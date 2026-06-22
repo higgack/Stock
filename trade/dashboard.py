@@ -691,9 +691,12 @@ def _build_html(
         'if(mode==="llm"&&!confirm("AI 보고서는 Gemini 비용이 발생합니다. 생성할까요?"))return;'
         'if(mode==="channel"&&!confirm("이 보고서를 텔레그램 채널로 전송할까요?"))return;'
         'res.innerHTML="<div class=\\"rb-note\\">"+(mode==="channel"?"채널 전송 중…":("생성 중… ("+(mode==="llm"?"AI":"무료")+")"))+"</div>";'
-        # 히트맵 셀에서 넘어온 클릭품목(leaf)명을 보고서 breadcrumb 용으로 전달 (2026-06-20).
-        'var leaf=window._rbLeaf||"";'
-        'fetch("api/company_report?q="+encodeURIComponent(v)+"&mode="+mode+(leaf?("&leaf="+encodeURIComponent(leaf)):""),{cache:"no-store",credentials:"include"})'
+        # 히트맵 셀에서 넘어온 클릭품목(leaf)명 + 방향(수출/수입)을 보고서로 전달
+        # (leaf=breadcrumb 2026-06-20, dir=해설·판가물량을 그 방향으로 2026-06-22).
+        'var leaf=window._rbLeaf||"";var rdir=window._rbDir||"";'
+        'fetch("api/company_report?q="+encodeURIComponent(v)+"&mode="+mode'
+        '+(leaf?("&leaf="+encodeURIComponent(leaf)):"")'
+        '+(rdir?("&dir="+encodeURIComponent(rdir)):""),{cache:"no-store",credentials:"include"})'
         '.then(function(r){return r.json();})'
         '.then(function(d){'
         'if(d.channel){res.innerHTML="<div class=\\"rb-note\\">"+(d.ok?("✅ 채널 전송 "+(d.sent||0)+"건"):("⚠️ "+(d.error||"전송 실패")))+"</div>";return;}'
@@ -701,23 +704,24 @@ def _build_html(
         '.catch(function(){res.innerHTML="<div class=\\"rb-note\\">⚠️ 네트워크 오류</div>";});}'
         # 수동 진입점(버튼·Enter·품목명 재검색)은 stale leaf 를 비움 — 히트맵에서
         # 넘어온 클릭품목명이 다음 수동 검색에 잘못 묻어나지 않게 (2026-06-20).
-        'document.getElementById("rb-free").addEventListener("click",function(){window._rbLeaf="";run("free");});'
-        'document.getElementById("rb-llm").addEventListener("click",function(){window._rbLeaf="";run("llm");});'
-        'document.getElementById("rb-chan").addEventListener("click",function(){window._rbLeaf="";run("channel");});'
-        'q.addEventListener("keydown",function(e){if(e.key==="Enter"){window._rbLeaf="";run("free");}});'
+        'document.getElementById("rb-free").addEventListener("click",function(){window._rbLeaf="";window._rbDir="";run("free");});'
+        'document.getElementById("rb-llm").addEventListener("click",function(){window._rbLeaf="";window._rbDir="";run("llm");});'
+        'document.getElementById("rb-chan").addEventListener("click",function(){window._rbLeaf="";window._rbDir="";run("channel");});'
+        'q.addEventListener("keydown",function(e){if(e.key==="Enter"){window._rbLeaf="";window._rbDir="";run("free");}});'
         # 결과 안의 품목명(data-rb-search) 클릭 → 그 실제 품목명으로 재검색 (사용자
         # 2026-06-19 — MLCC 등 별칭으로 들어와도 실제 품목명으로 한 번에 재조회).
         'res.addEventListener("click",function(e){'
         'var t=e.target.closest("[data-rb-search]");if(!t)return;'
-        'window._rbLeaf="";q.value=t.getAttribute("data-rb-search");q.focus();run("free");'
+        'window._rbLeaf="";window._rbDir="";q.value=t.getAttribute("data-rb-search");q.focus();run("free");'
         'window.scrollTo({top:q.getBoundingClientRect().top+window.scrollY-80,behavior:"smooth"});});'
         # 전역 훅 — 히트맵 셀 클릭 등 외부에서 이 위젯으로 검색을 던지는 단일 진입점
         # (사용자 2026-06-19 '히트맵도 연결'). 검색창 채우고 무료 보고서 실행 + 스크롤.
-        # 2번째 인자 leaf = 클릭한 품목명(예: 코팅머신) → breadcrumb 에 표시(2026-06-20).
-        'window.rbSearch=function(v,leaf){if(!v)return;window._rbLeaf=leaf||"";q.value=v;q.focus();run("free");'
+        # 2번째 leaf=클릭 품목명(breadcrumb 2026-06-20), 3번째 dir=방향 exp/imp(해설·
+        # 판가물량을 그 방향으로 2026-06-22).
+        'window.rbSearch=function(v,leaf,dir){if(!v)return;window._rbLeaf=leaf||"";window._rbDir=dir||"";q.value=v;q.focus();run("free");'
         'window.scrollTo({top:q.getBoundingClientRect().top+window.scrollY-80,behavior:"smooth"});};'
-        # 검색어를 지우면(X 버튼·전체삭제) 보고서도 leaf 도 함께 비움 (사용자 2026-06-18).
-        'q.addEventListener("input",function(){if(!(q.value||"").trim()){window._rbLeaf="";res.innerHTML="";}});'
+        # 검색어를 지우면(X 버튼·전체삭제) 보고서도 leaf·dir 도 함께 비움 (사용자 2026-06-18).
+        'q.addEventListener("input",function(){if(!(q.value||"").trim()){window._rbLeaf="";window._rbDir="";res.innerHTML="";}});'
         'q.addEventListener("search",function(){if(!(q.value||"").trim())res.innerHTML="";});'
         '})();</script>'
         # 🗂️ 전체 보고서 (사용자 2026-06-17) — 특정 월(기본 최신월) 수출입 전체 집계

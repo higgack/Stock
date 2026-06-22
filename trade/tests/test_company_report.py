@@ -342,73 +342,68 @@ class ItemModeTests(unittest.TestCase):
         self.assertIsNone(C._pv_split(300, 0, 200, 100))    # 기준 0 → None
         self.assertIsNone(C._pv_split(300, 100, 200, 0))    # 중량 0 → None
 
-    def test_hs10_leaf_name_and_pv_in_breadcrumb(self):
-        # 정확 HS10 검색 → 관세청 한글품목명(stat_kor) + 판가/물량 분해 breadcrumb.
-        by_mti = {"111100": {"name": "금", "industry": "기타",
-                             "months": {"2026-05": 1.01e9}}}
-        leaf = {"7108131010": {
-            "hs_code": "7108131010", "name": "금(기타 반제품)",
-            "exp": 1.01e9, "exp_pm": 9.4e8, "exp_py": 2.64e8,
-            "imp": 3.6e8, "imp_pm": 3.89e8, "imp_py": 2.45e8,
-            "exp_wgt": 40000, "exp_wgt_pm": 39000, "exp_wgt_py": 14000,
-            "imp_wgt": 15000, "imp_wgt_pm": 16000, "imp_wgt_py": 13000}}
-        res = C._hs_code_search("7108.13-1010", by_mti, [], None, hs_leaf=leaf)
-        self.assertEqual(res["hs_name"], "금(기타 반제품)")
-        self.assertIsNotNone(res["hs_pv"]["exp_yoy"])
+    def test_hs_pv_aggregate_and_name(self):
+        # 검색레벨 합산노드(수출)에서 판가물량 분해 + HS10 한글명 (사용자 2026-06-22
+        # '한 레벨·한 방향'). 854231→831210(catalog). months/wgts 합산노드 기준.
+        node = {"name": "프로세서와 컨트롤러", "industry": "반도체",
+                "months": {"2025-04": 90, "2025-05": 100, "2026-04": 200, "2026-05": 300},
+                "wgts": {"2025-04": 9, "2025-05": 10, "2026-04": 18, "2026-05": 20}}
+        by_mti = {"831210": node}
+        leaf = {"8542310000": {"hs_code": "8542310000", "name": "프로세서·컨트롤러"}}
+        res = C._hs_code_search("854231", by_mti, [], None, hs_leaf=leaf)
+        self.assertEqual(res["hs_dir"], "수출")             # 수입노드 없음→수출
+        self.assertEqual(res["hs_pv"]["yoy"]["value"], 200.0)   # 300 vs 100
+        self.assertEqual(res["hs_pv"]["yoy"]["qty"], 100.0)     # 20 vs 10
+        self.assertEqual(res["hs_pv"]["yoy"]["price"], 50.0)
         h = C.render_free(res)
         self.assertIn("판가 vs 물량 분해", h)
-        self.assertIn("금(기타 반제품)", h)
-        self.assertIn("단가 $", h)
-        # 중량 없는 구 스냅샷 leaf → 분해 None(graceful), 한글명만
-        leaf2 = {"7108131010": {"hs_code": "7108131010", "name": "금",
-                                "exp": 1e9, "exp_py": 2e8}}
-        res2 = C._hs_code_search("7108131010", by_mti, [], None, hs_leaf=leaf2)
-        self.assertIsNone(res2["hs_pv"])
-        self.assertNotIn("판가 vs 물량 분해", C.render_free(res2))
+        self.assertIn("수출", h)
 
-    def test_item_commentary_reused_from_industry(self):
-        # HS 검색 품목별 해설이 산업트렌드 카드와 동일 생성기(industry.item_comment_html)
-        # 재사용 (사용자 2026-06-22 '밑에 표처럼 코멘트'). 요약·신호·단가·스크리닝.
+    def test_direction_param_forces_import(self):
+        # 히트맵 수입 클릭 → direction='imp' → 해설·판가물량 수입 기준 (사용자 2026-06-22).
+        exp = {"name": "x", "industry": "반도체",
+               "months": {"2025-05": 100, "2026-05": 110},
+               "wgts": {"2025-05": 10, "2026-05": 10}}
+        imp = {"name": "x", "industry": "반도체",
+               "months": {"2025-05": 50, "2026-05": 200},
+               "wgts": {"2025-05": 5, "2026-05": 8}}
+        by_mti = {"831210": exp}
+        by_imp = {"831210": imp}
+        res = C._hs_code_search("854231", by_mti, [], by_imp, direction="imp")
+        self.assertEqual(res["hs_dir"], "수입")
+        self.assertEqual(res["hs_pv"]["yoy"]["value"], 300.0)   # 수입 200 vs 50
+        self.assertIn("수입", C.render_free(res))
+        # 자동(direction 없음): 최신월 큰 쪽 = 수입(200>110)
+        res2 = C._hs_code_search("854231", by_mti, [], by_imp)
+        self.assertEqual(res2["hs_dir"], "수입")
+
+    def test_item_comment_single_block_reused(self):
+        # 품목별 해설 = 검색레벨 합산노드 단일 블록, 산업트렌드 동일 생성기 재사용
+        # (사용자 2026-06-22 '한 레벨로'). per-row comment 아님.
         from trade import industry as I
         months = {f"2025-{m:02d}": 100 for m in range(1, 13)}
-        months.update({f"2026-{m:02d}": 300 + m * 40 for m in range(1, 6)})  # 급증
+        months.update({f"2026-{m:02d}": 300 + m * 40 for m in range(1, 6)})
         wgts = {ym: max(1, v // 50) for ym, v in months.items()}
         node = {"name": "디램", "industry": "반도체", "months": months, "wgts": wgts}
-        cmt = I.item_comment_html(node, "수출")
-        self.assertIn("ind-summary", cmt)              # 요약 <p>
-        self.assertTrue(("누적진도율" in cmt) or ("동력" in cmt) or ("G" in cmt))
-        # 빈 노드 → '' (graceful)
-        self.assertEqual(I.item_comment_html({}, "수출"), "")
-        # _hs_code_search 가 상위 품목에 comment 부착 + 렌더 섹션
-        by_mti = {"831210": node}
-        res = C._hs_code_search("854231", by_mti, [])
-        commented = [it for it in res["items"] if it.get("comment")]
-        self.assertTrue(commented)
-        self.assertNotIn("_m6", res["items"][0])       # 내부 키 제거
+        self.assertIn("ind-summary", I.item_comment_html(node, "수출"))
+        self.assertEqual(I.item_comment_html({}, "수출"), "")          # graceful
+        res = C._hs_code_search("854231", {"831210": node}, [])
+        self.assertIn("ind-summary", res["hs_comment"])               # 단일 해설
+        self.assertNotIn("_m6", res["items"][0])                      # 내부 키 제거
         self.assertIn("품목별 해설", C.render_free(res))
 
-    def test_pv_aggregate_at_heading_level(self):
-        # 광역(호/챕터) 검색도 prefix 하위 leaf 합산해 분해 (사용자 2026-06-22
-        # '각 HS 자릿수에 모두'). 8542.31(=854231) → 그 아래 leaf 2개 금액·중량 합산.
-        by_mti = {"831210": {"name": "프로세서와 컨트롤러", "industry": "반도체",
-                             "months": {"2026-05": 3e8}}}
-        leaf = {
-            "8542311000": {"hs_code": "8542311000", "name": "CPU", "exp": 100,
-                           "exp_py": 50, "imp": 0, "imp_py": 0,
-                           "exp_wgt": 10, "exp_wgt_py": 8, "imp_wgt": 0, "imp_wgt_py": 0},
-            "8542312000": {"hs_code": "8542312000", "name": "MCU", "exp": 200,
-                           "exp_py": 100, "imp": 0, "imp_py": 0,
-                           "exp_wgt": 20, "exp_wgt_py": 12, "imp_wgt": 0, "imp_wgt_py": 0},
-        }
-        res = C._hs_code_search("8542.31", by_mti, [], None, hs_leaf=leaf)
-        self.assertEqual(res["hs_pv_n"], 2)            # 두 leaf 합산
-        # 합산: exp 300 vs 150(+100%), 중량 30 vs 20(+50%) → 판가 +33.3%
-        self.assertEqual(res["hs_pv"]["exp_yoy"]["value"], 100.0)
-        self.assertEqual(res["hs_pv"]["exp_yoy"]["qty"], 50.0)
-        self.assertEqual(res["hs_pv"]["exp_yoy"]["price"], 33.3)
-        h = C.render_free(res)
-        self.assertIn("세부품목 합산", h)              # 광역 라벨
-        self.assertIn("가중평균", h)
+    def test_agg_dir_node_and_node_pv(self):
+        # 합산노드(여러 MTI) + 판가물량 분해 단위 (사용자 2026-06-22).
+        src = {"A": {"months": {"2025-05": 50, "2026-05": 150},
+                     "wgts": {"2025-05": 5, "2026-05": 10}},
+               "B": {"months": {"2025-05": 50, "2026-05": 150},
+                     "wgts": {"2025-05": 5, "2026-05": 10}}}
+        agg = C._agg_dir_node(["A", "B"], src)
+        self.assertEqual(agg["months"]["2026-05"], 300)   # 150+150
+        self.assertEqual(agg["wgts"]["2025-05"], 10)      # 5+5
+        pv = C._node_pv(agg)
+        self.assertEqual(pv["yoy"]["value"], 200.0)        # 300 vs 100
+        self.assertEqual(pv["yoy"]["qty"], 100.0)          # 20 vs 10
 
     def test_render_telegram_item(self):
         data = {"mode": "item", "name": "반도체",
