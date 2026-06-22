@@ -12,6 +12,8 @@ client-side views over the same data:
   국가별 (country view): one section per country, same mini-card layout as
                        회사별, grouping each alert under every country it
                        lists (multi-country → multiple sections)
+  지역별 (region view) : same as 국가별 but grouped by the Korean export
+                       region (서울 강남구 등); shares buildGroupedAxisView
 
 Filters (search, direction toggle, status toggle) run client-side over
 the embedded ALERTS array, so re-rendering after a filter change is a
@@ -767,6 +769,7 @@ def _build_html(
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
         '<button class="tab" data-tab="countries">국가별</button>'
+        '<button class="tab" data-tab="regions">지역별</button>'
         '<button class="tab" data-tab="matrix">매트릭스</button>'
         + (f'<button class="tab" data-tab="industry">📈 산업트렌드</button>'
            if _has_industry else '')
@@ -799,6 +802,7 @@ def _build_html(
         '<main id="items-view" class="view active"></main>'
         '<main id="companies-view" class="view"></main>'
         '<main id="countries-view" class="view"></main>'
+        '<main id="regions-view" class="view"></main>'
         '<main id="matrix-view" class="view"></main>'
         # 산업트렌드 CSV 데이터 — lazy 분리 시 메인에 남겨 csv-btn 이 항상 찾음(#2 fix).
         + industry_csv
@@ -1144,13 +1148,13 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
 .chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .count{margin-top:7px;font-size:11px;color:var(--text-sub)}
-/* 국가별 탭 국가 선택 바 (사용자 2026-06-22) — 검색 대신 칩 클릭으로 국가 리뷰 */
-.country-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
-.country-chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
-.country-chip:hover{border-color:var(--accent)}
-.country-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-.country-chip em{font-style:normal;opacity:.6;margin-left:3px;font-size:11px}
-.country-chip.active em{opacity:.85}
+/* 국가별·지역별 탭 축 선택 바 (사용자 2026-06-22) — 검색 대신 칩 클릭으로 리뷰 */
+.country-bar,.region-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.country-chip,.region-chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
+.country-chip:hover,.region-chip:hover{border-color:var(--accent)}
+.country-chip.active,.region-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.country-chip em,.region-chip em{font-style:normal;opacity:.6;margin-left:3px;font-size:11px}
+.country-chip.active em,.region-chip.active em{opacity:.85}
 .view{display:none;padding:12px}
 .view.active{display:block}
 .section{background:var(--surface);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
@@ -1727,7 +1731,7 @@ function hideModal(){
 }
 
 // --- state + filter ---
-const state={dir:'',status:'',q:'',onlynew:'',country:''};
+const state={dir:'',status:'',q:'',onlynew:'',country:'',region:''};
 function matches(a){
   if(!isLatest(a))return false;  // views render the latest of each dedup_key
   if(state.dir&&a.dir!==state.dir)return false;
@@ -1735,7 +1739,7 @@ function matches(a){
   if(state.onlynew&&!isAlertNew(a))return false;  // 🆕 최근 7일 게시 카드만
   if(state.q){
     const q=state.q.toLowerCase();
-    const hay=(a.item+' '+a.region+' '+a.country+' '+(a.countries||[]).join(' ')+' '+(a.stocks||[]).join(' ')).toLowerCase();
+    const hay=(a.item+' '+a.region+' '+a.country+' '+(a.countries||[]).join(' ')+' '+(a.regions||[]).join(' ')+' '+(a.stocks||[]).join(' ')).toLowerCase();
     if(!hay.includes(q))return false;
   }
   return true;
@@ -1914,30 +1918,30 @@ function buildCompaniesView(filtered){
   }).join('');
 }
 
-// 국가별 뷰 (사용자 2026-06-22) — 회사별과 동일 구조이되 국가로 그룹핑. BeOn
-// 데이터의 6요소 중 '나라' 축. 한 alert 이 여러 국가를 달면(countries 다중) 각
-// 국가 섹션에 모두 들어간다(매트릭스 셀 의미와 일치). 국가 미상은 '전국'.
-// 필터(수출/수입/잠정/확정/전체/🆕신규)는 전역 matches() 가 이미 적용한 filtered
-// 를 받으므로 별도 처리 불필요 — 회사별과 동일하게 자동 반영.
-function buildCountriesView(filtered){
-  const byCountry={};
+// 국가별·지역별 공용 그룹 뷰 (사용자 2026-06-22) — 회사별과 동일 카드 레이아웃,
+// 한 축(국가 또는 한국 내 지역)으로 그룹핑. BeOn 6요소 중 '나라'(country/countries)
+// 와 '지역'(region/regions, 수출지=서울 강남구 등) 축이 같은 구조라 한 빌더로 처리.
+//   field=단일키(country|region), multi=다중키(countries|regions), sk=state 서브필터
+//   키, cls=CSS/데이터 접두(country|region), emptyMsg=빈 결과 문구.
+// 한 alert 이 여러 값을 달면 각 섹션에 모두 포함. 값 미상은 '전국'. 칩 바로 검색
+// 없이 클릭 리뷰(state[sk]). 필터(수출/수입/잠정/확정/🆕신규)는 전역 matches() 가
+// 이미 적용한 filtered 를 받으므로 칩 목록·카운트도 그에 맞춰 자동 갱신.
+function buildGroupedAxisView(filtered, field, multi, sk, cls, emptyMsg){
+  const by={};
   filtered.forEach(a=>{
-    const cs=(a.countries&&a.countries.length)?a.countries:[a.country||'전국'];
-    cs.forEach(c=>{const k=c||'전국';(byCountry[k]=byCountry[k]||[]).push(a)});
+    const vs=(a[multi]&&a[multi].length)?a[multi]:[a[field]||'전국'];
+    vs.forEach(v=>{const k=v||'전국';(by[k]=by[k]||[]).push(a)});
   });
-  const entries=Object.entries(byCountry).sort((x,y)=>y[1].length-x[1].length||x[0].localeCompare(y[0]));
-  if(!entries.length)return '<div class="empty">조건에 맞는 국가가 없습니다.</div>';
-  // 국가 선택 버튼 바 (사용자 2026-06-22) — 어떤 국가가 있는지 한눈에 보고 검색
-  // 대신 칩 클릭으로 리뷰. '전체' + 국가별(빈도순) 칩, state.country 로 한 국가만
-  // 보기. 현재 필터(수출/수입/잠정/확정/신규) 결과에 맞춰 국가 목록·카운트가 갱신됨.
+  const entries=Object.entries(by).sort((x,y)=>y[1].length-x[1].length||x[0].localeCompare(y[0]));
+  if(!entries.length)return '<div class="empty">'+emptyMsg+'</div>';
   const names=entries.map(e=>e[0]);
-  const active=names.includes(state.country)?state.country:'';   // 결과에 없으면 전체 폴백
-  const chips='<div class="country-bar">'+
-    '<button class="country-chip'+(active===''?' active':'')+'" data-country="">전체 <em>'+entries.length+'</em></button>'+
-    entries.map(([n,arr])=>'<button class="country-chip'+(active===n?' active':'')+'" data-country="'+esc(n)+'">'+esc(n)+' <em>'+arr.length+'</em></button>').join('')+
+  const active=names.includes(state[sk])?state[sk]:'';            // 결과에 없으면 전체 폴백
+  const chips='<div class="'+cls+'-bar">'+
+    '<button class="'+cls+'-chip'+(active===''?' active':'')+'" data-'+cls+'="">전체 <em>'+entries.length+'</em></button>'+
+    entries.map(([n,arr])=>'<button class="'+cls+'-chip'+(active===n?' active':'')+'" data-'+cls+'="'+esc(n)+'">'+esc(n)+' <em>'+arr.length+'</em></button>').join('')+
   '</div>';
-  // 표시 섹션 선택: 국가 칩이 선택돼 있으면 그 국가만, 아니면 검색어가 국가명을
-  // 직접 매칭하면 그 섹션만(회사별 스마트검색과 동일), 둘 다 아니면 전부.
+  // 칩 선택 시 그 값만, 아니면 검색어가 값명을 직접 매칭하면 그것만(회사별
+  // 스마트검색과 동일), 둘 다 아니면 전부.
   let sorted=entries;
   if(active){
     sorted=entries.filter(([n])=>n===active);
@@ -1947,8 +1951,7 @@ function buildCountriesView(filtered){
     if(direct.length)sorted=direct;
   }
   return chips+sorted.map(([name,items])=>{
-    // 회사별과 동일: 같은 품목끼리 묶고(localeCompare), 그 안에서 전국-tier +
-    // posted_at desc. 같은 alert 이 국가 섹션 안에서 중복되진 않음(국가당 1회 push).
+    // 회사별과 동일: 같은 품목끼리 묶고, 그 안에서 전국-tier + posted_at desc.
     items.sort((a,b)=>
       (a.item||'').localeCompare(b.item||'')||
       regionTier(a)-regionTier(b)||
@@ -1957,6 +1960,12 @@ function buildCountriesView(filtered){
     const cards=items.map(renderMiniCard).join('');
     return renderSection(name, [items.length+'개 품목'], cards);
   }).join('');
+}
+function buildCountriesView(filtered){
+  return buildGroupedAxisView(filtered,'country','countries','country','country','조건에 맞는 국가가 없습니다.');
+}
+function buildRegionsView(filtered){
+  return buildGroupedAxisView(filtered,'region','regions','region','region','조건에 맞는 지역이 없습니다.');
 }
 
 function renderHeaderMeta(){
@@ -1992,8 +2001,8 @@ function renderHeaderMeta(){
 // (사용자 2026-06-15 '카드 클릭 너무 오래'). 이제 활성 탭만 빌드하고 나머지
 // 두 뷰는 '더티' 표시 후 탭 전환 시 빌드 → DOM 1×1054 로 1/3. CSV·모달은
 // ALERTS/ALERT_BY_ID(데이터)를 직접 읽어 DOM 무관이라 lazy 해도 안전.
-const _CLIENT_VIEWS={items:buildItemsView,companies:buildCompaniesView,countries:buildCountriesView,matrix:buildMatrixView};
-let _viewDirty={items:true,companies:true,countries:true,matrix:true};
+const _CLIENT_VIEWS={items:buildItemsView,companies:buildCompaniesView,countries:buildCountriesView,regions:buildRegionsView,matrix:buildMatrixView};
+let _viewDirty={items:true,companies:true,countries:true,regions:true,matrix:true};
 // 별도파일 lazy fetch (2026-06-16 '느려') — 산업트렌드(588 SVG ~7MB)를 index.html
 // 인라인 대신 industry_panel.html 로 빼 탭 첫 열 때만 fetch. 초기 로딩 11MB→~3MB.
 // data-src 없는 뷰(인라인/클라이언트)는 무시. 실패 시 재시도 가능하게 loaded 해제.
@@ -2032,8 +2041,8 @@ function _buildView(name){
 function render(){
   _lastFiltered=ALERTS.filter(matches);
   document.getElementById('visible-count').textContent=_lastFiltered.length;
-  // 클라 4뷰 전부 더티 표시 → 활성 뷰만 즉시 빌드, 나머지는 탭 전환 때.
-  _viewDirty={items:true,companies:true,countries:true,matrix:true};
+  // 클라 5뷰 전부 더티 표시 → 활성 뷰만 즉시 빌드, 나머지는 탭 전환 때.
+  _viewDirty={items:true,companies:true,countries:true,regions:true,matrix:true};
   _buildView(_activeTab());                           // industry/heatmap 이면 no-op (정상)
   filterIndustryCards();                              // 산업트렌드 탭도 검색 (2026-06-12)
   if(window.hmFilter) window.hmFilter(state.q||'');   // 히트맵 탭도 검색
@@ -2146,16 +2155,18 @@ document.querySelectorAll('.chip').forEach(chip=>{
     render();
   });
 });
-// 국가별 탭 국가 선택 칩 (사용자 2026-06-22) — 검색 대신 클릭으로 국가 좁히기.
-// 칩은 buildCountriesView 가 매번 다시 그리므로 위임(delegated) 처리. 다른 탭/
-// 뷰엔 영향 없음(state.country 는 buildCountriesView 만 읽음). 같은 칩 재클릭=전체.
+// 국가별/지역별 탭 축 선택 칩 (사용자 2026-06-22) — 검색 대신 클릭으로 국가·지역
+// 좁히기. 칩은 빌더가 매번 다시 그리므로 위임(delegated) 처리. 다른 탭/뷰엔 영향
+// 없음(state.country/region 은 해당 빌더만 읽음). 같은 칩 재클릭=전체(토글).
 document.addEventListener('click',function(e){
-  const cc=e.target.closest('.country-chip');
+  const cc=e.target.closest('.country-chip,.region-chip');
   if(!cc)return;
-  const v=cc.dataset.country||'';
-  state.country=(state.country===v)?'':v;     // 토글 — 선택국 재클릭 시 전체로
-  _viewDirty.countries=true;
-  _buildView('countries');                    // 전역 필터 불변 → 이 뷰만 재빌드
+  const isRegion=cc.classList.contains('region-chip');
+  const sk=isRegion?'region':'country', view=isRegion?'regions':'countries';
+  const v=cc.dataset[sk]||'';
+  state[sk]=(state[sk]===v)?'':v;             // 토글 — 선택값 재클릭 시 전체로
+  _viewDirty[view]=true;
+  _buildView(view);                           // 전역 필터 불변 → 이 뷰만 재빌드
 });
 let qTimer;
 document.getElementById('q').addEventListener('input',e=>{
