@@ -1034,8 +1034,33 @@ def _screen_yf(conditions: list[Condition], universe: list[str], market: str,
         log.info("stock_screener: %s Phase 3 tech — %s", market, note)
         hits = final
 
+    _backfill_names_naver(hits, market)
     return ScreenResult(conditions=conditions, hits=hits,
                         total_universe=total, elapsed_sec=0, market=market, note=note)
+
+
+def _backfill_names_naver(hits: list[dict], market: str) -> None:
+    """yfinance shortName 이 비거나 티커와 같은 종목명을 네이버 worldstock 한글명
+    으로 백필 (사용자 2026-06-23 'JP 티커만 나옴 → 네이버로 종목명, 미국도·향후
+    타국도'). JP/US/HK/CN universal — world_name_map(7d 캐시)라 run 당 1콜·저비용.
+    기존 양호한 명칭(US 영문 등)은 보존(없을 때만 채움). graceful."""
+    if not hits:
+        return
+    need = [h for h in hits if not h.get("name") or h.get("name") == h.get("ticker")]
+    if not need:
+        return
+    try:
+        from bot.naver_ranking_client import world_name_map
+        nm = world_name_map(market)
+    except Exception as exc:
+        log.debug("stock_screener: %s name backfill failed: %s", market, exc)
+        return
+    if not nm:
+        return
+    for h in need:
+        name = nm.get(h.get("ticker"))
+        if name:
+            h["name"] = name
 
 
 # ── Telegram formatting ────────────────────────────────────────────
@@ -1136,7 +1161,7 @@ def format_result_message(result: ScreenResult) -> list[str]:
             v = h.get(mk)
             if v is not None:
                 m = METRICS.get(mk)
-                vals.append(f"{m.name}:{v:g}")
+                vals.append(f"{m.name}:{fmt_metric_value(v)}")
             else:
                 vals.append(f"{METRICS[mk].name}:N/A")
 
@@ -1170,6 +1195,23 @@ def _fmt_mcap_jp(v_millions: float) -> str:
     if v_millions >= 100:
         return f"[¥{v_millions/100:,.0f}억]"
     return f"[¥{v_millions:,.0f}M]"
+
+
+def fmt_metric_value(v) -> str:
+    """스크리너 지표값 표기 — 과학표기(1.1e+06) 금지(사용자 2026-06-23 '볼륨 이상해').
+    큰 수(거래량 등)는 천단위 콤마, 정수는 정수로, 소수는 트림. 전 surface 공용
+    (텔레그램·대시보드 스크리너/아카이브). Rule applies to all markets / US+KR+JP."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if math.isnan(f) or math.isinf(f):
+        return "—"
+    if abs(f) >= 1000:
+        return f"{f:,.0f}"
+    if f == int(f):
+        return str(int(f))
+    return f"{f:g}"
 
 
 def _chunk_html(text: str, limit: int) -> list[str]:

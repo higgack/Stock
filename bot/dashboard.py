@@ -7335,6 +7335,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                 _scr_file = _sa.get("_file", "")
                 _scr_market = _sa.get("market", "KR")
                 _scr_is_us = _scr_market == "US"
+                _scr_is_jp = _scr_market == "JP"
                 _search_hay = _raw_conds
                 for _sh in (_sa.get("hits") or []):
                     _search_hay += " " + str(_sh.get("name", "")) + " " + str(_sh.get("ticker", ""))
@@ -7348,14 +7349,20 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                     if _scr_is_us:
                         _sh_mcap_str = (f"${_sh_mcap/1000:.1f}B" if _sh_mcap and _sh_mcap >= 1000
                                         else f"${_sh_mcap:,.0f}M" if _sh_mcap else "—")
+                    elif _scr_is_jp:
+                        # ¥백만(marketCap/1e6) → 조/억 (텔레그램 _fmt_mcap_jp 동일 규약)
+                        _sh_mcap_str = (f"¥{_sh_mcap/1e6:.1f}조" if _sh_mcap and _sh_mcap >= 1e6
+                                        else f"¥{_sh_mcap/100:,.0f}억" if _sh_mcap and _sh_mcap >= 100
+                                        else f"¥{_sh_mcap:,.0f}M" if _sh_mcap else "—")
                     else:
                         _sh_mcap_str = f"{_sh_mcap:,.0f}" if _sh_mcap else "—"
+                    from bot.stock_screener import fmt_metric_value as _fmv
                     _sh_extras = []
                     for _ek, _ev in _sh.items():
                         if _ek in ("code", "ticker", "name", "market", "mcap", "price"):
                             continue
                         if _ev is not None:
-                            _sh_extras.append(f"{_ek}:{_ev:g}" if isinstance(_ev, (int, float)) else f"{_ek}:{_ev}")
+                            _sh_extras.append(f"{_ek}:{_fmv(_ev)}" if isinstance(_ev, (int, float)) else f"{_ek}:{_ev}")
                     _sh_extra = _shtml.escape(" · ".join(_sh_extras[:5]))
                     _sh_name_cell = f"<b>{_sh_name}</b>" if _sh_name else f"<b>{_sh_ticker}</b>"
                     _scr_rows += (
@@ -10035,12 +10042,13 @@ def _render_screen_page(archives: list[dict]) -> str:
             else:
                 mcap_str = f"{mcap:,.0f}" if mcap else "—"
 
+            from bot.stock_screener import fmt_metric_value as _fmv
             extra_vals = []
             for k, v in h.items():
                 if k in ("code", "ticker", "name", "market", "mcap", "price"):
                     continue
                 if v is not None:
-                    extra_vals.append(f"{k}:{v:g}" if isinstance(v, (int, float)) else f"{k}:{v}")
+                    extra_vals.append(f"{k}:{_fmv(v)}" if isinstance(v, (int, float)) else f"{k}:{v}")
             extra = _html.escape(" · ".join(extra_vals[:5]))
             name_cell = f"<b>{name}</b>" if name else f"<b>{ticker}</b>"
             rows += (
