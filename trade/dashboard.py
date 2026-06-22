@@ -1979,18 +1979,20 @@ function buildCompaniesView(filtered){
 // fallback 포함) → 칩 바·매트릭스와 동일 규칙. field=axisVals 축키(industry|country|
 // region), sk=state 서브필터키, cls=CSS 접두, emptyMsg=빈 결과, sinkLabel=항상 맨아래
 // (산업 '미분류'). 필터(수출/수입/잠정/확정/🆕신규)는 전역 matches() 가 이미 적용.
-function buildGroupedAxisView(filtered, field, sk, cls, emptyMsg, sinkLabel){
+function buildGroupedAxisView(filtered, field, sk, cls, emptyMsg, sinkLabels){
   const by={};
   filtered.forEach(a=>{
     axisVals(a, field).forEach(v=>{(by[v]=by[v]||[]).push(a)});
   });
-  // 빈도순. sinkLabel(예: 미분류)은 카운트 무관 항상 맨 아래.
+  // 일반 산업/국가/지역은 빈도순. sinkLabels(예: ['기타','미분류'])은 카운트 무관
+  // 항상 맨 아래로, 배열 순서대로(기타 → 미분류) — 함께 보고 정리하기 위함.
+  const _sink=k=>{const i=(sinkLabels||[]).indexOf(k);return i<0?-1:i;};
   const entries=Object.entries(by).sort((x,y)=>{
-    if(sinkLabel){
-      if(x[0]===sinkLabel&&y[0]!==sinkLabel)return 1;
-      if(y[0]===sinkLabel&&x[0]!==sinkLabel)return -1;
-    }
-    return y[1].length-x[1].length||x[0].localeCompare(y[0]);
+    const rx=_sink(x[0]), ry=_sink(y[0]);
+    if(rx<0&&ry<0)return y[1].length-x[1].length||x[0].localeCompare(y[0]);
+    if(rx<0)return -1;              // 일반은 sink 보다 앞
+    if(ry<0)return 1;
+    return rx-ry;                   // sink 끼리는 지정 순서
   });
   if(!entries.length)return '<div class="empty">'+emptyMsg+'</div>';
   const names=entries.map(e=>e[0]);
@@ -2026,9 +2028,10 @@ function buildCountriesView(filtered){
 function buildRegionsView(filtered){
   return buildGroupedAxisView(filtered,'region','region','region','조건에 맞는 지역이 없습니다.');
 }
-// 산업별 — 품목→산업 매핑(미해석=미분류). 산업명 빈도순 + '미분류'는 항상 맨 아래.
+// 산업별 — 품목→산업 매핑(미해석=미분류). 산업명 빈도순 + '기타'·'미분류'는 맨 아래
+// (기타 → 미분류 순) 묶어 함께 정리(사용자 2026-06-22).
 function buildIndustriesView(filtered){
-  return buildGroupedAxisView(filtered,'industry','industry','industry','조건에 맞는 산업이 없습니다.','미분류');
+  return buildGroupedAxisView(filtered,'industry','industry','industry','조건에 맞는 산업이 없습니다.',['기타','미분류']);
 }
 
 function renderHeaderMeta(){
