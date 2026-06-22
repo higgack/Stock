@@ -77,6 +77,9 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
 5. 다단계: 항목별 검증 후 다음("OK/다음" 전 batch 금지).
 6. **회귀**: `make test`(=pytest tests/, VM ~37초) commit 전 의무. fail 시 commit 금지(누구든).
    새 회귀패턴 = `tests/test_regression.py` 영구추가(ad-hoc 1회용 금지). `make syntax`/`make help-len` 단축.
+   - **rtk opt-in 토큰절감**(`command -v rtk` 있을 때만): noisy pass/fail 출력 = `rtk` 래핑
+     (`rtk pytest …`/`rtk make test`/lint — 실패만+전체는 tee 보존). ⛔ `git diff`(배포전 셀프리뷰)·
+     수치 정확검증(DART/관세청)·진입점 스모크는 **원본**(전역 auto-rewrite 훅 금지 — 압축이 검증 가림).
 7. **배포전 셀프리뷰**(테스트 green 만으론 부족 — 사용자 '같은 거 두 번 힘들어'): base 대비 전체 diff
    재독 + (a) 기존함수 시그니처/반환형 정의부 확인 (b) 타임존(UTC↔KST)·단위·포맷 실기록부서 확인 +
    경계테스트 (c) 호출부 배선 E2E grep (d) 진입점 1회 실행 스모크(NameError/ImportError류).
