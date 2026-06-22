@@ -631,36 +631,46 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
 
     tech_note = ""
     tech_conds = [c for c in conditions if c.metric.source == "tech"]
-    if tech_conds and survivors:
-        from bot import pykrx_client as _pk
-        # 일봉 fetch 비용 bound — 시총 상위 _TECH_SCAN_CAP 개만 스캔(시총순 정렬 후 캡).
-        ranked = sorted(survivors.items(),
-                        key=lambda kv: kv[1].get("시가총액", 0) or 0, reverse=True)
-        scan = ranked[:_TECH_SCAN_CAP]
-        log.info("stock_screener: Phase 3 tech — top %d by mcap (%d conditions)",
-                 len(scan), len(tech_conds))
+    if tech_conds:
+        phase1_n = len(survivors)
+        if survivors:
+            from bot import pykrx_client as _pk
+            # 일봉 fetch 비용 bound — 시총 상위 _TECH_SCAN_CAP 개만 스캔(시총순 정렬 후 캡).
+            ranked = sorted(survivors.items(),
+                            key=lambda kv: kv[1].get("시가총액", 0) or 0, reverse=True)
+            scan = ranked[:_TECH_SCAN_CAP]
+            log.info("stock_screener: Phase 3 tech — top %d by mcap (%d conditions)",
+                     len(scan), len(tech_conds))
 
-        def _tt(kv):
-            try:
-                return kv[0], _pk.get_kr_trend_template(kv[0])
-            except Exception:
-                return kv[0], None
+            def _tt(kv):
+                try:
+                    return kv[0], _pk.get_kr_trend_template(kv[0])
+                except Exception:
+                    return kv[0], None
 
-        final = {}
-        loaded = 0
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for code, td in pool.map(_tt, scan):
-                if not td:
-                    continue
-                loaded += 1
-                if all(c.test(td.get(c.metric.yf_field)) for c in tech_conds):
-                    final[code] = {**survivors[code], **td}
-        # 가시성(사용자 2026-06-23 '0종목 원인 불명') — 스캔/데이터로드/통과 분리표시.
-        # 데이터로드 << 스캔 이면 일봉 fetch 실패(데이터 문제), 통과만 0이면 추세부재.
-        tech_note = (f"추세 스캔 상위 {len(scan)} · 일봉데이터 {loaded} · 통과 {len(final)}"
-                     f" (시총상위 {_TECH_SCAN_CAP}캡)")
-        log.info("stock_screener: Phase 3 tech — %s", tech_note)
-        survivors = final
+            final = {}
+            loaded = 0
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for code, td in pool.map(_tt, scan):
+                    if not td:
+                        continue
+                    loaded += 1
+                    if all(c.test(td.get(c.metric.yf_field)) for c in tech_conds):
+                        final[code] = {**survivors[code], **td}
+            # 가시성(사용자 2026-06-23 '0종목 원인 불명') — 퍼널 전구간 표시. 일봉데이터
+            # << 스캔 = fetch 실패(데이터 문제), 통과만 0 = 추세부재.
+            tech_note = (f"사전필터 통과 {phase1_n} · 추세스캔 상위 {len(scan)}"
+                         f" · 일봉데이터 {loaded} · 통과 {len(final)} (시총상위 {_TECH_SCAN_CAP}캡)")
+            log.info("stock_screener: Phase 3 tech — %s", tech_note)
+            survivors = final
+        else:
+            # Phase 1 사전필터(시총·거래량 등)에서 전멸 → tech 스킵. bulk 필드 보유수로
+            # '데이터 결측'(시총/거래량 None) vs '임계값 과함' 즉시 구분(사용자 2026-06-23).
+            _mc = sum(1 for d in bulk.values() if d.get("시가총액"))
+            _vol = sum(1 for d in bulk.values() if d.get("거래량"))
+            tech_note = (f"사전필터 통과 0/{total} — 추세 스캔 전 전멸 "
+                         f"(bulk 시총보유 {_mc}·거래량보유 {_vol})")
+            log.warning("stock_screener: tech skipped — %s", tech_note)
 
     name_map = _resolve_kr_names(list(survivors.keys()))
 
