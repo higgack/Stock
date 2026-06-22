@@ -373,15 +373,16 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
 
 def _looks_like_hs(q: str) -> bool:
     """입력이 HS코드 표기인지 — 점/대시 포함 거의-숫자(8517.79·2106.90-9099) 또는
-    8~10자리 bare(HSK10). 6자리 bare 는 주식코드라 제외. 순수."""
+    bare 2/4/8/10자리(챕터·호·HSK8/10). **6자리 bare 는 주식코드라 제외**(HS6 는
+    '8517.79' 점표기). 상위 자릿수부터 검색되게(사용자 2026-06-22 '85 치면 다'). 순수."""
     s = (q or "").strip()
     d = "".join(c for c in s if c.isdigit())
-    if len(d) < 6:
+    if not d:
         return False
     if s.isdigit():
-        return 8 <= len(d) <= 10                     # bare = HSK10 (6자리=주식코드)
+        return len(d) in (2, 4, 8, 10)              # bare HS prefix (6=주식코드 제외)
     nondigit = sum(1 for c in s if not c.isdigit() and c not in ".- ")
-    return nondigit == 0                             # 점/대시 표기 HS (숫자 외 토큰 없음)
+    return nondigit == 0 and len(d) >= 2            # 점/대시 표기 HS (숫자 외 토큰 없음)
 
 
 def _pv_split(dlr_now, dlr_base, wgt_now, wgt_base) -> dict | None:
@@ -423,8 +424,11 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
     'HS코드로 검색하면 숫자'). HS6→MTI6(mti_map). 미해석 → None. 순수.
     정확 HS10 검색이면 그 leaf 의 한글품목명(stat_kor)+판가/물량 분해도 첨부."""
     from trade import mti_companies, mti_map
+    # prefix 검색 — 2(챕터)/4(호)/6/8/10 어느 자릿수든 그 prefix 하위 전 HSK10 의
+    # MTI6 (사용자 2026-06-22 '85 치면 다 나오게'). 6자리 이상은 hs6_to_mti6 와 동치.
+    bare = re.sub(r"\D", "", query or "")
     try:
-        m6s = mti_map.hs6_to_mti6(query)
+        m6s = mti_map.hs_prefix_to_mti6(bare)
     except Exception:
         m6s = []
     if not m6s:
@@ -457,7 +461,6 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
     # 정확 HS10(점·대시 제거 10자리) → 그 leaf 의 한글품목명 + 판가/물량 분해.
     hs_name = None
     hs_pv = None
-    bare = re.sub(r"\D", "", query or "")
     if len(bare) == 10 and hs_leaf and bare in hs_leaf:
         _lf = hs_leaf[bare]
         hs_name = (_lf.get("name") or "").strip() or None

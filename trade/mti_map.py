@@ -152,6 +152,28 @@ def hs6_to_mti6(hs_code: str, path: Path | str = DEFAULT_PATH) -> list[str]:
     return _HS6_MTI6_CACHE[key].get(digits[:6], [])
 
 
+def hs_prefix_to_mti6(prefix: str, path: Path | str = DEFAULT_PATH) -> list[str]:
+    """HS prefix(2 챕터·4 호·6·8·10 자리) → 그 prefix 로 시작하는 모든 HSK10 의
+    MTI6 리스트 (상위 자릿수부터 검색 — 사용자 2026-06-22 '85 치면 다 나오게').
+    6자리 이상이면 hs6_to_mti6 와 동치(더 구체적이면 더 좁은 집합). 등장 순서
+    보존(호출부가 수출액순 정렬). 미해석/파일부재 → []. 순수."""
+    digits = "".join(c for c in (prefix or "") if c.isdigit())
+    if not digits:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        for hsk, rec in load_mti(path).items():
+            if str(hsk).startswith(digits):
+                m6 = rec[0] if rec else ""
+                if m6 and m6 not in seen:
+                    seen.add(m6)
+                    out.append(m6)
+    except Exception:
+        return []
+    return out
+
+
 def industries(path: Path | str = DEFAULT_PATH,
                include_catch_all: bool = False) -> list[str]:
     """Sorted unique industry labels. Excludes '기타' by default."""
