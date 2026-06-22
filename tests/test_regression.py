@@ -10128,6 +10128,17 @@ class TestNaverCommodityCharts:
         import bot.bok_ecos_client as e
         fs = inspect.getsource(e.fetch_series_points)
         assert "RESULT" in fs and "log.warning" in fs, "ECOS series silent-fail 미가시화"
+        # 경상수지·수출 정확 table/item/scale (ECOS 메타 확인 2026-06-23 — 옛 000000=
+        # 데이터없음·403Y014=무효 → INFO-200 으로 카드 드롭되던 근본원인 fix).
+        ca = e._SERIES["current_account"]
+        assert ca["table"] == "301Y017" and ca["item"] == "SA000"
+        assert ca["scale"] == 0.01 and ca["unit"] == "억$"      # 백만$→억$
+        ex = e._SERIES["export_amt"]
+        assert ex["table"] == "901Y118" and ex["item"] == "T002"
+        assert ex["scale"] == 1e-5 and ex["unit"] == "억$"      # 천$→억$
+        # scale 이 두 fetch 경로에 모두 적용(값·시계열 동일 단위).
+        assert "scale" in fs
+        assert "scale" in inspect.getsource(e._fetch_indicator)
 
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
