@@ -327,9 +327,19 @@ def _fetch_kr_bulk() -> Optional[dict]:
             continue
 
         result = {}
+        # df_cap 을 정규화 코드(zfill6 str) dict 로 — df_fund/df_cap 인덱스 포맷
+        # 불일치 시 'code in df_cap.index' 가 전부 False → 시총/거래량 전멸하던
+        # 근본원인 fix (사용자 2026-06-23 'bulk 시총보유 0'). 양쪽 zfill6 통일.
+        cap_by_code = {}
+        for _ci in df_cap.index:
+            try:
+                cap_by_code[str(_ci).zfill(6)] = df_cap.loc[_ci]
+            except Exception:
+                continue
         for code in df_fund.index:
+            ckey = str(code).zfill(6)
             row_f = df_fund.loc[code]
-            row_c = df_cap.loc[code] if code in df_cap.index else {}
+            row_c = cap_by_code.get(ckey)
             name = ""
             if hasattr(row_f, "get"):
                 name = row_f.get("종목명", "")
@@ -344,23 +354,26 @@ def _fetch_kr_bulk() -> Optional[dict]:
                 "DIV": _safe_float(row_f.get("DIV") if hasattr(row_f, "get") else row_f["DIV"]),
                 "종목명": str(name) if name else "",
             }
-            if hasattr(row_c, "get"):
+            if row_c is not None and hasattr(row_c, "get"):
                 entry["시가총액"] = _safe_float(row_c.get("시가총액"))
                 entry["종가"] = _safe_float(row_c.get("종가"))
                 entry["거래량"] = _safe_float(row_c.get("거래량"))
-            elif len(row_c) > 0:
-                entry["시가총액"] = _safe_float(row_c["시가총액"] if "시가총액" in row_c.index else None)
-                entry["종가"] = _safe_float(row_c["종가"] if "종가" in row_c.index else None)
-                entry["거래량"] = _safe_float(row_c["거래량"] if "거래량" in row_c.index else None)
 
             if entry.get("시가총액"):
                 entry["시가총액"] = entry["시가총액"] / 1e8
 
-            result[code] = entry
+            result[ckey] = entry
 
-        if result:
-            log.info("stock_screener: bulk fetched %d tickers for %s", len(result), date_str)
+        # 장전(새벽) 호출 시 오늘자 df_cap 이 0값 placeholder 로 와 시총/거래량이
+        # 전멸하던 근본원인 fix (사용자 2026-06-23 'bulk 시총보유 0'). 시총 보유 0
+        # 이면 그 날짜 거부 → 직전 영업일로 폴백(실거래 데이터 확보까지).
+        _cap_n = sum(1 for v in result.values() if v.get("시가총액"))
+        if result and _cap_n > 0:
+            log.info("stock_screener: bulk fetched %d tickers for %s (시총보유 %d)",
+                     len(result), date_str, _cap_n)
             break
+        log.debug("stock_screener: %s 시총 전무(장전 0값?) — 직전 영업일 폴백", date_str)
+        result = None
 
     return result
 
