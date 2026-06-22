@@ -7365,7 +7365,14 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                         f"<td style='text-align:right'>{_sh_mcap_str}</td>"
                         f"<td class='muted'>{_sh_extra}</td></tr>"
                     )
-                _scr_mcap_hdr = "시총($M)" if _scr_is_us else "시총(억)"
+                # 시총 컬럼 헤더 — 시장별 통화단위(US=$M, 아시아=현지통화M, KR=억).
+                from bot.stock_screener import _MKT_CCY as _scr_ccy_map
+                if _scr_market == "US":
+                    _scr_mcap_hdr = "시총($M)"
+                elif _scr_market in _scr_ccy_map:
+                    _scr_mcap_hdr = f"시총({_scr_ccy_map[_scr_market]}M)"
+                else:
+                    _scr_mcap_hdr = "시총(억)"
                 if _scr_rows:
                     _scr_table = (
                         f"<table class='scr-tbl'><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
@@ -7383,7 +7390,8 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                         "조건에 맞는 종목이 없습니다 "
                         f"(0종목 / {_scr_total:,}종목 스캔).{_note_html}</p>"
                     )
-                _scr_mbadge = " 🇺🇸" if _scr_is_us else ""
+                _scr_mbadge = {"US": " 🇺🇸", "JP": " 🇯🇵", "HK": " 🇭🇰",
+                               "CN_A": " 🇨🇳", "TW": " 🇹🇼"}.get(_scr_market, "")
                 parts.append(
                     f"<details class='scr-det cs-card' data-date=\"{_shtml.escape(_scr_date)}\""
                     f" data-file=\"{_shtml.escape(_scr_file)}\""

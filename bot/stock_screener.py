@@ -1256,8 +1256,9 @@ def format_result_message(result: ScreenResult) -> list[str]:
     cache_tag = " 💾캐시" if result.was_cached else ""
     market_tag = f" ({_MKT_TAG.get(result.market, 'KR')})"
     _ccy = _MKT_CCY.get(result.market, "")
+    # 결과 hits 는 전 시장 시총 내림차순(_screen_yf). TW 는 유니버스만 거래대금상위로
+    # 선별(시총 컬럼은 marketCap) — 표시 정렬 라벨은 시총 기준이 정확.
     sort_note = (f"시가총액 내림차순 ({_ccy}M, 대형주 우선)" if _ccy
-                 else "거래대금 상위 (대형주 우선)" if result.market == "TW"
                  else "시가총액 내림차순 (대형주 우선)")
 
     header = (
