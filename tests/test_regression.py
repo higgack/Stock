@@ -10062,22 +10062,24 @@ class TestNaverCommodityCharts:
         assert '_NV_KINDS = ("com", "idx", "coin", "fx")' in src  # 야후 chart 배치서 전부 제외
         assert "_fetch_macro_naver_values(all_yf_sids)" in src   # 값은 전체 네이버
 
-    def test_macro_snapshot_ccfi_replaces_platinum(self):
-        # 사용자 2026-06-18: Macro Snapshot 에서 백금 제거 + CCFI(중국 컨테이너 운임)를
-        # VIX 뒤로(한달단위). CCFI 는 marketindex/transport(com) — fetch_commodities 가
-        # transport 포함하므로 백금과 동일 com 경로(값+스파크라인).
+    def test_macro_snapshot_sox_card(self):
+        # 사용자 2026-06-22: Macro Snapshot 의 VIX 뒤 카드 = 필라델피아 반도체(SOX),
+        # 옛 CCFI(중국 컨테이너 운임) 대체. 값·1개월 스파크라인 모두 네이버 worldstock/
+        # index(.SOX) — S&P/나스닥/VIX 와 동일 idx 경로. 백금은 계속 미존재.
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "platinum" not in src and "PL=F" not in src, "백금 미제거"
-        assert '("ccfi", "중국 컨테이너 운임(CCFI)"' in src, "CCFI 카드 누락"
-        assert '"CCFI": ("com", "CCFI")' in src, "CCFI naver(transport) 매핑 누락"
+        assert '("sox", "필라델피아 반도체"' in src, "SOX 카드 누락"
+        assert '"^SOX": ("idx", ".SOX")' in src, "SOX naver(idx) 매핑 누락"
+        # CCFI 는 macro 카드에서 제거됨(market_overview CARD_FUTURES 에는 잔존)
+        assert '("ccfi", "중국 컨테이너 운임(CCFI)"' not in src, "옛 CCFI 카드 잔존"
+        assert '"CCFI": ("com", "CCFI")' not in src, "옛 CCFI com 매핑 잔존"
         # VIX 바로 뒤 순서 보장
         i_vix = src.index('("vix", "VIX"')
-        i_ccfi = src.index('("ccfi", "중국 컨테이너 운임(CCFI)"')
+        i_sox = src.index('("sox", "필라델피아 반도체"')
         i_wti = src.index('("wti", "WTI"')
-        assert i_vix < i_ccfi < i_wti, "CCFI 가 VIX 바로 뒤가 아님"
-        # naver_marketindex 가 transport 카테고리(CCFI/BADI)를 fetch_commodities 에 포함
-        nm = open("bot/naver_marketindex.py", encoding="utf-8").read()
-        assert '"transport"' in nm, "naver transport 카테고리 누락(CCFI 소스)"
+        assert i_vix < i_sox < i_wti, "SOX 가 VIX 바로 뒤가 아님"
+        # .SOX 가 idx pool(fetch_world_indices) 로 잡히는지 — idx 분기 존재 확인
+        assert 'fetch_naver_index_history' in src, "idx 스파크라인 경로 누락"
 
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →

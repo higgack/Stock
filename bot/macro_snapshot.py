@@ -63,11 +63,11 @@ GLOBAL = [
     ("sp500", "S&P 500", "", "yf", "^GSPC", 2),
     ("nasdaq", "NASDAQ", "", "yf", "^IXIC", 2),
     ("vix", "VIX", "", "yf", "^VIX", 2),
-    # 백금 제거 + 중국 컨테이너 운임(CCFI)을 VIX 뒤로 (사용자 2026-06-18). 값·1개월
-    # 스파크라인 모두 네이버 marketindex/transport (CARD_FUTURES nv:CCFI 와 동일 소스,
-    # _MACRO_NAVER 아래 매핑). 'CCFI' 는 yf 티커 아님(yf 배치는 graceful 빈값) — 값/차트
-    # 는 _MACRO_NAVER com 경로가 담당(니켈 패턴 동일).
-    ("ccfi", "중국 컨테이너 운임(CCFI)", "", "yf", "CCFI", 1),
+    # VIX 뒤 카드 = 필라델피아 반도체(SOX) (사용자 2026-06-22, 옛 CCFI 대체). 값·1개월
+    # 스파크라인 모두 네이버 worldstock/index (.SOX) — S&P/나스닥/VIX 와 동일 idx 경로
+    # (_MACRO_NAVER 아래 매핑). '^SOX' 는 yf 티커 형식이지만 idx 매핑이라 야후 미호출
+    # (값=fetch_world_indices·차트=fetch_naver_index_history). 한달단위(1개월) 동일.
+    ("sox", "필라델피아 반도체", "", "yf", "^SOX", 2),
     ("wti", "WTI", "$", "yf", "CL=F", 1),
     ("brent", "브렌트유", "$", "yf", "BZ=F", 1),
     ("natgas", "천연가스", "$", "yf", "NG=F", 2),
@@ -342,6 +342,7 @@ def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> l
 # kind: idx=worldstock/index · com=marketindex · coin=업비트 · fx=marketindex/exchange
 _MACRO_NAVER = {
     "^GSPC": ("idx", ".INX"), "^IXIC": ("idx", ".IXIC"), "^VIX": ("idx", ".VIX"),
+    "^SOX": ("idx", ".SOX"),     # 필라델피아 반도체 (사용자 2026-06-22, 옛 CCFI 대체)
     "CL=F": ("com", "CL"), "BZ=F": ("com", "BRN"), "NG=F": ("com", "NG"),
     "GC=F": ("com", "GC"), "SI=F": ("com", "SI"), "HG=F": ("com", "HG"),
     "ALI=F": ("com", "AA"),
@@ -350,7 +351,7 @@ _MACRO_NAVER = {
     # 카테고리 포함(naver_marketindex _CATEGORIES), CARD_FUTURES nv:CCFI 와 동일 소스.
     # 백금 com 매핑 제거(사용자 2026-06-18). 스파크라인은 fetch_commodity_spark 가 transport
     # 히스토리 조회(없으면 값만, graceful) — 배포 후 화면 확인 권장.
-    "CCFI": ("com", "CCFI"), "ZC=F": ("com", "ZC"), "ZS=F": ("com", "ZS"),
+    "ZC=F": ("com", "ZC"), "ZS=F": ("com", "ZS"),
     "ZW=F": ("com", "ZW"), "HE=F": ("com", "HE"), "KC=F": ("com", "KC"),
     "CT=F": ("com", "CT"), "NI=F": ("com", "NI"),
     "BTC-USD": ("coin", "BTC"), "ETH-USD": ("coin", "ETH"), "SOL-USD": ("coin", "SOL"),
