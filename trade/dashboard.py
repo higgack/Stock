@@ -784,7 +784,7 @@ def _build_html(
         ' &nbsp;·&nbsp; <a href="reference.html">'
         '📖 품목 레퍼런스북 — 품목 ↔ HS코드 ↔ 산업 ↔ 관련기업 →</a></div>'
         + '<nav class="tabs">'
-        '<button class="tab active" data-tab="industries">🏭 산업별</button>'
+        '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
         '<button class="tab" data-tab="countries">국가별</button>'

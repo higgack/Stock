@@ -104,7 +104,7 @@ class TestDashboardRenderer(unittest.TestCase):
         # 산업별·국가별·지역별 탭 (사용자 2026-06-22) — 공용 buildGroupedAxisView.
         # 산업별 = 맨 앞(active default). 탭·뷰·빌더·등록·순서·칩바 E2E.
         html = render_html(self.db_path)
-        self.assertIn('data-tab="industries">🏭 산업별', html)
+        self.assertIn('data-tab="industries">산업별', html)
         self.assertIn('data-tab="countries">국가별', html)
         self.assertIn('data-tab="regions">지역별', html)
         for vid in ('industries-view', 'countries-view', 'regions-view'):
