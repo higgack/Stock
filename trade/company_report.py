@@ -517,6 +517,17 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
     dir_lab = "수입" if is_imp else "수출"
     hs_pv = _node_pv(dir_node)                       # 판가물량(선택방향, 합산노드)
     hs_n = sum(1 for m6 in m6s if (by_mti or {}).get(m6) or (by_imp or {}).get(m6))
+    # 정확 HS10 — 그 코드 자체 旬 스냅샷(3개월: 기준월/전월/작년동월)의 판가물량.
+    # MTI 합산과 별개로 '이 10자리 한 줄만' 정밀치 추가(사용자 2026-06-22). 추세·
+    # 진도율은 HS10 월별이력이 없어 여전히 MTI 단위(해설 블록).
+    hs_pv_exact = None
+    if hs_leaf and len(bare) == 10 and bare in hs_leaf:
+        _lp = _leaf_pv(hs_leaf[bare])
+        if _lp:
+            _pf = "imp" if is_imp else "exp"
+            _ex = {"yoy": _lp.get(f"{_pf}_yoy"), "mom": _lp.get(f"{_pf}_mom")}
+            if _ex["yoy"] or _ex["mom"]:
+                hs_pv_exact = _ex
     hs_comment = ""
     try:
         from trade import industry as _ind
@@ -538,8 +549,8 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
     return {"mode": "item", "query": query, "name": f"HS {query}", "hs_search": True,
             "synonym": None, "items": rows[:30], "companies": companies[:40],
             "leaf": (leaf or "").strip() or None, "hs_name": hs_name,
-            "hs_pv": hs_pv, "hs_dir": dir_lab, "hs_n": hs_n,
-            "hs_comment": hs_comment, "hs_level": len(bare)}
+            "hs_pv": hs_pv, "hs_pv_exact": hs_pv_exact, "hs_dir": dir_lab,
+            "hs_n": hs_n, "hs_comment": hs_comment, "hs_level": len(bare)}
 
 
 def gather(query: str, api_key: str | None = None, leaf: str | None = None,
@@ -683,20 +694,20 @@ def _render_free_item(data: dict) -> str:
                  f'MTI품목으로 분류돼 모두 합산)</span></div>')
         # 📊 판가 vs 물량 분해 — 선택 방향(히트맵 클릭 방향/자동), 검색레벨 합산노드
         # 기준(해설과 동일 소스 → 일관). 금액=판가×물량, 단가=금액÷중량 (사용자 2026-06-22).
+        def _pct(v):
+            if v is None:
+                return '<span style="color:#9aa0aa">—</span>'
+            c = "#26a69a" if v >= 0 else "#e2574c"
+            return f'<span style="color:{c}">{"+" if v >= 0 else ""}{v}%</span>'
+
+        def _line(label, sp):
+            if not sp:
+                return ''
+            unit = f' · 단가 ${sp["unit_now"]:,.1f}/kg' if sp.get("unit_now") else ''
+            return (f'<div>{label} 금액 {_pct(sp["value"])} = '
+                    f'판가 {_pct(sp["price"])} × 물량 {_pct(sp["qty"])}{unit}</div>')
         pv = data.get("hs_pv")
         if pv:
-            def _pct(v):
-                if v is None:
-                    return '<span style="color:#9aa0aa">—</span>'
-                c = "#26a69a" if v >= 0 else "#e2574c"
-                return f'<span style="color:{c}">{"+" if v >= 0 else ""}{v}%</span>'
-
-            def _line(label, sp):
-                if not sp:
-                    return ''
-                unit = f' · 단가 ${sp["unit_now"]:,.1f}/kg' if sp.get("unit_now") else ''
-                return (f'<div>{label} 금액 {_pct(sp["value"])} = '
-                        f'판가 {_pct(sp["price"])} × 물량 {_pct(sp["qty"])}{unit}</div>')
             blk = (_line(f"{_ico} {_dir} YoY", pv.get("yoy"))
                    + _line(f"{_ico} {_dir} MoM", pv.get("mom")))
             if blk:
@@ -704,8 +715,21 @@ def _render_free_item(data: dict) -> str:
                          f'border:1px solid #2a2e37;border-radius:6px;padding:6px 10px;'
                          f'margin-bottom:12px;line-height:1.7">'
                          f'<b>📊 판가 vs 물량 분해</b> '
-                         f'<span style="color:#9aa0aa">(단가=금액÷중량 · 근사식이라 '
-                         f'판가×물량 합이 금액과 미세차 가능)</span>{blk}</div>')
+                         f'<span style="color:#9aa0aa">(MTI품목 합산 기준 · 단가=금액÷중량 · '
+                         f'근사식이라 판가×물량 합이 금액과 미세차 가능)</span>{blk}</div>')
+        # 📍 정확 HS10 — 그 코드 자체 旬 스냅샷(3개월) 판가물량 (사용자 2026-06-22
+        # '10자리 그 한 줄만'). MTI 합산과 별개의 정밀치. 10자리 검색시만.
+        pvx = data.get("hs_pv_exact")
+        if pvx:
+            xblk = (_line(f"{_ico} {_dir} YoY", pvx.get("yoy"))
+                    + _line(f"{_ico} {_dir} MoM", pvx.get("mom")))
+            if xblk:
+                head += (f'<div style="font-size:12px;color:#c8c8d0;background:#101a14;'
+                         f'border:1px solid #1f3a2a;border-radius:6px;padding:6px 10px;'
+                         f'margin-bottom:12px;line-height:1.7">'
+                         f'<b>📍 정확 HS10 (이 코드 자체)</b> '
+                         f'<span style="color:#9aa0aa">(관세청 旬 스냅샷 3개월 기준 · '
+                         f'추세·진도율은 위 MTI 단위)</span>{xblk}</div>')
     if companies:
         chips = "".join(
             '<span style="display:inline-block;background:#1c1f26;color:#e6edf3;'
