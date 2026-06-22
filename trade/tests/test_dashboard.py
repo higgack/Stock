@@ -100,21 +100,37 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn('id="items-view"', html)
         self.assertIn('id="companies-view"', html)
 
-    def test_countries_tab_wired(self):
-        # 국가별 탭 (사용자 2026-06-22) — 회사별 옆, 국가로 그룹핑. 탭·뷰·빌더·
-        # _CLIENT_VIEWS 등록까지 E2E 배선 + 회사별<국가별<매트릭스 순서.
+    def test_countries_and_regions_tabs_wired(self):
+        # 국가별·지역별 탭 (사용자 2026-06-22) — 회사별 옆, 국가/지역으로 그룹핑.
+        # 탭·뷰·빌더·_CLIENT_VIEWS 등록 E2E + 회사별<국가별<지역별<매트릭스 순서.
         html = render_html(self.db_path)
         self.assertIn('data-tab="countries">국가별', html)
+        self.assertIn('data-tab="regions">지역별', html)
         self.assertIn('id="countries-view"', html)
+        self.assertIn('id="regions-view"', html)
         self.assertIn("function buildCountriesView(", html)
+        self.assertIn("function buildRegionsView(", html)
+        self.assertIn("function buildGroupedAxisView(", html)  # 공용 빌더
         self.assertIn("countries:buildCountriesView", html)
+        self.assertIn("regions:buildRegionsView", html)
         self.assertTrue(
             html.index('data-tab="companies"')
             < html.index('data-tab="countries"')
+            < html.index('data-tab="regions"')
             < html.index('data-tab="matrix"'),
-            "탭 순서가 회사별<국가별<매트릭스 가 아님")
-        # 다중국가 검색 hay 에 countries 포함(다중국가 alert 도 국가검색에 잡힘)
+            "탭 순서가 회사별<국가별<지역별<매트릭스 가 아님")
+        # 공용 빌더가 올바른 축 인자로 호출되는지(국가/지역 wrapper)
+        self.assertIn("buildGroupedAxisView(filtered,'country','countries','country','country'", html)
+        self.assertIn("buildGroupedAxisView(filtered,'region','regions','region','region'", html)
+        # 검색 hay 에 countries·regions 다중 포함(다중값 alert 도 검색에 잡힘)
         self.assertIn("(a.countries||[]).join(' ')", html)
+        self.assertIn("(a.regions||[]).join(' ')", html)
+        # 축 선택 버튼 바 — CSS 클래스(국가·지역 공용) + 칩은 'data-'+cls 로 동적생성.
+        self.assertIn(".country-bar,.region-bar{", html)
+        self.assertIn(".country-chip,.region-chip{", html)
+        self.assertIn("data-'+cls+'=", html)          # 칩 data 속성 동적 빌드
+        self.assertIn("closest('.country-chip,.region-chip')", html)
+        self.assertIn("country:'',region:''", html)   # state 에 국가·지역 서브필터
 
     def test_filter_controls_exist(self):
         html = render_html(self.db_path)

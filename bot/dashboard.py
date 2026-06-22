@@ -11580,8 +11580,6 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         if _noparse_total:
             _lg.append('<span class="df-badge df-badge-noparse">미파싱제외</span> '
                        '회색 점선 — 설계상 구조화 대상 아님(자율공시·첨부정정, 제목이 곧 내용)')
-        _lg.append('<span style="color:var(--muted,#888)">🔥·⚠️·미파싱제외는 카테고리'
-                   '와 함께 선택 가능 (예: 미파싱+실적)</span>')
         parts.append('<p class="sub" style="margin:-6px 0 14px">'
                      + ' &nbsp;·&nbsp; '.join(_lg) + '</p>')
 

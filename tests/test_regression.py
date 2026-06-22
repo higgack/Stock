@@ -7387,7 +7387,7 @@ class TestDartUnparsed6:
         assert "activeFlags.every(" in src           # 선택 플래그 전부 AND
         # 플래그 클릭=토글(다른 pill active 유지), 카테고리=카테고리끼리만 배타
         assert "if(!x.dataset.flag)x.classList.remove('active')" in src
-        assert "함께 선택 가능" in src                # 범례 안내
+        # 범례 안내문구('함께 선택 가능')는 사용자 요청으로 제거(2026-06-22) — 기능은 유지
 
 
 class TestDartUnparsed7:
