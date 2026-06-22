@@ -323,6 +323,39 @@ class ItemModeTests(unittest.TestCase):
             self.assertIn(must, h)
         self.assertIn("20.0억$", h)
 
+    def test_pv_split_decompose(self):
+        # 판가/물량 분해 (사용자 2026-06-22 '판가야 물량이야?'). 단가=금액÷중량.
+        sp = C._pv_split(300, 100, 200, 100)   # 금액×3, 중량×2 → 단가 1.5배
+        self.assertEqual(sp["value"], 200.0)   # 금액 +200%
+        self.assertEqual(sp["qty"], 100.0)     # 물량 +100%
+        self.assertEqual(sp["price"], 50.0)    # 판가 +50% (1.5배)
+        self.assertIsNone(C._pv_split(300, 0, 200, 100))    # 기준 0 → None
+        self.assertIsNone(C._pv_split(300, 100, 200, 0))    # 중량 0 → None
+
+    def test_hs10_leaf_name_and_pv_in_breadcrumb(self):
+        # 정확 HS10 검색 → 관세청 한글품목명(stat_kor) + 판가/물량 분해 breadcrumb.
+        by_mti = {"111100": {"name": "금", "industry": "기타",
+                             "months": {"2026-05": 1.01e9}}}
+        leaf = {"7108131010": {
+            "hs_code": "7108131010", "name": "금(기타 반제품)",
+            "exp": 1.01e9, "exp_pm": 9.4e8, "exp_py": 2.64e8,
+            "imp": 3.6e8, "imp_pm": 3.89e8, "imp_py": 2.45e8,
+            "exp_wgt": 40000, "exp_wgt_pm": 39000, "exp_wgt_py": 14000,
+            "imp_wgt": 15000, "imp_wgt_pm": 16000, "imp_wgt_py": 13000}}
+        res = C._hs_code_search("7108.13-1010", by_mti, [], None, hs_leaf=leaf)
+        self.assertEqual(res["hs_name"], "금(기타 반제품)")
+        self.assertIsNotNone(res["hs_pv"]["exp_yoy"])
+        h = C.render_free(res)
+        self.assertIn("판가 vs 물량 분해", h)
+        self.assertIn("금(기타 반제품)", h)
+        self.assertIn("단가 $", h)
+        # 중량 없는 구 스냅샷 leaf → 분해 None(graceful), 한글명만
+        leaf2 = {"7108131010": {"hs_code": "7108131010", "name": "금",
+                                "exp": 1e9, "exp_py": 2e8}}
+        res2 = C._hs_code_search("7108131010", by_mti, [], None, hs_leaf=leaf2)
+        self.assertIsNone(res2["hs_pv"])
+        self.assertNotIn("판가 vs 물량 분해", C.render_free(res2))
+
     def test_render_telegram_item(self):
         data = {"mode": "item", "name": "반도체",
                 "items": [{"item": "디램", "export_usd": 2e9, "import_usd": 5e8}],

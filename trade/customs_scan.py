@@ -384,9 +384,20 @@ def init_db(conn: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS customs_heatmap_leaf (
             hs_code TEXT PRIMARY KEY, name TEXT, ref_ym TEXT,
             exp INTEGER, exp_pm INTEGER, exp_py INTEGER,
-            imp INTEGER, imp_pm INTEGER, imp_py INTEGER
+            imp INTEGER, imp_pm INTEGER, imp_py INTEGER,
+            exp_wgt INTEGER, exp_wgt_pm INTEGER, exp_wgt_py INTEGER,
+            imp_wgt INTEGER, imp_wgt_pm INTEGER, imp_wgt_py INTEGER
         )"""
     )
+    # 중량(물량) 6열 마이그레이션 (사용자 2026-06-22 '판가 vs 물량') — 구 스냅샷
+    # 테이블엔 금액만 있어 ADD COLUMN. 관세청 API가 이미 주는 exp_wgt/imp_wgt 를
+    # 저장해 단가($/kg)=금액/중량 → 금액 증감을 판가·물량으로 분해. 멱등(존재 시 skip).
+    for _col in ("exp_wgt", "exp_wgt_pm", "exp_wgt_py",
+                 "imp_wgt", "imp_wgt_pm", "imp_wgt_py"):
+        try:
+            conn.execute(f"ALTER TABLE customs_heatmap_leaf ADD COLUMN {_col} INTEGER")
+        except sqlite3.OperationalError:
+            pass        # 이미 있음
     conn.commit()
 
 
@@ -426,6 +437,13 @@ def heatmap_rows(leaves: dict[str, dict]) -> list[dict]:
             "exp_py": int(py.get("exp_dlr") or 0),
             "imp": imp, "imp_pm": int(pm.get("imp_dlr") or 0),
             "imp_py": int(py.get("imp_dlr") or 0),
+            # 중량(물량) — 판가·물량 분해용 (사용자 2026-06-22). API가 이미 주는 값.
+            "exp_wgt": int(ref.get("exp_wgt") or 0),
+            "exp_wgt_pm": int(pm.get("exp_wgt") or 0),
+            "exp_wgt_py": int(py.get("exp_wgt") or 0),
+            "imp_wgt": int(ref.get("imp_wgt") or 0),
+            "imp_wgt_pm": int(pm.get("imp_wgt") or 0),
+            "imp_wgt_py": int(py.get("imp_wgt") or 0),
         })
     return out
 
@@ -438,17 +456,19 @@ def store_heatmap(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.execute("DELETE FROM customs_heatmap_leaf")
     conn.executemany(
         "INSERT OR REPLACE INTO customs_heatmap_leaf "
-        "(hs_code, name, ref_ym, exp, exp_pm, exp_py, imp, imp_pm, imp_py) "
-        "VALUES (:hs_code,:name,:ref_ym,:exp,:exp_pm,:exp_py,:imp,:imp_pm,:imp_py)",
+        "(hs_code, name, ref_ym, exp, exp_pm, exp_py, imp, imp_pm, imp_py, "
+        " exp_wgt, exp_wgt_pm, exp_wgt_py, imp_wgt, imp_wgt_pm, imp_wgt_py) "
+        "VALUES (:hs_code,:name,:ref_ym,:exp,:exp_pm,:exp_py,:imp,:imp_pm,:imp_py,"
+        " :exp_wgt,:exp_wgt_pm,:exp_wgt_py,:imp_wgt,:imp_wgt_pm,:imp_wgt_py)",
         rows)
     conn.commit()
 
 
 def load_heatmap(conn: sqlite3.Connection) -> list[dict]:
     try:
-        cur = conn.execute(
-            "SELECT hs_code, name, ref_ym, exp, exp_pm, exp_py, "
-            "imp, imp_pm, imp_py FROM customs_heatmap_leaf")
+        # SELECT * — 중량(물량) 6열은 마이그레이션 후 자동 포함, 구 스냅샷이면
+        # 그 열만 없는 채로(report 가 .get 으로 graceful) (사용자 2026-06-22).
+        cur = conn.execute("SELECT * FROM customs_heatmap_leaf")
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     except sqlite3.OperationalError:

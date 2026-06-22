@@ -16,6 +16,7 @@ from __future__ import annotations
 import html as _html
 import logging
 import os
+import re
 
 log = logging.getLogger("trade.company_report")
 
@@ -383,10 +384,44 @@ def _looks_like_hs(q: str) -> bool:
     return nondigit == 0                             # 점/대시 표기 HS (숫자 외 토큰 없음)
 
 
+def _pv_split(dlr_now, dlr_base, wgt_now, wgt_base) -> dict | None:
+    """금액·중량 → 금액 증감의 판가/물량 분해 (사용자 2026-06-22 '판가냐 물량이냐').
+    단가($/kg)=금액/중량. 금액증감 ≈ (1+판가)(1+물량)-1. 데이터 부족(0·None) → None.
+    근사식이라 합이 정확히 금액%가 되진 않음(교차항) — 방향·크기 해석용."""
+    try:
+        dn, db = float(dlr_now), float(dlr_base)
+        wn, wb = float(wgt_now), float(wgt_base)
+    except (TypeError, ValueError):
+        return None
+    if dn <= 0 or db <= 0 or wn <= 0 or wb <= 0:
+        return None
+    return {"value": round((dn / db - 1) * 100, 1),       # 금액 %
+            "qty": round((wn / wb - 1) * 100, 1),          # 물량(중량) %
+            "price": round(((dn / wn) / (db / wb) - 1) * 100, 1),  # 단가(판가) %
+            "unit_now": dn / wn}                            # 최신월 단가 $/kg
+
+
+def _leaf_pv(leaf_row: dict) -> dict | None:
+    """HS10 leaf 스냅샷 → 수출/수입 각각 YoY·MoM 판가/물량 분해. 중량 열이 없거나
+    (구 스냅샷) 부족하면 None (graceful — 다음 풀스윕이 중량 채우면 표시)."""
+    if not leaf_row:
+        return None
+    g = leaf_row.get
+    out = {
+        "exp_yoy": _pv_split(g("exp"), g("exp_py"), g("exp_wgt"), g("exp_wgt_py")),
+        "exp_mom": _pv_split(g("exp"), g("exp_pm"), g("exp_wgt"), g("exp_wgt_pm")),
+        "imp_yoy": _pv_split(g("imp"), g("imp_py"), g("imp_wgt"), g("imp_wgt_py")),
+        "imp_mom": _pv_split(g("imp"), g("imp_pm"), g("imp_wgt"), g("imp_wgt_pm")),
+    }
+    return out if any(out.values()) else None
+
+
 def _hs_code_search(query: str, by_mti: dict, pairs: list,
-                    by_imp: dict | None = None, leaf: str | None = None) -> dict | None:
+                    by_imp: dict | None = None, leaf: str | None = None,
+                    hs_leaf: dict | None = None) -> dict | None:
     """HS코드 → 그 HS6 의 MTI 품목들 + 수출입 숫자 + 관련 상장사 (사용자 2026-06-19
-    'HS코드로 검색하면 숫자'). HS6→MTI6(mti_map). 미해석 → None. 순수."""
+    'HS코드로 검색하면 숫자'). HS6→MTI6(mti_map). 미해석 → None. 순수.
+    정확 HS10 검색이면 그 leaf 의 한글품목명(stat_kor)+판가/물량 분해도 첨부."""
     from trade import mti_companies, mti_map
     try:
         m6s = mti_map.hs6_to_mti6(query)
@@ -419,9 +454,20 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
                      "hs_linked": True})
         _add(cos)
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
+    # 정확 HS10(점·대시 제거 10자리) → 그 leaf 의 한글품목명 + 판가/물량 분해.
+    hs_name = None
+    hs_pv = None
+    bare = re.sub(r"\D", "", query or "")
+    if len(bare) == 10 and hs_leaf and bare in hs_leaf:
+        _lf = hs_leaf[bare]
+        hs_name = (_lf.get("name") or "").strip() or None
+        if hs_name == bare:                 # 이름이 코드와 동일하면 의미 없음
+            hs_name = None
+        hs_pv = _leaf_pv(_lf)
     return {"mode": "item", "query": query, "name": f"HS {query}", "hs_search": True,
             "synonym": None, "items": rows[:30], "companies": companies[:40],
-            "leaf": (leaf or "").strip() or None}
+            "leaf": (leaf or "").strip() or None,
+            "hs_name": hs_name, "hs_pv": hs_pv}
 
 
 def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> dict:
@@ -439,8 +485,9 @@ def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> d
     by_mti: dict = {}
     by_imp: dict = {}
     pairs: list = []
+    hs_leaf: dict = {}
     try:
-        from trade import customs, industry, mti_companies
+        from trade import customs, customs_scan, industry, mti_companies
         with customs.session() as conn:
             by_mti = industry.load_mti_stored(conn)
             by_imp = industry.load_mti_imports(conn)
@@ -453,6 +500,10 @@ def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> d
                 by_mti.setdefault(_m6, _n)
             for _m6, _n in hm_imp.items():
                 by_imp.setdefault(_m6, _n)
+            # HS10 leaf 스냅샷 — 정확 HS10 검색 시 한글품목명(stat_kor)+중량(물량)으로
+            # 판가/물량 분해 표시용 (사용자 2026-06-22). {bare HS10: leaf row}.
+            hs_leaf = {str(r.get("hs_code") or ""): r
+                       for r in customs_scan.load_heatmap(conn)}
         pairs = mti_companies.load_channel_pairs()
     except Exception as exc:
         log.warning("company_report data %s: %s", q, exc)
@@ -461,7 +512,7 @@ def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> d
     # 나와야'). 점/대시 포함 or 8~10자리 bare = HS(6자리 bare 는 주식코드라 제외 —
     # HS6 는 '8517.79' 점표기로). HS6→MTI6 → 그 품목들의 수출입.
     if _looks_like_hs(q):
-        hs_res = _hs_code_search(q, by_mti, pairs, by_imp, leaf=leaf)
+        hs_res = _hs_code_search(q, by_mti, pairs, by_imp, leaf=leaf, hs_leaf=hs_leaf)
         if hs_res:
             return hs_res
 
@@ -540,11 +591,41 @@ def _render_free_item(data: dict) -> str:
         # 히트맵 셀에서 넘어온 클릭품목(leaf)명을 그대로 보여줌 — 사용자가 누른 게
         # '코팅머신'인데 표엔 귀속 MTI품목(기타기계류 등)만 떠 혼란하던 것(2026-06-20).
         leaf_tag = (f'클릭품목 <b>{e(leaf)}</b> · ' if leaf else '')
+        # 정확 HS10 검색이면 그 leaf 의 관세청 한글품목명(stat_kor) 병기 (사용자 2026-06-22).
+        hs_name = (data.get("hs_name") or "").strip()
+        name_tag = (f' <span style="color:#e6c97a">[{e(hs_name)}]</span>' if hs_name else '')
         head += (f'<div style="font-size:12px;color:#c8a24a;background:#2a2410;'
                  f'border:1px solid #4a3f1a;border-radius:6px;padding:6px 10px;margin-bottom:12px">'
-                 f'🔎 {leaf_tag}HS <b>{e(data.get("query") or "")}</b> → 연계 MTI품목 <b>{n_it}개</b>. '
+                 f'🔎 {leaf_tag}HS <b>{e(data.get("query") or "")}</b>{name_tag} → 연계 MTI품목 <b>{n_it}개</b>. '
                  f'한 HS코드는 여러 MTI품목(카테고리)으로 분류될 수 있어 해당 품목을 모두 표시합니다 '
                  f'— 클릭한 세부품목은 아래 중 하나에 귀속됩니다.</div>')
+        # 판가 vs 물량 분해 (사용자 2026-06-22 '이 상승은 판가야 물량이야?') — 정확
+        # HS10 leaf 의 중량(물량) 기반 단가($/kg) 분해. 데이터 없으면(구 스냅샷) 미표시.
+        pv = data.get("hs_pv")
+        if pv:
+            def _pct(v):
+                if v is None:
+                    return '<span style="color:#9aa0aa">—</span>'
+                c = "#26a69a" if v >= 0 else "#e2574c"
+                return f'<span style="color:{c}">{"+" if v >= 0 else ""}{v}%</span>'
+
+            def _line(label, sp):
+                if not sp:
+                    return ''
+                unit = f' · 단가 ${sp["unit_now"]:,.1f}/kg' if sp.get("unit_now") else ''
+                return (f'<div>{label} 금액 {_pct(sp["value"])} = '
+                        f'판가 {_pct(sp["price"])} × 물량 {_pct(sp["qty"])}{unit}</div>')
+            blk = (_line("🚢 수출 YoY", pv.get("exp_yoy"))
+                   + _line("🚢 수출 MoM", pv.get("exp_mom"))
+                   + _line("📥 수입 YoY", pv.get("imp_yoy"))
+                   + _line("📥 수입 MoM", pv.get("imp_mom")))
+            if blk:
+                head += (f'<div style="font-size:12px;color:#c8c8d0;background:#15181f;'
+                         f'border:1px solid #2a2e37;border-radius:6px;padding:6px 10px;'
+                         f'margin-bottom:12px;line-height:1.7">'
+                         f'<b>📊 판가 vs 물량 분해</b> '
+                         f'<span style="color:#9aa0aa">(단가=금액÷중량 · 근사식이라 '
+                         f'판가×물량 합이 금액과 미세차 가능)</span>{blk}</div>')
     if companies:
         chips = "".join(
             '<span style="display:inline-block;background:#1c1f26;color:#e6edf3;'

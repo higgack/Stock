@@ -432,9 +432,12 @@ class HeatmapTest(unittest.TestCase):
     def _leaves(self):
         return {
             "8542000000": {"name": "메모리 반도체", "months": {
-                "2025-05": {"exp_dlr": 5_000_000_000, "imp_dlr": 100},
-                "2026-04": {"exp_dlr": 9_000_000_000, "imp_dlr": 200},
-                "2026-05": {"exp_dlr": 15_000_000_000, "imp_dlr": 300},
+                "2025-05": {"exp_dlr": 5_000_000_000, "imp_dlr": 100,
+                            "exp_wgt": 1000, "imp_wgt": 10},
+                "2026-04": {"exp_dlr": 9_000_000_000, "imp_dlr": 200,
+                            "exp_wgt": 1500, "imp_wgt": 20},
+                "2026-05": {"exp_dlr": 15_000_000_000, "imp_dlr": 300,
+                            "exp_wgt": 2000, "imp_wgt": 30},
                 "2026-06": {"exp_dlr": 0, "imp_dlr": 0},  # 미발표 트레일링 0
             }},
             "0101000000": {"name": "말", "months": {
@@ -452,15 +455,47 @@ class HeatmapTest(unittest.TestCase):
         self.assertEqual(r["exp_py"], 5_000_000_000)     # 작년동월 (13개월 윈도)
         self.assertNotIn("0101000000", by)               # 0 leaf 제외
 
+    def test_heatmap_rows_carries_weight(self):
+        # 판가/물량 분해용 중량(물량) 6열 (사용자 2026-06-22) — API가 주는 exp_wgt/
+        # imp_wgt 를 ref/pm/py 로 그대로 실어야 단가($/kg) 분해 가능.
+        r = {x["hs_code"]: x for x in cs.heatmap_rows(self._leaves())}["8542000000"]
+        self.assertEqual(r["exp_wgt"], 2000)        # 최신월(2026-05)
+        self.assertEqual(r["exp_wgt_pm"], 1500)     # 전월
+        self.assertEqual(r["exp_wgt_py"], 1000)     # 작년동월
+        self.assertEqual(r["imp_wgt"], 30)
+
     def test_store_load_roundtrip_and_empty_guard(self):
         import sqlite3
         conn = sqlite3.connect(":memory:")
         cs.init_db(conn)
         rows = cs.heatmap_rows(self._leaves())
         cs.store_heatmap(conn, rows)
-        self.assertEqual(len(cs.load_heatmap(conn)), len(rows))
+        loaded = cs.load_heatmap(conn)
+        self.assertEqual(len(loaded), len(rows))
+        # 중량 6열이 roundtrip 보존되는지 (단가 분해 데이터)
+        lr = {x["hs_code"]: x for x in loaded}["8542000000"]
+        self.assertEqual(lr["exp_wgt"], 2000)
+        self.assertEqual(lr["exp_wgt_py"], 1000)
         cs.store_heatmap(conn, [])   # 빈 스캔 → 기존 스냅샷 유지
         self.assertEqual(len(cs.load_heatmap(conn)), len(rows))
+
+    def test_init_db_migrates_legacy_heatmap_no_weight(self):
+        # 구 스냅샷(중량열 없는 테이블)에 init_db 가 ADD COLUMN 으로 마이그레이션 +
+        # SELECT * 로 graceful 로드(사용자 2026-06-22).
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE customs_heatmap_leaf (hs_code TEXT PRIMARY KEY, "
+                     "name TEXT, ref_ym TEXT, exp INT, exp_pm INT, exp_py INT, "
+                     "imp INT, imp_pm INT, imp_py INT)")
+        conn.execute("INSERT INTO customs_heatmap_leaf VALUES "
+                     "('8542000000','메모리','2026-05',15,9,5,3,2,1)")
+        cs.init_db(conn)                       # 마이그레이션
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(customs_heatmap_leaf)")]
+        self.assertIn("exp_wgt", cols)
+        self.assertIn("imp_wgt_py", cols)
+        row = cs.load_heatmap(conn)[0]         # 기존 행 보존 + weight None
+        self.assertEqual(row["exp"], 15)
+        self.assertIsNone(row["exp_wgt"])
 
     def test_build_heatmap_data_aggregates_h4(self):
         from trade.heatmap import build_heatmap_data
