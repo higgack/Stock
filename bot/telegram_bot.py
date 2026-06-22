@@ -1080,7 +1080,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /help /usage /portfolio /screener_list /sites /blog — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /티커 — 단일 분석 (예: /NVDA · /005930.KS · 한국은 종목명 /삼성전자)
 /compare NVDA AMD — 두 종목 비교
-/screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0) · /screen list
+/screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0) · 프리셋 minervini/valueup · /screen list
 /screener [도메인 | 자유어] — Bottleneck (67도메인+L4세분+자유어) · 전체 /screener_list
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림

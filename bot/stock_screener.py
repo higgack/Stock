@@ -490,6 +490,7 @@ class ScreenResult:
     elapsed_sec: float
     was_cached: bool = False
     market: str = "KR"
+    note: str = ""     # 진단 라벨(예: 추세 스캔 N·데이터 M·통과 K) — 0건 원인 가시화
 
 
 def run_screen(conditions: list[Condition],
@@ -520,6 +521,7 @@ def run_screen(conditions: list[Condition],
                 elapsed_sec=cached.get("elapsed_sec", 0),
                 was_cached=True,
                 market=market,
+                note=cached.get("note", ""),
             )
 
     if market == "KR":
@@ -539,6 +541,7 @@ def run_screen(conditions: list[Condition],
         "elapsed_sec": result.elapsed_sec,
         "conditions": cond_text,
         "market": market,
+        "note": result.note,
         "ts": datetime.now().isoformat(),
     })
 
@@ -618,6 +621,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
     elif (yf_conds or qoq_conds) and not survivors:
         pass
 
+    tech_note = ""
     tech_conds = [c for c in conditions if c.metric.source == "tech"]
     if tech_conds and survivors:
         from bot import pykrx_client as _pk
@@ -635,13 +639,19 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
                 return kv[0], None
 
         final = {}
+        loaded = 0
         with ThreadPoolExecutor(max_workers=8) as pool:
             for code, td in pool.map(_tt, scan):
                 if not td:
                     continue
+                loaded += 1
                 if all(c.test(td.get(c.metric.yf_field)) for c in tech_conds):
                     final[code] = {**survivors[code], **td}
-        log.info("stock_screener: Phase 3 tech — %d/%d survive", len(final), len(scan))
+        # 가시성(사용자 2026-06-23 '0종목 원인 불명') — 스캔/데이터로드/통과 분리표시.
+        # 데이터로드 << 스캔 이면 일봉 fetch 실패(데이터 문제), 통과만 0이면 추세부재.
+        tech_note = (f"추세 스캔 상위 {len(scan)} · 일봉데이터 {loaded} · 통과 {len(final)}"
+                     f" (시총상위 {_TECH_SCAN_CAP}캡)")
+        log.info("stock_screener: Phase 3 tech — %s", tech_note)
         survivors = final
 
     name_map = _resolve_kr_names(list(survivors.keys()))
@@ -670,7 +680,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
 
     return ScreenResult(
         conditions=conditions, hits=hits,
-        total_universe=total, elapsed_sec=0,
+        total_universe=total, elapsed_sec=0, note=tech_note,
     )
 
 
@@ -894,6 +904,7 @@ def format_result_message(result: ScreenResult) -> list[str]:
         f"결과: <b>{len(result.hits)}종목</b> / {result.total_universe:,}종목"
         f" · {result.elapsed_sec:.1f}초 · ₩0\n"
         f"정렬: {sort_note}\n"
+        + (f"🔎 {result.note}\n" if result.note else "")
     )
 
     if not result.hits:
@@ -976,6 +987,7 @@ def save_screen_archive(result: ScreenResult, conditions_text: str):
         "total_universe": result.total_universe,
         "elapsed_sec": result.elapsed_sec,
         "market": result.market,
+        "note": result.note,
         "hits": result.hits[:200],
         "ts": ts.isoformat(),
         "was_cached": result.was_cached,
