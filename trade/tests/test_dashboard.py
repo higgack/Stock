@@ -126,7 +126,7 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("buildGroupedAxisView(filtered,'country','country','country'", html)
         self.assertIn("buildGroupedAxisView(filtered,'region','region','region'", html)
         self.assertIn("buildGroupedAxisView(filtered,'industry','industry','industry'", html)
-        self.assertIn("'조건에 맞는 산업이 없습니다.','미분류'", html)   # 산업 sink 라벨
+        self.assertIn("'조건에 맞는 산업이 없습니다.',['기타','미분류']", html)   # 기타→미분류 맨아래
         # 검색 hay 에 countries·regions·industry 포함
         self.assertIn("(a.countries||[]).join(' ')", html)
         self.assertIn("(a.regions||[]).join(' ')", html)
