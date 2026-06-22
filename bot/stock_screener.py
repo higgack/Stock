@@ -35,9 +35,11 @@ log = logging.getLogger(__name__)
 
 _CACHE_DIR = Path(os.path.expanduser("~/.tradingagents/screen_cache"))
 _ARCHIVE_DIR = Path(os.path.expanduser("~/.tradingagents/screen_archive"))
-# tech(추세) 메트릭은 종목별 일봉 fetch 라 시총 상위 N개만 스캔(비용 bound,
-# 일봉당 daily 캐시). Minervini 는 유동 대형주 대상이라 상위 스캔이 적합.
-_TECH_SCAN_CAP = 300
+# tech(추세) 메트릭은 종목별 일봉 fetch(pykrx ~1-2초/종목, 사실상 직렬). 시총 상위
+# N개만 스캔(비용 bound, 일봉당 daily 캐시) + 데드라인으로 행 방지(사용자 2026-06-23
+# 10분+ 행). 미완분은 daily 캐시에 적재돼 같은 날 재실행 시 누적 완성.
+_TECH_SCAN_CAP = 150
+_TECH_BUDGET_SEC = 75
 
 # ── Metric definitions ─────────────────────────────────────────────
 
@@ -647,6 +649,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
     if tech_conds:
         phase1_n = len(survivors)
         if survivors:
+            import concurrent.futures as _cf
             from bot import pykrx_client as _pk
             # 일봉 fetch 비용 bound — 시총 상위 _TECH_SCAN_CAP 개만 스캔(시총순 정렬 후 캡).
             ranked = sorted(survivors.items(),
@@ -655,25 +658,39 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
             log.info("stock_screener: Phase 3 tech — top %d by mcap (%d conditions)",
                      len(scan), len(tech_conds))
 
-            def _tt(kv):
-                try:
-                    return kv[0], _pk.get_kr_trend_template(kv[0])
-                except Exception:
-                    return kv[0], None
-
+            # ⏱ pykrx 일봉이 종목당 ~1-2초(사실상 직렬) → 데드라인 없으면 수백종목에
+            # 10분+ 행(사용자 2026-06-23). _TECH_BUDGET_SEC 안에 완료분만 쓰고 미완은
+            # 버림(부분결과 + 시간초과 표시). 미완 fetch 는 종목별 daily 캐시에 적재돼
+            # 같은 날 재실행 시 누적 완성. with-블록은 종료 시 wait=True 라 행 → 수동
+            # shutdown(wait=False).
             final = {}
             loaded = 0
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                for code, td in pool.map(_tt, scan):
+            timed_out = False
+            pool = ThreadPoolExecutor(max_workers=5)
+            futmap = {pool.submit(_pk.get_kr_trend_template, code): code
+                      for code, _d in scan}
+            try:
+                for fut in _cf.as_completed(futmap, timeout=_TECH_BUDGET_SEC):
+                    code = futmap[fut]
+                    try:
+                        td = fut.result()
+                    except Exception:
+                        td = None
                     if not td:
                         continue
                     loaded += 1
                     if all(c.test(td.get(c.metric.yf_field)) for c in tech_conds):
                         final[code] = {**survivors[code], **td}
-            # 가시성(사용자 2026-06-23 '0종목 원인 불명') — 퍼널 전구간 표시. 일봉데이터
-            # << 스캔 = fetch 실패(데이터 문제), 통과만 0 = 추세부재.
-            tech_note = (f"사전필터 통과 {phase1_n} · 추세스캔 상위 {len(scan)}"
-                         f" · 일봉데이터 {loaded} · 통과 {len(final)} (시총상위 {_TECH_SCAN_CAP}캡)")
+            except _cf.TimeoutError:
+                timed_out = True
+            pool.shutdown(wait=False, cancel_futures=True)
+            # 가시성(사용자 2026-06-23) — 퍼널 전구간. 일봉데이터 << 스캔 = fetch 실패/
+            # 미완, 통과만 0 = 추세부재. 시간초과면 부분결과임을 명시.
+            tech_note = (f"사전필터 통과 {phase1_n} · 추세스캔 {len(scan)}"
+                         f" · 일봉데이터 {loaded} · 통과 {len(final)}"
+                         + (f" · ⏱{_TECH_BUDGET_SEC}s 초과(부분, 재실행 시 캐시누적)"
+                            if timed_out else "")
+                         + f" (시총상위 {_TECH_SCAN_CAP}캡)")
             log.info("stock_screener: Phase 3 tech — %s", tech_note)
             survivors = final
         else:
