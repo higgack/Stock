@@ -13,15 +13,26 @@ from __future__ import annotations
 
 import os
 import re
-from functools import lru_cache
 
 _PATH = os.path.join(os.path.dirname(__file__), "data", "hs_names.tsv")
 
+# (path → (mtime, dict)) — mtime 기반 캐시. lru_cache 와 달리 파일이 나중에
+# 생기거나(build_hs_names 적재) 갱신되면 장기 실행 서버(HS 검색 API)도 재시작
+# 없이 자동 반영(사용자 2026-06-22 '바로 반영'). 파일 안 변하면 재파싱 0.
+_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 
-@lru_cache(maxsize=2)
+
 def load_hs_names(path: str | None = None) -> dict[str, str]:
-    """{정규화 HS코드(자릿수 다양): 한글품목명}. 파일 부재/오류 → {} (graceful)."""
+    """{정규화 HS코드(자릿수 다양): 한글품목명}. 파일 부재/오류 → {} (graceful).
+    파일 mtime 변경 시 자동 재적재(서버 재시작 불요)."""
     p = path or _PATH
+    try:
+        mt = os.path.getmtime(p)
+    except OSError:
+        return {}                       # 파일 없음 → 빈 사전(라이브 stat_kor 만)
+    hit = _CACHE.get(p)
+    if hit and hit[0] == mt:
+        return hit[1]
     out: dict[str, str] = {}
     try:
         with open(p, encoding="utf-8") as f:
@@ -35,6 +46,7 @@ def load_hs_names(path: str | None = None) -> dict[str, str]:
                     out[code] = name
     except OSError:
         return {}
+    _CACHE[p] = (mt, out)
     return out
 
 
