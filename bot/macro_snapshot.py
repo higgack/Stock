@@ -532,12 +532,26 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     spark_dir = _spark_dir(card_spark, 0)
             elif src == "fred":
                 chart_spark = _fred_monthly(sid)
-                card_spark = chart_spark      # 월간 시계열(일봉 없음)
-                if chart_spark:
+                card_spark = chart_spark      # 월간 시계열(스파크라인)
+                # 헤드라인 값/변동 = 최신 관측치(spot) — 글로벌 핵심지표와 **동일 소스**
+                # (_fred_fetch_series, 24h 캐시 공유)로 통일(사용자 2026-06-23 '두 표면
+                # 일치'). 일별 series(2Y/10Y/금리차/하이일드)는 macro 월평균(freq=m)이
+                # 글로벌 spot 과 달라 불일치했음(2Y 4.00 vs 4.20). 월간 series(CPI/실업률/
+                # CFNAI)는 최신 관측 = 월말값이라 무변. 차트(추세)는 월간 그대로.
+                _spot = None
+                try:
+                    from bot.market_overview import _fred_fetch_series
+                    _spot = _fred_fetch_series(sid, 400)
+                except Exception:
+                    _spot = None
+                if _spot and _spot.get("value") is not None:
+                    value = _spot["value"]
+                    change = _spot.get("change")
+                elif chart_spark:
                     value = chart_spark[-1]
                     if len(chart_spark) >= 2:
                         change = chart_spark[-1] - chart_spark[-2]
-                spark_dir = _spark_dir(card_spark, -2)  # 직전 월 대비
+                spark_dir = _spark_dir(card_spark, -2)  # 직전 월 대비(추세 색)
             elif src == "ecos":
                 pts = _ecos_series(sid)
                 if pts:

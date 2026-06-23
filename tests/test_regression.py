@@ -10198,6 +10198,12 @@ class TestNaverCommodityCharts:
         assert "PPIFIS" in gsids, "미국 PPI 누락"
         labels = [lbl for _, lbl, *_ in m.GLOBAL]
         assert labels.index("미국 PPI") == labels.index("미국 CPI") + 1, "PPI 가 CPI 바로 오른쪽 아님"
+        # FRED 헤드라인 값 = 글로벌 핵심지표와 동일 소스(_fred_fetch_series spot)로 통일
+        # (사용자 2026-06-23 '두 표면 일치' — 일별 series 2Y/10Y 가 월평균 vs spot 불일치
+        # 였음). 차트(스파크라인)는 _fred_monthly(월간) 유지.
+        build_src = inspect.getsource(m.fetch_macro_snapshot)
+        assert "_fred_fetch_series" in build_src, "macro FRED 헤드라인 spot 통일 누락"
+        assert "_fred_monthly(sid)" in build_src, "FRED 월간 스파크라인 유지 누락"
 
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
