@@ -10002,6 +10002,33 @@ class TestNaverCommodityCharts:
         assert rec["reutersCode"] == "GCcv1" and rec["category"] == "metals"
         assert rec["close"] == 4238.80
 
+    def test_naver_prev_pct_signed_chg(self):
+        # 전일종가·변동률 부호 버그(사용자 2026-06-23): naver compareToPreviousClose/
+        # fluctuations 가 부호 포함이라 prev=close-sign*chg 는 하락일에 sign 이중적용 →
+        # prev 가 거꾸로(필반 close 13521 인데 prev 12407·% 8.97 — 정답 7.61). fix=
+        # sign*abs(chg). 하락일(code 5)에 prev>close·prev==close-change.
+        from bot.naver_marketindex import _parse_item, _parse_coins
+        down = {"closePrice": "13,521.32", "fluctuations": "-1113.4",
+                "fluctuationsRatio": "-7.61", "fluctuationsType": {"code": "5"},
+                "name": "SOX"}
+        r = _parse_item(down)
+        assert r["prev"] > r["close"], "하락일 prev 는 close 보다 높아야"
+        assert round(r["prev"], 2) == round(r["close"] - r["change"], 2)
+        assert round(r["prev"], 2) == 14634.72   # 12407.92(버그) 아님
+        up = {"closePrice": "100.0", "fluctuations": "5.0", "fluctuationsRatio": "5.26",
+              "fluctuationsType": {"code": "2"}, "name": "X"}
+        ru = _parse_item(up)
+        assert round(ru["prev"], 2) == 95.0 and ru["prev"] < ru["close"]   # 상승일 정상
+        # 코인은 이미 정상(signed chg → close-chg). 회귀 가드.
+        rc = _parse_coins([{"nfTicker": "BTC", "tradePrice": 94000000,
+                            "changeValue": 2000000, "changeRate": 2.17,
+                            "change": "FALLING"}])["BTC"]
+        assert round(rc["prev"]) == 96000000   # 하락 → prev 더 높음
+        # 지수/선물/ETF 는 prev 로 pct 계산 → abs(chg) 가드(소스). 6곳 전부 교정.
+        src = open("bot/naver_marketindex.py", encoding="utf-8").read()
+        assert "close - sign * chg" not in src, "버그 패턴 잔존(부호 이중적용)"
+        assert src.count("close - sign * abs(chg)") == 6
+
     def test_fetch_commodity_helpers_graceful(self):
         # 샌드박스 네이버 불가 → graceful [](크래시 0)
         from bot.naver_marketindex import (fetch_commodity_spark,
