@@ -6086,6 +6086,12 @@ class TestBlogWatchMultiBlog:
         for gone in ("tipranks.com", "nasdaq.com/market-activity",
                      "streetinsider.com", "finance.yahoo.com/research-hub"):
             assert gone not in dash, f"제거된 유료 사이트 잔존: {gone}"
+        # 종목당 최대 3건 집계 cap(사용자 2026-06-23 'US 리서치 한 종목 3개 이상 안돼')
+        # — 30일 롤링 store 누적으로 _emit 에 종목당 cap 없으면 MU 4건 노출되던 것.
+        import re as _re
+        emit = _re.search(r"def _emit\(\).*?return capped\[:limit\]", mo, _re.S)
+        assert emit, "_emit 종목당 cap 누락"
+        assert "per.get(sym, 0) >= 3" in emit.group(0), "종목당 3건 cap 임계 누락"
 
     def test_parse_channel_title(self):
         import bot.blog_watch as bw

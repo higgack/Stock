@@ -1266,7 +1266,19 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
         rows = [v for v in store.values()
                 if isinstance(v, dict) and v.get("date", "") >= cutoff]
         rows.sort(key=lambda x: x.get("date", ""), reverse=True)
-        return rows[:limit]
+        # 종목당 최대 3건(사용자 2026-06-11 룰 → 집계 목록에도 강제 2026-06-23):
+        # fetch-time items[:3] 는 슬라이스당이라, 30일 롤링 store 가 여러 로테이션
+        # 회차를 누적하면 종목당 3건 초과 노출됨(MU 4건). 최신순 유지하며 종목당 3건 cap.
+        # (intl 은 롤링 store 없이 매 fetch 전체 재빌드라 구조적으로 이미 ≤3.)
+        per: dict[str, int] = {}
+        capped: list[dict] = []
+        for r in rows:
+            sym = r.get("symbol", "")
+            if per.get(sym, 0) >= 3:
+                continue
+            per[sym] = per.get(sym, 0) + 1
+            capped.append(r)
+        return capped[:limit]
 
     # cold-start = store 가 한 번도 시드된 적 없음(빈 누적). 빈 store 는 가치 0인데
     # 회로차단 게이트가 영구 미시드 deadlock 을 만들 수 있다: 다른 탭이 야후를 계속
