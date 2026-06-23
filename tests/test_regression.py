@@ -10141,6 +10141,17 @@ class TestNaverCommodityCharts:
         # scale 이 두 fetch 경로에 모두 적용(값·시계열 동일 단위).
         assert "scale" in fs
         assert "scale" in inspect.getsource(e._fetch_indicator)
+        # 국내 둘째줄 채움(사용자 2026-06-23): 수입·외환보유액·GDP 추가(ECOS 코드 확인).
+        assert "import_amt" in dsids and "fx_reserve" in dsids and "kr_gdp" in dsids
+        imp = e._SERIES["import_amt"]
+        assert imp["table"] == "901Y118" and imp["item"] == "T004" and imp["scale"] == 1e-5
+        fxr = e._SERIES["fx_reserve"]
+        assert fxr["table"] == "732Y001" and fxr["item"] == "99" and fxr["scale"] == 1e-5
+        gdp = e._SERIES["kr_gdp"]
+        assert gdp["table"] == "902Y015" and gdp["item"] == "KOR" and gdp["freq"] == "Q"
+        assert "scale" not in gdp and gdp["unit"] == "%"   # 성장률 — 스케일 없음
+        # fetch_series_points 가 분기(Q) 주기 지원(GDP 카드용).
+        assert '"Q"' in fs or "'Q'" in fs
 
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →

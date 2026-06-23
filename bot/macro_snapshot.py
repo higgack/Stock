@@ -46,6 +46,10 @@ DOMESTIC = [
     ("usdkrw", "USD/KRW", "", "yf", "USDKRW=X", 1),
     ("kr_ca", "경상수지", "억$", "ecos", "current_account", 0),
     ("kr_export", "한국 수출", "억$", "ecos", "export_amt", 0),
+    # 국내 둘째 줄 채움(사용자 2026-06-23): 무역(수입)·대외(외환보유액)·성장(GDP).
+    ("kr_import", "한국 수입", "억$", "ecos", "import_amt", 0),
+    ("kr_reserve", "외환보유액", "억$", "ecos", "fx_reserve", 0),
+    ("kr_gdp", "한국 GDP", "%", "ecos", "kr_gdp", 1),   # 분기 전기대비 성장률
 ]
 
 # 사용자 2026-06-14 재정렬: FFR·달러인덱스 삭제 / 원자재 = WTI·브렌트·천연가스·

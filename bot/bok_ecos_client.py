@@ -103,6 +103,32 @@ _SERIES = {
         "scale": 1e-5,        # ECOS 천달러 → 억달러(÷100,000)
         "lookback_days": 400,
     },
+    "import_amt": {
+        "table": "901Y118",   # 3.2.1 통관 수출입 총괄 (수출과 동일 표, 사용자 2026-06-23)
+        "item": "T004",       # 수입금액 (ECOS item 확인 2026-06-23)
+        "freq": "M",
+        "label": "한국 수입",
+        "unit": "억$",
+        "scale": 1e-5,        # ECOS 천달러 → 억달러(÷100,000)
+        "lookback_days": 400,
+    },
+    "fx_reserve": {
+        "table": "732Y001",   # 3.5 외환보유액
+        "item": "99",         # 합계 (ECOS item 확인 2026-06-23)
+        "freq": "M",
+        "label": "외환보유액",
+        "unit": "억$",
+        "scale": 1e-5,        # ECOS 천달러 → 억달러(÷100,000)
+        "lookback_days": 400,
+    },
+    "kr_gdp": {
+        "table": "902Y015",   # 9.1.4.1 국제 주요국 경제성장률 (한국=KOR, 분기 전기대비%)
+        "item": "KOR",        # 한국 (ECOS item 확인 2026-06-23)
+        "freq": "Q",          # 분기 — fetch_series_points 가 YYYYQn 처리(_fetch_indicator 는 Q 미지원→prompt 만 skip, 카드는 정상)
+        "label": "한국 GDP",
+        "unit": "%",          # 성장률 — 스케일 없음
+        "lookback_days": 1500,  # 분기 → ~16개 분기(스파크라인 충분)
+    },
 }
 
 
