@@ -92,24 +92,21 @@ def _exposure_table(rows: list[dict], *, title: str, subtitle: str,
         nm = (f'{prefix}<span class="rb-relink" data-rb-search="{e(x["item"])}" '
               f'title="이 품목명으로 재검색" style="cursor:pointer;color:#6cb6ff;'
               f'text-decoration:underline dotted">{e(x["item"])}</span>')
-        # 관련 HS 코드 칩(사용자 2026-06-23) — 품목 옆에 대표 HS6 표시. 각 칩 클릭 시
-        # 그 HS 로 재검색(rb-relink 재사용) → 수출입 하위 품목 + 히트맵 드릴다운.
+        # 관련 HS 코드(사용자 2026-06-23) — 품목명 아래 얕은 서브라인. 각 코드 클릭 시
+        # 히트맵 그 HS 포커스(data-hm-hs) → 하위 드릴다운, 히트맵 없으면 HS 재검색 폴백.
         try:
             _hs6 = _item_hs6(x.get("item", ""))
         except Exception:
             _hs6 = []
         if _hs6:
-            # data-hm-hs = 히트맵 포커스(탭 전환 + 그 HS4 드릴다운). 히트맵 없으면
-            # 핸들러가 HS 재검색으로 폴백(data-rb-search 동작).
-            _chips = " ".join(
+            _links = " · ".join(
                 f'<span class="rb-relink" data-hm-hs="{e(c)}" data-rb-search="{e(c)}" '
-                f'title="HS {e(c)} → 히트맵 하위 드릴다운(수출입)" style="cursor:pointer;'
-                f'color:#8fcaa0;font-size:11px;border:1px solid #3a5a44;border-radius:3px;'
-                f'padding:0 4px;margin-left:4px">{e(c)} 🗺️</span>'
+                f'title="HS {e(c)} → 히트맵 하위 드릴다운(수출입)" '
+                f'style="cursor:pointer;color:#8fcaa0">{e(c)}</span>'
                 for c in _hs6[:3])
-            _more = (f' <span style="color:#9aa0aa;font-size:11px">외 {len(_hs6)-3}</span>'
-                     if len(_hs6) > 3 else "")
-            nm += " " + _chips + _more
+            _more = (f' 외{len(_hs6)-3}' if len(_hs6) > 3 else "")
+            nm += (f'<div style="font-size:11px;color:#7d828c;margin-top:2px">'
+                   f'🗺️ {_links}{_more}</div>')
         c = (f'<td style="padding:4px 8px">{nm}</td>'
              f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
              f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
