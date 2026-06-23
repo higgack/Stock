@@ -45,7 +45,7 @@ def _parse_item(it: dict) -> dict | None:
     pct = _num(it.get("fluctuationsRatio"))
     typ = (it.get("fluctuationsType") or {}).get("code")
     sign = -1.0 if typ == "5" else 1.0    # 5=하락, 2=상승
-    prev = (close - sign * chg) if chg is not None else close
+    prev = (close - sign * abs(chg)) if chg is not None else close
     return {"name": str(it.get("name") or ""), "close": close,
             "prev": prev, "change": (sign * abs(chg)) if chg is not None else 0.0,
             "pct": (sign * abs(pct)) if pct is not None else 0.0,
@@ -348,7 +348,7 @@ def fetch_world_indices(codes: tuple) -> dict:
         chg = _num(it.get("compareToPreviousClosePrice"))
         code = (it.get("compareToPreviousPrice") or {}).get("code")
         sign = -1.0 if code == "5" else 1.0
-        prev = (close - sign * chg) if chg is not None else close
+        prev = (close - sign * abs(chg)) if chg is not None else close
         pct = (sign * abs(chg) / prev * 100.0) if (chg is not None and prev) else 0.0
         out[rc] = {"close": close, "prev": prev,
                    "change": (sign * abs(chg)) if chg is not None else 0.0,
@@ -396,7 +396,7 @@ def fetch_domestic_indices(codes: tuple) -> dict:
         code = (it.get("compareToPreviousPrice") or {}).get("code")
         pctv = _num(it.get("fluctuationsRatioRaw") or it.get("fluctuationsRatio"))
         sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
-        prev = (close - sign * chg) if chg is not None else close
+        prev = (close - sign * abs(chg)) if chg is not None else close
         out[ic] = {"close": close, "prev": prev,
                    "change": (sign * abs(chg)) if chg is not None else 0.0,
                    "pct": (sign * abs(pctv)) if pctv is not None else 0.0}
@@ -442,7 +442,7 @@ def fetch_world_fx() -> dict:
         pct = _num(it.get("fluctuationsRatio"))
         code = (it.get("fluctuationsType") or {}).get("code")
         sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
-        prev = (close - sign * chg) if chg is not None else close
+        prev = (close - sign * abs(chg)) if chg is not None else close
         out[rc] = {"close": close, "prev": prev,
                    "change": (sign * abs(chg)) if chg is not None else 0.0,
                    "pct": (sign * abs(pct)) if pct is not None else 0.0}
@@ -526,7 +526,7 @@ def fetch_world_futures(codes: tuple) -> dict:
         chg = _num(it.get("compareToPreviousClosePrice"))
         code = (it.get("compareToPreviousPrice") or {}).get("code")
         sign = -1.0 if code == "5" else 1.0
-        prev = (close - sign * chg) if chg is not None else close
+        prev = (close - sign * abs(chg)) if chg is not None else close
         pct = (sign * abs(chg) / prev * 100.0) if (chg is not None and prev) else 0.0
         out[rc] = {"close": close, "prev": prev,
                    "change": (sign * abs(chg)) if chg is not None else 0.0, "pct": pct}
@@ -571,7 +571,7 @@ def fetch_world_etf(codes: tuple) -> dict:
         chg = _num(it.get("compareToPreviousClosePrice"))
         code = (it.get("compareToPreviousPrice") or {}).get("code")
         sign = -1.0 if code == "5" else 1.0
-        prev = (close - sign * chg) if chg is not None else close
+        prev = (close - sign * abs(chg)) if chg is not None else close
         pct = (sign * abs(chg) / prev * 100.0) if (chg is not None and prev) else 0.0
         out[rc] = {"close": close, "prev": prev,
                    "change": (sign * abs(chg)) if chg is not None else 0.0, "pct": pct}
