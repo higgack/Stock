@@ -519,6 +519,22 @@ class CatchAllHeatmapFallbackTests(unittest.TestCase):
         html = C.render_free(res)
         self.assertIn('data-rb-search="고정식축전기"', html)
 
+    def test_item_hs6_chips(self):
+        # 매칭 품목 옆 HS 코드 칩(사용자 2026-06-23 '면류 클릭 시 HS 나오게 + 히트맵
+        # 하위 드릴다운'). 면류=HS 1902(파스타류) → 점표기 HS6, 칩은 rb-relink 재사용
+        # (클릭 시 그 HS 재검색 → 수출입 하위 + 히트맵). 미매칭 graceful([]).
+        import trade.company_report as C
+        codes = C._item_hs6("면류")
+        self.assertTrue(codes, "면류 HS6 매칭 없음(연계표 확인)")
+        self.assertTrue(all("." in c and len(c) == 7 for c in codes))  # 'XXXX.XX'
+        self.assertTrue(any(c.startswith("1902") for c in codes))      # 면류=1902
+        self.assertEqual(C._item_hs6("___없는품목___"), [])            # graceful
+        # 표 렌더에 HS 칩(클릭 가능 data-rb-search=점표기 HS6)
+        html = C._exposure_table(
+            [{"item": "면류", "industry": "곡류", "export_usd": 1.8e8}],
+            title="t", subtitle="s")
+        self.assertRegex(html, r'data-rb-search="1902\.\d{2}"')
+
 
 class TypoAndAliasBatchTests(unittest.TestCase):
     """회사명 오타 교정 + 미매칭 알림 후보 별칭 매칭(사용자 2026-06-19 xlsx)."""
