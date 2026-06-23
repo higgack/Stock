@@ -60,6 +60,10 @@ GLOBAL = [
     ("us_ffr", "미국 FFR", "%", "fred", "FEDFUNDS", 2),   # 사용자 2026-06-14 맨앞 재추가
     ("us_2y", "미국 2Y", "%", "fred", "DGS2", 2),
     ("us_10y", "미국 10Y", "%", "fred", "DGS10", 2),
+    # 금리/신용 리스크 2종(사용자 2026-06-23): 장단기 금리차(역전=침체 선행) +
+    # 하이일드 스프레드(신용위험). 둘 다 FRED 일별 series(DGS2/DGS10 과 동일 경로).
+    ("us_10y2y", "미국 장단기금리차", "%", "fred", "T10Y2Y", 2),
+    ("us_hy", "미국 하이일드", "%", "fred", "BAMLH0A0HYM2", 2),
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
     ("us_unemploy", "미국 실업률", "%", "fred", "UNRATE", 1),
     # ISM PMI(NAPM)는 FRED 에서 폐기(ISM 저작권) → 무료 대체 = Chicago Fed

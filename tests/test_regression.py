@@ -10152,6 +10152,14 @@ class TestNaverCommodityCharts:
         assert "scale" not in gdp and gdp["unit"] == "%"   # 성장률 — 스케일 없음
         # fetch_series_points 가 분기(Q) 주기 지원(GDP 카드용).
         assert '"Q"' in fs or "'Q'" in fs
+        # 글로벌 금리/신용 리스크 2종 추가(사용자 2026-06-23): 장단기금리차·하이일드
+        # 스프레드. 둘 다 FRED 일별 series(DGS2/DGS10 과 동일 경로, 분기 가드 제외).
+        gsids = [sid for _, _, _, _, sid, _ in m.GLOBAL]
+        assert "T10Y2Y" in gsids and "BAMLH0A0HYM2" in gsids
+        from bot.macro_snapshot import _FRED_QUARTERLY
+        assert "T10Y2Y" not in _FRED_QUARTERLY and "BAMLH0A0HYM2" not in _FRED_QUARTERLY
+        for key, sid, src in [(t[0], t[4], t[3]) for t in m.GLOBAL if t[4] in ("T10Y2Y", "BAMLH0A0HYM2")]:
+            assert src == "fred"
 
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
