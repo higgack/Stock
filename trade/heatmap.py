@@ -208,6 +208,22 @@ var dir='exp', mode='yoy', grp='ch', HMQ='';
 var DRILL={drill}, zoomH4=null, zoomCh=null;   // 2단 줌: zoomCh=류 확대 / zoomH4=HS4 내 개별품목
 window.hmFilter=function(q){{ HMQ=(q||'').toLowerCase();
   if(document.getElementById('hm-map').offsetParent!==null) render(); }};
+// HS 코드로 히트맵 포커스(사용자 2026-06-23) — 보고서 매칭품목 HS 칩 클릭 시 히트맵
+// 탭 전환 + 그 HS4 개별품목 드릴다운(leaf 있으면), 없으면 HS4 필터 하이라이트.
+window.hmFocus=function(hs){{
+  var bare=(hs||'').replace(/[^0-9]/g,''); if(bare.length<4) return;
+  var h4=bare.slice(0,4); grp='ch';
+  var node=null;
+  (DATA.chapters||[]).forEach(function(g){{ (g.h4s||[]).forEach(function(n){{
+    if(n.h4===h4) node=n; }}); }});
+  var tab=document.querySelector('[data-tab="heatmap"]'); if(tab) tab.click();
+  setTimeout(function(){{
+    zoomCh=null;
+    if(node&&node.lv&&node.lv.length){{ zoomH4={{h4:node.h4,name:node.nm,lv:node.lv}}; HMQ=''; }}
+    else {{ zoomH4=null; HMQ=h4; }}
+    if(document.getElementById('hm-map').offsetParent!==null) render();
+  }},80);
+}};
 document.addEventListener('click',function(e){{
   if(e.target.closest('[data-tab="heatmap"]')) setTimeout(render,0);
 }});

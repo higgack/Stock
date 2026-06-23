@@ -734,6 +734,11 @@ def _build_html(
         # 결과 안의 품목명(data-rb-search) 클릭 → 그 실제 품목명으로 재검색 (사용자
         # 2026-06-19 — MLCC 등 별칭으로 들어와도 실제 품목명으로 한 번에 재조회).
         'res.addEventListener("click",function(e){'
+        # HS 칩(data-hm-hs) → 히트맵 그 HS 포커스(탭전환+드릴다운). 히트맵 없으면
+        # data-rb-search 폴백으로 그 HS 재검색(사용자 2026-06-23).
+        'var hm=e.target.closest("[data-hm-hs]");'
+        'if(hm&&window.hmFocus){window.hmFocus(hm.getAttribute("data-hm-hs"));'
+        'window.scrollTo({top:0,behavior:"smooth"});return;}'
         'var t=e.target.closest("[data-rb-search]");if(!t)return;'
         'window._rbLeaf="";window._rbDir="";q.value=t.getAttribute("data-rb-search");q.focus();run("free");'
         'window.scrollTo({top:q.getBoundingClientRect().top+window.scrollY-80,behavior:"smooth"});});'

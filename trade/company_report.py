@@ -99,11 +99,13 @@ def _exposure_table(rows: list[dict], *, title: str, subtitle: str,
         except Exception:
             _hs6 = []
         if _hs6:
+            # data-hm-hs = 히트맵 포커스(탭 전환 + 그 HS4 드릴다운). 히트맵 없으면
+            # 핸들러가 HS 재검색으로 폴백(data-rb-search 동작).
             _chips = " ".join(
-                f'<span class="rb-relink" data-rb-search="{e(c)}" '
-                f'title="HS {e(c)} 수출입·히트맵 하위 드릴다운" style="cursor:pointer;'
+                f'<span class="rb-relink" data-hm-hs="{e(c)}" data-rb-search="{e(c)}" '
+                f'title="HS {e(c)} → 히트맵 하위 드릴다운(수출입)" style="cursor:pointer;'
                 f'color:#8fcaa0;font-size:11px;border:1px solid #3a5a44;border-radius:3px;'
-                f'padding:0 4px;margin-left:4px">{e(c)}</span>'
+                f'padding:0 4px;margin-left:4px">{e(c)} 🗺️</span>'
                 for c in _hs6[:3])
             _more = (f' <span style="color:#9aa0aa;font-size:11px">외 {len(_hs6)-3}</span>'
                      if len(_hs6) > 3 else "")
