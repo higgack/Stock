@@ -13,6 +13,7 @@ mti_stored(저장된 수출입 집계). 신규 fetch·매칭 비용 0. graceful(
 """
 from __future__ import annotations
 
+import functools as _functools
 import html as _html
 import logging
 import os
@@ -91,6 +92,24 @@ def _exposure_table(rows: list[dict], *, title: str, subtitle: str,
         nm = (f'{prefix}<span class="rb-relink" data-rb-search="{e(x["item"])}" '
               f'title="이 품목명으로 재검색" style="cursor:pointer;color:#6cb6ff;'
               f'text-decoration:underline dotted">{e(x["item"])}</span>')
+        # 관련 HS 코드 칩(사용자 2026-06-23) — 품목 옆에 대표 HS6 표시. 각 칩 클릭 시
+        # 그 HS 로 재검색(rb-relink 재사용) → 수출입 하위 품목 + 히트맵 드릴다운.
+        try:
+            _hs6 = _item_hs6(x.get("item", ""))
+        except Exception:
+            _hs6 = []
+        if _hs6:
+            # data-hm-hs = 히트맵 포커스(탭 전환 + 그 HS4 드릴다운). 히트맵 없으면
+            # 핸들러가 HS 재검색으로 폴백(data-rb-search 동작).
+            _chips = " ".join(
+                f'<span class="rb-relink" data-hm-hs="{e(c)}" data-rb-search="{e(c)}" '
+                f'title="HS {e(c)} → 히트맵 하위 드릴다운(수출입)" style="cursor:pointer;'
+                f'color:#8fcaa0;font-size:11px;border:1px solid #3a5a44;border-radius:3px;'
+                f'padding:0 4px;margin-left:4px">{e(c)} 🗺️</span>'
+                for c in _hs6[:3])
+            _more = (f' <span style="color:#9aa0aa;font-size:11px">외 {len(_hs6)-3}</span>'
+                     if len(_hs6) > 3 else "")
+            nm += " " + _chips + _more
         c = (f'<td style="padding:4px 8px">{nm}</td>'
              f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
              f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
@@ -196,6 +215,39 @@ def _match_mti(item: str, name_idx: dict):
     (2026-06-18 회사별 소스 통합 시 적발). 미발견 None(=관세청 수치 없는 관련 품목)."""
     k = _norm(item)
     return name_idx.get(k) if k else None
+
+
+@_functools.lru_cache(maxsize=1)
+def _name_hs6_index() -> dict:
+    """정규화 품목명 → 대표 HS6 코드 리스트(bare 6자리, 정렬). mti_map 연계표
+    (load_mti/mti_names, 둘 다 lru 캐시) 기반 — 품목(MTI6) 구성 HS10 을 HS6 로
+    deduped. 품목 클릭 시 관련 HS 노출·드릴다운용(사용자 2026-06-23). graceful({})."""
+    try:
+        from trade import mti_map
+        hsk = mti_map.load_mti()        # {HSK10: (mti6, 산업, 품목명)}
+        names = mti_map.mti_names()     # {mti6: (품목명, 산업)}
+    except Exception:
+        return {}
+    m6_hs6: dict = {}
+    for hs, rec in (hsk or {}).items():
+        m6 = rec[0] if rec else ""
+        d = "".join(c for c in str(hs) if c.isdigit())
+        if m6 and len(d) >= 6:
+            m6_hs6.setdefault(m6, set()).add(d[:6])
+    out: dict = {}
+    for m6, meta in (names or {}).items():
+        nm = _norm(meta[0] if meta else "")
+        if nm and nm not in out and m6_hs6.get(m6):
+            out[nm] = sorted(m6_hs6[m6])
+    return out
+
+
+def _item_hs6(item: str) -> list:
+    """품목명 → 대표 HS6 코드(점표기 'XXXX.XX'). 미매칭 []. HS 검색(_looks_like_hs)
+    이 bare 6 은 주식코드로 제외하므로 점표기로 반환(클릭 시 HS 인식)."""
+    codes = _name_hs6_index().get(_norm(item)) or []
+    return [f"{c[:4]}.{c[4:6]}" for c in codes if len(c) >= 6]
+
 
 
 def _company_exposure(name: str, by_mti: dict, pairs: list,
@@ -667,7 +719,8 @@ def _render_free_item(data: dict) -> str:
             '· 관련 기업</div>'
             '<div style="font-size:12px;color:#9aa0aa;margin-bottom:12px">'
             '품목 역검색 · 관세청 수출입 품목 ↔ 관련 상장사(큐레이션+채널) · 무료(데이터)'
-            ' · 💡 아래 <b>품목명 클릭</b>으로 실제 품목명 재검색</div>')
+            ' · 💡 <b>품목명 클릭</b>=실제 품목명 재검색 · <b>HS 코드 칩 클릭</b>='
+            '그 HS 수출입·히트맵 하위 드릴다운</div>')
     # HS코드 검색(히트맵 셀 클릭 등) breadcrumb — 한 HS는 여러 MTI품목으로 연계될 수
     # 있어 표가 여러 행이 됨을 명시(사용자 2026-06-20 '코팅머신 눌렀는데 기타기계류가 뜸').
     if data.get("hs_search") and items:

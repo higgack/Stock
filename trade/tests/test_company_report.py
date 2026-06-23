@@ -519,6 +519,36 @@ class CatchAllHeatmapFallbackTests(unittest.TestCase):
         html = C.render_free(res)
         self.assertIn('data-rb-search="고정식축전기"', html)
 
+    def test_item_hs6_chips(self):
+        # 매칭 품목 옆 HS 코드 칩(사용자 2026-06-23 '면류 클릭 시 HS 나오게 + 히트맵
+        # 하위 드릴다운'). 면류=HS 1902(파스타류) → 점표기 HS6, 칩은 rb-relink 재사용
+        # (클릭 시 그 HS 재검색 → 수출입 하위 + 히트맵). 미매칭 graceful([]).
+        import trade.company_report as C
+        codes = C._item_hs6("면류")
+        self.assertTrue(codes, "면류 HS6 매칭 없음(연계표 확인)")
+        self.assertTrue(all("." in c and len(c) == 7 for c in codes))  # 'XXXX.XX'
+        self.assertTrue(any(c.startswith("1902") for c in codes))      # 면류=1902
+        self.assertEqual(C._item_hs6("___없는품목___"), [])            # graceful
+        # 표 렌더에 HS 칩 — 히트맵 포커스(data-hm-hs) + 재검색 폴백(data-rb-search).
+        html = C._exposure_table(
+            [{"item": "면류", "industry": "곡류", "export_usd": 1.8e8}],
+            title="t", subtitle="s")
+        self.assertRegex(html, r'data-hm-hs="1902\.\d{2}"')   # 히트맵 포커스
+        self.assertRegex(html, r'data-rb-search="1902\.\d{2}"')  # 히트맵 없을 때 폴백
+
+    def test_heatmap_hmfocus_hook(self):
+        # HS 칩 클릭 → 히트맵 그 HS 포커스(사용자 2026-06-23 '히트맵 자동 포커스').
+        # heatmap JS 에 window.hmFocus + 대시보드 res 핸들러가 data-hm-hs → hmFocus 배선.
+        from trade import heatmap, dashboard
+        rows = [{"hs_code": "1902110000", "name": "면류A", "exp": 1000,
+                 "exp_py": 900, "exp_pm": 950, "imp": 0, "imp_py": 0,
+                 "imp_pm": 0, "ref_ym": "202605"}]
+        hm = heatmap.render_heatmap_html(rows)
+        self.assertIn("window.hmFocus", hm)          # 포커스 훅 존재
+        self.assertIn("zoomH4", hm)                   # HS4 드릴다운 사용
+        dsrc = open("trade/dashboard.py", encoding="utf-8").read()
+        assert 'data-hm-hs' in dsrc and 'window.hmFocus' in dsrc, "res 핸들러 hmFocus 미배선"
+
 
 class TypoAndAliasBatchTests(unittest.TestCase):
     """회사명 오타 교정 + 미매칭 알림 후보 별칭 매칭(사용자 2026-06-19 xlsx)."""
