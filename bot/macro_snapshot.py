@@ -65,6 +65,8 @@ GLOBAL = [
     ("us_10y2y", "미국 장단기금리차", "%", "fred", "T10Y2Y", 2),
     ("us_hy", "미국 하이일드", "%", "fred", "BAMLH0A0HYM2", 2),
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
+    # CPI 오른쪽 PPI(생산자물가, 헤드라인=최종수요 PPIFIS, 지수레벨, 사용자 2026-06-23).
+    ("us_ppi", "미국 PPI", "", "fred", "PPIFIS", 2),
     ("us_unemploy", "미국 실업률", "%", "fred", "UNRATE", 1),
     # ISM PMI(NAPM)는 FRED 에서 폐기(ISM 저작권) → 무료 대체 = Chicago Fed
     # National Activity Index(CFNAI, 월간 85지표 합성 경기선행). 라벨 정확화

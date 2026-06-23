@@ -499,6 +499,38 @@ commit 에서** 갱신 의무. help 만 고치고 대시보드 설명을 방치�
 이 규칙은 차트뿐 아니라 모든 대시보드 표면에 universal 적용. 대시보드는
 help 와 마찬가지로 public-facing spec 이므로 out-of-sync = 버그.
 
+## 매크로/글로벌 스냅샷 카드 인벤토리 — canonical 순서 (2026-06-23 사용자 '기억해둬')
+
+> 두 표면의 카드 종류·순서 = 사용자 지정 spec. 카드 추가/제거/이동 시 이 목록을
+> 같은 commit 으로 갱신(out-of-sync = 버그). 새 카드는 소스(FRED/ECOS/naver) 코드를
+> VM 에서 검증 후 추가(추측 코드 = 빈 카드, 2026-06-23 ECOS saga 교훈).
+
+### A. Macro Snapshot (`bot/macro_snapshot.py` — `DOMESTIC` / `GLOBAL`)
+- 카드 = `(key, label, unit, src, sid, decimals)`. src: ecos(BOK)·fred·yf(값=naver `_MACRO_NAVER`).
+- ECOS 단위 변환은 `bot/bok_ecos_client.py` `_SERIES[*]["scale"]`(default 1.0).
+- **국내 (10)**: 한국 기준금리(ecos base_rate) · 국고채 3년(kr3y) · 국고채 10년(kr10y) ·
+  한국 CPI(cpi_idx) · USD/KRW(yf USDKRW=X) · 한국 수출(ecos export_amt 901Y118/T002 천$→억$) ·
+  한국 수입(ecos import_amt 901Y118/T004) · 경상수지(ecos current_account 301Y017/SA000 백만$→억$) ·
+  외환보유액(ecos fx_reserve 732Y001/99 천$→억$) · 한국 GDP(ecos kr_gdp 902Y015/KOR 분기%).
+- **글로벌 (30)**: 미국 2Y(DGS2) · 미국 10Y(DGS10) · 미국 장단기금리차(T10Y2Y) ·
+  미국 하이일드(BAMLH0A0HYM2) · 미국 CPI(CPIAUCSL) · 미국 PPI(PPIFIS Final Demand) ·
+  미국 실업률(UNRATE) · 미국 경기활동(CFNAI) · 미국 GDP(A191RL1Q225SBEA 분기) ·
+  S&P 500 · NASDAQ · VIX · 필라델피아 반도체(SOX) · WTI · 브렌트유 · 천연가스 · 금 · 은 ·
+  구리 · 알루미늄 합금 · 니켈 · 옥수수 · 대두 · 소맥 · 돈육 · 커피 · 면화 ·
+  비트코인 · 이더리움 · 솔라나. (미국 FFR 제거 2026-06-23.)
+
+### B. 글로벌 시장 스냅샷 (`bot/market_overview.py` — `ALL_CARDS` 9 섹션 + `FRED_INDICATORS`)
+별개 표면(홈 스냅샷). 카드 = `(label, "src:code")` — nvd/nvi/nvx/nvk/nv/nvc/nvf/nve = 네이버 경로.
+1. **한국 & 아시아**: 코스피·코스닥·니케이225·상해종합·심천종합·홍콩항셍·대만가권·말레이시아 KLCI·인니 IDX종합·인도 Sensex
+2. **주요 환율 (FX)**: 원/달러·엔/원(100엔)·유로/달러·파운드/달러·달러/위안·달러/HKD·대만달러/USD·루피/달러·호주달러/달러·스위스프랑/달러
+3. **핵심 지표 (금리/경제)** `FRED_INDICATORS`: 미국채 2년·10년·30년·JOLTS·실업수당청구·GDP성장률(QoQ)·근원PCE물가(YoY)·소매판매(YoY)·CPI(YoY)·PPI(YoY, PPIACO)
+4. **원자재 & 귀금속**: WTI·브렌트·두바이·천연가스·금·은·구리·알루미늄·니켈
+5. **시장 심리 & 코인**: VIX·비트코인·이더리움·테더·USD코인·리플·솔라나·트론·도지코인
+6. **미국 지수**: S&P500·나스닥종합·다우존스·다우운송·필라델피아반도체·XLF금융·XLV헬스케어·XLC커뮤니케이션·XLP필수소비
+7. **미국 지수-2**: XLY임의소비·XLI산업재·XLE에너지·XLU유틸리티·IYR부동산·XLB소재
+8. **미국 지수 선물 & 운송 (Futures)**: S&P500선물·다우선물·나스닥100선물·러셀2000선물·BDI건화물운임·중국컨테이너운임(CCFI)
+9. **유럽 지수**: 유로스톡스50·독일DAX·영국FTSE100·프랑스CAC40·이탈리아FTSE MIB·네덜란드AEX
+
 ## Automation-first principle
 
 **Every recurring operation MUST be automated** (cron / systemd timer /

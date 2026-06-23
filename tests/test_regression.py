@@ -10160,6 +10160,11 @@ class TestNaverCommodityCharts:
         assert "T10Y2Y" not in _FRED_QUARTERLY and "BAMLH0A0HYM2" not in _FRED_QUARTERLY
         for key, sid, src in [(t[0], t[4], t[3]) for t in m.GLOBAL if t[4] in ("T10Y2Y", "BAMLH0A0HYM2")]:
             assert src == "fred"
+        # 미국 FFR 제거 + CPI 오른쪽 PPI(Final Demand PPIFIS) 추가(사용자 2026-06-23).
+        assert "FEDFUNDS" not in gsids, "미국 FFR 미제거"
+        assert "PPIFIS" in gsids, "미국 PPI 누락"
+        labels = [lbl for _, lbl, *_ in m.GLOBAL]
+        assert labels.index("미국 PPI") == labels.index("미국 CPI") + 1, "PPI 가 CPI 바로 오른쪽 아님"
 
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
