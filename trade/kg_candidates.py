@@ -21,11 +21,17 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
 log = logging.getLogger("trade.kg_candidates")
+
+# 추출 기본 모델 = flash (엔티티/관계 추출엔 충분·pro 대비 ~10배 저렴, 사용자
+# 2026-06-23 비용). 봇 분석모델(TRADE_LLM_MODEL=pro)과 **독립** — env KG_LLM_MODEL
+# 또는 --model 로 override. 비용 = limit × 텍스트토큰, flash 라 limit 5 ≈ 수 원.
+_DEFAULT_KG_MODEL = os.environ.get("KG_LLM_MODEL") or "gemini-2.5-flash"
 
 _RELATIONS = ("취급품목", "테마", "납품", "고객", "계열")
 
@@ -197,7 +203,7 @@ def extract_candidates(texts: list[dict], *, model: Optional[str] = None,
     if not llm_insights._llm_ready():
         log.info("kg_candidates: no Gemini backend — skip")
         return []
-    model = model or llm_insights.DEFAULT_MODEL
+    model = model or _DEFAULT_KG_MODEL    # flash 기본(저렴) — 봇 분석모델과 독립
     cap = max_calls if max_calls is not None else llm_insights._max_calls()
     known = _known_companies() if use_company_filter else None
     existing = _existing_pairs_from_refbook()
@@ -245,6 +251,8 @@ if __name__ == "__main__":   # pragma: no cover
     ap.add_argument("--file", help="--source file 일 때 텍스트 파일 경로")
     ap.add_argument("--no-filter", action="store_true",
                     help="known_companies 필터 끔(원시 후보 확인용)")
+    ap.add_argument("--model", default=None,
+                    help=f"Gemini 모델(기본 {_DEFAULT_KG_MODEL}=저렴). pro 원하면 명시.")
     args = ap.parse_args()
 
     # .env 키 로드 — 수동 셸은 봇 서비스와 달리 .env 미로드(GOOGLE/GEMINI 키 부재 →
@@ -308,7 +316,8 @@ if __name__ == "__main__":   # pragma: no cover
         print("⚠️ 로드된 텍스트 0건 — 블로그 아카이브가 비었을 수 있음(새 블로그는 "
               "첫 사이클에 기존글 seen 처리·아카이브 안 함). '--source dart' 로 시도.")
 
-    cands = extract_candidates(batch, use_company_filter=not args.no_filter)
+    cands = extract_candidates(batch, model=args.model,
+                               use_company_filter=not args.no_filter)
     n = write_candidates_csv(cands)
     print(f"후보 {len(cands)}건 추출 → 승인 큐 CSV 신규 {n}건 적재 "
           f"({_candidates_csv_path()})")
