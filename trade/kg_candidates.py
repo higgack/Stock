@@ -284,9 +284,10 @@ def _new_against_csv(cands: list[dict], path=None) -> list[dict]:
     return out
 
 
-def _notify_blog_channel(new_cands: list[dict]) -> bool:
-    """새 관계 후보 → 블로그 채널(daily_kr_flow.push_telegram, =CHANNEL_CHAT_IDS)
-    알림 1건. 승인 대기 신호만 — 운영자가 대시보드/CSV 검토. graceful(실패 False)."""
+def _notify_channel(new_cands: list[dict], label: str = "블로그") -> bool:
+    """새 관계 후보 → 채널(daily_kr_flow.push_telegram, =CHANNEL_CHAT_IDS) 알림 1건.
+    label = 발굴 소스 표시(블로그 / DART공시 …). 승인 대기 신호만 — 운영자가
+    대시보드/CSV 검토. graceful(실패 False)."""
     if not new_cands:
         return False
     try:
@@ -296,12 +297,12 @@ def _notify_blog_channel(new_cands: list[dict]) -> bool:
         return False
     import html as _h
     n = len(new_cands)
-    lines = [f"🔗 <b>레퍼런스북 관계후보 {n}건</b> (블로그 자동발굴 · 승인 대기)"]
+    lines = [f"🔗 <b>레퍼런스북 관계후보 {n}건</b> ({_h.escape(label)} 자동발굴 · 승인 대기)"]
     for c in new_cands[:8]:
         co = _h.escape(str(c.get("company", "")))
         rel = _h.escape(str(c.get("relation", "")))
         tgt = _h.escape(str(c.get("target", "")))
-        src = _h.escape(str(c.get("source", "")).replace("blog:", ""))
+        src = _h.escape(str(c.get("source", "")).split(":", 1)[-1])
         tail = f"  <i>({src})</i>" if src else ""
         lines.append(f"• {co} —[{rel}]→ {tgt}{tail}")
     if n > 8:
@@ -314,12 +315,17 @@ def _notify_blog_channel(new_cands: list[dict]) -> bool:
         return False
 
 
-def run_blog_extraction(texts: list[dict], *, model: Optional[str] = None,
-                        max_calls: Optional[int] = None,
-                        notify: bool = True) -> list[dict]:
-    """블로그 새 글 텍스트 배치 → 후보 추출 → 승인 큐 CSV 적재 → (notify)채널 알림.
-    blog_watch.run() 후킹용. 킬스위치 off·키 부재·실패 전부 graceful([]).
-    반환 = CSV 에 새로 적재된 후보(중복 제외)."""
+def _notify_blog_channel(new_cands: list[dict]) -> bool:
+    """블로그 라벨 알림(back-compat 래퍼)."""
+    return _notify_channel(new_cands, "블로그")
+
+
+def run_extraction(texts: list[dict], *, label: str = "블로그",
+                   model: Optional[str] = None, max_calls: Optional[int] = None,
+                   notify: bool = True) -> list[dict]:
+    """텍스트 배치 → 후보 추출 → 승인 큐 CSV 적재 → (notify)채널 알림. 소스 무관
+    (블로그·DART공시 공용). label = 알림 표시 소스. 킬스위치 off·키 부재·실패 전부
+    graceful([]). 반환 = CSV 에 새로 적재된 후보(중복 제외)."""
     if not _kg_enabled():
         log.info("kg_candidates: KG_CANDIDATES_ENABLED off — skip")
         return []
@@ -340,13 +346,22 @@ def run_blog_extraction(texts: list[dict], *, model: Optional[str] = None,
     cands = extract_candidates(texts, model=model, max_calls=cap)
     new = _new_against_csv(cands)
     if not new:
-        log.info("kg_candidates: 블로그 추출 %d건(전부 기존) — 신규 0", len(cands))
+        log.info("kg_candidates: %s 추출 %d건(전부 기존) — 신규 0", label, len(cands))
         return []
     write_candidates_csv(new)
-    log.info("kg_candidates: 블로그 관계후보 신규 %d건 적재", len(new))
+    log.info("kg_candidates: %s 관계후보 신규 %d건 적재", label, len(new))
     if notify:
-        _notify_blog_channel(new)
+        _notify_channel(new, label)
     return new
+
+
+def run_blog_extraction(texts: list[dict], *, model: Optional[str] = None,
+                        max_calls: Optional[int] = None,
+                        notify: bool = True) -> list[dict]:
+    """블로그 새 글 텍스트 배치 → 후보 추출(run_extraction 블로그 라벨 래퍼).
+    blog_watch.run() 후킹용."""
+    return run_extraction(texts, label="블로그", model=model,
+                          max_calls=max_calls, notify=notify)
 
 
 def ingest_approved(queue_path=None, reinforce_path=None) -> int:

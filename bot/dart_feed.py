@@ -577,6 +577,97 @@ def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
         return None
 
 
+# ── 레퍼런스북 관계후보 자동발굴 (kg-gen, 사용자 2026-06-24 "DART 가 더 실용적") ──
+# 공급계약/계약 공시 **본문**(document.xml 산문)에서 (회사)-(관계)-(대상) 후보
+# 추출 → trade.kg_candidates 승인 큐(블로그와 동일 인프라). DART 본문은 표 파서·
+# 기존 reinforce 파이프라인이 못 잡는 **공급망(A→B 납품)·고객** 관계의 유일 소스
+# ('회사가 X 를 Y 에 공급' = 취급품목 + 납품 둘 다). 사업보고서 본문은 3MB·
+# 6000자 truncation 으로 무용 → 짧은 계약 공시만 viable. graceful: 킬스위치·키부재·
+# 예산초과·실패 전부 no-op. seen-set 으로 rcept_no 당 1회만(1분 폴링 재처리 방지).
+_KG_DART_SEEN = Path.home() / ".tradingagents" / "kg_dart_seen.json"
+_KG_DART_MAX_PER_CYCLE = 6     # 사이클(1분)당 신규 계약공시 처리 상한(콜 폭주 방지)
+
+
+def _kg_dart_seen_load() -> set:
+    try:
+        d = json.loads(_KG_DART_SEEN.read_text(encoding="utf-8"))
+        return set(d.get("seen", []))
+    except Exception:
+        return set()
+
+
+def _kg_dart_seen_save(seen: set) -> None:
+    try:
+        _KG_DART_SEEN.parent.mkdir(parents=True, exist_ok=True)
+        _KG_DART_SEEN.write_text(
+            json.dumps({"seen": sorted(seen)[-4000:]}, ensure_ascii=False),
+            encoding="utf-8")
+    except Exception as exc:
+        log.warning("dart_feed: kg seen save failed: %s", exc)
+
+
+def _is_kg_contract(item: dict) -> bool:
+    """kg 추출 대상 = 계약(공급계약/수주/기술이전 등) 공시. 카테고리 또는 제목."""
+    rn = item.get("report_nm") or ""
+    return (item.get("category") == "계약"
+            or any(k in rn for k in ("공급계약", "단일판매", "단일공급", "수주")))
+
+
+def extract_kg_candidates(items: list[dict]) -> int:
+    """새 계약 공시 본문 → 레퍼런스북 관계후보(취급품목·납품·고객) 자동발굴.
+    blog 후킹과 동일 인프라(trade.kg_candidates) 재사용 — 승인 큐 CSV + 채널 알림.
+    반환 = 발굴 신규 후보 수. graceful(전부 no-op 가능)."""
+    try:
+        from trade import kg_candidates as _kg
+    except Exception:
+        return 0
+    if not _kg._kg_enabled():
+        return 0
+    api_key = _dart_api_key()
+    if not api_key:
+        return 0
+    if _budget_today() >= _BUDGET_HARD:
+        log.info("dart_feed: kg skip — 일일 콜 예산 초과")
+        return 0
+    seen = _kg_dart_seen_load()
+    targets = []
+    for it in items:
+        rc = str(it.get("rcept_no") or "")
+        # 쿨다운(_doc_fail_recent) 중인 실패분은 슬롯 점유 방지 위해 제외 — 쿨다운
+        # 만료 후 자연 재시도(enrich 와 동일 백오프, transient 실패 영구 유실 방지).
+        if (rc and rc not in seen and _is_kg_contract(it)
+                and not _doc_fail_recent(rc)):
+            targets.append(it)
+    targets = targets[:_KG_DART_MAX_PER_CYCLE]
+    if not targets:
+        return 0
+    batch = []
+    for it in targets:
+        rc = str(it.get("rcept_no"))
+        cached = rc in _DOC_TEXT_MEM           # enrich 가 이미 받았으면 콜 0
+        if not cached:
+            _budget_add(1)                     # 실제 document.xml 콜(성공·실패 무관) 반영
+        txt = _fetch_doc_text(rc, api_key)
+        if txt is None:
+            continue                           # fetch 실패 — seen 안 함. _doc_fail 쿨다운이
+            # 백오프(30분/2h) 후 재시도 → transient 실패가 영구 유실되지 않음.
+        seen.add(rc)                           # 성공분만 1회 확정(재처리 방지)
+        if len(txt) >= 200:
+            nm = it.get("corp_name") or it.get("stock_code") or ""
+            rn = it.get("report_nm") or ""
+            batch.append({"text": txt[:6000],
+                          "source": f"dart:{nm} {rn}".strip()})
+    _kg_dart_seen_save(seen)
+    if not batch:
+        return 0
+    try:
+        new = _kg.run_extraction(batch, label="DART공시")
+        return len(new or [])
+    except Exception as exc:
+        log.warning("dart_feed: kg extraction failed: %s", exc)
+        return 0
+
+
 # 전 유형 generic 원문 필드 — (표시라벨, 라벨 regex, kind). 구조화 API 가
 # 없는/빈 공시(IR·시설투자·소송·배당·회사구조 등)의 표준 신고 양식에서 핵심
 # 숫자만. kind: won=원금액 약식 / pct / text / date.
@@ -4906,6 +4997,15 @@ if __name__ == "__main__":
 
     items = run_once()
     print(f"dart_feed: {len(items)} disclosures archived")
+
+    # 레퍼런스북 관계후보 자동발굴 — 새 계약 공시 본문에서 취급품목·납품·고객 관계
+    # → 승인 큐 + 채널 알림(블로그와 동일 인프라). graceful·killswitch·seen-gated.
+    try:
+        n_kg = extract_kg_candidates(items)
+        if n_kg:
+            print(f"dart_feed: 관계후보 {n_kg}건 발굴(승인 큐)")
+    except Exception as exc:
+        print(f"dart_feed: kg extraction failed: {exc}")
 
     # regenerate dashboard
     try:

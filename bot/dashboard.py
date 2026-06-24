@@ -9525,12 +9525,12 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
     return f"""
   <details class="month" style="margin:6px 0 14px">
     <summary class="month-head">
-      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그 자동발굴 · 승인 대기 {len(pend)}건)</span></span>
+      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {len(pend)}건)</span></span>
       <span class="count">검토 큐</span>
     </summary>
     <div class="month-body" style="padding:10px 12px">
       <p style="color:var(--muted);font-size:12px;margin:0 0 8px;line-height:1.6">
-        새 블로그 글에서 자동 추출한 <b>(회사)–(관계)–(대상)</b> 후보입니다.
+        새 블로그 글·DART 계약공시 본문에서 자동 추출한 <b>(회사)–(관계)–(대상)</b> 후보입니다.
         ⛔ 자동 등재 안 함 — 운영자가 검토·승인해야 레퍼런스북 보강에 반영됩니다
         (취급품목 승인분은 <code>kg_candidates --ingest</code> 로 이관).
       </p>

@@ -101,6 +101,23 @@ class KgCandidatesTests(unittest.TestCase):
                 if v is not None:
                     os.environ[k] = v
 
+    def test_run_extraction_label_graceful(self):
+        # DART 등 소스라벨 경로도 graceful(키없음 → []) + run_blog_extraction 별칭.
+        old = {k: os.environ.pop(k, None)
+               for k in ("GOOGLE_API_KEY", "GEMINI_API_KEY",
+                         "GOOGLE_GENAI_USE_VERTEXAI")}
+        try:
+            self.assertEqual(
+                kg.run_extraction([{"text": "삼성전자 HBM4 공급", "source": "dart:x"}],
+                                  label="DART공시", notify=False), [])
+            self.assertEqual(
+                kg.run_blog_extraction([{"text": "t", "source": "blog:x"}],
+                                       notify=False), [])
+        finally:
+            for k, v in old.items():
+                if v is not None:
+                    os.environ[k] = v
+
     def test_run_blog_extraction_killswitch(self):
         os.environ["KG_CANDIDATES_ENABLED"] = "0"
         try:
