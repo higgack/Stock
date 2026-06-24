@@ -18,10 +18,22 @@ import logging
 log = logging.getLogger("bot.valuechain")
 
 _SUPPLY = ("납품", "고객")            # 회사→회사 공급 관계(A 납품/고객 B = A가 B에 공급)
+_ITEM_REL = ("수출품목", "취급품목", "테마")   # 회사→품목/테마(품목 검색 대상)
 
 
 def _norm(s: str) -> str:
     return (s or "").replace(" ", "").replace("(주)", "").replace("㈜", "").lower()
+
+
+def _uniq(seq) -> list:
+    """순서 보존 dedup(정규화 기준). 빈 값 제외."""
+    out, seen = [], set()
+    for x in seq:
+        k = _norm(x)
+        if x and k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out
 
 
 def load_edges() -> list[dict]:
@@ -50,13 +62,15 @@ def load_edges() -> list[dict]:
         from trade import reference_book
         for row in reference_book.build_rows():
             item = (row.get("name") or "").strip()
+            industry = (row.get("industry") or "").strip()   # 업종 검색용
             hs = row.get("hs") or []
             hs_lbl = (f"HS {hs[0]}" + ("…" if len(hs) > 1 else "")) if hs else ""
             for co in (row.get("companies") or []):
                 if co and item:
                     edges.append({"company": co, "relation": "수출품목",
                                   "target": item, "evidence": hs_lbl,
-                                  "source": "관세청", "status": "", "kind": "trade"})
+                                  "source": "관세청", "status": "", "kind": "trade",
+                                  "industry": industry})
     except Exception as exc:
         log.warning("valuechain: trade refbook edges load failed: %s", exc)
     return edges
@@ -99,16 +113,6 @@ def neighborhood(company: str, edges: list[dict] | None = None) -> dict:
         edges = load_edges()
     KG = [e for e in edges if e.get("kind") != "trade"]
     TR = [e for e in edges if e.get("kind") == "trade"]
-
-    def _uniq(seq):
-        out, seen = [], set()
-        for x in seq:
-            k = _norm(x)
-            if x and k not in seen:
-                seen.add(k)
-                out.append(x)
-        return out
-
     suppliers = _uniq(e["company"] for e in KG
                       if _norm(e.get("target")) == nx and e.get("relation") in _SUPPLY)
     customers = _uniq(e["target"] for e in KG
@@ -140,6 +144,84 @@ def has_data(nb: dict) -> bool:
                or nb.get("peers"))
 
 
+def _degree_maps(edges: list[dict]) -> tuple[dict, dict, dict]:
+    """(회사, 품목, 업종) → 빈도. 검색 타입 판별(회사>품목>업종)용."""
+    co: dict[str, int] = {}
+    it: dict[str, int] = {}
+    ind: dict[str, int] = {}
+    for e in edges:
+        c, t, r = e.get("company"), e.get("target"), e.get("relation")
+        if c:
+            co[c] = co.get(c, 0) + 1
+        if t and r in ("납품", "고객", "계열") and e.get("kind") != "trade":
+            co[t] = co.get(t, 0) + 1
+        if t and r in _ITEM_REL:
+            it[t] = it.get(t, 0) + 1
+        g = e.get("industry")
+        if g:
+            ind[g] = ind.get(g, 0) + 1
+    return co, it, ind
+
+
+def resolve_kind(query: str, edges: list[dict]) -> tuple:
+    """검색어 → ('company'|'item'|'industry', 표준명) 또는 (None, None).
+    수출입 대시보드처럼 품목·업종 검색도 회사 검색처럼 동작(사용자 2026-06-24).
+    우선순위 회사 > 품목 > 업종(정확 norm 우선 → 부분 포함 중 빈도 최대)."""
+    nq = _norm(query)
+    if not nq:
+        return (None, None)
+    co, it, ind = _degree_maps(edges)
+    order = (("company", co), ("item", it), ("industry", ind))
+
+    def _exact(d):
+        ex = [n for n in d if _norm(n) == nq]
+        return max(ex, key=lambda n: d[n]) if ex else None
+
+    def _part(d):
+        pa = [n for n in d if nq in _norm(n)]
+        return max(pa, key=lambda n: d[n]) if pa else None
+    # 정확 매칭이 부분 매칭을 가로지름('반도체'=업종 정확 > '메모리반도체' 품목 부분).
+    for kind, d in order:
+        r = _exact(d)
+        if r:
+            return (kind, r)
+    for kind, d in order:
+        r = _part(d)
+        if r:
+            return (kind, r)
+    return (None, None)
+
+
+def item_neighborhood(item: str, edges: list[dict] | None = None) -> dict:
+    """품목 → 그 품목 다루는 회사들. {item, customs(관세청 수출), contract(계약공시
+    취급/테마), hs, industries}. 수출입 대시보드의 '품목→관련 상장사'에 대응."""
+    if edges is None:
+        edges = load_edges()
+    ni = _norm(item)
+    customs = _uniq(e["company"] for e in edges
+                    if e.get("relation") == "수출품목" and _norm(e.get("target")) == ni)
+    contract = _uniq(e["company"] for e in edges
+                     if e.get("relation") in ("취급품목", "테마")
+                     and _norm(e.get("target")) == ni)
+    hs, inds = "", []
+    for e in edges:
+        if e.get("relation") == "수출품목" and _norm(e.get("target")) == ni:
+            if e.get("evidence") and not hs:
+                hs = e["evidence"]
+            if e.get("industry") and e["industry"] not in inds:
+                inds.append(e["industry"])
+    return {"item": item, "customs": customs, "contract": contract,
+            "hs": hs, "industries": inds}
+
+
+def industry_companies(industry: str, edges: list[dict] | None = None) -> list:
+    """업종 → 그 업종 회사들(관세청 수출입 레퍼런스북 industry 기준)."""
+    if edges is None:
+        edges = load_edges()
+    ng = _norm(industry)
+    return _uniq(e["company"] for e in edges if _norm(e.get("industry")) == ng)
+
+
 def format_for_prompt(company: str, edges: list[dict] | None = None) -> str:
     """② NOAH 분석 컨텍스트 텍스트 블록. 데이터 없으면 '' (분석 영향 0).
     표기 차이 대비 관대 해석(resolve_company)."""
@@ -166,18 +248,27 @@ def format_for_prompt(company: str, edges: list[dict] | None = None) -> str:
     return "\n".join(L)
 
 
-def format_for_telegram(company: str, edges: list[dict] | None = None) -> str:
-    """③ /valuechain <회사> HTML 응답. 부분 일치 관대 해석(사용자 2026-06-24)."""
+def format_for_telegram(query: str, edges: list[dict] | None = None) -> str:
+    """③ /valuechain <회사|품목|업종> HTML 응답. 회사뿐 아니라 품목·업종 검색도
+    회사 검색처럼 결과(사용자 2026-06-24, 수출입 대시보드 동작). 부분 일치 관대."""
     import html as _h
     if edges is None:
         edges = load_edges()
-    resolved = resolve_company(company, edges)
-    nb = neighborhood(resolved or company, edges)
-    co = _h.escape(resolved or company)
-    if not has_data(nb):
-        return (f"🔗 <b>{co}</b> — 밸류체인 데이터 없음.\n"
-                "DART 계약공시·블로그 자동발굴이 쌓이면 채워집니다(대시보드 🔗 밸류체인).")
-    out = [f"🔗 <b>{co}</b> 밸류체인"]
+    kind, name = resolve_kind(query, edges)
+    if kind == "company":
+        return _fmt_company_tg(name, edges, _h)
+    if kind == "item":
+        return _fmt_item_tg(name, edges, _h)
+    if kind == "industry":
+        return _fmt_industry_tg(name, edges, _h)
+    return (f"🔗 <b>{_h.escape(query)}</b> — 밸류체인 데이터 없음.\n"
+            "회사·품목·업종으로 검색하세요. DART·블로그·관세청 데이터가 쌓이면 채워집니다.")
+
+
+def _fmt_company_tg(company: str, edges: list[dict], _h) -> str:
+    nb = neighborhood(company, edges)
+    co = _h.escape(company)
+    out = [f"🔗 <b>{co}</b> 밸류체인 <i>(회사)</i>"]
 
     def _sec(emoji, title, items):
         if items:
@@ -193,6 +284,31 @@ def format_for_telegram(company: str, edges: list[dict] | None = None) -> str:
     _sec("🔗", "계열", nb["affiliates"])
     if nb["suppliers"]:
         out.append(f"💡 {co} 호재·실적 시 공급사들이 수혜 후보")
+    out.append("<i>대시보드: NOAH archive → 🔗 밸류체인</i>")
+    return "\n".join(out)
+
+
+def _fmt_item_tg(item: str, edges: list[dict], _h) -> str:
+    nb = item_neighborhood(item, edges)
+    hs = f" · {_h.escape(nb['hs'])}" if nb["hs"] else ""
+    out = [f"📦 <b>{_h.escape(item)}</b> <i>(품목)</i>{hs}"]
+    if nb["customs"]:
+        out.append("🛃 <b>수출 회사(관세청)</b>: "
+                   + _h.escape(", ".join(nb["customs"][:20])))
+    if nb["contract"]:
+        out.append("📑 <b>취급 회사(계약공시)</b>: "
+                   + _h.escape(", ".join(nb["contract"][:20])))
+    if nb["industries"]:
+        out.append("🏭 업종: " + _h.escape(", ".join(nb["industries"][:5])))
+    out.append("<i>대시보드: NOAH archive → 🔗 밸류체인</i>")
+    return "\n".join(out)
+
+
+def _fmt_industry_tg(industry: str, edges: list[dict], _h) -> str:
+    cos = industry_companies(industry, edges)
+    out = [f"🏭 <b>{_h.escape(industry)}</b> <i>(업종)</i>"]
+    if cos:
+        out.append("회사: " + _h.escape(", ".join(cos[:30])))
     out.append("<i>대시보드: NOAH archive → 🔗 밸류체인</i>")
     return "\n".join(out)
 

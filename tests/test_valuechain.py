@@ -59,6 +59,32 @@ class ValueChainTests(unittest.TestCase):
         # 포맷터가 관대 해석 사용 → 부분어로도 결과
         self.assertIn("공급사", vc.format_for_telegram("하이닉스", _EDGES))
 
+    def test_search_by_item_and_industry(self):
+        # 회사 외 품목·업종 검색도 동작(수출입 대시보드처럼, 사용자 2026-06-24).
+        e = [
+            {"company": "삼성전자", "relation": "수출품목", "target": "메모리반도체",
+             "kind": "trade", "evidence": "HS 8542", "industry": "반도체",
+             "source": "관세청", "status": ""},
+            {"company": "SK하이닉스", "relation": "수출품목", "target": "메모리반도체",
+             "kind": "trade", "evidence": "HS 8542", "industry": "반도체",
+             "source": "관세청", "status": ""},
+            {"company": "DB하이텍", "relation": "수출품목", "target": "파운드리",
+             "kind": "trade", "evidence": "HS 8542", "industry": "반도체",
+             "source": "관세청", "status": ""},
+        ]
+        self.assertEqual(vc.resolve_kind("메모리반도체", e), ("item", "메모리반도체"))
+        # 정확 업종('반도체')이 부분 품목('메모리반도체')보다 우선
+        self.assertEqual(vc.resolve_kind("반도체", e), ("industry", "반도체"))
+        self.assertEqual(vc.resolve_kind("삼성전자", e), ("company", "삼성전자"))
+        nb = vc.item_neighborhood("메모리반도체", e)
+        self.assertEqual(set(nb["customs"]), {"삼성전자", "SK하이닉스"})
+        self.assertEqual(nb["hs"], "HS 8542")
+        self.assertEqual(set(vc.industry_companies("반도체", e)),
+                         {"삼성전자", "SK하이닉스", "DB하이텍"})
+        # telegram 포맷 — 품목/업종 분기
+        self.assertIn("(품목)", vc.format_for_telegram("메모리반도체", e))
+        self.assertIn("(업종)", vc.format_for_telegram("반도체", e))
+
     def test_top_suppliers_and_connected(self):
         # 다고객 납품사: 회사별 (서로 다른) 고객수.
         sup = dict(vc.top_suppliers(_EDGES))

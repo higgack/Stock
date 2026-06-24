@@ -9904,6 +9904,31 @@ _VALUECHAIN_JS = r"""
     if(e.k==='trade') comp[e.c]=1;
     if(e.s) docs[e.s]=1; });
   var entities = Object.keys(deg).sort(function(a,b){return deg[b]-deg[a];});
+  // 품목(itMap)·업종(indMap) 맵 — 회사뿐 아니라 품목·업종 검색 지원(사용자 2026-06-24)
+  var ITREL=['수출품목','취급품목','테마'], itMap={}, indMap={};
+  E.forEach(function(e){
+    if(ITREL.indexOf(e.r)>=0 && e.t) itMap[e.t]=(itMap[e.t]||0)+1;
+    if(e.g) indMap[e.g]=(indMap[e.g]||0)+1;
+  });
+  function _pick(map,nq,exactOnly){
+    var ks=Object.keys(map);
+    var ex=ks.filter(function(n){return norm(n)===nq;});
+    if(ex.length) return ex.sort(function(a,b){return map[b]-map[a];})[0];
+    if(exactOnly) return null;
+    var pa=ks.filter(function(n){return norm(n).indexOf(nq)>=0;});
+    return pa.length? pa.sort(function(a,b){return map[b]-map[a];})[0] : null;
+  }
+  function resolveKind(nq){
+    // 정확 매칭 우선(회사>품목>업종) → 부분 매칭(회사>품목>업종). 모듈 resolve_kind 와 동조.
+    var r;
+    if((r=_pick(deg,nq,true))) return ['company',r];
+    if((r=_pick(itMap,nq,true))) return ['item',r];
+    if((r=_pick(indMap,nq,true))) return ['industry',r];
+    if((r=_pick(deg,nq,false))) return ['company',r];
+    if((r=_pick(itMap,nq,false))) return ['item',r];
+    if((r=_pick(indMap,nq,false))) return ['industry',r];
+    return [null,null];
+  }
   setText('vc-stat-edges', E.length);
   setText('vc-stat-edges-l', '관계(엣지) · 공급망 '+KG.length+' · 관세청 '+TR.length);
   setText('vc-stat-nodes', Object.keys(comp).length);
@@ -9937,11 +9962,9 @@ _VALUECHAIN_JS = r"""
         KG.slice(0,400).map(edgeRow).join('');
       return;
     }
-    var exact=entities.filter(function(n){return norm(n)===nq;});
-    var part=entities.filter(function(n){return norm(n).indexOf(nq)>=0;});
-    var X = exact.length?exact[0]:(part.length?part[0]:null);
-    if(X){
-      var nx=norm(X);
+    var rk=resolveKind(nq), KIND=rk[0], NAME=rk[1];
+    if(KIND==='company'){
+      var X=NAME, nx=norm(X);
       var suppliers=KG.filter(function(e){return norm(e.t)===nx && ['납품','고객'].indexOf(e.r)>=0;});
       var customers=KG.filter(function(e){return norm(e.c)===nx && ['납품','고객'].indexOf(e.r)>=0;});
       var products =KG.filter(function(e){return norm(e.c)===nx && e.r==='취급품목';});
@@ -9963,6 +9986,23 @@ _VALUECHAIN_JS = r"""
         grp('🏷️ 테마', themes, pillT)+
         grp('🔗 계열', affil, function(e){return '<span class="vc-pill">'+esc(norm(e.c)===nx?e.t:e.c)+'</span>';})+
         (suppliers.length?'<div class="vc-tip">💡 '+esc(X)+' 호재·실적 시 위 공급사들이 수혜 후보</div>':'');
+    } else if(KIND==='item'){
+      var IT=NAME, nit=norm(IT);
+      var customs=E.filter(function(e){return e.r==='수출품목'&&norm(e.t)===nit;});
+      var contract=E.filter(function(e){return (e.r==='취급품목'||e.r==='테마')&&norm(e.t)===nit;});
+      var hs='',inds={}; customs.forEach(function(e){ if(e.e&&!hs)hs=e.e; if(e.g)inds[e.g]=1; });
+      focus.innerHTML='<div class="vc-focus-h">📦 '+esc(IT)+'<span class="vc-deg">품목'+(hs?' · '+esc(hs):'')+'</span></div>'+
+        grp('🛃 수출 회사 (관세청)', customs, pillC)+
+        grp('📑 취급 회사 (계약공시)', contract, pillC)+
+        (Object.keys(inds).length?'<div class="vc-grp"><div class="vc-grp-h">🏭 업종</div>'+
+          Object.keys(inds).map(function(g){return '<span class="vc-pill">'+esc(g)+'</span>';}).join('')+'</div>':'')+
+        '<div class="vc-tip">💡 같은 품목 회사 = 동종/피어 — 한 종목 호재 시 함께 점검</div>';
+    } else if(KIND==='industry'){
+      var nind=norm(NAME);
+      var sc={},cos=[]; E.forEach(function(e){ if(norm(e.g)===nind&&e.c&&!sc[norm(e.c)]){sc[norm(e.c)]=1;cos.push(e.c);} });
+      focus.innerHTML='<div class="vc-focus-h">🏭 '+esc(NAME)+'<span class="vc-deg">업종 · 회사 '+cos.length+'</span></div>'+
+        '<div class="vc-grp"><div class="vc-grp-h">회사 ('+cos.length+')</div>'+
+        cos.slice(0,80).map(function(n){return '<span class="vc-pill">'+esc(n)+'</span>';}).join('')+'</div>';
     } else { focus.innerHTML=''; }
     var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
     list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'"</div>'+f.slice(0,400).map(edgeRow).join('');
@@ -9987,7 +10027,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
         "c": e.get("company", ""), "r": e.get("relation", ""),
         "t": e.get("target", ""), "e": (e.get("evidence", "") or "")[:160],
         "s": e.get("source", ""), "st": e.get("status", ""),
-        "k": e.get("kind", "kg"),
+        "k": e.get("kind", "kg"), "g": e.get("industry", ""),
     } for e in edges if e.get("company") and e.get("target")]}
     # </script> 차단 + JSON 안전 임베드
     data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
@@ -10003,7 +10043,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
   <details class="month" style="margin:4px 0 12px">
     <summary class="month-head" style="cursor:pointer"><span>ℹ️ 사용법 — 처음이면 펼쳐 보세요</span><span class="count">가이드</span></summary>
     <div class="month-body" style="padding:10px 14px;font-size:13px;line-height:1.75;color:var(--fg)">
-      <b>1) 검색</b> — 위 검색창에 <b>회사명</b>(예: <code>SK하이닉스</code>)을 입력하거나 <b>주요 회사 칩</b>을 클릭하면, 그 회사의 밸류체인이 방향별로 묶여 나옵니다. 텔레그램에서도 <code>/valuechain SK하이닉스</code>로 동일 조회.<br>
+      <b>1) 검색</b> — <b>회사·품목·업종</b> 아무거나 검색됩니다(수출입 대시보드처럼). 예) <code>SK하이닉스</code>(회사)→공급사·고객·수출품목 / <code>메모리반도체</code>(품목)→그 품목 수출·취급 회사 / <code>반도체</code>(업종)→업종 회사. <b>주요 회사 칩</b> 클릭 = 빠른 검색. 텔레그램도 <code>/valuechain 메모리반도체</code> 동일.<br>
       <b>2) 그룹 의미</b><br>
       &nbsp;&nbsp;⬅️ <b>공급사</b> — 이 회사에 <b>납품</b>하는 회사들 (이 회사가 잘되면 <b>수혜 후보</b>)<br>
       &nbsp;&nbsp;➡️ <b>고객·납품처</b> — 이 회사가 <b>공급</b>하는 상대<br>
@@ -10023,7 +10063,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
   <div style="margin:12px 0 6px;color:var(--muted);font-size:13px">주요 회사 (연결수) — 클릭하면 필터</div>
   <div id="vc-chips" class="vc-chips"></div>
   <div class="search-bar" style="margin-top:12px">
-    <input id="vc-search" type="text" placeholder="회사·관계 검색 (예: SK하이닉스, 납품)" autocomplete="off" spellcheck="false">
+    <input id="vc-search" type="text" placeholder="회사·품목·업종 검색 (예: SK하이닉스, 메모리반도체, 반도체)" autocomplete="off" spellcheck="false">
     <button id="vc-clear" type="button">초기화</button>
   </div>
   <div id="vc-focus"></div>
