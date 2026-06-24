@@ -97,7 +97,9 @@ def filter_candidates(triples: Iterable[dict], *,
                       source: str = "") -> list[dict]:
     """후보 정제 — (a) '회사'가 알려진 상장사일 때만(known_companies 주어지면),
     (b) 이미 레퍼런스북에 있는 (회사,대상)은 제외(existing_pairs), (c) 트리플 dedup.
-    출처 부착. 순수(단위테스트). known_companies=None → 회사 필터 생략(전수)."""
+    출처 부착(source 비면 후보가 이미 가진 출처 보존 — extract_candidates 최종 교차
+    dedup 이 source='' 로 호출돼 1차 패스 출처를 덮어쓰던 버그 fix, 2026-06-24).
+    순수(단위테스트). known_companies=None → 회사 필터 생략(전수)."""
     kc = {_norm(c) for c in known_companies} if known_companies else None
     ep = existing_pairs or set()
     seen: set = set()
@@ -114,7 +116,7 @@ def filter_candidates(triples: Iterable[dict], *,
         if k in seen:
             continue
         seen.add(k)
-        out.append({**t, "source": source})
+        out.append({**t, "source": source or t.get("source", "")})
     return out
 
 

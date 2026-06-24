@@ -633,6 +633,14 @@ def extract_kg_candidates(items: list[dict]) -> int:
     seen = _kg_dart_seen_load()
     targets = []
     _picked: set = set()
+    # 사이클당 처리량 = LLM 실제 처리 가능 수에 맞춤(seen-loss 방지). fetch 후 seen
+    # 마킹하는데 run_extraction 이 _max_calls 까지만 추출 → 초과분이 seen 처리돼
+    # 영구 누락되던 것 fix(사용자 2026-06-24). fetch 수 == 추출 수.
+    try:
+        from trade import llm_insights as _li
+        _cap = max(1, min(_KG_DART_MAX_PER_CYCLE, _li._max_calls()))
+    except Exception:
+        _cap = _KG_DART_MAX_PER_CYCLE
 
     def _consider(it):
         rc = str(it.get("rcept_no") or "")
@@ -645,23 +653,23 @@ def extract_kg_candidates(items: list[dict]) -> int:
 
     for it in items:                       # ① 이번 사이클 신규 계약공시 우선
         _consider(it)
-        if len(targets) >= _KG_DART_MAX_PER_CYCLE:
+        if len(targets) >= _cap:
             break
     # ② 백필 드레이너 — 이미 저장된(DART 대시보드 아카이브) 계약공시 중 미처리분도
     # 잔여 슬롯만큼 점진 추출(사용자 2026-06-24 '저장된 6월 공시도 나와야'). seen-set 으로
     # 1회씩 · 예산가드 하 · 매 사이클(1분) 드레인 → 아카이브 소진까지 자동 수렴.
-    if len(targets) < _KG_DART_MAX_PER_CYCLE:
+    if len(targets) < _cap:
         try:
             for _day_items in load_all_archives(days_back=60).values():
                 for it in _day_items:
                     _consider(it)
-                    if len(targets) >= _KG_DART_MAX_PER_CYCLE:
+                    if len(targets) >= _cap:
                         break
-                if len(targets) >= _KG_DART_MAX_PER_CYCLE:
+                if len(targets) >= _cap:
                     break
         except Exception as exc:
             log.warning("dart_feed: kg backfill scan failed: %s", exc)
-    targets = targets[:_KG_DART_MAX_PER_CYCLE]
+    targets = targets[:_cap]
     if not targets:
         return 0
     batch = []

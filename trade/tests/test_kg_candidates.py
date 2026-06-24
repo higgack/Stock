@@ -19,6 +19,15 @@ class KgCandidatesTests(unittest.TestCase):
         self.assertEqual((t[0]["company"], t[0]["relation"], t[0]["target"]),
                          ("삼성전기", "취급품목", "MLCC"))
 
+    def test_filter_preserves_source_on_crossdedup(self):
+        # 최종 교차 dedup(source='')이 1차 패스 출처를 덮어쓰지 않음(2026-06-24 fix).
+        first = kg.filter_candidates(
+            [{"company": "삼성전기", "relation": "취급품목", "target": "MLCC"}],
+            source="dart:삼성전기 단일판매공급계약")
+        self.assertEqual(first[0]["source"], "dart:삼성전기 단일판매공급계약")
+        final = kg.filter_candidates(first, source="")   # extract_candidates 교차 dedup 모사
+        self.assertEqual(final[0]["source"], "dart:삼성전기 단일판매공급계약")
+
     def test_parse_triples_garbage(self):
         self.assertEqual(kg.parse_triples("not json"), [])
         self.assertEqual(kg.parse_triples(""), [])
