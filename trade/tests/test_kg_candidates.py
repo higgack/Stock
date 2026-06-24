@@ -172,5 +172,34 @@ class KgCandidatesTests(unittest.TestCase):
         self.assertEqual(kg.ingest_approved(queue_path=qp, reinforce_path=rp), 0)
 
 
+    def test_approve_candidates(self):
+        # 대시보드 '반영' — 취급품목→런타임 오버레이, 그 외→승인, dedup·idempotent.
+        d = tempfile.mkdtemp()
+        qp = os.path.join(d, "kg.csv")
+        ov = os.path.join(d, "ov.csv")
+        kg.write_candidates_csv([
+            {"company": "한화에어로스페이스", "relation": "취급품목",
+             "target": "자주포", "evidence": "e", "source": "dart:한화"},
+            {"company": "SK하이닉스", "relation": "납품",
+             "target": "MS", "evidence": "e", "source": "dart:sk"},
+        ], qp)
+        # 개별반영: 취급품목 → 오버레이 ingest
+        r1 = kg.approve_candidates(
+            keys=[("한화에어로스페이스", "취급품목", "자주포")],
+            queue_path=qp, reinforce_path=ov)
+        self.assertEqual(r1["ingested"], 1)
+        body = open(ov, encoding="utf-8-sig").read()
+        self.assertIn("자주포", body)
+        self.assertNotIn("MS", body)            # 납품은 오버레이 안 감
+        # 전체반영: 남은 납품 → 승인(refbook 영향 없음)
+        r2 = kg.approve_candidates(all_pending=True, queue_path=qp,
+                                   reinforce_path=ov)
+        self.assertEqual((r2["ingested"], r2["approved"]), (0, 1))
+        # idempotent
+        r3 = kg.approve_candidates(all_pending=True, queue_path=qp,
+                                   reinforce_path=ov)
+        self.assertEqual(r3["total"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

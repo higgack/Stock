@@ -836,6 +836,7 @@ def theme_rows() -> list[dict]:
 # 상장사로 노출 ②additional_candidates 가 current 로 인식해 보강 패널에서 자동 드롭
 # (사용자 2026-06-20 '보강후보 업데이트분 이름 정리했으니 반영'). 새 승인 = CSV 행 추가.
 _REINFORCE_APPROVED_CACHE: dict[str, list[str]] | None = None
+_REINFORCE_OVERLAY_MTIME: float | None = None
 
 
 def _approved_csv_path():
@@ -843,44 +844,66 @@ def _approved_csv_path():
     return Path(__file__).resolve().parent / "data" / "reinforce_approved.csv"
 
 
+def _runtime_reinforce_path():
+    """대시보드 '반영' 버튼이 적재하는 런타임 승인 오버레이(사용자 2026-06-24).
+    HOME 공유(VM 2개 체크아웃 ~/stock·~/stock-trade 모두 읽음) + gitignore(.trade/)
+    → auto-update git 충돌 회피. repo 체크인 reinforce_approved.csv(큐레이션 영구)와
+    별개로, load_reinforce_approved 가 둘 다 병합. kg_candidates._runtime_reinforce_path
+    와 동일 경로(writer↔reader 정합)."""
+    import os
+    from pathlib import Path
+    base = os.environ.get("TRADE_DATA_DIR") or str(Path.home() / ".trade")
+    return Path(base) / "reinforce_runtime.csv"
+
+
 def load_reinforce_approved(path=None) -> dict[str, list[str]]:
     """승인 보강후보 CSV(품목,추가상장사) → {정규화 품목키: [canon 회사…]}.
     품목명은 MTI 품목명 그대로(쉼표 포함 '메이크업, 기초화장품'도 단일 품목 →
     CSV 인용으로 보존, 분리 금지). 회사는 canon·dedup. 파일 부재/실패 → {} (graceful).
-    캐시(같은 프로세스 1회 로드) — path 지정 시 캐시 우회(테스트). 순수에 가까움."""
-    global _REINFORCE_APPROVED_CACHE
-    if path is None and _REINFORCE_APPROVED_CACHE is not None:
-        return _REINFORCE_APPROVED_CACHE
+    repo 체크인 reinforce_approved.csv + 런타임 오버레이(대시보드 '반영' 버튼 적재분,
+    HOME) 를 **병합** — 오버레이 mtime 변하면 캐시 재빌드(버튼 반영이 수출입
+    대시보드에 즉시 반영, 프로세스 재시작 불요). path 지정 시 캐시·오버레이 우회(테스트)."""
+    global _REINFORCE_APPROVED_CACHE, _REINFORCE_OVERLAY_MTIME
     import csv
     from pathlib import Path
-    p = Path(path) if path else _approved_csv_path()
+    overlay = _runtime_reinforce_path()
+    ov_mtime = overlay.stat().st_mtime if overlay.exists() else 0.0
+    if (path is None and _REINFORCE_APPROVED_CACHE is not None
+            and _REINFORCE_OVERLAY_MTIME == ov_mtime):
+        return _REINFORCE_APPROVED_CACHE
+
+    def _merge(p, out):
+        try:
+            with open(p, encoding="utf-8-sig", newline="") as f:
+                reader = csv.reader(f)
+                next(reader, None)                   # 헤더 (품목,DART추가후보상장사)
+                for row in reader:
+                    if len(row) < 2:
+                        continue
+                    item = (row[0] or "").strip()
+                    if not item:
+                        continue
+                    cos = dedup_companies(
+                        [c.strip() for c in (row[1] or "").split(",") if c.strip()])
+                    if not cos:
+                        continue
+                    key = item.replace(" ", "").lower()
+                    bucket = out.setdefault(key, [])
+                    seen = {c.replace(" ", "").lower() for c in bucket}
+                    for c in cos:
+                        ck = c.replace(" ", "").lower()
+                        if ck not in seen:
+                            seen.add(ck)
+                            bucket.append(c)
+        except Exception:
+            pass
+
     out: dict[str, list[str]] = {}
-    try:
-        with open(p, encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
-            next(reader, None)                       # 헤더 (품목,DART추가후보상장사)
-            for row in reader:
-                if len(row) < 2:
-                    continue
-                item = (row[0] or "").strip()
-                if not item:
-                    continue
-                cos = dedup_companies(
-                    [c.strip() for c in (row[1] or "").split(",") if c.strip()])
-                if not cos:
-                    continue
-                key = item.replace(" ", "").lower()
-                bucket = out.setdefault(key, [])
-                seen = {c.replace(" ", "").lower() for c in bucket}
-                for c in cos:
-                    ck = c.replace(" ", "").lower()
-                    if ck not in seen:
-                        seen.add(ck)
-                        bucket.append(c)
-    except Exception:
-        return {}
-    if path is None:
+    _merge(Path(path) if path else _approved_csv_path(), out)
+    if path is None:                                 # repo CSV + 런타임 오버레이 병합
+        _merge(overlay, out)
         _REINFORCE_APPROVED_CACHE = out
+        _REINFORCE_OVERLAY_MTIME = ov_mtime
     return out
 
 

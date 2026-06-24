@@ -9579,6 +9579,15 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
         dt = _h.escape(c.get("date", ""))
         st = c.get("status", "후보")
         col = _badge.get(st, "#a16207")
+        # data-* 로 키 전달(버튼 JS). 취급품목 = reinforce 반영, 그 외 = 승인표시.
+        _aco = _h.escape(c.get("company", ""), quote=True)
+        _arel = _h.escape(c.get("relation", ""), quote=True)
+        _atgt = _h.escape(c.get("target", ""), quote=True)
+        btn = (f'<button class="kg-apply" data-co="{_aco}" data-rel="{_arel}" '
+               f'data-tgt="{_atgt}">반영</button>'
+               if st == "후보" else
+               f'<span style="background:{col};color:#fff;border-radius:8px;'
+               f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span>')
         rows.append(
             f'<tr><td><b>{co}</b></td>'
             f'<td style="color:var(--muted)">{rel}</td>'
@@ -9586,10 +9595,9 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
             f'<td style="color:var(--muted);font-size:12px">{ev}</td>'
             f'<td style="color:var(--muted);font-size:12px">{src}</td>'
             f'<td style="font-size:12px">{dt}</td>'
-            f'<td><span style="background:{col};color:#fff;border-radius:8px;'
-            f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span></td></tr>')
+            f'<td>{btn}</td></tr>')
     return f"""
-  <details class="month" style="margin:6px 0 14px">
+  <details class="month" style="margin:6px 0 14px" open>
     <summary class="month-head">
       <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {len(pend)}건)</span></span>
       <span class="count">검토 큐</span>
@@ -9597,19 +9605,58 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
     <div class="month-body" style="padding:10px 12px">
       <p style="color:var(--muted);font-size:12px;margin:0 0 8px;line-height:1.6">
         새 블로그 글·DART 계약공시 본문에서 자동 추출한 <b>(회사)–(관계)–(대상)</b> 후보입니다.
-        ⛔ 자동 등재 안 함 — 운영자가 검토·승인해야 레퍼런스북 보강에 반영됩니다
-        (취급품목 승인분은 <code>kg_candidates --ingest</code> 로 이관).
+        ⛔ 자동 등재 안 함 — <b>반영</b> 버튼으로 승인하세요. <b>취급품목</b>은 수출입 레퍼런스북에
+        즉시 반영(중복 자동 스킵), 그 외 관계는 '승인' 표시만(운영자 수동 반영).
       </p>
+      <div style="margin:0 0 10px">
+        <button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({len(pend)}건)</button>
+        <span id="kg-apply-msg" style="margin-left:10px;font-size:12px;color:var(--muted)"></span>
+      </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13px">
           <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
-            <th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th><th>추출일</th><th>상태</th>
+            <th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th><th>추출일</th><th>반영</th>
           </tr></thead>
           <tbody>{''.join(rows)}</tbody>
         </table>
       </div>
     </div>
   </details>
+  <style>
+    .kg-apply{{background:#2563eb;color:#fff;border:0;border-radius:7px;padding:3px 12px;font-size:12px;cursor:pointer}}
+    .kg-apply:disabled{{opacity:.5;cursor:default}}
+  </style>
+  <script>
+  (function(){{
+    function post(url, body){{
+      return fetch(url, {{method:'POST', headers:{{'Content-Type':'application/json'}},
+        body: JSON.stringify(body||{{}})}}).then(function(r){{return r.json();}});
+    }}
+    var msg = document.getElementById('kg-apply-msg');
+    function say(t){{ if(msg) msg.textContent = t; }}
+    document.querySelectorAll('.kg-apply').forEach(function(b){{
+      b.addEventListener('click', function(){{
+        b.disabled = true; b.textContent = '반영중…';
+        post('api/kg_approve', {{company:b.dataset.co, relation:b.dataset.rel, target:b.dataset.tgt}})
+          .then(function(j){{
+            if(j && j.ok){{ b.textContent = j.ingested? '등재' : '승인';
+              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'). 새로고침하면 갱신됩니다.'); }}
+            else {{ b.disabled=false; b.textContent='반영'; say('실패: '+((j&&j.error)||'?')); }}
+          }}).catch(function(e){{ b.disabled=false; b.textContent='반영'; say('오류: '+e); }});
+      }});
+    }});
+    var all = document.getElementById('kg-apply-all');
+    if(all) all.addEventListener('click', function(){{
+      if(!confirm('대기 중인 관계후보를 전부 반영할까요?\\n취급품목은 수출입 레퍼런스북에 즉시 반영됩니다.')) return;
+      all.disabled = true; all.textContent = '반영중…';
+      post('api/kg_approve_all', {{}}).then(function(j){{
+        if(j && j.ok){{ say('전체반영 완료 — 등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'. 새로고침합니다…');
+          setTimeout(function(){{ location.reload(); }}, 900); }}
+        else {{ all.disabled=false; all.textContent='✅ 전체반영'; say('실패: '+((j&&j.error)||'?')); }}
+      }}).catch(function(e){{ all.disabled=false; all.textContent='✅ 전체반영'; say('오류: '+e); }});
+    }});
+  }})();
+  </script>
 """
 
 
@@ -12293,6 +12340,7 @@ def _render_market_card(title: str, items: list, yf: dict) -> str:
 
 def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
     """Render the FRED indicators card."""
+    from bot.macro_snapshot import _fmt_asof   # 기준월 포맷 공유(사용자 2026-06-24)
     rows: list[str] = []
     if dollar_idx:
         val_str = f'{dollar_idx["close"]:.2f}'
@@ -12323,8 +12371,12 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
             chg_cell = f'<td class="{cls}">{chg_str}</td>'
         else:
             chg_cell = '<td class="neu">—</td>'
+        # 기준월 라벨 — 헤드라인이 어느 관측월 값인지(FRED 발표지표, 사용자 2026-06-24).
+        _asof = _fmt_asof(d.get("time", ""))
+        _asof_html = (f' <span style="font-size:9px;color:var(--muted)">({_html.escape(_asof)})</span>'
+                      if _asof else "")
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
-                    f'<td>{val_str}</td>{chg_cell}</tr>')
+                    f'<td>{val_str}{_asof_html}</td>{chg_cell}</tr>')
     return ('<div class="mcard"><div class="mcard-title">'
             '핵심 지표 (금리/경제)</div><table>'
             + "".join(rows) + '</table></div>')
@@ -12690,9 +12742,15 @@ def _render_macro_card(ind: dict) -> str:
     # FRED/ECOS 는 12개월 월간이라 12개월(원래대로 그래프 — 사용자 2026-06-10).
     # 라인 기간(1개월/12개월)을 카드에 작게 명시(사용자 2026-06-10).
     spark = _macro_spark_svg(ind.get("spark", []))
+    # 기준월 라벨(사용자 2026-06-24) — 헤드라인 값이 어느 기간 관측치인지(ECOS/FRED
+    # 발표지표). 실시간 가격 카드(asof='')는 미표시. CLAUDE.md 규칙10b(데이터 위젯=
+    # 적용시각·소스 라벨) 정합.
+    asof = _html.escape(ind.get("asof", ""))
+    asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
+                 f'margin-top:2px">기준 {asof}</div>') if asof else ""
     return (
         f'<div class="macard"><div class="ml">{label}{span_html}</div>'
-        f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}</div>'
+        f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}{asof_html}</div>'
     )
 
 
