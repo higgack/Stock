@@ -562,10 +562,31 @@ class TypoAndAliasBatchTests(unittest.TestCase):
         # 미등재는 원본 보존
         self.assertEqual(mc.canon_company("삼성전기"), "삼성전기")
 
+    def test_company_canon_dedup_pairs(self):
+        # 같은 회사 다른표기 통일(운영자 확인 2026-06-24) — 산업↔관련기업 중복 수렴.
+        from trade import mti_companies as mc
+        pairs = [
+            ("네페스", "네패스"), ("금호석유", "금호석유화학"),
+            ("코오롱인더", "코오롱인더스트리"),
+            ("한국앤컴퍼니(아트라스BX)", "한국앤컴퍼니"),
+            ("현대에너지솔루션", "HD현대에너지솔루션"), ("현대차", "현대자동차"),
+        ]
+        for variant, canon in pairs:
+            self.assertEqual(mc.canon_company(variant), canon)
+            # 변형·공식명이 같은 canon → dedup 수렴
+            self.assertEqual(mc.canon_company(variant), mc.canon_company(canon))
+        # 서로 다른 회사는 병합 안 됨(오병합 가드)
+        self.assertEqual(mc.canon_company("삼성전자"), "삼성전자")
+        self.assertNotEqual(mc.canon_company("삼성전기"), mc.canon_company("삼성전자"))
+
     def test_price_alias_has_typos(self):
         from trade import price_provider as pp
         self.assertEqual(pp._NAME_ALIASES.get("SK바이오센서"), "SK바이오사이언스")
         self.assertEqual(pp._NAME_ALIASES.get("메티바이오메드"), "메타바이오메드")
+        self.assertEqual(pp._NAME_ALIASES.get("네페스"), "네패스")
+        # canon 공식명이 KRX 약어/구명과 달라도 가격 코드 직접 보장(master 의존 X)
+        self.assertEqual(pp._DIRECT_CODES.get("HD현대에너지솔루션"), "322000")
+        self.assertEqual(pp._DIRECT_CODES.get("현대자동차"), "005380")
 
     def test_new_aliases_resolve_company_and_hs(self):
         from trade import mti_companies as mc
