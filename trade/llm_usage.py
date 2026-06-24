@@ -29,6 +29,15 @@ _PRICING: dict[str, dict[str, float]] = {
 }
 KRW_PER_USD = 1380
 
+# kg 관계후보 자동발굴 kind — 소스별(블로그/DART)로 분리해 각 대시보드가 자기
+# 비용만 표시(메인은 합산). 'kg_candidate'=레거시(소스 미구분, 블로그로 취급).
+KG_KINDS = ("kg_candidate", "kg_blog", "kg_dart")
+
+
+def is_kg(kind: str | None) -> bool:
+    """kg 관계후보 발굴 비용 여부 — 수출입(insight)과 분리 집계용."""
+    return (kind or "").startswith("kg")
+
 
 def cost_usd(model: str, in_tok: int, out_tok: int) -> float:
     r = _PRICING.get(model)
@@ -70,10 +79,17 @@ def _read() -> list[dict]:
     return out
 
 
-def summary(now: float | None = None) -> dict:
-    """today / 7d / 30d 집계 (calls·tokens·cost_usd·cost_krw) + total_calls."""
+def summary(now: float | None = None, *, kinds=None, exclude_kinds=None) -> dict:
+    """today / 7d / 30d 집계 (calls·tokens·cost_usd·cost_krw) + total_calls.
+    kinds=세트 → 그 kind 만, exclude_kinds=세트 → 그 kind 제외(대시보드별 분리 집계)."""
     now = now if now is not None else time.time()
     recs = _read()
+    if kinds is not None:
+        _ks = set(kinds)
+        recs = [r for r in recs if r.get("kind") in _ks]
+    if exclude_kinds is not None:
+        _xs = set(exclude_kinds)
+        recs = [r for r in recs if r.get("kind") not in _xs]
     day = 86400
 
     def agg(since):

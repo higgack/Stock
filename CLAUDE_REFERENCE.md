@@ -1385,11 +1385,24 @@ ApeRAG/AKB)는 인프라·라이선스 부담으로 skip, OpenKB vectorless RAG 
   성공분만 확정·실패는 `_doc_fail_recent` 쿨다운 후 재시도)·사이클당 6건 cap·
   `_BUDGET_HARD` 예산가드·`_DOC_TEXT_MEM` 캐시히트 재사용. 블로그·DART 후보는 같은
   큐·대시보드·채널.
-- **비용 surface(2026-06-24, 사용자 '블로그도 공짜 아니니')**: kg = Gemini 추출이라
-  ₩0 아님 → `_compute_stats`(trade usage.jsonl 의 kind=kg_candidate 를 수출입과 분리한
-  **'관계후보' 버킷**) + `_render_stats_panel` 월 합산 + `cmd_usage`('관계후보(kg)' 줄)
-  + blog.html 비용카드(`_kg_candidate_cost_usd`, 오늘/이번 달) 동시 갱신. kind 미기록
-  옛 trade 레코드는 수출입(기존 동작 보존). **kg 비용 변경 시 이 4곳 동기.**
+- **비용 surface — LLM 비용만(네트워크/공공 API 제외), 자식 카드 + 메인 합산
+  (2026-06-24, 사용자 '각 대시보드 자기 비용카드 + 모두 메인 리포팅')**: kg = Gemini라
+  ₩0 아님. **소스별 kind 태그**로 각 대시보드가 자기 비용만 표시(메인은 합산):
+  · `trade.llm_usage`: `KG_KINDS=(kg_candidate,kg_blog,kg_dart)` · `is_kg()` ·
+    `summary(kinds=/exclude_kinds=)` 필터. record kind = run_extraction(kind=) 인자.
+  · 블로그 발굴 = `kind=kg_blog`(run_blog_extraction) → blog.html 카드
+    (`_kg_candidate_cost_usd(kinds={kg_blog,kg_candidate})`, kg_candidate=레거시).
+  · DART 발굴 = `kind=kg_dart`(dart_feed.extract_kg_candidates) → dart_feed.html 카드
+    (`kinds={kg_dart}`).
+  · 메인 `_compute_stats`: trade usage.jsonl 의 kind `startswith('kg')` → **'관계후보'
+    버킷**(=블로그카드+DART카드 합), 그 외 → **'수출입'**(insight). `_render_stats_panel`
+    월 합산 + `cmd_usage`('관계후보(kg)' 줄) 동시. kind 미기록 옛 레코드 → 수출입.
+  · 수출입 대시보드(`trade/cost.py collect`)= `summary(exclude_kinds=KG_KINDS)` →
+    insight 만(kg 제외, 헤더 💰 줄). **완전성 점검 결과**: 분석(index)·Screener·
+    DailyByte·부동산·블로그·관계후보·수출입 7개 LLM surface 전부 자식 카드+메인 합산
+    일치. 나머지(레딧·워치·페이퍼·청약뷰·market)는 LLM 0(무료). 네트워크/공공 API
+    (DART·관세청·naver·FRED)는 비용 아님. **kg 비용 변경 시: kind 태그→집계 6곳 동기
+    (_compute_stats/_render_stats_panel/cmd_usage/blog카드/dart카드/trade cost.py).**
 
 ## Multi-market expansion (US → KR → JP → TW → CN)
 

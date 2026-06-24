@@ -500,11 +500,12 @@ def _compute_stats(records: list[dict]) -> dict:
                                 float(_ts), kst).strftime("%Y-%m-%d")
                         except Exception:
                             continue
-                    # kg 관계후보(블로그·DART 자동발굴)는 같은 trade usage.jsonl
-                    # 이지만 수출입과 분리 — kind 로 버킷 구분(사용자 2026-06-24
-                    # '블로그도 공짜 아니니 별도 비용카드 + 메인 합산'). kind 미기록
-                    # 옛 레코드는 수출입(기존 동작 보존).
-                    _bucket = ("관계후보" if rec.get("kind") == "kg_candidate"
+                    # kg 관계후보(블로그·DART 자동발굴, kind=kg_*)는 같은 trade
+                    # usage.jsonl 이지만 수출입(insight)과 분리 — kind 로 버킷 구분
+                    # (사용자 2026-06-24 '블로그도 공짜 아니니 별도 비용카드 + 메인
+                    # 합산'). kind 미기록 옛 레코드는 수출입(기존 동작 보존).
+                    _bucket = ("관계후보"
+                               if (rec.get("kind") or "").startswith("kg")
                                else "수출입")
                     if rec_day_tr.startswith(month_prefix):
                         month_cost_usd += cost_usd_tr
@@ -9475,10 +9476,11 @@ def _load_blog_runs() -> list[dict]:
     return runs
 
 
-def _kg_candidate_cost_usd() -> tuple[float, float]:
-    """관계후보(kg) LLM 비용 — trade usage.jsonl 의 kind=kg_candidate 만 (today, month)
-    USD 합산. 메인 합산(_compute_stats 관계후보 버킷)과 동일 소스·동일 분리 — 블로그
-    대시보드 비용카드용(블로그·DART 자동발굴 통합 비용). graceful((0.0, 0.0))."""
+def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float]:
+    """관계후보(kg) LLM 비용 — trade usage.jsonl 에서 (today, month) USD 합산.
+    kinds=세트 주면 그 kind 만(소스별 대시보드 카드: 블로그=kg_blog/legacy,
+    DART=kg_dart). 미지정 시 전 kg_* (메인 관계후보 버킷과 동일). 메인 합산
+    (_compute_stats 관계후보)과 동일 소스·동일 분리. graceful((0.0, 0.0))."""
     import json as _j
     kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(kst)
@@ -9487,6 +9489,7 @@ def _kg_candidate_cost_usd() -> tuple[float, float]:
     _trade_dir = os.environ.get("TRADE_DATA_DIR", "").strip()
     path = (Path(_trade_dir) / "usage.jsonl" if _trade_dir
             else Path.home() / ".trade" / "usage.jsonl")
+    _kset = set(kinds) if kinds is not None else None
     today_usd = month_usd = 0.0
     if not path.exists():
         return (0.0, 0.0)
@@ -9497,7 +9500,11 @@ def _kg_candidate_cost_usd() -> tuple[float, float]:
                     rec = _j.loads(line)
                 except Exception:
                     continue
-                if rec.get("kind") != "kg_candidate":
+                _k = rec.get("kind") or ""
+                if _kset is not None:
+                    if _k not in _kset:
+                        continue
+                elif not _k.startswith("kg"):
                     continue
                 _cu = rec.get("cost_usd")
                 if _cu is not None and _cu > 0:
@@ -9637,10 +9644,12 @@ def _render_blog_page(runs: list[dict]) -> str:
     last_ts = ""
     if runs:
         last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
-    # 관계후보 발굴 비용(kg, 블로그+DART 자동발굴) — 단순 포워드가 아니라 Gemini
-    # 추출이라 ₩0 아님(사용자 2026-06-24). 메인 합산과 동일 소스(trade usage
-    # kind=kg_candidate). 값은 메인 '💰 비용' 카드 '관계후보' 항목과 일치.
-    _kg_today_usd, _kg_month_usd = _kg_candidate_cost_usd()
+    # 블로그 관계후보 발굴 비용(kg_blog + 레거시 kg_candidate) — 단순 포워드가
+    # 아니라 Gemini 추출이라 ₩0 아님(사용자 2026-06-24). DART 발굴분(kg_dart)은
+    # dart_feed.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는
+    # 둘 합산(=블로그 카드 + DART 카드).
+    _kg_today_usd, _kg_month_usd = _kg_candidate_cost_usd(
+        kinds={"kg_blog", "kg_candidate"})
     _kg_cost_val = f"{_krw(_kg_today_usd)} / {_krw(_kg_month_usd)}"
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -11705,6 +11714,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     # paint 후 스냅(2026-06-10 잔존 건 — _DART_FEED_CSS 주석 참조).
     parts: list[str] = [_SCREENER_CSS, "<script>" + _THEME_JS + "</script>",
                         _DART_FEED_CSS]
+    # 관계후보 발굴 비용(kg_dart) — 공시 수집·파싱은 무료(공공 API)지만 계약공시
+    # 본문 관계추출은 Gemini라 ₩0 아님(사용자 2026-06-24). 블로그 발굴분(kg_blog)은
+    # blog.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는 둘 합산.
+    _df_kg_t, _df_kg_m = _kg_candidate_cost_usd(kinds={"kg_dart"})
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
@@ -11713,6 +11726,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   </div>
   <h1>DART 공시</h1>
   <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
+  <p class="sub" style="margin:-6px 0 14px">🔗 관계후보 발굴 비용(계약공시 본문, Gemini): 오늘 {_krw(_df_kg_t)} · 이번 달 {_krw(_df_kg_m)} <span style="opacity:.7">— 공시 수집·파싱은 무료, 본문 관계추출만 과금. 메인 '관계후보'에 합산</span></p>
 
   <div class="df-controls">
     <div class="df-pills">{''.join(pills)}</div>

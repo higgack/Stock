@@ -1492,7 +1492,7 @@ def _build_usage_report() -> str:
                                 float(_ts2), _KST).date().isoformat()
                         except Exception:
                             continue
-                    _is_kg = _r.get("kind") == "kg_candidate"
+                    _is_kg = (_r.get("kind") or "").startswith("kg")
                     if _rd.startswith(month_str_kst):
                         if _is_kg:
                             kg_month_usd += _usd

@@ -203,7 +203,8 @@ def _known_companies() -> set:
 
 def extract_candidates(texts: list[dict], *, model: Optional[str] = None,
                        max_calls: Optional[int] = None,
-                       use_company_filter: bool = True) -> list[dict]:
+                       use_company_filter: bool = True,
+                       kind: str = "kg_candidate") -> list[dict]:
     """텍스트 배치 → 관계 후보(필터·dedup 적용). texts=[{"text":..,"source":..}].
     Gemini(llm_insights 인프라) 호출 — 키없음/킬스위치/상한/실패 시 graceful([]).
     ⛔ 자동 등재 안 함 — 호출부가 write_candidates_csv 로 승인 큐에만 적재."""
@@ -235,7 +236,7 @@ def extract_candidates(texts: list[dict], *, model: Optional[str] = None,
                                ("human", build_human_prompt(text, src))])
             um = getattr(resp, "usage_metadata", None) or {}
             llm_usage.record(model, um.get("input_tokens", 0),
-                             um.get("output_tokens", 0), kind="kg_candidate")
+                             um.get("output_tokens", 0), kind=kind)
             used += 1
             triples = parse_triples(getattr(resp, "content", "") or "")
             out.extend(filter_candidates(
@@ -321,10 +322,12 @@ def _notify_blog_channel(new_cands: list[dict]) -> bool:
 
 
 def run_extraction(texts: list[dict], *, label: str = "블로그",
+                   kind: str = "kg_candidate",
                    model: Optional[str] = None, max_calls: Optional[int] = None,
                    notify: bool = True) -> list[dict]:
     """텍스트 배치 → 후보 추출 → 승인 큐 CSV 적재 → (notify)채널 알림. 소스 무관
-    (블로그·DART공시 공용). label = 알림 표시 소스. 킬스위치 off·키 부재·실패 전부
+    (블로그·DART공시 공용). label = 알림 표시 소스, kind = 비용 집계 소스 태그
+    (kg_blog/kg_dart — 대시보드별 비용 분리). 킬스위치 off·키 부재·실패 전부
     graceful([]). 반환 = CSV 에 새로 적재된 후보(중복 제외)."""
     if not _kg_enabled():
         log.info("kg_candidates: KG_CANDIDATES_ENABLED off — skip")
@@ -343,7 +346,7 @@ def run_extraction(texts: list[dict], *, label: str = "블로그",
             cap = min(len(texts), 12, _li._max_calls())
         except Exception:
             cap = min(len(texts), 12)
-    cands = extract_candidates(texts, model=model, max_calls=cap)
+    cands = extract_candidates(texts, model=model, max_calls=cap, kind=kind)
     new = _new_against_csv(cands)
     if not new:
         log.info("kg_candidates: %s 추출 %d건(전부 기존) — 신규 0", label, len(cands))
@@ -360,7 +363,7 @@ def run_blog_extraction(texts: list[dict], *, model: Optional[str] = None,
                         notify: bool = True) -> list[dict]:
     """블로그 새 글 텍스트 배치 → 후보 추출(run_extraction 블로그 라벨 래퍼).
     blog_watch.run() 후킹용."""
-    return run_extraction(texts, label="블로그", model=model,
+    return run_extraction(texts, label="블로그", kind="kg_blog", model=model,
                           max_calls=max_calls, notify=notify)
 
 
