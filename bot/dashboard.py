@@ -10000,6 +10000,20 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
   </div>
   <h1>🔗 밸류체인</h1>
   <p class="sub">블로그·DART 계약공시(kg) + 관세청 수출입 레퍼런스북을 집합한 통합 그래프 · 회사 검색 시 공급사·고객·수출품목·동종 회사 연결(고객사 호재 → 공급사 수혜 발굴) · 모든 소스 갱신 자동 반영</p>
+  <details class="month" style="margin:4px 0 12px">
+    <summary class="month-head" style="cursor:pointer"><span>ℹ️ 사용법 — 처음이면 펼쳐 보세요</span><span class="count">가이드</span></summary>
+    <div class="month-body" style="padding:10px 14px;font-size:13px;line-height:1.75;color:var(--fg)">
+      <b>1) 검색</b> — 위 검색창에 <b>회사명</b>(예: <code>SK하이닉스</code>)을 입력하거나 <b>주요 회사 칩</b>을 클릭하면, 그 회사의 밸류체인이 방향별로 묶여 나옵니다. 텔레그램에서도 <code>/valuechain SK하이닉스</code>로 동일 조회.<br>
+      <b>2) 그룹 의미</b><br>
+      &nbsp;&nbsp;⬅️ <b>공급사</b> — 이 회사에 <b>납품</b>하는 회사들 (이 회사가 잘되면 <b>수혜 후보</b>)<br>
+      &nbsp;&nbsp;➡️ <b>고객·납품처</b> — 이 회사가 <b>공급</b>하는 상대<br>
+      &nbsp;&nbsp;🛃 <b>수출품목(관세청)</b> · 📦 <b>취급품목(계약공시)</b> — 이 회사가 다루는 품목<br>
+      &nbsp;&nbsp;👥 <b>동종 회사</b> — 같은 수출품목을 다루는 경쟁/피어 · 🏷️ 테마 · 🔗 계열<br>
+      <b>3) 데이터 출처</b> — <b>공급망</b> 태그 = 블로그·DART 계약공시 자동발굴(kg) / <b>관세청</b> 태그 = 수출입 레퍼런스북(MTI·DART 매출구성·테마·운영자 보강 병합). 각 소스가 갱신되면 자동 반영됩니다.<br>
+      <b>4) 활용</b> — 대형 고객사(예: SK하이닉스)의 호재·실적 → <b>그 공급사들이 수혜 후보</b>. 동종 회사로 peer 비교, 취급/수출품목으로 사업 파악.<br>
+      <b>⚠️ 주의</b> — 자동발굴(LLM·관세청)이라 일부 부정확할 수 있습니다. <b>참고 신호</b>로만 쓰고 확정 사실로 단정하지 마세요. 후보 검토·반영은 <a href="blog.html">📝 블로그 → 🔗 관계후보</a>에서.
+    </div>
+  </details>
   <div class="stats">
     <div class="stat"><div class="stat-v" id="vc-stat-edges">—</div><div class="stat-l" id="vc-stat-edges-l">관계(엣지)</div></div>
     <div class="stat"><div class="stat-v" id="vc-stat-nodes">—</div><div class="stat-l">회사(노드)</div></div>
