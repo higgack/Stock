@@ -2072,6 +2072,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="blog.html">📝 블로그</a>'
+        ' · <a href="valuechain.html">🔗 밸류체인</a>'
     )
 
     # Market filter buttons (show only if >1 market present)
@@ -9562,67 +9563,76 @@ def _load_kg_candidates(limit: int = 60) -> list[dict]:
 
 
 def _render_kg_candidates_section(cands: list[dict]) -> str:
-    """블로그 페이지 '🔗 관계후보' 섹션 — 승인 대기 큐 표. 운영자 검토 전용
-    (자동 등재 없음). 상태별 배지(후보/승인/등재). 비면 섹션 자체 생략."""
+    """블로그 페이지 '🔗 관계후보' 섹션 — 대기('후보') 표 + '✅ 처리됨'(승인/등재)
+    접이식 분리(사용자 2026-06-24 옵션B). 운영자 검토 전용(자동 등재 없음)."""
     import html as _h
-    pend = [c for c in cands if c.get("status") not in ("등재",)]
-    if not pend:
+    waiting = [c for c in cands if c.get("status", "후보") == "후보"]
+    done = [c for c in cands if c.get("status", "후보") in ("승인", "등재")]
+    if not waiting and not done:
         return ""
-    # 실제 반영 대기 = '후보'만('승인'은 이미 처리됨, 표엔 남기되 카운트 제외 —
-    # 독립리뷰 2026-06-24 M2 카운트 과대 fix).
-    n_wait = sum(1 for c in pend if c.get("status", "후보") == "후보")
-    _badge = {"후보": "#a16207", "승인": "#15803d", "등재": "#6b7280"}
-    rows = []
-    for c in pend:
+    n_wait, n_done = len(waiting), len(done)
+    # 등재=취급품목→레퍼런스북 반영(초록), 승인=납품/고객 등 기록만(회색), 후보=대기(amber).
+    _badge = {"후보": "#a16207", "승인": "#6b7280", "등재": "#15803d"}
+
+    def _row(c, with_btn):
         co = _h.escape(c.get("company", ""))
         rel = _h.escape(c.get("relation", ""))
         tgt = _h.escape(c.get("target", ""))
         ev = _h.escape((c.get("evidence", "") or "")[:120])
-        src = _h.escape((c.get("source", "") or "").replace("blog:", ""))
+        src = _h.escape((c.get("source", "") or "").replace("blog:", "").replace("dart:", ""))
         dt = _h.escape(c.get("date", ""))
         st = c.get("status", "후보")
         col = _badge.get(st, "#a16207")
-        # data-* 로 키 전달(버튼 JS). 취급품목 = reinforce 반영, 그 외 = 승인표시.
-        _aco = _h.escape(c.get("company", ""), quote=True)
-        _arel = _h.escape(c.get("relation", ""), quote=True)
-        _atgt = _h.escape(c.get("target", ""), quote=True)
-        btn = (f'<button class="kg-apply" data-co="{_aco}" data-rel="{_arel}" '
-               f'data-tgt="{_atgt}">반영</button>'
-               if st == "후보" else
-               f'<span style="background:{col};color:#fff;border-radius:8px;'
-               f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span>')
-        rows.append(
-            f'<tr><td><b>{co}</b></td>'
-            f'<td style="color:var(--muted)">{rel}</td>'
-            f'<td>{tgt}</td>'
-            f'<td style="color:var(--muted);font-size:12px">{ev}</td>'
-            f'<td style="color:var(--muted);font-size:12px">{src}</td>'
-            f'<td style="font-size:12px">{dt}</td>'
-            f'<td>{btn}</td></tr>')
+        if with_btn:
+            _aco = _h.escape(c.get("company", ""), quote=True)
+            _arel = _h.escape(c.get("relation", ""), quote=True)
+            _atgt = _h.escape(c.get("target", ""), quote=True)
+            last = (f'<button class="kg-apply" data-co="{_aco}" data-rel="{_arel}" '
+                    f'data-tgt="{_atgt}">반영</button>')
+        else:
+            last = (f'<span style="background:{col};color:#fff;border-radius:8px;'
+                    f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span>')
+        return (f'<tr><td><b>{co}</b></td><td style="color:var(--muted)">{rel}</td>'
+                f'<td>{tgt}</td><td style="color:var(--muted);font-size:12px">{ev}</td>'
+                f'<td style="color:var(--muted);font-size:12px">{src}</td>'
+                f'<td style="font-size:12px">{dt}</td><td>{last}</td></tr>')
+
+    _head_th = ('<thead><tr style="text-align:left;border-bottom:1px solid var(--border)">'
+                '<th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th>'
+                '<th>추출일</th><th>반영</th></tr></thead>')
+    wait_tbody = ("".join(_row(c, True) for c in waiting)
+                  or '<tr><td colspan="7" style="color:var(--muted);padding:8px">반영 대기 후보가 없습니다 — 새 글·공시가 오면 채워집니다.</td></tr>')
+    done_rows = "".join(_row(c, False) for c in done)
+    applyall = (
+        f'<div style="margin:0 0 10px"><button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({n_wait}건)</button>'
+        f'<span id="kg-apply-msg" style="margin-left:10px;font-size:12px;color:var(--muted)"></span></div>'
+    ) if waiting else ''
+    done_block = (
+        f'<details class="day" style="margin-top:12px"><summary class="day-head" style="cursor:pointer">'
+        f'<span>✅ 처리됨 <span style="color:var(--muted);font-weight:400;font-size:12px">(등재=레퍼런스북 반영 · 승인=기록만 · {n_done}건)</span></span></summary>'
+        f'<div style="overflow-x:auto;padding:8px 0"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+        f'{_head_th}<tbody>{done_rows}</tbody></table></div></details>'
+    ) if done else ''
     return f"""
   <details class="month" style="margin:6px 0 14px" open>
     <summary class="month-head">
-      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {n_wait}건)</span></span>
+      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 반영 대기 {n_wait}건)</span></span>
       <span class="count">검토 큐</span>
     </summary>
     <div class="month-body" style="padding:10px 12px">
       <p style="color:var(--muted);font-size:12px;margin:0 0 8px;line-height:1.6">
         새 블로그 글·DART 계약공시 본문에서 자동 추출한 <b>(회사)–(관계)–(대상)</b> 후보입니다.
         ⛔ 자동 등재 안 함 — <b>반영</b> 버튼으로 승인하세요. <b>취급품목</b>은 수출입 레퍼런스북에
-        즉시 반영(중복 자동 스킵), 그 외 관계는 '승인' 표시만(운영자 수동 반영).
+        즉시 반영(중복 자동 스킵), 그 외 관계(납품/고객/계열)는 '승인' 기록만(현재 소비 surface 없음).
       </p>
-      <div style="margin:0 0 10px">
-        <button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({n_wait}건)</button>
-        <span id="kg-apply-msg" style="margin-left:10px;font-size:12px;color:var(--muted)"></span>
-      </div>
+      {applyall}
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
-            <th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th><th>추출일</th><th>반영</th>
-          </tr></thead>
-          <tbody>{''.join(rows)}</tbody>
+          {_head_th}
+          <tbody>{wait_tbody}</tbody>
         </table>
       </div>
+      {done_block}
     </div>
   </details>
   <style>
@@ -9643,7 +9653,7 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
         post('api/kg_approve', {{company:b.dataset.co, relation:b.dataset.rel, target:b.dataset.tgt}})
           .then(function(j){{
             if(j && j.ok){{ b.textContent = j.ingested? '등재' : '승인';
-              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'). 새로고침하면 갱신됩니다.'); }}
+              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'). 새로고침하면 처리됨으로 이동합니다.'); }}
             else {{ b.disabled=false; b.textContent='반영'; say('실패: '+((j&&j.error)||'?')); }}
           }}).catch(function(e){{ b.disabled=false; b.textContent='반영'; say('오류: '+e); }});
       }});
@@ -9843,6 +9853,212 @@ def regenerate_blog_index() -> None:
         log.info("dashboard: blog.html regenerated (%d posts)", len(runs))
     except Exception as exc:
         log.warning("dashboard: blog regen failed: %s", exc)
+
+
+# ── 밸류체인(공급망) 대시보드 (valuechain.html, 사용자 2026-06-24) ───────────
+# kg 관계후보(블로그·DART 계약공시 자동발굴)의 (회사)-(관계)-(대상) 엣지를 소비하는
+# explorer. 회사 검색 시 공급사(→이 회사 납품)·고객/납품처(이 회사가 공급)·취급품목·
+# 계열을 방향별로 묶어 보여줌 → 밸류체인 종목 발굴(고객사 호재 → 공급사 수혜 식별).
+# 자동등재 무관, 전 상태(후보/승인/등재) 엣지를 탐색용으로 노출(상태·근거 함께).
+_VALUECHAIN_CSS = """
+<style>
+.vc-chips{display:flex;flex-wrap:wrap;gap:6px}
+.vc-chip{background:#1f2733;color:#c9d4e0;border:1px solid var(--border);border-radius:14px;
+  padding:3px 11px;font-size:12px;cursor:pointer}
+.vc-chip:hover{background:#2a3645}
+.vc-focus-h{font-size:16px;font-weight:700;margin:14px 0 8px}
+.vc-deg{font-size:11px;color:var(--muted);font-weight:400;margin-left:6px}
+.vc-grp{margin:0 0 10px}
+.vc-grp-h{font-size:12px;color:var(--muted);margin:0 0 5px}
+.vc-pill{display:inline-block;background:#142033;border:1px solid #24405f;color:#cfe0f5;
+  border-radius:8px;padding:2px 9px;font-size:12px;margin:0 5px 5px 0}
+.vc-tip{font-size:12px;color:#8fd0a8;background:#10241a;border-radius:8px;padding:6px 10px;margin:4px 0 10px}
+.vc-listh{font-size:13px;color:var(--muted);margin:12px 0 6px}
+.vc-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--border);
+  padding:7px 2px;font-size:13px}
+.vc-rel{color:var(--muted);font-style:italic;font-size:12px}
+.vc-ev{color:var(--muted);font-size:11px;margin-top:2px}
+.vc-src{color:var(--muted);font-size:11px;white-space:nowrap}
+.vc-tag{display:inline-block;background:#23314a;color:#9db8da;border-radius:6px;
+  padding:0 6px;font-size:10px;margin-left:6px;vertical-align:middle}
+</style>
+"""
+
+_VALUECHAIN_JS = r"""
+<script>
+(function(){
+  var raw = document.getElementById('vc-data');
+  var DATA = {edges:[]};
+  try { DATA = JSON.parse(raw.textContent); } catch(e){}
+  var E = DATA.edges || [];
+  var KG = E.filter(function(e){return e.k!=='trade';});   // 공급망·관계(블로그·DART)
+  var TR = E.filter(function(e){return e.k==='trade';});    // 관세청 수출품목(회사↔품목)
+  var CO = ['납품','고객','계열'];
+  function norm(s){ return (s||'').toString().replace(/\s+/g,'').toLowerCase(); }
+  function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':s); return d.innerHTML; }
+  function setText(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; }
+  var deg={}, comp={}, docs={};
+  function bump(n){ if(n) deg[n]=(deg[n]||0)+1; }
+  E.forEach(function(e){ bump(e.c); comp[e.c]=1;
+    if(CO.indexOf(e.r)>=0){ bump(e.t); comp[e.t]=1; }
+    if(e.k==='trade') comp[e.c]=1;
+    if(e.s) docs[e.s]=1; });
+  var entities = Object.keys(deg).sort(function(a,b){return deg[b]-deg[a];});
+  setText('vc-stat-edges', E.length);
+  setText('vc-stat-edges-l', '관계(엣지) · 공급망 '+KG.length+' · 관세청 '+TR.length);
+  setText('vc-stat-nodes', Object.keys(comp).length);
+  setText('vc-stat-docs', Object.keys(docs).length);
+  var chipWrap = document.getElementById('vc-chips');
+  entities.slice(0,28).forEach(function(name){
+    var b=document.createElement('button'); b.className='vc-chip';
+    b.textContent=name+' '+deg[name];
+    b.onclick=function(){ var s=document.getElementById('vc-search'); s.value=name; render(name); };
+    chipWrap.appendChild(b);
+  });
+  function edgeRow(e){
+    var tag = e.k==='trade' ? '<span class="vc-tag">관세청</span>' : '';
+    return '<div class="vc-row"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
+      (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
+      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div></div>';
+  }
+  function grp(title, items, fmt){
+    if(!items.length) return '';
+    return '<div class="vc-grp"><div class="vc-grp-h">'+title+' ('+items.length+')</div>'+items.map(fmt).join('')+'</div>';
+  }
+  function pillC(e){ return '<span class="vc-pill">'+esc(e.c)+'</span>'; }
+  function pillT(e){ return '<span class="vc-pill">'+esc(e.t)+'</span>'; }
+  function render(q){
+    var focus=document.getElementById('vc-focus'), list=document.getElementById('vc-list');
+    var nq=norm(q);
+    if(!nq){
+      focus.innerHTML='';
+      list.innerHTML='<div class="vc-listh">공급망·관계 '+KG.length+'건(블로그·DART)'+
+        (KG.length>400?' · 상위 400':'')+' — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시</div>'+
+        KG.slice(0,400).map(edgeRow).join('');
+      return;
+    }
+    var exact=entities.filter(function(n){return norm(n)===nq;});
+    var part=entities.filter(function(n){return norm(n).indexOf(nq)>=0;});
+    var X = exact.length?exact[0]:(part.length?part[0]:null);
+    if(X){
+      var nx=norm(X);
+      var suppliers=KG.filter(function(e){return norm(e.t)===nx && ['납품','고객'].indexOf(e.r)>=0;});
+      var customers=KG.filter(function(e){return norm(e.c)===nx && ['납품','고객'].indexOf(e.r)>=0;});
+      var products =KG.filter(function(e){return norm(e.c)===nx && e.r==='취급품목';});
+      var themes   =KG.filter(function(e){return norm(e.c)===nx && e.r==='테마';});
+      var affil    =KG.filter(function(e){return (norm(e.c)===nx||norm(e.t)===nx) && e.r==='계열';});
+      var exports  =TR.filter(function(e){return norm(e.c)===nx;});
+      // 동종 회사(peer) = 같은 수출품목을 다루는 다른 회사(관세청)
+      var myItems={}; exports.forEach(function(e){ myItems[norm(e.t)]=1; });
+      var peerCnt={};
+      TR.forEach(function(e){ if(norm(e.c)!==nx && myItems[norm(e.t)]) peerCnt[e.c]=(peerCnt[e.c]||0)+1; });
+      var peers=Object.keys(peerCnt).sort(function(a,b){return peerCnt[b]-peerCnt[a];}).slice(0,40);
+      focus.innerHTML='<div class="vc-focus-h">🏢 '+esc(X)+'<span class="vc-deg">연결 '+(deg[X]||0)+'</span></div>'+
+        grp('⬅️ 공급사 (이 회사에 납품)', suppliers, pillC)+
+        grp('➡️ 고객·납품처 (이 회사가 공급)', customers, pillT)+
+        grp('📦 취급품목 (계약공시)', products, pillT)+
+        grp('🛃 수출품목 (관세청)', exports, pillT)+
+        (peers.length?'<div class="vc-grp"><div class="vc-grp-h">👥 동종 회사 (같은 수출품목, '+peers.length+')</div>'+
+          peers.map(function(n){return '<span class="vc-pill">'+esc(n)+' '+peerCnt[n]+'</span>';}).join('')+'</div>':'')+
+        grp('🏷️ 테마', themes, pillT)+
+        grp('🔗 계열', affil, function(e){return '<span class="vc-pill">'+esc(norm(e.c)===nx?e.t:e.c)+'</span>';})+
+        (suppliers.length?'<div class="vc-tip">💡 '+esc(X)+' 호재·실적 시 위 공급사들이 수혜 후보</div>':'');
+    } else { focus.innerHTML=''; }
+    var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
+    list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'"</div>'+f.slice(0,400).map(edgeRow).join('');
+  }
+  var s=document.getElementById('vc-search');
+  s.addEventListener('input', function(){ render(s.value); });
+  document.getElementById('vc-clear').addEventListener('click', function(){ s.value=''; render(''); });
+  render('');
+})();
+</script>
+"""
+
+
+def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
+                            cost_month: float = 0.0) -> str:
+    """valuechain.html — kg 엣지 explorer(공급망/밸류체인). 회사 검색 시 공급사·
+    고객·취급품목·계열을 방향별로. 데이터는 <script type=application/json> 임베드 +
+    클라이언트 JS 검색/필터(서버 무상태)."""
+    import html as _h
+    import json as _j
+    payload = {"edges": [{
+        "c": e.get("company", ""), "r": e.get("relation", ""),
+        "t": e.get("target", ""), "e": (e.get("evidence", "") or "")[:160],
+        "s": e.get("source", ""), "st": e.get("status", ""),
+        "k": e.get("kind", "kg"),
+    } for e in edges if e.get("company") and e.get("target")]}
+    # </script> 차단 + JSON 안전 임베드
+    data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
+    parts = [_SCREENER_CSS, _VALUECHAIN_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="market.html">🌍 홈</a> · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="blog.html">📝 블로그</a> · <a href="dart_feed.html">📋 DART 공시</a>
+  </div>
+  <h1>🔗 밸류체인</h1>
+  <p class="sub">블로그·DART 계약공시(kg) + 관세청 수출입 레퍼런스북을 집합한 통합 그래프 · 회사 검색 시 공급사·고객·수출품목·동종 회사 연결(고객사 호재 → 공급사 수혜 발굴) · 모든 소스 갱신 자동 반영</p>
+  <details class="month" style="margin:4px 0 12px">
+    <summary class="month-head" style="cursor:pointer"><span>ℹ️ 사용법 — 처음이면 펼쳐 보세요</span><span class="count">가이드</span></summary>
+    <div class="month-body" style="padding:10px 14px;font-size:13px;line-height:1.75;color:var(--fg)">
+      <b>1) 검색</b> — 위 검색창에 <b>회사명</b>(예: <code>SK하이닉스</code>)을 입력하거나 <b>주요 회사 칩</b>을 클릭하면, 그 회사의 밸류체인이 방향별로 묶여 나옵니다. 텔레그램에서도 <code>/valuechain SK하이닉스</code>로 동일 조회.<br>
+      <b>2) 그룹 의미</b><br>
+      &nbsp;&nbsp;⬅️ <b>공급사</b> — 이 회사에 <b>납품</b>하는 회사들 (이 회사가 잘되면 <b>수혜 후보</b>)<br>
+      &nbsp;&nbsp;➡️ <b>고객·납품처</b> — 이 회사가 <b>공급</b>하는 상대<br>
+      &nbsp;&nbsp;🛃 <b>수출품목(관세청)</b> · 📦 <b>취급품목(계약공시)</b> — 이 회사가 다루는 품목<br>
+      &nbsp;&nbsp;👥 <b>동종 회사</b> — 같은 수출품목을 다루는 경쟁/피어 · 🏷️ 테마 · 🔗 계열<br>
+      <b>3) 데이터 출처</b> — <b>공급망</b> 태그 = 블로그·DART 계약공시 자동발굴(kg) / <b>관세청</b> 태그 = 수출입 레퍼런스북(MTI·DART 매출구성·테마·운영자 보강 병합). 각 소스가 갱신되면 자동 반영됩니다.<br>
+      <b>4) 활용</b> — 대형 고객사(예: SK하이닉스)의 호재·실적 → <b>그 공급사들이 수혜 후보</b>. 동종 회사로 peer 비교, 취급/수출품목으로 사업 파악.<br>
+      <b>⚠️ 주의</b> — 자동발굴(LLM·관세청)이라 일부 부정확할 수 있습니다. <b>참고 신호</b>로만 쓰고 확정 사실로 단정하지 마세요. 후보 검토·반영은 <a href="blog.html">📝 블로그 → 🔗 관계후보</a>에서.
+    </div>
+  </details>
+  <div class="stats">
+    <div class="stat"><div class="stat-v" id="vc-stat-edges">—</div><div class="stat-l" id="vc-stat-edges-l">관계(엣지)</div></div>
+    <div class="stat"><div class="stat-v" id="vc-stat-nodes">—</div><div class="stat-l">회사(노드)</div></div>
+    <div class="stat"><div class="stat-v" id="vc-stat-docs">—</div><div class="stat-l">출처 문서</div></div>
+    <div class="stat"><div class="stat-v">{_krw(cost_today)} / {_krw(cost_month)}</div><div class="stat-l">KG 발굴 비용 (오늘/이번 달) · 관세청 무료</div></div>
+  </div>
+  <div style="margin:12px 0 6px;color:var(--muted);font-size:13px">주요 회사 (연결수) — 클릭하면 필터</div>
+  <div id="vc-chips" class="vc-chips"></div>
+  <div class="search-bar" style="margin-top:12px">
+    <input id="vc-search" type="text" placeholder="회사·관계 검색 (예: SK하이닉스, 납품)" autocomplete="off" spellcheck="false">
+    <button id="vc-clear" type="button">초기화</button>
+  </div>
+  <div id="vc-focus"></div>
+  <div id="vc-list"></div>
+</div>
+<script id="vc-data" type="application/json">{data_json}</script>
+""")
+    parts.append(_VALUECHAIN_JS)
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def _load_valuechain_edges() -> list[dict]:
+    """밸류체인 그래프 엣지 = 다소스 집합. bot.valuechain.load_edges 단일 소스
+    재사용(②NOAH 주입·③/valuechain 명령과 동일 그래프 — drift 방지). graceful([])."""
+    try:
+        from bot import valuechain
+        return valuechain.load_edges()
+    except Exception as exc:
+        log.warning("valuechain: edges load failed: %s", exc)
+        return []
+
+
+def regenerate_valuechain_index() -> None:
+    """다소스 집합(_load_valuechain_edges) → write valuechain.html. blog_watch/
+    dart_feed 추출 후 + approve + 주기 regen 에서 호출 → 모든 소스 갱신 반영. graceful."""
+    try:
+        edges = _load_valuechain_edges()
+        ct, cm = _kg_candidate_cost_usd()
+        html = _render_valuechain_page(edges, ct, cm)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "valuechain.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: valuechain.html regenerated (%d edges)", len(edges))
+    except Exception as exc:
+        log.warning("dashboard: valuechain regen failed: %s", exc)
 
 
 # ── Watchlist 조건 알림 대시보드 (2026-06-04) ────────────────────────────
@@ -13418,6 +13634,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
+    &middot; <a href="valuechain.html">🔗 밸류체인</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>
   </div>

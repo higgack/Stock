@@ -591,10 +591,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     raise ValueError("company/relation/target required")
                 res = _kg.approve_candidates(keys=[(co, rel, tgt)])
             try:
-                from bot.dashboard import regenerate_blog_index
+                from bot.dashboard import (regenerate_blog_index,
+                                           regenerate_valuechain_index)
                 regenerate_blog_index()
+                regenerate_valuechain_index()
             except Exception as exc:
-                log.warning("kg_approve: blog regen failed: %s", exc)
+                log.warning("kg_approve: dashboard regen failed: %s", exc)
             log.info("kg_approve: all=%s → %s", all_pending, res)
             self._reply_json(200, {"ok": True, **res})
         except ValueError as exc:

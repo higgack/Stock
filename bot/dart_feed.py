@@ -5007,10 +5007,12 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"dart_feed: kg extraction failed: {exc}")
 
-    # regenerate dashboard
+    # regenerate dashboard (+ valuechain.html — DART 계약공시 kg 엣지 반영)
     try:
-        from bot.dashboard import regenerate_dart_feed_index
+        from bot.dashboard import (regenerate_dart_feed_index,
+                                   regenerate_valuechain_index)
         regenerate_dart_feed_index()
+        regenerate_valuechain_index()
         print("dart_feed: dashboard regenerated")
     except Exception as exc:
         print(f"dart_feed: dashboard regen failed: {exc}")

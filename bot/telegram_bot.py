@@ -1070,14 +1070,14 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
-<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
+<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터·장중 자동갱신) · 종목검색·스크롤복원
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
 ━━━━━━━━━
 <b>【명령어】</b> (탭 자동입력 · 대시보드 검색창 '/' 모드에서도 동일)
-/help /usage /portfolio /screener_list /sites /blog — 비용: /screener·daily_byte·cheongyak·realestate_cost
+/help /usage /portfolio /screener_list /sites /blog /valuechain — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /티커 — 단일 분석 (예: /NVDA · /005930.KS · 한국은 종목명 /삼성전자)
 /compare NVDA AMD — 두 종목 비교
 /screen [us|jp|hk|cn|tw] [조건 | 프리셋] [fresh] — 조건부 스크리너 (KR/US/JP/HK/CN/TW, ₩0) · 프리셋 minervini/valueup · fresh=캐시무시 · /screen list
@@ -1123,7 +1123,8 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://www.obf.md/app">키워드트래커</a>
  • <a href="https://stocks.allreview.kr/067010">실적분석</a>
  • <a href="https://www.ant.wiki/spacex">SpaceX</a>
- • <a href="https://kospi-king.codojun.com/">Global peer comparison</a>"""
+ • <a href="https://kospi-king.codojun.com/">Global peer comparison</a>
+ • <a href="https://demoday.co.kr/">Demoday</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
@@ -2058,6 +2059,39 @@ async def cmd_blog(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         _blog_list_text(), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+async def cmd_valuechain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/valuechain [회사] — 밸류체인 스크리너(③). 인자=회사면 그 회사의 공급사·고객·
+    수출품목·동종사, 없으면 연결 상위 + 다고객 납품사 + 대시보드 안내. LLM 0(그래프
+    조회만, ₩0). bot.valuechain 공용 모듈(② NOAH 주입과 동일 소스)."""
+    if update.message is None:
+        return
+    arg = " ".join(context.args).strip() if getattr(context, "args", None) else ""
+    try:
+        from bot import valuechain as _vc
+        if arg:
+            text = _vc.format_for_telegram(arg)
+        else:
+            edges = _vc.load_edges()
+            top = _vc.top_connected(edges, 15)
+            sup = _vc.top_suppliers(edges, 12)
+            lines = ["🔗 <b>밸류체인 스크리너</b>",
+                     "사용: <code>/valuechain SK하이닉스</code> → 공급사·고객·수출품목·동종사",
+                     ""]
+            if top:
+                lines.append("📌 <b>연결 상위</b>: "
+                             + ", ".join(f"{_html.escape(n)}({d})" for n, d in top))
+            if sup:
+                lines.append("🚚 <b>다고객 납품사</b>(여러 회사에 납품): "
+                             + ", ".join(f"{_html.escape(n)}({d})" for n, d in sup))
+            lines += ["", "<i>대시보드: NOAH archive → 🔗 밸류체인</i>"]
+            text = "\n".join(lines)
+    except Exception as exc:
+        log.warning("cmd_valuechain failed: %s", exc)
+        text = "밸류체인 조회 실패 — 잠시 후 다시 시도하세요."
+    await update.message.reply_text(
+        text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 _WATCH_HELP = (
@@ -3477,6 +3511,7 @@ def _static_command_registry() -> dict:
         "screener_list": (cmd_screener_list, "Screener 도메인 목록 (전체)"),
         "sites": (cmd_sites, "참고 사이트"),
         "blog": (cmd_blog, "감시 블로그 목록 (변화하는기업·필승·의교창·천상천하·메르·작은투자자)"),
+        "valuechain": (cmd_valuechain, "밸류체인 조회/스크리너 (/valuechain 회사 — 공급사·고객·수출품목·동종사)"),
         "watch": (cmd_watch, "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
         "watchlist": (cmd_watchlist, "감시 목록 보기"),
         "unwatch": (cmd_unwatch, "감시 삭제 (TICKER/id/all)"),
@@ -3762,7 +3797,8 @@ async def _periodic_dashboard_refresh(application=None) -> None:
                                        regenerate_watchlist_index,
                                        regenerate_paper_index,
                                        regenerate_market_index,
-                                       regenerate_dart_feed_index)
+                                       regenerate_dart_feed_index,
+                                       regenerate_valuechain_index)
             regenerate_index()
             regenerate_daily_byte_index()
             regenerate_realestate_index()
@@ -3773,6 +3809,7 @@ async def _periodic_dashboard_refresh(application=None) -> None:
             regenerate_watchlist_index()
             regenerate_market_index()
             regenerate_dart_feed_index()
+            regenerate_valuechain_index()
             # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
             # E0.5c: 청산 시 채널 알림(설정된 채널 있을 때) — 조용히 닫히지 않게.
             try:
@@ -3877,9 +3914,11 @@ async def _on_startup(application) -> None:
     except Exception as exc:
         log.warning("startup: reddit_insider.html regen failed: %s", exc)
     try:
-        from bot.dashboard import regenerate_blog_index
+        from bot.dashboard import (regenerate_blog_index,
+                                   regenerate_valuechain_index)
         regenerate_blog_index()
-        log.info("startup: blog.html regenerated with current code")
+        regenerate_valuechain_index()
+        log.info("startup: blog.html + valuechain.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: blog.html regen failed: %s", exc)
     try:
