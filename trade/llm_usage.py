@@ -79,9 +79,12 @@ def _read() -> list[dict]:
     return out
 
 
-def summary(now: float | None = None, *, kinds=None, exclude_kinds=None) -> dict:
+def summary(now: float | None = None, *, kinds=None, exclude_kinds=None,
+            exclude_kg: bool = False) -> dict:
     """today / 7d / 30d 집계 (calls·tokens·cost_usd·cost_krw) + total_calls.
-    kinds=세트 → 그 kind 만, exclude_kinds=세트 → 그 kind 제외(대시보드별 분리 집계)."""
+    kinds=세트 → 그 kind 만, exclude_kinds=세트 → 그 kind 제외(대시보드별 분리 집계).
+    exclude_kg=True → 모든 kg_* 제외(is_kg, startswith — 미래 kg 종류도 자동 제외해
+    수출입 대시보드에 kg 가 새지 않게). 메인/카드의 startswith 분류와 정합."""
     now = now if now is not None else time.time()
     recs = _read()
     if kinds is not None:
@@ -90,6 +93,8 @@ def summary(now: float | None = None, *, kinds=None, exclude_kinds=None) -> dict
     if exclude_kinds is not None:
         _xs = set(exclude_kinds)
         recs = [r for r in recs if r.get("kind") not in _xs]
+    if exclude_kg:
+        recs = [r for r in recs if not is_kg(r.get("kind"))]
     day = 86400
 
     def agg(since):

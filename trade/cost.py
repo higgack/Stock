@@ -122,9 +122,10 @@ def collect() -> dict:
     try:
         from trade import llm_usage
         # 수출입 대시보드 LLM = 트레이드 insight(🔍산업 추가신호)만. kg 관계후보
-        # (kg_blog/kg_dart)는 블로그·DART 대시보드 카드로 분리 집계(사용자
-        # 2026-06-24 '각 대시보드 자기 비용'). 메인 합산은 둘 다 포함(별 버킷).
-        llm = llm_usage.summary(exclude_kinds=llm_usage.KG_KINDS)
+        # (kg_*)는 블로그·DART 대시보드 카드로 분리 집계(사용자 2026-06-24 '각
+        # 대시보드 자기 비용'). 메인 합산은 둘 다 포함(별 버킷). exclude_kg=
+        # startswith 라 미래 kg 종류도 자동 제외(메인 분류와 정합, 이중표시 방지).
+        llm = llm_usage.summary(exclude_kg=True)
     except Exception:
         llm = None
 
