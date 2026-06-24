@@ -62,6 +62,30 @@ def load_edges() -> list[dict]:
     return edges
 
 
+def resolve_company(query: str, edges: list[dict]) -> str | None:
+    """부분 일치 관대 해석(사용자 2026-06-24) — 정확(norm) 우선, 없으면 norm 포함
+    중 연결수(degree) 최대. 표준 회사명 반환(없으면 None). 표기 조금 달라도 매칭."""
+    nq = _norm(query)
+    if not nq:
+        return None
+    deg: dict[str, int] = {}
+    for e in edges:
+        c = e.get("company")
+        if c:
+            deg[c] = deg.get(c, 0) + 1
+        t = e.get("target")
+        if t and e.get("kind") != "trade" and e.get("relation") in _SUPPLY + ("계열",):
+            deg[t] = deg.get(t, 0) + 1
+    ents = list(deg.keys())
+    exact = [n for n in ents if _norm(n) == nq]
+    if exact:
+        return max(exact, key=lambda n: deg[n])
+    part = [n for n in ents if nq in _norm(n)]
+    if part:
+        return max(part, key=lambda n: deg[n])
+    return None
+
+
 def neighborhood(company: str, edges: list[dict] | None = None) -> dict:
     """회사의 밸류체인 이웃. 반환 {company, suppliers, customers, exports, products,
     themes, affiliates, peers:[(name,shared)]}. 빈 회사/무매칭 → 빈 구조(순수)."""
@@ -117,8 +141,11 @@ def has_data(nb: dict) -> bool:
 
 
 def format_for_prompt(company: str, edges: list[dict] | None = None) -> str:
-    """② NOAH 분석 컨텍스트 텍스트 블록. 데이터 없으면 '' (분석 영향 0)."""
-    nb = neighborhood(company, edges)
+    """② NOAH 분석 컨텍스트 텍스트 블록. 데이터 없으면 '' (분석 영향 0).
+    표기 차이 대비 관대 해석(resolve_company)."""
+    if edges is None:
+        edges = load_edges()
+    nb = neighborhood(resolve_company(company, edges) or company, edges)
     if not has_data(nb):
         return ""
     L = [f"[밸류체인 — {company} (자동발굴: DART 계약공시·블로그·관세청 수출입)]"]
@@ -140,10 +167,13 @@ def format_for_prompt(company: str, edges: list[dict] | None = None) -> str:
 
 
 def format_for_telegram(company: str, edges: list[dict] | None = None) -> str:
-    """③ /valuechain <회사> HTML 응답. 데이터 없으면 안내."""
+    """③ /valuechain <회사> HTML 응답. 부분 일치 관대 해석(사용자 2026-06-24)."""
     import html as _h
-    nb = neighborhood(company, edges)
-    co = _h.escape(company)
+    if edges is None:
+        edges = load_edges()
+    resolved = resolve_company(company, edges)
+    nb = neighborhood(resolved or company, edges)
+    co = _h.escape(resolved or company)
     if not has_data(nb):
         return (f"🔗 <b>{co}</b> — 밸류체인 데이터 없음.\n"
                 "DART 계약공시·블로그 자동발굴이 쌓이면 채워집니다(대시보드 🔗 밸류체인).")
