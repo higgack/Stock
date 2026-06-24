@@ -1077,7 +1077,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【명령어】</b> (탭 자동입력 · 대시보드 검색창 '/' 모드에서도 동일)
-/help /usage /portfolio /screener_list /sites /blog — 비용: /screener·daily_byte·cheongyak·realestate_cost
+/help /usage /portfolio /screener_list /sites /blog /valuechain — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /티커 — 단일 분석 (예: /NVDA · /005930.KS · 한국은 종목명 /삼성전자)
 /compare NVDA AMD — 두 종목 비교
 /screen [us|jp|hk|cn|tw] [조건 | 프리셋] [fresh] — 조건부 스크리너 (KR/US/JP/HK/CN/TW, ₩0) · 프리셋 minervini/valueup · fresh=캐시무시 · /screen list
@@ -2058,6 +2058,39 @@ async def cmd_blog(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         _blog_list_text(), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+async def cmd_valuechain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/valuechain [회사] — 밸류체인 스크리너(③). 인자=회사면 그 회사의 공급사·고객·
+    수출품목·동종사, 없으면 연결 상위 + 다고객 납품사 + 대시보드 안내. LLM 0(그래프
+    조회만, ₩0). bot.valuechain 공용 모듈(② NOAH 주입과 동일 소스)."""
+    if update.message is None:
+        return
+    arg = " ".join(context.args).strip() if getattr(context, "args", None) else ""
+    try:
+        from bot import valuechain as _vc
+        if arg:
+            text = _vc.format_for_telegram(arg)
+        else:
+            edges = _vc.load_edges()
+            top = _vc.top_connected(edges, 15)
+            sup = _vc.top_suppliers(edges, 12)
+            lines = ["🔗 <b>밸류체인 스크리너</b>",
+                     "사용: <code>/valuechain SK하이닉스</code> → 공급사·고객·수출품목·동종사",
+                     ""]
+            if top:
+                lines.append("📌 <b>연결 상위</b>: "
+                             + ", ".join(f"{_html.escape(n)}({d})" for n, d in top))
+            if sup:
+                lines.append("🚚 <b>다고객 납품사</b>(여러 회사에 납품): "
+                             + ", ".join(f"{_html.escape(n)}({d})" for n, d in sup))
+            lines += ["", "<i>대시보드: NOAH archive → 🔗 밸류체인</i>"]
+            text = "\n".join(lines)
+    except Exception as exc:
+        log.warning("cmd_valuechain failed: %s", exc)
+        text = "밸류체인 조회 실패 — 잠시 후 다시 시도하세요."
+    await update.message.reply_text(
+        text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 _WATCH_HELP = (
@@ -3477,6 +3510,7 @@ def _static_command_registry() -> dict:
         "screener_list": (cmd_screener_list, "Screener 도메인 목록 (전체)"),
         "sites": (cmd_sites, "참고 사이트"),
         "blog": (cmd_blog, "감시 블로그 목록 (변화하는기업·필승·의교창·천상천하·메르·작은투자자)"),
+        "valuechain": (cmd_valuechain, "밸류체인 조회/스크리너 (/valuechain 회사 — 공급사·고객·수출품목·동종사)"),
         "watch": (cmd_watch, "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
         "watchlist": (cmd_watchlist, "감시 목록 보기"),
         "unwatch": (cmd_unwatch, "감시 삭제 (TICKER/id/all)"),

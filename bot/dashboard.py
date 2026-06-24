@@ -10023,39 +10023,14 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
 
 
 def _load_valuechain_edges() -> list[dict]:
-    """밸류체인 그래프 엣지 = **다소스 집합**(사용자 2026-06-24 '모든 갱신 소스가
-    여기 집합'):
-      ① kg 관계후보(블로그·DART 계약공시): 납품/고객/계열/취급품목/테마 (kind='kg').
-      ② 관세청 수출입 레퍼런스북(reference_book.build_rows): 회사—[수출품목]→품목(+HS)
-         — 관세청 MTI + DART 매출구성 + 테마 + 채널 + 운영자 보강(reinforce, 대시보드
-         반영 버튼분 포함)이 이미 병합된 통합 회사↔품목 그래프 (kind='trade').
-    각 소스가 갱신될 때마다 regen(dart 1분·blog 30분·반영·자정·startup)이 이 함수를
-    다시 호출 → 항상 최신 집합. 소스별 graceful(한쪽 실패해도 나머지 노출)."""
-    edges: list[dict] = []
+    """밸류체인 그래프 엣지 = 다소스 집합. bot.valuechain.load_edges 단일 소스
+    재사용(②NOAH 주입·③/valuechain 명령과 동일 그래프 — drift 방지). graceful([])."""
     try:
-        for c in _load_kg_candidates(limit=5000):
-            edges.append({"company": c.get("company", ""),
-                          "relation": c.get("relation", ""),
-                          "target": c.get("target", ""),
-                          "evidence": c.get("evidence", ""),
-                          "source": c.get("source", ""),
-                          "status": c.get("status", ""), "kind": "kg"})
+        from bot import valuechain
+        return valuechain.load_edges()
     except Exception as exc:
-        log.warning("valuechain: kg edges load failed: %s", exc)
-    try:
-        from trade import reference_book
-        for row in reference_book.build_rows():
-            item = (row.get("name") or "").strip()
-            hs = row.get("hs") or []
-            hs_lbl = (f"HS {hs[0]}" + ("…" if len(hs) > 1 else "")) if hs else ""
-            for co in (row.get("companies") or []):
-                if co and item:
-                    edges.append({"company": co, "relation": "수출품목",
-                                  "target": item, "evidence": hs_lbl,
-                                  "source": "관세청", "status": "", "kind": "trade"})
-    except Exception as exc:
-        log.warning("valuechain: trade refbook edges load failed: %s", exc)
-    return edges
+        log.warning("valuechain: edges load failed: %s", exc)
+        return []
 
 
 def regenerate_valuechain_index() -> None:

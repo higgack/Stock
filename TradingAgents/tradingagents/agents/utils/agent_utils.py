@@ -959,11 +959,35 @@ def has_recent_news(ticker: str) -> bool:
 _MACRO_CACHE: dict[tuple[str, str], str] = {}
 
 
+_VC_CACHE: dict = {}   # 밸류체인 블록 per stock code(회사별) — analyst 2콜 재사용
+
+
+def _kr_valuechain_block(symbol: str) -> str:
+    """KR 종목 → 밸류체인(공급사·고객·수출품목·동종사) 컨텍스트 텍스트(②).
+    ticker→한글사명(DART) → bot.valuechain.format_for_prompt. graceful('')."""
+    code = (symbol or "").upper().split(".")[0]
+    if code in _VC_CACHE:
+        return _VC_CACHE[code]
+    block = ""
+    try:
+        from bot.dart_client import get_dart
+        name = get_dart().stock_code_to_name(code)
+        if name:
+            from bot.valuechain import format_for_prompt
+            block = format_for_prompt(name)
+    except Exception as exc:
+        _analyst_log.warning("valuechain context for %s failed: %s", symbol, exc)
+    _VC_CACHE[code] = block
+    return block
+
+
 def get_macro_for(symbol: str, curr_date: str) -> str:
     """Return cached macro snapshot, fetching once per (market, curr_date)
     if needed. `symbol` is used only to detect the market — the snapshot
     itself is market-keyed, so two KR tickers on the same date share one
-    cached snapshot.
+    cached snapshot. For KR, a **company-specific** value-chain block is
+    appended AFTER the (market-keyed) cache read — so it is NOT contaminated
+    by the shared market cache (사용자 2026-06-24 ② NOAH 분석 컨텍스트 주입).
 
     Empty string on failure — caller decides how to label the section so
     the analyst prompt can include a graceful fallback line without the
@@ -974,23 +998,28 @@ def get_macro_for(symbol: str, curr_date: str) -> str:
     except Exception:
         market = "US"
     key = (market, curr_date)
-    if key in _MACRO_CACHE:
-        return _MACRO_CACHE[key]
-    try:
-        # Late import: macro_context_tools imports yfinance which is
-        # heavy enough to keep out of the agent_utils module load path
-        # for callers that never need the snapshot.
-        from tradingagents.agents.utils.macro_context_tools import get_macro_context
-        snapshot = get_macro_context.invoke(
-            {"curr_date": curr_date, "market": market}
-        ) or ""
-    except Exception as exc:
-        _analyst_log.warning(
-            "macro pre-fetch for %s/%s failed: %s — analyst will run without snapshot",
-            symbol, curr_date, exc,
-        )
-        snapshot = ""
-    _MACRO_CACHE[key] = snapshot
+    snapshot = _MACRO_CACHE.get(key)
+    if snapshot is None:
+        try:
+            # Late import: macro_context_tools imports yfinance which is
+            # heavy enough to keep out of the agent_utils module load path
+            # for callers that never need the snapshot.
+            from tradingagents.agents.utils.macro_context_tools import get_macro_context
+            snapshot = get_macro_context.invoke(
+                {"curr_date": curr_date, "market": market}
+            ) or ""
+        except Exception as exc:
+            _analyst_log.warning(
+                "macro pre-fetch for %s/%s failed: %s — analyst will run without snapshot",
+                symbol, curr_date, exc,
+            )
+            snapshot = ""
+        _MACRO_CACHE[key] = snapshot
+    # 밸류체인은 회사별 → market 캐시 밖에서 per-call append(캐시 공유 오염 방지).
+    if market == "KR":
+        vc = _kr_valuechain_block(symbol)
+        if vc:
+            snapshot = (snapshot + "\n\n" + vc) if snapshot else vc
     return snapshot
 
 
