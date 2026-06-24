@@ -366,6 +366,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_daily_byte_delete()
         if self.path == "/api/blog_delete":
             return self._handle_blog_delete()
+        if self.path == "/api/kg_approve":
+            return self._handle_kg_approve(all_pending=False)
+        if self.path == "/api/kg_approve_all":
+            return self._handle_kg_approve(all_pending=True)
         if self.path == "/api/realestate_delete":
             return self._handle_simple_delete(
                 "realestate_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
@@ -564,6 +568,40 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(400, {"ok": False, "error": str(exc)})
         except Exception as exc:
             log.exception("blog_delete: unexpected failure")
+            self._reply_json(500, {"ok": False, "error": str(exc)})
+
+    def _handle_kg_approve(self, *, all_pending: bool) -> None:
+        """POST /api/kg_approve {company,relation,target} (개별반영) ·
+        /api/kg_approve_all {} (전체반영) — 관계후보 승인(런타임, 커밋 불요).
+        취급품목 → 런타임 reinforce 오버레이(수출입 레퍼런스북 즉시 병합) + 큐 '등재',
+        그 외 → '승인'. blog.html 재생성. (사용자 2026-06-24 대시보드 반영 버튼)."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length < 0 or length > 2048:
+                raise ValueError("oversized request body")
+            payload = json.loads(self.rfile.read(length)) if length else {}
+            from trade import kg_candidates as _kg
+            if all_pending:
+                res = _kg.approve_candidates(all_pending=True)
+            else:
+                co = str(payload.get("company") or "").strip()
+                rel = str(payload.get("relation") or "").strip()
+                tgt = str(payload.get("target") or "").strip()
+                if not (co and rel and tgt):
+                    raise ValueError("company/relation/target required")
+                res = _kg.approve_candidates(keys=[(co, rel, tgt)])
+            try:
+                from bot.dashboard import regenerate_blog_index
+                regenerate_blog_index()
+            except Exception as exc:
+                log.warning("kg_approve: blog regen failed: %s", exc)
+            log.info("kg_approve: all=%s → %s", all_pending, res)
+            self._reply_json(200, {"ok": True, **res})
+        except ValueError as exc:
+            log.warning("kg_approve: bad request — %s", exc)
+            self._reply_json(400, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("kg_approve: unexpected failure")
             self._reply_json(500, {"ok": False, "error": str(exc)})
 
     def _handle_daily_byte_delete(self) -> None:

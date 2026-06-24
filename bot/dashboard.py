@@ -428,7 +428,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
     # — Standard View 폐기 #148 + 소스 삭제.)
     _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
-                 "부동산": 0.0, "블로그": 0.0,
+                 "부동산": 0.0, "블로그": 0.0, "관계후보": 0.0,
                  "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
@@ -500,12 +500,19 @@ def _compute_stats(records: list[dict]) -> dict:
                                 float(_ts), kst).strftime("%Y-%m-%d")
                         except Exception:
                             continue
+                    # kg 관계후보(블로그·DART 자동발굴, kind=kg_*)는 같은 trade
+                    # usage.jsonl 이지만 수출입(insight)과 분리 — kind 로 버킷 구분
+                    # (사용자 2026-06-24 '블로그도 공짜 아니니 별도 비용카드 + 메인
+                    # 합산'). kind 미기록 옛 레코드는 수출입(기존 동작 보존).
+                    _bucket = ("관계후보"
+                               if (rec.get("kind") or "").startswith("kg")
+                               else "수출입")
                     if rec_day_tr.startswith(month_prefix):
                         month_cost_usd += cost_usd_tr
-                        month_cost_by_sub_usd["수출입"] += cost_usd_tr
+                        month_cost_by_sub_usd[_bucket] += cost_usd_tr
                         if rec_day_tr == today_str:
                             today_cost_usd += cost_usd_tr
-                            today_cost_by_sub_usd["수출입"] += cost_usd_tr
+                            today_cost_by_sub_usd[_bucket] += cost_usd_tr
         except Exception as exc:
             log.warning("dashboard: trade usage read failed: %s", exc)
 
@@ -651,7 +658,7 @@ def _render_stats_panel(stats: dict) -> str:
     sub_parts: list[str] = []
     for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
                        ("부동산", "부동산"), ("블로그", "블로그"),
-                       ("수출입", "수출입")]:
+                       ("관계후보", "관계후보"), ("수출입", "수출입")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
             sub_parts.append(f"{label} {_krw(m_usd)}")
@@ -9469,6 +9476,65 @@ def _load_blog_runs() -> list[dict]:
     return runs
 
 
+def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float]:
+    """관계후보(kg) LLM 비용 — trade usage.jsonl 에서 (today, month) USD 합산.
+    kinds=세트 주면 그 kind 만(소스별 대시보드 카드: 블로그=kg_blog/legacy,
+    DART=kg_dart). 미지정 시 전 kg_* (메인 관계후보 버킷과 동일). 메인 합산
+    (_compute_stats 관계후보)과 동일 소스·동일 분리. graceful((0.0, 0.0))."""
+    import json as _j
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    now_kst = datetime.datetime.now(kst)
+    today_str = now_kst.strftime("%Y-%m-%d")
+    month_prefix = now_kst.strftime("%Y-%m")
+    _trade_dir = os.environ.get("TRADE_DATA_DIR", "").strip()
+    path = (Path(_trade_dir) / "usage.jsonl" if _trade_dir
+            else Path.home() / ".trade" / "usage.jsonl")
+    _kset = set(kinds) if kinds is not None else None
+    today_usd = month_usd = 0.0
+    if not path.exists():
+        return (0.0, 0.0)
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = _j.loads(line)
+                except Exception:
+                    continue
+                _k = rec.get("kind") or ""
+                if _kset is not None:
+                    if _k not in _kset:
+                        continue
+                elif not _k.startswith("kg"):
+                    continue
+                _cu = rec.get("cost_usd")
+                if _cu is not None and _cu > 0:
+                    cu = float(_cu)
+                else:
+                    _ck = rec.get("cost_krw", 0) or 0
+                    cu = float(_ck) / 1330.0 if _ck > 0 else 0.0
+                if cu <= 0:
+                    continue
+                _rd = rec.get("date")
+                if isinstance(_rd, str) and _rd:
+                    day = _rd
+                else:
+                    _ts = rec.get("ts")
+                    if not _ts:
+                        continue
+                    try:
+                        day = datetime.datetime.fromtimestamp(
+                            float(_ts), kst).strftime("%Y-%m-%d")
+                    except Exception:
+                        continue
+                if day.startswith(month_prefix):
+                    month_usd += cu
+                    if day == today_str:
+                        today_usd += cu
+    except Exception as exc:
+        log.warning("dashboard: kg cost read failed: %s", exc)
+    return (today_usd, month_usd)
+
+
 def _load_kg_candidates(limit: int = 60) -> list[dict]:
     """레퍼런스북 관계후보 승인 큐(trade.kg_candidates 런타임 CSV) → 최신순 dict 목록.
     각 dict: {company,relation,target,evidence,source,date,status}. graceful([])."""
@@ -9502,6 +9568,9 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
     pend = [c for c in cands if c.get("status") not in ("등재",)]
     if not pend:
         return ""
+    # 실제 반영 대기 = '후보'만('승인'은 이미 처리됨, 표엔 남기되 카운트 제외 —
+    # 독립리뷰 2026-06-24 M2 카운트 과대 fix).
+    n_wait = sum(1 for c in pend if c.get("status", "후보") == "후보")
     _badge = {"후보": "#a16207", "승인": "#15803d", "등재": "#6b7280"}
     rows = []
     for c in pend:
@@ -9513,6 +9582,15 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
         dt = _h.escape(c.get("date", ""))
         st = c.get("status", "후보")
         col = _badge.get(st, "#a16207")
+        # data-* 로 키 전달(버튼 JS). 취급품목 = reinforce 반영, 그 외 = 승인표시.
+        _aco = _h.escape(c.get("company", ""), quote=True)
+        _arel = _h.escape(c.get("relation", ""), quote=True)
+        _atgt = _h.escape(c.get("target", ""), quote=True)
+        btn = (f'<button class="kg-apply" data-co="{_aco}" data-rel="{_arel}" '
+               f'data-tgt="{_atgt}">반영</button>'
+               if st == "후보" else
+               f'<span style="background:{col};color:#fff;border-radius:8px;'
+               f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span>')
         rows.append(
             f'<tr><td><b>{co}</b></td>'
             f'<td style="color:var(--muted)">{rel}</td>'
@@ -9520,30 +9598,68 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
             f'<td style="color:var(--muted);font-size:12px">{ev}</td>'
             f'<td style="color:var(--muted);font-size:12px">{src}</td>'
             f'<td style="font-size:12px">{dt}</td>'
-            f'<td><span style="background:{col};color:#fff;border-radius:8px;'
-            f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span></td></tr>')
+            f'<td>{btn}</td></tr>')
     return f"""
-  <details class="month" style="margin:6px 0 14px">
+  <details class="month" style="margin:6px 0 14px" open>
     <summary class="month-head">
-      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {len(pend)}건)</span></span>
+      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {n_wait}건)</span></span>
       <span class="count">검토 큐</span>
     </summary>
     <div class="month-body" style="padding:10px 12px">
       <p style="color:var(--muted);font-size:12px;margin:0 0 8px;line-height:1.6">
         새 블로그 글·DART 계약공시 본문에서 자동 추출한 <b>(회사)–(관계)–(대상)</b> 후보입니다.
-        ⛔ 자동 등재 안 함 — 운영자가 검토·승인해야 레퍼런스북 보강에 반영됩니다
-        (취급품목 승인분은 <code>kg_candidates --ingest</code> 로 이관).
+        ⛔ 자동 등재 안 함 — <b>반영</b> 버튼으로 승인하세요. <b>취급품목</b>은 수출입 레퍼런스북에
+        즉시 반영(중복 자동 스킵), 그 외 관계는 '승인' 표시만(운영자 수동 반영).
       </p>
+      <div style="margin:0 0 10px">
+        <button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({n_wait}건)</button>
+        <span id="kg-apply-msg" style="margin-left:10px;font-size:12px;color:var(--muted)"></span>
+      </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13px">
           <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
-            <th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th><th>추출일</th><th>상태</th>
+            <th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th><th>추출일</th><th>반영</th>
           </tr></thead>
           <tbody>{''.join(rows)}</tbody>
         </table>
       </div>
     </div>
   </details>
+  <style>
+    .kg-apply{{background:#2563eb;color:#fff;border:0;border-radius:7px;padding:3px 12px;font-size:12px;cursor:pointer}}
+    .kg-apply:disabled{{opacity:.5;cursor:default}}
+  </style>
+  <script>
+  (function(){{
+    function post(url, body){{
+      return fetch(url, {{method:'POST', headers:{{'Content-Type':'application/json'}},
+        body: JSON.stringify(body||{{}})}}).then(function(r){{return r.json();}});
+    }}
+    var msg = document.getElementById('kg-apply-msg');
+    function say(t){{ if(msg) msg.textContent = t; }}
+    document.querySelectorAll('.kg-apply').forEach(function(b){{
+      b.addEventListener('click', function(){{
+        b.disabled = true; b.textContent = '반영중…';
+        post('api/kg_approve', {{company:b.dataset.co, relation:b.dataset.rel, target:b.dataset.tgt}})
+          .then(function(j){{
+            if(j && j.ok){{ b.textContent = j.ingested? '등재' : '승인';
+              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'). 새로고침하면 갱신됩니다.'); }}
+            else {{ b.disabled=false; b.textContent='반영'; say('실패: '+((j&&j.error)||'?')); }}
+          }}).catch(function(e){{ b.disabled=false; b.textContent='반영'; say('오류: '+e); }});
+      }});
+    }});
+    var all = document.getElementById('kg-apply-all');
+    if(all) all.addEventListener('click', function(){{
+      if(!confirm('대기 중인 관계후보를 전부 반영할까요?\\n취급품목은 수출입 레퍼런스북에 즉시 반영됩니다.')) return;
+      all.disabled = true; all.textContent = '반영중…';
+      post('api/kg_approve_all', {{}}).then(function(j){{
+        if(j && j.ok){{ say('전체반영 완료 — 등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'. 새로고침합니다…');
+          setTimeout(function(){{ location.reload(); }}, 900); }}
+        else {{ all.disabled=false; all.textContent='✅ 전체반영'; say('실패: '+((j&&j.error)||'?')); }}
+      }}).catch(function(e){{ all.disabled=false; all.textContent='✅ 전체반영'; say('오류: '+e); }});
+    }});
+  }})();
+  </script>
 """
 
 
@@ -9578,6 +9694,13 @@ def _render_blog_page(runs: list[dict]) -> str:
     last_ts = ""
     if runs:
         last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
+    # 블로그 관계후보 발굴 비용(kg_blog + 레거시 kg_candidate) — 단순 포워드가
+    # 아니라 Gemini 추출이라 ₩0 아님(사용자 2026-06-24). DART 발굴분(kg_dart)은
+    # dart_feed.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는
+    # 둘 합산(=블로그 카드 + DART 카드).
+    _kg_today_usd, _kg_month_usd = _kg_candidate_cost_usd(
+        kinds={"kg_blog", "kg_candidate"})
+    _kg_cost_val = f"{_krw(_kg_today_usd)} / {_krw(_kg_month_usd)}"
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
@@ -9591,6 +9714,7 @@ def _render_blog_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
     <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달)</div></div>
   </div>
 {_render_kg_candidates_section(_load_kg_candidates())}
   <div class="search-bar">
@@ -11640,6 +11764,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     # paint 후 스냅(2026-06-10 잔존 건 — _DART_FEED_CSS 주석 참조).
     parts: list[str] = [_SCREENER_CSS, "<script>" + _THEME_JS + "</script>",
                         _DART_FEED_CSS]
+    # 관계후보 발굴 비용(kg_dart) — 공시 수집·파싱은 무료(공공 API)지만 계약공시
+    # 본문 관계추출은 Gemini라 ₩0 아님(사용자 2026-06-24). 블로그 발굴분(kg_blog)은
+    # blog.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는 둘 합산.
+    _df_kg_t, _df_kg_m = _kg_candidate_cost_usd(kinds={"kg_dart"})
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
@@ -11648,6 +11776,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   </div>
   <h1>DART 공시</h1>
   <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
+  <p class="sub" style="margin:-6px 0 14px">🔗 관계후보 발굴 비용(계약공시 본문, Gemini): 오늘 {_krw(_df_kg_t)} · 이번 달 {_krw(_df_kg_m)} <span style="opacity:.7">— 공시 수집·파싱은 무료, 본문 관계추출만 과금. 메인 '관계후보'에 합산</span></p>
 
   <div class="df-controls">
     <div class="df-pills">{''.join(pills)}</div>
@@ -12214,6 +12343,7 @@ def _render_market_card(title: str, items: list, yf: dict) -> str:
 
 def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
     """Render the FRED indicators card."""
+    from bot.macro_snapshot import _fmt_asof   # 기준월 포맷 공유(사용자 2026-06-24)
     rows: list[str] = []
     if dollar_idx:
         val_str = f'{dollar_idx["close"]:.2f}'
@@ -12244,8 +12374,12 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
             chg_cell = f'<td class="{cls}">{chg_str}</td>'
         else:
             chg_cell = '<td class="neu">—</td>'
+        # 기준월 라벨 — 헤드라인이 어느 관측월 값인지(FRED 발표지표, 사용자 2026-06-24).
+        _asof = _fmt_asof(d.get("time", ""))
+        _asof_html = (f' <span style="font-size:9px;color:var(--muted)">({_html.escape(_asof)})</span>'
+                      if _asof else "")
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
-                    f'<td>{val_str}</td>{chg_cell}</tr>')
+                    f'<td>{val_str}{_asof_html}</td>{chg_cell}</tr>')
     return ('<div class="mcard"><div class="mcard-title">'
             '핵심 지표 (금리/경제)</div><table>'
             + "".join(rows) + '</table></div>')
@@ -12611,9 +12745,15 @@ def _render_macro_card(ind: dict) -> str:
     # FRED/ECOS 는 12개월 월간이라 12개월(원래대로 그래프 — 사용자 2026-06-10).
     # 라인 기간(1개월/12개월)을 카드에 작게 명시(사용자 2026-06-10).
     spark = _macro_spark_svg(ind.get("spark", []))
+    # 기준월 라벨(사용자 2026-06-24) — 헤드라인 값이 어느 기간 관측치인지(ECOS/FRED
+    # 발표지표). 실시간 가격 카드(asof='')는 미표시. CLAUDE.md 규칙10b(데이터 위젯=
+    # 적용시각·소스 라벨) 정합.
+    asof = _html.escape(ind.get("asof", ""))
+    asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
+                 f'margin-top:2px">기준 {asof}</div>') if asof else ""
     return (
         f'<div class="macard"><div class="ml">{label}{span_html}</div>'
-        f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}</div>'
+        f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}{asof_html}</div>'
     )
 
 

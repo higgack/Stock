@@ -126,8 +126,39 @@ def _candidates_csv_path() -> Path:
 
 
 def _reinforce_csv_path() -> Path:
-    # 운영자 승인 보강 CSV(repo 체크인) — ingest_approved 의 이관 대상.
+    # 운영자 승인 보강 CSV(repo 체크인) — ingest_approved 의 이관 대상(dev/repo).
     return Path(__file__).resolve().parent / "data" / "reinforce_approved.csv"
+
+
+def _runtime_reinforce_path() -> Path:
+    # 대시보드 '반영' 버튼 런타임 오버레이 — HOME 공유(VM 2개 체크아웃 모두 읽음)
+    # + gitignore(.trade/) → auto-update git 충돌 회피. mti_companies.
+    # _runtime_reinforce_path 와 동일 경로(writer↔reader 정합). reinforce_approved.csv
+    # (repo, 큐레이션 영구)와 별개로 load_reinforce_approved 가 병합.
+    base = os.environ.get("TRADE_DATA_DIR") or str(Path.home() / ".trade")
+    return Path(base) / "reinforce_runtime.csv"
+
+
+def _reinforce_pairs(path) -> set:
+    """주어진 reinforce CSV 의 (품목norm, 회사norm) 쌍 — 중복 append 방지용."""
+    pairs: set = set()
+    p = Path(path)
+    if not p.exists():
+        return pairs
+    try:
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            r = csv.reader(f)
+            next(r, None)
+            for row in r:
+                if len(row) < 2:
+                    continue
+                ik = _norm(row[0])
+                for c in (row[1] or "").split(","):
+                    if c.strip():
+                        pairs.add((ik, _norm(c)))
+    except Exception:
+        pass
+    return pairs
 
 
 _CSV_HEADER = ["회사", "관계", "대상", "근거", "출처", "추출일", "상태"]
@@ -203,7 +234,8 @@ def _known_companies() -> set:
 
 def extract_candidates(texts: list[dict], *, model: Optional[str] = None,
                        max_calls: Optional[int] = None,
-                       use_company_filter: bool = True) -> list[dict]:
+                       use_company_filter: bool = True,
+                       kind: str = "kg_candidate") -> list[dict]:
     """텍스트 배치 → 관계 후보(필터·dedup 적용). texts=[{"text":..,"source":..}].
     Gemini(llm_insights 인프라) 호출 — 키없음/킬스위치/상한/실패 시 graceful([]).
     ⛔ 자동 등재 안 함 — 호출부가 write_candidates_csv 로 승인 큐에만 적재."""
@@ -235,7 +267,7 @@ def extract_candidates(texts: list[dict], *, model: Optional[str] = None,
                                ("human", build_human_prompt(text, src))])
             um = getattr(resp, "usage_metadata", None) or {}
             llm_usage.record(model, um.get("input_tokens", 0),
-                             um.get("output_tokens", 0), kind="kg_candidate")
+                             um.get("output_tokens", 0), kind=kind)
             used += 1
             triples = parse_triples(getattr(resp, "content", "") or "")
             out.extend(filter_candidates(
@@ -321,10 +353,12 @@ def _notify_blog_channel(new_cands: list[dict]) -> bool:
 
 
 def run_extraction(texts: list[dict], *, label: str = "블로그",
+                   kind: str = "kg_candidate",
                    model: Optional[str] = None, max_calls: Optional[int] = None,
                    notify: bool = True) -> list[dict]:
     """텍스트 배치 → 후보 추출 → 승인 큐 CSV 적재 → (notify)채널 알림. 소스 무관
-    (블로그·DART공시 공용). label = 알림 표시 소스. 킬스위치 off·키 부재·실패 전부
+    (블로그·DART공시 공용). label = 알림 표시 소스, kind = 비용 집계 소스 태그
+    (kg_blog/kg_dart — 대시보드별 비용 분리). 킬스위치 off·키 부재·실패 전부
     graceful([]). 반환 = CSV 에 새로 적재된 후보(중복 제외)."""
     if not _kg_enabled():
         log.info("kg_candidates: KG_CANDIDATES_ENABLED off — skip")
@@ -343,7 +377,7 @@ def run_extraction(texts: list[dict], *, label: str = "블로그",
             cap = min(len(texts), 12, _li._max_calls())
         except Exception:
             cap = min(len(texts), 12)
-    cands = extract_candidates(texts, model=model, max_calls=cap)
+    cands = extract_candidates(texts, model=model, max_calls=cap, kind=kind)
     new = _new_against_csv(cands)
     if not new:
         log.info("kg_candidates: %s 추출 %d건(전부 기존) — 신규 0", label, len(cands))
@@ -360,7 +394,7 @@ def run_blog_extraction(texts: list[dict], *, model: Optional[str] = None,
                         notify: bool = True) -> list[dict]:
     """블로그 새 글 텍스트 배치 → 후보 추출(run_extraction 블로그 라벨 래퍼).
     blog_watch.run() 후킹용."""
-    return run_extraction(texts, label="블로그", model=model,
+    return run_extraction(texts, label="블로그", kind="kg_blog", model=model,
                           max_calls=max_calls, notify=notify)
 
 
@@ -447,6 +481,92 @@ def ingest_approved(queue_path=None, reinforce_path=None) -> int:
     except Exception as exc:
         log.warning("kg_candidates: ingest queue rewrite failed: %s", exc)
     return len(new_rows)
+
+
+def approve_candidates(keys=None, *, all_pending=False,
+                       queue_path=None, reinforce_path=None) -> dict:
+    """대시보드 '반영' 버튼 — 큐 후보 승인(런타임, 커밋 불요).
+    keys=[(회사,관계,대상),…] 개별반영 / all_pending=True 전체반영.
+    취급품목 → **런타임 reinforce 오버레이**(_runtime_reinforce_path, HOME 공유·
+    gitignore) 적재 → 수출입 레퍼런스북 즉시 병합(load_reinforce_approved) + 큐 상태
+    '등재'. 그 외 관계(테마/납품/고객/계열) → 상태 '승인'만(refbook 영향 없음, 운영자
+    수동). 이미 reinforce 에 있으면 dedup(스킵). 반환 {ingested, approved, total, skipped}.
+
+    ⛔ 영구 큐레이션은 reinforce_approved.csv(repo) — 오버레이는 런타임 누적분.
+    배포(merge) 시 운영자가 오버레이를 repo CSV 로 승격할 수 있음(ingest 헬퍼)."""
+    qp = Path(queue_path) if queue_path else _candidates_csv_path()
+    rp = Path(reinforce_path) if reinforce_path else _runtime_reinforce_path()
+    res = {"ingested": 0, "approved": 0, "total": 0, "skipped": 0}
+    if not qp.exists():
+        return res
+    want = None
+    if not all_pending:
+        want = {(_norm(c), (r or "").strip(), _norm(t))
+                for (c, r, t) in (keys or [])}
+        if not want:
+            return res
+    header = None
+    rows: list[list[str]] = []
+    try:
+        with open(qp, encoding="utf-8-sig", newline="") as f:
+            rd = csv.reader(f)
+            header = next(rd, None)
+            for row in rd:
+                rows.append(row)
+    except Exception as exc:
+        log.warning("kg_candidates: approve queue read failed: %s", exc)
+        return res
+    # 기존 reinforce 쌍(repo CSV + 런타임 오버레이) — 중복 append 방지.
+    existing = _reinforce_pairs(_reinforce_csv_path()) | _reinforce_pairs(rp)
+    new_rows: list[list[str]] = []
+    for row in rows:
+        if len(row) < 7:
+            continue
+        co, rel, tgt, status = (row[0].strip(), row[1].strip(),
+                                row[2].strip(), row[6].strip())
+        if status == "등재" or not (co and rel and tgt):
+            continue
+        if not all_pending and (_norm(co), rel, _norm(tgt)) not in want:
+            continue
+        if rel == "취급품목":
+            pk = (_norm(tgt), _norm(co))
+            if pk not in existing:
+                existing.add(pk)
+                new_rows.append([tgt, co])
+            row[6] = "등재"
+            res["ingested"] += 1
+        elif status != "승인":
+            row[6] = "승인"
+            res["approved"] += 1
+        else:
+            res["skipped"] += 1
+    if new_rows:
+        try:
+            rp.parent.mkdir(parents=True, exist_ok=True)
+            wh = not rp.exists() or rp.stat().st_size == 0
+            with open(rp, "a", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                if wh:
+                    w.writerow(["품목", "DART추가후보상장사"])
+                w.writerows(new_rows)
+        except Exception as exc:
+            log.warning("kg_candidates: overlay append failed: %s", exc)
+    try:
+        with open(qp, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header or _CSV_HEADER)
+            w.writerows(rows)
+    except Exception as exc:
+        log.warning("kg_candidates: approve queue rewrite failed: %s", exc)
+    # 수출입 레퍼런스북 캐시 무효화 — 같은 프로세스면 즉시, 타 프로세스는 오버레이
+    # mtime 변화로 다음 로드 시 재빌드(load_reinforce_approved).
+    try:
+        from trade import mti_companies
+        mti_companies._REINFORCE_APPROVED_CACHE = None
+    except Exception:
+        pass
+    res["total"] = res["ingested"] + res["approved"]
+    return res
 
 
 if __name__ == "__main__":   # pragma: no cover

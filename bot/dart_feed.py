@@ -661,7 +661,7 @@ def extract_kg_candidates(items: list[dict]) -> int:
     if not batch:
         return 0
     try:
-        new = _kg.run_extraction(batch, label="DART공시")
+        new = _kg.run_extraction(batch, label="DART공시", kind="kg_dart")
         return len(new or [])
     except Exception as exc:
         log.warning("dart_feed: kg extraction failed: %s", exc)

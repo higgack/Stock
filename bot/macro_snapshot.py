@@ -336,6 +336,22 @@ def _yf_daily_change(tickers: list[str]) -> dict[str, dict]:
     return out
 
 
+def _fmt_asof(raw: str) -> str:
+    """헤드라인 값의 기준 기간 라벨(사용자 2026-06-24). ECOS/FRED 관측 기간을
+    사람이 읽는 '기준월' 로: YYYYMM→'YYYY-MM', YYYYQn→'YYYY Qn'(분기 GDP),
+    YYYY-MM-DD(FRED)→'YYYY-MM'. 실시간 가격 카드(raw='')는 '' → 라벨 미표시."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if len(s) == 6 and s[4] in ("Q", "q"):      # ECOS 분기 (2026Q1)
+        return f"{s[:4]} {s[4:].upper()}"
+    if len(s) == 6 and s.isdigit():             # ECOS 월 (202604)
+        return f"{s[:4]}-{s[4:]}"
+    if len(s) >= 7 and s[4] == "-":             # FRED 관측일 (2026-04-01)
+        return s[:7]
+    return s
+
+
 # ── ECOS monthly downsample ─────────────────────────────────────────
 def _ecos_series(key: str) -> list[tuple[str, float]]:
     try:
@@ -486,6 +502,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             card_spark: list[float] = []    # 카드 미니(1개월)
             spark_dir = 0
             spark_span = "12개월"           # 라인 기간 라벨(작게 표기)
+            asof_raw = ""                   # 헤드라인 값의 기준 기간(ECOS/FRED 관측월)
             if src == "yf":
                 # 현재값 = 네이버 우선(카드 안 사라짐), 미매핑/실패는 yf 폴백.
                 nv = macro_nv.get(sid)
@@ -547,6 +564,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 if _spot and _spot.get("value") is not None:
                     value = _spot["value"]
                     change = _spot.get("change")
+                    asof_raw = _spot.get("time", "")   # FRED 관측일(YYYY-MM-DD)
                 elif chart_spark:
                     value = chart_spark[-1]
                     if len(chart_spark) >= 2:
@@ -556,6 +574,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 pts = _ecos_series(sid)
                 if pts:
                     value = pts[-1][1]
+                    asof_raw = pts[-1][0]              # ECOS 관측 기간(YYYYMM/YYYYQn)
                     if len(pts) >= 2:
                         change = pts[-1][1] - pts[-2][1]
                     chart_spark = _downsample_monthly(pts)
@@ -570,6 +589,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 "decimals": dec,
                 "spark": card_spark, "spark_dir": spark_dir,
                 "spark_span": spark_span,
+                "asof": _fmt_asof(asof_raw),   # 기준월 라벨(ECOS/FRED만, 실시간 가격 카드는 '')
             })
         return rows
 
