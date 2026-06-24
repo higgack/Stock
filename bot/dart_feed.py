@@ -585,7 +585,8 @@ def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
 # 6000자 truncation 으로 무용 → 짧은 계약 공시만 viable. graceful: 킬스위치·키부재·
 # 예산초과·실패 전부 no-op. seen-set 으로 rcept_no 당 1회만(1분 폴링 재처리 방지).
 _KG_DART_SEEN = Path.home() / ".tradingagents" / "kg_dart_seen.json"
-_KG_DART_MAX_PER_CYCLE = 6     # 사이클(1분)당 신규 계약공시 처리 상한(콜 폭주 방지)
+_KG_DART_MAX_PER_CYCLE = 12    # 사이클(1분)당 계약공시 처리 상한(신규+백필) — run_extraction
+                               # 내부캡(12)·trade 일일 LLM 예산과 동조. 아카이브 점진 드레인.
 
 
 def _kg_dart_seen_load() -> set:
@@ -631,13 +632,35 @@ def extract_kg_candidates(items: list[dict]) -> int:
         return 0
     seen = _kg_dart_seen_load()
     targets = []
-    for it in items:
+    _picked: set = set()
+
+    def _consider(it):
         rc = str(it.get("rcept_no") or "")
         # 쿨다운(_doc_fail_recent) 중인 실패분은 슬롯 점유 방지 위해 제외 — 쿨다운
         # 만료 후 자연 재시도(enrich 와 동일 백오프, transient 실패 영구 유실 방지).
-        if (rc and rc not in seen and _is_kg_contract(it)
+        if (rc and rc not in seen and rc not in _picked and _is_kg_contract(it)
                 and not _doc_fail_recent(rc)):
             targets.append(it)
+            _picked.add(rc)
+
+    for it in items:                       # ① 이번 사이클 신규 계약공시 우선
+        _consider(it)
+        if len(targets) >= _KG_DART_MAX_PER_CYCLE:
+            break
+    # ② 백필 드레이너 — 이미 저장된(DART 대시보드 아카이브) 계약공시 중 미처리분도
+    # 잔여 슬롯만큼 점진 추출(사용자 2026-06-24 '저장된 6월 공시도 나와야'). seen-set 으로
+    # 1회씩 · 예산가드 하 · 매 사이클(1분) 드레인 → 아카이브 소진까지 자동 수렴.
+    if len(targets) < _KG_DART_MAX_PER_CYCLE:
+        try:
+            for _day_items in load_all_archives(days_back=60).values():
+                for it in _day_items:
+                    _consider(it)
+                    if len(targets) >= _KG_DART_MAX_PER_CYCLE:
+                        break
+                if len(targets) >= _KG_DART_MAX_PER_CYCLE:
+                    break
+        except Exception as exc:
+            log.warning("dart_feed: kg backfill scan failed: %s", exc)
     targets = targets[:_KG_DART_MAX_PER_CYCLE]
     if not targets:
         return 0

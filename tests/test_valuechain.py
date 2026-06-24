@@ -50,6 +50,15 @@ class ValueChainTests(unittest.TestCase):
         self.assertIn("수혜 후보", t)              # 공급사 있으면 수혜 팁
         self.assertIn("데이터 없음", vc.format_for_telegram("없는회사", _EDGES))
 
+    def test_resolve_company_lenient(self):
+        # 부분 일치 관대 해석 — 표기 조금 달라도 매칭(사용자 2026-06-24).
+        self.assertEqual(vc.resolve_company("하이닉스", _EDGES), "SK하이닉스")
+        self.assertEqual(vc.resolve_company("sk 하이닉스", _EDGES), "SK하이닉스")
+        self.assertEqual(vc.resolve_company("SK하이닉스", _EDGES), "SK하이닉스")
+        self.assertIsNone(vc.resolve_company("없는회사", _EDGES))
+        # 포맷터가 관대 해석 사용 → 부분어로도 결과
+        self.assertIn("공급사", vc.format_for_telegram("하이닉스", _EDGES))
+
     def test_top_suppliers_and_connected(self):
         # 다고객 납품사: 회사별 (서로 다른) 고객수.
         sup = dict(vc.top_suppliers(_EDGES))
