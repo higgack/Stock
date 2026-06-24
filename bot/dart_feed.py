@@ -600,7 +600,7 @@ def _kg_dart_seen_save(seen: set) -> None:
     try:
         _KG_DART_SEEN.parent.mkdir(parents=True, exist_ok=True)
         _KG_DART_SEEN.write_text(
-            json.dumps({"seen": list(seen)[-4000:]}, ensure_ascii=False),
+            json.dumps({"seen": sorted(seen)[-4000:]}, ensure_ascii=False),
             encoding="utf-8")
     except Exception as exc:
         log.warning("dart_feed: kg seen save failed: %s", exc)
@@ -633,7 +633,10 @@ def extract_kg_candidates(items: list[dict]) -> int:
     targets = []
     for it in items:
         rc = str(it.get("rcept_no") or "")
-        if rc and rc not in seen and _is_kg_contract(it):
+        # 쿨다운(_doc_fail_recent) 중인 실패분은 슬롯 점유 방지 위해 제외 — 쿨다운
+        # 만료 후 자연 재시도(enrich 와 동일 백오프, transient 실패 영구 유실 방지).
+        if (rc and rc not in seen and _is_kg_contract(it)
+                and not _doc_fail_recent(rc)):
             targets.append(it)
     targets = targets[:_KG_DART_MAX_PER_CYCLE]
     if not targets:
@@ -642,11 +645,14 @@ def extract_kg_candidates(items: list[dict]) -> int:
     for it in targets:
         rc = str(it.get("rcept_no"))
         cached = rc in _DOC_TEXT_MEM           # enrich 가 이미 받았으면 콜 0
+        if not cached:
+            _budget_add(1)                     # 실제 document.xml 콜(성공·실패 무관) 반영
         txt = _fetch_doc_text(rc, api_key)
-        if not cached and txt is not None:
-            _budget_add(1)                     # 캐시 미스만 실콜 — 예산 반영
-        seen.add(rc)                           # 성공·실패 무관 1회만(재시도 폭주 방지)
-        if txt and len(txt) >= 200:
+        if txt is None:
+            continue                           # fetch 실패 — seen 안 함. _doc_fail 쿨다운이
+            # 백오프(30분/2h) 후 재시도 → transient 실패가 영구 유실되지 않음.
+        seen.add(rc)                           # 성공분만 1회 확정(재처리 방지)
+        if len(txt) >= 200:
             nm = it.get("corp_name") or it.get("stock_code") or ""
             rn = it.get("report_nm") or ""
             batch.append({"text": txt[:6000],
