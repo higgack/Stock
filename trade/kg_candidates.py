@@ -236,20 +236,52 @@ def extract_candidates(texts: list[dict], *, model: Optional[str] = None,
 
 if __name__ == "__main__":   # pragma: no cover
     import argparse
-    import sqlite3
+    import os
     ap = argparse.ArgumentParser(description="레퍼런스북 관계 후보 발굴(승인 큐)")
     ap.add_argument("--limit", type=int, default=5, help="처리할 텍스트 수(소배치)")
     ap.add_argument("--source", default="blog",
-                    choices=["blog", "file"], help="blog=블로그 아카이브 / file")
+                    choices=["blog", "dart", "file"],
+                    help="blog=블로그 아카이브 / dart=DART 매출제품 / file")
     ap.add_argument("--file", help="--source file 일 때 텍스트 파일 경로")
+    ap.add_argument("--no-filter", action="store_true",
+                    help="known_companies 필터 끔(원시 후보 확인용)")
     args = ap.parse_args()
+
+    # .env 키 로드 — 수동 셸은 봇 서비스와 달리 .env 미로드(GOOGLE/GEMINI 키 부재 →
+    # _llm_ready False → 0건). dotenv 모듈 없이 직접 파싱(ECOS probe 동일 패턴).
+    _envp = Path.home() / "stock" / ".env"
+    if _envp.exists():
+        for line in _envp.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            if k and k not in os.environ:
+                os.environ[k] = v.strip().strip('"').strip("'")
+
+    from trade import llm_insights
+    ready = llm_insights._llm_ready()
 
     batch: list[dict] = []
     if args.source == "file" and args.file:
         batch = [{"text": Path(args.file).read_text(encoding="utf-8"),
                   "source": Path(args.file).name}]
+    elif args.source == "dart":
+        # DART 매출제품 구성 인벤토리 — 회사·제품 텍스트(블로그보다 dense·관계 풍부).
+        try:
+            from trade.dart_revenue import load_inventory
+            inv = load_inventory()
+            for code, entry in list(inv.items())[:args.limit]:
+                prods = entry.get("products") or []
+                nm = entry.get("name") or code
+                txt = f"{nm} 제품 구성: " + ", ".join(
+                    str(p.get("name") or p) for p in prods[:30])
+                if prods:
+                    batch.append({"text": txt, "source": f"dart:{nm}"})
+        except Exception as exc:
+            print(f"DART 인벤토리 로드 실패: {exc}")
     else:
-        # 블로그 아카이브(store.db BeOn 또는 bot blog_archive) 최근 desc 소배치
         try:
             from bot import blog_watch
             p = Path(blog_watch._ARCHIVE_DIR)
@@ -261,9 +293,28 @@ if __name__ == "__main__":   # pragma: no cover
         except Exception as exc:
             print(f"블로그 아카이브 로드 실패: {exc}")
 
-    cands = extract_candidates(batch[:args.limit])
+    batch = [b for b in batch[:args.limit] if (b.get("text") or "").strip()]
+    # 진단(funnel) — 0건 원인 즉시 가시화(실수 12 silent-fail 금지).
+    print(f"[진단] Gemini 백엔드 준비: {ready} · 텍스트 로드: {len(batch)}건 "
+          f"· 소스: {args.source} · 회사필터: {'OFF' if args.no_filter else 'ON'}")
+    if batch:
+        _avg = sum(len(b['text']) for b in batch) // max(len(batch), 1)
+        print(f"[진단] 평균 텍스트 길이 ~{_avg}자 · 예시 출처: "
+              f"{', '.join(b['source'] for b in batch[:3])}")
+    if not ready:
+        print("⚠️ Gemini 키/백엔드 미설정 — .env 의 GOOGLE_API_KEY/GEMINI_API_KEY "
+              "(또는 Vertex) 확인. 0건의 원인.")
+    if not batch:
+        print("⚠️ 로드된 텍스트 0건 — 블로그 아카이브가 비었을 수 있음(새 블로그는 "
+              "첫 사이클에 기존글 seen 처리·아카이브 안 함). '--source dart' 로 시도.")
+
+    cands = extract_candidates(batch, use_company_filter=not args.no_filter)
     n = write_candidates_csv(cands)
     print(f"후보 {len(cands)}건 추출 → 승인 큐 CSV 신규 {n}건 적재 "
           f"({_candidates_csv_path()})")
+    if not cands and ready and batch:
+        print("ℹ️ 텍스트·키는 정상인데 0건 → 회사필터 과다 가능. '--no-filter' 로 "
+              "원시 후보 확인 권장.")
     for c in cands[:20]:
         print(f"  {c['company']} -[{c['relation']}]-> {c['target']}  ({c.get('evidence','')[:50]})")
+
