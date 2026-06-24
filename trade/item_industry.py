@@ -5,16 +5,22 @@ BeOn alert 의 item 은 HSK 세부 품목명(예: '기타골프용품', '니켈�
 
   1) `_MANUAL` — 운영자 확인 override (품목 원문 또는 정규화). fuzzy 금지 규칙상
      자동 보정은 안 하고, 운영자가 확인한 매핑만 여기 1줄로 등재(점진 확대).
+  1.5) `data/item_industry.csv` — 운영자 일괄 확인 매핑(품목,산업). BeOn alert 품목을
+     운영자가 직접 산업분류한 CSV. `_MANUAL` 인라인과 동급 우선(둘 다 자동 추정 전).
+     운영자는 이 CSV 만 갱신하면 산업별 탭·밸류체인 등 산업 사용처에 일괄 반영.
   2) MTI 품목명 정확매칭 (mti_map.mti_names) — {품목명: 산업}.
   3) HSK 품목명(hs_names) → HS6 prefix → 산업 (mti_map.load_mti 의 HSK10→산업).
 
 세 경로 모두 실패하면 None → 호출부가 '미분류' 로 분류(맨 아래 정렬).
 정규화는 영숫자/한글만 남겨 공백·괄호·기호 차이를 흡수(정확매칭 보조, fuzzy 아님).
 
-커버리지는 낮다(샘플 ~18%) — 대부분 미분류. _MANUAL 확대로만 올린다(자동 추정 금지).
+자동 인덱스(2·3) 커버리지는 낮다(샘플 ~18%) — 운영자 확인 CSV(1.5) 가 BeOn alert
+품목 커버리지를 끌어올린다. 신뢰 우선순위는 운영자 확인분(_MANUAL·CSV) > 자동 추정.
 """
 from __future__ import annotations
 
+import csv
+import os
 import re
 from functools import lru_cache
 
@@ -22,9 +28,33 @@ from functools import lru_cache
 #   "MLCC": "전기기기",
 _MANUAL: dict[str, str] = {}
 
+# 운영자 일괄 확인 매핑 파일 (품목,산업) — `_curated()` 가 정규화 인덱스로 로드.
+_CURATED_CSV = os.path.join(os.path.dirname(__file__), "data", "item_industry.csv")
+
 
 def _norm(s: str) -> str:
     return re.sub(r"[^0-9a-z가-힣]", "", (s or "").lower())
+
+
+@lru_cache(maxsize=1)
+def _curated() -> dict[str, str]:
+    """{정규화 품목명: 산업} — 운영자 확인 CSV(data/item_industry.csv). 1회 캐시.
+    파일 부재·깨짐은 graceful({}). 자동 추정 인덱스(_index)보다 우선."""
+    out: dict[str, str] = {}
+    try:
+        with open(_CURATED_CSV, encoding="utf-8-sig", newline="") as f:
+            r = csv.reader(f)
+            next(r, None)                          # 헤더(품목,산업) skip
+            for row in r:
+                if len(row) < 2:
+                    continue
+                item, ind = row[0].strip(), row[1].strip()
+                k = _norm(item)
+                if k and ind:
+                    out.setdefault(k, ind)
+    except Exception:
+        pass
+    return out
 
 
 @lru_cache(maxsize=1)
@@ -69,7 +99,8 @@ def _index() -> dict[str, str]:
 
 
 def industry_for(item: str) -> str:
-    """품목명 → 산업명, 미해석은 '' (호출부가 '미분류'). _MANUAL 최우선 → 인덱스."""
+    """품목명 → 산업명, 미해석은 '' (호출부가 '미분류').
+    우선순위: _MANUAL(인라인) → _curated(운영자 CSV) → _index(MTI/HSK 자동)."""
     if not item:
         return ""
     k = _norm(item)
@@ -77,4 +108,7 @@ def industry_for(item: str) -> str:
         return _MANUAL[item]
     if k in _MANUAL:
         return _MANUAL[k]
+    cur = _curated().get(k)
+    if cur:
+        return cur
     return _index().get(k, "")
