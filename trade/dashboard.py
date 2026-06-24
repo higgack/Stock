@@ -1183,7 +1183,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .country-chip.active,.region-chip.active,.industry-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .country-chip em,.region-chip em,.industry-chip em{font-style:normal;opacity:.6;margin-left:3px;font-size:11px}
 .country-chip.active em,.region-chip.active em,.industry-chip.active em{opacity:.85}
-/* 매트릭스 행/열 축 선택 바 (사용자 2026-06-22) — 품목·회사·국가·지역 2축 조합 */
+/* 매트릭스 행/열 축 선택 바 (사용자 2026-06-22) — 품목·회사·산업·국가·지역 2축 조합 */
 .mx-axisbar{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
 .mx-axis-grp{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
 .mx-axis-lab{font-size:12px;color:var(--text-sub);margin-right:2px}
@@ -1833,11 +1833,11 @@ function buildItemsView(filtered){
   }).join('');
 }
 
-// 다축 매트릭스 (사용자 2026-06-22) — 행/열 축을 품목·회사·국가·지역 중 선택.
+// 다축 매트릭스 (사용자 2026-06-22) — 행/열 축을 품목·회사·산업·국가·지역 중 선택.
 // 셀=그 (행값,열값) alert 수, 색 진하기=빈도, 셀 클릭→최신 alert. 5개 동시는 2D
-// 표라 불가 → 임의 2축 조합(국가×지역 등). 산업은 매핑 신뢰도 낮아 축에서 제외
-// (CSV 로는 industry 포함 전 축 export 가능). 각 축 값은 axisVals 로 다중 분해.
-const _MX_AXES={item:'품목',company:'회사',country:'국가',region:'지역'};
+// 표라 불가 → 임의 2축 조합(산업×국가 등). 산업 축 추가(사용자 2026-06-24, 운영자
+// item_industry CSV 로 분류 완비) — 미분류는 '미분류'. 각 축 값은 axisVals 로 다중 분해.
+const _MX_AXES={item:'품목',company:'회사',industry:'산업',country:'국가',region:'지역'};
 // 국가/지역 축 정제 (사용자 2026-06-22) — 파서가 거른 노이즈(제품명·스펙·국가↔지역
 // 혼입)를 실제 국가/한국지역만 남기고 나머지는 '전국'으로 접는다. GEO_* = 서버 화이
 // 트리스트(geo.py). 표시 축·칩·매트릭스만 정제(원본 alert·CSV·검색은 원값 유지).
@@ -2241,7 +2241,7 @@ document.addEventListener('click',function(e){
   _viewDirty[view]=true;
   _buildView(view);                           // 전역 필터 불변 → 이 뷰만 재빌드
 });
-// 매트릭스 행/열 축 선택 (사용자 2026-06-22) — 품목·회사·국가·지역 임의 2축 조합.
+// 매트릭스 행/열 축 선택 (사용자 2026-06-22) — 품목·회사·산업·국가·지역 임의 2축 조합.
 document.addEventListener('click',function(e){
   const ab=e.target.closest('.mx-axis-chip');
   if(!ab)return;
