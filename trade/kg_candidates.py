@@ -571,12 +571,90 @@ def approve_candidates(keys=None, *, all_pending=False,
     return res
 
 
+def _fill_sources(rows: list, dart_map: dict, blog_list: list) -> int:
+    """빈-출처 행의 source(col 4)를 결정론적으로 채움(순수). dart_map={norm회사:
+    'dart:…'}, blog_list=[(블로그명, norm본문)]. 회사 매칭 DART 우선 → 블로그 본문
+    등장. 반환=채운 건수. 상태/다른 컬럼 불변(출처만)."""
+    filled = 0
+    for row in rows:
+        if len(row) < 7 or (row[4] or "").strip():
+            continue
+        nco = _norm(row[0])
+        if not nco:
+            continue
+        if nco in dart_map:
+            row[4] = dart_map[nco]
+            filled += 1
+            continue
+        for title, ndesc in blog_list:
+            if nco in ndesc:
+                row[4] = f"blog:{title}"
+                filled += 1
+                break
+    return filled
+
+
+def backfill_source(queue_path=None, days_back: int = 60) -> int:
+    """기존 빈-출처(source='') 후보의 출처를 **결정론적·LLM 0·₩0**으로 소급 복원
+    (2026-06-24 출처 버그 이전 적재분). DART 계약공시 공시사명 ↔ 후보 '회사'(계약은
+    공시사=트리플 회사) → 'dart:회사 보고서', 블로그 본문에 회사명 등장 → 'blog:블로그'.
+    상태(승인/등재) 보존 — 출처 컬럼만 갱신. 반환=채운 건수."""
+    qp = Path(queue_path) if queue_path else _candidates_csv_path()
+    if not qp.exists():
+        return 0
+    try:
+        with open(qp, encoding="utf-8-sig", newline="") as f:
+            r = csv.reader(f)
+            header = next(r, None)
+            rows = [row for row in r]
+    except Exception as exc:
+        log.warning("kg_candidates: backfill_source read failed: %s", exc)
+        return 0
+    dart_map: dict = {}
+    try:
+        from bot import dart_feed
+        for day_items in dart_feed.load_all_archives(days_back=days_back).values():
+            for it in day_items:
+                if dart_feed._is_kg_contract(it):
+                    nm = (it.get("corp_name") or "").strip()
+                    if nm:
+                        dart_map.setdefault(
+                            _norm(nm), f"dart:{nm} {it.get('report_nm', '')}".strip())
+    except Exception as exc:
+        log.warning("kg_candidates: backfill_source dart scan failed: %s", exc)
+    blog_list: list = []
+    try:
+        from bot import blog_watch
+        for fp in sorted(Path(blog_watch._ARCHIVE_DIR).glob("*/*.json")):
+            try:
+                rec = json.loads(fp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            title = rec.get("blog_title") or rec.get("blog_id") or "블로그"
+            blog_list.append((title, _norm(rec.get("desc", ""))))
+    except Exception as exc:
+        log.warning("kg_candidates: backfill_source blog scan failed: %s", exc)
+    filled = _fill_sources(rows, dart_map, blog_list)
+    if filled:
+        try:
+            with open(qp, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(header or _CSV_HEADER)
+                w.writerows(rows)
+        except Exception as exc:
+            log.warning("kg_candidates: backfill_source write failed: %s", exc)
+            return 0
+    return filled
+
+
 if __name__ == "__main__":   # pragma: no cover
     import argparse
     import os
     ap = argparse.ArgumentParser(description="레퍼런스북 관계 후보 발굴(승인 큐)")
     ap.add_argument("--ingest", action="store_true",
                     help="승인 큐의 상태=승인+취급품목 행 → reinforce_approved.csv 이관")
+    ap.add_argument("--backfill-source", action="store_true",
+                    help="빈-출처 후보의 출처 결정론적 소급 복원(LLM 0·상태 보존)")
     ap.add_argument("--limit", type=int, default=5, help="처리할 텍스트 수(소배치)")
     ap.add_argument("--source", default="blog",
                     choices=["blog", "dart", "file"],
@@ -600,6 +678,12 @@ if __name__ == "__main__":   # pragma: no cover
             k = k.strip()
             if k and k not in os.environ:
                 os.environ[k] = v.strip().strip('"').strip("'")
+
+    if getattr(args, "backfill_source", False):
+        n = backfill_source()
+        print(f"출처 소급 복원: {n}건 채움 (LLM 0·상태 보존). 대시보드 regen 후 반영.")
+        import sys as _sys
+        _sys.exit(0)
 
     if args.ingest:
         n = ingest_approved()

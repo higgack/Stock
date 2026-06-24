@@ -28,6 +28,22 @@ class KgCandidatesTests(unittest.TestCase):
         final = kg.filter_candidates(first, source="")   # extract_candidates 교차 dedup 모사
         self.assertEqual(final[0]["source"], "dart:삼성전기 단일판매공급계약")
 
+    def test_fill_sources_deterministic(self):
+        # 빈-출처 소급 복원: 회사↔DART 공시사 매칭 / 블로그 본문 등장. 상태 보존.
+        rows = [
+            ["펨트론", "고객", "마이크론", "근거", "", "2026-06-24", "후보"],
+            ["SK하이닉스", "취급품목", "HBM", "근거", "", "2026-06-24", "승인"],
+            ["LG에너지솔루션", "테마", "2차전지", "근거", "blog:기존", "2026-06-24", "후보"],
+        ]
+        dart_map = {kg._norm("펨트론"): "dart:펨트론 단일판매공급계약"}
+        blog_list = [("필승", kg._norm("...sk하이닉스 HBM 증설..."))]
+        filled = kg._fill_sources(rows, dart_map, blog_list)
+        self.assertEqual(filled, 2)                       # 펨트론(dart) + SK(blog)
+        self.assertEqual(rows[0][4], "dart:펨트론 단일판매공급계약")
+        self.assertEqual(rows[1][4], "blog:필승")
+        self.assertEqual(rows[2][4], "blog:기존")          # 이미 있던 출처 불변
+        self.assertEqual(rows[1][6], "승인")               # 상태 보존
+
     def test_parse_triples_garbage(self):
         self.assertEqual(kg.parse_triples("not json"), [])
         self.assertEqual(kg.parse_triples(""), [])

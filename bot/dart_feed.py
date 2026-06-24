@@ -5029,6 +5029,19 @@ if __name__ == "__main__":
     items = run_once()
     print(f"dart_feed: {len(items)} disclosures archived")
 
+    # kg 출처 소급 복원 1회 — 2026-06-24 출처 버그 이전 적재분(빈 source)을 결정론적
+    # 으로 채움(LLM 0·₩0·상태 보존). marker gate(1회만). 아카이브 로드 후 실행.
+    try:
+        _m = Path.home() / ".tradingagents" / "kg_source_backfill.done"
+        if not _m.exists():
+            from trade import kg_candidates as _kgc
+            _n = _kgc.backfill_source()
+            _m.parent.mkdir(parents=True, exist_ok=True)
+            _m.write_text("done")
+            print(f"dart_feed: kg 출처 소급 복원 {_n}건")
+    except Exception as exc:
+        print(f"dart_feed: kg source backfill failed: {exc}")
+
     # 레퍼런스북 관계후보 자동발굴 — 새 계약 공시 본문에서 취급품목·납품·고객 관계
     # → 승인 큐 + 채널 알림(블로그와 동일 인프라). graceful·killswitch·seen-gated.
     try:
