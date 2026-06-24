@@ -31,3 +31,23 @@ def test_manual_override_takes_priority(monkeypatch):
 def test_index_is_dict():
     idx = ii._index()
     assert isinstance(idx, dict) and len(idx) > 100   # 구조화 사전 비어있지 않음
+
+
+def test_curated_csv_loaded_and_priority():
+    # 운영자 확인 CSV(data/item_industry.csv) 로드 + 자동 인덱스보다 우선.
+    cur = ii._curated()
+    assert isinstance(cur, dict) and len(cur) > 100    # 일괄 매핑 적재됨
+    # 동박: 인덱스(HS→비철금속)와 다르게 운영자 확인은 이차전지(전구체 맥락) → CSV 우선.
+    assert ii._index().get(ii._norm("동박")) == "비철금속"
+    assert ii.industry_for("동박") == "이차전지"
+    # 표기 정규화(공백) 견고 — 같은 결과.
+    assert ii.industry_for("플래시 메모리") == "반도체"
+    assert ii.industry_for(" 플래시  메모리 ") == "반도체"
+
+
+def test_curated_all_within_taxonomy():
+    # CSV 의 모든 산업은 표준 MTI 산업 ∪ '기타' (오타·신규라벨 누수 방지).
+    from trade import mti_map
+    valid = set(mti_map.industries()) | {"기타"}
+    bad = sorted({v for v in ii._curated().values() if v not in valid})
+    assert not bad, bad
