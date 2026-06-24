@@ -9717,6 +9717,8 @@ def _render_blog_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="dart_feed.html">📋 DART 공시</a>
+    · <a href="valuechain.html">🔗 밸류체인</a>
   </div>
   <h1>📝 블로그 Archive</h1>
   <p class="sub">네이버 블로그 새 글 자동 수집(30분)</p>
