@@ -2077,7 +2077,7 @@ async def cmd_valuechain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             top = _vc.top_connected(edges, 15)
             sup = _vc.top_suppliers(edges, 12)
             lines = ["🔗 <b>밸류체인 스크리너</b>",
-                     "사용: <code>/valuechain SK하이닉스</code> → 공급사·고객·수출품목·동종사",
+                     "사용: <code>/valuechain 회사·품목·업종</code> — 예) SK하이닉스(회사)·메모리반도체(품목)·반도체(업종)",
                      ""]
             if top:
                 lines.append("📌 <b>연결 상위</b>: "
@@ -3511,7 +3511,7 @@ def _static_command_registry() -> dict:
         "screener_list": (cmd_screener_list, "Screener 도메인 목록 (전체)"),
         "sites": (cmd_sites, "참고 사이트"),
         "blog": (cmd_blog, "감시 블로그 목록 (변화하는기업·필승·의교창·천상천하·메르·작은투자자)"),
-        "valuechain": (cmd_valuechain, "밸류체인 조회/스크리너 (/valuechain 회사 — 공급사·고객·수출품목·동종사)"),
+        "valuechain": (cmd_valuechain, "밸류체인 조회/스크리너 (/valuechain 회사·품목·업종 — 공급사·고객·수출품목·동종사)"),
         "watch": (cmd_watch, "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
         "watchlist": (cmd_watchlist, "감시 목록 보기"),
         "unwatch": (cmd_unwatch, "감시 삭제 (TICKER/id/all)"),
