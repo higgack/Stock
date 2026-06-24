@@ -606,7 +606,7 @@ def generate() -> tuple[str, float, str | None] | None:
                              elapsed_sec=_time.monotonic() - _t0,
                              kind="daily", png_rel=png_rel)
 
-    title = f"📊 <b>한국 Daily Byte - {_iso_dot(date)}</b>"
+    title = f"📰 <b>한국 Daily Byte - {_iso_dot(date)}</b>"
     full = f"{title}\n<i>장 마감 후 KR 수급 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"
     return full, cost_krw, png_path
 
@@ -737,7 +737,7 @@ def main() -> int:
              cost, "yes" if png else "no")
     # 인포그래픽 먼저(사진) → 텍스트 브리프. 사진 실패해도 텍스트는 진행.
     if png:
-        if push_telegram_photo(png, "📊 Daily Byte — KR 수급 인포그래픽"):
+        if push_telegram_photo(png, "📰 Daily Byte — KR 수급 인포그래픽"):
             log.info("daily_byte: infographic photo pushed")
     ok = push_telegram(body)
     log.info("daily_byte: push %s", "OK" if ok else "with failures")

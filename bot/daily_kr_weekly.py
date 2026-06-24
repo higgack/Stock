@@ -138,7 +138,7 @@ def generate() -> tuple[str, float] | None:
     # 주간 범위 (월~금) 제목
     days = [b["date"] for b in briefs]
     span = f"{days[0][5:].replace('-', '.')}~{days[-1][5:].replace('-', '.')}"
-    title = f"📊 <b>한국 Weekly Byte - {span}</b>"
+    title = f"📰 <b>한국 Weekly Byte - {span}</b>"
     full = (f"{title}\n<i>주간 KR 수급 종합 ({len(briefs)}일 · 생성 "
             f"{today:%m.%d %H:%M} KST)</i>\n\n{body}")
     return full, cost_krw
