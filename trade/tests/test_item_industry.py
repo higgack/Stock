@@ -37,12 +37,24 @@ def test_curated_csv_loaded_and_priority():
     # 운영자 확인 CSV(data/item_industry.csv) 로드 + 자동 인덱스보다 우선.
     cur = ii._curated()
     assert isinstance(cur, dict) and len(cur) > 100    # 일괄 매핑 적재됨
-    # 동박: 인덱스(HS→비철금속)와 다르게 운영자 확인은 이차전지(전구체 맥락) → CSV 우선.
-    assert ii._index().get(ii._norm("동박")) == "비철금속"
-    assert ii.industry_for("동박") == "이차전지"
+    # 전해액: 자동 인덱스는 미분류('기타')인데 운영자 확인은 이차전지 → CSV 우선(보강).
+    assert ii._index().get(ii._norm("전해액")) in (None, "", "기타")
+    assert ii.industry_for("전해액") == "이차전지"
     # 표기 정규화(공백) 견고 — 같은 결과.
     assert ii.industry_for("플래시 메모리") == "반도체"
     assert ii.industry_for(" 플래시  메모리 ") == "반도체"
+
+
+def test_curated_no_conflict_with_mti_map():
+    # 정합 게이트: 겹치는 품목명에서 curated 가 mti_map(레퍼런스북·산업트렌드·히트맵
+    # 단일 출처)과 어긋나면 안 됨. 단 mti_map 이 '기타'(미분류)면 curated 보강 허용.
+    idx = ii._index()
+    conflicts = []
+    for k, ind in ii._curated().items():
+        ref = idx.get(k)
+        if ref and ref != "기타" and ref != ind:
+            conflicts.append((k, ind, ref))
+    assert not conflicts, conflicts
 
 
 def test_curated_all_within_taxonomy():
