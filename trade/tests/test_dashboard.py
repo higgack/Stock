@@ -417,17 +417,22 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("country-mix", html)
 
     def test_matrix_multi_axis(self):
-        # 다축 매트릭스 (사용자 2026-06-22) — 행/열 축을 품목·회사·국가·지역 중 선택.
+        # 다축 매트릭스 — 행/열 축을 품목·회사·산업·국가·지역 중 선택
+        # (산업 축 추가 사용자 2026-06-24, item_industry CSV 분류 완비).
         html = render_html(self.db_path)
         self.assertIn("_MX_AXES", html)
         self.assertIn("function axisVals(", html)
         self.assertIn("mx-axisbar", html)
         self.assertIn("mx-axis-chip", html)
         self.assertIn("data-axis=", html)
-        # 4개 축 라벨 모두(산업 제외 — 매핑 없음)
-        for lab in ("품목", "회사", "국가", "지역"):
+        # 5개 축 라벨 모두(산업 포함)
+        for lab in ("품목", "회사", "산업", "국가", "지역"):
             self.assertIn(lab, html)
-        self.assertIn("item:'품목',company:'회사',country:'국가',region:'지역'", html)
+        self.assertIn(
+            "item:'품목',company:'회사',industry:'산업',country:'국가',region:'지역'",
+            html)
+        # 산업 축 분해 — axisVals 가 a.industry(미분류 fallback) 반환
+        self.assertIn("if(axis==='industry')return [a.industry||'미분류']", html)
         # 행/열 축 state + 축 칩 클릭 핸들러
         self.assertIn("mxRow:'item',mxCol:'country'", html)
         self.assertIn("closest('.mx-axis-chip')", html)
