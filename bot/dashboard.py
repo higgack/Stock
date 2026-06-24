@@ -9562,67 +9562,76 @@ def _load_kg_candidates(limit: int = 60) -> list[dict]:
 
 
 def _render_kg_candidates_section(cands: list[dict]) -> str:
-    """블로그 페이지 '🔗 관계후보' 섹션 — 승인 대기 큐 표. 운영자 검토 전용
-    (자동 등재 없음). 상태별 배지(후보/승인/등재). 비면 섹션 자체 생략."""
+    """블로그 페이지 '🔗 관계후보' 섹션 — 대기('후보') 표 + '✅ 처리됨'(승인/등재)
+    접이식 분리(사용자 2026-06-24 옵션B). 운영자 검토 전용(자동 등재 없음)."""
     import html as _h
-    pend = [c for c in cands if c.get("status") not in ("등재",)]
-    if not pend:
+    waiting = [c for c in cands if c.get("status", "후보") == "후보"]
+    done = [c for c in cands if c.get("status", "후보") in ("승인", "등재")]
+    if not waiting and not done:
         return ""
-    # 실제 반영 대기 = '후보'만('승인'은 이미 처리됨, 표엔 남기되 카운트 제외 —
-    # 독립리뷰 2026-06-24 M2 카운트 과대 fix).
-    n_wait = sum(1 for c in pend if c.get("status", "후보") == "후보")
-    _badge = {"후보": "#a16207", "승인": "#15803d", "등재": "#6b7280"}
-    rows = []
-    for c in pend:
+    n_wait, n_done = len(waiting), len(done)
+    # 등재=취급품목→레퍼런스북 반영(초록), 승인=납품/고객 등 기록만(회색), 후보=대기(amber).
+    _badge = {"후보": "#a16207", "승인": "#6b7280", "등재": "#15803d"}
+
+    def _row(c, with_btn):
         co = _h.escape(c.get("company", ""))
         rel = _h.escape(c.get("relation", ""))
         tgt = _h.escape(c.get("target", ""))
         ev = _h.escape((c.get("evidence", "") or "")[:120])
-        src = _h.escape((c.get("source", "") or "").replace("blog:", ""))
+        src = _h.escape((c.get("source", "") or "").replace("blog:", "").replace("dart:", ""))
         dt = _h.escape(c.get("date", ""))
         st = c.get("status", "후보")
         col = _badge.get(st, "#a16207")
-        # data-* 로 키 전달(버튼 JS). 취급품목 = reinforce 반영, 그 외 = 승인표시.
-        _aco = _h.escape(c.get("company", ""), quote=True)
-        _arel = _h.escape(c.get("relation", ""), quote=True)
-        _atgt = _h.escape(c.get("target", ""), quote=True)
-        btn = (f'<button class="kg-apply" data-co="{_aco}" data-rel="{_arel}" '
-               f'data-tgt="{_atgt}">반영</button>'
-               if st == "후보" else
-               f'<span style="background:{col};color:#fff;border-radius:8px;'
-               f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span>')
-        rows.append(
-            f'<tr><td><b>{co}</b></td>'
-            f'<td style="color:var(--muted)">{rel}</td>'
-            f'<td>{tgt}</td>'
-            f'<td style="color:var(--muted);font-size:12px">{ev}</td>'
-            f'<td style="color:var(--muted);font-size:12px">{src}</td>'
-            f'<td style="font-size:12px">{dt}</td>'
-            f'<td>{btn}</td></tr>')
+        if with_btn:
+            _aco = _h.escape(c.get("company", ""), quote=True)
+            _arel = _h.escape(c.get("relation", ""), quote=True)
+            _atgt = _h.escape(c.get("target", ""), quote=True)
+            last = (f'<button class="kg-apply" data-co="{_aco}" data-rel="{_arel}" '
+                    f'data-tgt="{_atgt}">반영</button>')
+        else:
+            last = (f'<span style="background:{col};color:#fff;border-radius:8px;'
+                    f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span>')
+        return (f'<tr><td><b>{co}</b></td><td style="color:var(--muted)">{rel}</td>'
+                f'<td>{tgt}</td><td style="color:var(--muted);font-size:12px">{ev}</td>'
+                f'<td style="color:var(--muted);font-size:12px">{src}</td>'
+                f'<td style="font-size:12px">{dt}</td><td>{last}</td></tr>')
+
+    _head_th = ('<thead><tr style="text-align:left;border-bottom:1px solid var(--border)">'
+                '<th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th>'
+                '<th>추출일</th><th>반영</th></tr></thead>')
+    wait_tbody = ("".join(_row(c, True) for c in waiting)
+                  or '<tr><td colspan="7" style="color:var(--muted);padding:8px">반영 대기 후보가 없습니다 — 새 글·공시가 오면 채워집니다.</td></tr>')
+    done_rows = "".join(_row(c, False) for c in done)
+    applyall = (
+        f'<div style="margin:0 0 10px"><button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({n_wait}건)</button>'
+        f'<span id="kg-apply-msg" style="margin-left:10px;font-size:12px;color:var(--muted)"></span></div>'
+    ) if waiting else ''
+    done_block = (
+        f'<details class="day" style="margin-top:12px"><summary class="day-head" style="cursor:pointer">'
+        f'<span>✅ 처리됨 <span style="color:var(--muted);font-weight:400;font-size:12px">(등재=레퍼런스북 반영 · 승인=기록만 · {n_done}건)</span></span></summary>'
+        f'<div style="overflow-x:auto;padding:8px 0"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+        f'{_head_th}<tbody>{done_rows}</tbody></table></div></details>'
+    ) if done else ''
     return f"""
   <details class="month" style="margin:6px 0 14px" open>
     <summary class="month-head">
-      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {n_wait}건)</span></span>
+      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 반영 대기 {n_wait}건)</span></span>
       <span class="count">검토 큐</span>
     </summary>
     <div class="month-body" style="padding:10px 12px">
       <p style="color:var(--muted);font-size:12px;margin:0 0 8px;line-height:1.6">
         새 블로그 글·DART 계약공시 본문에서 자동 추출한 <b>(회사)–(관계)–(대상)</b> 후보입니다.
         ⛔ 자동 등재 안 함 — <b>반영</b> 버튼으로 승인하세요. <b>취급품목</b>은 수출입 레퍼런스북에
-        즉시 반영(중복 자동 스킵), 그 외 관계는 '승인' 표시만(운영자 수동 반영).
+        즉시 반영(중복 자동 스킵), 그 외 관계(납품/고객/계열)는 '승인' 기록만(현재 소비 surface 없음).
       </p>
-      <div style="margin:0 0 10px">
-        <button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({n_wait}건)</button>
-        <span id="kg-apply-msg" style="margin-left:10px;font-size:12px;color:var(--muted)"></span>
-      </div>
+      {applyall}
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
-            <th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th><th>추출일</th><th>반영</th>
-          </tr></thead>
-          <tbody>{''.join(rows)}</tbody>
+          {_head_th}
+          <tbody>{wait_tbody}</tbody>
         </table>
       </div>
+      {done_block}
     </div>
   </details>
   <style>
@@ -9643,7 +9652,7 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
         post('api/kg_approve', {{company:b.dataset.co, relation:b.dataset.rel, target:b.dataset.tgt}})
           .then(function(j){{
             if(j && j.ok){{ b.textContent = j.ingested? '등재' : '승인';
-              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'). 새로고침하면 갱신됩니다.'); }}
+              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'). 새로고침하면 처리됨으로 이동합니다.'); }}
             else {{ b.disabled=false; b.textContent='반영'; say('실패: '+((j&&j.error)||'?')); }}
           }}).catch(function(e){{ b.disabled=false; b.textContent='반영'; say('오류: '+e); }});
       }});
