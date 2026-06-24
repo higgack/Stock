@@ -9568,6 +9568,9 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
     pend = [c for c in cands if c.get("status") not in ("등재",)]
     if not pend:
         return ""
+    # 실제 반영 대기 = '후보'만('승인'은 이미 처리됨, 표엔 남기되 카운트 제외 —
+    # 독립리뷰 2026-06-24 M2 카운트 과대 fix).
+    n_wait = sum(1 for c in pend if c.get("status", "후보") == "후보")
     _badge = {"후보": "#a16207", "승인": "#15803d", "등재": "#6b7280"}
     rows = []
     for c in pend:
@@ -9599,7 +9602,7 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
     return f"""
   <details class="month" style="margin:6px 0 14px" open>
     <summary class="month-head">
-      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {len(pend)}건)</span></span>
+      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그·DART공시 자동발굴 · 승인 대기 {n_wait}건)</span></span>
       <span class="count">검토 큐</span>
     </summary>
     <div class="month-body" style="padding:10px 12px">
@@ -9609,7 +9612,7 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
         즉시 반영(중복 자동 스킵), 그 외 관계는 '승인' 표시만(운영자 수동 반영).
       </p>
       <div style="margin:0 0 10px">
-        <button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({len(pend)}건)</button>
+        <button id="kg-apply-all" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">✅ 전체반영 ({n_wait}건)</button>
         <span id="kg-apply-msg" style="margin-left:10px;font-size:12px;color:var(--muted)"></span>
       </div>
       <div style="overflow-x:auto">
