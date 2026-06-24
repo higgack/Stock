@@ -2070,7 +2070,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="dart_feed.html">📋 DART 공시</a>'
         ' · <a href="valuechain.html">🔗 밸류체인</a>'
         f' · <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>'
-        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
+        ' · <a href="daily_byte.html">📰 Daily Byte</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="blog.html">📝 블로그</a>'
     )
@@ -8698,7 +8698,7 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {
     const card = btn.closest('.card'); if (!card) return;
     const date = card.dataset.date; const filename = card.dataset.filename;
     if (!date || !filename) return;
-    if (!confirm('📊 ' + date + ' / ' + filename + ' Daily Byte 기록을 삭제할까요?')) return;
+    if (!confirm('📰 ' + date + ' / ' + filename + ' Daily Byte 기록을 삭제할까요?')) return;
     btn.disabled = true; btn.textContent = '⏳';
     fetch('api/daily_byte_delete', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -8785,7 +8785,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
-  <h1>📊 Daily Byte — Archive</h1>
+  <h1>📰 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 08:00 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
 
   <div class="stats">
@@ -8869,7 +8869,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
                 title = f"{kind_badge} · {_html.escape(date)}"
                 # Body is already Telegram-safe HTML (<b>/<i> only) from
                 # daily_kr_flow._post_process. Strip the leading title line
-                # (Python adds '📊 <b>Daily Byte - ...</b>' + <i>subtitle</i>)
+                # (Python adds '📰 <b>Daily Byte - ...</b>' + <i>subtitle</i>)
                 # so the card doesn't double up on the heading.
                 body = (r.get("body") or "").strip()
                 # 수평선/구분선 줄 제거 (render 시점 — strip-fix 이전에 아카이브된
@@ -10162,7 +10162,7 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 NOAH 종목분석</a>
     · <a href="screener.html">📊 Screener</a>
-    · <a href="daily_byte.html">📊 Daily Byte</a>
+    · <a href="daily_byte.html">📰 Daily Byte</a>
   </div>
   <h1>🔔 워치리스트</h1>
   <p class="sub">조건 충족 시 텔레그램 알림 (30분 간격 체크 · LLM 0 · 비용 ₩0). 등록/삭제는 텔레그램 <code>/watch</code> · <code>/unwatch</code>.</p>
@@ -13673,7 +13673,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="valuechain.html">🔗 밸류체인</a>
     &middot; <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>
-    &middot; <a href="daily_byte.html">📊 Daily Byte</a>
+    &middot; <a href="daily_byte.html">📰 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
     &nbsp;|&nbsp;

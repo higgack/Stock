@@ -355,7 +355,7 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {
     const card = btn.closest('.card'); if (!card) return;
     const date = card.dataset.date; const filename = card.dataset.filename;
     if (!date || !filename) return;
-    if (!confirm('📊 ' + date + ' / ' + filename + ' Daily Byte 기록을 삭제할까요?')) return;
+    if (!confirm('📰 ' + date + ' / ' + filename + ' Daily Byte 기록을 삭제할까요?')) return;
     btn.disabled = true; btn.textContent = '⏳';
     fetch('api/daily_byte_delete', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
