@@ -326,9 +326,17 @@ def run_blog_extraction(texts: list[dict], *, model: Optional[str] = None,
     texts = [t for t in (texts or []) if (t.get("text") or "").strip()]
     if not texts:
         return []
-    # 글당 1콜 — 사이클당 과다 방지 상한(llm_insights 일일 상한과 별개). 새 글은
-    # 보통 0~수건이라 비용 미미(flash). 길이 bound 는 build_human_prompt 가 절단.
-    cap = max_calls if max_calls is not None else min(len(texts), 12)
+    # 글당 1콜 — 사이클당 과다 방지 상한 12 + 설정 일일상한(_max_calls)으로 동시
+    # bound(독립 리뷰 2026-06-24: 12 가 전역 예산 가드 우회 않게). 새 글은 보통
+    # 0~수건이라 비용 미미(flash). 길이 bound 는 build_human_prompt 가 절단.
+    if max_calls is not None:
+        cap = max_calls
+    else:
+        try:
+            from trade import llm_insights as _li
+            cap = min(len(texts), 12, _li._max_calls())
+        except Exception:
+            cap = min(len(texts), 12)
     cands = extract_candidates(texts, model=model, max_calls=cap)
     new = _new_against_csv(cands)
     if not new:

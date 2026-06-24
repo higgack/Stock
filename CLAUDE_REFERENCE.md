@@ -1357,6 +1357,29 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   `_COMPANY_CANON['삼성디스플레이(삼성전자)']='삼성디스플레이'` 로 dedup·매칭 통합.
   이런 '같은 회사 다른 표기' 케이스 = _COMPANY_CANON, 순수 오타 = _COMPANY_TYPO.
 
+## 레퍼런스북 관계후보 자동발굴 (kg-gen 패턴, 2026-06-24)
+
+7개 RAG/KB/KG 라이브러리 검토(사용자 2026-06-23) 결론 = **kg-gen(stair-lab)** 의
+핵심 아이디어만 cherry-pick(LLM 구조화추출 → (회사,관계,대상) 트리플 → dedup),
+의존성(DSPy) 없이 기존 trade Gemini 인프라 재사용 → ₩0 추가 인프라. 나머지(kotaemon/
+ApeRAG/AKB)는 인프라·라이선스 부담으로 skip, OpenKB vectorless RAG 는 후순위.
+- **모듈** `trade/kg_candidates.py`. 관계 어휘 = 취급품목/테마/납품/고객/계열. 추출
+  모델 = flash 기본(`KG_LLM_MODEL`/`--model` override). graceful(키없음/킬스위치/실패 → []).
+- **블로그쪽 적재**(사용자 "트레이드 대시보드말고 블로그쪽" + "둘 다(페이지+채널)"):
+  `bot/blog_watch.run()` 이 새 글 본문을 모아 `run_blog_extraction()` 후킹(자동화-first,
+  blog-watch.timer 30분 편승 — 별도 타이머 없음). 새 글 없으면 no-op. 킬스위치
+  `KG_CANDIDATES_ENABLED`(기본 on). 사이클당 콜 = min(새글수, 12, 일일상한).
+- **승인 큐** = `~/.tradingagents/kg_candidates.csv`(gitignore → auto-update git 충돌
+  회피, VM 영속). 헤더 회사/관계/대상/근거/출처/추출일/상태. 중복알림 방지=`_new_against_csv`.
+- **알림** = 블로그 채널(`daily_kr_flow.push_telegram`, CHANNEL_CHAT_IDS) 1건/배치.
+  **대시보드** = blog.html 상단 '🔗 관계후보' 섹션(`_render_kg_candidates_section`,
+  상태 배지·등재분 숨김·범례).
+- **이관**(운영자 승인분만, CLAUDE.md 정합): 큐에서 상태='승인'+관계='취급품목' 행 →
+  `reinforce_approved.csv`(품목=대상, 회사=회사). `ingest_approved()` / CLI `--ingest`.
+  ⛔ reinforce 는 repo 체크인 — dev/repo 컨텍스트서 실행·커밋·배포(VM 직접 실행 시 git
+  충돌). 테마/납품 등은 자동등재 안 함(운영자 수동). 비용 = trade llm_usage 에
+  kind=kg_candidate 로 집계(새 비용 surface 아님). 회귀 `test_kg_candidates`(10).
+
 ## Multi-market expansion (US → KR → JP → TW → CN)
 
 Phase tracking — what's done, what's blocking the next phase:
