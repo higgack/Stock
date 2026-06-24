@@ -1377,8 +1377,19 @@ ApeRAG/AKB)는 인프라·라이선스 부담으로 skip, OpenKB vectorless RAG 
 - **이관**(운영자 승인분만, CLAUDE.md 정합): 큐에서 상태='승인'+관계='취급품목' 행 →
   `reinforce_approved.csv`(품목=대상, 회사=회사). `ingest_approved()` / CLI `--ingest`.
   ⛔ reinforce 는 repo 체크인 — dev/repo 컨텍스트서 실행·커밋·배포(VM 직접 실행 시 git
-  충돌). 테마/납품 등은 자동등재 안 함(운영자 수동). 비용 = trade llm_usage 에
-  kind=kg_candidate 로 집계(새 비용 surface 아님). 회귀 `test_kg_candidates`(10).
+  충돌). 테마/납품 등은 자동등재 안 함(운영자 수동). 회귀 `test_kg_candidates`(11).
+- **DART 소스 추가(2026-06-24)**: dart_feed 1분 사이클(`__main__` run_once 후)에서 새
+  계약 공시(category=계약/제목 공급계약·단일판매·수주) **본문**(document.xml 산문)을
+  `kg_candidates.run_extraction(label="DART공시")` 로 추출 — 표 파서·reinforce 가 못
+  잡는 공급망(A→B 납품)·고객 관계 소스. seen-set(`~/.tradingagents/kg_dart_seen.json`,
+  성공분만 확정·실패는 `_doc_fail_recent` 쿨다운 후 재시도)·사이클당 6건 cap·
+  `_BUDGET_HARD` 예산가드·`_DOC_TEXT_MEM` 캐시히트 재사용. 블로그·DART 후보는 같은
+  큐·대시보드·채널.
+- **비용 surface(2026-06-24, 사용자 '블로그도 공짜 아니니')**: kg = Gemini 추출이라
+  ₩0 아님 → `_compute_stats`(trade usage.jsonl 의 kind=kg_candidate 를 수출입과 분리한
+  **'관계후보' 버킷**) + `_render_stats_panel` 월 합산 + `cmd_usage`('관계후보(kg)' 줄)
+  + blog.html 비용카드(`_kg_candidate_cost_usd`, 오늘/이번 달) 동시 갱신. kind 미기록
+  옛 trade 레코드는 수출입(기존 동작 보존). **kg 비용 변경 시 이 4곳 동기.**
 
 ## Multi-market expansion (US → KR → JP → TW → CN)
 

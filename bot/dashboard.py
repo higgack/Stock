@@ -428,7 +428,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
     # — Standard View 폐기 #148 + 소스 삭제.)
     _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
-                 "부동산": 0.0, "블로그": 0.0,
+                 "부동산": 0.0, "블로그": 0.0, "관계후보": 0.0,
                  "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
@@ -500,12 +500,18 @@ def _compute_stats(records: list[dict]) -> dict:
                                 float(_ts), kst).strftime("%Y-%m-%d")
                         except Exception:
                             continue
+                    # kg 관계후보(블로그·DART 자동발굴)는 같은 trade usage.jsonl
+                    # 이지만 수출입과 분리 — kind 로 버킷 구분(사용자 2026-06-24
+                    # '블로그도 공짜 아니니 별도 비용카드 + 메인 합산'). kind 미기록
+                    # 옛 레코드는 수출입(기존 동작 보존).
+                    _bucket = ("관계후보" if rec.get("kind") == "kg_candidate"
+                               else "수출입")
                     if rec_day_tr.startswith(month_prefix):
                         month_cost_usd += cost_usd_tr
-                        month_cost_by_sub_usd["수출입"] += cost_usd_tr
+                        month_cost_by_sub_usd[_bucket] += cost_usd_tr
                         if rec_day_tr == today_str:
                             today_cost_usd += cost_usd_tr
-                            today_cost_by_sub_usd["수출입"] += cost_usd_tr
+                            today_cost_by_sub_usd[_bucket] += cost_usd_tr
         except Exception as exc:
             log.warning("dashboard: trade usage read failed: %s", exc)
 
@@ -651,7 +657,7 @@ def _render_stats_panel(stats: dict) -> str:
     sub_parts: list[str] = []
     for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
                        ("부동산", "부동산"), ("블로그", "블로그"),
-                       ("수출입", "수출입")]:
+                       ("관계후보", "관계후보"), ("수출입", "수출입")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
             sub_parts.append(f"{label} {_krw(m_usd)}")
@@ -9469,6 +9475,59 @@ def _load_blog_runs() -> list[dict]:
     return runs
 
 
+def _kg_candidate_cost_usd() -> tuple[float, float]:
+    """관계후보(kg) LLM 비용 — trade usage.jsonl 의 kind=kg_candidate 만 (today, month)
+    USD 합산. 메인 합산(_compute_stats 관계후보 버킷)과 동일 소스·동일 분리 — 블로그
+    대시보드 비용카드용(블로그·DART 자동발굴 통합 비용). graceful((0.0, 0.0))."""
+    import json as _j
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    now_kst = datetime.datetime.now(kst)
+    today_str = now_kst.strftime("%Y-%m-%d")
+    month_prefix = now_kst.strftime("%Y-%m")
+    _trade_dir = os.environ.get("TRADE_DATA_DIR", "").strip()
+    path = (Path(_trade_dir) / "usage.jsonl" if _trade_dir
+            else Path.home() / ".trade" / "usage.jsonl")
+    today_usd = month_usd = 0.0
+    if not path.exists():
+        return (0.0, 0.0)
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = _j.loads(line)
+                except Exception:
+                    continue
+                if rec.get("kind") != "kg_candidate":
+                    continue
+                _cu = rec.get("cost_usd")
+                if _cu is not None and _cu > 0:
+                    cu = float(_cu)
+                else:
+                    _ck = rec.get("cost_krw", 0) or 0
+                    cu = float(_ck) / 1330.0 if _ck > 0 else 0.0
+                if cu <= 0:
+                    continue
+                _rd = rec.get("date")
+                if isinstance(_rd, str) and _rd:
+                    day = _rd
+                else:
+                    _ts = rec.get("ts")
+                    if not _ts:
+                        continue
+                    try:
+                        day = datetime.datetime.fromtimestamp(
+                            float(_ts), kst).strftime("%Y-%m-%d")
+                    except Exception:
+                        continue
+                if day.startswith(month_prefix):
+                    month_usd += cu
+                    if day == today_str:
+                        today_usd += cu
+    except Exception as exc:
+        log.warning("dashboard: kg cost read failed: %s", exc)
+    return (today_usd, month_usd)
+
+
 def _load_kg_candidates(limit: int = 60) -> list[dict]:
     """레퍼런스북 관계후보 승인 큐(trade.kg_candidates 런타임 CSV) → 최신순 dict 목록.
     각 dict: {company,relation,target,evidence,source,date,status}. graceful([])."""
@@ -9578,6 +9637,11 @@ def _render_blog_page(runs: list[dict]) -> str:
     last_ts = ""
     if runs:
         last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
+    # 관계후보 발굴 비용(kg, 블로그+DART 자동발굴) — 단순 포워드가 아니라 Gemini
+    # 추출이라 ₩0 아님(사용자 2026-06-24). 메인 합산과 동일 소스(trade usage
+    # kind=kg_candidate). 값은 메인 '💰 비용' 카드 '관계후보' 항목과 일치.
+    _kg_today_usd, _kg_month_usd = _kg_candidate_cost_usd()
+    _kg_cost_val = f"{_krw(_kg_today_usd)} / {_krw(_kg_month_usd)}"
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
@@ -9591,6 +9655,7 @@ def _render_blog_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
     <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달)</div></div>
   </div>
 {_render_kg_candidates_section(_load_kg_candidates())}
   <div class="search-bar">

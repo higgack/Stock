@@ -1455,7 +1455,10 @@ def _build_usage_report() -> str:
     # 한국 수출입(trade) cost — 별도 repo usage.jsonl (사용자 정책 2026-06-02).
     # $TRADE_DATA_DIR/usage.jsonl, 미설정 시 ~/.trade/usage.jsonl. cost_usd /
     # cost_krw + date / ts 양쪽 tolerant (dashboard._compute_stats 와 동일 로직).
+    # kg 관계후보(블로그·DART 자동발굴)는 같은 trade usage.jsonl 이지만 kind 로
+    # 수출입과 분리 집계(사용자 2026-06-24). kind 미기록 옛 레코드 → 수출입.
     tr_today_usd = tr_month_usd = 0.0
+    kg_today_usd = kg_month_usd = 0.0
     try:
         import json as _j_tr
         import os as _os_tr
@@ -1489,15 +1492,21 @@ def _build_usage_report() -> str:
                                 float(_ts2), _KST).date().isoformat()
                         except Exception:
                             continue
+                    _is_kg = _r.get("kind") == "kg_candidate"
                     if _rd.startswith(month_str_kst):
-                        tr_month_usd += _usd
-                        if _rd == today_str_kst:
-                            tr_today_usd += _usd
+                        if _is_kg:
+                            kg_month_usd += _usd
+                            if _rd == today_str_kst:
+                                kg_today_usd += _usd
+                        else:
+                            tr_month_usd += _usd
+                            if _rd == today_str_kst:
+                                tr_today_usd += _usd
     except Exception as _exc:
         log.warning("usage: trade cost read failed: %s", _exc)
 
-    today_total_usd = today_cost + tr_today_usd
-    month_total_usd = month_cost + tr_month_usd
+    today_total_usd = today_cost + tr_today_usd + kg_today_usd
+    month_total_usd = month_cost + tr_month_usd + kg_month_usd
 
     lines = [
         "📊 <b>NOAH 봇 사용 현황</b> (KST)",
@@ -1517,6 +1526,7 @@ def _build_usage_report() -> str:
         f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
         f"  • 부동산:            {krw(month_cost_realestate)}  ← /realestate_cost",
         f"  • 블로그:            {krw(month_cost_blog)}",
+        f"  • 관계후보(kg):      {krw(kg_month_usd)}",
         f"  • 한국 수출입:       {krw(tr_month_usd)}",
         "",
         f"💰 <b>NOAH 분석 단독 (참고)</b>",
