@@ -387,12 +387,13 @@ def run() -> int:
             log.info("blog_watch: 전문 백필 %d건", bf)
     except Exception as exc:
         log.warning("blog_watch: backfill failed: %s", exc)
-    # 대시보드 갱신 — blog.html (레딧 워처 패턴 mirror)
+    # 대시보드 갱신 — blog.html (레딧 워처 패턴 mirror) + valuechain.html(kg 엣지)
     try:
-        from bot.dashboard import regenerate_blog_index
+        from bot.dashboard import regenerate_blog_index, regenerate_valuechain_index
         regenerate_blog_index()
+        regenerate_valuechain_index()
     except Exception as exc:
-        log.warning("blog_watch: blog.html regen failed: %s", exc)
+        log.warning("blog_watch: dashboard regen failed: %s", exc)
     return 0
 
 

@@ -1070,7 +1070,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
-<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
+<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터·장중 자동갱신) · 종목검색·스크롤복원
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
@@ -3762,7 +3762,8 @@ async def _periodic_dashboard_refresh(application=None) -> None:
                                        regenerate_watchlist_index,
                                        regenerate_paper_index,
                                        regenerate_market_index,
-                                       regenerate_dart_feed_index)
+                                       regenerate_dart_feed_index,
+                                       regenerate_valuechain_index)
             regenerate_index()
             regenerate_daily_byte_index()
             regenerate_realestate_index()
@@ -3773,6 +3774,7 @@ async def _periodic_dashboard_refresh(application=None) -> None:
             regenerate_watchlist_index()
             regenerate_market_index()
             regenerate_dart_feed_index()
+            regenerate_valuechain_index()
             # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
             # E0.5c: 청산 시 채널 알림(설정된 채널 있을 때) — 조용히 닫히지 않게.
             try:
@@ -3877,9 +3879,11 @@ async def _on_startup(application) -> None:
     except Exception as exc:
         log.warning("startup: reddit_insider.html regen failed: %s", exc)
     try:
-        from bot.dashboard import regenerate_blog_index
+        from bot.dashboard import (regenerate_blog_index,
+                                   regenerate_valuechain_index)
         regenerate_blog_index()
-        log.info("startup: blog.html regenerated with current code")
+        regenerate_valuechain_index()
+        log.info("startup: blog.html + valuechain.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: blog.html regen failed: %s", exc)
     try:

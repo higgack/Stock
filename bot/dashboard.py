@@ -2072,6 +2072,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="blog.html">📝 블로그</a>'
+        ' · <a href="valuechain.html">🔗 밸류체인</a>'
     )
 
     # Market filter buttons (show only if >1 market present)
@@ -9854,6 +9855,169 @@ def regenerate_blog_index() -> None:
         log.warning("dashboard: blog regen failed: %s", exc)
 
 
+# ── 밸류체인(공급망) 대시보드 (valuechain.html, 사용자 2026-06-24) ───────────
+# kg 관계후보(블로그·DART 계약공시 자동발굴)의 (회사)-(관계)-(대상) 엣지를 소비하는
+# explorer. 회사 검색 시 공급사(→이 회사 납품)·고객/납품처(이 회사가 공급)·취급품목·
+# 계열을 방향별로 묶어 보여줌 → 밸류체인 종목 발굴(고객사 호재 → 공급사 수혜 식별).
+# 자동등재 무관, 전 상태(후보/승인/등재) 엣지를 탐색용으로 노출(상태·근거 함께).
+_VALUECHAIN_CSS = """
+<style>
+.vc-chips{display:flex;flex-wrap:wrap;gap:6px}
+.vc-chip{background:#1f2733;color:#c9d4e0;border:1px solid var(--border);border-radius:14px;
+  padding:3px 11px;font-size:12px;cursor:pointer}
+.vc-chip:hover{background:#2a3645}
+.vc-focus-h{font-size:16px;font-weight:700;margin:14px 0 8px}
+.vc-deg{font-size:11px;color:var(--muted);font-weight:400;margin-left:6px}
+.vc-grp{margin:0 0 10px}
+.vc-grp-h{font-size:12px;color:var(--muted);margin:0 0 5px}
+.vc-pill{display:inline-block;background:#142033;border:1px solid #24405f;color:#cfe0f5;
+  border-radius:8px;padding:2px 9px;font-size:12px;margin:0 5px 5px 0}
+.vc-tip{font-size:12px;color:#8fd0a8;background:#10241a;border-radius:8px;padding:6px 10px;margin:4px 0 10px}
+.vc-listh{font-size:13px;color:var(--muted);margin:12px 0 6px}
+.vc-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--border);
+  padding:7px 2px;font-size:13px}
+.vc-rel{color:var(--muted);font-style:italic;font-size:12px}
+.vc-ev{color:var(--muted);font-size:11px;margin-top:2px}
+.vc-src{color:var(--muted);font-size:11px;white-space:nowrap}
+</style>
+"""
+
+_VALUECHAIN_JS = r"""
+<script>
+(function(){
+  var raw = document.getElementById('vc-data');
+  var DATA = {edges:[]};
+  try { DATA = JSON.parse(raw.textContent); } catch(e){}
+  var E = DATA.edges || [];
+  var CO = ['납품','고객','계열'];   // 회사↔회사 관계
+  function norm(s){ return (s||'').toString().replace(/\s+/g,'').toLowerCase(); }
+  function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':s); return d.innerHTML; }
+  function setText(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; }
+  var deg={}, comp={}, docs={};
+  function bump(n){ if(n) deg[n]=(deg[n]||0)+1; }
+  E.forEach(function(e){ bump(e.c); comp[e.c]=1;
+    if(CO.indexOf(e.r)>=0){ bump(e.t); comp[e.t]=1; }
+    if(e.s) docs[e.s]=1; });
+  var entities = Object.keys(deg).sort(function(a,b){return deg[b]-deg[a];});
+  setText('vc-stat-edges', E.length);
+  setText('vc-stat-nodes', Object.keys(comp).length);
+  setText('vc-stat-docs', Object.keys(docs).length);
+  var chipWrap = document.getElementById('vc-chips');
+  entities.slice(0,28).forEach(function(name){
+    var b=document.createElement('button'); b.className='vc-chip';
+    b.textContent=name+' '+deg[name];
+    b.onclick=function(){ var s=document.getElementById('vc-search'); s.value=name; render(name); };
+    chipWrap.appendChild(b);
+  });
+  function edgeRow(e){
+    return '<div class="vc-row"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+
+      (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
+      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div></div>';
+  }
+  function grp(title, items, fmt){
+    if(!items.length) return '';
+    return '<div class="vc-grp"><div class="vc-grp-h">'+title+' ('+items.length+')</div>'+items.map(fmt).join('')+'</div>';
+  }
+  function pillC(e){ return '<span class="vc-pill">'+esc(e.c)+'</span>'; }
+  function pillT(e){ return '<span class="vc-pill">'+esc(e.t)+'</span>'; }
+  function render(q){
+    var focus=document.getElementById('vc-focus'), list=document.getElementById('vc-list');
+    var nq=norm(q);
+    if(!nq){
+      focus.innerHTML='';
+      list.innerHTML='<div class="vc-listh">관계 '+E.length+'건'+(E.length>400?' (상위 400 표시)':'')+'</div>'+
+        E.slice(0,400).map(edgeRow).join('');
+      return;
+    }
+    var exact=entities.filter(function(n){return norm(n)===nq;});
+    var part=entities.filter(function(n){return norm(n).indexOf(nq)>=0;});
+    var X = exact.length?exact[0]:(part.length?part[0]:null);
+    if(X){
+      var nx=norm(X);
+      var suppliers=E.filter(function(e){return norm(e.t)===nx && ['납품','고객'].indexOf(e.r)>=0;});
+      var customers=E.filter(function(e){return norm(e.c)===nx && ['납품','고객'].indexOf(e.r)>=0;});
+      var products =E.filter(function(e){return norm(e.c)===nx && e.r==='취급품목';});
+      var themes   =E.filter(function(e){return norm(e.c)===nx && e.r==='테마';});
+      var affil    =E.filter(function(e){return (norm(e.c)===nx||norm(e.t)===nx) && e.r==='계열';});
+      focus.innerHTML='<div class="vc-focus-h">🏢 '+esc(X)+'<span class="vc-deg">연결 '+(deg[X]||0)+'</span></div>'+
+        grp('⬅️ 공급사 (이 회사에 납품)', suppliers, pillC)+
+        grp('➡️ 고객·납품처 (이 회사가 공급)', customers, pillT)+
+        grp('📦 취급품목', products, pillT)+
+        grp('🏷️ 테마', themes, pillT)+
+        grp('🔗 계열', affil, function(e){return '<span class="vc-pill">'+esc(norm(e.c)===nx?e.t:e.c)+'</span>';})+
+        (suppliers.length?'<div class="vc-tip">💡 '+esc(X)+' 호재·실적 시 위 공급사들이 수혜 후보</div>':'');
+    } else { focus.innerHTML=''; }
+    var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
+    list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'"</div>'+f.slice(0,400).map(edgeRow).join('');
+  }
+  var s=document.getElementById('vc-search');
+  s.addEventListener('input', function(){ render(s.value); });
+  document.getElementById('vc-clear').addEventListener('click', function(){ s.value=''; render(''); });
+  render('');
+})();
+</script>
+"""
+
+
+def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
+                            cost_month: float = 0.0) -> str:
+    """valuechain.html — kg 엣지 explorer(공급망/밸류체인). 회사 검색 시 공급사·
+    고객·취급품목·계열을 방향별로. 데이터는 <script type=application/json> 임베드 +
+    클라이언트 JS 검색/필터(서버 무상태)."""
+    import html as _h
+    import json as _j
+    payload = {"edges": [{
+        "c": e.get("company", ""), "r": e.get("relation", ""),
+        "t": e.get("target", ""), "e": (e.get("evidence", "") or "")[:160],
+        "s": e.get("source", ""), "st": e.get("status", ""),
+    } for e in edges if e.get("company") and e.get("target")]}
+    # </script> 차단 + JSON 안전 임베드
+    data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
+    parts = [_SCREENER_CSS, _VALUECHAIN_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="market.html">🌍 홈</a> · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="blog.html">📝 블로그</a> · <a href="dart_feed.html">📋 DART 공시</a>
+  </div>
+  <h1>🔗 밸류체인</h1>
+  <p class="sub">블로그·DART 계약공시에서 자동발굴한 (회사)–(관계)–(대상) 그래프 · 회사 검색 시 공급사·고객·취급품목 연결을 봅니다(고객사 호재 → 공급사 수혜 발굴)</p>
+  <div class="stats">
+    <div class="stat"><div class="stat-v" id="vc-stat-edges">—</div><div class="stat-l">관계(엣지)</div></div>
+    <div class="stat"><div class="stat-v" id="vc-stat-nodes">—</div><div class="stat-l">회사(노드)</div></div>
+    <div class="stat"><div class="stat-v" id="vc-stat-docs">—</div><div class="stat-l">출처 문서</div></div>
+    <div class="stat"><div class="stat-v">{_krw(cost_today)} / {_krw(cost_month)}</div><div class="stat-l">KG 발굴 비용 (오늘/이번 달)</div></div>
+  </div>
+  <div style="margin:12px 0 6px;color:var(--muted);font-size:13px">주요 회사 (연결수) — 클릭하면 필터</div>
+  <div id="vc-chips" class="vc-chips"></div>
+  <div class="search-bar" style="margin-top:12px">
+    <input id="vc-search" type="text" placeholder="회사·관계 검색 (예: SK하이닉스, 납품)" autocomplete="off" spellcheck="false">
+    <button id="vc-clear" type="button">초기화</button>
+  </div>
+  <div id="vc-focus"></div>
+  <div id="vc-list"></div>
+</div>
+<script id="vc-data" type="application/json">{data_json}</script>
+""")
+    parts.append(_VALUECHAIN_JS)
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def regenerate_valuechain_index() -> None:
+    """Scan kg 관계후보 큐 → write valuechain.html. blog_watch/dart_feed 추출 후 +
+    approve + 주기 regen 에서 호출. graceful."""
+    try:
+        edges = _load_kg_candidates(limit=5000)
+        ct, cm = _kg_candidate_cost_usd()
+        html = _render_valuechain_page(edges, ct, cm)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "valuechain.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: valuechain.html regenerated (%d edges)", len(edges))
+    except Exception as exc:
+        log.warning("dashboard: valuechain regen failed: %s", exc)
+
+
 # ── Watchlist 조건 알림 대시보드 (2026-06-04) ────────────────────────────
 def _render_watchlist_page(watches: list[dict], alerts: list[dict]) -> str:
     """watchlist.html — 활성 워치 테이블 + 알림 이력. 읽기 전용
@@ -13427,6 +13591,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
+    &middot; <a href="valuechain.html">🔗 밸류체인</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>
   </div>
