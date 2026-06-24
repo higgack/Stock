@@ -9879,6 +9879,8 @@ _VALUECHAIN_CSS = """
 .vc-rel{color:var(--muted);font-style:italic;font-size:12px}
 .vc-ev{color:var(--muted);font-size:11px;margin-top:2px}
 .vc-src{color:var(--muted);font-size:11px;white-space:nowrap}
+.vc-tag{display:inline-block;background:#23314a;color:#9db8da;border-radius:6px;
+  padding:0 6px;font-size:10px;margin-left:6px;vertical-align:middle}
 </style>
 """
 
@@ -9889,7 +9891,9 @@ _VALUECHAIN_JS = r"""
   var DATA = {edges:[]};
   try { DATA = JSON.parse(raw.textContent); } catch(e){}
   var E = DATA.edges || [];
-  var CO = ['납품','고객','계열'];   // 회사↔회사 관계
+  var KG = E.filter(function(e){return e.k!=='trade';});   // 공급망·관계(블로그·DART)
+  var TR = E.filter(function(e){return e.k==='trade';});    // 관세청 수출품목(회사↔품목)
+  var CO = ['납품','고객','계열'];
   function norm(s){ return (s||'').toString().replace(/\s+/g,'').toLowerCase(); }
   function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':s); return d.innerHTML; }
   function setText(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; }
@@ -9897,9 +9901,11 @@ _VALUECHAIN_JS = r"""
   function bump(n){ if(n) deg[n]=(deg[n]||0)+1; }
   E.forEach(function(e){ bump(e.c); comp[e.c]=1;
     if(CO.indexOf(e.r)>=0){ bump(e.t); comp[e.t]=1; }
+    if(e.k==='trade') comp[e.c]=1;
     if(e.s) docs[e.s]=1; });
   var entities = Object.keys(deg).sort(function(a,b){return deg[b]-deg[a];});
   setText('vc-stat-edges', E.length);
+  setText('vc-stat-edges-l', '관계(엣지) · 공급망 '+KG.length+' · 관세청 '+TR.length);
   setText('vc-stat-nodes', Object.keys(comp).length);
   setText('vc-stat-docs', Object.keys(docs).length);
   var chipWrap = document.getElementById('vc-chips');
@@ -9910,7 +9916,8 @@ _VALUECHAIN_JS = r"""
     chipWrap.appendChild(b);
   });
   function edgeRow(e){
-    return '<div class="vc-row"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+
+    var tag = e.k==='trade' ? '<span class="vc-tag">관세청</span>' : '';
+    return '<div class="vc-row"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
       '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div></div>';
   }
@@ -9925,8 +9932,9 @@ _VALUECHAIN_JS = r"""
     var nq=norm(q);
     if(!nq){
       focus.innerHTML='';
-      list.innerHTML='<div class="vc-listh">관계 '+E.length+'건'+(E.length>400?' (상위 400 표시)':'')+'</div>'+
-        E.slice(0,400).map(edgeRow).join('');
+      list.innerHTML='<div class="vc-listh">공급망·관계 '+KG.length+'건(블로그·DART)'+
+        (KG.length>400?' · 상위 400':'')+' — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시</div>'+
+        KG.slice(0,400).map(edgeRow).join('');
       return;
     }
     var exact=entities.filter(function(n){return norm(n)===nq;});
@@ -9934,15 +9942,24 @@ _VALUECHAIN_JS = r"""
     var X = exact.length?exact[0]:(part.length?part[0]:null);
     if(X){
       var nx=norm(X);
-      var suppliers=E.filter(function(e){return norm(e.t)===nx && ['납품','고객'].indexOf(e.r)>=0;});
-      var customers=E.filter(function(e){return norm(e.c)===nx && ['납품','고객'].indexOf(e.r)>=0;});
-      var products =E.filter(function(e){return norm(e.c)===nx && e.r==='취급품목';});
-      var themes   =E.filter(function(e){return norm(e.c)===nx && e.r==='테마';});
-      var affil    =E.filter(function(e){return (norm(e.c)===nx||norm(e.t)===nx) && e.r==='계열';});
+      var suppliers=KG.filter(function(e){return norm(e.t)===nx && ['납품','고객'].indexOf(e.r)>=0;});
+      var customers=KG.filter(function(e){return norm(e.c)===nx && ['납품','고객'].indexOf(e.r)>=0;});
+      var products =KG.filter(function(e){return norm(e.c)===nx && e.r==='취급품목';});
+      var themes   =KG.filter(function(e){return norm(e.c)===nx && e.r==='테마';});
+      var affil    =KG.filter(function(e){return (norm(e.c)===nx||norm(e.t)===nx) && e.r==='계열';});
+      var exports  =TR.filter(function(e){return norm(e.c)===nx;});
+      // 동종 회사(peer) = 같은 수출품목을 다루는 다른 회사(관세청)
+      var myItems={}; exports.forEach(function(e){ myItems[norm(e.t)]=1; });
+      var peerCnt={};
+      TR.forEach(function(e){ if(norm(e.c)!==nx && myItems[norm(e.t)]) peerCnt[e.c]=(peerCnt[e.c]||0)+1; });
+      var peers=Object.keys(peerCnt).sort(function(a,b){return peerCnt[b]-peerCnt[a];}).slice(0,40);
       focus.innerHTML='<div class="vc-focus-h">🏢 '+esc(X)+'<span class="vc-deg">연결 '+(deg[X]||0)+'</span></div>'+
         grp('⬅️ 공급사 (이 회사에 납품)', suppliers, pillC)+
         grp('➡️ 고객·납품처 (이 회사가 공급)', customers, pillT)+
-        grp('📦 취급품목', products, pillT)+
+        grp('📦 취급품목 (계약공시)', products, pillT)+
+        grp('🛃 수출품목 (관세청)', exports, pillT)+
+        (peers.length?'<div class="vc-grp"><div class="vc-grp-h">👥 동종 회사 (같은 수출품목, '+peers.length+')</div>'+
+          peers.map(function(n){return '<span class="vc-pill">'+esc(n)+' '+peerCnt[n]+'</span>';}).join('')+'</div>':'')+
         grp('🏷️ 테마', themes, pillT)+
         grp('🔗 계열', affil, function(e){return '<span class="vc-pill">'+esc(norm(e.c)===nx?e.t:e.c)+'</span>';})+
         (suppliers.length?'<div class="vc-tip">💡 '+esc(X)+' 호재·실적 시 위 공급사들이 수혜 후보</div>':'');
@@ -9970,6 +9987,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
         "c": e.get("company", ""), "r": e.get("relation", ""),
         "t": e.get("target", ""), "e": (e.get("evidence", "") or "")[:160],
         "s": e.get("source", ""), "st": e.get("status", ""),
+        "k": e.get("kind", "kg"),
     } for e in edges if e.get("company") and e.get("target")]}
     # </script> 차단 + JSON 안전 임베드
     data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
@@ -9981,12 +9999,12 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
     · <a href="blog.html">📝 블로그</a> · <a href="dart_feed.html">📋 DART 공시</a>
   </div>
   <h1>🔗 밸류체인</h1>
-  <p class="sub">블로그·DART 계약공시에서 자동발굴한 (회사)–(관계)–(대상) 그래프 · 회사 검색 시 공급사·고객·취급품목 연결을 봅니다(고객사 호재 → 공급사 수혜 발굴)</p>
+  <p class="sub">블로그·DART 계약공시(kg) + 관세청 수출입 레퍼런스북을 집합한 통합 그래프 · 회사 검색 시 공급사·고객·수출품목·동종 회사 연결(고객사 호재 → 공급사 수혜 발굴) · 모든 소스 갱신 자동 반영</p>
   <div class="stats">
-    <div class="stat"><div class="stat-v" id="vc-stat-edges">—</div><div class="stat-l">관계(엣지)</div></div>
+    <div class="stat"><div class="stat-v" id="vc-stat-edges">—</div><div class="stat-l" id="vc-stat-edges-l">관계(엣지)</div></div>
     <div class="stat"><div class="stat-v" id="vc-stat-nodes">—</div><div class="stat-l">회사(노드)</div></div>
     <div class="stat"><div class="stat-v" id="vc-stat-docs">—</div><div class="stat-l">출처 문서</div></div>
-    <div class="stat"><div class="stat-v">{_krw(cost_today)} / {_krw(cost_month)}</div><div class="stat-l">KG 발굴 비용 (오늘/이번 달)</div></div>
+    <div class="stat"><div class="stat-v">{_krw(cost_today)} / {_krw(cost_month)}</div><div class="stat-l">KG 발굴 비용 (오늘/이번 달) · 관세청 무료</div></div>
   </div>
   <div style="margin:12px 0 6px;color:var(--muted);font-size:13px">주요 회사 (연결수) — 클릭하면 필터</div>
   <div id="vc-chips" class="vc-chips"></div>
@@ -10004,11 +10022,47 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
     return "".join(parts)
 
 
-def regenerate_valuechain_index() -> None:
-    """Scan kg 관계후보 큐 → write valuechain.html. blog_watch/dart_feed 추출 후 +
-    approve + 주기 regen 에서 호출. graceful."""
+def _load_valuechain_edges() -> list[dict]:
+    """밸류체인 그래프 엣지 = **다소스 집합**(사용자 2026-06-24 '모든 갱신 소스가
+    여기 집합'):
+      ① kg 관계후보(블로그·DART 계약공시): 납품/고객/계열/취급품목/테마 (kind='kg').
+      ② 관세청 수출입 레퍼런스북(reference_book.build_rows): 회사—[수출품목]→품목(+HS)
+         — 관세청 MTI + DART 매출구성 + 테마 + 채널 + 운영자 보강(reinforce, 대시보드
+         반영 버튼분 포함)이 이미 병합된 통합 회사↔품목 그래프 (kind='trade').
+    각 소스가 갱신될 때마다 regen(dart 1분·blog 30분·반영·자정·startup)이 이 함수를
+    다시 호출 → 항상 최신 집합. 소스별 graceful(한쪽 실패해도 나머지 노출)."""
+    edges: list[dict] = []
     try:
-        edges = _load_kg_candidates(limit=5000)
+        for c in _load_kg_candidates(limit=5000):
+            edges.append({"company": c.get("company", ""),
+                          "relation": c.get("relation", ""),
+                          "target": c.get("target", ""),
+                          "evidence": c.get("evidence", ""),
+                          "source": c.get("source", ""),
+                          "status": c.get("status", ""), "kind": "kg"})
+    except Exception as exc:
+        log.warning("valuechain: kg edges load failed: %s", exc)
+    try:
+        from trade import reference_book
+        for row in reference_book.build_rows():
+            item = (row.get("name") or "").strip()
+            hs = row.get("hs") or []
+            hs_lbl = (f"HS {hs[0]}" + ("…" if len(hs) > 1 else "")) if hs else ""
+            for co in (row.get("companies") or []):
+                if co and item:
+                    edges.append({"company": co, "relation": "수출품목",
+                                  "target": item, "evidence": hs_lbl,
+                                  "source": "관세청", "status": "", "kind": "trade"})
+    except Exception as exc:
+        log.warning("valuechain: trade refbook edges load failed: %s", exc)
+    return edges
+
+
+def regenerate_valuechain_index() -> None:
+    """다소스 집합(_load_valuechain_edges) → write valuechain.html. blog_watch/
+    dart_feed 추출 후 + approve + 주기 regen 에서 호출 → 모든 소스 갱신 반영. graceful."""
+    try:
+        edges = _load_valuechain_edges()
         ct, cm = _kg_candidate_cost_usd()
         html = _render_valuechain_page(edges, ct, cm)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
