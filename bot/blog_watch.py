@@ -278,8 +278,10 @@ def _push(item: dict) -> bool:
         return False
 
 
-def _process_blog(blog: dict, state: dict, seen: set) -> int:
-    """한 블로그 처리 → push 건수. RSS 미수신 시 -1(실패 신호)."""
+def _process_blog(blog: dict, state: dict, seen: set,
+                  new_texts: list | None = None) -> int:
+    """한 블로그 처리 → push 건수. RSS 미수신 시 -1(실패 신호).
+    new_texts 주어지면 새 글 본문을 {text,source} 로 누적(관계후보 자동발굴용)."""
     bid = blog["id"]
     xml = _fetch_rss(bid)
     if not xml:
@@ -340,6 +342,12 @@ def _process_blog(blog: dict, state: dict, seen: set) -> int:
         _save_archive(it)
         if _push(it):
             pushed += 1
+        # 관계후보 자동발굴 재료 누적(본문 = 전문 우선) — run() 후 일괄 추출.
+        if new_texts is not None:
+            txt = (it.get("desc") or "").strip()
+            if txt:
+                new_texts.append(
+                    {"text": txt, "source": f"blog:{it.get('blog_title') or bid}"})
         seen.add(it["guid"])
         state["seen"].append(it["guid"])
     log.info("blog_watch[%s]: 새 글 %d개 수집, %d push, 카테고리외 %d 제외",
@@ -351,13 +359,26 @@ def run() -> int:
     state = _load_state()
     seen = set(state.get("seen", []))
     fetched_any = False
+    new_texts: list[dict] = []          # 새 글 본문 — 관계후보 자동발굴 재료
     for blog in _BLOGS:
-        r = _process_blog(blog, state, seen)
+        r = _process_blog(blog, state, seen, new_texts)
         if r >= 0:
             fetched_any = True
     _save_state(state)
     if not fetched_any:
         return 1            # 전 블로그 RSS 실패 — 타이머에 실패 신호
+
+    # 레퍼런스북 관계후보 자동발굴(kg-gen 패턴) — 새 글 본문에서 (회사)-(관계)-
+    # (대상) 후보 추출 → 승인 큐 CSV 적재 + 채널 알림. 킬스위치·Gemini 키부재·
+    # 실패 전부 graceful(블로그 수집 본류엔 영향 0). 새 글 없으면 no-op.
+    if new_texts:
+        try:
+            from trade import kg_candidates
+            got = kg_candidates.run_blog_extraction(new_texts)
+            if got:
+                log.info("blog_watch: 관계후보 %d건 발굴(승인 큐)", len(got))
+        except Exception as exc:
+            log.warning("blog_watch: kg_candidates extraction failed: %s", exc)
 
     # 기존 잘린 글 점진 백필(전 블로그 공통 아카이브, 사이클당 3건) — 새 글 없어도.
     try:

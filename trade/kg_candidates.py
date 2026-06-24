@@ -119,7 +119,15 @@ def filter_candidates(triples: Iterable[dict], *,
 
 
 def _candidates_csv_path() -> Path:
-    return Path(__file__).resolve().parent / "data" / "kg_candidates.csv"
+    # 런타임 승인 큐 — blog_watch 가 VM 에서 새 글마다 append. .tradingagents
+    # (gitignore)에 두어 auto-update(git pull) 충돌 회피(블로그 아카이브와 동일
+    # 위치, 휘발 아님=VM 영속). 테스트·CLI 는 path 인자로 우회.
+    return Path.home() / ".tradingagents" / "kg_candidates.csv"
+
+
+def _reinforce_csv_path() -> Path:
+    # 운영자 승인 보강 CSV(repo 체크인) — ingest_approved 의 이관 대상.
+    return Path(__file__).resolve().parent / "data" / "reinforce_approved.csv"
 
 
 _CSV_HEADER = ["회사", "관계", "대상", "근거", "출처", "추출일", "상태"]
@@ -240,10 +248,198 @@ def extract_candidates(texts: list[dict], *, model: Optional[str] = None,
     return filter_candidates(out, known_companies=None, existing_pairs=existing)
 
 
+# ── 블로그 워처 후킹 (자동발굴, 사용자 2026-06-23 "블로그쪽에 쌓이게") ──────────
+# 새 블로그 글이 올 때 그 본문에서 관계 후보를 추출 → 승인 큐 CSV 적재 + 블로그
+# 채널 알림(둘 다). 자동화-first: 별도 타이머 없이 blog-watch.timer(30분)에 편승.
+# 킬스위치 KG_CANDIDATES_ENABLED(기본 on) · Gemini 키 없으면 graceful no-op.
+
+def _kg_enabled() -> bool:
+    return (os.environ.get("KG_CANDIDATES_ENABLED", "1").strip().lower()
+            not in ("0", "false", "off", "no", ""))
+
+
+def _new_against_csv(cands: list[dict], path=None) -> list[dict]:
+    """승인 큐 CSV 에 아직 없는 (회사,관계,대상)만 — 알림·적재 정합(중복알림 방지).
+    순수(테스트). path 부재/실패 → 전부 신규로 간주."""
+    p = Path(path) if path else _candidates_csv_path()
+    existing: set = set()
+    if p.exists():
+        try:
+            with open(p, encoding="utf-8-sig", newline="") as f:
+                r = csv.reader(f)
+                next(r, None)
+                for row in r:
+                    if len(row) >= 3:
+                        existing.add((_norm(row[0]), row[1].strip(), _norm(row[2])))
+        except Exception:
+            existing = set()
+    out, seen = [], set()
+    for c in cands:
+        k = (_norm(c.get("company", "")), c.get("relation", "").strip(),
+             _norm(c.get("target", "")))
+        if k in existing or k in seen:
+            continue
+        seen.add(k)
+        out.append(c)
+    return out
+
+
+def _notify_blog_channel(new_cands: list[dict]) -> bool:
+    """새 관계 후보 → 블로그 채널(daily_kr_flow.push_telegram, =CHANNEL_CHAT_IDS)
+    알림 1건. 승인 대기 신호만 — 운영자가 대시보드/CSV 검토. graceful(실패 False)."""
+    if not new_cands:
+        return False
+    try:
+        from bot.daily_kr_flow import push_telegram
+    except Exception as exc:
+        log.warning("kg_candidates: push import failed: %s", exc)
+        return False
+    import html as _h
+    n = len(new_cands)
+    lines = [f"🔗 <b>레퍼런스북 관계후보 {n}건</b> (블로그 자동발굴 · 승인 대기)"]
+    for c in new_cands[:8]:
+        co = _h.escape(str(c.get("company", "")))
+        rel = _h.escape(str(c.get("relation", "")))
+        tgt = _h.escape(str(c.get("target", "")))
+        src = _h.escape(str(c.get("source", "")).replace("blog:", ""))
+        tail = f"  <i>({src})</i>" if src else ""
+        lines.append(f"• {co} —[{rel}]→ {tgt}{tail}")
+    if n > 8:
+        lines.append(f"… 외 {n - 8}건")
+    lines.append("<i>검토: 대시보드 블로그 → 🔗 관계후보 섹션</i>")
+    try:
+        return push_telegram("\n".join(lines))
+    except Exception as exc:
+        log.warning("kg_candidates: notify failed: %s", exc)
+        return False
+
+
+def run_blog_extraction(texts: list[dict], *, model: Optional[str] = None,
+                        max_calls: Optional[int] = None,
+                        notify: bool = True) -> list[dict]:
+    """블로그 새 글 텍스트 배치 → 후보 추출 → 승인 큐 CSV 적재 → (notify)채널 알림.
+    blog_watch.run() 후킹용. 킬스위치 off·키 부재·실패 전부 graceful([]).
+    반환 = CSV 에 새로 적재된 후보(중복 제외)."""
+    if not _kg_enabled():
+        log.info("kg_candidates: KG_CANDIDATES_ENABLED off — skip")
+        return []
+    texts = [t for t in (texts or []) if (t.get("text") or "").strip()]
+    if not texts:
+        return []
+    # 글당 1콜 — 사이클당 과다 방지 상한 12 + 설정 일일상한(_max_calls)으로 동시
+    # bound(독립 리뷰 2026-06-24: 12 가 전역 예산 가드 우회 않게). 새 글은 보통
+    # 0~수건이라 비용 미미(flash). 길이 bound 는 build_human_prompt 가 절단.
+    if max_calls is not None:
+        cap = max_calls
+    else:
+        try:
+            from trade import llm_insights as _li
+            cap = min(len(texts), 12, _li._max_calls())
+        except Exception:
+            cap = min(len(texts), 12)
+    cands = extract_candidates(texts, model=model, max_calls=cap)
+    new = _new_against_csv(cands)
+    if not new:
+        log.info("kg_candidates: 블로그 추출 %d건(전부 기존) — 신규 0", len(cands))
+        return []
+    write_candidates_csv(new)
+    log.info("kg_candidates: 블로그 관계후보 신규 %d건 적재", len(new))
+    if notify:
+        _notify_blog_channel(new)
+    return new
+
+
+def ingest_approved(queue_path=None, reinforce_path=None) -> int:
+    """승인 큐에서 상태='승인' + 관계='취급품목' 행 → reinforce_approved.csv 이관
+    (품목=대상, 회사=회사). **운영자 승인분만**(CLAUDE.md '운영자 확인분만 등재').
+    이관 행 상태 → '등재'. (회사,품목) 이미 reinforce 에 있으면 행만 append 안 하고
+    상태만 등재. 다른 관계(테마/납품/고객/계열)는 자동등재 안 함(운영자 수동 반영).
+
+    ⛔ reinforce_approved.csv 는 repo 체크인 파일 — **dev/repo 컨텍스트**에서 실행 후
+    커밋·배포(VM 런타임 직접 실행 시 git 충돌). 반환 = reinforce 신규 적재 건수."""
+    qp = Path(queue_path) if queue_path else _candidates_csv_path()
+    rp = Path(reinforce_path) if reinforce_path else _reinforce_csv_path()
+    if not qp.exists():
+        return 0
+    header = None
+    rows: list[list[str]] = []
+    try:
+        with open(qp, encoding="utf-8-sig", newline="") as f:
+            r = csv.reader(f)
+            header = next(r, None)
+            for row in r:
+                rows.append(row)
+    except Exception as exc:
+        log.warning("kg_candidates: ingest queue read failed: %s", exc)
+        return 0
+    # 승인 + 취급품목만
+    to_ingest = []   # (품목, 회사)
+    for row in rows:
+        if len(row) < 7:
+            continue
+        co, rel, tgt, status = (row[0].strip(), row[1].strip(),
+                                row[2].strip(), row[6].strip())
+        if status == "승인" and rel == "취급품목" and co and tgt:
+            to_ingest.append((tgt, co))
+    if not to_ingest:
+        return 0
+    # reinforce 기존 (품목norm, 회사norm) 쌍 — 중복 append 방지
+    existing_pairs: set = set()
+    if rp.exists():
+        try:
+            with open(rp, encoding="utf-8-sig", newline="") as f:
+                r = csv.reader(f)
+                next(r, None)
+                for row in r:
+                    if len(row) < 2:
+                        continue
+                    ik = _norm(row[0])
+                    for c in (row[1] or "").split(","):
+                        if c.strip():
+                            existing_pairs.add((ik, _norm(c)))
+        except Exception:
+            existing_pairs = set()
+    new_rows: list[list[str]] = []
+    ingested_keys: set = set()
+    for tgt, co in to_ingest:
+        ingested_keys.add((_norm(co), "취급품목", _norm(tgt)))
+        pk = (_norm(tgt), _norm(co))
+        if pk in existing_pairs:
+            continue                       # 이미 반영 — 상태만 등재로 마킹
+        existing_pairs.add(pk)
+        new_rows.append([tgt, co])
+    if new_rows:
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not rp.exists() or rp.stat().st_size == 0
+        with open(rp, "a", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(["품목", "DART추가후보상장사"])
+            w.writerows(new_rows)
+    # 큐 상태 '승인' → '등재'
+    out_rows = []
+    for row in rows:
+        if len(row) >= 7:
+            k = (_norm(row[0]), row[1].strip(), _norm(row[2]))
+            if k in ingested_keys and row[6].strip() == "승인":
+                row[6] = "등재"
+        out_rows.append(row)
+    try:
+        with open(qp, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header or _CSV_HEADER)
+            w.writerows(out_rows)
+    except Exception as exc:
+        log.warning("kg_candidates: ingest queue rewrite failed: %s", exc)
+    return len(new_rows)
+
+
 if __name__ == "__main__":   # pragma: no cover
     import argparse
     import os
     ap = argparse.ArgumentParser(description="레퍼런스북 관계 후보 발굴(승인 큐)")
+    ap.add_argument("--ingest", action="store_true",
+                    help="승인 큐의 상태=승인+취급품목 행 → reinforce_approved.csv 이관")
     ap.add_argument("--limit", type=int, default=5, help="처리할 텍스트 수(소배치)")
     ap.add_argument("--source", default="blog",
                     choices=["blog", "dart", "file"],
@@ -267,6 +463,13 @@ if __name__ == "__main__":   # pragma: no cover
             k = k.strip()
             if k and k not in os.environ:
                 os.environ[k] = v.strip().strip('"').strip("'")
+
+    if args.ingest:
+        n = ingest_approved()
+        print(f"이관(승인→reinforce_approved.csv): 신규 {n}건 적재.")
+        print("ℹ️ reinforce_approved.csv 는 repo 체크인 — 커밋·배포 필요.")
+        import sys as _sys
+        _sys.exit(0)
 
     from trade import llm_insights
     ready = llm_insights._llm_ready()

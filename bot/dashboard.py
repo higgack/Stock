@@ -9469,6 +9469,84 @@ def _load_blog_runs() -> list[dict]:
     return runs
 
 
+def _load_kg_candidates(limit: int = 60) -> list[dict]:
+    """레퍼런스북 관계후보 승인 큐(trade.kg_candidates 런타임 CSV) → 최신순 dict 목록.
+    각 dict: {company,relation,target,evidence,source,date,status}. graceful([])."""
+    import csv as _csv
+    out: list[dict] = []
+    try:
+        from trade import kg_candidates as _kg
+        p = _kg._candidates_csv_path()
+        if not p.exists():
+            return out
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            r = _csv.reader(f)
+            next(r, None)                                  # 헤더
+            for row in r:
+                if len(row) < 7:
+                    continue
+                out.append({"company": row[0], "relation": row[1],
+                            "target": row[2], "evidence": row[3],
+                            "source": row[4], "date": row[5], "status": row[6]})
+    except Exception as exc:
+        log.warning("dashboard: kg_candidates load failed: %s", exc)
+        return []
+    out.reverse()                                          # 최신 적재가 위로
+    return out[:limit]
+
+
+def _render_kg_candidates_section(cands: list[dict]) -> str:
+    """블로그 페이지 '🔗 관계후보' 섹션 — 승인 대기 큐 표. 운영자 검토 전용
+    (자동 등재 없음). 상태별 배지(후보/승인/등재). 비면 섹션 자체 생략."""
+    import html as _h
+    pend = [c for c in cands if c.get("status") not in ("등재",)]
+    if not pend:
+        return ""
+    _badge = {"후보": "#a16207", "승인": "#15803d", "등재": "#6b7280"}
+    rows = []
+    for c in pend:
+        co = _h.escape(c.get("company", ""))
+        rel = _h.escape(c.get("relation", ""))
+        tgt = _h.escape(c.get("target", ""))
+        ev = _h.escape((c.get("evidence", "") or "")[:120])
+        src = _h.escape((c.get("source", "") or "").replace("blog:", ""))
+        dt = _h.escape(c.get("date", ""))
+        st = c.get("status", "후보")
+        col = _badge.get(st, "#a16207")
+        rows.append(
+            f'<tr><td><b>{co}</b></td>'
+            f'<td style="color:var(--muted)">{rel}</td>'
+            f'<td>{tgt}</td>'
+            f'<td style="color:var(--muted);font-size:12px">{ev}</td>'
+            f'<td style="color:var(--muted);font-size:12px">{src}</td>'
+            f'<td style="font-size:12px">{dt}</td>'
+            f'<td><span style="background:{col};color:#fff;border-radius:8px;'
+            f'padding:1px 8px;font-size:11px">{_h.escape(st)}</span></td></tr>')
+    return f"""
+  <details class="month" style="margin:6px 0 14px">
+    <summary class="month-head">
+      <span>🔗 관계후보 <span style="color:var(--muted);font-weight:400;font-size:12px">(블로그 자동발굴 · 승인 대기 {len(pend)}건)</span></span>
+      <span class="count">검토 큐</span>
+    </summary>
+    <div class="month-body" style="padding:10px 12px">
+      <p style="color:var(--muted);font-size:12px;margin:0 0 8px;line-height:1.6">
+        새 블로그 글에서 자동 추출한 <b>(회사)–(관계)–(대상)</b> 후보입니다.
+        ⛔ 자동 등재 안 함 — 운영자가 검토·승인해야 레퍼런스북 보강에 반영됩니다
+        (취급품목 승인분은 <code>kg_candidates --ingest</code> 로 이관).
+      </p>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
+            <th>회사</th><th>관계</th><th>대상</th><th>근거</th><th>출처</th><th>추출일</th><th>상태</th>
+          </tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+"""
+
+
 def _blog_desc_html(text: str) -> str:
     """블로그 본문 텍스트 → 문단 단위 <p> HTML (사용자 2026-06-16 '문맥단위로
     띄어쓰기 가독성'). 빈 줄/줄바꿈으로 문단을 분리해 각 문단에 아래 여백 +
@@ -9514,7 +9592,7 @@ def _render_blog_page(runs: list[dict]) -> str:
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
     <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
   </div>
-
+{_render_kg_candidates_section(_load_kg_candidates())}
   <div class="search-bar">
     <input id="scr-search" type="text" placeholder="제목 / 요약 / 본문 검색 (예: 반도체, 수주, 전환점)" autocomplete="off" spellcheck="false">
     <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
