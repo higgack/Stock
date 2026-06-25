@@ -7405,6 +7405,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                 parts.append(
                     f"<details class='scr-det cs-card' data-date=\"{_shtml.escape(_scr_date)}\""
                     f" data-file=\"{_shtml.escape(_scr_file)}\""
+                    f" data-imp-id=\"cs|{_shtml.escape(_scr_date)}|{_shtml.escape(_scr_file)}\""
                     f" data-search=\"{_shtml.escape(_search_hay)}\">"
                     f"<summary>▸ <b>{_scr_conds}</b>{_scr_mbadge} — {_scr_hits}종목/{_scr_total:,}종목{_scr_cached} "
                     f"<span class='muted'>{_scr_ts} · {_scr_elapsed:.1f}초</span>"
@@ -7906,7 +7907,7 @@ noahConsoleSetup({
   });
 })();
 </script>
-""" + _imp_cfg("screener") + _IMPORTANT_BLOCK + """
+""" + _imp_cfg("screener", card_sel=".card, .cs-card", head_sel="summary") + _IMPORTANT_BLOCK + """
 </body></html>
 """)
     return "".join(parts)
@@ -10068,9 +10069,11 @@ _VALUECHAIN_JS = r"""
     b.onclick=function(){ var s=document.getElementById('vc-search'); s.value=name; render(name); };
     chipWrap.appendChild(b);
   });
+  function attrEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function edgeRow(e){
     var tag = e.k==='trade' ? '<span class="vc-tag">관세청</span>' : '';
-    return '<div class="vc-row" data-imp-id="'+esc(e.c)+'|'+esc(e.r)+'|'+esc(e.t)+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
+    var iid = attrEsc(e.c+'|'+e.r+'|'+e.t);   // 속성 안전(따옴표 포함 회사명 대응)
+    return '<div class="vc-row" data-imp-id="'+iid+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
       '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div></div>';
   }
@@ -10201,10 +10204,12 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
 </div>
 <script id="vc-data" type="application/json">{data_json}</script>
 """)
-    parts.append(_VALUECHAIN_JS)
+    # 중요 블록을 _VALUECHAIN_JS 앞에 — render('') 의 window.__impApply() 가
+    # 첫 렌더에서도 정의돼 있도록(로드순서, 코드리뷰 2026-06-26).
     parts.append(_imp_cfg("valuechain", card_sel=".vc-row", head_sel="",
                           search_sel="#vc-search"))
     parts.append(_IMPORTANT_BLOCK)
+    parts.append(_VALUECHAIN_JS)
     parts.append("</body></html>")
     return "".join(parts)
 
