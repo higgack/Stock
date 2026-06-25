@@ -8588,6 +8588,11 @@ _IMPORTANT_BLOCK = """
 .memo-save{cursor:pointer;background:#34c759;color:#111;border:0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600}
 .memo-del{cursor:pointer;background:none;color:#ff453a;border:1px solid #ff453a;border-radius:6px;padding:4px 12px;font-size:12px}
 .memo-st{font-size:11px;color:#9aa2ad}
+.rem-panel{display:none;margin:6px 0 4px;padding:2px}
+.rem-panel.open{display:block}
+.rem-in{font:13px inherit;padding:5px 8px;border:1px solid var(--border,#444);border-radius:6px;background:var(--surface,#111);color:var(--text,#eee);color-scheme:dark light}
+.rem-set{cursor:pointer;background:#ff9f0a;color:#111;border:0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600}
+.rem-clr{cursor:pointer;background:none;color:#9aa2ad;border:1px solid var(--border,#555);border-radius:6px;padding:4px 12px;font-size:12px}
 html.imp-only .imp-markable:not(.imp-on){display:none!important}
 html.memo-only .imp-markable:not(.has-memo){display:none!important}
 </style>
@@ -8693,17 +8698,48 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
       var t=panel.querySelector('textarea'); if(t) t.focus();
     }
   }
-  function setRem(card){
-    var id=idOf(card), cur=(REMS[id]&&REMS[id].active)?REMS[id].time:'';
-    var v=prompt('알람 시각 (MM.DD.HH:MM · KST, 예 06.26.04:30) — 비우면 해제',cur);
-    if(v===null) return; v=(v||'').trim();
-    if(v && !TIME_RE.test(v)){ alert('형식: MM.DD.HH:MM (예 06.26.04:30 = 6/26 04:30)'); return; }
-    var body={surface:SURFACE,id:id,time:v,on:!!v,memo:MEMOS[id]||'',card:cardText(card)};
-    api('api/reminder',body).then(function(res){
-      if(res&&res.ok){ if(res.active) REMS[id]={time:res.time,active:true}; else delete REMS[id];
-        paint(card); }
-      else alert('알람 저장 실패'+(res&&res.error?': '+res.error:''));
-    }).catch(function(){ alert('알람 저장 실패'); });
+  function openRem(card){
+    // 메모처럼 인라인 패널 + 저장(알람)/해제 버튼. 날짜·시각은 네이티브 선택기
+    // (datetime-local, KST 기준 입력). 서버엔 MM.DD.HH:MM 으로 저장(연도 제외).
+    var id=idOf(card), panel=card.querySelector('.rem-panel');
+    if(!panel){
+      panel=document.createElement('div'); panel.className='rem-panel';
+      var inp=document.createElement('input'); inp.type='datetime-local'; inp.className='rem-in';
+      var bar=document.createElement('div'); bar.className='memo-bar';
+      var setb=document.createElement('button'); setb.type='button'; setb.className='rem-set'; setb.textContent='⏰ 알람';
+      var clr=document.createElement('button'); clr.type='button'; clr.className='rem-clr'; clr.textContent='해제';
+      var stt=document.createElement('span'); stt.className='memo-st';
+      var hint=document.createElement('span'); hint.className='memo-st'; hint.textContent='(KST)';
+      bar.appendChild(setb); bar.appendChild(clr); bar.appendChild(stt); bar.appendChild(hint);
+      panel.appendChild(inp); panel.appendChild(bar);
+      var head=(HEADSEL&&card.querySelector(HEADSEL));
+      if(head&&head.nextSibling) card.insertBefore(panel,head.nextSibling); else card.appendChild(panel);
+      // prefill — 기존 알람(MM.DD.HH:MM) → datetime-local(올해 연도)
+      if(REMS[id]&&REMS[id].active&&REMS[id].time){
+        var p=REMS[id].time.split(/[.:]/);
+        if(p.length===4) inp.value=(new Date().getFullYear())+'-'+p[0]+'-'+p[1]+'T'+p[2]+':'+p[3];
+      }
+      setb.addEventListener('click',function(){
+        var v=inp.value;            // 'YYYY-MM-DDTHH:MM'
+        if(!v){ alert('날짜·시각을 선택해줘'); return; }
+        var t=v.slice(5,7)+'.'+v.slice(8,10)+'.'+v.slice(11,13)+':'+v.slice(14,16);
+        if(!TIME_RE.test(t)){ alert('시각 형식 오류'); return; }
+        stt.textContent='저장 중...';
+        api('api/reminder',{surface:SURFACE,id:id,time:t,on:true,memo:MEMOS[id]||'',card:cardText(card)})
+          .then(function(res){ if(res&&res.ok&&res.active){ REMS[id]={time:res.time,active:true};
+            paint(card); stt.textContent='알람 '+res.time+' ✓'; setTimeout(function(){stt.textContent='';},1800);
+          } else { stt.textContent='실패'; } }).catch(function(){ stt.textContent='실패'; });
+      });
+      clr.addEventListener('click',function(){
+        stt.textContent='해제 중...';
+        api('api/reminder',{surface:SURFACE,id:id,time:'',on:false})
+          .then(function(res){ if(res&&res.ok){ delete REMS[id]; inp.value=''; paint(card);
+            stt.textContent='해제됨 ✓'; setTimeout(function(){stt.textContent='';},1500);
+          } else { stt.textContent='실패'; } }).catch(function(){ stt.textContent='실패'; });
+      });
+    }
+    panel.classList.toggle('open');
+    if(panel.classList.contains('open')&&card.tagName==='DETAILS') card.open=true;
   }
   window.__impApply=function(){ ensure(); };
   injectFilter();
@@ -8728,7 +8764,7 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
       var c1=mb.closest(CARDSEL); if(c1) openMemo(c1); return; }
     var rb=e.target.closest&&e.target.closest('.rem-btn');
     if(rb){ e.preventDefault(); e.stopPropagation();
-      var c2=rb.closest(CARDSEL); if(c2) setRem(c2); return; }
+      var c2=rb.closest(CARDSEL); if(c2) openRem(c2); return; }
     var f=e.target.closest&&e.target.closest('.imp-filter-btn');
     if(f){ e.preventDefault();
       var a1=document.documentElement.classList.toggle('imp-only');
