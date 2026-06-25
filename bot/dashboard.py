@@ -8735,9 +8735,11 @@ html.memo-only details:not(.imp-markable):not(:has(.imp-markable.has-memo)){disp
       var l2=document.createElement('span'); l2.className='rem-lab'; l2.textContent='📅 특정일';
       var din=document.createElement('input'); din.type='text'; din.className='rem-date'; din.placeholder='06.26.04:30'; din.setAttribute('inputmode','numeric');
       var dset=document.createElement('button'); dset.type='button'; dset.className='rem-set'; dset.textContent='설정';
+      var clr1=document.createElement('button'); clr1.type='button'; clr1.className='rem-clr'; clr1.textContent='해제';
       var clr=document.createElement('button'); clr.type='button'; clr.className='rem-clr'; clr.textContent='해제';
       var stt=document.createElement('span'); stt.className='rem-st';
-      [l1,tin,tset,sep,l2,din,dset,clr,stt].forEach(function(e){bar.appendChild(e);});
+      // 매일 [설정][해제] · 특정일 [설정][해제] (해제는 둘 다 동일하게 알람 종료)
+      [l1,tin,tset,clr1,sep,l2,din,dset,clr,stt].forEach(function(e){bar.appendChild(e);});
       panel.appendChild(bar);
       var head=(HEADSEL&&card.querySelector(HEADSEL));
       if(head&&head.nextSibling) card.insertBefore(panel,head.nextSibling); else card.appendChild(panel);
@@ -8758,12 +8760,13 @@ html.memo-only details:not(.imp-markable):not(:has(.imp-markable.has-memo)){disp
       tset.addEventListener('click',function(){ if(!tin.value){alert('매일 알람 시각을 선택해줘');return;} save(tin.value); });
       dset.addEventListener('click',function(){ var v=(din.value||'').trim();
         if(!TIME_RE.test(v)){ alert('특정일 형식: MM.DD.HH:MM (예 06.26.04:30)'); return; } save(v); });
-      clr.addEventListener('click',function(){ stt.textContent='해제 중...';
+      function doClear(){ stt.textContent='해제 중...';
         api('api/reminder',{surface:SURFACE,id:id,time:'',on:false}).then(function(res){
           if(res&&res.ok){ delete REMS[id]; tin.value=''; din.value=''; paint(card);
             stt.textContent='해제됨 ✓'; setTimeout(function(){stt.textContent='';},1500); }
           else { stt.textContent='실패'; } }).catch(function(){ stt.textContent='실패'; });
-      });
+      }
+      clr1.addEventListener('click',doClear); clr.addEventListener('click',doClear);
     }
     panel.classList.toggle('open');
     if(panel.classList.contains('open')&&card.tagName==='DETAILS') card.open=true;
