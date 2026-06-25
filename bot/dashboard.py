@@ -8599,7 +8599,7 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
   var SURFACE=window.IMP_SURFACE||C.surface||'';
   var CARDSEL=C.cardSel||'.card', HEADSEL=C.headSel||'.card-h';
   var IDATTRS=C.idAttrs||['date','filename'], SEARCHSEL=C.searchSel||'#scr-search';
-  var TIME_RE=/^([01]\\d|2[0-3]):[0-5]\\d$/;
+  var TIME_RE=/^(\\d{1,2})\\.(\\d{1,2})\\.(\\d{1,2}):(\\d{2})$/;   // MM.DD.HH:MM (KST)
   var MARKS=new Set(), MEMOS={}, REMS={};
   function idOf(card){
     if(card.dataset.impId) return card.dataset.impId;
@@ -8684,9 +8684,9 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
   }
   function setRem(card){
     var id=idOf(card), cur=(REMS[id]&&REMS[id].active)?REMS[id].time:'';
-    var v=prompt('알람 시각 (HH:MM, 24시간, KST) — 비우면 해제',cur);
+    var v=prompt('알람 시각 (MM.DD.HH:MM · KST, 예 06.26.04:30) — 비우면 해제',cur);
     if(v===null) return; v=(v||'').trim();
-    if(v && !TIME_RE.test(v)){ alert('형식: HH:MM (예 09:30, 24시간)'); return; }
+    if(v && !TIME_RE.test(v)){ alert('형식: MM.DD.HH:MM (예 06.26.04:30 = 6/26 04:30)'); return; }
     var body={surface:SURFACE,id:id,time:v,on:!!v,memo:MEMOS[id]||'',card:cardText(card)};
     api('api/reminder',body).then(function(res){
       if(res&&res.ok){ if(res.active) REMS[id]={time:res.time,active:true}; else delete REMS[id];

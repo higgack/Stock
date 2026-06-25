@@ -3502,9 +3502,8 @@ async def _periodic_reminders(application) -> None:
             if not CHANNEL_CHAT_IDS:
                 continue
             now = datetime.now(_KST)
-            now_hhmm = now.strftime("%H:%M")
             today = now.date().isoformat()
-            due = await asyncio.to_thread(_rem.due, now_hhmm, today)
+            due = await asyncio.to_thread(_rem.due, now, today)
             for d in due:
                 memo = (d.get("memo") or "").strip()
                 card = (d.get("card") or "").strip()

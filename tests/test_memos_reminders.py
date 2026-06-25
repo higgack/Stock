@@ -37,20 +37,28 @@ def test_memo_invalid_and_truncate():
 
 
 def test_reminder_set_due_sent_confirm():
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
     with tempfile.TemporaryDirectory() as d:
         r = _fresh_rem(d)
-        assert r.set_reminder("blog", "b1", "09:30", True, memo="m", card="c")["active"]
-        assert r.all_reminders() == {"blog": {"b1": {"time": "09:30", "active": True}}}
-        # due: now>=time & 오늘 미발송
-        assert [x["id"] for x in r.due("09:31", "2026-06-26")] == ["b1"]
-        assert r.due("09:00", "2026-06-26") == []          # 시각 전
+        # 지정 날짜+시각 (MM.DD.HH:MM, KST) — 6/26 09:30
+        assert r.set_reminder("blog", "b1", "06.26.09:30", True, memo="m", card="c")["active"]
+        assert r.set_reminder("blog", "b1", "6.26.9:30", True)["time"] == "06.26.09:30"  # 0패딩 정규화
+        assert r.all_reminders() == {"blog": {"b1": {"time": "06.26.09:30", "active": True}}}
+        d26_0931 = datetime(2026, 6, 26, 9, 31, tzinfo=KST)
+        d26_0900 = datetime(2026, 6, 26, 9, 0, tzinfo=KST)
+        d25_0931 = datetime(2026, 6, 25, 9, 31, tzinfo=KST)
+        d27_0931 = datetime(2026, 6, 27, 9, 31, tzinfo=KST)
+        d27_0000 = datetime(2026, 6, 27, 0, 0, tzinfo=KST)
+        assert [x["id"] for x in r.due(d26_0931, "2026-06-26")] == ["b1"]   # 지정일·시각 도달
+        assert r.due(d26_0900, "2026-06-26") == []        # 그날 시각 전
+        assert r.due(d25_0931, "2026-06-25") == []        # 지정일 전
         r.mark_sent("blog", "b1", "2026-06-26")
-        assert r.due("09:31", "2026-06-26") == []          # 오늘 발송됨
-        assert [x["id"] for x in r.due("09:31", "2026-06-27")] == ["b1"]  # 다음날 재발송
-        # 발송 payload 에 메모·카드 포함
-        item = r.due("09:31", "2026-06-28")[0]
+        assert r.due(d26_0931, "2026-06-26") == []        # 오늘 발송됨
+        assert [x["id"] for x in r.due(d27_0931, "2026-06-27")] == ["b1"]   # 다음날 같은시각 재발송
+        assert r.due(d27_0000, "2026-06-27") == []        # 다음날도 시각 전(00:00)엔 안 감
+        item = r.due(d27_0931, "2026-06-27")[0]
         assert item["memo"] == "m" and item["card"] == "c" and item["key"]
-        # 확인 → 종료(삭제)
         assert r.confirm_by_key(r.key_of("blog", "b1")) is not None
         assert r.all_reminders() == {}
 
@@ -58,8 +66,9 @@ def test_reminder_set_due_sent_confirm():
 def test_reminder_invalid_time_clears():
     with tempfile.TemporaryDirectory() as d:
         r = _fresh_rem(d)
-        assert r.set_reminder("blog", "b1", "25:99", True)["active"] is False  # 무효시각=해제
-        assert r.set_reminder("blog", "b1", "09:30", False)["active"] is False  # on=False=해제
+        assert r.set_reminder("blog", "b1", "06.26.25:99", True)["active"] is False  # 무효=해제
+        assert r.set_reminder("blog", "b1", "09:30", True)["active"] is False         # 옛 HH:MM=무효
+        assert r.set_reminder("blog", "b1", "13.40.09:30", True)["active"] is False   # 월/일 범위
         assert r.all_reminders() == {}
 
 
