@@ -2133,6 +2133,8 @@ def _render_index(records: list[dict]) -> str:
 </div>
 <script>{_INDEX_JS}</script>
 <script>{_INDEX_RUN_JS}</script>
+{_imp_cfg("analysis", head_sel=".card-row", id_attrs=["ticker", "date"], search_sel="#search")}
+{_IMPORTANT_BLOCK}
 </body>
 </html>
 """
@@ -7403,6 +7405,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                 parts.append(
                     f"<details class='scr-det cs-card' data-date=\"{_shtml.escape(_scr_date)}\""
                     f" data-file=\"{_shtml.escape(_scr_file)}\""
+                    f" data-imp-id=\"cs|{_shtml.escape(_scr_date)}|{_shtml.escape(_scr_file)}\""
                     f" data-search=\"{_shtml.escape(_search_hay)}\">"
                     f"<summary>▸ <b>{_scr_conds}</b>{_scr_mbadge} — {_scr_hits}종목/{_scr_total:,}종목{_scr_cached} "
                     f"<span class='muted'>{_scr_ts} · {_scr_elapsed:.1f}초</span>"
@@ -7904,6 +7907,7 @@ noahConsoleSetup({
   });
 })();
 </script>
+""" + _imp_cfg("screener", card_sel=".card, .cs-card", head_sel="summary") + _IMPORTANT_BLOCK + """
 </body></html>
 """)
     return "".join(parts)
@@ -8557,6 +8561,198 @@ def regenerate_screener_index() -> None:
 # UX 를 그대로 mirror — 차이는 카드가 단일 브리프 본문(섹션 분리 없음)
 # 이라는 점 + Daily/Weekly kind 뱃지.
 
+# 중요(important) 마크 — 카드별 ★ 토글 + 검색창 옆 '중요만' 필터 (사용자 2026-06-26).
+# 서버 저장(bot.important_marks, GET/POST /api/important) → 모바일·데스크탑 동기화.
+# 전 대시보드 universal: 자기완결 <style>+<script> 블록 1개(_IMPORTANT_BLOCK)를 각
+# 페이지에 주입하고, 페이지는 window.IMP_CFG(또는 IMP_SURFACE 만)로 표면·셀렉터만 선언.
+# 블록 JS 가 카드마다 ★ 버튼 + 검색창 옆 필터 버튼을 자동 주입(템플릿 편집 불요).
+# 기본값 = scr-search 카드 표면(daily_byte 류): cardSel='.card', headSel='.card-h',
+# idAttrs=['date','filename'], searchSel='#scr-search'. 다른 표면은 IMP_CFG 로 덮어씀.
+# ★ 클릭 = 토글+POST(낙관적, 실패 시 복구). 필터 = html.imp-only → 비중요 카드 숨김
+# (CSS !important 로 기존 검색/필터와 합성: 검색 통과 ∧ 중요, 둘 다 만족해야 표시).
+# 재렌더 뷰(NOAH/밸류체인)는 rebuild 후 window.__impApply() 호출로 ★ 재주입·상태복원.
+_IMPORTANT_BLOCK = """
+<style>
+.imp-ctl{cursor:pointer;background:none;border:0;padding:0 3px;font-size:14px;line-height:1;color:#9aa2ad;vertical-align:middle;flex:0 0 auto}
+.imp-ctl:hover{color:#f5c518}
+.imp-star.on{color:#f5c518}
+.memo-btn.on{color:#34c759}
+.rem-btn.on{color:#ff9f0a}
+.imp-filter-btn,.memo-filter-btn{cursor:pointer;background:var(--surface,#1c1c1e);color:var(--text,#e8e8ea);border:1px solid var(--border,#333);border-radius:14px;padding:5px 11px;font-size:12px;white-space:nowrap;margin-left:4px}
+.imp-filter-btn.active{background:#f5c518;color:#111;border-color:#f5c518;font-weight:600}
+.memo-filter-btn.active{background:#34c759;color:#111;border-color:#34c759;font-weight:600}
+.memo-panel{display:none;margin:6px 0 4px;padding:2px}
+.memo-panel.open{display:block}
+.memo-ta{width:100%;min-height:54px;box-sizing:border-box;font:13px/1.45 inherit;padding:6px;border:1px solid var(--border,#444);border-radius:6px;background:var(--surface,#111);color:var(--text,#eee);resize:vertical}
+.memo-bar{display:flex;align-items:center;gap:8px;margin-top:4px}
+.memo-save{cursor:pointer;background:#34c759;color:#111;border:0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600}
+.memo-st{font-size:11px;color:#9aa2ad}
+html.imp-only .imp-markable:not(.imp-on){display:none!important}
+html.memo-only .imp-markable:not(.has-memo){display:none!important}
+</style>
+<script>
+// ★ 중요 + 📝 메모 + ⏰ 알람 — 서버(/api/important·/api/memo·/api/reminder) 단일 저장,
+// 기기 무관 동기화. 로드 시 GET /api/important 로 marks+memos+reminders 1회 수신.
+(function(){
+  if(window.__impInit) return; window.__impInit=true;
+  var C=window.IMP_CFG||{};
+  var SURFACE=window.IMP_SURFACE||C.surface||'';
+  var CARDSEL=C.cardSel||'.card', HEADSEL=C.headSel||'.card-h';
+  var IDATTRS=C.idAttrs||['date','filename'], SEARCHSEL=C.searchSel||'#scr-search';
+  var TIME_RE=/^([01]\\d|2[0-3]):[0-5]\\d$/;
+  var MARKS=new Set(), MEMOS={}, REMS={};
+  function idOf(card){
+    if(card.dataset.impId) return card.dataset.impId;
+    return IDATTRS.map(function(a){return card.getAttribute('data-'+a)||'';}).join('|');
+  }
+  function api(path,body){ return fetch(path,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}); }
+  function cardText(card){
+    var c=card.cloneNode(true);
+    c.querySelectorAll('.imp-ctl,.memo-panel,.del-btn,.scr-del').forEach(function(e){e.remove();});
+    return (c.innerText||c.textContent||'').replace(/\\n{3,}/g,'\\n\\n').trim();
+  }
+  function mkbtn(cls,glyph,title){ var b=document.createElement('button');
+    b.className='imp-ctl '+cls; b.type='button'; b.textContent=glyph; b.title=title; return b; }
+  function paint(card){
+    var id=idOf(card);
+    var on=MARKS.has(id), hm=!!MEMOS[id], hr=!!(REMS[id]&&REMS[id].active);
+    card.classList.toggle('imp-on',on);
+    card.classList.toggle('has-memo',hm);
+    card.classList.toggle('has-rem',hr);
+    var s=card.querySelector('.imp-star'); if(s){s.classList.toggle('on',on); s.textContent=on?'★':'☆';}
+    var m=card.querySelector('.memo-btn'); if(m){m.classList.toggle('on',hm);}
+    var r=card.querySelector('.rem-btn'); if(r){r.classList.toggle('on',hr);
+      r.title=hr?('알람 '+REMS[id].time+' (KST) — 클릭하여 변경/해제'):'알람 설정 (HH:MM, KST)';}
+  }
+  function ensure(){
+    if(!SURFACE) return;
+    document.querySelectorAll(CARDSEL).forEach(function(card){
+      card.classList.add('imp-markable');
+      var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
+      if(!head.querySelector('.imp-star')) head.appendChild(mkbtn('imp-star','☆','중요 표시 토글'));
+      if(!head.querySelector('.memo-btn')) head.appendChild(mkbtn('memo-btn','📝','메모'));
+      if(!head.querySelector('.rem-btn')) head.appendChild(mkbtn('rem-btn','⏰','알람 설정 (HH:MM, KST)'));
+      paint(card);
+    });
+    counts();
+  }
+  function counts(){
+    var ni=document.querySelectorAll('.imp-markable.imp-on').length;
+    var nm=document.querySelectorAll('.imp-markable.has-memo').length;
+    document.querySelectorAll('.imp-filter-btn').forEach(function(f){f.title='중요 표시한 항목만 ('+ni+')';});
+    document.querySelectorAll('.memo-filter-btn').forEach(function(f){f.title='메모 있는 항목만 ('+nm+')';});
+  }
+  function injectFilter(){
+    var into=C.filterInto&&document.querySelector(C.filterInto);
+    if(!into){ var inp=SEARCHSEL&&document.querySelector(SEARCHSEL); into=inp&&inp.parentNode; }
+    if(into&&!into.querySelector('.imp-filter-btn')){
+      var f=mkbtn2('imp-filter-btn','⭐ 중요'); into.appendChild(f);
+      var g=mkbtn2('memo-filter-btn','📝 메모'); into.appendChild(g);
+    }
+  }
+  function mkbtn2(cls,txt){ var b=document.createElement('button'); b.className=cls;
+    b.type='button'; b.textContent=txt; return b; }
+  function openMemo(card){
+    var id=idOf(card), panel=card.querySelector('.memo-panel');
+    if(!panel){
+      panel=document.createElement('div'); panel.className='memo-panel';
+      var ta=document.createElement('textarea'); ta.className='memo-ta';
+      ta.placeholder='내 생각 메모... (비우고 저장 = 삭제)'; ta.value=MEMOS[id]||'';
+      var bar=document.createElement('div'); bar.className='memo-bar';
+      var save=document.createElement('button'); save.type='button'; save.className='memo-save'; save.textContent='저장';
+      var stt=document.createElement('span'); stt.className='memo-st';
+      bar.appendChild(save); bar.appendChild(stt); panel.appendChild(ta); panel.appendChild(bar);
+      var head=(HEADSEL&&card.querySelector(HEADSEL));
+      if(head&&head.nextSibling) card.insertBefore(panel,head.nextSibling); else card.appendChild(panel);
+      function doSave(){
+        var text=ta.value; stt.textContent='저장 중...';
+        api('api/memo',{surface:SURFACE,id:id,text:text}).then(function(res){
+          if(res&&res.ok){ if(text.trim()) MEMOS[id]=text.trim(); else delete MEMOS[id];
+            paint(card); counts(); stt.textContent='저장됨 ✓'; setTimeout(function(){stt.textContent='';},1500);
+          } else { stt.textContent='실패'; }
+        }).catch(function(){ stt.textContent='실패'; });
+      }
+      save.addEventListener('click',doSave); ta.addEventListener('blur',doSave);
+    }
+    panel.classList.toggle('open');
+    if(panel.classList.contains('open')){
+      if(card.tagName==='DETAILS') card.open=true;
+      var t=panel.querySelector('textarea'); if(t) t.focus();
+    }
+  }
+  function setRem(card){
+    var id=idOf(card), cur=(REMS[id]&&REMS[id].active)?REMS[id].time:'';
+    var v=prompt('알람 시각 (HH:MM, 24시간, KST) — 비우면 해제',cur);
+    if(v===null) return; v=(v||'').trim();
+    if(v && !TIME_RE.test(v)){ alert('형식: HH:MM (예 09:30, 24시간)'); return; }
+    var body={surface:SURFACE,id:id,time:v,on:!!v,memo:MEMOS[id]||'',card:cardText(card)};
+    api('api/reminder',body).then(function(res){
+      if(res&&res.ok){ if(res.active) REMS[id]={time:res.time,active:true}; else delete REMS[id];
+        paint(card); }
+      else alert('알람 저장 실패'+(res&&res.error?': '+res.error:''));
+    }).catch(function(){ alert('알람 저장 실패'); });
+  }
+  window.__impApply=function(){ ensure(); };
+  injectFilter();
+  fetch('api/important').then(function(r){return r.json();}).then(function(d){
+    if(d){ if(d.marks&&d.marks[SURFACE]) MARKS=new Set(d.marks[SURFACE]);
+      if(d.memos&&d.memos[SURFACE]) MEMOS=d.memos[SURFACE];
+      if(d.reminders&&d.reminders[SURFACE]) REMS=d.reminders[SURFACE]; }
+  }).catch(function(){}).then(ensure);
+  document.addEventListener('click',function(e){
+    var st=e.target.closest&&e.target.closest('.imp-star');
+    if(st){ e.preventDefault(); e.stopPropagation();
+      var card=st.closest(CARDSEL); if(!card) return;
+      var id=idOf(card), on=!MARKS.has(id);
+      if(on) MARKS.add(id); else MARKS.delete(id); paint(card); counts();
+      api('api/important',{surface:SURFACE,id:id,on:on})
+        .then(function(res){ if(!res||!res.ok) revert(); }).catch(revert);
+      function revert(){ if(on) MARKS.delete(id); else MARKS.add(id); paint(card); counts();
+        alert('중요 저장 실패 — 다시 시도해줘'); }
+      return; }
+    var mb=e.target.closest&&e.target.closest('.memo-btn');
+    if(mb){ e.preventDefault(); e.stopPropagation();
+      var c1=mb.closest(CARDSEL); if(c1) openMemo(c1); return; }
+    var rb=e.target.closest&&e.target.closest('.rem-btn');
+    if(rb){ e.preventDefault(); e.stopPropagation();
+      var c2=rb.closest(CARDSEL); if(c2) setRem(c2); return; }
+    var f=e.target.closest&&e.target.closest('.imp-filter-btn');
+    if(f){ e.preventDefault();
+      var a1=document.documentElement.classList.toggle('imp-only');
+      document.querySelectorAll('.imp-filter-btn').forEach(function(x){x.classList.toggle('active',a1);}); return; }
+    var g=e.target.closest&&e.target.closest('.memo-filter-btn');
+    if(g){ e.preventDefault();
+      var a2=document.documentElement.classList.toggle('memo-only');
+      document.querySelectorAll('.memo-filter-btn').forEach(function(x){x.classList.toggle('active',a2);}); return; }
+  });
+})();
+</script>
+"""
+
+
+def _imp_cfg(surface: str, card_sel: str = "", head_sel: str = "",
+             id_attrs: list[str] | None = None, search_sel: str = "",
+             filter_into: str = "") -> str:
+    """페이지에 중요-마크 설정(window.IMP_CFG) 주입 — _IMPORTANT_BLOCK 앞에 둘 것.
+    기본값(scr-search 카드 표면)과 같으면 surface 만 줘도 됨. filter_into = 검색창이
+    없는 표면에서 ⭐중요 필터 버튼을 직접 넣을 컨테이너 셀렉터."""
+    import json as _j
+    cfg = {"surface": surface}
+    if card_sel:
+        cfg["cardSel"] = card_sel
+    if head_sel:
+        cfg["headSel"] = head_sel
+    if id_attrs:
+        cfg["idAttrs"] = id_attrs
+    if search_sel:
+        cfg["searchSel"] = search_sel
+    if filter_into:
+        cfg["filterInto"] = filter_into
+    return f"<script>window.IMP_CFG={_j.dumps(cfg, ensure_ascii=False)};</script>"
+
+
 _DAILY_BYTE_JS = """
 <script>
 // 딥링크 — market.html '전체 보기' 가 #card-... 해시로 진입하면 해당 카드의
@@ -8718,6 +8914,7 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {
   });
 });
 </script>
+""" + _IMPORTANT_BLOCK + """
 </body></html>
 """
 
@@ -8926,6 +9123,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         parts.append('</div></details>')  # close month
 
     parts.append("</div>")
+    parts.append(_imp_cfg("daily_byte"))
     parts.append(_DAILY_BYTE_JS)
     return "".join(parts)
 
@@ -9085,6 +9283,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
         parts.append('</div></details>')
     _month_close(parts, _prev_month)
     parts.append("</div>")
+    parts.append(_imp_cfg("realestate"))
     parts.append(_REALESTATE_JS)
     return "".join(parts)
 
@@ -9227,6 +9426,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
         parts.append('</div></details>')
     _month_close(parts, _prev_month)
     parts.append("</div>")
+    parts.append(_imp_cfg("cheongyak"))
     parts.append(_CHEONGYAK_JS)
     return "".join(parts)
 
@@ -9417,6 +9617,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
         parts.append('</div></details>')  # close month
 
     parts.append("</div>")
+    parts.append(_imp_cfg("reddit"))
     parts.append(_DAILY_BYTE_JS)
     return "".join(parts)
 
@@ -9837,6 +10038,7 @@ def _render_blog_page(runs: list[dict]) -> str:
         parts.append('</div></details>')  # close month
 
     parts.append("</div>")
+    parts.append(_imp_cfg("blog"))
     parts.append(_DAILY_BYTE_JS
                  .replace("api/daily_byte_delete", "api/blog_delete")
                  .replace("Daily Byte 기록을 삭제할까요?", "블로그 글을 삭제할까요?"))
@@ -9941,9 +10143,11 @@ _VALUECHAIN_JS = r"""
     b.onclick=function(){ var s=document.getElementById('vc-search'); s.value=name; render(name); };
     chipWrap.appendChild(b);
   });
+  function attrEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function edgeRow(e){
     var tag = e.k==='trade' ? '<span class="vc-tag">관세청</span>' : '';
-    return '<div class="vc-row"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
+    var iid = attrEsc(e.c+'|'+e.r+'|'+e.t);   // 속성 안전(따옴표 포함 회사명 대응)
+    return '<div class="vc-row" data-imp-id="'+iid+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
       '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div></div>';
   }
@@ -9961,6 +10165,7 @@ _VALUECHAIN_JS = r"""
       list.innerHTML='<div class="vc-listh">공급망·관계 '+KG.length+'건(블로그·DART)'+
         (KG.length>400?' · 상위 400':'')+' — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시</div>'+
         KG.slice(0,400).map(edgeRow).join('');
+      if(window.__impApply) window.__impApply();
       return;
     }
     var rk=resolveKind(nq), KIND=rk[0], NAME=rk[1];
@@ -10007,6 +10212,7 @@ _VALUECHAIN_JS = r"""
     } else { focus.innerHTML=''; }
     var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
     list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'"</div>'+f.slice(0,400).map(edgeRow).join('');
+    if(window.__impApply) window.__impApply();
   }
   var s=document.getElementById('vc-search');
   s.addEventListener('input', function(){ render(s.value); });
@@ -10072,6 +10278,11 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
 </div>
 <script id="vc-data" type="application/json">{data_json}</script>
 """)
+    # 중요 블록을 _VALUECHAIN_JS 앞에 — render('') 의 window.__impApply() 가
+    # 첫 렌더에서도 정의돼 있도록(로드순서, 코드리뷰 2026-06-26).
+    parts.append(_imp_cfg("valuechain", card_sel=".vc-row", head_sel="",
+                          search_sel="#vc-search"))
+    parts.append(_IMPORTANT_BLOCK)
     parts.append(_VALUECHAIN_JS)
     parts.append("</body></html>")
     return "".join(parts)
@@ -10568,6 +10779,7 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
   <h1>📊 조건부 스크리너</h1>
   <p class="sub">정량 조건으로 KR + US + JP + HK + CN + TW 종목 필터 (pykrx/yfinance, ₩0).
   텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> · <code>/screen jp minervini</code> · <code>/screen valueup</code> · <code>/screen list</code></p>
+  <div id="screen-impbar" style="margin:10px 0"></div>
   {{cards}}
 </div>
 <script>
@@ -10591,6 +10803,8 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {{
   }});
 }});
 </script>
+{_imp_cfg('screen', card_sel='details[data-date]', head_sel='summary', id_attrs=['date', 'file'], filter_into='#screen-impbar')}
+{_IMPORTANT_BLOCK}
 </body>
 </html>
 """.replace("{cards}", cards)
@@ -12125,6 +12339,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 dt_short = date_str[5:]  # MM-DD
                 detail_lines = it.get("detail", [])
                 stock_code = it.get("stock_code", "")
+                _imp_id = _html.escape(str(it.get("rcept_no") or f"{cn}|{rn}"))  # 중요마크 안정 id
 
                 detail_html = ""
                 for ln in detail_lines:
@@ -12179,7 +12394,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 _flag_attr = " ".join(_flags)
 
                 parts.append(f"""
-          <div class="{_card_cls}" data-cat="{cat}" data-flag="{_flag_attr}" data-name="{cn}" data-report="{rn}">
+          <div class="{_card_cls}" data-cat="{cat}" data-flag="{_flag_attr}" data-name="{cn}" data-report="{rn}" data-imp-id="{_imp_id}">
             <div class="df-card-hd">
               <a href="{url}" target="_blank" rel="noopener" class="df-corp">{cn}</a>{ticker_link}
               <span class="df-meta"><span class="df-dt">{dt_short}</span> <span class="df-cat" style="background:{cat_color}">{cat}</span></span>
@@ -12330,6 +12545,9 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 """)
 
     parts.append("</div>\n")
+    parts.append(_imp_cfg("dart", card_sel=".df-card", head_sel=".df-card-hd",
+                          search_sel="#df-search"))
+    parts.append(_IMPORTANT_BLOCK)
     parts.append("</body></html>")
     return "\n".join(parts)
 

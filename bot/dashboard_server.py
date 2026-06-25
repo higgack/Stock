@@ -344,6 +344,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_search_api()
         if raw == "/api/favorites":
             return self._handle_favorites_get()
+        if raw == "/api/important":
+            return self._handle_important_get()
         return super().do_GET()
 
     def do_HEAD(self):
@@ -354,6 +356,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if not self._authorize():
             return
+        if self.path == "/api/important":
+            return self._handle_important_post()
+        if self.path == "/api/memo":
+            return self._handle_memo_post()
+        if self.path == "/api/reminder":
+            return self._handle_reminder_post()
         if self.path == "/api/favorite_add":
             return self._handle_favorite_add()
         if self.path == "/api/favorite_remove":
@@ -1088,6 +1096,84 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_ok({"ok": True, "entry": entry})
         except Exception as exc:
             log.warning("favorite_add: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_important_get(self) -> None:
+        """GET /api/important — 전 표면 중요 마크 + 메모 + 알람. 정적 페이지가 로드 시
+        1회 받아 ★/📝/⏰ 상태·필터를 그린다(기기 무관 동기화)."""
+        try:
+            from bot.important_marks import all_marks
+            out = {"ok": True, "marks": all_marks(), "memos": {}, "reminders": {}}
+            try:
+                from bot.memos import all_memos
+                out["memos"] = all_memos()
+            except Exception as exc:
+                log.warning("important_get memos: %s", exc)
+            try:
+                from bot.reminders import all_reminders
+                out["reminders"] = all_reminders()
+            except Exception as exc:
+                log.warning("important_get reminders: %s", exc)
+            self._json_ok(out)
+        except Exception as exc:
+            log.warning("important_get: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc), "marks": {},
+                           "memos": {}, "reminders": {}})
+
+    def _handle_memo_post(self) -> None:
+        """POST /api/memo {surface,id,text} — 카드 메모 저장(빈 텍스트=삭제)."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 16384:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            from bot.memos import set_memo
+            res = set_memo((payload.get("surface") or "").strip(),
+                           (payload.get("id") or "").strip(),
+                           payload.get("text") or "")
+            self._json_ok(res)
+        except Exception as exc:
+            log.warning("memo_post: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_important_post(self) -> None:
+        """POST /api/important {surface,id,on} — 카드 중요 토글. 반환 state=적용상태."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            surface = (payload.get("surface") or "").strip()
+            mark_id = (payload.get("id") or "").strip()
+            on = bool(payload.get("on"))
+            from bot.important_marks import toggle
+            state = toggle(surface, mark_id, on)
+            if on and not state:        # 입력 거부(화이트리스트 밖·과대 id 등)
+                self._json_ok({"ok": False, "error": "invalid surface/id"})
+                return
+            self._json_ok({"ok": True, "state": state})
+        except Exception as exc:
+            log.warning("important_post: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_reminder_post(self) -> None:
+        """POST /api/reminder {surface,id,time,on,memo,card} — 알람 설정/해제."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 32768:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            from bot.reminders import set_reminder
+            res = set_reminder(
+                (payload.get("surface") or "").strip(),
+                (payload.get("id") or "").strip(),
+                (payload.get("time") or "").strip(),
+                bool(payload.get("on")),
+                memo=payload.get("memo") or "",
+                card=payload.get("card") or "")
+            self._json_ok(res)
+        except Exception as exc:
+            log.warning("reminder_post: %s", exc)
             self._json_ok({"ok": False, "error": str(exc)})
 
     def _handle_favorite_remove(self) -> None:
