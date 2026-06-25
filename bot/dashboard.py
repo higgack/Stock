@@ -8604,6 +8604,11 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
    :has() 미지원 브라우저는 그룹이 남되 그룹 펼침(JS)으로 마크 카드는 보임(graceful). */
 html.imp-only details:not(.imp-markable):not(:has(.imp-markable.imp-on)){display:none!important}
 html.memo-only details:not(.imp-markable):not(:has(.imp-markable.has-memo)){display:none!important}
+/* div 기반 접기 그룹(DART .df-month/.df-date-group 등)도 마크 없으면 숨김 */
+html.imp-only .df-month:not(:has(.imp-markable.imp-on)),html.imp-only .df-date-group:not(:has(.imp-markable.imp-on)){display:none!important}
+html.memo-only .df-month:not(:has(.imp-markable.has-memo)),html.memo-only .df-date-group:not(:has(.imp-markable.has-memo)){display:none!important}
+/* 필터 중엔 접힘(.collapsed)이어도 그룹 본문 강제 노출(마크 카드 보이게) */
+html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-month-body,html.memo-only .df-date-body{display:block!important}
 </style>
 <script>
 // ★ 중요 + 📝 메모 + ⏰ 알람 — 서버(/api/important·/api/memo·/api/reminder) 단일 저장,
@@ -8675,10 +8680,14 @@ html.memo-only details:not(.imp-markable):not(:has(.imp-markable.has-memo)){disp
     }
   }
   function expandGroups(sel){
-    // 마크된 카드가 든 날짜/월 그룹(details, 카드 자신 제외)을 펼쳐 마크 카드 노출.
+    // 마크된 카드가 든 그룹을 펼쳐 마크 카드 노출 — details 기반 + div 기반(.collapsed,
+    // 예 DART .df-month/.df-date-group) 둘 다. 카드 자신(details)은 제외.
     document.querySelectorAll('details').forEach(function(d){
       if(d.matches&&d.matches(CARDSEL)) return;
       if(d.querySelector(sel)) d.open=true;
+    });
+    document.querySelectorAll('.df-month,.df-date-group,.day,.cs-day').forEach(function(g){
+      if(g.querySelector(sel)) g.classList.remove('collapsed');
     });
   }
   function mkbtn2(cls,txt){ var b=document.createElement('button'); b.className=cls;
