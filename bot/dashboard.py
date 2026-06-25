@@ -8586,6 +8586,7 @@ _IMPORTANT_BLOCK = """
 .memo-ta{width:100%;min-height:54px;box-sizing:border-box;font:13px/1.45 inherit;padding:6px;border:1px solid var(--border,#444);border-radius:6px;background:var(--surface,#111);color:var(--text,#eee);resize:vertical}
 .memo-bar{display:flex;align-items:center;gap:8px;margin-top:4px}
 .memo-save{cursor:pointer;background:#34c759;color:#111;border:0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600}
+.memo-del{cursor:pointer;background:none;color:#ff453a;border:1px solid #ff453a;border-radius:6px;padding:4px 12px;font-size:12px}
 .memo-st{font-size:11px;color:#9aa2ad}
 html.imp-only .imp-markable:not(.imp-on){display:none!important}
 html.memo-only .imp-markable:not(.has-memo){display:none!important}
@@ -8662,19 +8663,29 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
       ta.placeholder='내 생각 메모... (비우고 저장 = 삭제)'; ta.value=MEMOS[id]||'';
       var bar=document.createElement('div'); bar.className='memo-bar';
       var save=document.createElement('button'); save.type='button'; save.className='memo-save'; save.textContent='저장';
+      var del=document.createElement('button'); del.type='button'; del.className='memo-del'; del.textContent='삭제';
       var stt=document.createElement('span'); stt.className='memo-st';
-      bar.appendChild(save); bar.appendChild(stt); panel.appendChild(ta); panel.appendChild(bar);
+      bar.appendChild(save); bar.appendChild(del); bar.appendChild(stt);
+      panel.appendChild(ta); panel.appendChild(bar);
       var head=(HEADSEL&&card.querySelector(HEADSEL));
       if(head&&head.nextSibling) card.insertBefore(panel,head.nextSibling); else card.appendChild(panel);
-      function doSave(){
-        var text=ta.value; stt.textContent='저장 중...';
+      function commit(text){
+        stt.textContent='저장 중...';
         api('api/memo',{surface:SURFACE,id:id,text:text}).then(function(res){
           if(res&&res.ok){ if(text.trim()) MEMOS[id]=text.trim(); else delete MEMOS[id];
-            paint(card); counts(); stt.textContent='저장됨 ✓'; setTimeout(function(){stt.textContent='';},1500);
+            paint(card); counts();
+            stt.textContent=text.trim()?'저장됨 ✓':'삭제됨 ✓'; setTimeout(function(){stt.textContent='';},1500);
           } else { stt.textContent='실패'; }
         }).catch(function(){ stt.textContent='실패'; });
       }
+      function doSave(){ commit(ta.value); }
+      function doDel(){
+        if(!(MEMOS[id]||ta.value.trim())){ panel.classList.remove('open'); return; }
+        if(!confirm('이 메모를 삭제할까요?')) return;
+        ta.value=''; commit('');
+      }
       save.addEventListener('click',doSave); ta.addEventListener('blur',doSave);
+      del.addEventListener('click',doDel);
     }
     panel.classList.toggle('open');
     if(panel.classList.contains('open')){
