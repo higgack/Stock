@@ -2133,6 +2133,8 @@ def _render_index(records: list[dict]) -> str:
 </div>
 <script>{_INDEX_JS}</script>
 <script>{_INDEX_RUN_JS}</script>
+{_imp_cfg("analysis", head_sel=".card-row", id_attrs=["ticker", "date"], search_sel="#search")}
+{_IMPORTANT_BLOCK}
 </body>
 </html>
 """
@@ -7904,6 +7906,7 @@ noahConsoleSetup({
   });
 })();
 </script>
+""" + _imp_cfg("screener") + _IMPORTANT_BLOCK + """
 </body></html>
 """)
     return "".join(parts)
@@ -8614,12 +8617,13 @@ html.imp-only .imp-markable:not(.imp-on){display:none!important}
     });
   }
   function injectFilter(){
-    var inp=SEARCHSEL&&document.querySelector(SEARCHSEL);
-    var bar=inp&&inp.parentNode;
-    if(bar&&!bar.querySelector('.imp-filter-btn')){
+    // 검색창이 없는 표면(조건부 스크리너)은 IMP_CFG.filterInto 컨테이너에 직접 주입.
+    var into=C.filterInto&&document.querySelector(C.filterInto);
+    if(!into){ var inp=SEARCHSEL&&document.querySelector(SEARCHSEL); into=inp&&inp.parentNode; }
+    if(into&&!into.querySelector('.imp-filter-btn')){
       var f=document.createElement('button');
       f.className='imp-filter-btn'; f.type='button'; f.textContent='⭐ 중요';
-      bar.appendChild(f);
+      into.appendChild(f);
     }
   }
   window.__impApply=function(){ ensure(); };   // 재렌더 뷰가 호출
@@ -8654,9 +8658,11 @@ html.imp-only .imp-markable:not(.imp-on){display:none!important}
 
 
 def _imp_cfg(surface: str, card_sel: str = "", head_sel: str = "",
-             id_attrs: list[str] | None = None, search_sel: str = "") -> str:
+             id_attrs: list[str] | None = None, search_sel: str = "",
+             filter_into: str = "") -> str:
     """페이지에 중요-마크 설정(window.IMP_CFG) 주입 — _IMPORTANT_BLOCK 앞에 둘 것.
-    기본값(scr-search 카드 표면)과 같으면 surface 만 줘도 됨."""
+    기본값(scr-search 카드 표면)과 같으면 surface 만 줘도 됨. filter_into = 검색창이
+    없는 표면에서 ⭐중요 필터 버튼을 직접 넣을 컨테이너 셀렉터."""
     import json as _j
     cfg = {"surface": surface}
     if card_sel:
@@ -8667,6 +8673,8 @@ def _imp_cfg(surface: str, card_sel: str = "", head_sel: str = "",
         cfg["idAttrs"] = id_attrs
     if search_sel:
         cfg["searchSel"] = search_sel
+    if filter_into:
+        cfg["filterInto"] = filter_into
     return f"<script>window.IMP_CFG={_j.dumps(cfg, ensure_ascii=False)};</script>"
 
 
@@ -10062,7 +10070,7 @@ _VALUECHAIN_JS = r"""
   });
   function edgeRow(e){
     var tag = e.k==='trade' ? '<span class="vc-tag">관세청</span>' : '';
-    return '<div class="vc-row"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
+    return '<div class="vc-row" data-imp-id="'+esc(e.c)+'|'+esc(e.r)+'|'+esc(e.t)+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
       '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div></div>';
   }
@@ -10080,6 +10088,7 @@ _VALUECHAIN_JS = r"""
       list.innerHTML='<div class="vc-listh">공급망·관계 '+KG.length+'건(블로그·DART)'+
         (KG.length>400?' · 상위 400':'')+' — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시</div>'+
         KG.slice(0,400).map(edgeRow).join('');
+      if(window.__impApply) window.__impApply();
       return;
     }
     var rk=resolveKind(nq), KIND=rk[0], NAME=rk[1];
@@ -10126,6 +10135,7 @@ _VALUECHAIN_JS = r"""
     } else { focus.innerHTML=''; }
     var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
     list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'"</div>'+f.slice(0,400).map(edgeRow).join('');
+    if(window.__impApply) window.__impApply();
   }
   var s=document.getElementById('vc-search');
   s.addEventListener('input', function(){ render(s.value); });
@@ -10192,6 +10202,9 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
 <script id="vc-data" type="application/json">{data_json}</script>
 """)
     parts.append(_VALUECHAIN_JS)
+    parts.append(_imp_cfg("valuechain", card_sel=".vc-row", head_sel="",
+                          search_sel="#vc-search"))
+    parts.append(_IMPORTANT_BLOCK)
     parts.append("</body></html>")
     return "".join(parts)
 
@@ -10687,6 +10700,7 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
   <h1>📊 조건부 스크리너</h1>
   <p class="sub">정량 조건으로 KR + US + JP + HK + CN + TW 종목 필터 (pykrx/yfinance, ₩0).
   텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> · <code>/screen jp minervini</code> · <code>/screen valueup</code> · <code>/screen list</code></p>
+  <div id="screen-impbar" style="margin:10px 0"></div>
   {{cards}}
 </div>
 <script>
@@ -10710,6 +10724,8 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {{
   }});
 }});
 </script>
+{_imp_cfg('screen', card_sel='details[data-date]', head_sel='summary', id_attrs=['date', 'file'], filter_into='#screen-impbar')}
+{_IMPORTANT_BLOCK}
 </body>
 </html>
 """.replace("{cards}", cards)
@@ -12244,6 +12260,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 dt_short = date_str[5:]  # MM-DD
                 detail_lines = it.get("detail", [])
                 stock_code = it.get("stock_code", "")
+                _imp_id = _html.escape(str(it.get("rcept_no") or f"{cn}|{rn}"))  # 중요마크 안정 id
 
                 detail_html = ""
                 for ln in detail_lines:
@@ -12298,7 +12315,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 _flag_attr = " ".join(_flags)
 
                 parts.append(f"""
-          <div class="{_card_cls}" data-cat="{cat}" data-flag="{_flag_attr}" data-name="{cn}" data-report="{rn}">
+          <div class="{_card_cls}" data-cat="{cat}" data-flag="{_flag_attr}" data-name="{cn}" data-report="{rn}" data-imp-id="{_imp_id}">
             <div class="df-card-hd">
               <a href="{url}" target="_blank" rel="noopener" class="df-corp">{cn}</a>{ticker_link}
               <span class="df-meta"><span class="df-dt">{dt_short}</span> <span class="df-cat" style="background:{cat_color}">{cat}</span></span>
@@ -12449,6 +12466,9 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 """)
 
     parts.append("</div>\n")
+    parts.append(_imp_cfg("dart", card_sel=".df-card", head_sel=".df-card-hd",
+                          search_sel="#df-search"))
+    parts.append(_IMPORTANT_BLOCK)
     parts.append("</body></html>")
     return "\n".join(parts)
 

@@ -80,3 +80,20 @@ def test_group_pages_inject_important_block():
         assert "api/important" in html, fn           # 서버 저장 배선
         assert f'"surface": "{surf}"' in html, fn    # 표면별 cfg
         assert html.count("</body>") == 1 and html.count("</html>") == 1, fn
+
+
+def test_bespoke_pages_inject_important_block():
+    # 개별 JS 표면(종목분석·Bottleneck스크리너·조건부·DART·밸류체인)도 IMP 주입.
+    import bot.dashboard as d
+    cases = [
+        ("analysis", d._render_index([])),
+        ("screener", d._render_screener_page([], {}, [])),
+        ("screen", d._render_screen_page([])),
+        ("dart", d._render_dart_feed_page({})),
+        ("valuechain", d._render_valuechain_page([])),
+    ]
+    for surf, html in cases:
+        assert "__impInit" in html, surf
+        assert "api/important" in html, surf
+        assert f'"surface": "{surf}"' in html, surf
+        assert html.count("</body>") == 1 and html.count("</html>") == 1, surf
