@@ -8616,7 +8616,7 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
     .then(function(r){return r.json();}); }
   function cardText(card){
     var c=card.cloneNode(true);
-    c.querySelectorAll('.imp-ctl,.memo-panel,.del-btn,.scr-del').forEach(function(e){e.remove();});
+    c.querySelectorAll('.imp-ctl,.memo-panel,.rem-panel,.del-btn,.scr-del').forEach(function(e){e.remove();});
     return (c.innerText||c.textContent||'').replace(/\\n{3,}/g,'\\n\\n').trim();
   }
   function mkbtn(cls,glyph,title){ var b=document.createElement('button');
