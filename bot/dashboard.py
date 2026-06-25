@@ -7907,7 +7907,7 @@ noahConsoleSetup({
   });
 })();
 </script>
-""" + _imp_cfg("screener", card_sel=".card, .cs-card", head_sel="summary") + _IMPORTANT_BLOCK + """
+""" + _imp_cfg("screener", card_sel=".card, .cs-card", head_sel="summary", search_sel="#scr-search, #cs-search") + _IMPORTANT_BLOCK + """
 </body></html>
 """)
     return "".join(parts)
@@ -8595,6 +8595,10 @@ _IMPORTANT_BLOCK = """
 .rem-clr{cursor:pointer;background:none;color:#9aa2ad;border:1px solid var(--border,#555);border-radius:6px;padding:4px 12px;font-size:12px}
 html.imp-only .imp-markable:not(.imp-on){display:none!important}
 html.memo-only .imp-markable:not(.has-memo){display:none!important}
+/* 필터 시 마크 카드 없는 날짜/월 그룹(details)은 숨김 — 카드 details(.imp-markable)는 제외.
+   :has() 미지원 브라우저는 그룹이 남되 그룹 펼침(JS)으로 마크 카드는 보임(graceful). */
+html.imp-only details:not(.imp-markable):not(:has(.imp-markable.imp-on)){display:none!important}
+html.memo-only details:not(.imp-markable):not(:has(.imp-markable.has-memo)){display:none!important}
 </style>
 <script>
 // ★ 중요 + 📝 메모 + ⏰ 알람 — 서버(/api/important·/api/memo·/api/reminder) 단일 저장,
@@ -8650,13 +8654,27 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
     document.querySelectorAll('.imp-filter-btn').forEach(function(f){f.title='중요 표시한 항목만 ('+ni+')';});
     document.querySelectorAll('.memo-filter-btn').forEach(function(f){f.title='메모 있는 항목만 ('+nm+')';});
   }
-  function injectFilter(){
-    var into=C.filterInto&&document.querySelector(C.filterInto);
-    if(!into){ var inp=SEARCHSEL&&document.querySelector(SEARCHSEL); into=inp&&inp.parentNode; }
+  function injectInto(into){
     if(into&&!into.querySelector('.imp-filter-btn')){
-      var f=mkbtn2('imp-filter-btn','⭐ 중요'); into.appendChild(f);
-      var g=mkbtn2('memo-filter-btn','📝 메모'); into.appendChild(g);
+      into.appendChild(mkbtn2('imp-filter-btn','⭐ 중요'));
+      into.appendChild(mkbtn2('memo-filter-btn','📝 메모'));
     }
+  }
+  function injectFilter(){
+    // filterInto(검색창 없는 표면) 우선, 아니면 SEARCHSEL 의 모든 검색창 옆(한 페이지
+    // 검색창 여러 개 — 예 스크리너 #scr-search·#cs-search — 전부에 주입).
+    var done=false;
+    if(C.filterInto){ var fi=document.querySelector(C.filterInto); if(fi){ injectInto(fi); done=true; } }
+    if(!done&&SEARCHSEL){
+      document.querySelectorAll(SEARCHSEL).forEach(function(inp){ if(inp.parentNode) injectInto(inp.parentNode); });
+    }
+  }
+  function expandGroups(sel){
+    // 마크된 카드가 든 날짜/월 그룹(details, 카드 자신 제외)을 펼쳐 마크 카드 노출.
+    document.querySelectorAll('details').forEach(function(d){
+      if(d.matches&&d.matches(CARDSEL)) return;
+      if(d.querySelector(sel)) d.open=true;
+    });
   }
   function mkbtn2(cls,txt){ var b=document.createElement('button'); b.className=cls;
     b.type='button'; b.textContent=txt; return b; }
@@ -8768,11 +8786,13 @@ html.memo-only .imp-markable:not(.has-memo){display:none!important}
     var f=e.target.closest&&e.target.closest('.imp-filter-btn');
     if(f){ e.preventDefault();
       var a1=document.documentElement.classList.toggle('imp-only');
-      document.querySelectorAll('.imp-filter-btn').forEach(function(x){x.classList.toggle('active',a1);}); return; }
+      document.querySelectorAll('.imp-filter-btn').forEach(function(x){x.classList.toggle('active',a1);});
+      if(a1) expandGroups('.imp-markable.imp-on'); return; }
     var g=e.target.closest&&e.target.closest('.memo-filter-btn');
     if(g){ e.preventDefault();
       var a2=document.documentElement.classList.toggle('memo-only');
-      document.querySelectorAll('.memo-filter-btn').forEach(function(x){x.classList.toggle('active',a2);}); return; }
+      document.querySelectorAll('.memo-filter-btn').forEach(function(x){x.classList.toggle('active',a2);});
+      if(a2) expandGroups('.imp-markable.has-memo'); return; }
   });
 })();
 </script>
