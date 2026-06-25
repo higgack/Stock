@@ -17,16 +17,36 @@ import logging
 import re
 import threading
 import time
+from datetime import date as _date, datetime, timedelta, timezone
 from pathlib import Path
 
 from bot.important_marks import SURFACES, _MAX_ID
 
 log = logging.getLogger("bot.reminders")
 
+_KST = timezone(timedelta(hours=9))
 _FILE = Path.home() / ".tradingagents" / "reminders.json"
 _LOCK = threading.Lock()
-_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+# 알람 시각 = 월.일.시:분 (KST). 예 06.26.04:30 (6/26 04:30). 분까지.
+_DT_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{1,2}):(\d{2})$")
 _MAX_TEXT = 8000
+
+
+def _parse_dt(s: str):
+    """'MM.DD.HH:MM' → (month, day, hour, minute) 정수 튜플, 무효는 None."""
+    m = _DT_RE.match((s or "").strip())
+    if not m:
+        return None
+    mo, da, hh, mi = (int(x) for x in m.groups())
+    if 1 <= mo <= 12 and 1 <= da <= 31 and 0 <= hh <= 23 and 0 <= mi <= 59:
+        return (mo, da, hh, mi)
+    return None
+
+
+def _norm_dt(s: str) -> str:
+    """입력 정규화 → 'MM.DD.HH:MM' 영(0)패딩. 무효는 ''."""
+    p = _parse_dt(s)
+    return "%02d.%02d.%02d:%02d" % p if p else ""
 
 
 def key_of(surface: str, rem_id: str) -> str:
@@ -63,12 +83,13 @@ def all_reminders() -> dict[str, dict[str, dict]]:
     return out
 
 
-def set_reminder(surface: str, rem_id: str, time_hhmm: str, on: bool,
+def set_reminder(surface: str, rem_id: str, time_str: str, on: bool,
                  memo: str = "", card: str = "") -> dict:
-    """알람 설정/해제. on=False 또는 시각 무효 → 삭제. 반환 {ok, active, time}."""
+    """알람 설정/해제. time='MM.DD.HH:MM'(KST). on=False 또는 무효 → 삭제.
+    반환 {ok, active, time}."""
     surface = (surface or "").strip()
     rem_id = (rem_id or "").strip()
-    time_hhmm = (time_hhmm or "").strip()
+    norm = _norm_dt(time_str)
     if surface not in SURFACES or not rem_id or len(rem_id) > _MAX_ID:
         return {"ok": False, "error": "invalid surface/id"}
     with _LOCK:
@@ -77,17 +98,17 @@ def set_reminder(surface: str, rem_id: str, time_hhmm: str, on: bool,
         if not isinstance(bucket, dict):
             bucket = {}
             data[surface] = bucket
-        if on and _TIME_RE.match(time_hhmm):
+        if on and norm:
             prev = bucket.get(rem_id) if isinstance(bucket.get(rem_id), dict) else {}
             bucket[rem_id] = {
-                "time": time_hhmm,
+                "time": norm,
                 "memo": (memo or prev.get("memo", ""))[:_MAX_TEXT],
                 "card": (card or prev.get("card", ""))[:_MAX_TEXT],
                 "active": True,
-                "last_sent": "" if prev.get("time") != time_hhmm else prev.get("last_sent", ""),
+                "last_sent": "" if prev.get("time") != norm else prev.get("last_sent", ""),
                 "created": prev.get("created", int(time.time())),
             }
-            res = {"ok": True, "active": True, "time": time_hhmm}
+            res = {"ok": True, "active": True, "time": norm}
         else:
             bucket.pop(rem_id, None)
             if not bucket:
@@ -97,16 +118,11 @@ def set_reminder(surface: str, rem_id: str, time_hhmm: str, on: bool,
     return res
 
 
-def due(now_hhmm: str, today: str) -> list[dict]:
-    """오늘(today) 아직 안 보낸 활성 알람 중 현재시각(now_hhmm) 도달분.
-    봇이 정확한 분을 놓쳐도 같은날 따라잡도록 now >= time 이면 발송 대상."""
-    def _m(t):
-        try:
-            h, mi = t.split(":")
-            return int(h) * 60 + int(mi)
-        except Exception:
-            return 9999
-    now_m = _m(now_hhmm)
+def due(now_dt: datetime, today: str) -> list[dict]:
+    """오늘(today) 미발송 활성 알람 중 발송 대상. 지정 날짜(MM.DD) 도달 이후, 매일
+    지정 시각(HH:MM, KST) 에 발송 — 확인 전까지 다음날 같은 시각 재발송. 봇이 정확한
+    분을 놓쳐도 같은날 따라잡도록 그날 now 시각 >= 지정 시각이면 발송 대상."""
+    now_hm = now_dt.hour * 60 + now_dt.minute
     out = []
     with _LOCK:
         data = _load()
@@ -118,7 +134,12 @@ def due(now_hhmm: str, today: str) -> list[dict]:
                 continue
             if v.get("last_sent") == today:
                 continue
-            if _m(v.get("time", "")) <= now_m:
+            p = _parse_dt(v.get("time", ""))
+            if not p:
+                continue
+            mo, da, hh, mi = p
+            # 지정 날짜 이후(같은해) + 그날 시각 도달.
+            if (now_dt.month, now_dt.day) >= (mo, da) and now_hm >= hh * 60 + mi:
                 out.append({"surface": surf, "id": rid, "time": v.get("time", ""),
                             "memo": v.get("memo", ""), "card": v.get("card", ""),
                             "key": key_of(surf, rid)})
