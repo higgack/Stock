@@ -1072,6 +1072,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터·장중 자동갱신) · 종목검색·스크롤복원
+ ★📝⏰ <b>카드 도구</b> (전 대시보드 공통) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=지정 시각(KST) 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
@@ -1089,7 +1090,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【채널 알림】</b>
-🚀 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · 📰 Daily Byte(한 평일19:00·미 08:00·주간 한·미 일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분)
+🚀 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · ⏰ 카드 알람(지정 시각·KST·✅확인 시 종료) · 📰 Daily Byte(한 평일19:00·미 08:00·주간 한·미 일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분)
 
 ━━━━━━━━━
 <b>【분석 &amp; 비용】</b> ~3분 · ₩100~150/회 (/compare ₩200~300)
@@ -3488,6 +3489,66 @@ async def cmd_health(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
+async def _periodic_reminders(application) -> None:
+    """카드 알람 발송 루프 (60초, KST). dashboard_server 가 ~/.tradingagents/
+    reminders.json 에 저장한 알람 중 오늘 미발송·시각 도달분을 텔레그램으로 발송
+    (메모 + 카드내용 + ✅확인 버튼). 확인 시 종료, 미확인 시 다음날 같은 시각 재발송.
+    한 발송 실패가 루프를 죽이지 않음(요청별 try/except)."""
+    import bot.reminders as _rem
+    await asyncio.sleep(20)
+    while True:
+        await asyncio.sleep(60)
+        try:
+            if not CHANNEL_CHAT_IDS:
+                continue
+            now = datetime.now(_KST)
+            now_hhmm = now.strftime("%H:%M")
+            today = now.date().isoformat()
+            due = await asyncio.to_thread(_rem.due, now_hhmm, today)
+            for d in due:
+                memo = (d.get("memo") or "").strip()
+                card = (d.get("card") or "").strip()
+                body = (f"⏰ <b>알람</b> · {_html.escape(d.get('time',''))} (KST)\n"
+                        + (f"\n📝 {_html.escape(memo)}\n" if memo else "")
+                        + (f"\n━━━━━\n{_html.escape(card[:1500])}" if card else ""))
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+                    "✅ 확인 (알람 종료)", callback_data=f"rmok:{d['key']}")]])
+                sent_ok = False
+                for cid in CHANNEL_CHAT_IDS:
+                    try:
+                        await application.bot.send_message(
+                            chat_id=cid, text=body, parse_mode=ParseMode.HTML,
+                            reply_markup=kb, disable_web_page_preview=True)
+                        sent_ok = True
+                    except Exception as exc:
+                        log.warning("reminder send to %s failed: %s", cid, exc)
+                if sent_ok:        # 발송 성공분만 오늘 발송표시(실패 시 다음 분 재시도)
+                    await asyncio.to_thread(_rem.mark_sent, d["surface"], d["id"], today)
+        except Exception:
+            log.exception("reminder loop iteration failed")
+
+
+async def on_reminder_confirm(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """✅확인 콜백 — rmok:<key> 알람 종료(삭제) + 버튼 제거."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    if not data.startswith("rmok:"):
+        return
+    key = data.split(":", 1)[1]
+    import bot.reminders as _rem
+    res = await asyncio.to_thread(_rem.confirm_by_key, key)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:
+        log.debug("reminder confirm: clear keyboard failed: %s", exc)
+    try:
+        await query.message.reply_text(
+            "✅ 알람을 종료했습니다." if res else "이미 종료된 알람입니다.")
+    except Exception:
+        pass
+
+
 def _static_command_registry() -> dict:
     """정적 명령 단일 레지스트리 — name → (handler, 메뉴 설명).
 
@@ -4289,6 +4350,9 @@ async def _on_startup(application) -> None:
     # 떨어뜨린 요청을 채널 명령과 동일 경로로 실행.
     application._dashboard_requests_task = asyncio.create_task(
         _periodic_dashboard_requests(application))
+    # 카드 알람(메모 리마인더) 발송 루프 (60초, KST).
+    application._reminders_task = asyncio.create_task(
+        _periodic_reminders(application))
 
     orphan = _recovery.read()
     if orphan is None:
@@ -4365,6 +4429,7 @@ def main() -> None:
     # 봇 재시작 (auto-deploy 1분) 후 자동 노출.
     _register_dynamic_screener_handlers(app)
     app.add_handler(CallbackQueryHandler(on_full_report, pattern=r"^full:"))
+    app.add_handler(CallbackQueryHandler(on_reminder_confirm, pattern=r"^rmok:"))
     app.add_handler(
         MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, on_channel_post)
     )

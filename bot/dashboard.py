@@ -8573,85 +8573,159 @@ def regenerate_screener_index() -> None:
 # 재렌더 뷰(NOAH/밸류체인)는 rebuild 후 window.__impApply() 호출로 ★ 재주입·상태복원.
 _IMPORTANT_BLOCK = """
 <style>
-.imp-star{cursor:pointer;background:none;border:0;padding:0 4px;font-size:15px;line-height:1;color:#9aa2ad;vertical-align:middle;flex:0 0 auto}
-.imp-star.on,.imp-star:hover{color:#f5c518}
-.imp-filter-btn{cursor:pointer;background:var(--surface,#1c1c1e);color:var(--text,#e8e8ea);border:1px solid var(--border,#333);border-radius:14px;padding:5px 11px;font-size:12px;white-space:nowrap}
+.imp-ctl{cursor:pointer;background:none;border:0;padding:0 3px;font-size:14px;line-height:1;color:#9aa2ad;vertical-align:middle;flex:0 0 auto}
+.imp-ctl:hover{color:#f5c518}
+.imp-star.on{color:#f5c518}
+.memo-btn.on{color:#34c759}
+.rem-btn.on{color:#ff9f0a}
+.imp-filter-btn,.memo-filter-btn{cursor:pointer;background:var(--surface,#1c1c1e);color:var(--text,#e8e8ea);border:1px solid var(--border,#333);border-radius:14px;padding:5px 11px;font-size:12px;white-space:nowrap;margin-left:4px}
 .imp-filter-btn.active{background:#f5c518;color:#111;border-color:#f5c518;font-weight:600}
+.memo-filter-btn.active{background:#34c759;color:#111;border-color:#34c759;font-weight:600}
+.memo-panel{display:none;margin:6px 0 4px;padding:2px}
+.memo-panel.open{display:block}
+.memo-ta{width:100%;min-height:54px;box-sizing:border-box;font:13px/1.45 inherit;padding:6px;border:1px solid var(--border,#444);border-radius:6px;background:var(--surface,#111);color:var(--text,#eee);resize:vertical}
+.memo-bar{display:flex;align-items:center;gap:8px;margin-top:4px}
+.memo-save{cursor:pointer;background:#34c759;color:#111;border:0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600}
+.memo-st{font-size:11px;color:#9aa2ad}
 html.imp-only .imp-markable:not(.imp-on){display:none!important}
+html.memo-only .imp-markable:not(.has-memo){display:none!important}
 </style>
 <script>
+// ★ 중요 + 📝 메모 + ⏰ 알람 — 서버(/api/important·/api/memo·/api/reminder) 단일 저장,
+// 기기 무관 동기화. 로드 시 GET /api/important 로 marks+memos+reminders 1회 수신.
 (function(){
   if(window.__impInit) return; window.__impInit=true;
   var C=window.IMP_CFG||{};
   var SURFACE=window.IMP_SURFACE||C.surface||'';
   var CARDSEL=C.cardSel||'.card', HEADSEL=C.headSel||'.card-h';
   var IDATTRS=C.idAttrs||['date','filename'], SEARCHSEL=C.searchSel||'#scr-search';
-  var MARKS=new Set();        // 현재 표면의 마크 id 집합
+  var TIME_RE=/^([01]\\d|2[0-3]):[0-5]\\d$/;
+  var MARKS=new Set(), MEMOS={}, REMS={};
   function idOf(card){
     if(card.dataset.impId) return card.dataset.impId;
     return IDATTRS.map(function(a){return card.getAttribute('data-'+a)||'';}).join('|');
   }
+  function api(path,body){ return fetch(path,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}); }
+  function cardText(card){
+    var c=card.cloneNode(true);
+    c.querySelectorAll('.imp-ctl,.memo-panel,.del-btn,.scr-del').forEach(function(e){e.remove();});
+    return (c.innerText||c.textContent||'').replace(/\\n{3,}/g,'\\n\\n').trim();
+  }
+  function mkbtn(cls,glyph,title){ var b=document.createElement('button');
+    b.className='imp-ctl '+cls; b.type='button'; b.textContent=glyph; b.title=title; return b; }
   function paint(card){
-    var on=MARKS.has(idOf(card)), st=card.querySelector('.imp-star');
+    var id=idOf(card);
+    var on=MARKS.has(id), hm=!!MEMOS[id], hr=!!(REMS[id]&&REMS[id].active);
     card.classList.toggle('imp-on',on);
-    if(st){ st.classList.toggle('on',on); st.textContent=on?'★':'☆'; }
+    card.classList.toggle('has-memo',hm);
+    card.classList.toggle('has-rem',hr);
+    var s=card.querySelector('.imp-star'); if(s){s.classList.toggle('on',on); s.textContent=on?'★':'☆';}
+    var m=card.querySelector('.memo-btn'); if(m){m.classList.toggle('on',hm);}
+    var r=card.querySelector('.rem-btn'); if(r){r.classList.toggle('on',hr);
+      r.title=hr?('알람 '+REMS[id].time+' (KST) — 클릭하여 변경/해제'):'알람 설정 (HH:MM, KST)';}
   }
   function ensure(){
     if(!SURFACE) return;
     document.querySelectorAll(CARDSEL).forEach(function(card){
       card.classList.add('imp-markable');
       var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
-      if(!head.querySelector('.imp-star')){
-        var b=document.createElement('button');
-        b.className='imp-star'; b.type='button'; b.textContent='☆';
-        b.title='중요 표시 토글'; b.setAttribute('aria-label','중요 표시');
-        head.appendChild(b);
-      }
+      if(!head.querySelector('.imp-star')) head.appendChild(mkbtn('imp-star','☆','중요 표시 토글'));
+      if(!head.querySelector('.memo-btn')) head.appendChild(mkbtn('memo-btn','📝','메모'));
+      if(!head.querySelector('.rem-btn')) head.appendChild(mkbtn('rem-btn','⏰','알람 설정 (HH:MM, KST)'));
       paint(card);
     });
     counts();
   }
   function counts(){
-    var n=document.querySelectorAll('.imp-markable.imp-on').length;
-    document.querySelectorAll('.imp-filter-btn').forEach(function(f){
-      f.title='중요 표시한 항목만 보기 ('+n+')';
-    });
+    var ni=document.querySelectorAll('.imp-markable.imp-on').length;
+    var nm=document.querySelectorAll('.imp-markable.has-memo').length;
+    document.querySelectorAll('.imp-filter-btn').forEach(function(f){f.title='중요 표시한 항목만 ('+ni+')';});
+    document.querySelectorAll('.memo-filter-btn').forEach(function(f){f.title='메모 있는 항목만 ('+nm+')';});
   }
   function injectFilter(){
-    // 검색창이 없는 표면(조건부 스크리너)은 IMP_CFG.filterInto 컨테이너에 직접 주입.
     var into=C.filterInto&&document.querySelector(C.filterInto);
     if(!into){ var inp=SEARCHSEL&&document.querySelector(SEARCHSEL); into=inp&&inp.parentNode; }
     if(into&&!into.querySelector('.imp-filter-btn')){
-      var f=document.createElement('button');
-      f.className='imp-filter-btn'; f.type='button'; f.textContent='⭐ 중요';
-      into.appendChild(f);
+      var f=mkbtn2('imp-filter-btn','⭐ 중요'); into.appendChild(f);
+      var g=mkbtn2('memo-filter-btn','📝 메모'); into.appendChild(g);
     }
   }
-  window.__impApply=function(){ ensure(); };   // 재렌더 뷰가 호출
+  function mkbtn2(cls,txt){ var b=document.createElement('button'); b.className=cls;
+    b.type='button'; b.textContent=txt; return b; }
+  function openMemo(card){
+    var id=idOf(card), panel=card.querySelector('.memo-panel');
+    if(!panel){
+      panel=document.createElement('div'); panel.className='memo-panel';
+      var ta=document.createElement('textarea'); ta.className='memo-ta';
+      ta.placeholder='내 생각 메모... (비우고 저장 = 삭제)'; ta.value=MEMOS[id]||'';
+      var bar=document.createElement('div'); bar.className='memo-bar';
+      var save=document.createElement('button'); save.type='button'; save.className='memo-save'; save.textContent='저장';
+      var stt=document.createElement('span'); stt.className='memo-st';
+      bar.appendChild(save); bar.appendChild(stt); panel.appendChild(ta); panel.appendChild(bar);
+      var head=(HEADSEL&&card.querySelector(HEADSEL));
+      if(head&&head.nextSibling) card.insertBefore(panel,head.nextSibling); else card.appendChild(panel);
+      function doSave(){
+        var text=ta.value; stt.textContent='저장 중...';
+        api('api/memo',{surface:SURFACE,id:id,text:text}).then(function(res){
+          if(res&&res.ok){ if(text.trim()) MEMOS[id]=text.trim(); else delete MEMOS[id];
+            paint(card); counts(); stt.textContent='저장됨 ✓'; setTimeout(function(){stt.textContent='';},1500);
+          } else { stt.textContent='실패'; }
+        }).catch(function(){ stt.textContent='실패'; });
+      }
+      save.addEventListener('click',doSave); ta.addEventListener('blur',doSave);
+    }
+    panel.classList.toggle('open');
+    if(panel.classList.contains('open')){
+      if(card.tagName==='DETAILS') card.open=true;
+      var t=panel.querySelector('textarea'); if(t) t.focus();
+    }
+  }
+  function setRem(card){
+    var id=idOf(card), cur=(REMS[id]&&REMS[id].active)?REMS[id].time:'';
+    var v=prompt('알람 시각 (HH:MM, 24시간, KST) — 비우면 해제',cur);
+    if(v===null) return; v=(v||'').trim();
+    if(v && !TIME_RE.test(v)){ alert('형식: HH:MM (예 09:30, 24시간)'); return; }
+    var body={surface:SURFACE,id:id,time:v,on:!!v,memo:MEMOS[id]||'',card:cardText(card)};
+    api('api/reminder',body).then(function(res){
+      if(res&&res.ok){ if(res.active) REMS[id]={time:res.time,active:true}; else delete REMS[id];
+        paint(card); }
+      else alert('알람 저장 실패'+(res&&res.error?': '+res.error:''));
+    }).catch(function(){ alert('알람 저장 실패'); });
+  }
+  window.__impApply=function(){ ensure(); };
   injectFilter();
   fetch('api/important').then(function(r){return r.json();}).then(function(d){
-    if(d&&d.marks&&d.marks[SURFACE]) MARKS=new Set(d.marks[SURFACE]);
+    if(d){ if(d.marks&&d.marks[SURFACE]) MARKS=new Set(d.marks[SURFACE]);
+      if(d.memos&&d.memos[SURFACE]) MEMOS=d.memos[SURFACE];
+      if(d.reminders&&d.reminders[SURFACE]) REMS=d.reminders[SURFACE]; }
   }).catch(function(){}).then(ensure);
   document.addEventListener('click',function(e){
     var st=e.target.closest&&e.target.closest('.imp-star');
-    if(st){
-      e.preventDefault(); e.stopPropagation();
+    if(st){ e.preventDefault(); e.stopPropagation();
       var card=st.closest(CARDSEL); if(!card) return;
       var id=idOf(card), on=!MARKS.has(id);
-      if(on) MARKS.add(id); else MARKS.delete(id);
-      paint(card); counts();
-      fetch('api/important',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({surface:SURFACE,id:id,on:on})}).then(function(r){return r.json();})
+      if(on) MARKS.add(id); else MARKS.delete(id); paint(card); counts();
+      api('api/important',{surface:SURFACE,id:id,on:on})
         .then(function(res){ if(!res||!res.ok) revert(); }).catch(revert);
-      function revert(){ if(on) MARKS.delete(id); else MARKS.add(id);
-        paint(card); counts(); alert('중요 저장 실패 — 다시 시도해줘'); }
-      return;
-    }
+      function revert(){ if(on) MARKS.delete(id); else MARKS.add(id); paint(card); counts();
+        alert('중요 저장 실패 — 다시 시도해줘'); }
+      return; }
+    var mb=e.target.closest&&e.target.closest('.memo-btn');
+    if(mb){ e.preventDefault(); e.stopPropagation();
+      var c1=mb.closest(CARDSEL); if(c1) openMemo(c1); return; }
+    var rb=e.target.closest&&e.target.closest('.rem-btn');
+    if(rb){ e.preventDefault(); e.stopPropagation();
+      var c2=rb.closest(CARDSEL); if(c2) setRem(c2); return; }
     var f=e.target.closest&&e.target.closest('.imp-filter-btn');
     if(f){ e.preventDefault();
-      var active=document.documentElement.classList.toggle('imp-only');
-      document.querySelectorAll('.imp-filter-btn').forEach(function(x){x.classList.toggle('active',active);});
-    }
+      var a1=document.documentElement.classList.toggle('imp-only');
+      document.querySelectorAll('.imp-filter-btn').forEach(function(x){x.classList.toggle('active',a1);}); return; }
+    var g=e.target.closest&&e.target.closest('.memo-filter-btn');
+    if(g){ e.preventDefault();
+      var a2=document.documentElement.classList.toggle('memo-only');
+      document.querySelectorAll('.memo-filter-btn').forEach(function(x){x.classList.toggle('active',a2);}); return; }
   });
 })();
 </script>
