@@ -63,12 +63,21 @@ def test_reminder_set_due_sent_confirm():
         assert r.all_reminders() == {}
 
 
-def test_reminder_invalid_time_clears():
+def test_reminder_daily_and_invalid():
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
     with tempfile.TemporaryDirectory() as d:
         r = _fresh_rem(d)
-        assert r.set_reminder("blog", "b1", "06.26.25:99", True)["active"] is False  # 무효=해제
-        assert r.set_reminder("blog", "b1", "09:30", True)["active"] is False         # 옛 HH:MM=무효
-        assert r.set_reminder("blog", "b1", "13.40.09:30", True)["active"] is False   # 월/일 범위
+        # 매일(HH:MM) — 유효, 0패딩, 매일 그 시각 발송(날짜 무관)
+        assert r.set_reminder("blog", "b1", "8:17", True)["time"] == "08:17"
+        assert [x["id"] for x in r.due(datetime(2026, 6, 26, 8, 17, tzinfo=KST), "2026-06-26")] == ["b1"]
+        assert r.due(datetime(2026, 6, 26, 8, 16, tzinfo=KST), "2026-06-26") == []
+        r.mark_sent("blog", "b1", "2026-06-26")
+        assert [x["id"] for x in r.due(datetime(2026, 6, 27, 8, 17, tzinfo=KST), "2026-06-27")] == ["b1"]
+        # 무효 → 해제
+        assert r.set_reminder("blog", "b1", "06.26.25:99", True)["active"] is False  # 시각 범위
+        assert r.set_reminder("blog", "b1", "13.40.09:30", True)["active"] is False  # 월/일 범위
+        assert r.set_reminder("blog", "b1", "abc", True)["active"] is False           # 형식
         assert r.all_reminders() == {}
 
 

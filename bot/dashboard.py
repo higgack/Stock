@@ -8590,9 +8590,14 @@ _IMPORTANT_BLOCK = """
 .memo-st{font-size:11px;color:#9aa2ad}
 .rem-panel{display:none;margin:6px 0 4px;padding:2px}
 .rem-panel.open{display:block}
-.rem-in{font:13px inherit;padding:5px 8px;border:1px solid var(--border,#444);border-radius:6px;background:var(--surface,#111);color:var(--text,#eee);color-scheme:dark light}
+.rem-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.rem-lab{font-size:12px;color:var(--text-sub,#9aa2ad)}
+.rem-sep{color:var(--text-sub,#9aa2ad);opacity:.5;margin:0 2px}
+.rem-time,.rem-date{font:13px inherit;padding:5px 8px;border:1px solid var(--border,#444);border-radius:6px;background:var(--surface,#111);color:var(--text,#eee);color-scheme:dark light}
+.rem-date{width:110px}
 .rem-set{cursor:pointer;background:#ff9f0a;color:#111;border:0;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600}
 .rem-clr{cursor:pointer;background:none;color:#9aa2ad;border:1px solid var(--border,#555);border-radius:6px;padding:4px 12px;font-size:12px}
+.rem-st{font-size:11px;color:#7aa7ff}
 html.imp-only .imp-markable:not(.imp-on){display:none!important}
 html.memo-only .imp-markable:not(.has-memo){display:none!important}
 /* 필터 시 마크 카드 없는 날짜/월 그룹(details)은 숨김 — 카드 details(.imp-markable)는 제외.
@@ -8717,43 +8722,47 @@ html.memo-only details:not(.imp-markable):not(:has(.imp-markable.has-memo)){disp
     }
   }
   function openRem(card){
-    // 메모처럼 인라인 패널 + 저장(알람)/해제 버튼. 날짜·시각은 네이티브 선택기
-    // (datetime-local, KST 기준 입력). 서버엔 MM.DD.HH:MM 으로 저장(연도 제외).
+    // 인라인 알람 패널 — 2모드: ⏰매일(type=time, 매일 반복) · 📅특정일(MM.DD.HH:MM,
+    // 그 날짜부터). 각 [설정], 공용 [해제]. 모든 시각 KST. 본문은 설정 시 스냅샷 전송.
     var id=idOf(card), panel=card.querySelector('.rem-panel');
     if(!panel){
       panel=document.createElement('div'); panel.className='rem-panel';
-      var inp=document.createElement('input'); inp.type='datetime-local'; inp.className='rem-in';
-      var bar=document.createElement('div'); bar.className='memo-bar';
-      var setb=document.createElement('button'); setb.type='button'; setb.className='rem-set'; setb.textContent='⏰ 알람';
+      var bar=document.createElement('div'); bar.className='rem-bar';
+      var l1=document.createElement('span'); l1.className='rem-lab'; l1.textContent='⏰ 매일';
+      var tin=document.createElement('input'); tin.type='time'; tin.className='rem-time';
+      var tset=document.createElement('button'); tset.type='button'; tset.className='rem-set'; tset.textContent='설정';
+      var sep=document.createElement('span'); sep.className='rem-sep'; sep.textContent='·';
+      var l2=document.createElement('span'); l2.className='rem-lab'; l2.textContent='📅 특정일';
+      var din=document.createElement('input'); din.type='text'; din.className='rem-date'; din.placeholder='06.26.04:30'; din.setAttribute('inputmode','numeric');
+      var dset=document.createElement('button'); dset.type='button'; dset.className='rem-set'; dset.textContent='설정';
       var clr=document.createElement('button'); clr.type='button'; clr.className='rem-clr'; clr.textContent='해제';
-      var stt=document.createElement('span'); stt.className='memo-st';
-      var hint=document.createElement('span'); hint.className='memo-st'; hint.textContent='(KST)';
-      bar.appendChild(setb); bar.appendChild(clr); bar.appendChild(stt); bar.appendChild(hint);
-      panel.appendChild(inp); panel.appendChild(bar);
+      var stt=document.createElement('span'); stt.className='rem-st';
+      [l1,tin,tset,sep,l2,din,dset,clr,stt].forEach(function(e){bar.appendChild(e);});
+      panel.appendChild(bar);
       var head=(HEADSEL&&card.querySelector(HEADSEL));
       if(head&&head.nextSibling) card.insertBefore(panel,head.nextSibling); else card.appendChild(panel);
-      // prefill — 기존 알람(MM.DD.HH:MM) → datetime-local(올해 연도)
-      if(REMS[id]&&REMS[id].active&&REMS[id].time){
-        var p=REMS[id].time.split(/[.:]/);
-        if(p.length===4) inp.value=(new Date().getFullYear())+'-'+p[0]+'-'+p[1]+'T'+p[2]+':'+p[3];
+      function refresh(){
+        var r=REMS[id];
+        if(r&&r.active&&r.time){
+          if(r.time.indexOf('.')<0){ tin.value=r.time; din.value=''; stt.textContent='매일 '+r.time+' KST'; }
+          else { din.value=r.time; tin.value=''; stt.textContent='특정일 '+r.time+' KST'; }
+        } else { stt.textContent=''; }
       }
-      setb.addEventListener('click',function(){
-        var v=inp.value;            // 'YYYY-MM-DDTHH:MM'
-        if(!v){ alert('날짜·시각을 선택해줘'); return; }
-        var t=v.slice(5,7)+'.'+v.slice(8,10)+'.'+v.slice(11,13)+':'+v.slice(14,16);
-        if(!TIME_RE.test(t)){ alert('시각 형식 오류'); return; }
+      refresh();
+      function save(t){
         stt.textContent='저장 중...';
         api('api/reminder',{surface:SURFACE,id:id,time:t,on:true,memo:MEMOS[id]||'',card:cardText(card)})
           .then(function(res){ if(res&&res.ok&&res.active){ REMS[id]={time:res.time,active:true};
-            paint(card); stt.textContent='알람 '+res.time+' ✓'; setTimeout(function(){stt.textContent='';},1800);
-          } else { stt.textContent='실패'; } }).catch(function(){ stt.textContent='실패'; });
-      });
-      clr.addEventListener('click',function(){
-        stt.textContent='해제 중...';
-        api('api/reminder',{surface:SURFACE,id:id,time:'',on:false})
-          .then(function(res){ if(res&&res.ok){ delete REMS[id]; inp.value=''; paint(card);
-            stt.textContent='해제됨 ✓'; setTimeout(function(){stt.textContent='';},1500);
-          } else { stt.textContent='실패'; } }).catch(function(){ stt.textContent='실패'; });
+            paint(card); refresh(); } else { stt.textContent='실패'; } }).catch(function(){ stt.textContent='실패'; });
+      }
+      tset.addEventListener('click',function(){ if(!tin.value){alert('매일 알람 시각을 선택해줘');return;} save(tin.value); });
+      dset.addEventListener('click',function(){ var v=(din.value||'').trim();
+        if(!TIME_RE.test(v)){ alert('특정일 형식: MM.DD.HH:MM (예 06.26.04:30)'); return; } save(v); });
+      clr.addEventListener('click',function(){ stt.textContent='해제 중...';
+        api('api/reminder',{surface:SURFACE,id:id,time:'',on:false}).then(function(res){
+          if(res&&res.ok){ delete REMS[id]; tin.value=''; din.value=''; paint(card);
+            stt.textContent='해제됨 ✓'; setTimeout(function(){stt.textContent='';},1500); }
+          else { stt.textContent='실패'; } }).catch(function(){ stt.textContent='실패'; });
       });
     }
     panel.classList.toggle('open');

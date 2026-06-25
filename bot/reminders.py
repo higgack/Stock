@@ -27,8 +27,11 @@ log = logging.getLogger("bot.reminders")
 _KST = timezone(timedelta(hours=9))
 _FILE = Path.home() / ".tradingagents" / "reminders.json"
 _LOCK = threading.Lock()
-# 알람 시각 = 월.일.시:분 (KST). 예 06.26.04:30 (6/26 04:30). 분까지.
+# 알람 시각 2종(KST):
+#   매일   = 'HH:MM'           (매일 그 시각 반복)         예 08:17
+#   특정일 = 'MM.DD.HH:MM'     (그 날짜부터 매일 그 시각)  예 06.26.04:30
 _DT_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{1,2}):(\d{2})$")
+_HM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _MAX_TEXT = 8000
 
 
@@ -43,10 +46,21 @@ def _parse_dt(s: str):
     return None
 
 
-def _norm_dt(s: str) -> str:
-    """입력 정규화 → 'MM.DD.HH:MM' 영(0)패딩. 무효는 ''."""
+def _parse_hm(s: str):
+    """'HH:MM'(매일) → (hour, minute), 무효는 None."""
+    m = _HM_RE.match((s or "").strip())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _norm_time(s: str) -> str:
+    """입력 정규화 → 'MM.DD.HH:MM'(특정일) 또는 'HH:MM'(매일), 0패딩. 무효는 ''."""
     p = _parse_dt(s)
-    return "%02d.%02d.%02d:%02d" % p if p else ""
+    if p:
+        return "%02d.%02d.%02d:%02d" % p
+    hm = _parse_hm(s)
+    if hm:
+        return "%02d:%02d" % hm
+    return ""
 
 
 def key_of(surface: str, rem_id: str) -> str:
@@ -89,7 +103,7 @@ def set_reminder(surface: str, rem_id: str, time_str: str, on: bool,
     반환 {ok, active, time}."""
     surface = (surface or "").strip()
     rem_id = (rem_id or "").strip()
-    norm = _norm_dt(time_str)
+    norm = _norm_time(time_str)
     if surface not in SURFACES or not rem_id or len(rem_id) > _MAX_ID:
         return {"ok": False, "error": "invalid surface/id"}
     with _LOCK:
@@ -134,13 +148,16 @@ def due(now_dt: datetime, today: str) -> list[dict]:
                 continue
             if v.get("last_sent") == today:
                 continue
-            p = _parse_dt(v.get("time", ""))
-            if not p:
-                continue
-            mo, da, hh, mi = p
-            # 지정 날짜 이후(같은해) + 그날 시각 도달.
-            if (now_dt.month, now_dt.day) >= (mo, da) and now_hm >= hh * 60 + mi:
-                out.append({"surface": surf, "id": rid, "time": v.get("time", ""),
+            t = v.get("time", "")
+            p = _parse_dt(t)
+            if p:                                   # 특정일 MM.DD.HH:MM
+                mo, da, hh, mi = p
+                ok = (now_dt.month, now_dt.day) >= (mo, da) and now_hm >= hh * 60 + mi
+            else:                                   # 매일 HH:MM
+                hm = _parse_hm(t)
+                ok = bool(hm) and now_hm >= hm[0] * 60 + hm[1]
+            if ok:
+                out.append({"surface": surf, "id": rid, "time": t,
                             "memo": v.get("memo", ""), "card": v.get("card", ""),
                             "key": key_of(surf, rid)})
     return out
