@@ -1068,6 +1068,7 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         _CHUNK = 120
         scanned = 0
         _seen: set = set()   # yfinance 가 데이터를 반환한 티커 (벌크 누락 재시도 판별)
+        _baseline: dict = {}  # {tk:{h52,l52,name}} 오늘 제외 52주 고저 — 네이버 live 비교용
 
         # 일봉 1년 — **당일 intraday 고가/저가가 직전 251일 극값을 갱신**한 종목만
         # (진짜 52주 신고/신저, 사용자 2026-06-13 '1% 근접 말고 진짜'). 장중 한 번
@@ -1108,9 +1109,13 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                            "vol": vol, "value": value}
                     # 당일 intraday 고가/저가가 직전 251일 극값 갱신(동률 포함) = 신고/신저
                     # (사용자 2026-06-16 — 장중 한 번이라도 찍으면 종가 무관, 시장 통용 정의).
-                    if float(highs.iloc[-1]) >= float(highs.iloc[:-1].max()):
+                    h52 = float(highs.iloc[:-1].max())   # 오늘 제외 52주 최고(baseline)
+                    l52 = float(lows.iloc[:-1].min())     # 오늘 제외 52주 최저(baseline)
+                    _baseline[tk] = {"h52": round(h52, 4), "l52": round(l52, 4),
+                                     "name": _names.get(tk, tk)}
+                    if float(highs.iloc[-1]) >= h52:
                         out["high"].append(rec)
-                    elif float(lows.iloc[-1]) <= float(lows.iloc[:-1].min()):
+                    elif float(lows.iloc[-1]) <= l52:
                         out["low"].append(rec)
                 except Exception:
                     continue
@@ -1218,6 +1223,13 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                  tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:
             _cache_write(cache_name, out)
+        # 네이버 live 비교용 baseline 저장(오늘 제외 52주 고저, 전 스캔 유니버스).
+        # JP/CN_A/HK intl_highlow live 경로가 현재가와 비교(EOD 1회 산출 → 장중 저부하).
+        if _baseline:
+            try:
+                _cache_write(f"highlow_baseline_{tag}.json", _baseline)
+            except Exception as _bexc:
+                log.warning("finviz: %s baseline 저장 실패: %s", tag, _bexc)
     except Exception as exc:
         log.warning("finviz: %s highlow 산출 실패: %s", tag, exc)
     return out

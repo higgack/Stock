@@ -336,6 +336,46 @@ def world_stock_map(market: str, max_pages: int = 60) -> dict:
     return out
 
 
+def world_live_map(market: str, max_pages: int = 60) -> dict:
+    """{yfinance 티커 → {price, pct, name, vol, mcap}} — 네이버 worldstock 현재가 등
+    **live 스냅샷**(marketValue 페이지네이션). JP/CN_A/HK 52주 신고저 live 비교용
+    (intl_highlow): EOD yfinance baseline(오늘 제외 52주 고저)과 현재가 비교 → 장중
+    저부하 실시간 신고가. 10분 디스크 캐시(_cached ttl=600). graceful·429 면역.
+    네이버 worldstock 미수록 시장(TW)은 빈 {} (호출부가 기존 스캔으로 폴백)."""
+    cfg = _INTL_MOVER_EX.get(market)
+    if not cfg:
+        return {}
+    from bot.finviz_client import _cache_write, _cached
+    cache = f"naver_world_live_{market}.json"
+    c = _cached(cache, ttl=600)
+    if isinstance(c, dict) and c:
+        return c
+    out: dict = {}
+    for ex, suf in cfg:
+        for page in range(1, max_pages + 1):
+            st = _get_stocks(f"{_BASE}/worldstock/exchange/stock/list"
+                             f"?stockExchangeType={ex}&stockPriceSortType=marketValue"
+                             f"&page={page}&pageSize={_PAGE_SIZE}")
+            if not st:
+                break
+            for s in st:
+                tk = _suffix_ticker(s.get("symbolCode") or s.get("reutersCode"), suf)
+                if not tk:
+                    continue
+                row = _world_row(s)
+                pr = row.get("price")
+                if pr is None:
+                    continue
+                out[tk] = {"price": pr, "pct": row.get("pct"),
+                           "name": row.get("name"), "vol": row.get("vol"),
+                           "mcap": row.get("mcap")}
+            if len(st) < _PAGE_SIZE:
+                break
+    if out:
+        _cache_write(cache, out)
+    return out
+
+
 # 네이버 데스크탑 업종(industry) API — nationType 별 (사용자 2026-06-14 'CN/HK/JP
 # 업종 네이버'). US/KR=이미 처리, TW=네이버 미지원이라 제외. enum: USA|CHN|HKG|JPN|VNM
 # (VM probe 확인). 종목 객체에 reutersIndustryName(업종 한글)·koreanCodeName 보유.

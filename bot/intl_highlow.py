@@ -335,6 +335,85 @@ def _kick(market: str) -> None:
                      name=f"intl-highlow-{market}").start()
 
 
+# 네이버 worldstock 으로 live 52주 비교 가능한 시장(TW=TWSE 별도·KR=네이버 domestic 별도).
+_LIVE_MARKETS = ("JP", "CN_A", "HK")
+
+
+def _market_open(market: str) -> bool:
+    """장중(평일·세션 시간 내) 여부 — _SESSIONS_UTC(UTC 세션) 기준."""
+    from datetime import datetime, timezone
+    from bot.finviz_client import _SESSIONS_UTC
+    s = _SESSIONS_UTC.get(market)
+    if not s:
+        return False
+    oh, om, ch, cm = s
+    now = datetime.now(timezone.utc)
+    return now.weekday() < 5 and (oh, om) <= (now.hour, now.minute) < (ch, cm)
+
+
+def _load_baseline(market: str) -> dict:
+    from bot.finviz_client import _cached
+    b = _cached(f"highlow_baseline_{market}.json", ttl=7 * 86400)
+    return b if isinstance(b, dict) else {}
+
+
+def fetch_intl_highlow_live(market: str) -> dict | None:
+    """EOD baseline(오늘 제외 52주 고저, yfinance 스캔이 저장) × 네이버 현재가 → live
+    52주 신고가/신저가. JP/CN_A/HK 만(네이버 worldstock). baseline/현재가 없으면 None
+    → 호출부가 기존 스캔 캐시로 폴백. 10분 캐시(장 밖 freeze). 정확성: 동일 baseline
+    공식, 비교만 yfinance 오늘바 → 네이버 현재가('현재 신고가'; 장중 찍고 내려온 건 제외)."""
+    if market not in _LIVE_MARKETS:
+        return None
+    from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached,
+                                   _now_label, _session_fresh)
+    cache = f"highlow_live_{market}.json"
+    c = _cached(cache, ttl=86400)
+    if isinstance(c, dict) and c:
+        try:
+            mt = (_CACHE_DIR / cache).stat().st_mtime
+        except OSError:
+            mt = 0.0
+        if _session_fresh(market, mt, 600):       # 장중 10분 / 장 밖 freeze
+            return c
+    base = _load_baseline(market)
+    if not base:
+        return None
+    try:
+        from bot.naver_ranking_client import world_live_map
+        live = world_live_map(market)
+    except Exception as exc:
+        log.warning("intl highlow live %s: naver %s", market, exc)
+        live = {}
+    if not live:
+        return None
+    high, low = [], []
+    for tk, b in base.items():
+        q = live.get(tk)
+        if not q or q.get("price") is None:
+            continue
+        try:
+            price = float(q["price"])
+        except (TypeError, ValueError):
+            continue
+        h52, l52, vol = b.get("h52"), b.get("l52"), q.get("vol")
+        rec = {"ticker": tk, "name": q.get("name") or b.get("name") or tk,
+               "price": round(price, 4), "pct": q.get("pct"), "vol": vol,
+               "value": (round(price * vol / 1e8, 2) if vol else None),
+               "mcap": q.get("mcap"), "ind": None}
+        if h52 is not None and price >= float(h52):
+            high.append(rec)
+        elif l52 is not None and price <= float(l52):
+            low.append(rec)
+    if not high and not low:
+        return None
+    high.sort(key=lambda r: (r.get("mcap") or 0), reverse=True)
+    low.sort(key=lambda r: (r.get("mcap") or 0), reverse=True)
+    out = {"high": high, "low": low, "ts": _now_label(),
+           "source": f"{_CFG[market][3]} — 네이버 현재가 × 52주 baseline(live)"}
+    _cache_write(cache, out)
+    return out
+
+
 def fetch_intl_highlow(market: str) -> dict:
     """JP/CN_A/HK/KR 52주 신고가/신저가 — **동기 계산 안 함**. 시장-인지 신선도
     (KR=장중 30초[네이버] / JP·HK=장중 1h[yfinance 스캔] / 장 밖 마지막 마감 이후
@@ -342,6 +421,19 @@ def fetch_intl_highlow(market: str) -> dict:
     진행중 30분 dedup. {high,low,ts,source,building,status}."""
     if market not in _CFG:
         return {"high": [], "low": [], "ts": "", "source": "", "building": False}
+    # JP/CN_A/HK — 장중엔 네이버 현재가 × EOD baseline live 비교(10분, 저부하·실시간).
+    # baseline 부재/네이버 실패/빈결과/킬스위치(HIGHLOW_LIVE=0) 시 아래 기존 스캔 캐시로
+    # 자동 폴백(회귀 0). 장 밖엔 기존 경로(마지막 마감본 freeze).
+    import os as _os
+    if (market in _LIVE_MARKETS and _os.getenv("HIGHLOW_LIVE", "1") != "0"
+            and _market_open(market)):
+        try:
+            _lv = fetch_intl_highlow_live(market)
+        except Exception as _lexc:
+            log.warning("intl highlow live %s dispatch: %s", market, _lexc)
+            _lv = None
+        if _lv and (_lv.get("high") or _lv.get("low")):
+            return _lv
     from bot.finviz_client import (_CACHE_DIR, _HL_INTRA_TTL, _MOVERS_INTRA_TTL,
                                    _cached, _session_fresh)
     cache = _CFG[market][1]
