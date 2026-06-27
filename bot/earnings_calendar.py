@@ -446,13 +446,13 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>실적 캘린더 — NOAH</title>
+<title>실적 캘린더</title>
 {_CSS}
 </head><body>
 <a class="back-link" href="market.html">← 홈으로</a>
 <div style="font-size:11px;letter-spacing:2px;color:var(--muted);margin-bottom:4px">EARNINGS CALENDAR</div>
 <h1>실적 캘린더</h1>
-<div class="subtitle">한국시간 기준 일정. <b>시장 버튼</b>으로 달력이 시장별로 전환됩니다. 한국=<b>KIND IR일정</b>(실제 개최일·미래 포함, 클릭 시 KIND — DART 폴백), 미국=Finnhub 실적(장전 BMO / 장후 AMC), 일본·홍콩·대만=yfinance 확정 실적일(주요종목·한글명·향후 90일, 종목 클릭 시 NOAH 분석). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
+<div class="subtitle">한국시간 기준 일정. <b>시장 버튼</b>으로 달력이 시장별로 전환됩니다. 한국=<b>KIND IR일정</b>(실제 개최일·미래 포함, 클릭 시 KIND — DART 폴백), 미국=Finnhub 실적(장전 BMO / 장후 AMC), 일본·홍콩·대만=yfinance 확정 실적일(주요종목·한글명·향후 90일, 종목 클릭 시 분석). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
 {_market_toggle(year, month, market, intl_avail)}
 <div class="cal-header">
   <h2>{month_kr}</h2>
