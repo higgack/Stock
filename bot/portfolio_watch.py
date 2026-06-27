@@ -207,8 +207,18 @@ async def _run_async() -> int:
             if not data:
                 continue
             try:
-                from bot.portfolio import ingest, format_summary_text, NotBanksaladExport
+                from bot.portfolio import (ingest, format_summary_text,
+                                           NotBanksaladExport, EmptyHoldingsExport)
                 model = ingest(bytes(data), password=pw)
+            except EmptyHoldingsExport as exc:
+                # 진짜 뱅샐 export 인데 보유종목 0건 — 부분/손상 export 로 기존
+                # 데이터 덮어쓰기 거부됨(보존). RAG 비-자산 skip 과 달리 사용자가
+                # 올린 진짜 자산 파일의 이상이라 알림(2026-06-26 사고 재발방지).
+                log.warning("자산 export 0건 — 기존 보존 (%s): %s", fname, exc)
+                _push_confirm(
+                    "⚠️ 자산 export 보유종목 0건 — 기존 데이터 보존(덮어쓰기 거부). "
+                    "뱅크샐러드에서 전체 export 를 다시 받아 보내주세요.")
+                continue
             except NotBanksaladExport:
                 # RAG 채널의 비-자산 .zip/.xlsx — 확장자만 같았을 뿐. 조용히
                 # skip(푸시·저장 없음, portfolio.json 보존). seen 처리는 위에서

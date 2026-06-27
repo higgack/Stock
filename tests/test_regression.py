@@ -12703,3 +12703,63 @@ class TestMinerviniScreener:
         _os.utime(p, (old, old))
         assert s._load_cache(k) is None                      # 만료 → 재실행
         assert s._SCREEN_CACHE_TTL > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 빈-holdings export 가 기존 자산 데이터 덮어쓰기 차단
+#   배경: 2026-06-26 16:42 부분/손상 뱅샐 export 가 holdings 0건 모델로 기존
+#   365건 portfolio.json(+ budget.json)을 덮어써 자산·가계부가 화면에서 사라짐
+#   (.bak 로 복구). is_banksalad_export 게이트는 섹션 마커만 봐서 0건을 못 막았음.
+#   fix: prev.holdings>0 & new holdings==0 이면 ingest 가 EmptyHoldingsExport.
+# ─────────────────────────────────────────────────────────────────────────
+class TestEmptyHoldingsGuard:
+    """fix: 2026-06-27 (사고 2026-06-26 16:42)."""
+
+    def _patch(self, monkeypatch, prev, parsed_holdings):
+        import bot.portfolio as p
+        monkeypatch.setattr(p, "load", lambda: prev)
+        monkeypatch.setattr(p, "parse_export", lambda *a, **k: {"_": 1})
+        monkeypatch.setattr(p, "is_banksalad_export", lambda parsed: True)
+        monkeypatch.setattr(p, "build_model",
+                            lambda parsed: {"holdings": parsed_holdings})
+        saved = []
+        monkeypatch.setattr(p, "save", lambda m: saved.append(m))
+        return p, saved
+
+    def test_empty_parse_refuses_overwrite_when_prev_populated(self, monkeypatch):
+        from bot.portfolio import EmptyHoldingsExport
+        p, saved = self._patch(monkeypatch, prev={"holdings": [1, 2, 3]},
+                               parsed_holdings=[])
+        with pytest.raises(EmptyHoldingsExport):
+            p.ingest(b"x")
+        assert saved == []                       # 저장 안 됨 = 기존 데이터 보존
+
+    def test_first_upload_empty_is_allowed(self, monkeypatch):
+        # 신규 사용자(prev None) 면 0건도 통과 — 가드는 기존 데이터 있을 때만.
+        p, saved = self._patch(monkeypatch, prev=None, parsed_holdings=[])
+        p.ingest(b"x")
+        assert len(saved) == 1
+
+    def test_populated_parse_saves_normally(self, monkeypatch):
+        p, saved = self._patch(monkeypatch, prev={"holdings": [1]},
+                               parsed_holdings=[1, 2])
+        p.ingest(b"x")
+        assert len(saved) == 1 and len(saved[0]["holdings"]) == 2
+
+    def test_empty_holdings_is_notbanksalad_subclass(self):
+        # watcher 의 기존 NotBanksaladExport 보존 경로를 그대로 타도록 하위클래스.
+        from bot.portfolio import EmptyHoldingsExport, NotBanksaladExport
+        assert issubclass(EmptyHoldingsExport, NotBanksaladExport)
+
+    def test_budget_save_writes_bak(self, monkeypatch, tmp_path):
+        # budget 도 portfolio 처럼 .bak 백업(2026-06-26 budget 무백업 → 복구불가).
+        import bot.budget as b
+        bp = tmp_path / "budget.json"
+        monkeypatch.setattr(b, "BUDGET_PATH", bp)
+        b.save_budget({"v": 1})
+        assert bp.exists() and not bp.with_suffix(".json.bak").exists()  # 첫 저장 no bak
+        b.save_budget({"v": 2})
+        bak = bp.with_suffix(".json.bak")
+        assert bak.exists()                       # 2번째 저장 = 직전(v1) 백업
+        import json as _json
+        assert _json.loads(bak.read_text())["v"] == 1
