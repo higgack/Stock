@@ -9989,8 +9989,10 @@ def _blog_desc_html(text: str) -> str:
     if not text:
         return ""
     paras = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+    # 문단 간격 축소(사용자 2026-06-27 '줄 간격 너무 난다'): margin 11→5, line-height
+    # 1.7→1.6 — 문맥단위 가독성은 유지하되 빈공간 과다 해소.
     return "".join(
-        f'<p style="margin:0 0 11px;line-height:1.7">{_h.escape(p)}</p>'
+        f'<p style="margin:0 0 5px;line-height:1.6">{_h.escape(p)}</p>'
         for p in paras)
 
 
