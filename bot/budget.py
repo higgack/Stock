@@ -137,7 +137,17 @@ def build_budget_model(parsed: dict) -> dict:
 
 
 def save_budget(model: dict) -> None:
+    """atomic write to budget.json (+ 직전 1개 .bak 백업, portfolio.save 패리티).
+
+    2026-06-26 사고에서 budget 은 .bak 이 없어 portfolio 와 달리 자동복구 불가였음
+    → 덮어쓰기 전 기존 파일을 budget.json.bak 으로 복사(백업 실패는 비치명적)."""
     BUDGET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if BUDGET_PATH.exists():
+        try:
+            bak = BUDGET_PATH.with_suffix(".json.bak")
+            bak.write_text(BUDGET_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception:
+            pass
     payload = {**model, "_saved_ts": time.time()}
     tmp = BUDGET_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

@@ -31,6 +31,16 @@ class NotBanksaladExport(ValueError):
     skip 해 기존 portfolio.json 을 보존(2026-06-08 사용자 리포트)."""
 
 
+class EmptyHoldingsExport(NotBanksaladExport):
+    """진짜 뱅샐 export 처럼 보이나(섹션 마커 통과) 보유종목 0건으로 파싱됨.
+
+    2026-06-26 16:42 사고: 부분/손상 export 가 holdings 0건 모델로 기존 365건
+    portfolio.json(+ budget.json)을 덮어써 자산·가계부가 화면에서 사라짐(.bak 로
+    복구). 재발방지: 기존에 holdings>0 인데 새 파싱이 0건이면 ingest 가 이 예외를
+    던져 저장을 거부 → 기존 데이터 보존. NotBanksaladExport 하위라 기존 watcher
+    의 보존 경로를 그대로 탄다(단, watcher 는 이 케이스만 사용자에게 알림)."""
+
+
 def _won(v) -> str:
     """₩ 금액 → 억/만 약식(가독). None→'-'. (차트 fmtAxis 와 동일 철학.)"""
     if v is None:
@@ -291,6 +301,14 @@ def ingest(data, password=None) -> dict:
     if not is_banksalad_export(parsed):
         raise NotBanksaladExport("뱅크샐러드 자산 export 아님 (재무/투자 섹션 미검출)")
     model = build_model(parsed)
+    # 빈-holdings 사고 가드(2026-06-26 16:42 재발방지): 기존에 보유종목이 있는데
+    # 새 파싱이 0건이면 부분/손상 export 로 판단 → 저장 거부(기존 데이터 보존).
+    # 첫 업로드(prev None/빈)면 0건도 정상 통과(신규 사용자).
+    if (isinstance(prev, dict) and prev.get("holdings")
+            and not model.get("holdings")):
+        raise EmptyHoldingsExport(
+            f"파싱 결과 보유종목 0건 (기존 {len(prev['holdings'])}건 보존) — "
+            "부분/손상 export 의심, 덮어쓰기 거부")
     if isinstance(prev, dict) and prev.get("snapshot"):
         model["prev"] = {
             **prev["snapshot"],
