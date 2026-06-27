@@ -8818,12 +8818,15 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
     if(f){ e.preventDefault();
       var a1=document.documentElement.classList.toggle('imp-only');
       document.querySelectorAll('.imp-filter-btn').forEach(function(x){x.classList.toggle('active',a1);});
-      if(a1) expandGroups('.imp-markable.imp-on'); return; }
+      if(a1) expandGroups('.imp-markable.imp-on');
+      // 페이지별 그룹-카운트 필터(예 DART applyFilters)가 교집합 재적용하도록 통지.
+      document.dispatchEvent(new CustomEvent('impfilterchange')); return; }
     var g=e.target.closest&&e.target.closest('.memo-filter-btn');
     if(g){ e.preventDefault();
       var a2=document.documentElement.classList.toggle('memo-only');
       document.querySelectorAll('.memo-filter-btn').forEach(function(x){x.classList.toggle('active',a2);});
-      if(a2) expandGroups('.imp-markable.has-memo'); return; }
+      if(a2) expandGroups('.imp-markable.has-memo');
+      document.dispatchEvent(new CustomEvent('impfilterchange')); return; }
   });
 })();
 </script>
@@ -10175,11 +10178,18 @@ _VALUECHAIN_CSS = """
   border-radius:8px;padding:2px 9px;font-size:12px;margin:0 5px 5px 0}
 .vc-tip{font-size:12px;color:#8fd0a8;background:#10241a;border-radius:8px;padding:6px 10px;margin:4px 0 10px}
 .vc-listh{font-size:13px;color:var(--muted);margin:12px 0 6px}
-.vc-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--border);
-  padding:7px 2px;font-size:13px}
+.vc-row{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);
+  padding:7px 4px;font-size:13px}
+.vc-row:hover{background:var(--surface-2,rgba(127,127,127,.05))}
+/* 본문이 남는 폭을 차지 → 출처·도구(★/📝/⏰)가 우측에 붙어 클러스터(옛 space-between
+   이 5개 자식을 폭 전체로 흩뿌려 아이콘이 멀리 떨어지고 빈공간 과다 — 2026-06-27). */
+.vc-row>div:first-child{flex:1 1 auto;min-width:0}
 .vc-rel{color:var(--muted);font-style:italic;font-size:12px}
 .vc-ev{color:var(--muted);font-size:11px;margin-top:2px}
-.vc-src{color:var(--muted);font-size:11px;white-space:nowrap}
+.vc-src{color:var(--muted);font-size:11px;white-space:nowrap;margin-left:auto}
+/* ★/📝/⏰ 는 평소 흐리게(자리 덜 부각) → hover·활성(.on) 시 또렷. 간격도 타이트. */
+.vc-row .imp-ctl{padding:0 2px;font-size:13px;opacity:.45;transition:opacity .12s}
+.vc-row:hover .imp-ctl,.vc-row .imp-ctl.on{opacity:1}
 .vc-tag{display:inline-block;background:#23314a;color:#9db8da;border-radius:6px;
   padding:0 6px;font-size:10px;margin-left:6px;vertical-align:middle}
 </style>
@@ -12532,11 +12542,21 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     // 탭은 '전체'처럼 기본 펼침(최신일만) 유지 — 나머지 날짜는 접힘(헤더 클릭 펼침,
     // 일자별 매칭 카운트 표시). 사용자 2026-06-15 '다른 탭들도 전체탭처럼 해당일만'.
     if(wrap)wrap.classList.toggle('df-searching', !!q);
+    // ★중요/📝메모 필터(_IMPORTANT_BLOCK, html.imp-only/memo-only)를 카테고리·검색과
+    // 교집합(intersection)으로 합성: 마크 필터가 켜지면 비마크 카드도 .hidden 처리해
+    // 그룹 카운트·표시(.df-card:not(.hidden) 기준)가 정확히 줄어든다. 안 그러면
+    // imp-only CSS 가 카드만 숨기고 카운트엔 안 잡혀 '실적 누르고 중요 누르면
+    // 빈 그룹·틀린 카운트'(사용자 2026-06-27). 토글 시 impfilterchange 로 재적용.
+    var de=document.documentElement;
+    var impOnly=de.classList.contains('imp-only');
+    var memoOnly=de.classList.contains('memo-only');
     cards.forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
       var cf=(c.dataset.flag||'');
       var flagMatch=activeFlags.every(function(f){return cf.indexOf(f)>=0;});
-      if(!flagMatch){c.classList.add('hidden');return;}
+      var markMatch=(!impOnly||c.classList.contains('imp-on'))&&
+                    (!memoOnly||c.classList.contains('has-memo'));
+      if(!flagMatch||!markMatch){c.classList.add('hidden');return;}
       var textMatch=!q||
         (c.dataset.name||'').toLowerCase().indexOf(q)>=0||
         (c.dataset.report||'').toLowerCase().indexOf(q)>=0||
@@ -12585,6 +12605,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     });
   });
   if(search)search.addEventListener('input',applyFilters);
+  // ★중요/📝메모 필터 토글(_IMPORTANT_BLOCK) → 카테고리·검색과 교집합 재적용.
+  document.addEventListener('impfilterchange',applyFilters);
   if(clearBtn)clearBtn.addEventListener('click',function(){
     if(search)search.value='';
     activeFlags=[]; activeCat='전체';
