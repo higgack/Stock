@@ -898,18 +898,28 @@ _KR_FLAG_SVG = (
 
 
 _BASE_CSS = """
+/* Linear 스타일 디자인 토큰 (2026-06-27, design-spec 이식). 변수명 불변·값만
+   교체 → var() 쓰는 전 요소 자동 리스타일. 라이트 기본 + data-theme=dark 오버라이드.
+   별/메모/알람·삭제·차트 등 semantic 색은 spec 도 유지(여기 미변경). */
 :root {
-  --fg: #1f2937; --fg-soft: #6b7280; --bg: #f8fafc; --card: #ffffff;
-  --border: #e5e7eb; --accent: #0ea5e9;
+  --fg: #282a30; --fg-soft: #8a8f98; --bg: #f7f8f9; --card: #ffffff;
+  --surface-2: #f0f1f3;
+  --border: #e8e8ea; --border-input: #e0e1e4; --border-strong: #d8dade;
+  --accent: #5e6ad2; --accent-hover: #515dc4;
+  --focus-ring: rgba(94,106,210,0.13);
+  --radius: 10px; --radius-sm: 8px;
 }
 :root[data-theme="dark"] {
-  --fg: #e5e7eb; --fg-soft: #9ca3af; --bg: #111827; --card: #1f2937;
-  --border: #374151; --accent: #38bdf8;
+  --fg: #e2e3e6; --fg-soft: #8a8f98; --bg: #0b0c0e; --card: #141518;
+  --surface-2: #1a1b1f;
+  --border: #26272b; --border-input: #2a2c31; --border-strong: #34363c;
+  --accent: #7c84e8; --accent-hover: #9aa2f0;
+  --focus-ring: rgba(124,132,232,0.18);
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
     "Pretendard", "Helvetica Neue", "Segoe UI", "Apple Color Emoji",
     "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
   color: var(--fg); background: var(--bg); line-height: 1.55;
@@ -918,7 +928,7 @@ body {
 .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-h1 { font-size: 22px; margin: 0 0 4px; }
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.014em; }
 .sub { color: var(--fg-soft); font-size: 13px; margin: 0 0 24px; }
 .badge {
   font-size: 11px; padding: 2px 9px; border-radius: 999px;
@@ -954,10 +964,10 @@ _INDEX_CSS = _BASE_CSS + """
 }
 .search-bar input {
   flex: 1; padding: 10px 14px; font-size: 15px; color: var(--fg);
-  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
-  outline: none; transition: border-color 0.12s;
+  background: var(--card); border: 1px solid var(--border-input); border-radius: 8px;
+  outline: none; transition: border-color 0.12s, box-shadow 0.12s;
 }
-.search-bar input:focus { border-color: var(--accent); }
+.search-bar input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
 .search-bar button {
   padding: 10px 22px; font-size: 14px; font-weight: 500;
   cursor: pointer; white-space: nowrap;
@@ -7930,15 +7940,15 @@ _SCREENER_CSS = (
    Mirrors the NOAH index/detail pages. Variables below adapt: light
    defaults at `:root`, dark overrides at `:root[data-theme="dark"]`. */
 :root {
-  --bg:#f8fafc; --card:#ffffff; --border:#e5e7eb;
-  --text:#1f2937; --muted:#6b7280; --accent:#0ea5e9;
-  --pos:#059669; --neg:#dc2626; --neu:#6b7280; --pending:#d97706;
-  --accent-soft:rgba(14,165,233,0.07);
-  --accent-soft2:rgba(14,165,233,0.14);
+  --bg:#f7f8f9; --card:#ffffff; --border:#e8e8ea;
+  --text:#282a30; --muted:#8a8f98; --accent:#5e6ad2;
+  --pos:#059669; --neg:#dc2626; --neu:#8a8f98; --pending:#d97706;
+  --accent-soft:rgba(94,106,210,0.07);
+  --accent-soft2:rgba(94,106,210,0.14);
   --surface-tint:rgba(0,0,0,0.05);
   --surface-tint-strong:rgba(0,0,0,0.07);
   --row-border:rgba(0,0,0,0.05);
-  --tier-l-bg:rgba(14,165,233,0.12); --tier-l-fg:#0369a1;
+  --tier-l-bg:rgba(94,106,210,0.12); --tier-l-fg:#4651b8;
   --tier-m-bg:rgba(16,185,129,0.14); --tier-m-fg:#047857;
   --tier-s-bg:rgba(245,158,11,0.18); --tier-s-fg:#b45309;
   --search-btn-bg:#16a34a; --search-btn-hover:#15803d;
@@ -7946,15 +7956,15 @@ _SCREENER_CSS = (
   --mark-target-bg:rgba(245,158,11,0.7); --mark-target-fg:#1f2937;
 }
 :root[data-theme="dark"] {
-  --bg:#0F1219; --card:#1A1F2B; --border:#2A3142;
-  --text:#E8ECF4; --muted:#94A3B8; --accent:#3B82F6;
+  --bg:#0b0c0e; --card:#141518; --border:#26272b;
+  --text:#e2e3e6; --muted:#8a8f98; --accent:#7c84e8;
   --pos:#10B981; --neg:#EF4444; --neu:#6B7280; --pending:#F59E0B;
-  --accent-soft:rgba(59,130,246,0.06);
-  --accent-soft2:rgba(59,130,246,0.15);
+  --accent-soft:rgba(124,132,232,0.06);
+  --accent-soft2:rgba(124,132,232,0.15);
   --surface-tint:rgba(255,255,255,0.04);
   --surface-tint-strong:rgba(255,255,255,0.06);
   --row-border:rgba(255,255,255,0.04);
-  --tier-l-bg:rgba(59,130,246,0.15); --tier-l-fg:#93C5FD;
+  --tier-l-bg:rgba(124,132,232,0.15); --tier-l-fg:#9aa2f0;
   --tier-m-bg:rgba(16,185,129,0.15); --tier-m-fg:#6EE7B7;
   --tier-s-bg:rgba(245,158,11,0.15); --tier-s-fg:#FCD34D;
   --search-btn-bg:#16a34a; --search-btn-hover:#15803d;
@@ -12664,14 +12674,14 @@ _MARKET_CSS = (
     "<title>🌍 Market Overview — NOAH</title>"
     "<script>" + _THEME_JS + "</script>"
     "<style>"
-    ":root{--bg:#f8fafc;--card:#fff;--border:#e5e7eb;--text:#1f2937;"
-    "--muted:#6b7280;--accent:#0ea5e9;--pos:#059669;--neg:#dc2626;"
-    "--neu:#6b7280;--surface-tint:rgba(0,0,0,.05);"
-    "--accent-soft:rgba(14,165,233,.07)}"
-    ":root[data-theme='dark']{--bg:#0F1219;--card:#1A1F2B;--border:#2A3142;"
-    "--text:#E8ECF4;--muted:#94A3B8;--accent:#3B82F6;--pos:#10B981;"
+    ":root{--bg:#f7f8f9;--card:#fff;--border:#e8e8ea;--text:#282a30;"
+    "--muted:#8a8f98;--accent:#5e6ad2;--pos:#059669;--neg:#dc2626;"
+    "--neu:#8a8f98;--surface-tint:rgba(0,0,0,.05);"
+    "--accent-soft:rgba(94,106,210,.07)}"
+    ":root[data-theme='dark']{--bg:#0b0c0e;--card:#141518;--border:#26272b;"
+    "--text:#e2e3e6;--muted:#8a8f98;--accent:#7c84e8;--pos:#10B981;"
     "--neg:#EF4444;--neu:#6B7280;--surface-tint:rgba(255,255,255,.04);"
-    "--accent-soft:rgba(59,130,246,.06)}"
+    "--accent-soft:rgba(124,132,232,.06)}"
     "*{box-sizing:border-box}"
     "body{background:var(--bg);color:var(--text);margin:0;"
     "font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;"
