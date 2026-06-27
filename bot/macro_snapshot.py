@@ -67,6 +67,9 @@ GLOBAL = [
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
     # CPI 오른쪽 PPI(생산자물가, 헤드라인=최종수요 PPIFIS, 지수레벨, 사용자 2026-06-23).
     ("us_ppi", "미국 PPI", "", "fred", "PPIFIS", 2),
+    # PPI 옆 근원 PCE(Fed 타깃 물가 지표, 지수레벨, 사용자 2026-06-26). 헤드라인 대신
+    # 근원(PCEPILFE) — Fed 2% 타깃이 Core PCE.
+    ("us_pce", "미국 근원PCE", "", "fred", "PCEPILFE", 2),
     ("us_unemploy", "미국 실업률", "%", "fred", "UNRATE", 1),
     # ISM PMI(NAPM)는 FRED 에서 폐기(ISM 저작권) → 무료 대체 = Chicago Fed
     # National Activity Index(CFNAI, 월간 85지표 합성 경기선행). 라벨 정확화
@@ -93,7 +96,6 @@ GLOBAL = [
     ("soybean", "대두", "$", "yf", "ZS=F", 0),
     ("wheat", "소맥", "$", "yf", "ZW=F", 0),
     ("hogs", "돈육", "$", "yf", "HE=F", 2),
-    ("coffee", "커피", "$", "yf", "KC=F", 2),
     ("cotton", "면화", "$", "yf", "CT=F", 2),
     ("btc", "비트코인", "$", "yf", "BTC-USD", 0),
     ("eth", "이더리움", "$", "yf", "ETH-USD", 0),
@@ -392,7 +394,7 @@ _MACRO_NAVER = {
     # 백금 com 매핑 제거(사용자 2026-06-18). 스파크라인은 fetch_commodity_spark 가 transport
     # 히스토리 조회(없으면 값만, graceful) — 배포 후 화면 확인 권장.
     "ZC=F": ("com", "ZC"), "ZS=F": ("com", "ZS"),
-    "ZW=F": ("com", "ZW"), "HE=F": ("com", "HE"), "KC=F": ("com", "KC"),
+    "ZW=F": ("com", "ZW"), "HE=F": ("com", "HE"),
     "CT=F": ("com", "CT"), "NI=F": ("com", "NI"),
     "BTC-USD": ("coin", "BTC"), "ETH-USD": ("coin", "ETH"), "SOL-USD": ("coin", "SOL"),
     "USDKRW=X": ("fx", "FX_USDKRW"),
