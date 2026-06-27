@@ -71,9 +71,12 @@ def render_intl_highlow52_page(market: str) -> str:
     # JP/HK 52w 커버리지 = env HIGHLOW_UNIVERSE_CAP(기본 5000=사실상 전종목, 사용자
     # 2026-06-16 '전시장 다'). 기본값이면 full 이라 '전종목' 정확(옛 ~900 캡 라벨
     # 제거). env 로 캡 낮추면 시총 상위만 — 그 땐 라벨이 약간 낙관적.
-    # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 KR 장중 30초·
-    # JP/HK 장중 1h + **장 마감 후 EOD 자동 재산출**(페이지 무관).
-    _fresh_lbl = "장중 30초" if market == "KR" else "장중 1h·마감후 EOD 자동"
+    # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance baseline × 네이버 현재가.
+    # 신선도: KR 장중 30초 · JP/CN_A/HK 장중 10분(네이버 실시간 baseline 비교, #661)
+    # + **장 마감 후 EOD 자동 재산출**(페이지 무관). 이 함수는 KR/JP/CN_A/HK 만 받음
+    # (TW 는 tw_pages 별도 — 1h 스캔). 옛 '장중 1h' 라벨은 #661 이후 stale 였음.
+    _fresh_lbl = ("장중 30초" if market == "KR"
+                  else "장중 10분(네이버 실시간)·마감후 EOD 자동")
     if market == "KR":
         _ind_lbl = "업종=네이버 · "
     elif market in ("HK", "JP", "CN_A"):
@@ -84,7 +87,10 @@ def render_intl_highlow52_page(market: str) -> str:
     # CN_A 는 CSI 300+500(대형+중형 ~800, yfinance 커버 양호) — 사용자 2026-06-17.
     # 전 A주 소형주는 yfinance 1년 커버 빈약해 제외. AKShare 미설치/실패 시 peer 폴백.
     _scope = " · CSI300+500(대형·중형)" if market == "CN_A" else ""
-    sub = (f"{flag} {src}{_scope} · {(_hrs + ' · ') if _hrs else ''}"
+    # 국가명 중복 제거: 페이지 제목이 이미 flag(예 '🇯🇵 일본')를 보여주고 src 도
+    # 유니버스 라벨('일본 주요종목'…)에 국가명을 포함 → 부제에 flag 를 또 붙이면
+    # '🇯🇵 일본 일본 주요종목' 처럼 중복. 부제는 src 부터 시작(제목이 flag 담당).
+    sub = (f"{src}{_scope} · {(_hrs + ' · ') if _hrs else ''}"
            f"{_ind_lbl}{_fresh_lbl}{(' · 마지막 갱신 ' + ts) if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "HK": "hk52",
                "CN_A": "cn52"}.get(market, "")
