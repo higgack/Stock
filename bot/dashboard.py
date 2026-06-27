@@ -2116,13 +2116,13 @@ def _render_index(records: list[dict]) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>🦉 NOAH 주식분석 아카이브</title>
+<title>🦉 주식분석 아카이브</title>
 <script>{_THEME_JS}</script>
 <style>{_INDEX_CSS}</style>
 </head>
 <body>
 <div class="wrap">
-  <h1>🦉 NOAH 주식분석 아카이브</h1>
+  <h1>🦉 주식분석 아카이브</h1>
   <p class="sub">카드 클릭 시 전체 리포트{errors_link}</p>
   {stats_panel}
   <div class="search-bar">
@@ -7015,7 +7015,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
   </div>
   <h1>📊 Screener — Archive</h1>
@@ -8459,7 +8459,7 @@ details.layer-details summary {{ position:relative; }}
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
     · <a href="screener.html">📊 Screener</a>
     · <a href="gics_candidates.html">🧬 GICS 후보</a>
   </div>
@@ -9085,7 +9085,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
   </div>
   <h1>📰 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 08:00 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
@@ -9610,7 +9610,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
   </div>
   <h1>📨 미국 레딧 게시물 분석 — Archive</h1>
   <p class="sub">t.me/insidertracking 자동 포워드 · 제목 '미국 레딧 게시물 분석' 필터 · ₩0 (LLM 없음, 원본 그대로) · 정보 관찰(투자 권유 아님)</p>
@@ -10024,7 +10024,7 @@ def _render_blog_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
     · <a href="valuechain.html">🔗 밸류체인</a>
   </div>
   <h1>📝 블로그 Archive</h1>
@@ -10356,7 +10356,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="market.html">🌍 홈</a> · <a href="index.html">🦉 NOAH 종목분석</a>
+    <a href="market.html">🌍 홈</a> · <a href="index.html">🦉 종목분석</a>
     · <a href="dart_feed.html">📋 DART 공시</a> · <a href="blog.html">📝 블로그</a>
   </div>
   <h1>🔗 밸류체인</h1>
@@ -10485,7 +10485,7 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
     · <a href="screener.html">📊 Screener</a>
     · <a href="daily_byte.html">📰 Daily Byte</a>
   </div>
@@ -10523,7 +10523,7 @@ def _paper_nav(active: str = "paper") -> str:
     return (
         '<div class="nav">'
         '<a href="market.html">🌍 홈</a>'
-        ' · <a href="index.html">🦉 NOAH 종목분석</a>'
+        ' · <a href="index.html">🦉 종목분석</a>'
         ' · <a href="screener.html">📊 Screener</a>'
         ' · ' + _a("paper.html", "🔔 워치리스트", "paper")
         + '</div>')
@@ -11945,7 +11945,7 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
     · <a href="screener.html">📊 Screener</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
   </div>
@@ -12357,7 +12357,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="index.html">🦉 종목분석</a>
   </div>
   <h1>DART 공시</h1>
   <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
@@ -14012,7 +14012,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="budget.html">📒 가계부</a>
     &nbsp;|&nbsp;
     <a href="asia.html">🏯 ASIA</a>
-    &middot; <a href="index.html">🦉 NOAH 종목분석</a>
+    &middot; <a href="index.html">🦉 종목분석</a>
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="valuechain.html">🔗 밸류체인</a>
@@ -14786,7 +14786,7 @@ def _render_asia_page(data: dict) -> str:
     parts.append(
         '\n<div class="wrap">\n  <div class="nav">\n'
         '    <a href="market.html">🌍 홈</a>\n'
-        '    &middot; <a href="index.html">🦉 NOAH 종목분석</a>\n'
+        '    &middot; <a href="index.html">🦉 종목분석</a>\n'
         '  </div>\n  <h1>🏯 아시아 업종 등락</h1>\n'
         '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스·30초 자동 갱신</p>\n'
         '  <div id="live-sections">')
