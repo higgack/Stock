@@ -10178,11 +10178,18 @@ _VALUECHAIN_CSS = """
   border-radius:8px;padding:2px 9px;font-size:12px;margin:0 5px 5px 0}
 .vc-tip{font-size:12px;color:#8fd0a8;background:#10241a;border-radius:8px;padding:6px 10px;margin:4px 0 10px}
 .vc-listh{font-size:13px;color:var(--muted);margin:12px 0 6px}
-.vc-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--border);
-  padding:7px 2px;font-size:13px}
+.vc-row{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);
+  padding:7px 4px;font-size:13px}
+.vc-row:hover{background:var(--surface-2,rgba(127,127,127,.05))}
+/* 본문이 남는 폭을 차지 → 출처·도구(★/📝/⏰)가 우측에 붙어 클러스터(옛 space-between
+   이 5개 자식을 폭 전체로 흩뿌려 아이콘이 멀리 떨어지고 빈공간 과다 — 2026-06-27). */
+.vc-row>div:first-child{flex:1 1 auto;min-width:0}
 .vc-rel{color:var(--muted);font-style:italic;font-size:12px}
 .vc-ev{color:var(--muted);font-size:11px;margin-top:2px}
-.vc-src{color:var(--muted);font-size:11px;white-space:nowrap}
+.vc-src{color:var(--muted);font-size:11px;white-space:nowrap;margin-left:auto}
+/* ★/📝/⏰ 는 평소 흐리게(자리 덜 부각) → hover·활성(.on) 시 또렷. 간격도 타이트. */
+.vc-row .imp-ctl{padding:0 2px;font-size:13px;opacity:.45;transition:opacity .12s}
+.vc-row:hover .imp-ctl,.vc-row .imp-ctl.on{opacity:1}
 .vc-tag{display:inline-block;background:#23314a;color:#9db8da;border-radius:6px;
   padding:0 6px;font-size:10px;margin-left:6px;vertical-align:middle}
 </style>
