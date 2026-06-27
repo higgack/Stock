@@ -8727,7 +8727,8 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
       }
       function doSave(){ commit(ta.value); }
       function doDel(){
-        if(!(MEMOS[id]||ta.value.trim())){ panel.classList.remove('open'); return; }
+        // 저장된 메모 없음(빈 창) → 삭제할 내용 없으니 창만 닫기. 저장분 있을 때만 삭제.
+        if(!MEMOS[id]){ panel.classList.remove('open'); return; }
         if(!confirm('이 메모를 삭제할까요?')) return;
         ta.value=''; commit('');
       }
@@ -8779,7 +8780,10 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
       tset.addEventListener('click',function(){ if(!tin.value){alert('매일 알람 시각을 선택해줘');return;} save(tin.value); });
       dset.addEventListener('click',function(){ var v=(din.value||'').trim();
         if(!TIME_RE.test(v)){ alert('특정일 형식: MM.DD.HH:MM (예 06.26.04:30)'); return; } save(v); });
-      function doClear(){ stt.textContent='해제 중...';
+      function doClear(){
+        // 설정된 알람 없음(빈 창) → 해제할 내용 없으니 창만 닫기. 활성 알람 있을 때만 해제.
+        if(!(REMS[id]&&REMS[id].active)){ panel.classList.remove('open'); return; }
+        stt.textContent='해제 중...';
         api('api/reminder',{surface:SURFACE,id:id,time:'',on:false}).then(function(res){
           if(res&&res.ok){ delete REMS[id]; tin.value=''; din.value=''; paint(card);
             stt.textContent='해제됨 ✓'; setTimeout(function(){stt.textContent='';},1500); }
