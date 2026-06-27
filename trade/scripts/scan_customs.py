@@ -236,15 +236,25 @@ def _probe_fingerprint(key: str) -> dict | None:
     end = now.strftime("%Y%m")
     y, m = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
     start = f"{y:04d}{m:02d}"
-    try:
-        rows = customs_scan.fetch_chapter("85", start, end, key=key,
-                                          max_pages=1)
-    except Exception as exc:
-        log.warning("probe fetch failed: %s", exc)
+    # data.go.kr 일시적 지연(20초 타임아웃 1회 초과) false alarm 감소 — 2회 시도 후에만
+    # 알림(probe 는 5분마다라 1회 transient 는 안전망에 흡수, 진짜 장애만 알림).
+    rows = None
+    last_exc: Exception | None = None
+    for _attempt in range(2):
+        try:
+            rows = customs_scan.fetch_chapter("85", start, end, key=key,
+                                              max_pages=1)
+            break
+        except Exception as exc:
+            last_exc = exc
+            if _attempt == 0:
+                time.sleep(3)
+    if rows is None:
+        log.warning("probe fetch failed (2회): %s", last_exc)
         try:
             from trade import run_ledger
             if run_ledger.bump("probe_fail") == 1:   # 일 1회 dedup
-                _send_alert(f"❌ <b>관세청 probe 오류</b>\n{type(exc).__name__}"
+                _send_alert(f"❌ <b>관세청 probe 오류</b>\n{type(last_exc).__name__}"
                             " — 정기 4회/일 풀스윕이 안전망으로 계속 작동")
         except Exception:
             pass
