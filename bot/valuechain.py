@@ -284,7 +284,7 @@ def _fmt_company_tg(company: str, edges: list[dict], _h) -> str:
     _sec("🔗", "계열", nb["affiliates"])
     if nb["suppliers"]:
         out.append(f"💡 {co} 호재·실적 시 공급사들이 수혜 후보")
-    out.append("<i>대시보드: NOAH archive → 🔗 밸류체인</i>")
+    out.append("<i>대시보드: 주식분석 아카이브 → 🔗 밸류체인</i>")
     return "\n".join(out)
 
 
@@ -300,7 +300,7 @@ def _fmt_item_tg(item: str, edges: list[dict], _h) -> str:
                    + _h.escape(", ".join(nb["contract"][:20])))
     if nb["industries"]:
         out.append("🏭 업종: " + _h.escape(", ".join(nb["industries"][:5])))
-    out.append("<i>대시보드: NOAH archive → 🔗 밸류체인</i>")
+    out.append("<i>대시보드: 주식분석 아카이브 → 🔗 밸류체인</i>")
     return "\n".join(out)
 
 
@@ -309,7 +309,7 @@ def _fmt_industry_tg(industry: str, edges: list[dict], _h) -> str:
     out = [f"🏭 <b>{_h.escape(industry)}</b> <i>(업종)</i>"]
     if cos:
         out.append("회사: " + _h.escape(", ".join(cos[:30])))
-    out.append("<i>대시보드: NOAH archive → 🔗 밸류체인</i>")
+    out.append("<i>대시보드: 주식분석 아카이브 → 🔗 밸류체인</i>")
     return "\n".join(out)
 
 

@@ -54,7 +54,7 @@ def _tw_shell(title: str, sub: str, body: str, nav: str = "",
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{_html.escape(title)} — NOAH</title>{_CSS}</head><body>
+<title>{_html.escape(title)}</title>{_CSS}</head><body>
 <a class="back-link" href="{_bh}">{_html.escape(_bl)}</a>
 <h1>{_html.escape(title)}</h1>
 <div class="sub">{sub}</div>

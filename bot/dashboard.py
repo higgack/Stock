@@ -1660,7 +1660,7 @@ def _render_errors_page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>🚨 NOAH 오류 / 미완성 기록</title>
+<title>🚨 오류 / 미완성 기록</title>
 <script>{_THEME_JS}</script>
 <style>{_ERRORS_CSS}</style>
 </head>
@@ -11074,7 +11074,7 @@ _PF_SEND_JS = """<script>(function(){
       var a=[];for(var i=0;i<tr.cells.length;i++)a.push(tr.cells[i].textContent.trim());rs.push(a);});return rs;}
   function buildCsv(){
     var L=[];function row(a){L.push(a.map(esc).join(','));}
-    row(['NOAH 자산 스냅샷', snapDate()]);row([]);
+    row(['자산 스냅샷', snapDate()]);row([]);
     row(['[요약]']);
     document.querySelectorAll('.stats .stat').forEach(function(s){
       var l=(s.querySelector('.stat-lbl')||{}).textContent||'';
@@ -11088,7 +11088,7 @@ _PF_SEND_JS = """<script>(function(){
     row([]);row(['[보유 종목]']);
     var hasChg=!!document.querySelector('#pf-tbl th[data-k="chg"]');
     var h=['종목','티커','증권사','평가금액','수익률(%)','평가손익'];
-    if(hasChg)h.push('손익변동');h.push('NOAH판정');row(h);
+    if(hasChg)h.push('손익변동');h.push('판정');row(h);
     document.querySelectorAll('#pf-tbl tbody tr[data-name]').forEach(function(tr){
       var c=tr.cells;
       var a=[c[0].textContent.trim(),c[1].textContent.trim(),c[2].textContent.trim(),
@@ -11482,7 +11482,7 @@ def _render_portfolio_page(model, noah=None) -> str:
     _mkt_filter = f'<div class="pf-mkt-filter" style="display:flex;gap:5px;flex-wrap:wrap">{_mkt_btns}</div>'
     _ctl = ('<div class="pf-ctl"><input type="text" id="pf-q" placeholder="🔎 종목·티커 검색">'
             f'<select id="pf-broker">{_opts}</select>'
-            '<label><input type="checkbox" id="pf-noah"> NOAH 분석만</label>'
+            '<label><input type="checkbox" id="pf-noah"> 분석만</label>'
             f'{_mkt_filter}'
             '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
             ) if holdings else ''
@@ -11503,13 +11503,13 @@ def _render_portfolio_page(model, noah=None) -> str:
              '<th class="r" data-k="ret" data-t="n">수익률</th>'
              '<th class="r" data-k="pnl" data-t="n">평가손익</th>'
              + _chg_th +
-             '<th data-k="noah" data-t="s">NOAH 판정</th></tr></thead>')
+             '<th data-k="noah" data-t="s">판정</th></tr></thead>')
     # 헤더 카운트 = 고유 종목 수(증권사 중복 제외, 위에서 렌더 시점 재계산).
     # 행은 증권사별 포지션을 유지하므로(증권사 필터 보존) 건수와 다르면 병기.
     _hdr_cnt = (f'{_distinct}종목 · {_positions}건'
                 if _positions != _distinct else f'{_distinct}종목')
     holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + _hdr_cnt
-                      + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>' + _ctl
+                      + (f' · 분석 {noah_n}' if noah_n else '') + ')</div>' + _ctl
                       + '<div class="pf-scroll"><table class="pf-tbl" id="pf-tbl">'
                       + _head + '<tbody>' + hl_rows + '</tbody></table></div>'
                       + _PF_TABLE_JS + _PF_SEND_JS + '</div>')
@@ -11553,8 +11553,8 @@ def _render_portfolio_page(model, noah=None) -> str:
             '그대로 보여줘 건수(M건)는 종목 수보다 많을 수 있음. '
             "'손익변동'은 직전 다른 날짜 업로드 대비 종목별 평가손익 증감"
             '(벌거나 잃은 금액 · 첫 업로드·같은 날 재업로드는 미표시). '
-            '표 헤더 클릭 정렬 · 검색/증권사/NOAH 필터 가능. '
-            '티커 매칭 종목은 종목명 클릭 시 NOAH 분석으로 연결(분석 기록 있을 때). '
+            '표 헤더 클릭 정렬 · 검색/증권사/분석 필터 가능. '
+            '티커 매칭 종목은 종목명 클릭 시 분석으로 연결(분석 기록 있을 때). '
             '📤 텔레그램·📧 이메일 버튼으로 이 스냅샷(요약+보유종목)을 CSV로 전송(모바일용). '
             f'기준 기간: {as_of}</p>')
 
@@ -11646,7 +11646,7 @@ _BG_SEND_JS = """<script>(function(){
     var L=[];function row(a){L.push(a.map(esc).join(','));}
     var dt=document.getElementById('bg-snap-date');
     var d=dt?dt.textContent.trim():'budget';
-    row(['NOAH 가계부 스냅샷', d]);row([]);
+    row(['가계부 스냅샷', d]);row([]);
     row(['[요약]']);
     document.querySelectorAll('.stats .stat').forEach(function(s){
       var l=(s.querySelector('.stat-lbl')||{}).textContent||'';
@@ -12699,7 +12699,7 @@ _MARKET_CSS = (
     "<!doctype html><html lang='ko'><head><meta charset='UTF-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<meta name='color-scheme' content='light dark'>"
-    "<title>🌍 Market Overview — NOAH</title>"
+    "<title>🌍 Market Overview</title>"
     "<script>" + _THEME_JS + "</script>"
     "<style>"
     ":root{--bg:#f7f8f9;--card:#fff;--border:#e8e8ea;--text:#282a30;"
@@ -15106,7 +15106,7 @@ def render_lookup_page(ticker: str) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>📊 {_html.escape(h1_label)} — NOAH Lookup</title>
+<title>📊 {_html.escape(h1_label)} — Lookup</title>
 <script>{_THEME_JS}</script>
 <style>{_DETAIL_CSS}
 .lk-loading{{padding:48px 20px;text-align:center;color:var(--muted);font-size:14px}}</style>

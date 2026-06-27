@@ -1513,7 +1513,7 @@ def _build_usage_report() -> str:
     month_total_usd = month_cost + tr_month_usd + kg_month_usd
 
     lines = [
-        "📊 <b>NOAH 봇 사용 현황</b> (KST)",
+        "📊 <b>봇 사용 현황</b> (KST)",
         "",
         "🔬 <b>분석 실행</b>",
         f"  • 오늘: {len(today_runs)}건  (새 {today_new}건 + 캐시 {today_cache}건)",
@@ -1525,7 +1525,7 @@ def _build_usage_report() -> str:
         f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",
         "",
         "📐 <b>월간 subsystem 분포</b>",
-        f"  • NOAH 분석:        {krw(month_cost_analysis)}",
+        f"  • 분석:        {krw(month_cost_analysis)}",
         f"  • Bottleneck Screener: {krw(month_cost_screener)}  ← /screener_cost",
         f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
         f"  • 부동산:            {krw(month_cost_realestate)}  ← /realestate_cost",
@@ -1533,10 +1533,10 @@ def _build_usage_report() -> str:
         f"  • 관계후보(kg):      {krw(kg_month_usd)}",
         f"  • 한국 수출입:       {krw(tr_month_usd)}",
         "",
-        f"💰 <b>NOAH 분석 단독 (참고)</b>",
+        f"💰 <b>분석 단독 (참고)</b>",
         f"  • 7일:  {krw(week_cost)}  (${week_cost:.2f})",
         "",
-        "🤖 <b>모델별 (오늘 · NOAH 분석)</b>",
+        "🤖 <b>모델별 (오늘 · 분석)</b>",
     ]
     if by_model:
         for model in sorted(by_model, key=lambda m: -by_model[m]["cost"]):
@@ -2050,7 +2050,7 @@ def _blog_list_text() -> str:
         cat = b.get("categories")
         suffix = "" if cat is None else f" · {_h.escape('/'.join(cat))} 카테고리만"
         lines.append(f' • <a href="https://m.blog.naver.com/{bid}">{title}</a>{suffix}')
-    lines += ["", "📊 대시보드: NOAH archive → 📝 블로그"]
+    lines += ["", "📊 대시보드: 주식분석 아카이브 → 📝 블로그"]
     return "\n".join(lines)
 
 
@@ -2088,7 +2088,7 @@ async def cmd_valuechain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if sup:
                 lines.append("🚚 <b>다고객 납품사</b>(여러 회사에 납품): "
                              + ", ".join(f"{_html.escape(n)}({d})" for n, d in sup))
-            lines += ["", "<i>대시보드: NOAH archive → 🔗 밸류체인</i>"]
+            lines += ["", "<i>대시보드: 주식분석 아카이브 → 🔗 밸류체인</i>"]
             text = "\n".join(lines)
     except Exception as exc:
         log.warning("cmd_valuechain failed: %s", exc)
@@ -2123,7 +2123,7 @@ _WATCH_HELP = (
     "• 충족 시 알림 + <code>/TICKER</code> 정밀 분석 권유\n"
     "\n"
     "<b>📌 관리</b>: 목록 <code>/watchlist</code> · 삭제 <code>/unwatch TICKER</code> (또는 id, 또는 <code>all</code>)\n"
-    "대시보드(활성 워치 + 알림 이력): NOAH archive → 🔔 워치리스트"
+    "대시보드(활성 워치 + 알림 이력): 주식분석 아카이브 → 🔔 워치리스트"
 )
 
 
@@ -2213,7 +2213,7 @@ _PAPER_HELP = (
     "<code>/paper close TICKER</code> — 전량 매도\n"
     "<code>/paper pending</code> · <code>/paper cancel id|TICKER|all</code> — 지정가 대기\n"
     "<code>/paper halt</code> / <code>/paper resume</code> — 거래 중지/재개(kill-switch)\n"
-    "<code>/paper auto on|off</code> — NOAH 판정 자동매매(매수 자본5%·5거래일 청산)\n"
+    "<code>/paper auto on|off</code> — 분석 판정 자동매매(매수 자본5%·5거래일 청산)\n"
     "<code>/paper reset yes</code> — 전체 초기화 · <code>/paper reset TICKER</code> — 개별 종목만\n"
     "예: <code>/paper buy AAPL 10</code> · <code>/paper sell 005930.KS 5</code>"
 )
@@ -2514,7 +2514,7 @@ async def _handle_paper(args, send, idem=None) -> None:
             paper_trading.set_auto(args[1].lower() == "on")
             from bot.paper_signals import HORIZON_DAYS
             if args[1].lower() == "on":
-                await send(f"🤖 자동매매 <b>ON</b> — NOAH 분석 판정대로 페이퍼 주문 "
+                await send(f"🤖 자동매매 <b>ON</b> — 분석 판정대로 페이퍼 주문 "
                            f"(매수=자본 {paper_trading.auto_size_pct():.0%}·{HORIZON_DAYS}거래일 "
                            f"자동청산, 매도=보유 시 청산). Risk Gate 동일 적용.")
             else:
