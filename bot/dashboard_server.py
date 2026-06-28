@@ -43,12 +43,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import json
 import logging
 import os
 import re
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from secrets import compare_digest
 
@@ -97,6 +99,64 @@ _TOKEN = (os.getenv("DASHBOARD_TOKEN") or "").strip()
 _AUTH_USER = (os.getenv("DASHBOARD_USER") or "").strip()
 _AUTH_PASSWORD = (os.getenv("DASHBOARD_PASSWORD") or "").strip()
 _AUTH_REALM = "NOAH stock dashboard"
+
+# ── gzip 압축(전송량 5~10x↓, 사용자 2026-06-28 '대시보드 느려'). 큰 HTML/JS/JSON
+#    무압축 전송이 주 병목 — trade 서버 패턴 미러. 정적 서빙 + /trade 프록시 응답 적용.
+_GZIP_MIN_BYTES = 1024
+_GZIP_MIME_PREFIXES = ("text/html", "text/css", "application/javascript",
+                       "text/javascript", "application/json", "image/svg+xml",
+                       "text/plain")
+
+
+class _CapturingWFile:
+    """SimpleHTTPRequestHandler 가 쓰는 헤더+바디를 버퍼링 → 핸들러 종료 후
+    Content-Type 검사·gzip 적용."""
+
+    def __init__(self) -> None:
+        self._buf = BytesIO()
+
+    def write(self, data) -> int:
+        return self._buf.write(data)
+
+    def flush(self) -> None:
+        pass
+
+    def split(self):
+        raw = self._buf.getvalue()
+        sep = raw.find(b"\r\n\r\n")
+        if sep == -1:
+            return raw, b""
+        return raw[: sep + 4], raw[sep + 4:]
+
+
+def _pick_content_type(header_bytes: bytes):
+    for line in header_bytes.split(b"\r\n"):
+        if line.lower().startswith(b"content-type:"):
+            return (line.split(b":", 1)[1].strip()
+                    .decode("latin-1", errors="replace").split(";", 1)[0]
+                    .strip().lower())
+    return None
+
+
+def _patch_headers(header_bytes: bytes, *, content_length, add: dict) -> bytes:
+    """캡처된 헤더 blob 재작성 — Content-Length 교체 + add 헤더 추가(중복 제거)."""
+    out = []
+    add_lower = {k.lower() for k in add}
+    for line in header_bytes.split(b"\r\n"):
+        if not line:
+            continue
+        if b":" in line:
+            lname = line.partition(b":")[0].decode("ascii", "replace").lower()
+            if lname == "content-length" and content_length is not None:
+                continue
+            if lname in add_lower:
+                continue
+        out.append(line)
+    if content_length is not None:
+        out.append(f"Content-Length: {content_length}".encode("ascii"))
+    for k, v in add.items():
+        out.append(f"{k}: {v}".encode("latin-1", "replace"))
+    return b"\r\n".join(out) + b"\r\n\r\n"
 
 # ── lookup_detail stale-while-revalidate (종목분석 지연로딩 재방문 즉시화) ──
 # 무거운 detail(collect_stock_snapshot 의 yfinance 직렬 호출 + 동종비교 최대
@@ -346,12 +406,42 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_favorites_get()
         if raw == "/api/important":
             return self._handle_important_get()
-        return super().do_GET()
+        return self._serve_static_with_gzip("GET")
 
     def do_HEAD(self):
         if not self._authorize():
             return
-        return super().do_HEAD()
+        return self._serve_static_with_gzip("HEAD")
+
+    def _serve_static_with_gzip(self, method: str) -> None:
+        """정적 파일 서빙 + gzip(전송량 5~10x↓). no-cache 는 end_headers 오버라이드가
+        이미 주입하므로 여기선 Content-Encoding/Vary 만 추가. gzip 미지원/소형/비대상
+        MIME 는 무압축 pass-through(동작 동일)."""
+        if "gzip" not in self.headers.get("Accept-Encoding", ""):
+            return super().do_GET() if method == "GET" else super().do_HEAD()
+        orig = self.wfile
+        buf = _CapturingWFile()
+        self.wfile = buf
+        try:
+            super().do_GET() if method == "GET" else super().do_HEAD()
+        finally:
+            self.wfile = orig
+        header_bytes, body = buf.split()
+        mime = _pick_content_type(header_bytes)
+        gzippable = (mime is not None
+                     and any(mime.startswith(p) for p in _GZIP_MIME_PREFIXES)
+                     and len(body) >= _GZIP_MIN_BYTES)
+        if gzippable and method == "GET":
+            gz = gzip.compress(body)
+            orig.write(_patch_headers(
+                header_bytes, content_length=len(gz),
+                add={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"}) + gz)
+        elif gzippable:  # HEAD — Vary 만(본문 없음, Content-Length 는 stdlib 값 유지)
+            orig.write(_patch_headers(
+                header_bytes, content_length=None,
+                add={"Vary": "Accept-Encoding"}) + body)
+        else:
+            orig.write(header_bytes + body)
 
     def do_POST(self):
         if not self._authorize():
@@ -942,8 +1032,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # <body> 없는 응답(industry_panel.html 등 lazy 프래그먼트, #455)엔 배너
             # 주입 안 함 — prepend 하면 탭 콘텐츠 안에 nav 가 중복 표시됨(사용자
             # 2026-06-16 '연결 대시보드 두번'). 풀페이지(<body> 보유)만 배너 1회.
+        # 프록시 응답도 gzip — trade 페이지가 무압축으로 두 번(백엔드→프록시→브라우저)
+        # 내려가던 것 해소(사용자 2026-06-28). 정적 서빙과 동일 기준.
+        gz_ok = ("gzip" in self.headers.get("Accept-Encoding", "")
+                 and any((ctype or "").lower().startswith(p)
+                         for p in _GZIP_MIME_PREFIXES)
+                 and len(body) >= _GZIP_MIN_BYTES)
+        if gz_ok:
+            body = gzip.compress(body)
         self.send_response(status)
         self.send_header("Content-Type", ctype)
+        if gz_ok:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
