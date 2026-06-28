@@ -241,66 +241,94 @@ body{margin:0;background:#0b0c0e;color:#e2e3e6;
 .nav a{color:#7c84e8;text-decoration:none}.nav a:hover{text-decoration:underline}
 h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
 .sub{color:#8a8f98;font-size:13px;margin:0 0 18px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
-.jp-card{background:#141518;border:1px solid #26272b;border-radius:10px;
-  padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+.jp-card{background:#141518;border:1px solid #26272b;border-radius:10px;overflow:hidden}
+.jp-card[open]{border-color:#34363c}
+.jp-sum{list-style:none;cursor:pointer;padding:13px 16px;
+  display:flex;flex-direction:column;gap:7px}
+.jp-sum::-webkit-details-marker{display:none}
+.jp-sum::after{content:"▸ 펼치기(차트·월별)";color:#8a8f98;font-size:11px;margin-top:2px}
+.jp-card[open] .jp-sum::after{content:"▾ 접기"}
 .jp-hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .jp-item{font-weight:680;font-size:15px;color:#f7f8f8}
 .jp-co{font-size:12px;color:#8a8f98}
 .jp-mo{font-size:12px;color:#8a8f98;margin-left:auto}
-.jp-metric{display:flex;align-items:baseline;gap:8px;font-size:13px}
+.jp-metric{display:flex;align-items:baseline;gap:8px;font-size:13px;flex-wrap:wrap}
 .jp-mlabel{color:#8a8f98;min-width:62px}
 .jp-mval{font-weight:600;color:#e2e3e6}
 .jp-delta{font-size:12px}
 .up{color:#e5484d}.down{color:#5c9ce6}.flat{color:#8a8f98}
-.jp-chart{margin-top:6px;border:1px solid #26272b;border-radius:8px;overflow:hidden}
+.jp-detail{padding:0 16px 14px;border-top:1px solid #26272b}
+.jp-chart{margin:12px 0;border:1px solid #26272b;border-radius:8px;overflow:hidden}
 .jp-chart img{display:block;width:100%;height:auto}
+.jp-htbl{width:100%;border-collapse:collapse;font-size:12px}
+.jp-htbl th,.jp-htbl td{padding:4px 8px;text-align:right;border-bottom:1px solid #1f2023}
+.jp-htbl th{color:#8a8f98;font-weight:500}
+.jp-htbl td:first-child,.jp-htbl th:first-child{text-align:left;color:#b8bcc4}
 .empty{color:#8a8f98;font-size:14px;padding:40px 0;text-align:center}
 """
 
 
-def _delta_html(label: str, yoy, mom) -> str:
-    """YoY/MoM 한 줄(없으면 ''). 한국 관례: 상승=빨강▲ / 하락=파랑▼."""
-    if yoy is None and mom is None:
-        return ""
-    def seg(tag: str, v) -> str:
+def _delta_str(yoy, mom) -> str:
+    """YoY/MoM 인라인(없으면 ''). 한국 관례: 상승=빨강▲ / 하락=파랑▼."""
+    parts = []
+    for tag, v in (("YoY", yoy), ("MoM", mom)):
         if v is None:
-            return ""
+            continue
         cls = "up" if v > 0 else "down" if v < 0 else "flat"
         arr = "▲" if v > 0 else "▼" if v < 0 else "—"
-        return f'<span class="jp-delta {cls}">{tag} {arr} {v:+.1f}%</span>'
-    parts = " · ".join(s for s in (seg("YoY", yoy), seg("MoM", mom)) if s)
-    return f'<div class="jp-metric"><span class="jp-mlabel"></span>{parts}</div>'
+        parts.append(f'<span class="jp-delta {cls}">{tag} {arr}{v:+.1f}%</span>')
+    return ("&nbsp; " + " · ".join(parts)) if parts else ""
 
 
-def _card_html(r: dict, media_prefix: str) -> str:
+def _metric(emoji: str, label: str, val, unit: str, yoy, mom) -> str:
+    if val is None:
+        return ""
+    return (f'<div class="jp-metric"><span class="jp-mlabel">{emoji} {label}</span>'
+            f'<span class="jp-mval">{val:,.1f}{unit}</span>{_delta_str(yoy, mom)}</div>')
+
+
+def _hist_table(hist: list[dict]) -> str:
+    """월별 이력표(최신월 위). 1개월뿐이면 표 생략."""
+    rows = sorted(hist, key=lambda h: h.get("latest_month") or "", reverse=True)
+    rows = [h for h in rows if h.get("latest_month")]
+    if len(rows) < 2:
+        return ""
+    trs = []
+    for h in rows:
+        ev = h.get("export_value_bn")
+        pr = h.get("price_per_kg")
+        evs = f"{ev:,.1f}" if ev is not None else "—"
+        prs = f"{pr:,.1f}" if pr is not None else "—"
+        trs.append(f"<tr><td>{_html.escape(h['latest_month'])}</td>"
+                   f"<td>{evs}</td><td>{prs}</td></tr>")
+    return ('<table class="jp-htbl"><tr><th>월</th><th>수출액(십억엔)</th>'
+            '<th>단가(천엔/KG)</th></tr>' + "".join(trs) + "</table>")
+
+
+def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
+    """확장 가능 카드(한국 품목뷰처럼): summary=핵심수치, 펼치면 차트+월별 이력."""
     item = _html.escape(r.get("item") or "")
     co = r.get("company")
     co_html = f'<span class="jp-co">🏭 {_html.escape(co)}</span>' if co else ""
     mo = _html.escape(r.get("latest_month") or "")
-    rows = [f'<div class="jp-hd"><span class="jp-item">{item}</span>{co_html}'
-            f'<span class="jp-mo">📅 {mo}</span></div>']
-    ev = r.get("export_value_bn")
-    if ev is not None:
-        rows.append(
-            f'<div class="jp-metric"><span class="jp-mlabel">💰 수출액</span>'
-            f'<span class="jp-mval">{ev:,.1f}십억 엔</span></div>')
-        d = _delta_html("", r.get("export_yoy"), r.get("export_mom"))
-        if d:
-            rows.append(d)
-    pr = r.get("price_per_kg")
-    if pr is not None:
-        rows.append(
-            f'<div class="jp-metric"><span class="jp-mlabel">📦 수출단가</span>'
-            f'<span class="jp-mval">{pr:,.1f}천엔/KG</span></div>')
-        d = _delta_html("", r.get("price_yoy"), r.get("price_mom"))
-        if d:
-            rows.append(d)
+    summary = [f'<summary class="jp-sum">'
+               f'<div class="jp-hd"><span class="jp-item">{item}</span>{co_html}'
+               f'<span class="jp-mo">📅 {mo}</span></div>']
+    summary.append(_metric("💰", "수출액", r.get("export_value_bn"), "십억 엔",
+                           r.get("export_yoy"), r.get("export_mom")))
+    summary.append(_metric("📦", "수출단가", r.get("price_per_kg"), "천엔/KG",
+                           r.get("price_yoy"), r.get("price_mom")))
+    summary.append("</summary>")
+    detail = []
     chart = r.get("chart_media")
     if chart:
-        rows.append(f'<div class="jp-chart"><img loading="lazy" '
-                    f'src="{_html.escape(media_prefix + chart)}" alt="{item}"></div>')
-    return f'<div class="jp-card">{"".join(rows)}</div>'
+        detail.append(f'<div class="jp-chart"><img loading="lazy" '
+                      f'src="{_html.escape(media_prefix + chart)}" alt="{item}"></div>')
+    detail.append(_hist_table(hist))
+    detail_html = (f'<div class="jp-detail">{"".join(d for d in detail if d)}</div>'
+                   if any(detail) else "")
+    return f'<details class="jp-card">{"".join(summary)}{detail_html}</details>'
 
 
 def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
@@ -308,7 +336,8 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
     months = sorted({r.get("latest_month") for r in items if r.get("latest_month")})
     latest = months[-1] if months else ""
     if items:
-        cards = "".join(_card_html(r, media_url_prefix) for r in items)
+        cards = "".join(
+            _card_html(r, history(conn, r["item"]), media_url_prefix) for r in items)
         body = f'<div class="grid">{cards}</div>'
     else:
         body = ('<div class="empty">아직 수집된 일본 수출 데이터가 없습니다. '
@@ -316,13 +345,15 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
     return (
         "<!doctype html><html lang='ko'><head><meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>🇯🇵 일본 수출 데이터</title>"
+        "<title>🗾 일본 수출 데이터</title>"
         f"<style>{_CSS}</style></head><body><div class='wrap'>"
-        '<div class="nav"><a href="index.html">← 한국 수출입 대시보드</a></div>'
-        "<h1>🇯🇵 일본 수출 데이터</h1>"
+        # 백링크는 ./ (= /trade/ 프록시 루트 → 수출입 대시보드). 'index.html' 은
+        # 프록시 _OUR_ROOT_PAGES 와 충돌해 NOAH 메인으로 302 됨(2026-06-28 수정).
+        '<div class="nav"><a href="./">← 수출입 대시보드</a></div>'
+        "<h1>🗾 일본 수출 데이터</h1>"
         f'<p class="sub">출처 BeOn · 품목별 월 수출액(십억 엔)·단가(천엔/KG) · '
         f'{len(items)}개 품목'
-        f'{" · 최신 " + _html.escape(latest) if latest else ""}</p>'
+        f'{" · 최신 " + _html.escape(latest) if latest else ""} · 카드 클릭 = 차트·월별 펼침</p>'
         f"{body}</div></body></html>"
     )
 

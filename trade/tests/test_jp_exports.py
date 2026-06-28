@@ -205,7 +205,18 @@ class TestJPStore(unittest.TestCase):
         self.assertIn("다이싱/어셈블리", html)
         self.assertIn("27.6십억 엔", html)
         self.assertIn("../media/2026-05/x.jpg", html)
-        self.assertIn('href="index.html"', html)                   # 백링크
+        self.assertIn('href="./"', html)            # 백링크 = 수출입 대시보드(프록시 루트)
+        self.assertNotIn('href="index.html"', html)  # NOAH 메인 302 버그 회귀 차단
+        self.assertIn("<details", html)             # 확장 가능 카드
+
+    def test_render_history_table_when_multimonth(self):
+        c = self._conn()
+        jp.ingest(c, _FULL.replace("2026-05", "2026-04"), source_message_id=1)
+        jp.ingest(c, _FULL, source_message_id=2)     # 2026-05
+        html = jp.render_html(c)
+        self.assertIn("jp-htbl", html)               # 2개월 → 이력표 노출
+        self.assertIn("2026-04", html)
+        self.assertIn("2026-05", html)
 
     def test_render_empty(self):
         c = self._conn()
