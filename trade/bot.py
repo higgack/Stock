@@ -122,7 +122,7 @@ def _dm_keyboard() -> InlineKeyboardMarkup | None:
 # in trade-bot or its dashboard must update this string in the same
 # commit so the operator can /help and see what's actually live. The
 # trailing '최종 갱신' line records the last commit's date.
-_HELP_TEXT = """🇰🇷 <b>한국 수출입 데이터 대쉬보드 봇</b>
+_HELP_TEXT = """🌏 <b>수출입 데이터 대쉬보드 봇</b>
 
 BeOn(<code>t.me/BeOn_BeClear</code>) 수출입 알림 자동 수집·정리 — 원본 이미지 보존, 메타(품목·지역·국가·종목·기간·잠정/확정)만 regex 파싱(OCR·가공 0).
 

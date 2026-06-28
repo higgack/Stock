@@ -640,7 +640,7 @@ def _build_html(
         )
 
     head = (
-        f'<header><h1>🇰🇷 한국 수출입 데이터</h1>'
+        f'<header><h1>🌏 수출입 데이터</h1>'
         f'<div class="meta">'
         f"갱신 {escape(now)} · "
         f"총 {s.get('total', 0)}건 (최신 {len(latest_ids)}개) · "
@@ -692,7 +692,7 @@ def _build_html(
         '<html lang="ko"><head>'
         '<meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>한국 수출입 데이터</title>'
+        '<title>수출입 데이터</title>'
         f"<style>{_CSS}</style>"
         '</head><body>'
         + head
