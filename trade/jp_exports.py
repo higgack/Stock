@@ -143,23 +143,36 @@ def open_jp_db(path: str | Path) -> sqlite3.Connection:
 
 
 def upsert_jp(conn: sqlite3.Connection, row: dict) -> bool:
-    """품목 단위 최신 스냅샷 저장. 기존보다 과거월이면 skip(재포워드 안전).
-    반환: 저장(신규/갱신)했으면 True."""
+    """품목 단위 최신 스냅샷 저장(필드 보존 병합). 반환: 저장했으면 True.
+
+    - 기존에 월이 있는데 새 메시지가 더 과거이거나 월이 없으면 skip(최신 보존).
+    - 그 외엔 병합: 새 값 우선, 새 값이 없는 필드는 기존 값 유지 → 부분/truncated
+      재포워드(예 차트·단가 누락)가 good 데이터를 null 로 클로버하지 않음
+      (INSERT OR REPLACE 는 전체 행 치환이므로 병합 후 1회 치환)."""
     item = (row.get("item") or "").strip()
     if not item:
         return False
     new_month = row.get("latest_month") or ""
     ex = conn.execute(
-        "SELECT latest_month FROM jp_exports WHERE item=?", (item,)).fetchone()
-    if ex and ex[0] and new_month and new_month < ex[0]:
-        return False  # 더 과거 데이터 — 최신 보존
-    full = {k: row.get(k) for k in _COLS}
-    full["item"] = item
-    full["updated_at"] = datetime.now(timezone.utc).isoformat()
+        "SELECT * FROM jp_exports WHERE item=?", (item,)).fetchone()
+    exd = dict(ex) if ex is not None else None
+    if exd is not None:
+        ex_month = exd.get("latest_month") or ""
+        if ex_month and (not new_month or new_month < ex_month):
+            return False  # 더 과거이거나 월 미상 — 기존 최신 보존(클로버 차단)
+    merged = {}
+    for k in _COLS:
+        nv = row.get(k)
+        if nv is None or nv == "":
+            merged[k] = exd.get(k) if exd else None
+        else:
+            merged[k] = nv
+    merged["item"] = item
+    merged["updated_at"] = datetime.now(timezone.utc).isoformat()
     placeholders = ",".join(f":{c}" for c in _COLS)
     conn.execute(
         f"INSERT OR REPLACE INTO jp_exports ({','.join(_COLS)}) "
-        f"VALUES ({placeholders})", full)
+        f"VALUES ({placeholders})", merged)
     return True
 
 

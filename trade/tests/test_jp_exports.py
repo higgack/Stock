@@ -119,6 +119,32 @@ class TestJPStore(unittest.TestCase):
         self.assertEqual(len(rows), 1)                              # 같은 품목 = 1행
         self.assertEqual(rows[0]["export_value_bn"], 30.0)
 
+    def test_no_month_partial_does_not_clobber(self):
+        # /code-review 2026-06-27: 월 없는 truncated 재포워드가 good 스냅샷을
+        # null 로 덮으면 안 됨(필드 보존 + 월미상 skip).
+        c = self._conn()
+        jp.ingest(c, _FULL, source_message_id=1,
+                  media_paths=["media/2026-05/x.jpg"])
+        partial = ("일본 수출 데이터 업데이트: 다이싱/어셈블리 (DISCO)\n"
+                   "수출액: 0.1십억 엔\n")  # 월·단가·차트 없음
+        self.assertFalse(jp.ingest(c, partial, source_message_id=9))  # 월미상 → skip
+        r = jp.list_jp(c)[0]
+        self.assertEqual(r["latest_month"], "2026-05")    # 보존
+        self.assertEqual(r["export_value_bn"], 27.6)      # 0.1 로 안 덮임
+        self.assertEqual(r["chart_media"], "media/2026-05/x.jpg")  # 차트 보존
+
+    def test_same_month_merge_preserves_chart(self):
+        # 같은 달 재전송이 차트 없이 와도 기존 차트 유지(필드 보존 병합).
+        c = self._conn()
+        jp.ingest(c, _FULL, source_message_id=1,
+                  media_paths=["media/2026-05/x.jpg"])
+        # 같은 달, 차트 없는 재전송(가격만 갱신)
+        resend = _FULL.replace("19.3천엔", "20.0천엔")
+        self.assertTrue(jp.ingest(c, resend, source_message_id=2, media_paths=[]))
+        r = jp.list_jp(c)[0]
+        self.assertEqual(r["price_per_kg"], 20.0)                 # 갱신
+        self.assertEqual(r["chart_media"], "media/2026-05/x.jpg")  # 차트 보존
+
     def test_render_smoke(self):
         c = self._conn()
         jp.ingest(c, _FULL, source_message_id=1,
