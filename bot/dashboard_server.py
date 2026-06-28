@@ -414,16 +414,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return self._serve_static_with_gzip("HEAD")
 
     def _serve_static_with_gzip(self, method: str) -> None:
-        """정적 파일 서빙 + gzip(전송량 5~10x↓). no-cache 는 end_headers 오버라이드가
-        이미 주입하므로 여기선 Content-Encoding/Vary 만 추가. gzip 미지원/소형/비대상
-        MIME 는 무압축 pass-through(동작 동일)."""
-        if "gzip" not in self.headers.get("Accept-Encoding", ""):
-            return super().do_GET() if method == "GET" else super().do_HEAD()
+        """정적 파일 서빙 + gzip(전송량 5~10x↓, GET 만). no-cache 는 end_headers
+        오버라이드가 이미 주입하므로 여기선 Content-Encoding/Vary 만 추가. HEAD·
+        gzip 미지원·소형·비대상 MIME 는 무압축 pass-through(동작 동일). HEAD 는 본문이
+        없고 GET 과 Content-Length 불일치를 피하려 항상 pass-through(압축 안 함)."""
+        if method == "HEAD" or "gzip" not in self.headers.get("Accept-Encoding", ""):
+            return super().do_HEAD() if method == "HEAD" else super().do_GET()
         orig = self.wfile
         buf = _CapturingWFile()
         self.wfile = buf
         try:
-            super().do_GET() if method == "GET" else super().do_HEAD()
+            super().do_GET()
         finally:
             self.wfile = orig
         header_bytes, body = buf.split()
@@ -431,15 +432,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         gzippable = (mime is not None
                      and any(mime.startswith(p) for p in _GZIP_MIME_PREFIXES)
                      and len(body) >= _GZIP_MIN_BYTES)
-        if gzippable and method == "GET":
+        if gzippable:
             gz = gzip.compress(body)
             orig.write(_patch_headers(
                 header_bytes, content_length=len(gz),
                 add={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"}) + gz)
-        elif gzippable:  # HEAD — Vary 만(본문 없음, Content-Length 는 stdlib 값 유지)
-            orig.write(_patch_headers(
-                header_bytes, content_length=None,
-                add={"Vary": "Accept-Encoding"}) + body)
         else:
             orig.write(header_bytes + body)
 
