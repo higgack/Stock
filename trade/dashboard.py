@@ -789,9 +789,10 @@ def _build_html(
         # 📖 품목 레퍼런스북 (사용자 2026-06-18 '품목↔HS↔관련기업 레퍼런스북').
         ' &nbsp;·&nbsp; <a href="reference.html">'
         '📖 품목 레퍼런스북 — 품목 ↔ HS코드 ↔ 산업 ↔ 관련기업 →</a>'
-        # 🇯🇵 일본 수출 데이터 (BeOn, 사용자 2026-06-27) — 별도 페이지.
+        # 🗾 일본 수출 데이터 (BeOn, 사용자 2026-06-27) — 별도 페이지. 🇯🇵 flag 는
+        # 일부 폰트에서 'JP' 텍스트로 렌더 → 항상 보이는 🗾(일본 지도) 사용(사용자 2026-06-28).
         ' &nbsp;·&nbsp; <a href="jp.html">'
-        '🇯🇵 일본 수출 데이터 — 품목별 월 수출액·단가 →</a></div>'
+        '🗾 일본 수출 데이터 — 품목별 월 수출액·단가 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'

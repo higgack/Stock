@@ -36,7 +36,31 @@ _TRUNCATED = (
 )
 
 
+# 실제 BeOn 본딩 메시지 — 🔺🔻 이모지 화살표 + 관련회사 줄(2026-06-28 화면 누락 건).
+_REAL_BONDING = (
+    "📈 일본 수출 데이터 업데이트: 본딩 기기 (Bonding)\n"
+    "🏭 신카와, ASM PT\n"
+    "─────────\n"
+    "📅 최신 월: 2026-05\n"
+    "💰 수출액: 2.5십억 엔\n"
+    "   YoY 🔺 +12.0% / MoM 🔻 -12.0%\n"
+    "📦 수출 단가: 27.6천엔/KG\n"
+    "   YoY 🔺 +33.0% / MoM 🔻 -0.5%\n"
+)
+
+
 class TestJPParser(unittest.TestCase):
+    def test_real_bonding_emoji_arrows_and_company(self):
+        # 화면에서 빠졌던 관련회사 + YoY/MoM(🔺🔻 이모지) 보강 검증.
+        r = jp.parse_jp_export(_REAL_BONDING)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["item"], "본딩 기기 (Bonding)")
+        self.assertEqual(r["company"], "신카와, ASM PT")
+        self.assertEqual(r["export_yoy"], 12.0)
+        self.assertEqual(r["export_mom"], -12.0)
+        self.assertEqual(r["price_yoy"], 33.0)
+        self.assertEqual(r["price_mom"], -0.5)
+
     def test_full(self):
         r = jp.parse_jp_export(_FULL)
         self.assertIsNotNone(r)
@@ -100,15 +124,18 @@ class TestJPStore(unittest.TestCase):
         self.assertEqual(rows[0]["item"], "다이싱/어셈블리 (DISCO)")
         self.assertEqual(rows[0]["chart_media"], "media/2026-05/x.jpg")
 
-    def test_latest_wins_older_skipped(self):
+    def test_history_accumulates_dashboard_shows_latest(self):
+        # 한국처럼 월별 누적: 과거+최신 둘 다 저장, 대시보드는 최신월만 표시.
         c = self._conn()
-        newer = _FULL  # 2026-05
         older = _FULL.replace("2026-05", "2026-04").replace("27.6십억", "99.9십억")
-        self.assertTrue(jp.ingest(c, newer, source_message_id=1))
-        self.assertFalse(jp.ingest(c, older, source_message_id=2))  # 과거월 → skip
+        self.assertTrue(jp.ingest(c, older, source_message_id=1))   # 2026-04 저장
+        self.assertTrue(jp.ingest(c, _FULL, source_message_id=2))   # 2026-05 저장(누적)
         rows = jp.list_jp(c)
-        self.assertEqual(rows[0]["latest_month"], "2026-05")
-        self.assertEqual(rows[0]["export_value_bn"], 27.6)         # 최신 보존
+        self.assertEqual(len(rows), 1)                              # 품목별 최신 1행
+        self.assertEqual(rows[0]["latest_month"], "2026-05")        # 최신월
+        self.assertEqual(rows[0]["export_value_bn"], 27.6)
+        hist = jp.history(c, "다이싱/어셈블리 (DISCO)")
+        self.assertEqual([h["latest_month"] for h in hist], ["2026-04", "2026-05"])
 
     def test_same_item_newer_updates(self):
         c = self._conn()
@@ -116,20 +143,20 @@ class TestJPStore(unittest.TestCase):
         newer = _FULL.replace("2026-05", "2026-06").replace("27.6십억", "30.0십억")
         self.assertTrue(jp.ingest(c, newer, source_message_id=2))
         rows = jp.list_jp(c)
-        self.assertEqual(len(rows), 1)                              # 같은 품목 = 1행
+        self.assertEqual(len(rows), 1)                              # 대시보드 = 최신 1행
         self.assertEqual(rows[0]["export_value_bn"], 30.0)
+        self.assertEqual(len(jp.history(c, "다이싱/어셈블리 (DISCO)")), 2)  # 이력 2개월
 
     def test_no_month_partial_does_not_clobber(self):
-        # /code-review 2026-06-27: 월 없는 truncated 재포워드가 good 스냅샷을
-        # null 로 덮으면 안 됨(필드 보존 + 월미상 skip).
+        # 월 없는 truncated 재포워드는 (item,'') 버킷으로 → 실월(2026-05) 행 무손상.
         c = self._conn()
         jp.ingest(c, _FULL, source_message_id=1,
                   media_paths=["media/2026-05/x.jpg"])
         partial = ("일본 수출 데이터 업데이트: 다이싱/어셈블리 (DISCO)\n"
                    "수출액: 0.1십억 엔\n")  # 월·단가·차트 없음
-        self.assertFalse(jp.ingest(c, partial, source_message_id=9))  # 월미상 → skip
-        r = jp.list_jp(c)[0]
-        self.assertEqual(r["latest_month"], "2026-05")    # 보존
+        jp.ingest(c, partial, source_message_id=9)
+        r = jp.list_jp(c)[0]                              # MAX(month) → 2026-05
+        self.assertEqual(r["latest_month"], "2026-05")
         self.assertEqual(r["export_value_bn"], 27.6)      # 0.1 로 안 덮임
         self.assertEqual(r["chart_media"], "media/2026-05/x.jpg")  # 차트 보존
 
@@ -145,6 +172,48 @@ class TestJPStore(unittest.TestCase):
         self.assertEqual(r["price_per_kg"], 20.0)                 # 갱신
         self.assertEqual(r["chart_media"], "media/2026-05/x.jpg")  # 차트 보존
 
+    def test_migration_from_old_single_pk_preserves_rows(self):
+        import sqlite3
+        d = Path(tempfile.mkdtemp())
+        p = d / "jp.db"
+        # 옛 단일 PK 스키마 + 1행 시드
+        c0 = sqlite3.connect(str(p))
+        c0.executescript(
+            "CREATE TABLE jp_exports (item TEXT PRIMARY KEY, latest_month TEXT, "
+            "company TEXT, export_value_bn REAL, export_yoy REAL, export_mom REAL, "
+            "price_per_kg REAL, price_yoy REAL, price_mom REAL, chart_media TEXT, "
+            "source_message_id INTEGER, posted_at TEXT, raw_text TEXT, updated_at TEXT);")
+        c0.execute("INSERT INTO jp_exports(item,latest_month,export_value_bn) "
+                   "VALUES('본딩 기기 (Bonding)','2026-05',2.5)")
+        c0.commit(); c0.close()
+        # open_jp_db 가 마이그레이션 → 행 보존 + 새 (item,month) 누적 가능
+        c = jp.open_jp_db(p)
+        rows = jp.list_jp(c)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["latest_month"], "2026-05")
+        # 새 월 추가가 누적되는지(새 PK 적용 확인)
+        c.execute("INSERT INTO jp_exports(item,latest_month,export_value_bn) "
+                  "VALUES('본딩 기기 (Bonding)','2026-06',3.0)")
+        self.assertEqual(len(jp.history(c, "본딩 기기 (Bonding)")), 2)
+
+    def test_migration_crash_safe_leftover_old_table(self):
+        # /code-review: RENAME~DROP 사이 크래시로 jp_exports_old 잔존 시 다음 open
+        # 이 brick 되면 안 됨(DROP IF EXISTS 선행).
+        import sqlite3
+        d = Path(tempfile.mkdtemp())
+        p = d / "jp.db"
+        c0 = sqlite3.connect(str(p))
+        c0.executescript(
+            "CREATE TABLE jp_exports (item TEXT PRIMARY KEY, latest_month TEXT, "
+            "company TEXT, export_value_bn REAL, export_yoy REAL, export_mom REAL, "
+            "price_per_kg REAL, price_yoy REAL, price_mom REAL, chart_media TEXT, "
+            "source_message_id INTEGER, posted_at TEXT, raw_text TEXT, updated_at TEXT);")
+        c0.execute("INSERT INTO jp_exports(item,latest_month) VALUES('X','2026-05')")
+        c0.execute("CREATE TABLE jp_exports_old (x INTEGER)")  # 직전 크래시 잔존물
+        c0.commit(); c0.close()
+        c = jp.open_jp_db(p)                       # raise 안 해야
+        self.assertEqual(len(jp.list_jp(c)), 1)
+
     def test_render_smoke(self):
         c = self._conn()
         jp.ingest(c, _FULL, source_message_id=1,
@@ -154,7 +223,18 @@ class TestJPStore(unittest.TestCase):
         self.assertIn("다이싱/어셈블리", html)
         self.assertIn("27.6십억 엔", html)
         self.assertIn("../media/2026-05/x.jpg", html)
-        self.assertIn('href="index.html"', html)                   # 백링크
+        self.assertIn('href="./"', html)            # 백링크 = 수출입 대시보드(프록시 루트)
+        self.assertNotIn('href="index.html"', html)  # NOAH 메인 302 버그 회귀 차단
+        self.assertIn("<details", html)             # 확장 가능 카드
+
+    def test_render_history_table_when_multimonth(self):
+        c = self._conn()
+        jp.ingest(c, _FULL.replace("2026-05", "2026-04"), source_message_id=1)
+        jp.ingest(c, _FULL, source_message_id=2)     # 2026-05
+        html = jp.render_html(c)
+        self.assertIn("jp-htbl", html)               # 2개월 → 이력표 노출
+        self.assertIn("2026-04", html)
+        self.assertIn("2026-05", html)
 
     def test_render_empty(self):
         c = self._conn()
