@@ -934,7 +934,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # 수출입'). preventDefault 와 무관하게 location 직접 설정.
                 f'<a href="{_pfx}/market.html" onclick="window.location.href=this.href;return false" style="color:#58a6ff;text-decoration:none;margin-right:16px">🌍 홈</a>'
                 f'<a href="{_pfx}/index.html" onclick="window.location.href=this.href;return false" style="color:#58a6ff;text-decoration:none;margin-right:16px">🦉 종목분석</a>'
-                '<span style="color:#8b949e">· 🇰🇷 한국 수출입</span></div>'
+                '<span style="color:#8b949e">· 🌏 수출입</span></div>'
             ).encode("utf-8")
             m = _re.search(rb"<body[^>]*>", body, _re.IGNORECASE)
             if m:

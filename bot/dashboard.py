@@ -2079,7 +2079,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="dart_feed.html">📋 DART 공시</a>'
         ' · <a href="valuechain.html">🔗 밸류체인</a>'
-        f' · <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>'
+        f' · <a href="trade/">🌏 수출입</a>'
         ' · <a href="daily_byte.html">📰 Daily Byte</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="blog.html">📝 블로그</a>'
@@ -14016,7 +14016,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="valuechain.html">🔗 밸류체인</a>
-    &middot; <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>
+    &middot; <a href="trade/">🌏 수출입</a>
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
