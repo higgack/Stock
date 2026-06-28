@@ -31,6 +31,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from trade import ignored as _ignored
+from trade import jp_exports as _jp
 from trade.store import open_db
 
 load_dotenv()
@@ -146,6 +147,14 @@ def find_unstored() -> list[dict]:
             # Body-marker filter (DART 공시 릴레이 etc.) — varying line 1
             # but a stable substring elsewhere in the message.
             if _ignored.matches_contains(caption):
+                continue
+            # 일본 수출 데이터(BeOn) — 한국 store.db 가 아니라 별도 jp.db 로 ingest
+            # 된다(ingest_inbox: parse_caption None → parse_jp_export 폴백 → jp.db).
+            # 따라서 store.db alerts 에 없는 게 정상 → '미등록'으로 오탐하면 안 됨.
+            # JP 포맷으로 인식되는 캡션은 JP 파이프라인이 처리하므로 여기서 제외
+            # (한국 ignore 필터와 동일한 '이 store 의 alert 아님' 스킵). JP 파이프라인
+            # 자체 적재 카운트는 ingest_inbox 의 jp_inserted 로그가 별도 추적.
+            if _jp.parse_jp_export(caption) is not None:
                 continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))
