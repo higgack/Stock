@@ -4300,6 +4300,108 @@ _BAND_JS = r"""
 """
 
 
+# 기술 분석 탭 — 탭 활성화 시 /api/technical 로 지표 lazy fetch(무과금·즉시 표),
+# '실행' 버튼 클릭 시에만 &run=1 단일 LLM 호출 → 강세/약세·축별판정·시나리오 렌더.
+_TECHNICAL_JS = r"""
+(function(){
+  var pane=document.getElementById('si-technical'); if(!pane) return;
+  var IND=null, indFetched=false, debateBusy=false;
+  function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
+  function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
+  function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+  function fmt(v){ if(v==null||v===''||(typeof v==='number'&&!isFinite(v))) return '—';
+    if(typeof v==='number') return v.toLocaleString(undefined,{maximumFractionDigits:3}); return esc(v); }
+  // ── 지표 표 ──
+  var ROWS=[
+    ['종가','close'],['EMA10','ema10'],['SMA50','sma50'],['SMA200','sma200'],
+    ['RSI14','rsi14'],['MACD','macd'],['MACD 시그널','macd_signal'],['MACD 히스토그램','macd_hist'],
+    ['볼린저 위치(%)','boll_pos_pct'],['ATR14','atr14'],['ATR(%)','atr_pct'],
+    ['VWMA20','vwma20'],['거래량/20일평균','vol_ratio'],['60일 고가','high60'],['60일 저가','low60']
+  ];
+  function renderInd(ind){
+    var h='<table class="si-table"><thead><tr><th>지표</th><th class="num">값</th></tr></thead><tbody>';
+    for(var i=0;i<ROWS.length;i++){ h+='<tr><td>'+ROWS[i][0]+'</td><td class="num">'+fmt(ind[ROWS[i][1]])+'</td></tr>'; }
+    h+='</tbody></table>';
+    var as=ind.asof?('<div style="font-size:11px;color:var(--fg-soft);margin-top:6px">기준일 '+esc(ind.asof)+'</div>'):'';
+    document.getElementById('si-tech-ind').innerHTML=h+as;
+  }
+  function loadInd(){ if(indFetched) return; indFetched=true;
+    var st=document.getElementById('si-tech-ind-status');
+    fetch(base()+'api/technical?ticker='+encodeURIComponent(tkr()),{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(!j||!j.ok||!j.indicators){ if(st)st.textContent='지표 데이터가 없습니다(상장 이력 부족 또는 데이터 오프라인).'; return; }
+        IND=j.indicators; if(st)st.style.display='none'; renderInd(IND);
+        if(j.debate&&j.debate.ok) renderDebate(j.debate); })
+      .catch(function(){ if(st)st.textContent='지표 로딩 실패.'; indFetched=false; });
+  }
+  // ── 토론 렌더 ──
+  var VC={'강한 상승 우위':'#1b8f5a','상승 우위':'#26a69a','중립':'var(--fg-soft)',
+          '하락 우위':'#e2574c','강한 하락 우위':'#c0392b'};
+  function bar(v,color){ v=Math.max(0,Math.min(100,Number(v)||0));
+    return '<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden">'
+      +'<div style="width:'+v+'%;height:100%;background:'+(color||'var(--accent)')+'"></div></div>'; }
+  function list(arr,color){ if(!arr||!arr.length) return '<div style="color:var(--fg-soft);font-size:12px">—</div>';
+    var h='<ul style="margin:4px 0 0;padding-left:18px;font-size:13px;line-height:1.6">';
+    for(var i=0;i<arr.length;i++) h+='<li>'+esc(arr[i])+'</li>'; return h+'</ul>'; }
+  function renderDebate(d){
+    var box=document.getElementById('si-tech-debate'); if(!box) return;
+    var vc=VC[d.verdict]||'var(--fg)';
+    var h='<div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px">'
+      +'<div style="font-size:18px;font-weight:700;color:'+vc+'">'+esc(d.verdict||'—')+'</div>';
+    if(d.cached) h+='<div style="font-size:11px;color:var(--fg-soft);margin-top:2px">캐시(오늘 실행분 · 무과금)</div>';
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px;font-size:12px">';
+    function metric(lbl,v,c){ return '<div><div style="color:var(--fg-soft);margin-bottom:3px">'+lbl+' '+(v==null?'':Math.round(v))+'</div>'+bar(v,c)+'</div>'; }
+    h+=metric('점수',d.score,vc)+metric('신뢰도',d.confidence)+metric('합의도',d.consensus);
+    h+='</div></div>';
+    // 강세/약세
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">'
+      +'<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">'
+      +'<div style="font-weight:700;color:#26a69a">강세 연구원</div>'+list(d.bull)+'</div>'
+      +'<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">'
+      +'<div style="font-weight:700;color:#e2574c">약세 연구원</div>'+list(d.bear)+'</div></div>';
+    // 축별 판정표
+    if(d.axes&&d.axes.length){
+      h+='<div class="si-section-title" style="font-size:13px">축별 판정</div>'
+        +'<table class="si-table"><thead><tr><th>축</th><th>강세 논거</th><th>약세 논거</th><th>판정</th></tr></thead><tbody>';
+      for(var i=0;i<d.axes.length;i++){ var a=d.axes[i];
+        h+='<tr><td>'+esc(a.name)+'</td><td style="font-size:12px">'+esc(a.bull)+'</td>'
+          +'<td style="font-size:12px">'+esc(a.bear)+'</td><td style="font-size:12px;white-space:nowrap">'+esc(a.verdict)+'</td></tr>'; }
+      h+='</tbody></table>';
+    }
+    // 시나리오
+    if(d.scenarios){ var s=d.scenarios;
+      h+='<div class="si-section-title" style="font-size:13px;margin-top:12px">조건부 시나리오</div>'
+        +'<table class="si-table"><tbody>'
+        +'<tr><td style="white-space:nowrap;color:#26a69a">📈 추세 강화</td><td style="font-size:12px">'+esc(s.up)+'</td></tr>'
+        +'<tr><td style="white-space:nowrap;color:var(--fg-soft)">↔️ 통상 범위</td><td style="font-size:12px">'+esc(s.range)+'</td></tr>'
+        +'<tr><td style="white-space:nowrap;color:#e2574c">📉 추세 약화</td><td style="font-size:12px">'+esc(s.down)+'</td></tr>'
+        +'</tbody></table>'; }
+    box.innerHTML=h;
+  }
+  function runDebate(){ if(debateBusy) return;
+    if(!IND){ var s0=document.getElementById('si-tech-debate-status'); if(s0)s0.textContent='지표를 먼저 불러와야 합니다.'; return; }
+    debateBusy=true;
+    var btn=document.getElementById('si-tech-run'), st=document.getElementById('si-tech-debate-status');
+    if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.style.cursor='default'; }
+    if(st)st.textContent='분석 중… (수 초 소요)';
+    fetch(base()+'api/technical?ticker='+encodeURIComponent(tkr())+'&run=1',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(j){ debateBusy=false; if(btn){ btn.disabled=false; btn.style.opacity=''; btn.style.cursor='pointer'; }
+        if(!j||!j.ok||!j.debate||!j.debate.ok){ if(st)st.textContent=(j&&j.debate&&j.debate.error)?('실행 실패: '+esc(j.debate.error)):'실행 실패.'; return; }
+        if(st)st.textContent=''; renderDebate(j.debate); })
+      .catch(function(){ debateBusy=false; if(btn){ btn.disabled=false; btn.style.opacity=''; btn.style.cursor='pointer'; } if(st)st.textContent='실행 실패(네트워크).'; });
+  }
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-technical"]');
+    if(b){ setTimeout(loadInd,30); return; }
+    if(e.target&&e.target.id==='si-tech-run') runDebate();
+  });
+  if(pane.classList.contains('active')) setTimeout(loadInd,60);
+})();
+"""
+
+
 def _render_stock_info_html(rec: dict) -> str:
     """Render header cards + tabbed company info sections from stock_info."""
     si = rec.get("stock_info")
@@ -4410,6 +4512,7 @@ def _render_stock_info_html(rec: dict) -> str:
   <button type="button" class="si-tab" data-pane="si-holders">주주</button>
 {flow_tab}{disclosure_tab}{risk_tab}  <button type="button" class="si-tab" data-pane="si-news">뉴스</button>
   <button type="button" class="si-tab" data-pane="si-timeline">타임라인</button>
+  <button type="button" class="si-tab" data-pane="si-technical">기술 분석</button>
 </div>"""
 
     # ── 기업 정보 pane ──────────────────────────────────────────
@@ -5850,6 +5953,37 @@ def _render_stock_info_html(rec: dict) -> str:
   {_src_foot}출처: {_tl_sources}</div>
 </div>"""
 
+    # ── 기술 분석 pane (검증 지표 세트 무료 + 강세/약세 토론 LLM 1콜, cost-gated) ──
+    # 지표는 탭 활성화 시 /api/technical 로 lazy fetch(즉시·무과금). 토론은 '실행'
+    # 버튼 클릭 시에만 &run=1 단일 Gemini flash-lite 호출. (티커+KST날짜) 캐시라
+    # 같은 날 재클릭 무과금. 우리 종목분석 방법론(강세/약세·축별판정·시나리오) 재사용.
+    technical_pane = f"""<div class="si-pane" id="si-technical">
+  <div class="si-section">
+    <div class="si-section-title">검증 지표 세트
+      <span style="font-size:11px;color:var(--fg-soft);font-weight:400">· 일봉 1년 · 무료</span></div>
+    <div id="si-tech-ind-status" style="font-size:12px;color:var(--fg-soft)">지표 로딩…</div>
+    <div id="si-tech-ind"></div>
+  </div>
+  <div class="si-section">
+    <div class="si-section-title">강세 vs 약세 토론
+      <span style="font-size:11px;color:var(--fg-soft);font-weight:400">· 5거래일 방향성 · AI</span></div>
+    <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
+      위 지표만 근거로 강세·약세 연구원의 논거를 정리하고 축별 판정 후 종합 판정·조건부
+      시나리오를 제시합니다. AI(Gemini) 호출이라 소액 비용(약 ₩2~7)이 발생하며,
+      <b>같은 날 같은 종목 재실행은 무과금</b>(캐시)입니다.
+    </div>
+    <button type="button" id="si-tech-run"
+      style="background:var(--accent);color:#fff;border:none;border-radius:6px;
+             padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer">
+      🧮 기술 분석 실행 (Gemini)</button>
+    <div id="si-tech-debate-status" style="font-size:12px;color:var(--fg-soft);margin-top:8px"></div>
+    <div id="si-tech-debate" style="margin-top:12px"></div>
+  </div>
+  <div style="font-size:11px;color:var(--fg-soft);margin-top:8px;line-height:1.5">
+    검증 지표=yfinance 일봉 산출(EMA·SMA·RSI·MACD·볼린저·ATR·VWMA·거래량) ·
+    토론=Gemini AI 단일 호출(지표만 근거, 펀더멘털·뉴스 비포함) · 5거래일 단기 방향 참고용(투자권유 아님)</div>
+</div>"""
+
     # ── Tab switching JS ────────────────────────────────────────
     tab_js = """<script>
 (function(){
@@ -6335,6 +6469,56 @@ def _render_stock_info_html(rec: dict) -> str:
   {_src_foot}출처: {_hold_src}</div>
 </div>"""
 
+    # ── 투자정보 요약 카드 (D, 사용자 2026-06-28) — 여러 탭에 흩어진 핵심
+    # 멀티플(밸류에이션)·EPS/BPS·컨센서스(컨센서스 탭)를 종합 탭 첫 화면에 1카드로
+    # 집약. 데이터는 이미 fetch 된 si 값 재사용 → 추가 비용·네트워크 0. data-q 부여
+    # 셀은 라이브 오버레이가 querySelectorAll 로 함께 갱신(밸류에이션 탭과 동일 포맷).
+    def _ic_mult(key):
+        v = si.get(key)
+        return f"{float(v):.2f}x" if isinstance(v, (int, float)) else "—"
+    def _ic_ps(key):
+        v = si.get(key)
+        return f"{float(v):,.2f}" if isinstance(v, (int, float)) else "—"
+    def _ic_price(v):
+        return ("—" if not isinstance(v, (int, float))
+                else f"{csym}{_fmt_num(v, decimals=2 if currency not in _0dec else 0)}")
+    _ic_dy = _safe_dy_pct(si.get("dividendYield"), si.get("dividendRate"),
+                          si.get("current_price"))
+    _ic_dy_s = f"{_ic_dy:.2f}%" if isinstance(_ic_dy, (int, float)) else "—"
+    _ic_upside_s = "—"
+    if isinstance(target_mean, (int, float)) and cur_price and cur_price > 0:
+        _u = (target_mean - cur_price) / cur_price * 100
+        _ic_upside_s = (f'<span style="color:{"#26a69a" if _u >= 0 else "#e2574c"}">'
+                        f'{"+" if _u >= 0 else ""}{_u:.1f}%</span>')
+    _ic_range_s = (f"{_ic_price(target_low)} ~ {_ic_price(target_high)}"
+                   if isinstance(target_low, (int, float))
+                   and isinstance(target_high, (int, float)) else "—")
+    _ic_analysts_s = f"{n_analysts}명" if n_analysts else "—"
+    _ic_left = (
+        f'<tr><td>PER (후행)</td><td class="num" data-q="trailingPE">{_ic_mult("trailingPE")}</td></tr>'
+        f'<tr><td>PER (선행)</td><td class="num" data-q="forwardPE">{_ic_mult("forwardPE")}</td></tr>'
+        f'<tr><td>PBR</td><td class="num" data-q="priceToBook">{_ic_mult("priceToBook")}</td></tr>'
+        f'<tr><td>PSR</td><td class="num" data-q="priceToSalesTrailing12Months">{_ic_mult("priceToSalesTrailing12Months")}</td></tr>'
+        f'<tr><td>EPS (후행)</td><td class="num" data-q="trailingEps">{_ic_ps("trailingEps")}</td></tr>'
+        f'<tr><td>BPS</td><td class="num" data-q="bookValue">{_ic_ps("bookValue")}</td></tr>'
+        f'<tr><td>배당수익률</td><td class="num" data-q="dividendYield">{_ic_dy_s}</td></tr>'
+    )
+    _ic_right = (
+        f'<tr><td>투자의견</td><td class="num">{esc(rec_label)}</td></tr>'
+        f'<tr><td>목표주가</td><td class="num" data-q="target_mean">{_ic_price(target_mean)}</td></tr>'
+        f'<tr><td>상승여력</td><td class="num">{_ic_upside_s}</td></tr>'
+        f'<tr><td>목표가 범위</td><td class="num">{_ic_range_s}</td></tr>'
+        f'<tr><td>애널리스트</td><td class="num">{_ic_analysts_s}</td></tr>'
+    )
+    overview_card = f"""<div class="si-section" id="si-invest-card">
+  <div class="si-section-title">투자정보 요약</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;align-items:start">
+    <table class="si-table"><thead><tr><th>멀티플·주당</th><th class="num">값</th></tr></thead><tbody>{_ic_left}</tbody></table>
+    <table class="si-table"><thead><tr><th>컨센서스</th><th class="num">값</th></tr></thead><tbody>{_ic_right}</tbody></table>
+  </div>
+  <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">멀티플=밸류에이션 탭 · 컨센서스=컨센서스 탭 상세 · 상승여력·목표가범위=현재가 대비</div>
+</div>"""
+
     # Return a dict with separate pieces so _render_detail can wrap
     # the chart/summary/report inside the overview pane. The per-pane
     # map lets build_live_quote(full=True) hand back just the heavy,
@@ -6342,13 +6526,15 @@ def _render_stock_info_html(rec: dict) -> str:
     return {
         "header": header,
         "tabs": tabs_html,
+        "overview_card": overview_card,
         "tab_js": tab_js,
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
                        valuation_pane + "\n" + band_pane + "\n" + financials_pane + "\n" +
                        peers_pane + "\n" + earnings_pane + "\n" +
                        research_pane + "\n" + holders_pane + "\n" +
                        flow_pane + "\n" + disclosures_pane + "\n" +
-                       risk_pane + "\n" + news_pane + "\n" + timeline_pane,
+                       risk_pane + "\n" + news_pane + "\n" + timeline_pane + "\n" +
+                       technical_pane + f"\n<script>{_TECHNICAL_JS}</script>",
         "panes": {
             "si-financials": financials_pane,
             "si-peers": peers_pane,
@@ -6563,6 +6749,7 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
     si_parts = _render_stock_info_html(rec)
     si_header = si_parts.get("header", "") if si_parts else ""
     si_tabs = si_parts.get("tabs", "") if si_parts else ""
+    si_overview_card = si_parts.get("overview_card", "") if si_parts else ""
     si_tab_js = si_parts.get("tab_js", "") if si_parts else ""
     si_other = si_parts.get("other_panes", "") if si_parts else ""
     has_tabs = bool(si_parts)
@@ -6605,6 +6792,7 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
   {si_header}
   {si_tabs}
   {overview_open}
+  {si_overview_card}
   {outcome_html}
   {chart_html}
   <section class="report-section">
@@ -14973,6 +15161,7 @@ def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
     si_parts = _render_stock_info_html(rec)
     si_header = si_parts.get("header", "") if si_parts else ""
     si_tabs = si_parts.get("tabs", "") if si_parts else ""
+    si_overview_card = si_parts.get("overview_card", "") if si_parts else ""
     si_tab_js = si_parts.get("tab_js", "") if si_parts else ""
     si_other = si_parts.get("other_panes", "") if si_parts else ""
     has_tabs = bool(si_parts)
@@ -14994,6 +15183,7 @@ def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
     return (
         f'<div data-lk="header">{si_header}</div>\n'
         f'<div data-lk="tabs">{si_tabs}</div>\n'
+        f'<div data-lk="desc">{si_overview_card}</div>\n'
         f'<div data-lk="other">{si_other}</div>\n'
         f'<script>{_DETAIL_DEEP_LINK_JS}</script>\n{si_tab_js}\n{quote_script}'
     )

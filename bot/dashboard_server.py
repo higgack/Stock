@@ -348,6 +348,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # /api/band?ticker=..  — FnGuide PER/PBR 밴드차트(KR 전용), 탭 lazy fetch.
         if self.path.split("?", 1)[0] == "/api/band":
             return self._handle_band_api()
+        # /api/technical?ticker=..[&run=1] — 기술 분석 탭. 지표(무료) + run=1 시
+        # 강세/약세 토론(Gemini 1콜, cost-gated, 캐시). 탭 클릭/실행버튼 lazy fetch.
+        if self.path.split("?", 1)[0] == "/api/technical":
+            return self._handle_technical_api()
         # /api/quote?ticker=..[&full=1]  — live numbers for the detail page.
         # LIGHT (default): price-derived multiples + consensus + 52주 + 이평
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
@@ -778,6 +782,29 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(200, {"ok": True, "band": data})
         except Exception as exc:
             log.warning("band_api: failed — %s", exc)
+            self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_technical_api(self) -> None:
+        """기술 분석 탭. ?ticker= → 검증 지표 세트(무료). &run=1 → 강세/약세 토론
+        (Gemini 1콜, cost-gated, 티커+KST날짜 캐시). run 없으면 오늘 캐시분만 동봉
+        (재과금 없음). Read-only GET — _authorize() 게이트 통과분."""
+        import urllib.parse as _uparse
+        try:
+            qs = _uparse.parse_qs(_uparse.urlparse(self.path).query)
+            ticker = (qs.get("ticker", [""])[0] or "").strip().upper()
+            run = qs.get("run", ["0"])[0] == "1"
+            if not _TICKER_RE.match(ticker):
+                self._reply_json(400, {"ok": False, "error": "bad ticker"})
+                return
+            from bot import technical_analysis as _ta
+            ind = _ta.compute_indicators(ticker)
+            if not ind:
+                self._reply_json(200, {"ok": False, "error": "지표 데이터 없음"})
+                return
+            debate = _ta.run_debate(ticker, ind) if run else _ta.cached_debate(ticker)
+            self._reply_json(200, {"ok": True, "indicators": ind, "debate": debate})
+        except Exception as exc:
+            log.warning("technical_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _handle_chart_api(self) -> None:
