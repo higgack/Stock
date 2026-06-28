@@ -196,6 +196,24 @@ class TestJPStore(unittest.TestCase):
                   "VALUES('본딩 기기 (Bonding)','2026-06',3.0)")
         self.assertEqual(len(jp.history(c, "본딩 기기 (Bonding)")), 2)
 
+    def test_migration_crash_safe_leftover_old_table(self):
+        # /code-review: RENAME~DROP 사이 크래시로 jp_exports_old 잔존 시 다음 open
+        # 이 brick 되면 안 됨(DROP IF EXISTS 선행).
+        import sqlite3
+        d = Path(tempfile.mkdtemp())
+        p = d / "jp.db"
+        c0 = sqlite3.connect(str(p))
+        c0.executescript(
+            "CREATE TABLE jp_exports (item TEXT PRIMARY KEY, latest_month TEXT, "
+            "company TEXT, export_value_bn REAL, export_yoy REAL, export_mom REAL, "
+            "price_per_kg REAL, price_yoy REAL, price_mom REAL, chart_media TEXT, "
+            "source_message_id INTEGER, posted_at TEXT, raw_text TEXT, updated_at TEXT);")
+        c0.execute("INSERT INTO jp_exports(item,latest_month) VALUES('X','2026-05')")
+        c0.execute("CREATE TABLE jp_exports_old (x INTEGER)")  # 직전 크래시 잔존물
+        c0.commit(); c0.close()
+        c = jp.open_jp_db(p)                       # raise 안 해야
+        self.assertEqual(len(jp.list_jp(c)), 1)
+
     def test_render_smoke(self):
         c = self._conn()
         jp.ingest(c, _FULL, source_message_id=1,

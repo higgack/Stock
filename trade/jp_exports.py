@@ -8,9 +8,9 @@ BeOn 이 새로 보내는 *일본* 수출 통계 메시지는 한국 관세청 �
   ingest_inbox._ingest_group → (한국 파서 None) → parse_jp_export() → jp.db upsert
   trade.dashboard main() (sibling-regen) → regenerate() → ~/.trade/dashboard/jp.html
 
-저장은 별도 jp.db(한국 store.db 무영향). 품목(item) 단위 최신 스냅샷 1행(재포워드 =
-최신월 기준 갱신, 과거월 재포워드는 무시). 차트 PNG 는 한국 알림과 동일하게
-media/<날짜>/<uid>.jpg 상대경로로 저장(렌더 시 '../' prefix).
+저장은 별도 jp.db(한국 store.db 무영향). (품목, 월) 단위 월별 누적(한국 alerts 처럼
+이어 저장) — 대시보드는 품목별 최신월 1행 표시, 과거월은 history() 로 보존(트렌드).
+차트 PNG 는 한국 알림과 동일하게 media/<날짜>/<uid>.jpg 상대경로로 저장(렌더 '../').
 
 샘플 caption:
     📈 일본 수출 데이터 업데이트: 다이싱/어셈블리 (DISCO)
@@ -156,6 +156,9 @@ def open_jp_db(path: str | Path) -> sqlite3.Connection:
         # 기존 행(현재월 스냅샷) 보존 — 새 스키마로 복사(히스토리는 현재월부터 시작).
         old_cols = [r[1] for r in info]
         common = [c for c in _COLS if c in old_cols]
+        # crash-safe: 직전 마이그레이션이 RENAME~DROP 사이 죽어 잔존하면(컨테이너
+        # 휘발) 다음 RENAME 이 'table already exists'로 영구 brick → 먼저 정리.
+        conn.execute("DROP TABLE IF EXISTS jp_exports_old")
         conn.execute("ALTER TABLE jp_exports RENAME TO jp_exports_old")
         conn.executescript(_SCHEMA)
         conn.execute(
@@ -177,6 +180,12 @@ def upsert_jp(conn: sqlite3.Connection, row: dict) -> bool:
     if not item:
         return False
     month = row.get("latest_month") or ""
+    if not month:
+        # 월 미상(truncated) — 이미 실월 행이 있으면 phantom (item,'') 행 안 만듦.
+        if conn.execute(
+                "SELECT 1 FROM jp_exports WHERE item=? AND latest_month!='' LIMIT 1",
+                (item,)).fetchone():
+            return False
     ex = conn.execute(
         "SELECT * FROM jp_exports WHERE item=? AND latest_month=?",
         (item, month)).fetchone()
