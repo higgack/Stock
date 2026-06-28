@@ -2300,15 +2300,25 @@ mark.snippet-target {
   font-variant-numeric: tabular-nums; }
 .si-card .si-sub { font-size: 11px; color: var(--fg-soft); }
 /* ── Tab navigation ──────────────────────────────────────── */
-.si-tabs { display: flex; flex-wrap: wrap; gap: 2px 2px; border-bottom: 2px solid var(--border); margin: 0 0 16px; }
+/* 탭은 항상 한 줄 — 넘치면 가로 스크롤(모바일·다탭 친화, 사용자 2026-06-28).
+   활성 밑줄은 box-shadow inset 으로 그려 스크롤 컨테이너에서 안 잘림(옛 margin
+   -2px 오버플로 기법은 overflow:hidden 과 충돌해 제거). 스크롤바는 얇고 은은하게. */
+.si-tabs {
+  display: flex; flex-wrap: nowrap; gap: 2px 2px;
+  border-bottom: 2px solid var(--border); margin: 0 0 16px;
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+}
+.si-tabs::-webkit-scrollbar { height: 4px; }
+.si-tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.si-tabs::-webkit-scrollbar-track { background: transparent; }
 .si-tab {
   padding: 8px 14px; font-size: 13px; color: var(--fg-soft); cursor: pointer;
-  border-bottom: 2px solid transparent; margin-bottom: -2px;
   white-space: nowrap; flex: 0 0 auto;          /* 칩 단위 — 한글 글자단위 줄바꿈 방지 */
-  font-family: inherit; background: none; border-top: none; border-left: none; border-right: none;
+  font-family: inherit; background: none; border: none;
 }
 .si-tab:hover { color: var(--fg); }
-.si-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.si-tab.active { color: var(--accent); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
 .si-pane { display: none; }
 .si-pane.active { display: block; }
 /* ── Company info grid ───────────────────────────────────── */
