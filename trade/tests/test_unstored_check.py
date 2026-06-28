@@ -16,9 +16,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from trade.scripts import unstored_check as uc
 from trade.scripts.unstored_check import (
     _load_logged_miss_keys,
+    find_unstored,
     log_eval_misses,
 )
 
@@ -102,6 +105,48 @@ class TestLogEvalMisses(unittest.TestCase):
             [_miss(1, 100, "x"), _miss(1, 200, "y")], self.path
         )
         self.assertEqual(n, 1)
+
+
+class TestJpExportsNotUnstored(unittest.TestCase):
+    """일본 수출(BeOn) 캡션은 별도 jp.db 로 ingest 되므로 store.db alerts 에 없는
+    게 정상 — 미등록 오탐하면 안 됨(사용자 2026-06-28: 39건 JP 캡션 오탐 사건).
+    JP 포맷 인식분은 find_unstored 가 제외, 비-JP 미파싱분은 계속 잡아야 한다."""
+
+    JP_CAP = (
+        "📈 일본 수출 데이터 업데이트: MLCC (적층 세라믹 콘덴서)\n"
+        "━━━━━━━━━━━━━━━\n"
+        "📅 최신 월: 2026-05\n"
+        "💰 수출액: 323.76십억 엔"
+    )
+    NONJP_CAP = "랜덤 공지: 이번 주 세미나 안내 (수출입 무관)"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.inbox = Path(self.tmp.name) / "inbox.jsonl"
+        rows = [
+            {"caption_present": True, "caption": self.JP_CAP,
+             "chat_id": 1, "message_id": 10326, "ingested_at": "2020-01-01T00:00:00Z"},
+            {"caption_present": True, "caption": self.NONJP_CAP,
+             "chat_id": 1, "message_id": 10327, "ingested_at": "2020-01-01T00:00:00Z"},
+        ]
+        self.inbox.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+            encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_jp_skipped_nonjp_flagged(self):
+        # store.db 없음 → stored 집합 비어 모든 캡션이 후보. JP 만 제외돼야 함.
+        with mock.patch.object(uc, "INBOX_PATH", self.inbox), \
+             mock.patch.object(uc, "STORE_PATH", Path(self.tmp.name) / "nope.db"), \
+             mock.patch.object(uc._ignored, "load", return_value=set()), \
+             mock.patch.object(uc._ignored, "matches_prefix", return_value=False), \
+             mock.patch.object(uc._ignored, "matches_contains", return_value=False):
+            missing = find_unstored()
+        mids = {r["message_id"] for r in missing}
+        self.assertNotIn(10326, mids)   # JP 캡션 — jp.db 소관, 오탐 금지
+        self.assertIn(10327, mids)      # 비-JP 미파싱 — 계속 잡힘
 
 
 if __name__ == "__main__":
