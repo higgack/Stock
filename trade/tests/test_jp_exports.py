@@ -241,6 +241,14 @@ class TestJPStore(unittest.TestCase):
         html = jp.render_html(c)
         self.assertIn("아직 수집된 일본 수출 데이터가 없습니다", html)
 
+    def test_render_theme_light_default_with_auto_dark(self):
+        # 라이트 기본 + 시간대 자동 다크(body.dark) — 다른 대시보드와 동일.
+        c = self._conn()
+        html = jp.render_html(c)
+        self.assertIn("applyDarkMode", html)        # 시간대 토글 JS
+        self.assertIn("body.dark", html)            # 다크 오버라이드 CSS
+        self.assertIn(":root{--bg:#f7f8f9", html)   # 라이트 기본 토큰
+
 
 if __name__ == "__main__":
     unittest.main()

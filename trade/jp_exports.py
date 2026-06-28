@@ -240,42 +240,55 @@ def ingest(conn: sqlite3.Connection, caption: str, *, source_message_id=None,
 # ─────────────────────────────────────────────────────────────────────────
 # Dashboard render (jp.html)
 # ─────────────────────────────────────────────────────────────────────────
+# 라이트 기본 + body.dark 오버라이드(시간대 자동전환, trade 대시보드와 동일 메커니즘).
+# 토큰(CSS 변수)로 두 테마 일괄 — NOAH/trade Linear 팔레트 정합.
 _CSS = """
+:root{--bg:#f7f8f9;--card:#ffffff;--border:#e8e8ea;--text:#282a30;
+  --item:#16171a;--muted:#8a8f98;--accent:#5e6ad2;--row:#eef0f2;--chartbd:#e8e8ea}
+body.dark{--bg:#0b0c0e;--card:#141518;--border:#26272b;--text:#e2e3e6;
+  --item:#f7f8f8;--muted:#8a8f98;--accent:#9aa2f0;--row:#1f2023;--chartbd:#26272b}
 *{box-sizing:border-box}
-body{margin:0;background:#0b0c0e;color:#e2e3e6;
+body{margin:0;background:var(--bg);color:var(--text);
   font-family:'Inter',-apple-system,'Apple SD Gothic Neo','Pretendard',sans-serif;
-  line-height:1.5;-webkit-font-smoothing:antialiased}
+  line-height:1.5;-webkit-font-smoothing:antialiased;transition:background .3s,color .3s}
 .wrap{max-width:1100px;margin:0 auto;padding:20px 16px 64px}
 .nav{font-size:13px;margin-bottom:14px}
-.nav a{color:#7c84e8;text-decoration:none}.nav a:hover{text-decoration:underline}
+.nav a{color:var(--accent);text-decoration:none}.nav a:hover{text-decoration:underline}
 h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
-.sub{color:#8a8f98;font-size:13px;margin:0 0 18px}
+.sub{color:var(--muted);font-size:13px;margin:0 0 18px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
-.jp-card{background:#141518;border:1px solid #26272b;border-radius:10px;overflow:hidden}
-.jp-card[open]{border-color:#34363c}
+.jp-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.jp-card[open]{border-color:var(--accent)}
 .jp-sum{list-style:none;cursor:pointer;padding:13px 16px;
   display:flex;flex-direction:column;gap:7px}
 .jp-sum::-webkit-details-marker{display:none}
-.jp-sum::after{content:"▸ 펼치기(차트·월별)";color:#8a8f98;font-size:11px;margin-top:2px}
+.jp-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
 .jp-card[open] .jp-sum::after{content:"▾ 접기"}
 .jp-hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-.jp-item{font-weight:680;font-size:15px;color:#f7f8f8}
-.jp-co{font-size:12px;color:#8a8f98}
-.jp-mo{font-size:12px;color:#8a8f98;margin-left:auto}
+.jp-item{font-weight:680;font-size:15px;color:var(--item)}
+.jp-co{font-size:12px;color:var(--muted)}
+.jp-mo{font-size:12px;color:var(--muted);margin-left:auto}
 .jp-metric{display:flex;align-items:baseline;gap:8px;font-size:13px;flex-wrap:wrap}
-.jp-mlabel{color:#8a8f98;min-width:62px}
-.jp-mval{font-weight:600;color:#e2e3e6}
+.jp-mlabel{color:var(--muted);min-width:62px}
+.jp-mval{font-weight:600;color:var(--text)}
 .jp-delta{font-size:12px}
-.up{color:#e5484d}.down{color:#5c9ce6}.flat{color:#8a8f98}
-.jp-detail{padding:0 16px 14px;border-top:1px solid #26272b}
-.jp-chart{margin:12px 0;border:1px solid #26272b;border-radius:8px;overflow:hidden}
+.up{color:#e5484d}.down{color:#3b82f6}.flat{color:var(--muted)}
+.jp-detail{padding:0 16px 14px;border-top:1px solid var(--border)}
+.jp-chart{margin:12px 0;border:1px solid var(--chartbd);border-radius:8px;overflow:hidden}
 .jp-chart img{display:block;width:100%;height:auto}
 .jp-htbl{width:100%;border-collapse:collapse;font-size:12px}
-.jp-htbl th,.jp-htbl td{padding:4px 8px;text-align:right;border-bottom:1px solid #1f2023}
-.jp-htbl th{color:#8a8f98;font-weight:500}
-.jp-htbl td:first-child,.jp-htbl th:first-child{text-align:left;color:#b8bcc4}
-.empty{color:#8a8f98;font-size:14px;padding:40px 0;text-align:center}
+.jp-htbl th,.jp-htbl td{padding:4px 8px;text-align:right;border-bottom:1px solid var(--row)}
+.jp-htbl th{color:var(--muted);font-weight:500}
+.jp-htbl td:first-child,.jp-htbl th:first-child{text-align:left;color:var(--text)}
+.empty{color:var(--muted);font-size:14px;padding:40px 0;text-align:center}
 """
+
+# 시간대 자동 다크(19:00~07:00 KST) — trade 대시보드와 동일. body 존재 후 실행.
+_THEME_JS = (
+    "<script>function applyDarkMode(){var h=(new Date().getUTCHours()+9)%24;"
+    "document.body.classList.toggle('dark',h>=19||h<7);}"
+    "applyDarkMode();setInterval(applyDarkMode,60000);</script>"
+)
 
 
 def _delta_str(yoy, mom) -> str:
@@ -363,7 +376,7 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
         f'<p class="sub">출처 BeOn · 품목별 월 수출액(십억 엔)·단가(천엔/KG) · '
         f'{len(items)}개 품목'
         f'{" · 최신 " + _html.escape(latest) if latest else ""} · 카드 클릭 = 차트·월별 펼침</p>'
-        f"{body}</div></body></html>"
+        f"{body}</div>{_THEME_JS}</body></html>"
     )
 
 
