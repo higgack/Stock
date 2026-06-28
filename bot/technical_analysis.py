@@ -126,9 +126,14 @@ def pd_true_range(high, low, close):
 # ─────────────────────────────────────────────────────────────────────────
 # LLM 토론 (cost-gated, 캐시)
 # ─────────────────────────────────────────────────────────────────────────
+# 스키마 버전 — 프롬프트/출력 스키마 바뀌면 올려 옛 캐시 무효화(같은 날 옛 형식
+# 재노출 방지). v2: axis_verdict 라벨화 + placeholder 누수("형태 문자열") 제거.
+_SCHEMA_VER = "v2"
+
+
 def _cache_file(ticker: str, date: str) -> Path:
     safe = "".join(c for c in ticker if c.isalnum() or c in "._-")
-    return _CACHE_DIR / f"{safe}__{date}.json"
+    return _CACHE_DIR / f"{safe}__{date}__{_SCHEMA_VER}.json"
 
 
 def cached_debate(ticker: str) -> dict | None:
@@ -163,16 +168,21 @@ def _prompt(ticker: str, ind: dict) -> str:
         "2) 지표에 없는 수치·뉴스·펀더멘털 날조 금지(주어진 지표만).\n"
         "3) 한국어 자연 문체(번역체·기계적 병렬 회피), 간결.\n"
         "4) 감자/액면분할 등 corp action 의심 신호(가격 급변 등)면 기술지표 신뢰도\n"
-        "   낮춤을 명시.\n\n"
+        "   낮춤을 명시.\n"
+        "5) 각 축의 bull/bear 는 실제 논거 문장만. 한쪽 근거가 없으면 그 필드는\n"
+        '   빈 문자열 ""(설명·placeholder 금지). axis_verdict 는 강세/약세/중립\n'
+        "   라벨만(아래 enum 값 중 하나 그대로).\n\n"
         f"종목: {ticker} (기준일 {ind.get('asof')})\n"
         f"지표: {json.dumps(ind, ensure_ascii=False)}\n\n"
-        "아래 JSON 스키마로만 출력(설명·코드펜스 금지):\n"
-        '{"verdict":"강한 상승 우위|상승 우위|중립|하락 우위|강한 하락 우위",'
-        '"score":0-100,"confidence":0-100,"consensus":0-100,'
-        '"bull":["..."],"bear":["..."],'
-        '"axes":[{"name":"추세 정렬|모멘텀|변동성·밴드|거래량 확인|가격대 위치",'
-        '"bull":"...","bear":"...","verdict":"+1.00 강세 우위 형태 문자열"}],'
-        '"scenarios":{"up":"추세 강화 조건","down":"추세 약화 조건","range":"통상 잠잠 범위"}}'
+        "아래 JSON 스키마로만 출력(설명·코드펜스 금지, 각 필드는 예시가 아니라\n"
+        "실제 값으로 채울 것):\n"
+        '{"verdict":"강한 상승 우위|상승 우위|중립|하락 우위|강한 하락 우위 중 하나",'
+        '"score":"0~100 정수","confidence":"0~100 정수","consensus":"0~100 정수",'
+        '"bull":["강세 논거 문장", "..."],"bear":["약세 논거 문장", "..."],'
+        '"axes":[{"name":"추세 정렬|모멘텀|변동성·밴드|거래량 확인|가격대 위치 중 하나",'
+        '"bull":"해당 축 강세 논거 또는 \\"\\"","bear":"해당 축 약세 논거 또는 \\"\\"",'
+        '"axis_verdict":"강세 우위|약세 우위|중립 중 하나"}],'
+        '"scenarios":{"up":"추세 강화 시 조건","down":"추세 약화 시 조건","range":"통상 횡보 범위"}}'
     )
 
 
