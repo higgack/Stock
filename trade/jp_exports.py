@@ -251,8 +251,13 @@ body{margin:0;background:#0b0c0e;color:#e2e3e6;
 h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
 .sub{color:#8a8f98;font-size:13px;margin:0 0 18px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
-.jp-card{background:#141518;border:1px solid #26272b;border-radius:10px;
-  padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.jp-card{background:#141518;border:1px solid #26272b;border-radius:10px;overflow:hidden}
+.jp-card[open]{border-color:#34363c}
+.jp-sum{list-style:none;cursor:pointer;padding:13px 16px;
+  display:flex;flex-direction:column;gap:7px}
+.jp-sum::-webkit-details-marker{display:none}
+.jp-sum::after{content:"▸ 펼치기(차트·월별)";color:#8a8f98;font-size:11px;margin-top:2px}
+.jp-card[open] .jp-sum::after{content:"▾ 접기"}
 .jp-hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .jp-item{font-weight:680;font-size:15px;color:#f7f8f8}
 .jp-co{font-size:12px;color:#8a8f98}
@@ -262,14 +267,10 @@ h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
 .jp-mval{font-weight:600;color:#e2e3e6}
 .jp-delta{font-size:12px}
 .up{color:#e5484d}.down{color:#5c9ce6}.flat{color:#8a8f98}
-.jp-chart{margin-top:4px;border:1px solid #26272b;border-radius:8px;overflow:hidden}
+.jp-detail{padding:0 16px 14px;border-top:1px solid #26272b}
+.jp-chart{margin:12px 0;border:1px solid #26272b;border-radius:8px;overflow:hidden}
 .jp-chart img{display:block;width:100%;height:auto}
-/* 이전 월 데이터 — 카드는 기본 펼침(최신), 과거월만 토글로 아래에 이어붙임. */
-.jp-hist{margin-top:2px}
-.jp-hsum{list-style:none;cursor:pointer;color:#7c84e8;font-size:12px;padding:6px 0}
-.jp-hsum::-webkit-details-marker{display:none}
-.jp-hist[open] .jp-hsum{color:#8a8f98}
-.jp-htbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+.jp-htbl{width:100%;border-collapse:collapse;font-size:12px}
 .jp-htbl th,.jp-htbl td{padding:4px 8px;text-align:right;border-bottom:1px solid #1f2023}
 .jp-htbl th{color:#8a8f98;font-weight:500}
 .jp-htbl td:first-child,.jp-htbl th:first-child{text-align:left;color:#b8bcc4}
@@ -315,29 +316,28 @@ def _hist_table(hist: list[dict]) -> str:
 
 
 def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
-    """카드: 최신월 face(수치+차트)는 기본 표시, '이전 월 데이터'만 토글로 아래 펼침
-    (한국 품목뷰 — 최신 보이고 과거는 클릭 시 이어붙음, 사용자 2026-06-28)."""
+    """확장 가능 카드(한국 품목뷰처럼): summary=핵심수치, 펼치면 차트+월별 이력."""
     item = _html.escape(r.get("item") or "")
     co = r.get("company")
     co_html = f'<span class="jp-co">🏭 {_html.escape(co)}</span>' if co else ""
     mo = _html.escape(r.get("latest_month") or "")
-    face = [f'<div class="jp-hd"><span class="jp-item">{item}</span>{co_html}'
-            f'<span class="jp-mo">📅 {mo}</span></div>']
-    face.append(_metric("💰", "수출액", r.get("export_value_bn"), "십억 엔",
-                        r.get("export_yoy"), r.get("export_mom")))
-    face.append(_metric("📦", "수출단가", r.get("price_per_kg"), "천엔/KG",
-                        r.get("price_yoy"), r.get("price_mom")))
+    summary = [f'<summary class="jp-sum">'
+               f'<div class="jp-hd"><span class="jp-item">{item}</span>{co_html}'
+               f'<span class="jp-mo">📅 {mo}</span></div>']
+    summary.append(_metric("💰", "수출액", r.get("export_value_bn"), "십억 엔",
+                           r.get("export_yoy"), r.get("export_mom")))
+    summary.append(_metric("📦", "수출단가", r.get("price_per_kg"), "천엔/KG",
+                           r.get("price_yoy"), r.get("price_mom")))
+    summary.append("</summary>")
+    detail = []
     chart = r.get("chart_media")
     if chart:
-        face.append(f'<div class="jp-chart"><img loading="lazy" '
-                    f'src="{_html.escape(media_prefix + chart)}" alt="{item}"></div>')
-    hist_tbl = _hist_table(hist)
-    hist_html = ""
-    if hist_tbl:
-        n = len([h for h in hist if h.get("latest_month")])
-        hist_html = (f'<details class="jp-hist"><summary class="jp-hsum">'
-                     f'📋 이전 월 데이터 ({n}개월) ▾</summary>{hist_tbl}</details>')
-    return (f'<div class="jp-card">{"".join(f for f in face if f)}{hist_html}</div>')
+        detail.append(f'<div class="jp-chart"><img loading="lazy" '
+                      f'src="{_html.escape(media_prefix + chart)}" alt="{item}"></div>')
+    detail.append(_hist_table(hist))
+    detail_html = (f'<div class="jp-detail">{"".join(d for d in detail if d)}</div>'
+                   if any(detail) else "")
+    return f'<details class="jp-card">{"".join(summary)}{detail_html}</details>'
 
 
 def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
@@ -362,7 +362,7 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
         "<h1>🗾 일본 수출 데이터</h1>"
         f'<p class="sub">출처 BeOn · 품목별 월 수출액(십억 엔)·단가(천엔/KG) · '
         f'{len(items)}개 품목'
-        f'{" · 최신 " + _html.escape(latest) if latest else ""} · 최신월 카드 표시 · "이전 월 데이터" 클릭 시 과거월 펼침</p>'
+        f'{" · 최신 " + _html.escape(latest) if latest else ""} · 카드 클릭 = 차트·월별 펼침</p>'
         f"{body}</div></body></html>"
     )
 
