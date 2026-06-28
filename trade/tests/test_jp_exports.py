@@ -225,14 +225,17 @@ class TestJPStore(unittest.TestCase):
         self.assertIn("../media/2026-05/x.jpg", html)
         self.assertIn('href="./"', html)            # 백링크 = 수출입 대시보드(프록시 루트)
         self.assertNotIn('href="index.html"', html)  # NOAH 메인 302 버그 회귀 차단
-        self.assertIn("<details", html)             # 확장 가능 카드
+        self.assertIn("jp-chart", html)             # 차트는 기본 표시(펼침 불필요)
+        self.assertNotIn("<details", html)          # 단일월 → 이전월 토글 없음
 
-    def test_render_history_table_when_multimonth(self):
+    def test_render_history_toggle_when_multimonth(self):
         c = self._conn()
         jp.ingest(c, _FULL.replace("2026-05", "2026-04"), source_message_id=1)
         jp.ingest(c, _FULL, source_message_id=2)     # 2026-05
         html = jp.render_html(c)
-        self.assertIn("jp-htbl", html)               # 2개월 → 이력표 노출
+        self.assertIn('<details class="jp-hist"', html)  # 이전 월 데이터 토글
+        self.assertIn("이전 월 데이터", html)
+        self.assertIn("jp-htbl", html)
         self.assertIn("2026-04", html)
         self.assertIn("2026-05", html)
 
