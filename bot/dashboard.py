@@ -4379,11 +4379,15 @@ _TECHNICAL_JS = r"""
       +'<div style="font-weight:700;color:#e2574c">약세 연구원</div>'+list(d.bear)+'</div></div>';
     // 축별 판정표
     if(d.axes&&d.axes.length){
+      function cell(t){ t=(t==null?'':String(t)).trim(); return t?esc(t):'<span style="color:var(--fg-soft)">—</span>'; }
+      function vcol(t){ t=t||''; return /강세/.test(t)?'#26a69a':/약세/.test(t)?'#e2574c':'var(--fg-soft)'; }
       h+='<div class="si-section-title" style="font-size:13px">축별 판정</div>'
-        +'<table class="si-table"><thead><tr><th>축</th><th>강세 논거</th><th>약세 논거</th><th>판정</th></tr></thead><tbody>';
+        +'<table class="si-table"><thead><tr><th>축</th><th>강세 논거</th><th>약세 논거</th><th class="num">판정</th></tr></thead><tbody>';
       for(var i=0;i<d.axes.length;i++){ var a=d.axes[i];
-        h+='<tr><td>'+esc(a.name)+'</td><td style="font-size:12px">'+esc(a.bull)+'</td>'
-          +'<td style="font-size:12px">'+esc(a.bear)+'</td><td style="font-size:12px;white-space:nowrap">'+esc(a.verdict)+'</td></tr>'; }
+        var av=(a.axis_verdict||a.verdict||'').toString().trim();
+        var vb=av?('<span style="display:inline-block;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap;color:'+vcol(av)+';border:1px solid '+vcol(av)+'">'+esc(av)+'</span>'):'—';
+        h+='<tr><td style="white-space:nowrap">'+esc(a.name)+'</td><td style="font-size:12px">'+cell(a.bull)+'</td>'
+          +'<td style="font-size:12px">'+cell(a.bear)+'</td><td class="num">'+vb+'</td></tr>'; }
       h+='</tbody></table>';
     }
     // 시나리오

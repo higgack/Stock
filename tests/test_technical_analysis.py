@@ -37,6 +37,14 @@ class TestPrompt(unittest.TestCase):
         # 지표가 프롬프트에 직렬화돼 들어가야 함(LLM 이 근거로 쓰도록)
         self.assertIn("rsi14", p)
 
+    def test_no_placeholder_leak(self):
+        # 과거 실수(2026-06-28): 스키마 placeholder "형태 문자열" 을 LLM 이 그대로
+        # 베껴 '판정' 칸에 노출. 메타단어가 스키마에 남으면 재발 → 영구 차단.
+        p = ta._prompt("AAPL", {"asof": "2026-06-27"})
+        self.assertNotIn("형태 문자열", p)
+        self.assertIn("axis_verdict", p)     # 라벨 enum 필드명
+        self.assertIn("빈 문자열", p)        # 한쪽 근거 없을 때 "" 지시
+
 
 class TestCacheAndUsage(unittest.TestCase):
     def setUp(self):
