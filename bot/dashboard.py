@@ -5023,6 +5023,31 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
 
+    # 리서치 탭 집계 목표가 요약(사용자 2026-06-28) — US upgrades_downgrades 피드엔
+    # per-firm 목표가가 없어(yfinance 컬럼 = Firm/To/From/Action 뿐) 의견변경만 보였다.
+    # 집계 목표주가(평균·범위·기관수·상승여력)를 표 위 한 줄로 보강. target_mean 있으면
+    # 전 시장 공통(universal — KR/JP/TW 도 동일 노출, 시장 게이트 없음). target_mean
+    # 셀은 data-q 로 라이브 오버레이가 함께 갱신, 상승여력은 스냅샷 기준 정적.
+    research_target_html = ""
+    _rt_mean = si.get("target_mean")
+    if isinstance(_rt_mean, (int, float)) and _rt_mean:
+        _rt_dec = 2 if currency not in _0dec else 0
+        _rt_lo, _rt_hi, _rt_n = si.get("target_low"), si.get("target_high"), si.get("num_analysts")
+        _parts = [f'목표주가 <span data-q="target_mean" style="font-weight:700">'
+                  f'{csym}{_fmt_num(_rt_mean, decimals=_rt_dec)}</span>']
+        if isinstance(_rt_lo, (int, float)) and isinstance(_rt_hi, (int, float)):
+            _parts.append(f'범위 {csym}{_fmt_num(_rt_lo, decimals=_rt_dec)}'
+                          f'~{csym}{_fmt_num(_rt_hi, decimals=_rt_dec)}')
+        if _rt_n:
+            _parts.append(f'{_rt_n}명')
+        if cur_price and cur_price > 0:
+            _up = (_rt_mean - cur_price) / cur_price * 100
+            _parts.append(f'상승여력 <span style="color:{"#26a69a" if _up >= 0 else "#e2574c"}">'
+                          f'{"+" if _up >= 0 else ""}{_up:.1f}%</span>')
+        research_target_html = (
+            '<div style="font-size:13px;margin-bottom:10px;padding:8px 12px;'
+            f'background:var(--bg);border-radius:6px">{" · ".join(_parts)}</div>')
+
     _res_src = ("한경 컨센서스" if kr_reports
                 else "Kabutan" if (is_jp and (mkt.get("consensus") or {}).get("target_mean"))
                 else "鉅亨網" if (is_tw and (mkt.get("consensus") or {}).get("target_mean"))
@@ -5030,6 +5055,7 @@ def _render_stock_info_html(rec: dict) -> str:
     research_pane = f"""<div class="si-pane" id="si-research">
   <div class="si-section">
     <div class="si-section-title">리서치 액션</div>
+    {research_target_html}
     {research_table}
   </div>
   {_src_foot}출처: {_res_src}</div>
