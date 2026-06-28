@@ -25,11 +25,9 @@ log = logging.getLogger(__name__)
 _KST = timezone(timedelta(hours=9))
 _CACHE_DIR = Path.home() / ".tradingagents" / "technical_cache"
 _USAGE_LOG = Path.home() / ".tradingagents" / "usage.jsonl"
-_USD_TO_KRW = 1380
 
-# gemini-2.5-flash-lite 단가(USD/1M tok, 근사 — 비용 기록용. 정밀 청구는 GCP 콘솔).
-_IN_PER_M = 0.10
-_OUT_PER_M = 0.40
+# 비용은 usage_tracker.estimate_cost_usd(canonical _PRICING) 재사용 — 단가 중복·
+# 드리프트 방지. flash-lite 가 그 표에 등재돼 있음(미등재 모델은 0 반환).
 _MODEL = "gemini-2.5-flash-lite"
 
 
@@ -95,10 +93,11 @@ def compute_indicators(ticker: str) -> dict | None:
     pv = (close * vol).rolling(20).sum()
     vv = vol.rolling(20).sum()
     vwma20 = _last((pv / vv.replace(0, float("nan"))))
-    # 거래량 / 20일 평균
+    # 거래량 / 20일 평균 (거래정지/저유동 → 평균 0 가능 → ZeroDivision 가드:
+    # Python float 나눗셈은 numpy 와 달리 0 으로 나누면 예외 → None 으로 격하)
     vol_avg20 = vol.rolling(20).mean()
-    vol_ratio = (round(float(vol.iloc[-1]) / float(vol_avg20.iloc[-1]), 2)
-                 if len(vol_avg20.dropna()) else None)
+    _va = float(vol_avg20.iloc[-1]) if len(vol_avg20.dropna()) else 0.0
+    vol_ratio = (round(float(vol.iloc[-1]) / _va, 2) if _va > 0 else None)
     # 60일 고저
     hi60 = float(close.tail(60).max())
     lo60 = float(close.tail(60).min())
@@ -144,8 +143,9 @@ def cached_debate(ticker: str) -> dict | None:
 
 def _log_usage(pt: int, ot: int) -> None:
     try:
+        from bot.usage_tracker import estimate_cost_usd
         _USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-        cost = (pt * _IN_PER_M + ot * _OUT_PER_M) / 1e6
+        cost = estimate_cost_usd(_MODEL, pt, ot)
         rec = {"ts": time.time(), "type": "llm_call", "model": _MODEL,
                "prompt_tokens": pt, "completion_tokens": ot,
                "cost_usd": round(cost, 6), "subsystem": "technical"}
@@ -200,7 +200,11 @@ def run_debate(ticker: str, indicators: dict, *, force: bool = False) -> dict:
             c["cached"] = True
             return c
     try:
-        from bot.genai_factory import make_client
+        from bot.genai_factory import effective_key, make_client
+        # DATA OFFLINE 가드(docstring·CLAUDE.md): 키 부재 시 환각 차단 — 네트워크
+        # 단계 모호한 실패 대신 명확한 키미설정 신호. 비용 0(호출 자체 안 함).
+        if not effective_key():
+            return {"ok": False, "error": "AI 키 미설정(DATA OFFLINE)"}
         client = make_client()
         try:
             from google.genai import types as _t

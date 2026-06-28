@@ -4304,8 +4304,11 @@ _BAND_JS = r"""
 # '실행' 버튼 클릭 시에만 &run=1 단일 LLM 호출 → 강세/약세·축별판정·시나리오 렌더.
 _TECHNICAL_JS = r"""
 (function(){
-  var pane=document.getElementById('si-technical'); if(!pane) return;
-  var IND=null, indFetched=false, debateBusy=false;
+  // ⚠️ lookup 지연로딩은 이 스크립트가 든 other_panes 를 core/full 2회 주입(inject
+  // 가 매번 재실행) → 중복 시 document 클릭 리스너 2개 = '실행' 1클릭이 &run=1 을
+  // 2회 발사(첫 실행분 캐시 전이라 Gemini 2중 과금). window 플래그로 1회만 배선.
+  // 상태(지표·토론)도 window 에 둬 DOM 교체(core→full) 후에도 재렌더 가능.
+  if(window.__noahTechWired) return; window.__noahTechWired=1;
   function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
   function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
   function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
@@ -4325,15 +4328,19 @@ _TECHNICAL_JS = r"""
     var as=ind.asof?('<div style="font-size:11px;color:var(--fg-soft);margin-top:6px">기준일 '+esc(ind.asof)+'</div>'):'';
     document.getElementById('si-tech-ind').innerHTML=h+as;
   }
-  function loadInd(){ if(indFetched) return; indFetched=true;
+  function loadInd(){
     var st=document.getElementById('si-tech-ind-status');
+    if(window.__noahTechIND){   // 캐시 적중 — DOM 교체(lookup core→full) 후 재렌더
+      renderInd(window.__noahTechIND); if(st)st.style.display='none';
+      if(window.__noahTechDebate) renderDebate(window.__noahTechDebate); return; }
+    if(window.__noahTechFetching) return; window.__noahTechFetching=true;
     fetch(base()+'api/technical?ticker='+encodeURIComponent(tkr()),{cache:'no-store'})
       .then(function(r){return r.json();})
-      .then(function(j){
+      .then(function(j){ window.__noahTechFetching=false;
         if(!j||!j.ok||!j.indicators){ if(st)st.textContent='지표 데이터가 없습니다(상장 이력 부족 또는 데이터 오프라인).'; return; }
-        IND=j.indicators; if(st)st.style.display='none'; renderInd(IND);
-        if(j.debate&&j.debate.ok) renderDebate(j.debate); })
-      .catch(function(){ if(st)st.textContent='지표 로딩 실패.'; indFetched=false; });
+        window.__noahTechIND=j.indicators; if(st)st.style.display='none'; renderInd(j.indicators);
+        if(j.debate&&j.debate.ok){ window.__noahTechDebate=j.debate; renderDebate(j.debate); } })
+      .catch(function(){ window.__noahTechFetching=false; if(st)st.textContent='지표 로딩 실패.'; });
   }
   // ── 토론 렌더 ──
   var VC={'강한 상승 우위':'#1b8f5a','상승 우위':'#26a69a','중립':'var(--fg-soft)',
@@ -4379,25 +4386,26 @@ _TECHNICAL_JS = r"""
         +'</tbody></table>'; }
     box.innerHTML=h;
   }
-  function runDebate(){ if(debateBusy) return;
-    if(!IND){ var s0=document.getElementById('si-tech-debate-status'); if(s0)s0.textContent='지표를 먼저 불러와야 합니다.'; return; }
-    debateBusy=true;
+  function runDebate(){ if(window.__noahTechBusy) return;
+    if(!window.__noahTechIND){ var s0=document.getElementById('si-tech-debate-status'); if(s0)s0.textContent='지표를 먼저 불러와야 합니다.'; return; }
+    window.__noahTechBusy=true;
     var btn=document.getElementById('si-tech-run'), st=document.getElementById('si-tech-debate-status');
     if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.style.cursor='default'; }
     if(st)st.textContent='분석 중… (수 초 소요)';
     fetch(base()+'api/technical?ticker='+encodeURIComponent(tkr())+'&run=1',{cache:'no-store'})
       .then(function(r){return r.json();})
-      .then(function(j){ debateBusy=false; if(btn){ btn.disabled=false; btn.style.opacity=''; btn.style.cursor='pointer'; }
+      .then(function(j){ window.__noahTechBusy=false; if(btn){ btn.disabled=false; btn.style.opacity=''; btn.style.cursor='pointer'; }
         if(!j||!j.ok||!j.debate||!j.debate.ok){ if(st)st.textContent=(j&&j.debate&&j.debate.error)?('실행 실패: '+esc(j.debate.error)):'실행 실패.'; return; }
-        if(st)st.textContent=''; renderDebate(j.debate); })
-      .catch(function(){ debateBusy=false; if(btn){ btn.disabled=false; btn.style.opacity=''; btn.style.cursor='pointer'; } if(st)st.textContent='실행 실패(네트워크).'; });
+        window.__noahTechDebate=j.debate; if(st)st.textContent=''; renderDebate(j.debate); })
+      .catch(function(){ window.__noahTechBusy=false; if(btn){ btn.disabled=false; btn.style.opacity=''; btn.style.cursor='pointer'; } if(st)st.textContent='실행 실패(네트워크).'; });
   }
   document.addEventListener('click',function(e){
     var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-technical"]');
     if(b){ setTimeout(loadInd,30); return; }
     if(e.target&&e.target.id==='si-tech-run') runDebate();
   });
-  if(pane.classList.contains('active')) setTimeout(loadInd,60);
+  var p0=document.getElementById('si-technical');   // 종합이 기본 — 보통 미발화
+  if(p0&&p0.classList.contains('active')) setTimeout(loadInd,60);
 })();
 """
 

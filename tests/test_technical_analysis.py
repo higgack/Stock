@@ -73,6 +73,27 @@ class TestCacheAndUsage(unittest.TestCase):
         self.assertAlmostEqual(rec["cost_usd"], (1000 * 0.10 + 500 * 0.40) / 1e6, places=8)
 
 
+class TestClientJsIdempotency(unittest.TestCase):
+    """lookup 지연로딩은 _TECHNICAL_JS 를 core/full 2회 주입한다. 중복 배선 시
+    document 클릭 리스너가 2개가 돼 '실행' 1클릭이 &run=1 을 2회 발사(Gemini
+    2중 과금) — window 플래그 가드가 반드시 있어야 한다(과거 실수 재발 방지)."""
+
+    def test_window_wired_guard_present(self):
+        import bot.dashboard as d
+        js = d._TECHNICAL_JS
+        self.assertIn("window.__noahTechWired", js)
+        # 가드는 '있으면 즉시 return' 형태여야 1회만 배선됨
+        self.assertIn("if(window.__noahTechWired) return", js)
+
+    def test_state_on_window_survives_dom_swap(self):
+        # IND·debate·busy 상태가 window 에 있어야 DOM 교체(core→full) 후 재렌더 가능
+        import bot.dashboard as d
+        js = d._TECHNICAL_JS
+        for key in ("window.__noahTechIND", "window.__noahTechDebate",
+                    "window.__noahTechBusy"):
+            self.assertIn(key, js)
+
+
 class TestComputeIndicators(unittest.TestCase):
     """가짜 일봉(상승추세)을 주입해 지표 산출·라운딩·None 가드를 검증.
     yfinance/pandas 미설치 환경은 건너뛴다(VM 에서는 실행)."""
