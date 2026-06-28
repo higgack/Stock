@@ -28,6 +28,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from trade import ignored as _ignored
+from trade import jp_exports as _jp
 from trade.parser import parse_caption
 from trade.store import (
     alert_to_row,
@@ -132,6 +133,7 @@ def _ingest_group(
     media_root: Path,
     counters: dict,
     ignored_ids: set[int],
+    jp_conn=None,
 ) -> None:
     """Resolve one album/solo into a single alert row + media paths."""
     captioned = [r for r in group if r.get("caption_present")]
@@ -166,6 +168,21 @@ def _ingest_group(
         return
     parsed = parse_caption(caption_text)
     if parsed is None:
+        # 일본 수출 데이터(BeOn) — 한국 포맷 아님. JP 파서로 폴백 → 별도 jp.db.
+        if jp_conn is not None and _jp.parse_jp_export(caption_text) is not None:
+            jp_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    jp_media.append(p)
+            stored = _jp.ingest(
+                jp_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=jp_media)
+            counters["jp_inserted"] = counters.get("jp_inserted", 0) + (1 if stored else 0)
+            return
         counters["unparseable"] += 1
         return
 
@@ -244,6 +261,8 @@ def main() -> int:
     args.db.parent.mkdir(parents=True, exist_ok=True)
     conn = open_db(args.db)
     log.info("store: %s (existing alerts: %d)", args.db, stats(conn)["total"])
+    # 일본 수출(BeOn) 폴백 저장소 — 한국 store.db 와 분리(무영향).
+    jp_conn = _jp.open_jp_db(args.db.parent / "jp.db")
 
     groups = _group_messages(rows)
     log.info("grouped into %d send units", len(groups))
@@ -259,12 +278,13 @@ def main() -> int:
         "skipped_prefix": 0,
         "skipped_contains": 0,
         "unparseable": 0,
+        "jp_inserted": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
         "media_relinked": 0,
     }
     for grp in groups:
-        _ingest_group(conn, grp, args.media_root, counters, ignored_ids)
+        _ingest_group(conn, grp, args.media_root, counters, ignored_ids, jp_conn)
 
     log.info("ingest counters: %s", counters)
     s = stats(conn)

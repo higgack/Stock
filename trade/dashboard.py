@@ -788,7 +788,10 @@ def _build_html(
         '🤖 AI 보고서 아카이브 — 유료로 생성한 기업/전체 보고서 다시 보기 →</a>'
         # 📖 품목 레퍼런스북 (사용자 2026-06-18 '품목↔HS↔관련기업 레퍼런스북').
         ' &nbsp;·&nbsp; <a href="reference.html">'
-        '📖 품목 레퍼런스북 — 품목 ↔ HS코드 ↔ 산업 ↔ 관련기업 →</a></div>'
+        '📖 품목 레퍼런스북 — 품목 ↔ HS코드 ↔ 산업 ↔ 관련기업 →</a>'
+        # 🇯🇵 일본 수출 데이터 (BeOn, 사용자 2026-06-27) — 별도 페이지.
+        ' &nbsp;·&nbsp; <a href="jp.html">'
+        '🇯🇵 일본 수출 데이터 — 품목별 월 수출액·단가 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2579,6 +2582,15 @@ def main() -> int:
     try:
         from trade import reference_book
         reference_book.regenerate()
+    except Exception:
+        pass
+    # 🇯🇵 일본 수출 데이터(BeOn) — 별도 jp.db → jp.html (한국 대시보드 옆 형제 파일).
+    # 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
+    try:
+        from trade import jp_exports
+        jp_exports.regenerate(
+            args.db.parent / "jp.db", args.out.parent / "jp.html",
+            media_url_prefix=args.media_url)
     except Exception:
         pass
     return 0
