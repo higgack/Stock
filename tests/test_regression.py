@@ -9380,6 +9380,13 @@ class TestHkMovers:
         assert _suffix_ticker("7203", ".T") == "7203.T"
         assert _suffix_ticker("700", ".HK") == "0700.HK"
         assert _suffix_ticker("601288", ".SS") == "601288.SS"
+        # HK: 네이버 5자리 zero-pad(00700) → yfinance 4자리(0700) 정규화 —
+        # baseline 키와 일치해야 52주 live 비교가 됨(2026-06-29 버그: 옛 zfill(4)
+        # 가 5자리를 안 줄여 주요종목 전부 누락, 20/2272 만 비교됐음).
+        assert _suffix_ticker("00700", ".HK") == "0700.HK"
+        assert _suffix_ticker("02333", ".HK") == "2333.HK"
+        assert _suffix_ticker("09988", ".HK") == "9988.HK"
+        assert _suffix_ticker("82333", ".HK") == "82333.HK"   # ≥10000 은 그대로
         # US 추가(2026-06-14) — 52주 시총 worldstock overlay 용(접미사 없음).
         # AMEX 제외(2026-06-17 'AMEX 포함 안 함') → NASDAQ+NYSE 만.
         assert set(_INTL_MOVER_EX) == {"JP", "HK", "CN_A", "US"}

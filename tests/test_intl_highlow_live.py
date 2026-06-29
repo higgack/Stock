@@ -43,6 +43,20 @@ def test_live_equal_boundary_is_new_high(monkeypatch):
     assert [r["ticker"] for r in out["high"]] == ["X.HK"]
 
 
+def test_live_excludes_hk_rmb_cny_counter(monkeypatch):
+    # HK RMB 이중카운터(네이버 '… (CNY)')는 초저유동·통화불일치 → 신고저 제외
+    # (2026-06-29: 82333.HK 장성자동차(CNY) 단독 신저가 오탐). 주카운터는 정상 판정.
+    base = {"2333.HK": {"h52": 19.86, "l52": 8.98, "name": "장성자동차"},
+            "82333.HK": {"h52": 17.63, "l52": 7.86, "name": "82333.HK"}}
+    live = {"2333.HK": {"price": 8.5, "pct": -1.2, "name": "장성자동차", "vol": 9000, "mcap": 5000},
+            "82333.HK": {"price": 7.86, "pct": 0.0, "name": "장성자동차 (CNY)", "vol": 500, "mcap": 181}}
+    _setup(monkeypatch, base, live)
+    out = h.fetch_intl_highlow_live("HK")
+    tickers = [r["ticker"] for r in out["high"] + out["low"]]
+    assert "82333.HK" not in tickers          # (CNY) 카운터 제외
+    assert "2333.HK" in [r["ticker"] for r in out["low"]]  # 주카운터 정상(8.5<=8.98)
+
+
 def test_live_none_when_no_baseline(monkeypatch):
     # baseline 없으면 None → 호출부가 기존 스캔 캐시로 폴백.
     _setup(monkeypatch, {}, {"7203.T": {"price": 1, "name": "x"}})

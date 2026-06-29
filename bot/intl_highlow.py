@@ -391,6 +391,12 @@ def fetch_intl_highlow_live(market: str) -> dict | None:
         q = live.get(tk)
         if not q or q.get("price") is None:
             continue
+        # HK RMB 이중상장 카운터(네이버 '… (CNY)') 제외 — HKD 주카운터의 위안화
+        # 중복 상장이라 초저유동(거래 수백 주)이고, HKD baseline 과 통화가 달라
+        # 비교 자체가 무의미해 엉뚱한 신저가로 샌다(사용자 2026-06-29: 82333.HK
+        # 장성자동차(CNY) 단독 신저가 오탐). 데이터소스(Naver) 라벨 기반 정확 제외.
+        if "(CNY)" in (q.get("name") or ""):
+            continue
         try:
             price = float(q["price"])
         except (TypeError, ValueError):
