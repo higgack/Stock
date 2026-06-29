@@ -403,6 +403,8 @@ def _load_eval_miss_summary(
                 except json.JSONDecodeError:
                     continue
                 cap = rec.get("caption") or rec.get("text") or ""
+                if not cap.strip():            # find_unstored 와 parity(빈 캡션 스킵)
+                    continue
                 if _ignored.matches_prefix(cap) or _ignored.matches_contains(cap):
                     continue
                 if rec.get("message_id") in ignored_ids:   # 운영자 /ignore
