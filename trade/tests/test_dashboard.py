@@ -100,6 +100,43 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn('id="items-view"', html)
         self.assertIn('id="companies-view"', html)
 
+    def test_heatmap_and_csv_lazy_split(self):
+        # 사용자 2026-06-30 속도 최적화: 히트맵(2.3MB)·산업CSV(3MB) lazy 분리.
+        from trade.dashboard import _build_html
+        from trade.store import list_all_alerts, open_db, stats
+        c = open_db(self.db_path)
+        try:
+            alerts = list_all_alerts(c)
+            s = stats(c)
+        finally:
+            c.close()
+        latest = [a["id"] for a in alerts]
+        html = _build_html(alerts, latest, s, "../",
+                           heatmap_src="heatmap_panel.html",
+                           industry_csv_src="industry_csv.html")
+        # 히트맵: lazy 플레이스홀더(data-src) + 탭 노출, 인라인 데이터 없음
+        self.assertIn('id="heatmap-view" class="view" data-src="heatmap_panel.html"', html)
+        self.assertIn('data-tab="heatmap"', html)
+        # 산업 CSV: lazy const + 📥 클릭 시 fetch
+        self.assertIn('const INDUSTRY_CSV_SRC="industry_csv.html"', html)
+        self.assertIn("fetch(INDUSTRY_CSV_SRC", html)
+
+    def test_lazy_script_rerun_preserves_attributes(self):
+        # code-review(2026-06-30): _lazyFetchView 가 프래그먼트 <script> 재실행 시
+        # id/type 를 떨구면 히트맵의 <script type=application/json id=hm-data> 가
+        # 깨져 탭 전체 사망 → 모든 속성 보존(setAttribute 루프) 계약 고정.
+        src = Path("trade/dashboard.py").read_text(encoding="utf-8")
+        self.assertIn("for(var i=0;i<old.attributes.length;i++)", src)
+        self.assertIn("s.setAttribute(old.attributes[i].name", src)
+        # 더블클릭 중복 fetch 가드(fetch 전 플래그)
+        self.assertIn("_indCsvLoaded=true;   // fetch 전에", src)
+
+    def test_regen_passes_lazy_out_paths(self):
+        # regen 이 히트맵·산업CSV out 경로를 render_html 에 전달(소스 계약).
+        src = Path("trade/dashboard.py").read_text(encoding="utf-8")
+        self.assertIn('heatmap_out=args.out.parent / "heatmap_panel.html"', src)
+        self.assertIn('industry_csv_out=args.out.parent / "industry_csv.html"', src)
+
     def test_axis_tabs_wired(self):
         # 산업별·국가별·지역별 탭 (사용자 2026-06-22) — 공용 buildGroupedAxisView.
         # 산업별 = 맨 앞(active default). 탭·뷰·빌더·등록·순서·칩바 E2E.

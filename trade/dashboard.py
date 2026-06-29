@@ -55,6 +55,8 @@ def render_html(
     customs_db_path: Path | str | None = None,
     hs_map_path: Path | str | None = None,
     industry_out: Path | str | None = None,
+    heatmap_out: Path | str | None = None,
+    industry_csv_out: Path | str | None = None,
     history_out: Path | str | None = None,
 ) -> str:
     """Render the dashboard HTML from store.db.
@@ -122,10 +124,34 @@ def render_html(
         except Exception:
             industry_src = ""                           # 쓰기 실패 → 인라인 폴백(기능 보존)
             industry_csv = ""
+    # 히트맵 lazy 분리 (사용자 2026-06-30 '느려' — index.html 7.6MB 중 히트맵 2.3MB).
+    # industry 와 동일 패턴: 🟩히트맵 탭 첫 클릭 때만 fetch(_lazyFetchView). 히트맵
+    # JS(hmFilter/hmFocus/hmCSV)는 heatmap_html 내부 <script>라 fetch 후 재실행됨.
+    heatmap_src = ""
+    if heatmap_out is not None and heatmap_html:
+        try:
+            Path(heatmap_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(heatmap_out).write_text(heatmap_html, encoding="utf-8")
+            heatmap_src = Path(heatmap_out).name
+            heatmap_html = ""                           # 인라인 제거
+        except Exception:
+            heatmap_src = ""                            # 폴백 인라인(기능 보존)
+    # 산업트렌드 CSV 데이터 lazy 분리 (3MB) — 📥CSV 누를 때만 fetch(downloadIndustryCSV).
+    # 산업 탭 CSV 외엔 안 쓰여 인라인 불필요. 쓰기 실패 시 인라인 유지(폴백).
+    industry_csv_src = ""
+    if industry_csv_out is not None and industry_csv:
+        try:
+            Path(industry_csv_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(industry_csv_out).write_text(industry_csv, encoding="utf-8")
+            industry_csv_src = Path(industry_csv_out).name
+            industry_csv = ""                           # 인라인 제거 → on-click fetch
+        except Exception:
+            industry_csv_src = ""
     return _build_html(
         all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows,
         industry_html, heatmap_html, industry_src=industry_src,
-        industry_csv=industry_csv, history_out=history_out,
+        industry_csv=industry_csv, heatmap_src=heatmap_src,
+        industry_csv_src=industry_csv_src, history_out=history_out,
     )
 
 
@@ -589,6 +615,8 @@ def _build_html(
     heatmap_html: str = "",
     industry_src: str = "",
     industry_csv: str = "",
+    heatmap_src: str = "",
+    industry_csv_src: str = "",
     history_out: Path | str | None = None,
 ) -> str:
     # industry_src(있을 때) = 산업트렌드를 별도 파일로 빼고 탭 열 때 lazy fetch
@@ -816,7 +844,7 @@ def _build_html(
         + (f'<button class="tab" data-tab="industry">📈 산업트렌드</button>'
            if _has_industry else '')
         + (f'<button class="tab" data-tab="heatmap">🟩 히트맵</button>'
-           if heatmap_html else '')
+           if (heatmap_html or heatmap_src) else '')
         + '</nav>'
         '<section class="filters">'
         '<div class="top-row">'
@@ -854,7 +882,10 @@ def _build_html(
            if industry_src
            else f'<main id="industry-view" class="view">{industry_html}</main>'
            if industry_html else '')
-        + (f'<main id="heatmap-view" class="view">{heatmap_html}</main>'
+        + (f'<main id="heatmap-view" class="view" data-src="{heatmap_src}">'
+           '<div class="lazy-load">🟩 히트맵 불러오는 중…</div></main>'
+           if heatmap_src
+           else f'<main id="heatmap-view" class="view">{heatmap_html}</main>'
            if heatmap_html else '')
         + '<div id="modal" class="modal" hidden>'
         '<div class="modal-backdrop"></div>'
@@ -870,6 +901,7 @@ def _build_html(
         f"const STOCK_QUOTES={stock_quotes_json};\n"
         f"const GEO_COUNTRIES=new Set({geo_countries_json});\n"
         f"const GEO_SIDO={geo_sido_json};\n"
+        f"const INDUSTRY_CSV_SRC={json.dumps(industry_csv_src)};\n"   # 산업CSV lazy(빈문자=인라인)
         + _JS
         # 월별 원자료 가로 스크롤 = 최신(우측) 디폴트 (사용자 2026-06-15 '맨 오른쪽
         # 디폴트'). ⚠️ 산업트렌드는 탭이라 숨겨진 동안 scrollWidth=0 → 탭 핸들러가
@@ -2107,13 +2139,19 @@ function _lazyFetchView(view){
       // 2026-06-16 '스크롤 디폴트 오른쪽 풀림' — #455 lazy 전환 회귀). 1회만(loaded gate).
       view.querySelectorAll('script').forEach(function(old){
         const s=document.createElement('script');
-        if(old.src){s.src=old.src;}else{s.textContent=old.textContent;}
+        // ⚠️ 모든 속성 보존(id·type 포함) — 히트맵 프래그먼트의
+        // <script type="application/json" id="hm-data"> 데이터를 재생성할 때 id/type
+        // 를 떨구면 (a) JSON 을 JS 로 실행 시도 (b) getElementById('hm-data')=null →
+        // 히트맵 IIFE 크래시로 탭 전체가 죽음(2026-06-30 code-review). type 보존 시
+        // application/json 은 미실행 데이터홀더로 남아 id 로 찾힘, JS(type 없음)는 실행.
+        for(var i=0;i<old.attributes.length;i++){ s.setAttribute(old.attributes[i].name, old.attributes[i].value); }
+        if(!old.src) s.textContent=old.textContent;
         old.parentNode.replaceChild(s,old);
       });
       if(window._scrollRaw)window._scrollRaw(view);   // 월별 원자료 → 최신(우측)
     })
     .catch(function(){view.dataset.loaded='';
-      view.innerHTML='<div class="lazy-load">산업트렌드 불러오기 실패 — 다시 눌러 주세요.</div>';});
+      view.innerHTML='<div class="lazy-load">불러오기 실패 — 탭을 다시 눌러 주세요.</div>';});
 }
 let _lastFiltered=[];
 function _activeTab(){
@@ -2459,7 +2497,23 @@ function downloadRowsCSV(rows,stem){
   a.download=stem+'_'+kstTodayString()+'.csv';
   document.body.appendChild(a);a.click();a.remove();
 }
+var _indCsvLoaded=false;
 function downloadIndustryCSV(){
+  // CSV 데이터(3MB)는 lazy 분리(2026-06-30) — 인라인 없으면 📥 누를 때 INDUSTRY_CSV_SRC
+  // fetch → 숨김 div 에 주입(type=application/json 스크립트는 innerHTML 으로도
+  // getElementById 찾힘, 미실행) → 1회 후 _emitIndustryCSV. 인라인(아카이브/폴백)이면 바로.
+  if(!document.getElementById('mti-csv-summary') && !_indCsvLoaded
+     && typeof INDUSTRY_CSV_SRC!=='undefined' && INDUSTRY_CSV_SRC){
+    _indCsvLoaded=true;   // fetch 전에 즉시 in-flight 가드(더블클릭 = 중복 fetch·중복 id 방지)
+    fetch(INDUSTRY_CSV_SRC,{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.text();})
+      .then(function(html){ var d=document.createElement('div');
+        d.style.display='none'; d.innerHTML=html; document.body.appendChild(d); _emitIndustryCSV(); })
+      .catch(function(){ _indCsvLoaded=false; alert('품목 CSV 불러오기 실패'); });   // 실패 시 재시도 허용
+    return;
+  }
+  _emitIndustryCSV();
+}
+function _emitIndustryCSV(){
   // 산업 탭 = 품목(MTI) export 2종 (사용자 2026-06-13 '이런것들 엑셀로'):
   // 요약(품목당 1행, 카드 지표) + 월별 원시. 헤더는 industry.MTI_*_HEADER
   // 와 동기(테스트가 가드). 산업레벨(ind-csv-data)은 품목 monthly 의 산업
@@ -2551,6 +2605,10 @@ def main() -> int:
         # fetch → 초기 로딩 11MB→~3MB (사용자 2026-06-16 '느려'). 같은 디렉토리라
         # 정적 서버가 그대로 서빙(상대 fetch). 미생성 시 인라인 폴백.
         industry_out=args.out.parent / "industry_panel.html",
+        # 히트맵(2.3MB)·산업CSV(3MB) lazy 분리 (사용자 2026-06-30 — index.html
+        # 7.6MB→~1.3MB). 히트맵=🟩탭 첫 클릭 fetch, 산업CSV=📥 누를 때 fetch.
+        heatmap_out=args.out.parent / "heatmap_panel.html",
+        industry_csv_out=args.out.parent / "industry_csv.html",
         # 모달 히스토리(siblings, 3036행 ~2.3MB)도 별도 파일로 빼 모달 첫 클릭 때만
         # fetch → 초기 ALERTS 인라인 3.17MB→~0.8MB(최신만) (사용자 2026-06-16
         # '최신만 인라인 + 모달 히스토리 on-demand'). 뷰/검색/CSV 는 최신만 쓰므로
