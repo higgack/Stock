@@ -10551,7 +10551,7 @@ _VALUECHAIN_JS = r"""
     var iid = attrEsc(e.c+'|'+e.r+'|'+e.t);   // 속성 안전(따옴표 포함 회사명 대응)
     return '<div class="vc-row" data-imp-id="'+iid+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
-      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div>'+
+      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+(e.d?' · 📅'+esc(e.d)+' 학습':'')+'</div>'+
       '<button class="vc-del" type="button" title="이 관계 숨기기 (잘못된 매칭 제거)">🗑️</button></div>';
   }
   // 🗑️ 잘못된 관계 숨김 — 자동 도출 엣지라 영구 suppression(서버) + 클라 배열·DOM 제거.
@@ -10657,6 +10657,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
         "t": e.get("target", ""), "e": (e.get("evidence", "") or "")[:160],
         "s": e.get("source", ""), "st": e.get("status", ""),
         "k": e.get("kind", "kg"), "g": e.get("industry", ""),
+        "d": (e.get("date", "") or "")[:10],   # 학습(추출)일 — kg 만 보유
     } for e in edges if e.get("company") and e.get("target")]}
     # </script> 차단 + JSON 안전 임베드
     data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")

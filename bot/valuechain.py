@@ -104,6 +104,7 @@ def load_edges() -> list[dict]:
                         edges.append({"company": row[0], "relation": row[1],
                                       "target": row[2], "evidence": row[3],
                                       "source": row[4], "status": row[6],
+                                      "date": row[5],   # 추출일=학습한 날짜(YYYY-MM-DD)
                                       "kind": "kg"})
     except Exception as exc:
         log.warning("valuechain: kg edges load failed: %s", exc)

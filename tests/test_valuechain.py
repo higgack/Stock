@@ -138,5 +138,35 @@ class SuppressTests(unittest.TestCase):
             self.assertIn(eid, vc.load_suppressed())
 
 
+class LearnedDateTests(unittest.TestCase):
+    """kg 엣지에 학습(추출)일 통과 + 페이지 payload/edgeRow 렌더 계약(사용자 2026-06-29)."""
+
+    def test_load_edges_carries_kg_date(self):
+        import csv
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import trade.kg_candidates as kg
+        d = Path(tempfile.mkdtemp())
+        csvp = d / "kg.csv"
+        with open(csvp, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["회사", "관계", "대상", "근거", "출처", "추출일", "상태"])
+            w.writerow(["한화에어로스페이스", "취급품목", "항공기", "주요사업",
+                        "dart", "2026-06-20", "등재"])
+        with mock.patch.object(kg, "_candidates_csv_path", return_value=csvp), \
+             mock.patch("trade.reference_book.build_rows", return_value=[]), \
+             mock.patch.object(vc, "_SUPPRESS_PATH", d / "sup.json"):
+            edges = vc.load_edges()
+        e = next(x for x in edges if x["company"] == "한화에어로스페이스")
+        self.assertEqual(e["date"], "2026-06-20")
+
+    def test_page_renders_learned_date(self):
+        # payload 에 d 필드, edgeRow 가 '학습' 라벨로 렌더하는 소스 계약.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        self.assertIn('"d": (e.get("date", "") or "")[:10]', src)
+        self.assertIn("학습", src)
+
+
 if __name__ == "__main__":
     unittest.main()
