@@ -453,6 +453,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_memo_post()
         if self.path == "/api/reminder":
             return self._handle_reminder_post()
+        if self.path == "/api/vc_suppress":
+            return self._handle_vc_suppress_post()
         if self.path == "/api/favorite_add":
             return self._handle_favorite_add()
         if self.path == "/api/favorite_remove":
@@ -1261,6 +1263,32 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_ok(res)
         except Exception as exc:
             log.warning("memo_post: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_vc_suppress_post(self) -> None:
+        """POST /api/vc_suppress {id:"회사|관계|대상"} — 밸류체인 잘못된 관계 숨김(🗑️).
+        영구 suppression 저장 + valuechain.html 재생성(다음 로드부터 제외). 멱등."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 4096:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            edge_id = (payload.get("id") or "").strip()
+            from bot.valuechain import add_suppressed
+            ok = add_suppressed(edge_id)
+            regen = False
+            if ok:
+                try:
+                    from bot.dashboard import regenerate_valuechain_index
+                    regenerate_valuechain_index()
+                    regen = True
+                except Exception as exc:
+                    log.warning("vc_suppress: regen failed — %s", exc)
+            # regen=false 면 저장은 됐으나 html 갱신 실패 → 다른 탭/리로드는 다음
+            # 주기 regen 까지 stale(가시화, 리뷰 finding B · 실수노트 #11).
+            self._json_ok({"ok": ok, "regen": regen})
+        except Exception as exc:
+            log.warning("vc_suppress_post: %s", exc)
             self._json_ok({"ok": False, "error": str(exc)})
 
     def _handle_important_post(self) -> None:

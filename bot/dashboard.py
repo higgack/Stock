@@ -10437,6 +10437,12 @@ _VALUECHAIN_CSS = """
 /* ★/📝/⏰ 는 평소 흐리게(자리 덜 부각) → hover·활성(.on) 시 또렷. 간격도 타이트. */
 .vc-row .imp-ctl{padding:0 2px;font-size:13px;opacity:.45;transition:opacity .12s}
 .vc-row:hover .imp-ctl,.vc-row .imp-ctl.on{opacity:1}
+/* 🗑️ 잘못된 관계 숨김 — 평소 흐리게, hover 시 또렷(imp-ctl 와 동일 결). */
+.vc-del{background:none;border:none;cursor:pointer;font-size:13px;padding:0 2px;
+  opacity:.35;transition:opacity .12s;line-height:1;flex:0 0 auto}
+.vc-row:hover .vc-del{opacity:.85}
+.vc-del:hover{opacity:1}
+.vc-del:disabled{cursor:default}
 .vc-tag{display:inline-block;background:#23314a;color:#9db8da;border-radius:6px;
   padding:0 6px;font-size:10px;margin-left:6px;vertical-align:middle}
 </style>
@@ -10504,8 +10510,28 @@ _VALUECHAIN_JS = r"""
     var iid = attrEsc(e.c+'|'+e.r+'|'+e.t);   // 속성 안전(따옴표 포함 회사명 대응)
     return '<div class="vc-row" data-imp-id="'+iid+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
-      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div></div>';
+      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div>'+
+      '<button class="vc-del" type="button" title="이 관계 숨기기 (잘못된 매칭 제거)">🗑️</button></div>';
   }
+  // 🗑️ 잘못된 관계 숨김 — 자동 도출 엣지라 영구 suppression(서버) + 클라 배열·DOM 제거.
+  function dropEdge(id){
+    [E,KG,TR].forEach(function(arr){
+      for(var i=arr.length-1;i>=0;i--){ var x=arr[i];
+        if((x.c+'|'+x.r+'|'+x.t)===id) arr.splice(i,1); } });
+  }
+  document.addEventListener('click', function(ev){
+    var btn=ev.target.closest && ev.target.closest('.vc-del');
+    if(!btn) return;
+    var row=btn.closest('.vc-row'); if(!row) return;
+    var id=row.getAttribute('data-imp-id'); if(!id) return;
+    if(!confirm('이 관계를 숨길까요?\n잘못된 매칭 제거 — 다음부터 표시되지 않습니다.')) return;
+    btn.disabled=true; btn.textContent='⏳';
+    fetch('api/vc_suppress',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:id})}).then(function(r){return r.json();})
+      .then(function(j){ if(j&&j.ok){ dropEdge(id); row.remove(); }
+        else { btn.disabled=false; btn.textContent='🗑️'; alert('숨김 실패'); } })
+      .catch(function(){ btn.disabled=false; btn.textContent='🗑️'; alert('숨김 실패(네트워크)'); });
+  });
   function grp(title, items, fmt){
     if(!items.length) return '';
     return '<div class="vc-grp"><div class="vc-grp-h">'+title+' ('+items.length+')</div>'+items.map(fmt).join('')+'</div>';
@@ -10613,6 +10639,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
       &nbsp;&nbsp;👥 <b>동종 회사</b> — 같은 수출품목을 다루는 경쟁/피어 · 🏷️ 테마 · 🔗 계열<br>
       <b>3) 데이터 출처</b> — <b>공급망</b> 태그 = 블로그·DART 계약공시 자동발굴(kg) / <b>관세청</b> 태그 = 수출입 레퍼런스북(MTI·DART 매출구성·테마·운영자 보강 병합). 각 소스가 갱신되면 자동 반영됩니다.<br>
       <b>4) 활용</b> — 대형 고객사(예: SK하이닉스)의 호재·실적 → <b>그 공급사들이 수혜 후보</b>. 동종 회사로 peer 비교, 취급/수출품목으로 사업 파악.<br>
+      <b>5) 정리</b> — "관계 N건" 목록의 각 행 끝 <b>🗑️</b> = 잘못된 매칭 숨김(영구). 이후 페이지·텔레그램·분석 컨텍스트 모두에서 제외됩니다.<br>
       <b>⚠️ 주의</b> — 자동발굴(LLM·관세청)이라 일부 부정확할 수 있습니다. <b>참고 신호</b>로만 쓰고 확정 사실로 단정하지 마세요. 후보 검토·반영은 <a href="blog.html">📝 블로그 → 🔗 관계후보</a>에서.
     </div>
   </details>

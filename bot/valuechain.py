@@ -13,12 +13,62 @@
 """
 from __future__ import annotations
 
+import json as _json
 import logging
+import threading
+from pathlib import Path
 
 log = logging.getLogger("bot.valuechain")
 
 _SUPPLY = ("납품", "고객")            # 회사→회사 공급 관계(A 납품/고객 B = A가 B에 공급)
 _ITEM_REL = ("수출품목", "취급품목", "테마")   # 회사→품목/테마(품목 검색 대상)
+
+# 운영자가 '잘못된 매칭'으로 숨긴 엣지(🗑️, 사용자 2026-06-29). id='회사|관계|대상'.
+# 자동 도출 엣지라 하드삭제 대신 영구 suppression — 모든 소비처(페이지·텔레그램·
+# NOAH 컨텍스트)에서 load_edges 가 일괄 제외. dart_reinforce_rejected.json 과 동일 패턴.
+_SUPPRESS_PATH = Path.home() / ".tradingagents" / "valuechain_suppressed.json"
+_SUPPRESS_LOCK = threading.Lock()   # 쓰레드 서버 동시 🗑️ read-merge-write 직렬화
+
+
+def _edge_id(company: str, relation: str, target: str) -> str:
+    return f"{company}|{relation}|{target}"
+
+
+def load_suppressed() -> set[str]:
+    """숨긴 엣지 id 집합('회사|관계|대상'). 부재/실패 → set() (graceful)."""
+    try:
+        if _SUPPRESS_PATH.exists():
+            data = _json.loads(_SUPPRESS_PATH.read_text("utf-8"))
+            if isinstance(data, list):
+                return {str(x) for x in data}
+    except Exception as exc:
+        log.warning("valuechain: suppressed load failed: %s", exc)
+    return set()
+
+
+def add_suppressed(edge_id: str) -> bool:
+    """엣지 id 영구 숨김 추가. 반환 저장 여부. read-merge-write(멀티프로세스 관대)
+    + 원자적 교체. id 형식('회사|관계|대상', 파이프 ≥2) 아니면 거부."""
+    edge_id = (edge_id or "").strip()
+    if not edge_id or edge_id.count("|") < 2:
+        return False
+    # read-merge-write 를 락으로 직렬화 — ThreadingHTTPServer 동시 🗑️ 클릭이
+    # 서로의 추가분을 덮어써 silent 유실되는 race 차단(리뷰 finding A). 쓰기 자체는
+    # tmp+replace 로 원자적이라 동시 읽기(load_edges)는 항상 완전한 파일을 본다.
+    try:
+        with _SUPPRESS_LOCK:
+            cur = load_suppressed()
+            if edge_id in cur:
+                return True                   # 멱등
+            cur.add(edge_id)
+            _SUPPRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _SUPPRESS_PATH.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps(sorted(cur), ensure_ascii=False), "utf-8")
+            tmp.replace(_SUPPRESS_PATH)
+        return True
+    except Exception as exc:
+        log.warning("valuechain: suppress add failed: %s", exc)
+        return False
 
 
 def _norm(s: str) -> str:
@@ -73,6 +123,12 @@ def load_edges() -> list[dict]:
                                   "industry": industry})
     except Exception as exc:
         log.warning("valuechain: trade refbook edges load failed: %s", exc)
+    # 운영자 숨김(🗑️ 잘못된 매칭) 일괄 제외 — 페이지·텔레그램·NOAH 컨텍스트 공통.
+    sup = load_suppressed()
+    if sup:
+        edges = [e for e in edges
+                 if _edge_id(e.get("company", ""), e.get("relation", ""),
+                             e.get("target", "")) not in sup]
     return edges
 
 
