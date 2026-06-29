@@ -11,15 +11,56 @@ DART 대표자, CEO, 결산월, 공시, 임원지분, 소액주주, K-IFRS 재�
 
 from __future__ import annotations
 
+import copy
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 
 from bot.price_sanity import within_52w_range
 
 log = logging.getLogger(__name__)
 
+# ── 단기 스냅샷 캐시 (cold 상세 1장의 중복 수집 제거, 사용자 2026-06-29) ──────
+# 측정: 한 종목 cold 페이지가 collect_stock_snapshot 을 2~3회 호출(core 렌더 →
+# full 렌더 → /api/quote?full=1) — 각 호출이 yfinance .info + peers 8 + 시장
+# enrich 를 통째로 다시 함(AAPL 14.7s, 삼성 8.2s). filing/일간 느린 데이터라 짧은
+# 신선창이면 중복만 제거하고 정확성은 유지(라이브 가격/등락은 _QUOTE_JS 별도 갱신).
+#
+# ⚠️ 과거 실수(2026-06-15 '새 종목 아예 안됨')는 **공유 스냅샷을 여러 렌더가 동시
+# in-place 변경**한 race 였다. 그래서 캐시는 **copy-on-read/write** — 저장도 사본,
+# 읽기도 deepcopy 사본을 줘 호출부(_ensure_detail_enrichment 가 si 를 in-place
+# 변경)가 절대 캐시 원본을 못 건드린다. 순차 core→full 모델은 그대로(병렬 안 함).
+_SNAP_CACHE_TTL = 120.0
+_SNAP_CACHE: dict[str, tuple[float, dict]] = {}
+_SNAP_CACHE_LOCK = threading.Lock()
 
-def collect_stock_snapshot(ticker: str) -> dict | None:
+
+def collect_stock_snapshot(ticker: str, *, use_cache: bool = True) -> dict | None:
+    """Company/market facts dict, or *None* on failure.
+
+    use_cache=True(기본): 120초 copy-on-read 캐시 — cold 상세 1장의 중복 수집 제거.
+    use_cache=False: 강제 신선(수동 🔄 force / 아카이브 저장 시점 스냅샷)."""
+    if use_cache:
+        now = time.time()
+        with _SNAP_CACHE_LOCK:
+            ent = _SNAP_CACHE.get(ticker)
+            if ent and now - ent[0] < _SNAP_CACHE_TTL:
+                return copy.deepcopy(ent[1])      # 사본 — 호출부 in-place 변경 격리
+    snap = _collect_stock_snapshot_uncached(ticker)
+    if use_cache and snap is not None:
+        now = time.time()
+        with _SNAP_CACHE_LOCK:
+            # 만료 항목 정리 — 장수 대시보드 프로세스에서 티커마다 누적되는 무한
+            # 증가 방지(TTL 창 내 활성 티커 수로 한정). 쓰기 때만(저비용).
+            for k in [k for k, (ts, _) in _SNAP_CACHE.items()
+                      if now - ts >= _SNAP_CACHE_TTL]:
+                del _SNAP_CACHE[k]
+            _SNAP_CACHE[ticker] = (now, copy.deepcopy(snap))
+    return snap
+
+
+def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
     """Return a dict of company/market facts, or *None* on failure."""
     try:
         import yfinance as yf

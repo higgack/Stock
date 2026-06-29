@@ -86,7 +86,7 @@ def save_analysis(
         # fetch failures just skip the field (detail page degrades).
         try:
             from bot.stock_snapshot import collect_stock_snapshot
-            snap = collect_stock_snapshot(ticker)
+            snap = collect_stock_snapshot(ticker, use_cache=False)  # 분석 시점 스냅샷(정확)
             if snap:
                 record["stock_info"] = snap
         except Exception as exc:
@@ -209,7 +209,7 @@ def backfill_stock_info(limit: int | None = None) -> int:
             if not ticker:
                 continue
             try:
-                snap = collect_stock_snapshot(ticker)
+                snap = collect_stock_snapshot(ticker, use_cache=False)  # 백필도 신선
             except Exception as exc:
                 log.debug("archive: stock_info backfill skipped %s: %s", ticker, exc)
                 continue

@@ -3974,8 +3974,13 @@ def _fmt_over_line(q: dict, csym: str, pdec: int, src: str = "시간외") -> str
     return " · ".join(parts)
 
 
-def build_live_quote(ticker: str, full: bool = False) -> dict | None:
+def build_live_quote(ticker: str, full: bool = False,
+                     force_fresh: bool = False) -> dict | None:
     """Fresh live-quote payload for the detail-page overlay (numbers only).
+
+    force_fresh=True: 강제 신선(수동 🔄 / stale 백그라운드 force=1) — 120초 스냅샷
+    캐시 우회해 yfinance 새로 수집. 기본 False 면 캐시 재사용(cold 1장 중복 제거).
+
 
     LIGHT (full=False): one yfinance ``.info`` call → price-derived
     multiples + consensus + 52주 + 이평. KR (.KS/.KQ) takes a Naver-first
@@ -4009,7 +4014,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
         fresh = None
         try:
             from bot.stock_snapshot import collect_stock_snapshot
-            fresh = collect_stock_snapshot(ticker)
+            fresh = collect_stock_snapshot(ticker, use_cache=not force_fresh)
         except Exception as exc:
             log.warning("build_live_quote: full snapshot failed for %s: %s", ticker, exc)
         # 2) Fall back to the stored snapshot when yfinance bailed, so the
