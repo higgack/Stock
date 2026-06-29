@@ -95,5 +95,40 @@ class ValueChainTests(unittest.TestCase):
         self.assertGreaterEqual(conn.get("SK하이닉스", 0), 3)   # 다방향 연결
 
 
+class SuppressTests(unittest.TestCase):
+    """🗑️ 잘못된 관계 숨김(사용자 2026-06-29) — add/load/멱등/거부 + load_edges 제외."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._orig = vc._SUPPRESS_PATH
+        vc._SUPPRESS_PATH = Path(tempfile.mkdtemp()) / "sup.json"
+
+    def tearDown(self):
+        vc._SUPPRESS_PATH = self._orig
+
+    def test_add_load_idempotent(self):
+        eid = vc._edge_id("GST", "수출품목", "반도체제조용장비")
+        self.assertEqual(vc.load_suppressed(), set())
+        self.assertTrue(vc.add_suppressed(eid))
+        self.assertTrue(vc.add_suppressed(eid))          # 멱등
+        self.assertIn(eid, vc.load_suppressed())
+
+    def test_rejects_malformed_id(self):
+        self.assertFalse(vc.add_suppressed("bad"))       # 파이프 < 2
+        self.assertFalse(vc.add_suppressed(""))
+        self.assertFalse(vc.add_suppressed("a|b"))       # 2파트(파이프 1)뿐
+
+    def test_suppress_filter_excludes_edge(self):
+        # load_edges 가 끝에 적용하는 필터와 동일 식으로 제외/보존 검증.
+        vc.add_suppressed(vc._edge_id("삼성전자", "수출품목", "메모리반도체"))
+        sup = vc.load_suppressed()
+        kept = [e for e in _EDGES
+                if vc._edge_id(e["company"], e["relation"], e["target"]) not in sup]
+        names = {(e["company"], e["target"]) for e in kept}
+        self.assertNotIn(("삼성전자", "메모리반도체"), names)   # 숨김 제외
+        self.assertIn(("SK하이닉스", "메모리반도체"), names)    # 나머지 보존
+
+
 if __name__ == "__main__":
     unittest.main()
