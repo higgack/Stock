@@ -216,12 +216,18 @@ _INTL_MOVER_LABEL = {"JP": "도쿄(TSE)", "HK": "홍콩(HKEX)", "CN_A": "상하�
 
 def _suffix_ticker(sym: str, suf: str) -> str:
     """네이버 worldstock symbolCode → yfinance 접미사 티커. HK 는 4자리 zero-pad
-    (700→0700.HK, yfinance 규약). JP '7203'→7203.T, CN '601288'→601288.SS."""
-    sym = str(sym or "")
+    (700→0700.HK, yfinance 규약). JP '7203'→7203.T, CN '601288'→601288.SS.
+
+    ⚠️ HK: 네이버 symbolCode 는 **5자리 zero-pad**(00700) 혼재 → 옛 zfill(4) 는
+    이미 5자리인 걸 안 줄여 '00700.HK' 가 됐고, baseline/yfinance 규약 '0700.HK'
+    (4자리)과 불일치 → 52주 live 비교가 ≥10000(주로 RMB 이중카운터)만 매칭(2272 중
+    20)되고 주요종목 전부 누락(사용자 2026-06-29). int 재포맷으로 선행0 정규화 →
+    700·00700 모두 '0700.HK', ≥10000(82333)은 그대로(=intl_universe._hk_pick 동일)."""
+    sym = str(sym or "").strip()
     if not sym:
         return sym
-    if suf == ".HK":
-        sym = sym.zfill(4)
+    if suf == ".HK" and sym.isdigit():
+        return f"{int(sym):04d}{suf}"
     return f"{sym}{suf}"
 
 
