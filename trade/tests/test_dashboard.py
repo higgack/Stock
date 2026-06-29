@@ -121,6 +121,16 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn('const INDUSTRY_CSV_SRC="industry_csv.html"', html)
         self.assertIn("fetch(INDUSTRY_CSV_SRC", html)
 
+    def test_lazy_script_rerun_preserves_attributes(self):
+        # code-review(2026-06-30): _lazyFetchView 가 프래그먼트 <script> 재실행 시
+        # id/type 를 떨구면 히트맵의 <script type=application/json id=hm-data> 가
+        # 깨져 탭 전체 사망 → 모든 속성 보존(setAttribute 루프) 계약 고정.
+        src = Path("trade/dashboard.py").read_text(encoding="utf-8")
+        self.assertIn("for(var i=0;i<old.attributes.length;i++)", src)
+        self.assertIn("s.setAttribute(old.attributes[i].name", src)
+        # 더블클릭 중복 fetch 가드(fetch 전 플래그)
+        self.assertIn("_indCsvLoaded=true;   // fetch 전에", src)
+
     def test_regen_passes_lazy_out_paths(self):
         # regen 이 히트맵·산업CSV out 경로를 render_html 에 전달(소스 계약).
         src = Path("trade/dashboard.py").read_text(encoding="utf-8")

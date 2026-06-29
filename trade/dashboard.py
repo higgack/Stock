@@ -2139,7 +2139,13 @@ function _lazyFetchView(view){
       // 2026-06-16 '스크롤 디폴트 오른쪽 풀림' — #455 lazy 전환 회귀). 1회만(loaded gate).
       view.querySelectorAll('script').forEach(function(old){
         const s=document.createElement('script');
-        if(old.src){s.src=old.src;}else{s.textContent=old.textContent;}
+        // ⚠️ 모든 속성 보존(id·type 포함) — 히트맵 프래그먼트의
+        // <script type="application/json" id="hm-data"> 데이터를 재생성할 때 id/type
+        // 를 떨구면 (a) JSON 을 JS 로 실행 시도 (b) getElementById('hm-data')=null →
+        // 히트맵 IIFE 크래시로 탭 전체가 죽음(2026-06-30 code-review). type 보존 시
+        // application/json 은 미실행 데이터홀더로 남아 id 로 찾힘, JS(type 없음)는 실행.
+        for(var i=0;i<old.attributes.length;i++){ s.setAttribute(old.attributes[i].name, old.attributes[i].value); }
+        if(!old.src) s.textContent=old.textContent;
         old.parentNode.replaceChild(s,old);
       });
       if(window._scrollRaw)window._scrollRaw(view);   // 월별 원자료 → 최신(우측)
@@ -2498,10 +2504,11 @@ function downloadIndustryCSV(){
   // getElementById 찾힘, 미실행) → 1회 후 _emitIndustryCSV. 인라인(아카이브/폴백)이면 바로.
   if(!document.getElementById('mti-csv-summary') && !_indCsvLoaded
      && typeof INDUSTRY_CSV_SRC!=='undefined' && INDUSTRY_CSV_SRC){
+    _indCsvLoaded=true;   // fetch 전에 즉시 in-flight 가드(더블클릭 = 중복 fetch·중복 id 방지)
     fetch(INDUSTRY_CSV_SRC,{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.text();})
-      .then(function(html){ _indCsvLoaded=true; var d=document.createElement('div');
+      .then(function(html){ var d=document.createElement('div');
         d.style.display='none'; d.innerHTML=html; document.body.appendChild(d); _emitIndustryCSV(); })
-      .catch(function(){ alert('품목 CSV 불러오기 실패'); });
+      .catch(function(){ _indCsvLoaded=false; alert('품목 CSV 불러오기 실패'); });   // 실패 시 재시도 허용
     return;
   }
   _emitIndustryCSV();
