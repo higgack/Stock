@@ -382,7 +382,14 @@ def _load_eval_miss_summary(
     # 수출입 확정치 코멘트' 같은 off-topic 시리즈는 영구 파싱 불가가 정상이라
     # actionable 백로그가 아니다. read-only(파일 미변경)·다음 렌더에 즉시 반영·
     # 향후 IGNORED 추가도 자동 적용. matches_prefix/contains 재사용.
+    # 추가 제외(2026-06-30): (1) JP 일본수출 캡션 — jp.db 로 정상 ingest 되는데
+    # store.db 엔 안 들어가는 게 정상(unstored_check #687 와 동일 parse_jp_export
+    # 스킵, 옛 39건 stale 로그). (2) 운영자 /ignore 한 msg_id — find_unstored 는
+    # 이미 ignored_ids 를 스킵하지만 그 전에 적재된 옛 entry 는 카운트에 남아있어
+    # 불일치 → msg_id 도 제외해 일관. read-only(파일 미변경)·다음 렌더 즉시 반영.
     from trade import ignored as _ignored
+    from trade import jp_exports as _jp
+    ignored_ids = _ignored.load()
     count = 0
     oldest: datetime | None = None
     try:
@@ -397,6 +404,10 @@ def _load_eval_miss_summary(
                     continue
                 cap = rec.get("caption") or rec.get("text") or ""
                 if _ignored.matches_prefix(cap) or _ignored.matches_contains(cap):
+                    continue
+                if rec.get("message_id") in ignored_ids:   # 운영자 /ignore
+                    continue
+                if _jp.parse_jp_export(cap) is not None:    # JP → jp.db 정상 처리
                     continue
                 count += 1
                 detected = rec.get("detected_at")
