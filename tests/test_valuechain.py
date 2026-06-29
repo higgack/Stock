@@ -129,6 +129,14 @@ class SuppressTests(unittest.TestCase):
         self.assertNotIn(("삼성전자", "메모리반도체"), names)   # 숨김 제외
         self.assertIn(("SK하이닉스", "메모리반도체"), names)    # 나머지 보존
 
+    def test_special_char_id_roundtrip(self):
+        # 회사명에 &<>"·| 가 있어도 클라(attrEsc→getAttribute 디코드=raw)와 서버
+        # _edge_id 가 동일 문자열이라 매칭돼야 함(리뷰 finding D — 계약 고정).
+        for co in ['A&B', 'C<D>E', 'F"G', 'H|I']:
+            eid = vc._edge_id(co, "수출품목", "x")
+            self.assertTrue(vc.add_suppressed(eid))
+            self.assertIn(eid, vc.load_suppressed())
+
 
 if __name__ == "__main__":
     unittest.main()
