@@ -40,7 +40,8 @@ def collect_stock_snapshot(ticker: str, *, use_cache: bool = True) -> dict | Non
     """Company/market facts dict, or *None* on failure.
 
     use_cache=True(기본): 120초 copy-on-read 캐시 — cold 상세 1장의 중복 수집 제거.
-    use_cache=False: 강제 신선(수동 🔄 force / 아카이브 저장 시점 스냅샷)."""
+    use_cache=False: 캐시 '읽기'만 건너뛰고 신선 수집(수동 🔄 force / 아카이브 저장
+    시점). 단 그 신선 결과는 캐시에 '갱신' — 강제 새로고침 직후 같은-창 렌더도 신선."""
     if use_cache:
         now = time.time()
         with _SNAP_CACHE_LOCK:
@@ -48,7 +49,9 @@ def collect_stock_snapshot(ticker: str, *, use_cache: bool = True) -> dict | Non
             if ent and now - ent[0] < _SNAP_CACHE_TTL:
                 return copy.deepcopy(ent[1])      # 사본 — 호출부 in-place 변경 격리
     snap = _collect_stock_snapshot_uncached(ticker)
-    if use_cache and snap is not None:
+    # 쓰기는 항상(use_cache 무관) — force/archive 의 신선 결과도 캐시 갱신해 이후
+    # 읽기가 stale 을 안 보게(리뷰 finding #1). 읽기만 use_cache 로 우회.
+    if snap is not None:
         now = time.time()
         with _SNAP_CACHE_LOCK:
             # 만료 항목 정리 — 장수 대시보드 프로세스에서 티커마다 누적되는 무한

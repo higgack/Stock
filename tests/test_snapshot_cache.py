@@ -45,13 +45,14 @@ class TestSnapshotCache(unittest.TestCase):
         self.assertEqual(b["kr"]["research_reports"], [])   # 원본 보존
         self.assertNotIn("injected", b)
 
-    def test_use_cache_false_bypasses(self):
+    def test_use_cache_false_bypasses_read_but_writes(self):
+        # use_cache=False 는 캐시 '읽기'만 우회(매번 신선 수집)…
         ss.collect_stock_snapshot("AAPL", use_cache=False)
         ss.collect_stock_snapshot("AAPL", use_cache=False)
-        self.assertEqual(self.calls, ["AAPL", "AAPL"])      # 매번 본체 호출
-        # 캐시에 쓰지도 않음 → 이후 캐시 읽기도 미스
+        self.assertEqual(self.calls, ["AAPL", "AAPL"])      # 둘 다 본체 호출
+        # …하지만 신선 결과는 캐시에 갱신(finding #1) → 이후 일반 읽기는 적중
         ss.collect_stock_snapshot("AAPL")
-        self.assertEqual(self.calls, ["AAPL", "AAPL", "AAPL"])
+        self.assertEqual(self.calls, ["AAPL", "AAPL"])      # 본체 추가 호출 없음(캐시 적중)
 
     def test_ttl_expiry_recomputes(self):
         ss.collect_stock_snapshot("AAPL")
