@@ -9294,6 +9294,47 @@ def _load_daily_byte_runs() -> list[dict]:
     return runs
 
 
+# ── 자동 업데이트 배너 (사용자 2026-06-29) — 켜놓은 화면에 새 내용이 생기면 알림.
+# 메인/ASIA 처럼 영역 swap 이 아니라, HEAD 로 Last-Modified 만 폴링(본문 0·새 엔드
+# 포인트 0)해 페이지 파일이 바뀌면 "🆕 새 업데이트" 배너 → 클릭 시 reload. 콘텐츠
+# 도착형 페이지에만 주입. swap 안 하는 이유: 이 페이지들엔 필터·검색·펼친카드·스크롤·
+# 중요/메모 상태가 있어 innerHTML 교체 시 날아감 → 배너(알림+1클릭)로 상태 보존.
+# 비용: HEAD(헤더만)·탭 숨김 skip·LLM/regen 0 → 단일 사용자엔 사실상 무부하.
+_UPDATE_BANNER_JS = """<script>
+(function(){
+  if(window.__updBanner) return; window.__updBanner=true;
+  var POLL=45000, url=location.pathname+location.search, base=null, shown=false;
+  function head(){ return fetch(url,{method:'HEAD',cache:'no-store'})
+    .then(function(r){ return r.ok?r.headers.get('Last-Modified'):null; })
+    .catch(function(){ return null; }); }
+  function banner(){
+    if(shown||document.getElementById('upd-banner')) return; shown=true;
+    var b=document.createElement('div'); b.id='upd-banner';
+    b.textContent='🆕 새 업데이트 — 누르면 최신';
+    b.style.cssText='position:fixed;left:50%;bottom:18px;transform:translateX(-50%);'+
+      'z-index:9999;background:#2563eb;color:#fff;padding:10px 18px;border-radius:22px;'+
+      'cursor:pointer;font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35)';
+    b.onclick=function(){ location.reload(); };
+    document.body.appendChild(b);
+  }
+  function tick(){ if(document.hidden) return;
+    head().then(function(v){ if(!v) return;
+      if(base===null){ base=v; return; }
+      if(v!==base) banner(); }); }
+  head().then(function(v){ if(base===null) base=v; });   // 로드 시점 = 보고 있는 버전
+  setInterval(tick, POLL);
+})();
+</script>"""
+
+
+def _inject_update_banner(html: str) -> str:
+    """콘텐츠 도착형 페이지 HTML 첫 </body> 앞에 자동 업데이트 배너 주입. 멱등(이미
+    주입됐거나 </body> 없으면 그대로). 순수."""
+    if not html or "__updBanner" in html or "</body>" not in html:
+        return html
+    return html.replace("</body>", _UPDATE_BANNER_JS + "</body>", 1)
+
+
 def _render_daily_byte_page(runs: list[dict]) -> str:
     """Render daily_byte.html — date-grouped brief cards. Reuses
     _SCREENER_CSS (theme + card + search-bar + snippet styles) and the
@@ -9480,7 +9521,7 @@ def regenerate_daily_byte_index() -> None:
     All errors swallowed."""
     try:
         runs = _load_daily_byte_runs()
-        html = _render_daily_byte_page(runs)
+        html = _inject_update_banner(_render_daily_byte_page(runs))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "daily_byte.html").write_text(html, encoding="utf-8")
         log.info("dashboard: daily_byte.html regenerated (%d runs)", len(runs))
@@ -9644,7 +9685,7 @@ def regenerate_realestate_index() -> None:
         for r in ch_runs:
             r["_kind"] = "cheongyak"
         runs = re_runs + ch_runs
-        html = _render_realestate_page(runs)
+        html = _inject_update_banner(_render_realestate_page(runs))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "realestate.html").write_text(html, encoding="utf-8")
         log.info("dashboard: realestate.html regenerated (%d runs)", len(runs))
@@ -9974,7 +10015,7 @@ def regenerate_reddit_insider_index() -> None:
     + from periodic dashboard refresh + on startup."""
     try:
         runs = _load_reddit_insider_runs()
-        html = _render_reddit_insider_page(runs)
+        html = _inject_update_banner(_render_reddit_insider_page(runs))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "reddit_insider.html").write_text(
             html, encoding="utf-8"
@@ -10398,7 +10439,7 @@ def regenerate_blog_index() -> None:
     bot.blog_watch after new posts + periodic refresh + startup."""
     try:
         runs = _load_blog_runs()
-        html = _render_blog_page(runs)
+        html = _inject_update_banner(_render_blog_page(runs))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "blog.html").write_text(html, encoding="utf-8")
         log.info("dashboard: blog.html regenerated (%d posts)", len(runs))
@@ -10510,7 +10551,7 @@ _VALUECHAIN_JS = r"""
     var iid = attrEsc(e.c+'|'+e.r+'|'+e.t);   // 속성 안전(따옴표 포함 회사명 대응)
     return '<div class="vc-row" data-imp-id="'+iid+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
-      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+'</div>'+
+      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+(e.d?' · 📅'+esc(e.d)+' 학습':'')+'</div>'+
       '<button class="vc-del" type="button" title="이 관계 숨기기 (잘못된 매칭 제거)">🗑️</button></div>';
   }
   // 🗑️ 잘못된 관계 숨김 — 자동 도출 엣지라 영구 suppression(서버) + 클라 배열·DOM 제거.
@@ -10616,6 +10657,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
         "t": e.get("target", ""), "e": (e.get("evidence", "") or "")[:160],
         "s": e.get("source", ""), "st": e.get("status", ""),
         "k": e.get("kind", "kg"), "g": e.get("industry", ""),
+        "d": (e.get("date", "") or "")[:10],   # 학습(추출)일 — kg 만 보유
     } for e in edges if e.get("company") and e.get("target")]}
     # </script> 차단 + JSON 안전 임베드
     data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
@@ -10687,7 +10729,7 @@ def regenerate_valuechain_index() -> None:
     try:
         edges = _load_valuechain_edges()
         ct, cm = _kg_candidate_cost_usd()
-        html = _render_valuechain_page(edges, ct, cm)
+        html = _inject_update_banner(_render_valuechain_page(edges, ct, cm))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "valuechain.html").write_text(html, encoding="utf-8")
         log.info("dashboard: valuechain.html regenerated (%d edges)", len(edges))
@@ -12950,7 +12992,7 @@ def regenerate_dart_feed_index() -> None:
     """DART feed archive → dart_feed.html."""
     try:
         by_date = _load_dart_feed_data(days_back=30)
-        html = _render_dart_feed_page(by_date)
+        html = _inject_update_banner(_render_dart_feed_page(by_date))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "dart_feed.html").write_text(html, encoding="utf-8")
         total = sum(len(v) for v in by_date.values())

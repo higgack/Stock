@@ -762,5 +762,37 @@ class TestBatch20260615(unittest.TestCase):
         self.assertIn('TRADE_MAX_CANDIDATES") or "5000"', src)
 
 
+class TestEvalMissBacklogFilter(unittest.TestCase):
+    """미파싱 백로그 카운트 제외 규칙(사용자 2026-06-30): JP(jp.db 정상처리)·
+    IGNORED prefix/contains·운영자 /ignore msg_id 는 제외, 진짜 미파싱만 셈."""
+
+    def _write(self, rows):
+        import json as _j
+        import tempfile
+        p = Path(tempfile.mkdtemp()) / "eval.jsonl"
+        p.write_text("\n".join(_j.dumps(r, ensure_ascii=False) for r in rows),
+                     encoding="utf-8")
+        return p
+
+    def test_excludes_jp_ignored_and_msgid(self):
+        from unittest import mock
+        from trade import dashboard as td
+        from trade import ignored as ig
+        rows = [
+            {"detected_at": "2026-06-15T00:00:00Z", "message_id": 1,
+             "caption": "📈 일본 수출 데이터 업데이트: MLCC\n최신 월: 2026-05\n수출액: 5십억 엔"},
+            {"detected_at": "2026-06-15T00:00:00Z", "message_id": 2,
+             "caption": "이달의 주요 기업 수출데이터 코멘트"},          # IGNORED_CONTAINS
+            {"detected_at": "2026-06-15T00:00:00Z", "message_id": 9999,
+             "caption": "SemiAnalysis: AI 가치사슬"},                  # /ignore msg_id
+            {"detected_at": "2026-06-15T00:00:00Z", "message_id": 5,
+             "caption": "진짜 미파싱 신포맷 캡션"},                     # genuine
+        ]
+        p = self._write(rows)
+        with mock.patch.object(ig, "load", return_value={9999}):
+            s = td._load_eval_miss_summary(p)
+        self.assertEqual(s["count"], 1)   # genuine miss 만
+
+
 if __name__ == "__main__":
     unittest.main()
