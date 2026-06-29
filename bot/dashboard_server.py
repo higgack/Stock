@@ -928,7 +928,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
 
             from bot.dashboard import build_live_quote
-            quote = build_live_quote(ticker, full=full)
+            # force=1(수동 🔄 / stale 백그라운드 갱신)이면 120초 스냅샷 캐시도 우회
+            # 해 진짜 신선 수집. 일반 cold 로드는 캐시 재사용(중복 스냅샷 제거).
+            quote = build_live_quote(ticker, full=full, force_fresh=force)
             if not quote:
                 # 200 (not 404) so an old server (no endpoint → static 404)
                 # is distinguishable from "endpoint exists, no live data".
