@@ -35,8 +35,21 @@ _ITEM_REL = ("수출품목", "취급품목", "테마")   # 회사→품목/테�
 # ⚠️ universal — 신선도 룰은 전시장 분석 컨텍스트에 동일 적용. kg 가 KR 소스
 # (DART/블로그)인 건 데이터소스 사유지 market 게이트 아님. 큐레이션 상태축과 직교
 # (등재된 엣지도 늙을 수 있으나 사람 vouch 가 노후화를 이김 → '숨겨짐' 사고 방지).
-_STALE_AFTER_DAYS = int(os.environ.get("KG_STALE_AFTER_DAYS") or 180)
-_ARCHIVE_AFTER_DAYS = int(os.environ.get("KG_ARCHIVE_AFTER_DAYS") or 365)
+def _env_int(name: str, default: int) -> int:
+    """env 정수 파싱 — 비정상값(예: '180days')은 모듈 import 크래시 대신 기본값
+    (graceful, 이 파일 전반 패턴). 운영자 오타가 전 소비처(페이지·텔레그램·NOAH)
+    동시 다운시키지 않게."""
+    try:
+        v = os.environ.get(name)
+        return int(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        log.warning("valuechain: %s 비정상값(%r) 무시 → 기본 %d",
+                    name, os.environ.get(name), default)
+        return default
+
+
+_STALE_AFTER_DAYS = _env_int("KG_STALE_AFTER_DAYS", 180)
+_ARCHIVE_AFTER_DAYS = _env_int("KG_ARCHIVE_AFTER_DAYS", 365)
 _VOUCHED_STATUS = ("승인", "등재")     # 운영자 확인분 — 노후화 면제
 
 
@@ -181,8 +194,8 @@ def load_edges(include_archived: bool = False) -> list[dict]:
         fr = freshness(e, today)
         if fr == "archived" and not include_archived:
             continue
-        e["freshness"] = fr
-        out.append(e)
+        out.append({**e, "freshness": fr})   # 복사 후 스탬프 — 소스 dict 인플레이스
+        #                                       변형 회피(향후 소스 캐시·동시요청 안전).
     return out
 
 
@@ -343,10 +356,12 @@ def format_for_prompt(company: str, edges: list[dict] | None = None) -> str:
     표기 차이 대비 관대 해석(resolve_company)."""
     if edges is None:
         edges = load_edges()
-    # 노후화(stale/archived) 자동발굴 관계는 분석 컨텍스트에서 제외 — 1년 묵은 단일
-    # 블로그발 추측이 '사전지식 stale 가정'(7축 6번)으로 환각을 부추기는 것 차단.
-    edges = active_edges(edges)
-    nb = neighborhood(resolve_company(company, edges) or company, edges)
+    # 회사명 해석은 전체(active+stale) 그래프로 — 노후 엣지로만 노드 등장하는 회사도
+    # 정상 매핑(리뷰 finding: active 먼저 거르면 해석 실패로 active 관계까지 누락).
+    # 관계 주입만 active — 노후화(stale) 자동발굴 추측이 '사전지식 stale 가정'(7축 6번)
+    # 으로 환각 부추기는 것 차단(archived 는 load_edges 가 이미 기본 제외).
+    resolved = resolve_company(company, edges) or company
+    nb = neighborhood(resolved, active_edges(edges))
     if not has_data(nb):
         return ""
     L = [f"[밸류체인 — {company} (자동발굴: DART 계약공시·블로그·관세청 수출입)]"]
