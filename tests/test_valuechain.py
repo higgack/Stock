@@ -232,6 +232,17 @@ class FreshnessTests(unittest.TestCase):
         old = next(e for e in allinc if e["company"] == "올드사")
         self.assertEqual(old["freshness"], "archived")                     # 포함 시 라벨
 
+    def test_env_int_graceful(self):
+        # 비정상 env 값은 모듈 크래시 대신 기본값(리뷰 finding — import 안전).
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"KG_STALE_AFTER_DAYS": "180days"}):
+            self.assertEqual(vc._env_int("KG_STALE_AFTER_DAYS", 180), 180)
+        with mock.patch.dict(os.environ, {"KG_STALE_AFTER_DAYS": ""}):
+            self.assertEqual(vc._env_int("KG_STALE_AFTER_DAYS", 180), 180)
+        with mock.patch.dict(os.environ, {"KG_STALE_AFTER_DAYS": "90"}):
+            self.assertEqual(vc._env_int("KG_STALE_AFTER_DAYS", 180), 90)
+
     def test_format_for_prompt_drops_stale(self):
         # stale 자동발굴 관계는 NOAH 분석 컨텍스트에서 제외 — active 만 주입(7축6 환각가드).
         edges = [
