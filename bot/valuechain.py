@@ -15,13 +15,55 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import os
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger("bot.valuechain")
 
+_KST = timezone(timedelta(hours=9))   # 모든 시각 KST 명시계산(서버 로컬타임 의존 금지)
+
 _SUPPLY = ("납품", "고객")            # 회사→회사 공급 관계(A 납품/고객 B = A가 B에 공급)
 _ITEM_REL = ("수출품목", "취급품목", "테마")   # 회사→품목/테마(품목 검색 대상)
+
+# ── kg 엣지 신선도(노후화) 수명주기 (사용자 2026-06-30, hermes-agent #7816 차용) ──
+# 자동발굴(블로그·DART) kg 엣지는 학습일(추출일)만 고정돼 늙지 않음 → 1년 묵은 단일
+# 블로그발 추측이 신규 재확인 관계와 동급으로 NOAH 컨텍스트·페이지에 남는 문제. 학습일
+# 경과로 active→stale→archived 계산(로드시·stateless, 스케줄러 0). 운영자 vouch
+# (승인/등재)·관세청 trade(매 로드 live 재생성)·날짜불명 = 면제(항상 active).
+# ⚠️ universal — 신선도 룰은 전시장 분석 컨텍스트에 동일 적용. kg 가 KR 소스
+# (DART/블로그)인 건 데이터소스 사유지 market 게이트 아님. 큐레이션 상태축과 직교
+# (등재된 엣지도 늙을 수 있으나 사람 vouch 가 노후화를 이김 → '숨겨짐' 사고 방지).
+_STALE_AFTER_DAYS = int(os.environ.get("KG_STALE_AFTER_DAYS") or 180)
+_ARCHIVE_AFTER_DAYS = int(os.environ.get("KG_ARCHIVE_AFTER_DAYS") or 365)
+_VOUCHED_STATUS = ("승인", "등재")     # 운영자 확인분 — 노후화 면제
+
+
+def _parse_date(s: str):
+    """'YYYY-MM-DD…' → date(또는 None). graceful(형식 불명 → None=면제)."""
+    try:
+        return datetime.strptime((s or "")[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def freshness(edge: dict, today=None) -> str:
+    """kg 엣지 신선도 'active'|'stale'|'archived'(순수). trade(live 재생성)·운영자
+    vouch(승인/등재)·날짜불명 → 항상 active(보수적 유지). 그 외 학습일 경과로 판정."""
+    if edge.get("kind") == "trade":
+        return "active"
+    if (edge.get("status") or "").strip() in _VOUCHED_STATUS:
+        return "active"
+    d = _parse_date(edge.get("date"))
+    if d is None:
+        return "active"
+    age = ((today or datetime.now(_KST).date()) - d).days
+    if age > _ARCHIVE_AFTER_DAYS:
+        return "archived"
+    if age > _STALE_AFTER_DAYS:
+        return "stale"
+    return "active"
 
 # 운영자가 '잘못된 매칭'으로 숨긴 엣지(🗑️, 사용자 2026-06-29). id='회사|관계|대상'.
 # 자동 도출 엣지라 하드삭제 대신 영구 suppression — 모든 소비처(페이지·텔레그램·
@@ -86,9 +128,11 @@ def _uniq(seq) -> list:
     return out
 
 
-def load_edges() -> list[dict]:
-    """다소스 엣지 집합. 각 {company,relation,target,evidence,source,status,kind}.
-    kind='kg'(블로그·DART) / 'trade'(관세청). graceful(한 소스 실패해도 나머지)."""
+def load_edges(include_archived: bool = False) -> list[dict]:
+    """다소스 엣지 집합. 각 {company,relation,target,evidence,source,status,kind,
+    freshness}. kind='kg'(블로그·DART) / 'trade'(관세청). graceful(한 소스 실패해도
+    나머지). 각 엣지에 freshness('active'|'stale'|'archived') 부착 — archived 는
+    기본 제외(include_archived=True 면 포함, 페이지 카운트·토글용)."""
     edges: list[dict] = []
     # ① kg 관계후보 큐(런타임 CSV)
     try:
@@ -130,7 +174,22 @@ def load_edges() -> list[dict]:
         edges = [e for e in edges
                  if _edge_id(e.get("company", ""), e.get("relation", ""),
                              e.get("target", "")) not in sup]
-    return edges
+    # 신선도 부착 + archived 기본 제외(자동발굴 노후 관계 — 페이지/NOAH/텔레그램 위생).
+    today = datetime.now(_KST).date()   # KST 명시(학습일도 KST wall-clock 기준)
+    out: list[dict] = []
+    for e in edges:
+        fr = freshness(e, today)
+        if fr == "archived" and not include_archived:
+            continue
+        e["freshness"] = fr
+        out.append(e)
+    return out
+
+
+def active_edges(edges: list[dict]) -> list[dict]:
+    """active 만(stale/archived 제외) — NOAH 분석 컨텍스트 주입용. freshness 미부착
+    엣지(테스트/외부 호출)는 active 로 간주(하위호환)."""
+    return [e for e in edges if e.get("freshness", "active") == "active"]
 
 
 def resolve_company(query: str, edges: list[dict]) -> str | None:
@@ -284,6 +343,9 @@ def format_for_prompt(company: str, edges: list[dict] | None = None) -> str:
     표기 차이 대비 관대 해석(resolve_company)."""
     if edges is None:
         edges = load_edges()
+    # 노후화(stale/archived) 자동발굴 관계는 분석 컨텍스트에서 제외 — 1년 묵은 단일
+    # 블로그발 추측이 '사전지식 stale 가정'(7축 6번)으로 환각을 부추기는 것 차단.
+    edges = active_edges(edges)
     nb = neighborhood(resolve_company(company, edges) or company, edges)
     if not has_data(nb):
         return ""

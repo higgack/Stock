@@ -168,5 +168,82 @@ class LearnedDateTests(unittest.TestCase):
         self.assertIn("학습", src)
 
 
+class FreshnessTests(unittest.TestCase):
+    """kg 엣지 신선도 노후화(active/stale/archived, 사용자 2026-06-30, hermes #7816).
+    학습일 경과 판정 + 면제(trade/vouch/날짜불명) + load_edges archive 필터 + NOAH
+    컨텍스트 stale 제외 계약."""
+
+    def _mk(self, days_ago, today, **kw):
+        from datetime import timedelta
+        d = (today - timedelta(days=days_ago)).isoformat()
+        e = {"company": "A", "relation": "납품", "target": "B", "kind": "kg",
+             "status": "후보", "date": d}
+        e.update(kw)
+        return e
+
+    def test_thresholds(self):
+        from datetime import date
+        t = date(2026, 6, 30)
+        self.assertEqual(vc.freshness(self._mk(179, t), t), "active")
+        self.assertEqual(vc.freshness(self._mk(180, t), t), "active")   # 경계 포함=active
+        self.assertEqual(vc.freshness(self._mk(181, t), t), "stale")
+        self.assertEqual(vc.freshness(self._mk(365, t), t), "stale")
+        self.assertEqual(vc.freshness(self._mk(366, t), t), "archived")
+
+    def test_exemptions(self):
+        from datetime import date
+        t = date(2026, 6, 30)
+        # 관세청 trade(매 로드 live 재생성) — 항상 active.
+        self.assertEqual(vc.freshness(self._mk(900, t, kind="trade"), t), "active")
+        # 운영자 vouch(승인/등재) — 노후화 면제(사람 확인분 '숨겨짐' 사고 방지).
+        self.assertEqual(vc.freshness(self._mk(900, t, status="등재"), t), "active")
+        self.assertEqual(vc.freshness(self._mk(900, t, status="승인"), t), "active")
+        # 날짜 불명 → 보수적 유지.
+        self.assertEqual(
+            vc.freshness({"company": "A", "relation": "납품", "target": "B",
+                          "kind": "kg", "status": "후보"}, t), "active")
+
+    def test_active_edges_filter(self):
+        es = [{"company": "A", "freshness": "active"},
+              {"company": "B", "freshness": "stale"},
+              {"company": "C", "freshness": "archived"},
+              {"company": "D"}]   # freshness 미부착 → active 간주(하위호환)
+        self.assertEqual({e["company"] for e in vc.active_edges(es)}, {"A", "D"})
+
+    def test_load_edges_attaches_and_excludes_archived(self):
+        import csv
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import trade.kg_candidates as kg
+        d = Path(tempfile.mkdtemp())
+        csvp = d / "kg.csv"
+        with open(csvp, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["회사", "관계", "대상", "근거", "출처", "추출일", "상태"])
+            # 2020 = today(2026+) 기준 확실히 >365일 → archived(now() 의존 무관 견고).
+            w.writerow(["올드사", "납품", "타겟", "ev", "dart", "2020-01-01", "후보"])
+        with mock.patch.object(kg, "_candidates_csv_path", return_value=csvp), \
+             mock.patch("trade.reference_book.build_rows", return_value=[]), \
+             mock.patch.object(vc, "_SUPPRESS_PATH", d / "sup.json"):
+            default = vc.load_edges()
+            allinc = vc.load_edges(include_archived=True)
+        self.assertFalse(any(e["company"] == "올드사" for e in default))   # 기본 제외
+        old = next(e for e in allinc if e["company"] == "올드사")
+        self.assertEqual(old["freshness"], "archived")                     # 포함 시 라벨
+
+    def test_format_for_prompt_drops_stale(self):
+        # stale 자동발굴 관계는 NOAH 분석 컨텍스트에서 제외 — active 만 주입(7축6 환각가드).
+        edges = [
+            {"company": "갑", "relation": "납품", "target": "을", "kind": "kg",
+             "status": "후보", "freshness": "active"},
+            {"company": "병", "relation": "납품", "target": "을", "kind": "kg",
+             "status": "후보", "freshness": "stale"},
+        ]
+        block = vc.format_for_prompt("을", edges)
+        self.assertIn("갑", block)         # active 공급사 포함
+        self.assertNotIn("병", block)      # stale 제외
+
+
 if __name__ == "__main__":
     unittest.main()
