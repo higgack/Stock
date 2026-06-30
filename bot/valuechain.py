@@ -17,10 +17,12 @@ import json as _json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger("bot.valuechain")
+
+_KST = timezone(timedelta(hours=9))   # 모든 시각 KST 명시계산(서버 로컬타임 의존 금지)
 
 _SUPPLY = ("납품", "고객")            # 회사→회사 공급 관계(A 납품/고객 B = A가 B에 공급)
 _ITEM_REL = ("수출품목", "취급품목", "테마")   # 회사→품목/테마(품목 검색 대상)
@@ -56,7 +58,7 @@ def freshness(edge: dict, today=None) -> str:
     d = _parse_date(edge.get("date"))
     if d is None:
         return "active"
-    age = ((today or datetime.now().date()) - d).days
+    age = ((today or datetime.now(_KST).date()) - d).days
     if age > _ARCHIVE_AFTER_DAYS:
         return "archived"
     if age > _STALE_AFTER_DAYS:
@@ -173,7 +175,7 @@ def load_edges(include_archived: bool = False) -> list[dict]:
                  if _edge_id(e.get("company", ""), e.get("relation", ""),
                              e.get("target", "")) not in sup]
     # 신선도 부착 + archived 기본 제외(자동발굴 노후 관계 — 페이지/NOAH/텔레그램 위생).
-    today = datetime.now().date()
+    today = datetime.now(_KST).date()   # KST 명시(학습일도 KST wall-clock 기준)
     out: list[dict] = []
     for e in edges:
         fr = freshness(e, today)
