@@ -10486,6 +10486,10 @@ _VALUECHAIN_CSS = """
 .vc-del:disabled{cursor:default}
 .vc-tag{display:inline-block;background:#23314a;color:#9db8da;border-radius:6px;
   padding:0 6px;font-size:10px;margin-left:6px;vertical-align:middle}
+/* 신선도(노후화): stale 행은 흐리게(신뢰도↓ 시각 신호), 뱃지로 사유 표기. */
+.vc-row.vc-stale{opacity:.55}
+.vc-fr{display:inline-block;border-radius:6px;padding:0 5px;font-size:10px}
+.vc-fr-s{background:#3a3320;color:#d8c98a}
 </style>
 """
 
@@ -10495,7 +10499,10 @@ _VALUECHAIN_JS = r"""
   var raw = document.getElementById('vc-data');
   var DATA = {edges:[]};
   try { DATA = JSON.parse(raw.textContent); } catch(e){}
+  // 신선도(노후화): archived 는 서버에서 제외·카운트만 전송(arch), stale 은 포함하되 dim.
   var E = DATA.edges || [];
+  var ARCH_N = DATA.arch || 0;
+  var STALE_N = E.filter(function(e){return e.f==='stale';}).length;
   var KG = E.filter(function(e){return e.k!=='trade';});   // 공급망·관계(블로그·DART)
   var TR = E.filter(function(e){return e.k==='trade';});    // 관세청 수출품목(회사↔품목)
   var CO = ['납품','고객','계열'];
@@ -10535,7 +10542,8 @@ _VALUECHAIN_JS = r"""
     return [null,null];
   }
   setText('vc-stat-edges', E.length);
-  setText('vc-stat-edges-l', '관계(엣지) · 공급망 '+KG.length+' · 관세청 '+TR.length);
+  setText('vc-stat-edges-l', '관계(엣지) · 공급망 '+KG.length+' · 관세청 '+TR.length+
+    (STALE_N?' · 🟡오래됨 '+STALE_N:'')+(ARCH_N?' · ⚪보관 '+ARCH_N+'(숨김)':''));
   setText('vc-stat-nodes', Object.keys(comp).length);
   setText('vc-stat-docs', Object.keys(docs).length);
   var chipWrap = document.getElementById('vc-chips');
@@ -10546,12 +10554,17 @@ _VALUECHAIN_JS = r"""
     chipWrap.appendChild(b);
   });
   function attrEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function freshBadge(f){
+    if(f==='stale') return ' · <span class="vc-fr vc-fr-s" title="학습 후 오래 재확인 안 됨 — 신뢰도↓. 분석 컨텍스트에선 제외됨">🟡 오래됨</span>';
+    return '';
+  }
   function edgeRow(e){
     var tag = e.k==='trade' ? '<span class="vc-tag">관세청</span>' : '';
     var iid = attrEsc(e.c+'|'+e.r+'|'+e.t);   // 속성 안전(따옴표 포함 회사명 대응)
-    return '<div class="vc-row" data-imp-id="'+iid+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
+    var fc = (e.f==='stale') ? ' vc-stale' : '';   // 노후 관계 dim
+    return '<div class="vc-row'+fc+'" data-imp-id="'+iid+'"><div><b>'+esc(e.c)+'</b> <span class="vc-rel">'+esc(e.r)+'</span> → '+esc(e.t)+tag+
       (e.e?'<div class="vc-ev">'+esc(e.e)+'</div>':'')+'</div>'+
-      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+(e.d?' · 📅'+esc(e.d)+' 학습':'')+'</div>'+
+      '<div class="vc-src">'+esc((e.s||'').replace(/^blog:|^dart:/,''))+(e.st?' · '+esc(e.st):'')+(e.d?' · 📅'+esc(e.d)+' 학습':'')+freshBadge(e.f)+'</div>'+
       '<button class="vc-del" type="button" title="이 관계 숨기기 (잘못된 매칭 제거)">🗑️</button></div>';
   }
   // 🗑️ 잘못된 관계 숨김 — 자동 도출 엣지라 영구 suppression(서버) + 클라 배열·DOM 제거.
@@ -10652,13 +10665,19 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
     클라이언트 JS 검색/필터(서버 무상태)."""
     import html as _h
     import json as _j
-    payload = {"edges": [{
+    # archived(노후 보관)는 클라에 싣지 않고 카운트만 — MVP 는 재확인 부활(Phase 2)이
+    # 없어 1년+ 미승인 엣지가 다수 archived 될 수 있어 payload 비대화 방지. active/stale
+    # 만 전송(stale 은 dim 표시). 카운트는 헤더 라벨로 가시화(삭제 아님 — 실수 #11).
+    _ok = [e for e in edges if e.get("company") and e.get("target")]
+    arch_n = sum(1 for e in _ok if e.get("freshness") == "archived")
+    payload = {"arch": arch_n, "edges": [{
         "c": e.get("company", ""), "r": e.get("relation", ""),
         "t": e.get("target", ""), "e": (e.get("evidence", "") or "")[:160],
         "s": e.get("source", ""), "st": e.get("status", ""),
         "k": e.get("kind", "kg"), "g": e.get("industry", ""),
         "d": (e.get("date", "") or "")[:10],   # 학습(추출)일 — kg 만 보유
-    } for e in edges if e.get("company") and e.get("target")]}
+        "f": e.get("freshness", "active"),      # 신선도 active|stale
+    } for e in _ok if e.get("freshness") != "archived"]}
     # </script> 차단 + JSON 안전 임베드
     data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
     parts = [_SCREENER_CSS, _VALUECHAIN_CSS]
@@ -10682,6 +10701,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
       <b>3) 데이터 출처</b> — <b>공급망</b> 태그 = 블로그·DART 계약공시 자동발굴(kg) / <b>관세청</b> 태그 = 수출입 레퍼런스북(MTI·DART 매출구성·테마·운영자 보강 병합). 각 소스가 갱신되면 자동 반영됩니다.<br>
       <b>4) 활용</b> — 대형 고객사(예: SK하이닉스)의 호재·실적 → <b>그 공급사들이 수혜 후보</b>. 동종 회사로 peer 비교, 취급/수출품목으로 사업 파악.<br>
       <b>5) 정리</b> — "관계 N건" 목록의 각 행 끝 <b>🗑️</b> = 잘못된 매칭 숨김(영구). 이후 페이지·텔레그램·분석 컨텍스트 모두에서 제외됩니다.<br>
+      <b>6) 신선도</b> — 자동발굴(kg) 관계는 학습 후 오래(기본 6개월) 재확인이 안 되면 <b>🟡 오래됨</b>으로 흐려지고 <b>분석 컨텍스트에서 제외</b>됩니다. 1년 넘으면 <b>⚪ 보관</b>으로 목록에서 숨겨집니다(삭제 아님 — 상단 카운트로만 표기). 운영자가 <a href="blog.html">관계후보에서 승인</a>한 관계와 관세청 데이터는 노후화 면제(항상 표시).<br>
       <b>⚠️ 주의</b> — 자동발굴(LLM·관세청)이라 일부 부정확할 수 있습니다. <b>참고 신호</b>로만 쓰고 확정 사실로 단정하지 마세요. 후보 검토·반영은 <a href="blog.html">📝 블로그 → 🔗 관계후보</a>에서.
     </div>
   </details>
@@ -10717,7 +10737,9 @@ def _load_valuechain_edges() -> list[dict]:
     재사용(②NOAH 주입·③/valuechain 명령과 동일 그래프 — drift 방지). graceful([])."""
     try:
         from bot import valuechain
-        return valuechain.load_edges()
+        # archived 포함 — 페이지가 신선도 카운트 표시 + 클라가 목록에서 숨김/dim 처리
+        # (서버는 전수 제공, 표시 정책은 클라). NOAH/텔레그램은 기본 load_edges(제외).
+        return valuechain.load_edges(include_archived=True)
     except Exception as exc:
         log.warning("valuechain: edges load failed: %s", exc)
         return []
