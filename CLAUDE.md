@@ -46,6 +46,10 @@
     colspan 상세셀로 누수(코멘트 우측정렬·좌측잘림), grid 를 `<td>` 직속으로 두면 트랙 깨짐(블록
     div 래퍼로 해결), `direction:rtl`(표 최신-우측 디폴트)는 JS scrollLeft 와 충돌(JS 제거),
     자식표 max-content 가 부모표 폭 늘려 스크롤바 엉뚱한 위치(직속표만 width:100%). 2회+면 DOM 요청.
+15. PR 생성 전 push 필수(2026-06-30 #696 리뷰 fix 유실): 로컬 commit 만 하고 push 안 한 채
+    PR 만들면 그 커밋이 PR/merge 에서 빠지고 reset --hard 로 영구 유실 → "반영했다" 보고가 거짓.
+    flush 순서 = ① commit ② **push** ③ `git log origin/<dev> -1` 로 원격 반영 확인 ④ PR ⑤ merge
+    ⑥ merge 후 `grep` 로 base 에 변경 실재 확인(merge=배포 검증, 실수 #1 연장).
    (새 실수 = 날짜 + 한 줄 추가 의무.)
 
 ## ⛔ UNIVERSAL CHANGES ONLY (가장 중요)
