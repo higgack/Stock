@@ -641,5 +641,45 @@ class ImportDirectionTests(unittest.TestCase):
         self.assertIn('direction="import"', src)            # 수입 랭킹 병합 배선
 
 
+class YoYWindowInvariantTests(unittest.TestCase):
+    """관세청 YoY를 계산하는 **모든 now-앵커 윈도**가 '최신 확정월=now-2'(매월
+    1~15일, 전월 확정이 익월 ~15일)의 전년동월(now-14)을 담아야 한다는 불변식 —
+    2026-07-01 히트맵 무색 재발 방지(사용자 '앞으로 동일 이슈 없게'). 공용 상수
+    customs.YOY_LOOKBACK_MONTHS 를 scan_customs·fetch_customs 가 default 로 참조 →
+    누가 한 곳만 얕게 바꾸거나 새 now-앵커 윈도를 얕게 만들면 여기서 잡힌다."""
+
+    def test_shared_constant_deep_enough(self):
+        from trade import customs
+        # now-2 의 전년동월(now-14) 포함하려면 ≥15. 16(=now-15..now) 는 1달 슬랙.
+        self.assertGreaterEqual(customs.YOY_LOOKBACK_MONTHS, 15)
+
+    def test_both_scripts_reference_shared_constant(self):
+        from trade import customs
+        from trade.scripts import scan_customs as sc
+        from trade.scripts import fetch_customs as fc
+        self.assertEqual(sc.LOOKBACK_MONTHS_DEFAULT, customs.YOY_LOOKBACK_MONTHS)
+        self.assertEqual(fc.LOOKBACK_MONTHS_DEFAULT, customs.YOY_LOOKBACK_MONTHS)
+
+    def test_all_now_anchored_windows_cover_now_minus_2(self):
+        from datetime import datetime
+        from trade.scripts import scan_customs as sc
+        from trade.scripts import fetch_customs as fc
+        for name, win, lb in (
+            ("scan", sc._window, sc.LOOKBACK_MONTHS_DEFAULT),
+            ("fetch", fc._window, fc.LOOKBACK_MONTHS_DEFAULT),
+        ):
+            for mo in range(1, 13):     # 연중 어느 달이든
+                start, _ = win(lb, datetime(2026, mo, 1))
+                y2, m2 = 2026, mo        # now-14 = now-2(최신확정월)의 전년동월
+                for _ in range(14):
+                    m2 -= 1
+                    if m2 == 0:
+                        m2, y2 = 12, y2 - 1
+                need = f"{y2:04d}{m2:02d}"
+                self.assertLessEqual(
+                    start, need,
+                    f"{name} month {mo}: 윈도시작 {start} 가 now-14 {need} 미포함")
+
+
 if __name__ == "__main__":
     unittest.main()

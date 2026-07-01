@@ -64,7 +64,8 @@ log = logging.getLogger("scan-customs")
 # now-2 최신월도 전년동월 포함 + now-3 까지 1달 슬랙. 비용 페이지수 월수 비례
 # (+14% vs 14) « 10,000 무료 한도. 스윕은 월 ~3회라 절대비용 무시 가능.
 LOOKBACK_MONTHS_DEFAULT = int(
-    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "16"
+    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS")
+    or str(customs.YOY_LOOKBACK_MONTHS)   # 단일 소스(=16) — 재발 방지
 )
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
 # 배포 직후 1회 강제 풀 스윕 마커 (버전드). probe 는 관세청 무변경이면 스윕을

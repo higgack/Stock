@@ -51,10 +51,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("fetch-customs")
 
-# 12 months → enough for year-over-year comparison; pure cache fill, no
-# alerts, so no blast-radius concern with the wider window. Operator can
-# override via env without editing code.
-LOOKBACK_MONTHS_DEFAULT = int(os.environ.get("TRADE_CUSTOMS_LOOKBACK_MONTHS") or "12")
+# now-앵커 윈도라 최소 lookback = customs.YOY_LOOKBACK_MONTHS(=16, 단일 소스).
+# 과거 "12 months → enough for YoY" 는 오판이었다(2026-07-01): 최신 확정월이
+# 매월 1~15일엔 now-2 라 그 전년동월(now-14)이 12개월 윈도(now-11..now) 밖 →
+# pin 종목 YoY 가 '신규(전기0)' (히트맵 무색과 동일 클래스). 16이면 커버. pure
+# cache fill·무알림이라 넓혀도 blast-radius 없음. env 로 override 가능.
+LOOKBACK_MONTHS_DEFAULT = int(
+    os.environ.get("TRADE_CUSTOMS_LOOKBACK_MONTHS")
+    or str(customs.YOY_LOOKBACK_MONTHS)
+)
 
 
 def _yymm(dt: datetime) -> str:
