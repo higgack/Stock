@@ -488,15 +488,17 @@ def _balance_delta(exp_usd, exp_pct, imp_usd, imp_pct) -> Optional[float]:
 
 
 def _balance_delta_span(delta: Optional[float], label: str) -> str:
-    """수지 증감 → 색 span(개선=녹 ▲ 흑자확대/적자축소, 악화=적 ▼). 절대 억$.
-    수지에 %는 부호반전·0분모로 오해 → 절대 증감으로 표기(사용자 2026-07-01)."""
+    """수지 증감 → 색 span(개선=녹 +흑자확대/적자축소, 악화=적 -). 라벨은 다른
+    헤드라인 카드와 동일 YoY/MoM(사용자 2026-07-01 '똑같이'). 값은 %가 아닌 절대
+    억$ — 수지에 %는 부호반전·0분모로 오해. white-space:nowrap 로 '억$' 단위가
+    줄바꿈에 고아로 떨어지지 않게(줄맞춤 — 넘치면 YoY/MoM 사이에서만 개행)."""
     if delta is None:
         return ""
     from trade.customs import fmt_usd
     cls = "pos" if delta >= 0 else "neg"
-    arrow = "▲" if delta >= 0 else "▼"
-    return (f"<span class='ind-prov-{cls}' style='font-size:.82em;opacity:.95'>"
-            f"{label} {arrow}{fmt_usd(abs(delta))}</span>")
+    sign = "+" if delta >= 0 else "-"
+    return (f"<span class='ind-prov-{cls}' style='font-size:.82em;opacity:.95;"
+            f"white-space:nowrap'>{label} {sign}{fmt_usd(abs(delta))}</span>")
 
 
 def _balance_cell(exp: Optional[dict], imp: Optional[dict]) -> str:
@@ -510,9 +512,9 @@ def _balance_cell(exp: Optional[dict], imp: Optional[dict]) -> str:
         return ""
     from trade.customs import fmt_usd
     yoy = _balance_delta_span(
-        _balance_delta(e, exp.get("total_yoy"), i, imp.get("total_yoy")), "전년比")
+        _balance_delta(e, exp.get("total_yoy"), i, imp.get("total_yoy")), "YoY")
     mom = _balance_delta_span(
-        _balance_delta(e, exp.get("total_mom"), i, imp.get("total_mom")), "전월比")
+        _balance_delta(e, exp.get("total_mom"), i, imp.get("total_mom")), "MoM")
     return (
         "<div class='ind-prov-cell'>"
         "<div class='ind-prov-k'>무역수지</div>"

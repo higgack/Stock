@@ -721,14 +721,16 @@ class BalanceCardTests(unittest.TestCase):
         d = prov._balance_delta(1023e8, 70.9, 661e8, 30.1)
         self.assertAlmostEqual(d / 1e8, 271.5, delta=2)
         self.assertIn("ind-prov-pos", cell)
-        self.assertIn("전년比 ▲", cell)
+        self.assertIn("YoY +", cell)                  # 다른 카드와 동일 라벨
+        self.assertIn("MoM +", cell)
+        self.assertIn("white-space:nowrap", cell)     # '억$' 고아 줄바꿈 방지
 
     def test_deficit_and_missing_pct(self):
         # 적자(-50억$) + YoY% 없으면 증감 span 생략(카드는 절대 수지만).
         neg = prov._balance_cell({"total_usd": 100e8, "total_yoy": None},
                                  {"total_usd": 150e8, "total_yoy": None})
         self.assertIn("-50.0억$", neg)
-        self.assertNotIn("전년比", neg)
+        self.assertNotIn("YoY", neg)
         # 한쪽 %가 -100 → 역산 분모 0 → None(생략, 크래시 없음).
         self.assertIsNone(prov._balance_delta(1e8, -100.0, 1e8, 10.0))
         self.assertIsNone(prov._balance_delta(1e8, None, 1e8, 10.0))
