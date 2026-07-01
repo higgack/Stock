@@ -704,3 +704,45 @@ class ProvFetchTimerTests(unittest.TestCase):
         self.assertIn("00/30", tmr)                 # 30분 간격
         self.assertIn("Unit=trade-bot-prov-fetch.service", tmr)
         self.assertIn("Persistent=true", tmr)       # 부팅 후 보정
+
+
+class BalanceCardTests(unittest.TestCase):
+    """무역수지 헤드라인 카드 (사용자 2026-07-01) — 수출−수입 절대 + 전년·전월
+    대비 증감(억$, %아님=부호반전·0분모 회피). 유료 없이 가진 값 뺄셈으로 확보."""
+
+    def test_balance_and_yoy_delta(self):
+        # 화면값: 수출 1023억$ YoY+70.9% MoM+16.4% / 수입 661억$ YoY+30.1% MoM+8.7%.
+        exp = {"total_usd": 1023e8, "total_yoy": 70.9, "total_mom": 16.4}
+        imp = {"total_usd": 661e8, "total_yoy": 30.1, "total_mom": 8.7}
+        cell = prov._balance_cell(exp, imp)
+        self.assertIn("무역수지", cell)
+        self.assertIn("362억$", cell)                 # 1023−661
+        # 작년수지 역산: 1023/1.709−661/1.301 ≈ 90.5 → 증감 +271.5억$ 개선(pos).
+        d = prov._balance_delta(1023e8, 70.9, 661e8, 30.1)
+        self.assertAlmostEqual(d / 1e8, 271.5, delta=2)
+        self.assertIn("ind-prov-pos", cell)
+        self.assertIn("전년比 ▲", cell)
+
+    def test_deficit_and_missing_pct(self):
+        # 적자(-50억$) + YoY% 없으면 증감 span 생략(카드는 절대 수지만).
+        neg = prov._balance_cell({"total_usd": 100e8, "total_yoy": None},
+                                 {"total_usd": 150e8, "total_yoy": None})
+        self.assertIn("-50.0억$", neg)
+        self.assertNotIn("전년比", neg)
+        # 한쪽 %가 -100 → 역산 분모 0 → None(생략, 크래시 없음).
+        self.assertIsNone(prov._balance_delta(1e8, -100.0, 1e8, 10.0))
+        self.assertIsNone(prov._balance_delta(1e8, None, 1e8, 10.0))
+
+    def test_card_absent_when_one_side_missing(self):
+        # 수출/수입 중 하나라도 없으면 카드 생략(빈 문자열).
+        self.assertEqual(prov._balance_cell({"total_usd": 1e8}, None), "")
+        self.assertEqual(prov._balance_cell(None, {"total_usd": 1e8}), "")
+
+    def test_render_box_includes_balance_after_import(self):
+        def sig(t, y, m):
+            return {"total_usd": t, "total_yoy": y, "total_mom": m, "items": [],
+                    "ym": "2026-06", "decile": "FULL", "window": "전월(1~말일)"}
+        box = prov.render_box({"exp_item": sig(1023e8, 70.9, 16.4),
+                               "imp_item": sig(661e8, 30.1, 8.7)})
+        self.assertIn("무역수지", box)
+        self.assertLess(box.index("전체 수입"), box.index("무역수지"))
