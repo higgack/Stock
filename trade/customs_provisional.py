@@ -475,6 +475,52 @@ def _metric(label: str, item: Optional[dict], *,
     )
 
 
+def _balance_delta(exp_usd, exp_pct, imp_usd, imp_pct) -> Optional[float]:
+    """전년(또는 전월) 대비 무역수지 증감(USD). YoY/MoM%로 기준시점 절대액을
+    역산해 (수출−수입) 차이. 어느 한쪽 %가 없거나 역산 분모 0이면 None(생략).
+    순수(테스트)."""
+    if exp_pct is None or imp_pct is None or exp_usd is None or imp_usd is None:
+        return None
+    de, di = 1 + exp_pct / 100.0, 1 + imp_pct / 100.0
+    if de == 0 or di == 0:
+        return None
+    return (exp_usd - imp_usd) - (exp_usd / de - imp_usd / di)
+
+
+def _balance_delta_span(delta: Optional[float], label: str) -> str:
+    """수지 증감 → 색 span(개선=녹 ▲ 흑자확대/적자축소, 악화=적 ▼). 절대 억$.
+    수지에 %는 부호반전·0분모로 오해 → 절대 증감으로 표기(사용자 2026-07-01)."""
+    if delta is None:
+        return ""
+    from trade.customs import fmt_usd
+    cls = "pos" if delta >= 0 else "neg"
+    arrow = "▲" if delta >= 0 else "▼"
+    return (f"<span class='ind-prov-{cls}' style='font-size:.82em;opacity:.95'>"
+            f"{label} {arrow}{fmt_usd(abs(delta))}</span>")
+
+
+def _balance_cell(exp: Optional[dict], imp: Optional[dict]) -> str:
+    """무역수지(전체 수출−전체 수입) 헤드라인 셀 — 절대 수지 + 전년·전월 대비
+    증감(억$). 산업부 보도자료 헤드라인이지만 우리는 이미 가진 두 값의 뺄셈으로
+    무료 확보(HS상세·유료 불요, 사용자 2026-07-01). 둘 다 있을 때만."""
+    if not exp or not imp:
+        return ""
+    e, i = exp.get("total_usd"), imp.get("total_usd")
+    if e is None or i is None:
+        return ""
+    from trade.customs import fmt_usd
+    yoy = _balance_delta_span(
+        _balance_delta(e, exp.get("total_yoy"), i, imp.get("total_yoy")), "전년比")
+    mom = _balance_delta_span(
+        _balance_delta(e, exp.get("total_mom"), i, imp.get("total_mom")), "전월比")
+    return (
+        "<div class='ind-prov-cell'>"
+        "<div class='ind-prov-k'>무역수지</div>"
+        f"<div class='ind-prov-v'>{fmt_usd(e - i)} {yoy} {mom}</div>"
+        "</div>"
+    )
+
+
 # 모멘텀 뷰 그룹: (제목, kind, 수출이라 ⚠️ 표식)
 _MOM_GROUPS = (
     ("수출 품목", "exp_item", True),
@@ -701,6 +747,8 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
             "전체 수입",
             {"usd": imp_item.get("total_usd"), "yoy": imp_item.get("total_yoy"),
              "mom": imp_item.get("total_mom")}))
+    # 무역수지(수출−수입) — 산업부 보도자료 헤드라인, 가진 값 뺄셈으로 무료 확보.
+    cells.append(_balance_cell(exp_item, imp_item))
     cells.append(_metric("반도체제조용장비 수입", capex, lead=True))
     cells.append(_metric("반도체 수출", semi_exp))
     body = "".join(c for c in cells if c)
