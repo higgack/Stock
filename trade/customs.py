@@ -50,6 +50,15 @@ from typing import Callable, Iterator, Optional
 
 ENDPOINT = "https://apis.data.go.kr/1220000/Itemtrade/getItemtradeList"
 
+# now-앵커 월 윈도로 관세청 YoY를 계산하는 모든 곳의 **최소 lookback 개월수**(단일
+# 소스). 왜 16: 최신 확정월은 매월 1~15일엔 now-2(전월 확정이 익월 ~15일이라 —
+# 7/1엔 최신=2026-05, 6월 확정 7/15). now-2 의 전년동월 = now-14 → 윈도가 now-14
+# 까지 담아야 YoY 계산 가능(안 그러면 전부 '신규(전기0)'=히트맵 무색). 16=now-15..
+# now 라 now-2 포함 + now-3 1달 슬랙. now-앵커 커스텀 윈도 신설 시 이 값을 default
+# 로 쓸 것(scan_customs·fetch_customs 가 참조 — 2026-07-01 재발 방지). 더 깊은 건
+# 안전(industry_report=36). env 로 개별 override 가능.
+YOY_LOOKBACK_MONTHS = 16
+
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 DEFAULT_DB = _DATA_DIR / "customs.db"
 
