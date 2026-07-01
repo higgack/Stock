@@ -283,6 +283,39 @@ class WindowSplitTests(unittest.TestCase):
         self.assertEqual(cs._yymm_minus("202602", 3), "202511")
         self.assertEqual(cs._yymm_minus("202606", 12), "202506")
 
+
+class WindowLookbackTests(unittest.TestCase):
+    """LOOKBACK 윈도가 '최신 확정월 = now-2'(매월 1~15일, 전월 확정이 익월 ~15일)
+    의 전년동월을 담아야 히트맵 YoY 색이 나온다(2026-07-01 전 품목 무색 회귀 —
+    14개월이 now-1 가정이라 now-2 의 전년동월 now-14 를 놓쳐 전부 '신규(전기0)').
+    now 앵커 윈도가 now-14 까지 포함(≥16개월)하는지 연중 고정."""
+
+    @staticmethod
+    def _win(lb, y, m):
+        from datetime import datetime
+        from trade.scripts import scan_customs as sc
+        return sc._window(lb, datetime(y, m, 1))
+
+    def test_default_lookback_covers_now_minus_2_year_ago(self):
+        from trade.scripts import scan_customs as sc
+        # 2026-07-01: 최신 확정월=2026-05(now-2) → 전년동월 2025-05 필요.
+        start, end = self._win(sc.LOOKBACK_MONTHS_DEFAULT, 2026, 7)
+        self.assertLessEqual(start, "202505")   # 2025-05 포함(무색 fix)
+        self.assertEqual(end, "202607")
+        self.assertGreaterEqual(sc.LOOKBACK_MONTHS_DEFAULT, 15)   # 14→상향 고정
+
+    def test_now_minus_2_year_ago_covered_year_round(self):
+        from trade.scripts import scan_customs as sc
+        for mo in range(1, 13):
+            start, _ = self._win(sc.LOOKBACK_MONTHS_DEFAULT, 2026, mo)
+            y2, m2 = 2026, mo            # now-14 = now-2 의 전년동월
+            for _ in range(14):
+                m2 -= 1
+                if m2 == 0:
+                    m2, y2 = 12, y2 - 1
+            need = f"{y2:04d}{m2:02d}"
+            self.assertLessEqual(start, need, f"month {mo}: 윈도시작 {start} > now-14 {need}")
+
     def test_fetch_range_merges_windows(self):
         # 13-month span → 2 windows; rows from both returned, deduped.
         seen = []

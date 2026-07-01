@@ -55,14 +55,16 @@ log = logging.getLogger("scan-customs")
 # 6/1). 6 months guarantees ≥2 confirmed months year-round with slack.
 # Decoupled from fetch_customs' 12-month history window via its OWN env
 # var.
-# 14개월 (2026-06-12 밤 13→14 — YoY off-by-one fix): 최신 데이터월은
-# 항상 now 또는 now-1(잠정/확정 지연)이라, now 기준 13개월 윈도(now-12..
-# now)는 최신월의 **전년동월(now-13)을 안 담는다** → 히트맵 YoY 가 전부
-# '신규(전기 0)' (2026-06 실측: ref=2026-05, 필요=2025-05, 윈도 시작=
-# 2025-06). 14개월이면 연중 어느 시점이든 전년동월 포함 + 한 달 슬랙.
-# 비용 +8% 수준 « 10,000 무료 한도. 페이지수는 월수에 비례.
+# 16개월 (2026-07-01 밤 14→16 — YoY 재-off-by-one): 14개월(2026-06-12)은
+# '최신 데이터월 = now 또는 now-1' 가정이었으나, **매월 1~15일엔 최신 확정월이
+# now-2** (전월 확정이 익월 ~15일이라, 7/1엔 최신=2026-05=now-2, 6월 확정은
+# 7/15). now-2 의 전년동월은 now-14 인데 14개월 윈도(now-13..now)는 now-13 까지만
+# → 전년동월 밖 → 히트맵 YoY 전부 '신규(전기 0)'=무색 (2026-07-01 실측: ref=
+# 2026-05, 필요=2025-05, 14개월 윈도 시작=2025-06). 16개월(now-15..now)이면
+# now-2 최신월도 전년동월 포함 + now-3 까지 1달 슬랙. 비용 페이지수 월수 비례
+# (+14% vs 14) « 10,000 무료 한도. 스윕은 월 ~3회라 절대비용 무시 가능.
 LOOKBACK_MONTHS_DEFAULT = int(
-    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "14"
+    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "16"
 )
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
 # 배포 직후 1회 강제 풀 스윕 마커 (버전드). probe 는 관세청 무변경이면 스윕을
@@ -73,7 +75,7 @@ _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
 # (옛 `.weights_backfilled` 경로 재사용 — 기존 마커는 timestamp 라 버전과
 # 달라 자동으로 1회 강제됨.)
 _ROLLOUT_MARKER = Path.home() / ".trade" / ".weights_backfilled"
-_SCAN_ROLLOUT_VERSION = "2026-06-13-import"   # 수입 급등률/급증액 랭킹 적재
+_SCAN_ROLLOUT_VERSION = "2026-07-01-lookback16"   # 16개월 윈도 재적재(YoY 무색 fix)
 
 
 def _window(lookback_months: int, now: datetime | None = None) -> tuple[str, str]:
