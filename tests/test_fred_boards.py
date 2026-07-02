@@ -237,6 +237,17 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(wt["unit"], "B USD")           # FRED 원시(표시변환 아님)
         self.assertEqual(bm["unit"], "M USD")
 
+    def test_time_theme_wired(self):
+        # 시간 테마(19~07 KST 다크) — dashboard._THEME_JS 재사용 + 라이트 기본
+        # /다크 오버라이드 CSS 변수(사용자 2026-07-02 '우리하는것처럼').
+        for html in (fb.render_ppi_page([]),
+                     fb.render_liquidity_page([], {}, None)):
+            self.assertIn("Asia/Seoul", html)              # 테마 JS(KST 시간판정)
+            self.assertIn('data-theme="dark"', html)       # 다크 오버라이드 셀렉터
+            self.assertIn("--bg:#f7f8f9", html)            # 라이트 기본 팔레트
+            # 테마 스크립트가 <style> 앞(head) — 로드 플래시 방지 계약.
+            self.assertLess(html.index("Asia/Seoul"), html.index("<style>"))
+
     def test_payload_script_safe(self):
         # '<' escape(</script> 조기 종료 차단) — valuechain 패턴 동일 계약.
         row = self._ppi_row()
