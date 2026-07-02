@@ -439,11 +439,18 @@ function detail(id){{var r=R.find(function(x){{return x.id===id;}});if(!r)return
  if(chart)chart.destroy();
  chart=mkChart(document.getElementById('d-chart'),r.hist.map(function(h){{return h[0];}}),r.hist.map(function(h){{return h[1];}}));
  table();}}
+// 필터 변경 시 현재 선택이 목록 밖이면 첫 행으로 차트 자동 전환 — '반도체
+// 눌렀는데 차트 그대로'(사용자 2026-07-02 모바일) 직관 불일치 fix.
+function applyFilter(){{pills();table();var f=rows();
+ if(f.length&&!f.some(function(r){{return r.id===sel;}}))detail(f[0].id);}}
 document.addEventListener('click',function(ev){{
  var p=ev.target.closest('.pill');
  if(p){{if(p.hasAttribute('data-k'))fsig=p.getAttribute('data-k');
-  if(p.hasAttribute('data-c'))fcat=p.getAttribute('data-c');pills();table();return;}}
- var tr=ev.target.closest('tr.row');if(tr)detail(tr.getAttribute('data-id'));}});
+  if(p.hasAttribute('data-c'))fcat=p.getAttribute('data-c');applyFilter();return;}}
+ var tr=ev.target.closest('tr.row');
+ if(tr){{detail(tr.getAttribute('data-id'));
+  var d=document.getElementById('detail');
+  if(d&&d.scrollIntoView)d.scrollIntoView({{behavior:'smooth',block:'nearest'}});}}}});
 pills();table();if(R.length)detail(R[0].id);
 }})();
 </script></body></html>"""
@@ -539,7 +546,8 @@ function fv(r){{var v=r.latest,u=r.unit||'';
 function pills(){{var cats=JSON.parse(document.getElementById('cats').getAttribute('data-cats'));
  document.getElementById('cats').innerHTML=["<span class='pill"+(fcat==='all'?' active':'')+"' data-c='all'>전체</span>"]
  .concat(cats.map(function(c){{return "<span class='pill"+(fcat===c?' active':'')+"' data-c=\\""+esc(c)+"\\">"+esc(c)+"</span>";}})).join('');}}
-function table(){{document.getElementById('tb').innerHTML=R.filter(function(r){{return fcat==='all'||(r.category||'기타')===fcat;}})
+function frows(){{return R.filter(function(r){{return fcat==='all'||(r.category||'기타')===fcat;}});}}
+function table(){{document.getElementById('tb').innerHTML=frows()
  .map(function(r){{return "<tr class='row"+(sel===r.id?' selected':'')+"' data-id='"+esc(r.id)+"'>"+
  "<td><b>"+esc(r.name)+"</b><div style='color:#8b8fa3;font-size:10px'>"+esc(r.id)+"</div></td>"+
  "<td>"+esc(r.category||'—')+"</td><td><b>"+fv(r)+"</b></td>"+
@@ -553,9 +561,15 @@ function detail(id){{var r=R.find(function(x){{return x.id===id;}});if(!r)return
  if(chart)chart.destroy();
  chart=mkChart(document.getElementById('d-chart'),r.hist.map(function(h){{return h[0];}}),r.hist.map(function(h){{return h[1];}}));
  table();}}
+// 필터 변경 시 선택이 목록 밖이면 첫 행으로 차트 자동 전환(PPI 와 동일 fix).
+function applyFilter(){{pills();table();var f=frows();
+ if(f.length&&!f.some(function(r){{return r.id===sel;}}))detail(f[0].id);}}
 document.addEventListener('click',function(ev){{
- var p=ev.target.closest('.pill');if(p&&p.hasAttribute('data-c')){{fcat=p.getAttribute('data-c');pills();table();return;}}
- var tr=ev.target.closest('tr.row');if(tr)detail(tr.getAttribute('data-id'));}});
+ var p=ev.target.closest('.pill');if(p&&p.hasAttribute('data-c')){{fcat=p.getAttribute('data-c');applyFilter();return;}}
+ var tr=ev.target.closest('tr.row');
+ if(tr){{detail(tr.getAttribute('data-id'));
+  var d=document.getElementById('detail');
+  if(d&&d.scrollIntoView)d.scrollIntoView({{behavior:'smooth',block:'nearest'}});}}}});
 // 표 먼저(차트 실패가 페이지를 백지로 만들지 않게) → 그 다음 차트.
 pills();table();if(R.length)detail(R[0].id);
 if(D.net_liq&&D.net_liq.length){{mkChart(document.getElementById('nl-chart'),
