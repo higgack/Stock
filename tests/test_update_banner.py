@@ -37,10 +37,14 @@ class TestInjectUpdateBanner(unittest.TestCase):
         # 6개 콘텐츠 페이지 regen 이 _inject_update_banner 로 감싸는지(소스 계약).
         src = open("bot/dashboard.py", encoding="utf-8").read()
         for fn in ("_render_daily_byte_page", "_render_realestate_page",
-                   "_render_reddit_insider_page", "_render_blog_page",
-                   "_render_valuechain_page", "_render_dart_feed_page"):
+                   "_render_valuechain_page"):
             self.assertIn(f"_inject_update_banner(" + fn, src,
                           f"{fn} 가 배너 주입으로 감싸이지 않음")
+        # 레딧·블로그는 lazy 분리로 튜플 언팩 후 주입(2026-07-03).
+        self.assertIn("_inject_update_banner(_ri_html)", src)
+        self.assertIn("_inject_update_banner(_bl_html)", src)
+        self.assertIn("_inject_update_banner(_idx_html)", src)   # index 도 주입
+        self.assertIn("_inject_update_banner(_df_html)", src)    # dart(lazy 분리)
 
 
 if __name__ == "__main__":

@@ -4347,7 +4347,7 @@ class TestDartCardFormats:
         monkeypatch.setattr(db, "_load_dart_feed_data",
                             lambda days_back=30: m.load_all_archives(2),
                             raising=False)
-        html = db._render_dart_feed_page(m.load_all_archives(days_back=2))
+        html = db._render_dart_feed_page(m.load_all_archives(days_back=2))[0]
         assert 'df-detail-ln">= ' not in html        # '= ' prefix 제거
         assert "시가총액: 2조원 / 현재가: 1,000원" in html
         assert "042700" in calls and "000100" not in calls  # 중복 방지
@@ -6509,7 +6509,7 @@ class TestDartFeedTabCollapse:
         import bot.dashboard as d
         html = d._render_dart_feed_page({"2026-06-15": [
             {"corp_name": "테스트", "report_nm": "감자완료", "category": "리스크",
-             "url": "#", "stock_code": "123456", "detail": []}]})
+             "url": "#", "stock_code": "123456", "detail": []}]})[0]
         # df-searching 은 텍스트 검색(q)에만 — 카테고리/플래그엔 안 켜짐(접힘 유지)
         assert "df-searching', !!q)" in html
         assert "df-searching', !!q || activeCat" not in html   # 옛 조건 제거
@@ -6522,7 +6522,7 @@ class TestDartFeedTabCollapse:
         import bot.dashboard as d
         html = d._render_dart_feed_page({"2026-06-15": [
             {"corp_name": "테스트", "report_nm": "감자완료", "category": "리스크",
-             "url": "#", "stock_code": "123456", "detail": []}]})
+             "url": "#", "stock_code": "123456", "detail": []}]})[0]
         # 필터 JS 가 .df-month-cnt 를 보이는 카드 수+'건' 으로 재계산
         assert "querySelector('.df-month-cnt')" in html
         assert "mc.textContent=n+'건'" in html
