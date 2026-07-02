@@ -282,37 +282,55 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
 
 
 # ── 렌더 ───────────────────────────────────────────────────────────────────
+# 라이트 기본 + data-theme=dark 오버라이드 — 전 대시보드 공통 시간 테마
+# (19~07 KST 다크, dashboard._THEME_JS 재사용, 사용자 2026-07-02 '우리하는것처럼').
 _BOARD_CSS = """
 <style>
-body{background:#0f1117;color:#e4e6ed;font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;margin:0}
+:root{--bg:#f7f8f9;--card:#ffffff;--surface2:#f0f1f3;--border:#e4e5e9;
+ --fg:#282a30;--muted:#7c818c;--accent:#3b78e7;--pillbd:#282a30}
+:root[data-theme="dark"]{--bg:#0f1117;--card:#1a1d27;--surface2:#242836;
+ --border:#2e3348;--fg:#e4e6ed;--muted:#8b8fa3;--accent:#4f8ff7;--pillbd:#ffffff}
+body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;margin:0}
 .wrap{max-width:1440px;margin:0 auto;padding:20px}
-.nav{margin-bottom:14px;font-size:13px}.nav a{color:#8b8fa3;text-decoration:none}.nav a:hover{color:#e4e6ed}
-h1{font-size:24px;margin:6px 0}h1 em{color:#4f8ff7;font-style:normal}
-.sub{color:#8b8fa3;font-size:13px;margin:4px 0 14px}
+.nav{margin-bottom:14px;font-size:13px}.nav a{color:var(--muted);text-decoration:none}.nav a:hover{color:var(--fg)}
+h1{font-size:24px;margin:6px 0}h1 em{color:var(--accent);font-style:normal}
+.sub{color:var(--muted);font-size:13px;margin:4px 0 14px}
 .pills{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-.pill{padding:6px 14px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;border:2px solid transparent;background:#1a1d27;color:#8b8fa3}
-.pill.active{border-color:#fff;color:#e4e6ed}
-.p-strong{color:#ef4444}.p-moderate{color:#f59e0b}.p-reversal{color:#eab308}.p-decline{color:#3b82f6}.p-mild{color:#8b8fa3}
+.pill{padding:6px 14px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;border:2px solid transparent;background:var(--card);color:var(--muted);box-shadow:0 0 0 1px var(--border)}
+.pill.active{border-color:var(--pillbd);color:var(--fg)}
+.p-strong{color:#ef4444}.p-moderate{color:#f59e0b}.p-reversal{color:#ca8a04}.p-decline{color:#3b82f6}.p-mild{color:var(--muted)}
+:root[data-theme="dark"] .p-reversal{color:#eab308}
 table{width:100%;border-collapse:collapse;font-size:12px}
-th{color:#8b8fa3;text-align:left;padding:7px 9px;border-bottom:1px solid #2e3348;font-size:11px;white-space:nowrap}
-td{padding:7px 9px;border-bottom:1px solid rgba(46,51,72,.5)}
-tr.row{cursor:pointer}tr.row:hover{background:#242836}tr.selected{background:rgba(79,143,247,.12)}
-.pos{color:#22c55e;font-weight:600}.neg{color:#ef4444;font-weight:600}.flat{color:#8b8fa3}
-.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;background:#242836}
-.panel{background:#1a1d27;border:1px solid #2e3348;border-radius:12px;padding:18px;margin:14px 0}
+th{color:var(--muted);text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);font-size:11px;white-space:nowrap}
+td{padding:7px 9px;border-bottom:1px solid var(--border)}
+tr.row{cursor:pointer}tr.row:hover{background:var(--surface2)}tr.selected{background:rgba(79,143,247,.12)}
+.pos{color:#16a34a;font-weight:600}.neg{color:#ef4444;font-weight:600}.flat{color:var(--muted)}
+:root[data-theme="dark"] .pos{color:#22c55e}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;background:var(--surface2)}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin:14px 0}
 .panel-title{font-size:15px;font-weight:600;margin-bottom:10px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:8px 0}
-.stat{background:#242836;border-radius:8px;padding:10px}
-.stat .k{font-size:11px;color:#8b8fa3}.stat .v{font-size:18px;font-weight:700;margin-top:2px}
-.note{background:#242836;border-left:3px solid #4f8ff7;border-radius:8px;padding:12px;font-size:13px;color:#b9bdcc;margin-top:10px}
+.stat{background:var(--surface2);border-radius:8px;padding:10px}
+.stat .k{font-size:11px;color:var(--muted)}.stat .v{font-size:18px;font-weight:700;margin-top:2px}
+.note{background:var(--surface2);border-left:3px solid var(--accent);border-radius:8px;padding:12px;font-size:13px;color:var(--fg);opacity:.9;margin-top:10px}
 .chartbox{position:relative;height:320px}
 .tbl-wrap{max-height:560px;overflow-y:auto}
-.stocks{color:#8b8fa3;font-size:11px;max-width:340px}
-.guide{background:#1a1d27;border:1px solid #2e3348;border-radius:12px;padding:4px 14px;margin:10px 0;font-size:13px;line-height:1.7;color:#b9bdcc}
-.guide summary{cursor:pointer;padding:8px 0;color:#e4e6ed;font-weight:600}
-.footer{color:#8b8fa3;font-size:11px;text-align:center;padding:18px 0;border-top:1px solid #2e3348;margin-top:24px}
+.stocks{color:var(--muted);font-size:11px;max-width:340px}
+.guide{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:4px 14px;margin:10px 0;font-size:13px;line-height:1.7;color:var(--fg)}
+.guide summary{cursor:pointer;padding:8px 0;font-weight:600}
+.footer{color:var(--muted);font-size:11px;text-align:center;padding:18px 0;border-top:1px solid var(--border);margin-top:24px}
 </style>
 """
+
+
+def _theme_head() -> str:
+    """<head> 인라인 테마 스크립트 — dashboard._THEME_JS 재사용(19~07 KST 다크,
+    60초 재체크·플래시 방지). import 실패 시(순수 테스트 등) 다크 고정 폴백."""
+    try:
+        from bot.dashboard import _THEME_JS
+        return f"<script>{_THEME_JS}</script>"
+    except Exception:
+        return "<script>document.documentElement.dataset.theme='dark';</script>"
 
 _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · '
         '<a href="index.html">🦉 종목분석</a> · <a href="ppi.html">🏭 PPI</a> · '
@@ -323,7 +341,7 @@ _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · '
 _BOARD_JS_COMMON = """
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML;}
 function pc(v,dg){if(v==null)return"<span class='flat'>—</span>";var c=v>=0?'pos':'neg';return "<span class='"+c+"'>"+(v>=0?'+':'')+v.toFixed(dg==null?1:dg)+"%</span>";}
-var CHART_OPTS={plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8b8fa3',maxTicksLimit:12},grid:{color:'#242836'}},y:{ticks:{color:'#8b8fa3'},grid:{color:'#242836'}}},maintainAspectRatio:false};
+var CHART_OPTS={plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8a8f98',maxTicksLimit:12},grid:{color:'rgba(128,132,140,.18)'}},y:{ticks:{color:'#8a8f98'},grid:{color:'rgba(128,132,140,.18)'}}},maintainAspectRatio:false};
 function mkChart(el,labels,data,color,fill){
  if(typeof Chart==='undefined'||!el)return null;
  var ds={data:data,borderColor:color||'#4f8ff7',borderWidth:2,pointRadius:0,tension:.25};
@@ -355,6 +373,7 @@ def render_ppi_page(rows: list[dict], now: datetime | None = None) -> str:
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PPI 투자신호</title>
+{_theme_head()}
 <script src="{_CHARTJS_NAME}"></script>
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
@@ -456,6 +475,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>글로벌 유동성</title>
+{_theme_head()}
 <script src="{_CHARTJS_NAME}"></script>
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
