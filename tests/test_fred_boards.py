@@ -24,7 +24,7 @@ class CatalogTests(unittest.TestCase):
     def test_ppi_unique_and_fields(self):
         ids = [s["id"] for s in PPI_SERIES]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertGreaterEqual(len(ids), 70)          # 원본 32 + 확장 15 + 2차 24
+        self.assertGreaterEqual(len(ids), 72)          # 원본 32 + 확장 15+24 + 페인트·제지
         for s in PPI_SERIES:
             for k in ("id", "name", "cat", "stocks"):
                 self.assertTrue(s.get(k), f"{s.get('id')} missing {k}")
@@ -367,6 +367,16 @@ class RenderTests(unittest.TestCase):
             self.assertIn("--bg:#f7f8f9", html)            # 라이트 기본 팔레트
             # 테마 스크립트가 <style> 앞(head) — 로드 플래시 방지 계약.
             self.assertLess(html.index("Asia/Seoul"), html.index("<style>"))
+
+    def test_six_hour_regen_and_pairs_wired(self):
+        # 6시간 주기 재생성 태스크 배선(사용자 2026-07-02) + 마진쌍 확장 계약.
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        self.assertIn("_periodic_fred_boards", src)
+        self.assertIn("asyncio.sleep(6 * 3600)", src)
+        self.assertIn("to_thread(regenerate_fred_boards)", src)   # 이벤트루프 보호
+        self.assertGreaterEqual(len(fb._MARGIN_PAIRS), 17)        # 7 + 2차 10쌍
+        keys = {p["key"] for p in fb._MARGIN_PAIRS}
+        self.assertEqual(len(keys), len(fb._MARGIN_PAIRS))        # key 유일
 
     def test_live_fx_overlay_wired(self):
         # 원/달러 실시간 오버레이(사용자 2026-07-02) — 유동성 페이지가

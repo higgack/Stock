@@ -172,10 +172,12 @@ def _fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     return result
 
 
-def fetch_history(series_id: str, start: str = "2018-01-01") -> list[tuple[str, float]]:
+def fetch_history(series_id: str, start: str = "2018-01-01",
+                  ttl_hours: float = 5.0) -> list[tuple[str, float]]:
     """시리즈 전체 히스토리 [(date, value)] 오름차순. FRED 보드(ppi/liquidity
     대시보드)용 — _fetch_series(최신값)와 달리 시계열 전량. 실패/키부재 → [].
-    캐시 동일 패턴(per series+today, 12h) — 보드는 일 1회 재생성이라 충분."""
+    캐시 per series+today, 기본 5h — 보드 6시간 주기 재생성(사용자 2026-07-02)이
+    매 사이클 신선한 값을 받게(12h 면 두 사이클이 같은 캐시)."""
     api_key = os.getenv("FRED_API_KEY", "").strip()
     if not api_key:
         log.warning("fred: FRED_API_KEY missing — history %s unavailable", series_id)
@@ -183,7 +185,7 @@ def fetch_history(series_id: str, start: str = "2018-01-01") -> list[tuple[str, 
     cache_file = _CACHE_DIR / f"hist_{series_id}_{date.today().isoformat()}.json"
     if cache_file.exists():
         try:
-            if (time.time() - cache_file.stat().st_mtime) / 3600 < _CACHE_TTL_HOURS:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < ttl_hours:
                 return [tuple(x) for x in json.loads(cache_file.read_text())]
         except Exception as exc:
             log.warning("fred: hist cache read failed for %s: %s", series_id, exc)
