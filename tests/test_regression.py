@@ -168,7 +168,7 @@ class TestDashboardDetailsBalance:
              "analyzed_at": "2026-05-30T09:00:00",
              "summary": "Rating: Buy"},
         ]
-        html = d._render_index(recs)
+        html = d._render_index(recs)[0]
         n_open, n_close = self._balance(html)
         assert n_open == n_close, (
             f"index.html 불균형 open={n_open} close={n_close}"
@@ -6264,18 +6264,20 @@ class TestAnalysisCsvExport:
         import json
         import re
         import bot.dashboard as d
-        # 빈 아카이브 — 버튼·JSON·JS 존재
-        h0 = d._render_index([])
+        # 빈 아카이브 — 버튼·JS 존재. 2026-07-03 성능: 인라인 임베드 →
+        # 외부 analysis_csv.json(클릭 시 fetch, 전 리포트 2중 임베드 제거).
+        h0, f0 = d._render_index([])
         assert 'id="csv-btn"' in h0 and "⬇ CSV" in h0
-        assert 'id="analysis-csv-data"' in h0
+        assert 'id="analysis-csv-data"' not in h0     # 인라인 제거(성능)
+        assert "analysis_csv.json" in h0              # 클릭 시 fetch 배선
         assert "noah_분석_" in h0 and "ufeff" in h0   # BOM(엑셀 한글) JS
-        # 레코드 → CSV row 수집(전 필드)
+        assert "analysis_csv.json" in f0
+        # 레코드 → CSV row 수집(전 필드) — 외부 프래그먼트에서 검증
         rec = {"trade_date": "2026-06-14", "ticker": "AAPL",
                "analyzed_at": "2026-06-14T09:30:00",
                "summary": "x", "full_report": "y", "cost_krw": 2133}
-        h1 = d._render_index([rec])
-        m = re.search(r'id="analysis-csv-data">(.*?)</script>', h1, re.S)
-        data = json.loads(m.group(1).replace("<\\/", "</"))
+        _h1, f1 = d._render_index([rec])
+        data = json.loads(f1["analysis_csv.json"])
         assert len(data) == 1
         row = data[0]
         for k in ("분석일", "시각", "종목", "종목명", "시장", "판정",
@@ -12786,11 +12788,36 @@ class TestRefreshBannerAndPerf20260703:
     def _src(path):
         return open(path, encoding="utf-8").read()
 
-    def test_banner_30min_with_dismiss(self):
+    def test_banner_v2_spec(self):
+        # v2(사용자 2026-07-03 상세 스펙): ① 30분 기준선 자동 반영(상태 저장→
+        # 복원·입력 중 스킵) ② 1분 조용 체크 + 팝업 [바로 반영]/[그대로 보기].
+        for path in ("bot/dashboard.py", "trade/dashboard.py"):
+            src = self._src(path)
+            assert "CHECK=60000" in src                 # 1분 조용 체크
+            assert "BASELINE=1800000" in src            # 30분 기준선
+            assert "바로 반영" in src and "그대로 보기" in src
+            assert "restoreState" in src and "saveState" in src
+            assert "typing()" in src                    # 입력 중 자동반영 스킵
+        assert "POLL=45000" not in self._src("bot/dashboard.py")
+
+    def test_index_lazy_months_and_csv_external(self):
+        # 과거 월 lazy + CSV 외부화(성능 2026-07-03) — 렌더·JS·regen 배선 계약.
         src = self._src("bot/dashboard.py")
-        assert "POLL=1800000" in src                    # 30분 체크
-        assert "POLL=45000" not in src
-        assert "보던 화면 유지" in src                  # ✕ = 유지(재알림 재무장)
+        assert 'data-lazy="{_frag}"' in src             # 과거 월 프래그먼트 emit
+        assert "analysis_csv.json" in src               # CSV 외부 파일
+        assert 'id="analysis-csv-data"' not in src      # 인라인 임베드 제거
+        assert "loadAllMonths" in src and "rescan()" in src
+        assert "index fragment" in src                  # regen 이 프래그먼트 기록
+        import bot.dashboard as d
+        html, frags = d._render_index([])
+        assert "analysis_csv.json" in frags             # 빈 아카이브도 CSV 파일
+        # /code-review 2026-07-03 findings 고정:
+        assert "__failed" in src                        # #1 무한 재시도 루프 차단
+        assert "type=search" in src                     # #2 검색창 상태 복원
+        assert "_inject_update_banner(_idx_html)" in src.replace(" ", "") or \
+               "_inject_update_banner(_idx_html)" in src  # #3 index 배너 주입
+        assert "lastKey" in src                         # #6 포커스≠입력중
+        assert "개월 로드 실패" in src                  # #7 부분 실패 가시화
 
     def test_market_asia_no_forced_swap(self):
         src = self._src("bot/dashboard.py")
@@ -12806,5 +12833,4 @@ class TestRefreshBannerAndPerf20260703:
     def test_trade_prefetch_removed_banner_added(self):
         src = self._src("trade/dashboard.py")
         assert "_prefetchLazy" not in src               # 7MB 숨은 prefetch 제거
-        assert "POLL=1800000" in src
         assert "upd-banner" in src

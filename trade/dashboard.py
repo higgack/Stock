@@ -2552,13 +2552,46 @@ handleHashDeepLink();
 // 백그라운드 다운로드+DOM 주입해, 탭을 안 열어도 저사양 PC 에서 lazy 분리
 // (#692)의 이득을 무효화했음. 이제 순수 클릭 시 fetch(첫 클릭만 잠깐 로딩).
 
-// 새 데이터 업데이트 배너(사용자 2026-07-03 '30분 체크 + 팝업으로 내가 결정') —
-// NOAH _UPDATE_BANNER_JS 와 동일 패턴: HEAD Last-Modified 30분 폴(본문 0),
-// 변경 시 하단 팝업(새로고침=반영 / ✕·무시=보던 화면 유지). 서버 regen(5분)이
-// 갱신해도 강제 리로드 없음.
+// 갱신 UX(사용자 2026-07-03 스펙, NOAH _UPDATE_BANNER_JS 미러):
+// ① 30분 기준선 — 새 버전 있으면 자동 반영(스크롤·검색어 저장→복원, 입력 중 스킵)
+// ② 사이 1분 조용 체크 — 새 버전이면 하단 팝업 [바로 반영]/[그대로 보기]
+//   (같은 버전 재팝업 없음, 30분 기준선 도달 시 자동 반영).
 (function(){
   if(window.__updBanner) return; window.__updBanner=true;
-  var POLL=1800000, url=location.pathname+location.search, base=null;
+  var CHECK=60000, BASELINE=1800000;
+  var url=location.pathname+location.search, base=null, ignored=null;
+  var loadedAt=Date.now(), SK='updst:'+location.pathname;
+  var lastKey=0;
+  document.addEventListener('keydown', function(){ lastKey=Date.now(); }, true);
+  function typing(){ var a=document.activeElement;
+    // 포커스만으론 차단 금지(검색창 클릭 후 방치 시 기준선이 영영 안 돌던 것,
+    // 리뷰 finding #6) — 최근 60초 내 실제 키 입력이 있을 때만 '입력 중'.
+    return !!(a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)
+              && Date.now()-lastKey < 60000); }
+  function saveState(){
+    try{
+      var inputs={};
+      document.querySelectorAll('input[type=text][id],input[type=search][id],input:not([type])[id]').forEach(
+        function(i){ if(i.value) inputs[i.id]=i.value; });
+      sessionStorage.setItem(SK, JSON.stringify(
+        {y:window.scrollY, inputs:inputs, ts:Date.now()}));
+    }catch(e){}
+  }
+  function restoreState(){
+    try{
+      var raw=sessionStorage.getItem(SK); if(!raw) return;
+      sessionStorage.removeItem(SK);
+      var st=JSON.parse(raw);
+      if(!st || Date.now()-(st.ts||0) > 300000) return;
+      Object.keys(st.inputs||{}).forEach(function(id){
+        var el=document.getElementById(id);
+        if(el){ el.value=st.inputs[id];
+          el.dispatchEvent(new Event('input',{bubbles:true})); } });
+      var y=st.y||0;
+      [80,300,900].forEach(function(d){ setTimeout(function(){window.scrollTo(0,y);},d); });
+    }catch(e){}
+  }
+  function apply(){ saveState(); location.reload(); }
   function head(){ return fetch(url,{method:'HEAD',cache:'no-store'})
     .then(function(r){ return r.ok?r.headers.get('Last-Modified'):null; })
     .catch(function(){ return null; }); }
@@ -2566,23 +2599,31 @@ handleHashDeepLink();
     if(document.getElementById('upd-banner')) return;
     var b=document.createElement('div'); b.id='upd-banner';
     b.style.cssText='position:fixed;left:50%;bottom:18px;transform:translateX(-50%);'+
-      'z-index:9999;background:#2563eb;color:#fff;padding:10px 8px 10px 18px;border-radius:22px;'+
-      'font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35);display:flex;gap:10px;align-items:center';
-    var t=document.createElement('span'); t.textContent='🆕 새 업데이트 — 새로고침';
-    t.style.cursor='pointer'; t.onclick=function(){ location.reload(); };
-    var x=document.createElement('span'); x.textContent='✕';
-    x.style.cssText='cursor:pointer;opacity:.75;padding:0 8px';
-    x.title='보던 화면 유지(다음 업데이트 때 다시 알림)';
-    x.onclick=function(){ base=cur; b.remove(); };
-    b.appendChild(t); b.appendChild(x);
+      'z-index:9999;background:#2563eb;color:#fff;padding:10px 10px 10px 18px;border-radius:22px;'+
+      'font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+    var t=document.createElement('span'); t.textContent='🆕 새 업데이트 도착 — 바로 반영할까요?';
+    var y=document.createElement('span'); y.textContent='바로 반영';
+    y.style.cssText='cursor:pointer;background:rgba(255,255,255,.22);padding:4px 12px;border-radius:14px';
+    y.onclick=apply;
+    var n=document.createElement('span'); n.textContent='그대로 보기';
+    n.style.cssText='cursor:pointer;opacity:.8;padding:4px 10px';
+    n.title='하던 작업 그대로 — 이 버전은 다시 알리지 않음(30분 기준선에선 자동 반영)';
+    n.onclick=function(){ ignored=cur; b.remove(); };
+    b.appendChild(t); b.appendChild(y); b.appendChild(n);
     document.body.appendChild(b);
   }
   function tick(){ if(document.hidden) return;
     head().then(function(v){ if(!v) return;
       if(base===null){ base=v; return; }
-      if(v!==base) banner(v); }); }
+      if(v===base) return;
+      if(Date.now()-loadedAt>=BASELINE){
+        if(typing()) return;
+        apply(); return; }
+      if(v!==ignored) banner(v);
+    }); }
   head().then(function(v){ if(base===null) base=v; });
-  setInterval(tick, POLL);
+  restoreState();
+  setInterval(tick, CHECK);
 })();
 """
 
