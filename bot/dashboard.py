@@ -1579,7 +1579,7 @@ function noahConsoleSetup(opts){
   // _NL_KW 와 동기 유지(회귀 테스트가 양쪽 포함 확인).
   function govIntent(raw){
     if (!raw || raw.charAt(0) === '/') return false;
-    return ['거버넌스','지배구조','대주주','주주구성','지분구조','주주현황','경영권']
+    return ['거버넌스','지배구조','대주주','주주구성','지분구조','주주현황','주주환원현황','경영권']
       .some(function(k){ return raw.indexOf(k) >= 0; });
   }
   function go(){

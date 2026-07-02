@@ -13057,10 +13057,25 @@ class TestGovCommand20260704:
         db = open("bot/dashboard.py", encoding="utf-8").read()
         assert "function govIntent(raw)" in db
         assert "noahRunCommand('/gov ' + raw" in db
-        # JS 키워드 목록 = python _NL_KW 동기 (drift 시 여기서 fail)
+        # JS 키워드 목록 = python _NL_KW 동기 — **전 키워드** 검사(리뷰
+        # 2026-07-04 #3: 4개 샘플만 보다 '주주환원현황' drift 가 green 통과).
         import bot.governance as g
-        for k in ("거버넌스", "지배구조", "대주주", "경영권"):
-            assert k in g._NL_KW and f"'{k}'" in db
+        for k in g._NL_KW:
+            assert f"'{k}'" in db, f"콘솔 JS govIntent 에 {k} 누락"
         # NL 문장이 통째로 /gov 인자로 와도 재해석(빌드 내 retry)
         assert "extract_gov_query(query)" in open(
             "bot/governance.py", encoding="utf-8").read()
+
+    def test_gov_nl_guards_review_20260704(self, monkeypatch):
+        # 리뷰 fix 고정: #1 장문/멀티라인 = 질의 아님(봇 자신의 채널 브리핑
+        # echo·붙여넣은 기사 재트리거 차단) #2 키워드 내포 토큰 짜투리 폐기
+        # #4 에러 메시지 질의 60자 절단.
+        import bot.governance as g
+        assert g.extract_gov_query("삼성전자 최대주주 알려줘") == "삼성전자"
+        assert g.extract_gov_query("카카오 최대주주 누구야") == "카카오"
+        long_echo = "🏛 삼성전자 005930 거버넌스 브리핑\n👑 최대주주 현황 …" * 3
+        assert g.extract_gov_query(long_echo) is None          # 멀티라인/장문
+        assert g.extract_gov_query("어쩌구 " * 10 + "대주주") is None  # >40자
+        monkeypatch.setattr(g, "resolve_kr_target", lambda q: (None, q, []))
+        out = g.build_gov_brief("가" * 200 + " 거버넌스")
+        assert "가" * 61 not in out and "…" in out             # 질의 절단

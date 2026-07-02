@@ -110,16 +110,23 @@ _NL_KW = ("거버넌스", "지배구조", "대주주", "주주구성", "지분�
           "주주현황", "주주환원현황", "경영권")
 _NL_FILLER = {"알려줘", "보여줘", "분석해줘", "요약해줘", "정리해줘", "해줘",
               "좀", "줘", "브리핑", "리포트", "현황", "어때", "어때?",
-              "궁금해", "궁금", "확인", "체크", "봐줘", "요약", "분석"}
+              "궁금해", "궁금", "확인", "체크", "봐줘", "요약", "분석",
+              "누구야", "누구", "뭐야", "뭐", "어떻게", "얼마나"}
 
 
 def extract_gov_query(text: str) -> str | None:
     """자연어 문장에서 gov 브리핑 의도 감지 → 회사 질의 추출. 의도 없으면 None.
 
+    질의 가드(리뷰 2026-07-04 #1): 한 줄 + ≤40자만 질의로 인정 — 봇 자신의
+    채널 브리핑 echo('거버넌스 브리핑' 헤더 포함 장문)·붙여넣은 기사 등
+    키워드가 우연히 든 장문이 재트리거되는 것을 전 표면 공통 차단.
+
     토큰 단위 필터(부분문자열 치환 아님 — '하이닉스'의 '이' 같은 오염 방지):
-    키워드·필러 토큰 제거 후 남은 토큰들 = 회사 질의. 남는 게 없으면 None."""
+    키워드·필러 토큰 제거 후 남은 토큰들 = 회사 질의. 키워드 제거 잔여가
+    1글자 이하면 토큰 폐기('최대주주'→'최' 잔여 방지, 리뷰 #2) — 붙여쓰기
+    ('삼성전자지배구조'→'삼성전자', 4글자)는 유지."""
     t = (text or "").strip()
-    if not t or t.startswith("/"):
+    if not t or t.startswith("/") or "\n" in t or len(t) > 40:
         return None
     if not any(k in t for k in _NL_KW):
         return None
@@ -130,6 +137,8 @@ def extract_gov_query(text: str) -> str | None:
         for k in _NL_KW:          # '삼성전자지배구조' 붙여쓰기 — 키워드만 제거
             base = base.replace(k, "")
         base = base.strip()
+        if base != tok and len(base) <= 1:
+            continue              # 키워드 내포 토큰의 짜투리('최') 폐기
         if not base or base in _NL_FILLER:
             continue
         company.append(base)
@@ -226,14 +235,17 @@ def build_gov_brief(query: str, with_llm: bool = True) -> str:
         if nl and nl != query:
             code, name, cands = resolve_kr_target(nl)
     if not code:
+        # 질의 표시는 60자 절단 — 장문 인자가 에러 메시지를 4096 초과시켜
+        # 평문 폴백까지 실패하던 경로 차단(리뷰 2026-07-04 #4).
+        _qd = query[:60] + ("…" if len(query) > 60 else "")
         if cands:
             lines = "\n".join(
                 f"· {_html.escape(c.get('name', ''))} "
                 f"<code>{_html.escape(c.get('stock_code', ''))}</code>"
                 for c in cands[:8])
-            return (f"🔎 <b>{_html.escape(query)}</b> — 후보가 여러 개야. "
+            return (f"🔎 <b>{_html.escape(_qd)}</b> — 후보가 여러 개야. "
                     f"코드로 다시 시도해줘 (/gov 005930):\n{lines}")
-        return (f"⚠️ <b>{_html.escape(query)}</b> 를 KR 상장사로 못 찾았어. "
+        return (f"⚠️ <b>{_html.escape(_qd)}</b> 를 KR 상장사로 못 찾았어. "
                 "/gov 는 DART 기반 <b>한국 종목 전용</b>이야 — 6자리 코드 "
                 "또는 정확한 회사명으로 시도해줘. (미국 내부자/활동주의는 "
                 "📨 미국 레딧 대시보드 참고)")
