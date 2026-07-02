@@ -424,12 +424,34 @@ class DiscontinuedSweepTests(unittest.TestCase):
         self.assertTrue(callable(akshare_client.lpr_1y_history))
 
     def test_monthly_downsample(self):
+        # 월별 마지막 관측 + 날짜는 day-01 정규화(리뷰 2026-07-04 Major #1 —
+        # 월말 날짜를 그대로 두면 _value_at 날짜컷이 매달 한 달씩 건너뜀).
         daily = [("2026-05-01", 1.0), ("2026-05-30", 1.1),
                  ("2026-06-15", 1.2), ("2026-06-30", 1.3)]
         self.assertEqual(fb._monthly(daily),
-                         [("2026-05-30", 1.1), ("2026-06-30", 1.3)])
+                         [("2026-05-01", 1.1), ("2026-06-01", 1.3)])
         monthly = [(f"2026-0{m}-01", float(m)) for m in range(1, 8)]
         self.assertEqual(fb._monthly(monthly), monthly)  # 월간 무변화
+
+    def test_monthly_no_month_skip_on_eom_dates(self):
+        # 월말 관측(주간 수요일 패턴 포함)에서 1M 이 두 달 전으로 밀리지
+        # 않는지 — 정규화 전엔 06-24 앵커의 1M 이 04-29 를 집던 회귀.
+        weekly = []
+        import datetime as dt
+        d = dt.date(2025, 1, 1)
+        while d <= dt.date(2026, 6, 24):
+            if d.weekday() == 2:                      # 수요일
+                weekly.append((d.isoformat(), float(d.month)))
+            d += dt.timedelta(days=1)
+        m = fb.series_metrics(fb._monthly(weekly))
+        # 앵커 2026-06 → 1M 전 = 2026-05 관측(값 5.0). mom = (6-5)/5 = +20%
+        self.assertAlmostEqual(m["mom"], 20.0, places=1)
+
+    def test_rate_deltas_unit_gate(self):
+        # is_rate 라도 unit != '%' (DXY·M2V·NFCI 등 지수/비율)면 %p 미적용
+        # (리뷰 2026-07-04 Major #2) — _load_liq 게이트 계약(소스 검사).
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        self.assertIn("s.get(\"is_rate\") and s.get(\"unit\") == \"%\"", src)
 
     def test_rate_deltas_pp(self):
         mh = [(f"2025-{m:02d}-01", 2.15) for m in range(1, 13)] + [("2026-01-01", 2.40)]
@@ -473,6 +495,12 @@ class DiscontinuedSweepTests(unittest.TestCase):
         self.assertIn("⚠️중단", html)
         self.assertIn(".stale{", html)
         self.assertIn("한국은행 ECOS", html)   # 소스 라벨(가이드·헤더)
+        # 행→페이로드 배선(리뷰 Minor #4 — 위 리터럴은 정적 JS 라 항상 존재,
+        # 서버가 플래그를 실제로 싣는지는 JSON 에서 확인).
+        import re
+        mjs = re.search(r'<script id="liq-data"[^>]*>(.*?)</script>', html, re.S)
+        self.assertIn('"stale": true', mjs.group(1))
+        self.assertIn('"rate_delta": true', mjs.group(1))
 
 
 if __name__ == "__main__":

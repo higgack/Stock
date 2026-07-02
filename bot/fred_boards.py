@@ -25,7 +25,7 @@ from __future__ import annotations
 import html as _h
 import json as _json
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from bot.fred_boards_catalog import LIQ_SERIES, PPI_SERIES
 
@@ -127,15 +127,17 @@ def series_metrics(hist: list[tuple[str, float]]) -> dict | None:
 
 
 def _monthly(hist: list[tuple[str, float]]) -> list[tuple[str, float]]:
-    """일간/주간 시계열 → 월별 마지막 관측 1개(월간은 그대로).
+    """일간/주간 시계열 → 월별 마지막 관측 1개, 날짜는 그 달 01일로 정규화.
 
-    series_metrics 의 1M/3M/YoY 는 관측수 오프셋이라 일간 시리즈에서
-    1일/3일/12일 변화로 둔갑하던 것 fix (사용자 2026-07-04 스크린샷 —
-    ECB Rate YoY +11.6% 오표기 적발). 전 시리즈 공통(월간은 무변화)."""
-    out: dict[str, tuple[str, float]] = {}
+    표의 1M/3M/YoY 를 월 단위 창으로 통일(사용자 2026-07-04 스크린샷 — ECB
+    Rate YoY +11.6% 오표기 적발). ⚠️ day-01 정규화 필수: _value_at 이 날짜컷
+    방식이라 월말 관측 날짜(24~31일)를 그대로 두면 이전 달 관측이 컷보다
+    미래로 밀려 매달 한 달씩 건너뛰는 off-by-one(리뷰 2026-07-04 Major #1
+    — 값은 월말 관측 그대로, 키만 01일)."""
+    out: dict[str, float] = {}
     for d, v in hist:
-        out[d[:7]] = (d, v)
-    return [out[k] for k in sorted(out)]
+        out[d[:7]] = v
+    return [(f"{k}-01", out[k]) for k in sorted(out)]
 
 
 def _rate_deltas(m: dict, mhist: list[tuple[str, float]]) -> None:
@@ -157,7 +159,7 @@ def _mark_stale(row: dict, months: int = 12) -> None:
     공통 가드(사용자 2026-07-04 '더 이상 최신 제공 안 하는 것 검토')."""
     try:
         y, mo = int(row["latest_date"][:4]), int(row["latest_date"][5:7])
-        today = date.today()
+        today = datetime.now(_KST).date()   # KST 명시(CLAUDE.md 규칙 10a)
         if (today.year - y) * 12 + (today.month - mo) >= months:
             row["stale"] = True
     except Exception:
@@ -460,7 +462,10 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
         m = series_metrics(mh)
         if not m:
             continue
-        if s.get("is_rate"):
+        # %p 표기는 단위가 정말 % 인 계열만 — is_rate 는 최신값 % 표시용
+        # 플래그라 지수/비율(DXY·M2V·NFCI 등)에도 켜져 있어, 그대로 쓰면
+        # 레벨 차이가 '%p' 로 오표기(리뷰 2026-07-04 Major #2).
+        if s.get("is_rate") and s.get("unit") == "%":
             _rate_deltas(m, mh)
         row = {**s, **m, "hist": [(d, v) for d, v in hist][-260:]}
         _mark_stale(row)
