@@ -172,6 +172,57 @@ def _fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     return result
 
 
+def fetch_history(series_id: str, start: str = "2018-01-01") -> list[tuple[str, float]]:
+    """시리즈 전체 히스토리 [(date, value)] 오름차순. FRED 보드(ppi/liquidity
+    대시보드)용 — _fetch_series(최신값)와 달리 시계열 전량. 실패/키부재 → [].
+    캐시 동일 패턴(per series+today, 12h) — 보드는 일 1회 재생성이라 충분."""
+    api_key = os.getenv("FRED_API_KEY", "").strip()
+    if not api_key:
+        log.warning("fred: FRED_API_KEY missing — history %s unavailable", series_id)
+        return []
+    cache_file = _CACHE_DIR / f"hist_{series_id}_{date.today().isoformat()}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < _CACHE_TTL_HOURS:
+                return [tuple(x) for x in json.loads(cache_file.read_text())]
+        except Exception as exc:
+            log.warning("fred: hist cache read failed for %s: %s", series_id, exc)
+    url = (f"{_BASE_URL}/series/observations?series_id={series_id}"
+           f"&api_key={api_key}&file_type=json&observation_start={start}"
+           f"&sort_order=asc&limit=100000")
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        obs = resp.json().get("observations") or []
+    except Exception as exc:
+        log.warning("fred: history fetch failed for %s: %s", series_id, exc)
+        return []
+    clean: list[tuple[str, float]] = []
+    for row in obs:
+        v, d = row.get("value", ""), row.get("date", "")
+        if not v or v == "." or not d:
+            continue
+        try:
+            clean.append((d, float(v)))
+        except ValueError:
+            continue
+    if clean:
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            # 날짜 키 파일이라 어제 것은 재사용 불가 — 쓰기 전에 같은 시리즈의
+            # 옛 hist 캐시 삭제(무한 누적 디스크 누수 방지, 리뷰 finding).
+            for old in _CACHE_DIR.glob(f"hist_{series_id}_*.json"):
+                if old != cache_file:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+            cache_file.write_text(json.dumps(clean, ensure_ascii=False))
+        except Exception as exc:
+            log.warning("fred: hist cache write failed for %s: %s", series_id, exc)
+    return clean
+
+
 def fetch_macro(market: str) -> dict:
     """Return {key: indicator} for all defined series in this market.
     Missing / failed indicators are silently dropped — callers should

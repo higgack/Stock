@@ -14348,6 +14348,8 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="valuechain.html">🔗 밸류체인</a>
+    &middot; <a href="ppi.html">🏭 PPI</a>
+    &middot; <a href="liquidity.html">💧 유동성</a>
     &middot; <a href="trade/">🌏 수출입</a>
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
