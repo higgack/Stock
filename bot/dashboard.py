@@ -1574,9 +1574,18 @@ function noahConsoleSetup(opts){
       })
       .catch(function(e){ if (btn){ btn.disabled=false; btn.textContent=orig; } alert('⚠️ 요청 실패: ' + e); });
   }
+  // 자연어 거버넌스 질의('하이닉스 거버넌스') → /gov 라우팅 (사용자
+  // 2026-07-04 '자연어로도 같은 결과'). 키워드 목록은 bot/governance.py
+  // _NL_KW 와 동기 유지(회귀 테스트가 양쪽 포함 확인).
+  function govIntent(raw){
+    if (!raw || raw.charAt(0) === '/') return false;
+    return ['거버넌스','지배구조','대주주','주주구성','지분구조','주주현황','주주환원현황','경영권']
+      .some(function(k){ return raw.indexOf(k) >= 0; });
+  }
   function go(){
     var raw = (inp && inp.value || '').trim();
     if (raw.charAt(0) === '/'){ noahRunCommand(raw, panel); return; }
+    if (govIntent(raw)){ noahRunCommand('/gov ' + raw, panel); return; }
     runPrimary(raw);
   }
   if (btn) btn.addEventListener('click', go);
@@ -1584,6 +1593,7 @@ function noahConsoleSetup(opts){
     if (e.key === 'Enter'){
       var raw = (inp.value || '').trim();
       if (raw.charAt(0) === '/'){ e.preventDefault(); noahRunCommand(raw, panel); }
+      else if (govIntent(raw)){ e.preventDefault(); noahRunCommand('/gov ' + raw, panel); }
     }
   });
 }

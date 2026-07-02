@@ -13032,3 +13032,50 @@ class TestGovCommand20260704:
         out = g._latest_per_person(rows)
         assert len(out) == 2                            # 인당 1건
         assert out[0]["name"] == "김임원" and out[0]["pct"] == 1.2  # 최신 채택+최신순
+
+    def test_gov_natural_language_and_name_variants(self):
+        # 자연어 라우팅 + 이름 변형 해석 (사용자 2026-07-04 '자연어로도,
+        # 하이닉스→SK하이닉스').
+        import bot.governance as g
+        assert g.extract_gov_query("하이닉스 거버넌스") == "하이닉스"
+        assert g.extract_gov_query("하이닉스 거버넌스 알려줘") == "하이닉스"
+        assert g.extract_gov_query("삼성전자지배구조 어때?") == "삼성전자"
+        assert g.extract_gov_query("삼성전자 실적 알려줘") is None   # 의도 없음
+        assert g.extract_gov_query("/gov 삼성전자") is None          # 명령 제외
+        v = g._query_variants("SK하이닉스")
+        assert "에스케이하이닉스" in v                # 통용명 → DART 등재명
+        assert "하이닉스" in g._query_variants("하이닉스의")   # 조사 strip
+        assert "엘지에너지솔루션" in g._query_variants("LG 에너지솔루션")
+
+    def test_gov_nl_wiring_all_surfaces(self):
+        # 3표면 배선: 텔레그램 채널(on_channel_post)·DM(on_private_text)·
+        # 대시보드 콘솔(_CONSOLE_JS govIntent → /gov 라우팅).
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def on_private_text" in tb
+        assert tb.count("extract_gov_query") >= 2      # 채널 + DM 양쪽
+        assert "on_private_text,\n" in tb or "on_private_text)" in tb.replace(" ", "")
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "function govIntent(raw)" in db
+        assert "noahRunCommand('/gov ' + raw" in db
+        # JS 키워드 목록 = python _NL_KW 동기 — **전 키워드** 검사(리뷰
+        # 2026-07-04 #3: 4개 샘플만 보다 '주주환원현황' drift 가 green 통과).
+        import bot.governance as g
+        for k in g._NL_KW:
+            assert f"'{k}'" in db, f"콘솔 JS govIntent 에 {k} 누락"
+        # NL 문장이 통째로 /gov 인자로 와도 재해석(빌드 내 retry)
+        assert "extract_gov_query(query)" in open(
+            "bot/governance.py", encoding="utf-8").read()
+
+    def test_gov_nl_guards_review_20260704(self, monkeypatch):
+        # 리뷰 fix 고정: #1 장문/멀티라인 = 질의 아님(봇 자신의 채널 브리핑
+        # echo·붙여넣은 기사 재트리거 차단) #2 키워드 내포 토큰 짜투리 폐기
+        # #4 에러 메시지 질의 60자 절단.
+        import bot.governance as g
+        assert g.extract_gov_query("삼성전자 최대주주 알려줘") == "삼성전자"
+        assert g.extract_gov_query("카카오 최대주주 누구야") == "카카오"
+        long_echo = "🏛 삼성전자 005930 거버넌스 브리핑\n👑 최대주주 현황 …" * 3
+        assert g.extract_gov_query(long_echo) is None          # 멀티라인/장문
+        assert g.extract_gov_query("어쩌구 " * 10 + "대주주") is None  # >40자
+        monkeypatch.setattr(g, "resolve_kr_target", lambda q: (None, q, []))
+        out = g.build_gov_brief("가" * 200 + " 거버넌스")
+        assert "가" * 61 not in out and "…" in out             # 질의 절단

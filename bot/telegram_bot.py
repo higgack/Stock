@@ -286,6 +286,22 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     text = (post.text or "").strip()
     if not text.startswith(TICKER_PREFIX):
+        # 자연어 거버넌스 질의('하이닉스 거버넌스') — /gov 와 동일 결과
+        # (사용자 2026-07-04 '자연어로 쳐도 같은 결과'). 의도 없으면 기존
+        # 대로 무시(채널 일반 대화 침묵 유지).
+        from bot.governance import extract_gov_query, build_gov_brief
+        _gq = extract_gov_query(text)
+        if _gq:
+            brief = await asyncio.to_thread(build_gov_brief, _gq)
+            try:
+                await ctx.bot.send_message(
+                    chat_id=post.chat.id, text=brief,
+                    parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+            except Exception:
+                from bot.dashboard_console import strip_tg_html
+                await ctx.bot.send_message(
+                    chat_id=post.chat.id, text=strip_tg_html(brief),
+                    disable_web_page_preview=True)
         return  # not a ticker request — ignore
     body = text[len(TICKER_PREFIX):].strip()
     first_word = body.split(None, 1)[0].lower() if body else ""
@@ -1085,7 +1101,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 /screener [도메인 | 자유어] — Bottleneck (67도메인+L4세분+자유어) · 전체 /screener_list
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림
-/gov 종목 — 거버넌스 브리핑 (KR·DART: 대주주·임원지분·주총/활동주의 공시 + AI요약)
+/gov 종목 — 거버넌스 브리핑 (KR·DART: 대주주·임원지분·주총/활동주의 공시 + AI요약) · 자연어 OK("하이닉스 거버넌스")
 /paper — 페이퍼 모의매매(돈0) · /paper help
 /health · /yfpause·/naverpause on|off — 소스 헬스/정지토글
 
@@ -3514,6 +3530,31 @@ async def cmd_gov(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                                             disable_web_page_preview=True)
 
 
+async def on_private_text(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """DM 자유 텍스트 — 자연어 거버넌스 질의('하이닉스 거버넌스')만 /gov 와
+    동일 처리, 그 외 평문은 침묵(기존 동작 유지 — 사용자 2026-07-04)."""
+    if not update.message:
+        return
+    from bot.governance import extract_gov_query, build_gov_brief
+    q = extract_gov_query((update.message.text or "").strip())
+    if not q:
+        return
+    msg = await update.message.reply_text("🏛 거버넌스 조회 중… (DART)",
+                                          parse_mode=ParseMode.HTML)
+    text = await asyncio.to_thread(build_gov_brief, q)
+    try:
+        await msg.edit_text(text, parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True)
+    except Exception:
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML,
+                                            disable_web_page_preview=True)
+        except Exception:
+            from bot.dashboard_console import strip_tg_html
+            await update.message.reply_text(strip_tg_html(text),
+                                            disable_web_page_preview=True)
+
+
 async def cmd_health(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """야후/네이버 소스 헬스체크 — /health (DM). 잘 받아오는지 직접 점검."""
     if update.message:
@@ -4521,6 +4562,14 @@ def main() -> None:
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & filters.COMMAND, cmd_ticker_hint
+        )
+    )
+    # DM 평문 — 자연어 거버넌스 질의만 반응(그 외 침묵). COMMAND 제외라
+    # 위 핸들러들과 충돌 없음 (사용자 2026-07-04 '자연어로도 /gov').
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+            on_private_text,
         )
     )
 
