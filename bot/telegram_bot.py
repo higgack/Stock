@@ -3831,6 +3831,23 @@ async def _periodic_dart_fav_alerts(application) -> None:
             log.exception("dart_fav_alerts poll failed")
 
 
+async def _periodic_fred_boards() -> None:
+    """FRED 보드(ppi/liquidity.html) 6시간 주기 재생성(사용자 2026-07-02) —
+    유동성 일간 지표(VIX·스프레드·커브·환율 히스토리)가 당일 반영되게. 자정
+    regen(_periodic_dashboard_refresh)과 별개 태스크. 비용: FRED 무료 ~120콜
+    ×4/일(캐시 5h) — 무시 가능. 첫 사이클은 6h 후(startup 스레드가 방금 생성)."""
+    while True:
+        try:
+            await asyncio.sleep(6 * 3600)
+            from bot.fred_boards import regenerate_fred_boards
+            await asyncio.to_thread(regenerate_fred_boards)
+            log.info("fred boards 6h regen: ok")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("fred boards 6h regen failed")
+
+
 async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
@@ -4361,6 +4378,10 @@ async def _on_startup(application) -> None:
     # application so it stays referenced (otherwise the GC could collect it).
     application._auto_resolve_task = asyncio.create_task(_periodic_auto_resolve())
     application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
+    # FRED 보드 6시간 주기 재생성(사용자 2026-07-02) — 유동성 일간 지표(VIX·
+    # 스프레드·커브) 당일 반영. 자정 regen 과 별개, 첫 사이클은 6h 후(startup
+    # 스레드가 방금 생성). to_thread(네트워크 ~120콜, 이벤트루프 차단 금지).
+    application._fred_boards_task = asyncio.create_task(_periodic_fred_boards())
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
     application._highlow_prewarm_task = asyncio.create_task(_periodic_highlow_prewarm())

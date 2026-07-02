@@ -80,6 +80,8 @@ PPI_SERIES = [
     {'id': 'WPU0911', 'name': 'Wood Pulp', 'cat': 'Packaging & Paper', 'stocks': '펄프 — KR: 무림P&P / US: International Paper / BR: Suzano'},
     {'id': 'WPU081', 'name': 'Lumber', 'cat': 'Construction & Infra', 'stocks': '목재 — US: Weyerhaeuser / KR: 한솔홈데코·동화기업'},
     {'id': 'PCU325320325320', 'name': 'Pesticide & Other Ag Chemical Mfg', 'cat': 'Chemical & Materials', 'stocks': '농약·작물보호 — KR: 팜한농(LG화학)·경농 / US: Corteva·FMC'},
+    {'id': 'PCU325510325510', 'name': 'Paint & Coating Manufacturing', 'cat': 'Chemical & Materials', 'stocks': '페인트 — KR: KCC·노루페인트·삼화페인트 / US: Sherwin-Williams·PPG'},
+    {'id': 'PCU322121322121', 'name': 'Paper Mills', 'cat': 'Packaging & Paper', 'stocks': '제지 — KR: 한솔제지·무림페이퍼 / US: International Paper'},
 ]
 
 LIQ_SERIES = [
