@@ -71,6 +71,26 @@ class MetricsTests(unittest.TestCase):
     def test_series_metrics_short_none(self):
         self.assertIsNone(fb.series_metrics(_mk_hist([1, 2, 3])))
 
+    def test_momentum_sign_crossing_none(self):
+        # 금리커브류(T10Y3M 등) 음수↔양수 교차 시 분수 거듭제곱 = 복소수 →
+        # JSON 직렬화 크래시(리뷰 finding). 음수 구간 관여 시 momentum=None.
+        # 6개월 전(-0.2, 음수) → 최신(+0.4) 부호 교차: 기하 변화율 불능.
+        hist = _mk_hist([-0.5, -0.4, -0.3, -0.2, -0.3, -0.2, -0.1, 0.05,
+                         0.1, 0.2, 0.3, 0.4])
+        m = fb.series_metrics(hist)
+        self.assertIsNone(m["momentum"])
+        import json
+        json.dumps(m)                                   # 직렬화 가능해야 함
+
+    def test_value_at_eom_anchor(self):
+        # 앵커 06-30(월말) → 1개월 전 = 05-31 포함해야(리뷰 finding: day 그대로
+        # 쓰면 05-30 컷 → 05-31 누락 → 2개월 변화로 부풀려짐).
+        hist = [("2026-0%d-30" % 4, 95.0), ("2026-05-31", 100.0),
+                ("2026-06-30", 110.0)] + [
+            (f"2025-{m:02d}-28", 80.0) for m in range(6, 13)]
+        hist = sorted(hist)
+        self.assertEqual(fb._value_at(hist, 1), 100.0)   # 05-31 (95 아님)
+
 
 class SignalTests(unittest.TestCase):
     def _sig(self, **kw):
@@ -92,12 +112,22 @@ class SignalTests(unittest.TestCase):
 
 class LiquidityTests(unittest.TestCase):
     def test_net_liquidity_units(self):
-        # WALCL 7,000,000M$(=7000B) − TGA 800,000M$(=800B) − RRP 200B = 6000B.
+        # FRED 원시 단위: WALCL=M$, TGA(WTREGEN)=B$, RRP=B$ (리뷰 교정 —
+        # 공식 FRED 그래프 WALCL/1000 − RRPONTSYD − WTREGEN 와 동일).
+        # 7,000,000M(=7000B) − 800B − 200B = 6000B.
         walcl = [("2026-01-01", 7_000_000.0)]
-        tga = [("2026-01-01", 800_000.0)]
+        tga = [("2026-01-01", 800.0)]
         rrp = [("2026-01-01", 200.0)]
         nl = fb.net_liquidity(walcl, tga, rrp)
         self.assertEqual(nl, [("2026-01-01", 6000.0)])
+
+    def test_net_liquidity_real_values_lock(self):
+        # 2026-03 실측 잠금: WALCL 6,628,894M · TGA 832.053B · RRP 0.332B →
+        # ≈5,796.5B (외부 실측 Fed Net Liquidity ~5.8T 와 일치). 단위 회귀 방지.
+        nl = fb.net_liquidity([("2026-03-01", 6_628_894.0)],
+                              [("2026-03-01", 832.053)],
+                              [("2026-03-01", 0.332)])
+        self.assertAlmostEqual(nl[0][1], 5796.509, places=2)
 
     def test_net_liquidity_skips_unmatched(self):
         # TGA/RRP 해당일 이전 값 없으면 그 날짜 skip(부분 시계열 graceful).
@@ -115,6 +145,18 @@ class LiquidityTests(unittest.TestCase):
         s = fb.compute_score({"a": (80.0, False), "b": (80.0, True)})
         self.assertAlmostEqual(s, 50.0)
         self.assertIsNone(fb.compute_score({}))
+
+    def test_window_5y_by_date_not_count(self):
+        # '5년 백분위' 는 날짜 기준(리뷰 finding: 관측수 260 고정이면 일간=1년·
+        # 월간=전체가 돼 페이지 공식 문구와 어긋남). 일간 8년치 → 창은 최근 5년만.
+        pts = []
+        for y in range(2018, 2026):
+            for m in range(1, 13):
+                pts.append((f"{y:04d}-{m:02d}-15", float(y)))
+        win = fb._window_5y(pts)
+        self.assertEqual(len(win), 12 * 5 + 1)          # 5년치(경계일 포함 61)
+        self.assertTrue(all(v >= 2020 for v in win))    # 2020-12-15 이후만
+        self.assertEqual(fb._window_5y([]), [])
 
     def test_verdict_bands(self):
         self.assertIn("풍부", fb.score_verdict(75)[0])
@@ -158,6 +200,42 @@ class RenderTests(unittest.TestCase):
         self.assertIn("순유동성", html)
         self.assertIn("5년 트레일링 백분위", html)     # 공식 문서화(투명성)
         self.assertIn("KST", html)
+        self.assertIn("M2 YoY", html)                  # 구성요소 한글 라벨(영문키 노출 금지)
+        self.assertIn("ℹ️ 사용법", html)               # 첫사용자 가이드(같은 commit 룰)
+
+    def test_chart_resilience_contract(self):
+        # (a) Chart.js = 로컬 벤더 파일 참조(CDN 아님 — 오프라인 내성),
+        # (b) typeof Chart 가드, (c) 유동성: 표 렌더가 순유동성 차트보다 먼저
+        # (CDN/파일 차단 시 표까지 백지 되던 IIFE abort — 리뷰 finding).
+        hist = _mk_hist([100 + i for i in range(24)])
+        m = fb.series_metrics(hist)
+        row = {**LIQ_SERIES[0], **m, "hist": hist}
+        html = fb.render_liquidity_page([row], {"net_liq": [("2026-01-01", 1.0)],
+                                                "components": {}}, 50.0)
+        self.assertIn('src="chart.umd.min.js"', html)
+        self.assertNotIn("cdnjs.cloudflare.com", html)
+        self.assertIn("typeof Chart==='undefined'", html)
+        self.assertLess(html.index("pills();table();"), html.index("nl-chart'),"))
+        # PPI 도 로컬 참조 + 가드 + 가이드.
+        p = fb.render_ppi_page([])
+        self.assertIn('src="chart.umd.min.js"', p)
+        self.assertIn("typeof Chart==='undefined'", p)
+        self.assertIn("ℹ️ 사용법", p)
+
+    def test_liquidity_unit_map_contract(self):
+        # fv() 단위 스케일링 계약 — 원시 FRED 단위 맵 + 카탈로그 교정(리뷰:
+        # WALCL 'M USD' 6,628,894 를 '6.62M' 으로 내던 버그 / WTREGEN 은 B USD).
+        hist = _mk_hist([100 + i for i in range(24)])
+        m = fb.series_metrics(hist)
+        row = {**LIQ_SERIES[0], **m, "hist": hist}
+        html = fb.render_liquidity_page([row], {"net_liq": [], "components": {}}, None)
+        self.assertIn("'M USD':[1e6,'$']", html)
+        self.assertIn("'B USD':[1e9,'$']", html)
+        self.assertIn("'100M JPY':[1e8,'¥']", html)
+        wt = next(s for s in LIQ_SERIES if s["id"] == "WTREGEN")
+        bm = next(s for s in LIQ_SERIES if s["id"] == "BOGMBASE")
+        self.assertEqual(wt["unit"], "B USD")           # FRED 원시(표시변환 아님)
+        self.assertEqual(bm["unit"], "M USD")
 
     def test_payload_script_safe(self):
         # '<' escape(</script> 조기 종료 차단) — valuechain 패턴 동일 계약.

@@ -1072,7 +1072,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 ━━━━━━━━━
 <b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·💧유동성·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터·장중 자동갱신) · 종목검색·스크롤복원
- ★📝⏰ <b>카드 도구</b> (전 대시보드 공통) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
+ ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·유동성 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
    http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
@@ -3876,9 +3876,11 @@ async def _periodic_dashboard_refresh(application=None) -> None:
             regenerate_dart_feed_index()
             regenerate_valuechain_index()
             # FRED 보드(PPI·유동성) — 일 1회면 충분(월간/주간 시리즈, 캐시 12h).
+            # ⚠️ ~90 네트워크콜 = to_thread 필수(이벤트루프 차단 시 getUpdates
+            # 침묵 → watchdog 오탐 재시작, 실수 #2 — 리뷰 finding).
             try:
                 from bot.fred_boards import regenerate_fred_boards
-                regenerate_fred_boards()
+                await asyncio.to_thread(regenerate_fred_boards)
             except Exception:
                 log.exception("fred boards regen failed")
             # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
@@ -4004,22 +4006,21 @@ async def _on_startup(application) -> None:
         log.info("startup: dart_feed.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: dart_feed.html regen failed: %s", exc)
-    # FRED 보드(ppi/liquidity.html) — 파일 부재 시(첫 배포) startup 백그라운드
-    # 1회 생성(FRED ~90콜 ≈ 수십 초라 sync 금지). 이후는 자정 regen 이 갱신.
+    # FRED 보드(ppi/liquidity.html) — startup 백그라운드 무조건 재생성(파일 부재
+    # 게이트 제거: 렌더 코드 배포가 다음 자정까지 화면에 안 보이는 stale 차단,
+    # 실수 #11 — 리뷰 finding. 같은 날 재실행은 FRED 캐시 12h 라 사실상 무료).
+    # sync 금지(~90콜 ≈ 수십 초) — 데몬 스레드.
     try:
         import threading as _fb_thr
-        from bot.dashboard import ARCHIVE_ROOT as _fb_root
 
         def _fred_boards_initial():
             try:
                 from bot.fred_boards import regenerate_fred_boards
                 regenerate_fred_boards()
-                log.info("startup: FRED boards generated")
+                log.info("startup: FRED boards regenerated")
             except Exception as exc:
                 log.warning("startup: FRED boards regen failed: %s", exc)
-        if not (_fb_root / "ppi.html").exists() or \
-                not (_fb_root / "liquidity.html").exists():
-            _fb_thr.Thread(target=_fred_boards_initial, daemon=True).start()
+        _fb_thr.Thread(target=_fred_boards_initial, daemon=True).start()
     except Exception as exc:
         log.warning("startup: FRED boards thread failed: %s", exc)
     # DART 공시 즉시 채움 — 타이머(30분)를 기다리지 않고 startup 직후 백그라운드

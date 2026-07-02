@@ -209,6 +209,14 @@ def fetch_history(series_id: str, start: str = "2018-01-01") -> list[tuple[str, 
     if clean:
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            # 날짜 키 파일이라 어제 것은 재사용 불가 — 쓰기 전에 같은 시리즈의
+            # 옛 hist 캐시 삭제(무한 누적 디스크 누수 방지, 리뷰 finding).
+            for old in _CACHE_DIR.glob(f"hist_{series_id}_*.json"):
+                if old != cache_file:
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
             cache_file.write_text(json.dumps(clean, ensure_ascii=False))
         except Exception as exc:
             log.warning("fred: hist cache write failed for %s: %s", series_id, exc)
