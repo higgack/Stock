@@ -24,7 +24,7 @@ class CatalogTests(unittest.TestCase):
     def test_ppi_unique_and_fields(self):
         ids = [s["id"] for s in PPI_SERIES]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertGreaterEqual(len(ids), 45)          # 원본 32 + 확장 15
+        self.assertGreaterEqual(len(ids), 70)          # 원본 32 + 확장 15 + 2차 24
         for s in PPI_SERIES:
             for k in ("id", "name", "cat", "stocks"):
                 self.assertTrue(s.get(k), f"{s.get('id')} missing {k}")
