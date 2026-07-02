@@ -1208,6 +1208,8 @@ _INDEX_JS = """
     return m.__loading;
   }
   function loadAllMonths(){ return Promise.all(pendingMonths().map(loadMonth)); }
+  // ⭐/📝 필터가 접힌 과거 달의 ★를 놓치지 않도록 _IMPORTANT_BLOCK 의 lazyAll 훅에 등록.
+  window.__lazyLoadAll = loadAllMonths;
   lazyMonths.forEach(function(m){
     m.addEventListener('toggle', function(){
       if (m.open && !m.__loaded) { m.__failed = false; loadMonth(m).then(applyFilter); }
@@ -9004,27 +9006,33 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
     return _TPL;
   }
   function ensure(){
-    if(!SURFACE) return;
+    if(!SURFACE) return Promise.resolve();
     // 배치화(성능 2026-07-03, 사용자 '③도 적용'): 카드 수천 개 페이지에서
     // 버튼 삽입을 300개 단위 idle 청크로 나눠 첫 페인트 블로킹/버벅임 완화.
     // 멱등(재호출 시 .imp-star 존재 카드는 clone 안 붙이고 paint 만) — 청크
     // 진행 중 재호출돼도 안전. counts 는 마지막 청크 후 1회.
+    // 반환 = 마지막 청크(counts 포함)까지 끝난 뒤 resolve 되는 Promise —
+    // lazyAll 이 '전 카드 페인팅 완료' 시점에 필터를 재적용할 수 있게
+    // (리뷰 2026-07-04 Major: idle 청크 미완 상태에서 필터가 돌면 늦게
+    // 칠해진 ★가 hidden 으로 남음).
     var cards=Array.prototype.slice.call(document.querySelectorAll(CARDSEL));
     var i=0;
-    function chunk(){
-      var end=Math.min(i+300,cards.length);
-      for(;i<end;i++){ var card=cards[i];
-        card.classList.add('imp-markable');
-        var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
-        if(!head.querySelector('.imp-star')) head.appendChild(_tpl().cloneNode(true));
-        paint(card);
+    return new Promise(function(res){
+      function chunk(){
+        var end=Math.min(i+300,cards.length);
+        for(;i<end;i++){ var card=cards[i];
+          card.classList.add('imp-markable');
+          var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
+          if(!head.querySelector('.imp-star')) head.appendChild(_tpl().cloneNode(true));
+          paint(card);
+        }
+        if(i<cards.length){
+          if(window.requestIdleCallback) requestIdleCallback(chunk,{timeout:200});
+          else setTimeout(chunk,0);
+        } else { counts(); res(); }
       }
-      if(i<cards.length){
-        if(window.requestIdleCallback) requestIdleCallback(chunk,{timeout:200});
-        else setTimeout(chunk,0);
-      } else counts();
-    }
-    chunk();
+      chunk();
+    });
   }
   function counts(){
     var ni=document.querySelectorAll('.imp-markable.imp-on').length;
@@ -9057,6 +9065,23 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
     document.querySelectorAll('.df-month,.df-date-group,.day,.cs-day').forEach(function(g){
       if(g.querySelector(sel)) g.classList.remove('collapsed');
     });
+  }
+  function lazyAll(sel,flag){
+    // ⭐/📝 필터 ON 시 접힌 과거-월 lazy 프래그먼트 전부 로드 — 미로드 달의
+    // ★가 필터에 안 잡히던 것 해소(사용자 2026-07-03 '필터시 전체로드').
+    // 각 페이지 lazy 로더가 window.__lazyLoadAll 등록(없는 표면 = no-op).
+    // 로드 후 ensure() 1회 더 체이닝(멱등) — 월별 __impApply 의 idle 청크가
+    // 아직 도는 중에 재적용하면 늦게 칠해진 ★가 hidden 으로 남는 레이스 차단
+    // (리뷰 2026-07-04 Major). 그 다음 그룹 재펼침 + impfilterchange 재통지.
+    // flag 가드: 로드 중 사용자가 필터를 껐으면(html 클래스 제거됨) 펼침/재통지
+    // 생략 — 꺼진 필터가 전체 페이지를 강제 펼치던 것 차단(리뷰 Minor).
+    if(!window.__lazyLoadAll) return;
+    try{ var p=window.__lazyLoadAll();
+      if(p&&p.then) p.then(function(){ return ensure(); }).then(function(){
+        if(!document.documentElement.classList.contains(flag)) return;
+        expandGroups(sel);
+        document.dispatchEvent(new CustomEvent('impfilterchange')); }).catch(function(){});
+    }catch(e){}
   }
   function mkbtn2(cls,txt){ var b=document.createElement('button'); b.className=cls;
     b.type='button'; b.textContent=txt; return b; }
@@ -9152,7 +9177,7 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
     panel.classList.toggle('open');
     if(panel.classList.contains('open')&&card.tagName==='DETAILS') card.open=true;
   }
-  window.__impApply=function(){ ensure(); };
+  window.__impApply=function(){ return ensure(); };
   injectFilter();
   fetch('api/important').then(function(r){return r.json();}).then(function(d){
     if(d){ if(d.marks&&d.marks[SURFACE]) MARKS=new Set(d.marks[SURFACE]);
@@ -9182,13 +9207,17 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
       document.querySelectorAll('.imp-filter-btn').forEach(function(x){x.classList.toggle('active',a1);});
       if(a1) expandGroups('.imp-markable.imp-on');
       // 페이지별 그룹-카운트 필터(예 DART applyFilters)가 교집합 재적용하도록 통지.
-      document.dispatchEvent(new CustomEvent('impfilterchange')); return; }
+      document.dispatchEvent(new CustomEvent('impfilterchange'));
+      if(a1) lazyAll('.imp-markable.imp-on','imp-only');
+      return; }
     var g=e.target.closest&&e.target.closest('.memo-filter-btn');
     if(g){ e.preventDefault();
       var a2=document.documentElement.classList.toggle('memo-only');
       document.querySelectorAll('.memo-filter-btn').forEach(function(x){x.classList.toggle('active',a2);});
       if(a2) expandGroups('.imp-markable.has-memo');
-      document.dispatchEvent(new CustomEvent('impfilterchange')); return; }
+      document.dispatchEvent(new CustomEvent('impfilterchange'));
+      if(a2) lazyAll('.imp-markable.has-memo','memo-only');
+      return; }
   });
 })();
 </script>
@@ -9286,6 +9315,8 @@ _DAILY_BYTE_JS = """
     return m.__loading;
   }
   function loadAllMonths(){ return Promise.all(pendingMonths().map(loadMonth)); }
+  // ⭐/📝 필터가 접힌 과거 달의 ★를 놓치지 않도록 _IMPORTANT_BLOCK 의 lazyAll 훅에 등록.
+  window.__lazyLoadAll = loadAllMonths;
   lazyMonths.forEach(function(m){
     m.addEventListener('toggle', function(){
       if (m.open && !m.__loaded) { m.__failed = false; loadMonth(m).then(applyFilter); }
@@ -13151,6 +13182,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     return m.__loading;
   }
   function dfLoadAll(){return Promise.all(dfPending().map(dfLoadMonth));}
+  // ⭐/📝 필터가 접힌 과거 달의 ★를 놓치지 않도록 _IMPORTANT_BLOCK 의 lazyAll 훅에 등록.
+  window.__lazyLoadAll=dfLoadAll;
   var clearBtn=document.getElementById('df-clear');
   var viewBtns=document.querySelectorAll('.df-vbtn');
   var grids=document.querySelectorAll('.df-grid');
@@ -13352,8 +13385,12 @@ _MARKET_CSS = (
     "line-height:1.55;-webkit-font-smoothing:antialiased}"
     ".wrap{max-width:1100px;margin:0 auto;padding:24px 16px 64px}"
     ".nav{margin-bottom:12px}"
-    ".nav a{color:var(--accent);text-decoration:none;font-size:13px}"
+    ".nav a{color:var(--accent);text-decoration:none;font-size:13px;"
+    "white-space:nowrap}"
     ".nav a:hover{text-decoration:underline}"
+    # 부동산 그룹은 의도된 둘째 줄(길어진 1줄 nav 의 어색한 wrap 방지,
+    # 사용자 2026-07-03 '부동산을 밑으로').
+    ".nav-r2{margin:-8px 0 12px}"
     "h1{font-size:22px;margin:0 0 4px}"
     ".sub{color:var(--muted);font-size:13px;margin:0 0 24px}"
     ".search-box{margin:20px 0 28px;display:flex;gap:8px}"
@@ -13370,6 +13407,14 @@ _MARKET_CSS = (
     "margin:32px 0 14px}"
     ".section-hd h2{font-size:17px;margin:0}"
     ".section-hd .ts{color:var(--muted);font-size:12px}"
+    # 접기 섹션(글로벌 시장 스냅샷·Macro 국내/글로벌 지표) — 헤더 클릭 토글,
+    # ▾/▸ 표시, 상태는 localStorage(_CSEC_JS) 유지.
+    ".csec>summary{cursor:pointer;list-style:none;user-select:none}"
+    ".csec>summary::-webkit-details-marker{display:none}"
+    ".csec>summary h2::after,.csec>summary .macro-sub::after{"
+    "content:' \\25BE';color:var(--muted);font-size:11px}"
+    ".csec:not([open])>summary h2::after,"
+    ".csec:not([open])>summary .macro-sub::after{content:' \\25B8'}"
     ".card-grid{display:grid;"
     "grid-template-columns:repeat(auto-fill,minmax(300px,1fr));"
     "gap:14px;margin-bottom:28px}"
@@ -14375,14 +14420,20 @@ def _render_macro_snapshot(macro: dict) -> str:
     <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 새 데이터 시 하단 알림(30분 체크)</span>
   </div>""")
 
+    # 국내/글로벌 지표 = 접기 토글(details, 기본 펼침·localStorage 상태 유지,
+    # 사용자 2026-07-03 '토글같은걸 달아서 밑에 카드들을 접을수 있게').
     if domestic:
-        out.append('<div class="macro-sub">국내 지표</div><div class="macro-grid">')
+        out.append('<details class="csec" id="sec-macro-dom" open>'
+                   '<summary><div class="macro-sub">국내 지표</div></summary>'
+                   '<div class="macro-grid">')
         out.extend(_render_macro_card(i) for i in domestic)
-        out.append('</div>')
+        out.append('</div></details>')
     if glob:
-        out.append('<div class="macro-sub">글로벌 지표</div><div class="macro-grid">')
+        out.append('<details class="csec" id="sec-macro-glob" open>'
+                   '<summary><div class="macro-sub">글로벌 지표</div></summary>'
+                   '<div class="macro-grid">')
         out.extend(_render_macro_card(i) for i in glob)
-        out.append('</div>')
+        out.append('</div></details>')
 
     # charts row
     cards: list[str] = []
@@ -14577,6 +14628,21 @@ def _render_market_daily_cards() -> str:
 # PC 에서 30초마다 전체 페이지 fetch+DOMParser 하던 CPU 비용도 제거(성능 감사).
 _MARKET_LIVE_JS = ""
 
+# 접기 섹션(details.csec — 글로벌 시장 스냅샷·Macro 국내/글로벌 지표) 상태 유지:
+# 30분 자동 새로고침·재방문에도 접힘/펼침이 localStorage(페이지+섹션별 키)로
+# 살아남는다 (사용자 2026-07-03 '토글같은걸 달아서 접을수 있게').
+_CSEC_JS = """<script>
+(function(){
+  document.querySelectorAll('details.csec[id]').forEach(function(d){
+    var k='csec:'+location.pathname+':'+d.id;
+    try{ if(localStorage.getItem(k)==='0') d.open=false; }catch(e){}
+    d.addEventListener('toggle',function(){
+      try{ localStorage.setItem(k, d.open?'1':'0'); }catch(e){}
+    });
+  });
+})();
+</script>"""
+
 
 def _render_market_page(data: dict) -> str:
     """Render market.html — global market snapshot + earnings + research."""
@@ -14640,7 +14706,8 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
-    &nbsp;|&nbsp;
+  </div>
+  <div class="nav nav-r2">
     <a href="realestate.html">🏠 부동산</a>
   </div>
   <h1>🌍 Market Overview</h1>
@@ -14656,10 +14723,11 @@ def _render_market_page(data: dict) -> str:
 {_render_market_daily_cards()}
 
   <div id="live-sections">
-  <div class="section-hd">
+  <details class="csec" id="sec-gsnap" open>
+  <summary><div class="section-hd">
     <h2>글로벌 시장 스냅샷</h2>
     <span class="ts">{_html.escape(ts)} 기준 · 새 데이터 시 하단 알림(30분 체크)</span>
-  </div>
+  </div></summary>
   <div class="card-grid">
 """)
 
@@ -14669,7 +14737,7 @@ def _render_market_page(data: dict) -> str:
         else:
             parts.append(_render_market_card(title, items, yf))
 
-    parts.append('</div>')  # close card-grid
+    parts.append('</div></details>')  # close card-grid + 접기 details
 
     parts.append(_render_macro_snapshot(macro))
     parts.append(_render_deposit_widget(deposit))
@@ -15347,6 +15415,7 @@ def _render_market_page(data: dict) -> str:
 }})();
 </script>
 {_MARKET_LIVE_JS}
+{_CSEC_JS}
 </body></html>
 """)
     return "".join(parts)
