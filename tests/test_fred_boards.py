@@ -166,6 +166,81 @@ class LiquidityTests(unittest.TestCase):
         self.assertEqual(fb.score_verdict(None)[0], "—")
 
 
+class MarginSpreadTests(unittest.TestCase):
+    """마진 스프레드(판가 YoY − 원가 YoY, 사용자 2026-07-02 Phase2) — 수학·
+    graceful·렌더 계약."""
+
+    def _hist(self, start, monthly_step, n=30, y0=2023):
+        vals = [start + monthly_step * i for i in range(n)]
+        return _mk_hist(vals, y0)
+
+    def test_spread_math(self):
+        # 판가 YoY +12%대 vs 원가 YoY ~0% → 스프레드 양수(개선).
+        H = {"PCU324110324110": self._hist(100, 1.0),   # 판가 상승
+             "WPU0561": self._hist(100, 0.0)}           # 원가 횡보
+        # 나머지 쌍 데이터 없음 → 정유만 나와야(graceful).
+        out = fb.margin_spreads(H)
+        self.assertEqual(len(out), 1)
+        m = out[0]
+        self.assertIn("정유", m["label"])
+        self.assertGreater(m["spread"], 5)
+        self.assertAlmostEqual(m["in_yoy"], 0.0, places=6)
+
+    def test_spread_skips_short_data(self):
+        H = {"PCU324110324110": self._hist(100, 1.0, n=10),
+             "WPU0561": self._hist(100, 0.0, n=10)}
+        self.assertEqual(fb.margin_spreads(H), [])
+
+    def test_margin_panel_render(self):
+        panel = fb._margin_panel([{"label": "정유 (제품−원유)", "out_yoy": 10.0,
+                                   "in_yoy": 2.0, "spread": 8.0, "trend3m": 1.5,
+                                   "stocks": "S-Oil"}])
+        self.assertIn("마진 스프레드", panel)
+        self.assertIn("+8.0pp", panel)
+        self.assertIn("▲ 개선", panel)
+        self.assertEqual(fb._margin_panel([]), "")      # 빈 → 섹션 생략
+        # 페이지 통합: margins 전달 시 패널 포함, 미전달 시 미포함.
+        self.assertIn("마진 스프레드",
+                      fb.render_ppi_page([], [{"label": "x", "out_yoy": 1.0,
+                                               "in_yoy": 0.0, "spread": 1.0,
+                                               "trend3m": None, "stocks": "s"}]))
+
+
+class KrPpiTests(unittest.TestCase):
+    """한국 PPI(ECOS 404Y014) — 아이템 이름매칭·행 변환·graceful."""
+
+    def test_match_items_exact_then_shortest(self):
+        from bot import bok_ecos_client as ec
+        rows = [{"ITEM_NAME": "총지수", "ITEM_CODE": "*AA"},
+                {"ITEM_NAME": "반도체및전자표시장치", "ITEM_CODE": "B1"},
+                {"ITEM_NAME": "반도체제조용장비", "ITEM_CODE": "B2"},
+                {"ITEM_NAME": "화학제품", "ITEM_CODE": "C1"}]
+        got = ec._match_items(rows, ["총지수", "반도체", "화학", "없는것"])
+        self.assertEqual(got["총지수"], "*AA")           # 정확일치
+        self.assertEqual(got["반도체"], "B2" if len("반도체제조용장비") <
+                         len("반도체및전자표시장치") else "B1")  # 최단 이름
+        self.assertEqual(got["화학"], "C1")
+        self.assertNotIn("없는것", got)                  # 무매칭 생략
+
+    def test_load_kr_ppi_rows(self):
+        from unittest import mock
+        hist = [(f"{y:04d}-{m:02d}-01", 100.0 + (y - 2023) * 12 + m)
+                for y in (2023, 2024, 2025) for m in range(1, 13)]
+        with mock.patch("bot.bok_ecos_client.fetch_kr_ppi_history",
+                        return_value={"총지수": hist}):
+            rows = fb._load_kr_ppi()
+        self.assertEqual(len(rows), 1)                   # 매칭된 항목만
+        self.assertEqual(rows[0]["cat"], "한국 PPI(ECOS)")
+        self.assertTrue(rows[0]["id"].startswith("ECOS:"))
+        self.assertIn("sig", rows[0])                    # 동일 신호 파이프라인
+
+    def test_load_kr_ppi_graceful(self):
+        from unittest import mock
+        with mock.patch("bot.bok_ecos_client.fetch_kr_ppi_history",
+                        side_effect=RuntimeError("down")):
+            self.assertEqual(fb._load_kr_ppi(), [])
+
+
 class RenderTests(unittest.TestCase):
     def _ppi_row(self):
         hist = _mk_hist([100 + i for i in range(24)])

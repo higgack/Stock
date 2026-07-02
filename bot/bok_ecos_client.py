@@ -361,3 +361,93 @@ def format_kr_macro_for_prompt(macro: dict) -> str:
         date_part = f" — {time_s}" if time_s else ""
         lines.append(f"  • {label}: {value:.2f}{unit}{change_part}{date_part}")
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+# ── 한국 생산자물가(PPI) 히스토리 — FRED 보드 KR PPI 섹션용 (2026-07-02) ────
+# 404Y014(생산자물가지수, 월간). 아이템 코드는 하드코딩하지 않고
+# StatisticItemList 로 목록을 받아 **이름 부분일치**로 해석 — 코드 오타/개편에
+# 강건(무매칭 = 그 항목만 생략, graceful). 캐시 12h(다른 지표와 동일).
+_KR_PPI_TABLE = "404Y014"
+
+
+def _match_items(rows: list[dict], patterns: list[str]) -> dict[str, str]:
+    """아이템 목록에서 패턴별 코드 해석 {pattern: item_code}. 정확일치 우선,
+    없으면 부분일치 중 **이름이 가장 짧은 것**(가장 일반 분류). 순수(테스트)."""
+    out: dict[str, str] = {}
+    for pat in patterns:
+        exact = [r for r in rows if (r.get("ITEM_NAME") or "").strip() == pat]
+        if exact:
+            out[pat] = exact[0].get("ITEM_CODE", "")
+            continue
+        part = [r for r in rows if pat in (r.get("ITEM_NAME") or "")]
+        if part:
+            best = min(part, key=lambda r: len(r.get("ITEM_NAME") or ""))
+            out[pat] = best.get("ITEM_CODE", "")
+    return {k: v for k, v in out.items() if v}
+
+
+def fetch_kr_ppi_history(patterns: list[str],
+                         start: str = "201901") -> dict[str, list[tuple[str, float]]]:
+    """{패턴: [(YYYY-MM-01, 지수), …]} — 404Y014 월간 히스토리. 키 부재/실패
+    → {} 또는 해당 항목 생략(graceful). 일 1회 재생성용(12h 캐시)."""
+    api_key = os.getenv("BOK_ECOS_API_KEY", "").strip()
+    if not api_key:
+        log.info("ecos: BOK_ECOS_API_KEY missing — KR PPI unavailable")
+        return {}
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"kr_ppi_{today_str}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < _CACHE_TTL_HOURS:
+                cached = json.loads(cache_file.read_text())
+                if set(patterns) <= set(cached.keys()) | set(cached.get("_missing", [])):
+                    return {k: [tuple(x) for x in v] for k, v in cached.items()
+                            if k != "_missing"}
+        except Exception as exc:
+            log.warning("ecos: kr_ppi cache read failed: %s", exc)
+    # ① 아이템 목록 → 이름 해석
+    try:
+        url = (f"{_BASE_URL}/StatisticItemList/{api_key}/json/kr/1/500/"
+               f"{_KR_PPI_TABLE}")
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        items = (resp.json().get("StatisticItemList") or {}).get("row") or []
+    except Exception as exc:
+        log.warning("ecos: kr_ppi item list failed: %s", exc)
+        return {}
+    codes = _match_items(items, patterns)
+    if not codes:
+        log.warning("ecos: kr_ppi no items matched %s", patterns)
+        return {}
+    # ② 패턴별 월간 히스토리
+    end = date.today().strftime("%Y%m")
+    out: dict[str, list[tuple[str, float]]] = {}
+    for pat, code in codes.items():
+        try:
+            url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/200/"
+                   f"{_KR_PPI_TABLE}/M/{start}/{end}/{code}")
+            resp = requests.get(url, timeout=_TIMEOUT)
+            resp.raise_for_status()
+            rows = (resp.json().get("StatisticSearch") or {}).get("row") or []
+        except Exception as exc:
+            log.warning("ecos: kr_ppi fetch failed (%s): %s", pat, exc)
+            continue
+        pts = []
+        for r in sorted(rows, key=lambda x: x.get("TIME", "")):
+            t = (r.get("TIME") or "").strip()
+            try:
+                v = float(r.get("DATA_VALUE", "") or "nan")
+            except ValueError:
+                continue
+            if len(t) == 6 and v == v:
+                pts.append((f"{t[:4]}-{t[4:]}-01", v))
+        if pts:
+            out[pat] = pts
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {k: v for k, v in out.items()}
+        payload["_missing"] = [p for p in patterns if p not in out]
+        cache_file.write_text(json.dumps(payload, ensure_ascii=False))
+    except Exception as exc:
+        log.warning("ecos: kr_ppi cache write failed: %s", exc)
+    return out

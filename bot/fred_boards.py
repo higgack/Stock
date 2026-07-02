@@ -203,6 +203,98 @@ def score_verdict(score: float | None) -> tuple[str, str]:
     return ("🔴 긴축", "유동성 위축 — 방어적 포지셔닝 권고.")
 
 
+# ── 마진 스프레드(산업 PPI − 원재료 PPI, 사용자 2026-07-02 Phase2) ─────────
+# 판가(output) YoY − 원가(input) YoY (pp) = 마진 방향 프록시. 양수=마진 개선.
+# input 이 단일 원재료 proxy 인 쌍만(문서화) — 정확 원가바스켓 아님, 방향 신호용.
+_MARGIN_PAIRS = [
+    {"key": "refining", "label": "정유 (제품−원유)",
+     "out": "PCU324110324110", "inp": "WPU0561",
+     "stocks": "S-Oil·SK이노베이션·GS / US: Valero"},
+    {"key": "steel", "label": "철강 (제품−철광석)",
+     "out": "WPU1017", "inp": "WPU1011",
+     "stocks": "POSCO·현대제철 / US: Nucor / JP: 일본제철"},
+    {"key": "petchem", "label": "석유화학 (수지−원유)",
+     "out": "PCU325211325211", "inp": "WPU0561",
+     "stocks": "LG화학·롯데케미칼 / US: Dow"},
+    {"key": "box", "label": "골판지 (박스−펄프)",
+     "out": "PCU322211322211", "inp": "WPU0911",
+     "stocks": "태림포장·아세아제지 / US: IP"},
+    {"key": "transformer", "label": "전력기기 (변압기−구리)",
+     "out": "PCU335311335311", "inp": "WPUSI019011",
+     "stocks": "HD현대일렉트릭·효성중공업·LS ELECTRIC / US: Eaton"},
+    {"key": "tire", "label": "타이어 (제품−원유·합성고무원료 proxy)",
+     "out": "PCU326211326211", "inp": "WPU0561",
+     "stocks": "한국타이어 / JP: 브리지스톤"},
+    {"key": "airline", "label": "항공 (운임−원유·연료 proxy)",
+     "out": "PCU481111481111", "inp": "WPU0561",
+     "stocks": "대한항공 / US: Delta / JP: ANA"},
+]
+
+
+def _yoy_at(hist: list[tuple[str, float]], months_back: int):
+    """months_back 개월 전 시점의 YoY% — 스프레드 3M 추세 계산용(순수)."""
+    cur = _value_at(hist, months_back)
+    ago = _value_at(hist, months_back + 12)
+    return _pct(cur, ago) if cur is not None else None
+
+
+def margin_spreads(H: dict[str, list]) -> list[dict]:
+    """[{label, out_yoy, in_yoy, spread, trend3m, stocks}] — 쌍의 어느 한쪽
+    데이터 부족 시 그 쌍만 생략(graceful). spread=out−in(pp), trend3m=
+    spread 지금 − 3개월 전(양수=개선 가속). 순수(테스트)."""
+    out = []
+    for p in _MARGIN_PAIRS:
+        ho, hi = H.get(p["out"]) or [], H.get(p["inp"]) or []
+        if len(ho) < 16 or len(hi) < 16:
+            continue
+        oy, iy = _yoy_at(ho, 0), _yoy_at(hi, 0)
+        oy3, iy3 = _yoy_at(ho, 3), _yoy_at(hi, 3)
+        if oy is None or iy is None:
+            continue
+        spread = oy - iy
+        trend = (spread - (oy3 - iy3)) if (oy3 is not None and iy3 is not None) else None
+        out.append({"label": p["label"], "out_yoy": oy, "in_yoy": iy,
+                    "spread": spread, "trend3m": trend, "stocks": p["stocks"]})
+    return out
+
+
+# ── 한국 PPI(ECOS 404Y014, 사용자 2026-07-02 Phase2) ──────────────────────
+# FRED(미국) 옆에 한국 생산자물가 나란히 — 이름 부분일치로 코드 해석(강건).
+# 관련주 힌트는 큐레이션. BOK_ECOS_API_KEY 부재/무매칭 = 섹션만 생략(graceful).
+_KR_PPI_ITEMS = [
+    ("총지수", "한국 PPI 총지수", "전산업 판가 — KOSPI 전반"),
+    ("공산품", "한국 PPI 공산품", "제조업 판가 — 수출제조 전반"),
+    ("반도체", "한국 PPI 반도체", "삼성전자·SK하이닉스"),
+    ("자동차", "한국 PPI 자동차", "현대차·기아·현대모비스"),
+    ("철강", "한국 PPI 철강(1차금속)", "POSCO·현대제철"),
+    ("화학", "한국 PPI 화학제품", "LG화학·롯데케미칼·한화솔루션"),
+    ("의약품", "한국 PPI 의약품", "삼성바이오로직스·셀트리온·유한양행"),
+    ("전지", "한국 PPI 전지(배터리)", "LG에너지솔루션·삼성SDI"),
+]
+
+
+def _load_kr_ppi() -> list[dict]:
+    """ECOS 한국 PPI → PPI 보드 rows(동일 지표·신호 파이프라인, cat 고정)."""
+    try:
+        from bot import bok_ecos_client
+        hists = bok_ecos_client.fetch_kr_ppi_history(
+            [p for p, _, _ in _KR_PPI_ITEMS])
+    except Exception as exc:
+        log.warning("fred_boards: KR PPI load failed: %s", exc)
+        return []
+    rows = []
+    for pat, name, stocks in _KR_PPI_ITEMS:
+        hist = hists.get(pat) or []
+        m = series_metrics(hist)
+        if not m:
+            continue
+        key, label, note = _signal(m)
+        rows.append({"id": f"ECOS:{pat}", "name": name, "cat": "한국 PPI(ECOS)",
+                     "stocks": stocks, **m, "sig": key, "sig_label": label,
+                     "note": note, "hist": [(d[:7], v) for d, v in hist]})
+    return rows
+
+
 # 점수 구성요소 한글 라벨(페이지 표기 — 영문 키 노출 방지, 리뷰 finding).
 _COMP_KR = {
     "net_liq_13w": "순유동성 13주Δ", "reserves_13w": "지준 13주Δ",
@@ -213,18 +305,26 @@ _COMP_KR = {
 
 
 # ── 데이터 수집 ────────────────────────────────────────────────────────────
-def _load_ppi() -> list[dict]:
+def _load_ppi() -> tuple[list[dict], list[dict]]:
+    """→ (rows, margins). rows = FRED PPI + 한국 PPI(ECOS) 병합, margins =
+    마진 스프레드(카탈로그 외 input WPU1011 등 추가 fetch)."""
     from bot import fred_client
+    H: dict[str, list] = {}
+    ids = [s["id"] for s in PPI_SERIES]
+    extra = {p["out"] for p in _MARGIN_PAIRS} | {p["inp"] for p in _MARGIN_PAIRS}
+    for sid in ids + sorted(extra - set(ids)):
+        H[sid] = fred_client.fetch_history(sid, _PPI_START)
     rows = []
     for s in PPI_SERIES:
-        hist = fred_client.fetch_history(s["id"], _PPI_START)
+        hist = H.get(s["id"]) or []
         m = series_metrics(hist)
         if not m:
             continue
         key, label, note = _signal(m)
         rows.append({**s, **m, "sig": key, "sig_label": label, "note": note,
                      "hist": [(d[:7], v) for d, v in hist]})
-    return rows
+    rows += _load_kr_ppi()
+    return rows, margin_spreads(H)
 
 
 def _load_liq() -> tuple[list[dict], dict, float | None]:
@@ -358,11 +458,39 @@ def _fmt_pct_cell(v, digits=1):
     return f"<span class='{cls}'>{v:+.{digits}f}%</span>"
 
 
-def render_ppi_page(rows: list[dict], now: datetime | None = None) -> str:
-    """ppi.html — 시리즈 테이블 + 클릭 상세(Chart.js 로컬 벤더, 부재 시 표만).
-    rows 비면 데이터 없음 배너(키 부재도 페이지는 생성 — silent drop 금지)."""
+def _margin_panel(margins: list[dict]) -> str:
+    """마진 스프레드 패널(서버 렌더 정적 표 — JS 불요). 빈 목록 → ''."""
+    if not margins:
+        return ""
+    body = []
+    for m in margins:
+        tr = m.get("trend3m")
+        tr_s = ("<span class='flat'>—</span>" if tr is None else
+                f"<span class='{'pos' if tr >= 0 else 'neg'}'>"
+                f"{'▲ 개선' if tr >= 0 else '▼ 악화'} {tr:+.1f}pp</span>")
+        sp = m["spread"]
+        body.append(
+            f"<tr><td><b>{_h.escape(m['label'])}</b></td>"
+            f"<td>{_fmt_pct_cell(m['out_yoy'])}</td>"
+            f"<td>{_fmt_pct_cell(m['in_yoy'])}</td>"
+            f"<td><b><span class='{'pos' if sp >= 0 else 'neg'}'>{sp:+.1f}pp</span></b></td>"
+            f"<td>{tr_s}</td>"
+            f"<td class='stocks'>{_h.escape(m['stocks'])}</td></tr>")
+    return f"""
+<div class="panel"><div class="panel-title">💹 마진 스프레드 <span style="color:var(--muted);font-size:11px">판가 YoY − 원가 YoY(pp) · 양수=마진 개선 · 3M 추세=가속/둔화</span></div>
+<table><thead><tr><th>산업 (판가−원가)</th><th>판가 YoY</th><th>원가 YoY</th><th>스프레드</th><th>3M 추세</th><th>관련주</th></tr></thead>
+<tbody>{''.join(body)}</tbody></table>
+<div class="note">원가는 단일 원재료 proxy(정확한 원가바스켓 아님) — <b>방향 신호용</b>. 스프레드 확대 = 판가가 원가보다 빠르게 상승(마진 개선 압력).</div>
+</div>"""
+
+
+def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
+                    now: datetime | None = None) -> str:
+    """ppi.html — 마진 스프레드 + 시리즈 테이블 + 클릭 상세(Chart.js 로컬 벤더,
+    부재 시 표만). rows 비면 데이터 없음 배너(silent drop 금지)."""
     now = now or datetime.now(_KST)
     ts = now.strftime("%Y-%m-%d %H:%M KST")
+    margins = margins or []
     payload = _json.dumps({"rows": rows}, ensure_ascii=False).replace("<", "\\u003c")
     cats = sorted({r["cat"] for r in rows})
     empty = ("" if rows else
@@ -388,9 +516,12 @@ def render_ppi_page(rows: list[dict], now: datetime | None = None) -> str:
 <b>3) 행 클릭</b> = 상세(2019년 이후 차트·고점比·저점 회복률·6M 모멘텀·관련주).<br>
 <b>4) 관련주</b> — 해당 PPI 상승 = 그 산업 <b>판가 상승</b> → 관련주 실적 개선 신호(US·KR·JP·TW).
 자동 신호이므로 참고용 — 확정 판단 금지.<br>
-<b>5) 갱신</b> — 매일 자정 KST 자동 재생성(FRED 무료 API). 원본 대비: 박제 아님·자동 갱신.
+<b>5) 💹 마진 스프레드</b> — 판가(산업 PPI) YoY − 원가(원재료 PPI) YoY. 양수·확대 = 그 산업 마진 개선 압력(원가는 단일 proxy — 방향 신호용).<br>
+<b>6) 🇰🇷 한국 PPI</b> — 카테고리 '한국 PPI(ECOS)' = 한국은행 생산자물가(월간)를 같은 신호 룰로 — 미국(FRED)과 나란히 비교.<br>
+<b>7) 갱신</b> — 매일 자정 KST 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
 </details>
 {empty}
+{_margin_panel(margins)}
 <div class="pills" id="pills" data-counts='{_json.dumps(sig_counts)}'></div>
 <div class="pills" id="cats" data-cats='{_json.dumps(cats, ensure_ascii=False).replace("<", "&lt;")}'></div>
 <div class="panel"><div class="panel-title">시리즈 개요 <span style="color:#8b8fa3;font-size:11px">(행 클릭 = 상세 차트)</span></div>
@@ -587,10 +718,11 @@ def regenerate_fred_boards() -> None:
     from bot.dashboard import ARCHIVE_ROOT, _inject_update_banner
     _ensure_chartjs()
     try:
-        rows = _load_ppi()
-        html = _inject_update_banner(render_ppi_page(rows))
+        rows, margins = _load_ppi()
+        html = _inject_update_banner(render_ppi_page(rows, margins))
         (ARCHIVE_ROOT / "ppi.html").write_text(html, encoding="utf-8")
-        log.info("fred_boards: ppi.html regenerated (%d series)", len(rows))
+        log.info("fred_boards: ppi.html regenerated (%d series, %d margins)",
+                 len(rows), len(margins))
     except Exception:
         log.exception("fred_boards: ppi regen failed")
     try:
