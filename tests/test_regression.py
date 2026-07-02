@@ -13032,3 +13032,35 @@ class TestGovCommand20260704:
         out = g._latest_per_person(rows)
         assert len(out) == 2                            # 인당 1건
         assert out[0]["name"] == "김임원" and out[0]["pct"] == 1.2  # 최신 채택+최신순
+
+    def test_gov_natural_language_and_name_variants(self):
+        # 자연어 라우팅 + 이름 변형 해석 (사용자 2026-07-04 '자연어로도,
+        # 하이닉스→SK하이닉스').
+        import bot.governance as g
+        assert g.extract_gov_query("하이닉스 거버넌스") == "하이닉스"
+        assert g.extract_gov_query("하이닉스 거버넌스 알려줘") == "하이닉스"
+        assert g.extract_gov_query("삼성전자지배구조 어때?") == "삼성전자"
+        assert g.extract_gov_query("삼성전자 실적 알려줘") is None   # 의도 없음
+        assert g.extract_gov_query("/gov 삼성전자") is None          # 명령 제외
+        v = g._query_variants("SK하이닉스")
+        assert "에스케이하이닉스" in v                # 통용명 → DART 등재명
+        assert "하이닉스" in g._query_variants("하이닉스의")   # 조사 strip
+        assert "엘지에너지솔루션" in g._query_variants("LG 에너지솔루션")
+
+    def test_gov_nl_wiring_all_surfaces(self):
+        # 3표면 배선: 텔레그램 채널(on_channel_post)·DM(on_private_text)·
+        # 대시보드 콘솔(_CONSOLE_JS govIntent → /gov 라우팅).
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def on_private_text" in tb
+        assert tb.count("extract_gov_query") >= 2      # 채널 + DM 양쪽
+        assert "on_private_text,\n" in tb or "on_private_text)" in tb.replace(" ", "")
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "function govIntent(raw)" in db
+        assert "noahRunCommand('/gov ' + raw" in db
+        # JS 키워드 목록 = python _NL_KW 동기 (drift 시 여기서 fail)
+        import bot.governance as g
+        for k in ("거버넌스", "지배구조", "대주주", "경영권"):
+            assert k in g._NL_KW and f"'{k}'" in db
+        # NL 문장이 통째로 /gov 인자로 와도 재해석(빌드 내 retry)
+        assert "extract_gov_query(query)" in open(
+            "bot/governance.py", encoding="utf-8").read()
