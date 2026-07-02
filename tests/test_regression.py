@@ -6396,8 +6396,10 @@ class TestMarketLiveTick:
         assert "30초 자동 갱신" in html                        # ts 라벨
 
     def test_live_js_constant(self):
+        # 2026-07-03 정책 변경: 30초 강제 swap 제거 → 업데이트 배너(30분 체크,
+        # 사용자 선택)로 통일. _MARKET_LIVE_JS 는 빈 문자열이어야(부활 방지).
         import bot.dashboard as d
-        assert "DOMParser" in d._MARKET_LIVE_JS and "30000" in d._MARKET_LIVE_JS
+        assert d._MARKET_LIVE_JS == ""
 
 
 class TestHomeSnapshotPureNaver:
@@ -11047,7 +11049,9 @@ class TestAsiaDashboard20260615:
         a = d._render_asia_page({"jp_sector_movers": mv, "cn_sector_movers": mv,
                                  "hk_sector_movers": mv, "tw_sector_movers": mv})
         assert all(x in a for x in ["🇯🇵 일본", "🇨🇳 중국", "🇭🇰 홍콩", "🇹🇼 대만"])
-        assert "fetch('asia.html'" in a            # 라이브 틱 self-fetch
+        # 2026-07-03: 30초 self-fetch swap 제거(배너로 대체) — 스크롤 복원만 유지.
+        assert "fetch('asia.html'" not in a
+        assert "noah_asia_scroll" in a
         assert "noah_asia_scroll" in a             # 진입 위치 복원
         # ASIA nav = 홈 + NOAH 종목분석만 (사용자 2026-06-15) — 그 외 peers 없음
         _nav = a[a.index('<div class="nav">'):a.index("</div>", a.index('<div class="nav">'))]
@@ -11663,9 +11667,11 @@ class TestAsiaTier2_20260616:
         assert 'market in ("HK", "CN_A")' in s, "CN_A bare-code 정규화 누락"
 
     def test_t11_asia_hub_isopen_gate(self):
+        # 2026-07-03: 30초 폴링 자체가 제거돼 isOpen 게이트도 함께 은퇴(배너 30분
+        # 체크로 대체) — 폴링/장중 게이트가 부활하지 않는지 고정.
         from bot.dashboard import _ASIA_LIVE_JS as js
-        assert "function isOpen()" in js and "if(!isOpen()) return" in js
-        assert "d===0||d===6" in js          # 주말 skip
+        assert "isOpen" not in js and "setInterval" not in js
+        assert "noah_asia_scroll" in js                 # 스크롤 복원은 유지
 
     def test_t12_tw_limit_marker(self):
         from bot import highlow_render as hr
@@ -12770,3 +12776,35 @@ class TestEmptyHoldingsGuard:
         assert bak.exists()                       # 2번째 저장 = 직전(v1) 백업
         import json as _json
         assert _json.loads(bak.read_text())["v"] == 1
+
+
+class TestRefreshBannerAndPerf20260703:
+    """새로고침 UX(사용자 2026-07-03 '30분 체크 + 팝업으로 내가 결정') + 성능
+    감사 quick-win 계약 — 강제 자동 swap 제거·배너 30분·정적 JS 장기캐시."""
+
+    @staticmethod
+    def _src(path):
+        return open(path, encoding="utf-8").read()
+
+    def test_banner_30min_with_dismiss(self):
+        src = self._src("bot/dashboard.py")
+        assert "POLL=1800000" in src                    # 30분 체크
+        assert "POLL=45000" not in src
+        assert "보던 화면 유지" in src                  # ✕ = 유지(재알림 재무장)
+
+    def test_market_asia_no_forced_swap(self):
+        src = self._src("bot/dashboard.py")
+        assert "setInterval(tick, 30000)" not in src    # 30초 강제 swap 제거
+        assert "기준 · 30초 자동 갱신" not in src       # 라벨 동기화
+        assert "_inject_update_banner(_render_market_page" in src
+        assert "_inject_update_banner(_render_asia_page" in src
+        assert "noah_asia_scroll" in src                # 스크롤 복원은 유지
+
+    def test_vendored_js_long_cache(self):
+        assert "max-age=604800" in self._src("bot/dashboard_server.py")
+
+    def test_trade_prefetch_removed_banner_added(self):
+        src = self._src("trade/dashboard.py")
+        assert "_prefetchLazy" not in src               # 7MB 숨은 prefetch 제거
+        assert "POLL=1800000" in src
+        assert "upd-banner" in src
