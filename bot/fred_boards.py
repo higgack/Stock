@@ -241,10 +241,17 @@ def _yoy_at(hist: list[tuple[str, float]], months_back: int):
 def margin_spreads(H: dict[str, list]) -> list[dict]:
     """[{label, out_yoy, in_yoy, spread, trend3m, stocks}] — 쌍의 어느 한쪽
     데이터 부족 시 그 쌍만 생략(graceful). spread=out−in(pp), trend3m=
-    spread 지금 − 3개월 전(양수=개선 가속). 순수(테스트)."""
+    spread 지금 − 3개월 전(양수=개선 가속). **두 시계열을 공통 최신월로 잘라
+    정렬** — 발표 lag 로 한쪽만 최신월 있으면 다른 달 YoY 끼리 빼는 왜곡
+    (예: 5월 판가 − 6월 원가) 차단(리뷰 finding). 순수(테스트)."""
     out = []
     for p in _MARGIN_PAIRS:
         ho, hi = H.get(p["out"]) or [], H.get(p["inp"]) or []
+        if len(ho) < 16 or len(hi) < 16:
+            continue
+        common = min(ho[-1][0][:7], hi[-1][0][:7])   # 공통 최신월(YYYY-MM)
+        ho = [x for x in ho if x[0][:7] <= common]
+        hi = [x for x in hi if x[0][:7] <= common]
         if len(ho) < 16 or len(hi) < 16:
             continue
         oy, iy = _yoy_at(ho, 0), _yoy_at(hi, 0)
@@ -465,9 +472,13 @@ def _margin_panel(margins: list[dict]) -> str:
     body = []
     for m in margins:
         tr = m.get("trend3m")
-        tr_s = ("<span class='flat'>—</span>" if tr is None else
-                f"<span class='{'pos' if tr >= 0 else 'neg'}'>"
-                f"{'▲ 개선' if tr >= 0 else '▼ 악화'} {tr:+.1f}pp</span>")
+        if tr is None:
+            tr_s = "<span class='flat'>—</span>"
+        elif abs(tr) < 0.05:   # 변화 없음을 '개선'으로 오표기 금지(리뷰 finding)
+            tr_s = "<span class='flat'>→ 유지 +0.0pp</span>"
+        else:
+            tr_s = (f"<span class='{'pos' if tr > 0 else 'neg'}'>"
+                    f"{'▲ 개선' if tr > 0 else '▼ 악화'} {tr:+.1f}pp</span>")
         sp = m["spread"]
         body.append(
             f"<tr><td><b>{_h.escape(m['label'])}</b></td>"

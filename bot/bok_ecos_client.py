@@ -372,18 +372,49 @@ _KR_PPI_TABLE = "404Y014"
 
 def _match_items(rows: list[dict], patterns: list[str]) -> dict[str, str]:
     """아이템 목록에서 패턴별 코드 해석 {pattern: item_code}. 정확일치 우선,
-    없으면 부분일치 중 **이름이 가장 짧은 것**(가장 일반 분류). 순수(테스트)."""
+    없으면 부분일치 중 **ITEM_CODE 가 가장 짧은 것**(ECOS 계층에서 짧은 코드 =
+    상위 집계 — '철강선' 같은 세부 품목이 이름만 짧아 오매칭되던 최단이름
+    휴리스틱을 교정, 리뷰 finding. 코드 길이 동률이면 이름 짧은 쪽). 이름 비교는
+    양쪽 다 strip. 순수(테스트)."""
     out: dict[str, str] = {}
     for pat in patterns:
         exact = [r for r in rows if (r.get("ITEM_NAME") or "").strip() == pat]
         if exact:
             out[pat] = exact[0].get("ITEM_CODE", "")
             continue
-        part = [r for r in rows if pat in (r.get("ITEM_NAME") or "")]
+        part = [r for r in rows
+                if pat in (r.get("ITEM_NAME") or "").strip()]
         if part:
-            best = min(part, key=lambda r: len(r.get("ITEM_NAME") or ""))
+            best = min(part, key=lambda r: (len(r.get("ITEM_CODE") or ""),
+                                            len((r.get("ITEM_NAME") or "").strip())))
             out[pat] = best.get("ITEM_CODE", "")
     return {k: v for k, v in out.items() if v}
+
+
+def _fetch_item_list(api_key: str) -> list[dict]:
+    """404Y014 아이템 전체 목록 — 페이지네이션(1000행 단위, 최대 5쪽). 기본분류
+    품목이 500+ 개라 단일 1/500 요청은 뒤쪽 항목을 놓침(리뷰 finding)."""
+    items: list[dict] = []
+    for page in range(5):
+        s, e = page * 1000 + 1, (page + 1) * 1000
+        try:
+            url = (f"{_BASE_URL}/StatisticItemList/{api_key}/json/kr/{s}/{e}/"
+                   f"{_KR_PPI_TABLE}")
+            resp = requests.get(url, timeout=_TIMEOUT)
+            resp.raise_for_status()
+            payload = resp.json()
+            if "RESULT" in payload and "StatisticItemList" not in payload:
+                log.warning("ecos: kr_ppi item list error: %s",
+                            payload.get("RESULT"))
+                break
+            rows = (payload.get("StatisticItemList") or {}).get("row") or []
+        except Exception as exc:
+            log.warning("ecos: kr_ppi item list failed (p%d): %s", page, exc)
+            break
+        items.extend(rows)
+        if len(rows) < 1000:
+            break
+    return items
 
 
 def fetch_kr_ppi_history(patterns: list[str],
@@ -405,32 +436,37 @@ def fetch_kr_ppi_history(patterns: list[str],
                             if k != "_missing"}
         except Exception as exc:
             log.warning("ecos: kr_ppi cache read failed: %s", exc)
-    # ① 아이템 목록 → 이름 해석
-    try:
-        url = (f"{_BASE_URL}/StatisticItemList/{api_key}/json/kr/1/500/"
-               f"{_KR_PPI_TABLE}")
-        resp = requests.get(url, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        items = (resp.json().get("StatisticItemList") or {}).get("row") or []
-    except Exception as exc:
-        log.warning("ecos: kr_ppi item list failed: %s", exc)
+    # ① 아이템 목록(페이지네이션) → 이름 해석
+    items = _fetch_item_list(api_key)
+    if not items:
         return {}
     codes = _match_items(items, patterns)
     if not codes:
         log.warning("ecos: kr_ppi no items matched %s", patterns)
         return {}
-    # ② 패턴별 월간 히스토리
+    # ② 패턴별 월간 히스토리. 일시 실패(failed)는 '_missing'(진짜 무데이터)과
+    # 구분해 캐시에 안 박음 — 장애가 12h 동안 '없음'으로 박제 방지 + ECOS
+    # RESULT 에러 shape 는 CODE/MESSAGE 로깅(silent-fail 금지 — 리뷰 fix 2건).
+    # 1/400 = 2052년까지 월간 창 여유(1/200 은 2035-09부터 최신월 잘림).
     end = date.today().strftime("%Y%m")
     out: dict[str, list[tuple[str, float]]] = {}
+    failed: set[str] = set()
     for pat, code in codes.items():
         try:
-            url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/200/"
+            url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/400/"
                    f"{_KR_PPI_TABLE}/M/{start}/{end}/{code}")
             resp = requests.get(url, timeout=_TIMEOUT)
             resp.raise_for_status()
-            rows = (resp.json().get("StatisticSearch") or {}).get("row") or []
+            payload = resp.json()
+            if "RESULT" in payload and "StatisticSearch" not in payload:
+                log.warning("ecos: kr_ppi API error (%s): %s",
+                            pat, payload.get("RESULT"))
+                failed.add(pat)
+                continue
+            rows = (payload.get("StatisticSearch") or {}).get("row") or []
         except Exception as exc:
             log.warning("ecos: kr_ppi fetch failed (%s): %s", pat, exc)
+            failed.add(pat)
             continue
         pts = []
         for r in sorted(rows, key=lambda x: x.get("TIME", "")):
@@ -445,8 +481,11 @@ def fetch_kr_ppi_history(patterns: list[str],
             out[pat] = pts
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        payload = {k: v for k, v in out.items()}
-        payload["_missing"] = [p for p in patterns if p not in out]
+        payload = dict(out)
+        # 성공했지만 정말 데이터 없는 것만 _missing — failed 는 제외해 다음
+        # 실행(캐시 subset 불충족)이 재시도하게.
+        payload["_missing"] = [p for p in patterns
+                               if p not in out and p not in failed]
         cache_file.write_text(json.dumps(payload, ensure_ascii=False))
     except Exception as exc:
         log.warning("ecos: kr_ppi cache write failed: %s", exc)

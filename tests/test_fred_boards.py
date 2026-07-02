@@ -191,6 +191,23 @@ class MarginSpreadTests(unittest.TestCase):
              "WPU0561": self._hist(100, 0.0, n=10)}
         self.assertEqual(fb.margin_spreads(H), [])
 
+    def test_spread_aligns_to_common_month(self):
+        # 발표 lag: 원가 시리즈만 한 달 더(급등 200) — 공통월로 잘라야 5월판가−
+        # 6월원가 왜곡이 없다(리뷰 finding). 정렬 후 양쪽 flat → 스프레드 0.
+        ho = self._hist(100, 0.0, n=24)                  # 판가 flat, ~2024-12
+        hi = self._hist(100, 0.0, n=25)                  # 원가 flat + 1달 더
+        hi[-1] = (hi[-1][0], 200.0)                      # 마지막 달 급등
+        out = fb.margin_spreads({"PCU324110324110": ho, "WPU0561": hi})
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out[0]["spread"], 0.0, places=6)   # 급등월 제외됨
+
+    def test_trend_zero_renders_neutral(self):
+        # 변화 0 을 '▲ 개선'으로 오표기 금지(리뷰 finding) — '→ 유지'.
+        panel = fb._margin_panel([{"label": "x", "out_yoy": 1.0, "in_yoy": 1.0,
+                                   "spread": 0.0, "trend3m": 0.0, "stocks": "s"}])
+        self.assertIn("→ 유지", panel)
+        self.assertNotIn("▲ 개선", panel)   # 설명문 '마진 개선'과 구분(셀 표기만)
+
     def test_margin_panel_render(self):
         panel = fb._margin_panel([{"label": "정유 (제품−원유)", "out_yoy": 10.0,
                                    "in_yoy": 2.0, "spread": 8.0, "trend3m": 1.5,
@@ -209,18 +226,46 @@ class MarginSpreadTests(unittest.TestCase):
 class KrPpiTests(unittest.TestCase):
     """한국 PPI(ECOS 404Y014) — 아이템 이름매칭·행 변환·graceful."""
 
-    def test_match_items_exact_then_shortest(self):
+    def test_match_items_exact_then_shortest_code(self):
         from bot import bok_ecos_client as ec
+        # 부분일치는 ITEM_CODE 최단(= ECOS 상위 집계) 우선 — 이름이 짧은 세부
+        # 품목('반도체제조용기계')이 집계('반도체및전자표시장치', 코드 짧음)를
+        # 이기던 최단이름 휴리스틱 오매칭 회귀(리뷰 finding).
         rows = [{"ITEM_NAME": "총지수", "ITEM_CODE": "*AA"},
-                {"ITEM_NAME": "반도체및전자표시장치", "ITEM_CODE": "B1"},
-                {"ITEM_NAME": "반도체제조용장비", "ITEM_CODE": "B2"},
-                {"ITEM_NAME": "화학제품", "ITEM_CODE": "C1"}]
+                {"ITEM_NAME": "반도체및전자표시장치", "ITEM_CODE": "335"},
+                {"ITEM_NAME": "반도체제조용기계", "ITEM_CODE": "33512"},
+                {"ITEM_NAME": " 화학제품 ", "ITEM_CODE": "C1"}]
         got = ec._match_items(rows, ["총지수", "반도체", "화학", "없는것"])
         self.assertEqual(got["총지수"], "*AA")           # 정확일치
-        self.assertEqual(got["반도체"], "B2" if len("반도체제조용장비") <
-                         len("반도체및전자표시장치") else "B1")  # 최단 이름
-        self.assertEqual(got["화학"], "C1")
+        self.assertEqual(got["반도체"], "335")           # 코드 최단=상위 집계
+        self.assertEqual(got["화학"], "C1")              # strip 후 부분일치
         self.assertNotIn("없는것", got)                  # 무매칭 생략
+
+    def test_transient_failure_not_cached_as_missing(self):
+        # 일시 fetch 실패는 '_missing'에 박제 금지 → 캐시 subset 불충족으로
+        # 다음 실행이 재시도(리뷰 finding: 자정 blip = 하루종일 행 실종).
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from bot import bok_ecos_client as ec
+        tmp = Path(tempfile.mkdtemp())
+        items = {"StatisticItemList": {"row": [
+            {"ITEM_NAME": "총지수", "ITEM_CODE": "*AA"}]}}
+
+        def fake_get(url, timeout=0):
+            r = mock.Mock()
+            if "StatisticItemList" in url:
+                r.json.return_value = items
+                return r
+            raise RuntimeError("blip")                   # StatisticSearch 실패
+        with mock.patch.object(ec, "_CACHE_DIR", tmp), \
+             mock.patch.dict("os.environ", {"BOK_ECOS_API_KEY": "k"}), \
+             mock.patch.object(ec.requests, "get", side_effect=fake_get):
+            out = ec.fetch_kr_ppi_history(["총지수"])
+        self.assertEqual(out, {})
+        import json as _j
+        cached = _j.loads(next(tmp.glob("kr_ppi_*.json")).read_text())
+        self.assertEqual(cached.get("_missing"), [])     # failed ≠ missing
 
     def test_load_kr_ppi_rows(self):
         from unittest import mock
