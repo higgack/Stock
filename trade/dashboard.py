@@ -2561,12 +2561,17 @@ handleHashDeepLink();
   var CHECK=60000, BASELINE=1800000;
   var url=location.pathname+location.search, base=null, ignored=null;
   var loadedAt=Date.now(), SK='updst:'+location.pathname;
+  var lastKey=0;
+  document.addEventListener('keydown', function(){ lastKey=Date.now(); }, true);
   function typing(){ var a=document.activeElement;
-    return !!(a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)); }
+    // 포커스만으론 차단 금지(검색창 클릭 후 방치 시 기준선이 영영 안 돌던 것,
+    // 리뷰 finding #6) — 최근 60초 내 실제 키 입력이 있을 때만 '입력 중'.
+    return !!(a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)
+              && Date.now()-lastKey < 60000); }
   function saveState(){
     try{
       var inputs={};
-      document.querySelectorAll('input[type=text][id],input:not([type])[id]').forEach(
+      document.querySelectorAll('input[type=text][id],input[type=search][id],input:not([type])[id]').forEach(
         function(i){ if(i.value) inputs[i.id]=i.value; });
       sessionStorage.setItem(SK, JSON.stringify(
         {y:window.scrollY, inputs:inputs, ts:Date.now()}));

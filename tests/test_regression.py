@@ -12811,6 +12811,13 @@ class TestRefreshBannerAndPerf20260703:
         import bot.dashboard as d
         html, frags = d._render_index([])
         assert "analysis_csv.json" in frags             # 빈 아카이브도 CSV 파일
+        # /code-review 2026-07-03 findings 고정:
+        assert "__failed" in src                        # #1 무한 재시도 루프 차단
+        assert "type=search" in src                     # #2 검색창 상태 복원
+        assert "_inject_update_banner(_idx_html)" in src.replace(" ", "") or \
+               "_inject_update_banner(_idx_html)" in src  # #3 index 배너 주입
+        assert "lastKey" in src                         # #6 포커스≠입력중
+        assert "개월 로드 실패" in src                  # #7 부분 실패 가시화
 
     def test_market_asia_no_forced_swap(self):
         src = self._src("bot/dashboard.py")

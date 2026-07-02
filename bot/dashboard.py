@@ -1184,7 +1184,11 @@ _INDEX_JS = """
   var marketFilter = 'ALL';
   const mfBtns = Array.from(document.querySelectorAll('.mf-btn'));
   const lazyMonths = Array.from(document.querySelectorAll('details.month[data-lazy]'));
-  function pendingMonths(){ return lazyMonths.filter(function(m){ return !m.__loaded; }); }
+  // __failed 는 pending 에서 제외 — 404/오프라인 시 applyFilter 가 loadAll 을
+  // 무한 재귀(요청 폭주)하던 것 차단(리뷰 finding #1). 수동으로 접었다 펼치면
+  // __failed 리셋 → 재시도.
+  function pendingMonths(){ return lazyMonths.filter(function(m){ return !m.__loaded && !m.__failed; }); }
+  function failedCount(){ return lazyMonths.filter(function(m){ return m.__failed; }).length; }
   function loadMonth(m){
     if (m.__loaded) return Promise.resolve();
     if (m.__loading) return m.__loading;
@@ -1192,12 +1196,13 @@ _INDEX_JS = """
     m.__loading = fetch(m.dataset.lazy, {cache:'no-store'})
       .then(function(r){ if(!r.ok) throw 0; return r.text(); })
       .then(function(html){
-        body.innerHTML = html; m.__loaded = true;
-        rescan();
-        if (window.__impApply) window.__impApply();   // ★📝⏰ 새 카드에도
+        body.innerHTML = html; m.__loaded = true; m.__failed = false;
+        // rescan/★도구 예외가 fetch catch 로 떨어져 방금 넣은 본문을 '실패'
+        // 문구로 덮고 __loaded=true 라 영영 재시도 불가되던 것 방지(finding #4).
+        try { rescan(); if (window.__impApply) window.__impApply(); } catch(e) {}
       })
       .catch(function(){
-        m.__loading = null;
+        m.__loading = null; m.__failed = true;
         body.innerHTML = '<div class="lazy-note" style="color:var(--fg-soft);padding:10px 4px">불러오기 실패 — 접었다 다시 펼쳐보세요.</div>';
       });
     return m.__loading;
@@ -1205,7 +1210,7 @@ _INDEX_JS = """
   function loadAllMonths(){ return Promise.all(pendingMonths().map(loadMonth)); }
   lazyMonths.forEach(function(m){
     m.addEventListener('toggle', function(){
-      if (m.open && !m.__loaded) loadMonth(m).then(applyFilter);
+      if (m.open && !m.__loaded) { m.__failed = false; loadMonth(m).then(applyFilter); }
     });
   });
   function matchesMarket(c) {
@@ -1362,6 +1367,9 @@ _INDEX_JS = """
       return;
     }
     showSnippetsMode(raw);
+    // 로드 실패 월 가시화 — 결과가 '전체'처럼 보이는 착시 방지(finding #7).
+    var fc = failedCount();
+    if (fc) statusEl.textContent += ' · ⚠️ ' + fc + '개월 로드 실패(해당 월 제외)';
   }
 
   function syncFromHash() {
@@ -6966,15 +6974,22 @@ def regenerate_index() -> None:
         # self-host it. Non-fatal: a miss just means charts don't render.
         _ensure_chart_lib()
         _idx_html, _idx_frags = _render_index(records)
-        (ARCHIVE_ROOT / "index.html").write_text(_idx_html, encoding="utf-8")
-        # 과거 월 lazy 프래그먼트 + CSV JSON — 이름이 결정론적(YYYY-MM)이라
-        # 매 regen 덮어씀. 실패해도 index 는 유지(그 달만 '불러오기 실패' 표시).
+        # 프래그먼트를 index 보다 **먼저** + 원자 쓰기(tmp+replace) — 새 index 가
+        # 아직 없는/반쯤 쓰인 프래그먼트를 참조해 404·잘림 로드되는 창 차단
+        # (리뷰 finding #5, 월 롤오버 직후 첫 regen 이 대표 케이스).
         for _fn, _fc in _idx_frags.items():
             try:
-                (ARCHIVE_ROOT / _fn).write_text(_fc, encoding="utf-8")
+                _ft = (ARCHIVE_ROOT / _fn).with_suffix(".tmp")
+                _ft.write_text(_fc, encoding="utf-8")
+                _ft.replace(ARCHIVE_ROOT / _fn)
             except Exception as _fe:
                 log.warning("dashboard: index fragment %s write failed: %s",
                             _fn, _fe)
+        # 업데이트 배너(1분 팝업 + 30분 기준선) — index 도 콘텐츠 페이지와 동일
+        # (리뷰 finding #3: 미주입이면 mf/검색 복원 코드가 영영 안 돎).
+        _it = (ARCHIVE_ROOT / "index.html").with_suffix(".html.tmp")
+        _it.write_text(_inject_update_banner(_idx_html), encoding="utf-8")
+        _it.replace(ARCHIVE_ROOT / "index.html")
         # Errors / partial-completion catalog (Option A from the spec).
         hard_failures = _read_hard_failures()
         (ARCHIVE_ROOT / "errors.html").write_text(
@@ -9393,12 +9408,17 @@ _UPDATE_BANNER_JS = """<script>
   var CHECK=60000, BASELINE=1800000;
   var url=location.pathname+location.search, base=null, ignored=null;
   var loadedAt=Date.now(), SK='updst:'+location.pathname;
+  var lastKey=0;
+  document.addEventListener('keydown', function(){ lastKey=Date.now(); }, true);
   function typing(){ var a=document.activeElement;
-    return !!(a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)); }
+    // 포커스만으론 차단 금지(검색창 클릭 후 방치 시 기준선이 영영 안 돌던 것,
+    // 리뷰 finding #6) — 최근 60초 내 실제 키 입력이 있을 때만 '입력 중'.
+    return !!(a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)
+              && Date.now()-lastKey < 60000); }
   function saveState(){
     try{
       var inputs={};
-      document.querySelectorAll('input[type=text][id],input:not([type])[id]').forEach(
+      document.querySelectorAll('input[type=text][id],input[type=search][id],input:not([type])[id]').forEach(
         function(i){ if(i.value) inputs[i.id]=i.value; });
       var mf=document.querySelector('.mf-btn.active');
       sessionStorage.setItem(SK, JSON.stringify(
