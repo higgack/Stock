@@ -549,7 +549,7 @@ def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
 {_NAV}
 <h1>🏭 <em>PPI</em> 투자신호 보드</h1>
 <p class="sub">미 생산자물가(FRED) 산업별 가격 추세 → 관련주 신호 · {len(rows)}개 시리즈(2019-01~) ·
-관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(일 1회 자동 갱신)</p>
+관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 신호 필터</b> — 상단 알약(전체/🔴/🟠/🟡/🔵/⚪) 클릭 = 그 신호만. 두 번째 줄 = 카테고리 필터.<br>
 <b>2) 신호 의미(룰 기반)</b> — 🔴 <b>강한 상승</b>: YoY≥5% & 3M≥1.5%(가격 전가력↑) ·
@@ -560,7 +560,7 @@ def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
 자동 신호이므로 참고용 — 확정 판단 금지.<br>
 <b>5) 💹 마진 스프레드</b> — 판가(산업 PPI) YoY − 원가(원재료 PPI) YoY. 양수·확대 = 그 산업 마진 개선 압력(원가는 단일 proxy — 방향 신호용).<br>
 <b>6) 🇰🇷 한국 PPI</b> — 카테고리 '한국 PPI(ECOS)' = 한국은행 생산자물가(월간)를 같은 신호 룰로 — 미국(FRED)과 나란히 비교.<br>
-<b>7) 갱신</b> — 매일 자정 KST 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
+<b>7) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
 </details>
 {empty}
 {_margin_panel(margins)}
@@ -661,7 +661,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 {_NAV}
 <h1>💧 <em>글로벌 유동성</em> 보드</h1>
 <p class="sub">Fed 순유동성(WALCL−TGA−RRP)·M2·중앙은행 자산·크레딧 스프레드·스트레스 지표 {len(rows)}종(FRED) ·
-데이터 적용시각 {ts} · 소스 FRED API(일 1회 자동 갱신)</p>
+데이터 적용시각 {ts} · 소스 FRED API(6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 종합점수(0~100)</b> — 구성요소 8개 각각의 <b>최근값이 최근 5년 분포에서 어디쯤인지</b>(백분위)를
 평균. 순유동성 13주Δ·지준 13주Δ·M2 YoY·은행신용 YoY 는 높을수록 완화, HY스프레드·NFCI·VIX 는
@@ -669,7 +669,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 <b>2) 순유동성 차트</b> — Fed 총자산 − 재무부계정(TGA) − 역레포(RRP), 단위 B$.
 TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
-<b>4) 갱신</b> — 매일 자정 KST 자동 재생성(FRED 무료). Phase 2(BOK ECOS·중국 AKShare)는 추후.
+<b>4) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(FRED 무료). Phase 2(BOK ECOS·중국 AKShare)는 추후.
 </details>
 {empty}
 <div class="panel"><div class="panel-title">종합 유동성 점수</div>
