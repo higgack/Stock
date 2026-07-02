@@ -1085,6 +1085,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 /screener [도메인 | 자유어] — Bottleneck (67도메인+L4세분+자유어) · 전체 /screener_list
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림
+/gov 종목 — 거버넌스 브리핑 (KR·DART: 대주주·임원지분·주총/활동주의 공시 + AI요약)
 /paper — 페이퍼 모의매매(돈0) · /paper help
 /health · /yfpause·/naverpause on|off — 소스 헬스/정지토글
 
@@ -3482,6 +3483,37 @@ def _handle_health() -> str:
         return f"헬스체크 실패: {_html.escape(str(exc)[:200])}"
 
 
+async def cmd_gov(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/gov 종목 — 거버넌스 브리핑 (KR·DART). open-proxy-mcp 검토 채택
+    (2026-07-04) — 네이티브 구현(키 로컬), 텔레그램·대시보드 콘솔 공용."""
+    if not update.message:
+        return
+    query = " ".join(ctx.args).strip() if ctx.args else ""
+    if not query:
+        await update.message.reply_text(
+            "사용: <code>/gov 종목</code> — 예) /gov 삼성물산 · /gov 005930\n"
+            "대주주·임원 지분·주총/활동주의 공시(90일)·AI 3줄 종합 (KR 전용)",
+            parse_mode=ParseMode.HTML)
+        return
+    msg = await update.message.reply_text("🏛 거버넌스 조회 중… (DART)",
+                                          parse_mode=ParseMode.HTML)
+    from bot.governance import build_gov_brief
+    text = await asyncio.to_thread(build_gov_brief, query)
+    try:
+        await msg.edit_text(text, parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True)
+    except Exception:
+        # HTML 파스 거절(400)까지 겹치면 평문으로 degrade — '조회 중…'에서
+        # 무출력으로 멈추던 경로 차단 (리뷰 2026-07-04 #1).
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML,
+                                            disable_web_page_preview=True)
+        except Exception:
+            from bot.dashboard_console import strip_tg_html
+            await update.message.reply_text(strip_tg_html(text),
+                                            disable_web_page_preview=True)
+
+
 async def cmd_health(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """야후/네이버 소스 헬스체크 — /health (DM). 잘 받아오는지 직접 점검."""
     if update.message:
@@ -3581,6 +3613,7 @@ def _static_command_registry() -> dict:
         "watchlist": (cmd_watchlist, "감시 목록 보기"),
         "unwatch": (cmd_unwatch, "감시 삭제 (TICKER/id/all)"),
         "dart_alert": (cmd_dart_alert, "관심종목 DART 공시 알림 (on/off)"),
+        "gov": (cmd_gov, "거버넌스 브리핑 (KR — 대주주·지분·주총/활동주의 공시)"),
         "yfpause": (cmd_yfpause, "yfinance 호출 일시정지 토글 (on/off)"),
         "naverpause": (cmd_naverpause, "네이버 호출 일시정지 토글 (on/off)"),
         "health": (cmd_health, "야후/네이버 소스 헬스체크 (잘 받아오는지)"),

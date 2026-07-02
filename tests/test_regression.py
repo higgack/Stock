@@ -12960,3 +12960,75 @@ class TestActivistSignificance20260704:
             "category": "지분공시",
             "detail": ["보고사유: 신규보고", "지분율: 4.20% → 5.30% (+1.10%p ▲)"],
         }) == "신규 5.3% 대량보유"
+
+
+class TestGovCommand20260704:
+    """/gov 거버넌스 브리핑 (사용자 2026-07-04 — open-proxy-mcp 네이티브 채택).
+    단일 레지스트리·헬프 동시등록 + governance 순수 로직 계약."""
+
+    @staticmethod
+    def _src(path):
+        return open(path, encoding="utf-8").read()
+
+    def test_registry_and_help_wired(self):
+        src = self._src("bot/telegram_bot.py")
+        assert '"gov": (cmd_gov,' in src              # 단일 레지스트리(4소비처 파생)
+        assert "async def cmd_gov" in src
+        assert "/gov 종목 — 거버넌스 브리핑" in src   # _HELP_TEXT 같은 commit
+        import re
+        m = re.search(r'_HELP_TEXT = """(.*?)"""', src, re.S)
+        assert m and len(m.group(1).encode("utf-16-le")) // 2 < 4096
+
+    def test_gov_disclosure_filter(self, monkeypatch):
+        import bot.governance as g
+        import bot.dart_feed as df
+        fake = {"2026-07-01": [
+            {"stock_code": "005930", "report_nm": "주식등의대량보유상황보고서(일반)",
+             "category": "지분공시"},
+            {"stock_code": "005930", "report_nm": "단일판매공급계약체결",
+             "category": "계약"},
+            {"stock_code": "000660", "report_nm": "주주총회소집공고",
+             "category": "기타"},
+        ], "2026-06-30": [
+            {"stock_code": "005930", "report_nm": "주주총회소집공고",
+             "category": "기타"},
+        ]}
+        monkeypatch.setattr(df, "load_all_archives", lambda days_back=90: fake)
+        rows = g._gov_disclosures("005930")
+        names = [r["report_nm"] for r in rows]
+        assert "단일판매공급계약체결" not in names      # 비거버넌스 제외
+        assert "주식등의대량보유상황보고서(일반)" in names
+        assert "주주총회소집공고" in names              # 키워드 매치(타 카테고리)
+        assert all("000660" != r.get("stock_code") for r in rows)  # 타종목 제외
+        assert rows[0]["_date"] == "2026-07-01"         # 최신순
+
+    def test_gov_unresolved_escapes_and_guides(self, monkeypatch):
+        import bot.governance as g
+        monkeypatch.setattr(g, "resolve_kr_target", lambda q: (None, q, []))
+        out = g.build_gov_brief("<b>없는회사</b>")
+        assert "&lt;b&gt;" in out                       # 사용자입력 escape(교훈 #7)
+        assert "한국 종목 전용" in out                  # KR(DART) 한정 안내
+
+    def test_gov_candidates_listed(self, monkeypatch):
+        import bot.governance as g
+        cands = [{"name": "현대차", "stock_code": "005380"},
+                 {"name": "현대모비스", "stock_code": "012330"}]
+        monkeypatch.setattr(g, "resolve_kr_target", lambda q: (None, q, cands))
+        out = g.build_gov_brief("현대")
+        assert "005380" in out and "012330" in out and "후보" in out
+
+    def test_gov_review_fixes_20260704(self):
+        # 리뷰 fix 고정: ① 트림 = 줄 경계(rfind newline — mid-태그 절단 차단)
+        # + 텔레그램 평문 degrade 폴백 ② 임원 인당 최신 dedupe.
+        import bot.governance as g
+        src = open("bot/governance.py", encoding="utf-8").read()
+        assert 'text.rfind("\\n", 0, 3900)' in src
+        assert "strip_tg_html" in open("bot/telegram_bot.py", encoding="utf-8").read()
+        rows = [
+            {"name": "김임원", "role": "대표이사", "pct": 1.0, "changed_on": "2026-05-01"},
+            {"name": "김임원", "role": "대표이사", "pct": 1.2, "changed_on": "2026-06-20"},
+            {"name": "박주주", "role": "", "pct": 6.0, "changed_on": "2026-06-01"},
+        ]
+        out = g._latest_per_person(rows)
+        assert len(out) == 2                            # 인당 1건
+        assert out[0]["name"] == "김임원" and out[0]["pct"] == 1.2  # 최신 채택+최신순
