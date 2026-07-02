@@ -1134,9 +1134,16 @@ _INDEX_CSV_JS = """<script>
   var btn=document.getElementById('csv-btn');
   if(!btn)return;
   btn.addEventListener('click',function(){
-    var el=document.getElementById('analysis-csv-data');
-    if(!el){return;}
-    var rows;try{rows=JSON.parse(el.textContent||'[]');}catch(e){return;}
+    // 인라인 임베드 → 외부 JSON fetch(성능 2026-07-03: 전 리포트 전문 2중
+    // 임베드가 index 최대 중량원이었음). 클릭 시에만 다운로드.
+    btn.disabled=true; btn.textContent='⏳';
+    fetch('analysis_csv.json',{cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+      .then(function(rows){ buildCsv(rows); })
+      .catch(function(){ alert('CSV 데이터를 불러오지 못했습니다.'); })
+      .then(function(){ btn.disabled=false; btn.textContent='⬇ CSV'; });
+  });
+  function buildCsv(rows){
     if(!rows.length){alert('내보낼 분석 기록이 없습니다.');return;}
     var cols=Object.keys(rows[0]);
     function esc(v){v=(v==null?'':String(v));return /[",\\n\\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
@@ -1149,7 +1156,7 @@ _INDEX_CSV_JS = """<script>
     a.href=url;a.download='noah_분석_'+new Date().toISOString().slice(0,10)+'.csv';
     document.body.appendChild(a);a.click();document.body.removeChild(a);
     setTimeout(function(){URL.revokeObjectURL(url);},1000);
-  });
+  }
 })();
 </script>"""
 
@@ -1168,34 +1175,66 @@ _INDEX_JS = """
   const statusEl = document.getElementById('status');
   const emptyEl = document.getElementById('empty-search');
   const snp = document.getElementById('snippets');
-  const cards = Array.from(document.querySelectorAll('.card'));
-  const days = Array.from(document.querySelectorAll('details.day'));
-  const monthsG = Array.from(document.querySelectorAll('details.month'));
-  const total = cards.length;
+  // 과거 월은 lazy 프래그먼트(details.month[data-lazy], 성능 2026-07-03) —
+  // 로드될 때마다 카드/일/월 참조를 재수집(rescan). 총 건수는 서버가 준
+  // data-total(전체 아카이브 기준 — DOM 카드 수는 로드된 만큼뿐).
+  let cards = [], days = [], monthsG = [], cardData = [];
+  const total = parseInt(statusEl.dataset.total || '0', 10) || 0;
   const MAX_SNIPPETS = 80;
   var marketFilter = 'ALL';
   const mfBtns = Array.from(document.querySelectorAll('.mf-btn'));
+  const lazyMonths = Array.from(document.querySelectorAll('details.month[data-lazy]'));
+  function pendingMonths(){ return lazyMonths.filter(function(m){ return !m.__loaded; }); }
+  function loadMonth(m){
+    if (m.__loaded) return Promise.resolve();
+    if (m.__loading) return m.__loading;
+    var body = m.querySelector('.month-body');
+    m.__loading = fetch(m.dataset.lazy, {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw 0; return r.text(); })
+      .then(function(html){
+        body.innerHTML = html; m.__loaded = true;
+        rescan();
+        if (window.__impApply) window.__impApply();   // ★📝⏰ 새 카드에도
+      })
+      .catch(function(){
+        m.__loading = null;
+        body.innerHTML = '<div class="lazy-note" style="color:var(--fg-soft);padding:10px 4px">불러오기 실패 — 접었다 다시 펼쳐보세요.</div>';
+      });
+    return m.__loading;
+  }
+  function loadAllMonths(){ return Promise.all(pendingMonths().map(loadMonth)); }
+  lazyMonths.forEach(function(m){
+    m.addEventListener('toggle', function(){
+      if (m.open && !m.__loaded) loadMonth(m).then(applyFilter);
+    });
+  });
   function matchesMarket(c) {
     return marketFilter === 'ALL' || c.dataset.market === marketFilter;
   }
 
-  // Parse each card's body line index once. Synthetic 'metadata' line
-  // adds the visible card-row text (ticker chip + stance + rating)
+  // Parse each card's body line index once per rescan. Synthetic 'metadata'
+  // line adds the visible card-row text (ticker chip + stance + rating)
   // so a plain ticker query like 'NVDA' still surfaces the card as
   // a snippet rather than 0 matches when the body section labels
   // don't contain 'NVDA' literally.
-  const cardData = cards.map(function(c) {
-    let lines = [];
-    try { lines = JSON.parse(c.dataset.lines || '[]'); } catch (e) {}
-    const tk = (c.dataset.ticker || '').trim();
-    const nm = (c.dataset.name || '').trim();
-    const rowEl = c.querySelector('.card-row');
-    const rowTxt = rowEl ? rowEl.textContent.replace(/\\s+/g, ' ').trim() : '';
-    if (tk || nm || rowTxt) {
-      lines.unshift({sec: '카드', txt: ((nm ? nm + ' · ' : '') + tk + ' · ' + rowTxt).trim()});
-    }
-    return {card: c, lines: lines};
-  });
+  function rescan() {
+    cards = Array.from(document.querySelectorAll('.card'));
+    days = Array.from(document.querySelectorAll('details.day'));
+    monthsG = Array.from(document.querySelectorAll('details.month'));
+    cardData = cards.map(function(c) {
+      let lines = [];
+      try { lines = JSON.parse(c.dataset.lines || '[]'); } catch (e) {}
+      const tk = (c.dataset.ticker || '').trim();
+      const nm = (c.dataset.name || '').trim();
+      const rowEl = c.querySelector('.card-row');
+      const rowTxt = rowEl ? rowEl.textContent.replace(/\\s+/g, ' ').trim() : '';
+      if (tk || nm || rowTxt) {
+        lines.unshift({sec: '카드', txt: ((nm ? nm + ' · ' : '') + tk + ' · ' + rowTxt).trim()});
+      }
+      return {card: c, lines: lines};
+    });
+  }
+  rescan();
 
   function escapeHtml(s) {
     return s.replace(/[&<>"']/g, function(ch) {
@@ -1313,6 +1352,13 @@ _INDEX_JS = """
       return;
     }
     if (!raw) { showCardsMode(); return; }
+    // 검색은 전체 아카이브 대상 — 미로드 과거 월이 있으면 먼저 불러오고 재실행
+    // (lazy 분리로 검색이 최신 달만 보는 회귀 방지).
+    if (pendingMonths().length) {
+      statusEl.textContent = '🔎 전체 기록 불러오는 중… (' + pendingMonths().length + '개월)';
+      loadAllMonths().then(applyFilter);
+      return;
+    }
     showSnippetsMode(raw);
   }
 
@@ -1336,6 +1382,12 @@ _INDEX_JS = """
     btn.addEventListener('click', function() {
       marketFilter = btn.dataset.mf;
       mfBtns.forEach(function(b) { b.classList.toggle('active', b === btn); });
+      // 시장 필터도 전체 대상 — 미로드 월 로드 후 적용(정확한 노출/카운트).
+      if (marketFilter !== 'ALL' && pendingMonths().length) {
+        statusEl.textContent = marketFilter + ' 필터 — 전체 기록 불러오는 중…';
+        loadAllMonths().then(applyFilter);
+        return;
+      }
       applyFilter();
     });
   });
@@ -1345,8 +1397,10 @@ _INDEX_JS = """
   // that would kick the user back to the top of the page; the
   // regenerate_index() call on the server side has already rewritten
   // index.html so a manual refresh later picks up everything.
-  document.querySelectorAll('.del-btn').forEach(function(btn) {
-    btn.addEventListener('click', function(ev) {
+  // 위임 방식 — lazy 로드된 과거 월 카드의 🗑️ 도 배선되게(성능 2026-07-03).
+  document.addEventListener('click', function(ev) {
+      const btn = ev.target.closest && ev.target.closest('.del-btn');
+      if (!btn) return;
       ev.stopPropagation();
       ev.preventDefault();
       const card = btn.closest('.card');
@@ -1378,7 +1432,6 @@ _INDEX_JS = """
         btn.disabled = false;
         btn.textContent = '🗑️';
       });
-    });
   });
 
   // ── Scroll position persistence ──────────────────────────────
@@ -1887,7 +1940,10 @@ def _holding_market(h: dict) -> str:
     return "KR"
 
 
-def _render_index(records: list[dict]) -> str:
+def _render_index(records: list[dict]) -> tuple[str, dict[str, str]]:
+    """→ (index.html 본문, fragments). fragments = 과거 월 lazy 프래그먼트
+    (idx_m_YYYY-MM.html) + analysis_csv.json — regenerate_index 가 기록.
+    (성능 감사 2026-07-03: 최신 달만 인라인, CSV 인라인 임베드 제거.)"""
     by_date: dict[str, list[dict]] = {}
     for r in records:
         by_date.setdefault(r["trade_date"], []).append(r)
@@ -1899,6 +1955,7 @@ def _render_index(records: list[dict]) -> str:
         _market_counts[_mk] = _market_counts.get(_mk, 0) + 1
 
     csv_rows: list[dict] = []   # 분석 전체 → CSV 내보내기(사용자 2026-06-14)
+    fragments: dict[str, str] = {}   # 과거 월 lazy 프래그먼트 + CSV JSON(외부화)
     if not records:
         body = '<div class="empty">아직 분석 기록이 없습니다.</div>'
     else:
@@ -1914,22 +1971,17 @@ def _render_index(records: list[dict]) -> str:
         for _d in by_date:
             _ym = (_d or "")[:7]
             _month_counts_idx[_ym] = _month_counts_idx.get(_ym, 0) + len(by_date[_d])
-        _prev_month_idx = None
+        # 월별 day-블록 수집 → 최신 달만 인라인, 과거 달은 프래그먼트 파일로
+        # 분리(펼칠 때/검색할 때 fetch — 성능 감사 2026-07-03 '과거 월 lazy').
+        # data-lines(카드당 최대 ~50KB) 전송·파스가 아카이브 길이에 비례해
+        # 폭증하던 것을 첫 로드에서 제거.
+        _months_html: dict[str, list[str]] = {}
+        _month_order: list[str] = []
         for date in sorted(by_date.keys(), reverse=True):
             _cur_month_idx = (date or "")[:7]
-            if _cur_month_idx != _prev_month_idx:
-                if _prev_month_idx is not None:
-                    sections.append("</div></details>")  # close prev month
-                _m_open = " open"
-                sections.append(f"""
-            <details class="month"{_m_open}>
-              <summary class="month-head">
-                <span>📆 {_month_kr(_cur_month_idx)}</span>
-                <span class="count">{_month_counts_idx.get(_cur_month_idx, 0)} 건</span>
-              </summary>
-              <div class="month-body">
-            """)
-                _prev_month_idx = _cur_month_idx
+            if _cur_month_idx not in _months_html:
+                _months_html[_cur_month_idx] = []
+                _month_order.append(_cur_month_idx)
             day_records = sorted(
                 by_date[date],
                 key=lambda r: r.get("analyzed_at", ""),
@@ -2008,7 +2060,7 @@ def _render_index(records: list[dict]) -> str:
                   {outcome_html}
                 </div>
                 """)
-            sections.append(f"""
+            _months_html[_cur_month_idx].append(f"""
             <details class="day" open>
               <summary class="day-head">
                 <span>📅 {_format_date_kr(date)}</span>
@@ -2017,8 +2069,26 @@ def _render_index(records: list[dict]) -> str:
               <div class="cards">{"".join(cards)}</div>
             </details>
             """)
-        if _prev_month_idx is not None:
-            sections.append("</div></details>")  # close final month
+        # 최신 달(또는 이번 달)만 인라인+open, 과거 달은 <details data-lazy> —
+        # 클라 JS 가 펼침/검색 시 fetch. 프래그먼트는 regenerate_index 가 기록.
+        for _i, _ym in enumerate(_month_order):
+            _head = (f'<summary class="month-head">'
+                     f'<span>📆 {_month_kr(_ym)}</span>'
+                     f'<span class="count">{_month_counts_idx.get(_ym, 0)} 건</span>'
+                     f'</summary>')
+            _body = "".join(_months_html[_ym])
+            if _i == 0 or _ym == _this_month_idx:
+                sections.append(f'<details class="month" open>{_head}'
+                                f'<div class="month-body">{_body}</div></details>')
+            else:
+                _frag = f"idx_m_{_ym}.html"
+                fragments[_frag] = _body
+                sections.append(
+                    f'<details class="month" data-lazy="{_frag}">{_head}'
+                    f'<div class="month-body"><div class="lazy-note" '
+                    f'style="color:var(--fg-soft);padding:10px 4px">펼치면 '
+                    f'불러옵니다… ({_month_counts_idx.get(_ym, 0)} 건)</div>'
+                    f'</div></details>')
         # Orphan resolved entries: in the memory log but with no matching
         # archive record (typically analyses that predate the archive
         # system rollout). Surface them in a small footer so the
@@ -2107,10 +2177,12 @@ def _render_index(records: list[dict]) -> str:
         f'<div class="market-filter" id="market-filter">{"".join(_mf_btns)}</div>'
         if len(_market_counts) > 1 else ""
     )
-    # 전체 분석 기록 CSV(엑셀) — '</' defuse 로 <script> 안전 (사용자 2026-06-14).
-    csv_json = json.dumps(csv_rows, ensure_ascii=False).replace("</", "<\\/")
+    # 전체 분석 기록 CSV(엑셀) — 인라인 임베드 대신 외부 JSON(analysis_csv.json,
+    # 성능 감사 2026-07-03: 전 리포트 전문이 페이지에 2번 들어가던 최대 중량원).
+    # csv-btn 클릭 시 fetch — 다운로드 UX 동일, 첫 로드에서 수 MB 제거.
+    fragments["analysis_csv.json"] = json.dumps(csv_rows, ensure_ascii=False)
 
-    return f"""<!doctype html>
+    html = f"""<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -2131,10 +2203,9 @@ def _render_index(records: list[dict]) -> str:
     <button id="analyze-btn" type="button" class="run-btn" title="슬래시 없이 종목 입력 후 전체 분석(텔레그램 /티커 와 동일). '/' 입력 시엔 그 명령을 실행">분석</button>
     <button id="csv-btn" type="button" title="전체 분석 기록을 CSV(엑셀)로 내보내기">⬇ CSV</button>
   </div>
-  <script type="application/json" id="analysis-csv-data">{csv_json}</script>
   {_INDEX_CSV_JS}
   {market_filter_html}
-  <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
+  <p id="status" class="status-line" data-total="{len(records)}">총 {len(records)}건의 분석 기록</p>
   <div id="cmd-panel" class="cmd-panel" style="display:none"></div>
   <div id="snippets" class="snippets" style="display:none"></div>
   <div id="empty-search" class="empty-search">검색 결과가 없습니다.</div>
@@ -2148,6 +2219,7 @@ def _render_index(records: list[dict]) -> str:
 </body>
 </html>
 """
+    return html, fragments
 
 
 _DETAIL_CSS = _BASE_CSS + """
@@ -6891,9 +6963,16 @@ def regenerate_index() -> None:
         # Vendor the chart library once (idempotent) so detail pages can
         # self-host it. Non-fatal: a miss just means charts don't render.
         _ensure_chart_lib()
-        (ARCHIVE_ROOT / "index.html").write_text(
-            _render_index(records), encoding="utf-8"
-        )
+        _idx_html, _idx_frags = _render_index(records)
+        (ARCHIVE_ROOT / "index.html").write_text(_idx_html, encoding="utf-8")
+        # 과거 월 lazy 프래그먼트 + CSV JSON — 이름이 결정론적(YYYY-MM)이라
+        # 매 regen 덮어씀. 실패해도 index 는 유지(그 달만 '불러오기 실패' 표시).
+        for _fn, _fc in _idx_frags.items():
+            try:
+                (ARCHIVE_ROOT / _fn).write_text(_fc, encoding="utf-8")
+            except Exception as _fe:
+                log.warning("dashboard: index fragment %s write failed: %s",
+                            _fn, _fe)
         # Errors / partial-completion catalog (Option A from the spec).
         hard_failures = _read_hard_failures()
         (ARCHIVE_ROOT / "errors.html").write_text(
@@ -9303,10 +9382,44 @@ def _load_daily_byte_runs() -> list[dict]:
 _UPDATE_BANNER_JS = """<script>
 (function(){
   if(window.__updBanner) return; window.__updBanner=true;
-  // 30분 주기 체크(사용자 2026-07-03 '30분 기준 + 팝업으로 내가 결정') — HEAD
-  // Last-Modified 만 비교(본문 다운로드 0). 새 업데이트 = 하단 팝업: [새로고침]
-  // 누르면 반영, [✕] 또는 무시하면 보던 화면 그대로(강제 리로드 없음).
-  var POLL=1800000, url=location.pathname+location.search, base=null;
+  // 갱신 UX(사용자 2026-07-03 스펙):
+  // ① 기준선 — 30분마다 새 버전 있으면 **자동 반영**(스크롤·검색어·시장필터
+  //   저장→복원 = 보던 자리 그대로. 입력 중이면 그 틱 스킵 → 다음 체크에 재시도).
+  // ② 그 사이 — 1분마다 조용히 HEAD 체크, 새 버전이면 하단 팝업으로 선택:
+  //   [바로 반영]=즉시(상태 복원) / [그대로 보기]=유지(같은 버전 재팝업 없음,
+  //   단 30분 기준선 도달 시 자동 반영).
+  var CHECK=60000, BASELINE=1800000;
+  var url=location.pathname+location.search, base=null, ignored=null;
+  var loadedAt=Date.now(), SK='updst:'+location.pathname;
+  function typing(){ var a=document.activeElement;
+    return !!(a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable)); }
+  function saveState(){
+    try{
+      var inputs={};
+      document.querySelectorAll('input[type=text][id],input:not([type])[id]').forEach(
+        function(i){ if(i.value) inputs[i.id]=i.value; });
+      var mf=document.querySelector('.mf-btn.active');
+      sessionStorage.setItem(SK, JSON.stringify(
+        {y:window.scrollY, inputs:inputs, mf:mf?mf.dataset.mf:null, ts:Date.now()}));
+    }catch(e){}
+  }
+  function restoreState(){
+    try{
+      var raw=sessionStorage.getItem(SK); if(!raw) return;
+      sessionStorage.removeItem(SK);
+      var st=JSON.parse(raw);
+      if(!st || Date.now()-(st.ts||0) > 300000) return;   // 5분 지난 상태는 폐기
+      Object.keys(st.inputs||{}).forEach(function(id){
+        var el=document.getElementById(id);
+        if(el){ el.value=st.inputs[id];
+          el.dispatchEvent(new Event('input',{bubbles:true})); } });
+      if(st.mf){ var b=document.querySelector('.mf-btn[data-mf="'+st.mf+'"]');
+        if(b) b.click(); }
+      var y=st.y||0;
+      [80,300,900].forEach(function(d){ setTimeout(function(){window.scrollTo(0,y);},d); });
+    }catch(e){}
+  }
+  function apply(){ saveState(); location.reload(); }
   function head(){ return fetch(url,{method:'HEAD',cache:'no-store'})
     .then(function(r){ return r.ok?r.headers.get('Last-Modified'):null; })
     .catch(function(){ return null; }); }
@@ -9314,23 +9427,31 @@ _UPDATE_BANNER_JS = """<script>
     if(document.getElementById('upd-banner')) return;
     var b=document.createElement('div'); b.id='upd-banner';
     b.style.cssText='position:fixed;left:50%;bottom:18px;transform:translateX(-50%);'+
-      'z-index:9999;background:#2563eb;color:#fff;padding:10px 8px 10px 18px;border-radius:22px;'+
-      'font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35);display:flex;gap:10px;align-items:center';
-    var t=document.createElement('span'); t.textContent='🆕 새 업데이트 — 새로고침';
-    t.style.cursor='pointer'; t.onclick=function(){ location.reload(); };
-    var x=document.createElement('span'); x.textContent='✕';
-    x.style.cssText='cursor:pointer;opacity:.75;padding:0 8px';
-    x.title='보던 화면 유지(다음 업데이트 때 다시 알림)';
-    x.onclick=function(){ base=cur; b.remove(); };   // 이 버전은 무시 — 다음 변경 시 재알림
-    b.appendChild(t); b.appendChild(x);
+      'z-index:9999;background:#2563eb;color:#fff;padding:10px 10px 10px 18px;border-radius:22px;'+
+      'font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+    var t=document.createElement('span'); t.textContent='🆕 새 업데이트 도착 — 바로 반영할까요?';
+    var y=document.createElement('span'); y.textContent='바로 반영';
+    y.style.cssText='cursor:pointer;background:rgba(255,255,255,.22);padding:4px 12px;border-radius:14px';
+    y.onclick=apply;
+    var n=document.createElement('span'); n.textContent='그대로 보기';
+    n.style.cssText='cursor:pointer;opacity:.8;padding:4px 10px';
+    n.title='하던 작업 그대로 — 이 버전은 다시 알리지 않음(30분 기준선에선 자동 반영)';
+    n.onclick=function(){ ignored=cur; b.remove(); };
+    b.appendChild(t); b.appendChild(y); b.appendChild(n);
     document.body.appendChild(b);
   }
   function tick(){ if(document.hidden) return;
     head().then(function(v){ if(!v) return;
       if(base===null){ base=v; return; }
-      if(v!==base) banner(v); }); }
+      if(v===base) return;
+      if(Date.now()-loadedAt>=BASELINE){          // ① 30분 기준선 = 자동 반영
+        if(typing()) return;                       //   입력 중 → 이 틱 스킵
+        apply(); return; }
+      if(v!==ignored) banner(v);                   // ② 사이 = 팝업으로 선택
+    }); }
   head().then(function(v){ if(base===null) base=v; });   // 로드 시점 = 보고 있는 버전
-  setInterval(tick, POLL);
+  restoreState();
+  setInterval(tick, CHECK);
 })();
 </script>"""
 

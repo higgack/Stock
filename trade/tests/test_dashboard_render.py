@@ -68,7 +68,7 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         self.assertNotIn("_prefetchLazy", src)
         # 새 데이터 업데이트 배너(사용자 2026-07-03 '30분 체크 + 팝업으로 결정') —
         # 30분 HEAD 폴 + 하단 팝업(새로고침/유지 선택), 강제 리로드 없음.
-        self.assertIn("POLL=1800000", src)
+        self.assertIn("BASELINE=1800000", src)
         self.assertIn("upd-banner", src)
         self.assertIn("location.reload", src)
 
