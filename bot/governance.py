@@ -90,6 +90,20 @@ def _fmt_pct(v) -> str:
         return str(v or "—")
 
 
+def _latest_per_person(rows: list[dict]) -> list[dict]:
+    """elestock 롤링 이력 → 인당 최신 1건(changed_on 최대), 최신순 정렬.
+    get_insider_holdings 는 원시 이력 그대로라 dedupe 없이는 같은 임원의
+    옛 보고가 중복 노출('최신 보고' 라벨과 불일치 — 리뷰 2026-07-04 #2)."""
+    latest: dict[str, dict] = {}
+    for r in rows:
+        key = str(r.get("name", ""))
+        prev = latest.get(key)
+        if prev is None or str(r.get("changed_on", "")) > str(prev.get("changed_on", "")):
+            latest[key] = r
+    return sorted(latest.values(),
+                  key=lambda r: str(r.get("changed_on", "")), reverse=True)
+
+
 def _llm_summary(name: str, context: str) -> str | None:
     """Gemini flash 3줄 종합 — 키 없음/실패 시 None (브리핑은 그대로 출력)."""
     try:
@@ -169,6 +183,7 @@ def build_gov_brief(query: str, with_llm: bool = True) -> str:
     except Exception:
         insiders = []
     if insiders:
+        insiders = _latest_per_person(insiders)
         parts.append("\n👔 <b>임원·주요주주 소유</b> (최신 보고)")
         for r in insiders[:5]:
             nm = _html.escape(str(r.get("name", ""))[:20])
@@ -203,5 +218,8 @@ def build_gov_brief(query: str, with_llm: bool = True) -> str:
     parts.append("\n📊 공시 상세: 대시보드 → DART 공시 (종목명 검색)")
     text = "\n".join(parts)
     if len(text) > 3900:   # 텔레그램 4096 안전 마진
-        text = text[:3900] + "\n… (생략)"
+        # 줄 경계에서 자름 — 우리 출력은 태그가 줄 안에서 닫히므로 mid-태그/
+        # entity 절단(400 can't-parse-entities)이 없다 (리뷰 2026-07-04 #1).
+        cut = text.rfind("\n", 0, 3900)
+        text = text[:cut if cut > 0 else 3900] + "\n… (생략)"
     return text

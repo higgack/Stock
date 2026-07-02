@@ -13016,3 +13016,19 @@ class TestGovCommand20260704:
         monkeypatch.setattr(g, "resolve_kr_target", lambda q: (None, q, cands))
         out = g.build_gov_brief("현대")
         assert "005380" in out and "012330" in out and "후보" in out
+
+    def test_gov_review_fixes_20260704(self):
+        # 리뷰 fix 고정: ① 트림 = 줄 경계(rfind newline — mid-태그 절단 차단)
+        # + 텔레그램 평문 degrade 폴백 ② 임원 인당 최신 dedupe.
+        import bot.governance as g
+        src = open("bot/governance.py", encoding="utf-8").read()
+        assert 'text.rfind("\\n", 0, 3900)' in src
+        assert "strip_tg_html" in open("bot/telegram_bot.py", encoding="utf-8").read()
+        rows = [
+            {"name": "김임원", "role": "대표이사", "pct": 1.0, "changed_on": "2026-05-01"},
+            {"name": "김임원", "role": "대표이사", "pct": 1.2, "changed_on": "2026-06-20"},
+            {"name": "박주주", "role": "", "pct": 6.0, "changed_on": "2026-06-01"},
+        ]
+        out = g._latest_per_person(rows)
+        assert len(out) == 2                            # 인당 1건
+        assert out[0]["name"] == "김임원" and out[0]["pct"] == 1.2  # 최신 채택+최신순

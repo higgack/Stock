@@ -3503,8 +3503,15 @@ async def cmd_gov(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.edit_text(text, parse_mode=ParseMode.HTML,
                             disable_web_page_preview=True)
     except Exception:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML,
-                                        disable_web_page_preview=True)
+        # HTML 파스 거절(400)까지 겹치면 평문으로 degrade — '조회 중…'에서
+        # 무출력으로 멈추던 경로 차단 (리뷰 2026-07-04 #1).
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML,
+                                            disable_web_page_preview=True)
+        except Exception:
+            from bot.dashboard_console import strip_tg_html
+            await update.message.reply_text(strip_tg_html(text),
+                                            disable_web_page_preview=True)
 
 
 async def cmd_health(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
