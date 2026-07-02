@@ -12834,3 +12834,45 @@ class TestRefreshBannerAndPerf20260703:
         src = self._src("trade/dashboard.py")
         assert "_prefetchLazy" not in src               # 7MB 숨은 prefetch 제거
         assert "upd-banner" in src
+
+
+class TestFilterLazyAllAndMarketSections20260704:
+    """(1) ⭐/📝 필터 ON = lazy 과거-월 전체 로드(사용자 2026-07-03 '필터시 전체
+    로드') (2) market.html nav 부동산 둘째 줄 (3) 스냅샷·Macro 지표 접기 토글."""
+
+    @staticmethod
+    def _src(path):
+        return open(path, encoding="utf-8").read()
+
+    def test_imp_filter_triggers_lazy_load_all(self):
+        src = self._src("bot/dashboard.py")
+        # _IMPORTANT_BLOCK: 필터 ON 시 lazyAll(로드→그룹 재펼침→재통지) 호출.
+        assert "function lazyAll(sel)" in src
+        assert "lazyAll('.imp-markable.imp-on')" in src
+        assert "lazyAll('.imp-markable.has-memo')" in src
+        # 3계열 lazy 로더(index/_DAILY_BYTE_JS/dart)가 훅 등록 — 미등록 표면은 no-op.
+        assert src.count("window.__lazyLoadAll = loadAllMonths;") == 2
+        assert "window.__lazyLoadAll=dfLoadAll;" in src
+
+    def test_market_nav_realestate_second_row(self):
+        src = self._src("bot/dashboard.py")
+        # 부동산 = 의도된 둘째 줄(nav-r2) — 어색한 자동 wrap 제거(사용자 2026-07-03).
+        assert '<div class="nav nav-r2">' in src
+        assert ".nav-r2{margin:-8px 0 12px}" in src
+        assert "white-space:nowrap}" in src
+
+    def test_market_collapsible_sections(self):
+        src = self._src("bot/dashboard.py")
+        # 글로벌 시장 스냅샷 + Macro 국내/글로벌 지표 = details.csec 접기(기본 펼침).
+        for sec in ('id="sec-gsnap"', 'id="sec-macro-dom"', 'id="sec-macro-glob"'):
+            assert sec in src, sec
+        assert "details.csec[id]" in src                # _CSEC_JS 상태 유지
+        assert "localStorage.setItem(k, d.open?'1':'0')" in src
+        assert "{_CSEC_JS}" in src                      # market 페이지에 주입
+        import bot.dashboard as d
+        html = d._render_macro_snapshot({
+            "ts": "x", "domestic": [{"label": "국내지표"}],
+            "global": [{"label": "글로벌지표"}], "charts": {}})
+        assert html.count('<details class="csec"') == 2
+        assert html.count("</details>") == 2
+        assert "<summary>" in html and "macro-sub" in html
