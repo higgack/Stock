@@ -401,5 +401,79 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("<script>", m.group(1))
 
 
+class DiscontinuedSweepTests(unittest.TestCase):
+    """FRED 중단 시리즈 전수 검토(사용자 2026-07-04): 대체/삭제 + stale 가드
+    + 금리 %p + 월간 다운샘플. 삭제 근거: OECD MEI 중단(2023-11, M3 대체계열
+    MABMM301 도 동일 중단) — BOJ/ECB 총자산이 해당국 유동성 현행 커버."""
+
+    def test_catalog_dead_series_removed(self):
+        ids = {s["id"] for s in LIQ_SERIES}
+        for dead in ("MANMM101JPM189S", "MANMM101EZM189S", "MANMM101KRM189S",
+                     "INTDSRKRM193N", "INTDSRCNM193N"):
+            self.assertNotIn(dead, ids)
+        self.assertEqual(len(LIQ_SERIES), 37)
+
+    def test_catalog_alt_sources_wired(self):
+        srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
+        self.assertEqual(srcs, {"ECOS:M2": "ecos:m2",
+                                "ECOS:BASE": "ecos:base_rate",
+                                "AK:LPR1Y": "ak:lpr1y"})
+        # 대체 소스 함수 실재(배선 E2E)
+        from bot import bok_ecos_client, akshare_client
+        self.assertIn("m2", bok_ecos_client._SERIES)
+        self.assertTrue(callable(akshare_client.lpr_1y_history))
+
+    def test_monthly_downsample(self):
+        daily = [("2026-05-01", 1.0), ("2026-05-30", 1.1),
+                 ("2026-06-15", 1.2), ("2026-06-30", 1.3)]
+        self.assertEqual(fb._monthly(daily),
+                         [("2026-05-30", 1.1), ("2026-06-30", 1.3)])
+        monthly = [(f"2026-0{m}-01", float(m)) for m in range(1, 8)]
+        self.assertEqual(fb._monthly(monthly), monthly)  # 월간 무변화
+
+    def test_rate_deltas_pp(self):
+        mh = [(f"2025-{m:02d}-01", 2.15) for m in range(1, 13)] + [("2026-01-01", 2.40)]
+        m = fb.series_metrics(mh)
+        fb._rate_deltas(m, mh)
+        self.assertEqual(m["mom"], 0.25)
+        self.assertEqual(m["yoy"], 0.25)   # 11.6% 가 아니라 +0.25%p
+        self.assertTrue(m["rate_delta"])
+
+    def test_mark_stale(self):
+        r = {"latest_date": "2023-10"}
+        fb._mark_stale(r)
+        self.assertTrue(r.get("stale"))
+        r2 = {"latest_date": "2026-06"}
+        fb._mark_stale(r2)
+        self.assertNotIn("stale", r2)
+        r3 = {"latest_date": "실시간"}
+        fb._mark_stale(r3)          # 파싱 불가 graceful
+        self.assertNotIn("stale", r3)
+
+    def test_alt_history_normalizes(self):
+        from bot import bok_ecos_client as bec
+        orig = bec.fetch_series_points
+        bec.fetch_series_points = lambda key, lookback_days=None: [("202605", 3000.0)]
+        try:
+            self.assertEqual(fb._alt_history("ecos:m2"), [("2026-05-01", 3000.0)])
+        finally:
+            bec.fetch_series_points = orig
+        self.assertEqual(fb._alt_history("unknown:x"), [])
+
+    def test_render_stale_badge_and_pp(self):
+        row = {"id": "X", "name": "t", "category": "기준금리", "unit": "%",
+               "is_rate": True, "latest": 2.4, "latest_date": "2023-10",
+               "mom": 0.25, "m3": 0.25, "m6": 0.25, "yoy": 0.25, "total": 1.0,
+               "peak": 2.4, "peak_date": "2026-01", "from_peak": 0.0,
+               "trough_after_peak": None, "recovery": None, "momentum": None,
+               "rate_delta": True, "stale": True, "hist": [["2023-10-01", 2.4]]}
+        html = fb.render_liquidity_page([row], {}, None)
+        self.assertIn("function pcd(r,v,dg)", html)
+        self.assertIn("%p", html)
+        self.assertIn("⚠️중단", html)
+        self.assertIn(".stale{", html)
+        self.assertIn("한국은행 ECOS", html)   # 소스 라벨(가이드·헤더)
+
+
 if __name__ == "__main__":
     unittest.main()

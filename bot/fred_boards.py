@@ -25,7 +25,7 @@ from __future__ import annotations
 import html as _h
 import json as _json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from bot.fred_boards_catalog import LIQ_SERIES, PPI_SERIES
 
@@ -124,6 +124,79 @@ def series_metrics(hist: list[tuple[str, float]]) -> dict | None:
         "recovery": _pct(latest, trough) if trough and trough_d != peak_d else None,
         "momentum": momentum,
     }
+
+
+def _monthly(hist: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """일간/주간 시계열 → 월별 마지막 관측 1개(월간은 그대로).
+
+    series_metrics 의 1M/3M/YoY 는 관측수 오프셋이라 일간 시리즈에서
+    1일/3일/12일 변화로 둔갑하던 것 fix (사용자 2026-07-04 스크린샷 —
+    ECB Rate YoY +11.6% 오표기 적발). 전 시리즈 공통(월간은 무변화)."""
+    out: dict[str, tuple[str, float]] = {}
+    for d, v in hist:
+        out[d[:7]] = (d, v)
+    return [out[k] for k in sorted(out)]
+
+
+def _rate_deltas(m: dict, mhist: list[tuple[str, float]]) -> None:
+    """금리/스프레드 계열 — 1M/3M/6M/YoY 를 %변화율 대신 %p 차이로 교체
+    (2.15→2.40%는 '+11.6%'가 아니라 '+0.25%p', 사용자 2026-07-04)."""
+    latest = mhist[-1][1]
+
+    def dv(n: int):
+        v = _value_at(mhist, n)
+        return None if v is None else round(latest - v, 2)
+
+    m.update({"mom": dv(1), "m3": dv(3), "m6": dv(6), "yoy": dv(12),
+              "rate_delta": True})
+
+
+def _mark_stale(row: dict, months: int = 12) -> None:
+    """기준일이 months 개월 이상 과거면 stale 플래그 — 소스가 조용히 끊긴
+    시리즈(OECD/IMF 중단 사태)가 화면에서 즉시 보이게(⚠️ 배지). 전 보드
+    공통 가드(사용자 2026-07-04 '더 이상 최신 제공 안 하는 것 검토')."""
+    try:
+        y, mo = int(row["latest_date"][:4]), int(row["latest_date"][5:7])
+        today = date.today()
+        if (today.year - y) * 12 + (today.month - mo) >= months:
+            row["stale"] = True
+    except Exception:
+        pass
+
+
+def _ecos_iso(t: str) -> str:
+    """ECOS TIME(YYYYMM/YYYYMMDD) → ISO 날짜."""
+    t = (t or "").strip()
+    if len(t) == 6 and t.isdigit():
+        return f"{t[:4]}-{t[4:6]}-01"
+    if len(t) == 8 and t.isdigit():
+        return f"{t[:4]}-{t[4:6]}-{t[6:]}"
+    return t
+
+
+def _alt_history(src: str) -> list[tuple[str, float]]:
+    """FRED 중단 시리즈의 대체 소스 히스토리(ISO 날짜) — 사용자 2026-07-04
+    'FRED 중단분은 우리 자원으로 대체': ecos:m2(한국은행 M2 평잔) ·
+    ecos:base_rate(한국은행 기준금리, 일간→호출부 월간 다운샘플) ·
+    ak:lpr1y(인민은행 LPR 1년). 키부재/실패 → [] (해당 행만 생략)."""
+    try:
+        if src == "ecos:m2":
+            from bot import bok_ecos_client
+            return [(_ecos_iso(t), v)
+                    for t, v in bok_ecos_client.fetch_series_points("m2")]
+        if src == "ecos:base_rate":
+            # lookback ≤950일 — ECOS 페이지 창(1/1000)이 오름차순이라 초과 시
+            # **최신**이 잘림. 950 캘린더일 ≈ 관측 950행 미만으로 안전.
+            from bot import bok_ecos_client
+            return [(_ecos_iso(t), v)
+                    for t, v in bok_ecos_client.fetch_series_points(
+                        "base_rate", lookback_days=950)]
+        if src == "ak:lpr1y":
+            from bot import akshare_client
+            return akshare_client.lpr_1y_history()
+    except Exception as exc:
+        log.warning("fred_boards: alt source %s failed: %s", src, exc)
+    return []
 
 
 def _signal(m: dict) -> tuple[str, str, str]:
@@ -327,9 +400,11 @@ def _load_kr_ppi() -> list[dict]:
         if not m:
             continue
         key, label, note = _signal(m)
-        rows.append({"id": f"ECOS:{pat}", "name": name, "cat": "한국 PPI(ECOS)",
-                     "stocks": stocks, **m, "sig": key, "sig_label": label,
-                     "note": note, "hist": [(d[:7], v) for d, v in hist]})
+        row = {"id": f"ECOS:{pat}", "name": name, "cat": "한국 PPI(ECOS)",
+               "stocks": stocks, **m, "sig": key, "sig_label": label,
+               "note": note, "hist": [(d[:7], v) for d, v in hist]}
+        _mark_stale(row)
+        rows.append(row)
     return rows
 
 
@@ -355,29 +430,41 @@ def _load_ppi() -> tuple[list[dict], list[dict]]:
     rows = []
     for s in PPI_SERIES:
         hist = H.get(s["id"]) or []
-        m = series_metrics(hist)
+        m = series_metrics(_monthly(hist))
         if not m:
             continue
         key, label, note = _signal(m)
-        rows.append({**s, **m, "sig": key, "sig_label": label, "note": note,
-                     "hist": [(d[:7], v) for d, v in hist]})
+        row = {**s, **m, "sig": key, "sig_label": label, "note": note,
+               "hist": [(d[:7], v) for d, v in hist]}
+        _mark_stale(row)   # 소스 중단 자동 가시화(전 보드 공통, 2026-07-04)
+        rows.append(row)
     rows += _load_kr_ppi()
     return rows, margin_spreads(H)
 
 
 def _load_liq() -> tuple[list[dict], dict, float | None]:
-    """→ (rows, derived{net_liq, components}, score). rows 는 카탈로그 순."""
+    """→ (rows, derived{net_liq, components}, score). rows 는 카탈로그 순.
+    'src' 가 있는 항목은 FRED 대신 대체 소스(ECOS/AKShare — 2026-07-04 중단
+    시리즈 대체). 표 지표는 월간 다운샘플 기준(1M/3M/YoY 정합), 차트는 원본."""
     from bot import fred_client
     H: dict[str, list] = {}
     for s in LIQ_SERIES:
-        H[s["id"]] = fred_client.fetch_history(s["id"], _LIQ_START)
+        if s.get("src"):
+            H[s["id"]] = _alt_history(s["src"])
+        else:
+            H[s["id"]] = fred_client.fetch_history(s["id"], _LIQ_START)
     rows = []
     for s in LIQ_SERIES:
         hist = H.get(s["id"]) or []
-        m = series_metrics(hist)
+        mh = _monthly(hist)
+        m = series_metrics(mh)
         if not m:
             continue
-        rows.append({**s, **m, "hist": [(d, v) for d, v in hist][-260:]})
+        if s.get("is_rate"):
+            _rate_deltas(m, mh)
+        row = {**s, **m, "hist": [(d, v) for d, v in hist][-260:]}
+        _mark_stale(row)
+        rows.append(row)
     derived: dict = {}
     nl = net_liquidity(H.get("WALCL") or [], H.get("WTREGEN") or [],
                        H.get("RRPONTSYD") or [])
@@ -443,6 +530,7 @@ th{color:var(--muted);text-align:left;padding:7px 9px;border-bottom:1px solid va
 td{padding:7px 9px;border-bottom:1px solid var(--border)}
 tr.row{cursor:pointer}tr.row:hover{background:var(--surface2)}tr.selected{background:rgba(79,143,247,.12)}
 .pos{color:#16a34a;font-weight:600}.neg{color:#ef4444;font-weight:600}.flat{color:var(--muted)}
+.stale{color:#f87171;font-size:10px;font-weight:700}
 :root[data-theme="dark"] .pos{color:#22c55e}
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;background:var(--surface2)}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin:14px 0}
@@ -479,6 +567,12 @@ _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · '
 _BOARD_JS_COMMON = """
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML;}
 function pc(v,dg){if(v==null)return"<span class='flat'>—</span>";var c=v>=0?'pos':'neg';return "<span class='"+c+"'>"+(v>=0?'+':'')+v.toFixed(dg==null?1:dg)+"%</span>";}
+// 금리/스프레드 행(rate_delta) = %p 차이 표기(2.15→2.40 은 '+0.25%p'), 그 외 = pc.
+function pcd(r,v,dg){if(v==null)return"<span class='flat'>—</span>";
+ if(r.rate_delta){var c=v>=0?'pos':'neg';return "<span class='"+c+"'>"+(v>=0?'+':'')+v.toFixed(2)+"%p</span>";}
+ return pc(v,dg);}
+// 기준일 셀 — 12개월+ 미갱신(소스 중단) 자동 배지.
+function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale'>⚠️중단</span>":"");}
 var CHART_OPTS={plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8a8f98',maxTicksLimit:12},grid:{color:'rgba(128,132,140,.18)'}},y:{ticks:{color:'#8a8f98'},grid:{color:'rgba(128,132,140,.18)'}}},maintainAspectRatio:false};
 function mkChart(el,labels,data,color,fill){
  if(typeof Chart==='undefined'||!el)return null;
@@ -597,7 +691,7 @@ function pills(){{var cnt=JSON.parse(document.getElementById('pills').getAttribu
 function rows(){{return R.filter(function(r){{return (fsig==='all'||r.sig===fsig)&&(fcat==='all'||r.cat===fcat);}});}}
 function table(){{document.getElementById('tb').innerHTML=rows().map(function(r,i){{
  return "<tr class='row"+(sel===r.id?' selected':'')+"' data-id='"+esc(r.id)+"'>"+
- "<td><b>"+esc(r.name)+"</b><div style='color:#8b8fa3;font-size:10px'>"+esc(r.id)+" · "+esc(r.latest_date)+"</div></td>"+
+ "<td><b>"+esc(r.name)+"</b><div style='color:#8b8fa3;font-size:10px'>"+esc(r.id)+" · "+ld(r)+"</div></td>"+
  "<td>"+esc(r.cat)+"</td><td><span class='badge p-"+r.sig+"'>"+esc(r.sig_label)+"</span></td>"+
  "<td>"+pc(r.mom,2)+"</td><td>"+pc(r.m3)+"</td><td>"+pc(r.m6)+"</td><td>"+pc(r.yoy)+"</td><td>"+pc(r.from_peak)+"</td>"+
  "<td class='stocks'>"+esc(r.stocks)+"</td></tr>";}}).join('');}}
@@ -660,8 +754,8 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
 <h1>💧 <em>글로벌 유동성</em> 보드</h1>
-<p class="sub">Fed 순유동성(WALCL−TGA−RRP)·M2·중앙은행 자산·크레딧 스프레드·스트레스 지표 {len(rows)}종(FRED) ·
-데이터 적용시각 {ts} · 소스 FRED API(6시간 주기 자동 갱신)</p>
+<p class="sub">Fed 순유동성(WALCL−TGA−RRP)·M2·중앙은행 자산·크레딧 스프레드·스트레스 지표 {len(rows)}종 ·
+데이터 적용시각 {ts} · 소스 FRED + 한국은행 ECOS + 인민은행 LPR(6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 종합점수(0~100)</b> — 구성요소 8개 각각의 <b>최근값이 최근 5년 분포에서 어디쯤인지</b>(백분위)를
 평균. 순유동성 13주Δ·지준 13주Δ·M2 YoY·은행신용 YoY 는 높을수록 완화, HY스프레드·NFCI·VIX 는
@@ -669,7 +763,9 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 <b>2) 순유동성 차트</b> — Fed 총자산 − 재무부계정(TGA) − 역레포(RRP), 단위 B$.
 TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
-<b>4) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(FRED 무료). Phase 2(BOK ECOS·중국 AKShare)는 추후.
+<b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
+금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 12개월+ 미갱신 시리즈는 기준일에 <b>⚠️중단</b> 배지.<br>
+<b>5) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(전부 무료 API).
 </details>
 {empty}
 <div class="panel"><div class="panel-title">종합 유동성 점수</div>
@@ -693,7 +789,7 @@ TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
   <div class="chartbox"><canvas id="d-chart"></canvas></div>
   <div class="note" id="d-note"></div>
 </div>
-<div class="footer">FRED · 점수·해설은 참고 신호(투자 판단 아님) · Phase 2: BOK(ECOS)·중국(AKShare) — NOAH</div>
+<div class="footer">FRED · 한국은행 ECOS · 인민은행 LPR(AKShare) · 점수·해설은 참고 신호(투자 판단 아님) — NOAH</div>
 </div>
 <script id="liq-data" type="application/json">{payload}</script>
 <script>
@@ -724,7 +820,7 @@ function table(){{document.getElementById('tb').innerHTML=frows()
  .map(function(r){{return "<tr class='row"+(sel===r.id?' selected':'')+"' data-id='"+esc(r.id)+"'>"+
  "<td><b>"+esc(r.name)+"</b><div style='color:#8b8fa3;font-size:10px'>"+esc(r.id)+"</div></td>"+
  "<td>"+esc(r.category||'—')+"</td><td><b>"+fv(r)+"</b></td>"+
- "<td>"+pc(r.mom,2)+"</td><td>"+pc(r.m3)+"</td><td>"+pc(r.yoy)+"</td><td style='color:#8b8fa3'>"+esc(r.latest_date)+"</td></tr>";}}).join('');}}
+ "<td>"+pcd(r,r.mom,2)+"</td><td>"+pcd(r,r.m3)+"</td><td>"+pcd(r,r.yoy)+"</td><td style='color:#8b8fa3'>"+ld(r)+"</td></tr>";}}).join('');}}
 function detail(id){{var r=R.find(function(x){{return x.id===id;}});if(!r)return;sel=id;
  document.getElementById('detail').style.display='block';
  document.getElementById('d-title').textContent=r.name+' ('+r.id+') — 최신 '+fv(r);

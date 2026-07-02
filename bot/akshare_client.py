@@ -1173,3 +1173,47 @@ def format_cn_macro_for_prompt(macro: dict) -> str:
         return ""
 
     return "\n".join(parts)
+
+
+def lpr_1y_history() -> list[tuple[str, float]]:
+    """중국 LPR 1년 월간 히스토리 [(YYYY-MM-DD, %)] 오름차순.
+
+    유동성 보드 '중국 정책금리' — FRED 의 IMF 시리즈(INTDSRCNM193N)가
+    2025-06 이후 중단이라 인민은행 LPR(AKShare)로 대체 (사용자 2026-07-04
+    'FRED 중단분은 우리 자원으로 대체'). akshare 미설치/실패 → [] (graceful,
+    보드는 해당 행만 생략). 24h 캐시(_MACRO — 월 1회 발표라 충분)."""
+    cached = _cache_get("lpr_1y_history.json", _MACRO_CACHE_TTL_HOURS)
+    if cached:
+        return [(d, float(v)) for d, v in cached]
+    ak = _import_akshare()
+    if ak is None:
+        return []
+    try:
+        df = _fetch_with_retry(ak.macro_china_lpr, "macro_china_lpr")
+    except Exception as exc:
+        log.warning("akshare: LPR history fetch failed: %s", exc)
+        return []
+    if df is None or len(df) == 0:
+        return []
+    cols = list(df.columns)
+    date_col = next((c for c in cols if c in ("TRADE_DATE", "日期", "date")), cols[0])
+    val_col = next((c for c in cols if c in ("LPR1Y", "1Y_LPR", "LPR_1Y")), None)
+    if not val_col:
+        log.warning("akshare: LPR history — LPR1Y column missing (%s)", cols)
+        return []
+    points: list[tuple[str, float]] = []
+    for _, row in df.iterrows():
+        try:
+            v = float(row[val_col])
+            if v != v:  # NaN (발표 예정 placeholder 행)
+                continue
+            d = str(row[date_col])[:10]
+            if len(d) == 8 and d.isdigit():   # YYYYMMDD 변형
+                d = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+            points.append((d, v))
+        except Exception:
+            continue
+    points.sort(key=lambda p: p[0])
+    if points:
+        _cache_put("lpr_1y_history.json", points)
+    return points
