@@ -9638,7 +9638,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         for date in month_dates:
             day_open = ""
             day_count = len(by_date[date])
-            _dst.append(
+            parts.append(
                 f'<details class="day"{day_open}>'
                 f'<summary class="day-head">'
                 f'<span>📅 {_html.escape(date)}</span>'
@@ -10552,18 +10552,19 @@ def _render_blog_page(runs: list[dict]) -> str:
     <input id="scr-search" type="text" placeholder="제목 / 요약 / 본문 검색 (예: 반도체, 수주, 전환점)" autocomplete="off" spellcheck="false">
     <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
   </div>
-  <p id="scr-status" class="status-line">총 {total_runs}건의 글</p>
+  <p id="scr-status" class="status-line" data-total="{total_runs}">총 {total_runs}건의 글</p>
   <div id="scr-snippets" class="snippets" style="display:none"></div>
   <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
 
+    fragments: dict[str, str] = {}   # 과거 월 lazy(bl_m_*.html)
     if not runs:
         parts.append("""
   <div class="empty">
     아직 수집된 글이 없습니다. 블로그에 새 글이 올라오면 30분 내 자동 수집됩니다.
   </div>
 </div></body></html>""")
-        return "".join(parts)
+        return "".join(parts), fragments
 
     _today_kst_bl = _dt_bl.now(_tz_bl(_td_bl(hours=9))).date().isoformat()
     _this_month_bl = _today_kst_bl[:7]
@@ -10579,22 +10580,24 @@ def _render_blog_page(runs: list[dict]) -> str:
         except Exception:
             return ym
 
-    for month in sorted(months.keys(), reverse=True):
+    _sorted_months_bl = sorted(months.keys(), reverse=True)
+    for _mi_bl, month in enumerate(_sorted_months_bl):
         month_dates = months[month]
-        month_open = " open" if month == _this_month_bl else ""
         month_count = sum(len(by_date[d]) for d in month_dates)
-        parts.append(
-            f'<details class="month"{month_open}>'
-            f'<summary class="month-head">'
-            f'<span>📆 {_html.escape(_format_month_bl(month))}</span>'
-            f'<span class="count">{month_count} 건</span>'
-            f'</summary>'
-            f'<div class="month-body">'
-        )
+        _inline_bl = (_mi_bl == 0 or month == _this_month_bl)
+        _head_bl = (f'<summary class="month-head">'
+                    f'<span>📆 {_html.escape(_format_month_bl(month))}</span>'
+                    f'<span class="count">{month_count} 건</span>'
+                    f'</summary>')
+        mb: list = []
+        _dst = parts if _inline_bl else mb
+        if _inline_bl:
+            parts.append(f'<details class="month" open>{_head_bl}'
+                         f'<div class="month-body">')
         for date in month_dates:
             day_open = " open" if date == _today_kst_bl else ""
             day_count = len(by_date[date])
-            parts.append(
+            _dst.append(
                 f'<details class="day"{day_open}>'
                 f'<summary class="day-head">'
                 f'<span>📅 {_html.escape(date)}</span>'
@@ -10641,7 +10644,7 @@ def _render_blog_page(runs: list[dict]) -> str:
                     .replace(".", "_")
                 )
 
-                parts.append(f"""
+                _dst.append(f"""
   <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date', ''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
@@ -10653,15 +10656,24 @@ def _render_blog_page(runs: list[dict]) -> str:
     </div>
   </details>
 """)
-            parts.append('</div></details>')  # close day
-        parts.append('</div></details>')  # close month
+            _dst.append('</div></details>')  # close day
+        if _inline_bl:
+            parts.append('</div></details>')  # close month
+        else:
+            _frag_bl = f"bl_m_{month}.html"
+            fragments[_frag_bl] = "".join(mb)
+            parts.append(
+                f'<details class="month" data-lazy="{_frag_bl}">{_head_bl}'
+                f'<div class="month-body"><div style="color:var(--fg-soft);'
+                f'padding:10px 4px">펼치면 불러옵니다… ({month_count} 건)</div>'
+                f'</div></details>')
 
     parts.append("</div>")
     parts.append(_imp_cfg("blog"))
     parts.append(_DAILY_BYTE_JS
                  .replace("api/daily_byte_delete", "api/blog_delete")
                  .replace("Daily Byte 기록을 삭제할까요?", "블로그 글을 삭제할까요?"))
-    return "".join(parts)
+    return "".join(parts), fragments
 
 
 def regenerate_blog_index() -> None:
@@ -10669,9 +10681,18 @@ def regenerate_blog_index() -> None:
     bot.blog_watch after new posts + periodic refresh + startup."""
     try:
         runs = _load_blog_runs()
-        html = _inject_update_banner(_render_blog_page(runs))
+        _bl_html, _bl_frags = _render_blog_page(runs)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        (ARCHIVE_ROOT / "blog.html").write_text(html, encoding="utf-8")
+        for _fn, _fc in _bl_frags.items():   # 프래그먼트 먼저 + 원자
+            try:
+                _ft = (ARCHIVE_ROOT / _fn).with_suffix(".tmp")
+                _ft.write_text(_fc, encoding="utf-8")
+                _ft.replace(ARCHIVE_ROOT / _fn)
+            except Exception as _fe:
+                log.warning("dashboard: blog fragment %s failed: %s", _fn, _fe)
+        _bt = (ARCHIVE_ROOT / "blog.html").with_suffix(".html.tmp")
+        _bt.write_text(_inject_update_banner(_bl_html), encoding="utf-8")
+        _bt.replace(ARCHIVE_ROOT / "blog.html")
         log.info("dashboard: blog.html regenerated (%d posts)", len(runs))
     except Exception as exc:
         log.warning("dashboard: blog regen failed: %s", exc)
@@ -12736,7 +12757,7 @@ _DART_FEED_CSS = """
 """
 
 
-def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
+def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[str, str]]:
     import html as _html
     from datetime import datetime as _dt
 
@@ -12909,6 +12930,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     # 테마(다크/라이트) + df-* CSS 를 컨텐츠 전에 emit → FOUC('처음에 깨졌다
     # 복귀') 방지. CSS 가 카드 1000+개 뒤에 있으면 무스타일·전체펼침 첫
     # paint 후 스냅(2026-06-10 잔존 건 — _DART_FEED_CSS 주석 참조).
+    fragments: dict[str, str] = {}   # 과거 월 lazy(dart_m_*.html, 2026-07-03)
     parts: list[str] = [_SCREENER_CSS, "<script>" + _THEME_JS + "</script>",
                         _DART_FEED_CSS]
     # 관계후보 발굴 비용(kg_dart) — 공시 수집·파싱은 무료(공공 API)지만 계약공시
@@ -12973,10 +12995,18 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         except Exception:
             month_label = ym
         month_total = sum(len(by_date[d]) for d in dates)
-        m_cls = "" if mi == 0 else " collapsed"   # 최신 월만 펼침, 과거 월 접힘
-        parts.append(f"""
-  <div class="df-month{m_cls}" data-month="{ym}">
-    <div class="df-month-hd"><span class="df-caret">▾</span><span class="df-month-lbl">{month_label}</span><span class="df-month-cnt">{month_total}건</span></div>
+        # 최신 월만 인라인 — 과거 월은 프래그먼트 lazy(성능 2026-07-03, index
+        # 패턴. DART 는 월 수천 건이라 최대 수혜). mb 버퍼로 목적지 분기.
+        _inline_df = (mi == 0)
+        _hd_df = (f'<div class="df-month-hd"><span class="df-caret">▾</span>'
+                  f'<span class="df-month-lbl">{month_label}</span>'
+                  f'<span class="df-month-cnt">{month_total}건</span></div>')
+        mb: list = []
+        _dst = parts if _inline_df else mb
+        if _inline_df:
+            parts.append(f"""
+  <div class="df-month" data-month="{ym}">
+    {_hd_df}
     <div class="df-month-body">
 """)
         for date_str in dates:
@@ -12996,7 +13026,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
             d_cls = "" if _date_idx == 0 else " collapsed"  # 최신 날짜만 펼침
             _date_idx += 1
 
-            parts.append(f"""
+            _dst.append(f"""
       <div class="df-date-group{d_cls}" data-date="{date_str}">
         <div class="df-date-hd">
           <span class="df-caret">▾</span><span>{label}</span>
@@ -13069,7 +13099,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                                 '제목이 곧 내용(파서 갭 아님)">미파싱제외</span>')
                 _flag_attr = " ".join(_flags)
 
-                parts.append(f"""
+                _dst.append(f"""
           <div class="{_card_cls}" data-cat="{cat}" data-flag="{_flag_attr}" data-name="{cn}" data-report="{rn}" data-imp-id="{_imp_id}">
             <div class="df-card-hd">
               <a href="{url}" target="_blank" rel="noopener" class="df-corp">{cn}</a>{ticker_link}
@@ -13080,8 +13110,18 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
             {detail_html}
           </div>
 """)
-            parts.append("        </div></div>\n      </div>\n")
-        parts.append("    </div>\n  </div>\n")
+            _dst.append("        </div></div>\n      </div>\n")
+        if _inline_df:
+            parts.append("    </div>\n  </div>\n")
+        else:
+            _frag_df = f"dart_m_{ym}.html"
+            fragments[_frag_df] = "".join(mb)
+            parts.append(f"""
+  <div class="df-month collapsed" data-month="{ym}" data-lazy="{_frag_df}">
+    {_hd_df}
+    <div class="df-month-body"><div style="color:var(--muted,#888);padding:8px 2px">펼치면 불러옵니다… ({month_total}건)</div></div>
+  </div>
+""")
 
     # JS for filtering, search, view toggle — CSS 는 위(컨텐츠 앞) _DART_FEED_CSS.
     # ⚠️ raw 문자열(r-prefix) 필수 — CSV out.join('\r\n') 의 \r\n 이 비-raw 면 실제
@@ -13092,8 +13132,25 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 <script>
 (function(){
   var pills=document.querySelectorAll('.df-pill');
-  var cards=document.querySelectorAll('.df-card');
+  function dfCards(){return document.querySelectorAll('.df-card');}   // lazy 카드 포함(라이브)
   var search=document.getElementById('df-search');
+  // 과거 월 lazy(.df-month[data-lazy], 성능 2026-07-03 — index 패턴 미러).
+  var dfLazy=Array.prototype.slice.call(document.querySelectorAll('.df-month[data-lazy]'));
+  function dfPending(){return dfLazy.filter(function(m){return !m.__loaded&&!m.__failed;});}
+  function dfFailed(){return dfLazy.filter(function(m){return m.__failed;}).length;}
+  function dfLoadMonth(m){
+    if(m.__loaded)return Promise.resolve();
+    if(m.__loading)return m.__loading;
+    var body=m.querySelector('.df-month-body');
+    m.__loading=fetch(m.dataset.lazy,{cache:'no-store'})
+      .then(function(r){if(!r.ok)throw 0;return r.text();})
+      .then(function(html){body.innerHTML=html;m.__loaded=true;m.__failed=false;
+        try{if(window.__impApply)window.__impApply();}catch(e){}})
+      .catch(function(){m.__loading=null;m.__failed=true;
+        body.innerHTML='<div style="color:var(--muted,#888);padding:8px 2px">불러오기 실패 — 접었다 다시 펼쳐보세요.</div>';});
+    return m.__loading;
+  }
+  function dfLoadAll(){return Promise.all(dfPending().map(dfLoadMonth));}
   var clearBtn=document.getElementById('df-clear');
   var viewBtns=document.querySelectorAll('.df-vbtn');
   var grids=document.querySelectorAll('.df-grid');
@@ -13118,7 +13175,9 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     var de=document.documentElement;
     var impOnly=de.classList.contains('imp-only');
     var memoOnly=de.classList.contains('memo-only');
-    cards.forEach(function(c){
+    // 검색은 전체 아카이브 대상 — 미로드 과거 월 먼저 로드 후 재적용.
+    if(q&&dfPending().length){dfLoadAll().then(applyFilters);return;}
+    dfCards().forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
       var cf=(c.dataset.flag||'');
       var flagMatch=activeFlags.every(function(f){return cf.indexOf(f)>=0;});
@@ -13149,12 +13208,16 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     });
   }
 
-  // 월/날짜 헤더 클릭 → 접기/펼치기
-  document.querySelectorAll('.df-month-hd').forEach(function(h){
-    h.addEventListener('click',function(){h.parentElement.classList.toggle('collapsed');});
-  });
-  document.querySelectorAll('.df-date-hd').forEach(function(h){
-    h.addEventListener('click',function(){h.parentElement.classList.toggle('collapsed');});
+  // 월/날짜 헤더 클릭 → 접기/펼치기 — 위임(lazy 로드된 날짜 헤더도 동작) +
+  // 월 펼침 시 프래그먼트 로드.
+  document.addEventListener('click',function(ev){
+    var mh=ev.target.closest&&ev.target.closest('.df-month-hd');
+    if(mh){var m=mh.parentElement;m.classList.toggle('collapsed');
+      if(!m.classList.contains('collapsed')&&m.dataset.lazy&&!m.__loaded){
+        m.__failed=false;dfLoadMonth(m).then(applyFilters);}
+      return;}
+    var dh=ev.target.closest&&ev.target.closest('.df-date-hd');
+    if(dh)dh.parentElement.classList.toggle('collapsed');
   });
   pills.forEach(function(p){
     p.addEventListener('click',function(){
@@ -13207,9 +13270,12 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   }
   var csvBtn=document.getElementById('df-csv');
   if(csvBtn)csvBtn.addEventListener('click',function(){
+    if(dfPending().length){csvBtn.disabled=true;csvBtn.textContent='⏳';
+      dfLoadAll().then(function(){csvBtn.disabled=false;csvBtn.textContent='📥 CSV';csvBtn.click();});
+      return;}
     var FLAG={sig:'중요',unparsed:'미파싱',noparse:'미파싱제외'};
     var rows=[];
-    cards.forEach(function(c){
+    dfCards().forEach(function(c){
       if(c.classList.contains('hidden'))return;          // 필터된 것만
       var dt=(c.querySelector('.df-dt')||{}).textContent||'';
       var flag=(c.dataset.flag||'').split(' ').map(function(f){return FLAG[f]||'';})
@@ -13237,14 +13303,22 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                           search_sel="#df-search"))
     parts.append(_IMPORTANT_BLOCK)
     parts.append("</body></html>")
-    return "\n".join(parts)
+    return "\n".join(parts), fragments
 
 
 def regenerate_dart_feed_index() -> None:
     """DART feed archive → dart_feed.html."""
     try:
         by_date = _load_dart_feed_data(days_back=30)
-        html = _inject_update_banner(_render_dart_feed_page(by_date))
+        _df_html, _df_frags = _render_dart_feed_page(by_date)
+        for _fn, _fc in _df_frags.items():   # 프래그먼트 먼저 + 원자(404/잘림 창 차단)
+            try:
+                _ft = (ARCHIVE_ROOT / _fn).with_suffix(".tmp")
+                _ft.write_text(_fc, encoding="utf-8")
+                _ft.replace(ARCHIVE_ROOT / _fn)
+            except Exception as _fe:
+                log.warning("dashboard: dart fragment %s failed: %s", _fn, _fe)
+        html = _inject_update_banner(_df_html)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "dart_feed.html").write_text(html, encoding="utf-8")
         total = sum(len(v) for v in by_date.values())

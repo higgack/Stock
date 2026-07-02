@@ -76,6 +76,8 @@ def test_group_pages_inject_important_block():
     }
     for fn, surf in cases.items():
         html = getattr(d, fn)(sample)
+        if isinstance(html, tuple):   # lazy 분리 페이지(레딧·블로그)는 (html, frags)
+            html = html[0]
         assert "__impInit" in html, fn               # 공용 블록
         assert "api/important" in html, fn           # 서버 저장 배선
         assert f'"surface": "{surf}"' in html, fn    # 표면별 cfg
@@ -89,7 +91,7 @@ def test_bespoke_pages_inject_important_block():
         ("analysis", d._render_index([])[0]),
         ("screener", d._render_screener_page([], {}, [])),
         ("screen", d._render_screen_page([])),
-        ("dart", d._render_dart_feed_page({})),
+        ("dart", d._render_dart_feed_page({})[0]),
         ("valuechain", d._render_valuechain_page([])),
     ]
     for surf, html in cases:
