@@ -8993,17 +8993,38 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
     var r=card.querySelector('.rem-btn'); if(r){r.classList.toggle('on',hr);
       r.title=hr?('알람 '+REMS[id].time+' (KST) — 클릭하여 변경/해제'):'알람 설정 (HH:MM, KST)';}
   }
+  // 버튼 3종 템플릿 — 카드마다 createElement×3 대신 clone 1회(생성 비용↓).
+  var _TPL=null;
+  function _tpl(){
+    if(!_TPL){ _TPL=document.createDocumentFragment();
+      _TPL.appendChild(mkbtn('imp-star','☆','중요 표시 토글'));
+      _TPL.appendChild(mkbtn('memo-btn','📝','메모'));
+      _TPL.appendChild(mkbtn('rem-btn','⏰','알람 설정 (HH:MM, KST)'));
+    }
+    return _TPL;
+  }
   function ensure(){
     if(!SURFACE) return;
-    document.querySelectorAll(CARDSEL).forEach(function(card){
-      card.classList.add('imp-markable');
-      var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
-      if(!head.querySelector('.imp-star')) head.appendChild(mkbtn('imp-star','☆','중요 표시 토글'));
-      if(!head.querySelector('.memo-btn')) head.appendChild(mkbtn('memo-btn','📝','메모'));
-      if(!head.querySelector('.rem-btn')) head.appendChild(mkbtn('rem-btn','⏰','알람 설정 (HH:MM, KST)'));
-      paint(card);
-    });
-    counts();
+    // 배치화(성능 2026-07-03, 사용자 '③도 적용'): 카드 수천 개 페이지에서
+    // 버튼 삽입을 300개 단위 idle 청크로 나눠 첫 페인트 블로킹/버벅임 완화.
+    // 멱등(재호출 시 .imp-star 존재 카드는 clone 안 붙이고 paint 만) — 청크
+    // 진행 중 재호출돼도 안전. counts 는 마지막 청크 후 1회.
+    var cards=Array.prototype.slice.call(document.querySelectorAll(CARDSEL));
+    var i=0;
+    function chunk(){
+      var end=Math.min(i+300,cards.length);
+      for(;i<end;i++){ var card=cards[i];
+        card.classList.add('imp-markable');
+        var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
+        if(!head.querySelector('.imp-star')) head.appendChild(_tpl().cloneNode(true));
+        paint(card);
+      }
+      if(i<cards.length){
+        if(window.requestIdleCallback) requestIdleCallback(chunk,{timeout:200});
+        else setTimeout(chunk,0);
+      } else counts();
+    }
+    chunk();
   }
   function counts(){
     var ni=document.querySelectorAll('.imp-markable.imp-on').length;
@@ -9225,20 +9246,50 @@ _DAILY_BYTE_JS = """
   const sts = document.getElementById('scr-status');
   const emp = document.getElementById('scr-empty');
   const snp = document.getElementById('scr-snippets');
-  const cards = Array.from(document.querySelectorAll('.card'));
-  const dayGroups = Array.from(document.querySelectorAll('details.day'));
-  const monthGroups = Array.from(document.querySelectorAll('details.month'));
   if (!inp) return;
-  const total = cards.length;
+  // 과거 월 lazy(details.month[data-lazy], 성능 2026-07-03 — index 패턴 미러,
+  // 이 JS 를 공유하는 레딧·블로그·Daily Byte 페이지 공통 적용) — 로드 시 재수집.
+  let cards = [], dayGroups = [], monthGroups = [], cardData = [];
+  const total = parseInt(sts.dataset.total || '0', 10) || document.querySelectorAll('.card').length;
   const MAX_SNIPPETS = 80;
-
-  const cardData = cards.map(function(c) {
-    let lines = [];
-    try { lines = JSON.parse(c.dataset.lines || '[]'); } catch (e) {}
-    const t = c.querySelector('.domain');
-    const titleTxt = t ? t.textContent.trim() : '';
-    if (titleTxt) lines.unshift({sec: 'title', txt: titleTxt});
-    return {card: c, lines: lines};
+  function rescan() {
+    cards = Array.from(document.querySelectorAll('.card'));
+    dayGroups = Array.from(document.querySelectorAll('details.day'));
+    monthGroups = Array.from(document.querySelectorAll('details.month'));
+    cardData = cards.map(function(c) {
+      let lines = [];
+      try { lines = JSON.parse(c.dataset.lines || '[]'); } catch (e) {}
+      const t = c.querySelector('.domain');
+      const titleTxt = t ? t.textContent.trim() : '';
+      if (titleTxt) lines.unshift({sec: 'title', txt: titleTxt});
+      return {card: c, lines: lines};
+    });
+  }
+  rescan();
+  const lazyMonths = Array.from(document.querySelectorAll('details.month[data-lazy]'));
+  function pendingMonths(){ return lazyMonths.filter(function(m){ return !m.__loaded && !m.__failed; }); }
+  function failedCount(){ return lazyMonths.filter(function(m){ return m.__failed; }).length; }
+  function loadMonth(m){
+    if (m.__loaded) return Promise.resolve();
+    if (m.__loading) return m.__loading;
+    var body = m.querySelector('.month-body');
+    m.__loading = fetch(m.dataset.lazy, {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw 0; return r.text(); })
+      .then(function(html){
+        body.innerHTML = html; m.__loaded = true; m.__failed = false;
+        try { rescan(); if (window.__impApply) window.__impApply(); } catch(e) {}
+      })
+      .catch(function(){
+        m.__loading = null; m.__failed = true;
+        body.innerHTML = '<div style="color:var(--fg-soft);padding:10px 4px">불러오기 실패 — 접었다 다시 펼쳐보세요.</div>';
+      });
+    return m.__loading;
+  }
+  function loadAllMonths(){ return Promise.all(pendingMonths().map(loadMonth)); }
+  lazyMonths.forEach(function(m){
+    m.addEventListener('toggle', function(){
+      if (m.open && !m.__loaded) { m.__failed = false; loadMonth(m).then(applyFilter); }
+    });
   });
 
   function escapeHtml(s) {
@@ -9308,7 +9359,14 @@ _DAILY_BYTE_JS = """
   function applyFilter() {
     const q = (inp.value || '').trim();
     if (!q) { showCardsMode(); return; }
+    if (pendingMonths().length) {
+      sts.textContent = '🔎 전체 기록 불러오는 중… (' + pendingMonths().length + '개월)';
+      loadAllMonths().then(applyFilter);
+      return;
+    }
     showSnippetsMode(q);
+    var fc = failedCount();
+    if (fc) sts.textContent += ' · ⚠️ ' + fc + '개월 로드 실패(해당 월 제외)';
   }
 
   snp.addEventListener('click', function(ev) {
@@ -9330,8 +9388,9 @@ _DAILY_BYTE_JS = """
   clr.addEventListener('click', function() { inp.value = ''; showCardsMode(); inp.focus(); });
 })();
 
-document.querySelectorAll('.del-btn').forEach(function(btn) {
-  btn.addEventListener('click', function(ev) {
+document.addEventListener('click', function(ev) {
+    const btn = ev.target.closest && ev.target.closest('.del-btn');
+    if (!btn) return;
     ev.stopPropagation(); ev.preventDefault();
     const card = btn.closest('.card'); if (!card) return;
     const date = card.dataset.date; const filename = card.dataset.filename;
@@ -9353,7 +9412,6 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {
       }).catch(function(err) {
         alert('삭제 실패: ' + err); btn.disabled = false; btn.textContent = '🗑️';
       });
-  });
 });
 </script>
 """ + _IMPORTANT_BLOCK + """
@@ -9580,7 +9638,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         for date in month_dates:
             day_open = ""
             day_count = len(by_date[date])
-            parts.append(
+            _dst.append(
                 f'<details class="day"{day_open}>'
                 f'<summary class="day-head">'
                 f'<span>📅 {_html.escape(date)}</span>'
@@ -10058,18 +10116,19 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
     <input id="scr-search" type="text" placeholder="제목 / 본문 / 종목 검색 (예: SPCE, 광기, bagholder)" autocomplete="off" spellcheck="false">
     <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
   </div>
-  <p id="scr-status" class="status-line">총 {total_runs}건의 포워드</p>
+  <p id="scr-status" class="status-line" data-total="{total_runs}">총 {total_runs}건의 포워드</p>
   <div id="scr-snippets" class="snippets" style="display:none"></div>
   <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
 
+    fragments: dict[str, str] = {}   # 과거 월 lazy(ri_m_*.html, 성능 2026-07-03)
     if not runs:
         parts.append("""
   <div class="empty">
     아직 포워드 기록이 없습니다. t.me/insidertracking 채널의 '미국 레딧 게시물 분석' 게시물이 올라오면 5분 내 자동 수집됩니다.
   </div>
 </div></body></html>""")
-        return "".join(parts)
+        return "".join(parts), fragments
 
     _today_kst_ri = _dt_ri.now(_tz_ri(_td_ri(hours=9))).date().isoformat()
     _this_month_ri = _today_kst_ri[:7]
@@ -10086,24 +10145,28 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
         except Exception:
             return ym
 
-    for month in sorted(months.keys(), reverse=True):
+    _sorted_months_ri = sorted(months.keys(), reverse=True)
+    for _mi_ri, month in enumerate(_sorted_months_ri):
         month_dates = months[month]
-        month_open = " open" if month == _this_month_ri else ""
         month_count = sum(len(by_date[d]) for d in month_dates)
-        parts.append(
-            f'<details class="month"{month_open}>'
-            f'<summary class="month-head">'
-            f'<span>📆 {_html.escape(_format_month_ri(month))}</span>'
-            f'<span class="count">{month_count} 건</span>'
-            f'</summary>'
-            f'<div class="month-body">'
-        )
+        # 최신 달(또는 이번 달)만 인라인 — 과거 달은 프래그먼트 lazy(성능
+        # 2026-07-03, index 패턴). mb 버퍼에 본문을 모아 목적지 분기.
+        _inline_ri = (_mi_ri == 0 or month == _this_month_ri)
+        _head_ri = (f'<summary class="month-head">'
+                    f'<span>📆 {_html.escape(_format_month_ri(month))}</span>'
+                    f'<span class="count">{month_count} 건</span>'
+                    f'</summary>')
+        mb: list = []
+        _dst = parts if _inline_ri else mb
+        if _inline_ri:
+            parts.append(f'<details class="month" open>{_head_ri}'
+                         f'<div class="month-body">')
         for date in month_dates:
             # 날짜 그룹 기본 접힘 (사용자 2026-06-12 '다른 대시보드처럼' —
             # Daily Byte 전부-접힘 패턴 mirror)
             day_open = ""
             day_count = len(by_date[date])
-            parts.append(
+            _dst.append(
                 f'<details class="day"{day_open}>'
                 f'<summary class="day-head">'
                 f'<span>📅 {_html.escape(date)}</span>'
@@ -10140,7 +10203,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
                     .replace(".", "_")
                 )
 
-                parts.append(f"""
+                _dst.append(f"""
   <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date', ''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
@@ -10151,13 +10214,22 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
     </div>
   </details>
 """)
-            parts.append('</div></details>')  # close day
-        parts.append('</div></details>')  # close month
+            _dst.append('</div></details>')  # close day
+        if _inline_ri:
+            parts.append('</div></details>')  # close month
+        else:
+            _frag_ri = f"ri_m_{month}.html"
+            fragments[_frag_ri] = "".join(mb)
+            parts.append(
+                f'<details class="month" data-lazy="{_frag_ri}">{_head_ri}'
+                f'<div class="month-body"><div style="color:var(--fg-soft);'
+                f'padding:10px 4px">펼치면 불러옵니다… ({month_count} 건)</div>'
+                f'</div></details>')
 
     parts.append("</div>")
     parts.append(_imp_cfg("reddit"))
     parts.append(_DAILY_BYTE_JS)
-    return "".join(parts)
+    return "".join(parts), fragments
 
 
 def regenerate_reddit_insider_index() -> None:
@@ -10166,11 +10238,18 @@ def regenerate_reddit_insider_index() -> None:
     + from periodic dashboard refresh + on startup."""
     try:
         runs = _load_reddit_insider_runs()
-        html = _inject_update_banner(_render_reddit_insider_page(runs))
+        _ri_html, _ri_frags = _render_reddit_insider_page(runs)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        (ARCHIVE_ROOT / "reddit_insider.html").write_text(
-            html, encoding="utf-8"
-        )
+        for _fn, _fc in _ri_frags.items():   # 프래그먼트 먼저(404 창 차단)+원자
+            try:
+                _ft = (ARCHIVE_ROOT / _fn).with_suffix(".tmp")
+                _ft.write_text(_fc, encoding="utf-8")
+                _ft.replace(ARCHIVE_ROOT / _fn)
+            except Exception as _fe:
+                log.warning("dashboard: reddit fragment %s failed: %s", _fn, _fe)
+        _rt = (ARCHIVE_ROOT / "reddit_insider.html").with_suffix(".html.tmp")
+        _rt.write_text(_inject_update_banner(_ri_html), encoding="utf-8")
+        _rt.replace(ARCHIVE_ROOT / "reddit_insider.html")
         log.info(
             "dashboard: reddit_insider.html regenerated (%d runs)",
             len(runs),
