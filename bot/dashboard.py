@@ -1275,6 +1275,8 @@ _INDEX_JS = """
       if (hasVis && !d.classList.contains('orphan-day')) d.open = true;
     }
     for (const m of monthsG) {
+      // 미로드 lazy 월은 day 가 없어도 보여야(숨기면 영영 펼칠 수 없음).
+      if (m.dataset.lazy && !m.__loaded) { m.style.display = ''; continue; }
       var hasDay = !!m.querySelector('details.day:not([style*="display: none"])');
       m.style.display = hasDay ? '' : 'none';
     }

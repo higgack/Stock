@@ -320,7 +320,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         path_lower = self.path.lower().split("?")[0]
         # on-demand HTML 페이지도 no-cache — 안 하면 옛 페이지가 브라우저에
         # 캐시돼 stale(예: 신고가→상한가 변경이 안 보이던 문제, 2026-06-10).
-        if (path_lower.endswith((".html", "/")) or path_lower == ""
+        # .json 도 no-cache — analysis_csv.json 등 regen 산출물이 브라우저
+        # 휴리스틱 캐시로 stale 되는 것 방지(성능 2026-07-03 CSV 외부화 동반).
+        if (path_lower.endswith((".html", "/", ".json")) or path_lower == ""
                 or path_lower in ("/earnings", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow", "/usmovers",
                                   "/usprepost",
