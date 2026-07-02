@@ -12883,3 +12883,80 @@ class TestFilterLazyAllAndMarketSections20260704:
         assert html.count('<details class="csec"') == 2
         assert html.count("</details>") == 2
         assert "<summary>" in html and "macro-sub" in html
+
+
+class TestActivistSignificance20260704:
+    """🔥 규칙 10 — 활동주의/경영권 분쟁 승격 (사용자 2026-07-04 승인,
+    open-proxy-mcp 검토 채택). 정밀 우선: 부정 서술·routine 권유 미발화."""
+
+    def test_management_participation_purpose_fires(self):
+        from bot.dart_feed import significance
+        assert significance({
+            "report_nm": "주식등의대량보유상황보고서(일반)",
+            "category": "지분공시",
+            "detail": ["보고자: OO자산운용", "지분율: 5.12%",
+                       "보고사유: 신규보고(경영참가 목적)"],
+        }) == "경영참가 목적 보유"
+        # 보유목적 변경 라인 변형
+        assert significance({
+            "report_nm": "주식등의대량보유상황보고서(일반)",
+            "category": "지분공시",
+            "detail": ["보고자: X", "보유목적: 경영권에 영향을 주기 위한 목적"],
+        }) == "경영참가 목적 보유"
+
+    def test_negation_and_simple_investment_do_not_fire(self):
+        from bot.dart_feed import significance
+        # 부정 서술('없') — 미발화
+        assert significance({
+            "report_nm": "주식등의대량보유상황보고서(약식)",
+            "category": "지분공시",
+            "detail": ["보고사유: 경영권에 영향을 주기 위한 목적 없음(단순투자)"],
+        }) is None
+        # 단순투자 — 미발화
+        assert significance({
+            "report_nm": "주식등의대량보유상황보고서(약식)",
+            "category": "지분공시",
+            "detail": ["보고사유: 단순투자 변동"],
+        }) is None
+        # 지분공시 외 카테고리의 '경영권' 자유 서술(M&A 문맥) — 카테고리
+        # 게이트로 미발화
+        assert significance({
+            "report_nm": "최대주주변경",
+            "category": "회사구조",
+            "detail": ["보유목적: 경영권 이전"],
+        }) is None
+
+    def test_proxy_contest_titles_fire(self):
+        from bot.dart_feed import significance
+        assert significance({
+            "report_nm": "주주총회소집허가신청", "category": "소송",
+            "detail": [],
+        }) == "주총 소집허가 신청"
+        assert significance({
+            "report_nm": "주주총회소집공고(주주제안 포함)", "category": "기타",
+            "detail": [],
+        }) == "주주제안"
+        # 파싱된 사건: 라인에서도 발화
+        assert significance({
+            "report_nm": "소송등의제기", "category": "소송",
+            "detail": ["사건: 주주총회소집허가 신청"],
+        }) == "주주제안·표대결"
+
+    def test_correction_and_routine_solicitation_do_not_fire(self):
+        from bot.dart_feed import significance
+        assert significance({
+            "report_nm": "[기재정정]주주총회소집허가신청", "category": "소송",
+            "detail": [],
+        }) is None
+        assert significance({
+            "report_nm": "의결권대리행사권유참고서류", "category": "기타",
+            "detail": [],
+        }) is None
+
+    def test_existing_rule6_new_5pct_unaffected(self):
+        from bot.dart_feed import significance
+        assert significance({
+            "report_nm": "주식등의대량보유상황보고서(약식)",
+            "category": "지분공시",
+            "detail": ["보고사유: 신규보고", "지분율: 4.20% → 5.30% (+1.10%p ▲)"],
+        }) == "신규 5.3% 대량보유"
