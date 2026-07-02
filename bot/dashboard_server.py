@@ -334,6 +334,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # 0)지만, no-cache 가 없으면 브라우저가 옛 HTML 을 캐시해 갱신이
             # 안 보임 → 항상 revalidate (사용자 2026-06-11 '업데이트 실시간?').
             self.send_header("Cache-Control", "no-cache, must-revalidate")
+        elif path_lower.endswith((".js", ".css")):
+            # 벤더 라이브러리(lightweight-charts ~250KB·chart.umd ~205KB)는
+            # 버전 고정 파일 — 매 방문 Last-Modified 재검증(304 왕복)도 저사양/
+            # 고지연에서 체감됨 → 7일 캐시(성능 감사 2026-07-03). 라이브러리
+            # 교체 시 파일명이 같아도 7일 내 자연 만료 + regen 은 서버측이라 무관.
+            self.send_header("Cache-Control", "public, max-age=604800")
         super().end_headers()
 
     # ── Request handlers ─────────────────────────────────────────────

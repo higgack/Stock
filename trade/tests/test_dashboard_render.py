@@ -63,10 +63,14 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         # 스크립트 재실행(window._scrollRaw 정의·월별 원자료 우측 스크롤 복구).
         self.assertIn("createElement('script')", src)        # 프래그먼트 스크립트 재실행
         self.assertIn("if(window._scrollRaw)window._scrollRaw(view)", src)  # 우측 스크롤 호출
-        # 산업트렌드 백그라운드 prefetch(사용자 2026-06-16 '갭 두고 자동 로드') —
-        # idle(최대 3초) 시 미리 fetch 해 탭 클릭 즉시 표시.
-        self.assertIn("requestIdleCallback(_prefetchLazy", src)
-        self.assertIn(".view[data-src]", src)                # prefetch 대상 = lazy 뷰
+        # idle prefetch 는 제거(성능 감사 2026-07-03 — 3초 뒤 ~7MB 패널을 탭
+        # 안 열어도 다운로드+DOM 주입해 lazy 분리 이득을 무효화). 순수 클릭 fetch.
+        self.assertNotIn("_prefetchLazy", src)
+        # 새 데이터 업데이트 배너(사용자 2026-07-03 '30분 체크 + 팝업으로 결정') —
+        # 30분 HEAD 폴 + 하단 팝업(새로고침/유지 선택), 강제 리로드 없음.
+        self.assertIn("POLL=1800000", src)
+        self.assertIn("upd-banner", src)
+        self.assertIn("location.reload", src)
 
     def test_industry_csv_kept_in_main(self):
         # 산업트렌드 CSV JSON 스크립트는 lazy 분리돼도 메인에 남아야 csv-btn 이 찾음

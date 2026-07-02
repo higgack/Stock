@@ -9303,24 +9303,32 @@ def _load_daily_byte_runs() -> list[dict]:
 _UPDATE_BANNER_JS = """<script>
 (function(){
   if(window.__updBanner) return; window.__updBanner=true;
-  var POLL=45000, url=location.pathname+location.search, base=null, shown=false;
+  // 30분 주기 체크(사용자 2026-07-03 '30분 기준 + 팝업으로 내가 결정') — HEAD
+  // Last-Modified 만 비교(본문 다운로드 0). 새 업데이트 = 하단 팝업: [새로고침]
+  // 누르면 반영, [✕] 또는 무시하면 보던 화면 그대로(강제 리로드 없음).
+  var POLL=1800000, url=location.pathname+location.search, base=null;
   function head(){ return fetch(url,{method:'HEAD',cache:'no-store'})
     .then(function(r){ return r.ok?r.headers.get('Last-Modified'):null; })
     .catch(function(){ return null; }); }
-  function banner(){
-    if(shown||document.getElementById('upd-banner')) return; shown=true;
+  function banner(cur){
+    if(document.getElementById('upd-banner')) return;
     var b=document.createElement('div'); b.id='upd-banner';
-    b.textContent='🆕 새 업데이트 — 누르면 최신';
     b.style.cssText='position:fixed;left:50%;bottom:18px;transform:translateX(-50%);'+
-      'z-index:9999;background:#2563eb;color:#fff;padding:10px 18px;border-radius:22px;'+
-      'cursor:pointer;font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35)';
-    b.onclick=function(){ location.reload(); };
+      'z-index:9999;background:#2563eb;color:#fff;padding:10px 8px 10px 18px;border-radius:22px;'+
+      'font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35);display:flex;gap:10px;align-items:center';
+    var t=document.createElement('span'); t.textContent='🆕 새 업데이트 — 새로고침';
+    t.style.cursor='pointer'; t.onclick=function(){ location.reload(); };
+    var x=document.createElement('span'); x.textContent='✕';
+    x.style.cssText='cursor:pointer;opacity:.75;padding:0 8px';
+    x.title='보던 화면 유지(다음 업데이트 때 다시 알림)';
+    x.onclick=function(){ base=cur; b.remove(); };   // 이 버전은 무시 — 다음 변경 시 재알림
+    b.appendChild(t); b.appendChild(x);
     document.body.appendChild(b);
   }
   function tick(){ if(document.hidden) return;
     head().then(function(v){ if(!v) return;
       if(base===null){ base=v; return; }
-      if(v!==base) banner(); }); }
+      if(v!==base) banner(v); }); }
   head().then(function(v){ if(base===null) base=v; });   // 로드 시점 = 보고 있는 버전
   setInterval(tick, POLL);
 })();
@@ -14068,7 +14076,7 @@ def _render_macro_snapshot(macro: dict) -> str:
     out.append(f"""
   <div class="section-hd">
     <h2>Macro Snapshot</h2>
-    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 30초 자동 갱신</span>
+    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 새 데이터 시 하단 알림(30분 체크)</span>
   </div>""")
 
     if domestic:
@@ -14267,29 +14275,11 @@ def _render_market_daily_cards() -> str:
 
 # 라이브 틱 (사용자 2026-06-15 '홈 위젯 실시간 — 신규기능') — 정적 market.html 은
 # 타이머가 30초마다 재생성(no-cache)하므로, 페이지가 스스로 market.html 을 다시
-# 받아 #live-sections(스냅샷·Macro·업종등락)만 innerHTML 교체 → 새로고침 없이 자동
-# 갱신. 라이브 섹션은 전부 정적 HTML(인라인 SVG 스파크라인·표, JS 위젯 0)이라 swap
-# 안전. graceful: fetch 실패·빈 조각이면 무변경. 탭 숨김·검색 입력 중엔 skip.
-_MARKET_LIVE_JS = """<script>
-(function(){
-  var POLL = 30000;   // 30초 (소스 TTL·재생성 주기와 동일)
-  function tick(){
-    if (document.hidden) return;                       // 백그라운드 탭 skip
-    var s = document.getElementById('mkt-search');
-    if (s && (s === document.activeElement || s.value)) return;  // 검색 중 skip
-    fetch('market.html', {cache:'no-store'})
-      .then(function(r){ if(!r.ok) throw 0; return r.text(); })
-      .then(function(html){
-        var doc = new DOMParser().parseFromString(html, 'text/html');
-        var fresh = doc.getElementById('live-sections');
-        var cur = document.getElementById('live-sections');
-        if (fresh && cur && fresh.innerHTML.length > 100) cur.innerHTML = fresh.innerHTML;
-      })
-      .catch(function(){});                             // graceful — 무변경
-  }
-  setInterval(tick, POLL);
-})();
-</script>"""
+# (구) 30초 #live-sections 자동 swap 은 제거(사용자 2026-07-03 '30분 기준 +
+# 팝업으로 내가 결정') — 보던 화면이 바뀌는 강제 갱신 대신 _UPDATE_BANNER_JS
+# (30분 HEAD 폴 → 하단 팝업 → 사용자가 새로고침/유지 선택)로 통일. 저사양
+# PC 에서 30초마다 전체 페이지 fetch+DOMParser 하던 CPU 비용도 제거(성능 감사).
+_MARKET_LIVE_JS = ""
 
 
 def _render_market_page(data: dict) -> str:
@@ -14372,7 +14362,7 @@ def _render_market_page(data: dict) -> str:
   <div id="live-sections">
   <div class="section-hd">
     <h2>글로벌 시장 스냅샷</h2>
-    <span class="ts">{_html.escape(ts)} 기준 · 30초 자동 갱신</span>
+    <span class="ts">{_html.escape(ts)} 기준 · 새 데이터 시 하단 알림(30분 체크)</span>
   </div>
   <div class="card-grid">
 """)
@@ -14400,7 +14390,7 @@ def _render_market_page(data: dict) -> str:
     # 일·중·홍·대(ASIA) 업종 등락은 별도 asia.html 로 분리 — 홈 경량화·성능
     # (사용자 2026-06-15). nav '🏯 ASIA' 링크. 같은 data 로 _render_asia_page 가
     # 렌더(추가 fetch 0). KR·US 는 홈 유지.
-    parts.append('</div>')  # close #live-sections (라이브 틱 단위 — 30초 자동 갱신)
+    parts.append('</div>')  # close #live-sections
 
     # 다가오는 실적 — 시장별 탭 분리(사용자 정책: 한국 기본·최대한 표시 +
     # 2026-06-13 '실적빌드 다국가' JP/TW/CN/HK 추가, 접미사 재필터).
@@ -15067,30 +15057,11 @@ def _render_market_page(data: dict) -> str:
 
 
 # ASIA 별도 대시보드 (일·중·홍·대 업종 등락을 홈에서 분리 — 홈 경량화·성능,
-# 사용자 2026-06-15). 홈과 동일 소스·라이브 틱(#live-sections 30초 swap) +
-# 진입 위치 복원(noah_asia_scroll). asia.html 은 regenerate_market_index 가
-# 홈과 같은 data 로 함께 렌더(추가 fetch 0).
+# 사용자 2026-06-15). (구) 30초 라이브 swap 은 제거(사용자 2026-07-03 '30분
+# 기준 + 팝업으로 내가 결정') — _UPDATE_BANNER_JS 로 통일. 진입 위치 복원만 유지.
+# asia.html 은 regenerate_market_index 가 홈과 같은 data 로 함께 렌더(추가 fetch 0).
 _ASIA_LIVE_JS = """<script>
 (function(){
-  function kstNow(){var n=new Date();return new Date(n.getTime()+(n.getTimezoneOffset()+540)*60000);}
-  // 아시아 전 시장(JP·CN·HK·TW) 장 밖이면 폴링 skip (T11 2026-06-16) — 옛 코드는
-  // 30초 24/7 폴링이라 장후·주말에도 풀 마켓 렌더를 트리거. KST 09:00–17:10 =
-  // JP 개장(09:00 KST)~HK 마감(16:00 HKT=17:00 KST)+버퍼 union, 주말 제외.
-  function isOpen(){var k=kstNow(),d=k.getDay(),m=k.getHours()*60+k.getMinutes();
-    if(d===0||d===6) return false;
-    return m>=540 && m<=1030;}
-  function tick(){
-    if(document.hidden) return;
-    if(!isOpen()) return;
-    fetch('asia.html',{cache:'no-store'})
-      .then(function(r){if(!r.ok)throw 0;return r.text();})
-      .then(function(html){
-        var doc=new DOMParser().parseFromString(html,'text/html');
-        var fresh=doc.getElementById('live-sections'), cur=document.getElementById('live-sections');
-        if(fresh&&cur&&fresh.innerHTML.length>50) cur.innerHTML=fresh.innerHTML;
-      }).catch(function(){});
-  }
-  setInterval(tick, 30000);
   /* 진입 위치 복원 (사용자 2026-06-15 '일본이면 일본·대만이면 대만') — 홈
      market.html 과 동일 메커니즘, 키만 noah_asia_scroll. async 콘텐츠 대비 다중 재적용. */
   try{
@@ -15113,7 +15084,7 @@ _ASIA_LIVE_JS = """<script>
 
 def _render_asia_page(data: dict) -> str:
     """asia.html — 일·중·홍·대 업종 등락. 홈에서 분리해 홈 경량화(성능). 홈과
-    동일 위젯·30초 자동 갱신 + 진입 위치 복원(사용자 2026-06-15)."""
+    동일 위젯 · 업데이트 배너(30분 체크) + 진입 위치 복원(사용자 2026-06-15)."""
     _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:8px"
     _lk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     parts = [_MARKET_CSS]
@@ -15122,7 +15093,7 @@ def _render_asia_page(data: dict) -> str:
         '    <a href="market.html">🌍 홈</a>\n'
         '    &middot; <a href="index.html">🦉 종목분석</a>\n'
         '  </div>\n  <h1>🏯 아시아 업종 등락</h1>\n'
-        '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스·30초 자동 갱신</p>\n'
+        '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스 · 새 데이터 시 하단 알림(30분 체크)</p>\n'
         '  <div id="live-sections">')
     parts.append(_render_etf_sector_movers(
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
@@ -15155,7 +15126,9 @@ def regenerate_market_index() -> None:
     try:
         from bot.market_overview import fetch_all_market_data
         data = fetch_all_market_data()
-        html = _render_market_page(data)
+        # 30초 자동 swap 대신 업데이트 배너(30분 체크 → 사용자가 반영/유지 선택,
+        # 사용자 2026-07-03) — market/asia 도 콘텐츠 페이지와 동일 패턴.
+        html = _inject_update_banner(_render_market_page(data))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         # 원자 쓰기 — 1분 주기로 빨라지며 half-write 읽힘 창 차단
         # (SV C-B 클래스, temp + os.replace).
@@ -15167,7 +15140,8 @@ def regenerate_market_index() -> None:
         # 2026-06-15 — 홈에서 일·중·홍·대 분리). 실패해도 market.html 은 유지.
         try:
             atmp = (ARCHIVE_ROOT / "asia.html").with_suffix(".html.tmp")
-            atmp.write_text(_render_asia_page(data), encoding="utf-8")
+            atmp.write_text(_inject_update_banner(_render_asia_page(data)),
+                            encoding="utf-8")
             atmp.replace(ARCHIVE_ROOT / "asia.html")
         except Exception as aexc:
             log.warning("dashboard: asia.html regen failed: %s", aexc)

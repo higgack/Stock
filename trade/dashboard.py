@@ -2548,17 +2548,41 @@ render();
 // Fire after initial render so the modal can locate by id.
 handleHashDeepLink();
 
-// 산업트렌드(무거운 ~7MB 프래그먼트)는 탭 클릭 시 fetch 라 첫 클릭이 느림(사용자
-// 2026-06-16 '갭 두고 자동 로드'). 초기 렌더(경량 index) 끝난 뒤 브라우저 idle
-// (최대 3초) 시 백그라운드로 미리 prefetch → 탭 클릭 시 즉시 표시(따로 안 눌러도).
-// _lazyFetchView 의 loaded 가드로 클릭과 중복 fetch 안 되고, idle 후라 첫 화면
-// 속도엔 영향 없음(critical paint 와 비경쟁). requestIdleCallback 없으면 2.5초 폴백.
+// (구) idle prefetch 는 제거(성능 감사 2026-07-03) — 3초 뒤 ~7MB 산업패널을
+// 백그라운드 다운로드+DOM 주입해, 탭을 안 열어도 저사양 PC 에서 lazy 분리
+// (#692)의 이득을 무효화했음. 이제 순수 클릭 시 fetch(첫 클릭만 잠깐 로딩).
+
+// 새 데이터 업데이트 배너(사용자 2026-07-03 '30분 체크 + 팝업으로 내가 결정') —
+// NOAH _UPDATE_BANNER_JS 와 동일 패턴: HEAD Last-Modified 30분 폴(본문 0),
+// 변경 시 하단 팝업(새로고침=반영 / ✕·무시=보던 화면 유지). 서버 regen(5분)이
+// 갱신해도 강제 리로드 없음.
 (function(){
-  function _prefetchLazy(){
-    document.querySelectorAll('.view[data-src]').forEach(function(v){_lazyFetchView(v);});
+  if(window.__updBanner) return; window.__updBanner=true;
+  var POLL=1800000, url=location.pathname+location.search, base=null;
+  function head(){ return fetch(url,{method:'HEAD',cache:'no-store'})
+    .then(function(r){ return r.ok?r.headers.get('Last-Modified'):null; })
+    .catch(function(){ return null; }); }
+  function banner(cur){
+    if(document.getElementById('upd-banner')) return;
+    var b=document.createElement('div'); b.id='upd-banner';
+    b.style.cssText='position:fixed;left:50%;bottom:18px;transform:translateX(-50%);'+
+      'z-index:9999;background:#2563eb;color:#fff;padding:10px 8px 10px 18px;border-radius:22px;'+
+      'font-size:14px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.35);display:flex;gap:10px;align-items:center';
+    var t=document.createElement('span'); t.textContent='🆕 새 업데이트 — 새로고침';
+    t.style.cursor='pointer'; t.onclick=function(){ location.reload(); };
+    var x=document.createElement('span'); x.textContent='✕';
+    x.style.cssText='cursor:pointer;opacity:.75;padding:0 8px';
+    x.title='보던 화면 유지(다음 업데이트 때 다시 알림)';
+    x.onclick=function(){ base=cur; b.remove(); };
+    b.appendChild(t); b.appendChild(x);
+    document.body.appendChild(b);
   }
-  if(window.requestIdleCallback) requestIdleCallback(_prefetchLazy,{timeout:3000});
-  else setTimeout(_prefetchLazy,2500);
+  function tick(){ if(document.hidden) return;
+    head().then(function(v){ if(!v) return;
+      if(base===null){ base=v; return; }
+      if(v!==base) banner(v); }); }
+  head().then(function(v){ if(base===null) base=v; });
+  setInterval(tick, POLL);
 })();
 """
 
