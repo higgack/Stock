@@ -9006,27 +9006,33 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
     return _TPL;
   }
   function ensure(){
-    if(!SURFACE) return;
+    if(!SURFACE) return Promise.resolve();
     // 배치화(성능 2026-07-03, 사용자 '③도 적용'): 카드 수천 개 페이지에서
     // 버튼 삽입을 300개 단위 idle 청크로 나눠 첫 페인트 블로킹/버벅임 완화.
     // 멱등(재호출 시 .imp-star 존재 카드는 clone 안 붙이고 paint 만) — 청크
     // 진행 중 재호출돼도 안전. counts 는 마지막 청크 후 1회.
+    // 반환 = 마지막 청크(counts 포함)까지 끝난 뒤 resolve 되는 Promise —
+    // lazyAll 이 '전 카드 페인팅 완료' 시점에 필터를 재적용할 수 있게
+    // (리뷰 2026-07-04 Major: idle 청크 미완 상태에서 필터가 돌면 늦게
+    // 칠해진 ★가 hidden 으로 남음).
     var cards=Array.prototype.slice.call(document.querySelectorAll(CARDSEL));
     var i=0;
-    function chunk(){
-      var end=Math.min(i+300,cards.length);
-      for(;i<end;i++){ var card=cards[i];
-        card.classList.add('imp-markable');
-        var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
-        if(!head.querySelector('.imp-star')) head.appendChild(_tpl().cloneNode(true));
-        paint(card);
+    return new Promise(function(res){
+      function chunk(){
+        var end=Math.min(i+300,cards.length);
+        for(;i<end;i++){ var card=cards[i];
+          card.classList.add('imp-markable');
+          var head=(HEADSEL&&card.querySelector(HEADSEL))||card;
+          if(!head.querySelector('.imp-star')) head.appendChild(_tpl().cloneNode(true));
+          paint(card);
+        }
+        if(i<cards.length){
+          if(window.requestIdleCallback) requestIdleCallback(chunk,{timeout:200});
+          else setTimeout(chunk,0);
+        } else { counts(); res(); }
       }
-      if(i<cards.length){
-        if(window.requestIdleCallback) requestIdleCallback(chunk,{timeout:200});
-        else setTimeout(chunk,0);
-      } else counts();
-    }
-    chunk();
+      chunk();
+    });
   }
   function counts(){
     var ni=document.querySelectorAll('.imp-markable.imp-on').length;
@@ -9060,14 +9066,20 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
       if(g.querySelector(sel)) g.classList.remove('collapsed');
     });
   }
-  function lazyAll(sel){
+  function lazyAll(sel,flag){
     // ⭐/📝 필터 ON 시 접힌 과거-월 lazy 프래그먼트 전부 로드 — 미로드 달의
     // ★가 필터에 안 잡히던 것 해소(사용자 2026-07-03 '필터시 전체로드').
     // 각 페이지 lazy 로더가 window.__lazyLoadAll 등록(없는 표면 = no-op).
-    // 로드 완료 후 그룹 재펼침 + impfilterchange 재통지(그룹-카운트 필터 재적용).
+    // 로드 후 ensure() 1회 더 체이닝(멱등) — 월별 __impApply 의 idle 청크가
+    // 아직 도는 중에 재적용하면 늦게 칠해진 ★가 hidden 으로 남는 레이스 차단
+    // (리뷰 2026-07-04 Major). 그 다음 그룹 재펼침 + impfilterchange 재통지.
+    // flag 가드: 로드 중 사용자가 필터를 껐으면(html 클래스 제거됨) 펼침/재통지
+    // 생략 — 꺼진 필터가 전체 페이지를 강제 펼치던 것 차단(리뷰 Minor).
     if(!window.__lazyLoadAll) return;
     try{ var p=window.__lazyLoadAll();
-      if(p&&p.then) p.then(function(){ expandGroups(sel);
+      if(p&&p.then) p.then(function(){ return ensure(); }).then(function(){
+        if(!document.documentElement.classList.contains(flag)) return;
+        expandGroups(sel);
         document.dispatchEvent(new CustomEvent('impfilterchange')); }).catch(function(){});
     }catch(e){}
   }
@@ -9165,7 +9177,7 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
     panel.classList.toggle('open');
     if(panel.classList.contains('open')&&card.tagName==='DETAILS') card.open=true;
   }
-  window.__impApply=function(){ ensure(); };
+  window.__impApply=function(){ return ensure(); };
   injectFilter();
   fetch('api/important').then(function(r){return r.json();}).then(function(d){
     if(d){ if(d.marks&&d.marks[SURFACE]) MARKS=new Set(d.marks[SURFACE]);
@@ -9196,7 +9208,7 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
       if(a1) expandGroups('.imp-markable.imp-on');
       // 페이지별 그룹-카운트 필터(예 DART applyFilters)가 교집합 재적용하도록 통지.
       document.dispatchEvent(new CustomEvent('impfilterchange'));
-      if(a1) lazyAll('.imp-markable.imp-on');
+      if(a1) lazyAll('.imp-markable.imp-on','imp-only');
       return; }
     var g=e.target.closest&&e.target.closest('.memo-filter-btn');
     if(g){ e.preventDefault();
@@ -9204,7 +9216,7 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
       document.querySelectorAll('.memo-filter-btn').forEach(function(x){x.classList.toggle('active',a2);});
       if(a2) expandGroups('.imp-markable.has-memo');
       document.dispatchEvent(new CustomEvent('impfilterchange'));
-      if(a2) lazyAll('.imp-markable.has-memo');
+      if(a2) lazyAll('.imp-markable.has-memo','memo-only');
       return; }
   });
 })();

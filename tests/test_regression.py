@@ -12846,13 +12846,20 @@ class TestFilterLazyAllAndMarketSections20260704:
 
     def test_imp_filter_triggers_lazy_load_all(self):
         src = self._src("bot/dashboard.py")
-        # _IMPORTANT_BLOCK: 필터 ON 시 lazyAll(로드→그룹 재펼침→재통지) 호출.
-        assert "function lazyAll(sel)" in src
-        assert "lazyAll('.imp-markable.imp-on')" in src
-        assert "lazyAll('.imp-markable.has-memo')" in src
+        # _IMPORTANT_BLOCK: 필터 ON 시 lazyAll(로드→ensure 완료→그룹 재펼침→재통지).
+        assert "function lazyAll(sel,flag)" in src
+        assert "lazyAll('.imp-markable.imp-on','imp-only')" in src
+        assert "lazyAll('.imp-markable.has-memo','memo-only')" in src
         # 3계열 lazy 로더(index/_DAILY_BYTE_JS/dart)가 훅 등록 — 미등록 표면은 no-op.
         assert src.count("window.__lazyLoadAll = loadAllMonths;") == 2
         assert "window.__lazyLoadAll=dfLoadAll;" in src
+        # 리뷰 2026-07-04 fix 고정: (Major) ensure() = idle 청크 완료 후 resolve
+        # Promise — lazyAll 이 전 카드 페인팅 완료 시점에 재적용(레이스 차단).
+        # (Minor) 로드 중 필터 OFF 면 펼침/재통지 생략(flag 가드).
+        assert "return new Promise(function(res)" in src
+        assert "{ counts(); res(); }" in src
+        assert ".then(function(){ return ensure(); })" in src
+        assert "if(!document.documentElement.classList.contains(flag)) return;" in src
 
     def test_market_nav_realestate_second_row(self):
         src = self._src("bot/dashboard.py")
