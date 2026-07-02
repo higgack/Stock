@@ -352,6 +352,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 강세/약세 토론(Gemini 1콜, cost-gated, 캐시). 탭 클릭/실행버튼 lazy fetch.
         if self.path.split("?", 1)[0] == "/api/technical":
             return self._handle_technical_api()
+        # /api/usdkrw — 원/달러 실시간(네이버 marketindex, 30초 캐시 내장).
+        # 유동성 보드가 FRED DEXKOUS(1영업일 지연) 최신값을 실시간으로 덮는 용
+        # (사용자 2026-07-02 '환율은 네이버같은곳에서 실시간으로').
+        if self.path.split("?", 1)[0] == "/api/usdkrw":
+            return self._handle_usdkrw_api()
         # /api/quote?ticker=..[&full=1]  — live numbers for the detail page.
         # LIGHT (default): price-derived multiples + consensus + 52주 + 이평
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
@@ -1264,6 +1269,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("memo_post: %s", exc)
             self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_usdkrw_api(self) -> None:
+        """GET /api/usdkrw → {rate, change, pct, src}. 네이버 marketindex
+        fetch_kr_fx(30초 캐시·graceful) 재사용 — 실패/무데이터 시 {}(클라는
+        FRED 값 유지). LLM 0·₩0."""
+        try:
+            from bot.naver_marketindex import fetch_kr_fx
+            rec = (fetch_kr_fx() or {}).get("FX_USDKRW") or {}
+            if rec.get("close") is not None:
+                self._json_ok({"rate": rec["close"],
+                               "change": rec.get("change"),
+                               "pct": rec.get("pct"), "src": "네이버 실시간"})
+                return
+        except Exception as exc:
+            log.warning("usdkrw_api: %s", exc)
+        self._json_ok({})
 
     def _handle_vc_suppress_post(self) -> None:
         """POST /api/vc_suppress {id:"회사|관계|대상"} — 밸류체인 잘못된 관계 숨김(🗑️).
