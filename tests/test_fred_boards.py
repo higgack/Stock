@@ -505,3 +505,29 @@ class DiscontinuedSweepTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EcosM2NameResolutionTests(unittest.TestCase):
+    """한국 M2 아이템 이름해석(2026-07-04 라이브 fix) — 하드코딩 BBHA00 이
+    INFO-200(데이터 없음)이라 KR PPI 와 같은 StatisticItemList 런타임 매칭 +
+    말잔(101Y003) 표 폴백으로 전환. 코드 하드코딩 재발 방지 계약."""
+
+    def test_m2_config_uses_name_resolution(self):
+        from bot import bok_ecos_client as bec
+        cfg = bec._SERIES["m2"]
+        self.assertEqual(cfg.get("item_name"), "M2")
+        self.assertNotIn("item", cfg)              # 코드 하드코딩 금지
+        self.assertIn("101Y003", cfg.get("alt_tables", []))
+
+    def test_item_list_table_param(self):
+        # _fetch_item_list 가 table 인자화(KR PPI 기본값 유지) — 소스 계약.
+        import inspect
+        from bot import bok_ecos_client as bec
+        sig = inspect.signature(bec._fetch_item_list)
+        self.assertEqual(sig.parameters["table"].default, bec._KR_PPI_TABLE)
+
+    def test_match_items_exact_over_variant(self):
+        from bot import bok_ecos_client as bec
+        rows = [{"ITEM_NAME": "M2(계절조정)", "ITEM_CODE": "XZZ999"},
+                {"ITEM_NAME": "M2", "ITEM_CODE": "ABC100"}]
+        self.assertEqual(bec._match_items(rows, ["M2"]), {"M2": "ABC100"})
