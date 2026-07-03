@@ -133,8 +133,13 @@ _SERIES = {
         # 유동성 보드 한국 M2 — FRED 의 OECD Korea 통화량(MANMM101KRM189S)이
         # 2023-10 이후 중단(OECD MEI 개편)이라 한국은행 원천으로 대체
         # (사용자 2026-07-04 'FRED 중단분은 우리 자원으로 대체').
+        # ⚠️ 아이템 코드 하드코딩 금지 — 첫 배포의 BBHA00 이 INFO-200(데이터
+        # 없음, VM journal 2026-07-03)이라 KR PPI 와 같은 **이름해석**으로 전환:
+        # StatisticItemList 에서 'M2' 를 런타임 매칭(정확일치→최단코드),
+        # 평잔(101Y004) 무매칭 시 말잔(101Y003) 폴백.
         "table": "101Y004",   # 1.1.3.1.1 M2 상품별 구성내역(평잔, 원계열)
-        "item": "BBHA00",     # M2 (평잔) 합계
+        "alt_tables": ["101Y003"],   # 말잔 폴백
+        "item_name": "M2",    # 이름해석(코드 하드코딩 금지)
         "freq": "M",
         "label": "한국 M2(평잔)",
         "unit": "조원",
@@ -293,26 +298,44 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
     else:
         return []
 
-    url = (
-        f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/1000/"
-        f"{cfg['table']}/{cfg['freq']}/{start_str}/{end_str}/{cfg['item']}"
-    )
-    try:
-        resp = requests.get(url, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as exc:
-        log.warning("ecos: series fetch failed for %s: %s", key, exc)
-        return []
-    if "RESULT" in payload and "StatisticSearch" not in payload:
-        # silent-fail 금지(사용자 2026-06-23 '카드 빠짐 왜?'): ECOS RESULT 에러
-        # (잘못된 table/item·키한도·데이터없음)를 로그로 가시화 — 카드가 조용히
-        # 드롭되던 근본원인 추적용. CODE/MESSAGE 그대로 노출.
-        _r = payload.get("RESULT") or {}
-        log.warning("ecos: %s RESULT %s — %s (table=%s item=%s)", key,
-                    _r.get("CODE"), _r.get("MESSAGE"), cfg.get("table"), cfg.get("item"))
-        return []
-    rows = payload.get("StatisticSearch", {}).get("row") or []
+    # 표 후보 순회 — item_name 이 있으면 표별 StatisticItemList 이름해석
+    # (KR PPI _match_items 재사용, 코드 하드코딩 금지 — BBHA00 INFO-200 재발
+    # 방지 2026-07-04). 정적 item 시리즈는 기존 그대로 단일 표 1회.
+    rows: list[dict] = []
+    for _tbl in [cfg["table"]] + list(cfg.get("alt_tables", [])):
+        _item = cfg.get("item", "")
+        if cfg.get("item_name"):
+            _cands = _fetch_item_list(api_key, table=_tbl)
+            _code = _match_items(_cands, [cfg["item_name"]]).get(cfg["item_name"])
+            if not _code:
+                log.warning("ecos: %s item '%s' unmatched in %s (items=%d)",
+                            key, cfg["item_name"], _tbl, len(_cands))
+                continue
+            log.info("ecos: %s resolved %s/'%s' → %s",
+                     key, _tbl, cfg["item_name"], _code)
+            _item = _code
+        url = (
+            f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/1000/"
+            f"{_tbl}/{cfg['freq']}/{start_str}/{end_str}/{_item}"
+        )
+        try:
+            resp = requests.get(url, timeout=_TIMEOUT)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("ecos: series fetch failed for %s (%s): %s", key, _tbl, exc)
+            continue
+        if "RESULT" in payload and "StatisticSearch" not in payload:
+            # silent-fail 금지(사용자 2026-06-23 '카드 빠짐 왜?'): ECOS RESULT
+            # 에러(잘못된 table/item·키한도·데이터없음)를 로그로 가시화 — 카드가
+            # 조용히 드롭되던 근본원인 추적용. CODE/MESSAGE 그대로 노출.
+            _r = payload.get("RESULT") or {}
+            log.warning("ecos: %s RESULT %s — %s (table=%s item=%s)", key,
+                        _r.get("CODE"), _r.get("MESSAGE"), _tbl, _item)
+            continue
+        rows = payload.get("StatisticSearch", {}).get("row") or []
+        if rows:
+            break
     _scale = float(cfg.get("scale", 1.0))   # ECOS 원단위 → 카드 단위(예: 천$→억$)
     points: list[tuple[str, float]] = []
     for r in rows:
@@ -403,25 +426,26 @@ def _match_items(rows: list[dict], patterns: list[str]) -> dict[str, str]:
     return {k: v for k, v in out.items() if v}
 
 
-def _fetch_item_list(api_key: str) -> list[dict]:
-    """404Y014 아이템 전체 목록 — 페이지네이션(1000행 단위, 최대 5쪽). 기본분류
-    품목이 500+ 개라 단일 1/500 요청은 뒤쪽 항목을 놓침(리뷰 finding)."""
+def _fetch_item_list(api_key: str, table: str = _KR_PPI_TABLE) -> list[dict]:
+    """통계표 아이템 전체 목록 — 페이지네이션(1000행 단위, 최대 5쪽). 기본분류
+    품목이 500+ 개라 단일 1/500 요청은 뒤쪽 항목을 놓침(리뷰 finding).
+    table 인자화(2026-07-04) — KR PPI(404Y014) 외 M2 등 이름해석 시리즈 공용."""
     items: list[dict] = []
     for page in range(5):
         s, e = page * 1000 + 1, (page + 1) * 1000
         try:
             url = (f"{_BASE_URL}/StatisticItemList/{api_key}/json/kr/{s}/{e}/"
-                   f"{_KR_PPI_TABLE}")
+                   f"{table}")
             resp = requests.get(url, timeout=_TIMEOUT)
             resp.raise_for_status()
             payload = resp.json()
             if "RESULT" in payload and "StatisticItemList" not in payload:
-                log.warning("ecos: kr_ppi item list error: %s",
-                            payload.get("RESULT"))
+                log.warning("ecos: item list error (%s): %s",
+                            table, payload.get("RESULT"))
                 break
             rows = (payload.get("StatisticItemList") or {}).get("row") or []
         except Exception as exc:
-            log.warning("ecos: kr_ppi item list failed (p%d): %s", page, exc)
+            log.warning("ecos: item list failed (%s p%d): %s", table, page, exc)
             break
         items.extend(rows)
         if len(rows) < 1000:
