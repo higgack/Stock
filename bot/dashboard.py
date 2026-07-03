@@ -14718,7 +14718,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="blog.html">📝 블로그</a>
   </div>
   <div class="nav nav-r2">
-    <a href="realestate.html">🏠 부동산</a>
+    |&nbsp;<a href="realestate.html">🏠 부동산</a>
   </div>
   <h1>🌍 Market Overview</h1>
   <p class="sub">글로벌 시장 현황 · 종목 검색 · 실적 일정 · 리서치 액션 · 업종 등락</p>
