@@ -519,7 +519,12 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         cfg = bec._SERIES["m2"]
         self.assertEqual(cfg.get("item_name"), "M2")
         self.assertNotIn("item", cfg)              # 코드 하드코딩 금지
-        self.assertIn("101Y003", cfg.get("alt_tables", []))
+        # 현행 신계열(1.1장) 표 — 구계열 101Y00x(1.7장, ~2004 종료) 금지
+        # (VM TableList 확인 2026-07-04).
+        self.assertEqual(cfg["table"], "161Y006")
+        self.assertIn("161Y005", cfg.get("alt_tables", []))
+        self.assertFalse(any(t.startswith("101Y") for t in
+                             [cfg["table"]] + cfg.get("alt_tables", [])))
 
     def test_item_list_table_param(self):
         # _fetch_item_list 가 table 인자화(KR PPI 기본값 유지) — 소스 계약.
