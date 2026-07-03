@@ -305,11 +305,16 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
     for _tbl in [cfg["table"]] + list(cfg.get("alt_tables", [])):
         _item = cfg.get("item", "")
         if cfg.get("item_name"):
-            _cands = _fetch_item_list(api_key, table=_tbl)
+            _all = _fetch_item_list(api_key, table=_tbl)
+            # 주기 일치 + 최근까지 제공되는 항목만 — legacy(구계열) 동명
+            # 항목 오매칭 차단(END_TIME 이 13개월 이내 신선한 것만).
+            _cutoff = (date.today() - timedelta(days=400)).strftime("%Y%m")
+            _cands = _filter_series_items(_all, cfg["freq"], _cutoff)
             _code = _match_items(_cands, [cfg["item_name"]]).get(cfg["item_name"])
             if not _code:
-                log.warning("ecos: %s item '%s' unmatched in %s (items=%d)",
-                            key, cfg["item_name"], _tbl, len(_cands))
+                log.warning("ecos: %s item '%s' unmatched in %s "
+                            "(items=%d, 신선 %d)",
+                            key, cfg["item_name"], _tbl, len(_all), len(_cands))
                 continue
             log.info("ecos: %s resolved %s/'%s' → %s",
                      key, _tbl, cfg["item_name"], _code)
@@ -403,6 +408,31 @@ def format_kr_macro_for_prompt(macro: dict) -> str:
 # StatisticItemList 로 목록을 받아 **이름 부분일치**로 해석 — 코드 오타/개편에
 # 강건(무매칭 = 그 항목만 생략, graceful). 캐시 12h(다른 지표와 동일).
 _KR_PPI_TABLE = "404Y014"
+
+
+def _filter_series_items(rows: list[dict], freq: str,
+                         min_end_yyyymm: str) -> list[dict]:
+    """시리즈 이름해석용 아이템 필터 — CYCLE == freq 이고 END_TIME 이 최근
+    (min_end_yyyymm 이상)인 항목만. legacy 표의 동명 항목(예: 101Y004 'M2'
+    가 CYCLE A/M/Q 로 있지만 전부 END 2004 — 2026-07-04 실사례)이 이름만
+    같아 매칭돼 INFO-200 을 내던 것 차단. END_TIME 포맷 다양('2003'/'200409'/
+    '2004Q3'/'20040930') — 숫자만 추출해 YYYYMM 로 정규화(연도만이면 12월
+    간주) 후 비교. 순수(테스트)."""
+    import re as _re
+    out = []
+    for r in rows:
+        if (r.get("CYCLE") or "").strip() != freq:
+            continue
+        digits = _re.sub(r"\D", "", str(r.get("END_TIME") or ""))
+        if len(digits) >= 6:
+            end = digits[:6]
+        elif len(digits) == 4:
+            end = digits + "12"
+        else:
+            continue
+        if end >= min_end_yyyymm:
+            out.append(r)
+    return out
 
 
 def _match_items(rows: list[dict], patterns: list[str]) -> dict[str, str]:

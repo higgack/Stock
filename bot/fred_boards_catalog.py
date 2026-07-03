@@ -57,7 +57,6 @@ PPI_SERIES = [
     {'id': 'WPU0652', 'name': 'Fertilizer Materials', 'cat': 'Chemical & Materials', 'stocks': '비료 — US: Mosaic·Nutrien / KR: 남해화학·조비'},
     {'id': 'WPU022', 'name': 'Processed Foods & Feeds (Meats)', 'cat': 'Food & Agriculture', 'stocks': '육류·식품 — US: Tyson / KR: 하림·CJ제일제당 / JP: 니혼햄'},
     {'id': 'PCU336412336412', 'name': 'Aircraft Engine & Engine Parts Mfg', 'cat': 'Aerospace & Defense', 'stocks': '항공엔진 — KR: 한화에어로스페이스 / US: GE Aerospace·RTX / JP: IHI'},
-    {'id': 'PCU336414336414', 'name': 'Guided Missile & Space Vehicle Mfg', 'cat': 'Aerospace & Defense', 'stocks': '유도무기·우주 — KR: LIG넥스원·한화시스템 / US: Lockheed·Northrop'},
     {'id': 'PCU332992332992', 'name': 'Small Arms Ammunition Mfg', 'cat': 'Aerospace & Defense', 'stocks': '소구경탄약 — KR: 풍산 / US: Olin·Vista Outdoor'},
     {'id': 'PCU332993332993', 'name': 'Ammunition (exc. Small Arms) Mfg', 'cat': 'Aerospace & Defense', 'stocks': '탄약·포탄 — KR: 풍산·한화 / US: General Dynamics'},
     {'id': 'PCU334412334412', 'name': 'Bare Printed Circuit Board Mfg', 'cat': 'Semiconductor & Electronics', 'stocks': 'PCB — KR: 삼성전기·이수페타시스·대덕전자 / TW: Unimicron / JP: 이비덴'},

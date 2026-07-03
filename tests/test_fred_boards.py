@@ -531,3 +531,23 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         rows = [{"ITEM_NAME": "M2(계절조정)", "ITEM_CODE": "XZZ999"},
                 {"ITEM_NAME": "M2", "ITEM_CODE": "ABC100"}]
         self.assertEqual(bec._match_items(rows, ["M2"]), {"M2": "ABC100"})
+
+    def test_filter_series_items_blocks_legacy(self):
+        # 실사례(2026-07-04): 101Y004 'M2' 가 A/M/Q 로 존재하나 전부 END 2004
+        # (구계열) — 주기 일치 + 신선 END_TIME 만 통과.
+        from bot.bok_ecos_client import _filter_series_items
+        rows = [
+            {"ITEM_CODE": "BBHA00", "CYCLE": "A", "END_TIME": "2003"},
+            {"ITEM_CODE": "BBHA00", "CYCLE": "M", "END_TIME": "200409"},
+            {"ITEM_CODE": "NEW100", "CYCLE": "M", "END_TIME": "202605"},
+            {"ITEM_CODE": "QQQ", "CYCLE": "Q", "END_TIME": "2026Q1"},
+            {"ITEM_CODE": "BAD", "CYCLE": "M", "END_TIME": ""},
+        ]
+        out = _filter_series_items(rows, "M", "202506")
+        self.assertEqual([r["ITEM_CODE"] for r in out], ["NEW100"])
+
+    def test_dead_missile_ppi_removed(self):
+        # PCU336414336414 — FRED 400(미존재), BLS 미발행 확인(2026-07-04) →
+        # 삭제(항공우주 상위그룹 PCU3364133641 이 커버). 사용자 '없는건 삭제'.
+        self.assertFalse(any(s["id"] == "PCU336414336414" for s in PPI_SERIES))
+        self.assertEqual(len(PPI_SERIES), 72)
