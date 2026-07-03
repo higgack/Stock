@@ -133,12 +133,12 @@ _SERIES = {
         # 유동성 보드 한국 M2 — FRED 의 OECD Korea 통화량(MANMM101KRM189S)이
         # 2023-10 이후 중단(OECD MEI 개편)이라 한국은행 원천으로 대체
         # (사용자 2026-07-04 'FRED 중단분은 우리 자원으로 대체').
-        # ⚠️ 아이템 코드 하드코딩 금지 — 첫 배포의 BBHA00 이 INFO-200(데이터
-        # 없음, VM journal 2026-07-03)이라 KR PPI 와 같은 **이름해석**으로 전환:
-        # StatisticItemList 에서 'M2' 를 런타임 매칭(정확일치→최단코드),
-        # 평잔(101Y004) 무매칭 시 말잔(101Y003) 폴백.
-        "table": "101Y004",   # 1.1.3.1.1 M2 상품별 구성내역(평잔, 원계열)
-        "alt_tables": ["101Y003"],   # 말잔 폴백
+        # ⚠️ 아이템 코드 하드코딩 금지 — 첫 배포의 101Y004/BBHA00 이 INFO-200
+        # (구계열 1.7장, 1986~2004 종료 — VM TableList 확인 2026-07-04).
+        # 현행 신계열(1.1장) = 161Y006. 이름해석(StatisticItemList 런타임
+        # 매칭, CYCLE·END_TIME 신선 필터) + 계절조정(161Y005) 폴백.
+        "table": "161Y006",   # 1.1.3.1.2 M2 상품별 구성내역(평잔, 원계열) — 현행
+        "alt_tables": ["161Y005"],   # 평잔, 계절조정계열 폴백
         "item_name": "M2",    # 이름해석(코드 하드코딩 금지)
         "freq": "M",
         "label": "한국 M2(평잔)",
@@ -305,11 +305,16 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
     for _tbl in [cfg["table"]] + list(cfg.get("alt_tables", [])):
         _item = cfg.get("item", "")
         if cfg.get("item_name"):
-            _cands = _fetch_item_list(api_key, table=_tbl)
+            _all = _fetch_item_list(api_key, table=_tbl)
+            # 주기 일치 + 최근까지 제공되는 항목만 — legacy(구계열) 동명
+            # 항목 오매칭 차단(END_TIME 이 13개월 이내 신선한 것만).
+            _cutoff = (date.today() - timedelta(days=400)).strftime("%Y%m")
+            _cands = _filter_series_items(_all, cfg["freq"], _cutoff)
             _code = _match_items(_cands, [cfg["item_name"]]).get(cfg["item_name"])
             if not _code:
-                log.warning("ecos: %s item '%s' unmatched in %s (items=%d)",
-                            key, cfg["item_name"], _tbl, len(_cands))
+                log.warning("ecos: %s item '%s' unmatched in %s "
+                            "(items=%d, 신선 %d)",
+                            key, cfg["item_name"], _tbl, len(_all), len(_cands))
                 continue
             log.info("ecos: %s resolved %s/'%s' → %s",
                      key, _tbl, cfg["item_name"], _code)
@@ -403,6 +408,37 @@ def format_kr_macro_for_prompt(macro: dict) -> str:
 # StatisticItemList 로 목록을 받아 **이름 부분일치**로 해석 — 코드 오타/개편에
 # 강건(무매칭 = 그 항목만 생략, graceful). 캐시 12h(다른 지표와 동일).
 _KR_PPI_TABLE = "404Y014"
+
+
+def _filter_series_items(rows: list[dict], freq: str,
+                         min_end_yyyymm: str) -> list[dict]:
+    """시리즈 이름해석용 아이템 필터 — CYCLE == freq 이고 END_TIME 이 최근
+    (min_end_yyyymm 이상)인 항목만. legacy 표의 동명 항목(예: 101Y004 'M2'
+    가 CYCLE A/M/Q 로 있지만 전부 END 2004 — 2026-07-04 실사례)이 이름만
+    같아 매칭돼 INFO-200 을 내던 것 차단. END_TIME 포맷 다양('2003'/'200409'/
+    '2004Q3'/'20040930') — 숫자만 추출해 YYYYMM 로 정규화(연도만이면 12월
+    간주) 후 비교. 순수(테스트)."""
+    import re as _re
+    out = []
+    for r in rows:
+        if (r.get("CYCLE") or "").strip() != freq:
+            continue
+        raw = str(r.get("END_TIME") or "")
+        qm = _re.match(r"^(\d{4})Q([1-4])$", raw.strip())
+        if qm:   # 'YYYYQn' — 숫자추출('20043', len 5)로는 버려지던 분기
+                 # 포맷 명시 처리(리뷰 2026-07-04 #4, 미래 Q 시리즈 대비)
+            end = f"{qm.group(1)}{int(qm.group(2)) * 3:02d}"
+        else:
+            digits = _re.sub(r"\D", "", raw)
+            if len(digits) >= 6:
+                end = digits[:6]
+            elif len(digits) == 4:
+                end = digits + "12"
+            else:
+                continue
+        if end >= min_end_yyyymm:
+            out.append(r)
+    return out
 
 
 def _match_items(rows: list[dict], patterns: list[str]) -> dict[str, str]:

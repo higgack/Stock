@@ -411,13 +411,15 @@ class DiscontinuedSweepTests(unittest.TestCase):
         for dead in ("MANMM101JPM189S", "MANMM101EZM189S", "MANMM101KRM189S",
                      "INTDSRKRM193N", "INTDSRCNM193N"):
             self.assertNotIn(dead, ids)
-        self.assertEqual(len(LIQ_SERIES), 37)
+        self.assertEqual(len(LIQ_SERIES), 39)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
         self.assertEqual(srcs, {"ECOS:M2": "ecos:m2",
                                 "ECOS:BASE": "ecos:base_rate",
-                                "AK:LPR1Y": "ak:lpr1y"})
+                                "AK:LPR1Y": "ak:lpr1y",
+                                "AK:CNM2": "ak:cn_m2_yoy",      # 2026-07-04 확장
+                                "ECOS:KR10Y": "ecos:kr10y"})
         # 대체 소스 함수 실재(배선 E2E)
         from bot import bok_ecos_client, akshare_client
         self.assertIn("m2", bok_ecos_client._SERIES)
@@ -492,7 +494,7 @@ class DiscontinuedSweepTests(unittest.TestCase):
         html = fb.render_liquidity_page([row], {}, None)
         self.assertIn("function pcd(r,v,dg)", html)
         self.assertIn("%p", html)
-        self.assertIn("⚠️중단", html)
+        self.assertIn("⚠️지연", html)
         self.assertIn(".stale{", html)
         self.assertIn("한국은행 ECOS", html)   # 소스 라벨(가이드·헤더)
         # 행→페이로드 배선(리뷰 Minor #4 — 위 리터럴은 정적 JS 라 항상 존재,
@@ -517,7 +519,12 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         cfg = bec._SERIES["m2"]
         self.assertEqual(cfg.get("item_name"), "M2")
         self.assertNotIn("item", cfg)              # 코드 하드코딩 금지
-        self.assertIn("101Y003", cfg.get("alt_tables", []))
+        # 현행 신계열(1.1장) 표 — 구계열 101Y00x(1.7장, ~2004 종료) 금지
+        # (VM TableList 확인 2026-07-04).
+        self.assertEqual(cfg["table"], "161Y006")
+        self.assertIn("161Y005", cfg.get("alt_tables", []))
+        self.assertFalse(any(t.startswith("101Y") for t in
+                             [cfg["table"]] + cfg.get("alt_tables", [])))
 
     def test_item_list_table_param(self):
         # _fetch_item_list 가 table 인자화(KR PPI 기본값 유지) — 소스 계약.
@@ -531,3 +538,81 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         rows = [{"ITEM_NAME": "M2(계절조정)", "ITEM_CODE": "XZZ999"},
                 {"ITEM_NAME": "M2", "ITEM_CODE": "ABC100"}]
         self.assertEqual(bec._match_items(rows, ["M2"]), {"M2": "ABC100"})
+
+    def test_filter_series_items_blocks_legacy(self):
+        # 실사례(2026-07-04): 101Y004 'M2' 가 A/M/Q 로 존재하나 전부 END 2004
+        # (구계열) — 주기 일치 + 신선 END_TIME 만 통과.
+        from bot.bok_ecos_client import _filter_series_items
+        rows = [
+            {"ITEM_CODE": "BBHA00", "CYCLE": "A", "END_TIME": "2003"},
+            {"ITEM_CODE": "BBHA00", "CYCLE": "M", "END_TIME": "200409"},
+            {"ITEM_CODE": "NEW100", "CYCLE": "M", "END_TIME": "202605"},
+            {"ITEM_CODE": "QQQ", "CYCLE": "Q", "END_TIME": "2026Q1"},
+            {"ITEM_CODE": "BAD", "CYCLE": "M", "END_TIME": ""},
+        ]
+        out = _filter_series_items(rows, "M", "202506")
+        self.assertEqual([r["ITEM_CODE"] for r in out], ["NEW100"])
+
+    def test_dead_missile_ppi_removed(self):
+        # PCU336414336414 — FRED 400(미존재), BLS 미발행 확인(2026-07-04) →
+        # 삭제(항공우주 상위그룹 PCU3364133641 이 커버). 사용자 '없는건 삭제'.
+        self.assertFalse(any(s["id"] == "PCU336414336414" for s in PPI_SERIES))
+        self.assertEqual(len(PPI_SERIES), 74)   # 72 + 신규 4 − 탄약 중단 2(2026-07-04)
+
+    def test_stale_drop_and_note(self):
+        # 12개월+ 미갱신 = 목록 자동 제외 + 하단 제외 안내(사용자 2026-07-04
+        # '중단된거는 삭제'). 6~12개월 = ⚠️지연 배지(조기경고).
+        self.assertEqual(fb._DROP_AFTER_MONTHS, 12)
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        self.assertIn("_dropped_note", src)
+        self.assertEqual(src.count("age is not None and age >= _DROP_AFTER_MONTHS"), 2)  # PPI+LIQ
+        html = fb.render_ppi_page([], [], dropped=["Small Arms Ammunition Mfg (PCU332992332992)"])
+        self.assertIn("소스 중단(12개월+ 미갱신)", html)
+        self.assertIn("PCU332992332992", html)
+        # 지연 배지 경계: 6개월+ True / 미만 없음
+        import datetime as _dt
+        from zoneinfo import ZoneInfo
+        now = _dt.datetime.now(ZoneInfo("Asia/Seoul"))
+        old = (now - _dt.timedelta(days=200)).strftime("%Y-%m")
+        fresh = (now - _dt.timedelta(days=60)).strftime("%Y-%m")
+        r1, r2 = {"latest_date": old}, {"latest_date": fresh}
+        fb._mark_stale(r1); fb._mark_stale(r2)
+        self.assertTrue(r1.get("stale"))
+        self.assertNotIn("stale", r2)
+
+    def test_verified_additions_20260704(self):
+        # 검증 에이전트 통과 신규 4종(방산전자·농기계 P-variant·원료의약품·
+        # 창고물류) + 중복 카테고리('Construction & Infra') 통합 계약.
+        ids = {s["id"] for s in PPI_SERIES}
+        for want in ("PCU334511334511", "PCU333111333111P",
+                     "PCU325411325411", "PCU493110493110"):
+            self.assertIn(want, ids)
+        self.assertNotIn("PCU336992336992", ids)   # FRED 미존재 — 미등재
+        # 탄약 2종 = BLS 2025-06 중단 확정 → 물리 삭제(런타임 제외와 별개)
+        self.assertNotIn("PCU332992332992", ids)
+        self.assertNotIn("PCU332993332993", ids)
+        # PCU334220334220(통신장비)은 중단 '미확정' — 카탈로그 유지, 런타임
+        # 자동제외 가드가 판정(죽었으면 제외 목록 표기)
+        cats = {s["cat"] for s in PPI_SERIES}
+        self.assertNotIn("Construction & Infra", cats)   # 중복 필 통합
+        from collections import Counter
+        dup = [k for k, v in Counter(s["id"] for s in PPI_SERIES).items() if v > 1]
+        self.assertEqual(dup, [])
+
+    def test_review_fixes_20260704b(self):
+        # 리뷰 fix 고정: ① KR PPI 포함 통합 drop 패스 ② FRED 삭제(빈 hist)도
+        # 제외 목록 표기 ③ Q 포맷 END_TIME 정규화 ④ CN M2 발표일 시프트.
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        assert "rows += _load_kr_ppi()" in src
+        # 통합 패스가 병합 '뒤'에 있는지 — KR 행 우회 갭 재발 방지
+        assert src.index("rows += _load_kr_ppi()") < src.index(
+            "age is not None and age >= _DROP_AFTER_MONTHS")
+        assert src.count("— 데이터 없음") >= 2          # PPI+LIQ 양쪽
+        from bot.bok_ecos_client import _filter_series_items
+        rows = [{"ITEM_CODE": "Q1", "CYCLE": "Q", "END_TIME": "2026Q2"},
+                {"ITEM_CODE": "Q2", "CYCLE": "Q", "END_TIME": "2004Q3"}]
+        self.assertEqual(
+            [r["ITEM_CODE"] for r in _filter_series_items(rows, "Q", "202506")],
+            ["Q1"])
+        aks = open("bot/akshare_client.py", encoding="utf-8").read()
+        assert "_pub_shift" in aks                       # 발표일→참조월 보정
