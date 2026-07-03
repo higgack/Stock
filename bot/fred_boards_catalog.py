@@ -57,8 +57,6 @@ PPI_SERIES = [
     {'id': 'WPU0652', 'name': 'Fertilizer Materials', 'cat': 'Chemical & Materials', 'stocks': '비료 — US: Mosaic·Nutrien / KR: 남해화학·조비'},
     {'id': 'WPU022', 'name': 'Processed Foods & Feeds (Meats)', 'cat': 'Food & Agriculture', 'stocks': '육류·식품 — US: Tyson / KR: 하림·CJ제일제당 / JP: 니혼햄'},
     {'id': 'PCU336412336412', 'name': 'Aircraft Engine & Engine Parts Mfg', 'cat': 'Aerospace & Defense', 'stocks': '항공엔진 — KR: 한화에어로스페이스 / US: GE Aerospace·RTX / JP: IHI'},
-    {'id': 'PCU332992332992', 'name': 'Small Arms Ammunition Mfg', 'cat': 'Aerospace & Defense', 'stocks': '소구경탄약 — KR: 풍산 / US: Olin·Vista Outdoor'},
-    {'id': 'PCU332993332993', 'name': 'Ammunition (exc. Small Arms) Mfg', 'cat': 'Aerospace & Defense', 'stocks': '탄약·포탄 — KR: 풍산·한화 / US: General Dynamics'},
     {'id': 'PCU334412334412', 'name': 'Bare Printed Circuit Board Mfg', 'cat': 'Semiconductor & Electronics', 'stocks': 'PCB — KR: 삼성전기·이수페타시스·대덕전자 / TW: Unimicron / JP: 이비덴'},
     {'id': 'PCU334418334418', 'name': 'Printed Circuit Assembly Mfg', 'cat': 'Semiconductor & Electronics', 'stocks': '기판조립(EMS) — US: Jabil·Celestica / TW: 폭스콘 / KR: 켐트로닉스'},
     {'id': 'PCU334220334220', 'name': 'Wireless Communications Equipment Mfg', 'cat': 'Semiconductor & Electronics', 'stocks': '통신장비 — KR: 삼성전자(네트워크)·에이스테크 / US: Cisco / SE: 에릭슨'},
@@ -77,10 +75,14 @@ PPI_SERIES = [
     {'id': 'PCU324110324110', 'name': 'Petroleum Refineries', 'cat': 'Energy & Turbines', 'stocks': '정유 — KR: S-Oil·SK이노베이션·GS / US: Valero·Marathon'},
     {'id': 'PCU322211322211', 'name': 'Corrugated & Solid Fiber Box Mfg', 'cat': 'Packaging & Paper', 'stocks': '골판지·포장 — KR: 태림포장·아세아제지 / US: International Paper'},
     {'id': 'WPU0911', 'name': 'Wood Pulp', 'cat': 'Packaging & Paper', 'stocks': '펄프 — KR: 무림P&P / US: International Paper / BR: Suzano'},
-    {'id': 'WPU081', 'name': 'Lumber', 'cat': 'Construction & Infra', 'stocks': '목재 — US: Weyerhaeuser / KR: 한솔홈데코·동화기업'},
+    {'id': 'WPU081', 'name': 'Lumber', 'cat': 'Construction & Infrastructure', 'stocks': '목재 — US: Weyerhaeuser / KR: 한솔홈데코·동화기업'},
     {'id': 'PCU325320325320', 'name': 'Pesticide & Other Ag Chemical Mfg', 'cat': 'Chemical & Materials', 'stocks': '농약·작물보호 — KR: 팜한농(LG화학)·경농 / US: Corteva·FMC'},
     {'id': 'PCU325510325510', 'name': 'Paint & Coating Manufacturing', 'cat': 'Chemical & Materials', 'stocks': '페인트 — KR: KCC·노루페인트·삼화페인트 / US: Sherwin-Williams·PPG'},
     {'id': 'PCU322121322121', 'name': 'Paper Mills', 'cat': 'Packaging & Paper', 'stocks': '제지 — KR: 한솔제지·무림페이퍼 / US: International Paper'},
+    {'id': 'PCU334511334511', 'name': 'Search, Detection & Navigation Instruments', 'cat': 'Aerospace & Defense', 'stocks': '방산전자·항법 — KR: LIG넥스원·한화시스템 / US: L3Harris·RTX / IL: Elbit'},
+    {'id': 'PCU333111333111P', 'name': 'Farm Machinery & Equipment (Primary)', 'cat': 'Heavy Machinery', 'stocks': '농기계 — KR: 대동·TYM / US: Deere·AGCO / JP: 구보다'},
+    {'id': 'PCU325411325411', 'name': 'Medicinal & Botanical Mfg (API)', 'cat': 'Healthcare', 'stocks': '원료의약품(API) — KR: 에스티팜·경보제약 / US: Catalent / JP: 후지필름(CDMO)'},
+    {'id': 'PCU493110493110', 'name': 'General Warehousing & Storage', 'cat': 'Auto & Transport', 'stocks': '창고·물류 — KR: CJ대한통운·한진 / US: Prologis·GXO / JP: 니혼츠운'},
 ]
 
 LIQ_SERIES = [
