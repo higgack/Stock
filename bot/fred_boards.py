@@ -438,9 +438,10 @@ _COMP_KR = {
 
 
 # ── 데이터 수집 ────────────────────────────────────────────────────────────
-def _load_ppi() -> tuple[list[dict], list[dict]]:
-    """→ (rows, margins). rows = FRED PPI + 한국 PPI(ECOS) 병합, margins =
-    마진 스프레드(카탈로그 외 input WPU1011 등 추가 fetch)."""
+def _load_ppi() -> tuple[list[dict], list[dict], list[str]]:
+    """→ (rows, margins, dropped). rows = FRED PPI + 한국 PPI(ECOS) 병합,
+    margins = 마진 스프레드(카탈로그 외 input WPU1011 등 추가 fetch),
+    dropped = 소스 중단/데이터 없음으로 자동 제외된 시리즈 표기 목록."""
     from bot import fred_client
     H: dict[str, list] = {}
     ids = [s["id"] for s in PPI_SERIES]
@@ -451,14 +452,13 @@ def _load_ppi() -> tuple[list[dict], list[dict]]:
     dropped: list[str] = []
     for s in PPI_SERIES:
         hist = H.get(s["id"]) or []
+        if not hist:
+            # FRED 가 시리즈를 아예 지운 경우(400/무관측) — stale 경로에 안
+            # 걸려 조용히 사라지던 것도 제외 목록에 표기(리뷰 #5, silent 금지).
+            dropped.append(f"{s['name']} ({s['id']}) — 데이터 없음")
+            continue
         m = series_metrics(_monthly(hist))
         if not m:
-            continue
-        # 12개월+ 미갱신 = 중단 간주 → 자동 제외(사용자 2026-07-04 '삭제').
-        # silent 아님: 로그 + 페이지 하단 제외 목록.
-        age = _staleness(m["latest_date"])
-        if age is not None and age >= _DROP_AFTER_MONTHS:
-            dropped.append(f"{s['name']} ({s['id']})")
             continue
         key, label, note = _signal(m)
         row = {**s, **m, "sig": key, "sig_label": label, "note": note,
@@ -466,6 +466,17 @@ def _load_ppi() -> tuple[list[dict], list[dict]]:
         _mark_stale(row)   # 6개월+ 지연 조기경고 배지(전 보드 공통)
         rows.append(row)
     rows += _load_kr_ppi()
+    # 12개월+ 미갱신 = 중단 간주 → 자동 제외(사용자 2026-07-04 '삭제').
+    # FRED·한국PPI(ECOS) 합산 뒤 **통합 패스** — KR 행만 drop 을 우회하던
+    # 갭 제거(리뷰 #1, universal). silent 아님: 로그 + 페이지 상단 목록.
+    kept = []
+    for r in rows:
+        age = _staleness(str(r.get("latest_date", "")))
+        if age is not None and age >= _DROP_AFTER_MONTHS:
+            dropped.append(f"{r['name']} ({r['id']})")
+            continue
+        kept.append(r)
+    rows = kept
     if dropped:
         log.warning("fred_boards: ppi 소스 중단 제외 %d종: %s",
                     len(dropped), ", ".join(dropped))
@@ -487,6 +498,12 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
     dropped: list[str] = []
     for s in LIQ_SERIES:
         hist = H.get(s["id"]) or []
+        if not hist:
+            # 소스가 아예 안 주는 경우(FRED 400/ECOS·AKShare 실패)도 표기
+            # (리뷰 #5 — stale 경로 밖 silent 소멸 금지). 키 부재 등 일시
+            # 사유 포함이라 '데이터 없음'으로 구분.
+            dropped.append(f"{s['name']} ({s['id']}) — 데이터 없음")
+            continue
         mh = _monthly(hist)
         m = series_metrics(mh)
         if not m:

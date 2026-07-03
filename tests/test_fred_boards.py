@@ -598,3 +598,21 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         from collections import Counter
         dup = [k for k, v in Counter(s["id"] for s in PPI_SERIES).items() if v > 1]
         self.assertEqual(dup, [])
+
+    def test_review_fixes_20260704b(self):
+        # 리뷰 fix 고정: ① KR PPI 포함 통합 drop 패스 ② FRED 삭제(빈 hist)도
+        # 제외 목록 표기 ③ Q 포맷 END_TIME 정규화 ④ CN M2 발표일 시프트.
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        assert "rows += _load_kr_ppi()" in src
+        # 통합 패스가 병합 '뒤'에 있는지 — KR 행 우회 갭 재발 방지
+        assert src.index("rows += _load_kr_ppi()") < src.index(
+            "age is not None and age >= _DROP_AFTER_MONTHS")
+        assert src.count("— 데이터 없음") >= 2          # PPI+LIQ 양쪽
+        from bot.bok_ecos_client import _filter_series_items
+        rows = [{"ITEM_CODE": "Q1", "CYCLE": "Q", "END_TIME": "2026Q2"},
+                {"ITEM_CODE": "Q2", "CYCLE": "Q", "END_TIME": "2004Q3"}]
+        self.assertEqual(
+            [r["ITEM_CODE"] for r in _filter_series_items(rows, "Q", "202506")],
+            ["Q1"])
+        aks = open("bot/akshare_client.py", encoding="utf-8").read()
+        assert "_pub_shift" in aks                       # 발표일→참조월 보정

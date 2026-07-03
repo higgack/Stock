@@ -1245,6 +1245,10 @@ def cn_m2_yoy_history() -> list[tuple[str, float]]:
     if not val_col:
         log.warning("akshare: CN M2 history — value column missing (%s)", cols)
         return []
+    # '日期'(금십 소스)는 **발표일** — 5월 지표가 6월 중순 발표라 그대로 쓰면
+    # 참조월이 한 달 늦게 라벨링됨(규칙 10b 적용시각 정확). 참조월 컬럼
+    # ('月份')이 없을 때만 1개월 되돌림(리뷰 2026-07-04 #3).
+    _pub_shift = date_col in ("日期", "时间")
     points: list[tuple[str, float]] = []
     for _, row in df.iterrows():
         try:
@@ -1255,7 +1259,12 @@ def cn_m2_yoy_history() -> list[tuple[str, float]]:
             m = _re.search(r"(\d{4})\D+(\d{1,2})", raw)
             if not m:
                 continue
-            points.append((f"{m.group(1)}-{int(m.group(2)):02d}-01", v))
+            y, mo = int(m.group(1)), int(m.group(2))
+            if _pub_shift:
+                mo -= 1
+                if mo == 0:
+                    y, mo = y - 1, 12
+            points.append((f"{y}-{mo:02d}-01", v))
         except Exception:
             continue
     points.sort(key=lambda p: p[0])

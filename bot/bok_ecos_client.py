@@ -423,13 +423,19 @@ def _filter_series_items(rows: list[dict], freq: str,
     for r in rows:
         if (r.get("CYCLE") or "").strip() != freq:
             continue
-        digits = _re.sub(r"\D", "", str(r.get("END_TIME") or ""))
-        if len(digits) >= 6:
-            end = digits[:6]
-        elif len(digits) == 4:
-            end = digits + "12"
+        raw = str(r.get("END_TIME") or "")
+        qm = _re.match(r"^(\d{4})Q([1-4])$", raw.strip())
+        if qm:   # 'YYYYQn' — 숫자추출('20043', len 5)로는 버려지던 분기
+                 # 포맷 명시 처리(리뷰 2026-07-04 #4, 미래 Q 시리즈 대비)
+            end = f"{qm.group(1)}{int(qm.group(2)) * 3:02d}"
         else:
-            continue
+            digits = _re.sub(r"\D", "", raw)
+            if len(digits) >= 6:
+                end = digits[:6]
+            elif len(digits) == 4:
+                end = digits + "12"
+            else:
+                continue
         if end >= min_end_yyyymm:
             out.append(r)
     return out
