@@ -153,17 +153,27 @@ def _rate_deltas(m: dict, mhist: list[tuple[str, float]]) -> None:
               "rate_delta": True})
 
 
-def _mark_stale(row: dict, months: int = 12) -> None:
-    """기준일이 months 개월 이상 과거면 stale 플래그 — 소스가 조용히 끊긴
-    시리즈(OECD/IMF 중단 사태)가 화면에서 즉시 보이게(⚠️ 배지). 전 보드
-    공통 가드(사용자 2026-07-04 '더 이상 최신 제공 안 하는 것 검토')."""
+def _staleness(latest_date: str) -> int | None:
+    """기준일('YYYY-MM…') → 개월 나이. 파싱 불가 None. KST 명시(규칙 10a)."""
     try:
-        y, mo = int(row["latest_date"][:4]), int(row["latest_date"][5:7])
-        today = datetime.now(_KST).date()   # KST 명시(CLAUDE.md 규칙 10a)
-        if (today.year - y) * 12 + (today.month - mo) >= months:
-            row["stale"] = True
+        y, mo = int(latest_date[:4]), int(latest_date[5:7])
+        today = datetime.now(_KST).date()
+        return (today.year - y) * 12 + (today.month - mo)
     except Exception:
-        pass
+        return None
+
+
+def _mark_stale(row: dict, months: int = 6) -> None:
+    """기준일이 months(기본 6)개월 이상 과거면 stale 플래그(⚠️지연 배지) —
+    소스가 끊기기 시작한 시리즈의 조기 경고. 12개월 이상은 로더가 목록에서
+    자동 제외(사용자 2026-07-04 '중단된거는 삭제' — BLS 2025 감축분 포함
+    현재·미래 중단분 전부, 제외 내역은 로그+페이지 하단 표기)."""
+    age = _staleness(str(row.get("latest_date", "")))
+    if age is not None and age >= months:
+        row["stale"] = True
+
+
+_DROP_AFTER_MONTHS = 12   # 이 나이부터 행 자체를 제외(= 중단 간주)
 
 
 def _ecos_iso(t: str) -> str:
@@ -196,6 +206,14 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
         if src == "ak:lpr1y":
             from bot import akshare_client
             return akshare_client.lpr_1y_history()
+        if src == "ak:cn_m2_yoy":
+            from bot import akshare_client
+            return akshare_client.cn_m2_yoy_history()
+        if src == "ecos:kr10y":
+            from bot import bok_ecos_client
+            return [(_ecos_iso(t), v)
+                    for t, v in bok_ecos_client.fetch_series_points(
+                        "kr10y", lookback_days=950)]
     except Exception as exc:
         log.warning("fred_boards: alt source %s failed: %s", src, exc)
     return []
@@ -430,18 +448,28 @@ def _load_ppi() -> tuple[list[dict], list[dict]]:
     for sid in ids + sorted(extra - set(ids)):
         H[sid] = fred_client.fetch_history(sid, _PPI_START)
     rows = []
+    dropped: list[str] = []
     for s in PPI_SERIES:
         hist = H.get(s["id"]) or []
         m = series_metrics(_monthly(hist))
         if not m:
             continue
+        # 12개월+ 미갱신 = 중단 간주 → 자동 제외(사용자 2026-07-04 '삭제').
+        # silent 아님: 로그 + 페이지 하단 제외 목록.
+        age = _staleness(m["latest_date"])
+        if age is not None and age >= _DROP_AFTER_MONTHS:
+            dropped.append(f"{s['name']} ({s['id']})")
+            continue
         key, label, note = _signal(m)
         row = {**s, **m, "sig": key, "sig_label": label, "note": note,
                "hist": [(d[:7], v) for d, v in hist]}
-        _mark_stale(row)   # 소스 중단 자동 가시화(전 보드 공통, 2026-07-04)
+        _mark_stale(row)   # 6개월+ 지연 조기경고 배지(전 보드 공통)
         rows.append(row)
     rows += _load_kr_ppi()
-    return rows, margin_spreads(H)
+    if dropped:
+        log.warning("fred_boards: ppi 소스 중단 제외 %d종: %s",
+                    len(dropped), ", ".join(dropped))
+    return rows, margin_spreads(H), dropped
 
 
 def _load_liq() -> tuple[list[dict], dict, float | None]:
@@ -456,11 +484,16 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
         else:
             H[s["id"]] = fred_client.fetch_history(s["id"], _LIQ_START)
     rows = []
+    dropped: list[str] = []
     for s in LIQ_SERIES:
         hist = H.get(s["id"]) or []
         mh = _monthly(hist)
         m = series_metrics(mh)
         if not m:
+            continue
+        age = _staleness(m["latest_date"])
+        if age is not None and age >= _DROP_AFTER_MONTHS:
+            dropped.append(f"{s['name']} ({s['id']})")
             continue
         # %p 표기는 단위가 정말 % 인 계열만 — is_rate 는 최신값 % 표시용
         # 플래그라 지수/비율(DXY·M2V·NFCI 등)에도 켜져 있어, 그대로 쓰면
@@ -470,6 +503,9 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
         row = {**s, **m, "hist": [(d, v) for d, v in hist][-260:]}
         _mark_stale(row)
         rows.append(row)
+    if dropped:
+        log.warning("fred_boards: liq 소스 중단 제외 %d종: %s",
+                    len(dropped), ", ".join(dropped))
     derived: dict = {}
     nl = net_liquidity(H.get("WALCL") or [], H.get("WTREGEN") or [],
                        H.get("RRPONTSYD") or [])
@@ -508,6 +544,7 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
     add("curve_10y3m", H.get("T10Y3M"))
     score = compute_score(comps)
     derived["components"] = {k: round(p, 1) for k, (p, _) in comps.items()}
+    derived["dropped"] = dropped
     return rows, derived, score
 
 
@@ -576,8 +613,8 @@ function pc(v,dg){if(v==null)return"<span class='flat'>—</span>";var c=v>=0?'p
 function pcd(r,v,dg){if(v==null)return"<span class='flat'>—</span>";
  if(r.rate_delta){var c=v>=0?'pos':'neg';return "<span class='"+c+"'>"+(v>=0?'+':'')+v.toFixed(2)+"%p</span>";}
  return pc(v,dg);}
-// 기준일 셀 — 12개월+ 미갱신(소스 중단) 자동 배지.
-function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale'>⚠️중단</span>":"");}
+// 기준일 셀 — 6개월+ 지연 조기경고 배지(12개월+ 는 서버가 목록에서 제외).
+function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale'>⚠️지연</span>":"");}
 var CHART_OPTS={plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8a8f98',maxTicksLimit:12},grid:{color:'rgba(128,132,140,.18)'}},y:{ticks:{color:'#8a8f98'},grid:{color:'rgba(128,132,140,.18)'}}},maintainAspectRatio:false};
 function mkChart(el,labels,data,color,fill){
  if(typeof Chart==='undefined'||!el)return null;
@@ -625,8 +662,19 @@ def _margin_panel(margins: list[dict]) -> str:
 </div>"""
 
 
+def _dropped_note(dropped: list[str] | None) -> str:
+    """중단 제외 내역 표기 — silent 삭제 금지(사용자 2026-07-04 '중단 삭제').
+    없으면 빈 문자열."""
+    if not dropped:
+        return ""
+    names = _h.escape(", ".join(dropped))
+    return (f'<p class="sub" style="color:#f87171">⚠️ 소스 중단(12개월+ 미갱신)'
+            f'으로 자동 제외 {len(dropped)}종: {names}</p>')
+
+
 def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
-                    now: datetime | None = None) -> str:
+                    now: datetime | None = None,
+                    dropped: list[str] | None = None) -> str:
     """ppi.html — 마진 스프레드 + 시리즈 테이블 + 클릭 상세(Chart.js 로컬 벤더,
     부재 시 표만). rows 비면 데이터 없음 배너(silent drop 금지)."""
     now = now or datetime.now(_KST)
@@ -649,6 +697,7 @@ def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
 <h1>🏭 <em>PPI</em> 투자신호 보드</h1>
 <p class="sub">미 생산자물가(FRED) 산업별 가격 추세 → 관련주 신호 · {len(rows)}개 시리즈(2019-01~) ·
 관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(6시간 주기 자동 갱신)</p>
+{_dropped_note(dropped)}
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 신호 필터</b> — 상단 알약(전체/🔴/🟠/🟡/🔵/⚪) 클릭 = 그 신호만. 두 번째 줄 = 카테고리 필터.<br>
 <b>2) 신호 의미(룰 기반)</b> — 🔴 <b>강한 상승</b>: YoY≥5% & 3M≥1.5%(가격 전가력↑) ·
@@ -761,6 +810,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 <h1>💧 <em>글로벌 유동성</em> 보드</h1>
 <p class="sub">Fed 순유동성(WALCL−TGA−RRP)·M2·중앙은행 자산·크레딧 스프레드·스트레스 지표 {len(rows)}종 ·
 데이터 적용시각 {ts} · 소스 FRED + 한국은행 ECOS + 인민은행 LPR(6시간 주기 자동 갱신)</p>
+{_dropped_note(derived.get("dropped"))}
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 종합점수(0~100)</b> — 구성요소 8개 각각의 <b>최근값이 최근 5년 분포에서 어디쯤인지</b>(백분위)를
 평균. 순유동성 13주Δ·지준 13주Δ·M2 YoY·은행신용 YoY 는 높을수록 완화, HY스프레드·NFCI·VIX 는
@@ -769,7 +819,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
 <b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
-금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 12개월+ 미갱신 시리즈는 기준일에 <b>⚠️중단</b> 배지.<br>
+금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 6개월+ 지연 시리즈는 <b>⚠️지연</b> 배지, 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
 <b>5) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(전부 무료 API).
 </details>
 {empty}
@@ -873,8 +923,9 @@ def regenerate_fred_boards() -> None:
     from bot.dashboard import ARCHIVE_ROOT, _inject_update_banner
     _ensure_chartjs()
     try:
-        rows, margins = _load_ppi()
-        html = _inject_update_banner(render_ppi_page(rows, margins))
+        rows, margins, dropped = _load_ppi()
+        html = _inject_update_banner(render_ppi_page(rows, margins,
+                                                     dropped=dropped))
         (ARCHIVE_ROOT / "ppi.html").write_text(html, encoding="utf-8")
         log.info("fred_boards: ppi.html regenerated (%d series, %d margins)",
                  len(rows), len(margins))

@@ -1217,3 +1217,48 @@ def lpr_1y_history() -> list[tuple[str, float]]:
     if points:
         _cache_put("lpr_1y_history.json", points)
     return points
+
+
+def cn_m2_yoy_history() -> list[tuple[str, float]]:
+    """중국 M2 증가율(YoY %) 월간 히스토리 [(YYYY-MM-01, %)] 오름차순.
+
+    유동성 보드 M2/M3 카테고리 — 일본/유로 M3 가 OECD 중단으로 삭제된 자리에
+    우리 소스로 커버 가능한 중국 통화량 추가(사용자 2026-07-04 '추가할 수
+    있는 것 검토'). akshare 미설치/실패 → [] (graceful). 24h 캐시."""
+    import re as _re
+    cached = _cache_get("cn_m2_yoy_history.json", _MACRO_CACHE_TTL_HOURS)
+    if cached:
+        return [(d, float(v)) for d, v in cached]
+    ak = _import_akshare()
+    if ak is None:
+        return []
+    try:
+        df = _fetch_with_retry(ak.macro_china_m2_yearly, "macro_china_m2_yearly")
+    except Exception as exc:
+        log.warning("akshare: CN M2 history fetch failed: %s", exc)
+        return []
+    if df is None or len(df) == 0:
+        return []
+    cols = list(df.columns)
+    date_col = next((c for c in cols if c in ("月份", "日期", "时间", "date")), cols[0])
+    val_col = next((c for c in cols if c in ("今值", "数值", "value")), None)
+    if not val_col:
+        log.warning("akshare: CN M2 history — value column missing (%s)", cols)
+        return []
+    points: list[tuple[str, float]] = []
+    for _, row in df.iterrows():
+        try:
+            v = float(row[val_col])
+            if v != v:  # NaN placeholder(발표 예정 행)
+                continue
+            raw = str(row[date_col])
+            m = _re.search(r"(\d{4})\D+(\d{1,2})", raw)
+            if not m:
+                continue
+            points.append((f"{m.group(1)}-{int(m.group(2)):02d}-01", v))
+        except Exception:
+            continue
+    points.sort(key=lambda p: p[0])
+    if points:
+        _cache_put("cn_m2_yoy_history.json", points)
+    return points

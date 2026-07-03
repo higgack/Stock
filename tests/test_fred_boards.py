@@ -411,13 +411,15 @@ class DiscontinuedSweepTests(unittest.TestCase):
         for dead in ("MANMM101JPM189S", "MANMM101EZM189S", "MANMM101KRM189S",
                      "INTDSRKRM193N", "INTDSRCNM193N"):
             self.assertNotIn(dead, ids)
-        self.assertEqual(len(LIQ_SERIES), 37)
+        self.assertEqual(len(LIQ_SERIES), 39)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
         self.assertEqual(srcs, {"ECOS:M2": "ecos:m2",
                                 "ECOS:BASE": "ecos:base_rate",
-                                "AK:LPR1Y": "ak:lpr1y"})
+                                "AK:LPR1Y": "ak:lpr1y",
+                                "AK:CNM2": "ak:cn_m2_yoy",      # 2026-07-04 확장
+                                "ECOS:KR10Y": "ecos:kr10y"})
         # 대체 소스 함수 실재(배선 E2E)
         from bot import bok_ecos_client, akshare_client
         self.assertIn("m2", bok_ecos_client._SERIES)
@@ -492,7 +494,7 @@ class DiscontinuedSweepTests(unittest.TestCase):
         html = fb.render_liquidity_page([row], {}, None)
         self.assertIn("function pcd(r,v,dg)", html)
         self.assertIn("%p", html)
-        self.assertIn("⚠️중단", html)
+        self.assertIn("⚠️지연", html)
         self.assertIn(".stale{", html)
         self.assertIn("한국은행 ECOS", html)   # 소스 라벨(가이드·헤더)
         # 행→페이로드 배선(리뷰 Minor #4 — 위 리터럴은 정적 JS 라 항상 존재,
@@ -551,3 +553,24 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         # 삭제(항공우주 상위그룹 PCU3364133641 이 커버). 사용자 '없는건 삭제'.
         self.assertFalse(any(s["id"] == "PCU336414336414" for s in PPI_SERIES))
         self.assertEqual(len(PPI_SERIES), 72)
+
+    def test_stale_drop_and_note(self):
+        # 12개월+ 미갱신 = 목록 자동 제외 + 하단 제외 안내(사용자 2026-07-04
+        # '중단된거는 삭제'). 6~12개월 = ⚠️지연 배지(조기경고).
+        self.assertEqual(fb._DROP_AFTER_MONTHS, 12)
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        self.assertIn("_dropped_note", src)
+        self.assertEqual(src.count("age is not None and age >= _DROP_AFTER_MONTHS"), 2)  # PPI+LIQ
+        html = fb.render_ppi_page([], [], dropped=["Small Arms Ammunition Mfg (PCU332992332992)"])
+        self.assertIn("소스 중단(12개월+ 미갱신)", html)
+        self.assertIn("PCU332992332992", html)
+        # 지연 배지 경계: 6개월+ True / 미만 없음
+        import datetime as _dt
+        from zoneinfo import ZoneInfo
+        now = _dt.datetime.now(ZoneInfo("Asia/Seoul"))
+        old = (now - _dt.timedelta(days=200)).strftime("%Y-%m")
+        fresh = (now - _dt.timedelta(days=60)).strftime("%Y-%m")
+        r1, r2 = {"latest_date": old}, {"latest_date": fresh}
+        fb._mark_stale(r1); fb._mark_stale(r2)
+        self.assertTrue(r1.get("stale"))
+        self.assertNotIn("stale", r2)
