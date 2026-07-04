@@ -206,9 +206,6 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
         if src == "ak:lpr1y":
             from bot import akshare_client
             return akshare_client.lpr_1y_history()
-        if src == "ak:cn_m2_yoy":
-            from bot import akshare_client
-            return akshare_client.cn_m2_yoy_history()
         if src == "ecos:kr10y":
             from bot import bok_ecos_client
             return [(_ecos_iso(t), v)
@@ -401,6 +398,15 @@ _KR_PPI_ITEMS = [
     ("화학", "한국 PPI 화학제품", "LG화학·롯데케미칼·한화솔루션"),
     ("의약품", "한국 PPI 의약품", "삼성바이오로직스·셀트리온·유한양행"),
     ("전지", "한국 PPI 전지(배터리)", "LG에너지솔루션·삼성SDI"),
+    # ── 확장 2차(사용자 2026-07-04 '더 늘릴 수 있으면') — 이름해석이라
+    # ECOS 항목명과 무매칭이면 해당 행만 생략(graceful) + 로그 가시화.
+    ("디스플레이", "한국 PPI 디스플레이", "LG디스플레이·삼성전자(디스플레이)"),
+    ("선박", "한국 PPI 선박", "HD한국조선해양·한화오션·삼성중공업"),
+    ("기계및장비", "한국 PPI 기계·장비", "두산에너빌리티·HD현대인프라코어·두산밥캣"),
+    ("전기장비", "한국 PPI 전기장비", "LS ELECTRIC·효성중공업·HD현대일렉트릭"),
+    ("음식료품", "한국 PPI 음식료품", "CJ제일제당·오리온·농심"),
+    ("석유제품", "한국 PPI 석유제품", "S-Oil·SK이노베이션·GS"),
+    ("화장품", "한국 PPI 화장품", "아모레퍼시픽·LG생활건강·코스맥스"),
 ]
 
 
@@ -680,13 +686,10 @@ def _margin_panel(margins: list[dict]) -> str:
 
 
 def _dropped_note(dropped: list[str] | None) -> str:
-    """중단 제외 내역 표기 — silent 삭제 금지(사용자 2026-07-04 '중단 삭제').
-    없으면 빈 문자열."""
-    if not dropped:
-        return ""
-    names = _h.escape(", ".join(dropped))
-    return (f'<p class="sub" style="color:#f87171">⚠️ 소스 중단(12개월+ 미갱신)'
-            f'으로 자동 제외 {len(dropped)}종: {names}</p>')
+    """중단 제외 내역 — 화면 표기는 제거(사용자 2026-07-04 '지워졌으니 별도
+    코멘트 불필요'). 가시성은 journal 경고(로더의 log.warning)가 담당 —
+    운영자 디버깅 경로 유지. 항상 빈 문자열."""
+    return ""
 
 
 def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
