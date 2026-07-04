@@ -13398,9 +13398,6 @@ _MARKET_CSS = (
     ".nav a{color:var(--accent);text-decoration:none;font-size:13px;"
     "white-space:nowrap}"
     ".nav a:hover{text-decoration:underline}"
-    # 부동산 그룹은 의도된 둘째 줄(길어진 1줄 nav 의 어색한 wrap 방지,
-    # 사용자 2026-07-03 '부동산을 밑으로').
-    ".nav-r2{margin:-8px 0 12px}"
     "h1{font-size:22px;margin:0 0 4px}"
     ".sub{color:var(--muted);font-size:13px;margin:0 0 24px}"
     ".search-box{margin:20px 0 28px;display:flex;gap:8px}"
@@ -14716,9 +14713,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
-  </div>
-  <div class="nav nav-r2">
-    |&nbsp;<a href="realestate.html">🏠 부동산</a>
+    <span style="white-space:nowrap">&nbsp;|&nbsp;<a href="realestate.html">🏠 부동산</a></span>
   </div>
   <h1>🌍 Market Overview</h1>
   <p class="sub">글로벌 시장 현황 · 종목 검색 · 실적 일정 · 리서치 액션 · 업종 등락</p>

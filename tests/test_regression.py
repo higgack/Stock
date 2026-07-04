@@ -12861,12 +12861,13 @@ class TestFilterLazyAllAndMarketSections20260704:
         assert ".then(function(){ return ensure(); })" in src
         assert "if(!document.documentElement.classList.contains(flag)) return;" in src
 
-    def test_market_nav_realestate_second_row(self):
+    def test_market_nav_realestate_one_line(self):
         src = self._src("bot/dashboard.py")
-        # 부동산 = 의도된 둘째 줄(nav-r2) — 어색한 자동 wrap 제거(사용자 2026-07-03).
-        assert '<div class="nav nav-r2">' in src
-        assert ".nav-r2{margin:-8px 0 12px}" in src
-        assert "white-space:nowrap}" in src
+        # 부동산 = 같은 줄 말미의 nowrap 그룹(사용자 2026-07-04 '한 줄로') —
+        # 좁은 화면에선 '| 부동산'이 통째로 둘째 줄로 자연 강등.
+        assert '<span style="white-space:nowrap">&nbsp;|&nbsp;<a href="realestate.html">' in src
+        assert "nav-r2" not in src                     # 옛 2줄 구조 잔여물 금지
+        assert "white-space:nowrap}" in src            # nav 링크 중간 줄바꿈 방지
 
     def test_market_collapsible_sections(self):
         src = self._src("bot/dashboard.py")
