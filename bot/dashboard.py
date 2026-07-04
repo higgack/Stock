@@ -14427,7 +14427,7 @@ def _render_macro_snapshot(macro: dict) -> str:
     out.append(f"""
   <div class="section-hd">
     <h2>Macro Snapshot</h2>
-    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 새 데이터 시 하단 알림(30분 체크)</span>
+    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 새 데이터 시 하단 알림(1분 체크·30분 자동반영)</span>
   </div>""")
 
     # 국내/글로벌 지표 = 접기 토글(details, 기본 펼침·localStorage 상태 유지,
@@ -14736,7 +14736,7 @@ def _render_market_page(data: dict) -> str:
   <details class="csec" id="sec-gsnap" open>
   <summary><div class="section-hd">
     <h2>글로벌 시장 스냅샷</h2>
-    <span class="ts">{_html.escape(ts)} 기준 · 새 데이터 시 하단 알림(30분 체크)</span>
+    <span class="ts">{_html.escape(ts)} 기준 · 새 데이터 시 하단 알림(1분 체크·30분 자동반영)</span>
   </div></summary>
   <div class="card-grid">
 """)
@@ -15468,7 +15468,7 @@ def _render_asia_page(data: dict) -> str:
         '    <a href="market.html">🌍 홈</a>\n'
         '    &middot; <a href="index.html">🦉 종목분석</a>\n'
         '  </div>\n  <h1>🏯 아시아 업종 등락</h1>\n'
-        '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스 · 새 데이터 시 하단 알림(30분 체크)</p>\n'
+        '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스 · 새 데이터 시 하단 알림(1분 체크·30분 자동반영)</p>\n'
         '  <div id="live-sections">')
     parts.append(_render_etf_sector_movers(
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
