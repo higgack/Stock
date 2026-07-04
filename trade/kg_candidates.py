@@ -91,6 +91,53 @@ def _norm(s: str) -> str:
     return (s or "").replace(" ", "").replace("(주)", "").replace("㈜", "").lower()
 
 
+def _similar_target(a: str, b: str) -> bool:
+    """대상(품목) 근사 동일 판정 — 정규화 동일 OR 한쪽이 다른쪽을 포함
+    (짧은 쪽 정규화 ≥2자). 'D램'↔'D램 모듈', '웨이퍼'↔'메모리 웨이퍼' 류
+    변형이 정확일치 dedup 을 빠져나가 큐·처리목록에 계속 쌓이던 것 병합
+    (사용자 2026-07-04 '비슷한게 계속 늘어'). '반도체'⊂'반도체장비' 같은
+    과병합 가능성은 수용 — 정밀 구분이 필요하면 운영자가 repo CSV 로 직접
+    등재. 순수(테스트)."""
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    s, l = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(s) >= 2 and s in l
+
+
+def _load_queue_index(path) -> tuple[set, dict]:
+    """승인 큐 CSV → (정확키 set, (회사n,관계)→[대상 원문] 맵) — 정확일치·
+    근사중복 검사 공용 인덱스. 실패 → 빈 인덱스(전부 신규 간주)."""
+    exact: set = set()
+    targets: dict = {}
+    p = Path(path)
+    if not p.exists():
+        return exact, targets
+    try:
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            r = csv.reader(f)
+            next(r, None)
+            for row in r:
+                if len(row) >= 3:
+                    co_n, rel, tgt = _norm(row[0]), row[1].strip(), row[2].strip()
+                    exact.add((co_n, rel, _norm(tgt)))
+                    targets.setdefault((co_n, rel), []).append(tgt)
+    except Exception:
+        return set(), {}
+    return exact, targets
+
+
+def _is_near_dup(company: str, relation: str, target: str,
+                 targets: dict) -> bool:
+    """같은 (회사,관계)의 기존 대상 중 근사 동일이 있으면 True."""
+    for prev in targets.get((_norm(company), (relation or "").strip()), []):
+        if _similar_target(prev, target):
+            return True
+    return False
+
+
 def filter_candidates(triples: Iterable[dict], *,
                       known_companies: Optional[set] = None,
                       existing_pairs: Optional[set] = None,
@@ -173,27 +220,21 @@ def write_candidates_csv(cands: list[dict], path=None) -> int:
         return 0
     p = Path(path) if path else _candidates_csv_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    existing: set = set()
-    if p.exists():
-        try:
-            with open(p, encoding="utf-8-sig", newline="") as f:
-                r = csv.reader(f)
-                next(r, None)
-                for row in r:
-                    if len(row) >= 3:
-                        existing.add((_norm(row[0]), row[1].strip(), _norm(row[2])))
-        except Exception:
-            existing = set()
+    # 정확일치 + 근사중복(같은 회사·관계의 유사 대상 — 처리된 행 포함) 스킵
+    # (사용자 2026-07-04 '비슷한게 계속 늘어' — 큐 재유입 차단).
+    existing, targets = _load_queue_index(p)
     today = datetime.now().strftime("%Y-%m-%d")
     new_rows = []
     for c in cands:
-        key = (_norm(c.get("company", "")), c.get("relation", "").strip(),
-               _norm(c.get("target", "")))
-        if key in existing:
+        co, rel, tgt = (c.get("company", ""), c.get("relation", "").strip(),
+                        c.get("target", ""))
+        key = (_norm(co), rel, _norm(tgt))
+        if key in existing or _is_near_dup(co, rel, tgt, targets):
             continue
         existing.add(key)
-        new_rows.append([c.get("company", ""), c.get("relation", ""),
-                         c.get("target", ""), c.get("evidence", ""),
+        targets.setdefault((_norm(co), rel), []).append(tgt)
+        new_rows.append([co, c.get("relation", ""),
+                         tgt, c.get("evidence", ""),
                          c.get("source", ""), today, "후보"])
     if not new_rows:
         return 0
@@ -296,22 +337,14 @@ def _new_against_csv(cands: list[dict], path=None) -> list[dict]:
     """승인 큐 CSV 에 아직 없는 (회사,관계,대상)만 — 알림·적재 정합(중복알림 방지).
     순수(테스트). path 부재/실패 → 전부 신규로 간주."""
     p = Path(path) if path else _candidates_csv_path()
-    existing: set = set()
-    if p.exists():
-        try:
-            with open(p, encoding="utf-8-sig", newline="") as f:
-                r = csv.reader(f)
-                next(r, None)
-                for row in r:
-                    if len(row) >= 3:
-                        existing.add((_norm(row[0]), row[1].strip(), _norm(row[2])))
-        except Exception:
-            existing = set()
+    existing, targets = _load_queue_index(p)
     out, seen = [], set()
     for c in cands:
-        k = (_norm(c.get("company", "")), c.get("relation", "").strip(),
-             _norm(c.get("target", "")))
-        if k in existing or k in seen:
+        co, rel, tgt = (c.get("company", ""), c.get("relation", "").strip(),
+                        c.get("target", ""))
+        k = (_norm(co), rel, _norm(tgt))
+        # 근사중복도 '이미 있음' — 알림·적재 정합(write_candidates_csv 동일 룰)
+        if k in existing or k in seen or _is_near_dup(co, rel, tgt, targets):
             continue
         seen.add(k)
         out.append(c)
@@ -520,16 +553,35 @@ def approve_candidates(keys=None, *, all_pending=False,
         return res
     # 기존 reinforce 쌍(repo CSV + 런타임 오버레이) — 중복 append 방지.
     existing = _reinforce_pairs(_reinforce_csv_path()) | _reinforce_pairs(rp)
+    # 근사중복 인덱스(사용자 2026-07-04 '반영 시 Duplicate 저장 금지'):
+    # ① 이미 처리된 큐 행(등재/승인/중복)의 (회사,관계)→대상들
+    # ② 레퍼런스북 기존 (회사,품목) — 취급품목용. 같은 회사·관계에 유사
+    # 대상이 이미 있으면 재등재 대신 상태 '중복'(기록만, 오버레이 미적재).
+    decided: dict = {}
+    for row in rows:
+        if len(row) >= 7 and row[6].strip() in ("등재", "승인", "중복"):
+            decided.setdefault((_norm(row[0]), row[1].strip()),
+                               []).append(row[2].strip())
+    for co_n, item_n in _existing_pairs_from_refbook():
+        decided.setdefault((co_n, "취급품목"), []).append(item_n)
+    res["duplicates"] = 0
     new_rows: list[list[str]] = []
     for row in rows:
         if len(row) < 7:
             continue
         co, rel, tgt, status = (row[0].strip(), row[1].strip(),
                                 row[2].strip(), row[6].strip())
-        if status == "등재" or not (co and rel and tgt):
+        if status in ("등재", "중복") or not (co and rel and tgt):
             continue
         if not all_pending and (_norm(co), rel, _norm(tgt)) not in want:
             continue
+        # 근사중복 검사는 **후보 상태만** — decided 에 자기 자신이 든 기존
+        # '승인' 행이 재반영(전체반영) 때 자기유사로 '중복' 뒤집히는 것 방지.
+        if status == "후보" and _is_near_dup(co, rel, tgt, decided):
+            row[6] = "중복"
+            res["duplicates"] += 1
+            continue
+        decided.setdefault((_norm(co), rel), []).append(tgt)
         if rel == "취급품목":
             pk = (_norm(tgt), _norm(co))
             if pk not in existing:
