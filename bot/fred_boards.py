@@ -701,7 +701,12 @@ def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
     ts = now.strftime("%Y-%m-%d %H:%M KST")
     margins = margins or []
     payload = _json.dumps({"rows": rows}, ensure_ascii=False).replace("<", "\\u003c")
+    # Benchmark 를 '전체 카테고리' 바로 옆(맨 앞)으로 — 나머지는 알파벳순
+    # 유지 (사용자 2026-07-05 '전체 옆에 Benchmark').
     cats = sorted({r["cat"] for r in rows})
+    if "Benchmark" in cats:
+        cats.remove("Benchmark")
+        cats.insert(0, "Benchmark")
     empty = ("" if rows else
              "<div class='note'>⚠️ FRED 데이터 없음 — FRED_API_KEY 확인 필요. "
              "키 등록 후 자정 재생성(또는 봇 재시작) 시 채워집니다.</div>")
