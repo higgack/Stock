@@ -2169,11 +2169,11 @@ def _render_index(records: list[dict]) -> tuple[str, dict[str, str]]:
         ' · <a href="asia.html">🏯 ASIA</a>'   # 홈 옆 ASIA — 여기(NOAH 종목분석)만 (사용자 2026-06-15)
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
-        ' · <a href="dart_feed.html">📋 DART 공시</a>'
+        ' · <a href="dart_feed.html">📋 DART</a>'
         ' · <a href="valuechain.html">🔗 밸류체인</a>'
         f' · <a href="trade/">🌏 수출입</a>'
         ' · <a href="daily_byte.html">📰 Daily Byte</a>'
-        ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
+        ' · <a href="reddit_insider.html">📨 레딧</a>'
         ' · <a href="blog.html">📝 블로그</a>'
     )
 
@@ -10977,7 +10977,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a> · <a href="index.html">🦉 종목분석</a>
-    · <a href="dart_feed.html">📋 DART 공시</a> · <a href="blog.html">📝 블로그</a>
+    · <a href="dart_feed.html">📋 DART</a> · <a href="blog.html">📝 블로그</a>
   </div>
   <h1>🔗 밸류체인</h1>
   <p class="sub">블로그·DART 계약공시(kg) + 관세청 수출입 레퍼런스북을 집합한 통합 그래프 · 회사 검색 시 공급사·고객·수출품목·동종 회사 연결(고객사 호재 → 공급사 수혜 발굴) · 모든 소스 갱신 자동 반영</p>
@@ -14708,13 +14708,13 @@ def _render_market_page(data: dict) -> str:
     <a href="asia.html">🏯 ASIA</a>
     &middot; <a href="index.html">🦉 종목분석</a>
     &middot; <a href="screener.html">📊 Screener</a>
-    &middot; <a href="dart_feed.html">📋 DART 공시</a>
+    &middot; <a href="dart_feed.html">📋 DART</a>
     &middot; <a href="valuechain.html">🔗 밸류체인</a>
     &middot; <a href="ppi.html">🏭 PPI</a>
     &middot; <a href="liquidity.html">💧 유동성</a>
     &middot; <a href="trade/">🌏 수출입</a>
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
-    &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
+    &middot; <a href="reddit_insider.html">📨 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
   </div>
   <div class="nav nav-r2">
