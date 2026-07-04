@@ -10468,7 +10468,7 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
     ) if waiting else ''
     done_block = (
         f'<details class="day" style="margin-top:12px"><summary class="day-head" style="cursor:pointer">'
-        f'<span>✅ 처리됨 <span style="color:var(--muted);font-weight:400;font-size:12px">(등재=레퍼런스북 반영 · 승인=기록만 · {n_done}건)</span></span></summary>'
+        f'<span>✅ 처리됨 <span style="color:var(--muted);font-weight:400;font-size:12px">(등재=레퍼런스북 반영 · 승인=기록만 · 중복=기존과 유사해 스킵 · {n_done}건)</span></span></summary>'
         f'<div style="overflow-x:auto;padding:8px 0"><table style="width:100%;border-collapse:collapse;font-size:13px">'
         f'{_head_th}<tbody>{done_rows}</tbody></table></div></details>'
     ) if done else ''
@@ -10512,7 +10512,7 @@ def _render_kg_candidates_section(cands: list[dict]) -> str:
         post('api/kg_approve', {{company:b.dataset.co, relation:b.dataset.rel, target:b.dataset.tgt}})
           .then(function(j){{
             if(j && j.ok){{ b.textContent = j.ingested? '등재' : '승인';
-              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+'). 새로고침하면 처리됨으로 이동합니다.'); }}
+              say('반영됨 (등재 '+(j.ingested||0)+' · 승인 '+(j.approved||0)+(j.duplicates?' · 중복스킵 '+j.duplicates:'')+'). 새로고침하면 처리됨으로 이동합니다.'); }}
             else {{ b.disabled=false; b.textContent='반영'; say('실패: '+((j&&j.error)||'?')); }}
           }}).catch(function(e){{ b.disabled=false; b.textContent='반영'; say('오류: '+e); }});
       }});

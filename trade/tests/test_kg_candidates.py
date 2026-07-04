@@ -228,3 +228,65 @@ class KgCandidatesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NearDuplicateTests(unittest.TestCase):
+    """근사중복 병합(사용자 2026-07-04 '비슷한게 계속 늘어') — 정확일치를
+    빠져나가던 'D램'↔'D램 모듈' 류 변형을 큐 적재·알림·반영 3경로 모두 스킵."""
+
+    def test_similar_target(self):
+        self.assertTrue(kg._similar_target("D램", "D램 모듈"))
+        self.assertTrue(kg._similar_target("웨이퍼", "메모리 웨이퍼"))
+        self.assertTrue(kg._similar_target("DDR5", "ddr5 제품"))
+        self.assertFalse(kg._similar_target("DDR5", "LPDDR"))
+        self.assertFalse(kg._similar_target("", "HBM"))
+
+    def test_write_skips_near_dup_including_processed(self):
+        import csv as _csv, tempfile
+        from pathlib import Path
+        q = Path(tempfile.mkdtemp()) / "q.csv"
+        with open(q, "w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(kg._CSV_HEADER)
+            w.writerow(["삼성전자", "취급품목", "D램", "e", "s", "2026-07-01", "등재"])
+        n = kg.write_candidates_csv(
+            [{"company": "삼성전자", "relation": "취급품목", "target": "D램 모듈"},
+             {"company": "삼성전자", "relation": "취급품목", "target": "NAND"}],
+            path=q)
+        self.assertEqual(n, 1)                       # 근사중복 1건 스킵
+
+    def test_approve_marks_duplicate_and_skips_overlay(self):
+        import csv as _csv, tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        q, rp = d / "q.csv", d / "rf.csv"
+        with open(q, "w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(kg._CSV_HEADER)
+            w.writerow(["SK하이닉스", "취급품목", "웨이퍼", "e", "s", "2026-07-01", "등재"])
+            w.writerow(["SK하이닉스", "취급품목", "메모리 웨이퍼", "e", "s", "2026-07-04", "후보"])
+            w.writerow(["SK하이닉스", "취급품목", "HBM", "e", "s", "2026-07-04", "후보"])
+        res = kg.approve_candidates(all_pending=True, queue_path=q,
+                                    reinforce_path=rp)
+        self.assertEqual(res["duplicates"], 1)
+        self.assertEqual(res["ingested"], 1)
+        rows = list(_csv.reader(open(q, encoding="utf-8-sig")))[1:]
+        st = {(r[0], r[2]): r[6] for r in rows}
+        self.assertEqual(st[("SK하이닉스", "메모리 웨이퍼")], "중복")
+        ov = open(rp, encoding="utf-8-sig").read()
+        self.assertIn("HBM", ov)
+        self.assertNotIn("웨이퍼", ov)               # 중복은 오버레이 미적재
+
+    def test_same_batch_near_dups_first_wins(self):
+        import csv as _csv, tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        q, rp = d / "q.csv", d / "rf.csv"
+        with open(q, "w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(kg._CSV_HEADER)
+            w.writerow(["삼성전자", "취급품목", "LPDDR", "e", "s", "2026-07-04", "후보"])
+            w.writerow(["삼성전자", "취급품목", "LPDDR 모듈", "e", "s", "2026-07-04", "후보"])
+        res = kg.approve_candidates(all_pending=True, queue_path=q,
+                                    reinforce_path=rp)
+        self.assertEqual((res["ingested"], res["duplicates"]), (1, 1))
