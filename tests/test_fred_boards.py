@@ -558,7 +558,7 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         # PCU336414336414 — FRED 400(미존재), BLS 미발행 확인(2026-07-04) →
         # 삭제(항공우주 상위그룹 PCU3364133641 이 커버). 사용자 '없는건 삭제'.
         self.assertFalse(any(s["id"] == "PCU336414336414" for s in PPI_SERIES))
-        self.assertEqual(len(PPI_SERIES), 81)   # +검증 2차 7(2026-07-05)
+        self.assertEqual(len(PPI_SERIES), 95)   # +발굴 3차 14(2026-07-05)
 
     def test_stale_drop_and_note(self):
         # 12개월+ 미갱신 = 목록 자동 제외 + 하단 제외 안내(사용자 2026-07-04
@@ -649,3 +649,17 @@ class LiqExpansion20260705Tests(unittest.TestCase):
             self.assertIn(w, ids)
         for dead in ("PCU335921335921", "PCU492110492110", "PCU517312517312"):
             self.assertNotIn(dead, ids)
+
+    def test_third_batch_discovered_additions(self):
+        # 발굴 3차(2026-07-05) — 4렌즈 스캔, 2026 관측 증거 있는 것만 14종.
+        # 탄약(PCU332992332992)은 에이전트가 '현행'이라 봤으나 **우리 라이브
+        # 실측(2025-06 stale)이 반대 증거 → 실측 우선 재등재 금지**.
+        ids = {s["id"] for s in PPI_SERIES}
+        for w in ("PCU3339233339233", "PCU33323332", "PCU325212325212",
+                  "PCU326199326199A", "PCU3352233522", "WPU1178", "WPU102406",
+                  "WPU057203", "WPU057303", "PCU22121022121012",
+                  "PCU622110622110", "PCU541330541330", "PCU541810541810",
+                  "PCU523110523110201"):
+            self.assertIn(w, ids)
+        self.assertNotIn("PCU332992332992", ids)
+        self.assertNotIn("PCU5221105221101", ids)   # 은행 sub — Medium 보류
