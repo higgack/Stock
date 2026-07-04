@@ -206,9 +206,6 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
         if src == "ak:lpr1y":
             from bot import akshare_client
             return akshare_client.lpr_1y_history()
-        if src == "ak:cn_m2_yoy":
-            from bot import akshare_client
-            return akshare_client.cn_m2_yoy_history()
         if src == "ecos:kr10y":
             from bot import bok_ecos_client
             return [(_ecos_iso(t), v)
@@ -689,13 +686,10 @@ def _margin_panel(margins: list[dict]) -> str:
 
 
 def _dropped_note(dropped: list[str] | None) -> str:
-    """중단 제외 내역 표기 — silent 삭제 금지(사용자 2026-07-04 '중단 삭제').
-    없으면 빈 문자열."""
-    if not dropped:
-        return ""
-    names = _h.escape(", ".join(dropped))
-    return (f'<p class="sub" style="color:#f87171">⚠️ 소스 중단(12개월+ 미갱신)'
-            f'으로 자동 제외 {len(dropped)}종: {names}</p>')
+    """중단 제외 내역 — 화면 표기는 제거(사용자 2026-07-04 '지워졌으니 별도
+    코멘트 불필요'). 가시성은 journal 경고(로더의 log.warning)가 담당 —
+    운영자 디버깅 경로 유지. 항상 빈 문자열."""
+    return ""
 
 
 def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,

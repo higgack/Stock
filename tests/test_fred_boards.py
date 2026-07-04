@@ -411,14 +411,15 @@ class DiscontinuedSweepTests(unittest.TestCase):
         for dead in ("MANMM101JPM189S", "MANMM101EZM189S", "MANMM101KRM189S",
                      "INTDSRKRM193N", "INTDSRCNM193N"):
             self.assertNotIn(dead, ids)
-        self.assertEqual(len(LIQ_SERIES), 39)
+        self.assertEqual(len(LIQ_SERIES), 46)   # 39 −CNM2 +플래그십 8(2026-07-05)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
         self.assertEqual(srcs, {"ECOS:M2": "ecos:m2",
                                 "ECOS:BASE": "ecos:base_rate",
                                 "AK:LPR1Y": "ak:lpr1y",
-                                "AK:CNM2": "ak:cn_m2_yoy",      # 2026-07-04 확장
+                                # AK:CNM2 는 라이브에서 12개월+ stale 판정
+                                # (라벨/소스 원인 미상) → 삭제(2026-07-04)
                                 "ECOS:KR10Y": "ecos:kr10y"})
         # 대체 소스 함수 실재(배선 E2E)
         from bot import bok_ecos_client, akshare_client
@@ -557,7 +558,7 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         # PCU336414336414 — FRED 400(미존재), BLS 미발행 확인(2026-07-04) →
         # 삭제(항공우주 상위그룹 PCU3364133641 이 커버). 사용자 '없는건 삭제'.
         self.assertFalse(any(s["id"] == "PCU336414336414" for s in PPI_SERIES))
-        self.assertEqual(len(PPI_SERIES), 74)   # 72 + 신규 4 − 탄약 중단 2(2026-07-04)
+        self.assertEqual(len(PPI_SERIES), 81)   # +검증 2차 7(2026-07-05)
 
     def test_stale_drop_and_note(self):
         # 12개월+ 미갱신 = 목록 자동 제외 + 하단 제외 안내(사용자 2026-07-04
@@ -566,9 +567,10 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         src = open("bot/fred_boards.py", encoding="utf-8").read()
         self.assertIn("_dropped_note", src)
         self.assertEqual(src.count("age is not None and age >= _DROP_AFTER_MONTHS"), 2)  # PPI+LIQ
+        # 화면 코멘트는 제거(사용자 2026-07-04) — journal 경고가 가시성 담당.
         html = fb.render_ppi_page([], [], dropped=["Small Arms Ammunition Mfg (PCU332992332992)"])
-        self.assertIn("소스 중단(12개월+ 미갱신)", html)
-        self.assertIn("PCU332992332992", html)
+        self.assertNotIn("소스 중단(12개월+ 미갱신)", html)
+        self.assertNotIn("PCU332992332992", html)
         # 지연 배지 경계: 6개월+ True / 미만 없음
         import datetime as _dt
         from zoneinfo import ZoneInfo
@@ -614,5 +616,36 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         self.assertEqual(
             [r["ITEM_CODE"] for r in _filter_series_items(rows, "Q", "202506")],
             ["Q1"])
-        aks = open("bot/akshare_client.py", encoding="utf-8").read()
-        assert "_pub_shift" in aks                       # 발표일→참조월 보정
+        # (구 CN M2 발표월 보정 계약은 AK:CNM2 삭제와 함께 제거, 2026-07-04)
+
+
+class LiqExpansion20260705Tests(unittest.TestCase):
+    """유동성 확장 2차(사용자 '더 추가') — Fed 원천 플래그십 8종 + CNM2 삭제
+    + 제외 코멘트 배너 제거(journal 로그만)."""
+
+    def test_flagship_additions(self):
+        ids = {s["id"] for s in LIQ_SERIES}
+        for w in ("DGS30", "DEXJPUS", "DEXCHUS", "CBBTCUSD",
+                  "WLCFLPCL", "COMPOUT", "DPSACBW027SBOG", "RMFSL"):
+            self.assertIn(w, ids)
+        self.assertNotIn("AK:CNM2", ids)     # stale 판정 → 삭제(2026-07-04)
+        dgs30 = next(s for s in LIQ_SERIES if s["id"] == "DGS30")
+        self.assertTrue(dgs30["is_rate"])    # %p 표기 대상
+        fx = next(s for s in LIQ_SERIES if s["id"] == "DEXJPUS")
+        self.assertFalse(fx["is_rate"])      # 환율 레벨은 %변화 유지
+
+    def test_dropped_note_removed(self):
+        self.assertEqual(fb._dropped_note(["X (Y)"]), "")   # 화면 코멘트 없음
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        self.assertIn("소스 중단 제외", src)                # journal 경고는 유지
+
+    def test_second_batch_verified_additions(self):
+        # 2차 확장(2026-07-05) — 웹 교차검증 'current' 확정분만. 탈락:
+        # 광케이블 335921(2025-06 중단)·아연(시리즈 없음)·택배 492110(중단
+        # 의심)·무선 517312(FRED 미존재 — WPU3721 상품지수로 대체).
+        ids = {s["id"] for s in PPI_SERIES}
+        for w in ("PCU336411336411", "PCU481112481112", "PCU482111482111",
+                  "WPU0543", "WPU1012", "PCU5182105182105", "WPU3721"):
+            self.assertIn(w, ids)
+        for dead in ("PCU335921335921", "PCU492110492110", "PCU517312517312"):
+            self.assertNotIn(dead, ids)
