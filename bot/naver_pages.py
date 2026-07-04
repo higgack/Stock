@@ -56,7 +56,7 @@ td.ld a:hover{color:var(--accent)}
 
 _THEME_SCRIPT = r"""
 <script>
-(function(){var h=parseInt(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';})();
+(function(){function ap(){var h=parseInt(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}ap();setInterval(ap,60000);/* 60초 재체크 — 19/07시 경계에 열린 페이지도 리로드 없이 전환(메인 _THEME_JS·trade 와 통일, 2026-07-04) */})();
 /* '← 홈으로' 는 일반 nav 로 market.html 직행. '원래 자리로'는 history.back()
    (bfcache 불안정·다단이동 시 엉뚱한 페이지) 대신 market.html 자체의 스크롤
    복원(sessionStorage)으로 해결 — 어떤 경로로 홈에 도착해도 마지막 위치 복귀
