@@ -575,7 +575,9 @@ def approve_candidates(keys=None, *, all_pending=False,
             continue
         if not all_pending and (_norm(co), rel, _norm(tgt)) not in want:
             continue
-        if _is_near_dup(co, rel, tgt, decided):
+        # 근사중복 검사는 **후보 상태만** — decided 에 자기 자신이 든 기존
+        # '승인' 행이 재반영(전체반영) 때 자기유사로 '중복' 뒤집히는 것 방지.
+        if status == "후보" and _is_near_dup(co, rel, tgt, decided):
             row[6] = "중복"
             res["duplicates"] += 1
             continue

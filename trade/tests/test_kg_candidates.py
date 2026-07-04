@@ -290,3 +290,21 @@ class NearDuplicateTests(unittest.TestCase):
         res = kg.approve_candidates(all_pending=True, queue_path=q,
                                     reinforce_path=rp)
         self.assertEqual((res["ingested"], res["duplicates"]), (1, 1))
+
+    def test_reapprove_does_not_flip_approved_to_duplicate(self):
+        # 전체반영 재실행 시 기존 '승인' 행이 자기유사로 '중복' 뒤집히지 않음
+        # (셀프리뷰 2026-07-04 — decided 에 자기 자신 포함되는 경로).
+        import csv as _csv, tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        q, rp = d / "q.csv", d / "rf.csv"
+        with open(q, "w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(kg._CSV_HEADER)
+            w.writerow(["삼성전자", "테마", "HBM", "e", "s", "2026-07-01", "승인"])
+        res = kg.approve_candidates(all_pending=True, queue_path=q,
+                                    reinforce_path=rp)
+        self.assertEqual(res["duplicates"], 0)
+        rows = list(_csv.reader(open(q, encoding="utf-8-sig")))[1:]
+        self.assertEqual(rows[0][6], "승인")          # 상태 유지
+        self.assertEqual(res["skipped"], 1)
