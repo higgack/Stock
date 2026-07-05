@@ -132,24 +132,9 @@ class TestFormatters(unittest.TestCase):
         # single-line: no newlines
         self.assertNotIn("\n", line)
 
-    def test_dashboard_line_shows_llm_cost_when_used(self):
-        snap = self._snap()
-        snap["llm"] = {
-            "today": {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
-                      "in_tok": 0, "out_tok": 0},
-            "d7": {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
-                   "in_tok": 0, "out_tok": 0},
-            "d30": {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
-                    "in_tok": 0, "out_tok": 0},
-            "total_calls": 1,
-        }
-        line = cost.format_dashboard_line(snap)
-        self.assertIn("LLM 30일 45원", line)
-        self.assertNotIn("\n", line)
-
-    def test_dashboard_line_three_windows_when_available(self):
-        # summary 가 month/total 을 주면 오늘/이번달/누적 3창 표기
-        # (사용자 2026-07-05, 전 대시보드 비용카드 통일).
+    def test_dashboard_line_three_windows(self):
+        # 비용카드 3창 표기(오늘/이번달/누적+콜수 — 사용자 2026-07-05).
+        # snap 은 항상 현행 summary() 산이라 today_kst/month/total 키 보장.
         snap = self._snap()
         base = {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
                 "in_tok": 0, "out_tok": 0}
@@ -163,7 +148,7 @@ class TestFormatters(unittest.TestCase):
         line = cost.format_dashboard_line(snap)
         self.assertIn("LLM 오늘 45원", line)
         self.assertIn("이번달 90원", line)
-        self.assertIn("누적 300원", line)
+        self.assertIn("누적 300원(5콜)", line)
         self.assertNotIn("\n", line)
 
 

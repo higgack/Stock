@@ -258,6 +258,20 @@ def _now_ts() -> float:
     return time.time()
 
 
+def _read_usage_rollup_usd() -> float:
+    """usage_tracker 로테이션 롤업(usage_rollup.json) 읽기 — 30일 로테이션으로
+    파일에서 빠진 과거 llm_call 비용 총액(USD). read-only · graceful(0.0)."""
+    try:
+        with open(_USAGE_LOG_PATH.with_name("usage_rollup.json"),
+                  encoding="utf-8") as f:
+            return float((json.load(f) or {}).get("cost_usd", 0.0) or 0.0)
+    except FileNotFoundError:
+        return 0.0
+    except Exception as exc:
+        log.warning("dashboard: usage rollup read failed: %s", exc)
+        return 0.0
+
+
 def _read_usage_records() -> list[dict]:
     """Read raw llm_call records from usage.jsonl. Read-only — does NOT
     rotate the file (that's owned by usage_tracker)."""
@@ -423,7 +437,10 @@ def _compute_stats(records: list[dict]) -> dict:
     usage = _read_usage_records()
     today_cost_usd = 0.0
     month_cost_usd = 0.0
-    total_cost_usd = 0.0
+    # 누적(전체) 시작값 = 로테이션 롤업 — usage.jsonl 은 30일 로테이션이라
+    # 파일 합만으로는 '누적' 이 거짓(날마다 줄어듦). usage_tracker 가
+    # 로테이션 시 빠지는 비용을 usage_rollup.json 에 적산(리뷰 2026-07-05).
+    total_cost_usd = _read_usage_rollup_usd()
     month_cost_by_model: dict[str, float] = {}
     # Per-subsystem breakdown (분석 / Screener / …) so the main dashboard
     # surfaces where the total bill is coming from. Screener Pro calls
@@ -437,12 +454,14 @@ def _compute_stats(records: list[dict]) -> dict:
     for r in usage:
         if r.get("type") != "llm_call":
             continue
+        # 누적은 ts 가드 전에 합산 — 날짜 깨진 레코드도 총액 포함
+        # (trade 루프와 동일 불변식).
+        cost = r.get("cost_usd", 0) or 0
+        total_cost_usd += cost
         ts = r.get("ts")
         if not ts:
             continue
         rec_day = datetime.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d")
-        cost = r.get("cost_usd", 0) or 0
-        total_cost_usd += cost
         _subsys = r.get("subsystem")
         sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
                 "cheongyak": "부동산", "realestate": "부동산",

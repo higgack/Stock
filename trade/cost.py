@@ -198,20 +198,16 @@ def format_dashboard_line(snap: dict | None = None) -> str:
         f"💰 관세청 API 무료 ~{s['api_calls_per_day']:,}/{s['api_quota']:,}콜",
     ]
     # LLM(Gemini 🔍추가신호)은 변동 시에만 — 무료 아님이라 비용을 함께 노출.
-    # 비용 3창 표기(오늘/이번달/누적, KST — 사용자 2026-07-05). month/total
-    # 키 없는 옛 snap 은 기존 30일 표기 폴백(구버전 스냅 호환).
+    # 비용 3창 표기(오늘/이번달/누적 KST 달력 경계 — 사용자 2026-07-05).
+    # snap 은 항상 같은 배포의 llm_usage.summary() 산(産)이라 키 보장 —
+    # 폴백 분기 없음(리뷰 2026-07-05 dead-branch 제거).
     llm = s.get("llm")
     if llm and llm.get("total_calls"):
-        _mn, _tt = llm.get("month"), llm.get("total")
-        if _mn is not None and _tt is not None:
-            _td = llm.get("today_kst") or llm.get("today") or {}
-            parts.append(
-                f"LLM 오늘 {_td.get('cost_krw', 0):,}원 · "
-                f"이번달 {_mn['cost_krw']:,}원 · 누적 {_tt['cost_krw']:,}원"
-            )
-        else:
-            d30 = llm["d30"]
-            parts.append(f"LLM 30일 {d30['cost_krw']:,}원({d30['calls']}콜)")
+        parts.append(
+            f"LLM 오늘 {llm['today_kst']['cost_krw']:,}원 · "
+            f"이번달 {llm['month']['cost_krw']:,}원 · "
+            f"누적 {llm['total']['cost_krw']:,}원({llm['total_calls']}콜)"
+        )
     else:
         parts.append("LLM 0원(변동시만)")
     parts.append(f"데이터 {fmt_bytes(s['data_total_bytes'])}")

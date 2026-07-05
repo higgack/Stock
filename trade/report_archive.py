@@ -170,7 +170,7 @@ def regenerate(out_path: Path | None = None) -> Path:
     # 비용 3창(오늘/이번 달/누적, KST) — 전 대시보드 비용카드 표기 통일
     # (사용자 2026-07-05). run 의 _date(YYYY-MM-DD, KST 기록) 기준.
     total_cost = sum(float(r.get("cost_krw") or 0) for r in runs)
-    _today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+    _today = datetime.now(_KST).date().isoformat()
     today_cost = sum(float(r.get("cost_krw") or 0) for r in runs
                      if r.get("_date") == _today)
     month_cost = sum(float(r.get("cost_krw") or 0) for r in runs
