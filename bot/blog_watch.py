@@ -37,6 +37,7 @@ _BLOGS = (
     {"id": "ranto28", "title": "메르", "categories": None},      # 전체 글 (사용자 2026-06-18)
     {"id": "richyun0108", "title": "작은 투자자", "categories": None},  # 전체 글 (사용자 2026-06-22)
     {"id": "bboyanaga", "title": "애널리스트 김경민", "categories": None},  # 전체 글 (사용자 2026-06-23)
+    {"id": "usforall", "title": "모두의 미국주식", "categories": None},  # 전체 글 (사용자 2026-07-05)
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
