@@ -13258,8 +13258,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     var de=document.documentElement;
     var impOnly=de.classList.contains('imp-only');
     var memoOnly=de.classList.contains('memo-only');
-    // 검색은 전체 아카이브 대상 — 미로드 과거 월 먼저 로드 후 재적용.
-    if(q&&dfPending().length){dfLoadAll().then(applyFilters);return;}
+    // 검색·카테고리·플래그·마크 필터는 전체 아카이브 대상 — 미로드 과거 월
+    // 먼저 로드 후 재적용(카테고리 필터가 로드된 월만 세는 착시 방지).
+    var anyFilter=!!q||activeCat!=='전체'||activeFlags.length>0||impOnly||memoOnly;
+    if(anyFilter&&dfPending().length){dfLoadAll().then(applyFilters);return;}
     dfCards().forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
       var cf=(c.dataset.flag||'');
@@ -13281,6 +13283,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
       g.style.display=n?'':'none';
     });
     document.querySelectorAll('.df-month').forEach(function(m){
+      // 미로드 lazy 월은 DOM 카드 0장이라 숨기면 헤더째 사라져 영영 펼칠 수
+      // 없다(2026-07-05 '6월달껀 어디갔어' — index 1314 가드와 동일 규칙).
+      // anyFilter 시엔 위에서 전체 로드 후 재진입하므로 여기 도달 = 필터 없음
+      // → 서버가 준 전체 카운트 라벨 그대로 보존.
+      if(m.dataset.lazy&&!m.__loaded){m.style.display='';return;}
       var n=m.querySelectorAll('.df-card:not(.hidden)').length;
       // 월 카운트도 필터 동기화 — 안 그러면 일 카운트(df-date-cnt)는 필터된
       // 수로 줄어드는데 월은 전체(예: 일 90 ↔ 월 4697건)로 남아 데이터가

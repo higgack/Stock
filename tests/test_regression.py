@@ -13170,3 +13170,36 @@ class TestCostCardThreeWindows20260705:
         # /usage 텔레그램 패리티 배선(동시갱신 규칙)
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "rollup_cost_usd()" in tb and "• 누적:" in tb
+
+
+class TestDartLazyMonthVisibility20260705:
+    """dart_feed lazy 과거 월 소실 fix (사용자 2026-07-05 '6월달껀 어디갔어').
+    applyFilters 가 DOM 카드 0장인 미로드 lazy 월을 헤더째 display:none —
+    한 번 숨으면 클릭 불가라 영영 복구 불가. index(1314 가드)와 동일 규칙:
+    ① 미로드 lazy 월은 숨김·카운트 재작성 제외 ② 카테고리/플래그/마크
+    필터도 검색처럼 전체 로드 후 적용."""
+
+    def _dart_js(self):
+        import bot.dashboard as d
+        html, _ = d._render_dart_feed_page(
+            {"2026-07-03": [{"corp_name": "가", "report_nm": "r", "category": "계약",
+                             "rcept_no": "1", "stock_code": "", "url": "#", "detail": []}],
+             "2026-06-10": [{"corp_name": "나", "report_nm": "r", "category": "계약",
+                             "rcept_no": "2", "stock_code": "", "url": "#", "detail": []}]})
+        return html
+
+    def test_unloaded_lazy_month_never_hidden(self):
+        html = self._dart_js()
+        assert "if(m.dataset.lazy&&!m.__loaded){m.style.display='';return;}" in html
+        # 가드는 카운트 재작성(mc.textContent)보다 앞이어야 서버 전체건수 보존
+        _i = html.index("if(m.dataset.lazy&&!m.__loaded){m.style.display='';return;}")
+        assert _i < html.index("mc.textContent=n+'건'")
+
+    def test_any_filter_loads_all_months_first(self):
+        html = self._dart_js()
+        assert ("var anyFilter=!!q||activeCat!=='전체'||activeFlags.length>0"
+                "||impOnly||memoOnly;") in html
+        assert "if(anyFilter&&dfPending().length){dfLoadAll().then(applyFilters);return;}" in html
+        # 과거 월 lazy 구조 자체 계약(헤더+data-lazy 프래그먼트)
+        assert 'data-lazy="dart_m_2026-06.html"' in html
+        assert "2026년 6월" in html
