@@ -13108,3 +13108,65 @@ class TestAdminIssueSignificance20260705:
                              "detail": ["비고: 관리종목 아님"]}) is None
         # 🔥범례 동시 갱신 계약
         assert "·관리종목·" in open("bot/dashboard.py", encoding="utf-8").read()
+
+
+class TestCostCardThreeWindows20260705:
+    """비용카드 3창(오늘/이번 달/누적) 표기 계약 — 전 대시보드 (사용자
+    2026-07-05 '비용카드는 오늘/이번달/누적까지 포함. 모든 대쉬보드 적용')."""
+
+    def test_kg_cost_returns_three_tuple(self, tmp_path, monkeypatch):
+        import importlib
+        import json as _j
+        import bot.dashboard as d
+        # 옛달 kg 레코드 → today/month 0, total 만 잡혀야 함
+        (tmp_path / "usage.jsonl").write_text(_j.dumps(
+            {"kind": "kg_blog", "cost_usd": 1.0, "date": "2025-01-15"}) + "\n",
+            encoding="utf-8")
+        monkeypatch.setenv("TRADE_DATA_DIR", str(tmp_path))
+        t, m, x = d._kg_candidate_cost_usd()
+        assert (t, m) == (0.0, 0.0) and x == 1.0
+        # 파일 부재도 3-튜플 graceful
+        monkeypatch.setenv("TRADE_DATA_DIR", str(tmp_path / "none"))
+        assert d._kg_candidate_cost_usd() == (0.0, 0.0, 0.0)
+
+    def test_page_labels_include_cumulative(self):
+        import bot.dashboard as d
+        assert "(오늘/이번 달/누적)" in d._render_valuechain_page([], 1.0, 2.0, 3.0)
+        assert "비용 (오늘/이번 달/누적)" in d._render_gics_candidates_page([])
+        _ri = d._render_reddit_insider_page([])
+        _ri_html = _ri[0] if isinstance(_ri, tuple) else _ri  # (html, fragments)
+        assert "비용 (오늘/이번 달/누적)" in _ri_html
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        # 메인 카드 + 블로그 kg 카드 + DART kg 줄 라벨 계약
+        assert "💰 비용 (오늘 / 이번 달 / 누적)" in src
+        assert "🔗 관계후보 발굴 비용 (오늘/이번 달/누적)" in src
+        assert "누적 {_krw(_df_kg_x)}" in src
+
+    def test_compute_stats_exposes_total(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"total_cost_usd": total_cost_usd' in src
+
+    def test_rotation_rolls_cost_into_rollup(self, tmp_path, monkeypatch):
+        # '누적(전체)' 참값 보장: usage.jsonl 30일 로테이션으로 빠지는 비용은
+        # usage_rollup.json 에 적산(리뷰 2026-07-05 — 파일 합만으론 누적이
+        # 날마다 줄어드는 거짓 라벨). 재로테이션 이중적산 금지.
+        import time as _t
+        import json as _j
+        import bot.usage_tracker as ut
+        import bot.dashboard as d
+        logf = tmp_path / "usage.jsonl"
+        monkeypatch.setattr(ut, "USAGE_LOG", logf)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "usage_rollup.json")
+        old = {"ts": _t.time() - 40 * 86400, "type": "llm_call", "cost_usd": 2.5}
+        new = {"ts": _t.time(), "type": "llm_call", "cost_usd": 1.0}
+        logf.write_text(_j.dumps(old) + "\n" + _j.dumps(new) + "\n",
+                        encoding="utf-8")
+        assert len(ut.load_records()) == 1          # 40일 전 레코드 로테이션
+        assert ut.rollup_cost_usd() == 2.5          # 유출분 적산
+        ut.load_records()                           # 재실행에도
+        assert ut.rollup_cost_usd() == 2.5          # 이중적산 없음
+        monkeypatch.setattr(d, "_USAGE_LOG_PATH", logf)
+        assert d._read_usage_rollup_usd() == 2.5    # 대시보드 reader 동일 파일
+        # /usage 텔레그램 패리티 배선(동시갱신 규칙)
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "rollup_cost_usd()" in tb and "• 누적:" in tb

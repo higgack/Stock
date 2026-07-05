@@ -258,6 +258,20 @@ def _now_ts() -> float:
     return time.time()
 
 
+def _read_usage_rollup_usd() -> float:
+    """usage_tracker 로테이션 롤업(usage_rollup.json) 읽기 — 30일 로테이션으로
+    파일에서 빠진 과거 llm_call 비용 총액(USD). read-only · graceful(0.0)."""
+    try:
+        with open(_USAGE_LOG_PATH.with_name("usage_rollup.json"),
+                  encoding="utf-8") as f:
+            return float((json.load(f) or {}).get("cost_usd", 0.0) or 0.0)
+    except FileNotFoundError:
+        return 0.0
+    except Exception as exc:
+        log.warning("dashboard: usage rollup read failed: %s", exc)
+        return 0.0
+
+
 def _read_usage_records() -> list[dict]:
     """Read raw llm_call records from usage.jsonl. Read-only — does NOT
     rotate the file (that's owned by usage_tracker)."""
@@ -411,9 +425,10 @@ def _compute_stats(records: list[dict]) -> dict:
         ticker_counter.most_common(1)[0] if ticker_counter else ("-", 0)
     )
 
-    # ── cost: today (KST) and current month (KST) ──
-    # Two windows the user actually thinks in. The KST date of each
-    # record is computed once and reused for both buckets.
+    # ── cost: today (KST) / current month (KST) / all-time total ──
+    # Three windows the user actually thinks in (누적 포함 — 사용자
+    # 2026-07-05 '비용카드는 오늘/이번달/누적'). The KST date of each
+    # record is computed once and reused for the day/month buckets.
     kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(kst)
     today_str = now_kst.strftime("%Y-%m-%d")
@@ -422,6 +437,10 @@ def _compute_stats(records: list[dict]) -> dict:
     usage = _read_usage_records()
     today_cost_usd = 0.0
     month_cost_usd = 0.0
+    # 누적(전체) 시작값 = 로테이션 롤업 — usage.jsonl 은 30일 로테이션이라
+    # 파일 합만으로는 '누적' 이 거짓(날마다 줄어듦). usage_tracker 가
+    # 로테이션 시 빠지는 비용을 usage_rollup.json 에 적산(리뷰 2026-07-05).
+    total_cost_usd = _read_usage_rollup_usd()
     month_cost_by_model: dict[str, float] = {}
     # Per-subsystem breakdown (분석 / Screener / …) so the main dashboard
     # surfaces where the total bill is coming from. Screener Pro calls
@@ -435,11 +454,14 @@ def _compute_stats(records: list[dict]) -> dict:
     for r in usage:
         if r.get("type") != "llm_call":
             continue
+        # 누적은 ts 가드 전에 합산 — 날짜 깨진 레코드도 총액 포함
+        # (trade 루프와 동일 불변식).
+        cost = r.get("cost_usd", 0) or 0
+        total_cost_usd += cost
         ts = r.get("ts")
         if not ts:
             continue
         rec_day = datetime.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d")
-        cost = r.get("cost_usd", 0) or 0
         _subsys = r.get("subsystem")
         sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
                 "cheongyak": "부동산", "realestate": "부동산",
@@ -487,6 +509,9 @@ def _compute_stats(records: list[dict]) -> dict:
                         cost_usd_tr = float(_ck) / 1330.0 if _ck > 0 else 0.0
                     if cost_usd_tr <= 0:
                         continue
+                    # 누적(전체)은 날짜 파싱 전에 합산 — 날짜 필드가 깨진
+                    # 레코드도 총액에서는 빠지지 않게.
+                    total_cost_usd += cost_usd_tr
                     # date: 'date'(YYYY-MM-DD str) 우선, 없으면 ts(epoch)→KST.
                     _rd = rec.get("date")
                     if isinstance(_rd, str) and _rd:
@@ -573,6 +598,7 @@ def _compute_stats(records: list[dict]) -> dict:
         "ticker_distinct": len(ticker_counter),
         "today_cost_usd": today_cost_usd,
         "month_cost_usd": month_cost_usd,
+        "total_cost_usd": total_cost_usd,
         "month_cost_by_model": month_cost_by_model,
         "today_cost_by_sub_usd": today_cost_by_sub_usd,
         "month_cost_by_sub_usd": month_cost_by_sub_usd,
@@ -642,15 +668,17 @@ def _render_stats_panel(stats: dict) -> str:
         span_sub + f" · {stats['ticker_distinct']}개 종목" if span_sub else "",
     )
 
-    # Card 2: 비용 (오늘 / 이번 달)
+    # Card 2: 비용 (오늘 / 이번 달 / 누적)
     cost_label_parts = []
     for model in ("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"):
         usd = stats["month_cost_by_model"].get(model, 0)
         if usd > 0:
             short = model.replace("gemini-2.5-", "")
             cost_label_parts.append(f"{short} {_krw(usd)}")
-    cost_value = f"{_krw(stats['today_cost_usd'])} / {_krw(stats['month_cost_usd'])}"
-    cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']}"]
+    cost_value = (f"{_krw(stats['today_cost_usd'])} / "
+                  f"{_krw(stats['month_cost_usd'])} / "
+                  f"{_krw(stats.get('total_cost_usd', 0))}")
+    cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']} / 누적(전체)"]
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
     # Per-subsystem breakdown. Surface only buckets with non-zero
@@ -681,7 +709,7 @@ def _render_stats_panel(stats: dict) -> str:
         )
         cost_sub_parts.append(line)
     card_cost = _stat_card(
-        "💰 비용 (오늘 / 이번 달)", cost_value, "\n".join(cost_sub_parts),
+        "💰 비용 (오늘 / 이번 달 / 누적)", cost_value, "\n".join(cost_sub_parts),
     )
 
     # Card 3: 평균 시간
@@ -10150,7 +10178,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 포워드</div></div>
     <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수신 (KST)</div></div>
-    <div class="stat"><div class="stat-v">₩0</div><div class="stat-l">누적 비용</div></div>
+    <div class="stat"><div class="stat-v">₩0 / ₩0 / ₩0</div><div class="stat-l">비용 (오늘/이번 달/누적)</div></div>
   </div>
 
   <div class="search-bar">
@@ -10336,11 +10364,12 @@ def _load_blog_runs() -> list[dict]:
     return runs
 
 
-def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float]:
-    """관계후보(kg) LLM 비용 — trade usage.jsonl 에서 (today, month) USD 합산.
-    kinds=세트 주면 그 kind 만(소스별 대시보드 카드: 블로그=kg_blog/legacy,
-    DART=kg_dart). 미지정 시 전 kg_* (메인 관계후보 버킷과 동일). 메인 합산
-    (_compute_stats 관계후보)과 동일 소스·동일 분리. graceful((0.0, 0.0))."""
+def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float, float]:
+    """관계후보(kg) LLM 비용 — trade usage.jsonl 에서 (today, month, total)
+    USD 합산. kinds=세트 주면 그 kind 만(소스별 대시보드 카드: 블로그=
+    kg_blog/legacy, DART=kg_dart). 미지정 시 전 kg_* (메인 관계후보 버킷과
+    동일). 메인 합산(_compute_stats 관계후보)과 동일 소스·동일 분리.
+    graceful((0.0, 0.0, 0.0))."""
     import json as _j
     kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(kst)
@@ -10350,9 +10379,9 @@ def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float]:
     path = (Path(_trade_dir) / "usage.jsonl" if _trade_dir
             else Path.home() / ".trade" / "usage.jsonl")
     _kset = set(kinds) if kinds is not None else None
-    today_usd = month_usd = 0.0
+    today_usd = month_usd = total_usd = 0.0
     if not path.exists():
-        return (0.0, 0.0)
+        return (0.0, 0.0, 0.0)
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -10374,6 +10403,8 @@ def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float]:
                     cu = float(_ck) / 1330.0 if _ck > 0 else 0.0
                 if cu <= 0:
                     continue
+                # 누적은 날짜 파싱 전 합산 — 날짜 깨진 레코드도 총액 포함.
+                total_usd += cu
                 _rd = rec.get("date")
                 if isinstance(_rd, str) and _rd:
                     day = _rd
@@ -10392,7 +10423,7 @@ def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float]:
                         today_usd += cu
     except Exception as exc:
         log.warning("dashboard: kg cost read failed: %s", exc)
-    return (today_usd, month_usd)
+    return (today_usd, month_usd, total_usd)
 
 
 def _load_kg_candidates(limit: int = 60) -> list[dict]:
@@ -10569,9 +10600,10 @@ def _render_blog_page(runs: list[dict]) -> str:
     # 아니라 Gemini 추출이라 ₩0 아님(사용자 2026-06-24). DART 발굴분(kg_dart)은
     # dart_feed.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는
     # 둘 합산(=블로그 카드 + DART 카드).
-    _kg_today_usd, _kg_month_usd = _kg_candidate_cost_usd(
+    _kg_today_usd, _kg_month_usd, _kg_total_usd = _kg_candidate_cost_usd(
         kinds={"kg_blog", "kg_candidate"})
-    _kg_cost_val = f"{_krw(_kg_today_usd)} / {_krw(_kg_month_usd)}"
+    _kg_cost_val = (f"{_krw(_kg_today_usd)} / {_krw(_kg_month_usd)} / "
+                    f"{_krw(_kg_total_usd)}")
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
@@ -10586,7 +10618,7 @@ def _render_blog_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
     <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
-    <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달)</div></div>
+    <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달/누적)</div></div>
   </div>
 {_render_kg_candidates_section(_load_kg_candidates())}
   <div class="search-bar">
@@ -10951,7 +10983,8 @@ _VALUECHAIN_JS = r"""
 
 
 def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
-                            cost_month: float = 0.0) -> str:
+                            cost_month: float = 0.0,
+                            cost_total: float = 0.0) -> str:
     """valuechain.html — kg 엣지 explorer(공급망/밸류체인). 회사 검색 시 공급사·
     고객·취급품목·계열을 방향별로. 데이터는 <script type=application/json> 임베드 +
     클라이언트 JS 검색/필터(서버 무상태)."""
@@ -11001,7 +11034,7 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
     <div class="stat"><div class="stat-v" id="vc-stat-edges">—</div><div class="stat-l" id="vc-stat-edges-l">관계(엣지)</div></div>
     <div class="stat"><div class="stat-v" id="vc-stat-nodes">—</div><div class="stat-l">회사(노드)</div></div>
     <div class="stat"><div class="stat-v" id="vc-stat-docs">—</div><div class="stat-l">출처 문서</div></div>
-    <div class="stat"><div class="stat-v">{_krw(cost_today)} / {_krw(cost_month)}</div><div class="stat-l">KG 발굴 비용 (오늘/이번 달) · 관세청 무료</div></div>
+    <div class="stat"><div class="stat-v">{_krw(cost_today)} / {_krw(cost_month)} / {_krw(cost_total)}</div><div class="stat-l">KG 발굴 비용 (오늘/이번 달/누적) · 관세청 무료</div></div>
   </div>
   <div style="margin:12px 0 6px;color:var(--muted);font-size:13px">주요 회사 (연결수) — 클릭하면 필터</div>
   <div id="vc-chips" class="vc-chips"></div>
@@ -11042,8 +11075,8 @@ def regenerate_valuechain_index() -> None:
     dart_feed 추출 후 + approve + 주기 regen 에서 호출 → 모든 소스 갱신 반영. graceful."""
     try:
         edges = _load_valuechain_edges()
-        ct, cm = _kg_candidate_cost_usd()
-        html = _inject_update_banner(_render_valuechain_page(edges, ct, cm))
+        ct, cm, cx = _kg_candidate_cost_usd()
+        html = _inject_update_banner(_render_valuechain_page(edges, ct, cm, cx))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "valuechain.html").write_text(html, encoding="utf-8")
         log.info("dashboard: valuechain.html regenerated (%d edges)", len(edges))
@@ -12545,9 +12578,16 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
                     '✅ 채택됨</span>')
         return ('<span style="color:var(--fg-soft)">⏳ 미정</span>')
 
-    # 상단 stats
+    # 상단 stats — 비용은 오늘/이번 달/누적 3창 (KST, 사용자 2026-07-05).
+    # 분기 실행이라 오늘·이번 달은 대개 ₩0 이지만 전 대시보드 표기 통일.
     total_runs = len(runs)
     total_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs)
+    _kst_gc = datetime.timezone(datetime.timedelta(hours=9))
+    _today_gc = datetime.datetime.now(_kst_gc).strftime("%Y-%m-%d")
+    today_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs
+                         if (r.get("ts") or "")[:10] == _today_gc)
+    month_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs
+                         if (r.get("ts") or "")[:7] == _today_gc[:7])
     last_ts = runs[0].get("ts", "")[:10] if runs else "—"
     # 미채택 candidate 누적 카운트 (사용자가 행동해야 할 항목 수)
     pending_count = 0
@@ -12582,8 +12622,8 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-num">{total_runs}</div>
       <div class="stat-lbl">총 점검 횟수</div></div>
-    <div class="stat"><div class="stat-num">₩{int(total_cost_krw):,}</div>
-      <div class="stat-lbl">누적 비용</div></div>
+    <div class="stat"><div class="stat-num">₩{int(today_cost_krw):,} / ₩{int(month_cost_krw):,} / ₩{int(total_cost_krw):,}</div>
+      <div class="stat-lbl">비용 (오늘/이번 달/누적)</div></div>
     <div class="stat"><div class="stat-num">{last_ts}</div>
       <div class="stat-lbl">마지막 점검일</div></div>
     <div class="stat"><div class="stat-num">{pending_count}</div>
@@ -12977,7 +13017,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     # 관계후보 발굴 비용(kg_dart) — 공시 수집·파싱은 무료(공공 API)지만 계약공시
     # 본문 관계추출은 Gemini라 ₩0 아님(사용자 2026-06-24). 블로그 발굴분(kg_blog)은
     # blog.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는 둘 합산.
-    _df_kg_t, _df_kg_m = _kg_candidate_cost_usd(kinds={"kg_dart"})
+    _df_kg_t, _df_kg_m, _df_kg_x = _kg_candidate_cost_usd(kinds={"kg_dart"})
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
@@ -12986,7 +13026,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
   </div>
   <h1>DART 공시</h1>
   <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
-  <p class="sub" style="margin:-6px 0 14px">🔗 관계후보 발굴 비용(계약공시 본문, Gemini): 오늘 {_krw(_df_kg_t)} · 이번 달 {_krw(_df_kg_m)} <span style="opacity:.7">— 공시 수집·파싱은 무료, 본문 관계추출만 과금. 메인 '관계후보'에 합산</span></p>
+  <p class="sub" style="margin:-6px 0 14px">🔗 관계후보 발굴 비용(계약공시 본문, Gemini): 오늘 {_krw(_df_kg_t)} · 이번 달 {_krw(_df_kg_m)} · 누적 {_krw(_df_kg_x)} <span style="opacity:.7">— 공시 수집·파싱은 무료, 본문 관계추출만 과금. 메인 '관계후보'에 합산</span></p>
 
   <div class="df-controls">
     <div class="df-pills">{''.join(pills)}</div>

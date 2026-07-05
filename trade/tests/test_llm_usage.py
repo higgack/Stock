@@ -46,6 +46,21 @@ class LlmUsageTests(unittest.TestCase):
     def test_calls_today_empty(self):
         self.assertEqual(llm_usage.calls_today(), 0)
 
+    def test_summary_month_total_windows(self):
+        # 비용카드 3창(오늘/이번달/누적) 계약 (사용자 2026-07-05):
+        # summary 는 today_kst/month/total 키 제공, total 은 아무리 오래된
+        # 레코드도 포함, month 는 KST 달력월 경계.
+        now = time.time()
+        llm_usage.record("gemini-2.5-pro", 1000, 500, now=now)            # 오늘
+        llm_usage.record("gemini-2.5-pro", 1000, 500, now=now - 400 * 86400)  # 작년
+        s = llm_usage.summary(now)
+        for key in ("today_kst", "month", "total"):
+            self.assertIn(key, s)
+        self.assertEqual(s["total"]["calls"], 2)      # 누적 = 전부
+        self.assertEqual(s["month"]["calls"], 1)      # 이번 달 = 오늘 것만
+        self.assertEqual(s["today_kst"]["calls"], 1)
+        self.assertGreater(s["total"]["cost_krw"], s["month"]["cost_krw"] - 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1483,6 +1483,7 @@ def _build_usage_report() -> str:
     # 수출입과 분리 집계(사용자 2026-06-24). kind 미기록 옛 레코드 → 수출입.
     tr_today_usd = tr_month_usd = 0.0
     kg_today_usd = kg_month_usd = 0.0
+    tr_total_usd = 0.0   # trade 파일 전체 누적(수출입+kg, 날짜무관)
     try:
         import json as _j_tr
         import os as _os_tr
@@ -1506,6 +1507,8 @@ def _build_usage_report() -> str:
                         _usd = float(_ck) / fx if _ck > 0 else 0.0
                     if _usd <= 0:
                         continue
+                    # 누적은 날짜 파싱 전 합산(dashboard._compute_stats 동일 불변식)
+                    tr_total_usd += _usd
                     _rd = _r.get("date")
                     if not (isinstance(_rd, str) and _rd):
                         _ts2 = _r.get("ts")
@@ -1531,6 +1534,10 @@ def _build_usage_report() -> str:
 
     today_total_usd = today_cost + tr_today_usd + kg_today_usd
     month_total_usd = month_cost + tr_month_usd + kg_month_usd
+    # 누적(전체) = NOAH 롤업(30일 로테이션 유출분 적산) + NOAH 현재파일 전체
+    # + trade 파일 전체 — 대시보드 메인 카드 '누적' 과 동일 정의(동시갱신 규칙).
+    all_total_usd = (usage_tracker.rollup_cost_usd() + month_cost
+                     + tr_total_usd)
 
     lines = [
         "📊 <b>봇 사용 현황</b> (KST)",
@@ -1543,6 +1550,7 @@ def _build_usage_report() -> str:
         f"💰 <b>총 비용 (전체 surface 합산)</b> (₩{fx}/$)",
         f"  • 오늘: <b>{krw(today_total_usd)}</b>  (${today_total_usd:.2f})",
         f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",
+        f"  • 누적: <b>{krw(all_total_usd)}</b>  (${all_total_usd:.2f})",
         "",
         "📐 <b>월간 subsystem 분포</b>",
         f"  • 분석:        {krw(month_cost_analysis)}",

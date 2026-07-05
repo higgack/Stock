@@ -102,7 +102,8 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
 - nav: `market.html` = 홈(hub). 그룹1 자산(💼·가계부) / 그룹2 분석(NOAH·Screener·도메인·워치·
   레딧·DailyByte·SV·수출입) / 그룹3 부동산(청약). 새 대시보드 = 해당그룹 nav + 홈 nav.
 - 비용합산: 메인 cost = nav 비용surface 합산(분석/Screener/DailyByte/청약/부동산/블로그/trade수출입).
-  새 비용surface = `_compute_stats` + `cmd_usage` 동시갱신.
+  새 비용surface = `_compute_stats` + `cmd_usage` 동시갱신. 비용카드 표기 = 오늘/이번달/누적
+  3창(KST) 전 대시보드 통일(사용자 2026-07-05).
 - 외부 third-party 사이트는 `/sites`(`_SITES_TEXT`)만, 이모지 없는 plain text. 메인 nav 추가 금지.
 
 ## Automation-first

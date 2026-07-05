@@ -37,6 +37,10 @@ log = logging.getLogger(__name__)
 
 USAGE_LOG = Path.home() / ".tradingagents" / "usage.jsonl"
 ROTATION_DAYS = 30
+# 로테이션으로 파일에서 빠지는 llm_call 비용을 영구 적산하는 롤업 —
+# '누적(전체)' 비용 표기(대시보드·/usage)가 30일 로테이션에도 참이 되게
+# (사용자 2026-07-05 '비용카드는 오늘/이번달/누적'). 누적 = 롤업 + 현재 파일.
+ROLLUP_PATH = USAGE_LOG.with_name("usage_rollup.json")
 
 # Gemini 2.5 public pricing — USD per 1,000,000 tokens.
 # Source: https://ai.google.dev/gemini-api/docs/pricing  (≤200K input tier).
@@ -301,6 +305,7 @@ def load_records(window_days: int = ROTATION_DAYS) -> list[dict]:
     keep_in_file: list[str] = []
     in_window: list[dict] = []
     rotated = 0
+    rotated_cost_usd = 0.0
     try:
         with open(USAGE_LOG, encoding="utf-8") as f:
             for raw in f:
@@ -318,6 +323,8 @@ def load_records(window_days: int = ROTATION_DAYS) -> list[dict]:
                         in_window.append(rec)
                 else:
                     rotated += 1
+                    if rec.get("type") == "llm_call":
+                        rotated_cost_usd += rec.get("cost_usd", 0) or 0
     except Exception as exc:
         log.warning("usage_tracker: read failed: %s", exc)
         return []
@@ -333,7 +340,35 @@ def load_records(window_days: int = ROTATION_DAYS) -> list[dict]:
                     for line in keep_in_file:
                         f.write(line + "\n")
                 os.replace(tmp, USAGE_LOG)
+                # 롤업 적산은 replace 성공 후 같은 lock 안. 순서 근거:
+                # replace 실패 → 레코드 잔존, 다음 로테이션 재시도(이중적산 없음).
+                # 롤업쓰기 실패(희귀) → 그 회차 비용만 1회 미적산(과대계상 없음).
+                if rotated_cost_usd > 0:
+                    _add_rollup_cost_usd(rotated_cost_usd)
         except Exception as exc:
             log.warning("usage_tracker: rotation failed: %s", exc)
 
     return in_window
+
+
+def rollup_cost_usd() -> float:
+    """로테이션으로 usage.jsonl 에서 빠진 과거 llm_call 비용 총액(USD).
+    '누적(전체)' = rollup_cost_usd() + 현재 파일 합. graceful(0.0)."""
+    try:
+        with open(ROLLUP_PATH, encoding="utf-8") as f:
+            return float((json.load(f) or {}).get("cost_usd", 0.0) or 0.0)
+    except FileNotFoundError:
+        return 0.0
+    except Exception as exc:
+        log.warning("usage_tracker: rollup read failed: %s", exc)
+        return 0.0
+
+
+def _add_rollup_cost_usd(delta: float) -> None:
+    """롤업 파일에 delta 적산(원자적 replace). 호출부가 _write_lock 보유."""
+    total = rollup_cost_usd() + delta
+    tmp = ROLLUP_PATH.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"cost_usd": round(total, 6),
+                   "note": "usage.jsonl 30일 로테이션으로 빠진 비용 적산분"}, f)
+    os.replace(tmp, ROLLUP_PATH)

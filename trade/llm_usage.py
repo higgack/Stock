@@ -81,7 +81,10 @@ def _read() -> list[dict]:
 
 def summary(now: float | None = None, *, kinds=None, exclude_kinds=None,
             exclude_kg: bool = False) -> dict:
-    """today / 7d / 30d 집계 (calls·tokens·cost_usd·cost_krw) + total_calls.
+    """today / 7d / 30d + today_kst / month / total 집계 (calls·tokens·
+    cost_usd·cost_krw) + total_calls. today=롤링 24h(기존 소비자 보존),
+    today_kst/month=KST 달력일·달력월(대시보드 비용카드 3창 표기 —
+    오늘/이번 달/누적, 사용자 2026-07-05), total=전체 누적.
     kinds=세트 → 그 kind 만, exclude_kinds=세트 → 그 kind 제외(대시보드별 분리 집계).
     exclude_kg=True → 모든 kg_* 제외(is_kg, startswith — 미래 kg 종류도 자동 제외해
     수출입 대시보드에 kg 가 새지 않게). 메인/카드의 startswith 분류와 정합."""
@@ -108,10 +111,21 @@ def summary(now: float | None = None, *, kinds=None, exclude_kinds=None,
             "cost_krw": int(round(cost * KRW_PER_USD)),
         }
 
+    # KST 달력 경계 (모든 시각 KST 명시계산 — 서버 로컬타임 의존 금지)
+    import datetime as _dt
+    _kst = _dt.timezone(_dt.timedelta(hours=9))
+    _now_kst = _dt.datetime.fromtimestamp(now, _kst)
+    _day_start = _dt.datetime(_now_kst.year, _now_kst.month, _now_kst.day,
+                              tzinfo=_kst).timestamp()
+    _month_start = _dt.datetime(_now_kst.year, _now_kst.month, 1,
+                                tzinfo=_kst).timestamp()
     return {
         "today": agg(now - day),
         "d7": agg(now - 7 * day),
         "d30": agg(now - 30 * day),
+        "today_kst": agg(_day_start),
+        "month": agg(_month_start),
+        "total": agg(0),
         "total_calls": len(recs),
     }
 
