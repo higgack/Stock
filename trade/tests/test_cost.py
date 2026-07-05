@@ -147,6 +147,25 @@ class TestFormatters(unittest.TestCase):
         self.assertIn("LLM 30일 45원", line)
         self.assertNotIn("\n", line)
 
+    def test_dashboard_line_three_windows_when_available(self):
+        # summary 가 month/total 을 주면 오늘/이번달/누적 3창 표기
+        # (사용자 2026-07-05, 전 대시보드 비용카드 통일).
+        snap = self._snap()
+        base = {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
+                "in_tok": 0, "out_tok": 0}
+        snap["llm"] = {
+            "today": dict(base), "d7": dict(base), "d30": dict(base),
+            "today_kst": dict(base),
+            "month": dict(base, cost_krw=90),
+            "total": dict(base, cost_krw=300, calls=5),
+            "total_calls": 5,
+        }
+        line = cost.format_dashboard_line(snap)
+        self.assertIn("LLM 오늘 45원", line)
+        self.assertIn("이번달 90원", line)
+        self.assertIn("누적 300원", line)
+        self.assertNotIn("\n", line)
+
 
 if __name__ == "__main__":
     unittest.main()

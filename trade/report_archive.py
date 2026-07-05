@@ -167,10 +167,19 @@ def send_to_channel(file: str) -> dict:
 def regenerate(out_path: Path | None = None) -> Path:
     """jsonl → 날짜 그룹 색인 HTML. 빈 상태도 안전."""
     runs = load_runs()
+    # 비용 3창(오늘/이번 달/누적, KST) — 전 대시보드 비용카드 표기 통일
+    # (사용자 2026-07-05). run 의 _date(YYYY-MM-DD, KST 기록) 기준.
     total_cost = sum(float(r.get("cost_krw") or 0) for r in runs)
+    _today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+    today_cost = sum(float(r.get("cost_krw") or 0) for r in runs
+                     if r.get("_date") == _today)
+    month_cost = sum(float(r.get("cost_krw") or 0) for r in runs
+                     if (r.get("_date") or "").startswith(_today[:7]))
     stats = [Stat(value=str(len(runs)), label="AI 보고서")]
     if total_cost:
-        stats.append(Stat(value=f"₩{total_cost:,.0f}", label="누적 비용"))
+        stats.append(Stat(
+            value=f"₩{today_cost:,.0f} / ₩{month_cost:,.0f} / ₩{total_cost:,.0f}",
+            label="비용 (오늘/이번 달/누적)"))
     html = render_archive_page(
         runs=runs,
         title="🤖 AI 보고서 아카이브",
