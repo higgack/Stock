@@ -13080,3 +13080,31 @@ class TestGovCommand20260704:
         monkeypatch.setattr(g, "resolve_kr_target", lambda q: (None, q, []))
         out = g.build_gov_brief("가" * 200 + " 거버넌스")
         assert "가" * 61 not in out and "…" in out             # 질의 절단
+
+
+class TestAdminIssueSignificance20260705:
+    """🔥 규칙 7b — 관리종목(지정우려/지정/해제) 중요 승격 (사용자 2026-07-05
+    수성웹툰 지정우려 사례 — 상폐 전단계 경고, 확인 필수). 렌더타임 판정이라
+    과거 아카이브 소급(별도 백필 불요)."""
+
+    def test_admin_issue_fires(self):
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "기타시장안내(관리종목지정우려종목)",
+                             "category": "리스크", "detail": []}) == "관리종목 관련"
+        assert significance({"report_nm": "관리종목지정해제",
+                             "category": "리스크", "detail": []}) == "관리종목 관련"
+        assert significance({"report_nm": "기타시장안내", "category": "리스크",
+                             "detail": ["제목: 관리종목 지정우려 안내"]}) == "관리종목 관련"
+
+    def test_admin_issue_guards(self):
+        from bot.dart_feed import significance
+        # 상장폐지 동반 = 더 심각한 라벨 선점
+        assert significance({"report_nm": "관리종목지정 및 상장폐지 우려",
+                             "category": "리스크", "detail": []}) == "상장폐지 관련"
+        assert significance({"report_nm": "[기재정정]관리종목지정",
+                             "category": "리스크", "detail": []}) is None
+        # 화이트리스트 외 자유 서술 라인은 미발화
+        assert significance({"report_nm": "기타시장안내", "category": "리스크",
+                             "detail": ["비고: 관리종목 아님"]}) is None
+        # 🔥범례 동시 갱신 계약
+        assert "·관리종목·" in open("bot/dashboard.py", encoding="utf-8").read()

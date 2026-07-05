@@ -13013,7 +13013,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         _lg = []
         if _sig_total:
             _lg.append('<span class="df-badge df-badge-sig">🔥 중요</span> '
-                       '금색 — 손익(매출+20%/영업익+30%)·계약 매출10%·시설 자기자본15%·소각/자사주 발행주식3%·유상증자 시총5%·신규 5% 대량보유·배당 시가배당률3%·상장폐지·활동주의(경영참가 목적 보유·주주제안·주총 소집허가)')
+                       '금색 — 손익(매출+20%/영업익+30%)·계약 매출10%·시설 자기자본15%·소각/자사주 발행주식3%·유상증자 시총5%·신규 5% 대량보유·배당 시가배당률3%·상장폐지·관리종목·활동주의(경영참가 목적 보유·주주제안·주총 소집허가)')
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
                        '파란 점선 — 우리 파서 갭(제목·원문 공유 시 파서 추가)')
