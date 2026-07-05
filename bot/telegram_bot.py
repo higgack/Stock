@@ -3648,7 +3648,7 @@ def _static_command_registry() -> dict:
         "realestate_cost": (cmd_realestate_cost, "부동산 Byte 비용 (실거래 브리프)"),
         "screener_list": (cmd_screener_list, "Screener 도메인 목록 (전체)"),
         "sites": (cmd_sites, "참고 사이트"),
-        "blog": (cmd_blog, "감시 블로그 목록 (변화하는기업·필승·의교창·천상천하·메르·작은투자자)"),
+        "blog": (cmd_blog, "감시 블로그 목록 (네이버 자동 수집 — 현재 8곳)"),
         "valuechain": (cmd_valuechain, "밸류체인 조회/스크리너 (/valuechain 회사·품목·업종 — 공급사·고객·수출품목·동종사)"),
         "watch": (cmd_watch, "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
         "watchlist": (cmd_watchlist, "감시 목록 보기"),
