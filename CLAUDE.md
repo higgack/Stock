@@ -50,6 +50,9 @@
     PR 만들면 그 커밋이 PR/merge 에서 빠지고 reset --hard 로 영구 유실 → "반영했다" 보고가 거짓.
     flush 순서 = ① commit ② **push** ③ `git log origin/<dev> -1` 로 원격 반영 확인 ④ PR ⑤ merge
     ⑥ merge 후 `grep` 로 base 에 변경 실재 확인(merge=배포 검증, 실수 #1 연장).
+16. 검증 스크립트는 커밋과 한 체인(2026-07-06 재발): heredoc 스모크 뒤 별개 라인의
+    git commit 은 스모크 실패에도 실행됨 — `&&` 로 묶거나 스모크 먼저 단독 실행 후 커밋.
+    assert 도 오작성 주의(URL+라벨 substring 이중카운트류) — 실패 시 원인부터.
    (새 실수 = 날짜 + 한 줄 추가 의무.)
 
 ## ⛔ UNIVERSAL CHANGES ONLY (가장 중요)
