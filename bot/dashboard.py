@@ -12629,7 +12629,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
             trs.append(
                 f'<tr><td class="mc-rank">{r.get("rank", "")}</td>'
                 f'{name_cell}'
-                f'<td class="mc-r"><b>{_html.escape(str(r.get("metric", "")))}</b></td>'
+                f'<td class="mc-r"><b>{_html.escape(str(r.get("metric") or "—"))}</b></td>'
                 f'<td class="mc-r">{_html.escape(str(r.get("price") or "—"))}</td>'
                 f'{_chg_td(r.get("chg_pct"), r.get("chg_dir")) if has_chg else ""}'
                 f'{spark_td}'

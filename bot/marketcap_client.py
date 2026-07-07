@@ -111,23 +111,24 @@ def _parse_rank_rows(html: str) -> list[dict]:
         code_m = re.search(r'class="company-code"[^>]*>([^<]+)<', tr)
         _nm = name_m.group(1).strip()
         _cd = code_m.group(1).strip() if code_m else ""
-        # 이미지: 첫 img = 회사 로고, 'spark'/'chart' 포함 src = 30일 차트.
-        imgs = re.findall(r'<img[^>]+src="([^"]+)"', tr)
-        logo = _abs_url(imgs[0]) if imgs else ""
-        spark = ""
-        for src in imgs[1:]:
-            if re.search(r"spark|chart|graph|30", src, re.I):
+        # 이미지 분류는 src 내용으로만(위치 추정 금지 — 2026-07-08 실화면서
+        # 즐겨찾기 ★ 아이콘이 첫 img 라 로고 자리에 별이 찍힘): 로고 = 'logo'
+        # 포함 src, 30일 차트 = 'spark'/'chart' 포함 src. 그 외(별/국기 등) 무시.
+        imgs = re.findall(r'<img[^>]+(?:src|data-src)="([^"]+)"', tr)
+        logo = spark = ""
+        for src in imgs:
+            low = src.lower()
+            if not logo and "logo" in low:
+                logo = _abs_url(src)
+            elif not spark and re.search(r"spark|chart", low):
                 spark = _abs_url(src)
-                break
-        if not spark and len(imgs) >= 2:
-            # 로고 외 이미지 중 국기/로고류 아닌 것 채택(차트 URL 네이밍이
-            # 달라도 잡히게 — flag/country/logo/favicon 제외)
-            for src in imgs[1:]:
-                if not re.search(r"flag|country|logo|favicon", src, re.I):
-                    spark = _abs_url(src)
         tds = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
+        import html as _h
         txt = [re.sub(r"<[^>]+>", " ", t) for t in tds]
-        txt = [re.sub(r"\s+", " ", t).strip() for t in txt]
+        # HTML 엔티티/NBSP 정규화 — 원본 시총 셀 '$4.792&nbsp;T' 가 매칭 안
+        # 되면서 주가가 시총 컬럼으로 밀리던 실버그(2026-07-08 실화면).
+        txt = [re.sub(r"\s+", " ", _h.unescape(t).replace(" ", " ")).strip()
+               for t in txt]
         vals: list[str] = []          # 메트릭·주가류(원문) — 등장 순서 유지
         chg_pct = None
         chg_dir = 0
@@ -153,11 +154,16 @@ def _parse_rank_rows(html: str) -> list[dict]:
                 country_cands.append(t)
         if not vals:                   # 메트릭 없는 행(헤더 등) skip
             continue
+        metric, price = vals[0], (vals[1] if len(vals) >= 2 else "")
+        # 값이 1개뿐이고 단위(T/B/M) 없는 $금액이면 십중팔구 '주가만 잡힌'
+        # 행 — 시총 컬럼에 주가를 넣지 말고 주가 슬롯으로(재발 방지 가드).
+        if not price and re.match(r"^-?\$[\d.,]+$", metric):
+            metric, price = "", metric
         rows.append({
             "rank": len(rows) + 1,
             "name": _nm, "ticker": _cd, "logo": logo,
-            "metric": vals[0],
-            "price": vals[1] if len(vals) >= 2 else "",
+            "metric": metric,
+            "price": price,
             "chg_pct": chg_pct, "chg_dir": chg_dir,
             "spark": spark,
             "country": country_cands[-1] if country_cands else "",

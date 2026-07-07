@@ -13275,19 +13275,27 @@ class TestCreditSplitAndMarketcap20260706:
         dep2 = {k: v for k, v in dep.items() if "kosp" not in k and "kosd" not in k}
         ch2 = d._render_deposit_charts(dep2)
         assert "코스피 신용잔고" not in ch2 and "repeat(3,1fr)" in ch2
+        # deposit.json 스키마 버전 게이트 — 장외 무기한 fresh 캐시가 새 필드
+        # 반영을 다음 장까지 막던 것(2026-07-08). 구버전 캐시 = miss.
+        import bot.naver_sector_client as nsc
+        assert nsc._DEPOSIT_SCHEMA_V >= 2
+        src_n = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        assert 'c.get("_v") == _DEPOSIT_SCHEMA_V' in src_n
+        assert 'out["_v"] = _DEPOSIT_SCHEMA_V' in src_n
 
     def test_marketcap_parsers_and_page(self):
         # 2026-07-08 원본양식 이식: HTML 파서 = 로고·메트릭 원문·Price·Today·
         # 30일 차트·국가, 임베드 6축 탭 + 외부 9필. CSV 는 marketcap 축 폴백만.
         import bot.marketcap_client as mc
         import bot.dashboard as d
-        ROW = ('<tr><td>1</td>'
+        # 실화면 재현(2026-07-08): 즐겨찾기 ★ img + &nbsp; 시총 + 로고 + 국기
+        ROW = ('<tr><td><img src="/img/star-empty.svg"></td><td>1</td>'
                '<td><img src="/img/company-logos/64/NVDA.webp">'
                '<div class="company-name">NVIDIA</div>'
                '<div class="company-code">NVDA</div></td>'
-               '<td>$4.792 T</td><td>$197.85</td>'
+               '<td>$4.792&nbsp;T</td><td>$197.85</td>'
                '<td class="rate-up"> 1.18%</td>'
-               '<td><img src="/sparklines/NVDA.svg"></td>'
+               '<td><img data-src="/sparklines/NVDA.svg"></td>'
                '<td><img src="/img/flags/us.svg"> USA</td></tr>')
         rows = mc._parse_rank_rows(ROW + ROW.replace("NVIDIA", "Microsoft")
                                    .replace("NVDA", "MSFT")
@@ -13296,8 +13304,17 @@ class TestCreditSplitAndMarketcap20260706:
         assert len(rows) == 2
         assert rows[0]["metric"] == "$4.792 T" and rows[0]["price"] == "$197.85"
         assert rows[0]["chg_pct"] == 1.18 and rows[1]["chg_pct"] == -1.60
-        assert rows[0]["logo"].startswith("https://") and rows[0]["spark"].endswith(".svg")
+        assert rows[0]["metric"] == "$4.792 T"      # &nbsp; 정규화(주가 밀림 버그)
+        assert "star" not in rows[0]["logo"]        # ★ 아이콘 ≠ 로고
+        assert rows[0]["logo"].endswith("NVDA.webp")
+        assert rows[0]["spark"].endswith(".svg")    # data-src 수집
         assert rows[0]["country"] == "USA"          # 회사명/티커/국기 누수 금지
+        # 시총 셀 미매칭 행: 주가를 시총 컬럼에 넣지 않음(단일값 가드)
+        solo = mc._parse_rank_rows(
+            '<tr><td>9</td><td><div class="company-name">Saudi Aramco</div>'
+            '<div class="company-code">2222.SR</div></td>'
+            '<td>SAR&nbsp;26.16</td><td>$6.97</td><td>0.00%</td></tr>')
+        assert solo[0]["metric"] == "" and solo[0]["price"] == "$6.97"
         # P/E 형 메트릭(소수 숫자)도 원문 유지, 순수 정수(rank 등)는 미채택
         pe = mc._parse_rank_rows(
             '<tr><td>1</td><td><div class="company-name">FooCo</div>'

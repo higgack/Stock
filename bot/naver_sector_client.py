@@ -314,6 +314,9 @@ def _first_big(cells: list) -> Optional[float]:
 # 신용잔고 현실 범위(억원) — 잘못된 컬럼 매칭 값 차단 가드
 _CRED_MIN, _CRED_MAX = 150000.0, 800000.0
 
+# deposit.json 산출 스키마 버전 — 필드 추가/변경 시 +1 (구버전 캐시 1회 무효화)
+_DEPOSIT_SCHEMA_V = 2   # 2 = 코스피/코스닥 신용 분리 (2026-07-08)
+
 
 def _fsc_date(d: str) -> str:
     return f"{d[:4]}.{d[4:6]}.{d[6:8]}" if d and len(d) >= 8 else (d or "")
@@ -376,7 +379,10 @@ def fetch_deposit() -> dict:
     1차 FSC(금융투자협회 공식 API — 둘 다 견고·일별 시계열), 실패 시 Naver
     sise_deposit 폴백(고객예탁금만 견고, 신용은 컬럼 가드)."""
     c = _cached("deposit.json")
-    if c is not None:
+    # 스키마 버전 게이트(2026-07-08): 세션-인지 캐시는 장 밖에서 무기한
+    # fresh 라 새 필드(코스피/코스닥 신용 분리)가 다음 장까지 안 나타남 —
+    # 구버전 산출본이면 miss 취급해 1회 재생성(재생성분엔 _v 기록).
+    if c is not None and c.get("_v") == _DEPOSIT_SCHEMA_V:
         return c
     out = _fetch_deposit_fsc()
     if not out or out.get("deposit") is None:
@@ -394,6 +400,8 @@ def fetch_deposit() -> dict:
             out.setdefault("source", "금융투자협회")
     except Exception as exc:
         log.warning("equity fund merge failed: %s", exc)
+    if isinstance(out, dict) and out:
+        out["_v"] = _DEPOSIT_SCHEMA_V
     _cache_write("deposit.json", out)
     return out
 
