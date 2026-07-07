@@ -502,10 +502,12 @@ def credit_series_eok(n: int = 130) -> list[tuple[str, float]]:
 # 불가라 정확명 후보 + 휴리스틱 런타임 발견(2026-07-06). 발견 결과는 INFO 로그
 # (VM journal 로 실제 키 확인 → 확정 시 후보 목록에 고정 추가).
 _CREDIT_SPLIT_EXACT = {
-    "kospi": ("crdTrFingScrt", "scrtMrktCrdTrFing", "crdTrFingYs",
+    # 확정 필드명(2026-07-08 VM 실측 — 응답 keys: crdTrFingScrs/Kosdaq/Whl,
+    # crdTrLndr*(대주), dpsgScrtMogFing(예탁증권담보), sbscCapLn(청약자금)):
+    # 유가증권(코스피) = crdTrFingScrs ('Scrs' 축약 — Scrt 아님 주의).
+    "kospi": ("crdTrFingScrs", "crdTrFingScrt", "scrtMrktCrdTrFing",
               "stexMrktCrdTrFing", "crdTrFingStex"),
-    "kosdaq": ("crdTrFingKosdaq", "ksdqMrktCrdTrFing", "crdTrFingKsdq",
-               "crdTrFingKq"),
+    "kosdaq": ("crdTrFingKosdaq", "ksdqMrktCrdTrFing", "crdTrFingKsdq"),
 }
 
 
@@ -522,7 +524,7 @@ def _classify_credit_key(key: str) -> str | None:
         return None
     if any(t in lk for t in ("kosdaq", "ksdq")):
         return "kosdaq"
-    if any(t in lk for t in ("scrt", "stex", "kospi")):
+    if any(t in lk for t in ("scrs", "scrt", "stex", "kospi")):
         return "kospi"
     return None
 
@@ -539,7 +541,10 @@ def credit_split_series_eok(n: int = 130) -> dict:
         return {m: [tuple(x) for x in ser] for m, ser in c.items()}
     raw = _fetch(_KOFIA_BASE, _OP_CREDIT, {"numOfRows": n})
     if not raw:
-        return {}                        # 일시 실패 — 미캐시(다음 호출 재시도)
+        # 빈 응답도 로그(키 미설정/일시 실패 — silent 경로 금지, 2026-07-08
+        # '로그 0줄' 진단 혼선 재발 방지). 미캐시 — 다음 호출 재시도.
+        log.info("kofia credit split: 빈 응답(키 미설정/일시 실패) — skip")
+        return {}
     # 키 발견은 앞쪽 여러 행 union — 최신 행이 장중 일부 필드만 채워 오는
     # 케이스에서 시장 필드를 놓치지 않게(리뷰 2026-07-06).
     keys: list = []

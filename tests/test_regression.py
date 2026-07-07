@@ -13222,15 +13222,25 @@ class TestCreditSplitAndMarketcap20260706:
         assert fc._classify_credit_key("crdTrFingScrtRto") is None
         assert fc._classify_credit_key("crdTrFingDys") is None
         assert fc._classify_credit_key("crdTrFingAnlys") is None
+        # 2026-07-08 VM 실측 필드명 고정: 유가증권='Scrs' 축약 + 대주/담보 제외
+        assert fc._classify_credit_key("crdTrFingScrs") == "kospi"
+        assert "crdTrFingScrs" in fc._CREDIT_SPLIT_EXACT["kospi"]
+        assert fc._classify_credit_key("crdTrLndrScrs") is None    # 대주
+        assert fc._classify_credit_key("dpsgScrtMogFing") is None  # 예탁담보
 
     def test_credit_split_series(self, monkeypatch):
         import bot.fsc_client as fc
+        # 실측 응답 미러(2026-07-08): Scrs/Kosdaq + 대주(Lndr)·담보 필드 동거
         fake = [{"basDt": "20260701", "crdTrFingWhl": "370000000000000",
-                 "crdTrFingScrtMrkt": "290000000000000",
-                 "crdTrFingKsdqMrkt": "80000000000000"},
+                 "crdTrFingScrs": "290000000000000",
+                 "crdTrFingKosdaq": "80000000000000",
+                 "crdTrLndrWhl": "90000000000",
+                 "dpsgScrtMogFing": "24000000000000"},
                 {"basDt": "20260702", "crdTrFingWhl": "371000000000000",
-                 "crdTrFingScrtMrkt": "291000000000000",
-                 "crdTrFingKsdqMrkt": "80000000000000"}]
+                 "crdTrFingScrs": "291000000000000",
+                 "crdTrFingKosdaq": "80000000000000",
+                 "crdTrLndrWhl": "90000000000",
+                 "dpsgScrtMogFing": "24000000000000"}]
         monkeypatch.setattr(fc, "_fetch", lambda base, op, params: fake)
         monkeypatch.setattr(fc, "_cache_get", lambda *a, **k: None)
         monkeypatch.setattr(fc, "_cache_put", lambda *a, **k: None)
