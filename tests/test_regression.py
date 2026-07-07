@@ -13222,15 +13222,25 @@ class TestCreditSplitAndMarketcap20260706:
         assert fc._classify_credit_key("crdTrFingScrtRto") is None
         assert fc._classify_credit_key("crdTrFingDys") is None
         assert fc._classify_credit_key("crdTrFingAnlys") is None
+        # 2026-07-08 VM 실측 필드명 고정: 유가증권='Scrs' 축약 + 대주/담보 제외
+        assert fc._classify_credit_key("crdTrFingScrs") == "kospi"
+        assert "crdTrFingScrs" in fc._CREDIT_SPLIT_EXACT["kospi"]
+        assert fc._classify_credit_key("crdTrLndrScrs") is None    # 대주
+        assert fc._classify_credit_key("dpsgScrtMogFing") is None  # 예탁담보
 
     def test_credit_split_series(self, monkeypatch):
         import bot.fsc_client as fc
+        # 실측 응답 미러(2026-07-08): Scrs/Kosdaq + 대주(Lndr)·담보 필드 동거
         fake = [{"basDt": "20260701", "crdTrFingWhl": "370000000000000",
-                 "crdTrFingScrtMrkt": "290000000000000",
-                 "crdTrFingKsdqMrkt": "80000000000000"},
+                 "crdTrFingScrs": "290000000000000",
+                 "crdTrFingKosdaq": "80000000000000",
+                 "crdTrLndrWhl": "90000000000",
+                 "dpsgScrtMogFing": "24000000000000"},
                 {"basDt": "20260702", "crdTrFingWhl": "371000000000000",
-                 "crdTrFingScrtMrkt": "291000000000000",
-                 "crdTrFingKsdqMrkt": "80000000000000"}]
+                 "crdTrFingScrs": "291000000000000",
+                 "crdTrFingKosdaq": "80000000000000",
+                 "crdTrLndrWhl": "90000000000",
+                 "dpsgScrtMogFing": "24000000000000"}]
         monkeypatch.setattr(fc, "_fetch", lambda base, op, params: fake)
         monkeypatch.setattr(fc, "_cache_get", lambda *a, **k: None)
         monkeypatch.setattr(fc, "_cache_put", lambda *a, **k: None)
@@ -13267,42 +13277,49 @@ class TestCreditSplitAndMarketcap20260706:
         assert "코스피 신용잔고" not in ch2 and "repeat(3,1fr)" in ch2
 
     def test_marketcap_parsers_and_page(self):
+        # 2026-07-08 원본양식 이식: HTML 파서 = 로고·메트릭 원문·Price·Today·
+        # 30일 차트·국가, 임베드 6축 탭 + 외부 9필. CSV 는 marketcap 축 폴백만.
         import bot.marketcap_client as mc
         import bot.dashboard as d
-        assert mc._URL == "https://companiesmarketcap.com/"   # 글로벌(사이트 자체)
-        rows = mc._parse_csv("Rank,Name,Symbol,marketcap,price (USD),country\n"
-                             "1,NVIDIA,NVDA,4750000000000,195.55,United States\n")
-        assert rows and rows[0]["mcap_usd"] == 4.75e12
-        hr = mc._parse_html(
-            '<tr><td>1</td><td><div class="company-name">NVIDIA</div>'
-            '<div class="company-code">NVDA</div></td><td>$4.75 T</td>'
-            '<td>$195.55</td><td>1.2%</td><td>United States</td></tr>')
-        assert hr and hr[0]["chg_pct"] == 1.2
-        page = d._render_marketcap_page(
-            {"rows": rows, "fetched_at": "2026-07-06 12:00", "stale": False})
-        assert "Market cap" in page and "$4.75T" in page
-        # 문서 닫힘 — _inject_update_banner 가 </body> 요구(없으면 배너 무주입,
-        # 리뷰 2026-07-06). '오늘' 컬럼은 등락 데이터 실재 시만(CSV 경로 없음).
+        ROW = ('<tr><td>1</td>'
+               '<td><img src="/img/company-logos/64/NVDA.webp">'
+               '<div class="company-name">NVIDIA</div>'
+               '<div class="company-code">NVDA</div></td>'
+               '<td>$4.792 T</td><td>$197.85</td>'
+               '<td class="rate-up"> 1.18%</td>'
+               '<td><img src="/sparklines/NVDA.svg"></td>'
+               '<td><img src="/img/flags/us.svg"> USA</td></tr>')
+        rows = mc._parse_rank_rows(ROW + ROW.replace("NVIDIA", "Microsoft")
+                                   .replace("NVDA", "MSFT")
+                                   .replace('class="rate-up"> 1.18%',
+                                            'class="rate-down">-1.60%'))
+        assert len(rows) == 2
+        assert rows[0]["metric"] == "$4.792 T" and rows[0]["price"] == "$197.85"
+        assert rows[0]["chg_pct"] == 1.18 and rows[1]["chg_pct"] == -1.60
+        assert rows[0]["logo"].startswith("https://") and rows[0]["spark"].endswith(".svg")
+        assert rows[0]["country"] == "USA"          # 회사명/티커/국기 누수 금지
+        # P/E 형 메트릭(소수 숫자)도 원문 유지, 순수 정수(rank 등)는 미채택
+        pe = mc._parse_rank_rows(
+            '<tr><td>1</td><td><div class="company-name">FooCo</div>'
+            '<div class="company-code">FOO</div></td>'
+            '<td>12.34</td><td>$55.10</td></tr>')
+        assert pe and pe[0]["metric"] == "12.34" and pe[0]["price"] == "$55.10"
+        # CSV 폴백(marketcap 축 전용) — Today 없음
+        cf = mc._parse_csv_fallback(
+            "Rank,Name,Symbol,marketcap,price (USD),country\n"
+            "1,NVIDIA,NVDA,4750000000000,195.55,United States\n")
+        assert cf and cf[0]["metric"].startswith("$4.750") and cf[0]["chg_pct"] is None
+        # 렌더: 6축 탭 + 외부 9필 + 문서 닫힘(</body> — 갱신배너 주입 요건)
+        data = {k: {"rows": rows, "fetched_at": "2026-07-08 03:00", "stale": False}
+                for k, _, _, _ in mc.EMBED_AXES}
+        page = d._render_marketcap_page(data)
         assert page.rstrip().endswith("</body></html>")
-        assert ">오늘<" not in page                    # CSV rows → chg 전부 None
-        page_chg = d._render_marketcap_page(
-            {"rows": hr, "fetched_at": "2026-07-06 12:00", "stale": False})
-        assert ">오늘<" in page_chg                    # HTML 폴백 → chg 표시
-        # CSV 빈 주가 셀 = None(— 표기, $0.00 금지) + rank 'N/A' 행 tolerant
-        rows2 = mc._parse_csv("Rank,Name,Symbol,marketcap,price (USD),country\n"
-                              "N/A,Foo,FOO,1000000000,,Korea\n")
-        assert rows2 and rows2[0]["price_usd"] is None and rows2[0]["rank"] == 1
-        # HTML 국가열 — 회사명/티커 텍스트 누수 금지(마지막 후보 = 국가)
-        assert hr[0]["country"] == "United States"
-        # Rank by 15축 전부 (slug 웹검증 2026-07-06 — 추측 slug 금지 계약)
-        assert len(d._MARKETCAP_RANKBY) == 15
-        for lbl in ("Earnings", "Revenue", "Employees", "P/E ratio",
-                    "Dividend %", "MC gain", "MC loss", "Op. Margin",
-                    "Cost to borrow", "Total assets", "Net assets",
-                    "Total liabilities", "Total debt", "Cash on hand"):
-            assert lbl in page, lbl
-        assert "데이터 수집 실패" in d._render_marketcap_page(
-            {"rows": [], "fetched_at": "", "stale": True})
+        assert page.count('class="mc-tab"') == 6
+        assert page.count("mc-ext") >= 9 and "Employees ↗" in page
+        assert "Price (30 days)" in page and "mc-spark" in page
+        assert "▲1.18%" in page and "▼1.60%" in page
+        data["pe"] = {"rows": [], "fetched_at": "", "stale": True}
+        assert "데이터 수집 실패" in d._render_marketcap_page(data)
 
     def test_marketcap_wiring(self):
         # nav(홈 허브)·주기 태스크·help 등록 — 같은 commit 의무 계약
@@ -13316,3 +13333,8 @@ class TestCreditSplitAndMarketcap20260706:
         fb = open("bot/fred_boards.py", encoding="utf-8").read()
         assert 'href="marketcap.html">🏆 Market cap</a>' in fb
         assert 'href="ppi.html">🏭 PPI</a>' in db and "_MC_BASE" in db
+        # 임베드 6축(EMBED_AXES) + 외부 9필(_MARKETCAP_EXTERNAL) = 15축 유지
+        import bot.marketcap_client as mc
+        import bot.dashboard as d2
+        assert len(mc.EMBED_AXES) == 6 and len(d2._MARKETCAP_EXTERNAL) == 9
+        assert "fetch_all_axes" in db    # regen 이 6축 일괄 수집
