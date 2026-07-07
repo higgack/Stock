@@ -343,6 +343,23 @@ def _fetch_deposit_fsc() -> dict:
         if len(cser) >= 2:
             out["credit_chg"] = round(cser[-1][1] - cser[-2][1], 1)
         out["credit_series"] = [{"d": _fsc_date(d), "v": round(v, 1)} for d, v in cser]
+    # 시장별(코스피/코스닥) 신용잔고 — 같은 KOFIA 신용공여 응답의 시장 필드
+    # (사용자 2026-07-06 '왼쪽처럼 코스피·코스닥 신용잔고 추가'). 필드명
+    # 런타임 발견(fsc_client) — 미발견 시 키 자체가 없어 위젯 graceful 생략.
+    try:
+        split = fsc_client.credit_split_series_eok(130)
+    except Exception as exc:
+        log.warning("credit split fetch failed: %s", exc)
+        split = {}
+    for mkt, prefix in (("kospi", "credit_kospi"), ("kosdaq", "credit_kosdaq")):
+        ser = split.get(mkt) or []
+        if not ser:
+            continue
+        out[prefix] = round(ser[-1][1], 1)
+        if len(ser) >= 2:
+            out[f"{prefix}_chg"] = round(ser[-1][1] - ser[-2][1], 1)
+        out[f"{prefix}_series"] = [{"d": _fsc_date(d), "v": round(v, 1)}
+                                   for d, v in ser]
     if out:
         # 출처 정직화 (2026-06-10 사용자 review): 데이터는 FSC(금융투자협회
         # 종합통계)인데 위젯/차트 라벨이 'Naver' 하드코딩 — 06.05(FSC 최신)

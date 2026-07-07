@@ -498,6 +498,103 @@ def credit_series_eok(n: int = 130) -> list[tuple[str, float]]:
     return [(d, v / 1e8) for d, v in _kofia_series(_OP_CREDIT, "crdTrFingWhl", n)]
 
 
+# 시장별(코스피/코스닥) 신용거래융자 필드명 — data.go.kr 문서가 프록시로 확인
+# 불가라 정확명 후보 + 휴리스틱 런타임 발견(2026-07-06). 발견 결과는 INFO 로그
+# (VM journal 로 실제 키 확인 → 확정 시 후보 목록에 고정 추가).
+_CREDIT_SPLIT_EXACT = {
+    "kospi": ("crdTrFingScrt", "scrtMrktCrdTrFing", "crdTrFingYs",
+              "stexMrktCrdTrFing", "crdTrFingStex"),
+    "kosdaq": ("crdTrFingKosdaq", "ksdqMrktCrdTrFing", "crdTrFingKsdq",
+               "crdTrFingKq"),
+}
+
+
+def _classify_credit_key(key: str) -> str | None:
+    """crdTrFing* 계열 키 → 'kospi'/'kosdaq'/None. 전체(Whl)·대주(Loan) 제외 +
+    비잔고 파생필드(비율/일수/증감/건수 등) 제외(리뷰 2026-07-06 — 비율 필드가
+    kospi 로 오분류돼 '0억' 위젯이 실데이터처럼 보이는 것 차단)."""
+    lk = key.lower()
+    if "crdtrfing" not in lk or "whl" in lk:
+        return None
+    # ⚠️ 'rt' 단독 토큰 금지 — 'scrt' 내포로 코스피 필드까지 제외돼 버림.
+    if any(x in lk for x in ("rto", "rate", "ratio", "pct", "dys", "anlys",
+                             "cnt", "dff", "diff", "chg")):
+        return None
+    if any(t in lk for t in ("kosdaq", "ksdq")):
+        return "kosdaq"
+    if any(t in lk for t in ("scrt", "stex", "kospi")):
+        return "kospi"
+    return None
+
+
+def credit_split_series_eok(n: int = 130) -> dict:
+    """시장별 신용거래융자 시계열 {"kospi": [(basDt, 억원)], "kosdaq": [...]}.
+
+    응답 필드명 런타임 발견: 정확명 후보(_CREDIT_SPLIT_EXACT) 우선, 없으면
+    crdTrFing* 키 휴리스틱(_classify_credit_key). 발견/미발견 모두 INFO 로그
+    (silent-fail 금지). 미발견 시 {} — 위젯은 graceful 생략."""
+    ck = f"kofia_credit_split_{n}_{_now():%Y%m%d}"
+    c = _cache_get(ck, ttl=3 * 3600)
+    if c is not None:
+        return {m: [tuple(x) for x in ser] for m, ser in c.items()}
+    raw = _fetch(_KOFIA_BASE, _OP_CREDIT, {"numOfRows": n})
+    if not raw:
+        return {}                        # 일시 실패 — 미캐시(다음 호출 재시도)
+    # 키 발견은 앞쪽 여러 행 union — 최신 행이 장중 일부 필드만 채워 오는
+    # 케이스에서 시장 필드를 놓치지 않게(리뷰 2026-07-06).
+    keys: list = []
+    for it in raw[:10]:
+        for k in it.keys():
+            if k not in keys:
+                keys.append(k)
+    field: dict[str, str] = {}
+    for mkt, cands in _CREDIT_SPLIT_EXACT.items():
+        for cand in cands:
+            if cand in keys:
+                field[mkt] = cand
+                break
+    for k in keys:                       # 휴리스틱 보충(정확명 미적중 시장만)
+        mkt = _classify_credit_key(k)
+        if mkt and mkt not in field:
+            field[mkt] = k
+    log.info("kofia credit split: keys=%s → kospi=%s kosdaq=%s",
+             [k for k in keys if "crd" in k.lower()],
+             field.get("kospi"), field.get("kosdaq"))
+    out: dict = {}
+    for mkt, fk in field.items():
+        series = {}
+        for it in raw:
+            d = str(it.get("basDt") or "")
+            v = _f(it.get(fk))
+            if d and v is not None:
+                series[d] = v / 1e8      # 원 → 억원
+        ser = sorted(series.items())
+        if ser:
+            out[mkt] = ser
+    # 잔고 합리성 가드 — 오분류 필드(비율·증감 등)가 빠져나온 경우 차단:
+    # 각 시장 최신값은 전체(crdTrFingWhl) 미만 & 양수, 두 시장 합은 전체의
+    # ±25% 이내여야. 위반 시 WARNING + 전체 드롭(틀린 숫자 노출 금지).
+    whole = {d: v / 1e8 for d, v in
+             ((str(it.get("basDt") or ""), _f(it.get("crdTrFingWhl")))
+              for it in raw) if d and v is not None}
+    if out and whole:
+        w_latest = whole[max(whole)]
+        latest = {m: s[-1][1] for m, s in out.items()}
+        bad = [m for m, v in latest.items() if not (0 < v < w_latest)]
+        if not bad and len(latest) == 2:
+            tot = sum(latest.values())
+            if not (0.75 * w_latest <= tot <= 1.25 * w_latest):
+                bad = list(latest)
+        if bad:
+            log.warning("kofia credit split: 합리성 가드 위반 %s (latest=%s, "
+                        "whole=%.0f) — 드롭", bad, latest, w_latest)
+            out = {}
+    # 미발견(빈 결과)도 캐시 — 30초 위젯 regen 마다 재fetch 하는 쿼터 낭비
+    # 방지(리뷰 2026-07-06). 빈 dict 는 _cache_get 에서 None 과 구분됨.
+    _cache_put(ck, {m: list(map(list, s)) for m, s in out.items()})
+    return out
+
+
 def _fmt_jo(won) -> str:
     """원 → 조/억 한국어 단위 (LLM 에 raw 원 미노출, 환각 방지)."""
     if won is None:

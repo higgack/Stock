@@ -12555,6 +12555,139 @@ def _load_gics_check_runs() -> list[dict]:
     return runs
 
 
+# companiesmarketcap.com Rank by 축 — 사이트 해당 순위 페이지 다이렉트 링크
+# (사용자 2026-07-06 '사이트 자체를 이식, 다이렉트 연결 OK'). slug 전수
+# 웹검색 검증 2026-07-06 — 추측 slug 없음.
+_MC_BASE = "https://companiesmarketcap.com/"   # 도메인 1곳 관리(리뷰 2026-07-06)
+_MARKETCAP_RANKBY = (
+    ("Market Cap", ""),
+    ("Earnings", "most-profitable-companies/"),
+    ("Revenue", "largest-companies-by-revenue/"),
+    ("Employees", "largest-companies-by-number-of-employees/"),
+    ("P/E ratio", "top-companies-by-pe-ratio/"),
+    ("Dividend %", "top-companies-by-dividend-yield/"),
+    ("MC gain", "top-companies-by-market-cap-gain/"),
+    ("MC loss", "top-companies-by-market-cap-loss/"),
+    ("Op. Margin", "top-companies-by-operating-margin/"),
+    ("Cost to borrow", "companies-with-the-highest-cost-to-borrow/"),
+    ("Total assets", "top-companies-by-total-assets/"),
+    ("Net assets", "top-companies-by-net-assets/"),
+    ("Total liabilities", "companies-with-the-highest-liabilities/"),
+    ("Total debt", "companies-with-the-highest-debt/"),
+    ("Cash on hand", "companies-with-the-highest-cash-on-hand/"),
+)
+
+
+def _render_marketcap_page(data: dict) -> str:
+    """marketcap.html — companiesmarketcap.com 이식(사용자 2026-07-06 '사이트
+    자체를 카피, 제목 Market cap'). 표 = 글로벌 시총 Top(자체 렌더, 3h 갱신),
+    Rank by 필 = 사이트 해당 순위 다이렉트 링크(새 탭). 데이터는
+    bot.marketcap_client(3h 캐시)."""
+    import html as _html
+    rows = data.get("rows") or []
+    fetched = _html.escape(str(data.get("fetched_at") or "—"))
+    stale = data.get("stale")
+
+    def _mcap(v) -> str:
+        if not v:
+            return "—"
+        for unit, div in (("T", 1e12), ("B", 1e9), ("M", 1e6)):
+            if abs(v) >= div:
+                return f"${v / div:,.2f}{unit}"
+        return f"${v:,.0f}"
+
+    def _price(v) -> str:
+        return f"${v:,.2f}" if v is not None else "—"
+
+    def _chg(v) -> str:
+        if v is None:
+            return '<td class="mc-r" style="color:var(--muted)">—</td>'
+        cls = "up" if v > 0 else "dn" if v < 0 else "neu"
+        return f'<td class="mc-r {cls}">{"+" if v > 0 else ""}{v:.2f}%</td>'
+
+    # '오늘' 컬럼은 등락 데이터 실재 시만(CSV 경로엔 없음 — 전행 '—' 컬럼
+    # 방지, 리뷰 2026-07-06). HTML 폴백 성공 시 자동 표시.
+    has_chg = any(r.get("chg_pct") is not None for r in rows)
+    chg_th = '<th class="mc-r">오늘</th>' if has_chg else ""
+    trs = []
+    for r in rows:
+        trs.append(
+            f'<tr><td class="mc-rank">{r.get("rank", "")}</td>'
+            f'<td class="mc-name">{_html.escape(str(r.get("name", "")))}</td>'
+            f'<td class="mc-tk">{_html.escape(str(r.get("ticker", "")))}</td>'
+            f'<td class="mc-r">{_price(r.get("price_usd"))}</td>'
+            f'{_chg(r.get("chg_pct")) if has_chg else ""}'
+            f'<td class="mc-r"><b>{_mcap(r.get("mcap_usd"))}</b></td>'
+            f'<td>{_html.escape(str(r.get("country", "")))}</td></tr>')
+    body = ("".join(trs) if trs else
+            '<tr><td colspan="7" style="color:var(--muted);padding:24px">'
+            '데이터 수집 실패 — 다음 주기(3시간)에 자동 재시도합니다. '
+            'journal 의 bot.marketcap WARNING 참조.</td></tr>')
+    stale_badge = (' <span style="color:#f5a623">⚠️ 최신 수집 실패 — 마지막 '
+                   '성공분 표시</span>' if (stale and trs) else "")
+    rankby_pills = "".join(
+        f'<a class="mc-pill{" active" if lbl == "Market Cap" else ""}" '
+        f'href="{_MC_BASE}{slug}" target="_blank" rel="noopener">{lbl}</a>'
+        for lbl, slug in _MARKETCAP_RANKBY)
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 종목분석</a>
+    · <a href="ppi.html">🏭 PPI</a>
+    · <a href="liquidity.html">💧 유동성</a>
+  </div>
+  <h1>🏆 Market cap</h1>
+  <p class="sub">글로벌 시가총액 순위 · 출처
+    <a href="{_MC_BASE}" target="_blank" rel="noopener">companiesmarketcap.com</a>
+    · 기준 {fetched} KST · 3시간 갱신{stale_badge}</p>
+  <div class="mc-pills"><span class="mc-pills-l">Rank by</span>{rankby_pills}</div>
+  <p class="sub" style="margin:4px 0 12px;font-size:12px">필 클릭 = companiesmarketcap.com 해당 순위(새 탭) · 아래 표 = Market Cap 순위 이식</p>
+  <style>
+    .mc-pills{{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 4px}}
+    .mc-pills-l{{color:var(--muted);font-size:13px;margin-right:4px}}
+    .mc-pill{{padding:4px 12px;border-radius:16px;border:1px solid var(--border,#333);
+      color:var(--text,#1f2937);text-decoration:none;font-size:13px;white-space:nowrap}}
+    .mc-pill:hover{{border-color:var(--accent,#5e6ad2);color:var(--accent,#5e6ad2)}}
+    .mc-pill.active{{background:var(--accent,#5e6ad2);color:#fff;border-color:var(--accent,#5e6ad2)}}
+    .mc-table{{width:100%;border-collapse:collapse;font-size:14px}}
+    .mc-table th{{text-align:left;color:var(--muted);font-weight:600;
+      padding:8px 10px;border-bottom:2px solid var(--border,#333)}}
+    .mc-table td{{padding:9px 10px;border-bottom:1px solid var(--border,#333)}}
+    .mc-table th.mc-r,.mc-table td.mc-r{{text-align:right}}
+    .mc-rank{{color:var(--muted);width:36px}}
+    .mc-name{{font-weight:700}}
+    .mc-tk{{color:var(--muted);font-size:12px}}
+    .mc-table .up{{color:#26a69a}} .mc-table .dn{{color:#ef5350}}
+    .mc-table .neu{{color:var(--muted)}}
+    @media (max-width:640px){{.mc-table td,.mc-table th{{padding:7px 6px;font-size:13px}}}}
+  </style>
+  <div style="overflow-x:auto"><table class="mc-table">
+    <thead><tr><th>#</th><th>기업</th><th>티커</th><th class="mc-r">주가</th>
+      {chg_th}<th class="mc-r">시가총액</th><th>국가</th></tr></thead>
+    <tbody>{body}</tbody>
+  </table></div>
+</div>
+</body></html>
+""")
+    return "".join(parts)
+
+
+def regenerate_marketcap_page() -> None:
+    """marketcap_client → marketcap.html. graceful(실패 시 이전 파일 유지)."""
+    try:
+        from bot.marketcap_client import fetch_top_companies
+        data = fetch_top_companies(100)
+        html = _inject_update_banner(_render_marketcap_page(data))
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "marketcap.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: marketcap.html regenerated (%d rows, stale=%s)",
+                 len(data.get("rows") or []), data.get("stale"))
+    except Exception as exc:
+        log.warning("dashboard: marketcap regen failed: %s", exc)
+
+
 def _render_gics_candidates_page(runs: list[dict]) -> str:
     """Render gics_candidates.html — quarterly Pro check 결과 누적 surface.
     각 candidate 의 suggested_slug 가 registry 에 이미 있으면 '✅ 채택됨'
@@ -14294,6 +14427,13 @@ def _render_deposit_widget(dep: dict) -> str:
     if dep.get("credit") is not None:
         cv = (f'<div class="dp-item"><span class="dp-l">신용잔고</span>'
               f'<span class="dp-v">{_won(dep.get("credit"))}{_chg(dep.get("credit_chg"))}</span></div>')
+    # 코스피/코스닥 신용잔고 분리 (있을 때만 — 사용자 2026-07-06)
+    for _key, _lbl in (("credit_kospi", "코스피 신용"),
+                       ("credit_kosdaq", "코스닥 신용")):
+        if dep.get(_key) is not None:
+            cv += (f'<div class="dp-item"><span class="dp-l">{_lbl}</span>'
+                   f'<span class="dp-v">{_won(dep.get(_key))}'
+                   f'{_chg(dep.get(_key + "_chg"))}</span></div>')
     ev = ""        # 주식형펀드 (있을 때만 — graceful, 사용자 2026-06-14)
     if dep.get("equity_fund") is not None:
         ev = (f'<div class="dp-item"><span class="dp-l">주식형펀드</span>'
@@ -14326,8 +14466,20 @@ def _render_deposit_charts(dep: dict) -> str:
               "data": [p["v"] for p in cser], "axis": "L"}])
         cards.append(_chart_card("신용잔고 추이 (억원)",
                                  [("신용잔고", "#42a5f5")], svg, src_foot))
-    # 주식형펀드 자금동향 — 신용잔고 옆 3번째 차트 (사용자 2026-06-14). 데이터
-    # (equity_fund_series) 있을 때만 → graceful 2-col 회귀. 출처는 같은 KOFIA.
+    # 코스피/코스닥 신용잔고 분리 차트 (사용자 2026-07-06 — 시장별 레버리지
+    # 추이. KOFIA 신용공여 시장 필드, 있을 때만 graceful).
+    for _key, _lbl, _col in (("credit_kospi_series", "코스피 신용잔고", "#66bb6a"),
+                             ("credit_kosdaq_series", "코스닥 신용잔고", "#7e57c2")):
+        _ser = dep.get(_key, [])
+        if len(_ser) >= 2:
+            svg = _svg_line_chart(
+                [p["d"] for p in _ser],
+                [{"name": _lbl, "color": _col,
+                  "data": [p["v"] for p in _ser], "axis": "L"}])
+            cards.append(_chart_card(f"{_lbl} 추이 (억원)",
+                                     [(_lbl, _col)], svg, src_foot))
+    # 주식형펀드 자금동향 — 신용잔고 옆 차트 (사용자 2026-06-14). 데이터
+    # (equity_fund_series) 있을 때만 → graceful 회귀. 출처는 같은 KOFIA.
     eser = dep.get("equity_fund_series", [])
     if len(eser) >= 2:
         svg = _svg_line_chart(
@@ -14338,8 +14490,10 @@ def _render_deposit_charts(dep: dict) -> str:
                                  [("주식형펀드", "#26a69a")], svg, src_foot))
     if not cards:
         return ""
+    # 4개 이상이면 3열 wrap (5카드 1열 압착 방지)
+    _cols = min(len(cards), 3)
     return (f'<div class="chart-row" style="grid-template-columns:'
-            f'repeat({len(cards)},1fr);margin-top:-10px">'
+            f'repeat({_cols},1fr);margin-top:-10px">'
             + "".join(cards) + '</div>')
 
 
@@ -14756,6 +14910,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="valuechain.html">🔗 밸류체인</a>
     &middot; <a href="ppi.html">🏭 PPI</a>
     &middot; <a href="liquidity.html">💧 유동성</a>
+    &middot; <a href="marketcap.html">🏆 Market cap</a>
     &middot; <a href="trade/">🌏 수출입</a>
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 레딧</a>

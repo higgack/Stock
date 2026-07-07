@@ -13203,3 +13203,116 @@ class TestDartLazyMonthVisibility20260705:
         # 과거 월 lazy 구조 자체 계약(헤더+data-lazy 프래그먼트)
         assert 'data-lazy="dart_m_2026-06.html"' in html
         assert "2026년 6월" in html
+
+
+class TestCreditSplitAndMarketcap20260706:
+    """① 예탁금·신용 카드 코스피/코스닥 신용잔고 분리(KOFIA 시장 필드 런타임
+    발견) ② Market cap 대시보드(companiesmarketcap.com 이식 — 글로벌 시총 표
+    + Rank by 다이렉트 링크 15축) — 사용자 2026-07-06."""
+
+    def test_credit_key_heuristic(self):
+        import bot.fsc_client as fc
+        assert fc._classify_credit_key("crdTrFingKosdaq") == "kosdaq"
+        assert fc._classify_credit_key("crdTrFingKsdqMrkt") == "kosdaq"
+        assert fc._classify_credit_key("crdTrFingScrt") == "kospi"
+        assert fc._classify_credit_key("crdTrFingWhl") is None      # 전체 제외
+        assert fc._classify_credit_key("crdTrLoanWhl") is None      # 대주 제외
+        assert fc._classify_credit_key("basDt") is None
+        # 비잔고 파생필드 제외 (리뷰 2026-07-06 — 비율/일수 오분류 차단)
+        assert fc._classify_credit_key("crdTrFingScrtRto") is None
+        assert fc._classify_credit_key("crdTrFingDys") is None
+        assert fc._classify_credit_key("crdTrFingAnlys") is None
+
+    def test_credit_split_series(self, monkeypatch):
+        import bot.fsc_client as fc
+        fake = [{"basDt": "20260701", "crdTrFingWhl": "370000000000000",
+                 "crdTrFingScrtMrkt": "290000000000000",
+                 "crdTrFingKsdqMrkt": "80000000000000"},
+                {"basDt": "20260702", "crdTrFingWhl": "371000000000000",
+                 "crdTrFingScrtMrkt": "291000000000000",
+                 "crdTrFingKsdqMrkt": "80000000000000"}]
+        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: fake)
+        monkeypatch.setattr(fc, "_cache_get", lambda *a, **k: None)
+        monkeypatch.setattr(fc, "_cache_put", lambda *a, **k: None)
+        sp = fc.credit_split_series_eok(2)
+        assert set(sp) == {"kospi", "kosdaq"}
+        assert sp["kospi"][-1] == ("20260702", 2910000.0)   # 원→억원
+        # 응답에 시장 필드가 아예 없으면 {} (graceful) + 빈 결과도 캐시
+        # (30초 위젯 regen 마다 재fetch 하는 쿼터 낭비 방지 — 리뷰 2026-07-06)
+        puts = []
+        monkeypatch.setattr(fc, "_cache_put", lambda k, v: puts.append(v))
+        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: [
+            {"basDt": "20260701", "crdTrFingWhl": "1"}])
+        assert fc.credit_split_series_eok(1) == {}
+        assert puts and puts[-1] == {}
+        # 합리성 가드: 시장 최신값이 전체(Whl)보다 크면 오분류로 보고 드롭
+        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: [
+            {"basDt": "20260701", "crdTrFingWhl": "100",
+             "crdTrFingScrtMrkt": "90000000000000"}])
+        assert fc.credit_split_series_eok(1) == {}
+
+    def test_deposit_charts_include_split(self):
+        import bot.dashboard as d
+        two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
+        dep = {"date": "2026.07.02", "source": "금융투자협회",
+               "deposit": 1.0, "deposit_series": two, "credit_series": two,
+               "credit_kospi_series": two, "credit_kosdaq_series": two,
+               "equity_fund_series": two}
+        ch = d._render_deposit_charts(dep)
+        assert "코스피 신용잔고" in ch and "코스닥 신용잔고" in ch
+        assert "repeat(3,1fr)" in ch      # 4+카드 → 3열 wrap
+        # split 없으면 기존 3카드 그대로 (graceful)
+        dep2 = {k: v for k, v in dep.items() if "kosp" not in k and "kosd" not in k}
+        ch2 = d._render_deposit_charts(dep2)
+        assert "코스피 신용잔고" not in ch2 and "repeat(3,1fr)" in ch2
+
+    def test_marketcap_parsers_and_page(self):
+        import bot.marketcap_client as mc
+        import bot.dashboard as d
+        assert mc._URL == "https://companiesmarketcap.com/"   # 글로벌(사이트 자체)
+        rows = mc._parse_csv("Rank,Name,Symbol,marketcap,price (USD),country\n"
+                             "1,NVIDIA,NVDA,4750000000000,195.55,United States\n")
+        assert rows and rows[0]["mcap_usd"] == 4.75e12
+        hr = mc._parse_html(
+            '<tr><td>1</td><td><div class="company-name">NVIDIA</div>'
+            '<div class="company-code">NVDA</div></td><td>$4.75 T</td>'
+            '<td>$195.55</td><td>1.2%</td><td>United States</td></tr>')
+        assert hr and hr[0]["chg_pct"] == 1.2
+        page = d._render_marketcap_page(
+            {"rows": rows, "fetched_at": "2026-07-06 12:00", "stale": False})
+        assert "Market cap" in page and "$4.75T" in page
+        # 문서 닫힘 — _inject_update_banner 가 </body> 요구(없으면 배너 무주입,
+        # 리뷰 2026-07-06). '오늘' 컬럼은 등락 데이터 실재 시만(CSV 경로 없음).
+        assert page.rstrip().endswith("</body></html>")
+        assert ">오늘<" not in page                    # CSV rows → chg 전부 None
+        page_chg = d._render_marketcap_page(
+            {"rows": hr, "fetched_at": "2026-07-06 12:00", "stale": False})
+        assert ">오늘<" in page_chg                    # HTML 폴백 → chg 표시
+        # CSV 빈 주가 셀 = None(— 표기, $0.00 금지) + rank 'N/A' 행 tolerant
+        rows2 = mc._parse_csv("Rank,Name,Symbol,marketcap,price (USD),country\n"
+                              "N/A,Foo,FOO,1000000000,,Korea\n")
+        assert rows2 and rows2[0]["price_usd"] is None and rows2[0]["rank"] == 1
+        # HTML 국가열 — 회사명/티커 텍스트 누수 금지(마지막 후보 = 국가)
+        assert hr[0]["country"] == "United States"
+        # Rank by 15축 전부 (slug 웹검증 2026-07-06 — 추측 slug 금지 계약)
+        assert len(d._MARKETCAP_RANKBY) == 15
+        for lbl in ("Earnings", "Revenue", "Employees", "P/E ratio",
+                    "Dividend %", "MC gain", "MC loss", "Op. Margin",
+                    "Cost to borrow", "Total assets", "Net assets",
+                    "Total liabilities", "Total debt", "Cash on hand"):
+            assert lbl in page, lbl
+        assert "데이터 수집 실패" in d._render_marketcap_page(
+            {"rows": [], "fetched_at": "", "stale": True})
+
+    def test_marketcap_wiring(self):
+        # nav(홈 허브)·주기 태스크·help 등록 — 같은 commit 의무 계약
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'href="marketcap.html">🏆 Market cap</a>' in db
+        assert "def regenerate_marketcap_page" in db
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "_periodic_marketcap" in tb and "_marketcap_task" in tb
+        assert "🏆Market cap" in tb    # _HELP_TEXT 대시보드 목록
+        # 분석 그룹(차트보드) nav 상호링크 — PPI/유동성 ↔ Market cap
+        fb = open("bot/fred_boards.py", encoding="utf-8").read()
+        assert 'href="marketcap.html">🏆 Market cap</a>' in fb
+        assert 'href="ppi.html">🏭 PPI</a>' in db and "_MC_BASE" in db
