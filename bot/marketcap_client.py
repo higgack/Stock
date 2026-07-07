@@ -33,6 +33,9 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 _CACHE_DIR = Path.home() / ".tradingagents"
 _TTL = 3 * 3600
+# 파서 버전 — 파싱 로직 변경 시 +1 (구버전 파싱 결과 캐시 1회 무효화.
+# 2026-07-08 엔티티/로고 fix 가 3h 캐시에 막혀 안 보이던 것 재발 방지).
+_PARSER_V = 2
 _AXIS_GAP_SEC = 1.5     # 축 간 수집 간격(안티봇 예의)
 
 # 임베드 축 (사용자 2026-07-08 지정 6축) — key, 필 라벨, slug, 메트릭 컬럼 라벨.
@@ -229,7 +232,8 @@ def fetch_axis(axis: str, slug: str, limit: int = 100) -> dict:
     성공분(stale=True)."""
     c = _cache_read(axis)
     now = time.time()
-    if c.get("rows") and now - (c.get("ts") or 0) < _TTL:
+    if (c.get("rows") and c.get("_pv") == _PARSER_V
+            and now - (c.get("ts") or 0) < _TTL):
         return {"rows": c["rows"][:limit], "fetched_at": c.get("fetched_at", ""),
                 "source": c.get("source", ""), "stale": False}
     rows: list[dict] = []
@@ -247,7 +251,7 @@ def fetch_axis(axis: str, slug: str, limit: int = 100) -> dict:
             log.warning("marketcap csv fallback failed: %s", exc)
     if rows:
         fetched_at = datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
-        _cache_write(axis, {"rows": rows, "ts": now,
+        _cache_write(axis, {"rows": rows, "ts": now, "_pv": _PARSER_V,
                             "fetched_at": fetched_at, "source": source})
         return {"rows": rows[:limit], "fetched_at": fetched_at,
                 "source": source, "stale": False}
@@ -262,8 +266,9 @@ def fetch_all_axes(limit: int = 100) -> dict:
     _AXIS_GAP_SEC 대기(안티봇 예의). graceful — 축별 독립 실패."""
     out: dict = {}
     for key, _lbl, slug, _mcol in EMBED_AXES:
-        fresh_cache = (_cache_read(key).get("rows")
-                       and time.time() - (_cache_read(key).get("ts") or 0) < _TTL)
+        _c = _cache_read(key)
+        fresh_cache = (_c.get("rows") and _c.get("_pv") == _PARSER_V
+                       and time.time() - (_c.get("ts") or 0) < _TTL)
         out[key] = fetch_axis(key, slug, limit)
         if not fresh_cache:
             time.sleep(_AXIS_GAP_SEC)
