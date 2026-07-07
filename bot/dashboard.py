@@ -12559,15 +12559,11 @@ def _load_gics_check_runs() -> list[dict]:
 # (사용자 2026-07-06 '사이트 자체를 이식, 다이렉트 연결 OK'). slug 전수
 # 웹검색 검증 2026-07-06 — 추측 slug 없음.
 _MC_BASE = "https://companiesmarketcap.com/"   # 도메인 1곳 관리(리뷰 2026-07-06)
-_MARKETCAP_RANKBY = (
-    ("Market Cap", ""),
-    ("Earnings", "most-profitable-companies/"),
-    ("Revenue", "largest-companies-by-revenue/"),
+# 임베드 6축(marketcap_client.EMBED_AXES)을 제외한 나머지 = 외부 다이렉트 링크
+# 필(새 탭). slug 는 2026-07-06 웹검색 전수 검증분.
+_MARKETCAP_EXTERNAL = (
     ("Employees", "largest-companies-by-number-of-employees/"),
-    ("P/E ratio", "top-companies-by-pe-ratio/"),
     ("Dividend %", "top-companies-by-dividend-yield/"),
-    ("MC gain", "top-companies-by-market-cap-gain/"),
-    ("MC loss", "top-companies-by-market-cap-loss/"),
     ("Op. Margin", "top-companies-by-operating-margin/"),
     ("Cost to borrow", "companies-with-the-highest-cost-to-borrow/"),
     ("Total assets", "top-companies-by-total-assets/"),
@@ -12578,57 +12574,89 @@ _MARKETCAP_RANKBY = (
 )
 
 
-def _render_marketcap_page(data: dict) -> str:
+def _render_marketcap_page(data_by_axis: dict) -> str:
     """marketcap.html — companiesmarketcap.com 이식(사용자 2026-07-06 '사이트
-    자체를 카피, 제목 Market cap'). 표 = 글로벌 시총 Top(자체 렌더, 3h 갱신),
-    Rank by 필 = 사이트 해당 순위 다이렉트 링크(새 탭). 데이터는
-    bot.marketcap_client(3h 캐시)."""
+    자체를 카피' + 2026-07-08 '원본 양식 그대로 + 5축 추가 임베드').
+
+    임베드 6축(Market Cap/Earnings/Revenue/P/E/MC gain/MC loss) = 서버 렌더
+    탭(필 클릭 = 페이지 내 전환), 나머지 9축 = 원본 다이렉트 링크(↗ 새 탭).
+    행 양식 = 원본 그대로: 로고·기업(티커)·메트릭 원문·Price·Today·30일
+    차트(원본 img hot-link)·국가. 데이터 = bot.marketcap_client(축당 3h 캐시)."""
     import html as _html
-    rows = data.get("rows") or []
-    fetched = _html.escape(str(data.get("fetched_at") or "—"))
-    stale = data.get("stale")
+    from bot.marketcap_client import EMBED_AXES
 
-    def _mcap(v) -> str:
-        if not v:
-            return "—"
-        for unit, div in (("T", 1e12), ("B", 1e9), ("M", 1e6)):
-            if abs(v) >= div:
-                return f"${v / div:,.2f}{unit}"
-        return f"${v:,.0f}"
-
-    def _price(v) -> str:
-        return f"${v:,.2f}" if v is not None else "—"
-
-    def _chg(v) -> str:
-        if v is None:
+    def _chg_td(pct, direction) -> str:
+        if pct is None:
             return '<td class="mc-r" style="color:var(--muted)">—</td>'
-        cls = "up" if v > 0 else "dn" if v < 0 else "neu"
-        return f'<td class="mc-r {cls}">{"+" if v > 0 else ""}{v:.2f}%</td>'
+        cls = "up" if pct > 0 else "dn" if pct < 0 else "neu"
+        arrow = "▲" if pct > 0 else "▼" if pct < 0 else ""
+        return f'<td class="mc-r {cls}">{arrow}{abs(pct):.2f}%</td>'
 
-    # '오늘' 컬럼은 등락 데이터 실재 시만(CSV 경로엔 없음 — 전행 '—' 컬럼
-    # 방지, 리뷰 2026-07-06). HTML 폴백 성공 시 자동 표시.
-    has_chg = any(r.get("chg_pct") is not None for r in rows)
-    chg_th = '<th class="mc-r">오늘</th>' if has_chg else ""
-    trs = []
-    for r in rows:
-        trs.append(
-            f'<tr><td class="mc-rank">{r.get("rank", "")}</td>'
-            f'<td class="mc-name">{_html.escape(str(r.get("name", "")))}</td>'
-            f'<td class="mc-tk">{_html.escape(str(r.get("ticker", "")))}</td>'
-            f'<td class="mc-r">{_price(r.get("price_usd"))}</td>'
-            f'{_chg(r.get("chg_pct")) if has_chg else ""}'
-            f'<td class="mc-r"><b>{_mcap(r.get("mcap_usd"))}</b></td>'
-            f'<td>{_html.escape(str(r.get("country", "")))}</td></tr>')
-    body = ("".join(trs) if trs else
-            '<tr><td colspan="7" style="color:var(--muted);padding:24px">'
-            '데이터 수집 실패 — 다음 주기(3시간)에 자동 재시도합니다. '
-            'journal 의 bot.marketcap WARNING 참조.</td></tr>')
-    stale_badge = (' <span style="color:#f5a623">⚠️ 최신 수집 실패 — 마지막 '
-                   '성공분 표시</span>' if (stale and trs) else "")
-    rankby_pills = "".join(
-        f'<a class="mc-pill{" active" if lbl == "Market Cap" else ""}" '
-        f'href="{_MC_BASE}{slug}" target="_blank" rel="noopener">{lbl}</a>'
-        for lbl, slug in _MARKETCAP_RANKBY)
+    tabs: list[str] = []
+    pills: list[str] = []
+    any_fetched = ""
+    any_stale = False
+    for key, lbl, slug, mcol in EMBED_AXES:
+        d = data_by_axis.get(key) or {}
+        rows = d.get("rows") or []
+        if d.get("fetched_at"):
+            any_fetched = any_fetched or d["fetched_at"]
+        if d.get("stale") and rows:
+            any_stale = True
+        pills.append(
+            f'<button type="button" class="mc-pill mc-embed'
+            f'{" active" if key == "marketcap" else ""}" data-axis="{key}">'
+            f'{_html.escape(lbl)}</button>')
+        has_chg = any(r.get("chg_pct") is not None for r in rows)
+        has_spark = any(r.get("spark") for r in rows)
+        chg_th = '<th class="mc-r">Today</th>' if has_chg else ""
+        spark_th = '<th>Price (30 days)</th>' if has_spark else ""
+        trs: list[str] = []
+        for r in rows:
+            logo = (f'<img class="mc-logo" loading="lazy" src="'
+                    f'{_html.escape(str(r.get("logo")))}" alt="">'
+                    if r.get("logo") else "")
+            name_cell = (
+                f'<td class="mc-name-td"><div class="mc-namewrap">{logo}'
+                f'<div><div class="mc-name">{_html.escape(str(r.get("name", "")))}</div>'
+                f'<div class="mc-tk">{_html.escape(str(r.get("ticker", "")))}</div>'
+                f'</div></div></td>')
+            spark_td = ""
+            if has_spark:
+                spark_td = (f'<td><img class="mc-spark" loading="lazy" src="'
+                            f'{_html.escape(str(r.get("spark")))}" alt=""></td>'
+                            if r.get("spark") else "<td></td>")
+            trs.append(
+                f'<tr><td class="mc-rank">{r.get("rank", "")}</td>'
+                f'{name_cell}'
+                f'<td class="mc-r"><b>{_html.escape(str(r.get("metric", "")))}</b></td>'
+                f'<td class="mc-r">{_html.escape(str(r.get("price") or "—"))}</td>'
+                f'{_chg_td(r.get("chg_pct"), r.get("chg_dir")) if has_chg else ""}'
+                f'{spark_td}'
+                f'<td>{_html.escape(str(r.get("country", "")))}</td></tr>')
+        body = ("".join(trs) if trs else
+                '<tr><td colspan="7" style="color:var(--muted);padding:24px">'
+                '데이터 수집 실패 — 다음 주기(3시간)에 자동 재시도합니다. '
+                'journal 의 bot.marketcap WARNING 참조.</td></tr>')
+        _fetched = _html.escape(str(d.get("fetched_at") or "—"))
+        _stale_note = (' · <span style="color:#f5a623">⚠️ 최신 수집 실패 — '
+                       '마지막 성공분</span>' if (d.get("stale") and rows) else "")
+        tabs.append(f"""
+  <div class="mc-tab" data-axis="{key}" style="display:{'block' if key == 'marketcap' else 'none'}">
+    <p class="sub" style="margin:2px 0 8px;font-size:12px">기준 {_fetched} KST{_stale_note}</p>
+    <div style="overflow-x:auto"><table class="mc-table">
+      <thead><tr><th>#</th><th>기업</th><th class="mc-r">{_html.escape(mcol)}</th>
+        <th class="mc-r">Price</th>{chg_th}{spark_th}<th>국가</th></tr></thead>
+      <tbody>{body}</tbody>
+    </table></div>
+  </div>""")
+    ext_pills = "".join(
+        f'<a class="mc-pill mc-ext" href="{_MC_BASE}{slug}" target="_blank" '
+        f'rel="noopener">{_html.escape(lbl)} ↗</a>'
+        for lbl, slug in _MARKETCAP_EXTERNAL)
+    fetched = _html.escape(str(any_fetched or "—"))
+    stale_badge = (' <span style="color:#f5a623">⚠️ 일부 축 최신 수집 실패</span>'
+                   if any_stale else "")
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
@@ -12639,51 +12667,63 @@ def _render_marketcap_page(data: dict) -> str:
     · <a href="liquidity.html">💧 유동성</a>
   </div>
   <h1>🏆 Market cap</h1>
-  <p class="sub">글로벌 시가총액 순위 · 출처
+  <p class="sub">글로벌 기업 순위 · 출처
     <a href="{_MC_BASE}" target="_blank" rel="noopener">companiesmarketcap.com</a>
     · 기준 {fetched} KST · 3시간 갱신{stale_badge}</p>
-  <div class="mc-pills"><span class="mc-pills-l">Rank by</span>{rankby_pills}</div>
-  <p class="sub" style="margin:4px 0 12px;font-size:12px">필 클릭 = companiesmarketcap.com 해당 순위(새 탭) · 아래 표 = Market Cap 순위 이식</p>
+  <div class="mc-pills"><span class="mc-pills-l">Rank by</span>{''.join(pills)}{ext_pills}</div>
+  <p class="sub" style="margin:4px 0 12px;font-size:12px">앞 6개 필 = 페이지 내 전환(임베드) · ↗ 필 = companiesmarketcap.com 해당 순위(새 탭) · 로고/30일 차트 = 원본 이미지</p>
   <style>
     .mc-pills{{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 4px}}
     .mc-pills-l{{color:var(--muted);font-size:13px;margin-right:4px}}
     .mc-pill{{padding:4px 12px;border-radius:16px;border:1px solid var(--border,#333);
-      color:var(--text,#1f2937);text-decoration:none;font-size:13px;white-space:nowrap}}
+      background:transparent;color:var(--text,#1f2937);text-decoration:none;
+      font-size:13px;white-space:nowrap;cursor:pointer}}
     .mc-pill:hover{{border-color:var(--accent,#5e6ad2);color:var(--accent,#5e6ad2)}}
     .mc-pill.active{{background:var(--accent,#5e6ad2);color:#fff;border-color:var(--accent,#5e6ad2)}}
+    .mc-pill.mc-ext{{opacity:.85}}
     .mc-table{{width:100%;border-collapse:collapse;font-size:14px}}
     .mc-table th{{text-align:left;color:var(--muted);font-weight:600;
       padding:8px 10px;border-bottom:2px solid var(--border,#333)}}
-    .mc-table td{{padding:9px 10px;border-bottom:1px solid var(--border,#333)}}
+    .mc-table td{{padding:9px 10px;border-bottom:1px solid var(--border,#333);vertical-align:middle}}
     .mc-table th.mc-r,.mc-table td.mc-r{{text-align:right}}
     .mc-rank{{color:var(--muted);width:36px}}
+    .mc-namewrap{{display:flex;align-items:center;gap:10px}}
+    .mc-logo{{width:26px;height:26px;border-radius:5px;object-fit:contain;background:#fff}}
     .mc-name{{font-weight:700}}
     .mc-tk{{color:var(--muted);font-size:12px}}
+    .mc-spark{{height:36px;max-width:150px}}
     .mc-table .up{{color:#26a69a}} .mc-table .dn{{color:#ef5350}}
     .mc-table .neu{{color:var(--muted)}}
-    @media (max-width:640px){{.mc-table td,.mc-table th{{padding:7px 6px;font-size:13px}}}}
+    @media (max-width:640px){{.mc-table td,.mc-table th{{padding:7px 6px;font-size:13px}}
+      .mc-spark{{max-width:90px}}}}
   </style>
-  <div style="overflow-x:auto"><table class="mc-table">
-    <thead><tr><th>#</th><th>기업</th><th>티커</th><th class="mc-r">주가</th>
-      {chg_th}<th class="mc-r">시가총액</th><th>국가</th></tr></thead>
-    <tbody>{body}</tbody>
-  </table></div>
+{''.join(tabs)}
 </div>
+<script>
+(function(){{
+  var pills=document.querySelectorAll('.mc-pill.mc-embed');
+  var tabs=document.querySelectorAll('.mc-tab');
+  pills.forEach(function(p){{p.addEventListener('click',function(){{
+    pills.forEach(function(x){{x.classList.toggle('active',x===p);}});
+    tabs.forEach(function(t){{t.style.display=(t.dataset.axis===p.dataset.axis)?'block':'none';}});
+  }});}});
+}})();
+</script>
 </body></html>
 """)
     return "".join(parts)
 
 
 def regenerate_marketcap_page() -> None:
-    """marketcap_client → marketcap.html. graceful(실패 시 이전 파일 유지)."""
+    """marketcap_client(임베드 6축) → marketcap.html. graceful(실패 시 이전 파일 유지)."""
     try:
-        from bot.marketcap_client import fetch_top_companies
-        data = fetch_top_companies(100)
+        from bot.marketcap_client import fetch_all_axes
+        data = fetch_all_axes(100)
         html = _inject_update_banner(_render_marketcap_page(data))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "marketcap.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: marketcap.html regenerated (%d rows, stale=%s)",
-                 len(data.get("rows") or []), data.get("stale"))
+        log.info("dashboard: marketcap.html regenerated (%s)",
+                 {k: len((v or {}).get("rows") or []) for k, v in data.items()})
     except Exception as exc:
         log.warning("dashboard: marketcap regen failed: %s", exc)
 
