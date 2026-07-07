@@ -498,6 +498,72 @@ def credit_series_eok(n: int = 130) -> list[tuple[str, float]]:
     return [(d, v / 1e8) for d, v in _kofia_series(_OP_CREDIT, "crdTrFingWhl", n)]
 
 
+# 시장별(코스피/코스닥) 신용거래융자 필드명 — data.go.kr 문서가 프록시로 확인
+# 불가라 정확명 후보 + 휴리스틱 런타임 발견(2026-07-06). 발견 결과는 INFO 로그
+# (VM journal 로 실제 키 확인 → 확정 시 후보 목록에 고정 추가).
+_CREDIT_SPLIT_EXACT = {
+    "kospi": ("crdTrFingScrt", "scrtMrktCrdTrFing", "crdTrFingYs",
+              "stexMrktCrdTrFing", "crdTrFingStex"),
+    "kosdaq": ("crdTrFingKosdaq", "ksdqMrktCrdTrFing", "crdTrFingKsdq",
+               "crdTrFingKq"),
+}
+
+
+def _classify_credit_key(key: str) -> str | None:
+    """crdTrFing* 계열 키 → 'kospi'/'kosdaq'/None. 전체(Whl)·대주(Loan) 제외."""
+    lk = key.lower()
+    if "crdtrfing" not in lk or "whl" in lk:
+        return None
+    if any(t in lk for t in ("kosdaq", "ksdq", "kq")):
+        return "kosdaq"
+    if any(t in lk for t in ("scrt", "stex", "ys", "kospi")):
+        return "kospi"
+    return None
+
+
+def credit_split_series_eok(n: int = 130) -> dict:
+    """시장별 신용거래융자 시계열 {"kospi": [(basDt, 억원)], "kosdaq": [...]}.
+
+    응답 필드명 런타임 발견: 정확명 후보(_CREDIT_SPLIT_EXACT) 우선, 없으면
+    crdTrFing* 키 휴리스틱(_classify_credit_key). 발견/미발견 모두 INFO 로그
+    (silent-fail 금지). 미발견 시 {} — 위젯은 graceful 생략."""
+    ck = f"kofia_credit_split_{n}_{_now():%Y%m%d}"
+    c = _cache_get(ck, ttl=3 * 3600)
+    if c is not None:
+        return {m: [tuple(x) for x in ser] for m, ser in c.items()}
+    raw = _fetch(_KOFIA_BASE, _OP_CREDIT, {"numOfRows": n})
+    if not raw:
+        return {}
+    keys = list(raw[0].keys())
+    field: dict[str, str] = {}
+    for mkt, cands in _CREDIT_SPLIT_EXACT.items():
+        for cand in cands:
+            if cand in keys:
+                field[mkt] = cand
+                break
+    for k in keys:                       # 휴리스틱 보충(정확명 미적중 시장만)
+        mkt = _classify_credit_key(k)
+        if mkt and mkt not in field:
+            field[mkt] = k
+    log.info("kofia credit split: keys=%s → kospi=%s kosdaq=%s",
+             [k for k in keys if "crd" in k.lower()],
+             field.get("kospi"), field.get("kosdaq"))
+    out: dict = {}
+    for mkt, fk in field.items():
+        series = {}
+        for it in raw:
+            d = str(it.get("basDt") or "")
+            v = _f(it.get(fk))
+            if d and v is not None:
+                series[d] = v / 1e8      # 원 → 억원
+        ser = sorted(series.items())
+        if ser:
+            out[mkt] = ser
+    if out:
+        _cache_put(ck, {m: list(map(list, s)) for m, s in out.items()})
+    return out
+
+
 def _fmt_jo(won) -> str:
     """원 → 조/억 한국어 단위 (LLM 에 raw 원 미노출, 환각 방지)."""
     if won is None:
