@@ -13315,6 +13315,11 @@ class TestCreditSplitAndMarketcap20260706:
             '<div class="company-code">2222.SR</div></td>'
             '<td>SAR&nbsp;26.16</td><td>$6.97</td><td>0.00%</td></tr>')
         assert solo[0]["metric"] == "" and solo[0]["price"] == "$6.97"
+        # 파서 버전 게이트 — 파싱 fix 가 3h 캐시에 가려지지 않게(2026-07-08)
+        assert mc._PARSER_V >= 2
+        src_m = open("bot/marketcap_client.py", encoding="utf-8").read()
+        assert 'c.get("_pv") == _PARSER_V' in src_m
+        assert '"_pv": _PARSER_V' in src_m
         # P/E 형 메트릭(소수 숫자)도 원문 유지, 순수 정수(rank 등)는 미채택
         pe = mc._parse_rank_rows(
             '<tr><td>1</td><td><div class="company-name">FooCo</div>'
