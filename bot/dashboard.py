@@ -12558,22 +12558,23 @@ def _load_gics_check_runs() -> list[dict]:
 # companiesmarketcap.com Rank by 축 — 사이트 해당 순위 페이지 다이렉트 링크
 # (사용자 2026-07-06 '사이트 자체를 이식, 다이렉트 연결 OK'). slug 전수
 # 웹검색 검증 2026-07-06 — 추측 slug 없음.
+_MC_BASE = "https://companiesmarketcap.com/"   # 도메인 1곳 관리(리뷰 2026-07-06)
 _MARKETCAP_RANKBY = (
-    ("Market Cap", "https://companiesmarketcap.com/"),
-    ("Earnings", "https://companiesmarketcap.com/most-profitable-companies/"),
-    ("Revenue", "https://companiesmarketcap.com/largest-companies-by-revenue/"),
-    ("Employees", "https://companiesmarketcap.com/largest-companies-by-number-of-employees/"),
-    ("P/E ratio", "https://companiesmarketcap.com/top-companies-by-pe-ratio/"),
-    ("Dividend %", "https://companiesmarketcap.com/top-companies-by-dividend-yield/"),
-    ("MC gain", "https://companiesmarketcap.com/top-companies-by-market-cap-gain/"),
-    ("MC loss", "https://companiesmarketcap.com/top-companies-by-market-cap-loss/"),
-    ("Op. Margin", "https://companiesmarketcap.com/top-companies-by-operating-margin/"),
-    ("Cost to borrow", "https://companiesmarketcap.com/companies-with-the-highest-cost-to-borrow/"),
-    ("Total assets", "https://companiesmarketcap.com/top-companies-by-total-assets/"),
-    ("Net assets", "https://companiesmarketcap.com/top-companies-by-net-assets/"),
-    ("Total liabilities", "https://companiesmarketcap.com/companies-with-the-highest-liabilities/"),
-    ("Total debt", "https://companiesmarketcap.com/companies-with-the-highest-debt/"),
-    ("Cash on hand", "https://companiesmarketcap.com/companies-with-the-highest-cash-on-hand/"),
+    ("Market Cap", ""),
+    ("Earnings", "most-profitable-companies/"),
+    ("Revenue", "largest-companies-by-revenue/"),
+    ("Employees", "largest-companies-by-number-of-employees/"),
+    ("P/E ratio", "top-companies-by-pe-ratio/"),
+    ("Dividend %", "top-companies-by-dividend-yield/"),
+    ("MC gain", "top-companies-by-market-cap-gain/"),
+    ("MC loss", "top-companies-by-market-cap-loss/"),
+    ("Op. Margin", "top-companies-by-operating-margin/"),
+    ("Cost to borrow", "companies-with-the-highest-cost-to-borrow/"),
+    ("Total assets", "top-companies-by-total-assets/"),
+    ("Net assets", "top-companies-by-net-assets/"),
+    ("Total liabilities", "companies-with-the-highest-liabilities/"),
+    ("Total debt", "companies-with-the-highest-debt/"),
+    ("Cash on hand", "companies-with-the-highest-cash-on-hand/"),
 )
 
 
@@ -12604,6 +12605,10 @@ def _render_marketcap_page(data: dict) -> str:
         cls = "up" if v > 0 else "dn" if v < 0 else "neu"
         return f'<td class="mc-r {cls}">{"+" if v > 0 else ""}{v:.2f}%</td>'
 
+    # '오늘' 컬럼은 등락 데이터 실재 시만(CSV 경로엔 없음 — 전행 '—' 컬럼
+    # 방지, 리뷰 2026-07-06). HTML 폴백 성공 시 자동 표시.
+    has_chg = any(r.get("chg_pct") is not None for r in rows)
+    chg_th = '<th class="mc-r">오늘</th>' if has_chg else ""
     trs = []
     for r in rows:
         trs.append(
@@ -12611,7 +12616,7 @@ def _render_marketcap_page(data: dict) -> str:
             f'<td class="mc-name">{_html.escape(str(r.get("name", "")))}</td>'
             f'<td class="mc-tk">{_html.escape(str(r.get("ticker", "")))}</td>'
             f'<td class="mc-r">{_price(r.get("price_usd"))}</td>'
-            f'{_chg(r.get("chg_pct"))}'
+            f'{_chg(r.get("chg_pct")) if has_chg else ""}'
             f'<td class="mc-r"><b>{_mcap(r.get("mcap_usd"))}</b></td>'
             f'<td>{_html.escape(str(r.get("country", "")))}</td></tr>')
     body = ("".join(trs) if trs else
@@ -12622,18 +12627,20 @@ def _render_marketcap_page(data: dict) -> str:
                    '성공분 표시</span>' if (stale and trs) else "")
     rankby_pills = "".join(
         f'<a class="mc-pill{" active" if lbl == "Market Cap" else ""}" '
-        f'href="{url}" target="_blank" rel="noopener">{lbl}</a>'
-        for lbl, url in _MARKETCAP_RANKBY)
+        f'href="{_MC_BASE}{slug}" target="_blank" rel="noopener">{lbl}</a>'
+        for lbl, slug in _MARKETCAP_RANKBY)
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 종목분석</a>
+    · <a href="ppi.html">🏭 PPI</a>
+    · <a href="liquidity.html">💧 유동성</a>
   </div>
   <h1>🏆 Market cap</h1>
   <p class="sub">글로벌 시가총액 순위 · 출처
-    <a href="https://companiesmarketcap.com/" target="_blank" rel="noopener">companiesmarketcap.com</a>
+    <a href="{_MC_BASE}" target="_blank" rel="noopener">companiesmarketcap.com</a>
     · 기준 {fetched} KST · 3시간 갱신{stale_badge}</p>
   <div class="mc-pills"><span class="mc-pills-l">Rank by</span>{rankby_pills}</div>
   <p class="sub" style="margin:4px 0 12px;font-size:12px">필 클릭 = companiesmarketcap.com 해당 순위(새 탭) · 아래 표 = Market Cap 순위 이식</p>
@@ -12653,14 +12660,16 @@ def _render_marketcap_page(data: dict) -> str:
     .mc-name{{font-weight:700}}
     .mc-tk{{color:var(--muted);font-size:12px}}
     .mc-table .up{{color:#26a69a}} .mc-table .dn{{color:#ef5350}}
+    .mc-table .neu{{color:var(--muted)}}
     @media (max-width:640px){{.mc-table td,.mc-table th{{padding:7px 6px;font-size:13px}}}}
   </style>
   <div style="overflow-x:auto"><table class="mc-table">
     <thead><tr><th>#</th><th>기업</th><th>티커</th><th class="mc-r">주가</th>
-      <th class="mc-r">오늘</th><th class="mc-r">시가총액</th><th>국가</th></tr></thead>
+      {chg_th}<th class="mc-r">시가총액</th><th>국가</th></tr></thead>
     <tbody>{body}</tbody>
   </table></div>
 </div>
+</body></html>
 """)
     return "".join(parts)
 

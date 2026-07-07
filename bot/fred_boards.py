@@ -625,7 +625,8 @@ def _theme_head() -> str:
 
 _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · '
         '<a href="index.html">🦉 종목분석</a> · <a href="ppi.html">🏭 PPI</a> · '
-        '<a href="liquidity.html">💧 유동성</a></div>')
+        '<a href="liquidity.html">💧 유동성</a> · '
+        '<a href="marketcap.html">🏆 Market cap</a></div>')
 
 # 공용 JS: esc/pc + Chart.js 옵션(중복 3벌 → 1벌, 리뷰 finding) + 차트 가드
 # (Chart 미로딩 시 표는 살리고 차트만 생략 — 벤더 파일 유실/차단 내성).

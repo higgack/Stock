@@ -3917,12 +3917,13 @@ async def _periodic_dart_fav_alerts(application) -> None:
 
 async def _periodic_marketcap() -> None:
     """marketcap.html 3시간 주기 재생성(사용자 2026-07-06 — companiesmarketcap
-    반도체 순위 미러). 첫 생성은 부팅 90초 후(다른 startup regen 과 분산),
-    이후 3h(클라이언트 디스크 캐시 TTL 과 동일)."""
+    글로벌 시총 순위 이식). 첫 생성은 부팅 5초 후(파일 부재 404 창 최소화 +
+    watchdog 재시작 루프에서도 생성 보장 — 리뷰 2026-07-06), 이후 3h
+    (클라이언트 디스크 캐시 TTL 과 동일 — 캐시 fresh 면 재렌더만, 외부 호출 0)."""
     first = True
     while True:
         try:
-            await asyncio.sleep(90 if first else 3 * 3600)
+            await asyncio.sleep(5 if first else 3 * 3600)
             first = False
             from bot.dashboard import regenerate_marketcap_page
             await asyncio.to_thread(regenerate_marketcap_page)

@@ -88,16 +88,23 @@ def _parse_csv(text: str) -> list[dict]:
     for r in rdr:
         try:
             mcap = float(str(r.get(c_mcap, "")).replace(",", "") or 0)
-        except ValueError:
+        except (ValueError, TypeError):
             continue
         if mcap <= 0:
             continue
+        # 빈 주가 셀 = None(— 표기) — '' or 0 → $0.00 오표기 방지(리뷰 2026-07-06)
+        _ps = str(r.get(c_price, "") or "").replace(",", "").strip() if c_price else ""
         try:
-            price = float(str(r.get(c_price, "")).replace(",", "") or 0)
+            price = float(_ps) if _ps else None
         except ValueError:
             price = None
+        # rank 도 행 단위 tolerant — 한 행의 'N/A' 가 전체 파싱을 죽이지 않게
+        try:
+            rank = int(float(r.get(c_rank))) if c_rank and r.get(c_rank) else len(rows) + 1
+        except (ValueError, TypeError):
+            rank = len(rows) + 1
         rows.append({
-            "rank": int(float(r.get(c_rank) or len(rows) + 1)),
+            "rank": rank,
             "name": (r.get(c_name) or "").strip(),
             "ticker": (r.get(c_sym) or "").strip() if c_sym else "",
             "mcap_usd": mcap,
@@ -119,8 +126,10 @@ def _parse_html(html: str) -> list[dict]:
         code_m = re.search(r'class="company-code"[^>]*>([^<]+)<', tr)
         tds = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
         txt = [re.sub(r"<[^>]+>", "", t).strip() for t in tds]
+        _nm = name_m.group(1).strip()
+        _cd = code_m.group(1).strip() if code_m else ""
         mcap = price = chg = None
-        country = ""
+        country_cands: list = []
         for t in txt:
             if mcap is None and re.match(r"^\$[\d.,]+\s*[TBM]$", t):
                 num = float(re.sub(r"[^\d.]", "", t))
@@ -130,8 +139,12 @@ def _parse_html(html: str) -> list[dict]:
                 price = float(re.sub(r"[^\d.]", "", t))
             elif chg is None and re.match(r"^-?[\d.]+%$", t):
                 chg = float(t.rstrip("%"))
-            elif t and re.match(r"^[A-Za-z .()]+$", t) and len(t) < 30:
-                country = t
+            elif (t and len(t) < 30 and not re.search(r"[\d$%]", t)
+                  and _nm not in t and (not _cd or _cd not in t)):
+                # 국가 후보 — 숫자/$/% 없음 + 회사명·티커 텍스트 제외(이름 td
+                # 누수 방지, 리뷰 2026-07-06). 사이트 구조상 국가 = 마지막 열.
+                country_cands.append(t)
+        country = country_cands[-1] if country_cands else ""
         if mcap is None:
             continue
         rows.append({"rank": len(rows) + 1,
