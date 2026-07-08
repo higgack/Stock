@@ -73,6 +73,11 @@ def fetch_fear_greed() -> dict:
     now = time.time()
     if c.get("data") and now - (c.get("ts") or 0) < _TTL:
         return c["data"]
+    # 실패 스로틀 — CNN 차단 환경에서 매 market regen(30초~1분)마다 15초
+    # 타임아웃을 물고 전체 갱신이 느려지는 것 방지: 실패 후 5분간 재시도 안
+    # 함(마지막 성공분/폴백 즉시 반환).
+    if now - (c.get("fail_ts") or 0) < 300:
+        return dict(c["data"], stale=True) if c.get("data") else {}
     data: dict = {}
     try:
         import requests
@@ -82,6 +87,15 @@ def fetch_fear_greed() -> dict:
         data = _parse(r.json())
     except Exception as exc:
         log.warning("fear&greed fetch failed: %s", exc)
+    if not data:
+        try:
+            _CACHE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _CACHE.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(dict(c, fail_ts=now), f, ensure_ascii=False)
+            os.replace(tmp, _CACHE)
+        except Exception:
+            pass
     if data:
         try:
             _CACHE.parent.mkdir(parents=True, exist_ok=True)
