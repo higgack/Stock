@@ -35,7 +35,7 @@ _CACHE_DIR = Path.home() / ".tradingagents"
 _TTL = 3 * 3600
 # 파서 버전 — 파싱 로직 변경 시 +1 (구버전 파싱 결과 캐시 1회 무효화.
 # 2026-07-08 엔티티/로고 fix 가 3h 캐시에 막혀 안 보이던 것 재발 방지).
-_PARSER_V = 2
+_PARSER_V = 3   # 3 = $스팬 공백·인라인 SVG 스파크(2026-07-08 실측 행 반영)
 _AXIS_GAP_SEC = 1.5     # 축 간 수집 간격(안티봇 예의)
 
 # 임베드 축 (사용자 2026-07-08 지정 6축) — key, 필 라벨, slug, 메트릭 컬럼 라벨.
@@ -94,9 +94,16 @@ def _abs_url(src: str) -> str:
     return s
 
 
-_MONEY_RE = re.compile(r"^-?\$[\d.,]+\s*[TBM]?$")          # $4.792 T / $197.85
+# '$ 4.769 T' — 원본 시총 셀이 <span>$</span>4.769 T 라 태그 제거 시 $와 숫자
+# 사이 공백 생김(2026-07-08 VM 실측 행) → \s? 허용 + 표시 시 정규화.
+_MONEY_RE = re.compile(r"^-?\$\s?[\d.,]+\s*[TBM]?$")        # $4.792 T / $ 196.93
 _NUM_RE = re.compile(r"^-?[\d.,]+$")                        # 12.34 (P/E 등)
 _PCT_RE = re.compile(r"^[▲▼+-]?\s*[\d.,]+%$")               # 1.18% / -1.60%
+# 30일 차트 = 인라인 <svg><path d="..."> (이미지 아님 — 2026-07-08 실측).
+_SPARK_RE = re.compile(
+    r'<td[^>]*class="[^"]*sparkline[^"]*"[^>]*>.*?<path d="([^"]+)"', re.S)
+_SPARK_TD_RE = re.compile(r'<td[^>]*class="[^"]*sparkline[^"]*"[^>]*>')
+_PATH_SAFE_RE = re.compile(r"^[0-9MLHVCSQTAZmlhvcsqtaz,.\s\-]+$")
 
 
 def _parse_rank_rows(html: str) -> list[dict]:
@@ -125,6 +132,15 @@ def _parse_rank_rows(html: str) -> list[dict]:
                 logo = _abs_url(src)
             elif not spark and re.search(r"spark|chart", low):
                 spark = _abs_url(src)
+        # 인라인 SVG 스파크라인(원본은 CSS 로 크기/색 — path 데이터만 추출해
+        # 렌더 쪽에서 재구성). path d 는 안전 문자만 통과(주입 차단).
+        spark_d = ""
+        spark_neg = False
+        sp_m = _SPARK_RE.search(tr)
+        if sp_m and _PATH_SAFE_RE.match(sp_m.group(1)):
+            spark_d = re.sub(r"\s+", " ", sp_m.group(1)).strip()
+            td_m = _SPARK_TD_RE.search(tr)
+            spark_neg = bool(td_m and "red" in td_m.group(0))
         tds = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
         import html as _h
         txt = [re.sub(r"<[^>]+>", " ", t) for t in tds]
@@ -157,6 +173,8 @@ def _parse_rank_rows(html: str) -> list[dict]:
                 country_cands.append(t)
         if not vals:                   # 메트릭 없는 행(헤더 등) skip
             continue
+        # '$ 4.769' → '$4.769' 표시 정규화(스팬 분리로 생긴 공백 제거)
+        vals = [re.sub(r"^(-?)\$\s+", r"\1$", v) for v in vals]
         metric, price = vals[0], (vals[1] if len(vals) >= 2 else "")
         # 값이 1개뿐이고 단위(T/B/M) 없는 $금액이면 십중팔구 '주가만 잡힌'
         # 행 — 시총 컬럼에 주가를 넣지 말고 주가 슬롯으로(재발 방지 가드).
@@ -168,7 +186,7 @@ def _parse_rank_rows(html: str) -> list[dict]:
             "metric": metric,
             "price": price,
             "chg_pct": chg_pct, "chg_dir": chg_dir,
-            "spark": spark,
+            "spark": spark, "spark_d": spark_d, "spark_neg": spark_neg,
             "country": country_cands[-1] if country_cands else "",
         })
     if not rows:

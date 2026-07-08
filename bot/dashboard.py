@@ -12608,7 +12608,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
             f'{" active" if key == "marketcap" else ""}" data-axis="{key}">'
             f'{_html.escape(lbl)}</button>')
         has_chg = any(r.get("chg_pct") is not None for r in rows)
-        has_spark = any(r.get("spark") for r in rows)
+        has_spark = any(r.get("spark") or r.get("spark_d") for r in rows)
         chg_th = '<th class="mc-r">Today</th>' if has_chg else ""
         spark_th = '<th>Price (30 days)</th>' if has_spark else ""
         trs: list[str] = []
@@ -12623,9 +12623,20 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
                 f'</div></div></td>')
             spark_td = ""
             if has_spark:
-                spark_td = (f'<td><img class="mc-spark" loading="lazy" src="'
-                            f'{_html.escape(str(r.get("spark")))}" alt=""></td>'
-                            if r.get("spark") else "<td></td>")
+                if r.get("spark"):
+                    spark_td = (f'<td><img class="mc-spark" loading="lazy" src="'
+                                f'{_html.escape(str(r.get("spark")))}" alt=""></td>')
+                elif r.get("spark_d"):
+                    # 원본이 인라인 SVG(이미지 아님 — 2026-07-08 실측):
+                    # path 데이터로 재구성, red/green 클래스 색 재현.
+                    _sc = "#ef5350" if r.get("spark_neg") else "#26a69a"
+                    spark_td = (
+                        '<td><svg class="mc-spark-svg" viewBox="0 0 160 45" '
+                        'preserveAspectRatio="none"><path d="'
+                        f'{_html.escape(str(r.get("spark_d")))}" fill="none" '
+                        f'stroke="{_sc}" stroke-width="2"/></svg></td>')
+                else:
+                    spark_td = "<td></td>"
             trs.append(
                 f'<tr><td class="mc-rank">{r.get("rank", "")}</td>'
                 f'{name_cell}'
@@ -12692,6 +12703,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
     .mc-name{{font-weight:700}}
     .mc-tk{{color:var(--muted);font-size:12px}}
     .mc-spark{{height:36px;max-width:150px}}
+    .mc-spark-svg{{height:36px;width:150px}}
     .mc-table .up{{color:#26a69a}} .mc-table .dn{{color:#ef5350}}
     .mc-table .neu{{color:var(--muted)}}
     @media (max-width:640px){{.mc-table td,.mc-table th{{padding:7px 6px;font-size:13px}}
@@ -14500,6 +14512,16 @@ def _render_deposit_charts(dep: dict) -> str:
               "data": [p["v"] for p in dser], "axis": "L"}])
         cards.append(_chart_card("고객예탁금 추이 (억원)",
                                  [("고객예탁금", "#ab47bc")], svg, src_foot))
+    # 주식형펀드 자금동향 — 고객예탁금 바로 옆(사용자 2026-07-08 위치 이동).
+    # 데이터(equity_fund_series) 있을 때만 → graceful 회귀. 출처는 같은 KOFIA.
+    eser = dep.get("equity_fund_series", [])
+    if len(eser) >= 2:
+        svg = _svg_line_chart(
+            [p["d"] for p in eser],
+            [{"name": "주식형펀드", "color": "#26a69a",
+              "data": [p["v"] for p in eser], "axis": "L"}])
+        cards.append(_chart_card("주식형펀드 추이 (억원)",
+                                 [("주식형펀드", "#26a69a")], svg, src_foot))
     if len(cser) >= 2:
         svg = _svg_line_chart(
             [p["d"] for p in cser],
@@ -14520,16 +14542,6 @@ def _render_deposit_charts(dep: dict) -> str:
                   "data": [p["v"] for p in _ser], "axis": "L"}])
             cards.append(_chart_card(f"{_lbl} 추이 (억원)",
                                      [(_lbl, _col)], svg, src_foot))
-    # 주식형펀드 자금동향 — 신용잔고 옆 차트 (사용자 2026-06-14). 데이터
-    # (equity_fund_series) 있을 때만 → graceful 회귀. 출처는 같은 KOFIA.
-    eser = dep.get("equity_fund_series", [])
-    if len(eser) >= 2:
-        svg = _svg_line_chart(
-            [p["d"] for p in eser],
-            [{"name": "주식형펀드", "color": "#26a69a",
-              "data": [p["v"] for p in eser], "axis": "L"}])
-        cards.append(_chart_card("주식형펀드 추이 (억원)",
-                                 [("주식형펀드", "#26a69a")], svg, src_foot))
     if not cards:
         return ""
     # 4개 이상이면 3열 wrap (5카드 1열 압착 방지)

@@ -13316,26 +13316,34 @@ class TestCreditSplitAndMarketcap20260706:
         # 30일 차트·국가, 임베드 6축 탭 + 외부 9필. CSV 는 marketcap 축 폴백만.
         import bot.marketcap_client as mc
         import bot.dashboard as d
-        # 실화면 재현(2026-07-08): 즐겨찾기 ★ img + &nbsp; 시총 + 로고 + 국기
-        ROW = ('<tr><td><img src="/img/star-empty.svg"></td><td>1</td>'
-               '<td><img src="/img/company-logos/64/NVDA.webp">'
+        # VM 실측 행 그대로(2026-07-08 사용자 제공) — 시총 $스팬 분리 공백 ·
+        # ★ fav img · 인라인 SVG 스파크(red) · percentage-green · flag+USA
+        ROW = ('<tr><td class="fav"><img alt="favorite icon" src="/img/fav.svg?v2"></td>'
+               '<td class="rank-td td-right" data-sort="1">1</td>'
+               '<td class="name-td"><div class="logo-container">'
+               '<img loading="lazy" class="company-logo" src="/img/company-logos/64/NVDA.png"></div>'
+               '<div class="name-div"><a href="/nvidia/marketcap/">'
                '<div class="company-name">NVIDIA</div>'
-               '<div class="company-code">NVDA</div></td>'
-               '<td>$4.792&nbsp;T</td><td>$197.85</td>'
-               '<td class="rate-up"> 1.18%</td>'
-               '<td><img data-src="/sparklines/NVDA.svg"></td>'
-               '<td><img src="/img/flags/us.svg"> USA</td></tr>')
-        rows = mc._parse_rank_rows(ROW + ROW.replace("NVIDIA", "Microsoft")
-                                   .replace("NVDA", "MSFT")
-                                   .replace('class="rate-up"> 1.18%',
-                                            'class="rate-down">-1.60%'))
+               '<div class="company-code"><span class="rank d-none"></span>NVDA</div></a></div></td>'
+               '<td class="td-right" data-sort="4769841152000">'
+               '<span class="currency-symbol-left">$</span>4.769 T</td>'
+               '<td class="td-right" data-sort="19693">$196.93</td>'
+               '<td data-sort="71" class="rh-sm"><span class="percentage-green">'
+               '<svg class="a" viewBox="0 0 12 12"><path d="M10 8H2l4-4 4 4z"></path></svg>'
+               '0.71%</span></td>'
+               '<td class="p-0 sparkline-td red"><svg>'
+               '<path d="M0,14 L5,17 L10,15" /></svg></td>'
+               '<td><img class="flag" src="/img/flags/us.png"> '
+               '<span class="responsive-hidden">USA</span></td></tr>')
+        rows = mc._parse_rank_rows(
+            ROW + ROW.replace("NVIDIA", "Microsoft").replace("NVDA", "MSFT")
+            .replace("percentage-green", "percentage-red").replace(">0.71%", ">-1.60%"))
         assert len(rows) == 2
-        assert rows[0]["metric"] == "$4.792 T" and rows[0]["price"] == "$197.85"
-        assert rows[0]["chg_pct"] == 1.18 and rows[1]["chg_pct"] == -1.60
-        assert rows[0]["metric"] == "$4.792 T"      # &nbsp; 정규화(주가 밀림 버그)
-        assert "star" not in rows[0]["logo"]        # ★ 아이콘 ≠ 로고
-        assert rows[0]["logo"].endswith("NVDA.webp")
-        assert rows[0]["spark"].endswith(".svg")    # data-src 수집
+        assert rows[0]["metric"] == "$4.769 T"      # $스팬 공백 정규화(실측 버그)
+        assert rows[0]["price"] == "$196.93"
+        assert rows[0]["chg_pct"] == 0.71 and rows[1]["chg_pct"] == -1.60
+        assert rows[0]["logo"].endswith("NVDA.png") and "fav" not in rows[0]["logo"]
+        assert rows[0]["spark_d"].startswith("M0,14") and rows[0]["spark_neg"] is True
         assert rows[0]["country"] == "USA"          # 회사명/티커/국기 누수 금지
         # 시총 셀 미매칭 행: 주가를 시총 컬럼에 넣지 않음(단일값 가드)
         solo = mc._parse_rank_rows(
@@ -13366,8 +13374,9 @@ class TestCreditSplitAndMarketcap20260706:
         assert page.rstrip().endswith("</body></html>")
         assert page.count('class="mc-tab"') == 6
         assert page.count("mc-ext") >= 9 and "Employees ↗" in page
-        assert "Price (30 days)" in page and "mc-spark" in page
-        assert "▲1.18%" in page and "▼1.60%" in page
+        assert "Price (30 days)" in page and "mc-spark-svg" in page
+        assert 'stroke="#ef5350"' in page           # 인라인 SVG 스파크(red)
+        assert "▲0.71%" in page and "▼1.60%" in page
         data["pe"] = {"rows": [], "fetched_at": "", "stale": True}
         assert "데이터 수집 실패" in d._render_marketcap_page(data)
 
