@@ -11000,16 +11000,15 @@ class TestRatesChartSpread20260615:
         rf = {"labels": ["07", "08", "09"], "us_10y": [4.5, 4.4, 4.6],
               "kr_10y": [4.0, 3.9, 4.1], "kr_label": "한국 국고채 10년",
               "spread": [0.5, 0.5, 0.5]}
-        dom = [{"name": "기준금리", "value": 2.5, "decimals": 2, "unit": "%"}]
-        html = d._render_macro_snapshot({"ts": "", "domestic": dom,
-                                         "charts": {"rates_fx": rf}})
+        # 2026-07-08 차트 row 가 '시장유동성' 섹션(_render_macro_charts_row)
+        # 으로 이동 — 계약은 새 함수 기준으로 유지.
+        html = d._render_macro_charts_row({"charts": {"rates_fx": rf}})
         assert "한·미 국채 금리 추이" in html
         assert "美-韓 금리차 %p (우)" in html
         assert "미국 10Y" in html and "한국 국고채 10년" in html
         assert "원/달러" not in html and "yfinance" not in html   # 환율·소스 제외
         rf2 = dict(rf); rf2.pop("spread")
-        html2 = d._render_macro_snapshot({"ts": "", "domestic": dom,
-                                          "charts": {"rates_fx": rf2}})
+        html2 = d._render_macro_charts_row({"charts": {"rates_fx": rf2}})
         assert "美-韓 금리차" in html2                             # spread 폴백 계산
 
     def test_build_charts_computes_spread(self):
@@ -13282,6 +13281,35 @@ class TestCreditSplitAndMarketcap20260706:
         src_n = open("bot/naver_sector_client.py", encoding="utf-8").read()
         assert 'c.get("_v") == _DEPOSIT_SCHEMA_V' in src_n
         assert 'out["_v"] = _DEPOSIT_SCHEMA_V' in src_n
+
+    def test_liquidity_section_and_collateral_20260708(self):
+        # '시장유동성' 접이식 섹션(금리·물가·센티먼트 + 예탁금·신용) + 6번째
+        # 지표 예탁증권담보융자(dpsgScrtMogFing — 같은 응답, 추가 호출 0).
+        import bot.dashboard as d
+        import bot.naver_sector_client as nsc
+        import bot.fsc_client as fc
+        assert nsc._DEPOSIT_SCHEMA_V >= 3          # 담보융자 스키마
+        assert callable(fc.collateral_loan_series_eok)
+        two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
+        dep = {"date": "2026.07.06", "source": "금융투자협회", "deposit": 1.0,
+               "collateral": 240000.0, "collateral_series": two,
+               "deposit_series": two, "credit_series": two,
+               "equity_fund_series": two}
+        macro = {"ts": "07.08. 12:06 KST",
+                 "charts": {"sentiment": {"value": 65, "label": "낙관",
+                                          "src": "VIX 역산"}}}
+        sec = d._render_liquidity_section(macro, dep)
+        assert "<h2>시장유동성</h2>" in sec
+        assert 'id="sec-liquidity"' in sec and 'class="csec"' in sec   # 접기+상태유지
+        assert "담보융자" in sec and "예탁증권담보융자 추이" in sec
+        assert "시장 센티먼트" in sec              # 매크로 3카드 row 편입
+        # Macro Snapshot 에선 charts row 분리(중복 렌더 금지)
+        snap = d._render_macro_snapshot(
+            {"domestic": [], "global": [], "ts": "t",
+             "charts": {"sentiment": {"value": 1, "label": "x", "src": "y"}}})
+        assert "시장 센티먼트" not in snap
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_render_liquidity_section(macro, deposit)" in src
 
     def test_marketcap_parsers_and_page(self):
         # 2026-07-08 원본양식 이식: HTML 파서 = 로고·메트릭 원문·Price·Today·

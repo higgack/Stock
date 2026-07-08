@@ -315,7 +315,7 @@ def _first_big(cells: list) -> Optional[float]:
 _CRED_MIN, _CRED_MAX = 150000.0, 800000.0
 
 # deposit.json 산출 스키마 버전 — 필드 추가/변경 시 +1 (구버전 캐시 1회 무효화)
-_DEPOSIT_SCHEMA_V = 2   # 2 = 코스피/코스닥 신용 분리 (2026-07-08)
+_DEPOSIT_SCHEMA_V = 3   # 2=코스피/코스닥 신용 분리 · 3=예탁증권담보융자 (2026-07-08)
 
 
 def _fsc_date(d: str) -> str:
@@ -363,6 +363,19 @@ def _fetch_deposit_fsc() -> dict:
             out[f"{prefix}_chg"] = round(ser[-1][1] - ser[-2][1], 1)
         out[f"{prefix}_series"] = [{"d": _fsc_date(d), "v": round(v, 1)}
                                    for d, v in ser]
+    # 예탁증권담보융자 — 6번째 지표(사용자 2026-07-08 '하나 더'). 같은 신용
+    # 공여 응답 필드라 추가 호출 0. graceful.
+    try:
+        coll = fsc_client.collateral_loan_series_eok(130)
+    except Exception as exc:
+        log.warning("collateral loan fetch failed: %s", exc)
+        coll = []
+    if coll:
+        out["collateral"] = round(coll[-1][1], 1)
+        if len(coll) >= 2:
+            out["collateral_chg"] = round(coll[-1][1] - coll[-2][1], 1)
+        out["collateral_series"] = [{"d": _fsc_date(d), "v": round(v, 1)}
+                                    for d, v in coll]
     if out:
         # 출처 정직화 (2026-06-10 사용자 review): 데이터는 FSC(금융투자협회
         # 종합통계)인데 위젯/차트 라벨이 'Naver' 하드코딩 — 06.05(FSC 최신)
