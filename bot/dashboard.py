@@ -12637,8 +12637,14 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
                         f'stroke="{_sc}" stroke-width="2"/></svg></td>')
                 else:
                     spark_td = "<td></td>"
+            _mv = r.get("rank_move") or 0
+            _mv_html = ""
+            if _mv > 0:
+                _mv_html = f'<span class="mc-mv up">▲{_mv}</span>'
+            elif _mv < 0:
+                _mv_html = f'<span class="mc-mv dn">▼{-_mv}</span>'
             trs.append(
-                f'<tr><td class="mc-rank">{r.get("rank", "")}</td>'
+                f'<tr><td class="mc-rank">{r.get("rank", "")}{_mv_html}</td>'
                 f'{name_cell}'
                 f'<td class="mc-r"><b>{_html.escape(str(r.get("metric") or "—"))}</b></td>'
                 f'<td class="mc-r">{_html.escape(str(r.get("price") or "—"))}</td>'
@@ -12697,7 +12703,8 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
       padding:8px 10px;border-bottom:2px solid var(--border,#333)}}
     .mc-table td{{padding:9px 10px;border-bottom:1px solid var(--border,#333);vertical-align:middle}}
     .mc-table th.mc-r,.mc-table td.mc-r{{text-align:right}}
-    .mc-rank{{color:var(--muted);width:36px}}
+    .mc-rank{{color:var(--muted);width:52px;white-space:nowrap}}
+    .mc-mv{{font-size:10.5px;margin-left:5px;font-weight:700}}
     .mc-namewrap{{display:flex;align-items:center;gap:10px}}
     .mc-logo{{width:26px;height:26px;border-radius:5px;object-fit:contain;background:#fff}}
     .mc-name{{font-weight:700}}
@@ -13739,14 +13746,24 @@ _MARKET_CSS = (
     ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
     "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
     # ── 투자자 예탁금·신용 (deposit) ──
-    ".dp-wrap{display:flex;align-items:center;flex-wrap:wrap;gap:10px 22px;"
-    "background:var(--card);border:1px solid var(--border);border-radius:12px;"
-    "padding:12px 16px;margin-bottom:14px}"
+    # 7개 지표(2026-07-08 담보융자 추가)로 늘며 인라인 flex 가 2줄로 깨져
+    # 타일 그리드로 리디자인(사용자 '이쁘게'): 헤더줄(제목+기준일) + 반응형
+    # 균등 타일(라벨 위·값 아래), 타일 사이 세로 구분선.
+    ".dp-wrap{background:var(--card);border:1px solid var(--border);"
+    "border-radius:12px;padding:12px 16px 10px;margin-bottom:14px}"
+    ".dp-top{display:flex;align-items:baseline;gap:12px;margin-bottom:10px}"
     ".dp-hd{font-size:13px;font-weight:700}"
-    ".dp-item{display:flex;align-items:baseline;gap:7px}"
-    ".dp-l{font-size:12px;color:var(--muted)}"
-    ".dp-v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}"
     ".dp-ts{font-size:11px;color:var(--muted);margin-left:auto}"
+    ".dp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));"
+    "gap:2px 0}"
+    ".dp-item{display:flex;flex-direction:column;gap:3px;padding:2px 14px;"
+    "border-left:1px solid var(--border)}"
+    ".dp-item:first-child{border-left:none;padding-left:2px}"
+    ".dp-l{font-size:11.5px;color:var(--muted);white-space:nowrap}"
+    ".dp-v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;"
+    "white-space:nowrap}"
+    "@media(max-width:700px){.dp-grid{grid-template-columns:repeat(2,1fr)}"
+    ".dp-item{border-left:none;padding:4px 2px}}"
     # ── 업종 등락 TOP (sector movers) ──
     ".sm-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}"
     "@media(max-width:700px){.sm-wrap{grid-template-columns:1fr}}"
@@ -14492,8 +14509,10 @@ def _render_deposit_widget(dep: dict) -> str:
         ev = (f'<div class="dp-item"><span class="dp-l">주식형펀드</span>'
               f'<span class="dp-v">{_won(dep.get("equity_fund"))}{_chg(dep.get("equity_fund_chg"))}</span></div>')
     return (
-        '<div class="dp-wrap"><div class="dp-hd">💰 투자자 예탁금·신용</div>'
-        f'{dv}{cv}{ev}<span class="dp-ts">기준일 {date} · {src}</span></div>'
+        '<div class="dp-wrap">'
+        '<div class="dp-top"><div class="dp-hd">💰 투자자 예탁금·신용</div>'
+        f'<span class="dp-ts">기준일 {date} · {src}</span></div>'
+        f'<div class="dp-grid">{dv}{ev}{cv}</div></div>'   # 차트 순서와 동일
     )
 
 
@@ -14754,12 +14773,13 @@ def _render_liquidity_section(macro: dict, dep: dict) -> str:
     if not (charts_row or dep_w):
         return ""
     ts = str((macro or {}).get("ts", ""))
+    # 제목(h2) 자체가 접기 토글 — 글로벌 시장 스냅샷(sec-gsnap)과 동일 패턴
+    # (사용자 2026-07-08 '서브 summary 없애고 시장유동성에서 바로 접히게').
     return (
-        '<div class="section-hd"><h2>시장유동성</h2>'
-        f'<span class="ts">{_html.escape(ts)} 기준 · 새 데이터 시 하단 알림'
-        '(1분 체크·30분 자동반영)</span></div>'
         '<details class="csec" id="sec-liquidity" open>'
-        '<summary><div class="macro-sub">금리·물가·센티먼트 + 예탁금·신용</div></summary>'
+        '<summary><div class="section-hd"><h2>시장유동성</h2>'
+        f'<span class="ts">{_html.escape(ts)} 기준 · 새 데이터 시 하단 알림'
+        '(1분 체크·30분 자동반영)</span></div></summary>'
         + charts_row + dep_w + dep_c + '</details>')
 
 

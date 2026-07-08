@@ -13300,7 +13300,15 @@ class TestCreditSplitAndMarketcap20260706:
                                           "src": "VIX 역산"}}}
         sec = d._render_liquidity_section(macro, dep)
         assert "<h2>시장유동성</h2>" in sec
+        # 위젯 항목 순서 = 차트 순서(예탁금→주식형펀드→신용…, 사용자 2026-07-08)
+        dep2 = dict(dep, equity_fund=3665000.0, credit=377000.0)
+        w = d._render_deposit_widget(dep2)
+        assert (w.index("고객예탁금") < w.index("주식형펀드")
+                < w.index("담보융자"))
         assert 'id="sec-liquidity"' in sec and 'class="csec"' in sec   # 접기+상태유지
+        # 제목 h2 가 summary 안(제목 클릭 = 접기 — 서브 summary 제거, 2026-07-08)
+        assert sec.index("<summary>") < sec.index("<h2>시장유동성</h2>")
+        assert "금리·물가·센티먼트 + 예탁금·신용" not in sec
         assert "담보융자" in sec and "예탁증권담보융자 추이" in sec
         assert "시장 센티먼트" in sec              # 매크로 3카드 row 편입
         # Macro Snapshot 에선 charts row 분리(중복 렌더 금지)
@@ -13356,6 +13364,34 @@ class TestCreditSplitAndMarketcap20260706:
         src_m = open("bot/marketcap_client.py", encoding="utf-8").read()
         assert 'c.get("_pv") == _PARSER_V' in src_m
         assert '"_pv": _PARSER_V' in src_m
+        # 축별 실측 행(2026-07-08 사용자 제공): earnings = 메트릭 셀 안
+        # 정보아이콘 tooltip-title 속성에 <br/> 내포(태그제거 오염) ·
+        # mc_loss = '-$144.36 Billion' 풀네임 단위.
+        earn = mc._parse_rank_rows(
+            '<tr><td>1</td><td><div class="company-name">Alphabet</div>'
+            '<div class="company-code">GOOG</div></td>'
+            '<td class="td-right">$195.68 B <img class="info-icon" '
+            'tooltip-title="2026: Q1<br/>2025: Q2<br/>" src="/img/i.svg"></td>'
+            '<td class="td-right">$363.62</td>'
+            '<td><span class="percentage-red">0.35%</span></td></tr>')
+        assert earn[0]["metric"] == "$195.68 B" and earn[0]["price"] == "$363.62"
+        assert earn[0]["chg_pct"] == -0.35          # percentage-red → 음수
+        loss = mc._parse_rank_rows(
+            '<tr><td>1</td><td><div class="company-name">SpaceX</div>'
+            '<div class="company-code">SPCX</div></td>'
+            '<td class="td-right text-red">-$144.36 Billion</td>'
+            '<td class="td-right">$149.47</td></tr>')
+        assert loss[0]["metric"] == "-$144.36 Billion"
+        assert loss[0]["price"] == "$149.47"
+        assert mc._PARSER_V >= 5                    # 구캐시 무효화
+        # 순위변화 = rank-td moves 속성(2026-07-08 실측 13위 ▲3 / 16위 ▼3)
+        mv = mc._parse_rank_rows(
+            '<tr><td class="rank-td td-right" data-sort="13" moves="3">13</td>'
+            '<td><div class="company-name">Eli Lilly</div>'
+            '<div class="company-code">LLY</div></td>'
+            '<td><span class="currency-symbol-left">$</span>1.101 T</td>'
+            '<td>$1,236</td></tr>')
+        assert mv[0]["rank_move"] == 3 and mv[0]["metric"] == "$1.101 T"
         # P/E 형 메트릭(소수 숫자)도 원문 유지, 순수 정수(rank 등)는 미채택
         pe = mc._parse_rank_rows(
             '<tr><td>1</td><td><div class="company-name">FooCo</div>'

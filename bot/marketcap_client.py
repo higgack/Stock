@@ -35,7 +35,7 @@ _CACHE_DIR = Path.home() / ".tradingagents"
 _TTL = 3 * 3600
 # 파서 버전 — 파싱 로직 변경 시 +1 (구버전 파싱 결과 캐시 1회 무효화.
 # 2026-07-08 엔티티/로고 fix 가 3h 캐시에 막혀 안 보이던 것 재발 방지).
-_PARSER_V = 3   # 3 = $스팬 공백·인라인 SVG 스파크(2026-07-08 실측 행 반영)
+_PARSER_V = 5   # 5 = 순위변화 moves 속성 수집(2026-07-08 실측)
 _AXIS_GAP_SEC = 1.5     # 축 간 수집 간격(안티봇 예의)
 
 # 임베드 축 (사용자 2026-07-08 지정 6축) — key, 필 라벨, slug, 메트릭 컬럼 라벨.
@@ -96,7 +96,9 @@ def _abs_url(src: str) -> str:
 
 # '$ 4.769 T' — 원본 시총 셀이 <span>$</span>4.769 T 라 태그 제거 시 $와 숫자
 # 사이 공백 생김(2026-07-08 VM 실측 행) → \s? 허용 + 표시 시 정규화.
-_MONEY_RE = re.compile(r"^-?\$\s?[\d.,]+\s*[TBM]?$")        # $4.792 T / $ 196.93
+# 단위: 축약(T/B/M — marketcap 등) + 풀네임(Billion — MC gain/loss 축, 실측)
+_MONEY_RE = re.compile(
+    r"^-?\$\s?[\d.,]+\s*(?:[TBM]|Trillion|Billion|Million)?$")
 _NUM_RE = re.compile(r"^-?[\d.,]+$")                        # 12.34 (P/E 등)
 _PCT_RE = re.compile(r"^[▲▼+-]?\s*[\d.,]+%$")               # 1.18% / -1.60%
 # 30일 차트 = 인라인 <svg><path d="..."> (이미지 아님 — 2026-07-08 실측).
@@ -115,9 +117,19 @@ def _parse_rank_rows(html: str) -> list[dict]:
     버그 원천 차단). 구조 변경 시 빈 리스트 + 경고."""
     rows: list[dict] = []
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+        # 속성값 안의 '<br/>'(ttm 정보아이콘 tooltip-title — earnings/PE 실측)
+        # 가 태그제거를 중간에 끊어 셀 텍스트를 오염 → 텍스트성 속성만 제거
+        # (class/src 는 보존 — 등락 부호·로고 판정에 필요).
+        tr = re.sub(r'\s(?:tooltip-title|title|alt)="[^"]*"', "", tr)
         name_m = re.search(r'class="company-name"[^>]*>([^<]+)<', tr)
         if not name_m:
             continue
+        # 순위변화 = rank-td 의 moves 속성(2026-07-08 실측: moves="3"/"-3")
+        mv_m = re.search(r'<td[^>]*class="[^"]*rank-td[^"]*"[^>]*\smoves="(-?\d+)"', tr)
+        try:
+            rank_move = int(mv_m.group(1)) if mv_m else 0
+        except ValueError:
+            rank_move = 0
         code_m = re.search(r'class="company-code"[^>]*>([^<]+)<', tr)
         _nm = name_m.group(1).strip()
         _cd = code_m.group(1).strip() if code_m else ""
@@ -186,6 +198,7 @@ def _parse_rank_rows(html: str) -> list[dict]:
             "metric": metric,
             "price": price,
             "chg_pct": chg_pct, "chg_dir": chg_dir,
+            "rank_move": rank_move,
             "spark": spark, "spark_d": spark_d, "spark_neg": spark_neg,
             "country": country_cands[-1] if country_cands else "",
         })

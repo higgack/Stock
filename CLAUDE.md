@@ -8,6 +8,8 @@
 ## 브랜치 · 배포
 - dev 작업 → PR → base `claude/stock-trading-automation-xqYf7` **squash merge = 배포**.
   VM auto-update(1분 폴링)가 base 만 감시. merge 까지가 배포 — draft 만 열고 멈추지 말 것.
+  GitHub 연동(MCP) 불가 시 base 로 **직접 squash-push 배포 허용**(사용자 2026-07-08 규칙삭제
+  — PR 우회 OK. 단 squash 스타일 단일커밋 + push 후 base grep 검증은 동일).
 - `trade/` 도 같은 base 추적. VM 체크아웃 2개(`~/stock` NOAH · `~/stock-trade` trade)
   독립 배포. 옛 `claude/export-import-dashboard-zQsi2` 브랜치는 은퇴(새 작업 금지).
 
