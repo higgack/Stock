@@ -677,14 +677,24 @@ def _build_charts(spark: dict[str, list[float]],
             "kr_cpi": krcpi[-n2:],
         }
 
-    # sentiment (VIX → 0-100, higher score = greed). VIX 값 = 네이버 우선(macro_nv,
-    # 야후 throttle 무관, 사용자 2026-06-14 '게이지도 네이버·빅스 역산이고 네이버에
-    # 있으니까'), 없으면 yf 스파크 마지막값 폴백.
-    vix_spark = spark.get("vix", [])
-    vix = (vix_value if isinstance(vix_value, (int, float))
-           else (vix_spark[-1] if vix_spark else None))
-    if isinstance(vix, (int, float)):
-        charts["sentiment"] = {"score": _vix_to_score(vix), "vix": vix}
+    # sentiment — 1차 실 CNN Fear & Greed(사용자 2026-07-08 '실제 F&G 로'),
+    # 실패 시 기존 VIX 역산 폴백(출처 라벨로 구분 — 조용한 대체 금지).
+    try:
+        from bot.fear_greed_client import fetch_fear_greed
+        fg = fetch_fear_greed()
+    except Exception:
+        fg = {}
+    if fg.get("score") is not None:
+        charts["sentiment"] = dict(fg, source="cnn")
+    else:
+        # VIX 값 = 네이버 우선(macro_nv, 야후 throttle 무관, 사용자
+        # 2026-06-14), 없으면 yf 스파크 마지막값 폴백.
+        vix_spark = spark.get("vix", [])
+        vix = (vix_value if isinstance(vix_value, (int, float))
+               else (vix_spark[-1] if vix_spark else None))
+        if isinstance(vix, (int, float)):
+            charts["sentiment"] = {"score": _vix_to_score(vix), "vix": vix,
+                                   "source": "vix"}
 
     return charts
 

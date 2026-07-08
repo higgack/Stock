@@ -13433,3 +13433,38 @@ class TestCreditSplitAndMarketcap20260706:
         import bot.dashboard as d2
         assert len(mc.EMBED_AXES) == 6 and len(d2._MARKETCAP_EXTERNAL) == 9
         assert "fetch_all_axes" in db    # regen 이 6축 일괄 수집
+
+
+class TestFearGreedGauge20260708:
+    """시장 센티먼트 게이지 = 실 CNN Fear & Greed (사용자 2026-07-08 '실제
+    F&G 로 바꿔줘'). 실패 시 VIX 역산 폴백 — 출처 라벨로 정직 구분."""
+
+    def test_parse_cnn_schema(self):
+        import bot.fear_greed_client as fgc
+        fg = fgc._parse({"fear_and_greed": {
+            "score": 43.06, "rating": "Fear",
+            "timestamp": "2026-07-07T23:59:59+00:00",
+            "previous_close": 43.0, "previous_1_week": 30.0,
+            "previous_1_month": 41.2, "previous_1_year": 75.0}})
+        assert fg["score"] == 43 and fg["rating_kr"] == "공포"
+        assert fg["prev_1w"] == 30 and fg["prev_1y"] == 75
+        assert "KST" in fg["ts"]                      # KST 명시 변환
+        assert fgc._parse({}) == {}                   # graceful
+        assert fgc._parse({"fear_and_greed": {"score": "n/a"}}) == {}
+
+    def test_gauge_labels_cnn_vs_vix(self):
+        import bot.dashboard as d
+        card = d._render_sentiment_gauge(
+            {"score": 43, "rating_kr": "공포", "ts": "07.08 08:59 KST",
+             "prev_close": 43, "prev_1w": 30, "prev_1m": 41, "prev_1y": 75,
+             "source": "cnn"})
+        assert "CNN Fear &amp; Greed" in card and ">공포<" in card
+        assert "전일 43" in card and "1년 75" in card
+        assert "역산" not in card
+        # VIX 폴백은 '(폴백)' 정직 표기 + CNN 문구 없음
+        card2 = d._render_sentiment_gauge({"score": 65, "vix": 16.13,
+                                           "source": "vix"})
+        assert "VIX 16.13 역산(폴백)" in card2 and "CNN" not in card2
+        # macro_snapshot 배선 — CNN 우선, 실패 시 VIX 폴백 경로 존재
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert "fetch_fear_greed" in src and '"source": "vix"' in src

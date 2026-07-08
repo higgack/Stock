@@ -14447,9 +14447,9 @@ def _render_sentiment_gauge(data: dict) -> str:
         f'stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>'
     )
     parts.append(f'<circle cx="{cx:.0f}" cy="{cy:.0f}" r="5" fill="currentColor"/>')
-    # center value + label
+    # center value + label — CNN rating 우선(극단적 공포/공포/중립/탐욕/…)
     from bot.macro_snapshot import sentiment_label
-    lbl = sentiment_label(score)
+    lbl = str(data.get("rating_kr") or "") or sentiment_label(score)
     parts.append(
         f'<text x="{cx:.0f}" y="{cy - 24:.0f}" font-size="30" font-weight="700" '
         f'fill="currentColor" text-anchor="middle">{score}</text>'
@@ -14460,11 +14460,27 @@ def _render_sentiment_gauge(data: dict) -> str:
     )
     parts.append('</svg>')
     svg = "".join(parts)
-    vix_str = f"VIX {vix:.2f} 역산" if isinstance(vix, (int, float)) else "VIX 역산"
+    # 출처 정직 표기 — 실 CNN F&G vs VIX 역산 폴백 구분(사용자 2026-07-08)
+    if data.get("source") == "cnn":
+        _ts = str(data.get("ts") or "")
+        src_str = "CNN Fear & Greed" + (f" · {_ts}" if _ts else "")
+        if data.get("stale"):
+            src_str += " · ⚠️ 최신 수집 실패(마지막 성공분)"
+    else:
+        src_str = (f"VIX {vix:.2f} 역산(폴백)"
+                   if isinstance(vix, (int, float)) else "VIX 역산(폴백)")
+    # 과거 비교줄(전일/1주/1달/1년 — CNN 데이터 있을 때만)
+    prev_html = ""
+    _prevs = [("전일", data.get("prev_close")), ("1주", data.get("prev_1w")),
+              ("1달", data.get("prev_1m")), ("1년", data.get("prev_1y"))]
+    _pp = [f"{_l} {_v}" for _l, _v in _prevs if _v is not None]
+    if _pp:
+        prev_html = ('<div class="leg" style="margin-top:6px"><span>'
+                     + " · ".join(_pp) + '</span></div>')
     return (
         f'<div class="chart-card"><h3>시장 센티먼트</h3>'
-        f'<div class="leg"><span>공포 0 ↔ 100 탐욕</span></div>{svg}'
-        f'<div class="foot">출처: {_html.escape(vix_str)}</div></div>'
+        f'<div class="leg"><span>공포 0 ↔ 100 탐욕</span></div>{svg}{prev_html}'
+        f'<div class="foot">출처: {_html.escape(src_str)}</div></div>'
     )
 
 
