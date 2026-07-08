@@ -12608,7 +12608,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
             f'{" active" if key == "marketcap" else ""}" data-axis="{key}">'
             f'{_html.escape(lbl)}</button>')
         has_chg = any(r.get("chg_pct") is not None for r in rows)
-        has_spark = any(r.get("spark") for r in rows)
+        has_spark = any(r.get("spark") or r.get("spark_d") for r in rows)
         chg_th = '<th class="mc-r">Today</th>' if has_chg else ""
         spark_th = '<th>Price (30 days)</th>' if has_spark else ""
         trs: list[str] = []
@@ -12623,9 +12623,20 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
                 f'</div></div></td>')
             spark_td = ""
             if has_spark:
-                spark_td = (f'<td><img class="mc-spark" loading="lazy" src="'
-                            f'{_html.escape(str(r.get("spark")))}" alt=""></td>'
-                            if r.get("spark") else "<td></td>")
+                if r.get("spark"):
+                    spark_td = (f'<td><img class="mc-spark" loading="lazy" src="'
+                                f'{_html.escape(str(r.get("spark")))}" alt=""></td>')
+                elif r.get("spark_d"):
+                    # 원본이 인라인 SVG(이미지 아님 — 2026-07-08 실측):
+                    # path 데이터로 재구성, red/green 클래스 색 재현.
+                    _sc = "#ef5350" if r.get("spark_neg") else "#26a69a"
+                    spark_td = (
+                        '<td><svg class="mc-spark-svg" viewBox="0 0 160 45" '
+                        'preserveAspectRatio="none"><path d="'
+                        f'{_html.escape(str(r.get("spark_d")))}" fill="none" '
+                        f'stroke="{_sc}" stroke-width="2"/></svg></td>')
+                else:
+                    spark_td = "<td></td>"
             trs.append(
                 f'<tr><td class="mc-rank">{r.get("rank", "")}</td>'
                 f'{name_cell}'
@@ -12692,6 +12703,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
     .mc-name{{font-weight:700}}
     .mc-tk{{color:var(--muted);font-size:12px}}
     .mc-spark{{height:36px;max-width:150px}}
+    .mc-spark-svg{{height:36px;width:150px}}
     .mc-table .up{{color:#26a69a}} .mc-table .dn{{color:#ef5350}}
     .mc-table .neu{{color:var(--muted)}}
     @media (max-width:640px){{.mc-table td,.mc-table th{{padding:7px 6px;font-size:13px}}
@@ -14467,9 +14479,10 @@ def _render_deposit_widget(dep: dict) -> str:
     if dep.get("credit") is not None:
         cv = (f'<div class="dp-item"><span class="dp-l">신용잔고</span>'
               f'<span class="dp-v">{_won(dep.get("credit"))}{_chg(dep.get("credit_chg"))}</span></div>')
-    # 코스피/코스닥 신용잔고 분리 (있을 때만 — 사용자 2026-07-06)
+    # 코스피/코스닥 신용잔고 분리 + 예탁증권담보융자 (있을 때만)
     for _key, _lbl in (("credit_kospi", "코스피 신용"),
-                       ("credit_kosdaq", "코스닥 신용")):
+                       ("credit_kosdaq", "코스닥 신용"),
+                       ("collateral", "담보융자")):
         if dep.get(_key) is not None:
             cv += (f'<div class="dp-item"><span class="dp-l">{_lbl}</span>'
                    f'<span class="dp-v">{_won(dep.get(_key))}'
@@ -14499,6 +14512,16 @@ def _render_deposit_charts(dep: dict) -> str:
               "data": [p["v"] for p in dser], "axis": "L"}])
         cards.append(_chart_card("고객예탁금 추이 (억원)",
                                  [("고객예탁금", "#ab47bc")], svg, src_foot))
+    # 주식형펀드 자금동향 — 고객예탁금 바로 옆(사용자 2026-07-08 위치 이동).
+    # 데이터(equity_fund_series) 있을 때만 → graceful 회귀. 출처는 같은 KOFIA.
+    eser = dep.get("equity_fund_series", [])
+    if len(eser) >= 2:
+        svg = _svg_line_chart(
+            [p["d"] for p in eser],
+            [{"name": "주식형펀드", "color": "#26a69a",
+              "data": [p["v"] for p in eser], "axis": "L"}])
+        cards.append(_chart_card("주식형펀드 추이 (억원)",
+                                 [("주식형펀드", "#26a69a")], svg, src_foot))
     if len(cser) >= 2:
         svg = _svg_line_chart(
             [p["d"] for p in cser],
@@ -14509,7 +14532,8 @@ def _render_deposit_charts(dep: dict) -> str:
     # 코스피/코스닥 신용잔고 분리 차트 (사용자 2026-07-06 — 시장별 레버리지
     # 추이. KOFIA 신용공여 시장 필드, 있을 때만 graceful).
     for _key, _lbl, _col in (("credit_kospi_series", "코스피 신용잔고", "#66bb6a"),
-                             ("credit_kosdaq_series", "코스닥 신용잔고", "#7e57c2")):
+                             ("credit_kosdaq_series", "코스닥 신용잔고", "#7e57c2"),
+                             ("collateral_series", "예탁증권담보융자", "#f5a623")):
         _ser = dep.get(_key, [])
         if len(_ser) >= 2:
             svg = _svg_line_chart(
@@ -14518,16 +14542,6 @@ def _render_deposit_charts(dep: dict) -> str:
                   "data": [p["v"] for p in _ser], "axis": "L"}])
             cards.append(_chart_card(f"{_lbl} 추이 (억원)",
                                      [(_lbl, _col)], svg, src_foot))
-    # 주식형펀드 자금동향 — 신용잔고 옆 차트 (사용자 2026-06-14). 데이터
-    # (equity_fund_series) 있을 때만 → graceful 회귀. 출처는 같은 KOFIA.
-    eser = dep.get("equity_fund_series", [])
-    if len(eser) >= 2:
-        svg = _svg_line_chart(
-            [p["d"] for p in eser],
-            [{"name": "주식형펀드", "color": "#26a69a",
-              "data": [p["v"] for p in eser], "axis": "L"}])
-        cards.append(_chart_card("주식형펀드 추이 (억원)",
-                                 [("주식형펀드", "#26a69a")], svg, src_foot))
     if not cards:
         return ""
     # 4개 이상이면 3열 wrap (5카드 1열 압착 방지)
@@ -14683,7 +14697,13 @@ def _render_macro_snapshot(macro: dict) -> str:
         out.extend(_render_macro_card(i) for i in glob)
         out.append('</div></details>')
 
-    # charts row
+    return "".join(out)
+
+
+def _render_macro_charts_row(macro: dict) -> str:
+    """한·미 국채금리 / 물가·경기 모멘텀 / 시장 센티먼트 3카드 row —
+    시장유동성 섹션(사용자 2026-07-08)으로 이동, Macro Snapshot 에서 분리."""
+    charts = (macro or {}).get("charts", {})
     cards: list[str] = []
     rf = charts.get("rates_fx")
     if rf:
@@ -14718,9 +14738,29 @@ def _render_macro_snapshot(macro: dict) -> str:
     if sent:
         cards.append(_render_sentiment_gauge(sent))
     if cards:
-        out.append('<div class="chart-row">' + "".join(cards) + '</div>')
+        return '<div class="chart-row">' + "".join(cards) + '</div>'
+    return ""
 
-    return "".join(out)
+
+
+def _render_liquidity_section(macro: dict, dep: dict) -> str:
+    """'시장유동성' 섹션 — 한·미 국채금리/물가·모멘텀/센티먼트 3카드 +
+    투자자 예탁금·신용(위젯+추이 차트)을 Macro Snapshot 과 같은 제목 헤더 +
+    details.csec 접기(localStorage 상태 유지)로 묶음(사용자 2026-07-08
+    '시장유동성이라는 이름으로 제목 만들고 카드들을 접을 수 있게')."""
+    charts_row = _render_macro_charts_row(macro)
+    dep_w = _render_deposit_widget(dep)
+    dep_c = _render_deposit_charts(dep)
+    if not (charts_row or dep_w):
+        return ""
+    ts = str((macro or {}).get("ts", ""))
+    return (
+        '<div class="section-hd"><h2>시장유동성</h2>'
+        f'<span class="ts">{_html.escape(ts)} 기준 · 새 데이터 시 하단 알림'
+        '(1분 체크·30분 자동반영)</span></div>'
+        '<details class="csec" id="sec-liquidity" open>'
+        '<summary><div class="macro-sub">금리·물가·센티먼트 + 예탁금·신용</div></summary>'
+        + charts_row + dep_w + dep_c + '</details>')
 
 
 def _load_latest_market_daily(archive_name: str, kind_filter: str = "daily") -> dict | None:
@@ -14987,8 +15027,8 @@ def _render_market_page(data: dict) -> str:
     parts.append('</div></details>')  # close card-grid + 접기 details
 
     parts.append(_render_macro_snapshot(macro))
-    parts.append(_render_deposit_widget(deposit))
-    parts.append(_render_deposit_charts(deposit))
+    # 시장유동성 섹션(금리·물가·센티먼트 + 예탁금·신용 — 접기, 2026-07-08)
+    parts.append(_render_liquidity_section(macro, deposit))
     parts.append(_render_sector_movers(sector_movers))
     parts.append(_render_us_sector_movers(us_sector_movers))
     # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1). TW 는 TWSE 類股(~30) 우선.

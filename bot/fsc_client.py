@@ -498,6 +498,14 @@ def credit_series_eok(n: int = 130) -> list[tuple[str, float]]:
     return [(d, v / 1e8) for d, v in _kofia_series(_OP_CREDIT, "crdTrFingWhl", n)]
 
 
+def collateral_loan_series_eok(n: int = 130) -> list[tuple[str, float]]:
+    """예탁증권담보융자 잔고 시계열 [(basDt, 억원)] — 신용융자 밖의 '빚투'
+    보완 레버리지(2026-07-08 실측 필드 dpsgScrtMogFing, 신용공여 응답 동거
+    — 추가 API 호출 0). 대시보드 예탁금 카드 6번째 지표."""
+    return [(d, v / 1e8)
+            for d, v in _kofia_series(_OP_CREDIT, "dpsgScrtMogFing", n)]
+
+
 # 시장별(코스피/코스닥) 신용거래융자 필드명 — data.go.kr 문서가 프록시로 확인
 # 불가라 정확명 후보 + 휴리스틱 런타임 발견(2026-07-06). 발견 결과는 INFO 로그
 # (VM journal 로 실제 키 확인 → 확정 시 후보 목록에 고정 추가).

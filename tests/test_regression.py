@@ -11000,16 +11000,15 @@ class TestRatesChartSpread20260615:
         rf = {"labels": ["07", "08", "09"], "us_10y": [4.5, 4.4, 4.6],
               "kr_10y": [4.0, 3.9, 4.1], "kr_label": "한국 국고채 10년",
               "spread": [0.5, 0.5, 0.5]}
-        dom = [{"name": "기준금리", "value": 2.5, "decimals": 2, "unit": "%"}]
-        html = d._render_macro_snapshot({"ts": "", "domestic": dom,
-                                         "charts": {"rates_fx": rf}})
+        # 2026-07-08 차트 row 가 '시장유동성' 섹션(_render_macro_charts_row)
+        # 으로 이동 — 계약은 새 함수 기준으로 유지.
+        html = d._render_macro_charts_row({"charts": {"rates_fx": rf}})
         assert "한·미 국채 금리 추이" in html
         assert "美-韓 금리차 %p (우)" in html
         assert "미국 10Y" in html and "한국 국고채 10년" in html
         assert "원/달러" not in html and "yfinance" not in html   # 환율·소스 제외
         rf2 = dict(rf); rf2.pop("spread")
-        html2 = d._render_macro_snapshot({"ts": "", "domestic": dom,
-                                          "charts": {"rates_fx": rf2}})
+        html2 = d._render_macro_charts_row({"charts": {"rates_fx": rf2}})
         assert "美-韓 금리차" in html2                             # spread 폴백 계산
 
     def test_build_charts_computes_spread(self):
@@ -13283,31 +13282,68 @@ class TestCreditSplitAndMarketcap20260706:
         assert 'c.get("_v") == _DEPOSIT_SCHEMA_V' in src_n
         assert 'out["_v"] = _DEPOSIT_SCHEMA_V' in src_n
 
+    def test_liquidity_section_and_collateral_20260708(self):
+        # '시장유동성' 접이식 섹션(금리·물가·센티먼트 + 예탁금·신용) + 6번째
+        # 지표 예탁증권담보융자(dpsgScrtMogFing — 같은 응답, 추가 호출 0).
+        import bot.dashboard as d
+        import bot.naver_sector_client as nsc
+        import bot.fsc_client as fc
+        assert nsc._DEPOSIT_SCHEMA_V >= 3          # 담보융자 스키마
+        assert callable(fc.collateral_loan_series_eok)
+        two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
+        dep = {"date": "2026.07.06", "source": "금융투자협회", "deposit": 1.0,
+               "collateral": 240000.0, "collateral_series": two,
+               "deposit_series": two, "credit_series": two,
+               "equity_fund_series": two}
+        macro = {"ts": "07.08. 12:06 KST",
+                 "charts": {"sentiment": {"value": 65, "label": "낙관",
+                                          "src": "VIX 역산"}}}
+        sec = d._render_liquidity_section(macro, dep)
+        assert "<h2>시장유동성</h2>" in sec
+        assert 'id="sec-liquidity"' in sec and 'class="csec"' in sec   # 접기+상태유지
+        assert "담보융자" in sec and "예탁증권담보융자 추이" in sec
+        assert "시장 센티먼트" in sec              # 매크로 3카드 row 편입
+        # Macro Snapshot 에선 charts row 분리(중복 렌더 금지)
+        snap = d._render_macro_snapshot(
+            {"domestic": [], "global": [], "ts": "t",
+             "charts": {"sentiment": {"value": 1, "label": "x", "src": "y"}}})
+        assert "시장 센티먼트" not in snap
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_render_liquidity_section(macro, deposit)" in src
+
     def test_marketcap_parsers_and_page(self):
         # 2026-07-08 원본양식 이식: HTML 파서 = 로고·메트릭 원문·Price·Today·
         # 30일 차트·국가, 임베드 6축 탭 + 외부 9필. CSV 는 marketcap 축 폴백만.
         import bot.marketcap_client as mc
         import bot.dashboard as d
-        # 실화면 재현(2026-07-08): 즐겨찾기 ★ img + &nbsp; 시총 + 로고 + 국기
-        ROW = ('<tr><td><img src="/img/star-empty.svg"></td><td>1</td>'
-               '<td><img src="/img/company-logos/64/NVDA.webp">'
+        # VM 실측 행 그대로(2026-07-08 사용자 제공) — 시총 $스팬 분리 공백 ·
+        # ★ fav img · 인라인 SVG 스파크(red) · percentage-green · flag+USA
+        ROW = ('<tr><td class="fav"><img alt="favorite icon" src="/img/fav.svg?v2"></td>'
+               '<td class="rank-td td-right" data-sort="1">1</td>'
+               '<td class="name-td"><div class="logo-container">'
+               '<img loading="lazy" class="company-logo" src="/img/company-logos/64/NVDA.png"></div>'
+               '<div class="name-div"><a href="/nvidia/marketcap/">'
                '<div class="company-name">NVIDIA</div>'
-               '<div class="company-code">NVDA</div></td>'
-               '<td>$4.792&nbsp;T</td><td>$197.85</td>'
-               '<td class="rate-up"> 1.18%</td>'
-               '<td><img data-src="/sparklines/NVDA.svg"></td>'
-               '<td><img src="/img/flags/us.svg"> USA</td></tr>')
-        rows = mc._parse_rank_rows(ROW + ROW.replace("NVIDIA", "Microsoft")
-                                   .replace("NVDA", "MSFT")
-                                   .replace('class="rate-up"> 1.18%',
-                                            'class="rate-down">-1.60%'))
+               '<div class="company-code"><span class="rank d-none"></span>NVDA</div></a></div></td>'
+               '<td class="td-right" data-sort="4769841152000">'
+               '<span class="currency-symbol-left">$</span>4.769 T</td>'
+               '<td class="td-right" data-sort="19693">$196.93</td>'
+               '<td data-sort="71" class="rh-sm"><span class="percentage-green">'
+               '<svg class="a" viewBox="0 0 12 12"><path d="M10 8H2l4-4 4 4z"></path></svg>'
+               '0.71%</span></td>'
+               '<td class="p-0 sparkline-td red"><svg>'
+               '<path d="M0,14 L5,17 L10,15" /></svg></td>'
+               '<td><img class="flag" src="/img/flags/us.png"> '
+               '<span class="responsive-hidden">USA</span></td></tr>')
+        rows = mc._parse_rank_rows(
+            ROW + ROW.replace("NVIDIA", "Microsoft").replace("NVDA", "MSFT")
+            .replace("percentage-green", "percentage-red").replace(">0.71%", ">-1.60%"))
         assert len(rows) == 2
-        assert rows[0]["metric"] == "$4.792 T" and rows[0]["price"] == "$197.85"
-        assert rows[0]["chg_pct"] == 1.18 and rows[1]["chg_pct"] == -1.60
-        assert rows[0]["metric"] == "$4.792 T"      # &nbsp; 정규화(주가 밀림 버그)
-        assert "star" not in rows[0]["logo"]        # ★ 아이콘 ≠ 로고
-        assert rows[0]["logo"].endswith("NVDA.webp")
-        assert rows[0]["spark"].endswith(".svg")    # data-src 수집
+        assert rows[0]["metric"] == "$4.769 T"      # $스팬 공백 정규화(실측 버그)
+        assert rows[0]["price"] == "$196.93"
+        assert rows[0]["chg_pct"] == 0.71 and rows[1]["chg_pct"] == -1.60
+        assert rows[0]["logo"].endswith("NVDA.png") and "fav" not in rows[0]["logo"]
+        assert rows[0]["spark_d"].startswith("M0,14") and rows[0]["spark_neg"] is True
         assert rows[0]["country"] == "USA"          # 회사명/티커/국기 누수 금지
         # 시총 셀 미매칭 행: 주가를 시총 컬럼에 넣지 않음(단일값 가드)
         solo = mc._parse_rank_rows(
@@ -13338,8 +13374,9 @@ class TestCreditSplitAndMarketcap20260706:
         assert page.rstrip().endswith("</body></html>")
         assert page.count('class="mc-tab"') == 6
         assert page.count("mc-ext") >= 9 and "Employees ↗" in page
-        assert "Price (30 days)" in page and "mc-spark" in page
-        assert "▲1.18%" in page and "▼1.60%" in page
+        assert "Price (30 days)" in page and "mc-spark-svg" in page
+        assert 'stroke="#ef5350"' in page           # 인라인 SVG 스파크(red)
+        assert "▲0.71%" in page and "▼1.60%" in page
         data["pe"] = {"rows": [], "fetched_at": "", "stale": True}
         assert "데이터 수집 실패" in d._render_marketcap_page(data)
 
