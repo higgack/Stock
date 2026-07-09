@@ -13468,3 +13468,48 @@ class TestFearGreedGauge20260708:
         # macro_snapshot 배선 — CNN 우선, 실패 시 VIX 폴백 경로 존재
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "fetch_fear_greed" in src and '"source": "vix"' in src
+
+
+class TestBlogSeenCapAndDateGuard20260708:
+    """옛 블로그 글 재푸시 fix (사용자 2026-07-08 '왜 예전꺼 가져오는거야' —
+    의교창 6/18 글 재푸시). 원인: 전 블로그 공용 seen 캡 600 을 usforall
+    초기화 유입이 밀어내 옛 GUID 축출 → RSS 창에 남은 옛 글이 '신규' 오판.
+    fix: 캡 5000 + 날짜가드(실수 9 — pubDate 14일 초과 push 금지, seen 만)."""
+
+    def test_cap_and_guard_constants(self):
+        import bot.blog_watch as bw
+        assert bw._MAX_SEEN >= 5000
+        assert bw._MAX_AGE_DAYS <= 14
+
+    def test_old_post_not_pushed_but_seen(self, monkeypatch):
+        import bot.blog_watch as bw
+        from datetime import datetime, timedelta
+        pushed = []
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda url: "")
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_push", lambda it: pushed.append(it["title"]) or True)
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: "<rss/>")
+        old_pub = (datetime.now(bw._KST) - timedelta(days=20)
+                   ).strftime("%a, %d %b %Y %H:%M:%S +0900")
+        new_pub = datetime.now(bw._KST).strftime("%a, %d %b %Y %H:%M:%S +0900")
+        items = [
+            {"guid": "g-old", "title": "옛글", "link": "", "pubDate": old_pub,
+             "desc": "", "category": "", "blog_title": "t"},
+            {"guid": "g-new", "title": "오늘글", "link": "", "pubDate": new_pub,
+             "desc": "x", "category": "", "blog_title": "t"},
+        ]
+        monkeypatch.setattr(bw, "_parse_items", lambda xml: items)
+        state = {"seen": [], "init": {"b": True}}
+        seen: set = set()
+        bw._process_blog({"id": "b", "title": "t", "categories": None},
+                         state, seen, None)
+        assert pushed == ["오늘글"]                 # 옛 글 push 금지
+        assert "g-old" in seen and "g-new" in seen  # 재검사 방지
+        # pubDate 파싱 불가면 허용(놓침 방지)
+        pushed.clear()
+        items2 = [{"guid": "g-x", "title": "무날짜", "link": "", "pubDate": "??",
+                   "desc": "x", "category": "", "blog_title": "t"}]
+        monkeypatch.setattr(bw, "_parse_items", lambda xml: items2)
+        bw._process_blog({"id": "b", "title": "t", "categories": None},
+                         {"seen": [], "init": {"b": True}}, set(), None)
+        assert pushed == ["무날짜"]
