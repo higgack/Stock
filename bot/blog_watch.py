@@ -44,7 +44,13 @@ _BLOGS = (
 _HOME = os.path.expanduser("~")
 _STATE = os.path.join(_HOME, ".tradingagents", "blog_watch_state.json")
 _ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "blog_archive")
-_MAX_SEEN = 600          # 멀티 블로그 — 블로그당 최근 GUID 충분히 보존
+# ⚠️ seen 은 전 블로그 공용 리스트 — 캡이 작으면 새 블로그 초기화(수십 GUID
+# 일괄 유입)가 옛 GUID 를 밀어내 뜸한 블로그의 옛 글이 '신규'로 재푸시됨
+# (2026-07-08 의교창 6/18 글 재푸시 — usforall 초기화가 트리거). 600→5000.
+_MAX_SEEN = 5000
+# 날짜가드(실수 9): pubDate 가 이 일수보다 오래된 글은 push 없이 seen 만
+# 처리 — 캡 축출/RSS 재등장에도 옛 글 재푸시 원천 차단.
+_MAX_AGE_DAYS = 14
 _MAX_NEW_PER_RUN = 5     # 블로그당
 
 
@@ -332,6 +338,27 @@ def _process_blog(blog: dict, state: dict, seen: set,
         log.warning("blog_watch[%s]: RSS 에 category 없음 — 전체 허용(형식 확인)", bid)
     skipped_cat = len(new_items) - len(allowed)
     allowed = allowed[:_MAX_NEW_PER_RUN]
+
+    # 날짜가드 — pubDate 파싱 가능하고 _MAX_AGE_DAYS 초과면 push 제외
+    # (seen 처리만). 파싱 불가면 허용(놓침 방지).
+    fresh: list[dict] = []
+    for it in allowed:
+        pub_dt = None
+        try:
+            from email.utils import parsedate_to_datetime
+            pub_dt = parsedate_to_datetime(it.get("pubDate") or "")
+        except Exception:
+            pub_dt = None
+        if pub_dt is not None and (
+                _now_kst() - pub_dt.astimezone(_KST)
+                > timedelta(days=_MAX_AGE_DAYS)):
+            seen.add(it["guid"])
+            state["seen"].append(it["guid"])
+            log.info("blog_watch[%s]: 날짜가드 — %s (%s) 옛 글 push 생략",
+                     bid, it.get("title", "")[:30], it.get("pubDate", ""))
+            continue
+        fresh.append(it)
+    allowed = fresh
 
     pushed = 0
     for it in allowed:
