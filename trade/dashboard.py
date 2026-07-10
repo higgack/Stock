@@ -419,6 +419,7 @@ def _load_eval_miss_summary(
     # 불일치 → msg_id 도 제외해 일관. read-only(파일 미변경)·다음 렌더 즉시 반영.
     from trade import ignored as _ignored
     from trade import jp_exports as _jp
+    from trade import tw_exports as _tw
     ignored_ids = _ignored.load()
     count = 0
     oldest: datetime | None = None
@@ -440,6 +441,8 @@ def _load_eval_miss_summary(
                 if rec.get("message_id") in ignored_ids:   # 운영자 /ignore
                     continue
                 if _jp.parse_jp_export(cap) is not None:    # JP → jp.db 정상 처리
+                    continue
+                if _tw.parse_tw_export(cap) is not None:    # TW → tw.db 정상 처리
                     continue
                 count += 1
                 detected = rec.get("detected_at")
@@ -837,7 +840,10 @@ def _build_html(
         # 🗾 일본 수출 데이터 (BeOn, 사용자 2026-06-27) — 별도 페이지. 🇯🇵 flag 는
         # 일부 폰트에서 'JP' 텍스트로 렌더 → 항상 보이는 🗾(일본 지도) 사용(사용자 2026-06-28).
         ' &nbsp;·&nbsp; <a href="jp.html">'
-        '🗾 일본 수출 데이터 — 품목별 월 수출액·단가 →</a></div>'
+        '🗾 일본 수출 데이터 — 품목별 월 수출액·단가 →</a>'
+        # 🇹🇼 대만 수출 데이터 (나쁜양파, 사용자 2026-07-10) — 일본 옆.
+        ' &nbsp;·&nbsp; <a href="tw.html">'
+        '🇹🇼 대만 수출 데이터 — 품목별 월 수출액·관련기업 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2731,6 +2737,15 @@ def main() -> int:
         from trade import jp_exports
         jp_exports.regenerate(
             args.db.parent / "jp.db", args.out.parent / "jp.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    # 🇹🇼 대만 수출 데이터(나쁜양파) — 별도 tw.db → tw.html (일본 옆 형제 파일,
+    # 사용자 2026-07-10). 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
+    try:
+        from trade import tw_exports
+        tw_exports.regenerate(
+            args.db.parent / "tw.db", args.out.parent / "tw.html",
             media_url_prefix=args.media_url)
     except Exception:
         pass

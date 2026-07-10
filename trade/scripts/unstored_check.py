@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 
 from trade import ignored as _ignored
 from trade import jp_exports as _jp
+from trade import tw_exports as _tw
 from trade.store import open_db
 
 load_dotenv()
@@ -155,6 +156,9 @@ def find_unstored() -> list[dict]:
             # (한국 ignore 필터와 동일한 '이 store 의 alert 아님' 스킵). JP 파이프라인
             # 자체 적재 카운트는 ingest_inbox 의 jp_inserted 로그가 별도 추적.
             if _jp.parse_jp_export(caption) is not None:
+                continue
+            # 대만 수출 데이터(나쁜양파) — 별도 tw.db, 동일 사유로 제외(사용자 2026-07-10).
+            if _tw.parse_tw_export(caption) is not None:
                 continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))

@@ -114,6 +114,7 @@ cat > "$SUDOERS_TMP2" <<'SUDOERS'
 higgack ALL=(ALL) NOPASSWD: /home/higgack/stock-trade/deploy/install-trade-units.sh
 higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-dashboard
 higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-beon-listener
+higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-badonion-listener
 SUDOERS
 if visudo -cf "$SUDOERS_TMP2" >/dev/null 2>&1; then
     if ! cmp -s "$SUDOERS_TMP2" "$SUDOERS_TRADE" 2>/dev/null; then

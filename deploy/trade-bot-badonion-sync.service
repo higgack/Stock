@@ -1,0 +1,17 @@
+[Unit]
+Description=나쁜양파(Badonions) 대만 수출 통계 Telethon 백필 — 리스너 다운타임 안전망
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.backfill-venv/bin/python trade/scripts/backfill_badonion.py
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

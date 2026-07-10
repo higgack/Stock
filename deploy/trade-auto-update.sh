@@ -126,6 +126,20 @@ if [ -n "$LISTENER_RELEVANT" ]; then
     fi
 fi
 
+# Best-effort: 나쁜양파(대만) 리스너 재시작 — listen_badonion.py 변경 시
+# (BeOn 리스너와 동일 클래스, 사용자 2026-07-10). sudoers 항목은
+# install-trade-units.sh 가 자기확장 설치.
+BADONION_LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_badonion\.py$' || true)
+if [ -n "$BADONION_LISTENER_RELEVANT" ]; then
+    if sudo -n /bin/systemctl restart trade-bot-badonion-listener 2>/dev/null; then
+        echo "trade-bot-update: also restarted trade-bot-badonion-listener"
+        LISTENER_NOTE="${LISTENER_NOTE}"$'\n'"<i>+ 나쁜양파 리스너 재시작</i>"
+    else
+        echo "trade-bot-update: badonion-listener restart skipped (no sudoers entry)"
+        LISTENER_NOTE="${LISTENER_NOTE}"$'\n'"<i>⚠️ 나쁜양파 리스너 재시작 권한 없음 — 다음 배포에서 sudoers 자동 설치 후 재시도</i>"
+    fi
+fi
+
 # Best-effort: also restart the dashboard server when the change set
 # touches its code. Requires a sudoers entry; logs and continues if
 # the entry is missing so the main deploy doesn't fail because of it.
