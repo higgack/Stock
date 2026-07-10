@@ -29,6 +29,12 @@ Album handling: identical to listen_beon.py — buffer by grouped_id for
 ALBUM_DEBOUNCE_S seconds, then forward as a single forward_messages([...])
 call so trade-bot's media_group_id grouping still works.
 
+Relevance filter (differs from listen_beon.py, 사용자 2026-07-11 — 실백필 중
+애널리스트 레이팅표 등 무관 콘텐츠가 trade 채널로 넘어간 걸 확인): 나쁜양파는
+대만 수출 데이터 외 다른 트레이딩 정보도 섞어 올리는 일반 채널이라, 캡션이
+`tw_exports.parse_tw_export()` 로 파싱되는 메시지(앨범이면 멤버 중 하나라도)
+만 forward 한다. BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음.
+
 Lifecycle alerts (best-effort, never raise):
   🟢 <b>나쁜양파 리스너 가동</b>
   ⚠️ <b>나쁜양파 리스너 forward 실패</b>
@@ -54,6 +60,8 @@ from telethon.errors import (
     FloodWaitError,
     SessionPasswordNeededError,
 )
+
+from trade import tw_exports as _tw
 
 load_dotenv()
 
@@ -178,6 +186,7 @@ async def _run_listener() -> int:
     log.info("connected: source=%s dest=%s", source.id, dest.id)
 
     album_buf: dict[int, list[int]] = {}
+    album_relevant: dict[int, bool] = {}
     album_tasks: dict[int, asyncio.Task] = {}
     fwd_q: asyncio.Queue = asyncio.Queue()
     worker_task = asyncio.create_task(
@@ -187,23 +196,36 @@ async def _run_listener() -> int:
         try:
             await asyncio.sleep(ALBUM_DEBOUNCE_S)
             ids = album_buf.pop(gid, [])
+            relevant = album_relevant.pop(gid, False)
             album_tasks.pop(gid, None)
-            if ids:
+            if not ids:
+                return
+            if relevant:
                 fwd_q.put_nowait(sorted(ids))
                 log.info("queued album gid=%d (%d msgs, q=%d)",
                          gid, len(ids), fwd_q.qsize())
+            else:
+                log.info("dropped irrelevant album gid=%d (%d msgs) — "
+                          "no 대만 수출 caption", gid, len(ids))
         except Exception as e:
             log.exception("flush_album error: %s", e)
 
     @client.on(events.NewMessage(chats=source))
     async def on_new(event):
         msg = event.message
+        is_tw = _tw.parse_tw_export(msg.text or "") is not None
         gid = getattr(msg, "grouped_id", None)
         if gid is None:
-            fwd_q.put_nowait([msg.id])
-            log.info("queued msg=%d (q=%d)", msg.id, fwd_q.qsize())
+            if is_tw:
+                fwd_q.put_nowait([msg.id])
+                log.info("queued msg=%d (q=%d)", msg.id, fwd_q.qsize())
+            else:
+                log.info("dropped irrelevant msg=%d — no 대만 수출 caption",
+                          msg.id)
             return
         album_buf.setdefault(gid, []).append(msg.id)
+        if is_tw:
+            album_relevant[gid] = True
         if gid not in album_tasks:
             album_tasks[gid] = asyncio.create_task(flush_album(gid))
 
