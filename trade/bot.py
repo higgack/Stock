@@ -18,9 +18,10 @@ Media-group handling (BeOn posts text + graph + table as one album):
 
 Forwarder fallback:
   Some forwarder tools strip forward_origin and prepend a "BeOn - 비온"
-  header into the text body (copy mode). When SOURCE_ORIGIN is set we
-  accept both true forwards and copy-style forwards by checking for the
-  header pattern.
+  header into the text body (copy mode). When TRADE_SOURCE_ORIGIN is set we
+  accept both true forwards (from any of its comma-separated sources — a
+  second Telethon relay, 나쁜양파/Badonions, joined 2026-07-11) and
+  copy-style forwards by checking for the header pattern.
 
 Out of scope (intentionally, never):
   - OCR / LLM analysis of images. BeOn's own graph is the deliverable;
@@ -73,10 +74,26 @@ TOKEN = os.environ["TRADE_BOT_TOKEN"]
 _raw_ids = os.environ.get("TRADE_CHANNEL_CHAT_IDS", "")
 CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}
 
-# Optional source-channel filter. Username (without @) or numeric -100... ID.
+def _parse_source_origins(raw: str) -> set[str]:
+    """Comma-separated usernames (without @) or numeric -100... IDs —
+    e.g. "BeOn_BeClear, @Badonions" once a second Telethon relay (나쁜양파,
+    사용자 2026-07-11) forwards into the same private channel. .strip()
+    BEFORE .lstrip("@") — an operator hand-editing the list naturally
+    writes a space after the comma, and stripping '@' first would leave
+    a literal " @badonions" → "@badonions" (leading @ survives), which
+    then matches neither the numeric nor username branch in
+    _origin_matches and silently never matches (independent review
+    2026-07-11 — the exact silent-drop failure mode this whole fix
+    exists to close, just triggered by list formatting instead)."""
+    return {s.strip().lstrip("@").lower() for s in raw.split(",") if s.strip()}
+
+
+# Optional source-channel filter — see _parse_source_origins() above.
 # When unset, every channel post is accepted — useful while discovering the
-# destination channel's chat ID on first run.
-SOURCE_ORIGIN = os.environ.get("TRADE_SOURCE_ORIGIN", "").lstrip("@").strip()
+# destination channel's chat ID on first run. A single value still works
+# (backward compatible with the pre-multi-source .env).
+SOURCE_ORIGINS: set[str] = _parse_source_origins(
+    os.environ.get("TRADE_SOURCE_ORIGIN", ""))
 
 INBOX_DIR = Path(os.environ.get("TRADE_DATA_DIR") or str(Path.home() / ".trade"))
 INBOX_PATH = INBOX_DIR / "inbox.jsonl"
@@ -167,12 +184,18 @@ def _allowed_channel(chat_id: int) -> bool:
 
 
 def _origin_matches(post: Message) -> bool:
-    """Accept a post if it's a real forward from the configured source
+    """Accept a post if it's a real forward from any configured source
     OR a copy-style forward whose body starts with the BeOn header.
 
-    Discovery mode (SOURCE_ORIGIN unset) accepts everything.
+    Discovery mode (SOURCE_ORIGINS unset) accepts everything. Multiple
+    sources (comma-separated in TRADE_SOURCE_ORIGIN) match OR — needed
+    since 2026-07-11 when a second Telethon relay (나쁜양파/Badonions)
+    started forwarding into the same private channel; without this a
+    non-BeOn origin silently fails here and never reaches inbox.jsonl
+    (no log line — this is exactly how the Badonion pipeline's forwards
+    disappeared despite Telethon reporting them forwarded successfully).
     """
-    if not SOURCE_ORIGIN:
+    if not SOURCE_ORIGINS:
         return True
 
     origin = getattr(post, "forward_origin", None)
@@ -181,11 +204,13 @@ def _origin_matches(post: Message) -> bool:
         chat = getattr(post, "forward_from_chat", None)
 
     if chat is not None:
-        if SOURCE_ORIGIN.lstrip("-").isdigit():
-            if chat.id == int(SOURCE_ORIGIN):
+        chat_username = (chat.username or "").lower()
+        for src in SOURCE_ORIGINS:
+            if src.lstrip("-").isdigit():
+                if chat.id == int(src):
+                    return True
+            elif chat_username == src:
                 return True
-        elif (chat.username or "").lower() == SOURCE_ORIGIN.lower():
-            return True
 
     body = post.text or post.caption or ""
     if _BEON_HEADER_RE.search(body):
@@ -1300,7 +1325,7 @@ def main() -> None:
         INBOX_PATH,
         MEDIA_ROOT,
         CHANNEL_CHAT_IDS or "<discovery>",
-        SOURCE_ORIGIN or "<any>",
+        SOURCE_ORIGINS or "<any>",
         DOWNLOAD_CONCURRENCY,
     )
     app.run_polling()
