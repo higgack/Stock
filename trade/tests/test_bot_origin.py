@@ -110,5 +110,34 @@ class OriginMatchesTests(unittest.TestCase):
             self.assertFalse(bot._origin_matches(_fake_post(text="그냥 잡담")))
 
 
+@unittest.skipUnless(_HAVE_TELEGRAM, "python-telegram-bot not installed")
+class ParseSourceOriginsTests(unittest.TestCase):
+    """독립 code-review 2026-07-11 지적 — .strip() 이 .lstrip("@") 보다
+    먼저 실행돼야 "BeOn_BeClear, @Badonions" 같은(콤마 뒤 공백 자연스러운
+    수기입력) 케이스에서 leading '@' 가 안 남는다. 순서 뒤바뀌면 "@badonions"
+    로 파싱되어 어느 브랜치에도 안 걸려 조용히 영구 미매치(이 fix 전체가
+    막으려던 바로 그 실패모드가 콤마리스트 포맷팅으로 재발)."""
+
+    def test_leading_at_after_comma_space_stripped_correctly(self):
+        from trade import bot
+        result = bot._parse_source_origins("BeOn_BeClear, @Badonions")
+        self.assertEqual(result, {"beon_beclear", "badonions"})
+        self.assertNotIn("@badonions", result)
+
+    def test_empty_string_yields_empty_set(self):
+        from trade import bot
+        self.assertEqual(bot._parse_source_origins(""), set())
+
+    def test_single_value_no_comma(self):
+        from trade import bot
+        self.assertEqual(
+            bot._parse_source_origins("BeOn_BeClear"), {"beon_beclear"})
+
+    def test_numeric_id_passthrough(self):
+        from trade import bot
+        self.assertEqual(
+            bot._parse_source_origins("-1002695068357"), {"-1002695068357"})
+
+
 if __name__ == "__main__":
     unittest.main()

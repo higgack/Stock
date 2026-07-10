@@ -74,17 +74,26 @@ TOKEN = os.environ["TRADE_BOT_TOKEN"]
 _raw_ids = os.environ.get("TRADE_CHANNEL_CHAT_IDS", "")
 CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}
 
-# Optional source-channel filter. Comma-separated usernames (without @) or
-# numeric -100... IDs — e.g. "BeOn_BeClear,Badonions" once a second Telethon
-# relay (나쁜양파, 사용자 2026-07-11) forwards into the same private channel.
+def _parse_source_origins(raw: str) -> set[str]:
+    """Comma-separated usernames (without @) or numeric -100... IDs —
+    e.g. "BeOn_BeClear, @Badonions" once a second Telethon relay (나쁜양파,
+    사용자 2026-07-11) forwards into the same private channel. .strip()
+    BEFORE .lstrip("@") — an operator hand-editing the list naturally
+    writes a space after the comma, and stripping '@' first would leave
+    a literal " @badonions" → "@badonions" (leading @ survives), which
+    then matches neither the numeric nor username branch in
+    _origin_matches and silently never matches (independent review
+    2026-07-11 — the exact silent-drop failure mode this whole fix
+    exists to close, just triggered by list formatting instead)."""
+    return {s.strip().lstrip("@").lower() for s in raw.split(",") if s.strip()}
+
+
+# Optional source-channel filter — see _parse_source_origins() above.
 # When unset, every channel post is accepted — useful while discovering the
 # destination channel's chat ID on first run. A single value still works
 # (backward compatible with the pre-multi-source .env).
-SOURCE_ORIGINS: set[str] = {
-    s.lstrip("@").strip().lower()
-    for s in os.environ.get("TRADE_SOURCE_ORIGIN", "").split(",")
-    if s.strip()
-}
+SOURCE_ORIGINS: set[str] = _parse_source_origins(
+    os.environ.get("TRADE_SOURCE_ORIGIN", ""))
 
 INBOX_DIR = Path(os.environ.get("TRADE_DATA_DIR") or str(Path.home() / ".trade"))
 INBOX_PATH = INBOX_DIR / "inbox.jsonl"
