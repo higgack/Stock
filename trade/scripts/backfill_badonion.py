@@ -6,6 +6,14 @@ private trade channel so trade-bot can ingest them like live forwards.
 + 최신월/과거 히스토리 동봉)를 텔레그램으로 발행 — 별도 tw.db 로 적재되어
 일본 옆 tw.html 대시보드에 렌더된다(trade/tw_exports.py, trade/dashboard.py).
 
+⚠️ BeOn 과의 차이점(사용자 2026-07-11, 실백필 중 애널리스트 레이팅표가 trade
+채널로 넘어간 걸 확인): 나쁜양파는 대만 수출 데이터 외에 애널리스트 레이팅표·
+Capex 비교차트 등 무관한 트레이딩 정보도 섞어 올리는 일반 채널 — BeOn 처럼
+'전부 forward 후 다운스트림에서 파싱 실패분만 버림' 방식을 쓰면 무관 콘텐츠가
+전부 private trade 채널에 그대로 쌓인다. 그래서 이 스크립트는 forward 시점에
+`tw_exports.parse_tw_export()` 로 대만 수출 캡션인 unit(앨범이면 멤버 중 하나
+라도 매칭)만 골라 보낸다 — BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음.
+
 Works both as a one-off catch-up and as a periodic sync driven by
 trade-bot-badonion-sync.timer. Idempotent — scans inbox.jsonl and skips
 any Badonions message_id that's already been ingested, so re-running is
@@ -69,6 +77,7 @@ from telethon.tl.custom.message import Message
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from trade import ignored as _ignored
+from trade import tw_exports as _tw
 
 load_dotenv()
 
@@ -404,9 +413,24 @@ async def run(
             )
             return 2
 
-        units = _group_by_album(candidates)
+        units_all = _group_by_album(candidates)
         log.info(
-            "grouped into %d send units (singles + albums)", len(units)
+            "grouped into %d send units (singles + albums)", len(units_all)
+        )
+
+        # 관련성 필터 — 나쁜양파는 대만 수출 데이터 외 콘텐츠도 섞인 일반 채널
+        # (사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간 걸 확인).
+        # 앨범이면 멤버 중 하나라도 대만 수출 캡션이면 유닛 전체(사진 포함) 유지.
+        units = [
+            u for u in units_all
+            if any(_tw.parse_tw_export(m.text or "") is not None for m in u)
+        ]
+        skipped_irrelevant = len(units_all) - len(units)
+        total_msgs = sum(len(u) for u in units)
+        log.info(
+            "relevance filter: %d/%d units are 대만 수출 데이터 "
+            "(%d irrelevant skipped, %d candidate msgs total)",
+            len(units), len(units_all), skipped_irrelevant, len(candidates),
         )
 
         if dry_run:
@@ -416,7 +440,6 @@ async def run(
         forwarded_msgs = 0
         skipped_units = 0
         consecutive_failures = 0
-        total_msgs = len(candidates)
         try:
             for i, unit in enumerate(units, 1):
                 if i == 1 or i % DISK_CHECK_EVERY_UNITS == 0:
