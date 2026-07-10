@@ -289,10 +289,10 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
     return (
         "<!doctype html><html lang='ko'><head><meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>🇹🇼 대만 수출 데이터</title>"
+        "<title>🧋 대만 수출 데이터</title>"
         f"<style>{_CSS}</style></head><body><div class='wrap'>"
         '<div class="nav"><a href="./">← 수출입 대시보드</a></div>'
-        "<h1>🇹🇼 대만 수출 데이터</h1>"
+        "<h1>🧋 대만 수출 데이터</h1>"
         f'<p class="sub">출처 나쁜양파(관세청 대만) · 품목별 월 수출액(USD M$) · '
         f'{len(items)}개 품목'
         f'{" · 최신 " + _html.escape(latest) if latest else ""} · 카드 클릭 = 차트·월별 펼침</p>'
