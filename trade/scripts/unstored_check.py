@@ -30,6 +30,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from trade import cn_exports as _cn
 from trade import ignored as _ignored
 from trade import jp_exports as _jp
 from trade import tw_exports as _tw
@@ -159,6 +160,9 @@ def find_unstored() -> list[dict]:
                 continue
             # 대만 수출 데이터(나쁜양파) — 별도 tw.db, 동일 사유로 제외(사용자 2026-07-10).
             if _tw.parse_tw_export(caption) is not None:
+                continue
+            # 중국 수출 데이터(나쁜양파) — 별도 cn.db, 동일 사유로 제외(사용자 2026-07-11).
+            if _cn.parse_cn_export(caption) is not None:
                 continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))

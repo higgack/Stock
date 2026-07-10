@@ -31,8 +31,9 @@ call so trade-bot's media_group_id grouping still works.
 
 Relevance filter (differs from listen_beon.py, 사용자 2026-07-11 — 실백필 중
 애널리스트 레이팅표 등 무관 콘텐츠가 trade 채널로 넘어간 걸 확인): 나쁜양파는
-대만 수출 데이터 외 다른 트레이딩 정보도 섞어 올리는 일반 채널이라, 캡션이
-`tw_exports.parse_tw_export()` 로 파싱되는 메시지(앨범이면 멤버 중 하나라도)
+대만·중국(같은 채널, 사용자 2026-07-11) 수출 데이터 외 다른 트레이딩 정보도
+섞어 올리는 일반 채널이라, 캡션이 `tw_exports.parse_tw_export()` 또는
+`cn_exports.parse_cn_export()` 로 파싱되는 메시지(앨범이면 멤버 중 하나라도)
 만 forward 한다. BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음.
 
 Lifecycle alerts (best-effort, never raise):
@@ -61,9 +62,16 @@ from telethon.errors import (
     SessionPasswordNeededError,
 )
 
+from trade import cn_exports as _cn
 from trade import tw_exports as _tw
 
 load_dotenv()
+
+
+def _is_relevant(text: str) -> bool:
+    """대만·중국 수출 데이터 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터,
+    사용자 2026-07-11 — 같은 채널에 중국도 추가)."""
+    return _tw.parse_tw_export(text) is not None or _cn.parse_cn_export(text) is not None
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -206,25 +214,25 @@ async def _run_listener() -> int:
                          gid, len(ids), fwd_q.qsize())
             else:
                 log.info("dropped irrelevant album gid=%d (%d msgs) — "
-                          "no 대만 수출 caption", gid, len(ids))
+                          "no 대만·중국 수출 caption", gid, len(ids))
         except Exception as e:
             log.exception("flush_album error: %s", e)
 
     @client.on(events.NewMessage(chats=source))
     async def on_new(event):
         msg = event.message
-        is_tw = _tw.parse_tw_export(msg.text or "") is not None
+        relevant_msg = _is_relevant(msg.text or "")
         gid = getattr(msg, "grouped_id", None)
         if gid is None:
-            if is_tw:
+            if relevant_msg:
                 fwd_q.put_nowait([msg.id])
                 log.info("queued msg=%d (q=%d)", msg.id, fwd_q.qsize())
             else:
-                log.info("dropped irrelevant msg=%d — no 대만 수출 caption",
+                log.info("dropped irrelevant msg=%d — no 대만·중국 수출 caption",
                           msg.id)
             return
         album_buf.setdefault(gid, []).append(msg.id)
-        if is_tw:
+        if relevant_msg:
             album_relevant[gid] = True
         if gid not in album_tasks:
             album_tasks[gid] = asyncio.create_task(flush_album(gid))
