@@ -131,15 +131,10 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
 - 대시보드 인증: 모든 대시보드 HTTP Basic Auth 기본(`DASHBOARD_USER=higgack` + `DASHBOARD_PASSWORD`
   .env 전용, literal 코드·git 금지). NOAH archive 서버가 단일 자격으로 전 surface 일괄 보호.
 
-## 트레이드 레퍼런스북 (HS↔수출입↔회사 매칭 — 요점)
-- 회사명 오타교정 = `mti_companies._COMPANY_TYPO`(매칭) + `price_provider._NAME_ALIASES`(가격) 양쪽
-  1줄. fuzzy 자동교정 금지(운영자 확인분만). 같은회사 다른표기 = `_COMPANY_CANON`.
-- catch-all HS6 과잉부착 = `_THEME_MTI_PIN` 정확 MTI6 핀. 콤마/공백이 사명 일부인 단일회사 =
-  `price_provider._JOINED_COMPANY`. 결합토큰 분리 = `split_names`(회사뷰·미매칭 동일 파이프).
-- DART 보강후보: 승인=`reinforce_approved.csv`, 거절=자동 거절메모리(`_build_reinforce` 가 승인 CSV
-  해시변경 시 패널−승인분 자동적재 → 운영자는 승인분만). 미매칭/보강은 운영자 확인 후 등재.
+## 트레이드 레퍼런스북 · DART 피드
 - DART 공시피드(`bot/dart_feed.py`) 카테고리·🔥중요 판정·칩 순서 정책은 고정 — 임의 변경 금지(REFERENCE).
-(상세 매핑·핀 목록·DART revenue 파서·feed 파서 = REFERENCE.)
+- HS↔수출입↔회사 매칭 세부(오타교정·MTI핀·`split_names`·DART 보강후보) = **`trade/CLAUDE.md`**
+  (trade/ 작업 시 로드) + 상세는 REFERENCE.
 
 ## 멀티마켓 · 기능 상세 → CLAUDE_REFERENCE.md
 US/KR/JP/TW/CN_A/HK 확장 · 실거래 E0 페이퍼+RiskGate · 차트 Phase · Daily Byte · Bottleneck
