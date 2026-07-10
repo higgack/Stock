@@ -142,6 +142,14 @@ DISK_RESUME_BUFFER_GB = float(
 DISK_CHECK_EVERY_UNITS = int(os.environ.get("TRADE_DISK_CHECK_EVERY") or "20")
 DISK_POLL_SECONDS = 60
 
+# 연속 forward 실패 cap — 개별 메시지 삭제/포워드불가는 드문드문 발생하는 게
+# 정상이지만, 연속으로 여러 건 실패하면 세션/권한/네트워크 등 시스템 문제일
+# 가능성이 높음 → 조용히 수천 건을 다 스킵하기 전에 크게 abort(2026-07-11,
+# 사이블링 Badonion 파이프라인 리뷰에서 발견된 클래스 — 동일 fix 이식).
+MAX_CONSECUTIVE_FAILURES = int(
+    os.environ.get("TRADE_MAX_CONSECUTIVE_FWD_FAILURES") or "5"
+)
+
 
 class BackfillAborted(Exception):
     """Raised when the script should exit gracefully so the operator
@@ -381,6 +389,19 @@ async def _forward_unit(client, source, unit: list[Message], dest) -> bool:
                     f"{MAX_FLOOD_WAIT_S}s threshold"
                 )
             delay = e.seconds + 1
+        except Exception as e:
+            # Permanent per-message failure (e.g. MessageIdInvalidError —
+            # source message deleted/edited-to-service between candidate
+            # scan and forward time). Not a FloodWait, retrying won't help
+            # and re-raising would crash the entire multi-thousand-message
+            # backfill over one bad message (2026-07-11, surfaced by the
+            # sibling Badonion pipeline's wide catch-up run — same retry
+            # loop shape here, same crash class). Skip this unit, keep going.
+            log.warning(
+                "permanent forward failure msgs=%s (%s: %s) — skipping unit",
+                msg_ids, type(e).__name__, e,
+            )
+            return False
     log.error("giving up on msgs=%s after 5 attempts", msg_ids)
     return False
 
@@ -535,6 +556,8 @@ async def run(
             return 0
 
         forwarded_msgs = 0
+        skipped_units = 0
+        consecutive_failures = 0
         total_msgs = len(candidates)
         try:
             for i, unit in enumerate(units, 1):
@@ -544,6 +567,23 @@ async def run(
                 ok = await _forward_unit(client, source, unit, dest)
                 if ok:
                     forwarded_msgs += len(unit)
+                    consecutive_failures = 0
+                else:
+                    skipped_units += 1
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                        # A per-message error (deleted/service message) is
+                        # isolated and rare; a run of these back-to-back is
+                        # a signal of something systemic (dest write access
+                        # revoked, source/dest entity gone stale, etc.) —
+                        # that must abort loudly, not get ground through as
+                        # thousands of individually "skipped" units (2026-07-11
+                        # review of the per-unit skip fix above).
+                        raise BackfillAborted(
+                            f"{consecutive_failures} consecutive forward "
+                            f"failures — likely systemic (session/permission/"
+                            f"network), not isolated per-message errors"
+                        )
                 if i % 20 == 0:
                     pace = _current_pause(forwarded_msgs)
                     log.info(
@@ -562,13 +602,18 @@ async def run(
             return 1
 
         log.info(
-            "done: forwarded %d of %d candidate messages",
+            "done: forwarded %d of %d candidate messages (skipped_units=%d)",
             forwarded_msgs,
             total_msgs,
+            skipped_units,
         )
-        if forwarded_msgs > 0:
+        if forwarded_msgs > 0 or skipped_units > 0:
+            # skipped_units>0 도 notify 게이트 포함(2026-07-11 리뷰) — 전부 실패해도
+            # forwarded_msgs=0 이라 조용히 "변경없음" 취급되던 걸 fix.
+            _title = ("✅ <b>BeOn 동기화 완료</b>" if forwarded_msgs > 0
+                      else "⚠️ <b>BeOn 동기화 — 전체 실패</b>")
             _note = (
-                f"✅ <b>BeOn 동기화 완료</b>\n"
+                f"{_title}\n"
                 f"신규 forwarded: {forwarded_msgs}/{total_msgs} msgs\n"
                 f"units: {len(units)}"
             )
@@ -584,13 +629,16 @@ async def run(
                              "beon_skip:" + ",".join(str(i) for i in _cand_ids))]
             if fallback_ids:
                 _note += f"\n⚠️ 출처 불명 {len(fallback_ids)}건 포함"
+            if skipped_units:
+                _note += f"\n⚠️ 영구실패로 스킵된 unit {skipped_units}건(삭제/포워드불가 등)"
             _notify(_note, buttons=_buttons)
         else:
-            # Empty / all-already-ingested / all-ignored window — the
-            # normal quiet state for a safety net behind the realtime
-            # listener. Silent: session health was already proven by the
-            # successful startup above, and a genuine failure would have
-            # raised there. No ⚠️ here (that was a false-positive source).
+            # Only reached when forwarded_msgs==0 AND skipped_units==0 —
+            # i.e. nothing was even attempted (empty / all-already-ingested
+            # / all-ignored window). Any actual forward attempt, success or
+            # failure, routes to the branch above (2026-07-11 — skipped_units
+            # now gates it too, so a failing run is never silent here).
+            # Normal quiet state for a safety net behind the realtime listener.
             log.info(
                 "sync: nothing new (iterated=%d skipped_existing=%d "
                 "skipped_ignored=%d fwd_fallback=%d)",
