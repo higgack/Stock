@@ -180,6 +180,37 @@ bash trade/scripts/free_disk.sh   # one-shot safe cleanup
 # backfill auto-detects the free space and resumes within ~60 s
 ```
 
+## 대만 수출 데이터 — Badonions(나쁜양파, t.me/Badonions)
+
+일본(BeOn)과 동일한 Telethon relay 패턴의 두 번째 소스(사용자 2026-07-10).
+`trade/scripts/backfill_badonion.py` + `trade/scripts/listen_badonion.py`
+가 `backfill_beon.py`/`listen_beon.py` 를 그대로 미러링 — 같은 `.backfill-venv`,
+같은 `TRADE_TELETHON_API_ID`/`TRADE_TELETHON_API_HASH`, 같은 목적지 채널
+(`TRADE_CHANNEL_CHAT_IDS`)을 재사용하고, 세션 파일만 별도
+(`.badonion-session` / `.badonion-listener-session`)라 BeOn 파이프라인과
+독립적으로 동작한다. 캡션은 `trade.tw_exports.parse_tw_export()` 로 파싱되어
+한국(`store.db`)·일본(`jp.db`) 과 분리된 `tw.db` 에 적재되고, `tw.html` 로
+렌더되어 대시보드에서 일본 옆에 링크된다.
+
+```bash
+# 1. (BeOn 이미 설정돼 있으면 스킵) .backfill-venv 준비 — 위 BeOn 섹션 참고
+
+# 2. 리스너 최초 1회 인증 (전화번호 + 코드 + 2FA) — 별도 세션 파일
+cd ~/stock-trade
+.backfill-venv/bin/python -m trade.scripts.listen_badonion --auth
+
+# 3. systemd 유닛 설치 (install-trade-units.sh 가 다음 배포 틱에 자동 설치도 함)
+sudo cp deploy/trade-bot-badonion-sync.service /etc/systemd/system/
+sudo cp deploy/trade-bot-badonion-sync.timer /etc/systemd/system/
+sudo cp deploy/trade-bot-badonion-listener.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now trade-bot-badonion-sync.timer trade-bot-badonion-listener
+
+# 4. 과거 히스토리 백필 (선택)
+.backfill-venv/bin/python trade/scripts/backfill_badonion.py --since 2026-01-01 --dry-run
+tmux new -s badonion-backfill -d ".backfill-venv/bin/python trade/scripts/backfill_badonion.py --since 2026-01-01 2>&1 | tee -a ~/badonion-backfill.log"
+```
+
 ## Dashboard (phase 2b/2c)
 
 The dashboard is a single static HTML file regenerated from `store.db`
