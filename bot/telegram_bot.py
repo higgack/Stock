@@ -1128,7 +1128,7 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://stockhub.kr/">Stockhub</a>
  • <a href="https://jusikbot.com/">Jusikbot — Real-time Stock Dashboard</a>
  • <a href="https://tebi.raoni.xyz/">트비 주식뉴스 어그리게이터 리포트</a>
- • <a href="https://www.tradeodds.io/">Stop guessing. See what history did next.</a>
+ • <a href="https://www.tradeodds.io/">tradeodds</a>
  • <a href="https://aibottlenecks.app/">AI Bottlenecks</a>
  • <a href="https://analytics.blancwm.com/">Analytics Portal</a>
  • <a href="https://reports.blueming.net/dashboard">report summary</a>
@@ -1150,7 +1150,8 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://thevc.kr/">thevc</a>
  • <a href="https://www.jipfeed.com/">집피드</a>
  • <a href="https://livewiki.com/ko">livewiki</a>
- • <a href="https://easyconomics.com/">[중요] funesay board</a>"""
+ • <a href="https://easyconomics.com/">[중요] funesay board</a>
+ • <a href="https://soonsal.com/">Soonsal</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
