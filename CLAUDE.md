@@ -44,7 +44,8 @@
 13. UI '안됨' = 브라우저 접속 URL(포트·프록시·토큰경로) 맨 먼저 물어라. curl 200 ≠ 브라우저
     정상(프록시). DOM 측정 ≠ 스크린샷. 같은증상 반복 = 즉시 가시정보 요청. 실수기록은 같은 턴에.
 14. 대시보드 CSS 디버깅(샌드박스서 렌더 불가, 2026-06-20 trade 차트표 ~10턴 삽질): 추측 반복 금지
-    → 생성 HTML 먼저 찍어 구조 확인 + CSS 상속함정 의심 — `.ind-table td{text-align:right}` 가
+    → 새 대시보드/CSS 작업 전 `DESIGN.md`(디자인 토큰·컴포넌트 패턴) 참조.
+    생성 HTML 먼저 찍어 구조 확인 + CSS 상속함정 의심 — `.ind-table td{text-align:right}` 가
     colspan 상세셀로 누수(코멘트 우측정렬·좌측잘림), grid 를 `<td>` 직속으로 두면 트랙 깨짐(블록
     div 래퍼로 해결), `direction:rtl`(표 최신-우측 디폴트)는 JS scrollLeft 와 충돌(JS 제거),
     자식표 max-content 가 부모표 폭 늘려 스크롤바 엉뚱한 위치(직속표만 width:100%). 2회+면 DOM 요청.
@@ -110,6 +111,13 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
   새 비용surface = `_compute_stats` + `cmd_usage` 동시갱신. 비용카드 표기 = 오늘/이번달/누적
   3창(KST) 전 대시보드 통일(사용자 2026-07-05).
 - 외부 third-party 사이트는 `/sites`(`_SITES_TEXT`)만, 이모지 없는 plain text. 메인 nav 추가 금지.
+
+## 미니멀 코드 · 토큰 절약 (ponytail/codex-first 요지 이식, 2026-07-10)
+- 코드 작성 전 사다리: ①불필요하면 스킵 ②코드베이스에 이미 있으면 재사용 ③표준lib/기존
+  의존성이면 사용 ④한 줄로 되면 한 줄 ⑤그래야만 최소 완전 구현. diff = 요청 범위만
+  (관성 리팩토링·방어코드 부풀리기 금지). 같은 아웃풋이면 항상 더 적은 코드/출력.
+- 대규모 탐색·기계적 다파일 작업 = 서브에이전트 위임(메인 컨텍스트에 파일 덤프 금지).
+  noisy 검증 출력 = rtk 규칙(§Pre-commit 6). 중간응답 최소는 §배치 워크플로 2 그대로.
 
 ## Automation-first
 모든 반복작업 = 자동화(asyncio task / systemd timer / cron). 수동 SSH·반복 명령 금지. fix 가
