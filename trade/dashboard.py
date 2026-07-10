@@ -417,6 +417,7 @@ def _load_eval_miss_summary(
     # 스킵, 옛 39건 stale 로그). (2) 운영자 /ignore 한 msg_id — find_unstored 는
     # 이미 ignored_ids 를 스킵하지만 그 전에 적재된 옛 entry 는 카운트에 남아있어
     # 불일치 → msg_id 도 제외해 일관. read-only(파일 미변경)·다음 렌더 즉시 반영.
+    from trade import cn_exports as _cn
     from trade import ignored as _ignored
     from trade import jp_exports as _jp
     from trade import tw_exports as _tw
@@ -443,6 +444,8 @@ def _load_eval_miss_summary(
                 if _jp.parse_jp_export(cap) is not None:    # JP → jp.db 정상 처리
                     continue
                 if _tw.parse_tw_export(cap) is not None:    # TW → tw.db 정상 처리
+                    continue
+                if _cn.parse_cn_export(cap) is not None:    # CN → cn.db 정상 처리
                     continue
                 count += 1
                 detected = rec.get("detected_at")
@@ -846,7 +849,11 @@ def _build_html(
         # JP 와 동일 폰트문제(일부 폰트에서 'tw' 텍스트로 렌더, 사용자 2026-07-11
         # 스크린샷 확인) → 항상 보이는 🧋(버블티, 대만 상징) 사용.
         ' &nbsp;·&nbsp; <a href="tw.html">'
-        '🧋 대만 수출 데이터 — 품목별 →</a></div>'
+        '🧋 대만 수출 데이터 — 품목별 →</a>'
+        # 🐼 중국 수출 데이터 (나쁜양파, 같은 채널, 사용자 2026-07-11) — 대만 옆.
+        # 🇨🇳 flag 도 동일 폰트문제 우려 → 처음부터 논-플래그 이모지(🐼) 사용.
+        ' &nbsp;·&nbsp; <a href="cn.html">'
+        '🐼 중국 수출 데이터 — 품목별 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2749,6 +2756,15 @@ def main() -> int:
         from trade import tw_exports
         tw_exports.regenerate(
             args.db.parent / "tw.db", args.out.parent / "tw.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    # 🐼 중국 수출 데이터(나쁜양파, 같은 채널) — 별도 cn.db → cn.html (대만 옆
+    # 형제 파일, 사용자 2026-07-11). 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
+    try:
+        from trade import cn_exports
+        cn_exports.regenerate(
+            args.db.parent / "cn.db", args.out.parent / "cn.html",
             media_url_prefix=args.media_url)
     except Exception:
         pass
