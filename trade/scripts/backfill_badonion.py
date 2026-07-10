@@ -117,6 +117,13 @@ DISK_RESUME_BUFFER_GB = float(
 DISK_CHECK_EVERY_UNITS = int(os.environ.get("TRADE_DISK_CHECK_EVERY") or "20")
 DISK_POLL_SECONDS = 60
 
+# 연속 forward 실패 cap — 개별 메시지 삭제/포워드불가는 드문드문 발생하는 게
+# 정상이지만, 연속으로 여러 건 실패하면 세션/권한/네트워크 등 시스템 문제일
+# 가능성이 높음 → 조용히 수천 건을 다 스킵하기 전에 크게 abort(2026-07-11).
+MAX_CONSECUTIVE_FAILURES = int(
+    os.environ.get("TRADE_MAX_CONSECUTIVE_FWD_FAILURES") or "5"
+)
+
 
 class BackfillAborted(Exception):
     """Raised when the script should exit gracefully so the operator
@@ -283,6 +290,18 @@ async def _forward_unit(client, source, unit: list[Message], dest) -> bool:
                     f"{MAX_FLOOD_WAIT_S}s threshold"
                 )
             delay = e.seconds + 1
+        except Exception as e:
+            # Permanent per-message failure (e.g. MessageIdInvalidError —
+            # source message deleted/edited-to-service between candidate
+            # scan and forward time). Not a FloodWait, retrying won't help
+            # and re-raising would crash the entire multi-thousand-message
+            # backfill over one bad message (2026-07-11, surfaced by a wide
+            # Badonion catch-up run). Skip this unit, keep going.
+            log.warning(
+                "permanent forward failure msgs=%s (%s: %s) — skipping unit",
+                msg_ids, type(e).__name__, e,
+            )
+            return False
     log.error("giving up on msgs=%s after 5 attempts", msg_ids)
     return False
 
@@ -395,6 +414,8 @@ async def run(
             return 0
 
         forwarded_msgs = 0
+        skipped_units = 0
+        consecutive_failures = 0
         total_msgs = len(candidates)
         try:
             for i, unit in enumerate(units, 1):
@@ -404,6 +425,23 @@ async def run(
                 ok = await _forward_unit(client, source, unit, dest)
                 if ok:
                     forwarded_msgs += len(unit)
+                    consecutive_failures = 0
+                else:
+                    skipped_units += 1
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                        # A per-message error (deleted/service message) is
+                        # isolated and rare; a run of these back-to-back is
+                        # a signal of something systemic (dest write access
+                        # revoked, source/dest entity gone stale, etc.) —
+                        # that must abort loudly, not get ground through as
+                        # thousands of individually "skipped" units (2026-07-11
+                        # review of the per-unit skip fix above).
+                        raise BackfillAborted(
+                            f"{consecutive_failures} consecutive forward "
+                            f"failures — likely systemic (session/permission/"
+                            f"network), not isolated per-message errors"
+                        )
                 if i % 20 == 0:
                     pace = _current_pause(forwarded_msgs)
                     log.info(
@@ -422,18 +460,26 @@ async def run(
             return 1
 
         log.info(
-            "done: forwarded %d of %d candidate messages",
+            "done: forwarded %d of %d candidate messages (skipped_units=%d)",
             forwarded_msgs,
             total_msgs,
+            skipped_units,
         )
-        if forwarded_msgs > 0:
+        if forwarded_msgs > 0 or skipped_units > 0:
+            # skipped_units>0 도 notify 게이트 포함(2026-07-11 리뷰) — 전부 실패해도
+            # forwarded_msgs=0 이라 조용히 "변경없음" 취급되던 걸 fix. 실패가
+            # 반복되면 operator 가 로그 대신 이 알림으로 알아채야 함.
+            _title = ("✅ <b>나쁜양파 동기화 완료</b>" if forwarded_msgs > 0
+                      else "⚠️ <b>나쁜양파 동기화 — 전체 실패</b>")
             _note = (
-                f"✅ <b>나쁜양파 동기화 완료</b>\n"
+                f"{_title}\n"
                 f"신규 forwarded: {forwarded_msgs}/{total_msgs} msgs\n"
                 f"units: {len(units)}"
             )
             if fwd_fallback_count:
                 _note += f"\n⚠️ 출처 불명 {fwd_fallback_count}건 포함"
+            if skipped_units:
+                _note += f"\n⚠️ 영구실패로 스킵된 unit {skipped_units}건(삭제/포워드불가 등)"
             _notify(_note)
         else:
             log.info(

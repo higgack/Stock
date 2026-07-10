@@ -832,18 +832,21 @@ def _build_html(
         'ym.addEventListener("search",function(){if(!(ym.value||"").trim())res.innerHTML="";});'
         '})();</script>'
         # 🤖 유료 AI 보고서 아카이브 링크 (사용자 2026-06-18 '돈내고 분석한건 대시보드에 아카이브').
+        # nav 한줄 유지 위해 설명 꼬리 잘라냄(사용자 2026-07-11 — 앵커 단어까지만).
         + '<div class="report-archive-link"><a href="report_archive.html">'
-        '🤖 AI 보고서 아카이브 — 유료로 생성한 기업/전체 보고서 다시 보기 →</a>'
+        '🤖 AI 보고서 아카이브 — 유료로 →</a>'
         # 📖 품목 레퍼런스북 (사용자 2026-06-18 '품목↔HS↔관련기업 레퍼런스북').
         ' &nbsp;·&nbsp; <a href="reference.html">'
-        '📖 품목 레퍼런스북 — 품목 ↔ HS코드 ↔ 산업 ↔ 관련기업 →</a>'
+        '📖 품목 레퍼런스북 — 품목 →</a>'
         # 🗾 일본 수출 데이터 (BeOn, 사용자 2026-06-27) — 별도 페이지. 🇯🇵 flag 는
         # 일부 폰트에서 'JP' 텍스트로 렌더 → 항상 보이는 🗾(일본 지도) 사용(사용자 2026-06-28).
         ' &nbsp;·&nbsp; <a href="jp.html">'
-        '🗾 일본 수출 데이터 — 품목별 월 수출액·단가 →</a>'
-        # 🇹🇼 대만 수출 데이터 (나쁜양파, 사용자 2026-07-10) — 일본 옆.
+        '🗾 일본 수출 데이터 — 품목별 →</a>'
+        # 🇹🇼 대만 수출 데이터 (나쁜양파, 사용자 2026-07-10) — 일본 옆. 🇹🇼 flag 도
+        # JP 와 동일 폰트문제(일부 폰트에서 'tw' 텍스트로 렌더, 사용자 2026-07-11
+        # 스크린샷 확인) → 항상 보이는 🧋(버블티, 대만 상징) 사용.
         ' &nbsp;·&nbsp; <a href="tw.html">'
-        '🇹🇼 대만 수출 데이터 — 품목별 월 수출액·관련기업 →</a></div>'
+        '🧋 대만 수출 데이터 — 품목별 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
