@@ -112,6 +112,13 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
   3창(KST) 전 대시보드 통일(사용자 2026-07-05).
 - 외부 third-party 사이트는 `/sites`(`_SITES_TEXT`)만, 이모지 없는 plain text. 메인 nav 추가 금지.
 
+## 미니멀 코드 · 토큰 절약 (ponytail/codex-first 요지 이식, 2026-07-10)
+- 코드 작성 전 사다리: ①불필요하면 스킵 ②코드베이스에 이미 있으면 재사용 ③표준lib/기존
+  의존성이면 사용 ④한 줄로 되면 한 줄 ⑤그래야만 최소 완전 구현. diff = 요청 범위만
+  (관성 리팩토링·방어코드 부풀리기 금지). 같은 아웃풋이면 항상 더 적은 코드/출력.
+- 대규모 탐색·기계적 다파일 작업 = 서브에이전트 위임(메인 컨텍스트에 파일 덤프 금지).
+  noisy 검증 출력 = rtk 규칙(§Pre-commit 6). 중간응답 최소는 §배치 워크플로 2 그대로.
+
 ## Automation-first
 모든 반복작업 = 자동화(asyncio task / systemd timer / cron). 수동 SSH·반복 명령 금지. fix 가
 운영자 반복명령 요구하면 잘못된 fix — 런타임 자가구동으로 재설계. 우선순위: in-process scheduler
