@@ -180,22 +180,28 @@ bash trade/scripts/free_disk.sh   # one-shot safe cleanup
 # backfill auto-detects the free space and resumes within ~60 s
 ```
 
-## 대만·중국 수출 데이터 — Badonions(나쁜양파, t.me/Badonions)
+## 대만·중국·일본(2번째 소스) 수출 데이터 — Badonions(나쁜양파, t.me/Badonions)
 
 일본(BeOn)과 동일한 Telethon relay 패턴의 두 번째 소스(사용자 2026-07-10,
-중국 추가 2026-07-11 — "같은 텔레그램"). `trade/scripts/backfill_badonion.py`
-+ `trade/scripts/listen_badonion.py` 가 `backfill_beon.py`/`listen_beon.py` 를
-그대로 미러링 — 같은 `.backfill-venv`, 같은 `TRADE_TELETHON_API_ID`/
-`TRADE_TELETHON_API_HASH`, 같은 목적지 채널(`TRADE_CHANNEL_CHAT_IDS`)을
-재사용하고, 세션 파일만 별도(`.badonion-session` / `.badonion-listener-session`)
-라 BeOn 파이프라인과 독립적으로 동작한다.
+중국 추가 2026-07-11 — "같은 텔레그램", 일본 2번째 소스 추가 2026-07-11 —
+"일본은 2개의 서로 다른 채널에서 2개의 대쉬보드로 갈거야"). 나쁜양파 채널이
+BeOn 과 별도로 자체 일본 수출 통계도 발행하는데, 운영자가 두 소스를 의도적으로
+분리 유지하길 원해서 `jp_exports.py`(BeOn)를 건드리지 않고 완전히 독립된
+`jp2_exports.py` + `jp2.db` + `jp2.html` 로 추가했다.
 
-나쁜양파는 대만·중국 수출 데이터 외에 애널리스트 레이팅표 등 무관한 트레이딩
-정보도 섞어 올리는 일반 채널이라(BeOn 과 다른 점), forward 시점에
-`trade.tw_exports.parse_tw_export()` 또는 `trade.cn_exports.parse_cn_export()`
-로 매칭되는 캡션(앨범이면 멤버 중 하나라도)만 골라 보낸다. 대만은
-`store.db`·`jp.db` 와 분리된 `tw.db` → `tw.html`, 중국은 별도 `cn.db` →
-`cn.html` 로 적재/렌더되어 대시보드에서 일본 옆에 나란히 링크된다.
+`trade/scripts/backfill_badonion.py` + `trade/scripts/listen_badonion.py` 가
+`backfill_beon.py`/`listen_beon.py` 를 그대로 미러링 — 같은 `.backfill-venv`,
+같은 `TRADE_TELETHON_API_ID`/`TRADE_TELETHON_API_HASH`, 같은 목적지 채널
+(`TRADE_CHANNEL_CHAT_IDS`)을 재사용하고, 세션 파일만 별도(`.badonion-session`
+/ `.badonion-listener-session`)라 BeOn 파이프라인과 독립적으로 동작한다.
+
+나쁜양파는 대만·중국·일본 수출 데이터 외에 애널리스트 레이팅표 등 무관한
+트레이딩 정보도 섞어 올리는 일반 채널이라(BeOn 과 다른 점), forward 시점에
+`trade.tw_exports.parse_tw_export()`/`trade.cn_exports.parse_cn_export()`/
+`trade.jp2_exports.parse_jp2_export()` 중 하나로 매칭되는 캡션(앨범이면 멤버
+중 하나라도)만 골라 보낸다. 대만은 `store.db`·`jp.db` 와 분리된 `tw.db` →
+`tw.html`, 중국은 별도 `cn.db` → `cn.html`, 일본(나쁜양파)은 별도 `jp2.db` →
+`jp2.html` 로 적재/렌더되어 대시보드에 나란히 링크된다.
 
 ```bash
 # 1. (BeOn 이미 설정돼 있으면 스킵) .backfill-venv 준비 — 위 BeOn 섹션 참고

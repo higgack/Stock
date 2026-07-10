@@ -2,19 +2,21 @@
 private trade channel so trade-bot can ingest them like live forwards.
 
 미러 of backfill_beon.py (사용자 2026-07-10 — "일본이랑 똑같은 방식으로 대만
-가져와줘"). 나쁜양파는 대만·중국(사용자 2026-07-11 — "같은 텔레그램") 관세
-월별 품목 수출통계(품목당 관련기업 여러 개 + 최신월/과거 히스토리 동봉)를
-텔레그램으로 발행 — 별도 tw.db/cn.db 로 적재되어 일본 옆 tw.html/cn.html
-대시보드에 렌더된다(trade/tw_exports.py, trade/cn_exports.py, trade/dashboard.py).
+가져와줘"). 나쁜양파는 대만·중국(사용자 2026-07-11 — "같은 텔레그램")에 더해
+일본(사용자 2026-07-11 — "일본은 2개의 서로 다른 채널에서 2개의 대쉬보드로
+갈거야", BeOn 과 별도 두 번째 소스) 관세 월별 품목 수출통계(품목당 관련기업
+여러 개 + 최신월/과거 히스토리 동봉)를 텔레그램으로 발행 — 별도 tw.db/cn.db/
+jp2.db 로 적재되어 tw.html/cn.html/jp2.html 대시보드에 렌더된다
+(trade/tw_exports.py, trade/cn_exports.py, trade/jp2_exports.py, trade/dashboard.py).
 
 ⚠️ BeOn 과의 차이점(사용자 2026-07-11, 실백필 중 애널리스트 레이팅표가 trade
-채널로 넘어간 걸 확인): 나쁜양파는 대만·중국 수출 데이터 외에 애널리스트
+채널로 넘어간 걸 확인): 나쁜양파는 대만·중국·일본 수출 데이터 외에 애널리스트
 레이팅표·Capex 비교차트 등 무관한 트레이딩 정보도 섞어 올리는 일반 채널 —
 BeOn 처럼 '전부 forward 후 다운스트림에서 파싱 실패분만 버림' 방식을 쓰면
 무관 콘텐츠가 전부 private trade 채널에 그대로 쌓인다. 그래서 이 스크립트는
-forward 시점에 `_is_relevant()`(tw_exports/cn_exports 파서 둘 다 시도)로
-대만·중국 수출 캡션인 unit(앨범이면 멤버 중 하나라도 매칭)만 골라 보낸다 —
-BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음.
+forward 시점에 `_is_relevant()`(tw_exports/cn_exports/jp2_exports 파서 셋 다
+시도)로 대만·중국·일본 수출 캡션인 unit(앨범이면 멤버 중 하나라도 매칭)만
+골라 보낸다 — BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음.
 
 Works both as a one-off catch-up and as a periodic sync driven by
 trade-bot-badonion-sync.timer. Idempotent — scans inbox.jsonl and skips
@@ -80,13 +82,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from trade import cn_exports as _cn
 from trade import ignored as _ignored
+from trade import jp2_exports as _jp2
 from trade import tw_exports as _tw
 
 
 def _is_relevant(text: str) -> bool:
-    """대만·중국 수출 데이터 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터,
-    사용자 2026-07-11 — 같은 채널에 중국도 추가)."""
-    return _tw.parse_tw_export(text) is not None or _cn.parse_cn_export(text) is not None
+    """대만·중국·일본(나쁜양파 두 번째 소스) 수출 데이터 캡션인지(나쁜양파
+    채널의 무관 콘텐츠 필터, 사용자 2026-07-11 — 같은 채널에 중국·일본 추가)."""
+    return (_tw.parse_tw_export(text) is not None
+            or _cn.parse_cn_export(text) is not None
+            or _jp2.parse_jp2_export(text) is not None)
 
 load_dotenv()
 
@@ -427,10 +432,10 @@ async def run(
             "grouped into %d send units (singles + albums)", len(units_all)
         )
 
-        # 관련성 필터 — 나쁜양파는 대만·중국 수출 데이터 외 콘텐츠도 섞인 일반
-        # 채널(사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간 걸
-        # 확인). 앨범이면 멤버 중 하나라도 대만·중국 수출 캡션이면 유닛 전체
-        # (사진 포함) 유지.
+        # 관련성 필터 — 나쁜양파는 대만·중국·일본 수출 데이터 외 콘텐츠도 섞인
+        # 일반 채널(사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간
+        # 걸 확인). 앨범이면 멤버 중 하나라도 대만·중국·일본 수출 캡션이면 유닛
+        # 전체(사진 포함) 유지.
         units = [
             u for u in units_all
             if any(_is_relevant(m.text or "") for m in u)
@@ -438,7 +443,7 @@ async def run(
         skipped_irrelevant = len(units_all) - len(units)
         total_msgs = sum(len(u) for u in units)
         log.info(
-            "relevance filter: %d/%d units are 대만·중국 수출 데이터 "
+            "relevance filter: %d/%d units are 대만·중국·일본 수출 데이터 "
             "(%d irrelevant skipped, %d candidate msgs total)",
             len(units), len(units_all), skipped_irrelevant, len(candidates),
         )

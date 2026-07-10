@@ -419,6 +419,7 @@ def _load_eval_miss_summary(
     # 불일치 → msg_id 도 제외해 일관. read-only(파일 미변경)·다음 렌더 즉시 반영.
     from trade import cn_exports as _cn
     from trade import ignored as _ignored
+    from trade import jp2_exports as _jp2
     from trade import jp_exports as _jp
     from trade import tw_exports as _tw
     ignored_ids = _ignored.load()
@@ -446,6 +447,8 @@ def _load_eval_miss_summary(
                 if _tw.parse_tw_export(cap) is not None:    # TW → tw.db 정상 처리
                     continue
                 if _cn.parse_cn_export(cap) is not None:    # CN → cn.db 정상 처리
+                    continue
+                if _jp2.parse_jp2_export(cap) is not None:  # JP2 → jp2.db 정상 처리
                     continue
                 count += 1
                 detected = rec.get("detected_at")
@@ -853,7 +856,12 @@ def _build_html(
         # 🐼 중국 수출 데이터 (나쁜양파, 같은 채널, 사용자 2026-07-11) — 대만 옆.
         # 🇨🇳 flag 도 동일 폰트문제 우려 → 처음부터 논-플래그 이모지(🐼) 사용.
         ' &nbsp;·&nbsp; <a href="cn.html">'
-        '🐼 중국 수출 데이터 — 품목별 →</a></div>'
+        '🐼 중국 수출 데이터 — 품목별 →</a>'
+        # 🎌 일본 수출 데이터 — 나쁜양파(두 번째 소스, 사용자 2026-07-11 "일본은
+        # 2개의 서로 다른 채널에서 2개의 대쉬보드로 갈거야"). 위 jp.html(BeOn)과는
+        # 별도 페이지 — 🎌(교차깃발, flag-sequence 아니라 폰트문제 없음)로 구분.
+        ' &nbsp;·&nbsp; <a href="jp2.html">'
+        '🎌 일본 수출 데이터(나쁜양파) — 품목별 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2765,6 +2773,16 @@ def main() -> int:
         from trade import cn_exports
         cn_exports.regenerate(
             args.db.parent / "cn.db", args.out.parent / "cn.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    # 🎌 일본 수출 데이터 — 나쁜양파 두 번째 소스(BeOn 의 jp.html 과 별도 페이지,
+    # 사용자 2026-07-11 "일본은 2개의 서로 다른 채널에서 2개의 대쉬보드로 갈거야").
+    # 별도 jp2.db → jp2.html. 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
+    try:
+        from trade import jp2_exports
+        jp2_exports.regenerate(
+            args.db.parent / "jp2.db", args.out.parent / "jp2.html",
             media_url_prefix=args.media_url)
     except Exception:
         pass

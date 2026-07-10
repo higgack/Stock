@@ -1,5 +1,5 @@
 [Unit]
-Description=나쁜양파(Badonions) 대만·중국 수출 통계 실시간 Telethon 리스너
+Description=나쁜양파(Badonions) 대만·중국·일본 수출 통계 실시간 Telethon 리스너
 After=network-online.target
 Wants=network-online.target
 

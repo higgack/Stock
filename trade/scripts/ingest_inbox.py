@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 
 from trade import cn_exports as _cn
 from trade import ignored as _ignored
+from trade import jp2_exports as _jp2
 from trade import jp_exports as _jp
 from trade import tw_exports as _tw
 from trade.parser import parse_caption
@@ -138,6 +139,7 @@ def _ingest_group(
     jp_conn=None,
     tw_conn=None,
     cn_conn=None,
+    jp2_conn=None,
 ) -> None:
     """Resolve one album/solo into a single alert row + media paths."""
     captioned = [r for r in group if r.get("caption_present")]
@@ -218,6 +220,23 @@ def _ingest_group(
                 or primary.get("date") or "",
                 media_paths=cn_media)
             counters["cn_inserted"] = counters.get("cn_inserted", 0) + (1 if stored else 0)
+            return
+        # 일본 수출 데이터 — 나쁜양파 소스(BeOn 과 별도 두 번째 채널). 한국·
+        # JP(BeOn)·대만·중국 전부 아님. JP2 파서로 5차 폴백 → 별도 jp2.db
+        # (사용자 2026-07-11, tw_exports 와 동일 fallback 패턴).
+        if jp2_conn is not None and _jp2.parse_jp2_export(caption_text) is not None:
+            jp2_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    jp2_media.append(p)
+            stored = _jp2.ingest(
+                jp2_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=jp2_media)
+            counters["jp2_inserted"] = counters.get("jp2_inserted", 0) + (1 if stored else 0)
             return
         counters["unparseable"] += 1
         return
@@ -303,6 +322,9 @@ def main() -> int:
     tw_conn = _tw.open_tw_db(args.db.parent / "tw.db")
     # 중국 수출(나쁜양파) 폴백 저장소 — 나머지 전부와 분리(무영향).
     cn_conn = _cn.open_cn_db(args.db.parent / "cn.db")
+    # 일본 수출 나쁜양파 소스(BeOn 과 별도 두 번째 채널) 폴백 저장소 — 나머지
+    # 전부와 분리(무영향).
+    jp2_conn = _jp2.open_jp2_db(args.db.parent / "jp2.db")
 
     groups = _group_messages(rows)
     log.info("grouped into %d send units", len(groups))
@@ -321,13 +343,14 @@ def main() -> int:
         "jp_inserted": 0,
         "tw_inserted": 0,
         "cn_inserted": 0,
+        "jp2_inserted": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
         "media_relinked": 0,
     }
     for grp in groups:
         _ingest_group(conn, grp, args.media_root, counters, ignored_ids,
-                      jp_conn, tw_conn, cn_conn)
+                      jp_conn, tw_conn, cn_conn, jp2_conn)
 
     log.info("ingest counters: %s", counters)
     s = stats(conn)
