@@ -396,25 +396,27 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(len(keys), len(fb._MARGIN_PAIRS))        # key 유일
 
     def test_live_fx_overlay_wired(self):
-        # 환율 실시간 오버레이(사용자 2026-07-02, 2026-07-14 엔/위안 확장) —
-        # 유동성 페이지가 api/usdkrw·usdjpy·usdcny 를 로드 시+5분 주기로 fetch,
-        # DEXKOUS/DEXJPUS/DEXCHUS 최신값만 덮는 계약.
+        # 환율 실시간 오버레이(사용자 2026-07-02, 2026-07-14 엔/위안 1차 +
+        # 대만·유로·파운드·스위스프랑 2차 확장) — 유동성 페이지가 api/usd<pair>
+        # 를 로드 시+5분 주기로 fetch, 대응 FRED(또는 USDTWD 는 네이버 전용)
+        # 시리즈 최신값만 덮는 계약.
         html = fb.render_liquidity_page([], {}, None)
         self.assertIn("fetch('api/'+p[0])", html)          # 공통 fetch 경로
-        for pair in ("'usdkrw','DEXKOUS'", "'usdjpy','DEXJPUS'",
-                     "'usdcny','DEXCHUS'"):
-            self.assertIn(pair, html)
-        self.assertIn("setInterval(liveFx,300000)", html)
-        for series_id in ("DEXKOUS", "DEXJPUS", "DEXCHUS"):
+        pairs = [("usdkrw", "DEXKOUS"), ("usdjpy", "DEXJPUS"),
+                 ("usdcny", "DEXCHUS"), ("usdeur", "DEXUSEU"),
+                 ("usdgbp", "DEXUSUK"), ("usdchf", "DEXSZUS"),
+                 ("usdtwd", "USDTWD")]
+        for pair, series_id in pairs:
+            self.assertIn(f"'{pair}','{series_id}'", html)
             self.assertIn(series_id, html)
+        self.assertIn("setInterval(liveFx,300000)", html)
         # 서버 라우트·핸들러 배선(E2E grep — 헬퍼만 만들고 미배선 방지).
         srv = open("bot/dashboard_server.py", encoding="utf-8").read()
-        self.assertIn('"/api/usdkrw"', srv)
         self.assertIn("_handle_fx_api", srv)
         self.assertIn("fetch_kr_fx", srv)
         self.assertIn("fetch_world_fx", srv)
-        self.assertIn('"usdjpy": ("world", "USDJPY")', srv)
-        self.assertIn('"usdcny": ("world", "USDCNY")', srv)
+        for pair, _ in pairs:
+            self.assertIn(f'"{pair}"', srv)
 
     def test_payload_script_safe(self):
         # '<' escape(</script> 조기 종료 차단) — valuechain 패턴 동일 계약.
@@ -436,7 +438,8 @@ class DiscontinuedSweepTests(unittest.TestCase):
         for dead in ("MANMM101JPM189S", "MANMM101EZM189S", "MANMM101KRM189S",
                      "INTDSRKRM193N", "INTDSRCNM193N"):
             self.assertNotIn(dead, ids)
-        self.assertEqual(len(LIQ_SERIES), 46)   # 39 −CNM2 +플래그십 8(2026-07-05)
+        # 39 −CNM2 +플래그십 8(2026-07-05) +환율 4(대만·유로·파운드·스위스프랑, 2026-07-14)
+        self.assertEqual(len(LIQ_SERIES), 50)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
@@ -445,7 +448,9 @@ class DiscontinuedSweepTests(unittest.TestCase):
                                 "AK:LPR1Y": "ak:lpr1y",
                                 # AK:CNM2 는 라이브에서 12개월+ stale 판정
                                 # (라벨/소스 원인 미상) → 삭제(2026-07-04)
-                                "ECOS:KR10Y": "ecos:kr10y"})
+                                "ECOS:KR10Y": "ecos:kr10y",
+                                # FRED H.10 미수록 대만달러 — 네이버 전용(2026-07-14)
+                                "USDTWD": "naver_fx_latest:USDTWD"})
         # 대체 소스 함수 실재(배선 E2E)
         from bot import bok_ecos_client, akshare_client
         self.assertIn("m2", bok_ecos_client._SERIES)
@@ -509,6 +514,34 @@ class DiscontinuedSweepTests(unittest.TestCase):
         finally:
             bec.fetch_series_points = orig
         self.assertEqual(fb._alt_history("unknown:x"), [])
+
+    def test_naver_fx_latest_row_happy_and_missing(self):
+        # FRED 미수록 통화(대만달러) — naver_fx_latest 최소 row(히스토리 없음,
+        # 2026-07-14). happy: close 있으면 latest/latest_date 채우고 hist=[]·
+        # mom/m3/yoy=None. edge: reutersCode 없거나 close=None → 드롭(None).
+        from bot import naver_marketindex as nmi
+        s = {"id": "USDTWD", "name": "대만달러/달러 환율"}
+        orig = nmi.fetch_world_fx
+        nmi.fetch_world_fx = lambda: {"USDTWD": {"close": 32.1, "change": -0.05,
+                                                  "pct": -0.16}}
+        try:
+            row = fb._naver_fx_latest_row(s, "USDTWD")
+        finally:
+            nmi.fetch_world_fx = orig
+        self.assertEqual(row["latest"], 32.1)
+        self.assertEqual(row["latest_date"], "네이버 실시간")
+        self.assertEqual(row["hist"], [])
+        self.assertIsNone(row["mom"])
+        self.assertIsNone(row["m3"])
+        self.assertIsNone(row["yoy"])
+        self.assertEqual(row["id"], "USDTWD")           # 원 카탈로그 필드 보존
+
+        nmi.fetch_world_fx = lambda: {}
+        try:
+            self.assertIsNone(fb._naver_fx_latest_row(s, "USDTWD"))
+            self.assertIsNone(fb._naver_fx_latest_row(s, "NOPE"))
+        finally:
+            nmi.fetch_world_fx = orig
 
     def test_render_stale_badge_and_pp(self):
         row = {"id": "X", "name": "t", "category": "기준금리", "unit": "%",
@@ -688,3 +721,27 @@ class LiqExpansion20260705Tests(unittest.TestCase):
             self.assertIn(w, ids)
         self.assertNotIn("PCU332992332992", ids)
         self.assertNotIn("PCU5221105221101", ids)   # 은행 sub — Medium 보류
+
+
+class FxExpansion20260714Tests(unittest.TestCase):
+    """환율 2차 확장(사용자 '대만달러, 유로, 파운드, 스위스프랑도 추가... 네이버
+    실시간으로') — FRED 4종(DEXUSEU/DEXUSUK/DEXSZUS + 대만은 FRED 미수록이라
+    USDTWD 는 naver_fx_latest 전용)."""
+
+    def test_new_currencies_present(self):
+        ids = {s["id"] for s in LIQ_SERIES}
+        for w in ("DEXUSEU", "DEXUSUK", "DEXSZUS", "USDTWD"):
+            self.assertIn(w, ids)
+        for w in ("DEXUSEU", "DEXUSUK", "DEXSZUS", "USDTWD"):
+            s = next(x for x in LIQ_SERIES if x["id"] == w)
+            self.assertEqual(s["category"], "환율")
+            self.assertFalse(s["is_rate"])
+        twd = next(x for x in LIQ_SERIES if x["id"] == "USDTWD")
+        self.assertEqual(twd["src"], "naver_fx_latest:USDTWD")
+
+    def test_naver_fx_latest_wired_into_load_liq(self):
+        # 헬퍼만 만들고 미배선 방지(E2E grep) — _load_liq 가 naver_fx_latest:
+        # 접두 src 를 FRED fetch_history 경로 대신 _naver_fx_latest_row 로 라우팅.
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        self.assertIn('src.startswith("naver_fx_latest:")', src)
+        self.assertIn("_naver_fx_latest_row(s, src.split", src)
