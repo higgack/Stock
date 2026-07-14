@@ -490,6 +490,24 @@ def _load_ppi() -> tuple[list[dict], list[dict], list[str]]:
     return rows, margin_spreads(H), dropped
 
 
+def _naver_fx_latest_row(s: dict, reuters_code: str) -> dict | None:
+    """FRED H.10 미수록 통화(대만달러 등, src='naver_fx_latest:<reutersCode>') —
+    네이버 exchangeWorld 최신값만으로 최소 row 구성(히스토리·1M/3M/YoY 없음,
+    'hist':[] 라 차트는 빈 상태 · mom/m3/yoy=None 이라 표에는 '—'). regen(6h)
+    시점 스냅샷 + 클라 liveFx() 5분 오버레이로 계속 최신화. graceful None(드롭)."""
+    try:
+        from bot.naver_marketindex import fetch_world_fx
+        rec = (fetch_world_fx() or {}).get(reuters_code) or {}
+    except Exception as exc:
+        log.warning("fred_boards: naver_fx_latest %s failed: %s", reuters_code, exc)
+        return None
+    close = rec.get("close")
+    if close is None:
+        return None
+    return {**s, "latest": close, "latest_date": "네이버 실시간",
+            "mom": None, "m3": None, "yoy": None, "hist": []}
+
+
 def _load_liq() -> tuple[list[dict], dict, float | None]:
     """→ (rows, derived{net_liq, components}, score). rows 는 카탈로그 순.
     'src' 가 있는 항목은 FRED 대신 대체 소스(ECOS/AKShare — 2026-07-04 중단
@@ -497,13 +515,24 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
     from bot import fred_client
     H: dict[str, list] = {}
     for s in LIQ_SERIES:
-        if s.get("src"):
-            H[s["id"]] = _alt_history(s["src"])
+        src = s.get("src") or ""
+        if src.startswith("naver_fx_latest:"):
+            continue    # FRED 미수록 통화(대만달러 등) — 아래서 별도 처리
+        if src:
+            H[s["id"]] = _alt_history(src)
         else:
             H[s["id"]] = fred_client.fetch_history(s["id"], _LIQ_START)
     rows = []
     dropped: list[str] = []
     for s in LIQ_SERIES:
+        src = s.get("src") or ""
+        if src.startswith("naver_fx_latest:"):
+            row = _naver_fx_latest_row(s, src.split(":", 1)[1])
+            if row:
+                rows.append(row)
+            else:
+                dropped.append(f"{s['name']} ({s['id']}) — 데이터 없음")
+            continue
         hist = H.get(s["id"]) or []
         if not hist:
             # 소스가 아예 안 주는 경우(FRED 400/ECOS·AKShare 실패)도 표기
@@ -927,16 +956,23 @@ document.addEventListener('click',function(ev){{
 pills();table();if(R.length)detail(R[0].id);
 if(D.net_liq&&D.net_liq.length){{mkChart(document.getElementById('nl-chart'),
  D.net_liq.map(function(h){{return h[0];}}),D.net_liq.map(function(h){{return h[1];}}),'#22c55e',true);}}
-// 원/달러 실시간 오버레이(사용자 2026-07-02 '네이버같은곳에서 실시간으로') —
-// 최신값·기준일만 네이버로 덮고 기간지표(1M/3M/YoY)·차트는 FRED 히스토리 유지.
-// 로드 시 + 5분마다. 실패 시 조용히 FRED 값 유지(graceful).
+// 환율 실시간 오버레이(사용자 2026-07-02 '네이버같은곳에서 실시간으로', 2026-07-14
+// 엔/위안 1차 확장 + 대만달러/유로/파운드/스위스프랑 2차 확장 '나머지 환율도
+// 네이버실시간으로') — 최신값·기준일만 네이버로 덮고 기간지표(1M/3M/YoY)·차트는
+// FRED 히스토리 유지(단 USDTWD 는 FRED 미수록이라 히스토리 자체가 없음 — 서버가
+// naver_fx_latest 로 최신값만 시딩, 이 오버레이가 5분마다 갱신). 로드 시 + 5분마다.
+// 실패 시 조용히 기존값 유지(graceful, pair 단위 독립).
+var FXPAIRS=[['usdkrw','DEXKOUS'],['usdjpy','DEXJPUS'],['usdcny','DEXCHUS'],
+ ['usdeur','DEXUSEU'],['usdgbp','DEXUSUK'],['usdchf','DEXSZUS'],['usdtwd','USDTWD']];
 function liveFx(){{
- fetch('api/usdkrw').then(function(r){{return r.json();}}).then(function(j){{
-  if(!j||j.rate==null)return;
-  var r=R.find(function(x){{return x.id==='DEXKOUS';}});if(!r)return;
-  r.latest=j.rate;r.latest_date=j.src||'실시간';
-  table();if(sel==='DEXKOUS')detail('DEXKOUS');
- }}).catch(function(){{}});
+ FXPAIRS.forEach(function(p){{
+  fetch('api/'+p[0]).then(function(r){{return r.json();}}).then(function(j){{
+   if(!j||j.rate==null)return;
+   var r=R.find(function(x){{return x.id===p[1];}});if(!r)return;
+   r.latest=j.rate;r.latest_date=j.src||'실시간';
+   table();if(sel===p[1])detail(p[1]);
+  }}).catch(function(){{}});
+ }});
 }}
 liveFx();setInterval(liveFx,300000);
 }})();
