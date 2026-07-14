@@ -360,11 +360,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 강세/약세 토론(Gemini 1콜, cost-gated, 캐시). 탭 클릭/실행버튼 lazy fetch.
         if self.path.split("?", 1)[0] == "/api/technical":
             return self._handle_technical_api()
-        # /api/usdkrw · usdjpy · usdcny · usdeur · usdgbp · usdchf · usdtwd —
-        # 환율 실시간(네이버 marketindex, 30초 캐시 내장). 유동성 보드가 FRED
+        # /api/usdkrw · usdjpy · usdcny · usdeur · usdgbp · usdchf — 환율
+        # 실시간(네이버 marketindex, 30초 캐시 내장). 유동성 보드가 FRED
         # DEX*(1영업일 지연) 최신값을 실시간으로 덮는 용(사용자 2026-07-02
         # '환율은 네이버같은곳에서 실시간으로', 2026-07-14 엔·위안 1차 +
-        # 대만·유로·파운드·스위스프랑 2차 확장 '나머지 환율도 네이버실시간으로').
+        # 유로·파운드·스위스프랑 2차 확장 — 대만달러는 FRED 미수록이라 히스토리
+        # 없이 추가했으나 사용자 요청으로 제외).
         _fx_route = self.path.split("?", 1)[0]
         if _fx_route.startswith("/api/") and _fx_route[5:] in self._FX_SOURCE:
             return self._handle_fx_api(_fx_route[5:])
@@ -1283,22 +1284,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     # pair → (marketindex 하위 패밀리, reutersCode). usdkrw 는 KRW-base
     # exchange(fetch_kr_fx), 나머지는 exchangeWorld cross-rate(fetch_world_fx,
-    # 2026-07-14 대만달러·유로·파운드·스위스프랑 확장) — reutersCode 표기가
-    # 그대로 "1 USD = N <통화>"(usdeur/usdgbp 는 반대로 "1 <통화> = N USD",
-    # EUR/GBP 는 Naver 도 forex 관례상 자국통화를 기준통화로 표기)라 FRED
-    # DEXJPUS/DEXCHUS/DEXUSEU/DEXUSUK/DEXSZUS 단위와 그대로 일치(변환 불필요).
-    # usdtwd 는 FRED 미수록(대만 H.10 비수록) — 네이버가 유일 소스(서버 regen
-    # 시딩 + 이 엔드포인트 둘 다 fetch_world_fx 재사용).
+    # 2026-07-14 유로·파운드·스위스프랑 확장) — reutersCode 표기가 그대로
+    # "1 USD = N <통화>"(usdeur/usdgbp 는 반대로 "1 <통화> = N USD", EUR/GBP 는
+    # Naver 도 forex 관례상 자국통화를 기준통화로 표기)라 FRED DEXJPUS/DEXCHUS/
+    # DEXUSEU/DEXUSUK/DEXSZUS 단위와 그대로 일치(변환 불필요). 대만달러는 FRED
+    # 미수록이라 히스토리 없이 추가했으나 사용자 요청으로 제외(2026-07-14).
     _FX_SOURCE = {"usdkrw": ("kr", "FX_USDKRW"),
                   "usdjpy": ("world", "USDJPY"),
                   "usdcny": ("world", "USDCNY"),
                   "usdeur": ("world", "EURUSD"),
                   "usdgbp": ("world", "GBPUSD"),
-                  "usdchf": ("world", "USDCHF"),
-                  "usdtwd": ("world", "USDTWD")}
+                  "usdchf": ("world", "USDCHF")}
 
     def _handle_fx_api(self, pair: str) -> None:
-        """GET /api/usdkrw|usdjpy|usdcny|usdeur|usdgbp|usdchf|usdtwd →
+        """GET /api/usdkrw|usdjpy|usdcny|usdeur|usdgbp|usdchf →
         {rate, change, pct, src}. 네이버 marketindex(30초 캐시·graceful)
         재사용 — 실패/무데이터 시 {}(클라는 기존 값 유지)."""
         try:
