@@ -222,6 +222,23 @@ class MarginSpreadTests(unittest.TestCase):
                                                "in_yoy": 0.0, "spread": 1.0,
                                                "trend3m": None, "stocks": "s"}]))
 
+    def test_asof_label_shown(self):
+        # 데이터 위젯 = 적용시각 라벨 의무(CLAUDE.md 전역 규칙) — 마진 스프레드
+        # 도 시리즈개요 표와 동일하게 행마다 '기준 YYYY-MM' 노출(사용자 2026-07-11).
+        H = {"PCU324110324110": self._hist(100, 1.0),
+             "WPU0561": self._hist(100, 0.0)}
+        out = fb.margin_spreads(H)
+        self.assertEqual(len(out), 1)
+        self.assertRegex(out[0]["asof"], r"^\d{4}-\d{2}$")
+        panel = fb._margin_panel(out)
+        self.assertIn(f"기준 {out[0]['asof']}", panel)
+
+    def test_asof_missing_graceful(self):
+        # 구 호출부(캐시된 dict 등)에 asof 키가 없어도 크래시 없이 em-dash.
+        panel = fb._margin_panel([{"label": "x", "out_yoy": 1.0, "in_yoy": 1.0,
+                                   "spread": 0.0, "trend3m": 0.0, "stocks": "s"}])
+        self.assertIn("기준 —", panel)
+
 
 class KrPpiTests(unittest.TestCase):
     """한국 PPI(ECOS 404Y014) — 아이템 이름매칭·행 변환·graceful."""

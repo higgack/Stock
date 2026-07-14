@@ -382,7 +382,8 @@ def margin_spreads(H: dict[str, list]) -> list[dict]:
         spread = oy - iy
         trend = (spread - (oy3 - iy3)) if (oy3 is not None and iy3 is not None) else None
         out.append({"label": p["label"], "out_yoy": oy, "in_yoy": iy,
-                    "spread": spread, "trend3m": trend, "stocks": p["stocks"]})
+                    "spread": spread, "trend3m": trend, "stocks": p["stocks"],
+                    "asof": common})
     return out
 
 
@@ -671,8 +672,10 @@ def _margin_panel(margins: list[dict]) -> str:
             tr_s = (f"<span class='{'pos' if tr > 0 else 'neg'}'>"
                     f"{'▲ 개선' if tr > 0 else '▼ 악화'} {tr:+.1f}pp</span>")
         sp = m["spread"]
+        asof = m.get("asof") or "—"
         body.append(
-            f"<tr><td><b>{_h.escape(m['label'])}</b></td>"
+            f"<tr><td><b>{_h.escape(m['label'])}</b>"
+            f"<div style='color:var(--muted);font-size:10px'>기준 {_h.escape(asof)}</div></td>"
             f"<td>{_fmt_pct_cell(m['out_yoy'])}</td>"
             f"<td>{_fmt_pct_cell(m['in_yoy'])}</td>"
             f"<td><b><span class='{'pos' if sp >= 0 else 'neg'}'>{sp:+.1f}pp</span></b></td>"
