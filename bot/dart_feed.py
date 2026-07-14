@@ -1657,6 +1657,35 @@ def _merger_lines(txt: str) -> list[str]:
     return parts
 
 
+def _correction_order_lines(txt: str) -> list[str]:
+    """정정명령부과 (미파싱, 2026-07-11 — 휴맥스홀딩스·아시아나항공, 둘 다
+    회사합병 결정 주요사항보고서에 대한 정정명령). 자본시장법 제164조 근거로
+    금융위가 기 제출 보고서에 정정을 명령한 공시 — 원 보고서 자체가 아니라
+    별도 report_nm('정정명령부과'). 원 제출일·원 보고서명·정정명령일·사유
+    추출. 순수(단위테스트)."""
+    parts: list[str] = []
+
+    m = re.search(
+        r"(\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2})\s*\.\s*제출된\s*"
+        r"([가-힣A-Za-z0-9()·,\- ]{2,40}?)에\s*대한\s*심사결과",
+        txt)
+    if m:
+        parts.append(f"원 제출: {m.group(1).replace(' ', '')} {m.group(2).strip()}")
+
+    reason = re.search(
+        r"신고서의\s*내용\s*중\s*([가-힣A-Za-z0-9(),·. ]{2,60}?)\s*"
+        r"(?:과|와)\s*관련하여\s*중요한\s*누락", txt)
+    if reason:
+        parts.append(f"사유: {reason.group(1).strip()} 관련 중요 누락/허위기재")
+
+    order_date = re.search(
+        r"(\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2})\s*\.\s*정정명령이\s*부과", txt)
+    if order_date:
+        parts.append(f"정정명령일: {order_date.group(1).replace(' ', '')}")
+
+    return parts
+
+
 def _business_transfer_lines(txt: str) -> list[str]:
     """영업양도 결정 (공정거래법 — 미파싱-5 SK/엔솔브 PV·ESS 운영사업).
     양도영업/양도가액/목적/양수법인/재무내용(백만원). 순수."""
@@ -3025,6 +3054,15 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
             if len(parts) >= 2:
                 return {"lines": parts}
         # 실패 시 specs(bsnTrfDecsn) 폴스루
+    elif "정정명령" in t:
+        # 금융위 정정명령부과 — 원 보고서(주로 주요사항보고서) 자체가 아니라
+        # 별도 report_nm(미파싱, 2026-07-11 휴맥스홀딩스·아시아나항공).
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _correction_order_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "확인서" in t:
         # 정형 첨부(대표이사 확인서) — 수집되면 최소 파싱, 정책상 보통
         # 기타→drop (흘러드는 경우만)

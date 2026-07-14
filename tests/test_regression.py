@@ -7494,6 +7494,43 @@ class TestDartUnparsed7:
         assert o["관할법원"] == "수원지방법원 성남지원"
 
 
+class TestDartUnparsed8:
+    """미파싱-8 (사용자 2026-07-11, 2예시) — 정정명령부과(금융위, 자본시장법
+    제164조). 휴맥스홀딩스·아시아나항공 둘 다 회사합병 결정 주요사항보고서에
+    대한 정정명령 — 실측 문구 그대로(관련된/관련한 어순 변형 둘 다 커버)."""
+
+    def test_correction_order_hmx(self):
+        from bot.dart_feed import _correction_order_lines
+        L = _correction_order_lines(
+            "2026.7.1. 제출된 주요사항보고서(회사합병 결정)에 대한 심사결과 "
+            "신고서의 내용 중 기타 투자판단과 관련된 중요사항 등과 관련하여 "
+            "중요한 누락(또는 허위의 기재)이 있어 2026.7.9. 정정명령이 "
+            "부과되었습니다.")
+        assert any(l == "원 제출: 2026.7.1 주요사항보고서(회사합병 결정)" for l in L)
+        assert any("기타 투자판단과 관련된 중요사항" in l
+                   and "중요 누락/허위기재" in l for l in L)
+        assert any(l == "정정명령일: 2026.7.9" for l in L)
+
+    def test_correction_order_asiana_wording_variant(self):
+        # '관련한'(어순 변형) — 링크된 관계사 이름도 슬래시/괄호 없이 파싱.
+        from bot.dart_feed import _correction_order_lines
+        L = _correction_order_lines(
+            "2026.6.26. 제출된 주요사항보고서(회사합병 결정)에 대한 심사결과 "
+            "신고서의 내용 중 기타 투자판단과 관련한 중요사항 등과 관련하여 "
+            "중요한 누락(또는 허위의 기재)이 있어 2026.7.6. 정정명령이 "
+            "부과되었습니다.")
+        assert any(l == "원 제출: 2026.6.26 주요사항보고서(회사합병 결정)" for l in L)
+        assert any(l == "정정명령일: 2026.7.6" for l in L)
+
+    def test_correction_order_dispatch_routing(self):
+        # "정정명령" elif 가 "합병"/"영업양도" 등 다른 브랜치보다 앞서 안전하게
+        # 걸리는지 — report_nm 자체엔 '합병' 문자열이 없음(정정명령부과 뿐).
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert 'elif "정정명령" in t:' in src
+        block = src[src.index('elif "정정명령" in t:'):]
+        assert "_correction_order_lines" in block[:400]
+
+
 class TestLookupPriceGlitchGuard:
     """종목검색 카드 글리치 가드 (KLAC $2,411/$3.15T 2026-06-12) — yfinance
     분할 미조정 수신가를 직전 종가로 교체 + 시총 재계산 + 보정 주석."""
