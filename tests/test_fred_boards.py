@@ -396,17 +396,25 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(len(keys), len(fb._MARGIN_PAIRS))        # key 유일
 
     def test_live_fx_overlay_wired(self):
-        # 원/달러 실시간 오버레이(사용자 2026-07-02) — 유동성 페이지가
-        # api/usdkrw 를 로드 시+5분 주기로 fetch, DEXKOUS 최신값만 덮는 계약.
+        # 환율 실시간 오버레이(사용자 2026-07-02, 2026-07-14 엔/위안 확장) —
+        # 유동성 페이지가 api/usdkrw·usdjpy·usdcny 를 로드 시+5분 주기로 fetch,
+        # DEXKOUS/DEXJPUS/DEXCHUS 최신값만 덮는 계약.
         html = fb.render_liquidity_page([], {}, None)
-        self.assertIn("api/usdkrw", html)
+        self.assertIn("fetch('api/'+p[0])", html)          # 공통 fetch 경로
+        for pair in ("'usdkrw','DEXKOUS'", "'usdjpy','DEXJPUS'",
+                     "'usdcny','DEXCHUS'"):
+            self.assertIn(pair, html)
         self.assertIn("setInterval(liveFx,300000)", html)
-        self.assertIn("DEXKOUS", html)
+        for series_id in ("DEXKOUS", "DEXJPUS", "DEXCHUS"):
+            self.assertIn(series_id, html)
         # 서버 라우트·핸들러 배선(E2E grep — 헬퍼만 만들고 미배선 방지).
         srv = open("bot/dashboard_server.py", encoding="utf-8").read()
         self.assertIn('"/api/usdkrw"', srv)
-        self.assertIn("_handle_usdkrw_api", srv)
+        self.assertIn("_handle_fx_api", srv)
         self.assertIn("fetch_kr_fx", srv)
+        self.assertIn("fetch_world_fx", srv)
+        self.assertIn('"usdjpy": ("world", "USDJPY")', srv)
+        self.assertIn('"usdcny": ("world", "USDCNY")', srv)
 
     def test_payload_script_safe(self):
         # '<' escape(</script> 조기 종료 차단) — valuechain 패턴 동일 계약.

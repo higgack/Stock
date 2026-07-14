@@ -927,16 +927,20 @@ document.addEventListener('click',function(ev){{
 pills();table();if(R.length)detail(R[0].id);
 if(D.net_liq&&D.net_liq.length){{mkChart(document.getElementById('nl-chart'),
  D.net_liq.map(function(h){{return h[0];}}),D.net_liq.map(function(h){{return h[1];}}),'#22c55e',true);}}
-// 원/달러 실시간 오버레이(사용자 2026-07-02 '네이버같은곳에서 실시간으로') —
-// 최신값·기준일만 네이버로 덮고 기간지표(1M/3M/YoY)·차트는 FRED 히스토리 유지.
-// 로드 시 + 5분마다. 실패 시 조용히 FRED 값 유지(graceful).
+// 환율 실시간 오버레이(사용자 2026-07-02 '네이버같은곳에서 실시간으로', 2026-07-14
+// 엔/위안 확장 '나머지 환율도 네이버실시간으로') — 최신값·기준일만 네이버로 덮고
+// 기간지표(1M/3M/YoY)·차트는 FRED 히스토리 유지. 로드 시 + 5분마다.
+// 실패 시 조용히 FRED 값 유지(graceful, pair 단위 독립).
+var FXPAIRS=[['usdkrw','DEXKOUS'],['usdjpy','DEXJPUS'],['usdcny','DEXCHUS']];
 function liveFx(){{
- fetch('api/usdkrw').then(function(r){{return r.json();}}).then(function(j){{
-  if(!j||j.rate==null)return;
-  var r=R.find(function(x){{return x.id==='DEXKOUS';}});if(!r)return;
-  r.latest=j.rate;r.latest_date=j.src||'실시간';
-  table();if(sel==='DEXKOUS')detail('DEXKOUS');
- }}).catch(function(){{}});
+ FXPAIRS.forEach(function(p){{
+  fetch('api/'+p[0]).then(function(r){{return r.json();}}).then(function(j){{
+   if(!j||j.rate==null)return;
+   var r=R.find(function(x){{return x.id===p[1];}});if(!r)return;
+   r.latest=j.rate;r.latest_date=j.src||'실시간';
+   table();if(sel===p[1])detail(p[1]);
+  }}).catch(function(){{}});
+ }});
 }}
 liveFx();setInterval(liveFx,300000);
 }})();
