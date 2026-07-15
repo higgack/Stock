@@ -263,6 +263,11 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertIn('data-co="%EB%93%A3%EB%B3%B4%EC%A2%85%EB%AA%A9A"', h)  # quote(듣보종목A)
         self.assertIn("api/kg_approve?co=", h)
         self.assertIn("취급품목", h)
+        # 응답 실패(401/404 등, 빈/비-JSON body) 시 r.json() 이 혼란스러운
+        # SyntaxError 만 던지던 문제(사용자 2026-07-16 리포트) — 상태코드부터
+        # 확인해 실패 원문을 노출하는지 배선 확인.
+        self.assertIn("if (!r.ok)", h)
+        self.assertIn("'HTTP ' + r.status", h)
 
     def test_reinforce_telegram_summary(self):
         # 18일 dart-revenue 갱신이 보내는 보강 DM 요약(후보수순·0이면 무음).
