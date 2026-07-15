@@ -247,6 +247,19 @@ def write_candidates_csv(cands: list[dict], path=None) -> int:
     return len(new_rows)
 
 
+def sync_unmatched_to_queue(unmatched: list[tuple[str, list[str], int]],
+                            path=None) -> int:
+    """레퍼런스북 '미매칭 알림 후보'(reference_book.unmatched_candidates,
+    LLM 아닌 순수 빈도기반 발굴) → 이 큐에 '취급품목' 후보로 적재 — 블로그
+    대시보드의 기존 반영 버튼(approve_candidates)이 그대로 동작하게 하는
+    배선(사용자 2026-07-15 '이것도 블로그대쉬보드처럼 버튼 추가'). write_candidates_csv
+    재사용이라 중복·근사중복 스킵 그대로. graceful(빈 리스트/실패 → 0)."""
+    cands = [{"company": co, "relation": "취급품목", "target": item,
+              "evidence": f"미매칭 알림 빈도 {n}건", "source": "미매칭자동발굴"}
+             for item, cos, n in (unmatched or []) for co in cos]
+    return write_candidates_csv(cands, path=path)
+
+
 def _existing_pairs_from_refbook() -> set:
     """레퍼런스북의 (회사,품목) 기존 쌍 — 이미 수록된 후보 제외용. graceful(set())."""
     pairs: set = set()

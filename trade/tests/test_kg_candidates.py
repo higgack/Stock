@@ -80,6 +80,32 @@ class KgCandidatesTests(unittest.TestCase):
         self.assertIn("삼성전기,취급품목,MLCC", body)
         self.assertEqual(body.count("삼성전기"), 1)              # 중복 미적재
 
+    def test_sync_unmatched_to_queue(self):
+        # 레퍼런스북 미매칭 후보(item, [companies], n) → 큐 적재(사용자
+        # 2026-07-15 '블로그대쉬보드처럼 버튼 추가'). 다회사 item 은
+        # 회사별로 개별 후보 행, 전부 relation='취급품목'. 재호출 시
+        # write_candidates_csv 의 중복 skip 그대로.
+        unmatched = [
+            ("ECAC/FGC 압축기", ["현대중공업터보기계"], 1),
+            ("적외선 광학용 ZnS", ["그린광학", "무명사"], 1),
+        ]
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "kg.csv")
+        self.assertEqual(kg.sync_unmatched_to_queue(unmatched, path=p), 3)
+        self.assertEqual(kg.sync_unmatched_to_queue(unmatched, path=p), 0)
+        with open(p, encoding="utf-8-sig") as f:
+            body = f.read()
+        self.assertIn("현대중공업터보기계,취급품목,ECAC/FGC 압축기", body)
+        self.assertIn("그린광학,취급품목,적외선 광학용 ZnS", body)
+        self.assertIn("무명사,취급품목,적외선 광학용 ZnS", body)
+        self.assertIn("미매칭자동발굴", body)
+
+    def test_sync_unmatched_to_queue_empty(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "kg.csv")
+        self.assertEqual(kg.sync_unmatched_to_queue([], path=p), 0)
+        self.assertEqual(kg.sync_unmatched_to_queue(None, path=p), 0)
+
     def test_extract_graceful_without_gemini(self):
         # 키/백엔드 없으면(샌드박스) graceful [] — 자동등재·크래시 0.
         old = {k: os.environ.pop(k, None)

@@ -137,6 +137,28 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertEqual(R.unmatched_candidates(self._ROWS,
                                                 db_path=Path("/no/such.db")), [])
 
+    def test_reinforce_approved_company_drops_from_unmatched_regardless_of_key(self):
+        """반영 버튼 크리티컬 버그(독립 리뷰 2026-07-15) 회귀 — 버튼이 적재하는
+        reinforce 항목의 '품목' 키는 원문 알림 캡션('ECAC/FGC 압축기')이라 카탈로그
+        canonical MTI 품목명('압축기')과 거의 항상 다름. surfaced 를 rows(캐탈로그
+        행)만으로 구하면 reinforce_approved_for(canonical_name) 경유로는 절대 안
+        붙어 반영해도 미매칭이 계속 재등장(버튼은 '등재됨' 표시하지만 실제 무효).
+        surfaced 가 reinforce 전체(품목키 무관)도 포함해야 함."""
+        from trade import mti_companies
+        with tempfile.TemporaryDirectory() as td:
+            db = self._db(td, [
+                ("ECAC/FGC 압축기", ["현대중공업터보기계"]),
+                ("진짜미매칭", ["듣보종목"]),
+            ])
+            # 반영 버튼이 쓰는 실제 키 형태(원문 캡션, canonical 품목명 아님) 모사.
+            fake_reinforce = {"ecac/fgc압축기": ["현대중공업터보기계"]}
+            with mock.patch.object(mti_companies, "load_reinforce_approved",
+                                   return_value=fake_reinforce):
+                cands = R.unmatched_candidates(self._ROWS, db_path=db)
+        items = [c[0] for c in cands]
+        self.assertNotIn("ECAC/FGC 압축기", items)   # 반영됨 → 더는 미매칭 아님
+        self.assertIn("진짜미매칭", items)            # 반영 안 된 건 그대로 유지
+
     def test_space_joined_companies_split(self):
         """BeOn 1-space 결합 토큰('나노신소재 제이오')을 split_names 로 쪼개 surfaced
         대조 — _clean_stocks 가 쉼표만 쪼개 결합 토큰이 영구 미매칭으로 남던 것 해소
@@ -230,6 +252,17 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertIn("듣보종목", h)
         # 비면 패널 자체가 안 나옴
         self.assertNotIn("미매칭 알림 후보", R.render_page(self._ROWS))
+
+    def test_unmatched_panel_has_approve_buttons(self):
+        # 회사 칩마다 반영 버튼(사용자 2026-07-15 '블로그대쉬보드처럼 버튼
+        # 추가') — GET api/kg_approve 로 fetch(NOAH 프록시 GET-only, 커밋
+        # 불요 런타임 반영). 두 회사 → 버튼 2개, 각자 data-co/data-tgt.
+        um = [("신소재 XYZ", ["듣보종목A", "듣보종목B"], 3)]
+        h = R.render_page(self._ROWS, unmatched=um)
+        self.assertEqual(h.count('class="umbtn"'), 2)
+        self.assertIn('data-co="%EB%93%A3%EB%B3%B4%EC%A2%85%EB%AA%A9A"', h)  # quote(듣보종목A)
+        self.assertIn("api/kg_approve?co=", h)
+        self.assertIn("취급품목", h)
 
     def test_reinforce_telegram_summary(self):
         # 18일 dart-revenue 갱신이 보내는 보강 DM 요약(후보수순·0이면 무음).
