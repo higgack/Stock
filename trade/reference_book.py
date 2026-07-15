@@ -368,7 +368,18 @@ def _render_unmatched(unmatched: list[tuple[str, list[str], int]] | None) -> str
    fetch('api/kg_approve?co=' + b.dataset.co + '&rel=' +
     encodeURIComponent('취급품목') + '&tgt=' + b.dataset.tgt,
     {cache: 'no-store', credentials: 'include'})
-    .then(function(r){ return r.json(); })
+    .then(function(r){
+     // 응답이 JSON 이 아니면(401/404/500 등 — 예: BasicAuth 재도전 시 빈 body)
+     // r.json() 이 혼란스러운 'SyntaxError: ...' 만 던지고 실제 원인(상태코드·
+     // 본문)이 안 보이던 문제(사용자 2026-07-16 리포트) — 상태 먼저 확인해
+     // 실패 시 원문 그대로 노출.
+     if (!r.ok) {
+      return r.text().then(function(t){
+       throw new Error('HTTP ' + r.status + (t ? (': ' + t.slice(0, 200)) : ''));
+      });
+     }
+     return r.json();
+    })
     .then(function(j){
      if(j && j.ok){
       b.textContent = j.ingested ? '등재됨' : '처리됨';
