@@ -130,9 +130,15 @@ def _parse_rank_rows(html: str) -> list[dict]:
             rank_move = int(mv_m.group(1)) if mv_m else 0
         except ValueError:
             rank_move = 0
-        code_m = re.search(r'class="company-code"[^>]*>([^<]+)<', tr)
+        # company-code div 는 실측(2026-07-08) 순위행에서 안에 빈
+        # '<span class="rank d-none"></span>' 를 먼저 두고 그 뒤에 티커
+        # 텍스트가 오는 구조라, 이전 '>([^<]+)<' 는 '>' 직후가 '<' 라 항상
+        # 미매칭 → ticker 가 전 행에서 계속 빈 문자열이던 버그(2026-07-16
+        # 발견 — 마켓캡 회사명 클릭 링크 기능 추가 중 rows 실측 fixture 로
+        # 재현). div 전체 텍스트를 잡고 중첩 태그 제거로 티커만 남김.
+        code_m = re.search(r'class="company-code"[^>]*>(.*?)</div>', tr, re.S)
         _nm = name_m.group(1).strip()
-        _cd = code_m.group(1).strip() if code_m else ""
+        _cd = re.sub(r"<[^>]+>", "", code_m.group(1)).strip() if code_m else ""
         # 이미지 분류는 src 내용으로만(위치 추정 금지 — 2026-07-08 실화면서
         # 즐겨찾기 ★ 아이콘이 첫 img 라 로고 자리에 별이 찍힘): 로고 = 'logo'
         # 포함 src, 30일 차트 = 'spark'/'chart' 포함 src. 그 외(별/국기 등) 무시.

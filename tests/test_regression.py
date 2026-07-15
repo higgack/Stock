@@ -13466,8 +13466,31 @@ class TestCreditSplitAndMarketcap20260706:
         assert "Price (30 days)" in page and "mc-spark-svg" in page
         assert 'stroke="#ef5350"' in page           # 인라인 SVG 스파크(red)
         assert "▲0.71%" in page and "▼1.60%" in page
+        # 회사명 클릭 → 종목분석(index.html) 딥링크(사용자 2026-07-16). 정상
+        # 티커(NVDA/MSFT, [A-Za-z0-9.]+)는 링크, 비정상(공백 등 있었다면)은
+        # 평문 폴백 — 여기 fixture 는 전부 정상이라 rows 수만큼 링크 존재.
+        # data 는 rows 를 EMBED_AXES 6개 탭 전부에 그대로 재사용하므로 링크도
+        # 탭 수만큼 반복(rows 자체는 2건).
+        assert page.count('class="mc-name-link"') == len(rows) * len(mc.EMBED_AXES)
+        assert 'href="index.html#ticker=NVDA"' in page
+        assert 'href="index.html#ticker=MSFT"' in page
         data["pe"] = {"rows": [], "fetched_at": "", "stale": True}
         assert "데이터 수집 실패" in d._render_marketcap_page(data)
+
+    def test_marketcap_name_link_fallback_no_ticker(self):
+        # 티커 없거나(빈 문자열) 해시 파서 문자셋([A-Za-z0-9.]+) 밖(예: 공백
+        # 포함 표기)이면 죽은 링크 대신 평문 폴백(2026-07-16).
+        import bot.marketcap_client as mc
+        import bot.dashboard as d
+        rows = [{"rank": 1, "name": "NoTickerCo", "ticker": "", "metric": "$1 T",
+                 "price": "$1", "country": "USA"},
+                {"rank": 2, "name": "WeirdCo", "ticker": "AB CD", "metric": "$1 T",
+                 "price": "$1", "country": "USA"}]
+        data = {k: {"rows": rows, "fetched_at": "t", "stale": False}
+                for k, _, _, _ in mc.EMBED_AXES}
+        page = d._render_marketcap_page(data)
+        assert 'class="mc-name-link"' not in page
+        assert "NoTickerCo" in page and "WeirdCo" in page
 
     def test_marketcap_wiring(self):
         # nav(홈 허브)·주기 태스크·help 등록 — 같은 commit 의무 계약
