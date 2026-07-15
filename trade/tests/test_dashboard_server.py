@@ -42,7 +42,9 @@ class PublicShareGateTests(unittest.TestCase):
         srv = importlib.reload(srv)
         cls.srv_mod = srv
         # 직접 핸들러를 띄우면 SimpleHTTPRequestHandler가 CWD에서 서빙하므로
-        # data_dir로 들어가야 함.
+        # data_dir로 들어가야 함. tearDownClass 에서 원복(2026-07-15 회귀 —
+        # 복원 누락 시 같은 프로세스에서 뒤에 도는 CWD-상대경로 테스트가 깨짐).
+        cls._old_cwd = os.getcwd()
         os.chdir(data)
         cls.httpd = HTTPServer(("127.0.0.1", 0), srv.GatedHandler)
         cls.port = cls.httpd.server_address[1]
@@ -54,6 +56,7 @@ class PublicShareGateTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=1)
+        os.chdir(cls._old_cwd)
         cls._tmp.cleanup()
         for k, v in cls._old_env.items():
             if v is None:
@@ -98,6 +101,54 @@ class PublicShareGateTests(unittest.TestCase):
         code, body = self._get("/dashboard/index.html", auth="u:p")
         self.assertEqual(code, 200)
         self.assertIn("LIVE", body)
+
+
+class KgApproveApiTests(unittest.TestCase):
+    """레퍼런스북 미매칭 반영 버튼의 서버측 라우트(사용자 2026-07-15). GET
+    전용(NOAH 프록시가 POST 미포워드) — _api_kg_approve 는 순수 함수 호출로
+    직접 검증(서버 기동 불요), 라우트 배선은 별도 grep(E2E)."""
+
+    def test_missing_params_graceful(self):
+        from trade import dashboard_server as srv
+        self.assertEqual(srv._api_kg_approve("", "취급품목", "X"),
+                         {"ok": False, "error": "co/rel/tgt 누락"})
+        self.assertEqual(srv._api_kg_approve("A", "", "X")["ok"], False)
+        self.assertEqual(srv._api_kg_approve("A", "취급품목", "")["ok"], False)
+
+    def test_delegates_to_approve_candidates_and_regenerates(self):
+        from trade import dashboard_server as srv, kg_candidates
+        calls = {}
+
+        def fake_approve(keys=None, **kw):
+            calls["keys"] = keys
+            return {"ingested": 1, "approved": 0, "total": 1, "skipped": 0,
+                    "duplicates": 0}
+
+        orig_approve = kg_candidates.approve_candidates
+        kg_candidates.approve_candidates = fake_approve
+        try:
+            from trade import reference_book
+            orig_regen = reference_book.regenerate
+            regen_called = []
+            reference_book.regenerate = lambda: regen_called.append(1)
+            try:
+                res = srv._api_kg_approve("현대중공업터보기계", "취급품목",
+                                          "ECAC/FGC 압축기")
+            finally:
+                reference_book.regenerate = orig_regen
+        finally:
+            kg_candidates.approve_candidates = orig_approve
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["ingested"], 1)
+        self.assertEqual(calls["keys"],
+                         [("현대중공업터보기계", "취급품목", "ECAC/FGC 압축기")])
+        self.assertEqual(regen_called, [1])
+
+    def test_route_wired(self):
+        # 헬퍼만 만들고 미배선 방지 (E2E grep).
+        src = open("trade/dashboard_server.py", encoding="utf-8").read()
+        self.assertIn('"/api/kg_approve"', src)
+        self.assertIn("_api_kg_approve(", src)
 
 
 if __name__ == "__main__":

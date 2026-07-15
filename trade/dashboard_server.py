@@ -185,6 +185,28 @@ def _api_report_archive_delete(file: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _api_kg_approve(co: str, rel: str, tgt: str) -> dict:
+    """GET /api/kg_approve?co=&rel=&tgt= — 레퍼런스북 '미매칭 알림 후보' 반영
+    버튼(사용자 2026-07-15 '블로그대쉬보드처럼') · bot/dashboard.py 블로그
+    페이지의 kg_approve 버튼과 동일 백엔드(kg_candidates.approve_candidates)
+    재사용, GET(프록시 GET-only, 위 report_archive_* 와 동일 컨벤션)만 신설.
+    reference_book.regenerate() 로 즉시 화면 반영(다음 정기 regen 안 기다림)."""
+    if not (co and rel and tgt):
+        return {"ok": False, "error": "co/rel/tgt 누락"}
+    try:
+        from trade import kg_candidates
+        res = kg_candidates.approve_candidates(keys=[(co, rel, tgt)])
+        try:
+            from trade import reference_book
+            reference_book.regenerate()
+        except Exception as exc:
+            log.warning("kg_approve: reference_book regen failed: %s", exc)
+        return {"ok": True, **res}
+    except Exception as exc:
+        log.warning("kg_approve %s/%s/%s: %s", co, rel, tgt, exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _api_company_report(q: str, mode: str, leaf: str = "", direction: str = "") -> dict:
     """GET /api/company_report?q=&mode=free|llm&leaf=&dir= — 기업 중심 보고서 HTML (사용자
     2026-06-17 '버튼으로 보고서 뽑기, 무료+유료'). mode=llm 만 비용(opt-in). leaf=히트맵
@@ -426,6 +448,12 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
             payload = _api_report_archive_send((qs.get("file", [""])[0] or "").strip())
+        elif path == "/api/kg_approve":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            payload = _api_kg_approve((qs.get("co", [""])[0] or "").strip(),
+                                      (qs.get("rel", [""])[0] or "").strip(),
+                                      (qs.get("tgt", [""])[0] or "").strip())
         else:
             self.send_error(404)
             return

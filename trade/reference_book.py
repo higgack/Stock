@@ -241,6 +241,11 @@ body.dark .co{color:#e6edf3}body.dark .co .x{background:#21262d;border-color:#3a
 .umi{color:#1f2328}.umc{color:#1f2328}.umn{text-align:right;color:#656d76;font-variant-numeric:tabular-nums}
 body.dark .um{background:#1c1808;border-color:#3a3417}body.dark .um>summary{color:#e3b341}
 body.dark .umt thead th{border-color:#4a3f17}body.dark .umi,body.dark .umc{color:#e6edf3}
+.umchip{display:inline-flex;align-items:center;gap:6px;background:#eef1f4;border:1px solid #cdd4dc;
+ border-radius:10px;padding:1px 4px 1px 8px;margin:1px;font-size:12px;color:#1f2328}
+body.dark .umchip{background:#21262d;border-color:#3a414b;color:#e6edf3}
+.umbtn{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer}
+.umbtn:disabled{opacity:.5;cursor:default}
 .rf{background:#eef4ff;border-color:#bcd2f7}.rf>summary{color:#1f5fbf}
 .rfbar{display:flex;gap:8px;align-items:center;margin:0 12px 8px}
 .rfbar #rfq{flex:1;min-width:160px;padding:6px 10px;border:1px solid #bcd2f7;background:#fff;color:#1f2328;border-radius:8px;font-size:13px}
@@ -314,26 +319,68 @@ _JS = """
 
 def _render_unmatched(unmatched: list[tuple[str, list[str], int]] | None) -> str:
     """미매칭 후보 패널 — 회사는 있으나 어떤 품목·별칭에도 안 붙은 알림
-    (빈도순, 접이식). 새 언어격차(별칭 추가 대상) 자동 노출. 비면 ''. 순수."""
+    (빈도순, 접이식). 새 언어격차(별칭 추가 대상) 자동 노출. 회사 칩마다
+    '반영' 버튼(사용자 2026-07-15 '블로그대쉬보드처럼 버튼으로 추가') —
+    블로그 페이지 kg_approve 버튼과 동일 백엔드(kg_candidates.approve_
+    candidates, regenerate() 가 미리 sync_unmatched_to_queue 로 큐에 적재)
+    재사용, GET 라우트만 신설(NOAH 프록시가 POST 미포워드 — dashboard_server
+    기존 report_archive_delete 와 동일 GET 컨벤션). 클릭 시 즉시 런타임
+    반영(커밋 불요) + 행 흐리게. 비면 ''."""
     if not unmatched:
         return ""
     e = _html.escape
+
+    def _q(s: str) -> str:
+        import urllib.parse
+        return urllib.parse.quote(s, safe="")
+
     body = []
     for item, cos, n in unmatched:
-        co = ", ".join(cos)
+        tgt_q = _q(item)
+        chips = "".join(
+            f'<span class="umchip">{e(co)}'
+            f'<button class="umbtn" data-co="{_q(co)}" data-tgt="{tgt_q}">'
+            "반영</button></span>"
+            for co in cos)
         body.append(
             f'<tr><td class="umi">{e(item)}</td>'
-            f'<td class="umc">{e(co)}</td>'
+            f'<td class="umc">{chips}</td>'
             f'<td class="umn">{n}</td></tr>')
+    script = """
+<script>
+(function(){
+ document.querySelectorAll('.um .umbtn').forEach(function(b){
+  b.addEventListener('click', function(){
+   b.disabled = true; b.textContent = '반영중…';
+   fetch('api/kg_approve?co=' + b.dataset.co + '&rel=' +
+    encodeURIComponent('취급품목') + '&tgt=' + b.dataset.tgt)
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+     if(j && j.ok){
+      b.textContent = j.ingested ? '등재됨' : '처리됨';
+      var row = b.closest('tr'); if(row) row.style.opacity = '.4';
+     } else {
+      b.disabled = false; b.textContent = '반영';
+      alert('실패: ' + ((j && j.error) || '?'));
+     }
+    }).catch(function(err){
+     b.disabled = false; b.textContent = '반영'; alert('오류: ' + err);
+    });
+  });
+ });
+})();
+</script>"""
     return (
         f"<details class='um'><summary>🔍 미매칭 알림 후보 "
         f"<b>{len(unmatched)}</b>건 — 별칭 추가 대상</summary>"
         "<p class='umnote'>회사는 있으나 어떤 품목·별칭에도 안 붙은 알림"
-        "(빈도순). 새 언어격차 발굴용 — 캡쳐 주시면 매칭을 추가합니다. "
-        "(자동 갱신 · 일일 결산에 신규분 통지)</p>"
+        "(빈도순). 회사명 옆 <b>반영</b> 버튼으로 즉시 등재(커밋 불요, "
+        "런타임 반영) — 오탐이면 그냥 두세요, 다음에도 재확인할 수 있게 "
+        "남아있습니다. (자동 갱신 · 일일 결산에 신규분 통지)</p>"
         "<table class='umt'><thead><tr><th>알림 품목 (원문)</th>"
         "<th>회사</th><th>빈도</th></tr></thead>"
-        f"<tbody>{''.join(body)}</tbody></table></details>")
+        f"<tbody>{''.join(body)}</tbody></table></details>"
+        f"{script}")
 
 
 def _render_reinforce(reinforce: list[tuple[str, list[str]]] | None) -> str:
@@ -432,6 +479,14 @@ def regenerate(out_path: Path | None = None) -> Path:
         unmatched = unmatched_candidates(rows)
     except Exception:
         unmatched = []
+    try:
+        # 미매칭 후보 → kg_candidates 큐 적재(반영 버튼이 승인할 대상 생성,
+        # 사용자 2026-07-15). regen 마다 호출하지만 write_candidates_csv 가
+        # 중복·근사중복 스킵이라 저렴(신규분만 append).
+        from trade import kg_candidates
+        kg_candidates.sync_unmatched_to_queue(unmatched)
+    except Exception as exc:
+        log.warning("reference_book: unmatched→queue sync failed: %s", exc)
     try:
         reinforce = load_reinforce()          # curation 타이머가 적재한 캐시(없으면 [])
     except Exception:

@@ -231,6 +231,17 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         # 비면 패널 자체가 안 나옴
         self.assertNotIn("미매칭 알림 후보", R.render_page(self._ROWS))
 
+    def test_unmatched_panel_has_approve_buttons(self):
+        # 회사 칩마다 반영 버튼(사용자 2026-07-15 '블로그대쉬보드처럼 버튼
+        # 추가') — GET api/kg_approve 로 fetch(NOAH 프록시 GET-only, 커밋
+        # 불요 런타임 반영). 두 회사 → 버튼 2개, 각자 data-co/data-tgt.
+        um = [("신소재 XYZ", ["듣보종목A", "듣보종목B"], 3)]
+        h = R.render_page(self._ROWS, unmatched=um)
+        self.assertEqual(h.count('class="umbtn"'), 2)
+        self.assertIn('data-co="%EB%93%A3%EB%B3%B4%EC%A2%85%EB%AA%A9A"', h)  # quote(듣보종목A)
+        self.assertIn("api/kg_approve?co=", h)
+        self.assertIn("취급품목", h)
+
     def test_reinforce_telegram_summary(self):
         # 18일 dart-revenue 갱신이 보내는 보강 DM 요약(후보수순·0이면 무음).
         note = R.reinforce_telegram({"디램": ["A", "B"], "낸드": ["X"]})
