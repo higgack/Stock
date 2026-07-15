@@ -7523,12 +7523,28 @@ class TestDartUnparsed8:
         assert any(l == "정정명령일: 2026.7.6" for l in L)
 
     def test_correction_order_dispatch_routing(self):
-        # "정정명령" elif 가 "합병"/"영업양도" 등 다른 브랜치보다 앞서 안전하게
-        # 걸리는지 — report_nm 자체엔 '합병' 문자열이 없음(정정명령부과 뿐).
-        src = open("bot/dart_feed.py", encoding="utf-8").read()
-        assert 'elif "정정명령" in t:' in src
-        block = src[src.index('elif "정정명령" in t:'):]
-        assert "_correction_order_lines" in block[:400]
+        # 2026-07-15 재발 — 소스 grep 만 하던 이전 버전은 실행 순서를 전혀
+        # 검증 안 해 배포 후 미파싱 그대로였던 실제 버그(정정명령 elif 가
+        # "회사합병" elif 뒤에 있어 실측 report_nm "...주요사항보고서(회사
+        # 합병 결정)..." 이 '회사합병' 키워드에 먼저 걸려 정정명령 파서가
+        # 영영 실행 안 됨)를 놓쳤다. 실측 포맷으로 _extract_detail_specific
+        # 을 직접 호출해 진짜 반환값을 검증(사용자 재확인으로 발견).
+        from bot import dart_feed as df
+        report_nm = "정정명령부과( 2026.07.01. 제출 주요사항보고서(회사합병 결정) )"
+        assert "합병" in report_nm   # 하위 "회사합병" elif 도 매치되는 실측 포맷 고정
+        orig = df._fetch_doc_text
+        df._fetch_doc_text = lambda rcept_no, api_key: (
+            "2026.7.1. 제출된 주요사항보고서(회사합병 결정)에 대한 심사결과 "
+            "신고서의 내용 중 기타 투자판단과 관련된 중요사항 등과 관련하여 "
+            "중요한 누락(또는 허위의 기재)이 있어 2026.7.9. 정정명령이 "
+            "부과되었습니다.")
+        try:
+            result = df._extract_detail_specific(
+                report_nm, "20260709000001", "00000000", "dummy_key")
+        finally:
+            df._fetch_doc_text = orig
+        assert result is not None
+        assert any("원 제출" in l for l in result["lines"])
 
 
 class TestLookupPriceGlitchGuard:
