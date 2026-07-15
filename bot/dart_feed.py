@@ -2888,6 +2888,22 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
 
     t = report_nm or ""
 
+    # 금융위 정정명령부과 — 원 보고서(주로 주요사항보고서) 자체가 아니라 별도
+    # report_nm 인데, 제목에 원 보고서명이 그대로 포함돼("...주요사항보고서
+    # (회사합병 결정)..." 등) 아래 회사합병/영업양도 등 키워드 elif 에 먼저
+    # 걸려 이 파서가 영영 실행되지 않던 버그(2026-07-11 추가 → 2026-07-15
+    # 배포 후에도 미파싱 그대로 재현, 사용자 재확인으로 발견 — dispatch
+    # 순서상 죽은 코드였음). 함수 최상단 + 무조건 return 으로 하위 키워드
+    # 체인 도달 자체를 차단(재발 방지, 원 보고서 종류가 뭐든 우선).
+    if "정정명령" in t:
+        txt0 = _fetch_doc_text(rcept_no, api_key)
+        if txt0:
+            parts0 = _correction_order_lines(txt0)
+            if len(parts0) >= 2:
+                return {"lines": parts0}
+            _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+
     # 대량보유 5% 보고서 — majorstock.json(지분공시 종합정보). 주요사항보고서와
     # 응답 구조가 달라 전용 처리: 보고자·지분율 변동(직전→현재, %p)·변동주식·
     # 보고사유. (프로텍·하이브 레퍼런스 카드 대응, 무료.)
@@ -3054,15 +3070,6 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
             if len(parts) >= 2:
                 return {"lines": parts}
         # 실패 시 specs(bsnTrfDecsn) 폴스루
-    elif "정정명령" in t:
-        # 금융위 정정명령부과 — 원 보고서(주로 주요사항보고서) 자체가 아니라
-        # 별도 report_nm(미파싱, 2026-07-11 휴맥스홀딩스·아시아나항공).
-        txt2 = _fetch_doc_text(rcept_no, api_key)
-        if txt2:
-            parts = _correction_order_lines(txt2)
-            if len(parts) >= 2:
-                return {"lines": parts}
-            _doc_fail_mark(rcept_no, hours=12.0)
     elif "확인서" in t:
         # 정형 첨부(대표이사 확인서) — 수집되면 최소 파싱, 정책상 보통
         # 기타→drop (흘러드는 경우만)
