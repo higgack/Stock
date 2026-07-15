@@ -12616,10 +12616,22 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
             logo = (f'<img class="mc-logo" loading="lazy" src="'
                     f'{_html.escape(str(r.get("logo")))}" alt="">'
                     if r.get("logo") else "")
+            _tk = str(r.get("ticker") or "")
+            _nm_esc = _html.escape(str(r.get("name", "")))
+            _tk_esc = _html.escape(_tk)
+            # 종목분석(index.html) 기존 해시 딥링크 재사용(#ticker=, 검색창
+            # syncFromHash 가 이미 처리 — 사용자 2026-07-16 '회사명 클릭하면
+            # 기업분석대쉬보드로'). ticker 가 그 파서의 문자셋([A-Za-z0-9.]+)
+            # 밖이면(드문 비-US 표기) 링크 없이 평문 — 죽은 링크 방지.
+            if re.fullmatch(r"[A-Za-z0-9.]+", _tk):
+                name_html = (f'<a class="mc-name-link" href="index.html#ticker={_tk_esc}">'
+                             f'<div class="mc-name">{_nm_esc}</div></a>')
+            else:
+                name_html = f'<div class="mc-name">{_nm_esc}</div>'
             name_cell = (
                 f'<td class="mc-name-td"><div class="mc-namewrap">{logo}'
-                f'<div><div class="mc-name">{_html.escape(str(r.get("name", "")))}</div>'
-                f'<div class="mc-tk">{_html.escape(str(r.get("ticker", "")))}</div>'
+                f'<div>{name_html}'
+                f'<div class="mc-tk">{_tk_esc}</div>'
                 f'</div></div></td>')
             spark_td = ""
             if has_spark:
@@ -12708,6 +12720,8 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
     .mc-namewrap{{display:flex;align-items:center;gap:10px}}
     .mc-logo{{width:26px;height:26px;border-radius:5px;object-fit:contain;background:#fff}}
     .mc-name{{font-weight:700}}
+    .mc-name-link{{color:inherit;text-decoration:none}}
+    .mc-name-link:hover .mc-name{{text-decoration:underline}}
     .mc-tk{{color:var(--muted);font-size:12px}}
     .mc-spark{{height:36px;max-width:150px}}
     .mc-spark-svg{{height:36px;width:150px}}
