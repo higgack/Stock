@@ -158,6 +158,19 @@ def unmatched_candidates(rows: list[dict], db_path=None,
     from trade import mti_companies
     surfaced = {c.replace(" ", "").lower()
                 for r in rows for c in (r.get("companies") or [])}
+    # + reinforce 승인 전체(품목키 무관, 사용자 2026-07-15 반영 버튼 fix) —
+    # 반영 버튼이 적재하는 (원문 캡션, 회사) 쌍은 캡션이 카탈로그 canonical
+    # MTI 품목명과 정확히 같을 일이 거의 없어(예: 'ECAC/FGC 압축기' ≠ '압축기')
+    # reinforce_approved_for(canonical_name) 경유로는 어떤 행에도 안 붙는다
+    # → surfaced 를 rows 만으로 구하면 반영해도 계속 미매칭으로 재등장(독립
+    # 리뷰 2026-07-15 — 버튼이 '등재됨'을 표시하지만 실제로 안 사라지던
+    # 크리티컬 버그). 반영된 회사는 "이미 검토·승인됨"이 핵심이라, 품목키
+    # 정확일치와 무관하게 전역으로 알려진 회사 취급.
+    try:
+        for cos in mti_companies.load_reinforce_approved().values():
+            surfaced.update(c.replace(" ", "").lower() for c in cos)
+    except Exception:
+        pass
     try:
         alerts = mti_companies._load_alerts(db_path)
     except Exception:
@@ -353,7 +366,8 @@ def _render_unmatched(unmatched: list[tuple[str, list[str], int]] | None) -> str
   b.addEventListener('click', function(){
    b.disabled = true; b.textContent = '반영중…';
    fetch('api/kg_approve?co=' + b.dataset.co + '&rel=' +
-    encodeURIComponent('취급품목') + '&tgt=' + b.dataset.tgt)
+    encodeURIComponent('취급품목') + '&tgt=' + b.dataset.tgt,
+    {cache: 'no-store', credentials: 'include'})
     .then(function(r){ return r.json(); })
     .then(function(j){
      if(j && j.ok){

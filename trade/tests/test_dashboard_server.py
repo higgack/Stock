@@ -44,13 +44,19 @@ class PublicShareGateTests(unittest.TestCase):
         # 직접 핸들러를 띄우면 SimpleHTTPRequestHandler가 CWD에서 서빙하므로
         # data_dir로 들어가야 함. tearDownClass 에서 원복(2026-07-15 회귀 —
         # 복원 누락 시 같은 프로세스에서 뒤에 도는 CWD-상대경로 테스트가 깨짐).
+        # try/finally — setUpClass 도중 예외 시 unittest 가 tearDownClass 를
+        # 안 불러주므로(독립 리뷰 지적), chdir 직후 실패해도 여기서 즉시 원복.
         cls._old_cwd = os.getcwd()
         os.chdir(data)
-        cls.httpd = HTTPServer(("127.0.0.1", 0), srv.GatedHandler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-        time.sleep(0.05)
+        try:
+            cls.httpd = HTTPServer(("127.0.0.1", 0), srv.GatedHandler)
+            cls.port = cls.httpd.server_address[1]
+            cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+            cls.thread.start()
+            time.sleep(0.05)
+        except Exception:
+            os.chdir(cls._old_cwd)
+            raise
 
     @classmethod
     def tearDownClass(cls):
