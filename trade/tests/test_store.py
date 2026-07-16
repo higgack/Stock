@@ -134,6 +134,36 @@ class TestStore(unittest.TestCase):
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0]["status"], "final")
 
+    def test_latest_prefers_newer_period_over_later_posted_older_period(self):
+        # 회귀(2026-07-16, 사용자 '현재잠정 7월 아냐?') — BeOn 발행 주기가
+        # 기간과 게시순서를 어긋나게 만든다: 익월 1-10일 잠정은 ~11일에,
+        # 그 *전달* 확정은 ~15일에 올라온다 → 오래된 기간(6월)의 확정이
+        # 더 최근 기간(7월)의 잠정보다 항상 늦게 게시된다. posted_at 만
+        # 보던 옛 로직은 6월 확정이 7월 잠정을 '최신' 자리에서 밀어냈다
+        # (매달 15일 이후 반복 재현되는 구조적 버그). period_end 가 이겨야
+        # 한다 — 게시 순서와 무관하게.
+        cap_jul_prelim = (
+            "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+            "2026년 7월 1일 ~ 10일 잠정치 수출데이터 입니다."
+        )
+        cap_jun_final = (
+            "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+            "2026년 6월 확정치 수출데이터 입니다."
+        )
+        upsert_alert(self.conn, _row_for(
+            cap_jul_prelim, msg_id=1, posted_at="2026-07-12T04:49:54+00:00"))
+        upsert_alert(self.conn, _row_for(
+            cap_jun_final, msg_id=2, posted_at="2026-07-15T06:27:12+00:00"))
+
+        latest = latest_per_dedup_key(self.conn)
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0]["source_message_id"], 1)   # 7월 잠정, 늦게 게시된 6월 확정 아님
+        self.assertEqual(latest[0]["status"], "preliminary")
+
+        rows = list_all_alerts(self.conn)
+        self.assertEqual(rows[0]["source_message_id"], 1)     # 그룹 첫 행도 동일
+        self.assertEqual(rows[1]["source_message_id"], 2)     # 6월 확정은 history 로
+
     def test_latest_keeps_different_countries_separate(self):
         for msg_id, country in [(1, "중국"), (2, "미국"), (3, "일본")]:
             caption = (
