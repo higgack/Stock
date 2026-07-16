@@ -7495,56 +7495,51 @@ class TestDartUnparsed7:
 
 
 class TestDartUnparsed8:
-    """미파싱-8 (사용자 2026-07-11, 2예시) — 정정명령부과(금융위, 자본시장법
-    제164조). 휴맥스홀딩스·아시아나항공 둘 다 회사합병 결정 주요사항보고서에
-    대한 정정명령 — 실측 문구 그대로(관련된/관련한 어순 변형 둘 다 커버)."""
+    """미파싱-8 (사용자 2026-07-11, 2예시 — 휴맥스홀딩스·아시아나항공, 둘 다
+    회사합병 결정 주요사항보고서에 대한 정정명령부과).
+
+    2026-07-16 재조사(배포 후에도 계속 미파싱): VM 실측 결과 이 report_nm
+    의 document.xml 자체가 DART 에 없음(status 014 '파일이 존재하지
+    않습니다' — 첨부문서 없는 금융위 행정통지). 그래서 애초에 원문 fetch
+    로 사유·정정명령일을 뽑으려던 최초 설계(_fetch_doc_text 경유)가 전제부터
+    틀렸다 — report_nm 자체에서 원 제출일·원 보고서명만 파싱하도록 재설계."""
 
     def test_correction_order_hmx(self):
         from bot.dart_feed import _correction_order_lines
         L = _correction_order_lines(
-            "2026.7.1. 제출된 주요사항보고서(회사합병 결정)에 대한 심사결과 "
-            "신고서의 내용 중 기타 투자판단과 관련된 중요사항 등과 관련하여 "
-            "중요한 누락(또는 허위의 기재)이 있어 2026.7.9. 정정명령이 "
-            "부과되었습니다.")
-        assert any(l == "원 제출: 2026.7.1 주요사항보고서(회사합병 결정)" for l in L)
-        assert any("기타 투자판단과 관련된 중요사항" in l
-                   and "중요 누락/허위기재" in l for l in L)
-        assert any(l == "정정명령일: 2026.7.9" for l in L)
+            "정정명령부과( 2026.07.01. 제출 주요사항보고서(회사합병 결정) )")
+        assert L == ["원 제출일: 2026.07.01", "원 보고서: 주요사항보고서(회사합병 결정)"]
 
-    def test_correction_order_asiana_wording_variant(self):
-        # '관련한'(어순 변형) — 링크된 관계사 이름도 슬래시/괄호 없이 파싱.
+    def test_correction_order_asiana(self):
         from bot.dart_feed import _correction_order_lines
         L = _correction_order_lines(
-            "2026.6.26. 제출된 주요사항보고서(회사합병 결정)에 대한 심사결과 "
-            "신고서의 내용 중 기타 투자판단과 관련한 중요사항 등과 관련하여 "
-            "중요한 누락(또는 허위의 기재)이 있어 2026.7.6. 정정명령이 "
-            "부과되었습니다.")
-        assert any(l == "원 제출: 2026.6.26 주요사항보고서(회사합병 결정)" for l in L)
-        assert any(l == "정정명령일: 2026.7.6" for l in L)
+            "정정명령부과( 2026.06.26. 제출 주요사항보고서(회사합병 결정) )")
+        assert L == ["원 제출일: 2026.06.26", "원 보고서: 주요사항보고서(회사합병 결정)"]
+
+    def test_correction_order_no_match_graceful(self):
+        from bot.dart_feed import _correction_order_lines
+        assert _correction_order_lines("전혀 다른 공시제목") == []
+        assert _correction_order_lines("") == []
 
     def test_correction_order_dispatch_routing(self):
-        # 2026-07-15 재발 — 소스 grep 만 하던 이전 버전은 실행 순서를 전혀
-        # 검증 안 해 배포 후 미파싱 그대로였던 실제 버그(정정명령 elif 가
-        # "회사합병" elif 뒤에 있어 실측 report_nm "...주요사항보고서(회사
-        # 합병 결정)..." 이 '회사합병' 키워드에 먼저 걸려 정정명령 파서가
-        # 영영 실행 안 됨)를 놓쳤다. 실측 포맷으로 _extract_detail_specific
-        # 을 직접 호출해 진짜 반환값을 검증(사용자 재확인으로 발견).
+        # 2026-07-15 1차 재발(dispatch 순서 — "회사합병" elif 에 먼저 걸림)
+        # + 2026-07-16 2차 재발(document.xml 없는 report_nm 을 fetch 로
+        # 풀려던 설계 오류) 둘 다 회귀 방지 — fetch 없이 report_nm 만으로
+        # _extract_detail_specific 이 바로 파싱하는지 실제 반환값으로 검증
+        # (소스 grep 만으론 이 클래스의 버그 2건 다 놓쳤었다).
         from bot import dart_feed as df
         report_nm = "정정명령부과( 2026.07.01. 제출 주요사항보고서(회사합병 결정) )"
         assert "합병" in report_nm   # 하위 "회사합병" elif 도 매치되는 실측 포맷 고정
         orig = df._fetch_doc_text
-        df._fetch_doc_text = lambda rcept_no, api_key: (
-            "2026.7.1. 제출된 주요사항보고서(회사합병 결정)에 대한 심사결과 "
-            "신고서의 내용 중 기타 투자판단과 관련된 중요사항 등과 관련하여 "
-            "중요한 누락(또는 허위의 기재)이 있어 2026.7.9. 정정명령이 "
-            "부과되었습니다.")
+        df._fetch_doc_text = lambda rcept_no, api_key: (_ for _ in ()).throw(
+            AssertionError("정정명령 분기는 document fetch 를 호출하면 안 됨"))
         try:
             result = df._extract_detail_specific(
-                report_nm, "20260709000001", "00000000", "dummy_key")
+                report_nm, "20260709100044", "00000000", "dummy_key")
         finally:
             df._fetch_doc_text = orig
         assert result is not None
-        assert any("원 제출" in l for l in result["lines"])
+        assert any("원 제출일" in l for l in result["lines"])
 
 
 class TestLookupPriceGlitchGuard:

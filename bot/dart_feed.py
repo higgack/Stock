@@ -1657,33 +1657,26 @@ def _merger_lines(txt: str) -> list[str]:
     return parts
 
 
-def _correction_order_lines(txt: str) -> list[str]:
+def _correction_order_lines(report_nm: str) -> list[str]:
     """정정명령부과 (미파싱, 2026-07-11 — 휴맥스홀딩스·아시아나항공, 둘 다
     회사합병 결정 주요사항보고서에 대한 정정명령). 자본시장법 제164조 근거로
     금융위가 기 제출 보고서에 정정을 명령한 공시 — 원 보고서 자체가 아니라
-    별도 report_nm('정정명령부과'). 원 제출일·원 보고서명·정정명령일·사유
-    추출. 순수(단위테스트)."""
-    parts: list[str] = []
+    별도 report_nm('정정명령부과').
 
+    ⚠️ 2026-07-16 재조사: document.xml 이 이 report_nm 에 아예 없다(DART
+    status 014 '파일이 존재하지 않습니다', VM 실측 — 첫 배포 후에도 계속
+    미파싱이라 재조사해 발견). 첨부문서 없는 금융위 행정통지라 원문 fetch
+    자체가 성립 안 함 — **report_nm 자체**를 파싱한다("정정명령부과( 2026.07.01.
+    제출 주요사항보고서(회사합병 결정) )" 형식). 원 제출일·원 보고서명만
+    추출(사유·정정명령일은 report_nm 에 없어 프로그램적으로 확보 불가 —
+    DART 웹 UI 에만 있는 정보로 보임). 순수(단위테스트)."""
     m = re.search(
-        r"(\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2})\s*\.\s*제출된\s*"
-        r"([가-힣A-Za-z0-9()·,\- ]{2,40}?)에\s*대한\s*심사결과",
-        txt)
-    if m:
-        parts.append(f"원 제출: {m.group(1).replace(' ', '')} {m.group(2).strip()}")
-
-    reason = re.search(
-        r"신고서의\s*내용\s*중\s*([가-힣A-Za-z0-9(),·. ]{2,60}?)\s*"
-        r"(?:과|와)\s*관련하여\s*중요한\s*누락", txt)
-    if reason:
-        parts.append(f"사유: {reason.group(1).strip()} 관련 중요 누락/허위기재")
-
-    order_date = re.search(
-        r"(\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2})\s*\.\s*정정명령이\s*부과", txt)
-    if order_date:
-        parts.append(f"정정명령일: {order_date.group(1).replace(' ', '')}")
-
-    return parts
+        r"정정명령부과\(\s*(\d{4}\.\d{1,2}\.\d{1,2})\.\s*제출\s*"
+        r"(.+?)\s*\)\s*$",
+        report_nm or "")
+    if not m:
+        return []
+    return [f"원 제출일: {m.group(1)}", f"원 보고서: {m.group(2).strip()}"]
 
 
 def _business_transfer_lines(txt: str) -> list[str]:
@@ -2896,12 +2889,13 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
     # 순서상 죽은 코드였음). 함수 최상단 + 무조건 return 으로 하위 키워드
     # 체인 도달 자체를 차단(재발 방지, 원 보고서 종류가 뭐든 우선).
     if "정정명령" in t:
-        txt0 = _fetch_doc_text(rcept_no, api_key)
-        if txt0:
-            parts0 = _correction_order_lines(txt0)
-            if len(parts0) >= 2:
-                return {"lines": parts0}
-            _doc_fail_mark(rcept_no, hours=12.0)
+        # document.xml 없음(DART status 014 '파일이 존재하지 않습니다' —
+        # 2026-07-16 VM 실측, 첨부문서 없는 금융위 행정통지) → fetch 없이
+        # report_nm 자체 파싱(_correction_order_lines 참조). 실패해도
+        # doc_fail_mark 불필요(애초에 네트워크 호출이 없어 throttle 대상 아님).
+        parts0 = _correction_order_lines(t)
+        if len(parts0) >= 2:
+            return {"lines": parts0}
         return None
 
     # 대량보유 5% 보고서 — majorstock.json(지분공시 종합정보). 주요사항보고서와
