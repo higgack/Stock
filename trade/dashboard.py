@@ -81,9 +81,12 @@ def render_html(
     finally:
         conn.close()
     # list_all_alerts orders so the first row of each dedup_key block is
-    # the 'latest' (newest posted_at + final-wins-tie). The remainder of
-    # each block is the history rendered inline in the modal for visual
-    # comparison.
+    # the 'latest' (newest period_end + final-wins-tie within equal
+    # period_end + newest posted_at as final tiebreak — 2026-07-16 fix,
+    # period_end must win over posted_at or a later-posted confirmation
+    # for an OLDER period evicts a newer period's still-preliminary
+    # alert every month). The remainder of each block is the history
+    # rendered inline in the modal for visual comparison.
     seen: set[str] = set()
     latest_ids: list[int] = []
     for a in all_alerts:

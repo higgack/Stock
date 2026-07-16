@@ -248,10 +248,25 @@ def count_alerts(conn: sqlite3.Connection) -> int:
 def list_all_alerts(conn: sqlite3.Connection) -> list[dict]:
     """Every alert, grouped by dedup_key with each group's latest first.
 
-    Tie-break inside a group: newest posted_at; 'final' wins against
-    'preliminary' at identical posted_at (matches latest_per_dedup_key
-    semantics so the first row of each dedup_key block is the same
-    'latest' that view rendering uses).
+    Tie-break inside a group: newest **period_end** first (which data
+    period this alert actually covers), 'final' wins against
+    'preliminary' at identical period_end, then newest posted_at as a
+    final tiebreak (matches latest_per_dedup_key semantics so the first
+    row of each dedup_key block is the same 'latest' that view
+    rendering uses).
+
+    period_end (not posted_at) has to be primary: BeOn's own publish
+    cadence interleaves periods and posting order — e.g. next month's
+    1-10일 잠정 posts ~day 11, while *last* month's 확정 posts ~day 15,
+    so 확정 for the OLDER period is always posted AFTER the NEWER
+    period's 잠정. Sorting by posted_at alone (pre-2026-07-16 bug) let
+    that later-posted-but-older-period 확정 evict the newer-period 잠정
+    from '최신' every month, right after the confirmed release — 사용자
+    리포트 '현재잠정 7월 아냐?' (screenshot showed 확정 6월전체 · 잠정
+    6월1-10일 even though DB already had 잠정 7월1-10일 posted 3 days
+    earlier). Fix: period recency wins regardless of posting order;
+    status/posted_at only break ties for alerts covering the *same*
+    period (the genuine 잠정→확정 upgrade case).
 
     Powers the dashboard's modal-history feature: render_html walks
     the result once, splits the first row of each dedup_key group as
@@ -264,16 +279,20 @@ def list_all_alerts(conn: sqlite3.Connection) -> list[dict]:
         for r in conn.execute(
             "SELECT * FROM alerts "
             "ORDER BY dedup_key, "
-            "posted_at DESC, "
-            "CASE WHEN status='final' THEN 0 ELSE 1 END"
+            "period_end DESC, "
+            "CASE WHEN status='final' THEN 0 ELSE 1 END, "
+            "posted_at DESC"
         )
     ]
 
 
 def latest_per_dedup_key(conn: sqlite3.Connection) -> list[dict]:
-    """One row per (direction, item, region, country) — the most
-    recently published, with 'final' winning ties against 'preliminary'
-    when posted_at is identical. Drives the 품목별 view.
+    """One row per (direction, item, region, country) — the alert
+    covering the most recent data **period** (not just most recently
+    *posted* — see list_all_alerts docstring for why posted_at alone is
+    wrong), with 'final' winning ties against 'preliminary' when
+    period_end matches, and newest posted_at as the final tiebreak.
+    Drives the 품목별 view.
     """
     sql = """
     SELECT a.* FROM alerts a
@@ -281,14 +300,19 @@ def latest_per_dedup_key(conn: sqlite3.Connection) -> list[dict]:
       SELECT 1 FROM alerts b
       WHERE b.dedup_key = a.dedup_key
         AND (
-          b.posted_at > a.posted_at
+          b.period_end > a.period_end
           OR (
-            b.posted_at = a.posted_at
+            b.period_end = a.period_end
             AND b.status = 'final' AND a.status = 'preliminary'
+          )
+          OR (
+            b.period_end = a.period_end
+            AND b.status = a.status
+            AND b.posted_at > a.posted_at
           )
         )
     )
-    ORDER BY a.posted_at DESC
+    ORDER BY a.period_end DESC, a.posted_at DESC
     """
     return [row_to_dict(r) for r in conn.execute(sql)]
 
