@@ -308,6 +308,25 @@ class UnmatchedCandidatesTests(unittest.TestCase):
             # path 지정은 캐시 우회 → 부재 파일은 {}
             self.assertEqual(mc.load_reinforce_approved(Path("/no/x.csv")), {})
 
+    def test_reinforce_approved_item_alias_normalizes_key(self):
+        # DART 자유서술형 표기(DDR5 등) → 카탈로그 품목명(D램) 정규화
+        # (catalog_guard 고아키 축소, 사용자 2026-07-18 '최대한 매치').
+        from trade import mti_companies as mc
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "approved.csv"
+            p.write_text(
+                "품목,DART추가후보상장사\n"
+                "DDR5,SK하이닉스\n"
+                "d램모듈,삼성전자\n"
+                "낯선품목,이상한회사\n",
+                encoding="utf-8-sig")
+            d = mc.load_reinforce_approved(p)
+            # 두 변형 모두 canonical 'D램' 키로 병합(회사 합쳐짐)
+            self.assertEqual(sorted(d["d램"]), ["SK하이닉스", "삼성전자"])
+            self.assertNotIn("ddr5", d)
+            # 별칭 미등재 품목은 원본 정규화 키 그대로(그대로 고아로 남음)
+            self.assertIn("낯선품목", d)
+
     def test_reinforce_approved_in_repo_csv(self):
         # repo 체크인 CSV 가 실제 로드되고 build_rows 관련상장사에 병합되는지(배선 E2E).
         from trade import mti_companies as mc

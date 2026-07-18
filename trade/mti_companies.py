@@ -844,6 +844,22 @@ def theme_rows() -> list[dict]:
 # (repo 체크인·auto-update 배포)로 적재. build_rows 가 관련상장사에 병합 → ①관련
 # 상장사로 노출 ②additional_candidates 가 current 로 인식해 보강 패널에서 자동 드롭
 # (사용자 2026-06-20 '보강후보 업데이트분 이름 정리했으니 반영'). 새 승인 = CSV 행 추가.
+# DART 매출품목 자유서술형 표기 → MTI 카탈로그 품목명 정규화 (catalog_guard
+# 월례 점검 189개 고아키 조사, 사용자 2026-07-18 '최대한 매치'). reinforce
+# 키는 DART 공시 매출품목 breakdown 에서 그대로 추출돼 세대/공정 표기가
+# 카탈로그 정식 품목명과 다른 경우가 많다(예: 'DDR5'→'D램'). 여기 등재된
+# 것만 canonical 로 정규화 — 카탈로그에 **대응 품목 자체가 없는** 공정노드
+# (2nm공정 등, MTI 는 공정이 아닌 완제품/부품 단위 분류)·서비스/프로젝트명
+# (ESG캠페인·해외발전 프로젝트명 등)·과도구체 부품명(컴프레서·파워트레인 —
+# 카탈로그엔 상위 완제품만 있어 오병합 위험)은 **의도적으로 미등재**(추가는
+# 운영자 확인 후 1줄, fuzzy 자동교정 금지 — _COMPANY_TYPO 와 동일 원칙).
+_ITEM_ALIAS = {
+    "dram": "D램", "d램모듈": "D램",
+    "16층수직적층d램(vs-dram)": "D램", "4f²수직게이트(vg)d램": "D램",
+    "ddr3": "D램", "ddr4": "D램", "ddr5": "D램",
+}
+_ITEM_ALIAS_NORM = {k: v.replace(" ", "").lower() for k, v in _ITEM_ALIAS.items()}
+
 _REINFORCE_APPROVED_CACHE: dict[str, list[str]] | None = None
 _REINFORCE_OVERLAY_MTIME: float | None = None
 
@@ -871,7 +887,9 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
     CSV 인용으로 보존, 분리 금지). 회사는 canon·dedup. 파일 부재/실패 → {} (graceful).
     repo 체크인 reinforce_approved.csv + 런타임 오버레이(대시보드 '반영' 버튼 적재분,
     HOME) 를 **병합** — 오버레이 mtime 변하면 캐시 재빌드(버튼 반영이 수출입
-    대시보드에 즉시 반영, 프로세스 재시작 불요). path 지정 시 캐시·오버레이 우회(테스트)."""
+    대시보드에 즉시 반영, 프로세스 재시작 불요). 품목키는 _ITEM_ALIAS 로 canonical
+    정규화 후 병합(자유서술형→카탈로그 품목명, catalog_guard 고아 축소).
+    path 지정 시 캐시·오버레이 우회(테스트)."""
     global _REINFORCE_APPROVED_CACHE, _REINFORCE_OVERLAY_MTIME
     import csv
     from pathlib import Path
@@ -897,6 +915,7 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
                     if not cos:
                         continue
                     key = item.replace(" ", "").lower()
+                    key = _ITEM_ALIAS_NORM.get(key, key)
                     bucket = out.setdefault(key, [])
                     seen = {c.replace(" ", "").lower() for c in bucket}
                     for c in cos:
