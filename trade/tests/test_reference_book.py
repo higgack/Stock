@@ -326,6 +326,13 @@ class UnmatchedCandidatesTests(unittest.TestCase):
             self.assertNotIn("ddr5", d)
             # 별칭 미등재 품목은 원본 정규화 키 그대로(그대로 고아로 남음)
             self.assertIn("낯선품목", d)
+            # 조회측(reinforce_approved_for)도 같은 별칭 적용 — 적재는
+            # 'DDR5'로 했는데 조회도 'DDR5'로 하면 못 찾던 비대칭 회귀 방지
+            # (독립리뷰 지적, load_reinforce_approved(path=...) 캐시 우회라
+            # 전역 캐시에 안 실려 reinforce_approved_for() 직접 검증은 별도
+            # 스텁으로). _item_key 단위 검증으로 대체:
+            self.assertEqual(mc._item_key("DDR5"), "d램")
+            self.assertEqual(mc._item_key("D램"), "d램")
 
     def test_reinforce_approved_item_alias_covers_catalog_guard_categories(self):
         # 189개 고아키 실사(2026-07-18 사용자 제공 전체 목록) 중 카테고리

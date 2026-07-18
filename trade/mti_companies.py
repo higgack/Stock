@@ -880,6 +880,15 @@ _ITEM_ALIAS = {
 }
 _ITEM_ALIAS_NORM = {k: v.replace(" ", "").lower() for k, v in _ITEM_ALIAS.items()}
 
+
+def _item_key(item: str) -> str:
+    """품목명 → 정규화+별칭치환 키. load_reinforce_approved(적재)·
+    reinforce_approved_for(조회) 양쪽이 반드시 같은 변환을 거치게(비대칭 시
+    'DDR5'로 적재된 걸 'DDR5'로 조회해도 못 찾는 회귀 방지, 독립리뷰 지적)."""
+    key = (item or "").replace(" ", "").lower()
+    return _ITEM_ALIAS_NORM.get(key, key)
+
+
 _REINFORCE_APPROVED_CACHE: dict[str, list[str]] | None = None
 _REINFORCE_OVERLAY_MTIME: float | None = None
 
@@ -934,8 +943,7 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
                         [c.strip() for c in (row[1] or "").split(",") if c.strip()])
                     if not cos:
                         continue
-                    key = item.replace(" ", "").lower()
-                    key = _ITEM_ALIAS_NORM.get(key, key)
+                    key = _item_key(item)
                     bucket = out.setdefault(key, [])
                     seen = {c.replace(" ", "").lower() for c in bucket}
                     for c in cos:
@@ -956,8 +964,9 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
 
 
 def reinforce_approved_for(name: str) -> list[str]:
-    """품목명 → 운영자 승인 추가 상장사(없으면 []). 순수(캐시)."""
-    return list(load_reinforce_approved().get((name or "").replace(" ", "").lower(), []))
+    """품목명 → 운영자 승인 추가 상장사(없으면 []). _item_key 로 조회측도
+    별칭 적용(적재측과 동일 변환 — 'DDR5' 로 조회해도 'D램' 버킷 매치). 순수(캐시)."""
+    return list(load_reinforce_approved().get(_item_key(name), []))
 
 
 def theme_for_company(name: str) -> tuple[str | None, str]:

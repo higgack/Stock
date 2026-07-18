@@ -1669,14 +1669,17 @@ def _correction_order_lines(report_nm: str) -> list[str]:
     자체가 성립 안 함 — **report_nm 자체**를 파싱한다("정정명령부과( 2026.07.01.
     제출 주요사항보고서(회사합병 결정) )" 형식). 원 제출일·원 보고서명만
     추출(사유·정정명령일은 report_nm 에 없어 프로그램적으로 확보 불가 —
-    DART 웹 UI 에만 있는 정보로 보임). 순수(단위테스트)."""
+    DART 웹 UI 에만 있는 정보로 보임). 날짜 구두점 주변 공백 허용(옛 파서가
+    커버하던 변형 — "2026. 7. 1." 도 매치, 독립리뷰 지적으로 복원).
+    순수(단위테스트)."""
     m = re.search(
-        r"정정명령부과\(\s*(\d{4}\.\d{1,2}\.\d{1,2})\.\s*제출\s*"
+        r"정정명령부과\(\s*(\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2})\s*\.\s*제출\s*"
         r"(.+?)\s*\)\s*$",
         report_nm or "")
     if not m:
         return []
-    return [f"원 제출일: {m.group(1)}", f"원 보고서: {m.group(2).strip()}"]
+    return [f"원 제출일: {m.group(1).replace(' ', '')}",
+            f"원 보고서: {m.group(2).strip()}"]
 
 
 def _business_transfer_lines(txt: str) -> list[str]:
