@@ -844,6 +844,51 @@ def theme_rows() -> list[dict]:
 # (repo 체크인·auto-update 배포)로 적재. build_rows 가 관련상장사에 병합 → ①관련
 # 상장사로 노출 ②additional_candidates 가 current 로 인식해 보강 패널에서 자동 드롭
 # (사용자 2026-06-20 '보강후보 업데이트분 이름 정리했으니 반영'). 새 승인 = CSV 행 추가.
+# DART 매출품목 자유서술형 표기 → MTI 카탈로그 품목명 정규화 (catalog_guard
+# 월례 점검 189개 고아키 조사, 사용자 2026-07-18 '최대한 매치'). reinforce
+# 키는 DART 공시 매출품목 breakdown 에서 그대로 추출돼 세대/공정 표기가
+# 카탈로그 정식 품목명과 다른 경우가 많다(예: 'DDR5'→'D램'). 여기 등재된
+# 것만 canonical 로 정규화 — 카탈로그에 **대응 품목 자체가 없는** 공정노드
+# (2nm공정 등, MTI 는 공정이 아닌 완제품/부품 단위 분류)·서비스/프로젝트명
+# (ESG캠페인·해외발전 프로젝트명 등)·과도구체 부품명(컴프레서·파워트레인 —
+# 카탈로그엔 상위 완제품만 있어 오병합 위험)은 **의도적으로 미등재**(추가는
+# 운영자 확인 후 1줄, fuzzy 자동교정 금지 — _COMPANY_TYPO 와 동일 원칙).
+_ITEM_ALIAS = {
+    "dram": "D램", "d램모듈": "D램",
+    "16층수직적층d램(vs-dram)": "D램", "4f²수직게이트(vg)d램": "D램",
+    "ddr3": "D램", "ddr4": "D램", "ddr5": "D램",
+    "gp-dram": "D램", "lpddr": "D램", "범용dram": "D램", "일반dram": "D램",
+    # HBM = DRAM 다이를 적층한 제품(칩 자체) — 패키징 공정/장비(hbm패키징기술·
+    # tcbonder 장비류·고대역폭메모리(hbm)패키지 등)는 별개 카테고리라 미등재.
+    "hbm": "D램", "hbm3e": "D램", "hbm4": "D램", "hbm4e": "D램",
+    "hbm메모리": "D램", "고대역폭메모리(hbm)": "D램",
+    # 낸드플래시 = 낸드(동일 제품, 정식/기술 명칭 차이만).
+    "nand": "낸드", "낸드플래시": "낸드",
+    # 백신·항체치료제 = 생물학적 제제(합성 화학의약품과 구분되는 확립된 분류) →
+    # 카탈로그 유일 바이오 의약품 항목. 특정 세부품목 추정(화장품 종류·의약품
+    # 성분 등)과 달리 '생물학적 제제냐 아니냐'는 모호성이 없어 등재.
+    "인플루엔자백신": "바이오의약품", "경구용콜레라백신(유비콜)": "바이오의약품",
+    "경구용콜레라백신(유비콜-에스)": "바이오의약품",
+    "클로티냅(항혈전항체치료제)": "바이오의약품",
+    # 카탈로그 유일 군용함정 품목(민간 선박류와 명확히 구분) — 호위함/잠수함은
+    # 전투함 계열로 다른 후보와 혼동 여지 없음.
+    "호위함": "군함", "잠수함": "군함", "장보고-ⅲ(kss-ⅲ)배치ⅱ": "군함",
+    # 농수산식품 카탈로그의 확립된 하위분류(크림→유제품 기타, 불닭볶음면→
+    # 면류, 불닭소스→기타소스류) — 브랜드 제품명이지 카테고리 모호성 없음.
+    "유크림": "기타낙농품", "불닭볶음면": "면류", "불닭소스": "기타소스류",
+    "특란": "난류",
+}
+_ITEM_ALIAS_NORM = {k: v.replace(" ", "").lower() for k, v in _ITEM_ALIAS.items()}
+
+
+def _item_key(item: str) -> str:
+    """품목명 → 정규화+별칭치환 키. load_reinforce_approved(적재)·
+    reinforce_approved_for(조회) 양쪽이 반드시 같은 변환을 거치게(비대칭 시
+    'DDR5'로 적재된 걸 'DDR5'로 조회해도 못 찾는 회귀 방지, 독립리뷰 지적)."""
+    key = (item or "").replace(" ", "").lower()
+    return _ITEM_ALIAS_NORM.get(key, key)
+
+
 _REINFORCE_APPROVED_CACHE: dict[str, list[str]] | None = None
 _REINFORCE_OVERLAY_MTIME: float | None = None
 
@@ -871,7 +916,9 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
     CSV 인용으로 보존, 분리 금지). 회사는 canon·dedup. 파일 부재/실패 → {} (graceful).
     repo 체크인 reinforce_approved.csv + 런타임 오버레이(대시보드 '반영' 버튼 적재분,
     HOME) 를 **병합** — 오버레이 mtime 변하면 캐시 재빌드(버튼 반영이 수출입
-    대시보드에 즉시 반영, 프로세스 재시작 불요). path 지정 시 캐시·오버레이 우회(테스트)."""
+    대시보드에 즉시 반영, 프로세스 재시작 불요). 품목키는 _ITEM_ALIAS 로 canonical
+    정규화 후 병합(자유서술형→카탈로그 품목명, catalog_guard 고아 축소).
+    path 지정 시 캐시·오버레이 우회(테스트)."""
     global _REINFORCE_APPROVED_CACHE, _REINFORCE_OVERLAY_MTIME
     import csv
     from pathlib import Path
@@ -896,7 +943,7 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
                         [c.strip() for c in (row[1] or "").split(",") if c.strip()])
                     if not cos:
                         continue
-                    key = item.replace(" ", "").lower()
+                    key = _item_key(item)
                     bucket = out.setdefault(key, [])
                     seen = {c.replace(" ", "").lower() for c in bucket}
                     for c in cos:
@@ -917,8 +964,9 @@ def load_reinforce_approved(path=None) -> dict[str, list[str]]:
 
 
 def reinforce_approved_for(name: str) -> list[str]:
-    """품목명 → 운영자 승인 추가 상장사(없으면 []). 순수(캐시)."""
-    return list(load_reinforce_approved().get((name or "").replace(" ", "").lower(), []))
+    """품목명 → 운영자 승인 추가 상장사(없으면 []). _item_key 로 조회측도
+    별칭 적용(적재측과 동일 변환 — 'DDR5' 로 조회해도 'D램' 버킷 매치). 순수(캐시)."""
+    return list(load_reinforce_approved().get(_item_key(name), []))
 
 
 def theme_for_company(name: str) -> tuple[str | None, str]:

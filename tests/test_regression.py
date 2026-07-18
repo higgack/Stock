@@ -7521,6 +7521,15 @@ class TestDartUnparsed8:
         assert _correction_order_lines("전혀 다른 공시제목") == []
         assert _correction_order_lines("") == []
 
+    def test_correction_order_spaced_date_variant(self):
+        # 독립리뷰 지적(2026-07-18): 옛 파서(document 본문 파싱)는 날짜
+        # 구두점 주변 공백("2026. 7. 1.")을 허용했는데 report_nm 재설계판
+        # 최초 버전이 그 관용성을 빠뜨림 — 회귀 방지.
+        from bot.dart_feed import _correction_order_lines
+        L = _correction_order_lines(
+            "정정명령부과( 2026. 7. 1. 제출 주요사항보고서(회사합병 결정) )")
+        assert L == ["원 제출일: 2026.7.1", "원 보고서: 주요사항보고서(회사합병 결정)"]
+
     def test_correction_order_dispatch_routing(self):
         # 2026-07-15 1차 재발(dispatch 순서 — "회사합병" elif 에 먼저 걸림)
         # + 2026-07-16 2차 재발(document.xml 없는 report_nm 을 fetch 로

@@ -308,6 +308,53 @@ class UnmatchedCandidatesTests(unittest.TestCase):
             # path 지정은 캐시 우회 → 부재 파일은 {}
             self.assertEqual(mc.load_reinforce_approved(Path("/no/x.csv")), {})
 
+    def test_reinforce_approved_item_alias_normalizes_key(self):
+        # DART 자유서술형 표기(DDR5 등) → 카탈로그 품목명(D램) 정규화
+        # (catalog_guard 고아키 축소, 사용자 2026-07-18 '최대한 매치').
+        from trade import mti_companies as mc
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "approved.csv"
+            p.write_text(
+                "품목,DART추가후보상장사\n"
+                "DDR5,SK하이닉스\n"
+                "d램모듈,삼성전자\n"
+                "낯선품목,이상한회사\n",
+                encoding="utf-8-sig")
+            d = mc.load_reinforce_approved(p)
+            # 두 변형 모두 canonical 'D램' 키로 병합(회사 합쳐짐)
+            self.assertEqual(sorted(d["d램"]), ["SK하이닉스", "삼성전자"])
+            self.assertNotIn("ddr5", d)
+            # 별칭 미등재 품목은 원본 정규화 키 그대로(그대로 고아로 남음)
+            self.assertIn("낯선품목", d)
+            # 조회측(reinforce_approved_for)도 같은 별칭 적용 — 적재는
+            # 'DDR5'로 했는데 조회도 'DDR5'로 하면 못 찾던 비대칭 회귀 방지
+            # (독립리뷰 지적, load_reinforce_approved(path=...) 캐시 우회라
+            # 전역 캐시에 안 실려 reinforce_approved_for() 직접 검증은 별도
+            # 스텁으로). _item_key 단위 검증으로 대체:
+            self.assertEqual(mc._item_key("DDR5"), "d램")
+            self.assertEqual(mc._item_key("D램"), "d램")
+
+    def test_reinforce_approved_item_alias_covers_catalog_guard_categories(self):
+        # 189개 고아키 실사(2026-07-18 사용자 제공 전체 목록) 중 카테고리
+        # 모호성 없는 항목들 — HBM(=D램 다이 적층)·백신/항체치료제(=바이오
+        # 의약품)·전투함(=군함)·식품 브랜드제품(=카탈로그 하위분류)도
+        # canonical 로 정규화되는지 대표 1개씩 확인.
+        from trade import mti_companies as mc
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "approved.csv"
+            p.write_text(
+                "품목,DART추가후보상장사\n"
+                "HBM3E,SK하이닉스\n"
+                "인플루엔자백신,SK바이오사이언스\n"
+                "호위함,HD현대중공업\n"
+                "특란,가나\n",
+                encoding="utf-8-sig")
+            d = mc.load_reinforce_approved(p)
+            self.assertEqual(d["d램"], ["SK하이닉스"])
+            self.assertEqual(d["바이오의약품"], ["SK바이오사이언스"])
+            self.assertEqual(d["군함"], ["HD현대중공업"])
+            self.assertEqual(d["난류"], ["가나"])
+
     def test_reinforce_approved_in_repo_csv(self):
         # repo 체크인 CSV 가 실제 로드되고 build_rows 관련상장사에 병합되는지(배선 E2E).
         from trade import mti_companies as mc
