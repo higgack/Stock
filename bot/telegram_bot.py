@@ -1151,7 +1151,8 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://www.jipfeed.com/">집피드</a>
  • <a href="https://livewiki.com/ko">livewiki</a>
  • <a href="https://easyconomics.com/">[중요] funesay board</a>
- • <a href="https://soonsal.com/">Soonsal</a>"""
+ • <a href="https://soonsal.com/">Soonsal</a>
+ • <a href="https://activeholders.com/">activeholders</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
