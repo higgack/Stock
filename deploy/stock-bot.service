@@ -10,6 +10,13 @@ WorkingDirectory=/home/higgack/stock
 ExecStart=/home/higgack/stock/.venv/bin/python -m bot.telegram_bot
 Restart=always
 RestartSec=10
+# CPU 스케줄 우선순위 상향(사용자 2026-07-21 — VM 공유 프로세스(root 소유
+# src.bot, ~46% CPU 상시)와 경합 시 asyncio 이벤트루프가 GIL/스케줄러에서
+# 밀려 getUpdates 180초 미호출 → watchdog 오탐성 재시작 3연속 관측. CPU
+# 증설은 비용상 보류 — 총 CPU 늘리는 게 아니라 경합 시 우리 프로세스를
+# 먼저 스케줄하도록 커널 우선순위만 조정(무비용). 과도한 음수는 다른 정상
+# 서비스 굶길 수 있어 완만한 -5.
+Nice=-5
 # Screener / KR 분석은 5-15분 blocking — 기본 90s TimeoutStopSec 안에 깔끔히
 # 종료 못 해 systemd 가 SIGKILL → 진행 중 작업 살해(2026-06-01 surfaced:
 # Screener 가 Phase 4·5 중 stop-sigterm timeout → 결과 안 나옴). 15분으로
