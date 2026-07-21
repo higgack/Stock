@@ -593,6 +593,9 @@ class MtiCompaniesTests(unittest.TestCase):
         self.assertEqual(companies_for("디램"), ["삼성전자", "SK하이닉스"])
         self.assertIn("현대제철", companies_for("H형강"))
         self.assertIn("심팩", companies_for("페로망간"))
+        # 큐레이션 후보 알림 등재분(2026-07-21, 사용자 확인 후 승인)
+        self.assertEqual(companies_for("프로세서와 컨트롤러"),
+                          ["삼성전자", "어보브반도체", "텔레칩스"])
         self.assertEqual(companies_for("정체불명품목"), [])
         self.assertEqual(companies_for(""), [])
 
