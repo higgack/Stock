@@ -237,16 +237,19 @@ def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------
-# 10일 모멘텀 — 최신창 YoY vs 직전 풀월 YoY = 가속/둔화
+# 10일 모멘텀 — 최신창 YoY vs 직전월 '같은 창' YoY = 가속/둔화
 # ---------------------------------------------------------------------
 
 def momentum_rows(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
     """전체(0)+품목/국가(1..10) 각각에 대해 최신창 YoY와 '모멘텀'을 계산.
 
-    모멘텀(idx) = 최신창 YoY − 직전 '풀월' YoY (퍼센트포인트).
+    모멘텀(idx) = 최신창 YoY − 직전월 **같은 창**(decile) YoY (퍼센트포인트).
       · 양수 = 추세 가속(▲), 음수 = 둔화(▼).
-      · 최신창이 부분누적(01~10/01~20)이면 확정보다 ~20일 빠른 선행 가속신호,
-        풀월이면 ΔYoY(전월 풀 대비 가속도).
+      · 창이 10일/20일/한달(FULL) 무엇이든 항상 그 창 기준으로 통일
+        (사용자 2026-07-23 '20일 vs 20일로' — 예전엔 부분누적 창일 때
+        비교대상이 '직전 풀월'이라 창 기준이 안 맞았음, ΔYoY·ΔMoM 모두
+        수정. 대신 확정치 대비 안정성은 낮아짐(양쪽 다 부분누적끼리
+        비교라 요일효과 등 노이즈 ↑ — 트레이드오프 사용자 확인).
     반환 items는 입력 순서 그대로(정렬은 렌더에서). 데이터 없으면 None.
     """
     if not rows:
@@ -261,22 +264,18 @@ def momentum_rows(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
     def _py(ym: str) -> str:
         return f"{int(ym[:4]) - 1}-{ym[5:7]}"
 
-    cur_prev = _find(_py(latest_ym), cur["decile"])
-    # 전월 동순 (MoM, 사용자 2026-06-12 '표에도') — 예: 6월 1-10 vs 5월 1-10.
-    _y, _m = int(latest_ym[:4]), int(latest_ym[5:7])
-    _pm_ym = f"{_y - 1}-12" if _m == 1 else f"{_y}-{_m - 1:02d}"
-    cur_prev_mo = _find(_pm_ym, cur["decile"])
-    # 최신월보다 앞선 가장 최근 '풀월'(직전 마감월)과 그 작년 동월 풀월.
-    full_months = sorted({r["ym"] for r in rows
-                          if r["decile"] == "FULL" and r["ym"] < latest_ym})
-    pf_ym = full_months[-1] if full_months else None
-    prev_full = _find(pf_ym, "FULL") if pf_ym else None
-    prev_full_py = _find(_py(pf_ym), "FULL") if pf_ym else None
-    # ΔMoM 용 — 직전 풀월의 전월 풀월 (예: 5월 FULL 의 MoM 기준 4월 FULL).
     def _pm(ym: str) -> str:
         y, m = int(ym[:4]), int(ym[5:7])
         return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-    prev_full_pm = _find(_pm(pf_ym), "FULL") if pf_ym else None
+
+    cur_prev = _find(_py(latest_ym), cur["decile"])
+    # 전월 동순 (MoM, 사용자 2026-06-12 '표에도') — 예: 6월 1-10 vs 5월 1-10.
+    cur_prev_mo = _find(_pm(latest_ym), cur["decile"])
+    # ΔYoY·ΔMoM 비교기준 = 직전월의 **같은 창**(cur_prev_mo) 자체의 YoY·MoM
+    # — 그 창의 전년 동월(YoY용)과 그 창의 전월(MoM용), 전부 cur 와 동일한
+    # decile 로 통일(2026-07-23 재설계 — 예전엔 여기가 '직전 풀월' 이었음).
+    prev_mo_py = _find(_py(_pm(latest_ym)), cur["decile"]) if cur_prev_mo else None
+    prev_mo_pm = _find(_pm(_pm(latest_ym)), cur["decile"]) if cur_prev_mo else None
 
     def _yoy(base: Optional[dict], prev: Optional[dict], i: int) -> Optional[float]:
         if base is None or prev is None:
@@ -289,13 +288,13 @@ def momentum_rows(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
     out = []
     for i, name in enumerate(["전체", *labels]):
         cy = _yoy(cur, cur_prev, i)
-        pf = _yoy(prev_full, prev_full_py, i)
+        pf = _yoy(cur_prev_mo, prev_mo_py, i)
         mom = (cy - pf) if (cy is not None and pf is not None) else None
-        # ΔMoM (사용자 2026-06-13 'MoM 도 모멘텀') = 최신창 MoM − 직전
-        # 풀월 MoM. ⚠️ MoM 은 계절효과 미보정 — 둘 다 같은 계절 경계를
+        # ΔMoM (사용자 2026-06-13 'MoM 도 모멘텀') = 최신창 MoM − 직전월
+        # 같은 창의 MoM. ⚠️ MoM 은 계절효과 미보정 — 둘 다 같은 계절 경계를
         # 건너는 비교라 부분 상쇄되지만, 해석은 ΔYoY(계절 중립)를 우선.
         mc = _yoy(cur, cur_prev_mo, i)
-        pf_mom = _yoy(prev_full, prev_full_pm, i)
+        pf_mom = _yoy(cur_prev_mo, prev_mo_pm, i)
         out.append({"idx": i, "name": name, "usd": cur["amt"][i],
                     "yoy": cy, "momentum": mom,
                     "mom_chg": mc,
@@ -668,8 +667,9 @@ def momentum_archive_html(rows_by_kind: dict[str, list]) -> str:
     if not tables:
         return ""
     note = ("<div style='font-size:11.5px;color:#666;line-height:1.4;margin-top:6px'>"
-            "ΔYoY = 최신창 YoY − 직전 풀월 YoY · ΔMoM = 최신창 MoM − 직전 풀월 "
-            "MoM (▲가속/▼둔화) · MoM = 전월 동순(계절효과 미보정) · 절대액 큰 순</div>")
+            "ΔYoY = 최신창 YoY − 직전월 같은 창 YoY · ΔMoM = 최신창 MoM − 직전월 같은 창 "
+            "MoM (▲가속/▼둔화, 10일/20일/한달 항상 같은 창끼리) · MoM = 전월 동순"
+            "(계절효과 미보정) · 절대액 큰 순</div>")
     return f"<div style='margin-top:8px'>{note}{tables}</div>"
 
 
@@ -702,8 +702,9 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
         "</div>"
     )
     note = (
-        "<div class='ind-prov-mom-note'>ΔYoY = 최신창 YoY − 직전 풀월 YoY · "
-        "ΔMoM = 최신창 MoM − 직전 풀월 MoM (▲가속/▼둔화) · MoM = 전월 동순 "
+        "<div class='ind-prov-mom-note'>ΔYoY = 최신창 YoY − 직전월 같은 창 YoY · "
+        "ΔMoM = 최신창 MoM − 직전월 같은 창 MoM (▲가속/▼둔화, 10일/20일/한달 "
+        "항상 같은 창끼리) · MoM = 전월 동순 "
         "— MoM·ΔMoM 은 계절효과 미보정이라 추세 판단은 ΔYoY 우선 · "
         "전체 행 고정</div>"
     )
