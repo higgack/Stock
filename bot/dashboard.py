@@ -12619,12 +12619,14 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
             _tk = str(r.get("ticker") or "")
             _nm_esc = _html.escape(str(r.get("name", "")))
             _tk_esc = _html.escape(_tk)
-            # 종목분석(index.html) 기존 해시 딥링크 재사용(#ticker=, 검색창
-            # syncFromHash 가 이미 처리 — 사용자 2026-07-16 '회사명 클릭하면
-            # 기업분석대쉬보드로'). ticker 가 그 파서의 문자셋([A-Za-z0-9.]+)
-            # 밖이면(드문 비-US 표기) 링크 없이 평문 — 죽은 링크 방지.
+            # /lookup/<ticker> 딥링크(사용자 2026-07-16 '회사명 클릭하면
+            # 기업분석대쉬보드로' → 2026-07-23 재지적: index.html#ticker= 는
+            # '주식분석 아카이브'(완료된 AI 분석만 검색, 미분석 종목 0건 매칭)로
+            # 가버려 오배선 — /lookup/<ticker> 가 실제 종목 상세(시세·차트·재무)
+            # 페이지. ticker 가 그 파서의 문자셋([A-Za-z0-9.]+) 밖이면(드문
+            # 비-US 표기) 링크 없이 평문 — 죽은 링크 방지.
             if re.fullmatch(r"[A-Za-z0-9.]+", _tk):
-                name_html = (f'<a class="mc-name-link" href="index.html#ticker={_tk_esc}">'
+                name_html = (f'<a class="mc-name-link" href="lookup/{_tk_esc}">'
                              f'<div class="mc-name">{_nm_esc}</div></a>')
             else:
                 name_html = f'<div class="mc-name">{_nm_esc}</div>'

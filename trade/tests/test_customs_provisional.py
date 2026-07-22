@@ -641,8 +641,10 @@ class MomentumTableMomColumnTest(unittest.TestCase):
 
 
 class MomChgDeltaTests(unittest.TestCase):
-    """ΔMoM (MoM 모멘텀, 사용자 2026-06-13) — 최신창 MoM − 직전 풀월 MoM.
-    계절효과 미보정 캐비엇 노트 + 6컬럼(YoY·ΔYoY·MoM·ΔMoM) + 정렬키."""
+    """ΔMoM (MoM 모멘텀, 사용자 2026-06-13) — 최신창 MoM − 직전월 같은 창 MoM
+    (2026-07-23 재설계: 예전엔 '직전 풀월' 기준이라 부분누적 창일 때 비교
+    기준의 창이 안 맞았음 — 사용자 '20일 vs 20일로' 요청, 항상 같은 decile
+    끼리). 계절효과 미보정 캐비엇 노트 + 6컬럼(YoY·ΔYoY·MoM·ΔMoM) + 정렬키."""
 
     @staticmethod
     def _rows():
@@ -652,7 +654,13 @@ class MomChgDeltaTests(unittest.TestCase):
         out = []
         for ym, dec, tot, a in (
             ("2026-06", "D10", 110.0, 60.0), ("2026-05", "D10", 100.0, 50.0),
-            ("2025-06", "D10", 55.0, 30.0), ("2026-05", "FULL", 300.0, 150.0),
+            ("2025-06", "D10", 55.0, 30.0),
+            # ΔYoY·ΔMoM 비교기준 = 직전월(2026-05) 같은 창(D10) 자체의
+            # YoY·MoM — 그 창의 전년 동월(2025-05 D10)과 전월(2026-04 D10).
+            ("2025-05", "D10", 80.0, 40.0), ("2026-04", "D10", 125.0, 62.5),
+            # FULL 행은 더는 Δ 계산에 안 쓰이지만(창 불일치 회귀 방지 —
+            # 실수로 다시 섞이면 아래 숫자가 안 맞아 즉시 실패) 그대로 둠.
+            ("2026-05", "FULL", 300.0, 150.0),
             ("2026-04", "FULL", 250.0, 100.0), ("2025-05", "FULL", 200.0, 100.0),
         ):
             out.append({"ym": ym, "decile": dec, "amt": amts(tot, a),
@@ -663,8 +671,11 @@ class MomChgDeltaTests(unittest.TestCase):
         mv = prov.momentum_rows(self._rows(), prov.LABELS["exp_item"])
         tot = mv["items"][0]
         self.assertAlmostEqual(tot["mom_chg"], 10.0, places=1)
-        self.assertAlmostEqual(tot["momchg_delta"], -10.0, places=1)   # 10−20
-        self.assertAlmostEqual(mv["items"][1]["momchg_delta"], -30.0, places=1)
+        # ΔYoY: cy(100.0) − 직전월(D10) YoY(25.0, =100→80) = 75.0
+        self.assertAlmostEqual(tot["momentum"], 75.0, places=1)
+        # ΔMoM: mc(10.0) − 직전월(D10) MoM(-20.0, =100→125) = 30.0
+        self.assertAlmostEqual(tot["momchg_delta"], 30.0, places=1)
+        self.assertAlmostEqual(mv["items"][1]["momchg_delta"], 40.0, places=1)
         html = prov.render_momentum({"exp_item": self._rows()})
         self.assertIn("<th>ΔMoM</th>", html)
         self.assertIn("data-momchgd=", html)

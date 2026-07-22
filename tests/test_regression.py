@@ -13470,14 +13470,16 @@ class TestCreditSplitAndMarketcap20260706:
         assert "Price (30 days)" in page and "mc-spark-svg" in page
         assert 'stroke="#ef5350"' in page           # 인라인 SVG 스파크(red)
         assert "▲0.71%" in page and "▼1.60%" in page
-        # 회사명 클릭 → 종목분석(index.html) 딥링크(사용자 2026-07-16). 정상
+        # 회사명 클릭 → /lookup/<ticker> 딥링크(사용자 2026-07-16, 2026-07-23
+        # index.html#ticker= 오배선 수정 — 그건 완료된 AI 분석만 검색하는
+        # 아카이브라 미분석 종목은 0건 매칭으로 죽은 링크였음). 정상
         # 티커(NVDA/MSFT, [A-Za-z0-9.]+)는 링크, 비정상(공백 등 있었다면)은
         # 평문 폴백 — 여기 fixture 는 전부 정상이라 rows 수만큼 링크 존재.
         # data 는 rows 를 EMBED_AXES 6개 탭 전부에 그대로 재사용하므로 링크도
         # 탭 수만큼 반복(rows 자체는 2건).
         assert page.count('class="mc-name-link"') == len(rows) * len(mc.EMBED_AXES)
-        assert 'href="index.html#ticker=NVDA"' in page
-        assert 'href="index.html#ticker=MSFT"' in page
+        assert 'href="lookup/NVDA"' in page
+        assert 'href="lookup/MSFT"' in page
         data["pe"] = {"rows": [], "fetched_at": "", "stale": True}
         assert "데이터 수집 실패" in d._render_marketcap_page(data)
 
