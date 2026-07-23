@@ -4989,31 +4989,40 @@ def run_once(target_date: date | None = None,
                 pending.append(it)
     except Exception as exc:
         log.warning("dart_feed: 백필 대기열 로드 실패: %s", exc)
+    # 접수일(rcept_dt 'YYYYMMDD')별 그룹핑 → 각 날짜 파일에 merge (아카이브
+    # 항목의 enrich 성공분도 detail 업데이트로 반영).
+    def _save_by_day(work_items: list[dict]) -> None:
+        by_day: dict[date, list[dict]] = {}
+        for it in work_items:
+            raw = str(it.get("date") or "").strip()
+            try:
+                d = datetime.strptime(raw[:8], "%Y%m%d").date()
+            except (ValueError, TypeError):
+                d = target_date
+            by_day.setdefault(d, []).append(it)
+        for d, day_items in by_day.items():
+            merge_and_save(d, day_items)
+
     # 오늘치(items)는 기존 캡으로 최신순 처리 — 신선도 우선 유지.
     # pending(백로그)은 **별도 호출 + 구식순 정렬 + 전용 쿼터**로 분리
     # (2026-07-24 — 신규 유입에 밀려 오래된 백로그가 기아 상태였던 근본
     # 원인 fix, _ENRICH_MAX_PER_CYCLE_BACKLOG 정의부 참조). 날짜 파싱 실패
     # 항목은 정렬 끝으로(부당하게 새치기 안 함).
+    #
+    # ⚠️ 2026-07-24 재발견(배포 직후 VM 실측): 호출을 둘로 나누면서 총
+    # enrich 소요시간이 늘어 dart-feed.service 의 TimeoutStartSec(300s)를
+    # 넘겨 SIGTERM 으로 죽는 사이클이 급증 — 죽는 시점이 저장(merge_and_save)
+    # **이전**이라 해당 사이클의 enrich 성공분(로그엔 '성공 N건'이 찍히는데)
+    # 이 통째로 미저장 상태로 유실되는 회귀 발생(실측: '성공' 목록에 있던
+    # 항목이 아카이브엔 detail=None). 각 단계 enrich 직후 **그 단계만** 바로
+    # 저장 — 이후 단계에서 죽어도 이미 끝난 단계 성과는 보존.
     pending.sort(key=lambda it: str(it.get("date") or "99999999"))
     if items:
         enrich_disclosures(items)
+        _save_by_day(items)
     if pending:
         enrich_disclosures(pending, max_per_cycle=_ENRICH_MAX_PER_CYCLE_BACKLOG)
-    work = items + pending
-
-    # 접수일(rcept_dt 'YYYYMMDD')별 그룹핑 → 각 날짜 파일에 merge
-    # (work 전체 — 아카이브 항목의 enrich 성공분도 detail 업데이트로 반영)
-    by_day: dict[date, list[dict]] = {}
-    for it in work:
-        raw = str(it.get("date") or "").strip()
-        try:
-            d = datetime.strptime(raw[:8], "%Y%m%d").date()
-        except (ValueError, TypeError):
-            d = target_date
-        by_day.setdefault(d, []).append(it)
-
-    for d, day_items in by_day.items():
-        merge_and_save(d, day_items)
+        _save_by_day(pending)
 
     return items
 
