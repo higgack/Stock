@@ -492,14 +492,24 @@ def _budget_add(n: int = 1) -> int:
 # 사이클(1분)당 신규 enrich 시도 상한 — 60/분(=3600/시간). 장 마감(15:30 KST)
 # 후 16~18시 KST 공시 폭주를 더 빨리 흡수(16→60, 사용자 2026-07-23 재조사:
 # 2026-06-15 튜닝 당시 가정('정상 ~250건/일')이 이제 안 맞음 — VM 실측
-# 결과 지분공시 한 카테고리만 하루 933건 나온 날 확인, 16/분으로는 못 따라
-# 잡아 '미파싱' 이 폭주lag 아니라 수 주째 상시 누적(2026-06-24~07-22 매일
-# 25~70%대 잔존, 0 수렴한 날 없음 — 실측). 최신순 소진(오늘치 우선), 나머지는
-# 다음 사이클 점진 백필. ⚠️ 일일 예산 소비는 공시 '총량'에 묶임(정상
-# ~250건/일×2콜=500, 하드캡 15k 훨씬 아래, 실측 최대치도 여전히 여유) —
-# per-cycle 상향은 같은 총량을 더 적은 사이클에 처리할 뿐 일일 예산을 안
-# 늘린다. _BUDGET_HARD 가 대량 backfill 시 총량 폭주를 여전히 차단.
+# 결과 지분공시 한 카테고리만 하루 933건 나온 날 확인). ⚠️ 일일 예산 소비는
+# 공시 '총량'에 묶임(정상 ~250건/일×2콜=500, 하드캡 15k 훨씬 아래, 실측
+# 최대치도 여전히 여유) — per-cycle 상향은 같은 총량을 더 적은 사이클에
+# 처리할 뿐 일일 예산을 안 늘린다. _BUDGET_HARD 가 대량 backfill 시 총량
+# 폭주를 여전히 차단. 이 캡은 run_once 의 '오늘치 fresh' 호출 전용(아래).
 _ENRICH_MAX_PER_CYCLE = 60
+
+# 백로그(pending, 14일 윈도) 전용 쿼터 — **구식순** 고정 할당(2026-07-24
+# 재설계). 근본 원인 재조사: _ENRICH_MAX_PER_CYCLE 하나를 'work = 오늘치
+# + pending' 전체에 최신순으로 적용하면, 오늘치 자체가 매 사이클 계속
+# 리필돼(캡 소진) 뒤쪽(pending, 오래된 것들)이 영원히 차례가 안 옴 — VM
+# 실측: 삼익악기 대량보유(일반) 건을 수동 enrich_disclosures 호출하면
+# 즉시 정상 파싱되는데(파서 자체는 멀쩡) 자동 사이클로는 07-21 접수 후
+# 수일째 그대로. '최신순 소진, 나머지는 다음 사이클 백필'이라는 예전
+# 가정이 신규 유입이 캡에 필적/초과하는 상황에서 깨짐(무기한 기아).
+# 오늘치와 별도 호출 + 별도(작지만 보장된) 쿼터로 백로그가 유입량과 무관
+# 하게 항상 전진하도록 분리.
+_ENRICH_MAX_PER_CYCLE_BACKLOG = 20
 
 
 def _doc_fail_load() -> dict:
@@ -4081,8 +4091,12 @@ def _shares_outstanding(stock_code: str) -> float | None:
         return None
 
 
-def enrich_disclosures(items: list[dict]) -> list[dict]:
-    """구조화 상세 추출 + PER 계산으로 보강. in-place + return."""
+def enrich_disclosures(items: list[dict], max_per_cycle: int | None = None) -> list[dict]:
+    """구조화 상세 추출 + PER 계산으로 보강. in-place + return.
+
+    max_per_cycle 생략 시 _ENRICH_MAX_PER_CYCLE(전역 기본) 사용 — run_once
+    가 '오래된 백로그' 전용 호출에 별도 쿼터를 줄 때만 오버라이드한다
+    (2026-07-24 재설계 참조)."""
     api_key = _dart_api_key()
     if not api_key:
         return items
@@ -4102,6 +4116,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
     except Exception:
         known = {}
 
+    cap = max_per_cycle if max_per_cycle is not None else _ENRICH_MAX_PER_CYCLE
     attempted = enriched = failed = skipped = 0
     ok_list: list[str] = []
     for item in items:
@@ -4125,7 +4140,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             if rcept_no and _doc_fail_recent(rcept_no):
                 skipped += 1
                 continue
-            if attempted >= _ENRICH_MAX_PER_CYCLE:
+            if attempted >= cap:
                 skipped += 1
                 continue
             if _budget_today() >= _BUDGET_HARD:
@@ -4959,15 +4974,14 @@ def run_once(target_date: date | None = None,
              target_date, days_back + 1, _max_pages, _budget_today())
     items = fetch_market_disclosures(target_date, days_back=days_back,
                                      max_pages=_max_pages)
-    # 백필 대기열 — 최근 3일 아카이브에서 detail 없는 항목을 합쳐 enrich.
+    # 백필 대기열 — 최근 14일 아카이브에서 detail 없는 항목을 합쳐 enrich.
     # 증분(당일) 사이클은 fetch 가 당일분만 담아 새벽/한산 시간대에 백필이
     # 시간당 풀스캔 8건으로 기어가던 버그 fix (사용자 2026-06-11).
     fetched_ids = {it.get("rcept_no") for it in items}
     pending: list[dict] = []
     try:
         # 윈도 3→14일 (2026-06-11): 풀백필이 추가한 당월 초 항목도 파서
-        # 보유 유형이면 enrich 가 자연 드레인 (8건/분 cap 그대로 — 분당
-        # 한도 보호, 백로그는 수 시간에 걸쳐 소진).
+        # 보유 유형이면 enrich 가 자연 드레인.
         for day_items in load_all_archives(days_back=14).values():
             for it in day_items:
                 if it.get("rcept_no") in fetched_ids or it.get("detail"):
@@ -4975,9 +4989,17 @@ def run_once(target_date: date | None = None,
                 pending.append(it)
     except Exception as exc:
         log.warning("dart_feed: 백필 대기열 로드 실패: %s", exc)
+    # 오늘치(items)는 기존 캡으로 최신순 처리 — 신선도 우선 유지.
+    # pending(백로그)은 **별도 호출 + 구식순 정렬 + 전용 쿼터**로 분리
+    # (2026-07-24 — 신규 유입에 밀려 오래된 백로그가 기아 상태였던 근본
+    # 원인 fix, _ENRICH_MAX_PER_CYCLE_BACKLOG 정의부 참조). 날짜 파싱 실패
+    # 항목은 정렬 끝으로(부당하게 새치기 안 함).
+    pending.sort(key=lambda it: str(it.get("date") or "99999999"))
+    if items:
+        enrich_disclosures(items)
+    if pending:
+        enrich_disclosures(pending, max_per_cycle=_ENRICH_MAX_PER_CYCLE_BACKLOG)
     work = items + pending
-    if work:
-        enrich_disclosures(work)
 
     # 접수일(rcept_dt 'YYYYMMDD')별 그룹핑 → 각 날짜 파일에 merge
     # (work 전체 — 아카이브 항목의 enrich 성공분도 detail 업데이트로 반영)
