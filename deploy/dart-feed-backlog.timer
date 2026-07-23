@@ -1,0 +1,11 @@
+[Unit]
+Description=DART Disclosure Feed backlog trigger — 5분 간격(독립, 오래된 미파싱 전담)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=dart-feed-backlog.service
+
+[Install]
+WantedBy=timers.target

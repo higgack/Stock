@@ -1,0 +1,19 @@
+[Unit]
+Description=DART Disclosure Feed — 오래된 미파싱 백로그 전담(독립 사이클)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.dart_feed --backfill-pending
+StandardOutput=journal
+StandardError=journal
+# run_once(dart-feed.service, 1분 사이클)와 완전히 분리된 전용 프로세스
+# (2026-07-24 — 같은 사이클 안에서 백로그 전용 쿼터를 시도했다가 2회
+# 라이브 장애로 롤백한 히스토리, bot/dart_feed.py backfill_pending 독스트링
+# 참조). 백로그 항목은 쿨다운·폴백경로를 거치는 '어려운 케이스'가 많아
+# 개별 처리시간이 길 수 있어 넉넉하게.
+TimeoutStartSec=900
