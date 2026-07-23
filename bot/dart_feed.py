@@ -5026,11 +5026,16 @@ def backfill_pending(days_back: int = 14,
     분리된 **독립 타이머**(dart-feed-backlog.timer, 자체 여유 타임아웃)
     전용 진입점(2026-07-24, run_once 안에서 시도했다가 2회 라이브 장애로
     롤백한 히스토리 참조). 최근 days_back 일 아카이브에서 detail 없는
-    항목만 구식순으로 모아 enrich 후 즉시 저장. 백로그 항목은 이미 한 번
-    실패한 '어려운 케이스'가 많아(쿨다운·폴백경로) 개별 처리시간이 길 수
-    있음 — 그래서 이 전용 사이클엔 넉넉한 타임아웃을 준다. graceful(예외
-    시 빈 통계 반환)."""
-    stats = {"total": 0, "enriched": 0}
+    항목만 구식순으로 모아 **건별로** enrich 직후 즉시 저장.
+
+    ⚠️ 2026-07-24 재발견: 독립 타이머로 옮긴 뒤에도 넉넉한 타임아웃
+    (900s)마저 실제로 넘겨 SIGTERM 재현 — 백로그 항목은 폴백경로마다
+    자체 타임아웃 대기가 누적돼 건당 소요시간이 예상보다 훨씬 김. 예전
+    처럼 전량 enrich 후 한 번에 저장하면 또 죽는 시점 이전 작업이 통째로
+    유실(3번째 재발 방지) — 그래서 **1건 처리할 때마다 그 1건만 즉시
+    저장**. 프로세스가 어느 시점에 죽어도 그때까지 끝난 건수만큼은
+    확정 보존, 남은 건 다음 사이클이 이어감(진행이 항상 순증)."""
+    stats = {"total": 0, "enriched": 0, "attempted": 0}
     try:
         pending: list[dict] = []
         for day_items in load_all_archives(days_back=days_back).values():
@@ -5040,23 +5045,33 @@ def backfill_pending(days_back: int = 14,
                 pending.append(it)
         pending.sort(key=lambda it: str(it.get("date") or "99999999"))
         stats["total"] = len(pending)
-        if not pending:
-            return stats
-        enrich_disclosures(pending, max_per_cycle=max_per_cycle)
-        by_day: dict[date, list[dict]] = {}
         today = datetime.now(_KST).date()
-        for it in pending:
+
+        def _save_one(it: dict) -> None:
             raw = str(it.get("date") or "").strip()
             try:
                 d = datetime.strptime(raw[:8], "%Y%m%d").date()
             except (ValueError, TypeError):
                 d = today
-            by_day.setdefault(d, []).append(it)
-        for d, day_items in by_day.items():
-            merge_and_save(d, day_items)
-        stats["enriched"] = sum(1 for it in pending if it.get("detail"))
-        log.info("dart_feed backfill_pending: %d/%d 건 enrich",
-                 stats["enriched"], stats["total"])
+            merge_and_save(d, [it])
+
+        attempted = 0
+        for item in pending:
+            if attempted >= max_per_cycle:
+                break
+            if not is_parse_target(item):
+                continue
+            rcept_no = str(item.get("rcept_no", ""))
+            if rcept_no and _doc_fail_recent(rcept_no):
+                continue
+            attempted += 1
+            enrich_disclosures([item])   # 1건뿐 — 내부 cap 과 무관
+            if item.get("detail"):
+                stats["enriched"] += 1
+            _save_one(item)              # 이 건만 바로 저장(중간사망 방어)
+        stats["attempted"] = attempted
+        log.info("dart_feed backfill_pending: %d/%d 건 enrich(시도 %d/%d)",
+                 stats["enriched"], stats["total"], attempted, stats["total"])
     except Exception as exc:
         log.warning("dart_feed backfill_pending 실패: %s", exc)
     return stats
