@@ -11,9 +11,9 @@ EnvironmentFile=/home/higgack/stock/.env
 ExecStart=/home/higgack/stock/.venv/bin/python -m bot.dart_feed
 StandardOutput=journal
 StandardError=journal
-# 300→600 (2026-07-24): 백로그 전용 쿼터 분리로 사이클당 attempt 총량이
-# 늘어(오늘치 최대 60 + 백로그 최대 20) VM 실측상 300s 를 자주 넘겨
-# SIGTERM 으로 죽는 사이클이 급증 — 단계별 즉시저장(run_once 참조)으로
-# 유실 자체는 막았지만, 그래도 자주 죽으면 그 사이클의 남은 단계(특히
-# 백로그) 진행이 못 끝나 매번 처음부터 재시도. 여유를 둬 정상 완주 빈도 ↑.
+# 300→600 (2026-07-24): 지분공시 등 물량 자체가 늘어(VM 실측 하루 900+건
+# 카테고리도 관측) 오늘치(items) 60건 enrich 만으로도 종종 300s 에 근접 —
+# 여유 확보. ⚠️ 백로그(pending) 처리는 이 사이클에 넣지 않음(2회 라이브
+# 장애로 롤백한 히스토리, bot/dart_feed.py backfill_pending 독스트링 +
+# deploy/dart-feed-backlog.service 참조 — 완전히 분리된 독립 타이머).
 TimeoutStartSec=600

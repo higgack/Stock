@@ -3978,15 +3978,17 @@ class TestDartFeedBackfill:
         saved = m.load_archive(d)
         assert saved[0].get("detail") == ["계약금액: 70억원"]
 
-    def test_backlog_gets_dedicated_quota_despite_fresh_volume(
+    def test_backfill_pending_processes_old_backlog_independently(
             self, tmp_path, monkeypatch):
-        """2026-07-24 근본원인 fix — 예전엔 work=items+pending 을 단일 캡
-        으로 최신순 처리해 '오늘치' 유입만으로 캡이 소진되면 pending(백로그)
-        이 영원히 차례 안 옴(VM 실측: 대량보유 파서는 멀쩡한데 자동 사이클
-        로는 07-21 건이 수일째 미파싱 — 신규 유입이 매 사이클 계속 캡을
-        재소진해 뒤쪽 백로그 기아). fresh 캡을 1로 좁혀 fresh 2건이 이미
-        캡을 초과하는 상황을 만들어도, pending 의 오래된 1건이 별도(백로그
-        전용) 쿼터로 그래도 enrich 되는지 확인."""
+        """2026-07-24 — 오래된 백로그를 run_once(1분, 짧은 타임아웃)와
+        같은 사이클에 넣으면 (a) 오늘치 유입이 캡을 계속 재소진해 백로그가
+        영원히 차례 안 옴, (b) 억지로 별도 쿼터를 같은 프로세스에 넣었더니
+        총 소요시간이 늘어 dart-feed.service TimeoutStartSec 를 넘겨
+        SIGTERM 으로 죽어 그 사이클 전체가 미저장 유실(라이브 장애 2회 —
+        VM 실측: '성공' 로그에 있던 항목이 아카이브엔 detail=None). 최종
+        설계: backfill_pending() 을 run_once 와 완전히 분리된 독립 진입점
+        (dart-feed-backlog.timer, 넉넉한 타임아웃)으로 — 이 테스트는 그
+        분리된 함수가 오래된 백로그를 실제로 enrich+저장하는지만 확인."""
         m = self._load(tmp_path, monkeypatch)
         from datetime import date, timedelta
         old_d = date.today() - timedelta(days=5)
@@ -3995,20 +3997,21 @@ class TestDartFeedBackfill:
                                   "corp_code": "C", "stock_code": "",
                                   "date": old_d.strftime("%Y%m%d")}])
         monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
-        monkeypatch.setattr(m, "_ENRICH_MAX_PER_CYCLE", 1)   # fresh 캡 좁힘
-        today_d = date.today()
-        fresh = [{"rcept_no": f"NEW{i}", "report_nm": "단일판매ㆍ공급계약체결",
-                  "category": "계약", "corp_code": "C", "stock_code": "",
-                  "date": today_d.strftime("%Y%m%d")} for i in range(2)]
-        monkeypatch.setattr(m, "fetch_market_disclosures",
-                            lambda *a, **k: fresh)         # fresh 2건 > 캡 1
         monkeypatch.setattr(m, "_extract_detail",
                             lambda *a: {"lines": ["계약금액: 70억원"]})
+        st = m.backfill_pending(days_back=14)
+        assert st["total"] == 1 and st["enriched"] == 1
+        saved = m.load_archive(old_d)
+        assert saved[0].get("detail") == ["계약금액: 70억원"]
+
+        # run_once 는 이제 pending 을 별도 쿼터로 처리하지 않음(기존 결합
+        # 방식 그대로) — 회귀 방지: run_once 호출 자체는 여전히 오늘치만
+        # 정상 동작해야 함(백로그 로직 제거로 오늘치 흐름이 깨지지 않는지).
+        monkeypatch.setattr(m, "fetch_market_disclosures",
+                            lambda *a, **k: [])
         monkeypatch.setattr(m, "_industry_line", lambda sc: [])
         monkeypatch.setattr(m, "_market_cap_price_lines", lambda sc: [])
-        m.run_once()
-        saved = m.load_archive(old_d)
-        assert saved[0].get("detail") == ["계약금액: 70억원"]   # 백로그도 처리됨
+        m.run_once()   # 오늘치 0건이라도 예외 없이 완주해야 함
 
     def test_contract_party_as_last_field(self, tmp_path, monkeypatch):
         m = self._load(tmp_path, monkeypatch)

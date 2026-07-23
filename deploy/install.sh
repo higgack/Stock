@@ -61,6 +61,7 @@ for unit in \
     portfolio-watch.service         portfolio-watch.timer \
     watchlist-check.service         watchlist-check.timer \
     dart-feed.service               dart-feed.timer \
+    dart-feed-backlog.service       dart-feed-backlog.timer \
     highlow-scan.service            highlow-scan.timer \
     trend-precompute.service        trend-precompute.timer ;
 do
@@ -188,6 +189,11 @@ if [ -f "$DEPLOY_DIR/watchlist-check.timer" ]; then
 fi
 if [ -f "$DEPLOY_DIR/dart-feed.timer" ]; then
     systemctl enable --now dart-feed.timer
+fi
+if [ -f "$DEPLOY_DIR/dart-feed-backlog.timer" ]; then
+    # 오래된 미파싱 백로그 전담 — dart-feed.timer(1분, 짧은 타임아웃)와
+    # 완전히 분리된 독립 사이클(2026-07-24, backfill_pending 독스트링 참조).
+    systemctl enable --now dart-feed-backlog.timer
 fi
 if [ -f "$DEPLOY_DIR/highlow-scan.timer" ]; then
     # 52주 신고저 슬롯 스캐너 — 봇 배포와 독립(사용자 2026-06-19). enable --now 로

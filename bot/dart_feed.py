@@ -499,16 +499,17 @@ def _budget_add(n: int = 1) -> int:
 # 폭주를 여전히 차단. 이 캡은 run_once 의 '오늘치 fresh' 호출 전용(아래).
 _ENRICH_MAX_PER_CYCLE = 60
 
-# 백로그(pending, 14일 윈도) 전용 쿼터 — **구식순** 고정 할당(2026-07-24
-# 재설계). 근본 원인 재조사: _ENRICH_MAX_PER_CYCLE 하나를 'work = 오늘치
-# + pending' 전체에 최신순으로 적용하면, 오늘치 자체가 매 사이클 계속
+# 백로그(pending, 14일 윈도) 전용 쿼터 — backfill_pending() 이 사용
+# (dart-feed-backlog.timer, run_once 와 완전히 분리된 독립 사이클,
+# 2026-07-24). 근본 원인: _ENRICH_MAX_PER_CYCLE 하나를 'work = 오늘치 +
+# pending' 전체에 최신순으로 적용하면, 오늘치 자체가 매 사이클 계속
 # 리필돼(캡 소진) 뒤쪽(pending, 오래된 것들)이 영원히 차례가 안 옴 — VM
 # 실측: 삼익악기 대량보유(일반) 건을 수동 enrich_disclosures 호출하면
 # 즉시 정상 파싱되는데(파서 자체는 멀쩡) 자동 사이클로는 07-21 접수 후
-# 수일째 그대로. '최신순 소진, 나머지는 다음 사이클 백필'이라는 예전
-# 가정이 신규 유입이 캡에 필적/초과하는 상황에서 깨짐(무기한 기아).
-# 오늘치와 별도 호출 + 별도(작지만 보장된) 쿼터로 백로그가 유입량과 무관
-# 하게 항상 전진하도록 분리.
+# 수일째 그대로. ⚠️ 처음엔 이 쿼터를 run_once 안에서 별도 호출로 처리
+# 했다가(같은 사이클, 짧은 타임아웃) 라이브 장애 2회로 롤백 — 백로그
+# 항목은 쿨다운·폴백경로를 거치는 어려운 케이스가 많아 개별 처리시간이
+# 길어 같은 타임아웃 예산을 공유하면 위험. 완전 분리된 타이머로 이전.
 _ENRICH_MAX_PER_CYCLE_BACKLOG = 20
 
 
@@ -4977,6 +4978,15 @@ def run_once(target_date: date | None = None,
     # 백필 대기열 — 최근 14일 아카이브에서 detail 없는 항목을 합쳐 enrich.
     # 증분(당일) 사이클은 fetch 가 당일분만 담아 새벽/한산 시간대에 백필이
     # 시간당 풀스캔 8건으로 기어가던 버그 fix (사용자 2026-06-11).
+    #
+    # ⚠️ 2026-07-24 히스토리: pending 을 이 run_once(1분 사이클, dart-feed.
+    # service TimeoutStartSec 제약)와 같은 호출 안에서 별도 쿼터로 처리하는
+    # 시도를 2회 배포했다가 둘 다 라이브에서 타임아웃/저장유실로 롤백했음
+    # (백로그 항목은 이미 한 번 실패해 쿨다운·폴백 경로를 거치는 '어려운
+    # 케이스'가 많아 개별 처리시간이 오늘치보다 김 — 600초로 올려도 정확히
+    # 그 시각 재현). pending 처리는 backfill_pending()으로 완전히 분리해
+    # **독립된 타이머**(dart-feed-backlog.timer)로 옮김 — 이 함수(run_once)
+    # 는 오늘치(items)만, 기존처럼 단일 캡으로 처리.
     fetched_ids = {it.get("rcept_no") for it in items}
     pending: list[dict] = []
     try:
@@ -4989,42 +4999,67 @@ def run_once(target_date: date | None = None,
                 pending.append(it)
     except Exception as exc:
         log.warning("dart_feed: 백필 대기열 로드 실패: %s", exc)
-    # 접수일(rcept_dt 'YYYYMMDD')별 그룹핑 → 각 날짜 파일에 merge (아카이브
-    # 항목의 enrich 성공분도 detail 업데이트로 반영).
-    def _save_by_day(work_items: list[dict]) -> None:
+    work = items + pending
+    if work:
+        enrich_disclosures(work)
+
+    # 접수일(rcept_dt 'YYYYMMDD')별 그룹핑 → 각 날짜 파일에 merge
+    # (work 전체 — 아카이브 항목의 enrich 성공분도 detail 업데이트로 반영)
+    by_day: dict[date, list[dict]] = {}
+    for it in work:
+        raw = str(it.get("date") or "").strip()
+        try:
+            d = datetime.strptime(raw[:8], "%Y%m%d").date()
+        except (ValueError, TypeError):
+            d = target_date
+        by_day.setdefault(d, []).append(it)
+
+    for d, day_items in by_day.items():
+        merge_and_save(d, day_items)
+
+    return items
+
+
+def backfill_pending(days_back: int = 14,
+                     max_per_cycle: int = _ENRICH_MAX_PER_CYCLE_BACKLOG) -> dict:
+    """오래된 미파싱 백로그 전담 — run_once(1분, 짧은 타임아웃)와 완전히
+    분리된 **독립 타이머**(dart-feed-backlog.timer, 자체 여유 타임아웃)
+    전용 진입점(2026-07-24, run_once 안에서 시도했다가 2회 라이브 장애로
+    롤백한 히스토리 참조). 최근 days_back 일 아카이브에서 detail 없는
+    항목만 구식순으로 모아 enrich 후 즉시 저장. 백로그 항목은 이미 한 번
+    실패한 '어려운 케이스'가 많아(쿨다운·폴백경로) 개별 처리시간이 길 수
+    있음 — 그래서 이 전용 사이클엔 넉넉한 타임아웃을 준다. graceful(예외
+    시 빈 통계 반환)."""
+    stats = {"total": 0, "enriched": 0}
+    try:
+        pending: list[dict] = []
+        for day_items in load_all_archives(days_back=days_back).values():
+            for it in day_items:
+                if it.get("detail"):
+                    continue
+                pending.append(it)
+        pending.sort(key=lambda it: str(it.get("date") or "99999999"))
+        stats["total"] = len(pending)
+        if not pending:
+            return stats
+        enrich_disclosures(pending, max_per_cycle=max_per_cycle)
         by_day: dict[date, list[dict]] = {}
-        for it in work_items:
+        today = datetime.now(_KST).date()
+        for it in pending:
             raw = str(it.get("date") or "").strip()
             try:
                 d = datetime.strptime(raw[:8], "%Y%m%d").date()
             except (ValueError, TypeError):
-                d = target_date
+                d = today
             by_day.setdefault(d, []).append(it)
         for d, day_items in by_day.items():
             merge_and_save(d, day_items)
-
-    # 오늘치(items)는 기존 캡으로 최신순 처리 — 신선도 우선 유지.
-    # pending(백로그)은 **별도 호출 + 구식순 정렬 + 전용 쿼터**로 분리
-    # (2026-07-24 — 신규 유입에 밀려 오래된 백로그가 기아 상태였던 근본
-    # 원인 fix, _ENRICH_MAX_PER_CYCLE_BACKLOG 정의부 참조). 날짜 파싱 실패
-    # 항목은 정렬 끝으로(부당하게 새치기 안 함).
-    #
-    # ⚠️ 2026-07-24 재발견(배포 직후 VM 실측): 호출을 둘로 나누면서 총
-    # enrich 소요시간이 늘어 dart-feed.service 의 TimeoutStartSec(300s)를
-    # 넘겨 SIGTERM 으로 죽는 사이클이 급증 — 죽는 시점이 저장(merge_and_save)
-    # **이전**이라 해당 사이클의 enrich 성공분(로그엔 '성공 N건'이 찍히는데)
-    # 이 통째로 미저장 상태로 유실되는 회귀 발생(실측: '성공' 목록에 있던
-    # 항목이 아카이브엔 detail=None). 각 단계 enrich 직후 **그 단계만** 바로
-    # 저장 — 이후 단계에서 죽어도 이미 끝난 단계 성과는 보존.
-    pending.sort(key=lambda it: str(it.get("date") or "99999999"))
-    if items:
-        enrich_disclosures(items)
-        _save_by_day(items)
-    if pending:
-        enrich_disclosures(pending, max_per_cycle=_ENRICH_MAX_PER_CYCLE_BACKLOG)
-        _save_by_day(pending)
-
-    return items
+        stats["enriched"] = sum(1 for it in pending if it.get("detail"))
+        log.info("dart_feed backfill_pending: %d/%d 건 enrich",
+                 stats["enriched"], stats["total"])
+    except Exception as exc:
+        log.warning("dart_feed backfill_pending 실패: %s", exc)
+    return stats
 
 
 if __name__ == "__main__":
@@ -5040,6 +5075,19 @@ if __name__ == "__main__":
                 os.environ.setdefault(k.strip(), v.strip())
 
     import sys as _sys
+    if any("backfill-pending" in a or "backfill_pending" in a
+           for a in _sys.argv[1:]):
+        # 오래된 미파싱 백로그 전담(dart-feed-backlog.timer 전용, 2026-07-24
+        # — run_once 안에서 시도했다가 라이브 장애 2회로 롤백한 히스토리
+        # 참조. 완전 분리된 별도 사이클 + 넉넉한 타임아웃으로):
+        #   .venv/bin/python -m bot.dart_feed --backfill-pending [days]
+        _days = 14
+        for a in _sys.argv[1:]:
+            if a.isdigit():
+                _days = int(a)
+        st = backfill_pending(days_back=_days)
+        print(f"[backfill-pending] {st['enriched']}/{st['total']}건 enrich")
+        raise SystemExit(0)
     if any("backfill" in a for a in _sys.argv[1:]):
         # 새 분류 룰 소급 백필 (재분류 + 과거 N일 재fetch):
         #   .venv/bin/python -m bot.dart_feed --backfill [days]
