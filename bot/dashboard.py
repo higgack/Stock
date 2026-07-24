@@ -10932,7 +10932,10 @@ _VALUECHAIN_JS = r"""
   // 목록 페이지네이션(사용자 2026-07-24 '400개 이상은 접어서 클릭하면 늘어나게') —
   // 상위 400건 컷 대신 최신순 전체를 PAGE_SIZE 단위로 점진 노출. vcSorted 는
   // renderList() 호출 시 스냅샷(정렬된 배열), vcShown 은 현재까지 펼친 개수.
-  var PAGE_SIZE = 100;
+  // 200(사용자 2026-07-24 재검토 'PAGE_SIZE 늘려줘') — 행이 2줄 텍스트뿐인
+  // 가벼운 DOM 이라 200개 렌더도 즉시(가상화 불필요), 500건대 목록 기준
+  // 클릭 2~3회면 전체 소진되도록.
+  var PAGE_SIZE = 200;
   var vcSorted = [], vcShown = PAGE_SIZE, vcHeader = '';
   function paintList(){
     var list=document.getElementById('vc-list');
