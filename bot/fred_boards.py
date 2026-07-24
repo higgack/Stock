@@ -190,7 +190,9 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
     """FRED 중단 시리즈의 대체 소스 히스토리(ISO 날짜) — 사용자 2026-07-04
     'FRED 중단분은 우리 자원으로 대체': ecos:m2(한국은행 M2 평잔) ·
     ecos:base_rate(한국은행 기준금리, 일간→호출부 월간 다운샘플) ·
-    ak:lpr1y(인민은행 LPR 1년). 키부재/실패 → [] (해당 행만 생략)."""
+    ak:lpr1y(인민은행 LPR 1년) · ecos:fx_reserve(한국 외환보유액, 2026-07-24
+    리서치 에이전트 발견 — bok_ecos_client 에 이미 정의돼 있었으나 미배선
+    상태였던 것을 여기 연결). 키부재/실패 → [] (해당 행만 생략)."""
     try:
         if src == "ecos:m2":
             from bot import bok_ecos_client
@@ -211,6 +213,10 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
             return [(_ecos_iso(t), v)
                     for t, v in bok_ecos_client.fetch_series_points(
                         "kr10y", lookback_days=950)]
+        if src == "ecos:fx_reserve":
+            from bot import bok_ecos_client
+            return [(_ecos_iso(t), v)
+                    for t, v in bok_ecos_client.fetch_series_points("fx_reserve")]
     except Exception as exc:
         log.warning("fred_boards: alt source %s failed: %s", src, exc)
     return []
@@ -349,6 +355,44 @@ _MARGIN_PAIRS = [
     {"key": "meat", "label": "육가공 (가공육−생축)",
      "out": "WPU022", "inp": "WPU013",
      "stocks": "하림·CJ제일제당 / US: Tyson"},
+    # ── 3차 확장 10쌍(리서치 에이전트 검증, 사용자 2026-07-24 '다 업데이트지속되는거면 모두 적용') ──
+    {"key": "semis", "label": "반도체 (소자−공정소재 proxy)",
+     "out": "PCU334413334413", "inp": "WPU061",
+     "stocks": "삼성전자·SK하이닉스 / US: Micron / JP: 키옥시아"},
+    # caveat: input 이 공정소재(WPU061, paint 와 공유) proxy — 웨이퍼/메모리
+    # 원가 전용 FRED 시리즈 없음, 방향신호 노이즈가 다른 쌍보다 큼(문서화).
+    {"key": "aluminum", "label": "알루미늄 제련 (압연−보크사이트·알루미나)",
+     "out": "PCU331313331313", "inp": "IR14200",
+     "stocks": "남선알미늄·조일알미늄 / US: Alcoa·Century Aluminum / JP: UACJ"},
+    # inp = FRED Import Price Index 계열(WPU/PCU 아님) — PPI 계열 보크사이트
+    # 시리즈(PCU2122992122992)는 2015년 폐지되어 대체.
+    {"key": "aerospace", "label": "항공기부품·방산 (기체−비철금속)",
+     "out": "PCU336411336411", "inp": "WPU102",
+     "stocks": "한화에어로스페이스·KAI / US: Lockheed Martin·Boeing / JP: 미쓰비시중공업"},
+    {"key": "gasutil", "label": "도시가스 (공급−천연가스)",
+     "out": "PCU221210221210", "inp": "WPU0531",
+     "stocks": "한국가스공사·삼천리·경동도시가스 / US: Atmos Energy / JP: 도쿄가스"},
+    {"key": "cosmetics", "label": "화장품 (완제품−산업화학)",
+     "out": "PCU325620325620", "inp": "WPU061",
+     "stocks": "아모레퍼시픽·LG생활건강·코스맥스 / US: Estee Lauder / JP: 시세이도"},
+    {"key": "pharma", "label": "제약 (완제−원료의약품)",
+     "out": "PCU325412325412", "inp": "WPU0631",
+     "stocks": "유한양행·종근당·삼성바이오로직스 / US: Teva·Viatris / JP: 다케다"},
+    {"key": "apparel", "label": "의류·섬유 (완제품−원면)",
+     "out": "PCU315315", "inp": "WPU0151",
+     "stocks": "한세실업·영원무역·효성티앤씨 / US: 위탁생산 밸류체인 참고"},
+    {"key": "dairy", "label": "유제품 (가공−원유(생乳))",
+     "out": "PCU311511311511", "inp": "WPU01610102",
+     "stocks": "매일유업·남양유업·빙그레"},
+    # KR 전용(US/JP 순수 유제품 peer 없음 — 문서화 예외).
+    {"key": "telecom_eq", "label": "통신장비 (완제품−구리)",
+     "out": "PCU334220334220", "inp": "WPUSI019011",
+     "stocks": "삼성전자(네트워크)·에이스테크 / US: Cisco / JP: NEC"},
+    {"key": "glass", "label": "유리 (판유리−산업용사)",
+     "out": "PCU327211327211", "inp": "WPU139904",
+     "stocks": "KCC글라스·한글라스 / US: Corning / JP: AGC"},
+    # inp = WPU139904(Industrial Sand) — 최초 후보 WPU13990101(Industrial
+    # Glass Sand)은 2018-08 이후 갱신 없어 대체(리서치 에이전트 발견).
 ]
 
 
