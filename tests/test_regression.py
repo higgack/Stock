@@ -13670,7 +13670,9 @@ class TestValuechainPagination20260724:
     def test_pagination_wired(self):
         import bot.dashboard as d
         js = d._VALUECHAIN_JS
-        assert "var PAGE_SIZE = 100;" in js
+        # 100→200(사용자 2026-07-24 재검토 'PAGE_SIZE 늘려줘' — 행이 가벼운
+        # 2줄 텍스트라 200 렌더도 즉시, 500건대 목록 기준 클릭 2~3회면 소진).
+        assert "var PAGE_SIZE = 200;" in js
         assert "function paintList()" in js
         assert "function renderList(header, items)" in js
         assert "vc-more-btn" in js
