@@ -489,16 +489,21 @@ def _fetch_item_list(api_key: str, table: str = _KR_PPI_TABLE) -> list[dict]:
     return items
 
 
-def fetch_kr_ppi_history(patterns: list[str],
-                         start: str = "201901") -> dict[str, list[tuple[str, float]]]:
-    """{패턴: [(YYYY-MM-01, 지수), …]} — 404Y014 월간 히스토리. 키 부재/실패
-    → {} 또는 해당 항목 생략(graceful). 일 1회 재생성용(12h 캐시)."""
+def fetch_kr_price_index_history(
+        patterns: list[str], table: str = _KR_PPI_TABLE,
+        cache_key: str = "kr_ppi",
+        start: str = "201901") -> dict[str, list[tuple[str, float]]]:
+    """{패턴: [(YYYY-MM-01, 지수), …]} — 물가지수류(품목별 이름해석) 공용
+    월간 히스토리 fetcher. table 인자화(2026-07-24, KR PPI 전용이던 것을
+    KR CPI 도 재사용하도록 일반화) — cache_key 로 물가종류별 캐시파일 분리
+    (같은 날 두 물가지수가 파일을 덮어쓰지 않도록). 키 부재/실패 → {} 또는
+    해당 항목 생략(graceful). 일 1회 재생성용(12h 캐시)."""
     api_key = os.getenv("BOK_ECOS_API_KEY", "").strip()
     if not api_key:
-        log.info("ecos: BOK_ECOS_API_KEY missing — KR PPI unavailable")
+        log.info("ecos: BOK_ECOS_API_KEY missing — %s unavailable", cache_key)
         return {}
     today_str = date.today().isoformat()
-    cache_file = _CACHE_DIR / f"kr_ppi_{today_str}.json"
+    cache_file = _CACHE_DIR / f"{cache_key}_{today_str}.json"
     if cache_file.exists():
         try:
             if (time.time() - cache_file.stat().st_mtime) / 3600 < _CACHE_TTL_HOURS:
@@ -507,14 +512,14 @@ def fetch_kr_ppi_history(patterns: list[str],
                     return {k: [tuple(x) for x in v] for k, v in cached.items()
                             if k != "_missing"}
         except Exception as exc:
-            log.warning("ecos: kr_ppi cache read failed: %s", exc)
+            log.warning("ecos: %s cache read failed: %s", cache_key, exc)
     # ① 아이템 목록(페이지네이션) → 이름 해석
-    items = _fetch_item_list(api_key)
+    items = _fetch_item_list(api_key, table=table)
     if not items:
         return {}
     codes = _match_items(items, patterns)
     if not codes:
-        log.warning("ecos: kr_ppi no items matched %s", patterns)
+        log.warning("ecos: %s no items matched %s", cache_key, patterns)
         return {}
     # ② 패턴별 월간 히스토리. 일시 실패(failed)는 '_missing'(진짜 무데이터)과
     # 구분해 캐시에 안 박음 — 장애가 12h 동안 '없음'으로 박제 방지 + ECOS
@@ -526,18 +531,18 @@ def fetch_kr_ppi_history(patterns: list[str],
     for pat, code in codes.items():
         try:
             url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/400/"
-                   f"{_KR_PPI_TABLE}/M/{start}/{end}/{code}")
+                   f"{table}/M/{start}/{end}/{code}")
             resp = requests.get(url, timeout=_TIMEOUT)
             resp.raise_for_status()
             payload = resp.json()
             if "RESULT" in payload and "StatisticSearch" not in payload:
-                log.warning("ecos: kr_ppi API error (%s): %s",
-                            pat, payload.get("RESULT"))
+                log.warning("ecos: %s API error (%s): %s",
+                            cache_key, pat, payload.get("RESULT"))
                 failed.add(pat)
                 continue
             rows = (payload.get("StatisticSearch") or {}).get("row") or []
         except Exception as exc:
-            log.warning("ecos: kr_ppi fetch failed (%s): %s", pat, exc)
+            log.warning("ecos: %s fetch failed (%s): %s", cache_key, pat, exc)
             failed.add(pat)
             continue
         pts = []
@@ -560,5 +565,29 @@ def fetch_kr_ppi_history(patterns: list[str],
                                if p not in out and p not in failed]
         cache_file.write_text(json.dumps(payload, ensure_ascii=False))
     except Exception as exc:
-        log.warning("ecos: kr_ppi cache write failed: %s", exc)
+        log.warning("ecos: %s cache write failed: %s", cache_key, exc)
     return out
+
+
+def fetch_kr_ppi_history(patterns: list[str],
+                         start: str = "201901") -> dict[str, list[tuple[str, float]]]:
+    """{패턴: [(YYYY-MM-01, 지수), …]} — 404Y014(한국 PPI) 월간 히스토리.
+    fetch_kr_price_index_history 의 PPI 전용 얇은 래퍼(기존 호출부 시그니처
+    보존 — KR PPI 보드가 이 이름으로 참조)."""
+    return fetch_kr_price_index_history(patterns, table=_KR_PPI_TABLE,
+                                        cache_key="kr_ppi", start=start)
+
+
+# ── 한국 CPI(901Y009, 2026-07-24 'CPI 도 PPI 처럼') ────────────────────────
+# 901Y009 는 이미 cpi_idx(_SERIES 총지수 item='0')가 쓰는 표 — 품목성질별
+# 세부항목도 같은 표 안에 있을 것으로 보고 이름해석 재사용. 무매칭이면 그
+# 항목만 생략(graceful, KR PPI 와 동일 원칙 — 코드 하드코딩 금지).
+_KR_CPI_TABLE = "901Y009"
+
+
+def fetch_kr_cpi_history(patterns: list[str],
+                         start: str = "201901") -> dict[str, list[tuple[str, float]]]:
+    """{패턴: [(YYYY-MM-01, 지수), …]} — 901Y009(한국 CPI) 월간 히스토리.
+    fetch_kr_price_index_history 의 CPI 전용 얇은 래퍼."""
+    return fetch_kr_price_index_history(patterns, table=_KR_CPI_TABLE,
+                                        cache_key="kr_cpi", start=start)

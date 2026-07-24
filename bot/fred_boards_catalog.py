@@ -117,6 +117,66 @@ PPI_SERIES = [
     {'id': 'PCU3372133721', 'name': 'Office Furniture Mfg', 'cat': 'Furniture & Home', 'stocks': '사무가구 — KR: 현대리바트 / US: MillerKnoll·Steelcase / JP: 오카무라'},
 ]
 
+# CPI 투자신호(cpi.html, 사용자 2026-07-24 'PPI 처럼 CPI 도') — 소비자물가
+# 세부항목별. PPI 와 달리 '관련주' 방향이 항목마다 다름(예: 의료서비스 CPI
+# 상승↔의료주 매출 증가, 유가 CPI 상승↔항공 원가부담) — stocks 필드에 방향
+# 함께 명시(양면적인 항목은 stocks 텍스트에 '양면' 표기). 리서치 에이전트가
+# WebSearch(fred.stlouisfed.org 직접 접근은 샌드박스서 프록시 차단) 2+소스
+# 교차검증. 분기 시리즈(실질임금)는 월간 파이프라인과 주기 안 맞아 이번엔
+# 제외(에이전트 권고 — 별도 콜아웃 카드로 추후 검토).
+CPI_SERIES = [
+    # ── Benchmark(헤드라인/근원 인플레 게이지 — 개별종목 매핑 없음) ──
+    {'id': 'CPIAUCSL', 'name': 'CPI-U All Items (Headline)', 'cat': 'Benchmark', 'stocks': '헤드라인 CPI 벤치마크 — 서프라이즈가 Fed 금리경로·전자산 밸류에이션에 즉각 영향'},
+    {'id': 'CPILFESL', 'name': 'CPI-U ex Food & Energy (Core)', 'cat': 'Benchmark', 'stocks': '근원 CPI 벤치마크 — Fed 정책 판단의 핵심 참고지표'},
+    {'id': 'STICKCPIM157SFRBATL', 'name': 'Sticky Price CPI (Atlanta Fed)', 'cat': 'Benchmark', 'stocks': '가격경직 품목 기반 — 인플레 기대(persistence) 게이지, 성장주·장기채 민감도 참고'},
+    {'id': 'FLEXCPIM157SFRBATL', 'name': 'Flexible Price CPI (Atlanta Fed)', 'cat': 'Benchmark', 'stocks': '가격변동 빈번 품목 기반 — 현재 경기상황 민감 선행 게이지'},
+    {'id': 'MEDCPIM158SFRBCLE', 'name': 'Median CPI (Cleveland Fed)', 'cat': 'Benchmark', 'stocks': '중위값 기반 근원인플레 — Core CPI보다 추세포착력 우수하다는 클리블랜드 연은 연구'},
+    {'id': 'TRMMEANCPIM158SFRBCLE', 'name': '16% Trimmed-Mean CPI (Cleveland Fed)', 'cat': 'Benchmark', 'stocks': '상하위 8%씩 절사 후 평균(Trimmed-Mean PCE 는 Dallas Fed 이나 이건 Cleveland Fed CPI판)'},
+    # ── Food(소비자 식품가 — 전가력 보유 브랜드 긍정, 무전가력 유통·외식은 마진압박 양면) ──
+    {'id': 'CPIUFDSL', 'name': 'CPI: Food', 'cat': 'Food & Agriculture', 'stocks': '식품 소비자가(양면) — 전가력 보유 가공식품사 긍정: KR: CJ제일제당·오뚜기 / US: General Mills·Kraft Heinz'},
+    {'id': 'CUSR0000SAF11', 'name': 'CPI: Food at Home', 'cat': 'Food & Agriculture', 'stocks': '집밥 식료품가(양면) — 식품브랜드 긍정 vs 마트유통 마진압박: KR: CJ제일제당(긍정)·이마트·GS리테일(반대)'},
+    {'id': 'CUSR0000SEFV', 'name': 'CPI: Food Away from Home', 'cat': 'Food & Agriculture', 'stocks': '외식 메뉴가격 전가력 — US: McDonald\'s·Darden Restaurants·Chipotle(동일점포매출 참고)'},
+    {'id': 'CUSR0000SAF112', 'name': 'CPI: Meats, Poultry, Fish & Eggs', 'cat': 'Food & Agriculture', 'stocks': '축육 소비자가(양면) — KR: 하림·마니커 / US: Tyson Foods'},
+    {'id': 'CUSR0000SAF111', 'name': 'CPI: Cereals & Bakery Products', 'cat': 'Food & Agriculture', 'stocks': '곡물·제빵 — KR: CJ제일제당·오뚜기 / US: General Mills·Kellanova'},
+    {'id': 'CUSR0000SEFJ', 'name': 'CPI: Dairy & Related Products', 'cat': 'Food & Agriculture', 'stocks': '유제품 — KR: 매일유업·남양유업 / JP: 明治ホールディングス'},
+    # ── Energy(업스트림·유틸리티 수혜, 항공·물류 등 사용자측은 반대 — 양면) ──
+    {'id': 'CPIENGSL', 'name': 'CPI: Energy', 'cat': 'Energy & Utilities', 'stocks': '에너지 소비자가 종합(양면) — 정유·업스트림 긍정, 항공·물류 사용자측 비용부담은 반대'},
+    {'id': 'CUSR0000SACE', 'name': 'CPI: Energy Commodities', 'cat': 'Energy & Utilities', 'stocks': '휘발유·연료유 소비자가 — KR: S-Oil·SK이노베이션(정유마진) / US: Valero·Marathon'},
+    {'id': 'CUSR0000SETB01', 'name': 'CPI: Gasoline (All Types)', 'cat': 'Energy & Utilities', 'stocks': '휘발유 소매가(양면) — 정유 긍정: KR: S-Oil / US: Valero, 반대: 대한항공·CJ대한통운(비용부담)'},
+    {'id': 'CUSR0000SEHF01', 'name': 'CPI: Electricity', 'cat': 'Energy & Utilities', 'stocks': '전기요금 — 유틸리티 수익성 긍정: US: NextEra·Duke Energy / KR: 한국전력(요금정산 구조 별도)'},
+    {'id': 'CUSR0000SEHF02', 'name': 'CPI: Utility (Piped) Gas Service', 'cat': 'Energy & Utilities', 'stocks': '도시가스요금 — US: Atmos Energy·Southwest Gas / KR: 한국가스공사(요금연동 참고)'},
+    {'id': 'CUSR0000SEHE', 'name': 'CPI: Fuel Oil & Other Fuels', 'cat': 'Energy & Utilities', 'stocks': '난방유 — US: Valero 등 정유사 크랙마진 참고'},
+    # ── Shelter(임대료 상승 = 리츠·임대인 수혜, 가계 실질구매력엔 부담 — 양면) ──
+    {'id': 'CUSR0000SAH1', 'name': 'CPI: Shelter', 'cat': 'Shelter & Real Estate', 'stocks': '주거비 종합(양면) — 임대 리츠 긍정: US: AvalonBay·Equity Residential, 가계 소비여력엔 반대 압박'},
+    {'id': 'CUSR0000SEHA', 'name': 'CPI: Rent of Primary Residence', 'cat': 'Shelter & Real Estate', 'stocks': '실제임대료 — 주거 리츠·임대인 수혜: US: AvalonBay·Equity Residential·Invitation Homes'},
+    {'id': 'CUSR0000SEHC', 'name': "CPI: Owners' Equivalent Rent", 'cat': 'Shelter & Real Estate', 'stocks': '귀속임대료(주택가치 대리지표) — 직접 종목매핑 약함, 주택시장 온도 참고용'},
+    {'id': 'CUSR0000SEHB', 'name': 'CPI: Lodging Away from Home', 'cat': 'Shelter & Real Estate', 'stocks': '숙박비 — 호텔 리츠·운영사 긍정: US: Marriott·Hilton·Host Hotels / KR: 호텔신라(호텔부문)'},
+    # ── Healthcare(의료비 상승 = 헬스케어·보험 매출 성장 tailwind 성격 강함) ──
+    {'id': 'CPIMEDSL', 'name': 'CPI: Medical Care', 'cat': 'Healthcare', 'stocks': '의료비 종합 — 헬스케어 매출 성장 긍정: US: UnitedHealth·HCA Healthcare'},
+    {'id': 'CUSR0000SAM1', 'name': 'CPI: Medical Care Commodities (Drugs)', 'cat': 'Healthcare', 'stocks': '의약품 소비자가 전가력 — US: Pfizer·Merck / KR: 유한양행·종근당'},
+    {'id': 'CUSR0000SAM2', 'name': 'CPI: Medical Care Services', 'cat': 'Healthcare', 'stocks': '의료서비스 요금 — US: HCA Healthcare·UnitedHealth(Optum)'},
+    {'id': 'CUSR0000SEMD', 'name': 'CPI: Hospital & Related Services', 'cat': 'Healthcare', 'stocks': '병원서비스 요금 — US: HCA Healthcare·Community Health Systems(KR 직접매핑 제한)'},
+    {'id': 'CUSR0000SEMC', 'name': 'CPI: Professional (Physician/Dental/Eye Care) Services', 'cat': 'Healthcare', 'stocks': '전문의료서비스 요금 — US: UnitedHealth(Optum), 개원의 단일종목 매핑 어려워 광의 대체'},
+    # ── Transportation(자동차 OEM·보험·정비 긍정, 항공은 운임 vs 유가 양면 주의) ──
+    {'id': 'CPITRNSL', 'name': 'CPI: Transportation', 'cat': 'Auto & Transport', 'stocks': '교통비 종합 — 자동차·보험·정비 밸류체인 참고지표'},
+    {'id': 'CUSR0000SETA01', 'name': 'CPI: New Vehicles', 'cat': 'Auto & Transport', 'stocks': '신차가격 전가력 — KR: 현대차·기아 / US: GM·Ford / JP: 토요타'},
+    {'id': 'CUSR0000SETA02', 'name': 'CPI: Used Cars and Trucks', 'cat': 'Auto & Transport', 'stocks': '중고차가격 — US: CarMax·Carvana·KAR Global'},
+    {'id': 'CUSR0000SETE', 'name': 'CPI: Motor Vehicle Insurance', 'cat': 'Auto & Transport', 'stocks': '자동차보험료 — US: Progressive·Allstate / KR: 삼성화재·DB손해보험'},
+    # ⚠️ SETE 는 BLS data.bls.gov 로만 확인, FRED 미러 페이지는 검색스니펫
+    # 미노출(리서치 에이전트 2026-07-24 낮은 확신 표기) — 다음 라이브 점검 때
+    # detail 없이 반복 dropped 처리되면 우선 재확인 대상.
+    {'id': 'CUSR0000SETD', 'name': 'CPI: Motor Vehicle Maintenance and Repair', 'cat': 'Auto & Transport', 'stocks': '정비·부품 요금 — US: AutoZone·O\'Reilly Automotive'},
+    {'id': 'CUSR0000SETG01', 'name': 'CPI: Airline Fares', 'cat': 'Auto & Transport', 'stocks': '항공운임 전가력(양면) — US: Delta·United·Southwest / KR: 대한항공(PPI Jet Fuel 원가상승과는 반대방향)'},
+    # ── Apparel/Recreation/Education&Comm/Beverages/Household/Personal Care ──
+    {'id': 'CPIAPPSL', 'name': 'CPI: Apparel', 'cat': 'Apparel & Retail', 'stocks': '의류가격(양면) — 전가력 보유 브랜드 긍정: KR: F&F·한섬 / US: Ralph Lauren, 저가 SPA는 반대 압박'},
+    {'id': 'CPIRECSL', 'name': 'CPI: Recreation', 'cat': 'Consumer & Leisure', 'stocks': '레저·미디어 요금전가력 — US: Disney·Live Nation / KR: 하이브·CJ ENM'},
+    {'id': 'CPIEDUSL', 'name': 'CPI: Education and Communication', 'cat': 'Consumer & Leisure', 'stocks': '교육·통신 요금 — US: T-Mobile·Verizon(PPI 무선통신 원가와 보완, 중복 아님) / KR: 메가스터디교육'},
+    {'id': 'CUSR0000SAF116', 'name': 'CPI: Alcoholic Beverages', 'cat': 'Consumer & Leisure', 'stocks': '주류 소비자가 전가력 — KR: 하이트진로 / US: Constellation Brands·Brown-Forman'},
+    {'id': 'CUSR0000SEGA', 'name': 'CPI: Tobacco and Smoking Products', 'cat': 'Consumer & Leisure', 'stocks': '담배 소비자가 전가력 — KR: KT&G / US: Philip Morris·Altria / JP: Japan Tobacco'},
+    {'id': 'CUSR0000SAH3', 'name': 'CPI: Household Furnishings and Operations', 'cat': 'Consumer & Retail', 'stocks': '가구·가전 소매가 — KR: 현대리바트·한샘 / US: Williams-Sonoma·RH / JP: 니토리'},
+    {'id': 'CUSR0000SAG1', 'name': 'CPI: Personal Care', 'cat': 'Consumer & Retail', 'stocks': '뷰티·퍼스널케어 전가력 — KR: 아모레퍼시픽·LG생활건강 / US: Estée Lauder·P&G / JP: 시세이도(PPI 화장품 생산원가와 보완)'},
+]
+
 LIQ_SERIES = [
     {'id': 'M2SL', 'name': 'US M2', 'category': 'M2/M3 통화량', 'unit': 'B USD', 'desc': '미국 M2 광의통화. 현금+요구불예금+저축+소액정기예금+MMF 등', 'interpret': '미국 M2는 경제 내 유동성의 총량을 측정하는 핵심 지표입니다. 미국은 2006년 M3 발표를 중단했으므로, M2가 사실상 가장 넓은 통화량 지표입니다.', 'how_to_read': 'YoY 증가율이 핵심입니다. M2 YoY > 0%이면 유동성 확장, < 0%이면 축소(역사적으로 매우 드뭄). 2020년 코로나 시기 YoY +25% 급증 후 2022-23년 사상 첫 마이너스를 기록했습니다. M2 증가 → 자산가격 상승 압력, M2 감소 → 자산가격 하락 압력.', 'kr_impact': 'US M2 확장은 글로벌 달러 유동성 증가 → 원/달러 안정 또는 원화 강세 → 외국인 자금 한국 유입 가능성 증가. KOSPI와 높은 상관관계.', 'is_rate': False},
     {'id': 'M1SL', 'name': 'US M1', 'category': 'M2/M3 통화량', 'unit': 'B USD', 'desc': '미국 M1 협의통화. 가장 유동적인 화폐(현금+당좌+기타요구불)', 'interpret': 'M1은 즉시 사용 가능한 가장 유동적인 통화량입니다. 2020년 5월 저축예금이 M1에 포함되면서 수준이 급변했습니다(정의 변경).', 'how_to_read': '정의 변경(2020.5) 이후 절대 수준보다는 이후 추세가 중요합니다. M1 감소는 즉시 사용 가능한 유동성 위축을 의미.', 'kr_impact': '미국 내 즉시 유동성 지표로, 소비·투자 즉각 반응. 한국 수출 수요와 간접 연결.', 'is_rate': False},

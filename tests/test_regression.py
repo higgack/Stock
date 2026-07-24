@@ -13682,3 +13682,37 @@ class TestValuechainPagination20260724:
         assert "[E,KG,TR,vcSorted].forEach" in js
         # CSS 도 같은 커밋(Help/대시보드 등록 규칙).
         assert ".vc-more-btn{" in d._VALUECHAIN_CSS
+
+
+class TestCpiBoardWiring20260724:
+    """CPI 보드(cpi.html, 사용자 'PPI 처럼 CPI 도') — nav(홈 허브·Market cap)·
+    _HELP_TEXT·regenerate_fred_boards 배선이 PPI/유동성과 동일 커밋 원칙으로
+    등록됐는지(Help/대시보드 등록 의무 규칙 계약)."""
+
+    def test_home_hub_nav(self):
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'href="cpi.html">🛒 CPI</a>' in db
+        # Market cap 페이지 nav 도 상호링크(marketcap_wiring 과 동일 패턴).
+        assert db.count('href="cpi.html">🛒 CPI</a>') >= 2
+
+    def test_help_text_registered(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "🛒CPI" in tb                 # 대시보드 목록
+        assert "PPI·CPI·유동성 제외" in tb    # 카드도구 제외(차트보드) 목록
+
+    def test_fred_boards_nav_and_regen(self):
+        from bot import fred_boards as fb
+        assert 'href="cpi.html">🛒 CPI</a>' in fb._NAV
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        assert '(ARCHIVE_ROOT / "cpi.html").write_text' in src
+        assert "regenerate_fred_boards" in src
+
+    def test_help_text_length_still_under_cap(self):
+        # _HELP_TEXT 4096 UTF-16 단일메시지 한도(§Help 의무 검증) — CPI 문구
+        # 추가 후에도 유지되는지.
+        import re
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        m = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', tb, re.S)
+        assert m is not None
+        text = m.group(1)
+        assert len(text.encode("utf-16-le")) // 2 < 4096

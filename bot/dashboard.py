@@ -12726,6 +12726,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 종목분석</a>
     · <a href="ppi.html">🏭 PPI</a>
+    · <a href="cpi.html">🛒 CPI</a>
     · <a href="liquidity.html">💧 유동성</a>
   </div>
   <h1>🏆 Market cap</h1>
@@ -15072,6 +15073,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="dart_feed.html">📋 DART</a>
     &middot; <a href="valuechain.html">🔗 밸류체인</a>
     &middot; <a href="ppi.html">🏭 PPI</a>
+    &middot; <a href="cpi.html">🛒 CPI</a>
     &middot; <a href="liquidity.html">💧 유동성</a>
     &middot; <a href="marketcap.html">🏆 Market cap</a>
     &middot; <a href="trade/">🌏 수출입</a>
