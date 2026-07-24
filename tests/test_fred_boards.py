@@ -786,16 +786,26 @@ class CpiBoardTests(unittest.TestCase):
     def test_catalog_fields(self):
         ids = [s["id"] for s in CPI_SERIES]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(len(ids), 40)   # 리서치 에이전트 검증분(2026-07-24)
+        self.assertEqual(len(ids), 52)   # 1차 40(2026-07-24) + 2차 감사 12종
         for s in CPI_SERIES:
             for k in ("id", "name", "cat", "stocks"):
                 self.assertTrue(s.get(k), f"{s.get('id')} missing {k}")
         for want in ("CPIAUCSL", "CPILFESL", "STICKCPIM157SFRBATL",
                      "CUSR0000SAH1", "CPIMEDSL", "CUSR0000SETG01"):
             self.assertIn(want, ids)
+        # 2차 감사(2026-07-24, 사용자 'PPI 처럼 최대한 반영') 추가분 — 신발·
+        # 아동복·자동차부품·상하수도·영상음향·케이블·IT·완구·교육보육·펫푸드.
+        for want in ("CUSR0000SEAE", "CUSR0000SEAF", "CUSR0000SAA1",
+                     "CUSR0000SAA2", "CUSR0000SETC", "CUSR0000SEHG",
+                     "CUSR0000SERA", "CUSR0000SERA02", "CUSR0000SEEE",
+                     "CUSR0000SERE01", "CUSR0000SEEB", "CUSR0000SS61031"):
+            self.assertIn(want, ids)
         # 분기 실질임금 시리즈는 월간 파이프라인과 주기 안 맞아 이번 배치엔
         # 의도적으로 제외(에이전트 권고 — 별도 콜아웃 카드 후보).
         self.assertNotIn("LES1252881600Q", ids)
+        # 감사에서 확인 불가로 스킵된 후보들(추측 등재 금지 계약).
+        for skipped in ("CUSR0000SEAG", "CUSR0000SEHD"):
+            self.assertNotIn(skipped, ids)
 
     def test_load_kr_cpi_rows(self):
         from unittest import mock

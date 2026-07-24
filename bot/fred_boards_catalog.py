@@ -146,6 +146,7 @@ CPI_SERIES = [
     {'id': 'CUSR0000SEHF01', 'name': 'CPI: Electricity', 'cat': 'Energy & Utilities', 'stocks': '전기요금 — 유틸리티 수익성 긍정: US: NextEra·Duke Energy / KR: 한국전력(요금정산 구조 별도)'},
     {'id': 'CUSR0000SEHF02', 'name': 'CPI: Utility (Piped) Gas Service', 'cat': 'Energy & Utilities', 'stocks': '도시가스요금 — US: Atmos Energy·Southwest Gas / KR: 한국가스공사(요금연동 참고)'},
     {'id': 'CUSR0000SEHE', 'name': 'CPI: Fuel Oil & Other Fuels', 'cat': 'Energy & Utilities', 'stocks': '난방유 — US: Valero 등 정유사 크랙마진 참고'},
+    {'id': 'CUSR0000SEHG', 'name': 'CPI: Water and Sewer and Trash Collection Services', 'cat': 'Energy & Utilities', 'stocks': '상하수도·쓰레기수거 요금 — US: American Water Works·Republic Services·Waste Management(KR·JP·TW 직접매핑 제한 — 지자체 직영 위주)'},
     # ── Shelter(임대료 상승 = 리츠·임대인 수혜, 가계 실질구매력엔 부담 — 양면) ──
     {'id': 'CUSR0000SAH1', 'name': 'CPI: Shelter', 'cat': 'Shelter & Real Estate', 'stocks': '주거비 종합(양면) — 임대 리츠 긍정: US: AvalonBay·Equity Residential, 가계 소비여력엔 반대 압박'},
     {'id': 'CUSR0000SEHA', 'name': 'CPI: Rent of Primary Residence', 'cat': 'Shelter & Real Estate', 'stocks': '실제임대료 — 주거 리츠·임대인 수혜: US: AvalonBay·Equity Residential·Invitation Homes'},
@@ -162,19 +163,31 @@ CPI_SERIES = [
     {'id': 'CUSR0000SETA01', 'name': 'CPI: New Vehicles', 'cat': 'Auto & Transport', 'stocks': '신차가격 전가력 — KR: 현대차·기아 / US: GM·Ford / JP: 토요타'},
     {'id': 'CUSR0000SETA02', 'name': 'CPI: Used Cars and Trucks', 'cat': 'Auto & Transport', 'stocks': '중고차가격 — US: CarMax·Carvana·KAR Global'},
     {'id': 'CUSR0000SETE', 'name': 'CPI: Motor Vehicle Insurance', 'cat': 'Auto & Transport', 'stocks': '자동차보험료 — US: Progressive·Allstate / KR: 삼성화재·DB손해보험'},
-    # ⚠️ SETE 는 BLS data.bls.gov 로만 확인, FRED 미러 페이지는 검색스니펫
-    # 미노출(리서치 에이전트 2026-07-24 낮은 확신 표기) — 다음 라이브 점검 때
-    # detail 없이 반복 dropped 처리되면 우선 재확인 대상.
+    # SETE 재검증(2026-07-24 2차 감사): BLS 원천(download.bls.gov cu.series
+    # 마스터파일)에 1985M01~2026M05 데이터로 직접 명시 확인(1차보다 확신 상향)
+    # — 다만 FRED 미러 페이지 자체는 여전히 검색 미노출, 브라우저 직접확인 전까지
+    # 유지하되 주시.
+    {'id': 'CUSR0000SETC', 'name': 'CPI: Motor Vehicle Parts and Equipment', 'cat': 'Auto & Transport', 'stocks': '자동차부품(애프터마켓) 소비자가 — US: AutoZone·O\'Reilly Automotive(부품판매, SETD 정비공임과 구분) / KR: 현대모비스·에스엘 / JP: デンソー(Denso)'},
     {'id': 'CUSR0000SETD', 'name': 'CPI: Motor Vehicle Maintenance and Repair', 'cat': 'Auto & Transport', 'stocks': '정비·부품 요금 — US: AutoZone·O\'Reilly Automotive'},
     {'id': 'CUSR0000SETG01', 'name': 'CPI: Airline Fares', 'cat': 'Auto & Transport', 'stocks': '항공운임 전가력(양면) — US: Delta·United·Southwest / KR: 대한항공(PPI Jet Fuel 원가상승과는 반대방향)'},
     # ── Apparel/Recreation/Education&Comm/Beverages/Household/Personal Care ──
     {'id': 'CPIAPPSL', 'name': 'CPI: Apparel', 'cat': 'Apparel & Retail', 'stocks': '의류가격(양면) — 전가력 보유 브랜드 긍정: KR: F&F·한섬 / US: Ralph Lauren, 저가 SPA는 반대 압박'},
+    {'id': 'CUSR0000SEAE', 'name': 'CPI: Footwear', 'cat': 'Apparel & Retail', 'stocks': '신발 소비자가(양면) — 브랜드 긍정: US: Nike·Deckers / KR: F&F·화승엔터프라이즈, OEM 생산 비용측: TW: 豐泰企業(Feng Tay, Nike·Adidas 위탁생산)'},
+    {'id': 'CUSR0000SEAF', 'name': "CPI: Infants' and Toddlers' Apparel", 'cat': 'Apparel & Retail', 'stocks': '유아동복 소비자가 — KR: 아가방컴퍼니(013990) / US: Carter\'s / JP: 니시마츠야체인'},
+    {'id': 'CUSR0000SAA1', 'name': "CPI: Men's and Boys' Apparel", 'cat': 'Apparel & Retail', 'stocks': '남성복 소비자가 전가력 — US: Ralph Lauren·PVH(Calvin Klein) / JP: 青山商事(Aoyama Trading, 8219) / KR: LF·한섬'},
+    {'id': 'CUSR0000SAA2', 'name': "CPI: Women's and Girls' Apparel", 'cat': 'Apparel & Retail', 'stocks': '여성복 소비자가 전가력 — KR: 한섬·신세계인터내셔날 / US: Gap·Victoria\'s Secret'},
     {'id': 'CPIRECSL', 'name': 'CPI: Recreation', 'cat': 'Consumer & Leisure', 'stocks': '레저·미디어 요금전가력 — US: Disney·Live Nation / KR: 하이브·CJ ENM'},
+    {'id': 'CUSR0000SERA', 'name': 'CPI: Video and Audio', 'cat': 'Consumer & Leisure', 'stocks': '영상·음향 기기·서비스 소비자가 — KR: 삼성전자(VD)·LG전자(HE) / JP: ソニー(Sony) / US: Netflix·Sonos'},
+    {'id': 'CUSR0000SERA02', 'name': 'CPI: Cable, Satellite, and Live Streaming TV Service', 'cat': 'Consumer & Leisure', 'stocks': '케이블·위성·스트리밍 요금 전가력 — US: Netflix·Disney / KR: CJ ENM·KT스카이라이프'},
+    {'id': 'CUSR0000SEEE', 'name': 'CPI: Information Technology, Hardware and Services', 'cat': 'Consumer & Leisure', 'stocks': 'IT 하드웨어·서비스 소비자가 — US: Apple·Dell·HP / KR: 삼성전자·LG전자 / TW: 華碩(ASUS)·宏碁(Acer)'},
+    {'id': 'CUSR0000SERE01', 'name': 'CPI: Toys', 'cat': 'Consumer & Leisure', 'stocks': '완구 소비자가(양면) — US: Hasbro·Mattel / KR: 손오공·오로라월드 / JP: バンダイナムコ'},
     {'id': 'CPIEDUSL', 'name': 'CPI: Education and Communication', 'cat': 'Consumer & Leisure', 'stocks': '교육·통신 요금 — US: T-Mobile·Verizon(PPI 무선통신 원가와 보완, 중복 아님) / KR: 메가스터디교육'},
+    {'id': 'CUSR0000SEEB', 'name': 'CPI: Tuition, Other School Fees, and Childcare', 'cat': 'Consumer & Leisure', 'stocks': '교육비·보육료(CPIEDUSL 대비 통신 제외 순수 교육·보육) — US: Bright Horizons Family Solutions(BFAM) / JP: JPホールディングス(2749, 어린이집 운영) / KR: 메가스터디교육·웅진씽크빅(사교육 참고)'},
     {'id': 'CUSR0000SAF116', 'name': 'CPI: Alcoholic Beverages', 'cat': 'Consumer & Leisure', 'stocks': '주류 소비자가 전가력 — KR: 하이트진로 / US: Constellation Brands·Brown-Forman'},
     {'id': 'CUSR0000SEGA', 'name': 'CPI: Tobacco and Smoking Products', 'cat': 'Consumer & Leisure', 'stocks': '담배 소비자가 전가력 — KR: KT&G / US: Philip Morris·Altria / JP: Japan Tobacco'},
     {'id': 'CUSR0000SAH3', 'name': 'CPI: Household Furnishings and Operations', 'cat': 'Consumer & Retail', 'stocks': '가구·가전 소매가 — KR: 현대리바트·한샘 / US: Williams-Sonoma·RH / JP: 니토리'},
     {'id': 'CUSR0000SAG1', 'name': 'CPI: Personal Care', 'cat': 'Consumer & Retail', 'stocks': '뷰티·퍼스널케어 전가력 — KR: 아모레퍼시픽·LG생활건강 / US: Estée Lauder·P&G / JP: 시세이도(PPI 화장품 생산원가와 보완)'},
+    {'id': 'CUSR0000SS61031', 'name': 'CPI: Pet Food and Treats', 'cat': 'Consumer & Retail', 'stocks': '펫푸드 소비자가 — US: Freshpet·Chewy·Colgate-Palmolive(Hill\'s) / KR: 대주산업(003310, 펫푸드 OEM) / JP: ユニ・チャーム(Unicharm)'},
 ]
 
 LIQ_SERIES = [
