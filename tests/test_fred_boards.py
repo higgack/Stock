@@ -510,6 +510,42 @@ class DiscontinuedSweepTests(unittest.TestCase):
         fb._mark_stale(r3)          # 파싱 불가 graceful
         self.assertNotIn("stale", r3)
 
+    def test_mark_stale_quarterly_freq_doubles_threshold(self):
+        # 사용자 2026-07-24 '⚠️지연 왜 뜨는지' — M2V/M1V(GDP 기반)·FDHBFIN
+        # (재무부 TIC)처럼 분기 공표+보고지연이 정상인 시리즈에 월간 6개월
+        # 임계값을 그대로 적용하면 매 분기 절반가량 오탐 지연배지가 뜨던 버그.
+        # freq='Q' 는 임계값 2배(경고 12개월/제외 24개월).
+        import datetime as _dt
+        from zoneinfo import ZoneInfo
+        now = _dt.datetime.now(ZoneInfo("Asia/Seoul"))
+        age6 = (now - _dt.timedelta(days=182)).strftime("%Y-%m")
+        age9 = (now - _dt.timedelta(days=270)).strftime("%Y-%m")
+        age13 = (now - _dt.timedelta(days=395)).strftime("%Y-%m")
+        r6 = {"latest_date": age6, "freq": "Q"}
+        fb._mark_stale(r6)
+        self.assertNotIn("stale", r6)          # 정상 분기 지연(6개월) — 오탐 아님
+        r9 = {"latest_date": age9, "freq": "Q"}
+        fb._mark_stale(r9)
+        self.assertNotIn("stale", r9)          # FDHBFIN 실측 수준(9개월)도 정상
+        r13 = {"latest_date": age13, "freq": "Q"}
+        fb._mark_stale(r13)
+        self.assertTrue(r13.get("stale"))      # 진짜 지연(13개월)은 여전히 감지
+        # 월간(freq 없음)은 기존 6개월 임계값 그대로 — 회귀 없음.
+        r6_monthly = {"latest_date": age6}
+        fb._mark_stale(r6_monthly)
+        self.assertTrue(r6_monthly.get("stale"))
+
+    def test_drop_after_months_quarterly_doubled(self):
+        self.assertEqual(fb._drop_after_months({"freq": "Q"}), 24)
+        self.assertEqual(fb._drop_after_months({}), 12)
+
+    def test_liq_quarterly_series_tagged(self):
+        # M2V·M1V(GDP/M2·M1, 분기)·FDHBFIN(재무부 TIC, 분기) — 카탈로그 freq
+        # 태깅 실재 확인(위 임계값 배가 로직이 실제로 적용될 대상).
+        for want in ("M2V", "M1V", "FDHBFIN"):
+            s = next(x for x in LIQ_SERIES if x["id"] == want)
+            self.assertEqual(s.get("freq"), "Q", f"{want} missing freq='Q'")
+
     def test_alt_history_normalizes(self):
         from bot import bok_ecos_client as bec
         orig = bec.fetch_series_points
@@ -601,7 +637,7 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         self.assertEqual(fb._DROP_AFTER_MONTHS, 12)
         src = open("bot/fred_boards.py", encoding="utf-8").read()
         self.assertIn("_dropped_note", src)
-        self.assertEqual(src.count("age is not None and age >= _DROP_AFTER_MONTHS"), 3)  # PPI+CPI+LIQ
+        self.assertEqual(src.count("age is not None and age >= _drop_after_months("), 3)  # PPI+CPI+LIQ
         # 화면 코멘트는 제거(사용자 2026-07-04) — journal 경고가 가시성 담당.
         html = fb.render_ppi_page([], [], dropped=["Small Arms Ammunition Mfg (PCU332992332992)"])
         self.assertNotIn("소스 중단(12개월+ 미갱신)", html)
@@ -643,7 +679,7 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         assert "rows += _load_kr_ppi()" in src
         # 통합 패스가 병합 '뒤'에 있는지 — KR 행 우회 갭 재발 방지
         assert src.index("rows += _load_kr_ppi()") < src.index(
-            "age is not None and age >= _DROP_AFTER_MONTHS")
+            "age is not None and age >= _drop_after_months(")
         assert src.count("— 데이터 없음") >= 2          # PPI+LIQ 양쪽
         from bot.bok_ecos_client import _filter_series_items
         rows = [{"ITEM_CODE": "Q1", "CYCLE": "Q", "END_TIME": "2026Q2"},

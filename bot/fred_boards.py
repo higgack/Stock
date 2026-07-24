@@ -167,13 +167,26 @@ def _mark_stale(row: dict, months: int = 6) -> None:
     """기준일이 months(기본 6)개월 이상 과거면 stale 플래그(⚠️지연 배지) —
     소스가 끊기기 시작한 시리즈의 조기 경고. 12개월 이상은 로더가 목록에서
     자동 제외(사용자 2026-07-04 '중단된거는 삭제' — BLS 2025 감축분 포함
-    현재·미래 중단분 전부, 제외 내역은 로그+페이지 하단 표기)."""
+    현재·미래 중단분 전부, 제외 내역은 로그+페이지 하단 표기).
+
+    카탈로그 'freq'=='Q'(분기 시리즈, 예: M2V/M1V — GDP 분기공표 기반,
+    FDHBFIN — 재무부 TIC 분기자료 2분기 지연)는 임계값 2배(사용자 2026-07-24
+    '지연 왜 뜨는지' — 분기 시리즈는 다음 분기 공표 직전이면 정상 상태에서도
+    월간 기준 6개월 age 를 넘겨 매 분기 절반가량 오탐 지연배지가 뜨던 버그.
+    월간 임계값을 분기 시리즈에 그대로 적용하지 않도록 주기별로 분리)."""
+    eff_months = months * 2 if row.get("freq") == "Q" else months
     age = _staleness(str(row.get("latest_date", "")))
-    if age is not None and age >= months:
+    if age is not None and age >= eff_months:
         row["stale"] = True
 
 
 _DROP_AFTER_MONTHS = 12   # 이 나이부터 행 자체를 제외(= 중단 간주)
+
+
+def _drop_after_months(entry: dict) -> int:
+    """entry(카탈로그 dict 또는 병합된 row)의 'freq'=='Q' 면 _DROP_AFTER_MONTHS
+    2배 — _mark_stale 과 동일 근거(분기 시리즈 정상 지연 vs 진짜 중단 구분)."""
+    return _DROP_AFTER_MONTHS * 2 if entry.get("freq") == "Q" else _DROP_AFTER_MONTHS
 
 
 def _ecos_iso(t: str) -> str:
@@ -567,7 +580,7 @@ def _load_ppi() -> tuple[list[dict], list[dict], list[str]]:
     kept = []
     for r in rows:
         age = _staleness(str(r.get("latest_date", "")))
-        if age is not None and age >= _DROP_AFTER_MONTHS:
+        if age is not None and age >= _drop_after_months(r):
             dropped.append(f"{r['name']} ({r['id']})")
             continue
         kept.append(r)
@@ -606,7 +619,7 @@ def _load_cpi() -> tuple[list[dict], list[str]]:
     kept = []
     for r in rows:
         age = _staleness(str(r.get("latest_date", "")))
-        if age is not None and age >= _DROP_AFTER_MONTHS:
+        if age is not None and age >= _drop_after_months(r):
             dropped.append(f"{r['name']} ({r['id']})")
             continue
         kept.append(r)
@@ -643,7 +656,7 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
         if not m:
             continue
         age = _staleness(m["latest_date"])
-        if age is not None and age >= _DROP_AFTER_MONTHS:
+        if age is not None and age >= _drop_after_months(s):
             dropped.append(f"{s['name']} ({s['id']})")
             continue
         # %p 표기는 단위가 정말 % 인 계열만 — is_rate 는 최신값 % 표시용
