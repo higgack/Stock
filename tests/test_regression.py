@@ -13639,14 +13639,44 @@ class TestBlogSeenCapAndDateGuard20260708:
 class TestValuechainDateSort20260724:
     """밸류체인 관계 목록 최신순 정렬(사용자 2026-07-24 '최신날짜순으로') —
     예전엔 서버가 임베드한 원본 배열 순서 그대로(사실상 무순) 표시됐음.
-    기본 목록(KG)·검색결과 목록(f) 둘 다 byDateDesc 로 정렬 후 슬라이스하는지
-    소스 문자열로 고정(클라 JS라 렌더 직접 실행은 불가 — grep 회귀)."""
+    기본 목록(KG)·검색결과 목록(f) 둘 다 byDateDesc 로 정렬해 renderList() 로
+    넘기는지 소스 문자열로 고정(클라 JS라 렌더 직접 실행은 불가 — grep 회귀)."""
 
     def test_sort_helper_defined_and_wired(self):
         import bot.dashboard as d
         js = d._VALUECHAIN_JS
         assert "function byDateDesc(a,b)" in js
-        # 기본 목록(검색 안 한 상태)과 검색결과 목록 둘 다 정렬 적용.
-        assert "KG.slice().sort(byDateDesc).slice(0,400)" in js
-        assert "f.slice().sort(byDateDesc).slice(0,400)" in js
+        # 기본 목록(검색 안 한 상태)과 검색결과 목록 둘 다 renderList 로 정렬 위임.
+        assert "renderList('공급망·관계 '+KG.length" in js
+        assert "renderList('관계 '+f.length" in js
+        assert "vcSorted=items.slice().sort(byDateDesc)" in js
         assert "최신순" in js
+
+
+class TestValuechainPagination20260724:
+    """밸류체인 목록 '상위 400' 컷 → 전체를 더보기 페이지네이션으로(사용자
+    2026-07-24 '400개 이상은 접어서 클릭하면 늘어나게, 적당량으로 조정') —
+    상위 400 하드컷 문구·슬라이스 제거되고 PAGE_SIZE 단위 점진 노출로 대체됐는지
+    + 삭제(🗑️) 시 vcSorted 스냅샷에서도 제거되는지(재노출 방지) 소스 문자열 고정."""
+
+    def test_top400_cut_removed(self):
+        import bot.dashboard as d
+        js = d._VALUECHAIN_JS
+        # 예전 사용자 노출 문구(헤더에 '· 상위 400' 표시)만 제거 확인 — 코드
+        # 주석에 남은 '상위 400건' 서술은 무관(과거맥락 설명용, 리터럴 아님).
+        assert "' · 상위 400'" not in js
+        assert ".slice(0,400)" not in js
+
+    def test_pagination_wired(self):
+        import bot.dashboard as d
+        js = d._VALUECHAIN_JS
+        assert "var PAGE_SIZE = 100;" in js
+        assert "function paintList()" in js
+        assert "function renderList(header, items)" in js
+        assert "vc-more-btn" in js
+        assert "더보기 (" in js
+        assert "vcShown+=PAGE_SIZE; paintList();" in js
+        # 삭제 시 다음 렌더에서 되살아나지 않도록 스냅샷도 같이 제거.
+        assert "[E,KG,TR,vcSorted].forEach" in js
+        # CSS 도 같은 커밋(Help/대시보드 등록 규칙).
+        assert ".vc-more-btn{" in d._VALUECHAIN_CSS

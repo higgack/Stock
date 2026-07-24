@@ -10814,6 +10814,10 @@ _VALUECHAIN_CSS = """
 .vc-row.vc-stale{opacity:.55}
 .vc-fr{display:inline-block;border-radius:6px;padding:0 5px;font-size:10px}
 .vc-fr-s{background:#3a3320;color:#d8c98a}
+/* 더보기(페이지네이션) — 400건 상위컷 대신 전체를 청크로 점진 노출(2026-07-24). */
+.vc-more-btn{display:block;width:100%;margin:10px 0 4px;padding:8px;background:#1f2733;
+  color:#c9d4e0;border:1px solid var(--border);border-radius:8px;font-size:13px;cursor:pointer}
+.vc-more-btn:hover{background:#2a3645}
 </style>
 """
 
@@ -10892,8 +10896,10 @@ _VALUECHAIN_JS = r"""
       '<button class="vc-del" type="button" title="이 관계 숨기기 (잘못된 매칭 제거)">🗑️</button></div>';
   }
   // 🗑️ 잘못된 관계 숨김 — 자동 도출 엣지라 영구 suppression(서버) + 클라 배열·DOM 제거.
+  // vcSorted(현재 목록의 정렬 스냅샷)도 같이 지워야 이후 '더보기' 클릭 시 삭제한
+  // 행이 되살아나지 않음(2026-07-24 페이지네이션 도입과 함께 배선).
   function dropEdge(id){
-    [E,KG,TR].forEach(function(arr){
+    [E,KG,TR,vcSorted].forEach(function(arr){
       for(var i=arr.length-1;i>=0;i--){ var x=arr[i];
         if((x.c+'|'+x.r+'|'+x.t)===id) arr.splice(i,1); } });
   }
@@ -10923,15 +10929,31 @@ _VALUECHAIN_JS = r"""
   }
   function pillC(e){ return '<span class="vc-pill">'+esc(e.c)+'</span>'; }
   function pillT(e){ return '<span class="vc-pill">'+esc(e.t)+'</span>'; }
+  // 목록 페이지네이션(사용자 2026-07-24 '400개 이상은 접어서 클릭하면 늘어나게') —
+  // 상위 400건 컷 대신 최신순 전체를 PAGE_SIZE 단위로 점진 노출. vcSorted 는
+  // renderList() 호출 시 스냅샷(정렬된 배열), vcShown 은 현재까지 펼친 개수.
+  var PAGE_SIZE = 100;
+  var vcSorted = [], vcShown = PAGE_SIZE, vcHeader = '';
+  function paintList(){
+    var list=document.getElementById('vc-list');
+    var shown = vcSorted.slice(0, vcShown);
+    var more = vcSorted.length - shown.length;
+    list.innerHTML='<div class="vc-listh">'+vcHeader+'</div>'+shown.map(edgeRow).join('')+
+      (more>0 ? '<button id="vc-more" type="button" class="vc-more-btn">더보기 ('+more+'개 더 · 전체 '+vcSorted.length+'건)</button>' : '');
+    var btn=document.getElementById('vc-more');
+    if(btn) btn.addEventListener('click', function(){ vcShown+=PAGE_SIZE; paintList(); });
+    if(window.__impApply) window.__impApply();
+  }
+  function renderList(header, items){
+    vcHeader=header; vcSorted=items.slice().sort(byDateDesc); vcShown=PAGE_SIZE;
+    paintList();
+  }
   function render(q){
-    var focus=document.getElementById('vc-focus'), list=document.getElementById('vc-list');
+    var focus=document.getElementById('vc-focus');
     var nq=norm(q);
     if(!nq){
       focus.innerHTML='';
-      list.innerHTML='<div class="vc-listh">공급망·관계 '+KG.length+'건(블로그·DART)'+
-        (KG.length>400?' · 상위 400':'')+' — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시 · 최신순</div>'+
-        KG.slice().sort(byDateDesc).slice(0,400).map(edgeRow).join('');
-      if(window.__impApply) window.__impApply();
+      renderList('공급망·관계 '+KG.length+'건(블로그·DART) — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시 · 최신순', KG);
       return;
     }
     var rk=resolveKind(nq), KIND=rk[0], NAME=rk[1];
@@ -10977,9 +10999,7 @@ _VALUECHAIN_JS = r"""
         cos.slice(0,80).map(function(n){return '<span class="vc-pill">'+esc(n)+'</span>';}).join('')+'</div>';
     } else { focus.innerHTML=''; }
     var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
-    list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'" · 최신순</div>'+
-      f.slice().sort(byDateDesc).slice(0,400).map(edgeRow).join('');
-    if(window.__impApply) window.__impApply();
+    renderList('관계 '+f.length+'건 — "'+esc(q)+'" · 최신순', f);
   }
   var s=document.getElementById('vc-search');
   s.addEventListener('input', function(){ render(s.value); });
