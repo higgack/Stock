@@ -10910,6 +10910,13 @@ _VALUECHAIN_JS = r"""
         else { btn.disabled=false; btn.textContent='🗑️'; alert('숨김 실패'); } })
       .catch(function(){ btn.disabled=false; btn.textContent='🗑️'; alert('숨김 실패(네트워크)'); });
   });
+  function byDateDesc(a,b){   // 학습일(d) 최신순 — 날짜 없는 건 맨 뒤(2026-07-24 '최신순으로')
+    var da=a.d||'', db=b.d||'';
+    if(da===db) return 0;
+    if(!da) return 1;
+    if(!db) return -1;
+    return da<db ? 1 : -1;
+  }
   function grp(title, items, fmt){
     if(!items.length) return '';
     return '<div class="vc-grp"><div class="vc-grp-h">'+title+' ('+items.length+')</div>'+items.map(fmt).join('')+'</div>';
@@ -10922,8 +10929,8 @@ _VALUECHAIN_JS = r"""
     if(!nq){
       focus.innerHTML='';
       list.innerHTML='<div class="vc-listh">공급망·관계 '+KG.length+'건(블로그·DART)'+
-        (KG.length>400?' · 상위 400':'')+' — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시</div>'+
-        KG.slice(0,400).map(edgeRow).join('');
+        (KG.length>400?' · 상위 400':'')+' — 관세청 수출품목 '+TR.length+'건은 회사 검색 시 표시 · 최신순</div>'+
+        KG.slice().sort(byDateDesc).slice(0,400).map(edgeRow).join('');
       if(window.__impApply) window.__impApply();
       return;
     }
@@ -10970,7 +10977,8 @@ _VALUECHAIN_JS = r"""
         cos.slice(0,80).map(function(n){return '<span class="vc-pill">'+esc(n)+'</span>';}).join('')+'</div>';
     } else { focus.innerHTML=''; }
     var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
-    list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'"</div>'+f.slice(0,400).map(edgeRow).join('');
+    list.innerHTML='<div class="vc-listh">관계 '+f.length+'건 — "'+esc(q)+'" · 최신순</div>'+
+      f.slice().sort(byDateDesc).slice(0,400).map(edgeRow).join('');
     if(window.__impApply) window.__impApply();
   }
   var s=document.getElementById('vc-search');

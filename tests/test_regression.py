@@ -13634,3 +13634,19 @@ class TestBlogSeenCapAndDateGuard20260708:
         bw._process_blog({"id": "b", "title": "t", "categories": None},
                          {"seen": [], "init": {"b": True}}, set(), None)
         assert pushed == ["무날짜"]
+
+
+class TestValuechainDateSort20260724:
+    """밸류체인 관계 목록 최신순 정렬(사용자 2026-07-24 '최신날짜순으로') —
+    예전엔 서버가 임베드한 원본 배열 순서 그대로(사실상 무순) 표시됐음.
+    기본 목록(KG)·검색결과 목록(f) 둘 다 byDateDesc 로 정렬 후 슬라이스하는지
+    소스 문자열로 고정(클라 JS라 렌더 직접 실행은 불가 — grep 회귀)."""
+
+    def test_sort_helper_defined_and_wired(self):
+        import bot.dashboard as d
+        js = d._VALUECHAIN_JS
+        assert "function byDateDesc(a,b)" in js
+        # 기본 목록(검색 안 한 상태)과 검색결과 목록 둘 다 정렬 적용.
+        assert "KG.slice().sort(byDateDesc).slice(0,400)" in js
+        assert "f.slice().sort(byDateDesc).slice(0,400)" in js
+        assert "최신순" in js

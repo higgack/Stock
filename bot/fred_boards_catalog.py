@@ -104,6 +104,17 @@ PPI_SERIES = [
     {'id': 'PCU333111333111P', 'name': 'Farm Machinery & Equipment (Primary)', 'cat': 'Heavy Machinery', 'stocks': '농기계 — KR: 대동·TYM / US: Deere·AGCO / JP: 구보다'},
     {'id': 'PCU325411325411', 'name': 'Medicinal & Botanical Mfg (API)', 'cat': 'Healthcare', 'stocks': '원료의약품(API) — KR: 에스티팜·경보제약 / US: Catalent / JP: 후지필름(CDMO)'},
     {'id': 'PCU493110493110', 'name': 'General Warehousing & Storage', 'cat': 'Auto & Transport', 'stocks': '창고·물류 — KR: CJ대한통운·한진 / US: Prologis·GXO / JP: 니혼츠운'},
+    # ── 4차 확장 10종(리서치 에이전트 발굴, 2026-07-24 '다 업데이트지속되는거면 모두 적용') ──
+    {'id': 'PCU3344133344131', 'name': 'Semiconductor IC Packaging (OSAT)', 'cat': 'Semiconductor & Electronics', 'stocks': 'OSAT·반도체 후공정 — KR: 하나마이크론·SFA반도체 / US: Amkor / JP: 新光電気工業 / TW: ASE·矽格'},
+    {'id': 'PCU313313', 'name': 'Textile Mills', 'cat': 'Textile & Apparel', 'stocks': '섬유 — KR: 효성첨단소재·코오롱인더스트리 / US: Unifi / JP: 東レ / TW: 儒鴻·聚陽'},
+    {'id': 'PCU21222122', 'name': 'Metal Ore Mining', 'cat': 'Mining & Resources', 'stocks': '금속광업(배터리·철강 원료) — KR: 고려아연·풍산 / US: Freeport-McMoRan·Newmont / JP: 三菱マテリアル / TW: 中鋼'},
+    {'id': 'PCU21212121', 'name': 'Coal Mining', 'cat': 'Mining & Resources', 'stocks': '석탄광업 — KR: 한국전력 / US: Peabody Energy·Arch Resources / JP: 電源開発(J-POWER)'},
+    {'id': 'PCU339920339920', 'name': 'Sporting & Athletic Goods Mfg', 'cat': 'Consumer & Beauty', 'stocks': '스포츠용품 — KR: 볼빅·화승엔터프라이즈 / US: Callaway/Topgolf·Nike / JP: 스미토모고무·미즈노 / TW: 巨大機械(Giant)'},
+    {'id': 'PCU312230312230', 'name': 'Tobacco Manufacturing', 'cat': 'Tobacco & Beverage', 'stocks': '담배 — KR: KT&G / US: Philip Morris·Altria / JP: Japan Tobacco'},
+    {'id': 'PCU311615311615', 'name': 'Poultry Processing', 'cat': 'Food & Agriculture', 'stocks': '육계가공 — KR: 하림·마니커 / US: Tyson Foods·Pilgrim\'s Pride / JP: 日本ハム / TW: 大成長城'},
+    {'id': 'PCU311511311511', 'name': 'Fluid Milk Manufacturing', 'cat': 'Food & Agriculture', 'stocks': '유제품 — KR: 매일유업·남양유업 / JP: 明治ホールディングス / TW: 統一企業'},
+    {'id': 'PCU312140312140P', 'name': 'Distilleries - Primary Products', 'cat': 'Tobacco & Beverage', 'stocks': '증류주 — KR: 하이트진로 / US: Brown-Forman·Constellation Brands / JP: 산토리(음료부문 proxy) / TW: 台湾烟酒'},
+    {'id': 'PCU3372133721', 'name': 'Office Furniture Mfg', 'cat': 'Furniture & Home', 'stocks': '사무가구 — KR: 현대리바트 / US: MillerKnoll·Steelcase / JP: 오카무라'},
 ]
 
 LIQ_SERIES = [
@@ -156,4 +167,13 @@ LIQ_SERIES = [
     {'id': 'DEXUSEU', 'name': '유로/달러 환율', 'category': '환율', 'unit': '$/€', 'desc': '미국 달러 대 유로 — DEXUSEU 는 1유로당 달러(Fed H.10 일별), 다른 환율행과 표기방향 반대(달러가 표시통화)라 상승=유로 강세.', 'interpret': '글로벌 위험선호·달러 약세축의 핵심 축. 상승(유로 강세=달러 약세) = 위험자산 우호·ECB 긴축/Fed 완화 기대.', 'how_to_read': '달러인덱스(DXY)와 역행 — DXY 절반 가까이가 EUR 비중.', 'kr_impact': '달러 약세 국면은 통상 원화 강세(원/달러 하락) 동반 — 외국인 KOSPI 순매수 우호적 환경.', 'is_rate': False},
     {'id': 'DEXUSUK', 'name': '파운드/달러 환율', 'category': '환율', 'unit': '$/£', 'desc': '미국 달러 대 영국 파운드 — DEXUSUK 는 1파운드당 달러(Fed H.10 일별), EUR 와 동일하게 달러가 표시통화(상승=파운드 강세).', 'interpret': 'BOE 통화정책·영국 재정 리스크의 온도계. 급락은 영국발 리스크(2022 길트 위기류) 신호.', 'how_to_read': 'EUR/USD 와 동조 이탈 시 영국 고유 요인(BOE·재정) 점검.', 'kr_impact': '직접 연동은 약하나 달러 전반 약세축의 일부로 원/달러에 간접 영향.', 'is_rate': False},
     {'id': 'DEXSZUS', 'name': '스위스프랑/달러 환율', 'category': '환율', 'unit': 'Fr/$', 'desc': '스위스 프랑 대 미국 달러 (Fed H.10 일별) — CHF 는 안전자산 통화, JPY/CNY 와 동일하게 외화가 표시통화(상승=프랑 약세).', 'interpret': '안전자산 수요의 대체 지표(엔과 유사). 프랑 급강세(하락) = 글로벌 리스크오프·안전자산 쏠림.', 'how_to_read': 'VIX 급등과 동반 급락(프랑 강세) 시 리스크오프 확인 지표로 활용.', 'kr_impact': '직접 연동은 약하나 글로벌 리스크오프 국면 공통신호 — VIX·엔캐리와 함께 보면 국면 판단 보강.', 'is_rate': False},
+    # ── 3차 확장 5종(리서치 에이전트 발굴, 2026-07-24 '다 업데이트지속되는거면 모두 적용') ──
+    # China M2(AKShare)는 후보에 있었으나 제외 — 동일 접근(AK:CNM2)이
+    # 2026-07-04 라이브에서 원인불명 12개월+ stale 판정으로 이미 한 번
+    # 삭제된 이력(LiqExpansion20260705Tests 참조) 재발 방지, 재검증 전 보류.
+    {'id': 'EFFR', 'name': '실효 연방기금금리 (EFFR)', 'category': '기준금리', 'unit': '%', 'desc': '뉴욕 연은이 매 영업일 집계하는 실제 익일물 연방기금 거래금리(일간) — FEDFUNDS(월평균)의 일간 버전.', 'interpret': 'FEDFUNDS는 월평균이라 일간 자금시장 스트레스를 놓친다. EFFR은 매일 갱신되어 기존 IORB 항목이 감시하라는 "FEDFUNDS-IORB 갭"을 실제로는 일간 지표(EFFR)로 봐야 정확하다.', 'how_to_read': 'EFFR이 IORB 위로 뜨거나 갭이 좁아지면 지준 부족·레포 시장 압박 신호(2019년 9월 레포 발작 패턴). Fed 목표범위 상단 근접도 함께 확인.', 'kr_impact': '미 단기자금시장 경색은 글로벌 달러 조달비용 상승으로 전이 — 한국 시중은행 외화조달·스왑레이트에 즉각 영향.', 'is_rate': True},
+    {'id': 'ECOS:FXRESERVE', 'src': 'ecos:fx_reserve', 'name': '한국 외환보유액', 'category': '글로벌 중앙은행', 'unit': '억$', 'desc': '한국은행 외환보유액 합계(월간, ECOS 732Y001 원천). 원화 방어력·환시개입 여력의 직접 지표.', 'interpret': '외환보유액은 한국은행이 원/달러 급변동 시 시장개입에 쓸 수 있는 실탄. 지속 감소는 개입 소진 또는 자본유출 압력을 시사.', 'how_to_read': 'YoY·MoM 감소가 가속되면 환율 방어 여력 축소 신호 — 원/달러(DEXKOUS) 급등기에 함께 보면 개입 여부 짐작 가능. 증가 추세는 경상수지 흑자·자본유입 우위.', 'kr_impact': '외환보유액 감소 지속 + 원화 약세 = 한국 매크로 리스크 프리미엄 상승 신호. 급감은 외국인 채권·주식 이탈과 동반되는 경향.', 'is_rate': False},
+    {'id': 'TRESEGCNM052N', 'name': '중국 외환보유액(금 제외)', 'category': '글로벌 중앙은행', 'unit': 'M USD', 'desc': 'IMF IFS 경유 중국 외환보유액(금 제외, 월간).', 'interpret': '인민은행의 외환보유액 — 위안화 방어력과 자본유출입 압력의 핵심 지표. 2015-16년 급감은 자본유출·위안 평가절하 우려의 대표 사례.', 'how_to_read': 'YoY 감소 가속 = 자본유출 압력·위안 약세 방어 개입. 증가 = 경상흑자·자본유입 우위. 위안/달러(DEXCHUS)와 나란히 보면 인민은행 개입 여부 추정 가능.', 'kr_impact': '중국 외환보유액 급감 + 위안 약세는 아시아 통화 동반 약세(원화 포함) 압력 — 원/달러 상방 리스크 사전 신호로 활용.', 'is_rate': False},
+    {'id': 'FDHBFIN', 'name': '외국인 보유 미 연방부채', 'category': '신용창조', 'unit': 'B USD', 'desc': '외국인·국제기구가 보유한 미 연방정부 부채 총액(분기, 미 재무부 원천). 월간 TIC 상세자료는 FRED 미제공이라 이 시리즈가 가장 깨끗한 대체지표.', 'interpret': '해외 투자자의 미국 국채 수요를 보여주는 지표. 외국인 수요 위축은 국채금리 상승압력·달러 신뢰도 이슈로 연결.', 'how_to_read': 'YoY 감소 전환 = 외국인의 미 국채 수요 둔화 — 10Y(DGS10) 상승압력 요인으로 해석. 이 시리즈는 합계치라 최대보유국(중국·일본) 비중 변화는 별도 확인 필요.', 'kr_impact': '외국인의 미 국채 수요 약화 → 미 장기금리 상승압력 → 한국 국고채·기업 조달금리 동반 상승 경로.', 'is_rate': False},
+    {'id': 'ANFCI', 'name': '조정 금융여건지수 (ANFCI)', 'category': '금융환경', 'unit': 'Index', 'desc': '시카고 Fed NFCI에서 성장·인플레 국면과 무관한 순수 금융여건 성분만 분리한 버전(주간, NFCI와 동일 매주 수요일 발표).', 'interpret': 'NFCI는 경기 상황이 좋으면 자동으로 낮아지는 경향이 있어 "진짜 긴축"과 "경기 호조"를 구분하기 어렵다. ANFCI는 이 성분을 제거해 순수한 신용·유동성 긴축도만 남긴다.', 'how_to_read': 'NFCI와 ANFCI가 같은 방향이면 신호 신뢰도↑. 둘이 괴리(NFCI 완화, ANFCI 긴축 등)되면 경기 호조가 금융긴축을 가리고 있다는 뜻 — 실제 유동성 여건은 ANFCI 쪽에 가깝다.', 'kr_impact': 'NFCI와 동일한 글로벌 캐리트레이드·EM 자금흐름 경로. NFCI와 괴리 시 ANFCI를 우선 참고.', 'is_rate': True},
 ]

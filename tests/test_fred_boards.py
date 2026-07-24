@@ -441,7 +441,9 @@ class DiscontinuedSweepTests(unittest.TestCase):
             self.assertNotIn(dead, ids)
         # 39 −CNM2 +플래그십 8(2026-07-05) +환율 3(유로·파운드·스위스프랑, 2026-07-14
         # — 대만달러는 FRED 미수록 히스토리 없이 추가했다가 사용자 요청으로 제외)
-        self.assertEqual(len(LIQ_SERIES), 49)
+        # +5(리서치 에이전트 4차 확장, 2026-07-24 — China M2 는 AK:CNM2 재발
+        # 리스크로 제외)
+        self.assertEqual(len(LIQ_SERIES), 54)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
@@ -449,8 +451,11 @@ class DiscontinuedSweepTests(unittest.TestCase):
                                 "ECOS:BASE": "ecos:base_rate",
                                 "AK:LPR1Y": "ak:lpr1y",
                                 # AK:CNM2 는 라이브에서 12개월+ stale 판정
-                                # (라벨/소스 원인 미상) → 삭제(2026-07-04)
-                                "ECOS:KR10Y": "ecos:kr10y"})
+                                # (라벨/소스 원인 미상) → 삭제(2026-07-04).
+                                # 2026-07-24 재검토에서도 재발 리스크 미해소로
+                                # 재등재 보류(LiqExpansion20260724Tests 참조)
+                                "ECOS:KR10Y": "ecos:kr10y",
+                                "ECOS:FXRESERVE": "ecos:fx_reserve"})
         # 대체 소스 함수 실재(배선 E2E)
         from bot import bok_ecos_client, akshare_client
         self.assertIn("m2", bok_ecos_client._SERIES)
@@ -588,7 +593,7 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         # PCU336414336414 — FRED 400(미존재), BLS 미발행 확인(2026-07-04) →
         # 삭제(항공우주 상위그룹 PCU3364133641 이 커버). 사용자 '없는건 삭제'.
         self.assertFalse(any(s["id"] == "PCU336414336414" for s in PPI_SERIES))
-        self.assertEqual(len(PPI_SERIES), 95)   # +발굴 3차 14(2026-07-05)
+        self.assertEqual(len(PPI_SERIES), 105)  # +발굴 3차 14(2026-07-05) +4차 10(2026-07-24)
 
     def test_stale_drop_and_note(self):
         # 12개월+ 미갱신 = 목록 자동 제외 + 하단 제외 안내(사용자 2026-07-04
@@ -717,3 +722,57 @@ class FxExpansion20260714Tests(unittest.TestCase):
         src = open("bot/fred_boards.py", encoding="utf-8").read()
         self.assertNotIn("naver_fx_latest", src)
         self.assertNotIn("_naver_fx_latest_row", src)
+
+
+class MarginPpiLiqExpansion20260724Tests(unittest.TestCase):
+    """4차 확장(사용자 2026-07-24 '마진스프레드/PPI/유동성 다 업데이트지속되는거면
+    모두 적용') — 3개 리서치 에이전트 검증분: 마진쌍 10 + PPI 10 + 유동성 5.
+    China M2(AKShare)는 후보였으나 동일 접근(AK:CNM2)이 2026-07-04 라이브에서
+    이미 한 번 원인불명 stale 로 삭제된 이력이 있어 재검증 없이 재등재하지
+    않음(⛔ 과거 실수 반복 금지)."""
+
+    def test_margin_pairs_third_batch(self):
+        from bot.fred_boards import _MARGIN_PAIRS
+        self.assertEqual(len(_MARGIN_PAIRS), 27)          # 17 + 3차 10쌍
+        keys = {p["key"] for p in _MARGIN_PAIRS}
+        self.assertEqual(len(keys), len(_MARGIN_PAIRS))   # key 유일
+        for want in ("semis", "aluminum", "aerospace", "gasutil", "cosmetics",
+                     "pharma", "apparel", "dairy", "telecom_eq", "glass"):
+            self.assertIn(want, keys)
+
+    def test_ppi_fourth_batch_ids(self):
+        ids = {s["id"] for s in PPI_SERIES}
+        for want in ("PCU3344133344131", "PCU313313", "PCU21222122",
+                     "PCU21212121", "PCU339920339920", "PCU312230312230",
+                     "PCU311615311615", "PCU311511311511",
+                     "PCU312140312140P", "PCU3372133721"):
+            self.assertIn(want, ids)
+        cats = {s["cat"] for s in PPI_SERIES}
+        for want in ("Textile & Apparel", "Mining & Resources",
+                     "Tobacco & Beverage", "Furniture & Home"):
+            self.assertIn(want, cats)
+
+    def test_liq_fourth_batch_ids_and_wiring(self):
+        ids = {s["id"] for s in LIQ_SERIES}
+        for want in ("EFFR", "ECOS:FXRESERVE", "TRESEGCNM052N", "FDHBFIN",
+                     "ANFCI"):
+            self.assertIn(want, ids)
+        self.assertNotIn("AK:CNM2", ids)   # 재검증 없이 재등재 금지(위 독스트링)
+        fxr = next(s for s in LIQ_SERIES if s["id"] == "ECOS:FXRESERVE")
+        self.assertEqual(fxr["src"], "ecos:fx_reserve")
+        # fx_reserve 는 bok_ecos_client 에 2026-06-23 부터 정의돼 있었으나
+        # 미배선 상태였던 소스 — _SERIES 실재 + _alt_history 배선 둘 다 확인.
+        from bot import bok_ecos_client
+        self.assertIn("fx_reserve", bok_ecos_client._SERIES)
+
+    def test_alt_history_fx_reserve_wired(self):
+        from bot import fred_boards as fb
+        from bot import bok_ecos_client as bec
+        orig = bec.fetch_series_points
+        bec.fetch_series_points = lambda key, lookback_days=None: (
+            [("202606", 4321.0)] if key == "fx_reserve" else [])
+        try:
+            self.assertEqual(fb._alt_history("ecos:fx_reserve"),
+                             [("2026-06-01", 4321.0)])
+        finally:
+            bec.fetch_series_points = orig
