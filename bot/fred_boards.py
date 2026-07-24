@@ -27,7 +27,7 @@ import json as _json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from bot.fred_boards_catalog import LIQ_SERIES, PPI_SERIES
+from bot.fred_boards_catalog import CPI_SERIES, LIQ_SERIES, PPI_SERIES
 
 log = logging.getLogger("bot.fred_boards")
 
@@ -479,6 +479,50 @@ def _load_kr_ppi() -> list[dict]:
     return rows
 
 
+# ── 한국 CPI(ECOS 901Y009, 사용자 2026-07-24 'CPI 도 PPI 처럼') ───────────
+# BOK 공식 COICOP 12대분류 이름으로 이름해석 시도 — 무매칭이면 해당 행만
+# 생략(graceful, KR PPI 와 동일 원칙). 관련주 힌트는 큐레이션.
+_KR_CPI_ITEMS = [
+    ("총지수", "한국 CPI 총지수", "소비자물가 전반 — 내수 소비여력 지표"),
+    ("식료품", "한국 CPI 식료품·비주류음료", "이마트·CJ제일제당·농심·오리온 — 식품물가 압력"),
+    ("주류", "한국 CPI 주류·담배", "하이트진로·KT&G"),
+    ("의류", "한국 CPI 의류·신발", "한세실업·영원무역·F&F"),
+    ("주택", "한국 CPI 주택·수도·전기·연료", "한국전력·한국가스공사 — 공공요금·주거비 부담"),
+    ("가정용품", "한국 CPI 가정용품·가사서비스", "LG전자·쿠쿠홈시스"),
+    ("보건", "한국 CPI 보건", "유한양행·종근당·오스템임플란트 — 의료비 부담"),
+    ("교통", "한국 CPI 교통", "현대차·기아·대한항공 — 교통비 부담"),
+    ("통신", "한국 CPI 통신", "SK텔레콤·KT·LG유플러스"),
+    ("오락", "한국 CPI 오락·문화", "하이브·CJ CGV"),
+    ("교육", "한국 CPI 교육", "웅진씽크빅·메가스터디"),
+    ("음식", "한국 CPI 음식·숙박", "롯데지알에스·강원랜드 — 외식·숙박물가"),
+    ("기타상품", "한국 CPI 기타 상품·서비스", "아모레퍼시픽·LG생활건강"),
+]
+
+
+def _load_kr_cpi() -> list[dict]:
+    """ECOS 한국 CPI → CPI 보드 rows(동일 지표·신호 파이프라인, cat 고정)."""
+    try:
+        from bot import bok_ecos_client
+        hists = bok_ecos_client.fetch_kr_cpi_history(
+            [p for p, _, _ in _KR_CPI_ITEMS])
+    except Exception as exc:
+        log.warning("fred_boards: KR CPI load failed: %s", exc)
+        return []
+    rows = []
+    for pat, name, stocks in _KR_CPI_ITEMS:
+        hist = hists.get(pat) or []
+        m = series_metrics(hist)
+        if not m:
+            continue
+        key, label, note = _signal(m)
+        row = {"id": f"ECOS:{pat}", "name": name, "cat": "한국 CPI(ECOS)",
+               "stocks": stocks, **m, "sig": key, "sig_label": label,
+               "note": note, "hist": [(d[:7], v) for d, v in hist]}
+        _mark_stale(row)
+        rows.append(row)
+    return rows
+
+
 # 점수 구성요소 한글 라벨(페이지 표기 — 영문 키 노출 방지, 리뷰 finding).
 _COMP_KR = {
     "net_liq_13w": "순유동성 13주Δ", "reserves_13w": "지준 13주Δ",
@@ -532,6 +576,45 @@ def _load_ppi() -> tuple[list[dict], list[dict], list[str]]:
         log.warning("fred_boards: ppi 소스 중단 제외 %d종: %s",
                     len(dropped), ", ".join(dropped))
     return rows, margin_spreads(H), dropped
+
+
+def _load_cpi() -> tuple[list[dict], list[str]]:
+    """→ (rows, dropped). rows = FRED CPI + 한국 CPI(ECOS) 병합. PPI 와 같은
+    지표·신호·staleness 파이프라인 재사용 — 마진 스프레드 개념(단일 원재료
+    proxy 대비 판가)은 CPI 에 대응 없어 생략."""
+    from bot import fred_client
+    H: dict[str, list] = {}
+    ids = [s["id"] for s in CPI_SERIES]
+    for sid in ids:
+        H[sid] = fred_client.fetch_history(sid, _PPI_START)
+    rows = []
+    dropped: list[str] = []
+    for s in CPI_SERIES:
+        hist = H.get(s["id"]) or []
+        if not hist:
+            dropped.append(f"{s['name']} ({s['id']}) — 데이터 없음")
+            continue
+        m = series_metrics(_monthly(hist))
+        if not m:
+            continue
+        key, label, note = _signal(m)
+        row = {**s, **m, "sig": key, "sig_label": label, "note": note,
+               "hist": [(d[:7], v) for d, v in hist]}
+        _mark_stale(row)
+        rows.append(row)
+    rows += _load_kr_cpi()
+    kept = []
+    for r in rows:
+        age = _staleness(str(r.get("latest_date", "")))
+        if age is not None and age >= _DROP_AFTER_MONTHS:
+            dropped.append(f"{r['name']} ({r['id']})")
+            continue
+        kept.append(r)
+    rows = kept
+    if dropped:
+        log.warning("fred_boards: cpi 소스 중단 제외 %d종: %s",
+                    len(dropped), ", ".join(dropped))
+    return rows, dropped
 
 
 def _load_liq() -> tuple[list[dict], dict, float | None]:
@@ -670,6 +753,7 @@ def _theme_head() -> str:
 
 _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · '
         '<a href="index.html">🦉 종목분석</a> · <a href="ppi.html">🏭 PPI</a> · '
+        '<a href="cpi.html">🛒 CPI</a> · '
         '<a href="liquidity.html">💧 유동성</a> · '
         '<a href="marketcap.html">🏆 Market cap</a></div>')
 
@@ -850,6 +934,111 @@ pills();table();if(R.length)detail(R[0].id);
 </script></body></html>"""
 
 
+def render_cpi_page(rows: list[dict], now: datetime | None = None,
+                    dropped: list[str] | None = None) -> str:
+    """cpi.html — 소비자물가(CPI) 세부항목별 가격 추세 + 클릭 상세. PPI 보드와
+    같은 인프라(신호·staleness·차트) 재사용, 마진 스프레드 패널은 없음(CPI 는
+    소비자 구매물가라 '판가−원가' 개념이 대응되지 않음). rows 비면 데이터
+    없음 배너(silent drop 금지, 2026-07-24 'PPI 처럼 CPI 도')."""
+    now = now or datetime.now(_KST)
+    ts = now.strftime("%Y-%m-%d %H:%M KST")
+    payload = _json.dumps({"rows": rows}, ensure_ascii=False).replace("<", "\\u003c")
+    cats = sorted({r["cat"] for r in rows})
+    if "Benchmark" in cats:
+        cats.remove("Benchmark")
+        cats.insert(0, "Benchmark")
+    empty = ("" if rows else
+             "<div class='note'>⚠️ FRED 데이터 없음 — FRED_API_KEY 확인 필요. "
+             "키 등록 후 자정 재생성(또는 봇 재시작) 시 채워집니다.</div>")
+    sig_counts = {k: sum(1 for r in rows if r["sig"] == k)
+                  for k in ("strong", "moderate", "reversal", "decline", "mild")}
+    return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CPI 투자신호</title>
+{_theme_head()}
+<script src="{_CHARTJS_NAME}"></script>
+{_BOARD_CSS}</head><body><div class="wrap">
+{_NAV}
+<h1>🛒 <em>CPI</em> 투자신호 보드</h1>
+<p class="sub">미 소비자물가(FRED) 세부항목별 가격 추세 → 관련주 신호 · {len(rows)}개 시리즈(2019-01~) ·
+관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(6시간 주기 자동 갱신)</p>
+{_dropped_note(dropped)}
+<details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
+<b>1) 신호 필터</b> — 상단 알약(전체/🔴/🟠/🟡/🔵/⚪) 클릭 = 그 신호만. 두 번째 줄 = 카테고리 필터.<br>
+<b>2) 신호 의미(룰 기반)</b> — 🔴 <b>강한 상승</b>: YoY≥5% & 3M≥1.5%(물가 압력 가속) ·
+🟡 <b>바닥 반등</b>: 고점 대비 -5% 아래에서 저점 대비 +1.5% 반등(디스인플레 종료 후보) ·
+🔵 <b>하락</b>: YoY·3M 모두 음수(물가 둔화) · 🟠 <b>중간</b>: YoY≥2% 또는 3M≥0.7% · ⚪ 중립.<br>
+<b>3) 행 클릭</b> = 상세(2019년 이후 차트·고점比·저점 회복률·6M 모멘텀·관련주).<br>
+<b>4) 관련주</b> — CPI 는 소비자 구매물가라 방향이 항목마다 다릅니다(예: 의료서비스 CPI 상승↔의료주 매출 증가,
+주거비 CPI 상승↔임대인·리츠 수혜, 유가 CPI 상승↔항공·물류 원가부담). 각 행 관련주 설명에 방향 참고 표기.
+자동 신호이므로 참고용 — 확정 판단 금지.<br>
+<b>5) 🇰🇷 한국 CPI</b> — 카테고리 '한국 CPI(ECOS)' = 한국은행 소비자물가(월간)를 같은 신호 룰로 — 미국(FRED)과 나란히 비교.<br>
+<b>6) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
+</details>
+{empty}
+<div class="pills" id="pills" data-counts='{_json.dumps(sig_counts)}'></div>
+<div class="pills" id="cats" data-cats='{_json.dumps(cats, ensure_ascii=False).replace("<", "&lt;")}'></div>
+<div class="panel"><div class="panel-title">시리즈 개요 <span style="color:#8b8fa3;font-size:11px">(행 클릭 = 상세 차트)</span></div>
+<div class="tbl-wrap"><table><thead><tr>
+<th>시리즈</th><th>카테고리</th><th>신호</th><th>MoM</th><th>3M</th><th>6M</th><th>YoY</th><th>고점比</th><th>관련주</th>
+</tr></thead><tbody id="tb"></tbody></table></div></div>
+<div class="panel" id="detail" style="display:none">
+  <div class="panel-title" id="d-title"></div>
+  <div class="stat-grid" id="d-stats"></div>
+  <div class="chartbox"><canvas id="d-chart"></canvas></div>
+  <div class="note" id="d-note"></div>
+</div>
+<div class="footer">FRED CPI · 신호는 룰 기반 참고 신호(투자 판단 아님) · NOAH</div>
+</div>
+<script id="cpi-data" type="application/json">{payload}</script>
+<script>
+(function(){{
+var R=JSON.parse(document.getElementById('cpi-data').textContent).rows||[];
+var SIG={{strong:'🔴 강한 상승',moderate:'🟠 중간 상승',reversal:'🟡 바닥 반등',decline:'🔵 하락',mild:'⚪ 중립',all:'전체'}};
+var fsig='all',fcat='all',sel=null,chart=null;
+{_BOARD_JS_COMMON}
+function pills(){{var cnt=JSON.parse(document.getElementById('pills').getAttribute('data-counts'));
+ var keys=['all','strong','moderate','reversal','decline','mild'];
+ document.getElementById('pills').innerHTML=keys.map(function(k){{
+  var n=k==='all'?R.length:(cnt[k]||0);
+  return "<span class='pill p-"+k+(fsig===k?' active':'')+"' data-k="+k+">"+SIG[k]+" "+n+"</span>";}}).join('');
+ var cats=JSON.parse(document.getElementById('cats').getAttribute('data-cats'));
+ document.getElementById('cats').innerHTML=["<span class='pill"+(fcat==='all'?' active':'')+"' data-c='all'>전체 카테고리</span>"]
+  .concat(cats.map(function(c){{return "<span class='pill"+(fcat===c?' active':'')+"' data-c=\\""+esc(c)+"\\">"+esc(c)+"</span>";}})).join('');
+}}
+function rows(){{return R.filter(function(r){{return (fsig==='all'||r.sig===fsig)&&(fcat==='all'||r.cat===fcat);}});}}
+function table(){{document.getElementById('tb').innerHTML=rows().map(function(r,i){{
+ return "<tr class='row"+(sel===r.id?' selected':'')+"' data-id='"+esc(r.id)+"'>"+
+ "<td><b>"+esc(r.name)+"</b><div style='color:#8b8fa3;font-size:10px'>"+esc(r.id)+" · "+ld(r)+"</div></td>"+
+ "<td>"+esc(r.cat)+"</td><td><span class='badge p-"+r.sig+"'>"+esc(r.sig_label)+"</span></td>"+
+ "<td>"+pc(r.mom,2)+"</td><td>"+pc(r.m3)+"</td><td>"+pc(r.m6)+"</td><td>"+pc(r.yoy)+"</td><td>"+pc(r.from_peak)+"</td>"+
+ "<td class='stocks'>"+esc(r.stocks)+"</td></tr>";}}).join('');}}
+function detail(id){{var r=R.find(function(x){{return x.id===id;}});if(!r)return;sel=id;
+ document.getElementById('detail').style.display='block';
+ document.getElementById('d-title').textContent=r.name+' ('+r.id+') — '+r.sig_label;
+ var st=[['최신',r.latest.toFixed(1)+' ('+r.latest_date+')'],['YoY',(r.yoy==null?'—':r.yoy.toFixed(1)+'%')],
+  ['2019년 이후',(r.total==null?'—':r.total.toFixed(1)+'%')],['고점 대비',(r.from_peak==null?'—':r.from_peak.toFixed(1)+'%')],
+  ['저점 회복',(r.recovery==null?'—':r.recovery.toFixed(1)+'%')],['6M 모멘텀',(r.momentum==null?'—':r.momentum.toFixed(2)+'%/월')]];
+ document.getElementById('d-stats').innerHTML=st.map(function(s){{return "<div class='stat'><div class='k'>"+s[0]+"</div><div class='v'>"+s[1]+"</div></div>";}}).join('');
+ document.getElementById('d-note').innerHTML='💡 '+esc(r.note)+'<br>📌 관련주: '+esc(r.stocks);
+ if(chart)chart.destroy();
+ chart=mkChart(document.getElementById('d-chart'),r.hist.map(function(h){{return h[0];}}),r.hist.map(function(h){{return h[1];}}));
+ table();}}
+function applyFilter(){{pills();table();var f=rows();
+ if(f.length&&!f.some(function(r){{return r.id===sel;}}))detail(f[0].id);}}
+document.addEventListener('click',function(ev){{
+ var p=ev.target.closest('.pill');
+ if(p){{if(p.hasAttribute('data-k'))fsig=p.getAttribute('data-k');
+  if(p.hasAttribute('data-c'))fcat=p.getAttribute('data-c');applyFilter();return;}}
+ var tr=ev.target.closest('tr.row');
+ if(tr){{detail(tr.getAttribute('data-id'));
+  var d=document.getElementById('detail');
+  if(d&&d.scrollIntoView)d.scrollIntoView({{behavior:'smooth',block:'nearest'}});}}}});
+pills();table();if(R.length)detail(R[0].id);
+}})();
+</script></body></html>"""
+
+
 def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
                           now: datetime | None = None) -> str:
     """liquidity.html — 종합점수 + 순유동성 차트 + 지표 테이블·상세(해설 포함).
@@ -996,10 +1185,11 @@ liveFx();setInterval(liveFx,300000);
 
 # ── 재생성(자정 regen·startup 훅) ─────────────────────────────────────────
 def regenerate_fred_boards() -> None:
-    """ppi.html + liquidity.html 재생성 — 자정 대시보드 regen + startup 백그라운드
-    (둘 다 무조건 — 배포 후 최신 렌더 코드가 즉시 화면에, 실수 #11. FRED 캐시
-    12h 라 같은 날 재실행은 사실상 무료). 실패 시 기존 파일 유지(graceful).
-    ⚠️ 네트워크 ~90콜 — 반드시 스레드/to_thread 로 호출(이벤트루프 차단 금지)."""
+    """ppi.html + cpi.html + liquidity.html 재생성 — 자정 대시보드 regen +
+    startup 백그라운드(전부 무조건 — 배포 후 최신 렌더 코드가 즉시 화면에,
+    실수 #11. FRED 캐시 12h 라 같은 날 재실행은 사실상 무료). 실패 시 기존
+    파일 유지(graceful). ⚠️ 네트워크 ~90콜+ — 반드시 스레드/to_thread 로
+    호출(이벤트루프 차단 금지)."""
     from bot.dashboard import ARCHIVE_ROOT, _inject_update_banner
     _ensure_chartjs()
     try:
@@ -1011,6 +1201,13 @@ def regenerate_fred_boards() -> None:
                  len(rows), len(margins))
     except Exception:
         log.exception("fred_boards: ppi regen failed")
+    try:
+        rows, dropped = _load_cpi()
+        html = _inject_update_banner(render_cpi_page(rows, dropped=dropped))
+        (ARCHIVE_ROOT / "cpi.html").write_text(html, encoding="utf-8")
+        log.info("fred_boards: cpi.html regenerated (%d series)", len(rows))
+    except Exception:
+        log.exception("fred_boards: cpi regen failed")
     try:
         rows, derived, score = _load_liq()
         html = _inject_update_banner(render_liquidity_page(rows, derived, score))

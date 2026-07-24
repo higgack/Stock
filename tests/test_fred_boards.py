@@ -3,7 +3,7 @@ fetch(FRED I/O)는 graceful 의존이라 제외, 명시 히스토리로 순수 �
 import unittest
 
 from bot import fred_boards as fb
-from bot.fred_boards_catalog import LIQ_SERIES, PPI_SERIES
+from bot.fred_boards_catalog import CPI_SERIES, LIQ_SERIES, PPI_SERIES
 
 
 def _mk_hist(vals, start_y=2023):
@@ -601,7 +601,7 @@ class EcosM2NameResolutionTests(unittest.TestCase):
         self.assertEqual(fb._DROP_AFTER_MONTHS, 12)
         src = open("bot/fred_boards.py", encoding="utf-8").read()
         self.assertIn("_dropped_note", src)
-        self.assertEqual(src.count("age is not None and age >= _DROP_AFTER_MONTHS"), 2)  # PPI+LIQ
+        self.assertEqual(src.count("age is not None and age >= _DROP_AFTER_MONTHS"), 3)  # PPI+CPI+LIQ
         # 화면 코멘트는 제거(사용자 2026-07-04) — journal 경고가 가시성 담당.
         html = fb.render_ppi_page([], [], dropped=["Small Arms Ammunition Mfg (PCU332992332992)"])
         self.assertNotIn("소스 중단(12개월+ 미갱신)", html)
@@ -776,3 +776,77 @@ class MarginPpiLiqExpansion20260724Tests(unittest.TestCase):
                              [("2026-06-01", 4321.0)])
         finally:
             bec.fetch_series_points = orig
+
+
+class CpiBoardTests(unittest.TestCase):
+    """CPI 보드(cpi.html, 사용자 2026-07-24 'PPI 처럼 CPI 도') — PPI 와 동일
+    인프라(신호·staleness·차트) 재사용 계약. 마진 스프레드 패널은 CPI 에
+    대응 개념 없어 render_cpi_page 에 없음(의도적, 누락 아님)."""
+
+    def test_catalog_fields(self):
+        ids = [s["id"] for s in CPI_SERIES]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(len(ids), 40)   # 리서치 에이전트 검증분(2026-07-24)
+        for s in CPI_SERIES:
+            for k in ("id", "name", "cat", "stocks"):
+                self.assertTrue(s.get(k), f"{s.get('id')} missing {k}")
+        for want in ("CPIAUCSL", "CPILFESL", "STICKCPIM157SFRBATL",
+                     "CUSR0000SAH1", "CPIMEDSL", "CUSR0000SETG01"):
+            self.assertIn(want, ids)
+        # 분기 실질임금 시리즈는 월간 파이프라인과 주기 안 맞아 이번 배치엔
+        # 의도적으로 제외(에이전트 권고 — 별도 콜아웃 카드 후보).
+        self.assertNotIn("LES1252881600Q", ids)
+
+    def test_load_kr_cpi_rows(self):
+        from unittest import mock
+        hist = [(f"{y:04d}-{m:02d}-01", 100.0 + (y - 2023) * 12 + m)
+                for y in (2023, 2024, 2025) for m in range(1, 13)]
+        with mock.patch("bot.bok_ecos_client.fetch_kr_cpi_history",
+                        return_value={"총지수": hist}):
+            rows = fb._load_kr_cpi()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cat"], "한국 CPI(ECOS)")
+        self.assertTrue(rows[0]["id"].startswith("ECOS:"))
+        self.assertIn("sig", rows[0])
+
+    def test_load_kr_cpi_graceful(self):
+        from unittest import mock
+        with mock.patch("bot.bok_ecos_client.fetch_kr_cpi_history",
+                        side_effect=RuntimeError("down")):
+            self.assertEqual(fb._load_kr_cpi(), [])
+
+    def test_kr_cpi_uses_dedicated_table_not_ppi(self):
+        # KR CPI 는 901Y009(cpi_idx 총지수와 같은 표), KR PPI 는 404Y014 —
+        # 공용 fetch_kr_price_index_history 로 리팩터링 후에도 두 물가종류가
+        # 서로 다른 표/캐시파일을 쓰는지 고정(캐시 충돌 방지 계약).
+        from bot import bok_ecos_client as bec
+        self.assertEqual(bec._KR_CPI_TABLE, "901Y009")
+        self.assertEqual(bec._KR_PPI_TABLE, "404Y014")
+        self.assertNotEqual(bec._KR_CPI_TABLE, bec._KR_PPI_TABLE)
+
+    def _cpi_row(self):
+        hist = _mk_hist([100 + i for i in range(24)])
+        m = fb.series_metrics(hist)
+        key, label, note = fb._signal(m)
+        return {**CPI_SERIES[0], **m, "sig": key, "sig_label": label,
+                "note": note, "hist": [(d[:7], v) for d, v in hist]}
+
+    def test_render_smoke(self):
+        html = fb.render_cpi_page([self._cpi_row()])
+        self.assertIn("cpi-data", html)
+        self.assertIn("CPI", html)
+        self.assertIn("KST", html)
+        self.assertIn("FRED API", html)
+        self.assertNotIn("FRED 데이터 없음", html)
+        self.assertNotIn("마진 스프레드", html)   # CPI 대응 개념 없음(의도적)
+
+    def test_render_empty_banner(self):
+        html = fb.render_cpi_page([])
+        self.assertIn("FRED 데이터 없음", html)
+        self.assertIn("FRED_API_KEY", html)
+
+    def test_nav_and_regen_wired(self):
+        self.assertIn('href="cpi.html">🛒 CPI</a>', fb._NAV)
+        src = open("bot/fred_boards.py", encoding="utf-8").read()
+        assert '(ARCHIVE_ROOT / "cpi.html").write_text' in src
+        assert "_load_cpi()" in src and "render_cpi_page(" in src
