@@ -14578,3 +14578,120 @@ class TestDividendScreener20260726:
         assert "_compute_div_cagr_value" in src
         assert "div_cagr_conds" in src   # _screen_kr 배선
         assert 'elif c.metric.source == "div_cagr"' in src   # _screen_yf 배선
+
+
+_13F_XML_PREV = b"""<?xml version="1.0" encoding="UTF-8"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+<infoTable>
+<nameOfIssuer>APPLE INC</nameOfIssuer>
+<cusip>037833100</cusip>
+<value>1000000</value>
+<shrsOrPrnAmt><sshPrnamt>1000000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+<infoTable>
+<nameOfIssuer>COCA COLA CO</nameOfIssuer>
+<cusip>191216100</cusip>
+<value>2000000</value>
+<shrsOrPrnAmt><sshPrnamt>400000000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+</informationTable>"""
+
+_13F_XML_CURR = b"""<?xml version="1.0" encoding="UTF-8"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+<infoTable>
+<nameOfIssuer>APPLE INC</nameOfIssuer>
+<cusip>037833100</cusip>
+<value>1100000</value>
+<shrsOrPrnAmt><sshPrnamt>900000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+<infoTable>
+<nameOfIssuer>NEWCO INC</nameOfIssuer>
+<cusip>999999100</cusip>
+<value>500000</value>
+<shrsOrPrnAmt><sshPrnamt>50000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+</informationTable>"""
+
+
+class TestEdgar13F20260726:
+    """13F 기관플로우 트래커(claude-trading-skills 이식, 미국전용 예외,
+    bot/edgar_13f.py) — XML 파싱 + delta 계산 순수함수 + graceful 배선."""
+
+    def test_parse_infotable_xml(self):
+        from bot import edgar_13f as e13
+        rows = e13.parse_infotable_xml(_13F_XML_PREV)
+        assert len(rows) == 2
+        assert rows[0] == {"issuer": "APPLE INC", "cusip": "037833100",
+                           "value_usd_thousands": 1000000.0, "shares": 1000000.0,
+                           "share_type": "SH"}
+
+    def test_parse_infotable_xml_malformed_returns_empty(self):
+        from bot import edgar_13f as e13
+        assert e13.parse_infotable_xml(b"not xml at all") == []
+        assert e13.parse_infotable_xml(b"") == []
+
+    def test_compute_holding_delta_increased_and_decreased(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "apple")
+        assert d == {"prev_shares": 1000000.0, "curr_shares": 900000.0,
+                     "delta_shares": -100000.0, "delta_pct": -10.0,
+                     "action": "DECREASED"}
+
+    def test_compute_holding_delta_exited(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "coca cola")
+        assert d["action"] == "EXITED"
+        assert d["curr_shares"] == 0
+
+    def test_compute_holding_delta_new(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "newco")
+        assert d["action"] == "NEW"
+        assert d["delta_pct"] is None   # prev_shares=0 → 퍼센트 정의불가
+
+    def test_compute_holding_delta_not_held(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "nvidia")
+        assert d["action"] == "NOT_HELD"
+
+    def test_find_filer_cik_known_and_unknown(self):
+        from bot import edgar_13f as e13
+        assert e13.find_filer_cik("berkshire") == "0001067983"
+        assert e13.find_filer_cik("Nonexistent Fund LLC") is None
+
+    def test_get_13f_flow_unknown_filer_graceful(self):
+        from bot import edgar_13f as e13
+        assert e13.get_13f_flow("Apple Inc", filer_key="NOSUCHFUND") is None
+        assert e13.get_13f_flow("", filer_key="BERKSHIRE") is None
+
+    def test_format_13f_block_none_and_not_held(self):
+        from bot import edgar_13f as e13
+        assert e13.format_13f_block(None) == ""
+        assert e13.format_13f_block({"action": "NOT_HELD"}) == ""
+
+    def test_format_13f_block_renders_flow(self):
+        from bot import edgar_13f as e13
+        flow = {"filer": "Berkshire Hathaway Inc", "prev_filing_date": "2026-02-14",
+                "curr_filing_date": "2026-05-15", "prev_shares": 1000000.0,
+                "curr_shares": 900000.0, "delta_shares": -100000.0,
+                "delta_pct": -10.0, "action": "DECREASED"}
+        text = e13.format_13f_block(flow)
+        assert "Berkshire Hathaway Inc" in text
+        assert "감편" in text
+        assert "-10.0%" in text
+
+    def test_wiring(self):
+        ss_src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "from bot.edgar_13f import get_13f_flow" in ss_src
+        assert 'snap.setdefault("us", {})["institutional_13f"]' in ss_src
+        db_src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'us.get("institutional_13f")' in db_src
+        assert "us_13f_html" in db_src

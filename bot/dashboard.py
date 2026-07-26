@@ -6008,6 +6008,25 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>제출일</th><th>성명</th><th>직위</th><th>거래 내역</th></tr></thead><tbody>{ui_rows}</tbody></table>
   </div>"""
 
+    # US 13F 기관플로우(2026-07-26, 미국전용 — bot/edgar_13f.py) — 대표
+    # 기관투자자 최근 2개 분기 대비 이 종목 보유변화(신규/증편/감편/청산).
+    us_13f_html = ""
+    us_13f = us.get("institutional_13f")
+    if us_13f:
+        _action_kr = {"NEW": "신규 편입", "INCREASED": "증편", "DECREASED": "감편",
+                     "EXITED": "전량 청산", "UNCHANGED": "변동 없음"}.get(
+            us_13f.get("action"), us_13f.get("action", ""))
+        _dp = us_13f.get("delta_pct")
+        _dp_str = f"{_dp:+.1f}%" if _dp is not None else "—"
+        us_13f_html = f"""<div class="si-section">
+    <div class="si-section-title">13F 기관플로우 — {esc(us_13f.get('filer',''))}</div>
+    <table class="si-table"><tbody>
+      <tr><td>기간</td><td class="num">{esc(us_13f.get('prev_filing_date',''))} → {esc(us_13f.get('curr_filing_date',''))}</td></tr>
+      <tr><td>보유수량</td><td class="num">{us_13f.get('prev_shares',0):,.0f} → {us_13f.get('curr_shares',0):,.0f}주</td></tr>
+      <tr><td>변화</td><td class="num">{esc(_action_kr)} ({_dp_str})</td></tr>
+    </tbody></table>
+  </div>"""
+
     # ── 공시 pane (all markets — DART/EDINET/MOPS/AKShare/EDGAR) ──
     disclosures_pane = ""
     disc_source_map = {"kr": "DART", "jp": "EDINET", "tw": "MOPS",
@@ -6637,6 +6656,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {kr_affiliates_html}
   {kr_affiliates_invest_html}
   {us_insider_html}
+  {us_13f_html}
   {jp_holders_html}
   {tw_insiders_html}
   {tw_disp_html}
