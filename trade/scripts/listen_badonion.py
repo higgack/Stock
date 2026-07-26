@@ -32,9 +32,12 @@ call so trade-bot's media_group_id grouping still works.
 Relevance filter (differs from listen_beon.py, 사용자 2026-07-11 — 실백필 중
 애널리스트 레이팅표 등 무관 콘텐츠가 trade 채널로 넘어간 걸 확인): 나쁜양파는
 대만·중국·일본(같은 채널, 사용자 2026-07-11 — 일본은 BeOn 과 별도 두 번째
-소스) 수출 데이터 외 다른 트레이딩 정보도 섞어 올리는 일반 채널이라, 캡션이
-`tw_exports.parse_tw_export()`/`cn_exports.parse_cn_export()`/
-`jp2_exports.parse_jp2_export()` 중 하나로 파싱되는 메시지(앨범이면 멤버 중
+소스)·태국·말레이시아·필리핀·멕시코(사용자 2026-07-26) 수출 데이터 외 다른
+트레이딩 정보도 섞어 올리는 일반 채널이라, 캡션이 7개국 파서
+(`tw_exports.parse_tw_export()`/`cn_exports.parse_cn_export()`/
+`jp2_exports.parse_jp2_export()`/`th_exports.parse_th_export()`/
+`my_exports.parse_my_export()`/`ph_exports.parse_ph_export()`/
+`mx_exports.parse_mx_export()`) 중 하나로 파싱되는 메시지(앨범이면 멤버 중
 하나라도)만 forward 한다. BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음.
 
 Lifecycle alerts (best-effort, never raise):
@@ -65,17 +68,26 @@ from telethon.errors import (
 
 from trade import cn_exports as _cn
 from trade import jp2_exports as _jp2
+from trade import mx_exports as _mx
+from trade import my_exports as _my
+from trade import ph_exports as _ph
+from trade import th_exports as _th
 from trade import tw_exports as _tw
 
 load_dotenv()
 
 
 def _is_relevant(text: str) -> bool:
-    """대만·중국·일본(나쁜양파 두 번째 소스) 수출 데이터 캡션인지(나쁜양파
-    채널의 무관 콘텐츠 필터, 사용자 2026-07-11 — 같은 채널에 중국·일본 추가)."""
+    """대만·중국·일본(나쁜양파 두 번째 소스)·태국·말레이시아·필리핀·멕시코
+    수출 데이터 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터, 사용자 2026-07-11
+    중국·일본 추가 + 2026-07-26 태국·말레이시아·필리핀·멕시코 추가)."""
     return (_tw.parse_tw_export(text) is not None
             or _cn.parse_cn_export(text) is not None
-            or _jp2.parse_jp2_export(text) is not None)
+            or _jp2.parse_jp2_export(text) is not None
+            or _th.parse_th_export(text) is not None
+            or _my.parse_my_export(text) is not None
+            or _ph.parse_ph_export(text) is not None
+            or _mx.parse_mx_export(text) is not None)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -218,7 +230,7 @@ async def _run_listener() -> int:
                          gid, len(ids), fwd_q.qsize())
             else:
                 log.info("dropped irrelevant album gid=%d (%d msgs) — "
-                          "no 대만·중국·일본 수출 caption", gid, len(ids))
+                          "no 대만·중국·일본·태국·말레이시아·필리핀·멕시코 수출 caption", gid, len(ids))
         except Exception as e:
             log.exception("flush_album error: %s", e)
 
@@ -232,7 +244,7 @@ async def _run_listener() -> int:
                 fwd_q.put_nowait([msg.id])
                 log.info("queued msg=%d (q=%d)", msg.id, fwd_q.qsize())
             else:
-                log.info("dropped irrelevant msg=%d — no 대만·중국·일본 수출 caption",
+                log.info("dropped irrelevant msg=%d — no 대만·중국·일본·태국·말레이시아·필리핀·멕시코 수출 caption",
                           msg.id)
             return
         album_buf.setdefault(gid, []).append(msg.id)

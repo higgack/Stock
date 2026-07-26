@@ -295,7 +295,9 @@ def fetch_crypto_snapshot() -> dict:
 # ── 시장 폭(Market Breadth, 2026-07-26 사용자 추천 추가) ────────────────────
 # 개별종목 breadth(MMTH 류, S&P500 500종목 전수 50/200일선 상회비율)는 yfinance
 # 500콜이 비용/시간 커 이번 배치엔 미채택 — 11개 SPDR 섹터 ETF(유동성 최상위,
-# GICS 11개 섹터 1:1 매핑) 의 자기 50/200일선 상회 비율로 근사. 개별종목
+# GICS 11개 섹터 1:1 매핑) 의 자기 20/50/200일선 상회 비율로 근사(20일=단기,
+# 50일=중기, 200일=장기 — Minervini/IBD 추세템플릿 관례와 동일 원리, 20일은
+# 사용자 2026-07-26 "중기말고 단기도 추가해줘" 요청으로 추가). 개별종목
 # breadth 보다 해상도는 낮지만(섹터 단위) '소수 대형주가 지수를 방어 중인지
 # vs 전반적 상승인지' 판별에는 충분 — 이미 계산 중인 RSP/SPY(macro 레짐)와
 # 상호보완(그쪽은 대형/소형 비율, 이쪽은 섹터 참여도). US 전용(SPDR 섹터
@@ -314,14 +316,21 @@ def sma(closes: list, period: int):
 
 def breadth_from_closes(sector_closes: dict) -> dict:
     """{ticker: closes(과거→최신 list)} → 섹터-레벨 breadth 비율. 순수함수
-    (테스트용). 각 섹터가 자신의 50/200일 SMA 위에 있는지 비율(0-100%) —
-    개별종목 A/D-line·MMTH 의 섹터 근사(모듈 상단 주석 참조). 데이터 부족한
-    섹터는 그 지표에서 제외(counted 분모에서도 빠짐)."""
-    above50 = above200 = counted50 = counted200 = 0
+    (테스트용). 각 섹터가 자신의 20/50/200일 SMA 위에 있는지 비율(0-100%) —
+    개별종목 A/D-line·MMTH 의 섹터 근사(모듈 상단 주석 참조). 20일선은
+    사용자 2026-07-26 요청("중기말고 단기도 추가해줘") — 한 거래월(~영업일
+    20일) 단위 단기 모멘텀, 50/200일과 동일 원리로 상회비율만 다른 창.
+    데이터 부족한 섹터는 그 지표에서 제외(counted 분모에서도 빠짐)."""
+    above20 = above50 = above200 = counted20 = counted50 = counted200 = 0
     for closes in sector_closes.values():
         if not closes:
             continue
         last = closes[-1]
+        s20 = sma(closes, 20)
+        if s20 is not None:
+            counted20 += 1
+            if last > s20:
+                above20 += 1
         s50 = sma(closes, 50)
         if s50 is not None:
             counted50 += 1
@@ -333,6 +342,7 @@ def breadth_from_closes(sector_closes: dict) -> dict:
             if last > s200:
                 above200 += 1
     return {
+        "pct_above_20dma": round(above20 / counted20 * 100, 1) if counted20 else None,
         "pct_above_50dma": round(above50 / counted50 * 100, 1) if counted50 else None,
         "pct_above_200dma": round(above200 / counted200 * 100, 1) if counted200 else None,
         "n_sectors": len(sector_closes),
@@ -363,14 +373,16 @@ def fetch_market_breadth(market: str = "US") -> dict:
 # 있지만 시장타이밍 보드 단독 열람 시에도 바로 보이게 여기 카드로 병기.
 # MOVE(ICE BofA, 채권시장 변동성)는 yfinance 커버리지가 시기/벤더에 따라
 # 불안정 — 실패 시 그 필드만 생략(VIX 는 항상 시도, 서로 독립적 try).
-def _fetch_vix_cnn():
+def _fetch_vix_cnn(reference=None):
     """CNN Fear&Greed 의 시장변동성(VIX) 서브지표(2026-07-26, 사용자 요청
     "VIX 는 가장 정확한 CNN 값으로, 양쪽 다" — bot/macro_snapshot.py 매크로9
-    위젯과 동일 최우선 소스로 canonical 통일). 실패/구조불일치 시 None(호출부가
-    네이버로 폴백, bot/fear_greed_client.py 독스트링 참조)."""
+    위젯과 동일 최우선 소스로 canonical 통일). reference(네이버 값)로 이격도
+    검증 — VM 실측에서 CNN 필드가 실제 VIX 가 아닌 것으로 의심되는 값을
+    반환한 사례 발견(bot/fear_greed_client.py 독스트링). 실패/불신뢰 시
+    None(호출부가 네이버로 폴백)."""
     try:
         from bot.fear_greed_client import fetch_cnn_vix
-        return fetch_cnn_vix()
+        return fetch_cnn_vix(reference=reference)
     except Exception as exc:
         log.debug("market_timing: VIX CNN fetch failed: %s", exc)
         return None
@@ -393,16 +405,18 @@ def _fetch_vix_naver():
 
 
 def fetch_volatility_snapshot() -> dict:
-    """{"vix": {value, date, source}, "move": {value, date}|None} — VIX 는
-    CNN 최우선(메인 대시보드와 canonical 값 일치, 모듈 docstring 참조) →
-    네이버 → yfinance 3단 폴백. 실패한 쪽만 생략(그 항목 없이 반환)."""
+    """{"vix": {value, date, source}, "move": {value, date}|None} — 네이버를
+    먼저 확보해(30초 캐시, 저렴) CNN 의 이격도 검증 reference 로 사용, CNN
+    이 신뢰가능(_vix_plausible)하면 CNN 값 채택(메인 대시보드와 canonical
+    일치, 모듈 docstring 참조) → 불신뢰/실패 시 네이버 → 그것도 실패 시
+    yfinance 3단 폴백. 실패한 쪽만 생략(그 항목 없이 반환)."""
     out: dict = {}
     try:
-        cnn_v = _fetch_vix_cnn()
+        nv = _fetch_vix_naver()
+        cnn_v = _fetch_vix_cnn(reference=nv)
         if cnn_v is not None:
             out["vix"] = {"value": cnn_v, "date": None, "source": "CNN(실시간)"}
         else:
-            nv = _fetch_vix_naver()
             if nv is not None:
                 out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
             else:
@@ -608,19 +622,23 @@ def render_market_timing_page(data: dict, now=None) -> str:
     breadth = data.get("breadth", {})
     breadth_card = ""
     if breadth and breadth.get("pct_above_50dma") is not None:
+        _b20 = (f'{breadth["pct_above_20dma"]:.0f}%'
+                if breadth.get("pct_above_20dma") is not None else "—")
         _b50 = f'{breadth["pct_above_50dma"]:.0f}%'
         _b200 = (f'{breadth["pct_above_200dma"]:.0f}%'
                 if breadth.get("pct_above_200dma") is not None else "—")
         breadth_card = f"""
 <div class="panel"><div class="panel-title">📊 시장 폭 (섹터 breadth, US 전용)</div>
 <div class="stat-grid">
+<div class="stat"><div class="k">20일선 상회 섹터</div><div class="v">{_b20}</div></div>
 <div class="stat"><div class="k">50일선 상회 섹터</div><div class="v">{_b50}</div></div>
 <div class="stat"><div class="k">200일선 상회 섹터</div><div class="v">{_b200}</div></div>
 <div class="stat"><div class="k">표본</div><div class="v" style="font-size:14px">SPDR 섹터 ETF {breadth.get("n_sectors",0)}개</div></div>
 </div>
-<div class="note">11개 GICS 섹터 ETF(XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLRE/XLU/XLC) 중 자신의 50/200일
-이평선 위에 있는 비율 — 개별종목(500종목) breadth 의 섹터-레벨 근사(비용상 전수스캔 대신 채택,
-문서화된 스코프). 낮으면 소수 대형주만 지수를 방어 중일 가능성, 높으면 전반적 참여.</div></div>"""
+<div class="note">11개 GICS 섹터 ETF(XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLRE/XLU/XLC) 중 자신의 20/50/200일
+이평선 위에 있는 비율(20일=단기 모멘텀·50일=중기·200일=장기 추세) — 개별종목(500종목) breadth 의
+섹터-레벨 근사(비용상 전수스캔 대신 채택, 문서화된 스코프). 낮으면 소수 대형주만 지수를 방어 중일
+가능성, 높으면 전반적 참여.</div></div>"""
 
     vol = data.get("volatility", {})
     vol_card = ""

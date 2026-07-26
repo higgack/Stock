@@ -34,6 +34,10 @@ from trade import cn_exports as _cn
 from trade import ignored as _ignored
 from trade import jp2_exports as _jp2
 from trade import jp_exports as _jp
+from trade import mx_exports as _mx
+from trade import my_exports as _my
+from trade import ph_exports as _ph
+from trade import th_exports as _th
 from trade import tw_exports as _tw
 from trade.store import open_db
 
@@ -168,6 +172,16 @@ def find_unstored() -> list[dict]:
             # 일본 수출 데이터(나쁜양파, BeOn 과 별도 두 번째 소스) — 별도 jp2.db,
             # 동일 사유로 제외(사용자 2026-07-11).
             if _jp2.parse_jp2_export(caption) is not None:
+                continue
+            # 태국·말레이시아·필리핀·멕시코 수출 데이터(나쁜양파, 같은 채널) —
+            # 각각 별도 th.db/my.db/ph.db/mx.db, 동일 사유로 제외(사용자 2026-07-26).
+            if _th.parse_th_export(caption) is not None:
+                continue
+            if _my.parse_my_export(caption) is not None:
+                continue
+            if _ph.parse_ph_export(caption) is not None:
+                continue
+            if _mx.parse_mx_export(caption) is not None:
                 continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))
