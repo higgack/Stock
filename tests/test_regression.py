@@ -14066,6 +14066,17 @@ class TestMarketTiming20260726:
         for m in ("US", "KR", "JP"):
             assert mt.MARKET_INDICES.get(m), f"{m} 지수 미등록"
 
+    def test_market_indices_extended_tw_cn_hk_20260726(self):
+        # 사용자 지적(2026-07-26) — 최초 배치가 시간 제약으로 US/KR/JP 만
+        # 채웠던 스코프 갭. bot/market.py MARKET_CONFIG 의 broad_benchmark
+        # 와 동일 티커 사용(단일 소스 유지) 확인.
+        from bot import market_timing as mt
+        assert mt.MARKET_INDICES["TW"][0][0] == "0050.TW"
+        assert mt.MARKET_INDICES["CN_A"][0][0] == "510300.SS"
+        assert mt.MARKET_INDICES["HK"][0][0] == "2800.HK"
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert 'for mkt in ("US", "KR", "JP", "TW", "CN_A", "HK")' in src
+
     def test_render_market_timing_page_smoke(self):
         from bot import market_timing as mt
         data = {
@@ -14094,6 +14105,27 @@ class TestMarketTiming20260726:
         from bot import market_timing as mt
         html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
         assert "시장타이밍" in html   # crash 없이 렌더(빈 데이터도 graceful)
+
+    def test_render_market_timing_page_all_six_markets(self):
+        # TW/CN_A/HK 확장(2026-07-26) 후에도 6개 시장 카드가 전부 렌더되는지.
+        from bot import market_timing as mt
+        dd = {"d5": 0, "d15": 0, "d25": 0, "risk_level": "NORMAL"}
+        ftd = {"state": "NO_CORRECTION"}
+        base = {"dd": dd, "ftd": ftd, "latest_date": "2026-07-24", "latest_close": 100.0}
+        data = {
+            "markets": {
+                "US": {**base, "ticker": "^GSPC", "name": "S&P 500"},
+                "KR": {**base, "ticker": "^KS11", "name": "KOSPI"},
+                "JP": {**base, "ticker": "^N225", "name": "니케이225"},
+                "TW": {**base, "ticker": "0050.TW", "name": "TAIEX 50 (0050)"},
+                "CN_A": {**base, "ticker": "510300.SS", "name": "CSI 300 (510300)"},
+                "HK": {**base, "ticker": "2800.HK", "name": "Hang Seng (2800.HK)"},
+            },
+            "macro": {}, "crypto": {},
+        }
+        html = mt.render_market_timing_page(data)
+        for label in ("S&P 500", "KOSPI", "니케이225", "TAIEX 50", "CSI 300", "Hang Seng"):
+            assert label in html
 
     def test_wiring(self):
         # nav(공용 fred_boards._NAV + 홈허브 + Market cap) · 6시간 periodic ·
