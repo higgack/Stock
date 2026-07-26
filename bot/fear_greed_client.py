@@ -7,6 +7,16 @@
 기본 UA 는 403 — 브라우저 UA 필수. 30분 디스크 캐시 + 실패 시 마지막 성공분
 (stale 표기). 완전 실패 시 {} — 게이지는 기존 VIX 역산 폴백(라벨 정직 표기).
 샌드박스 프록시 403 이라 실검증은 VM 런타임(WARNING 로그로 가시화).
+
+VIX 서브지표(2026-07-26, 사용자 요청 — "VIX 는 가장 정확한 CNN 값으로,
+양쪽 다"): 공개적으로 문서화된 graphdata 응답 구조상 최상위에
+market_volatility_vix.data = [[epoch_ms, value], ...] 형태로 원시 VIX
+시계열이 같이 온다(공식 API 문서는 없음 — 널리 알려진 리버스엔지니어링
+구조 기반 추정, 이 세션은 CNN 접근이 막혀 있어 실검증 불가·VM 런타임에서만
+확인 가능). _extract_vix_component 가 이 구조를 관대하게 파싱하고, 실패
+시(구조가 다르거나 키 없음) None 반환 — 호출부(macro_snapshot.py 매크로9
+위젯 · market_timing.py 변동성 카드)는 기존 네이버→yfinance 폴백 체인으로
+조용히 이어감(값 소실 없음, 조용한 오작동도 없음).
 """
 from __future__ import annotations
 
@@ -16,6 +26,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 log = logging.getLogger("bot.fear_greed")
 
@@ -30,6 +41,29 @@ _RATING_KR = {
     "extreme fear": "극단적 공포", "fear": "공포", "neutral": "중립",
     "greed": "탐욕", "extreme greed": "극단적 탐욕",
 }
+
+
+def _extract_vix_component(payload: dict):
+    """graphdata 응답의 시장변동성(VIX) 서브지표 원시값 추출 — 모듈 상단
+    독스트링 참조(구조 추정, 이 세션 실검증 불가). market_volatility_vix.
+    data 마지막 [ts, value] 우선, 없으면 value/score 스칼라 키도 시도.
+    전부 실패 시 None(순수 tolerant 파싱, 크래시 없음)."""
+    comp = (payload or {}).get("market_volatility_vix")
+    if not isinstance(comp, dict):
+        return None
+    series = comp.get("data")
+    if isinstance(series, list) and series:
+        last = series[-1]
+        if isinstance(last, (list, tuple)) and len(last) >= 2:
+            try:
+                return float(last[1])
+            except (TypeError, ValueError):
+                pass
+    for key in ("value", "score"):
+        v = comp.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return None
 
 
 def _parse(payload: dict) -> dict:
@@ -59,6 +93,7 @@ def _parse(payload: dict) -> dict:
         "prev_1w": _i(fg.get("previous_1_week")),
         "prev_1m": _i(fg.get("previous_1_month")),
         "prev_1y": _i(fg.get("previous_1_year")),
+        "vix": _extract_vix_component(payload),
     }
 
 
@@ -109,3 +144,13 @@ def fetch_fear_greed() -> dict:
     if c.get("data"):
         return dict(c["data"], stale=True)
     return {}
+
+
+def fetch_cnn_vix() -> Optional[float]:
+    """CNN Fear&Greed graphdata 의 시장변동성(VIX) 서브지표 최신값(2026-07-26,
+    사용자 요청 — "VIX 는 가장 정확한 CNN 값으로") — fetch_fear_greed() 와
+    동일 fetch/캐시 재사용(추가 네트워크 콜 0). 파싱 실패/CNN 접근불가 시
+    None(호출부가 네이버→yfinance 로 폴백, 모듈 상단 독스트링 참조)."""
+    data = fetch_fear_greed()
+    v = data.get("vix")
+    return float(v) if isinstance(v, (int, float)) else None

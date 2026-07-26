@@ -363,13 +363,25 @@ def fetch_market_breadth(market: str = "US") -> dict:
 # 있지만 시장타이밍 보드 단독 열람 시에도 바로 보이게 여기 카드로 병기.
 # MOVE(ICE BofA, 채권시장 변동성)는 yfinance 커버리지가 시기/벤더에 따라
 # 불안정 — 실패 시 그 필드만 생략(VIX 는 항상 시도, 서로 독립적 try).
+def _fetch_vix_cnn():
+    """CNN Fear&Greed 의 시장변동성(VIX) 서브지표(2026-07-26, 사용자 요청
+    "VIX 는 가장 정확한 CNN 값으로, 양쪽 다" — bot/macro_snapshot.py 매크로9
+    위젯과 동일 최우선 소스로 canonical 통일). 실패/구조불일치 시 None(호출부가
+    네이버로 폴백, bot/fear_greed_client.py 독스트링 참조)."""
+    try:
+        from bot.fear_greed_client import fetch_cnn_vix
+        return fetch_cnn_vix()
+    except Exception as exc:
+        log.debug("market_timing: VIX CNN fetch failed: %s", exc)
+        return None
+
+
 def _fetch_vix_naver():
     """네이버 worldstock .VIX — bot/macro_snapshot.py 의 메인 대시보드 매크로9
-    위젯과 동일 소스('네이버 우선, 야후 throttle 무관' 사용자 2026-06-14
-    원칙). 사용자 2026-07-26 리포트('빅스지수가 다른데 메인대시보드랑
-    시장타이밍이랑') — 이 카드가 독립적으로 yfinance ^VIX 만 썼던 게 원인
-    (다른 소스 + 최대 6시간 stale, canonical 값 불일치). 30초 캐시라 사실상
-    실시간. 실패 시 None(호출부가 yfinance 로 폴백)."""
+    위젯과 동일 2차 소스. 사용자 2026-07-26 리포트('빅스지수가 다른데
+    메인대시보드랑 시장타이밍이랑') — 이 카드가 독립적으로 yfinance ^VIX 만
+    썼던 게 원인(다른 소스 + 최대 6시간 stale, canonical 값 불일치). 30초
+    캐시라 사실상 실시간. 실패 시 None(호출부가 yfinance 로 최종 폴백)."""
     try:
         from bot import naver_marketindex as nm
         rec = (nm.fetch_world_indices((".VIX",)) or {}).get(".VIX")
@@ -382,18 +394,22 @@ def _fetch_vix_naver():
 
 def fetch_volatility_snapshot() -> dict:
     """{"vix": {value, date, source}, "move": {value, date}|None} — VIX 는
-    네이버 우선(메인 대시보드와 canonical 값 일치, 모듈 docstring 참조),
-    실패 시만 yfinance 폴백. 실패한 쪽만 생략(그 항목 없이 반환)."""
+    CNN 최우선(메인 대시보드와 canonical 값 일치, 모듈 docstring 참조) →
+    네이버 → yfinance 3단 폴백. 실패한 쪽만 생략(그 항목 없이 반환)."""
     out: dict = {}
     try:
-        nv = _fetch_vix_naver()
-        if nv is not None:
-            out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
+        cnn_v = _fetch_vix_cnn()
+        if cnn_v is not None:
+            out["vix"] = {"value": cnn_v, "date": None, "source": "CNN(실시간)"}
         else:
-            vix_hist = fetch_index_history("^VIX", days=10)
-            if vix_hist:
-                out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
-                             "source": "yfinance(폴백)"}
+            nv = _fetch_vix_naver()
+            if nv is not None:
+                out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
+            else:
+                vix_hist = fetch_index_history("^VIX", days=10)
+                if vix_hist:
+                    out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
+                                 "source": "yfinance(폴백)"}
     except Exception as exc:
         log.debug("market_timing: VIX fetch failed: %s", exc)
     try:
