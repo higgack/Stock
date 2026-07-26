@@ -30,6 +30,7 @@ snapshot.py _enrich_us)만 이 모듈을 부르고, KR/JP enrich 경로는 애�
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from typing import Optional
 
@@ -38,6 +39,23 @@ log = logging.getLogger("bot.edgar_13f")
 _DEFAULT_FILERS = {
     "BERKSHIRE": {"cik": "0001067983", "name": "Berkshire Hathaway Inc"},
 }
+
+# SEC company_tickers.json 의 title(예: "Apple Inc.", 마침표 있음)과 13F
+# INFOTABLE 의 nameOfIssuer(예: "APPLE INC", 마침표 없음·대문자)는 표기
+# 관례가 달라 단순 substring 매칭이 실패하기 쉽다(독립 코드리뷰 발견,
+# 2026-07-26 — stock_snapshot.py 가 실제로 넘기는 값은 SEC 공식 title 인데
+# 테스트는 짧은 순수명("apple")만 검증해 이 불일치를 못 잡았음). 구두점·
+# 법인형태 접미사를 양쪽 다 제거한 뒤 비교.
+_SUFFIX_RE = re.compile(
+    r"\b(inc|incorporated|corp|corporation|co|company|ltd|limited|llc|plc|"
+    r"group|holdings?|the)\b\.?")
+
+
+def _normalize_company_name(name: str) -> str:
+    """대소문자/구두점/법인형태 접미사 제거 — 회사명 substring 매칭 전처리."""
+    s = re.sub(r"[.,]", "", (name or "").lower())
+    s = _SUFFIX_RE.sub("", s)
+    return " ".join(s.split())
 
 
 def parse_infotable_xml(xml_bytes: bytes) -> list:
@@ -82,11 +100,16 @@ def compute_holding_delta(prev_holdings: list, curr_holdings: list,
     """이전분기/이번분기 보유내역에서 name_substring(회사명 일부, 대소문자
     무관) 매칭 종목의 수량증감 산출 — 순수함수(테스트용). 다중매치(클래스
     A/B 등)는 shares 합산. action: NEW/INCREASED/DECREASED/EXITED/
-    UNCHANGED/NOT_HELD."""
-    needle = name_substring.lower()
+    UNCHANGED/NOT_HELD. 회사명 비교는 구두점·법인형태접미사 정규화 후
+    substring(SEC 공식 title "Apple Inc." vs 13F issuer "APPLE INC" 표기차
+    대응, 독립 코드리뷰 발견)."""
+    needle = _normalize_company_name(name_substring)
 
     def _sum_shares(holdings):
-        return sum(h["shares"] for h in holdings if needle in h["issuer"].lower())
+        if not needle:
+            return 0
+        return sum(h["shares"] for h in holdings
+                   if needle in _normalize_company_name(h["issuer"]))
 
     prev_shares = _sum_shares(prev_holdings)
     curr_shares = _sum_shares(curr_holdings)

@@ -117,9 +117,17 @@ def _direction(rating: str) -> str:
 def _open_thesis(ticker: str, chain: dict, summary: str, today: str) -> None:
     """자동매수 체결 직후 트레이드 씨시스 생성(2026-07-26, trader-memory-core
     이식) — 방금 채워진 포지션에서 원가·수량을 그대로 읽어 재계산 불요.
-    실패해도 매수 자체는 이미 성공했으니 조용히 무시(graceful, 부가기능)."""
+    실패해도 매수 자체는 이미 성공했으니 조용히 무시(graceful, 부가기능).
+
+    ⚠️ 종목당 ACTIVE 씨시스는 항상 최대 1개(불변식) — 이미 ACTIVE 인 씨시스가
+    있으면 스킵(같은 종목 평단추가매수는 새 씨시스 아님). 이 가드가 없으면
+    sync_closed() 가 같은 청산 체결을 두 씨시스 모두에 매칭시켜 실현손익이
+    중복 기록·중복 포스트모템 알림·다이제스트/백테스트리뷰 통계 중복반영으로
+    이어짐(독립 코드리뷰 발견, 2026-07-26)."""
     try:
         from bot import paper_trading, trade_thesis
+        if any(t.get("ticker") == ticker for t in trade_thesis.list_theses(status="ACTIVE")):
+            return
         pos = paper_trading.get_account().get("positions", {}).get(ticker)
         if not pos:
             return

@@ -14779,3 +14779,80 @@ class TestCotGate20260726:
         from bot import market_timing as mt
         html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
         assert "시장타이밍" in html   # crash 없이 렌더(cot 키 부재도 graceful)
+
+
+class TestBatchIndependentReviewFixes20260726:
+    """9개 배치 병합 전 독립 코드리뷰(Agent)가 찾은 실버그 2건 fix.
+
+    1) 13F 회사명 매칭: 실제 호출부(stock_snapshot.py)가 넘기는 값은 SEC
+       공식 title("Apple Inc.", 마침표 있음)인데 13F issuer 는 "APPLE INC"
+       (마침표 없음) — 기존 단순 substring 은 이 표기차로 항상 매치실패해
+       NOT_HELD 로 조용히 드롭되던 버그(테스트는 "apple" 같은 순수명만 써서
+       못 잡음). _normalize_company_name 으로 양쪽 정규화 후 비교하도록 fix.
+    2) 트레이드 씨시스 중복 생성: 같은 종목이 ACTIVE 씨시스 보유 중에 다시
+       매수되면(평단추가) 두번째 씨시스가 또 생성 → sync_closed() 가 같은
+       청산 체결을 두 씨시스 모두에 매칭시켜 실현손익 이중기록·중복
+       포스트모템 알림·다이제스트 통계 중복반영. _open_thesis 에 '종목당
+       ACTIVE 최대 1개' 가드 추가로 fix."""
+
+    def test_compute_holding_delta_matches_sec_official_title_with_period(self):
+        from bot import edgar_13f as e13
+        prev = [{"issuer": "APPLE INC", "cusip": "037833100", "shares": 1000000.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        curr = [{"issuer": "APPLE INC", "cusip": "037833100", "shares": 900000.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        for needle in ("Apple Inc.", "Apple Inc", "Apple, Inc.", "APPLE INC"):
+            d = e13.compute_holding_delta(prev, curr, needle)
+            assert d["action"] == "DECREASED", f"failed for needle={needle!r}"
+            assert d["prev_shares"] == 1000000.0 and d["curr_shares"] == 900000.0
+
+    def test_compute_holding_delta_bare_name_unaffected(self):
+        # 기존(정규화 전) 테스트가 쓰던 짧은 순수명도 그대로 동작해야(회귀 방지).
+        from bot import edgar_13f as e13
+        prev = [{"issuer": "COCA COLA CO", "cusip": "191216100", "shares": 400000000.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        d = e13.compute_holding_delta(prev, [], "coca cola")
+        assert d["action"] == "EXITED"
+
+    def test_compute_holding_delta_empty_needle_graceful(self):
+        from bot import edgar_13f as e13
+        prev = [{"issuer": "APPLE INC", "cusip": "037833100", "shares": 100.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        d = e13.compute_holding_delta(prev, prev, "")
+        assert d["action"] == "NOT_HELD"   # 빈 needle 은 아무 것도 매치하지 않음
+
+    def test_normalize_company_name_strips_suffix_and_punctuation(self):
+        from bot import edgar_13f as e13
+        assert e13._normalize_company_name("Apple Inc.") == "apple"
+        assert e13._normalize_company_name("APPLE INC") == "apple"
+        assert e13._normalize_company_name("Berkshire Hathaway Inc.") == \
+            e13._normalize_company_name("BERKSHIRE HATHAWAY INC")
+
+    def test_open_thesis_guard_skips_when_ticker_already_active(self, tmp_path, monkeypatch):
+        import bot.paper_signals as ps
+        import bot.paper_trading as pt
+        import bot.trade_thesis as tt
+        monkeypatch.setattr(tt, "_HOME", tmp_path)
+        monkeypatch.setattr(tt, "_THESES", tmp_path / "theses.json")
+        tt.open_thesis("AAPL", "US", 1000.0, 150.0, 10, 1500000.0)
+        assert len(tt.list_theses(status="ACTIVE")) == 1
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {"AAPL": {
+            "market": "US", "avg_cost_native": 155.0, "qty": 20,
+            "cost_basis_krw": 3100000.0, "auto_close_date": None}}})
+        ps._open_thesis("AAPL", {}, "re-buy while already held", "2026-07-26")
+        active = tt.list_theses(status="ACTIVE")
+        assert len(active) == 1, "종목당 ACTIVE 씨시스 1개 불변식 위반 — 중복 생성됨"
+
+    def test_open_thesis_guard_allows_different_ticker(self, tmp_path, monkeypatch):
+        import bot.paper_signals as ps
+        import bot.paper_trading as pt
+        import bot.trade_thesis as tt
+        monkeypatch.setattr(tt, "_HOME", tmp_path)
+        monkeypatch.setattr(tt, "_THESES", tmp_path / "theses.json")
+        tt.open_thesis("AAPL", "US", 1000.0, 150.0, 10, 1500000.0)
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {"MSFT": {
+            "market": "US", "avg_cost_native": 400.0, "qty": 5,
+            "cost_basis_krw": 2800000.0, "auto_close_date": None}}})
+        ps._open_thesis("MSFT", {}, "new ticker", "2026-07-26")
+        active = tt.list_theses(status="ACTIVE")
+        assert len(active) == 2   # 다른 종목은 정상적으로 새 씨시스 생성
