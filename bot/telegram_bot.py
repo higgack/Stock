@@ -1086,9 +1086,9 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 ━━━━━━━━━
-<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🚦시장타이밍·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
+<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🚦시장타이밍·📅경제캘린더·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터) · 새 데이터 하단알림(1분 체크·30분 자동반영, 반영은 사용자 선택) · 종목검색·스크롤복원
- ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·CPI·유동성·시장타이밍 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
+ ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·CPI·유동성·시장타이밍·경제캘린더 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
    http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
@@ -4003,6 +4003,17 @@ async def _periodic_fred_boards() -> None:
             raise
         except Exception:
             log.exception("market timing 6h regen failed")
+        # 경제캘린더 보드(2026-07-26) — CPI/고용동향/GDP/PCE/FOMC 발표일정.
+        # 같은 6시간 주기(발표일 자체가 자주 안 바뀜, FRED 캐시도 12h) —
+        # 실패해도 위 두 보드 갱신과 독립(try 분리).
+        try:
+            from bot.econ_calendar import regenerate_econ_calendar
+            await asyncio.to_thread(regenerate_econ_calendar)
+            log.info("econ calendar 6h regen: ok")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("econ calendar 6h regen failed")
 
 
 async def _periodic_dashboard_refresh(application=None) -> None:
@@ -4226,6 +4237,20 @@ async def _on_startup(application) -> None:
         _mt_thr.Thread(target=_market_timing_initial, daemon=True).start()
     except Exception as exc:
         log.warning("startup: market timing thread failed: %s", exc)
+    # 경제캘린더 보드(2026-07-26) — 같은 이유로 startup 무조건 재생성.
+    try:
+        import threading as _ec_thr
+
+        def _econ_calendar_initial():
+            try:
+                from bot.econ_calendar import regenerate_econ_calendar
+                regenerate_econ_calendar()
+                log.info("startup: econ calendar regenerated")
+            except Exception as exc:
+                log.warning("startup: econ calendar regen failed: %s", exc)
+        _ec_thr.Thread(target=_econ_calendar_initial, daemon=True).start()
+    except Exception as exc:
+        log.warning("startup: econ calendar thread failed: %s", exc)
     # DART 공시 즉시 채움 — 타이머(30분)를 기다리지 않고 startup 직후 백그라운드
     # 1회 fetch → 재배포 시 수 초 내 공시 표시(빈 '전체 0' 방지). 무료·LLM 0.
     try:

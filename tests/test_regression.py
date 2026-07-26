@@ -14105,7 +14105,9 @@ class TestMarketTiming20260726:
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "regenerate_market_timing" in tb
         assert "🚦시장타이밍" in tb
-        assert "시장타이밍" in tb and "PPI·CPI·유동성·시장타이밍 제외" in tb
+        # 후속 차트보드 추가마다 이 문자열이 계속 늘어남(2026-07-26 경제캘린더
+        # 추가로 재확인) — exact-substring 대신 부분포함으로 완화.
+        assert "시장타이밍" in tb and "PPI·CPI·유동성" in tb and "제외" in tb
         mtsrc = open("bot/market_timing.py", encoding="utf-8").read()
         assert "def regenerate_market_timing" in mtsrc
         assert '(ARCHIVE_ROOT / "market_timing.html").write_text' in mtsrc
@@ -14426,3 +14428,85 @@ class TestPatternScreener20260726:
         assert "merge_into_trend_result" in pk_src
         ss_src = open("bot/stock_screener.py", encoding="utf-8").read()
         assert "merge_into_trend_result" in ss_src
+
+
+class TestEconCalendar20260726:
+    """경제 캘린더 보드(CPI/고용동향/GDP/PCE/FOMC, FRED release-dates API,
+    bot/econ_calendar.py) — 순수 날짜분류 함수 + graceful 배선."""
+
+    def test_upcoming_and_recent_picks_next_and_recent(self):
+        from bot import econ_calendar as ec
+        dates = ["2026-06-10", "2026-07-10", "2026-07-30", "2026-09-10"]
+        r = ec.upcoming_and_recent(dates, "2026-07-26")
+        assert r["next"] == "2026-07-30"
+        assert r["recent"] == []   # 07-10 은 14일 컷오프(07-12) 밖
+
+    def test_upcoming_and_recent_includes_within_cutoff(self):
+        from bot import econ_calendar as ec
+        r = ec.upcoming_and_recent(["2026-07-20"], "2026-07-26")
+        assert r["next"] is None
+        assert r["recent"] == ["2026-07-20"]
+
+    def test_upcoming_and_recent_empty_dates(self):
+        from bot import econ_calendar as ec
+        assert ec.upcoming_and_recent([], "2026-07-26") == {"next": None, "recent": []}
+
+    def test_upcoming_and_recent_all_past_outside_cutoff(self):
+        from bot import econ_calendar as ec
+        r = ec.upcoming_and_recent(["2026-01-01"], "2026-07-26")
+        assert r["next"] is None
+        assert r["recent"] == []
+
+    def test_load_econ_calendar_graceful_without_api_key(self, monkeypatch):
+        from bot import econ_calendar as ec
+        monkeypatch.delenv("FRED_API_KEY", raising=False)
+        data = ec._load_econ_calendar(today="2026-07-26")
+        assert len(data["events"]) == len(ec._RELEASES)
+        assert all(e.get("error") for e in data["events"])   # 키 없으니 전부 조회실패(graceful)
+
+    def test_render_econ_calendar_page_smoke(self):
+        from bot import econ_calendar as ec
+        data = {"events": [
+            {"key": "cpi", "label": "🛒 CPI", "release_id": 10,
+             "next": "2026-08-12", "recent": []},
+            {"key": "fomc", "label": "🏛️ FOMC", "error": "release_id 미확인"},
+        ], "as_of": "2026-07-26"}
+        html = ec.render_econ_calendar_page(data)
+        assert html.lower().count("<!doctype") == 1
+        assert "2026-08-12" in html and "release_id 미확인" in html
+
+    def test_render_econ_calendar_page_empty_graceful(self):
+        from bot import econ_calendar as ec
+        html = ec.render_econ_calendar_page({"events": []})
+        assert "경제 캘린더" in html   # crash 없이 렌더(빈 데이터도 graceful)
+
+    def test_find_release_id_and_fetch_release_dates_no_key_graceful(self, monkeypatch):
+        from bot import fred_client as fc
+        monkeypatch.delenv("FRED_API_KEY", raising=False)
+        assert fc.fetch_releases_catalog() == []
+        assert fc.find_release_id("Consumer Price Index") is None
+        assert fc.fetch_release_dates(10, "2026-01-01", "2026-12-31") == []
+
+    def test_find_release_id_matches_by_substring(self, monkeypatch):
+        from bot import fred_client as fc
+        monkeypatch.setattr(fc, "fetch_releases_catalog",
+                            lambda: [{"id": 10, "name": "Consumer Price Index"},
+                                     {"id": 50, "name": "Employment Situation"}])
+        assert fc.find_release_id("consumer price index") == 10
+        assert fc.find_release_id("Employment") == 50
+        assert fc.find_release_id("Nonexistent Release") is None
+
+    def test_wiring(self):
+        # nav(공용 fred_boards._NAV + 홈허브 2곳) · 6시간 periodic · startup
+        # 스레드 · _HELP_TEXT 등록 — 같은 커밋 의무 계약.
+        from bot import fred_boards as fb
+        assert 'href="econ_calendar.html">📅 경제캘린더</a>' in fb._NAV
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db.count('href="econ_calendar.html">📅 경제캘린더</a>') >= 2
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "regenerate_econ_calendar" in tb
+        assert "📅경제캘린더" in tb
+        assert "econ_calendar" in tb.lower()
+        ecsrc = open("bot/econ_calendar.py", encoding="utf-8").read()
+        assert "def regenerate_econ_calendar" in ecsrc
+        assert '(ARCHIVE_ROOT / "econ_calendar.html").write_text' in ecsrc

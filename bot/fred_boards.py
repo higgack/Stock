@@ -769,6 +769,7 @@ _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · '
         '<a href="cpi.html">🛒 CPI</a> · '
         '<a href="liquidity.html">💧 유동성</a> · '
         '<a href="market_timing.html">🚦 시장타이밍</a> · '
+        '<a href="econ_calendar.html">📅 경제캘린더</a> · '
         '<a href="marketcap.html">🏆 Market cap</a></div>')
 
 # 공용 JS: esc/pc + Chart.js 옵션(중복 3벌 → 1벌, 리뷰 finding) + 차트 가드
