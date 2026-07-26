@@ -31,6 +31,10 @@ from trade import cn_exports as _cn
 from trade import ignored as _ignored
 from trade import jp2_exports as _jp2
 from trade import jp_exports as _jp
+from trade import mx_exports as _mx
+from trade import my_exports as _my
+from trade import ph_exports as _ph
+from trade import th_exports as _th
 from trade import tw_exports as _tw
 from trade.parser import parse_caption
 from trade.store import (
@@ -140,6 +144,10 @@ def _ingest_group(
     tw_conn=None,
     cn_conn=None,
     jp2_conn=None,
+    th_conn=None,
+    my_conn=None,
+    ph_conn=None,
+    mx_conn=None,
 ) -> None:
     """Resolve one album/solo into a single alert row + media paths."""
     captioned = [r for r in group if r.get("caption_present")]
@@ -238,6 +246,70 @@ def _ingest_group(
                 media_paths=jp2_media)
             counters["jp2_inserted"] = counters.get("jp2_inserted", 0) + (1 if stored else 0)
             return
+        # 태국 수출 데이터(나쁜양파, 같은 채널) — 위 전부 아님. TH 파서로 6차
+        # 폴백 → 별도 th.db(사용자 2026-07-26, tw_exports 와 동일 fallback 패턴).
+        if th_conn is not None and _th.parse_th_export(caption_text) is not None:
+            th_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    th_media.append(p)
+            stored = _th.ingest(
+                th_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=th_media)
+            counters["th_inserted"] = counters.get("th_inserted", 0) + (1 if stored else 0)
+            return
+        # 말레이시아 수출 데이터(나쁜양파, 같은 채널) — 위 전부 아님. MY 파서로
+        # 7차 폴백 → 별도 my.db(사용자 2026-07-26).
+        if my_conn is not None and _my.parse_my_export(caption_text) is not None:
+            my_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    my_media.append(p)
+            stored = _my.ingest(
+                my_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=my_media)
+            counters["my_inserted"] = counters.get("my_inserted", 0) + (1 if stored else 0)
+            return
+        # 필리핀 수출 데이터(나쁜양파, 같은 채널) — 위 전부 아님. PH 파서로
+        # 8차 폴백 → 별도 ph.db(사용자 2026-07-26).
+        if ph_conn is not None and _ph.parse_ph_export(caption_text) is not None:
+            ph_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    ph_media.append(p)
+            stored = _ph.ingest(
+                ph_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=ph_media)
+            counters["ph_inserted"] = counters.get("ph_inserted", 0) + (1 if stored else 0)
+            return
+        # 멕시코 수출 데이터(나쁜양파, 같은 채널) — 위 전부 아님. MX 파서로
+        # 9차 폴백 → 별도 mx.db(사용자 2026-07-26).
+        if mx_conn is not None and _mx.parse_mx_export(caption_text) is not None:
+            mx_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    mx_media.append(p)
+            stored = _mx.ingest(
+                mx_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=mx_media)
+            counters["mx_inserted"] = counters.get("mx_inserted", 0) + (1 if stored else 0)
+            return
         counters["unparseable"] += 1
         return
 
@@ -325,6 +397,12 @@ def main() -> int:
     # 일본 수출 나쁜양파 소스(BeOn 과 별도 두 번째 채널) 폴백 저장소 — 나머지
     # 전부와 분리(무영향).
     jp2_conn = _jp2.open_jp2_db(args.db.parent / "jp2.db")
+    # 태국·말레이시아·필리핀·멕시코 수출(나쁜양파, 같은 채널) 폴백 저장소
+    # (사용자 2026-07-26) — 나머지 전부와 분리(무영향).
+    th_conn = _th.open_th_db(args.db.parent / "th.db")
+    my_conn = _my.open_my_db(args.db.parent / "my.db")
+    ph_conn = _ph.open_ph_db(args.db.parent / "ph.db")
+    mx_conn = _mx.open_mx_db(args.db.parent / "mx.db")
 
     groups = _group_messages(rows)
     log.info("grouped into %d send units", len(groups))
@@ -344,13 +422,18 @@ def main() -> int:
         "tw_inserted": 0,
         "cn_inserted": 0,
         "jp2_inserted": 0,
+        "th_inserted": 0,
+        "my_inserted": 0,
+        "ph_inserted": 0,
+        "mx_inserted": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
         "media_relinked": 0,
     }
     for grp in groups:
         _ingest_group(conn, grp, args.media_root, counters, ignored_ids,
-                      jp_conn, tw_conn, cn_conn, jp2_conn)
+                      jp_conn, tw_conn, cn_conn, jp2_conn,
+                      th_conn, my_conn, ph_conn, mx_conn)
 
     log.info("ingest counters: %s", counters)
     s = stats(conn)

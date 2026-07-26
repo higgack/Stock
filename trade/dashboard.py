@@ -424,6 +424,10 @@ def _load_eval_miss_summary(
     from trade import ignored as _ignored
     from trade import jp2_exports as _jp2
     from trade import jp_exports as _jp
+    from trade import mx_exports as _mx
+    from trade import my_exports as _my
+    from trade import ph_exports as _ph
+    from trade import th_exports as _th
     from trade import tw_exports as _tw
     ignored_ids = _ignored.load()
     count = 0
@@ -452,6 +456,14 @@ def _load_eval_miss_summary(
                 if _cn.parse_cn_export(cap) is not None:    # CN → cn.db 정상 처리
                     continue
                 if _jp2.parse_jp2_export(cap) is not None:  # JP2 → jp2.db 정상 처리
+                    continue
+                if _th.parse_th_export(cap) is not None:    # TH → th.db 정상 처리
+                    continue
+                if _my.parse_my_export(cap) is not None:    # MY → my.db 정상 처리
+                    continue
+                if _ph.parse_ph_export(cap) is not None:    # PH → ph.db 정상 처리
+                    continue
+                if _mx.parse_mx_export(cap) is not None:    # MX → mx.db 정상 처리
                     continue
                 count += 1
                 detected = rec.get("detected_at")
@@ -868,7 +880,18 @@ def _build_html(
         # 🐼 중국 수출 데이터 (나쁜양파, 같은 채널, 사용자 2026-07-11) — 대만 옆.
         # 🇨🇳 flag 도 동일 폰트문제 우려 → 처음부터 논-플래그 이모지(🐼) 사용.
         ' &nbsp;·&nbsp; <a href="cn.html">'
-        '🐼 중국 수출 데이터(나쁜양파) →</a></div>'
+        '🐼 중국 수출 데이터(나쁜양파) →</a>'
+        # 🐘🐯🥭🌮 태국·말레이시아·필리핀·멕시코 수출 데이터 (나쁜양파, 같은
+        # 채널, 사용자 2026-07-26) — 중국 옆. 전부 논-플래그 이모지(국가 상징
+        # 동물/음식)로 TW/CN 과 동일 폰트문제 회피(사용자 2026-07-11 교훈).
+        ' &nbsp;·&nbsp; <a href="th.html">'
+        '🐘 태국 수출 데이터(나쁜양파) →</a>'
+        ' &nbsp;·&nbsp; <a href="my.html">'
+        '🐯 말레이시아 수출 데이터(나쁜양파) →</a>'
+        ' &nbsp;·&nbsp; <a href="ph.html">'
+        '🥭 필리핀 수출 데이터(나쁜양파) →</a>'
+        ' &nbsp;·&nbsp; <a href="mx.html">'
+        '🌮 멕시코 수출 데이터(나쁜양파) →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2801,6 +2824,37 @@ def main() -> int:
         from trade import jp2_exports
         jp2_exports.regenerate(
             args.db.parent / "jp2.db", args.out.parent / "jp2.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    # 🐘🐯🥭🌮 태국·말레이시아·필리핀·멕시코 수출 데이터(나쁜양파, 같은 채널,
+    # 사용자 2026-07-26) — 별도 th.db/my.db/ph.db/mx.db → 동명 .html (jp2 옆
+    # 형제 파일). 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
+    try:
+        from trade import th_exports
+        th_exports.regenerate(
+            args.db.parent / "th.db", args.out.parent / "th.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    try:
+        from trade import my_exports
+        my_exports.regenerate(
+            args.db.parent / "my.db", args.out.parent / "my.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    try:
+        from trade import ph_exports
+        ph_exports.regenerate(
+            args.db.parent / "ph.db", args.out.parent / "ph.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    try:
+        from trade import mx_exports
+        mx_exports.regenerate(
+            args.db.parent / "mx.db", args.out.parent / "mx.html",
             media_url_prefix=args.media_url)
     except Exception:
         pass

@@ -15063,17 +15063,19 @@ class TestMarketTimingBreadthVol20260726:
     def test_breadth_from_closes_mixed_above_below(self):
         from bot import market_timing as mt
         flat = [100.0] * 249
-        above = flat + [200.0]   # last close well above both SMAs
-        below = flat + [50.0]    # last close well below both SMAs
+        above = flat + [200.0]   # last close well above all SMAs
+        below = flat + [50.0]    # last close well below all SMAs
         result = mt.breadth_from_closes({"A": above, "B": below})
-        assert result == {"pct_above_50dma": 50.0, "pct_above_200dma": 50.0, "n_sectors": 2}
+        assert result == {"pct_above_20dma": 50.0, "pct_above_50dma": 50.0,
+                          "pct_above_200dma": 50.0, "n_sectors": 2}
 
     def test_breadth_from_closes_excludes_insufficient_data_sector(self):
         from bot import market_timing as mt
         flat = [100.0] * 249
         above = flat + [200.0]
-        short = [100.0] * 10   # <50 bars, excluded from both ratios
+        short = [100.0] * 10   # <20 bars, excluded from all three ratios
         result = mt.breadth_from_closes({"A": above, "B": short})
+        assert result["pct_above_20dma"] == 100.0
         assert result["pct_above_50dma"] == 100.0
         assert result["pct_above_200dma"] == 100.0
         assert result["n_sectors"] == 2   # n_sectors counts all input, ratios don't
@@ -15081,7 +15083,8 @@ class TestMarketTimingBreadthVol20260726:
     def test_breadth_from_closes_empty(self):
         from bot import market_timing as mt
         assert mt.breadth_from_closes({}) == {
-            "pct_above_50dma": None, "pct_above_200dma": None, "n_sectors": 0}
+            "pct_above_20dma": None, "pct_above_50dma": None,
+            "pct_above_200dma": None, "n_sectors": 0}
 
     def test_fetch_market_breadth_non_us_returns_empty(self):
         from bot import market_timing as mt
@@ -15172,19 +15175,21 @@ class TestMarketTimingBreadthVol20260726:
         from bot import market_timing as mt
         data = {
             "markets": {}, "macro": {}, "crypto": {}, "cot": {},
-            "breadth": {"pct_above_50dma": 63.6, "pct_above_200dma": 81.8, "n_sectors": 11},
+            "breadth": {"pct_above_20dma": 45.5, "pct_above_50dma": 63.6,
+                       "pct_above_200dma": 81.8, "n_sectors": 11},
             "volatility": {"vix": {"value": 14.2, "date": "2026-07-25"},
                           "move": {"value": 92.5, "date": "2026-07-25"}},
         }
         html = mt.render_market_timing_page(data)
-        assert "시장 폭" in html and "64%" in html and "82%" in html
+        assert "시장 폭" in html and "46%" in html and "64%" in html and "82%" in html
         assert "VIX" in html and "14.2" in html
         assert "MOVE" in html and "92.5" in html
 
     def test_render_breadth_none_200dma_no_crash(self):
         from bot import market_timing as mt
         data = {"markets": {}, "macro": {}, "crypto": {},
-                "breadth": {"pct_above_50dma": 50.0, "pct_above_200dma": None, "n_sectors": 3}}
+                "breadth": {"pct_above_20dma": None, "pct_above_50dma": 50.0,
+                           "pct_above_200dma": None, "n_sectors": 3}}
         html = mt.render_market_timing_page(data)
         assert "50%" in html and "None" not in html
 

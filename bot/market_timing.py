@@ -295,7 +295,9 @@ def fetch_crypto_snapshot() -> dict:
 # ── 시장 폭(Market Breadth, 2026-07-26 사용자 추천 추가) ────────────────────
 # 개별종목 breadth(MMTH 류, S&P500 500종목 전수 50/200일선 상회비율)는 yfinance
 # 500콜이 비용/시간 커 이번 배치엔 미채택 — 11개 SPDR 섹터 ETF(유동성 최상위,
-# GICS 11개 섹터 1:1 매핑) 의 자기 50/200일선 상회 비율로 근사. 개별종목
+# GICS 11개 섹터 1:1 매핑) 의 자기 20/50/200일선 상회 비율로 근사(20일=단기,
+# 50일=중기, 200일=장기 — Minervini/IBD 추세템플릿 관례와 동일 원리, 20일은
+# 사용자 2026-07-26 "중기말고 단기도 추가해줘" 요청으로 추가). 개별종목
 # breadth 보다 해상도는 낮지만(섹터 단위) '소수 대형주가 지수를 방어 중인지
 # vs 전반적 상승인지' 판별에는 충분 — 이미 계산 중인 RSP/SPY(macro 레짐)와
 # 상호보완(그쪽은 대형/소형 비율, 이쪽은 섹터 참여도). US 전용(SPDR 섹터
@@ -314,14 +316,21 @@ def sma(closes: list, period: int):
 
 def breadth_from_closes(sector_closes: dict) -> dict:
     """{ticker: closes(과거→최신 list)} → 섹터-레벨 breadth 비율. 순수함수
-    (테스트용). 각 섹터가 자신의 50/200일 SMA 위에 있는지 비율(0-100%) —
-    개별종목 A/D-line·MMTH 의 섹터 근사(모듈 상단 주석 참조). 데이터 부족한
-    섹터는 그 지표에서 제외(counted 분모에서도 빠짐)."""
-    above50 = above200 = counted50 = counted200 = 0
+    (테스트용). 각 섹터가 자신의 20/50/200일 SMA 위에 있는지 비율(0-100%) —
+    개별종목 A/D-line·MMTH 의 섹터 근사(모듈 상단 주석 참조). 20일선은
+    사용자 2026-07-26 요청("중기말고 단기도 추가해줘") — 한 거래월(~영업일
+    20일) 단위 단기 모멘텀, 50/200일과 동일 원리로 상회비율만 다른 창.
+    데이터 부족한 섹터는 그 지표에서 제외(counted 분모에서도 빠짐)."""
+    above20 = above50 = above200 = counted20 = counted50 = counted200 = 0
     for closes in sector_closes.values():
         if not closes:
             continue
         last = closes[-1]
+        s20 = sma(closes, 20)
+        if s20 is not None:
+            counted20 += 1
+            if last > s20:
+                above20 += 1
         s50 = sma(closes, 50)
         if s50 is not None:
             counted50 += 1
@@ -333,6 +342,7 @@ def breadth_from_closes(sector_closes: dict) -> dict:
             if last > s200:
                 above200 += 1
     return {
+        "pct_above_20dma": round(above20 / counted20 * 100, 1) if counted20 else None,
         "pct_above_50dma": round(above50 / counted50 * 100, 1) if counted50 else None,
         "pct_above_200dma": round(above200 / counted200 * 100, 1) if counted200 else None,
         "n_sectors": len(sector_closes),
@@ -608,19 +618,23 @@ def render_market_timing_page(data: dict, now=None) -> str:
     breadth = data.get("breadth", {})
     breadth_card = ""
     if breadth and breadth.get("pct_above_50dma") is not None:
+        _b20 = (f'{breadth["pct_above_20dma"]:.0f}%'
+                if breadth.get("pct_above_20dma") is not None else "—")
         _b50 = f'{breadth["pct_above_50dma"]:.0f}%'
         _b200 = (f'{breadth["pct_above_200dma"]:.0f}%'
                 if breadth.get("pct_above_200dma") is not None else "—")
         breadth_card = f"""
 <div class="panel"><div class="panel-title">📊 시장 폭 (섹터 breadth, US 전용)</div>
 <div class="stat-grid">
+<div class="stat"><div class="k">20일선 상회 섹터</div><div class="v">{_b20}</div></div>
 <div class="stat"><div class="k">50일선 상회 섹터</div><div class="v">{_b50}</div></div>
 <div class="stat"><div class="k">200일선 상회 섹터</div><div class="v">{_b200}</div></div>
 <div class="stat"><div class="k">표본</div><div class="v" style="font-size:14px">SPDR 섹터 ETF {breadth.get("n_sectors",0)}개</div></div>
 </div>
-<div class="note">11개 GICS 섹터 ETF(XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLRE/XLU/XLC) 중 자신의 50/200일
-이평선 위에 있는 비율 — 개별종목(500종목) breadth 의 섹터-레벨 근사(비용상 전수스캔 대신 채택,
-문서화된 스코프). 낮으면 소수 대형주만 지수를 방어 중일 가능성, 높으면 전반적 참여.</div></div>"""
+<div class="note">11개 GICS 섹터 ETF(XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLRE/XLU/XLC) 중 자신의 20/50/200일
+이평선 위에 있는 비율(20일=단기 모멘텀·50일=중기·200일=장기 추세) — 개별종목(500종목) breadth 의
+섹터-레벨 근사(비용상 전수스캔 대신 채택, 문서화된 스코프). 낮으면 소수 대형주만 지수를 방어 중일
+가능성, 높으면 전반적 참여.</div></div>"""
 
     vol = data.get("volatility", {})
     vol_card = ""
