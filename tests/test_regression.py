@@ -13833,6 +13833,35 @@ class TestFearGreedGauge20260708:
         monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {"vix": None})
         assert fgc.fetch_cnn_vix() is None
 
+    def test_vix_plausible_absolute_range(self):
+        import bot.fear_greed_client as fgc
+        assert fgc._vix_plausible(25.0, None) is True
+        assert fgc._vix_plausible(7.9, None) is False    # 사상 최저 미만
+        assert fgc._vix_plausible(90.1, None) is False   # 사상 최고 초과
+
+    def test_vix_plausible_reference_mismatch_rejected(self):
+        # 사용자 리포트(2026-07-26 VM 실측) — CNN 50.0 vs 실제(네이버) ~18 처럼
+        # 크게 벗어나면 구조 오독 의심 → False(호출부가 네이버로 폴백).
+        import bot.fear_greed_client as fgc
+        assert fgc._vix_plausible(50.0, 18.0) is False
+
+    def test_vix_plausible_reference_close_accepted(self):
+        import bot.fear_greed_client as fgc
+        assert fgc._vix_plausible(18.5, 18.0) is True
+        assert fgc._vix_plausible(25.0, None) is True   # reference 없으면 절대범위만
+
+    def test_vix_plausible_genuine_crisis_both_elevated_accepted(self):
+        # 실제 위기 상황(양쪽 다 높고 서로 근접)은 오탐 금지.
+        import bot.fear_greed_client as fgc
+        assert fgc._vix_plausible(55.0, 52.0) is True
+
+    def test_fetch_cnn_vix_rejects_implausible_against_reference(self, monkeypatch):
+        import bot.fear_greed_client as fgc
+        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {"vix": 50.0})
+        assert fgc.fetch_cnn_vix(reference=18.0) is None
+        assert fgc.fetch_cnn_vix(reference=48.0) == 50.0
+        assert fgc.fetch_cnn_vix() == 50.0   # reference 없으면 절대범위만
+
     def test_macro_snapshot_vix_wired_to_cnn(self):
         # 메인 대시보드 매크로9 위젯도 시장타이밍과 동일 CNN 최우선 소스
         # (사용자 2026-07-26 "양쪽 다").
@@ -15118,16 +15147,18 @@ class TestMarketTimingBreadthVol20260726:
         assert result["n_sectors"] == len(mt._BREADTH_SECTOR_ETFS_US) - 1
         assert "XLK" not in result["sectors_ok"]
 
-    def test_fetch_volatility_snapshot_vix_prefers_cnn(self, monkeypatch):
+    def test_fetch_volatility_snapshot_vix_prefers_cnn_when_plausible(self, monkeypatch):
         # 사용자 요청(2026-07-26) "VIX 는 가장 정확한 CNN 값으로, 양쪽 다" —
-        # CNN 성공 시 네이버/yfinance 는 호출조차 안 돼야 함.
+        # 네이버는 이제 이격도 검증 reference 로 항상 먼저 확보되지만(2026-07-26
+        # VM 실측 CNN 구조오독 발견 이후 크로스체크 도입), CNN 이 네이버와
+        # 근접(plausible)하면 최종 채택은 CNN. yfinance 는 호출 안 됨.
         from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: 15.8)
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 16.0)
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: 15.8)
 
         def fail_if_called(*a, **k):
-            raise AssertionError("CNN 성공 시 naver/yfinance 호출 금지")
+            raise AssertionError("CNN 채택 시 yfinance 호출 금지")
 
-        monkeypatch.setattr(mt, "_fetch_vix_naver", fail_if_called)
         monkeypatch.setattr(mt, "fetch_index_history",
                            lambda ticker, days=10: [] if ticker == "^MOVE" else fail_if_called())
         result = mt.fetch_volatility_snapshot()
@@ -15139,8 +15170,8 @@ class TestMarketTimingBreadthVol20260726:
         # 와 동일 네이버 소스로 폴백해 canonical 값이 일치. yfinance 는
         # 호출조차 안 돼야 함(불필요한 콜 회피 확인).
         from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: None)
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
 
         def fail_if_called(ticker, days=10):
             raise AssertionError(f"naver 성공 시 yfinance({ticker}) 호출 금지")
@@ -15149,10 +15180,23 @@ class TestMarketTimingBreadthVol20260726:
         result = mt.fetch_volatility_snapshot()
         assert result["vix"] == {"value": 18.6, "date": None, "source": "네이버(실시간)"}
 
+    def test_fetch_volatility_snapshot_vix_cnn_implausible_falls_back_to_naver(self, monkeypatch):
+        # 사용자 리포트(2026-07-26 VM 스크린샷) — VIX(CNN) 50.0 인데 F&G 39/공포
+        # 로 모순, CNN 필드 오독 의심. _fetch_vix_cnn 이 자체적으로(reference 와
+        # 이격도 검증 후) None 반환하는 경로 — 이 스냅샷 레벨에서는 네이버로
+        # 정상 폴백되는지만 확인(_vix_plausible 자체 검증은 fear_greed_client
+        # 단위테스트에서).
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.0)
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda ticker, days=10: [])
+        result = mt.fetch_volatility_snapshot()
+        assert result["vix"] == {"value": 18.0, "date": None, "source": "네이버(실시간)"}
+
     def test_fetch_volatility_snapshot_vix_falls_back_to_yfinance(self, monkeypatch):
         from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: None)
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
 
         def fake_fetch(ticker, days=10):
             if ticker == "^VIX":
@@ -15165,8 +15209,8 @@ class TestMarketTimingBreadthVol20260726:
 
     def test_fetch_volatility_snapshot_both_fail_graceful(self, monkeypatch):
         from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: None)
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
         monkeypatch.setattr(mt, "fetch_index_history",
                            lambda ticker, days=10: (_ for _ in ()).throw(RuntimeError("x")))
         assert mt.fetch_volatility_snapshot() == {}
