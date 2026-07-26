@@ -25,7 +25,7 @@ release_id 를 숫자로 하드코딩하지 않고 FRED 공식 release 명 부�
 - ✅ **ISM 제조업/비제조업 PMI** — 기존 이름검색(find_release_id) 메커니즘
   그대로 재사용해 항목만 추가(FRED 카탈로그에 없으면 자동으로 기존
   '조회 실패' graceful 경로 — 신규 분기 불요, 위험 0).
-- ✅ **메가테크 실적일(MSFT/NVDA/TSM/ASML)** — 이미 있는
+- ✅ **메가테크 실적일(AI/반도체/빅테크 24종)** — 이미 있는
   bot.earnings_calendar._fetch_us_month(Finnhub, 6h 캐시)를 재사용해
   워치리스트만 필터 — 신규 API 호출 없음.
 - ❌ **QRA(미 재무부 분기 리펀딩 발표)** — 미구현. FRED release-dates 에
@@ -62,7 +62,15 @@ _SERIES_FOR_ACTUAL = {
     "cpi": "CPIAUCSL", "jobs": "PAYEMS", "gdp": "GDP", "pce": "PCEPI",
 }
 
-_MEGATECH_WATCHLIST = ("MSFT", "NVDA", "TSM", "ASML")
+# AI/반도체/빅테크 실적 워치리스트 — 4종(2026-07-26 최초) → 20종 추가(사용자
+# 2026-07-26 확장). GEV(GE Vernova)·CAT(Caterpillar) 는 순수 빅테크는
+# 아니지만 AI 데이터센터 전력/건설 인프라 익스포저로 사용자가 지정.
+_MEGATECH_WATCHLIST = (
+    "MSFT", "NVDA", "TSM", "ASML",
+    "AAPL", "GOOG", "AMZN", "AVGO", "META", "TSLA", "MU", "AMD", "INTC",
+    "AMAT", "CAT", "LRCX", "ORCL", "NFLX", "DELL", "ARM", "KLAC", "GEV",
+    "PANW", "TXN",
+)
 
 
 def upcoming_and_recent(dates: list, today: str, *, past_days: int = 14) -> dict:
@@ -106,7 +114,7 @@ def find_actual_value(observations: list, release_date: str, max_lag_days: int =
 
 
 def _load_megatech_earnings(today: Optional[str] = None) -> list:
-    """AI/반도체 대형주(MSFT/NVDA/TSM/ASML) 실적 발표일(2026-07-26 사용자
+    """AI/반도체/빅테크 대형주(_MEGATECH_WATCHLIST 24종) 실적 발표일(2026-07-26 사용자
     추천) — bot.earnings_calendar._fetch_us_month(Finnhub, 6h 캐시) 재사용,
     신규 API 호출 없음. 이번달+다음달 스캔(실적일은 보통 4-6주 전 확정).
     실패 시 []( graceful — 이 카드만 생략, 나머지 캘린더는 정상)."""
@@ -236,7 +244,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
             for e in megatech
         )
         megatech_card = f"""
-<div class="panel"><div class="panel-title">🖥️ 메가테크 실적 발표일 (MSFT·NVDA·TSM·ASML)</div>
+<div class="panel"><div class="panel-title">🖥️ 메가테크 실적 발표일 (AI/반도체/빅테크 {len(_MEGATECH_WATCHLIST)}종)</div>
 <table><thead><tr><th>날짜</th><th>티커</th><th>시점</th></tr></thead><tbody>{rows}</tbody></table>
 <div class="note">AI/반도체 주도주 가이던스 — 거시지표 못지않게 시장 유동성/사이클 변곡점 참고.</div></div>"""
 
@@ -254,7 +262,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
 '다음 발표일'이 임박했다면 신규 진입 전 리스크 인지, '최근 발표일'은 직후
 반응(gap/드리프트)을 되짚어볼 때 참고. '실제치'는 해당 발표일에 나온 FRED
 관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 메가테크
-실적일(MSFT/NVDA/TSM/ASML)은 AI/반도체 사이클 변곡점 참고용. 현재 US(연준/
+실적일(AI/반도체/빅테크 24종)은 AI/반도체 사이클 변곡점 참고용. 현재 US(연준/
 BLS/BEA) 발표 중심 — KR/JP 는 FRED 개별 발표일정 커버리지 공백으로 미포함
 (추후 확장 여지, 시장 게이트 아닌 데이터소스 제약). 미 재무부 QRA(분기
 리펀딩 발표)는 정확한 일정을 검증할 무료 소스가 없어 미포함 —

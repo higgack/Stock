@@ -15113,13 +15113,24 @@ class TestEconCalendarAdditions20260726:
         keys = {r["key"] for r in ec._RELEASES}
         assert "ism_mfg" in keys and "ism_svc" in keys
 
+    def test_megatech_watchlist_expanded_20260726(self):
+        # 사용자 확장 요청(2026-07-26) — 4종 → 24종. 누락/오타 회귀 방지.
+        from bot import econ_calendar as ec
+        expected = {
+            "MSFT", "NVDA", "TSM", "ASML", "AAPL", "GOOG", "AMZN", "AVGO",
+            "META", "TSLA", "MU", "AMD", "INTC", "AMAT", "CAT", "LRCX",
+            "ORCL", "NFLX", "DELL", "ARM", "KLAC", "GEV", "PANW", "TXN",
+        }
+        assert set(ec._MEGATECH_WATCHLIST) == expected
+        assert len(ec._MEGATECH_WATCHLIST) == 24   # 중복 없음
+
     def test_load_megatech_earnings_filters_watchlist(self, monkeypatch):
         from bot import econ_calendar as ec
 
         def fake_fetch_us_month(y, m):
             return [
                 {"symbol": "NVDA", "date": "2026-08-20", "hour": "amc"},
-                {"symbol": "AAPL", "date": "2026-08-21", "hour": "amc"},  # not in watchlist
+                {"symbol": "GME", "date": "2026-08-21", "hour": "amc"},  # not in watchlist
                 {"symbol": "TSM", "date": "2026-08-15", "hour": "bmo"},
             ]
 
