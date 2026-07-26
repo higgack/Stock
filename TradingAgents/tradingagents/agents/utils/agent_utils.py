@@ -391,6 +391,16 @@ def get_analyst_directive() -> str:
         " 보류' / '검증 미완료' / '데이터 이상으로 인용 보류' 같은 시스템 내부"
         " 가드 텍스트는 리포트에 적지 말 것. 의심 시리즈는 존재 자체를 omit —"
         " reader 에게 보류 사유를 설명하지 않는다."
+        "\n\nSTANCE SENTINEL (mandatory, 2026-07-26 — machine-parseable stance,"
+        " claude-trading-skills 리뷰 반영, bot/analyzer.py _extract_stance 가"
+        " 최우선으로 읽음): 본문 결론 verdict 문장(RULE 7 등 기존 요구사항 그대로"
+        " 자연어로 작성) 바로 다음 줄에, 정확히 이 형태로 단독 줄을 추가하라 —"
+        " 같은 줄에 다른 텍스트 없이: <<STANCE:BUY>> 또는 <<STANCE:HOLD>> 또는"
+        " <<STANCE:SELL>> (대괄호 2개+콜론, 공백 없이 정확히 — 대소문자는"
+        " 시스템이 관대하게 처리하지만 정확한 형태 준수 권장). 본문 결론과"
+        " 반드시 동일한 방향(매수→BUY, 보유→HOLD, 매도→SELL). 이 sentinel 은"
+        " 기존 프로즈 verdict 를 대체하지 않고 기계가 읽을 수 있게 추가로"
+        " 명시하는 것뿐 — 프로즈 결론 문장은 그대로 작성해야 한다."
     )
 
 
