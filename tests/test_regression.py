@@ -1719,6 +1719,93 @@ class TestRiskGate:
         assert "halt_banner" in ds and "status_line" in ds, "대시보드 게이트 표시 누락"
 
 
+class TestRiskGateExpansion20260726:
+    """Risk Gate 확장(claude-trading-skills drawdown-circuit-breaker/
+    pre-trade-discipline-gate 이식) — 연속손실 쿨다운·주간/월간 drawdown·
+    복수매매(revenge trade) 차단. 전부 매수만 게이트, 매도는 항상 허용."""
+
+    def test_consecutive_loss_cooldown(self):
+        import time
+        import bot.risk_gate as rg
+        now = time.time()
+        # 연속손실 2회(LIMIT) — 최근 청산이 곧 쿨다운 기산점.
+        acct = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600, "realized_krw": -1000},
+            {"ticker": "B", "side": "sell", "ts": now - 60, "realized_krw": -1000},
+        ]}
+        ok, msg = rg.check_order(acct, "C", "buy", 1000)
+        assert not ok and "연속손실" in msg
+        assert rg.check_order(acct, "C", "sell", 0)[0]   # 매도는 항상 허용
+
+        # 승 하나가 스트릭을 끊으면 쿨다운 없음.
+        acct2 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600, "realized_krw": -1000},
+            {"ticker": "B", "side": "sell", "ts": now - 1800, "realized_krw": 500},
+            {"ticker": "C", "side": "sell", "ts": now - 60, "realized_krw": -1000},
+        ]}
+        assert rg.check_order(acct2, "D", "buy", 1000)[0]   # streak=1 < LIMIT(2)
+
+        # 쿨다운 시간(LOSS_COOLDOWN_HOURS) 경과 후엔 해제.
+        acct3 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell",
+             "ts": now - (rg.LOSS_COOLDOWN_HOURS + 1) * 3600, "realized_krw": -1000},
+            {"ticker": "B", "side": "sell",
+             "ts": now - (rg.LOSS_COOLDOWN_HOURS + 0.5) * 3600, "realized_krw": -1000},
+        ]}
+        assert rg.check_order(acct3, "C", "buy", 1000)[0]
+
+    def test_weekly_and_monthly_drawdown_halt(self, monkeypatch):
+        # 일일 한도(30%)보다 주간(50%)·월간(80%) 한도가 더 크므로, 그 임계값을
+        # 넘는 손실은 일일 체크도 같이 걸린다 — 여기선 주간/월간 체크만 따로
+        # 검증하려고 _today_realized_krw 를 0으로 몰아 일일 체크를 분리.
+        import time
+        import bot.risk_gate as rg
+        monkeypatch.setattr(rg, "_today_realized_krw", lambda acct: 0.0)
+        base = 1e7
+        now = time.time()
+        acct = {"starting_capital_krw": base, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600,
+             "realized_krw": -rg.WEEKLY_LOSS_PCT * base - 1}]}
+        ok, msg = rg.check_order(acct, "B", "buy", 1000)
+        assert not ok and "주간" in msg
+        assert rg.check_order(acct, "B", "sell", 0)[0]
+
+        # 월간 단독 검증 — 주간 임계값을 사실상 비활성화(큰 값)해 분리
+        # (월간 한도(80%)가 주간(50%)보다 크므로 그냥 큰 손실을 넣으면 주간
+        # 체크가 먼저 걸림 — 위 일일 체크와 같은 함정).
+        monkeypatch.setattr(rg, "WEEKLY_LOSS_PCT", 10.0)
+        acct2 = {"starting_capital_krw": base, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600,
+             "realized_krw": -rg.MONTHLY_LOSS_PCT * base - 1}]}
+        ok2, msg2 = rg.check_order(acct2, "B", "buy", 1000)
+        assert not ok2 and "월간" in msg2
+
+    def test_revenge_trade_blocked_within_window(self):
+        import time
+        import bot.risk_gate as rg
+        now = time.time()
+        acct = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "AAPL", "side": "sell", "ts": now - 300, "realized_krw": -500}]}
+        ok, msg = rg.check_order(acct, "AAPL", "buy", 1000)
+        assert not ok and "복수매매" in msg
+        # 다른 종목은 영향 없음.
+        assert rg.check_order(acct, "MSFT", "buy", 1000)[0]
+        # 창(REVENGE_WINDOW_HOURS) 밖이면 허용.
+        acct2 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "AAPL", "side": "sell",
+             "ts": now - (rg.REVENGE_WINDOW_HOURS + 1) * 3600, "realized_krw": -500}]}
+        assert rg.check_order(acct2, "AAPL", "buy", 1000)[0]
+        # 손실이 아니라 익절 청산이면 복수매매 아님.
+        acct3 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "AAPL", "side": "sell", "ts": now - 300, "realized_krw": 500}]}
+        assert rg.check_order(acct3, "AAPL", "buy", 1000)[0]
+
+    def test_status_line_mentions_new_limits(self):
+        import bot.risk_gate as rg
+        s = rg.status_line()
+        assert "연속손실" in s and "복수매매" in s and "주" in s and "월" in s
+
+
 class TestPaperAutoSignals:
     """E0.5b — NOAH 판정 → 페이퍼 자동 주문 (분석≠실행 분리, auto opt-in,
     자본 5% 사이징, 5거래일 자동 청산)."""
