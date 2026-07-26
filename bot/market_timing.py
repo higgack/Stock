@@ -363,14 +363,37 @@ def fetch_market_breadth(market: str = "US") -> dict:
 # 있지만 시장타이밍 보드 단독 열람 시에도 바로 보이게 여기 카드로 병기.
 # MOVE(ICE BofA, 채권시장 변동성)는 yfinance 커버리지가 시기/벤더에 따라
 # 불안정 — 실패 시 그 필드만 생략(VIX 는 항상 시도, 서로 독립적 try).
+def _fetch_vix_naver():
+    """네이버 worldstock .VIX — bot/macro_snapshot.py 의 메인 대시보드 매크로9
+    위젯과 동일 소스('네이버 우선, 야후 throttle 무관' 사용자 2026-06-14
+    원칙). 사용자 2026-07-26 리포트('빅스지수가 다른데 메인대시보드랑
+    시장타이밍이랑') — 이 카드가 독립적으로 yfinance ^VIX 만 썼던 게 원인
+    (다른 소스 + 최대 6시간 stale, canonical 값 불일치). 30초 캐시라 사실상
+    실시간. 실패 시 None(호출부가 yfinance 로 폴백)."""
+    try:
+        from bot import naver_marketindex as nm
+        rec = (nm.fetch_world_indices((".VIX",)) or {}).get(".VIX")
+        if rec and rec.get("close") is not None:
+            return float(rec["close"])
+    except Exception as exc:
+        log.debug("market_timing: VIX naver fetch failed: %s", exc)
+    return None
+
+
 def fetch_volatility_snapshot() -> dict:
-    """{"vix": {value, date}, "move": {value, date}|None} — 각각 독립 fetch,
-    실패한 쪽만 생략(그 항목 없이 반환). yfinance 사용(무료, 신규 API 없음)."""
+    """{"vix": {value, date, source}, "move": {value, date}|None} — VIX 는
+    네이버 우선(메인 대시보드와 canonical 값 일치, 모듈 docstring 참조),
+    실패 시만 yfinance 폴백. 실패한 쪽만 생략(그 항목 없이 반환)."""
     out: dict = {}
     try:
-        vix_hist = fetch_index_history("^VIX", days=10)
-        if vix_hist:
-            out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"]}
+        nv = _fetch_vix_naver()
+        if nv is not None:
+            out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
+        else:
+            vix_hist = fetch_index_history("^VIX", days=10)
+            if vix_hist:
+                out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
+                             "source": "yfinance(폴백)"}
     except Exception as exc:
         log.debug("market_timing: VIX fetch failed: %s", exc)
     try:
@@ -590,7 +613,9 @@ def render_market_timing_page(data: dict, now=None) -> str:
         move = vol.get("move")
         vol_rows = ""
         if vix:
-            vol_rows += (f'<div class="stat"><div class="k">VIX</div>'
+            _vix_src = vix.get("source", "")
+            vol_rows += (f'<div class="stat"><div class="k">VIX'
+                        f'{f" ({_h.escape(_vix_src)})" if _vix_src else ""}</div>'
                         f'<div class="v">{vix["value"]:.1f}</div></div>')
         if move:
             vol_rows += (f'<div class="stat"><div class="k">MOVE</div>'
@@ -599,7 +624,8 @@ def render_market_timing_page(data: dict, now=None) -> str:
             vol_card = f"""
 <div class="panel"><div class="panel-title">🌪️ 변동성 (VIX·MOVE)</div>
 <div class="stat-grid">{vol_rows}</div>
-<div class="note">VIX=주식시장 변동성(공포지수) · MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
+<div class="note">VIX=주식시장 변동성(공포지수, 메인 대시보드와 동일 네이버 소스 — canonical 일치) ·
+MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
 금리변동성이 기술주/반도체 장세에 선행 신호가 되는 경우가 있어 병기.</div></div>"""
 
     payload = _json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")

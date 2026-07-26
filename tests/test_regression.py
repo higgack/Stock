@@ -15072,8 +15072,24 @@ class TestMarketTimingBreadthVol20260726:
         assert result["n_sectors"] == len(mt._BREADTH_SECTOR_ETFS_US) - 1
         assert "XLK" not in result["sectors_ok"]
 
-    def test_fetch_volatility_snapshot_independent_fields(self, monkeypatch):
+    def test_fetch_volatility_snapshot_vix_prefers_naver(self, monkeypatch):
+        # 사용자 리포트(2026-07-26) '빅스지수가 다른데 메인대시보드랑
+        # 시장타이밍이랑' — 메인 대시보드(bot/macro_snapshot.py) 와 동일
+        # 네이버 소스를 우선 써야 canonical 값이 일치. yfinance 는 호출조차
+        # 안 돼야 함(불필요한 콜 회피 확인).
         from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
+
+        def fail_if_called(ticker, days=10):
+            raise AssertionError(f"naver 성공 시 yfinance({ticker}) 호출 금지")
+
+        monkeypatch.setattr(mt, "fetch_index_history", fail_if_called)
+        result = mt.fetch_volatility_snapshot()
+        assert result["vix"] == {"value": 18.6, "date": None, "source": "네이버(실시간)"}
+
+    def test_fetch_volatility_snapshot_vix_falls_back_to_yfinance(self, monkeypatch):
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
 
         def fake_fetch(ticker, days=10):
             if ticker == "^VIX":
@@ -15082,10 +15098,11 @@ class TestMarketTimingBreadthVol20260726:
 
         monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
         result = mt.fetch_volatility_snapshot()
-        assert result == {"vix": {"value": 14.2, "date": "2026-07-25"}}
+        assert result == {"vix": {"value": 14.2, "date": "2026-07-25", "source": "yfinance(폴백)"}}
 
     def test_fetch_volatility_snapshot_both_fail_graceful(self, monkeypatch):
         from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
         monkeypatch.setattr(mt, "fetch_index_history",
                            lambda ticker, days=10: (_ for _ in ()).throw(RuntimeError("x")))
         assert mt.fetch_volatility_snapshot() == {}
@@ -15115,6 +15132,7 @@ class TestMarketTimingBreadthVol20260726:
         assert '"breadth": breadth' in src and '"volatility": volatility' in src
         assert "def fetch_market_breadth" in src
         assert "def fetch_volatility_snapshot" in src
+        assert "def _fetch_vix_naver" in src   # 메인 대시보드와 동일 소스(canonical 일치)
 
 
 class TestEconCalendarAdditions20260726:
