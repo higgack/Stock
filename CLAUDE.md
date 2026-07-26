@@ -144,6 +144,16 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
 - HS↔수출입↔회사 매칭 세부(오타교정·MTI핀·`split_names`·DART 보강후보) = **`trade/CLAUDE.md`**
   (trade/ 작업 시 로드) + 상세는 REFERENCE.
 
+## 개발 도구 (Claude Code)
+- **code-review-graph** (Tree-sitter 콜그래프 MCP, 2026-07-26 채택) — 배포전 셀프리뷰의
+  "호출부 배선 grep E2E"/blast-radius 확인을 구조적으로 보강(722파일 규모라 grep 사각 존재).
+  `.claude/skills/`(review-changes 등 4종) + `.claude/settings.json` hooks 는 repo 커밋(툴 미설치
+  환경에선 hook 이 자동 no-op). `.mcp.json` 은 머신별 절대경로라 `.gitignore` 유지(커밋 안 함) —
+  환경별 최초 1회 `pip install code-review-graph && code-review-graph install --platform
+  claude-code --no-instructions -y` 실행 필요(venv 권장 — 시스템 패키지 충돌 시 `--user` 는
+  `-I` isolated-mode 서브프로세스 프로브와 충돌해 그래프가 0노드로 빌드되는 함정 있음).
+- 자동화 인벤토리·CLAUDE.md 룰↔테스트 커버리지 매핑 = `docs/automation.md` / `docs/tests.md`.
+
 ## 멀티마켓 · 기능 상세 → CLAUDE_REFERENCE.md
 US/KR/JP/TW/CN_A/HK 확장 · 실거래 E0 페이퍼+RiskGate · 차트 Phase · Daily Byte · Bottleneck
 Screener(운영+설계) · 부동산/청약/블로그/레딧/자산/가계부 · Gemini AI-Studio↔Vertex 토글 ·

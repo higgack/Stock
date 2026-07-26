@@ -14856,3 +14856,69 @@ class TestBatchIndependentReviewFixes20260726:
         ps._open_thesis("MSFT", {}, "new ticker", "2026-07-26")
         active = tt.list_theses(status="ACTIVE")
         assert len(active) == 2   # 다른 종목은 정상적으로 새 씨시스 생성
+
+
+class TestStanceSentinel20260726:
+    """구조화 stance sentinel(<<STANCE:BUY|HOLD|SELL>>, claude-trading-skills
+    Agent-Skills-for-Context-Engineering 리뷰 채택) — bot.analyzer 는 yfinance
+    의존이라 통 import 불가(TestPmOverrideRatingMask 와 동일 제약) → 관련
+    모듈수준 상수(_STANCE_* ~ _extract_stance) 를 소스에서 슬라이스해 exec."""
+
+    def _extract_stance_fn(self):
+        import re as _re
+        lines = open("bot/analyzer.py", encoding="utf-8").read().splitlines()
+        start = next(i for i, l in enumerate(lines) if l.startswith("_STANCE_KEYWORDS = ["))
+        end = next(i for i, l in enumerate(lines) if l.startswith("_DECISION_DIRECTION = {"))
+        block = "\n".join(lines[start:end])
+        ns = {"re": _re}
+        exec(block, ns)
+        return ns["_extract_stance"]
+
+    def test_sentinel_present_each_direction(self):
+        fn = self._extract_stance_fn()
+        assert fn("<<STANCE:BUY>>") == "매수"
+        assert fn("<<STANCE:HOLD>>") == "보유"
+        assert fn("<<STANCE:SELL>>") == "매도"
+
+    def test_sentinel_case_insensitive_and_embedded(self):
+        fn = self._extract_stance_fn()
+        assert fn("결론적으로 본 종목에 대해 보유 의견을 제시합니다.\n<<stance:hold>>") == "보유"
+
+    def test_sentinel_last_occurrence_wins(self):
+        # 정정 패턴(초안 BUY → 최종 SELL) — 기존 rightmost-wins 철학과 일관.
+        fn = self._extract_stance_fn()
+        assert fn("<<STANCE:BUY>> 초안, 정정: <<STANCE:SELL>>") == "매도"
+
+    def test_sentinel_overrides_conflicting_prose(self):
+        # sentinel 이 Pass -1(최우선) — 본문 프로즈와 방향이 어긋나도 sentinel 승.
+        # 정상 운영에선 안 나야 하는 상황(sentinel=프로즈 재확인 목적)이지만
+        # 우선순위 계약 자체를 회귀 고정.
+        fn = self._extract_stance_fn()
+        body = "결론적으로 본 종목에 대해 매도 의견을 제시합니다.\n<<STANCE:BUY>>"
+        assert fn(body) == "매수"
+
+    def test_sentinel_absent_falls_through_unchanged(self):
+        # 순수 additive 검증 — sentinel 없는 기존 본문은 예전 로직 그대로.
+        fn = self._extract_stance_fn()
+        assert fn("결론적으로 본 종목에 대해 보유 의견을 제시합니다.") == "보유"
+        assert fn("RSI 78 과매수 zone입니다.") == ""   # false-friend 여전히 중립화
+        assert fn("") == ""
+        assert fn(None) == ""
+
+    def test_malformed_sentinel_ignored(self):
+        # 대괄호 하나·콜론 누락 등 형식 미준수는 매치 안 되고 기존 로직으로 폴백.
+        fn = self._extract_stance_fn()
+        body = "<STANCE:BUY> 결론적으로 본 종목에 대해 보유 의견을 제시합니다."
+        assert fn(body) == "보유"
+
+    def test_wiring_get_analyst_directive_and_callers(self):
+        src = open(
+            "TradingAgents/tradingagents/agents/utils/agent_utils.py",
+            encoding="utf-8").read()
+        assert "STANCE SENTINEL" in src
+        assert "<<STANCE:BUY>>" in src and "<<STANCE:HOLD>>" in src and "<<STANCE:SELL>>" in src
+        for f in ("market_analyst.py", "news_analyst.py",
+                  "social_media_analyst.py", "fundamentals_analyst.py"):
+            asrc = open(f"TradingAgents/tradingagents/agents/analysts/{f}",
+                       encoding="utf-8").read()
+            assert "get_analyst_directive()" in asrc

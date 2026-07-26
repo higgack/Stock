@@ -734,10 +734,22 @@ def _display_ticker(ticker: str) -> str:
     return ticker
 
 
+_STANCE_SENTINEL_RE = re.compile(r"<<\s*STANCE\s*:\s*(BUY|HOLD|SELL)\s*>>", re.IGNORECASE)
+_STANCE_SENTINEL_TO_LABEL = {"BUY": "매수", "HOLD": "보유", "SELL": "매도"}
+
+
 def _extract_stance(body: str | None) -> str:
     """Pick the analyst's bottom-line stance from its report body.
 
-    Three-pass scan (priority order):
+    Pass -1 (2026-07-26, claude-trading-skills 리뷰 반영): 4개 분석가
+    프롬프트(get_analyst_directive, agent_utils.py)에 기계가 읽는
+    <<STANCE:BUY|HOLD|SELL>> sentinel 라인을 필수화했다 — 아래 정규식/키워드
+    다단계 스캔은 그 sentinel 이 없을 때(구버전 아카이브·LLM 미준수 등)만
+    쓰이는 폴백. sentinel 이 있으면 최우선으로 신뢰(가장 마지막 occurrence —
+    결론부 재확인/정정 패턴과 동일 철학). 이 pass 추가는 순수 additive — 기존
+    본문에 sentinel 이 없으면 아래 로직은 전혀 안 바뀜(회귀 없음).
+
+    Sentinel 없을 때는 기존 Three-pass 스캔(priority order):
 
     1. CONCLUSION-ZONE explicit patterns: scan the last 800 characters for
        explicit recommendation patterns. Analysts write the verdict in the
@@ -753,6 +765,9 @@ def _extract_stance(body: str | None) -> str:
     """
     if not body:
         return ""
+    sentinel_matches = _STANCE_SENTINEL_RE.findall(body)
+    if sentinel_matches:
+        return _STANCE_SENTINEL_TO_LABEL[sentinel_matches[-1].upper()]
     lower = body.lower()
     # Neutralise cited third-party IB ratings ("'매수' 등급", "매도 레이팅")
     # BEFORE the compound/keyword scans so a quoted rating the analyst is
