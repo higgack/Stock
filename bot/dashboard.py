@@ -6008,6 +6008,25 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>제출일</th><th>성명</th><th>직위</th><th>거래 내역</th></tr></thead><tbody>{ui_rows}</tbody></table>
   </div>"""
 
+    # US 13F 기관플로우(2026-07-26, 미국전용 — bot/edgar_13f.py) — 대표
+    # 기관투자자 최근 2개 분기 대비 이 종목 보유변화(신규/증편/감편/청산).
+    us_13f_html = ""
+    us_13f = us.get("institutional_13f")
+    if us_13f:
+        _action_kr = {"NEW": "신규 편입", "INCREASED": "증편", "DECREASED": "감편",
+                     "EXITED": "전량 청산", "UNCHANGED": "변동 없음"}.get(
+            us_13f.get("action"), us_13f.get("action", ""))
+        _dp = us_13f.get("delta_pct")
+        _dp_str = f"{_dp:+.1f}%" if _dp is not None else "—"
+        us_13f_html = f"""<div class="si-section">
+    <div class="si-section-title">13F 기관플로우 — {esc(us_13f.get('filer',''))}</div>
+    <table class="si-table"><tbody>
+      <tr><td>기간</td><td class="num">{esc(us_13f.get('prev_filing_date',''))} → {esc(us_13f.get('curr_filing_date',''))}</td></tr>
+      <tr><td>보유수량</td><td class="num">{us_13f.get('prev_shares',0):,.0f} → {us_13f.get('curr_shares',0):,.0f}주</td></tr>
+      <tr><td>변화</td><td class="num">{esc(_action_kr)} ({_dp_str})</td></tr>
+    </tbody></table>
+  </div>"""
+
     # ── 공시 pane (all markets — DART/EDINET/MOPS/AKShare/EDGAR) ──
     disclosures_pane = ""
     disc_source_map = {"kr": "DART", "jp": "EDINET", "tw": "MOPS",
@@ -6637,6 +6656,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {kr_affiliates_html}
   {kr_affiliates_invest_html}
   {us_insider_html}
+  {us_13f_html}
   {jp_holders_html}
   {tw_insiders_html}
   {tw_disp_html}
@@ -11471,12 +11491,80 @@ def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: li
     except Exception:
         pass
 
+    # 트레이드 씨시스(투자논거) 청산 이력 + 포스트모템(2026-07-26) — 진입근거
+    # (auto 신호 체인)·MFE/MAE·청산사유를 자동매매 결정이력(audit_block, 왜
+    # 진입했나)과 짝지어 '진입→청산' 전체를 보여줌.
+    thesis_block = ""
+    try:
+        from bot import trade_thesis
+        closed = trade_thesis.list_theses(status="CLOSED", limit=15)
+        if closed:
+            trows = ""
+            for t in closed:
+                pm = trade_thesis.postmortem_text(t)
+                col = "#16a34a" if (t.get("realized_pct") or 0) > 0 else "#dc2626"
+                when = (_dt.datetime.fromtimestamp(t["exit_ts"]).strftime("%m-%d %H:%M")
+                        if t.get("exit_ts") else "")
+                trows += (
+                    f'<tr><td class="muted">{_html.escape(when)}</td>'
+                    f'<td><b>{_html.escape(t.get("ticker",""))}</b></td>'
+                    f'<td style="color:{col}">{_html.escape(pm)}</td>'
+                    f'<td class="muted">MFE {t.get("mfe_pct",0):+.1f}% / '
+                    f'MAE {t.get("mae_pct",0):+.1f}%</td></tr>')
+            _digest = trade_thesis.digest_stats(days=7)
+            _digest_line = ""
+            if _digest["n"]:
+                _digest_line = (
+                    f'<p class="sub" style="font-size:12px">최근 7일 승률 '
+                    f'{_digest["win_rate"]:.0f}% · 기대값 {_digest["expectancy_pct"]:+.2f}%/건'
+                    + (f' · 손익비 {_digest["profit_factor"]:.2f}'
+                       if _digest["profit_factor"] is not None else '') + '</p>')
+            thesis_block = (
+                '<div class="pf-card"><div class="pf-h">📔 트레이드 씨시스 청산 이력 (최근 '
+                + str(len(closed)) + ')</div>' + _digest_line +
+                '<table class="pf-tbl"><thead><tr><th>청산시각</th><th>종목</th>'
+                '<th>결과</th><th>MFE/MAE</th></tr></thead>'
+                '<tbody>' + trows + '</tbody></table></div>')
+    except Exception:
+        pass
+
+    # 백테스트 리뷰(2026-07-26) — claude-trading-skills backtest-expert 스킬의
+    # 5축(Sample Size/Expectancy/Risk Management/Robustness/Execution Realism)
+    # 프레임워크를 청산 씨시스 이력 전체에 적용(bot/backtest_review.py).
+    backtest_block = ""
+    try:
+        from bot import backtest_review
+        _bt = backtest_review.review_trade_history()
+        if _bt.get("n"):
+            _verdict_col = {"Deploy": "#16a34a", "Refine": "#d97706",
+                            "Abandon": "#dc2626"}.get(_bt["verdict"], "#666")
+            _dim_rows = "".join(
+                f'<tr><td>{_html.escape(d["name"])}</td>'
+                f'<td class="muted">{d["score"]}/{d["max_score"]}</td></tr>'
+                for d in _bt["dimensions"])
+            _flag_lines = "".join(
+                f'<p class="sub" style="font-size:12px">'
+                f'{"🔴" if f["severity"]=="high" else "🟡"} {_html.escape(f["message"])}</p>'
+                for f in _bt["red_flags"])
+            backtest_block = (
+                '<div class="pf-card"><div class="pf-h">📊 백테스트 리뷰 ('
+                + str(_bt["n"]) + '건, ' + f'{_bt["span_days"]:.0f}' + '일간)</div>'
+                f'<p class="sub" style="font-size:13px">총점 <b>{_bt["total_score"]}/100</b> — '
+                f'판정 <b style="color:{_verdict_col}">{_html.escape(_bt["verdict"])}</b></p>'
+                '<table class="pf-tbl"><thead><tr><th>항목</th><th>점수</th></tr></thead>'
+                '<tbody>' + _dim_rows + '</tbody></table>'
+                + (_flag_lines or '<p class="sub" style="font-size:12px">레드플래그 없음</p>')
+                + '</div>')
+    except Exception:
+        pass
+
     # wl_section 은 위(빈-계좌 early-return 공유)에서 이미 빌드됨.
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🔔 워치리스트</h1>'
             '<p class="sub">조건 알림(30분 체크, ₩0) + 페이퍼 트레이딩(모의 매매, 리스크 0)</p>'
             + halt_banner + e1_banner + stats + stats_extra + curve_html + pos_block + pend_block
-            + tr_block + audit_block + note + gate_line + wl_section + "</div>")
+            + tr_block + audit_block + thesis_block + backtest_block
+            + note + gate_line + wl_section + "</div>")
 
 
 def _sym_cur(currency: str) -> str:
@@ -12728,6 +12816,8 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
     · <a href="ppi.html">🏭 PPI</a>
     · <a href="cpi.html">🛒 CPI</a>
     · <a href="liquidity.html">💧 유동성</a>
+    · <a href="market_timing.html">🚦 시장타이밍</a>
+    · <a href="econ_calendar.html">📅 경제캘린더</a>
   </div>
   <h1>🏆 Market cap</h1>
   <p class="sub">글로벌 기업 순위 · 출처
@@ -15075,6 +15165,8 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="ppi.html">🏭 PPI</a>
     &middot; <a href="cpi.html">🛒 CPI</a>
     &middot; <a href="liquidity.html">💧 유동성</a>
+    &middot; <a href="market_timing.html">🚦 시장타이밍</a>
+    &middot; <a href="econ_calendar.html">📅 경제캘린더</a>
     &middot; <a href="marketcap.html">🏆 Market cap</a>
     &middot; <a href="trade/">🌏 수출입</a>
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>

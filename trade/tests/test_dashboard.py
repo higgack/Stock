@@ -179,6 +179,24 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("closest('.country-chip,.region-chip,.industry-chip')", html)
         self.assertIn("country:'',region:'',industry:''", html)   # state 서브필터 3축
 
+    def test_grouped_axis_card_shows_current_tab_region(self):
+        # 2026-07-26 fix — multi-region/multi-country alert(axisVals 가
+        # a.regions 전체로 여러 탭에 동시 배치)의 카드 라벨이 항상 whereLabel()
+        # 의 a.region(첫 값)만 보여줘, 두번째 이후 지역 탭에서 봐도 첫 지역만
+        # 나오던 불일치(사용자 리포트 '지역별구분에 첨부지역이 안맞음') fix.
+        # 탭 컨텍스트(field/value)를 렌더에 넘겨 그 탭의 실제 값을 보여준다.
+        html = render_html(self.db_path)
+        self.assertIn("function whereLabelForAxis(a,field,value){", html)
+        self.assertIn("function renderMiniCard(a,ctx){", html)
+        self.assertIn(
+            "const where=ctx?whereLabelForAxis(a,ctx.field,ctx.value):whereLabel(a);",
+            html)
+        # buildGroupedAxisView(국가별/지역별/산업별 공용) 만 탭 컨텍스트를 넘김 —
+        # 품목별/회사별(renderMiniCard 단독 호출)은 컨텍스트 없이 기존 동작 유지.
+        self.assertIn(
+            "items.map(function(a){return renderMiniCard(a,{field:field,value:name});})",
+            html)
+
     def test_filter_controls_exist(self):
         html = render_html(self.db_path)
         self.assertIn('id="q"', html)

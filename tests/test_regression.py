@@ -1719,6 +1719,93 @@ class TestRiskGate:
         assert "halt_banner" in ds and "status_line" in ds, "대시보드 게이트 표시 누락"
 
 
+class TestRiskGateExpansion20260726:
+    """Risk Gate 확장(claude-trading-skills drawdown-circuit-breaker/
+    pre-trade-discipline-gate 이식) — 연속손실 쿨다운·주간/월간 drawdown·
+    복수매매(revenge trade) 차단. 전부 매수만 게이트, 매도는 항상 허용."""
+
+    def test_consecutive_loss_cooldown(self):
+        import time
+        import bot.risk_gate as rg
+        now = time.time()
+        # 연속손실 2회(LIMIT) — 최근 청산이 곧 쿨다운 기산점.
+        acct = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600, "realized_krw": -1000},
+            {"ticker": "B", "side": "sell", "ts": now - 60, "realized_krw": -1000},
+        ]}
+        ok, msg = rg.check_order(acct, "C", "buy", 1000)
+        assert not ok and "연속손실" in msg
+        assert rg.check_order(acct, "C", "sell", 0)[0]   # 매도는 항상 허용
+
+        # 승 하나가 스트릭을 끊으면 쿨다운 없음.
+        acct2 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600, "realized_krw": -1000},
+            {"ticker": "B", "side": "sell", "ts": now - 1800, "realized_krw": 500},
+            {"ticker": "C", "side": "sell", "ts": now - 60, "realized_krw": -1000},
+        ]}
+        assert rg.check_order(acct2, "D", "buy", 1000)[0]   # streak=1 < LIMIT(2)
+
+        # 쿨다운 시간(LOSS_COOLDOWN_HOURS) 경과 후엔 해제.
+        acct3 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell",
+             "ts": now - (rg.LOSS_COOLDOWN_HOURS + 1) * 3600, "realized_krw": -1000},
+            {"ticker": "B", "side": "sell",
+             "ts": now - (rg.LOSS_COOLDOWN_HOURS + 0.5) * 3600, "realized_krw": -1000},
+        ]}
+        assert rg.check_order(acct3, "C", "buy", 1000)[0]
+
+    def test_weekly_and_monthly_drawdown_halt(self, monkeypatch):
+        # 일일 한도(30%)보다 주간(50%)·월간(80%) 한도가 더 크므로, 그 임계값을
+        # 넘는 손실은 일일 체크도 같이 걸린다 — 여기선 주간/월간 체크만 따로
+        # 검증하려고 _today_realized_krw 를 0으로 몰아 일일 체크를 분리.
+        import time
+        import bot.risk_gate as rg
+        monkeypatch.setattr(rg, "_today_realized_krw", lambda acct: 0.0)
+        base = 1e7
+        now = time.time()
+        acct = {"starting_capital_krw": base, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600,
+             "realized_krw": -rg.WEEKLY_LOSS_PCT * base - 1}]}
+        ok, msg = rg.check_order(acct, "B", "buy", 1000)
+        assert not ok and "주간" in msg
+        assert rg.check_order(acct, "B", "sell", 0)[0]
+
+        # 월간 단독 검증 — 주간 임계값을 사실상 비활성화(큰 값)해 분리
+        # (월간 한도(80%)가 주간(50%)보다 크므로 그냥 큰 손실을 넣으면 주간
+        # 체크가 먼저 걸림 — 위 일일 체크와 같은 함정).
+        monkeypatch.setattr(rg, "WEEKLY_LOSS_PCT", 10.0)
+        acct2 = {"starting_capital_krw": base, "positions": {}, "trades": [
+            {"ticker": "A", "side": "sell", "ts": now - 3600,
+             "realized_krw": -rg.MONTHLY_LOSS_PCT * base - 1}]}
+        ok2, msg2 = rg.check_order(acct2, "B", "buy", 1000)
+        assert not ok2 and "월간" in msg2
+
+    def test_revenge_trade_blocked_within_window(self):
+        import time
+        import bot.risk_gate as rg
+        now = time.time()
+        acct = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "AAPL", "side": "sell", "ts": now - 300, "realized_krw": -500}]}
+        ok, msg = rg.check_order(acct, "AAPL", "buy", 1000)
+        assert not ok and "복수매매" in msg
+        # 다른 종목은 영향 없음.
+        assert rg.check_order(acct, "MSFT", "buy", 1000)[0]
+        # 창(REVENGE_WINDOW_HOURS) 밖이면 허용.
+        acct2 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "AAPL", "side": "sell",
+             "ts": now - (rg.REVENGE_WINDOW_HOURS + 1) * 3600, "realized_krw": -500}]}
+        assert rg.check_order(acct2, "AAPL", "buy", 1000)[0]
+        # 손실이 아니라 익절 청산이면 복수매매 아님.
+        acct3 = {"starting_capital_krw": 1e7, "positions": {}, "trades": [
+            {"ticker": "AAPL", "side": "sell", "ts": now - 300, "realized_krw": 500}]}
+        assert rg.check_order(acct3, "AAPL", "buy", 1000)[0]
+
+    def test_status_line_mentions_new_limits(self):
+        import bot.risk_gate as rg
+        s = rg.status_line()
+        assert "연속손실" in s and "복수매매" in s and "주" in s and "월" in s
+
+
 class TestPaperAutoSignals:
     """E0.5b — NOAH 판정 → 페이퍼 자동 주문 (분석≠실행 분리, auto opt-in,
     자본 5% 사이징, 5거래일 자동 청산)."""
@@ -1940,6 +2027,146 @@ class TestPaperLimitOrders:
         pt = open("bot/paper_trading.py", encoding="utf-8").read()
         assert "def fill_pending" in pt and "def cancel_pending" in pt
         assert "지정가 대기" in open("bot/dashboard.py", encoding="utf-8").read()
+
+
+class TestTradeThesis:
+    """트레이드 씨시스(투자논거) 생애주기 + 포스트모템(2026-07-26,
+    claude-trading-skills trader-memory-core 이식). paper_trading 체결을
+    직접 훅하지 않고 상태비교(reconcile)로 청산 감지 — 청산 경로 무관.
+
+    ⚠️ paper_trading 모킹은 sys.modules 치환이 아니라 실제 모듈의 함수를
+    monkeypatch.setattr 로 교체(리뷰 회귀 — 다른 테스트 클래스가 세션 중
+    이미 `import bot.paper_trading`을 실행해두면 `bot` 패키지가 그 real
+    모듈을 속성으로 붙들고 있어서, trade_thesis.py 내부의 `from bot import
+    paper_trading` 이 sys.modules 치환을 무시하고 real 모듈을 그대로 반환—
+    전체 스위트에서만 재현되고 단독 실행 시엔 통과해 처음엔 못 잡았다)."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import bot.trade_thesis as tt
+        monkeypatch.setattr(tt, "_HOME", tmp_path)
+        monkeypatch.setattr(tt, "_THESES", tmp_path / "theses.json")
+        return tt
+
+    def test_open_thesis_is_active(self, tmp_path, monkeypatch):
+        tt = self._setup(tmp_path, monkeypatch)
+        tid = tt.open_thesis("AAPL", "US", 1000.0, 300.0, 2, 828000.0,
+                             thesis_statement="PM Buy", chain={"pm": "Buy"},
+                             planned_exit_date="2026-08-01")
+        theses = tt.list_theses()
+        assert len(theses) == 1
+        t = theses[0]
+        assert t["id"] == tid and t["status"] == "ACTIVE"
+        assert t["ticker"] == "AAPL" and t["entry_cost_krw"] == 828000.0
+        assert t["mfe_pct"] == 0.0 and t["mfe_mae_sampled"] is False
+
+    def test_update_mfe_mae_tracks_extremes(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("AAPL", "US", time.time(), 300.0, 2, 828000.0)
+        monkeypatch.setattr(pt, "positions_with_pnl",
+                           lambda: [{"ticker": "AAPL", "ret_pct": 5.0}])
+        tt.update_mfe_mae()
+        t = tt.list_theses()[0]
+        assert t["mfe_pct"] == 5.0 and t["mae_pct"] == 0.0 and t["mfe_mae_sampled"] is True
+        monkeypatch.setattr(pt, "positions_with_pnl",
+                           lambda: [{"ticker": "AAPL", "ret_pct": -3.0}])
+        tt.update_mfe_mae()
+        t = tt.list_theses()[0]
+        assert t["mfe_pct"] == 5.0 and t["mae_pct"] == -3.0   # 극값만 갱신(되돌아가도 유지)
+
+    def test_sync_closed_detects_exit_and_computes_pct(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        entry_ts = time.time() - 3600
+        tt.open_thesis("AAPL", "US", entry_ts, 300.0, 2, 828000.0,
+                       planned_exit_date="2026-08-01")
+        monkeypatch.setattr(pt, "get_account", lambda: {
+            "positions": {}, "trades": [
+                {"ticker": "AAPL", "side": "sell", "ts": time.time(),
+                 "fill_native": 310.0, "realized_krw": 27600.0}]})
+        closed = tt.sync_closed()
+        assert len(closed) == 1
+        t = closed[0]
+        assert t["status"] == "CLOSED" and t["realized_krw"] == 27600.0
+        assert abs(t["realized_pct"] - (27600.0 / 828000.0 * 100)) < 1e-6
+        assert t["exit_reason"] == "horizon"   # planned_exit_date 있음
+        # 목록에도 CLOSED 로 반영돼야.
+        assert tt.list_theses(status="ACTIVE") == []
+        assert len(tt.list_theses(status="CLOSED")) == 1
+
+    def test_sync_closed_no_sell_yet_stays_active(self, tmp_path, monkeypatch):
+        # 포지션은 이미 없어졌지만(레이스) 매도 체결 로그가 아직 없으면 재시도
+        # 위해 ACTIVE 유지(리뷰: 성급히 닫으면 데이터 유실).
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("AAPL", "US", time.time(), 300.0, 2, 828000.0)
+        monkeypatch.setattr(pt, "get_account",
+                           lambda: {"positions": {}, "trades": []})
+        assert tt.sync_closed() == []
+        assert tt.list_theses(status="ACTIVE")[0]["status"] == "ACTIVE"
+
+    def test_postmortem_text_no_fake_gap_note_when_unsampled(self, tmp_path, monkeypatch):
+        # 회귀 고정: mfe_pct 기본값(0.0)이 실측이 아닌데 '고점 대비 반납'으로
+        # 오표기하던 버그(전패 케이스에서 '최고 +0.0%p 갔다가 반납' 오탐).
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("LOSS", "KR", time.time() - 3600, 1000.0, 10, 10000.0)
+        monkeypatch.setattr(pt, "get_account", lambda: {
+            "positions": {}, "trades": [
+                {"ticker": "LOSS", "side": "sell", "ts": time.time(),
+                 "fill_native": 900.0, "realized_krw": -1000.0}]})
+        closed = tt.sync_closed()
+        pm = tt.postmortem_text(closed[0])
+        assert "❌" in pm and "-10.0%" in pm
+        assert "반납" not in pm
+
+    def test_postmortem_text_shows_real_gap_note_when_sampled(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("GAVEBACK", "KR", time.time() - 7200, 1000.0, 10, 10000.0)
+        monkeypatch.setattr(pt, "positions_with_pnl",
+                           lambda: [{"ticker": "GAVEBACK", "ret_pct": 8.0}])
+        tt.update_mfe_mae()
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {}, "trades": [
+            {"ticker": "GAVEBACK", "side": "sell", "ts": time.time(),
+             "fill_native": 1010.0, "realized_krw": 100.0}]})
+        closed = tt.sync_closed()
+        pm = tt.postmortem_text(closed[0])
+        assert "반납" in pm and "+8.0%p" in pm
+
+    def test_digest_stats_and_text_handle_all_win_and_all_loss(self, tmp_path, monkeypatch):
+        # 회귀 고정: avg_win/avg_loss 둘 다 있다고 가정하면 전승/전패 구간에서
+        # None.__format__ 크래시하던 버그.
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("WIN", "KR", time.time() - 3600, 1000.0, 10, 10000.0)
+        monkeypatch.setattr(pt, "get_account", lambda: {
+            "positions": {}, "trades": [
+                {"ticker": "WIN", "side": "sell", "ts": time.time(),
+                 "fill_native": 1020.0, "realized_krw": 200.0}]})
+        tt.sync_closed()
+        s = tt.digest_stats(days=7)
+        assert s["n"] == 1 and s["win_rate"] == 100.0 and s["avg_loss_pct"] is None
+        text = tt.weekly_digest_text(days=7)
+        assert text is not None and "평균 패" not in text and "평균 승" in text
+
+    def test_digest_empty_returns_none(self, tmp_path, monkeypatch):
+        tt = self._setup(tmp_path, monkeypatch)
+        assert tt.digest_stats(days=7)["n"] == 0
+        assert tt.weekly_digest_text(days=7) is None
+
+    def test_wiring(self):
+        # Help/대시보드 등록 규칙 — 자동매수 진입 시 씨시스 생성 + 30분
+        # periodic 이 sync/mfe·mae 갱신 + 월요일 자정 주간다이제스트 + 대시보드
+        # 표기, 전부 같은 커밋으로 배선됐는지.
+        ps = open("bot/paper_signals.py", encoding="utf-8").read()
+        assert "_open_thesis(" in ps and "def _open_thesis" in ps
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "trade_thesis.update_mfe_mae()" in tb
+        assert "trade_thesis.sync_closed()" in tb
+        assert "weekly_digest_text" in tb
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "트레이드 씨시스" in db
 
 
 class TestMegacapComps:
@@ -13698,7 +13925,9 @@ class TestCpiBoardWiring20260724:
     def test_help_text_registered(self):
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "🛒CPI" in tb                 # 대시보드 목록
-        assert "PPI·CPI·유동성 제외" in tb    # 카드도구 제외(차트보드) 목록
+        # 카드도구 제외(차트보드) 목록 — 이후 시장타이밍 보드가 추가돼도
+        # "PPI·CPI·유동성"부터는 계속 이어져야(신규 차트보드 = 이 목록에 추가).
+        assert "PPI·CPI·유동성" in tb and "제외" in tb
 
     def test_fred_boards_nav_and_regen(self):
         from bot import fred_boards as fb
@@ -13716,3 +13945,914 @@ class TestCpiBoardWiring20260724:
         assert m is not None
         text = m.group(1)
         assert len(text.encode("utf-16-le")) // 2 < 4096
+
+
+class TestMarketTiming20260726:
+    """시장타이밍/브레드스(claude-trading-skills ibd-distribution-day-monitor/
+    ftd-detector/crypto-regime-analyzer/macro-regime-detector 이식) — 분산일
+    카운트·팔로우스루데이 상태기계·매크로 레짐·크립토 스코어 순수로직."""
+
+    def _flat_history(self, n, price=100.0, vol=1000):
+        return [{"date": f"d{i}", "close": price, "high": price * 1.01,
+                 "low": price * 0.99, "volume": vol} for i in range(n)]
+
+    def test_distribution_day_detected_on_decline_with_volume_up(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[5]["close"] = rows[6]["close"] * 0.99   # -1% vs 어제(더 최신)
+        rows[5]["volume"] = 2000                      # 거래량 증가
+        summ = mt.distribution_day_summary(rows)
+        assert summ["d5"] == 1 and summ["d15"] == 1 and summ["d25"] == 1
+        assert summ["risk_level"] == "NORMAL"
+
+    def test_distribution_day_no_signal_without_volume_increase(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[5]["close"] = rows[6]["close"] * 0.99
+        rows[5]["volume"] = 500   # 거래량 감소 — DD 아님
+        summ = mt.distribution_day_summary(rows)
+        assert summ["d25"] == 0
+
+    def test_distribution_day_invalidated_by_5pct_gain(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[10]["close"] = rows[11]["close"] * 0.99
+        rows[10]["volume"] = 2000
+        # DD 이후(더 최신, index<10) 세션 중 하나가 DD종가 대비 +5% 고가 도달.
+        rows[3]["high"] = rows[10]["close"] * 1.06
+        records = mt.detect_distribution_days(rows)
+        dd = next(r for r in records if r["age_sessions"] == 10)
+        assert dd["status"] == "invalidated"
+        summ = mt.distribution_day_summary(rows)
+        assert summ["d25"] == 0   # invalidated 는 active 카운트에서 제외
+
+    def test_distribution_day_expired_after_25_sessions(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[26]["close"] = rows[27]["close"] * 0.99
+        rows[26]["volume"] = 2000
+        records = mt.detect_distribution_days(rows)
+        dd = next(r for r in records if r["age_sessions"] == 26)
+        assert dd["status"] == "expired"
+
+    def test_risk_classification_thresholds(self):
+        from bot import market_timing as mt
+        assert mt.classify_risk(0, 0, 0) == "NORMAL"
+        assert mt.classify_risk(0, 0, 3) == "CAUTION"
+        assert mt.classify_risk(2, 0, 0) == "HIGH"       # d5 threshold
+        assert mt.classify_risk(0, 3, 0) == "HIGH"       # d15 threshold
+        assert mt.classify_risk(0, 0, 5) == "HIGH"       # d25 threshold
+        assert mt.classify_risk(0, 4, 0) == "SEVERE"     # d15 severe
+        assert mt.classify_risk(0, 0, 6) == "SEVERE"     # d25 severe
+
+    def _ftd_scenario(self, rally_closes, vol_up_at=None, n_pad=48):
+        # 40플랫(100) + 하락시퀀스(고점100→저점94, 3일하락) + rally_closes.
+        decline = [100, 100, 100, 100, 100, 99, 97, 94]
+        full = decline + rally_closes
+        rows = self._flat_history(n_pad)
+        for i, c in enumerate(full):
+            idx = -len(full) + i
+            rows[idx]["close"] = c
+            rows[idx]["high"] = c * 1.005
+            rows[idx]["low"] = c * 0.995
+            rows[idx]["volume"] = 2000 if (vol_up_at is not None and i == vol_up_at) else 1000
+        return rows
+
+    def test_ftd_confirmed_prime_window(self):
+        from bot import market_timing as mt
+        # decline(8개)+day1..day5: index 8=day1(94.5,vol up), 12=day5(FTD, +2.6%,vol up)
+        rally = [94.5, 95, 95.2, 96, 98.5]
+        rows = self._ftd_scenario(rally, vol_up_at=None)
+        rows[-len(rally)]["volume"] = 2000     # day1 거래량 증가
+        rows[-1]["volume"] = 2000              # FTD일 거래량 증가
+        res = mt.detect_ftd(rows)
+        assert res["state"] == "FTD_CONFIRMED"
+        assert res["day"] == 5 and res["window"] == "prime"
+        assert res["gain_pct"] > 2.0
+
+    def test_ftd_rally_failed_on_day1_low_breach(self):
+        from bot import market_timing as mt
+        rally = [94.8, 94.2]   # day1 저가~94.33, day2 종가 94.2 < day1저가(but > swing_low 94)
+        rows = self._ftd_scenario(rally)
+        res = mt.detect_ftd(rows)
+        assert res["state"] == "RALLY_FAILED" and res["day"] == 2
+
+    def test_ftd_no_correction_when_decline_too_small(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(50)
+        assert mt.detect_ftd(rows)["state"] == "NO_CORRECTION"
+
+    def test_ftd_insufficient_data(self):
+        from bot import market_timing as mt
+        assert mt.detect_ftd(self._flat_history(10))["state"] == "INSUFFICIENT_DATA"
+
+    def test_macro_regime_majority_vote_and_transitional_fallback(self):
+        from bot import market_timing as mt
+        assert mt.classify_macro_regime(2.0, -0.3, 1.0, 1.5, 3.0, 2.0) == "Broadening"
+        assert mt.classify_macro_regime(None, None, None, None, None, None) == "Transitional"
+
+    def test_crypto_regime_score_partial_components_graceful(self):
+        from bot import market_timing as mt
+        full = mt.crypto_regime_score(50000, 48000, 40000, 55.0, -15.0, 20.0)
+        assert full["score"] is not None and set(full["components"]) == {
+            "trend", "dominance", "drawdown", "momentum"}
+        partial = mt.crypto_regime_score(50000, None, None, None, None, None)
+        assert partial["score"] is None and partial["components"] == {}
+        empty = mt.crypto_regime_score(None, None, None, None, None, None)
+        assert empty["score"] is None
+
+    def test_market_indices_universal_kr_us_jp(self):
+        from bot import market_timing as mt
+        for m in ("US", "KR", "JP"):
+            assert mt.MARKET_INDICES.get(m), f"{m} 지수 미등록"
+
+    def test_render_market_timing_page_smoke(self):
+        from bot import market_timing as mt
+        data = {
+            "markets": {
+                "US": {"ticker": "^GSPC", "name": "S&P 500",
+                       "dd": {"d5": 1, "d15": 2, "d25": 3, "risk_level": "CAUTION"},
+                       "ftd": {"state": "FTD_CONFIRMED", "day": 5,
+                              "window": "prime", "quality_score": 80},
+                       "latest_date": "2026-07-24", "latest_close": 5000.0},
+                "KR": {"ticker": "^KS11", "name": "KOSPI", "error": "데이터 없음"},
+                "JP": {"ticker": "^N225", "name": "니케이225",
+                       "dd": {"d5": 0, "d15": 0, "d25": 0, "risk_level": "NORMAL"},
+                       "ftd": {"state": "NO_CORRECTION"},
+                       "latest_date": "2026-07-24", "latest_close": 40000.0},
+            },
+            "macro": {"regime": "Broadening", "rsp_spy": 2.0, "curve_10y2y": -0.3},
+            "crypto": {"price": 60000, "ath_change_pct": -12.5, "score": 70.0,
+                      "components": {"trend": 100}},
+        }
+        html = mt.render_market_timing_page(data)
+        assert "mt-data" in html and "CAUTION" in html
+        assert "데이터 없음" in html and "FTD 확정" in html
+        assert html.lower().count("<!doctype") == 1
+
+    def test_render_market_timing_page_empty_market_graceful(self):
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
+        assert "시장타이밍" in html   # crash 없이 렌더(빈 데이터도 graceful)
+
+    def test_wiring(self):
+        # nav(공용 fred_boards._NAV + 홈허브 + Market cap) · 6시간 periodic ·
+        # startup 스레드 · _HELP_TEXT 등록 — 같은 커밋 의무 계약.
+        from bot import fred_boards as fb
+        assert 'href="market_timing.html">🚦 시장타이밍</a>' in fb._NAV
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db.count('href="market_timing.html">🚦 시장타이밍</a>') >= 2
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "regenerate_market_timing" in tb
+        assert "🚦시장타이밍" in tb
+        # 후속 차트보드 추가마다 이 문자열이 계속 늘어남(2026-07-26 경제캘린더
+        # 추가로 재확인) — exact-substring 대신 부분포함으로 완화.
+        assert "시장타이밍" in tb and "PPI·CPI·유동성" in tb and "제외" in tb
+        mtsrc = open("bot/market_timing.py", encoding="utf-8").read()
+        assert "def regenerate_market_timing" in mtsrc
+        assert '(ARCHIVE_ROOT / "market_timing.html").write_text' in mtsrc
+
+
+class TestBacktestReview20260726:
+    """백테스트 리뷰(claude-trading-skills backtest-expert 5축 프레임워크
+    이식, bot/backtest_review.py) — 스코어링 공식/경계값 + 씨시스 이력 변환."""
+
+    def test_score_sample_size_boundaries(self):
+        from bot import backtest_review as br
+        assert br.score_sample_size(29) == 0
+        assert br.score_sample_size(30) == 8
+        assert br.score_sample_size(99) == 14
+        assert br.score_sample_size(100) == 15
+        assert br.score_sample_size(199) == 19
+        assert br.score_sample_size(200) == 20
+        assert br.score_sample_size(1000) == 20
+
+    def test_calc_profit_factor_inf_when_no_losses(self):
+        from bot import backtest_review as br
+        assert br.calc_profit_factor(100.0, 2.0, 1.0) == float("inf")
+        pf = br.calc_profit_factor(60.0, 2.0, 1.0)
+        assert pf == (0.6 * 2.0) / (0.4 * 1.0)
+
+    def test_score_expectancy_boundaries(self):
+        from bot import backtest_review as br
+        assert br.score_expectancy(40.0, 1.0, 1.0) == 0          # exp <= 0
+        assert br.score_expectancy(100.0, 20.0, 0.0) == 20        # exp huge >=1.5
+        mid = br.score_expectancy(60.0, 1.0, 1.0)                 # exp = 0.2
+        assert 5 <= mid < 10
+
+    def test_score_risk_management_catastrophic_drawdown_zero(self):
+        from bot import backtest_review as br
+        assert br.score_risk_management(50.0, 90.0, 5.0, 1.0) == 0
+        assert br.score_risk_management(60.0, 90.0, 5.0, 1.0) == 0
+        good = br.score_risk_management(10.0, 75.0, 2.0, 1.0)
+        assert good == 20   # dd<20 -> 12 + pf(=0.75*2/0.25=6.0)>=3.0 -> 8
+
+    def test_score_robustness_boundaries(self):
+        from bot import backtest_review as br
+        assert br.score_robustness(4, 2) == 5    # years<5 -> 0 + param<=4 -> 5
+        assert br.score_robustness(10, 4) == 20   # years>=10 -> 15 + 5
+        assert br.score_robustness(10, 9) == 15   # param>=8 -> 0
+
+    def test_get_verdict_thresholds(self):
+        from bot import backtest_review as br
+        assert br.get_verdict(70) == "Deploy"
+        assert br.get_verdict(69) == "Refine"
+        assert br.get_verdict(40) == "Refine"
+        assert br.get_verdict(39) == "Abandon"
+
+    def test_detect_red_flags_small_sample_and_negative_expectancy(self):
+        from bot import backtest_review as br
+        flags = br.detect_red_flags(10, 30.0, 1.0, 3.0, 10.0, 8, 2, True)
+        ids = {f["id"] for f in flags}
+        assert "small_sample" in ids and "negative_expectancy" in ids
+        assert "no_slippage_test" not in ids
+
+    def test_evaluate_validates_inputs(self):
+        from bot import backtest_review as br
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            br.evaluate(-1, 50.0, 1.0, 1.0, 10.0, 5, 2, True)
+        with _pytest.raises(ValueError):
+            br.evaluate(50, 150.0, 1.0, 1.0, 10.0, 5, 2, True)
+
+    def test_max_drawdown_pct_from_returns(self):
+        from bot import backtest_review as br
+        # +10 -> peak 10, -4 -> equity 6 (dd 4), +1 -> equity 7, -20 -> equity -13 (dd 23)
+        pcts = [10.0, -4.0, 1.0, -20.0]
+        assert br.max_drawdown_pct_from_returns(pcts) == 23.0
+        assert br.max_drawdown_pct_from_returns([]) == 0.0
+        assert br.max_drawdown_pct_from_returns([5.0, 5.0]) == 0.0   # 낙폭 없음(단조 증가)
+
+    def test_review_trade_history_empty_returns_n_zero(self):
+        from bot import backtest_review as br
+        result = br.review_trade_history(theses=[])
+        assert result["n"] == 0
+        assert "평가 불가" in br.review_text(result)
+
+    def test_review_trade_history_all_win_profit_factor_inf(self):
+        from bot import backtest_review as br
+        day = 86400.0
+        theses = [{"entry_ts": 1000.0 + i * day, "exit_ts": 1000.0 + i * day + day,
+                   "realized_pct": 3.0} for i in range(35)]
+        result = br.review_trade_history(theses=theses)
+        assert result["n"] == 35
+        assert result["profit_factor"] == float("inf")
+        assert result["dimensions"][2]["score"] == 20   # Risk Management: 무손실 -> pf 만점 + dd 0 -> 20
+        text = br.review_text(result)
+        assert "Inf(무손실)" in text
+
+    def test_review_trade_history_all_loss_is_abandon_with_flags(self):
+        from bot import backtest_review as br
+        day = 86400.0
+        theses = [{"entry_ts": 1000.0 + i * day, "exit_ts": 1000.0 + i * day + day,
+                   "realized_pct": -8.0} for i in range(35)]
+        result = br.review_trade_history(theses=theses, slippage_tested=False, num_parameters=9)
+        assert result["verdict"] == "Abandon"
+        ids = {f["id"] for f in result["red_flags"]}
+        assert {"negative_expectancy", "excessive_drawdown", "no_slippage_test",
+                "over_optimized"} <= ids
+
+    def test_review_trade_history_ignores_unrealized_and_sorts_chronologically(self):
+        from bot import backtest_review as br
+        day = 86400.0
+        # 순서 뒤섞여 들어와도 exit_ts 기준 정렬 후 낙폭 계산(입력 순서 무관 보장)
+        theses = [
+            {"entry_ts": 3000.0, "exit_ts": 3000.0 + day, "realized_pct": -5.0},
+            {"entry_ts": 1000.0, "exit_ts": 1000.0 + day, "realized_pct": 10.0},
+            {"entry_ts": 2000.0, "exit_ts": 2000.0 + day, "realized_pct": None},  # 미실현/무효 제외
+        ]
+        result = br.review_trade_history(theses=theses)
+        assert result["n"] == 2   # realized_pct None 인 건 제외
+
+    def test_wiring(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def cmd_backtest_review" in tb
+        assert '"backtest_review": (cmd_backtest_review' in tb
+        assert "/backtest_review" in tb   # _HELP_TEXT 등록
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "backtest_review.review_trade_history" in db
+        assert "백테스트 리뷰" in db
+
+
+def _vcp_ramp(pivots, start=100.0):
+    """(n_bars, target) 리스트로 선형 램프 closes 생성 — VCP 조정/피벗 테스트용."""
+    closes = [start]
+    for n, target in pivots:
+        s = closes[-1]
+        for i in range(1, n + 1):
+            closes.append(s + (target - s) * i / n)
+    highs = [c * 1.01 for c in closes]
+    lows = [c * 0.99 for c in closes]
+    return closes, highs, lows
+
+
+class TestPatternScreener20260726:
+    """VCP·모멘텀버스트·PEAD 패턴 탐지(claude-trading-skills 이식,
+    bot/pattern_screener.py) — 순수함수 + trend_template 병합 배선."""
+
+    def test_zigzag_swings_alternates_and_respects_min_move(self):
+        from bot import pattern_screener as ps
+        highs = [100, 105, 110, 108, 104, 100, 105, 112, 118, 115, 110]
+        lows = [h - 1 for h in highs]
+        swings = ps.zigzag_swings(highs, lows, min_move=8)
+        types = [s[1] for s in swings]
+        assert len(swings) >= 2   # 최소 한 번은 반전 감지
+        for a, b in zip(types, types[1:]):
+            assert a != b   # 항상 고점/저점 교대
+
+    def test_zigzag_swings_empty_on_zero_min_move(self):
+        from bot import pattern_screener as ps
+        assert ps.zigzag_swings([1, 2, 3], [1, 2, 3], 0) == []
+        assert ps.zigzag_swings([], [], 5) == []
+
+    def test_detect_vcp_valid_two_contractions_pre_breakout(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 144)])
+        vols = [1000.0] * len(closes)
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120)
+        assert res["valid_vcp"] is True
+        assert res["num_contractions"] == 2
+        # 각 조정폭이 이전 조정의 70% 이하로 수축(오래된→최신 순 저장)
+        d1, d2 = res["contraction_depths_pct"]
+        assert d2 <= d1 * 0.70 + 0.01
+        assert res["execution_state"] == "Pre-breakout"
+        assert res["breakout"] is False
+
+    def test_detect_vcp_breakout_with_volume(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 150)])
+        vols = [1000.0] * len(closes)
+        vols[-1] = 2000.0
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120)
+        assert res["valid_vcp"] is True
+        assert res["breakout"] is True
+        assert res["execution_state"] == "Breakout"
+        assert res["score"] > 0
+
+    def test_detect_vcp_single_contraction_invalid(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (20, 160)])
+        vols = [1000.0] * len(closes)
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120)
+        assert res["valid_vcp"] is False
+        assert res["execution_state"] == "None"
+        assert res["score"] == 0
+
+    def test_detect_vcp_stage2_gate_zeroes_out_despite_valid_pattern(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 150)])
+        vols = [1000.0] * len(closes)
+        vols[-1] = 2000.0
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120, stage2_ok=False)
+        assert res["valid_vcp"] is False
+        assert res["breakout"] is False
+        assert res["execution_state"] == "Not-Stage2"
+        assert res["score"] == 0
+
+    def test_detect_vcp_short_history_returns_none(self):
+        from bot import pattern_screener as ps
+        assert ps.detect_vcp([1, 2, 3], [1, 2, 3], [1, 2, 3], [1, 2, 3]) is None
+
+    def test_detect_momentum_burst_pct_trigger_with_range_expansion(self):
+        from bot import pattern_screener as ps
+        n = 55
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        closes[-1] = closes[-2] * 1.05
+        vols[-1] = 2500.0
+        highs = [c * 1.005 for c in closes]
+        lows = [c * 0.995 for c in closes]
+        highs[-1] = closes[-1] * 1.03
+        lows[-1] = closes[-2] * 0.99
+        res = ps.detect_momentum_burst(closes, vols, highs=highs, lows=lows)
+        assert res["valid"] is True
+        assert res["trigger"] == "pct"
+        assert res["range_expansion"] is True
+        assert res["score"] > 50
+
+    def test_detect_momentum_burst_dollar_trigger(self):
+        from bot import pattern_screener as ps
+        n = 55
+        closes = [200.0] * n
+        vols = [1000.0] * n
+        closes[-1] = closes[-2] + 0.95
+        vols[-1] = 2000.0
+        res = ps.detect_momentum_burst(closes, vols)
+        assert res["valid"] is True
+        assert res["trigger"] == "dollar"
+
+    def test_detect_momentum_burst_no_volume_surge_invalid(self):
+        from bot import pattern_screener as ps
+        n = 55
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        closes[-1] = closes[-2] * 1.06   # 6% move but flat volume
+        res = ps.detect_momentum_burst(closes, vols)
+        assert res["valid"] is False
+        assert res["trigger"] is None
+        assert res["score"] == 0
+
+    def test_detect_momentum_burst_short_history_returns_none(self):
+        from bot import pattern_screener as ps
+        assert ps.detect_momentum_burst([1, 2, 3], [1, 2, 3]) is None
+
+    def test_detect_pead_valid_gap_and_drift(self):
+        from bot import pattern_screener as ps
+        n = 80
+        opens = [100.0] * n
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        gap_idx = n - 10
+        opens[gap_idx] = closes[gap_idx - 1] * 1.07
+        closes[gap_idx] = opens[gap_idx] * 1.01
+        vols[gap_idx] = 2000.0
+        for i in range(gap_idx + 1, n):
+            closes[i] = closes[i - 1] * 1.005
+            opens[i] = closes[i - 1]
+        res = ps.detect_pead(closes, opens, vols, lookback_days=20)
+        assert res["valid"] is True
+        assert res["gap_pct"] == 7.0
+        assert res["drift_pct"] > 0
+        assert res["score"] > 0
+
+    def test_detect_pead_collapsed_is_invalid(self):
+        from bot import pattern_screener as ps
+        n = 80
+        opens = [100.0] * n
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        gap_idx = n - 10
+        opens[gap_idx] = closes[gap_idx - 1] * 1.07
+        closes[gap_idx] = opens[gap_idx] * 1.01
+        vols[gap_idx] = 2000.0
+        for i in range(gap_idx + 1, n):
+            closes[i] = closes[i - 1] * 1.005
+            opens[i] = closes[i - 1]
+        closes[-1] = opens[gap_idx] * 0.5   # 갭 붕괴
+        res = ps.detect_pead(closes, opens, vols, lookback_days=20)
+        assert res["valid"] is False
+
+    def test_detect_pead_no_gap_returns_message_dict(self):
+        from bot import pattern_screener as ps
+        n = 80
+        res = ps.detect_pead([100.0] * n, [100.0] * n, [1000.0] * n, lookback_days=20)
+        assert res["valid"] is False
+        assert res["gap_pct"] is None
+
+    def test_detect_pead_short_history_returns_none(self):
+        from bot import pattern_screener as ps
+        assert ps.detect_pead([1] * 10, [1] * 10, [1] * 10, lookback_days=20) is None
+
+    def test_merge_into_trend_result_adds_expected_keys(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 150)])
+        opens = closes[:]
+        vols = [1000.0] * len(closes)
+        vols[-1] = 2000.0
+        result = {"tt": 1.0}
+        ps.merge_into_trend_result(result, closes, opens, highs, lows, vols)
+        assert set(result) >= {"vcp_valid", "vcp_score", "mb_valid", "mb_score",
+                               "pead_valid", "pead_score"}
+        assert result["vcp_valid"] in (0.0, 1.0)
+
+    def test_wiring(self):
+        from bot import stock_screener as ss
+        for key in ("vcp_valid", "vcp_score", "mb_valid", "mb_score",
+                    "pead_valid", "pead_score"):
+            assert key in ss.METRICS
+        for preset in ("vcp", "momentum_burst", "pead"):
+            assert preset in ss.PRESETS
+            conds = ss.parse_conditions(ss.PRESETS[preset]["conditions"])
+            assert conds   # 파싱 성공(별칭 등록 검증)
+        pk_src = open("bot/pykrx_client.py", encoding="utf-8").read()
+        assert "merge_into_trend_result" in pk_src
+        ss_src = open("bot/stock_screener.py", encoding="utf-8").read()
+        assert "merge_into_trend_result" in ss_src
+
+
+class TestEconCalendar20260726:
+    """경제 캘린더 보드(CPI/고용동향/GDP/PCE/FOMC, FRED release-dates API,
+    bot/econ_calendar.py) — 순수 날짜분류 함수 + graceful 배선."""
+
+    def test_upcoming_and_recent_picks_next_and_recent(self):
+        from bot import econ_calendar as ec
+        dates = ["2026-06-10", "2026-07-10", "2026-07-30", "2026-09-10"]
+        r = ec.upcoming_and_recent(dates, "2026-07-26")
+        assert r["next"] == "2026-07-30"
+        assert r["recent"] == []   # 07-10 은 14일 컷오프(07-12) 밖
+
+    def test_upcoming_and_recent_includes_within_cutoff(self):
+        from bot import econ_calendar as ec
+        r = ec.upcoming_and_recent(["2026-07-20"], "2026-07-26")
+        assert r["next"] is None
+        assert r["recent"] == ["2026-07-20"]
+
+    def test_upcoming_and_recent_empty_dates(self):
+        from bot import econ_calendar as ec
+        assert ec.upcoming_and_recent([], "2026-07-26") == {"next": None, "recent": []}
+
+    def test_upcoming_and_recent_all_past_outside_cutoff(self):
+        from bot import econ_calendar as ec
+        r = ec.upcoming_and_recent(["2026-01-01"], "2026-07-26")
+        assert r["next"] is None
+        assert r["recent"] == []
+
+    def test_load_econ_calendar_graceful_without_api_key(self, monkeypatch):
+        from bot import econ_calendar as ec
+        monkeypatch.delenv("FRED_API_KEY", raising=False)
+        data = ec._load_econ_calendar(today="2026-07-26")
+        assert len(data["events"]) == len(ec._RELEASES)
+        assert all(e.get("error") for e in data["events"])   # 키 없으니 전부 조회실패(graceful)
+
+    def test_render_econ_calendar_page_smoke(self):
+        from bot import econ_calendar as ec
+        data = {"events": [
+            {"key": "cpi", "label": "🛒 CPI", "release_id": 10,
+             "next": "2026-08-12", "recent": []},
+            {"key": "fomc", "label": "🏛️ FOMC", "error": "release_id 미확인"},
+        ], "as_of": "2026-07-26"}
+        html = ec.render_econ_calendar_page(data)
+        assert html.lower().count("<!doctype") == 1
+        assert "2026-08-12" in html and "release_id 미확인" in html
+
+    def test_render_econ_calendar_page_empty_graceful(self):
+        from bot import econ_calendar as ec
+        html = ec.render_econ_calendar_page({"events": []})
+        assert "경제 캘린더" in html   # crash 없이 렌더(빈 데이터도 graceful)
+
+    def test_find_release_id_and_fetch_release_dates_no_key_graceful(self, monkeypatch):
+        from bot import fred_client as fc
+        monkeypatch.delenv("FRED_API_KEY", raising=False)
+        assert fc.fetch_releases_catalog() == []
+        assert fc.find_release_id("Consumer Price Index") is None
+        assert fc.fetch_release_dates(10, "2026-01-01", "2026-12-31") == []
+
+    def test_find_release_id_matches_by_substring(self, monkeypatch):
+        from bot import fred_client as fc
+        monkeypatch.setattr(fc, "fetch_releases_catalog",
+                            lambda: [{"id": 10, "name": "Consumer Price Index"},
+                                     {"id": 50, "name": "Employment Situation"}])
+        assert fc.find_release_id("consumer price index") == 10
+        assert fc.find_release_id("Employment") == 50
+        assert fc.find_release_id("Nonexistent Release") is None
+
+    def test_wiring(self):
+        # nav(공용 fred_boards._NAV + 홈허브 2곳) · 6시간 periodic · startup
+        # 스레드 · _HELP_TEXT 등록 — 같은 커밋 의무 계약.
+        from bot import fred_boards as fb
+        assert 'href="econ_calendar.html">📅 경제캘린더</a>' in fb._NAV
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db.count('href="econ_calendar.html">📅 경제캘린더</a>') >= 2
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "regenerate_econ_calendar" in tb
+        assert "📅경제캘린더" in tb
+        assert "econ_calendar" in tb.lower()
+        ecsrc = open("bot/econ_calendar.py", encoding="utf-8").read()
+        assert "def regenerate_econ_calendar" in ecsrc
+        assert '(ARCHIVE_ROOT / "econ_calendar.html").write_text' in ecsrc
+
+
+class TestDividendScreener20260726:
+    """배당 스크리너(claude-trading-skills 이식) — 성장형(3년배당CAGR+RSI
+    눌림목) / 가치형(수익률+PER+PBR, 기존 메트릭 재사용) 배선 + 순수함수."""
+
+    def test_rsi14_from_closes_uptrend_and_downtrend(self):
+        from bot import pattern_screener as ps
+        up = [100 + i for i in range(30)]
+        down = [130 - i for i in range(30)]
+        assert ps.rsi14_from_closes(up) == 100.0
+        assert ps.rsi14_from_closes(down) == 0.0
+
+    def test_rsi14_from_closes_short_history_none(self):
+        from bot import pattern_screener as ps
+        assert ps.rsi14_from_closes([1] * 10) is None
+
+    def test_dividend_cagr_pct_known_value(self):
+        from bot import stock_screener as ss
+        # 100 -> 140.49 over 3yrs = exactly 12% CAGR ((1.12)^3=1.404928)
+        cagr = ss.dividend_cagr_pct({2023: 100.0, 2026: 140.4928}, years=3)
+        assert cagr == 12.0
+
+    def test_dividend_cagr_pct_missing_base_year_none(self):
+        from bot import stock_screener as ss
+        assert ss.dividend_cagr_pct({2023: 100.0}, years=3) is None
+
+    def test_dividend_cagr_pct_empty_none(self):
+        from bot import stock_screener as ss
+        assert ss.dividend_cagr_pct({}, years=3) is None
+
+    def test_dividend_cagr_pct_zero_or_negative_base_none(self):
+        from bot import stock_screener as ss
+        assert ss.dividend_cagr_pct({2020: 0.0, 2023: 100.0}, years=3) is None
+
+    def test_dividend_cagr_pct_dividend_cut_negative(self):
+        from bot import stock_screener as ss
+        cagr = ss.dividend_cagr_pct({2020: 100.0, 2023: 0.0}, years=3)
+        assert cagr == -100.0
+
+    def test_merge_into_trend_result_adds_rsi14(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150)])
+        opens = closes[:]
+        vols = [1000.0] * len(closes)
+        result = {"tt": 1.0}
+        ps.merge_into_trend_result(result, closes, opens, highs, lows, vols)
+        assert "rsi14" in result
+
+    def test_presets_parse_and_metrics_registered(self):
+        from bot import stock_screener as ss
+        assert "div_cagr" in ss.METRICS and ss.METRICS["div_cagr"].source == "div_cagr"
+        assert "rsi14" in ss.METRICS and ss.METRICS["rsi14"].source == "tech"
+        for preset, expect_keys in (
+            ("growth_dividend", {"div_cagr", "rsi14", "mcap"}),
+            ("value_dividend", {"div", "per", "pbr"}),
+        ):
+            assert preset in ss.PRESETS
+            conds = ss.parse_conditions(ss.PRESETS[preset]["conditions"])
+            assert conds
+            assert {c.metric.key for c in conds} >= expect_keys
+
+    def test_wiring(self):
+        src = open("bot/stock_screener.py", encoding="utf-8").read()
+        assert "compute_div_cagr" in src
+        assert "_compute_div_cagr_value" in src
+        assert "div_cagr_conds" in src   # _screen_kr 배선
+        assert 'elif c.metric.source == "div_cagr"' in src   # _screen_yf 배선
+
+
+_13F_XML_PREV = b"""<?xml version="1.0" encoding="UTF-8"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+<infoTable>
+<nameOfIssuer>APPLE INC</nameOfIssuer>
+<cusip>037833100</cusip>
+<value>1000000</value>
+<shrsOrPrnAmt><sshPrnamt>1000000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+<infoTable>
+<nameOfIssuer>COCA COLA CO</nameOfIssuer>
+<cusip>191216100</cusip>
+<value>2000000</value>
+<shrsOrPrnAmt><sshPrnamt>400000000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+</informationTable>"""
+
+_13F_XML_CURR = b"""<?xml version="1.0" encoding="UTF-8"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+<infoTable>
+<nameOfIssuer>APPLE INC</nameOfIssuer>
+<cusip>037833100</cusip>
+<value>1100000</value>
+<shrsOrPrnAmt><sshPrnamt>900000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+<infoTable>
+<nameOfIssuer>NEWCO INC</nameOfIssuer>
+<cusip>999999100</cusip>
+<value>500000</value>
+<shrsOrPrnAmt><sshPrnamt>50000</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt>
+</infoTable>
+</informationTable>"""
+
+
+class TestEdgar13F20260726:
+    """13F 기관플로우 트래커(claude-trading-skills 이식, 미국전용 예외,
+    bot/edgar_13f.py) — XML 파싱 + delta 계산 순수함수 + graceful 배선."""
+
+    def test_parse_infotable_xml(self):
+        from bot import edgar_13f as e13
+        rows = e13.parse_infotable_xml(_13F_XML_PREV)
+        assert len(rows) == 2
+        assert rows[0] == {"issuer": "APPLE INC", "cusip": "037833100",
+                           "value_usd_thousands": 1000000.0, "shares": 1000000.0,
+                           "share_type": "SH"}
+
+    def test_parse_infotable_xml_malformed_returns_empty(self):
+        from bot import edgar_13f as e13
+        assert e13.parse_infotable_xml(b"not xml at all") == []
+        assert e13.parse_infotable_xml(b"") == []
+
+    def test_compute_holding_delta_increased_and_decreased(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "apple")
+        assert d == {"prev_shares": 1000000.0, "curr_shares": 900000.0,
+                     "delta_shares": -100000.0, "delta_pct": -10.0,
+                     "action": "DECREASED"}
+
+    def test_compute_holding_delta_exited(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "coca cola")
+        assert d["action"] == "EXITED"
+        assert d["curr_shares"] == 0
+
+    def test_compute_holding_delta_new(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "newco")
+        assert d["action"] == "NEW"
+        assert d["delta_pct"] is None   # prev_shares=0 → 퍼센트 정의불가
+
+    def test_compute_holding_delta_not_held(self):
+        from bot import edgar_13f as e13
+        prev = e13.parse_infotable_xml(_13F_XML_PREV)
+        curr = e13.parse_infotable_xml(_13F_XML_CURR)
+        d = e13.compute_holding_delta(prev, curr, "nvidia")
+        assert d["action"] == "NOT_HELD"
+
+    def test_find_filer_cik_known_and_unknown(self):
+        from bot import edgar_13f as e13
+        assert e13.find_filer_cik("berkshire") == "0001067983"
+        assert e13.find_filer_cik("Nonexistent Fund LLC") is None
+
+    def test_get_13f_flow_unknown_filer_graceful(self):
+        from bot import edgar_13f as e13
+        assert e13.get_13f_flow("Apple Inc", filer_key="NOSUCHFUND") is None
+        assert e13.get_13f_flow("", filer_key="BERKSHIRE") is None
+
+    def test_format_13f_block_none_and_not_held(self):
+        from bot import edgar_13f as e13
+        assert e13.format_13f_block(None) == ""
+        assert e13.format_13f_block({"action": "NOT_HELD"}) == ""
+
+    def test_format_13f_block_renders_flow(self):
+        from bot import edgar_13f as e13
+        flow = {"filer": "Berkshire Hathaway Inc", "prev_filing_date": "2026-02-14",
+                "curr_filing_date": "2026-05-15", "prev_shares": 1000000.0,
+                "curr_shares": 900000.0, "delta_shares": -100000.0,
+                "delta_pct": -10.0, "action": "DECREASED"}
+        text = e13.format_13f_block(flow)
+        assert "Berkshire Hathaway Inc" in text
+        assert "감편" in text
+        assert "-10.0%" in text
+
+    def test_wiring(self):
+        ss_src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "from bot.edgar_13f import get_13f_flow" in ss_src
+        assert 'snap.setdefault("us", {})["institutional_13f"]' in ss_src
+        db_src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'us.get("institutional_13f")' in db_src
+        assert "us_13f_html" in db_src
+
+
+class TestCotGate20260726:
+    """COT(CFTC Commitments of Traders) 역발상 게이트(claude-trading-skills
+    이식, 선물전용 예외, bot/cot_gate.py) — 순수함수 + market_timing 병합."""
+
+    def test_cot_index_at_max_and_min(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]) == 100.0
+        assert cg.cot_index([100, 90, 80, 70, 60, 50, 40, 30, 20, 10]) == 0.0
+
+    def test_cot_index_midpoint(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([10, 90, 50]) == 50.0
+
+    def test_cot_index_flat_series_none(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([5, 5, 5, 5]) is None
+
+    def test_cot_index_too_short_none(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([5]) is None
+
+    def test_cot_index_respects_lookback_window(self):
+        from bot import cot_gate as cg
+        # 마지막 3개(lookback=3)만 봄: [90,10,50] -> range[10,90], current=50 -> 50.0
+        # 앞의 -1000 이 lookback 밖이라 범위에 영향 없어야 함(포함되면 결과 달라짐)
+        hist = [-1000, 90, 10, 50]
+        assert cg.cot_index(hist, lookback=3) == 50.0
+
+    def test_classify_cot_positioning_thresholds(self):
+        from bot import cot_gate as cg
+        assert cg.classify_cot_positioning(80.0) == "EXTREME_LONG_CROWDED"
+        assert cg.classify_cot_positioning(20.0) == "EXTREME_SHORT_CROWDED"
+        assert cg.classify_cot_positioning(50.0) == "NEUTRAL"
+        assert cg.classify_cot_positioning(None) == "UNKNOWN"
+
+    def test_price_failed_to_hold_up_direction(self):
+        from bot import cot_gate as cg
+        closes = [100, 105, 110, 108, 106, 112]
+        assert cg.price_failed_to_hold(closes, 1, "up", confirm_days=3) is False
+        closes2 = [100, 105, 95, 96, 97]
+        assert cg.price_failed_to_hold(closes2, 1, "up", confirm_days=3) is True
+
+    def test_price_failed_to_hold_down_direction(self):
+        from bot import cot_gate as cg
+        closes = [100, 95, 90, 92, 93, 94]   # trigger idx1=95, follow=[90,92,93] all<=95 -> no fail
+        assert cg.price_failed_to_hold(closes, 1, "down", confirm_days=3) is False
+        closes2 = [100, 95, 105, 106]        # follow has 105>95 -> fail
+        assert cg.price_failed_to_hold(closes2, 1, "down", confirm_days=2) is True
+
+    def test_price_failed_to_hold_out_of_range_and_insufficient_data(self):
+        from bot import cot_gate as cg
+        closes = [100, 105, 110]
+        assert cg.price_failed_to_hold(closes, 10, "up") is None
+        assert cg.price_failed_to_hold(closes, 2, "up", confirm_days=3) is None
+
+    def test_price_failed_to_hold_bad_direction_none(self):
+        from bot import cot_gate as cg
+        assert cg.price_failed_to_hold([1, 2, 3, 4, 5], 0, "sideways") is None
+
+    def test_get_cot_signal_graceful_without_network(self):
+        from bot import cot_gate as cg
+        sig = cg.get_cot_signal("SP500")
+        assert sig["market"] == "SP500"
+        assert sig["signal"] == "UNKNOWN"
+        assert sig["index"] is None
+
+    def test_wiring(self):
+        mt_src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert "from bot.cot_gate import get_cot_signal" in mt_src
+        assert '"cot": cot' in mt_src
+        assert "COT 역발상 게이트" in mt_src
+        from bot import market_timing as mt
+        data = {"markets": {}, "macro": {}, "crypto": {},
+                "cot": {"market": "SP500", "index": 85.0, "signal": "EXTREME_LONG_CROWDED",
+                       "label": "테스트", "as_of": "2026-07-18"}}
+        html = mt.render_market_timing_page(data)
+        assert "COT 역발상 게이트" in html and "85" in html
+
+    def test_render_market_timing_page_no_cot_graceful(self):
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
+        assert "시장타이밍" in html   # crash 없이 렌더(cot 키 부재도 graceful)
+
+
+class TestBatchIndependentReviewFixes20260726:
+    """9개 배치 병합 전 독립 코드리뷰(Agent)가 찾은 실버그 2건 fix.
+
+    1) 13F 회사명 매칭: 실제 호출부(stock_snapshot.py)가 넘기는 값은 SEC
+       공식 title("Apple Inc.", 마침표 있음)인데 13F issuer 는 "APPLE INC"
+       (마침표 없음) — 기존 단순 substring 은 이 표기차로 항상 매치실패해
+       NOT_HELD 로 조용히 드롭되던 버그(테스트는 "apple" 같은 순수명만 써서
+       못 잡음). _normalize_company_name 으로 양쪽 정규화 후 비교하도록 fix.
+    2) 트레이드 씨시스 중복 생성: 같은 종목이 ACTIVE 씨시스 보유 중에 다시
+       매수되면(평단추가) 두번째 씨시스가 또 생성 → sync_closed() 가 같은
+       청산 체결을 두 씨시스 모두에 매칭시켜 실현손익 이중기록·중복
+       포스트모템 알림·다이제스트 통계 중복반영. _open_thesis 에 '종목당
+       ACTIVE 최대 1개' 가드 추가로 fix."""
+
+    def test_compute_holding_delta_matches_sec_official_title_with_period(self):
+        from bot import edgar_13f as e13
+        prev = [{"issuer": "APPLE INC", "cusip": "037833100", "shares": 1000000.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        curr = [{"issuer": "APPLE INC", "cusip": "037833100", "shares": 900000.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        for needle in ("Apple Inc.", "Apple Inc", "Apple, Inc.", "APPLE INC"):
+            d = e13.compute_holding_delta(prev, curr, needle)
+            assert d["action"] == "DECREASED", f"failed for needle={needle!r}"
+            assert d["prev_shares"] == 1000000.0 and d["curr_shares"] == 900000.0
+
+    def test_compute_holding_delta_bare_name_unaffected(self):
+        # 기존(정규화 전) 테스트가 쓰던 짧은 순수명도 그대로 동작해야(회귀 방지).
+        from bot import edgar_13f as e13
+        prev = [{"issuer": "COCA COLA CO", "cusip": "191216100", "shares": 400000000.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        d = e13.compute_holding_delta(prev, [], "coca cola")
+        assert d["action"] == "EXITED"
+
+    def test_compute_holding_delta_empty_needle_graceful(self):
+        from bot import edgar_13f as e13
+        prev = [{"issuer": "APPLE INC", "cusip": "037833100", "shares": 100.0,
+                 "value_usd_thousands": 1.0, "share_type": "SH"}]
+        d = e13.compute_holding_delta(prev, prev, "")
+        assert d["action"] == "NOT_HELD"   # 빈 needle 은 아무 것도 매치하지 않음
+
+    def test_normalize_company_name_strips_suffix_and_punctuation(self):
+        from bot import edgar_13f as e13
+        assert e13._normalize_company_name("Apple Inc.") == "apple"
+        assert e13._normalize_company_name("APPLE INC") == "apple"
+        assert e13._normalize_company_name("Berkshire Hathaway Inc.") == \
+            e13._normalize_company_name("BERKSHIRE HATHAWAY INC")
+
+    def test_open_thesis_guard_skips_when_ticker_already_active(self, tmp_path, monkeypatch):
+        import bot.paper_signals as ps
+        import bot.paper_trading as pt
+        import bot.trade_thesis as tt
+        monkeypatch.setattr(tt, "_HOME", tmp_path)
+        monkeypatch.setattr(tt, "_THESES", tmp_path / "theses.json")
+        tt.open_thesis("AAPL", "US", 1000.0, 150.0, 10, 1500000.0)
+        assert len(tt.list_theses(status="ACTIVE")) == 1
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {"AAPL": {
+            "market": "US", "avg_cost_native": 155.0, "qty": 20,
+            "cost_basis_krw": 3100000.0, "auto_close_date": None}}})
+        ps._open_thesis("AAPL", {}, "re-buy while already held", "2026-07-26")
+        active = tt.list_theses(status="ACTIVE")
+        assert len(active) == 1, "종목당 ACTIVE 씨시스 1개 불변식 위반 — 중복 생성됨"
+
+    def test_open_thesis_guard_allows_different_ticker(self, tmp_path, monkeypatch):
+        import bot.paper_signals as ps
+        import bot.paper_trading as pt
+        import bot.trade_thesis as tt
+        monkeypatch.setattr(tt, "_HOME", tmp_path)
+        monkeypatch.setattr(tt, "_THESES", tmp_path / "theses.json")
+        tt.open_thesis("AAPL", "US", 1000.0, 150.0, 10, 1500000.0)
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {"MSFT": {
+            "market": "US", "avg_cost_native": 400.0, "qty": 5,
+            "cost_basis_krw": 2800000.0, "auto_close_date": None}}})
+        ps._open_thesis("MSFT", {}, "new ticker", "2026-07-26")
+        active = tt.list_theses(status="ACTIVE")
+        assert len(active) == 2   # 다른 종목은 정상적으로 새 씨시스 생성

@@ -772,6 +772,21 @@ def _enrich_us(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: EDGAR Form 4 skipped: %s", exc)
 
+    # ── SEC 13F 기관플로우 (2026-07-26, 미국전용 — bot/edgar_13f.py 독스트링
+    # 참조) — 대표 기관투자자(현재 버크셔 해서웨이)의 최근 2개 분기 13F 대비
+    # 이 종목 보유변화. 회사명 substring 매칭(CUSIP 매핑 소스 없음, 문서화된
+    # 한계) — SEC company_tickers.json 의 공식 title 을 매칭명으로 사용.
+    try:
+        from bot.edgar_13f import get_13f_flow
+        from bot.edgar_client import sec_ticker_names
+        name = sec_ticker_names().get(ticker.upper())
+        if name:
+            flow = get_13f_flow(name)
+            if flow and flow.get("action") != "NOT_HELD":
+                snap.setdefault("us", {})["institutional_13f"] = flow
+    except Exception as exc:
+        log.debug("stock_snapshot: 13F flow skipped: %s", exc)
+
 
 def _enrich_jp(ticker: str, snap: dict) -> None:
     """Add JP-specific data from EDINET to an existing snapshot dict."""

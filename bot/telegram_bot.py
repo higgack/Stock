@@ -1086,9 +1086,9 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 ━━━━━━━━━
-<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
+<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🚦시장타이밍·📅경제캘린더·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터) · 새 데이터 하단알림(1분 체크·30분 자동반영, 반영은 사용자 선택) · 종목검색·스크롤복원
- ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·CPI·유동성 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
+ ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·CPI·유동성·시장타이밍·경제캘린더 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
    http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
@@ -1102,7 +1102,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림
 /gov 종목 — 거버넌스 브리핑 (KR·DART: 대주주·임원지분·주총/활동주의 공시 + AI요약) · 자연어 OK("하이닉스 거버넌스")
-/paper — 페이퍼 모의매매(돈0) · /paper help
+/paper — 페이퍼 모의매매(돈0) · /paper help · /backtest_review — 청산이력 5축평가(Deploy/Refine/Abandon)
 /health · /yfpause·/naverpause on|off — 소스 헬스/정지토글
 
 ━━━━━━━━━
@@ -3096,6 +3096,29 @@ async def _periodic_paper_pending(application=None) -> None:
                             pass
             except Exception:
                 log.debug("paper reconcile skipped")
+            # 트레이드 씨시스(2026-07-26) — MFE/MAE 30분 샘플 + 청산 감지·
+            # 포스트모템 알림(청산 경로 무관, sync_closed 가 상태비교로 감지).
+            try:
+                from bot import trade_thesis
+                trade_thesis.update_mfe_mae()
+                closed = trade_thesis.sync_closed()
+                if closed:
+                    from bot.dashboard import regenerate_paper_index
+                    regenerate_paper_index()
+                    if application is not None and CHANNEL_CHAT_IDS:
+                        for t in closed:
+                            pm = trade_thesis.postmortem_text(t)
+                            if not pm:
+                                continue
+                            for _cid in CHANNEL_CHAT_IDS:
+                                try:
+                                    await application.bot.send_message(
+                                        chat_id=_cid,
+                                        text=f"📔 씨시스 청산 {t['ticker']}: {pm}")
+                                except Exception:
+                                    pass
+            except Exception:
+                log.debug("trade_thesis sync skipped")
         except Exception:
             log.exception("paper pending fill failed")
 
@@ -3638,6 +3661,23 @@ async def on_reminder_confirm(update: Update, _: ContextTypes.DEFAULT_TYPE) -> N
         pass
 
 
+async def cmd_backtest_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/backtest_review — 트레이드 씨시스 청산 이력 5축 품질평가
+    (Sample Size/Expectancy/Risk Management/Robustness/Execution Realism →
+    Deploy/Refine/Abandon). claude-trading-skills backtest-expert 스킬 이식
+    (bot/backtest_review.py)."""
+    if update.message is None:
+        return
+    try:
+        from bot import backtest_review
+        result = await asyncio.to_thread(backtest_review.review_trade_history)
+        text = backtest_review.review_text(result)
+    except Exception as exc:
+        log.exception("backtest_review failed: %s", exc)
+        text = "⚠️ 백테스트 리뷰 계산 중 오류가 발생했습니다."
+    await update.message.reply_text(text)
+
+
 def _static_command_registry() -> dict:
     """정적 명령 단일 레지스트리 — name → (handler, 메뉴 설명).
 
@@ -3672,6 +3712,7 @@ def _static_command_registry() -> dict:
         "naverpause": (cmd_naverpause, "네이버 호출 일시정지 토글 (on/off)"),
         "health": (cmd_health, "야후/네이버 소스 헬스체크 (잘 받아오는지)"),
         "paper": (cmd_paper, "페이퍼 트레이딩 (모의 매매·돈 0)"),
+        "backtest_review": (cmd_backtest_review, "트레이드 이력 백테스트 리뷰 (5축 Deploy/Refine/Abandon)"),
         # /screen·/screener — 콘솔은 전용 분기, 텔레그램은 이 핸들러
         "screen": (cmd_screen, "조건부 스크리너 (PER<15 PBR<1 등 자유 조건)"),
         "screener": (cmd_screener, "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
@@ -3951,6 +3992,28 @@ async def _periodic_fred_boards() -> None:
             raise
         except Exception:
             log.exception("fred boards 6h regen failed")
+        # 시장타이밍 보드(2026-07-26) — 같은 6시간 주기(분산일·FTD·매크로
+        # 레짐 갱신 빈도로 충분, 크립토 스코어도 마찬가지). 실패해도 FRED
+        # 보드 갱신과 독립(try 분리).
+        try:
+            from bot.market_timing import regenerate_market_timing
+            await asyncio.to_thread(regenerate_market_timing)
+            log.info("market timing 6h regen: ok")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("market timing 6h regen failed")
+        # 경제캘린더 보드(2026-07-26) — CPI/고용동향/GDP/PCE/FOMC 발표일정.
+        # 같은 6시간 주기(발표일 자체가 자주 안 바뀜, FRED 캐시도 12h) —
+        # 실패해도 위 두 보드 갱신과 독립(try 분리).
+        try:
+            from bot.econ_calendar import regenerate_econ_calendar
+            await asyncio.to_thread(regenerate_econ_calendar)
+            log.info("econ calendar 6h regen: ok")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("econ calendar 6h regen failed")
 
 
 async def _periodic_dashboard_refresh(application=None) -> None:
@@ -4023,6 +4086,21 @@ async def _periodic_dashboard_refresh(application=None) -> None:
                                     pass
             except Exception:
                 log.exception("paper horizon close failed")
+            # 트레이드 씨시스 주간 다이제스트(2026-07-26) — 월요일 자정에만
+            # 최근 7일 청산분 승률·기대값·손익비 발송(청산 0건이면 스킵).
+            if now_kst.weekday() == 0:
+                try:
+                    from bot import trade_thesis
+                    digest = trade_thesis.weekly_digest_text(days=7)
+                    if digest and application is not None and CHANNEL_CHAT_IDS:
+                        for _cid in CHANNEL_CHAT_IDS:
+                            try:
+                                await application.bot.send_message(
+                                    chat_id=_cid, text=digest)
+                            except Exception:
+                                pass
+                except Exception:
+                    log.exception("weekly trade thesis digest failed")
             regenerate_paper_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
@@ -4145,6 +4223,34 @@ async def _on_startup(application) -> None:
         _fb_thr.Thread(target=_fred_boards_initial, daemon=True).start()
     except Exception as exc:
         log.warning("startup: FRED boards thread failed: %s", exc)
+    # 시장타이밍 보드(2026-07-26) — 같은 이유로 startup 무조건 재생성.
+    try:
+        import threading as _mt_thr
+
+        def _market_timing_initial():
+            try:
+                from bot.market_timing import regenerate_market_timing
+                regenerate_market_timing()
+                log.info("startup: market timing regenerated")
+            except Exception as exc:
+                log.warning("startup: market timing regen failed: %s", exc)
+        _mt_thr.Thread(target=_market_timing_initial, daemon=True).start()
+    except Exception as exc:
+        log.warning("startup: market timing thread failed: %s", exc)
+    # 경제캘린더 보드(2026-07-26) — 같은 이유로 startup 무조건 재생성.
+    try:
+        import threading as _ec_thr
+
+        def _econ_calendar_initial():
+            try:
+                from bot.econ_calendar import regenerate_econ_calendar
+                regenerate_econ_calendar()
+                log.info("startup: econ calendar regenerated")
+            except Exception as exc:
+                log.warning("startup: econ calendar regen failed: %s", exc)
+        _ec_thr.Thread(target=_econ_calendar_initial, daemon=True).start()
+    except Exception as exc:
+        log.warning("startup: econ calendar thread failed: %s", exc)
     # DART 공시 즉시 채움 — 타이머(30분)를 기다리지 않고 startup 직후 백그라운드
     # 1회 fetch → 재배포 시 수 초 내 공시 표시(빈 '전체 0' 방지). 무료·LLM 0.
     try:

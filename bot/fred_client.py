@@ -225,6 +225,91 @@ def fetch_history(series_id: str, start: str = "2018-01-01",
     return clean
 
 
+def fetch_releases_catalog(ttl_hours: float = 24.0) -> list[dict]:
+    """FRED 전체 release 카탈로그([{id,name}, ...]) — 24h 캐시. release_id 를
+    숫자로 하드코딩하지 않고 이름 검색으로 찾기 위함(release_id 는 문서마다
+    다르게 인용되어 오기 위험 — 경제캘린더(bot/econ_calendar.py)가 이 카탈로그
+    에서 이름으로 조회). 키 부재/실패 → []."""
+    api_key = os.getenv("FRED_API_KEY", "").strip()
+    if not api_key:
+        log.warning("fred: FRED_API_KEY missing — releases catalog unavailable")
+        return []
+    cache_file = _CACHE_DIR / f"releases_catalog_{date.today().isoformat()}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < ttl_hours:
+                return json.loads(cache_file.read_text())
+        except Exception as exc:
+            log.warning("fred: releases catalog cache read failed: %s", exc)
+    url = (f"{_BASE_URL}/releases?api_key={api_key}&file_type=json&limit=1000")
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        releases = resp.json().get("releases") or []
+    except Exception as exc:
+        log.warning("fred: releases catalog fetch failed: %s", exc)
+        return []
+    result = [{"id": r.get("id"), "name": r.get("name", "")} for r in releases if r.get("id")]
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        for old in _CACHE_DIR.glob("releases_catalog_*.json"):
+            if old != cache_file:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        cache_file.write_text(json.dumps(result, ensure_ascii=False))
+    except Exception as exc:
+        log.warning("fred: releases catalog cache write failed: %s", exc)
+    return result
+
+
+def find_release_id(name_substring: str) -> Optional[int]:
+    """이름 부분일치(대소문자무관)로 release_id 조회 — 첫 매치 반환(카탈로그
+    순서). 매치 없음/카탈로그 미가용 → None(호출부가 graceful 하게 생략)."""
+    needle = name_substring.lower()
+    for r in fetch_releases_catalog():
+        if needle in (r.get("name") or "").lower():
+            return r.get("id")
+    return None
+
+
+def fetch_release_dates(release_id: int, start: str, end: str,
+                        ttl_hours: float = 12.0) -> list[str]:
+    """release_id 의 예정/과거 발표일 목록(YYYY-MM-DD, 오름차순) — [start,end]
+    구간. FRED 는 발표 몇 달~1년 전부터 예정일을 공개하므로 미래 구간도 조회
+    가능(예: FOMC/CPI/고용동향). 키 부재/실패 → []."""
+    api_key = os.getenv("FRED_API_KEY", "").strip()
+    if not api_key:
+        log.warning("fred: FRED_API_KEY missing — release %s dates unavailable", release_id)
+        return []
+    cache_file = _CACHE_DIR / f"reldates_{release_id}_{start}_{end}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < ttl_hours:
+                return json.loads(cache_file.read_text())
+        except Exception as exc:
+            log.warning("fred: release dates cache read failed for %s: %s", release_id, exc)
+    url = (f"{_BASE_URL}/release/dates?release_id={release_id}"
+           f"&api_key={api_key}&file_type=json&sort_order=asc"
+           f"&include_release_dates_with_no_data=true"
+           f"&realtime_start={start}&realtime_end={end}")
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        rows = resp.json().get("release_dates") or []
+    except Exception as exc:
+        log.warning("fred: release dates fetch failed for %s: %s", release_id, exc)
+        return []
+    dates = sorted({r["date"] for r in rows if r.get("date")})
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(dates, ensure_ascii=False))
+    except Exception as exc:
+        log.warning("fred: release dates cache write failed for %s: %s", release_id, exc)
+    return dates
+
+
 def fetch_macro(market: str) -> dict:
     """Return {key: indicator} for all defined series in this market.
     Missing / failed indicators are silently dropped — callers should

@@ -1427,6 +1427,17 @@ function sectionStockPx(name){
     (Number(q.p)||0).toLocaleString()+'원 '+sign+c.toFixed(1)+'%</span>'+asof;
 }
 function whereLabel(a){return [a.region,a.country].filter(Boolean).join(' → ')}
+// 지역별/국가별 그룹 뷰 전용 — multi-region/multi-country alert 는 axisVals
+// 가 a.regions(전체 목록)로 여러 탭에 동시 노출시키는데, 카드 라벨은 항상
+// whereLabel()의 a.region(첫 값)만 보여줘 두번째 이후 탭에서 봐도 첫 지역만
+// 나오던 불일치 발견(사용자 2026-07-26, '지역별구분에 첨부지역이 안맞음').
+// value = 지금 보고있는 그 탭의 축 값(axisVals 로 이미 정규화됨) — 그대로
+// 표시하면 무조건 정확(그 탭에 배치된 이유가 곧 이 값이므로).
+function whereLabelForAxis(a,field,value){
+  if(field==='region')return [value,a.country].filter(Boolean).join(' → ');
+  if(field==='country')return [a.region,value].filter(Boolean).join(' → ');
+  return whereLabel(a);
+}
 
 // Build a one-shot dedup_key → alerts[] index so the modal can find
 // sibling history alerts (and so the views don't have to repeat work).
@@ -1687,8 +1698,8 @@ function niceLabel(a){
 }
 
 // --- mini-card (used by BOTH views; click → modal) ---
-function renderMiniCard(a){
-  const where=whereLabel(a);
+function renderMiniCard(a,ctx){
+  const where=ctx?whereLabelForAxis(a,ctx.field,ctx.value):whereLabel(a);
   const bg=(a.media&&a.media[0])?' style="background-image:url('+esc(a.media[0])+')"':'';
   const sla=slaBadge(a);
   const slaHtml=sla?'<span class="mini-sla '+sla.kind+'">'+esc(sla.text)+'</span>':'';
@@ -2108,7 +2119,7 @@ function buildGroupedAxisView(filtered, field, sk, cls, emptyMsg, sinkLabels){
       regionTier(a)-regionTier(b)||
       (b.posted_at||'').localeCompare(a.posted_at||'')
     );
-    const cards=items.map(renderMiniCard).join('');
+    const cards=items.map(function(a){return renderMiniCard(a,{field:field,value:name});}).join('');
     return renderSection(name, [items.length+'개 품목'], cards);
   }).join('');
 }
