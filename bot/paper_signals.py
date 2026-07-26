@@ -114,6 +114,26 @@ def _direction(rating: str) -> str:
     return "hold"
 
 
+def _open_thesis(ticker: str, chain: dict, summary: str, today: str) -> None:
+    """자동매수 체결 직후 트레이드 씨시스 생성(2026-07-26, trader-memory-core
+    이식) — 방금 채워진 포지션에서 원가·수량을 그대로 읽어 재계산 불요.
+    실패해도 매수 자체는 이미 성공했으니 조용히 무시(graceful, 부가기능)."""
+    try:
+        from bot import paper_trading, trade_thesis
+        pos = paper_trading.get_account().get("positions", {}).get(ticker)
+        if not pos:
+            return
+        trade_thesis.open_thesis(
+            ticker, pos.get("market") or "", time.time(),
+            pos.get("avg_cost_native"), pos.get("qty"),
+            pos.get("cost_basis_krw"),
+            thesis_statement=summary, chain=chain,
+            planned_exit_date=pos.get("auto_close_date"),
+            setup_type="auto_signal")
+    except Exception as exc:
+        log.debug("paper_signals: open_thesis failed for %s: %s", ticker, exc)
+
+
 def on_analysis(ticker: str, rating: str, summary: str = "",
                 full: str = "") -> Optional[str]:
     """분석 완료 시 호출 — auto on 이면 판정대로 페이퍼 주문. 알림 텍스트 또는
@@ -148,6 +168,8 @@ def on_analysis(ticker: str, rating: str, summary: str = "",
                 tkr, base * pct,
                 idem=f"auto:{tkr}:{today}", horizon_days=HORIZON_DAYS)
             _log_auto_audit(tkr, chain, ("buy_filled" if ok else "buy_blocked") + f": {msg}")
+            if ok:
+                _open_thesis(tkr, chain, summary, today)
             return (f"🤖 자동매수 ({cs}): {msg}" if ok
                     else f"🤖 자동매수 보류 ({cs}): {msg}")
 

@@ -3096,6 +3096,29 @@ async def _periodic_paper_pending(application=None) -> None:
                             pass
             except Exception:
                 log.debug("paper reconcile skipped")
+            # 트레이드 씨시스(2026-07-26) — MFE/MAE 30분 샘플 + 청산 감지·
+            # 포스트모템 알림(청산 경로 무관, sync_closed 가 상태비교로 감지).
+            try:
+                from bot import trade_thesis
+                trade_thesis.update_mfe_mae()
+                closed = trade_thesis.sync_closed()
+                if closed:
+                    from bot.dashboard import regenerate_paper_index
+                    regenerate_paper_index()
+                    if application is not None and CHANNEL_CHAT_IDS:
+                        for t in closed:
+                            pm = trade_thesis.postmortem_text(t)
+                            if not pm:
+                                continue
+                            for _cid in CHANNEL_CHAT_IDS:
+                                try:
+                                    await application.bot.send_message(
+                                        chat_id=_cid,
+                                        text=f"📔 씨시스 청산 {t['ticker']}: {pm}")
+                                except Exception:
+                                    pass
+            except Exception:
+                log.debug("trade_thesis sync skipped")
         except Exception:
             log.exception("paper pending fill failed")
 
@@ -4023,6 +4046,21 @@ async def _periodic_dashboard_refresh(application=None) -> None:
                                     pass
             except Exception:
                 log.exception("paper horizon close failed")
+            # 트레이드 씨시스 주간 다이제스트(2026-07-26) — 월요일 자정에만
+            # 최근 7일 청산분 승률·기대값·손익비 발송(청산 0건이면 스킵).
+            if now_kst.weekday() == 0:
+                try:
+                    from bot import trade_thesis
+                    digest = trade_thesis.weekly_digest_text(days=7)
+                    if digest and application is not None and CHANNEL_CHAT_IDS:
+                        for _cid in CHANNEL_CHAT_IDS:
+                            try:
+                                await application.bot.send_message(
+                                    chat_id=_cid, text=digest)
+                            except Exception:
+                                pass
+                except Exception:
+                    log.exception("weekly trade thesis digest failed")
             regenerate_paper_index()
             log.info("midnight dashboard regen: ok")
         except Exception:

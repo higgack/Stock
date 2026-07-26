@@ -1942,6 +1942,146 @@ class TestPaperLimitOrders:
         assert "지정가 대기" in open("bot/dashboard.py", encoding="utf-8").read()
 
 
+class TestTradeThesis:
+    """트레이드 씨시스(투자논거) 생애주기 + 포스트모템(2026-07-26,
+    claude-trading-skills trader-memory-core 이식). paper_trading 체결을
+    직접 훅하지 않고 상태비교(reconcile)로 청산 감지 — 청산 경로 무관.
+
+    ⚠️ paper_trading 모킹은 sys.modules 치환이 아니라 실제 모듈의 함수를
+    monkeypatch.setattr 로 교체(리뷰 회귀 — 다른 테스트 클래스가 세션 중
+    이미 `import bot.paper_trading`을 실행해두면 `bot` 패키지가 그 real
+    모듈을 속성으로 붙들고 있어서, trade_thesis.py 내부의 `from bot import
+    paper_trading` 이 sys.modules 치환을 무시하고 real 모듈을 그대로 반환—
+    전체 스위트에서만 재현되고 단독 실행 시엔 통과해 처음엔 못 잡았다)."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import bot.trade_thesis as tt
+        monkeypatch.setattr(tt, "_HOME", tmp_path)
+        monkeypatch.setattr(tt, "_THESES", tmp_path / "theses.json")
+        return tt
+
+    def test_open_thesis_is_active(self, tmp_path, monkeypatch):
+        tt = self._setup(tmp_path, monkeypatch)
+        tid = tt.open_thesis("AAPL", "US", 1000.0, 300.0, 2, 828000.0,
+                             thesis_statement="PM Buy", chain={"pm": "Buy"},
+                             planned_exit_date="2026-08-01")
+        theses = tt.list_theses()
+        assert len(theses) == 1
+        t = theses[0]
+        assert t["id"] == tid and t["status"] == "ACTIVE"
+        assert t["ticker"] == "AAPL" and t["entry_cost_krw"] == 828000.0
+        assert t["mfe_pct"] == 0.0 and t["mfe_mae_sampled"] is False
+
+    def test_update_mfe_mae_tracks_extremes(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("AAPL", "US", time.time(), 300.0, 2, 828000.0)
+        monkeypatch.setattr(pt, "positions_with_pnl",
+                           lambda: [{"ticker": "AAPL", "ret_pct": 5.0}])
+        tt.update_mfe_mae()
+        t = tt.list_theses()[0]
+        assert t["mfe_pct"] == 5.0 and t["mae_pct"] == 0.0 and t["mfe_mae_sampled"] is True
+        monkeypatch.setattr(pt, "positions_with_pnl",
+                           lambda: [{"ticker": "AAPL", "ret_pct": -3.0}])
+        tt.update_mfe_mae()
+        t = tt.list_theses()[0]
+        assert t["mfe_pct"] == 5.0 and t["mae_pct"] == -3.0   # 극값만 갱신(되돌아가도 유지)
+
+    def test_sync_closed_detects_exit_and_computes_pct(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        entry_ts = time.time() - 3600
+        tt.open_thesis("AAPL", "US", entry_ts, 300.0, 2, 828000.0,
+                       planned_exit_date="2026-08-01")
+        monkeypatch.setattr(pt, "get_account", lambda: {
+            "positions": {}, "trades": [
+                {"ticker": "AAPL", "side": "sell", "ts": time.time(),
+                 "fill_native": 310.0, "realized_krw": 27600.0}]})
+        closed = tt.sync_closed()
+        assert len(closed) == 1
+        t = closed[0]
+        assert t["status"] == "CLOSED" and t["realized_krw"] == 27600.0
+        assert abs(t["realized_pct"] - (27600.0 / 828000.0 * 100)) < 1e-6
+        assert t["exit_reason"] == "horizon"   # planned_exit_date 있음
+        # 목록에도 CLOSED 로 반영돼야.
+        assert tt.list_theses(status="ACTIVE") == []
+        assert len(tt.list_theses(status="CLOSED")) == 1
+
+    def test_sync_closed_no_sell_yet_stays_active(self, tmp_path, monkeypatch):
+        # 포지션은 이미 없어졌지만(레이스) 매도 체결 로그가 아직 없으면 재시도
+        # 위해 ACTIVE 유지(리뷰: 성급히 닫으면 데이터 유실).
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("AAPL", "US", time.time(), 300.0, 2, 828000.0)
+        monkeypatch.setattr(pt, "get_account",
+                           lambda: {"positions": {}, "trades": []})
+        assert tt.sync_closed() == []
+        assert tt.list_theses(status="ACTIVE")[0]["status"] == "ACTIVE"
+
+    def test_postmortem_text_no_fake_gap_note_when_unsampled(self, tmp_path, monkeypatch):
+        # 회귀 고정: mfe_pct 기본값(0.0)이 실측이 아닌데 '고점 대비 반납'으로
+        # 오표기하던 버그(전패 케이스에서 '최고 +0.0%p 갔다가 반납' 오탐).
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("LOSS", "KR", time.time() - 3600, 1000.0, 10, 10000.0)
+        monkeypatch.setattr(pt, "get_account", lambda: {
+            "positions": {}, "trades": [
+                {"ticker": "LOSS", "side": "sell", "ts": time.time(),
+                 "fill_native": 900.0, "realized_krw": -1000.0}]})
+        closed = tt.sync_closed()
+        pm = tt.postmortem_text(closed[0])
+        assert "❌" in pm and "-10.0%" in pm
+        assert "반납" not in pm
+
+    def test_postmortem_text_shows_real_gap_note_when_sampled(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("GAVEBACK", "KR", time.time() - 7200, 1000.0, 10, 10000.0)
+        monkeypatch.setattr(pt, "positions_with_pnl",
+                           lambda: [{"ticker": "GAVEBACK", "ret_pct": 8.0}])
+        tt.update_mfe_mae()
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {}, "trades": [
+            {"ticker": "GAVEBACK", "side": "sell", "ts": time.time(),
+             "fill_native": 1010.0, "realized_krw": 100.0}]})
+        closed = tt.sync_closed()
+        pm = tt.postmortem_text(closed[0])
+        assert "반납" in pm and "+8.0%p" in pm
+
+    def test_digest_stats_and_text_handle_all_win_and_all_loss(self, tmp_path, monkeypatch):
+        # 회귀 고정: avg_win/avg_loss 둘 다 있다고 가정하면 전승/전패 구간에서
+        # None.__format__ 크래시하던 버그.
+        import bot.paper_trading as pt
+        tt = self._setup(tmp_path, monkeypatch)
+        tt.open_thesis("WIN", "KR", time.time() - 3600, 1000.0, 10, 10000.0)
+        monkeypatch.setattr(pt, "get_account", lambda: {
+            "positions": {}, "trades": [
+                {"ticker": "WIN", "side": "sell", "ts": time.time(),
+                 "fill_native": 1020.0, "realized_krw": 200.0}]})
+        tt.sync_closed()
+        s = tt.digest_stats(days=7)
+        assert s["n"] == 1 and s["win_rate"] == 100.0 and s["avg_loss_pct"] is None
+        text = tt.weekly_digest_text(days=7)
+        assert text is not None and "평균 패" not in text and "평균 승" in text
+
+    def test_digest_empty_returns_none(self, tmp_path, monkeypatch):
+        tt = self._setup(tmp_path, monkeypatch)
+        assert tt.digest_stats(days=7)["n"] == 0
+        assert tt.weekly_digest_text(days=7) is None
+
+    def test_wiring(self):
+        # Help/대시보드 등록 규칙 — 자동매수 진입 시 씨시스 생성 + 30분
+        # periodic 이 sync/mfe·mae 갱신 + 월요일 자정 주간다이제스트 + 대시보드
+        # 표기, 전부 같은 커밋으로 배선됐는지.
+        ps = open("bot/paper_signals.py", encoding="utf-8").read()
+        assert "_open_thesis(" in ps and "def _open_thesis" in ps
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "trade_thesis.update_mfe_mae()" in tb
+        assert "trade_thesis.sync_closed()" in tb
+        assert "weekly_digest_text" in tb
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "트레이드 씨시스" in db
+
+
 class TestMegacapComps:
     """fix(2026-06-06 AAPL review): mega-cap tech 는 산업 무관 Mag-7 풀로
     (좁은 'Consumer Electronics' 분류가 AAPL 을 GoPro/Sonos 와 비교하던 무의미

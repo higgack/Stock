@@ -11471,12 +11471,49 @@ def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: li
     except Exception:
         pass
 
+    # 트레이드 씨시스(투자논거) 청산 이력 + 포스트모템(2026-07-26) — 진입근거
+    # (auto 신호 체인)·MFE/MAE·청산사유를 자동매매 결정이력(audit_block, 왜
+    # 진입했나)과 짝지어 '진입→청산' 전체를 보여줌.
+    thesis_block = ""
+    try:
+        from bot import trade_thesis
+        closed = trade_thesis.list_theses(status="CLOSED", limit=15)
+        if closed:
+            trows = ""
+            for t in closed:
+                pm = trade_thesis.postmortem_text(t)
+                col = "#16a34a" if (t.get("realized_pct") or 0) > 0 else "#dc2626"
+                when = (_dt.datetime.fromtimestamp(t["exit_ts"]).strftime("%m-%d %H:%M")
+                        if t.get("exit_ts") else "")
+                trows += (
+                    f'<tr><td class="muted">{_html.escape(when)}</td>'
+                    f'<td><b>{_html.escape(t.get("ticker",""))}</b></td>'
+                    f'<td style="color:{col}">{_html.escape(pm)}</td>'
+                    f'<td class="muted">MFE {t.get("mfe_pct",0):+.1f}% / '
+                    f'MAE {t.get("mae_pct",0):+.1f}%</td></tr>')
+            _digest = trade_thesis.digest_stats(days=7)
+            _digest_line = ""
+            if _digest["n"]:
+                _digest_line = (
+                    f'<p class="sub" style="font-size:12px">최근 7일 승률 '
+                    f'{_digest["win_rate"]:.0f}% · 기대값 {_digest["expectancy_pct"]:+.2f}%/건'
+                    + (f' · 손익비 {_digest["profit_factor"]:.2f}'
+                       if _digest["profit_factor"] is not None else '') + '</p>')
+            thesis_block = (
+                '<div class="pf-card"><div class="pf-h">📔 트레이드 씨시스 청산 이력 (최근 '
+                + str(len(closed)) + ')</div>' + _digest_line +
+                '<table class="pf-tbl"><thead><tr><th>청산시각</th><th>종목</th>'
+                '<th>결과</th><th>MFE/MAE</th></tr></thead>'
+                '<tbody>' + trows + '</tbody></table></div>')
+    except Exception:
+        pass
+
     # wl_section 은 위(빈-계좌 early-return 공유)에서 이미 빌드됨.
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🔔 워치리스트</h1>'
             '<p class="sub">조건 알림(30분 체크, ₩0) + 페이퍼 트레이딩(모의 매매, 리스크 0)</p>'
             + halt_banner + e1_banner + stats + stats_extra + curve_html + pos_block + pend_block
-            + tr_block + audit_block + note + gate_line + wl_section + "</div>")
+            + tr_block + audit_block + thesis_block + note + gate_line + wl_section + "</div>")
 
 
 def _sym_cur(currency: str) -> str:
