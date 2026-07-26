@@ -513,21 +513,13 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     value, change = nv["value"], nv["change"]
                 elif d:
                     value, change = d["value"], d["change"]
-                # VIX 만 CNN 을 최우선(사용자 2026-07-26 "가장 정확한 CNN 값으로,
-                # 양쪽 다" — 시장타이밍 보드와 동일 소스로 canonical 통일). change
-                # 는 네이버/yf 값 그대로 유지(CNN 은 전일比 델타를 안정적으로 안
-                # 주므로 헤드라인 수치만 교체) — 실패/불신뢰 시 조용히 기존 값
-                # 유지. reference=value(이미 위에서 확보한 네이버/yf 값)로
-                # 이격도 검증(2026-07-26 VM 실측 — CNN 필드 오독 의심 발견,
-                # bot/fear_greed_client.py 독스트링 참조).
-                if sid == "^VIX":
-                    try:
-                        from bot.fear_greed_client import fetch_cnn_vix
-                        cnn_vix = fetch_cnn_vix(reference=value)
-                        if cnn_vix is not None:
-                            value = cnn_vix
-                    except Exception as exc:
-                        log.debug("macro: CNN VIX override failed: %s", exc)
+                # (2026-07-26 회고: VIX 를 CNN "값"으로 덮어쓰려 했었으나 —
+                # 사용자가 말한 "CNN 값"은 VIX 가 아니라 CNN Fear & Greed
+                # 지수 자체였음(사용자 스크린샷으로 확인). CNN 은 원시 VIX
+                # 가격을 공개적으로 노출하지 않아 그 시도는 잘못된 전제였고
+                # 되돌림 — VIX 는 계속 네이버/yfinance 가 정확한 소스,
+                # bot/fear_greed_client.py 독스트링 참조. F&G 지수 자체는
+                # 아래 sentiment 섹션에서 이미 별도로 다룸.)
                 # 일일 % 변화 — 한달단위(1개월) 카드는 절대값 대신 %로
                 # 표시(사용자 2026-06-10). 단 환율(USD/KRW)는 절대값. prev=value-change.
                 if (value is not None and change is not None

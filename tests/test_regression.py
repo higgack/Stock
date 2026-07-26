@@ -13800,73 +13800,22 @@ class TestFearGreedGauge20260708:
         assert fgc._parse({}) == {}                   # graceful
         assert fgc._parse({"fear_and_greed": {"score": "n/a"}}) == {}
 
-    def test_extract_vix_component_list_data(self):
-        # 사용자 요청(2026-07-26) "VIX 는 가장 정확한 CNN 값으로" — graphdata
-        # market_volatility_vix.data 의 마지막 [ts, value] 사용.
+    def test_no_cnn_vix_price_extraction_reverted(self):
+        # 회고(2026-07-26): "VIX 는 CNN 값으로" 요청을 "CNN 이 원시 VIX
+        # 가격도 준다"로 오독해 만들었던 기능 — 사용자가 CNN Fear&Greed
+        # 페이지 스크린샷으로 재확인한 결과 사용자가 말한 "CNN 값"은 F&G
+        # 지수 자체였음(CNN 은 원시 VIX 가격을 공개 노출 안 함). 되돌림
+        # 확인 — 관련 함수가 모듈에 없어야 함(잘못된 전제 기반 코드 제거).
         import bot.fear_greed_client as fgc
-        payload = {"market_volatility_vix": {"data": [[1000, 15.0], [2000, 18.6]]}}
-        assert fgc._extract_vix_component(payload) == 18.6
+        assert not hasattr(fgc, "_extract_vix_component")
+        assert not hasattr(fgc, "fetch_cnn_vix")
+        assert not hasattr(fgc, "_vix_plausible")
+        assert "vix" not in fgc._parse({"fear_and_greed": {"score": 43, "rating": "fear"}})
 
-    def test_extract_vix_component_scalar_fallback(self):
-        import bot.fear_greed_client as fgc
-        assert fgc._extract_vix_component(
-            {"market_volatility_vix": {"value": 21.3}}) == 21.3
-        assert fgc._extract_vix_component(
-            {"market_volatility_vix": {"score": 19.9}}) == 19.9
-
-    def test_extract_vix_component_missing_or_malformed(self):
-        import bot.fear_greed_client as fgc
-        assert fgc._extract_vix_component({}) is None
-        assert fgc._extract_vix_component({"market_volatility_vix": "bad"}) is None
-        assert fgc._extract_vix_component({"market_volatility_vix": {}}) is None
-        assert fgc._extract_vix_component(
-            {"market_volatility_vix": {"data": []}}) is None
-        assert fgc._extract_vix_component(
-            {"market_volatility_vix": {"data": [["bad", "val"]]}}) is None
-
-    def test_fetch_cnn_vix_delegates_and_graceful(self, monkeypatch):
-        import bot.fear_greed_client as fgc
-        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {"vix": 17.4})
-        assert fgc.fetch_cnn_vix() == 17.4
-        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {})
-        assert fgc.fetch_cnn_vix() is None
-        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {"vix": None})
-        assert fgc.fetch_cnn_vix() is None
-
-    def test_vix_plausible_absolute_range(self):
-        import bot.fear_greed_client as fgc
-        assert fgc._vix_plausible(25.0, None) is True
-        assert fgc._vix_plausible(7.9, None) is False    # 사상 최저 미만
-        assert fgc._vix_plausible(90.1, None) is False   # 사상 최고 초과
-
-    def test_vix_plausible_reference_mismatch_rejected(self):
-        # 사용자 리포트(2026-07-26 VM 실측) — CNN 50.0 vs 실제(네이버) ~18 처럼
-        # 크게 벗어나면 구조 오독 의심 → False(호출부가 네이버로 폴백).
-        import bot.fear_greed_client as fgc
-        assert fgc._vix_plausible(50.0, 18.0) is False
-
-    def test_vix_plausible_reference_close_accepted(self):
-        import bot.fear_greed_client as fgc
-        assert fgc._vix_plausible(18.5, 18.0) is True
-        assert fgc._vix_plausible(25.0, None) is True   # reference 없으면 절대범위만
-
-    def test_vix_plausible_genuine_crisis_both_elevated_accepted(self):
-        # 실제 위기 상황(양쪽 다 높고 서로 근접)은 오탐 금지.
-        import bot.fear_greed_client as fgc
-        assert fgc._vix_plausible(55.0, 52.0) is True
-
-    def test_fetch_cnn_vix_rejects_implausible_against_reference(self, monkeypatch):
-        import bot.fear_greed_client as fgc
-        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {"vix": 50.0})
-        assert fgc.fetch_cnn_vix(reference=18.0) is None
-        assert fgc.fetch_cnn_vix(reference=48.0) == 50.0
-        assert fgc.fetch_cnn_vix() == 50.0   # reference 없으면 절대범위만
-
-    def test_macro_snapshot_vix_wired_to_cnn(self):
-        # 메인 대시보드 매크로9 위젯도 시장타이밍과 동일 CNN 최우선 소스
-        # (사용자 2026-07-26 "양쪽 다").
+    def test_macro_snapshot_vix_not_overridden_by_cnn(self):
+        # VIX 는 계속 네이버/yf 값 그대로 — CNN 오버라이드 되돌림 확인.
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
-        assert "fetch_cnn_vix" in src and '"^VIX"' in src
+        assert "fetch_cnn_vix" not in src
 
     def test_gauge_labels_cnn_vs_vix(self):
         import bot.dashboard as d
@@ -15147,31 +15096,15 @@ class TestMarketTimingBreadthVol20260726:
         assert result["n_sectors"] == len(mt._BREADTH_SECTOR_ETFS_US) - 1
         assert "XLK" not in result["sectors_ok"]
 
-    def test_fetch_volatility_snapshot_vix_prefers_cnn_when_plausible(self, monkeypatch):
-        # 사용자 요청(2026-07-26) "VIX 는 가장 정확한 CNN 값으로, 양쪽 다" —
-        # 네이버는 이제 이격도 검증 reference 로 항상 먼저 확보되지만(2026-07-26
-        # VM 실측 CNN 구조오독 발견 이후 크로스체크 도입), CNN 이 네이버와
-        # 근접(plausible)하면 최종 채택은 CNN. yfinance 는 호출 안 됨.
-        from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 16.0)
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: 15.8)
-
-        def fail_if_called(*a, **k):
-            raise AssertionError("CNN 채택 시 yfinance 호출 금지")
-
-        monkeypatch.setattr(mt, "fetch_index_history",
-                           lambda ticker, days=10: [] if ticker == "^MOVE" else fail_if_called())
-        result = mt.fetch_volatility_snapshot()
-        assert result["vix"] == {"value": 15.8, "date": None, "source": "CNN(실시간)"}
-
     def test_fetch_volatility_snapshot_vix_prefers_naver(self, monkeypatch):
         # 사용자 리포트(2026-07-26) '빅스지수가 다른데 메인대시보드랑
-        # 시장타이밍이랑' — CNN 실패 시 메인 대시보드(bot/macro_snapshot.py)
-        # 와 동일 네이버 소스로 폴백해 canonical 값이 일치. yfinance 는
-        # 호출조차 안 돼야 함(불필요한 콜 회피 확인).
+        # 시장타이밍이랑' — 메인 대시보드(bot/macro_snapshot.py)와 동일
+        # 네이버 소스를 우선 써야 canonical 값이 일치. (CNN 을 VIX 최우선
+        # 소스로 쓰려던 시도는 잘못된 전제로 밝혀져 되돌림 — 사용자가 말한
+        # "CNN 값"은 VIX 가 아니라 F&G 지수 자체였음, 아래 sentiment 테스트
+        # 참조.) yfinance 는 호출조차 안 돼야 함(불필요한 콜 회피 확인).
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
 
         def fail_if_called(ticker, days=10):
             raise AssertionError(f"naver 성공 시 yfinance({ticker}) 호출 금지")
@@ -15180,23 +15113,9 @@ class TestMarketTimingBreadthVol20260726:
         result = mt.fetch_volatility_snapshot()
         assert result["vix"] == {"value": 18.6, "date": None, "source": "네이버(실시간)"}
 
-    def test_fetch_volatility_snapshot_vix_cnn_implausible_falls_back_to_naver(self, monkeypatch):
-        # 사용자 리포트(2026-07-26 VM 스크린샷) — VIX(CNN) 50.0 인데 F&G 39/공포
-        # 로 모순, CNN 필드 오독 의심. _fetch_vix_cnn 이 자체적으로(reference 와
-        # 이격도 검증 후) None 반환하는 경로 — 이 스냅샷 레벨에서는 네이버로
-        # 정상 폴백되는지만 확인(_vix_plausible 자체 검증은 fear_greed_client
-        # 단위테스트에서).
-        from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.0)
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
-        monkeypatch.setattr(mt, "fetch_index_history", lambda ticker, days=10: [])
-        result = mt.fetch_volatility_snapshot()
-        assert result["vix"] == {"value": 18.0, "date": None, "source": "네이버(실시간)"}
-
     def test_fetch_volatility_snapshot_vix_falls_back_to_yfinance(self, monkeypatch):
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
 
         def fake_fetch(ticker, days=10):
             if ticker == "^VIX":
@@ -15210,10 +15129,47 @@ class TestMarketTimingBreadthVol20260726:
     def test_fetch_volatility_snapshot_both_fail_graceful(self, monkeypatch):
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
-        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda reference=None: None)
         monkeypatch.setattr(mt, "fetch_index_history",
                            lambda ticker, days=10: (_ for _ in ()).throw(RuntimeError("x")))
         assert mt.fetch_volatility_snapshot() == {}
+
+    def test_no_fetch_vix_cnn_reverted(self):
+        # 회고(2026-07-26) — CNN 을 VIX 최우선 소스로 쓰려던 _fetch_vix_cnn
+        # 은 잘못된 전제(CNN 은 원시 VIX 가격 비노출) 기반이라 제거.
+        from bot import market_timing as mt
+        assert not hasattr(mt, "_fetch_vix_cnn")
+
+    def test_load_market_timing_includes_sentiment(self, monkeypatch):
+        # 사용자 2026-07-26 "이 fear and greed를 양쪽에 똑같이 적용해줄수
+        # 없는거야" — 메인 대시보드와 동일 fetch_fear_greed() 재사용 확인.
+        from bot import market_timing as mt
+        import bot.fear_greed_client as fgc
+        fake = {"score": 39, "rating": "fear", "rating_kr": "공포", "ts": "t",
+               "prev_close": 39, "prev_1w": 37, "prev_1m": 26, "prev_1y": 75}
+        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: fake)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "fetch_market_breadth", lambda *a, **k: {})
+        monkeypatch.setattr(mt, "fetch_volatility_snapshot", lambda: {})
+        monkeypatch.setattr(mt, "fetch_crypto_snapshot", lambda: {})
+        data = mt._load_market_timing()
+        assert data["sentiment"] == fake
+
+    def test_render_sentiment_card(self):
+        from bot import market_timing as mt
+        data = {"markets": {}, "macro": {}, "crypto": {},
+                "sentiment": {"score": 39, "rating_kr": "공포", "ts": "07.25 08:59 KST",
+                             "prev_close": 39, "prev_1w": 37, "prev_1m": 26, "prev_1y": 75}}
+        html = mt.render_market_timing_page(data)
+        assert "시장 센티먼트" in html and "Fear &amp; Greed" in html
+        assert "39" in html and "공포" in html
+        assert "37" in html and "26" in html and "75" in html
+
+    def test_render_sentiment_card_absent_graceful(self):
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
+        # 가이드 텍스트엔 항상 언급되지만(사용법 설명), sentiment 데이터 없으면
+        # 실제 패널카드는 미노출.
+        assert 'panel-title">🎯 시장 센티먼트' not in html
 
     def test_render_breadth_and_volatility_cards(self):
         from bot import market_timing as mt
@@ -15240,10 +15196,10 @@ class TestMarketTimingBreadthVol20260726:
     def test_wiring(self):
         src = open("bot/market_timing.py", encoding="utf-8").read()
         assert '"breadth": breadth' in src and '"volatility": volatility' in src
+        assert '"sentiment": sentiment' in src   # CNN F&G, 메인 대시보드와 canonical 일치
         assert "def fetch_market_breadth" in src
         assert "def fetch_volatility_snapshot" in src
-        assert "def _fetch_vix_cnn" in src   # 최우선 소스(사용자 2026-07-26)
-        assert "def _fetch_vix_naver" in src   # 메인 대시보드와 동일 2차 소스(canonical 일치)
+        assert "def _fetch_vix_naver" in src   # 메인 대시보드와 동일 소스(canonical 일치)
 
 
 class TestEconCalendarAdditions20260726:

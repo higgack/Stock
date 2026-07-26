@@ -373,24 +373,15 @@ def fetch_market_breadth(market: str = "US") -> dict:
 # 있지만 시장타이밍 보드 단독 열람 시에도 바로 보이게 여기 카드로 병기.
 # MOVE(ICE BofA, 채권시장 변동성)는 yfinance 커버리지가 시기/벤더에 따라
 # 불안정 — 실패 시 그 필드만 생략(VIX 는 항상 시도, 서로 독립적 try).
-def _fetch_vix_cnn(reference=None):
-    """CNN Fear&Greed 의 시장변동성(VIX) 서브지표(2026-07-26, 사용자 요청
-    "VIX 는 가장 정확한 CNN 값으로, 양쪽 다" — bot/macro_snapshot.py 매크로9
-    위젯과 동일 최우선 소스로 canonical 통일). reference(네이버 값)로 이격도
-    검증 — VM 실측에서 CNN 필드가 실제 VIX 가 아닌 것으로 의심되는 값을
-    반환한 사례 발견(bot/fear_greed_client.py 독스트링). 실패/불신뢰 시
-    None(호출부가 네이버로 폴백)."""
-    try:
-        from bot.fear_greed_client import fetch_cnn_vix
-        return fetch_cnn_vix(reference=reference)
-    except Exception as exc:
-        log.debug("market_timing: VIX CNN fetch failed: %s", exc)
-        return None
-
-
+# (2026-07-26 회고: 한때 CNN 을 VIX 값의 "최우선 소스"로 시도했으나 —
+# 사용자가 스크린샷으로 재확인한 결과 사용자가 말한 "CNN 값"은 VIX 가 아닌
+# CNN Fear & Greed 지수(아래 render 의 sentiment 카드) 자체였음. CNN 은
+# 원시 VIX 가격을 공개적으로 노출하지 않아 그 시도는 잘못된 전제 —
+# bot/fear_greed_client.py 참조, 되돌림. VIX 는 계속 네이버가 정확한
+# 소스(메인 대시보드 bot/macro_snapshot.py 와 동일 — canonical 일치).)
 def _fetch_vix_naver():
     """네이버 worldstock .VIX — bot/macro_snapshot.py 의 메인 대시보드 매크로9
-    위젯과 동일 2차 소스. 사용자 2026-07-26 리포트('빅스지수가 다른데
+    위젯과 동일 소스. 사용자 2026-07-26 리포트('빅스지수가 다른데
     메인대시보드랑 시장타이밍이랑') — 이 카드가 독립적으로 yfinance ^VIX 만
     썼던 게 원인(다른 소스 + 최대 6시간 stale, canonical 값 불일치). 30초
     캐시라 사실상 실시간. 실패 시 None(호출부가 yfinance 로 최종 폴백)."""
@@ -405,25 +396,19 @@ def _fetch_vix_naver():
 
 
 def fetch_volatility_snapshot() -> dict:
-    """{"vix": {value, date, source}, "move": {value, date}|None} — 네이버를
-    먼저 확보해(30초 캐시, 저렴) CNN 의 이격도 검증 reference 로 사용, CNN
-    이 신뢰가능(_vix_plausible)하면 CNN 값 채택(메인 대시보드와 canonical
-    일치, 모듈 docstring 참조) → 불신뢰/실패 시 네이버 → 그것도 실패 시
-    yfinance 3단 폴백. 실패한 쪽만 생략(그 항목 없이 반환)."""
+    """{"vix": {value, date, source}, "move": {value, date}|None} — VIX 는
+    네이버(메인 대시보드와 canonical 값 일치) → yfinance 2단 폴백. 실패한
+    쪽만 생략(그 항목 없이 반환)."""
     out: dict = {}
     try:
         nv = _fetch_vix_naver()
-        cnn_v = _fetch_vix_cnn(reference=nv)
-        if cnn_v is not None:
-            out["vix"] = {"value": cnn_v, "date": None, "source": "CNN(실시간)"}
+        if nv is not None:
+            out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
         else:
-            if nv is not None:
-                out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
-            else:
-                vix_hist = fetch_index_history("^VIX", days=10)
-                if vix_hist:
-                    out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
-                                 "source": "yfinance(폴백)"}
+            vix_hist = fetch_index_history("^VIX", days=10)
+            if vix_hist:
+                out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
+                             "source": "yfinance(폴백)"}
     except Exception as exc:
         log.debug("market_timing: VIX fetch failed: %s", exc)
     try:
@@ -529,8 +514,19 @@ def _load_market_timing() -> dict:
     except Exception as exc:
         log.debug("market_timing: volatility panel failed: %s", exc)
 
+    # CNN Fear & Greed 지수(2026-07-26, 사용자 "이 fear and greed를 양쪽에
+    # 똑같이 적용해줄수 없는거야" — 메인 대시보드 bot/dashboard.py 의 시장
+    # 센티먼트 게이지와 동일 fetch_fear_greed() 재사용, canonical 값 일치
+    # 보장). 실패해도 graceful(그 카드만 생략).
+    sentiment: dict = {}
+    try:
+        from bot.fear_greed_client import fetch_fear_greed
+        sentiment = fetch_fear_greed()
+    except Exception as exc:
+        log.debug("market_timing: sentiment panel failed: %s", exc)
+
     return {"markets": markets, "macro": macro, "crypto": crypto, "cot": cot,
-            "breadth": breadth, "volatility": volatility}
+            "breadth": breadth, "volatility": volatility, "sentiment": sentiment}
 
 
 _FTD_LABEL = {
@@ -662,6 +658,25 @@ def render_market_timing_page(data: dict, now=None) -> str:
 MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
 금리변동성이 기술주/반도체 장세에 선행 신호가 되는 경우가 있어 병기.</div></div>"""
 
+    sent = data.get("sentiment") or {}
+    sent_card = ""
+    if sent.get("score") is not None:
+        _prevs = [("전일", sent.get("prev_close")), ("1주", sent.get("prev_1w")),
+                 ("1달", sent.get("prev_1m")), ("1년", sent.get("prev_1y"))]
+        _prev_rows = "".join(
+            f'<div class="stat"><div class="k">{_l}</div><div class="v" style="font-size:16px">{_v}</div></div>'
+            for _l, _v in _prevs if _v is not None)
+        _stale = " · ⚠️ 최신 수집 실패(마지막 성공분)" if sent.get("stale") else ""
+        _ts = _h.escape(str(sent.get("ts") or ""))
+        sent_card = f"""
+<div class="panel"><div class="panel-title">🎯 시장 센티먼트 (CNN Fear &amp; Greed)</div>
+<div class="stat-grid">
+<div class="stat"><div class="k">현재</div><div class="v">{sent["score"]} <span style="font-size:13px">{_h.escape(sent.get("rating_kr",""))}</span></div></div>
+{_prev_rows}
+</div>
+<div class="note">CNN Fear &amp; Greed 지수(0=극단공포 · 100=극단탐욕) — 메인 대시보드 시장 센티먼트
+게이지와 동일 소스(canonical 일치, 사용자 2026-07-26 "양쪽에 똑같이"). 기준 {_ts}{_stale}</div></div>"""
+
     payload = _json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -670,7 +685,7 @@ MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
 <h1>🚦 <em>시장타이밍</em> 보드</h1>
-<p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·시장폭·변동성·매크로 레짐·크립토·COT — 데이터 적용시각 {ts} ·
+<p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·시장폭·변동성·센티먼트·매크로 레짐·크립토·COT — 데이터 적용시각 {ts} ·
 소스 yfinance + FRED + CoinGecko + CFTC(전부 무료, 6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 분산일(Distribution Day)</b> — 종가 -0.2%+ 하락 & 거래량 증가 = 기관 매도 신호.
@@ -681,9 +696,11 @@ D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. CAUTION(3+)·HIGH(5+)·S
 <b>3) 시장 폭</b> — 11개 GICS 섹터 ETF 중 50/200일선 상회 비율(US 전용, 개별종목 breadth
 의 섹터-레벨 근사). 낮으면 소수 대형주만 지수 방어, 높으면 전반적 참여.<br>
 <b>4) 변동성(VIX·MOVE)</b> — VIX=주식 공포지수, MOVE=채권 변동성(커버리지 불안정 시 생략).<br>
-<b>5) 매크로 레짐</b> — 크로스에셋 비율로 시장 국면(집중/확산/긴축/인플레) 참고.<br>
-<b>6) 크립토 레짐</b> — BTC 중심 0-100 점수(참고용, 컴포넌트 일부만 반영).<br>
-<b>7) COT 역발상 게이트</b> — S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
+<b>5) 시장 센티먼트</b> — CNN Fear &amp; Greed 지수(메인 대시보드와 동일 소스). VIX 와는 다른
+지표(VIX=변동성 하나, F&amp;G=7개 컴포넌트 종합 심리지수) — 혼동 주의.<br>
+<b>6) 매크로 레짐</b> — 크로스에셋 비율로 시장 국면(집중/확산/긴축/인플레) 참고.<br>
+<b>7) 크립토 레짐</b> — BTC 중심 0-100 점수(참고용, 컴포넌트 일부만 반영).<br>
+<b>8) COT 역발상 게이트</b> — S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
 선물전용) 트레일링 3년 백분위. 극단 쏠림(≥80/≤20)은 과거 반전 빈도가 높았던
 구간이라는 참고 신호일 뿐(선물전용).<br>
 자동 신호이므로 참고용 — 확정 판단 금지.
@@ -691,10 +708,11 @@ D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. CAUTION(3+)·HIGH(5+)·S
 {cards}
 {breadth_card}
 {vol_card}
+{sent_card}
 {macro_card}
 {crypto_card}
 {cot_card}
-<div class="footer">분산일·FTD·시장폭·변동성·매크로레짐·크립토·COT — 신호는 참고용(투자 판단 아님) · NOAH</div>
+<div class="footer">분산일·FTD·시장폭·변동성·센티먼트·매크로레짐·크립토·COT — 신호는 참고용(투자 판단 아님) · NOAH</div>
 </div>
 <script id="mt-data" type="application/json">{payload}</script>
 </body></html>"""
