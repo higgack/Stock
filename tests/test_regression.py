@@ -13925,7 +13925,9 @@ class TestCpiBoardWiring20260724:
     def test_help_text_registered(self):
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "🛒CPI" in tb                 # 대시보드 목록
-        assert "PPI·CPI·유동성 제외" in tb    # 카드도구 제외(차트보드) 목록
+        # 카드도구 제외(차트보드) 목록 — 이후 시장타이밍 보드가 추가돼도
+        # "PPI·CPI·유동성"부터는 계속 이어져야(신규 차트보드 = 이 목록에 추가).
+        assert "PPI·CPI·유동성" in tb and "제외" in tb
 
     def test_fred_boards_nav_and_regen(self):
         from bot import fred_boards as fb
@@ -13943,3 +13945,167 @@ class TestCpiBoardWiring20260724:
         assert m is not None
         text = m.group(1)
         assert len(text.encode("utf-16-le")) // 2 < 4096
+
+
+class TestMarketTiming20260726:
+    """시장타이밍/브레드스(claude-trading-skills ibd-distribution-day-monitor/
+    ftd-detector/crypto-regime-analyzer/macro-regime-detector 이식) — 분산일
+    카운트·팔로우스루데이 상태기계·매크로 레짐·크립토 스코어 순수로직."""
+
+    def _flat_history(self, n, price=100.0, vol=1000):
+        return [{"date": f"d{i}", "close": price, "high": price * 1.01,
+                 "low": price * 0.99, "volume": vol} for i in range(n)]
+
+    def test_distribution_day_detected_on_decline_with_volume_up(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[5]["close"] = rows[6]["close"] * 0.99   # -1% vs 어제(더 최신)
+        rows[5]["volume"] = 2000                      # 거래량 증가
+        summ = mt.distribution_day_summary(rows)
+        assert summ["d5"] == 1 and summ["d15"] == 1 and summ["d25"] == 1
+        assert summ["risk_level"] == "NORMAL"
+
+    def test_distribution_day_no_signal_without_volume_increase(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[5]["close"] = rows[6]["close"] * 0.99
+        rows[5]["volume"] = 500   # 거래량 감소 — DD 아님
+        summ = mt.distribution_day_summary(rows)
+        assert summ["d25"] == 0
+
+    def test_distribution_day_invalidated_by_5pct_gain(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[10]["close"] = rows[11]["close"] * 0.99
+        rows[10]["volume"] = 2000
+        # DD 이후(더 최신, index<10) 세션 중 하나가 DD종가 대비 +5% 고가 도달.
+        rows[3]["high"] = rows[10]["close"] * 1.06
+        records = mt.detect_distribution_days(rows)
+        dd = next(r for r in records if r["age_sessions"] == 10)
+        assert dd["status"] == "invalidated"
+        summ = mt.distribution_day_summary(rows)
+        assert summ["d25"] == 0   # invalidated 는 active 카운트에서 제외
+
+    def test_distribution_day_expired_after_25_sessions(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        rows[26]["close"] = rows[27]["close"] * 0.99
+        rows[26]["volume"] = 2000
+        records = mt.detect_distribution_days(rows)
+        dd = next(r for r in records if r["age_sessions"] == 26)
+        assert dd["status"] == "expired"
+
+    def test_risk_classification_thresholds(self):
+        from bot import market_timing as mt
+        assert mt.classify_risk(0, 0, 0) == "NORMAL"
+        assert mt.classify_risk(0, 0, 3) == "CAUTION"
+        assert mt.classify_risk(2, 0, 0) == "HIGH"       # d5 threshold
+        assert mt.classify_risk(0, 3, 0) == "HIGH"       # d15 threshold
+        assert mt.classify_risk(0, 0, 5) == "HIGH"       # d25 threshold
+        assert mt.classify_risk(0, 4, 0) == "SEVERE"     # d15 severe
+        assert mt.classify_risk(0, 0, 6) == "SEVERE"     # d25 severe
+
+    def _ftd_scenario(self, rally_closes, vol_up_at=None, n_pad=48):
+        # 40플랫(100) + 하락시퀀스(고점100→저점94, 3일하락) + rally_closes.
+        decline = [100, 100, 100, 100, 100, 99, 97, 94]
+        full = decline + rally_closes
+        rows = self._flat_history(n_pad)
+        for i, c in enumerate(full):
+            idx = -len(full) + i
+            rows[idx]["close"] = c
+            rows[idx]["high"] = c * 1.005
+            rows[idx]["low"] = c * 0.995
+            rows[idx]["volume"] = 2000 if (vol_up_at is not None and i == vol_up_at) else 1000
+        return rows
+
+    def test_ftd_confirmed_prime_window(self):
+        from bot import market_timing as mt
+        # decline(8개)+day1..day5: index 8=day1(94.5,vol up), 12=day5(FTD, +2.6%,vol up)
+        rally = [94.5, 95, 95.2, 96, 98.5]
+        rows = self._ftd_scenario(rally, vol_up_at=None)
+        rows[-len(rally)]["volume"] = 2000     # day1 거래량 증가
+        rows[-1]["volume"] = 2000              # FTD일 거래량 증가
+        res = mt.detect_ftd(rows)
+        assert res["state"] == "FTD_CONFIRMED"
+        assert res["day"] == 5 and res["window"] == "prime"
+        assert res["gain_pct"] > 2.0
+
+    def test_ftd_rally_failed_on_day1_low_breach(self):
+        from bot import market_timing as mt
+        rally = [94.8, 94.2]   # day1 저가~94.33, day2 종가 94.2 < day1저가(but > swing_low 94)
+        rows = self._ftd_scenario(rally)
+        res = mt.detect_ftd(rows)
+        assert res["state"] == "RALLY_FAILED" and res["day"] == 2
+
+    def test_ftd_no_correction_when_decline_too_small(self):
+        from bot import market_timing as mt
+        rows = self._flat_history(50)
+        assert mt.detect_ftd(rows)["state"] == "NO_CORRECTION"
+
+    def test_ftd_insufficient_data(self):
+        from bot import market_timing as mt
+        assert mt.detect_ftd(self._flat_history(10))["state"] == "INSUFFICIENT_DATA"
+
+    def test_macro_regime_majority_vote_and_transitional_fallback(self):
+        from bot import market_timing as mt
+        assert mt.classify_macro_regime(2.0, -0.3, 1.0, 1.5, 3.0, 2.0) == "Broadening"
+        assert mt.classify_macro_regime(None, None, None, None, None, None) == "Transitional"
+
+    def test_crypto_regime_score_partial_components_graceful(self):
+        from bot import market_timing as mt
+        full = mt.crypto_regime_score(50000, 48000, 40000, 55.0, -15.0, 20.0)
+        assert full["score"] is not None and set(full["components"]) == {
+            "trend", "dominance", "drawdown", "momentum"}
+        partial = mt.crypto_regime_score(50000, None, None, None, None, None)
+        assert partial["score"] is None and partial["components"] == {}
+        empty = mt.crypto_regime_score(None, None, None, None, None, None)
+        assert empty["score"] is None
+
+    def test_market_indices_universal_kr_us_jp(self):
+        from bot import market_timing as mt
+        for m in ("US", "KR", "JP"):
+            assert mt.MARKET_INDICES.get(m), f"{m} 지수 미등록"
+
+    def test_render_market_timing_page_smoke(self):
+        from bot import market_timing as mt
+        data = {
+            "markets": {
+                "US": {"ticker": "^GSPC", "name": "S&P 500",
+                       "dd": {"d5": 1, "d15": 2, "d25": 3, "risk_level": "CAUTION"},
+                       "ftd": {"state": "FTD_CONFIRMED", "day": 5,
+                              "window": "prime", "quality_score": 80},
+                       "latest_date": "2026-07-24", "latest_close": 5000.0},
+                "KR": {"ticker": "^KS11", "name": "KOSPI", "error": "데이터 없음"},
+                "JP": {"ticker": "^N225", "name": "니케이225",
+                       "dd": {"d5": 0, "d15": 0, "d25": 0, "risk_level": "NORMAL"},
+                       "ftd": {"state": "NO_CORRECTION"},
+                       "latest_date": "2026-07-24", "latest_close": 40000.0},
+            },
+            "macro": {"regime": "Broadening", "rsp_spy": 2.0, "curve_10y2y": -0.3},
+            "crypto": {"price": 60000, "ath_change_pct": -12.5, "score": 70.0,
+                      "components": {"trend": 100}},
+        }
+        html = mt.render_market_timing_page(data)
+        assert "mt-data" in html and "CAUTION" in html
+        assert "데이터 없음" in html and "FTD 확정" in html
+        assert html.lower().count("<!doctype") == 1
+
+    def test_render_market_timing_page_empty_market_graceful(self):
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
+        assert "시장타이밍" in html   # crash 없이 렌더(빈 데이터도 graceful)
+
+    def test_wiring(self):
+        # nav(공용 fred_boards._NAV + 홈허브 + Market cap) · 6시간 periodic ·
+        # startup 스레드 · _HELP_TEXT 등록 — 같은 커밋 의무 계약.
+        from bot import fred_boards as fb
+        assert 'href="market_timing.html">🚦 시장타이밍</a>' in fb._NAV
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db.count('href="market_timing.html">🚦 시장타이밍</a>') >= 2
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "regenerate_market_timing" in tb
+        assert "🚦시장타이밍" in tb
+        assert "시장타이밍" in tb and "PPI·CPI·유동성·시장타이밍 제외" in tb
+        mtsrc = open("bot/market_timing.py", encoding="utf-8").read()
+        assert "def regenerate_market_timing" in mtsrc
+        assert '(ARCHIVE_ROOT / "market_timing.html").write_text' in mtsrc

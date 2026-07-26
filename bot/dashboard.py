@@ -12765,6 +12765,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
     · <a href="ppi.html">🏭 PPI</a>
     · <a href="cpi.html">🛒 CPI</a>
     · <a href="liquidity.html">💧 유동성</a>
+    · <a href="market_timing.html">🚦 시장타이밍</a>
   </div>
   <h1>🏆 Market cap</h1>
   <p class="sub">글로벌 기업 순위 · 출처
@@ -15112,6 +15113,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="ppi.html">🏭 PPI</a>
     &middot; <a href="cpi.html">🛒 CPI</a>
     &middot; <a href="liquidity.html">💧 유동성</a>
+    &middot; <a href="market_timing.html">🚦 시장타이밍</a>
     &middot; <a href="marketcap.html">🏆 Market cap</a>
     &middot; <a href="trade/">🌏 수출입</a>
     &middot; <a href="daily_byte.html">📰 Daily Byte</a>
