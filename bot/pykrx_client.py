@@ -363,6 +363,13 @@ def get_kr_trend_template(ticker: str) -> Optional[dict]:
         log.warning("pykrx: trend template parse failed for %s: %s", code, exc)
         return None
     try:
+        from bot.pattern_screener import merge_into_trend_result
+        opens = [float(x) for x in df["시가"].tolist()]
+        volumes = [float(x) for x in df["거래량"].tolist()]
+        merge_into_trend_result(result, closes, opens, highs, lows, volumes)
+    except Exception as exc:
+        log.debug("pykrx: pattern screener merge failed for %s: %s", code, exc)
+    try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(result))
     except Exception:

@@ -14230,3 +14230,199 @@ class TestBacktestReview20260726:
         db = open("bot/dashboard.py", encoding="utf-8").read()
         assert "backtest_review.review_trade_history" in db
         assert "백테스트 리뷰" in db
+
+
+def _vcp_ramp(pivots, start=100.0):
+    """(n_bars, target) 리스트로 선형 램프 closes 생성 — VCP 조정/피벗 테스트용."""
+    closes = [start]
+    for n, target in pivots:
+        s = closes[-1]
+        for i in range(1, n + 1):
+            closes.append(s + (target - s) * i / n)
+    highs = [c * 1.01 for c in closes]
+    lows = [c * 0.99 for c in closes]
+    return closes, highs, lows
+
+
+class TestPatternScreener20260726:
+    """VCP·모멘텀버스트·PEAD 패턴 탐지(claude-trading-skills 이식,
+    bot/pattern_screener.py) — 순수함수 + trend_template 병합 배선."""
+
+    def test_zigzag_swings_alternates_and_respects_min_move(self):
+        from bot import pattern_screener as ps
+        highs = [100, 105, 110, 108, 104, 100, 105, 112, 118, 115, 110]
+        lows = [h - 1 for h in highs]
+        swings = ps.zigzag_swings(highs, lows, min_move=8)
+        types = [s[1] for s in swings]
+        assert len(swings) >= 2   # 최소 한 번은 반전 감지
+        for a, b in zip(types, types[1:]):
+            assert a != b   # 항상 고점/저점 교대
+
+    def test_zigzag_swings_empty_on_zero_min_move(self):
+        from bot import pattern_screener as ps
+        assert ps.zigzag_swings([1, 2, 3], [1, 2, 3], 0) == []
+        assert ps.zigzag_swings([], [], 5) == []
+
+    def test_detect_vcp_valid_two_contractions_pre_breakout(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 144)])
+        vols = [1000.0] * len(closes)
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120)
+        assert res["valid_vcp"] is True
+        assert res["num_contractions"] == 2
+        # 각 조정폭이 이전 조정의 70% 이하로 수축(오래된→최신 순 저장)
+        d1, d2 = res["contraction_depths_pct"]
+        assert d2 <= d1 * 0.70 + 0.01
+        assert res["execution_state"] == "Pre-breakout"
+        assert res["breakout"] is False
+
+    def test_detect_vcp_breakout_with_volume(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 150)])
+        vols = [1000.0] * len(closes)
+        vols[-1] = 2000.0
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120)
+        assert res["valid_vcp"] is True
+        assert res["breakout"] is True
+        assert res["execution_state"] == "Breakout"
+        assert res["score"] > 0
+
+    def test_detect_vcp_single_contraction_invalid(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (20, 160)])
+        vols = [1000.0] * len(closes)
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120)
+        assert res["valid_vcp"] is False
+        assert res["execution_state"] == "None"
+        assert res["score"] == 0
+
+    def test_detect_vcp_stage2_gate_zeroes_out_despite_valid_pattern(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 150)])
+        vols = [1000.0] * len(closes)
+        vols[-1] = 2000.0
+        res = ps.detect_vcp(closes, highs, lows, vols, lookback_days=120, stage2_ok=False)
+        assert res["valid_vcp"] is False
+        assert res["breakout"] is False
+        assert res["execution_state"] == "Not-Stage2"
+        assert res["score"] == 0
+
+    def test_detect_vcp_short_history_returns_none(self):
+        from bot import pattern_screener as ps
+        assert ps.detect_vcp([1, 2, 3], [1, 2, 3], [1, 2, 3], [1, 2, 3]) is None
+
+    def test_detect_momentum_burst_pct_trigger_with_range_expansion(self):
+        from bot import pattern_screener as ps
+        n = 55
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        closes[-1] = closes[-2] * 1.05
+        vols[-1] = 2500.0
+        highs = [c * 1.005 for c in closes]
+        lows = [c * 0.995 for c in closes]
+        highs[-1] = closes[-1] * 1.03
+        lows[-1] = closes[-2] * 0.99
+        res = ps.detect_momentum_burst(closes, vols, highs=highs, lows=lows)
+        assert res["valid"] is True
+        assert res["trigger"] == "pct"
+        assert res["range_expansion"] is True
+        assert res["score"] > 50
+
+    def test_detect_momentum_burst_dollar_trigger(self):
+        from bot import pattern_screener as ps
+        n = 55
+        closes = [200.0] * n
+        vols = [1000.0] * n
+        closes[-1] = closes[-2] + 0.95
+        vols[-1] = 2000.0
+        res = ps.detect_momentum_burst(closes, vols)
+        assert res["valid"] is True
+        assert res["trigger"] == "dollar"
+
+    def test_detect_momentum_burst_no_volume_surge_invalid(self):
+        from bot import pattern_screener as ps
+        n = 55
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        closes[-1] = closes[-2] * 1.06   # 6% move but flat volume
+        res = ps.detect_momentum_burst(closes, vols)
+        assert res["valid"] is False
+        assert res["trigger"] is None
+        assert res["score"] == 0
+
+    def test_detect_momentum_burst_short_history_returns_none(self):
+        from bot import pattern_screener as ps
+        assert ps.detect_momentum_burst([1, 2, 3], [1, 2, 3]) is None
+
+    def test_detect_pead_valid_gap_and_drift(self):
+        from bot import pattern_screener as ps
+        n = 80
+        opens = [100.0] * n
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        gap_idx = n - 10
+        opens[gap_idx] = closes[gap_idx - 1] * 1.07
+        closes[gap_idx] = opens[gap_idx] * 1.01
+        vols[gap_idx] = 2000.0
+        for i in range(gap_idx + 1, n):
+            closes[i] = closes[i - 1] * 1.005
+            opens[i] = closes[i - 1]
+        res = ps.detect_pead(closes, opens, vols, lookback_days=20)
+        assert res["valid"] is True
+        assert res["gap_pct"] == 7.0
+        assert res["drift_pct"] > 0
+        assert res["score"] > 0
+
+    def test_detect_pead_collapsed_is_invalid(self):
+        from bot import pattern_screener as ps
+        n = 80
+        opens = [100.0] * n
+        closes = [100.0] * n
+        vols = [1000.0] * n
+        gap_idx = n - 10
+        opens[gap_idx] = closes[gap_idx - 1] * 1.07
+        closes[gap_idx] = opens[gap_idx] * 1.01
+        vols[gap_idx] = 2000.0
+        for i in range(gap_idx + 1, n):
+            closes[i] = closes[i - 1] * 1.005
+            opens[i] = closes[i - 1]
+        closes[-1] = opens[gap_idx] * 0.5   # 갭 붕괴
+        res = ps.detect_pead(closes, opens, vols, lookback_days=20)
+        assert res["valid"] is False
+
+    def test_detect_pead_no_gap_returns_message_dict(self):
+        from bot import pattern_screener as ps
+        n = 80
+        res = ps.detect_pead([100.0] * n, [100.0] * n, [1000.0] * n, lookback_days=20)
+        assert res["valid"] is False
+        assert res["gap_pct"] is None
+
+    def test_detect_pead_short_history_returns_none(self):
+        from bot import pattern_screener as ps
+        assert ps.detect_pead([1] * 10, [1] * 10, [1] * 10, lookback_days=20) is None
+
+    def test_merge_into_trend_result_adds_expected_keys(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 150)])
+        opens = closes[:]
+        vols = [1000.0] * len(closes)
+        vols[-1] = 2000.0
+        result = {"tt": 1.0}
+        ps.merge_into_trend_result(result, closes, opens, highs, lows, vols)
+        assert set(result) >= {"vcp_valid", "vcp_score", "mb_valid", "mb_score",
+                               "pead_valid", "pead_score"}
+        assert result["vcp_valid"] in (0.0, 1.0)
+
+    def test_wiring(self):
+        from bot import stock_screener as ss
+        for key in ("vcp_valid", "vcp_score", "mb_valid", "mb_score",
+                    "pead_valid", "pead_score"):
+            assert key in ss.METRICS
+        for preset in ("vcp", "momentum_burst", "pead"):
+            assert preset in ss.PRESETS
+            conds = ss.parse_conditions(ss.PRESETS[preset]["conditions"])
+            assert conds   # 파싱 성공(별칭 등록 검증)
+        pk_src = open("bot/pykrx_client.py", encoding="utf-8").read()
+        assert "merge_into_trend_result" in pk_src
+        ss_src = open("bot/stock_screener.py", encoding="utf-8").read()
+        assert "merge_into_trend_result" in ss_src

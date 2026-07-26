@@ -152,6 +152,21 @@ _reg("to_high", "52주고점대비", ("52주고점대비", "to_high", "고점대
 _reg("rs6m", "6개월수익률", ("6개월수익률", "rs6m", "rs", "상대강도6개월"), "tech",
      "rs6m", "%", desc="6개월 가격수익률 (상대강도 참고치)")
 
+# VCP·모멘텀버스트·PEAD (claude-trading-skills 이식, 2026-07-26) — tt 와 동일
+# 일봉 fetch 재사용(bot/pattern_screener.py, 추가 API 호출 없음).
+_reg("vcp_valid", "VCP패턴", ("VCP패턴", "vcp_valid", "vcp", "변동성수축패턴"),
+     "tech", "vcp_valid", desc="Minervini VCP(변동성수축패턴) 유효=1 (2-4회 조정 수축+Stage2)")
+_reg("vcp_score", "VCP점수", ("VCP점수", "vcp_score"), "tech", "vcp_score",
+     desc="VCP 패턴 품질 점수(0-100)")
+_reg("mb_valid", "모멘텀버스트", ("모멘텀버스트", "mb_valid", "momentum_burst", "4%데이"),
+     "tech", "mb_valid", desc="Stockbee 모멘텀버스트('4% Days') 유효=1")
+_reg("mb_score", "모멘텀버스트점수", ("모멘텀버스트점수", "mb_score"), "tech", "mb_score",
+     desc="모멘텀버스트 품질 점수(0-100)")
+_reg("pead_valid", "PEAD", ("PEAD", "pead_valid", "실적드리프트"),
+     "tech", "pead_valid", desc="실적 갭업 후 드리프트(PEAD) 후보 유효=1")
+_reg("pead_score", "PEAD점수", ("PEAD점수", "pead_score"), "tech", "pead_score",
+     desc="PEAD 후보 품질 점수(0-100)")
+
 _QOQ_STMT_MAP: dict[str, tuple[str, str]] = {
     "_qoq_revenue": ("income_stmt", "Total Revenue"),
     "_qoq_gross_profit": ("income_stmt", "Gross Profit"),
@@ -284,6 +299,21 @@ PRESETS: dict[str, dict] = {
         "name": "Minervini 추세",
         "desc": "SEPA 추세 템플릿(이평 정렬+52주 위치) · 시총 상위 스캔",
         "conditions": "트렌드템플릿>=1 시총>500 거래량>0",
+    },
+    "vcp": {
+        "name": "VCP (변동성수축패턴)",
+        "desc": "Minervini VCP — Stage2 추세 + 2-4회 수축 조정 + 피벗 근접/돌파",
+        "conditions": "VCP패턴>=1 시총>500 거래량>0",
+    },
+    "momentum_burst": {
+        "name": "모멘텀버스트 (Stockbee)",
+        "desc": "'4% Days' — 당일 4%+(또는 $0.90+) 상승 + 거래량 급증",
+        "conditions": "모멘텀버스트>=1 시총>500 거래량>0",
+    },
+    "pead": {
+        "name": "PEAD (실적드리프트)",
+        "desc": "실적 갭업 후 드리프트 지속 후보 (가격/거래량 휴리스틱)",
+        "conditions": "PEAD>=1 시총>500 거래량>0",
     },
 }
 
@@ -1000,6 +1030,13 @@ def get_yf_trend_template(ticker: str) -> Optional[dict]:
     except Exception as exc:
         log.debug("yf_trend: %s parse failed: %s", ticker, exc)
         return None
+    try:
+        from bot.pattern_screener import merge_into_trend_result
+        opens = [float(x) for x in df["Open"].tolist()]
+        volumes = [float(x) for x in df["Volume"].tolist()]
+        merge_into_trend_result(res, closes, opens, highs, lows, volumes)
+    except Exception as exc:
+        log.debug("yf_trend: %s pattern screener merge failed: %s", ticker, exc)
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cf.write_text(json.dumps(res))
