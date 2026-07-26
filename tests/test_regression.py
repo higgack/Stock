@@ -14695,3 +14695,87 @@ class TestEdgar13F20260726:
         db_src = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'us.get("institutional_13f")' in db_src
         assert "us_13f_html" in db_src
+
+
+class TestCotGate20260726:
+    """COT(CFTC Commitments of Traders) 역발상 게이트(claude-trading-skills
+    이식, 선물전용 예외, bot/cot_gate.py) — 순수함수 + market_timing 병합."""
+
+    def test_cot_index_at_max_and_min(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]) == 100.0
+        assert cg.cot_index([100, 90, 80, 70, 60, 50, 40, 30, 20, 10]) == 0.0
+
+    def test_cot_index_midpoint(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([10, 90, 50]) == 50.0
+
+    def test_cot_index_flat_series_none(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([5, 5, 5, 5]) is None
+
+    def test_cot_index_too_short_none(self):
+        from bot import cot_gate as cg
+        assert cg.cot_index([5]) is None
+
+    def test_cot_index_respects_lookback_window(self):
+        from bot import cot_gate as cg
+        # 마지막 3개(lookback=3)만 봄: [90,10,50] -> range[10,90], current=50 -> 50.0
+        # 앞의 -1000 이 lookback 밖이라 범위에 영향 없어야 함(포함되면 결과 달라짐)
+        hist = [-1000, 90, 10, 50]
+        assert cg.cot_index(hist, lookback=3) == 50.0
+
+    def test_classify_cot_positioning_thresholds(self):
+        from bot import cot_gate as cg
+        assert cg.classify_cot_positioning(80.0) == "EXTREME_LONG_CROWDED"
+        assert cg.classify_cot_positioning(20.0) == "EXTREME_SHORT_CROWDED"
+        assert cg.classify_cot_positioning(50.0) == "NEUTRAL"
+        assert cg.classify_cot_positioning(None) == "UNKNOWN"
+
+    def test_price_failed_to_hold_up_direction(self):
+        from bot import cot_gate as cg
+        closes = [100, 105, 110, 108, 106, 112]
+        assert cg.price_failed_to_hold(closes, 1, "up", confirm_days=3) is False
+        closes2 = [100, 105, 95, 96, 97]
+        assert cg.price_failed_to_hold(closes2, 1, "up", confirm_days=3) is True
+
+    def test_price_failed_to_hold_down_direction(self):
+        from bot import cot_gate as cg
+        closes = [100, 95, 90, 92, 93, 94]   # trigger idx1=95, follow=[90,92,93] all<=95 -> no fail
+        assert cg.price_failed_to_hold(closes, 1, "down", confirm_days=3) is False
+        closes2 = [100, 95, 105, 106]        # follow has 105>95 -> fail
+        assert cg.price_failed_to_hold(closes2, 1, "down", confirm_days=2) is True
+
+    def test_price_failed_to_hold_out_of_range_and_insufficient_data(self):
+        from bot import cot_gate as cg
+        closes = [100, 105, 110]
+        assert cg.price_failed_to_hold(closes, 10, "up") is None
+        assert cg.price_failed_to_hold(closes, 2, "up", confirm_days=3) is None
+
+    def test_price_failed_to_hold_bad_direction_none(self):
+        from bot import cot_gate as cg
+        assert cg.price_failed_to_hold([1, 2, 3, 4, 5], 0, "sideways") is None
+
+    def test_get_cot_signal_graceful_without_network(self):
+        from bot import cot_gate as cg
+        sig = cg.get_cot_signal("SP500")
+        assert sig["market"] == "SP500"
+        assert sig["signal"] == "UNKNOWN"
+        assert sig["index"] is None
+
+    def test_wiring(self):
+        mt_src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert "from bot.cot_gate import get_cot_signal" in mt_src
+        assert '"cot": cot' in mt_src
+        assert "COT 역발상 게이트" in mt_src
+        from bot import market_timing as mt
+        data = {"markets": {}, "macro": {}, "crypto": {},
+                "cot": {"market": "SP500", "index": 85.0, "signal": "EXTREME_LONG_CROWDED",
+                       "label": "테스트", "as_of": "2026-07-18"}}
+        html = mt.render_market_timing_page(data)
+        assert "COT 역발상 게이트" in html and "85" in html
+
+    def test_render_market_timing_page_no_cot_graceful(self):
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
+        assert "시장타이밍" in html   # crash 없이 렌더(cot 키 부재도 graceful)

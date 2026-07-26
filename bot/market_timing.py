@@ -349,7 +349,19 @@ def _load_market_timing() -> dict:
     except Exception as exc:
         log.debug("market_timing: crypto panel failed: %s", exc)
 
-    return {"markets": markets, "macro": macro, "crypto": crypto}
+    # COT(CFTC Commitments of Traders) 역발상 게이트(2026-07-26, 선물전용
+    # 예외 — bot/cot_gate.py 독스트링 참조) — S&P500 E-mini 대형투기자
+    # 포지셔닝. 개별종목 게이트 아닌 매크로 부가신호(실패해도 graceful).
+    cot: dict = {}
+    try:
+        from bot.cot_gate import get_cot_signal
+        sig = get_cot_signal("SP500")
+        if sig.get("index") is not None:
+            cot = sig
+    except Exception as exc:
+        log.debug("market_timing: COT gate failed: %s", exc)
+
+    return {"markets": markets, "macro": macro, "crypto": crypto, "cot": cot}
 
 
 _FTD_LABEL = {
@@ -425,6 +437,19 @@ def render_market_timing_page(data: dict, now=None) -> str:
 </div>
 <div class="note">CoinGecko 무료 공개 API — 가격·ATH낙폭 컴포넌트만(SMA·도미넌스는 추후 확장).</div></div>"""
 
+    cot = data.get("cot", {})
+    cot_card = ""
+    if cot and cot.get("index") is not None:
+        cot_card = f"""
+<div class="panel"><div class="panel-title">📐 COT 역발상 게이트 (선물전용)</div>
+<div class="stat-grid">
+<div class="stat"><div class="k">S&amp;P500 E-mini COT Index</div><div class="v">{cot["index"]:.0f}</div></div>
+<div class="stat"><div class="k">포지셔닝</div><div class="v" style="font-size:14px">{_h.escape(cot.get("label",""))}</div></div>
+</div>
+<div class="sub" style="margin:4px 0 0">기준 {_h.escape(str(cot.get("as_of","—")))} (CFTC 주간 보고)</div>
+<div class="note">대형투기자(non-commercial) 순포지션의 트레일링 3년 대비 백분위(고전 COT Index) —
+≥80 과열매수(역발상 매도경계) · ≤20 과열매도(역발상 매수경계). 개별종목 게이트 아닌 매크로 참고신호.</div></div>"""
+
     payload = _json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -433,8 +458,8 @@ def render_market_timing_page(data: dict, now=None) -> str:
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
 <h1>🚦 <em>시장타이밍</em> 보드</h1>
-<p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·매크로 레짐·크립토 — 데이터 적용시각 {ts} ·
-소스 yfinance + FRED + CoinGecko(전부 무료, 6시간 주기 자동 갱신)</p>
+<p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·매크로 레짐·크립토·COT — 데이터 적용시각 {ts} ·
+소스 yfinance + FRED + CoinGecko + CFTC(전부 무료, 6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 분산일(Distribution Day)</b> — 종가 -0.2%+ 하락 & 거래량 증가 = 기관 매도 신호.
 D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. CAUTION(3+)·HIGH(5+)·SEVERE(6+) — 높을수록
@@ -443,12 +468,16 @@ D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. CAUTION(3+)·HIGH(5+)·S
 바닥 확인 신호(O'Neil 방법론). 🟢 FTD 확정만 유효 신호, 나머지는 대기/무효.<br>
 <b>3) 매크로 레짐</b> — 크로스에셋 비율로 시장 국면(집중/확산/긴축/인플레) 참고.<br>
 <b>4) 크립토 레짐</b> — BTC 중심 0-100 점수(참고용, 컴포넌트 일부만 반영).<br>
+<b>5) COT 역발상 게이트</b> — S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
+선물전용) 트레일링 3년 백분위. 극단 쏠림(≥80/≤20)은 과거 반전 빈도가 높았던
+구간이라는 참고 신호일 뿐(선물전용).<br>
 자동 신호이므로 참고용 — 확정 판단 금지.
 </details>
 {cards}
 {macro_card}
 {crypto_card}
-<div class="footer">분산일·FTD·매크로레짐·크립토 — 신호는 참고용(투자 판단 아님) · NOAH</div>
+{cot_card}
+<div class="footer">분산일·FTD·매크로레짐·크립토·COT — 신호는 참고용(투자 판단 아님) · NOAH</div>
 </div>
 <script id="mt-data" type="application/json">{payload}</script>
 </body></html>"""
