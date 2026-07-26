@@ -11508,12 +11508,43 @@ def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: li
     except Exception:
         pass
 
+    # 백테스트 리뷰(2026-07-26) — claude-trading-skills backtest-expert 스킬의
+    # 5축(Sample Size/Expectancy/Risk Management/Robustness/Execution Realism)
+    # 프레임워크를 청산 씨시스 이력 전체에 적용(bot/backtest_review.py).
+    backtest_block = ""
+    try:
+        from bot import backtest_review
+        _bt = backtest_review.review_trade_history()
+        if _bt.get("n"):
+            _verdict_col = {"Deploy": "#16a34a", "Refine": "#d97706",
+                            "Abandon": "#dc2626"}.get(_bt["verdict"], "#666")
+            _dim_rows = "".join(
+                f'<tr><td>{_html.escape(d["name"])}</td>'
+                f'<td class="muted">{d["score"]}/{d["max_score"]}</td></tr>'
+                for d in _bt["dimensions"])
+            _flag_lines = "".join(
+                f'<p class="sub" style="font-size:12px">'
+                f'{"🔴" if f["severity"]=="high" else "🟡"} {_html.escape(f["message"])}</p>'
+                for f in _bt["red_flags"])
+            backtest_block = (
+                '<div class="pf-card"><div class="pf-h">📊 백테스트 리뷰 ('
+                + str(_bt["n"]) + '건, ' + f'{_bt["span_days"]:.0f}' + '일간)</div>'
+                f'<p class="sub" style="font-size:13px">총점 <b>{_bt["total_score"]}/100</b> — '
+                f'판정 <b style="color:{_verdict_col}">{_html.escape(_bt["verdict"])}</b></p>'
+                '<table class="pf-tbl"><thead><tr><th>항목</th><th>점수</th></tr></thead>'
+                '<tbody>' + _dim_rows + '</tbody></table>'
+                + (_flag_lines or '<p class="sub" style="font-size:12px">레드플래그 없음</p>')
+                + '</div>')
+    except Exception:
+        pass
+
     # wl_section 은 위(빈-계좌 early-return 공유)에서 이미 빌드됨.
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🔔 워치리스트</h1>'
             '<p class="sub">조건 알림(30분 체크, ₩0) + 페이퍼 트레이딩(모의 매매, 리스크 0)</p>'
             + halt_banner + e1_banner + stats + stats_extra + curve_html + pos_block + pend_block
-            + tr_block + audit_block + thesis_block + note + gate_line + wl_section + "</div>")
+            + tr_block + audit_block + thesis_block + backtest_block
+            + note + gate_line + wl_section + "</div>")
 
 
 def _sym_cur(currency: str) -> str:

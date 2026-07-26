@@ -14109,3 +14109,124 @@ class TestMarketTiming20260726:
         mtsrc = open("bot/market_timing.py", encoding="utf-8").read()
         assert "def regenerate_market_timing" in mtsrc
         assert '(ARCHIVE_ROOT / "market_timing.html").write_text' in mtsrc
+
+
+class TestBacktestReview20260726:
+    """백테스트 리뷰(claude-trading-skills backtest-expert 5축 프레임워크
+    이식, bot/backtest_review.py) — 스코어링 공식/경계값 + 씨시스 이력 변환."""
+
+    def test_score_sample_size_boundaries(self):
+        from bot import backtest_review as br
+        assert br.score_sample_size(29) == 0
+        assert br.score_sample_size(30) == 8
+        assert br.score_sample_size(99) == 14
+        assert br.score_sample_size(100) == 15
+        assert br.score_sample_size(199) == 19
+        assert br.score_sample_size(200) == 20
+        assert br.score_sample_size(1000) == 20
+
+    def test_calc_profit_factor_inf_when_no_losses(self):
+        from bot import backtest_review as br
+        assert br.calc_profit_factor(100.0, 2.0, 1.0) == float("inf")
+        pf = br.calc_profit_factor(60.0, 2.0, 1.0)
+        assert pf == (0.6 * 2.0) / (0.4 * 1.0)
+
+    def test_score_expectancy_boundaries(self):
+        from bot import backtest_review as br
+        assert br.score_expectancy(40.0, 1.0, 1.0) == 0          # exp <= 0
+        assert br.score_expectancy(100.0, 20.0, 0.0) == 20        # exp huge >=1.5
+        mid = br.score_expectancy(60.0, 1.0, 1.0)                 # exp = 0.2
+        assert 5 <= mid < 10
+
+    def test_score_risk_management_catastrophic_drawdown_zero(self):
+        from bot import backtest_review as br
+        assert br.score_risk_management(50.0, 90.0, 5.0, 1.0) == 0
+        assert br.score_risk_management(60.0, 90.0, 5.0, 1.0) == 0
+        good = br.score_risk_management(10.0, 75.0, 2.0, 1.0)
+        assert good == 20   # dd<20 -> 12 + pf(=0.75*2/0.25=6.0)>=3.0 -> 8
+
+    def test_score_robustness_boundaries(self):
+        from bot import backtest_review as br
+        assert br.score_robustness(4, 2) == 5    # years<5 -> 0 + param<=4 -> 5
+        assert br.score_robustness(10, 4) == 20   # years>=10 -> 15 + 5
+        assert br.score_robustness(10, 9) == 15   # param>=8 -> 0
+
+    def test_get_verdict_thresholds(self):
+        from bot import backtest_review as br
+        assert br.get_verdict(70) == "Deploy"
+        assert br.get_verdict(69) == "Refine"
+        assert br.get_verdict(40) == "Refine"
+        assert br.get_verdict(39) == "Abandon"
+
+    def test_detect_red_flags_small_sample_and_negative_expectancy(self):
+        from bot import backtest_review as br
+        flags = br.detect_red_flags(10, 30.0, 1.0, 3.0, 10.0, 8, 2, True)
+        ids = {f["id"] for f in flags}
+        assert "small_sample" in ids and "negative_expectancy" in ids
+        assert "no_slippage_test" not in ids
+
+    def test_evaluate_validates_inputs(self):
+        from bot import backtest_review as br
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            br.evaluate(-1, 50.0, 1.0, 1.0, 10.0, 5, 2, True)
+        with _pytest.raises(ValueError):
+            br.evaluate(50, 150.0, 1.0, 1.0, 10.0, 5, 2, True)
+
+    def test_max_drawdown_pct_from_returns(self):
+        from bot import backtest_review as br
+        # +10 -> peak 10, -4 -> equity 6 (dd 4), +1 -> equity 7, -20 -> equity -13 (dd 23)
+        pcts = [10.0, -4.0, 1.0, -20.0]
+        assert br.max_drawdown_pct_from_returns(pcts) == 23.0
+        assert br.max_drawdown_pct_from_returns([]) == 0.0
+        assert br.max_drawdown_pct_from_returns([5.0, 5.0]) == 0.0   # 낙폭 없음(단조 증가)
+
+    def test_review_trade_history_empty_returns_n_zero(self):
+        from bot import backtest_review as br
+        result = br.review_trade_history(theses=[])
+        assert result["n"] == 0
+        assert "평가 불가" in br.review_text(result)
+
+    def test_review_trade_history_all_win_profit_factor_inf(self):
+        from bot import backtest_review as br
+        day = 86400.0
+        theses = [{"entry_ts": 1000.0 + i * day, "exit_ts": 1000.0 + i * day + day,
+                   "realized_pct": 3.0} for i in range(35)]
+        result = br.review_trade_history(theses=theses)
+        assert result["n"] == 35
+        assert result["profit_factor"] == float("inf")
+        assert result["dimensions"][2]["score"] == 20   # Risk Management: 무손실 -> pf 만점 + dd 0 -> 20
+        text = br.review_text(result)
+        assert "Inf(무손실)" in text
+
+    def test_review_trade_history_all_loss_is_abandon_with_flags(self):
+        from bot import backtest_review as br
+        day = 86400.0
+        theses = [{"entry_ts": 1000.0 + i * day, "exit_ts": 1000.0 + i * day + day,
+                   "realized_pct": -8.0} for i in range(35)]
+        result = br.review_trade_history(theses=theses, slippage_tested=False, num_parameters=9)
+        assert result["verdict"] == "Abandon"
+        ids = {f["id"] for f in result["red_flags"]}
+        assert {"negative_expectancy", "excessive_drawdown", "no_slippage_test",
+                "over_optimized"} <= ids
+
+    def test_review_trade_history_ignores_unrealized_and_sorts_chronologically(self):
+        from bot import backtest_review as br
+        day = 86400.0
+        # 순서 뒤섞여 들어와도 exit_ts 기준 정렬 후 낙폭 계산(입력 순서 무관 보장)
+        theses = [
+            {"entry_ts": 3000.0, "exit_ts": 3000.0 + day, "realized_pct": -5.0},
+            {"entry_ts": 1000.0, "exit_ts": 1000.0 + day, "realized_pct": 10.0},
+            {"entry_ts": 2000.0, "exit_ts": 2000.0 + day, "realized_pct": None},  # 미실현/무효 제외
+        ]
+        result = br.review_trade_history(theses=theses)
+        assert result["n"] == 2   # realized_pct None 인 건 제외
+
+    def test_wiring(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def cmd_backtest_review" in tb
+        assert '"backtest_review": (cmd_backtest_review' in tb
+        assert "/backtest_review" in tb   # _HELP_TEXT 등록
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "backtest_review.review_trade_history" in db
+        assert "백테스트 리뷰" in db

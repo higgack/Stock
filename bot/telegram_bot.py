@@ -1102,7 +1102,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림
 /gov 종목 — 거버넌스 브리핑 (KR·DART: 대주주·임원지분·주총/활동주의 공시 + AI요약) · 자연어 OK("하이닉스 거버넌스")
-/paper — 페이퍼 모의매매(돈0) · /paper help
+/paper — 페이퍼 모의매매(돈0) · /paper help · /backtest_review — 청산이력 5축평가(Deploy/Refine/Abandon)
 /health · /yfpause·/naverpause on|off — 소스 헬스/정지토글
 
 ━━━━━━━━━
@@ -3661,6 +3661,23 @@ async def on_reminder_confirm(update: Update, _: ContextTypes.DEFAULT_TYPE) -> N
         pass
 
 
+async def cmd_backtest_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/backtest_review — 트레이드 씨시스 청산 이력 5축 품질평가
+    (Sample Size/Expectancy/Risk Management/Robustness/Execution Realism →
+    Deploy/Refine/Abandon). claude-trading-skills backtest-expert 스킬 이식
+    (bot/backtest_review.py)."""
+    if update.message is None:
+        return
+    try:
+        from bot import backtest_review
+        result = await asyncio.to_thread(backtest_review.review_trade_history)
+        text = backtest_review.review_text(result)
+    except Exception as exc:
+        log.exception("backtest_review failed: %s", exc)
+        text = "⚠️ 백테스트 리뷰 계산 중 오류가 발생했습니다."
+    await update.message.reply_text(text)
+
+
 def _static_command_registry() -> dict:
     """정적 명령 단일 레지스트리 — name → (handler, 메뉴 설명).
 
@@ -3695,6 +3712,7 @@ def _static_command_registry() -> dict:
         "naverpause": (cmd_naverpause, "네이버 호출 일시정지 토글 (on/off)"),
         "health": (cmd_health, "야후/네이버 소스 헬스체크 (잘 받아오는지)"),
         "paper": (cmd_paper, "페이퍼 트레이딩 (모의 매매·돈 0)"),
+        "backtest_review": (cmd_backtest_review, "트레이드 이력 백테스트 리뷰 (5축 Deploy/Refine/Abandon)"),
         # /screen·/screener — 콘솔은 전용 분기, 텔레그램은 이 핸들러
         "screen": (cmd_screen, "조건부 스크리너 (PER<15 PBR<1 등 자유 조건)"),
         "screener": (cmd_screener, "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
