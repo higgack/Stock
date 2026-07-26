@@ -260,6 +260,32 @@ def detect_pead(closes, opens, volumes, *, lookback_days: int = 20,
     }
 
 
+def rsi14_from_closes(closes) -> Optional[float]:
+    """Wilder RSI(14) — 마지막 값만 반환(순수, chart_data.py _series_payload
+    의 RSI(14) 와 동일 알고리즘 계열이나 시딩 방식이 다름: 여기는 고전
+    Wilder 시딩(첫 14봉 단순평균 시드 후 지수평활) — 정상상태로 수렴하면
+    두 방식 값은 사실상 같아짐(스크리너 임계값 판정 용도로 무시 가능한
+    오차). None=이력부족(<15봉)."""
+    n = len(closes)
+    if n < 15:
+        return None
+    gains, losses = [], []
+    for i in range(1, n):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0.0))
+        losses.append(max(-d, 0.0))
+    avg_gain = sum(gains[:14]) / 14
+    avg_loss = sum(losses[:14]) / 14
+    alpha = 1.0 / 14
+    for i in range(14, len(gains)):
+        avg_gain += alpha * (gains[i] - avg_gain)
+        avg_loss += alpha * (losses[i] - avg_loss)
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100.0 - 100.0 / (1.0 + rs), 1)
+
+
 def merge_into_trend_result(result: dict, closes, opens, highs, lows, volumes) -> None:
     """trend_template_from_series() 결과 dict 에 VCP/모멘텀버스트/PEAD 필드를
     in-place 병합 — bot/pykrx_client.get_kr_trend_template 과
@@ -281,3 +307,7 @@ def merge_into_trend_result(result: dict, closes, opens, highs, lows, volumes) -
     if pead is not None:
         result["pead_valid"] = 1.0 if pead["valid"] else 0.0
         result["pead_score"] = float(pead["score"])
+
+    rsi = rsi14_from_closes(closes)
+    if rsi is not None:
+        result["rsi14"] = rsi

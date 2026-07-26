@@ -14510,3 +14510,71 @@ class TestEconCalendar20260726:
         ecsrc = open("bot/econ_calendar.py", encoding="utf-8").read()
         assert "def regenerate_econ_calendar" in ecsrc
         assert '(ARCHIVE_ROOT / "econ_calendar.html").write_text' in ecsrc
+
+
+class TestDividendScreener20260726:
+    """배당 스크리너(claude-trading-skills 이식) — 성장형(3년배당CAGR+RSI
+    눌림목) / 가치형(수익률+PER+PBR, 기존 메트릭 재사용) 배선 + 순수함수."""
+
+    def test_rsi14_from_closes_uptrend_and_downtrend(self):
+        from bot import pattern_screener as ps
+        up = [100 + i for i in range(30)]
+        down = [130 - i for i in range(30)]
+        assert ps.rsi14_from_closes(up) == 100.0
+        assert ps.rsi14_from_closes(down) == 0.0
+
+    def test_rsi14_from_closes_short_history_none(self):
+        from bot import pattern_screener as ps
+        assert ps.rsi14_from_closes([1] * 10) is None
+
+    def test_dividend_cagr_pct_known_value(self):
+        from bot import stock_screener as ss
+        # 100 -> 140.49 over 3yrs = exactly 12% CAGR ((1.12)^3=1.404928)
+        cagr = ss.dividend_cagr_pct({2023: 100.0, 2026: 140.4928}, years=3)
+        assert cagr == 12.0
+
+    def test_dividend_cagr_pct_missing_base_year_none(self):
+        from bot import stock_screener as ss
+        assert ss.dividend_cagr_pct({2023: 100.0}, years=3) is None
+
+    def test_dividend_cagr_pct_empty_none(self):
+        from bot import stock_screener as ss
+        assert ss.dividend_cagr_pct({}, years=3) is None
+
+    def test_dividend_cagr_pct_zero_or_negative_base_none(self):
+        from bot import stock_screener as ss
+        assert ss.dividend_cagr_pct({2020: 0.0, 2023: 100.0}, years=3) is None
+
+    def test_dividend_cagr_pct_dividend_cut_negative(self):
+        from bot import stock_screener as ss
+        cagr = ss.dividend_cagr_pct({2020: 100.0, 2023: 0.0}, years=3)
+        assert cagr == -100.0
+
+    def test_merge_into_trend_result_adds_rsi14(self):
+        from bot import pattern_screener as ps
+        closes, highs, lows = _vcp_ramp([(30, 150)])
+        opens = closes[:]
+        vols = [1000.0] * len(closes)
+        result = {"tt": 1.0}
+        ps.merge_into_trend_result(result, closes, opens, highs, lows, vols)
+        assert "rsi14" in result
+
+    def test_presets_parse_and_metrics_registered(self):
+        from bot import stock_screener as ss
+        assert "div_cagr" in ss.METRICS and ss.METRICS["div_cagr"].source == "div_cagr"
+        assert "rsi14" in ss.METRICS and ss.METRICS["rsi14"].source == "tech"
+        for preset, expect_keys in (
+            ("growth_dividend", {"div_cagr", "rsi14", "mcap"}),
+            ("value_dividend", {"div", "per", "pbr"}),
+        ):
+            assert preset in ss.PRESETS
+            conds = ss.parse_conditions(ss.PRESETS[preset]["conditions"])
+            assert conds
+            assert {c.metric.key for c in conds} >= expect_keys
+
+    def test_wiring(self):
+        src = open("bot/stock_screener.py", encoding="utf-8").read()
+        assert "compute_div_cagr" in src
+        assert "_compute_div_cagr_value" in src
+        assert "div_cagr_conds" in src   # _screen_kr 배선
+        assert 'elif c.metric.source == "div_cagr"' in src   # _screen_yf 배선

@@ -166,6 +166,15 @@ _reg("pead_valid", "PEAD", ("PEAD", "pead_valid", "실적드리프트"),
      "tech", "pead_valid", desc="실적 갭업 후 드리프트(PEAD) 후보 유효=1")
 _reg("pead_score", "PEAD점수", ("PEAD점수", "pead_score"), "tech", "pead_score",
      desc="PEAD 후보 품질 점수(0-100)")
+_reg("rsi14", "RSI", ("RSI", "rsi", "RSI14", "rsi14", "상대강도지수"), "tech",
+     "rsi14", desc="RSI(14, Wilder) — 배당성장주 눌림목 타이밍 필터 등에 활용")
+
+# 배당 스크리너(claude-trading-skills 이식, 2026-07-26) — 성장형(배당CAGR)
+# vs 가치형(PER/PBR/배당수익률, 기존 메트릭 재사용). div_cagr 은 yfinance
+# 배당이력 기반(qoq 와 동일 패턴 — ticker 객체 배치조회 시 함께 계산).
+_reg("div_cagr", "배당성장률3년", ("배당성장률3년", "div_cagr", "divcagr",
+                                "배당CAGR", "dividend_cagr"), "div_cagr",
+     "_div_cagr", "%", desc="3년 연배당 CAGR (전년까지 완결연도 기준)")
 
 _QOQ_STMT_MAP: dict[str, tuple[str, str]] = {
     "_qoq_revenue": ("income_stmt", "Total Revenue"),
@@ -315,6 +324,16 @@ PRESETS: dict[str, dict] = {
         "desc": "실적 갭업 후 드리프트 지속 후보 (가격/거래량 휴리스틱)",
         "conditions": "PEAD>=1 시총>500 거래량>0",
     },
+    "growth_dividend": {
+        "name": "배당성장주 (눌림목)",
+        "desc": "3년 배당CAGR 12%+ + RSI≤40(눌림목 타이밍)",
+        "conditions": "배당성장률3년>=12 RSI<=40 시총>500",
+    },
+    "value_dividend": {
+        "name": "가치배당주",
+        "desc": "배당수익률 3%+, PER<20, PBR<2",
+        "conditions": "배당수익률>=3 PER<20 PER>0 PBR<2 PBR>0",
+    },
 }
 
 
@@ -454,13 +473,52 @@ def _compute_qoq_values(ticker_obj, qoq_map: dict, result: dict):
         result[key] = round((curr - prev) / abs(prev) * 100, 2)
 
 
+def dividend_cagr_pct(annual_totals: dict, years: int = 3) -> Optional[float]:
+    """연도별 배당총액 dict({year:int -> 연간배당합계:float}) → N년 CAGR(%).
+    순수함수(테스트용, yfinance/pandas 무관). 최신완결연도·N년전 연도 둘 다
+    없거나 base<=0 이면 None(배당 이력 부족/무배당 전환 등)."""
+    if not annual_totals:
+        return None
+    latest_year = max(annual_totals)
+    base_year = latest_year - years
+    if base_year not in annual_totals:
+        return None
+    base = annual_totals[base_year]
+    latest = annual_totals[latest_year]
+    if base <= 0:
+        return None
+    return round(((latest / base) ** (1.0 / years) - 1.0) * 100.0, 2)
+
+
+def _compute_div_cagr_value(ticker_obj) -> Optional[float]:
+    """yf.Ticker.dividends(전체 배당이력, 시장 무관 — KR/US/JP 등 공통)로
+    연도별 합계를 만들어 dividend_cagr_pct 에 위임. 올해(진행중 부분연도)는
+    왜곡 방지를 위해 제외 — 작년까지의 완결 연도만 사용."""
+    try:
+        divs = ticker_obj.dividends
+        if divs is None or divs.empty:
+            return None
+        annual: dict = {}
+        for ts, amt in divs.items():
+            y = ts.year
+            annual[y] = annual.get(y, 0.0) + float(amt)
+        from datetime import date as _date
+        annual.pop(_date.today().year, None)
+        return dividend_cagr_pct(annual, years=3)
+    except Exception:
+        return None
+
+
 def _fetch_yfinance_batch(tickers: list[str], fields: list[str],
                           max_workers: int = 8,
-                          qoq_fields: Optional[dict] = None) -> dict[str, dict]:
+                          qoq_fields: Optional[dict] = None,
+                          compute_div_cagr: bool = False) -> dict[str, dict]:
     """Fetch yfinance .info for a batch of tickers. Returns {ticker: {field: value}}.
 
     If qoq_fields is provided ({computed_key: (stmt_type, row_name)}),
     also fetch quarterly statements and compute QoQ growth rates.
+    compute_div_cagr=True 이면 배당 이력에서 3년 CAGR 도 함께 계산
+    (_div_cagr 키 — bot/stock_screener.py "div_cagr" 메트릭).
     """
     results = {}
     _qoq = qoq_fields or {}
@@ -473,6 +531,8 @@ def _fetch_yfinance_batch(tickers: list[str], fields: list[str],
             data = {f: _safe_float(info.get(f)) for f in fields}
             if _qoq:
                 _compute_qoq_values(t, _qoq, data)
+            if compute_div_cagr:
+                data["_div_cagr"] = _compute_div_cagr_value(t)
             return tk, data
         except Exception as exc:
             log.debug("yfinance fetch %s failed: %s", tk, exc)
@@ -621,6 +681,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
     pykrx_conds = [c for c in conditions if c.metric.source == "pykrx"]
     yf_conds = [c for c in conditions if c.metric.source == "yfinance"]
     qoq_conds = [c for c in conditions if c.metric.source == "qoq"]
+    div_cagr_conds = [c for c in conditions if c.metric.source == "div_cagr"]
 
     survivors = {}
     for code, data in bulk.items():
@@ -638,7 +699,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
     log.info("stock_screener: Phase 1 pykrx bulk — %d/%d survive (%d conditions)",
              len(survivors), total, len(pykrx_conds))
 
-    if (yf_conds or qoq_conds) and survivors:
+    if (yf_conds or qoq_conds or div_cagr_conds) and survivors:
         needed_fields = list({c.metric.yf_field for c in yf_conds})
         qoq_map = {c.metric.yf_field: _QOQ_STMT_MAP[c.metric.yf_field]
                     for c in qoq_conds if c.metric.yf_field in _QOQ_STMT_MAP}
@@ -653,12 +714,14 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
         batch_size = min(len(ticker_map), 200)
         all_tickers = list(ticker_map.values())[:batch_size]
 
-        log.info("stock_screener: Phase 2 — fetching yfinance for %d tickers (%s%s)",
+        log.info("stock_screener: Phase 2 — fetching yfinance for %d tickers (%s%s%s)",
                  len(all_tickers), ", ".join(needed_fields),
-                 f" + QoQ {len(qoq_map)}" if qoq_map else "")
+                 f" + QoQ {len(qoq_map)}" if qoq_map else "",
+                 " + 배당CAGR" if div_cagr_conds else "")
 
         yf_data = _fetch_yfinance_batch(all_tickers, needed_fields,
-                                         qoq_fields=qoq_map or None)
+                                         qoq_fields=qoq_map or None,
+                                         compute_div_cagr=bool(div_cagr_conds))
 
         reverse_map = {v: k for k, v in ticker_map.items()}
         final = {}
@@ -667,7 +730,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
             if not code or code not in survivors:
                 continue
             passed = True
-            for c in yf_conds + qoq_conds:
+            for c in yf_conds + qoq_conds + div_cagr_conds:
                 raw = yfd.get(c.metric.yf_field)
                 if not c.test(raw):
                     passed = False
@@ -677,9 +740,10 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
                 final[code] = merged
 
         log.info("stock_screener: Phase 2 yfinance — %d/%d survive (%d conditions)",
-                 len(final), len(survivors), len(yf_conds) + len(qoq_conds))
+                 len(final), len(survivors),
+                 len(yf_conds) + len(qoq_conds) + len(div_cagr_conds))
         survivors = final
-    elif (yf_conds or qoq_conds) and not survivors:
+    elif (yf_conds or qoq_conds or div_cagr_conds) and not survivors:
         pass
 
     tech_note = ""
@@ -1137,6 +1201,9 @@ def _screen_yf(conditions: list[Condition], universe: list[str], market: str,
                 continue
             yf_field, prescale = mapping
             yf_fields.add(yf_field)
+        elif c.metric.source == "div_cagr":
+            yf_field = c.metric.yf_field       # "_div_cagr" — 계산값(배당이력), .info 아님
+            prescale = 1.0
         else:
             yf_field = c.metric.yf_field
             prescale = 1.0
@@ -1144,11 +1211,14 @@ def _screen_yf(conditions: list[Condition], universe: list[str], market: str,
         cond_info.append((c, yf_field, prescale))
 
     yf_fields.update(["marketCap", "shortName", "regularMarketPrice"])
+    div_cagr_needed = any(c.metric.source == "div_cagr" for c in conditions)
 
-    log.info("stock_screener: %s — fetching yfinance for %d tickers%s",
-             market, total, f" (+ QoQ {len(qoq_map)})" if qoq_map else "")
+    log.info("stock_screener: %s — fetching yfinance for %d tickers%s%s",
+             market, total, f" (+ QoQ {len(qoq_map)})" if qoq_map else "",
+             " (+ 배당CAGR)" if div_cagr_needed else "")
     yf_data = _fetch_yfinance_batch(universe, list(yf_fields), max_workers=20,
-                                     qoq_fields=qoq_map or None)
+                                     qoq_fields=qoq_map or None,
+                                     compute_div_cagr=div_cagr_needed)
 
     hits = []
     for ticker, data in yf_data.items():
