@@ -281,6 +281,96 @@ def fetch_crypto_snapshot() -> dict:
         return {}
 
 
+# ── 시장 폭(Market Breadth, 2026-07-26 사용자 추천 추가) ────────────────────
+# 개별종목 breadth(MMTH 류, S&P500 500종목 전수 50/200일선 상회비율)는 yfinance
+# 500콜이 비용/시간 커 이번 배치엔 미채택 — 11개 SPDR 섹터 ETF(유동성 최상위,
+# GICS 11개 섹터 1:1 매핑) 의 자기 50/200일선 상회 비율로 근사. 개별종목
+# breadth 보다 해상도는 낮지만(섹터 단위) '소수 대형주가 지수를 방어 중인지
+# vs 전반적 상승인지' 판별에는 충분 — 이미 계산 중인 RSP/SPY(macro 레짐)와
+# 상호보완(그쪽은 대형/소형 비율, 이쪽은 섹터 참여도). US 전용(SPDR 섹터
+# ETF가 미국 고유 상품 — 데이터소스 공백, market gate 아님).
+_BREADTH_SECTOR_ETFS_US = (
+    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLRE", "XLU", "XLC",
+)
+
+
+def sma(closes: list, period: int):
+    """단순이동평균 마지막 값 — 순수함수. 데이터 부족(<period) 시 None."""
+    if len(closes) < period:
+        return None
+    return sum(closes[-period:]) / period
+
+
+def breadth_from_closes(sector_closes: dict) -> dict:
+    """{ticker: closes(과거→최신 list)} → 섹터-레벨 breadth 비율. 순수함수
+    (테스트용). 각 섹터가 자신의 50/200일 SMA 위에 있는지 비율(0-100%) —
+    개별종목 A/D-line·MMTH 의 섹터 근사(모듈 상단 주석 참조). 데이터 부족한
+    섹터는 그 지표에서 제외(counted 분모에서도 빠짐)."""
+    above50 = above200 = counted50 = counted200 = 0
+    for closes in sector_closes.values():
+        if not closes:
+            continue
+        last = closes[-1]
+        s50 = sma(closes, 50)
+        if s50 is not None:
+            counted50 += 1
+            if last > s50:
+                above50 += 1
+        s200 = sma(closes, 200)
+        if s200 is not None:
+            counted200 += 1
+            if last > s200:
+                above200 += 1
+    return {
+        "pct_above_50dma": round(above50 / counted50 * 100, 1) if counted50 else None,
+        "pct_above_200dma": round(above200 / counted200 * 100, 1) if counted200 else None,
+        "n_sectors": len(sector_closes),
+    }
+
+
+def fetch_market_breadth(market: str = "US") -> dict:
+    """market='US' 만 지원(SPDR 섹터 ETF 데이터소스 공백 — 모듈 상단 주석).
+    각 섹터 ETF 280일 히스토리(200일 SMA 계산 여유분 포함) → breadth_from_
+    closes. 실패한 섹터는 개별 스킵(전체 실패 아님)."""
+    if market.upper() != "US":
+        return {}
+    sector_closes: dict = {}
+    for ticker in _BREADTH_SECTOR_ETFS_US:
+        try:
+            hist = fetch_index_history(ticker, days=280)
+            if hist:
+                sector_closes[ticker] = [h["close"] for h in hist]
+        except Exception as exc:
+            log.debug("market_timing: breadth fetch failed for %s: %s", ticker, exc)
+    if not sector_closes:
+        return {}
+    return {**breadth_from_closes(sector_closes), "sectors_ok": sorted(sector_closes)}
+
+
+# ── 변동성(VIX + MOVE, 2026-07-26 사용자 추천 추가) ──────────────────────────
+# VIX 는 이미 bot/fred_boards.py 유동성보드 점수 컴포넌트(FRED VIXCLS)에
+# 있지만 시장타이밍 보드 단독 열람 시에도 바로 보이게 여기 카드로 병기.
+# MOVE(ICE BofA, 채권시장 변동성)는 yfinance 커버리지가 시기/벤더에 따라
+# 불안정 — 실패 시 그 필드만 생략(VIX 는 항상 시도, 서로 독립적 try).
+def fetch_volatility_snapshot() -> dict:
+    """{"vix": {value, date}, "move": {value, date}|None} — 각각 독립 fetch,
+    실패한 쪽만 생략(그 항목 없이 반환). yfinance 사용(무료, 신규 API 없음)."""
+    out: dict = {}
+    try:
+        vix_hist = fetch_index_history("^VIX", days=10)
+        if vix_hist:
+            out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"]}
+    except Exception as exc:
+        log.debug("market_timing: VIX fetch failed: %s", exc)
+    try:
+        move_hist = fetch_index_history("^MOVE", days=10)
+        if move_hist:
+            out["move"] = {"value": move_hist[-1]["close"], "date": move_hist[-1]["date"]}
+    except Exception as exc:
+        log.debug("market_timing: MOVE fetch failed (커버리지 불안정 — graceful): %s", exc)
+    return out
+
+
 # ── 데이터 수집(전체 스냅샷) + 렌더 ──────────────────────────────────────────
 def _load_market_timing() -> dict:
     """전체 스냅샷 — 시장별(US/KR/JP) DD/FTD + 매크로 크로스에셋 레짐 +
@@ -361,7 +451,22 @@ def _load_market_timing() -> dict:
     except Exception as exc:
         log.debug("market_timing: COT gate failed: %s", exc)
 
-    return {"markets": markets, "macro": macro, "crypto": crypto, "cot": cot}
+    # 시장 폭(2026-07-26 사용자 추천) — US 전용(SPDR 섹터 ETF 데이터소스 공백).
+    breadth: dict = {}
+    try:
+        breadth = fetch_market_breadth("US")
+    except Exception as exc:
+        log.debug("market_timing: breadth panel failed: %s", exc)
+
+    # 변동성 VIX+MOVE(2026-07-26 사용자 추천).
+    volatility: dict = {}
+    try:
+        volatility = fetch_volatility_snapshot()
+    except Exception as exc:
+        log.debug("market_timing: volatility panel failed: %s", exc)
+
+    return {"markets": markets, "macro": macro, "crypto": crypto, "cot": cot,
+            "breadth": breadth, "volatility": volatility}
 
 
 _FTD_LABEL = {
@@ -450,6 +555,42 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="note">대형투기자(non-commercial) 순포지션의 트레일링 3년 대비 백분위(고전 COT Index) —
 ≥80 과열매수(역발상 매도경계) · ≤20 과열매도(역발상 매수경계). 개별종목 게이트 아닌 매크로 참고신호.</div></div>"""
 
+    breadth = data.get("breadth", {})
+    breadth_card = ""
+    if breadth and breadth.get("pct_above_50dma") is not None:
+        _b50 = f'{breadth["pct_above_50dma"]:.0f}%'
+        _b200 = (f'{breadth["pct_above_200dma"]:.0f}%'
+                if breadth.get("pct_above_200dma") is not None else "—")
+        breadth_card = f"""
+<div class="panel"><div class="panel-title">📊 시장 폭 (섹터 breadth, US 전용)</div>
+<div class="stat-grid">
+<div class="stat"><div class="k">50일선 상회 섹터</div><div class="v">{_b50}</div></div>
+<div class="stat"><div class="k">200일선 상회 섹터</div><div class="v">{_b200}</div></div>
+<div class="stat"><div class="k">표본</div><div class="v" style="font-size:14px">SPDR 섹터 ETF {breadth.get("n_sectors",0)}개</div></div>
+</div>
+<div class="note">11개 GICS 섹터 ETF(XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLRE/XLU/XLC) 중 자신의 50/200일
+이평선 위에 있는 비율 — 개별종목(500종목) breadth 의 섹터-레벨 근사(비용상 전수스캔 대신 채택,
+문서화된 스코프). 낮으면 소수 대형주만 지수를 방어 중일 가능성, 높으면 전반적 참여.</div></div>"""
+
+    vol = data.get("volatility", {})
+    vol_card = ""
+    if vol:
+        vix = vol.get("vix")
+        move = vol.get("move")
+        vol_rows = ""
+        if vix:
+            vol_rows += (f'<div class="stat"><div class="k">VIX</div>'
+                        f'<div class="v">{vix["value"]:.1f}</div></div>')
+        if move:
+            vol_rows += (f'<div class="stat"><div class="k">MOVE</div>'
+                        f'<div class="v">{move["value"]:.1f}</div></div>')
+        if vol_rows:
+            vol_card = f"""
+<div class="panel"><div class="panel-title">🌪️ 변동성 (VIX·MOVE)</div>
+<div class="stat-grid">{vol_rows}</div>
+<div class="note">VIX=주식시장 변동성(공포지수) · MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
+금리변동성이 기술주/반도체 장세에 선행 신호가 되는 경우가 있어 병기.</div></div>"""
+
     payload = _json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -458,7 +599,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
 <h1>🚦 <em>시장타이밍</em> 보드</h1>
-<p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·매크로 레짐·크립토·COT — 데이터 적용시각 {ts} ·
+<p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·시장폭·변동성·매크로 레짐·크립토·COT — 데이터 적용시각 {ts} ·
 소스 yfinance + FRED + CoinGecko + CFTC(전부 무료, 6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 분산일(Distribution Day)</b> — 종가 -0.2%+ 하락 & 거래량 증가 = 기관 매도 신호.
@@ -466,18 +607,23 @@ D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. CAUTION(3+)·HIGH(5+)·S
 경계.<br>
 <b>2) 팔로우스루데이(FTD)</b> — 3%+ 조정 후 반등 4~10일째 +1.25%+ 상승·거래량 증가 =
 바닥 확인 신호(O'Neil 방법론). 🟢 FTD 확정만 유효 신호, 나머지는 대기/무효.<br>
-<b>3) 매크로 레짐</b> — 크로스에셋 비율로 시장 국면(집중/확산/긴축/인플레) 참고.<br>
-<b>4) 크립토 레짐</b> — BTC 중심 0-100 점수(참고용, 컴포넌트 일부만 반영).<br>
-<b>5) COT 역발상 게이트</b> — S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
+<b>3) 시장 폭</b> — 11개 GICS 섹터 ETF 중 50/200일선 상회 비율(US 전용, 개별종목 breadth
+의 섹터-레벨 근사). 낮으면 소수 대형주만 지수 방어, 높으면 전반적 참여.<br>
+<b>4) 변동성(VIX·MOVE)</b> — VIX=주식 공포지수, MOVE=채권 변동성(커버리지 불안정 시 생략).<br>
+<b>5) 매크로 레짐</b> — 크로스에셋 비율로 시장 국면(집중/확산/긴축/인플레) 참고.<br>
+<b>6) 크립토 레짐</b> — BTC 중심 0-100 점수(참고용, 컴포넌트 일부만 반영).<br>
+<b>7) COT 역발상 게이트</b> — S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
 선물전용) 트레일링 3년 백분위. 극단 쏠림(≥80/≤20)은 과거 반전 빈도가 높았던
 구간이라는 참고 신호일 뿐(선물전용).<br>
 자동 신호이므로 참고용 — 확정 판단 금지.
 </details>
 {cards}
+{breadth_card}
+{vol_card}
 {macro_card}
 {crypto_card}
 {cot_card}
-<div class="footer">분산일·FTD·매크로레짐·크립토·COT — 신호는 참고용(투자 판단 아님) · NOAH</div>
+<div class="footer">분산일·FTD·시장폭·변동성·매크로레짐·크립토·COT — 신호는 참고용(투자 판단 아님) · NOAH</div>
 </div>
 <script id="mt-data" type="application/json">{payload}</script>
 </body></html>"""

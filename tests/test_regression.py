@@ -14922,3 +14922,262 @@ class TestStanceSentinel20260726:
             asrc = open(f"TradingAgents/tradingagents/agents/analysts/{f}",
                        encoding="utf-8").read()
             assert "get_analyst_directive()" in asrc
+
+
+class TestYoutubeTranscript20260726:
+    """mcp-youtube 아이디어 이식(Node MCP 서버 대신 순수 파이썬 yt-dlp 래퍼,
+    bot/youtube_transcript.py) — VTT 파싱 순수함수 + yt-dlp 부재 graceful."""
+
+    def test_strip_vtt_removes_headers_and_timing(self):
+        from bot import youtube_transcript as yt
+        vtt = (
+            "WEBVTT\nKind: captions\nLanguage: en\n\n"
+            "00:00:00.000 --> 00:00:02.000\nHello world\n"
+        )
+        assert yt._strip_vtt(vtt) == "Hello world"
+
+    def test_strip_vtt_removes_inline_tags_and_cue_numbers(self):
+        from bot import youtube_transcript as yt
+        vtt = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\n<c>Hello</c> <00:00:01.000>world"
+        assert yt._strip_vtt(vtt) == "Hello world"
+
+    def test_strip_vtt_collapses_exact_consecutive_duplicates(self):
+        from bot import youtube_transcript as yt
+        vtt = (
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:02.000\nsame line\n\n"
+            "00:00:02.000 --> 00:00:04.000\nsame line\n\n"
+            "00:00:04.000 --> 00:00:06.000\ndifferent line\n"
+        )
+        assert yt._strip_vtt(vtt) == "same line different line"
+
+    def test_strip_vtt_empty_input(self):
+        from bot import youtube_transcript as yt
+        assert yt._strip_vtt("") == ""
+        assert yt._strip_vtt("WEBVTT\n\n") == ""
+
+    def test_fetch_transcript_graceful_without_yt_dlp(self, monkeypatch):
+        from bot import youtube_transcript as yt
+        monkeypatch.setattr(yt.shutil, "which", lambda name: None)
+        assert yt.fetch_youtube_transcript("https://youtube.com/watch?v=x") is None
+
+    def test_fetch_transcript_falls_back_to_english(self, monkeypatch):
+        from bot import youtube_transcript as yt
+        monkeypatch.setattr(yt.shutil, "which", lambda name: "/usr/bin/yt-dlp")
+        calls = []
+
+        def fake_fetch_one(url, lang):
+            calls.append(lang)
+            return "english transcript" if lang == "en" else None
+
+        monkeypatch.setattr(yt, "_fetch_one_lang", fake_fetch_one)
+        result = yt.fetch_youtube_transcript("https://youtube.com/watch?v=x", lang="ko")
+        assert result == "english transcript"
+        assert calls == ["ko", "en"]
+
+
+class TestMarketTimingBreadthVol20260726:
+    """시장 폭(섹터 breadth)·변동성(VIX/MOVE) — 사용자 추천 추가 항목,
+    bot/market_timing.py. 순수함수 + graceful fetch 배선."""
+
+    def test_sma_basic_and_insufficient_data(self):
+        from bot import market_timing as mt
+        assert mt.sma([1, 2, 3, 4, 5], 3) == 4.0
+        assert mt.sma([1, 2], 3) is None
+
+    def test_breadth_from_closes_mixed_above_below(self):
+        from bot import market_timing as mt
+        flat = [100.0] * 249
+        above = flat + [200.0]   # last close well above both SMAs
+        below = flat + [50.0]    # last close well below both SMAs
+        result = mt.breadth_from_closes({"A": above, "B": below})
+        assert result == {"pct_above_50dma": 50.0, "pct_above_200dma": 50.0, "n_sectors": 2}
+
+    def test_breadth_from_closes_excludes_insufficient_data_sector(self):
+        from bot import market_timing as mt
+        flat = [100.0] * 249
+        above = flat + [200.0]
+        short = [100.0] * 10   # <50 bars, excluded from both ratios
+        result = mt.breadth_from_closes({"A": above, "B": short})
+        assert result["pct_above_50dma"] == 100.0
+        assert result["pct_above_200dma"] == 100.0
+        assert result["n_sectors"] == 2   # n_sectors counts all input, ratios don't
+
+    def test_breadth_from_closes_empty(self):
+        from bot import market_timing as mt
+        assert mt.breadth_from_closes({}) == {
+            "pct_above_50dma": None, "pct_above_200dma": None, "n_sectors": 0}
+
+    def test_fetch_market_breadth_non_us_returns_empty(self):
+        from bot import market_timing as mt
+        assert mt.fetch_market_breadth("KR") == {}
+        assert mt.fetch_market_breadth("JP") == {}
+
+    def test_fetch_market_breadth_us_uses_sector_etfs(self, monkeypatch):
+        from bot import market_timing as mt
+        calls = []
+
+        def fake_fetch(ticker, days=120):
+            calls.append(ticker)
+            return [{"close": 100.0 + i} for i in range(250)]
+
+        monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
+        result = mt.fetch_market_breadth("US")
+        assert set(calls) == set(mt._BREADTH_SECTOR_ETFS_US)
+        assert result["n_sectors"] == 11
+        assert result["pct_above_50dma"] == 100.0   # 순증가 시계열이라 전부 상회
+
+    def test_fetch_market_breadth_partial_failure_graceful(self, monkeypatch):
+        from bot import market_timing as mt
+
+        def fake_fetch(ticker, days=120):
+            if ticker == "XLK":
+                raise RuntimeError("boom")
+            return [{"close": 100.0}] * 250
+
+        monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
+        result = mt.fetch_market_breadth("US")
+        assert result["n_sectors"] == len(mt._BREADTH_SECTOR_ETFS_US) - 1
+        assert "XLK" not in result["sectors_ok"]
+
+    def test_fetch_volatility_snapshot_independent_fields(self, monkeypatch):
+        from bot import market_timing as mt
+
+        def fake_fetch(ticker, days=10):
+            if ticker == "^VIX":
+                return [{"close": 14.2, "date": "2026-07-25"}]
+            raise RuntimeError("MOVE unavailable")   # 독립 실패 — VIX 는 살아있어야
+
+        monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
+        result = mt.fetch_volatility_snapshot()
+        assert result == {"vix": {"value": 14.2, "date": "2026-07-25"}}
+
+    def test_fetch_volatility_snapshot_both_fail_graceful(self, monkeypatch):
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history",
+                           lambda ticker, days=10: (_ for _ in ()).throw(RuntimeError("x")))
+        assert mt.fetch_volatility_snapshot() == {}
+
+    def test_render_breadth_and_volatility_cards(self):
+        from bot import market_timing as mt
+        data = {
+            "markets": {}, "macro": {}, "crypto": {}, "cot": {},
+            "breadth": {"pct_above_50dma": 63.6, "pct_above_200dma": 81.8, "n_sectors": 11},
+            "volatility": {"vix": {"value": 14.2, "date": "2026-07-25"},
+                          "move": {"value": 92.5, "date": "2026-07-25"}},
+        }
+        html = mt.render_market_timing_page(data)
+        assert "시장 폭" in html and "64%" in html and "82%" in html
+        assert "VIX" in html and "14.2" in html
+        assert "MOVE" in html and "92.5" in html
+
+    def test_render_breadth_none_200dma_no_crash(self):
+        from bot import market_timing as mt
+        data = {"markets": {}, "macro": {}, "crypto": {},
+                "breadth": {"pct_above_50dma": 50.0, "pct_above_200dma": None, "n_sectors": 3}}
+        html = mt.render_market_timing_page(data)
+        assert "50%" in html and "None" not in html
+
+    def test_wiring(self):
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert '"breadth": breadth' in src and '"volatility": volatility' in src
+        assert "def fetch_market_breadth" in src
+        assert "def fetch_volatility_snapshot" in src
+
+
+class TestEconCalendarAdditions20260726:
+    """경제캘린더 사용자 추천 추가(실제치 오버레이·ISM PMI·메가테크 실적)
+    — bot/econ_calendar.py. QRA 는 검증 불가 사유로 의도적 미구현(문서화)."""
+
+    def test_find_actual_value_picks_most_recent_at_or_before(self):
+        from bot import econ_calendar as ec
+        obs = [("2026-05-01", 3.1), ("2026-06-01", 3.2), ("2026-07-01", 3.3)]
+        assert ec.find_actual_value(obs, "2026-06-05") == ("2026-06-01", 3.2)
+
+    def test_find_actual_value_none_when_all_after_release(self):
+        from bot import econ_calendar as ec
+        obs = [("2026-05-01", 3.1)]
+        assert ec.find_actual_value(obs, "2026-04-01") is None
+
+    def test_find_actual_value_none_when_stale_beyond_max_lag(self):
+        from bot import econ_calendar as ec
+        obs = [("2026-01-01", 3.0)]
+        assert ec.find_actual_value(obs, "2026-12-01", max_lag_days=45) is None
+
+    def test_find_actual_value_empty_observations(self):
+        from bot import econ_calendar as ec
+        assert ec.find_actual_value([], "2026-06-05") is None
+
+    def test_ism_pmi_entries_registered(self):
+        from bot import econ_calendar as ec
+        keys = {r["key"] for r in ec._RELEASES}
+        assert "ism_mfg" in keys and "ism_svc" in keys
+
+    def test_load_megatech_earnings_filters_watchlist(self, monkeypatch):
+        from bot import econ_calendar as ec
+
+        def fake_fetch_us_month(y, m):
+            return [
+                {"symbol": "NVDA", "date": "2026-08-20", "hour": "amc"},
+                {"symbol": "AAPL", "date": "2026-08-21", "hour": "amc"},  # not in watchlist
+                {"symbol": "TSM", "date": "2026-08-15", "hour": "bmo"},
+            ]
+
+        from bot import earnings_calendar as real_ec
+        monkeypatch.setattr(real_ec, "_fetch_us_month", fake_fetch_us_month)
+        result = ec._load_megatech_earnings(today="2026-07-26")
+        symbols = {e["symbol"] for e in result}
+        assert symbols == {"NVDA", "TSM"}
+        assert result == sorted(result, key=lambda e: e["date"])
+
+    def test_load_megatech_earnings_dedupes_across_month_scan(self, monkeypatch):
+        from bot import econ_calendar as ec
+
+        def fake_fetch_us_month(y, m):
+            return [{"symbol": "MSFT", "date": "2026-08-01", "hour": "amc"}]
+
+        from bot import earnings_calendar as real_ec
+        monkeypatch.setattr(real_ec, "_fetch_us_month", fake_fetch_us_month)
+        result = ec._load_megatech_earnings(today="2026-07-26")
+        assert len(result) == 1   # 이번달+다음달 스캔이 같은 이벤트 중복 없이
+
+    def test_render_actuals_and_megatech_card(self):
+        from bot import econ_calendar as ec
+        data = {
+            "as_of": "2026-07-26",
+            "events": [
+                {"key": "cpi", "label": "🛒 CPI", "next": "2026-08-12",
+                 "recent": ["2026-07-11"],
+                 "actuals": [{"release_date": "2026-07-11",
+                             "obs_date": "2026-07-01", "value": 3.2}]},
+            ],
+            "megatech_earnings": [
+                {"symbol": "NVDA", "date": "2026-08-20", "hour": "amc"},
+                {"symbol": "ASML", "date": "2026-07-16", "hour": "bmo"},
+            ],
+        }
+        html = ec.render_econ_calendar_page(data)
+        assert "3.2" in html and "컨센서스" in html
+        assert "NVDA" in html and "ASML" in html and "장후" in html and "장전" in html
+        assert "메가테크 실적 발표일" in html
+
+    def test_render_no_megatech_graceful(self):
+        from bot import econ_calendar as ec
+        html = ec.render_econ_calendar_page({"events": [], "megatech_earnings": []})
+        assert "경제 캘린더" in html   # crash 없이 렌더
+
+    def test_qra_documented_not_implemented(self):
+        # QRA 는 검증불가 사유로 미구현 — 가이드 텍스트에 명시돼 있는지,
+        # 데이터 카드로는 안 나오는지(빈 캘린더 렌더에 'QRA' 항목 카드 없음).
+        from bot import econ_calendar as ec
+        src = open("bot/econ_calendar.py", encoding="utf-8").read()
+        assert "QRA" in src and "treasurydirect.gov" in src
+        keys = {r["key"] for r in ec._RELEASES}
+        assert "qra" not in keys   # 데이터 항목으로는 미등재(가이드 텍스트만)
+
+    def test_wiring(self):
+        src = open("bot/econ_calendar.py", encoding="utf-8").read()
+        assert "_SERIES_FOR_ACTUAL" in src
+        assert "_MEGATECH_WATCHLIST" in src
+        assert "def _load_megatech_earnings" in src
+        assert '"megatech_earnings": megatech' in src
