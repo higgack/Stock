@@ -3,9 +3,11 @@
 
 claude-trading-skills(tradermonty/claude-trading-skills) 리뷰 3순위 갭 이식
 — ibd-distribution-day-monitor·ftd-detector·crypto-regime-analyzer·
-macro-regime-detector 개념. 전마켓(KR/US/JP) 공통 원칙 — 지수만 시장별
-교체(KOSPI/S&P500·나스닥/TOPIX), FRED 보드(PPI/CPI/유동성)와는 다른
-각도(시장타이밍 신호이지 물가·유동성 레벨이 아님).
+macro-regime-detector 개념. 전마켓(KR/US/JP/TW/CN_A/HK) 공통 원칙 — 지수만
+시장별 교체(MARKET_INDICES, bot/market.py MARKET_CONFIG 의 broad_benchmark
+재사용), FRED 보드(PPI/CPI/유동성)와는 다른 각도(시장타이밍 신호이지
+물가·유동성 레벨이 아님). (최초 배치는 시간 제약으로 US/KR/JP 만 채웠던
+스코프 갭 — 사용자 지적으로 2026-07-26 TW/CN_A/HK 확장.)
 
 데이터 소스: 지수·ETF 는 bot/chart_data.fetch_chart_payload(yfinance, 무료)
 재사용 — 신규 API 클라이언트 불요. 크립토만 CoinGecko 공개 API(무료·키리스)
@@ -247,11 +249,20 @@ def fetch_index_history(ticker: str, days: int = 120) -> list[dict]:
         return []
 
 
-# 시장별 대표지수 — universal(KR/US/JP), 신규 시장 추가 시 이 dict 만 확장.
+# 시장별 대표지수 — universal(KR/US/JP/TW/CN_A/HK), 신규 시장 추가 시 이
+# dict 만 확장. TW/CN_A/HK 는 지수 자체(^TWII/^SSEC/^HSI) 대신 bot/market.py
+# MARKET_CONFIG 의 broad_benchmark ETF 티커를 그대로 재사용(단일 소스 유지
+# — 캐노니컬 벤치마크가 거기서 바뀌면 여기도 같이 확인 필요). 원래 이 dict
+# 는 "신규 시장 추가 시 확장" 전제로 설계됐는데 최초 배치(2026-07-26,
+# claude-trading-skills 3순위 갭)가 시간 제약으로 US/KR/JP 만 채웠던 스코프
+# 갭 — 사용자 지적으로 2026-07-26 확장.
 MARKET_INDICES = {
     "US": [("^GSPC", "S&P 500"), ("^IXIC", "나스닥종합")],
     "KR": [("^KS11", "KOSPI")],
     "JP": [("^N225", "니케이225")],
+    "TW": [("0050.TW", "TAIEX 50 (0050)")],
+    "CN_A": [("510300.SS", "CSI 300 (510300)")],
+    "HK": [("2800.HK", "Hang Seng (2800.HK)")],
 }
 
 
@@ -352,14 +363,53 @@ def fetch_market_breadth(market: str = "US") -> dict:
 # 있지만 시장타이밍 보드 단독 열람 시에도 바로 보이게 여기 카드로 병기.
 # MOVE(ICE BofA, 채권시장 변동성)는 yfinance 커버리지가 시기/벤더에 따라
 # 불안정 — 실패 시 그 필드만 생략(VIX 는 항상 시도, 서로 독립적 try).
+def _fetch_vix_cnn():
+    """CNN Fear&Greed 의 시장변동성(VIX) 서브지표(2026-07-26, 사용자 요청
+    "VIX 는 가장 정확한 CNN 값으로, 양쪽 다" — bot/macro_snapshot.py 매크로9
+    위젯과 동일 최우선 소스로 canonical 통일). 실패/구조불일치 시 None(호출부가
+    네이버로 폴백, bot/fear_greed_client.py 독스트링 참조)."""
+    try:
+        from bot.fear_greed_client import fetch_cnn_vix
+        return fetch_cnn_vix()
+    except Exception as exc:
+        log.debug("market_timing: VIX CNN fetch failed: %s", exc)
+        return None
+
+
+def _fetch_vix_naver():
+    """네이버 worldstock .VIX — bot/macro_snapshot.py 의 메인 대시보드 매크로9
+    위젯과 동일 2차 소스. 사용자 2026-07-26 리포트('빅스지수가 다른데
+    메인대시보드랑 시장타이밍이랑') — 이 카드가 독립적으로 yfinance ^VIX 만
+    썼던 게 원인(다른 소스 + 최대 6시간 stale, canonical 값 불일치). 30초
+    캐시라 사실상 실시간. 실패 시 None(호출부가 yfinance 로 최종 폴백)."""
+    try:
+        from bot import naver_marketindex as nm
+        rec = (nm.fetch_world_indices((".VIX",)) or {}).get(".VIX")
+        if rec and rec.get("close") is not None:
+            return float(rec["close"])
+    except Exception as exc:
+        log.debug("market_timing: VIX naver fetch failed: %s", exc)
+    return None
+
+
 def fetch_volatility_snapshot() -> dict:
-    """{"vix": {value, date}, "move": {value, date}|None} — 각각 독립 fetch,
-    실패한 쪽만 생략(그 항목 없이 반환). yfinance 사용(무료, 신규 API 없음)."""
+    """{"vix": {value, date, source}, "move": {value, date}|None} — VIX 는
+    CNN 최우선(메인 대시보드와 canonical 값 일치, 모듈 docstring 참조) →
+    네이버 → yfinance 3단 폴백. 실패한 쪽만 생략(그 항목 없이 반환)."""
     out: dict = {}
     try:
-        vix_hist = fetch_index_history("^VIX", days=10)
-        if vix_hist:
-            out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"]}
+        cnn_v = _fetch_vix_cnn()
+        if cnn_v is not None:
+            out["vix"] = {"value": cnn_v, "date": None, "source": "CNN(실시간)"}
+        else:
+            nv = _fetch_vix_naver()
+            if nv is not None:
+                out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
+            else:
+                vix_hist = fetch_index_history("^VIX", days=10)
+                if vix_hist:
+                    out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
+                                 "source": "yfinance(폴백)"}
     except Exception as exc:
         log.debug("market_timing: VIX fetch failed: %s", exc)
     try:
@@ -373,7 +423,7 @@ def fetch_volatility_snapshot() -> dict:
 
 # ── 데이터 수집(전체 스냅샷) + 렌더 ──────────────────────────────────────────
 def _load_market_timing() -> dict:
-    """전체 스냅샷 — 시장별(US/KR/JP) DD/FTD + 매크로 크로스에셋 레짐 +
+    """전체 스냅샷 — 시장별(US/KR/JP/TW/CN_A/HK) DD/FTD + 매크로 크로스에셋 레짐 +
     크립토. 조각별 실패는 그 필드만 비고(graceful), 전체 재생성은 항상 성공."""
     markets: dict[str, dict] = {}
     for mkt, indices in MARKET_INDICES.items():
@@ -493,7 +543,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
     ts = now.strftime("%Y-%m-%d %H:%M KST")
 
     cards = ""
-    for mkt in ("US", "KR", "JP"):
+    for mkt in ("US", "KR", "JP", "TW", "CN_A", "HK"):
         m = data.get("markets", {}).get(mkt, {})
         if m.get("error"):
             cards += (f'<div class="panel"><div class="panel-title">{mkt}</div>'
@@ -579,7 +629,9 @@ def render_market_timing_page(data: dict, now=None) -> str:
         move = vol.get("move")
         vol_rows = ""
         if vix:
-            vol_rows += (f'<div class="stat"><div class="k">VIX</div>'
+            _vix_src = vix.get("source", "")
+            vol_rows += (f'<div class="stat"><div class="k">VIX'
+                        f'{f" ({_h.escape(_vix_src)})" if _vix_src else ""}</div>'
                         f'<div class="v">{vix["value"]:.1f}</div></div>')
         if move:
             vol_rows += (f'<div class="stat"><div class="k">MOVE</div>'
@@ -588,7 +640,8 @@ def render_market_timing_page(data: dict, now=None) -> str:
             vol_card = f"""
 <div class="panel"><div class="panel-title">🌪️ 변동성 (VIX·MOVE)</div>
 <div class="stat-grid">{vol_rows}</div>
-<div class="note">VIX=주식시장 변동성(공포지수) · MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
+<div class="note">VIX=주식시장 변동성(공포지수, 메인 대시보드와 동일 네이버 소스 — canonical 일치) ·
+MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
 금리변동성이 기술주/반도체 장세에 선행 신호가 되는 경우가 있어 병기.</div></div>"""
 
     payload = _json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")

@@ -13800,6 +13800,45 @@ class TestFearGreedGauge20260708:
         assert fgc._parse({}) == {}                   # graceful
         assert fgc._parse({"fear_and_greed": {"score": "n/a"}}) == {}
 
+    def test_extract_vix_component_list_data(self):
+        # 사용자 요청(2026-07-26) "VIX 는 가장 정확한 CNN 값으로" — graphdata
+        # market_volatility_vix.data 의 마지막 [ts, value] 사용.
+        import bot.fear_greed_client as fgc
+        payload = {"market_volatility_vix": {"data": [[1000, 15.0], [2000, 18.6]]}}
+        assert fgc._extract_vix_component(payload) == 18.6
+
+    def test_extract_vix_component_scalar_fallback(self):
+        import bot.fear_greed_client as fgc
+        assert fgc._extract_vix_component(
+            {"market_volatility_vix": {"value": 21.3}}) == 21.3
+        assert fgc._extract_vix_component(
+            {"market_volatility_vix": {"score": 19.9}}) == 19.9
+
+    def test_extract_vix_component_missing_or_malformed(self):
+        import bot.fear_greed_client as fgc
+        assert fgc._extract_vix_component({}) is None
+        assert fgc._extract_vix_component({"market_volatility_vix": "bad"}) is None
+        assert fgc._extract_vix_component({"market_volatility_vix": {}}) is None
+        assert fgc._extract_vix_component(
+            {"market_volatility_vix": {"data": []}}) is None
+        assert fgc._extract_vix_component(
+            {"market_volatility_vix": {"data": [["bad", "val"]]}}) is None
+
+    def test_fetch_cnn_vix_delegates_and_graceful(self, monkeypatch):
+        import bot.fear_greed_client as fgc
+        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {"vix": 17.4})
+        assert fgc.fetch_cnn_vix() == 17.4
+        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {})
+        assert fgc.fetch_cnn_vix() is None
+        monkeypatch.setattr(fgc, "fetch_fear_greed", lambda: {"vix": None})
+        assert fgc.fetch_cnn_vix() is None
+
+    def test_macro_snapshot_vix_wired_to_cnn(self):
+        # 메인 대시보드 매크로9 위젯도 시장타이밍과 동일 CNN 최우선 소스
+        # (사용자 2026-07-26 "양쪽 다").
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert "fetch_cnn_vix" in src and '"^VIX"' in src
+
     def test_gauge_labels_cnn_vs_vix(self):
         import bot.dashboard as d
         card = d._render_sentiment_gauge(
@@ -14066,6 +14105,17 @@ class TestMarketTiming20260726:
         for m in ("US", "KR", "JP"):
             assert mt.MARKET_INDICES.get(m), f"{m} 지수 미등록"
 
+    def test_market_indices_extended_tw_cn_hk_20260726(self):
+        # 사용자 지적(2026-07-26) — 최초 배치가 시간 제약으로 US/KR/JP 만
+        # 채웠던 스코프 갭. bot/market.py MARKET_CONFIG 의 broad_benchmark
+        # 와 동일 티커 사용(단일 소스 유지) 확인.
+        from bot import market_timing as mt
+        assert mt.MARKET_INDICES["TW"][0][0] == "0050.TW"
+        assert mt.MARKET_INDICES["CN_A"][0][0] == "510300.SS"
+        assert mt.MARKET_INDICES["HK"][0][0] == "2800.HK"
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert 'for mkt in ("US", "KR", "JP", "TW", "CN_A", "HK")' in src
+
     def test_render_market_timing_page_smoke(self):
         from bot import market_timing as mt
         data = {
@@ -14094,6 +14144,27 @@ class TestMarketTiming20260726:
         from bot import market_timing as mt
         html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
         assert "시장타이밍" in html   # crash 없이 렌더(빈 데이터도 graceful)
+
+    def test_render_market_timing_page_all_six_markets(self):
+        # TW/CN_A/HK 확장(2026-07-26) 후에도 6개 시장 카드가 전부 렌더되는지.
+        from bot import market_timing as mt
+        dd = {"d5": 0, "d15": 0, "d25": 0, "risk_level": "NORMAL"}
+        ftd = {"state": "NO_CORRECTION"}
+        base = {"dd": dd, "ftd": ftd, "latest_date": "2026-07-24", "latest_close": 100.0}
+        data = {
+            "markets": {
+                "US": {**base, "ticker": "^GSPC", "name": "S&P 500"},
+                "KR": {**base, "ticker": "^KS11", "name": "KOSPI"},
+                "JP": {**base, "ticker": "^N225", "name": "니케이225"},
+                "TW": {**base, "ticker": "0050.TW", "name": "TAIEX 50 (0050)"},
+                "CN_A": {**base, "ticker": "510300.SS", "name": "CSI 300 (510300)"},
+                "HK": {**base, "ticker": "2800.HK", "name": "Hang Seng (2800.HK)"},
+            },
+            "macro": {}, "crypto": {},
+        }
+        html = mt.render_market_timing_page(data)
+        for label in ("S&P 500", "KOSPI", "니케이225", "TAIEX 50", "CSI 300", "Hang Seng"):
+            assert label in html
 
     def test_wiring(self):
         # nav(공용 fred_boards._NAV + 홈허브 + Market cap) · 6시간 periodic ·
@@ -14439,7 +14510,8 @@ class TestEconCalendar20260726:
         dates = ["2026-06-10", "2026-07-10", "2026-07-30", "2026-09-10"]
         r = ec.upcoming_and_recent(dates, "2026-07-26")
         assert r["next"] == "2026-07-30"
-        assert r["recent"] == []   # 07-10 은 14일 컷오프(07-12) 밖
+        # 45일 컷오프(2026-06-11, 2026-07-26 기준) — 07-10 은 안, 06-10 은 밖.
+        assert r["recent"] == ["2026-07-10"]
 
     def test_upcoming_and_recent_includes_within_cutoff(self):
         from bot import econ_calendar as ec
@@ -14473,7 +14545,10 @@ class TestEconCalendar20260726:
         ], "as_of": "2026-07-26"}
         html = ec.render_econ_calendar_page(data)
         assert html.lower().count("<!doctype") == 1
-        assert "2026-08-12" in html and "release_id 미확인" in html
+        assert "2026-08-12" in html
+        # 확인 안 되는 항목은 카드 자체를 비노출(사용자 2026-07-26
+        # "확인안되는건 대쉬보드에서 삭제해줘") — 에러 문구가 화면에 없어야 함.
+        assert "release_id 미확인" not in html
 
     def test_render_econ_calendar_page_empty_graceful(self):
         from bot import econ_calendar as ec
@@ -15040,8 +15115,41 @@ class TestMarketTimingBreadthVol20260726:
         assert result["n_sectors"] == len(mt._BREADTH_SECTOR_ETFS_US) - 1
         assert "XLK" not in result["sectors_ok"]
 
-    def test_fetch_volatility_snapshot_independent_fields(self, monkeypatch):
+    def test_fetch_volatility_snapshot_vix_prefers_cnn(self, monkeypatch):
+        # 사용자 요청(2026-07-26) "VIX 는 가장 정확한 CNN 값으로, 양쪽 다" —
+        # CNN 성공 시 네이버/yfinance 는 호출조차 안 돼야 함.
         from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: 15.8)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("CNN 성공 시 naver/yfinance 호출 금지")
+
+        monkeypatch.setattr(mt, "_fetch_vix_naver", fail_if_called)
+        monkeypatch.setattr(mt, "fetch_index_history",
+                           lambda ticker, days=10: [] if ticker == "^MOVE" else fail_if_called())
+        result = mt.fetch_volatility_snapshot()
+        assert result["vix"] == {"value": 15.8, "date": None, "source": "CNN(실시간)"}
+
+    def test_fetch_volatility_snapshot_vix_prefers_naver(self, monkeypatch):
+        # 사용자 리포트(2026-07-26) '빅스지수가 다른데 메인대시보드랑
+        # 시장타이밍이랑' — CNN 실패 시 메인 대시보드(bot/macro_snapshot.py)
+        # 와 동일 네이버 소스로 폴백해 canonical 값이 일치. yfinance 는
+        # 호출조차 안 돼야 함(불필요한 콜 회피 확인).
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: None)
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
+
+        def fail_if_called(ticker, days=10):
+            raise AssertionError(f"naver 성공 시 yfinance({ticker}) 호출 금지")
+
+        monkeypatch.setattr(mt, "fetch_index_history", fail_if_called)
+        result = mt.fetch_volatility_snapshot()
+        assert result["vix"] == {"value": 18.6, "date": None, "source": "네이버(실시간)"}
+
+    def test_fetch_volatility_snapshot_vix_falls_back_to_yfinance(self, monkeypatch):
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: None)
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
 
         def fake_fetch(ticker, days=10):
             if ticker == "^VIX":
@@ -15050,10 +15158,12 @@ class TestMarketTimingBreadthVol20260726:
 
         monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
         result = mt.fetch_volatility_snapshot()
-        assert result == {"vix": {"value": 14.2, "date": "2026-07-25"}}
+        assert result == {"vix": {"value": 14.2, "date": "2026-07-25", "source": "yfinance(폴백)"}}
 
     def test_fetch_volatility_snapshot_both_fail_graceful(self, monkeypatch):
         from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_cnn", lambda: None)
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
         monkeypatch.setattr(mt, "fetch_index_history",
                            lambda ticker, days=10: (_ for _ in ()).throw(RuntimeError("x")))
         assert mt.fetch_volatility_snapshot() == {}
@@ -15083,6 +15193,8 @@ class TestMarketTimingBreadthVol20260726:
         assert '"breadth": breadth' in src and '"volatility": volatility' in src
         assert "def fetch_market_breadth" in src
         assert "def fetch_volatility_snapshot" in src
+        assert "def _fetch_vix_cnn" in src   # 최우선 소스(사용자 2026-07-26)
+        assert "def _fetch_vix_naver" in src   # 메인 대시보드와 동일 2차 소스(canonical 일치)
 
 
 class TestEconCalendarAdditions20260726:
@@ -15108,10 +15220,50 @@ class TestEconCalendarAdditions20260726:
         from bot import econ_calendar as ec
         assert ec.find_actual_value([], "2026-06-05") is None
 
-    def test_ism_pmi_entries_registered(self):
+    def test_ism_pmi_entries_removed_20260726(self):
+        # ISM 제조업/비제조업은 FRED 카탈로그 매치가 항상 실패해(사용자
+        # 2026-07-26 스크린샷 — 영구 "release_id 미확인") 카탈로그에서 제거.
         from bot import econ_calendar as ec
         keys = {r["key"] for r in ec._RELEASES}
-        assert "ism_mfg" in keys and "ism_svc" in keys
+        assert "ism_mfg" not in keys and "ism_svc" not in keys
+
+    def test_is_plausible_release_cadence_rejects_daily_noise(self):
+        # FOMC 버그(사용자 2026-07-26 — "최근 발표일" 14개 연속 일자) 재현:
+        # 근일간 간격은 CPI/고용/GDP/PCE/FOMC 전항목에서 불가능한 패턴.
+        from bot import econ_calendar as ec
+        daily = [f"2026-07-{d:02d}" for d in range(13, 27)]
+        assert ec._is_plausible_release_cadence(daily) is False
+
+    def test_is_plausible_release_cadence_accepts_real_cadences(self):
+        from bot import econ_calendar as ec
+        fomc = ["2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17", "2026-07-29"]
+        cpi = ["2026-04-10", "2026-05-13", "2026-06-11", "2026-07-14"]
+        assert ec._is_plausible_release_cadence(fomc) is True
+        assert ec._is_plausible_release_cadence(cpi) is True
+
+    def test_is_plausible_release_cadence_insufficient_data_defaults_true(self):
+        from bot import econ_calendar as ec
+        assert ec._is_plausible_release_cadence([]) is True
+        assert ec._is_plausible_release_cadence(["2026-07-14"]) is True
+
+    def test_load_econ_calendar_suppresses_implausible_cadence(self, monkeypatch):
+        # find_release_id 가 오매치돼 근일간 release_dates 를 반환해도 그
+        # 항목은 error 로 강등되고(FOMC 하드코딩 아님 — 전항목 동일 가드).
+        from bot import econ_calendar as ec, fred_client
+
+        def fake_find_release_id(search):
+            return 999 if search == "FOMC" else None
+
+        def fake_fetch_release_dates(rid, start, end):
+            return [f"2026-07-{d:02d}" for d in range(13, 27)]
+
+        monkeypatch.setattr(fred_client, "find_release_id", fake_find_release_id)
+        monkeypatch.setattr(fred_client, "fetch_release_dates", fake_fetch_release_dates)
+        monkeypatch.setattr(ec, "_load_megatech_earnings", lambda t: [])
+        data = ec._load_econ_calendar(today="2026-07-26")
+        fomc_entry = next(e for e in data["events"] if e["key"] == "fomc")
+        assert fomc_entry.get("error")
+        assert "next" not in fomc_entry and "recent" not in fomc_entry
 
     def test_megatech_watchlist_expanded_20260726(self):
         # 사용자 확장 요청(2026-07-26) — 4종 → 24종. 누락/오타 회귀 방지.
@@ -15192,3 +15344,4 @@ class TestEconCalendarAdditions20260726:
         assert "_MEGATECH_WATCHLIST" in src
         assert "def _load_megatech_earnings" in src
         assert '"megatech_earnings": megatech' in src
+        assert "def _is_plausible_release_cadence" in src   # FOMC 오매치 가드(2026-07-26)
