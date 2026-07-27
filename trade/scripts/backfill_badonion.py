@@ -443,10 +443,11 @@ async def run(
             "grouped into %d send units (singles + albums)", len(units_all)
         )
 
-        # 관련성 필터 — 나쁜양파는 대만·중국·일본 수출 데이터 외 콘텐츠도 섞인
-        # 일반 채널(사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간
-        # 걸 확인). 앨범이면 멤버 중 하나라도 대만·중국·일본 수출 캡션이면 유닛
-        # 전체(사진 포함) 유지.
+        # 관련성 필터 — 나쁜양파는 7개국 수출 데이터 외 콘텐츠도 섞인 일반
+        # 채널(사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간
+        # 걸 확인). 앨범이면 멤버 중 하나라도 7개국 수출 캡션이면 유닛
+        # 전체(사진 포함) 유지(_is_relevant, 2026-07-26 태국·말레이시아·
+        # 필리핀·멕시코 추가).
         units = [
             u for u in units_all
             if any(_is_relevant(m.text or "") for m in u)
@@ -454,7 +455,8 @@ async def run(
         skipped_irrelevant = len(units_all) - len(units)
         total_msgs = sum(len(u) for u in units)
         log.info(
-            "relevance filter: %d/%d units are 대만·중국·일본 수출 데이터 "
+            "relevance filter: %d/%d units are 대만·중국·일본·태국·말레이시아·"
+            "필리핀·멕시코 수출 데이터 "
             "(%d irrelevant skipped, %d candidate msgs total)",
             len(units), len(units_all), skipped_irrelevant, len(candidates),
         )
