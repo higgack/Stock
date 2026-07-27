@@ -15201,6 +15201,27 @@ class TestMarketTimingBreadthVol20260726:
         assert "def fetch_volatility_snapshot" in src
         assert "def _fetch_vix_naver" in src   # 메인 대시보드와 동일 소스(canonical 일치)
 
+    def test_guide_text_accuracy_20260727(self):
+        # 사용자 리포트(2026-07-27) — 가이드 §3 이 20일선 추가 후에도 여전히
+        # "50/200일선"만 언급(구현과 불일치). 검증 요청에 4건 발견해 동시 수정:
+        # (a) §3 20일선 누락, (b) §1 위험도가 d25 단일축인 것처럼 오독 소지
+        # (실제론 d5/d15/d25 중 최고 트리거 — classify_risk 로직 확인),
+        # (c) §6 Transitional(판단보류) 상태가 목록에서 누락, (d) 소스 라인이
+        # 네이버(VIX)·CNN(센티먼트)를 안 밝힘.
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
+        assert "20/50/200일선" in html   # (a)
+        assert "D5≥2" in html and "D15≥3" in html   # (b) — d25 단일축 아님 명시
+        assert "Transitional" in html and "판단보류" in html   # (c)
+        assert "네이버(VIX)" in html and "CNN(센티먼트)" in html   # (d)
+
+    def test_classify_risk_multi_axis_matches_guide_claim(self):
+        # (b) 의 실제 근거 — d25 낮아도 d5/d15 단독으로 HIGH/SEVERE 트리거됨.
+        from bot import market_timing as mt
+        assert mt.classify_risk(2, 0, 0) == "HIGH"      # d5≥2 단독
+        assert mt.classify_risk(0, 3, 0) == "HIGH"      # d15≥3 단독
+        assert mt.classify_risk(0, 4, 0) == "SEVERE"    # d15≥4 단독
+
 
 class TestEconCalendarAdditions20260726:
     """경제캘린더 사용자 추천 추가(실제치 오버레이·ISM PMI·메가테크 실적)
