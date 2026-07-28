@@ -18,8 +18,9 @@ so that:
 
 from __future__ import annotations
 
+import json
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -268,3 +269,65 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# ESON (Efficient Structured Object Notation) handoff serializers
+# ---------------------------------------------------------------------------
+
+
+def _eson_encode_cell(val: Any) -> str:
+    """Encode a single cell value as bare string or JSON (ESON format)."""
+    if val is None:
+       return 'null'
+    if isinstance(val, bool):
+       return 'true' if val else 'false'
+    if isinstance(val, (int, float)):
+       return str(val)
+    if isinstance(val, str):
+       if not val or val[0] in ('"', '[', '{') or val[0].isspace() or val[-1].isspace():
+           return json.dumps(val)
+       if '\t' in val or '\r' in val or '\n' in val:
+           return json.dumps(val)
+       if val in ('null', 'true', 'false'):
+           return json.dumps(val)
+       try:
+           float(val)
+           return json.dumps(val)
+       except ValueError:
+           return val
+    return json.dumps(val, separators=(',', ':'))
+
+
+def research_plan_to_eson(plan: ResearchPlan, ticker: str) -> str:
+    """Convert ResearchPlan to ESON for Research Manager → Trader handoff.
+
+    ESON is lossless and cuts ~50% tokens vs JSON for agent-to-agent pipes.
+    Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    """
+    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'plan{{recommendation,rationale,strategic_actions}}']
+    row = [
+       plan.recommendation.value,
+       plan.rationale,
+       plan.strategic_actions,
+    ]
+    lines.append('\t'.join(_eson_encode_cell(v) for v in row))
+    return '\n'.join(lines) + '\n'
+
+
+def trader_proposal_to_eson(proposal: TraderProposal, ticker: str) -> str:
+    """Convert TraderProposal to ESON for Trader → Portfolio Manager handoff.
+
+    Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    """
+    lines = ['!eson/1', f'ticker={_eson_encode_cell(ticker)}', 'proposal{{action,reasoning,entry_price,stop_loss,position_sizing,kill_trigger}}']
+    row = [
+       proposal.action.value,
+       proposal.reasoning,
+       proposal.entry_price,
+       proposal.stop_loss,
+       proposal.position_sizing,
+       proposal.kill_trigger,
+    ]
+    lines.append('\t'.join(_eson_encode_cell(v) for v in row))
+    return '\n'.join(lines) + '\n'
