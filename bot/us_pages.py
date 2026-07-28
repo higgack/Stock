@@ -1,0 +1,428 @@
+"""미국 업종별 시세 · 52주 신고가/신저가 별도 페이지 (Finviz 소스).
+
+KR naver_pages(테마별 시세 · 상한가/하한가)의 미국 미러 — market.html
+'미국 업종 등락 TOP 10' 옆 링크 → 서버 사이드 렌더. 미국엔 가격제한폭이
+없으므로 상한가/하한가 대신 52주 신고가/신저가 (사용자 2026-06-10).
+무료·무키·graceful. 종목 클릭 → 우리 종목분석(lookup)."""
+from __future__ import annotations
+
+import html as _html
+import logging
+
+from bot.live_refresh import LIVE_REFRESH_JS as _LIVE_REFRESH_JS
+from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
+# 정렬 JS + 셀 CSS 는 highlow_render 단일 소스 사용 (사용자 2026-06-15 '미국만
+# 종목명이 글자가 붙어 나옴'): us_pages 가 갖고 있던 로컬 복사본이 .nk(티커
+# 아래 한글명 별도 줄) CSS + window.hlBindSort(자동 새로고침 후 정렬 재바인드)를
+# 빠뜨려 ① 미국 종목명이 티커에 붙어 렌더 ② live-refresh 후 정렬 헤더 사망.
+from bot.highlow_render import HL_SORT_JS as _HL_SORT_JS
+
+log = logging.getLogger("bot.us_pages")
+
+# 연장거래 창 라벨 — ET(미국 거래 기준)를 현재 한국시간으로 (CLAUDE.md KST
+# 시간표기 정책). 동부 서머타임(EDT)/표준시(EST) **자동 반영** (사용자 2026-06-15
+# '섬머타임 고려해서') — zoneinfo America/New_York→Asia/Seoul. lib 부재 시 폴백.
+def _ext_kst_for_date(d) -> str:
+    """주어진 ET 날짜의 연장거래(장전 4:00–9:30·장후 16:00–20:00 ET) KST 창 +
+    서머타임 여부 (순수·테스트용). 장후는 KST 익일."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    et, kst = ZoneInfo("America/New_York"), ZoneInfo("Asia/Seoul")
+
+    def _k(h: int, m: int) -> str:
+        return datetime(d.year, d.month, d.day, h, m,
+                        tzinfo=et).astimezone(kst).strftime("%H:%M")
+
+    probe = datetime(d.year, d.month, d.day, 12, 0, tzinfo=et)
+    is_dst = bool(probe.dst()) and probe.dst().total_seconds() != 0
+    return (f"한국시간 장전 {_k(4, 0)}–{_k(9, 30)} · 장후 익일 "
+            f"{_k(16, 0)}–{_k(20, 0)} (美 {'서머타임' if is_dst else '표준시'})")
+
+
+def _ext_window_kst() -> str:
+    """오늘(美 동부 기준) 연장거래 창의 KST 표기 — 서머타임 자동 반영.
+    zoneinfo/tzdata 부재 시 EDT 기준 폴백."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return _ext_kst_for_date(datetime.now(ZoneInfo("America/New_York")).date())
+    except Exception:
+        return "한국시간 장전 17:00–22:30 · 장후 익일 05:00–09:00 (美 서머타임)"
+
+
+def _shell(title: str, sub: str, active: str, body: str) -> str:
+    def _t(key: str, label: str) -> str:
+        cls = ' class="active"' if key == active else ""
+        return f'<a{cls} href="{key}">{label}</a>'
+    # 자식 링크 명칭 통일(사용자 2026-06-13): 업종별 시세(전체) →
+    # 신고가·신저가 → 급등·급락 (가격제한 없는 시장).
+    toggle = ('<div class="toggle">'
+              + _t("usindustry", "🏭 업종별 시세(전체)")
+              + _t("ushighlow", "📈 신고가·신저가")
+              + _t("usmovers", "🚀 급등·급락")
+              + _t("usprepost", "🌙 장전·장후")
+              + '</div>')
+    return f"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_html.escape(title)}</title>{_CSS}</head><body>
+<a class="back-link" href="market.html">← 홈으로</a>
+<h1>{_html.escape(title)}</h1>
+<div class="sub">{sub}</div>
+{toggle}
+<div id="live-root">
+{body}
+</div>
+{_THEME_SCRIPT}
+{_LIVE_REFRESH_JS}
+</body></html>"""
+
+
+def render_us_industry_page() -> str:
+    """미국 업종별 시세 — Finviz industry 전체(~140), 등락 내림차순."""
+    try:
+        from bot.finviz_client import fetch_groups
+        data = fetch_groups()
+    except Exception as exc:
+        log.warning("us industry page fetch failed: %s", exc)
+        data = {"groups": [], "ts": "", "source": ""}
+    groups = data.get("groups", [])
+    ts = _html.escape(data.get("ts", ""))
+    src = _html.escape(data.get("source", "Finviz"))
+
+    if not groups:
+        body = ('<div class="empty">업종 데이터를 불러올 수 없습니다.<br>'
+                '(잠시 후 다시 시도해 주세요.)</div>')
+    else:
+        def _name_cell(g: dict) -> str:
+            # 업종 클릭 → Finviz 해당 업종 종목 목록(사용자 2026-06-10, KR
+            # 테마→Naver 상세 미러). slug 있는 행(Finviz 출처)만 링크, 폴백
+            # (GICS 산출/ETF)은 슬러그 없어 일반 텍스트.
+            nm = _html.escape(g.get("name", ""))
+            slug = g.get("slug", "")
+            if slug and slug.replace("ind_", "").replace("_", "").isalnum():
+                url = f"https://finviz.com/screener?v=111&f={_html.escape(slug)}&o=-change"
+                return (f'<a href="{url}" target="_blank" rel="noopener">{nm}</a>'
+                        ' <span class="ts">↗</span>')
+            return nm
+        rows = "".join(
+            f'<tr><td class="rk">{i}</td>'
+            f'<td class="nm">{_name_cell(g)}</td>'
+            f'{_pct_cell(g.get("pct"))}</tr>'
+            for i, g in enumerate(groups, 1))
+        _clickable = any(g.get("slug") for g in groups)
+        _hint = " · 업종 클릭 → 종목 목록" if _clickable else ""
+        from bot.highlow_render import GENERIC_FILTER_JS as _gfjs
+        body = (f'<div class="panel"><h2>🏭 업종별 등락 '
+                f'<span class="ts">{len(groups)}개 · 등락 내림차순{_hint}</span></h2>'
+                f'<table class="cflt"><thead><tr><th>#</th><th>업종</th>'
+                f'<th style="text-align:right">등락률</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table></div>{_gfjs}')
+    sub = f"미국 업종(industry) 당일 등락 · 출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else "")
+    return _shell("미국 업종별 시세", sub, "usindustry", body)
+
+
+def _fmt_mcap(m_eok: float | None) -> str:
+    """억$ → 사람이 읽는 시총 ($T/$B/$M). 신고저·급등급락 공용."""
+    if not m_eok:
+        return "—"
+    if m_eok >= 10000:      # ≥ $1T
+        return f"${m_eok / 10000:.2f}T"
+    if m_eok >= 10:         # ≥ $1B
+        return f"${m_eok / 10:.1f}B"
+    return f"${m_eok * 100:.0f}M"
+
+
+def _stock_panel(title: str, items: list, tid: str, extra_head: str = "") -> str:
+    """종목 표 패널 (종목/현재가/등락률/시총/업종, 헤더 정렬) — 신고저·
+    급등급락 공용 (2026-06-12 movers 추가 때 highlow 내부에서 승격)."""
+    if not items:
+        return (f'<div class="panel"><h2>{title}</h2>'
+                '<div class="empty">해당 종목 없음</div></div>')
+
+    def _row(i: int, it: dict) -> str:
+        tk = _html.escape(it.get("ticker", ""))
+        nm = _html.escape(it.get("name") or it.get("ticker", ""))
+        label = f'{tk}<span class="ts">({nm})</span>' if nm != tk else tk
+        price = it.get("price")
+        pct = it.get("pct")
+        mcap = it.get("mcap")
+        vol = it.get("vol")        # 거래량(사용자 2026-06-13)
+        # 업종분류 — yfinance industry 원문 그대로 (사용자 2026-06-12)
+        ind = _html.escape(str(it.get("ind") or ""))
+        ind_cell = (f'<td class="ind" title="{ind}">{ind}</td>'
+                    if ind else '<td class="ind">—</td>')
+        # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap/vol=numeric)
+        return (
+            f'<tr data-sym="{tk.lower()}" '
+            f'data-price="{price if price is not None else -1}" '
+            f'data-pct="{pct if pct is not None else -9999}" '
+            f'data-vol="{vol if vol is not None else -1}" '
+            f'data-mcap="{mcap if mcap is not None else -1}" '
+            f'data-ind="{ind.lower()}">'
+            f'<td class="rk">{i}</td>'
+            f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
+            f'<td class="num">{("$" + format(price, ",.2f")) if price is not None else "—"}</td>'
+            f'{_pct_cell(pct)}'
+            f'<td class="num">{_fmt_vol(vol)}</td>'
+            f'<td class="num">{_fmt_mcap(mcap)}</td>'
+            f'{ind_cell}</tr>'
+        )
+    rows = "".join(_row(i, it) for i, it in enumerate(items, 1))
+    # th data-key/data-type → JS 정렬. # 컬럼은 정렬 비활성.
+    return (
+        f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
+        f'{extra_head}'
+        f'<table class="hl-table" id="{tid}"><thead><tr>'
+        f'<th>#</th>'
+        f'<th class="srt" data-key="sym" data-type="text">종목</th>'
+        f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
+        f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
+        f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량(주)</th>'
+        f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
+        f'<th class="srt" data-key="ind" data-type="text">업종</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table></div>'
+    )
+
+
+def render_us_highlow_page() -> str:
+    """미국 52주 신고가·신저가 — Finviz ta_newhigh/ta_newlow (전 미국 상장).
+    폴백(S&P 500 산출) 시에도 동일 표. 종목 → 우리 종목분석(lookup)."""
+    try:
+        from bot.finviz_client import fetch_high_low
+        data = fetch_high_low()
+    except Exception as exc:
+        log.warning("us high/low page fetch failed: %s", exc)
+        data = {"high": [], "low": [], "ts": "", "source": ""}
+    ts = _html.escape(data.get("ts", ""))
+    from bot.highlow_render import clean_source as _clean_src
+    src = _html.escape(_clean_src(data.get("source", "Finviz")))  # stale '1% 근접' 정규화
+    from bot.highlow_render import stock_panel as _hpanel
+
+    def _panel(title, items, tid, extra=""):
+        # 종목명=네이버 한글 + 거래량·거래대금 (사용자 2026-06-14 변경 — '네이버
+        # 한글로, 거래량도 가져와'). 거래량=Finviz Overview Volume.
+        return _hpanel(title, items, tid, "US", extra,
+                       show_vol=True, show_value=True)
+
+    hi, lo = data.get("high", []), data.get("low", [])
+    # 종목명 네이버 한글 (사용자 2026-06-14 'US 52주 네이버 한글로') — 업종 endpoint
+    # koreanCodeName(7d 캐시). + 거래대금(억$)=종가×거래량(Finviz Volume). 렌더
+    # 시점이라 캐시 무관·graceful(네이버 실패 시 영문명 유지).
+    try:
+        from bot.naver_ranking_client import world_quote_map, world_upjong_name
+        _nm = world_upjong_name("US")
+        _q = world_quote_map("US")        # 거래량·거래대금 네이버(사용자 2026-06-14)
+    except Exception:
+        _nm, _q = {}, {}
+    for r in hi + lo:
+        src_price = r.get("price")
+        src_vol = r.get("vol")
+        # 원본 소스가 price+vol 을 이미 주면 거래대금은 먼저 로컬 계산.
+        # (테스트/오프라인/네이버 편차와 무관하게 결정적 렌더 보장)
+        if r.get("value") is None and src_price and src_vol:
+            try:
+                r["value"] = round(float(src_price) * float(src_vol) / 1e8, 2)
+            except (TypeError, ValueError):
+                pass
+        kr = _nm.get(r.get("ticker"))
+        if kr:
+            r["name"] = kr
+        q = _q.get(r.get("ticker"))       # 네이버 거래량/거래대금/시총 우선
+        if q:
+            if r.get("vol") is None and q.get("vol") is not None:
+                r["vol"] = q["vol"]
+            if r.get("value") is None and q.get("value") is not None:
+                r["value"] = q["value"]
+            # 시총 네이버 무료 우선(B 그룹 2026-06-16) — tier-1 Finviz 는 시총
+            # 미제공이고 fast_info 는 rate-limit 회로차단 1순위라, 네이버 업종
+            # endpoint 시총(억$)으로 채워 '시총 —' 연쇄 + 시총-정렬 붕괴 해소.
+            if r.get("mcap") is None and q.get("mcap") is not None:
+                r["mcap"] = q["mcap"]
+        # 네이버 미스 시(또는 소스 계산 실패 시) 현재값으로 거래대금 산출 폴백
+        if r.get("value") is None and r.get("price") and r.get("vol"):
+            try:
+                r["value"] = round(float(r["price"]) * float(r["vol"]) / 1e8, 2)
+            except (TypeError, ValueError):
+                pass
+    # 기본 정렬 = 시총 내림차순 (사용자 2026-06-12 '처음 화면은 시총순') —
+    # 시총 미확보(—) 행은 뒤로. 헤더 클릭으로 다른 기준 재정렬 가능.
+    _mc_key = lambda it: (it.get("mcap") is None, -(it.get("mcap") or 0))
+    hi = sorted(hi, key=_mc_key)
+    lo = sorted(lo, key=_mc_key)
+    if not hi and not lo:
+        body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
+                '(잠시 후 다시 시도해 주세요.)</div>')
+    else:
+        # 업종 분포 한 줄 추가 (사용자 2026-06-13 '업종분포 다 넣어주는걸로')
+        body = ('<div class="grid">'
+                + _panel("🔺 52주 신고가", hi, "hl-high", _ind_dist_line(hi))
+                + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
+                + '</div>' + _HL_SORT_JS)
+    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고'). 장중 30분 전량 갱신
+    # (사용자 2026-06-19 '미국장 새벽=저부하' — :00·:30 슬롯 force, 마감후 EOD freeze).
+    from bot.highlow_render import market_hours_label as _mhl
+    sub = (f"미국 52주 신고가·신저가 · {_mhl('US')} · 종목명=네이버 한글 · 거래량·거래대금 · "
+           f"업종=GICS·yfinance · 출처 {src} · 장중 30분·마감후 EOD 자동"
+           + (f" · 마지막 갱신 {ts}" if ts else ""))
+    return _shell("미국 신고가·신저가", sub, "ushighlow", body)
+
+
+def _ind_dist_line(items: list, top_k: int = 5) -> str:
+    """패널 상단 업종 분포 한 줄 — 'Biotechnology 6 · 반도체 4 …' (참고
+    텔레그램 채널의 섹터 카운트 미러, 순수 함수). 업종 없는 행은 제외."""
+    from collections import Counter
+    cnt = Counter(str(it.get("ind")) for it in items if it.get("ind"))
+    if not cnt:
+        return ""
+    parts = " · ".join(f"{_html.escape(ind)} <b>{n}</b>"
+                       for ind, n in cnt.most_common(top_k))
+    return (f'<div class="ts" style="margin:2px 0 8px">업종 분포: {parts}'
+            + (" 외" if len(cnt) > top_k else "") + "</div>")
+
+
+def render_us_movers_page() -> str:
+    """미국 당일 급등·급락 TOP30 — 전 미국 상장 일봉 산출 (신고가/신저가
+    형제 표면, 사용자 2026-06-12). SWR 백그라운드 — 첫 방문이 산출 kick,
+    캐시 전엔 '산출 중' 안내. 종목 → 우리 종목분석(lookup)."""
+    try:
+        from bot.finviz_client import fetch_us_movers
+        data = fetch_us_movers()
+    except Exception as exc:
+        log.warning("us movers page fetch failed: %s", exc)
+        data = {"up": [], "down": [], "ts": "", "source": ""}
+    ts = _html.escape(data.get("ts", ""))
+    src = _html.escape(data.get("source", ""))
+    up, down = data.get("up", []), data.get("down", [])
+
+    if not up and not down:
+        if data.get("building"):
+            # 상태 마커로 '산출 중'과 '산출 실패'를 구분 표시 — 실패가
+            # 영구 '산출 중'으로 위장하던 것 차단 (2026-06-13 surfaced)
+            st = data.get("status") or {}
+            ts_lb = _html.escape(str(st.get("ts_label") or ""))
+            if st.get("state") == "failed":
+                detail = _html.escape(str(st.get("detail") or ""))
+                body = (f'<div class="empty">⚠️ 최근 산출 실패'
+                        + (f' ({ts_lb})' if ts_lb else '') + f' — {detail}<br>'
+                        '5분 후 자동 재시도됩니다. 반복되면 yfinance 일시 '
+                        '제한 가능 — 잠시 뒤 다시 확인해 주세요.</div>')
+            elif st.get("state") == "running":
+                done, total = st.get("done"), st.get("total")
+                prog = (f" — 배치 {done}/{total}"
+                        if done is not None and total else "")
+                body = (f'<div class="empty">⏳ 산출 진행 중{prog}'
+                        + (f' (시작 {ts_lb})' if ts_lb else '')
+                        + ' — 전 미국 상장 일봉 스캔(수 분 소요). '
+                          '잠시 후 새로고침해 주세요.</div>')
+            else:
+                body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전 미국 상장 '
+                        '일봉 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
+                    '(잠시 후 다시 시도해 주세요.)</div>')
+    else:
+        from bot.highlow_render import sort_by_pct, stock_panel as _hpanel
+        # 네이버 소스면 거래량·거래대금 표시(Naver 제공) — 사용자 2026-06-14
+        # '거래량과 거래대금 모두'. 기본 등락률순(헤더로 시총 재정렬, 사용자 2026-06-15).
+        _is_nv = "네이버" in src
+        up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
+        # 업종 render-time 백필 (사용자 2026-06-14 'US 급등락 업종 안 나옴') — 무버
+        # 캐시가 네이버 업종맵 생기기 전(stale 02:12)이라 ind=None. GICS/NASDAQ 벌크
+        # (캐시) + 네이버 USA 업종맵(캐시 읽기만)으로 즉시 채움. render-safe(.info 안 함·
+        # 네이버 fetch 안 함). 주말 session-fresh 라 재산출 대기 없이 표시.
+        try:
+            from bot.finviz_client import _cached, _fetch_industries
+            _miss = [r.get("ticker") for r in up + down if not r.get("ind")]
+            if _miss:
+                _bulk = _fetch_industries(_miss, allow_slow=False)   # 벌크 캐시(빠름)
+                _nv = _cached("naver_industry_US.json", ttl=7 * 86400) or {}
+                for r in up + down:
+                    if not r.get("ind"):
+                        r["ind"] = _bulk.get(r.get("ticker")) or _nv.get(r.get("ticker"))
+        except Exception:
+            pass
+        body = ('<div class="grid">'
+                + _hpanel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "US",
+                          _ind_dist_line(up), show_vol=_is_nv, show_value=_is_nv)
+                + _hpanel("📉 가장 많이 내린 TOP 30", down, "mv-down", "US",
+                          _ind_dist_line(down), show_vol=_is_nv, show_value=_is_nv) + '</div>'
+                + _HL_SORT_JS)
+    # 부제 — 무엇·출처·장시간·정렬·신선도·마지막갱신(사용자 2026-06-16).
+    from bot.highlow_render import market_hours_label as _mhl
+    from bot.highlow_render import movers_freshness as _mf
+    _hrs = _mhl("US")
+    _fresh = _mf("US")
+    if "네이버" in src:
+        sub = (f"미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE) · {_hrs} · {_fresh}"
+               + (f" · 마지막 갱신 {ts}" if ts else ""))
+    else:
+        sub = (f"미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · {_hrs}"
+               + (f" · 출처 {src}" if src else "") + f" · {_fresh}"
+               + (f" · 마지막 갱신 {ts}" if ts else ""))
+    return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)
+
+
+def render_us_prepost_page() -> str:
+    """미국 전시장(정규장 무버) 장전(pre-market)·장후(after-hours) 급등·급락 TOP30 —
+    정규장 종가 대비 시간외 등락(네이버 실시간 overMarketPriceInfo, 사용자 2026-06-16
+    '야후 안 쓰고 네이버'). 유니버스 = 전시장 NASDAQ+NYSE 정규장 무버(AMEX 제외, 사용자
+    2026-06-16 '전시장 정규장 무버' — 시간외 급변은 뉴스주라 무버 랭킹에 직격). 급등락
+    (정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick. 종목 → 우리 종목분석(lookup)."""
+    try:
+        from bot.prepost_client import fetch_us_prepost_movers
+        data = fetch_us_prepost_movers()
+    except Exception as exc:
+        log.warning("us prepost page fetch failed: %s", exc)
+        data = {"up": [], "down": [], "ts": "", "source": "", "session": ""}
+    ts = _html.escape(data.get("ts", ""))
+    up, down = data.get("up", []), data.get("down", [])
+    sess = data.get("session") or ""
+    sess_kr = "장전" if sess == "pre" else "장후" if sess == "post" else "장전·장후"
+
+    if not up and not down:
+        if data.get("building"):
+            st = data.get("status") or {}
+            ts_lb = _html.escape(str(st.get("ts_label") or ""))
+            if st.get("state") == "failed":
+                detail = _html.escape(str(st.get("detail") or ""))
+                body = (f'<div class="empty">⚠️ 최근 산출 실패'
+                        + (f' ({ts_lb})' if ts_lb else '') + f' — {detail}<br>'
+                        f'연장거래({_ext_window_kst()})에만 데이터가 '
+                        '있습니다. 정규장 중·장 완전 종료 시에는 직전 연장 스냅샷을 '
+                        '보여줍니다.</div>')
+            elif st.get("state") == "running":
+                done, total = st.get("done"), st.get("total")
+                prog = (f" — 배치 {done}/{total}"
+                        if done is not None and total else "")
+                body = (f'<div class="empty">⏳ 산출 진행 중{prog}'
+                        + (f' (시작 {ts_lb})' if ts_lb else '')
+                        + ' — 전시장 무버 시간외 스캔(~1분). '
+                          '잠시 후 새로고침해 주세요.</div>')
+            else:
+                body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전시장 무버 '
+                        '시간외 스캔(~1분). 잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = (f'<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
+                    f'연장거래({_ext_window_kst()}) 시간에 '
+                    '확인해 주세요.</div>')
+    else:
+        from bot.highlow_render import sort_by_pct, stock_panel as _hpanel
+        up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
+        # 거래량·거래대금 = 정규장 누적(네이버 worldstock 이 美 시간외 거래량/거래대금
+        # 미제공 — probe 확인 2026-06-16). 시간외 보드라 '정규장 거래량/거래대금'으로
+        # 명확화해 시간외로 오해 안 되게(사용자 요청). 가격·등락만 시간외 라이브.
+        _vlbl = dict(show_vol=True, show_value=True, vol_label="정규장 거래량(주)",
+                     value_label="정규장 거래대금")
+        body = ('<div class="grid">'
+                + _hpanel(f"🚀 {sess_kr} 가장 많이 오른 TOP 30", up, "pp-up", "US",
+                          _ind_dist_line(up), **_vlbl)
+                + _hpanel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down, "pp-down", "US",
+                          _ind_dist_line(down), **_vlbl) + '</div>'
+                + _HL_SORT_JS)
+    sub = (f"전시장 무버 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
+           "네이버 실시간 · 가격·등락=시간외 라이브 · 거래량·거래대금=정규장 누적"
+           "(시간외분은 네이버 미제공) · 연장거래 창에서 30분 · "
+           + _ext_window_kst()
+           + (f" · 마지막 갱신 {ts}" if ts else ""))
+    return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)

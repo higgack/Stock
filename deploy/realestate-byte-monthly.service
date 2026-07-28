@@ -1,0 +1,14 @@
+[Unit]
+Description=부동산 Byte Monthly — 월간 부동산 종합 텔레그램 푸시 (매월 1일 09:00 KST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.realestate_monthly
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600

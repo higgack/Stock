@@ -1,0 +1,14 @@
+[Unit]
+Description=미국 레딧 게시물 분석 watcher — t.me/insidertracking 폴링·필터·forward
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.reddit_insider_watch
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

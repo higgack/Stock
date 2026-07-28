@@ -1,0 +1,377 @@
+"""포트폴리오 저장·집계·요약 (자산관리 P1 증분3).
+
+흐름: parse_export(뱅샐 zip/xlsx) → resolve_ticker(종목명→티커) → 집계 모델 →
+저장(JSON). 대시보드(증분4)·텔레그램 핸들러가 이 모델을 소비. 라이브 가격·
+NOAH 분석 오버레이는 증분4·5에서 모델 위에 얹는다.
+
+저장: ~/.tradingagents/portfolio.json (atomic). 파서가 1.고객정보·가계부를 애초에
+제외하므로 저장 데이터엔 이름/이메일/소비내역이 없다 — 보유종목·자산군·순자산·
+대출·보험만. (PII 최소화.)
+
+순수 함수(build_model/format/_won)는 단위테스트 가능. ingest 만 I/O.
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+
+from bot.portfolio_parser import parse_export, is_banksalad_export
+from bot.portfolio_resolve import resolve_ticker
+
+PORTFOLIO_PATH = Path.home() / ".tradingagents" / "portfolio.json"
+
+
+class NotBanksaladExport(ValueError):
+    """업로드된 .zip/.xlsx 가 뱅크샐러드 자산 export 가 아님.
+
+    RAG 채널('무엇이든 포워드')의 비-자산 파일이 확장자만으로 자산 업데이트로
+    오인되는 것을 막기 위해 ingest 가 저장 전에 던진다 — watcher 는 조용히
+    skip 해 기존 portfolio.json 을 보존(2026-06-08 사용자 리포트)."""
+
+
+class EmptyHoldingsExport(NotBanksaladExport):
+    """진짜 뱅샐 export 처럼 보이나(섹션 마커 통과) 보유종목 0건으로 파싱됨.
+
+    2026-06-26 16:42 사고: 부분/손상 export 가 holdings 0건 모델로 기존 365건
+    portfolio.json(+ budget.json)을 덮어써 자산·가계부가 화면에서 사라짐(.bak 로
+    복구). 재발방지: 기존에 holdings>0 인데 새 파싱이 0건이면 ingest 가 이 예외를
+    던져 저장을 거부 → 기존 데이터 보존. NotBanksaladExport 하위라 기존 watcher
+    의 보존 경로를 그대로 탄다(단, watcher 는 이 케이스만 사용자에게 알림)."""
+
+
+def _won(v) -> str:
+    """₩ 금액 → 억/만 약식(가독). None→'-'. (차트 fmtAxis 와 동일 철학.)"""
+    if v is None:
+        return "-"
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    neg = n < 0
+    n = abs(n)
+    if n >= 1e8:
+        s = f"{n / 1e8:.1f}억"
+    elif n >= 1e4:
+        s = f"{n / 1e4:,.0f}만"
+    else:
+        s = f"{n:,.0f}"
+    return ("-" if neg else "") + s + "원"
+
+
+def _distinct_stock_keys(holdings: list[dict]) -> set:
+    """고유 종목 식별 키 집합.
+
+    같은 종목을 여러 증권사에 보유하면 뱅샐 export 가 행을 분리해(중복) 단순
+    포지션 건수는 같은 종목을 두 번 센다(사용자 2026-06-05: "타 증권사에 같은
+    종목 두개는 하나로"). 매칭된 종목은 **ticker** 로 dedup(증권사 간 종목명
+    표기 차이까지 흡수), 미매칭은 **종목명** 으로 dedup. '보유 종목' 카운트가
+    포지션 건수가 아닌 실제 종목 수를 뜻하게 하기 위함. 보유 테이블 자체는
+    원본 행을 유지(증권사 필터 보존) — 카운트만 고유 기준."""
+    keys = set()
+    for h in holdings:
+        if h.get("matched") and h.get("ticker"):
+            keys.add(("t", h["ticker"]))
+        else:
+            keys.add(("n", (h.get("상품명") or "").strip()))
+    return keys
+
+
+def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
+    """파서 결과 → 대시보드/요약용 집계 모델.
+
+    - holdings: 각 보유에 ticker/market/matched + 평가손익(평가금액−투자원금) 부착.
+    - by_broker: 증권사별 평가금액·원금·손익·종목수.
+    - asset_allocation: 재무현황 자산 카테고리별 합(예적금/투자/부동산/동산/연금…).
+    - net_worth: 총자산/총부채/순자산(파서가 항목 합으로 산출).
+    - top_gainers/losers: 수익률 정렬 상·하위 5.
+    """
+    holdings = []
+    unresolved_names: list[str] = []
+    for h in parsed.get("holdings", []):
+        r = resolve(h.get("상품명") or "")
+        ev, cost = h.get("평가금액"), h.get("투자원금")
+        pnl = (ev - cost) if (ev is not None and cost is not None) else None
+        holdings.append({
+            **h, "ticker": r["ticker"], "market": r["market"],
+            "matched": r["matched"], "source": r.get("source"),
+            "평가손익": pnl,
+        })
+        if not r["matched"] and r.get("source") is None:
+            unresolved_names.append(h.get("상품명") or "")
+    if unresolved_names:
+        try:
+            from bot.portfolio_auto_resolve import batch_resolve
+            from bot.portfolio_resolve import _normalize
+            auto = batch_resolve(unresolved_names)
+            for h in holdings:
+                if h["matched"] or h.get("source"):
+                    continue
+                key = _normalize(h.get("상품명") or "")
+                ar = auto.get(key)
+                if ar:
+                    h["ticker"], h["market"], h["matched"] = ar[0], ar[1], True
+        except Exception:
+            pass
+    by_broker: dict[str, dict] = {}
+    for h in holdings:
+        b = h.get("금융사") or "?"
+        d = by_broker.setdefault(b, {"평가금액": 0.0, "투자원금": 0.0, "종목수": 0})
+        d["평가금액"] += h.get("평가금액") or 0.0
+        d["투자원금"] += h.get("투자원금") or 0.0
+        d["종목수"] += 1
+    for d in by_broker.values():
+        d["평가손익"] = d["평가금액"] - d["투자원금"]
+    fin = parsed.get("finance", {})
+    alloc: dict[str, float] = {}
+    for cat, items in fin.get("assets", {}).items():
+        tot = sum(it.get("amount") or 0.0 for it in items)
+        if tot:
+            alloc[cat] = tot
+    # 수익률 TOP/WORST 용 종목명 dedup — 같은 종목을 여러 증권사에 보유하면
+    # export 에 행이 중복되어 상/하위에 같은 종목이 두 번 뜬다(비보심 랩스
+    # 2026-06-04). |수익률| 가장 큰 1개만 남겨('더 두드러지는것') 중복·상하위
+    # 동시노출 방지. (보유 테이블·집계는 원본 전체 유지 — dedup 은 랭킹 표시용만.)
+    _by_name: dict = {}
+    for h in holdings:
+        if h.get("수익률") is None:
+            continue
+        nm = h.get("상품명")
+        cur = _by_name.get(nm)
+        if cur is None or abs(h["수익률"]) > abs(cur["수익률"]):
+            _by_name[nm] = h
+    rated = list(_by_name.values())
+    eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
+    cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
+    invest_asset_total = alloc.get("투자성 자산", 0)
+    cash_in_invest = max(invest_asset_total - eval_sum, 0)
+    # 예수금(CMA/Super365)은 투자성 자산이 아니라 자유입출금 자산 — 재분류
+    if cash_in_invest > 0:
+        alloc["투자성 자산"] = invest_asset_total - cash_in_invest
+        alloc["자유입출금 자산"] = alloc.get("자유입출금 자산", 0) + cash_in_invest
+    # 연금펀드: 연금 자산 중 투자현황(Section 5)에 안 잡히는 펀드 부분.
+    # 연금 계좌 브로커를 자동 식별 — holdings 합이 연금 자산 이하인 브로커.
+    fund_in_pension = 0
+    pension_total = alloc.get("연금 자산", 0)
+    if pension_total > 0 and by_broker:
+        best_broker, best_sum = None, 0
+        for b, d in by_broker.items():
+            bsum = d["평가금액"]
+            if 0 < bsum <= pension_total and bsum > best_sum:
+                best_broker, best_sum = b, bsum
+        if best_broker is not None:
+            fund_in_pension = pension_total - best_sum
+    return {
+        "as_of": parsed.get("as_of"),
+        "net_worth": {
+            "총자산": fin.get("총자산"), "총부채": fin.get("총부채"),
+            "순자산": fin.get("순자산"),
+        },
+        "holdings": holdings,
+        "by_broker": by_broker,
+        "asset_allocation": alloc,
+        "liabilities": fin.get("liabilities", {}),
+        "loans": parsed.get("loans", []),
+        "insurance": parsed.get("insurance", []),
+        "top_gainers": sorted(rated, key=lambda h: h["수익률"], reverse=True)[:5],
+        "top_losers": sorted(rated, key=lambda h: h["수익률"])[:5],
+        "holding_count": len(holdings),
+        "distinct_count": len(_distinct_stock_keys(holdings)),
+        "matched_count": sum(1 for h in holdings if h["matched"]),
+        "unmatched_names": [h.get("상품명", "") for h in holdings
+                           if not h["matched"] and not h.get("source")],
+        "cash_in_invest": cash_in_invest,
+        "fund_in_pension": fund_in_pension,
+        "snapshot": {
+            "총자산": fin.get("총자산"), "총부채": fin.get("총부채"),
+            "순자산": fin.get("순자산"),
+            "주식평가": eval_sum,
+            "주식원금": cost_sum,
+            "예수금": cash_in_invest,
+            "연금펀드": fund_in_pension,
+            "투자성 자산": invest_asset_total,
+            "종목수": len(holdings),
+            "holdings_pnl": {
+                f"{h.get('상품명', '')}|{h.get('금융사', '')}": h.get("평가손익") or 0
+                for h in holdings
+            },
+        },
+    }
+
+
+def format_summary_text(model: dict) -> str:
+    """텔레그램 회신용 한 화면 요약 (증권사별·자산배분)."""
+    nw = model.get("net_worth", {})
+    cash = model.get("cash_in_invest") or 0
+    cash_part = f"\n예수금(자유입출금) {_won(cash)}" if cash else ""
+    lines = [
+        "📂 자산 요약 (뱅크샐러드 기준)",
+        f"순자산 {_won(nw.get('순자산'))}  "
+        f"(자산 {_won(nw.get('총자산'))} − 부채 {_won(nw.get('총부채'))})",
+        f"주식 {model.get('distinct_count', model.get('holding_count', 0))}종목 · "
+        f"티커매칭 {model.get('matched_count', 0)}{cash_part}",
+    ]
+    if model.get("by_broker"):
+        lines.append("— 증권사별 —")
+        for b, d in sorted(model["by_broker"].items(), key=lambda kv: -kv[1]["평가금액"]):
+            lines.append(f"• {b}: {_won(d['평가금액'])} ({d['종목수']}종목, 손익 {_won(d['평가손익'])})")
+    if model.get("asset_allocation"):
+        lines.append("— 자산 배분 —")
+        for cat, amt in sorted(model["asset_allocation"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"• {cat}: {_won(amt)}")
+    if model.get("loans"):
+        lines.append(f"— 대출 {len(model['loans'])}건 · 보험 {len(model.get('insurance', []))}건 —")
+    um = model.get("unmatched_names") or []
+    if um:
+        unique = sorted(set(um))
+        lines.append(f"\n⚠️ 미매칭 {len(unique)}종목 (수동 확인 필요)")
+        for n in unique:
+            lines.append(f"  · {n}")
+    return "\n".join(lines)
+
+
+def save(model: dict) -> None:
+    """atomic write to portfolio.json (+ 직전 1개 .bak 백업).
+
+    덮어쓰기 전 기존 portfolio.json 을 portfolio.json.bak 으로 복사 → 어떤
+    사고(잘못된 ingest 등)로 손상돼도 1회 롤백 가능. 백업 실패는 비치명적
+    (메인 저장은 그대로 진행)."""
+    PORTFOLIO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if PORTFOLIO_PATH.exists():
+        try:
+            bak = PORTFOLIO_PATH.with_suffix(".json.bak")
+            bak.write_text(PORTFOLIO_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception:
+            pass
+    payload = {**model, "_saved_ts": time.time()}
+    tmp = PORTFOLIO_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, PORTFOLIO_PATH)
+
+
+def load() -> dict | None:
+    try:
+        return json.loads(PORTFOLIO_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def backfill_cash_in_invest() -> bool:
+    """기존 portfolio.json 에 cash_in_invest 백필 + 예수금→자유입출금 재분류.
+
+    재업로드 없이 즉시 반영. 반환: 변경 여부."""
+    model = load()
+    if not model or not model.get("holdings"):
+        return False
+    alloc = model.get("asset_allocation", {})
+    holdings = model.get("holdings", [])
+    eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
+    invest_total = alloc.get("투자성 자산", 0)
+    cash = max(invest_total - eval_sum, 0)
+    snap = model.get("snapshot")
+    if not isinstance(snap, dict):
+        return False
+    changed = False
+    if model.get("cash_in_invest") is None:
+        model["cash_in_invest"] = cash
+        snap["예수금"] = cash
+        snap["투자성 자산"] = invest_total
+        changed = True
+    # 예수금→자유입출금 자산 재분류 (asset_allocation 도넛 반영)
+    if cash > 0 and alloc.get("투자성 자산", 0) > eval_sum:
+        alloc["투자성 자산"] = alloc["투자성 자산"] - cash
+        alloc["자유입출금 자산"] = alloc.get("자유입출금 자산", 0) + cash
+        changed = True
+    if not changed:
+        return False
+    save(model)
+    return True
+
+
+def ingest(data, password=None) -> dict:
+    """zip/xlsx(바이트 또는 경로) → 파싱·resolve·집계 → 저장. 모델 반환.
+
+    텔레그램 핸들러(증분3 wiring)·CLI 가 호출. password 기본은 호출부가 .env
+    BANKSALAD_ZIP_PW 에서 주입(코드/깃에 비번 박지 않음)."""
+    prev = load()  # 직전 저장 모델 (증분 비교용) — 첫 업로드면 None
+    parsed = parse_export(data, password=password)
+    # 진짜 뱅샐 export 인지 게이트 — 아니면 저장·집계 없이 즉시 중단해 기존
+    # portfolio.json 을 보존(비-자산 RAG 파일이 빈 모델로 덮어쓰는 사고 차단).
+    if not is_banksalad_export(parsed):
+        raise NotBanksaladExport("뱅크샐러드 자산 export 아님 (재무/투자 섹션 미검출)")
+    model = build_model(parsed)
+    # 빈-holdings 사고 가드(2026-06-26 16:42 재발방지): 기존에 보유종목이 있는데
+    # 새 파싱이 0건이면 부분/손상 export 로 판단 → 저장 거부(기존 데이터 보존).
+    # 첫 업로드(prev None/빈)면 0건도 정상 통과(신규 사용자).
+    if (isinstance(prev, dict) and prev.get("holdings")
+            and not model.get("holdings")):
+        raise EmptyHoldingsExport(
+            f"파싱 결과 보유종목 0건 (기존 {len(prev['holdings'])}건 보존) — "
+            "부분/손상 export 의심, 덮어쓰기 거부")
+    if isinstance(prev, dict) and prev.get("snapshot"):
+        model["prev"] = {
+            **prev["snapshot"],
+            "as_of": prev.get("as_of"),
+            "_saved_ts": prev.get("_saved_ts"),
+        }
+    save(model)
+    # 가계부(현금흐름) — 같은 export 에서 별도 모델·대시보드 (P2, 2026-06-04).
+    # 실패해도 자산 ingest 는 그대로 반환(비치명적).
+    try:
+        from bot.budget import build_budget_model, save_budget
+        save_budget(build_budget_model(parsed))
+    except Exception:
+        pass
+    return model
+
+
+def main(argv=None) -> int:
+    """CLI 검증: ``python -m bot.portfolio <export.zip|.xlsx> [--pw PW] [--no-regen]``.
+
+    RAG 채널 없이 로컬 파일로 즉시 파싱·집계·저장·대시보드 갱신 — 실제 zip
+    테스트용(사용자 요청 2026-06-04). 비번은 ``--pw`` 또는 .env BANKSALAD_ZIP_PW.
+    PII(고객정보/가계부)는 파서가 애초에 제외하므로 저장물엔 들어가지 않는다.
+    ⚠️ ingest 는 ~/.tradingagents/portfolio.json 을 덮어쓴다(실데이터 갱신)."""
+    import argparse
+    import sys
+    p = argparse.ArgumentParser(prog="bot.portfolio",
+                                description="뱅크샐러드 export 로컬 검증·대시보드 갱신")
+    p.add_argument("path", help="뱅크샐러드 export .zip 또는 .xlsx 경로")
+    p.add_argument("--pw", default=None, help="zip 비밀번호(미지정 시 .env BANKSALAD_ZIP_PW)")
+    p.add_argument("--no-regen", action="store_true", help="대시보드 재생성 생략(저장만)")
+    args = p.parse_args(argv)
+    try:
+        from dotenv import load_dotenv
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+    except ImportError:
+        pass
+    pw = args.pw or os.environ.get("BANKSALAD_ZIP_PW") or None
+    try:
+        data = Path(args.path).read_bytes()
+    except OSError as exc:
+        print(f"파일 읽기 실패: {exc}", file=sys.stderr)
+        return 2
+    try:
+        model = ingest(data, password=pw)
+    except RuntimeError as exc:
+        print(f"🔒 비밀번호 오류 또는 zip 해제 실패: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — CLI 친절 메시지
+        print(f"파싱 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(format_summary_text(model))
+    if not args.no_regen:
+        try:
+            from bot.dashboard import regenerate_portfolio_index
+            regenerate_portfolio_index()
+            print("\n✅ 대시보드 갱신됨 → portfolio.html")
+        except Exception as exc:  # noqa: BLE001
+            print(f"\n⚠️ 대시보드 재생성 실패(저장은 완료): {exc}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

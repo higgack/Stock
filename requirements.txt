@@ -3,4 +3,47 @@
 # dependencies come from TradingAgents/pyproject.toml.
 python-telegram-bot>=21.0
 python-dotenv>=1.0.0
+# pykrx — KRX trading data (가격 정합성 + 외국인/기관/개인 일별 수급).
+# KR-only; pure-Python wrapper, no native deps.
+# ≥1.2.8 필요: KRX 가 2025-12-27 'KRX Data Marketplace' 로 전환되며 로그인
+# 필수가 됐고, 이 버전부터 KRX_ID/KRX_PW 환경변수 인증을 지원한다.
+# (무료 가입 — Naver/Kakao. .env 에 KRX_ID/KRX_PW 미설정 시 pykrx 수급
+# 데이터 전체 skip, krx_login_ready() gate 가 graceful 처리.)
+pykrx>=1.2.8
+# matplotlib — Daily Byte 인포그래픽 PNG 렌더 (bot/daily_byte_infographic.py).
+# pykrx 의 transitive dep 이기도 하나 직접 import 하므로 명시. 한글 렌더는
+# VM 에 NanumGothic 필요: `sudo apt install -y fonts-nanum` (없으면 인포그래픽
+# 만 skip, 텍스트 브리프는 정상 push).
+matplotlib>=3.8.0
+# akshare — CN A-share + HK market data (공告·港股통 flow·ST·LPR·CPI·PMI).
+# CN/HK-only; key-less scraper. Heavy dep (~200MB, ~50 transitive packages).
+# Lazy-imported inside bot/akshare_client.py — non-CN analyses unaffected.
+akshare>=1.16.0
+# pytest — tests/test_regression.py 회귀 슈트 (사용자 정책 2026-06-01
+# pre-commit verification §6 의무). 매 commit 전 `make test` 또는
+# `.venv/bin/python -m pytest tests/ -v` 한 줄 실행. dev 의존성이지만
+# 별도 requirements-dev 안 두는 게 사용자 정책(VM 1대 운영, 별 의미 없음).
+pytest>=8.0
+# Telethon — userbot client for reading public Telegram channels we don't
+# operate (bot/reddit_insider_watch.py reads t.me/insidertracking for
+# "미국 레딧 게시물 분석" posts). 사용자 본인 계정 인증 1회 (TG_USER_API_ID
+# + TG_USER_API_HASH from my.telegram.org). 세션 파일 .session 에 저장,
+# 이후 무인 운영. python-telegram-bot 과 별개 (그건 봇 계정 전용).
+telethon>=1.34
+# exchange_calendars — 휴장일-인지 거래일 캘린더 (bot/market_calendar.py).
+# 무료·무키·전 시장(XNYS/XKRX/XTKS/XTAI/XSHG/XHKG). auto_resolve 의
+# 5거래일/N캘린더일 outcome readiness gate 를 공휴일까지 반영해 정밀화.
+# 미설치 시 market_calendar 가 graceful None → 기존 캘린더-일 휴리스틱 폴백.
+exchange_calendars>=4.5
+# xlrd — JPX 투자부門別 주간 XLS 파서 (bot/jpx_flow_client.py).
+# JPX 가 2026-06 URL 구조를 고정 CSV → per-week XLS (BIFF, Code page 932)
+# 로 변경. xlrd 가 없으면 JP 수급 데이터 graceful skip.
+xlrd>=2.0
+# langchain-google-vertexai — Vertex AI backend for the Gemini Chat surface
+# (analysts + decision tier via TradingAgents google_client.py, trade bot).
+# Only needed when GOOGLE_GENAI_USE_VERTEXAI=true; the google-genai SDK
+# (genai.Client(vertexai=True), already a dep) covers the screener/feed
+# surface. Pulls google-cloud-aiplatform. Also declared in TradingAgents
+# pyproject (installed via -e below) — listed here for explicitness.
+langchain-google-vertexai>=2.0.0
 -e ./TradingAgents

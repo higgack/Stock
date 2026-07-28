@@ -11,8 +11,11 @@ Centralising it here avoids drift between those call sites.
 
 from __future__ import annotations
 
+import logging as _logging
 import re
 from typing import Tuple
+
+_rating_log = _logging.getLogger(__name__)
 
 
 # Canonical, ordered 5-tier scale (most bullish to most bearish).
@@ -47,4 +50,9 @@ def parse_rating(text: str, default: str = "Hold") -> str:
             if clean in _RATING_SET:
                 return clean.capitalize()
 
+    _rating_log.warning(
+        "parse_rating: no 5-tier rating found in text (len=%d) — returning default '%s'",
+        len(text or ""),
+        default,
+    )
     return default

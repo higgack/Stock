@@ -10,10 +10,18 @@ back gracefully to free-text generation.
 
 from __future__ import annotations
 
-from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
+import logging
+import re
+
+from tradingagents.agents.schemas import (
+    PortfolioDecision,
+    PortfolioRating,
+    render_pm_decision,
+)
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_language_instruction,
+    _content_to_str,
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
@@ -21,11 +29,449 @@ from tradingagents.agents.utils.structured import (
 )
 
 
-def create_portfolio_manager(llm):
+_pm_log = logging.getLogger("tradingagents.portfolio_manager")
+
+
+# Rating direction buckets used by the override-discipline post-check.
+# Hold sits in its own bucket so a Hold majority can be preserved while
+# either Buy- or Sell-side flips trigger the discipline rule.
+_BUY_SIDE = {PortfolioRating.BUY, PortfolioRating.OVERWEIGHT}
+_SELL_SIDE = {PortfolioRating.SELL, PortfolioRating.UNDERWEIGHT}
+_HOLD_SIDE = {PortfolioRating.HOLD}
+
+
+def _rating_direction(rating: PortfolioRating) -> str:
+    """Map a 5-tier rating to a 3-direction bucket for discipline checks."""
+    if rating in _BUY_SIDE:
+        return "buy"
+    if rating in _SELL_SIDE:
+        return "sell"
+    return "hold"
+
+
+def _stance_to_direction(stance: str) -> str:
+    """Map an analyst stance string ('매수' / '보유' / '매도') to a direction."""
+    s = (stance or "").strip()
+    if s in ("매수", "강매수", "Buy", "Overweight"):
+        return "buy"
+    if s in ("매도", "강매도", "Sell", "Underweight"):
+        return "sell"
+    return "hold"
+
+
+def _analyst_majority_direction(state: dict) -> tuple[str | None, int]:
+    """Return (majority_direction, voter_count) from the 4 analyst reports.
+
+    Skipped analysts (empty / failed report bodies) don't vote — same rule
+    bot/analyzer.py uses when rendering the stance bar to the user. If
+    every analyst that ran leans the same way, that direction is the
+    majority. If they split (e.g. 1 매수 + 1 매도 + 2 보유), majority is
+    Hold (the safe default). Returns (None, 0) when no analyst stance
+    can be extracted — caller skips the override check in that case
+    (cannot enforce discipline without a baseline).
+    """
+    try:
+        from bot.analyzer import _extract_stance
+    except Exception:
+        return None, 0
+
+    report_keys = (
+        "market_report", "sentiment_report",
+        "news_report", "fundamentals_report",
+    )
+    directions: list[str] = []
+    for key in report_keys:
+        body = state.get(key)
+        if not body or not isinstance(body, str):
+            continue
+        stance = _extract_stance(body)
+        if not stance:
+            continue
+        directions.append(_stance_to_direction(stance))
+
+    if not directions:
+        return None, 0
+
+    # Hold counts as a vote for the Hold direction. If ANY analyst leans
+    # buy and the rest are Hold, the majority is still ambiguous between
+    # Buy and Hold — we default to Hold (more conservative) unless the
+    # buy side is the strict plurality. Same logic for sell.
+    #
+    # STRICT plurality (buys > holds, not >=): a buy==hold TIE is NOT a
+    # buy consensus — it must fall through to Hold. The old `>=` returned
+    # "buy" on a 2-buy-2-hold tie, contradicting the "default to Hold
+    # unless buy is the plurality" intent above. 9988.HK (Alibaba)
+    # 2026-05-27 surfaced the cost: stance mis-extraction produced a
+    # 2-buy/2-hold split, the `>=` tie-break elected a "buy" majority, and
+    # _enforce_pm_override_discipline then FORCE-corrected a bearish PM
+    # (RM Sell + Trader Sell) up to Buy to match the false majority. With
+    # strict `>`, a buy/hold (or sell/hold) tie returns Hold, so the
+    # discipline can at worst force Hold — never an aggressive Buy/Sell off
+    # a tie. Genuine pluralities (3-1, 2-1, 4-0) are unaffected.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    buys = directions.count("buy")
+    sells = directions.count("sell")
+    holds = directions.count("hold")
+    if buys > sells and buys > holds:
+        return "buy", len(directions)
+    if sells > buys and sells > holds:
+        return "sell", len(directions)
+    # Genuine two-sided split (e.g. 1 buy + 1 sell, holds ≤ either side):
+    # there is no consensus to protect, so discipline enforcement and
+    # Option-4 LLM routing both skip — PM verdict stands as-is.
+    if buys > 0 and buys == sells and holds <= buys:
+        return None, len(directions)
+    # Holds dominate.
+    return "hold", len(directions)
+
+
+# Trigger keywords (Korean / English variants) that justify a PM override
+# of the analyst-consensus direction per CLAUDE.md PM override discipline.
+# Detection is text-based on the verdict's `investment_thesis` (the PM's
+# rationale) — generous matching to avoid false rejections, since the
+# downstream cost of a false reject (Hold override of a legitimate PM
+# Sell call) is one wrong direction, while the cost of a false accept
+# (letting through a no-trigger override) is the bug we're trying to
+# fix in the first place. Be slightly inclusive.
+_OVERRIDE_TRIGGERS = [
+    # (a) 5-day technical extreme. Captures int + optional decimal so
+    # the >=75 / <=25 boundary check is accurate (RSI 25.5 must NOT
+    # trigger under Option A, only ≤25 does).
+    re.compile(r"RSI[^0-9가-힣\n]*?([0-9]{1,3}(?:\.[0-9]+)?)"),
+    # (b) imminent catalyst — earnings / FOMC / specific regulatory event
+    re.compile(
+        r"(어닝|실적 발표|earnings)\s*(?:발표)?\s*(?:일정|window)?"
+        r"\s*(?:가|이|는)?\s*(?:5거래일|5\s*일|5\s*days|이번 주|D-?[0-5])"
+    ),
+    re.compile(r"FOMC|연준\s*금리\s*결정|기준금리\s*결정|BoJ\s*(?:회의|정책)"),
+    re.compile(r"가이던스\s*(?:하향|컷|상향)|guide\s*(?:cut|raise)"),
+    re.compile(r"승인\s*(?:연기|취소|보류)|규제\s*(?:반려|차단)"),
+    # Corporate-action / capital-return / catalyst keywords (expanded
+    # 2026-05-19 after 茅台 600519.SS surfaced 'price hike + 신제품'
+    # catalysts that the old narrow regex didn't catch). Korean variants
+    # cover KR/JP/TW/CN analyses; English variants cover US; 中文 variants
+    # cover CN_A/HK 出厂价 / 提价 patterns. All these qualify as RULE 13
+    # / RULE 10-14 dominant variable shifts within the 5-day horizon.
+    re.compile(r"가격\s*인상|가격\s*인하|가격\s*조정|가격\s*결정|价格\s*调整|提价|调价|出厂价"),
+    re.compile(r"신제품\s*출시|신제품\s*발표|新产品\s*发布|新品\s*上市|product\s*launch"),
+    re.compile(r"자사주\s*(?:매입|소각|취득)|버이백|share\s*buyback|回购|股票\s*回购"),
+    re.compile(r"배당\s*(?:인상|컷|증액|감액|특별)|special\s*dividend|分红\s*调整|派息\s*提高"),
+    re.compile(r"인수\s*합병|M&A|merger|acquisition|并购|MOU|大额\s*订单|大单"),
+    re.compile(r"FDA\s*승인|FDA\s*approval|판매\s*허가|临床\s*获批|临床\s*成功"),
+    re.compile(r"엔티티\s*리스트|entity\s*list|BIS\s*제재|export\s*control|出口\s*管制|SDN"),
+    re.compile(r"판호\s*발급|游戏\s*版号|NPC\s*版号"),
+    re.compile(r"감자|减资|증자|定增|配股|无偿|无偿配股|股本\s*缩减"),
+    # (c) mismatch warning explicit reference
+    re.compile(r"stance.?vs.?decision\s*mismatch|stance↔결정\s*mismatch"),
+    re.compile(r"분석가\s*stance\s*vs\s*결정"),
+    # (d) data-availability HOLD
+    re.compile(r"데이터\s*부족|데이터\s*가용성|data\s*availability"),
+    # Corollary — corporate action HARD GUARD acknowledgment
+    re.compile(r"corporate\s*action|분할|무상증자|주식분할|株式分割|HARD\s*GUARD"),
+]
+
+
+def _override_trigger_present(rationale: str) -> bool:
+    """Scan PM rationale text for at least one named override trigger.
+    Returns True if any pattern matches. Conservative — RSI must be
+    accompanied by a numeric value (so a generic 'RSI도 약세' without a
+    threshold value doesn't count). This is the exact gap that lets
+    coal-mine '단기 위험 요소' prose flip a consistent analyst signal.
+
+    Option A alignment (2026-05-19): RSI extreme threshold tightened
+    from >=70/<=30 to >=75/<=25 to match CLAUDE.md PM override
+    discipline text ('RSI > 75 for Buy-reverse to Underweight, RSI <
+    25 for Sell-reverse to Overweight'). Old wider gate (30) let
+    茅台 600519.SS RSI 29.85 sneak through as a Buy-side trigger
+    without true 5-day extreme. Tighter gate is more conservative —
+    reduces false-positive overrides, surfaces the additional catalyst
+    triggers (가격 인상 / 신제품 / 자사주 매입 / M&A 등) that were
+    expanded above as the proper Buy-reverse path."""
+    if not rationale:
+        return False
+    text = rationale
+    for pat in _OVERRIDE_TRIGGERS:
+        m = pat.search(text)
+        if not m:
+            continue
+        # Special handling for RSI: require a value AND the value must be
+        # in the extreme zone (>= 75 or <= 25) to satisfy "5-day technical
+        # extreme". 'RSI 29.85 oversold' should NOT count as a trigger
+        # under Option A (CLAUDE.md alignment). Catalysts like '가격
+        # 인상 + 신제품 출시' now carry the trigger weight via the new
+        # patterns above.
+        if pat.pattern.startswith("RSI"):
+            try:
+                val = float(m.group(1))
+                if val >= 75 or val <= 25:
+                    return True
+            except (ValueError, IndexError):
+                pass
+            continue
+        return True
+    return False
+
+
+def _override_trigger_directional(rationale: str, pm_dir: str) -> bool:
+    """Direction-aware override trigger check (2026-05-22, LG전자 surfaced).
+
+    RSI triggers are DIRECTIONAL per CLAUDE.md:
+      • RSI > 75 → valid only for Sell-side override (Hold/Buy → Sell/Underweight)
+      • RSI < 25 → valid only for Buy-side override (Hold/Sell → Buy/Overweight)
+    Using RSI 78 to justify a Buy-side override (Hold → Overweight) is a
+    direction mismatch — the overbought signal should BLOCK a bullish flip,
+    not justify it. Previous code checked RSI extreme value only, not direction,
+    allowing exactly this false pass.
+
+    All non-RSI triggers (catalyst, M&A, FOMC, mismatch warning, data-
+    availability HOLD, corporate action HARD GUARD) are direction-agnostic
+    — they qualify regardless of which way the PM is overriding.
+
+    Applies to all markets (US + KR + JP + TW + CN_A + HK) — RSI
+    direction semantics are universal.
+    """
+    if not rationale:
+        return False
+    for pat in _OVERRIDE_TRIGGERS:
+        m = pat.search(rationale)
+        if not m:
+            continue
+        if pat.pattern.startswith("RSI"):
+            try:
+                val = float(m.group(1))
+                # RSI extreme present — check direction consistency
+                if val >= 75 and pm_dir == "sell":
+                    return True  # overbought → valid sell-side trigger
+                if val <= 25 and pm_dir == "buy":
+                    return True  # oversold → valid buy-side trigger
+                # RSI extreme but wrong direction: RSI>75 used to justify
+                # Buy-side override (or RSI<25 for Sell-side) — not valid
+            except (ValueError, IndexError):
+                pass
+            continue
+        # Non-RSI trigger: direction-agnostic
+        return True
+    return False
+
+
+def _enforce_pm_override_discipline(
+    decision: PortfolioDecision, state: dict,
+) -> tuple[PortfolioDecision, str | None]:
+    """If PM verdict direction opposes the analyst majority AND no named
+    override trigger appears in the rationale, downgrade the rating to
+    align with the analyst majority. Returns (possibly-adjusted decision,
+    adjustment note for memory / logging or None).
+
+    Rule mirrors `## Portfolio Manager override discipline` in CLAUDE.md
+    and the prompt text in `_PM_DISCIPLINE_PROMPT` above. Text-only
+    instructions weren't sufficient — Toyota 7203.T 2026-05-18 had 4-of-4
+    analysts on Hold and the PM still chose Underweight with no named
+    trigger (RSI 47.37 quoted as 'neutral recovery', no imminent catalyst,
+    no mismatch warning, no data-availability HOLD). This Python post-
+    check enforces the rule structurally.
+
+    Conservative on missing data: when analyst majority can't be
+    determined (no readable stance from any report) we skip the check
+    entirely. Better to let one false-negative pass than to incorrectly
+    flip a legitimate PM call.
+
+    Defensive design (post 두산 000150.KS 2026-05-18 silent skip):
+    every step wrapped in try/except with INFO/WARNING logs so a
+    cryptic Pydantic / state-shape / regex bug doesn't degrade silently
+    into 'rule appears not to fire'. journalctl -u stock-bot | grep
+    pm-discipline tells you exactly which path executed."""
+    try:
+        majority, voter_count = _analyst_majority_direction(state)
+    except Exception as exc:
+        _pm_log.warning(
+            "pm-discipline: analyst-majority extraction failed (%s) — skipping check",
+            exc,
+        )
+        return decision, None
+    if not majority:
+        _pm_log.info(
+            "pm-discipline: analyst majority indeterminate (no readable stances) — skipping check"
+        )
+        return decision, None
+    # Minimum voter floor. CLAUDE.md PM override discipline names "2-of-2 with
+    # 2 abstain" as the smallest enforceable consensus, and the Option-4 light-
+    # LLM routing already gates on voter_count >= 2 — but the forcing path had
+    # no floor, so a SINGLE readable analyst stance could force-correct the PM.
+    # 자이에스앤디 317400.KS 2026-05-26: fundamentals' summary table broke →
+    # no readable fundamentals verdict → only the market analyst voted (1×Hold)
+    # → a sell-side PM/Trader (RM Underweight, Trader Sell) was force-corrected
+    # to Hold off that single vote. A lone stance is not a consensus; below the
+    # floor we respect the PM's synthesis. Aligns the forcing path with the
+    # documented minimum and the use_light gate. Universal — all markets.
+    if voter_count < 2:
+        _pm_log.info(
+            "pm-discipline: only %d analyst stance(s) readable (< 2 floor) — "
+            "respecting PM verdict %s, skipping override-discipline check",
+            voter_count, decision.rating.value,
+        )
+        return decision, None
+
+    pm_dir = _rating_direction(decision.rating)
+    if pm_dir == majority:
+        _pm_log.info(
+            "pm-discipline: PM=%s aligns with majority=%s (%d voters) — no adjustment",
+            decision.rating.value, majority, voter_count,
+        )
+        return decision, None
+    # Hold → Buy/Sell flip is also subject to the discipline (and the
+    # other direction). The text covers any "opposite of analyst
+    # majority" case.
+    try:
+        has_trigger = _override_trigger_directional(decision.investment_thesis, pm_dir)
+    except Exception as exc:
+        _pm_log.warning(
+            "pm-discipline: trigger-scan regex failed (%s) — treating as no-trigger to be safe",
+            exc,
+        )
+        has_trigger = False
+    if has_trigger:
+        _pm_log.info(
+            "pm-discipline: PM=%s vs majority=%s (%d voters), override trigger present — no adjustment",
+            decision.rating.value, majority, voter_count,
+        )
+        return decision, None
+
+    # No trigger named. Downgrade PM verdict to match analyst majority.
+    target = {
+        "buy": PortfolioRating.BUY,
+        "sell": PortfolioRating.SELL,
+        "hold": PortfolioRating.HOLD,
+    }[majority]
+    note = (
+        f"[PM override discipline 자동 보정] 분석가 {voter_count}명의 다수 방향"
+        f" ({majority.upper()})과 PM 1차 판단 ({decision.rating.value})이"
+        f" 반대 방향인데, override 근거 (RSI>75/<25, 임박 catalyst, mismatch"
+        f" warning, data-availability HOLD) 중 명시된 trigger가 없어"
+        f" {target.value}로 보정됨. CLAUDE.md '## Portfolio Manager override"
+        f" discipline' 규칙."
+    )
+    _pm_log.warning(
+        "pm-discipline: PM=%s OVERRIDDEN to %s — majority=%s (%d voters), no trigger in rationale",
+        decision.rating.value, target.value, majority, voter_count,
+    )
+    # Pydantic v1/v2 compatibility: v1 uses .copy(update=...), v2 prefers
+    # .model_copy(update=...) (with .copy still working but deprecated).
+    # 두산 000150.KS 2026-05-18 may have failed silently here if v2's
+    # .copy() raised on the Enum field — try v2 first, fall back to v1.
+    new_fields = {
+        "rating": target,
+        "investment_thesis": decision.investment_thesis + "\n\n" + note,
+    }
+    try:
+        adjusted = decision.model_copy(update=new_fields)
+    except (AttributeError, TypeError):
+        try:
+            adjusted = decision.copy(update=new_fields)
+        except Exception as exc:
+            _pm_log.warning(
+                "pm-discipline: both model_copy and copy failed (%s) — falling back to in-place mutation",
+                exc,
+            )
+            # Last resort: mutate fields in-place. PortfolioDecision is a
+            # Pydantic model so setattr works; downstream render_pm_decision
+            # reads .rating and .investment_thesis fresh either way.
+            try:
+                decision.rating = target
+                decision.investment_thesis = (
+                    decision.investment_thesis + "\n\n" + note
+                )
+                adjusted = decision
+            except Exception as exc2:
+                _pm_log.error(
+                    "pm-discipline: in-place mutation failed too (%s) — returning unchanged decision (override NOT applied)",
+                    exc2,
+                )
+                return decision, None
+    return adjusted, note
+
+
+def create_portfolio_manager(llm, llm_light=None):
+    """Create the Portfolio Manager node.
+
+    `llm`: full-budget decision LLM (Gemini 2.5 Pro w/ thinking_budget=4096
+        by default). Used for conflict cases — analysts split or PM
+        verdict opposes analyst majority — where genuine synthesis is
+        required.
+    `llm_light` (optional, Option 4 cost reduction 2026-05-18): lighter
+        decision LLM (thinking_budget=2048 by default). Used when all
+        running analysts lean the same direction, where the PM's job
+        reduces to summarising agreement rather than resolving conflict.
+        Falls back to `llm` when unset — identical to pre-Option-4
+        behaviour."""
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
+    if llm_light is not None and llm_light is not llm:
+        structured_llm_light = bind_structured(
+            llm_light, PortfolioDecision, "Portfolio Manager (consensus)",
+        )
+    else:
+        structured_llm_light = structured_llm
 
     def portfolio_manager_node(state) -> dict:
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        # Option 4 routing: when the four analysts are unanimous in
+        # direction (매수/보유/매도), use the light LLM (thinking_budget=
+        # 2048) — synthesis is mostly summarisation. Conflict / split
+        # cases keep the heavy LLM (4096) to preserve override-discipline
+        # reasoning quality. Hold-only consensus also routes light: the
+        # PM still has to check the DATA-AVAILABILITY GUARD and the
+        # consistency-of-evidence requirement, but neither demands the
+        # extra thinking budget reserved for split-direction debates.
+        try:
+            majority, voter_count = _analyst_majority_direction(state)
+            use_light = (
+                majority is not None
+                and voter_count >= 2
+                and structured_llm_light is not structured_llm
+            )
+        except Exception as exc:
+            _pm_log.warning(
+                "pm-budget: majority extraction failed (%s) — defaulting to heavy LLM",
+                exc,
+            )
+            use_light = False
+        active_structured_llm = structured_llm_light if use_light else structured_llm
+        active_base_llm = llm_light if (use_light and llm_light is not None) else llm
+        if use_light:
+            _pm_log.info(
+                "pm-budget: %d analysts unanimous on %s — using light LLM (thinking_budget=2048)",
+                voter_count, majority,
+            )
+
+        # F1-MVP Gemini context caching (2026-05-19). Layered on top of
+        # Option 4 (light vs heavy LLM): cache binding applies to whichever
+        # base LLM was chosen. Cached input tokens billed at ~25% rate
+        # — savings layer on top of thinking_budget reduction.
+        cache_name = state.get("gemini_cache_name", "")
+        cache_active = False
+        if cache_name:
+            try:
+                cached_llm = active_base_llm.bind(cached_content=cache_name)
+                label = "PM (cached, light)" if use_light else "PM (cached)"
+                active_structured_llm = bind_structured(
+                    cached_llm, PortfolioDecision, label,
+                )
+                cache_active = True
+                _pm_log.info(
+                    "pm-cache: using gemini cache %s (light=%s)",
+                    cache_name, use_light,
+                )
+            except Exception as exc:
+                _pm_log.warning(
+                    "pm-cache: bind(cached_content) failed (%s) — fallback to non-cached",
+                    exc,
+                )
+
+        # BUG1 (2026-05-29 audit): omit inline instrument_context when the
+        # Gemini cache is bound — already delivered as the cached prefix.
+        # Double-sending (cached @~25% + inline @100%) negated the cache.
+        instrument_context = (
+            "" if cache_active
+            else build_instrument_context(state["company_of_interest"])
+        )
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
@@ -39,7 +485,17 @@ def create_portfolio_manager(llm):
             else ""
         )
 
-        prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
+        # Language directive at TOP + BOTTOM (same pattern as
+        # research_manager) — risk debate history below is long English
+        # quick_thinking_llm output. Top placement commits LLM to output
+        # language before reading English context. 茅台 600519.SS 2026-
+        # 05-19 surfaced the issue in research_manager; PM applies the
+        # same defensive pattern preemptively.
+        language_directive = get_language_instruction()
+
+        prompt = language_directive + f"""
+
+As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
 {instrument_context}
 
@@ -52,6 +508,80 @@ def create_portfolio_manager(llm):
 - **Underweight**: Reduce exposure, take partial profits
 - **Sell**: Exit position or avoid entry
 
+**DATA-AVAILABILITY GUARD (mandatory):** If the analyst reports
+materially fail (e.g. 'data unavailable', '데이터 없음', '정보
+없음', '데이터 부족', 'currentPrice 미수집', '재무제표 검색
+불가') — i.e. you cannot quote even one specific number from the
+fundamentals or market sections — your verdict MUST be **Hold**,
+with the rationale '데이터 부족으로 평가 불가, 사용자 재시도 필요'.
+Do NOT pick Sell / Underweight on a 'no data = risk' line of
+reasoning; that's an artificial bearish signal manufactured from
+the absence of evidence. NAVER on 2026-05-17 took exactly that
+wrong path — fundamentals had 'PER 정보 없음 / EPS 정보 없음'
+across the board and the PM still output Sell, which actively
+mislead the user. The correct response to empty data is to
+neither buy nor sell; ask for a retry.
+
+**ANALYST CONSENSUS OVERRIDE DISCIPLINE (mandatory):** When the
+analyst stance bar shows consistent agreement on a direction —
+defined as ALL the analysts that actually ran (i.e. weren't pre-
+skipped for missing data) leaning the same way — you MAY override
+to the opposite direction (e.g. Underweight / Sell when analysts
+lean Hold / Buy) ONLY if you explicitly name at least ONE of these
+triggers in your rationale:
+(a) 5-day-horizon technical extreme — RSI > 75 for Buy-reverse,
+    RSI < 25 for Sell-reverse
+(b) imminent specific catalyst — earnings within ±5 days, FOMC,
+    guide cut, regulatory event in the next 5 days
+(c) stance-vs-decision mismatch detector explicit warning text
+    was visible in your prompt
+(d) data-availability HOLD per the GUARD above
+Without ONE of these triggers named, default to the analyst
+direction: Buy / Overweight when analysts lean buy, Hold when
+analysts lean hold (even partially: 2-of-2 Hold with 2 abstain
+counts as consistent Hold), Sell / Underweight when analysts
+lean sell.
+
+**TRIGGER PHRASE MUST APPEAR VERBATIM (F8 — BYD 002594.SZ
+2026-05-20 surfaced):** The override trigger keyword MUST appear
+in the actual prose of your `investment_thesis`, not in a
+paraphrase that the regex scanner can't match. Acceptable
+phrasings include 'RSI 78 (>75 과열 zone)', '실적 발표 D-3',
+'FOMC 5월 31일 결정', 'stance-vs-decision mismatch 경고',
+'데이터 부족으로', '가격 인상 발표', '신제품 출시', 'M&A
+공시', 'entity list 추가', '판호 발급', '자사주 매입 결정',
+'corporate action HARD GUARD'. ❌ FORBIDDEN paraphrases that
+will NOT match the discipline scanner and trigger automatic
+downgrade: 'RSI 등 단기 모멘텀 약화' (RSI value missing),
+'단기 catalyst 다수' (no specific event named), '위험 요소가
+다수 누적' (generic risk prose), '5거래일 horizon 모멘텀
+우려' (no extreme value, no event). If you cannot honestly
+quote one of the listed VERBATIM trigger phrases, the analyst
+majority verdict stands — do not invent a phrase to satisfy the
+rule.
+
+This rule covers ALL of:
+ • 4-of-4 unanimous
+ • 3-of-4 with 1 abstain
+ • 2-of-2 with 2 abstain (news / sentiment skipped — common
+   for KR/JP low-coverage tickers; the smaller voter count does
+   NOT lower the trigger bar)
+ • 3-of-3 with 1 abstain
+
+The pattern 'analysts 보유 + RSI alone → PM Sell' (현대모비스 /
+호텔신라 / 한전 2026-05-17 cluster, 코미코 2026-05-17 with only
+시장+펀더멘털 voters both Hold yet PM flipped to Sell on RSI
+55.36 / general 모멘텀 약화) is exactly what this rule prevents.
+A consistent analyst signal should not flip on a single technical
+indicator or generic '단기 위험 요소' phrasing without explicit
+justification.
+
+Corollary — when the build_instrument_context block contains a
+CORPORATE ACTION IN-FLIGHT (HARD GUARD), the standard technical
+triggers (RSI / MACD / SMA) are invalid for this analysis and
+CANNOT be used as override triggers; only (b) imminent catalyst
+or (d) data-availability HOLD apply.
+
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
@@ -61,15 +591,41 @@ def create_portfolio_manager(llm):
 
 ---
 
-Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
+Be decisive and ground every conclusion in specific evidence from the analysts.{language_directive}"""
 
-        final_trade_decision = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            prompt,
-            render_pm_decision,
-            "Portfolio Manager",
-        )
+        # Structured path first so we can inspect the typed decision
+        # (rating + investment_thesis) for the override-discipline post
+        # check. Free-text fallback bypasses the structural check because
+        # we'd be regex-parsing markdown — keep the prompt's text rule
+        # as the only guard in that path.
+        final_trade_decision: str
+        if active_structured_llm is not None:
+            try:
+                decision: PortfolioDecision = active_structured_llm.invoke(prompt)
+                decision, _override_note = _enforce_pm_override_discipline(
+                    decision, state,
+                )
+                final_trade_decision = render_pm_decision(decision)
+            except Exception as exc:
+                _pm_log.warning(
+                    "Portfolio Manager: structured invocation failed (%s);"
+                    " falling back to free-text without discipline check",
+                    exc,
+                )
+                # M3 (2026-05-29 audit): normalize .content (multi-part list
+                # → str) so downstream parse_rating doesn't AttributeError.
+                # The analyzer-layer Fix F/G is the override-discipline
+                # backstop on this free-text path (no PortfolioDecision to
+                # re-check here).
+                final_trade_decision = _content_to_str(llm.invoke(prompt))
+        else:
+            final_trade_decision = invoke_structured_or_freetext(
+                active_structured_llm,
+                llm,
+                prompt,
+                render_pm_decision,
+                "Portfolio Manager",
+            )
 
         new_risk_debate_state = {
             "judge_decision": final_trade_decision,

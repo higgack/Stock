@@ -1,0 +1,14 @@
+[Unit]
+Description=Watchlist 조건 알림 체크 (rsi/price/sma/52w/earnings — LLM 0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.watchlist
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

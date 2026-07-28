@@ -1,0 +1,15 @@
+[Unit]
+Description=Trigger watchlist 조건 체크 — 30분 간격
+
+[Timer]
+# 30분 간격. 조건 충족은 edge-trigger(false→true) 라 같은 조건이 계속
+# true 여도 1회만 알림 (스팸 방지). yfinance 만 사용 → 비용 ₩0. 워치가
+# 없으면 즉시 graceful skip. 다양한 시장(US/KR/JP) 시간대를 모두 커버하려
+# 상시 30분. Persistent=true 로 부팅 시 한 번 즉시 실행.
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=watchlist-check.service
+
+[Install]
+WantedBy=timers.target

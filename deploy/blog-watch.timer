@@ -1,0 +1,12 @@
+[Unit]
+Description=Blog Watcher trigger — 30분마다 네이버 블로그 새 글 polling
+
+[Timer]
+# 30분 간격 (블로그 글은 드물어 충분). 부팅 후 2분 뒤 첫 실행.
+OnBootSec=2min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=blog-watch.service
+
+[Install]
+WantedBy=timers.target

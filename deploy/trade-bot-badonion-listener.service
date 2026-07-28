@@ -1,0 +1,20 @@
+[Unit]
+Description=나쁜양파(Badonions) 대만·중국·일본 수출 통계 실시간 Telethon 리스너
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.backfill-venv/bin/python -m trade.scripts.listen_badonion
+Restart=on-failure
+RestartSec=15
+# 세션 미인증(exit 78) 시 hot-loop 방지 — operator 가 --auth 재실행 후 수동 restart.
+RestartPreventExitStatus=78
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

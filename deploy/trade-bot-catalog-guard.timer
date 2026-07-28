@@ -1,0 +1,12 @@
+[Unit]
+Description=연계표 정합 가드 월례 트리거 — 매월 18일 09:00 KST (연계표 갱신 점검 시기)
+
+[Timer]
+# 월 1회(18일) — 무역협회 연계표 갱신 확인 넛지 + 큐레이션 키 정합 점검.
+# Persistent=true 로 서버 다운 시 부팅 후 1회 보정.
+OnCalendar=*-*-18 09:00:00 Asia/Seoul
+Persistent=true
+Unit=trade-bot-catalog-guard.service
+
+[Install]
+WantedBy=timers.target

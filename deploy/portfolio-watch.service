@@ -1,0 +1,14 @@
+[Unit]
+Description=자산 watcher — 'Noah의 RAG' 채널의 뱅크샐러드 zip/xlsx 픽업·파싱·대시보드 갱신
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.portfolio_watch
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=180

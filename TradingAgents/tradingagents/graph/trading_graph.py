@@ -1,6 +1,7 @@
 # TradingAgents/graph/trading_graph.py
 
 import logging
+import math
 import os
 from pathlib import Path
 import json
@@ -92,6 +93,12 @@ class TradingAgentsGraph:
         quick_kwargs = dict(llm_kwargs)
         if self.config.get("quick_max_output_tokens"):
             quick_kwargs["max_output_tokens"] = self.config["quick_max_output_tokens"]
+        # Decision tier (research_manager / trader / portfolio_manager).
+        # Optional — when not configured the deep tier is reused, so the
+        # behavior is identical to before this option existed.
+        decision_kwargs = dict(deep_kwargs)
+        if self.config.get("decision_max_output_tokens"):
+            decision_kwargs["max_output_tokens"] = self.config["decision_max_output_tokens"]
 
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
@@ -108,7 +115,53 @@ class TradingAgentsGraph:
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
-        
+
+        decision_model = self.config.get("decision_think_llm")
+        if decision_model and decision_model != self.config["deep_think_llm"]:
+            decision_client = create_llm_client(
+                provider=self.config["llm_provider"],
+                model=decision_model,
+                base_url=self.config.get("backend_url"),
+                **decision_kwargs,
+            )
+            self.decision_thinking_llm = decision_client.get_llm()
+        else:
+            # No dedicated decision tier — fall back to the deep tier.
+            self.decision_thinking_llm = self.deep_thinking_llm
+
+        # Light variant of the decision LLM for PM consensus paths
+        # (Option 4 cost reduction, 2026-05-18). thinking_budget=2048
+        # vs the default 4096 — when all four analysts agree on
+        # direction, synthesis is mostly summarisation rather than
+        # conflict resolution, so half the thinking budget suffices.
+        # Conflict cases route to the full decision_thinking_llm
+        # unchanged.  Only the Gemini 2.5 Pro path honours the
+        # override; non-Google providers and Gemini 3 receive the
+        # same LLM object (no quality / cost change).
+        # Rule applies universally — US + KR + JP + TW (+ future CN).
+        decision_light_kwargs = dict(decision_kwargs)
+        decision_light_kwargs["thinking_budget_override"] = (
+            self.config.get("pm_consensus_thinking_budget", 2048)
+        )
+        decision_light_model = (
+            decision_model
+            if decision_model and decision_model != self.config["deep_think_llm"]
+            else self.config["deep_think_llm"]
+        )
+        try:
+            decision_light_client = create_llm_client(
+                provider=self.config["llm_provider"],
+                model=decision_light_model,
+                base_url=self.config.get("backend_url"),
+                **decision_light_kwargs,
+            )
+            self.decision_thinking_llm_light = decision_light_client.get_llm()
+        except Exception:
+            # Provider that doesn't honour the override → reuse the
+            # heavy LLM. PM logic falls back transparently.
+            self.decision_thinking_llm_light = self.decision_thinking_llm
+
+
         self.memory_log = TradingMemoryLog(self.config)
 
         # Create tool nodes
@@ -124,6 +177,8 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            decision_thinking_llm=self.decision_thinking_llm,
+            decision_thinking_llm_light=self.decision_thinking_llm_light,
         )
 
         self.propagator = Propagator()
@@ -144,6 +199,12 @@ class TradingAgentsGraph:
         """Get provider-specific kwargs for LLM client creation."""
         kwargs = {}
         provider = self.config.get("llm_provider", "").lower()
+
+        # Per-request HTTP timeout, applied to every provider that supports
+        # it. Without this a single hung Gemini call can burn the whole
+        # 10-minute analysis budget. Lets the caller's retry kick in.
+        if self.config.get("llm_request_timeout"):
+            kwargs["timeout"] = self.config["llm_request_timeout"]
 
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
@@ -203,31 +264,82 @@ class TradingAgentsGraph:
     ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
 
+        Alpha is computed against the ticker's matched SECTOR ETF when one
+        is available (e.g. PLUG → TAN, NVDA → SOXX, JPM → XLF), with SPY
+        as the fallback for tickers we can't classify. Comparing against
+        the sector is a fairer scorecard: a +3% week on PLUG only beats
+        the market alpha test if PLUG actually outperformed the solar
+        sector — otherwise the bot is just riding sector beta.
+
         Returns (raw_return, alpha_return, actual_holding_days) or
         (None, None, None) if price data is unavailable (too recent, delisted,
         or network error).
         """
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
-            end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
+            # m8 (2026-05-29 audit): align with bot/auto_resolve.py's tightened
+            # +3 gate (was +7 here). The two copies independently resolve the
+            # same pending entry; a 7 vs 3 divergence let them settle it on
+            # different days with different partial-window actual_days. +3 is
+            # the minimum that absorbs a weekend transition (5 trading days
+            # settle within holding_days + 3 calendar days); the per-fetch
+            # ≥2-close readiness check below caps partial windows.
+            end = start + timedelta(days=holding_days + 3)
+            # If the holding window hasn't elapsed yet there are no returns to
+            # score. Bailing here also stops yfinance from logging '$TICKER:
+            # possibly delisted' for a forward range it can't possibly serve.
+            if end > datetime.now():
+                return None, None, None
             end_str = end.strftime("%Y-%m-%d")
 
-            stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
-            spy = yf.Ticker("SPY").history(start=trade_date, end=end_str)
+            # Resolve benchmark — sector ETF preferred, SPY fallback.
+            benchmark_symbol = "SPY"
+            try:
+                from tradingagents.agents.utils.sector_strength_tools import _resolve_benchmark
+                bm = _resolve_benchmark(ticker)
+                if bm and bm[0]:
+                    benchmark_symbol = bm[0]
+            except Exception:
+                pass  # SPY default already set
 
-            if len(stock) < 2 or len(spy) < 2:
+            stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
+            bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+
+            # m9 (2026-05-29 audit): a thin sector ETF (<2 closes in the
+            # window) would otherwise block an otherwise-resolvable entry
+            # forever. Fall back to SPY (always liquid). raw return is a
+            # unitless ratio so the alpha stays arithmetically valid — just
+            # benchmarked against the broad US market instead of the sector.
+            if len(bench) < 2 and benchmark_symbol != "SPY":
+                logger.info(
+                    "fetch_returns: %s benchmark %s thin (<2 closes) — SPY fallback",
+                    ticker, benchmark_symbol,
+                )
+                benchmark_symbol = "SPY"
+                bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+
+            if len(stock) < 2 or len(bench) < 2:
                 return None, None, None
 
-            actual_days = min(holding_days, len(stock) - 1, len(spy) - 1)
+            actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
             raw = float(
                 (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
                 / stock["Close"].iloc[0]
             )
-            spy_ret = float(
-                (spy["Close"].iloc[actual_days] - spy["Close"].iloc[0])
-                / spy["Close"].iloc[0]
+            bench_ret = float(
+                (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
+                / bench["Close"].iloc[0]
             )
-            alpha = raw - spy_ret
+            alpha = raw - bench_ret
+            if math.isnan(raw) or math.isnan(bench_ret):
+                logger.warning(
+                    "fetch_returns: %s/%s — NaN in Close (yfinance data gap)", ticker, trade_date
+                )
+                return None, None, None
+            logger.info(
+                "fetch_returns: %s/%s — raw=%.4f bench=%s ret=%.4f alpha=%.4f days=%d",
+                ticker, trade_date, raw, benchmark_symbol, bench_ret, alpha, actual_days,
+            )
             return raw, alpha, actual_days
         except Exception as e:
             logger.warning(
@@ -312,10 +424,50 @@ class TradingAgentsGraph:
 
     def _run_graph(self, company_name, trade_date):
         """Execute the graph and write the resulting state to disk and memory log."""
+        # F1 + F7 (2026-05-29 audit): drop per-run instrument caches so this
+        # analysis re-fetches fresh intraday data, and so the context memo
+        # starts empty (the up-to-8 build_instrument_context calls this run
+        # then share one build per distinct shape instead of re-fanning out
+        # ~20 prefetch tasks each time).
+        try:
+            from tradingagents.agents.utils.agent_utils import (
+                clear_instrument_caches,
+            )
+            clear_instrument_caches()
+        except Exception as exc:
+            logger.warning("clear_instrument_caches failed: %s", exc)
+
         # Initialize state — inject memory log context for PM.
         past_context = self.memory_log.get_past_context(company_name)
+
+        # F1-MVP Gemini context caching (2026-05-19). Create one
+        # CachedContent containing this ticker's full instrument_context
+        # at analysis start. Pass cache name through AgentState so
+        # decision-tier nodes (RM/Trader/PM) can reference it when
+        # invoking their Pro LLM. Cleanup in finally block.
+        gemini_cache = None
+        gemini_cache_name = ""
+        try:
+            from bot.gemini_cache_manager import maybe_create_cache
+            from tradingagents.agents.utils.agent_utils import (
+                build_instrument_context,
+            )
+            # Decision-tier nodes use the full (non-sliced, analyst_id=None)
+            # instrument_context — same shape they consume during invocation.
+            # Build once here so the cache contents exactly match what the
+            # nodes will see.
+            common_ctx = build_instrument_context(company_name)
+            gemini_cache_name, gemini_cache = maybe_create_cache(
+                company_name, common_ctx,
+            )
+        except Exception as exc:
+            logger.warning("gemini cache setup failed for %s: %s", company_name, exc)
+
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date, past_context=past_context
+            company_name,
+            trade_date,
+            past_context=past_context,
+            gemini_cache_name=gemini_cache_name,
         )
         args = self.propagator.get_graph_args()
 
@@ -324,17 +476,23 @@ class TradingAgentsGraph:
             tid = thread_id(company_name, str(trade_date))
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
-        if self.debug:
-            trace = []
-            for chunk in self.graph.stream(init_agent_state, **args):
-                if len(chunk["messages"]) == 0:
-                    pass
-                else:
-                    chunk["messages"][-1].pretty_print()
-                    trace.append(chunk)
-            final_state = trace[-1]
-        else:
-            final_state = self.graph.invoke(init_agent_state, **args)
+        try:
+            if self.debug:
+                trace = []
+                for chunk in self.graph.stream(init_agent_state, **args):
+                    if len(chunk["messages"]) == 0:
+                        pass
+                    else:
+                        chunk["messages"][-1].pretty_print()
+                        trace.append(chunk)
+                final_state = trace[-1]
+            else:
+                final_state = self.graph.invoke(init_agent_state, **args)
+        finally:
+            # Best-effort cache cleanup. Gemini auto-expires at TTL even
+            # if delete() never runs, so a failure here is harmless.
+            if gemini_cache is not None:
+                gemini_cache.delete()
 
         # Store current state for reflection.
         self.curr_state = final_state

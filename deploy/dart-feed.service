@@ -1,0 +1,19 @@
+[Unit]
+Description=DART Disclosure Feed — 전체 시장 공시 수집 + 대시보드 갱신 (30분 간격)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.dart_feed
+StandardOutput=journal
+StandardError=journal
+# 300→600 (2026-07-24): 지분공시 등 물량 자체가 늘어(VM 실측 하루 900+건
+# 카테고리도 관측) 오늘치(items) 60건 enrich 만으로도 종종 300s 에 근접 —
+# 여유 확보. ⚠️ 백로그(pending) 처리는 이 사이클에 넣지 않음(2회 라이브
+# 장애로 롤백한 히스토리, bot/dart_feed.py backfill_pending 독스트링 +
+# deploy/dart-feed-backlog.service 참조 — 완전히 분리된 독립 타이머).
+TimeoutStartSec=600

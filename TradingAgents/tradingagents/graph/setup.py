@@ -10,6 +10,76 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .conditional_logic import ConditionalLogic
 
 
+_ANALYST_REPORT_FIELD = {
+    "market":       "market_report",
+    "social":       "sentiment_report",
+    "news":         "news_report",
+    "fundamentals": "fundamentals_report",
+}
+
+
+def _make_pre_debate_guard(selected_analysts: list[str]):
+    """Factory for the pre-debate guard node, closed over the analyst set
+    that actually ran. ETF analyses skip the social analyst, so the guard
+    must not flag sentiment_report's empty initial value as a failure.
+
+    The conditional edge after this node decides proceed-to-debate vs
+    short-circuit-to-END. When aborting, we also stub the debate / risk /
+    decision state fields so trading_graph._log_state and the propagate()
+    return path don't KeyError on the partial state — the bot's
+    _check_reports_or_raise still detects the failed analyst reports and
+    converts that into a Korean retry message before any of these empty
+    placeholder values are user-visible.
+    """
+    keys_to_check = [
+        _ANALYST_REPORT_FIELD[a] for a in selected_analysts
+        if a in _ANALYST_REPORT_FIELD
+    ]
+
+    def guard(state):
+        from tradingagents.agents.utils.agent_utils import looks_failed_report
+        aborting = any(
+            looks_failed_report(state.get(k, "") or "")
+            for k in keys_to_check
+        )
+        if not aborting:
+            return {}
+        return {
+            "investment_plan": "",
+            "trader_investment_plan": "",
+            "final_trade_decision": "",
+        }
+
+    return guard, keys_to_check
+
+
+def _make_retry_bump(analyst_type: str):
+    """Tiny node that increments an analyst's retry counter and clears its
+    cached report.
+
+    Routed to from "Msg Clear X" when ConditionalLogic.should_retry_X
+    decides the report is unusable. Clearing the report is what lets the
+    re-run actually overwrite the bad value rather than leaving it in
+    state (the `Annotated[str, ...]` reducer is last-write-wins by default,
+    so this is just defensive housekeeping). Messages have already been
+    cleared by Msg Clear, so the analyst restarts with the standard
+    "Continue" placeholder.
+    """
+    count_key = f"{analyst_type}_retry_count"
+    if analyst_type == "social":
+        report_key = "sentiment_report"
+    else:
+        report_key = f"{analyst_type}_report"
+
+    def bump(state):
+        return {
+            count_key: (state.get(count_key, 0) or 0) + 1,
+            report_key: "",
+        }
+
+    return bump
+
+
 class GraphSetup:
     """Handles the setup and configuration of the agent graph."""
 
@@ -19,10 +89,24 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        decision_thinking_llm: Any = None,
+        decision_thinking_llm_light: Any = None,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
+        # Optional dedicated tier for final-decision nodes (research manager,
+        # trader, portfolio/risk manager). Falls back to deep when caller
+        # didn't configure one — behavior identical to before this option
+        # existed.
+        self.decision_thinking_llm = decision_thinking_llm or deep_thinking_llm
+        # Light variant of the decision LLM (Option 4 cost reduction).
+        # Used by Portfolio Manager when the four analysts are unanimous,
+        # where less synthesis is required. Falls back to the heavy
+        # decision LLM when the caller didn't configure one.
+        self.decision_thinking_llm_light = (
+            decision_thinking_llm_light or self.decision_thinking_llm
+        )
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
 
@@ -80,14 +164,22 @@ class GraphSetup:
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
         bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
-        research_manager_node = create_research_manager(self.deep_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
+        # research_manager / trader / portfolio_manager are the three nodes
+        # that produce or finalize the BUY/HOLD/SELL call. Routing them to
+        # the decision tier (Pro by default) lifts the quality of the user-
+        # facing recommendation without paying Pro prices for the analyst
+        # and debate phases.
+        research_manager_node = create_research_manager(self.decision_thinking_llm)
+        trader_node = create_trader(self.decision_thinking_llm)
 
         # Create risk analysis nodes
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
         neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        portfolio_manager_node = create_portfolio_manager(
+            self.decision_thinking_llm,
+            llm_light=self.decision_thinking_llm_light,
+        )
 
         # Create workflow
         workflow = StateGraph(AgentState)
@@ -99,6 +191,14 @@ class GraphSetup:
                 f"Msg Clear {analyst_type.capitalize()}", delete_nodes[analyst_type]
             )
             workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
+            # One-shot retry bump per analyst. ConditionalLogic.should_retry_X
+            # routes here from Msg Clear X when the report looks unusable;
+            # this node bumps the counter (capping retries) and clears the
+            # bad report so the next analyst pass can overwrite it cleanly.
+            workflow.add_node(
+                f"Retry {analyst_type.capitalize()}",
+                _make_retry_bump(analyst_type),
+            )
 
         # Add other nodes
         workflow.add_node("Bull Researcher", bull_researcher_node)
@@ -129,12 +229,42 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
+            # After Msg Clear, decide: retry this analyst once if its report
+            # looks unusable, otherwise advance to the next analyst (or to
+            # the pre-debate guard after the last analyst).
             if i < len(selected_analysts) - 1:
-                next_analyst = f"{selected_analysts[i+1].capitalize()} Analyst"
-                workflow.add_edge(current_clear, next_analyst)
+                advance_target = f"{selected_analysts[i+1].capitalize()} Analyst"
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                advance_target = "Pre Debate Guard"
+            current_retry = f"Retry {analyst_type.capitalize()}"
+            workflow.add_conditional_edges(
+                current_clear,
+                getattr(self.conditional_logic, f"should_retry_{analyst_type}"),
+                {
+                    "retry": current_retry,
+                    "advance": advance_target,
+                },
+            )
+            # Retry bump runs the analyst again with a fresh message slate.
+            workflow.add_edge(current_retry, current_analyst)
+
+        # Pre-debate guard: short-circuit to END if any analyst report is
+        # still unusable after its retry. Saves Bull/Bear/Trader/Risk/PM
+        # cost and prevents the decision LLM from hallucinating around
+        # the missing data. Both the guard node and its conditional edge
+        # are closed over `selected_analysts` so analyses that drop the
+        # social analyst (ETFs) don't trigger a false abort on the empty
+        # initial sentiment_report.
+        guard_node, guard_keys = _make_pre_debate_guard(selected_analysts)
+        workflow.add_node("Pre Debate Guard", guard_node)
+        workflow.add_conditional_edges(
+            "Pre Debate Guard",
+            self.conditional_logic.make_should_proceed_to_debate(guard_keys),
+            {
+                "proceed": "Bull Researcher",
+                "abort": END,
+            },
+        )
 
         # Add remaining edges
         workflow.add_conditional_edges(

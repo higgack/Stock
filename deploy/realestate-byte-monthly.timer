@@ -1,0 +1,12 @@
+[Unit]
+Description=부동산 Byte Monthly trigger — 매월 1일 09:00 KST (전월 주간 브리프 종합)
+
+[Timer]
+# 매월 1일 09:00 KST. 주간 브리프(금)가 이미 weekly 라 Daily Byte 의
+# Weekly 에 대응하는 위계는 monthly. 전월 주간들을 모아 월간 종합.
+OnCalendar=*-*-01 09:00:00 Asia/Seoul
+Persistent=true
+Unit=realestate-byte-monthly.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=US Weekly Byte trigger - Sunday 22:00 KST (same as KR Weekly)
+
+[Timer]
+# Sunday 22:00 KST - same schedule as daily-byte-weekly (KR).
+# Aggregates US Daily Byte archive for the week.
+# Persistent=true triggers one catch-up run after reboot.
+OnCalendar=Sun *-*-* 22:00:00 Asia/Seoul
+Persistent=true
+Unit=daily-byte-weekly-us.service
+
+[Install]
+WantedBy=timers.target

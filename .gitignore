@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 .tradingagents/
+.codegraph/
+.mcp.json
+.pytest_cache/
+# Added by code-review-graph
+.code-review-graph/

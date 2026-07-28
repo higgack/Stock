@@ -1,0 +1,157 @@
+#!/bin/bash
+# Idempotent systemd unit installer for trade-bot.
+#
+# Compares every deploy/trade-bot*.{service,timer} against
+# /etc/systemd/system/, copies what changed (mode 644), runs
+# daemon-reload if anything changed, enables+starts any newly-
+# introduced timer, and restarts any currently-active service whose
+# unit file content changed.
+#
+# Wired into trade-auto-update.sh as `sudo -n install-trade-units.sh`
+# so new units land on the host automatically on the next deploy
+# tick. Safe to run by hand too. Reads $TRADE_REPO if set, else
+# defaults to /home/higgack/stock-trade.
+#
+# Sudoers entry (one-time, see trade/README.md):
+#   higgack ALL=(ALL) NOPASSWD: /home/higgack/stock-trade/deploy/install-trade-units.sh
+
+set -euo pipefail
+
+REPO="${TRADE_REPO:-/home/higgack/stock-trade}"
+DEPLOY="$REPO/deploy"
+SYSTEMD_DIR="/etc/systemd/system"
+SUDOERS_DEST="/etc/sudoers.d/higgack-trade-services"
+# Lines this script owns in $SUDOERS_DEST. Each must independently pass
+# `visudo -cf` to land. Extend the array when a new sibling restart
+# needs to run via `sudo -n` from trade-auto-update.sh.
+SUDOERS_LINES=(
+    "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-dashboard"
+    "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-beon-listener"
+    "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-badonion-listener"
+)
+
+if [ ! -d "$DEPLOY" ]; then
+    echo "install-trade-units: $DEPLOY not found" >&2
+    exit 1
+fi
+
+CHANGED_FILES=()
+CHANGED_SERVICES=()
+NEW_TIMERS=()
+NEW_SERVICES=()
+SUDOERS_INSTALLED=0
+
+# Idempotent sudoers self-management. install-trade-units.sh itself is
+# bootstrapped via an operator-installed sudoers entry, but once running
+# as root it owns the entries needed for trade-auto-update.sh to do
+# `sudo -n /bin/systemctl restart trade-bot-dashboard` etc. Adding a new
+# sibling-service restart now means appending to SUDOERS_LINES — no more
+# manual /etc/sudoers.d edits per deploy.
+SUDOERS_DESIRED=$(printf '%s\n' "${SUDOERS_LINES[@]}")
+SUDOERS_CURRENT=""
+if [ -f "$SUDOERS_DEST" ]; then
+    SUDOERS_CURRENT=$(cat "$SUDOERS_DEST")
+fi
+if [ "$SUDOERS_CURRENT" != "$SUDOERS_DESIRED" ]; then
+    printf '%s\n' "${SUDOERS_LINES[@]}" > "${SUDOERS_DEST}.tmp"
+    chmod 440 "${SUDOERS_DEST}.tmp"
+    if visudo -cf "${SUDOERS_DEST}.tmp" > /dev/null 2>&1; then
+        mv "${SUDOERS_DEST}.tmp" "$SUDOERS_DEST"
+        SUDOERS_INSTALLED=1
+        echo "install-trade-units: sudoers updated at $SUDOERS_DEST"
+    else
+        rm -f "${SUDOERS_DEST}.tmp"
+        echo "install-trade-units: sudoers content failed visudo -c — skipped" >&2
+    fi
+fi
+
+CHANGED_TIMERS=()
+shopt -s nullglob
+for src in "$DEPLOY"/trade-bot*.service "$DEPLOY"/trade-bot*.timer; do
+    name=$(basename "$src")
+    dst="$SYSTEMD_DIR/$name"
+    if [ ! -e "$dst" ] || ! cmp -s "$src" "$dst"; then
+        cp -- "$src" "$dst"
+        chmod 644 "$dst"
+        CHANGED_FILES+=("$name")
+        if [[ "$name" == *.timer ]]; then
+            if ! systemctl is-active --quiet "$name" 2>/dev/null; then
+                # Newly-introduced timer (not yet active) → enable+start it.
+                NEW_TIMERS+=("$name")
+            else
+                # Already-active timer whose content changed (e.g. OnCalendar
+                # 스케줄 변경, 사용자 2026-06-18 DART refresh 1일→18일) → restart
+                # 해 새 spec 즉시 재무장(daemon-reload 만으론 active OnCalendar 타이머
+                # 재계산이 보장 안 됨 → silent 미적용 방지, 실수기록 #12d). 타이머
+                # restart 는 .service 를 실행하지 않음(스케줄만 재arm) — 안전.
+                CHANGED_TIMERS+=("$name")
+            fi
+        elif [[ "$name" == *.service ]]; then
+            base="${name%.service}"
+            if systemctl is-active --quiet "$base" 2>/dev/null; then
+                # Already running → restart so new unit content takes effect.
+                CHANGED_SERVICES+=("$base")
+            elif [ ! -e "$DEPLOY/${base}.timer" ] && [[ "$base" != "trade-bot-update" ]]; then
+                # Brand-new standalone service (no driving timer, not self) —
+                # auto-enable. Long-running daemons like beon-listener live
+                # here. Services that need manual setup (e.g. Telethon session
+                # auth) should exit with code 78 + ❌ notify so systemd's
+                # RestartPreventExitStatus=78 stops the loop and the operator
+                # gets one clear alert.
+                NEW_SERVICES+=("$base")
+            fi
+        fi
+    fi
+done
+shopt -u nullglob
+
+if [ ${#CHANGED_FILES[@]} -eq 0 ] && [ "$SUDOERS_INSTALLED" -eq 0 ]; then
+    echo "install-trade-units: no changes"
+    exit 0
+fi
+
+if [ ${#CHANGED_FILES[@]} -eq 0 ]; then
+    echo "install-trade-units: SUMMARY changed=0 new_timers=0 new_services=0 restarted=0 sudoers_installed=$SUDOERS_INSTALLED"
+    exit 0
+fi
+
+echo "install-trade-units: copied ${CHANGED_FILES[*]}"
+systemctl daemon-reload
+echo "install-trade-units: daemon-reload done"
+
+for t in "${NEW_TIMERS[@]:-}"; do
+    [ -z "$t" ] && continue
+    systemctl enable --now "$t"
+    echo "install-trade-units: enabled+started $t"
+done
+
+for s in "${NEW_SERVICES[@]:-}"; do
+    [ -z "$s" ] && continue
+    # Use `|| true` so a config-error exit (e.g. listener needs --auth)
+    # doesn't fail the whole deploy. The service's own ❌ notify tells
+    # the operator what to do.
+    systemctl enable --now "$s" || true
+    echo "install-trade-units: enabled+started new service $s"
+done
+
+for s in "${CHANGED_SERVICES[@]:-}"; do
+    [ -z "$s" ] && continue
+    # Don't restart trade-bot-update mid-run (we're literally inside it
+    # right now via trade-auto-update.sh). The next timer fire will
+    # already use the new unit content after daemon-reload.
+    if [[ "$s" == "trade-bot-update" ]]; then
+        echo "install-trade-units: skip restart of self ($s)"
+        continue
+    fi
+    systemctl restart "$s" || true
+    echo "install-trade-units: restarted $s"
+done
+
+for t in "${CHANGED_TIMERS[@]:-}"; do
+    [ -z "$t" ] && continue
+    # 스케줄(OnCalendar) 등이 바뀐 active 타이머 재무장. restart 는 .service 미실행.
+    systemctl restart "$t" || true
+    echo "install-trade-units: restarted timer $t (schedule change)"
+done
+
+echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} changed_timers=${#CHANGED_TIMERS[@]} new_services=${#NEW_SERVICES[@]} restarted=${#CHANGED_SERVICES[@]} sudoers_installed=$SUDOERS_INSTALLED"

@@ -1,0 +1,11 @@
+[Unit]
+Description=DART Disclosure Feed trigger — 1분 간격 공시 수집(준실시간)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=dart-feed.service
+
+[Install]
+WantedBy=timers.target

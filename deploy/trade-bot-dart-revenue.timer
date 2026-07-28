@@ -1,0 +1,19 @@
+[Unit]
+Description=DART 매출구성 인벤토리 전수 갱신 — 매월 18일 05:00 KST(신규상장·사업변경 반영)
+
+[Timer]
+# 매월 18일 05:00 — **1일을 피함**(사용자 2026-06-18). 1일은 관세청 잠정(전월 전체)
+# 공개일이라 customs-probe 풀스윕+대시보드 regen+LLM신호가 몰려 가장 바쁜 날 →
+# DART 전수 refresh 를 거기 얹지 않는다. 18일은 (a) customs 한가한 창(확정 ~15일 ~
+# 잠정 순별 ~21일 사이), (b) 분기/반기/사업보고서 마감(~14·15일) 직후라 신규 정기
+# 보고서를 며칠 내 캐치 = 타이밍 최선. refresh 는 변경분만(rcept_no 비교 skip)이라
+# 돌리는 날이 정확성과 무관 — 부하 회피용으로 자유롭게 옮길 수 있다. '말일'은 systemd
+# 로 깔끔히 표현 안 되고(28~31 가변) 분기보고서를 다음 달까지 못 잡아 18일이 우월.
+# 코드 개선 소급은 매일 04:30 trade-bot-dart-reparse(드레이너)가 별도 담당.
+# Persistent=true 로 다운 시 보정 실행.
+OnCalendar=*-*-18 05:00:00 Asia/Seoul
+Persistent=true
+Unit=trade-bot-dart-revenue.service
+
+[Install]
+WantedBy=timers.target

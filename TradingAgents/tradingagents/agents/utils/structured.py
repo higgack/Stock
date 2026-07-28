@@ -69,5 +69,11 @@ def invoke_structured_or_freetext(
                 agent_name, exc,
             )
 
+    # M3 (2026-05-29 audit): normalize multi-part list `.content` (Gemini
+    # sometimes returns content as a list of parts) so downstream
+    # parse_rating / _extract_rating receive a string, not a list (which
+    # would raise AttributeError on .upper()/.splitlines()). Covers the
+    # research_manager / trader / PM-else free-text fallback paths.
     response = plain_llm.invoke(prompt)
-    return response.content
+    from tradingagents.agents.utils.agent_utils import _content_to_str
+    return _content_to_str(response)

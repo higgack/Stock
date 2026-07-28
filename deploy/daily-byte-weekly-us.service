@@ -1,0 +1,14 @@
+[Unit]
+Description=US Weekly Byte - weekly US market summary Telegram push (Sun 22:00 KST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.us_market_weekly
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600

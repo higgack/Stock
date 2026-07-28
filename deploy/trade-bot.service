@@ -1,0 +1,17 @@
+[Unit]
+Description=Korea Import/Export Dashboard Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=큐레이션 후보 알림 — 미매핑 고수출 품목 → operator DM (관세청 갱신일)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.curation_candidates
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

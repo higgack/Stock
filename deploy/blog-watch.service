@@ -1,0 +1,14 @@
+[Unit]
+Description=Blog Watcher — 네이버 블로그 '변화하는 기업을 찾아서' 새 글 포워드+아카이브
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.blog_watch
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

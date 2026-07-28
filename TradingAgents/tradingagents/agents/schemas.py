@@ -67,19 +67,29 @@ class ResearchPlan(BaseModel):
     instructions the trader can execute against.
     """
 
-    recommendation: PortfolioRating = Field(
-        description=(
-            "The investment recommendation. Exactly one of Buy / Overweight / "
-            "Hold / Underweight / Sell. Reserve Hold for situations where the "
-            "evidence on both sides is genuinely balanced; otherwise commit to "
-            "the side with the stronger arguments."
-        ),
-    )
+    # Field order is deliberate: the free-text rationale is generated BEFORE
+    # the recommendation enum so the model reasons its way to the verdict
+    # rather than committing to a rating first and rationalising afterwards.
+    # Structured-output providers (Gemini response_schema / OpenAI json_schema)
+    # generate fields in schema-declaration order, so reasoning-before-enum
+    # reduces the text↔enum divergence seen on ALAB 2026-05-26 (PM thesis
+    # argued Hold but the enum came out Buy). strategic_actions depends on the
+    # recommendation, so it follows the enum.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
     rationale: str = Field(
         description=(
             "Conversational summary of the key points from both sides of the "
             "debate, ending with which arguments led to the recommendation. "
             "Speak naturally, as if to a teammate."
+        ),
+    )
+    recommendation: PortfolioRating = Field(
+        description=(
+            "The investment recommendation that follows from the rationale "
+            "above. Exactly one of Buy / Overweight / Hold / Underweight / "
+            "Sell. Reserve Hold for situations where the evidence on both "
+            "sides is genuinely balanced; otherwise commit to the side with "
+            "the stronger arguments."
         ),
     )
     strategic_actions: str = Field(
@@ -115,13 +125,19 @@ class TraderProposal(BaseModel):
     entry, stop-loss, and sizing.
     """
 
-    action: TraderAction = Field(
-        description="The transaction direction. Exactly one of Buy / Hold / Sell.",
-    )
+    # Reasoning-before-enum ordering (see ResearchPlan note): the case is
+    # written first, then the action enum follows from it, then the numeric
+    # levels that depend on the chosen action.
     reasoning: str = Field(
         description=(
             "The case for this action, anchored in the analysts' reports and "
             "the research plan. Two to four sentences."
+        ),
+    )
+    action: TraderAction = Field(
+        description=(
+            "The transaction direction that follows from the reasoning above. "
+            "Exactly one of Buy / Hold / Sell."
         ),
     )
     entry_price: Optional[float] = Field(
@@ -135,6 +151,18 @@ class TraderProposal(BaseModel):
     position_sizing: Optional[str] = Field(
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
+    )
+    kill_trigger: Optional[str] = Field(
+        default=None,
+        description=(
+            "Thesis-breaking event/data (NOT a price level — stop_loss covers "
+            "price). One short line naming the specific news, guidance, or "
+            "macro datum that would invalidate the case and warrant immediate "
+            "exit/reverse regardless of price. Examples: 'Q1 revenue miss vs "
+            "guide', '美 對中 수출규제 발표', '50일 SMA 데드크로스 + 거래량 "
+            "급증', '경쟁사 qual 통과 공식 발표'. Distinct from stop_loss "
+            "(price-based) and Plan catalyst (positive trigger)."
+        ),
     )
 
 
@@ -156,6 +184,8 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
         parts.extend(["", f"**Stop Loss**: {proposal.stop_loss}"])
     if proposal.position_sizing:
         parts.extend(["", f"**Position Sizing**: {proposal.position_sizing}"])
+    if proposal.kill_trigger:
+        parts.extend(["", f"**Kill Trigger**: {proposal.kill_trigger}"])
     parts.extend([
         "",
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
@@ -177,23 +207,35 @@ class PortfolioDecision(BaseModel):
     the rating-scale guidance.
     """
 
+    # Field order is deliberate (ALAB 2026-05-26 fix): investment_thesis (the
+    # evidence-anchored reasoning) is generated FIRST so the model reasons to
+    # its verdict; the rating enum follows the thesis; the executive_summary
+    # action plan and the numeric targets — all consequences of the rating —
+    # come after. Structured-output providers generate fields in declaration
+    # order, so this minimises the text↔enum divergence where the PM thesis
+    # argued Hold but the rating enum emitted Buy (committed before reasoning).
+    # render_pm_decision keeps the display order (Rating first) so parse_rating
+    # and the report layout are unchanged.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    investment_thesis: str = Field(
+        description=(
+            "Detailed reasoning anchored in specific evidence from the analysts' "
+            "debate. Write this BEFORE settling on the rating. If prior lessons "
+            "are referenced in the prompt context, incorporate them; otherwise "
+            "rely solely on the current analysis."
+        ),
+    )
     rating: PortfolioRating = Field(
         description=(
-            "The final position rating. Exactly one of Buy / Overweight / Hold / "
-            "Underweight / Sell, picked based on the analysts' debate."
+            "The final position rating that follows from the investment thesis "
+            "above. Exactly one of Buy / Overweight / Hold / Underweight / "
+            "Sell, picked based on the analysts' debate."
         ),
     )
     executive_summary: str = Field(
         description=(
             "A concise action plan covering entry strategy, position sizing, "
             "key risk levels, and time horizon. Two to four sentences."
-        ),
-    )
-    investment_thesis: str = Field(
-        description=(
-            "Detailed reasoning anchored in specific evidence from the analysts' "
-            "debate. If prior lessons are referenced in the prompt context, "
-            "incorporate them; otherwise rely solely on the current analysis."
         ),
     )
     price_target: Optional[float] = Field(

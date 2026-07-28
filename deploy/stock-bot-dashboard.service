@@ -1,0 +1,34 @@
+[Unit]
+Description=NOAH 주식분석 아카이브 대시보드 (custom HTTP server with delete API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=higgack
+Group=higgack
+WorkingDirectory=/home/higgack/stock
+Environment=PYTHONPATH=/home/higgack/stock:/home/higgack/stock/TradingAgents
+# Load DASHBOARD_TOKEN / DASHBOARD_USER / DASHBOARD_PASSWORD (and any
+# other ambient secrets the bot uses) directly via systemd. This is
+# the primary mechanism — the dashboard_server's dotenv fallback only
+# fires when python-dotenv happens to be available in the system
+# interpreter. EnvironmentFile= works regardless and parses the same
+# KEY=VALUE format as .env.
+EnvironmentFile=-/home/higgack/stock/.env
+# bot.dashboard_server is a thin wrapper around stdlib http.server that
+# adds POST /api/delete plus optional URL-token + Basic Auth gating.
+# Static GET behavior is identical to the old `python3 -m http.server
+# 8081` setup when no credentials are configured.
+# venv python — 다른 모든 서비스와 동일. /api/chart 온디맨드 차트가
+# yfinance 를 쓰는데 yfinance 는 .venv 에만 설치돼 있어 system python3
+# 로는 ImportError → 'no data' (2026-06-04 일/주/월봉 안 바뀜 버그 원인).
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.dashboard_server --port 8081 --bind 0.0.0.0
+Restart=always
+RestartSec=5
+# Belt-and-suspenders: cycle the process daily so any slow stdlib
+# memory growth never accumulates indefinitely.
+RuntimeMaxSec=86400
+
+[Install]
+WantedBy=multi-user.target

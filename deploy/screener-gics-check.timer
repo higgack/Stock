@@ -1,0 +1,18 @@
+[Unit]
+Description=Quarterly GICS / emerging industry check trigger — 3·6·9·12월 5일 09:00 KST
+
+[Timer]
+# 4x/year — 3·6·9·12월 5일 09:00 KST. 매분기 첫 달의 5일에 실행 (사용자
+# 정책 2026-06-01 — 한국이 미국 대비 시차 앞서므로 1일 09:00 KST 면 미국
+# 데이터/시장 마감이 아직 충분히 반영되지 않은 시점. 5일이면 미국 시장
+# 4일 close 까지 확보 → 분기 정리 데이터 안정).
+# OnCalendar 형식: YYYY-MM-DD HH:MM:SS — 월은 숫자만 (Jan/Mar 같은 영문
+# 약어는 day-of-week 자리 — 첫 번째 fix 2026-05-29 사용자 보고). Asia/
+# Seoul TZ 는 systemd 226+ 에서 지원. Persistent=true 로 서버 다운 후
+# 미실행 trigger 부팅 시 fire — 분기 알림 누락 방지.
+OnCalendar=*-03,06,09,12-05 09:00:00 Asia/Seoul
+Persistent=true
+Unit=screener-gics-check.service
+
+[Install]
+WantedBy=timers.target

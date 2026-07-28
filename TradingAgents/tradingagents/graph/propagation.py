@@ -16,14 +16,25 @@ class Propagator:
         self.max_recur_limit = max_recur_limit
 
     def create_initial_state(
-        self, company_name: str, trade_date: str, past_context: str = ""
+        self,
+        company_name: str,
+        trade_date: str,
+        past_context: str = "",
+        gemini_cache_name: str = "",
     ) -> Dict[str, Any]:
-        """Create the initial state for the agent graph."""
+        """Create the initial state for the agent graph.
+
+        gemini_cache_name (F1-MVP, 2026-05-19): When non-empty, decision-
+        tier nodes (research_manager / trader / portfolio_manager) will
+        invoke their Gemini Pro LLM with `cached_content=cache_name` —
+        cached input tokens billed at ~25% rate. Empty string disables
+        caching (default; downstream nodes proceed without cache)."""
         return {
             "messages": [("human", company_name)],
             "company_of_interest": company_name,
             "trade_date": str(trade_date),
             "past_context": past_context,
+            "gemini_cache_name": gemini_cache_name,
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",

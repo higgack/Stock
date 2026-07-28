@@ -1,0 +1,14 @@
+[Unit]
+Description=연계표↔큐레이션 정합 가드 — reinforce/핀/테마 키 카탈로그 대조 + 연계표 버전 리마인더
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.catalog_guard
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily Byte — 장 마감 후 KR 수급 브리프 텔레그램 푸시 (19:00 KST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.daily_kr_flow
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600

@@ -1,0 +1,14 @@
+[Unit]
+Description=자정 결산 — 어제 포워드/관세청 작동·오류 + 신규 미매칭 품목 후보 요약 DM (활동한 날만)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.daily_digest
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

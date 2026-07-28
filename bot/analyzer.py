@@ -7,6 +7,7 @@ synchronous `analyze(ticker, date)` call that returns (summary, full_report).
 import logging
 import re
 import sys
+import time
 from datetime import date as _date
 from pathlib import Path
 
@@ -18,6 +19,10 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
 from bot import cache as _cache
+from bot.archive import save_analysis as _archive_save
+from bot.dashboard import regenerate_index as _dashboard_regen
+from bot.md_tables import insert_table_separators as _insert_table_separators
+from bot.usage_tracker import UsageCallback, log_analysis
 
 log = logging.getLogger("stock-bot.analyzer")
 
@@ -34,6 +39,12 @@ def _build_config() -> dict:
     #   intermediate text. graph/setup.py routes analysts to deep_think_llm.
     config["deep_think_llm"] = "gemini-2.5-flash"
     config["quick_think_llm"] = "gemini-2.5-flash-lite"
+    # Final-decision tier (research_manager / trader / portfolio_manager).
+    # Pro lifts the quality of the actual BUY/HOLD/SELL synthesis without
+    # paying Pro prices for the analyst+debate phases — those stay on
+    # Flash/Flash-Lite. Adds roughly $0.03-0.05/analysis on top of the
+    # ~$0.05 baseline.
+    config["decision_think_llm"] = "gemini-2.5-pro"
     config["google_thinking_level"] = "minimal"
     config["max_debate_rounds"] = 1
     config["max_risk_discuss_rounds"] = 1
@@ -43,18 +54,100 @@ def _build_config() -> dict:
     # (quick tier) only need a few paragraphs of stance text. Saves
     # roughly 30-40% on output-token spend with no measurable loss in
     # report content.
-    config["deep_max_output_tokens"] = 4000
+    config["deep_max_output_tokens"] = 16384
     config["quick_max_output_tokens"] = 2000
+    # Decision tier shares the long-output budget with deep — the trader
+    # / managers write multi-paragraph rationales that benefit from room.
+    config["decision_max_output_tokens"] = 16384
+    # Per-Gemini-call HTTP timeout. Without this, a single hung response
+    # can chew the entire 10-minute analysis budget; SIMO hit exactly that
+    # case (worker silent for 7+ min before the asyncio-side timeout fired).
+    # 150s is generous for a long Korean-language analyst response with
+    # tools, still leaves headroom for ~4 calls within the 600s wall budget.
+    config["llm_request_timeout"] = 150
     config["data_vendors"] = {
         "core_stock_apis": "yfinance",
         "technical_indicators": "yfinance",
         "fundamental_data": "yfinance",
         "news_data": "yfinance",
     }
+    # NOTE: UsageCallback is wired in directly at TradingAgentsGraph
+    # construction time (see analyze()) rather than via config — the
+    # graph's __init__ takes a separate `callbacks=` kwarg, anything
+    # in the config dict under that key is ignored.
     return config
 
 
 _BUSY_MARKER = Path.home() / ".tradingagents" / ".busy"
+
+
+def mark_busy() -> None:
+    """Create the .busy marker so auto-update / watchdog defer restarts.
+
+    Called from the asyncio handler BEFORE the worker thread starts, to
+    close the race where a deploy timer fires after recovery state is
+    written but before analyze() has had a chance to touch the marker
+    itself.
+    """
+    _BUSY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    _BUSY_MARKER.touch()
+
+
+def clear_busy() -> None:
+    try:
+        _BUSY_MARKER.unlink()
+    except FileNotFoundError:
+        pass
+
+
+_ANALYST_REPORT_KEYS = {
+    "market":       ("📈 시장",     "market_report"),
+    "social":       ("💬 감정",     "sentiment_report"),
+    "news":         ("📰 뉴스",     "news_report"),
+    "fundamentals": ("💰 펀더멘털", "fundamentals_report"),
+}
+
+
+class AnalysisIncompleteError(RuntimeError):
+    """Raised when ≥1 analyst's final report is still unusable after the
+    in-graph retry. The Telegram handler converts this into a Korean error
+    message that prompts the user to retry, rather than serving a hollow
+    BUY/HOLD/SELL synthesis."""
+
+
+class InvalidTickerError(RuntimeError):
+    """Raised when yfinance returns no usable price data for the
+    requested ticker — typically because the user typed a company name
+    instead of a ticker (NAVER → should be 035420.KS), a typo, or a
+    delisted symbol. NAVER on 2026-05-17 was the canonical case: the
+    bot ran the full ~3 minute pipeline with empty data and the PM
+    output 'Sell' on a 'no data = risk = sell' line of reasoning. The
+    pre-flight aborts before any LLM call so the user gets a clear
+    'ticker not found' message and we don't waste tokens producing a
+    misleading recommendation."""
+
+
+def _check_reports_or_raise(state, selected: list[str]) -> None:
+    from tradingagents.agents.utils.agent_utils import looks_failed_report
+
+    failed = []
+    for analyst in selected:
+        meta = _ANALYST_REPORT_KEYS.get(analyst)
+        if not meta:
+            continue
+        label, key = meta
+        if looks_failed_report((state.get(key) or "")):
+            failed.append(label)
+    if not failed:
+        return
+    log.warning(
+        "analyze: %d/%d analyst reports still failed after retry: %s",
+        len(failed), len(selected), failed,
+    )
+    raise AnalysisIncompleteError(
+        "분석가 응답 누락: " + ", ".join(failed)
+        + " — 잠시 후 재시도해주세요"
+    )
 
 
 def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
@@ -70,38 +163,300 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     """
     target_date = target_date or _date.today().isoformat()
     ticker = ticker.upper()
+    # KR .KS↔.KQ suffix 자동 교정 (티로보틱스 117730 2026-06-04): KOSDAQ
+    # 종목을 .KS 로 조회하면 yfinance/KIS/뉴스가 엉뚱한 장부에서 데이터를
+    # 받아 불일치·뉴스 0건·기술분석 freeze 오발. 권위 있는 KRX 목록으로
+    # 진입 즉시 교정 → 모든 다운스트림(컨텍스트·뉴스·수급)이 올바른 시장
+    # 조회. pykrx/creds 부재 시 graceful no-op.
+    try:
+        from bot.market import normalize_kr_ticker_suffix
+        _norm = normalize_kr_ticker_suffix(ticker)
+        if _norm != ticker:
+            log.info("KR suffix 정규화: %s → %s", ticker, _norm)
+            ticker = _norm
+    except Exception as _exc:
+        log.warning("KR suffix 정규화 실패 (%s) — 원본 유지", _exc)
+    started_at = time.time()
 
     cached = _cache.get(ticker, target_date)
     if cached is not None:
         log.info("cache hit for %s/%s", ticker, target_date)
+        log_analysis(ticker, time.time() - started_at, cache_hit=True)
         return cached
 
-    _BUSY_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    _BUSY_MARKER.touch()
+    # Pre-flight: ticker must exist in yfinance. NAVER on 2026-05-17
+    # ran the full pipeline against an empty .info dict and produced a
+    # 'Sell' decision on 'no data = risk' reasoning — actively
+    # dangerous. Abort here before spending tokens. The DM / channel
+    # router catches InvalidTickerError and translates it into a
+    # human-readable message pointing at the right input form (KR
+    # 6-digit + suffix, US bare ticker, or Korean name).
     try:
-        ta = TradingAgentsGraph(
-            debug=False,
-            config=_build_config(),
-            selected_analysts=_SELECTED_ANALYSTS,
+        from tradingagents.agents.utils.agent_utils import _instrument_info
+        info = _instrument_info(ticker)
+        has_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if not has_price:
+            raise InvalidTickerError(
+                f"yfinance에서 '{ticker}' 가격 데이터를 찾을 수 없습니다."
+            )
+    except InvalidTickerError:
+        raise
+    except Exception as exc:
+        # yfinance .info itself blew up (network blip etc.) — let the
+        # main pipeline try anyway. If it really is bad data the
+        # AnalysisIncompleteError path will catch it downstream.
+        log.warning(
+            "analyze: pre-flight yfinance check for %s failed: %s — proceeding",
+            ticker, exc,
         )
-        state, decision = ta.propagate(ticker, target_date)
 
-        full = _format_full(state, decision, ticker, target_date)
-        summary = _format_summary(state, decision, ticker, target_date)
-        _cache.put(ticker, target_date, summary, full)
-        return summary, full
-    finally:
+    # NOTE: .busy marker lifecycle is now owned by the main bot's handler
+    # (refcount-based) so that a second queued request doesn't lose the
+    # marker mid-flight when the first request's subprocess finishes.
+    # Calling mark/clear_busy from inside analyze() would race with that.
+    log.info("analyze: building TradingAgentsGraph for %s", ticker)
+    # ETFs and leveraged funds have no company-specific social chatter or
+    # news flow — the social analyst returns empty placeholders for these
+    # (KORU on 2026-05-08 was the canonical case). Drop social entirely
+    # for funds; the news/fundamentals analysts get a fund-specific
+    # prompt via build_instrument_context.
+    selected = list(_SELECTED_ANALYSTS)
+    pre_flight_notes: list[str] = []
+    try:
+        from tradingagents.agents.utils.agent_utils import is_etf
+        if is_etf(ticker):
+            selected = [a for a in selected if a != "social"]
+            log.info("analyze: %s detected as fund — skipping social analyst", ticker)
+    except Exception as exc:
+        log.warning("analyze: ETF detection failed for %s: %s", ticker, exc)
+
+    # News pre-flight: newly-IPO'd / low-coverage tickers (IBTA on
+    # 2026-05-10 was the canonical case) have zero yfinance news, the
+    # analyst's fail-fast retry then aborts the whole pipeline after
+    # paying ~$0.05. Skip the news analyst entirely up front and warn
+    # the user instead.
+    #
+    # Social/sentiment is dropped together because it reads from the
+    # same yfinance news / social feed — 319660.KS 피에스케이 on
+    # 2026-05-17 had 'news 자동 생략' announced but the sentiment
+    # analyst ran anyway and failed with the generic '모델 응답
+    # 오류' placeholder because it had no data either. They share
+    # one upstream so they share the pre-flight skip.
+    if "news" in selected:
         try:
-            _BUSY_MARKER.unlink()
-        except FileNotFoundError:
-            pass
+            from tradingagents.agents.utils.agent_utils import has_recent_news
+            if not has_recent_news(ticker):
+                selected = [a for a in selected if a not in ("news", "social")]
+                # Market-specific skip message so the user can see which
+                # fallback sources were actually tried. Default text
+                # "yfinance에 기사 0건" mis-implies for KR/JP that the
+                # KR / JP fallback path wasn't even attempted, when in
+                # fact has_recent_news already tried Naver (KR) /
+                # Kabutan (JP) and got 0 too. 코미코 2026-05-17 case
+                # surfaced this: user reasonably assumed Naver fallback
+                # wasn't wired when it actually had run and returned
+                # empty.
+                try:
+                    from bot.market import detect_market
+                    _market = detect_market(ticker)
+                except Exception:
+                    _market = "US"
+                if _market == "KR":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + Naver(한국어)"
+                        f" + DART 공시 모두 최근 28일간 {ticker} 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                elif _market == "JP":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + Kabutan(일본어)"
+                        f" + EDINET 공시 모두 최근 28일간 {ticker} 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                elif _market == "TW":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + 鉅亨網(繁體中文)"
+                        f" + MOPS 공시 모두 최근 28일간 {ticker} 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                elif _market == "US":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + SEC 8-K 공시"
+                        f" 모두 최근 {ticker} 기사·공시 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                else:
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance에 {ticker} 기사 0건"
+                        " (신생주·저커버리지 종목 추정 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                pre_flight_notes.append(_skip_msg)
+                log.info(
+                    "analyze: %s has 0 news items (market=%s) — skipping news + social",
+                    ticker, _market,
+                )
+        except Exception as exc:
+            log.warning("analyze: news pre-check failed for %s: %s", ticker, exc)
+
+    # Earnings calendar warning. A 5-trading-day recommendation that
+    # lands inside the earnings reaction window has its outcome
+    # dominated by the earnings move, not by the bot's analysis.
+    # Window is ±10 calendar days so we catch both pre-earnings runup
+    # and the post-earnings drift that typically plays out for 1-2
+    # weeks after the print.
+    try:
+        from tradingagents.agents.utils.agent_utils import days_until_earnings
+        delta = days_until_earnings(ticker, target_date)
+        if delta is not None and -10 <= delta <= 10:
+            if delta > 5:
+                pre_flight_notes.append(
+                    f"📅 실적 발표 {delta}일 후 — 발표 임박. 추천 평가가 어닝 반응에 좌우될 가능성"
+                )
+            elif 0 < delta <= 5:
+                pre_flight_notes.append(
+                    f"⚠️ 실적 발표 {delta}일 후 — 발표 전후 변동성 ↑."
+                    " 5거래일 추천 평가가 어닝 반응에 좌우될 수 있음"
+                )
+            elif delta == 0:
+                pre_flight_notes.append(
+                    "⚠️ 실적 발표 당일 — 발표 결과에 따라 큰 변동 가능"
+                )
+            elif -5 <= delta < 0:
+                pre_flight_notes.append(
+                    f"📊 실적 발표 {-delta}일 전 발표됨 — post-earnings drift 영향권"
+                )
+            else:  # -10 <= delta < -5
+                pre_flight_notes.append(
+                    f"📊 실적 발표 {-delta}일 전 발표됨 — drift 잔영 가능"
+                )
+    except Exception as exc:
+        log.warning("analyze: earnings check failed for %s: %s", ticker, exc)
+
+    ta = TradingAgentsGraph(
+        debug=False,
+        config=_build_config(),
+        selected_analysts=selected,
+        # Hooks every Gemini call into ~/.tradingagents/usage.jsonl so
+        # /usage and the dashboard cost card stay accurate.
+        callbacks=[UsageCallback()],
+    )
+    log.info("analyze: graph built — invoking propagate")
+    state, decision = ta.propagate(ticker, target_date)
+    log.info("analyze: propagate done — formatting output")
+
+    # Fail-fast on still-broken analyst reports. The graph already retried
+    # each analyst once internally (see ConditionalLogic.should_retry_*);
+    # if any final report still looks unusable, the downstream debate /
+    # decision LLMs will hallucinate around the gap and produce an
+    # authoritative-looking BUY/SELL on a hollow foundation. Better to
+    # surface a clear error so the user retries than to deliver a confident
+    # decision built on missing inputs.
+    _check_reports_or_raise(state, selected)
+
+    # Fix F + G: PM Override Discipline code-enforcement.
+    # Must run before formatting so override_rating drives the summary card
+    # and override_note surfaces in the full report's PM section.
+    _override_rating: str | None = None
+    _override_note: str = ""
+    try:
+        _override_rating, _override_note = _check_pm_override_required(state, decision)
+        if _override_note:
+            log.info(
+                "analyze: PM override blocked for %s — forcing Hold "
+                "(no trigger keyword found in PM rationale)",
+                ticker,
+            )
+            # Phase 0 M2 audit — record the in-graph↔analyzer conflict case
+            # (sentinel present + analyzer forcing Hold). No behavior change.
+            _trade_date = ""
+            if isinstance(state, dict):
+                _trade_date = str(state.get("trade_date") or "")
+            _log_pm_override_conflict(
+                ticker, _trade_date or str(target_date or ""),
+                state, decision, _override_note,
+            )
+    except Exception as exc:
+        log.warning("analyze: PM override check failed for %s: %s", ticker, exc)
+
+    # Surface the last few resolved recommendations for this ticker as a
+    # short Korean header line — gives the reader an immediate sense of
+    # whether the bot has been right or wrong on this name lately.
+    past_outcomes = _format_past_outcomes(ta.memory_log, ticker)
+    log.info("analyze: past_outcomes done — building full report")
+
+    full = _format_full(
+        state, decision, ticker, target_date, past_outcomes, selected,
+        override_note=_override_note or None,
+    )
+    log.info("analyze: full report done (%d chars) — building summary", len(full))
+
+    summary = _format_summary(
+        state, decision, ticker, target_date, past_outcomes,
+        notes=pre_flight_notes,
+        override_rating=_override_rating,
+    )
+    log.info("analyze: summary done (%d chars) — writing cache", len(summary))
+
+    _cache.put(ticker, target_date, summary, full)
+    log.info("analyze: cache write done — returning to worker")
+    elapsed = time.time() - started_at
+    log_analysis(ticker, elapsed, cache_hit=False)
+    # Persist to the long-term archive. Cache writes expire at midnight;
+    # the archive does not, and is what the dashboard reads from. Pass
+    # started_at so the archive can stamp this run's Gemini cost (incl. the
+    # chart disclosure-title translation) onto the record for the detail page.
+    _archive_save(ticker, target_date, summary, full, elapsed, started_at=started_at)
+    # Refresh the static HTML dashboard. Internally swallows errors, so
+    # a dashboard hiccup can't break the analysis path.
+    _dashboard_regen()
+
+    # Standard View push hook 제거 (2026-06-12) — SV 폐기(#148, backend
+    # 중단)로 loopback POST 대상이 사라짐. 소스 삭제와 함께 정리.
+
+    return summary, full
+
+
+def _format_past_outcomes(memory_log, ticker: str, limit: int = 2) -> str:
+    """Build a one-or-two line Korean string summarizing the most recent
+    RESOLVED recommendations for this ticker. Empty when no resolved
+    history exists yet (first-time ticker or all entries still pending).
+    """
+    try:
+        entries = memory_log.load_entries()
+    except Exception:
+        return ""
+    matched = [
+        e for e in reversed(entries)
+        if e.get("ticker") == ticker and not e.get("pending") and e.get("raw")
+    ]
+    if not matched:
+        return ""
+    lines = []
+    for e in matched[:limit]:
+        raw = e.get("raw") or "n/a"
+        alpha = e.get("alpha")
+        rating_kr = _RATING_KR.get(e.get("rating", "").upper(), e.get("rating", ""))
+        date = e.get("date", "")
+        # Compose: "지난 추천 (2026-04-24): 매수 → +5.3% (벤치마크 대비 +1.2%)"
+        bench = f" (벤치마크 대비 {alpha})" if alpha and alpha != "n/a" else ""
+        lines.append(f"📒 지난 추천 ({date}): {rating_kr} → {raw}{bench}")
+    return "\n".join(lines)
+
+
+_RATING_KR = {
+    "BUY": "매수",
+    "OVERWEIGHT": "비중확대",
+    "HOLD": "보유",
+    "UNDERWEIGHT": "비중축소",
+    "SELL": "매도",
+}
 
 
 _SECTION_LABELS_FOR_SUMMARY = [
-    ("market_report", "📈"),
-    ("sentiment_report", "💬"),
-    ("news_report", "📰"),
-    ("fundamentals_report", "💰"),
+    ("market_report", "📈", "시장"),
+    ("sentiment_report", "💬", "감정"),
+    ("news_report", "📰", "뉴스"),
+    ("fundamentals_report", "💰", "펀더멘털"),
 ]
 
 # Stance keywords ordered by specificity (longest first to avoid 'buy'
@@ -135,51 +490,881 @@ _STANCE_KEYWORDS = [
 ]
 
 
+# Technical / order-flow compounds that EMBED 매수/매도 as a substring but
+# are NOT a buy/sell verdict. The bare-keyword fallback (pass 3 of
+# _extract_stance) does an rfind for "매수"/"매도" and would otherwise match
+# the 매수 inside 과매수 (overbought) or the 매도 inside 순매도 (net-sell),
+# mislabelling a HOLD/opposite conclusion. We neutralise these to a token
+# with no stance substring BEFORE the bare scan. 강매수/강매도 (strong
+# buy/sell) are genuine verdicts and intentionally NOT listed here.
+# Surfaced: ALAB 2026-05-26 감정 body "투자 의견은 HOLD … 과매수 …" → 매수,
+# which cascaded into _analyst_majority_direction electing a false buy
+# majority and the PM Buy slipping past the override discipline.
+# Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+_STANCE_FALSE_FRIENDS = (
+    "과매수", "과매도", "순매수", "순매도",
+    "매수세", "매도세", "매수벽", "매도벽",
+    "매수호가", "매도호가", "매수우위", "매도우위",
+    "매수자", "매도자", "매수량", "매도량",
+    "매수잔량", "매도잔량", "매수주문", "매도주문",
+    "매수강도", "매도강도",
+    # Position / entry / opportunity compounds — typically appear in
+    # CONDITIONAL or HYPOTHETICAL phrasing ("적극적인 매수 포지션을 취하기에는
+    # 리스크가 큽니다" = sell/hold reasoning that EMBEDS the 매수 keyword).
+    # Meituan 3690.HK 2026-05-28: market analyst's own verdict was HOLD
+    # ("5거래일 전망은 HOLD입니다") but rightmost-rfind picked up "매수" inside
+    # the very next sentence "적극적인 매수 포지션을 취하기에는 리스크가 큼" →
+    # stance mislabeled 매수. Same class as 9988.HK '매수 등급' + 2382.TW
+    # '매수 의견' bugs, new surface form via position/entry compounds.
+    "매수 포지션", "매도 포지션", "매수포지션", "매도포지션",
+    "매수 진입", "매도 진입", "매수진입", "매도진입",
+    "매수 기회", "매도 시점", "매수기회", "매도시점",
+)
+
+
+# Cited third-party analyst RATINGS ("골드만 '매수' 등급을 유지", "중신증권
+# 매도 레이팅") are NOT the analyst's own verdict — they are evidence the
+# analyst quotes. The bare-keyword fallback (pass 3) would otherwise rfind
+# the 매수/매도 inside a cited rating and mislabel the whole report.
+# 9988.HK (Alibaba) 2026-05-27: the news analyst concluded HOLD but the body
+# cited 4-5 IB "'매수' 등급" lines; the rightmost cited 매수 won the bare
+# scan → 뉴스 mislabeled 매수 → false buy-majority → PM force-corrected to
+# Buy. We neutralise the rating-citation forms (매수/매도 + 등급/레이팅/콜,
+# with optional surrounding quotes) BEFORE the keyword scans. The analyst's
+# OWN verdict never uses '등급/레이팅' (it uses '투자 의견/보유 의견/HOLD'),
+# so masking these is safe. Rule applies to all analyses going forward
+# (US + KR + JP + TW + CN_A + HK — IB rating citations appear in every market).
+_CITED_RATING_RE = re.compile(
+    r"['\"‘’“”]?(?:매수|매도)['\"‘’“”]?"
+    r"\s*(?:등급|레이팅|콜)"
+)
+
+# Cited third-party analyst OPINIONS phrased as "...매수 의견" / "...매도 의견"
+# where the subject is a third-party (애널리스트 / 컨센서스 / N명 / 투자은행 /
+# 월가), NOT the analyst's own verdict. The bare "매수 의견" / "매도 의견" form
+# is in _STANCE_EXPLICIT_KEYWORDS as a strong own-verdict signal, so a cited
+# consensus opinion would be mislabeled as the analyst's stance.
+# 2382.TW 2026-05-28: the sentiment analyst's OWN conclusion was 관망(HOLD)
+# ("관망세 유지가 합리적") but the body said "애널리스트들의 ... 매수 의견은
+# 향후 주가 상승 ..." → stance mislabeled 매수. Same class as the 9988.HK
+# 매수 등급 bug, via 의견 instead of 등급. We require a third-party-attribution
+# token within ~25 chars BEFORE 매수/매도 의견 so the analyst's own
+# "매수 의견을 제시합니다" (no preceding attribution) is preserved.
+# 300750.SZ 2026-05-28: regex initially used [^.\n] which blocked traversal
+# across mid-sentence decimal points ("32.3%" inside the attribution-to-verdict
+# span). Switched to (?:[^.\n]|\.(?!\s)) — allow period only when NOT followed
+# by whitespace (decimals like 32.3 / 1.31/5 pass; sentence terminators '. ' or
+# '.\n' still block). Preserves both fixes (CATL decimal + 2382.TW boundary).
+# Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+_CITED_OPINION_RE = re.compile(
+    r"(?:애널리스트|analyst|컨센서스|consensus|투자은행|증권가|증권사|"
+    r"월가|wall\s*street|\d+\s*명)(?:[^.\n]|\.(?!\s)){0,25}?(?:매수|매도)\s*의견"
+)
+
+# Conclusion VERDICT DECLARATION — the analyst's own bottom-line, written as
+# "투자 의견: HOLD" / "투자 의견은 매수" / "최종 의견 보유" / "결론: SELL".
+# These colon/은-는 forms were NOT covered by the literal explicit-keyword
+# list (which only matched the "HOLD 의견" value-first form), so a body that
+# phrased its verdict this way fell through to the fragile bare-keyword pass.
+# This regex (pass 0, highest priority, conclusion-zone only) captures the
+# verdict the analyst DECLARES, ignoring cited ratings (which lack the
+# '투자 의견/결론/판단' prefix). Rule applies to all analyses going forward.
+_VERDICT_DECL_RE = re.compile(
+    r"(?:투자\s*의견|최종\s*의견|투자\s*판단|최종\s*판단|결론)\s*[은는:]*\s*"
+    r"['\"‘’“”]?\s*(매수|매도|보유|hold|buy|sell)",
+    re.IGNORECASE,
+)
+_VERDICT_WORD_TO_LABEL = {
+    "매수": "매수", "매도": "매도", "보유": "보유",
+    "hold": "보유", "buy": "매수", "sell": "매도",
+}
+
+
+# Explicit recommendation patterns — these mean "this is the verdict",
+# not "this keyword appears in passing". _extract_stance scans these
+# FIRST and prefers their rightmost match over the bare-keyword pass,
+# so a body like "HOLD 의견을 제시합니다 ... 단기 조정 시 매수 기회를
+# 모색" gets labelled 보유 (the explicit verdict) instead of 매수
+# (the bare-keyword fallback's rightmost hit). Mirror every Korean
+# explicit verb in both spaced and unspaced parenthesised forms because
+# different analysts use both.
+_STANCE_EXPLICIT_KEYWORDS = [
+    ("FINAL TRANSACTION PROPOSAL: BUY", "매수"),
+    ("FINAL TRANSACTION PROPOSAL: HOLD", "보유"),
+    ("FINAL TRANSACTION PROPOSAL: SELL", "매도"),
+    ("HOLD 의견", "보유"),
+    ("BUY 의견", "매수"),
+    ("SELL 의견", "매도"),
+    ("매수 의견", "매수"),
+    ("매도 의견", "매도"),
+    ("보유 의견", "보유"),
+    ("홀드 의견", "보유"),
+    ("매수 (BUY)", "매수"),
+    ("매도 (SELL)", "매도"),
+    ("보유 (HOLD)", "보유"),
+    ("매수(BUY)", "매수"),
+    ("매도(SELL)", "매도"),
+    ("보유(HOLD)", "보유"),
+    ("거래 제안: BUY", "매수"),
+    ("거래 제안: SELL", "매도"),
+    ("거래 제안: HOLD", "보유"),
+    ("거래 액션: BUY", "매수"),
+    ("거래 액션: SELL", "매도"),
+    ("거래 액션: HOLD", "보유"),
+    ("추천: Buy", "매수"),
+    ("추천: Overweight", "매수"),
+    ("추천: Sell", "매도"),
+    ("추천: Underweight", "매도"),
+    ("추천: Hold", "보유"),
+    # Korean section-title variants seen in analyst output. SNG
+    # 2026-05-17 market body concluded with '투자 제언: HOLD' but
+    # the bare-keyword fallback picked up a later 매수 mention and
+    # mislabeled the stance as 매수.
+    ("투자 제언: BUY", "매수"),
+    ("투자 제언: SELL", "매도"),
+    ("투자 제언: HOLD", "보유"),
+    ("투자 제언: 매수", "매수"),
+    ("투자 제언: 매도", "매도"),
+    ("투자 제언: 보유", "보유"),
+    ("투자 제안: BUY", "매수"),
+    ("투자 제안: SELL", "매도"),
+    ("투자 제안: HOLD", "보유"),
+    ("투자 제안: 매수", "매수"),
+    ("투자 제안: 매도", "매도"),
+    ("투자 제안: 보유", "보유"),
+    # '투자 의견은/의견:' verdict forms. ALAB 2026-05-26 감정 body wrote
+    # "투자 의견은 HOLD입니다" which was NOT in this explicit list, so it
+    # fell through to the bare-keyword fallback and matched 매수 inside a
+    # nearby 과매수 — labelling a HOLD conclusion as 매수. Cover spaced +
+    # unspaced (투자의견) and '은'/':' separators.
+    ("투자 의견은 BUY", "매수"),
+    ("투자 의견은 SELL", "매도"),
+    ("투자 의견은 HOLD", "보유"),
+    ("투자 의견은 매수", "매수"),
+    ("투자 의견은 매도", "매도"),
+    ("투자 의견은 보유", "보유"),
+    ("투자 의견: BUY", "매수"),
+    ("투자 의견: SELL", "매도"),
+    ("투자 의견: HOLD", "보유"),
+    ("투자 의견: 매수", "매수"),
+    ("투자 의견: 매도", "매도"),
+    ("투자 의견: 보유", "보유"),
+    ("투자의견은 BUY", "매수"),
+    ("투자의견은 SELL", "매도"),
+    ("투자의견은 HOLD", "보유"),
+    ("투자의견: BUY", "매수"),
+    ("투자의견: SELL", "매도"),
+    ("투자의견: HOLD", "보유"),
+    # Horizon-based conclusion patterns — LLM sometimes writes
+    # "5거래일 horizon에서는 HOLD를 권고합니다" without a "의견" keyword.
+    # Also covers bare-verb forms: "결론: HOLD", "HOLD를 권고" etc.
+    ("horizon에서는 hold", "보유"),
+    ("horizon에서는 buy", "매수"),
+    ("horizon에서는 sell", "매도"),
+    ("에서는 hold를", "보유"),
+    ("에서는 buy를", "매수"),
+    ("에서는 sell를", "매도"),
+    ("결론: hold", "보유"),
+    ("결론: buy", "매수"),
+    ("결론: sell", "매도"),
+    ("결론은 hold", "보유"),
+    ("결론은 buy", "매수"),
+    ("결론은 sell", "매도"),
+    ("권고: hold", "보유"),
+    ("권고: buy", "매수"),
+    ("권고: sell", "매도"),
+    ("hold를 권고", "보유"),
+    ("buy를 권고", "매수"),
+    ("sell을 권고", "매도"),
+    ("hold를 제시", "보유"),
+    ("buy를 제시", "매수"),
+    ("sell을 제시", "매도"),
+]
+
+
+def _display_ticker(ticker: str) -> str:
+    """Format a ticker for display in headlines and summary cards.
+
+    For KR tickers, prepend the Korean company name from DART so
+    '005930.KS' renders as '삼성전자 / 005930.KS' — KR users find pure
+    numeric tickers hard to read at a glance. US tickers pass through
+    unchanged. Falls back to bare ticker on any lookup failure (DART
+    key missing, name not in cache, etc.) so the report still ships.
+    """
+    try:
+        from bot.market import detect_market
+        market = detect_market(ticker)
+        if market == "KR":
+            from bot.dart_client import get_dart
+            code = (ticker or "").upper().split(".")[0]
+            name = get_dart().stock_code_to_name(code)
+            if name:
+                return f"{name} / {ticker}"
+            return ticker
+        if market == "JP":
+            # JP: prefer yfinance longName (English / occasionally JP). EDINET
+            # Japanese-name lookup will replace this once edinet_client lands.
+            try:
+                from tradingagents.agents.utils.agent_utils import _instrument_info
+                info = _instrument_info(ticker) or {}
+                name = info.get("longName") or info.get("shortName")
+                if name and name.upper() != ticker.upper():
+                    return f"{name} / {ticker}"
+            except Exception:
+                pass
+            return ticker
+        if market == "TW":
+            # TW: yfinance longName usually carries the English corporate
+            # name ('Taiwan Semiconductor Manufacturing Company Limited').
+            # Sometimes the 繁體中文 name comes through ('鴻海精密工業'
+            # for 2317.TW). Either is OK as a display prefix — the
+            # numeric ticker alone (2330.TW / 8299.TWO) is unreadable
+            # at a glance like KR numeric tickers.
+            try:
+                from tradingagents.agents.utils.agent_utils import _instrument_info
+                info = _instrument_info(ticker) or {}
+                name = info.get("longName") or info.get("shortName")
+                if name and name.upper() != ticker.upper():
+                    return f"{name} / {ticker}"
+            except Exception:
+                pass
+            return ticker
+    except Exception:
+        pass
+    return ticker
+
+
+_STANCE_SENTINEL_RE = re.compile(r"<<\s*STANCE\s*:\s*(BUY|HOLD|SELL)\s*>>", re.IGNORECASE)
+_STANCE_SENTINEL_TO_LABEL = {"BUY": "매수", "HOLD": "보유", "SELL": "매도"}
+
+
 def _extract_stance(body: str | None) -> str:
     """Pick the analyst's bottom-line stance from its report body.
 
-    Looks for the LAST occurrence of any known stance keyword — analysts
-    typically conclude with their recommendation, so the last hit is most
-    representative. Returns an empty string when nothing matches.
+    Pass -1 (2026-07-26, claude-trading-skills 리뷰 반영): 4개 분석가
+    프롬프트(get_analyst_directive, agent_utils.py)에 기계가 읽는
+    <<STANCE:BUY|HOLD|SELL>> sentinel 라인을 필수화했다 — 아래 정규식/키워드
+    다단계 스캔은 그 sentinel 이 없을 때(구버전 아카이브·LLM 미준수 등)만
+    쓰이는 폴백. sentinel 이 있으면 최우선으로 신뢰(가장 마지막 occurrence —
+    결론부 재확인/정정 패턴과 동일 철학). 이 pass 추가는 순수 additive — 기존
+    본문에 sentinel 이 없으면 아래 로직은 전혀 안 바뀜(회귀 없음).
+
+    Sentinel 없을 때는 기존 Three-pass 스캔(priority order):
+
+    1. CONCLUSION-ZONE explicit patterns: scan the last 800 characters for
+       explicit recommendation patterns. Analysts write the verdict in the
+       conclusion section near the end; any trailing prose that mentions
+       "매도" or "매수" in passing (e.g. "단기 매도 압력을 시사합니다") is
+       earlier in the document and loses to the conclusion-zone pattern.
+       Fixes 경동나비엔 009450.KS 2026-05-22: market analyst concluded
+       "HOLD 의견을 제시합니다" but trailing "매도 압력을 시사합니다" text
+       caused rightmost-full-body scan to return "매도" instead of "보유".
+    2. Full-body explicit patterns (fallback when conclusion zone has no
+       explicit pattern — rare; covers analysts whose verdict appears early).
+    3. Rightmost bare keyword (last resort).
     """
     if not body:
         return ""
+    sentinel_matches = _STANCE_SENTINEL_RE.findall(body)
+    if sentinel_matches:
+        return _STANCE_SENTINEL_TO_LABEL[sentinel_matches[-1].upper()]
     lower = body.lower()
-    last_pos = -1
-    last_label = ""
-    for keyword, label in _STANCE_KEYWORDS:
-        pos = lower.rfind(keyword.lower())
-        if pos > last_pos:
-            last_pos = pos
-            last_label = label
-    return last_label
+    # Neutralise cited third-party IB ratings ("'매수' 등급", "매도 레이팅")
+    # BEFORE the compound/keyword scans so a quoted rating the analyst is
+    # merely reporting can't win the bare-keyword fallback as if it were the
+    # analyst's own verdict (9988.HK 2026-05-27 news analyst). Regex, not
+    # literal, because the quote/space between 매수 and 등급 varies.
+    lower = _CITED_RATING_RE.sub("○○", lower)
+    # Neutralise cited third-party "매수/매도 의견" (애널리스트들의 매수 의견 …)
+    # so a quoted consensus opinion can't win the explicit-keyword scan as if
+    # it were the analyst's own verdict (2382.TW 2026-05-28 sentiment analyst).
+    lower = _CITED_OPINION_RE.sub("○○", lower)
+    # Neutralise technical / order-flow compounds (과매수 overbought, 순매도
+    # net-sell, 매수세 buying-pressure, …) that embed 매수/매도 as a substring
+    # so the bare-keyword fallback can't rfind them as a buy/sell verdict.
+    # Explicit verdict keywords never contain these compounds, so masking the
+    # whole scan text is safe for all three passes.
+    for _ff in _STANCE_FALSE_FRIENDS:
+        if _ff in lower:
+            lower = lower.replace(_ff, "○○")
+
+    def _match_positions(text_lower: str, kw: str) -> list[int]:
+        """All start positions of `kw` in `text_lower`, rightmost first.
+
+        m7 (2026-05-29 audit): ASCII keywords ('buy'/'sell'/'hold') are
+        matched with WORD BOUNDARIES so they don't fire inside 'buyback' /
+        'household' / 'threshold' / 'seller' / 'stronghold'. Korean keywords
+        have no word boundaries (and their substring false-friends — 과매수
+        / 순매도 — are pre-masked into ○○ above), so they keep plain rfind.
+        Previously the bare-keyword fallback (pass 3) rfind'd 'hold' etc.
+        with no boundary, a latent member of the stance-extraction bug class
+        that cascades into _analyst_majority_direction → PM discipline."""
+        if kw.isascii() and kw.isalpha():
+            return [m.start() for m in
+                    reversed(list(re.finditer(r"\b" + re.escape(kw) + r"\b", text_lower)))]
+        out: list[int] = []
+        pos = text_lower.rfind(kw)
+        while pos >= 0:
+            out.append(pos)
+            pos = text_lower.rfind(kw, 0, pos)
+        return out
+
+    def _rightmost_match_in(text_lower: str, keyword_list):
+        by_len = sorted(keyword_list, key=lambda kv: -len(kv[0]))
+        accepted: list[tuple[int, int]] = []
+        candidates: list[tuple[int, str]] = []
+        for keyword, label in by_len:
+            kw = keyword.lower()
+            for pos in _match_positions(text_lower, kw):
+                end = pos + len(kw)
+                inside = any(s <= pos and end <= e for s, e in accepted)
+                if not inside:
+                    accepted.append((pos, end))
+                    candidates.append((pos, label))
+                    break
+        if not candidates:
+            return ""
+        candidates.sort(key=lambda kv: -kv[0])
+        return candidates[0][1]
+
+    # Pass 0: verdict DECLARATION in conclusion zone ("투자 의견: HOLD",
+    # "결론은 매수"). Highest priority — this is the analyst explicitly
+    # naming its own bottom-line, which the value-first explicit-keyword
+    # list ("HOLD 의견") doesn't cover. Take the rightmost declaration so a
+    # late "최종 결론" wins over an earlier "초기 투자 의견".
+    _CONCLUSION_ZONE = 800
+    zone_lower = lower[-_CONCLUSION_ZONE:] if len(lower) > _CONCLUSION_ZONE else lower
+    decl = None
+    for m in _VERDICT_DECL_RE.finditer(zone_lower):
+        decl = m.group(1)
+    if decl:
+        return _VERDICT_WORD_TO_LABEL[decl.lower()]
+
+    # Pass 1: explicit patterns in conclusion zone (last 800 chars)
+    zone_hit = _rightmost_match_in(zone_lower, _STANCE_EXPLICIT_KEYWORDS)
+    if zone_hit:
+        return zone_hit
+
+    # Pass 2: explicit patterns full body
+    full_hit = _rightmost_match_in(lower, _STANCE_EXPLICIT_KEYWORDS)
+    if full_hit:
+        return full_hit
+
+    # Pass 3: bare keyword fallback
+    return _rightmost_match_in(lower, _STANCE_KEYWORDS)
 
 
-def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
-    rating = _extract_rating(decision) or "N/A"
+
+_DECISION_DIRECTION = {
+    "Buy": "buy", "Overweight": "buy",
+    "Sell": "sell", "Underweight": "sell",
+    "Hold": "hold",
+}
+_STANCE_DIRECTION_KEYWORDS = (
+    ("매수", "buy"),
+    ("매도", "sell"),
+    ("보유", "hold"),
+)
+_DIRECTION_KR = {"buy": "매수", "sell": "매도", "hold": "보유"}
+
+
+# ── Fix F + G (2026-05-23, FORM US 7-axis + 외부 검증자 3차 피드백) ─────────
+# PM Override Discipline code-enforcement.
+# FORM case: 4/4 unanimous Hold + Trader Hold → PM Overweight without trigger
+# → system must force HOLD. CLAUDE.md rule: RSI ≥75/≤25 수치, catalyst D-N일,
+# HARD GUARD keyword 중 하나가 PM rationale에 명시돼야 unanimous override 허용.
+# Rule applies to all analyses going forward — US + KR + JP + TW + CN/HK.
+
+# Technical-extreme triggers are DIRECTIONAL (mirrors the in-graph
+# _override_trigger_directional, LG전자 2026-05-22): 과매수/overbought only
+# justifies a DOWNWARD (sell-side) override, 과매도/oversold only an UPWARD
+# (buy-side) override. Using an overbought signal to bless a Hold→Buy
+# override is a direction mismatch — the ALAB 2026-05-26 failure mode.
+_PM_TRIGGER_OVERBOUGHT = ("과매수", "overbought")
+_PM_TRIGGER_OVERSOLD = ("과매도", "oversold")
+# Direction-agnostic event triggers — qualify regardless of override direction.
+_PM_TRIGGER_KEYWORDS = (
+    "기술적 극단",
+    "시장경보", "거래정지", "주식분할", "감자", "무상증자",
+    "corp action", "corporate action", "hard guard",
+    "데이터 없음", "데이터 부재", "데이터를 사용할 수 없",
+    "어닝 발표", "실적 발표", "fomc", "가격 인상",
+    "이벤트 리스크", "event risk", "catalyst",
+    "st/*st", "정지", "停牌",
+)
+
+
+def _has_pm_override_trigger(text: str, pm_dir: str | None = None) -> bool:
+    """Return True if text contains a valid PM override trigger.
+
+    When pm_dir ('buy'/'sell'/'hold') is supplied, technical-extreme triggers
+    are direction-checked: RSI≥75 / 과매수 only validate a sell-side override,
+    RSI≤25 / 과매도 only a buy-side override. With pm_dir=None the check is
+    permissive (any extreme counts) — preserves the old call-site behaviour.
+    Threshold aligned to CLAUDE.md + in-graph discipline (≥75/≤25).
+    Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    """
+    low = text.lower()
+    # RSI extreme with a concrete number — direction-aware.
+    for m in re.finditer(r'rsi\s*[\(（]?\d*[\)）]?\s*[:：\s]\s*(\d+\.?\d*)', low):
+        try:
+            val = float(m.group(1))
+            if val >= 75 and pm_dir in (None, "sell"):
+                return True  # overbought → valid sell-side trigger only
+            if val <= 25 and pm_dir in (None, "buy"):
+                return True  # oversold → valid buy-side trigger only
+        except Exception:
+            pass
+    # Textual technical extreme — same direction semantics as RSI.
+    if any(kw in low for kw in _PM_TRIGGER_OVERBOUGHT) and pm_dir in (None, "sell"):
+        return True
+    if any(kw in low for kw in _PM_TRIGGER_OVERSOLD) and pm_dir in (None, "buy"):
+        return True
+    # D-N catalyst countdown phrase — direction-agnostic.
+    if re.search(r'd[-\s]*[1-9]\d?\s*일?|\b[1-9]\d?\s*일\s*(이내|후|이후)', low):
+        return True
+    # Direction-agnostic event keywords.
+    if any(kw in low for kw in _PM_TRIGGER_KEYWORDS):
+        return True
+    return False
+
+
+def _get_unanimous_analyst_direction(state: dict) -> str | None:
+    """Return 'buy'/'hold'/'sell' if ALL voted analysts unanimously agree.
+    Returns None when fewer than 2 analysts voted or they disagree.
+    """
+    counts = {"buy": 0, "sell": 0, "hold": 0}
+    total_voted = 0
+    for key, _, _ in _SECTION_LABELS_FOR_SUMMARY:
+        body = state.get(key) if isinstance(state, dict) else None
+        if not body or not body.strip():
+            continue
+        stance = _extract_stance(body)
+        if not stance:
+            continue
+        total_voted += 1
+        for kw, direction in _STANCE_DIRECTION_KEYWORDS:
+            if kw in stance:
+                counts[direction] += 1
+                break
+    if total_voted < 2:
+        return None
+    for direction, count in counts.items():
+        if count == total_voted:
+            return direction
+    return None
+
+
+def _check_pm_override_required(
+    state: dict, decision: str
+) -> tuple[str | None, str]:
+    """Check PM Override Discipline (Fix F) and Trader consistency (Fix G).
+
+    Returns (override_rating, override_note):
+      override_rating = 'Hold' when system forces HOLD; None otherwise.
+      override_note   = explanation string (empty when PM is legitimate).
+
+    Fix F: if ALL voted analysts unanimously disagree with PM direction AND
+    PM rationale contains no trigger (RSI ≥75/≤25 / catalyst D-N일 / HARD
+    GUARD), → auto-force HOLD.
+
+    Fix G: if Trader says HOLD but PM says BUY/Overweight and no trigger
+    → also auto-force HOLD.
+    """
+    pm_rating = _extract_rating(decision)
+    if pm_rating is None:
+        return None, ""
+    final_dir = _DECISION_DIRECTION.get(pm_rating, "")
+    if not final_dir:
+        return None, ""
+
+    # Build combined text for trigger check (PM rationale + investment plan)
+    combined = " ".join([
+        decision,
+        (state.get("investment_plan") or "") if isinstance(state, dict) else "",
+    ])
+
+    # Fix F: Unanimous analyst direction check
+    unanimous_dir = _get_unanimous_analyst_direction(state)
+    if unanimous_dir and unanimous_dir != final_dir:
+        if _has_pm_override_trigger(combined, final_dir):
+            return None, ""  # trigger present — PM override is legitimate
+        analyst_kr = _DIRECTION_KR.get(unanimous_dir, unanimous_dir)
+        note = (
+            f"⛔ **PM OVERRIDE 자동 차단** (시스템 강제 HOLD):\n"
+            f"분석가 전원 '{analyst_kr}' 합의 → PM {pm_rating} override 시도\n"
+            f"RSI ≥75/≤25 수치 미인용 · 임박 catalyst D-N일 미명시 · HARD GUARD 없음\n"
+            f"→ 시스템이 자동으로 **HOLD** 로 변환. PM 원문은 아래 참고."
+        )
+        return "Hold", note
+
+    # Fix G: Trader → Final consistency check
+    trader_body = (state.get("trader_investment_plan") or "") if isinstance(state, dict) else ""
+    if trader_body:
+        trader_stance = _extract_stance(trader_body)
+        if trader_stance:
+            for kw, trader_dir in _STANCE_DIRECTION_KEYWORDS:
+                if kw in trader_stance:
+                    if trader_dir == "hold" and final_dir in ("buy", "sell"):
+                        if not _has_pm_override_trigger(combined, final_dir):
+                            note = (
+                                f"⛔ **PM-Trader 불일치 자동 차단** (시스템 강제 HOLD):\n"
+                                f"Trader '{trader_stance}' → PM {pm_rating} — 방향 상충,"
+                                f" trigger(RSI/catalyst/HARD GUARD) 미인용\n"
+                                f"→ 시스템이 자동으로 **HOLD** 로 변환. PM 원문은 아래 참고."
+                            )
+                            return "Hold", note
+                    break
+
+    return None, ""
+
+
+_PM_INGRAPH_SENTINEL = "[PM override discipline 자동 보정]"
+
+
+def _mask_overridden_pm_rating(decision: str) -> str:
+    """강제 HOLD 시 PM 원문에 노출된 비-Hold 등급 표기를 취소선+주석으로
+    마스킹 (082920 2026-06-11 외부 리뷰: '⛔ 자동 차단' 바로 밑에 PM 원문
+    'Overweight' 가 그대로 노출돼 최종 Hold ↔ Overweight 시각 혼선).
+
+    decision 본문의 라인 단위로, 그 줄이 사실상 등급 선언(라인 전체가
+    등급어 1개, 또는 '추천:/판정:/Rating:' 등 접두 + 등급어)일 때만
+    `~~Overweight~~ (시스템 기각 — 최종 HOLD)` 로 치환. 근거 서술 안의
+    'overweight' 단어는 건드리지 않음(과수정 방지)."""
+    _OVR = ("Overweight", "Buy", "Underweight", "Sell")
+    _PREFIX = ("추천", "판정", "등급", "최종", "의견", "rating", "call",
+               "recommendation", "decision")
+    out: list[str] = []
+    for ln in decision.split("\n"):
+        s = ln.strip()
+        if not s:
+            out.append(ln)
+            continue
+        matched = None
+        for w in _OVR:
+            # 케이스1: 줄 전체가 등급어 1개 (앞뒤 기호/공백 허용)
+            if re.fullmatch(rf"[\*\s>·•\-]*{w}[\*\s\.!]*", s, re.IGNORECASE):
+                matched = w
+                break
+            # 케이스2: '추천: Overweight' 류 (접두어 + 등급어로 끝)
+            m = re.match(
+                rf"^(.{{0,18}}?)\b{w}\b[\*\s\.!]*$", s, re.IGNORECASE)
+            if m and any(p in m.group(1).lower() for p in
+                         (p.lower() for p in _PREFIX)):
+                matched = w
+                break
+        if matched:
+            out.append(re.sub(rf"\b{matched}\b",
+                              f"~~{matched}~~ (시스템 기각 — 최종 HOLD)",
+                              ln, count=1, flags=re.IGNORECASE))
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
+
+def _log_pm_override_conflict(
+    ticker: str, trade_date: str, state: dict, decision: str, override_note: str
+) -> None:
+    """Phase 0 M2 audit (2026-05-29): record the cases where the analyzer-
+    layer Fix F/G forces HOLD on a decision the IN-GRAPH discipline had
+    ALREADY aligned to the analyst majority (sentinel present in the
+    rendered decision). That co-occurrence IS the M2 two-layer conflict —
+    in-graph trusts the analyst majority (aligns PM up to Buy/Sell), then
+    the analyzer layer (Fix G Trader-veto, usually) drags it back to Hold.
+
+    ZERO behavior change: the override is still applied exactly as today.
+    This only appends a JSONL audit line so bot/pm_override_audit.py can
+    quantify how often the conflict fires + (joined with resolved 5d
+    outcomes) whether following the analyst-aligned verdict or the forced
+    Hold produced better calls — i.e. decide the policy from data, not
+    guesswork. Best-effort; never raises into the analysis path."""
+    if not override_note or _PM_INGRAPH_SENTINEL not in (decision or ""):
+        return
+    try:
+        m = re.search(r"PM 1차 판단 \(([^)]+)\)", decision)
+        rec = {
+            "ts": time.time(),
+            "event": "pm_override_conflict",
+            "ticker": ticker,
+            "trade_date": trade_date,
+            "analyst_unanimous": _get_unanimous_analyst_direction(state),
+            "pm_1cha_rating": m.group(1) if m else "",
+            "in_graph_aligned_rating": _extract_rating(decision),
+            "analyzer_forced": "Hold",
+            "fix": "G" if "PM-Trader" in override_note else "F",
+            "note_head": override_note[:100],
+        }
+        path = Path.home() / ".tradingagents" / "pm_override_audit.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        log.info(
+            "pm-override-conflict [M2]: %s %s — in-graph aligned→%s, analyzer Fix %s forced Hold",
+            ticker, trade_date, rec["in_graph_aligned_rating"], rec["fix"],
+        )
+    except Exception as exc:
+        log.debug("pm_override_audit log failed: %s", exc)
+
+
+# ── End Fix F + G ────────────────────────────────────────────────────────────
+
+
+def _detect_stance_decision_mismatch(state: dict, final_rating: str) -> str:
+    """Return a one-line warning when the analyst-section stance majority
+    disagrees with the final BUY/HOLD/SELL direction. Empty string when
+    they agree or the signal is too weak.
+
+    The debate / decision LLMs sometimes legitimately override the
+    analyst consensus — e.g. when the bear surfaces a new framing the
+    analysts missed (the GOOGL 2026-05-10 case: 4×보유 → Underweight
+    after the bear caught the Q1 26 81% earnings jump being driven by
+    a one-off security sale; the PLUG 2026-05-10 case: 2 매수 + 1 보유
+    + 1 매도 → Sell after the bear surfaced cash-burn / dilution risk).
+    That's valuable, not a bug. But the summary card showing the stance
+    bar alongside a contradicting verdict is genuinely confusing to
+    read, and the user deserves to know to re-read the decision
+    rationale instead of glossing over.
+
+    Trigger rule: more analysts disagreed with the final direction than
+    agreed. A 2-2 tie where the final matches one side, or a 3-1 with
+    the final matching the 3, both stay quiet.
+    """
+    final_dir = _DECISION_DIRECTION.get(final_rating)
+    if not final_dir:
+        return ""
+    counts = {"buy": 0, "sell": 0, "hold": 0}
+    for key, _, _ in _SECTION_LABELS_FOR_SUMMARY:
+        body = state.get(key) if isinstance(state, dict) else None
+        stance = _extract_stance(body)
+        if not stance:
+            continue
+        for kw, direction in _STANCE_DIRECTION_KEYWORDS:
+            if kw in stance:
+                counts[direction] += 1
+                break
+    total = sum(counts.values())
+    if total < 2:
+        return ""  # too few stances to form a meaningful comparison
+    final_count = counts.get(final_dir, 0)
+    disagreeing = total - final_count
+    if disagreeing <= final_count:
+        return ""
+    # Show actual breakdown so the user can see WHY we're flagging.
+    breakdown = " · ".join(
+        f"{_DIRECTION_KR[d]} {c}" for d, c in counts.items() if c > 0
+    )
+    lines = [
+        f"⚠️ 분석가 stance vs 결정: {breakdown} → 결정 "
+        f"{_DIRECTION_KR[final_dir]} ({final_count}/{total}명만 동의, "
+        f"토론·결정 단계가 다수 분석가와 다른 결론)"
+    ]
+    rationale = _extract_decision_rationale(state)
+    if rationale:
+        lines.append(f"결정 근거: {rationale}")
+    return "\n".join(lines)
+
+
+def _detect_trader_decision_divergence(state: dict, final_rating: str) -> str:
+    """One-line transparency note when the FINAL rating direction diverges
+    from the Trader's action direction. The Trader is the last synthesis node
+    before the PM, so a Trader Sell → final Hold (자이에스앤디 317400.KS
+    2026-05-26: Trader Sell / RM Underweight, final Hold) reads as an
+    unexplained reversal on the card. The PM landing more conservatively than
+    the Trader is legitimate (e.g. an oversold bounce risk argues against a
+    fresh Sell), but the reader deserves a pointer to the decision rationale
+    rather than a silent contradiction. Empty when they align or the Trader
+    produced no readable stance. Universal — all markets."""
+    final_dir = _DECISION_DIRECTION.get(final_rating)
+    if not final_dir:
+        return ""
+    trader_body = (state.get("trader_investment_plan") or "") if isinstance(state, dict) else ""
+    trader_stance = _extract_stance(trader_body)
+    if not trader_stance:
+        return ""
+    trader_dir = ""
+    for kw, direction in _STANCE_DIRECTION_KEYWORDS:
+        if kw in trader_stance:
+            trader_dir = direction
+            break
+    if not trader_dir or trader_dir == final_dir:
+        return ""
+    return (
+        f"⚠️ 트레이더 {_DIRECTION_KR.get(trader_dir, trader_dir)} → 최종 "
+        f"{_DIRECTION_KR.get(final_dir, final_dir)} (PM(최종 결정권자)의 자체 "
+        f"판단 — 리서치 매니저·트레이더와 다른 결론, PM이 분석가·밸류에이션 "
+        f"종합. 근거 참고)"
+    )
+
+
+def _detect_discipline_forced_hold_banner(state: dict, decision: str) -> str:
+    """Banner for the case where final HOLD was FORCED by PM override
+    discipline (Fix F/G), not by a genuine PM-vs-Trader disagreement.
+
+    IBM 2026-06-02 surfaced the misread: PM=Overweight, Trader=Buy (둘 다
+    매수) but 분석가 4명 전원 보유 + PM rationale 에 RSI≥75 sell-side trigger
+    도 D-N일 임박 catalyst 도 없어 Fix F 가 HOLD 강제. The old trader-
+    divergence banner said '트레이더 매수 → 최종 보유 (PM이 트레이더와 다른
+    결론)' which falsely implies the PM landed on Hold — when the PM actually
+    voted matching the Trader and the SYSTEM overrode both to HOLD.
+
+    Surfaces the real mechanism: 분석가 합의 방향 + PM 원래 등급 + discipline
+    강제 HOLD. Universal — all markets. Empty when the inputs aren't readable.
+    """
+    # Recover the PM's ORIGINAL (pre-discipline) rating. Two force layers:
+    #  - analyzer Fix F/G: the decision text is unmodified, so _extract_rating
+    #    yields the PM's original non-Hold rating directly (IBM 2026-06-02).
+    #  - in-graph _enforce_pm_override_discipline (portfolio_manager.py): the
+    #    decision was ALREADY downgraded to Hold with a sentinel note appended,
+    #    so _extract_rating returns 'Hold' (→ a nonsensical 'Hold override Hold'
+    #    banner). Parse the original from the note's 'PM 1차 판단 (X)' instead.
+    #    삼성전기 009150 2026-06-04 took exactly this in-graph path.
+    pm_rating = None
+    m_orig = re.search(r"PM 1차 판단 \(([^)]+)\)", decision or "")
+    if m_orig:
+        pm_rating = m_orig.group(1).strip()
+    if not pm_rating:
+        pm_rating = _extract_rating(decision)
+    pm_dir = _DECISION_DIRECTION.get(pm_rating or "", "")
+    unanimous = _get_unanimous_analyst_direction(state)
+    if not pm_rating or not pm_dir or not unanimous:
+        # Fall back to the generic divergence note if we can't reconstruct
+        # the discipline context (defensive — banner should still inform).
+        return _detect_trader_decision_divergence(state, "Hold")
+    analyst_kr = _DIRECTION_KR.get(unanimous, unanimous)
+    pm_kr = _DIRECTION_KR.get(pm_dir, pm_dir)
+    return (
+        f"⚠️ 시스템 강제 보유 (PM override discipline): 분석가 전원 "
+        f"'{analyst_kr}' 합의인데 PM '{pm_rating}({pm_kr})' override 시도 → "
+        f"RSI≥75/≤25 또는 임박 catalyst(D-N일) 미인용으로 자동 HOLD 변환. "
+        f"PM·트레이더 의견이 아닌 시스템 보정 결과. 결정 근거 참고."
+    )
+
+
+_RATIONALE_BLOCK_RE = re.compile(
+    r"근거\s*:\s*(.+?)(?=\s*전략\s*실행\s*:|\s*거래\s*액션\s*:|$)",
+    re.DOTALL,
+)
+
+
+def _extract_decision_rationale(state: dict) -> str:
+    """Pull a short version of the decision rationale from research_manager's
+    investment_plan. Returns the first 1–2 sentences after '근거:' or empty
+    string when the marker isn't present.
+
+    The full rationale is several paragraphs long; the summary card only has
+    room for one line, so we trim aggressively. Truncation rules:
+      * stop at the next major section header (전략 실행, 거래 액션)
+      * keep the LAST 2 sentences (the verdict + its reasoning live there;
+        the first sentences are typically scene-setting that says
+        "this was a contest between bull and bear" without conveying
+        which side won)
+      * hard-cap at 220 chars and ellipsize if needed
+    """
+    plan = (state.get("investment_plan") or "") if isinstance(state, dict) else ""
+    if not plan:
+        return ""
+    m = _RATIONALE_BLOCK_RE.search(plan)
+    if not m:
+        return ""
+    body = m.group(1).strip()
+    if not body:
+        return ""
+    # Split on Korean sentence enders + ASCII period; take last 2 sentences
+    # so the verdict and its reasoning come through instead of the intro.
+    sentences = [s.strip() for s in re.split(r"(?<=[.다요])\s+", body) if s.strip()]
+    if not sentences:
+        return ""
+    tail = sentences[-2:] if len(sentences) >= 2 else sentences
+    out = " ".join(tail).strip()
+    if len(out) > 220:
+        out = out[:217].rstrip() + "…"
+    return out
+
+
+def _format_summary(
+    state: dict,
+    decision: str,
+    ticker: str,
+    date_: str,
+    past_outcomes: str = "",
+    notes: list[str] | None = None,
+    override_rating: str | None = None,  # Fix F — PM override enforcement
+) -> str:
+    rating = override_rating or _extract_rating(decision) or "N/A"
+    display = _display_ticker(ticker)
     parts = [
-        f"📊 **{ticker}** ({date_})",
+        f"📊 **{display}** ({date_})",
         "━━━━━━━━━━━━━━",
         f"🎯 최종 판정: **{rating}**",
     ]
+    if past_outcomes:
+        parts.append(past_outcomes)
+    # Pre-flight notes (news pre-check, ETF detection, etc) sit right
+    # under the headline so the user knows up front which analyst paths
+    # were skipped before reading the stance bar — otherwise a missing
+    # 📰 뉴스 line in the stance bar looks like a silent failure.
+    if notes:
+        for note in notes:
+            parts.append(note)
     # Compact one-line per-analyst stance bar so the user sees who voted
     # what at a glance, before the longer per-section snippets.
+    # Fallback to '미명시' when an analyst body produces no recognizable
+    # verdict — 한국전력공사 2026-05-17 had the fundamentals body skip
+    # the explicit verdict line, so the stance bar silently dropped from
+    # 4 entries to 3 and the user couldn't tell whether the analyst
+    # actually ran. Showing '미명시' instead of omission makes the gap
+    # visible and prevents the mismatch detector's denominator from
+    # silently shrinking.
     stance_chunks = []
-    for key, icon in _SECTION_LABELS_FOR_SUMMARY:
+    for key, icon, name in _SECTION_LABELS_FOR_SUMMARY:
         body = state.get(key) if isinstance(state, dict) else None
-        stance = _extract_stance(body)
-        if stance:
-            stance_chunks.append(f"{icon} {stance}")
+        if not body or not body.strip():
+            continue  # analyst was pre-flight-skipped; don't show entry at all
+        stance = _extract_stance(body) or "미명시"
+        stance_chunks.append(f"{icon} {name}: {stance}")
     if stance_chunks:
         parts.append("  ·  ".join(stance_chunks))
+    # Surface analyst-vs-decision direction mismatch on its own line so
+    # the user doesn't gloss over a verdict that contradicts the stance bar.
+    mismatch = _detect_stance_decision_mismatch(state, rating)
+    if mismatch:
+        parts.append(mismatch)
+    # Trader → final divergence (e.g. Trader Sell, final Hold) gets its own
+    # transparency line so the synthesis chain doesn't look self-contradictory.
+    # When override_rating is set, the final HOLD was FORCED by PM override
+    # discipline (Fix F/G) — NOT a PM-vs-Trader disagreement. The default
+    # divergence banner ('PM이 트레이더와 다른 결론') misreads that case:
+    # IBM 2026-06-02 had PM=Overweight + Trader=Buy (둘 다 매수) but Fix F
+    # forced HOLD (분석가 4명 전원 보유 + trigger 없음). Showing '트레이더
+    # 매수 → 최종 보유 (PM이 트레이더와 다른 결론)' falsely implies the PM
+    # disagreed. Replace with an accurate discipline-forced banner.
+    # The discipline can force HOLD at EITHER layer: the analyzer Fix F/G
+    # (override_rating == 'Hold') OR the in-graph _enforce_pm_override_
+    # discipline (portfolio_manager.py), which downgrades the PM verdict and
+    # leaves the sentinel in the decision text. The IBM 2026-06-02 fix only
+    # covered the analyzer layer, so an in-graph-forced HOLD (삼성전기 009150
+    # 2026-06-04: PM 1차 Overweight → 강제 Hold, sentinel present) fell through
+    # to the generic 'PM이 트레이더와 다른 결론' banner — which misled even an
+    # external reviewer into diagnosing a non-existent enum bug. Route BOTH
+    # layers to the accurate discipline banner.
+    discipline_forced = override_rating == "Hold" or (
+        rating == "Hold" and _PM_INGRAPH_SENTINEL in (decision or "")
+    )
+    if discipline_forced:
+        trader_divergence = _detect_discipline_forced_hold_banner(state, decision)
+    else:
+        trader_divergence = _detect_trader_decision_divergence(state, rating)
+    if trader_divergence:
+        parts.append(trader_divergence)
     parts.append("")
     # One key sentence per analyst section, so the summary tells the user
     # WHY without forcing them to expand the full report.
-    for key, icon in _SECTION_LABELS_FOR_SUMMARY:
+    for key, icon, name in _SECTION_LABELS_FOR_SUMMARY:
         body = state.get(key) if isinstance(state, dict) else None
         snippet = _first_meaningful_sentence(body) if body else ""
         if snippet:
-            parts.append(f"{icon} {snippet}")
+            parts.append(f"{icon} **{name}**: {snippet}")
     parts.append("")
     parts.append(_first_lines(decision, max_lines=4))
     return "\n".join(parts)
@@ -195,6 +1380,12 @@ def _first_meaningful_sentence(text: str, max_chars: int = 200) -> str:
         if line.startswith(("#", "•", "*", "-", "|")):
             continue
         if line.endswith(":"):
+            continue
+        # Strip the rating echo lines that managers/analysts sometimes put
+        # at the very top of their report — those bubble up into the user-
+        # facing summary as a redundant 'FINAL TRANSACTION PROPOSAL: HOLD'
+        # line that's already conveyed by the per-analyst stance bar.
+        if "FINAL TRANSACTION PROPOSAL" in line.upper():
             continue
         if len(line) < 30:
             continue
@@ -215,19 +1406,106 @@ _REPORT_SECTIONS = [
     ("sentiment_report", "💬 감정 분석", "social"),
     ("news_report", "📰 뉴스 분석", "news"),
     ("fundamentals_report", "💰 펀더멘털", "fundamentals"),
-    ("investment_plan", "🧭 투자 계획", None),
+    ("investment_plan", "🧭 투자 계획 (리서치 매니저)", None),
     ("trader_investment_plan", "💼 트레이더 제안", None),
 ]
 
 
-def _format_full(state: dict, decision: str, ticker: str, date_: str) -> str:
-    parts = [f"📋 {ticker} 전체 리포트 ({date_})\n"]
+def _extract_canonical(ticker: str) -> dict:
+    """Pull key numeric facts for post-processing validation.
+
+    Used by _clean_section → _polish to cross-check analyst output numbers
+    against yfinance ground truth. Returns {} on any failure.
+    """
+    try:
+        from tradingagents.agents.utils.agent_utils import _instrument_info
+        from bot.market import get_market_config
+        info = _instrument_info(ticker)
+        cfg  = get_market_config(ticker)
+        result: dict = {
+            "currency":        cfg.get("currency", "USD"),
+            "currency_symbol": cfg.get("currency_symbol", "$"),
+        }
+        mc = info.get("marketCap")
+        px = info.get("currentPrice") or info.get("regularMarketPrice")
+        if isinstance(mc, (int, float)) and mc > 0:
+            result["market_cap"] = mc
+        if isinstance(px, (int, float)) and px > 0:
+            result["current_price"] = px
+        return result
+    except Exception:
+        return {}
+
+
+def _format_full(
+    state: dict,
+    decision: str,
+    ticker: str,
+    date_: str,
+    past_outcomes: str = "",
+    selected: list[str] | None = None,
+    override_note: str | None = None,  # Fix F — PM override note
+) -> str:
+    """Render the long-form report. `selected` is the per-run list of
+    analyst ids that actually ran — when the pre-flight pruning drops
+    one (e.g. news for a 0-coverage KR ticker), we use the run-level
+    list so the section header isn't followed by a misleading
+    '_(모델 응답 오류로 미완성)_' placeholder. Falls back to the
+    module-default list when callers don't pass anything."""
+    parts = [f"📋 {_display_ticker(ticker)} 전체 리포트 ({date_})\n"]
+    if past_outcomes:
+        parts.append(past_outcomes + "\n")
+    # Ticker-derived currency symbol for polish step. Trader / PM
+    # sections often have zero currency marker in their own body text;
+    # the per-section body-scan in _polish misses them. Pass the
+    # MARKET_CONFIG symbol explicitly so 'Stop Loss 3,150' becomes
+    # 'NT$3,150' for TW tickers regardless of whether Trader's body
+    # mentions NT$.
+    try:
+        from bot.market import get_market_config
+        _section_currency_symbol = get_market_config(ticker).get("currency_symbol", "")
+    except Exception:
+        _section_currency_symbol = ""
+    # Pre-extract canonical numbers once for the whole report so every
+    # section's post-processing validator can cross-check against ground truth.
+    _canonical = _extract_canonical(ticker)
+    run_selected = set(selected) if selected is not None else set(_SELECTED_ANALYSTS)
+    module_default = set(_SELECTED_ANALYSTS)
     for key, label, analyst_id in _REPORT_SECTIONS:
-        if analyst_id is not None and analyst_id not in _SELECTED_ANALYSTS:
-            continue  # we never ran this analyst — skip the section entirely
+        if analyst_id is not None and analyst_id not in module_default:
+            # never wired into the graph at all — skip silently
+            continue
+        if analyst_id is not None and analyst_id not in run_selected:
+            # Pre-flight pruning dropped this analyst on this run.
+            # Surface a clear '자동 생략' line instead of letting the
+            # section fall through to the generic FAILURE_PLACEHOLDER
+            # which reads as a model error — the user already saw the
+            # skip note in the summary header and shouldn't see a
+            # contradicting 'oops' message in the full report.
+            parts.append(
+                f"\n## {label}\n_(분석가 자동 생략 — 사전 데이터 부족 또는"
+                f" 종목 특성상 해당 분석을 진행하지 않았습니다. 요약 메시지"
+                f" 상단의 사유를 참고하세요.)_"
+            )
+            continue
         body = state.get(key) if isinstance(state, dict) else None
-        parts.append(f"\n## {label}\n{_clean_section(body)}")
-    parts.append(f"\n## ✅ 최종 결정\n{decision}")
+        _section_cleaned = _clean_section(
+            body, currency_symbol=_section_currency_symbol, canonical=_canonical,
+        )
+        if key == "trader_investment_plan":
+            _section_cleaned = _flag_trader_price_hallucination(
+                _section_cleaned, canonical=_canonical,
+            )
+        parts.append(f"\n## {label}\n{_section_cleaned}")
+    # 강제 HOLD(override_note 존재 = _check_pm_override_required 가 HOLD
+    # 강제한 경우만 채워짐) 시 PM 원문의 비-Hold 등급 표기를 마스킹 —
+    # 배너는 HOLD 인데 원문 'Overweight' 가 그대로 노출돼 혼선 나던 것
+    # (082920 2026-06-11 외부 review).
+    _pm_section = (
+        f"{override_note}\n\n---\n{_mask_overridden_pm_rating(decision)}"
+        if override_note else decision
+    )
+    parts.append(f"\n## ✅ 최종 결정\n{_pm_section}")
     return "\n".join(parts)
 
 
@@ -269,7 +1547,22 @@ _INSTRUMENT_CTX_RE = re.compile(
 # Bullet rows where the agent padded a single point-in-time value with
 # trailing '— -' placeholders (e.g. '시가총액: $36.94B — - — - — -').
 # Collapse to just the value(s) actually present.
-_DASH_PADDING_RE = re.compile(r"(?:\s+[—\-]+\s+-){2,}\s*$", re.MULTILINE)
+_DASH_PADDING_RE = re.compile(r"(?: [—\-]{1,5} -){2,15}\s*$", re.MULTILINE)
+
+# Comps dash-chain detector (Fix D, 9988.HK 2026-05-27). A multiple-value
+# cell is a number (optional sign/decimal), N/M (optional parenthetical),
+# N/A, or 적자. A line whose trailing 5 cells are all such values separated
+# by ' — ' is a Comps row that dropped its PER/Fwd PER/PSR/PBR/EV-EBITDA
+# labels; the polish step re-attaches them. Name part excludes the em-dash
+# so a hyphenated company name still parses. Compiled once at module load.
+_COMPS_CELL = r"(?:-?\d+(?:\.\d+)?|N/M(?:\([^)\n]*\))?|N/A|적자)"
+_COMPS_DASH_RE = re.compile(
+    r"^([ \t]*[•·*\-]?[ \t]*\S[^\n—]*?)[ \t]*—[ \t]*(" + _COMPS_CELL +
+    r")[ \t]*—[ \t]*(" + _COMPS_CELL + r")[ \t]*—[ \t]*(" + _COMPS_CELL +
+    r")[ \t]*—[ \t]*(" + _COMPS_CELL + r")[ \t]*—[ \t]*(" + _COMPS_CELL +
+    r")[ \t]*$",
+    re.MULTILINE,
+)
 
 # English structured-field labels that the research_manager / trader / risk
 # debators emit even under a Korean directive. The patterns tolerate
@@ -299,16 +1592,30 @@ _LARGE_NUM_RE = re.compile(
 _LONG_DECIMAL_RE = re.compile(r"(?<![\d.])(\d+\.\d{5,})(?![\d.])")
 # Runaway repetition Gemini sometimes emits ('--------…' x thousands of chars).
 _RUNAWAY_CHAR_RE = re.compile(r"([\-=_*#~])\1{29,}")
+# Whole lines that are essentially nothing but dashes / equals / underscores
+# (Markdown table separators echoed dozens of times). _RUNAWAY_CHAR_RE
+# misses these when whitespace breaks the run; this pattern catches lines
+# made of those chars even with intermixed spaces. 15 minimum keeps real
+# horizontal rules ('---' as a Markdown separator) intact.
+_DASH_LINE_RE = re.compile(r"(?m)^[\s\-=_*#~]{15,}$\n?")
 
 # Korean place-value reading like '46억 7100만 64 달러' that Gemini often emits
 # when reading large dollar amounts verbatim. We rewrite them as '약 47억 달러'.
 _KO_NUM_RE = re.compile(
     r"(?<![\w가-힣])"
-    r"(?:(\d{1,4})\s*조\s*)?"
-    r"(?:(\d{1,4})\s*억\s*)?"
-    r"(?:(\d{1,4})\s*만\s*)?"
+    # Require at least one of the place-value groups OR a leading digit
+    # before '달러'. The previous fully-optional structure (every group
+    # `?`) gave the engine free rein to try empty matches at every
+    # '달러' occurrence; on a 76K-char fundamentals body the catastrophic
+    # backtracking triggered the SIGALRM step guard. The lookahead anchors
+    # the prefix so the regex only fires when there's actually a number to
+    # normalize.
+    r"(?=\d)"
+    r"(?:(\d{1,4})\s{0,3}조\s{0,3})?"
+    r"(?:(\d{1,4})\s{0,3}억\s{0,3})?"
+    r"(?:(\d{1,4})\s{0,3}만\s{0,3})?"
     r"(\d{1,4})?"
-    r"\s*달러"
+    r"\s{0,3}달러"
     r"(?!\w)"
 )
 
@@ -339,6 +1646,23 @@ _DUP_HEADER_RE = re.compile(
 # content in between is also a re-emission signal (catches cases like
 # '1. 가격 추세' restarting after '1. 이동평균선' has already been used).
 _DUP_NUMBERED_RE = re.compile(r"(?m)^\s*1\.\s+\S")
+# Cross-section emoji headers that an analyst should never include in
+# its OWN body — they belong to downstream nodes (research_manager /
+# trader / portfolio_manager). When the fundamentals analyst goes into
+# a re-emission loop (ONTO 2026-05-10 case) it sometimes mimics the
+# downstream report format and writes these headers itself, repeating
+# them at the tail. A second occurrence of any of these inside a single
+# analyst body is unambiguous evidence of duplication — truncate at it.
+_DUP_DOWNSTREAM_RE = re.compile(
+    r"(?m)^\s*(?:🧭\s*투자\s*계획|💼\s*트레이더\s*제안|✅\s*최종\s*결정)\b"
+)
+# DCF / 결론 / 거래자 인사이트 etc — fundamentals-analyst-specific
+# section labels that should appear at most once per body. Their second
+# occurrence is the same kind of re-emission signal.
+_DUP_FUND_TAIL_RE = re.compile(
+    r"(?m)^\s*(?:DCF\s*시나리오|결론\s*및\s*투자\s*통찰|"
+    r"결론\s*및\s*거래\s*시사점|거래자\s*인사이트)\b"
+)
 
 
 def _abbrev_korean(num: int) -> str:
@@ -408,19 +1732,169 @@ def _add_unit_hint(m: re.Match) -> str:
     return f"{label}{nums} (단위: 백만 달러)"
 
 
+def _find_first_repeat(pattern: re.Pattern, body: str) -> int | None:
+    """Return the start position of the FIRST occurrence whose matched
+    text was already seen earlier in the body, else None.
+
+    Patterns like _DUP_DOWNSTREAM_RE and _DUP_FUND_TAIL_RE have multiple
+    alternatives (e.g. 🧭/💼/✅). Naively taking matches[1] would point
+    at a different header's first appearance, not a duplicate. We key
+    by the actual matched text so only true repetition triggers
+    truncation.
+    """
+    seen: set[str] = set()
+    for m in pattern.finditer(body):
+        key = re.sub(r"\s+", " ", m.group().strip())
+        if key in seen:
+            return m.start()
+        seen.add(key)
+    return None
+
+
 def _drop_repeated_section(body: str) -> str:
     """If a major section header appears twice, the agent emitted its
     report twice — keep only up to the second occurrence."""
-    matches = list(_DUP_HEADER_RE.finditer(body))
-    if len(matches) >= 2:
-        return body[: matches[1].start()].rstrip()
+    candidates: list[int] = []
+    for pattern in (_DUP_HEADER_RE, _DUP_DOWNSTREAM_RE, _DUP_FUND_TAIL_RE):
+        pos = _find_first_repeat(pattern, body)
+        if pos is not None:
+            candidates.append(pos)
     nums = list(_DUP_NUMBERED_RE.finditer(body))
     if len(nums) >= 2 and nums[1].start() - nums[0].start() > 1000:
-        return body[: nums[1].start()].rstrip()
+        candidates.append(nums[1].start())
+    if candidates:
+        return body[: min(candidates)].rstrip()
     return body
 
 
-def _polish(body: str) -> str:
+def _magnitude_check(body: str, canonical: dict) -> str:
+    """Scan RULE 1 financial series for unit-magnitude jumps within the
+    same line (e.g. 'FY24 ₩89,201억 | FY23 ₩90.19조' — 10,000x gap
+    = 조/억 mix). Inserts a ⚠️ warning line immediately after any
+    financial series line where adjacent KRW/JPY values differ by > 500x.
+
+    Only applies to KRW / JPY output (large-unit languages).
+    """
+    currency = canonical.get("currency", "USD") if canonical else "USD"
+    if currency not in ("KRW", "JPY"):
+        return body
+
+    # Capture optional leading minus so adverse periods (FY22 -8,544억)
+    # don't get silently flipped to positive in the normalized companion
+    # line. Preceded by lookbehind for word-boundary-ish char so we don't
+    # accidentally grab the dash in '|—|' table separators.
+    _val_re = re.compile(r'(-?\d[\d,\.]*)\s*(조|억)')
+
+    def _to_raw(num_str: str, unit: str) -> float:
+        try:
+            return float(num_str.replace(",", "")) * (1e12 if unit == "조" else 1e8)
+        except ValueError:
+            return 0.0
+
+    result: list[str] = []
+    for line in body.split("\n"):
+        result.append(line)
+        matches = list(_val_re.finditer(line))
+        vals = [(_to_raw(m.group(1), m.group(2)), m.group(2))
+                for m in matches]
+        if len(vals) >= 2:
+            for i in range(len(vals) - 1):
+                v1, u1 = vals[i]
+                v2, u2 = vals[i + 1]
+                # Any 조/억 unit mix within the same series line is suspicious.
+                # LG전자 case: 'FY24 ₩89,201억 | FY23 ₩90.19조' — both
+                # represent similar revenue scales but expressed inconsistently.
+                if abs(v1) > 0 and abs(v2) > 0 and u1 != u2:
+                    # 2026-05-23 (010140.KS surfaced): the warning alone
+                    # was leaking through to reader 6+ times in one
+                    # analysis. Add a normalized companion line so the
+                    # reader sees the corrected series alongside the
+                    # warning, without disturbing the LLM's original
+                    # text (transparency). Pick the larger unit (조 if
+                    # any value ≥ 1조 in magnitude, else 억) as the
+                    # canonical so decimals stay sane. Use abs() in the
+                    # magnitude pick so a series with -8.5조 still
+                    # renders in 조.
+                    raw_vals = [v for v, _ in vals if v != 0]
+                    use_jo = any(abs(v) >= 1e12 for v in raw_vals)
+                    unit_label = "조 원" if currency == "KRW" else (
+                        "兆 円" if currency == "JPY" else None
+                    )
+                    scale = 1e12 if use_jo else 1e8
+                    if not use_jo:
+                        unit_label = "억 원" if currency == "KRW" else (
+                            "億 円" if currency == "JPY" else None
+                        )
+                    # Fix O (2026-05-24, 현대모비스 012330.KS 외부 검증 surface):
+                    # 폐기된 "↳ 단위 정규화 (...)" companion 행. 외부 검증자
+                    # 보고: "내부 디버깅 노트가 사용자 UI 에 그대로 노출".
+                    # body 본문은 LLM 이 이미 올바른 단위 (조 원 / 億 円) 로
+                    # 출력하는 경우가 대부분 — 중복 normalization 행은
+                    # noise. 단위 mismatch 가 실제 발생한 경우는 별도
+                    # _canonical_crosscheck 가 잡고, in-line 으로 정정
+                    # banner 를 출력. 본 polish 단계는 silent — 더 이상
+                    # companion 행을 emit 하지 않는다. Universal — US +
+                    # KR + JP + TW + CN/HK 모든 시장 동일.
+                    break
+    return "\n".join(result)
+
+
+def _canonical_crosscheck(body: str, canonical: dict) -> str:
+    """Check 시가총액 mentions in the output against the canonical value.
+
+    If canonical 시총 is ₩5.83조 but the text mentions ₩58조 or ₩0.58조
+    (> ±30% off), inserts a correction banner so the reader can spot the
+    discrepancy. Only applied for KRW / JPY markets where 조/억 confusion
+    is the primary failure mode.
+    """
+    mc = canonical.get("market_cap") if canonical else None
+    currency = canonical.get("currency", "USD") if canonical else "USD"
+    if not mc or currency not in ("KRW", "JPY"):
+        return body
+
+    _mc_kw_re  = re.compile(r'시가총액|시총')
+    _val_re    = re.compile(r'약\s*(\d[\d,\.]*)\s*(조|억)')
+    unit_word  = "원" if currency == "KRW" else "엔"
+    mc_disp    = (f"약 {mc / 1e12:,.2f}조 {unit_word}"
+                  if mc >= 1e12 else f"약 {mc / 1e8:,.0f}억 {unit_word}")
+
+    def _norm(num_str: str, unit: str) -> float:
+        try:
+            return float(num_str.replace(",", "")) * (1e12 if unit == "조" else 1e8)
+        except ValueError:
+            return 0.0
+
+    result: list[str] = []
+    for line in body.split("\n"):
+        result.append(line)
+        if not _mc_kw_re.search(line):
+            continue
+        for m in _val_re.finditer(line):
+            found = _norm(m.group(1), m.group(2))
+            if found <= 0:
+                continue
+            ratio = max(found, mc) / min(found, mc)
+            if ratio > 1.3:
+                result.append(
+                    f"  ⚠️ [시가총액 불일치: 위 값이 시스템 canonical ({mc_disp}) 대비"
+                    f" {ratio:.1f}배 차이 — canonical 값 우선 사용]"
+                )
+                break
+    return "\n".join(result)
+
+
+# If a section body is longer than this, skip the polish-pass regexes
+# entirely and serve the raw content. Polishing a 100K+ char Korean
+# response can hit catastrophic backtracking on _INSTRUMENT_CTX_RE /
+# _KO_NUM_RE and burn the whole 10-min wall budget. The reader sees a
+# slightly noisier report, which is far better than no report at all.
+_POLISH_LENGTH_GUARD = 100_000
+
+# Each polish step paired with a short label so we can log which step
+# is currently running. Past hangs in this function happened silently
+# between the propagate log and the timeout — the labels make the
+# culprit obvious in the journal next time.
+def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None) -> str:
     """Strip noise patterns that agents occasionally leak into their text.
 
     Removes per-section 'FINAL TRANSACTION PROPOSAL' lines (the rating is
@@ -430,27 +1904,540 @@ def _polish(body: str) -> str:
     headers, and collapses leftover literal '\\n\\n' escape sequences and
     runs of blank lines.
     """
-    body = _FINAL_PROPOSAL_RE.sub("", body)
-    body = _LINK_LINE_RE.sub("", body)
-    body = _TOOL_HEADER_RE.sub("", body)
-    body = _INSTRUMENT_CTX_RE.sub("", body)
-    body = _DASH_PADDING_RE.sub("", body)
-    body = _ESCAPED_NEWLINES_RE.sub("\n\n", body)
-    # Any remaining stray literal '\n' becomes a real newline.
-    body = body.replace("\\n", "\n")
+    # Normalize CRLF → LF before ALL regex passes.  Many MULTILINE
+    # patterns use [ \t]*$ which does not match \r, causing silent misses
+    # on LLM outputs that use Windows line endings.  The Comps dash-chain
+    # transform (_COMPS_DASH_RE / Fix D) was confirmed non-firing in
+    # production against 8306.T 2026-05-27 because Gemini emitted \r\n.
+    # Normalization here makes every subsequent step CRLF-safe.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Cheap, high-impact passes ALWAYS run, even before the length guard.
+    # When a fundamentals analyst response goes off the rails and emits a
+    # 50K-char run of dashes, the body can balloon past the polish-length
+    # threshold and bypass the runaway cleanup, leaving a wall of '---'
+    # in the user-facing report. Stripping runaway chars + dash-only
+    # lines is O(n) regex with no backtracking risk, so doing it up
+    # front is essentially free and fixes the common case.
+    pre_len = len(body)
     body = _RUNAWAY_CHAR_RE.sub("", body)
-    body = _drop_repeated_section(body)
-    body = _LARGE_NUM_RE.sub(_abbrev_match, body)
-    body = _KO_NUM_RE.sub(_ko_num_normalize, body)
-    body = _LONG_DECIMAL_RE.sub(_round_long_decimal, body)
-    body = _FIN_BULLET_RE.sub(_add_unit_hint, body)
-    for pat, repl in _KO_LABEL_REPLACEMENTS:
-        body = pat.sub(repl, body)
-    body = re.sub(r"\n{3,}", "\n\n", body)
+    body = _DASH_LINE_RE.sub("", body)
+    if len(body) != pre_len:
+        log.info("polish: pre-strip removed %d chars of runaway/dash garbage",
+                 pre_len - len(body))
+
+    if len(body) > _POLISH_LENGTH_GUARD:
+        log.warning(
+            "polish: body too long (%d chars > %d) — skipping regex pass",
+            len(body), _POLISH_LENGTH_GUARD,
+        )
+        return body.strip()
+
+    def _step(label: str, fn):
+        """Run a single polish pass with a per-step wall-clock guard.
+
+        Past incidents (ONTO 2026-05-10 hung _format_full for 7+ minutes
+        between propagate-done and the subprocess timeout, no journal
+        evidence of which regex was responsible) showed that a single
+        pathological input can push one of these regexes into worst-case
+        backtracking and silently burn the whole 10-minute budget. Each
+        step now gets 10 wall seconds; if it doesn't return in time we
+        skip it and continue with the unchanged body. The skipped log
+        line names the step so the regex can be hardened later, and
+        readability of the section degrades gracefully (one missing
+        cosmetic pass) instead of the whole analysis getting killed.
+
+        SIGALRM works here because we run in the analyze_worker
+        subprocess — main thread, no other timers in flight.
+        """
+        nonlocal body
+        import signal as _signal
+
+        class _StepTimeout(Exception):
+            pass
+
+        def _handler(_signum, _frame):
+            raise _StepTimeout()
+
+        prev = _signal.signal(_signal.SIGALRM, _handler)
+        _signal.alarm(10)
+        t0 = time.time()
+        try:
+            body = fn(body)
+            log.info("polish: %s done (%d chars)", label, len(body))
+        except _StepTimeout:
+            log.warning(
+                "polish: %s exceeded 10s wall budget — skipping (body kept "
+                "as-is, %d chars)", label, len(body),
+            )
+        finally:
+            _signal.alarm(0)
+            _signal.signal(_signal.SIGALRM, prev)
+            elapsed = time.time() - t0
+            if elapsed > 1.0:
+                log.info("polish: %s took %.1fs", label, elapsed)
+
+    _step("final-proposal",     lambda b: _FINAL_PROPOSAL_RE.sub("", b))
+    _step("link-line",          lambda b: _LINK_LINE_RE.sub("", b))
+    _step("tool-header",         lambda b: _TOOL_HEADER_RE.sub("", b))
+    _step("instrument-ctx",      lambda b: _INSTRUMENT_CTX_RE.sub("", b))
+    _step("dash-padding",        lambda b: _DASH_PADDING_RE.sub("", b))
+    _step("escaped-newlines",    lambda b: _ESCAPED_NEWLINES_RE.sub("\n\n", b))
+    _step("literal-bs-n",        lambda b: b.replace("\\n", "\n"))
+    # Gemini 토크나이저가 특정 음절을 두 번 분절하는 quirk — CRM 2026-05-28
+    # 과 300750.SZ 2026-05-28 둘 다 "영향을 미 미칠 수 있습니다" 동일 오타
+    # 발현. 일반 패턴 (가-힣 + 공백 + 동일 음절)으로 잡으면 '이 이번' / '그
+    # 그리고' 같은 합법 한국어 시퀀스도 오류 처리될 수 있어, 관찰된 정확한
+    # 패턴만 좁게 치환. 새로운 패턴 발견 시 한 줄씩 추가.
+    _step("ko-typo-fix",         lambda b: b.replace("미 미칠", "미칠"))
+    _step("runaway-char",        lambda b: _RUNAWAY_CHAR_RE.sub("", b))
+    _step("drop-repeated",       _drop_repeated_section)
+    _step("large-num",           lambda b: _LARGE_NUM_RE.sub(_abbrev_match, b))
+    _step("ko-num",              lambda b: _KO_NUM_RE.sub(_ko_num_normalize, b))
+    _step("long-decimal",        lambda b: _LONG_DECIMAL_RE.sub(_round_long_decimal, b))
+    _step("fin-bullet",          lambda b: _FIN_BULLET_RE.sub(_add_unit_hint, b))
+    for idx, (pat, repl) in enumerate(_KO_LABEL_REPLACEMENTS, 1):
+        _step(f"ko-label-{idx}", lambda b, p=pat, r=repl: p.sub(r, b))
+    _step("blank-lines",         lambda b: re.sub(r"\n{3,}", "\n\n", b))
+    # 4-digit-comma 'X,XXXX' integers (Japanese 万 / Korean 만 style)
+    # are unreadable when mixed into a Korean prose paragraph. Toyota
+    # 7203.T 2026-05-18 had '매출 (억 엔): FY25: 48,0367' (raw
+    # 480,367 with the comma in the wrong place). We don't try to
+    # auto-relocate the comma (risky — would change the magnitude
+    # silently); instead we strip the misplaced comma so the number
+    # becomes a plain integer that the reader can interpret without
+    # guessing the digit grouping. Replace '\d,\d{4}\b' patterns only.
+    # Won't touch legit 3-digit-grouped numbers (1,234 / 12,345 /
+    # 123,456) or properly-grouped large numbers (1,234,567).
+    _step("strip-4digit-comma", lambda b: re.sub(
+        r"(\d),(\d{4})(?!\d)", r"\1\2", b,
+    ))
+    # '백만' / '백만 원' style numbers (e.g. '₩약 1.6백만', '약 1.5백만 원')
+    # are explicitly forbidden by our currency directive — '백만' is a
+    # million-style English unit awkward in Korean. Surface in 두산
+    # 000150.KS 2026-05-18 (₩약 1.6백만 throughout all four analyst
+    # sections + DCF + stop loss) and 삼성전기 2026-05-17 (₩약 1.0백만).
+    # Text directive alone keeps getting ignored; auto-convert at the
+    # polish layer. Maps '₩약 X.XX백만' / '약 X.XX백만 원' → '약 XYZ만 원'
+    # (X.X × 100 = XYZ 만 원). Handles 1-2 decimal places.
+    def _convert_baekman(b: str) -> str:
+        def repl(m: re.Match) -> str:
+            try:
+                val = float(m.group(1))
+            except ValueError:
+                return m.group(0)
+            man = val * 100  # 백만 = 100만
+            if man.is_integer() and man < 100_000:
+                return f"약 {int(man):,}만 원"
+            return f"약 {man:,.1f}만 원"
+        # Three permitted spellings: '₩약 X.X백만', '약 X.X백만 원',
+        # '약 X.X백만'. The optional '(?:\s*원)?' tail means we only
+        # consume trailing ' 원' when 원 is actually present —
+        # otherwise we'd swallow the trailing space before the next
+        # token (e.g. '백만 —' would become '약 XXX만 원—' losing the
+        # separator space).
+        # NEGATIVE LOOKAHEAD `(?!\s*[엔円¥$€元주株])`: don't fire when the
+        # following token is a non-KRW currency marker. JP / TW / CN /
+        # US analysts writing '약 1.6백만 엔' / '약 X백만 元' / '약 X
+        # 백만 $' would otherwise be silently corrupted to '약 N0만 원
+        # X' (KRW unit slapped on a non-KRW number). The cross-market
+        # audit caught this — '백만' is intended to be a KR-only fix
+        # and the lookahead enforces that scope. 元 is critical: TWD
+        # uses '元' / '兆 元' / '億 元', CNY uses '元' / '亿元', JPY
+        # ALSO uses '円' which is already covered by '円'.
+        out = re.sub(
+            r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元주株])",
+            repl, b,
+        )
+        out = re.sub(
+            r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元주株])",
+            repl, out,
+        )
+        return out
+    _step("convert-baekman", _convert_baekman)
+    # Debt-ratio '배' (multiples) unit error. yfinance .info debtToEquity
+    # is a percentage (e.g. 82.77 = 82.77%), but the LLM occasionally
+    # renders it as '부채비율: 82.77배' which would mean debt = 82.77× of
+    # equity — a near-insolvent reading that misleads the reader. 두산
+    # 000150.KS 2026-05-18 fundamentals had this exact error. Convert
+    # the '배' suffix to '%' specifically when the leading label is
+    # 부채비율 (other ratios like 유동비율 1.03배 are legitimately
+    # expressed as multiples and left alone).
+    _step("debt-ratio-unit", lambda b: re.sub(
+        r"(부채비율[:\s]*\d+(?:\.\d+)?)\s*배",
+        r"\1%",
+        b,
+    ))
+    # Currency-symbol + thousands-comma for bare integers in trader /
+    # stop-loss / target-price cells. Toyota / 두산 reports had
+    # 'Stop Loss: 1321500.0' — should be '₩1,321,500'. The polish layer
+    # doesn't know the ticker's market, so we use a context-aware
+    # pattern: any decimal-zero integer immediately preceded by a
+    # currency context keyword (Stop Loss / 손절 / 목표 / 진입가).
+    def _format_bare_currency(b: str) -> str:
+        # Match '<keyword>: <integer>.0' and re-format integer with commas
+        # + prepend market currency symbol (NT$ / ₩ / HK$ / ¥ / $) when
+        # the body's other text already establishes one. Trader emits
+        # bare integers like 'Stop Loss: 1950' even for TWD/KRW/etc;
+        # readers expect 'NT$1,950' / '₩1,321,500'.
+        #
+        # Markdown-bold support: the Trader's render template emits
+        # '**Stop Loss**: 25000.0' (asterisks around label). The optional
+        # \*{0,2} groups around the label name handle the bold case
+        # while still matching unformatted '진입가: 12345.0' equally.
+        # English labels (Entry Price / Target Price / Stop Loss) added
+        # because Trader emits English here even for KR / JP / TW tickers.
+        #
+        # Currency symbol priority:
+        # 1. Ticker-derived `currency_symbol` from analyzer caller (most
+        #    reliable — comes from MARKET_CONFIG via detect_market). The
+        #    Trader section often has no currency marker in its own body
+        #    text (MediaTek 2454.TW 2026-05-18: Trader emitted '진입가
+        #    3,350' / 'Stop Loss 3,150' with zero NT$ marker), so per-
+        #    section body scan misses TW/KR/JP/HK Trader output.
+        # 2. Fallback: scan body for first currency prefix. 'NT$' >
+        #    'HK$' > '₩' > '¥' > '$' (multi-glyph prefixes first to
+        #    avoid '$' inside 'NT$' / 'HK$' matching first).
+        if currency_symbol:
+            sym = currency_symbol
+        elif re.search(r"NT\$\d", b):
+            sym = "NT$"
+        elif re.search(r"HK\$\d", b):
+            sym = "HK$"
+        elif re.search(r"₩\s*\d|₩\d", b):
+            sym = "₩"
+        elif re.search(r"¥\s*\d|¥\d", b):
+            sym = "¥"
+        elif re.search(r"\$\s*\d|\$\d", b):
+            sym = "$"
+        else:
+            sym = ""  # no detectable currency context — leave bare
+        pattern = re.compile(
+            r"(\*{0,2})"
+            r"(Stop\s*Loss|손절\s*가|손절매|목표\s*가|진입\s*가|매도\s*가|"
+            r"Entry\s*Price|Target\s*Price)"
+            r"(\*{0,2})"
+            r"(\s*[:=]?\s*)"
+            r"(\d{4,})(?:\.0+)?\b"
+        )
+        def repl(m: re.Match) -> str:
+            open_b, label, close_b, sep, num = m.groups()
+            # Skip if the value already has a currency prefix (avoid
+            # double-prepending on re-runs / partial polish).
+            full = m.group(0)
+            already_has_sym = (
+                sym and f"{sep.strip()} {sym}" in full
+                or any(s in full for s in ("NT$", "HK$", "₩", "¥", "$"))
+            )
+            num_fmt = f"{int(num):,}"
+            if already_has_sym or not sym:
+                return f"{open_b}{label}{close_b}{sep}{num_fmt}"
+            # Trim trailing space in sep so '**Stop Loss**:  ' becomes
+            # '**Stop Loss**: ' (single space before currency symbol).
+            sep_clean = sep.rstrip() + " " if sep.endswith(" ") else sep
+            if not sep_clean.endswith(" "):
+                sep_clean = sep_clean + " "
+            return f"{open_b}{label}{close_b}{sep_clean}{sym}{num_fmt}"
+        return pattern.sub(repl, b)
+    _step("format-bare-currency", _format_bare_currency)
+    # Corporate-action HARD GUARD enforcement at the output layer.
+    # Surfaced by 프로텍 053610.KS 2026-05-18: build_instrument_context
+    # injected the HARD GUARD directive (감자완료 2026-05-04 hit our
+    # _detect_kr_corp_action keyword scan) telling the LLM to NOT cite
+    # MA/EMA/MACD/RSI/Bollinger/ATR because yfinance historical was
+    # stale (current ₩26,700 vs 50 SMA ₩65,120 = −59% gap). The market
+    # analyst acknowledged 감자 in prose then went ahead and wrote full
+    # 이동평균선 / MACD 지표 / RSI 지표 / ATR 지표 subsections anyway.
+    # Text-only HARD GUARD is ignored. Output-layer polish prepends a
+    # visible banner so a reader can't miss that the technical analysis
+    # is unreliable, even when the LLM defies the prompt.
+    def _hard_guard_warn(b: str) -> str:
+        # Universal corp-action keyword set — KR (감자/무상증자/분할),
+        # JP (株式分割/併合), TW (減資/無償配股/股票分割/庫藏股), US
+        # (stock split / reverse split). Detect presence in body prose;
+        # analyst usually mentions the event. Universal-by-default per
+        # CLAUDE.md — keywords for all 4 markets in one alternation so
+        # the same banner fires regardless of which market the subject
+        # belongs to.
+        has_corp_action = re.search(
+            r"감자(?:결정|완료)?|무상증자|주식분할|액면분할|주식병합|"
+            r"株式分割|株式併合|株式無償割当|"
+            r"減資|無償配股|股票分割|股票合併|庫藏股|"
+            r"stock\s*split|reverse\s*split|forward\s*split",
+            b, re.IGNORECASE,
+        )
+        if not has_corp_action:
+            return b
+        # Detect any technical-indicator subsection. If the LLM is
+        # discussing MA/MACD/RSI/Bollinger/ATR while a corp action is
+        # in flight, the analysis values are corrupt.
+        has_technical = re.search(
+            r"(?:^|\n)\s*(?:이동평균선|단기\s*이동평균|중기\s*이동평균|"
+            r"MACD\s*지표|RSI\s*지표|ATR\s*지표|볼린저\s*밴드|Bollinger|"
+            r"추세\s*지표\s*분석|모멘텀\s*지표\s*분석|변동성\s*지표\s*분석|"
+            r"거래량\s*기반\s*지표)",
+            b,
+        )
+        if not has_technical:
+            return b
+        # Both signals present — prepend a single banner at top of body.
+        # Per-section prepend was considered but a single big banner is
+        # less repetitive and harder to scroll past.
+        banner = (
+            "⛔ **CORPORATE ACTION HARD GUARD 위반 감지** — corp action"
+            " (감자/분할/무상증자/주식병합) 진행 중인 종목인데 본 보고서가"
+            " 기술 지표 (이동평균선 / MACD / RSI / 볼린저 / ATR) 를 인용함."
+            " yfinance historical 시계열이 corp action 이전 가격이라 모든"
+            " MA / 모멘텀 비교 수치는 stale (현재가와 50-200% 괴리 가능)."
+            " 본 보고서의 기술 분석 부분은 신뢰 불가 — 결정은 펀더멘털 +"
+            " corp action 이벤트 분석만 기반해주세요. 프롬프트 룰을 LLM이"
+            " 무시한 케이스이며, 다음 보고 주기에서 가격 시계열이 안정화될"
+            " 때까지는 기술 분석 보류가 정답입니다.\n\n"
+        )
+        return banner + b.lstrip()
+    _step("hard-guard-warn", _hard_guard_warn)
+    # RULE 1 (PERIOD LABELS) auto-warn — detect multi-dash time series
+    # without period labels (FY25 / Q4 / etc). 두산 000150.KS 2026-05-18:
+    #   '순이익: 758억 원 — -2,262억 원 — -3,883억 원 — -6,964억 원 — ...'
+    # Eight values, zero period labels. RULE 1 forbids this but the
+    # text rule keeps being skipped. We can't auto-relabel (don't know
+    # which value is which FY) but we CAN append a visible warning so
+    # the reader knows the LLM produced an under-labeled series.
+    def _flag_unlabeled_series(b: str) -> str:
+        # Match bullet lines with 4+ ' — ' separators where none of the
+        # values is preceded by a 'FY'/'Q'/'TTM'/'FY25'-style label.
+        # Period-label tokens we tolerate: FY{digits}, Q{digit}, Q{digit} {digits},
+        # TTM, {YYYY}, {YYYY}.{MM}, '연간' / '분기'.
+        period_label_re = re.compile(
+            r"(?:FY\d{2,4}|Q[1-4](?:\s*\d{2,4})?|TTM|연간|분기|"
+            r"\d{4}(?:[./-]\d{1,2})?|\d{4}년)"
+        )
+        lines = b.split("\n")
+        flagged = 0
+        out = []
+        for line in lines:
+            stripped = line.strip()
+            # Bullet line with at least 4 dash separators? KR/JP analysts
+            # use ' — ' or ' - ' as separator; match both.
+            if (
+                stripped.startswith(("•", "*", "-"))
+                and stripped.count(" — ") >= 4
+                and not period_label_re.search(stripped)
+            ):
+                out.append(line + " ⚠️(RULE 1: period labels 누락 — 값 순서 불명확)")
+                flagged += 1
+            else:
+                out.append(line)
+        return "\n".join(out)
+    _step("rule1-unlabeled-series", _flag_unlabeled_series)
+    # Empty markdown table headers — analyst started a table then fell
+    # back to prose, leaving '| 지표 | 현재 값 | 변화 |' header + ack
+    # separator '|---|---|---|' followed by no data rows. MediaTek
+    # 2454.TW 2026-05-18: both News + Sentiment '요약 테이블' sections
+    # had this pattern. Strip the orphan header so readers don't see a
+    # broken-looking table — the narrative below it carries the data.
+    def _strip_empty_tables(b: str) -> str:
+        # Match: header row '| col1 | col2 | ... |\n| --- | --- | ... |'
+        # NOT followed by a data row (line starts with '|').
+        empty_table_re = re.compile(
+            r"^\s*\|[^\n]+\|\s*\n\s*\|\s*[:\-]+\s*(?:\|\s*[:\-]+\s*)+\|\s*\n"
+            r"(?!\s*\|)",  # next line is NOT a data row
+            re.MULTILINE,
+        )
+        return empty_table_re.sub("", b)
+    _step("strip-empty-tables", _strip_empty_tables)
+    # Markdown table merged onto a single line (e.g. '|---|---|---| |
+    # row1 | val1 |') — the LLM concatenated the separator line with
+    # the first data row. MediaTek 2454.TW 2026-05-18 Market 분석:
+    # '| 지표명 | ... | 해석 |\n|---|---|---| | 종가 | NT$3,260 | ...'.
+    # Insert a newline between the separator and the first row so
+    # markdown parsers can render the table correctly.
+    def _split_inline_tables(b: str) -> str:
+        # Match '|---|---|...| ' (separator) immediately followed by
+        # another '|' (start of data row) on the SAME line.
+        inline_re = re.compile(
+            r"(\|\s*[:\-]+\s*(?:\|\s*[:\-]+\s*)+\|)\s+(\|[^\n]+\|)",
+        )
+        return inline_re.sub(r"\1\n\2", b)
+    _step("split-inline-tables", _split_inline_tables)
+    # Markdown table missing its header-separator row entirely. A valid GFM
+    # table REQUIRES a '|---|---|' line right after the header; the LLM
+    # occasionally omits it (티로보틱스 117730.KS 2026-06-04: '요약표\n
+    # | 지표 | 현재 값 | 비고 |\n| 평균 | ... |' — no separator), so the
+    # whole block renders as raw '|...|' text or flattens to bullets in
+    # Telegram. Insert the missing separator so it renders as a table.
+    # Universal — all analyses. (split-inline-tables 다음에 둬서 인라인
+    # 병합 separator 를 먼저 분리한 뒤, separator 자체가 없는 케이스 보강.)
+    _step("insert-table-separators", _insert_table_separators)
+    # Comps row emitted as a dash-chain ("9988.HK: Alibaba — 20.1 — 13.2 —
+    # 2.39 — 1.94 — 21.8") strips the PER/Fwd PER/PSR/PBR/EV-EBITDA labels,
+    # so the reader (and the downstream Trader/PM LLMs that re-cite the
+    # multiples) must guess which number is which. build_instrument_context
+    # forbids this format, but the LLM ignores the directive (9988.HK
+    # 2026-05-27 news analyst re-emitted the banned dash-chain). Re-attach
+    # the canonical labels deterministically: a line whose trailing 5 cells
+    # are all multiple-values separated by ' — ' is a Comps row; rewrite to
+    # the inline-label '/' form. Exactly-5 numeric-ish cells is the guard so
+    # ordinary em-dash prose ('현재가 X — 하락 — 볼린저…') can't match. The
+    # column order is the fixed Comps order injected by the context. Rule
+    # applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    def _comps_dash_to_inline(b: str) -> str:
+        def _sub(m):
+            name = m.group(1).rstrip()
+            return (
+                f"{name} | PER {m.group(2)} / Fwd PER {m.group(3)} /"
+                f" PSR {m.group(4)} / PBR {m.group(5)} / EV/EBITDA {m.group(6)}"
+            )
+        return _COMPS_DASH_RE.sub(_sub, b)
+    _step("comps-dash-to-inline", _comps_dash_to_inline)
+    # Strip trailing "— N/A" repetitions from Comps rows whose first cell
+    # already carries inline labels (PER / Fwd PER / PSR / PBR / EV/EBITDA).
+    # Fundamentals LLM sometimes emits the pre-fetched inline-labeled first
+    # cell followed by 3-4 empty N/A columns it invented (8306.T 2026-05-27:
+    # "PER 14.4 / Fwd PER 20.2 / PSR 4.06 / PBR 1.55 — N/A — N/A — N/A").
+    # Anchor: line must contain at least one '/ PBR' or '/ PSR' so we don't
+    # strip meaningful N/A entries from other bullet types.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    _comps_trailing_na_re = re.compile(
+        r"((?:PER|PSR|PBR|Fwd PER|EV/EBITDA)[^\n]*?)(?:\s*—\s*N/A)+(\s*)$",
+        re.MULTILINE,
+    )
+    _step("comps-trailing-na", lambda b: _comps_trailing_na_re.sub(r"\1\2", b))
+    # Broken-table separator residue — a table whose header row was dropped
+    # (or bulletised by the renderer) leaving only the alignment-separator
+    # line, e.g. 자이에스앤디 317400.KS 2026-05-26 펀더멘털 emitted
+    # '• :---------------: :' under '요약 재무 정보'. _strip_empty_tables only
+    # catches pipe-delimited '| col |\n|---|---|' headers, so a bullet/colon
+    # residue slips through and renders as a broken table. Strip any line that
+    # is ONLY separator characters (optional leading bullet/dash, then dashes /
+    # colons / pipes / spaces) AND contains at least one colon — the colon is
+    # a table-alignment marker, so a legitimate '---' horizontal rule (no
+    # colon) is preserved. Requires ≥3 consecutive dashes so short prose like
+    # ':)' can't match. Rule applies to all analyses (US + KR + JP + TW + CN/HK).
+    _separator_residue_re = re.compile(
+        r"^[ \t]*[•·*\-]?[ \t]*(?=[-:|\s]*:)(?=[-:|\s]*-{3})[-:|\s]+$\n?",
+        re.MULTILINE,
+    )
+    _step("strip-separator-residue",
+          lambda b: _separator_residue_re.sub("", b))
+    # Conservative dedup for short Korean approximation words that
+    # analysts occasionally double-print before a number ("약 약 1776조"
+    # — SNG 2026-05-17). Only handles a fixed allowlist; we don't do
+    # a general "(\w+) \1" pass because legitimate Korean phrases
+    # ("그 그 사람", "이 이 종목" etc.) would get clobbered.
+    _step("ko-double-prefix",    lambda b: re.sub(
+        r"\b(약|대략|혹은|또는|즉)\s+\1\b", r"\1", b,
+    ))
+    # News-section "요약 테이블" / "요약표" / "Summary table" repeated
+    # headers — 한국전력공사 2026-05-17 emitted three of them with
+    # broken markdown in between. Keep the FIRST occurrence, strip
+    # subsequent ones along with the line they sit on.
+    def _dedup_summary_table(b):
+        pattern = re.compile(
+            r"^[ \t]*요약\s*(?:테이블|표|table)[ \t]*$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        count = 0
+        def repl(_match):
+            nonlocal count
+            count += 1
+            return _match.group(0) if count == 1 else ""
+        return pattern.sub(repl, b)
+    _step("dup-summary-table-header", _dedup_summary_table)
+    # Post-generation numeric validators — run after all cosmetic passes
+    # so they inspect the final text the user will actually see.
+    if canonical:
+        _step("magnitude-check",
+              lambda b: _magnitude_check(b, canonical))
+        _step("canonical-crosscheck",
+              lambda b: _canonical_crosscheck(b, canonical))
     return body.strip()
 
 
-def _clean_section(body) -> str:
+def _flag_trader_price_hallucination(
+    body: str, canonical: dict | None = None, tol: float = 0.15,
+) -> str:
+    """Backstop for the Trader price-hallucination class (2026-05-29 SK
+    하이닉스 000660.KS surfaced — Trader cited training-cutoff 2024-Q2
+    ~₩20만 prices for Entry/Stop while the actual current price was
+    ₩2,333,000, an order of magnitude off, making the proposed trade
+    impossible to execute).
+
+    Extracts the numeric Entry Price / Stop Loss values from the rendered
+    trader markdown, compares each against the canonical currentPrice (the
+    same yfinance source the FACTUAL ANCHOR / summary card already use),
+    and prepends a ⚠️ warning line when either is outside ±tol of current
+    price. The trader's text body is left intact — we don't auto-correct
+    (a legitimate price move into that range is possible), only surface
+    the discrepancy so the reader knows the entry/stop can't be acted on
+    as written. Universal — every market (US/KR/JP/TW/CN/HK).
+
+    Pairs with the prompt-side absolute-anchor directive in trader.py; the
+    prompt asks Pro to stay within ±15% but Pro ignored it on the SK live
+    case → this Python check is the backstop. tol matches the prompt
+    threshold so the two layers stay consistent."""
+    if not isinstance(canonical, dict):
+        return body
+    cur = canonical.get("current_price")
+    if not isinstance(cur, (int, float)) or cur <= 0:
+        return body
+    if not body or not isinstance(body, str):
+        return body
+    # Match labels we render (Entry Price, Stop Loss) plus the
+    # localized Korean forms the Trader sometimes uses (진입가, 손절).
+    # Tolerate **bold** wrappers and "Loss" -> "Loss". Number is the
+    # first numeric token after the colon, comma-separated allowed.
+    import re
+    _LABEL_RE = re.compile(
+        r"\*{0,2}\s*"
+        r"(Entry\s*Price|Stop\s*Loss|진입\s*가격?|손절\s*가격?|Target\s*Price|목표\s*가격?)"
+        r"\s*\*{0,2}\s*[:：]\s*[^\d\-]*([\d,]+(?:\.\d+)?)",
+        re.IGNORECASE,
+    )
+    flags: list[str] = []
+    for m in _LABEL_RE.finditer(body):
+        label = m.group(1)
+        try:
+            val = float(m.group(2).replace(",", ""))
+        except ValueError:
+            continue
+        if val <= 0:
+            continue
+        ratio = val / cur
+        if ratio < (1 - tol) or ratio > (1 + tol):
+            flags.append(
+                f"{label} {m.group(2)} (현재가 대비 {(ratio - 1) * 100:+.0f}%)"
+            )
+    if not flags:
+        return body
+    # One-line warning + suggested execution-range so the reader has a
+    # concrete fallback instead of just being told something's wrong.
+    low = cur * 0.97
+    high = cur * 1.03
+    suggest = f"{low:,.0f}–{high:,.0f}"
+    # When a Stop Loss specifically was flagged (MRVL 2026-06-04: Trader
+    # anchored on a pre-rally ~$72 stop for a $301 stock = -76%), also
+    # suggest a realistic 5-day stop band — concrete fallback, not just
+    # "something's wrong". Direction-agnostic: long stop below (-5~8%) /
+    # short stop above (+5~8%); reader picks by the Trader's action.
+    # warn-only still (no auto-correct — a real move is theoretically possible).
+    stop_note = ""
+    if any(("Stop" in f) or ("손절" in f) for f in flags):
+        stop_note = (
+            f" 권장 Stop ≈ {cur * 0.92:,.0f}–{cur * 0.95:,.0f}(롱, 현재가 -5~8%)"
+            f" 또는 {cur * 1.05:,.0f}–{cur * 1.08:,.0f}(숏, +5~8%)."
+        )
+    note = (
+        f"⚠️ <b>가격 환각 의심</b> (학습 cutoff 이후 가격 변동 큰 종목 — Trader"
+        f" 가 과거 가격 인용 가능): {' · '.join(flags)}. 현재가 {cur:,.0f}"
+        f" 기준 5거래일 horizon entry 권장 범위 ≈ {suggest}.{stop_note} Trader"
+        f" 출력 그대로 실행 금지, 수동 검증 필요.\n\n"
+    )
+    return note + body
+
+
+def _clean_section(body, currency_symbol: str = "", canonical: dict | None = None) -> str:
     """Replace empty or obviously-broken agent output with a clear placeholder.
 
     Gemini occasionally emits a JSON error blob, raw tool_code, or no content
@@ -458,13 +2445,33 @@ def _clean_section(body) -> str:
     so the reader knows the section is missing rather than silently dropping
     it (which used to leave the report header followed by the next section).
     Otherwise pass the body through `_polish` to remove leaked noise.
+
+    currency_symbol: optional market currency from caller's ticker context.
+    Threaded into _polish so Trader output (which often has no currency
+    marker in its own body) still gets the correct ₩ / NT$ / HK$ / ¥ / $
+    prefix on Stop Loss / Entry Price values. MediaTek 2454.TW 2026-05-18
+    surfaced this — Trader emitted '진입가 3,350 / Stop Loss 3,150' bare
+    because Fix 5's body-scan couldn't find any NT$ in the Trader's own
+    section. Ticker-derived symbol bypasses that detection gap.
     """
     if not body or not body.strip():
+        return _FAILURE_PLACEHOLDER
+    # Defensively reject pathologically long sections. A normal analyst
+    # response tops out around 20-30K chars; anything past 200K is almost
+    # always raw tool-call output (news payload, OHLCV CSV, indicator
+    # dump) accidentally echoed verbatim by the analyst into its 'final
+    # report' instead of summarised. Fail fast — passing it through would
+    # blow the Telegram message budget and produce unreadable garbage.
+    if len(body) > 200_000:
+        log.warning(
+            "clean_section: pathological length %d chars — treating as failure",
+            len(body),
+        )
         return _FAILURE_PLACEHOLDER
     head = body.strip()[:500]
     if any(m in head for m in _GARBAGE_MARKERS):
         return _FAILURE_PLACEHOLDER
-    polished = _polish(body)
+    polished = _polish(body, currency_symbol=currency_symbol, canonical=canonical)
     # If the polished body is mostly headers + empty placeholders ('• :: :',
     # '요약표' alone), treat it as a failed run rather than serving the husk.
     stripped = polished.strip()
@@ -477,11 +2484,34 @@ def _clean_section(body) -> str:
 
 
 def _extract_rating(decision: str) -> str | None:
-    upper = decision.upper()
-    for kw in ("OVERWEIGHT", "UNDERWEIGHT", "BUY", "SELL", "HOLD"):
-        if kw in upper:
-            return kw.title()
-    return None
+    """Extract the 5-tier rating from a rendered decision.
+
+    Routes through the canonical, label-aware ``rating.parse_rating`` (which
+    reads the ``**Rating**: X`` header line FIRST, then falls back to the
+    first whitespace-delimited 5-tier word) so the user-facing summary card
+    headline can never diverge from the memory log / signal processor that
+    already use ``parse_rating``.
+
+    The previous implementation scanned a FIXED keyword priority
+    (OVERWEIGHT → UNDERWEIGHT → BUY → SELL → HOLD) regardless of position,
+    so any decision whose thesis prose merely mentioned 'overweight' /
+    'underweight' — most importantly the PM override-discipline note that
+    names the PRE-correction rating ("PM 1차 판단 (Underweight)이 ... Buy로
+    보정됨") — was mis-read as that word, showing the user the OPPOSITE of
+    the rendered Rating line while the memory log stored the correct value
+    (split-brain). 2026-05-29 audit C1.
+
+    Returns the Title-cased rating, or None when no rating appears (callers
+    fall back to ``override_rating`` / 'N/A')."""
+    if not isinstance(decision, str) or not decision.strip():
+        return None
+    try:
+        from tradingagents.agents.utils.rating import parse_rating
+    except Exception:
+        return None
+    _sentinel = "__NO_RATING__"
+    result = parse_rating(decision, default=_sentinel)
+    return None if result == _sentinel else result
 
 
 def _first_lines(text: str, max_lines: int = 8) -> str:
