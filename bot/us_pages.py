@@ -216,21 +216,30 @@ def render_us_highlow_page() -> str:
     except Exception:
         _nm, _q = {}, {}
     for r in hi + lo:
+        src_price = r.get("price")
+        src_vol = r.get("vol")
+        # 원본 소스가 price+vol 을 이미 주면 거래대금은 먼저 로컬 계산.
+        # (테스트/오프라인/네이버 편차와 무관하게 결정적 렌더 보장)
+        if r.get("value") is None and src_price and src_vol:
+            try:
+                r["value"] = round(float(src_price) * float(src_vol) / 1e8, 2)
+            except (TypeError, ValueError):
+                pass
         kr = _nm.get(r.get("ticker"))
         if kr:
             r["name"] = kr
         q = _q.get(r.get("ticker"))       # 네이버 거래량/거래대금/시총 우선
         if q:
-            if q.get("vol") is not None:
+            if r.get("vol") is None and q.get("vol") is not None:
                 r["vol"] = q["vol"]
-            if q.get("value") is not None:
+            if r.get("value") is None and q.get("value") is not None:
                 r["value"] = q["value"]
             # 시총 네이버 무료 우선(B 그룹 2026-06-16) — tier-1 Finviz 는 시총
             # 미제공이고 fast_info 는 rate-limit 회로차단 1순위라, 네이버 업종
             # endpoint 시총(억$)으로 채워 '시총 —' 연쇄 + 시총-정렬 붕괴 해소.
             if r.get("mcap") is None and q.get("mcap") is not None:
                 r["mcap"] = q["mcap"]
-        # 네이버 미스 시 Finviz Volume 으로 거래대금 산출(폴백)
+        # 네이버 미스 시(또는 소스 계산 실패 시) 현재값으로 거래대금 산출 폴백
         if r.get("value") is None and r.get("price") and r.get("vol"):
             try:
                 r["value"] = round(float(r["price"]) * float(r["vol"]) / 1e8, 2)

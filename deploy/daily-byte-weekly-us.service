@@ -1,5 +1,5 @@
 [Unit]
-Description=US Weekly Byte — 주간 미국 시장 종합 텔레그램 푸시 (일 22:00 KST, KR Weekly 동일 시각)
+Description=US Weekly Byte - weekly US market summary Telegram push (Sun 22:00 KST)
 After=network-online.target
 Wants=network-online.target
 

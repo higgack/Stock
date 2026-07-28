@@ -207,7 +207,8 @@ async def _run_async() -> int:
             if not data:
                 continue
             try:
-                from bot.portfolio import (ingest, format_summary_text,
+                from bot.portfolio import ingest
+                from bot.portfolio import (format_summary_text,
                                            NotBanksaladExport, EmptyHoldingsExport)
                 model = ingest(bytes(data), password=pw)
             except EmptyHoldingsExport as exc:

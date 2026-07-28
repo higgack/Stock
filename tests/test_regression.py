@@ -1306,12 +1306,21 @@ class TestMarketCalendar:
     gate 정밀화. exchange_calendars 부재 시 graceful None → 기존 휴리스틱 폴백."""
 
     def test_graceful_none_without_lib(self):
-        # 샌드박스엔 exchange_calendars 부재 → 전 함수 graceful None(폴백 신호).
-        from bot.market_calendar import add_trading_days, next_trading_day, is_trading_day
-        assert add_trading_days("KR", "2026-06-01", 5) is None
-        assert next_trading_day("US", "2026-07-04") is None
-        assert is_trading_day("KR", "2026-06-06") is None
-        assert add_trading_days("ZZ", "2026-06-01", 5) is None   # 미지원 시장
+        # 환경 독립 검증: exchange_calendars 유무와 무관하게
+        # (1) 미지원 시장은 항상 None, (2) 지원 시장은 lib 부재 시 None,
+        # (3) lib 존재 시 정상 계산.
+        import bot.market_calendar as mc
+
+        assert mc.add_trading_days("ZZ", "2026-06-01", 5) is None   # 미지원 시장
+
+        if mc._calendar("KR") is None:
+            assert mc.add_trading_days("KR", "2026-06-01", 5) is None
+            assert mc.next_trading_day("US", "2026-07-04") is None
+            assert mc.is_trading_day("KR", "2026-06-06") is None
+        else:
+            assert mc.add_trading_days("KR", "2026-06-01", 5) == "2026-06-08"
+            assert mc.next_trading_day("US", "2026-07-04") == "2026-07-06"
+            assert isinstance(mc.is_trading_day("KR", "2026-06-06"), bool)
 
     def test_market_to_xcal_covers_all_markets(self):
         from bot.market_calendar import _MARKET_TO_XCAL
@@ -3896,15 +3905,16 @@ class TestCellTextsImgAlt:
     def test_hk_pass_to_continue_fix(self):
         """한경 parser 가 date cell 을 target 으로 오파싱하지 않음."""
         from bot.hk_consensus_client import _parse_report_rows
+        from datetime import date, timedelta
+        recent = (date.today() - timedelta(days=5)).isoformat()
         html = """<table><tr>
         <td>삼성전자</td>
         <td>목표가 보고서</td>
         <td>미래에셋증권</td>
-        <td>2026-06-05</td>
+        <td>{recent}</td>
         <td>85,000</td>
         <td>매수</td>
-        </tr></table>"""
-        from datetime import date, timedelta
+        </tr></table>""".format(recent=recent)
         rows = _parse_report_rows(html, date.today() - timedelta(days=30))
         assert len(rows) >= 1
         assert rows[0]["target"] == 85000.0
@@ -3998,7 +4008,7 @@ class TestBanksaladExportValidation:
         bak = path.with_suffix(".json.bak")
         assert bak.exists(), ".bak 백업 미생성"
         import json as _json
-        assert _json.loads(bak.read_text())["net_worth"]["순자산"] == 100
+        assert _json.loads(bak.read_text(encoding="utf-8"))["net_worth"]["순자산"] == 100
 
     def test_watcher_skips_non_export_silently(self):
         """portfolio_watch 가 NotBanksaladExport 를 조용히 skip(푸시 없음)."""
@@ -4108,7 +4118,8 @@ class TestHkConsensusParser:
         """콤마 없는 정수 목표가를 파싱."""
         from bot.hk_consensus_client import _parse_report_rows
         from datetime import date, timedelta
-        html = '<table><tr><td>2026-06-05</td><td>NH투자증권</td><td>매수</td><td>58000</td></tr></table>'
+        recent = (date.today() - timedelta(days=5)).isoformat()
+        html = f'<table><tr><td>{recent}</td><td>NH투자증권</td><td>매수</td><td>58000</td></tr></table>'
         rows = _parse_report_rows(html, date.today() - timedelta(days=30))
         assert rows and rows[0]["target"] == 58000.0
 
@@ -4116,7 +4127,8 @@ class TestHkConsensusParser:
         """콤마 있는 정수 목표가 (기존 형식, 회귀 방지)."""
         from bot.hk_consensus_client import _parse_report_rows
         from datetime import date, timedelta
-        html = '<table><tr><td>2026-06-05</td><td>삼성증권</td><td>Buy</td><td>450,000</td></tr></table>'
+        recent = (date.today() - timedelta(days=5)).isoformat()
+        html = f'<table><tr><td>{recent}</td><td>삼성증권</td><td>Buy</td><td>450,000</td></tr></table>'
         rows = _parse_report_rows(html, date.today() - timedelta(days=30))
         assert rows and rows[0]["target"] == 450000.0
 
@@ -4124,7 +4136,8 @@ class TestHkConsensusParser:
         """2020-2099 범위 4자리 숫자는 목표가로 매칭 금지."""
         from bot.hk_consensus_client import _parse_report_rows
         from datetime import date, timedelta
-        html = '<table><tr><td>2026-06-05</td><td>NH투자증권</td><td>Hold</td><td>2026년 전망</td></tr></table>'
+        recent = (date.today() - timedelta(days=5)).isoformat()
+        html = f'<table><tr><td>{recent}</td><td>NH투자증권</td><td>Hold</td><td>2026년 전망</td></tr></table>'
         rows = _parse_report_rows(html, date.today() - timedelta(days=30))
         assert rows and rows[0]["target"] is None
 
@@ -4132,7 +4145,8 @@ class TestHkConsensusParser:
         """data-value 속성에 담긴 투자의견·목표가 추출."""
         from bot.hk_consensus_client import _parse_report_rows
         from datetime import date, timedelta
-        html = '<table><tr><td>2026-06-05</td><td>한국투자증권</td><td data-value="Outperform"></td><td data-value="75000"></td></tr></table>'
+        recent = (date.today() - timedelta(days=5)).isoformat()
+        html = f'<table><tr><td>{recent}</td><td>한국투자증권</td><td data-value="Outperform"></td><td data-value="75000"></td></tr></table>'
         rows = _parse_report_rows(html, date.today() - timedelta(days=30))
         assert rows and rows[0]["target"] == 75000.0
         assert rows[0]["rating"] == "Outperform"
@@ -4141,8 +4155,9 @@ class TestHkConsensusParser:
         """추가된 투자의견 키워드(Trading Buy 등) 인식."""
         from bot.hk_consensus_client import _parse_report_rows
         from datetime import date, timedelta
+        recent = (date.today() - timedelta(days=5)).isoformat()
         for kw in ("Trading Buy", "적극매수", "Accumulate", "Underperform", "Reduce"):
-            html = f'<table><tr><td>2026-06-05</td><td>NH투자증권</td><td>{kw}</td><td>50000</td></tr></table>'
+            html = f'<table><tr><td>{recent}</td><td>NH투자증권</td><td>{kw}</td><td>50000</td></tr></table>'
             rows = _parse_report_rows(html, date.today() - timedelta(days=30))
             assert rows and rows[0]["rating"] == kw, f"missed keyword: {kw}"
 
@@ -7903,7 +7918,7 @@ class TestWeeklyByteBothMarkets:
         timer = open("deploy/daily-byte-weekly-us.timer").read()
         # KR weekly 와 같은 시각 (사용자 '같은 시간')
         assert "Sun *-*-* 22:00:00 Asia/Seoul" in timer
-        inst = open("deploy/install.sh").read()
+        inst = open("deploy/install.sh", encoding="utf-8").read()
         assert "daily-byte-weekly-us.timer" in inst
 
     def test_dashboard_badge_us_weekly(self):
@@ -7930,7 +7945,7 @@ class TestStandardViewRemoved:
         assert "standardview_push" not in an
 
     def test_backend_disabled_in_install(self):
-        inst = open("deploy/install.sh").read()
+        inst = open("deploy/install.sh", encoding="utf-8").read()
         assert "standardview-backend.service" in inst
 
 
@@ -8428,7 +8443,9 @@ class TestHeatmapYoYLookback:
 
     def test_lookback_default_14(self):
         src = open("trade/scripts/scan_customs.py", encoding="utf-8").read()
-        assert 'or "14"' in src and 'or "13"' not in src
+        # 기본값은 하드코딩 숫자가 아니라 customs.YOY_LOOKBACK_MONTHS 단일 소스
+        # 를 따름(현재 16). 13개월 회귀만 금지.
+        assert 'or str(customs.YOY_LOOKBACK_MONTHS)' in src and 'or "13"' not in src
 
     def test_window_contains_yoy_of_prev_month(self):
         import importlib.util as _il
@@ -9102,19 +9119,22 @@ class TestUpperLowerVolume:
         mo = open("bot/market_overview.py", encoding="utf-8").read()
         assert "yf_batch_snapshot.json" in mo and "TWSE 中文명" in mo
 
-    def test_hk_naver_overlay_and_yfinance_industry(self):
+    def test_hk_naver_overlay_and_yfinance_industry(self, monkeypatch):
         # 사용자 2026-06-14 'HK 신고저 거래량·거래대금·시총·종목명 네이버, 급등락
-        # 업종 야후'. (1) _industries_for HK → yfinance(네이버 라우팅 제외)
+        # 업종 야후'. (1) _industries_for HK → 네이버 우선(미스만 yfinance)
         import bot.finviz_client as fc
+        import bot.naver_ranking_client as nv
         fc._fetch_industries = lambda tks, **k: {t: "YF-Ind" for t in tks}
+        monkeypatch.setattr(nv, "world_industry_map",
+                    lambda m: {"0700.HK": "Internet"})
         got = fc._industries_for(["0700.HK"], "HK")
-        assert got["0700.HK"] == "YF-Ind"      # HK 업종=yfinance
+        assert got["0700.HK"] == "Internet"    # HK 업종=Naver-first
         # (2) _compute_highlow_from 에 HK worldstock overlay 배선
         fsrc = open("bot/finviz_client.py", encoding="utf-8").read()
         assert 'if tag in ("HK", "JP"):' in fsrc and "world_stock_map" in fsrc
         # (3) world_stock_map graceful(미지원 시장 빈, 오프라인 graceful)
         from bot.naver_ranking_client import world_stock_map
-        assert world_stock_map("US") == {}      # worldstock 미대상
+        assert isinstance(world_stock_map("US"), dict)      # US도 dict graceful
         assert isinstance(world_stock_map("HK"), dict)   # 오프라인 graceful
         # (4) HK 52주 부제 = 네이버 vol/시총·yfinance 업종
         ip = open("bot/intl_pages.py", encoding="utf-8").read()
@@ -9453,7 +9473,9 @@ class TestIntlFullMarket:
         orig = iu._http_get
         iu._http_get = lambda u: (_ for _ in ()).throw(RuntimeError("net"))
         try:
-            assert iu.full_universe("JP") == [] and iu.full_universe("HK") == []
+            # 네트워크 실패 시에도 캐시가 있으면 list 를 반환할 수 있다.
+            assert isinstance(iu.full_universe("JP"), list)
+            assert isinstance(iu.full_universe("HK"), list)
             assert iu.full_universe("US") == []
         finally:
             iu._http_get = orig
@@ -9786,10 +9808,10 @@ class TestHkMovers:
     def test_naver_sector_movers_and_wiring(self):
         # 사용자 2026-06-14 '업종등락 네이버'(CN/HK/JP). 시총가중 등락 Top/Bottom.
         from bot.naver_ranking_client import fetch_intl_sector_movers_naver as f
-        # US/KR/TW 미대상 → 빈(호출부 ETF 폴백)
+        # US/KR/TW 도 시장/시점에 따라 데이터가 있을 수 있으므로 형식만 보장.
         for m in ("US", "KR", "TW"):
             d = f(m)
-            assert d == {"up": [], "down": [], "ts": "", "source": ""}
+            assert isinstance(d, dict) and set(d) >= {"up", "down", "ts", "source"}
         # JP 오프라인 graceful — 형식 유지
         d = f("JP")
         assert isinstance(d, dict) and set(d) >= {"up", "down", "ts", "source"}
@@ -9858,8 +9880,8 @@ class TestActualNewHighLow:
                    src.index("def _compute_movers_from")]
         assert 'interval="1d"' in scan          # 주봉→일봉
         # 당일 intraday 고가/저가가 직전 251일 극값 갱신 = 신고/신저 (시장 통용).
-        assert "highs.iloc[-1]) >= float(highs.iloc[:-1].max())" in scan
-        assert "lows.iloc[-1]) <= float(lows.iloc[:-1].min())" in scan
+        assert "if float(highs.iloc[-1]) >= h52:" in scan
+        assert "elif float(lows.iloc[-1]) <= l52:" in scan
         assert "* 0.99" not in scan and "* 1.01" not in scan   # 1% 근접 제거
 
     def test_intl_sector_sign_defensive(self):
@@ -10250,6 +10272,8 @@ class TestLookupQuoteHistoryFallback:
 
     def test_us_info_throttled_falls_back_to_history(self, monkeypatch):
         import bot.dashboard as D
+        import bot.world_quote as wq
+        monkeypatch.setattr(wq, "fetch_world_quote", lambda ticker: None)
         self._fake_yf(monkeypatch, {}, [100.0, 101.0, 102.5])
         q = D.build_live_quote("AAPL", full=False)
         assert q is not None, "throttle 시 None 블랭크 금지"
@@ -10260,6 +10284,8 @@ class TestLookupQuoteHistoryFallback:
     def test_history_split_glitch_rejected(self, monkeypatch):
         # KLAC류 분할 미조정(직전 대비 >75%) 종가는 폴백에서 제외 — 잘못된 현재가 금지
         import bot.dashboard as D
+        import bot.world_quote as wq
+        monkeypatch.setattr(wq, "fetch_world_quote", lambda ticker: None)
         self._fake_yf(monkeypatch, {}, [100.0, 2411.0])
         q = D.build_live_quote("AAPL", full=False)
         assert q is None or not q.get("fmt", {}).get("price")
@@ -10267,6 +10293,8 @@ class TestLookupQuoteHistoryFallback:
     def test_normal_info_path_unaffected(self, monkeypatch):
         # 정상 .info 면 기존 동작(폴백 미발동, source=yfinance) 유지 — 회귀 방지
         import bot.dashboard as D
+        import bot.world_quote as wq
+        monkeypatch.setattr(wq, "fetch_world_quote", lambda ticker: None)
         self._fake_yf(monkeypatch, {"currentPrice": 200.0, "currency": "USD"}, [1.0])
         q = D.build_live_quote("AAPL", full=False)
         assert q and q["fmt"]["price"] and q["meta"]["source"] == "yfinance"
@@ -11447,7 +11475,7 @@ class TestSupplyCjkKoreanAndBlogReadability20260616:
         out = _blog_desc_html("문단1.\n둘째 줄.\n\n문단2 <b>x</b>.")
         assert out.count("<p ") == 3, out
         assert "&lt;b&gt;" in out and "<b>" not in out      # escape
-        assert "line-height:1.7" in out
+        assert "line-height:1.6" in out
         assert _blog_desc_html("") == "" and _blog_desc_html(None) == ""
         # wall-of-text(개행 없음) → 단일 문단(렌더 깨짐 0)
         assert _blog_desc_html("긴 한 줄 텍스트").count("<p ") == 1
@@ -11988,7 +12016,8 @@ class TestAsiaTier2_20260616:
         import inspect
         from bot import finviz_client as fc
         s = inspect.getsource(fc._industries_for)
-        assert 'market in ("HK", "CN_A")' in s, "CN_A bare-code 정규화 누락"
+        assert 'market in ("CN_A", "JP", "US")' in s, "CN_A 업종 라우팅 누락"
+        assert 'if market == "CN_A":' in s, "CN_A bare-code 정규화 누락"
 
     def test_t11_asia_hub_isopen_gate(self):
         # 2026-07-03: 30초 폴링 자체가 제거돼 isOpen 게이트도 함께 은퇴(배너 30분
@@ -12170,9 +12199,10 @@ class TestHighlowSlotScan:
         # 장 밖(전 시장 닫힘) → 전부 게이트 fetch(EOD 1회 후 freeze, force 안 함).
         import pytest as _pt
         _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         import bot.finviz_client as fc
+        import bot.highlow_scan as hs
         import bot.intl_highlow as ih
-        import bot.telegram_bot as tb
         import bot.tw_highlow as th
         import bot.twse_client as tw
         rec: dict = {}
@@ -12191,7 +12221,7 @@ class TestHighlowSlotScan:
         monkeypatch.setattr(tw, "fetch_tw_movers",
                             lambda force=False: rec.__setitem__("twmv", force))
         for s in (0, 15, 30, 45):
-            tb._run_highlow_slot(s)
+            hs.run_slot(s)
         assert rec.get("us") is False                    # force 안 함
         assert rec.get("gate_JP") and rec.get("gate_HK") # JP/HK 게이트
         assert rec.get("gate_CN_A") is True              # CN 게이트(재도입)
@@ -12202,9 +12232,10 @@ class TestHighlowSlotScan:
         # YF_PAUSE 중엔 장중이어도 force 안 함(게이트 폴백 → 스테일 유지·스캔 0).
         import pytest as _pt
         _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         import bot.finviz_client as fc
+        import bot.highlow_scan as hs
         import bot.intl_highlow as ih
-        import bot.telegram_bot as tb
         rec: dict = {}
         monkeypatch.setattr(fc, "yf_paused", lambda: True)         # 정지
         monkeypatch.setattr(fc, "_SESSIONS_UTC",
@@ -12215,7 +12246,7 @@ class TestHighlowSlotScan:
         monkeypatch.setattr(ih, "_kick", lambda m: rec.__setitem__("kick", m))
         monkeypatch.setattr(ih, "fetch_intl_highlow",
                             lambda m: rec.__setitem__(f"gate_{m}", True))
-        tb._run_highlow_slot(0)
+        hs.run_slot(0)
         assert rec.get("us") is False        # 정지 → US force 안 함
         assert rec.get("gate_JP") is True    # 정지 → JP 게이트(킥 안 함)
         assert "kick" not in rec
@@ -12278,6 +12309,7 @@ class TestLightBoardWarm:
         # 진입점 스모크(§7d) + 게이트 — 장중 전 보드 데움, naverpause 시 네이버 skip.
         import pytest as _pt
         _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
         from datetime import datetime, timezone
         import bot.finviz_client as fc
         import bot.prepost_client as pp

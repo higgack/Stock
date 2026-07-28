@@ -12,6 +12,8 @@
   — PR 우회 OK. 단 squash 스타일 단일커밋 + push 후 base grep 검증은 동일).
 - `trade/` 도 같은 base 추적. VM 체크아웃 2개(`~/stock` NOAH · `~/stock-trade` trade)
   독립 배포. 옛 `claude/export-import-dashboard-zQsi2` 브랜치는 은퇴(새 작업 금지).
+- 사용자 고정 선호(2026-07-29): "운영 반영" 목적의 작업은 미커밋 상태 완료 금지.
+  필수 체인 = 수정/검증 → commit → push → base 반영 확인(로컬 확인만일 때만 미커밋 허용).
 
 ## Default workflow — 배치 적재 (사용자 2026-06-12)
 1. 평소 = 적재: 명시적 "커밋/푸시/배포" 없으면 구현·검증만, merge 안 함. 매 답변 끝

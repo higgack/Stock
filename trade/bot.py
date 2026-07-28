@@ -69,7 +69,17 @@ logging.basicConfig(
 )
 log = logging.getLogger("trade-bot")
 
-TOKEN = os.environ["TRADE_BOT_TOKEN"]
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if value:
+        return value
+    raise RuntimeError(
+        f"Missing required environment variable: {name}. "
+        "Set it in .env before starting the trade bot."
+    )
+
+
+TOKEN = _require_env("TRADE_BOT_TOKEN")
 
 _raw_ids = os.environ.get("TRADE_CHANNEL_CHAT_IDS", "")
 CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}

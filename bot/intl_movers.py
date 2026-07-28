@@ -51,11 +51,10 @@ def _compute(market: str) -> None:
             nv = fetch_intl_movers_naver(market)
             if nv.get("up") or nv.get("down"):
                 try:
-                    # CN/HK/JP 업종 = 네이버 업종맵(사용자 2026-06-14 — yfinance
-                    # .info 가 비-US 업종 자주 비워 '업종 —' 이던 것 해소).
-                    from bot.finviz_client import _industries_for
+                    # 업종은 yfinance enrich 유지(네이버 무버 + 야후 업종 정책).
+                    from bot.finviz_client import _fetch_industries
                     hits = [r["ticker"] for r in nv["up"] + nv["down"] if r.get("ticker")]
-                    inds = _industries_for(hits, market)
+                    inds = _fetch_industries(hits)
                     for r in nv["up"] + nv["down"]:
                         if not r.get("ind"):
                             r["ind"] = inds.get(r["ticker"])

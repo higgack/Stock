@@ -23,7 +23,8 @@ log = logging.getLogger("bot.dart_feed")
 
 _DART_BASE = "https://opendart.fss.or.kr/api"
 _TIMEOUT = 15
-_ARCHIVE_DIR = Path.home() / ".tradingagents" / "dart_feed_archive"
+_HOME_DIR = Path(os.environ.get("HOME") or str(Path.home()))
+_ARCHIVE_DIR = _HOME_DIR / ".tradingagents" / "dart_feed_archive"
 _KST = timezone(timedelta(hours=9))
 
 # ── 카테고리 분류 (chart_events.classify 재사용하되, 대시보드용 한국어 라벨) ──
@@ -234,7 +235,7 @@ def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
     return out
 
 
-_IR_MONTH_CACHE = Path.home() / ".tradingagents" / "cache" / "dart_ir_month"
+_IR_MONTH_CACHE = _HOME_DIR / ".tradingagents" / "cache" / "dart_ir_month"
 _IR_MONTH_TTL = 12 * 3600
 _IR_CHUNK_DAYS = 7          # 주 단위 윈도로 쪼개 firehose 깊이를 분산
 _IR_CHUNK_MAX_PAGES = 20    # 청크당 페이지 상한(과거 월 1회 cold load 시간 bound)
@@ -459,13 +460,13 @@ def _extract_elestock(rcept_no: str, corp_code: str,
     return None
 
 
-_DOC_FAIL = Path.home() / ".tradingagents" / "dart_doc_fail.json"
+_DOC_FAIL = _HOME_DIR / ".tradingagents" / "dart_doc_fail.json"
 # 일일 DART 콜 버짓 백스톱(키당 2만/일 한도 — 사용자 2026-06-11 '블락 전에
 # 미리'): listing 페이지·enrich 시도를 카운트, 초과 시 그날 enrich 중단 +
 # listing 최소화. 차단당하기 전에 우리가 먼저 감속.
-_BUDGET_FILE = Path.home() / ".tradingagents" / "dart_call_budget.json"
+_BUDGET_FILE = _HOME_DIR / ".tradingagents" / "dart_call_budget.json"
 _BUDGET_HARD = 15000   # 한도 20k 대비 25% 안전 마진
-_FULLSCAN_TS = Path.home() / ".tradingagents" / "dart_feed_fullscan.ts"
+_FULLSCAN_TS = _HOME_DIR / ".tradingagents" / "dart_feed_fullscan.ts"
 
 
 def _budget_today() -> int:
@@ -598,7 +599,7 @@ def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
 # ('회사가 X 를 Y 에 공급' = 취급품목 + 납품 둘 다). 사업보고서 본문은 3MB·
 # 6000자 truncation 으로 무용 → 짧은 계약 공시만 viable. graceful: 킬스위치·키부재·
 # 예산초과·실패 전부 no-op. seen-set 으로 rcept_no 당 1회만(1분 폴링 재처리 방지).
-_KG_DART_SEEN = Path.home() / ".tradingagents" / "kg_dart_seen.json"
+_KG_DART_SEEN = _HOME_DIR / ".tradingagents" / "kg_dart_seen.json"
 _KG_DART_MAX_PER_CYCLE = 12    # 사이클(1분)당 계약공시 처리 상한(신규+백필) — run_extraction
                                # 내부캡(12)·trade 일일 LLM 예산과 동조. 아카이브 점진 드레인.
 
@@ -5206,7 +5207,7 @@ if __name__ == "__main__":
     # kg 출처 소급 복원 1회 — 2026-06-24 출처 버그 이전 적재분(빈 source)을 결정론적
     # 으로 채움(LLM 0·₩0·상태 보존). marker gate(1회만). 아카이브 로드 후 실행.
     try:
-        _m = Path.home() / ".tradingagents" / "kg_source_backfill.done"
+        _m = _HOME_DIR / ".tradingagents" / "kg_source_backfill.done"
         if not _m.exists():
             from trade import kg_candidates as _kgc
             _n = _kgc.backfill_source()

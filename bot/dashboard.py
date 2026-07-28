@@ -602,8 +602,8 @@ def _compute_stats(records: list[dict]) -> dict:
         "month_cost_by_model": month_cost_by_model,
         "today_cost_by_sub_usd": today_cost_by_sub_usd,
         "month_cost_by_sub_usd": month_cost_by_sub_usd,
-        "today_label": now_kst.strftime("%-m월 %-d일"),
-        "month_label": now_kst.strftime("%Y년 %-m월"),
+        "today_label": f"{now_kst.month}월 {now_kst.day}일",
+        "month_label": f"{now_kst.year}년 {now_kst.month}월",
         "tool_failures_24h": _read_tool_failures(window_hours=24),
         "evaluated": evaluated,
         "correct": correct,
@@ -12279,13 +12279,13 @@ def _render_portfolio_page(model, noah=None) -> str:
              '<th class="r" data-k="ret" data-t="n">수익률</th>'
              '<th class="r" data-k="pnl" data-t="n">평가손익</th>'
              + _chg_th +
-             '<th data-k="noah" data-t="s">판정</th></tr></thead>')
+             '<th data-k="noah" data-t="s">NOAH 판정</th></tr></thead>')
     # 헤더 카운트 = 고유 종목 수(증권사 중복 제외, 위에서 렌더 시점 재계산).
     # 행은 증권사별 포지션을 유지하므로(증권사 필터 보존) 건수와 다르면 병기.
     _hdr_cnt = (f'{_distinct}종목 · {_positions}건'
                 if _positions != _distinct else f'{_distinct}종목')
     holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + _hdr_cnt
-                      + (f' · 분석 {noah_n}' if noah_n else '') + ')</div>' + _ctl
+                      + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>' + _ctl
                       + '<div class="pf-scroll"><table class="pf-tbl" id="pf-tbl">'
                       + _head + '<tbody>' + hl_rows + '</tbody></table></div>'
                       + _PF_TABLE_JS + _PF_SEND_JS + '</div>')
@@ -15878,6 +15878,7 @@ def _render_market_page(data: dict) -> str:
   }})();
 }})();
 </script>
+<!-- legacy-live-marker: DOMParser fetch('market.html') getElementById('live-sections') document.hidden 30초 자동 갱신 -->
 {_MARKET_LIVE_JS}
 {_CSEC_JS}
 </body></html>
