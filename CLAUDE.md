@@ -162,6 +162,16 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
   환경별 최초 1회 `pip install code-review-graph && code-review-graph install --platform
   claude-code --no-instructions -y` 실행 필요(venv 권장 — 시스템 패키지 충돌 시 `--user` 는
   `-I` isolated-mode 서브프로세스 프로브와 충돌해 그래프가 0노드로 빌드되는 함정 있음).
+- **engram** (Gentleman-Programming/engram, 2026-07-29 외부레포 리뷰 채택 검토) — Claude Code
+  세션간 연속성용 MCP 메모리 서버(Go 바이너리, SQLite+FTS5, 임베딩/디케이 없음). 채택 시
+  환경별 최초 1회 `engram setup claude-code` 실행(code-review-graph 와 동일 패턴 — 머신별
+  개별 설치, repo 커밋 불요). 세션종료 시 Goal/Discoveries/Accomplished/Next Steps/Files
+  템플릿으로 자동요약 저장 → 다음 세션 시작에 자동주입.
+- **Skill_Seekers** (yusufkaraaslan/Skill_Seekers, 2026-07-29 검토) — 외부 API 문서(yfinance/
+  FRED 등)를 스캔해 `.claude/skills/` 용 SKILL.md 를 자동생성하는 파이프라인. "사전지식 stale
+  가정 금지"(실수#12) 대응용 grounded 레퍼런스 생성에 유용하나 AI 보강 단계가 API 키 과금 또는
+  로컬 Claude Code 구독 소모를 유발 — 사용자가 본인 머신에서 직접 실행 판단(에이전트가 임의
+  과금 유발 금지). 생성물은 다른 티커분석과 동일하게 "데이터 vs 환각" 검증 후 커밋.
 - 자동화 인벤토리·CLAUDE.md 룰↔테스트 커버리지 매핑 = `docs/automation.md` / `docs/tests.md`.
 
 ## 멀티마켓 · 기능 상세 → CLAUDE_REFERENCE.md
