@@ -29,6 +29,16 @@ Copilot 용 온보딩 요약은 `.github/copilot-instructions.md`(+ `trade/**` �
 (c) Copilot 이 만든 변경도 이 파일의 모든 규칙(UNIVERSAL CHANGES ONLY·Help/Dashboard 등록·
 Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기준이 다르다" 예외 금지.
 
+## ⚠️ 다른 AI 에이전트와 레포 공유 (사용자 2026-07-29, GitHub Copilot 합류)
+이 레포(`higgack/Stock`)는 이제 **Claude Code 뿐 아니라 GitHub Copilot 도 병행 개발**한다.
+Copilot 용 온보딩 요약은 `.github/copilot-instructions.md`(+ `trade/**` 전용
+`.github/instructions/trade.instructions.md`) — Claude 규칙 요약본, 상세는 여전히 이 파일들이
+원본. 실무 함의: (a) 작업 시작 전 `git log origin/<base>` 로 내가 모르는 새 커밋(Copilot 작성)
+있는지 확인 습관화 — base 가 두 에이전트가 각자 merge 하는 공용 배포 지점이라 동시편집/충돌
+가능. (b) "내가 마지막으로 고친 상태"를 가정하지 말 것 — 매 세션 시작 시 base 최신상태 fetch.
+(c) Copilot 이 만든 변경도 이 파일의 모든 규칙(UNIVERSAL CHANGES ONLY·Help/Dashboard 등록·
+Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기준이 다르다" 예외 금지.
+
 ## Default workflow — 배치 적재 (사용자 2026-06-12)
 1. 평소 = 적재: 명시적 "커밋/푸시/배포" 없으면 구현·검증만, merge 안 함. 매 답변 끝
    `📦 누적: N개` (= `git diff --name-only origin/<base>`).
@@ -168,6 +178,16 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
   환경별 최초 1회 `pip install code-review-graph && code-review-graph install --platform
   claude-code --no-instructions -y` 실행 필요(venv 권장 — 시스템 패키지 충돌 시 `--user` 는
   `-I` isolated-mode 서브프로세스 프로브와 충돌해 그래프가 0노드로 빌드되는 함정 있음).
+- **engram** (Gentleman-Programming/engram, 2026-07-29 외부레포 리뷰 채택 검토) — Claude Code
+  세션간 연속성용 MCP 메모리 서버(Go 바이너리, SQLite+FTS5, 임베딩/디케이 없음). 채택 시
+  환경별 최초 1회 `engram setup claude-code` 실행(code-review-graph 와 동일 패턴 — 머신별
+  개별 설치, repo 커밋 불요). 세션종료 시 Goal/Discoveries/Accomplished/Next Steps/Files
+  템플릿으로 자동요약 저장 → 다음 세션 시작에 자동주입.
+- **Skill_Seekers** (yusufkaraaslan/Skill_Seekers, 2026-07-29 검토) — 외부 API 문서(yfinance/
+  FRED 등)를 스캔해 `.claude/skills/` 용 SKILL.md 를 자동생성하는 파이프라인. "사전지식 stale
+  가정 금지"(실수#12) 대응용 grounded 레퍼런스 생성에 유용하나 AI 보강 단계가 API 키 과금 또는
+  로컬 Claude Code 구독 소모를 유발 — 사용자가 본인 머신에서 직접 실행 판단(에이전트가 임의
+  과금 유발 금지). 생성물은 다른 티커분석과 동일하게 "데이터 vs 환각" 검증 후 커밋.
 - 자동화 인벤토리·CLAUDE.md 룰↔테스트 커버리지 매핑 = `docs/automation.md` / `docs/tests.md`.
 
 ## 멀티마켓 · 기능 상세 → CLAUDE_REFERENCE.md

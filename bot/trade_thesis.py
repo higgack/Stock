@@ -17,6 +17,16 @@ trader-memory-core/weekly-performance-digest/trade-performance-coach 개념을
   30분 해상도 근사임을 문서화.
 - entry_cost_krw 를 생성 시점에 그대로 저장해 realized_pct 계산 시 별도
   환율 재조회 불요(포지션엔 KRW 원가가 이미 있음).
+
+외부 레퍼런스 리뷰 이식(2026-07-29, engram/EverOS 개념 검토 — 사용자 승인):
+- **entry_track_record**: 신규 씨시스 생성 시 같은 종목(+setup_type)의 과거
+  CLOSED 성과를 그 시점 스냅샷으로 동결 저장(engram 의 topic_key 기반
+  consolidated-view 이식) — "그 종목이 그동안 어땠는지 알고도 들어갔나"를
+  사후에 추적 가능. `postmortem_text()` 가 승률 부진 이력이 있었으면 경고
+  문구를 붙임(engram mem_judge/mem_compare — 상충 신호 명시 이식).
+- **export_postmortem_md()**: CLOSED 전환 시 theses.json(canonical) 외에
+  사람이 바로 읽을 수 있는 markdown 사본을 병행 저장(EverOS 의
+  markdown-as-source-of-truth 이식) — 실패해도 canonical 저장엔 영향 없음.
 """
 from __future__ import annotations
 
@@ -24,11 +34,13 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
+_KST = timezone(timedelta(hours=9))
 _HOME = Path.home() / ".tradingagents" / "paper"
 _THESES = _HOME / "theses.json"
 _CAP = 1000   # 보관 상한 — 초과 시 오래된 CLOSED 부터 제거(ACTIVE 는 항상 보존)
@@ -62,6 +74,27 @@ def _trim(data: dict) -> None:
     data["theses"] = active + keep_closed
 
 
+def pattern_track_record(ticker: str, setup_type: Optional[str] = None) -> dict:
+    """ticker(+setup_type) 의 과거 CLOSED 씨시스 집계 — 신규 진입 시 '이
+    종목/셋업이 그동안 어땠는지' 스냅샷(engram topic_key consolidated-view
+    이식, 2026-07-29). digest_stats 와 동일 통계 정의를 단일종목 스코프로
+    축소한 순수 조회 함수. 이력 없으면 n=0."""
+    ticker = (ticker or "").upper()
+    closed = [t for t in _load().get("theses", []) if t.get("status") == "CLOSED"
+             and t.get("ticker") == ticker
+             and (setup_type is None or t.get("setup_type") == setup_type)]
+    closed.sort(key=lambda t: t.get("exit_ts") or 0)
+    pcts = [t["realized_pct"] for t in closed if t.get("realized_pct") is not None]
+    n = len(pcts)
+    wins = [p for p in pcts if p > 0]
+    return {
+        "n": n,
+        "win_rate": (len(wins) / n * 100) if n else None,
+        "expectancy_pct": (sum(pcts) / n) if n else None,
+        "last_verdict": postmortem_text(closed[-1]) if closed else "",
+    }
+
+
 def open_thesis(ticker: str, market: str, entry_ts: float,
                 entry_price_native: float, qty: float, entry_cost_krw: float, *,
                 thesis_statement: str = "", chain: Optional[dict] = None,
@@ -84,6 +117,7 @@ def open_thesis(ticker: str, market: str, entry_ts: float,
         "mfe_pct": 0.0, "mae_pct": 0.0, "mfe_mae_sampled": False,
         "exit_ts": None, "exit_price_native": None, "exit_reason": None,
         "realized_krw": None, "realized_pct": None,
+        "entry_track_record": pattern_track_record(ticker, setup_type),
     })
     _trim(data)
     _save(data)
@@ -179,6 +213,7 @@ def sync_closed() -> list[dict]:
             t["exit_reason"] = "horizon"
         else:
             t["exit_reason"] = "signal"
+        export_postmortem_md(t)
         newly_closed.append(dict(t))
     if newly_closed:
         _trim(data)
@@ -204,7 +239,55 @@ def postmortem_text(t: dict) -> str:
     # 오표기 방지(리뷰: 전패 케이스에서 '최고 +0.0%p' 오탐 발견).
     if t.get("mfe_mae_sampled") and mfe - pct > 3.0:
         gap_note = f" · 최고 +{mfe:.1f}%p 갔다가 반납(이익실현 타이밍 재검토)"
-    return f"{verdict} {pct:+.1f}% ({reason}){gap_note}"
+    caution_note = ""
+    track = t.get("entry_track_record") or {}
+    # 진입 시점에 이미 이 종목 승률이 부진(2건+ & <40%)했으면 '알고도 반복
+    # 진입'이었다는 뜻 — 상충 신호를 사후에 명시(engram mem_judge/mem_compare
+    # 이식, 2026-07-29). entry_track_record 없는 구버전 레코드는 스킵.
+    if track.get("n", 0) >= 2 and (track.get("win_rate") if track.get("win_rate")
+                                    is not None else 100) < 40:
+        caution_note = (f" · ⚠️ 진입시점 이 종목 승률 {track['win_rate']:.0f}%"
+                        f"({track['n']}건) 이력 — 반복진입 재검토")
+    return f"{verdict} {pct:+.1f}% ({reason}){gap_note}{caution_note}"
+
+
+def export_postmortem_md(t: dict) -> None:
+    """CLOSED 씨시스 1건을 사람이 바로 읽을 수 있는 markdown 사본으로 병행
+    저장(EverOS markdown-as-source-of-truth 이식, 2026-07-29). theses.json
+    이 canonical — 이건 grep/cat 가능한 human-readable 미러일 뿐이라 실패해도
+    씨시스 처리 자체엔 영향 없음(graceful, 로그만 — silent-fail 아님)."""
+    if t.get("status") != "CLOSED":
+        return
+    try:
+        # _HOME 기준 매 호출 시 재계산(모듈 상수로 캐싱하면 테스트의 _HOME
+        # monkeypatch 를 못 따라가 실제 홈 디렉토리에 테스트 산출물이 새는
+        # 버그가 남는다 — 리뷰로 발견, 2026-07-29).
+        md_dir = _HOME / "postmortems"
+        md_dir.mkdir(parents=True, exist_ok=True)
+        exit_dt = (datetime.fromtimestamp(t["exit_ts"], _KST) if t.get("exit_ts")
+                  else datetime.now(_KST))
+        fname = f"{exit_dt.strftime('%Y%m%d')}_{t.get('ticker','')}_{t.get('id','')}.md"
+        track = t.get("entry_track_record") or {}
+        track_line = (f"- 진입시점 트랙레코드: {track['n']}건, 승률 {track['win_rate']:.0f}%\n"
+                     if track.get("n") else "")
+        body = (
+            f"---\n"
+            f"ticker: {t.get('ticker','')}\n"
+            f"market: {t.get('market','')}\n"
+            f"setup_type: {t.get('setup_type') or ''}\n"
+            f"exit_reason: {t.get('exit_reason') or ''}\n"
+            f"realized_pct: {t.get('realized_pct')}\n"
+            f"exit_at_kst: {exit_dt.isoformat(timespec='seconds')}\n"
+            f"---\n\n"
+            f"# {t.get('ticker','')} — {postmortem_text(t)}\n\n"
+            f"{track_line}"
+            f"- 진입 논거: {t.get('thesis_statement') or '(없음)'}\n"
+            f"- MFE {t.get('mfe_pct',0):+.1f}% / MAE {t.get('mae_pct',0):+.1f}%\n"
+        )
+        (md_dir / fname).write_text(body, encoding="utf-8")
+    except OSError as exc:
+        log.debug("trade_thesis: export_postmortem_md failed for %s: %s",
+                 t.get("id"), exc)
 
 
 def digest_stats(days: int = 7) -> dict:

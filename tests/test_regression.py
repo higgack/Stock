@@ -2164,6 +2164,59 @@ class TestTradeThesis:
         assert tt.digest_stats(days=7)["n"] == 0
         assert tt.weekly_digest_text(days=7) is None
 
+    def _close(self, tt, monkeypatch, ticker, entry_cost, realized_krw):
+        import bot.paper_trading as pt
+        tt.open_thesis(ticker, "US", time.time() - 3600, 100.0, 1, entry_cost,
+                       setup_type="auto_signal")
+        monkeypatch.setattr(pt, "get_account", lambda: {
+            "positions": {}, "trades": [
+                {"ticker": ticker, "side": "sell", "ts": time.time(),
+                 "fill_native": 90.0, "realized_krw": realized_krw}]})
+        closed = tt.sync_closed()
+        assert len(closed) == 1
+        return closed[0]
+
+    def test_entry_track_record_snapshots_prior_closed_history(self, tmp_path, monkeypatch):
+        # engram topic_key consolidated-view 이식(2026-07-29) — 신규 진입 시
+        # 그 종목의 과거 성과를 그 시점 스냅샷으로 동결 저장하는지.
+        tt = self._setup(tmp_path, monkeypatch)
+        self._close(tt, monkeypatch, "AAA", 10000.0, -1000.0)
+        self._close(tt, monkeypatch, "AAA", 10000.0, -1000.0)
+        tid3 = tt.open_thesis("AAA", "US", time.time(), 100.0, 1, 10000.0,
+                              setup_type="auto_signal")
+        t3 = next(t for t in tt.list_theses(status="ACTIVE") if t["id"] == tid3)
+        assert t3["entry_track_record"]["n"] == 2
+        assert t3["entry_track_record"]["win_rate"] == 0.0
+
+    def test_postmortem_caution_note_when_prior_track_record_poor(self, tmp_path, monkeypatch):
+        # engram mem_judge/mem_compare 이식(2026-07-29) — 진입시점에 이미 부진
+        # 이력(2건+, 승률<40%)이 있었으면 사후 포스트모템에 경고문구 명시.
+        tt = self._setup(tmp_path, monkeypatch)
+        self._close(tt, monkeypatch, "AAA", 10000.0, -1000.0)
+        self._close(tt, monkeypatch, "AAA", 10000.0, -1000.0)
+        closed3 = self._close(tt, monkeypatch, "AAA", 10000.0, 500.0)
+        pm = tt.postmortem_text(closed3)
+        assert "⚠️" in pm and "승률 0%" in pm and "2건" in pm
+
+    def test_postmortem_no_caution_note_when_track_record_thin(self, tmp_path, monkeypatch):
+        # 이력 <2건이면(첫 트레이드 등) 경고문구 미표시 — 기존 all-win/all-loss
+        # 다이제스트 테스트가 이미 통과했던 n=1 케이스 회귀 방지.
+        tt = self._setup(tmp_path, monkeypatch)
+        closed = self._close(tt, monkeypatch, "SOLO", 10000.0, -1000.0)
+        assert "⚠️" not in tt.postmortem_text(closed)
+
+    def test_export_postmortem_md_follows_home_monkeypatch(self, tmp_path, monkeypatch):
+        # 회귀 고정(2026-07-29 셀프리뷰 발견): _POSTMORTEM_MD_DIR 을 모듈
+        # 상수로 한 번만 계산하면 테스트의 _HOME monkeypatch 를 못 따라가
+        # 실제 운영자 홈 디렉토리(~/.tradingagents/paper/postmortems/)에
+        # 테스트 산출물이 새던 버그 — _HOME 기준 매 호출 재계산으로 수정.
+        tt = self._setup(tmp_path, monkeypatch)
+        self._close(tt, monkeypatch, "AAA", 10000.0, -1000.0)
+        md_files = list((tmp_path / "postmortems").glob("*.md"))
+        assert len(md_files) == 1
+        content = md_files[0].read_text(encoding="utf-8")
+        assert "ticker: AAA" in content and "❌" in content
+
     def test_wiring(self):
         # Help/대시보드 등록 규칙 — 자동매수 진입 시 씨시스 생성 + 30분
         # periodic 이 sync/mfe·mae 갱신 + 월요일 자정 주간다이제스트 + 대시보드
