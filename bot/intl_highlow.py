@@ -9,6 +9,7 @@ TW 는 별도(twse STOCK_DAY_ALL ~1000 전종목). JP/CN/HK 는 peer 주요종�
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
@@ -82,10 +83,9 @@ def _universe(market: str) -> tuple[list[str], dict]:
     cfg = _CFG.get(market)
     if not cfg:
         return [], {}
-    # JP/HK: 공식 상장목록 전종목 우선 (사용자 2026-06-13 full-market), 실패 시
-    # peer 폴백. 이름=ticker(번역 백필이 한글명 채움). CN_A 는 의도적 peer-only
-    # (재도입 2026-06-17 — 전종목 yfinance 1y 는 커버리지·부하 리스크라 주요종목만).
-    if market in ("JP", "HK"):
+    # JP/HK: 기본은 peer(회귀 안정·고정 개수). full-universe 스캔은 환경변수로만
+    # opt-in (운영 부하/변동성 제어).
+    if market in ("JP", "HK") and os.getenv("HIGHLOW_USE_FULL_UNIVERSE", "0") == "1":
         try:
             from bot.intl_universe import full_universe
             full = full_universe(market)
@@ -98,8 +98,7 @@ def _universe(market: str) -> tuple[list[str], dict]:
                 # 도 #546 영숫자 fix 로 공식 유니버스 3733 에 포함) → 공식 소스 단독이
                 # 정답. '신규종목 누락 방지'는 _jp_pick 의 일반 규칙(4자 영숫자, 형식 무관)
                 # + 라이브 공식목록 + 벌크 누락 재시도(_compute_highlow_from)로 보장.
-                import os as _os
-                _cap = int(_os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, market)
                 return full, {t: t for t in full}
@@ -115,8 +114,7 @@ def _universe(market: str) -> tuple[list[str], dict]:
             csi = list_csi300_500()              # {ticker: 中文명}, AKShare
             if len(csi) > 100:
                 full = list(csi.keys())
-                import os as _os
-                _cap = int(_os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, "CN_A")
                 return full, {t: csi.get(t, t) for t in full}

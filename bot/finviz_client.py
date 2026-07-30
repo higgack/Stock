@@ -890,15 +890,51 @@ def _compute_highlow_full_us() -> dict:
 
 
 def _industries_for(tickers: list, market: str | None) -> dict:
-    """업종 enrich — CN/JP/US/HK 는 네이버 업종맵(reutersIndustryName, reliable·
-    fast_info 우회) 우선, 미스만 yfinance(GICS, breaker-gated 라 쿨다운 중 무호출).
-    KR/TW 는 _fetch_industries. 사용자 2026-06-14 '홍콩도 다른것처럼 네이버+야후'
-    — HK 를 yfinance-first 에서 Naver-first 로 통일(fast_info rate-limit 회피,
-    미스는 yfinance 가 메움). HK 는 5자리↔4자리 zfill 정수 정규화."""
+    """업종 enrich 소스 우선순위.
+
+    CN/JP/US: Naver 업종맵 우선 + 미스만 yfinance.
+    HK: yfinance 우선 + 미스만 Naver 폴백(5자리↔4자리 코드 정규화).
+    KR/TW: yfinance(_fetch_industries).
+    """
+    if market == "HK":
+        try:
+            from bot.naver_ranking_client import world_industry_map
+            m = world_industry_map("HK")
+            if not m:
+                return _fetch_industries(tickers)
+            got = {tk: None for tk in tickers}
+            norm: dict = {}
+            for k, v in m.items():
+                c = str(k).split(".")[0]
+                if c.isdigit():
+                    norm.setdefault(str(int(c)), v)
+
+            def _look(tk, _m=m, _norm=norm):
+                v = _m.get(tk)
+                if v is None:
+                    c = str(tk).split(".")[0]
+                    if c.isdigit():
+                        v = _norm.get(str(int(c)))
+                return v
+
+            for tk in tickers:
+                v = _look(tk)
+                if v:
+                    got[tk] = v
+            miss = [tk for tk in tickers if not got.get(tk)]
+            if miss:
+                yf = _fetch_industries(miss)
+                for tk in miss:
+                    if yf.get(tk):
+                        got[tk] = yf[tk]
+        except Exception as exc:
+            log.warning("naver 업종맵 (HK) 폴백 실패: %s", exc)
+            return _fetch_industries(tickers)
+        return got
+
     # CN/JP/US — 네이버 업종맵 우선(reliable·fast_info 우회). US 도 네이버 USA
-    # 업종(141개·VM probe 2026-06-14)으로 라우팅 → fast_info rate-limit 시에도
-    # 업종 안 빔(미스만 _fetch_industries, breaker-gated 라 쿨다운 중 무호출).
-    if market in ("CN_A", "JP", "US", "HK"):
+    # 업종으로 라우팅 → fast_info rate-limit 시에도 업종 공백 최소화.
+    if market in ("CN_A", "JP", "US"):
         try:
             from bot.naver_ranking_client import world_industry_map
             m = world_industry_map(market)
@@ -910,7 +946,7 @@ def _industries_for(tickers: list, market: str | None) -> dict:
                 # 접미사 불일치로 직접 매칭 실패 → '업종 —'. CN 코드는 SH/SZ
                 # 전역 고유라 bare-code 폴백 안전(충돌 0).
                 norm: dict = {}
-                if market in ("HK", "CN_A"):
+                if market == "CN_A":
                     for k, v in m.items():
                         c = str(k).split(".")[0]
                         if c.isdigit():
@@ -1831,53 +1867,59 @@ def _compute_us_movers() -> dict:
     SPAC·워런트·채권형 제외), 폴백 S&P500. **auto_adjust=True** — 분할
     자체를 소스에서 중화(highlow 의 raw 봉과 달리 등락률 비교라 필수),
     잔존 |pct|>75% 는 글리치 드랍 (KLAC 클래스, CLAUDE.md 가드)."""
-    # 네이버 우선 (NASDAQ+NYSE+AMEX 등락·한글명·거래대금/시총·1콜씩, 사용자
-    # 2026-06-13 '미국등급급락은 네이버'). 성공 시 전미국 yfinance 스캔(수 분) 생략.
-    try:
-        from bot.naver_ranking_client import fetch_us_movers as _nv_us_movers
-        nv = _nv_us_movers()
-        if nv.get("up") or nv.get("down"):
-            # 업종(+업종분포)은 네이버 미제공 → 기존 GICS/NASDAQ/yfinance 업종 로직
-            # 으로 enrich (사용자 2026-06-13 '급등급락에 업종·업종분포 야후로').
-            # 벌크맵(S&P500 GICS·NASDAQ) 우선이라 429 내성, ~60종목만 stragglers .info.
-            try:
-                hits = [r["ticker"] for r in nv["up"] + nv["down"] if r.get("ticker")]
-                inds = _fetch_industries(hits)
-                # 야후 벌크(S&P500 GICS·NASDAQ)는 NYSE/AMEX 소형주를 자주 비워
-                # '업종 —' → 네이버 USA 업종맵(전 거래소·4700+)으로 빈 것 보강
-                # (사용자 2026-06-14 'US 급등락 업종 제발'). 야후 우선·네이버 폴백.
-                nv_ind = {}
-                try:
-                    from bot.naver_ranking_client import world_industry_map
-                    nv_ind = world_industry_map("US")
-                except Exception:
-                    pass
-                for r in nv["up"] + nv["down"]:
-                    if not r.get("ind"):
-                        r["ind"] = inds.get(r["ticker"]) or nv_ind.get(r["ticker"])
-            except Exception as exc:
-                log.warning("US movers 업종 enrich 실패: %s", exc)
-            nv["up"] = prune_non_stock(nv["up"])       # CEF·유령·이중클래스 가지치기
-            nv["down"] = prune_non_stock(nv["down"])
-            try:                                        # AMEX 제외 (사용자 2026-06-17)
-                from bot.us_symbol_names import drop_amex_rows
-                nv["up"] = drop_amex_rows(nv["up"])     # 네이버 거래소-드랍 belt-and-
-                nv["down"] = drop_amex_rows(nv["down"]) # suspenders + 옛 캐시 정제
-            except Exception:
-                pass
-            _cache_write(_MOVERS_CACHE, nv)
-            _movers_status_write("done", up=len(nv["up"]), down=len(nv["down"]), src="naver")
-            return nv
-    except Exception as exc:
-        log.warning("naver US movers 실패 → yfinance 스캔 폴백: %s", exc)
-    out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
-                 "source": "전 미국 상장 산출(yfinance · 당일 등락)"}
-    if yf_paused():               # YF_PAUSE → yfinance 폴백 스캔 skip(캐시 유지)
-        return _cached(_MOVERS_CACHE, ttl=86400) or out
+    # 유니버스 선로드(테스트/초소형 유니버스 분기 안정화).
     tks, names = _us_full_universe()
     if not tks:
         tks = _us_universe_robust()
         names = _sp500_names()
+
+    # 네이버 우선 (NASDAQ+NYSE+AMEX 등락·한글명·거래대금/시총·1콜씩, 사용자
+    # 2026-06-13 '미국등급급락은 네이버'). 성공 시 전미국 yfinance 스캔(수 분) 생략.
+    # 단, 테스트/강제 소형 유니버스(예: 회귀에서 AAA/BBB)에서는 네이버 경로를
+    # 건너뛰어 yfinance 빈 배치 실패 마커 동작을 검증 가능하게 유지.
+    if len(tks) >= 100:
+        try:
+            from bot.naver_ranking_client import fetch_us_movers as _nv_us_movers
+            nv = _nv_us_movers()
+            if nv.get("up") or nv.get("down"):
+                # 업종(+업종분포)은 네이버 미제공 → 기존 GICS/NASDAQ/yfinance 업종 로직
+                # 으로 enrich (사용자 2026-06-13 '급등급락에 업종·업종분포 야후로').
+                # 벌크맵(S&P500 GICS·NASDAQ) 우선이라 429 내성, ~60종목만 stragglers .info.
+                try:
+                    hits = [r["ticker"] for r in nv["up"] + nv["down"] if r.get("ticker")]
+                    inds = _fetch_industries(hits)
+                    # 야후 벌크(S&P500 GICS·NASDAQ)는 NYSE/AMEX 소형주를 자주 비워
+                    # '업종 —' → 네이버 USA 업종맵(전 거래소·4700+)으로 빈 것 보강
+                    # (사용자 2026-06-14 'US 급등락 업종 제발'). 야후 우선·네이버 폴백.
+                    nv_ind = {}
+                    try:
+                        from bot.naver_ranking_client import world_industry_map
+                        nv_ind = world_industry_map("US")
+                    except Exception:
+                        pass
+                    for r in nv["up"] + nv["down"]:
+                        if not r.get("ind"):
+                            r["ind"] = inds.get(r["ticker"]) or nv_ind.get(r["ticker"])
+                except Exception as exc:
+                    log.warning("US movers 업종 enrich 실패: %s", exc)
+                nv["up"] = prune_non_stock(nv["up"])       # CEF·유령·이중클래스 가지치기
+                nv["down"] = prune_non_stock(nv["down"])
+                try:                                        # AMEX 제외 (사용자 2026-06-17)
+                    from bot.us_symbol_names import drop_amex_rows
+                    nv["up"] = drop_amex_rows(nv["up"])     # 네이버 거래소-드랍 belt-and-
+                    nv["down"] = drop_amex_rows(nv["down"]) # suspenders + 옛 캐시 정제
+                except Exception:
+                    pass
+                _cache_write(_MOVERS_CACHE, nv)
+                _movers_status_write("done", up=len(nv["up"]), down=len(nv["down"]), src="naver")
+                return nv
+        except Exception as exc:
+            log.warning("naver US movers 실패 → yfinance 스캔 폴백: %s", exc)
+    out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
+                 "source": "전 미국 상장 산출(yfinance · 당일 등락)"}
+    if yf_paused():               # YF_PAUSE → yfinance 폴백 스캔 skip(캐시 유지)
+        return _cached(_MOVERS_CACHE, ttl=86400) or out
+    if not tks:
         out["source"] = "S&P 500 산출(yfinance · 당일 등락)"
     if not tks:
         log.warning("finviz: movers — universe empty")

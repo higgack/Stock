@@ -93,7 +93,8 @@ def _detect_market_safe(ticker: str) -> str:
     try:
         from bot.market import detect_market
         return detect_market(ticker) or "US"
-    except Exception:
+    except Exception as exc:
+        log.warning("detect_market failed for %s; fallback to US: %s", ticker, exc)
         return "US"
 
 

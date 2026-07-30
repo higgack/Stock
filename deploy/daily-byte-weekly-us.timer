@@ -1,10 +1,10 @@
 [Unit]
-Description=US Weekly Byte trigger — 일요일 22:00 KST (KR Weekly 와 동일 시각)
+Description=US Weekly Byte trigger - Sunday 22:00 KST (same as KR Weekly)
 
 [Timer]
-# 일요일 22:00 KST — daily-byte-weekly(KR) 와 같은 시각에 한 주 미국
-# Daily Byte 아카이브를 종합 (사용자 2026-06-12 '주간 한·미 같은 시간').
-# Persistent=true 로 서버 다운 시 부팅 후 1회 fire.
+# Sunday 22:00 KST - same schedule as daily-byte-weekly (KR).
+# Aggregates US Daily Byte archive for the week.
+# Persistent=true triggers one catch-up run after reboot.
 OnCalendar=Sun *-*-* 22:00:00 Asia/Seoul
 Persistent=true
 Unit=daily-byte-weekly-us.service
