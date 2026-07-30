@@ -63,8 +63,8 @@ def compute_indicators(ticker: str) -> dict | None:
         v = s.dropna()
         return float(v.iloc[-1]) if len(v) else None
 
-    ema10 = _last(close.ewm(span=10, adjust=False).mean())
-    sma50 = _last(close.rolling(50).mean())
+    ema21 = _last(close.ewm(span=21, adjust=False).mean())
+    sma55 = _last(close.rolling(55).mean())
     sma200 = _last(close.rolling(200).mean())
     # RSI14 (Wilder)
     delta = close.diff()
@@ -107,7 +107,7 @@ def compute_indicators(ticker: str) -> dict | None:
 
     return {
         "ticker": ticker, "asof": str(close.index[-1].date()),
-        "close": _r(cur), "ema10": _r(ema10), "sma50": _r(sma50),
+        "close": _r(cur), "ema21": _r(ema21), "sma55": _r(sma55),
         "sma200": _r(sma200), "rsi14": _r(rsi14, 1), "macd": _r(macd, 3),
         "macd_signal": _r(macds, 3), "macd_hist": _r(macdh, 3),
         "boll_pos_pct": boll_pos, "atr14": _r(atr14), "atr_pct": atr_pct,

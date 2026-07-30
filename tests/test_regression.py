@@ -344,8 +344,9 @@ class TestPMOverrideDisciplineBanner:
 # 6) Technical snapshot SSoT — 현재가/EMA/SMA 동일 series 통합
 #    배경: IBM 2026-06-02 10 EMA 266 vs 현재가 325 (22% 격차). EMA/SMA 가
 #    별도 경로(stockstats)라 stale. _compute_technical_snapshot 에 현재가
-#    + 10 EMA + 50 SMA + 200 SMA 가 같은 close series 에서 계산돼 SSoT 에
-#    포함되는지 (코드 레벨 — 네트워크 없이 정적 검증).
+#    + 21 EMA + 55 SMA + 200 SMA(2026-07-29 Credit Suisse Fibonacci 방법론
+#    채택, 이전 10/50) 가 같은 close series 에서 계산돼 SSoT 에 포함되는지
+#    (코드 레벨 — 네트워크 없이 정적 검증).
 # ─────────────────────────────────────────────────────────────────────────
 class TestTechnicalSnapshotSSoT:
     """fix: IBM 2026-06-02 review (EMA/SMA SSoT 통합)."""
@@ -360,9 +361,9 @@ class TestTechnicalSnapshotSSoT:
         )
         assert m, "_compute_technical_snapshot 못 찾음"
         fn = m.group(0)
-        # 현재가 + 10 EMA + 50 SMA + 200 SMA 가 같은 close series 에서
-        assert "ema10 = close.ewm(span=10" in fn, "10 EMA 누락"
-        assert "close.rolling(50).mean()" in fn, "50 SMA 누락"
+        # 현재가 + 21 EMA + 55 SMA + 200 SMA 가 같은 close series 에서
+        assert "ema21 = close.ewm(span=21" in fn, "21 EMA 누락"
+        assert "close.rolling(55).mean()" in fn, "55 SMA 누락"
         assert "close.rolling(200).mean()" in fn, "200 SMA 누락"
         assert "ma_lines" in fn and "*ma_lines" in fn, "MA 라인 미주입"
         # 200 SMA 가능하도록 1y 윈도
@@ -481,8 +482,9 @@ class TestFixCurrencySymbols:
 # ─────────────────────────────────────────────────────────────────────────
 # 8) 가격 차트 (lightweight-charts) 렌더 회귀 차단
 #    배경: 2026-06-03 사용자 요청 — /ticker 상세 페이지에 1년 종가 +
-#    10EMA/50SMA/200SMA 차트. price_chart 페이로드(schema v2) 가 있을 때만
-#    차트 섹션 + 라이브러리 스크립트 emit, 없으면(v1 옛 기록) text-only.
+#    21EMA/55SMA/200SMA(2026-07-29 Credit Suisse Fibonacci 방법론, 이전
+#    10/50) 차트. price_chart 페이로드(schema v2) 가 있을 때만 차트 섹션 +
+#    라이브러리 스크립트 emit, 없으면(v1 옛 기록) text-only.
 # ─────────────────────────────────────────────────────────────────────────
 class TestPriceChartRender:
     """fix: 가격 차트 v1 (2026-06-03)."""
@@ -492,8 +494,8 @@ class TestPriceChartRender:
             "currency": "$", "decimals": 2,
             "times": ["2025-06-01", "2025-06-02", "2025-06-03"],
             "close": [145.2, 146.1, 144.8],
-            "ema10": [145.0, 145.3, 145.1],
-            "sma50": [None, None, 140.0],
+            "ema21": [145.0, 145.3, 145.1],
+            "sma55": [None, None, 140.0],
         }
 
     def test_chart_section_present_with_payload(self):
@@ -1112,8 +1114,8 @@ class TestWatchlist:
 
     def test_parse_conditions_valid_invalid(self):
         from bot.watchlist import parse_conditions
-        v, inv = parse_conditions("rsi<30 PRICE>950, >sma50 <sma200 52whigh earnings JUNK")
-        assert "rsi<30" in v and "price>950" in v and ">sma50" in v
+        v, inv = parse_conditions("rsi<30 PRICE>950, >sma55 <sma200 52whigh earnings JUNK")
+        assert "rsi<30" in v and "price>950" in v and ">sma55" in v
         assert "52whigh" in v and "earnings" in v
         assert "junk" in inv
 
@@ -1145,31 +1147,31 @@ class TestWatchlist:
 
     def test_evaluate_conditions(self, monkeypatch):
         import bot.chart_data as cd
-        # 합성 payload: 현재가 100, rsi 25, sma50 110, sma200 90, 52w hi 200 lo 50
+        # 합성 payload: 현재가 100, rsi 25, sma55 110, sma200 90, 52w hi 200 lo 50
         fake = {
             "currency": "$", "decimals": 2,
             "times": ["2025-06-01", "2025-06-02"],
             "close": [50.0, 100.0],          # last=100, min=50
             "rsi": [None, 25.0],
-            "sma50": [None, 110.0],
+            "sma55": [None, 110.0],
             "sma200": [None, 90.0],
         }
         # 52w high 를 위해 max 를 키운 close 사용
         fake["close"] = [50.0, 200.0, 100.0]
         fake["times"] = ["a", "b", "c"]
         fake["rsi"] = [None, None, 25.0]
-        fake["sma50"] = [None, None, 110.0]
+        fake["sma55"] = [None, None, 110.0]
         fake["sma200"] = [None, None, 90.0]
         monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: fake)
         from bot.watchlist import evaluate
         r = evaluate("X", ["rsi<30", "rsi>30", "price>90", "price>150",
-                           ">sma200", "<sma50", "52whigh", "52wlow"])
+                           ">sma200", "<sma55", "52whigh", "52wlow"])
         assert r["rsi<30"][0] is True
         assert r["rsi>30"][0] is False
         assert r["price>90"][0] is True
         assert r["price>150"][0] is False
         assert r[">sma200"][0] is True   # 100 > 90
-        assert r["<sma50"][0] is True    # 100 < 110
+        assert r["<sma55"][0] is True    # 100 < 110
         assert r["52whigh"][0] is False  # 100 vs 52주 최고 200 → 아님
         assert r["52wlow"][0] is False   # 100 vs 52주 최저 50 → 아님
 

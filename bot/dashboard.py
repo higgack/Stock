@@ -2764,7 +2764,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <div class="cg-sec"><b>상단 헤드라인 · OHLC 바</b>
         <ul>
           <li>차트 위 <span class="k">현재가</span>(크게) · <span class="k">기간 수익률</span>(표시 구간의 절대 변동 + %) · <span class="k">거래량</span> — 한눈에.</li>
-          <li>그 아래 <span class="k">OHLC 바</span> — 날짜 · 시·고·저·종 · 일간 등락% · (이평선 켜면)10EMA/50SMA/200SMA. 차트에 마우스를 올리면 그 봉 값으로 바뀌고, 떼면 마지막 봉으로 돌아갑니다.</li>
+          <li>그 아래 <span class="k">OHLC 바</span> — 날짜 · 시·고·저·종 · 일간 등락% · (이평선 켜면)21EMA/55SMA/200SMA. 차트에 마우스를 올리면 그 봉 값으로 바뀌고, 떼면 마지막 봉으로 돌아갑니다.</li>
         </ul>
       </div>
       <div class="cg-sec"><b>우측 값 패널 (지금 값 한눈에)</b>
@@ -2790,7 +2790,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량·RSI·MACD)으로 돌아갑니다.
         <ul>
           <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
-          <li><span class="k">이평선</span> — <span style="color:#2563eb">10 EMA</span>(단기) · <span style="color:#3ec46d">50 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선.</li>
+          <li><span class="k">이평선</span> — <span style="color:#2563eb">21 EMA</span>(단기) · <span style="color:#3ec46d">55 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선(Credit Suisse Fibonacci 21/55/200 방법론).</li>
           <li><span class="k" style="color:#7890c8">볼린저</span> — 20일·2σ 밴드. 상단 부근=과열, 하단 부근=과매도, 폭=변동성.</li>
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
@@ -2973,8 +2973,8 @@ _CHART_JS = """
       try { mainS.setMarkers(mk); } catch (e) {}
     }
     if (ind.ma) {
-      if (d.ema10)  chart.addLineSeries({ color: '#2563eb', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema10));
-      if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma50));
+      if (d.ema21)  chart.addLineSeries({ color: '#2563eb', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema21));
+      if (d.sma55)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma55));
       if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma200));
     }
     if (ind.bb && d.bb_u) {
@@ -3074,8 +3074,8 @@ _CHART_JS = """
       }
       trow('종가', d.close[idx], fgColor(), prec);
       if (ind.ma) {
-        trow('10 EMA', d.ema10 && d.ema10[idx], '#2563eb', prec);
-        trow('50 SMA', d.sma50 && d.sma50[idx], '#3ec46d', prec);
+        trow('21 EMA', d.ema21 && d.ema21[idx], '#2563eb', prec);
+        trow('55 SMA', d.sma55 && d.sma55[idx], '#3ec46d', prec);
         trow('200 SMA', d.sma200 && d.sma200[idx], '#e2574c', prec);
       }
       if (ind.bb && d.bb_u) {
@@ -3221,8 +3221,8 @@ _CHART_JS = """
     if (d.wk52_low  != null) items.push(['52주 신저가', d.wk52_low,  '#e2574c', dec]);
     items.push(null);   // 구분선
     if (ind.ma) {
-      if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#2563eb', dec]);
-      if (d.sma50)  items.push(['50 SMA', lastNonNull(d.sma50), '#3ec46d', dec]);
+      if (d.ema21)  items.push(['21 EMA', lastNonNull(d.ema21), '#2563eb', dec]);
+      if (d.sma55)  items.push(['55 SMA', lastNonNull(d.sma55), '#3ec46d', dec]);
       if (d.sma200) items.push(['200 SMA', lastNonNull(d.sma200), '#e2574c', dec]);
     }
     if (ind.bb && d.bb_u) {
@@ -3301,8 +3301,8 @@ _CHART_JS = """
       parts.push('<span class="co-seg" style="color:' + col + '">' + (ch >= 0 ? '+' : '') + ch.toFixed(2) + '%</span>');
     }
     if (ind.ma) {
-      if (d.ema10 && d.ema10[idx] != null)  seg('10EMA', d.ema10[idx], '#2563eb');
-      if (d.sma50 && d.sma50[idx] != null)  seg('50SMA', d.sma50[idx], '#3ec46d');
+      if (d.ema21 && d.ema21[idx] != null)  seg('21EMA', d.ema21[idx], '#2563eb');
+      if (d.sma55 && d.sma55[idx] != null)  seg('55SMA', d.sma55[idx], '#3ec46d');
       if (d.sma200 && d.sma200[idx] != null) seg('200SMA', d.sma200[idx], '#e2574c');
     }
     oEl.innerHTML = parts.join('');
@@ -4453,7 +4453,7 @@ _TECHNICAL_JS = r"""
     if(typeof v==='number') return v.toLocaleString(undefined,{maximumFractionDigits:3}); return esc(v); }
   // ── 지표 표 ──
   var ROWS=[
-    ['종가','close'],['EMA10','ema10'],['SMA50','sma50'],['SMA200','sma200'],
+    ['종가','close'],['EMA21','ema21'],['SMA55','sma55'],['SMA200','sma200'],
     ['RSI14','rsi14'],['MACD','macd'],['MACD 시그널','macd_signal'],['MACD 히스토그램','macd_hist'],
     ['볼린저 위치(%)','boll_pos_pct'],['ATR14','atr14'],['ATR(%)','atr_pct'],
     ['VWMA20','vwma20'],['거래량/20일평균','vol_ratio'],['60일 고가','high60'],['60일 저가','low60']
@@ -11209,7 +11209,7 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
     <thead><tr><th>시각</th><th>종목</th><th>충족 조건</th></tr></thead>
     <tbody>{alert_rows}</tbody>
   </table>
-  <p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma50 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>
+  <p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma55 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>
 </div>
 </body>
 </html>
@@ -11314,7 +11314,7 @@ def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: li
         f'<h2>🔔 알림 이력 ({len(_al)})</h2>'
         '<table class="pf-tbl"><thead><tr><th>시각</th><th>종목</th><th>충족 조건</th></tr></thead>'
         f'<tbody>{_ar}</tbody></table>'
-        '<p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma50 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>'
+        '<p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma55 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>'
     )
 
     if not rows and not trades:

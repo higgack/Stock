@@ -2944,12 +2944,17 @@ def _compute_technical_snapshot(ticker: str) -> str:
             elif rsi_val_num <= 30:
                 rsi_zone = " [과매도 접근 구간 ≤30]"
 
-        # 현재가 + 이동평균 (10 EMA / 50 SMA / 200 SMA) — RSI/MACD/볼린저와
-        # 동일 close 시리즈에서 계산해 SSoT 에 함께 박는다. IBM 2026-06-02
-        # surfaced: 10 EMA 가 별도 경로(stockstats/alpha_vantage)에서 와
-        # current price 와 시점이 어긋나 266 vs 325(22% 격차) stale 출력.
-        # 같은 series 로 통일해 시공간 왜곡 영구 차단. 통화 포맷은 볼린저와
-        # 동일 (_sym_bb / _fmt_bb 재사용 — KRW/JPY 정수, 그 외 소수 2자리).
+        # 현재가 + 이동평균 (21 EMA / 55 SMA / 200 SMA, 2026-07-29 Credit
+        # Suisse technical_tutorial 방법론 채택 — Fibonacci 21/55 단기·중기
+        # + 200 장기, 이전 10 EMA/50 SMA 에서 전환. chart_data.py 차트와
+        # 동일 기간·SSoT — 아래 "Canonical 50일/200일 SMA"(Yahoo .info
+        # fiftyDayAverage 기반, 별도 데이터소스)와는 무관, 변경 대상 아님) —
+        # RSI/MACD/볼린저와 동일 close 시리즈에서 계산해 SSoT 에 함께 박는다.
+        # IBM 2026-06-02 surfaced: 10 EMA 가 별도 경로(stockstats/
+        # alpha_vantage)에서 와 current price 와 시점이 어긋나 266 vs 325
+        # (22% 격차) stale 출력. 같은 series 로 통일해 시공간 왜곡 영구 차단.
+        # 통화 포맷은 볼린저와 동일 (_sym_bb / _fmt_bb 재사용 — KRW/JPY 정수,
+        # 그 외 소수 2자리).
         try:
             from bot.market import get_market_config as _gcfg_ma
             _cma = _gcfg_ma(ticker)
@@ -2968,19 +2973,19 @@ def _compute_technical_snapshot(ticker: str) -> str:
                 "위 현재가/MA/RSI/MACD/볼린저는 직전 정상 종가 기준. 가격 방향성은 "
                 "신중·중립 해석 (phantom 폭락/급등 아님)."
             )
-        ema10 = close.ewm(span=10, adjust=False).mean()
-        _ema10v = float(ema10.iloc[-1])
-        _gap10 = (_cur_px - _ema10v) / _ema10v * 100 if _ema10v else 0.0
+        ema21 = close.ewm(span=21, adjust=False).mean()
+        _ema21v = float(ema21.iloc[-1])
+        _gap21 = (_cur_px - _ema21v) / _ema21v * 100 if _ema21v else 0.0
         ma_lines.append(
-            f"10 EMA: {_sym_ma}{_fmt_ma.format(_ema10v)} (현재가 대비 "
-            f"{_gap10:+.1f}%)"
+            f"21 EMA: {_sym_ma}{_fmt_ma.format(_ema21v)} (현재가 대비 "
+            f"{_gap21:+.1f}%)"
         )
-        if len(close) >= 50:
-            _sma50 = float(close.rolling(50).mean().iloc[-1])
-            _g50 = (_cur_px - _sma50) / _sma50 * 100 if _sma50 else 0.0
+        if len(close) >= 55:
+            _sma55 = float(close.rolling(55).mean().iloc[-1])
+            _g55 = (_cur_px - _sma55) / _sma55 * 100 if _sma55 else 0.0
             ma_lines.append(
-                f"50 SMA: {_sym_ma}{_fmt_ma.format(_sma50)} (현재가 대비 "
-                f"{_g50:+.1f}%)"
+                f"55 SMA: {_sym_ma}{_fmt_ma.format(_sma55)} (현재가 대비 "
+                f"{_g55:+.1f}%)"
             )
         if len(close) >= 200:
             _sma200 = float(close.rolling(200).mean().iloc[-1])
@@ -3005,10 +3010,10 @@ def _compute_technical_snapshot(ticker: str) -> str:
             f"볼린저(20,2σ): {bb_str}",
             sep,
             "⛔ SINGLE SOURCE OF TRUTH 강제 적용 (FORM 2026-05-23 RSI hallucination 방지):",
-            "   • 위 현재가 / 10 EMA / 50 SMA / 200 SMA / RSI(14) / MACD /"
+            "   • 위 현재가 / 21 EMA / 55 SMA / 200 SMA / RSI(14) / MACD /"
             " 볼린저 수치가 이 분석의 유일한 canonical 값.",
             "   • 위와 다른 현재가 / EMA / SMA / RSI / MACD / 볼린저 값을 독자"
-            " 계산·추정·인용하는 것 FORBIDDEN. 특히 10 EMA / 50 SMA / 200 SMA"
+            " 계산·추정·인용하는 것 FORBIDDEN. 특히 21 EMA / 55 SMA / 200 SMA"
             " 는 위 '현재가 대비 %' 와 함께 그대로 인용 — 별도 툴(stockstats/"
             " alpha_vantage) 재계산값이 위와 달라도 위 snapshot 우선 (IBM"
             " 2026-06-02: 10 EMA 266 vs 현재가 325 의 22% 시공간 왜곡 = 별도"
@@ -3887,7 +3892,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
             f" or '약 {_sym}{_fmt.format(px)}'). '₩약 1.0백만' style"
             f" (삼성전기 2026-05-17) loses 1% of precision AND uses the"
             f" awkward '백만' unit — both forbidden.\n"
-            f" • 기술 분석 표 (10 EMA / 50 SMA / Close Price / RSI 입력값)"
+            f" • 기술 분석 표 (21 EMA / 55 SMA / Close Price / RSI 입력값)"
             f" 및 narrative 본문 의 '현재가' / '현재 가격' / 'Close Price'"
             f" 셀도 같은 canonical 값 ({_sym}{_fmt.format(px)}) 사용. yfinance"
             f" .history Close (전일 종가) vs .info currentPrice (latest"
@@ -4331,7 +4336,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         # (a) recent stock split not yet propagated to either current
         # or historical series, (b) yfinance KR data quality issue,
         # or (c) a genuinely catastrophic / explosive move. In all
-        # three cases the technical indicators (10 EMA, MACD, RSI,
+        # three cases the technical indicators (21 EMA, MACD, RSI,
         # Bollinger bands) computed from the historical series need
         # to be cross-checked before the analyst anchors a directional
         # thesis on them.
@@ -4453,7 +4458,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                     "\n이는 stock-split adjustment lag / corp action /"
                     " 거래정지 등의 데이터 quality 문제로 확정.\n\n"
                     "다음 사용 절대 금지 (RULE 위반):\n"
-                    "  ❌ 10 EMA / 50 SMA / 200 SMA 비교 또는 cross 신호 인용\n"
+                    "  ❌ 21 EMA / 55 SMA / 200 SMA 비교 또는 cross 신호 인용\n"
                     "  ❌ MACD / RSI / Bollinger 밴드 / ATR 기반 매수/매도"
                     " 신호 narrative\n"
                     "  ❌ '단기 상승 모멘텀' / '하락 추세 지속' / '과매수/"
@@ -4523,7 +4528,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
             " 일별 조정에 lag이 있는 경우가 흔해 currentPrice vs 50일/200일"
             " SMA 등에 대규모 갭이 남는다.\n"
             "다음 기술적 분석 요소는 사용 금지 (값이 의미 없음):\n"
-            "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+            "  • 21 EMA / 55 SMA / 200 SMA 비교\n"
             "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
             "  • '과매수 / 과매도 / 단기 모멘텀 약화' 류 결론\n"
             "  • 52주 최고/최저 비교\n"
@@ -5311,7 +5316,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         " fiftyDayAverage / twoHundredDayAverage / 일별 close는"
                         " 미조정인 혼합 상태가 흔하다.\n"
                         "다음 기술적 분석 요소는 사용 금지 (값이 의미 없음):\n"
-                        "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+                        "  • 21 EMA / 55 SMA / 200 SMA 비교\n"
                         "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
                         "  • '과매수 / 과매도 / 단기 모멘텀 약화' 류 결론\n"
                         "  • 50주·52주 최고/최저 비교\n"
@@ -5746,7 +5751,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         " 가격 시계열은 ex-date 전후로 비조정 또는 부분 조정"
                         " 상태일 가능성이 매우 크다.\n"
                         "다음 기술적 분석 요소는 사용 금지:\n"
-                        "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+                        "  • 21 EMA / 55 SMA / 200 SMA 비교\n"
                         "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
                         "  • 52주 최고/최저 비교\n"
                         "시장 분석가는 (1) corporate action 자체의 정성"
@@ -5937,7 +5942,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         " 의 historical 가격 시계열은 ex-date 전후로 비조정"
                         " 또는 부분 조정 상태일 가능성이 매우 크다.\n"
                         "다음 기술적 분석 요소는 사용 금지:\n"
-                        "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+                        "  • 21 EMA / 55 SMA / 200 SMA 비교\n"
                         "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
                         "  • 52주 최고/최저 비교\n"
                         "시장 분석가는 (1) corporate action 자체의 정성 분석"
@@ -6216,7 +6221,7 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         f"{ticker} 는 현재 거래 정지 상태이다. yfinance 가격이"
                         " freeze 상태이고 일별 close 가 갱신되지 않는다.\n"
                         "다음 항목은 사용 금지 (의미 없음):\n"
-                        "  • 10 EMA / 50 SMA / 200 SMA / MACD / RSI / Bollinger\n"
+                        "  • 21 EMA / 55 SMA / 200 SMA / MACD / RSI / Bollinger\n"
                         "  • 5거래일 수익률 / momentum / 추세 분석\n"
                         "  • Comps 표의 multiples (stale price 기준)\n"
                         "허용된 분석:\n"
