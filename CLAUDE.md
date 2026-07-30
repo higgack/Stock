@@ -29,26 +29,6 @@ Copilot 용 온보딩 요약은 `.github/copilot-instructions.md`(+ `trade/**` �
 (c) Copilot 이 만든 변경도 이 파일의 모든 규칙(UNIVERSAL CHANGES ONLY·Help/Dashboard 등록·
 Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기준이 다르다" 예외 금지.
 
-## ⚠️ 다른 AI 에이전트와 레포 공유 (사용자 2026-07-29, GitHub Copilot 합류)
-이 레포(`higgack/Stock`)는 이제 **Claude Code 뿐 아니라 GitHub Copilot 도 병행 개발**한다.
-Copilot 용 온보딩 요약은 `.github/copilot-instructions.md`(+ `trade/**` 전용
-`.github/instructions/trade.instructions.md`) — Claude 규칙 요약본, 상세는 여전히 이 파일들이
-원본. 실무 함의: (a) 작업 시작 전 `git log origin/<base>` 로 내가 모르는 새 커밋(Copilot 작성)
-있는지 확인 습관화 — base 가 두 에이전트가 각자 merge 하는 공용 배포 지점이라 동시편집/충돌
-가능. (b) "내가 마지막으로 고친 상태"를 가정하지 말 것 — 매 세션 시작 시 base 최신상태 fetch.
-(c) Copilot 이 만든 변경도 이 파일의 모든 규칙(UNIVERSAL CHANGES ONLY·Help/Dashboard 등록·
-Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기준이 다르다" 예외 금지.
-
-## ⚠️ 다른 AI 에이전트와 레포 공유 (사용자 2026-07-29, GitHub Copilot 합류)
-이 레포(`higgack/Stock`)는 이제 **Claude Code 뿐 아니라 GitHub Copilot 도 병행 개발**한다.
-Copilot 용 온보딩 요약은 `.github/copilot-instructions.md`(+ `trade/**` 전용
-`.github/instructions/trade.instructions.md`) — Claude 규칙 요약본, 상세는 여전히 이 파일들이
-원본. 실무 함의: (a) 작업 시작 전 `git log origin/<base>` 로 내가 모르는 새 커밋(Copilot 작성)
-있는지 확인 습관화 — base 가 두 에이전트가 각자 merge 하는 공용 배포 지점이라 동시편집/충돌
-가능. (b) "내가 마지막으로 고친 상태"를 가정하지 말 것 — 매 세션 시작 시 base 최신상태 fetch.
-(c) Copilot 이 만든 변경도 이 파일의 모든 규칙(UNIVERSAL CHANGES ONLY·Help/Dashboard 등록·
-Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기준이 다르다" 예외 금지.
-
 ## Default workflow — 배치 적재 (사용자 2026-06-12)
 1. 평소 = 적재: 명시적 "커밋/푸시/배포" 없으면 구현·검증만, merge 안 함. 매 답변 끝
    `📦 누적: N개` (= `git diff --name-only origin/<base>`).
@@ -92,6 +72,15 @@ Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기
 16. 검증 스크립트는 커밋과 한 체인(2026-07-06 재발): heredoc 스모크 뒤 별개 라인의
     git commit 은 스모크 실패에도 실행됨 — `&&` 로 묶거나 스모크 먼저 단독 실행 후 커밋.
     assert 도 오작성 주의(URL+라벨 substring 이중카운트류) — 실패 시 원인부터.
+17. squash-merge 반복 후 dev 미동기화 → base merge 시 내용 5중복(2026-07-29,
+    Copilot 병행 세션서 실측): dev 에서 여러 PR 을 연달아 squash-merge 해도 dev
+    로컬 브랜치는 원본(비squash) 커밋을 그대로 들고 있음 — squash 커밋은 base 에
+    새 해시로 남아 dev 원본과 "다른 커밋"으로 보이므로, 나중에 `git merge origin/
+    <base>` 로 동기화하면 같은 텍스트가 여러 번 반복 삽입될 수 있음(git 이 동일
+    내용을 서로 다른 삽입으로 인식). 대응: PR 여러 개 연달아 squash-merge 후에는
+    다음 작업 전 **매번** dev 를 base 로 동기화(`git merge origin/<base>` 또는
+    rebase) — 실수#17 방지+ 실수 규칙(a) "매 세션 시작 시 base fetch" 의 실제
+    발동 사례. merge 직후 파일 diff 를 훑어 반복 삽입 없는지 확인 습관화.
    (새 실수 = 날짜 + 한 줄 추가 의무.)
 
 ## ⛔ UNIVERSAL CHANGES ONLY (가장 중요)

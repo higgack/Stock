@@ -229,7 +229,7 @@ def _series_payload(
 
 
 # ── KR intraday via KIS API ──────────────────────────────────────────────
-_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
 
 
 def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
@@ -324,7 +324,7 @@ def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
 # period are whitelisted; MAs (21/55/200) recompute on the chosen interval
 # (so weekly view = 21wk/55wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
-_VALID_INTERVALS = {"5m", "15m", "1h", "1d", "1wk", "1mo"}
+_VALID_INTERVALS = {"5m", "15m", "30m", "1h", "1d", "1wk", "1mo"}
 _VALID_PERIODS = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
@@ -794,7 +794,7 @@ def fetch_chart_payload(
                 auto_adjust=True,
             )
         # Intraday fallback: some markets don't have intraday via yfinance.
-        _MIN_INTRADAY = {"5m": 20, "15m": 10, "1h": 10}
+        _MIN_INTRADAY = {"5m": 20, "15m": 10, "30m": 10, "1h": 10}
         _got = len(hist) if hist is not None else 0
         if interval in _MIN_INTRADAY and _got < _MIN_INTRADAY[interval]:
             interval = "1d"
