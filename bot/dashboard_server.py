@@ -833,7 +833,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         import time
         import urllib.parse as _uparse
 
-        _VALID_INTERVALS = {"5m", "15m", "1h", "1d", "1wk", "1mo"}
+        _VALID_INTERVALS = {"5m", "10m", "15m", "1h", "1d", "1wk", "1mo"}
         _VALID_RANGES = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
         try:
             qs = _uparse.urlparse(self.path).query

@@ -229,7 +229,7 @@ def _series_payload(
 
 
 # ── KR intraday via KIS API ──────────────────────────────────────────────
-_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "10m": 10, "15m": 15, "1h": 60}
 
 
 def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
@@ -324,7 +324,10 @@ def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
 # period are whitelisted; MAs (21/55/200) recompute on the chosen interval
 # (so weekly view = 21wk/55wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
-_VALID_INTERVALS = {"5m", "15m", "1h", "1d", "1wk", "1mo"}
+_VALID_INTERVALS = {"5m", "10m", "15m", "1h", "1d", "1wk", "1mo"}
+# yfinance 자체엔 10분봉이 없음(유효 interval: 1m/2m/5m/15m/30m/60m/90m/1d/…) —
+# 5분봉으로 fetch 후 pandas resample 로 합성(2026-07-29 사용자 요청).
+_YF_INTERVAL_ALIAS = {"10m": "5m"}
 _VALID_PERIODS = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
@@ -777,9 +780,10 @@ def fetch_chart_payload(
         import yfinance as yf
         from datetime import datetime, timedelta
 
+        _fetch_iv = _YF_INTERVAL_ALIAS.get(interval, interval)
         t = yf.Ticker(ticker)
         if period in ("max", "1d"):
-            hist = t.history(period=period, interval=interval, auto_adjust=True)
+            hist = t.history(period=period, interval=_fetch_iv, auto_adjust=True)
         else:
             now = datetime.now()
             end = now + timedelta(days=1)
@@ -790,13 +794,14 @@ def fetch_chart_payload(
             hist = t.history(
                 start=start.strftime("%Y-%m-%d"),
                 end=end.strftime("%Y-%m-%d"),
-                interval=interval,
+                interval=_fetch_iv,
                 auto_adjust=True,
             )
         # Intraday fallback: some markets don't have intraday via yfinance.
+        # (임계는 실제 fetch 한 interval 기준 — 10분봉은 5분봉으로 fetch.)
         _MIN_INTRADAY = {"5m": 20, "15m": 10, "1h": 10}
         _got = len(hist) if hist is not None else 0
-        if interval in _MIN_INTRADAY and _got < _MIN_INTRADAY[interval]:
+        if _fetch_iv in _MIN_INTRADAY and _got < _MIN_INTRADAY[_fetch_iv]:
             interval = "1d"
             if period in ("max", "1d"):
                 hist = t.history(period="5d", interval="1d", auto_adjust=True)
@@ -807,6 +812,13 @@ def fetch_chart_payload(
                     interval="1d",
                     auto_adjust=True,
                 )
+        elif interval in _YF_INTERVAL_ALIAS and hist is not None and len(hist) >= 2:
+            # 5분봉 → 10분봉 리샘플 (OHLCV 표준 집계: 시가=첫값·고가=최대·
+            # 저가=최소·종가=마지막·거래량=합).
+            hist = hist.resample("10min").agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum",
+            }).dropna(subset=["Close"])
         if hist is None or len(hist) < 2:
             return _fetch_series_fallback(ticker, period)   # 야후 빈 → 네이버/KIS
         close = hist["Close"].dropna()
