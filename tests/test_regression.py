@@ -2442,8 +2442,52 @@ class TestTradeLevelParser:
         m = _re.search(r"\{safe\}_\{interval\}_\{rng\}_v(\d+)\.json", srv)
         assert m and int(m.group(1)) >= 5, \
             "elliott/interval_fallback 필드 추가분이 반영되려면 캐시 버전 ≥5 필요"
-        # ℹ️가이드에도 국내 종목 분봉 미제공 사실이 적혀 있어야(설명 out-of-sync 방지)
-        assert "국내(.KS/.KQ) 종목은 Yahoo가 분봉을 제공하지 않아" in db
+        # ℹ️가이드에도 국내 분봉 경로가 적혀 있어야(설명 out-of-sync 방지)
+        assert "네이버 실시간 분봉" in db and "당일치만" in db
+
+    def test_kr_manual_intraday_routes_to_naver(self, monkeypatch):
+        """국내 종목의 **수동** 분봉 선택도 네이버 경로로 보낸다.
+
+        예전엔 범위 '1일' 일 때만 네이버를 탔고, 30분봉 버튼을 직접 누르면
+        yfinance 로 갔다가 국내 분봉이 없어 일봉으로 되돌아왔다(사용자 지적
+        2026-07-29). 네이버는 당일치만 주므로 범위가 '1일' 로 바뀌는데, 그
+        사실을 notice 로 알린다(조용한 대체 금지)."""
+        import bot.chart_data as cd
+        calls = []
+
+        def fake_naver(ticker, interval="5m"):
+            calls.append((ticker, interval))
+            return {"times": [1, 2], "close": [100.0, 101.0],
+                    "interval": interval, "period": "1d"}
+        monkeypatch.setattr(cd, "_fetch_kr_intraday", fake_naver)
+
+        # 수동 30분봉 + 범위 1년 → 네이버 30m + 범위조정 안내
+        p = cd.fetch_chart_payload("005930.KS", interval="30m", period="1y")
+        assert calls == [("005930.KS", "30m")], calls
+        assert p["period"] == "1d" and "notice" in p
+        # 1시간봉도 동일
+        calls.clear()
+        cd.fetch_chart_payload("035720.KQ", interval="1h", period="6mo")
+        assert calls == [("035720.KQ", "1h")], calls
+        # 범위 '1일'(기존 동작)은 그대로 + 범위가 안 바뀌므로 불필요한 안내 없음
+        calls.clear()
+        p = cd.fetch_chart_payload("005930.KS", interval="5m", period="1d")
+        assert calls == [("005930.KS", "5m")] and "notice" not in p
+        # 일봉 요청은 네이버 분봉 경로를 타면 안 됨
+        calls.clear()
+        cd.fetch_chart_payload("005930.KS", interval="1d", period="1y")
+        assert calls == []
+        # 해외 종목은 분봉이어도 네이버 미호출(국내 전용 데이터소스)
+        calls.clear()
+        cd.fetch_chart_payload("AAPL", interval="30m", period="1mo")
+        assert calls == []
+
+    def test_kr_intraday_failure_falls_through_gracefully(self, monkeypatch):
+        """장전·휴장 등으로 네이버가 비면 예외 없이 아래 폴백 경로로 내려간다."""
+        import bot.chart_data as cd
+        monkeypatch.setattr(cd, "_fetch_kr_intraday", lambda t, i="5m": None)
+        r = cd.fetch_chart_payload("005930.KS", interval="30m", period="1y")
+        assert r is None or isinstance(r, dict)   # raise 하지 않는 것이 핵심
 
 
 # ─────────────────────────────────────────────────────────────────────────

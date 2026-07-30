@@ -346,6 +346,8 @@ def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
 # (so weekly view = 21wk/55wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
 _VALID_INTERVALS = {"5m", "15m", "30m", "1h", "1d", "1wk", "1mo"}
+# 분봉/시간봉 = 인트라데이. KR 은 이 집합일 때 네이버 분봉 경로로 라우팅한다.
+_INTRADAY_INTERVALS = {"5m", "15m", "30m", "1h"}
 _VALID_PERIODS = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
@@ -781,19 +783,32 @@ def fetch_chart_payload(
     if period not in _VALID_PERIODS:
         period = "1y"
     _is_kr = ticker.upper().endswith((".KS", ".KQ"))
-    # 단기 기간 → 최적 봉 자동 매핑.
-    # KR: yfinance 가 분봉을 제공하지 않으므로 '1d'만 KIS API 로 대체하고,
-    # '1wk'/'1mo' 는 일봉으로 유지 (분봉 매핑 skip).
+    # 단기 기간 → 최적 봉 자동 매핑(해외 전용 — KR 은 아래 네이버 경로가 처리).
     _PERIOD_INTERVAL_MAP = {
         "1d": "5m", "1wk": "15m", "1mo": "1h",
     }
-    if period in _PERIOD_INTERVAL_MAP:
-        if _is_kr and period == "1d":
-            kr_payload = _fetch_kr_intraday(ticker, _PERIOD_INTERVAL_MAP[period])
+    # KR 분봉은 yfinance 가 아예 제공하지 않아 네이버 분봉 API 로 라우팅한다.
+    # 예전엔 범위 '1일' 일 때만 이 경로를 타서, 사용자가 30분봉 버튼을 직접
+    # 눌러도 yfinance 로 갔다가 데이터가 없어 일봉으로 되돌아왔다(사용자 지적
+    # 2026-07-29). 이제 수동 선택 분봉도 같은 경로로 보낸다.
+    # ⚠️ 네이버 분봉 API 는 **당일치만** 제공 → payload period 가 '1d' 로 잡히며,
+    # 사용자가 다른 범위를 골랐다면 notice 로 그 사실을 알린다(조용한 대체 금지).
+    if _is_kr:
+        kr_iv = (interval if interval in _INTRADAY_INTERVALS
+                 else _PERIOD_INTERVAL_MAP.get(period) if period == "1d" else None)
+        if kr_iv:
+            kr_payload = _fetch_kr_intraday(ticker, kr_iv)
             if kr_payload:
+                if period != "1d":
+                    kr_payload["notice"] = (
+                        "국내 종목은 Yahoo 가 분봉을 제공하지 않아 네이버 실시간"
+                        " 분봉으로 표시합니다 — 당일치만 있어 범위가 '1일' 로"
+                        " 조정됐습니다.")
                 return kr_payload
-        if not _is_kr:
-            interval = _PERIOD_INTERVAL_MAP[period]
+            # 네이버도 실패(장전·휴장·조회불가) → 아래 yfinance 경로로 내려가
+            # 일봉 폴백 + interval_fallback 안내를 타게 둔다.
+    elif period in _PERIOD_INTERVAL_MAP:
+        interval = _PERIOD_INTERVAL_MAP[period]
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
