@@ -2341,6 +2341,7 @@ class TestTradeLevelParser:
         html = _render_chart_section(rec)
         assert 'data-ticker="TSLA"' in html, "API fetch 용 ticker 누락"
         assert 'data-kind="interval" data-val="10m"' in html, "10분봉 버튼 누락"
+        assert 'data-kind="interval" data-val="30m"' in html, "30분봉 버튼 누락"
         assert 'data-kind="interval" data-val="1h"' in html, "1시간봉 버튼 누락"
         assert 'data-kind="interval" data-val="1d"' in html, "일봉 버튼 누락"
         assert 'data-kind="interval" data-val="1wk"' in html, "주봉 버튼 누락"
@@ -2385,12 +2386,12 @@ class TestTradeLevelParser:
         """interval 화이트리스트도 range 와 동일하게 두 곳(chart_data.
         _VALID_INTERVALS + dashboard_server._VALID_INTERVALS)에 중복 정의 —
         한쪽에만 추가하면 그 버튼이 서버 단에서 조용히 1d 로 폴백하는 드리프트가
-        생긴다(2026-07-29 10분봉/1시간봉 버튼 추가 시 발견 — range whitelist
-        sync 테스트와 대칭, interval 쪽엔 없었음). 둘이 정확히 일치 +
-        10m/1h 둘 다 포함 영구 보장."""
+        생긴다(2026-07-29 10분봉/1시간봉 버튼 추가 시 발견, 30분봉 추가 시 재검증
+        — range whitelist sync 테스트와 대칭, interval 쪽엔 없었음). 둘이 정확히
+        일치 + 10m/30m/1h 전부 포함 영구 보장."""
         import re as _re
         from bot.chart_data import _VALID_INTERVALS
-        assert "10m" in _VALID_INTERVALS and "1h" in _VALID_INTERVALS
+        assert {"10m", "30m", "1h"} <= _VALID_INTERVALS
         srv = open("bot/dashboard_server.py", encoding="utf-8").read()
         m = _re.search(r"_VALID_INTERVALS\s*=\s*\{([^}]*)\}", srv)
         assert m, "서버 _VALID_INTERVALS 리터럴 누락"
@@ -2419,6 +2420,7 @@ class TestTradeLevelParser:
         from bot.dashboard import _lookup_chart_html
         html = _lookup_chart_html("AAPL")
         assert 'data-kind="interval" data-val="10m"' in html
+        assert 'data-kind="interval" data-val="30m"' in html
         assert 'data-kind="interval" data-val="1h"' in html
 
 

@@ -229,7 +229,7 @@ def _series_payload(
 
 
 # ── KR intraday via KIS API ──────────────────────────────────────────────
-_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "10m": 10, "15m": 15, "1h": 60}
+_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "10m": 10, "15m": 15, "30m": 30, "1h": 60}
 
 
 def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
@@ -324,7 +324,7 @@ def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
 # period are whitelisted; MAs (21/55/200) recompute on the chosen interval
 # (so weekly view = 21wk/55wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
-_VALID_INTERVALS = {"5m", "10m", "15m", "1h", "1d", "1wk", "1mo"}
+_VALID_INTERVALS = {"5m", "10m", "15m", "30m", "1h", "1d", "1wk", "1mo"}
 # yfinance 자체엔 10분봉이 없음(유효 interval: 1m/2m/5m/15m/30m/60m/90m/1d/…) —
 # 5분봉으로 fetch 후 pandas resample 로 합성(2026-07-29 사용자 요청).
 _YF_INTERVAL_ALIAS = {"10m": "5m"}
@@ -799,7 +799,7 @@ def fetch_chart_payload(
             )
         # Intraday fallback: some markets don't have intraday via yfinance.
         # (임계는 실제 fetch 한 interval 기준 — 10분봉은 5분봉으로 fetch.)
-        _MIN_INTRADAY = {"5m": 20, "15m": 10, "1h": 10}
+        _MIN_INTRADAY = {"5m": 20, "15m": 10, "30m": 10, "1h": 10}
         _got = len(hist) if hist is not None else 0
         if _fetch_iv in _MIN_INTRADAY and _got < _MIN_INTRADAY[_fetch_iv]:
             interval = "1d"

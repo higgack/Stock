@@ -2703,6 +2703,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     <div class="chart-toolbar">
       <span class="chart-tf-group">
         <button class="chart-tf-btn" data-kind="interval" data-val="10m">10분봉</button>
+        <button class="chart-tf-btn" data-kind="interval" data-val="30m">30분봉</button>
         <button class="chart-tf-btn" data-kind="interval" data-val="1h">1시간봉</button>
         <button class="chart-tf-btn" data-kind="interval" data-val="1d">일봉</button>
         <button class="chart-tf-btn" data-kind="interval" data-val="1wk">주봉</button>
@@ -2803,7 +2804,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">10분봉/1시간봉/일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 네이버 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음(10분봉/1시간봉은 Yahoo 인트라데이 보관기간 한계로 최근 구간만 표시 — 데이터 부족 시 자동으로 일봉 폴백). 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치). 가격 시리즈는 Yahoo가 1차이며, Yahoo에 데이터가 없는 종목은 네이버→KIS 일봉으로 자동 폴백(셋 다 없으면 '데이터 없음').</li>
+          <li><span class="k">10분봉/30분봉/1시간봉/일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 네이버 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음(10분·30분·1시간봉은 Yahoo 인트라데이 보관기간 한계로 최근 구간만 표시 — 데이터 부족 시 자동으로 일봉 폴백). 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치). 가격 시리즈는 Yahoo가 1차이며, Yahoo에 데이터가 없는 종목은 네이버→KIS 일봉으로 자동 폴백(셋 다 없으면 '데이터 없음').</li>
           <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
           <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
@@ -2903,7 +2904,7 @@ _CHART_JS = """
       rightPriceScale: { borderVisible: false, minimumWidth: 130, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.20 } },
       // rightOffset 7: 우측 끝에 여백 → 최근 캔들·마커가 가장자리/가격축에 안 붙고
       // 빈 공간에 놓임(사용자 가독성 2026-06-05).
-      timeScale: { borderVisible: false, timeVisible: (curInterval==='5m'||curInterval==='10m'||curInterval==='15m'||curInterval==='1h'), rightOffset: 7 },
+      timeScale: { borderVisible: false, timeVisible: (curInterval==='5m'||curInterval==='10m'||curInterval==='15m'||curInterval==='30m'||curInterval==='1h'), rightOffset: 7 },
       crosshair: { mode: 1 }
     });
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
@@ -3183,7 +3184,7 @@ _CHART_JS = """
   }
   // 범위/봉 한국어 라벨 — 헤드라인·기간수익률·캡션에서 공통 사용.
   function rangeLabel(r){ r = r || curRange; return ({'1d':'1일','1wk':'1주일','1mo':'1개월','3mo':'3개월','6mo':'6개월','ytd':'YTD','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[r] || r; }
-  function intervalLabel(i){ i = i || curInterval; return ({'5m':'5분봉','10m':'10분봉','15m':'15분봉','1h':'1시간봉','1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
+  function intervalLabel(i){ i = i || curInterval; return ({'5m':'5분봉','10m':'10분봉','15m':'15분봉','30m':'30분봉','1h':'1시간봉','1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
   function buildValues(d){
     var vEl = document.getElementById('chart-values');
     if (!vEl) return;
@@ -3386,7 +3387,7 @@ _CHART_JS = """
         curRange = val;
         var autoMap = {'1d':'5m','1wk':'15m','1mo':'1h'};
         if (autoMap[val]) curInterval = autoMap[val];
-        else if (['5m','10m','15m','1h'].indexOf(curInterval) >= 0) curInterval = '1d';
+        else if (['5m','10m','15m','30m','1h'].indexOf(curInterval) >= 0) curInterval = '1d';
       }
       load();
     }
@@ -16034,6 +16035,7 @@ def _lookup_chart_html(ticker: str) -> str:
     <div class="chart-toolbar">
       <span class="chart-tf-group">
         <button class="chart-tf-btn" data-kind="interval" data-val="10m">10분봉</button>
+        <button class="chart-tf-btn" data-kind="interval" data-val="30m">30분봉</button>
         <button class="chart-tf-btn" data-kind="interval" data-val="1h">1시간봉</button>
         <button class="chart-tf-btn" data-kind="interval" data-val="1d">일봉</button>
         <button class="chart-tf-btn" data-kind="interval" data-val="1wk">주봉</button>
