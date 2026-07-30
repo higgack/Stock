@@ -859,7 +859,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # v3: added last_price for ~15min-delayed intraday (2026-06-04).
             # v4: last_price now validated vs the close series (bad fast_info
             #     quote → last-close fallback) — drop v3 caches with the glitch.
-            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v4.json"
+            # v5: elliott(피보나치·파동 오버레이) + interval_fallback 안내 필드
+            #     추가 (2026-07-29) — 옛 캐시엔 없어 배포 직후 오버레이가 안
+            #     보이거나 폴백 안내가 빠지는 것 방지.
+            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v5.json"
             # TTL 5 min — last_price 가 장중 갱신되도록. yfinance 호출은
             # 종목당 5분당 1회 → 단일 채널 audience 면 무료한도 안전 (~2000/h).
             if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:

@@ -815,9 +815,15 @@ def fetch_chart_payload(
                 auto_adjust=True,
             )
         # Intraday fallback: some markets don't have intraday via yfinance.
+        # (KR 종목은 yfinance 가 분봉 자체를 안 줘서 사실상 항상 여기로 온다.)
+        # 폴백이 일어나면 payload 에 사실을 실어 보낸다 — 예전엔 응답 interval 만
+        # 조용히 1d 로 바뀌어, 사용자는 분봉 버튼을 눌렀는데 왜 일봉이 나오는지
+        # 알 수 없었다(사용자 지적 2026-07-29). silent 동작변경 금지.
         _MIN_INTRADAY = {"5m": 20, "15m": 10, "30m": 10, "1h": 10}
         _got = len(hist) if hist is not None else 0
+        _iv_fallback = None
         if interval in _MIN_INTRADAY and _got < _MIN_INTRADAY[interval]:
+            _iv_fallback = {"requested": interval, "applied": "1d", "bars": _got}
             interval = "1d"
             if period in ("max", "1d"):
                 hist = t.history(period="5d", interval="1d", auto_adjust=True)
@@ -847,6 +853,8 @@ def fetch_chart_payload(
         payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker, interval=interval)
         payload["interval"] = interval
         payload["period"] = period
+        if _iv_fallback:
+            payload["interval_fallback"] = _iv_fallback
         # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).
         # 일봉 series 의 마지막 종가는 D-1/EOD 라 장중엔 stale → 프론트가
         # '현재가' 로 우선 사용. 단 fast_info 는 일부 종목(특히 KR/JP/CN)에서

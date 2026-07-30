@@ -597,9 +597,15 @@ class TestPriceChartRender:
         assert "value: lp" in _CHART_JS, "라인 마지막점 라이브 대체 누락"
         # 패널 '현재가' 가 last_price 우선
         assert "(d.last_price != null ? d.last_price : lastNonNull(d.close))" in _CHART_JS
-        # 서버 캐시 키 버전 (v3) + TTL 단축 (5분)
+        # 서버 캐시 키에 버전 접미사가 있고 TTL 이 5분인지.
+        # ⚠️ 버전 숫자를 하드코딩하지 말 것 — 예전엔 "_v4.json" 을 그대로 박아둬
+        # 페이로드 형태가 바뀌어 정당하게 v5 로 올릴 때 이 테스트가 깨졌다
+        # (2026-07-29). 검증해야 할 건 '버전이 몇이냐' 가 아니라 '버전 접미사로
+        # 옛 캐시를 무효화하는 규약이 살아 있느냐' 다.
+        import re as _re
         srv = open("bot/dashboard_server.py", encoding="utf-8").read()
-        assert "_v4.json" in srv, "캐시 키 버전 v4 누락(라이브 가드 후 bump)"
+        assert _re.search(r"\{safe\}_\{interval\}_\{rng\}_v\d+\.json", srv), \
+            "차트 캐시 키의 버전 접미사 규약 누락(라이브 가드 후 bump 용)"
         assert "< 300:" in srv, "캐시 TTL 5분 누락"
 
     def test_chart_indicators_volume_rsi_bb_macd_candle(self):
@@ -2412,6 +2418,32 @@ class TestTradeLevelParser:
         assert 'data-kind="interval" data-val="5m"' in html
         assert 'data-kind="interval" data-val="30m"' in html
         assert 'data-kind="interval" data-val="1h"' in html
+
+    def test_interval_fallback_is_surfaced_not_silent(self):
+        """분봉/시간봉 데이터가 모자라 일봉으로 되돌릴 때 그 사실을 페이로드에
+        싣고 프론트가 안내한다. 이전엔 응답 interval 만 조용히 '1d' 로 바뀌어
+        버튼 하이라이트가 슬그머니 옮겨갈 뿐이라, 분봉을 눌렀는데 왜 일봉이
+        나오는지 알 수 없었다(사용자 지적 2026-07-29). 특히 국내(.KS/.KQ)는
+        yfinance 가 분봉을 안 줘서 사실상 항상 이 경로를 탄다.
+        (yfinance·pandas 미설치 샌드박스라 실호출 대신 배선을 정적 검증.)"""
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert '_iv_fallback = {"requested": interval, "applied": "1d"' in cd, \
+            "폴백 사실을 기록하지 않음"
+        assert 'payload["interval_fallback"] = _iv_fallback' in cd, \
+            "폴백 정보를 페이로드에 미주입"
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "j.chart.interval_fallback" in db, "프론트가 폴백 플래그 미소비"
+        assert "데이터가 없어" in db, "폴백 안내 문구 없음"
+        # 페이로드 형태가 바뀌었으면 차트 캐시 버전도 올려야 배포 직후 옛 캐시가
+        # 새 필드 없이 5분간 서빙되는 일이 없다(실수#11 '배포완료 ≠ 화면에 보임').
+        # 버전은 하한만 고정 — 정확히 v5 로 박으면 다음 정당한 bump 때 깨진다.
+        import re as _re
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        m = _re.search(r"\{safe\}_\{interval\}_\{rng\}_v(\d+)\.json", srv)
+        assert m and int(m.group(1)) >= 5, \
+            "elliott/interval_fallback 필드 추가분이 반영되려면 캐시 버전 ≥5 필요"
+        # ℹ️가이드에도 국내 종목 분봉 미제공 사실이 적혀 있어야(설명 out-of-sync 방지)
+        assert "국내(.KS/.KQ) 종목은 Yahoo가 분봉을 제공하지 않아" in db
 
 
 # ─────────────────────────────────────────────────────────────────────────
