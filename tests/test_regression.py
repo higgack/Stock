@@ -2416,12 +2416,12 @@ class TestTradeLevelParser:
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8c) 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29)
-#     Credit Suisse "Technical Analysis - Explained" p23~p31 근거. 비율 상수는
-#     문서 인쇄값, 임펄스 하드룰은 Elliott canon(문서 미열거) — bot/elliott_fib.py
-#     독스트링에 출처 구분이 박혀 있고 이 테스트가 그 구분을 고정한다.
+#     최초 구현은 Credit Suisse 튜토리얼(p23~p31)만 따랐으나, 사용자 요청으로
+#     정석(StockCharts·EWI·Frost&Prechter·TradingView 기본값)과 대조해 다른
+#     부분은 정석을 채택. 이 테스트가 '규칙 vs 지침' 구분과 표준 레벨을 고정한다.
 # ─────────────────────────────────────────────────────────────────────────
 class TestElliottFib20260729:
-    """fix/feat: 엘리엇·피보나치 차트 오버레이 (CS 튜토리얼 이식)."""
+    """fix/feat: 엘리엇·피보나치 차트 오버레이 (정석 기준)."""
 
     # 교과서 임펄스 — CS p30 네 비율이 정확히 맞는 피벗열.
     def _textbook_impulse(self):
@@ -2433,41 +2433,61 @@ class TestElliottFib20260729:
         return [(0, "low", p0), (10, "high", p1), (20, "low", p2),
                 (30, "high", p3), (40, "low", p4), (50, "high", p5)]
 
-    def test_fib_sequence_and_levels_match_document(self):
-        """[CS p29] 인쇄된 수열/비율 + [CS p28] H&S 의 50% 근거로 넣은 0.5."""
+    def test_retracement_levels_are_platform_standard_set(self):
+        """정석 채택 — TradingView·thinkorswim 기본 세트. CS 튜토리얼은
+        0.382/0.618 만 다뤄 0.236/0.786 이 빠져 있었다."""
         from bot import elliott_fib as ef
         assert ef.FIB_SEQUENCE[:11] == (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144)
-        # 인접항 비율 ≈ 0.618, 교대항 ≈ 0.382 (문서가 제시한 성질)
-        assert abs(55 / 89 - 0.618) < 0.001 and abs(34 / 89 - 0.382) < 0.001
-        assert ef.RETRACEMENT_LEVELS == (0.382, 0.5, 0.618)
-        assert ef.EXTENSION_LEVELS == (1.0, 1.618, 2.618)
+        assert ef.RETRACEMENT_LEVELS == (0.236, 0.382, 0.5, 0.618, 0.786)
+        # 유래 검증: 0.618²≈0.382 · 0.618³≈0.236 · √0.618≈0.786
+        assert abs(0.618 ** 2 - 0.382) < 0.001
+        assert abs(0.618 ** 3 - 0.236) < 0.001
+        assert abs(0.618 ** 0.5 - 0.786) < 0.001
+        # 50% 는 피보나치 비율이 아님(다우 관행) — 코드 주석에 그 사실이 남아야
+        # 나중에 "왜 0.5 가 있지?" 로 잘못 정리되는 걸 막는다.
+        src = open("bot/elliott_fib.py", encoding="utf-8").read()
+        assert "피보나치 비율이 **아니다**" in src and "다우" in src
 
-    def test_retracement_and_extension_math(self):
-        from bot.elliott_fib import fib_retracement_levels, fib_extension_levels
+    def test_projection_formula_uses_standard_anchor(self):
+        """회귀 고정: 초기 구현이 `end + span×k` 라 표준 대비 한 span 밀려
+        k=1.618 이 261.8% 가 아닌 361.8% 를 가리켰다. 표준은 `start + span×k`."""
+        from bot import elliott_fib as ef
+        assert ef.PROJECTION_LEVELS == (1.272, 1.618, 2.0, 2.618)
+        pj = {d["ratio"]: d["price"] for d in ef.fib_projection_levels(100, 200)}
+        assert pj[1.618] == 261.8, "표준 산식이면 161.8% 투영은 261.8"
+        assert pj[1.272] == 227.2 and pj[2.0] == 300.0 and pj[2.618] == 361.8
+        assert not hasattr(ef, "fib_extension_levels"), \
+            "3점 anchor 도구와 혼동되는 옛 이름이 남아 있음(projection 으로 통일)"
+
+    def test_retracement_math_both_directions(self):
+        from bot.elliott_fib import fib_retracement_levels, fib_projection_levels
         up = {d["ratio"]: d["price"] for d in fib_retracement_levels(100, 200)}
-        assert up[0.382] == 161.8 and up[0.5] == 150.0 and up[0.618] == 138.2
+        assert up[0.236] == 176.4 and up[0.382] == 161.8 and up[0.5] == 150.0
+        assert up[0.618] == 138.2 and up[0.786] == 121.4
         # 하락 다리의 되돌림은 위쪽으로 — 부호 처리 회귀 고정
         dn = {d["ratio"]: d["price"] for d in fib_retracement_levels(200, 100)}
-        assert dn[0.618] == 161.8 and dn[0.5] == 150.0
-        ext = {d["ratio"]: d["price"] for d in fib_extension_levels(100, 200)}
-        assert ext[1.0] == 300.0 and ext[1.618] == 361.8
+        assert dn[0.618] == 161.8 and dn[0.786] == 178.6
         # edge: 길이 0 / 비수치 → 빈 리스트(호출부가 그냥 안 그림)
         assert fib_retracement_levels(100, 100) == []
         assert fib_retracement_levels(None, 200) == []
-        assert fib_extension_levels(100, None) == []
+        assert fib_projection_levels(100, None) == []
 
     def test_textbook_impulse_scores_full_confidence(self):
         from bot.elliott_fib import label_impulse
         imp = label_impulse(self._textbook_impulse())
         assert imp and imp["kind"] == "impulse" and imp["dir"] == "up"
         assert imp["confidence"] == 1.0, imp["ratios"]
-        assert imp["wedge"] is False and all(imp["rules"].values())
+        assert imp["diagonal"] is False and imp["truncated"] is False
+        assert all(imp["rules"].values())
+        # 무효화 가격 = 파동1 기점(여기가 깨지면 이 카운트 자체가 무효)
+        assert imp["invalidation"] == 100.0
         assert [x["label"] for x in imp["labels"]] == list("012345")
         # 라벨마다 피벗 종류가 있어야 차트가 위/아래 배치를 정한다
         assert all(x["kind"] in ("high", "low") for x in imp["labels"])
 
-    def test_impulse_rejects_elliott_canon_violations(self):
-        """[canon] ① 파동2가 시작점 이탈 · ② 파동3 최단 → 임펄스 자체 불성립."""
+    def test_impulse_rejects_rule_violations(self):
+        """규칙(위반=카운트 무효): 파동2 기점 이탈 · 파동3 최단 · 파동3 이
+        파동1 끝 미돌파(R2 따름정리, 정석 반영으로 추가된 검사)."""
         from bot.elliott_fib import label_impulse
         bad2 = self._textbook_impulse()
         bad2[2] = (20, "low", 95.0)               # 파동2 가 시작점(100) 아래
@@ -2475,18 +2495,36 @@ class TestElliottFib20260729:
         short3 = [(0, "low", 100), (10, "high", 130), (20, "low", 120),
                   (30, "high", 125), (40, "low", 122), (50, "high", 180)]
         assert label_impulse(short3) is None      # 파동3(5) 이 최단
+        # 파동3 끝(135)이 파동1 끝(140)을 못 넘음 → 정석상 임펄스 아님
+        no_exceed = [(0, "low", 100), (10, "high", 140), (20, "low", 120),
+                     (30, "high", 135), (40, "low", 125), (50, "high", 200)]
+        assert label_impulse(no_exceed) is None
         assert label_impulse(self._textbook_impulse()[:5]) is None   # 피벗 부족
 
-    def test_wave4_overlap_kept_as_wedge_not_rejected(self):
-        """[canon ③] 파동4 겹침은 [CS p24] 'Fifth wave wedge' 로 존재 →
-        탈락시키지 않고 wedge 플래그 + confidence 반감."""
+    def test_diagonal_allowed_but_wave4_beyond_wave2_rejected(self):
+        """정석: 파동4 겹침은 다이애고널(쐐기)로 인정하되, 그 경우에도 파동4 는
+        파동2 의 끝을 넘어설 수 없다. 초기 구현엔 이 제약이 없었다."""
         from bot.elliott_fib import label_impulse
-        wg = [(0, "low", 100), (10, "high", 120), (20, "low", 112.36),
-              (30, "high", 144.72), (40, "low", 118.0), (50, "high", 160.0)]
-        w = label_impulse(wg)
-        assert w and w["wedge"] is True
+        ok = [(0, "low", 100), (10, "high", 120), (20, "low", 112),
+              (30, "high", 145), (40, "low", 118), (50, "high", 160)]
+        w = label_impulse(ok)
+        assert w and w["diagonal"] is True
         assert w["rules"]["wave4_no_overlap"] is False
         assert w["confidence"] < 1.0
+        # 파동4(110) 가 파동2 끝(112) 아래 → 다이애고널로도 불인정
+        bad = [(0, "low", 100), (10, "high", 120), (20, "low", 112),
+               (30, "high", 145), (40, "low", 110), (50, "high", 160)]
+        assert label_impulse(bad) is None
+
+    def test_truncated_fifth_is_valid_but_flagged(self):
+        """정석: 파동5 가 파동3 끝을 못 넘는 '절단 5파'는 유효한 형태다.
+        '5파는 반드시 신고점'이라는 순진한 가정이 자동 카운팅의 흔한 오답."""
+        from bot.elliott_fib import label_impulse
+        tr = [(0, "low", 100), (10, "high", 120), (20, "low", 107.64),
+              (30, "high", 140), (40, "low", 127.64), (50, "high", 138)]
+        t = label_impulse(tr)
+        assert t and t["truncated"] is True
+        assert t["confidence"] < 1.0        # 유효하되 덜 전형적
 
     def test_down_impulse_symmetric(self):
         """부호 정규화 — 하락 임펄스도 상승과 동일 점수(방향만 다름)."""
@@ -2496,28 +2534,43 @@ class TestElliottFib20260729:
         d = label_impulse(inv)
         assert d and d["dir"] == "down" and d["confidence"] == 1.0
 
-    def test_correction_partial_ratio_hit_is_not_labeled(self):
+    def test_impulse_legs_not_mislabeled_as_correction(self):
         """회귀 고정(2026-07-29 스모크 실측): 진행 중인 임펄스의 파동2·3·4 가
-        A·B·C 조정으로 오라벨링되던 버그. B/A=2.618 로 [CS p30] 기대비율
-        (0.382/0.618)을 크게 빗나갔는데도 C/A 만 맞아 confidence 0.5 로 라벨이
-        붙었다 → 체크가 2개뿐이라 부분일치는 근거가 얇으므로 둘 다 맞을 때만
-        라벨링하도록 강화."""
+        A·B·C 조정으로 오라벨링되던 버그(B/A=2.618 로 기대비율을 크게 빗나갔는데
+        C/A 만 맞아 confidence 0.5 로 라벨이 붙음). 지금은 B/A 가 어떤 조정 패턴
+        밴드에도 안 들어가면 그 시점에 탈락한다."""
         from bot.elliott_fib import label_correction
         false_corr = [(10, "high", 120.0), (20, "low", 107.64),
                       (30, "high", 140.0), (40, "low", 127.64)]
         assert label_correction(false_corr) is None
 
-    def test_valid_abc_correction_labeled(self):
-        """[CS p30] B=0.618A · [CS p31] 'wave c equal in length to wave a'."""
+    def _corr(self, b_ratio, c_ratio, start=200.0, alen=50.0):
         from bot.elliott_fib import label_correction
-        c0, ca = 200.0, 150.0
-        cb = ca + 0.618 * (c0 - ca)
-        cc = cb - 1.0 * (c0 - ca)
-        corr = label_correction([(0, "high", c0), (10, "low", ca),
-                                 (20, "high", cb), (30, "low", cc)])
-        assert corr and corr["kind"] == "correction" and corr["dir"] == "down"
-        assert corr["confidence"] == 1.0 and corr["irregular"] is False
-        assert [x["label"] for x in corr["labels"]] == ["0", "A", "B", "C"]
+        a = start - alen
+        b = a + b_ratio * alen
+        c = b - c_ratio * alen
+        return label_correction([(0, "high", start), (10, "low", a),
+                                 (20, "high", b), (30, "low", c)])
+
+    def test_correction_taxonomy_matches_mainstream_bands(self):
+        """정석(EWI) B 되돌림 임계로 패턴을 먼저 분류 — 초기 구현은 B/A·C/A 를
+        좁은 값 집합에 대조만 해 분류 개념이 없었다."""
+        z = self._corr(0.618, 1.0)
+        assert z and z["pattern"] == "zigzag" and z["confidence"] == 1.0
+        assert z["dir"] == "down" and z["irregular"] is False
+        assert [x["label"] for x in z["labels"]] == ["0", "A", "B", "C"]
+        assert self._corr(1.0, 1.0)["pattern"] == "flat_regular"
+        assert self._corr(1.2, 1.618)["pattern"] == "flat_expanded"
+        # 확장 플랫인데 C 가 A 의 끝에 못 미치면 러닝 플랫
+        assert self._corr(1.2, 0.5)["pattern"] == "flat_running"
+
+    def test_correction_ratio_miss_lowers_confidence_not_rejected(self):
+        """'규칙 vs 지침' — B 가 패턴 밴드에 들면 분류는 성립하고, C 비율이
+        빗나가면 탈락이 아니라 confidence 만 떨어진다."""
+        # C/A=1.25 는 목표 1.0(허용 ~1.15) 과 1.618(허용 ~1.375) 사이 빈 구간
+        c = self._corr(0.618, 1.25)      # 지그재그 밴드 O, C/A 는 목표에서 벗어남
+        assert c and c["pattern"] == "zigzag"
+        assert c["ratios"]["C/A"]["hit"] is False and c["confidence"] == 0.5
 
     def _synth_series(self, pts, per=10):
         t, h, l, c = [], [], [], []
@@ -2542,7 +2595,10 @@ class TestElliottFib20260729:
         # 기준 다리 = 마지막으로 '완성된' 스윙(진행 중 되돌림은 미확정이라 제외)
         assert res["leg"]["dir"] == "up"
         assert abs(res["leg"]["to"] - piv[-1]) < 1e-6
-        assert len(res["retracements"]) == 3
+        assert len(res["retracements"]) == 5 and len(res["projections"]) == 4
+        # 5파 완성 → 이어질 조정의 되돌림 목표(전체 0→5 구간)도 제공
+        ct = res["wave"]["correction_targets"]
+        assert [x["ratio"] for x in ct] == [0.382, 0.5, 0.618]
 
     def test_analyze_waves_graceful_on_thin_input(self):
         """데이터 부족·평탄 시리즈는 None → 호출부가 오버레이를 그냥 안 그림."""
