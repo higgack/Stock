@@ -72,7 +72,7 @@ class DfToPayloadTests(unittest.TestCase):
         self.assertEqual(p["period"], "1y")
         self.assertEqual(len(p["times"]), len(p["close"]))
         self.assertEqual(p["times"][0], "2025-06-02")
-        self.assertIn("ema10", p)
+        self.assertIn("ema21", p)
 
     def test_none_passthrough(self):
         self.assertIsNone(C._df_to_daily_payload(None, "X", "1y"))

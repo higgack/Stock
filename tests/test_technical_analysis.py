@@ -138,14 +138,15 @@ class TestComputeIndicators(unittest.TestCase):
 
     def test_indicator_values(self):
         # compute_indicators 내부 산출과 동일한 공식으로 핵심 지표 sanity 확인.
+        # 21/55/200 (2026-07-29 Credit Suisse Fibonacci 방법론 채택).
         import pandas as pd
         df = self._fake_hist(260)
         close = df["Close"]
-        sma50 = float(close.rolling(50).mean().iloc[-1])
-        ema10 = float(close.ewm(span=10, adjust=False).mean().iloc[-1])
-        # 단조 상승이면 현재가 > SMA50, EMA10 > SMA50
-        self.assertGreater(float(close.iloc[-1]), sma50)
-        self.assertGreater(ema10, sma50)
+        sma55 = float(close.rolling(55).mean().iloc[-1])
+        ema21 = float(close.ewm(span=21, adjust=False).mean().iloc[-1])
+        # 단조 상승이면 현재가 > SMA55, EMA21 > SMA55
+        self.assertGreater(float(close.iloc[-1]), sma55)
+        self.assertGreater(ema21, sma55)
 
 
 if __name__ == "__main__":

@@ -2,12 +2,20 @@
 
 Produces a compact JSON-serializable dict (parallel arrays) that the
 dashboard embeds and lightweight-charts renders client-side. The close
-series + 10 EMA / 50 SMA / 200 SMA are computed from the SAME yfinance
+series + 21 EMA / 55 SMA / 200 SMA are computed from the SAME yfinance
 1y close series as `_compute_technical_snapshot` (agent_utils), so the
 chart's moving-average lines agree with the text TECHNICAL SNAPSHOT
 (SSoT). Re-fetched here (not threaded through the graph run) for
 decoupling — the analysis just finished seconds ago, so the daily-close
 series is identical to what the analysts saw.
+
+MA periods 21/55/200 (2026-07-29, Credit Suisse technical_tutorial 방법론
+사용자 요청 — Fibonacci 21/55 단기·중기 + 200 장기, Golden/Death Cross =
+21↕55 크로스). 이전 10 EMA/50 SMA 에서 전환 — Yahoo `.info` 의
+fiftyDayAverage/twoHundredDayAverage 기반 "Canonical 50일/200일 SMA"
+(agent_utils.py 펀더멘털 컨텍스트, Minervini 추세템플릿, 시장폭·크립토
+레짐 등 별도 지표)는 그 데이터소스 고유 기간이라 변경 대상 아님 — 이 파일
+(개별종목 차트 + TECHNICAL SNAPSHOT)만 universal 적용.
 
 Universal: works for US + KR + JP + TW + CN/HK + EU (any yfinance-
 covered ticker). Currency symbol / decimals come from market.py so the
@@ -37,8 +45,8 @@ def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
           "decimals": 2,            # 0 for KRW/JPY, else 2
           "times":  ["2025-06-03", ...],   # daily (yyyy-mm-dd)
           "close":  [145.20, ...],
-          "ema10":  [144.10, ...],         # full length
-          "sma50":  [null, ..., 140.0, ...],   # null until 50th bar
+          "ema21":  [144.10, ...],         # full length
+          "sma55":  [null, ..., 140.0, ...],   # null until 55th bar
           "sma200": [null, ..., 130.0, ...],   # omitted if <200 bars
         }
     """
@@ -108,15 +116,15 @@ def _series_payload(
 ) -> dict:
     """Build the parallel-array chart payload from a pandas close Series.
 
-    Includes: close + 10 EMA / 50 SMA / 200 SMA + RSI(14) + volume +
+    Includes: close + 21 EMA / 55 SMA / 200 SMA + RSI(14) + volume +
     Bollinger(20,2σ) + MACD(12,26,9) + OHLC (for candlestick toggle).
     Bollinger / MACD use the SAME formulas as _compute_technical_snapshot
     (SSoT) so the chart overlays match the text analysis. Each block is
     omitted gracefully when the series is too short or inputs are absent."""
     import math
 
-    ema10 = close.ewm(span=10, adjust=False).mean()
-    sma50 = close.rolling(50).mean() if len(close) >= 50 else None
+    ema21 = close.ewm(span=21, adjust=False).mean()
+    sma55 = close.rolling(55).mean() if len(close) >= 55 else None
     sma200 = close.rolling(200).mean() if len(close) >= 200 else None
 
     def _round(v, nd=decimals) -> float | None:
@@ -140,10 +148,10 @@ def _series_payload(
         "decimals": decimals,
         "times": _times,
         "close": [_round(v) for v in close.values],
-        "ema10": [_round(v) for v in ema10.values],
+        "ema21": [_round(v) for v in ema21.values],
     }
-    if sma50 is not None:
-        payload["sma50"] = [_round(v) for v in sma50.values]
+    if sma55 is not None:
+        payload["sma55"] = [_round(v) for v in sma55.values]
     if sma200 is not None:
         payload["sma200"] = [_round(v) for v in sma200.values]
 
@@ -313,8 +321,8 @@ def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
 
 
 # On-demand timeframe fetch (dashboard /api/chart endpoint). interval +
-# period are whitelisted; MAs (10/50/200) recompute on the chosen interval
-# (so weekly view = 10wk/50wk/200wk — diverges from the daily text SSoT,
+# period are whitelisted; MAs (21/55/200) recompute on the chosen interval
+# (so weekly view = 21wk/55wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
 _VALID_INTERVALS = {"5m", "15m", "1h", "1d", "1wk", "1mo"}
 _VALID_PERIODS = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}

@@ -2153,7 +2153,7 @@ _WATCH_HELP = (
     "<b>📋 조건 종류</b>\n"
     "• <code>rsi&lt;30</code> / <code>rsi&gt;70</code> — RSI(14)가 값 아래/위로\n"
     "• <code>price&gt;950</code> / <code>price&lt;800</code> — 현재가가 값 위/아래로\n"
-    "• <code>&gt;sma50</code> / <code>&lt;sma200</code> — 현재가가 이동평균 위/아래로\n"
+    "• <code>&gt;sma55</code> / <code>&lt;sma200</code> — 현재가가 이동평균 위/아래로\n"
     "• <code>52whigh</code> / <code>52wlow</code> — 52주 신고가/신저가 근접\n"
     "• <code>earnings</code> — 다음 실적 발표 5일 이내(D-5)\n"
     "• <code>foreignbuy</code> / <code>foreignsell</code> — 외국인 5일 순매수/순매도 전환 (KR .KS/.KQ)\n"

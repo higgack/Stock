@@ -12,7 +12,8 @@ never execute trades.
 Conditions (space/comma separated):
   rsi<30  rsi>70       — RSI(14) crosses a threshold
   price>950  price<800 — current price crosses a level
-  >sma50  <sma200      — price above/below a moving average
+  >sma55  <sma200      — price above/below a moving average (21/55/200
+                          Credit Suisse Fibonacci 방법론, 2026-07-29)
   52whigh  52wlow      — price at/near 52-week high/low
   earnings             — next earnings within 5 days (best-effort)
 
@@ -45,7 +46,7 @@ _FLOW_CONDS = {"foreignbuy", "foreignsell", "instbuy", "instsell"}
 _COND_PATTERNS = [
     re.compile(r"^rsi([<>])(\d{1,3}(?:\.\d+)?)$", re.IGNORECASE),
     re.compile(r"^price([<>])(\d+(?:\.\d+)?)$", re.IGNORECASE),
-    re.compile(r"^([<>])sma(50|200)$", re.IGNORECASE),
+    re.compile(r"^([<>])sma(55|200)$", re.IGNORECASE),
     re.compile(r"^52w(high|low)$", re.IGNORECASE),
     re.compile(r"^earnings$", re.IGNORECASE),
     re.compile(r"^(foreignbuy|foreignsell|instbuy|instsell)$", re.IGNORECASE),
@@ -197,7 +198,7 @@ def evaluate(ticker: str, conditions: list[str]) -> dict:
         return {}
     price = closes[-1]
     rsi = _last(payload.get("rsi"))
-    sma50 = _last(payload.get("sma50"))
+    sma55 = _last(payload.get("sma55"))
     sma200 = _last(payload.get("sma200"))
     hi52, lo52 = max(closes), min(closes)
     cur = payload.get("currency", "$")
@@ -233,9 +234,9 @@ def evaluate(ticker: str, conditions: list[str]) -> dict:
             met = price < thr if m.group(1) == "<" else price > thr
             detail = f"현재가 {cur}{price:g} {m.group(1)} {cur}{thr:g}"
             out[cond] = (met, detail); continue
-        m = re.match(r"^([<>])sma(50|200)$", cond)
+        m = re.match(r"^([<>])sma(55|200)$", cond)
         if m:
-            sma = sma50 if m.group(2) == "50" else sma200
+            sma = sma55 if m.group(2) == "55" else sma200
             if sma is not None:
                 met = price < sma if m.group(1) == "<" else price > sma
                 detail = f"현재가 {cur}{price:g} {m.group(1)} {m.group(2)}SMA {cur}{sma:g}"
