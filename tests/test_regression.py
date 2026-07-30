@@ -2415,6 +2415,159 @@ class TestTradeLevelParser:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8c) 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29)
+#     Credit Suisse "Technical Analysis - Explained" p23~p31 근거. 비율 상수는
+#     문서 인쇄값, 임펄스 하드룰은 Elliott canon(문서 미열거) — bot/elliott_fib.py
+#     독스트링에 출처 구분이 박혀 있고 이 테스트가 그 구분을 고정한다.
+# ─────────────────────────────────────────────────────────────────────────
+class TestElliottFib20260729:
+    """fix/feat: 엘리엇·피보나치 차트 오버레이 (CS 튜토리얼 이식)."""
+
+    # 교과서 임펄스 — CS p30 네 비율이 정확히 맞는 피벗열.
+    def _textbook_impulse(self):
+        p0, p1 = 100.0, 120.0
+        p2 = p1 - 0.618 * (p1 - p0)
+        p3 = p2 + 1.618 * (p1 - p0)
+        p4 = p3 - 0.382 * (p3 - p2)
+        p5 = p4 + 1.0 * (p3 - p0)
+        return [(0, "low", p0), (10, "high", p1), (20, "low", p2),
+                (30, "high", p3), (40, "low", p4), (50, "high", p5)]
+
+    def test_fib_sequence_and_levels_match_document(self):
+        """[CS p29] 인쇄된 수열/비율 + [CS p28] H&S 의 50% 근거로 넣은 0.5."""
+        from bot import elliott_fib as ef
+        assert ef.FIB_SEQUENCE[:11] == (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144)
+        # 인접항 비율 ≈ 0.618, 교대항 ≈ 0.382 (문서가 제시한 성질)
+        assert abs(55 / 89 - 0.618) < 0.001 and abs(34 / 89 - 0.382) < 0.001
+        assert ef.RETRACEMENT_LEVELS == (0.382, 0.5, 0.618)
+        assert ef.EXTENSION_LEVELS == (1.0, 1.618, 2.618)
+
+    def test_retracement_and_extension_math(self):
+        from bot.elliott_fib import fib_retracement_levels, fib_extension_levels
+        up = {d["ratio"]: d["price"] for d in fib_retracement_levels(100, 200)}
+        assert up[0.382] == 161.8 and up[0.5] == 150.0 and up[0.618] == 138.2
+        # 하락 다리의 되돌림은 위쪽으로 — 부호 처리 회귀 고정
+        dn = {d["ratio"]: d["price"] for d in fib_retracement_levels(200, 100)}
+        assert dn[0.618] == 161.8 and dn[0.5] == 150.0
+        ext = {d["ratio"]: d["price"] for d in fib_extension_levels(100, 200)}
+        assert ext[1.0] == 300.0 and ext[1.618] == 361.8
+        # edge: 길이 0 / 비수치 → 빈 리스트(호출부가 그냥 안 그림)
+        assert fib_retracement_levels(100, 100) == []
+        assert fib_retracement_levels(None, 200) == []
+        assert fib_extension_levels(100, None) == []
+
+    def test_textbook_impulse_scores_full_confidence(self):
+        from bot.elliott_fib import label_impulse
+        imp = label_impulse(self._textbook_impulse())
+        assert imp and imp["kind"] == "impulse" and imp["dir"] == "up"
+        assert imp["confidence"] == 1.0, imp["ratios"]
+        assert imp["wedge"] is False and all(imp["rules"].values())
+        assert [x["label"] for x in imp["labels"]] == list("012345")
+        # 라벨마다 피벗 종류가 있어야 차트가 위/아래 배치를 정한다
+        assert all(x["kind"] in ("high", "low") for x in imp["labels"])
+
+    def test_impulse_rejects_elliott_canon_violations(self):
+        """[canon] ① 파동2가 시작점 이탈 · ② 파동3 최단 → 임펄스 자체 불성립."""
+        from bot.elliott_fib import label_impulse
+        bad2 = self._textbook_impulse()
+        bad2[2] = (20, "low", 95.0)               # 파동2 가 시작점(100) 아래
+        assert label_impulse(bad2) is None
+        short3 = [(0, "low", 100), (10, "high", 130), (20, "low", 120),
+                  (30, "high", 125), (40, "low", 122), (50, "high", 180)]
+        assert label_impulse(short3) is None      # 파동3(5) 이 최단
+        assert label_impulse(self._textbook_impulse()[:5]) is None   # 피벗 부족
+
+    def test_wave4_overlap_kept_as_wedge_not_rejected(self):
+        """[canon ③] 파동4 겹침은 [CS p24] 'Fifth wave wedge' 로 존재 →
+        탈락시키지 않고 wedge 플래그 + confidence 반감."""
+        from bot.elliott_fib import label_impulse
+        wg = [(0, "low", 100), (10, "high", 120), (20, "low", 112.36),
+              (30, "high", 144.72), (40, "low", 118.0), (50, "high", 160.0)]
+        w = label_impulse(wg)
+        assert w and w["wedge"] is True
+        assert w["rules"]["wave4_no_overlap"] is False
+        assert w["confidence"] < 1.0
+
+    def test_down_impulse_symmetric(self):
+        """부호 정규화 — 하락 임펄스도 상승과 동일 점수(방향만 다름)."""
+        from bot.elliott_fib import label_impulse
+        inv = [(i, ("high" if k == "low" else "low"), 300 - p)
+               for i, k, p in self._textbook_impulse()]
+        d = label_impulse(inv)
+        assert d and d["dir"] == "down" and d["confidence"] == 1.0
+
+    def test_correction_partial_ratio_hit_is_not_labeled(self):
+        """회귀 고정(2026-07-29 스모크 실측): 진행 중인 임펄스의 파동2·3·4 가
+        A·B·C 조정으로 오라벨링되던 버그. B/A=2.618 로 [CS p30] 기대비율
+        (0.382/0.618)을 크게 빗나갔는데도 C/A 만 맞아 confidence 0.5 로 라벨이
+        붙었다 → 체크가 2개뿐이라 부분일치는 근거가 얇으므로 둘 다 맞을 때만
+        라벨링하도록 강화."""
+        from bot.elliott_fib import label_correction
+        false_corr = [(10, "high", 120.0), (20, "low", 107.64),
+                      (30, "high", 140.0), (40, "low", 127.64)]
+        assert label_correction(false_corr) is None
+
+    def test_valid_abc_correction_labeled(self):
+        """[CS p30] B=0.618A · [CS p31] 'wave c equal in length to wave a'."""
+        from bot.elliott_fib import label_correction
+        c0, ca = 200.0, 150.0
+        cb = ca + 0.618 * (c0 - ca)
+        cc = cb - 1.0 * (c0 - ca)
+        corr = label_correction([(0, "high", c0), (10, "low", ca),
+                                 (20, "high", cb), (30, "low", cc)])
+        assert corr and corr["kind"] == "correction" and corr["dir"] == "down"
+        assert corr["confidence"] == 1.0 and corr["irregular"] is False
+        assert [x["label"] for x in corr["labels"]] == ["0", "A", "B", "C"]
+
+    def _synth_series(self, pts, per=10):
+        t, h, l, c = [], [], [], []
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            for s in range(per):
+                v = a + (b - a) * s / per
+                t.append("2026-%03d" % (len(t) + 1))
+                h.append(v); l.append(v); c.append(v)
+        t.append("2026-999"); h.append(pts[-1]); l.append(pts[-1]); c.append(pts[-1])
+        return t, h, l, c
+
+    def test_analyze_waves_end_to_end(self):
+        from bot.elliott_fib import analyze_waves
+        piv = [p for _, _, p in self._textbook_impulse()]
+        # 5파 뒤에 되돌림을 붙여야 마지막 고점이 피벗으로 '확정'된다.
+        t, h, l, c = self._synth_series(piv + [piv[-1] - 0.382 * (piv[-1] - piv[-2])])
+        res = analyze_waves(t, h, l, c)
+        assert res and res["wave"]["kind"] == "impulse"
+        assert res["wave"]["confidence"] == 1.0
+        assert all("time" in x for x in res["wave"]["labels"])
+        # 기준 다리 = 마지막으로 '완성된' 스윙(진행 중 되돌림은 미확정이라 제외)
+        assert res["leg"]["dir"] == "up"
+        assert abs(res["leg"]["to"] - piv[-1]) < 1e-6
+        assert len(res["retracements"]) == 3
+
+    def test_analyze_waves_graceful_on_thin_input(self):
+        """데이터 부족·평탄 시리즈는 None → 호출부가 오버레이를 그냥 안 그림."""
+        from bot.elliott_fib import analyze_waves
+        assert analyze_waves([1, 2], [1, 2], [1, 2], [1, 2]) is None
+        flat = ([f"d{i}" for i in range(60)], [100.0] * 60, [100.0] * 60, [100.0] * 60)
+        assert analyze_waves(*flat) is None      # ATR=0 → 스윙 없음
+
+    def test_wiring_chart_payload_and_dashboard(self):
+        """Help/Dashboard 등록 규칙 — 페이로드 생성 · 버튼(양쪽 대시보드) ·
+        렌더 코드 · ℹ️가이드 문구가 같은 커밋에 전부 배선됐는지."""
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "from bot.elliott_fib import analyze_waves" in cd
+        assert 'payload["elliott"] = ef' in cd, "차트 페이로드에 미주입"
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db.count('data-ind="fib"') == 2, "피보나치 버튼이 양쪽 대시보드에 없음"
+        assert db.count('data-ind="wave"') == 2, "엘리엇 버튼이 양쪽 대시보드에 없음"
+        assert "fib:false" in db and "wave:false" in db, "IND_DEFAULT 기본 OFF 미등록"
+        assert "ind.fib && d.elliott" in db, "피보나치 렌더 미배선"
+        assert "ind.wave && d.elliott" in db, "엘리엇 렌더 미배선"
+        # ℹ️가이드: 동작 설명 + 주관성 경고(확정 판단 금지)
+        assert "확정 판단 금지" in db and "피보나치" in db and "엘리엇" in db
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 9) 자산관리 — 뱅크샐러드 export 파서 (2026-06-04 P1 증분1)
 #    뱅샐현황 시트(섹션형) → 투자/재무/부동산/동산/대출/보험/현금흐름 구조화.
 #    1.고객정보(PII)는 파싱 안 함. 총자산/순자산은 export 가 빈 셀이라 항목

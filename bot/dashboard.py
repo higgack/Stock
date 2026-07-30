@@ -2732,6 +2732,8 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="fib">피보나치</button>
+      <button class="chart-ind-btn" data-ind="wave">엘리엇</button>
       <button class="chart-ind-btn" data-ind="log">로그</button>
       <button class="chart-ind-btn" data-ind="events">공시</button>
     </div>
@@ -2798,6 +2800,8 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
           <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12일EMA−26일EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9일EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>. ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음.</li>
+          <li><span class="k" style="color:#d9a441">피보나치</span> — <b>마지막으로 완성된 스윙 다리</b>(직전 고점↔저점)를 기준으로 되돌림선 <b>38.2% · 50% · 61.8%</b> + 0%/100% 앵커(옅은 선). 조정이 멈추기 쉬운 가격대를 보는 용도. 기준 다리는 ATR×1.5 이상 움직인 구간만 스윙으로 인정(zigzag)하며, <b>지금 진행 중인 마지막 구간은 아직 스윙으로 확정되지 않아 기준에서 제외</b>됩니다. 비율 근거 = Credit Suisse 튜토리얼 p28~p30(0.382/0.618=피보나치 인접·교대항 비율, 0.5=H&S의 "50%~61.80%" 반등 구간). <b>기본 OFF</b>.</li>
+          <li><span class="k" style="color:#d9a441">엘리엇</span> — 확정된 스윙 피벗 위에 파동 번호를 붙입니다. <span style="color:#d9a441">주황 ●</span>=5파 임펄스(0·1·2·3·4·5), <span style="color:#8b5cf6">보라 ●</span>=a-b-c 조정(0·A·B·C). 판정은 ① 엘리엇 3대 원칙(파동2가 시작점을 깨지 않음 · 파동3이 최단이 아님 · 파동4가 파동1과 겹치지 않음)을 통과하고 ② 파동 간 피보나치 비율(CS p30: W2/W1=0.382·0.618, W3/W1=1.618·2.618, W4/W3=0.382·0.618, W5=0→3구간의 1.0·1.618)이 얼마나 맞는지로 적합도를 계산합니다. 조건이 안 맞으면 <b>아무 라벨도 안 붙습니다</b>(억지 라벨링 금지). ⚠️ 파동 세기는 본질적으로 주관적이라 분석가마다 다르게 셉니다 — <b>참고용이며 확정 판단 금지</b>. <b>기본 OFF</b>.</li>
           <li><span class="k">로그</span> — 세로축 로그 스케일. 긴 기간 %변동 비교에 유리.</li>
           <li><span class="k">공시</span> — 공시 마커 표시/숨김(위 '공시 마커' 참고).</li>
         </ul>
@@ -2834,7 +2838,7 @@ _CHART_JS = """
   // 지표 on/off 상태 (새로고침 시 항상 기본값으로 회귀 — 사용자 정책 2026-06-06).
   // 페이지 안에서는 토글 자유(in-memory ind 변경 후 재렌더), 단 localStorage 미저장.
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, log:false, events:false };
+  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, log:false, events:false, fib:false, wave:false };
   function loadInd(){
     try { localStorage.removeItem(IND_KEY); } catch(e){}  // 옛 영속값 정리
     var out = {};
@@ -2971,6 +2975,21 @@ _CHART_JS = """
         mk.push({ time: ev.time, position: 'belowBar', color: ev.color || '#94a3b8', shape: 'square', size: 2 });
       }
     }
+    // 엘리엇 파동 라벨 — 확정 피벗에만 숫자(임펄스 0~5) / 문자(조정 0·A·B·C).
+    // 고점 피벗은 캔들 위, 저점 피벗은 아래에 붙여 캔들을 가리지 않게 한다.
+    if (ind.wave && d.elliott && d.elliott.wave && d.elliott.wave.labels) {
+      var wv = d.elliott.wave;
+      for (var wi = 0; wi < wv.labels.length; wi++) {
+        var lb = wv.labels[wi];
+        if (!lb.time || lb.time < firstT || lb.time > lastT) continue;
+        mk.push({
+          time: lb.time,
+          position: (lb.kind === 'high') ? 'aboveBar' : 'belowBar',
+          color: (wv.kind === 'impulse') ? '#d9a441' : '#8b5cf6',
+          shape: 'circle', text: lb.label, size: 1
+        });
+      }
+    }
     if (mk.length) {
       mk.sort(function(a, b){ return a.time < b.time ? -1 : (a.time > b.time ? 1 : 0); });
       try { mainS.setMarkers(mk); } catch (e) {}
@@ -3012,6 +3031,19 @@ _CHART_JS = """
       priceLine(markers.entry,  '#9b59b6', '진입', 2, false);
       priceLine(markers.stop,   '#e2574c', '손절', 2, false);
       priceLine(markers.target, '#3ec46d', '목표', 2, false);
+    }
+    // 피보나치 되돌림 — '마지막으로 완성된 스윙 다리'(진행 중 구간 제외) 기준.
+    // 38.2/50/61.8% (CS 튜토리얼 p28~p30). 0%·100% 앵커도 함께 그려 기준 다리를
+    // 눈으로 확인할 수 있게 한다.
+    if (ind.fib && d.elliott && d.elliott.retracements) {
+      var lg = d.elliott.leg || {};
+      priceLine(lg.from, 'rgba(217,164,65,0.45)', 'Fib 0%', 3, false);
+      priceLine(lg.to,   'rgba(217,164,65,0.45)', 'Fib 100%', 3, false);
+      for (var fi = 0; fi < d.elliott.retracements.length; fi++) {
+        var fr = d.elliott.retracements[fi];
+        priceLine(fr.price, 'rgba(217,164,65,0.9)',
+                  'Fib ' + (fr.ratio * 100).toFixed(1) + '%', 2, false);
+      }
     }
     if (!(preserve && prevRange)) chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
@@ -16064,6 +16096,8 @@ def _lookup_chart_html(ticker: str) -> str:
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="fib">피보나치</button>
+      <button class="chart-ind-btn" data-ind="wave">엘리엇</button>
       <button class="chart-ind-btn" data-ind="log">로그</button>
       <button class="chart-ind-btn" data-ind="events">공시</button>
     </div>

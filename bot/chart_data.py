@@ -225,6 +225,27 @@ def _series_payload(
                 ]
         except Exception:
             pass
+
+    # 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29, Credit Suisse
+    # technical_tutorial p23~31 — bot/elliott_fib.py 에 규칙 출처 명시).
+    # 파동 원리는 프랙탈(CS p23 "patterns ... every day are similar to ... week,
+    # month")이라 일봉/분봉/주봉 어느 interval 이든 그 단위로 계산한다.
+    # 순수 가격 연산이라 전 시장 동일(universal). 실패해도 차트 본체엔 영향 없음.
+    try:
+        from bot.elliott_fib import analyze_waves
+        _c = payload.get("close") or []
+        _hh = payload.get("high") or _c
+        _ll = payload.get("low") or _c
+        keep = [i for i, cv in enumerate(_c)
+                if cv is not None and _hh[i] is not None and _ll[i] is not None]
+        if len(keep) >= 30:
+            ef = analyze_waves([payload["times"][i] for i in keep],
+                               [_hh[i] for i in keep], [_ll[i] for i in keep],
+                               [_c[i] for i in keep])
+            if ef:
+                payload["elliott"] = ef
+    except Exception as exc:      # silent-fail 금지 — 원인 로그는 남긴다
+        log.debug("chart_data: elliott/fib overlay skipped: %s", exc)
     return payload
 
 
