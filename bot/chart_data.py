@@ -136,7 +136,11 @@ def _series_payload(
         except Exception:
             return None
 
-    _intraday = interval in ("1m", "5m", "15m", "1h")
+    # 인트라데이면 시간축을 epoch 정수로(같은 날 여러 봉이라 날짜문자열이면 시각이
+    # 전부 동일해져 lightweight-charts 의 '시간 오름차순' 요구를 깬다 → 빈 차트).
+    # ⚠️ 새 분봉 interval 추가 시 이 튜플도 같이 갱신할 것 — 30m 을 여기 빠뜨려
+    # 30분봉이 날짜문자열로 나가던 버그가 있었다(독립 리뷰 발견 2026-07-30).
+    _intraday = interval in ("1m", "5m", "15m", "30m", "1h")
     if _intraday:
         import calendar as _cal
         _times = [int(_cal.timegm(d.timetuple())) for d in close.index]
@@ -225,6 +229,27 @@ def _series_payload(
                 ]
         except Exception:
             pass
+
+    # 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29, Credit Suisse
+    # technical_tutorial p23~31 — bot/elliott_fib.py 에 규칙 출처 명시).
+    # 파동 원리는 프랙탈(CS p23 "patterns ... every day are similar to ... week,
+    # month")이라 일봉/분봉/주봉 어느 interval 이든 그 단위로 계산한다.
+    # 순수 가격 연산이라 전 시장 동일(universal). 실패해도 차트 본체엔 영향 없음.
+    try:
+        from bot.elliott_fib import analyze_waves
+        _c = payload.get("close") or []
+        _hh = payload.get("high") or _c
+        _ll = payload.get("low") or _c
+        keep = [i for i, cv in enumerate(_c)
+                if cv is not None and _hh[i] is not None and _ll[i] is not None]
+        if len(keep) >= 30:
+            ef = analyze_waves([payload["times"][i] for i in keep],
+                               [_hh[i] for i in keep], [_ll[i] for i in keep],
+                               [_c[i] for i in keep])
+            if ef:
+                payload["elliott"] = ef
+    except Exception as exc:      # silent-fail 금지 — 원인 로그는 남긴다
+        log.debug("chart_data: elliott/fib overlay skipped: %s", exc)
     return payload
 
 
@@ -325,6 +350,8 @@ def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
 # (so weekly view = 21wk/55wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
 _VALID_INTERVALS = {"5m", "15m", "30m", "1h", "1d", "1wk", "1mo"}
+# 분봉/시간봉 = 인트라데이. KR 은 이 집합일 때 네이버 분봉 경로로 라우팅한다.
+_INTRADAY_INTERVALS = {"5m", "15m", "30m", "1h"}
 _VALID_PERIODS = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
@@ -760,19 +787,45 @@ def fetch_chart_payload(
     if period not in _VALID_PERIODS:
         period = "1y"
     _is_kr = ticker.upper().endswith((".KS", ".KQ"))
-    # 단기 기간 → 최적 봉 자동 매핑.
-    # KR: yfinance 가 분봉을 제공하지 않으므로 '1d'만 KIS API 로 대체하고,
-    # '1wk'/'1mo' 는 일봉으로 유지 (분봉 매핑 skip).
+    # 단기 기간 → 최적 봉 자동 매핑(해외 전용 — KR 은 아래 네이버 경로가 처리).
     _PERIOD_INTERVAL_MAP = {
         "1d": "5m", "1wk": "15m", "1mo": "1h",
     }
-    if period in _PERIOD_INTERVAL_MAP:
-        if _is_kr and period == "1d":
-            kr_payload = _fetch_kr_intraday(ticker, _PERIOD_INTERVAL_MAP[period])
+    # KR 분봉은 yfinance 가 아예 제공하지 않아 네이버 분봉 API 로 라우팅한다.
+    # 예전엔 범위 '1일' 일 때만 이 경로를 타서, 사용자가 30분봉 버튼을 직접
+    # 눌러도 yfinance 로 갔다가 데이터가 없어 일봉으로 되돌아왔다(사용자 지적
+    # 2026-07-29). 이제 수동 선택 분봉도 같은 경로로 보낸다.
+    # ⚠️ 네이버 분봉 API 는 **당일치만** 제공 → payload period 가 '1d' 로 잡히며,
+    # 사용자가 다른 범위를 골랐다면 notice 로 그 사실을 알린다(조용한 대체 금지).
+    if _is_kr:
+        kr_iv = (interval if interval in _INTRADAY_INTERVALS
+                 else _PERIOD_INTERVAL_MAP.get(period) if period == "1d" else None)
+        if kr_iv:
+            kr_payload = _fetch_kr_intraday(ticker, kr_iv)
             if kr_payload:
+                if period != "1d":
+                    kr_payload["notice"] = (
+                        "국내 종목은 Yahoo 가 분봉을 제공하지 않아 네이버 실시간"
+                        " 분봉으로 표시합니다 — 당일치만 있어 범위가 '1일' 로"
+                        " 조정됐습니다.")
                 return kr_payload
-        if not _is_kr:
-            interval = _PERIOD_INTERVAL_MAP[period]
+            # 네이버도 실패(장전·휴장·조회불가) → 아래 yfinance 경로로 내려가
+            # 일봉 폴백 + interval_fallback 안내를 타게 둔다.
+    elif period in _PERIOD_INTERVAL_MAP:
+        interval = _PERIOD_INTERVAL_MAP[period]
+    # 분봉→일봉 폴백 사실. try 밖에서 초기화해야 예외 경로(아래 except)에서도
+    # 안전하게 참조된다.
+    _iv_fallback = None
+
+    def _fallback_with_notice():
+        """야후 실패/빈결과 → 네이버·KIS 일봉. 분봉 요청이었다면 폴백 사실을
+        같이 실어 보낸다 — 안 그러면 '조용한 대체' 가 이 분기에서만 되살아난다
+        (독립 리뷰 발견 2026-07-30)."""
+        fb = _fetch_series_fallback(ticker, period)
+        if fb is not None and _iv_fallback:
+            fb["interval_fallback"] = _iv_fallback
+        return fb
+
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
@@ -794,9 +847,14 @@ def fetch_chart_payload(
                 auto_adjust=True,
             )
         # Intraday fallback: some markets don't have intraday via yfinance.
+        # (KR 종목은 yfinance 가 분봉 자체를 안 줘서 사실상 항상 여기로 온다.)
+        # 폴백이 일어나면 payload 에 사실을 실어 보낸다 — 예전엔 응답 interval 만
+        # 조용히 1d 로 바뀌어, 사용자는 분봉 버튼을 눌렀는데 왜 일봉이 나오는지
+        # 알 수 없었다(사용자 지적 2026-07-29). silent 동작변경 금지.
         _MIN_INTRADAY = {"5m": 20, "15m": 10, "30m": 10, "1h": 10}
         _got = len(hist) if hist is not None else 0
         if interval in _MIN_INTRADAY and _got < _MIN_INTRADAY[interval]:
+            _iv_fallback = {"requested": interval, "applied": "1d", "bars": _got}
             interval = "1d"
             if period in ("max", "1d"):
                 hist = t.history(period="5d", interval="1d", auto_adjust=True)
@@ -808,10 +866,10 @@ def fetch_chart_payload(
                     auto_adjust=True,
                 )
         if hist is None or len(hist) < 2:
-            return _fetch_series_fallback(ticker, period)   # 야후 빈 → 네이버/KIS
+            return _fallback_with_notice()      # 야후 빈 → 네이버/KIS 일봉
         close = hist["Close"].dropna()
         if len(close) < 2:
-            return _fetch_series_fallback(ticker, period)
+            return _fallback_with_notice()
         currency, decimals = _currency_for(ticker)
         vol = hist["Volume"].reindex(close.index) if "Volume" in hist else None
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
@@ -826,6 +884,8 @@ def fetch_chart_payload(
         payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker, interval=interval)
         payload["interval"] = interval
         payload["period"] = period
+        if _iv_fallback:
+            payload["interval_fallback"] = _iv_fallback
         # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).
         # 일봉 series 의 마지막 종가는 D-1/EOD 라 장중엔 stale → 프론트가
         # '현재가' 로 우선 사용. 단 fast_info 는 일부 종목(특히 KR/JP/CN)에서
@@ -848,7 +908,7 @@ def fetch_chart_payload(
             "chart_data: fetch_chart_payload failed %s %s %s: %s",
             ticker, interval, period, exc,
         )
-        return _fetch_series_fallback(ticker, period)   # 야후 실패 → 네이버/KIS
+        return _fallback_with_notice()   # 야후 실패 → 네이버/KIS(+폴백 안내 보존)
 
 
 # Trade-plan price levels emitted in full_report by the Trader / PM:

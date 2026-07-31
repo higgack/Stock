@@ -2732,6 +2732,8 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="fib">피보나치</button>
+      <button class="chart-ind-btn" data-ind="wave">엘리엇</button>
       <button class="chart-ind-btn" data-ind="log">로그</button>
       <button class="chart-ind-btn" data-ind="events">공시</button>
     </div>
@@ -2798,13 +2800,15 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
           <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12일EMA−26일EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9일EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>. ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음.</li>
+          <li><span class="k" style="color:#d9a441">피보나치</span> — <b>마지막으로 완성된 스윙 다리</b>(직전 고점↔저점)를 기준으로 되돌림선 <b>23.6 · 38.2 · 50 · 61.8 · 78.6%</b> + 0%/100% 앵커(옅은 선). 조정이 멈추기 쉬운 가격대를 보는 용도로, TradingView·thinkorswim 기본값과 같은 표준 세트입니다. 유래: 23.6%=0.618³ · 38.2%=0.618² · 61.8%=황금비(1/φ) · 78.6%=√0.618, <b>50%는 피보나치 비율이 아니라</b> 다우 이론의 '절반쯤 되돌린다'는 관찰이 관행으로 굳은 것입니다. 실무에선 61.8% 부근을 되돌림이 멈추기 쉬운 구간으로, 78.6%를 확실히 깨면 직전 상승/하락 구조가 무너진 것으로 보는 편(관례이지 증명된 규칙은 아님). 기준 다리는 ATR×1.5 이상 움직인 구간만 스윙으로 인정(zigzag)하며 고가·저가(꼬리 포함)를 앵커로 씁니다. <b>지금 진행 중인 마지막 구간은 아직 스윙으로 확정되지 않아 기준에서 제외</b>됩니다. <b>기본 OFF</b>.</li>
+          <li><span class="k" style="color:#d9a441">엘리엇</span> — 확정된 스윙 피벗 위에 파동 번호를 붙입니다. <span style="color:#d9a441">주황 ●</span>=5파 임펄스(0·1·2·3·4·5), <span style="color:#8b5cf6">보라 ●</span>=조정(0·A·B·C). <b>규칙과 지침을 구분</b>해서 판정합니다 — <b>규칙</b>(위반하면 라벨 자체를 안 붙임): 파동2가 파동1 시작점을 깨지 않음 · 파동3이 파동1 끝을 넘어서고 1·3·5 중 최단이 아님 · 파동4가 파동1 영역에 들어가지 않음(단 <b>다이애고널</b>은 겹침이 정상이라 예외로 인정하되 파동4가 파동2 끝을 넘으면 탈락). <b>지침</b>(맞으면 확신도↑, 틀려도 탈락 아님): 파동 간 피보나치 비율 W2/W1=0.382·0.5·0.618·0.786, W3/W1=1.618·2.618·4.236, W4/W3=0.236·0.382·0.5, W5=0→3구간의 0.382·0.618·1.0·1.618(또는 파동1의 0.618·1.0). 조정은 B가 A를 되돌린 비율로 <b>지그재그(38~79%) · 정규 플랫(90~104%) · 확장/러닝 플랫(105%~)</b>을 구분합니다. 5파가 완성되면 이어질 조정의 되돌림 목표(전체 구간의 38.2~61.8%)도 함께 계산합니다. 어느 밴드에도 안 맞으면 <b>아무 라벨도 안 붙습니다</b>(억지 라벨링 금지). ⚠️ 파동 세기는 본질적으로 주관적이라 분석가마다 다르게 세고, 확정 피벗도 이후 데이터로 재해석될 수 있습니다 — <b>참고용이며 확정 판단 금지</b>. <b>기본 OFF</b>.</li>
           <li><span class="k">로그</span> — 세로축 로그 스케일. 긴 기간 %변동 비교에 유리.</li>
           <li><span class="k">공시</span> — 공시 마커 표시/숨김(위 '공시 마커' 참고).</li>
         </ul>
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">5분봉/30분봉/1시간봉/일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 네이버 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음(5분·30분·1시간봉은 Yahoo 인트라데이 보관기간 한계로 최근 구간만 표시 — 데이터 부족 시 자동으로 일봉 폴백). 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치). 가격 시리즈는 Yahoo가 1차이며, Yahoo에 데이터가 없는 종목은 네이버→KIS 일봉으로 자동 폴백(셋 다 없으면 '데이터 없음').</li>
+          <li><span class="k">5분봉/30분봉/1시간봉/일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 네이버 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. <b>국내(.KS/.KQ) 종목</b>은 Yahoo가 분봉을 제공하지 않아 5분·30분·1시간봉을 고르면 <b>네이버 실시간 분봉</b>으로 받아옵니다 — 다만 네이버는 <b>당일치만</b> 주므로 범위가 자동으로 '1일'로 조정되며 그 사실을 차트 위에 안내합니다(장 시작 전·휴장일엔 데이터가 없어 일봉으로 표시). <b>해외 종목</b>은 Yahoo 인트라데이 보관기간 한계로 최근 구간만 있습니다. 어느 경우든 데이터가 모자라 일봉으로 되돌린 경우 <b>차트 위에 그 사실을 안내</b>합니다(조용히 바뀌지 않음). 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치). 가격 시리즈는 Yahoo가 1차이며, Yahoo에 데이터가 없는 종목은 네이버→KIS 일봉으로 자동 폴백(셋 다 없으면 '데이터 없음').</li>
           <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
           <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
@@ -2834,7 +2838,7 @@ _CHART_JS = """
   // 지표 on/off 상태 (새로고침 시 항상 기본값으로 회귀 — 사용자 정책 2026-06-06).
   // 페이지 안에서는 토글 자유(in-memory ind 변경 후 재렌더), 단 localStorage 미저장.
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, log:false, events:false };
+  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, log:false, events:false, fib:false, wave:false };
   function loadInd(){
     try { localStorage.removeItem(IND_KEY); } catch(e){}  // 옛 영속값 정리
     var out = {};
@@ -2971,6 +2975,23 @@ _CHART_JS = """
         mk.push({ time: ev.time, position: 'belowBar', color: ev.color || '#94a3b8', shape: 'square', size: 2 });
       }
     }
+    // 엘리엇 파동 라벨 — 확정 피벗에만 숫자(임펄스 0~5) / 문자(조정 0·A·B·C).
+    // 고점 피벗은 캔들 위, 저점 피벗은 아래에 붙여 캔들을 가리지 않게 한다.
+    if (ind.wave && d.elliott && d.elliott.wave && d.elliott.wave.labels) {
+      var wv = d.elliott.wave;
+      // 변수명 wlb — 같은 함수 스코프의 캔들 루프가 이미 lb 를 쓴다(var 는 함수
+      // 스코프라 재선언이 섀도잉 아닌 덮어쓰기가 된다).
+      for (var wi = 0; wi < wv.labels.length; wi++) {
+        var wlb = wv.labels[wi];
+        if (!wlb.time || wlb.time < firstT || wlb.time > lastT) continue;
+        mk.push({
+          time: wlb.time,
+          position: (wlb.kind === 'high') ? 'aboveBar' : 'belowBar',
+          color: (wv.kind === 'impulse') ? '#d9a441' : '#8b5cf6',
+          shape: 'circle', text: wlb.label, size: 1
+        });
+      }
+    }
     if (mk.length) {
       mk.sort(function(a, b){ return a.time < b.time ? -1 : (a.time > b.time ? 1 : 0); });
       try { mainS.setMarkers(mk); } catch (e) {}
@@ -3012,6 +3033,32 @@ _CHART_JS = """
       priceLine(markers.entry,  '#9b59b6', '진입', 2, false);
       priceLine(markers.stop,   '#e2574c', '손절', 2, false);
       priceLine(markers.target, '#3ec46d', '목표', 2, false);
+    }
+    // 피보나치 되돌림 — '마지막으로 완성된 스윙 다리'(진행 중 구간 제외) 기준.
+    // 23.6/38.2/50/61.8/78.6% (표준 세트). 0%·100% 앵커도 그려 기준 다리를 눈으로
+    // 확인할 수 있게 한다. ⚠️ 앵커 방향: 되돌림은 다리 끝(to)에서 시작점(from)
+    // 쪽으로 되돌아가므로 **0%=to, 100%=from** 이다(산식 end-span×r 과 일치).
+    // 초기 구현이 이를 뒤집어 라벨링했다(독립 리뷰 발견 2026-07-30).
+    if (ind.fib && d.elliott && d.elliott.retracements && d.elliott.retracements.length) {
+      var lg = d.elliott.leg || {};
+      priceLine(lg.to,   'rgba(217,164,65,0.45)', 'Fib 0%', 3, false);
+      priceLine(lg.from, 'rgba(217,164,65,0.45)', 'Fib 100%', 3, false);
+      for (var fi = 0; fi < d.elliott.retracements.length; fi++) {
+        var fr = d.elliott.retracements[fi];
+        priceLine(fr.price, 'rgba(217,164,65,0.9)',
+                  'Fib ' + (fr.ratio * 100).toFixed(1) + '%', 2, false);
+      }
+    }
+    // 5파 완성 시 이어질 조정의 되돌림 목표 — 엘리엇 토글에 묶는다(피보나치
+    // 토글은 되돌림선 담당). 가이드가 이 값을 약속하는데 그리지 않으면
+    // 설명-동작 out-of-sync 가 된다.
+    if (ind.wave && d.elliott && d.elliott.wave
+        && d.elliott.wave.correction_targets) {
+      var ct = d.elliott.wave.correction_targets;
+      for (var ci = 0; ci < ct.length; ci++) {
+        priceLine(ct[ci].price, 'rgba(139,92,246,0.75)',
+                  '조정목표 ' + (ct[ci].ratio * 100).toFixed(1) + '%', 3, false);
+      }
     }
     if (!(preserve && prevRange)) chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
@@ -3353,7 +3400,17 @@ _CHART_JS = """
       .then(function(j){
         el.style.opacity = '';
         if (j && j.ok && j.chart) {
-          status('');
+          // 요청한 봉의 데이터가 모자라 서버가 일봉으로 되돌린 경우 그 사실을
+          // 알린다 — 예전엔 버튼 하이라이트만 슬그머니 옮겨가서, 눌렀는데 왜
+          // 일봉이 나오는지 알 수 없었다(사용자 지적 2026-07-29).
+          var ivf = j.chart.interval_fallback;
+          if (ivf) {
+            status('ℹ️ ' + intervalLabel(ivf.requested) + ' 데이터가 없어 '
+                   + intervalLabel(ivf.applied) + '으로 표시합니다'
+                   + (ivf.bars ? ' (받은 봉 ' + ivf.bars + '개)' : '')
+                   + ' — 분봉은 최근 구간만 보관됩니다.');
+          } else if (j.chart.notice) { status('ℹ️ ' + j.chart.notice); }
+          else { status(''); }
           // 서버가 반환한 실제 봉/범위로 동기화 — 서버가 요청 range/interval 을
           // 화이트리스트 미일치로 보정(예: 미배포 시 1주일→1년)했을 때 값 패널·
           // 버튼이 '실제 데이터' 를 정직하게 반영하게(기간 % 오라벨 방지).
@@ -3385,7 +3442,11 @@ _CHART_JS = """
       if (kind === 'interval') curInterval = val;
       else if (kind === 'range') {
         curRange = val;
-        var autoMap = {'1d':'5m','1wk':'15m','1mo':'1h'};
+        // 범위 → 최적 봉 자동 매핑. 국내(.KS/.KQ)는 네이버 분봉이 '당일치'뿐이라
+        // 1주일/1개월까지 분봉으로 매핑하면 그 범위가 통째로 오늘 하루로 접힌다
+        // (독립 리뷰 발견 2026-07-30) → 국내는 '1일' 만 분봉으로 매핑한다.
+        var isKR = /\\.(KS|KQ)$/i.test(ticker);
+        var autoMap = isKR ? {'1d':'5m'} : {'1d':'5m','1wk':'15m','1mo':'1h'};
         if (autoMap[val]) curInterval = autoMap[val];
         else if (['5m','15m','30m','1h'].indexOf(curInterval) >= 0) curInterval = '1d';
       }
@@ -16064,6 +16125,8 @@ def _lookup_chart_html(ticker: str) -> str:
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="fib">피보나치</button>
+      <button class="chart-ind-btn" data-ind="wave">엘리엇</button>
       <button class="chart-ind-btn" data-ind="log">로그</button>
       <button class="chart-ind-btn" data-ind="events">공시</button>
     </div>

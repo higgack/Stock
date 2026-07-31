@@ -597,9 +597,15 @@ class TestPriceChartRender:
         assert "value: lp" in _CHART_JS, "라인 마지막점 라이브 대체 누락"
         # 패널 '현재가' 가 last_price 우선
         assert "(d.last_price != null ? d.last_price : lastNonNull(d.close))" in _CHART_JS
-        # 서버 캐시 키 버전 (v3) + TTL 단축 (5분)
+        # 서버 캐시 키에 버전 접미사가 있고 TTL 이 5분인지.
+        # ⚠️ 버전 숫자를 하드코딩하지 말 것 — 예전엔 "_v4.json" 을 그대로 박아둬
+        # 페이로드 형태가 바뀌어 정당하게 v5 로 올릴 때 이 테스트가 깨졌다
+        # (2026-07-29). 검증해야 할 건 '버전이 몇이냐' 가 아니라 '버전 접미사로
+        # 옛 캐시를 무효화하는 규약이 살아 있느냐' 다.
+        import re as _re
         srv = open("bot/dashboard_server.py", encoding="utf-8").read()
-        assert "_v4.json" in srv, "캐시 키 버전 v4 누락(라이브 가드 후 bump)"
+        assert _re.search(r"\{safe\}_\{interval\}_\{rng\}_v\d+\.json", srv), \
+            "차트 캐시 키의 버전 접미사 규약 누락(라이브 가드 후 bump 용)"
         assert "< 300:" in srv, "캐시 TTL 5분 누락"
 
     def test_chart_indicators_volume_rsi_bb_macd_candle(self):
@@ -2412,6 +2418,343 @@ class TestTradeLevelParser:
         assert 'data-kind="interval" data-val="5m"' in html
         assert 'data-kind="interval" data-val="30m"' in html
         assert 'data-kind="interval" data-val="1h"' in html
+
+    def test_interval_fallback_is_surfaced_not_silent(self):
+        """분봉/시간봉 데이터가 모자라 일봉으로 되돌릴 때 그 사실을 페이로드에
+        싣고 프론트가 안내한다. 이전엔 응답 interval 만 조용히 '1d' 로 바뀌어
+        버튼 하이라이트가 슬그머니 옮겨갈 뿐이라, 분봉을 눌렀는데 왜 일봉이
+        나오는지 알 수 없었다(사용자 지적 2026-07-29). 특히 국내(.KS/.KQ)는
+        yfinance 가 분봉을 안 줘서 사실상 항상 이 경로를 탄다.
+        (yfinance·pandas 미설치 샌드박스라 실호출 대신 배선을 정적 검증.)"""
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert '_iv_fallback = {"requested": interval, "applied": "1d"' in cd, \
+            "폴백 사실을 기록하지 않음"
+        assert 'payload["interval_fallback"] = _iv_fallback' in cd, \
+            "폴백 정보를 페이로드에 미주입"
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "j.chart.interval_fallback" in db, "프론트가 폴백 플래그 미소비"
+        assert "데이터가 없어" in db, "폴백 안내 문구 없음"
+        # 페이로드 형태가 바뀌었으면 차트 캐시 버전도 올려야 배포 직후 옛 캐시가
+        # 새 필드 없이 5분간 서빙되는 일이 없다(실수#11 '배포완료 ≠ 화면에 보임').
+        # 버전은 하한만 고정 — 정확히 v5 로 박으면 다음 정당한 bump 때 깨진다.
+        import re as _re
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        m = _re.search(r"\{safe\}_\{interval\}_\{rng\}_v(\d+)\.json", srv)
+        assert m and int(m.group(1)) >= 5, \
+            "elliott/interval_fallback 필드 추가분이 반영되려면 캐시 버전 ≥5 필요"
+        # ℹ️가이드에도 국내 분봉 경로가 적혀 있어야(설명 out-of-sync 방지)
+        assert "네이버 실시간 분봉" in db and "당일치만" in db
+
+    def test_kr_manual_intraday_routes_to_naver(self, monkeypatch):
+        """국내 종목의 **수동** 분봉 선택도 네이버 경로로 보낸다.
+
+        예전엔 범위 '1일' 일 때만 네이버를 탔고, 30분봉 버튼을 직접 누르면
+        yfinance 로 갔다가 국내 분봉이 없어 일봉으로 되돌아왔다(사용자 지적
+        2026-07-29). 네이버는 당일치만 주므로 범위가 '1일' 로 바뀌는데, 그
+        사실을 notice 로 알린다(조용한 대체 금지)."""
+        import bot.chart_data as cd
+        calls = []
+
+        def fake_naver(ticker, interval="5m"):
+            calls.append((ticker, interval))
+            return {"times": [1, 2], "close": [100.0, 101.0],
+                    "interval": interval, "period": "1d"}
+        monkeypatch.setattr(cd, "_fetch_kr_intraday", fake_naver)
+
+        # 수동 30분봉 + 범위 1년 → 네이버 30m + 범위조정 안내
+        p = cd.fetch_chart_payload("005930.KS", interval="30m", period="1y")
+        assert calls == [("005930.KS", "30m")], calls
+        assert p["period"] == "1d" and "notice" in p
+        # 1시간봉도 동일
+        calls.clear()
+        cd.fetch_chart_payload("035720.KQ", interval="1h", period="6mo")
+        assert calls == [("035720.KQ", "1h")], calls
+        # 범위 '1일'(기존 동작)은 그대로 + 범위가 안 바뀌므로 불필요한 안내 없음
+        calls.clear()
+        p = cd.fetch_chart_payload("005930.KS", interval="5m", period="1d")
+        assert calls == [("005930.KS", "5m")] and "notice" not in p
+        # 일봉 요청은 네이버 분봉 경로를 타면 안 됨
+        calls.clear()
+        cd.fetch_chart_payload("005930.KS", interval="1d", period="1y")
+        assert calls == []
+        # 해외 종목은 분봉이어도 네이버 미호출(국내 전용 데이터소스)
+        calls.clear()
+        cd.fetch_chart_payload("AAPL", interval="30m", period="1mo")
+        assert calls == []
+
+    def test_kr_intraday_failure_falls_through_gracefully(self, monkeypatch):
+        """장전·휴장 등으로 네이버가 비면 예외 없이 아래 폴백 경로로 내려간다."""
+        import bot.chart_data as cd
+        monkeypatch.setattr(cd, "_fetch_kr_intraday", lambda t, i="5m": None)
+        r = cd.fetch_chart_payload("005930.KS", interval="30m", period="1y")
+        assert r is None or isinstance(r, dict)   # raise 하지 않는 것이 핵심
+
+    def test_all_intraday_intervals_emit_epoch_times(self):
+        """회귀 고정(독립 리뷰 2026-07-30, CRITICAL): _series_payload 의
+        `_intraday` 판정 튜플에 '30m' 이 빠져 있어 30분봉이 날짜문자열
+        ('2026-07-31')로 나갔다. 같은 세션의 봉이 전부 같은 시간값이 되어
+        lightweight-charts 의 '시간 오름차순' 요구를 깨고 차트가 빈다.
+        분봉 interval 집합과 epoch 판정 집합은 항상 일치해야 한다."""
+        import re as _re
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        m = _re.search(r"_intraday = interval in \(([^)]*)\)", src)
+        assert m, "_intraday 판정식 못 찾음"
+        epoch_ivs = set(_re.findall(r'"([^"]+)"', m.group(1)))
+        from bot.chart_data import _INTRADAY_INTERVALS
+        assert _INTRADAY_INTERVALS <= epoch_ivs, (
+            f"분봉인데 epoch 시간축을 안 쓰는 interval: "
+            f"{_INTRADAY_INTERVALS - epoch_ivs}")
+
+    def test_kr_range_buttons_do_not_collapse_to_today(self):
+        """회귀 고정(독립 리뷰 2026-07-30, MAJOR): 클라이언트가 범위→봉을
+        자동매핑(1주일→15m, 1개월→1h)하는데, 국내는 네이버 분봉이 당일치뿐이라
+        그대로 두면 1주일·1개월 범위가 통째로 '오늘'로 접혔다. 국내는 '1일' 만
+        분봉으로 매핑한다."""
+        from bot.dashboard import _CHART_JS
+        assert "isKR ? {'1d':'5m'} :" in _CHART_JS, \
+            "국내 range 자동매핑이 여전히 1주일/1개월까지 분봉으로 감"
+        assert r"/\.(KS|KQ)$/i.test(ticker)" in _CHART_JS, "국내 판정 정규식 누락"
+
+    def test_fib_anchor_labels_match_retracement_math(self):
+        """회귀 고정(독립 리뷰 2026-07-30, MAJOR): 되돌림은 다리 끝(to)에서
+        시작점(from) 쪽으로 되돌아가므로 0%=to, 100%=from 이다. 초기 구현이
+        이를 뒤집어 라벨링해, 상승 다리에서 0% 가 저점에 찍혔다."""
+        from bot.elliott_fib import fib_retracement_levels
+        from bot.dashboard import _CHART_JS
+        lv = {d["ratio"]: d["price"] for d in fib_retracement_levels(100, 200)}
+        # 산식 확인: 작은 비율일수록 다리 끝(200)에 가깝다
+        assert lv[0.236] > lv[0.786], "되돌림 산식 방향이 바뀜"
+        i0 = _CHART_JS.index("'Fib 0%'")
+        i100 = _CHART_JS.index("'Fib 100%'")
+        assert "lg.to" in _CHART_JS[i0 - 40:i0], "0% 앵커가 leg.to 가 아님"
+        assert "lg.from" in _CHART_JS[i100 - 40:i100], "100% 앵커가 leg.from 이 아님"
+
+    def test_guide_promised_correction_targets_are_rendered(self):
+        """가이드가 '5파 완성 시 조정 목표를 계산한다' 고 약속하므로 실제로
+        그려야 한다(설명-동작 out-of-sync 방지). 엘리엇 토글에 묶는다."""
+        from bot.dashboard import _CHART_JS
+        assert "correction_targets" in _CHART_JS, "조정 목표 미렌더"
+        assert "조정목표" in _CHART_JS
+
+    def test_series_fallback_preserves_interval_fallback_notice(self):
+        """회귀 고정(독립 리뷰 2026-07-30, MINOR): 야후가 비어 네이버/KIS 일봉
+        폴백으로 빠지는 분기에서 interval_fallback 이 유실돼, '조용한 대체 금지'
+        가 그 경로에서만 되살아났다."""
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "def _fallback_with_notice()" in src
+        assert 'fb["interval_fallback"] = _iv_fallback' in src
+        # 원본 _fetch_series_fallback 직접 return 이 남아 있으면 안내가 새어나감
+        assert "return _fetch_series_fallback(ticker, period)" not in src, \
+            "폴백 안내를 건너뛰는 직접 return 이 남아 있음"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 8c) 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29)
+#     최초 구현은 Credit Suisse 튜토리얼(p23~p31)만 따랐으나, 사용자 요청으로
+#     정석(StockCharts·EWI·Frost&Prechter·TradingView 기본값)과 대조해 다른
+#     부분은 정석을 채택. 이 테스트가 '규칙 vs 지침' 구분과 표준 레벨을 고정한다.
+# ─────────────────────────────────────────────────────────────────────────
+class TestElliottFib20260729:
+    """fix/feat: 엘리엇·피보나치 차트 오버레이 (정석 기준)."""
+
+    # 교과서 임펄스 — CS p30 네 비율이 정확히 맞는 피벗열.
+    def _textbook_impulse(self):
+        p0, p1 = 100.0, 120.0
+        p2 = p1 - 0.618 * (p1 - p0)
+        p3 = p2 + 1.618 * (p1 - p0)
+        p4 = p3 - 0.382 * (p3 - p2)
+        p5 = p4 + 1.0 * (p3 - p0)
+        return [(0, "low", p0), (10, "high", p1), (20, "low", p2),
+                (30, "high", p3), (40, "low", p4), (50, "high", p5)]
+
+    def test_retracement_levels_are_platform_standard_set(self):
+        """정석 채택 — TradingView·thinkorswim 기본 세트. CS 튜토리얼은
+        0.382/0.618 만 다뤄 0.236/0.786 이 빠져 있었다."""
+        from bot import elliott_fib as ef
+        assert ef.FIB_SEQUENCE[:11] == (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144)
+        assert ef.RETRACEMENT_LEVELS == (0.236, 0.382, 0.5, 0.618, 0.786)
+        # 유래 검증: 0.618²≈0.382 · 0.618³≈0.236 · √0.618≈0.786
+        assert abs(0.618 ** 2 - 0.382) < 0.001
+        assert abs(0.618 ** 3 - 0.236) < 0.001
+        assert abs(0.618 ** 0.5 - 0.786) < 0.001
+        # 50% 는 피보나치 비율이 아님(다우 관행) — 코드 주석에 그 사실이 남아야
+        # 나중에 "왜 0.5 가 있지?" 로 잘못 정리되는 걸 막는다.
+        src = open("bot/elliott_fib.py", encoding="utf-8").read()
+        assert "피보나치 비율이 **아니다**" in src and "다우" in src
+
+    def test_projection_formula_uses_standard_anchor(self):
+        """회귀 고정: 초기 구현이 `end + span×k` 라 표준 대비 한 span 밀려
+        k=1.618 이 261.8% 가 아닌 361.8% 를 가리켰다. 표준은 `start + span×k`."""
+        from bot import elliott_fib as ef
+        assert ef.PROJECTION_LEVELS == (1.272, 1.618, 2.0, 2.618)
+        pj = {d["ratio"]: d["price"] for d in ef.fib_projection_levels(100, 200)}
+        assert pj[1.618] == 261.8, "표준 산식이면 161.8% 투영은 261.8"
+        assert pj[1.272] == 227.2 and pj[2.0] == 300.0 and pj[2.618] == 361.8
+        assert not hasattr(ef, "fib_extension_levels"), \
+            "3점 anchor 도구와 혼동되는 옛 이름이 남아 있음(projection 으로 통일)"
+
+    def test_retracement_math_both_directions(self):
+        from bot.elliott_fib import fib_retracement_levels, fib_projection_levels
+        up = {d["ratio"]: d["price"] for d in fib_retracement_levels(100, 200)}
+        assert up[0.236] == 176.4 and up[0.382] == 161.8 and up[0.5] == 150.0
+        assert up[0.618] == 138.2 and up[0.786] == 121.4
+        # 하락 다리의 되돌림은 위쪽으로 — 부호 처리 회귀 고정
+        dn = {d["ratio"]: d["price"] for d in fib_retracement_levels(200, 100)}
+        assert dn[0.618] == 161.8 and dn[0.786] == 178.6
+        # edge: 길이 0 / 비수치 → 빈 리스트(호출부가 그냥 안 그림)
+        assert fib_retracement_levels(100, 100) == []
+        assert fib_retracement_levels(None, 200) == []
+        assert fib_projection_levels(100, None) == []
+
+    def test_textbook_impulse_scores_full_confidence(self):
+        from bot.elliott_fib import label_impulse
+        imp = label_impulse(self._textbook_impulse())
+        assert imp and imp["kind"] == "impulse" and imp["dir"] == "up"
+        assert imp["confidence"] == 1.0, imp["ratios"]
+        assert imp["diagonal"] is False and imp["truncated"] is False
+        assert all(imp["rules"].values())
+        # 무효화 가격 = 파동1 기점(여기가 깨지면 이 카운트 자체가 무효)
+        assert imp["invalidation"] == 100.0
+        assert [x["label"] for x in imp["labels"]] == list("012345")
+        # 라벨마다 피벗 종류가 있어야 차트가 위/아래 배치를 정한다
+        assert all(x["kind"] in ("high", "low") for x in imp["labels"])
+
+    def test_impulse_rejects_rule_violations(self):
+        """규칙(위반=카운트 무효): 파동2 기점 이탈 · 파동3 최단 · 파동3 이
+        파동1 끝 미돌파(R2 따름정리, 정석 반영으로 추가된 검사)."""
+        from bot.elliott_fib import label_impulse
+        bad2 = self._textbook_impulse()
+        bad2[2] = (20, "low", 95.0)               # 파동2 가 시작점(100) 아래
+        assert label_impulse(bad2) is None
+        short3 = [(0, "low", 100), (10, "high", 130), (20, "low", 120),
+                  (30, "high", 125), (40, "low", 122), (50, "high", 180)]
+        assert label_impulse(short3) is None      # 파동3(5) 이 최단
+        # 파동3 끝(135)이 파동1 끝(140)을 못 넘음 → 정석상 임펄스 아님
+        no_exceed = [(0, "low", 100), (10, "high", 140), (20, "low", 120),
+                     (30, "high", 135), (40, "low", 125), (50, "high", 200)]
+        assert label_impulse(no_exceed) is None
+        assert label_impulse(self._textbook_impulse()[:5]) is None   # 피벗 부족
+
+    def test_diagonal_allowed_but_wave4_beyond_wave2_rejected(self):
+        """정석: 파동4 겹침은 다이애고널(쐐기)로 인정하되, 그 경우에도 파동4 는
+        파동2 의 끝을 넘어설 수 없다. 초기 구현엔 이 제약이 없었다."""
+        from bot.elliott_fib import label_impulse
+        ok = [(0, "low", 100), (10, "high", 120), (20, "low", 112),
+              (30, "high", 145), (40, "low", 118), (50, "high", 160)]
+        w = label_impulse(ok)
+        assert w and w["diagonal"] is True
+        assert w["rules"]["wave4_no_overlap"] is False
+        assert w["confidence"] < 1.0
+        # 파동4(110) 가 파동2 끝(112) 아래 → 다이애고널로도 불인정
+        bad = [(0, "low", 100), (10, "high", 120), (20, "low", 112),
+               (30, "high", 145), (40, "low", 110), (50, "high", 160)]
+        assert label_impulse(bad) is None
+
+    def test_truncated_fifth_is_valid_but_flagged(self):
+        """정석: 파동5 가 파동3 끝을 못 넘는 '절단 5파'는 유효한 형태다.
+        '5파는 반드시 신고점'이라는 순진한 가정이 자동 카운팅의 흔한 오답."""
+        from bot.elliott_fib import label_impulse
+        tr = [(0, "low", 100), (10, "high", 120), (20, "low", 107.64),
+              (30, "high", 140), (40, "low", 127.64), (50, "high", 138)]
+        t = label_impulse(tr)
+        assert t and t["truncated"] is True
+        assert t["confidence"] < 1.0        # 유효하되 덜 전형적
+
+    def test_down_impulse_symmetric(self):
+        """부호 정규화 — 하락 임펄스도 상승과 동일 점수(방향만 다름)."""
+        from bot.elliott_fib import label_impulse
+        inv = [(i, ("high" if k == "low" else "low"), 300 - p)
+               for i, k, p in self._textbook_impulse()]
+        d = label_impulse(inv)
+        assert d and d["dir"] == "down" and d["confidence"] == 1.0
+
+    def test_impulse_legs_not_mislabeled_as_correction(self):
+        """회귀 고정(2026-07-29 스모크 실측): 진행 중인 임펄스의 파동2·3·4 가
+        A·B·C 조정으로 오라벨링되던 버그(B/A=2.618 로 기대비율을 크게 빗나갔는데
+        C/A 만 맞아 confidence 0.5 로 라벨이 붙음). 지금은 B/A 가 어떤 조정 패턴
+        밴드에도 안 들어가면 그 시점에 탈락한다."""
+        from bot.elliott_fib import label_correction
+        false_corr = [(10, "high", 120.0), (20, "low", 107.64),
+                      (30, "high", 140.0), (40, "low", 127.64)]
+        assert label_correction(false_corr) is None
+
+    def _corr(self, b_ratio, c_ratio, start=200.0, alen=50.0):
+        from bot.elliott_fib import label_correction
+        a = start - alen
+        b = a + b_ratio * alen
+        c = b - c_ratio * alen
+        return label_correction([(0, "high", start), (10, "low", a),
+                                 (20, "high", b), (30, "low", c)])
+
+    def test_correction_taxonomy_matches_mainstream_bands(self):
+        """정석(EWI) B 되돌림 임계로 패턴을 먼저 분류 — 초기 구현은 B/A·C/A 를
+        좁은 값 집합에 대조만 해 분류 개념이 없었다."""
+        z = self._corr(0.618, 1.0)
+        assert z and z["pattern"] == "zigzag" and z["confidence"] == 1.0
+        assert z["dir"] == "down" and z["irregular"] is False
+        assert [x["label"] for x in z["labels"]] == ["0", "A", "B", "C"]
+        assert self._corr(1.0, 1.0)["pattern"] == "flat_regular"
+        assert self._corr(1.2, 1.618)["pattern"] == "flat_expanded"
+        # 확장 플랫인데 C 가 A 의 끝에 못 미치면 러닝 플랫
+        assert self._corr(1.2, 0.5)["pattern"] == "flat_running"
+
+    def test_correction_ratio_miss_lowers_confidence_not_rejected(self):
+        """'규칙 vs 지침' — B 가 패턴 밴드에 들면 분류는 성립하고, C 비율이
+        빗나가면 탈락이 아니라 confidence 만 떨어진다."""
+        # C/A=1.25 는 목표 1.0(허용 ~1.15) 과 1.618(허용 ~1.375) 사이 빈 구간
+        c = self._corr(0.618, 1.25)      # 지그재그 밴드 O, C/A 는 목표에서 벗어남
+        assert c and c["pattern"] == "zigzag"
+        assert c["ratios"]["C/A"]["hit"] is False and c["confidence"] == 0.5
+
+    def _synth_series(self, pts, per=10):
+        t, h, l, c = [], [], [], []
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            for s in range(per):
+                v = a + (b - a) * s / per
+                t.append("2026-%03d" % (len(t) + 1))
+                h.append(v); l.append(v); c.append(v)
+        t.append("2026-999"); h.append(pts[-1]); l.append(pts[-1]); c.append(pts[-1])
+        return t, h, l, c
+
+    def test_analyze_waves_end_to_end(self):
+        from bot.elliott_fib import analyze_waves
+        piv = [p for _, _, p in self._textbook_impulse()]
+        # 5파 뒤에 되돌림을 붙여야 마지막 고점이 피벗으로 '확정'된다.
+        t, h, l, c = self._synth_series(piv + [piv[-1] - 0.382 * (piv[-1] - piv[-2])])
+        res = analyze_waves(t, h, l, c)
+        assert res and res["wave"]["kind"] == "impulse"
+        assert res["wave"]["confidence"] == 1.0
+        assert all("time" in x for x in res["wave"]["labels"])
+        # 기준 다리 = 마지막으로 '완성된' 스윙(진행 중 되돌림은 미확정이라 제외)
+        assert res["leg"]["dir"] == "up"
+        assert abs(res["leg"]["to"] - piv[-1]) < 1e-6
+        assert len(res["retracements"]) == 5 and len(res["projections"]) == 4
+        # 5파 완성 → 이어질 조정의 되돌림 목표(전체 0→5 구간)도 제공
+        ct = res["wave"]["correction_targets"]
+        assert [x["ratio"] for x in ct] == [0.382, 0.5, 0.618]
+
+    def test_analyze_waves_graceful_on_thin_input(self):
+        """데이터 부족·평탄 시리즈는 None → 호출부가 오버레이를 그냥 안 그림."""
+        from bot.elliott_fib import analyze_waves
+        assert analyze_waves([1, 2], [1, 2], [1, 2], [1, 2]) is None
+        flat = ([f"d{i}" for i in range(60)], [100.0] * 60, [100.0] * 60, [100.0] * 60)
+        assert analyze_waves(*flat) is None      # ATR=0 → 스윙 없음
+
+    def test_wiring_chart_payload_and_dashboard(self):
+        """Help/Dashboard 등록 규칙 — 페이로드 생성 · 버튼(양쪽 대시보드) ·
+        렌더 코드 · ℹ️가이드 문구가 같은 커밋에 전부 배선됐는지."""
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "from bot.elliott_fib import analyze_waves" in cd
+        assert 'payload["elliott"] = ef' in cd, "차트 페이로드에 미주입"
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db.count('data-ind="fib"') == 2, "피보나치 버튼이 양쪽 대시보드에 없음"
+        assert db.count('data-ind="wave"') == 2, "엘리엇 버튼이 양쪽 대시보드에 없음"
+        assert "fib:false" in db and "wave:false" in db, "IND_DEFAULT 기본 OFF 미등록"
+        assert "ind.fib && d.elliott" in db, "피보나치 렌더 미배선"
+        assert "ind.wave && d.elliott" in db, "엘리엇 렌더 미배선"
+        # ℹ️가이드: 동작 설명 + 주관성 경고(확정 판단 금지)
+        assert "확정 판단 금지" in db and "피보나치" in db and "엘리엇" in db
 
 
 # ─────────────────────────────────────────────────────────────────────────
