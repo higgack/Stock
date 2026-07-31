@@ -111,6 +111,46 @@ class ProbeModeTests(unittest.TestCase):
                                side_effect=RuntimeError("boom")):
             self.assertTrue(sc._probe_says_skip("k"))    # 정기 풀스윕이 안전망
 
+    def test_probe_alert_includes_http_status_code(self):
+        """회귀 고정(사용자 요청 2026-07-31): probe 오류 알림이 예외 클래스명
+        ("HTTPError")만 찍어서 서버 일시장애(5xx)·서비스키 문제(401/403)·
+        트래픽제한(429)을 구분할 수 없었다. urllib.error.HTTPError 는 실제
+        상태코드+사유를 붙이고, 코드가 없는 예외(URLError/timeout 등)는
+        클래스명만 유지."""
+        import urllib.error
+        self.assertEqual(
+            sc._exc_detail(urllib.error.HTTPError("u", 503, "Service Unavailable",
+                                                  {}, None)),
+            "HTTPError 503 (Service Unavailable)")
+        self.assertEqual(
+            sc._exc_detail(urllib.error.HTTPError("u", 401, "Unauthorized",
+                                                  {}, None)),
+            "HTTPError 401 (Unauthorized)")
+        self.assertEqual(sc._exc_detail(TimeoutError("timed out")), "TimeoutError")
+        self.assertEqual(sc._exc_detail(urllib.error.URLError("no route")), "URLError")
+        self.assertEqual(sc._exc_detail(None), "Unknown")
+
+    def test_probe_failure_alert_uses_exc_detail(self):
+        """probe 2회 실패 시 알림 본문에 _exc_detail 결과(상태코드 포함)가
+        실제로 실려 보내지는지 — 헬퍼만 만들고 호출부에서 안 쓰는 배선누락 방지.
+        run_ledger.bump 는 실제 홈 디렉토리 JSON 을 건드리므로(날짜별 누적이라
+        같은 날 재실행 시 dedup 반환값이 1이 아닐 수 있음) 직접 모킹해 격리."""
+        from unittest import mock
+        from trade import run_ledger
+        import urllib.error
+        self._tmp()
+        sent = []
+        with mock.patch.object(sc.customs_scan, "fetch_chapter",
+                               side_effect=urllib.error.HTTPError(
+                                   "u", 503, "Service Unavailable", {}, None)), \
+             mock.patch.object(sc, "_send_alert", side_effect=lambda body: sent.append(body) or True), \
+             mock.patch.object(run_ledger, "bump", return_value=1), \
+             mock.patch.object(sc, "time") as mtime:
+            mtime.sleep = lambda *_: None
+            sc._probe_fingerprint("k")
+        self.assertTrue(sent, "probe_fail 알림이 안 보내짐")
+        self.assertIn("HTTPError 503 (Service Unavailable)", sent[0])
+
     def test_units_and_wiring(self):
         from pathlib import Path as _P
         root = _P(sc.__file__).resolve().parents[2]

@@ -32,6 +32,7 @@ import logging
 import os
 import sys
 import time
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -231,6 +232,19 @@ _PROBE_MARKER = Path.home() / ".trade" / ".scan_probe.json"
 _PROBE_RUN_GUARD = Path.home() / ".trade" / ".scan_probe_run.ts"
 
 
+def _exc_detail(exc: Exception | None) -> str:
+    """예외를 알림에 쓸 한 줄로 — 그냥 클래스명("HTTPError")만으로는 서버
+    일시장애(5xx)·서비스키 문제(401/403)·트래픽제한(429)을 구분할 수 없어
+    사용자가 재발 시 원인을 못 짚었다(2026-07-31 첫 발생 후 개선 요청).
+    urllib.error.HTTPError 는 실제 상태코드+사유를 붙이고, 그 외(URLError·
+    timeout 등 코드가 없는 예외)는 클래스명만."""
+    if exc is None:
+        return "Unknown"
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTPError {exc.code} ({exc.reason})"
+    return type(exc).__name__
+
+
 def _probe_fingerprint(key: str) -> dict | None:
     """1콜 — 85류(전기전자, 최대 챕터·매월 필수 존재) 최근 2개월 1페이지.
     지문 = 최신 실월(미래 0행 제외) + 그 월 수출입 합. 관세청이 새 월을
@@ -257,7 +271,7 @@ def _probe_fingerprint(key: str) -> dict | None:
         try:
             from trade import run_ledger
             if run_ledger.bump("probe_fail") == 1:   # 일 1회 dedup
-                _send_alert(f"❌ <b>관세청 probe 오류</b>\n{type(last_exc).__name__}"
+                _send_alert(f"❌ <b>관세청 probe 오류</b>\n{_exc_detail(last_exc)}"
                             " — 정기 4회/일 풀스윕이 안전망으로 계속 작동")
         except Exception:
             pass
