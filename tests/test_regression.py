@@ -2536,6 +2536,30 @@ class TestTradeLevelParser:
         assert "correction_targets" in _CHART_JS, "조정 목표 미렌더"
         assert "조정목표" in _CHART_JS
 
+    def test_fib_wave_explanation_panel_wired(self):
+        """차트엔 선/번호만 찍혀 어느 선이 몇 %인지·무슨 패턴을 몇 % 적합도로
+        잡았는지 알 수 없었다(사용자 지적 2026-07-31). 차트 아래 설명 패널에
+        기준 다리·레벨 가격·현재 되돌림 위치·패턴·적합도·무효화 가격을 풀어쓴다."""
+        from bot.dashboard import _CHART_JS, _lookup_chart_html, _render_chart_section
+        assert "renderFibWavePanel" in _CHART_JS, "설명 패널 렌더러 미배선"
+        # 켜진 지표에 대해서만 표시(둘 다 꺼져 있으면 패널 숨김)
+        assert "!(ind.fib || ind.wave)" in _CHART_JS
+        for token in ["기준 다리", "되돌림 구간을", "100% 초과", "적합도",
+                      "무효화 가격", "확정 판단 금지", "맞을 확률이 아닙니다"]:
+            assert token in _CHART_JS, f"설명 패널에 '{token}' 누락"
+        # 패턴 한글명 매핑(zigzag→지그재그 등) — 영문 키 그대로 노출 방지
+        for ko in ["지그재그", "정규 플랫", "확장 플랫", "러닝 플랫"]:
+            assert ko in _CHART_JS, f"조정 패턴 한글명 '{ko}' 누락"
+        # 패널 div 가 양쪽 대시보드에 있어야(한쪽만 갱신하는 드리프트 방지)
+        assert 'id="chart-fibwave"' in _render_chart_section(
+            {"ticker": "AAPL", "price_chart": {"currency": "$", "decimals": 2,
+             "times": ["2025-06-01", "2025-06-02"], "close": [1.0, 2.0]}})
+        assert 'id="chart-fibwave"' in _lookup_chart_html("AAPL")
+        # ℹ️가이드도 패널 존재를 안내해야(설명-동작 동기화)
+        from bot.dashboard import _render_chart_section as _rcs
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db.count("차트 아래 설명 패널") >= 2, "가이드 두 항목에 패널 안내 누락"
+
     def test_series_fallback_preserves_interval_fallback_notice(self):
         """회귀 고정(독립 리뷰 2026-07-30, MINOR): 야후가 비어 네이버/KIS 일봉
         폴백으로 빠지는 분기에서 interval_fallback 이 유실돼, '조용한 대체 금지'
