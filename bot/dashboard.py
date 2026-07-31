@@ -2979,14 +2979,16 @@ _CHART_JS = """
     // 고점 피벗은 캔들 위, 저점 피벗은 아래에 붙여 캔들을 가리지 않게 한다.
     if (ind.wave && d.elliott && d.elliott.wave && d.elliott.wave.labels) {
       var wv = d.elliott.wave;
+      // 변수명 wlb — 같은 함수 스코프의 캔들 루프가 이미 lb 를 쓴다(var 는 함수
+      // 스코프라 재선언이 섀도잉 아닌 덮어쓰기가 된다).
       for (var wi = 0; wi < wv.labels.length; wi++) {
-        var lb = wv.labels[wi];
-        if (!lb.time || lb.time < firstT || lb.time > lastT) continue;
+        var wlb = wv.labels[wi];
+        if (!wlb.time || wlb.time < firstT || wlb.time > lastT) continue;
         mk.push({
-          time: lb.time,
-          position: (lb.kind === 'high') ? 'aboveBar' : 'belowBar',
+          time: wlb.time,
+          position: (wlb.kind === 'high') ? 'aboveBar' : 'belowBar',
           color: (wv.kind === 'impulse') ? '#d9a441' : '#8b5cf6',
-          shape: 'circle', text: lb.label, size: 1
+          shape: 'circle', text: wlb.label, size: 1
         });
       }
     }
@@ -3033,16 +3035,29 @@ _CHART_JS = """
       priceLine(markers.target, '#3ec46d', '목표', 2, false);
     }
     // 피보나치 되돌림 — '마지막으로 완성된 스윙 다리'(진행 중 구간 제외) 기준.
-    // 38.2/50/61.8% (CS 튜토리얼 p28~p30). 0%·100% 앵커도 함께 그려 기준 다리를
-    // 눈으로 확인할 수 있게 한다.
-    if (ind.fib && d.elliott && d.elliott.retracements) {
+    // 23.6/38.2/50/61.8/78.6% (표준 세트). 0%·100% 앵커도 그려 기준 다리를 눈으로
+    // 확인할 수 있게 한다. ⚠️ 앵커 방향: 되돌림은 다리 끝(to)에서 시작점(from)
+    // 쪽으로 되돌아가므로 **0%=to, 100%=from** 이다(산식 end-span×r 과 일치).
+    // 초기 구현이 이를 뒤집어 라벨링했다(독립 리뷰 발견 2026-07-30).
+    if (ind.fib && d.elliott && d.elliott.retracements && d.elliott.retracements.length) {
       var lg = d.elliott.leg || {};
-      priceLine(lg.from, 'rgba(217,164,65,0.45)', 'Fib 0%', 3, false);
-      priceLine(lg.to,   'rgba(217,164,65,0.45)', 'Fib 100%', 3, false);
+      priceLine(lg.to,   'rgba(217,164,65,0.45)', 'Fib 0%', 3, false);
+      priceLine(lg.from, 'rgba(217,164,65,0.45)', 'Fib 100%', 3, false);
       for (var fi = 0; fi < d.elliott.retracements.length; fi++) {
         var fr = d.elliott.retracements[fi];
         priceLine(fr.price, 'rgba(217,164,65,0.9)',
                   'Fib ' + (fr.ratio * 100).toFixed(1) + '%', 2, false);
+      }
+    }
+    // 5파 완성 시 이어질 조정의 되돌림 목표 — 엘리엇 토글에 묶는다(피보나치
+    // 토글은 되돌림선 담당). 가이드가 이 값을 약속하는데 그리지 않으면
+    // 설명-동작 out-of-sync 가 된다.
+    if (ind.wave && d.elliott && d.elliott.wave
+        && d.elliott.wave.correction_targets) {
+      var ct = d.elliott.wave.correction_targets;
+      for (var ci = 0; ci < ct.length; ci++) {
+        priceLine(ct[ci].price, 'rgba(139,92,246,0.75)',
+                  '조정목표 ' + (ct[ci].ratio * 100).toFixed(1) + '%', 3, false);
       }
     }
     if (!(preserve && prevRange)) chart.timeScale().fitContent();
@@ -3427,7 +3442,11 @@ _CHART_JS = """
       if (kind === 'interval') curInterval = val;
       else if (kind === 'range') {
         curRange = val;
-        var autoMap = {'1d':'5m','1wk':'15m','1mo':'1h'};
+        // 범위 → 최적 봉 자동 매핑. 국내(.KS/.KQ)는 네이버 분봉이 '당일치'뿐이라
+        // 1주일/1개월까지 분봉으로 매핑하면 그 범위가 통째로 오늘 하루로 접힌다
+        // (독립 리뷰 발견 2026-07-30) → 국내는 '1일' 만 분봉으로 매핑한다.
+        var isKR = /\\.(KS|KQ)$/i.test(ticker);
+        var autoMap = isKR ? {'1d':'5m'} : {'1d':'5m','1wk':'15m','1mo':'1h'};
         if (autoMap[val]) curInterval = autoMap[val];
         else if (['5m','15m','30m','1h'].indexOf(curInterval) >= 0) curInterval = '1d';
       }

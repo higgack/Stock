@@ -2489,6 +2489,64 @@ class TestTradeLevelParser:
         r = cd.fetch_chart_payload("005930.KS", interval="30m", period="1y")
         assert r is None or isinstance(r, dict)   # raise 하지 않는 것이 핵심
 
+    def test_all_intraday_intervals_emit_epoch_times(self):
+        """회귀 고정(독립 리뷰 2026-07-30, CRITICAL): _series_payload 의
+        `_intraday` 판정 튜플에 '30m' 이 빠져 있어 30분봉이 날짜문자열
+        ('2026-07-31')로 나갔다. 같은 세션의 봉이 전부 같은 시간값이 되어
+        lightweight-charts 의 '시간 오름차순' 요구를 깨고 차트가 빈다.
+        분봉 interval 집합과 epoch 판정 집합은 항상 일치해야 한다."""
+        import re as _re
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        m = _re.search(r"_intraday = interval in \(([^)]*)\)", src)
+        assert m, "_intraday 판정식 못 찾음"
+        epoch_ivs = set(_re.findall(r'"([^"]+)"', m.group(1)))
+        from bot.chart_data import _INTRADAY_INTERVALS
+        assert _INTRADAY_INTERVALS <= epoch_ivs, (
+            f"분봉인데 epoch 시간축을 안 쓰는 interval: "
+            f"{_INTRADAY_INTERVALS - epoch_ivs}")
+
+    def test_kr_range_buttons_do_not_collapse_to_today(self):
+        """회귀 고정(독립 리뷰 2026-07-30, MAJOR): 클라이언트가 범위→봉을
+        자동매핑(1주일→15m, 1개월→1h)하는데, 국내는 네이버 분봉이 당일치뿐이라
+        그대로 두면 1주일·1개월 범위가 통째로 '오늘'로 접혔다. 국내는 '1일' 만
+        분봉으로 매핑한다."""
+        from bot.dashboard import _CHART_JS
+        assert "isKR ? {'1d':'5m'} :" in _CHART_JS, \
+            "국내 range 자동매핑이 여전히 1주일/1개월까지 분봉으로 감"
+        assert r"/\.(KS|KQ)$/i.test(ticker)" in _CHART_JS, "국내 판정 정규식 누락"
+
+    def test_fib_anchor_labels_match_retracement_math(self):
+        """회귀 고정(독립 리뷰 2026-07-30, MAJOR): 되돌림은 다리 끝(to)에서
+        시작점(from) 쪽으로 되돌아가므로 0%=to, 100%=from 이다. 초기 구현이
+        이를 뒤집어 라벨링해, 상승 다리에서 0% 가 저점에 찍혔다."""
+        from bot.elliott_fib import fib_retracement_levels
+        from bot.dashboard import _CHART_JS
+        lv = {d["ratio"]: d["price"] for d in fib_retracement_levels(100, 200)}
+        # 산식 확인: 작은 비율일수록 다리 끝(200)에 가깝다
+        assert lv[0.236] > lv[0.786], "되돌림 산식 방향이 바뀜"
+        i0 = _CHART_JS.index("'Fib 0%'")
+        i100 = _CHART_JS.index("'Fib 100%'")
+        assert "lg.to" in _CHART_JS[i0 - 40:i0], "0% 앵커가 leg.to 가 아님"
+        assert "lg.from" in _CHART_JS[i100 - 40:i100], "100% 앵커가 leg.from 이 아님"
+
+    def test_guide_promised_correction_targets_are_rendered(self):
+        """가이드가 '5파 완성 시 조정 목표를 계산한다' 고 약속하므로 실제로
+        그려야 한다(설명-동작 out-of-sync 방지). 엘리엇 토글에 묶는다."""
+        from bot.dashboard import _CHART_JS
+        assert "correction_targets" in _CHART_JS, "조정 목표 미렌더"
+        assert "조정목표" in _CHART_JS
+
+    def test_series_fallback_preserves_interval_fallback_notice(self):
+        """회귀 고정(독립 리뷰 2026-07-30, MINOR): 야후가 비어 네이버/KIS 일봉
+        폴백으로 빠지는 분기에서 interval_fallback 이 유실돼, '조용한 대체 금지'
+        가 그 경로에서만 되살아났다."""
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "def _fallback_with_notice()" in src
+        assert 'fb["interval_fallback"] = _iv_fallback' in src
+        # 원본 _fetch_series_fallback 직접 return 이 남아 있으면 안내가 새어나감
+        assert "return _fetch_series_fallback(ticker, period)" not in src, \
+            "폴백 안내를 건너뛰는 직접 return 이 남아 있음"
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8c) 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29)

@@ -136,7 +136,11 @@ def _series_payload(
         except Exception:
             return None
 
-    _intraday = interval in ("1m", "5m", "15m", "1h")
+    # 인트라데이면 시간축을 epoch 정수로(같은 날 여러 봉이라 날짜문자열이면 시각이
+    # 전부 동일해져 lightweight-charts 의 '시간 오름차순' 요구를 깬다 → 빈 차트).
+    # ⚠️ 새 분봉 interval 추가 시 이 튜플도 같이 갱신할 것 — 30m 을 여기 빠뜨려
+    # 30분봉이 날짜문자열로 나가던 버그가 있었다(독립 리뷰 발견 2026-07-30).
+    _intraday = interval in ("1m", "5m", "15m", "30m", "1h")
     if _intraday:
         import calendar as _cal
         _times = [int(_cal.timegm(d.timetuple())) for d in close.index]
@@ -809,6 +813,19 @@ def fetch_chart_payload(
             # 일봉 폴백 + interval_fallback 안내를 타게 둔다.
     elif period in _PERIOD_INTERVAL_MAP:
         interval = _PERIOD_INTERVAL_MAP[period]
+    # 분봉→일봉 폴백 사실. try 밖에서 초기화해야 예외 경로(아래 except)에서도
+    # 안전하게 참조된다.
+    _iv_fallback = None
+
+    def _fallback_with_notice():
+        """야후 실패/빈결과 → 네이버·KIS 일봉. 분봉 요청이었다면 폴백 사실을
+        같이 실어 보낸다 — 안 그러면 '조용한 대체' 가 이 분기에서만 되살아난다
+        (독립 리뷰 발견 2026-07-30)."""
+        fb = _fetch_series_fallback(ticker, period)
+        if fb is not None and _iv_fallback:
+            fb["interval_fallback"] = _iv_fallback
+        return fb
+
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
@@ -836,7 +853,6 @@ def fetch_chart_payload(
         # 알 수 없었다(사용자 지적 2026-07-29). silent 동작변경 금지.
         _MIN_INTRADAY = {"5m": 20, "15m": 10, "30m": 10, "1h": 10}
         _got = len(hist) if hist is not None else 0
-        _iv_fallback = None
         if interval in _MIN_INTRADAY and _got < _MIN_INTRADAY[interval]:
             _iv_fallback = {"requested": interval, "applied": "1d", "bars": _got}
             interval = "1d"
@@ -850,10 +866,10 @@ def fetch_chart_payload(
                     auto_adjust=True,
                 )
         if hist is None or len(hist) < 2:
-            return _fetch_series_fallback(ticker, period)   # 야후 빈 → 네이버/KIS
+            return _fallback_with_notice()      # 야후 빈 → 네이버/KIS 일봉
         close = hist["Close"].dropna()
         if len(close) < 2:
-            return _fetch_series_fallback(ticker, period)
+            return _fallback_with_notice()
         currency, decimals = _currency_for(ticker)
         vol = hist["Volume"].reindex(close.index) if "Volume" in hist else None
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
@@ -892,7 +908,7 @@ def fetch_chart_payload(
             "chart_data: fetch_chart_payload failed %s %s %s: %s",
             ticker, interval, period, exc,
         )
-        return _fetch_series_fallback(ticker, period)   # 야후 실패 → 네이버/KIS
+        return _fallback_with_notice()   # 야후 실패 → 네이버/KIS(+폴백 안내 보존)
 
 
 # Trade-plan price levels emitted in full_report by the Trader / PM:
