@@ -11092,6 +11092,22 @@ class TestNaverCommodityCharts:
         assert "_fred_fetch_series" in build_src, "macro FRED 헤드라인 spot 통일 누락"
         assert "_fred_monthly(sid)" in build_src, "FRED 월간 스파크라인 유지 누락"
 
+    def test_macro_dxy_replaces_cfnai(self):
+        # 사용자 2026-07-31: 미국 경기활동(CFNAI) 카드 제거 + 글로벌 지표 맨 앞에
+        # 달러인덱스(DXY) 추가. DXY 는 네이버 reutersCode 미검증 상태라
+        # _MACRO_NAVER 매핑 없이 기존 yf 폴백 경로(값=chart_spark[-1])로 채워진다
+        # (추측 네이버 코드로 빈 카드가 되는 걸 방지 — 2026-06-23 ECOS saga 교훈).
+        import bot.macro_snapshot as m
+        gsids = [sid for _, _, _, _, sid, _ in m.GLOBAL]
+        assert "CFNAI" not in gsids, "CFNAI 카드가 아직 남아있음"
+        assert "DX-Y.NYB" in gsids, "DXY 카드 누락"
+        assert m.GLOBAL[0][4] == "DX-Y.NYB", "DXY 가 글로벌 지표 맨 앞이 아님"
+        assert m.GLOBAL[0][3] == "yf", "DXY src 는 yf 여야 함"
+        assert "DX-Y.NYB" not in m._MACRO_NAVER, (
+            "DXY 는 네이버 코드 미검증 — 매핑 추가 시 VM 확인 후 이 assert 갱신")
+        labels = [lbl for _, lbl, *_ in m.GLOBAL]
+        assert "미국 경기활동(CFNAI)" not in labels
+
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
         # 매 regen(5분) 240콜 재poke. 빈 결과도 캐시 + 회로차단 게이트 + rate-limit trip.

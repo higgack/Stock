@@ -512,12 +512,13 @@ help 와 마찬가지로 public-facing spec 이므로 out-of-sync = 버그.
   한국 CPI(cpi_idx) · USD/KRW(yf USDKRW=X) · 한국 수출(ecos export_amt 901Y118/T002 천$→억$) ·
   한국 수입(ecos import_amt 901Y118/T004) · 경상수지(ecos current_account 301Y017/SA000 백만$→억$) ·
   외환보유액(ecos fx_reserve 732Y001/99 천$→억$) · 한국 GDP(ecos kr_gdp 902Y015/KOR 분기%).
-- **글로벌 (30)**: 미국 2Y(DGS2) · 미국 10Y(DGS10) · 미국 장단기금리차(T10Y2Y) ·
-  미국 하이일드(BAMLH0A0HYM2) · 미국 CPI(CPIAUCSL) · 미국 PPI(PPIFIS Final Demand) ·
-  미국 실업률(UNRATE) · 미국 경기활동(CFNAI) · 미국 GDP(A191RL1Q225SBEA 분기) ·
-  S&P 500 · NASDAQ · VIX · 필라델피아 반도체(SOX) · WTI · 브렌트유 · 천연가스 · 금 · 은 ·
-  구리 · 알루미늄 합금 · 니켈 · 옥수수 · 대두 · 소맥 · 돈육 · 커피 · 면화 ·
-  비트코인 · 이더리움 · 솔라나. (미국 FFR 제거 2026-06-23.)
+- **글로벌 (30)**: 달러인덱스(DXY, DX-Y.NYB — `_MACRO_NAVER` 미매핑, yf 폴백) · 미국 2Y(DGS2) ·
+  미국 10Y(DGS10) · 미국 장단기금리차(T10Y2Y) · 미국 하이일드(BAMLH0A0HYM2) ·
+  미국 CPI(CPIAUCSL) · 미국 PPI(PPIFIS Final Demand) · 미국 실업률(UNRATE) ·
+  미국 GDP(A191RL1Q225SBEA 분기) · S&P 500 · NASDAQ · VIX · 필라델피아 반도체(SOX) ·
+  WTI · 브렌트유 · 천연가스 · 금 · 은 · 구리 · 알루미늄 합금 · 니켈 · 옥수수 · 대두 ·
+  소맥 · 돈육 · 커피 · 면화 · 비트코인 · 이더리움 · 솔라나.
+  (미국 FFR 제거 2026-06-23. 미국 경기활동(CFNAI) 제거 + 달러인덱스 복원 2026-07-31.)
 
 ### B. 글로벌 시장 스냅샷 (`bot/market_overview.py` — `ALL_CARDS` 9 섹션 + `FRED_INDICATORS`)
 별개 표면(홈 스냅샷). 카드 = `(label, "src:code")` — nvd/nvi/nvx/nvk/nv/nvc/nvf/nve = 네이버 경로.
