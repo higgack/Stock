@@ -2752,6 +2752,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     </div>
     <div id="chart-caption" class="chart-caption"></div>
     <script type="application/json" id="chart-data">{payload}</script>
+    <div id="chart-fibwave" class="chart-disc" style="display:none"></div>
     <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
       상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (새로고침 시 기본값으로 회귀)
@@ -2800,8 +2801,8 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
           <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12일EMA−26일EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9일EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>. ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음.</li>
-          <li><span class="k" style="color:#d9a441">피보나치</span> — <b>마지막으로 완성된 스윙 다리</b>(직전 고점↔저점)를 기준으로 되돌림선 <b>23.6 · 38.2 · 50 · 61.8 · 78.6%</b> + 0%/100% 앵커(옅은 선). 조정이 멈추기 쉬운 가격대를 보는 용도로, TradingView·thinkorswim 기본값과 같은 표준 세트입니다. 유래: 23.6%=0.618³ · 38.2%=0.618² · 61.8%=황금비(1/φ) · 78.6%=√0.618, <b>50%는 피보나치 비율이 아니라</b> 다우 이론의 '절반쯤 되돌린다'는 관찰이 관행으로 굳은 것입니다. 실무에선 61.8% 부근을 되돌림이 멈추기 쉬운 구간으로, 78.6%를 확실히 깨면 직전 상승/하락 구조가 무너진 것으로 보는 편(관례이지 증명된 규칙은 아님). 기준 다리는 ATR×1.5 이상 움직인 구간만 스윙으로 인정(zigzag)하며 고가·저가(꼬리 포함)를 앵커로 씁니다. <b>지금 진행 중인 마지막 구간은 아직 스윙으로 확정되지 않아 기준에서 제외</b>됩니다. <b>기본 OFF</b>.</li>
-          <li><span class="k" style="color:#d9a441">엘리엇</span> — 확정된 스윙 피벗 위에 파동 번호를 붙입니다. <span style="color:#d9a441">주황 ●</span>=5파 임펄스(0·1·2·3·4·5), <span style="color:#8b5cf6">보라 ●</span>=조정(0·A·B·C). <b>규칙과 지침을 구분</b>해서 판정합니다 — <b>규칙</b>(위반하면 라벨 자체를 안 붙임): 파동2가 파동1 시작점을 깨지 않음 · 파동3이 파동1 끝을 넘어서고 1·3·5 중 최단이 아님 · 파동4가 파동1 영역에 들어가지 않음(단 <b>다이애고널</b>은 겹침이 정상이라 예외로 인정하되 파동4가 파동2 끝을 넘으면 탈락). <b>지침</b>(맞으면 확신도↑, 틀려도 탈락 아님): 파동 간 피보나치 비율 W2/W1=0.382·0.5·0.618·0.786, W3/W1=1.618·2.618·4.236, W4/W3=0.236·0.382·0.5, W5=0→3구간의 0.382·0.618·1.0·1.618(또는 파동1의 0.618·1.0). 조정은 B가 A를 되돌린 비율로 <b>지그재그(38~79%) · 정규 플랫(90~104%) · 확장/러닝 플랫(105%~)</b>을 구분합니다. 5파가 완성되면 이어질 조정의 되돌림 목표(전체 구간의 38.2~61.8%)도 함께 계산합니다. 어느 밴드에도 안 맞으면 <b>아무 라벨도 안 붙습니다</b>(억지 라벨링 금지). ⚠️ 파동 세기는 본질적으로 주관적이라 분석가마다 다르게 세고, 확정 피벗도 이후 데이터로 재해석될 수 있습니다 — <b>참고용이며 확정 판단 금지</b>. <b>기본 OFF</b>.</li>
+          <li><span class="k" style="color:#d9a441">피보나치</span> — <b>마지막으로 완성된 스윙 다리</b>(직전 고점↔저점)를 기준으로 되돌림선 <b>23.6 · 38.2 · 50 · 61.8 · 78.6%</b> + 0%/100% 앵커(옅은 선). 조정이 멈추기 쉬운 가격대를 보는 용도로, TradingView·thinkorswim 기본값과 같은 표준 세트입니다. 유래: 23.6%=0.618³ · 38.2%=0.618² · 61.8%=황금비(1/φ) · 78.6%=√0.618, <b>50%는 피보나치 비율이 아니라</b> 다우 이론의 '절반쯤 되돌린다'는 관찰이 관행으로 굳은 것입니다. 실무에선 61.8% 부근을 되돌림이 멈추기 쉬운 구간으로, 78.6%를 확실히 깨면 직전 상승/하락 구조가 무너진 것으로 보는 편(관례이지 증명된 규칙은 아님). 기준 다리는 ATR×1.5 이상 움직인 구간만 스윙으로 인정(zigzag)하며 고가·저가(꼬리 포함)를 앵커로 씁니다. <b>지금 진행 중인 마지막 구간은 아직 스윙으로 확정되지 않아 기준에서 제외</b>됩니다. 차트엔 선만 그어지므로 <b>차트 아래 설명 패널</b>에 기준 다리(날짜·가격)·각 레벨 가격·현재가가 몇 % 되돌린 지점인지가 함께 표시됩니다. <b>기본 OFF</b>.</li>
+          <li><span class="k" style="color:#d9a441">엘리엇</span> — 확정된 스윙 피벗 위에 파동 번호를 붙입니다. <span style="color:#d9a441">주황 ●</span>=5파 임펄스(0·1·2·3·4·5), <span style="color:#8b5cf6">보라 ●</span>=조정(0·A·B·C). <b>규칙과 지침을 구분</b>해서 판정합니다 — <b>규칙</b>(위반하면 라벨 자체를 안 붙임): 파동2가 파동1 시작점을 깨지 않음 · 파동3이 파동1 끝을 넘어서고 1·3·5 중 최단이 아님 · 파동4가 파동1 영역에 들어가지 않음(단 <b>다이애고널</b>은 겹침이 정상이라 예외로 인정하되 파동4가 파동2 끝을 넘으면 탈락). <b>지침</b>(맞으면 확신도↑, 틀려도 탈락 아님): 파동 간 피보나치 비율 W2/W1=0.382·0.5·0.618·0.786, W3/W1=1.618·2.618·4.236, W4/W3=0.236·0.382·0.5, W5=0→3구간의 0.382·0.618·1.0·1.618(또는 파동1의 0.618·1.0). 조정은 B가 A를 되돌린 비율로 <b>지그재그(38~79%) · 정규 플랫(90~104%) · 확장/러닝 플랫(105%~)</b>을 구분합니다. 5파가 완성되면 이어질 조정의 되돌림 목표(전체 구간의 38.2~61.8%)도 함께 계산합니다. 어느 밴드에도 안 맞으면 <b>아무 라벨도 안 붙습니다</b>(억지 라벨링 금지). 차트엔 번호만 찍히므로 <b>차트 아래 설명 패널</b>에 패턴 종류·방향·적합도(%)·파동별 비율 적중 여부·<b>무효화 가격</b>(여기를 되돌리면 해석이 깨지는 가격)이 함께 표시됩니다. ⚠️ 적합도는 피보나치 비율이 얼마나 맞는지일 뿐 <b>맞을 확률이 아닙니다</b>. 파동 세기는 본질적으로 주관적이라 분석가마다 다르게 세고, 확정 피벗도 이후 데이터로 재해석될 수 있습니다 — <b>참고용이며 확정 판단 금지</b>. <b>기본 OFF</b>.</li>
           <li><span class="k">로그</span> — 세로축 로그 스케일. 긴 기간 %변동 비교에 유리.</li>
           <li><span class="k">공시</span> — 공시 마커 표시/숨김(위 '공시 마커' 참고).</li>
         </ul>
@@ -3062,6 +3063,93 @@ _CHART_JS = """
     }
     if (!(preserve && prevRange)) chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
+
+    // 피보나치·엘리엇 설명 패널 — 차트엔 선/점만 찍히고 어느 선이 몇 %인지,
+    // 무슨 패턴을 몇 %의 적합도로 잡았는지 알 수 없어 해석이 불가능했다
+    // (사용자 지적 2026-07-31). 켜진 지표에 대해서만 아래 패널에 풀어쓴다.
+    (function renderFibWavePanel(){
+      var fwEl = document.getElementById('chart-fibwave');
+      if (!fwEl) return;
+      var ef = d.elliott;
+      if (!ef || !(ind.fib || ind.wave)) { fwEl.style.display = 'none'; fwEl.innerHTML = ''; return; }
+      var dc = (d.decimals === 0) ? 0 : 2;
+      var px = (d.last_price != null) ? d.last_price : lastNonNull(d.close);
+      var out = [];
+
+      if (ind.fib && ef.retracements && ef.retracements.length) {
+        var lg = ef.leg || {};
+        var up = lg.dir === 'up';
+        var parts = ['<b>0%</b> ' + fmtPrice(lg.to, dc)];
+        for (var i = 0; i < ef.retracements.length; i++) {
+          var r = ef.retracements[i];
+          var key = (r.ratio === 0.618);   // 되돌림이 가장 잘 멈춘다고 보는 구간
+          parts.push((key ? '<b>' : '') + (r.ratio * 100).toFixed(1) + '%' + (key ? '</b>' : '')
+                     + ' ' + fmtPrice(r.price, dc));
+        }
+        parts.push('<b>100%</b> ' + fmtPrice(lg.from, dc));
+        // 현재가가 되돌림 구간의 어디쯤인지 — 0%(다리 끝) 기준 되돌린 비율.
+        var span = (lg.to - lg.from), pos = '';
+        if (span && px != null) {
+          var back = (lg.to - px) / span;      // 0=미되돌림, 1=전부 되돌림
+          if (back < 0) pos = '되돌림 구간을 <b>넘어섬</b>(다리 방향으로 더 진행)';
+          else if (back > 1) pos = '<b>100% 초과</b> — 이 다리가 통째로 무효화된 상태';
+          else pos = '현재 <b>' + (back * 100).toFixed(1) + '% 되돌림</b> 지점';
+        }
+        out.push(
+          '<div><b style="color:#d9a441">📐 피보나치 되돌림</b> — 기준 다리 '
+          + escTt(String(lg.from_time || '')) + ' ' + fmtPrice(lg.from, dc) + ' → '
+          + escTt(String(lg.to_time || '')) + ' ' + fmtPrice(lg.to, dc)
+          + ' (' + (up ? '상승' : '하락') + ')</div>'
+          + '<div style="margin-top:2px">' + parts.join(' · ') + '</div>'
+          + (pos ? '<div style="margin-top:2px">→ 현재가 ' + fmtPrice(px, dc) + ' — ' + pos + '</div>' : '')
+          + '<div class="cd-desc" style="margin-top:2px">되돌림은 다리 끝(0%)에서 시작점(100%) 쪽으로 되돌아온 정도입니다. '
+          + '61.8%는 되돌림이 멈추기 쉬운 구간으로, 78.6%를 확실히 깨면 직전 흐름이 무너진 것으로 보는 편입니다(관례).</div>');
+      }
+
+      if (ind.wave && ef.wave) {
+        var w = ef.wave, imp = (w.kind === 'impulse');
+        var PAT = { zigzag: '지그재그', flat_regular: '정규 플랫',
+                    flat_expanded: '확장 플랫', flat_running: '러닝 플랫' };
+        var head = imp
+          ? '5파 임펄스(0·1·2·3·4·5)' + (w.diagonal ? ' · <b>다이애고널</b>(파동4가 파동1과 겹침)' : '')
+                                      + (w.truncated ? ' · <b>절단 5파</b>(파동5가 파동3 고점 미돌파)' : '')
+                                      + (w.extended_wave ? ' · 파동' + w.extended_wave + ' 연장' : '')
+          : 'a·b·c 조정(0·A·B·C) · ' + (PAT[w.pattern] || w.pattern || '')
+                                      + (w.irregular ? ' · B가 시작점 초과' : '');
+        var rows = [];
+        for (var k in w.ratios) {
+          var rt = w.ratios[k];
+          if (rt.actual == null) continue;
+          rows.push(k + ' <b>' + rt.actual + '</b>'
+                    + (rt.hit ? ' <span style="color:#26a69a">✓' + (rt.target != null ? ' ' + rt.target : '') + '</span>'
+                              : ' <span style="color:#e2574c">✗</span>'));
+        }
+        var ct = '';
+        if (w.correction_targets && w.correction_targets.length) {
+          var cts = [];
+          for (var ci2 = 0; ci2 < w.correction_targets.length; ci2++) {
+            cts.push((w.correction_targets[ci2].ratio * 100).toFixed(1) + '% '
+                     + fmtPrice(w.correction_targets[ci2].price, dc));
+          }
+          ct = '<div style="margin-top:2px">이어질 조정 되돌림 목표(전체 0→5 구간): ' + cts.join(' · ') + '</div>';
+        }
+        out.push(
+          '<div' + (out.length ? ' style="margin-top:7px"' : '') + '>'
+          + '<b style="color:' + (imp ? '#d9a441' : '#8b5cf6') + '">🌊 엘리엇</b> — ' + head
+          + ' · 방향 ' + (w.dir === 'up' ? '상승' : '하락')
+          + ' · 적합도 <b>' + Math.round((w.confidence || 0) * 100) + '%</b></div>'
+          + (rows.length ? '<div style="margin-top:2px">파동 비율: ' + rows.join(' · ') + '</div>' : '')
+          + (w.invalidation != null
+              ? '<div style="margin-top:2px">무효화 가격 <b>' + fmtPrice(w.invalidation, dc)
+                + '</b> — 여기를 되돌리면 이 파동 해석은 깨집니다</div>' : '')
+          + ct
+          + '<div class="cd-desc" style="margin-top:2px">적합도는 파동 간 피보나치 비율이 얼마나 맞는지일 뿐 '
+          + '<b>맞을 확률이 아닙니다</b>. 엘리엇 3원칙을 어기면 아예 라벨을 안 붙이며, 확정 피벗도 이후 데이터로 '
+          + '다시 해석될 수 있습니다 — 참고용, 확정 판단 금지.</div>');
+      }
+      fwEl.innerHTML = out.join('');
+      fwEl.style.display = out.length ? '' : 'none';
+    })();
 
     // 공시 내용 패널(차트 아래) — 마커 hover 시 종류·전체 제목·설명·원문 링크.
     // 차트 안 floating 툴팁은 좁아 제목 잘림 → 아래 고정 패널에 표시(사용자 2026-06-05).
@@ -16145,6 +16233,7 @@ def _lookup_chart_html(ticker: str) -> str:
     </div>
     <div id="chart-caption" class="chart-caption"></div>
     <script type="application/json" id="chart-data">{_chart_payload}</script>
+    <div id="chart-fibwave" class="chart-disc" style="display:none"></div>
     <div id="chart-disc" class="chart-disc"></div>
 </section>"""
 
