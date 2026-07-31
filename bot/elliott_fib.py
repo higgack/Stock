@@ -54,7 +54,7 @@ from typing import Optional
 
 # zigzag/ATR 은 bot/pattern_screener.py(VCP 탐지)가 이미 쓰는 것을 그대로 재사용 —
 # 같은 피벗 정의를 두 벌 두면 차트 라벨과 스크리너 판정이 미묘하게 갈린다.
-from bot.pattern_screener import _atr, zigzag_swings
+from bot.pattern_screener import zigzag_swings
 
 # [CS p29] 문서에 인쇄된 수열 — 아래 비율들의 출처.
 FIB_SEQUENCE = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144,
@@ -99,8 +99,80 @@ _FLAT_EXP_C_OVER_A = (1.618, 2.618)
 _DEFAULT_TOL = 0.15   # 비율 상대오차 허용치(±15%) — 통설에 허용폭 명시 없어 관례값.
 
 
+# 피벗 임계 후보 — **가격 대비 상대(%)**. 굵은 것부터 훑어 내려간다.
+_PIVOT_THRESHOLD_STEPS = (0.35, 0.25, 0.18, 0.13, 0.095, 0.07,
+                          0.05, 0.036, 0.026, 0.018, 0.012, 0.008)
+_TARGET_PIVOTS = 8      # 임펄스(6개)+여유. 이만큼 나오는 가장 굵은 임계를 채택.
+# 창의 고가/저가 배율이 이 값을 넘으면 파동 길이를 로그(%) 기준으로 잰다.
+# (관례값 — 통설에 명시 임계는 없다. 산술축에서 초기 파동이 뭉개지는 지점.)
+_LOG_SCALE_RATIO = 3.0
+
+
 def _r(v, nd: int = 4):
     return round(v, nd) if isinstance(v, (int, float)) else None
+
+
+def _lg(price):
+    """로그가격. 파동 길이·피벗 임계를 **상대(%) 기준**으로 다루기 위한 변환.
+    0 이하(불량 데이터)면 None → 호출부가 graceful 종료."""
+    import math
+    if not isinstance(price, (int, float)) or price <= 0:
+        return None
+    return math.log(price)
+
+
+def _as_pct(log_len):
+    """로그 길이 → 퍼센트 이동폭(표시용). log 0.405 → +50.0%"""
+    import math
+    if not isinstance(log_len, (int, float)):
+        return None
+    return round((math.exp(log_len) - 1.0) * 100.0, 2)
+
+
+def auto_pivots(highs, lows, *, target_min: int = _TARGET_PIVOTS):
+    """보고 있는 창에 맞는 **등급(degree)** 의 피벗을 고른다.
+
+    굵은 임계부터 훑어 내려가며 피벗이 target_min 개 이상 나오는 **첫(=가장
+    굵은)** 임계를 채택 → 그 창을 지배하는 구조가 잡힌다. 5년 창이면 수년짜리
+    파동이, 1개월 창이면 그 안의 파동이 잡혀 프랙탈 성질과 맞는다.
+
+    임계는 **상대(%)** 이고 로그가격에서 비교한다. 이전 구현은 ATR(최근 14봉)
+    ×1.5 라는 **절대** 임계여서, 5년간 10배 오른 종목이면 그 임계가 최근 고가
+    기준으로 잡혀 과거 저가 구간에선 아예 피벗이 안 생겼다 → 라벨이 늘 차트
+    오른쪽 끝 몇 주에만 몰렸다(사용자 지적 2026-07-31).
+
+    반환: (pivots[(idx, 'high'|'low', 실제가격)], 채택된 임계 비율)."""
+    logs = _log_arrays(highs, lows)
+    if logs is None:
+        return [], 0.0
+    best, best_thr = [], 0.0
+    for f in _PIVOT_THRESHOLD_STEPS:
+        piv = _pivots_at(logs, highs, lows, f)
+        if len(piv) > len(best):
+            best, best_thr = piv, f
+        if len(piv) >= target_min:
+            return piv, f
+    return best, best_thr
+
+
+def _log_arrays(highs, lows):
+    """(로그고가, 로그저가) — 가격에 0 이하가 섞이면 None(graceful)."""
+    n = len(highs)
+    if n == 0 or len(lows) != n:
+        return None
+    lh = [_lg(x) for x in highs]
+    ll = [_lg(x) for x in lows]
+    if any(x is None for x in lh) or any(x is None for x in ll):
+        return None
+    return lh, ll
+
+
+def _pivots_at(logs, highs, lows, frac: float):
+    """상대임계 frac(예: 0.13 = 13%) 로 잡은 피벗 — 표시용 실제 가격으로 환원."""
+    import math
+    lh, ll = logs
+    raw = zigzag_swings(lh, ll, math.log(1.0 + frac))
+    return [(i, k, (highs[i] if k == "high" else lows[i])) for i, k, _ in raw]
 
 
 def fib_retracement_levels(start: float, end: float,
@@ -156,7 +228,8 @@ def _alternating(pivots) -> bool:
     return True
 
 
-def label_impulse(pivots, *, tol: float = _DEFAULT_TOL) -> Optional[dict]:
+def label_impulse(pivots, *, tol: float = _DEFAULT_TOL,
+                  log_scale: bool = False) -> Optional[dict]:
     """최근 6개 피벗(P0~P5)을 5파 임펄스로 라벨링 시도.
 
     pivots = [(idx, 'high'|'low', price), ...] 시간순(zigzag_swings 출력).
@@ -170,7 +243,17 @@ def label_impulse(pivots, *, tol: float = _DEFAULT_TOL) -> Optional[dict]:
         return None
     up = p[0][1] == "low"          # 저점에서 출발 = 상승 임펄스
     sign = 1.0 if up else -1.0
-    v = [pr * sign for _, _, pr in p]   # 부호 정규화 → 항상 '상승 임펄스' 형태
+    # 파동 길이 기준(log_scale) — 호출부가 창의 가격 배율을 보고 정한다.
+    #  · 선형(기본): 차트가 산술축이라 사용자가 화면에서 재는 값과 일치. 통설
+    #    도구들도 대개 가격차로 잰다.
+    #  · 로그: 장기 차트(수배~수십배 상승)에서는 선형으로 재면 초기 저가 구간
+    #    파동이 터무니없이 짧게 나와 '파동3 최단' 같은 규칙 판정까지 왜곡된다.
+    # log 는 단조증가라 어느 쪽이든 규칙의 대소 비교(v[2]>v[0] 등)는 동일하게
+    # 성립하고, 바뀌는 것은 길이의 '비율' 뿐이다.
+    base = [_lg(pr) for _, _, pr in p] if log_scale else [pr for _, _, pr in p]
+    if any(x is None for x in base):
+        return None
+    v = [x * sign for x in base]   # 부호 정규화 → 항상 '상승 임펄스' 형태
 
     w1, w2 = v[1] - v[0], v[1] - v[2]
     w3, w4 = v[3] - v[2], v[3] - v[4]
@@ -244,8 +327,12 @@ def label_impulse(pivots, *, tol: float = _DEFAULT_TOL) -> Optional[dict]:
             {"idx": p[i][0], "kind": p[i][1], "price": p[i][2], "label": str(i)}
             for i in range(6)
         ],
-        "wave_lengths": {"W1": _r(w1), "W2": _r(w2), "W3": _r(w3),
-                         "W4": _r(w4), "W5": _r(w5)},
+        # 로그 기준이면 %이동폭으로 환산해 표기(로그 원값은 사람이 못 읽는다).
+        "length_unit": "pct" if log_scale else "price",
+        "wave_lengths": ({"W1": _as_pct(w1), "W2": _as_pct(w2), "W3": _as_pct(w3),
+                          "W4": _as_pct(w4), "W5": _as_pct(w5)} if log_scale else
+                         {"W1": _r(w1), "W2": _r(w2), "W3": _r(w3),
+                          "W4": _r(w4), "W5": _r(w5)}),
         "ratios": ratios,
         "rules": {"wave2_holds_origin": r1_wave2,
                   "wave3_exceeds_wave1": r2_exceeds,
@@ -257,7 +344,8 @@ def label_impulse(pivots, *, tol: float = _DEFAULT_TOL) -> Optional[dict]:
     }
 
 
-def label_correction(pivots, *, tol: float = _DEFAULT_TOL) -> Optional[dict]:
+def label_correction(pivots, *, tol: float = _DEFAULT_TOL,
+                     log_scale: bool = False) -> Optional[dict]:
     """최근 4개 피벗(시작·A·B·C)을 조정 패턴으로 분류·라벨링 시도.
 
     통설 임계로 지그재그 / 정규 플랫 / 확장 플랫(러닝 포함) 을 **먼저 분류**하고,
@@ -274,9 +362,14 @@ def label_correction(pivots, *, tol: float = _DEFAULT_TOL) -> Optional[dict]:
     if not _alternating(p):
         return None
     px = [pr for _, _, pr in p]
-    a = abs(px[1] - px[0])
-    b = abs(px[2] - px[1])
-    c = abs(px[3] - px[2])
+    # 길이 기준은 임펄스와 동일 규칙(log_scale) — 방향/초과 판정은 항상 실제
+    # 가격으로(log 가 단조증가라 두 방식의 대소 비교 결과는 같다).
+    lp = [_lg(x) for x in px] if log_scale else list(px)
+    if any(x is None for x in lp):
+        return None
+    a = abs(lp[1] - lp[0])
+    b = abs(lp[2] - lp[1])
+    c = abs(lp[3] - lp[2])
     if min(a, b, c) <= 0:
         return None
 
@@ -313,38 +406,77 @@ def label_correction(pivots, *, tol: float = _DEFAULT_TOL) -> Optional[dict]:
         "irregular": (px[2] > px[0]) if down else (px[2] < px[0]),
         "labels": [{"idx": p[i][0], "kind": p[i][1], "price": p[i][2],
                     "label": ["0", "A", "B", "C"][i]} for i in range(4)],
-        "wave_lengths": {"A": _r(a), "B": _r(b), "C": _r(c)},
+        "length_unit": "pct" if log_scale else "price",
+        "wave_lengths": ({"A": _as_pct(a), "B": _as_pct(b), "C": _as_pct(c)}
+                         if log_scale else
+                         {"A": _r(a), "B": _r(b), "C": _r(c)}),
         "ratios": ratios,
         "invalidation": px[0],
         "confidence": 1.0 if hit_c else 0.5,
     }
 
 
-def analyze_waves(times, highs, lows, closes, *, atr_multiplier: float = 1.5,
-                  tol: float = _DEFAULT_TOL, min_bars: int = 30) -> Optional[dict]:
+def analyze_waves(times, highs, lows, closes, *, tol: float = _DEFAULT_TOL,
+                  min_bars: int = 30,
+                  target_pivots: int = _TARGET_PIVOTS) -> Optional[dict]:
     """차트 오버레이용 진입점 — 피보나치 되돌림 + (가능하면) 파동 라벨.
 
     times/highs/lows/closes = 같은 길이의 시간축·OHLC 배열(오래된→최신).
     반환 dict 는 chart payload 에 그대로 실린다(JSON 직렬화 가능). 데이터 부족·
     스윙 부족이면 None → 호출부가 오버레이를 그냥 안 그린다(graceful).
 
+    **보이는 창에 맞춰 등급이 자동으로 정해진다**(auto_pivots): 5년 창이면
+    수년짜리 파동을, 1개월 창이면 그 안의 파동을 센다. 파동 원리가 프랙탈이라
+    창마다 다른 등급이 잡히는 게 정상이며, 그래서 범위/봉을 바꾸면 라벨 위치도
+    바뀐다. 이전 구현은 ATR(최근 14봉) 기반 **절대** 임계라 장기 차트에서도 늘
+    최근 몇 주의 잔파동만 라벨링됐다(사용자 지적 2026-07-31).
+
     피보나치 기준 다리(leg) = **마지막으로 완성된 스윙 구간**(직전 피벗 → 최신
     피벗). 고가/저가(꼬리 포함)를 앵커로 쓴다 — 종가 기준 스윙과 꼬리 기준 범위를
-    섞는 것이 이 계열의 가장 흔한 버그라 zigzag 와 앵커를 일치시킨다.
+    섞는 것이 이 계열의 가장 흔한 버그라 zigzag 와 앵커를 일치시킨다. 되돌림
+    가격 자체는 차트가 기본 산술축이라 **선형**으로 계산한다(파동 길이 비교만
+    로그 기준 — 장기 차트에서 초기 구간이 뭉개지는 것을 막기 위해).
 
     ⚠️ zigzag 특성상 **마지막 진행 중 다리는 피벗으로 확정되지 않는다**(반대방향
-    으로 min_move 만큼 되돌려야 직전 극점이 피벗으로 확정). 즉 라벨은 항상
-    '확정된 구조'까지만 붙고, 지금 만들어지는 중인 파동엔 번호가 안 붙는다 —
-    미확정 구간까지 추정해 붙이는 것이 통설이 지적하는 '우측 끝 리페인팅'의
-    주범이라 의도적으로 배제한다.
+    으로 임계만큼 되돌려야 직전 극점이 피벗으로 확정). 즉 라벨은 항상 '확정된
+    구조'까지만 붙고, 지금 만들어지는 중인 파동엔 번호가 안 붙는다 — 미확정
+    구간까지 추정해 붙이는 것이 통설이 지적하는 '우측 끝 리페인팅'의 주범이라
+    의도적으로 배제한다. 대신 마지막 확정 라벨 이후 현재가가 어디까지 왔는지를
+    `progress` 로 제공한다.
     """
     n = len(closes)
     if n < min_bars or len(highs) != n or len(lows) != n or len(times) != n:
         return None
-    atr = _atr(highs, lows, closes, period=14)
-    if atr <= 0:
+    # 등급 선택: 굵은 임계부터 훑어 **유효한 파동 카운트가 나오는 첫(=가장 큰)
+    # 등급**을 채택한다. 한 등급만 보면 그 창에서 규칙을 못 맞춰 라벨이 통째로
+    # 사라지는 일이 잦다(합성 5년 데이터 실측) — 통설도 '복수 임계로 돌려보라'
+    # 고 권한다. 어느 등급에서도 카운트가 안 나오면 피보나치만 그린다.
+    logs = _log_arrays(highs, lows)
+    if logs is None:
         return None
-    pivots = zigzag_swings(highs, lows, atr * atr_multiplier)
+    # 길이 기준: 창의 가격 배율이 크면(기본 3배 초과) 로그(%), 아니면 선형(가격차).
+    # 산술축 차트에서 사용자가 재는 값과 맞추는 게 기본이되, 수배씩 오른 장기
+    # 창에서는 선형이 초기 파동을 뭉개 규칙 판정까지 왜곡되므로 전환한다.
+    _lo, _hi = min(lows), max(highs)
+    log_scale = bool(_lo > 0 and (_hi / _lo) > _LOG_SCALE_RATIO)
+    pivots, thr, wave = [], 0.0, None
+    fib_only = None
+    for f in _PIVOT_THRESHOLD_STEPS:
+        piv = _pivots_at(logs, highs, lows, f)
+        if len(piv) < 2:
+            continue
+        if fib_only is None and len(piv) >= target_pivots:
+            fib_only = (piv, f)        # 라벨 실패 시 쓸 기본 등급
+        if len(piv) >= 4:
+            w = (label_impulse(piv, tol=tol, log_scale=log_scale)
+                 or label_correction(piv, tol=tol, log_scale=log_scale))
+            if w:
+                pivots, thr, wave = piv, f, w
+                break
+    if wave is None:
+        if fib_only is None:
+            return None
+        pivots, thr = fib_only
     if len(pivots) < 2:
         return None
 
@@ -359,11 +491,10 @@ def analyze_waves(times, highs, lows, closes, *, atr_multiplier: float = 1.5,
         "retracements": fib_retracement_levels(a_price, b_price),
         "projections": fib_projection_levels(a_price, b_price),
         "pivot_count": len(pivots),
-        "atr_threshold": _r(atr * atr_multiplier, 6),
+        # 이 창에서 '스윙' 으로 인정한 최소 등락폭(%) — 등급을 눈으로 확인용.
+        "pivot_threshold_pct": _r(thr * 100.0, 2),
     }
 
-    # 임펄스 우선 시도 → 실패 시 조정 패턴. 둘 다 실패면 피보나치만 반환.
-    wave = label_impulse(pivots, tol=tol) or label_correction(pivots, tol=tol)
     if wave:
         for lb in wave["labels"]:
             lb["time"] = times[lb["idx"]]
@@ -373,5 +504,17 @@ def analyze_waves(times, highs, lows, closes, *, atr_multiplier: float = 1.5,
             wave["correction_targets"] = fib_retracement_levels(
                 wave["labels"][0]["price"], wave["labels"][5]["price"],
                 levels=(0.382, 0.5, 0.618))
+        # '지금 어디까지 왔나' — 마지막 확정 라벨 이후 현재가까지의 진행.
+        last = wave["labels"][-1]
+        cur = closes[-1]
+        if isinstance(cur, (int, float)) and last.get("price"):
+            wave["progress"] = {
+                "since_label": last["label"],
+                "since_price": last["price"],
+                "since_time": last.get("time"),
+                "current": cur,
+                "pct": _r((cur / last["price"] - 1.0) * 100.0, 2),
+                "bars": max(0, (n - 1) - last["idx"]),
+            }
         out["wave"] = wave
     return out

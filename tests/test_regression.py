@@ -2758,6 +2758,69 @@ class TestElliottFib20260729:
         ct = res["wave"]["correction_targets"]
         assert [x["ratio"] for x in ct] == [0.382, 0.5, 0.618]
 
+    def _grow(self, anchors, per, noise=0.010, seed=7):
+        """앵커 가격들을 로그보간으로 이어붙인 합성 시계열(장기 성장 재현용)."""
+        import random
+        random.seed(seed)
+        t, h, l, c = [], [], [], []
+        for i in range(len(anchors) - 1):
+            a, b = anchors[i], anchors[i + 1]
+            for s in range(per):
+                v = a * ((b / a) ** (s / per)) * (1 + random.uniform(-noise, noise))
+                c.append(v); h.append(v * 1.01); l.append(v * 0.99)
+                t.append("d%04d" % len(c))
+        return t, h, l, c
+
+    def test_pivot_degree_scales_with_window_not_recent_atr(self):
+        """회귀 고정(사용자 지적 2026-07-31): 라벨이 늘 차트 오른쪽 끝 몇 주에만
+        몰렸다. 원인은 피벗 임계가 ATR(최근 14봉) 기반 **절대값**이라, 5년간
+        10배 오른 종목이면 그 임계가 최근 고가 기준이라 과거 저가 구간엔 피벗이
+        아예 안 생긴 것. 이제 **상대(%) 임계**를 로그가격에서 적용하고 창에 맞는
+        등급을 고르므로 라벨이 창 전체에 분포해야 한다."""
+        from bot.elliott_fib import analyze_waves
+        from bot.pattern_screener import _atr, zigzag_swings
+        anchors = [19, 17, 22, 20, 35, 50, 45, 75, 120, 100,
+                   140, 130, 95, 150, 190, 175, 236, 164, 210, 195]
+        t, h, l, c = self._grow(anchors, 65)
+        n = len(c)
+        # 예전 방식 재현 — 라벨용 마지막 6개 피벗이 차트 끝(>90%)에 몰렸다
+        old = zigzag_swings(h, l, _atr(h, l, c, period=14) * 1.5)
+        assert len(old) >= 6
+        assert min(p[0] for p in old[-6:]) / n > 0.9, \
+            "예전 절대임계 재현 실패(전제가 바뀌었으면 이 테스트를 재작성할 것)"
+        # 신규 — 라벨이 오른쪽 끝에만 몰리지 않아야
+        res = analyze_waves(t, h, l, c)
+        assert res and res.get("wave"), "장기 창에서 파동 라벨이 아예 안 나옴"
+        idxs = [x["idx"] for x in res["wave"]["labels"]]
+        assert min(idxs) / n < 0.85, \
+            f"라벨이 여전히 우측 끝에 몰림(첫 라벨 {min(idxs)/n:.0%} 지점)"
+        assert res["pivot_threshold_pct"] > 0, "채택 등급(임계%) 미보고"
+
+    def test_length_unit_switches_to_log_on_high_ratio_window(self):
+        """길이 기준은 창의 가격 배율로 정한다 — 저배율 창은 선형(가격차)이라
+        산술축 차트에서 재는 값과 일치하고, 수배 오른 장기 창은 로그(%)라
+        초기 파동이 뭉개지지 않는다. (W3/W1 이 선형 2.67 vs 로그 1.72 처럼
+        어느 피보나치 목표에 맞는지가 뒤바뀔 만큼 차이가 커 모드 구분이 필요.)"""
+        from bot.elliott_fib import analyze_waves
+        lo = analyze_waves(*self._grow([100, 112, 105, 124, 117, 140, 131], 40))
+        assert lo and lo["wave"]["length_unit"] == "price", "저배율인데 로그 기준"
+        hi = analyze_waves(*self._grow(
+            [19, 17, 22, 20, 35, 50, 45, 75, 120, 100,
+             140, 130, 95, 150, 190, 175, 236, 164, 210, 195], 65))
+        assert hi and hi["wave"]["length_unit"] == "pct", "고배율인데 선형 기준"
+
+    def test_progress_reports_position_after_last_confirmed_wave(self):
+        """진행 중 파동엔 번호를 안 붙이므로(리페인팅 방지) '지금 어디까지
+        왔는지' 를 progress 로 대신 제공한다 — 사용자의 핵심 질문."""
+        from bot.elliott_fib import analyze_waves
+        res = analyze_waves(*self._grow([100, 112, 105, 124, 117, 140, 131], 40))
+        pg = res["wave"]["progress"]
+        assert pg["since_label"] == res["wave"]["labels"][-1]["label"]
+        assert pg["bars"] >= 0 and pg["pct"] is not None
+        from bot.dashboard import _CHART_JS
+        assert "현재 위치: 마지막 확정" in _CHART_JS, "패널에 현재 위치 미표시"
+        assert "이 화면의 파동 등급" in _CHART_JS, "패널에 등급 설명 미표시"
+
     def test_analyze_waves_graceful_on_thin_input(self):
         """데이터 부족·평탄 시리즈는 None → 호출부가 오버레이를 그냥 안 그림."""
         from bot.elliott_fib import analyze_waves
