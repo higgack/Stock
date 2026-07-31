@@ -2819,7 +2819,13 @@ class TestElliottFib20260729:
         assert pg["bars"] >= 0 and pg["pct"] is not None
         from bot.dashboard import _CHART_JS
         assert "현재 위치: 마지막 확정" in _CHART_JS, "패널에 현재 위치 미표시"
-        assert "이 화면의 파동 등급" in _CHART_JS, "패널에 등급 설명 미표시"
+        # 등급 안내는 피보나치·엘리엇이 **함께** 쓰는 정보라 엘리엇 블록 밖
+        # (공통 영역)에 있어야 피보나치만 켰을 때도 보인다.
+        assert "이 화면의 등급" in _CHART_JS, "패널에 등급 설명 미표시"
+        i_deg = _CHART_JS.index("이 화면의 등급")
+        i_wave = _CHART_JS.index("ind.wave && ef.wave")
+        i_join = _CHART_JS.index("fwEl.innerHTML = out.join")
+        assert i_wave < i_deg < i_join, "등급 안내가 엘리엇 블록 안에 갇힘"
 
     def test_analyze_waves_graceful_on_thin_input(self):
         """데이터 부족·평탄 시리즈는 None → 호출부가 오버레이를 그냥 안 그림."""

@@ -3168,14 +3168,19 @@ _CHART_JS = """
               ? '<div style="margin-top:2px">무효화 가격 <b>' + fmtPrice(w.invalidation, dc)
                 + '</b> — 여기를 되돌리면 이 파동 해석은 깨집니다</div>' : '')
           + ct
-          + (ef.pivot_threshold_pct != null
-              ? '<div class="cd-desc" style="margin-top:2px">이 화면의 파동 등급: '
-                + fmtNum(ef.pivot_threshold_pct, 1) + '% 이상 등락만 스윙으로 인정(피벗 '
-                + ef.pivot_count + '개). 범위·봉을 바꾸면 등급이 다시 잡혀 라벨 위치도 바뀝니다 — '
-                + '파동 원리가 프랙탈이라 창마다 다른 등급이 보이는 게 정상입니다.</div>' : '')
           + '<div class="cd-desc" style="margin-top:2px">적합도는 파동 간 피보나치 비율이 얼마나 맞는지일 뿐 '
           + '<b>맞을 확률이 아닙니다</b>. 엘리엇 3원칙을 어기면 아예 라벨을 안 붙이며, 확정 피벗도 이후 데이터로 '
           + '다시 해석될 수 있습니다 — 참고용, 확정 판단 금지.</div>');
+      }
+      // 등급(스윙 인정 최소 등락폭)은 피보나치 기준 다리와 파동 라벨을 **함께**
+      // 결정하므로 어느 쪽만 켜도 보여야 한다 — 엘리엇 블록 안에만 두면
+      // 피보나치만 켰을 때 무슨 등급으로 잡힌 건지 알 수 없다.
+      if (out.length && ef.pivot_threshold_pct != null) {
+        out.push('<div class="cd-desc" style="margin-top:4px;padding-top:4px;'
+          + 'border-top:1px solid var(--border)">이 화면의 등급: <b>'
+          + fmtNum(ef.pivot_threshold_pct, 1) + '%</b> 이상 등락만 스윙으로 인정(피벗 '
+          + ef.pivot_count + '개) — 피보나치 기준 다리와 파동 번호가 이 등급을 함께 씁니다. '
+          + '범위·봉을 바꾸면 등급이 다시 잡혀 위치도 바뀝니다(파동 원리가 프랙탈이라 정상).</div>');
       }
       fwEl.innerHTML = out.join('');
       fwEl.style.display = out.length ? '' : 'none';
