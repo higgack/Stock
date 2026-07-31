@@ -2732,6 +2732,8 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="ichi">일목균형표</button>
+      <button class="chart-ind-btn" data-ind="disp">이격도</button>
       <button class="chart-ind-btn" data-ind="fib">피보나치</button>
       <button class="chart-ind-btn" data-ind="wave">엘리엇</button>
       <button class="chart-ind-btn" data-ind="log">로그</button>
@@ -2747,15 +2749,17 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
         <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
         <div id="rsi-chart" class="sub-chart"></div>
         <div id="macd-chart" class="sub-chart"></div>
+        <div id="disp-chart" class="sub-chart"></div>
       </div>
       <div id="chart-values" class="chart-values"></div>
     </div>
     <div id="chart-caption" class="chart-caption"></div>
     <script type="application/json" id="chart-data">{payload}</script>
+    <div id="chart-ichi" class="chart-disc" style="display:none"></div>
     <div id="chart-fibwave" class="chart-disc" style="display:none"></div>
     <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
-      상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (새로고침 시 기본값으로 회귀)
+      상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/일목균형표/이격도/피보나치/엘리엇/로그/공시 on/off (새로고침 시 기본값으로 회귀) · 일목균형표를 켜면 선행스팬(구름)이 26봉 앞까지 그려져 차트 오른쪽이 미래 구간만큼 늘어납니다
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
@@ -2778,7 +2782,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li><span class="k">분석 후</span> — 시점가 대비 현재가 변동%. 분석 이후 우리 방향이 맞았는지(초록=올랐다·빨강=내렸다).</li>
           <li><span class="k">기간 N</span> — 지금 보이는 구간(1일·1주일·1개월·3개월 등)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신. 1일=5분봉, 1주일=15분봉, 1개월=1시간봉, YTD=연초(1/1) 이후.</li>
           <li><span class="k">52주 신고가/신저가</span> — 최근 1년 최고·최저가(항상 표시, 차트 범위·지표 토글 무관).</li>
-          <li>그 아래는 켜둔 지표의 최신값(이평선·볼린저·RSI·MACD·거래량). 가격 항목엔 통화 기호(₩/¥/$ 등) 표시.</li>
+          <li>그 아래는 켜둔 지표의 최신값(이평선·볼린저·일목균형표·이격도·RSI·MACD·거래량). 가격 항목엔 통화 기호(₩/¥/$ 등) 표시. 일목균형표는 <b>마지막 실제 봉</b> 기준(전환/기준/구름 상·하단) — 구름은 미래까지 그려지지만 값 패널은 '지금' 구름을 보여줍니다.</li>
         </ul>
       </div>
       <div class="cg-sec"><b>과거 추천 마커 (우리 track record)</b>
@@ -2801,6 +2805,8 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
           <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12일EMA−26일EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9일EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>. ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음.</li>
+          <li><span class="k" style="color:#26a69a">일목균형표</span>(一目均衡表) — 5선 + 구름. <b>전환선(9)</b>·<b>기준선(26)</b>·<b>선행스팬2(52)</b>는 이동평균이 <b>아니라</b> 그 기간 <b>고가와 저가의 한가운데</b>(가격대의 균형점)이고, <b>선행스팬1</b>=(전환+기준)÷2 입니다. 선행스팬1·2 사이가 <b>구름(Kumo)</b>으로, <b>26봉 앞(당봉 포함)에 그려져 차트 오른쪽 빈 공간까지</b> 이어집니다 — 그래서 구름 색이 바뀌는 <b>전환(twist)</b>을 미리 볼 수 있습니다. <b>후행스팬</b>은 당봉 종가를 반대로 뒤에 찍은 선이라 오른쪽 끝에서 끊기는 게 정상입니다(미래 종가를 알 수 없으므로). 해석: ① 가격이 <b>구름 위=상승추세</b>(구름이 지지) · 아래=하락추세(저항) · <b>구름 안=추세 없음</b> ② 양운(선행1&gt;선행2)=강세 · 음운=약세, <b>구름이 두꺼울수록 지지·저항이 강함</b> ③ 전환선이 기준선을 위로 뚫으면 호전(골든), 아래면 역전(데드) — <b>크로스가 구름 위에서 나면 '강'</b>·안이면 '중'·아래면 '약' ④ 후행스팬이 그 자리 과거 가격 위면 강세 확인(가장 중요한 확인선). ①③④가 동시에 강세면 <b>삼역호전(三役好転)</b>으로, 일목에서 가장 신뢰도 높다고 보는 신호입니다(거울상은 삼역역전). 파라미터 9·26·52 는 <b>주봉·분봉에서도 바꾸지 않는 것</b>이 표준 관행이며, 색·이격량은 TradingView 기본값과 맞췄습니다. 최소 <b>77봉</b>(52+25)이 있어야 계산되며 모자라면 표시하지 않습니다. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에. <b>기본 OFF</b>.</li>
+          <li><span class="k" style="color:#f5a623">이격도</span> — 하단 별도 패널. <b>종가 ÷ N일 이동평균 × 100</b>(국내 HTS 관행, <b>100이 기준</b>=이평선과 일치). 20일·60일 2선을 그리고 100 기준선과 과열/침체 밴드를 함께 표시합니다. 평균으로 되돌아오려는 성질(평균회귀)을 이용한 <b>단기 시점 포착</b>용으로, 기준선은 키움증권 기술적지표 가이드 값(<b>20일 105/95 · 60일 110/90</b>)을 씁니다 — 국내 소스마다 표가 달라(한경 계열은 국면별 106/98 등) <b>절대 기준이 아닙니다</b>. ⚠️ <b>추세장 함정</b>: 강한 추세에선 이격도가 과열/침체에 머문 채 계속 갑니다. 상승장에서 105 넘었다고 파는 건 손실로 이어지기 쉬워 <b>분할 매매 + 추세지표(MACD·일목) 확인</b>이 표준 권고이며, 20일·60일이 <b>동시에</b> 극단일 때가 신뢰도가 높습니다. (서구 Disparity Index 는 0 기준 = 이격도−100 이라 임계값 숫자가 다릅니다.) <b>기본 OFF</b>.</li>
           <li><span class="k" style="color:#d9a441">피보나치</span> — <b>마지막으로 완성된 스윙 다리</b>(직전 고점↔저점)를 기준으로 되돌림선 <b>23.6 · 38.2 · 50 · 61.8 · 78.6%</b> + 0%/100% 앵커(옅은 선). 조정이 멈추기 쉬운 가격대를 보는 용도로, TradingView·thinkorswim 기본값과 같은 표준 세트입니다. 유래: 23.6%=0.618³ · 38.2%=0.618² · 61.8%=황금비(1/φ) · 78.6%=√0.618, <b>50%는 피보나치 비율이 아니라</b> 다우 이론의 '절반쯤 되돌린다'는 관찰이 관행으로 굳은 것입니다. 실무에선 61.8% 부근을 되돌림이 멈추기 쉬운 구간으로, 78.6%를 확실히 깨면 직전 상승/하락 구조가 무너진 것으로 보는 편(관례이지 증명된 규칙은 아님). 기준 다리는 ATR×1.5 이상 움직인 구간만 스윙으로 인정(zigzag)하며 고가·저가(꼬리 포함)를 앵커로 씁니다. <b>지금 진행 중인 마지막 구간은 아직 스윙으로 확정되지 않아 기준에서 제외</b>됩니다. 차트엔 선만 그어지므로 <b>차트 아래 설명 패널</b>에 기준 다리(날짜·가격)·각 레벨 가격·현재가가 몇 % 되돌린 지점인지가 함께 표시됩니다. <b>기본 OFF</b>.</li>
           <li><span class="k" style="color:#d9a441">엘리엇</span> — 확정된 스윙 피벗 위에 파동 번호를 붙입니다. <span style="color:#d9a441">주황 ●</span>=5파 임펄스(0·1·2·3·4·5), <span style="color:#8b5cf6">보라 ●</span>=조정(0·A·B·C). <b>규칙과 지침을 구분</b>해서 판정합니다 — <b>규칙</b>(위반하면 라벨 자체를 안 붙임): 파동2가 파동1 시작점을 깨지 않음 · 파동3이 파동1 끝을 넘어서고 1·3·5 중 최단이 아님 · 파동4가 파동1 영역에 들어가지 않음(단 <b>다이애고널</b>은 겹침이 정상이라 예외로 인정하되 파동4가 파동2 끝을 넘으면 탈락). <b>지침</b>(맞으면 확신도↑, 틀려도 탈락 아님): 파동 간 피보나치 비율 W2/W1=0.382·0.5·0.618·0.786, W3/W1=1.618·2.618·4.236, W4/W3=0.236·0.382·0.5, W5=0→3구간의 0.382·0.618·1.0·1.618(또는 파동1의 0.618·1.0). 조정은 B가 A를 되돌린 비율로 <b>지그재그(38~79%) · 정규 플랫(90~104%) · 확장/러닝 플랫(105%~)</b>을 구분합니다. <b>파동 등급은 보고 있는 범위·봉에 맞춰 자동으로 정해집니다</b> — 그 창에서 유효한 카운트가 나오는 가장 큰 등급(스윙 인정 최소 등락폭)을 골라 세므로, 5년 차트면 수년짜리 파동이·1개월 차트면 그 안의 파동이 잡히고 <b>범위를 바꾸면 라벨 위치도 다시 잡힙니다</b>(파동 원리가 프랙탈이라 정상). 진행 중인 마지막 파동은 확정 전이라 번호를 안 붙이는 대신, 마지막 확정 파동 이후 <b>현재까지 몇 % 왔는지</b>를 패널에 표시합니다. 5파가 완성되면 이어질 조정의 되돌림 목표(전체 구간의 38.2~61.8%)도 함께 계산합니다. 어느 밴드에도 안 맞으면 <b>아무 라벨도 안 붙습니다</b>(억지 라벨링 금지). 차트엔 번호만 찍히므로 <b>차트 아래 설명 패널</b>에 패턴 종류·방향·적합도(%)·파동별 비율 적중 여부·<b>무효화 가격</b>(여기를 되돌리면 해석이 깨지는 가격)이 함께 표시됩니다. ⚠️ 적합도는 피보나치 비율이 얼마나 맞는지일 뿐 <b>맞을 확률이 아닙니다</b>. 파동 세기는 본질적으로 주관적이라 분석가마다 다르게 세고, 확정 피벗도 이후 데이터로 재해석될 수 있습니다 — <b>참고용이며 확정 판단 금지</b>. <b>기본 OFF</b>.</li>
           <li><span class="k">로그</span> — 세로축 로그 스케일. 긴 기간 %변동 비교에 유리.</li>
@@ -2831,15 +2837,16 @@ _CHART_JS = """
   var markers = initial.markers || null;
   var asOfClose = (initial && initial.as_of_close != null) ? initial.as_of_close : null;
   var analysisMarkers = (initial && initial.analysis_markers) || null;
-  var chart = null, rsiChart = null, macdChart = null;
+  var chart = null, rsiChart = null, macdChart = null, dispChart = null;
   var curInterval = '1d', curRange = '1y';
   var lastData = null;   // 마지막 렌더 데이터 — 지표 토글 시 refetch 없이 재렌더
+  var lastIchiOn = false; // 직전 렌더의 일목 on/off — 토글 시 보이는 범위 보정용
   var curSym = '';       // 현재 시장 통화 기호(₩/¥/€/NT$/HK$/$) — render 시 세팅
 
   // 지표 on/off 상태 (새로고침 시 항상 기본값으로 회귀 — 사용자 정책 2026-06-06).
   // 페이지 안에서는 토글 자유(in-memory ind 변경 후 재렌더), 단 localStorage 미저장.
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, log:false, events:false, fib:false, wave:false };
+  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, ichi:false, disp:false, log:false, events:false, fib:false, wave:false };
   function loadInd(){
     try { localStorage.removeItem(IND_KEY); } catch(e){}  // 옛 영속값 정리
     var out = {};
@@ -2878,6 +2885,26 @@ _CHART_JS = """
     });
   }
   function showSub(id, on){ var e = document.getElementById(id); if (e) { e.className = 'sub-chart' + (on ? '' : ' hidden'); e.innerHTML = ''; } return on ? document.getElementById(id) : null; }
+  // 하위 pane(RSI/MACD/이격도)의 시간축을 메인과 **같은 인덱스 공간**으로 맞춘다.
+  // lightweight-charts 의 논리적 인덱스는 그 차트가 가진 시간점의 순번이라,
+  // RSI(앞 14봉 결측)·MACD(앞 26봉)처럼 시작이 다르면 fitContent/논리범위 동기화가
+  // 서로 다른 봉을 가리킨다(기존부터 있던 어긋남). 일목균형표를 켜면 메인만
+  // 선행스팬 때문에 25봉 더 길어져 **오른쪽 끝까지** 틀어진다(독립 리뷰 2026-07-31).
+  // whitespace 데이터({time}만, 값 없음 → 렌더도 가격축 영향도 없음)로 전 pane 에
+  // 같은 시간점을 깔아 인덱스 공간을 일치시킨다.
+  // 이격도 기간별 색 — 기간 집합은 서버 상수(DISPARITY_PERIODS)가 정하므로
+  // 알려진 기간엔 고정색, 그 외엔 팔레트 회전으로 색이 없어 안 그려지는 일 방지.
+  var _DISP_FIXED = { d20: '#f5a623', d60: '#4c9aff' };
+  var _DISP_PAL = ['#26a69a', '#b07cff', '#e2574c', '#2dd4bf'];
+  function dispColor(key){
+    if (_DISP_FIXED[key]) return _DISP_FIXED[key];
+    var n = parseInt(String(key).replace(/^d/, ''), 10) || 0;
+    return _DISP_PAL[n % _DISP_PAL.length];
+  }
+  function padAxis(c, times){
+    try { c.addLineSeries({ lastValueVisible: false, priceLineVisible: false })
+           .setData(times.map(function(t){ return { time: t }; })); } catch(e){}
+  }
 
   function render(d, preserve){
     if (typeof LightweightCharts === 'undefined') {
@@ -2893,6 +2920,7 @@ _CHART_JS = """
     if (chart) { try { chart.remove(); } catch(e){} chart = null; }
     if (rsiChart) { try { rsiChart.remove(); } catch(e){} rsiChart = null; }
     if (macdChart) { try { macdChart.remove(); } catch(e){} macdChart = null; }
+    if (dispChart) { try { dispChart.remove(); } catch(e){} dispChart = null; }
     el.innerHTML = '';
     var layout = { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit', attributionLogo: false };
     var grid = { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } };
@@ -3008,6 +3036,67 @@ _CHART_JS = """
       chart.addLineSeries({ color: 'rgba(120,144,200,0.5)', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.bb_m));
       chart.addLineSeries({ color: 'rgba(120,144,200,0.9)', lineWidth: 1, lineStyle: 2, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.bb_l));
     }
+    // 일목균형표 — 5선 + 구름(Kumo). 선행스팬은 봉 **앞쪽**(아직 캔들이 없는
+    // 미래)까지 이어지므로 자체 시간축(ichi.times = 기존 축 + 미래 shift봉)을
+    // 쓴다. 그래서 d.times 에 묶인 zip() 이 아니라 zipT() 로 그린다.
+    // 색은 TradingView 기본값과 동일(사용자가 눈으로 대조할 대상).
+    if (ind.ichi && d.ichimoku && d.ichimoku.times) {
+      var ic = d.ichimoku;
+      function zipT(tt, a){ var o=[]; if(!a) return o; for(var i=0;i<tt.length&&i<a.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: tt[i], value: v }); } return o; }
+      function ichiLine(color, arr, width){
+        var s = chart.addLineSeries({ color: color, lineWidth: width || 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false });
+        s.setData(zipT(ic.times, arr));
+        return s;
+      }
+      var spanAS = ichiLine('#26a69a', ic.span_a);
+      ichiLine('#ef5350', ic.span_b);
+      ichiLine('#2962ff', ic.tenkan);
+      ichiLine('#b71c1c', ic.kijun);
+      ichiLine('#43a047', ic.chikou);
+      // 구름 채우기 — lightweight-charts 엔 '두 선 사이 밴드' 시리즈가 없어
+      // series primitive(v4.1+)로 직접 칠한다. ⚠️ 색은 **봉마다** 선행1>선행2 로
+      // 판정 — 시리즈 단위로 한 번만 정하면 구름 전환(twist)이 틀리게 칠해진다.
+      // primitive 미지원/예외면 선 5개만 남고 차트는 정상(graceful).
+      try {
+        if (spanAS.attachPrimitive) {
+          var kumoView = {
+            zOrder: function(){ return 'bottom'; },
+            renderer: function(){
+              return { draw: function(target){
+                try {
+                  target.useMediaCoordinateSpace(function(scope){
+                    var ctx = scope.context, tsc = chart.timeScale(), run = null;
+                    function flush(){
+                      if (run && run.pts.length > 1) {
+                        ctx.beginPath();
+                        for (var i = 0; i < run.pts.length; i++) { var p = run.pts[i]; if (i === 0) ctx.moveTo(p.x, p.a); else ctx.lineTo(p.x, p.a); }
+                        for (var j = run.pts.length - 1; j >= 0; j--) { var q = run.pts[j]; ctx.lineTo(q.x, q.b); }
+                        ctx.closePath();
+                        ctx.fillStyle = run.up ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)';
+                        ctx.fill();
+                      }
+                      run = null;
+                    }
+                    for (var k = 0; k < ic.times.length; k++) {
+                      var a = ic.span_a[k], b = ic.span_b[k];
+                      if (a === null || a === undefined || b === null || b === undefined) { flush(); continue; }
+                      var x = tsc.timeToCoordinate(ic.times[k]);
+                      var ya = spanAS.priceToCoordinate(a), yb = spanAS.priceToCoordinate(b);
+                      if (x === null || ya === null || yb === null) { flush(); continue; }
+                      var pt = { x: x, a: ya, b: yb }, up = (a >= b);
+                      if (run && run.up !== up) { run.pts.push(pt); flush(); run = { up: up, pts: [pt] }; }
+                      else { if (!run) run = { up: up, pts: [] }; run.pts.push(pt); }
+                    }
+                    flush();
+                  });
+                } catch(e) {}
+              } };
+            }
+          };
+          spanAS.attachPrimitive({ updateAllViews: function(){}, paneViews: function(){ return [kumoView]; } });
+        }
+      } catch(e) {}
+    }
     if (ind.vol && d.volume) {
       var volS = chart.addHistogramSeries({ priceScaleId: 'vol', priceFormat: { type: 'volume' }, lastValueVisible: false, priceLineVisible: false });
       chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
@@ -3063,6 +3152,91 @@ _CHART_JS = """
     }
     if (!(preserve && prevRange)) chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
+
+    // 일목균형표·이격도 설명 패널 — 차트엔 선과 구름만 보여 '지금 무슨 상태인지'를
+    // 읽을 수 없다. 피보나치·엘리엇에서 똑같은 지적을 받았으므로(2026-07-31)
+    // 이번엔 처음부터 함께 넣는다. 켜진 지표만 표시.
+    (function renderIchiPanel(){
+      var ie = document.getElementById('chart-ichi');
+      if (!ie) return;
+      if (!(ind.ichi || ind.disp)) { ie.style.display = 'none'; ie.innerHTML = ''; return; }
+      var dc = (d.decimals === 0) ? 0 : 2;
+      var out = [];
+
+      if (ind.ichi && d.ichimoku && d.ichimoku.signal) {
+        var s = d.ichimoku.signal, P = d.ichimoku.periods || [9, 26, 52];
+        var PVC = { above: '구름 <b>위</b> — 상승추세(구름이 지지 역할)',
+                    below: '구름 <b>아래</b> — 하락추세(구름이 저항 역할)',
+                    'in':  '구름 <b>안</b> — 추세 없음(대부분의 룰이 이 구간 신호를 보류)' };
+        var TK  = { golden: '전환선이 기준선 <b>위</b>(호전·골든크로스)',
+                    dead:   '전환선이 기준선 <b>아래</b>(역전·데드크로스)' };
+        var STR = { strong: '강', neutral: '중', weak: '약' };
+        var AT  = { above: '구름 위', 'in': '구름 안', below: '구름 아래' };
+        var CH  = { above: '후행스팬이 그 자리 과거 가격 <b>위</b>(강세 확인)',
+                    below: '후행스팬이 그 자리 과거 가격 <b>아래</b>(약세 확인)' };
+        var CLD = { bull: '<b>양운</b>(선행1&gt;선행2 · 강세)', bear: '<b>음운</b>(선행1&lt;선행2 · 약세)' };
+        var L = [];
+        if (s.price_vs_cloud) L.push('① 가격 위치 — ' + PVC[s.price_vs_cloud]);
+        if (s.cloud) L.push('② 구름 — ' + CLD[s.cloud]
+          + (s.cloud_top != null ? ' · 상단 ' + fmtPrice(s.cloud_top, dc) + ' / 하단 ' + fmtPrice(s.cloud_bot, dc) : '')
+          + (s.twist_in != null ? ' · <b>' + s.twist_in + '봉 뒤 구름 전환</b> 예정' : ''));
+        if (s.tk_cross) L.push('③ 전환·기준 — ' + TK[s.tk_cross]
+          + (s.tk_strength ? ' · 강도 <b>' + STR[s.tk_strength] + '</b>' : '')
+          + (s.tk_age != null ? '(' + s.tk_age + '봉 전 ' + (AT[s.tk_at] || '') + '에서 교차)' : '')
+          + (s.kijun_slope ? ' · 기준선 ' + ({ up: '상승', down: '하락', flat: '횡보' })[s.kijun_slope] : ''));
+        if (s.chikou) L.push('④ 후행스팬 — ' + CH[s.chikou]);
+        var tr = '';
+        if (s.three_role === 'bull') tr = '<div style="margin-top:3px;color:#26a69a"><b>▲ 삼역호전(三役好転)</b> — ①전환&gt;기준(기준선 상승·횡보) ②후행스팬 상향 ③가격이 구름 위, 세 조건 동시 충족. 일목에서 가장 신뢰도 높다고 보는 복합 신호입니다.</div>';
+        else if (s.three_role === 'bear') tr = '<div style="margin-top:3px;color:#e2574c"><b>▼ 삼역역전(三役逆転)</b> — 삼역호전의 정확한 거울상(전환&lt;기준·후행 하향·가격이 구름 아래). 약세 복합 신호입니다.</div>';
+        var sc = (s.score > 0 ? '+' : '') + s.score;
+        out.push('<div><b style="color:#26a69a">☁️ 일목균형표</b> — 전환 ' + P[0] + ' · 기준 ' + P[1] + ' · 선행2 ' + P[2]
+          + ' · 이격 ' + (d.ichimoku.shift + 1) + '(당봉 포함) · 종합 <b>' + sc + '</b>/±4</div>'
+          + (L.length ? '<div style="margin-top:2px">' + L.join('<br>') + '</div>' : '')
+          + tr
+          + '<div class="cd-desc" style="margin-top:3px">전환선·기준선·선행스팬2 는 이동평균이 아니라 <b>그 기간 고가와 저가의 한가운데</b>(가격대의 균형점)입니다. '
+          + '구름은 <b>' + (d.ichimoku.shift + 1) + '봉 앞</b>에 그려져 차트 오른쪽 빈 공간까지 이어지며, 그래서 구름 전환(twist)을 미리 볼 수 있습니다. '
+          + '후행스팬은 반대로 뒤로 밀려 오른쪽 끝에서 끊기는 것이 정상입니다(미래 종가를 알 수 없으므로). '
+          + '구름이 두꺼울수록 지지·저항이 강하다고 봅니다. 파라미터 9·26·52 는 주봉·분봉에서도 바꾸지 않는 것이 표준 관행입니다. '
+          + '⚠️ 종합 점수는 네 신호의 단순 합계일 뿐 <b>맞을 확률이 아닙니다</b> — 참고용.</div>');
+      } else if (ind.ichi) {
+        // 원인별로 다른 안내 — 하나로 뭉뜽그리면 '더 긴 범위를 고르라'는 조언이
+        // 도움이 안 되는 경우에도 그대로 뜬다(독립 리뷰 2026-07-31).
+        // (a) 선은 있는데 signal 만 없음 = 마지막 봉 종가 결측
+        // (b) 필드 자체가 없음 = 아직 로딩 중(저장 placeholder 는 용량상 미포함) 또는 봉 부족
+        var why = (d.ichimoku)
+          ? '마지막 봉의 종가가 없어 현재 상태를 판정할 수 없습니다(선은 그대로 표시됩니다).'
+          : '아직 계산된 값이 없습니다. 차트를 불러오는 중이거나, 이 구간의 봉이 모자랍니다(선행스팬2 52봉 + 이격 25봉 = <b>최소 77봉</b>) — 더 긴 범위를 선택해 보세요.';
+        out.push('<div><b style="color:#26a69a">☁️ 일목균형표</b> <span class="cd-desc">— ' + why + '</span></div>');
+      }
+
+      if (ind.disp && d.disparity && d.disparity.series) {
+        var ds = d.disparity.series, db = d.disparity.bands || {};
+        var ZONE = { hot: '<b style="color:#e2574c">과열</b>', cold: '<b style="color:#26a69a">침체</b>', normal: '보통' };
+        var dl = [];
+        // 기간은 서버(ichimoku.DISPARITY_PERIODS)가 정한다 — JS 에 20/60 을 박아두면
+        // 상수를 바꿨을 때 페이로드는 오는데 화면엔 안 나오는 드리프트가 생긴다.
+        Object.keys(ds).forEach(function(key){
+          var p = key.replace(/^d/, ''), arr = ds[key]; if (!arr) return;
+          var v = lastNonNull(arr); if (v == null) return;
+          var b = db[p], z = 'normal';
+          if (b) z = (v >= b.hot) ? 'hot' : (v <= b.cold ? 'cold' : 'normal');
+          dl.push(p + '일 <b>' + fmtNum(v, 1) + '</b> ' + ZONE[z]
+            + (b ? ' <span class="cd-desc">(과열 ' + fmtNum(b.hot, 0) + ' 이상 · 침체 ' + fmtNum(b.cold, 0) + ' 이하)</span>' : ''));
+        });
+        out.push('<div' + (out.length ? ' style="margin-top:7px"' : '') + '><b style="color:#f5a623">📏 이격도</b> — 종가가 이동평균에서 얼마나 벌어졌나 = <b>종가 ÷ N일 이동평균 × 100</b>. 100이면 이평선과 정확히 일치.</div>'
+          + (dl.length ? '<div style="margin-top:2px">' + dl.join(' · ') + '</div>' : '')
+          + '<div class="cd-desc" style="margin-top:3px">100 위=이평선 위(과열 쪽) · 아래=이평선 아래(침체 쪽). 평균으로 되돌아오려는 성질(평균회귀)을 이용한 <b>단기 시점 포착</b>용입니다. '
+          + '기준선은 키움증권 기술적지표 가이드 값(20일 105/95 · 60일 110/90)을 씁니다 — 국내 소스마다 표가 달라(한경 계열은 국면별 106/98 등) <b>절대 기준이 아닙니다</b>. '
+          + '⚠️ <b>추세장 함정</b>: 강한 추세에서는 이격도가 과열/침체에 머문 채 계속 진행합니다. 상승장에서 105 넘었다고 파는 건 손실로 이어지기 쉬워, '
+          + '분할 매매 + MACD·일목 같은 추세지표로 확인하는 것이 표준 권고입니다. 20일·60일이 <b>동시에</b> 극단일 때가 신뢰도가 높습니다. '
+          + '(서구 Disparity Index 는 0 기준 = 이격도−100 이라 임계값 숫자가 다릅니다.)</div>');
+      } else if (ind.disp) {
+        out.push('<div' + (out.length ? ' style="margin-top:7px"' : '') + '><b style="color:#f5a623">📏 이격도</b> <span class="cd-desc">— 이 구간은 봉이 모자라 계산할 수 없습니다(20일 이격도에 최소 20봉 필요).</span></div>');
+      }
+
+      ie.innerHTML = out.join('');
+      ie.style.display = out.length ? '' : 'none';
+    })();
 
     // 피보나치·엘리엇 설명 패널 — 차트엔 선/점만 찍히고 어느 선이 몇 %인지,
     // 무슨 패턴을 몇 %의 적합도로 잡았는지 알 수 없어 해석이 불가능했다
@@ -3236,8 +3410,12 @@ _CHART_JS = """
         tip.style.display = 'none'; buildOHLC(d, null); return;   // 커서 이탈 → 마지막 봉 복귀
       }
       var idx = d.times.indexOf(param.time);
-      if (idx < 0) { tip.style.display = 'none'; buildOHLC(d, null); return; }
-      buildOHLC(d, idx);   // 상단바를 hover 봉으로 갱신
+      // 일목균형표를 켜면 시간축이 미래(선행스팬 투영 구간)까지 늘어난다. 그 구간엔
+      // 캔들이 없어 idx 는 -1 이지만 구름 값은 있으므로 툴팁을 살려 둔다.
+      // (JS 에서 arr[-1] 은 undefined → trow 가 알아서 건너뛰므로 나머지 행은 무해.)
+      var ichiT = (ind.ichi && d.ichimoku && d.ichimoku.times) ? d.ichimoku.times.indexOf(param.time) : -1;
+      if (idx < 0 && ichiT < 0) { tip.style.display = 'none'; buildOHLC(d, null); return; }
+      buildOHLC(d, idx >= 0 ? idx : null);   // 상단바를 hover 봉으로 갱신(미래 봉이면 마지막 봉 유지)
       var ttDate = param.time; if (typeof ttDate === 'number') { var _dt = new Date(ttDate * 1000); ttDate = _dt.getUTCFullYear()+'-'+String(_dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(_dt.getUTCDate()).padStart(2,'0')+' '+String(_dt.getUTCHours()).padStart(2,'0')+':'+String(_dt.getUTCMinutes()).padStart(2,'0'); }
       var rows = ['<div class="tt-date">' + ttDate + '</div>'];
       function trow(name, val, color, dc, kind) {
@@ -3260,6 +3438,22 @@ _CHART_JS = """
         trow('볼린저상', d.bb_u && d.bb_u[idx], '#7890c8', prec);
         trow('볼린저하', d.bb_l && d.bb_l[idx], '#7890c8', prec);
       }
+      // 일목균형표는 자체 시간축(미래 포함)이라 인덱스가 d.times 와 다르다 —
+      // 그 축에서 다시 찾는다(미래 봉 hover 시에도 구름 값이 보이게).
+      if (ichiT >= 0) {
+        var ii = ichiT;
+        if (ii >= 0) {
+          trow('전환선', d.ichimoku.tenkan[ii], '#2962ff', prec);
+          trow('기준선', d.ichimoku.kijun[ii], '#b71c1c', prec);
+          trow('선행1', d.ichimoku.span_a[ii], '#26a69a', prec);
+          trow('선행2', d.ichimoku.span_b[ii], '#ef5350', prec);
+          trow('후행', d.ichimoku.chikou[ii], '#43a047', prec);
+        }
+      }
+      if (ind.disp && d.disparity && d.disparity.series) {
+        var _dsr = d.disparity.series;
+        Object.keys(_dsr).forEach(function(key){ trow('이격도' + key.replace(/^d/, ''), _dsr[key][idx], dispColor(key), 1, 'raw'); });
+      }
       if (ind.rsi && d.rsi) trow('RSI', d.rsi[idx], '#b07cff', 1, 'raw');
       if (ind.macd && d.macd) trow('MACD', d.macd[idx], '#4c9aff', Math.max(prec, 3), 'raw');
       if (ind.vol && d.volume) trow('거래량', d.volume[idx], '#94a3b8', 0, 'vol');
@@ -3276,11 +3470,14 @@ _CHART_JS = """
     });
 
     var linked = [chart];
+    // 전 pane 공통 시간축 — 일목을 켜면 메인이 선행스팬만큼 길어지므로 그 축을 쓴다.
+    var axisTimes = (ind.ichi && d.ichimoku && d.ichimoku.times) ? d.ichimoku.times : d.times;
 
     // RSI(14) pane.
     var rsiEl = showSub('rsi-chart', ind.rsi && !!d.rsi);
     if (rsiEl) {
       rsiChart = subChart(rsiEl);
+      padAxis(rsiChart, axisTimes);
       var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: true, priceLineVisible: false, title: 'RSI' });
       rsiS.setData(zip(d.rsi));
       rsiS.createPriceLine({ price: 70, color: 'rgba(229,87,76,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '70' });
@@ -3294,6 +3491,7 @@ _CHART_JS = """
     var macdEl = showSub('macd-chart', ind.macd && !!d.macd);
     if (macdEl) {
       macdChart = subChart(macdEl);
+      padAxis(macdChart, axisTimes);
       var mpf = { precision: 3, minMove: 0.001 };
       var histS = macdChart.addHistogramSeries({ priceFormat: mpf, lastValueVisible: false, priceLineVisible: false });
       var hd = [];
@@ -3309,9 +3507,51 @@ _CHART_JS = """
       linked.push(macdChart);
     }
 
+    // 이격도 pane — 종가/이동평균×100(한국 관행, 100이 기준선). 20일·60일 2선 +
+    // 100 기준선 + 과열/침체 밴드(키움 기준: 20일 105/95 · 60일 110/90).
+    var dispEl = showSub('disp-chart', ind.disp && !!(d.disparity && d.disparity.series));
+    if (dispEl) {
+      dispChart = subChart(dispEl);
+      padAxis(dispChart, axisTimes);
+      var dseries = d.disparity.series, dbands = d.disparity.bands || {};
+      var dpf = { precision: 1, minMove: 0.1 };
+      // 색은 기간 순서대로 — 알려진 기간(20/60)은 고정색, 그 외는 회전.
+      var DCOL = dispColor;
+      var firstDS = null;
+      Object.keys(dseries).forEach(function(k){
+        if (!dseries[k]) return;
+        var s = dispChart.addLineSeries({ color: DCOL(k), lineWidth: 1, priceFormat: dpf, lastValueVisible: true, priceLineVisible: false, title: k.slice(1) + '일' });
+        s.setData(zip(dseries[k]));
+        if (!firstDS) firstDS = s;
+      });
+      if (firstDS) {
+        // 100 = 이동평균과 정확히 일치하는 지점(위=이평 위, 아래=이평 아래).
+        firstDS.createPriceLine({ price: 100, color: 'rgba(148,163,184,0.75)', lineWidth: 1, lineStyle: 0, axisLabelVisible: false, title: '100' });
+        Object.keys(dbands).forEach(function(p){
+          var b = dbands[p], col = (p === '20') ? 'rgba(245,166,35,0.45)' : 'rgba(76,154,255,0.45)';
+          firstDS.createPriceLine({ price: b.hot,  color: col, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: p + '일 과열' });
+          firstDS.createPriceLine({ price: b.cold, color: col, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: p + '일 침체' });
+        });
+      }
+      dispChart.timeScale().fitContent();
+      dispChart.applyOptions({ width: dispEl.clientWidth });
+      linked.push(dispChart);
+    }
+
     if (linked.length > 1) linkTimeScales(linked);
     // 토글 재렌더면 저장한 뷰 복원 — linkTimeScales 가 sub-pane 까지 동기화.
-    if (preserve && prevRange) { try { chart.timeScale().setVisibleLogicalRange(prevRange); } catch(e){} }
+    // 토글 재렌더면 저장한 뷰 복원. 단 일목균형표를 **방금 켰다면** 시간축이
+    // 선행스팬만큼 오른쪽으로 늘어났는데 옛 범위를 그대로 복원하면 정작 보여주려던
+    // 미래 구름이 화면 밖에 남는다(가이드는 '오른쪽으로 늘어난다'고 약속하는데
+    // 화면은 그대로 — 실수#11 '배포완료 ≠ 화면에 보임'). 껐다면 반대로 되돌린다.
+    if (preserve && prevRange) {
+      var rr = { from: prevRange.from, to: prevRange.to };
+      var sh = (d.ichimoku && d.ichimoku.shift) || 0;
+      if (ind.ichi && !lastIchiOn) rr.to += sh;
+      else if (!ind.ichi && lastIchiOn) rr.to -= sh;
+      try { chart.timeScale().setVisibleLogicalRange(rr); } catch(e){}
+    }
+    lastIchiOn = !!(ind.ichi && d.ichimoku);
     buildValues(d);
     buildHeadline(d);
     buildOHLC(d, null);   // 기본 = 마지막 봉
@@ -3406,6 +3646,19 @@ _CHART_JS = """
     if (ind.bb && d.bb_u) {
       items.push(['볼린저상', lastNonNull(d.bb_u), '#7890c8', dec]);
       items.push(['볼린저하', lastNonNull(d.bb_l), '#7890c8', dec]);
+    }
+    // 일목균형표 — 마지막 **실제 봉** 기준값(signal). lastNonNull 을 쓰면
+    // 선행스팬은 미래 끝값을 집어 '지금 구름'과 어긋난다.
+    if (ind.ichi && d.ichimoku && d.ichimoku.signal) {
+      var isg = d.ichimoku.signal;
+      items.push(['전환선', isg.tenkan, '#2962ff', dec]);
+      items.push(['기준선', isg.kijun, '#b71c1c', dec]);
+      items.push(['구름상단', isg.cloud_top, '#26a69a', dec]);
+      items.push(['구름하단', isg.cloud_bot, '#ef5350', dec]);
+    }
+    if (ind.disp && d.disparity && d.disparity.series) {
+      var _dsv = d.disparity.series;
+      Object.keys(_dsv).forEach(function(key){ items.push(['이격도' + key.replace(/^d/, ''), lastNonNull(_dsv[key]), dispColor(key), 1, 'raw']); });
     }
     if (ind.rsi && d.rsi)   items.push(['RSI', lastNonNull(d.rsi), '#b07cff', 1, 'raw']);
     if (ind.macd && d.macd) items.push(['MACD', lastNonNull(d.macd), '#4c9aff', Math.max(dec,3), 'raw']);
@@ -3592,6 +3845,7 @@ _CHART_JS = """
       if (chart) chart.applyOptions({ width: el.clientWidth });
       var re = document.getElementById('rsi-chart'); if (rsiChart && re) rsiChart.applyOptions({ width: re.clientWidth });
       var me = document.getElementById('macd-chart'); if (macdChart && me) macdChart.applyOptions({ width: me.clientWidth });
+      var de = document.getElementById('disp-chart'); if (dispChart && de) dispChart.applyOptions({ width: de.clientWidth });
     });
     var last = document.documentElement.dataset.theme;
     setInterval(function(){
@@ -3602,6 +3856,7 @@ _CHART_JS = """
         if (chart) chart.applyOptions(opts);
         if (rsiChart) rsiChart.applyOptions(opts);
         if (macdChart) macdChart.applyOptions(opts);
+        if (dispChart) dispChart.applyOptions(opts);
       }
     }, 60000);
   }
@@ -16253,6 +16508,8 @@ def _lookup_chart_html(ticker: str) -> str:
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="ichi">일목균형표</button>
+      <button class="chart-ind-btn" data-ind="disp">이격도</button>
       <button class="chart-ind-btn" data-ind="fib">피보나치</button>
       <button class="chart-ind-btn" data-ind="wave">엘리엇</button>
       <button class="chart-ind-btn" data-ind="log">로그</button>
@@ -16268,11 +16525,13 @@ def _lookup_chart_html(ticker: str) -> str:
         <div id="price-chart" class="price-chart" data-ticker="{_tkr_esc}"></div>
         <div id="rsi-chart" class="sub-chart"></div>
         <div id="macd-chart" class="sub-chart"></div>
+        <div id="disp-chart" class="sub-chart"></div>
       </div>
       <div id="chart-values" class="chart-values"></div>
     </div>
     <div id="chart-caption" class="chart-caption"></div>
     <script type="application/json" id="chart-data">{_chart_payload}</script>
+    <div id="chart-ichi" class="chart-disc" style="display:none"></div>
     <div id="chart-fibwave" class="chart-disc" style="display:none"></div>
     <div id="chart-disc" class="chart-disc"></div>
 </section>"""

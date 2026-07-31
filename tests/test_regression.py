@@ -2851,6 +2851,345 @@ class TestElliottFib20260729:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8d) 일목균형표 · 이격도 차트 오버레이 (2026-07-31 사용자 요청)
+#     정석(StockCharts ChartSchool · TradingView Pine 원문 · 楽天/マネックス証券 ·
+#     키움증권 기술적지표 가이드 · 알파스퀘어)과 대조해 구현. 이 테스트가
+#     "이동평균이 아니라 Donchian 중간값", "선행 이격 = 당봉 포함 26 = 25봉",
+#     "이격도는 100 기준(한국 관행)" 같은 표준을 영구 고정한다.
+# ─────────────────────────────────────────────────────────────────────────
+class TestIchimokuDisparity20260731:
+    """feat: 일목균형표(9/26/52) + 이격도(20/60) 차트 오버레이."""
+
+    @staticmethod
+    def _ramp(n=140, step=0.5, start=100.0):
+        c = [start + i * step for i in range(n)]
+        return [x + 1 for x in c], [x - 1 for x in c], c
+
+    # ── 표준 산식 ────────────────────────────────────────────────────
+    def test_lines_are_donchian_midpoints_not_moving_averages(self):
+        """가장 흔한 오구현: 전환선을 close 의 9일 이동평균으로 계산하는 것.
+        일목의 세 선은 **그 기간 고가·저가의 한가운데**(당봉 포함)다."""
+        from bot.ichimoku import _mid
+        h, lo = [10, 12, 11, 15, 14], [5, 6, 7, 9, 8]
+        m = _mid(h, lo, 3)
+        assert m[:2] == [None, None], "창이 안 찬 구간은 None"
+        assert m[2] == (12 + 5) / 2 == 8.5      # max(10,12,11)·min(5,6,7) — 당봉 포함
+        assert m[4] == (15 + 7) / 2 == 11.0
+        # 이동평균이었다면 (10+12+11)/3=11.0 이 나왔을 것 — 다른 값임을 고정
+        assert m[2] != sum(h[:3]) / 3
+
+    def test_displacement_is_tradingview_convention(self):
+        """이격량은 소스가 갈린다(TradingView 25봉 vs MT4/StockCharts 26봉).
+        사용자가 눈으로 대조할 대상이 TradingView 이므로 25봉으로 고정하되,
+        '당봉 포함 26번째'라는 원 정의와 같은 뜻임을 상수 관계로 못박는다."""
+        from bot.ichimoku import DISPLACEMENT, MIN_BARS, SENKOU_B, _SHIFT
+        assert DISPLACEMENT == 26 and _SHIFT == 25 == DISPLACEMENT - 1
+        assert MIN_BARS == SENKOU_B + _SHIFT == 77
+
+    def test_arrays_extend_into_the_future_and_align(self):
+        """선행스팬은 봉 **앞쪽**(캔들 없는 미래)까지 이어져야 한다 — 기존
+        index 에 그냥 shift 하면 투영 구간이 잘리는 게 일목 오구현 1위."""
+        from bot.ichimoku import _SHIFT, ichimoku
+        h, lo, c = self._ramp()
+        ich = ichimoku(h, lo, c)
+        n, L = len(c), len(c) + _SHIFT
+        for k in ("tenkan", "kijun", "span_a", "span_b", "chikou"):
+            assert len(ich[k]) == L, f"{k} 길이 불일치"
+        # 선행스팬: 앞 shift 개 None, 미래 끝까지 값 존재
+        assert ich["span_a"][:_SHIFT] == [None] * _SHIFT
+        assert ich["span_a"][-1] is not None and ich["span_b"][-1] is not None
+        # 선행1 = '그 시점의' 전환·기준 평균을 통째로 이동한 것(26봉 전 값 아님)
+        i = L - 1
+        assert abs(ich["span_a"][i]
+                   - (ich["tenkan"][i - _SHIFT] + ich["kijun"][i - _SHIFT]) / 2) < 1e-9
+        # 후행스팬 = 당봉 종가를 shift 봉 뒤로 → 오른쪽 끝 shift 개는 None(정상)
+        assert ich["chikou"][0] == c[_SHIFT]
+        assert ich["chikou"][n - _SHIFT - 1] == c[n - 1]
+        assert all(v is None for v in ich["chikou"][n - _SHIFT:])
+
+    def test_short_history_yields_nothing_not_a_half_cloud(self):
+        """77봉 미만이면 현재 봉의 구름이 성립하지 않는다 — 반쪽 구름을 그리는
+        대신 아예 미제공(호출부 graceful)."""
+        from bot.ichimoku import MIN_BARS, ichimoku
+        h, lo, c = self._ramp(n=MIN_BARS - 1)
+        assert ichimoku(h, lo, c) is None
+        h2, lo2, c2 = self._ramp(n=MIN_BARS)
+        assert ichimoku(h2, lo2, c2) is not None
+
+    # ── 신호 판정 ────────────────────────────────────────────────────
+    def test_three_role_reversal_bull_and_mirror_bear(self):
+        """삼역호전(三役好転) = ①전환>기준(기준선 상승·횡보) ②후행스팬 상향
+        ③가격이 구름 위, 셋 동시. 삼역역전은 정확한 거울상."""
+        from bot.ichimoku import ichimoku, ichimoku_signal
+        h, lo, c = self._ramp()
+        up = ichimoku_signal(ichimoku(h, lo, c), c)
+        assert up["price_vs_cloud"] == "above" and up["cloud"] == "bull"
+        assert up["tk_cross"] == "golden" and up["chikou"] == "above"
+        assert up["three_role"] == "bull" and up["score"] == 4
+        h2, lo2, c2 = self._ramp(step=-0.5, start=200.0)
+        dn = ichimoku_signal(ichimoku(h2, lo2, c2), c2)
+        assert dn["three_role"] == "bear" and dn["score"] == -4
+
+    def test_cross_age_counts_from_the_cross_bar_itself(self):
+        """`_cross_age` 는 '부호가 바뀐 봉' 까지의 거리다 — 당봉에서 크로스했으면
+        0. 옛 구현은 **크로스 직전 봉**을 세어 1 을 돌려줬고(off-by-one), 그
+        결과 tk_at 이 크로스 한 봉 전의 구름 위치를 보게 돼 강·약 등급이
+        뒤집혔다(독립 리뷰 2026-07-31)."""
+        from bot.ichimoku import _cross_age
+        assert _cross_age([1, 1, 1, 1, 3], [2] * 5, 4, 1) == 0, "당봉 크로스는 0"
+        assert _cross_age([1, 1, 1, 3, 3], [2] * 5, 4, 1) == 1
+        assert _cross_age([3] * 5, [2] * 5, 4, 1) is None, "창 안에 크로스 없음"
+
+    def test_tk_cross_strength_graded_at_the_cross_bar(self):
+        """크로스 강도는 **크로스가 난 그 봉**의 구름 대비 위치로 매긴다
+        (StockCharts 관행). 현재 위치로 대신하면 크로스 후 가격이 움직인 경우
+        등급이 틀어진다. 크로스 봉과 그 직전 봉이 구름 **반대편**에 오도록
+        합성해, off-by-one 이 되살아나면 반드시 깨지게 만든다."""
+        from bot.ichimoku import _SHIFT, ichimoku_signal
+        n, sh = 30, _SHIFT
+        ich = {
+            "shift": sh, "periods": [9, 26, 52], "bars": n,
+            "chikou": [None] * (n + sh),
+            # i=28 에서 전환선이 기준선 위로 = 골든크로스(당봉 i=29 기준 1봉 전)
+            "tenkan": [8.0] * 28 + [12.0, 12.0] + [None] * sh,
+            "kijun": [10.0] * 30 + [None] * sh,
+            # 구름: i≤28 은 높은 곳(18~20), i=29 만 낮은 곳(4~5)
+            "span_a": [None] * sh + [20.0] * 4 + [5.0],
+            "span_b": [None] * sh + [18.0] * 4 + [4.0],
+        }
+        s = ichimoku_signal(ich, [9.0] * n)
+        assert s["tk_cross"] == "golden" and s["tk_age"] == 1
+        # 크로스 봉(i=28)에서 가격 9 는 구름(18~20) **아래** → 약한 골든크로스.
+        # off-by-one 이면 i=27 을 보게 되는데 거기도 아래라 값은 같지만, tk_age
+        # 자체가 2 가 되어 위 assert 에서 먼저 걸린다.
+        assert s["tk_at"] == "below" and s["tk_strength"] == "weak"
+        # 현재 봉(i=29)에서는 구름(4~5) 위 — 현재 위치로 매겼다면 'strong' 이었을 것
+        assert s["price_vs_cloud"] == "above", "현재 위치와 크로스 시점이 달라야 의미 있는 회귀"
+
+    def test_future_cloud_twist_is_detected(self):
+        """구름은 앞에 그려지므로 색이 바뀌는 지점(twist)이 **미리** 보인다 —
+        일목의 선행 지표적 성격. 미래 구간까지 스캔하는지 고정."""
+        from bot.ichimoku import _SHIFT, ichimoku_signal
+        n, sh = 30, _SHIFT
+        ich = {
+            "shift": sh, "periods": [9, 26, 52], "bars": n,
+            "tenkan": [10.0] * n + [None] * sh,
+            "kijun": [9.0] * n + [None] * sh,
+            "chikou": [None] * (n + sh),
+            "span_a": [None] * sh + [10.0] * n,
+            # 실제 봉 구간은 양운(B=8), 미래 3봉 뒤부터 음운(B=12)
+            "span_b": ([None] * sh + [8.0] * (n - sh)
+                       + [8.0 if k < 3 else 12.0 for k in range(1, sh + 1)]),
+        }
+        s = ichimoku_signal(ich, [11.0] * n)
+        assert s["cloud"] == "bull" and s["twist_in"] == 3
+        flat = dict(ich, span_b=[None] * sh + [8.0] * n)
+        assert ichimoku_signal(flat, [11.0] * n)["twist_in"] is None
+
+    # ── 이격도 ──────────────────────────────────────────────────────
+    def test_disparity_uses_korean_100_base_not_western_zero_base(self):
+        """한국 이격도 = 종가/이평×100 (100 기준). 서구 Disparity Index 는
+        (종가-이평)/이평×100 (0 기준)으로 **다른 척도**다 — 섞이면 '105'가
+        +105% 로 읽히는 대형 오독이 된다."""
+        from bot.ichimoku import disparity
+        assert disparity([100.0] * 30, (20,))["d20"][-1] == 100.0   # 0 이 아님
+        c = [10000.0] * 19 + [10800.0]
+        ma = (10000.0 * 19 + 10800.0) / 20
+        assert disparity(c, (20,))["d20"][-1] == round(10800.0 / ma * 100, 2)
+        assert disparity([100.0] * 30, (20,))["d20"][:19] == [None] * 19
+        assert disparity([1.0] * 10, (20,)) == {}      # 데이터 부족 → 미제공
+        assert disparity([0.0] * 20, (20,)).get("d20", [None])[-1] is None  # 0 나눗셈
+
+    def test_disparity_bands_are_kiwoom_reference_values(self):
+        """국내 소스가 갈린다(키움 105/95 vs 한경 계열 국면별 106/98…).
+        국면 분류기가 필요 없는 키움판을 기본으로 고정 — 바꾸려면 화면
+        안내 문구도 같이 바꿔야 하므로 테스트로 묶어 둔다."""
+        from bot.ichimoku import DISPARITY_BANDS, DISPARITY_PERIODS, disparity_zone
+        assert DISPARITY_PERIODS == (20, 60)
+        assert DISPARITY_BANDS[20] == {"hot": 105.0, "cold": 95.0}
+        assert DISPARITY_BANDS[60] == {"hot": 110.0, "cold": 90.0}
+        assert disparity_zone(105.0, 20) == "hot" and disparity_zone(95.0, 20) == "cold"
+        assert disparity_zone(100.0, 20) == "normal"
+        assert disparity_zone(105.0, 60) == "normal"   # 60일은 110 부터 과열
+        assert disparity_zone(None, 20) is None and disparity_zone(100.0, 999) is None
+
+    # ── 시간축 확장 ──────────────────────────────────────────────────
+    def test_future_times_match_axis_type_and_calendar(self):
+        """미래 축 값은 기존 times 와 **타입이 같아야** 한다(분봉=epoch 정수·
+        그 외=YYYY-MM-DD 문자열). 섞이면 lightweight-charts 시간축이 깨진다."""
+        from bot.chart_data import _future_times
+        # ⚠️ ticker=None 으로 **폴백(주5일) 경로를 고정**해서 본다. ticker 를 주면
+        # VM 처럼 exchange_calendars 가 깔린 환경에선 실제 휴장일 캘린더를 타므로,
+        # 미래 공휴일이 창에 들어오는 순간 이 하드코딩 리스트가 깨진다(샌드박스에선
+        # 라이브러리가 없어 통과 → VM `make test` 에서만 실패, 독립 리뷰 2026-07-31).
+        d = _future_times(["2026-07-29", "2026-07-30", "2026-07-31"], "1d", None, 5)
+        assert d == ["2026-08-03", "2026-08-04", "2026-08-05",
+                     "2026-08-06", "2026-08-07"], "주말(8/1·8/2) 미건너뜀"
+        assert all(isinstance(x, str) for x in d)
+        # 캘린더 경로(있으면)는 값이 아니라 **구조**로 검증 — 환경 무관.
+        cal = _future_times(["2026-07-31"], "1d", "AAPL", 5)
+        assert len(cal) == 5 and cal == sorted(cal)
+        assert all(isinstance(x, str) and len(x) == 10 for x in cal)
+        assert all(x > "2026-07-31" for x in cal), "미래 세션만 나와야 함"
+        # 분기 기준은 interval 문자열이 아니라 **마지막 축 값의 타입** — 축을
+        # 만든 쪽(_series_payload)과 어긋나지 않게 하려는 의도적 설계.
+        ep = _future_times([1000, 1300, 1600, 1900], "5m", None, 3)
+        assert ep == [2200, 2500, 2800] and all(isinstance(x, int) for x in ep)
+        assert _future_times(["2026-07-31"], "1wk", None, 2) == ["2026-08-07", "2026-08-14"]
+        # 월봉 말일 클램프(1/31 → 2/28) + 연말 넘김
+        assert _future_times(["2026-01-31"], "1mo", None, 2) == ["2026-02-28", "2026-03-31"]
+        assert _future_times(["2026-11-30"], "1mo", None, 2) == ["2026-12-30", "2027-01-30"]
+        assert _future_times([], "1d", None, 5) == []
+        assert _future_times(["2026-07-31"], "1d", None, 0) == []
+
+    def test_market_calendar_future_sessions_graceful(self):
+        """휴장일 반영 세션이 우선이지만 라이브러리 부재(샌드박스)·미지원
+        시장이면 None → 호출부가 주5일 근사로 폴백(전 시장 동일 경로)."""
+        from bot.market_calendar import future_sessions
+        assert future_sessions("ZZZ", "2026-07-31", 5) is None
+        assert future_sessions("US", "2026-07-31", 0) is None
+        # ⚠️ 옛 버전은 `in (None,) or True` 라 **항상 참**이었다(아무것도 검증 못 함,
+        # 독립 리뷰 2026-07-31). 라이브러리 유무와 무관한 구조 검증으로 교체.
+        r = future_sessions("US", "2026-07-31", 5)
+        assert r is None or (
+            len(r) == 5 and r == sorted(r)
+            and all(isinstance(x, str) and len(x) == 10 and x > "2026-07-31" for x in r)
+        ), f"future_sessions 반환 형식 이상: {r}"
+
+    # ── 배선(payload → 화면) ────────────────────────────────────────
+    def test_payload_wiring(self):
+        """pandas 미설치 샌드박스라 실호출 대신 배선을 정적 검증."""
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "from bot.ichimoku import" in cd, "일목/이격도 모듈 미연결"
+        assert 'payload["ichimoku"]' in cd and 'payload["disparity"]' in cd
+        assert "_future_times(_times, interval, ticker" in cd, "미래 축 확장 미배선"
+        # 두 지표는 **독립 try** — 일목 쪽 예외에 이격도가 같이 휩쓸리면 안 된다.
+        assert 'log.debug("chart_data: ichimoku overlay skipped' in cd, "silent-fail 금지"
+        assert 'log.debug("chart_data: disparity overlay skipped' in cd, \
+            "이격도가 일목과 같은 try 에 묶임(한쪽 예외에 둘 다 소실)"
+        # signal 은 dict 리터럴 밖에서 미리 계산(여기서 나는 예외가 필드 전체를
+        # 날리지 않도록)
+        assert "_sig = ichimoku_signal(_ich, _cl)" in cd
+        # archive 에 영구 저장되는 스냅샷에는 두 지표를 넣지 않는다 — 전 구간
+        # 배열이라 1년 일봉 페이로드가 20KB→52KB(+157%)로 불어나는데, 저장본은
+        # /api/chart 응답으로 교체되기 전 잠깐 쓰는 placeholder 이고 두 지표
+        # 모두 기본 OFF 라 표시될 일이 없다.
+        assert "for_storage: bool = False" in cd, "저장용 경량 플래그 없음"
+        assert "if not for_storage:" in cd, "저장 경로에서 무거운 오버레이 미제외"
+        assert "ticker=ticker, for_storage=True)" in cd, \
+            "build_price_chart(저장 경로)가 경량 플래그를 안 씀"
+        # ±inf 는 json.dumps 가 'Infinity' 로 써서 JSON.parse 를 깨뜨린다.
+        # (_round 한정 — 거래량 _vol 은 int(inf) 가 OverflowError 로 잡혀 안전.)
+        import re as _re
+        rnd = _re.search(r"def _round\(v, nd=decimals\).*?\n    # ", cd, _re.S)
+        assert rnd and "math.isfinite(f)" in rnd.group(0), "_round 가 inf 를 안 거름"
+        assert "if math.isnan(f)" not in rnd.group(0), "_round 에 isnan 분기 잔존(inf 통과)"
+
+    def test_dashboard_wiring_both_surfaces(self):
+        """버튼·서브패널·설명패널이 **양쪽** 차트 화면에 있어야 한다(두 함수가
+        각자 HTML 을 들고 _CHART_JS 만 공유하는 구조라 개별 동기화 필요)."""
+        from bot.dashboard import _CHART_JS, _lookup_chart_html
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        for tok in ['data-ind="ichi"', 'data-ind="disp"',
+                    'id="disp-chart"', 'id="chart-ichi"']:
+            assert db.count(tok) == 2, f"{tok} 가 양쪽 대시보드에 없음"
+            assert tok in _lookup_chart_html("AAPL"), f"lookup 페이지에 {tok} 누락"
+        assert "ichi:false" in db and "disp:false" in db, "IND_DEFAULT 기본 OFF 미등록"
+        assert "renderIchiPanel" in _CHART_JS, "설명 패널 렌더러 미배선"
+        assert "zipT" in _CHART_JS, "일목 전용 시간축 zip 미배선"
+        # 구름은 봉마다 색을 정해야 twist 가 제대로 칠해진다
+        assert "attachPrimitive" in _CHART_JS and "useMediaCoordinateSpace" in _CHART_JS
+        assert "up = (a >= b)" in _CHART_JS, "구름 색 봉단위 판정 누락"
+        # 미래(투영) 구간 hover 시에도 툴팁이 살아야 함
+        assert "if (idx < 0 && ichiT < 0)" in _CHART_JS
+        # 서브 차트 정리/리사이즈/테마 동기화 3종
+        assert "dispChart.remove()" in _CHART_JS
+        assert "dispChart.applyOptions({ width: de.clientWidth })" in _CHART_JS
+        assert "if (dispChart) dispChart.applyOptions(opts);" in _CHART_JS
+
+    def test_subpanes_share_the_main_time_axis(self):
+        """하위 pane(RSI/MACD/이격도)은 자기 데이터가 시작되는 지점부터 시간축을
+        만든다 — 논리적 인덱스가 메인과 달라 fitContent·범위 동기화가 서로 다른
+        봉을 가리킨다(RSI 는 앞 14봉, MACD 는 26봉 결측). 일목을 켜면 메인만
+        선행스팬 25봉이 더 붙어 **오른쪽 끝까지** 어긋난다(독립 리뷰 2026-07-31).
+        whitespace 데이터로 전 pane 에 같은 시간점을 깔아 인덱스 공간을 맞춘다."""
+        from bot.dashboard import _CHART_JS
+        assert "function padAxis(c, times)" in _CHART_JS, "축 패딩 헬퍼 없음"
+        assert "return { time: t };" in _CHART_JS, "whitespace 데이터 미사용"
+        # 일목이 켜져 있으면 확장된 축을, 아니면 기본 축을 쓴다
+        assert ("var axisTimes = (ind.ichi && d.ichimoku && d.ichimoku.times) "
+                "? d.ichimoku.times : d.times;") in _CHART_JS
+        for c in ("rsiChart", "macdChart", "dispChart"):
+            assert f"padAxis({c}, axisTimes);" in _CHART_JS, f"{c} 축 미정렬"
+
+    def test_toggling_ichimoku_reveals_the_projected_cloud(self):
+        """일목은 기본 OFF 라 **버튼 토글**이 유일한 진입 경로인데, 그 경로는
+        preserve 재렌더라 fitContent 를 건너뛰고 옛 범위를 복원한다. 그러면
+        시간축만 25봉 길어지고 화면은 그대로라 정작 보여주려던 미래 구름이
+        밖에 남는다 — 가이드는 '오른쪽으로 늘어난다'고 약속하는데 화면은
+        안 변하는 실수#11 패턴(독립 리뷰 2026-07-31)."""
+        from bot.dashboard import _CHART_JS
+        assert "var lastIchiOn = false;" in _CHART_JS, "직전 토글 상태 미추적"
+        assert "if (ind.ichi && !lastIchiOn) rr.to += sh;" in _CHART_JS, \
+            "일목 켤 때 보이는 범위를 선행스팬만큼 안 넓힘"
+        assert "else if (!ind.ichi && lastIchiOn) rr.to -= sh;" in _CHART_JS, \
+            "일목 끌 때 되돌리지 않음(토글 반복 시 계속 넓어짐)"
+        assert "lastIchiOn = !!(ind.ichi && d.ichimoku);" in _CHART_JS
+
+    def test_disparity_periods_not_hardcoded_in_js(self):
+        """기간 집합의 SSoT 는 서버 상수(DISPARITY_PERIODS)다. JS 에 20/60 을
+        박아두면 상수를 바꿨을 때 페이로드는 오는데 화면엔 안 나온다."""
+        from bot.dashboard import _CHART_JS
+        assert "['d20', 'd60']" not in _CHART_JS and "['20', '60']" not in _CHART_JS
+        assert "d.disparity.series.d20" not in _CHART_JS, "툴팁/값패널에 기간 하드코딩"
+        assert _CHART_JS.count("Object.keys(ds") + _CHART_JS.count("Object.keys(_ds") >= 3, \
+            "패널·툴팁·값패널이 서버가 준 기간을 순회하지 않음"
+        assert "function dispColor(key)" in _CHART_JS, "미지 기간용 색 폴백 없음"
+
+    def test_chart_js_parses(self):
+        """`_CHART_JS` 는 53KB 짜리 파이썬 문자열이라 파이썬 syntax 검사를
+        통과해도 JS 문법 오류는 못 잡는다 — 오타 하나면 차트 전체가 죽는데
+        `ast.parse` 는 통과하므로 배포 후에야 발견된다. node 가 있으면
+        `node --check` 로 파싱까지 검증(없으면 skip — VM/CI 환경 차이 무관)."""
+        import os as _os
+        import shutil
+        import subprocess
+        import tempfile
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            pytest.skip("node 미설치 — JS 파싱 검증 skip")
+        from bot.dashboard import _CHART_JS
+        with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8",
+                                         delete=False) as f:
+            f.write(_CHART_JS)
+            path = f.name
+        try:
+            r = subprocess.run([node, "--check", path], capture_output=True, text=True)
+            assert r.returncode == 0, f"_CHART_JS JS 문법 오류:\n{r.stderr}"
+        finally:
+            _os.unlink(path)
+
+    def test_cache_version_bumped_for_new_payload_fields(self):
+        """페이로드에 ichimoku/disparity 가 추가됐으니 차트 캐시 버전도 올려야
+        배포 직후 옛 캐시가 새 필드 없이 서빙되지 않는다(실수#11)."""
+        import re as _re
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        m = _re.search(r"\{safe\}_\{interval\}_\{rng\}_v(\d+)\.json", srv)
+        assert m and int(m.group(1)) >= 6, "캐시 버전 ≥6 필요"
+
+    def test_guide_text_matches_behaviour(self):
+        """설명-동작 out-of-sync = 버그. 가이드가 표준 근거(고저 중간값·
+        선행 26봉·100 기준·추세장 함정)를 정확히 말하는지 고정."""
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        for tok in ["일목균형표", "이격도", "삼역호전", "구름(Kumo)", "후행스팬",
+                    "고가와 저가의 한가운데", "추세장 함정", "키움증권",
+                    "절대 기준이 아닙니다", "Disparity Index"]:
+            assert tok in db, f"가이드에 '{tok}' 누락"
+        # 기본 OFF 안내(피보나치·엘리엇과 동일 정책) — 새 지표 2종분 추가
+        assert db.count("<b>기본 OFF</b>") >= 4
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 9) 자산관리 — 뱅크샐러드 export 파서 (2026-06-04 P1 증분1)
 #    뱅샐현황 시트(섹션형) → 투자/재무/부동산/동산/대출/보험/현금흐름 구조화.
 #    1.고객정보(PII)는 파싱 안 함. 총자산/순자산은 export 가 빈 셀이라 항목

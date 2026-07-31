@@ -84,7 +84,9 @@ def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
         hi = hist["High"].reindex(close.index) if "High" in hist else None
         lo = hist["Low"].reindex(close.index) if "Low" in hist else None
-        payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker)
+        # for_storage — 이 페이로드만 archive 에 영구 저장된다(분석당 1건).
+        payload = _series_payload(close, currency, decimals, vol, op, hi, lo,
+                                  ticker=ticker, for_storage=True)
         # 저장 스냅샷은 1년 일봉 윈도 — 값 패널의 '기간 %' 라벨이 정직하게
         # '1년' 으로 표시되도록 명시(프론트가 d.period 로 라벨 산출).
         payload["period"] = "1y"
@@ -109,10 +111,63 @@ def _currency_for(ticker: str) -> tuple[str, int]:
         return "$", 2
 
 
+def _future_times(times: list, interval: str, ticker: str | None, n: int) -> list:
+    """마지막 봉 **이후** n개의 시간축 값.
+
+    일목균형표 선행스팬은 봉 앞쪽(아직 캔들이 없는 미래)에 그려지므로 축을
+    그만큼 늘려 줘야 한다 — 기존 index 에 그냥 shift 하면 투영 구간이 통째로
+    잘린다(일목 오구현 1위). 타입은 `_series_payload` 의 times 와 **반드시**
+    같아야 한다(분봉=epoch 정수 · 그 외=YYYY-MM-DD 문자열). 섞이면
+    lightweight-charts 시간축이 깨진다.
+
+    일봉은 휴장일까지 반영한 실제 세션(`bot/market_calendar`)을 우선 쓰고,
+    라이브러리 부재/미지원 시장이면 주5일 근사로 폴백 — 전 시장 동일 경로."""
+    if not times or n <= 0:
+        return []
+    last = times[-1]
+    if isinstance(last, (int, float)) and not isinstance(last, bool):
+        # 분봉 — 실측 봉 간격(중앙값)만큼 더한다. 고정 interval 분보다 실측이
+        # 안전(장 시작/마감 경계·결측봉으로 간격이 균일하지 않을 수 있음).
+        deltas = sorted(b - a for a, b in zip(times[:-1], times[1:]) if b > a)
+        step = (deltas[len(deltas) // 2] if deltas
+                else _INTERVAL_MINUTES.get(interval, 5) * 60)
+        return [int(last + step * (k + 1)) for k in range(n)]
+    import datetime as _dt
+    if interval == "1wk":
+        d0 = _dt.date.fromisoformat(last)
+        return [(d0 + _dt.timedelta(weeks=k + 1)).isoformat() for k in range(n)]
+    if interval == "1mo":
+        import calendar as _c
+        y, m, day = int(last[:4]), int(last[5:7]), int(last[8:10])
+        out: list = []
+        for _ in range(n):
+            m += 1
+            if m > 12:
+                m, y = 1, y + 1
+            out.append(f"{y:04d}-{m:02d}-{min(day, _c.monthrange(y, m)[1]):02d}")
+        return out
+    if ticker:      # 일봉 — 휴장일 반영한 실제 거래일 우선
+        try:
+            from bot.market import detect_market
+            from bot.market_calendar import future_sessions
+            sess = future_sessions(detect_market(ticker), last, n)
+            if sess and len(sess) == n:
+                return sess
+        except Exception:
+            pass
+    out, d0 = [], _dt.date.fromisoformat(last)
+    while len(out) < n:      # 폴백: 주5일 근사(공휴일 미반영 — 투영 구간이라 무해)
+        d0 += _dt.timedelta(days=1)
+        if d0.weekday() < 5:
+            out.append(d0.isoformat())
+    return out
+
+
 def _series_payload(
     close, currency: str, decimals: int,
     volume=None, opens=None, highs=None, lows=None,
     ticker: str | None = None, interval: str = "1d",
+    for_storage: bool = False,
 ) -> dict:
     """Build the parallel-array chart payload from a pandas close Series.
 
@@ -130,7 +185,9 @@ def _series_payload(
     def _round(v, nd=decimals) -> float | None:
         try:
             f = float(v)
-            if math.isnan(f):
+            # isnan 이 아니라 isfinite — ±inf 는 json.dumps 가 'Infinity' 로 써서
+            # JSON.parse 를 깨뜨린다(NaN 만 걸러선 부족).
+            if not math.isfinite(f):
                 return None
             return round(f, nd)
         except Exception:
@@ -208,6 +265,55 @@ def _series_payload(
             except Exception:
                 return None
         payload["volume"] = [_vol(v) for v in volume.values]
+
+    # 일목균형표 · 이격도 (2026-07-31 사용자 요청 — 정석 웹 리서치와 대조해 구현,
+    # 규칙·출처는 bot/ichimoku.py 독스트링). 순수 리스트 연산이라 전 시장 동일하고,
+    # 9/26/52 는 현대 표준 관행대로 **주기(일·주·분봉) 무관 고정**(스케일링 없음).
+    #
+    # ⚠️ for_storage(=archive 에 영구 저장되는 분석 스냅샷)면 건너뛴다. 두 지표는
+    # 전 구간 배열이라 1년 일봉 기준 페이로드가 20KB→52KB(+157%)로 불어나는데,
+    # 저장본은 상세 페이지가 /api/chart 로 '오늘까지' 를 받아오기 전 잠깐 쓰는
+    # placeholder 이고 두 지표 모두 기본 OFF 라 사실상 표시될 일이 없다.
+    # 실제로 그려지는 API 응답(1h 디스크 캐시)에는 그대로 들어간다.
+    if not for_storage:
+        try:
+            from bot.ichimoku import ichimoku, ichimoku_signal
+            _cl = payload.get("close") or []
+            _hi = payload.get("high") or _cl
+            _lo = payload.get("low") or _cl
+            _ich = ichimoku(_hi, _lo, _cl)
+            if _ich:
+                # 선행스팬이 그려질 미래 자리만큼 시간축을 늘린다(_future_times).
+                _ext = list(_times) + _future_times(_times, interval, ticker, _ich["shift"])
+                _n = len(_ext)      # 미래축 생성이 실패해도 길이를 맞춰 안전하게 잘림
+                # signal 은 미리 계산 — dict 리터럴 안에서 부르면 여기서 난 예외가
+                # ichimoku 필드를 통째로 날려 '선은 있는데 패널만 없는' 열화가 아니라
+                # 아무것도 없는 상태가 된다.
+                _sig = ichimoku_signal(_ich, _cl)
+                payload["ichimoku"] = {
+                    "times": _ext,
+                    "tenkan": _ich["tenkan"][:_n], "kijun": _ich["kijun"][:_n],
+                    "span_a": _ich["span_a"][:_n], "span_b": _ich["span_b"][:_n],
+                    "chikou": _ich["chikou"][:_n],
+                    "shift": _ich["shift"], "periods": _ich["periods"],
+                    "signal": _sig,
+                }
+        except Exception as exc:      # silent-fail 금지 — 원인 로그는 남긴다
+            log.debug("chart_data: ichimoku overlay skipped: %s", exc)
+        # 이격도는 **별도 try** — 일목 쪽 예외에 같이 휩쓸려 사라지면 안 된다
+        # (서로 독립 지표, 독립 리뷰 2026-07-31).
+        try:
+            from bot.ichimoku import DISPARITY_BANDS, DISPARITY_PERIODS, disparity
+            _dp = disparity(payload.get("close") or [], DISPARITY_PERIODS)
+            if _dp:
+                payload["disparity"] = {
+                    "series": _dp,
+                    "bands": {str(p): DISPARITY_BANDS[p]
+                              for p in DISPARITY_PERIODS
+                              if f"d{p}" in _dp and p in DISPARITY_BANDS},
+                }
+        except Exception as exc:
+            log.debug("chart_data: disparity overlay skipped: %s", exc)
 
     # 공시 이벤트 마커 (전 시장, ₩0). 차트가 보여줄 기간(span)을 넘겨 KR/US 는
     # 풀히스토리, JP/TW/CN 은 시장별 안전 캡으로 fetch. 보이는 날짜 구간으로 필터.
