@@ -120,7 +120,7 @@ _ABS_CHANGE_SIDS = {"USDKRW=X"}
 
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct_absfx_dxypct").encode()
+     + "|spark1mo_span_pct_absfx_dxypct_periodchg").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -619,12 +619,35 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             if value is None:
                 continue  # graceful: drop empty cards
             spark_cache[key] = chart_spark   # 큰 차트는 월간 유지
+            # 기간 변동 — 카드가 **실제로 그리는 구간**(spark_span: 1개월/12개월)의
+            # 시작값 대비 현재값. 옛 카드는 '직전 관측 대비'(yf=전일·FRED/ECOS=전월)
+            # 만 보여줘 라인이 보여주는 기간과 어긋났고, 그래서 그래프로 방향은
+            # 보이는데 "얼마나" 움직였는지는 읽을 수 없었다(사용자 2026-08-01).
+            # 시작값도 함께 실어 카드에 "1개월 전 101.95" 로 표기.
+            p_start = next((v for v in card_spark if v is not None), None)
+            period_start = period_change = period_change_pct = None
+            if p_start is not None and value is not None:
+                period_start = round(float(p_start), dec)
+                period_change = round(float(value) - float(p_start), dec)
+                if p_start:
+                    period_change_pct = round(
+                        (float(value) / float(p_start) - 1) * 100, 2)
             rows.append({
                 "key": key, "label": label, "unit": unit,
                 "value": value, "change": change, "change_pct": change_pct,
                 "decimals": dec,
                 "spark": card_spark, "spark_dir": spark_dir,
                 "spark_span": spark_span,
+                "period_start": period_start,
+                "period_change": period_change,
+                "period_change_pct": period_change_pct,
+                # 변동 표기 단위를 **서버가 명시** — 프론트가 change_pct 유무로
+                # 추측하면 일간 변동이 없는 카드(DXY: 네이버 미매핑이라 change 부재)
+                # 만 절대값으로 튀어 표기가 들쭉날쭉해진다. 규칙은 2026-06-10 그대로:
+                # 1개월(가격) 카드 = % · 12개월(FRED/ECOS) = 절대값,
+                # 단 환율(_ABS_CHANGE_SIDS)은 ₩ 절대값이 직관적이라 예외.
+                "pct_style": bool(spark_span == "1개월"
+                                  and sid not in _ABS_CHANGE_SIDS),
                 "asof": _fmt_asof(asof_raw),   # 기준월 라벨(ECOS/FRED만, 실시간 가격 카드는 '')
             })
         return rows
