@@ -381,6 +381,35 @@ def _fmt_asof(raw: str) -> str:
     return s
 
 
+def _asof_lag_months(raw: str, today: Optional[date] = None) -> Optional[int]:
+    """기준월이 **오늘 기준 몇 개월 전**인지 (KST 기준 date 주입 가능·순수).
+
+    "8월인데 왜 6월 숫자냐"(사용자 2026-08-01) — 원천 통계 공표 지연이라 정상인데
+    화면만 봐선 정상 지연인지 갱신이 막힌 건지 알 수 없었다. 경과 개월을 함께
+    찍어 평소 지연폭을 벗어나면 바로 눈에 띄게 한다. 분기(YYYYQn)는 분기 말월
+    기준. 판별 불가/실시간 카드는 None."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        if len(s) == 6 and s[4] in ("Q", "q"):          # 2026Q1 → 분기 말월(3월)
+            y, q = int(s[:4]), int(s[5])
+            m = q * 3
+        elif len(s) == 6 and s.isdigit():               # 202604
+            y, m = int(s[:4]), int(s[4:])
+        elif len(s) >= 7 and s[4] == "-":               # 2026-04(-01)
+            y, m = int(s[:4]), int(s[5:7])
+        else:
+            return None
+        if not (1 <= m <= 12):
+            return None
+    except (ValueError, IndexError):
+        return None
+    t = today or (datetime.utcnow() + timedelta(hours=9)).date()   # KST
+    lag = (t.year - y) * 12 + (t.month - m)
+    return lag if lag >= 0 else 0
+
+
 # ── ECOS monthly downsample ─────────────────────────────────────────
 def _ecos_series(key: str) -> list[tuple[str, float]]:
     try:
@@ -649,6 +678,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 "pct_style": bool(spark_span == "1개월"
                                   and sid not in _ABS_CHANGE_SIDS),
                 "asof": _fmt_asof(asof_raw),   # 기준월 라벨(ECOS/FRED만, 실시간 가격 카드는 '')
+                "asof_lag": _asof_lag_months(asof_raw),   # 오늘 기준 경과 개월
             })
         return rows
 
