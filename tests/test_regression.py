@@ -6498,6 +6498,78 @@ class TestIntlHighLow52:
         assert "range(0, len(dropped), 40)" in src
         assert 'getattr(df.columns, "nlevels", 1)' in src    # 단일 티커 flat 처리
 
+    def test_highlow_excludes_stale_and_dormant_tickers(self, monkeypatch):
+        """52주 신고저 판정의 3대 오탐 회귀 고정 (사용자 2026-08-01 '제대로 잡아내고
+        있는지'). 옛 `_proc` 에는 **마지막 봉의 날짜 검사가 아예 없었다**:
+
+        (a) 정지·상장폐지 종목 — 1년 프레임이 몇 달 전에서 끝나는데 그날의 극값을
+            '오늘의 신고저'로 매일 다시 보고했다. 이름 기반 prune_non_stock 은
+            CJK 종목명에 무발화라 HK/JP/TW 를 못 걸렀다.
+        (b) 휴면 종목 — Volume 을 따로 dropna 해 당일 거래량이 NaN 이면 **옛날**
+            거래량을 집어와, 정작 그걸 막으려던 `if not vol` 가드를 통과했고
+            거래대금도 '오늘 종가 × 과거 거래량' 이라는 틀린 값이 됐다.
+        (c) 아웃사이드 데이 — `elif` 때문에 신고가와 신저가를 같은 날 찍은 종목의
+            신저가가 통째로 숨겨졌다.
+        """
+        pd = pytest.importorskip("pandas")
+        yf = pytest.importorskip("yfinance")
+        import numpy as np
+
+        import bot.finviz_client as fc
+        idx = pd.bdate_range(end="2026-07-31", periods=260)
+        n = len(idx)
+        osc = 100 + 3 * np.sin(np.arange(n) / 11.0)   # 횡보 — 이벤트를 심어야만 갱신
+
+        def mk():
+            return osc.copy(), osc + 0.8, osc - 0.8, np.full(n, 1000.0)
+
+        spec = {}
+        c, h, l, v = mk()
+        h[-1] = osc.max() + 1.4                       # 정상 신고가
+        spec["NORMAL_HIGH"] = (c, h, l, v)
+        c, h, l, v = mk()                             # 60일 전 정지, 그날 52주 신저가
+        c = np.linspace(100, 70, n); h, l = c + 0.5, c - 0.5
+        for a in (c, h, l):
+            a[-60:] = np.nan
+        v = v.copy(); v[-60:] = np.nan
+        spec["HALTED_LOW"] = (c, h, l, v)
+        c, h, l, v = mk()                             # 오늘 신저가지만 거래량 NaN
+        l[-1] = osc.min() - 1.5; v = v.copy(); v[-1] = np.nan
+        spec["DORMANT_LOW"] = (c, h, l, v)
+        c, h, l, v = mk()                             # 하루에 신고가+신저가 동시
+        h[-1] = osc.max() + 2.0; l[-1] = osc.min() - 2.0
+        spec["OUTSIDE_BOTH"] = (c, h, l, v)
+        spec["QUIET_NONE"] = mk()                     # 대조군 — 아무 갱신 없음
+
+        cols, data = [], {}
+        for tk, (c, h, l, v) in spec.items():
+            for nm, arr in (("Open", c), ("High", h), ("Low", l),
+                            ("Close", c), ("Volume", v)):
+                cols.append((tk, nm)); data[(tk, nm)] = arr
+        df = pd.DataFrame(data, index=idx,
+                          columns=pd.MultiIndex.from_tuples(cols))
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        monkeypatch.setattr(fc, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(fc, "_fetch_mcaps", lambda t: {})
+        monkeypatch.setattr(fc, "_industries_for", lambda t, g: {})
+        monkeypatch.setattr(yf, "download", lambda t, **k: df)
+        out = fc._compute_highlow_from(list(spec), {t: t for t in spec},
+                                       "x.json", "src", "TEST")
+        hi = {r["ticker"] for r in out["high"]}
+        lo = {r["ticker"] for r in out["low"]}
+        assert "HALTED_LOW" not in lo, "정지 종목의 옛 극값이 오늘 신저가로 샘"
+        assert "DORMANT_LOW" not in lo, "당일 거래량 NaN(휴면)이 신저가로 샘"
+        assert "OUTSIDE_BOTH" in hi and "OUTSIDE_BOTH" in lo, \
+            "아웃사이드 데이가 신고가·신저가 양쪽에 안 잡힘(옛 elif 회귀)"
+        assert "NORMAL_HIGH" in hi, "정상 신고가를 놓침(가드가 과하게 걸림)"
+        assert "QUIET_NONE" not in hi and "QUIET_NONE" not in lo
+        # 소스 가드 — 행 정렬·신선도 기준이 전 배치 공용인지
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert 'sub.dropna(subset=["Close", "High", "Low"])' in src, \
+            "컬럼별 개별 dropna 로 회귀(.iloc[-1] 이 서로 다른 날짜를 가리킴)"
+        assert "recent_ref" in src, "신선도 기준이 배치별로 잡히면 재시도 배치가 뚫림"
+        assert "stale_skipped" in src, "신선도 제외 건수 미가시화"
+
     def test_kr_strips_foreign_comparables(self):
         # _KR_INDUSTRY_PEERS 는 반도체에 TSM/NVDA 등 해외 비교군 포함 →
         # .KS/.KQ 만 남겨야(해외 종목이 한국 52주 페이지에 새지 않게).
@@ -10355,6 +10427,44 @@ class TestIntlFullMarket:
         finally:
             iu.full_universe = orig
 
+    def test_jp_hk_full_universe_is_the_default(self, monkeypatch):
+        """JP/HK 는 공식 상장목록 **전종목**이 기본이어야 한다.
+
+        2026-07-29 `fe766e3`(회귀 스위트 안정화 커밋)가 이걸 환경변수 opt-in
+        (`HIGHLOW_USE_FULL_UNIVERSE=1`)으로 바꿔 기본값이 peer 로 **조용히 축소**
+        됐고(JP 102·HK 51종목), 그 결과 "일본 52주 신고가 1종목" 처럼 보드가
+        비어 보였다(사용자 2026-08-01). 아래 `test_full_market_session_aware_wired`
+        는 문자열만 확인해 이 회귀를 못 잡았다 — 그래서 **동작**으로 고정한다."""
+        import bot.intl_highlow as ih
+        import bot.intl_universe as iu
+        monkeypatch.delenv("HIGHLOW_USE_FULL_UNIVERSE", raising=False)
+        fake = {"JP": [f"{1000 + i}.T" for i in range(3733)],
+                "HK": [f"{i:04d}.HK" for i in range(1, 2600)]}
+        monkeypatch.setattr(iu, "full_universe", lambda m: fake.get(m, []))
+        for mkt in ("JP", "HK"):
+            uni, _ = ih._universe(mkt)
+            assert len(uni) == len(fake[mkt]), (
+                f"{mkt} 가 전종목이 아님({len(uni)}종목) — peer 로 축소됐는지 확인")
+        # 환경변수는 **opt-out** 으로만 동작(끄면 peer 폴백)
+        monkeypatch.setenv("HIGHLOW_USE_FULL_UNIVERSE", "0")
+        uni_off, _ = ih._universe("JP")
+        assert 0 < len(uni_off) < 500, "opt-out 시 peer 폴백이어야"
+        # 공식 목록 fetch 실패 시에도 peer 로 graceful 폴백(회귀 0)
+        monkeypatch.delenv("HIGHLOW_USE_FULL_UNIVERSE", raising=False)
+        monkeypatch.setattr(iu, "full_universe", lambda m: [])
+        uni_fb, _ = ih._universe("JP")
+        assert 0 < len(uni_fb) < 500, "fetch 실패 시 peer 폴백 누락"
+
+    def test_universe_label_reflects_actual_scan(self):
+        """화면 라벨이 실제 스캔한 유니버스를 반영해야 한다 — 고정 문자열
+        ('일본 주요종목')은 전종목으로 바뀐 뒤에도 그대로라 화면이 거짓말을 하고,
+        반대로 공식목록 fetch 실패로 peer 폴백해도 알 수 없다(종목 수 노출)."""
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert 'f"{label} {len(uni):,}종목 산출' in src, "라벨에 실제 종목 수 미표기"
+        assert '"JP": "일본 전종목(JPX 상장)"' in src
+        tw = open("bot/tw_highlow.py", encoding="utf-8").read()
+        assert 'f"上市+上櫃 전종목 {len(uni):,}종목 산출' in tw
+
     def test_full_market_session_aware_wired(self):
         # JP/HK 전종목(full_universe) + 시장-인지 신선도. KR=네이버(fetch_kr_highlow)
         # → 장중 30초(_MOVERS_INTRA_TTL, 사용자 2026-06-15 '한국 신고저 실시간'),
@@ -10745,7 +10855,13 @@ class TestActualNewHighLow:
         assert 'interval="1d"' in scan          # 주봉→일봉
         # 당일 intraday 고가/저가가 직전 251일 극값 갱신 = 신고/신저 (시장 통용).
         assert "if float(highs.iloc[-1]) >= h52:" in scan
-        assert "elif float(lows.iloc[-1]) <= l52:" in scan
+        # ⚠️ 옛 테스트는 `elif` 를 문자열로 못박아 **버그를 고정**하고 있었다 —
+        # 변동성이 큰 날 신고가·신저가를 동시에 찍은 종목의 신저가가 elif 때문에
+        # 통째로 숨겨졌다(2026-08-01 수정). 판정 기준(intraday 극값 갱신)이 이
+        # 테스트의 의도이고, 두 방향은 독립이어야 한다.
+        assert "if float(lows.iloc[-1]) <= l52:" in scan
+        assert "elif float(lows.iloc[-1]) <= l52:" not in scan, \
+            "elif 회귀 — 아웃사이드 데이의 신저가가 숨겨진다"
         assert "* 0.99" not in scan and "* 1.01" not in scan   # 1% 근접 제거
 
     def test_intl_sector_sign_defensive(self):

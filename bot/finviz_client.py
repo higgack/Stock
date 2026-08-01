@@ -1103,6 +1103,8 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                  tag, len(universe))
         _CHUNK = 120
         scanned = 0
+        stale_skipped = 0    # 신선도 가드로 제외된 정지/휴면 종목 수 (가시화)
+        recent_ref = None    # (최신 세션일, {최근 2세션}) — 전 배치 공용 신선도 기준
         _seen: set = set()   # yfinance 가 데이터를 반환한 티커 (벌크 누락 재시도 판별)
         _baseline: dict = {}  # {tk:{h52,l52,name}} 오늘 제외 52주 고저 — 네이버 live 비교용
 
@@ -1112,9 +1114,18 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         def _proc(df, chunk) -> None:
             """한 배치 df → 신고/신저 판정·append. 단일 티커는 yfinance 가 flat 컬럼
             을 줘 멀티레벨 분기. yfinance 가 준 티커만 _seen 에 기록(누락=재시도 대상)."""
-            nonlocal scanned
+            nonlocal scanned, stale_skipped, recent_ref
             multi = getattr(df.columns, "nlevels", 1) > 1
             lv0 = set(df.columns.get_level_values(0)) if multi else set()
+            # 이 시장의 최근 2세션 = 신선도 기준(아래 가드). 멀티티커 벌크라 인덱스가
+            # 사실상 그 시장의 거래일 달력이고, 2세션 허용은 yfinance 가 당일 봉을
+            # 늦게 채우는 지연 흡수용.
+            # ⚠️ 배치별로 따로 잡으면 안 된다 — 벌크 누락 재시도 배치(40종목)가 전부
+            # 정지 종목이면 그 배치의 '마지막 2세션'이 몇 달 전이 돼 가드가 무력화된다.
+            # 관측된 가장 최신 달력을 전 배치 공용 기준으로 유지한다.
+            if len(df.index) and (recent_ref is None or df.index[-1] > recent_ref[0]):
+                recent_ref = (df.index[-1], set(df.index[-2:]))
+            recent = recent_ref[1] if recent_ref else set()
             for tk in chunk:
                 try:
                     if multi:
@@ -1124,17 +1135,33 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                     else:
                         sub = df                # 단일 티커 flat 컬럼
                     _seen.add(tk)
-                    closes = sub["Close"].dropna()
-                    highs = sub["High"].dropna()
-                    lows = sub["Low"].dropna()
-                    if len(closes) < 20 or len(highs) < 2 or len(lows) < 2:
+                    # ⚠️ 컬럼별 개별 dropna 금지 — Close/High/Low 를 따로 dropna 하면
+                    # 길이가 달라져 .iloc[-1] 이 서로 **다른 날짜**를 가리킬 수 있다.
+                    # 행 단위로 한 번에 걸러 전 컬럼을 같은 날짜에 정렬한다.
+                    sub = sub.dropna(subset=["Close", "High", "Low"])
+                    if len(sub) < 20:
+                        continue
+                    # 신선도 가드 — 정지·상장폐지·휴면 종목은 1년 프레임의 마지막 봉이
+                    # 몇 주/몇 달 전이라, 그날 찍은 극값이 **매일** '오늘의 신고저'로
+                    # 새어나온다(날짜 검사가 아예 없었음). 특히 정지 종목이 많은 HK·
+                    # 저유동 TW/JP 에서 보드를 오염시킨다. 이름 기반 prune_non_stock 은
+                    # CJK 종목명에 무발화라 이걸 못 걸렀다.
+                    if recent and sub.index[-1] not in recent:
+                        stale_skipped += 1
                         continue
                     scanned += 1
+                    closes, highs, lows = sub["Close"], sub["High"], sub["Low"]
                     last = float(closes.iloc[-1])
                     prev = float(closes.iloc[-2])
                     pct = round((last / prev - 1) * 100, 2) if prev > 0 else None
-                    vols = sub["Volume"].dropna()
-                    vol = int(float(vols.iloc[-1])) if len(vols) else None
+                    # 거래량도 **같은 행**에서. 옛 코드는 Volume 을 따로 dropna 해
+                    # 당일 거래량이 NaN 이면 옛날 거래량을 집어와, (a) 아래 '비거래
+                    # 제외' 가드가 정작 겨냥한 휴면 종목을 통과시키고 (b) 거래대금이
+                    # '오늘 종가 × 과거 거래량' 이라는 틀린 값으로 표시됐다.
+                    try:
+                        vol = int(float(sub["Volume"].iloc[-1]))   # NaN 이면 ValueError
+                    except (ValueError, TypeError, KeyError):
+                        vol = None
                     # 비거래(거래량 0/None) 제외 — HK ADR/HDR·휴면 종목이 평평한
                     # 가격으로 거짓 52주 고저에 잡히는 것 차단(사용자 2026-06-14).
                     if not vol:
@@ -1149,10 +1176,13 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                     l52 = float(lows.iloc[:-1].min())     # 오늘 제외 52주 최저(baseline)
                     _baseline[tk] = {"h52": round(h52, 4), "l52": round(l52, 4),
                                      "name": _names.get(tk, tk)}
+                    # elif 아님 — 변동성이 큰 날엔 한 종목이 52주 신고가와 신저가를
+                    # 동시에 찍을 수 있고(아웃사이드 데이), 옛 elif 는 그런 종목의
+                    # 신저가를 통째로 숨겼다. 드물지만 숨기면 안 되는 신호.
                     if float(highs.iloc[-1]) >= h52:
                         out["high"].append(rec)
-                    elif float(lows.iloc[-1]) <= l52:
-                        out["low"].append(rec)
+                    if float(lows.iloc[-1]) <= l52:
+                        out["low"].append(dict(rec))
                 except Exception:
                     continue
 
@@ -1255,8 +1285,9 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # 사용자 2026-06-14). 시총·업종·거래량 채워진 상태라 정확. 비-US 는 무발화.
         out["high"] = prune_non_stock(out["high"])
         out["low"] = prune_non_stock(out["low"])
-        log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
-                 tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
+        log.info("finviz: %s highlow — scanned %d → high %d / low %d "
+                 "(mcap %d, 신선도제외 %d)", tag, scanned, len(out["high"]),
+                 len(out["low"]), len(mcaps), stale_skipped)
         if out["high"] or out["low"]:
             _cache_write(cache_name, out)
         # 네이버 live 비교용 baseline 저장(오늘 제외 52주 고저, 전 스캔 유니버스).
