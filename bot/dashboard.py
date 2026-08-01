@@ -10802,6 +10802,124 @@ def regenerate_reddit_insider_index() -> None:
 _BLOG_ARCHIVE_DIR = Path.home() / ".tradingagents" / "blog_archive"
 
 
+# ── DAJU 실적 예정 알림 (2026-08-01 사용자 요청) ──────────────────────────
+# bot/daju_watch.py(Telethon 리스너)가 @daju_017_bot 알림을 파싱해 적층.
+# 블로그 페이지 **상단 별도 섹션** — 블로그 글과 성격이 달라 카드 스트림에
+# 섞지 않는다(사용자 선택). 출처의 "투자 권유가 아님" 고지를 그대로 노출.
+_DAJU_ARCHIVE_DIR = Path.home() / ".tradingagents" / "daju_archive"
+
+
+def _load_daju_runs(limit: int = 20) -> list[dict]:
+    """~/.tradingagents/daju_archive/YYYY-MM-DD/*.json → 최신순 limit 건."""
+    import json as _json
+    runs: list[dict] = []
+    if not _DAJU_ARCHIVE_DIR.exists():
+        return runs
+    try:
+        for d in sorted(_DAJU_ARCHIVE_DIR.iterdir(), reverse=True):
+            if not d.is_dir():
+                continue
+            for f in sorted(d.glob("*.json"), reverse=True):
+                try:
+                    r = _json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if isinstance(r, dict):
+                    runs.append(r)
+                if len(runs) >= limit:
+                    return runs
+    except Exception as exc:
+        log.warning("dashboard: daju archive scan failed: %s", exc)
+    return runs
+
+
+def _render_daju_section(runs: list[dict]) -> str:
+    """블로그 페이지 상단 '실적 발표 예정' 섹션 — 최신 1건을 펼쳐 보여주고
+    이전 건은 접어 둔다. 파싱이 깨진 건(stocks 없음)은 원문 그대로 노출."""
+    if not runs:
+        return ""
+    def _card(r: dict, open_: bool) -> str:
+        head = _html.escape(r.get("headline") or "실적 발표 예정")
+        ts = _html.escape((r.get("ts") or "")[:16].replace("T", " "))
+        stocks = r.get("stocks") or []
+        rows: list[str] = []
+        for st in stocks:
+            nm = _html.escape(st.get("name") or "")
+            cd = _html.escape(st.get("code") or "")
+            sc = st.get("score")
+            sc_h = (f'<span class="dj-score">{sc}<span class="dj-max">/'
+                    f'{st.get("score_max") or 100}</span></span>'
+                    if sc is not None else '<span class="dj-max">—</span>')
+            mv = st.get("move_1m")
+            mv_h = ""
+            if isinstance(mv, (int, float)):
+                col = "var(--pos)" if mv > 0 else ("var(--neg)" if mv < 0 else "var(--muted)")
+                mv_h = (f'<span style="color:{col}">{"▲" if mv > 0 else ("▼" if mv < 0 else "")} '
+                        f'{abs(mv):.1f}%</span>')
+            secs = []
+            for sec in st.get("sections") or []:
+                bl = "".join(f"<li>{_html.escape(b)}</li>"
+                             for b in (sec.get("bullets") or []))
+                secs.append(f'<div class="dj-sec"><b>{_html.escape(sec.get("icon") or "")}'
+                            f' {_html.escape(sec.get("title") or "")}</b><ul>{bl}</ul></div>')
+            rows.append(
+                f'<div class="dj-stock"><div class="dj-hd">'
+                f'<span class="dj-nm">{nm}</span> <span class="dj-cd">{cd}</span>'
+                f'{sc_h}</div>'
+                f'<div class="dj-meta">{_html.escape(str(st.get("price") or ""))}'
+                f'{" · " + mv_h if mv_h else ""}'
+                f'{" · " + _html.escape(str(st.get("when"))) if st.get("when") else ""}</div>'
+                f'{"".join(secs)}</div>')
+        tom = r.get("tomorrow") or {}
+        tom_h = ""
+        if tom.get("items"):
+            lis = []
+            for i in tom["items"]:
+                star = " 🌟" if i.get("starred") else ""
+                tm = f' <span class="dj-cd">{_html.escape(i["time"])}</span>' if i.get("time") else ""
+                note = (f' <span class="dj-note">{_html.escape(i["note"])}</span>'
+                        if i.get("note") else "")
+                lis.append(f'<li>{_html.escape(i.get("name") or "")} '
+                           f'<span class="dj-cd">{_html.escape(i.get("code") or "")}</span>'
+                           f'{tm}{star}{note}</li>')
+            more = (f'<span class="dj-note"> 외 {tom["more"]}곳</span>'
+                    if tom.get("more") else "")
+            tom_h = (f'<div class="dj-tom"><b>📎 {_html.escape(tom.get("label") or "")}</b>'
+                     f'{more}<ul>{"".join(lis)}</ul></div>')
+        if not rows and not tom_h:      # 파싱 실패 → 원문 그대로(정보 보존)
+            rows = [f'<pre class="dj-raw">{_html.escape(r.get("raw") or "")}</pre>']
+        return (f'<details class="dj-card"{" open" if open_ else ""}>'
+                f'<summary><b>{head}</b> <span class="dj-note">{ts}</span></summary>'
+                f'{"".join(rows)}{tom_h}</details>')
+    cards = "".join(_card(r, i == 0) for i, r in enumerate(runs[:8]))
+    return (_DAJU_CSS + '<div class="dj-wrap"><div class="dj-title">📣 실적 발표 예정 '
+            '<span class="dj-note">· 출처 DAJU(다주) 텔레그램 · '
+            '데이터 기반 추정이며 <b>투자 권유가 아닙니다</b></span></div>'
+            + cards + '</div>')
+
+
+_DAJU_CSS = """<style>
+.dj-wrap{margin:10px 0 16px}
+.dj-title{font-size:14px;font-weight:700;margin-bottom:6px}
+.dj-note{font-size:11px;color:var(--muted);font-weight:400}
+.dj-card{border:1px solid var(--border);border-radius:10px;padding:8px 12px;
+  margin-bottom:8px;background:var(--card)}
+.dj-card>summary{cursor:pointer;font-size:13px;list-style:none}
+.dj-stock{padding:8px 0;border-top:1px solid var(--border)}
+.dj-hd{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.dj-nm{font-size:14px;font-weight:700}
+.dj-cd{font-size:11px;color:var(--muted)}
+.dj-score{margin-left:auto;font-size:15px;font-weight:700;color:var(--accent)}
+.dj-max{font-size:11px;color:var(--muted);font-weight:400}
+.dj-meta{font-size:12px;color:var(--muted);margin:2px 0 4px}
+.dj-sec{margin:3px 0;font-size:12px}
+.dj-sec ul,.dj-tom ul{margin:2px 0 0 16px;padding:0}
+.dj-sec li,.dj-tom li{font-size:12px;line-height:1.55}
+.dj-tom{border-top:1px solid var(--border);padding-top:6px;margin-top:4px;font-size:12px}
+.dj-raw{white-space:pre-wrap;font-size:12px;line-height:1.5;margin:6px 0}
+</style>"""
+
+
 def _load_blog_runs() -> list[dict]:
     """Scan ~/.tradingagents/blog_archive/YYYY-MM-DD/*.json → newest-first.
     각 dict: {ts, date, title, link, summary, desc, _date, _filename}."""
@@ -11087,6 +11205,7 @@ def _render_blog_page(runs: list[dict]) -> str:
     <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
     <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달/누적)</div></div>
   </div>
+{_render_daju_section(_load_daju_runs())}
 {_render_kg_candidates_section(_load_kg_candidates())}
   <div class="search-bar">
     <input id="scr-search" type="text" placeholder="제목 / 요약 / 본문 검색 (예: 반도체, 수주, 전환점)" autocomplete="off" spellcheck="false">
