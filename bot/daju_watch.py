@@ -184,8 +184,23 @@ def _auth() -> None:
         print(f"OK — session saved at {_SESSION}")
 
 
+def _session_ready() -> bool:
+    """인증된 세션 파일이 있나 — 네트워크 없이 즉시 판정(순수-ish)."""
+    return (Path(f"{_SESSION}.session").exists() or Path(_SESSION).exists())
+
+
 def _run() -> None:
     """상시 수신. DAJU 형식이 아닌 메시지는 무시(relevance 필터)."""
+    # ⚠️ 세션 미인증 상태로 systemd 아래서 돌면 telethon 이 대화형 input() 을
+    # 호출하고, TTY 가 없어 EOFError → **SEGV(코어덤프)** 로 죽는다. exit 11 은
+    # RestartPreventExitStatus=78 에 안 걸려 15초마다 재시작 루프가 된다
+    # (2026-08-01 실측 — 인증 전 기동에서 정확히 이 경로를 밟았다).
+    # 세션 유무를 먼저 보고 78 로 깔끔히 종료해 루프를 끊는다.
+    if not _session_ready():
+        log.error("세션 미인증 — 먼저 인증하세요: "
+                  ".venv/bin/python -m bot.daju_watch --auth  (세션: %s)",
+                  Path(f"{_SESSION}.session").resolve())
+        raise SystemExit(78)
     from telethon import events
     from bot.daju_parse import is_daju_earnings
     client = _client()
@@ -202,8 +217,12 @@ def _run() -> None:
             log.warning("daju: handle failed (id=%s): %s", event.message.id, exc)
 
     log.info("daju: listener 가동 — source=%s", _SOURCE)
-    with client:
-        client.run_until_disconnected()
+    try:
+        with client:
+            client.run_until_disconnected()
+    except EOFError:      # 세션이 있어도 만료·손상되면 여기로 온다(2차 방어)
+        log.error("세션 만료/손상으로 대화형 입력 요구 — --auth 재실행 후 restart")
+        raise SystemExit(78)
 
 
 def main(argv: list[str] | None = None) -> int:   # pragma: no cover - 진입점

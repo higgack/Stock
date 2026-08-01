@@ -3338,6 +3338,25 @@ class TestDajuEarningsPreview20260801:
         assert src.index("raise SystemExit(78)") < src.index(
             "from telethon import TelegramClient\n    return TelegramClient")
 
+    def test_unauthed_session_exits_78_not_segv(self, tmp_path, monkeypatch):
+        """세션 미인증 상태로 systemd 아래서 돌면 telethon 이 대화형 input() 을
+        부르고, TTY 가 없어 EOFError → **SEGV(코어덤프)** 로 죽는다. exit 11 은
+        RestartPreventExitStatus=78 에 안 걸려 15초마다 재시작 루프가 된다
+        (2026-08-01 실측). 세션 유무를 먼저 보고 78 로 끊는다."""
+        import bot.daju_watch as dw
+        monkeypatch.setenv("DAJU_TELETHON_API_ID", "1")
+        monkeypatch.setenv("DAJU_TELETHON_API_HASH", "x")
+        monkeypatch.setattr(dw, "_SESSION", str(tmp_path / "nosuch"))
+        assert not dw._session_ready()
+        with pytest.raises(SystemExit) as ei:
+            dw._run()
+        assert ei.value.code == 78, "78 이 아니면 systemd hot-loop"
+        (tmp_path / "has.session").write_text("x")
+        monkeypatch.setattr(dw, "_SESSION", str(tmp_path / "has"))
+        assert dw._session_ready(), "telethon 이 붙이는 .session 접미사 인식"
+        src = open("bot/daju_watch.py", encoding="utf-8").read()
+        assert "except EOFError" in src, "세션 만료 2차 방어 누락"
+
     def test_wiring(self):
         """리스너·대시보드·systemd·help 배선 — 헬퍼만 만들고 안 쓰는 누락 방지."""
         db = open("bot/dashboard.py", encoding="utf-8").read()
