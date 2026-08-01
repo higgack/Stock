@@ -1,10 +1,15 @@
 """JP/CN/HK 52주 신고가/신저가 — TW 패턴 일반화 (사용자 2026-06-13 '다른 나라도
-모두 적용'). 유니버스 = bot.market 의 _*_INDUSTRY_PEERS curated 주요종목(시장당
-~50-100, 이미 검증된 리스트). finviz_client._compute_highlow_from(US 신고저
-스캐너) 재사용 + SWR(신선 30분/스테일+백그라운드 킥). **동기 계산 안 함**.
+모두 적용'). finviz_client._compute_highlow_from(US 신고저 스캐너) 재사용 +
+SWR(신선 30분/스테일+백그라운드 킥). **동기 계산 안 함**.
 
-TW 는 별도(twse STOCK_DAY_ALL ~1000 전종목). JP/CN/HK 는 peer 주요종목 universe
-— 풀시장은 인덱스 구성종목 소스 추가 시 확장(향후). VM yfinance 검증(10/10).
+유니버스(2026-08-01 정정):
+  - JP/HK = 공식 상장목록 **전종목**(JPX data_j / HKEX ListOfSecurities,
+    `bot/intl_universe.full_universe`). fetch 실패 시 peer 주요종목 폴백.
+  - CN_A  = CSI300+500(AKShare) ~800, 실패 시 peer 폴백.
+  - KR    = 전종목(pykrx) 또는 KIS.
+  - TW 는 별도 모듈(`bot/tw_highlow.py`, 上市+上櫃 전종목).
+⚠️ JP/HK 는 한때 환경변수 opt-in 으로 바뀌어 기본값이 peer(102·51종목)로 조용히
+축소돼 있었다 — 보드가 거의 비어 보이던 원인(`_universe` 주석 참조).
 """
 from __future__ import annotations
 
@@ -83,9 +88,14 @@ def _universe(market: str) -> tuple[list[str], dict]:
     cfg = _CFG.get(market)
     if not cfg:
         return [], {}
-    # JP/HK: 기본은 peer(회귀 안정·고정 개수). full-universe 스캔은 환경변수로만
-    # opt-in (운영 부하/변동성 제어).
-    if market in ("JP", "HK") and os.getenv("HIGHLOW_USE_FULL_UNIVERSE", "0") == "1":
+    # JP/HK: 공식 상장목록 **전종목**(사용자 2026-06-13 full-market) — 실패 시 아래
+    # peer 폴백. ⚠️ 2026-07-29 `fe766e3`(회귀 스위트 안정화 커밋)가 이걸 환경변수
+    # opt-in 으로 바꿔 기본값이 peer(JP 102·HK 51종목)로 **조용히 축소**됐었다.
+    # 그 결과 "일본 52주 신고가 1종목" 처럼 시장 전체가 아니라 큐레이션 대형주
+    # 100개 안에서만 잡혀 보드가 사실상 비어 보였다(사용자 2026-08-01 지적).
+    # TW(전종목 ~2000)·US(전 상장)와 커버리지가 어긋나던 것도 이것 때문.
+    # 이제 기본 ON, 환경변수는 **opt-out**(HIGHLOW_USE_FULL_UNIVERSE=0)으로만.
+    if market in ("JP", "HK") and os.getenv("HIGHLOW_USE_FULL_UNIVERSE", "1") != "0":
         try:
             from bot.intl_universe import full_universe
             full = full_universe(market)
@@ -311,9 +321,17 @@ def _compute(market: str) -> None:
             _status_write(market, "failed", detail="universe empty")
             return
         _status_write(market, "running", total=len(uni))
+        # 라벨은 **실제로 스캔한 유니버스**를 반영해야 한다 — 고정 문자열
+        # ("일본 주요종목")은 전종목으로 확대된 뒤에도 그대로라 화면이 거짓말을
+        # 하게 되고, 반대로 공식 상장목록 fetch 가 실패해 peer 로 폴백해도 그걸
+        # 알 수 없다. 종목 수를 함께 찍어 커버리지를 한눈에 확인 가능하게 한다
+        # (사용자 2026-08-01 '제대로 잡아내고 있는지').
+        label = _CFG[market][3]
+        if market in ("JP", "HK") and len(uni) > 500:
+            label = {"JP": "일본 전종목(JPX 상장)", "HK": "홍콩 전종목(HKEX 상장)"}[market]
         out = _compute_highlow_from(
             uni, names, _CFG[market][1],
-            f"{_CFG[market][3]} 산출(yfinance · 당일 52주 고저 갱신)", market)
+            f"{label} {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)", market)
         _status_write(market, "done", high=len(out.get("high", [])),
                       low=len(out.get("low", [])))
     except Exception as exc:

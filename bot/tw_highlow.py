@@ -78,7 +78,8 @@ def _compute_tw_highlow() -> None:
         _status_write("running", total=len(uni))
         out = _compute_highlow_from(
             uni, names, _CACHE,
-            "TWSE 전종목 산출(yfinance · 당일 52주 고저 갱신)", "TW")
+            f"上市+上櫃 전종목 {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)",
+            "TW")
         _status_write("done", high=len(out.get("high", [])),
                       low=len(out.get("low", [])))
     except Exception as exc:

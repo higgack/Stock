@@ -2369,6 +2369,44 @@ mismatch no-op 였음), 병렬 prefetch + 디스크 캐시 TTL 일관.
   여부) → 되는 것만 탭 추가(실적빌드처럼 graceful). 실적빌드(#330)와 달리
   yfinance .calendar 같은 단일 범용 소스가 없어 시장별 클라이언트 필요.
 
+## 52주 신고가/신저가 정확도 점검 (2026-08-01 사용자 '제대로 잡아내고 있는지')
+
+전 시장(US/JP/CN/HK/TW)이 `finviz_client._compute_highlow_from` 한 곳을 공유한다.
+판정 기준 = **당일 intraday 고가/저가가 오늘 제외 251일 극값을 갱신**(장중 한 번
+찍으면 종가 무관 — 시장 통용). 점검에서 나온 결함 5건 수정:
+
+1. **JP/HK 유니버스가 조용히 축소돼 있었음(MAJOR·화면 증상의 주원인)** — 원래
+   공식 상장목록 전종목(JPX 3,733 / HKEX ~2,600)이었는데 `fe766e3`(2026-07-29
+   "Stabilize regression suite", Claude 아님)가 `HIGHLOW_USE_FULL_UNIVERSE` opt-in
+   으로 바꿔 **기본값이 peer 102/51종목**이 됐다. "일본 신고가 1종목"의 정체.
+   → 기본 ON 복원, 환경변수는 opt-out 으로만. fetch 실패 시 peer 폴백은 유지.
+   이를 지키던 테스트(`test_full_market_session_aware_wired`)가 **문자열만 확인**해
+   회귀를 못 잡았음 → 동작 기반 테스트 추가.
+2. **정지·상장폐지 종목이 매일 신고저로 샘(MAJOR)** — `_proc` 에 **마지막 봉 날짜
+   검사가 아예 없었다**. 1년 프레임이 몇 달 전에서 끝나는 종목의 그날 극값이 매일
+   '오늘의 신고저'로 보고됐다. 이름 기반 `prune_non_stock` 은 CJK 종목명에 무발화라
+   HK/JP/TW 를 못 걸렀다. → **최근 2세션 신선도 가드**(기준은 전 배치 공용 —
+   배치별로 잡으면 정지 종목만 든 재시도 배치가 자기 기준을 만들어 뚫림).
+3. **휴면 종목이 '비거래 제외' 가드를 통과(MAJOR)** — Volume 을 따로 `dropna` 해
+   당일 거래량이 NaN 이면 **과거** 거래량을 집어왔다. 정작 그걸 막으려던
+   `if not vol` 가드가 무력화됐고, 거래대금도 '오늘 종가 × 과거 거래량' 오표시.
+   → 같은 행에서 읽기(NaN 이면 ValueError → 제외).
+4. **컬럼별 개별 dropna 로 날짜 어긋남(MINOR)** — Close/High/Low 를 각각 dropna 해
+   길이가 달라지면 `.iloc[-1]` 이 서로 다른 날짜를 가리킬 수 있었다.
+   → 행 단위 `dropna(subset=["Close","High","Low"])` 로 정렬.
+5. **아웃사이드 데이의 신저가가 숨겨짐(MINOR)** — `elif` 라 신고가·신저가를 같은 날
+   찍은 종목은 신고가로만 잡혔다. → 독립 `if` 2개. (옛 테스트가 `elif` 를 문자열로
+   못박아 **버그를 고정**하고 있었음 → 정정.)
+
+검증: pandas/yfinance 로 `_compute_highlow_from` 을 실제 실행해 수정 전/후 비교 —
+BEFORE 신저가=[정지종목, 휴면종목] / AFTER 신저가=[아웃사이드데이]만, 정상 신고가·
+대조군은 불변. 회귀 3종 추가(`test_highlow_excludes_stale_and_dormant_tickers`,
+`test_jp_hk_full_universe_is_the_default`, `test_universe_label_reflects_actual_scan`).
+화면 라벨에 **실제 스캔 종목 수**를 찍어 커버리지(전종목인지 peer 폴백인지)를 노출.
+
+⚠️ 미검증: JPX/HKEX 공식목록 fetch 는 샌드박스 프록시가 막아 VM 확인 필요. 실패해도
+peer 폴백이라 회귀는 없고, 라벨의 종목 수로 어느 쪽인지 바로 판별 가능.
+
 - **한국 52주 신고저 KIS 1콜 경로 — VM 검증 후 소스 교체 (사용자 2026-06-13
   'KIS 에서 안되는건가')**. 현재 `/kr52` 는 검증된 yfinance 유니버스
   스캔(83 KR 주요종목, `intl_highlow` KR 분기, #330). KIS Open API 는
