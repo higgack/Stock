@@ -3281,6 +3281,30 @@ class TestDajuEarningsPreview20260801:
         assert not is_daju_earnings("오늘 장 어렵네요")
         assert not is_daju_earnings("")
 
+    def test_headline_ignores_faq_lookalike_phrase(self):
+        """실제 DAJU 첫 안내 메시지(2026-08-01 사용자 제보) = 신규기능
+        안내문 + 실제 알림이 한 메시지에 같이 옴. FAQ Q3 답변 줄에도 헤드라인과
+        똑같은 문구('3영업일 뒤 실적 발표 예정 종목이 있고 …')가 등장해, 느슨한
+        매칭으로는 안내문 문장을 헤드라인/target 으로 잘못 집는다(target 오염).
+        진짜 헤드라인만 '(M/D 요일)' 날짜패턴으로 가른다."""
+        from bot.daju_parse import parse_daju
+        hybrid = (
+            "📣[신규 기능 안내]\n안녕하세요. DAJU(다주) 입니다.\n\n"
+            "📌 FAQ\nQ3. 어떻게 쓰는 건가요?\n"
+            "└ A. 3영업일 뒤 실적 발표 예정 종목이 있고, 기대 스코어가 일정 "
+            "이상일 경우 안내해드립니다. (알람을 받고 싶지 않다면, 알림 "
+            "설정에서 꺼주시면 됩니다.)\n\n"
+            "아직 부족한 점이 많지만 항상 성투하시길 바라겠습니다. "
+            "+ 3영업일 후 실적 발표 예정 (8/5 수)\n\n"
+            "※ 발표 예정 16곳 중 기대 상위 2곳\n\n"
+            "━━━━━━━━━━━━━━\n\n"
+            "📌 1. 롯데렌탈 (089860)\n - 기대점수 : 52점 / 100\n"
+            " - 현재가 : 39,350원  (1개월 🔺29.4%)\n")
+        d = parse_daju(hybrid)
+        assert d["headline"] == "3영업일 후 실적 발표 예정 (8/5 수)", d["headline"]
+        assert d["target"] == "8/5 수", d["target"]
+        assert len(d["stocks"]) == 1 and d["stocks"][0]["name"] == "롯데렌탈"
+
     def test_archive_is_idempotent_and_isolated(self, tmp_path, monkeypatch):
         """같은 message_id 재수신(리스너 재시작·중복 push)에 카드가 늘면 안 된다.
         ⚠️ 아카이브 경로를 monkeypatch — 테스트가 실제 홈을 오염시킨 전례 있음."""

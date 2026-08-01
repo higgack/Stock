@@ -26,6 +26,14 @@ _STOCK_RE = re.compile(r"^\s*📌\s*(\d+)\.\s*(.+?)\s*\((\d{6})\)\s*$")
 # 한 글자 차이로만 갈렸다(2026-08-01 실측 — 표현이 바뀌면 안내문까지 수집됨).
 # 6자리 종목코드가 붙은 번호 항목을 요구해 확실히 가른다.
 _STOCK_ANY_RE = re.compile(r"📌\s*\d+\.\s*[^\n(]+\(\d{6}\)")
+# 진짜 헤드라인만 골라내는 엄격판 — "N영업일 후/뒤 실적 발표 예정" 바로 뒤에
+# 날짜 괄호 '(M/D 요일)' 이 붙어야 함. ⚠️ 2026-08-01 실측: DAJU 신규기능
+# 안내문(FAQ Q3 답변)에도 같은 문구가 그대로 등장해("...예정 종목이 있고,
+# ...(알람을 받고 싶지 않다면...)") 느슨한 _HEADLINE_RE 로는 안내문 문장을
+# 헤드라인으로 잘못 집어(= target 도 오염). 안내문+알림이 한 메시지에 같이
+# 온 실제 사례(신규기능 첫 안내)에서 발견 — 날짜패턴 요구로 확실히 가른다.
+_HEADLINE_STRICT_RE = re.compile(
+    r"\d+\s*영업일\s*[후뒤]\s*실적\s*발표\s*예정\s*\([^)]*\d{1,2}/\d{1,2}[^)]*\)\s*$")
 _SCORE_RE = re.compile(r"기대점수\s*[:：]\s*(-?\d+)\s*점\s*/\s*(\d+)")
 _WHEN_RE = re.compile(r"발표시각\s*[:：]\s*(.+?)\s*$")
 _PRICE_RE = re.compile(
@@ -74,12 +82,24 @@ def parse_daju(text: str) -> Optional[dict]:
                  "stocks": [], "tomorrow": None, "notes": [], "raw": text}
 
     for ln in lines:
-        if _HEADLINE_RE.search(ln):
-            out["headline"] = ln.lstrip("📣 ").strip()
-            m = re.search(r"\(([^)]+)\)\s*$", out["headline"])
-            if m:
-                out["target"] = m.group(1).strip()
+        m = _HEADLINE_STRICT_RE.search(ln)
+        if m:
+            # 매치 구간만 헤드라인으로 — 줄 전체를 쓰면 안내문처럼 헤드라인이
+            # 문단 끝에 붙어 나오는 변형(2026-08-01 실측)에서 앞 문단이
+            # 통째로 헤드라인에 섞여 들어간다.
+            out["headline"] = m.group(0).strip()
+            tm = re.search(r"\(([^)]+)\)\s*$", out["headline"])
+            if tm:
+                out["target"] = tm.group(1).strip()
             break
+    else:
+        for ln in lines:                     # 날짜패턴 없는 변형 포맷 폴백
+            if _HEADLINE_RE.search(ln):
+                out["headline"] = ln.lstrip("📣 ").strip()
+                m = re.search(r"\(([^)]+)\)\s*$", out["headline"])
+                if m:
+                    out["target"] = m.group(1).strip()
+                break
     m = _COUNT_RE.search(text)
     if m:
         out["total"], out["picked"] = int(m.group(1)), int(m.group(2))
