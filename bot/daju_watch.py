@@ -128,11 +128,53 @@ def handle_text(text: str, msg_id: int | str,
 
 
 # ── Telethon 리스너 ────────────────────────────────────────────────────────
+# Telethon 자격증명은 **trade 체크아웃(~/stock-trade/.env)** 에만 있다 — NOAH
+# 서비스는 ~/stock/.env 만 EnvironmentFile 로 읽으므로 그대로는 KeyError 로
+# 죽는다(2026-08-01 실측). 이름 후보를 순회하고, 없으면 trade .env 에서 필요한
+# 두 키만 읽어 온다(전체 주입은 TRADE_BOT_TOKEN 등과 충돌 위험).
+_ID_KEYS = ("DAJU_TELETHON_API_ID", "TELETHON_API_ID", "TRADE_TELETHON_API_ID")
+_HASH_KEYS = ("DAJU_TELETHON_API_HASH", "TELETHON_API_HASH",
+              "TRADE_TELETHON_API_HASH")
+_TRADE_ENV = Path.home() / "stock-trade" / ".env"
+
+
+def _env_lookup(keys: tuple, env_file: Path = _TRADE_ENV) -> str | None:
+    """환경변수 → (없으면) trade .env 파일에서 keys 중 첫 매치. 순수-ish·graceful.
+    ⚠️ 값은 절대 로그에 찍지 않는다(키 노출 금지)."""
+    for k in keys:
+        v = os.environ.get(k)
+        if v:
+            return v.strip()
+    try:
+        if env_file.exists():
+            for ln in env_file.read_text(encoding="utf-8").splitlines():
+                ln = ln.strip()
+                if not ln or ln.startswith("#") or "=" not in ln:
+                    continue
+                k, _, v = ln.partition("=")
+                if k.strip() in keys:
+                    return v.strip().strip("'\"")
+    except OSError:
+        pass
+    return None
+
+
 def _client():
+    # ⚠️ 자격증명 검사를 telethon import **앞**에 — 뒤에 두면 라이브러리 부재
+    # 환경에서 ImportError 가 먼저 터져 정작 필요한 안내가 안 보인다.
+    api_id, api_hash = _env_lookup(_ID_KEYS), _env_lookup(_HASH_KEYS)
+    if not api_id or not api_hash:
+        # exit **78** = systemd RestartPreventExitStatus → 15초 hot-loop 방지
+        # (기존 beon/badonion 리스너와 동일 정책 — 운영자 조치 후 수동 restart).
+        # ⚠️ SystemExit("문자열") 은 exit code 1 이라 재시작 루프를 못 막는다 —
+        # 메시지는 로그로 남기고 코드는 정수 78 로 종료해야 한다.
+        log.error("Telethon 자격증명 없음 — %s/%s 를 ~/stock/.env 에 넣거나 "
+                  "%s 에 TRADE_TELETHON_* 가 있는지 확인하세요. "
+                  "(인증: .venv/bin/python -m bot.daju_watch --auth)",
+                  _ID_KEYS[0], _HASH_KEYS[0], _TRADE_ENV)
+        raise SystemExit(78)
     from telethon import TelegramClient
-    api_id = int(os.environ["TRADE_TELETHON_API_ID"])
-    api_hash = os.environ["TRADE_TELETHON_API_HASH"]
-    return TelegramClient(_SESSION, api_id, api_hash)
+    return TelegramClient(_SESSION, int(api_id), api_hash)
 
 
 def _auth() -> None:
