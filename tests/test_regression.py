@@ -11547,6 +11547,46 @@ class TestNaverCommodityCharts:
         assert "_fred_fetch_series" in build_src, "macro FRED 헤드라인 spot 통일 누락"
         assert "_fred_monthly(sid)" in build_src, "FRED 월간 스파크라인 유지 누락"
 
+    def test_macro_asof_shows_publication_lag(self):
+        """"8월인데 왜 6월 숫자냐"(사용자 2026-08-01) — 원천 통계 공표 지연이라
+        정상인데(통관 수출입·물가 ≈1개월 · 한은 국제수지 ≈2개월), 화면만 봐선
+        정상 지연인지 갱신이 막힌 건지 구분할 수 없었다. 기준월 옆에 경과 개월을
+        찍어 평소 지연폭을 벗어나면 바로 보이게 한다."""
+        import re as _re
+        from datetime import date as _date
+
+        from bot.dashboard import _render_macro_card
+        from bot.macro_snapshot import _asof_lag_months
+        T = _date(2026, 8, 1)
+        assert _asof_lag_months("202606", T) == 2      # 통관 수출입
+        assert _asof_lag_months("202605", T) == 3      # 경상수지
+        assert _asof_lag_months("2026Q2", T) == 2      # 분기 → 분기 말월
+        assert _asof_lag_months("2026-06-01", T) == 2  # FRED 관측일
+        assert _asof_lag_months("202608", T) == 0
+        assert _asof_lag_months("202609", T) == 0      # 미래 관측도 음수 아님
+        for bad in ("", "garbage", "202699"):
+            assert _asof_lag_months(bad, T) is None
+        card = " ".join(_re.sub(r"<[^>]+>", " ", _render_macro_card({
+            "label": "한국 수출", "unit": "억$", "value": 1022.0, "decimals": 0,
+            "change": 146.0, "change_pct": None, "spark": [607.0, 1022.0],
+            "spark_span": "12개월", "period_start": 607.0, "period_change": 414.0,
+            "period_change_pct": 68.2, "pct_style": False,
+            "asof": "2026-06", "asof_lag": 2})).split())
+        assert "기준 2026-06 (2개월 전)" in card
+        # 실시간 가격 카드는 기준월도 경과도 없음(현재가라 지연 개념 자체가 없음)
+        live = " ".join(_re.sub(r"<[^>]+>", " ", _render_macro_card({
+            "label": "WTI", "unit": "$", "value": 84.7, "decimals": 1,
+            "change": None, "change_pct": 1.29, "spark": [83.6, 84.7],
+            "spark_span": "1개월", "period_start": 83.6, "period_change": 1.1,
+            "period_change_pct": 1.32, "pct_style": True,
+            "asof": "", "asof_lag": None})).split())
+        assert "기준" not in live and "개월 전)" not in live
+        # 서버 전송 + 섹션 안내문(설명-동작 동기화)
+        assert '"asof_lag": _asof_lag_months(asof_raw)' in open(
+            "bot/macro_snapshot.py", encoding="utf-8").read()
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "최신 공표치" in db and "갱신이 막힌 것" in db, "공표 지연 안내 누락"
+
     def test_macro_card_change_matches_its_own_period(self):
         """카드 헤드라인 변동은 **그 카드가 그리는 기간** 기준이어야 한다.
 

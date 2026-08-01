@@ -14882,8 +14882,13 @@ def _render_macro_card(ind: dict) -> str:
     # 발표지표). 실시간 가격 카드(asof='')는 미표시. CLAUDE.md 규칙10b(데이터 위젯=
     # 적용시각·소스 라벨) 정합.
     asof = _html.escape(ind.get("asof", ""))
+    # 경과 개월 병기 — "8월인데 왜 6월 숫자냐"(사용자 2026-08-01). 원천 통계 공표
+    # 지연이라 정상인데, 화면만 봐선 정상 지연인지 갱신이 막힌 건지 알 수 없었다.
+    _lag = ind.get("asof_lag")
+    _lag_html = (f' <span style="opacity:.75">({_lag}개월 전)</span>'
+                 if isinstance(_lag, int) and _lag > 0 else "")
     asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
-                 f'margin-top:2px">기준 {asof}</div>') if asof else ""
+                 f'margin-top:2px">기준 {asof}{_lag_html}</div>') if asof else ""
     # 기간 시작값 + 직전 관측 대비 — "얼마나 올랐나"의 기준점을 보여준다
     # (사용자 2026-08-01 '기간대로 시작가도 포함'). 직전 대비는 헤드라인에서
     # 밀려났지만 FRED/ECOS 의 전월 대비는 표준 해석이라 여기 남긴다.
@@ -15325,6 +15330,13 @@ def _render_macro_snapshot(macro: dict) -> str:
   <div class="section-hd">
     <h2>Macro Snapshot</h2>
     <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 새 데이터 시 하단 알림(1분 체크·30분 자동반영)</span>
+  </div>
+  <div class="macro-note" style="font-size:11px;color:var(--muted);margin:-2px 0 8px">
+    카드의 <b>기준 YYYY-MM</b> = 그 통계의 <b>최신 공표치</b>입니다. 발표지표는 공표 일정상
+    지연이 정상이라(통관 수출입·물가 ≈ 1개월 · 한은 국제수지 ≈ 2개월 · 미국 GDP는 분기),
+    8월 초에 6월(경상수지는 5월) 기준이 최신인 것이 맞습니다. 옆의 <b>(N개월 전)</b>은 오늘
+    기준 경과 개월 — 평소보다 크게 벌어지면 그때는 갱신이 막힌 것입니다.
+    지수·원자재·환율 카드는 기준월 없이 <b>실시간 현재가</b>입니다.
   </div>""")
 
     # 국내/글로벌 지표 = 접기 토글(details, 기본 펼침·localStorage 상태 유지,
