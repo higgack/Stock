@@ -14858,12 +14858,22 @@ def _render_macro_card(ind: dict) -> str:
     span = _html.escape(ind.get("spark_span", ""))
     span_html = f'<span class="msp">{span}</span>' if span else ""
     val_html = _macro_fmt_value(ind.get("value"), ind.get("decimals", 2), ind.get("unit", ""))
-    # 한달단위(1개월) yf 카드는 변화를 % 로(change_pct 존재), FRED/ECOS(12개월)
-    # 는 절대값 그대로(사용자 2026-06-10 '한달단위는 숫자말고 퍼센티지').
-    if ind.get("change_pct") is not None:
-        chg_html = _macro_fmt_change_pct(ind.get("change_pct"))
+    # 헤드라인 변동 = **카드가 그리는 기간**(span badge: 1개월/12개월) 기준.
+    # 옛 표시는 '직전 관측 대비'(yf=전일·FRED/ECOS=전월)라 라인이 보여주는 구간과
+    # 어긋나, 그래프로 방향은 보이는데 얼마나 움직였는지 읽을 수 없었다
+    # (사용자 2026-08-01). 직전 대비는 아래 보조줄로 내려 정보는 유지.
+    # 표기 단위는 기존 관례 유지 — yf 가격 카드(change_pct 보유)는 %,
+    # FRED/ECOS 는 절대값(금리 %p·지수 포인트가 직관적).
+    # pct_style 은 서버(macro_snapshot)가 명시. 옛 캐시(필드 부재)는 기존
+    # 휴리스틱으로 폴백 — 30초 TTL 이라 곧 새 페이로드로 교체된다.
+    _pct_style = ind.get("pct_style")
+    if _pct_style is None:
+        _pct_style = ind.get("change_pct") is not None
+    dec = ind.get("decimals", 2)
+    if _pct_style:
+        chg_html = _macro_fmt_change_pct(ind.get("period_change_pct"))
     else:
-        chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
+        chg_html = _macro_fmt_change(ind.get("period_change"), dec)
     # 색 = 표시되는 라인의 방향(첫→끝): yf 카드는 1개월 일봉이라 1개월,
     # FRED/ECOS 는 12개월 월간이라 12개월(원래대로 그래프 — 사용자 2026-06-10).
     # 라인 기간(1개월/12개월)을 카드에 작게 명시(사용자 2026-06-10).
@@ -14874,9 +14884,24 @@ def _render_macro_card(ind: dict) -> str:
     asof = _html.escape(ind.get("asof", ""))
     asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
                  f'margin-top:2px">기준 {asof}</div>') if asof else ""
+    # 기간 시작값 + 직전 관측 대비 — "얼마나 올랐나"의 기준점을 보여준다
+    # (사용자 2026-08-01 '기간대로 시작가도 포함'). 직전 대비는 헤드라인에서
+    # 밀려났지만 FRED/ECOS 의 전월 대비는 표준 해석이라 여기 남긴다.
+    bits: list[str] = []
+    if ind.get("period_start") is not None and span:
+        bits.append(f'{span} 전 '
+                    f'{_macro_fmt_value(ind.get("period_start"), dec, ind.get("unit", ""))}')
+    _prev = ind.get("change_pct") if _pct_style else ind.get("change")
+    if _prev is not None and round(float(_prev), 2) != 0:
+        _prev_html = (_macro_fmt_change_pct(_prev) if _pct_style
+                      else _macro_fmt_change(_prev, dec))
+        bits.append(f'직전 {_prev_html}')
+    base_html = (f'<div class="mbase" style="font-size:10px;color:var(--muted);'
+                 f'margin-top:1px">{" · ".join(bits)}</div>') if bits else ""
     return (
         f'<div class="macard"><div class="ml">{label}{span_html}</div>'
-        f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}{asof_html}</div>'
+        f'<div class="mv"><span>{val_html}</span>{chg_html}</div>'
+        f'{base_html}{spark}{asof_html}</div>'
     )
 
 

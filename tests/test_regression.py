@@ -11547,6 +11547,67 @@ class TestNaverCommodityCharts:
         assert "_fred_fetch_series" in build_src, "macro FRED 헤드라인 spot 통일 누락"
         assert "_fred_monthly(sid)" in build_src, "FRED 월간 스파크라인 유지 누락"
 
+    def test_macro_card_change_matches_its_own_period(self):
+        """카드 헤드라인 변동은 **그 카드가 그리는 기간** 기준이어야 한다.
+
+        옛 카드는 '직전 관측 대비'(yf=전일 · FRED/ECOS=전월)만 보여줘, 스파크라인이
+        1개월/12개월을 그리는데 숫자는 하루/한달 변동이라 서로 어긋났다. 그래서
+        그래프로 방향은 보이는데 '얼마나' 움직였는지 읽을 수 없었다(사용자
+        2026-08-01). 기간 시작값도 함께 표기해 기준점을 보여준다."""
+        import re as _re
+
+        from bot.dashboard import _render_macro_card
+
+        def txt(ind):
+            return " ".join(_re.sub(r"<[^>]+>", " ",
+                                    _render_macro_card(ind)).split())
+
+        # 12개월 FRED 카드 — 헤드라인은 12개월 변동(+9.85), 전월(-1.41)은 보조줄
+        cpi = txt({"label": "미국 CPI", "unit": "", "value": 332.57, "decimals": 2,
+                   "change": -1.41, "change_pct": None, "spark": [322.72, 332.57],
+                   "spark_span": "12개월", "period_start": 322.72,
+                   "period_change": 9.85, "period_change_pct": 3.05,
+                   "pct_style": False, "asof": "2026-06"})
+        assert "▲ 9.85" in cpi, "헤드라인이 기간 변동이 아님"
+        assert "12개월 전 322.72" in cpi, "기간 시작값 미표기"
+        assert "직전 ▼ 1.41" in cpi, "직전 관측 대비가 사라짐(정보 손실)"
+        # 1개월 가격 카드 — % 표기
+        sp = txt({"label": "S&P 500", "unit": "", "value": 7489.72, "decimals": 2,
+                  "change": 52.0, "change_pct": 0.70, "spark": [7100.0, 7489.72],
+                  "spark_span": "1개월", "period_start": 7100.0,
+                  "period_change": 389.72, "period_change_pct": 5.49,
+                  "pct_style": True, "asof": ""})
+        assert "▲ 5.49%" in sp and "1개월 전 7,100.00" in sp
+        # 일간 변동이 아예 없는 카드(DXY: 네이버 미매핑)도 기간 변동은 나와야 —
+        # 옛 렌더러는 change/change_pct 가 없어 '—' 만 찍혔다.
+        dxy = txt({"label": "달러인덱스(DXY)", "unit": "", "value": 99.80,
+                   "decimals": 2, "change": None, "change_pct": None,
+                   "spark": [101.95, 99.80], "spark_span": "1개월",
+                   "period_start": 101.95, "period_change": -2.15,
+                   "period_change_pct": -2.11, "pct_style": True, "asof": ""})
+        assert "▼ 2.11%" in dxy and "—" not in dxy, "DXY 변동이 여전히 비어 있음"
+        # 환율은 ₩ 절대값 유지(2026-06-10 예외) — pct_style=False
+        krw = txt({"label": "USD/KRW", "unit": "", "value": 1445.5, "decimals": 1,
+                   "change": 2.1, "change_pct": None, "spark": [1426.2, 1445.5],
+                   "spark_span": "1개월", "period_start": 1426.2,
+                   "period_change": 19.3, "period_change_pct": 1.35,
+                   "pct_style": False, "asof": ""})
+        assert "▲ 19.3" in krw and "%" not in krw.split("1개월 전")[0]
+        # 기간 데이터가 없으면 보조줄 없이 graceful
+        assert "전 " not in txt({"label": "X", "unit": "", "value": 10.0,
+                                 "decimals": 2, "change": None, "change_pct": None,
+                                 "spark": [], "spark_span": "12개월",
+                                 "period_start": None, "period_change": None,
+                                 "period_change_pct": None, "asof": ""})
+        # 서버가 필드를 실제로 실어 보내는지 + 표기단위를 서버가 명시하는지
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        for f in ('"period_start": period_start', '"period_change": period_change',
+                  '"period_change_pct": period_change_pct', '"pct_style"'):
+            assert f in src, f"macro_snapshot 이 {f} 미전송"
+        assert "sid not in _ABS_CHANGE_SIDS" in src, "환율 절대값 예외 누락"
+        # 페이로드 모양이 바뀌었으니 캐시 salt 도 갱신(옛 스냅샷 즉시 무효화)
+        assert "periodchg" in src, "_DEFS_VERSION salt 미갱신"
+
     def test_yf_close_handles_single_ticker_multiindex(self):
         """DXY 카드가 안 뜨던 근본원인(사용자 2026-08-01 '이거 안된것 같은데').
 
