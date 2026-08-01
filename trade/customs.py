@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -137,10 +138,33 @@ def parse_response(xml_text: str) -> list[dict]:
     return rows
 
 
+def redact_url(url: str) -> str:
+    """serviceKey 값을 가린 URL — 로그·알림에 실어도 안전(키 노출 금지 규칙).
+    순수·테스트 가능."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        q = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+        q = [(k, "***" if k.lower() in ("servicekey", "apikey", "key") else v)
+             for k, v in q]
+        return urllib.parse.urlunsplit(
+            (parts.scheme, parts.netloc, parts.path,
+             urllib.parse.urlencode(q, safe="*"), parts.fragment))
+    except Exception:
+        return url.split("?")[0]      # 최소한 경로만
+
+
 def _http_get(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "trade-bot/1.0"})
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
-        return resp.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+            return resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        # 상태코드만으론 어느 경로가 죽었는지 알 수 없다 — 2026-08-01 전 챕터
+        # 404 때 "HTTP Error 404: Not Found" 만 남아 엔드포인트 문제인지
+        # 파라미터 문제인지 구분이 안 됐다. 요청 URL(키 마스킹)을 붙여 알림·
+        # 로그만 보고 바로 판별되게 한다.
+        raise CustomsAPIError(
+            f"HTTP {exc.code} {exc.reason} — {redact_url(url)}") from exc
 
 
 def fetch(

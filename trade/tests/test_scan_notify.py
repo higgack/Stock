@@ -244,3 +244,45 @@ class RolloutScanTests(unittest.TestCase):
         # 조기 return(ok==0/coverage/empty) 경로 제외 → 실패 시 다음 probe 재시도
         stored = src.index('log.info("stored live')
         src.index("_mark_rollout_done()", stored)            # 없으면 ValueError=fail
+
+
+class CustomsHttpErrorTests(unittest.TestCase):
+    """HTTP 실패 시 **어느 URL 이 죽었는지**를 에러에 싣는다 (사용자 2026-08-01
+    전 챕터 404): 옛 메시지는 "HTTP Error 404: Not Found" 뿐이라 엔드포인트가
+    바뀐 건지 파라미터가 잘못된 건지 구분할 수 없었다. ⚠️ serviceKey 는 반드시
+    마스킹(키 노출 금지)."""
+
+    URL = ("https://apis.data.go.kr/1220000/Itemtrade/getItemtradeList"
+           "?serviceKey=SUPER%2BSECRET&strtYymm=202605&endYymm=202607&hsSgn=85")
+
+    def test_redact_url_masks_key_keeps_path(self):
+        from trade.customs import redact_url
+        r = redact_url(self.URL)
+        self.assertNotIn("SUPER", r)
+        self.assertNotIn("SECRET", r)
+        self.assertIn("***", r)
+        self.assertIn("Itemtrade/getItemtradeList", r)   # 경로는 보존(진단용)
+        self.assertIn("hsSgn=85", r)
+        # 파싱 불가 입력도 graceful(최소한 경로만)
+        self.assertEqual(redact_url("not a url"), "not a url")
+
+    def test_http_error_carries_status_and_url(self):
+        import urllib.error
+        import urllib.request
+        from unittest import mock
+
+        from trade import customs
+
+        def _boom(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+        with mock.patch.object(urllib.request, "urlopen", _boom):
+            with self.assertRaises(customs.CustomsAPIError) as cm:
+                customs._http_get(self.URL)
+        msg = str(cm.exception)
+        self.assertIn("404", msg)
+        self.assertIn("Not Found", msg)
+        self.assertIn("Itemtrade/getItemtradeList", msg)
+        self.assertNotIn("SECRET", msg, "에러 메시지에 서비스키가 샜다")
+        # 알림 본문까지 그대로 이어지는지(배선)
+        self.assertIn("404", sc._exc_detail(cm.exception))
