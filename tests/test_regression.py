@@ -3305,6 +3305,39 @@ class TestDajuEarningsPreview20260801:
                                        "raw": "원문<b>보존</b>"}])
         assert "dj-raw" in bad and "&lt;b&gt;" in bad and "<b>보존" not in bad
 
+    def test_telethon_creds_lookup_and_no_hot_loop(self, tmp_path, monkeypatch):
+        """Telethon 자격증명은 **trade 체크아웃 .env** 에만 있다 — NOAH 서비스는
+        ~/stock/.env 만 읽으므로 그대로면 KeyError 로 죽고, systemd 가 15초마다
+        재시작해 hot-loop 가 된다(2026-08-01 실측). 이름 후보 순회 + trade .env
+        폴백 + 부재 시 exit 78(RestartPreventExitStatus)로 고정."""
+        import os as _os
+
+        import bot.daju_watch as dw
+        for k in list(_os.environ):
+            if "TELETHON" in k:
+                monkeypatch.delenv(k, raising=False)
+        env = tmp_path / ".env"
+        env.write_text("# comment\nTRADE_BOT_TOKEN=secret\n"
+                       'TRADE_TELETHON_API_ID = "24680"\n'
+                       "TRADE_TELETHON_API_HASH='abc def'\n", encoding="utf-8")
+        assert dw._env_lookup(dw._ID_KEYS, env) == "24680", "따옴표·공백 처리"
+        assert dw._env_lookup(dw._HASH_KEYS, env) == "abc def"
+        assert dw._env_lookup(("NOPE",), env) is None
+        assert dw._env_lookup(("NOPE",), tmp_path / "missing.env") is None
+        monkeypatch.setenv("DAJU_TELETHON_API_ID", "999")
+        assert dw._env_lookup(dw._ID_KEYS, env) == "999", "환경변수가 파일보다 우선"
+        monkeypatch.delenv("DAJU_TELETHON_API_ID")
+        # 자격증명 부재 → 반드시 정수 78 (SystemExit("문자열")은 exit 1 이라
+        # 재시작 루프를 못 막는다)
+        monkeypatch.setattr(dw, "_TRADE_ENV", tmp_path / "missing.env")
+        with pytest.raises(SystemExit) as ei:
+            dw._client()
+        assert ei.value.code == 78, "exit 78 이 아니면 systemd hot-loop"
+        src = open("bot/daju_watch.py", encoding="utf-8").read()
+        # 자격증명 검사가 telethon import 앞이어야 안내가 보인다
+        assert src.index("raise SystemExit(78)") < src.index(
+            "from telethon import TelegramClient\n    return TelegramClient")
+
     def test_wiring(self):
         """리스너·대시보드·systemd·help 배선 — 헬퍼만 만들고 안 쓰는 누락 방지."""
         db = open("bot/dashboard.py", encoding="utf-8").read()
