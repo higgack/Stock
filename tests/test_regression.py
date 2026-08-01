@@ -3190,6 +3190,140 @@ class TestIchimokuDisparity20260731:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8e) DAJU(다주) 실적 예정 알림 → 블로그 대시보드 (2026-08-01 사용자 요청)
+#     외부 텔레그램 봇(@daju_017_bot)의 "3영업일 후 실적 발표 예정" 알림을
+#     Telethon 리스너가 받아 파싱·아카이브 → blog.html 상단 섹션.
+#     ⚠️ 남의 서비스 포맷이라 언제든 바뀔 수 있음 → 파서는 best-effort,
+#     실패 시 원문(raw) 폴백이 **정보 보존의 마지막 방어선**이다.
+# ─────────────────────────────────────────────────────────────────────────
+_DAJU_SAMPLE = """\
+\U0001F4E3 3영업일 후 실적 발표 예정 (8/5 수)
+
+※ 발표 전 데이터 기반 추정이며 투자 권유가 아닙니다
+※ 발표 예정 16곳 중 기대 상위 2곳
+
+━━━━━━━━━━━━━━
+
+\U0001F4CC 1. 롯데렌탈 (089860)
+ - 기대점수 : 52점 / 100
+ - 발표시각 : 미정 · 26.2Q
+ - 현재가 : 39,350원  (1개월 \U0001F53A29.4%)
+\U0001F525 외국인·기관 순매수
+    · 최근 5일 순매수, 시가총액 대비 +0.20%
+    · 최근 15일 중 11일 순매수
+\U0001F4C8 증권사 목표주가
+    · 가장 높은 목표주가까지 +34.7% 남음
+
+\U0001F4CC 2. 에이피알 (278470)
+ - 기대점수 : 46점 / 100
+ - 현재가 : 320,000원  (1개월 \U0001F53B20.4%)
+
+━━━━━━━━━━━━━━
+
+\U0001F4CE 내일(8/3 월) 발표 예정 주요 종목
+
+  · S-Oil (010950) 10:00 \U0001F31F
+     └ 1개월 +17%
+  · LX인터내셔널 (001120)
+     └ 직전 -7% · 1개월 +0%
+
+  외 3곳
+"""
+
+
+class TestDajuEarningsPreview20260801:
+    """feat: DAJU 실적 예정 알림 수집 → 블로그 대시보드 상단 섹션."""
+
+    def test_parser_extracts_structure(self):
+        from bot.daju_parse import is_daju_earnings, parse_daju
+        assert is_daju_earnings(_DAJU_SAMPLE)
+        assert not is_daju_earnings("그냥 잡담")
+        assert parse_daju("그냥 잡담") is None
+        d = parse_daju(_DAJU_SAMPLE)
+        assert d["target"] == "8/5 수"
+        assert d["total"] == 16 and d["picked"] == 2
+        assert len(d["stocks"]) == 2
+        a, b = d["stocks"]
+        assert (a["rank"], a["name"], a["code"]) == (1, "롯데렌탈", "089860")
+        assert (a["score"], a["score_max"]) == (52, 100)
+        assert a["price"] == "39,350원" and a["when"] == "미정 · 26.2Q"
+        assert a["move_1m"] == 29.4, "🔺는 양수"
+        assert b["move_1m"] == -20.4, "🔻는 음수여야(부호 소실 회귀)"
+        titles = [s["title"] for s in a["sections"]]
+        assert "외국인·기관 순매수" in titles and "증권사 목표주가" in titles
+        assert a["sections"][0]["bullets"][0].startswith("최근 5일")
+        t = d["tomorrow"]
+        assert t["more"] == 3 and len(t["items"]) == 2
+        assert t["items"][0]["code"] == "010950"
+        assert t["items"][0]["time"] == "10:00" and t["items"][0]["starred"]
+        assert not t["items"][1]["starred"]
+        assert t["items"][1]["note"] == "직전 -7% · 1개월 +0%"
+        assert d["raw"] == _DAJU_SAMPLE, "원문 보존(파서 깨져도 화면 유지)"
+
+    def test_archive_is_idempotent_and_isolated(self, tmp_path, monkeypatch):
+        """같은 message_id 재수신(리스너 재시작·중복 push)에 카드가 늘면 안 된다.
+        ⚠️ 아카이브 경로를 monkeypatch — 테스트가 실제 홈을 오염시킨 전례 있음."""
+        import bot.daju_watch as dw
+        monkeypatch.setattr(dw, "_ARCHIVE_DIR", tmp_path)
+        rec = dw.archive_daju(_DAJU_SAMPLE, 12345)
+        assert rec and len(rec["stocks"]) == 2
+        assert rec["msg_id"] == "12345" and rec["source"] == "DAJU"
+        dw.archive_daju(_DAJU_SAMPLE, 12345)
+        assert len(list(tmp_path.rglob("*.json"))) == 1, "중복 아카이브"
+        assert dw.archive_daju("무관 메시지", 999) is None
+        assert len(list(tmp_path.rglob("*.json"))) == 1
+
+    def test_push_summary_escapes_and_carries_disclaimer(self):
+        """채널 push 는 원문 재게시가 아니라 요점 + 출처 고지. parse_mode=HTML
+        이라 외부 텍스트의 <,>,& escape 필수(실수#7)."""
+        import bot.daju_watch as dw
+        from bot.daju_parse import parse_daju
+        body = dw.summarize_for_push(parse_daju(_DAJU_SAMPLE))
+        assert "투자 권유가 아닙니다" in body, "출처 고지 누락"
+        assert "롯데렌탈" in body and "기대 52점" in body
+        assert "1개월 +29.4%" in body and "1개월 -20.4%" in body
+        evil = {"headline": "<b>x</b>", "stocks": [
+            {"name": "<i>y</i>&z", "code": "000000", "score": 1}], "tomorrow": None}
+        out = dw.summarize_for_push(evil)
+        assert "<i>y</i>" not in out and "&lt;i&gt;" in out and "&amp;" in out
+
+    def test_dashboard_section_renders_and_falls_back_to_raw(self):
+        import re as _re
+
+        import bot.dashboard as D
+        from bot.daju_parse import parse_daju
+        rec = parse_daju(_DAJU_SAMPLE)
+        rec["ts"] = "2026-08-01T18:30:00+09:00"
+        html = D._render_daju_section([rec])
+        plain = " ".join(_re.sub(r"<[^>]+>", " ", html).split())
+        for tok in ("롯데렌탈", "089860", "에이피알", "320,000원",
+                    "투자 권유가 아닙니다", "S-Oil", "외 3곳", "외국인·기관 순매수"):
+            assert tok in plain, f"섹션에 '{tok}' 누락"
+        assert D._render_daju_section([]) == "", "빈 아카이브면 섹션 미표시"
+        # 파싱이 깨진 건은 원문 그대로(정보 보존) + escape
+        bad = D._render_daju_section([{"headline": "x", "ts": "", "stocks": [],
+                                       "raw": "원문<b>보존</b>"}])
+        assert "dj-raw" in bad and "&lt;b&gt;" in bad and "<b>보존" not in bad
+
+    def test_wiring(self):
+        """리스너·대시보드·systemd·help 배선 — 헬퍼만 만들고 안 쓰는 누락 방지."""
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "{_render_daju_section(_load_daju_runs())}" in db, "블로그 페이지 미배선"
+        assert "daju_archive" in db
+        dw = open("bot/daju_watch.py", encoding="utf-8").read()
+        assert "is_daju_earnings(body)" in dw, "리스너 relevance 필터 누락"
+        assert "regenerate_blog_index" in dw, "대시보드 재생성 미배선"
+        assert "events.NewMessage(chats=_SOURCE)" in dw
+        # 세션 파일은 다른 리스너와 **별도**(상시 프로세스 락 경합 방지)
+        assert ".daju-listener-session" in dw
+        unit = open("deploy/daju-listener.service", encoding="utf-8").read()
+        assert "-m bot.daju_watch" in unit and "RestartPreventExitStatus=78" in unit
+        # user-visible 변경 → _HELP_TEXT 같은 commit 갱신(공개 spec)
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "DAJU 실적예정" in tb, "_HELP_TEXT 미갱신"
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 9) 자산관리 — 뱅크샐러드 export 파서 (2026-06-04 P1 증분1)
 #    뱅샐현황 시트(섹션형) → 투자/재무/부동산/동산/대출/보험/현금흐름 구조화.
 #    1.고객정보(PII)는 파싱 안 함. 총자산/순자산은 export 가 빈 셀이라 항목

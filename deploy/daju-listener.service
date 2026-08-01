@@ -1,0 +1,21 @@
+[Unit]
+Description=DAJU(다주) 실적 예정 알림 실시간 Telethon 리스너 → 블로그 대시보드
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=-/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.daju_watch
+Restart=on-failure
+RestartSec=15
+# 세션 미인증 시 hot-loop 방지 — operator 가 --auth 재실행 후 수동 restart.
+# (badonion/beon 리스너와 동일 정책)
+RestartPreventExitStatus=78
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
