@@ -83,6 +83,34 @@ def add_trading_days(market: str, date_str: str, n: int) -> Optional[str]:
         return None
 
 
+def future_sessions(market: str, date_str: str, n: int) -> Optional[list]:
+    """`date_str` **다음** 거래일부터 n개 세션(YYYY-MM-DD 오름차순) — 한 번의
+    `sessions_in_range` 로 뽑는다(add_trading_days 를 n 번 호출하면 같은 윈도를
+    n 번 계산).
+
+    용도: 일목균형표 선행스팬은 26봉 **앞**에 그리는데 그 자리엔 아직 캔들이
+    없어 시간축 값을 만들어 줘야 한다(bot/chart_data.py). graceful None —
+    라이브러리/시장 미지원 시 호출부가 주5일 근사로 폴백."""
+    cal = _calendar(market)
+    if cal is None or n <= 0:
+        return None
+    try:
+        import pandas as pd
+        start = pd.Timestamp(date_str) + pd.Timedelta(days=1)
+        # 거래일 n 개를 담기 충분한 캘린더-일 윈도(연휴 다발 가정 여유).
+        end = start + pd.Timedelta(days=n * 2 + 20)
+        sessions = cal.sessions_in_range(
+            start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        )
+        if sessions is None or len(sessions) < n:
+            return None      # 윈도 부족(버퍼상 거의 없음) → 폴백
+        return [s.strftime("%Y-%m-%d") for s in sessions[:n]]
+    except Exception as exc:
+        log.debug("market_calendar.future_sessions(%s,%s,%d) failed: %s",
+                  market, date_str, n, exc)
+        return None
+
+
 def next_trading_day(market: str, date_str: str) -> Optional[str]:
     """`date_str` **이상** 첫 거래일(YYYY-MM-DD). date_str 이 세션이면 자기
     자신. graceful None."""

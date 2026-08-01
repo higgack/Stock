@@ -56,7 +56,12 @@ DOMESTIC = [
 # 금·은·구리·알루미늄·[니켈]·옥수수·대두·소맥·돈육·커피·면화 / 코인은
 # 비트·이더·솔만(BNB·도지·리플 삭제). 니켈은 yfinance 무티커(네이버 metals 전용)
 # 라 이름 확정 후 추가. 백금 제거 + VIX 뒤 CCFI(중국 컨테이너 운임) 추가(2026-06-18).
+# 달러인덱스(DXY) 복원 + 미국 경기활동(CFNAI) 제거(사용자 2026-07-31). DXY 는
+# _MACRO_NAVER 미매핑(네이버 reutersCode 미검증) — 기존 yf 폴백 경로(_yf_monthly_batch/
+# _yf_daily_1mo_batch, 1h 캐시)로 값 채움. DX-Y.NYB 는 bot/us_market_daily.py·
+# market_overview.py 에 이미 쓰이던 확인된 yfinance 티커.
 GLOBAL = [
+    ("dxy", "달러인덱스(DXY)", "", "yf", "DX-Y.NYB", 2),
     # 미국 FFR 제거(사용자 2026-06-23) — 정책금리는 2Y/10Y 로 대체.
     ("us_2y", "미국 2Y", "%", "fred", "DGS2", 2),
     ("us_10y", "미국 10Y", "%", "fred", "DGS10", 2),
@@ -71,10 +76,8 @@ GLOBAL = [
     # 근원(PCEPILFE) — Fed 2% 타깃이 Core PCE.
     ("us_pce", "미국 근원PCE", "", "fred", "PCEPILFE", 2),
     ("us_unemploy", "미국 실업률", "%", "fred", "UNRATE", 1),
-    # ISM PMI(NAPM)는 FRED 에서 폐기(ISM 저작권) → 무료 대체 = Chicago Fed
-    # National Activity Index(CFNAI, 월간 85지표 합성 경기선행). 라벨 정확화
-    # (사용자 2026-06-23 'ISM PMI 카드 400'). GDP 는 분기 series → _FRED_QUARTERLY.
-    ("us_cfnai", "미국 경기활동(CFNAI)", "", "fred", "CFNAI", 2),
+    # 미국 경기활동(CFNAI) 카드 제거(사용자 2026-07-31 — 달러인덱스로 교체).
+    # GDP 는 분기 series → _FRED_QUARTERLY.
     ("us_gdp", "미국 GDP", "%", "fred", "A191RL1Q225SBEA", 1),
     ("sp500", "S&P 500", "", "yf", "^GSPC", 2),
     ("nasdaq", "NASDAQ", "", "yf", "^IXIC", 2),
@@ -563,7 +566,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # (_fred_fetch_series, 24h 캐시 공유)로 통일(사용자 2026-06-23 '두 표면
                 # 일치'). 일별 series(2Y/10Y/금리차/하이일드)는 macro 월평균(freq=m)이
                 # 글로벌 spot 과 달라 불일치했음(2Y 4.00 vs 4.20). 월간 series(CPI/실업률/
-                # CFNAI)는 최신 관측 = 월말값이라 무변. 차트(추세)는 월간 그대로.
+                # PPI)는 최신 관측 = 월말값이라 무변. 차트(추세)는 월간 그대로.
                 _spot = None
                 try:
                     from bot.market_overview import _fred_fetch_series
