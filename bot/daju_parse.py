@@ -18,8 +18,14 @@ from typing import Optional
 
 # 이 메시지가 DAJU 실적 예정 알림인지 — 리스너의 relevance 필터가 쓴다.
 # (나쁜양파 리스너가 캡션 파싱으로 무관 콘텐츠를 거르는 것과 같은 패턴.)
-_HEADLINE_RE = re.compile(r"영업일\s*후\s*실적\s*발표\s*예정")
+_HEADLINE_RE = re.compile(r"영업일\s*[후뒤]\s*실적\s*발표\s*예정")
 _STOCK_RE = re.compile(r"^\s*📌\s*(\d+)\.\s*(.+?)\s*\((\d{6})\)\s*$")
+# 본문 어디든 '📌 N. 종목명 (123456)' 이 실제로 있는가 — relevance 판정의 핵심.
+# ⚠️ 옛 판정은 "📌" 가 텍스트에 있기만 하면 통과였는데, DAJU **신규 기능 안내문**
+# 에도 '📌 FAQ'·'📌 문의' 가 있어서, 실제로는 헤드라인의 '후' vs 안내문의 '뒤'
+# 한 글자 차이로만 갈렸다(2026-08-01 실측 — 표현이 바뀌면 안내문까지 수집됨).
+# 6자리 종목코드가 붙은 번호 항목을 요구해 확실히 가른다.
+_STOCK_ANY_RE = re.compile(r"📌\s*\d+\.\s*[^\n(]+\(\d{6}\)")
 _SCORE_RE = re.compile(r"기대점수\s*[:：]\s*(-?\d+)\s*점\s*/\s*(\d+)")
 _WHEN_RE = re.compile(r"발표시각\s*[:：]\s*(.+?)\s*$")
 _PRICE_RE = re.compile(
@@ -42,8 +48,7 @@ def is_daju_earnings(text: str) -> bool:
     """이 텍스트가 DAJU 실적 예정 알림인가 — 리스너 relevance 필터용(순수)."""
     if not text:
         return False
-    return bool(_HEADLINE_RE.search(text)) and bool(_STOCK_RE.search(text)
-                                                    or "📌" in text)
+    return bool(_HEADLINE_RE.search(text)) and bool(_STOCK_ANY_RE.search(text))
 
 
 def _pct(sign: str, num: str) -> Optional[float]:

@@ -3260,6 +3260,27 @@ class TestDajuEarningsPreview20260801:
         assert t["items"][1]["note"] == "직전 -7% · 1개월 +0%"
         assert d["raw"] == _DAJU_SAMPLE, "원문 보존(파서 깨져도 화면 유지)"
 
+    def test_only_earnings_alerts_are_ingested(self):
+        """DAJU 채널의 **모든** 메시지가 아니라 실적 예정 알림만 수집한다
+        (사용자 2026-08-01 확인). 옛 판정은 "📌" 가 있기만 하면 통과였는데
+        DAJU **신규 기능 안내문**에도 '📌 FAQ'·'📌 문의' 가 있어, 실제로는
+        헤드라인의 '후' vs 안내문의 '뒤' 한 글자로만 갈렸다 — 표현이 바뀌면
+        안내문까지 수집되는 취약한 상태. 6자리 종목코드가 붙은 번호 항목을
+        요구해 확실히 가른다."""
+        from bot.daju_parse import is_daju_earnings
+        notice = ("📣[신규 기능 안내]\n안녕하세요. DAJU(다주) 입니다.\n"
+                  "📌 FAQ\nQ3. 어떻게 쓰나요?\n"
+                  "└ A. 3영업일 뒤 실적 발표 예정 종목이 있고 …\n📌 문의\n")
+        assert is_daju_earnings(_DAJU_SAMPLE)
+        assert not is_daju_earnings(notice), "안내문이 수집됨"
+        # 표현 드리프트 양방향 — 안내문은 '후' 로 바뀌어도 거부, 알림은 '뒤' 도 수집
+        assert not is_daju_earnings(notice.replace("영업일 뒤", "영업일 후"))
+        assert is_daju_earnings(_DAJU_SAMPLE.replace("영업일 후", "영업일 뒤"))
+        # 종목코드 없는 유사 문구는 거부
+        assert not is_daju_earnings("3영업일 후 실적 발표 예정\n📌 FAQ\n📌 문의")
+        assert not is_daju_earnings("오늘 장 어렵네요")
+        assert not is_daju_earnings("")
+
     def test_archive_is_idempotent_and_isolated(self, tmp_path, monkeypatch):
         """같은 message_id 재수신(리스너 재시작·중복 push)에 카드가 늘면 안 된다.
         ⚠️ 아카이브 경로를 monkeypatch — 테스트가 실제 홈을 오염시킨 전례 있음."""
