@@ -126,9 +126,51 @@ class ProbeModeTests(unittest.TestCase):
             sc._exc_detail(urllib.error.HTTPError("u", 401, "Unauthorized",
                                                   {}, None)),
             "HTTPError 401 (Unauthorized)")
-        self.assertEqual(sc._exc_detail(TimeoutError("timed out")), "TimeoutError")
-        self.assertEqual(sc._exc_detail(urllib.error.URLError("no route")), "URLError")
+        # 코드 없는 예외는 클래스명 + 메시지 — 관세청 CustomsAPIError 는 메시지
+        # 자체가 resultCode/resultMsg 진단이라 클래스명만 찍으면 사유가 버려진다
+        # (2026-08-01 '97챕터 전부 실패' 알림이 정확히 그랬음).
+        self.assertEqual(sc._exc_detail(TimeoutError("timed out")),
+                         "TimeoutError: timed out")
+        self.assertEqual(sc._exc_detail(TimeoutError()), "TimeoutError")
+        self.assertEqual(sc._exc_detail(urllib.error.URLError("no route")),
+                         "URLError: <urlopen error no route>")
         self.assertEqual(sc._exc_detail(None), "Unknown")
+        from trade.customs import CustomsAPIError
+        d = sc._exc_detail(CustomsAPIError("resultCode=99 resultMsg='기간 초과'"))
+        self.assertIn("resultCode=99", d)
+        self.assertIn("기간 초과", d)
+        self.assertLessEqual(len(sc._exc_detail(RuntimeError("x" * 500))), 180)
+
+    def test_scan_fail_alert_names_the_reason(self):
+        """'97챕터 전부 실패' 알림이 옛날엔 'journal 의 resultMsg 확인 필요'
+        라고만 해서 운영자가 VM 로그를 뒤져야 했다(자동화 원칙 위반 — 알림이
+        스스로 원인을 말해야 한다, 사용자 2026-08-01). 사유를 빈도순으로 요약."""
+        import urllib.error
+
+        from trade.customs import CustomsAPIError
+        errs = [sc._exc_detail(CustomsAPIError(
+            "resultCode=99 resultMsg='SERVICE KEY IS NOT REGISTERED'"))] * 95
+        errs += [sc._exc_detail(urllib.error.HTTPError(
+            "u", 500, "Internal Server Error", {}, None))] * 2
+        s = sc._err_summary(errs)
+        self.assertIn("SERVICE KEY IS NOT REGISTERED", s)
+        self.assertIn("×95", s)
+        self.assertIn("HTTPError 500", s)
+        self.assertEqual(sc._err_summary([]), "사유 미확인")
+        # 상위 N 초과분은 '그 외 M종' 으로 접기
+        many = [f"E{i}" for i in range(9)]
+        self.assertIn("그 외 6종", sc._err_summary(many))
+        # parse_mode=HTML 이므로 API 원문의 <,>,& escape (실수#7)
+        esc = sc._err_summary([sc._exc_detail(CustomsAPIError("msg='<b>x</b> a&b'"))])
+        self.assertNotIn("<b>", esc)
+        self.assertIn("&lt;b&gt;", esc)
+        self.assertIn("&amp;", esc)
+        self.assertIn("'", esc, "따옴표는 그대로 읽히게(quote=False)")
+        # 호출부 배선 — 헬퍼만 만들고 안 쓰는 누락 방지
+        src = Path(sc.__file__).read_text(encoding="utf-8")
+        self.assertIn("errs.append(_exc_detail(exc))", src)
+        self.assertIn("_err_summary(errs)", src)
+        self.assertNotIn("journal 의 resultMsg 확인 필요", src)
 
     def test_probe_failure_alert_uses_exc_detail(self):
         """probe 2회 실패 시 알림 본문에 _exc_detail 결과(상태코드 포함)가

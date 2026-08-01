@@ -172,6 +172,31 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
 
 
 # ── yfinance monthly batch ──────────────────────────────────────────
+def _yf_close(df, tk):
+    """yfinance 프레임에서 티커 종가 Series — 컬럼 모양 무관(순수·graceful).
+
+    ⚠️ `yf.download` 는 **단일 티커여도** MultiIndex 컬럼(Price, Ticker)을 준다
+    (`multi_level_index=True` 가 기본). 옛 코드는 `len(tickers) > 1` 로 모양을
+    판단해 단일 티커일 때 `df["Close"]`(DataFrame)를 Series 로 착각했고,
+    `.tolist()` 가 없어 AttributeError → except 로 빨려 들어가 **빈 결과**가 됐다.
+    네이버로 안 가는 yf 티커가 달러인덱스(DX-Y.NYB) 하나뿐이라 이 분기가 정확히
+    단일 티커로 돌았고, 그래서 DXY 카드가 계속 안 떴다(사용자 2026-08-01)."""
+    try:
+        if getattr(df.columns, "nlevels", 1) > 1:
+            lv0 = df.columns.get_level_values(0)
+            if "Close" in lv0:                 # (Price, Ticker) — download 기본
+                sub = df["Close"]
+                if tk in getattr(sub, "columns", []):
+                    return sub[tk].dropna()
+                return sub.iloc[:, 0].dropna() if getattr(sub, "ndim", 1) > 1 else sub.dropna()
+            if tk in lv0:                      # (Ticker, Price) — group_by="ticker"
+                return df[tk]["Close"].dropna()
+            return None
+        return df["Close"].dropna()            # flat 컬럼
+    except Exception:
+        return None
+
+
 def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
     """Batch monthly close (13mo) for all tickers → {ticker: [floats]}.
 
@@ -204,10 +229,9 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
             return _cached("macro_yf_monthly.json", ttl=86400) or out if _cached else out
         for tk in tickers:
             try:
-                if len(tickers) > 1:
-                    closes = df["Close"][tk].dropna()
-                else:
-                    closes = df["Close"].dropna()
+                closes = _yf_close(df, tk)     # 컬럼 모양 무관(단일 티커 MultiIndex 포함)
+                if closes is None or not len(closes):
+                    continue
                 vals = [round(float(c), 4) for c in closes.tolist()][-_SPARK_N:]
                 if vals:
                     out[tk] = vals
@@ -250,8 +274,9 @@ def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
         if df is not None and not df.empty:
             for tk in tickers:
                 try:
-                    closes = (df["Close"][tk] if len(tickers) > 1
-                              else df["Close"]).dropna()
+                    closes = _yf_close(df, tk)   # 위 _yf_monthly_batch 와 동일 사유
+                    if closes is None or not len(closes):
+                        continue
                     vals = [round(float(c), 4) for c in closes.tolist()]
                     if vals:
                         out[tk] = vals
@@ -303,9 +328,8 @@ def _yf_daily_change(tickers: list[str]) -> dict[str, dict]:
         if df is not None and not df.empty:
             for tk in tickers:
                 try:
-                    closes = (df["Close"][tk] if len(tickers) > 1
-                              else df["Close"]).dropna()
-                    if len(closes) >= 1:
+                    closes = _yf_close(df, tk)   # 위 두 배치와 동일 사유(컬럼 모양)
+                    if closes is not None and len(closes) >= 1:
                         cur = float(closes.iloc[-1])
                         prev = float(closes.iloc[-2]) if len(closes) >= 2 else cur
                         daily[tk] = {"value": cur, "change": cur - prev}
