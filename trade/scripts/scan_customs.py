@@ -232,17 +232,47 @@ _PROBE_MARKER = Path.home() / ".trade" / ".scan_probe.json"
 _PROBE_RUN_GUARD = Path.home() / ".trade" / ".scan_probe_run.ts"
 
 
-def _exc_detail(exc: Exception | None) -> str:
+def _exc_detail(exc: Exception | None, limit: int = 160) -> str:
     """예외를 알림에 쓸 한 줄로 — 그냥 클래스명("HTTPError")만으로는 서버
     일시장애(5xx)·서비스키 문제(401/403)·트래픽제한(429)을 구분할 수 없어
     사용자가 재발 시 원인을 못 짚었다(2026-07-31 첫 발생 후 개선 요청).
-    urllib.error.HTTPError 는 실제 상태코드+사유를 붙이고, 그 외(URLError·
-    timeout 등 코드가 없는 예외)는 클래스명만."""
+
+    urllib.error.HTTPError 는 실제 상태코드+사유를 붙이고, 그 외에는 클래스명 +
+    **메시지**를 붙인다 — 관세청 CustomsAPIError 는 메시지 자체가
+    `resultCode=99 resultMsg='...'` 라는 진단이라, 클래스명만 찍으면 정작 필요한
+    사유가 버려진다(2026-08-01 '97챕터 전부 실패' 알림이 정확히 그랬다).
+    ⚠️ 알림은 parse_mode=HTML 이라 API 원문의 <,>,& 는 호출부에서 escape 할 것."""
     if exc is None:
         return "Unknown"
     if isinstance(exc, urllib.error.HTTPError):
         return f"HTTPError {exc.code} ({exc.reason})"
-    return type(exc).__name__
+    name = type(exc).__name__
+    msg = str(exc).strip()
+    if not msg:
+        return name
+    if len(msg) > limit:
+        msg = msg[:limit - 1] + "…"
+    return f"{name}: {msg}"
+
+
+def _err_summary(errs: list, top: int = 3) -> str:
+    """실패 사유 리스트 → 알림 본문 한 덩어리(빈도순 상위 top). 순수·테스트 가능.
+
+    97챕터가 같은 이유로 죽는 게 보통이라 전부 나열할 필요는 없고, 사유별 건수만
+    보이면 서비스키 문제인지 일시 장애인지 즉시 갈린다. ⚠️ 알림이 parse_mode=HTML
+    이므로 API 원문에 섞인 <,>,& 를 여기서 escape 한다(실수#7)."""
+    import html as _html
+    from collections import Counter
+    if not errs:
+        return "사유 미확인"
+    cnt = Counter(errs)
+    # quote=False — 텔레그램 HTML 은 <,>,& 만 escape 하면 되고, 따옴표까지 바꾸면
+    # resultMsg='...' 가 &#x27; 범벅이 돼 읽기 어렵다.
+    parts = [f"· {_html.escape(reason, quote=False)} ×{n}"
+             for reason, n in cnt.most_common(top)]
+    if len(cnt) > top:
+        parts.append(f"· 그 외 {len(cnt) - top}종")
+    return "\n".join(parts)
 
 
 def _probe_fingerprint(key: str) -> dict | None:
@@ -377,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
 
     all_rows: list[dict] = []
     ok = fail = 0
+    errs: list[str] = []          # 실패 사유 — 알림에 실어 원인을 바로 보이게
     for ch in chapters:
         try:
             # fetch_chapter_range — 13개월 윈도를 ≤12개월로 쪼개 호출.
@@ -390,15 +421,19 @@ def main(argv: list[str] | None = None) -> int:
             ok += 1
         except Exception as exc:
             fail += 1
+            errs.append(_exc_detail(exc))
             log.warning("chapter %s failed: %s", ch, exc)
     log.info("scan: chapters ok=%d fail=%d rows=%d", ok, fail, len(all_rows))
     from trade import run_ledger
     if ok == 0:
         # 오류 알람 (사용자 2026-06-13) — 일 1회 dedup(원장 첫 발생만).
+        # 옛 문구는 운영자에게 journal 을 직접 열어보라고만 해서 VM 에 들어가
+        # 로그를 뒤져야 했다(자동화 원칙 위반 — 알림이 스스로 원인을 말해야 한다,
+        # 사용자 2026-08-01). 실패 사유를 빈도순으로 요약해 싣는다.
         if run_ledger.bump("scan_fail") == 1:
-            _send_alert("❌ <b>관세청 스캔 실패</b>\n97챕터 전부 실패 — "
-                        "journal 의 resultMsg 확인 필요 "
-                        "(이전 스냅샷은 유지됨)")
+            _send_alert("❌ <b>관세청 스캔 실패</b>\n"
+                        f"{len(chapters)}챕터 전부 실패 (이전 스냅샷은 유지됨)\n"
+                        f"{_err_summary(errs)}")
         return 1
     coverage = ok / (ok + fail) if (ok + fail) else 0.0
 

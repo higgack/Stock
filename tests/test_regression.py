@@ -11547,6 +11547,55 @@ class TestNaverCommodityCharts:
         assert "_fred_fetch_series" in build_src, "macro FRED 헤드라인 spot 통일 누락"
         assert "_fred_monthly(sid)" in build_src, "FRED 월간 스파크라인 유지 누락"
 
+    def test_yf_close_handles_single_ticker_multiindex(self):
+        """DXY 카드가 안 뜨던 근본원인(사용자 2026-08-01 '이거 안된것 같은데').
+
+        `yf.download` 는 **단일 티커여도** MultiIndex 컬럼(Price, Ticker)을 준다
+        (`multi_level_index=True` 기본). 옛 코드는 `len(tickers) > 1` 로 모양을
+        판단해 단일 티커일 때 `df["Close"]`(DataFrame)를 Series 로 착각했고,
+        `.tolist()` 가 없어 AttributeError → except 로 빨려 들어가 빈 결과가 됐다.
+        네이버로 안 가는 yf 티커가 DX-Y.NYB **하나뿐**이라 이 분기가 정확히 단일
+        티커로 돌았고, 그래서 값이 None → 카드가 graceful drop 됐다."""
+        pd = pytest.importorskip("pandas")
+        yf = pytest.importorskip("yfinance")
+        import numpy as np
+
+        import bot.finviz_client as fc
+        import bot.macro_snapshot as m
+        idx = pd.date_range("2025-08-01", periods=13, freq="MS")
+
+        def mi(pairs):
+            d = pd.DataFrame(dict(pairs), index=idx)
+            d.columns = pd.MultiIndex.from_tuples(d.columns)
+            return d
+
+        single = mi([(("Close", "DX-Y.NYB"), np.linspace(100, 105, 13)),
+                     (("Open", "DX-Y.NYB"), np.linspace(100, 105, 13))])
+        multi = mi([(("Close", "AAA"), np.arange(13.0)),
+                    (("Close", "BBB"), np.arange(13.0) + 1)])
+        flat = pd.DataFrame({"Close": np.linspace(50, 55, 13)}, index=idx)
+        # 세 형태 모두에서 종가 추출 (구버전 flat 컬럼 하위호환 포함)
+        assert list(m._yf_close(single, "DX-Y.NYB"))[-1] == 105.0
+        assert list(m._yf_close(multi, "BBB"))[-1] == 13.0
+        assert list(m._yf_close(flat, "DX-Y.NYB"))[-1] == 55.0
+        # 배치 헬퍼 2종이 실제로 값을 채우는지(옛 코드는 단일 티커에서 {} 였음)
+        _c, _w = fc._cached, fc._cache_write
+        _dl = yf.download
+        try:
+            fc._cached = lambda *a, **k: None
+            fc._cache_write = lambda *a, **k: None
+            yf.download = lambda *a, **k: single
+            assert m._yf_monthly_batch(["DX-Y.NYB"]).get("DX-Y.NYB"), \
+                "단일 티커 monthly 배치가 빈 결과 — DXY 카드가 안 뜬다"
+            assert m._yf_daily_1mo_batch(["DX-Y.NYB"]).get("DX-Y.NYB"), \
+                "단일 티커 daily 배치가 빈 결과"
+        finally:
+            fc._cached, fc._cache_write, yf.download = _c, _w, _dl
+        # 티커 개수로 모양을 판단하던 옛 분기가 되살아나지 않게
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert 'if len(tickers) > 1:' not in src, "티커 개수 기반 분기 회귀"
+        assert 'df["Close"][tk] if len(tickers) > 1' not in src
+
     def test_macro_dxy_replaces_cfnai(self):
         # 사용자 2026-07-31: 미국 경기활동(CFNAI) 카드 제거 + 글로벌 지표 맨 앞에
         # 달러인덱스(DXY) 추가. DXY 는 네이버 reutersCode 미검증 상태라
