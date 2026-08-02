@@ -15127,9 +15127,17 @@ def _render_macro_card(ind: dict) -> str:
     asof = _html.escape(ind.get("asof", ""))
     # 경과 개월 병기 — "8월인데 왜 6월 숫자냐"(사용자 2026-08-01). 원천 통계 공표
     # 지연이라 정상인데, 화면만 봐선 정상 지연인지 갱신이 막힌 건지 알 수 없었다.
+    # 일별 갱신 카드(국채금리 등)는 월 단위 대신 asof_lag_days — 주말·짧은
+    # 공휴일 등 정상 지연폭 이내면 서버가 아예 None 을 보내 배지가 안 뜬다
+    # (=현재 기준, 사용자 2026-08-02 "미국 국채도 한국처럼 현재 기준으로").
     _lag = ind.get("asof_lag")
-    _lag_html = (f' <span style="opacity:.75">({_lag}개월 전)</span>'
-                 if isinstance(_lag, int) and _lag > 0 else "")
+    _lag_d = ind.get("asof_lag_days")
+    if isinstance(_lag_d, int) and _lag_d > 0:
+        _lag_html = f' <span style="opacity:.75">({_lag_d}일 전)</span>'
+    elif isinstance(_lag, int) and _lag > 0:
+        _lag_html = f' <span style="opacity:.75">({_lag}개월 전)</span>'
+    else:
+        _lag_html = ""
     asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
                  f'margin-top:2px">기준 {asof}{_lag_html}</div>') if asof else ""
     # 기간 시작값 + 직전 관측 대비 — "얼마나 올랐나"의 기준점을 보여준다
@@ -15580,6 +15588,9 @@ def _render_macro_snapshot(macro: dict) -> str:
     8월 초에 6월(경상수지는 5월) 기준이 최신인 것이 맞습니다. 옆의 <b>(N개월 전)</b>은 오늘
     기준 경과 개월 — 평소보다 크게 벌어지면 그때는 갱신이 막힌 것입니다.
     지수·원자재·환율 카드는 기준월 없이 <b>실시간 현재가</b>입니다.
+    국채금리·기준금리처럼 매일(영업일) 갱신되는 카드는 정확한 <b>기준 YYYY-MM-DD</b>
+    날짜를 보여주고, 주말 등 정상 지연폭 이내면 배지 없이 최신으로 취급합니다 —
+    실제로 여러 날 정체된 경우만 <b>(N일 전)</b>으로 경고합니다.
   </div>""")
 
     # 국내/글로벌 지표 = 접기 토글(details, 기본 펼침·localStorage 상태 유지,

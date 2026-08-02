@@ -120,7 +120,7 @@ _ABS_CHANGE_SIDS = {"USDKRW=X"}
 
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct_absfx_dxypct_periodchg").encode()
+     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -365,10 +365,15 @@ def _yf_daily_change(tickers: list[str]) -> dict[str, dict]:
     return out
 
 
-def _fmt_asof(raw: str) -> str:
+def _fmt_asof(raw: str, full: bool = False) -> str:
     """헤드라인 값의 기준 기간 라벨(사용자 2026-06-24). ECOS/FRED 관측 기간을
     사람이 읽는 '기준월' 로: YYYYMM→'YYYY-MM', YYYYQn→'YYYY Qn'(분기 GDP),
-    YYYY-MM-DD(FRED)→'YYYY-MM'. 실시간 가격 카드(raw='')는 '' → 라벨 미표시."""
+    YYYY-MM-DD(FRED)→'YYYY-MM'. 실시간 가격 카드(raw='')는 '' → 라벨 미표시.
+
+    full=True(일별 갱신 카드 전용, 사용자 2026-08-02) — 월로 자르지 않고
+    정확한 날짜를 보여준다. 국채금리 같은 일별 series는 '2026-07' 보다
+    '2026-07-31' 이 더 정확하고, 월 잘림이 없어야 _asof_lag_days 의 날짜
+    표시와도 짝이 맞는다."""
     s = (raw or "").strip()
     if not s:
         return ""
@@ -376,8 +381,10 @@ def _fmt_asof(raw: str) -> str:
         return f"{s[:4]} {s[4:].upper()}"
     if len(s) == 6 and s.isdigit():             # ECOS 월 (202604)
         return f"{s[:4]}-{s[4:]}"
+    if full and len(s) == 8 and s.isdigit():    # ECOS 일별 (20260731) → 그대로
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     if len(s) >= 7 and s[4] == "-":             # FRED 관측일 (2026-04-01)
-        return s[:7]
+        return s if full else s[:7]
     return s
 
 
@@ -407,6 +414,39 @@ def _asof_lag_months(raw: str, today: Optional[date] = None) -> Optional[int]:
         return None
     t = today or (datetime.utcnow() + timedelta(hours=9)).date()   # KST
     lag = (t.year - y) * 12 + (t.month - m)
+    return lag if lag >= 0 else 0
+
+
+# 일별(영업일) 갱신 카드 — 캘린더월 경계로 lag 를 재면 금요일 관측치를 주말
+# 지나 월요일에 봐도 '1개월 전'으로 잘못 뜬다(실측 2026-08-02, 사용자 스크린샷:
+# 08-02 에 07-31 국채금리를 보고 "1개월 전"). 한국 국고채(kr_3y/kr_10y/kr_rate)
+# 가 이 misleading 배지 없이 '기준 20260731'만 보인 건 의도된 설계가 아니라
+# ECOS 8자리(YYYYMMDD) 포맷을 _asof_lag_months 가 못 읽어 조용히 None 을
+# 반환한 우연이었다(진짜로 지연되면 아무 경고도 못 냄 — 이것도 버그).
+# 두 문제를 여기서 함께 고친다: 이 키들은 날짜 단위로 재서, 정상 지연폭
+# (주말·짧은 공휴일) 이내면 배지를 아예 안 띄우고(="현재 기준" — 사용자
+# 2026-08-02), 정말 갱신이 막힌 경우만 'N일 전'으로 경고한다.
+_DAILY_CADENCE_KEYS = {"us_2y", "us_10y", "us_10y2y", "us_hy",
+                        "kr_rate", "kr_3y", "kr_10y"}
+_DAILY_STALE_DAYS = 5   # 주말(2) + 짧은 공휴일 정도는 정상, 그 이상만 경고
+
+
+def _asof_lag_days(raw: str, today: Optional[date] = None) -> Optional[int]:
+    """일 단위 경과일 — 'YYYY-MM-DD'(FRED) 또는 'YYYYMMDD'(ECOS 일별)만
+    대상. 월간/분기 포맷(YYYYMM/YYYYQn)은 None(그쪽은 _asof_lag_months 소관)."""
+    s = (raw or "").strip()
+    try:
+        if len(s) >= 10 and s[4] == "-":            # 2026-07-31
+            y, m, d = int(s[:4]), int(s[5:7]), int(s[8:10])
+        elif len(s) == 8 and s.isdigit():            # 20260731
+            y, m, d = int(s[:4]), int(s[4:6]), int(s[6:8])
+        else:
+            return None
+        obs = date(y, m, d)
+    except (ValueError, IndexError):
+        return None
+    t = today or (datetime.utcnow() + timedelta(hours=9)).date()   # KST
+    lag = (t - obs).days
     return lag if lag >= 0 else 0
 
 
@@ -661,6 +701,12 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 if p_start:
                     period_change_pct = round(
                         (float(value) / float(p_start) - 1) * 100, 2)
+            # 일별 갱신 카드(국채금리 등)는 월 단위로 자르면 '2026-07' 처럼
+            # 부정확해지고, 월 경계 lag 는 주말 넘겼다고 '1개월 전' 오탐이
+            # 난다(사용자 2026-08-02) — 정확한 날짜 + 일 단위 lag(정상 지연폭
+            # 이내면 배지 자체를 안 띄워 "현재 기준" 으로 취급)로 대체한다.
+            _is_daily_card = key in _DAILY_CADENCE_KEYS
+            _lag_d = _asof_lag_days(asof_raw) if _is_daily_card else None
             rows.append({
                 "key": key, "label": label, "unit": unit,
                 "value": value, "change": change, "change_pct": change_pct,
@@ -677,8 +723,10 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # 단 환율(_ABS_CHANGE_SIDS)은 ₩ 절대값이 직관적이라 예외.
                 "pct_style": bool(spark_span == "1개월"
                                   and sid not in _ABS_CHANGE_SIDS),
-                "asof": _fmt_asof(asof_raw),   # 기준월 라벨(ECOS/FRED만, 실시간 가격 카드는 '')
-                "asof_lag": _asof_lag_months(asof_raw),   # 오늘 기준 경과 개월
+                "asof": _fmt_asof(asof_raw, full=_is_daily_card),
+                "asof_lag": None if _is_daily_card else _asof_lag_months(asof_raw),
+                "asof_lag_days": (_lag_d if _lag_d is not None
+                                   and _lag_d > _DAILY_STALE_DAYS else None),
             })
         return rows
 
