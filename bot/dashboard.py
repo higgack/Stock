@@ -14941,7 +14941,7 @@ def _macro_fmt_value(v, dec: int, unit: str) -> str:
     if unit == "%":
         return f"{num}%"
     if unit == "억$":
-        return f"{num}<span style='font-size:13px;color:var(--muted);margin-left:2px'>억$</span>"
+        return f"{num}<span style='font-size:11px;color:var(--muted);margin-left:2px'>억$</span>"
     return num
 
 
