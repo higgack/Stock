@@ -178,7 +178,12 @@ def _series_payload(
     omitted gracefully when the series is too short or inputs are absent."""
     import math
 
-    ema21 = close.ewm(span=21, adjust=False).mean()
+    # ⚠️ min_periods 필수 — ewm 은 기본적으로 0봉째부터 값을 낸다(시드=첫 종가).
+    # sma55/sma200 은 rolling 이라 자동으로 warm-up 이 NaN 인데 ema21 만 가드가
+    # 없어, 2봉짜리 창(월봉+1년 ~12봉·주봉+1개월 ~4봉)에서도 '21 EMA' 가 그려졌다
+    # (실측 2026-08-02: 2봉 → non-null 2개). 21봉 미만이면 아예 안 그린다.
+    ema21 = (close.ewm(span=21, adjust=False, min_periods=21).mean()
+             if len(close) >= 21 else None)
     sma55 = close.rolling(55).mean() if len(close) >= 55 else None
     sma200 = close.rolling(200).mean() if len(close) >= 200 else None
 
@@ -209,8 +214,9 @@ def _series_payload(
         "decimals": decimals,
         "times": _times,
         "close": [_round(v) for v in close.values],
-        "ema21": [_round(v) for v in ema21.values],
     }
+    if ema21 is not None:
+        payload["ema21"] = [_round(v) for v in ema21.values]
     if sma55 is not None:
         payload["sma55"] = [_round(v) for v in sma55.values]
     if sma200 is not None:
@@ -243,11 +249,17 @@ def _series_payload(
 
     # MACD(12, 26, 9) — lower pane (line + signal + histogram). Same as
     # snapshot SSoT. Extra decimal precision (3) since values are small.
-    if len(close) >= 27:
-        ema12 = close.ewm(span=12, adjust=False).mean()
-        ema26 = close.ewm(span=26, adjust=False).mean()
+    # ⚠️ min_periods 필수 — ewm(adjust=False) 는 첫 종가를 시드로 0봉째부터
+    # 값을 낸다. 옛 코드는 >=27봉이면 그대로 내보내 시그널/히스토그램이
+    # 워밍업 편향값(수렴값과 최대 오차 59, 히스토그램 부호가 40봉 중 12봉
+    # 불일치)을 그대로 노출했다(실측 2026-08-02, 사용자 스크린샷 계기).
+    # 26봉EMA 는 26봉, 그 위의 9봉EMA 시그널은 26+9-1=34봉째부터 정의된다
+    # (min_periods 전파로 실측 확인) — 가드도 34로 올린다.
+    if len(close) >= 34:
+        ema12 = close.ewm(span=12, adjust=False, min_periods=12).mean()
+        ema26 = close.ewm(span=26, adjust=False, min_periods=26).mean()
         macd_line = ema12 - ema26
-        macd_sig = macd_line.ewm(span=9, adjust=False).mean()
+        macd_sig = macd_line.ewm(span=9, adjust=False, min_periods=9).mean()
         macd_hist = macd_line - macd_sig
         md = max(decimals, 3)
         payload["macd"] = [_round(v, md) for v in macd_line.values]

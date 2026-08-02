@@ -663,6 +663,70 @@ class TestPriceChartRender:
         assert all(k in p for k in ("macd", "macd_signal", "macd_hist")), "MACD 누락"
         assert all(k in p for k in ("open", "high", "low")), "OHLC 누락"
 
+    def test_ema21_and_macd_gated_and_warm_up_nulled(self):
+        """실측(사용자 2026-08-02): ema21 은 가드가 아예 없어 2봉짜리 창에도
+        그려졌고(sma55/sma200 과 불일치), MACD 는 >=27봉이면 그대로 내보내
+        시그널·히스토그램이 워밍업 편향값(수렴값과 최대오차 59, 히스토그램
+        부호가 40봉 중 12봉 불일치)을 노출했다. min_periods 로 sma55/sma200
+        과 같은 '진짜 정의되는 봉부터만' 정책을 맞춘다 — 신호선은 26+9-1=34봉째
+        부터 정의됨(min_periods 전파 실측 확인)."""
+        import pandas as pd
+        from bot.chart_data import _series_payload
+
+        def mk(n):
+            idx = pd.date_range("2026-01-01", periods=n, freq="D")
+            c = pd.Series([10000.0 + i * 37 for i in range(n)], index=idx)
+            return c, c * 1.01, c * 0.99, pd.Series([1e6] * n, index=idx)
+
+        for n in (2, 12, 20):
+            c, h, l, v = mk(n)
+            p = _series_payload(c, "$", 2, v, c, h, l)
+            assert "ema21" not in p, f"{n}봉인데 ema21 가드 없음"
+        for n in (21, 22):
+            c, h, l, v = mk(n)
+            p = _series_payload(c, "$", 2, v, c, h, l)
+            assert "ema21" in p and len(p["ema21"]) == n
+
+        for n in (26, 33):
+            c, h, l, v = mk(n)
+            p = _series_payload(c, "$", 2, v, c, h, l)
+            assert "macd" not in p, f"{n}봉인데 MACD 가드 없음(워밍업 편향 노출 위험)"
+        c, h, l, v = mk(34)
+        p = _series_payload(c, "$", 2, v, c, h, l)
+        assert "macd" in p and "macd_signal" in p and "macd_hist" in p
+        # 34봉째(idx33)에서 처음 정의 — 그 전은 None(워밍업 구간 은닉).
+        assert all(x is None for x in p["macd_signal"][:33])
+        assert p["macd_signal"][33] is not None
+
+    def test_indicator_period_labels_use_bars_not_days(self):
+        """RSI(14)/MACD(12,26,9)/볼린저(20)/이격도(20,60) 의 파라미터는 봉
+        단위인데 UI 가 '일'로 표기해, 주봉·분봉에서는 틀린 라벨이 된다(실측
+        2026-08-02 — 일목균형표만 '봉'으로 정확했음). 가이드·차트아래패널·
+        이격도 서브차트 타이틀 전부 '봉'으로 통일."""
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        for bad in ("12일EMA", "9일EMA", "20일 이동평균", "20일·2σ",
+                    "N일 이동평균", "20일 105/95", "60일 110/90",
+                    "20일·60일"):
+            assert bad not in db, f"'일' 단위 잔존: {bad}"
+        for good in ("12봉EMA", "9봉EMA", "20봉 이동평균", "20봉·2σ",
+                     "N봉 이동평균", "20봉 105/95", "60봉 110/90",
+                     "20봉·60봉"):
+            assert good in db, f"'봉' 표기 누락: {good}"
+        assert "k.slice(1) + '봉'" in db, "이격도 서브차트 시리즈 타이틀 미수정"
+        assert "p + '봉 과열'" in db and "p + '봉 침체'" in db, \
+            "이격도 과열/침체 price-line 타이틀 미수정"
+
+    def test_bollinger_guide_does_not_falsely_claim_tradingview_parity(self):
+        """볼린저 σ 는 pandas 기본(표본표준편차, ddof=1) 인데 가이드가
+        'TradingView 기본값과 동일'이라 잘못 주장했다(실측: TradingView
+        ta.stdev 는 모표준편차 ddof=0, 밴드 반폭이 약 2.6% 차이). 공식은
+        technical_analysis.py(텍스트분석 SSoT) 와 공유돼 넓은 파급범위라
+        바꾸지 않고, 문구만 정확하게 고친다."""
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "TradingView 기본값과 동일)" not in db, \
+            "볼린저 σ 가 TradingView 와 동일하다는 거짓 주장 잔존"
+        assert "표본표준편차" in db
+
     def test_build_price_chart_graceful_on_failure(self):
         """네트워크/티커 실패 시 None 반환 (예외 전파 금지 — 아카이브
         저장 경로가 차트 때문에 깨지면 안 됨)."""
