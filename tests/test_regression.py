@@ -13868,7 +13868,7 @@ class TestIndexCardRecompose:
         assert len(us2) == 6 and all(tk.startswith("nve:") for _, tk in us2)
         # 사용자 2026-06-17: AIQ(네이버 미커버 '—') → XLB 소재(기술은 다른 위젯 커버)
         assert {tk for _, tk in us2} == {"nve:XLY", "nve:XLI", "nve:XLE",
-                                         "nve:XLU", "nve:IYR", "nve:XLB"}
+                                         "nve:XLU", "nve:XLRE", "nve:XLB"}
         # 제거된 이머징/베트남 지수가 어느 카드에도 없음
         allt = {tk for _, c in m.ALL_CARDS if c for _, tk in c}
         for gone in ("nvi:.AXJO", "nvi:.BVSP", "nvi:.MXX", "nvi:.MERV",
@@ -13876,16 +13876,22 @@ class TestIndexCardRecompose:
             assert gone not in allt, gone
 
     def test_dow_transport_replaced_by_xlk(self):
-        """사용자 2026-08-01: 다우운송 제거 → XLK(기술) 추가. GICS 11개 섹터 중
-        유일하게 미보유였던 기술 섹터(SOX 는 반도체 한정이라 대체 아님) 공백 해소."""
+        """사용자 2026-08-01: 다우운송 제거 → XLK(기술) 추가(필라델피아 반도체
+        바로 아래). GICS 11개 섹터 중 유일하게 미보유였던 기술 섹터(SOX 는 반도체
+        한정이라 대체 아님) 공백 해소. IYR(iShares) → 표준 SPDR XLRE 로 교체."""
         import bot.market_overview as m
         us = dict(m.CARD_US)
         assert "다우 운송" not in us and "nvi:.DJT" not in us.values()
         assert us.get("XLK 기술") == "nve:XLK"
-        # GICS 11섹터 전부 (부동산은 IYR 로 대체 커버) — 어느 카드에도 있으면 충족
+        titles = [t for t, _ in m.CARD_US]
+        assert titles.index("XLK 기술") == titles.index("필라델피아 반도체") + 1
+        us2 = dict(m.CARD_US2)
+        assert "IYR 부동산" not in us2 and "nve:IYR" not in us2.values()
+        assert us2.get("XLRE 부동산") == "nve:XLRE"
+        # GICS 11섹터 전부 — 어느 카드에도 있으면 충족
         allt = {tk for _, c in m.ALL_CARDS if c for _, tk in c}
         for sector_tk in ("nve:XLK", "nve:XLF", "nve:XLE", "nve:XLV", "nve:XLY",
-                          "nve:XLP", "nve:XLI", "nve:XLB", "nve:IYR", "nve:XLU",
+                          "nve:XLP", "nve:XLI", "nve:XLB", "nve:XLRE", "nve:XLU",
                           "nve:XLC"):
             assert sector_tk in allt, f"{sector_tk} 미보유"
 

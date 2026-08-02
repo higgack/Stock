@@ -124,8 +124,8 @@ CARD_US = [
     ("us S&P 500", "nvi:.INX"),
     ("us 나스닥 종합", "nvi:.IXIC"),
     ("us 다우 존스", "nvi:.DJI"),
-    ("XLK 기술", "nve:XLK"),
     ("필라델피아 반도체", "nvi:.SOX"),
+    ("XLK 기술", "nve:XLK"),   # 사용자 2026-08-01: 반도체(SOX) 바로 아래로 이동
     # 섹터 ETF (네이버 worldstock/etf, nve: bare 티커). 사용자 2026-06-17 재구성:
     # XLE 는 '미국 지수-2'로 이동, XLC(커뮤니케이션) 추가, 순서 XLF→XLV→XLC→XLP.
     ("XLF 금융", "nve:XLF"),
@@ -155,7 +155,7 @@ CARD_EU = [
 ]
 
 # 사용자 2026-06-17: 옛 '아메리카 & 이머징'(호주·브라질·멕시코·아르헨티나·인니·말련)
-# 폐기 → '미국 지수-2'(미국 섹터 ETF). nve: bare 티커 — XLY/XLI/XLE/XLU/IYR(표준
+# 폐기 → '미국 지수-2'(미국 섹터 ETF). nve: bare 티커 — XLY/XLI/XLE/XLU/XLRE(표준
 # SPDR 섹터) 네이버 etf 커버, AIQ(테마) 등 네이버 미커버는 _fetch_etf_quotes 의
 # yfinance 폴백으로 채움(YF_PAUSE 시 미커버만 블랭크). 인니·말련은 아시아 카드로 이동.
 CARD_US2 = [
@@ -163,11 +163,11 @@ CARD_US2 = [
     ("XLI 산업재", "nve:XLI"),
     ("XLE 에너지", "nve:XLE"),
     ("XLU 유틸리티", "nve:XLU"),
-    ("IYR 부동산", "nve:IYR"),
+    ("XLRE 부동산", "nve:XLRE"),   # 사용자 2026-08-01: IYR(iShares) → 표준 SPDR XLRE
     # 사용자 2026-06-17: AIQ(테마 ETF·네이버 etf 미커버 → '—' 빈칸)를 XLB(소재)로
     # 대체(표준 SPDR이라 네이버 커버, 빈칸 해소). 보유 섹터: XLF·XLV·XLC·XLP(지수1) +
-    # XLY·XLI·XLE·XLU·IYR(지수2) + XLB(소재) + XLK(지수1, 2026-08-01 추가) —
-    # GICS 11개 섹터 전부 보유(부동산은 표준 XLRE 대신 IYR 로 대체 커버).
+    # XLY·XLI·XLE·XLU·XLRE(지수2) + XLB(소재) + XLK(지수1, 2026-08-01 추가) —
+    # GICS 11개 섹터 전부 표준 SPDR ETF 로 보유.
     ("XLB 소재", "nve:XLB"),
 ]
 
