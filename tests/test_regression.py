@@ -11920,11 +11920,64 @@ class TestNaverCommodityCharts:
             "period_change_pct": 1.32, "pct_style": True,
             "asof": "", "asof_lag": None})).split())
         assert "기준" not in live and "개월 전)" not in live
-        # 서버 전송 + 섹션 안내문(설명-동작 동기화)
-        assert '"asof_lag": _asof_lag_months(asof_raw)' in open(
-            "bot/macro_snapshot.py", encoding="utf-8").read()
+        # 서버 전송 + 섹션 안내문(설명-동작 동기화). 2026-08-02: 일별 갱신
+        # 카드(국채금리)는 asof_lag(월) 대신 asof_lag_days 로 분리(아래 별도
+        # 테스트가 그 동작을 검증) — 여기서는 월간 카드 경로가 여전히
+        # _asof_lag_months 를 호출하는지만 확인.
+        ms_src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert "_asof_lag_months(asof_raw)" in ms_src
+        assert '"asof_lag_days"' in ms_src, "일별 카드 lag 필드 배선 누락"
         db = open("bot/dashboard.py", encoding="utf-8").read()
         assert "최신 공표치" in db and "갱신이 막힌 것" in db, "공표 지연 안내 누락"
+
+    def test_daily_cadence_cards_show_current_not_monthly_lag(self):
+        """미국 국채(2Y/10Y/장단기금리차/하이일드)·한국 국고채/기준금리처럼
+        매일(영업일) 갱신되는 카드는 월 경계로 lag 를 재면 안 된다 — 금요일
+        관측치를 주말 지나 월요일에 봐도 캘린더월이 바뀌었다는 이유만으로
+        '1개월 전'이 뜬 게 실측 버그였다(2026-08-02, 사용자 스크린샷: 08-02
+        에 07-31 국채금리를 보고 '1개월 전'). 정상 지연폭(주말 등) 이내면
+        배지 없이 '현재 기준'으로, 실제로 여러 날 정체되면 'N일 전'으로."""
+        from datetime import date as _date
+        from bot.macro_snapshot import (_asof_lag_days, _fmt_asof,
+                                        _DAILY_CADENCE_KEYS, _DAILY_STALE_DAYS)
+        T = _date(2026, 8, 2)   # 일요일
+        # 금요일 관측치 — 캘린더월은 넘어갔지만 실제로는 이틀 전(정상)
+        assert _asof_lag_days("2026-07-31", T) == 2
+        assert _asof_lag_days("20260731", T) == 2       # ECOS 8자리도 동일 파싱
+        assert _fmt_asof("2026-07-31", full=True) == "2026-07-31"   # 월 안 잘림
+        assert _fmt_asof("20260731", full=True) == "2026-07-31"
+        # 진짜 정체(3주) — 정상 지연폭을 넘으면 여전히 경고돼야 함
+        assert _asof_lag_days("2026-07-10", T) > _DAILY_STALE_DAYS
+        # 월간/분기 포맷은 일 단위 파서 대상이 아님(월 lag 쪽이 맡음)
+        assert _asof_lag_days("202606", T) is None
+        assert _asof_lag_days("2026Q2", T) is None
+        assert _DAILY_CADENCE_KEYS == {"us_2y", "us_10y", "us_10y2y", "us_hy",
+                                       "kr_rate", "kr_3y", "kr_10y"}
+        # 대시보드 렌더 — asof_lag_days 가 있으면 '일 전', 없고 asof_lag(월)만
+        # 있으면 '개월 전', 둘 다 없으면 배지 없음(=현재 기준).
+        import re as _re2
+        from bot.dashboard import _render_macro_card
+        fresh = " ".join(_re2.sub(r"<[^>]+>", " ", _render_macro_card({
+            "label": "미국 10Y", "unit": "%", "value": 4.68, "decimals": 2,
+            "change": 0.42, "change_pct": None, "spark": [4.26, 4.68],
+            "spark_span": "12개월", "period_start": 4.26, "period_change": 0.42,
+            "period_change_pct": None, "pct_style": False,
+            "asof": "2026-07-31", "asof_lag": None, "asof_lag_days": None,
+        })).split())
+        assert "기준 2026-07-31" in fresh
+        assert "전)" not in fresh, "정상 지연폭인데 배지가 떠 현재기준으로 안 보임"
+        stale = " ".join(_re2.sub(r"<[^>]+>", " ", _render_macro_card({
+            "label": "미국 10Y", "unit": "%", "value": 4.68, "decimals": 2,
+            "change": 0.42, "change_pct": None, "spark": [4.26, 4.68],
+            "spark_span": "12개월", "period_start": 4.26, "period_change": 0.42,
+            "period_change_pct": None, "pct_style": False,
+            "asof": "2026-07-10", "asof_lag": None, "asof_lag_days": 23,
+        })).split())
+        assert "23일 전" in stale, "진짜 정체 시 일 단위 경고가 안 뜸"
+        # 섹션 안내문도 새 동작을 설명해야 함(설명-동작 동기화)
+        db2 = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "매일(영업일) 갱신되는 카드" in db2 and "(N일 전)" in db2, \
+            "매크로 섹션 안내문에 일별 카드 설명 누락"
 
     def test_macro_card_change_matches_its_own_period(self):
         """카드 헤드라인 변동은 **그 카드가 그리는 기간** 기준이어야 한다.
@@ -16954,3 +17007,59 @@ class TestEconCalendarAdditions20260726:
         assert "def _load_megatech_earnings" in src
         assert '"megatech_earnings": megatech' in src
         assert "def _is_plausible_release_cadence" in src   # FOMC 오매치 가드(2026-07-26)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 10) 자동화 인벤토리 감사 — deploy/ unit 실재성 (2026-08-02 전체 점검)
+#     daily_digest.py 가 systemctl is-active 로 trade-bot-beon-listener 를
+#     체크하는데 deploy/ 에 그 유닛 파일이 아예 없었다(VM 수동 설치만 되고
+#     repo 미반영 추정 — daju-listener·beon-sync 도 docs/automation.md 누락).
+#     코드가 이름으로 참조하는 systemd 유닛은 전부 deploy/ 에 실재해야 한다는
+#     불변식을 걸어 재발을 막는다.
+# ─────────────────────────────────────────────────────────────────────────
+class TestDeployUnitInventoryAudit20260802:
+    def test_systemctl_referenced_units_exist_in_deploy(self):
+        """`["systemctl", ..., "<unit>"]` 형태로 이름 참조되는 유닛은 전부
+        deploy/ 에 .service 또는 .timer 파일이 있어야 한다(실측 버그:
+        trade-bot-beon-listener 가 코드·배포스크립트·문서 전부에서 참조되는데
+        정작 deploy/ 에 파일이 없었음 — VM 에만 존재하는 상태로 추정, disaster
+        recovery 시 유실 위험)."""
+        import re
+        import glob
+        import os as _os
+        ref_re = re.compile(r'\["systemctl",\s*(?:"[^"]+",\s*)*"([a-zA-Z0-9_.-]+)"\s*\]')
+        deploy_names = {_os.path.basename(p) for p in glob.glob("deploy/*")}
+        checked = 0
+        for py in (glob.glob("bot/*.py") + glob.glob("trade/*.py")
+                   + glob.glob("trade/scripts/*.py")):
+            src = open(py, encoding="utf-8").read()
+            for m in ref_re.finditer(src):
+                unit = m.group(1)
+                candidates = {unit, unit + ".service", unit + ".timer"}
+                assert candidates & deploy_names, \
+                    f"{py}: systemctl 로 '{unit}' 참조하지만 deploy/ 에 파일 없음"
+                checked += 1
+        assert checked >= 2, "systemctl 참조 스캔이 아무것도 못 찾음(정규식 회귀?)"
+
+    def test_beon_listener_and_sync_units_reconstructed(self):
+        """실측 발견 그 자체를 고정 — trade-bot-beon-listener(실시간)·
+        trade-bot-beon-sync(2h 안전망, badonion 의 6h 와 동일 패턴이나 BeOn
+        이 원조라 간격 다름) 유닛 3파일이 형제(badonion) 패턴대로 존재."""
+        lst = open("deploy/trade-bot-beon-listener.service", encoding="utf-8").read()
+        assert "-m trade.scripts.listen_beon" in lst
+        assert "RestartPreventExitStatus=78" in lst
+        svc = open("deploy/trade-bot-beon-sync.service", encoding="utf-8").read()
+        assert "backfill_beon.py" in svc and "Type=oneshot" in svc
+        tmr = open("deploy/trade-bot-beon-sync.timer", encoding="utf-8").read()
+        assert "OnUnitActiveSec=2h" in tmr
+        assert "trade-bot-beon-sync.service" in tmr
+
+    def test_automation_doc_lists_always_on_listeners(self):
+        """`docs/automation.md` 는 timer 표만 있고 상시구동 리스너(Restart=
+        on-failure 데몬)는 아예 섹션이 없었다 — daju-listener 를 이번 세션에
+        추가하며 이 문서 갱신을 빠뜨린 것도 실수(자동화 원칙: 신규 반복작업
+        추가 = 이 표에 한 줄, 같은 커밋)."""
+        doc = open("docs/automation.md", encoding="utf-8").read()
+        for name in ("daju-listener", "trade-bot-beon-listener",
+                     "trade-bot-beon-sync", "trade-bot-badonion-listener"):
+            assert name in doc, f"docs/automation.md 에 '{name}' 누락"

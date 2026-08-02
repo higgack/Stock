@@ -2,11 +2,13 @@
 channel so trade-bot can ingest them like live forwards.
 
 Works both as a one-off catch-up and as a periodic sync driven by
-trade-bot-beon-sync.timer (fires on BeOn publication days: 1/11/15/21
-of each month at 12:00 KST). Idempotent — scans inbox.jsonl and skips
-any BeOn message_id that's already been ingested, so re-running is safe
-(picks up where it left off after a FloodWait abort, disk-low pause,
-or accidental Ctrl+C).
+trade-bot-beon-sync.timer (every 2h — downtime safety net for the
+realtime listener, not tied to BeOn's own publication schedule; the
+old "1/11/15/21일 12:00" comment here was stale, see diagnose_dedup.py
+which references "every 2-hour beon-sync tick" from a live incident).
+Idempotent — scans inbox.jsonl and skips any BeOn message_id that's
+already been ingested, so re-running is safe (picks up where it left
+off after a FloodWait abort, disk-low pause, or accidental Ctrl+C).
 
 Safety features (tuned from the first 3683-message run):
   - Adaptive pacing: starts at 1.5 s/unit and grows by 0.1 s every 500
@@ -34,12 +36,13 @@ Setup (one-time):
 
 Run manually:
   .backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01
-  .backfill-venv/bin/python trade/scripts/backfill_beon.py  # default: 40-day lookback
+  .backfill-venv/bin/python trade/scripts/backfill_beon.py  # default: 2-day lookback
   # optional: --to 2026-05-16, --dry-run, --lookback-days N
 
 Run by systemd (trade-bot-beon-sync.timer):
-  Invoked without --since; defaults to 40-day lookback which covers
-  the widest gap between BeOn publication dates plus ample buffer.
+  Invoked without --since; defaults to 2-day lookback (--lookback-days
+  default), comfortably wider than the 2h timer interval — the listener
+  handles realtime, this is only the short-downtime safety net.
 
 After a one-off backfill you can remove the temp venv (the periodic
 service reuses it, so keep it if beon-sync.timer is active):

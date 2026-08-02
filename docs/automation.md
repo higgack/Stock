@@ -59,6 +59,24 @@
 | `trade-bot-curation.timer` | 매월 1/11/15/21일 18:00 KST | `trade.scripts.curation_candidates` | 큐레이션 후보 생성(운영자 확인 대기) |
 | `trade-bot-badonion-sync.timer` | 6시간 | `trade/scripts/backfill_badonion.py` | 배도니언 소스 백필 동기화 |
 
+## 상시구동 리스너 (Telethon userbot, timer 아님 — Restart=on-failure 데몬)
+
+> 2026-08-02 감사에서 발견: 아래 5개 중 `daju-listener` 는 이번 세션에 추가하며
+> 이 표 갱신을 빠뜨렸고(자동화 원칙 위반), `trade-bot-beon-listener` +
+> `trade-bot-beon-sync.{service,timer}` 는 코드(`daily_digest.py`·
+> `listen_beon.py`·`trade-auto-update.sh`)가 전부 이름으로 참조하는데도
+> **`deploy/` 에 파일 자체가 없었다**(VM 에 수동 설치만 되고 repo 미반영 추정).
+> 형제 유닛(badonion) 패턴으로 재구성했으나, VM 실제 유닛과 대조 확인 필요
+> (`systemctl cat trade-bot-beon-listener`).
+
+| 서비스 | 소스 | 하는 일 | Kill-switch |
+|---|---|---|---|
+| `daju-listener.service` | `bot.daju_watch` | DAJU(다주) 실적 예정 알림 실시간 포워드 → 블로그 대시보드 아카이브 | 세션 미인증(exit 78) → RestartPreventExitStatus 로 hot-loop 방지 |
+| `trade-bot-beon-listener.service` | `trade.scripts.listen_beon` | BeOn_BeClear(대만·중국·일본 수출통계) 실시간 forward | 위와 동일 패턴 |
+| `trade-bot-beon-sync.timer`(2h) | `trade.scripts.backfill_beon` | 리스너 다운타임 안전망(--lookback-days 2 기본) | 없음(idempotent 재스캔) |
+| `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward | 세션 미인증(exit 78) |
+| `trade-bot-badonion-sync.timer`(6h) | `trade/scripts/backfill_badonion.py` | 위 안전망 | 없음 |
+
 ## 원칙 위반 시 재설계 규칙
 운영자가 같은 명령을 두 번 이상 반복 실행해야 하는 fix 는 잘못된 fix — 우선순위
 in-process scheduler > systemd timer > cron > (일회성만) 수동. 새 반복작업 추가 = 이 표에

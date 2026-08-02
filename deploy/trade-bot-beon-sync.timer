@@ -1,0 +1,16 @@
+[Unit]
+Description=BeOn 동기화 트리거 — 2시간 간격 (리스너가 실시간 처리, 이건 다운타임 안전망)
+
+[Timer]
+# 실시간은 trade-bot-beon-listener 가 즉시 forward. 이 타이머는 리스너 재시작
+# 창·일시적 접속 끊김을 메우는 안전망이라 빈도가 급하지 않음(스크립트 기본
+# --lookback-days 2 가 2시간 간격보다 훨씬 넓어 gap 없음). 나쁜양파 백필과
+# 동일 패턴(사용자 2026-07-10 "일본이랑 똑같은 방식으로") — 단 BeOn 이 원조라
+# 간격이 2h(badonion 은 6h).
+OnBootSec=5min
+OnUnitActiveSec=2h
+Persistent=true
+Unit=trade-bot-beon-sync.service
+
+[Install]
+WantedBy=timers.target
