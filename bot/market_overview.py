@@ -117,11 +117,14 @@ CARD_SENTIMENT = [
 # 사용자 2026-06-14: 러셀 다음 다우운송·필라델피아반도체·나스닥바이오·KBW은행.
 # 사용자 2026-06-14 '다 네이버로' — yfinance(^) → 네이버 worldstock(nvi:reutersCode).
 # 확인된 ^XXX→.XXX 패턴(.N225/.TWII/.HSI/.VIX/.SOX/.BSESN). S&P 는 네이버 .INX.
+# 사용자 2026-08-01: 다우운송 제거 → XLK(기술) 추가 — GICS 11개 섹터 중 유일하게
+# 미보유였던 섹터(당시 SOX 반도체가 대신 커버한다고 봤으나 SOX 는 반도체 한정이라
+# 소프트웨어 포함 기술 섹터 전체 대표성이 약함 + 비중(~30%) 최대 섹터가 무대표).
 CARD_US = [
     ("us S&P 500", "nvi:.INX"),
     ("us 나스닥 종합", "nvi:.IXIC"),
     ("us 다우 존스", "nvi:.DJI"),
-    ("다우 운송", "nvi:.DJT"),
+    ("XLK 기술", "nve:XLK"),
     ("필라델피아 반도체", "nvi:.SOX"),
     # 섹터 ETF (네이버 worldstock/etf, nve: bare 티커). 사용자 2026-06-17 재구성:
     # XLE 는 '미국 지수-2'로 이동, XLC(커뮤니케이션) 추가, 순서 XLF→XLV→XLC→XLP.
@@ -162,9 +165,9 @@ CARD_US2 = [
     ("XLU 유틸리티", "nve:XLU"),
     ("IYR 부동산", "nve:IYR"),
     # 사용자 2026-06-17: AIQ(테마 ETF·네이버 etf 미커버 → '—' 빈칸)를 XLB(소재)로
-    # 대체 — 기술(XLK/IT)은 다른 위젯에서 커버되므로 미보유 GICS 섹터인 소재를 채움
-    # (표준 SPDR이라 네이버 커버, 빈칸 해소). 보유 섹터: XLF·XLV·XLC·XLP(지수1) +
-    # XLY·XLI·XLE·XLU·IYR(지수2) + XLB(소재) → XLK 기술만 의도적 제외.
+    # 대체(표준 SPDR이라 네이버 커버, 빈칸 해소). 보유 섹터: XLF·XLV·XLC·XLP(지수1) +
+    # XLY·XLI·XLE·XLU·IYR(지수2) + XLB(소재) + XLK(지수1, 2026-08-01 추가) —
+    # GICS 11개 섹터 전부 보유(부동산은 표준 XLRE 대신 IYR 로 대체 커버).
     ("XLB 소재", "nve:XLB"),
 ]
 

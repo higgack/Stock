@@ -13875,6 +13875,20 @@ class TestIndexCardRecompose:
                      "nvi:.VNI", "nvi:.HNXI"):
             assert gone not in allt, gone
 
+    def test_dow_transport_replaced_by_xlk(self):
+        """사용자 2026-08-01: 다우운송 제거 → XLK(기술) 추가. GICS 11개 섹터 중
+        유일하게 미보유였던 기술 섹터(SOX 는 반도체 한정이라 대체 아님) 공백 해소."""
+        import bot.market_overview as m
+        us = dict(m.CARD_US)
+        assert "다우 운송" not in us and "nvi:.DJT" not in us.values()
+        assert us.get("XLK 기술") == "nve:XLK"
+        # GICS 11섹터 전부 (부동산은 IYR 로 대체 커버) — 어느 카드에도 있으면 충족
+        allt = {tk for _, c in m.ALL_CARDS if c for _, tk in c}
+        for sector_tk in ("nve:XLK", "nve:XLF", "nve:XLE", "nve:XLV", "nve:XLY",
+                          "nve:XLP", "nve:XLI", "nve:XLB", "nve:IYR", "nve:XLU",
+                          "nve:XLC"):
+            assert sector_tk in allt, f"{sector_tk} 미보유"
+
     def test_etf_yf_fallback(self, monkeypatch):
         # 네이버 etf 미커버(AIQ) → yfinance 폴백 (사용자 2026-06-17 VM probe).
         import bot.finviz_client as fc
