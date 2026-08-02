@@ -3165,6 +3165,31 @@ class TestIchimokuDisparity20260731:
         assert "차트 아래 설명 패널" in rsi_li, "RSI 가이드에 역참조 누락"
         assert "차트 아래 설명 패널" in macd_li, "MACD 가이드에 역참조 누락"
 
+    def test_bollinger_panel_and_button_order(self):
+        """볼린저도 RSI·MACD 와 같은 설명 패널 + 버튼을 MACD 뒤로 이동
+        (사용자 2026-08-02). 패널은 %B(밴드 안 위치)·밴드폭(스퀴즈 여부)을
+        말해야 하고, 버튼/가이드/legend 의 순서 표기가 서로 어긋나면 안 된다."""
+        import re as _re4
+        from bot.dashboard import _CHART_JS
+        assert "renderBBPanel" in _CHART_JS
+        assert "chart-bb" in _CHART_JS
+        for tok in ("%B", "스퀴즈", "표준편차"):
+            assert tok in _CHART_JS, f"볼린저 패널에 '{tok}' 누락"
+        db_src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db_src.count('id="chart-bb"') >= 2, "차트 shell·lookup_detail 양쪽 다 필요"
+        bb_li = _re4.search(r'<li><span class="k"[^>]*>볼린저</span>.*?</li>', db_src).group(0)
+        assert "차트 아래 설명 패널" in bb_li, "볼린저 가이드에 역참조 누락"
+        # 버튼 순서 — 볼린저가 MACD 뒤(양쪽 HTML 블록 모두)
+        for block in _re4.findall(r'<span class="chart-ind-label">지표:</span>.*?data-ind="events"',
+                                  db_src, _re4.S):
+            order = _re4.findall(r'data-ind="(\w+)"', block)
+            assert order.index("bb") > order.index("macd"), f"볼린저가 MACD 앞: {order}"
+        # 가이드 <li> 순서도 같아야(설명-동작 일치) — 볼린저 항목이 MACD 항목 뒤
+        assert db_src.index(bb_li) > db_src.index(macd_li := _re4.search(
+            r'<li><span class="k"[^>]*>MACD</span>.*?</li>', db_src).group(0)), "가이드 순서 불일치"
+        # legend 한 줄 요약의 나열 순서도 동기화
+        assert "캔들/이평선/거래량/RSI/MACD/볼린저/" in db_src, "legend 나열 순서 미갱신"
+
     def test_chart_js_parses(self):
         """`_CHART_JS` 는 53KB 짜리 파이썬 문자열이라 파이썬 syntax 검사를
         통과해도 JS 문법 오류는 못 잡는다 — 오타 하나면 차트 전체가 죽는데
