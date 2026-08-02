@@ -3146,6 +3146,25 @@ class TestIchimokuDisparity20260731:
             "패널·툴팁·값패널이 서버가 준 기간을 순회하지 않음"
         assert "function dispColor(key)" in _CHART_JS, "미지 기간용 색 폴백 없음"
 
+    def test_rsi_macd_panel_matches_default_on_indicators(self):
+        """RSI·MACD 는 기본 ON 지표라 늘 보이는데도 우측 뱃지엔 숫자만 있고
+        과열/과매도·골든/데드크로스·모멘텀 방향을 알 방법이 없었다(사용자
+        2026-08-02, 피보나치·일목균형표에 이미 있는 '차트 아래 설명 패널'과
+        동격 요청). 패널 렌더 함수·핵심 상태 문구·컨테이너 div·가이드 역참조를 고정."""
+        from bot.dashboard import _CHART_JS
+        assert "renderRsiMacdPanel" in _CHART_JS
+        assert "chart-rsimacd" in _CHART_JS
+        for tok in ("과열", "과매도", "골든", "데드", "히스토그램", "다이버전스"):
+            assert tok in _CHART_JS, f"RSI/MACD 패널에 '{tok}' 누락"
+        db_src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert db_src.count('id="chart-rsimacd"') >= 2, "차트 shell·lookup_detail 양쪽 다 필요"
+        # 가이드(위 legend)가 새 패널을 참조 — out-of-sync 방지(RULE: 설명-동작 일치)
+        import re as _re3
+        rsi_li = _re3.search(r'<li><span class="k"[^>]*>RSI</span>.*?</li>', db_src).group(0)
+        macd_li = _re3.search(r'<li><span class="k"[^>]*>MACD</span>.*?</li>', db_src).group(0)
+        assert "차트 아래 설명 패널" in rsi_li, "RSI 가이드에 역참조 누락"
+        assert "차트 아래 설명 패널" in macd_li, "MACD 가이드에 역참조 누락"
+
     def test_chart_js_parses(self):
         """`_CHART_JS` 는 53KB 짜리 파이썬 문자열이라 파이썬 syntax 검사를
         통과해도 JS 문법 오류는 못 잡는다 — 오타 하나면 차트 전체가 죽는데
