@@ -2728,10 +2728,10 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <span class="chart-ind-label">지표:</span>
       <button class="chart-ind-btn" data-ind="candle">캔들</button>
       <button class="chart-ind-btn" data-ind="ma">이평선</button>
-      <button class="chart-ind-btn" data-ind="bb">볼린저</button>
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="bb">볼린저</button>
       <button class="chart-ind-btn" data-ind="ichi">일목균형표</button>
       <button class="chart-ind-btn" data-ind="disp">이격도</button>
       <button class="chart-ind-btn" data-ind="fib">피보나치</button>
@@ -2756,11 +2756,12 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     <div id="chart-caption" class="chart-caption"></div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div id="chart-rsimacd" class="chart-disc" style="display:none"></div>
+    <div id="chart-bb" class="chart-disc" style="display:none"></div>
     <div id="chart-ichi" class="chart-disc" style="display:none"></div>
     <div id="chart-fibwave" class="chart-disc" style="display:none"></div>
     <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
-      상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/일목균형표/이격도/피보나치/엘리엇/로그/공시 on/off (새로고침 시 기본값으로 회귀) · 일목균형표를 켜면 선행스팬(구름)이 26봉 앞까지 그려져 차트 오른쪽이 미래 구간만큼 늘어납니다
+      상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/거래량/RSI/MACD/볼린저/일목균형표/이격도/피보나치/엘리엇/로그/공시 on/off (새로고침 시 기본값으로 회귀) · 일목균형표를 켜면 선행스팬(구름)이 26봉 앞까지 그려져 차트 오른쪽이 미래 구간만큼 늘어납니다
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
@@ -2802,10 +2803,10 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
         <ul>
           <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
           <li><span class="k">이평선</span> — <span style="color:#2563eb">21 EMA</span>(단기) · <span style="color:#3ec46d">55 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선(Credit Suisse Fibonacci 21/55/200 방법론).</li>
-          <li><span class="k" style="color:#7890c8">볼린저</span> — 20일·2σ 밴드. 상단 부근=과열, 하단 부근=과매도, 폭=변동성.</li>
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석). 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에.</li>
           <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12일EMA−26일EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9일EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>. ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에.</li>
+          <li><span class="k" style="color:#7890c8">볼린저</span> — 가격 위에 겹쳐 그리는 변동성 밴드. <b>중심선=20일 이동평균</b>, <b>상/하단=중심선 ±2 표준편차</b>(TradingView 기본값과 동일). ① 상단 부근=과열 · 하단 부근=과매도로 보는 편이지만 변동성 밴드일 뿐 <b>절대 기준은 아닙니다</b>. ② 밴드 안 위치는 <b>%B</b>(0=하단·100=상단)로, 밴드 밖으로 나가면 강한 과열/과매도이거나 강한 추세 진행 신호로 봅니다. ③ 밴드 폭이 좁아지는 <b>스퀴즈</b>는 변동성 축소 후 확대(브레이크아웃)가 이어지는 경우가 많다고 보며, 넓어지면 추세 진행 중 변동성이 커진 상태로 해석합니다. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에.</li>
           <li><span class="k" style="color:#26a69a">일목균형표</span>(一目均衡表) — 5선 + 구름. <b>전환선(9)</b>·<b>기준선(26)</b>·<b>선행스팬2(52)</b>는 이동평균이 <b>아니라</b> 그 기간 <b>고가와 저가의 한가운데</b>(가격대의 균형점)이고, <b>선행스팬1</b>=(전환+기준)÷2 입니다. 선행스팬1·2 사이가 <b>구름(Kumo)</b>으로, <b>26봉 앞(당봉 포함)에 그려져 차트 오른쪽 빈 공간까지</b> 이어집니다 — 그래서 구름 색이 바뀌는 <b>전환(twist)</b>을 미리 볼 수 있습니다. <b>후행스팬</b>은 당봉 종가를 반대로 뒤에 찍은 선이라 오른쪽 끝에서 끊기는 게 정상입니다(미래 종가를 알 수 없으므로). 해석: ① 가격이 <b>구름 위=상승추세</b>(구름이 지지) · 아래=하락추세(저항) · <b>구름 안=추세 없음</b> ② 양운(선행1&gt;선행2)=강세 · 음운=약세, <b>구름이 두꺼울수록 지지·저항이 강함</b> ③ 전환선이 기준선을 위로 뚫으면 호전(골든), 아래면 역전(데드) — <b>크로스가 구름 위에서 나면 '강'</b>·안이면 '중'·아래면 '약' ④ 후행스팬이 그 자리 과거 가격 위면 강세 확인(가장 중요한 확인선). ①③④가 동시에 강세면 <b>삼역호전(三役好転)</b>으로, 일목에서 가장 신뢰도 높다고 보는 신호입니다(거울상은 삼역역전). 파라미터 9·26·52 는 <b>주봉·분봉에서도 바꾸지 않는 것</b>이 표준 관행이며, 색·이격량은 TradingView 기본값과 맞췄습니다. 최소 <b>77봉</b>(52+25)이 있어야 계산되며 모자라면 표시하지 않습니다. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에. <b>기본 OFF</b>.</li>
           <li><span class="k" style="color:#f5a623">이격도</span> — 하단 별도 패널. <b>종가 ÷ N일 이동평균 × 100</b>(국내 HTS 관행, <b>100이 기준</b>=이평선과 일치). 20일·60일 2선을 그리고 100 기준선과 과열/침체 밴드를 함께 표시합니다. 평균으로 되돌아오려는 성질(평균회귀)을 이용한 <b>단기 시점 포착</b>용으로, 기준선은 키움증권 기술적지표 가이드 값(<b>20일 105/95 · 60일 110/90</b>)을 씁니다 — 국내 소스마다 표가 달라(한경 계열은 국면별 106/98 등) <b>절대 기준이 아닙니다</b>. ⚠️ <b>추세장 함정</b>: 강한 추세에선 이격도가 과열/침체에 머문 채 계속 갑니다. 상승장에서 105 넘었다고 파는 건 손실로 이어지기 쉬워 <b>분할 매매 + 추세지표(MACD·일목) 확인</b>이 표준 권고이며, 20일·60일이 <b>동시에</b> 극단일 때가 신뢰도가 높습니다. (서구 Disparity Index 는 0 기준 = 이격도−100 이라 임계값 숫자가 다릅니다.) <b>기본 OFF</b>.</li>
           <li><span class="k" style="color:#d9a441">피보나치</span> — <b>마지막으로 완성된 스윙 다리</b>(직전 고점↔저점)를 기준으로 되돌림선 <b>23.6 · 38.2 · 50 · 61.8 · 78.6%</b> + 0%/100% 앵커(옅은 선). 조정이 멈추기 쉬운 가격대를 보는 용도로, TradingView·thinkorswim 기본값과 같은 표준 세트입니다. 유래: 23.6%=0.618³ · 38.2%=0.618² · 61.8%=황금비(1/φ) · 78.6%=√0.618, <b>50%는 피보나치 비율이 아니라</b> 다우 이론의 '절반쯤 되돌린다'는 관찰이 관행으로 굳은 것입니다. 실무에선 61.8% 부근을 되돌림이 멈추기 쉬운 구간으로, 78.6%를 확실히 깨면 직전 상승/하락 구조가 무너진 것으로 보는 편(관례이지 증명된 규칙은 아님). 기준 다리는 ATR×1.5 이상 움직인 구간만 스윙으로 인정(zigzag)하며 고가·저가(꼬리 포함)를 앵커로 씁니다. <b>지금 진행 중인 마지막 구간은 아직 스윙으로 확정되지 않아 기준에서 제외</b>됩니다. 차트엔 선만 그어지므로 <b>차트 아래 설명 패널</b>에 기준 다리(날짜·가격)·각 레벨 가격·현재가가 몇 % 되돌린 지점인지가 함께 표시됩니다. <b>기본 OFF</b>.</li>
@@ -3310,6 +3311,55 @@ _CHART_JS = """
 
       rmEl.innerHTML = out.join('');
       rmEl.style.display = out.length ? '' : 'none';
+    })();
+
+    // 볼린저 밴드 설명 패널 — RSI·MACD 와 같은 요청(사용자 2026-08-02). 차트엔
+    // 밴드 선만 보여 지금 가격이 밴드 안 어디쯤인지(%B)·밴드가 좁아지는지
+    // (스퀴즈) 알 방법이 없었다.
+    (function renderBBPanel(){
+      var bbEl = document.getElementById('chart-bb');
+      if (!bbEl) return;
+      if (!(ind.bb && d.bb_u && d.bb_m && d.bb_l)) { bbEl.style.display = 'none'; bbEl.innerHTML = ''; return; }
+      var dc = (d.decimals === 0) ? 0 : 2;
+      var uv = lastNonNull(d.bb_u), mv = lastNonNull(d.bb_m), lv = lastNonNull(d.bb_l);
+      var px = (d.last_price != null) ? d.last_price : lastNonNull(d.close);
+      if (uv == null || mv == null || lv == null) { bbEl.style.display = 'none'; bbEl.innerHTML = ''; return; }
+      var L3 = [];
+      if (px != null && uv > lv) {
+        var posTxt;
+        if (px > uv) posTxt = '<b style="color:#e2574c">상단 위로 이탈</b>(밴드 밖 · 강한 과열/추세)';
+        else if (px < lv) posTxt = '<b style="color:#26a69a">하단 아래로 이탈</b>(밴드 밖 · 강한 과매도/추세)';
+        else {
+          var pctB = (px - lv) / (uv - lv) * 100;
+          posTxt = '%B <b>' + pctB.toFixed(0) + '%</b>(0=하단·100=상단)';
+        }
+        L3.push('① 위치 — ' + posTxt);
+      }
+      if (uv != null && lv != null && mv) {
+        var bw = (uv - lv) / mv * 100;
+        var bwPrev = null, bwDist = null;
+        for (var bj = d.bb_u.length - 21; bj >= 0; bj--) {
+          if (d.bb_u[bj] != null && d.bb_l[bj] != null && d.bb_m[bj]) {
+            bwPrev = (d.bb_u[bj] - d.bb_l[bj]) / d.bb_m[bj] * 100;
+            bwDist = (d.bb_u.length - 1) - bj;
+            break;
+          }
+        }
+        var bwTxt = '② 폭 — <b>' + bw.toFixed(1) + '%</b>(중심 대비)';
+        if (bwPrev != null) {
+          var bwDir = bw > bwPrev ? '확대' : (bw < bwPrev ? '축소' : '보합');
+          bwTxt += ' · ' + bwDir + ' <span class="cd-desc">(' + bwDist + '봉 전 대비)</span>';
+        }
+        L3.push(bwTxt);
+      }
+      bbEl.innerHTML =
+        '<div><b style="color:#7890c8">📉 볼린저 밴드</b>(20일·2σ) — 상단 <b>' + fmtPrice(uv, dc)
+        + '</b> · 중심 <b>' + fmtPrice(mv, dc) + '</b> · 하단 <b>' + fmtPrice(lv, dc) + '</b></div>'
+        + (L3.length ? '<div style="margin-top:2px">' + L3.join('<br>') + '</div>' : '')
+        + '<div class="cd-desc" style="margin-top:3px">중심선=20일 이동평균 · 상/하단=중심선 ±2 표준편차. 상단 부근=과열 · 하단 부근=과매도로 보는 편이지만 '
+        + '변동성 밴드일 뿐 <b>절대 기준은 아닙니다</b>. 밴드 폭이 좁아지는 <b>스퀴즈</b>는 변동성 축소 후 확대(브레이크아웃)가 이어지는 경우가 많다고 보는 신호이며, '
+        + '넓어지면 추세 진행 중 변동성이 커진 상태로 해석하는 것이 일반적입니다.</div>';
+      bbEl.style.display = '';
     })();
 
     // 피보나치·엘리엇 설명 패널 — 차트엔 선/점만 찍히고 어느 선이 몇 %인지,
@@ -16734,10 +16784,10 @@ def _lookup_chart_html(ticker: str) -> str:
       <span class="chart-ind-label">지표:</span>
       <button class="chart-ind-btn" data-ind="candle">캔들</button>
       <button class="chart-ind-btn" data-ind="ma">이평선</button>
-      <button class="chart-ind-btn" data-ind="bb">볼린저</button>
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="bb">볼린저</button>
       <button class="chart-ind-btn" data-ind="ichi">일목균형표</button>
       <button class="chart-ind-btn" data-ind="disp">이격도</button>
       <button class="chart-ind-btn" data-ind="fib">피보나치</button>
@@ -16762,6 +16812,7 @@ def _lookup_chart_html(ticker: str) -> str:
     <div id="chart-caption" class="chart-caption"></div>
     <script type="application/json" id="chart-data">{_chart_payload}</script>
     <div id="chart-rsimacd" class="chart-disc" style="display:none"></div>
+    <div id="chart-bb" class="chart-disc" style="display:none"></div>
     <div id="chart-ichi" class="chart-disc" style="display:none"></div>
     <div id="chart-fibwave" class="chart-disc" style="display:none"></div>
     <div id="chart-disc" class="chart-disc"></div>

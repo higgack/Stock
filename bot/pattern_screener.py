@@ -48,7 +48,18 @@ def _atr(highs, lows, closes, period: int = 14) -> float:
 
 def zigzag_swings(highs, lows, min_move: float) -> list:
     """ATR 반전폭(min_move) 기반 zigzag — 교대 고점/저점 스윙 리스트
-    [(idx, 'high'|'low', price), ...] (시간순). min_move<=0 이면 빈 리스트."""
+    [(idx, 'high'|'low', price), ...] (시간순). min_move<=0 이면 빈 리스트.
+
+    ⚠️ 스윙은 **서로 다른 봉** 사이에서만 확정한다. 일중 변동폭이 min_move 를
+    넘는 큰 봉 하나는 같은 i 에서 두 블록이 모두 발화해 (i,'high')·(i,'low') 를
+    연속으로 내놓을 수 있었다 — 그러면 시간폭 0 짜리 '스윙'이 만들어지고,
+    피보나치 기준 다리가 그 한 봉의 고저가 되어 화면에 `07-30 → 07-30` 처럼
+    시작·끝 날짜가 같은 다리가 찍혔다(사용자 2026-08-02 실측: 1년 일봉인데
+    직전 1봉짜리 다리를 잡아 '100% 초과 — 통째로 무효화'). 애초에 봉 안에서는
+    고가·저가의 **선후를 알 수 없어** 방향을 단정할 수 없으므로, 직전 피벗과
+    같은 봉이면 확정하지 않고 후보로 계속 추적한다(더 뒤 봉에서 극점이
+    갱신되면 그때 정상 확정 — 모듈 정책 '진행 중 다리는 미확정'과 동일 취지).
+    zigzag 를 공유하는 VCP 탐지도 같은 이유로 0봉 수축이 사라진다."""
     n = len(highs)
     if n == 0 or min_move <= 0:
         return []
@@ -60,14 +71,16 @@ def zigzag_swings(highs, lows, min_move: float) -> list:
         if direction <= 0:
             if lows[i] < cand_low:
                 cand_low, cand_low_idx = lows[i], i
-            if highs[i] - cand_low >= min_move:
+            if highs[i] - cand_low >= min_move and (
+                    not swings or swings[-1][0] != cand_low_idx):
                 swings.append((cand_low_idx, "low", cand_low))
                 direction = 1
                 cand_high, cand_high_idx = highs[i], i
         if direction >= 0:
             if highs[i] > cand_high:
                 cand_high, cand_high_idx = highs[i], i
-            if cand_high - lows[i] >= min_move:
+            if cand_high - lows[i] >= min_move and (
+                    not swings or swings[-1][0] != cand_high_idx):
                 swings.append((cand_high_idx, "high", cand_high))
                 direction = -1
                 cand_low, cand_low_idx = lows[i], i
