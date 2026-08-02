@@ -1105,7 +1105,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【명령어】</b> (탭 자동입력 · 대시보드 검색창 '/' 모드에서도 동일)
-/help /usage /portfolio /screener_list /sites /blog /valuechain — 비용: /screener·daily_byte·cheongyak·realestate_cost
+/help /usage /portfolio /screener_list /sites /blog /valuechain — 비용: /screener_cost·/daily_byte_cost·/cheongyak_cost·/realestate_cost
 /티커 — 단일 분석 (예: /NVDA · /005930.KS · 한국은 종목명 /삼성전자)
 /compare NVDA AMD — 두 종목 비교
 /screen [us|jp|hk|cn|tw] [조건 | 프리셋] [fresh] — 조건부 스크리너 (KR/US/JP/HK/CN/TW, ₩0) · 프리셋 minervini/valueup · fresh=캐시무시 · /screen list
