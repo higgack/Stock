@@ -3274,12 +3274,17 @@ _CHART_JS = """
           }
           var hMom = '';
           if (hv != null && d.macd_hist) {
-            var hPrev = null;
+            var hPrev = null, hPrevDist = null;
             for (var hj = d.macd_hist.length - 4; hj >= 0; hj--) {
-              if (d.macd_hist[hj] != null) { hPrev = d.macd_hist[hj]; break; }
+              if (d.macd_hist[hj] != null) {
+                hPrev = d.macd_hist[hj];
+                hPrevDist = (d.macd_hist.length - 1) - hj;
+                break;
+              }
             }
             if (hPrev != null) {
-              hMom = Math.abs(hv) > Math.abs(hPrev) ? '강화' : (Math.abs(hv) < Math.abs(hPrev) ? '약화' : '보합');
+              var hDir = Math.abs(hv) > Math.abs(hPrev) ? '강화' : (Math.abs(hv) < Math.abs(hPrev) ? '약화' : '보합');
+              hMom = hDir + ' <span class="cd-desc">(' + hPrevDist + '봉 전 대비)</span>';
             }
           }
           var L2 = [];
