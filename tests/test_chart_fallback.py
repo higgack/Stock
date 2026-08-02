@@ -72,7 +72,12 @@ class DfToPayloadTests(unittest.TestCase):
         self.assertEqual(p["period"], "1y")
         self.assertEqual(len(p["times"]), len(p["close"]))
         self.assertEqual(p["times"][0], "2025-06-02")
-        self.assertIn("ema21", p)
+        # 10봉 — ema21 은 21봉 미만이면 가드로 생략된다(2026-08-02 fix: 옛
+        # 구현은 가드가 없어 2봉짜리 창에도 그려졌다 — sma55/sma200 과 동일하게
+        # '정의되는 봉부터만' 내보내도록 고침). 이 테스트가 바로 그 버그를
+        # 고정하고 있었다(10봉인데 ema21 존재를 요구) — 옛 버그가 아니라
+        # 올바른 생략을 확인하도록 갱신.
+        self.assertNotIn("ema21", p)
 
     def test_none_passthrough(self):
         self.assertIsNone(C._df_to_daily_payload(None, "X", "1y"))
