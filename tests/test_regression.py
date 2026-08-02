@@ -15553,6 +15553,31 @@ class TestCpiBoardWiring20260724:
         text = m.group(1)
         assert len(text.encode("utf-16-le")) // 2 < 4096
 
+    def test_help_text_matches_static_command_registry(self):
+        """전체 점검(2026-08-02) 발견 — HELP_TEXT 가 4개 비용 명령을 안내하며
+        '_cost' 접미사를 마지막(realestate_cost) 에만 붙여 "/screener·
+        daily_byte·cheongyak·realestate_cost" 로 적었다. 그러면 '/screener'
+        는 완전히 다른 기존 명령(Bottleneck 발굴)으로 읽히고 'daily_byte'·
+        'cheongyak' 은 아예 존재하지 않는 명령으로 읽힌다 — 사용자가 그대로
+        입력하면 실패하거나 엉뚱한 명령이 실행된다. 단일 레지스트리
+        (_static_command_registry)에 등록된 명령이 전부 HELP_TEXT 에도
+        정확한 이름으로 등장하는지(= drift 재발 방지) 고정."""
+        import re
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        reg_m = re.search(
+            r"def _static_command_registry\(\).*?return \{(.*?)\n    \}\n",
+            tb, re.S)
+        registered = set(re.findall(r'"([a-z_0-9]+)":\s*\(', reg_m.group(1)))
+        assert len(registered) >= 20, "레지스트리 추출 실패(정규식 회귀?)"
+        help_m = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', tb, re.S)
+        help_text = help_m.group(1)
+        help_cmds = set(re.findall(r'/([a-z_][a-z_0-9]*)', help_text))
+        # 'start' 는 관행상 자기소개 텍스트에 자기참조 안 함(help 와 동일 핸들러) — 예외.
+        orphans = (registered - help_cmds) - {"start"}
+        assert not orphans, f"레지스트리엔 있는데 HELP_TEXT 에 정확한 이름으로 없음: {orphans}"
+        cost_cmds = {"screener_cost", "daily_byte_cost", "cheongyak_cost", "realestate_cost"}
+        assert cost_cmds <= help_cmds, f"비용 명령 4종이 HELP_TEXT 에 온전한 이름으로 없음"
+
 
 class TestMarketTiming20260726:
     """시장타이밍/브레드스(claude-trading-skills ibd-distribution-day-monitor/
