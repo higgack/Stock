@@ -15787,6 +15787,52 @@ class TestPatternScreener20260726:
         assert ps.zigzag_swings([1, 2, 3], [1, 2, 3], 0) == []
         assert ps.zigzag_swings([], [], 5) == []
 
+    def test_zigzag_never_emits_two_pivots_on_one_bar(self):
+        """일중 변동폭이 임계를 넘는 큰 봉 하나가 (i,'high')·(i,'low') 를 연속
+        으로 내놓아 **시간폭 0 짜리 스윙**이 만들어졌다(사용자 2026-08-02 실측).
+        그 결과 피보나치 기준 다리가 한 봉의 고저가 되어 1년 일봉 차트에
+        `07-30 → 07-30` 다리가 찍히고 '100% 초과 — 통째로 무효화'로 표시됐다.
+        봉 안에서는 고가·저가의 선후를 알 수 없으므로 스윙은 서로 다른 봉
+        사이에서만 확정해야 한다."""
+        from bot import pattern_screener as ps
+        # 재현: idx=4 가 고 53,820 / 저 48,650 (일중 10.6%) — 임계 4,000 초과
+        highs = [40000, 42000, 45000, 50000, 53820, 59250]
+        lows = [39000, 41000, 44000, 49000, 48650, 54220]
+        sw = ps.zigzag_swings(highs, lows, 4000)
+        idxs = [s[0] for s in sw]
+        assert len(idxs) == len(set(idxs)), f"같은 봉에 두 피벗: {sw}"
+        assert all(a < b for a, b in zip(idxs, idxs[1:])), f"시간순 위반: {sw}"
+        kinds = [s[1] for s in sw]
+        assert all(a != b for a, b in zip(kinds, kinds[1:])), f"교대 위반: {sw}"
+
+    def test_fib_leg_spans_more_than_one_bar(self):
+        """위 zigzag 불변식의 **소비자 쪽** 고정 — 피보나치 기준 다리의 시작·끝이
+        같은 봉이면 되돌림이 무의미하다(다리=그 봉의 일중 레인지).
+
+        단일 손수 케이스로는 재현이 까다로워(확정 순서가 임계·후속봉에 달림)
+        고정 시드 코퍼스 위 **속성 테스트**로 건다 — 픽스 없이 돌리면 이 코퍼스
+        에서 실제로 `from_time == to_time` 다리가 나온다(2026-08-02 실측)."""
+        import random as _rnd
+        from bot.elliott_fib import analyze_waves
+        rng = _rnd.Random(3)
+        for trial in range(12):
+            n = 60 + trial % 40
+            times, highs, lows, closes = [], [], [], []
+            base = 10000.0
+            for i in range(n):
+                base *= 1 + rng.uniform(-0.03, 0.045)
+                w = base * rng.uniform(0.005, 0.02)
+                highs.append(base + w); lows.append(base - w); closes.append(base)
+                times.append(f"D{i:03d}")
+            k = n - 2                     # 일중 레인지 큰 봉 — 재현 트리거
+            mid = closes[k]
+            highs[k], lows[k], closes[k] = mid * 1.13, mid * 0.87, mid
+            r = analyze_waves(times, highs, lows, closes)
+            if not r:
+                continue                  # 스윙 부족이면 None (graceful)
+            lg = r["leg"]
+            assert lg["from_time"] != lg["to_time"], f"trial{trial} 0봉 다리: {lg}"
+
     def test_detect_vcp_valid_two_contractions_pre_breakout(self):
         from bot import pattern_screener as ps
         closes, highs, lows = _vcp_ramp([(30, 150), (10, 130), (15, 145), (8, 138), (10, 144)])
