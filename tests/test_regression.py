@@ -3885,8 +3885,12 @@ class TestPortfolioDashboard:
         # 봇 DM 문서 ingest 핸들러는 제거 — 입력은 RAG 채널 watcher (봇 깨끗하게)
         assert "cmd_portfolio_upload" not in src, "DM 업로드 핸들러 잔존(제거돼야)"
         assert "filters.Document" not in src, "DM 문서 핸들러 잔존(제거돼야)"
-        # help §9 대시보드 목록에 자산 추가 (사용자 정책: 대시보드 변경은 help 동기)
-        assert "06beb08f5f4ad5515007e65f8f60b471/portfolio.html" in src, "help 자산 링크 누락"
+        # help §9 — 자산은 '그 외' nav 목록(분석아카이브·자산·Screener·...)에만 이름으로
+        # 남고, Main 처럼 별도 URL 줄은 안 둔다(사용자 2026-08-03 "자산부분은 지워져"
+        # — Main 만 단일 entry 로 URL 노출, 나머지는 Main nav 통해 접근).
+        assert "06beb08f5f4ad5515007e65f8f60b471/portfolio.html" not in src, \
+            "help 에 자산 단독 URL 잔존(제거돼야)"
+        assert "·자산·" in src, "help nav 목록에서 '자산' 이름 자체까지 빠짐(과다삭제)"
 
 
 class TestPortfolioWatch:
