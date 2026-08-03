@@ -17144,17 +17144,27 @@ class TestIntlHighLowLiveIndustry20260803:
     def test_live_merge_populates_industry(self, monkeypatch):
         import bot.intl_highlow as ih
 
+        # baseline 에 hit 종목(0005.HK) + non-hit 종목(9999.HK, 가격이 h52/l52
+        # 사이라 결과에 안 들어감) 을 함께 둬 스코프 축소(아래 두번째 테스트)를
+        # 같은 fixture 로 교차검증할 수 있게 한다.
         monkeypatch.setattr(ih, "_load_baseline", lambda market: {
             "0005.HK": {"h52": 160.0, "l52": 100.0, "name": "HSBC"},
+            "9999.HK": {"h52": 200.0, "l52": 50.0, "name": "논힛"},
         })
         monkeypatch.setattr(
             "bot.naver_ranking_client.world_live_map",
             lambda market: {"0005.HK": {"price": 168.10, "pct": -0.06,
                                         "vol": 740000, "mcap": 29000.0,
-                                        "name": "HSBC"}})
-        monkeypatch.setattr(
-            "bot.finviz_client._industries_for",
-            lambda tickers, market: {"0005.HK": "Banks - Diversified"})
+                                        "name": "HSBC"},
+                            "9999.HK": {"price": 120.0, "pct": 0.1,
+                                       "vol": 1000, "mcap": 100.0,
+                                       "name": "논힛"}})
+        seen = {}
+
+        def _fake_industries(tickers, market):
+            seen["tickers"] = list(tickers)
+            return {"0005.HK": "Banks - Diversified"}
+        monkeypatch.setattr("bot.finviz_client._industries_for", _fake_industries)
         monkeypatch.setattr("bot.finviz_client._cached", lambda name, ttl=86400: None)
         monkeypatch.setattr("bot.finviz_client._cache_write", lambda name, obj: None)
 
@@ -17164,11 +17174,25 @@ class TestIntlHighLowLiveIndustry20260803:
         assert recs, "baseline 갱신 조건(price>=h52)을 만족하는 레코드가 없음 — fixture 확인"
         assert all(r["ind"] == "Banks - Diversified" for r in recs), \
             "live 병합 레코드의 ind 가 여전히 None(또는 다른 값) — 하드코딩 회귀"
+        # 2026-08-03 code-review 후속 fix — 전체 baseline(base.keys(), JP/HK
+        # 전종목 수천 개일 수 있음)이 아니라 실제 hi/lo 히트 티커만 조회해야
+        # (정적 스캔 경로의 hits2 스코핑과 동일 — 페이지 요청 경로 블로킹
+        # 비용 축소). non-hit 종목(9999.HK)이 조회 대상에 안 들어가야 한다.
+        assert seen["tickers"] == ["0005.HK"], \
+            f"_industries_for 가 hi/lo 이외 티커까지 조회함(스코프 축소 실패): {seen['tickers']}"
 
-    def test_no_hardcoded_ind_none(self):
+    def test_no_hardcoded_ind_none_result(self):
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
-        assert '"ind": None}' not in src, "live 병합 레코드에 ind 하드코딩 None 잔존"
         assert "_industries_for" in src, "live 병합 경로에 업종 백필 미배선"
+        # 스코프는 hi/lo 확정 이후여야(base.keys() 전체 조회 회귀 방지) —
+        # _industries_for 호출부 앞에 'high + low' 스코프 힌트가 있어야.
+        idx = src.index("_industries_for(")
+        before = src[:idx]
+        assert "if not high and not low:" in before, \
+            "_industries_for 호출이 hi/lo 확정(빈 결과 조기반환) 이전으로 되돌아감 " \
+            "— base.keys() 전체 조회 회귀 위험"
+        assert "_industries_for(list(base.keys())" not in src, \
+            "_industries_for 가 다시 전체 baseline 을 조회함(스코프 축소 회귀)"
 
 
 class TestChartIndDefaultsNoRsiMacd20260803:
