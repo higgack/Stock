@@ -17092,3 +17092,36 @@ class TestDeployUnitInventoryAudit20260802:
         for name in ("daju-listener", "trade-bot-beon-listener",
                      "trade-bot-beon-sync", "trade-bot-badonion-listener"):
             assert name in doc, f"docs/automation.md 에 '{name}' 누락"
+
+
+class TestOnStartupStaticPagesBackgrounded20260803:
+    """2026-08-03 실측: _on_startup(post_init) 이 screener~dart_feed 정적
+    페이지 재생성 10개를 async 본문에서 동기 실행 → app.run_polling() 의
+    getUpdates 시작을 그만큼 지연. dart_feed 재생성은 FSC(data.go.kr) 시총
+    조회가 45초 소프트예산(dashboard._mc_deadline) + 콜당 20초(fsc_client.
+    _TIMEOUT) 오버런까지 낼 수 있어, FSC 저하(429·timeout 연발) 시 watchdog
+    의 180초 'bot starting' 유예(deploy/watchdog.sh)를 넘겨 polling 진입 전에
+    재시작당함 — 09:07·09:11 hang 알림 실측(재시작마다 cascade 처음부터 재현,
+    자기악화 루프). main() 의 _startup_regen 스레드와 동일 패턴으로 백그라운드화."""
+
+    def test_static_pages_regen_is_backgrounded(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "def _static_pages_regen():" in src, \
+            "static 페이지 재생성이 별도 함수로 분리돼야(백그라운드화 전제)"
+        assert 'Thread(target=_static_pages_regen, name="static-pages-regen",' in src, \
+            "static 페이지 재생성이 daemon 스레드로 배선돼야 (post_init 동기 " \
+            "실행이면 getUpdates 시작 지연 → watchdog false-restart)"
+        # 스레드 함수 정의가 스레드 기동보다 먼저 나와야 하고, 그 사이(정의부
+        # 내부)에 각 regenerate_* 호출이 들어있어야 — 동기 최상위 호출로
+        # 되돌아가는 회귀 방지.
+        def_idx = src.index("def _static_pages_regen():")
+        start_idx = src.index('name="static-pages-regen"')
+        assert def_idx < start_idx
+        body = src[def_idx:start_idx]
+        for fn in ("regenerate_screener_index", "regenerate_daily_byte_index",
+                   "regenerate_realestate_index", "regenerate_cheongyak_index",
+                   "regenerate_gics_candidates_index", "regenerate_watchlist_index",
+                   "regenerate_reddit_insider_index", "regenerate_blog_index",
+                   "regenerate_valuechain_index", "regenerate_market_index",
+                   "regenerate_dart_feed_index"):
+            assert fn in body, f"{fn} 가 백그라운드 스레드 함수 밖(동기 경로)으로 이동함"
