@@ -3513,7 +3513,7 @@ class TestDajuEarningsPreview20260801:
     def test_wiring(self):
         """리스너·대시보드·systemd·help 배선 — 헬퍼만 만들고 안 쓰는 누락 방지."""
         db = open("bot/dashboard.py", encoding="utf-8").read()
-        assert "{_render_daju_section(_load_daju_runs())}" in db, "블로그 페이지 미배선"
+        assert "{_render_daju_section(_load_daju_runs(200))}" in db, "블로그 페이지 미배선"
         assert "daju_archive" in db
         dw = open("bot/daju_watch.py", encoding="utf-8").read()
         assert "is_daju_earnings(body)" in dw, "리스너 relevance 필터 누락"
@@ -3526,6 +3526,51 @@ class TestDajuEarningsPreview20260801:
         # user-visible 변경 → _HELP_TEXT 같은 commit 갱신(공개 spec)
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "DAJU 실적예정" in tb, "_HELP_TEXT 미갱신"
+
+
+class TestDajuGroupedByMonthDay20260803:
+    """사용자 2026-08-03 '블로그 업데이트 대쉬보드 반영되는거랑 똑같은
+    형식으로(카드형식 및 월/일별 쌓이는 구조 등) 구현해줘' — DAJU 실적발표
+    예정 섹션을 blog.html 본문 카드 스트림과 같은 month>day>card 누적
+    구조로 재구성(2026-08-01 최초 구현은 최신 8건 flat 나열 — 날짜 그룹
+    없었음)."""
+
+    def _rec(self, date, headline):
+        return {"headline": headline, "date": date,
+                "ts": f"{date}T18:30:00+09:00",
+                "stocks": [], "tomorrow": {}, "raw": ""}
+
+    def test_groups_by_month_and_day(self):
+        import bot.dashboard as D
+        runs = [
+            self._rec("2025-02-03", "카드A"),
+            self._rec("2025-02-03", "카드B"),
+            self._rec("2025-01-15", "카드C"),
+        ]
+        html = D._render_daju_section(runs)
+        assert html.count('<details class="month"') == 2, "월 그룹 2개(2025-01·2025-02)여야"
+        assert html.count('<details class="day"') == 2, "일 그룹 2개(01-15·02-03)여야"
+        assert "2025년 2월" in html and "2025년 1월" in html
+        assert "2025-02-03" in html and "2025-01-15" in html
+        assert '<span class="count">2 건</span>' in html   # 02-03 은 2건
+        assert html.index("2025년 2월") < html.index("2025년 1월"), "최신월이 먼저(내림차순)"
+        assert html.count('<details class="dj-card"') == 3   # 개별 카드 스타일 유지
+        assert "카드A" in html and "카드B" in html and "카드C" in html
+
+    def test_no_cap_at_eight(self):
+        # 옛 구현이 runs[:8] 로 잘랐던 것 — 회귀 방지(전부 렌더돼야).
+        import bot.dashboard as D
+        runs = [self._rec("2025-03-01", f"카드{i}") for i in range(12)]
+        html = D._render_daju_section(runs)
+        for i in range(12):
+            assert f"카드{i}" in html, f"카드{i} 가 누락됨(구 cap=8 회귀)"
+
+    def test_load_daju_runs_bumped_for_grouping(self):
+        # 8개 flat 캡이 사라졌으니 로드 limit 도 그에 맞춰 늘어야(그룹 뒤에서
+        # 잘리는 걸 방지) — 기존 20 → 200.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_load_daju_runs(200)" in src, \
+            "블로그 페이지의 _load_daju_runs 호출이 확장된 limit 을 안 씀"
 
 
 # ─────────────────────────────────────────────────────────────────────────

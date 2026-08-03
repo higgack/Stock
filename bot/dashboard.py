@@ -10967,69 +10967,119 @@ def _load_daju_runs(limit: int = 20) -> list[dict]:
     return runs
 
 
+def _render_daju_card(r: dict, open_: bool) -> str:
+    """DAJU 실적 발표 예정 카드 1건(종목별 점수·추세 + 내일 예정 목록)."""
+    head = _html.escape(r.get("headline") or "실적 발표 예정")
+    ts = _html.escape((r.get("ts") or "")[:16].replace("T", " "))
+    stocks = r.get("stocks") or []
+    rows: list[str] = []
+    for st in stocks:
+        nm = _html.escape(st.get("name") or "")
+        cd = _html.escape(st.get("code") or "")
+        sc = st.get("score")
+        sc_h = (f'<span class="dj-score">{sc}<span class="dj-max">/'
+                f'{st.get("score_max") or 100}</span></span>'
+                if sc is not None else '<span class="dj-max">—</span>')
+        mv = st.get("move_1m")
+        mv_h = ""
+        if isinstance(mv, (int, float)):
+            col = "var(--pos)" if mv > 0 else ("var(--neg)" if mv < 0 else "var(--muted)")
+            mv_h = (f'<span style="color:{col}">{"▲" if mv > 0 else ("▼" if mv < 0 else "")} '
+                    f'{abs(mv):.1f}%</span>')
+        secs = []
+        for sec in st.get("sections") or []:
+            bl = "".join(f"<li>{_html.escape(b)}</li>"
+                         for b in (sec.get("bullets") or []))
+            secs.append(f'<div class="dj-sec"><b>{_html.escape(sec.get("icon") or "")}'
+                        f' {_html.escape(sec.get("title") or "")}</b><ul>{bl}</ul></div>')
+        rows.append(
+            f'<div class="dj-stock"><div class="dj-hd">'
+            f'<span class="dj-nm">{nm}</span> <span class="dj-cd">{cd}</span>'
+            f'{sc_h}</div>'
+            f'<div class="dj-meta">{_html.escape(str(st.get("price") or ""))}'
+            f'{" · " + mv_h if mv_h else ""}'
+            f'{" · " + _html.escape(str(st.get("when"))) if st.get("when") else ""}</div>'
+            f'{"".join(secs)}</div>')
+    tom = r.get("tomorrow") or {}
+    tom_h = ""
+    if tom.get("items"):
+        lis = []
+        for i in tom["items"]:
+            star = " 🌟" if i.get("starred") else ""
+            tm = f' <span class="dj-cd">{_html.escape(i["time"])}</span>' if i.get("time") else ""
+            note = (f' <span class="dj-note">{_html.escape(i["note"])}</span>'
+                    if i.get("note") else "")
+            lis.append(f'<li>{_html.escape(i.get("name") or "")} '
+                       f'<span class="dj-cd">{_html.escape(i.get("code") or "")}</span>'
+                       f'{tm}{star}{note}</li>')
+        more = (f'<span class="dj-note"> 외 {tom["more"]}곳</span>'
+                if tom.get("more") else "")
+        tom_h = (f'<div class="dj-tom"><b>📎 {_html.escape(tom.get("label") or "")}</b>'
+                 f'{more}<ul>{"".join(lis)}</ul></div>')
+    if not rows and not tom_h:      # 파싱 실패 → 원문 그대로(정보 보존)
+        rows = [f'<pre class="dj-raw">{_html.escape(r.get("raw") or "")}</pre>']
+    return (f'<details class="dj-card"{" open" if open_ else ""}>'
+            f'<summary><b>{head}</b> <span class="dj-note">{ts}</span></summary>'
+            f'{"".join(rows)}{tom_h}</details>')
+
+
 def _render_daju_section(runs: list[dict]) -> str:
-    """블로그 페이지 상단 '실적 발표 예정' 섹션 — 최신 1건을 펼쳐 보여주고
-    이전 건은 접어 둔다. 파싱이 깨진 건(stocks 없음)은 원문 그대로 노출."""
+    """블로그 페이지 상단 '실적 발표 예정' 섹션 — blog.html 본문 카드 스트림과
+    같은 월/일별 누적 구조(month>day>card, 사용자 2026-08-03 '블로그 업데이트
+    대쉬보드 반영되는거랑 똑같은 형식으로'). details.month/day 는 blog.html
+    본문이 이미 쓰는 _SCREENER_CSS 공용 클래스(접기+개수 배지)를 그대로
+    재사용 — 새 CSS 불요. DAJU 볼륨이 낮아(하루 0~1건) blog 처럼 과거월
+    lazy fragment 는 불필요해 전부 인라인.
+
+    2026-08-01 최초 구현은 최신 8건을 그냥 나열(날짜 그룹 없음) — 사용자가
+    블로그처럼 날짜별로 쌓이길 기대해 재구성."""
     if not runs:
         return ""
-    def _card(r: dict, open_: bool) -> str:
-        head = _html.escape(r.get("headline") or "실적 발표 예정")
-        ts = _html.escape((r.get("ts") or "")[:16].replace("T", " "))
-        stocks = r.get("stocks") or []
-        rows: list[str] = []
-        for st in stocks:
-            nm = _html.escape(st.get("name") or "")
-            cd = _html.escape(st.get("code") or "")
-            sc = st.get("score")
-            sc_h = (f'<span class="dj-score">{sc}<span class="dj-max">/'
-                    f'{st.get("score_max") or 100}</span></span>'
-                    if sc is not None else '<span class="dj-max">—</span>')
-            mv = st.get("move_1m")
-            mv_h = ""
-            if isinstance(mv, (int, float)):
-                col = "var(--pos)" if mv > 0 else ("var(--neg)" if mv < 0 else "var(--muted)")
-                mv_h = (f'<span style="color:{col}">{"▲" if mv > 0 else ("▼" if mv < 0 else "")} '
-                        f'{abs(mv):.1f}%</span>')
-            secs = []
-            for sec in st.get("sections") or []:
-                bl = "".join(f"<li>{_html.escape(b)}</li>"
-                             for b in (sec.get("bullets") or []))
-                secs.append(f'<div class="dj-sec"><b>{_html.escape(sec.get("icon") or "")}'
-                            f' {_html.escape(sec.get("title") or "")}</b><ul>{bl}</ul></div>')
-            rows.append(
-                f'<div class="dj-stock"><div class="dj-hd">'
-                f'<span class="dj-nm">{nm}</span> <span class="dj-cd">{cd}</span>'
-                f'{sc_h}</div>'
-                f'<div class="dj-meta">{_html.escape(str(st.get("price") or ""))}'
-                f'{" · " + mv_h if mv_h else ""}'
-                f'{" · " + _html.escape(str(st.get("when"))) if st.get("when") else ""}</div>'
-                f'{"".join(secs)}</div>')
-        tom = r.get("tomorrow") or {}
-        tom_h = ""
-        if tom.get("items"):
-            lis = []
-            for i in tom["items"]:
-                star = " 🌟" if i.get("starred") else ""
-                tm = f' <span class="dj-cd">{_html.escape(i["time"])}</span>' if i.get("time") else ""
-                note = (f' <span class="dj-note">{_html.escape(i["note"])}</span>'
-                        if i.get("note") else "")
-                lis.append(f'<li>{_html.escape(i.get("name") or "")} '
-                           f'<span class="dj-cd">{_html.escape(i.get("code") or "")}</span>'
-                           f'{tm}{star}{note}</li>')
-            more = (f'<span class="dj-note"> 외 {tom["more"]}곳</span>'
-                    if tom.get("more") else "")
-            tom_h = (f'<div class="dj-tom"><b>📎 {_html.escape(tom.get("label") or "")}</b>'
-                     f'{more}<ul>{"".join(lis)}</ul></div>')
-        if not rows and not tom_h:      # 파싱 실패 → 원문 그대로(정보 보존)
-            rows = [f'<pre class="dj-raw">{_html.escape(r.get("raw") or "")}</pre>']
-        return (f'<details class="dj-card"{" open" if open_ else ""}>'
-                f'<summary><b>{head}</b> <span class="dj-note">{ts}</span></summary>'
-                f'{"".join(rows)}{tom_h}</details>')
-    cards = "".join(_card(r, i == 0) for i, r in enumerate(runs[:8]))
+    from collections import defaultdict
+    from datetime import datetime as _dt_dj, timedelta as _td_dj, timezone as _tz_dj
+
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for r in runs:
+        by_date[r.get("date") or (r.get("ts") or "")[:10] or "?"].append(r)
+
+    today_kst = _dt_dj.now(_tz_dj(_td_dj(hours=9))).date().isoformat()
+    this_month = today_kst[:7]
+
+    months: dict[str, list[str]] = defaultdict(list)
+    for date in sorted(by_date.keys(), reverse=True):
+        months[(date or "")[:7]].append(date)
+
+    def _fmt_month(ym: str) -> str:
+        try:
+            y, m = ym.split("-")
+            return f"{int(y)}년 {int(m)}월"
+        except Exception:
+            return ym
+
+    body: list[str] = []
+    for month in sorted(months.keys(), reverse=True):
+        month_dates = months[month]
+        month_count = sum(len(by_date[d]) for d in month_dates)
+        month_open = " open" if month == this_month else ""
+        body.append(f'<details class="month"{month_open}>'
+                    f'<summary class="month-head"><span>📆 {_html.escape(_fmt_month(month))}</span>'
+                    f'<span class="count">{month_count} 건</span></summary>'
+                    f'<div class="month-body">')
+        for date in month_dates:
+            day_runs = by_date[date]
+            day_open = " open" if date == today_kst else ""
+            body.append(f'<details class="day"{day_open}>'
+                        f'<summary class="day-head"><span>📅 {_html.escape(date)}</span>'
+                        f'<span class="count">{len(day_runs)} 건</span></summary>'
+                        f'<div class="day-body">')
+            for i, r in enumerate(day_runs):
+                body.append(_render_daju_card(r, open_=(date == today_kst and i == 0)))
+            body.append('</div></details>')
+        body.append('</div></details>')
     return (_DAJU_CSS + '<div class="dj-wrap"><div class="dj-title">📣 실적 발표 예정 '
-            '<span class="dj-note">· 출처 DAJU(다주) 텔레그램 · '
+            f'<span class="dj-note">· 출처 DAJU(다주) 텔레그램 · 총 {len(runs)}건 · '
             '데이터 기반 추정이며 <b>투자 권유가 아닙니다</b></span></div>'
-            + cards + '</div>')
+            + "".join(body) + '</div>')
 
 
 _DAJU_CSS = """<style>
@@ -11339,7 +11389,7 @@ def _render_blog_page(runs: list[dict]) -> str:
     <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
     <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달/누적)</div></div>
   </div>
-{_render_daju_section(_load_daju_runs())}
+{_render_daju_section(_load_daju_runs(200))}
 {_render_kg_candidates_section(_load_kg_candidates())}
   <div class="search-bar">
     <input id="scr-search" type="text" placeholder="제목 / 요약 / 본문 검색 (예: 반도체, 수주, 전환점)" autocomplete="off" spellcheck="false">
