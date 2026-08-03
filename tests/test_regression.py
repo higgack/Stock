@@ -14404,6 +14404,14 @@ class TestWisereportEarningsSurprise:
         op = parts["other_panes"]
         assert "실적 서프라이즈" in op and "영업이익 컨센서스" in op
         assert "185,098" in op and "572,000" in op and "+8.1%" in op
+        # 최신 분기(2026/03)가 왼쪽 — 사용자 2026-08-03 스크린샷 지적
+        # (2026/03 이 2026/06 보다 왼쪽에 있던 실측 버그) 고정 회귀.
+        assert op.index("2026/03") < op.index("2025/12"), \
+            "최신 기간(2026/03)이 헤더에서 더 왼쪽(먼저)이어야"
+        assert op.index("401,923") < op.index("185,098"), \
+            "영업이익 컨센서스 값도 최신(401,923)이 왼쪽이어야"
+        assert op.index("2026/04/07(연결)") < op.index("2026/01/08(연결)"), \
+            "잠정치 발표일 행도 최신이 왼쪽이어야"
         # 비-KR 은 미표시
         p2 = d._render_stock_info_html({"ticker": "AAPL", "stock_info": {
             "currency": "USD", "current_price": 200, "recommendation_key": "buy"}})
@@ -17092,6 +17100,62 @@ class TestDeployUnitInventoryAudit20260802:
         for name in ("daju-listener", "trade-bot-beon-listener",
                      "trade-bot-beon-sync", "trade-bot-badonion-listener"):
             assert name in doc, f"docs/automation.md 에 '{name}' 누락"
+
+
+class TestIntlHighLowLiveIndustry20260803:
+    """사용자 2026-08-03 스크린샷: HK/JP/CN_A 52주 신고가·신저가 표에서 업종
+    컬럼이 전부 '—' (요약 '업종 분포' 줄도 없음) — 같은 페이지의 급등락(TOP30)
+    표는 정상 표시. 원인: fetch_intl_highlow_live(장중 네이버 실시간가 × EOD
+    baseline 병합 경로 — JP/CN_A/HK 장중엔 이게 정적 스캔보다 우선 서빙됨)
+    가 ind 를 항상 None 으로 하드코딩했었다. 정적 스캔 경로(finviz_client.
+    _compute_highlow_from)는 같은 _industries_for 헬퍼로 이미 채우고 있었음."""
+
+    def test_live_merge_populates_industry(self, monkeypatch):
+        import bot.intl_highlow as ih
+
+        monkeypatch.setattr(ih, "_load_baseline", lambda market: {
+            "0005.HK": {"h52": 160.0, "l52": 100.0, "name": "HSBC"},
+        })
+        monkeypatch.setattr(
+            "bot.naver_ranking_client.world_live_map",
+            lambda market: {"0005.HK": {"price": 168.10, "pct": -0.06,
+                                        "vol": 740000, "mcap": 29000.0,
+                                        "name": "HSBC"}})
+        monkeypatch.setattr(
+            "bot.finviz_client._industries_for",
+            lambda tickers, market: {"0005.HK": "Banks - Diversified"})
+        monkeypatch.setattr("bot.finviz_client._cached", lambda name, ttl=86400: None)
+        monkeypatch.setattr("bot.finviz_client._cache_write", lambda name, obj: None)
+
+        out = ih.fetch_intl_highlow_live("HK")
+        assert out is not None
+        recs = out["high"] + out["low"]
+        assert recs, "baseline 갱신 조건(price>=h52)을 만족하는 레코드가 없음 — fixture 확인"
+        assert all(r["ind"] == "Banks - Diversified" for r in recs), \
+            "live 병합 레코드의 ind 가 여전히 None(또는 다른 값) — 하드코딩 회귀"
+
+    def test_no_hardcoded_ind_none(self):
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert '"ind": None}' not in src, "live 병합 레코드에 ind 하드코딩 None 잔존"
+        assert "_industries_for" in src, "live 병합 경로에 업종 백필 미배선"
+
+
+class TestChartIndDefaultsNoRsiMacd20260803:
+    """사용자 2026-08-03 스크린샷 지적: 가격 차트 지표 디폴트에 RSI·MACD 가
+    같이 켜져 있어(캔들·이평선·거래량·RSI·MACD) 처음부터 하단 패널 2개가
+    추가로 붙는다 — 기본은 캔들·이평선·거래량 3개만으로 축소."""
+
+    def test_ind_default_rsi_macd_off(self):
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "rsi:false" in db and "macd:false" in db, \
+            "IND_DEFAULT 에서 RSI·MACD 가 기본 OFF 여야"
+        assert "rsi:true" not in db and "macd:true" not in db, \
+            "IND_DEFAULT 잔존 rsi:true/macd:true (기본 ON 회귀)"
+        assert "candle:true" in db and "ma:true" in db and "vol:true" in db, \
+            "캔들·이평선·거래량은 여전히 기본 ON 이어야"
+        # ℹ️가이드 문구도 동작과 동기화(out-of-sync = 버그, CLAUDE.md 규칙)
+        assert "기본값(캔들·이평선·거래량)" in db
+        assert "기본값(캔들·이평선·거래량·RSI·MACD)" not in db
 
 
 class TestOnStartupStaticPagesBackgrounded20260803:
