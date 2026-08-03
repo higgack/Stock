@@ -17244,3 +17244,46 @@ class TestOnStartupStaticPagesBackgrounded20260803:
                    "regenerate_valuechain_index", "regenerate_market_index",
                    "regenerate_dart_feed_index"):
             assert fn in body, f"{fn} 가 백그라운드 스레드 함수 밖(동기 경로)으로 이동함"
+
+
+class TestFredCardDailyDateAndJoltsScale20260803:
+    """사용자 2026-08-03 스크린샷 후속 질문("최신값 맞는거지?")에서 발견:
+    (1) '핵심 지표' 카드가 국채금리 3종(일별 series)도 macro_snapshot 과 달리
+    월 잘림 라벨('2026-07')을 써 실제로는 최근 며칠 값인데 한 달 지난 것처럼
+    보였다 — macro_snapshot 은 2026-08-02 에 같은 문제를 _DAILY_CADENCE_KEYS
+    로 이미 고쳤는데 이 카드엔 안 옮겨졌었음.
+    (2) JOLTS(단위 M) 의 change 값이 헤드라인처럼 ÷1000 안 돼 원시(천단위)
+    숫자가 그대로 떠 '▲9.00' 이 마치 9백만 변화처럼 보였다(실제 0.01M=1만)."""
+
+    def test_daily_series_shows_full_date(self):
+        import bot.dashboard as d
+        fred_data = [{"label": "US 미국채 10년 (금리)", "unit": "%",
+                      "series_id": "DGS10",
+                      "data": {"value": 4.68, "change": 0.01, "time": "2026-07-31"}}]
+        html = d._render_fred_card(fred_data, None)
+        assert "2026-07-31" in html, "일별 series(DGS10) 가 정확한 날짜를 안 보여줌"
+        assert "(2026-07)</span>" not in html, "일별 series 가 여전히 월로 잘림"
+
+    def test_non_daily_series_still_month_truncated(self):
+        # 월간/분기 series(CPI 등)는 원래대로 월 라벨 유지 — 회귀 방지.
+        import bot.dashboard as d
+        fred_data = [{"label": "CPI (YoY)", "unit": "%", "series_id": "CPIAUCSL",
+                      "data": {"value": 3.46, "change": -0.70, "time": "2026-06-15"}}]
+        html = d._render_fred_card(fred_data, None)
+        assert "(2026-06)</span>" in html
+        assert "2026-06-15" not in html
+
+    def test_jolts_change_scaled_to_millions(self):
+        import bot.dashboard as d
+        # 원시(천단위) value=7600 → 7.6M, change=9(천단위) → 0.01M 로 스케일.
+        fred_data = [{"label": "JOLTS (비농업 구인)", "unit": "M", "series_id": "JTSJOL",
+                      "data": {"value": 7600.0, "change": 9.0, "time": "2026-05-15"}}]
+        html = d._render_fred_card(fred_data, None)
+        assert "7.6M" in html
+        assert "▲0.01" in html, "JOLTS change 가 여전히 원시(천단위) 스케일로 표시됨"
+        assert "▲9.00" not in html, "JOLTS change 가 헤드라인과 다른 스케일(원시값)로 표시됨"
+
+    def test_fetch_all_fred_includes_series_id(self):
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert '"series_id": series_id' in src, \
+            "_fetch_all_fred 결과에 series_id 미포함 — 카드 렌더가 일별/월별 구분 불가"

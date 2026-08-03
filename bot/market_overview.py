@@ -679,7 +679,7 @@ def _fetch_all_fred() -> list[dict]:
         if data:
             data["label"] = label
             data["unit"] = unit
-        results.append({"label": label, "unit": unit, "data": data})
+        results.append({"label": label, "unit": unit, "series_id": series_id, "data": data})
     return results
 
 
