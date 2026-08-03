@@ -452,16 +452,27 @@ def _fetch_yf_batch() -> dict[str, dict]:
 
 def _yf_etf_quotes(syms: list) -> dict:
     """yfinance 로 ETF close/prev (네이버 etf 미커버 폴백) → {nve:SYM: rec}. 5일 일봉
-    마지막 2종가로 close·prev·change·pct. 종목별 실패 격리(graceful)."""
+    마지막 2종가로 close·prev·change·pct. 종목별 실패 격리(graceful).
+
+    2026-08-03 fix(XLRE '—' 실측 — VM `fetch_world_etf` 확인 결과 네이버 미커버 +
+    yf_paused=False 인데도 빈칸): yf.download 는 **list** 인자 + group_by="ticker"
+    면 원소가 1개여도 MultiIndex 컬럼을 돌려준다(sandbox 에서도 실측 확인 —
+    네트워크 실패로 빈 프레임이 와도 columns 는 MultiIndex(['Ticker','Price'])).
+    옛 코드는 '요청 심볼 수 1개'(len(syms)>1) 로 flat/MultiIndex 를 판단해 미커버
+    ETF 가 폴백에서 **정확히 1개만 missing**일 때(XLRE 처럼 흔한 케이스) sub=df
+    가 여전히 MultiIndex 라 sub["Close"] 가 KeyError → 조용히 스킵돼 빈칸이
+    됐다. 실제 컬럼 형태(df.columns 가 MultiIndex 인지)로 판단하도록 수정."""
     out: dict = {}
     if not syms:
         return out
+    import pandas as pd
     import yfinance as yf
     df = yf.download(list(syms), period="5d", interval="1d", group_by="ticker",
                      threads=True, progress=False, auto_adjust=False)
+    is_multi = isinstance(df.columns, pd.MultiIndex)
     for sym in syms:
         try:
-            if len(syms) > 1:
+            if is_multi:
                 if sym not in df.columns.get_level_values(0):
                     continue
                 sub = df[sym]
