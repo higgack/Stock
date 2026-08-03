@@ -10983,8 +10983,13 @@ def _render_daju_card(r: dict, open_: bool) -> str:
         mv = st.get("move_1m")
         mv_h = ""
         if isinstance(mv, (int, float)):
+            # 원문(DAJU)이 "현재가: 93,700원 (1개월 ▼29.6%)" 처럼 기간을 명시하는데
+            # 카드는 "▼29.6%" 만 보여줘 등락률 기간이 불명확했다(사용자 2026-08-03
+            # '원본보면 1개월이라고 되어 있는데 이 부분도 추가해놔야 안 헷갈리지').
+            # 다른 값들(현재가 시각·점수 등)은 당일 기준인데 이 %만 1개월 누적이라
+            # 라벨 없이는 당일 등락률로 오인하기 쉬움 — 원문과 같은 표기로 명시.
             col = "var(--pos)" if mv > 0 else ("var(--neg)" if mv < 0 else "var(--muted)")
-            mv_h = (f'<span style="color:{col}">{"▲" if mv > 0 else ("▼" if mv < 0 else "")} '
+            mv_h = (f'<span style="color:{col}">1개월 {"▲" if mv > 0 else ("▼" if mv < 0 else "")} '
                     f'{abs(mv):.1f}%</span>')
         secs = []
         for sec in st.get("sections") or []:

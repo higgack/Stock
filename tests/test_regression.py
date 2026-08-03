@@ -3458,6 +3458,18 @@ class TestDajuEarningsPreview20260801:
                                        "raw": "원문<b>보존</b>"}])
         assert "dj-raw" in bad and "&lt;b&gt;" in bad and "<b>보존" not in bad
 
+    def test_move_1m_shows_period_label(self):
+        # 사용자 2026-08-03: 원문(DAJU)이 "현재가: 93,700원 (1개월 ▼29.6%)" 처럼
+        # 기간을 명시하는데 카드는 "▼29.6%" 만 보여줘 당일 등락률로 오인하기
+        # 쉬웠다 — 원문과 같은 "1개월" 라벨을 등락률 옆에 붙여야 한다.
+        import bot.dashboard as D
+        from bot.daju_parse import parse_daju
+        rec = parse_daju(_DAJU_SAMPLE)
+        rec["ts"] = "2026-08-01T18:30:00+09:00"
+        html = D._render_daju_section([rec])
+        assert "1개월 ▲ 29.4%" in html, "롯데렌탈 1개월 등락률에 기간 라벨 누락"
+        assert "1개월 ▼ 20.4%" in html, "에이피알 1개월 등락률에 기간 라벨 누락"
+
     def test_telethon_creds_lookup_and_no_hot_loop(self, tmp_path, monkeypatch):
         """Telethon 자격증명은 **trade 체크아웃 .env** 에만 있다 — NOAH 서비스는
         ~/stock/.env 만 읽으므로 그대로면 KeyError 로 죽고, systemd 가 15초마다
