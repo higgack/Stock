@@ -14084,6 +14084,37 @@ class TestIndexCardRecompose:
         out2 = mo._fetch_etf_quotes(["nve:XLY", "nve:AIQ"])
         assert "nve:XLY" in out2 and "nve:AIQ" not in out2
 
+    def test_yf_etf_quotes_single_missing_multiindex(self, monkeypatch):
+        """2026-08-03 실측(XLRE '—' — 사용자 VM `fetch_world_etf` 확인 결과
+        네이버 미커버 + yf_paused=False 인데도 빈칸이었음). yf.download 는
+        list 인자 + group_by="ticker" 면 심볼이 1개여도 MultiIndex 컬럼을
+        돌려준다(sandbox 실측 확인 — 네트워크 실패로 빈 프레임이 와도
+        columns 는 MultiIndex(['Ticker','Price'])). 옛 코드는 len(syms)>1 로
+        flat/MultiIndex 를 판단해 '미커버 ETF 가 정확히 1개'인 흔한 케이스
+        (XLRE 단독 미커버)에서 sub=df 가 여전히 MultiIndex 라 sub["Close"]
+        가 KeyError → 조용히 스킵돼 빈칸이 됐다. 실제 df.columns 형태로
+        판단하도록 고친 것을 회귀 고정."""
+        import sys
+        import types
+
+        import pandas as pd
+        import bot.market_overview as mo
+
+        idx = pd.bdate_range(end="2026-08-01", periods=5)
+        cols = pd.MultiIndex.from_product(
+            [["XLRE"], ["Open", "High", "Low", "Close", "Adj Close", "Volume"]],
+            names=["Ticker", "Price"])
+        df = pd.DataFrame(1.0, index=idx, columns=cols)
+        df[("XLRE", "Close")] = [40.0, 40.5, 41.0, 41.2, 41.8]
+
+        fake_yf = types.SimpleNamespace(download=lambda tickers, **kw: df)
+        monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+
+        out = mo._yf_etf_quotes(["XLRE"])
+        assert "nve:XLRE" in out, "단일 미커버 ETF 가 MultiIndex 컬럼 오판으로 스킵됨"
+        assert out["nve:XLRE"]["close"] == 41.8
+        assert out["nve:XLRE"]["prev_close"] == 41.2
+
 
 class TestTwMoversNoLimitMarker:
     """TW 무버 상한/하한(±10%) 마커·legend 제거 (사용자 2026-06-17 '대만에서 이건
