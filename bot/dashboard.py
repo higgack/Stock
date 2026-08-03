@@ -14720,6 +14720,11 @@ def _render_market_card(title: str, items: list, yf: dict) -> str:
 def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
     """Render the FRED indicators card."""
     from bot.macro_snapshot import _fmt_asof   # 기준월 포맷 공유(사용자 2026-06-24)
+    # 일별 series(국채금리) — macro_snapshot._DAILY_CADENCE_KEYS 와 같은 목적.
+    # 2026-08-02 macro_snapshot fix(full=True 로 월 잘림 없이 정확한 날짜)가
+    # 이 카드엔 안 옮겨져 있었다(2026-08-03 사용자 스크린샷 — 미국채 2/10/30년이
+    # '(2026-07)' 로만 표시돼 실제론 며칠 전 값인데도 한 달 지난 것처럼 보임).
+    _DAILY_SIDS = {"DGS2", "DGS10", "DGS30"}
     rows: list[str] = []
     if dollar_idx:
         val_str = f'{dollar_idx["close"]:.2f}'
@@ -14734,15 +14739,20 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
                         f'<td>—</td><td class="neu">—</td></tr>')
             continue
         v = d["value"]
+        chg = d.get("change")
         if unit == "M":
             val_str = f'{v / 1000:.1f}M'
+            # change 도 헤드라인과 같은 스케일(÷1000)로 — 2026-08-03 사용자
+            # 스크린샷: JOLTS 7.6M 옆에 원시(천 단위) change 9.00 이 그대로 떠
+            # '▲9.00M' 처럼 보였음(실제로는 ▲0.01M=9천 단위 변화).
+            if chg is not None:
+                chg = chg / 1000
         elif unit == "K":
             val_str = f'{v:,.0f}K'
         elif unit == "%":
             val_str = f'{v:.2f}%'
         else:
             val_str = f'{v:,.0f}'
-        chg = d.get("change")
         if chg is not None:
             arrow = "▲" if chg >= 0 else "▼"
             cls = "up" if chg >= 0 else "dn"
@@ -14751,7 +14761,9 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         else:
             chg_cell = '<td class="neu">—</td>'
         # 기준월 라벨 — 헤드라인이 어느 관측월 값인지(FRED 발표지표, 사용자 2026-06-24).
-        _asof = _fmt_asof(d.get("time", ""))
+        # 일별 series 는 월 잘림 없이 정확한 날짜(macro_snapshot 과 동일 규칙).
+        _full = item.get("series_id") in _DAILY_SIDS
+        _asof = _fmt_asof(d.get("time", ""), full=_full)
         _asof_html = (f' <span style="font-size:9px;color:var(--muted)">({_html.escape(_asof)})</span>'
                       if _asof else "")
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
