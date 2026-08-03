@@ -17287,3 +17287,38 @@ class TestFredCardDailyDateAndJoltsScale20260803:
         src = open("bot/market_overview.py", encoding="utf-8").read()
         assert '"series_id": series_id' in src, \
             "_fetch_all_fred 결과에 series_id 미포함 — 카드 렌더가 일별/월별 구분 불가"
+
+
+class TestDepositCacheSessionIndependent20260803:
+    """사용자 2026-08-03 실측(TNBfolio 위젯 캡쳐 비교): TNBfolio 는 07/31
+    투자자예탁금·신용융자를 이미 반영(오후 6:35)했는데 우리 대시보드는
+    여전히 07/30 — KOFIA 가 KR 장마감(15:30) 이후 저녁에도 T-1 데이터를
+    자체 스케줄로 공표할 수 있는데, deposit.json 캐시가 _session_fresh
+    ("KR",...) 를 써서 '장 밖 = 재fetch 0' 으로 얼어붙어 다음 장 개장까지
+    새 공표본을 못 받아온다(fsc_client._kofia_series 의 안쪽 3h 캐시는
+    이미 하루종일 재확인하도록 돼있었는데 이 바깥 캐시가 먼저 막고 있었음).
+    ttl 명시 시 세션과 무관하게 순수 경과시간으로만 신선도 판단하도록 fix."""
+
+    def test_cached_ttl_overrides_session_freeze(self, tmp_path, monkeypatch):
+        import os
+        import time
+
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        f = tmp_path / "deposit.json"
+        f.write_text('{"date": "old"}', encoding="utf-8")
+        # 장 밖이라고 가정해도(_session_fresh 가 True 를 리턴해도) ttl 지정 시
+        # 그건 무시하고 순수 경과시간만 본다 — old mtime(4시간 전)이면 stale.
+        monkeypatch.setattr("bot.finviz_client._session_fresh", lambda *a, **k: True)
+        old = time.time() - 4 * 3600
+        os.utime(f, (old, old))
+        assert nsc._cached("deposit.json", ttl=3 * 3600) is None, \
+            "ttl 지정 시에도 session_fresh(장 밖 프리즈)에 여전히 의존함"
+        # 세션-인지 기본 호출(ttl=None)은 옛 동작 그대로 유지(다른 캐시파일 회귀 방지).
+        assert nsc._cached("deposit.json") == {"date": "old"}, \
+            "ttl 미지정 기본 경로가 세션-인지 동작을 잃음(업종/테마 등 회귀 위험)"
+
+    def test_fetch_deposit_uses_session_independent_ttl(self):
+        src = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        assert '_cached("deposit.json", ttl=3 * 3600)' in src, \
+            "fetch_deposit 가 세션-무관 TTL 로 안 바뀜(장마감 후 얼어붙는 회귀)"

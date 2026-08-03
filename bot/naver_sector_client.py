@@ -158,18 +158,33 @@ def parse_themes_full(html: str) -> list[dict]:
     return out
 
 
-def _cached(name: str):
+def _cached(name: str, ttl: float | None = None):
+    """ttl=None(기본) = 세션-인지(KR 장중 30초/장 밖 재fetch 0) — 업종·테마·
+    상한가/하한가처럼 '장 마감 후엔 더 바뀔 값이 없는' 실시간 시세 전용.
+
+    ttl=<초> 명시 시 그 값으로 **평시간 TTL** 사용(장 개폐 무관) — 2026-08-03
+    fix: 투자자예탁금(deposit.json)은 KOFIA 가 T-1 데이터를 자체 스케줄로
+    공표(KR 장마감 15:30 이후·저녁에도 갱신될 수 있음, 사용자 실측 —
+    TNBfolio 는 18:35 에 07/31 반영했는데 우리는 장중 스냅샷에 갇혀 07/30
+    고정)해 KR 세션과 무관하다. 세션-frozen 캐시를 그대로 쓰면 장 마감 후
+    새 공표본이 나와도 다음 장 개장까지 재fetch 자체가 안 됨 — fsc_client.
+    _kofia_series 의 안쪽 3h 캐시(날짜-keyed, 하루종일 재확인)가 있어도 이
+    바깥 캐시가 먼저 막아 무의미해짐."""
     cache_file = _CACHE_DIR / name
     if cache_file.exists():
         try:
             mt = cache_file.stat().st_mtime
-            # 세션-인지(사용자 2026-06-15 '업종 30초'): KR 장중 30초 / 장 밖엔 마지막
-            # 산출본 fresh(재fetch 0). _session_fresh 부재 시 _CACHE_TTL_SEC 폴백.
-            try:
-                from bot.finviz_client import _session_fresh
-                fresh = _session_fresh("KR", mt, _CACHE_TTL_SEC)
-            except Exception:
-                fresh = (time.time() - mt < _CACHE_TTL_SEC)
+            if ttl is not None:
+                fresh = (time.time() - mt < ttl)
+            else:
+                # 세션-인지(사용자 2026-06-15 '업종 30초'): KR 장중 30초 / 장
+                # 밖엔 마지막 산출본 fresh(재fetch 0). _session_fresh 부재 시
+                # _CACHE_TTL_SEC 폴백.
+                try:
+                    from bot.finviz_client import _session_fresh
+                    fresh = _session_fresh("KR", mt, _CACHE_TTL_SEC)
+                except Exception:
+                    fresh = (time.time() - mt < _CACHE_TTL_SEC)
             if fresh:
                 return json.loads(cache_file.read_text())
         except Exception:
@@ -387,11 +402,13 @@ def _fetch_deposit_fsc() -> dict:
 
 def fetch_deposit() -> dict:
     """고객예탁금·신용잔고 → {date, deposit, credit, deposit_chg, credit_chg,
-    deposit_series, credit_series}. 억원. 장중 30초 캐시.
+    deposit_series, credit_series}. 억원. 3h TTL(세션-인지 아님, 2026-08-03 —
+    KOFIA T-1 공표가 KR 장 마감 이후·저녁에도 나올 수 있어 fsc_client.
+    _kofia_series 의 안쪽 3h 캐시와 같은 리듬으로 하루종일 재확인).
 
     1차 FSC(금융투자협회 공식 API — 둘 다 견고·일별 시계열), 실패 시 Naver
     sise_deposit 폴백(고객예탁금만 견고, 신용은 컬럼 가드)."""
-    c = _cached("deposit.json")
+    c = _cached("deposit.json", ttl=3 * 3600)
     # 스키마 버전 게이트(2026-07-08): 세션-인지 캐시는 장 밖에서 무기한
     # fresh 라 새 필드(코스피/코스닥 신용 분리)가 다음 장까지 안 나타남 —
     # 구버전 산출본이면 miss 취급해 1회 재생성(재생성분엔 _v 기록).
