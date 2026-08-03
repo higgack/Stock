@@ -2799,13 +2799,13 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). US 8-K 는 항목 종류가 넓어(실적·Reg FD·임원 위주) 매칭되는 마커가 KR DART(세밀한 공시명)보다 적게 표시될 수 있음. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(<b>기본 OFF</b> — 선택해서 보기).</li>
         </ul>
       </div>
-      <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량·RSI·MACD)으로 돌아갑니다.
+      <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량)으로 돌아갑니다.
         <ul>
           <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
           <li><span class="k">이평선</span> — <span style="color:#2563eb">21 EMA</span>(단기) · <span style="color:#3ec46d">55 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선(Credit Suisse Fibonacci 21/55/200 방법론).</li>
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
-          <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석). 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에.</li>
-          <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12봉EMA−26봉EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9봉EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>(파라미터는 봉 단위 — 주봉·분봉에서도 바뀌지 않음). ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에.</li>
+          <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석). 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에. <b>기본 OFF</b>.</li>
+          <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12봉EMA−26봉EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9봉EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>(파라미터는 봉 단위 — 주봉·분봉에서도 바뀌지 않음). ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에. <b>기본 OFF</b>.</li>
           <li><span class="k" style="color:#7890c8">볼린저</span> — 가격 위에 겹쳐 그리는 변동성 밴드. <b>중심선=20봉 이동평균</b>, <b>상/하단=중심선 ±2 표준편차</b>(<b>표본표준편차</b> — TradingView `ta.stdev` 기본값인 모표준편차와는 밴드 폭이 약 2~3% 차이 날 수 있습니다). ① 상단 부근=과열 · 하단 부근=과매도로 보는 편이지만 변동성 밴드일 뿐 <b>절대 기준은 아닙니다</b>. ② 밴드 안 위치는 <b>%B</b>(0=하단·100=상단)로, 밴드 밖으로 나가면 강한 과열/과매도이거나 강한 추세 진행 신호로 봅니다. ③ 밴드 폭이 좁아지는 <b>스퀴즈</b>는 변동성 축소 후 확대(브레이크아웃)가 이어지는 경우가 많다고 보며, 넓어지면 추세 진행 중 변동성이 커진 상태로 해석합니다. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에.</li>
           <li><span class="k" style="color:#26a69a">일목균형표</span>(一目均衡表) — 5선 + 구름. <b>전환선(9)</b>·<b>기준선(26)</b>·<b>선행스팬2(52)</b>는 이동평균이 <b>아니라</b> 그 기간 <b>고가와 저가의 한가운데</b>(가격대의 균형점)이고, <b>선행스팬1</b>=(전환+기준)÷2 입니다. 선행스팬1·2 사이가 <b>구름(Kumo)</b>으로, <b>26봉 앞(당봉 포함)에 그려져 차트 오른쪽 빈 공간까지</b> 이어집니다 — 그래서 구름 색이 바뀌는 <b>전환(twist)</b>을 미리 볼 수 있습니다. <b>후행스팬</b>은 당봉 종가를 반대로 뒤에 찍은 선이라 오른쪽 끝에서 끊기는 게 정상입니다(미래 종가를 알 수 없으므로). 해석: ① 가격이 <b>구름 위=상승추세</b>(구름이 지지) · 아래=하락추세(저항) · <b>구름 안=추세 없음</b> ② 양운(선행1&gt;선행2)=강세 · 음운=약세, <b>구름이 두꺼울수록 지지·저항이 강함</b> ③ 전환선이 기준선을 위로 뚫으면 호전(골든), 아래면 역전(데드) — <b>크로스가 구름 위에서 나면 '강'</b>·안이면 '중'·아래면 '약' ④ 후행스팬이 그 자리 과거 가격 위면 강세 확인(가장 중요한 확인선). ①③④가 동시에 강세면 <b>삼역호전(三役好転)</b>으로, 일목에서 가장 신뢰도 높다고 보는 신호입니다(거울상은 삼역역전). 파라미터 9·26·52 는 <b>주봉·분봉에서도 바꾸지 않는 것</b>이 표준 관행이며, 색·이격량은 TradingView 기본값과 맞췄습니다. 최소 <b>77봉</b>(52+25)이 있어야 계산되며 모자라면 표시하지 않습니다. 자세한 현재 상태는 <b>차트 아래 설명 패널</b>에. <b>기본 OFF</b>.</li>
           <li><span class="k" style="color:#f5a623">이격도</span> — 하단 별도 패널. <b>종가 ÷ N봉 이동평균 × 100</b>(국내 HTS 관행, <b>100이 기준</b>=이평선과 일치). 20봉·60봉 2선을 그리고 100 기준선과 과열/침체 밴드를 함께 표시합니다. 평균으로 되돌아오려는 성질(평균회귀)을 이용한 <b>단기 시점 포착</b>용으로, 기준선은 키움증권 기술적지표 가이드 값(<b>20봉 105/95 · 60봉 110/90</b> — 국내 관행이 일봉 기준이라 원 출처는 '일'이지만 주봉·분봉에도 파라미터를 그대로 적용)을 씁니다 — 국내 소스마다 표가 달라(한경 계열은 국면별 106/98 등) <b>절대 기준이 아닙니다</b>. ⚠️ <b>추세장 함정</b>: 강한 추세에선 이격도가 과열/침체에 머문 채 계속 갑니다. 상승장에서 105 넘었다고 파는 건 손실로 이어지기 쉬워 <b>분할 매매 + 추세지표(MACD·일목) 확인</b>이 표준 권고이며, 20봉·60봉이 <b>동시에</b> 극단일 때가 신뢰도가 높습니다. (서구 Disparity Index 는 0 기준 = 이격도−100 이라 임계값 숫자가 다릅니다.) <b>기본 OFF</b>.</li>
@@ -2848,7 +2848,7 @@ _CHART_JS = """
   // 지표 on/off 상태 (새로고침 시 항상 기본값으로 회귀 — 사용자 정책 2026-06-06).
   // 페이지 안에서는 토글 자유(in-memory ind 변경 후 재렌더), 단 localStorage 미저장.
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, ichi:false, disp:false, log:false, events:false, fib:false, wave:false };
+  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:false, macd:false, ichi:false, disp:false, log:false, events:false, fib:false, wave:false };
   function loadInd(){
     try { localStorage.removeItem(IND_KEY); } catch(e){}  // 옛 영속값 정리
     var out = {};
@@ -3240,10 +3240,11 @@ _CHART_JS = """
       ie.style.display = out.length ? '' : 'none';
     })();
 
-    // RSI·MACD 설명 패널 — 이 둘은 기본 ON 이라 항상 보이는데도 우측 뱃지에
-    // 숫자만 있고 지금이 과열/과매도인지, 골든/데드크로스인지, 모멘텀이 강해지는지
-    // 알 방법이 없었다(사용자 2026-08-02, 피보나치·일목균형표와 같은 지적). 켜진
-    // 지표만 표시 — 서버가 별도 signal 을 안 주므로(원시 시계열뿐) 여기서 계산.
+    // RSI·MACD 설명 패널 — 켜져 있어도 우측 뱃지에 숫자만 있고 지금이 과열/
+    // 과매도인지, 골든/데드크로스인지, 모멘텀이 강해지는지 알 방법이 없었다
+    // (사용자 2026-08-02, 피보나치·일목균형표와 같은 지적). 켜진 지표만 표시
+    // — 서버가 별도 signal 을 안 주므로(원시 시계열뿐) 여기서 계산. (2026-08-03:
+    // RSI·MACD 기본값이 ON→OFF 로 바뀌어 이제 사용자가 켜야 보임.)
     (function renderRsiMacdPanel(){
       var rmEl = document.getElementById('chart-rsimacd');
       if (!rmEl) return;
@@ -5379,10 +5380,17 @@ def _render_stock_info_html(rec: dict) -> str:
     # 실적 서프라이즈(KR) — WISEreport 어닝서프라이즈(영업이익·당기순이익 ×
     # 컨센서스/잠정치/Surprise/전년동기). mkt.earnings_surprise = 스냅샷 수집분.
     def _es_table(es: dict) -> str:
-        periods = es.get("periods") or []
+        # wisereport_earnings 는 원본(네이버 소스) 순서 그대로 오래된→최신
+        # 오름차순으로 온다 — 표시는 최신이 왼쪽(사용자 2026-08-03 스크린샷
+        # 지적: 2026/03 이 2026/06 왼쪽에 있던 것 fix). 파서/저장 구조는
+        # 그대로 두고(다른 소비처 없음, dashboard.py 렌더 지점 단일) 렌더
+        # 시점에만 역순 적용.
+        periods = list(reversed(es.get("periods") or []))
         if not periods:
             return ""
         ncol = len(periods)
+        def _rev(lst):
+            return list(reversed(lst or []))
         def _amt(v):   # 억원
             return f"{v:,.0f}" if isinstance(v, (int, float)) else "—"
         def _pct(v):
@@ -5395,11 +5403,13 @@ def _render_stock_info_html(rec: dict) -> str:
                             for i in range(ncol))
             edge = ' style="border-top:1px solid var(--border-soft)"' if top else ""
             return f'<tr{edge}><td>{esc(label)}</td>{cells}</tr>\n'
-        ann = es.get("announce") or []
+        ann = _rev(es.get("announce") or [])
         ann_cells = "".join(f'<td class="num">{esc(str(ann[i])) if i < len(ann) else "—"}</td>'
                             for i in range(ncol))
         hdr = "".join(f'<th class="num">{esc(p)}</th>' for p in periods)
-        op, ni = es.get("op", {}), es.get("ni", {})
+        op_raw, ni_raw = es.get("op", {}), es.get("ni", {})
+        op = {k: _rev(v) for k, v in op_raw.items()}
+        ni = {k: _rev(v) for k, v in ni_raw.items()}
         return f"""<div class="si-section" style="margin-top:16px">
     <div class="si-section-title">실적 서프라이즈 <span style="font-weight:400;color:var(--fg-soft);font-size:11px">(영업이익·당기순이익 · 단위 억원, %)</span></div>
     <table class="si-table"><thead><tr><th>항목</th>{hdr}</tr></thead><tbody>

@@ -381,7 +381,7 @@ def fetch_intl_highlow_live(market: str) -> dict | None:
     if market not in _LIVE_MARKETS:
         return None
     from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached,
-                                   _now_label, _session_fresh)
+                                   _industries_for, _now_label, _session_fresh)
     cache = f"highlow_live_{market}.json"
     c = _cached(cache, ttl=86400)
     if isinstance(c, dict) and c:
@@ -402,6 +402,12 @@ def fetch_intl_highlow_live(market: str) -> dict | None:
         live = {}
     if not live:
         return None
+    # 2026-08-03 fix — 업종이 항상 None 이라 신고가/신저가 표에서 '업종' 컬럼과
+    # '업종 분포' 요약이 빠졌었다(사용자 스크린샷, 급등락 페이지엔 정상 표시).
+    # 정적 스캔 경로(finviz_client._compute_highlow_from)는 같은 헬퍼로 업종을
+    # 채우는데 이 live 병합 경로만 빠져 있었음. 네이버 업종맵 기반이라 저비용
+    # (미스만 yfinance 폴백) + 10분 세션캐시라 페이지당 재계산 아님.
+    inds = _industries_for(list(base.keys()), market)
     high, low = [], []
     for tk, b in base.items():
         q = live.get(tk)
@@ -421,7 +427,7 @@ def fetch_intl_highlow_live(market: str) -> dict | None:
         rec = {"ticker": tk, "name": q.get("name") or b.get("name") or tk,
                "price": round(price, 4), "pct": q.get("pct"), "vol": vol,
                "value": (round(price * vol / 1e8, 2) if vol else None),
-               "mcap": q.get("mcap"), "ind": None}
+               "mcap": q.get("mcap"), "ind": inds.get(tk)}
         if h52 is not None and price >= float(h52):
             high.append(rec)
         elif l52 is not None and price <= float(l52):
