@@ -402,12 +402,6 @@ def fetch_intl_highlow_live(market: str) -> dict | None:
         live = {}
     if not live:
         return None
-    # 2026-08-03 fix — 업종이 항상 None 이라 신고가/신저가 표에서 '업종' 컬럼과
-    # '업종 분포' 요약이 빠졌었다(사용자 스크린샷, 급등락 페이지엔 정상 표시).
-    # 정적 스캔 경로(finviz_client._compute_highlow_from)는 같은 헬퍼로 업종을
-    # 채우는데 이 live 병합 경로만 빠져 있었음. 네이버 업종맵 기반이라 저비용
-    # (미스만 yfinance 폴백) + 10분 세션캐시라 페이지당 재계산 아님.
-    inds = _industries_for(list(base.keys()), market)
     high, low = [], []
     for tk, b in base.items():
         q = live.get(tk)
@@ -427,13 +421,25 @@ def fetch_intl_highlow_live(market: str) -> dict | None:
         rec = {"ticker": tk, "name": q.get("name") or b.get("name") or tk,
                "price": round(price, 4), "pct": q.get("pct"), "vol": vol,
                "value": (round(price * vol / 1e8, 2) if vol else None),
-               "mcap": q.get("mcap"), "ind": inds.get(tk)}
+               "mcap": q.get("mcap"), "ind": None}
         if h52 is not None and price >= float(h52):
             high.append(rec)
         elif l52 is not None and price <= float(l52):
             low.append(rec)
     if not high and not low:
         return None
+    # 2026-08-03 fix — 업종이 항상 None 이라 신고가/신저가 표에서 '업종' 컬럼과
+    # '업종 분포' 요약이 빠졌었다(사용자 스크린샷, 급등락 페이지엔 정상 표시).
+    # 정적 스캔 경로(finviz_client._compute_highlow_from)는 같은 헬퍼로 업종을
+    # 채우는데 이 live 병합 경로만 빠져 있었음. **hi/lo 확정 후에만 조회**
+    # (2026-08-03 code-review 발견: 최초 구현이 base.keys() 전체 — JP/HK 전종목
+    # 수천 개 — 를 조회해 정적 경로가 hits2(당일 실제 신고/신저 히트만)로 좁히던
+    # 것과 달리 페이지 요청 경로에서 불필요한 (HK 는 yfinance .info 폴백까지
+    # 걸리는) 블로킹 비용을 냈다. 실제 결과에 필요한 티커만 조회하도록 스코프 축소).
+    hit_tickers = [r["ticker"] for r in high + low]
+    inds = _industries_for(hit_tickers, market)
+    for r in high + low:
+        r["ind"] = inds.get(r["ticker"])
     high.sort(key=lambda r: (r.get("mcap") or 0), reverse=True)
     low.sort(key=lambda r: (r.get("mcap") or 0), reverse=True)
     out = {"high": high, "low": low, "ts": _now_label(),
