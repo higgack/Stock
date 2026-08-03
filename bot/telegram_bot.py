@@ -4157,68 +4157,89 @@ async def _on_startup(application) -> None:
             log.info("startup: yfinance 1회 자동 정지 (사용자 요청) — /yfpause off 로 재개")
     except Exception as exc:
         log.warning("startup: yf autopause 실패: %s", exc)
+    # 2026-08-03 fix — 아래 정적 페이지 재생성(screener~dart_feed)이 이 async
+    # post_init 본문에서 동기 실행되면 app.run_polling() 의 getUpdates 시작을
+    # 그만큼 늦춘다. dart_feed 재생성은 FSC(data.go.kr) 시총조회 루프를 돌리는데
+    # 45초 소프트예산(bot/dashboard.py _mc_deadline) + 이미 시작된 콜의 최대
+    # 20초(fsc_client._TIMEOUT) 오버런까지 더해질 수 있어, FSC 가 저하(429·
+    # timeout 연발)될 때 이 블록 하나로 65초+ 가 나갈 수 있다. 앞선 정적
+    # 재생성들과 누적되면 watchdog 의 180초 'bot starting' 유예(deploy/
+    # watchdog.sh)를 넘겨 polling 이 뜨기도 전에 재시작당하고, 재시작마다
+    # 이 cascade 를 처음부터 다시 도는 자기악화 루프가 된다(2026-08-03 실측
+    # — 09:07·09:11 hang 알림, dart_feed regen 직후 Stopping 로그로 확인).
+    # main()의 _startup_regen 스레드(4740행)가 이미 다른 페이지 세트에 쓰던
+    # 것과 동일 패턴으로 백그라운드화 — getUpdates 가 즉시 시작되므로
+    # watchdog 이 startup regen 으로는 절대 트립하지 않는다.
+    def _static_pages_regen():
+        try:
+            from bot.dashboard import regenerate_screener_index
+            regenerate_screener_index()
+            log.info("startup: screener.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: screener.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_daily_byte_index
+            regenerate_daily_byte_index()
+            log.info("startup: daily_byte.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: daily_byte.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_realestate_index
+            regenerate_realestate_index()
+            log.info("startup: realestate.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: realestate.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_cheongyak_index
+            regenerate_cheongyak_index()
+            log.info("startup: cheongyak.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: cheongyak.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_gics_candidates_index
+            regenerate_gics_candidates_index()
+            log.info("startup: gics_candidates.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: gics_candidates.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_watchlist_index
+            regenerate_watchlist_index()
+            log.info("startup: watchlist.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: watchlist.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_reddit_insider_index
+            regenerate_reddit_insider_index()
+            log.info("startup: reddit_insider.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: reddit_insider.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import (regenerate_blog_index,
+                                       regenerate_valuechain_index)
+            regenerate_blog_index()
+            regenerate_valuechain_index()
+            log.info("startup: blog.html + valuechain.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: blog.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_market_index
+            regenerate_market_index()
+            log.info("startup: market.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: market.html regen failed: %s", exc)
+        try:
+            from bot.dashboard import regenerate_dart_feed_index
+            regenerate_dart_feed_index()
+            log.info("startup: dart_feed.html regenerated with current code")
+        except Exception as exc:
+            log.warning("startup: dart_feed.html regen failed: %s", exc)
+
     try:
-        from bot.dashboard import regenerate_screener_index
-        regenerate_screener_index()
-        log.info("startup: screener.html regenerated with current code")
+        import threading as _sp_thr
+        _sp_thr.Thread(target=_static_pages_regen, name="static-pages-regen",
+                       daemon=True).start()
     except Exception as exc:
-        log.warning("startup: screener.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_daily_byte_index
-        regenerate_daily_byte_index()
-        log.info("startup: daily_byte.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: daily_byte.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_realestate_index
-        regenerate_realestate_index()
-        log.info("startup: realestate.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: realestate.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_cheongyak_index
-        regenerate_cheongyak_index()
-        log.info("startup: cheongyak.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: cheongyak.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_gics_candidates_index
-        regenerate_gics_candidates_index()
-        log.info("startup: gics_candidates.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: gics_candidates.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_watchlist_index
-        regenerate_watchlist_index()
-        log.info("startup: watchlist.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: watchlist.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_reddit_insider_index
-        regenerate_reddit_insider_index()
-        log.info("startup: reddit_insider.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: reddit_insider.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import (regenerate_blog_index,
-                                   regenerate_valuechain_index)
-        regenerate_blog_index()
-        regenerate_valuechain_index()
-        log.info("startup: blog.html + valuechain.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: blog.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_market_index
-        regenerate_market_index()
-        log.info("startup: market.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: market.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_dart_feed_index
-        regenerate_dart_feed_index()
-        log.info("startup: dart_feed.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: dart_feed.html regen failed: %s", exc)
+        log.warning("startup: static pages regen thread failed: %s", exc)
     # FRED 보드(ppi/liquidity.html) — startup 백그라운드 무조건 재생성(파일 부재
     # 게이트 제거: 렌더 코드 배포가 다음 자정까지 화면에 안 보이는 stale 차단,
     # 실수 #11 — 리뷰 finding. 같은 날 재실행은 FRED 캐시 12h 라 사실상 무료).
