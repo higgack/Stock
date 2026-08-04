@@ -6976,9 +6976,11 @@ class TestIntlHighLow52:
         import bot.intl_highlow as ih
         uni, _ = ih._universe("KR")
         assert uni and all(t.endswith((".KS", ".KQ")) for t in uni), uni[:5]
-        # JP/CN/HK 는 native-only 맵이라 필터가 no-op(개수 보존)
-        assert len(ih._universe("JP")[0]) == 102
-        assert len(ih._universe("HK")[0]) == 51
+        # JP/HK 전종목 유니버스도 각 시장 종목만 유지해야 한다.
+        jp, _ = ih._universe("JP")
+        hk, _ = ih._universe("HK")
+        assert jp and all(t.endswith(".T") for t in jp), jp[:5]
+        assert hk and all(t.endswith(".HK") for t in hk), hk[:5]
 
     def test_fetch_never_sync_computes(self, monkeypatch):
         import bot.intl_highlow as ih
@@ -10226,8 +10228,8 @@ class TestVolumeColumn:
         # 하냐'). 52주 render 가 enrich_for_panel(want_name=True) 로 이름을 렌더 때
         # 덮어쓰므로, 이름 정책 변경에 캐시 버전 bump(전종목 재스캔) 불필요.
         src = open("bot/tw_pages.py", encoding="utf-8").read()
-        assert 'enrich_for_panel(high, "TW", want_name=True)' in src   # 52주 신고가
-        assert 'enrich_for_panel(low, "TW", want_name=True)' in src    # 52주 신저가
+        assert 'enrich_for_panel(high, "TW", want_ind=True, want_name=True)' in src
+        assert 'enrich_for_panel(low, "TW", want_ind=True, want_name=True)' in src
         # 무버 페이지도 동일 패턴(이름 렌더-타임) — 회귀 방지
         assert 'enrich_for_panel(up, "TW", want_ind=True, want_name=True)' in src
 
@@ -10356,6 +10358,7 @@ class TestUpperLowerVolume:
             raise AssertionError("렌더 경로에서 슬로우 yfinance/Flash 호출 금지")
         seen: dict = {}
         monkeypatch.setattr(fc, "_fetch_mcaps", _boom)             # 호출되면 fail
+        monkeypatch.setattr("bot.twse_client.fetch_tw_industry_map", lambda: {})
         monkeypatch.setattr(fc, "_fetch_industries",
                             lambda tks, allow_slow=True: seen.update(ind=allow_slow) or {})
         monkeypatch.setattr(fc, "_fetch_display_names",
@@ -14199,6 +14202,39 @@ class TestTwIndustryBulkMap20260804:
         m = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
         assert m == {"2330": "반도체", "2317": "전자부품"}
 
+    def test_parses_real_mops_industry_codes(self, monkeypatch):
+        import bot.twse_client as tw
+
+        class _R:
+            status_code = 200
+            def json(self):
+                return [
+                    {"公司代號": "2059", "公司名稱": "川湖", "產業別": "28"},
+                    {"公司代號": "2344", "公司名稱": "華邦電", "產業別": "24"},
+                    {"公司代號": "1907", "公司名稱": "永豐餘", "產業別": "09"},
+                    {"公司代號": "6669", "公司名稱": "緯穎", "產業別": "25"},
+                ]
+        monkeypatch.setattr(tw.requests, "get", lambda *a, **k: _R())
+        got = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
+        assert got == {"2059": "전자부품", "2344": "반도체",
+                       "1907": "제지", "6669": "컴퓨터·주변기기"}
+
+    def test_cached_numeric_codes_are_healed(self, monkeypatch):
+        import bot.twse_client as tw
+
+        monkeypatch.setattr(tw, "_cached_stale",
+                            lambda name, max_age_sec=86400: {"2059": "28", "2344": "24"})
+        written = {}
+        monkeypatch.setattr(tw, "_cache_write",
+                            lambda name, obj: written.setdefault(name, obj))
+        got = tw.fetch_tw_industry_map()
+        assert got == {"2059": "전자부품", "2344": "반도체"}
+        assert written["tw_industry_map"] == got
+
+    def test_unknown_industry_code_never_leaks_as_number(self):
+        import bot.twse_client as tw
+        assert tw._sector_kr("99") == "기타"
+
     def test_unrecognized_schema_returns_empty_gracefully(self, monkeypatch):
         # 필드명이 예상과 다르면(스키마 변경) 예외 없이 {} — yfinance 폴백 유지.
         import bot.twse_client as tw
@@ -14237,6 +14273,18 @@ class TestTwIndustryBulkMap20260804:
         got = fc._industries_for(["2330.TW", "9999.TW"], "TW")
         assert got["2330.TW"] == "반도체"           # 벌크맵 히트
         assert got["9999.TW"] == "기타"              # 미스만 yfinance 폴백
+
+    def test_industries_for_tw_translates_yfinance_fallback(self, monkeypatch):
+        import bot.finviz_client as fc
+        monkeypatch.setattr("bot.twse_client.fetch_tw_industry_map", lambda: {})
+        seen = {}
+        def _fallback(tickers, **kwargs):
+            seen.update(kwargs)
+            return {"3441.TWO": "Electronic Components", "5324.TWO": "Lodging"}
+        monkeypatch.setattr(fc, "_fetch_industries", _fallback)
+        got = fc._industries_for(["3441.TWO", "5324.TWO"], "TW", allow_slow=False)
+        assert got == {"3441.TWO": "전자부품", "5324.TWO": "숙박"}
+        assert seen["allow_slow"] is False
 
     def test_industries_for_tw_falls_back_when_bulk_map_empty(self, monkeypatch):
         # 라이브 검증 불가한 신규 OpenAPI 가 실패/빈 응답이어도 전체 경로가

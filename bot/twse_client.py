@@ -79,11 +79,28 @@ _SECTOR_KR = {
     "半導體業": "반도체", "其他電子業": "기타전자", "貿易百貨業": "무역·백화",
 }
 
+# MOPS t187ap03의 `產業別`은 업종명이 아니라 이 2자리 코드로 내려온다.
+_INDUSTRY_CODE_KR = {
+    "01": "시멘트", "02": "식품", "03": "플라스틱", "04": "섬유",
+    "05": "전기기계", "06": "전선", "08": "유리·도자", "09": "제지",
+    "10": "철강", "11": "고무", "12": "자동차", "14": "건설·건자재",
+    "15": "해운", "16": "관광·외식", "17": "금융·보험", "18": "무역·백화",
+    "20": "기타", "21": "화학", "22": "바이오·의료", "23": "석유·전력·가스",
+    "24": "반도체", "25": "컴퓨터·주변기기", "26": "광전(디스플레이)",
+    "27": "통신·네트워크", "28": "전자부품", "29": "전자유통",
+    "30": "IT서비스", "31": "기타전자", "32": "문화창작",
+    "33": "농업기술", "34": "전자상거래", "35": "그린·환경",
+    "36": "디지털·클라우드", "37": "스포츠·레저", "38": "홈리빙",
+}
+
 
 def _sector_kr(core: str) -> str:
     """繁體 類股명 → 한국어. 정확 매칭 우선, 미스 시 接尾 변형 자가매칭(電腦及週邊設備
     ↔ 電腦及週邊 — 길이 4+ prefix 만, 오매칭 방지) → 끝내 미스면 繁體 그대로(사용자
     2026-06-16 한자 누수 fix). TWSE 類股명에 設備/業 등 suffix 변형이 섞여 나오던 것 흡수."""
+    core = str(core or "").strip()
+    if core.isdigit():
+        return _INDUSTRY_CODE_KR.get(core.zfill(2), "기타")
     if core in _SECTOR_KR:
         return _SECTOR_KR[core]
     # core(TWSE 정식명)가 map key(짧은 형)로 시작할 때만 매칭 — 設備/業 등 suffix
@@ -433,7 +450,10 @@ def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
     if not force:
         c = _cached_stale("tw_industry_map", max_age_sec=_TW_IND_CACHE_TTL)
         if isinstance(c, dict) and c:
-            return c
+            normalized = {code: _sector_kr(ind) for code, ind in c.items()}
+            if normalized != c:
+                _cache_write("tw_industry_map", normalized)
+            return normalized
     out: dict[str, str] = {}
     out.update(_fetch_one_industry_source(_OPENAPI_LISTED_INFO, "上市"))
     out.update(_fetch_one_industry_source(_OPENAPI_OTC_INFO, "上櫃"))

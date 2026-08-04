@@ -889,7 +889,8 @@ def _compute_highlow_full_us() -> dict:
         "전 미국 상장 산출(yfinance · 당일 52주 고저 갱신)", "전미국")
 
 
-def _industries_for(tickers: list, market: str | None) -> dict:
+def _industries_for(tickers: list, market: str | None,
+                    allow_slow: bool = True) -> dict:
     """업종 enrich 소스 우선순위.
 
     CN/JP/US: Naver 업종맵 우선 + 미스만 yfinance.
@@ -904,26 +905,30 @@ def _industries_for(tickers: list, market: str | None) -> dict:
     if market == "TW":
         try:
             from bot.twse_client import fetch_tw_industry_map
+            from bot.translate import industry_kr
             m = fetch_tw_industry_map()
             if not m:
-                return _fetch_industries(tickers)
+                return {tk: industry_kr(ind) for tk, ind in
+                        _fetch_industries(tickers, allow_slow=allow_slow).items()}
             got = {tk: m.get(str(tk).split(".")[0]) for tk in tickers}
             miss = [tk for tk in tickers if not got.get(tk)]
             if miss:
-                yf = _fetch_industries(miss)
+                yf = _fetch_industries(miss, allow_slow=allow_slow)
                 for tk in miss:
                     if yf.get(tk):
                         got[tk] = yf[tk]
-            return got
+            return {tk: industry_kr(ind) if ind else ind for tk, ind in got.items()}
         except Exception as exc:
             log.warning("twse 업종맵 → yfinance 폴백: %s", exc)
-            return _fetch_industries(tickers)
+            from bot.translate import industry_kr
+            return {tk: industry_kr(ind) for tk, ind in
+                    _fetch_industries(tickers, allow_slow=allow_slow).items()}
     if market == "HK":
         try:
             from bot.naver_ranking_client import world_industry_map
             m = world_industry_map("HK")
             if not m:
-                return _fetch_industries(tickers)
+                return _fetch_industries(tickers, allow_slow=allow_slow)
             got = {tk: None for tk in tickers}
             norm: dict = {}
             for k, v in m.items():
@@ -945,13 +950,13 @@ def _industries_for(tickers: list, market: str | None) -> dict:
                     got[tk] = v
             miss = [tk for tk in tickers if not got.get(tk)]
             if miss:
-                yf = _fetch_industries(miss)
+                yf = _fetch_industries(miss, allow_slow=allow_slow)
                 for tk in miss:
                     if yf.get(tk):
                         got[tk] = yf[tk]
         except Exception as exc:
             log.warning("naver 업종맵 (HK) 폴백 실패: %s", exc)
-            return _fetch_industries(tickers)
+            return _fetch_industries(tickers, allow_slow=allow_slow)
         return got
 
     # CN/JP/US — 네이버 업종맵 우선(reliable·fast_info 우회). US 도 네이버 USA
@@ -985,15 +990,15 @@ def _industries_for(tickers: list, market: str | None) -> dict:
                 got = {tk: _look(tk) for tk in tickers}
                 miss = [tk for tk in tickers if not got.get(tk)]
                 if miss:
-                    yf = _fetch_industries(miss)
+                    yf = _fetch_industries(miss, allow_slow=allow_slow)
                     for tk in miss:
                         if yf.get(tk):
                             got[tk] = yf[tk]
                 return got
         except Exception as exc:
             log.warning("naver 업종맵 (%s) → yfinance 폴백: %s", market, exc)
-        return _fetch_industries(tickers)
-    return _fetch_industries(tickers)
+        return _fetch_industries(tickers, allow_slow=allow_slow)
+    return _fetch_industries(tickers, allow_slow=allow_slow)
 
 
 # ── 비-주식 가지치기 (CEF 펀드 vehicle · 유령티커 · 이중클래스 dedupe) ──────
@@ -1648,40 +1653,14 @@ def _fetch_industries(tickers: list, allow_slow: bool = True) -> dict:
       3) yfinance .info — allow_slow=True(백그라운드 산출)일 때만, 잔여
          소수만. (.info 가 데이터센터 IP 에서 비어 '업종 —' 전멸이던 건
          2026-06-12 — 벌크 레이어가 1차가 되어 .info 의존 제거.)
-    실패 종목은 누락(graceful), 해소되면 영구 캐시에 적재.
-    
-    대만(TW/TWO) 티커는 fetch_tw_industry_map() 으로 별도 처리 (사용자 2026-08-04
-    '대만 업종 숫자로 나와' — yfinance .info 미지원, TWSE OpenAPI 전종목 일괄)."""
+    실패 종목은 누락(graceful), 해소되면 영구 캐시에 적재."""
     if not tickers:
         return {}
-    
-    # 대만 티커 분리 (UNIVERSAL: TW+TWO 동일 처리)
-    tw_tickers = [t for t in tickers if (t or "").endswith((".TW", ".TWO"))]
-    other_tickers = [t for t in tickers if t not in tw_tickers]
-    
-    result = {}
-    
-    # 대만: fetch_tw_industry_map() 사용 (전종목 일괄, 렌더-세이프)
-    if tw_tickers:
-        try:
-            from bot.twse_client import fetch_tw_industry_map
-            tw_map = fetch_tw_industry_map()
-            for tk in tw_tickers:
-                code = tk.split(".")[0] if "." in tk else tk
-                if code in tw_map:
-                    result[tk] = tw_map[code]
-        except Exception as exc:
-            log.warning("finviz: TW 업종 fetch 실패: %s", exc)
-    
-    # 나머지(US/KR/JP/HK/CN) — 기존 로직
-    if not other_tickers:
-        return result
-    
     if yf_paused():               # YF_PAUSE → .info 레이어 skip(캐시·벌크맵 유지)
         allow_slow = False
     cache = _cached("us_industry_cache.json", ttl=365 * 86400) or {}
     changed = False
-    missing = [t for t in other_tickers if t not in cache]
+    missing = [t for t in tickers if t not in cache]
     if missing:
         bulk = _bulk_industry_maps()
         for t in missing:
@@ -1689,7 +1668,7 @@ def _fetch_industries(tickers: list, allow_slow: bool = True) -> dict:
             if ind:
                 cache[t] = str(ind)
                 changed = True
-        missing = [t for t in other_tickers if t not in cache]
+        missing = [t for t in tickers if t not in cache]
     if missing and allow_slow:
         try:
             import yfinance as yf
@@ -1711,8 +1690,7 @@ def _fetch_industries(tickers: list, allow_slow: bool = True) -> dict:
             log.warning("finviz: 업종 fetch 실패: %s", exc)
     if changed:
         _cache_write("us_industry_cache.json", cache)
-    result.update({t: cache[t] for t in other_tickers if t in cache})
-    return result
+    return {t: cache[t] for t in tickers if t in cache}
 
 
 def _fetch_display_names(tickers: list, allow_slow: bool = True) -> dict:

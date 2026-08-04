@@ -747,8 +747,8 @@ def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
     if changed:
         _cache_write(pkey, persist)
     if want_ind:
-        from bot.finviz_client import _fetch_industries
-        inds = _fetch_industries(tickers, allow_slow=allow_slow)
+        from bot.finviz_client import _industries_for
+        inds = _industries_for(tickers, market, allow_slow=allow_slow)
         for tk in tickers:
             meta.setdefault(tk, {})["ind"] = inds.get(tk)
     _co = not allow_slow            # 렌더-세이프 → 번역 캐시-only(Flash 0)
