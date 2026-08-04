@@ -32,6 +32,21 @@ _OPENAPI_STOCK = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 # probe 로 필드 확인: SecuritiesCompanyCode/CompanyName/Close/Change/TradingShares/
 # TransactionAmount, Date=ROC 7자리). parse_stock_day_all 이 두 필드셋 공용 처리.
 _OPENAPI_TPEX = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+# 상장법인 기본자료(MOPS 공시 미러, 사용자 2026-08-04 '대만 급등락 업종 —
+# 캐싱구조 한계 조사해줘') — 종목별 産業別(업종) 포함 **전종목 일괄** JSON.
+# 지금까지 TW 업종은 yfinance 개별조회(.info, 백그라운드·250개/회 상한)에만
+# 의존해 무버 TOP30 신규진입 종목(변동성 큰 소형주 위주 — 캐시가 항상 콜드)이
+# 늘 '—' 로 빠졌다. STOCK_DAY_ALL 과 같은 OpenAPI 호스트 계열(t187ap03_L =
+# 상장법인 기본자료). ⚠️ 이 URL/필드명은 샌드박스에서 openapi.twse.com.tw 가
+# 프록시에 403 차단돼 라이브 검증 불가 — fetch_tw_industry_map 은 필드를
+# 이름(부분일치, "代號"/"產業")으로 탐색해 스키마가 달라도 조용히 {} 반환하고
+# (개별조회 yfinance 폴백 그대로 유지, 회귀 0) 이 파일 실행 시(`--probe`) 실제
+# 응답을 찍는다 — VM 실행 결과로 최종 확인 필요.
+_OPENAPI_LISTED_INFO = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+# TPEx(上櫃) 기본자료 등가물 — 정확한 경로 미검증(같은 이유). 실패해도
+# graceful(상장 TWSE 분만 채워짐 — 上櫃 분은 기존 yfinance 폴백 유지).
+_OPENAPI_OTC_INFO = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+_TW_IND_CACHE_TTL = 24 * 3600   # 상장법인 기본자료는 하루 내 사실상 불변
 _HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
          "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
@@ -371,6 +386,62 @@ def fetch_mi_index() -> dict:
     return out
 
 
+def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
+    """OpenAPI 상장법인 기본자료 1개 소스 → {종목코드: 업종(한글)}. 필드명은
+    고정 인덱스 대신 **부분일치로 탐색**(代號/產業 포함 키) — 이 파일의 다른
+    파서(_field_idx)와 같은 방어 스타일. 응답 형태·필드명이 예상과 다르면
+    로그만 남기고 {} (호출부가 yfinance 개별조회로 자연 폴백, 회귀 0)."""
+    try:
+        r = requests.get(url, headers=_HDRS, timeout=15)
+        rows = r.json() if r.status_code == 200 else None
+    except Exception as exc:
+        log.warning("twse industry map (%s) fetch failed: %s", label, exc)
+        return {}
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        log.warning("twse industry map (%s): 예상 밖 응답 형태(list[dict] 아님) — "
+                   "스킵(yfinance 폴백 유지)", label)
+        return {}
+    sample = rows[0]
+    code_key = next((k for k in sample if "代號" in k), None)
+    ind_key = next((k for k in sample if "產業" in k), None)
+    if not code_key or not ind_key:
+        log.warning("twse industry map (%s): 필드 미탐색(code=%s ind=%s, keys=%s) — "
+                   "스키마 변경 의심, 스킵", label, code_key, ind_key, list(sample)[:12])
+        return {}
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get(code_key) or "").strip()
+        ind = str(row.get(ind_key) or "").strip()
+        if code and ind:
+            out[code] = _sector_kr(ind)
+    log.info("twse industry map (%s): %d종목 (code_key=%s ind_key=%s)",
+             label, len(out), code_key, ind_key)
+    return out
+
+
+def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
+    """{종목코드: 업종(한글)} — 상장(TWSE)+상장(TPEx上櫃) 전종목 기본자료
+    일괄 조회(24h 캐시, 사용자 2026-08-04). TW 무버/52주 페이지가 지금까지
+    yfinance 개별조회(백그라운드·상한 250개/회)에만 의존해 신규진입 종목
+    (변동성 큰 소형주 위주라 캐시가 늘 콜드)이 항상 업종 '—' 로 빠지던 것의
+    근본 해소 시도 — 전종목 일괄이라 렌더-세이프(캐시-only) 경로에서도
+    즉시 채워짐. 두 소스 중 하나만 성공해도 부분 반환(graceful) — TPEx 실패
+    시 TWSE 상장분만이라도 개선. 코드 키는 6자리 zero-pad 없이 원문 그대로
+    (finviz_client._industries_for 가 호출측에서 티커 정규화)."""
+    if not force:
+        c = _cached_stale("tw_industry_map", max_age_sec=_TW_IND_CACHE_TTL)
+        if isinstance(c, dict) and c:
+            return c
+    out: dict[str, str] = {}
+    out.update(_fetch_one_industry_source(_OPENAPI_LISTED_INFO, "上市"))
+    out.update(_fetch_one_industry_source(_OPENAPI_OTC_INFO, "上櫃"))
+    if out:
+        _cache_write("tw_industry_map", out)
+    return out
+
+
 def fetch_tw_sector_movers(top_n: int = 10) -> dict:
     """TW 업종 등락 — TWSE 類股 지수(약 20-40업종). 장 마감/점검으로 live 가 비면
     직전 좋은 類股 스냅샷(stale 캐시)을 복원해 ETF 4개 폴백 degrade 방지
@@ -465,3 +536,11 @@ if __name__ == "__main__":   # VM 라이브 구조 검증
     print(f"[legacy 類股] 업종 {len(mi['sectors'])}개 (점검시간이면 0=정상)")
     for s in mi["sectors"][:5]:
         print("  업종", s["name"], s["pct"], "%")
+    # ③ 종목별 업종 맵 — 상장법인 기본자료(2026-08-04 신규, URL/필드 미검증
+    # — 샌드박스가 openapi.twse.com.tw 프록시 403 이라 이 실행 결과로 최종
+    # 확인 필요). 0종목이면 _fetch_one_industry_source 의 warning 로그에서
+    # 실제 응답 keys 를 확인해 코드의 code_key/ind_key 탐색 로직 조정.
+    imap = fetch_tw_industry_map(force=True)
+    print(f"[업종맵] {len(imap)}종목")
+    for code, ind in list(imap.items())[:8]:
+        print("  ", code, ind)
