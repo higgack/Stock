@@ -17502,3 +17502,56 @@ class TestDepositCacheSessionIndependent20260803:
         src = open("bot/naver_sector_client.py", encoding="utf-8").read()
         assert '_cached("deposit.json", ttl=3 * 3600)' in src, \
             "fetch_deposit 가 세션-무관 TTL 로 안 바뀜(장마감 후 얼어붙는 회귀)"
+from bot.highlow_render import _display_industry, ind_dist_line
+from bot.us_pages import render_us_highlow_page, render_us_movers_page, render_us_prepost_page
+
+
+def test_display_industry_falls_back_to_korean_title_case():
+    assert _display_industry("Information Technology Services") == "IT 서비스"
+    assert _display_industry("banks - diversified") == "종합 은행"
+
+
+def test_us_highlow_industry_distribution_is_korean(monkeypatch):
+    from bot import finviz_client as fc
+    monkeypatch.setattr(fc, "fetch_high_low", lambda force=False: {
+        "high": [{"ticker": "JPM", "name": "JPM", "price": 1, "pct": 1, "vol": 1,
+                   "mcap": 1, "ind": "Banks - Diversified"}],
+        "low": [{"ticker": "BAC", "name": "BAC", "price": 1, "pct": -1, "vol": 1,
+                  "mcap": 1, "ind": "Banks - Regional"}],
+        "ts": "now",
+        "source": "Finviz",
+    })
+    html = render_us_highlow_page()
+    assert "종합 은행" in html
+    assert "지방 은행" in html
+
+
+def test_us_movers_industry_distribution_is_korean(monkeypatch):
+    from bot import finviz_client as fc
+    monkeypatch.setattr(fc, "fetch_us_movers", lambda: {
+        "up": [{"ticker": "AAA", "name": "AAA", "price": 1, "pct": 1, "vol": 1,
+                 "mcap": 1, "ind": "Semiconductors"}],
+        "down": [{"ticker": "BBB", "name": "BBB", "price": 1, "pct": -1, "vol": 1,
+                   "mcap": 1, "ind": "Software - Application"}],
+        "ts": "now",
+        "source": "Finviz",
+    })
+    html = render_us_movers_page()
+    assert "반도체" in html
+    assert "소프트웨어 - 애플리케이션" in html
+
+
+def test_us_prepost_industry_distribution_is_korean(monkeypatch):
+    from bot import prepost_client as pc
+    monkeypatch.setattr(pc, "fetch_us_prepost_movers", lambda: {
+        "up": [{"ticker": "AAA", "name": "AAA", "price": 1, "pct": 1, "vol": 1,
+                 "mcap": 1, "ind": "Banks - Diversified"}],
+        "down": [{"ticker": "BBB", "name": "BBB", "price": 1, "pct": -1, "vol": 1,
+                   "mcap": 1, "ind": "Biotechnology"}],
+        "ts": "now",
+        "source": "네이버",
+        "session": "pre",
+    })
+    html = render_us_prepost_page()
+    assert "종합 은행" in html
+    assert "바이오" in html

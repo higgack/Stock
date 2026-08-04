@@ -58,7 +58,10 @@ def market_hours_label(market: str) -> str:
 def _display_industry(ind) -> str:
     """업종 표시 정규화 — 영문 업종은 한글로 변환, 한글/기타는 원문 유지."""
     txt = str(ind or "").strip()
-    return _industry_kr(txt) if txt else ""
+    if not txt:
+        return ""
+    kr = _industry_kr(txt)
+    return kr if kr != txt else _industry_kr(txt.title())
 
 
 def movers_freshness(market: str) -> str:
