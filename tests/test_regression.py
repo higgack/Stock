@@ -7146,7 +7146,7 @@ class TestUsMovers:
         html = render_us_movers_page()
         assert "가장 많이 오른" in html and "ATEX" in html and "+47.20%" in html
         assert "가장 많이 내린" in html and "XYZ" in html and "-31.00%" in html
-        assert "업종 분포" in html and "Telecom Services" in html
+        assert "업종 분포" in html and "통신 서비스" in html
         assert 'href="usmovers"' in html      # 토글 탭 (3페이지 공유 shell)
         assert 'href="lookup/ATEX"' in html   # 종목 → 우리 분석 연결
 
