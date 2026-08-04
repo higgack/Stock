@@ -14173,6 +14173,81 @@ class TestIndexCardRecompose:
         assert out["nve:XLRE"]["prev_close"] == 41.2
 
 
+class TestTwIndustryBulkMap20260804:
+    """사용자 2026-08-04: TW 급등락 표에서 업종·시총이 대부분 '—' — 원인은
+    (사용자 최초 추측과 달리) 소형주라 데이터가 없는 게 아니라, TW 만 네이버
+    worldstock 미지원이라 yfinance 개별조회(백그라운드·250개/회 상한)에만
+    의존해 무버 TOP30 신규진입 종목(변동성 큰 소형주 위주 — 캐시가 항상
+    콜드)이 늘 못 채워지는 캐싱 구조 문제. TWSE/TPEx 상장법인 기본자료
+    (전종목 일괄 OpenAPI)로 벌크 업종맵을 만들어 렌더-세이프 경로에서도
+    즉시 채워지게 함. ⚠️ OpenAPI URL/필드명은 샌드박스 프록시가 openapi.
+    twse.com.tw 를 403 차단해 라이브 검증 불가 — 실패 시 100% graceful
+    (yfinance 폴백 그대로, 회귀 0)이므로 안전하게 배포하되 VM 실행
+    (`python -m bot.twse_client`) 결과로 최종 확인 필요."""
+
+    def test_parses_realistic_response(self, monkeypatch):
+        import bot.twse_client as tw
+
+        class _R:
+            status_code = 200
+            def json(self):
+                return [
+                    {"公司代號": "2330", "公司名稱": "台積電", "產業別": "半導體業"},
+                    {"公司代號": "2317", "公司名稱": "鴻海", "產業別": "電子零組件業"},
+                ]
+        monkeypatch.setattr(tw.requests, "get", lambda *a, **k: _R())
+        m = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
+        assert m == {"2330": "반도체", "2317": "전자부품"}
+
+    def test_unrecognized_schema_returns_empty_gracefully(self, monkeypatch):
+        # 필드명이 예상과 다르면(스키마 변경) 예외 없이 {} — yfinance 폴백 유지.
+        import bot.twse_client as tw
+
+        class _R:
+            status_code = 200
+            def json(self):
+                return [{"foo": "bar", "baz": 1}]
+        monkeypatch.setattr(tw.requests, "get", lambda *a, **k: _R())
+        assert tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市") == {}
+
+    def test_network_failure_returns_empty_gracefully(self, monkeypatch):
+        import bot.twse_client as tw
+
+        def _boom(*a, **k):
+            raise ConnectionError("blocked")
+        monkeypatch.setattr(tw.requests, "get", _boom)
+        assert tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市") == {}
+
+    def test_fetch_tw_industry_map_merges_both_sources_and_caches(self, monkeypatch):
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "_cached_stale", lambda name, max_age_sec=86400: None)
+        written = {}
+        monkeypatch.setattr(tw, "_cache_write", lambda name, obj: written.setdefault(name, obj))
+        monkeypatch.setattr(tw, "_fetch_one_industry_source", lambda url, label: (
+            {"2330": "반도체"} if label == "上市" else {"6488": "광전(디스플레이)"}))
+        out = tw.fetch_tw_industry_map()
+        assert out == {"2330": "반도체", "6488": "광전(디스플레이)"}
+        assert written.get("tw_industry_map") == out
+
+    def test_industries_for_tw_prefers_bulk_falls_back_to_yfinance_on_miss(self, monkeypatch):
+        import bot.finviz_client as fc
+        monkeypatch.setattr("bot.twse_client.fetch_tw_industry_map",
+                            lambda: {"2330": "반도체"})
+        monkeypatch.setattr(fc, "_fetch_industries", lambda tickers, **k: {"9999.TW": "기타"})
+        got = fc._industries_for(["2330.TW", "9999.TW"], "TW")
+        assert got["2330.TW"] == "반도체"           # 벌크맵 히트
+        assert got["9999.TW"] == "기타"              # 미스만 yfinance 폴백
+
+    def test_industries_for_tw_falls_back_when_bulk_map_empty(self, monkeypatch):
+        # 라이브 검증 불가한 신규 OpenAPI 가 실패/빈 응답이어도 전체 경로가
+        # yfinance 단독(기존 동작)으로 자연 폴백해야 — 회귀 0 보장.
+        import bot.finviz_client as fc
+        monkeypatch.setattr("bot.twse_client.fetch_tw_industry_map", lambda: {})
+        monkeypatch.setattr(fc, "_fetch_industries", lambda tickers, **k: {"2330.TW": "반도체(yf)"})
+        got = fc._industries_for(["2330.TW"], "TW")
+        assert got == {"2330.TW": "반도체(yf)"}
+
+
 class TestTwMoversNoLimitMarker:
     """TW 무버 상한/하한(±10%) 마커·legend 제거 (사용자 2026-06-17 '대만에서 이건
     없어도 돼'). stock_panel limit_pct 미전달(행 🔺/🔻 마커 없음) + 부제 legend 제거.

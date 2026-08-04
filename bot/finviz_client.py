@@ -894,8 +894,30 @@ def _industries_for(tickers: list, market: str | None) -> dict:
 
     CN/JP/US: Naver 업종맵 우선 + 미스만 yfinance.
     HK: yfinance 우선 + 미스만 Naver 폴백(5자리↔4자리 코드 정규화).
-    KR/TW: yfinance(_fetch_industries).
+    TW: TWSE/TPEx 상장법인 기본자료(전종목 일괄) 우선 + 미스만 yfinance
+        (2026-08-04 신규 — 네이버 worldstock 이 TW 미지원이라 그동안 yfinance
+        개별조회에만 의존, 무버 TOP30 신규진입 소형주가 항상 캐시 콜드라
+        업종 '—' 로 빠지던 것 개선. 소스 URL/필드 샌드박스 미검증 — 실패해도
+        graceful 하게 이 함수 최하단 yfinance 단독 경로로 자연 폴백).
+    KR: yfinance(_fetch_industries).
     """
+    if market == "TW":
+        try:
+            from bot.twse_client import fetch_tw_industry_map
+            m = fetch_tw_industry_map()
+            if not m:
+                return _fetch_industries(tickers)
+            got = {tk: m.get(str(tk).split(".")[0]) for tk in tickers}
+            miss = [tk for tk in tickers if not got.get(tk)]
+            if miss:
+                yf = _fetch_industries(miss)
+                for tk in miss:
+                    if yf.get(tk):
+                        got[tk] = yf[tk]
+            return got
+        except Exception as exc:
+            log.warning("twse 업종맵 → yfinance 폴백: %s", exc)
+            return _fetch_industries(tickers)
     if market == "HK":
         try:
             from bot.naver_ranking_client import world_industry_map
