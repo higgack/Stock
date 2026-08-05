@@ -16364,7 +16364,7 @@ class TestPatternScreener20260726:
 
 
 class TestEconCalendar20260726:
-    """경제 캘린더 보드(CPI/고용동향/GDP/PCE/FOMC, FRED release-dates API,
+    """경제 캘린더 보드(CPI/PPI/고용/실업수당/소매/ECI/GDP/PCE/FOMC, FRED release-dates API,
     bot/econ_calendar.py) — 순수 날짜분류 함수 + graceful 배선."""
 
     def test_upcoming_and_recent_picks_next_and_recent(self):
@@ -17108,7 +17108,7 @@ class TestMarketTimingBreadthVol20260726:
 
 
 class TestEconCalendarAdditions20260726:
-    """경제캘린더 사용자 추천 추가(실제치 오버레이·ISM PMI·메가테크 실적)
+    """경제캘린더 사용자 추천 추가(실제치 오버레이·고영향 거시지표·메가테크 실적)
     — bot/econ_calendar.py. QRA 는 검증 불가 사유로 의도적 미구현(문서화)."""
 
     def test_find_actual_value_picks_most_recent_at_or_before(self):
@@ -17130,11 +17130,13 @@ class TestEconCalendarAdditions20260726:
         from bot import econ_calendar as ec
         assert ec.find_actual_value([], "2026-06-05") is None
 
-    def test_ism_pmi_entries_removed_20260726(self):
-        # ISM 제조업/비제조업은 FRED 카탈로그 매치가 항상 실패해(사용자
-        # 2026-07-26 스크린샷 — 영구 "release_id 미확인") 카탈로그에서 제거.
+    def test_release_catalog_contains_high_impact_us_events(self):
+        # 경제캘린더 확장(2026-08-06): 5일 변동성 핵심 + 정책민감도 + 경기 조기경보 추가.
         from bot import econ_calendar as ec
         keys = {r["key"] for r in ec._RELEASES}
+        assert {"cpi", "core_cpi", "ppi", "jobs", "ahe", "unemp", "claims", "cont_claims", "retail", "eci", "gdp", "pce", "core_pce", "fomc"} <= keys
+        # ISM 제조업/비제조업은 FRED 카탈로그 매치가 항상 실패해(사용자
+        # 2026-07-26 스크린샷 — 영구 "release_id 미확인") 카탈로그에서 제거 상태 유지.
         assert "ism_mfg" not in keys and "ism_svc" not in keys
 
     def test_is_plausible_release_cadence_rejects_daily_noise(self):
@@ -17150,6 +17152,16 @@ class TestEconCalendarAdditions20260726:
         cpi = ["2026-04-10", "2026-05-13", "2026-06-11", "2026-07-14"]
         assert ec._is_plausible_release_cadence(fomc) is True
         assert ec._is_plausible_release_cadence(cpi) is True
+
+    def test_claims_releases_use_weekly_cadence_threshold(self):
+        from bot import econ_calendar as ec
+        weekly = ["2026-07-03", "2026-07-10", "2026-07-17", "2026-07-24", "2026-07-31"]
+        for k in ("claims", "cont_claims"):
+            cfg = next(r for r in ec._RELEASES if r["key"] == k)
+            assert cfg.get("min_avg_gap_days") == 4
+            assert ec._is_plausible_release_cadence(
+                weekly, min_avg_gap_days=cfg["min_avg_gap_days"]
+            ) is True
 
     def test_is_plausible_release_cadence_insufficient_data_defaults_true(self):
         from bot import econ_calendar as ec
@@ -17238,6 +17250,24 @@ class TestEconCalendarAdditions20260726:
         from bot import econ_calendar as ec
         html = ec.render_econ_calendar_page({"events": [], "megatech_earnings": []})
         assert "경제 캘린더" in html   # crash 없이 렌더
+
+
+    def test_series_mapping_contains_policy_and_recession_signals(self):
+        from bot import econ_calendar as ec
+        m = ec._SERIES_FOR_ACTUAL
+        assert m["core_cpi"] == "CPILFESL"
+        assert m["core_pce"] == "PCEPILFE"
+        assert m["ahe"] == "CES0500000003"
+        assert m["eci"] == "ECIWAG"
+        assert m["claims"] == "ICSA" and m["cont_claims"] == "CCSA" and m["retail"] == "RSAFS"
+
+
+    def test_event_specific_actual_lag_configured(self):
+        from bot import econ_calendar as ec
+        cfg = {r["key"]: r for r in ec._RELEASES}
+        assert cfg["gdp"].get("actual_max_lag_days") == 140
+        assert cfg["eci"].get("actual_max_lag_days") == 140
+        assert cfg["core_pce"].get("actual_max_lag_days") == 70
 
     def test_qra_documented_not_implemented(self):
         # QRA 는 검증불가 사유로 미구현 — 가이드 텍스트에 명시돼 있는지,
