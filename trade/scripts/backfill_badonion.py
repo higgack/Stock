@@ -51,11 +51,11 @@ Telegram app credentials needed — same account, second session file).
 
 Run manually:
   .backfill-venv/bin/python trade/scripts/backfill_badonion.py --since 2026-05-01
-  .backfill-venv/bin/python trade/scripts/backfill_badonion.py  # default: 2-day lookback
+  .backfill-venv/bin/python trade/scripts/backfill_badonion.py  # default: 3-day lookback
   # optional: --to 2026-05-16, --dry-run, --lookback-days N
 
 Run by systemd (trade-bot-badonion-sync.timer):
-  Invoked without --since; defaults to 2-day lookback (realtime listener
+  Invoked without --since; defaults to 3-day lookback (realtime listener
   is the primary path, this is the downtime safety net).
 """
 
@@ -445,9 +445,9 @@ async def run(
             "grouped into %d send units (singles + albums)", len(units_all)
         )
 
-        # 관련성 필터 — 나쁜양파는 7개국 수출 데이터 외 콘텐츠도 섞인 일반
+        # 관련성 필터 — 나쁜양파는 7개국 수출/미국 수입 데이터 외 콘텐츠도 섞인 일반
         # 채널(사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간
-        # 걸 확인). 앨범이면 멤버 중 하나라도 7개국 수출 캡션이면 유닛
+        # 걸 확인). 앨범이면 멤버 중 하나라도 대상 캡션이면 유닛
         # 전체(사진 포함) 유지(_is_relevant, 2026-07-26 태국·말레이시아·
         # 필리핀·멕시코 추가).
         units = [
@@ -458,7 +458,7 @@ async def run(
         total_msgs = sum(len(u) for u in units)
         log.info(
             "relevance filter: %d/%d units are 대만·중국·일본·태국·말레이시아·"
-            "필리핀·멕시코 수출 데이터 "
+            "필리핀·멕시코 수출/미국 수입 데이터 "
             "(%d irrelevant skipped, %d candidate msgs total)",
             len(units), len(units_all), skipped_irrelevant, len(candidates),
         )
@@ -562,10 +562,10 @@ def main() -> None:
     ap.add_argument(
         "--lookback-days",
         type=int,
-        default=2,
+        default=3,
         metavar="N",
         help=(
-            "Days to look back when --since is omitted (default: 2). "
+            "Days to look back when --since is omitted (default: 3). "
             "Listener handles realtime; this is the safety net for short "
             "downtime windows. For wider historical catch-ups use "
             "explicit --since."
