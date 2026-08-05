@@ -60,20 +60,20 @@ from typing import Optional
 log = logging.getLogger("bot.econ_calendar")
 
 _RELEASES = [
-    {"key": "cpi", "label": "🛒 CPI (소비자물가지수)", "search": "Consumer Price Index"},
-    {"key": "core_cpi", "label": "🧩 Core CPI (근원 CPI)", "search": "Consumer Price Index"},
-    {"key": "ppi", "label": "🏭 PPI (생산자물가지수)", "search": "Producer Price Index"},
-    {"key": "jobs", "label": "💼 고용동향 (Employment Situation)", "search": "Employment Situation"},
-    {"key": "ahe", "label": "💵 시간당임금 (AHE)", "search": "Employment Situation"},
-    {"key": "unemp", "label": "📊 실업률 (Unemployment Rate)", "search": "Employment Situation"},
-    {"key": "claims", "label": "📉 신규 실업수당 (Initial Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4},
-    {"key": "cont_claims", "label": "🧷 연속 실업수당 (Continuing Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4},
-    {"key": "retail", "label": "🛍️ 소매판매 (Retail Sales)", "search": "Advance Monthly Sales for Retail and Food Services"},
-    {"key": "eci", "label": "🧮 고용비용지수 (ECI)", "search": "Employment Cost Index", "actual_max_lag_days": 140},
-    {"key": "gdp", "label": "📈 GDP (국내총생산)", "search": "Gross Domestic Product", "actual_max_lag_days": 140},
-    {"key": "pce", "label": "💰 PCE (개인소비지출)", "search": "Personal Income and Outlays"},
-    {"key": "core_pce", "label": "🧠 Core PCE (근원 PCE)", "search": "Personal Income and Outlays", "actual_max_lag_days": 70},
-    {"key": "fomc", "label": "🏛️ FOMC", "search": "FOMC"},
+    {"key": "cpi", "label": "🛒 CPI (소비자물가지수)", "search": "Consumer Price Index", "groups": ["미국 5거래일 변동성", "정책민감도"]},
+    {"key": "core_cpi", "label": "🧩 Core CPI (근원 CPI)", "search": "Consumer Price Index", "groups": ["정책민감도"]},
+    {"key": "ppi", "label": "🏭 PPI (생산자물가지수)", "search": "Producer Price Index", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "jobs", "label": "💼 고용동향 (Employment Situation)", "search": "Employment Situation", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "ahe", "label": "💵 시간당임금 (AHE)", "search": "Employment Situation", "groups": ["정책민감도"]},
+    {"key": "unemp", "label": "📊 실업률 (Unemployment Rate)", "search": "Employment Situation", "groups": ["경기침체 조기경보"]},
+    {"key": "claims", "label": "📉 신규 실업수당 (Initial Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4, "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "cont_claims", "label": "🧷 연속 실업수당 (Continuing Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4, "groups": ["경기침체 조기경보"]},
+    {"key": "retail", "label": "🛍️ 소매판매 (Retail Sales)", "search": "Advance Monthly Sales for Retail and Food Services", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "eci", "label": "🧮 고용비용지수 (ECI)", "search": "Employment Cost Index", "actual_min_lag_days": 70, "actual_max_lag_days": 220, "groups": ["정책민감도", "경기침체 조기경보"]},
+    {"key": "gdp", "label": "📈 GDP (국내총생산)", "search": "Gross Domestic Product", "actual_min_lag_days": 100, "actual_max_lag_days": 220, "groups": ["경기침체 조기경보"]},
+    {"key": "pce", "label": "💰 PCE (개인소비지출)", "search": "Personal Income and Outlays", "groups": ["정책민감도"]},
+    {"key": "core_pce", "label": "🧠 Core PCE (근원 PCE)", "search": "Personal Income and Outlays", "actual_min_lag_days": 20, "actual_max_lag_days": 70, "groups": ["정책민감도"]},
+    {"key": "fomc", "label": "🏛️ FOMC", "search": "FOMC", "groups": ["미국 5거래일 변동성", "정책민감도"]},
 ]
 
 # 과거 발표일의 실제치(actual) 오버레이용 FRED 시리즈 매핑(2026-07-26 사용자
@@ -137,26 +137,63 @@ def _is_plausible_release_cadence(dates: list, *, min_avg_gap_days: int = 10) ->
     return avg_gap >= min_avg_gap_days
 
 
-def find_actual_value(observations: list, release_date: str, max_lag_days: int = 45):
-    """observations([(date,value)], 오름차순, fred_client.fetch_history 형태)
-    중 release_date 이하로 가장 최근 값 — '그 발표에서 실제로 나온 값' 근사
-    (월간지표는 보통 발표일 당일~D-2 이내 관측치가 게시됨). 순수함수(테스트용).
-    max_lag_days 밖(너무 오래된 관측치)이면 그 release_date 는 매치 없음
-    취급(스테일 값을 엉뚱한 발표에 붙이는 오탐 방지). 반환 (obs_date, value)
-    또는 None."""
+def find_actual_value(observations: list, release_date: str, max_lag_days: int = 45,
+                      min_lag_days: int = 0):
+    """observations([(date,value)], 오름차순)에서 release_date 시점에
+    유효한 실제치 근사값을 선택. [release_date-max_lag_days,
+    release_date-min_lag_days] 창에 들어오는 마지막 관측치를 채택한다.
+    (지표별 공표-관측 시차는 _RELEASES의 actual_min/max_lag_days로 조정)."""
     if not observations:
         return None
     rd = date.fromisoformat(release_date)
-    cutoff = rd - timedelta(days=max_lag_days)
+    lower = rd - timedelta(days=max_lag_days)
+    upper = rd - timedelta(days=min_lag_days)
     best = None
     for d, v in observations:
         od = date.fromisoformat(d)
-        if od > rd:
+        if od > upper:
             break
-        if od >= cutoff:
+        if lower <= od <= upper:
             best = (d, v)
     return best
 
+
+def _value_on_or_before(observations: list, cutoff_date: str):
+    """오름차순 observations 에서 cutoff_date 이하 마지막 관측치."""
+    out = None
+    for d, v in observations:
+        if d > cutoff_date:
+            break
+        out = (d, v)
+    return out
+
+
+def _build_trend_summary(observations: list, actuals: list[dict]) -> dict:
+    """실제치 카드용 방향성 요약(최근발표대비·3M·1Y)."""
+    if not observations:
+        return {}
+
+    def _pct(cur: float, base: float | None):
+        if base is None or base == 0:
+            return None
+        return (cur - base) / abs(base) * 100.0
+
+    latest_obs_date, latest_val = observations[-1]
+    ld = date.fromisoformat(latest_obs_date)
+    m3 = _value_on_or_before(observations, (ld - timedelta(days=90)).isoformat())
+    y1 = _value_on_or_before(observations, (ld - timedelta(days=365)).isoformat())
+
+    out: dict = {"latest_obs_date": latest_obs_date}
+    if len(actuals) >= 2:
+        cur = float(actuals[-1]["value"])
+        prev = float(actuals[-2]["value"])
+        out["release_delta"] = cur - prev
+        out["release_pct"] = _pct(cur, prev)
+    if m3:
+        out["m3_pct"] = _pct(float(latest_val), float(m3[1]))
+    if y1:
+        out["y1_pct"] = _pct(float(latest_val), float(y1[1]))
+    return out
 
 def _load_megatech_earnings(today: Optional[str] = None) -> list:
     """AI/반도체/빅테크 대형주(_MEGATECH_WATCHLIST 24종) 실적 발표일(2026-07-26 사용자
@@ -221,17 +258,26 @@ def _load_econ_calendar(today: Optional[str] = None) -> dict:
             series_id = _SERIES_FOR_ACTUAL.get(r["key"])
             if series_id and info["recent"]:
                 try:
-                    hist_start = (date.fromisoformat(t) - timedelta(days=400)).isoformat()
+                    actual_max_lag = int(r.get("actual_max_lag_days", 45))
+                    actual_min_lag = int(r.get("actual_min_lag_days", 0))
+                    lookback_days = max(400, actual_max_lag + 400)
+                    hist_start = (date.fromisoformat(t) - timedelta(days=lookback_days)).isoformat()
                     obs = fred_client.fetch_history(series_id, start=hist_start)
                     actuals = []
                     for rdate in info["recent"]:
-                        max_lag = int(r.get("actual_max_lag_days", 45))
-                        hit = find_actual_value(obs, rdate, max_lag_days=max_lag)
+                        hit = find_actual_value(
+                            obs, rdate,
+                            max_lag_days=actual_max_lag,
+                            min_lag_days=actual_min_lag,
+                        )
                         if hit:
                             actuals.append({"release_date": rdate,
                                            "obs_date": hit[0], "value": hit[1]})
                     if actuals:
                         entry["actuals"] = actuals
+                    trend = _build_trend_summary(obs, actuals)
+                    if trend:
+                        entry["trend"] = trend
                 except Exception as exc:
                     log.debug("econ_calendar: actual-value fetch failed for %s: %s",
                              r["key"], exc)
@@ -268,11 +314,17 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
             # _load_econ_calendar 의 log.debug/warning 으로 백엔드에서 계속 추적 가능.
             continue
         label = _h.escape(e.get("label", e.get("key", "")))
+        groups = e.get("groups") or []
+        group_html = ""
+        if groups:
+            tags = " · ".join(_h.escape(g) for g in groups)
+            group_html = f'<div class="note" style="margin:4px 0 8px">분류: {tags}</div>'
         nxt = e.get("next")
         recent = e.get("recent") or []
         nxt_s = _h.escape(nxt) if nxt else "예정 없음(구간 내)"
         recent_s = ", ".join(_h.escape(d) for d in recent) if recent else "—"
         actuals_html = ""
+        trend_html = ""
         if e.get("actuals"):
             rows = "".join(
                 f'<div class="stat"><div class="k">{_h.escape(a["release_date"])} 실제치</div>'
@@ -283,12 +335,30 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
             actuals_html = (f'<div class="stat-grid" style="margin-top:6px">{rows}</div>'
                             '<div class="note" style="font-size:11px">컨센서스(예측치) 비교는 '
                             '무료 소스 없음 — 실제치만 표시.</div>')
+
+        trend = e.get("trend") or {}
+        trend_parts = []
+        rd = trend.get("release_delta")
+        if rd is not None:
+            arrow = "▲" if rd > 0 else ("▼" if rd < 0 else "→")
+            rp = trend.get("release_pct")
+            rp_s = "" if rp is None else f" ({rp:+.1f}%)"
+            trend_parts.append(f"최근 발표대비 {arrow} {rd:+,.1f}{rp_s}")
+        if trend.get("m3_pct") is not None:
+            trend_parts.append(f"3M {trend['m3_pct']:+.1f}%")
+        if trend.get("y1_pct") is not None:
+            trend_parts.append(f"1Y {trend['y1_pct']:+.1f}%")
+        if trend_parts:
+            trend_html = (f'<div class="note" style="font-size:11px">방향성: {" · ".join(trend_parts)}'
+                          f' <span style="color:#8b8fa3">(최근 관측 {_h.escape(str(trend.get("latest_obs_date", "—")))})</span></div>')
+
         cards += f"""
 <div class="panel"><div class="panel-title">{label}</div>
+{group_html}
 <div class="stat-grid">
 <div class="stat"><div class="k">다음 발표일</div><div class="v" style="font-size:16px">{nxt_s}</div></div>
 <div class="stat"><div class="k">최근 발표일(45일 내)</div><div class="v" style="font-size:13px">{recent_s}</div></div>
-</div>{actuals_html}</div>"""
+</div>{actuals_html}{trend_html}</div>"""
 
     megatech = data.get("megatech_earnings") or []
     megatech_card = ""
@@ -317,7 +387,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
 거시지표 발표일 전후는 변동성이 커지는 구간 — 진입/청산 타이밍 참고용.
 '다음 발표일'이 임박했다면 신규 진입 전 리스크 인지, '최근 발표일'은 직후
 반응(gap/드리프트)을 되짚어볼 때 참고. '실제치'는 해당 발표일에 나온 FRED
-관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 정책민감도(근원 CPI·근원 PCE·AHE·ECI)와 경기 조기경보(신규/연속 실업수당·실업률·소매판매)를 함께 본다. 분기/장기지표(GDP·ECI·Core PCE)는 발표-관측 시차를 감안해 실제치 매칭 허용폭을 확대했다. 메가테크
+관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 카드 상단 '분류'에서 미국 5거래일 변동성/정책민감도/경기침체 조기경보 구분을 확인할 수 있다. '최근 발표일'은 릴리스 일정(수정치 포함) 기준이며, 실제치 매칭은 지표별 발표-관측 시차를 반영한다. 하단 '방향성'은 최근 발표대비·3M·1Y 변화를 함께 보여준다. 메가테크
 실적일(AI/반도체/빅테크 24종)은 AI/반도체 사이클 변곡점 참고용. 현재 US(연준/
 BLS/BEA) 발표 중심 — KR/JP 는 FRED 개별 발표일정 커버리지 공백으로 미포함
 (추후 확장 여지, 시장 게이트 아닌 데이터소스 제약). 미 재무부 QRA(분기

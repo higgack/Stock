@@ -17126,9 +17126,25 @@ class TestEconCalendarAdditions20260726:
         obs = [("2026-01-01", 3.0)]
         assert ec.find_actual_value(obs, "2026-12-01", max_lag_days=45) is None
 
+    def test_find_actual_value_respects_min_lag_window(self):
+        from bot import econ_calendar as ec
+        obs = [("2026-01-01", 31000.0), ("2026-04-01", 32475.2)]
+        # GDP 2026-06-25 release 시점엔 2026-04 관측치가 아직 이른 값으로 간주될 수 있어,
+        # min_lag 를 적용하면 2026-01 관측치가 선택된다.
+        assert ec.find_actual_value(
+            obs, "2026-06-25", max_lag_days=220, min_lag_days=100
+        ) == ("2026-01-01", 31000.0)
+
     def test_find_actual_value_empty_observations(self):
         from bot import econ_calendar as ec
         assert ec.find_actual_value([], "2026-06-05") is None
+
+    def test_release_groups_are_exposed(self):
+        from bot import econ_calendar as ec
+        cfg = {r["key"]: r for r in ec._RELEASES}
+        assert "정책민감도" in cfg["core_pce"].get("groups", [])
+        assert "경기침체 조기경보" in cfg["cont_claims"].get("groups", [])
+        assert "미국 5거래일 변동성" in cfg["fomc"].get("groups", [])
 
     def test_release_catalog_contains_high_impact_us_events(self):
         # 경제캘린더 확장(2026-08-06): 5일 변동성 핵심 + 정책민감도 + 경기 조기경보 추가.
@@ -17233,8 +17249,11 @@ class TestEconCalendarAdditions20260726:
             "events": [
                 {"key": "cpi", "label": "🛒 CPI", "next": "2026-08-12",
                  "recent": ["2026-07-11"],
+                 "groups": ["미국 5거래일 변동성", "정책민감도"],
                  "actuals": [{"release_date": "2026-07-11",
-                             "obs_date": "2026-07-01", "value": 3.2}]},
+                             "obs_date": "2026-07-01", "value": 3.2}],
+                 "trend": {"release_delta": 0.2, "release_pct": 6.7, "m3_pct": 1.1,
+                           "y1_pct": -0.9, "latest_obs_date": "2026-07-01"}},
             ],
             "megatech_earnings": [
                 {"symbol": "NVDA", "date": "2026-08-20", "hour": "amc"},
@@ -17243,6 +17262,8 @@ class TestEconCalendarAdditions20260726:
         }
         html = ec.render_econ_calendar_page(data)
         assert "3.2" in html and "컨센서스" in html
+        assert "분류: 미국 5거래일 변동성 · 정책민감도" in html
+        assert "방향성: 최근 발표대비 ▲ +0.2 (+6.7%) · 3M +1.1% · 1Y -0.9%" in html
         assert "NVDA" in html and "ASML" in html and "장후" in html and "장전" in html
         assert "메가테크 실적 발표일" in html
 
@@ -17260,13 +17281,17 @@ class TestEconCalendarAdditions20260726:
         assert m["ahe"] == "CES0500000003"
         assert m["eci"] == "ECIWAG"
         assert m["claims"] == "ICSA" and m["cont_claims"] == "CCSA" and m["retail"] == "RSAFS"
+        assert m["gdp"] == "GDP" and m["eci"] == "ECIWAG"
 
 
     def test_event_specific_actual_lag_configured(self):
         from bot import econ_calendar as ec
         cfg = {r["key"]: r for r in ec._RELEASES}
-        assert cfg["gdp"].get("actual_max_lag_days") == 140
-        assert cfg["eci"].get("actual_max_lag_days") == 140
+        assert cfg["gdp"].get("actual_min_lag_days") == 100
+        assert cfg["gdp"].get("actual_max_lag_days") == 220
+        assert cfg["eci"].get("actual_min_lag_days") == 70
+        assert cfg["eci"].get("actual_max_lag_days") == 220
+        assert cfg["core_pce"].get("actual_min_lag_days") == 20
         assert cfg["core_pce"].get("actual_max_lag_days") == 70
 
     def test_qra_documented_not_implemented(self):
