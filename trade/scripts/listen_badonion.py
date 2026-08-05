@@ -73,12 +73,13 @@ from trade import my_exports as _my
 from trade import ph_exports as _ph
 from trade import th_exports as _th
 from trade import tw_exports as _tw
+from trade import us_imports as _us
 
 load_dotenv()
 
 
 def _is_relevant(text: str) -> bool:
-    """대만·중국·일본(나쁜양파 두 번째 소스)·태국·말레이시아·필리핀·멕시코
+    """대만·중국·일본(나쁜양파 두 번째 소스)·태국·말레이시아·필리핀·멕시코·미국
     수출 데이터 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터, 사용자 2026-07-11
     중국·일본 추가 + 2026-07-26 태국·말레이시아·필리핀·멕시코 추가)."""
     return (_tw.parse_tw_export(text) is not None
@@ -87,7 +88,8 @@ def _is_relevant(text: str) -> bool:
             or _th.parse_th_export(text) is not None
             or _my.parse_my_export(text) is not None
             or _ph.parse_ph_export(text) is not None
-            or _mx.parse_mx_export(text) is not None)
+            or _mx.parse_mx_export(text) is not None
+            or _us.parse_us_import(text) is not None)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
