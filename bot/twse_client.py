@@ -47,6 +47,7 @@ _OPENAPI_LISTED_INFO = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 # graceful(상장 TWSE 분만 채워짐 — 上櫃 분은 기존 yfinance 폴백 유지).
 _OPENAPI_OTC_INFO = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
 _TW_IND_CACHE_TTL = 24 * 3600   # 상장법인 기본자료는 하루 내 사실상 불변
+_CJK_RE = re.compile(r"[一-鿿]")   # 業種명 신뢰 판별(숫자 분류코드 배제용)
 _HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
          "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
@@ -409,15 +410,27 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
                    "스키마 변경 의심, 스킵", label, code_key, ind_key, list(sample)[:12])
         return {}
     out: dict[str, str] = {}
+    skipped_numeric = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
         code = str(row.get(code_key) or "").strip()
         ind = str(row.get(ind_key) or "").strip()
-        if code and ind:
-            out[code] = _sector_kr(ind)
-    log.info("twse industry map (%s): %d종목 (code_key=%s ind_key=%s)",
-             label, len(out), code_key, ind_key)
+        if not code or not ind:
+            continue
+        # 2026-08-04 VM 실측 fix: 產業別 필드가 한자 업종명이 아니라 **숫자
+        # 분류코드**("20"/"02"/"22" 등)였음 — _sector_kr 이 매칭 못 해 원본을
+        # 그대로 반환해 대시보드 업종 컬럼에 숫자가 그대로 샜다(사용자 스크린샷,
+        # '업종 분포: 20 6 · 02 5 · 22 5…'). 코드 테이블 미보유라 정확 매핑
+        # 불가 — 한자(CJK) 없는 값은 신뢰 못 할 코드로 보고 드롭(해당 종목은
+        # yfinance 개별조회 폴백으로 자연 복귀 — 배포 전 상태와 동일, 숫자
+        # 노출 재발 방지가 우선).
+        if not _CJK_RE.search(ind):
+            skipped_numeric += 1
+            continue
+        out[code] = _sector_kr(ind)
+    log.info("twse industry map (%s): %d종목 (code_key=%s ind_key=%s, "
+             "숫자코드 드롭 %d)", label, len(out), code_key, ind_key, skipped_numeric)
     return out
 
 

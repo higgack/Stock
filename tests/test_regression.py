@@ -14199,6 +14199,26 @@ class TestTwIndustryBulkMap20260804:
         m = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
         assert m == {"2330": "반도체", "2317": "전자부품"}
 
+    def test_numeric_industry_code_dropped_not_leaked(self, monkeypatch):
+        # 2026-08-04 VM 실측: 產業別 필드가 실제로는 한자 업종명이 아니라
+        # 숫자 분류코드("20"/"02"/"22" 등)였음 — _sector_kr 매칭 실패 시
+        # 원본을 그대로 반환해 대시보드 업종 컬럼에 숫자가 그대로 샜다
+        # (사용자 스크린샷 '업종 분포: 20 6 · 02 5 · 22 5…'). 한자 없는 값은
+        # 드롭돼야(해당 종목은 yfinance 폴백으로 자연 복귀).
+        import bot.twse_client as tw
+
+        class _R:
+            status_code = 200
+            def json(self):
+                return [
+                    {"公司代號": "1215", "公司名稱": "卜蜂", "產業別": "20"},
+                    {"公司代號": "2059", "公司名稱": "川湖", "產業別": "半導體業"},
+                ]
+        monkeypatch.setattr(tw.requests, "get", lambda *a, **k: _R())
+        m = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
+        assert "1215" not in m, "숫자 분류코드가 업종으로 그대로 샘(회귀)"
+        assert m == {"2059": "반도체"}
+
     def test_unrecognized_schema_returns_empty_gracefully(self, monkeypatch):
         # 필드명이 예상과 다르면(스키마 변경) 예외 없이 {} — yfinance 폴백 유지.
         import bot.twse_client as tw
