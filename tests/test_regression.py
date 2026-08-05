@@ -17145,7 +17145,6 @@ class TestEconCalendarAdditions20260726:
         assert "정책민감도" in cfg["core_pce"].get("groups", [])
         assert "경기침체 조기경보" in cfg["cont_claims"].get("groups", [])
         assert "미국 5거래일 변동성" in cfg["fomc"].get("groups", [])
-
     def test_release_catalog_contains_high_impact_us_events(self):
         # 경제캘린더 확장(2026-08-06): 5일 변동성 핵심 + 정책민감도 + 경기 조기경보 추가.
         from bot import econ_calendar as ec
