@@ -1096,7 +1096,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 ━━━━━━━━━
-<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🚦시장타이밍·📅경제캘린더(CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·JOLTS·소비자심리·산업생산, 분류: 5일변동성/정책민감/침체조기경보, 방향성: 최근발표대비·3M·1Y)·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
+<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🚦시장타이밍·📅경제캘린더(CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·JOLTS·소비자심리·산업생산, 분류: 5일변동성/정책민감/침체조기경보, 방향성: 최근발표대비·1M·3M·6M·1Y)·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터) · 새 데이터 하단알림(1분 체크·30분 자동반영, 반영은 사용자 선택) · 종목검색·스크롤복원
  ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·CPI·유동성·시장타이밍·경제캘린더 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
    http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html

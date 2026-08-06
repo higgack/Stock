@@ -199,7 +199,7 @@ def _value_on_or_before(observations: list, cutoff_date: str):
 
 
 def _build_trend_summary(observations: list, actuals: list[dict]) -> dict:
-    """실제치 카드용 방향성 요약(최근발표대비·3M·1Y)."""
+    """실제치 카드용 방향성 요약(최근발표대비·1M·3M·6M·1Y)."""
     if not observations:
         return {}
 
@@ -210,7 +210,9 @@ def _build_trend_summary(observations: list, actuals: list[dict]) -> dict:
 
     latest_obs_date, latest_val = observations[-1]
     ld = date.fromisoformat(latest_obs_date)
+    m1 = _value_on_or_before(observations, (ld - timedelta(days=30)).isoformat())
     m3 = _value_on_or_before(observations, (ld - timedelta(days=90)).isoformat())
+    m6 = _value_on_or_before(observations, (ld - timedelta(days=180)).isoformat())
     y1 = _value_on_or_before(observations, (ld - timedelta(days=365)).isoformat())
 
     out: dict = {"latest_obs_date": latest_obs_date}
@@ -219,8 +221,12 @@ def _build_trend_summary(observations: list, actuals: list[dict]) -> dict:
         prev = float(actuals[-2]["value"])
         out["release_delta"] = cur - prev
         out["release_pct"] = _pct(cur, prev)
+    if m1:
+        out["m1_pct"] = _pct(float(latest_val), float(m1[1]))
     if m3:
         out["m3_pct"] = _pct(float(latest_val), float(m3[1]))
+    if m6:
+        out["m6_pct"] = _pct(float(latest_val), float(m6[1]))
     if y1:
         out["y1_pct"] = _pct(float(latest_val), float(y1[1]))
     return out
@@ -362,9 +368,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
                 f'<span class="sub" style="font-size:10px">({_h.escape(a["obs_date"])} 관측)</span></div></div>'
                 for a in e["actuals"]
             )
-            actuals_html = (f'<div class="stat-grid" style="margin-top:6px">{rows}</div>'
-                            '<div class="note" style="font-size:11px">컨센서스(예측치) 비교는 '
-                            '무료 소스 없음 — 실제치만 표시.</div>')
+            actuals_html = f'<div class="stat-grid" style="margin-top:6px">{rows}</div>'
 
         trend = e.get("trend") or {}
         trend_parts = []
@@ -374,8 +378,12 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
             rp = trend.get("release_pct")
             rp_s = "" if rp is None else f" ({rp:+.1f}%)"
             trend_parts.append(f"최근 발표대비 {arrow} {rd:+,.1f}{rp_s}")
+        if trend.get("m1_pct") is not None:
+            trend_parts.append(f"1M {trend['m1_pct']:+.1f}%")
         if trend.get("m3_pct") is not None:
             trend_parts.append(f"3M {trend['m3_pct']:+.1f}%")
+        if trend.get("m6_pct") is not None:
+            trend_parts.append(f"6M {trend['m6_pct']:+.1f}%")
         if trend.get("y1_pct") is not None:
             trend_parts.append(f"1Y {trend['y1_pct']:+.1f}%")
         if trend_parts:
@@ -417,7 +425,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
 거시지표 발표일 전후는 변동성이 커지는 구간 — 진입/청산 타이밍 참고용.
 '다음 발표일'이 임박했다면 신규 진입 전 리스크 인지, '최근 발표일'은 직후
 반응(gap/드리프트)을 되짚어볼 때 참고. '실제치'는 해당 발표일에 나온 FRED
-관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 카드 상단 '분류'에서 미국 5거래일 변동성/정책민감도/경기침체 조기경보 구분을 확인할 수 있다. '최근 발표일'은 릴리스 일정(수정치 포함) 기준이며, 실제치 매칭은 지표별 발표-관측 시차를 반영한다. 하단 '방향성'은 최근 발표대비·3M·1Y 변화를 함께 보여준다. 메가테크
+관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 카드 상단 '분류'에서 미국 5거래일 변동성/정책민감도/경기침체 조기경보 구분을 확인할 수 있다. '최근 발표일'은 릴리스 일정(수정치 포함) 기준이며, 실제치 매칭은 지표별 발표-관측 시차를 반영한다. 하단 '방향성'은 최근 발표대비·1M·3M·6M·1Y 변화를 함께 보여준다. 메가테크
 실적일(AI/반도체/빅테크 24종)은 AI/반도체 사이클 변곡점 참고용. 현재 US(연준/
 BLS/BEA) 발표 중심 — KR/JP 는 FRED 개별 발표일정 커버리지 공백으로 미포함
 (추후 확장 여지, 시장 게이트 아닌 데이터소스 제약). 미 재무부 QRA(분기
