@@ -17312,6 +17312,53 @@ class TestEconCalendarAdditions20260726:
         assert "def _is_plausible_release_cadence" in src   # FOMC 오매치 가드(2026-07-26)
 
 
+class TestEconCalendarJoltsUmichIndpro20260806:
+    """사용자 2026-08-06 '경제 캘린더 대쉬보드를 보고 혹시나 중요한것중에서
+    추가할만 한게 있는지 확인해주고, 현재 형식으로 있다면 추가해줘' — 검토 후
+    JOLTS(구인건수)·UMich(소비자심리)·산업생산·가동률 3건 추가. ISM PMI 는
+    2026-07-26 에 이미 release_id 조회 실패로 검증돼 재시도 안 함(REFERENCE)."""
+
+    def test_new_releases_registered_with_series_mapping(self):
+        from bot import econ_calendar as ec
+        cfg = {r["key"]: r for r in ec._RELEASES}
+        for key in ("jolts", "umich", "indpro"):
+            assert key in cfg, f"{key} 가 _RELEASES 에 없음"
+            assert key in ec._SERIES_FOR_ACTUAL, f"{key} 의 실제치 FRED 시리즈 매핑 누락"
+        assert ec._SERIES_FOR_ACTUAL["jolts"] == "JTSJOL"
+        assert ec._SERIES_FOR_ACTUAL["umich"] == "UMCSENT"
+        assert ec._SERIES_FOR_ACTUAL["indpro"] == "INDPRO"
+
+    def test_new_releases_have_search_terms_and_groups(self):
+        from bot import econ_calendar as ec
+        cfg = {r["key"]: r for r in ec._RELEASES}
+        assert cfg["jolts"]["search"] == "Job Openings and Labor Turnover Survey"
+        assert cfg["umich"]["search"] == "Surveys of Consumers"
+        assert cfg["indpro"]["search"] == "Industrial Production and Capacity Utilization"
+        # 그룹은 기존 taxonomy 재사용(신규 그룹명 추가 안 함 — 필터 UI 무변경).
+        for key in ("jolts", "umich", "indpro"):
+            for g in cfg[key]["groups"]:
+                assert g in ("미국 5거래일 변동성", "정책민감도", "경기침체 조기경보")
+
+    def test_jolts_uses_wider_lag_window_for_5to6_week_publication_delay(self):
+        # JOLTS 는 관측월 종료 후 약 5~6주 뒤 발표 — 기본 lag(0~45일) 경계에
+        # 걸릴 수 있어 명시적으로 넓힘(GDP/ECI/Core PCE 와 같은 패턴).
+        from bot import econ_calendar as ec
+        cfg = {r["key"]: r for r in ec._RELEASES}
+        assert cfg["jolts"].get("actual_min_lag_days") == 25
+        assert cfg["jolts"].get("actual_max_lag_days") == 65
+
+    def test_help_text_mentions_new_indicators(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "JOLTS" in src and "소비자심리" in src and "산업생산" in src, \
+            "_HELP_TEXT 에 신규 지표 미반영"
+
+    def test_ism_still_not_reattempted(self):
+        # ISM 재검토 결과도 여전히 미등재 유지(구조적 한계로 판단, 재시도 안 함).
+        from bot import econ_calendar as ec
+        keys = {r["key"] for r in ec._RELEASES}
+        assert "ism_mfg" not in keys and "ism_svc" not in keys
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # 10) 자동화 인벤토리 감사 — deploy/ unit 실재성 (2026-08-02 전체 점검)
 #     daily_digest.py 가 systemctl is-active 로 trade-bot-beon-listener 를

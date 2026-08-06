@@ -432,6 +432,9 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
         code = str(row.get(code_key) or "").strip()
         ind = str(row.get(ind_key) or "").strip()
         if code and ind:
+            # 2026-08-04 VM 실측: 產業別 필드는 한자 업종명이 아니라 MOPS
+            # 2자리 숫자 분류코드("20"/"02"/"22" 등) — _sector_kr 이
+            # _INDUSTRY_CODE_KR 코드표로 정확 매핑(숫자 그대로 노출 fix).
             out[code] = _sector_kr(ind)
     log.info("twse industry map (%s): %d종목 (code_key=%s ind_key=%s)",
              label, len(out), code_key, ind_key)
