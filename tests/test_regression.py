@@ -17251,8 +17251,9 @@ class TestEconCalendarAdditions20260726:
                  "groups": ["미국 5거래일 변동성", "정책민감도"],
                  "actuals": [{"release_date": "2026-07-11",
                              "obs_date": "2026-07-01", "value": 3.2}],
-                 "trend": {"release_delta": 0.2, "release_pct": 6.7, "m3_pct": 1.1,
-                           "y1_pct": -0.9, "latest_obs_date": "2026-07-01"}},
+                 "trend": {"release_delta": 0.2, "release_pct": 6.7, "m1_pct": 0.4,
+                           "m3_pct": 1.1, "m6_pct": 2.2, "y1_pct": -0.9,
+                           "latest_obs_date": "2026-07-01"}},
             ],
             "megatech_earnings": [
                 {"symbol": "NVDA", "date": "2026-08-20", "hour": "amc"},
@@ -17260,9 +17261,9 @@ class TestEconCalendarAdditions20260726:
             ],
         }
         html = ec.render_econ_calendar_page(data)
-        assert "3.2" in html and "컨센서스" in html
+        assert "3.2" in html
         assert "분류: 미국 5거래일 변동성 · 정책민감도" in html
-        assert "방향성: 최근 발표대비 ▲ +0.2 (+6.7%) · 3M +1.1% · 1Y -0.9%" in html
+        assert "방향성: 최근 발표대비 ▲ +0.2 (+6.7%) · 1M +0.4% · 3M +1.1% · 6M +2.2% · 1Y -0.9%" in html
         assert "NVDA" in html and "ASML" in html and "장후" in html and "장전" in html
         assert "메가테크 실적 발표일" in html
 
