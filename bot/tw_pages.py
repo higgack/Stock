@@ -152,8 +152,10 @@ def render_tw_highlow52_page() -> str:
         # 한국어(translate_titles_kr, 영구캐시)로 덮어쓰므로, 앞으로 TW 이름 정책
         # 변경 = 이 호출만 수정(재스캔 0). TW 전용 — TW 는 네이버 미지원이라 이름이
         # 별도 translate 경로(문서화된 data-source 예외). 무버 패널과 동일 패턴.
-        hi = sort_by_mcap(enrich_for_panel(high, "TW", want_name=True))
-        lo = sort_by_mcap(enrich_for_panel(low, "TW", want_name=True))
+        # want_ind=True 추가 (사용자 2026-08-04 '대만 업종 숫자로 나와' — TWSE
+        # OpenAPI 전종목 업종 일괄 매핑).
+        hi = sort_by_mcap(enrich_for_panel(high, "TW", want_ind=True, want_name=True))
+        lo = sort_by_mcap(enrich_for_panel(low, "TW", want_ind=True, want_name=True))
         # 거래량/거래대금(=종가×거래량) — yfinance 스캔이 vol 주면 표시(사용자
         # 2026-06-14). 없으면 숨김(빈 컬럼 방지).
         _hv = any(r.get("vol") for r in hi + lo)

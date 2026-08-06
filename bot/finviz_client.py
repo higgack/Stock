@@ -889,7 +889,8 @@ def _compute_highlow_full_us() -> dict:
         "전 미국 상장 산출(yfinance · 당일 52주 고저 갱신)", "전미국")
 
 
-def _industries_for(tickers: list, market: str | None) -> dict:
+def _industries_for(tickers: list, market: str | None,
+                    allow_slow: bool = True) -> dict:
     """업종 enrich 소스 우선순위.
 
     CN/JP/US: Naver 업종맵 우선 + 미스만 yfinance.
@@ -904,26 +905,30 @@ def _industries_for(tickers: list, market: str | None) -> dict:
     if market == "TW":
         try:
             from bot.twse_client import fetch_tw_industry_map
+            from bot.translate import industry_kr
             m = fetch_tw_industry_map()
             if not m:
-                return _fetch_industries(tickers)
+                return {tk: industry_kr(ind) for tk, ind in
+                        _fetch_industries(tickers, allow_slow=allow_slow).items()}
             got = {tk: m.get(str(tk).split(".")[0]) for tk in tickers}
             miss = [tk for tk in tickers if not got.get(tk)]
             if miss:
-                yf = _fetch_industries(miss)
+                yf = _fetch_industries(miss, allow_slow=allow_slow)
                 for tk in miss:
                     if yf.get(tk):
                         got[tk] = yf[tk]
-            return got
+            return {tk: industry_kr(ind) if ind else ind for tk, ind in got.items()}
         except Exception as exc:
             log.warning("twse 업종맵 → yfinance 폴백: %s", exc)
-            return _fetch_industries(tickers)
+            from bot.translate import industry_kr
+            return {tk: industry_kr(ind) for tk, ind in
+                    _fetch_industries(tickers, allow_slow=allow_slow).items()}
     if market == "HK":
         try:
             from bot.naver_ranking_client import world_industry_map
             m = world_industry_map("HK")
             if not m:
-                return _fetch_industries(tickers)
+                return _fetch_industries(tickers, allow_slow=allow_slow)
             got = {tk: None for tk in tickers}
             norm: dict = {}
             for k, v in m.items():
@@ -945,13 +950,13 @@ def _industries_for(tickers: list, market: str | None) -> dict:
                     got[tk] = v
             miss = [tk for tk in tickers if not got.get(tk)]
             if miss:
-                yf = _fetch_industries(miss)
+                yf = _fetch_industries(miss, allow_slow=allow_slow)
                 for tk in miss:
                     if yf.get(tk):
                         got[tk] = yf[tk]
         except Exception as exc:
             log.warning("naver 업종맵 (HK) 폴백 실패: %s", exc)
-            return _fetch_industries(tickers)
+            return _fetch_industries(tickers, allow_slow=allow_slow)
         return got
 
     # CN/JP/US — 네이버 업종맵 우선(reliable·fast_info 우회). US 도 네이버 USA
@@ -985,15 +990,15 @@ def _industries_for(tickers: list, market: str | None) -> dict:
                 got = {tk: _look(tk) for tk in tickers}
                 miss = [tk for tk in tickers if not got.get(tk)]
                 if miss:
-                    yf = _fetch_industries(miss)
+                    yf = _fetch_industries(miss, allow_slow=allow_slow)
                     for tk in miss:
                         if yf.get(tk):
                             got[tk] = yf[tk]
                 return got
         except Exception as exc:
             log.warning("naver 업종맵 (%s) → yfinance 폴백: %s", market, exc)
-        return _fetch_industries(tickers)
-    return _fetch_industries(tickers)
+        return _fetch_industries(tickers, allow_slow=allow_slow)
+    return _fetch_industries(tickers, allow_slow=allow_slow)
 
 
 # ── 비-주식 가지치기 (CEF 펀드 vehicle · 유령티커 · 이중클래스 dedupe) ──────

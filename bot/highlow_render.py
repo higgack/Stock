@@ -17,6 +17,7 @@ import threading as _threading
 import time as _time
 
 log = logging.getLogger("bot.highlow_render")
+from bot.translate import industry_kr as _industry_kr
 
 
 def _strip_dup_ticker(ticker: str, name: str) -> str:
@@ -52,6 +53,12 @@ _MKT_HOURS = {
 def market_hours_label(market: str) -> str:
     """'장 09:00–15:30 KST' 류 장 시간 라벨(현지·KST). 미상 시 ''."""
     return _MKT_HOURS.get(market, "")
+
+
+def _display_industry(ind) -> str:
+    """업종 표시 정규화 — 영문 업종은 한글로 변환, 한글/기타는 원문 유지."""
+    txt = str(ind or "").strip()
+    return _industry_kr(txt) if txt else ""
 
 
 def movers_freshness(market: str) -> str:
@@ -516,7 +523,8 @@ def fmt_mcap(mcap, market: str, with_sym: bool = True) -> str:
 def ind_dist_line(items: list, top_k: int = 5) -> str:
     """패널 상단 업종 분포 한 줄 — 'Biotechnology 6 · 반도체 4 …' (순수)."""
     from collections import Counter
-    cnt = Counter(str(it.get("ind")) for it in items if it.get("ind"))
+    inds = [_display_industry(it.get("ind")) for it in items]
+    cnt = Counter(ind for ind in inds if ind)
     if not cnt:
         return ""
     parts = [f"{_html.escape(name)} {n}" for name, n in cnt.most_common(top_k)]
@@ -585,7 +593,9 @@ def stock_panel(title: str, items: list, tid: str, market: str,
             elif pct <= -limit_pct:
                 label = "🔻 " + label
         vol, mcap = it.get("vol"), it.get("mcap")
-        ind = _html.escape(str(it.get("ind") or ""))
+        ind_txt = _display_industry(it.get("ind"))
+        ind = _html.escape(ind_txt)
+        ind_key = _html.escape(ind_txt.lower())
         try:
             pnum = float(price) if price is not None else None
         except (TypeError, ValueError):
@@ -612,7 +622,7 @@ def stock_panel(title: str, items: list, tid: str, market: str,
                 f'data-vol="{vol if vol is not None else -1}" '
                 f'data-value="{value if value is not None else -1}" '
                 f'data-mcap="{mcap if mcap is not None else -1}" '
-                f'data-ind="{ind.lower()}"')
+                f'data-ind="{ind_key}"')
         return f'<tr {data}>' + "".join(cells) + '</tr>'
     rows = "".join(_row(i, it) for i, it in enumerate(items, 1))
     heads = ['<th>#</th>',
@@ -747,8 +757,8 @@ def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
     if changed:
         _cache_write(pkey, persist)
     if want_ind:
-        from bot.finviz_client import _fetch_industries
-        inds = _fetch_industries(tickers, allow_slow=allow_slow)
+        from bot.finviz_client import _industries_for
+        inds = _industries_for(tickers, market, allow_slow=allow_slow)
         for tk in tickers:
             meta.setdefault(tk, {})["ind"] = inds.get(tk)
     _co = not allow_slow            # 렌더-세이프 → 번역 캐시-only(Flash 0)

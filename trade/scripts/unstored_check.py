@@ -28,7 +28,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # test env fallback
+    def load_dotenv(*args, **kwargs):
+        return False
 
 from trade import cn_exports as _cn
 from trade import ignored as _ignored
@@ -39,6 +43,7 @@ from trade import my_exports as _my
 from trade import ph_exports as _ph
 from trade import th_exports as _th
 from trade import tw_exports as _tw
+from trade import us_imports as _us
 from trade.store import open_db
 
 load_dotenv()
@@ -182,6 +187,9 @@ def find_unstored() -> list[dict]:
             if _ph.parse_ph_export(caption) is not None:
                 continue
             if _mx.parse_mx_export(caption) is not None:
+                continue
+            # 미국 수입 데이터(나쁜양파, 같은 채널) — 별도 us.db, 동일 사유로 제외.
+            if _us.parse_us_import(caption) is not None:
                 continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))

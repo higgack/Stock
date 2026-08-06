@@ -6976,9 +6976,11 @@ class TestIntlHighLow52:
         import bot.intl_highlow as ih
         uni, _ = ih._universe("KR")
         assert uni and all(t.endswith((".KS", ".KQ")) for t in uni), uni[:5]
-        # JP/CN/HK 는 native-only 맵이라 필터가 no-op(개수 보존)
-        assert len(ih._universe("JP")[0]) == 102
-        assert len(ih._universe("HK")[0]) == 51
+        # JP/HK 전종목 유니버스도 각 시장 종목만 유지해야 한다.
+        jp, _ = ih._universe("JP")
+        hk, _ = ih._universe("HK")
+        assert jp and all(t.endswith(".T") for t in jp), jp[:5]
+        assert hk and all(t.endswith(".HK") for t in hk), hk[:5]
 
     def test_fetch_never_sync_computes(self, monkeypatch):
         import bot.intl_highlow as ih
@@ -7144,7 +7146,7 @@ class TestUsMovers:
         html = render_us_movers_page()
         assert "가장 많이 오른" in html and "ATEX" in html and "+47.20%" in html
         assert "가장 많이 내린" in html and "XYZ" in html and "-31.00%" in html
-        assert "업종 분포" in html and "Telecom Services" in html
+        assert "업종 분포" in html and "통신 서비스" in html
         assert 'href="usmovers"' in html      # 토글 탭 (3페이지 공유 shell)
         assert 'href="lookup/ATEX"' in html   # 종목 → 우리 분석 연결
 
@@ -10226,8 +10228,8 @@ class TestVolumeColumn:
         # 하냐'). 52주 render 가 enrich_for_panel(want_name=True) 로 이름을 렌더 때
         # 덮어쓰므로, 이름 정책 변경에 캐시 버전 bump(전종목 재스캔) 불필요.
         src = open("bot/tw_pages.py", encoding="utf-8").read()
-        assert 'enrich_for_panel(high, "TW", want_name=True)' in src   # 52주 신고가
-        assert 'enrich_for_panel(low, "TW", want_name=True)' in src    # 52주 신저가
+        assert 'enrich_for_panel(high, "TW", want_ind=True, want_name=True)' in src
+        assert 'enrich_for_panel(low, "TW", want_ind=True, want_name=True)' in src
         # 무버 페이지도 동일 패턴(이름 렌더-타임) — 회귀 방지
         assert 'enrich_for_panel(up, "TW", want_ind=True, want_name=True)' in src
 
@@ -10356,6 +10358,7 @@ class TestUpperLowerVolume:
             raise AssertionError("렌더 경로에서 슬로우 yfinance/Flash 호출 금지")
         seen: dict = {}
         monkeypatch.setattr(fc, "_fetch_mcaps", _boom)             # 호출되면 fail
+        monkeypatch.setattr("bot.twse_client.fetch_tw_industry_map", lambda: {})
         monkeypatch.setattr(fc, "_fetch_industries",
                             lambda tks, allow_slow=True: seen.update(ind=allow_slow) or {})
         monkeypatch.setattr(fc, "_fetch_display_names",
@@ -14199,25 +14202,38 @@ class TestTwIndustryBulkMap20260804:
         m = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
         assert m == {"2330": "반도체", "2317": "전자부품"}
 
-    def test_numeric_industry_code_dropped_not_leaked(self, monkeypatch):
-        # 2026-08-04 VM 실측: 產業別 필드가 실제로는 한자 업종명이 아니라
-        # 숫자 분류코드("20"/"02"/"22" 등)였음 — _sector_kr 매칭 실패 시
-        # 원본을 그대로 반환해 대시보드 업종 컬럼에 숫자가 그대로 샜다
-        # (사용자 스크린샷 '업종 분포: 20 6 · 02 5 · 22 5…'). 한자 없는 값은
-        # 드롭돼야(해당 종목은 yfinance 폴백으로 자연 복귀).
+    def test_parses_real_mops_industry_codes(self, monkeypatch):
         import bot.twse_client as tw
 
         class _R:
             status_code = 200
             def json(self):
                 return [
-                    {"公司代號": "1215", "公司名稱": "卜蜂", "產業別": "20"},
-                    {"公司代號": "2059", "公司名稱": "川湖", "產業別": "半導體業"},
+                    {"公司代號": "2059", "公司名稱": "川湖", "產業別": "28"},
+                    {"公司代號": "2344", "公司名稱": "華邦電", "產業別": "24"},
+                    {"公司代號": "1907", "公司名稱": "永豐餘", "產業別": "09"},
+                    {"公司代號": "6669", "公司名稱": "緯穎", "產業別": "25"},
                 ]
         monkeypatch.setattr(tw.requests, "get", lambda *a, **k: _R())
-        m = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
-        assert "1215" not in m, "숫자 분류코드가 업종으로 그대로 샘(회귀)"
-        assert m == {"2059": "반도체"}
+        got = tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市")
+        assert got == {"2059": "전자부품", "2344": "반도체",
+                       "1907": "제지", "6669": "컴퓨터·주변기기"}
+
+    def test_cached_numeric_codes_are_healed(self, monkeypatch):
+        import bot.twse_client as tw
+
+        monkeypatch.setattr(tw, "_cached_stale",
+                            lambda name, max_age_sec=86400: {"2059": "28", "2344": "24"})
+        written = {}
+        monkeypatch.setattr(tw, "_cache_write",
+                            lambda name, obj: written.setdefault(name, obj))
+        got = tw.fetch_tw_industry_map()
+        assert got == {"2059": "전자부품", "2344": "반도체"}
+        assert written["tw_industry_map"] == got
+
+    def test_unknown_industry_code_never_leaks_as_number(self):
+        import bot.twse_client as tw
+        assert tw._sector_kr("99") == "기타"
 
     def test_unrecognized_schema_returns_empty_gracefully(self, monkeypatch):
         # 필드명이 예상과 다르면(스키마 변경) 예외 없이 {} — yfinance 폴백 유지.
@@ -14257,6 +14273,18 @@ class TestTwIndustryBulkMap20260804:
         got = fc._industries_for(["2330.TW", "9999.TW"], "TW")
         assert got["2330.TW"] == "반도체"           # 벌크맵 히트
         assert got["9999.TW"] == "기타"              # 미스만 yfinance 폴백
+
+    def test_industries_for_tw_translates_yfinance_fallback(self, monkeypatch):
+        import bot.finviz_client as fc
+        monkeypatch.setattr("bot.twse_client.fetch_tw_industry_map", lambda: {})
+        seen = {}
+        def _fallback(tickers, **kwargs):
+            seen.update(kwargs)
+            return {"3441.TWO": "Electronic Components", "5324.TWO": "Lodging"}
+        monkeypatch.setattr(fc, "_fetch_industries", _fallback)
+        got = fc._industries_for(["3441.TWO", "5324.TWO"], "TW", allow_slow=False)
+        assert got == {"3441.TWO": "전자부품", "5324.TWO": "숙박"}
+        assert seen["allow_slow"] is False
 
     def test_industries_for_tw_falls_back_when_bulk_map_empty(self, monkeypatch):
         # 라이브 검증 불가한 신규 OpenAPI 가 실패/빈 응답이어도 전체 경로가
@@ -16336,7 +16364,7 @@ class TestPatternScreener20260726:
 
 
 class TestEconCalendar20260726:
-    """경제 캘린더 보드(CPI/고용동향/GDP/PCE/FOMC, FRED release-dates API,
+    """경제 캘린더 보드(CPI/PPI/고용/실업수당/소매/ECI/GDP/PCE/FOMC, FRED release-dates API,
     bot/econ_calendar.py) — 순수 날짜분류 함수 + graceful 배선."""
 
     def test_upcoming_and_recent_picks_next_and_recent(self):
@@ -17080,7 +17108,7 @@ class TestMarketTimingBreadthVol20260726:
 
 
 class TestEconCalendarAdditions20260726:
-    """경제캘린더 사용자 추천 추가(실제치 오버레이·ISM PMI·메가테크 실적)
+    """경제캘린더 사용자 추천 추가(실제치 오버레이·고영향 거시지표·메가테크 실적)
     — bot/econ_calendar.py. QRA 는 검증 불가 사유로 의도적 미구현(문서화)."""
 
     def test_find_actual_value_picks_most_recent_at_or_before(self):
@@ -17098,15 +17126,32 @@ class TestEconCalendarAdditions20260726:
         obs = [("2026-01-01", 3.0)]
         assert ec.find_actual_value(obs, "2026-12-01", max_lag_days=45) is None
 
+    def test_find_actual_value_respects_min_lag_window(self):
+        from bot import econ_calendar as ec
+        obs = [("2026-01-01", 31000.0), ("2026-04-01", 32475.2)]
+        # GDP 2026-06-25 release 시점엔 2026-04 관측치가 아직 이른 값으로 간주될 수 있어,
+        # min_lag 를 적용하면 2026-01 관측치가 선택된다.
+        assert ec.find_actual_value(
+            obs, "2026-06-25", max_lag_days=220, min_lag_days=100
+        ) == ("2026-01-01", 31000.0)
+
     def test_find_actual_value_empty_observations(self):
         from bot import econ_calendar as ec
         assert ec.find_actual_value([], "2026-06-05") is None
 
-    def test_ism_pmi_entries_removed_20260726(self):
-        # ISM 제조업/비제조업은 FRED 카탈로그 매치가 항상 실패해(사용자
-        # 2026-07-26 스크린샷 — 영구 "release_id 미확인") 카탈로그에서 제거.
+    def test_release_groups_are_exposed(self):
+        from bot import econ_calendar as ec
+        cfg = {r["key"]: r for r in ec._RELEASES}
+        assert "정책민감도" in cfg["core_pce"].get("groups", [])
+        assert "경기침체 조기경보" in cfg["cont_claims"].get("groups", [])
+        assert "미국 5거래일 변동성" in cfg["fomc"].get("groups", [])
+    def test_release_catalog_contains_high_impact_us_events(self):
+        # 경제캘린더 확장(2026-08-06): 5일 변동성 핵심 + 정책민감도 + 경기 조기경보 추가.
         from bot import econ_calendar as ec
         keys = {r["key"] for r in ec._RELEASES}
+        assert {"cpi", "core_cpi", "ppi", "jobs", "ahe", "unemp", "claims", "cont_claims", "retail", "eci", "gdp", "pce", "core_pce", "fomc"} <= keys
+        # ISM 제조업/비제조업은 FRED 카탈로그 매치가 항상 실패해(사용자
+        # 2026-07-26 스크린샷 — 영구 "release_id 미확인") 카탈로그에서 제거 상태 유지.
         assert "ism_mfg" not in keys and "ism_svc" not in keys
 
     def test_is_plausible_release_cadence_rejects_daily_noise(self):
@@ -17122,6 +17167,16 @@ class TestEconCalendarAdditions20260726:
         cpi = ["2026-04-10", "2026-05-13", "2026-06-11", "2026-07-14"]
         assert ec._is_plausible_release_cadence(fomc) is True
         assert ec._is_plausible_release_cadence(cpi) is True
+
+    def test_claims_releases_use_weekly_cadence_threshold(self):
+        from bot import econ_calendar as ec
+        weekly = ["2026-07-03", "2026-07-10", "2026-07-17", "2026-07-24", "2026-07-31"]
+        for k in ("claims", "cont_claims"):
+            cfg = next(r for r in ec._RELEASES if r["key"] == k)
+            assert cfg.get("min_avg_gap_days") == 4
+            assert ec._is_plausible_release_cadence(
+                weekly, min_avg_gap_days=cfg["min_avg_gap_days"]
+            ) is True
 
     def test_is_plausible_release_cadence_insufficient_data_defaults_true(self):
         from bot import econ_calendar as ec
@@ -17193,8 +17248,11 @@ class TestEconCalendarAdditions20260726:
             "events": [
                 {"key": "cpi", "label": "🛒 CPI", "next": "2026-08-12",
                  "recent": ["2026-07-11"],
+                 "groups": ["미국 5거래일 변동성", "정책민감도"],
                  "actuals": [{"release_date": "2026-07-11",
-                             "obs_date": "2026-07-01", "value": 3.2}]},
+                             "obs_date": "2026-07-01", "value": 3.2}],
+                 "trend": {"release_delta": 0.2, "release_pct": 6.7, "m3_pct": 1.1,
+                           "y1_pct": -0.9, "latest_obs_date": "2026-07-01"}},
             ],
             "megatech_earnings": [
                 {"symbol": "NVDA", "date": "2026-08-20", "hour": "amc"},
@@ -17203,6 +17261,8 @@ class TestEconCalendarAdditions20260726:
         }
         html = ec.render_econ_calendar_page(data)
         assert "3.2" in html and "컨센서스" in html
+        assert "분류: 미국 5거래일 변동성 · 정책민감도" in html
+        assert "방향성: 최근 발표대비 ▲ +0.2 (+6.7%) · 3M +1.1% · 1Y -0.9%" in html
         assert "NVDA" in html and "ASML" in html and "장후" in html and "장전" in html
         assert "메가테크 실적 발표일" in html
 
@@ -17210,6 +17270,28 @@ class TestEconCalendarAdditions20260726:
         from bot import econ_calendar as ec
         html = ec.render_econ_calendar_page({"events": [], "megatech_earnings": []})
         assert "경제 캘린더" in html   # crash 없이 렌더
+
+
+    def test_series_mapping_contains_policy_and_recession_signals(self):
+        from bot import econ_calendar as ec
+        m = ec._SERIES_FOR_ACTUAL
+        assert m["core_cpi"] == "CPILFESL"
+        assert m["core_pce"] == "PCEPILFE"
+        assert m["ahe"] == "CES0500000003"
+        assert m["eci"] == "ECIWAG"
+        assert m["claims"] == "ICSA" and m["cont_claims"] == "CCSA" and m["retail"] == "RSAFS"
+        assert m["gdp"] == "GDP" and m["eci"] == "ECIWAG"
+
+
+    def test_event_specific_actual_lag_configured(self):
+        from bot import econ_calendar as ec
+        cfg = {r["key"]: r for r in ec._RELEASES}
+        assert cfg["gdp"].get("actual_min_lag_days") == 100
+        assert cfg["gdp"].get("actual_max_lag_days") == 220
+        assert cfg["eci"].get("actual_min_lag_days") == 70
+        assert cfg["eci"].get("actual_max_lag_days") == 220
+        assert cfg["core_pce"].get("actual_min_lag_days") == 20
+        assert cfg["core_pce"].get("actual_max_lag_days") == 70
 
     def test_qra_documented_not_implemented(self):
         # QRA 는 검증불가 사유로 미구현 — 가이드 텍스트에 명시돼 있는지,

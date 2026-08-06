@@ -11,6 +11,7 @@ import logging
 
 from bot.live_refresh import LIVE_REFRESH_JS as _LIVE_REFRESH_JS
 from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
+from bot.translate import industry_kr as _industry_kr
 # 정렬 JS + 셀 CSS 는 highlow_render 단일 소스 사용 (사용자 2026-06-15 '미국만
 # 종목명이 글자가 붙어 나옴'): us_pages 가 갖고 있던 로컬 복사본이 .nk(티커
 # 아래 한글명 별도 줄) CSS + window.hlBindSort(자동 새로고침 후 정렬 재바인드)를
@@ -98,7 +99,8 @@ def render_us_industry_page() -> str:
             # 업종 클릭 → Finviz 해당 업종 종목 목록(사용자 2026-06-10, KR
             # 테마→Naver 상세 미러). slug 있는 행(Finviz 출처)만 링크, 폴백
             # (GICS 산출/ETF)은 슬러그 없어 일반 텍스트.
-            nm = _html.escape(g.get("name", ""))
+            nm_raw = str(g.get("name", "") or "").strip()
+            nm = _html.escape(_industry_kr(nm_raw) if nm_raw else "")
             slug = g.get("slug", "")
             if slug and slug.replace("ind_", "").replace("_", "").isalnum():
                 url = f"https://finviz.com/screener?v=111&f={_html.escape(slug)}&o=-change"
@@ -272,7 +274,8 @@ def _ind_dist_line(items: list, top_k: int = 5) -> str:
     """패널 상단 업종 분포 한 줄 — 'Biotechnology 6 · 반도체 4 …' (참고
     텔레그램 채널의 섹터 카운트 미러, 순수 함수). 업종 없는 행은 제외."""
     from collections import Counter
-    cnt = Counter(str(it.get("ind")) for it in items if it.get("ind"))
+    inds = [_industry_kr(str(it.get("ind") or "").strip()) for it in items]
+    cnt = Counter(ind for ind in inds if ind)
     if not cnt:
         return ""
     parts = " · ".join(f"{_html.escape(ind)} <b>{n}</b>"

@@ -1,4 +1,4 @@
-"""경제 캘린더 보드 — CPI/고용동향/GDP/PCE/FOMC 발표일정 (2026-07-26).
+"""경제 캘린더 보드 — CPI/PPI/고용/실업수당/소매/ECI/GDP/PCE/FOMC 발표일정 (2026-07-26).
 
 claude-trading-skills 저장소 리뷰에서 발견한 갭(매크로 이벤트 캘린더 부재)을
 메움 — bot/earnings_calendar.py(개별 종목 실적)와 달리 시장 전체에 영향을
@@ -12,7 +12,7 @@ release_id 를 숫자로 하드코딩하지 않고 FRED 공식 release 명 부�
 가능한 이름 검색이 숫자 암기보다 안전. 매치 없으면 그 항목만 '조회 실패'로
 표시(전체 재생성은 항상 성공, graceful).
 
-현재는 US 발표(CPI/고용동향/GDP/PCE/FOMC — 전부 FRED 가 커버하는 미국
+현재는 US 발표(CPI/PPI/고용/실업수당/소매/ECI/GDP/PCE/FOMC — 전부 FRED 가 커버하는 미국
 연방 지표) 중심. KR/JP 는 FRED 가 개별 발표일정을 세밀하게 제공하지
 않아(시리즈 관측치는 있어도 release-dates 캘린더가 얇음) 이번 배치엔
 미포함 — 향후 한국은행/일본은행 공식 일정 소스가 확인되면 동일 구조로
@@ -25,7 +25,7 @@ release_id 를 숫자로 하드코딩하지 않고 FRED 공식 release 명 부�
 
 2026-07-26 사용자 추천 4건 검토 결과:
 - ✅ **실제치(actual) 오버레이** — 과거 발표일의 FRED 시리즈 관측값을 붙임
-  (CPIAUCSL/PAYEMS/GDP/PCEPI, 전부 수십년 안정적으로 인용되는 FRED 표준
+  (CPIAUCSL/CPILFESL/PPIACO/PAYEMS/CES0500000003/ICSA/CCSA/RSXFS/GDP/PCEPI/PCEPILFE/ECIWAG, 전부 수십년 안정적으로 인용되는 FRED 표준
   니모닉 — release_id 와 달리 문서마다 다르게 인용될 위험이 낮아 하드코딩).
 - ⚠️→❌ **ISM 제조업/비제조업 PMI** — 이름검색(find_release_id)이 매치
   실패("release_id 미확인")로 항상 고정, 실사용 불가 확인(사용자 2026-07-26
@@ -48,7 +48,7 @@ FOMC 버그(2026-07-26 사용자 스크린샷 — "최근 발표일(14일 내)" 
 자체는 유지하되(release_id 하드코딩보다 안전 — 위 설계원칙), 반환된
 release_dates 의 인접 간격이 비정상으로 촘촘하면(평균 10일 미만)
 `_is_plausible_release_cadence` 가 그 항목을 '조회 실패'로 강등하는 범용
-가드 추가 — FOMC 하드코딩 특례가 아니라 CPI/고용/GDP/PCE/FOMC 전항목에
+가드 추가 — FOMC 하드코딩 특례가 아니라 _RELEASES 전항목에
 동일 적용(오매치가 다른 검색어에서 재발해도 자동 방어).
 """
 from __future__ import annotations
@@ -60,11 +60,20 @@ from typing import Optional
 log = logging.getLogger("bot.econ_calendar")
 
 _RELEASES = [
-    {"key": "cpi", "label": "🛒 CPI (소비자물가지수)", "search": "Consumer Price Index"},
-    {"key": "jobs", "label": "💼 고용동향 (Employment Situation)", "search": "Employment Situation"},
-    {"key": "gdp", "label": "📈 GDP (국내총생산)", "search": "Gross Domestic Product"},
-    {"key": "pce", "label": "💰 PCE (개인소비지출)", "search": "Personal Income and Outlays"},
-    {"key": "fomc", "label": "🏛️ FOMC", "search": "FOMC"},
+    {"key": "cpi", "label": "🛒 CPI (소비자물가지수)", "search": "Consumer Price Index", "groups": ["미국 5거래일 변동성", "정책민감도"]},
+    {"key": "core_cpi", "label": "🧩 Core CPI (근원 CPI)", "search": "Consumer Price Index", "groups": ["정책민감도"]},
+    {"key": "ppi", "label": "🏭 PPI (생산자물가지수)", "search": "Producer Price Index", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "jobs", "label": "💼 고용동향 (Employment Situation)", "search": "Employment Situation", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "ahe", "label": "💵 시간당임금 (AHE)", "search": "Employment Situation", "groups": ["정책민감도"]},
+    {"key": "unemp", "label": "📊 실업률 (Unemployment Rate)", "search": "Employment Situation", "groups": ["경기침체 조기경보"]},
+    {"key": "claims", "label": "📉 신규 실업수당 (Initial Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4, "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "cont_claims", "label": "🧷 연속 실업수당 (Continuing Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4, "groups": ["경기침체 조기경보"]},
+    {"key": "retail", "label": "🛍️ 소매판매 (Retail Sales)", "search": "Advance Monthly Sales for Retail and Food Services", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
+    {"key": "eci", "label": "🧮 고용비용지수 (ECI)", "search": "Employment Cost Index", "actual_min_lag_days": 70, "actual_max_lag_days": 220, "groups": ["정책민감도", "경기침체 조기경보"]},
+    {"key": "gdp", "label": "📈 GDP (국내총생산)", "search": "Gross Domestic Product", "actual_min_lag_days": 100, "actual_max_lag_days": 220, "groups": ["경기침체 조기경보"]},
+    {"key": "pce", "label": "💰 PCE (개인소비지출)", "search": "Personal Income and Outlays", "groups": ["정책민감도"]},
+    {"key": "core_pce", "label": "🧠 Core PCE (근원 PCE)", "search": "Personal Income and Outlays", "actual_min_lag_days": 20, "actual_max_lag_days": 70, "groups": ["정책민감도"]},
+    {"key": "fomc", "label": "🏛️ FOMC", "search": "FOMC", "groups": ["미국 5거래일 변동성", "정책민감도"]},
 ]
 
 # 과거 발표일의 실제치(actual) 오버레이용 FRED 시리즈 매핑(2026-07-26 사용자
@@ -73,7 +82,10 @@ _RELEASES = [
 # 이 니모닉들은 release_id 와 달리 수십년 안정적으로 통용되는 FRED 표준
 # 코드라 하드코딩 위험이 낮음(release_id 이슈와는 다른 리스크 등급).
 _SERIES_FOR_ACTUAL = {
-    "cpi": "CPIAUCSL", "jobs": "PAYEMS", "gdp": "GDP", "pce": "PCEPI",
+    "cpi": "CPIAUCSL", "core_cpi": "CPILFESL", "ppi": "PPIACO",
+    "jobs": "PAYEMS", "ahe": "CES0500000003", "unemp": "UNRATE",
+    "claims": "ICSA", "cont_claims": "CCSA", "retail": "RSAFS",
+    "eci": "ECIWAG", "gdp": "GDP", "pce": "PCEPI", "core_pce": "PCEPILFE",
 }
 
 # AI/반도체/빅테크 실적 워치리스트 — 4종(2026-07-26 최초) → 20종 추가(사용자
@@ -92,11 +104,11 @@ def upcoming_and_recent(dates: list, today: str, *, past_days: int = 45) -> dict
     next=오늘 이후 가장 가까운 예정일(오늘 포함) 또는 None.
     recent=[오늘 기준 past_days일 내 과거 발표일들](오늘 미포함).
     past_days=45(2026-07-26 조정, 이전 14 — 근거 없는 임의값이었음): 이
-    캘린더의 지표는 전부 월 1회(CPI/고용/GDP/PCE) ~ 연 8회(FOMC, 평균
-    ~46일 간격)로, 14일 창은 월 후반부 조회 시 직전 발표를 놓치는 경우가
+    캘린더의 지표는 주간(실업수당)·월간(CPI/PPI/고용/PCE/소매)·분기(ECI/GDP)·연 8회(FOMC)로 구성되어,
+    14일 창은 월 후반부 조회 시 직전 발표를 놓치는 경우가
     잦음(예: CPI 가 매월 10~13일경 발표되면 25일 이후엔 14일 창에 아무것도
     안 잡힘). 45일 = FOMC 최대 간격(연말 등 ~50일)에 근접한 여유폭 —
-    이 캘린더의 모든 지표에서 '직전 1회 발표'를 안정적으로 포착."""
+    특히 월간/분기 지표에서 '직전 1회 발표'를 안정적으로 포착."""
     if not dates:
         return {"next": None, "recent": []}
     t = date.fromisoformat(today)
@@ -113,13 +125,10 @@ def upcoming_and_recent(dates: list, today: str, *, past_days: int = 45) -> dict
 
 
 def _is_plausible_release_cadence(dates: list, *, min_avg_gap_days: int = 10) -> bool:
-    """dates(YYYY-MM-DD 오름차순) 인접 간격이 저빈도 매크로 지표(월 1회~
-    FOMC 연 8회, 최소 간격도 4주 안팎)로서 통계적으로 타당한지 — FOMC
-    오매치 버그(모듈 상단 독스트링 참조) 재발 방지 범용 가드(FOMC 전용
-    아님, _RELEASES 전항목에 동일 적용). 평균 간격이 min_avg_gap_days 미만
-    이면 근일간 발표 성격의 무관한 release_id 매치로 판단 → False(호출부가
-    그 항목을 '조회 실패'로 강등). dates 2개 미만이면 판단 불가 → True
-    (순수함수, 크래시 없음)."""
+    """dates(YYYY-MM-DD 오름차순) 인접 간격이 각 이벤트의 기대 주기와
+    통계적으로 타당한지 검사. 기본 임계값(10일)은 월간/분기/FOMC용,
+    주간 지표(실업수당)는 _RELEASES의 min_avg_gap_days=4로 완화한다.
+    평균 간격이 임계값 미만이면 무관 release 오매치로 보고 False."""
     if len(dates) < 2:
         return True
     ds = [date.fromisoformat(d) for d in dates]
@@ -128,26 +137,63 @@ def _is_plausible_release_cadence(dates: list, *, min_avg_gap_days: int = 10) ->
     return avg_gap >= min_avg_gap_days
 
 
-def find_actual_value(observations: list, release_date: str, max_lag_days: int = 45):
-    """observations([(date,value)], 오름차순, fred_client.fetch_history 형태)
-    중 release_date 이하로 가장 최근 값 — '그 발표에서 실제로 나온 값' 근사
-    (월간지표는 보통 발표일 당일~D-2 이내 관측치가 게시됨). 순수함수(테스트용).
-    max_lag_days 밖(너무 오래된 관측치)이면 그 release_date 는 매치 없음
-    취급(스테일 값을 엉뚱한 발표에 붙이는 오탐 방지). 반환 (obs_date, value)
-    또는 None."""
+def find_actual_value(observations: list, release_date: str, max_lag_days: int = 45,
+                      min_lag_days: int = 0):
+    """observations([(date,value)], 오름차순)에서 release_date 시점에
+    유효한 실제치 근사값을 선택. [release_date-max_lag_days,
+    release_date-min_lag_days] 창에 들어오는 마지막 관측치를 채택한다.
+    (지표별 공표-관측 시차는 _RELEASES의 actual_min/max_lag_days로 조정)."""
     if not observations:
         return None
     rd = date.fromisoformat(release_date)
-    cutoff = rd - timedelta(days=max_lag_days)
+    lower = rd - timedelta(days=max_lag_days)
+    upper = rd - timedelta(days=min_lag_days)
     best = None
     for d, v in observations:
         od = date.fromisoformat(d)
-        if od > rd:
+        if od > upper:
             break
-        if od >= cutoff:
+        if lower <= od <= upper:
             best = (d, v)
     return best
 
+
+def _value_on_or_before(observations: list, cutoff_date: str):
+    """오름차순 observations 에서 cutoff_date 이하 마지막 관측치."""
+    out = None
+    for d, v in observations:
+        if d > cutoff_date:
+            break
+        out = (d, v)
+    return out
+
+
+def _build_trend_summary(observations: list, actuals: list[dict]) -> dict:
+    """실제치 카드용 방향성 요약(최근발표대비·3M·1Y)."""
+    if not observations:
+        return {}
+
+    def _pct(cur: float, base: float | None):
+        if base is None or base == 0:
+            return None
+        return (cur - base) / abs(base) * 100.0
+
+    latest_obs_date, latest_val = observations[-1]
+    ld = date.fromisoformat(latest_obs_date)
+    m3 = _value_on_or_before(observations, (ld - timedelta(days=90)).isoformat())
+    y1 = _value_on_or_before(observations, (ld - timedelta(days=365)).isoformat())
+
+    out: dict = {"latest_obs_date": latest_obs_date}
+    if len(actuals) >= 2:
+        cur = float(actuals[-1]["value"])
+        prev = float(actuals[-2]["value"])
+        out["release_delta"] = cur - prev
+        out["release_pct"] = _pct(cur, prev)
+    if m3:
+        out["m3_pct"] = _pct(float(latest_val), float(m3[1]))
+    if y1:
+        out["y1_pct"] = _pct(float(latest_val), float(y1[1]))
+    return out
 
 def _load_megatech_earnings(today: Optional[str] = None) -> list:
     """AI/반도체/빅테크 대형주(_MEGATECH_WATCHLIST 24종) 실적 발표일(2026-07-26 사용자
@@ -199,7 +245,8 @@ def _load_econ_calendar(today: Optional[str] = None) -> dict:
                 events.append(entry)
                 continue
             dates = fred_client.fetch_release_dates(rid, start, end)
-            if not _is_plausible_release_cadence(dates):
+            min_gap = int(r.get("min_avg_gap_days", 10))
+            if not _is_plausible_release_cadence(dates, min_avg_gap_days=min_gap):
                 entry["error"] = "release_id 매치 오류로 추정 (비정상 간격)"
                 log.warning("econ_calendar: %s release_id=%s implausible cadence "
                            "(dates=%s) — suppressing, likely wrong FRED release match",
@@ -211,16 +258,26 @@ def _load_econ_calendar(today: Optional[str] = None) -> dict:
             series_id = _SERIES_FOR_ACTUAL.get(r["key"])
             if series_id and info["recent"]:
                 try:
-                    hist_start = (date.fromisoformat(t) - timedelta(days=400)).isoformat()
+                    actual_max_lag = int(r.get("actual_max_lag_days", 45))
+                    actual_min_lag = int(r.get("actual_min_lag_days", 0))
+                    lookback_days = max(400, actual_max_lag + 400)
+                    hist_start = (date.fromisoformat(t) - timedelta(days=lookback_days)).isoformat()
                     obs = fred_client.fetch_history(series_id, start=hist_start)
                     actuals = []
                     for rdate in info["recent"]:
-                        hit = find_actual_value(obs, rdate)
+                        hit = find_actual_value(
+                            obs, rdate,
+                            max_lag_days=actual_max_lag,
+                            min_lag_days=actual_min_lag,
+                        )
                         if hit:
                             actuals.append({"release_date": rdate,
                                            "obs_date": hit[0], "value": hit[1]})
                     if actuals:
                         entry["actuals"] = actuals
+                    trend = _build_trend_summary(obs, actuals)
+                    if trend:
+                        entry["trend"] = trend
                 except Exception as exc:
                     log.debug("econ_calendar: actual-value fetch failed for %s: %s",
                              r["key"], exc)
@@ -257,11 +314,17 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
             # _load_econ_calendar 의 log.debug/warning 으로 백엔드에서 계속 추적 가능.
             continue
         label = _h.escape(e.get("label", e.get("key", "")))
+        groups = e.get("groups") or []
+        group_html = ""
+        if groups:
+            tags = " · ".join(_h.escape(g) for g in groups)
+            group_html = f'<div class="note" style="margin:4px 0 8px">분류: {tags}</div>'
         nxt = e.get("next")
         recent = e.get("recent") or []
         nxt_s = _h.escape(nxt) if nxt else "예정 없음(구간 내)"
         recent_s = ", ".join(_h.escape(d) for d in recent) if recent else "—"
         actuals_html = ""
+        trend_html = ""
         if e.get("actuals"):
             rows = "".join(
                 f'<div class="stat"><div class="k">{_h.escape(a["release_date"])} 실제치</div>'
@@ -272,12 +335,30 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
             actuals_html = (f'<div class="stat-grid" style="margin-top:6px">{rows}</div>'
                             '<div class="note" style="font-size:11px">컨센서스(예측치) 비교는 '
                             '무료 소스 없음 — 실제치만 표시.</div>')
+
+        trend = e.get("trend") or {}
+        trend_parts = []
+        rd = trend.get("release_delta")
+        if rd is not None:
+            arrow = "▲" if rd > 0 else ("▼" if rd < 0 else "→")
+            rp = trend.get("release_pct")
+            rp_s = "" if rp is None else f" ({rp:+.1f}%)"
+            trend_parts.append(f"최근 발표대비 {arrow} {rd:+,.1f}{rp_s}")
+        if trend.get("m3_pct") is not None:
+            trend_parts.append(f"3M {trend['m3_pct']:+.1f}%")
+        if trend.get("y1_pct") is not None:
+            trend_parts.append(f"1Y {trend['y1_pct']:+.1f}%")
+        if trend_parts:
+            trend_html = (f'<div class="note" style="font-size:11px">방향성: {" · ".join(trend_parts)}'
+                          f' <span style="color:#8b8fa3">(최근 관측 {_h.escape(str(trend.get("latest_obs_date", "—")))})</span></div>')
+
         cards += f"""
 <div class="panel"><div class="panel-title">{label}</div>
+{group_html}
 <div class="stat-grid">
 <div class="stat"><div class="k">다음 발표일</div><div class="v" style="font-size:16px">{nxt_s}</div></div>
 <div class="stat"><div class="k">최근 발표일(45일 내)</div><div class="v" style="font-size:13px">{recent_s}</div></div>
-</div>{actuals_html}</div>"""
+</div>{actuals_html}{trend_html}</div>"""
 
     megatech = data.get("megatech_earnings") or []
     megatech_card = ""
@@ -300,13 +381,13 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
 <h1>📅 <em>경제 캘린더</em></h1>
-<p class="sub">CPI·고용동향·GDP·PCE·FOMC·메가테크 실적 — 데이터 적용시각 {_h.escape(ts)} ·
+<p class="sub">CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·메가테크 실적 — 데이터 적용시각 {_h.escape(ts)} ·
 소스 FRED release-dates API + Finnhub(무료, 6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 거시지표 발표일 전후는 변동성이 커지는 구간 — 진입/청산 타이밍 참고용.
 '다음 발표일'이 임박했다면 신규 진입 전 리스크 인지, '최근 발표일'은 직후
 반응(gap/드리프트)을 되짚어볼 때 참고. '실제치'는 해당 발표일에 나온 FRED
-관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 메가테크
+관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 카드 상단 '분류'에서 미국 5거래일 변동성/정책민감도/경기침체 조기경보 구분을 확인할 수 있다. '최근 발표일'은 릴리스 일정(수정치 포함) 기준이며, 실제치 매칭은 지표별 발표-관측 시차를 반영한다. 하단 '방향성'은 최근 발표대비·3M·1Y 변화를 함께 보여준다. 메가테크
 실적일(AI/반도체/빅테크 24종)은 AI/반도체 사이클 변곡점 참고용. 현재 US(연준/
 BLS/BEA) 발표 중심 — KR/JP 는 FRED 개별 발표일정 커버리지 공백으로 미포함
 (추후 확장 여지, 시장 게이트 아닌 데이터소스 제약). 미 재무부 QRA(분기
@@ -315,7 +396,7 @@ treasurydirect.gov 재무부 공지 직접 확인 권장.
 </details>
 {cards}
 {megatech_card}
-<div class="footer">CPI·고용동향·GDP·PCE·FOMC·메가테크실적 — 신호는 참고용(투자 판단 아님) · NOAH</div>
+<div class="footer">CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·메가테크실적 — 신호는 참고용(투자 판단 아님) · NOAH</div>
 </div>
 </body></html>"""
 

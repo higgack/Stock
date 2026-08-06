@@ -37,7 +37,11 @@ from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # test env fallback
+    def load_dotenv(*args, **kwargs):
+        return False
 
 from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 위치 복원(공용)
 from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
@@ -425,6 +429,7 @@ def _load_eval_miss_summary(
     from trade import jp2_exports as _jp2
     from trade import jp_exports as _jp
     from trade import mx_exports as _mx
+    from trade import us_imports as _us
     from trade import my_exports as _my
     from trade import ph_exports as _ph
     from trade import th_exports as _th
@@ -464,6 +469,8 @@ def _load_eval_miss_summary(
                 if _ph.parse_ph_export(cap) is not None:    # PH → ph.db 정상 처리
                     continue
                 if _mx.parse_mx_export(cap) is not None:    # MX → mx.db 정상 처리
+                    continue
+                if _us.parse_us_import(cap) is not None:    # US → us.db 정상 처리
                     continue
                 count += 1
                 detected = rec.get("detected_at")
@@ -891,7 +898,9 @@ def _build_html(
         ' &nbsp;·&nbsp; <a href="ph.html">'
         '🥭 필리핀 수출 데이터(나쁜양파) →</a>'
         ' &nbsp;·&nbsp; <a href="mx.html">'
-        '🌮 멕시코 수출 데이터(나쁜양파) →</a></div>'
+        '🌮 멕시코 수출 데이터(나쁜양파) →</a>'
+        ' &nbsp;·&nbsp; <a href="us.html">'
+        '🇺🇸 미국 수입 데이터(나쁜양파) →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2827,8 +2836,8 @@ def main() -> int:
             media_url_prefix=args.media_url)
     except Exception:
         pass
-    # 🐘🐯🥭🌮 태국·말레이시아·필리핀·멕시코 수출 데이터(나쁜양파, 같은 채널,
-    # 사용자 2026-07-26) — 별도 th.db/my.db/ph.db/mx.db → 동명 .html (jp2 옆
+    # 🐘🐯🥭🌮🇺🇸 태국·말레이시아·필리핀·멕시코·미국 수입 데이터(나쁜양파, 같은 채널,
+    # 사용자 2026-07-26) — 별도 th.db/my.db/ph.db/mx.db/us.db → 동명 .html (jp2 옆
     # 형제 파일). 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
     try:
         from trade import th_exports
@@ -2855,6 +2864,13 @@ def main() -> int:
         from trade import mx_exports
         mx_exports.regenerate(
             args.db.parent / "mx.db", args.out.parent / "mx.html",
+            media_url_prefix=args.media_url)
+    except Exception:
+        pass
+    try:
+        from trade import us_imports
+        us_imports.regenerate(
+            args.db.parent / "us.db", args.out.parent / "us.html",
             media_url_prefix=args.media_url)
     except Exception:
         pass

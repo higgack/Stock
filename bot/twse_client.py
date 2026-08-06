@@ -47,7 +47,6 @@ _OPENAPI_LISTED_INFO = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 # graceful(상장 TWSE 분만 채워짐 — 上櫃 분은 기존 yfinance 폴백 유지).
 _OPENAPI_OTC_INFO = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
 _TW_IND_CACHE_TTL = 24 * 3600   # 상장법인 기본자료는 하루 내 사실상 불변
-_CJK_RE = re.compile(r"[一-鿿]")   # 業種명 신뢰 판별(숫자 분류코드 배제용)
 _HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
          "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
@@ -80,11 +79,28 @@ _SECTOR_KR = {
     "半導體業": "반도체", "其他電子業": "기타전자", "貿易百貨業": "무역·백화",
 }
 
+# MOPS t187ap03의 `產業別`은 업종명이 아니라 이 2자리 코드로 내려온다.
+_INDUSTRY_CODE_KR = {
+    "01": "시멘트", "02": "식품", "03": "플라스틱", "04": "섬유",
+    "05": "전기기계", "06": "전선", "08": "유리·도자", "09": "제지",
+    "10": "철강", "11": "고무", "12": "자동차", "14": "건설·건자재",
+    "15": "해운", "16": "관광·외식", "17": "금융·보험", "18": "무역·백화",
+    "20": "기타", "21": "화학", "22": "바이오·의료", "23": "석유·전력·가스",
+    "24": "반도체", "25": "컴퓨터·주변기기", "26": "광전(디스플레이)",
+    "27": "통신·네트워크", "28": "전자부품", "29": "전자유통",
+    "30": "IT서비스", "31": "기타전자", "32": "문화창작",
+    "33": "농업기술", "34": "전자상거래", "35": "그린·환경",
+    "36": "디지털·클라우드", "37": "스포츠·레저", "38": "홈리빙",
+}
+
 
 def _sector_kr(core: str) -> str:
     """繁體 類股명 → 한국어. 정확 매칭 우선, 미스 시 接尾 변형 자가매칭(電腦及週邊設備
     ↔ 電腦及週邊 — 길이 4+ prefix 만, 오매칭 방지) → 끝내 미스면 繁體 그대로(사용자
     2026-06-16 한자 누수 fix). TWSE 類股명에 設備/業 등 suffix 변형이 섞여 나오던 것 흡수."""
+    core = str(core or "").strip()
+    if core.isdigit():
+        return _INDUSTRY_CODE_KR.get(core.zfill(2), "기타")
     if core in _SECTOR_KR:
         return _SECTOR_KR[core]
     # core(TWSE 정식명)가 map key(짧은 형)로 시작할 때만 매칭 — 設備/業 등 suffix
@@ -410,27 +426,18 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
                    "스키마 변경 의심, 스킵", label, code_key, ind_key, list(sample)[:12])
         return {}
     out: dict[str, str] = {}
-    skipped_numeric = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
         code = str(row.get(code_key) or "").strip()
         ind = str(row.get(ind_key) or "").strip()
-        if not code or not ind:
-            continue
-        # 2026-08-04 VM 실측 fix: 產業別 필드가 한자 업종명이 아니라 **숫자
-        # 분류코드**("20"/"02"/"22" 등)였음 — _sector_kr 이 매칭 못 해 원본을
-        # 그대로 반환해 대시보드 업종 컬럼에 숫자가 그대로 샜다(사용자 스크린샷,
-        # '업종 분포: 20 6 · 02 5 · 22 5…'). 코드 테이블 미보유라 정확 매핑
-        # 불가 — 한자(CJK) 없는 값은 신뢰 못 할 코드로 보고 드롭(해당 종목은
-        # yfinance 개별조회 폴백으로 자연 복귀 — 배포 전 상태와 동일, 숫자
-        # 노출 재발 방지가 우선).
-        if not _CJK_RE.search(ind):
-            skipped_numeric += 1
-            continue
-        out[code] = _sector_kr(ind)
-    log.info("twse industry map (%s): %d종목 (code_key=%s ind_key=%s, "
-             "숫자코드 드롭 %d)", label, len(out), code_key, ind_key, skipped_numeric)
+        if code and ind:
+            # 2026-08-04 VM 실측: 產業別 필드는 한자 업종명이 아니라 MOPS
+            # 2자리 숫자 분류코드("20"/"02"/"22" 등) — _sector_kr 이
+            # _INDUSTRY_CODE_KR 코드표로 정확 매핑(숫자 그대로 노출 fix).
+            out[code] = _sector_kr(ind)
+    log.info("twse industry map (%s): %d종목 (code_key=%s ind_key=%s)",
+             label, len(out), code_key, ind_key)
     return out
 
 
@@ -446,7 +453,10 @@ def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
     if not force:
         c = _cached_stale("tw_industry_map", max_age_sec=_TW_IND_CACHE_TTL)
         if isinstance(c, dict) and c:
-            return c
+            normalized = {code: _sector_kr(ind) for code, ind in c.items()}
+            if normalized != c:
+                _cache_write("tw_industry_map", normalized)
+            return normalized
     out: dict[str, str] = {}
     out.update(_fetch_one_industry_source(_OPENAPI_LISTED_INFO, "上市"))
     out.update(_fetch_one_industry_source(_OPENAPI_OTC_INFO, "上櫃"))

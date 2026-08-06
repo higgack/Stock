@@ -63,6 +63,14 @@ _TH_CAPTION = (
     "26년06월: $10.0M  (+5.0% YoY)  (-2.0% MoM)"
 )
 
+_US_CAPTION = (
+    "🇺🇸 6월 수입 미국\n\n▶️ 테스트 품목\n\n"
+    "26년06월: $12.3M  (+7.0% YoY)  (+1.5% MoM)\n\n"
+    "관련기업: [#Test US](https://www.google.com/search?q=Test+US)\n\n"
+    "최근 추이 (단위: USD M$)\n"
+    "26년05월: $11.9M  (+6.0% YoY)  (+0.8% MoM)"
+)
+
 
 class ParseTests(unittest.TestCase):
     def test_full_message_headline_and_history_plain_hashtag(self):
@@ -100,6 +108,7 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(mx.parse_mx_export(_CN_CAPTION))
         self.assertIsNone(mx.parse_mx_export(_JP2_CAPTION))
         self.assertIsNone(mx.parse_mx_export(_TH_CAPTION))
+        self.assertIsNone(mx.parse_mx_export(_US_CAPTION))
         self.assertIsNone(mx.parse_mx_export(""))
         self.assertIsNone(mx.parse_mx_export("그냥 잡담 메시지"))
 
@@ -111,49 +120,52 @@ class StorageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "mx.db"
+        self.conn = None
 
     def tearDown(self):
+        if self.conn is not None:
+            self.conn.close()
         self.tmp.cleanup()
 
     def test_ingest_stores_all_months_and_latest_snapshot(self):
-        conn = mx.open_mx_db(self.db_path)
-        ok = mx.ingest(conn, _REAL_FULL, source_message_id=1,
+        self.conn = mx.open_mx_db(self.db_path)
+        ok = mx.ingest(self.conn, _REAL_FULL, source_message_id=1,
                         posted_at="2026-07-26T07:03:00Z",
                         media_paths=["2026-07-26/abc.jpg"])
         self.assertTrue(ok)
-        latest = mx.list_mx(conn)
+        latest = mx.list_mx(self.conn)
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0]["month"], "2026-04")
         self.assertEqual(latest[0]["export_value_musd"], 499.4)
         self.assertIn("APTV", latest[0]["companies"])
-        hist = mx.history(conn, "전기회로 개폐·보호·접속용 기타 기기")
+        hist = mx.history(self.conn, "전기회로 개폐·보호·접속용 기타 기기")
         self.assertEqual(len(hist), 3)
         self.assertEqual(hist[0]["month"], "2026-02")   # 오름차순
         self.assertEqual(hist[-1]["month"], "2026-04")
 
     def test_reingest_preserves_media_when_new_media_absent(self):
-        conn = mx.open_mx_db(self.db_path)
-        mx.ingest(conn, _REAL_FULL, source_message_id=1,
+        self.conn = mx.open_mx_db(self.db_path)
+        mx.ingest(self.conn, _REAL_FULL, source_message_id=1,
                   posted_at="t", media_paths=["chart.jpg"])
-        mx.ingest(conn, _REAL_FULL, source_message_id=1,
+        mx.ingest(self.conn, _REAL_FULL, source_message_id=1,
                   posted_at="t", media_paths=None)
-        latest = mx.list_mx(conn)
+        latest = mx.list_mx(self.conn)
         self.assertEqual(latest[0]["chart_media"], "chart.jpg")
 
     def test_other_source_caption_not_ingested(self):
-        conn = mx.open_mx_db(self.db_path)
-        self.assertFalse(mx.ingest(conn, _JP1_CAPTION))
-        self.assertFalse(mx.ingest(conn, _TW_CAPTION))
-        self.assertFalse(mx.ingest(conn, _CN_CAPTION))
-        self.assertFalse(mx.ingest(conn, _JP2_CAPTION))
-        self.assertFalse(mx.ingest(conn, _TH_CAPTION))
-        self.assertEqual(mx.list_mx(conn), [])
+        self.conn = mx.open_mx_db(self.db_path)
+        self.assertFalse(mx.ingest(self.conn, _JP1_CAPTION))
+        self.assertFalse(mx.ingest(self.conn, _TW_CAPTION))
+        self.assertFalse(mx.ingest(self.conn, _CN_CAPTION))
+        self.assertFalse(mx.ingest(self.conn, _JP2_CAPTION))
+        self.assertFalse(mx.ingest(self.conn, _TH_CAPTION))
+        self.assertEqual(mx.list_mx(self.conn), [])
 
     def test_multiple_items_independent(self):
-        conn = mx.open_mx_db(self.db_path)
-        mx.ingest(conn, _REAL_FULL, source_message_id=1, posted_at="t")
-        mx.ingest(conn, _MARKDOWN_LINK_CO, source_message_id=2, posted_at="t")
-        latest = mx.list_mx(conn)
+        self.conn = mx.open_mx_db(self.db_path)
+        mx.ingest(self.conn, _REAL_FULL, source_message_id=1, posted_at="t")
+        mx.ingest(self.conn, _MARKDOWN_LINK_CO, source_message_id=2, posted_at="t")
+        latest = mx.list_mx(self.conn)
         self.assertEqual(len(latest), 2)
         items = {r["item"] for r in latest}
         self.assertIn("테스트 품목", items)
@@ -163,15 +175,18 @@ class RenderTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "mx.db"
+        self.conn = None
 
     def tearDown(self):
+        if self.conn is not None:
+            self.conn.close()
         self.tmp.cleanup()
 
     def test_render_html_with_data(self):
-        conn = mx.open_mx_db(self.db_path)
-        mx.ingest(conn, _REAL_FULL, source_message_id=1, posted_at="t",
+        self.conn = mx.open_mx_db(self.db_path)
+        mx.ingest(self.conn, _REAL_FULL, source_message_id=1, posted_at="t",
                   media_paths=["2026-07-26/abc.jpg"])
-        html = mx.render_html(conn)
+        html = mx.render_html(self.conn)
         self.assertIn("멕시코 수출 데이터", html)
         self.assertIn("499.4", html)
         self.assertIn("APTV", html)
@@ -179,8 +194,8 @@ class RenderTests(unittest.TestCase):
         self.assertIn("2026-07-26/abc.jpg", html)
 
     def test_render_html_empty_graceful(self):
-        conn = mx.open_mx_db(self.db_path)
-        html = mx.render_html(conn)
+        self.conn = mx.open_mx_db(self.db_path)
+        html = mx.render_html(self.conn)
         self.assertIn("아직 수집된 멕시코 수출 데이터(나쁜양파)가 없습니다", html)
         self.assertNotIn('<details class="mx-card"', html)
 

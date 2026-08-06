@@ -36,6 +36,7 @@ from trade import my_exports as _my
 from trade import ph_exports as _ph
 from trade import th_exports as _th
 from trade import tw_exports as _tw
+from trade import us_imports as _us
 from trade.parser import parse_caption
 from trade.store import (
     alert_to_row,
@@ -148,6 +149,7 @@ def _ingest_group(
     my_conn=None,
     ph_conn=None,
     mx_conn=None,
+    us_conn=None,
 ) -> None:
     """Resolve one album/solo into a single alert row + media paths."""
     captioned = [r for r in group if r.get("caption_present")]
@@ -310,6 +312,22 @@ def _ingest_group(
                 media_paths=mx_media)
             counters["mx_inserted"] = counters.get("mx_inserted", 0) + (1 if stored else 0)
             return
+        # 미국 수입 데이터(나쁜양파, 같은 채널) — 위 전부 아님. US 파서로
+        # 10차 폴백 → 별도 us.db(사용자 2026-08-05).
+        if us_conn is not None and _us.parse_us_import(caption_text) is not None:
+            us_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    us_media.append(p)
+            stored = _us.ingest(
+                us_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=us_media)
+            counters["us_inserted"] = counters.get("us_inserted", 0) + (1 if stored else 0)
+            return
         counters["unparseable"] += 1
         return
 
@@ -403,6 +421,7 @@ def main() -> int:
     my_conn = _my.open_my_db(args.db.parent / "my.db")
     ph_conn = _ph.open_ph_db(args.db.parent / "ph.db")
     mx_conn = _mx.open_mx_db(args.db.parent / "mx.db")
+    us_conn = _us.open_us_db(args.db.parent / "us.db")
 
     groups = _group_messages(rows)
     log.info("grouped into %d send units", len(groups))
@@ -426,6 +445,7 @@ def main() -> int:
         "my_inserted": 0,
         "ph_inserted": 0,
         "mx_inserted": 0,
+        "us_inserted": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
         "media_relinked": 0,
@@ -433,7 +453,7 @@ def main() -> int:
     for grp in groups:
         _ingest_group(conn, grp, args.media_root, counters, ignored_ids,
                       jp_conn, tw_conn, cn_conn, jp2_conn,
-                      th_conn, my_conn, ph_conn, mx_conn)
+                      th_conn, my_conn, ph_conn, mx_conn, us_conn)
 
     log.info("ingest counters: %s", counters)
     s = stats(conn)
