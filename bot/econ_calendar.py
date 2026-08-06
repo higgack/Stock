@@ -1,4 +1,5 @@
-"""경제 캘린더 보드 — CPI/PPI/고용/실업수당/소매/ECI/GDP/PCE/FOMC 발표일정 (2026-07-26).
+"""경제 캘린더 보드 — CPI/PPI/고용/실업수당/소매/ECI/GDP/PCE/FOMC/JOLTS/소비자심리/
+산업생산 발표일정 (2026-07-26 최초, 2026-08-06 3건 추가).
 
 claude-trading-skills 저장소 리뷰에서 발견한 갭(매크로 이벤트 캘린더 부재)을
 메움 — bot/earnings_calendar.py(개별 종목 실적)와 달리 시장 전체에 영향을
@@ -50,6 +51,27 @@ release_dates 의 인접 간격이 비정상으로 촘촘하면(평균 10일 미
 `_is_plausible_release_cadence` 가 그 항목을 '조회 실패'로 강등하는 범용
 가드 추가 — FOMC 하드코딩 특례가 아니라 _RELEASES 전항목에
 동일 적용(오매치가 다른 검색어에서 재발해도 자동 방어).
+
+2026-08-06 사용자 요청("추가할만한 게 있는지 확인") — 기존 14개 대비 빠진
+주요 미국 지표 검토, 3건 추가:
+- ✅ **JOLTS(구인·이직 동향조사)** — Fed 가 노동시장 slack 판단에 직접
+  인용(파월 기자회견 단골 언급). 이미 market_overview.py '핵심 지표' 카드에
+  헤드라인 수치는 있지만 **발표일정**은 이 캘린더에 없었음(역할 다름 —
+  캘린더=다음 발표가 언제인지, 카드=현재 값). release 명 "Job Openings and
+  Labor Turnover Survey"는 BLS 공식 릴리스명이라 ISM 과 달리 FRED release-
+  dates 매치 가능성 높음(검증은 배포 후 VM 렌더로 확인 — 매치 실패해도
+  이 카드만 '조회 실패'로 자동 생략, 회귀 0).
+- ✅ **소비자심리지수(University of Michigan)** — 기대인플레이션 서브지수를
+  Fed 가 별도로 주시. FRED release 명 "Surveys of Consumers"(공식 릴리스명).
+- ✅ **산업생산·가동률(Industrial Production/Capacity Utilization)** —
+  연준 자체 G.17 통계 릴리스, 실물경기 직접 측정. release 명 그대로 검색.
+- ❌ **ISM 제조업/비제조업 PMI** — 위 2026-07-26 리뷰에서 이미 검증
+  실패(release_id 미확인) 확인됨, 재시도 안 함(민간 설문조사라 FRED 가
+  '릴리스'로 추적 안 하는 구조적 한계로 판단 — 이름을 바꿔 재검색해도
+  같은 결과일 가능성 높음).
+- ❌ **주택착공/신규주택판매** — 후보였으나 이미 있는 14개+3개 대비
+  시장 영향력이 상대적으로 낮고(월간 후행지표), 카드 과다로 스캔하기
+  어려워지는 것 방지 위해 이번엔 보류.
 """
 from __future__ import annotations
 
@@ -74,6 +96,12 @@ _RELEASES = [
     {"key": "pce", "label": "💰 PCE (개인소비지출)", "search": "Personal Income and Outlays", "groups": ["정책민감도"]},
     {"key": "core_pce", "label": "🧠 Core PCE (근원 PCE)", "search": "Personal Income and Outlays", "actual_min_lag_days": 20, "actual_max_lag_days": 70, "groups": ["정책민감도"]},
     {"key": "fomc", "label": "🏛️ FOMC", "search": "FOMC", "groups": ["미국 5거래일 변동성", "정책민감도"]},
+    # 2026-08-06 사용자 요청 검토 후 추가(3건, 이하 참조):
+    {"key": "jolts", "label": "🧳 구인건수 (JOLTS)", "search": "Job Openings and Labor Turnover Survey",
+     "actual_min_lag_days": 25, "actual_max_lag_days": 65, "groups": ["정책민감도", "경기침체 조기경보"]},
+    {"key": "umich", "label": "😊 소비자심리지수 (UMich)", "search": "Surveys of Consumers", "groups": ["정책민감도"]},
+    {"key": "indpro", "label": "🏗️ 산업생산·가동률", "search": "Industrial Production and Capacity Utilization",
+     "groups": ["경기침체 조기경보"]},
 ]
 
 # 과거 발표일의 실제치(actual) 오버레이용 FRED 시리즈 매핑(2026-07-26 사용자
@@ -86,6 +114,8 @@ _SERIES_FOR_ACTUAL = {
     "jobs": "PAYEMS", "ahe": "CES0500000003", "unemp": "UNRATE",
     "claims": "ICSA", "cont_claims": "CCSA", "retail": "RSAFS",
     "eci": "ECIWAG", "gdp": "GDP", "pce": "PCEPI", "core_pce": "PCEPILFE",
+    # 2026-08-06 추가분 — 전부 수십년 안정적으로 인용되는 FRED 표준 니모닉.
+    "jolts": "JTSJOL", "umich": "UMCSENT", "indpro": "INDPRO",
 }
 
 # AI/반도체/빅테크 실적 워치리스트 — 4종(2026-07-26 최초) → 20종 추가(사용자
@@ -381,7 +411,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
 {_BOARD_CSS}</head><body><div class="wrap">
 {_NAV}
 <h1>📅 <em>경제 캘린더</em></h1>
-<p class="sub">CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·메가테크 실적 — 데이터 적용시각 {_h.escape(ts)} ·
+<p class="sub">CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·JOLTS·소비자심리·산업생산·메가테크 실적 — 데이터 적용시각 {_h.escape(ts)} ·
 소스 FRED release-dates API + Finnhub(무료, 6시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 거시지표 발표일 전후는 변동성이 커지는 구간 — 진입/청산 타이밍 참고용.
@@ -396,7 +426,7 @@ treasurydirect.gov 재무부 공지 직접 확인 권장.
 </details>
 {cards}
 {megatech_card}
-<div class="footer">CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·메가테크실적 — 신호는 참고용(투자 판단 아님) · NOAH</div>
+<div class="footer">CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·JOLTS·소비자심리·산업생산·메가테크실적 — 신호는 참고용(투자 판단 아님) · NOAH</div>
 </div>
 </body></html>"""
 
