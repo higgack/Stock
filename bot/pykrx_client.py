@@ -492,7 +492,10 @@ def _find_vkospi_ticker() -> Optional[str]:
         from pykrx import stock
     except ImportError:
         return None
-    for market in ("KOSPI", "KOSDAQ"):
+    # pykrx.get_index_ticker_list 유효 market 값 4종 전부 순회(2026-08-08
+    # 실측 — KOSPI/KOSDAQ 만 봤더니 VKOSPI 못 찾음. IndexTicker 소스 확인
+    # 결과 KRX/테마 카테고리에도 지수가 분류돼 있어 후보군 누락이었음).
+    for market in ("KOSPI", "KOSDAQ", "KRX", "테마"):
         try:
             tickers = stock.get_index_ticker_list(market=market)
         except Exception as exc:
