@@ -698,45 +698,33 @@ class KisClient:
         _cache_put(ck, {"bars": bars})
         return bars
 
-    # 10. 국내 업종/지수 일별시세 (VKOSPI 등 — 사용자 2026-08-08). get_daily_chart
-    #     와 같은 tr_id(FHKST03010100)를 market_div_code 만 'U'(업종/지수)로 바꿔
-    #     재사용 — 이 tr_id/엔드포인트 자체는 종목시세로 이미 운영 검증된 것.
-    #     ⚠️ index_code(예: VKOSPI 자체 코드)는 KIS 문서/앱에서 확인 전이라
-    #     graceful(무응답/무데이터 시 None → 호출부가 카드 생략). 12h 캐시.
-    def get_domestic_index_daily(self, index_code: str, days: int = 200) -> Optional[list]:
-        """국내 업종/지수 일봉. Returns list of {date:'YYYY-MM-DD', close} 오름차순.
-        creds 부재/미지원 코드/실패 → None (graceful)."""
-        from datetime import date as _date, timedelta as _td
-        end = _date.today()
-        start = end - _td(days=int(days) + 7)
-        ck = f"idxdaily_{index_code}.json"
-        cached = _cache_get(ck, ttl_hours=6)
+    # 10. 국내 업종/지수 현재지수 (VKOSPI 등 — 사용자 2026-08-08). KIS 공식문서
+    #     ([국내주식] 업종/기타 카테고리, "국내업종 현재지수[v1_국내주식-063]")
+    #     확인 완료: URL /uapi/domestic-stock/v1/quotations/inquire-index-price,
+    #     tr_id FHPUP02100000, FID_COND_MRKT_DIV_CODE="U"(업종), FID_INPUT_ISCD=
+    #     지수코드(코스피 0001/코스닥 1001/코스피200 2001 등). 응답 output.
+    #     bstp_nmix_prpr = 업종 지수 현재가(문서 확인 필드명, 추측 아님).
+    #     모의투자 미지원 — 반드시 실전 KIS_APP_KEY/SECRET 필요.
+    #     ⚠️ VKOSPI 자체 지수코드는 아직 미확인(포탈 업종코드 다운로드 확인 중) —
+    #     index_code 인자화해 graceful(무응답/무데이터 시 None). 5분 캐시(스냅샷).
+    def get_domestic_index_price(self, index_code: str) -> Optional[float]:
+        """국내 업종/지수 현재가(포인트, float). creds 부재/미지원 코드/실패 시
+        None (graceful)."""
+        ck = f"idxprice_{index_code}.json"
+        cached = _cache_get(ck, ttl_hours=5 / 60.0)
         if cached is not None:
-            return cached.get("bars")
-        bars: list = []
-        try:
-            data = _get(
-                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-                "FHKST03010100",
-                {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": index_code,
-                 "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
-                 "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
-                 "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"},
-            )
-            for r in ((data or {}).get("output2") or []):
-                ds = (r.get("stck_bsop_date") or "").strip()
-                cl = _float(r.get("stck_clpr") or r.get("bstp_nmix_prpr"))
-                if len(ds) != 8 or cl is None:
-                    continue
-                bars.append({"date": f"{ds[:4]}-{ds[4:6]}-{ds[6:]}", "close": cl})
-        except Exception as exc:
-            log.warning("kis index_daily %s: %s", index_code, exc)
+            return cached.get("value")
+        data = _get(
+            "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+            "FHPUP02100000",
+            {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": index_code},
+        )
+        out = (data or {}).get("output") or {}
+        value = _float(out.get("bstp_nmix_prpr"))
+        if value is None:
             return None
-        if len(bars) < 2:
-            return None
-        bars.sort(key=lambda x: x["date"])
-        _cache_put(ck, {"bars": bars})
-        return bars
+        _cache_put(ck, {"value": value})
+        return value
 
     def get_all(self, ticker: str) -> dict:
         """7종 모든 데이터를 한 dict로. 각 필드가 None이면 해당 endpoint 실패."""
