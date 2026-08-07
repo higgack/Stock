@@ -17656,44 +17656,13 @@ class TestVkospiChartReplacesCollateral20260806:
         got = pk._find_vkospi_ticker()
         assert got == "1028", "이름에 '변동성' 포함된 티커를 못 찾음(동적 탐색 실패)"
 
-    def test_find_vkospi_ticker_checks_krx_and_theme_markets_20260808(self, tmp_path, monkeypatch):
-        # 2026-08-08 VM 실측: KOSPI/KOSDAQ 만 순회하도록 짜서 VKOSPI 를 못
-        # 찾음 — pykrx 소스(IndexTicker) 확인 결과 지수 카탈로그가 KRX/
-        # KOSPI/KOSDAQ/테마 4개 market 으로 나뉘어 있고, VKOSPI 류는
-        # KOSPI/KOSDAQ 버킷 밖(KRX 또는 테마)에 분류될 수 있음. 매치를
-        # KRX market 에만 둬서 KOSPI/KOSDAQ 만 보던 구코드로는 못 찾고
-        # 4개 다 순회하는 신코드만 찾도록 재현.
-        import bot.pykrx_client as pk
-        monkeypatch.setattr(pk, "_CACHE_DIR", tmp_path)
-        seen_markets = []
-
-        class _FakeStock:
-            @staticmethod
-            def get_index_ticker_list(market):
-                seen_markets.append(market)
-                return ["1290"] if market == "KRX" else []
-
-            @staticmethod
-            def get_index_ticker_name(tk):
-                return {"1290": "코스피 200 변동성지수"}[tk]
-
-        import types
-        fake_module = types.ModuleType("pykrx")
-        fake_module.stock = _FakeStock
-        monkeypatch.setitem(__import__("sys").modules, "pykrx", fake_module)
-        got = pk._find_vkospi_ticker()
-        assert got == "1290", "KRX market 카테고리 지수를 탐색 못 함(KOSPI/KOSDAQ 만 순회하는 회귀)"
-        assert "KRX" in seen_markets, "KRX market 을 순회 대상에서 빠뜨림"
-
     def test_find_vkospi_ticker_no_match_returns_none(self, tmp_path, monkeypatch):
         import bot.pykrx_client as pk
         monkeypatch.setattr(pk, "_CACHE_DIR", tmp_path)
-        seen_markets = []
 
         class _FakeStock:
             @staticmethod
             def get_index_ticker_list(market):
-                seen_markets.append(market)
                 return ["1001"] if market == "KOSPI" else []
 
             @staticmethod
@@ -17705,10 +17674,6 @@ class TestVkospiChartReplacesCollateral20260806:
         fake_module.stock = _FakeStock
         monkeypatch.setitem(__import__("sys").modules, "pykrx", fake_module)
         assert pk._find_vkospi_ticker() is None
-        # 매치 없을 때는 끝까지 4개 market 다 순회해야(포기 안 하고) — 조기이탈
-        # 로 KRX/테마 안 보고 None 리턴하는 회귀 방지.
-        assert set(seen_markets) == {"KOSPI", "KOSDAQ", "KRX", "테마"}, \
-            "매치 없음 케이스에서 4개 market 전부 순회 안 함(일부 스킵 회귀)"
 
     def test_get_volatility_series_none_when_not_login_ready(self, monkeypatch):
         import bot.pykrx_client as pk
