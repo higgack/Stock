@@ -17778,3 +17778,23 @@ class TestRealestateRegionsSujiDongtan20260808:
         # 옛 코드를 그대로 재사용하지 않았는지 회귀 확인.
         from bot.realestate_client import _REGIONS
         assert "41590" not in _REGIONS
+
+
+class TestRealestateRegionsDaejeonSejong20260808:
+    """사용자 2026-08-08 후속 요청 — 대전·세종·광주 대표 구 추가. 대전
+    유성구·세종시는 VM 라이브 조회로 응답 법정동명 일치 확인 후 등록.
+    광주 남구는 2026-04-28/7-1 광주광역시+전라남도 '전남광주통합특별시'
+    통합 출범으로 舊 시도코드(29xxx) 전부 무효 확인(VM 실측, 29150~29159
+    전부 0건) — 새 시도코드 미확인이라 사용자 결정으로 보류, 이번엔 미등록."""
+
+    def test_daejeon_and_sejong_in_regions(self):
+        from bot.realestate_client import _REGIONS
+        assert _REGIONS.get("30200") == "대전 유성구"
+        assert _REGIONS.get("36110") == "세종시"
+
+    def test_gwangju_deferred_not_added(self):
+        # 광주는 보류 결정 — 옛 코드(29xxx 대) 를 착오로 등록하지 않았는지
+        # 회귀 확인(등록 시 통합특별시 출범 후 무효 코드라 0건 카드가 뜸).
+        from bot.realestate_client import _REGIONS
+        assert not any(v.startswith("광주") for v in _REGIONS.values())
+        assert "29155" not in _REGIONS
