@@ -15445,7 +15445,8 @@ class TestCreditSplitAndMarketcap20260706:
         # 제목 h2 가 summary 안(제목 클릭 = 접기 — 서브 summary 제거, 2026-07-08)
         assert sec.index("<summary>") < sec.index("<h2>시장유동성</h2>")
         assert "금리·물가·센티먼트 + 예탁금·신용" not in sec
-        assert "담보융자" in sec and "예탁증권담보융자 추이" in sec
+        assert "담보융자" in sec           # 위젯 요약 = 유지(차트만 VKOSPI 로 교체, 2026-08-08)
+        assert "예탁증권담보융자 추이" not in sec
         assert "시장 센티먼트" in sec              # 매크로 3카드 row 편입
         # Macro Snapshot 에선 charts row 분리(중복 렌더 금지)
         snap = d._render_macro_snapshot(
@@ -17604,3 +17605,122 @@ class TestDepositCacheSessionIndependent20260803:
         src = open("bot/naver_sector_client.py", encoding="utf-8").read()
         assert '_cached("deposit.json", ttl=3 * 3600)' in src, \
             "fetch_deposit 가 세션-무관 TTL 로 안 바뀜(장마감 후 얼어붙는 회귀)"
+
+
+class TestKisVkospiIndex20260808:
+    """VKOSPI 재구현(2번째 시도) — pykrx/ECOS 무료소스 둘 다 데이터 없어 1차
+    롤백(#835) 후, 사용자가 KIS Developers 공식문서 확인 + idxcode.mst 마스터
+    파일 실측 파싱으로 지수코드 '0503'(VKOSPI) 확정. KIS 국내업종 현재지수/
+    기간별시세 API 로 재구현. 코드는 추측 아님 — 실제 다운로드한 마스터파일에서
+    확인."""
+
+    def test_get_domestic_index_price_parses_bstp_nmix_prpr(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        seen = {}
+
+        def _fake_get(path, tr_id, params, custtype=None):
+            seen["path"] = path
+            seen["tr_id"] = tr_id
+            seen["params"] = params
+            return {"output": {"bstp_nmix_prpr": "6258.77"}}
+
+        monkeypatch.setattr(k, "_get", _fake_get)
+        v = k.KisClient().get_domestic_index_price("0503")
+        assert v == 6258.77
+        assert seen["tr_id"] == "FHPUP02100000"
+        assert seen["path"] == "/uapi/domestic-stock/v1/quotations/inquire-index-price"
+        assert seen["params"]["FID_COND_MRKT_DIV_CODE"] == "U"
+        assert seen["params"]["FID_INPUT_ISCD"] == "0503"
+
+    def test_get_domestic_index_price_none_on_empty_output(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        monkeypatch.setattr(k, "_get", lambda path, tr_id, params, custtype=None: None)
+        assert k.KisClient().get_domestic_index_price("0503") is None
+
+    def test_get_domestic_index_daily_paginates_and_dedups(self, monkeypatch):
+        # days=200 > 70 이므로 페이지네이션(70일 단위 청크) 여러 번 호출돼야
+        # 함 — 각 호출을 서로 다른 날짜로 응답해 병합·중복제거 검증.
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        call_count = {"n": 0}
+
+        def _fake_get(path, tr_id, params, custtype=None):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"output2": [
+                    {"stck_bsop_date": "20260805", "bstp_nmix_prpr": "21.30"},
+                    {"stck_bsop_date": "20260806", "bstp_nmix_prpr": "22.70"},
+                ]}
+            if call_count["n"] == 2:
+                return {"output2": [
+                    {"stck_bsop_date": "20260806", "bstp_nmix_prpr": "22.70"},  # 중복
+                    {"stck_bsop_date": "20260601", "bstp_nmix_prpr": "19.10"},
+                ]}
+            return {"output2": []}   # 더 과거 청크는 데이터 없음 → 루프 종료
+
+        monkeypatch.setattr(k, "_get", _fake_get)
+        bars = k.KisClient().get_domestic_index_daily("0503", days=200)
+        assert bars is not None
+        dates = [b["date"] for b in bars]
+        assert dates == sorted(dates), "오름차순 정렬 안 됨"
+        assert len(dates) == len(set(dates)), "중복 날짜 제거 안 됨"
+        assert {"date": "2026-08-06", "close": 22.70} in bars
+        assert call_count["n"] >= 2, "70일 초과분 페이지네이션 안 됨(1콜만 호출)"
+
+    def test_get_domestic_index_daily_none_when_too_few_bars(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        monkeypatch.setattr(k, "_get", lambda path, tr_id, params, custtype=None: {"output2": []})
+        assert k.KisClient().get_domestic_index_daily("0503", days=200) is None
+
+    def test_fetch_deposit_merges_vkospi_from_kis(self, monkeypatch):
+        import bot.naver_sector_client as nsc
+        import bot.kis_client as kc
+
+        class _FakeKis:
+            def get_domestic_index_daily(self, index_code):
+                assert index_code == "0503"
+                return [{"date": "2026-08-05", "close": 21.3},
+                        {"date": "2026-08-06", "close": 22.7}]
+
+        monkeypatch.setattr(kc, "get_kis", lambda: _FakeKis())
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_fetch_deposit_fsc",
+                            lambda: {"date": "2026.08.06", "deposit": 1.0})
+        monkeypatch.setattr(nsc, "_fetch_equity_fund_naver", lambda: None)
+        result = nsc.fetch_deposit()
+        assert result.get("vkospi_series") == [
+            {"d": "2026.08.05", "v": 21.3}, {"d": "2026.08.06", "v": 22.7}]
+
+    def test_deposit_schema_v_and_index_code_20260808(self):
+        import bot.naver_sector_client as nsc
+        assert nsc._DEPOSIT_SCHEMA_V >= 4
+        assert nsc._KIS_VKOSPI_IDX_CODE == "0503"
+        src = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        assert "get_domestic_index_daily" in src
+        assert "vkospi_series" in src
+
+    def test_deposit_charts_renders_vkospi_via_kis(self):
+        import bot.dashboard as d
+        two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
+        vser = [{"d": "2026.08.05", "v": 21.3}, {"d": "2026.08.06", "v": 22.7}]
+        dep = {"source": "금융투자협회", "deposit_series": two,
+               "credit_series": two, "vkospi_series": vser}
+        sec = d._render_deposit_charts(dep)
+        assert "VKOSPI 추이" in sec and "<svg" in sec
+        assert "예탁증권담보융자 추이" not in sec
+
+    def test_deposit_charts_no_vkospi_data_graceful(self):
+        import bot.dashboard as d
+        two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
+        dep = {"source": "금융투자협회", "deposit_series": two}
+        sec = d._render_deposit_charts(dep)
+        assert "VKOSPI" not in sec
+        assert "고객예탁금 추이" in sec

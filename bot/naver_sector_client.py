@@ -330,7 +330,14 @@ def _first_big(cells: list) -> Optional[float]:
 _CRED_MIN, _CRED_MAX = 150000.0, 800000.0
 
 # deposit.json 산출 스키마 버전 — 필드 추가/변경 시 +1 (구버전 캐시 1회 무효화)
-_DEPOSIT_SCHEMA_V = 3   # 2=코스피/코스닥 신용 분리 · 3=예탁증권담보융자 (2026-07-08)
+_DEPOSIT_SCHEMA_V = 4   # 2=코스피/코스닥 신용 분리 · 3=예탁증권담보융자(2026-07-08)
+                        # · 4=VKOSPI 시리즈(2026-08-08, KIS 소스)
+
+# VKOSPI(코스피 200 변동성지수) KIS 업종상세코드. pykrx/ECOS 둘 다 미제공 확인
+# 후(2026-08-08) KIS 공식 idxcode.mst(FAQ 종목정보 다운로드·업종코드) 실측
+# 파싱으로 확정 — 시장구분 '0', 코드 '0503', 명칭 'VKOSPI' 정확히 일치
+# (추측 아님, 다운로드한 마스터파일에서 실제 확인).
+_KIS_VKOSPI_IDX_CODE = "0503"
 
 
 def _fsc_date(d: str) -> str:
@@ -430,6 +437,18 @@ def fetch_deposit() -> dict:
             out.setdefault("source", "금융투자협회")
     except Exception as exc:
         log.warning("equity fund merge failed: %s", exc)
+    # VKOSPI(코스피 변동성지수) — 예탁증권담보융자 추이 차트 자리 대체(사용자
+    # 2026-08-06 요청, 2026-08-08 KIS API 로 재구현 — pykrx/ECOS 무료소스엔
+    # 없어 1차 시도 롤백했었음). KIS 국내업종 기간별시세, 실패해도 이 위젯의
+    # 나머지 지표엔 영향 없음(graceful).
+    try:
+        from bot.kis_client import get_kis
+        vbars = get_kis().get_domestic_index_daily(_KIS_VKOSPI_IDX_CODE)
+        if vbars and isinstance(out, dict):
+            out["vkospi_series"] = [{"d": b["date"].replace("-", "."),
+                                     "v": round(b["close"], 2)} for b in vbars]
+    except Exception as exc:
+        log.warning("vkospi merge failed: %s", exc)
     if isinstance(out, dict) and out:
         out["_v"] = _DEPOSIT_SCHEMA_V
     _cache_write("deposit.json", out)
