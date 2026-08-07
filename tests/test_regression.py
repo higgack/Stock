@@ -17798,3 +17798,35 @@ class TestRealestateRegionsDaejeonSejong20260808:
         from bot.realestate_client import _REGIONS
         assert not any(v.startswith("광주") for v in _REGIONS.values())
         assert "29155" not in _REGIONS
+
+
+class TestRealestateInfographicPppReadability20260808:
+    """사용자 2026-08-08 스크린샷 — '평당가 비교' 섹션이 n등분한 좁은 세로
+    막대 + 지역명 4글자 절단 + 6.5pt 로 렌더돼 지역이 늘어날수록(14개) 더
+    안 보이던 문제. 위 '평균 거래가' 섹션과 같은 가로 막대 행 레이아웃으로
+    교체(10pt 지역명 전체·9pt 값+단위, n 에 비례해 세로로 늘어나 안 찌그러짐)."""
+
+    def test_old_cramped_pattern_removed_from_source(self):
+        src = open("bot/realestate_infographic.py", encoding="utf-8").read()
+        assert "names[i][:4]" not in src, "지역명 4글자 절단 패턴이 여전히 남아있음"
+        assert 'size=6.5' not in src, "6.5pt 글씨가 여전히 남아있음"
+        assert "만원/평" in src, "평당가 값에 단위 라벨이 없음"
+
+    def test_render_infographic_scales_with_many_regions(self, tmp_path, monkeypatch):
+        # 실제 등록된 지역 수(현재 14개)로 렌더 — 크래시/음수 높이 없이
+        # 끝까지 완주하는지 스모크 테스트(폰트 게이트만 우회, Nanum 미설치
+        # 샌드박스 대응 — 실제 글리프 렌더는 VM 몫).
+        import bot.realestate_infographic as ri
+        from bot.realestate_client import _REGIONS
+
+        monkeypatch.setattr(ri, "_font_ready", lambda: True)
+        monkeypatch.setattr(ri, "_setup_font", lambda: True)
+        mock = {"ymd": "202607", "regions": {
+            name: {"avg_manwon": 300000 - i * 15000, "n_deals": 50 + i * 10,
+                   "avg_per_pyeong": 12000 - i * 700, "max_manwon": 500000}
+            for i, name in enumerate(_REGIONS.values())
+        }}
+        out = str(tmp_path / "re_test.png")
+        result = ri.render_infographic(mock, out)
+        assert result == out
+        assert (tmp_path / "re_test.png").stat().st_size > 0
