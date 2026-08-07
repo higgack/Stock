@@ -17759,3 +17759,22 @@ class TestEconCalendarTrendFontSize20260808:
         assert 'style="font-size:18px">2026-08-12' in html, "다음 발표일 값이 상향 안 됨"
         assert 'style="font-size:16px">2026-07-14</div></div>' in html, \
             "최근 발표일 값이 상향 안 됨"
+
+
+class TestRealestateRegionsSujiDongtan20260808:
+    """사용자 2026-08-08 요청 — 아파트 실거래가 주간 브리프에 용인 수지구·
+    화성 동탄구 추가. 동탄구는 2026-02-01 화성시 4개구(만세/효행/병점/동탄)
+    분구로 신설된 신규 법정동코드라 공식 코드조회 사이트(mois.go.kr 등)
+    전부 접근 불가 상태에서, VM 실거래가 API 라이브 조회로 응답의 법정동명
+    (여울동·영천동·산척동 — 동탄구 관할동과 일치)으로 41597 실측 확정."""
+
+    def test_suji_and_dongtan_in_regions(self):
+        from bot.realestate_client import _REGIONS
+        assert _REGIONS.get("41465") == "용인 수지구"
+        assert _REGIONS.get("41597") == "화성 동탄구"
+
+    def test_old_hwaseong_unified_code_not_reused(self):
+        # 41590(舊 화성시 통합코드)은 분구 후 폐지 확인(VM 실측) — 착오로
+        # 옛 코드를 그대로 재사용하지 않았는지 회귀 확인.
+        from bot.realestate_client import _REGIONS
+        assert "41590" not in _REGIONS
