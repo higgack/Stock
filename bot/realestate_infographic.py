@@ -93,7 +93,10 @@ def render_infographic(data: dict, out_path: str) -> str | None:
 
     W = 100.0
     _has_ppp = any((r.get("avg_per_pyeong") or 0) for _, r in items)
-    H = 30.0 + n * 6.0 + (24 if _has_ppp else 8)
+    # 평당가 비교도 위 섹션과 같은 행(row) 레이아웃(2026-08-08 가독성 개선 —
+    # 옆으로 n등분한 좁은 막대 + 6.5pt 글씨가 지역 늘어날수록 더 읽기 힘들어지던
+    # 문제) 이라 같은 n*row_h 만큼 세로 공간 필요.
+    H = 30.0 + n * 6.0 + ((10.0 + n * 6.0) if _has_ppp else 8)
     fig_w = 11.6
     fig, ax = plt.subplots(figsize=(fig_w, fig_w * (H / W)), dpi=150)
     fig.patch.set_facecolor(_BG)
@@ -147,20 +150,27 @@ def render_infographic(data: dict, out_path: str) -> str | None:
     txt(dx0, rows_top - 1.5, "■ 거래량", size=8, color=_GOLD)
 
     # ── 평당가 비교 (있으면) ───────────────────────────────────────
+    # 위 '평균 거래가' 섹션과 같은 가로 막대 행 레이아웃(2026-08-08 가독성
+    # 개선 — 옛 방식은 n등분한 좁은 세로막대 + 지역명 4글자 절단 + 6.5pt 라
+    # 지역 수가 늘어날수록(현재 14개) 더 안 보이던 문제, 사용자 스크린샷).
     y2 = rows_top + n * row_h + 5
     if any(ppps):
-        _section(4, y2, "평당가 비교 (만원/평)", _PUR)
-        panel(4, y2 + 3, 92, 8, fc=_PANEL, rad=1.8)
-        maxp = max(ppps) or 1
-        seg = 88 / max(1, n)
-        for i in range(n):
+        _section(4, y2, "평당가 비교 (만원/평, 내림차순)", _PUR)
+        ppp_rows_top = y2 + 4
+        panel(4, ppp_rows_top, 92, n * row_h + 2, fc=_PANEL, rad=1.8)
+        ppp_order = sorted(range(n), key=lambda i: ppps[i], reverse=True)
+        max_ppp = max(ppps) or 1
+        pbx0 = 22.0          # 평당가 막대 시작
+        pbx_w = 60.0         # 평당가 최대 폭 (거래량 열 없어 더 넓게)
+        pry = ppp_rows_top + 3.5
+        for i in ppp_order:
             if not ppps[i]:
                 continue
-            cx = 6 + i * seg
-            h = max(0.4, ppps[i] / maxp * 4.5)
-            ax.add_patch(Rectangle((cx, y2 + 9 - h), seg * 0.5, h, facecolor=_PUR, edgecolor="none"))
-            txt(cx + seg * 0.25, y2 + 10.2, names[i][:4], size=6.5, color=_MUTED, ha="center")
-            txt(cx + seg * 0.25, y2 + 9 - h - 0.8, f"{ppps[i]:,.0f}", size=6.5, color=_PUR, ha="center")
+            txt(7, pry, names[i][:9], size=10, color=_MUTED, weight="bold")
+            w = max(0.5, ppps[i] / max_ppp * pbx_w)
+            ax.add_patch(Rectangle((pbx0, pry - 1.1), w, 2.2, facecolor=_PUR, edgecolor="none"))
+            txt(pbx0 + w + 1.5, pry, f"{ppps[i]:,.0f}만원/평", size=9, color=_PUR, weight="bold")
+            pry += row_h
 
     txt(4, H - 2.5, "수치: MOLIT 아파트 실거래가 (공식) · 환각 0", size=8.5, color=_MUTED)
     txt(96, H - 2.5, "공공데이터 관찰 (교육·정보), 투자 권유 아님", size=8.5, color=_MUTED, ha="right")
