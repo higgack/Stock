@@ -354,7 +354,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
         group_html = ""
         if groups:
             tags = " · ".join(_h.escape(g) for g in groups)
-            group_html = f'<div class="note" style="margin:4px 0 8px">분류: {tags}</div>'
+            group_html = f'<div class="note" style="margin:4px 0 8px;font-size:15px">분류: {tags}</div>'
         nxt = e.get("next")
         recent = e.get("recent") or []
         nxt_s = _h.escape(nxt) if nxt else "예정 없음(구간 내)"
@@ -364,8 +364,8 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
         if e.get("actuals"):
             rows = "".join(
                 f'<div class="stat"><div class="k">{_h.escape(a["release_date"])} 실제치</div>'
-                f'<div class="v" style="font-size:13px">{a["value"]:,.1f} '
-                f'<span class="sub" style="font-size:10px">({_h.escape(a["obs_date"])} 관측)</span></div></div>'
+                f'<div class="v" style="font-size:16px">{a["value"]:,.1f} '
+                f'<span class="sub" style="font-size:12px">({_h.escape(a["obs_date"])} 관측)</span></div></div>'
                 for a in e["actuals"]
             )
             actuals_html = f'<div class="stat-grid" style="margin-top:6px">{rows}</div>'
@@ -387,15 +387,15 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
         if trend.get("y1_pct") is not None:
             trend_parts.append(f"1Y {trend['y1_pct']:+.1f}%")
         if trend_parts:
-            trend_html = (f'<div class="note" style="font-size:11px">방향성: {" · ".join(trend_parts)}'
-                          f' <span style="color:#8b8fa3">(최근 관측 {_h.escape(str(trend.get("latest_obs_date", "—")))})</span></div>')
+            trend_html = (f'<div class="note" style="font-size:15px">방향성: {" · ".join(trend_parts)}'
+                          f' <span style="color:#8b8fa3;font-size:13px">(최근 관측 {_h.escape(str(trend.get("latest_obs_date", "—")))})</span></div>')
 
         cards += f"""
 <div class="panel"><div class="panel-title">{label}</div>
 {group_html}
 <div class="stat-grid">
-<div class="stat"><div class="k">다음 발표일</div><div class="v" style="font-size:16px">{nxt_s}</div></div>
-<div class="stat"><div class="k">최근 발표일(45일 내)</div><div class="v" style="font-size:13px">{recent_s}</div></div>
+<div class="stat"><div class="k">다음 발표일</div><div class="v" style="font-size:18px">{nxt_s}</div></div>
+<div class="stat"><div class="k">최근 발표일(45일 내)</div><div class="v" style="font-size:16px">{recent_s}</div></div>
 </div>{actuals_html}{trend_html}</div>"""
 
     megatech = data.get("megatech_earnings") or []
