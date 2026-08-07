@@ -17792,12 +17792,14 @@ class TestRealestateRegionsDaejeonSejong20260808:
         assert _REGIONS.get("30200") == "대전 유성구"
         assert _REGIONS.get("36110") == "세종시"
 
-    def test_gwangju_deferred_not_added(self):
-        # 광주는 보류 결정 — 옛 코드(29xxx 대) 를 착오로 등록하지 않았는지
-        # 회귀 확인(등록 시 통합특별시 출범 후 무효 코드라 0건 카드가 뜸).
+    def test_gwangju_nam_gu_uses_new_unified_code_not_old(self):
+        # 광주 남구 후속 확정(2026-08-08) — 사용자가 code.go.kr 확인해 제공한
+        # 전남광주통합특별시 신규코드(12270) 로 등록. 舊 광주 시도코드(29xxx,
+        # 통합 후 무효)를 착오로 재사용하지 않았는지 회귀 확인.
         from bot.realestate_client import _REGIONS
-        assert not any(v.startswith("광주") for v in _REGIONS.values())
+        assert _REGIONS.get("12270") == "광주 남구"
         assert "29155" not in _REGIONS
+        assert not any(k.startswith("29") for k in _REGIONS)
 
 
 class TestRealestateInfographicPppReadability20260808:
