@@ -15455,14 +15455,25 @@ def _render_deposit_widget(dep: dict) -> str:
     if dep.get("credit") is not None:
         cv = (f'<div class="dp-item"><span class="dp-l">신용잔고</span>'
               f'<span class="dp-v">{_won(dep.get("credit"))}{_chg(dep.get("credit_chg"))}</span></div>')
-    # 코스피/코스닥 신용잔고 분리 + 예탁증권담보융자 (있을 때만)
+    # 코스피/코스닥 신용잔고 분리 (있을 때만)
     for _key, _lbl in (("credit_kospi", "코스피 신용"),
-                       ("credit_kosdaq", "코스닥 신용"),
-                       ("collateral", "담보융자")):
+                       ("credit_kosdaq", "코스닥 신용")):
         if dep.get(_key) is not None:
             cv += (f'<div class="dp-item"><span class="dp-l">{_lbl}</span>'
                    f'<span class="dp-v">{_won(dep.get(_key))}'
                    f'{_chg(dep.get(_key + "_chg"))}</span></div>')
+    # VKOSPI(코스피 변동성지수) — 예탁증권담보융자 위젯 항목 자리 대체(사용자
+    # 2026-08-08). 억원 단위가 아니라 지수 포인트라 _won() 대신 소수점 표기.
+    if dep.get("vkospi") is not None:
+        _vv = dep["vkospi"]
+        _vchg = dep.get("vkospi_chg")
+        _vchg_html = ""
+        if _vchg is not None:
+            _cls = "up" if _vchg > 0 else "dn" if _vchg < 0 else "neu"
+            _arrow = "▲" if _vchg > 0 else "▼" if _vchg < 0 else "-"
+            _vchg_html = f' <span class="{_cls}" style="font-size:12px">{_arrow}{abs(_vchg):.2f}</span>'
+        cv += (f'<div class="dp-item"><span class="dp-l">VKOSPI</span>'
+               f'<span class="dp-v">{_vv:.2f}{_vchg_html}</span></div>')
     ev = ""        # 주식형펀드 (있을 때만 — graceful, 사용자 2026-06-14)
     if dep.get("equity_fund") is not None:
         ev = (f'<div class="dp-item"><span class="dp-l">주식형펀드</span>'

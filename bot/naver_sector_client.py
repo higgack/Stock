@@ -409,13 +409,13 @@ def _fetch_deposit_fsc() -> dict:
 
 def fetch_deposit() -> dict:
     """고객예탁금·신용잔고 → {date, deposit, credit, deposit_chg, credit_chg,
-    deposit_series, credit_series}. 억원. 3h TTL(세션-인지 아님, 2026-08-03 —
-    KOFIA T-1 공표가 KR 장 마감 이후·저녁에도 나올 수 있어 fsc_client.
-    _kofia_series 의 안쪽 3h 캐시와 같은 리듬으로 하루종일 재확인).
+    deposit_series, credit_series}. 억원. 1h TTL(세션-인지 아님, 2026-08-08
+    '시장유동성 섹션 전체 1시간 단위로' — fsc_client._kofia_series 의 안쪽
+    캐시도 같은 리듬(1h)으로 맞춤, 하루종일 재확인).
 
     1차 FSC(금융투자협회 공식 API — 둘 다 견고·일별 시계열), 실패 시 Naver
     sise_deposit 폴백(고객예탁금만 견고, 신용은 컬럼 가드)."""
-    c = _cached("deposit.json", ttl=3 * 3600)
+    c = _cached("deposit.json", ttl=1 * 3600)
     # 스키마 버전 게이트(2026-07-08): 세션-인지 캐시는 장 밖에서 무기한
     # fresh 라 새 필드(코스피/코스닥 신용 분리)가 다음 장까지 안 나타남 —
     # 구버전 산출본이면 miss 취급해 1회 재생성(재생성분엔 _v 기록).
@@ -447,6 +447,9 @@ def fetch_deposit() -> dict:
         if vbars and isinstance(out, dict):
             out["vkospi_series"] = [{"d": b["date"].replace("-", "."),
                                      "v": round(b["close"], 2)} for b in vbars]
+            out["vkospi"] = round(vbars[-1]["close"], 2)
+            if len(vbars) >= 2:
+                out["vkospi_chg"] = round(vbars[-1]["close"] - vbars[-2]["close"], 2)
     except Exception as exc:
         log.warning("vkospi merge failed: %s", exc)
     if isinstance(out, dict) and out:
