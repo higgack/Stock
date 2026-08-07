@@ -15510,8 +15510,7 @@ def _render_deposit_charts(dep: dict) -> str:
     # 코스피/코스닥 신용잔고 분리 차트 (사용자 2026-07-06 — 시장별 레버리지
     # 추이. KOFIA 신용공여 시장 필드, 있을 때만 graceful).
     for _key, _lbl, _col in (("credit_kospi_series", "코스피 신용잔고", "#66bb6a"),
-                             ("credit_kosdaq_series", "코스닥 신용잔고", "#7e57c2"),
-                             ("collateral_series", "예탁증권담보융자", "#f5a623")):
+                             ("credit_kosdaq_series", "코스닥 신용잔고", "#7e57c2")):
         _ser = dep.get(_key, [])
         if len(_ser) >= 2:
             svg = _svg_line_chart(
@@ -15520,6 +15519,18 @@ def _render_deposit_charts(dep: dict) -> str:
                   "data": [p["v"] for p in _ser], "axis": "L"}])
             cards.append(_chart_card(f"{_lbl} 추이 (억원)",
                                      [(_lbl, _col)], svg, src_foot))
+    # VKOSPI(코스피 변동성지수) — 예탁증권담보융자 추이 자리 대체(사용자
+    # 2026-08-06 요청, 2026-08-08 KIS API 로 재구현). KOFIA 예탁금/신용과
+    # 무관한 별개 소스(KIS 국내업종 기간별시세) — 단위가 억원이 아니라
+    # (지수 포인트) src_foot·타이틀 별도 표기.
+    vser = dep.get("vkospi_series", [])
+    if len(vser) >= 2:
+        svg = _svg_line_chart(
+            [p["d"] for p in vser],
+            [{"name": "VKOSPI", "color": "#f5a623",
+              "data": [p["v"] for p in vser], "axis": "L"}])
+        cards.append(_chart_card("VKOSPI 추이 (코스피 200 변동성지수)",
+                                 [("VKOSPI", "#f5a623")], svg, "출처: KIS"))
     if not cards:
         return ""
     # 4개 이상이면 3열 wrap (5카드 1열 압착 방지)
