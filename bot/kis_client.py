@@ -698,6 +698,46 @@ class KisClient:
         _cache_put(ck, {"bars": bars})
         return bars
 
+    # 10. 국내 업종/지수 일별시세 (VKOSPI 등 — 사용자 2026-08-08). get_daily_chart
+    #     와 같은 tr_id(FHKST03010100)를 market_div_code 만 'U'(업종/지수)로 바꿔
+    #     재사용 — 이 tr_id/엔드포인트 자체는 종목시세로 이미 운영 검증된 것.
+    #     ⚠️ index_code(예: VKOSPI 자체 코드)는 KIS 문서/앱에서 확인 전이라
+    #     graceful(무응답/무데이터 시 None → 호출부가 카드 생략). 12h 캐시.
+    def get_domestic_index_daily(self, index_code: str, days: int = 200) -> Optional[list]:
+        """국내 업종/지수 일봉. Returns list of {date:'YYYY-MM-DD', close} 오름차순.
+        creds 부재/미지원 코드/실패 → None (graceful)."""
+        from datetime import date as _date, timedelta as _td
+        end = _date.today()
+        start = end - _td(days=int(days) + 7)
+        ck = f"idxdaily_{index_code}.json"
+        cached = _cache_get(ck, ttl_hours=6)
+        if cached is not None:
+            return cached.get("bars")
+        bars: list = []
+        try:
+            data = _get(
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                "FHKST03010100",
+                {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": index_code,
+                 "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                 "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                 "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"},
+            )
+            for r in ((data or {}).get("output2") or []):
+                ds = (r.get("stck_bsop_date") or "").strip()
+                cl = _float(r.get("stck_clpr") or r.get("bstp_nmix_prpr"))
+                if len(ds) != 8 or cl is None:
+                    continue
+                bars.append({"date": f"{ds[:4]}-{ds[4:6]}-{ds[6:]}", "close": cl})
+        except Exception as exc:
+            log.warning("kis index_daily %s: %s", index_code, exc)
+            return None
+        if len(bars) < 2:
+            return None
+        bars.sort(key=lambda x: x["date"])
+        _cache_put(ck, {"bars": bars})
+        return bars
+
     def get_all(self, ticker: str) -> dict:
         """7종 모든 데이터를 한 dict로. 각 필드가 None이면 해당 endpoint 실패."""
         return {
