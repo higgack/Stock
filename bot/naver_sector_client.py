@@ -330,7 +330,8 @@ def _first_big(cells: list) -> Optional[float]:
 _CRED_MIN, _CRED_MAX = 150000.0, 800000.0
 
 # deposit.json 산출 스키마 버전 — 필드 추가/변경 시 +1 (구버전 캐시 1회 무효화)
-_DEPOSIT_SCHEMA_V = 3   # 2=코스피/코스닥 신용 분리 · 3=예탁증권담보융자 (2026-07-08)
+_DEPOSIT_SCHEMA_V = 4   # 2=코스피/코스닥 신용 분리 · 3=예탁증권담보융자(2026-07-08)
+                        # · 4=VKOSPI 시리즈(2026-08-06)
 
 
 def _fsc_date(d: str) -> str:
@@ -430,6 +431,17 @@ def fetch_deposit() -> dict:
             out.setdefault("source", "금융투자협회")
     except Exception as exc:
         log.warning("equity fund merge failed: %s", exc)
+    # VKOSPI(코스피 변동성지수) — 예탁증권담보융자 추이 차트 자리 대체(사용자
+    # 2026-08-06 "예탁증권담보융자 추이 제거하고 그 자리에 KOSPI Volatility
+    # 적용"). KOFIA 예탁금/신용과 무관한 별개 소스(KRX, pykrx) — 실패해도
+    # 이 위젯의 나머지 지표엔 영향 없음(graceful).
+    try:
+        from bot.pykrx_client import get_kr_volatility_index_series
+        vser = get_kr_volatility_index_series()
+        if vser and isinstance(out, dict):
+            out["vkospi_series"] = [{"d": d, "v": round(v, 2)} for d, v in vser]
+    except Exception as exc:
+        log.warning("vkospi merge failed: %s", exc)
     if isinstance(out, dict) and out:
         out["_v"] = _DEPOSIT_SCHEMA_V
     _cache_write("deposit.json", out)
