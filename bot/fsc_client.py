@@ -438,13 +438,13 @@ _OP_CREDIT = "getGrantingOfCreditBalanceInfo"         # 신용공여잔고추이
 def _kofia_series(op: str, field: str, n: int = 30) -> list[tuple[str, float]]:
     """협회통계 op 의 (basDt, field값) 시계열 (오름차순).
 
-    캐시 3h (사용자 2026-06-10 — 예탁금 위젯이 Naver 라이브 대비 3일 늦게
-    보인 건. data.go.kr 공표가 당일 갱신되는 경우 12h 캐시가 최대 반나절
-    지연을 더하던 것 단축. 키가 날짜 포함이라 자정 후 첫 호출은 어차피
+    캐시 1h (사용자 2026-08-08 '시장유동성 섹션 전체 1시간 단위로' — 기존
+    3h(2026-06-10, 예탁금 위젯이 Naver 라이브 대비 3일 늦게 보인 건 대응)
+    보다 더 조인 재확인 주기. 키가 날짜 포함이라 자정 후 첫 호출은 어차피
     재fetch — TTL 은 당일 내 재확인 주기). 진단 로그로 원천 최신 basDt 를
     INFO 남김 — VM journal 에서 '원천 자체가 T+N 지연'인지 판별용."""
     ck = f"kofia_{op}_{field}_{n}_{_now():%Y%m%d}"
-    c = _cache_get(ck, ttl=3 * 3600)
+    c = _cache_get(ck, ttl=1 * 3600)
     if c is not None:
         return [tuple(x) for x in c]
     raw = _fetch(_KOFIA_BASE, op, {"numOfRows": n})
@@ -544,7 +544,7 @@ def credit_split_series_eok(n: int = 130) -> dict:
     crdTrFing* 키 휴리스틱(_classify_credit_key). 발견/미발견 모두 INFO 로그
     (silent-fail 금지). 미발견 시 {} — 위젯은 graceful 생략."""
     ck = f"kofia_credit_split_{n}_{_now():%Y%m%d}"
-    c = _cache_get(ck, ttl=3 * 3600)
+    c = _cache_get(ck, ttl=1 * 3600)  # 2026-08-08: 시장유동성 섹션 1h 통일
     if c is not None:
         return {m: [tuple(x) for x in ser] for m, ser in c.items()}
     raw = _fetch(_KOFIA_BASE, _OP_CREDIT, {"numOfRows": n})

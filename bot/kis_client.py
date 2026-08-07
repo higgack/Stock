@@ -733,14 +733,14 @@ class KisClient:
     #     FID_PERIOD_DIV_CODE="D". 응답 output2[].stck_bsop_date/bstp_nmix_prpr.
     #     ⚠️ 문서에 "한 번의 호출에 최대 50건까지" 명시 — 200일치는 날짜구간
     #     분할 페이지네이션 필요(70일 단위 청크, 50영업일 캡 안전마진).
-    #     6h 캐시(다른 국내지수 일봉과 동일 신선도 기준).
+    #     1h 캐시(2026-08-08 '시장유동성 섹션 전체 1시간 단위로').
     def get_domestic_index_daily(self, index_code: str, days: int = 200) -> Optional[list]:
         """국내 업종/지수 일봉. Returns list of {date:'YYYY-MM-DD', close} 오름차순
         (중복일자 제거). creds 부재/미지원 코드/실패 시 None (graceful)."""
         from datetime import date as _date, timedelta as _td
         end = _date.today()
         ck = f"idxdaily_{index_code}.json"
-        cached = _cache_get(ck, ttl_hours=6)
+        cached = _cache_get(ck, ttl_hours=1)
         if cached is not None:
             return cached.get("bars")
         by_date: dict[str, float] = {}

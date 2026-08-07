@@ -15428,7 +15428,6 @@ class TestCreditSplitAndMarketcap20260706:
         assert callable(fc.collateral_loan_series_eok)
         two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
         dep = {"date": "2026.07.06", "source": "금융투자협회", "deposit": 1.0,
-               "collateral": 240000.0, "collateral_series": two,
                "deposit_series": two, "credit_series": two,
                "equity_fund_series": two}
         macro = {"ts": "07.08. 12:06 KST",
@@ -15436,16 +15435,19 @@ class TestCreditSplitAndMarketcap20260706:
                                           "src": "VIX 역산"}}}
         sec = d._render_liquidity_section(macro, dep)
         assert "<h2>시장유동성</h2>" in sec
-        # 위젯 항목 순서 = 차트 순서(예탁금→주식형펀드→신용…, 사용자 2026-07-08)
-        dep2 = dict(dep, equity_fund=3665000.0, credit=377000.0)
+        # 위젯 항목 순서 = 차트 순서(예탁금→주식형펀드→신용…VKOSPI, 사용자
+        # 2026-07-08 순서규칙 + 2026-08-08 담보융자→VKOSPI 항목 교체)
+        dep2 = dict(dep, equity_fund=3665000.0, credit=377000.0,
+                    vkospi=21.3, vkospi_chg=-0.5)
         w = d._render_deposit_widget(dep2)
         assert (w.index("고객예탁금") < w.index("주식형펀드")
-                < w.index("담보융자"))
+                < w.index("VKOSPI"))
+        assert "21.30" in w
         assert 'id="sec-liquidity"' in sec and 'class="csec"' in sec   # 접기+상태유지
         # 제목 h2 가 summary 안(제목 클릭 = 접기 — 서브 summary 제거, 2026-07-08)
         assert sec.index("<summary>") < sec.index("<h2>시장유동성</h2>")
         assert "금리·물가·센티먼트 + 예탁금·신용" not in sec
-        assert "담보융자" in sec           # 위젯 요약 = 유지(차트만 VKOSPI 로 교체, 2026-08-08)
+        assert "담보융자" not in sec       # 위젯·차트 모두 VKOSPI 로 교체(2026-08-08)
         assert "예탁증권담보융자 추이" not in sec
         assert "시장 센티먼트" in sec              # 매크로 3카드 row 편입
         # Macro Snapshot 에선 charts row 분리(중복 렌더 금지)
@@ -17603,8 +17605,8 @@ class TestDepositCacheSessionIndependent20260803:
 
     def test_fetch_deposit_uses_session_independent_ttl(self):
         src = open("bot/naver_sector_client.py", encoding="utf-8").read()
-        assert '_cached("deposit.json", ttl=3 * 3600)' in src, \
-            "fetch_deposit 가 세션-무관 TTL 로 안 바뀜(장마감 후 얼어붙는 회귀)"
+        assert '_cached("deposit.json", ttl=1 * 3600)' in src, \
+            "fetch_deposit 가 세션-무관 TTL(1h) 로 안 바뀜(2026-08-08 시장유동성 1h 통일)"
 
 
 class TestKisVkospiIndex20260808:
