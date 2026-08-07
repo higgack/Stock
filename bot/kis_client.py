@@ -726,6 +726,58 @@ class KisClient:
         _cache_put(ck, {"value": value})
         return value
 
+    # 11. 국내 업종/지수 기간별시세(일봉) — VKOSPI 차트용. KIS 공식문서
+    #     ("국내주식업종기간별시세(일/주/월/년)[v1_국내주식-021]") 확인 완료:
+    #     URL /uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice,
+    #     tr_id FHKUP03500100(실전/모의 동일), FID_COND_MRKT_DIV_CODE="U",
+    #     FID_PERIOD_DIV_CODE="D". 응답 output2[].stck_bsop_date/bstp_nmix_prpr.
+    #     ⚠️ 문서에 "한 번의 호출에 최대 50건까지" 명시 — 200일치는 날짜구간
+    #     분할 페이지네이션 필요(70일 단위 청크, 50영업일 캡 안전마진).
+    #     6h 캐시(다른 국내지수 일봉과 동일 신선도 기준).
+    def get_domestic_index_daily(self, index_code: str, days: int = 200) -> Optional[list]:
+        """국내 업종/지수 일봉. Returns list of {date:'YYYY-MM-DD', close} 오름차순
+        (중복일자 제거). creds 부재/미지원 코드/실패 시 None (graceful)."""
+        from datetime import date as _date, timedelta as _td
+        end = _date.today()
+        ck = f"idxdaily_{index_code}.json"
+        cached = _cache_get(ck, ttl_hours=6)
+        if cached is not None:
+            return cached.get("bars")
+        by_date: dict[str, float] = {}
+        chunk_end = end
+        remaining = int(days) + 7
+        while remaining > 0:
+            chunk_days = min(remaining, 70)
+            chunk_start = chunk_end - _td(days=chunk_days)
+            try:
+                data = _get(
+                    "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
+                    "FHKUP03500100",
+                    {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": index_code,
+                     "FID_INPUT_DATE_1": chunk_start.strftime("%Y%m%d"),
+                     "FID_INPUT_DATE_2": chunk_end.strftime("%Y%m%d"),
+                     "FID_PERIOD_DIV_CODE": "D"},
+                )
+            except Exception as exc:
+                log.warning("kis index_daily %s: %s", index_code, exc)
+                data = None
+            rows = (data or {}).get("output2") or []
+            for r in rows:
+                ds = (r.get("stck_bsop_date") or "").strip()
+                cl = _float(r.get("bstp_nmix_prpr"))
+                if len(ds) != 8 or cl is None:
+                    continue
+                by_date[f"{ds[:4]}-{ds[4:6]}-{ds[6:]}"] = cl
+            if not rows:
+                break
+            chunk_end = chunk_start - _td(days=1)
+            remaining -= chunk_days
+        if len(by_date) < 2:
+            return None
+        bars = [{"date": d, "close": c} for d, c in sorted(by_date.items())]
+        _cache_put(ck, {"bars": bars})
+        return bars
+
     def get_all(self, ticker: str) -> dict:
         """7종 모든 데이터를 한 dict로. 각 필드가 None이면 해당 endpoint 실패."""
         return {
