@@ -17726,3 +17726,36 @@ class TestKisVkospiIndex20260808:
         sec = d._render_deposit_charts(dep)
         assert "VKOSPI" not in sec
         assert "고객예탁금 추이" in sec
+
+
+class TestEconCalendarTrendFontSize20260808:
+    """사용자 2026-08-08 스크린샷 — 경제 캘린더 카드의 '방향성' 줄이 다른
+    텍스트보다 눈에 띄게 작게(11px, .note 클래스 기본 13px 보다도 작음) 렌더돼
+    가독성 저하. 방향성·분류·실제치·발표일 값 전부 상향(11~13px → 15~18px)."""
+
+    def _sample_html(self):
+        from bot import econ_calendar as ec
+        data = {"events": [
+            {"key": "cpi", "label": "CPI", "groups": ["미국 5거래일 변동성"],
+             "next": "2026-08-12", "recent": ["2026-07-14"],
+             "actuals": [{"release_date": "2026-07-14",
+                         "obs_date": "2026-06-01", "value": 332.6}],
+             "trend": {"release_delta": -1.3, "release_pct": -0.4, "m1_pct": -0.4,
+                       "m3_pct": 0.7, "m6_pct": 2.0, "y1_pct": 3.5,
+                       "latest_obs_date": "2026-06-01"}},
+        ], "megatech_earnings": []}
+        return ec.render_econ_calendar_page(data)
+
+    def test_trend_line_not_smaller_than_note_default(self):
+        html = self._sample_html()
+        assert 'font-size:11px">방향성:' not in html, \
+            "방향성 줄이 여전히 .note 기본(13px)보다 작은 11px 로 남아있음"
+        assert 'font-size:15px">방향성:' in html
+
+    def test_group_and_actual_value_sizes_bumped(self):
+        html = self._sample_html()
+        assert 'font-size:15px">분류:' in html
+        assert 'style="font-size:16px">332.6' in html, "실제치 값이 여전히 13px 대"
+        assert 'style="font-size:18px">2026-08-12' in html, "다음 발표일 값이 상향 안 됨"
+        assert 'style="font-size:16px">2026-07-14</div></div>' in html, \
+            "최근 발표일 값이 상향 안 됨"
