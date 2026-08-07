@@ -15445,7 +15445,8 @@ class TestCreditSplitAndMarketcap20260706:
         # 제목 h2 가 summary 안(제목 클릭 = 접기 — 서브 summary 제거, 2026-07-08)
         assert sec.index("<summary>") < sec.index("<h2>시장유동성</h2>")
         assert "금리·물가·센티먼트 + 예탁금·신용" not in sec
-        assert "담보융자" in sec and "예탁증권담보융자 추이" in sec
+        assert "담보융자" in sec           # 위젯 요약 = 유지(차트만 VKOSPI 로 교체, 2026-08-06)
+        assert "예탁증권담보융자 추이" not in sec
         assert "시장 센티먼트" in sec              # 매크로 3카드 row 편입
         # Macro Snapshot 에선 charts row 분리(중복 렌더 금지)
         snap = d._render_macro_snapshot(
@@ -17604,3 +17605,84 @@ class TestDepositCacheSessionIndependent20260803:
         src = open("bot/naver_sector_client.py", encoding="utf-8").read()
         assert '_cached("deposit.json", ttl=3 * 3600)' in src, \
             "fetch_deposit 가 세션-무관 TTL 로 안 바뀜(장마감 후 얼어붙는 회귀)"
+
+
+class TestVkospiChartReplacesCollateral20260806:
+    """사용자 2026-08-06 요청: '예탁증권담보융자 추이 (억원)' 차트를 제거하고
+    그 자리에 KOSPI Volatility(VKOSPI) 를 적용. investing.com/블로그는
+    직접 스크래핑 대상 아님(anti-bot·비공식) — KRX 공식소스(pykrx) 채택.
+    티커코드는 TW 업종코드 사고(2026-08-04, 숫자코드 하드코딩→오염) 교훈으로
+    숫자 하드코딩 대신 카탈로그 이름("변동성") 매칭으로 동적 탐색."""
+
+    def test_deposit_charts_renders_vkospi_not_collateral(self):
+        import bot.dashboard as d
+        two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
+        vser = [{"d": "2026.08.05", "v": 21.3}, {"d": "2026.08.06", "v": 22.7}]
+        dep = {"source": "금융투자협회", "deposit_series": two,
+               "credit_series": two, "collateral_series": two,
+               "vkospi_series": vser}
+        sec = d._render_deposit_charts(dep)
+        assert "VKOSPI 추이" in sec and "<svg" in sec
+        assert "예탁증권담보융자 추이" not in sec
+
+    def test_deposit_charts_no_vkospi_data_graceful(self):
+        # vkospi_series 없으면(pykrx 미인증/티커 미탐색) 카드 자체가 생략
+        # — collateral 대체 없이 조용히 빠짐(가짜 데이터 fabrication 금지).
+        import bot.dashboard as d
+        two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
+        dep = {"source": "금융투자협회", "deposit_series": two,
+               "collateral_series": two}
+        sec = d._render_deposit_charts(dep)
+        assert "VKOSPI" not in sec and "예탁증권담보융자 추이" not in sec
+        assert "고객예탁금 추이" in sec
+
+    def test_find_vkospi_ticker_name_based_not_hardcoded(self, tmp_path, monkeypatch):
+        import bot.pykrx_client as pk
+        monkeypatch.setattr(pk, "_CACHE_DIR", tmp_path)
+
+        class _FakeStock:
+            @staticmethod
+            def get_index_ticker_list(market):
+                return ["1001", "1028"] if market == "KOSPI" else []
+
+            @staticmethod
+            def get_index_ticker_name(tk):
+                return {"1001": "코스피", "1028": "코스피 200 변동성지수"}[tk]
+
+        import types
+        fake_module = types.ModuleType("pykrx")
+        fake_module.stock = _FakeStock
+        monkeypatch.setitem(__import__("sys").modules, "pykrx", fake_module)
+        got = pk._find_vkospi_ticker()
+        assert got == "1028", "이름에 '변동성' 포함된 티커를 못 찾음(동적 탐색 실패)"
+
+    def test_find_vkospi_ticker_no_match_returns_none(self, tmp_path, monkeypatch):
+        import bot.pykrx_client as pk
+        monkeypatch.setattr(pk, "_CACHE_DIR", tmp_path)
+
+        class _FakeStock:
+            @staticmethod
+            def get_index_ticker_list(market):
+                return ["1001"] if market == "KOSPI" else []
+
+            @staticmethod
+            def get_index_ticker_name(tk):
+                return "코스피"
+
+        import types
+        fake_module = types.ModuleType("pykrx")
+        fake_module.stock = _FakeStock
+        monkeypatch.setitem(__import__("sys").modules, "pykrx", fake_module)
+        assert pk._find_vkospi_ticker() is None
+
+    def test_get_volatility_series_none_when_not_login_ready(self, monkeypatch):
+        import bot.pykrx_client as pk
+        monkeypatch.setattr(pk, "krx_login_ready", lambda: False)
+        assert pk.get_kr_volatility_index_series() is None
+
+    def test_deposit_schema_v_bumped_for_vkospi(self):
+        import bot.naver_sector_client as nsc
+        assert nsc._DEPOSIT_SCHEMA_V >= 4
+        src = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        assert "vkospi_series" in src
+        assert "get_kr_volatility_index_series" in src
