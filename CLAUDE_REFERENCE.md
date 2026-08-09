@@ -2355,6 +2355,63 @@ Bear-skip + PM light-LLM 만장일치 단축, output cap (deep/decision 16384
 screener 2-Pro + 병렬 fetch + 24h 캐시, 분석가 캐시 bind 제거 (model-
 mismatch no-op 였음), 병렬 prefetch + 디스크 캐시 TTL 일관.
 
+## 🚨 2026-08-09 모델 audit 후속 — Gemini 2.5 전면 퇴역 대응 (데드라인 있음)
+
+사용자 요청("우리 모델에 최적화 꼼꼼히 검토") — WebSearch 외부조사(ai.google.dev/
+Vertex 공식 가격표는 샌드박스 차단이라 3자 소스 교차확인) + 코드베이스 gemini-2.5-*
+전 호출처 전수조사(에이전트, bot/ + trade/ + TradingAgents/).
+
+### 데드라인 — 협상 여지 없음
+- **gemini-2.5-pro / -flash / -flash-lite 전부 2026-10-16 서비스 종료 확정**
+  (원래 6/17 예정이었다가 사용자 반발로 연기된 이력까지 GitHub changelog·
+  benchr.org 등 복수 소스로 확인). 오늘(8/9) 기준 **68일 남음**.
+- NOAH 는 이 3개 모델ID 에 전면 하드코딩 의존 — TradingAgents/ 분석 파이프라인
+  (4분석가+5토론+3결정노드), bot/screener.py, 전 Daily Byte류(us_market_daily/
+  daily_kr_flow/realestate_brief/cheongyak_brief), bot/chart_translate.py,
+  bot/translate.py, bot/governance.py, bot/portfolio_auto_resolve.py,
+  trade/llm_insights.py, trade/kg_candidates.py 전부 해당.
+
+### 코드베이스 전수조사 — 티어별 분석 1회당 노드수 × 캐싱 여부
+- **pro**: 결정 3노드(RM/Trader/PM, TradingAgents/…managers/) — 유일하게
+  컨텍스트 캐싱 적용(`bot/gemini_cache_manager.py`, AI Studio 전용 — Vertex
+  는 캐시 API 구조가 달라 명시적 early-return 으로 미지원). + 스크리너/전
+  Daily Byte류/trade·llm_insights(전부 grounding, 캐싱 없음, 온디맨드/스케줄).
+- **flash**: 4명 분석가(시장/감정/뉴스/펀더멘털, 분석 1회당 실호출 4건) +
+  대시보드 번역·이름해석(chart_translate.py/translate.py/portfolio_auto_
+  resolve.py) — 이쪽은 영구 파일캐시로 호출이 사실상 0 에 수렴, 실비용은
+  분석가 4콜이 지배적.
+- **flash-lite**: Bull/Bear 토론 2 + Risk 3인 토론 3 = 분석 1회당 5노드,
+  **캐싱 전혀 없음**(원래 최저가 티어라 캐싱 불필요했던 설계) + 종목당
+  일일 1회 기술분석 토론(technical_analysis.py, 파일캐시 있음).
+- `GOOGLE_GENAI_USE_VERTEXAI` 토글은 실제 런타임 반영(문서용 아님) — 3곳
+  독립구현(`bot/genai_factory.py`/`TradingAgents/…google_client.py`/
+  `trade/llm_insights.py`). 같은 모델ID 면 AI Studio/Vertex 가격 동일(공식
+  기준) — Vertex 는 컨텍스트캐시 미지원이라 전환해도 비용 우회책 안 됨.
+
+### 신모델 가격 (3자 소스 교차확인 — 프리뷰/정식가 혼재로 소스간 편차 있음,
+전환 전 공식 페이지(ai.google.dev/pricing) 재확인 필수 — 이 세션에선
+샌드박스 차단으로 직접 검증 불가):
+
+| 티어 | 현재(2.5) $입력/$출력(1M) | 최신 대체 후보 | 방향 |
+|---|---|---|---|
+| pro → Gemini 3.1 Pro(2026-02-19) | $1.25/$10.00 | 소스별 $1.00~2.00/$6~12 | 평평~개선 가능성 |
+| flash → Gemini 3.6 Flash(2026-07-21, 3.5 대비 output 17%↓) | $0.30/$2.50 | ~$1.50/$7.50 | 약 5x/3x 상승 |
+| flash-lite → Gemini 3.5 Flash-Lite(2026-07-21) | $0.10/$0.40 | ~$0.30/$2.50 | 약 3x/6x 상승 |
+
+**핵심 시사점**: 비용 부담이 제일 큰 pro 티어(결정 3노드)는 전환 영향이
+적은데, 정작 **분석 1회당 노드수가 제일 많은 flash-lite 토론 5노드(캐싱
+0)**가 청구서에 가장 크게 찍힐 지점.
+
+### 다음 세션 착수 시
+1. **10/16 전 마이그레이션 필수** — 여유 갖고 사전 테스트(구조화출력/
+   thinking_budget 파라미터 신모델 호환성, 회귀테스트 1400+ 전체 재확인).
+2. flash-lite 토론 5노드에 컨텍스트 캐싱 확장 검토 — 가격 상승폭이 제일
+   큰 지점을 구조적으로 상쇄 가능(현재 결정 3노드만 캐싱 적용된 인프라
+   `bot/gemini_cache_manager.py` 재사용/확장).
+3. Vertex 전환은 비용 우회책 아님(가격 동일 + 캐싱 손실) — 검토 불필요.
+4. 착수 전 반드시 공식 가격표로 위 표 재검증(VM 은 네트워크 열려있어
+   가능 — 이 세션은 3자 소스 교차확인까지만).
+
 ## TODO
 
 - **부동산 Byte — 광주 대표구 ✅ 완료 (2026-08-08)**. 대전 유성구(30200)·
