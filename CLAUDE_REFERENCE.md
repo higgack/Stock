@@ -2475,55 +2475,39 @@ BEFORE 신저가=[정지종목, 휴면종목] / AFTER 신저가=[아웃사이드
 ⚠️ 미검증: JPX/HKEX 공식목록 fetch 는 샌드박스 프록시가 막아 VM 확인 필요. 실패해도
 peer 폴백이라 회귀는 없고, 라벨의 종목 수로 어느 쪽인지 바로 판별 가능.
 
-- **한국 52주 신고저 KIS 1콜 경로 — VM 검증 후 소스 교체 (사용자 2026-06-13
-  'KIS 에서 안되는건가')**. 현재 `/kr52` 는 검증된 yfinance 유니버스
-  스캔(83 KR 주요종목, `intl_highlow` KR 분기, #330). KIS Open API 는
-  국내주식 **신고가/신저가 순위** 엔드포인트가 있어(추정 TR_ID
-  `FHPST01890000`, `/uapi/domestic-stock/v1/ranking/new-highlow`) **단일
-  콜**로 전 종목 52주 신고/신저 근접을 받을 수 있음 — 유니버스 스캔보다
-  싸고 넓음(주요종목 83 한정 아님). `kis_client.py` 엔 미구현(현재 종목별
-  시세/수급 TR 만). ⚠️ 샌드박스에서 KIS 도달 불가 → **VM 검증 선결**:
-  정확한 TR_ID·필수 파라미터(시장구분 J/Q·기간·정렬)·응답 필드명 확인.
-  ⚠️ TR_ID `FHPST01890000`·path `new-highlow` 는 **추정**(샌드박스 검증
-  불가) — probe 가 `rt_cd`/`msg1` 로 맞는지 알려줌(`_get` 은 실패 시 None
-  반환+stderr 로그라 raw 응답을 직접 출력해야 진단됨). VM 1블록 probe
-  (creds 로드됨):
-  ⚠️ bare `python -c` 는 `.env` 자동 로드 안 함 → `load_dotenv` 선행 필수
-  (안 하면 token False·status 404·non-JSON 으로 오진, 2026-06-13 1차 probe
-  실패 교훈).
-  ```
-  cd ~/stock && .venv/bin/python -c "
-  from dotenv import load_dotenv; from pathlib import Path
-  load_dotenv(Path.home() / 'stock' / '.env')
-  from bot import kis_client as k
-  import requests, json
-  tok = k._get_token(); print('token:', bool(tok))
-  url = k._BASE_PROD + '/uapi/domestic-stock/v1/ranking/new-highlow'
-  params = {'FID_COND_MRKT_DIV_CODE':'J','FID_COND_SCR_DIV_CODE':'20187',
-    'FID_INPUT_ISCD':'0000','FID_RANK_SORT_CLS_CODE':'0','FID_INPUT_CNT_1':'0',
-    'FID_PRC_CLS_CODE':'0','FID_INPUT_PRICE_1':'','FID_INPUT_PRICE_2':'',
-    'FID_VOL_CNT':'','FID_TRGT_CLS_CODE':'','FID_TRGT_EXLS_CLS_CODE':'',
-    'FID_DIV_CLS_CODE':'0'}
-  h = {'authorization':f'Bearer {tok}','appkey':k._app_key(),
-    'appsecret':k._app_secret(),'tr_id':'FHPST01890000',
-    'Content-Type':'application/json; charset=utf-8'}
-  r = requests.get(url, headers=h, params=params, timeout=10)
-  print('status:', r.status_code)
-  try:
-      d = r.json()
-  except Exception:
-      print('non-JSON body[:300]:', r.text[:300]); raise SystemExit
-  print('rt_cd:', d.get('rt_cd'), '| msg:', d.get('msg1'))
-  out = d.get('output') or d.get('output1') or d.get('output2')
-  print('fields:', list(out[0].keys()) if isinstance(out,list) and out else out)
-  print('sample:', json.dumps(out[:2] if isinstance(out,list) else out, ensure_ascii=False)[:900])"
-  ```
-  rt_cd='0' 이면 path/TR_ID 정답 → fields 로 필드명 확정. rt_cd!='0' 이면
-  msg1 가 사유(유효하지않은 tr_id 등) → KIS 개발자포털 '국내주식순위분석 >
-  신고가/신저가'에서 정확 path/TR_ID 확인 후 재시도. 확정 후 `kis_client.
-  fetch_kr_new_highlow()` 작성 + `/kr52` 데이터 소스만 교체(페이지·라우트·
-  위젯 그대로). 실패 시 yfinance 유지. 추측 보고 금지(실수기록 #12a) —
-  probe 출력 없이 TR_ID 단정하지 말 것.
+- **한국 52주 신고저 KIS 1콜 경로 — ✅ 이미 구현+VM검증 완료, 결론: 폐기
+  (2026-08-09 재확인 — 아래는 stale 이었던 옛 기록을 정정)**. 과거 이 항목은
+  "미구현·TR_ID 추정(`FHPST01890000`/`new-highlow`)"으로 적혀 있었으나 **틀린
+  정보** — 실제로는 사용자가 2026-07-04 직접 구현+VM검증까지 완료한 상태였음:
+  `kis_client.fetch_kr_new_highlow()`(정확한 TR_ID는 `FHPST01870000`, path는
+  `/uapi/domestic-stock/v1/ranking/near-new-highlow` — 위에 적혀있던 890000/
+  new-highlow 는 둘 다 오기였고 실제 호출하면 404) + `intl_highlow._compute_kr_kis()`
+  로 배선까지 끝나 있었음. 단 `_compute_kr_kis()` 자체 docstring 에 **"레거시 —
+  `_compute_kr_full` 로 대체, KIS 캡 ~30이 ETF/SPAC 에 잠식돼 실종목이 1~3개뿐"**
+  이라 명시 — VM 검증 결과 KIS 신고저 순위 응답이 상한 30개 인근으로 잘려 오는데
+  그 중 대부분이 ETF/ETN/SPAC 이라 실제 종목이 거의 안 남는 문제가 실측 확인됐고,
+  그래서 현재 `/kr52` 는 의도적으로 전종목 pykrx 유니버스 + yfinance 당일 스캔
+  (`_compute_kr_full`, KR/intl_highlow.py:226)으로 운영 중. `_compute_kr_kis()`
+  함수 자체는 코드에 보존(미사용)만 되어 있음 — 재활성화 불필요, 재조사도 불필요.
+  (교훈: TODO 문서가 실제 코드 상태보다 stale 해지면 다음 세션이 이미 끝난 조사를
+  반복함 — REFERENCE 갱신 안 하고 "추정" 항목 방치 금지.)
+
+- **해외주식 KIS 신규 함수 2종 — 원천만 추가, 라이브 미배선 (2026-08-09
+  사용자 제공 공식문서)**. 위 국내 조사 중 사용자가 해외주식 문서 2건을
+  직접 붙여넣어 review+구현: `kis_client.get_overseas_price_detail(ticker)`
+  (HHDFS76200200, `/uapi/overseas-price/v1/quotations/price-detail` —
+  PER/PBR/EPS/BPS/52주고저/시총 등, US/JP/HK/CN(SS/SZ) 지원·TW 미지원 —
+  기존 `_overseas_excd_symb` 재사용) + `kis_client.fetch_overseas_new_highlow(excd,...)`
+  (HHDFS76300000, `/uapi/overseas-stock/v1/ranking/new-highlow` — 거래소별
+  신고/신저 랭킹). 필드명은 문서 그대로 매핑(추정 없음), 회귀 8종
+  (`TestKisOverseasPriceDetailAndNewHighlow20260809`)으로 파싱 계약 고정.
+  ⚠️ 둘 다 **VM 실호출 미검증** + 라이브 파이프라인(intl_highlow/agent_utils)
+  **미배선** — 특히 `fetch_overseas_new_highlow` 는 국내 근접판(`_compute_kr_kis`)
+  이 위 항목처럼 ETF/SPAC 캡 잠식으로 폐기된 전례가 있어 VM 에서 실종목
+  비율 확인 전엔 배선 금지. `get_overseas_price_detail` 은 상대적으로 유망
+  (KR D1 Phase 3 와 동일 패턴 — US/JP/HK/CN 펀더 fallback 원천 결측 메꿈)
+  — 다음 세션: VM probe 로 실제 응답 확인 → 문제없으면 agent_utils.py 의
+  yfinance `.info` PER/PBR/EPS/BPS/52주고저 결측 시 폴백으로 배선 검토.
 
 ## 📋 Standard View open issues (2026-05-21 session pickup)
 

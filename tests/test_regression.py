@@ -17709,6 +17709,103 @@ class TestKisVkospiIndex20260808:
         assert "get_domestic_index_daily" in src
         assert "vkospi_series" in src
 
+
+class TestKisOverseasPriceDetailAndNewHighlow20260809:
+    """해외주식 현재가상세(HHDFS76200200)·신고/신저가 랭킹(HHDFS76300000) —
+    사용자 2026-08-09 KIS 공식문서 직접 제공(KR 52주 신고저 KIS 1콜 조사 중
+    발견, 도메인은 별개). 필드명 문서 그대로 매핑; 라이브 파이프라인 미배선
+    (VM 실호출 미검증 — client 함수만 제공, 회귀는 파싱 계약만 검증)."""
+
+    def test_get_overseas_price_detail_parses_all_fields(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        seen = {}
+
+        def _fake_get(path, tr_id, params, custtype=None):
+            seen["path"] = path
+            seen["tr_id"] = tr_id
+            seen["params"] = dict(params)
+            seen["custtype"] = custtype
+            return {"output": {
+                "last": "185.50", "open": "184.00", "high": "186.20",
+                "low": "183.90", "base": "184.10", "tomv": "2890000000",
+                "h52p": "199.62", "h52d": "20260115",
+                "l52p": "164.08", "l52d": "20260410",
+                "perx": "31.42", "pbrx": "48.9", "epsx": "6.13",
+                "bpsx": "3.79", "shar": "15500000000", "curr": "USD",
+                "e_icod": "Technology", "tvol": "48213000",
+            }}
+
+        monkeypatch.setattr(k, "_get", _fake_get)
+        r = k.KisClient().get_overseas_price_detail("AAPL")
+        assert seen["path"] == "/uapi/overseas-price/v1/quotations/price-detail"
+        assert seen["tr_id"] == "HHDFS76200200"
+        assert seen["params"] == {"AUTH": "", "EXCD": "NAS", "SYMB": "AAPL"}
+        assert seen["custtype"] == "P"
+        assert r["price"] == 185.50
+        assert r["per"] == 31.42 and r["pbr"] == 48.9
+        assert r["eps"] == 6.13 and r["bps"] == 3.79
+        assert r["high_52w"] == 199.62 and r["high_52w_date"] == "20260115"
+        assert r["low_52w"] == 164.08 and r["low_52w_date"] == "20260410"
+        assert r["market_cap"] == 2890000000.0
+        assert r["currency"] == "USD" and r["sector"] == "Technology"
+
+    def test_get_overseas_price_detail_none_for_unsupported_market(self, monkeypatch):
+        import bot.kis_client as k
+        called = {"n": 0}
+        monkeypatch.setattr(k, "_get", lambda *a, **kw: called.__setitem__("n", called["n"] + 1))
+        # 대만 = _overseas_excd_symb 미지원 → _get 호출 전에 None(graceful)
+        assert k.KisClient().get_overseas_price_detail("2330.TW") is None
+        assert called["n"] == 0
+
+    def test_get_overseas_price_detail_none_when_get_fails(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        monkeypatch.setattr(k, "_get", lambda path, tr_id, params, custtype=None: None)
+        assert k.KisClient().get_overseas_price_detail("7203.T") is None
+
+    def test_fetch_overseas_new_highlow_parses_output2(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_get_token", lambda: "tok")
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        seen = {}
+
+        def _fake_get(path, tr_id, params, custtype=None):
+            seen["path"] = path
+            seen["tr_id"] = tr_id
+            seen["params"] = dict(params)
+            return {"output2": [
+                {"symb": "AAPL", "name": "애플", "last": "185.5",
+                 "rate": "1.2", "tvol": "48213000", "ename": "Apple Inc"},
+                {"symb": "", "name": "빈심볼제외"},
+            ]}
+
+        monkeypatch.setattr(k, "_get", _fake_get)
+        rows = k.fetch_overseas_new_highlow("NAS", is_high=True)
+        assert seen["path"] == "/uapi/overseas-stock/v1/ranking/new-highlow"
+        assert seen["tr_id"] == "HHDFS76300000"
+        assert seen["params"]["EXCD"] == "NAS"
+        assert seen["params"]["GUBN"] == "1"       # is_high=True → 신고(1)
+        assert seen["params"]["NDAY"] == "6"        # 디폴트 52주
+        assert len(rows) == 1 and rows[0]["symbol"] == "AAPL"
+        assert rows[0]["name"] == "애플" and rows[0]["price"] == 185.5
+
+    def test_fetch_overseas_new_highlow_graceful_without_creds(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_get_token", lambda: None)
+        assert k.fetch_overseas_new_highlow("NAS") is None
+
+    def test_new_functions_not_wired_into_live_pipeline_yet(self):
+        # 2026-08-09: 원천 함수만 제공, VM 실호출 미검증이라 intl_highlow/
+        # agent_utils 라이브 파이프라인 배선은 보류 — 이 계약이 깨지면(누군가
+        # 무검증 배선) 최소한 문서화된 의도 위반임을 알리는 가드.
+        ih_src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "get_overseas_price_detail" not in ih_src
+        assert "fetch_overseas_new_highlow" not in ih_src
+
     def test_deposit_charts_renders_vkospi_via_kis(self):
         import bot.dashboard as d
         two = [{"d": "2026.07.01", "v": 1}, {"d": "2026.07.02", "v": 2}]
