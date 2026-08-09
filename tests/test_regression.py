@@ -17795,8 +17795,35 @@ class TestKisOverseasPriceDetailAndNewHighlow20260809:
 
     def test_fetch_overseas_new_highlow_graceful_without_creds(self, monkeypatch):
         import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
         monkeypatch.setattr(k, "_get_token", lambda: None)
         assert k.fetch_overseas_new_highlow("NAS") is None
+
+    def test_fetch_overseas_new_highlow_serves_cache_without_creds(self, monkeypatch):
+        # 캐시 확인이 creds/토큰보다 먼저여야 함(형제 함수들과 동일 순서) —
+        # 토큰 발급 일시 실패 시에도 신선한 캐시는 서빙(배포전 리뷰 지적).
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get",
+                            lambda key, ttl_hours=None: {"rows": [{"symbol": "AAPL"}]})
+        monkeypatch.setattr(k, "_get_token", lambda: None)   # creds 부재
+        monkeypatch.setattr(k, "_get", lambda *a, **kw: pytest.fail("캐시 히트인데 네트워크 호출"))
+        assert k.fetch_overseas_new_highlow("NAS") == [{"symbol": "AAPL"}]
+
+    def test_fetch_overseas_new_highlow_cache_key_covers_all_query_params(self, monkeypatch):
+        # vol_rang 등 응답을 바꾸는 파라미터가 캐시 키에 전부 반영돼야 함 —
+        # 누락 시 다른 필터 요청이 이전 결과를 그대로 받는다(배포전 리뷰 지적).
+        import bot.kis_client as k
+        keys = []
+        monkeypatch.setattr(k, "_cache_get",
+                            lambda key, ttl_hours=None: keys.append(key))
+        monkeypatch.setattr(k, "_get_token", lambda: None)
+        variants = ({"vol_rang": "0"}, {"vol_rang": "5"},
+                    {"nday": "0"}, {"gubn2": "0"}, {"is_high": False})
+        for kwargs in variants:
+            k.fetch_overseas_new_highlow("NAS", **kwargs)
+        # creds 부재여도 캐시 조회까지는 도달해야 함(위 순서 계약)
+        assert len(keys) == len(variants), f"캐시 조회 미도달: {keys}"
+        assert len(keys) == len(set(keys)), f"캐시 키 충돌: {keys}"
 
     def test_new_functions_not_wired_into_live_pipeline_yet(self):
         # 2026-08-09: 원천 함수만 제공, VM 실호출 미검증이라 intl_highlow/

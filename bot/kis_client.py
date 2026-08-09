@@ -1160,10 +1160,10 @@ def fetch_overseas_new_highlow(excd: str, is_high: bool = True,
     (`intl_highlow._compute_kr_kis`, 2026-06-13 legacy 처리) — 해외판도 같은
     문제일 가능성 있어 **VM 실호출로 실종목 비율 확인 전엔 라이브 배선 금지**
     (2026-08-09 문서 대조만 완료, kis_client 미배선 상태로 원천 함수만 제공)."""
-    tok = _get_token()
-    if not tok:
-        return None
-    cache_key = f"ovshl_{excd}_{'h' if is_high else 'l'}_{nday}_{gubn2}.json"
+    # 캐시 먼저(형제 함수들과 동일 순서) — creds 일시 부재/토큰 발급 실패에도
+    # 신선한 캐시가 있으면 서빙. 토큰 확인은 _get() 내부에 이미 있어 중복 불요.
+    cache_key = (f"ovshl_{excd}_{'h' if is_high else 'l'}"
+                 f"_{nday}_{gubn2}_{vol_rang}.json")
     cached = _cache_get(cache_key, ttl_hours=0.5)
     if cached is not None:
         return cached.get("rows")
