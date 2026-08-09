@@ -2509,6 +2509,43 @@ peer 폴백이라 회귀는 없고, 라벨의 종목 수로 어느 쪽인지 바
   — 다음 세션: VM probe 로 실제 응답 확인 → 문제없으면 agent_utils.py 의
   yfinance `.info` PER/PBR/EPS/BPS/52주고저 결측 시 폴백으로 배선 검토.
 
+  **VM 1블록 probe (바로 실행 가능 — 2026-08-09 미리 작성)**. 함수가 이미
+  배포돼 있으므로 raw HTTP 가 아니라 함수를 직접 호출해 검증한다(`_get` 은
+  실패 시 None 반환 + stderr 경고라, None 이면 로그를 같이 봐야 원인이 보임).
+  ⚠️ bare `python -c` 는 `.env` 자동 로드 안 함 → `load_dotenv` 선행 필수
+  (안 하면 creds 부재로 전부 None → "API 가 안 된다"고 오진, 실수기록 #12).
+  ⚠️ 캐시가 살아있으면 옛 값을 볼 수 있어 `_cache_get` 을 무력화하고 실행.
+  ```
+  cd ~/stock && .venv/bin/python -c "
+  import logging; logging.basicConfig(level=logging.WARNING)
+  from dotenv import load_dotenv; from pathlib import Path
+  load_dotenv(Path.home() / 'stock' / '.env')
+  from bot import kis_client as k
+  k._cache_get = lambda *a, **kw: None      # 캐시 우회(신선한 응답 강제)
+  print('token:', bool(k._get_token()))
+  # ① 현재가상세 — 시장별 1종목씩(US/JP/HK/CN)
+  for t in ('AAPL', '7203.T', '0700.HK', '600519.SS'):
+      d = k.KisClient().get_overseas_price_detail(t)
+      if not d:
+          print(f'{t}: None (위 WARNING 로그에 rt_cd/msg1 확인)'); continue
+      print(f\"{t}: px={d['price']} per={d['per']} pbr={d['pbr']} \"
+            f\"eps={d['eps']} 52h={d['high_52w']}({d['high_52w_date']}) \"
+            f\"52l={d['low_52w']} mcap={d['market_cap']} cur={d['currency']}\")
+  # ② 신고저 랭킹 — 실종목 비율이 관건(국내판 폐기 사유)
+  for ex in ('NAS', 'NYS', 'TSE'):
+      rows = k.fetch_overseas_new_highlow(ex, is_high=True)
+      if rows is None:
+          print(f'{ex}: None'); continue
+      print(f'{ex}: {len(rows)}건 | 샘플:',
+            [(r['symbol'], r['name'], r['price']) for r in rows[:8]])"
+  ```
+  판정 기준: ① 은 per/pbr/eps 가 **0 또는 빈값이 아닌 실제 값**으로 오는지가
+  핵심(0 으로만 오면 yfinance fallback 으로서 가치 없음 → 배선 불가). 52주
+  고저는 yfinance 값과 대조해 자릿수/통화 일치 확인. ② 는 **건수와 ETF/SPAC
+  비율** — 국내판처럼 30건 캡에 ETF 가 대부분이면 폐기, 실종목이 충분하면
+  `intl_highlow` 의 US/JP 경로 대체 후보로 검토(현재 yfinance 유니버스 스캔
+  대비 콜 수가 압도적으로 적음). 추측 보고 금지 — probe 출력 없이 단정 금지.
+
 ## 📋 Standard View open issues (2026-05-21 session pickup)
 
 User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
