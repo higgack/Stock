@@ -355,6 +355,65 @@ class KisClient:
                 return px
         return None
 
+    # 1d. 해외주식 현재가상세 (PER/PBR/EPS/BPS/52주 고저 — 비-KR 펀더 fallback 원천)
+    def get_overseas_price_detail(self, ticker: str) -> Optional[dict]:
+        """해외주식 현재가상세(KIS HHDFS76200200), 12h 캐시. 미지원 시장(대만
+        등)/creds 부재/실패 시 None(graceful).
+
+        KR 은 D1 Phase 3(get_current_price 의 hts_avls/per/pbr/eps/bps +
+        pykrx 백필, agent_utils.py)로 yfinance .info 결측 시 대체하는데,
+        US/JP/HK/CN(SS/SZ) 은 이런 비-yfinance fallback 이 없음 — 이 함수가
+        그 원천이 될 수 있음(2026-08-09 사용자 제공 KIS 문서 확인, 필드명
+        전부 문서 그대로: h52p/h52d/l52p/l52d=52주 고저+일자, perx/pbrx/
+        epsx/bpsx=PER/PBR/EPS/BPS, tomv=시가총액).
+        ⚠️ 무료 해외시세라 미국은 무지연, HK/CN/JP 는 15분 지연(문서 명시).
+        ⚠️ 문서 대조만 완료 — VM 실호출로 실제 응답 미검증. agent_utils.py
+        펀더 파이프라인에 배선 전 VM 확인 선행 필요(라이브 미배선, 원천
+        함수만 제공)."""
+        excds, symb = _overseas_excd_symb(ticker)
+        if not excds or not symb:
+            return None
+        cache_key = f"ovsdetail_{ticker.upper().replace('.', '_')}.json"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+        for excd in excds:
+            data = _get(
+                "/uapi/overseas-price/v1/quotations/price-detail",
+                "HHDFS76200200",
+                {"AUTH": "", "EXCD": excd, "SYMB": symb},
+                custtype="P",
+            )
+            if not data:
+                continue
+            out = data.get("output") or {}
+            last = _float(out.get("last"))
+            if not last or last <= 0:
+                continue
+            result = {
+                "price":         last,
+                "open":          _float(out.get("open")),
+                "high":          _float(out.get("high")),
+                "low":           _float(out.get("low")),
+                "prev_close":    _float(out.get("base")),
+                "market_cap":    _float(out.get("tomv")),
+                "per":           _float(out.get("perx")),
+                "pbr":           _float(out.get("pbrx")),
+                "eps":           _float(out.get("epsx")),
+                "bps":           _float(out.get("bpsx")),
+                "shares":        _int(out.get("shar")),
+                "currency":      out.get("curr") or None,
+                "high_52w":      _float(out.get("h52p")),
+                "high_52w_date": out.get("h52d") or None,
+                "low_52w":       _float(out.get("l52p")),
+                "low_52w_date":  out.get("l52d") or None,
+                "sector":        out.get("e_icod") or None,
+                "volume":        _int(out.get("tvol")),
+            }
+            _cache_put(cache_key, result)
+            return result
+        return None
+
     # 2+3. 외인/기관/개인 + 기관 주체별
     def get_investor_flow(self, ticker: str) -> Optional[dict]:
         """외인/기관/개인 당일 + 5일 누적 순매수 + 기관 주체별.
@@ -1078,4 +1137,50 @@ def fetch_kr_new_highlow(period: int = 250, count: int = 60) -> dict:
             })
             if len(out[key]) >= count:
                 break
+    return out
+
+
+# ─── 해외주식 신고/신저가 랭킹 (2026-08-09 사용자 제공 KIS 문서, 미검증) ────────
+
+_OVSHL_PATH = "/uapi/overseas-stock/v1/ranking/new-highlow"
+_OVSHL_TR = "HHDFS76300000"
+
+
+def fetch_overseas_new_highlow(excd: str, is_high: bool = True,
+                                nday: str = "6", vol_rang: str = "0",
+                                gubn2: str = "1") -> Optional[list]:
+    """해외주식 신고/신저가 랭킹 (KIS HHDFS76300000), 거래소 1개씩(excd:
+    NYS/NAS/AMS/HKS/SHS/SZS/TSE 등), 30분 캐시. nday: KIS enum
+    0=5일 1=10일 2=20일 3=30일 4=60일 5=120일 6=52주 7=1년(문서 그대로).
+    gubn2: '1'=돌파유지(디폴트) '0'=일시돌파 포함(노이즈↑). creds 부재/실패
+    시 None(graceful).
+
+    ⚠️ 국내(KR) 동일계열 near-new-highlow 랭킹이 실사용 결과 상위 캡(~30)이
+    ETF/SPAC 에 잠식돼 실종목이 1~3개뿐이라 폐기된 전례 있음
+    (`intl_highlow._compute_kr_kis`, 2026-06-13 legacy 처리) — 해외판도 같은
+    문제일 가능성 있어 **VM 실호출로 실종목 비율 확인 전엔 라이브 배선 금지**
+    (2026-08-09 문서 대조만 완료, kis_client 미배선 상태로 원천 함수만 제공)."""
+    # 캐시 먼저(형제 함수들과 동일 순서) — creds 일시 부재/토큰 발급 실패에도
+    # 신선한 캐시가 있으면 서빙. 토큰 확인은 _get() 내부에 이미 있어 중복 불요.
+    cache_key = (f"ovshl_{excd}_{'h' if is_high else 'l'}"
+                 f"_{nday}_{gubn2}_{vol_rang}.json")
+    cached = _cache_get(cache_key, ttl_hours=0.5)
+    if cached is not None:
+        return cached.get("rows")
+    data = _get(
+        _OVSHL_PATH, _OVSHL_TR,
+        {"KEYB": "", "AUTH": "", "EXCD": excd,
+         "GUBN": "1" if is_high else "0", "GUBN2": gubn2,
+         "NDAY": nday, "VOL_RANG": vol_rang},
+        custtype="P",
+    )
+    if not data:
+        return None
+    rows = data.get("output2") or []
+    out = [{
+        "symbol": r.get("symb"), "name": r.get("name"),
+        "price": _float(r.get("last")), "pct": _float(r.get("rate")),
+        "vol": _int(r.get("tvol")), "ename": r.get("ename"),
+    } for r in rows if r.get("symb")]
+    _cache_put(cache_key, {"rows": out})
     return out
