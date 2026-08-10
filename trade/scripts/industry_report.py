@@ -56,8 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # rolling window ending this month
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
+    from datetime import datetime, timezone, timedelta
+    _KST = timezone(timedelta(hours=9))
+    now = datetime.now(_KST)  # KST to match customs data
     y, m = now.year, now.month
     back = args.lookback_months - 1
     while back > 0:
