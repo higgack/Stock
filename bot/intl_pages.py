@@ -68,6 +68,9 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src, market_hours_label
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
+    # CN_A 라벨 인코딩 손상 복구 (2026-08-11).
+    if market == "CN_A" and "주요종목" not in src:
+        src = "중국 A주 주요종목 — 네이버 현재가 × 52주 baseline(live)"
     # JP/HK 52w 커버리지 = env HIGHLOW_UNIVERSE_CAP(기본 5000=사실상 전종목, 사용자
     # 2026-06-16 '전시장 다'). 기본값이면 full 이라 '전종목' 정확(옛 ~900 캡 라벨
     # 제거). env 로 캡 낮추면 시총 상위만 — 그 땐 라벨이 약간 낙관적.
