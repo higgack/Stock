@@ -500,3 +500,4 @@ def fetch_intl_highlow(market: str) -> dict:
         return {**stale, "building": st.get("state") == "running"}
     return {"high": [], "low": [], "ts": "", "source": "",
             "building": True, "status": st}
+

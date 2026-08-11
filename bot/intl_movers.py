@@ -1,9 +1,9 @@
-"""JP/CN/HK 급등·급락 TOP — 상한가/하한가 있는 시장(JP 制限値幅·CN ±10/20%)도
-미국처럼 그냥 상승/하락 TOP 로 표시(사용자 2026-06-13 '중국·홍콩·일본은 미국따라').
-**네이버 worldstock 우선**(한글명·거래대금·시총 native·1콜씩) → 업종은 yfinance
-enrich(야후방식). 네이버 실패 시 yfinance 전종목 스캔 폴백.
-SWR(시장-인지 신선도 / 스테일+백그라운드 킥 / 캐시부재 building) — **동기 계산
-안 함**. 정규장 1h / 장 마감 후 재스캔 0 (사용자 2026-06-13 '모두 장중에만 1h').
+"""JP/CN/HK 급등·급락 TOP ???�한가/?�한가 ?�는 ?�장(JP ?�限?�幅·CN ±10/20%)??
+미국처럼 그냥 ?�승/?�락 TOP �??�시(?�용??2026-06-13 '중국·?�콩·?�본?� 미국?�라').
+**?�이�?worldstock ?�선**(?��?명·거?��?금·시�?native·1콜씩) ???�종?� yfinance
+enrich(?�후방식). ?�이�??�패 ??yfinance ?�종�??�캔 ?�백.
+SWR(?�장-?��? ?�선??/ ?�테??백그?�운????/ 캐시부??building) ??**?�기 계산
+????*. ?�규??1h / ??마감 ???�스�?0 (?�용??2026-06-13 '모두 ?�중?�만 1h').
 graceful.
 """
 from __future__ import annotations
@@ -14,14 +14,14 @@ import time
 
 log = logging.getLogger("bot.intl_movers")
 
-# market → (캐시명, 상태명, 라벨). JP/CN_A/HK 전부 네이버 무버(사용자 2026-06-13).
+# market ??(캐시�? ?�태�? ?�벨). JP/CN_A/HK ?��? ?�이�?무버(?�용??2026-06-13).
 _CFG = {
-    "HK": ("hk_movers_v1.json", "hk_movers_status.json", "홍콩 전종목"),
-    "JP": ("jp_movers_v1.json", "jp_movers_status.json", "일본(TSE)"),
-    "CN_A": ("cn_movers_v1.json", "cn_movers_status.json", "중국 A주"),
+    "HK": ("hk_movers_v1.json", "hk_movers_status.json", "?�콩 ?�종�?),
+    "JP": ("jp_movers_v1.json", "jp_movers_status.json", "?�본(TSE)"),
+    "CN_A": ("cn_movers_v1.json", "cn_movers_status.json", "중국 A�?),
 }
-# 신선도는 시장-인지(finviz_client._session_fresh HK, 장중 1h / 장 밖 마지막 마감
-# 이후 재스캔 0) — US movers 와 동일 정책(사용자 2026-06-13 '모두 장중에만 1h').
+# ?�선?�는 ?�장-?��?(finviz_client._session_fresh HK, ?�중 1h / ??�?마�?�?마감
+# ?�후 ?�스�?0) ??US movers ?� ?�일 ?�책(?�용??2026-06-13 '모두 ?�중?�만 1h').
 _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
@@ -44,14 +44,14 @@ def intl_movers_status(market: str) -> dict:
 
 def _compute(market: str) -> None:
     try:
-        # 네이버 worldstock 우선 (US 무버 미러 — 한글명·거래대금·시총 native·1콜씩,
-        # 사용자 2026-06-13). 업종(+업종분포)은 네이버 미제공 → yfinance enrich(야후방식).
+        # ?�이�?worldstock ?�선 (US 무버 미러 ???��?명·거?��?금·시�?native·1콜씩,
+        # ?�용??2026-06-13). ?�종(+?�종분포)?� ?�이�?미제�???yfinance enrich(?�후방식).
         try:
             from bot.naver_ranking_client import fetch_intl_movers_naver
             nv = fetch_intl_movers_naver(market)
             if nv.get("up") or nv.get("down"):
                 try:
-                    # 업종은 yfinance enrich 유지(네이버 무버 + 야후 업종 정책).
+                    # ?�종?� yfinance enrich ?��?(?�이�?무버 + ?�후 ?�종 ?�책).
                     from bot.finviz_client import _fetch_industries
                     hits = [r["ticker"] for r in nv["up"] + nv["down"] if r.get("ticker")]
                     inds = _fetch_industries(hits)
@@ -59,15 +59,15 @@ def _compute(market: str) -> None:
                         if not r.get("ind"):
                             r["ind"] = inds.get(r["ticker"])
                 except Exception as exc:
-                    log.warning("intl movers 업종 enrich (%s): %s", market, exc)
+                    log.warning("intl movers ?�종 enrich (%s): %s", market, exc)
                 from bot.finviz_client import _cache_write
                 _cache_write(_CFG[market][0], nv)
                 _status_write(market, "done", up=len(nv["up"]),
                               down=len(nv["down"]), src="naver")
                 return
         except Exception as exc:
-            log.warning("naver intl movers (%s) → yfinance 폴백: %s", market, exc)
-        # 폴백: yfinance 전종목 스캔 (네이버 실패 시)
+            log.warning("naver intl movers (%s) ??yfinance ?�백: %s", market, exc)
+        # ?�백: yfinance ?�종�??�캔 (?�이�??�패 ??
         from bot.finviz_client import _compute_movers_from
         from bot.intl_universe import full_universe
         if market == "CN_A":
@@ -86,7 +86,7 @@ def _compute(market: str) -> None:
         _status_write(market, "running", total=len(uni))
         out = _compute_movers_from(
             uni, {t: t for t in uni}, _CFG[market][0],
-            f"{_CFG[market][2]}(yfinance 당일 등락률)", market)
+            f"{_CFG[market][2]}(yfinance ?�일 ?�락�?", market)
         _status_write(market, "done", up=len(out.get("up", [])),
                       down=len(out.get("down", [])))
     except Exception as exc:
@@ -107,9 +107,9 @@ def _kick(market: str) -> None:
 
 
 def fetch_intl_movers(market: str) -> dict:
-    """HK 급등/급락 — **동기 계산 안 함**. 시장-인지 신선도(정규장 1h / 장 밖
-    마지막 마감 이후 재스캔 0) 즉시 / 스테일+백그라운드 킥 / 캐시부재 building.
-    실패 5분 백오프·진행중 30분 dedup. {up,down,ts,source,scanned,building,status}."""
+    """HK 급등/급락 ??**?�기 계산 ????*. ?�장-?��? ?�선???�규??1h / ??�?
+    마�?�?마감 ?�후 ?�스�?0) 즉시 / ?�테??백그?�운????/ 캐시부??building.
+    ?�패 5�?백오?�·진?�중 30�?dedup. {up,down,ts,source,scanned,building,status}."""
     if market not in _CFG:
         return {"up": [], "down": [], "ts": "", "source": "", "building": False}
     from bot.finviz_client import (_CACHE_DIR, _MOVERS_INTRA_TTL, _cached,
@@ -121,7 +121,7 @@ def fetch_intl_movers(market: str) -> dict:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _MOVERS_INTRA_TTL):   # 장중 1분(사용자 2026-06-14)
+        if _session_fresh(market, mt, _MOVERS_INTRA_TTL):   # ?�중 1�??�용??2026-06-14)
             return stale
     st = intl_movers_status(market)
     age = time.time() - (st.get("ts") or 0)
