@@ -7,14 +7,14 @@
 from __future__ import annotations
 
 THEME = {
-    "domain": "Sub-tier (Aerospace & Defense)",
+    "domain": "서브티어 공급망",
     "layer": "L4_SUBINDUSTRY",
     "aliases": [],
     "horizon": "12-24 months",
     "binding_layer_taxonomy": [
-        "Sub-tier — 미국 (US (Boeing BA · GE Aerospace GE · Howmet HWM · TransDigm TDG · Heico HEI · Curtiss-Wright CW · MTU MTX.DE), BR (Embraer ERJ), CA (Bombardier BBD-B.TO) · Lockheed Martin LMT)",
-        "Sub-tier — 유럽 (Spirit AeroSystems SPR), EU (Airbus AIR.PA · Safran SAF.PA · Rolls-Royce RR.L · BAE BA.L · Rheinmetall RHM.DE · Leonardo LDO.MI · Thales HO.PA · Saab SAAB-B.ST)",
-        "Sub-tier — 비상장 (Rafael 비상장)",
+        "서브티어 공급망 — 미국 (US (Boeing BA · GE Aerospace GE · Howmet HWM · TransDigm TDG · Heico HEI · Curtiss-Wright CW · MTU MTX.DE), BR (Embraer ERJ), CA (Bombardier BBD-B.TO) · Lockheed Martin LMT)",
+        "서브티어 공급망 — 유럽 (Spirit AeroSystems SPR), EU (Airbus AIR.PA · Safran SAF.PA · Rolls-Royce RR.L · BAE BA.L · Rheinmetall RHM.DE · Leonardo LDO.MI · Thales HO.PA · Saab SAAB-B.ST)",
+        "서브티어 공급망 — 비상장 (Rafael 비상장)",
     ],
     "catalyst_types": [
         "Boeing 737 MAX 월별 출하량 + Airbus A320neo backlog + 中 COMAC C919 ramp",

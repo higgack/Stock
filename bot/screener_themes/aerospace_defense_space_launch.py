@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 THEME = {
-    "domain": "Space Launch + 위성 (Aerospace & Defense)",
+    "domain": "우주 발사 + 위성",
     "layer": "L4_SUBINDUSTRY",
     "aliases": ["space_launch", "launch", "위성"],
     "horizon": "12-24 months",
     "binding_layer_taxonomy": [
-        "Space Launch + 위성 — 비상장 (SpaceX 비상장 · Maxar 비상장 · Astranis 비상장)",
-        "Space Launch + 위성 — 미국 (Rocket Lab RKLB · Planet PL · Iridium IRDM · Intuitive Machines LUNR · Redwire RDW)",
+        "우주 발사 + 위성 — 비상장 (SpaceX 비상장 · Maxar 비상장 · Astranis 비상장)",
+        "우주 발사 + 위성 — 미국 (Rocket Lab RKLB · Planet PL · Iridium IRDM · Intuitive Machines LUNR · Redwire RDW)",
     ],
     "catalyst_types": [
         "Boeing 737 MAX 월별 출하량 + Airbus A320neo backlog + 中 COMAC C919 ramp",
@@ -24,7 +24,7 @@ THEME = {
         "AUKUS Pillar 1 잠수함 인도 일정 + 美 NRC SMR 해군 추진 인허가",
     ],
     "regional_concentration": {
-        "Space Launch + 위성 (비상장)": "SpaceX 비상장 · Maxar 비상장 · Astranis 비상장",
-        "Space Launch + 위성 (미국)": "Rocket Lab RKLB · Planet PL · Iridium IRDM · Intuitive Machines LUNR · Redwire RDW",
+        "우주 발사 + 위성 (비상장)": "SpaceX 비상장 · Maxar 비상장 · Astranis 비상장",
+        "우주 발사 + 위성 (미국)": "Rocket Lab RKLB · Planet PL · Iridium IRDM · Intuitive Machines LUNR · Redwire RDW",
     },
 }
