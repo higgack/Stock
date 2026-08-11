@@ -9169,7 +9169,7 @@ def _render_screener_domains_page() -> str:
         ("L3_INDUSTRY", "🔬 L3 Industry","각 L2 아래 sub-industry"),
         # L4 = 각 L3 아래 세부 sub-industry (2026-06-14, GICS sub-industry 깊이).
         # 예: Semiconductors → Memory/Foundry/Equipment/Logic AI ...
-        ("L4_SUBINDUSTRY", "🎯 L4 Sub-industry", "각 L3 아래 세부 sub-industry (slug/별칭 접근)"),
+        ("L4_SUBINDUSTRY", "🎯 L4 세부 업종", "각 L3 아래 세부 업종 (slug/별칭 접근)"),
         # AD_HOC = `/screener <자유어>` 5회+ 사용 후 자동 promoted 정식 모듈
         # (bot/screener_freetext.promote_to_module). 사용자 수동 reclassify
         # 전까지 별도 layer 로 노출.
