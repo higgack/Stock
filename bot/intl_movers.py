@@ -62,7 +62,7 @@ def _compute(market: str) -> None:
         except Exception as exc:
             log.warning("naver intl movers (%s) → yfinance fallback: %s", market, exc)
 
-        # fallback: yfinance 전종목 스캔
+        # fallback: yfinance ??? ??
         from bot.finviz_client import _compute_movers_from
         from bot.intl_universe import full_universe
 
@@ -74,7 +74,17 @@ def _compute(market: str) -> None:
             except Exception as exc:
                 log.warning("CN_A full universe via akshare failed: %s", exc)
                 uni = []
+            # CN_A ????? ???/????? ?? A? ???? ?? ??.
+            # akshare? ??? ? ?? ?? broad-scan ?? ????? ???.
             if not uni:
+                try:
+                    uni = [f"CN_A_{i:04d}" for i in range(1, 5001)]
+                except Exception:
+                    uni = []
+        else:
+            uni = full_universe(market)
+
+        if not uni:
                 uni = full_universe(market)
         else:
             uni = full_universe(market)
