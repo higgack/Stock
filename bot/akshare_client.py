@@ -233,10 +233,12 @@ def _is_transient_network_error(exc: Exception) -> bool:
     return False
 
 def list_cn_a_universe() -> dict:
-    """CN A? ??? {yfinance_ticker: ???}.
+    """Full CN A-share universe {yfinance_ticker: ???}.
 
-    ??? AKShare ??? ?? ????, ???? ? dict? ??? ??
-    ???? CSI300+500 ?? peer? ???? ??.
+    Primary path: AKShare full A-share listing sources (spot/code-name style
+    endpoints) with SH+SZ+BJ coverage where available. Falls back cleanly to
+    CSI300+500 only if the full universe cannot be collected. Empty dict on
+    AKShare absence/failure so callers can degrade gracefully.
     """
     cache_key = "cn_a_universe.json"
     cached = _cache_get(cache_key, ttl_hours=7 * 24)
@@ -250,6 +252,7 @@ def list_cn_a_universe() -> dict:
         ("stock_zh_a_spot_em", "spot"),
         ("stock_zh_a_hist_em", "hist"),
         ("stock_info_a_code_name", "code_name"),
+        ("stock_zh_a_spot", "spot_full"),
     ]
     for fn_name, mode in candidates:
         fn = getattr(ak, fn_name, None)
@@ -287,8 +290,10 @@ def list_cn_a_universe() -> dict:
                 if df is None or getattr(df, "empty", True):
                     continue
                 cols = {str(c): c for c in df.columns}
-                code_c = next((cols[c] for c in cols if "??" in c or "????" in c), None)
-                name_c = next((cols[c] for c in cols if "??" in c or "????" in c), None)
+                code_c = next((cols[c] for c in cols
+                               if any(k in c for k in ("??", "????", "????", "code"))), None)
+                name_c = next((cols[c] for c in cols
+                               if any(k in c for k in ("??", "????", "????", "name"))), None)
                 if code_c is None:
                     continue
                 for _, row in df.iterrows():
@@ -298,6 +303,11 @@ def list_cn_a_universe() -> dict:
                         out.setdefault(tk, nm or tk)
         except Exception as exc:
             log.warning("akshare CN A universe %s failed: %s", fn_name, exc)
+    if len(out) <= 100:
+        try:
+            out = list_csi300_500() or out
+        except Exception as exc:
+            log.warning("akshare CN A universe fallback CSI300+500 failed: %s", exc)
     if len(out) > 100:
         _cache_put(cache_key, out)
     return out

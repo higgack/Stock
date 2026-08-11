@@ -70,7 +70,16 @@ def _compute(market: str) -> None:
         # 폴백: yfinance 전종목 스캔 (네이버 실패 시)
         from bot.finviz_client import _compute_movers_from
         from bot.intl_universe import full_universe
-        uni = full_universe(market)
+        if market == "CN_A":
+            try:
+                from bot.akshare_client import list_cn_a_universe
+                uni_map = list_cn_a_universe()
+                uni = list(uni_map.keys()) if uni_map else []
+            except Exception as exc:
+                log.warning("CN_A full universe via akshare failed: %s", exc)
+                uni = full_universe(market)
+        else:
+            uni = full_universe(market)
         if not uni:
             _status_write(market, "failed", detail="universe empty")
             return
