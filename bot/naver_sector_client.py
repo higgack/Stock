@@ -338,6 +338,7 @@ _DEPOSIT_SCHEMA_V = 4   # 2=코스피/코스닥 신용 분리 · 3=예탁증권�
 # 파싱으로 확정 — 시장구분 '0', 코드 '0503', 명칭 'VKOSPI' 정확히 일치
 # (추측 아님, 다운로드한 마스터파일에서 실제 확인).
 _KIS_VKOSPI_IDX_CODE = "0503"
+_LAST_DEPOSIT_OK: dict = {}
 
 
 def _fsc_date(d: str) -> str:
@@ -420,6 +421,9 @@ def fetch_deposit() -> dict:
     # fresh 라 새 필드(코스피/코스닥 신용 분리)가 다음 장까지 안 나타남 —
     # 구버전 산출본이면 miss 취급해 1회 재생성(재생성분엔 _v 기록).
     if c is not None and c.get("_v") == _DEPOSIT_SCHEMA_V:
+        if isinstance(c, dict) and c.get("deposit") is not None:
+            global _LAST_DEPOSIT_OK
+            _LAST_DEPOSIT_OK = dict(c)
         return c
     out = _fetch_deposit_fsc()
     if not out or out.get("deposit") is None:
@@ -454,6 +458,13 @@ def fetch_deposit() -> dict:
         log.warning("vkospi merge failed: %s", exc)
     if isinstance(out, dict) and out:
         out["_v"] = _DEPOSIT_SCHEMA_V
+        if out.get("deposit") is not None:
+            _LAST_DEPOSIT_OK.clear()
+            _LAST_DEPOSIT_OK.update(out)
+    if (not isinstance(out, dict) or out.get("deposit") is None) and _LAST_DEPOSIT_OK.get("deposit") is not None:
+        out = dict(_LAST_DEPOSIT_OK)
+        out.setdefault("source", "??????")
+        out["_stale"] = True
     _cache_write("deposit.json", out)
     return out
 
