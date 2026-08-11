@@ -232,6 +232,77 @@ def _is_transient_network_error(exc: Exception) -> bool:
         return True
     return False
 
+def list_cn_a_universe() -> dict:
+    """CN A? ??? {yfinance_ticker: ???}.
+
+    ??? AKShare ??? ?? ????, ???? ? dict? ??? ??
+    ???? CSI300+500 ?? peer? ???? ??.
+    """
+    cache_key = "cn_a_universe.json"
+    cached = _cache_get(cache_key, ttl_hours=7 * 24)
+    if isinstance(cached, dict) and len(cached) > 100:
+        return cached
+    ak = _import_akshare()
+    if ak is None:
+        return {}
+    out: dict = {}
+    candidates = [
+        ("stock_zh_a_spot_em", "spot"),
+        ("stock_zh_a_hist_em", "hist"),
+        ("stock_info_a_code_name", "code_name"),
+    ]
+    for fn_name, mode in candidates:
+        fn = getattr(ak, fn_name, None)
+        if fn is None:
+            continue
+        try:
+            if mode == "spot":
+                df = _fetch_with_retry(lambda f=fn: f(), f"{fn_name}")
+                if df is None or getattr(df, "empty", True):
+                    continue
+                code_c = _pick_cons_col(df.columns, "code")
+                name_c = _pick_cons_col(df.columns, "name")
+                if code_c is None:
+                    continue
+                for _, row in df.iterrows():
+                    tk = _cn_code_to_ticker(row.get(code_c))
+                    if tk:
+                        nm = str(row.get(name_c) or "").strip() if name_c else ""
+                        out.setdefault(tk, nm or tk)
+            elif mode == "code_name":
+                df = _fetch_with_retry(lambda f=fn: f(), f"{fn_name}")
+                if df is None or getattr(df, "empty", True):
+                    continue
+                code_c = _pick_cons_col(df.columns, "code")
+                name_c = _pick_cons_col(df.columns, "name")
+                if code_c is None:
+                    continue
+                for _, row in df.iterrows():
+                    tk = _cn_code_to_ticker(row.get(code_c))
+                    if tk:
+                        nm = str(row.get(name_c) or "").strip() if name_c else ""
+                        out.setdefault(tk, nm or tk)
+            else:
+                df = _fetch_with_retry(lambda f=fn: f(), f"{fn_name}")
+                if df is None or getattr(df, "empty", True):
+                    continue
+                cols = {str(c): c for c in df.columns}
+                code_c = next((cols[c] for c in cols if "??" in c or "????" in c), None)
+                name_c = next((cols[c] for c in cols if "??" in c or "????" in c), None)
+                if code_c is None:
+                    continue
+                for _, row in df.iterrows():
+                    tk = _cn_code_to_ticker(row.get(code_c))
+                    if tk:
+                        nm = str(row.get(name_c) or "").strip() if name_c else ""
+                        out.setdefault(tk, nm or tk)
+        except Exception as exc:
+            log.warning("akshare CN A universe %s failed: %s", fn_name, exc)
+    if len(out) > 100:
+        _cache_put(cache_key, out)
+    return out
+
+
 
 def _fetch_with_retry(ak_fn, label: str, max_retries: int = 2):
     """Call `ak_fn()` (a zero-arg lambda) and retry transient network

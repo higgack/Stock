@@ -26,13 +26,11 @@ log = logging.getLogger(__name__)
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v3.json",
            "jp_highlow_status.json", "일본 주요종목", (".T",)),
-    # CN_A 52주 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 → CSI300+500') —
-    # 옛 2026-06-14 제거 번복. **CSI 300 + CSI 500**(대형+중형 ~800): AKShare
-    # list_csi300_500 → yfinance 1y 스캔(_universe CN_A 분기). 전 A주(~5천)는
-    # 소형주 yfinance 1년 커버 빈약해 제외 — CSI300+500 은 커버리지 양호(dense).
-    # AKShare 미설치/실패 시 peer(_CN_A_INDUSTRY_PEERS ~64) 폴백. 슬롯 :30 분산.
-    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v1.json",
-             "cn_highlow_status.json", "중국 CSI300+500", (".SS", ".SZ")),
+    # CN_A 52? = A? ???(??? 2026-08-11 ?? ??). ?? A? ??
+    # ????? ??? ?? ?? ??, ?? ? CSI300+500 / peer ? ??.
+    # ???? ??? ?? ??? coverage ??.
+    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v2.json",
+             "cn_highlow_status.json", "?? A? ???", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v4.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
     # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
@@ -115,13 +113,18 @@ def _universe(market: str) -> tuple[list[str], dict]:
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":
-        # CN = CSI 300 + CSI 500 (사용자 2026-06-17 'CSI300+500') — 대형+중형 ~800.
-        # 전 A주(~5천)는 소형주를 yfinance 가 1년 일봉으로 잘 안 줘 신고저가 듬성듬성
-        # 했음 → yfinance 커버리지 양호한 대형·중형만(dense·가벼움). AKShare 미설치/
-        # 실패 시 아래 peer 폴백(주요종목 ~64, 회귀 0). 캡=HIGHLOW_UNIVERSE_CAP.
+        # CN_A = A? ???. ??? AKShare ??? ??? ?? ????,
+        # ?? ? CSI300+500, ????? peer ??.
         try:
-            from bot.akshare_client import list_csi300_500
-            csi = list_csi300_500()              # {ticker: 中文명}, AKShare
+            from bot.akshare_client import list_cn_a_universe, list_csi300_500
+            cn = list_cn_a_universe()
+            if len(cn) > 100:
+                full = list(cn.keys())
+                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+                if len(full) > _cap:
+                    full = _cap_by_liquidity(full, _cap, "CN_A")
+                return full, {t: cn.get(t, t) for t in full}
+            csi = list_csi300_500()
             if len(csi) > 100:
                 full = list(csi.keys())
                 _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
@@ -129,8 +132,8 @@ def _universe(market: str) -> tuple[list[str], dict]:
                     full = _cap_by_liquidity(full, _cap, "CN_A")
                 return full, {t: csi.get(t, t) for t in full}
         except Exception as exc:
-            log.warning("intl CN CSI300+500 universe (AKShare): %s", exc)
-        # AKShare 부재/실패 → 아래 peer 폴백으로 진행(회귀 0)
+            log.warning("intl CN A-share universe (AKShare): %s", exc)
+        # AKShare ??/?? ? ?? peer ???? ??(?? 0)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
