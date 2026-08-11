@@ -1,6 +1,6 @@
 """Telecommunication Services — L3 under Communication Services.
 
-Integrated Wireless (AT&T · Verizon · T-Mobile) + Cable (Comcast ·
+미국 무선 통신(AT&T · Verizon · T-Mobile) + Cable (Comcast ·
 Charter) + Infra REIT (American Tower · Crown Castle). 5G ARPU 성장 +
 broadband BEAD 보조금 + cell tower lease 갱신이 주 driver.
 """
@@ -8,7 +8,7 @@ broadband BEAD 보조금 + cell tower lease 갱신이 주 driver.
 from __future__ import annotations
 
 THEME = {
-    "domain": "Telecommunication Services (통신 서비스)",
+    "domain": "통신 서비스",
     "layer": "L3_INDUSTRY",
     "aliases": [
         "telecom",
@@ -26,19 +26,19 @@ THEME = {
     ],
     "horizon": "9-24 months",
     "binding_layer_taxonomy": [
-        "US Integrated Wireless (AT&T · Verizon · T-Mobile)",
-        "US Cable + Broadband (Comcast · Charter · Dish · Altice)",
-        "Communication Infrastructure REIT (American Tower · Crown Castle · SBA · Equinix)",
-        "EU Integrated (Vodafone · Deutsche Telekom · Orange · BT · Telefónica)",
-        "Asia 4 Mega-tier (NTT · KDDI · SoftBank · China Mobile · China Telecom · Reliance Jio)",
-        "Korea + Specialty Telecom (SKT · KT · LG U+ + 한국알뜰폰)",
+        "미국 무선 통신(AT&T · Verizon · T-Mobile)",
+        "미국 케이블 + 광대역(Comcast · Charter · Dish · Altice)",
+        "통신 인프라 리츠(American Tower · Crown Castle · SBA · Equinix)",
+        "유럽 통신 통합(Vodafone · Deutsche Telekom · Orange · BT · Telefónica)",
+        "아시아 4대 메가( NTT · KDDI · SoftBank · China Mobile · China Telecom · Reliance Jio )",
+        "한국 + 특화 통신(SK텔레콤 · KT · LG U+ + 알뜰폰",
     ],
     "catalyst_types": [
         "5G ARPU 성장 + 美 Verizon/AT&T/T-Mobile capex 사이클",
-        "美 broadband BEAD 보조금 + Cable retention 손실 (Comcast/Charter)",
-        "Cell tower REIT (AMT/CCI) 분기 lease 갱신 + small cell + edge 컴퓨팅 deployment",
-        "EU 통신사 합병 + 5G capex 회수 + 영국 fiber rollout BT/Openreach",
-        "中国 14차 5개년 5G ARPU + 国家 数字경제 + 美 SDN entity list",
+        "미국 broadband BEAD 보조금 + Cable retention 손실(Comcast/Charter)",
+        "셀타워 리츠(AMT/CCI) 분기 lease 갱신 + small cell + edge 컴퓨팅 배치",
+        "유럽 통신사 합병 + 5G capex 회수 + 영국 fiber rollout BT/Openreach",
+        "중국 14차 5개년 5G ARPU + 국가 디지털경제 + 미국 SDN entity list",
         "한국 5G 28GHz 정책 + 일본 NTT vs SoftBank vs KDDI 경쟁",
     ],
     "regional_concentration": {
