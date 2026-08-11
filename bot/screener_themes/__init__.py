@@ -72,6 +72,42 @@ _REQUIRED_KEYS = (
 _VALID_LAYERS = ("L1_TREND", "L2_SECTOR", "L3_INDUSTRY", "L4_SUBINDUSTRY",
                  "AD_HOC")
 
+_L4_DOMAIN_KO = {
+    "aerospace_defense_commercial_aviation_oem": "Commercial Aviation OEM (상업 항공기 OEM)",
+    "aerospace_defense_drones_counter_uas": "Drones & Counter-UAS (드론 및 대드론)",
+    "aerospace_defense_military_prime": "Military Prime (방산 주계약자)",
+    "aerospace_defense_naval_shipbuilding": "Naval Shipbuilding (해군 조선)",
+    "aerospace_defense_space_launch": "Space Launch (우주 발사체)",
+    "aerospace_defense_sub_tier": "Sub-tier (부품 협력사)",
+    "airlines_asia_low_cost": "Asia Low-cost (아시아 저비용항공)",
+    "airlines_asia_premium": "Asia Premium (아시아 프리미엄 항공)",
+    "airlines_eu_flag_carriers": "EU Flag Carriers (유럽 국적기)",
+    "airlines_eu_low_cost": "EU Low-cost (유럽 저비용항공)",
+    "airlines_us_low_cost": "US Low-cost (미국 저비용항공)",
+    "airlines_us_network_carriers": "US Network Carriers (미국 네트워크 항공)",
+    "apparel_luxury_eu_ch": "EU/CH Luxury (유럽·스위스 럭셔리)",
+    "apparel_luxury_eu_hard_luxury": "EU Hard Luxury (유럽 하드 럭셔리)",
+    "apparel_luxury_fast_fashion_asia": "Fast Fashion Asia (아시아 패스트패션)",
+    "apparel_luxury_us": "US Luxury (미국 럭셔리)",
+    "apparel_luxury_us_apparel": "US Apparel (미국 의류)",
+    "automotive_auto_parts_adas": "Auto Parts & ADAS (부품 및 ADAS)",
+    "automotive_auto_retail": "Auto Retail (자동차 소매)",
+    "automotive_ev_pure_play": "EV Pure Play (전기차 순수주)",
+    "automotive_ice_hybrid_oem": "ICE/Hybrid OEM (내연기관·하이브리드 OEM)",
+    "automotive_luxury_oem": "Luxury OEM (고급차 OEM)",
+    "automotive_tire": "Tire (타이어)",
+    "banks_china_joint_stock_insuranc": "China Joint Stock Insurance (중국 주식제 보험)",
+    "banks_global_gsib": "Global GSIB (글로벌 시스템적 중요은행)",
+    "banks_japan_mega_banks": "Japan Mega Banks (일본 메가뱅크)",
+    "banks_korea": "Korea Banks (한국 은행)",
+    "banks_us_big_4_diversified": "US Big 4 Diversified (미국 4대 은행)",
+    "banks_us_regional": "US Regional Banks (미국 지방은행)",
+    "bdc_pe_sponsor_affiliated": "PE Sponsor Affiliated (PE 스폰서 연계 BDC)",
+    "bdc_tier_1_externally_managed": "Tier 1 Externally Managed (외부운용 BDC)",
+    "bdc_tier_2_internally_managed": "Tier 2 Internally Managed (내부운용 BDC)",
+    "bdc_tier_3_specialty_niche": "Tier 3 Specialty Niche (특화 틈새 BDC)",
+    "bdc_venture_debt_focused": "Venture Debt Focused (벤처 대출 집중 BDC)",
+}
 
 def _validate(slug: str, theme: dict) -> None:
     """Fail-fast import-time check. Catches typos in dict keys before they
@@ -185,9 +221,12 @@ def list_domains() -> list[dict]:
     out = []
     for slug in sorted(_THEMES):
         theme = _THEMES[slug]
+        domain = theme.get("domain", slug)
+        if theme.get("layer") == "L4_SUBINDUSTRY":
+            domain = _L4_DOMAIN_KO.get(slug, domain)
         out.append({
             "slug": slug,
-            "domain": theme.get("domain", slug),
+            "domain": domain,
             "aliases": list(theme.get("aliases", []) or []),
             "layer": theme.get("layer", "L1_TREND"),
         })
