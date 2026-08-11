@@ -9181,7 +9181,12 @@ def _render_screener_domains_page() -> str:
 
     def _render_card(d: dict) -> str:
         slug = d["slug"]
-        domain = _html.escape(d["domain"])
+        domain_raw = d["domain"]
+        if d.get("layer") == "L4_SUBINDUSTRY" and " (" in domain_raw:
+            base, rest = domain_raw.split(" (", 1)
+            domain_raw = base + " (" + rest.replace(")", "") + ")"
+        domain = _html.escape(domain_raw)
+        aliases = [a for a in d["aliases"] if a.lower() != slug]
         aliases = [a for a in d["aliases"] if a.lower() != slug]
         alias_html = ""
         if aliases:
