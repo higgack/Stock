@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 THEME = {
-    "domain": "Commercial Aviation OEM (Aerospace & Defense)",
+    "domain": "상업 항공 OEM 방산",
     "layer": "L4_SUBINDUSTRY",
     "aliases": ["commercial_aviation", "commercial", "aviation"],
     "horizon": "12-24 months",
     "binding_layer_taxonomy": [
-        "Commercial Aviation OEM — 미국 (US (Boeing BA · GE Aerospace GE · Howmet HWM · TransDigm TDG · Heico HEI · Curtiss-Wright CW · MTU MTX.DE), BR (Embraer ERJ), CA (Bombardier BBD-B.TO))",
-        "Commercial Aviation OEM — 유럽 (Spirit AeroSystems SPR), EU (Airbus AIR.PA · Safran SAF.PA · Rolls-Royce RR.L)",
+        "상업 항공 OEM — 미국 (US (Boeing BA · GE Aerospace GE · Howmet HWM · TransDigm TDG · Heico HEI · Curtiss-Wright CW · MTU MTX.DE), BR (Embraer ERJ), CA (Bombardier BBD-B.TO))",
+        "상업 항공 OEM — 유럽 (Spirit AeroSystems SPR), EU (Airbus AIR.PA · Safran SAF.PA · Rolls-Royce RR.L)",
     ],
     "catalyst_types": [
         "Boeing 737 MAX 월별 출하량 + Airbus A320neo backlog + 中 COMAC C919 ramp",
@@ -24,7 +24,7 @@ THEME = {
         "AUKUS Pillar 1 잠수함 인도 일정 + 美 NRC SMR 해군 추진 인허가",
     ],
     "regional_concentration": {
-        "Commercial Aviation OEM (미국)": "US (Boeing BA · GE Aerospace GE · Howmet HWM · TransDigm TDG · Heico HEI · Curtiss-Wright CW · MTU MTX.DE), BR (Embraer ERJ), CA (Bombardier BBD-B.TO)",
-        "Commercial Aviation OEM (유럽)": "Spirit AeroSystems SPR), EU (Airbus AIR.PA · Safran SAF.PA · Rolls-Royce RR.L",
+        "상업 항공 OEM (미국)": "US (Boeing BA · GE Aerospace GE · Howmet HWM · TransDigm TDG · Heico HEI · Curtiss-Wright CW · MTU MTX.DE), BR (Embraer ERJ), CA (Bombardier BBD-B.TO)",
+        "상업 항공 OEM (유럽)": "Spirit AeroSystems SPR), EU (Airbus AIR.PA · Safran SAF.PA · Rolls-Royce RR.L",
     },
 }
