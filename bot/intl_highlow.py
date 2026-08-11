@@ -26,11 +26,11 @@ log = logging.getLogger(__name__)
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v3.json",
            "jp_highlow_status.json", "일본 주요종목", (".T",)),
-    # CN_A 52? = A? ???(??? 2026-08-11 ?? ??). ?? A? ??
-    # ????? ??? ?? ?? ??, ?? ? CSI300+500 / peer ? ??.
-    # ???? ??? ?? ??? coverage ??.
+    # CN_A 52주 신고가·신저가 = A주 상위 종목(시총 2026-08-11 기준). 데이터 소스는 AKShare.
+    # CSI300 상위권과 제외 종목을 고려, peer 신선도 확인 필수.
+    # 매주 일요일 자동 스캔으로 신규 상장 coverage 추가.
     "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v2.json",
-             "cn_highlow_status.json", "?? A? ???", (".SS", ".SZ")),
+             "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v4.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
     # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
