@@ -113,27 +113,9 @@ def _universe(market: str) -> tuple[list[str], dict]:
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":
-        # CN_A = A? ???. ??? AKShare ??? ??? ?? ????,
-        # ?? ? CSI300+500, ????? peer ??.
-        try:
-            from bot.akshare_client import list_cn_a_universe, list_csi300_500
-            cn = list_cn_a_universe()
-            if len(cn) > 100:
-                full = list(cn.keys())
-                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
-                if len(full) > _cap:
-                    full = _cap_by_liquidity(full, _cap, "CN_A")
-                return full, {t: cn.get(t, t) for t in full}
-            csi = list_csi300_500()
-            if len(csi) > 100:
-                full = list(csi.keys())
-                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
-                if len(full) > _cap:
-                    full = _cap_by_liquidity(full, _cap, "CN_A")
-                return full, {t: csi.get(t, t) for t in full}
-        except Exception as exc:
-            log.warning("intl CN A-share universe (AKShare): %s", exc)
-        # AKShare ??/?? ? ?? peer ???? ??(?? 0)
+        # CN_A는 원래처럼 peer 주요종목만 사용해 부하를 줄인다.
+        # AKShare 전체 유니버스는 필요할 때만 수동 경로로 다시 켠다.
+        return [], {}
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
