@@ -113,9 +113,18 @@ def _universe(market: str) -> tuple[list[str], dict]:
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":
-        # CN_A는 원래처럼 peer 주요종목만 사용해 부하를 줄인다.
-        # AKShare 전체 유니버스는 필요할 때만 수동 경로로 다시 켠다.
-        return [], {}
+        # CN_A = AKShare CSI300+500 유니버스 (cap=500 부하 관리)
+        # JP/HK와 동일하게 full universe로 변경 (2026-08-14 부하 최적화).
+        try:
+            from bot.intl_universe import full_universe
+            full = full_universe(market)
+            if len(full) > 100:
+                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "500"))
+                if len(full) > _cap:
+                    full = _cap_by_liquidity(full, _cap, market)
+                return full, {t: t for t in full}
+        except Exception as exc:
+            log.warning("intl full_universe CN_A: %s", exc)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
