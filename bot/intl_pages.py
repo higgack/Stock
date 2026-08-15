@@ -27,13 +27,19 @@ def render_intl_highlow52_page(market: str) -> str:
     ts = _html.escape(data.get("ts", ""))
     high, low = data.get("high", []), data.get("low", [])
     if not high and not low:
+        st = data.get("status") or {}
         if data.get("building"):
-            st = data.get("status") or {}
             tot = st.get("total")
             prog = f" (주요종목 {tot})" if tot else ""
             body = ('<div class="empty">⏳ 52주 신고가·신저가 산출 중'
                     f'{_html.escape(prog)}…<br>주요종목 1년 주봉 스캔. '
                     '잠시 후 새로고침해 주세요.</div>')
+        elif st.get("state") == "done":
+            tot = st.get("total")
+            prog = f" (주요종목 {tot})" if tot else ""
+            body = ('<div class="empty">52주 신고가·신저가 결과가 없습니다'
+                    f'{_html.escape(prog)}.<br>이번 스캔에서는 기준을 넘은 종목이 '
+                    '없었습니다.</div>')
         else:
             body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
