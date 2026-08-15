@@ -66,26 +66,20 @@ def _compute(market: str) -> None:
         from bot.finviz_client import _compute_movers_from
         from bot.intl_universe import full_universe
 
+        uni_map: dict = {}
         if market == "CN_A":
+            # CN_A universe = AKShare A-share listing. full_universe() only
+            # supports JP/HK; the old code unconditionally overwrote uni with
+            # full_universe(market) right after, so CN_A always ended up empty
+            # and the board reported "universe empty". Synthetic CN_A_####
+            # placeholder tickers were also dropped (not real symbols).
             try:
                 from bot.akshare_client import list_cn_a_universe
-                uni_map = list_cn_a_universe()
-                uni = list(uni_map.keys()) if uni_map else []
+                uni_map = list_cn_a_universe() or {}
+                uni = list(uni_map.keys())
             except Exception as exc:
-                log.warning("CN_A full universe via akshare failed: %s", exc)
+                log.warning("CN_A universe via akshare failed: %s", exc)
                 uni = []
-            # CN_A ????? ???/????? ?? A? ???? ?? ??.
-            # akshare? ??? ? ?? ?? broad-scan ?? ????? ???.
-            if not uni:
-                try:
-                    uni = [f"CN_A_{i:04d}" for i in range(1, 5001)]
-                except Exception:
-                    uni = []
-        else:
-            uni = full_universe(market)
-
-        if not uni:
-                uni = full_universe(market)
         else:
             uni = full_universe(market)
 
@@ -95,7 +89,7 @@ def _compute(market: str) -> None:
             return
 
         _status_write(market, "running", total=len(uni))
-        out = _compute_movers_from(uni, {t: t for t in uni}, _CFG[market][0], f"{_CFG[market][2]}(yfinance 일일 등락)", market)
+        out = _compute_movers_from(uni, {t: (uni_map.get(t) or t) for t in uni}, _CFG[market][0], f"{_CFG[market][2]}(yfinance 일일 등락)", market)
         _status_write(market, "done", up=len(out.get("up", [])), down=len(out.get("down", [])))
     except Exception as exc:
         log.warning("intl movers compute (%s): %s", market, exc)

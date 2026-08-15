@@ -14325,20 +14325,38 @@ class TestCN52Reenabled:
         assert suffix == (".SS", ".SZ")             # native A주 접미사 필터
 
     def test_cn_csi_universe_wired(self, monkeypatch):
-        # CSI 경로: _universe('CN_A') 가 AKShare list_csi300_500 를 우선 사용.
+        # 2026-08-15 — CN_A 유니버스는 AKShare **A주 전종목**
+        # (list_cn_a_universe, 내부적으로 CSI300+500 폴백)을 쓴다. 이전에는
+        # intl_universe.full_universe("CN_A") 를 불렀는데 _SPEC 은 JP/HK 만
+        # 지원해 항상 [] → 조용히 peer(~64)로 축소돼 보드가 비었다.
+        # 급등락(intl_movers)과 **동일 소스** 유지가 이 테스트의 핵심.
         import bot.intl_highlow as ih
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
-        assert "list_csi300_500" in src            # AKShare CSI 소스 배선
-        # AKShare 가 CSI 구성종목 주면 그게 유니버스(폴백 아님) — 배선 검증(네트워크 0).
-        monkeypatch.setattr("bot.akshare_client.list_csi300_500",
+        assert "list_cn_a_universe" in src         # AKShare A주 전종목 배선
+        blk = src.split('if market == "CN_A":')[1].split("from bot import market")[0]
+        assert "= full_universe" not in blk        # 예전 no-op 경로 재발 방지
+        monkeypatch.setattr("bot.akshare_client.list_cn_a_universe",
                             lambda: {f"{600000 + i}.SS": f"종목{i}" for i in range(800)})
+        monkeypatch.setattr(ih, "_cap_by_liquidity",
+                            lambda full, cap, market: full[:cap])
         uni, names = ih._universe("CN_A")
-        assert len(uni) == 800 and names["600000.SS"] == "종목0"
+        # HIGHLOW_UNIVERSE_CAP(기본 500) 로 유동성 상위 칭 — yfinance 스캔 부하 관리.
+        assert len(uni) == 500 and names["600000.SS"] == "종목0"
         # AKShare 빈 결과(미설치/실패) → peer(_CN_A_INDUSTRY_PEERS) 폴백, 회귀 0.
-        monkeypatch.setattr("bot.akshare_client.list_csi300_500", lambda: {})
+        monkeypatch.setattr("bot.akshare_client.list_cn_a_universe", lambda: {})
         uni2, names2 = ih._universe("CN_A")
         assert len(uni2) >= 30                       # peer ~64
         assert all(t.endswith((".SS", ".SZ")) for t in uni2)
+
+    def test_cn_movers_universe_not_overwritten(self, monkeypatch):
+        """급등락 CN_A 유니버스가 full_universe 로 덮어쓰여 비지 않아야 한다.
+        옫 코드는 akshare 로 받은 uni 를 직후 `uni = full_universe(market)` 로
+        무조건 덮어써 CN_A 가 항상 빈 유니버스('universe empty')가 됐다."""
+        src = open("bot/intl_movers.py", encoding="utf-8").read()
+        blk = src.split('if market == "CN_A":')[1].split("if not uni:")[0]
+        assert "list_cn_a_universe" in blk
+        assert blk.count("uni = full_universe(market)") == 1   # else 분기 1회만
+        assert "CN_A_{" not in src and 'CN_A_%' not in src  # 가짜 플레이스홀더 티커 제거
 
     def test_cn_csi_parse_and_code_conversion(self, monkeypatch):
         import bot.akshare_client as ak

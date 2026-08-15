@@ -29,7 +29,7 @@ _CFG = {
     # CN_A 52주 신고가·신저가 = A주 상위 종목(시총 2026-08-11 기준). 데이터 소스는 AKShare.
     # CSI300 상위권과 제외 종목을 고려, peer 신선도 확인 필수.
     # 매주 일요일 자동 스캔으로 신규 상장 coverage 추가.
-    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v2.json",
+    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v3.json",
              "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v4.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
@@ -113,18 +113,22 @@ def _universe(market: str) -> tuple[list[str], dict]:
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":
-        # CN_A = AKShare CSI300+500 유니버스 (cap=500 부하 관리)
-        # JP/HK와 동일하게 full universe로 변경 (2026-08-14 부하 최적화).
+        # CN_A universe = AKShare A-share listing (list_cn_a_universe, which
+        # itself falls back to CSI300+500). intl_universe.full_universe only
+        # supports JP/HK, so it always returned [] for CN_A and the code fell
+        # through to the peer map (~64 tickers) -> board looked empty.
+        # Same source as the movers board so both stay in sync.
         try:
-            from bot.intl_universe import full_universe
-            full = full_universe(market)
+            from bot.akshare_client import list_cn_a_universe
+            uni_map = list_cn_a_universe() or {}
+            full = list(uni_map.keys())
             if len(full) > 100:
                 _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "500"))
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, market)
-                return full, {t: t for t in full}
+                return full, {t: (uni_map.get(t) or t) for t in full}
         except Exception as exc:
-            log.warning("intl full_universe CN_A: %s", exc)
+            log.warning("intl CN_A universe (akshare): %s", exc)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
@@ -321,8 +325,11 @@ def _compute(market: str) -> None:
         # 알 수 없다. 종목 수를 함께 찍어 커버리지를 한눈에 확인 가능하게 한다
         # (사용자 2026-08-01 '제대로 잡아내고 있는지').
         label = _CFG[market][3]
-        if market in ("JP", "HK") and len(uni) > 500:
-            label = {"JP": "일본 전종목(JPX 상장)", "HK": "홍콩 전종목(HKEX 상장)"}[market]
+        if len(uni) > (100 if market == "CN_A" else 500):
+            label = {"JP": "일본 전종목(JPX 상장)",
+                     "HK": "홍콩 전종목(HKEX 상장)",
+                     "CN_A": "중국 A주(AKShare 상장 · 유동성 상위)",
+                     }.get(market, label)
         out = _compute_highlow_from(
             uni, names, _CFG[market][1],
             f"{label} {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)", market)
@@ -489,9 +496,6 @@ def fetch_intl_highlow(market: str) -> dict:
             _kick(market)
     if stale is not None:
         return {**stale, "building": st.get("state") == "running"}
-    if market in _LIVE_MARKETS and _os.getenv("HIGHLOW_LIVE", "1") != "0":
-        return {"high": [], "low": [], "ts": "", "source": "",
-                "building": False, "status": st, "live": True}
     return {"high": [], "low": [], "ts": "", "source": "",
             "building": True, "status": st}
 
