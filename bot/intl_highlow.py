@@ -488,7 +488,8 @@ def fetch_intl_highlow(market: str) -> dict:
         if not yf_paused():        # YF_PAUSE → 재산출 kick 안 함(스테일 유지)
             _kick(market)
     if stale is not None:
-        return {**stale, "building": st.get("state") == "running"}
+        done = bool(stale.get("high") or stale.get("low"))
+        return {**stale, "building": (st.get("state") == "running" and not done)}
     return {"high": [], "low": [], "ts": "", "source": "",
-            "building": True, "status": st}
+            "building": (st.get("state") == "running"), "status": st}
 
