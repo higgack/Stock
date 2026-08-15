@@ -489,6 +489,9 @@ def fetch_intl_highlow(market: str) -> dict:
             _kick(market)
     if stale is not None:
         return {**stale, "building": st.get("state") == "running"}
+    if market in _LIVE_MARKETS and _os.getenv("HIGHLOW_LIVE", "1") != "0":
+        return {"high": [], "low": [], "ts": "", "source": "",
+                "building": False, "status": st, "live": True}
     return {"high": [], "low": [], "ts": "", "source": "",
             "building": True, "status": st}
 
