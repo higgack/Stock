@@ -1843,9 +1843,14 @@ class TestRiskGateExpansion20260726:
         import bot.risk_gate as rg
         monkeypatch.setattr(rg, "_today_realized_krw", lambda acct: 0.0)
         base = 1e7
-        now = time.time()
+        # ⚠️ `now - 3600` 을 그대로 쓰면 **KST 월요일 00~01시**에 그 시각이
+        # 지난 주(일요일 23시대)로 떨어져 주간 창 밖이 된다 — 매주 월요일
+        # 새벽에만 깨지는 플레이크였다(2026-08-17 00:15 KST 실측). 창 시작
+        # 이후로 끌어올려 시각 의존성을 없앤다(월초 00시 = 월간 창도 동일).
+        now = max(time.time() - 3600,
+                  rg._week_start_kst() + 1, rg._month_start_kst() + 1)
         acct = {"starting_capital_krw": base, "positions": {}, "trades": [
-            {"ticker": "A", "side": "sell", "ts": now - 3600,
+            {"ticker": "A", "side": "sell", "ts": now,
              "realized_krw": -rg.WEEKLY_LOSS_PCT * base - 1}]}
         ok, msg = rg.check_order(acct, "B", "buy", 1000)
         assert not ok and "주간" in msg
@@ -1856,7 +1861,7 @@ class TestRiskGateExpansion20260726:
         # 체크가 먼저 걸림 — 위 일일 체크와 같은 함정).
         monkeypatch.setattr(rg, "WEEKLY_LOSS_PCT", 10.0)
         acct2 = {"starting_capital_krw": base, "positions": {}, "trades": [
-            {"ticker": "A", "side": "sell", "ts": now - 3600,
+            {"ticker": "A", "side": "sell", "ts": now,
              "realized_krw": -rg.MONTHLY_LOSS_PCT * base - 1}]}
         ok2, msg2 = rg.check_order(acct2, "B", "buy", 1000)
         assert not ok2 and "월간" in msg2
@@ -6047,11 +6052,19 @@ class TestQuarterlyChartLayout20260816:
     2분할이라 각 652×270px 뿐이었고 y축 locator 설정이 아예 없었다."""
 
     def test_charts_stacked_full_width_not_side_by_side(self):
+        import re
         src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
-        assert "H_TILE, H_CHART = 17.0, 62.0" in src, "차트 섹션 높이 미확대"
-        assert "cw = 46.5" not in src, "좌우 2분할 잔존"
-        # 두 콤보 모두 전체폭(95)
+        # 정확한 리터럴을 박으면 값을 더 키울 때마다 테스트가 깨진다(실제로
+        # 62 → 88 확대에서 깨졌다). 계약은 '차트가 타일보다 충분히 크고
+        # 세로 2단' 이지 특정 숫자가 아니다.
+        m = re.search(r"H_TILE, H_CHART = ([\d.]+), ([\d.]+)", src)
+        assert m, "레이아웃 상수 이름이 바뀜"
+        tile, chart = float(m.group(1)), float(m.group(2))
+        assert chart >= 3 * tile, f"차트 섹션이 작다(H_CHART={chart})"
+        # 두 콤보 모두 전체폭(95). 옛 마커는 `cw = 46.5` 부재였는데 그건
+        # **LLM 카드 2단** 폭과 이름이 겹쳐 오탐이 됐다 — 차트 폭을 직접 본다.
         assert src.count("combo((2.5, y") >= 1 and "95, _ch" in src
+        assert "combo((2.5, y, 46" not in src, "좌우 2분할 잔존"
 
     def test_axis_tick_locator_wired_on_both_axes(self):
         # "숫자 간격 세밀하게" 의 핵심 — 옛 코드엔 locator 가 0건이었다.
@@ -6088,6 +6101,502 @@ class TestQuarterlyChartLayout20260816:
         # 정수 %로 고정하면 마진 폭이 좁을 때 '11% 10% 10% 10%' 로 중복된다.
         src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
         assert "_pdec" in src and 'f"{v:,.0f}%"' not in src
+
+    def test_bar_value_labels_are_finer_than_axis_ticks(self):
+        # 축 자릿수를 그대로 쓰면 2.15·2.24·2.31 이 '2.1/2.2/2.3' 으로 뭉개져
+        # 라벨을 붙인 목적(분기간 차이 식별)이 사라진다(2026-08-16 렌더 실측).
+        from bot.quarterly_infographic import _label_decimals
+        # USD 대형주: 스케일 후 peak 2.31(B) → 2자리라야 2.15/2.24 가 구분된다
+        assert _label_decimals(2.31, 1) == 2
+        vals = [2.15, 2.31, 2.10, 2.24]
+        d = _label_decimals(max(vals), 1)
+        assert len({f"{v:.{d}f}" for v in vals}) == 4, "라벨이 서로 뭉개짐"
+        # 값이 크면 소수는 노이즈 — 408(M) 은 정수
+        assert _label_decimals(408, 0) == 0
+        # 축 자릿수가 더 크면 그쪽을 따른다(라벨이 축보다 성기면 안 됨)
+        assert _label_decimals(500, 1) == 1
+
+    def test_rendered_bar_labels_actually_distinguish_quarters(self):
+        # ⚠️ _label_decimals 단위 테스트만으로는 **호출부가 그걸 쓰는지**를
+        # 못 잡는다(ldec=dec 로 되돌려도 초록이었다). 실제 렌더에서 축으로
+        # 넘어간 라벨 문자열을 가로채 검증한다.
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+
+        from matplotlib.axes import Axes
+
+        import bot.quarterly_infographic as qi
+        seen = []
+        _orig_font, _orig_lbl = qi._font_ok, Axes.bar_label
+        qi._font_ok = lambda: True
+
+        def _spy(self, container, **kw):
+            seen.append(list(kw.get("labels") or []))
+            return _orig_lbl(self, container, **kw)
+
+        Axes.bar_label = _spy
+        try:
+            def q(lab, r, o, n):
+                return {"label": lab,
+                        "financials": {"매출": r, "영업이익": o, "당기순이익": n},
+                        "ratios": {"영업이익률": o / r * 100,
+                                   "순이익률": n / r * 100}}
+            qs = [q("25.2Q", 2.15e9, 3.9e8, 3.0e8), q("25.3Q", 2.31e9, 4.6e8, 1.4e8),
+                  q("25.4Q", 2.10e9, 3.7e8, 3.1e8), q("26.1Q", 2.24e9, 4.7e8, 3.5e8),
+                  q("26.2Q", 2.31e9, 4.8e8, 4.1e8)]
+            p = {"ticker": "T", "company": "T", "market": "US",
+                 "market_cap": 7e10, "quarters": qs, "ttm": qi._ttm(qs),
+                 "per": 42.0, "per_forward": 33.2, "per_self": False, "psr": 8.1,
+                 "currency": "USD", "trade_currency": "USD",
+                 "currency_mismatch": False, "fiscal_note": "",
+                 "anomaly_keys": [], "anomaly_labels": [],
+                 "component_accounts": {}, "source_label": "s",
+                 "asof": "2026-08-16", "growth_risk": {"ok": False}}
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                assert qi._render_locked(p, f"{d}/x.png")
+        finally:
+            qi._font_ok, Axes.bar_label = _orig_font, _orig_lbl
+        assert seen, "막대 값 라벨이 아예 안 붙음"
+        rev = seen[0]           # 첫 시리즈 = 매출
+        assert rev == ["2.15", "2.31", "2.10", "2.24", "2.31"], rev
+        # 2.15 vs 2.10 vs 2.24 가 같은 문자열이 되면 라벨의 의미가 없다
+        assert len(set(rev)) == 4, f"라벨이 뭉개짐: {rev}"
+
+    def test_small_second_series_is_not_labelled_all_zero(self):
+        # 두 시리즈의 **공통** peak 로 자릿수를 정하면 스케일이 훨씬 작은
+        # 쪽(매출 2.31B 옆 영업이익 4.8M)이 전 분기 '0.00' 이 된다
+        # (2026-08-16 독립 리뷰 실측). 자릿수는 시리즈별이어야 한다.
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+
+        from matplotlib.axes import Axes
+
+        import bot.quarterly_infographic as qi
+        seen, _orig_font, _orig_lbl = [], qi._font_ok, Axes.bar_label
+        qi._font_ok = lambda: True
+
+        def _spy(self, container, **kw):
+            seen.append(list(kw.get("labels") or []))
+            return _orig_lbl(self, container, **kw)
+
+        Axes.bar_label = _spy
+        try:
+            # 영업이익이 매출의 1/500 — 마진 0.2% 대 기업(유통·상사에서 실재)
+            qs = [{"label": f"26.{i}Q",
+                   "financials": {"매출": r, "영업이익": o, "당기순이익": o * 0.8},
+                   "ratios": {"영업이익률": o / r * 100, "순이익률": o * 0.8 / r * 100}}
+                  for i, (r, o) in enumerate(
+                      [(2.15e9, 4.2e6), (2.31e9, 4.8e6)], 1)]
+            p = {"ticker": "T", "company": "T", "market": "US",
+                 "market_cap": 7e10, "quarters": qs, "ttm": {}, "per": 42.0,
+                 "per_forward": None, "per_self": False, "psr": 8.1,
+                 "currency": "USD", "trade_currency": "USD",
+                 "currency_mismatch": False, "fiscal_note": "",
+                 "anomaly_keys": [], "anomaly_labels": [],
+                 "component_accounts": {}, "source_label": "s",
+                 "asof": "2026-08-16", "growth_risk": {"ok": False}}
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                assert qi._render_locked(p, f"{d}/x.png")
+        finally:
+            qi._font_ok, Axes.bar_label = _orig_font, _orig_lbl
+        op = seen[1]        # 두 번째 시리즈 = 영업이익
+        assert set(op) != {"0.00"}, f"작은 시리즈가 전부 0: {op}"
+        assert len(set(op)) == 2, f"작은 시리즈 라벨이 뭉개짐: {op}"
+
+    def test_negative_bar_labels_stay_inside_the_axes(self):
+        # 헤드룸을 위쪽에만 주면 적자 분기의 값 라벨이 막대 아래 축 밖에
+        # 그려져 x 라벨·아래 % 패널과 겹친다(2026-08-16 독립 리뷰).
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+
+        from matplotlib.axes import Axes
+
+        import bot.quarterly_infographic as qi
+        bars, _orig_font, _orig_bar = [], qi._font_ok, Axes.bar
+        qi._font_ok = lambda: True
+
+        def _spy(self, *a, **k):
+            bars.append(self)
+            return _orig_bar(self, *a, **k)
+
+        Axes.bar = _spy
+        try:
+            qs = [{"label": f"26.{i}Q",
+                   "financials": {"매출": 1e9, "영업이익": 2e8, "당기순이익": n},
+                   "ratios": {"영업이익률": 20.0, "순이익률": n / 1e9 * 100}}
+                  for i, n in enumerate([3e8, -2.5e8], 1)]
+            p = {"ticker": "T", "company": "T", "market": "US",
+                 "market_cap": 7e10, "quarters": qs, "ttm": {}, "per": 42.0,
+                 "per_forward": None, "per_self": False, "psr": 8.1,
+                 "currency": "USD", "trade_currency": "USD",
+                 "currency_mismatch": False, "fiscal_note": "",
+                 "anomaly_keys": [], "anomaly_labels": [],
+                 "component_accounts": {}, "source_label": "s",
+                 "asof": "2026-08-16", "growth_risk": {"ok": False}}
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                assert qi._render_locked(p, f"{d}/x.png")
+        finally:
+            qi._font_ok, Axes.bar = _orig_font, _orig_bar
+        assert bars, "금액 축을 못 찾음"
+        # (a) 금액축 눈금도 **픽셀에서 뽑은 nbins** 를 써야 한다 — 상한만
+        #     검사하면 nbins=4 로 되돌려도 통과한다.
+        for a in bars:
+            h = a.get_window_extent().height
+            assert a.yaxis.get_major_locator()._nbins == qi._nbins_for(
+                h, qi._AMT_NBINS), (a.yaxis.get_major_locator()._nbins, h)
+        # (b) 적자 막대 **라벨이 들어갈 실제 픽셀 공간**이 축 안에 있어야
+        #     한다. `get_y()` 는 음수 막대에서도 0 이라 그것만 보면 자동
+        #     마진만으로도 통과해 버린다 — 데이터 단위가 아니라 픽셀로 잰다.
+        ni_ax = [a for a in bars
+                 if any(p.get_height() < 0 for c in a.containers for p in c)]
+        assert ni_ax, "적자 막대 축을 못 찾음"
+        for a in ni_ax:
+            lo = a.get_ylim()[0]
+            bottom = min(p.get_y() + p.get_height()
+                         for c in a.containers for p in c
+                         if p.get_height() < 0)
+            # 라벨(7.5pt) + padding(1.5pt) ≈ 9pt ≈ 22.5px @180dpi
+            need_px = 22.5
+            px_per_unit = (a.get_window_extent().height
+                           / (a.get_ylim()[1] - lo))
+            assert (bottom - lo) * px_per_unit >= need_px, (
+                f"적자 라벨이 축 밖으로 나감: 여유 "
+                f"{(bottom - lo) * px_per_unit:.0f}px < {need_px}px")
+
+    def test_axis_ticks_are_regular(self):
+        # steps 에 2.5 가 있으면 0.25 간격이 dec=1 포맷에서 0.2·0.5·0.8 로
+        # 반올림돼 **불규칙해 보인다**(렌더 실측 재발방지).
+        from matplotlib.ticker import MaxNLocator
+
+        from bot.quarterly_infographic import _AMT_NBINS, _TICK_STEPS
+        assert 2.5 not in _TICK_STEPS, "0.25 간격 → 눈금 라벨 불규칙(재발)"
+        t = MaxNLocator(nbins=_AMT_NBINS, steps=_TICK_STEPS).tick_values(0, 2.5)
+        gaps = {round(b - a, 10) for a, b in zip(t, t[1:])}
+        assert len(gaps) == 1, f"눈금 간격 불균일: {t}"
+
+    def test_tick_density_follows_axis_pixel_height(self):
+        # 고정 nbins 는 양방향으로 틀린다 — 큰 축에선 성기고(0.2 간격이
+        # 탈락해 0.5 5칸), 낮은 축(% 패널 142px)에선 9pt 라벨이 겹친다.
+        # 픽셀 기준이라 레이아웃 상수를 바꿔도 자동으로 따라와야 한다.
+        from bot.quarterly_infographic import (
+            _AMT_NBINS, _PCT_NBINS, _TICK_MIN_PX, _nbins_for)
+        assert _nbins_for(142, _PCT_NBINS) * _TICK_MIN_PX <= 142 + _TICK_MIN_PX
+        assert _nbins_for(142, _PCT_NBINS) < _PCT_NBINS, "낮은 축인데 상한 그대로"
+        # 큰 축에선 상한까지 촘촘해진다
+        assert _nbins_for(2000, _AMT_NBINS) == _AMT_NBINS
+        # 축이 병적으로 낮아도 최소 3개는 유지(빈 축 방지)
+        assert _nbins_for(10, _AMT_NBINS) == 3 and _nbins_for(0, _AMT_NBINS) == 3
+
+    def test_rendered_tick_labels_do_not_overlap(self):
+        # 위 규칙이 **실제 렌더에서** 지켜지는지 — 축마다 (높이 ÷ 눈금수)가
+        # 라벨 높이보다 커야 한다. 정적 리뷰로는 못 보는 결함이었다.
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+
+        from matplotlib.axes import Axes
+
+        import bot.quarterly_infographic as qi
+        axes, _orig_font, _orig_plot = [], qi._font_ok, Axes.plot
+        qi._font_ok = lambda: True
+
+        def _spy(self, *a, **k):
+            axes.append(self)
+            return _orig_plot(self, *a, **k)
+
+        Axes.plot = _spy
+        try:
+            def q(lab, r, o, n):
+                return {"label": lab,
+                        "financials": {"매출": r, "영업이익": o, "당기순이익": n},
+                        "ratios": {"영업이익률": o / r * 100,
+                                   "순이익률": n / r * 100}}
+            qs = [q("25.2Q", 2.15e9, 3.9e8, 3.0e8), q("25.3Q", 2.31e9, 4.6e8, 1.4e8),
+                  q("25.4Q", 2.10e9, 3.7e8, 3.1e8), q("26.1Q", 2.24e9, 4.7e8, 3.5e8),
+                  q("26.2Q", 2.31e9, 4.8e8, 4.1e8)]
+            p = {"ticker": "T", "company": "T", "market": "US",
+                 "market_cap": 7e10, "quarters": qs, "ttm": qi._ttm(qs),
+                 "per": 42.0, "per_forward": 33.2, "per_self": False, "psr": 8.1,
+                 "currency": "USD", "trade_currency": "USD",
+                 "currency_mismatch": False, "fiscal_note": "",
+                 "anomaly_keys": [], "anomaly_labels": [],
+                 "component_accounts": {}, "source_label": "s",
+                 "asof": "2026-08-16", "growth_risk": {"ok": False}}
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                assert qi._render_locked(p, f"{d}/x.png")
+        finally:
+            qi._font_ok, Axes.plot = _orig_font, _orig_plot
+        assert axes, "% 패널이 안 그려짐"
+        for a in axes:
+            h = a.get_window_extent().height
+            lo, hi = a.get_ylim()
+            n = len([t for t in a.get_yticks() if lo <= t <= hi])
+            assert n >= 2, f"눈금이 2개 미만: {n}"
+            assert h / n >= 22.5, f"라벨 겹침: 높이 {h:.0f}px / 눈금 {n}개"
+            # 상한만 보면 nbins=4 로 되돌려도 통과한다 — locator 가 실제로
+            # **픽셀에서 뽑은 값**을 받았는지 확인해 성긴 회귀도 잡는다.
+            loc = a.yaxis.get_major_locator()
+            assert loc._nbins == qi._nbins_for(h, qi._PCT_NBINS), (
+                loc._nbins, h)
+
+    def test_forward_per_is_extracted_and_range_guarded(self):
+        from bot.quarterly_infographic import _PER_MAX, build_payload
+        _M = TestQuarterlyMultiMarket20260816
+        rows = _M._rows([("2025-03-31", 90e9), ("2025-06-30", 94e9),
+                         ("2025-09-30", 102e9), ("2025-12-31", 124e9),
+                         ("2026-03-31", 95e9)])
+        p = build_payload("AAPL", {**_M._snap(rows), "forwardPE": 33.2})
+        assert p["per_forward"] == 33.2
+        # 음수·비현실·문자열·부재는 전부 None → 화면에서 'N/A'
+        for bad in (None, -3.0, _PER_MAX + 1, 0.0, "n/a"):
+            q = build_payload("AAPL", {**_M._snap(rows), "forwardPE": bad})
+            assert q["per_forward"] is None, bad
+
+    def test_forward_per_shown_in_html_fallback_too(self):
+        # PNG 를 못 만드는 환경(한글 폰트 부재)에서 뜨는 유일한 화면이다 —
+        # 여기에만 없으면 그 경로에서 지표가 통째로 사라진다.
+        from bot.quarterly_infographic import table_html
+        qs = [{"label": "26.2Q", "financials": {"매출": 1e9, "영업이익": 2e8,
+                                                "당기순이익": 1e8},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}]
+        h = table_html({"quarters": qs, "currency": "USD", "per": 42.0,
+                        "per_forward": 33.2, "psr": 8.1})
+        assert "Forward PER" in h and "33.20배" in h
+        h2 = table_html({"quarters": qs, "currency": "USD", "per": None,
+                         "per_forward": None, "psr": None})
+        assert "Forward PER" in h2 and "N/A" in h2, "미제공이 빈칸으로 사라짐"
+
+    def test_footnotes_state_the_period_basis(self):
+        # 사용자 질문 "이 영업이익률이 연간이야 분기야?" — 값만 있고 기간
+        # 표기가 없어 판별 불가였다. 각주가 분기 라벨을 명시해야 한다.
+        from bot.quarterly_infographic import _footnotes
+        qs = [{"label": "26.2Q"}]
+        notes = _footnotes({}, qs)
+        head = notes[0][0]
+        assert "26.2Q" in head and "단일분기" in head
+        assert "%p" in head, "이익률 변화가 %p 라는 사실이 안 적힘"
+        # 플래그가 붙으면 각주가 늘어난다 → H_FOOT 이 따라 커져야 한다
+        more = _footnotes({"per_self": True, "currency_mismatch": True,
+                           "anomaly_keys": ["매출"], "fiscal_note": "3월 결산"},
+                          qs)
+        assert len(more) > len(notes)
+
+    def test_llm_card_section_actually_renders(self):
+        # `cw` 가 정의된 적이 없어 카드가 붙는 KR 경로는 최초 구현부터
+        # NameError → render_infographic 의 포괄 except 가 삼킴 → PNG 없이
+        # 표로 폴백해 왔다(과금하는 경로인데 그림이 0장, 2026-08-16 독립 리뷰).
+        # ⚠️ **render_infographic(포괄 except) 이 아니라 _render_locked** 로
+        # 부른다 — 감싸면 예외가 다시 조용히 삼켜져 테스트가 무력해진다.
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+
+        import bot.quarterly_infographic as qi
+        _orig = qi._font_ok
+        qi._font_ok = lambda: True
+        try:
+            qs = [{"label": f"26.{i}Q",
+                   "financials": {"매출": 1e12, "영업이익": 2e11,
+                                  "당기순이익": 1e11},
+                   "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+                  for i in (1, 2)]
+            p = {"ticker": "005930.KS", "company": "삼성전자", "market": "KOSPI",
+                 "market_cap": 5e14, "quarters": qs, "ttm": {}, "per": 12.0,
+                 "per_forward": 10.5, "per_self": False, "psr": 1.5,
+                 "currency": "KRW", "trade_currency": "KRW",
+                 "currency_mismatch": False, "fiscal_note": "",
+                 "anomaly_keys": [], "anomaly_labels": [],
+                 "component_accounts": {}, "source_label": "DART",
+                 "asof": "2026-08-16",
+                 "growth_risk": {"ok": True, "headline": "HBM 출하 확대",
+                                 "risk_subline": "메모리 가격",
+                                 "growth_drivers": ["HBM3E 양산", "서버 수요"],
+                                 "sustain_risks": ["설비 경쟁", "환율"]}}
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                out = f"{d}/card.png"
+                assert qi._render_locked(p, out) == out, "LLM 카드 경로 렌더 실패"
+                import os
+                assert os.path.getsize(out) > 10_000
+        finally:
+            qi._font_ok = _orig
+
+    def test_render_version_invalidates_cache_on_layout_change(self):
+        # 캐시 키가 (티커, 분기, 날짜)뿐이면 오늘 이미 본 종목은 배포 후에도
+        # 옛 그림이 그대로 뜬다("배포완료 ≠ 화면에 보임", 실수 #11).
+        from bot.quarterly_infographic import _RENDER_VER, cache_path
+        p = cache_path("AAPL", "20260630", asof="2026-08-16")
+        assert p.name.endswith(f"_{_RENDER_VER}.png"), p.name
+        # 버전이 다르면 파일명이 달라져야(= 재렌더)
+        import bot.quarterly_infographic as qi
+        _o = qi._RENDER_VER
+        try:
+            qi._RENDER_VER = "vX"
+            assert qi.cache_path("AAPL", "20260630", asof="2026-08-16") != p
+        finally:
+            qi._RENDER_VER = _o
+
+    def test_footer_height_scales_with_note_count(self):
+        # 옛 코드는 H_FOOT=15.0 고정이라 각주가 3줄을 넘으면 맨 아래
+        # 출처·면책 줄을 덮어썼다. 소스 grep 은 '겹치는 공식'도 통과시키므로
+        # **실제 PNG 높이**가 각주 수에 따라 커지는지를 본다.
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+
+        from PIL import Image
+
+        import bot.quarterly_infographic as qi
+        _orig = qi._font_ok
+        qi._font_ok = lambda: True
+        try:
+            qs = [{"label": f"26.{i}Q",
+                   "financials": {"매출": 1e9, "영업이익": 2e8, "당기순이익": 1e8},
+                   "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+                  for i in (1, 2)]
+            base = {"ticker": "T", "company": "T", "market": "US",
+                    "market_cap": 7e10, "quarters": qs, "ttm": {},
+                    "per": 42.0, "per_forward": 33.2, "per_self": False,
+                    "psr": 8.1, "currency": "USD", "trade_currency": "USD",
+                    "currency_mismatch": False, "fiscal_note": "",
+                    "anomaly_keys": [], "anomaly_labels": [],
+                    "component_accounts": {}, "source_label": "s",
+                    "asof": "2026-08-16", "growth_risk": {"ok": False}}
+            many = {**base, "per_self": True, "currency_mismatch": True,
+                    "trade_currency": "HKD", "anomaly_keys": ["매출"],
+                    "anomaly_labels": ["26.1Q"],
+                    "component_accounts": {"매출": "이자수익"},
+                    "fiscal_note": "결산 03-31"}
+            n_few = len(qi._footnotes(base, qs))
+            n_many = len(qi._footnotes(many, qs))
+            assert n_many > n_few
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                assert qi._render_locked(base, f"{d}/a.png")
+                assert qi._render_locked(many, f"{d}/b.png")
+                ha = Image.open(f"{d}/a.png").size[1]
+                hb = Image.open(f"{d}/b.png").size[1]
+            # 각주 1줄당 최소 2.4 단위 = (전체높이/H) 픽셀만큼 늘어야 한다.
+            assert hb > ha, f"각주가 {n_many - n_few}줄 늘었는데 높이 그대로"
+            assert (hb - ha) / (n_many - n_few) >= 30, (ha, hb)
+        finally:
+            qi._font_ok = _orig
+
+    def test_footnote_states_the_actual_per_basis(self):
+        # "TTM PER·PSR = 최근 4분기 합" 은 틀렸다 — per 는 기본적으로 야후
+        # trailingPE(후행 12개월)이고 4분기 합은 PSR·자체계산 폴백뿐이다.
+        from bot.quarterly_infographic import _footnotes
+        txt = " ".join(t for t, _ in _footnotes({}, [{"label": "26.2Q"}]))
+        assert "TTM PER·PSR = 최근 4분기 합" not in txt, "틀린 산식 설명(재발)"
+        assert "후행 12개월" in txt and "PSR = 시총 ÷ 최근 4분기 매출 합" in txt
+
+    def test_trailing_and_forward_per_share_the_same_guard(self):
+        # 소스 PER 만 정제를 안 하면 같은 타일이 'TTM 1,234.50배 / Fwd N/A'
+        # 로 비대칭이 되고, 문자열이 오면 포맷에서 렌더 전체가 죽는다.
+        from bot.quarterly_infographic import _PER_MAX, build_payload
+        _M = TestQuarterlyMultiMarket20260816
+        rows = _M._rows([("2025-03-31", 90e9), ("2025-06-30", 94e9),
+                         ("2025-09-30", 102e9), ("2025-12-31", 124e9),
+                         ("2026-03-31", 95e9)])
+        for bad in (_PER_MAX + 1, -5.0, "n/a"):
+            p = build_payload("AAPL", {**_M._snap(rows), "trailingPE": bad,
+                                       "forwardPE": bad})
+            assert p["per_forward"] is None, bad
+            # 소스값이 쓸모없으면 자체계산 폴백으로 넘어가야(그냥 통과 금지)
+            assert p["per"] is None or p["per_self"] is True, (bad, p["per"])
+        # 정상값은 그대로 통과
+        ok = build_payload("AAPL", {**_M._snap(rows), "trailingPE": 42.0,
+                                    "forwardPE": 33.2})
+        assert ok["per"] == 42.0 and ok["per_self"] is False
+        assert ok["per_forward"] == 33.2
+
+    def test_html_fallback_carries_the_same_footnotes(self):
+        # 폰트 없는 서버에선 이 표가 유일한 화면이다 — 값이 '—' 인 이유가
+        # 여기서만 사라지면 안 된다(옛 코드는 구성요소 계정 한 줄만 복제).
+        from bot.quarterly_infographic import table_html
+        qs = [{"label": "26.2Q",
+               "financials": {"매출": 1e9, "영업이익": 2e8, "당기순이익": 1e8},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}]
+        h = table_html({"quarters": qs, "currency": "CNY",
+                        "trade_currency": "HKD", "currency_mismatch": True,
+                        "per": None, "per_forward": None, "psr": None,
+                        "anomaly_keys": ["매출"], "anomaly_labels": ["26.2Q"]})
+        assert "통화가 달라" in h, "값이 비었는데 이유가 없음"
+        assert "이상치 감지" in h
+        assert "단일분기 기준" in h, "기준 기간 표기가 PNG 에만 있음"
+
+    def test_render_smoke_covers_new_tile_and_chart_paths(self):
+        # 정적 리뷰로는 안 잡히는 결함(겹침·NameError·통화 오표기)이 이
+        # 파일에서 반복 발생했다 — 실제로 PNG 를 만들어 본다.
+        import warnings
+
+        import os
+        import tempfile
+
+        import matplotlib
+        matplotlib.use("Agg")
+
+        import bot.quarterly_infographic as qi
+        _orig = qi._font_ok
+        qi._font_ok = lambda: True          # 샌드박스에 Nanum 이 없다
+        try:
+            def q(lab, r, o, n, ratios=True):
+                return {"label": lab, "financials": {"매출": r, "영업이익": o,
+                                                     "당기순이익": n},
+                        "ratios": ({"영업이익률": o / r * 100,
+                                    "순이익률": n / r * 100} if ratios else
+                                   {"영업이익률": None, "순이익률": None})}
+
+            base = {"ticker": "T", "company": "T", "market": "US",
+                    "market_cap": 7e10, "per": 42.0, "per_self": False,
+                    "psr": 8.1, "currency": "USD", "trade_currency": "USD",
+                    "currency_mismatch": False, "fiscal_note": "",
+                    "anomaly_keys": [], "anomaly_labels": [],
+                    "component_accounts": {}, "source_label": "s",
+                    "asof": "2026-08-16", "growth_risk": {"ok": False}}
+            five = [q("25.2Q", 2.15e9, 3.9e8, 3.0e8), q("25.3Q", 2.31e9, 4.6e8, 1.4e8),
+                    q("25.4Q", 2.10e9, 3.7e8, 3.1e8), q("26.1Q", 2.24e9, 4.7e8, 3.5e8),
+                    q("26.2Q", 2.31e9, 4.8e8, 4.1e8)]
+            # 마진 전무 + 적자 + Forward PER 부재 + 이상치 = 각주 다중 경로
+            four = [q("25.3Q", 1.2e12, 9e10, 7e10, False),
+                    q("25.4Q", 1.3e12, 1.1e11, 8e10, False),
+                    q("26.1Q", 1.25e12, 1.0e11, -2e10, False),
+                    q("26.2Q", 1.4e12, 1.3e11, 9e10, False)]
+            cases = [
+                {**base, "quarters": five, "ttm": qi._ttm(five), "per_forward": 33.2},
+                {**base, "quarters": four, "ttm": qi._ttm(four), "per_forward": None,
+                 "currency": "KRW", "trade_currency": "KRW", "per": None,
+                 "per_self": True, "psr": None, "anomaly_keys": ["매출"],
+                 "anomaly_labels": ["26.1Q"],
+                 "component_accounts": {"매출": "이자수익"}},
+            ]
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                for i, p in enumerate(cases):
+                    out = f"{d}/x{i}.png"
+                    assert qi._render_locked(p, out) == out, i
+                    assert os.path.getsize(out) > 10_000, i
+        finally:
+            qi._font_ok = _orig
 
     def test_pct_panel_uses_horizontal_title_not_vertical_ylabel(self):
         # 축이 낮아 세로쓰기 한글이 글자끼리 겹쳐 뭉갠다(렌더 스모크 실측).
