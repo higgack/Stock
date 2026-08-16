@@ -428,6 +428,7 @@ def _load_eval_miss_summary(
     from trade import ignored as _ignored
     from trade import jp2_exports as _jp2
     from trade import jp_exports as _jp
+    from trade import kr_stock_exports as _krs
     from trade import mx_exports as _mx
     from trade import us_imports as _us
     from trade import my_exports as _my
@@ -471,6 +472,8 @@ def _load_eval_miss_summary(
                 if _mx.parse_mx_export(cap) is not None:    # MX → mx.db 정상 처리
                     continue
                 if _us.parse_us_import(cap) is not None:    # US → us.db 정상 처리
+                    continue
+                if _krs.parse_kr_stock_export(cap) is not None:  # KR종목 → kr_stock.db
                     continue
                 count += 1
                 detected = rec.get("detected_at")
@@ -900,7 +903,11 @@ def _build_html(
         ' &nbsp;·&nbsp; <a href="mx.html">'
         '🌮 멕시코 수출 데이터(나쁜양파) →</a>'
         ' &nbsp;·&nbsp; <a href="us.html">'
-        '🇺🇸 미국 수입 데이터(나쁜양파) →</a></div>'
+        '🇺🇸 미국 수입 데이터(나쁜양파) →</a>'
+        # 한국만 품목(HS)이 아니라 **종목(회사)** 기준이라 라벨에 명시한다
+        # (사용자 2026-08-16). 이모지는 flag-sequence 회피 규칙 준수.
+        ' &nbsp;·&nbsp; <a href="kr_stock.html">'
+        '🏢 한국 수출 데이터(종목별·나쁜양파) →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2874,6 +2881,18 @@ def main() -> int:
             media_url_prefix=args.media_url)
     except Exception:
         pass
+    try:
+        from trade import kr_stock_exports
+        kr_stock_exports.regenerate(
+            args.db.parent / "kr_stock.db", args.out.parent / "kr_stock.html",
+            media_url_prefix=args.media_url)
+    except Exception as exc:
+        # nav 링크는 무조건 나가므로, 여기서 조용히 삼키면 404 가 되고
+        # 원인 단서가 0 이 된다(실수 #12 silent-fail 금지). 형제 블록들도
+        # bare pass 지만 이 경로가 가장 새 코드라 최소한 로그는 남긴다.
+        import logging          # 이 파일의 기존 관례(로컬 임포트, :323 참조)
+        logging.getLogger("trade-dashboard").warning(
+            "kr_stock.html 생성 실패 — nav 링크가 404 가 됩니다: %s", exc)
     return 0
 
 

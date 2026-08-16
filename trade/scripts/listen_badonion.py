@@ -68,6 +68,7 @@ from telethon.errors import (
 
 from trade import cn_exports as _cn
 from trade import jp2_exports as _jp2
+from trade import kr_stock_exports as _krs
 from trade import mx_exports as _mx
 from trade import my_exports as _my
 from trade import ph_exports as _ph
@@ -80,7 +81,7 @@ load_dotenv()
 
 def _is_relevant(text: str) -> bool:
     """대만·중국·일본(나쁜양파 두 번째 소스)·태국·말레이시아·필리핀·멕시코·미국
-    수출 데이터 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터, 사용자 2026-07-11
+    수출 데이터 + 한국 수출(종목별) 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터, 사용자 2026-07-11
     중국·일본 추가 + 2026-07-26 태국·말레이시아·필리핀·멕시코 추가)."""
     return (_tw.parse_tw_export(text) is not None
             or _cn.parse_cn_export(text) is not None
@@ -89,7 +90,10 @@ def _is_relevant(text: str) -> bool:
             or _my.parse_my_export(text) is not None
             or _ph.parse_ph_export(text) is not None
             or _mx.parse_mx_export(text) is not None
-            or _us.parse_us_import(text) is not None)
+            or _us.parse_us_import(text) is not None
+            # 한국 수출(종목별) — 유일한 회사 기준 소스. 이게 없으면
+            # 나쁜양파의 한국 종목 메시지가 여기서 전량 드랍된다.
+            or _krs.parse_kr_stock_export(text) is not None)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",

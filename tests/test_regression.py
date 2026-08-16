@@ -15741,12 +15741,16 @@ class TestCN52Reenabled:
         blk = src.split('if market == "CN_A":')[1].split("from bot import market")[0]
         assert "= full_universe" not in blk        # 예전 no-op 경로 재발 방지
         monkeypatch.setattr("bot.akshare_client.list_cn_a_universe",
-                            lambda: {f"{600000 + i}.SS": f"종목{i}" for i in range(800)})
+                            lambda: {f"{600000 + i}.SS": f"종목{i}" for i in range(3000)})
         monkeypatch.setattr(ih, "_cap_by_liquidity",
                             lambda full, cap, market: full[:cap])
+        for _k in ("HIGHLOW_UNIVERSE_CAP", "HIGHLOW_UNIVERSE_CAP_CN_A"):
+            monkeypatch.delenv(_k, raising=False)
         uni, names = ih._universe("CN_A")
-        # HIGHLOW_UNIVERSE_CAP(기본 500) 로 유동성 상위 칭 — yfinance 스캔 부하 관리.
-        assert len(uni) == 500 and names["600000.SS"] == "종목0"
+        # 기본 캡 2000 으로 시총 상위 절삭 — yfinance 스캔 부하 관리.
+        # 500 이던 옛 기본값은 52주 극값이 가장 안 나오는 대형주 구간만 보고
+        # 있어 실제로 0건이 나왔다(사용자 2026-08-16, 진단 카운터로 확인).
+        assert len(uni) == 2000 and names["600000.SS"] == "종목0"
         # AKShare 빈 결과(미설치/실패) → peer(_CN_A_INDUSTRY_PEERS) 폴백, 회귀 0.
         monkeypatch.setattr("bot.akshare_client.list_cn_a_universe", lambda: {})
         uni2, names2 = ih._universe("CN_A")

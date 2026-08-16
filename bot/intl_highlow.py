@@ -147,7 +147,14 @@ def _universe(market: str) -> tuple[list[str], dict]:
             uni_map = list_cn_a_universe() or {}
             full = list(uni_map.keys())
             if len(full) > 100:
-                _cap = _universe_cap(market, 500)
+                # 기본 500 → 2000 (사용자 2026-08-16). 시총 상위 500 은 52주
+                # 극값이 가장 안 나오는 구간만 보고 있어 실제로 0건이 나왔다
+                # (진단 카운터가 universe=500·scanned=500·batch_fail=0 으로
+                # 스캔 정상을 입증 — 데이터 장애가 아니라 표본 문제였다).
+                # 부하: :30 슬롯이 CN+US(5,625)=7,625 가 되는데, :00 슬롯이
+                # 이미 US+JP=9,358 을 25분 예산 안에서 소화하므로 검증된
+                # 부하의 82%. env 로 언제든 조정 가능(.env.example 참조).
+                _cap = _universe_cap(market, 2000)
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, market)
                 return full, {t: (uni_map.get(t) or t) for t in full}
