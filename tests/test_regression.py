@@ -7298,6 +7298,73 @@ class TestDartFeedBackfill:
         assert r and any("70억원" in l for l in r["lines"])
         assert any("LG전자" in l for l in r["lines"])
 
+    def test_periodic_reports_are_their_own_category(self, tmp_path, monkeypatch):
+        # 사용자 2026-08-16 '8/14 에 2Q 실적이 쏟아졌는데 DART 피드엔 15건뿐'.
+        # 반기보고서 = 한국 상장사 2Q 실적 원문인데, 옛 코드는 맨 아래
+        # catch-all(`"보고서" in t` → 지분공시)로 흘렸고 **대시보드의 지분공시
+        # 노이즈컷이 대량보유·소유상황이 아닌 지분공시를 전부 숨겨서** 수집은
+        # 되는데 화면에서 통째로 사라졌다.
+        m = self._load(tmp_path, monkeypatch)
+        for nm in ("반기보고서 (2026.06)", "분기보고서 (2026.06)",
+                   "사업보고서 (2025.12)", "[기재정정]반기보고서 (2026.06)",
+                   "[첨부정정]사업보고서 (2025.12)"):
+            assert m._classify_report(nm) == "정기보고서", nm
+        # 감사인이 내는 동반 서류는 포함하지 않는다(같은 실적 이중 카드화 방지)
+        assert m._classify_report("연결감사보고서 (2026.06)") != "정기보고서"
+        # 기존 지분공시 계열은 그대로 — 분류가 흔들리면 노이즈컷이 깨진다
+        assert m._classify_report("주식등의대량보유상황보고서") == "지분공시"
+        assert m._classify_report(
+            "임원ㆍ주요주주특정증권등소유상황보고서") == "지분공시"
+        # 잠정실적 공시는 여전히 '실적' (정기보고서가 가로채면 안 됨)
+        assert m._classify_report(
+            "매출액또는손익구조30%(대규모법인은15%)이상변동") == "실적"
+
+    def test_periodic_reports_are_not_hidden_by_equity_noise_cut(self):
+        # 분류만 고쳐도 **대시보드가 숨기면 의미가 없다**. 옛 버전은 판정을
+        # 미러한 프록시 테스트였다 — 클로저라 직접 못 불렀고, 그래서 노이즈컷에
+        # 분기를 추가해 다시 숨겨도 초록이었다(독립 리뷰). 판정 함수를 모듈
+        # 레벨로 올려 **실제로 호출**한다.
+        import bot.dashboard as dash
+        from bot.dart_feed import _classify_report
+        noise = dash._equity_noise_impl
+        for nm in ("반기보고서 (2026.06)", "분기보고서 (2026.06)",
+                   "사업보고서 (2025.12)", "[기재정정]반기보고서 (2026.06)"):
+            it = {"report_nm": nm, "category": _classify_report(nm)}
+            assert not noise(it), f"{nm} 이 화면에서 숨겨짐(원래 버그)"
+        # 기존 노이즈컷 정책은 그대로 — 고빈도 지분공시는 detail 있을 때만
+        assert noise({"report_nm": "임원ㆍ주요주주특정증권등소유상황보고서",
+                      "category": "지분공시"})
+        assert not noise({"report_nm": "임원ㆍ주요주주특정증권등소유상황보고서",
+                          "category": "지분공시", "detail": ["지분율 1%→3%"]})
+        assert not noise({"report_nm": "단일판매ㆍ공급계약체결",
+                          "category": "계약"})
+        # 칩·색 등록 — 카테고리를 만들고 UI 에 안 올리면 필터가 안 보인다
+        assert "정기보고서" in dash._DART_CATEGORIES
+        assert "정기보고서" in dash._DART_CAT_COLORS
+        # 실적 바로 뒤에 와야 한 쌍으로 읽힌다
+        i = dash._DART_CATEGORIES.index
+        assert i("정기보고서") == i("실적") + 1
+
+    def test_reclass_version_bumped_for_periodic_split(self):
+        # 분류를 바꿔도 **이미 아카이브된 8월 반기보고서**는 옛 category 를
+        # 들고 있어 계속 숨겨진다 — 버전 문자열을 올려야 소급 재분류가 돈다.
+        # ⚠️ 새 버전 토큰을 리터럴로 박으면 다음 정책 변경(v10…) 때 무관한
+        # 커밋이 이 테스트로 빨개진다 — **이전 값이 아님**만 고정한다.
+        from bot.dart_feed import _RECLASS_VER
+        assert _RECLASS_VER != "v8-회사분할-회사구조", (
+            "_RECLASS_VER 미bump — 과거 아카이브가 옛 카테고리로 남아 계속 숨겨짐")
+
+    def test_periodic_reports_intentionally_not_enriched(self):
+        # 정기보고서를 _PARSE_CATS 에 넣으면 is_parse_target=True 가 되어
+        # (a) 파서가 없는데 enrich 를 시도해 doc API 를 태우고 (b) 실패분이
+        # 마감일에 수백 장 ⚠️미파싱으로 칠해진다. 제목+회사+링크가 곧 완결
+        # 신호이므로 **의도적으로 제외**한다 — 다음 사람이 '버그'로 오해하고
+        # 넣지 않도록 계약으로 고정.
+        from bot.dart_feed import _PARSE_CATS, is_parse_target
+        assert "정기보고서" not in _PARSE_CATS
+        assert not is_parse_target(
+            {"report_nm": "반기보고서 (2026.06)", "category": "정기보고서"})
+
     def test_convert_exercise_classified_not_etc(self, tmp_path, monkeypatch):
         m = self._load(tmp_path, monkeypatch)
         assert m._classify_report("전환청구권행사(제5회차)") != "기타"
@@ -11564,6 +11631,12 @@ class TestDartDividendCategoryAndCapitalRaise:
         from bot.dashboard import _DART_CATEGORIES
         # 배당↔지분공시 교환 (사용자 2026-06-12 2차)
         assert _DART_CATEGORIES == [
+            "전체", "실적", "정기보고서", "계약", "신규시설투자", "주주환원",
+            "자금조달", "지분공시", "배당", "리스크", "소송", "회사구조",
+            "자산양수도", "조회공시", "IR"]
+        # 정기보고서(2026-08-16 신설)는 **삽입만** 했다 — 사용자가 2026-06-12
+        # 에 확정한 나머지 칩의 상대 순서는 그대로여야 한다(빼면 원본 복원).
+        assert [c for c in _DART_CATEGORIES if c != "정기보고서"] == [
             "전체", "실적", "계약", "신규시설투자", "주주환원", "자금조달",
             "지분공시", "배당", "리스크", "소송", "회사구조", "자산양수도",
             "조회공시", "IR"]

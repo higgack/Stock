@@ -56,6 +56,9 @@ _CATEGORY_COLORS = {
 
 # DART report_nm 패턴 → 우리 카테고리 (chart_events.classify 보다 세분화)
 _EARNINGS_KW = ("영업(잠정)실적", "매출액또는손익구조", "영업실적", "잠정실적")
+# 정기보고서 — 한국 상장사 실적 원문. 반기보고서가 곧 2Q, 분기보고서가 1Q/3Q.
+# '[기재정정]반기보고서' 같은 접두 변형도 substring 으로 함께 잡힌다.
+_PERIODIC_KW = ("사업보고서", "반기보고서", "분기보고서")
 # 기업설명회(IR) — 한국 기업은 IR 일정을 공시로 미리 발표(다가오는 실적/IR 신호)
 _IR_KW = ("기업설명회", "IR개최", "IR 개최", "기업설명회(IR)")
 _EQUITY_KW = ("주식등의대량보유상황보고서", "임원ㆍ주요주주특정증권등소유상황보고서",
@@ -67,6 +70,16 @@ def _classify_report(report_nm: str) -> str:
     t = report_nm or ""
     if any(k in t for k in _EARNINGS_KW):
         return "실적"
+    # 정기보고서(사업/반기/분기) — 2026-08-16 사용자 '8/14 에 2Q 실적이 쏟아졌는데
+    # 왜 적냐'로 발견. 옛 코드는 이들을 맨 아래 catch-all(`"보고서" in t` →
+    # 지분공시)로 흘렸고, 대시보드의 지분공시 노이즈컷이 대량보유·소유상황이
+    # **아닌 지분공시를 전부 숨겨서**(dashboard `_equity_noise` 의 `return True`)
+    # 수집은 되는데 화면에서 통째로 사라졌다. 반기보고서 = 한국 상장사의 2Q
+    # 실적 원문이라 사용자가 정확히 찾던 것 — 별도 카테고리로 승격한다.
+    # ⚠️ 감사·검토보고서는 감사인이 내는 동반 서류라 여기 넣지 않는다
+    # (같은 실적을 두 배로 카드화하지 않기 위함).
+    if any(k in t for k in _PERIODIC_KW):
+        return "정기보고서"
     # 전환청구권/주식분할·병합 — chart_events KW 에 없어 '기타'로 떨어져
     # fetch(skip_routine)에서 잘리던 것(E2E 하네스 2026-06-11 적발). #237
     # 파서가 닿도록 명시 분류.
@@ -4876,7 +4889,7 @@ def reclassify_tuja_once_if_needed() -> int | None:
 _RECLASS_MARKER_V7 = _ARCHIVE_DIR.parent / ".dart_feed_reclassified_v7"
 # 분류 정책 버전 — 바뀔 때마다 bump 하면 startup 1회 로컬 재분류가 소급
 # (marker 가 버전 문자열을 저장, 불일치 시 재실행. API 0·수 초).
-_RECLASS_VER = "v8-회사분할-회사구조"
+_RECLASS_VER = "v9-정기보고서-분리"
 
 
 def reclassify_v7_once_if_needed() -> dict | None:

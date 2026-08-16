@@ -28,6 +28,7 @@ from typing import Callable
 
 from trade import cn_exports as _cn
 from trade import jp2_exports as _jp2
+from trade import jp_stock_exports as _jps
 from trade import kr_stock_exports as _krs
 from trade import mx_exports as _mx
 from trade import my_exports as _my
@@ -81,6 +82,12 @@ SOURCES: tuple[Source, ...] = (
            "kr_stock.db", "kr_stock.html",
            # 한국만 품목(HS)이 아니라 **종목(회사)** 기준이라 라벨에 명시.
            "🏢 한국 수출 데이터(종목별·나쁜양파)"),
+    # 일본도 품목(jp2)과 **종목** 두 갈래다. 종목판은 jp2 파서가 회사 헤더를
+    # 못 읽어 관련성 필터에서 통째로 드랍되고 있었다(2026-08-16 실측 8건).
+    Source("jps", "일본 수출(종목별)", _jps.parse_jp_stock_export,
+           _jps.open_jp_stock_db, _jps.ingest, _jps.regenerate,
+           "jp_stock.db", "jp_stock.html",
+           "🗼 일본 수출 데이터(종목별·나쁜양파)"),
 )
 
 # nav 표시 순서 — **ingest 순서와 다르다.** 일본(나쁜양파)은 사용자 요청으로
@@ -89,8 +96,8 @@ SOURCES: tuple[Source, ...] = (
 # 표시 순서만 여기서 따로 잡는다. 키 누락은 테스트가 잡는다(누락 시 새 소스가
 # 생성은 되는데 nav 에 없어 **도달 불가** — is_relevant 가 미매칭 알림까지
 # 눌러버려 조용한 유실이 된다).
-NAV_ORDER: tuple[str, ...] = ("jp2", "tw", "cn", "th", "my", "ph", "mx",
-                              "us", "krs")
+NAV_ORDER: tuple[str, ...] = ("jp2", "jps", "tw", "cn", "th", "my", "ph",
+                              "mx", "us", "krs")
 
 
 def is_relevant(text: str) -> bool:

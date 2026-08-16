@@ -14078,8 +14078,10 @@ def _load_dart_feed_data(days_back: int = 30) -> dict[str, list[dict]]:
 # 칩 순서 = 사용자 지정 고정 (2026-06-12): 전체·중요·미파싱(플래그) 다음
 # 실적 → 계약 → 신규시설투자 → 주주환원 → 자금조달 → 배당(신설 분리) →
 # 지분공시 → 리스크 → 소송 → 회사구조 → 자산양수도 → 조회공시 → IR.
-_DART_CATEGORIES = ["전체", "실적", "계약", "신규시설투자", "주주환원",
-                    "자금조달", "지분공시", "배당", "리스크", "소송",
+# 정기보고서는 '실적' 바로 뒤 — 반기보고서 = 2Q 실적 원문이라 실적과 한 쌍으로
+# 읽힌다(사용자 2026-08-16 'DART 2Q 실적을 모두 확인하고 싶다').
+_DART_CATEGORIES = ["전체", "실적", "정기보고서", "계약", "신규시설투자",
+                    "주주환원", "자금조달", "지분공시", "배당", "리스크", "소송",
                     "회사구조", "자산양수도", "조회공시", "IR"]
 # 배당↔지분공시 위치 교환 (사용자 2026-06-12 2차)
 
@@ -14089,6 +14091,7 @@ _DART_CAT_COLORS = {
     "리스크": "#ef5350", "소송": "#26a69a", "회사구조": "#ff7043",
     "조회공시": "#8d6e63",
     "지분공시": "#ec407a",
+    "정기보고서": "#7e57c2",
 }
 
 _WEEKDAY_KR = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
@@ -14167,6 +14170,52 @@ _DART_FEED_CSS = """
 """
 
 
+def _equity_noise_impl(it: dict) -> bool:
+    """#18 지분공시 노이즈컷 — True 이면 숨김.
+
+    2026-06-12 '지분공시도 다 파싱': 임원·주요주주 소유상황은 elestock
+    파싱된(detail 보유) 카드만 노출 — 파싱 전/실패는 기존대로 숨겨
+    제목만 카드 홍수 방지. 대량보유는 기존 정책(±5%p 미만 변동 컷).
+    기타경영사항(자율공시)도 동일 — 소송성 파싱(detail)된 것만 노출
+    (사용자 2026-06-12 소송 5예시, 비소송 자율공시 PR 류 차단).
+
+    ⚠️ **모듈 레벨** 함수다(옛 코드는 _render_dart_feed_page 안의 클로저).
+    이 판정이 곧 '카드가 화면에 뜨는가'인데 클로저라 테스트가 직접 호출을
+    못 해, 미러한 서술만 검증하는 프록시 테스트가 됐다 — 실제로 정기보고서가
+    이 함수 때문에 통째로 숨겨진 걸 몇 달 뒤에야 발견했다(2026-08-16).
+    ⚠️ 마지막 `return True` 는 **지분공시 catch-all 숨김**이다. 새 "…보고서"
+    유형이 지분공시로 떨어지면 조용히 사라진다 — 그런 유형은 여기가 아니라
+    `_classify_report` 에서 자기 카테고리를 받아야 한다."""
+    rn = it.get("report_nm", "")
+    if "기타경영사항" in rn or "투자판단" in rn:
+        return not (it.get("detail") or [])
+    if it.get("category") != "지분공시":
+        return False
+    if "대량보유" not in rn:
+        # 소유상황(elestock) + 최대주주등소유주식변동신고서(공정거래법,
+        # 라이브 2026-06-13) = 고빈도(36/3일) → detail 파싱된 것만 노출,
+        # 미파싱은 숨겨 제목 홍수 방지 (대량보유와 같은 정책).
+        if ("소유상황" in rn or "소유주식변동" in rn
+                or ("주식보유" in rn and "변동" in rn)):
+            return not (it.get("detail") or [])
+        return True
+    det = it.get("detail") or []
+    if not det:
+        return False
+    for dl in det:
+        s = str(dl)
+        if "지분율" in s and "→" not in s:
+            return False
+        m = re.search(r"([+-]?\d+\.?\d*)\s*%p", s)
+        if m:
+            try:
+                if abs(float(m.group(1))) >= 5.0:
+                    return False
+            except ValueError:
+                pass
+    return True
+
+
 def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[str, str]]:
     import html as _html
     from datetime import datetime as _dt
@@ -14196,42 +14245,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         _mc_memo[code] = out
         return out
 
-    def _equity_noise(it: dict) -> bool:
-        """#18 지분공시 노이즈컷 — True 이면 숨김.
-
-        2026-06-12 '지분공시도 다 파싱': 임원·주요주주 소유상황은 elestock
-        파싱된(detail 보유) 카드만 노출 — 파싱 전/실패는 기존대로 숨겨
-        제목만 카드 홍수 방지. 대량보유는 기존 정책(±5%p 미만 변동 컷).
-        기타경영사항(자율공시)도 동일 — 소송성 파싱(detail)된 것만 노출
-        (사용자 2026-06-12 소송 5예시, 비소송 자율공시 PR 류 차단)."""
-        rn = it.get("report_nm", "")
-        if "기타경영사항" in rn or "투자판단" in rn:
-            return not (it.get("detail") or [])
-        if it.get("category") != "지분공시":
-            return False
-        if "대량보유" not in rn:
-            # 소유상황(elestock) + 최대주주등소유주식변동신고서(공정거래법,
-            # 라이브 2026-06-13) = 고빈도(36/3일) → detail 파싱된 것만 노출,
-            # 미파싱은 숨겨 제목 홍수 방지 (대량보유와 같은 정책).
-            if ("소유상황" in rn or "소유주식변동" in rn
-                    or ("주식보유" in rn and "변동" in rn)):
-                return not (it.get("detail") or [])
-            return True
-        det = it.get("detail") or []
-        if not det:
-            return False
-        for dl in det:
-            s = str(dl)
-            if "지분율" in s and "→" not in s:
-                return False
-            m = re.search(r"([+-]?\d+\.?\d*)\s*%p", s)
-            if m:
-                try:
-                    if abs(float(m.group(1))) >= 5.0:
-                        return False
-                except ValueError:
-                    pass
-        return True
+    _equity_noise = _equity_noise_impl
 
     # 미파싱(파싱 대상인데 detail 없음) + 중요 공시 6규칙 판정 — 단일
     # 사전 패스로 item 에 주석(_sig/_unparsed)을 박아 pill 카운트와 카드
