@@ -196,57 +196,38 @@ def probe_backlog(ticker: str) -> None:
 
 
 def probe_vkospi() -> None:
-    """VKOSPI(코스피200 변동성지수) 소스 **진단**.
+    """VKOSPI(코스피200 변동성지수) — KIS 경로 확인.
 
-    후보 코드를 바꿔가며 두 번 실패했다(2026-08-16). 더 추측하지 않고
-    엔드포인트 여러 형태를 실제로 때려 **status 와 응답 앞부분을 그대로**
-    찍는다 — 이 출력 하나로 어떤 URL·코드가 맞는지 확정한다
-    (CLAUDE.md 실수 #12: 같은 증상 2회+ = 추측 종료, 가시성 심기)."""
-    print("── ⑤ VKOSPI 소스 진단 (시장타이밍 보드) " + "─" * 22)
-    import datetime as _dt
-
-    import requests
+    네이버는 프로브가 **원리적 불가**로 확정했다(2026-08-16:
+    `/index/VKOSPI/basic` → 409 "지원하지 않는 지수입니다", 차트 API 는 빈
+    배열, 대조군 KOSPI 는 정상). 메인 대시보드가 이미 쓰는 KIS 경로로
+    바꿨으므로 여기서는 그게 시장타이밍에서도 도는지만 본다."""
+    print("── ⑤ VKOSPI (KIS 경로) " + "─" * 38)
     try:
-        from bot.naver_quote import _HDRS
-    except Exception:
-        _HDRS = {"User-Agent": "Mozilla/5.0"}
-    end = _dt.date.today()
-    start = end - _dt.timedelta(days=400)
-    ymd = "%Y%m%d"
-    cands = []
-    # (a) 국내지수 차트 API — 현재 코드가 쓰는 형태
-    for code in ("VKOSPI", "VKOSPI200", "KOSPI"):   # KOSPI = 대조군(형태 검증)
-        cands.append((
-            f"chart/domestic/index/{code}/day",
-            f"https://api.stock.naver.com/chart/domestic/index/{code}/day",
-            {"startDateTime": start.strftime(ymd) + "0000",
-             "endDateTime": end.strftime(ymd) + "0000"}))
-    # (b) 지수 basic — 현재값만이라도 잡히는지
-    for code in ("VKOSPI", "VKOSPI200"):
-        cands.append((f"index/{code}/basic",
-                      f"https://api.stock.naver.com/index/{code}/basic", {}))
-    # (c) siseJson — 많은 라이브러리가 지수 일봉에 쓰는 경로
-    for sym in ("VKOSPI", "VKOSPI200"):
-        cands.append((
-            f"siseJson {sym}",
-            "https://api.finance.naver.com/siseJson.naver",
-            {"symbol": sym, "requestType": "1", "timeframe": "day",
-             "startTime": start.strftime(ymd), "endTime": end.strftime(ymd)}))
-    for label, url, params in cands:
-        try:
-            r = requests.get(url, headers=_HDRS, params=params, timeout=10)
-            body = (r.text or "")[:220].replace("\n", " ")
-            print(f"  [{r.status_code}] {label}")
-            print(f"        {body}")
-        except Exception as exc:
-            print(f"  [ERR] {label}: {exc}")
-    print("  → 200 이면서 숫자 시계열이 보이는 줄의 label 을 알려주시면 "
-          "그대로 배선합니다.")
-    print("     (KOSPI 대조군이 200 이면 URL 형태 자체는 맞고 코드만 다른 것)")
+        from bot.market_timing import (_VKOSPI_DAYS, fetch_vkospi_rows,
+                                       vol_history)
+        from bot.naver_sector_client import _KIS_VKOSPI_IDX_CODE
+    except Exception as exc:
+        print(f"  ❌ import 실패: {exc}")
+        return
+    print(f"  지수코드 {_KIS_VKOSPI_IDX_CODE} · 요청 {_VKOSPI_DAYS}봉")
+    rows = fetch_vkospi_rows()
+    if rows:
+        print(f"  ✅ {len(rows)}행 · 최근 {rows[-1]['date']} = {rows[-1]['close']}")
+        print(f"  과거창: {vol_history(rows)}")
+    else:
+        print("  ❌ 값 없음 — 카드는 생략됩니다(날조 없음).")
+        print("     KIS_APP_KEY/KIS_APP_SECRET 설정 또는 타당범위 로그 확인")
+        print("     (메인 대시보드에 VKOSPI 가 뜬다면 크리덴셜은 정상)")
 
 
 def main(argv: list[str]) -> int:
-    tickers = argv[1:] or ["039030.KQ"]
+    # 기본 목록 = ① 종합/밸류에이션 결측 재현용(039030.KQ) + ② 수주잔고를
+    # **실제로 공시할 가능성이 높은** 업종(조선·전력기기·방산·플랜트).
+    # 이오테크닉스는 반기보고서에 수주잔고 키워드가 0회로 확정돼(2026-08-16)
+    # 파서를 짤 표본이 되지 못한다 — 공시하는 회사의 실제 표 배열이 필요하다.
+    tickers = argv[1:] or ["039030.KQ", "042660.KS", "267260.KS",
+                           "064350.KS", "034020.KS"]
     for t in tickers:
         print("=" * 74)
         print(f"■ {t}")

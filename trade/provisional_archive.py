@@ -25,6 +25,7 @@ from pathlib import Path
 
 from trade import customs, customs_provisional as prov
 from trade.archive_template import FieldMap, Stat, render_archive_page
+from trade.archive_template import back_link_html
 
 _KST = timezone(timedelta(hours=9))
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
@@ -145,7 +146,7 @@ def regenerate(out_path: Path | None = None) -> Path:
                  "적립 · 확정(익월 ~15일)이 들어오면 '그때 잠정 ↔ 확정' 대조용 · "
                  "단위 억$ · 수출 절대액 ⚠️ 과대 가능 · 월/일 접기·검색",
         field_map=_FM,
-        nav_html='<a href="./">← 대시보드</a>',   # './'=trade 루트(index.html 은 NOAH 가로챔)
+        nav_html=back_link_html(),
         stats=[Stat(value=str(len(runs)), label="잠정 스냅샷"),
                Stat(value=str(months), label="개월")],
         empty_message="아직 적립된 잠정 스냅샷이 없습니다. 다음 잠정 발표"

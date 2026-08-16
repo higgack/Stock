@@ -37,6 +37,8 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from trade.archive_template import back_nav_html
+from trade.archive_template import card_html
 
 _MARKER_RE = re.compile(r"\d+\s*월\s*수출\s*일본")
 _RE_ITEM = re.compile(r"▶️\s*(.+)")
@@ -200,10 +202,11 @@ h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
 .jp2-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
 .jp2-card[open]{border-color:var(--accent)}
-.jp2-sum{list-style:none;cursor:pointer;padding:13px 16px;
+.jp2-sum{list-style:none;padding:13px 16px;
   display:flex;flex-direction:column;gap:7px}
 .jp2-sum::-webkit-details-marker{display:none}
-.jp2-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
+details.jp2-card > .jp2-sum{cursor:pointer}
+details.jp2-card > .jp2-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
 .jp2-card[open] .jp2-sum::after{content:"▾ 접기"}
 .jp2-hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .jp2-item{font-weight:680;font-size:15px;color:var(--item)}
@@ -265,7 +268,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     mo = _html.escape(r.get("month") or "")
     co = (r.get("companies") or "").strip()
     co_html = (f'<div class="jp2-co">🏭 {_html.escape(co)}</div>' if co else "")
-    summary = [f'<summary class="jp2-sum">'
+    summary = [f''
                f'<div class="jp2-hd"><span class="jp2-item">{item}</span>'
                f'<span class="jp2-mo">📅 {mo}</span></div>']
     ev = r.get("export_value_musd")
@@ -275,16 +278,13 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
             f'<span class="jp2-mval">${ev:,.1f}M</span>'
             f'{_delta_str(r.get("export_yoy"), r.get("export_mom"))}</div>')
     summary.append(co_html)
-    summary.append("</summary>")
     detail = []
     chart = r.get("chart_media")
     if chart:
         detail.append(f'<div class="jp2-chart"><img loading="lazy" '
                       f'src="{_html.escape(media_prefix + chart)}" alt="{item}"></div>')
     detail.append(_hist_table(hist))
-    detail_html = (f'<div class="jp2-detail">{"".join(d for d in detail if d)}</div>'
-                   if any(detail) else "")
-    return f'<details class="jp2-card">{"".join(summary)}{detail_html}</details>'
+    return card_html("jp2", summary, detail)
 
 
 def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
@@ -303,7 +303,7 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>🎌 일본 수출 데이터 (나쁜양파)</title>"
         f"<style>{_CSS}</style></head><body><div class='wrap'>"
-        '<div class="nav"><a href="./">← 수출입 대시보드</a></div>'
+        f"{back_nav_html()}"
         "<h1>🎌 일본 수출 데이터 (나쁜양파)</h1>"
         f'<p class="sub">출처 나쁜양파(관세 일본, BeOn과 별도 소스) · 품목별 월 수출액(USD M$) · '
         f'{len(items)}개 품목'

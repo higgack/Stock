@@ -19512,7 +19512,7 @@ class TestMarketTimingBreadthVol20260726:
         # 이고, 히스토리는 종가 시계열에서 온다.
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
-        monkeypatch.setattr(mt, "_fetch_vkospi_rows", lambda days=400: [])
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda days=400: [])
         seen = []
 
         def fake_fetch(ticker, days=120, min_rows=None):
@@ -19532,7 +19532,7 @@ class TestMarketTimingBreadthVol20260726:
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
 
-        monkeypatch.setattr(mt, "_fetch_vkospi_rows", lambda days=400: [])
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda days=400: [])
 
         def fake_fetch(ticker, days=120, min_rows=None):
             if ticker == "^VIX":
@@ -19554,7 +19554,7 @@ class TestMarketTimingBreadthVol20260726:
         # ⚠️ VKOSPI 도 반드시 스텁 — 안 하면 이 테스트가 **실제 HTTPS** 를
         # 때리고, 엔드포인트가 살아나는 순간 VM 에서 `make test` 가 깨진다
         # (2026-08-16 독립 리뷰 실측).
-        monkeypatch.setattr(mt, "_fetch_vkospi_rows", lambda days=400: [])
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda days=400: [])
 
         def boom(ticker, days=120, min_rows=None):
             raise RuntimeError("x")
@@ -21218,7 +21218,7 @@ class TestChronologicalTablesAndVol20260816:
         data = {"volatility": {
             "vix": {"value": 14.2, "source": "네이버(실시간)",
                     "history": {"전일": 14.9, "1주": 15.3, "1달": 18.1, "1년": 13.4}},
-            "vkospi": {"value": 17.8, "source": "네이버 국내지수",
+            "vkospi": {"value": 17.8, "source": "KIS",
                        "history": {"전일": 18.2, "1주": 19.0, "1달": 21.5, "1년": 16.0}},
             "move": {"value": 88.0}}}
         html = mt.render_market_timing_page(data)
@@ -21238,25 +21238,50 @@ class TestChronologicalTablesAndVol20260816:
         assert "VKOSPI" not in html
         assert "(VIX)" in html
 
-    def test_vkospi_fetch_is_graceful_and_tries_every_candidate(self, monkeypatch):
+    def test_vkospi_uses_the_same_kis_index_code_as_the_main_dashboard(self,
+                                                                       monkeypatch):
+        """지수코드를 복제하면 KIS 가 코드를 바꾼 날 메인 대시보드와 시장타이밍이
+        갈라진다 — 한 상수를 **import 해서** 쓰는지 확인한다."""
         from bot import market_timing as mt
-        tried = []
+        from bot.naver_sector_client import _KIS_VKOSPI_IDX_CODE
+        seen = {}
 
-        class _R:
-            status_code = 404
+        class _K:
+            def get_domestic_index_daily(self, code, days=200):
+                seen["code"], seen["days"] = code, days
+                return [{"date": f"d{i}", "close": 16.0} for i in range(120)]
 
-            def json(self):
-                return {}
+        monkeypatch.setattr("bot.kis_client.get_kis", lambda: _K())
+        rows = mt.fetch_vkospi_rows()
+        assert seen["code"] == _KIS_VKOSPI_IDX_CODE, seen
+        # ⚠️ `days` 는 **캘린더 일수 span** 이지 봉 수가 아니다
+        # (get_domestic_index_daily 가 `remaining = days + 7` 로 역방향
+        # 캘린더 청킹을 한다). 1년 창(252 거래일)을 채우려면 거래일 비율
+        # ~0.69 를 감안해 **365 일보다 넉넉히** 요청해야 한다 — 253 을 걸면
+        # 300(≈205봉)도 통과해 '1년' 칸이 조용히 사라진다(독립 리뷰).
+        assert seen["days"] * 0.69 > 252, f"1년 창 미달: {seen}"
+        assert len(rows) == 120
 
-        def fake_get(url, **kw):
-            tried.append(url)
-            return _R()
+    def test_vkospi_is_graceful_without_kis_credentials(self, monkeypatch):
+        """KIS 크리덴셜이 없으면 None → 카드 생략. 0 이나 VIX 값으로 채우지 않는다."""
+        from bot import market_timing as mt
 
-        monkeypatch.setattr("requests.get", fake_get)
-        assert mt._fetch_vkospi_rows() == []
-        assert len(tried) == len(mt._VKOSPI_CANDIDATES), tried
-        for code in mt._VKOSPI_CANDIDATES:
-            assert any(f"/index/{code}/day" in u for u in tried), code
+        class _K:
+            def get_domestic_index_daily(self, code, days=200):
+                return None
+
+        monkeypatch.setattr("bot.kis_client.get_kis", lambda: _K())
+        assert mt.fetch_vkospi_rows() == []
+
+    def test_vkospi_naver_path_is_gone(self):
+        """네이버는 **원리적으로 불가**다 — VM 프로브가 409 StockConflict
+        '지원하지 않는 지수입니다' 로 확정(대조군 KOSPI 는 정상 데이터).
+        되살아날 여지가 없으므로 잔재를 남기지 않는다."""
+        from bot import market_timing as mt
+        assert not hasattr(mt, "_fetch_vkospi_rows")
+        assert not hasattr(mt, "_VKOSPI_CANDIDATES")
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert "api.stock.naver.com/chart/domestic/index" not in src
 
     def test_volatility_snapshot_survives_a_vkospi_failure(self, monkeypatch):
         # VKOSPI 가 죽어도 VIX 카드는 살아야 한다(독립 try).
@@ -21269,7 +21294,7 @@ class TestChronologicalTablesAndVol20260816:
         def boom(*a, **k):
             raise RuntimeError("네이버 down")
 
-        monkeypatch.setattr(mt, "_fetch_vkospi_rows", boom)
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", boom)
         out = mt.fetch_volatility_snapshot()
         assert out["vix"]["value"] == 14.2
         assert out["vix"]["history"], "VIX 과거창 미첨부"
@@ -21296,27 +21321,27 @@ class TestVolAndTableReviewFixes20260816:
         assert not _vkospi_plausible(vol[:5])
         assert not _vkospi_plausible([]) and not _vkospi_plausible(None)
 
-    def test_vkospi_fetch_skips_an_implausible_candidate(self, monkeypatch):
+    def test_vkospi_rejects_a_price_index_even_from_kis(self, monkeypatch):
+        """소스가 KIS 로 바뀌어도 타당범위 검사는 유지한다 — 지수코드 오타나
+        KIS 코드체계 변경 시 '가격지수를 변동성지수로 표시'하는 실패모드는
+        그대로다."""
         from bot import market_timing as mt
-        tried = []
 
-        class _R:
-            status_code = 200
+        class _K:
+            def get_domestic_index_daily(self, code, days=200):
+                return [{"date": f"d{i}", "close": 2500.0} for i in range(120)]
 
-            def json(self):
-                return {}
+        monkeypatch.setattr("bot.kis_client.get_kis", lambda: _K())
+        assert mt.fetch_vkospi_rows() == []
 
-        monkeypatch.setattr("requests.get",
-                            lambda url, **kw: tried.append(url) or _R())
-        # 파싱은 되지만 값이 코스피 지수대 → 두 후보 모두 거절 → []
-        monkeypatch.setattr(mt, "_payload_to_rows", lambda p, d: [
-            {"date": f"d{i}", "close": 2500.0} for i in range(120)])
-        monkeypatch.setattr("bot.chart_data._rows_to_daily_df", lambda r: r)
-        monkeypatch.setattr("bot.chart_data._parse_naver_daily", lambda j: [])
-        monkeypatch.setattr("bot.chart_data._df_to_daily_payload",
-                            lambda df, t, p: {"times": ["d"], "close": [1.0]})
-        assert mt._fetch_vkospi_rows() == []
-        assert len(tried) == len(mt._VKOSPI_CANDIDATES), "거절 후 다음 후보 미시도"
+    def test_kis_index_cache_key_includes_the_row_count(self):
+        """200봉 요청과 400봉 요청이 같은 캐시 파일을 쓰면 먼저 쓴 쪽 길이가
+        상대에게 서빙된다 — 메인 대시보드(200)와 시장타이밍(400)이 서로의
+        데이터를 받아 '1년' 칸이 조용히 사라진다."""
+        src = open("bot/kis_client.py", encoding="utf-8").read()
+        blk = src[src.index("def get_domestic_index_daily"):]
+        blk = blk[:blk.index("\n    def ", 1)]
+        assert 'ck = f"idxdaily_{index_code}_{int(days)}.json"' in blk, blk[:400]
 
     def test_infographic_fallback_table_matches_the_chart_direction(self):
         """폰트 없는 서버에서 이 표가 PNG 를 대신한다 — 방향이 반대면
@@ -21334,7 +21359,7 @@ class TestVolAndTableReviewFixes20260816:
         src = open("tests/test_regression.py", encoding="utf-8").read()
         blk = src[src.index("def test_fetch_volatility_snapshot_both_fail_graceful"):]
         blk = blk[:blk.index("\n    def ", 1)]
-        assert "_fetch_vkospi_rows" in blk, "VKOSPI 스텁 누락 — 라이브 호출"
+        assert "fetch_vkospi_rows" in blk, "VKOSPI 스텁 누락 — 라이브 호출"
 
     def test_badge_does_not_overclaim_daily_only_updates(self):
         """F&G 는 6시간마다 갱신되므로 '하루 1회만 변한다'는 배지 문구는

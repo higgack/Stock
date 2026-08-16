@@ -16,6 +16,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from trade.archive_template import back_nav_html
 
 log = logging.getLogger("trade.reference_book")
 _KST = timezone(timedelta(hours=9))
@@ -477,7 +478,7 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>📖 품목 레퍼런스북</title>"
         f"<style>{_CSS}</style></head><body><div class='wrap'>"
-        "<div class='nav'><a href='./'>← 대시보드</a></div>"
+        f"{back_nav_html()}"
         "<h1>📖 품목 레퍼런스북</h1>"
         f"<p class='sub'>MTI 품목 ↔ 구성 HS10 코드 ↔ 산업 ↔ 관련 상장사 · "
         f"무역협회 HSK-MTI 연계표 + 큐레이션·채널 관련기업 · 총 {n_mti:,}품목"

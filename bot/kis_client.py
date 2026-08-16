@@ -798,7 +798,11 @@ class KisClient:
         (중복일자 제거). creds 부재/미지원 코드/실패 시 None (graceful)."""
         from datetime import date as _date, timedelta as _td
         end = _date.today()
-        ck = f"idxdaily_{index_code}.json"
+        # ⚠️ 캐시 키에 **days 포함** — 없으면 200봉 요청과 400봉 요청이 같은
+        # 파일을 공유해 먼저 쓴 쪽 길이가 상대에게 서빙된다(메인 대시보드는
+        # 200, 시장타이밍은 1년 창이 필요해 400). 그러면 '1년' 칸이 조용히
+        # 사라지거나 차트가 갑자기 길어진다(2026-08-16 독립 조사).
+        ck = f"idxdaily_{index_code}_{int(days)}.json"
         cached = _cache_get(ck, ttl_hours=1)
         if cached is not None:
             return cached.get("bars")

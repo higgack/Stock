@@ -33,6 +33,8 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from trade.archive_template import back_nav_html
+from trade.archive_template import card_html
 
 _MARKER_RE = re.compile(r"\d+\s*월\s*수출\s*대만")
 _RE_ITEM = re.compile(r"▶️\s*(.+)")
@@ -188,10 +190,11 @@ h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
 .tw-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
 .tw-card[open]{border-color:var(--accent)}
-.tw-sum{list-style:none;cursor:pointer;padding:13px 16px;
+.tw-sum{list-style:none;padding:13px 16px;
   display:flex;flex-direction:column;gap:7px}
 .tw-sum::-webkit-details-marker{display:none}
-.tw-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
+details.tw-card > .tw-sum{cursor:pointer}
+details.tw-card > .tw-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
 .tw-card[open] .tw-sum::after{content:"▾ 접기"}
 .tw-hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .tw-item{font-weight:680;font-size:15px;color:var(--item)}
@@ -253,7 +256,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     mo = _html.escape(r.get("month") or "")
     co = (r.get("companies") or "").strip()
     co_html = (f'<div class="tw-co">🏭 {_html.escape(co)}</div>' if co else "")
-    summary = [f'<summary class="tw-sum">'
+    summary = [f''
                f'<div class="tw-hd"><span class="tw-item">{item}</span>'
                f'<span class="tw-mo">📅 {mo}</span></div>']
     ev = r.get("export_value_musd")
@@ -263,16 +266,13 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
             f'<span class="tw-mval">${ev:,.1f}M</span>'
             f'{_delta_str(r.get("export_yoy"), r.get("export_mom"))}</div>')
     summary.append(co_html)
-    summary.append("</summary>")
     detail = []
     chart = r.get("chart_media")
     if chart:
         detail.append(f'<div class="tw-chart"><img loading="lazy" '
                       f'src="{_html.escape(media_prefix + chart)}" alt="{item}"></div>')
     detail.append(_hist_table(hist))
-    detail_html = (f'<div class="tw-detail">{"".join(d for d in detail if d)}</div>'
-                   if any(detail) else "")
-    return f'<details class="tw-card">{"".join(summary)}{detail_html}</details>'
+    return card_html("tw", summary, detail)
 
 
 def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
@@ -291,7 +291,7 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>🧋 대만 수출 데이터</title>"
         f"<style>{_CSS}</style></head><body><div class='wrap'>"
-        '<div class="nav"><a href="./">← 수출입 대시보드</a></div>'
+        f"{back_nav_html()}"
         "<h1>🧋 대만 수출 데이터</h1>"
         f'<p class="sub">출처 나쁜양파(관세청 대만) · 품목별 월 수출액(USD M$) · '
         f'{len(items)}개 품목'

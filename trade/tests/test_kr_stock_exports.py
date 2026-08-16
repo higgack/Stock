@@ -190,7 +190,12 @@ class RenderTests(unittest.TestCase):
         self.conn = krs.open_kr_stock_db(self.db_path)
         html = krs.render_html(self.conn)
         self.assertIn("아직 수집된", html)
-        self.assertIn("index.html", html)
+        # ⚠️ 계약 반전 — 옛 테스트는 `index.html` **존재**를 단언해 버그를
+        # 고정하고 있었다. NOAH 프록시가 `/trade/index.html` 을 종목분석
+        # 메인으로 302 시키므로(_OUR_ROOT_PAGES) 그 링크는 수출입 대시보드로
+        # 가지 않는다(사용자 2026-08-16). 올바른 형태는 './'.
+        self.assertIn('href="./"', html)
+        self.assertNotIn("index.html", html)
 
 
 class RoutingTests(unittest.TestCase):
