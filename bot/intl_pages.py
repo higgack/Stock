@@ -15,6 +15,27 @@ _FLAG = {"JP": "🇯🇵 일본", "CN_A": "🇨🇳 중국 A주", "HK": "🇭�
 
 
 def render_intl_highlow52_page(market: str) -> str:
+    """JP/CN_A/HK/KR 52주 신고가·신저가 — 진입점. 실제 렌더는 _render_intl_highlow52
+    (아래)에 위임하고, 여기서는 무슨 예외가 나든(신규 버그 포함) 500 으로 새지
+    않고 최소 의존성(외부 헬퍼 호출 없음 — _tw_shell 등도 잠재 원인일 수 있어
+    제외) 안내 페이지로 대체 + 전체 traceback 로그(2026-08-16, 사용자 반복 500
+    재발 대응 최종 안전망)."""
+    try:
+        return _render_intl_highlow52(market)
+    except Exception as exc:
+        import traceback
+        log.error("intl 52w page CRASH (%s): %s\n%s", market, exc,
+                  traceback.format_exc())
+        flag = _FLAG.get(market, market)
+        return (f'<!doctype html><meta charset="utf-8">'
+                f'<title>{flag} 52주 신고가·신저가</title>'
+                '<body style="font-family:sans-serif;padding:24px">'
+                f'<h2>{flag} 52주 신고가·신저가</h2>'
+                '<p>일시적 오류로 표시할 수 없습니다. 잠시 후 다시 시도해 '
+                '주세요.</p><p><a href="/">← 홈으로</a></p></body>')
+
+
+def _render_intl_highlow52(market: str) -> str:
     """JP/CN_A/HK/KR 52주 신고가·신저가 — 미국 포맷 통일(사용자 2026-06-13):
     종목(+이름)·현재가·등락률·거래량·시총·업종 + 시총정렬 + 헤더정렬 + 업종분포."""
     try:
