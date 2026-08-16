@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 THEME = {
-    "domain": "Naval Shipbuilding (Aerospace & Defense)",
+    "domain": "해군 조선",
     "layer": "L4_SUBINDUSTRY",
     "aliases": ["naval_shipbuilding", "naval", "shipbuilding"],
     "horizon": "12-24 months",
     "binding_layer_taxonomy": [
-        "Naval Shipbuilding — 주요 (HII · Babcock UK)",
-        "Naval Shipbuilding — 기타·공급망 (한화오션 · 三菱重工)",
+        "해군 조선 — 주요 (HII · Babcock UK)",
+        "해군 조선 — 기타·공급망 (한화오션 · 三菱重工)",
     ],
     "catalyst_types": [
         "Boeing 737 MAX 월별 출하량 + Airbus A320neo backlog + 中 COMAC C919 ramp",
@@ -24,7 +24,7 @@ THEME = {
         "AUKUS Pillar 1 잠수함 인도 일정 + 美 NRC SMR 해군 추진 인허가",
     ],
     "regional_concentration": {
-        "Naval Shipbuilding (주요)": "HII · Babcock UK",
-        "Naval Shipbuilding (확장)": "한화오션 · 三菱重工",
+        "해군 조선 (주요)": "HII · Babcock UK",
+        "해군 조선 (확장)": "한화오션 · 三菱重工",
     },
 }

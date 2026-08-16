@@ -36,6 +36,19 @@ def _api_key() -> str:
     return os.getenv("FINNHUB_API_KEY", "").strip()
 
 
+def _us_name_map() -> dict[str, str]:
+    try:
+        from bot.us_symbol_names import us_symbol_names
+        names = dict(us_symbol_names() or {})
+        try:
+            from bot.edgar_client import sec_ticker_names
+            for tk, nm in (sec_ticker_names() or {}).items():
+                names.setdefault(tk, nm)
+        except Exception:
+            pass
+        return names
+    except Exception:
+        return {}
 def fetch_month(year: int, month: int) -> list[dict]:
     """Fetch a full month — 미국(Finnhub 실적) + 한국(KIND IR일정·DART 폴백).
 
@@ -129,12 +142,14 @@ def _fetch_us_month(year: int, month: int) -> list[dict]:
         return []
 
     result = []
+    names = _us_name_map()
     for e in raw:
         sym = e.get("symbol", "")
         if not sym:
             continue
         result.append({
             "symbol": sym,
+            "name": names.get(sym, ""),
             "date": e.get("date", ""),
             "hour": e.get("hour", ""),
             "eps_estimate": e.get("epsEstimate"),

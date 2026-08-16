@@ -118,7 +118,7 @@ def _cache_get(cache_key: str, ttl_hours: float = _CACHE_TTL_HOURS):
     try:
         age_h = (time.time() - cache_file.stat().st_mtime) / 3600
         if age_h < ttl_hours:
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
     except Exception as exc:
         log.warning("akshare: cache read failed for %s: %s", cache_key, exc)
     return None
@@ -128,7 +128,7 @@ def _cache_put(cache_key: str, value) -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         (_CACHE_DIR / cache_key).write_text(
-            json.dumps(value, ensure_ascii=False, default=str)
+            json.dumps(value, ensure_ascii=False, default=str), encoding="utf-8"
         )
     except Exception as exc:
         log.warning("akshare: cache write failed for %s: %s", cache_key, exc)
@@ -231,6 +231,87 @@ def _is_transient_network_error(exc: Exception) -> bool:
     if "ConnectionError" in name or "Timeout" in name:
         return True
     return False
+
+def list_cn_a_universe() -> dict:
+    """Full CN A-share universe {yfinance_ticker: ???}.
+
+    Primary path: AKShare full A-share listing sources (spot/code-name style
+    endpoints) with SH+SZ+BJ coverage where available. Falls back cleanly to
+    CSI300+500 only if the full universe cannot be collected. Empty dict on
+    AKShare absence/failure so callers can degrade gracefully.
+    """
+    cache_key = "cn_a_universe.json"
+    cached = _cache_get(cache_key, ttl_hours=7 * 24)
+    if isinstance(cached, dict) and len(cached) > 100:
+        return cached
+    ak = _import_akshare()
+    if ak is None:
+        return {}
+    out: dict = {}
+    candidates = [
+        ("stock_zh_a_spot_em", "spot"),
+        ("stock_zh_a_hist_em", "hist"),
+        ("stock_info_a_code_name", "code_name"),
+        ("stock_zh_a_spot", "spot_full"),
+    ]
+    for fn_name, mode in candidates:
+        fn = getattr(ak, fn_name, None)
+        if fn is None:
+            continue
+        try:
+            if mode == "spot":
+                df = _fetch_with_retry(lambda f=fn: f(), f"{fn_name}")
+                if df is None or getattr(df, "empty", True):
+                    continue
+                code_c = _pick_cons_col(df.columns, "code")
+                name_c = _pick_cons_col(df.columns, "name")
+                if code_c is None:
+                    continue
+                for _, row in df.iterrows():
+                    tk = _cn_code_to_ticker(row.get(code_c))
+                    if tk:
+                        nm = str(row.get(name_c) or "").strip() if name_c else ""
+                        out.setdefault(tk, nm or tk)
+            elif mode == "code_name":
+                df = _fetch_with_retry(lambda f=fn: f(), f"{fn_name}")
+                if df is None or getattr(df, "empty", True):
+                    continue
+                code_c = _pick_cons_col(df.columns, "code")
+                name_c = _pick_cons_col(df.columns, "name")
+                if code_c is None:
+                    continue
+                for _, row in df.iterrows():
+                    tk = _cn_code_to_ticker(row.get(code_c))
+                    if tk:
+                        nm = str(row.get(name_c) or "").strip() if name_c else ""
+                        out.setdefault(tk, nm or tk)
+            else:
+                df = _fetch_with_retry(lambda f=fn: f(), f"{fn_name}")
+                if df is None or getattr(df, "empty", True):
+                    continue
+                cols = {str(c): c for c in df.columns}
+                code_c = next((cols[c] for c in cols
+                               if any(k in c for k in ("??", "????", "????", "code"))), None)
+                name_c = next((cols[c] for c in cols
+                               if any(k in c for k in ("??", "????", "????", "name"))), None)
+                if code_c is None:
+                    continue
+                for _, row in df.iterrows():
+                    tk = _cn_code_to_ticker(row.get(code_c))
+                    if tk:
+                        nm = str(row.get(name_c) or "").strip() if name_c else ""
+                        out.setdefault(tk, nm or tk)
+        except Exception as exc:
+            log.warning("akshare CN A universe %s failed: %s", fn_name, exc)
+    if len(out) <= 100:
+        try:
+            out = list_csi300_500() or out
+        except Exception as exc:
+            log.warning("akshare CN A universe fallback CSI300+500 failed: %s", exc)
+    if len(out) > 100:
+        _cache_put(cache_key, out)
+    return out
+
 
 
 def _fetch_with_retry(ak_fn, label: str, max_retries: int = 2):

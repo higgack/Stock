@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 THEME = {
-    "domain": "Military Prime (Aerospace & Defense)",
+    "domain": "군용 주요 방산",
     "layer": "L4_SUBINDUSTRY",
     "aliases": ["military_prime", "military", "prime"],
     "horizon": "12-24 months",
     "binding_layer_taxonomy": [
-        "Military Prime — 주요 (Lockheed Martin LMT · RTX RTX · Northrop NOC · General Dynamics GD · L3Harris LHX)",
-        "Military Prime — 기타·공급망 (Huntington Ingalls HII · Textron TXT · Palantir PLTR · Kratos KTOS · AeroVironment AVAV · Mercury Systems MRCY)",
+        "군용 주요 — Lockheed Martin LMT · RTX RTX · Northrop NOC · General Dynamics GD · L3Harris LHX)",
+        "군용 기타·공급망 (Huntington Ingalls HII · Textron TXT · Palantir PLTR · Kratos KTOS · AeroVironment AVAV · Mercury Systems MRCY)",
     ],
     "catalyst_types": [
         "Boeing 737 MAX 월별 출하량 + Airbus A320neo backlog + 中 COMAC C919 ramp",
@@ -24,7 +24,7 @@ THEME = {
         "AUKUS Pillar 1 잠수함 인도 일정 + 美 NRC SMR 해군 추진 인허가",
     ],
     "regional_concentration": {
-        "Military Prime (주요)": "Lockheed Martin LMT · RTX RTX · Northrop NOC · General Dynamics GD · L3Harris LHX",
-        "Military Prime (확장)": "Huntington Ingalls HII · Textron TXT · Palantir PLTR · Kratos KTOS · AeroVironment AVAV · Mercury Systems MRCY",
+        "군용 주요": "Lockheed Martin LMT · RTX RTX · Northrop NOC · General Dynamics GD · L3Harris LHX",
+        "군용 확장": "Huntington Ingalls HII · Textron TXT · Palantir PLTR · Kratos KTOS · AeroVironment AVAV · Mercury Systems MRCY",
     },
 }

@@ -26,13 +26,11 @@ log = logging.getLogger(__name__)
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v3.json",
            "jp_highlow_status.json", "일본 주요종목", (".T",)),
-    # CN_A 52주 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 → CSI300+500') —
-    # 옛 2026-06-14 제거 번복. **CSI 300 + CSI 500**(대형+중형 ~800): AKShare
-    # list_csi300_500 → yfinance 1y 스캔(_universe CN_A 분기). 전 A주(~5천)는
-    # 소형주 yfinance 1년 커버 빈약해 제외 — CSI300+500 은 커버리지 양호(dense).
-    # AKShare 미설치/실패 시 peer(_CN_A_INDUSTRY_PEERS ~64) 폴백. 슬롯 :30 분산.
-    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v1.json",
-             "cn_highlow_status.json", "중국 CSI300+500", (".SS", ".SZ")),
+    # CN_A 52주 신고가·신저가 = A주 상위 종목(시총 2026-08-11 기준). 데이터 소스는 AKShare.
+    # CSI300 상위권과 제외 종목을 고려, peer 신선도 확인 필수.
+    # 매주 일요일 자동 스캔으로 신규 상장 coverage 추가.
+    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v2.json",
+             "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v4.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
     # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
@@ -115,22 +113,23 @@ def _universe(market: str) -> tuple[list[str], dict]:
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":
-        # CN = CSI 300 + CSI 500 (사용자 2026-06-17 'CSI300+500') — 대형+중형 ~800.
-        # 전 A주(~5천)는 소형주를 yfinance 가 1년 일봉으로 잘 안 줘 신고저가 듬성듬성
-        # 했음 → yfinance 커버리지 양호한 대형·중형만(dense·가벼움). AKShare 미설치/
-        # 실패 시 아래 peer 폴백(주요종목 ~64, 회귀 0). 캡=HIGHLOW_UNIVERSE_CAP.
+        # CN_A 유니버스 = AKShare A주 전종목(list_cn_a_universe, 내부적으로
+        # CSI300+500 폴백) — 2026-08-15. intl_universe.full_universe()는 JP/HK
+        # 만 _SPEC 에 정의돼 있어 CN_A 로 부르면 항상 [] 를 반환하고 조용히
+        # peer(~64종목) 폴백으로 축소됐던 게 '신고가/신저가 종목이 거의 없다'는
+        # 원래 사용자 불만의 실제 원인이었다(intl_movers.py 급등락과 동일 소스로
+        # 통일 — UNIVERSAL CHANGES ONLY).
         try:
-            from bot.akshare_client import list_csi300_500
-            csi = list_csi300_500()              # {ticker: 中文명}, AKShare
-            if len(csi) > 100:
-                full = list(csi.keys())
-                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+            from bot.akshare_client import list_cn_a_universe
+            uni_map = list_cn_a_universe() or {}
+            full = list(uni_map.keys())
+            if len(full) > 100:
+                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "500"))
                 if len(full) > _cap:
-                    full = _cap_by_liquidity(full, _cap, "CN_A")
-                return full, {t: csi.get(t, t) for t in full}
+                    full = _cap_by_liquidity(full, _cap, market)
+                return full, {t: (uni_map.get(t) or t) for t in full}
         except Exception as exc:
-            log.warning("intl CN CSI300+500 universe (AKShare): %s", exc)
-        # AKShare 부재/실패 → 아래 peer 폴백으로 진행(회귀 0)
+            log.warning("intl CN_A universe via akshare: %s", exc)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
@@ -315,20 +314,20 @@ def _compute(market: str) -> None:
         if market == "KR":
             _compute_kr_full()
             return
-        from bot.finviz_client import _compute_highlow_from
+        from bot.finviz_client import _compute_highlow_from, _cache_write
         uni, names = _universe(market)
         if not uni:
             _status_write(market, "failed", detail="universe empty")
             return
         _status_write(market, "running", total=len(uni))
-        # 라벨은 **실제로 스캔한 유니버스**를 반영해야 한다 — 고정 문자열
-        # ("일본 주요종목")은 전종목으로 확대된 뒤에도 그대로라 화면이 거짓말을
-        # 하게 되고, 반대로 공식 상장목록 fetch 가 실패해 peer 로 폴백해도 그걸
-        # 알 수 없다. 종목 수를 함께 찍어 커버리지를 한눈에 확인 가능하게 한다
-        # (사용자 2026-08-01 '제대로 잡아내고 있는지').
         label = _CFG[market][3]
         if market in ("JP", "HK") and len(uni) > 500:
             label = {"JP": "일본 전종목(JPX 상장)", "HK": "홍콩 전종목(HKEX 상장)"}[market]
+        # CN_A 도 JP/HK 와 동일한 yfinance 52주 baseline 경로 사용(2026-08-15
+        # 되돌림). fetch_intl_movers_naver 는 '급등락 TOP'용 함수(up/down 스키마)라
+        # high/low 키가 없어 캐시가 영구 빈 결과로 남고 highlow_baseline_CN_A.json
+        # 도 못 만들어 live 비교 경로까지 죽었던 게 실제 원인(UNIVERSAL CHANGES
+        # ONLY — CN_A 만 다른 데이터 경로를 쓸 문서화된 이유 없음, JP/HK 와 통일).
         out = _compute_highlow_from(
             uni, names, _CFG[market][1],
             f"{label} {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)", market)
@@ -340,7 +339,6 @@ def _compute(market: str) -> None:
     finally:
         with _lock:
             _running[market] = False
-
 
 def _kick(market: str) -> None:
     with _lock:
@@ -476,15 +474,22 @@ def fetch_intl_highlow(market: str) -> dict:
     # 스캔(heavy·수 분) → 장중 1h 유지. 장 밖 마지막 마감 이후 재스캔 0(전 시장 공통).
     _intra = _MOVERS_INTRA_TTL if market == "KR" else _HL_INTRA_TTL
     stale = _cached(cache, ttl=86400)
+    stale_empty = stale is not None and not (stale.get("high") or stale.get("low"))
     if stale is not None:
         try:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _intra):
+        if _session_fresh(market, mt, _intra) and not stale_empty:
             return stale
     st = intl_highlow_status(market)
     age = time.time() - (st.get("ts") or 0)
+    if stale_empty and age >= 1800:
+        st = {"state": "stale", "ts": 0}
+    # just_kicked: 이번 호출에서 방금 _kick() 을 호출했으면 building=True 로 즉시
+    # 반영(상태파일은 백그라운드 스레드가 나중에 "running" 을 쓰므로 그 전까지는
+    # st.get("state")만 보면 building=False 로 새는 race 가 있었음, 2026-08-15).
+    just_kicked = False
     if st.get("state") == "failed" and age < 300:
         pass
     elif st.get("state") == "running" and age < 1800:
@@ -493,7 +498,10 @@ def fetch_intl_highlow(market: str) -> dict:
         from bot.finviz_client import yf_paused
         if not yf_paused():        # YF_PAUSE → 재산출 kick 안 함(스테일 유지)
             _kick(market)
+            just_kicked = True
     if stale is not None:
-        return {**stale, "building": st.get("state") == "running"}
+        done = bool(stale.get("high") or stale.get("low"))
+        return {**stale, "building": (not done and (just_kicked or (st.get("state") == "running" and age < 1800)))}
     return {"high": [], "low": [], "ts": "", "source": "",
-            "building": True, "status": st}
+            "building": (just_kicked or (st.get("state") == "running" and age < 1800)), "status": st}
+

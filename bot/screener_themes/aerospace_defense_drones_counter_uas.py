@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 THEME = {
-    "domain": "Drones & Counter-UAS (Aerospace & Defense)",
+    "domain": "드론 및 대드론(UAS 대응)",
     "layer": "L4_SUBINDUSTRY",
     "aliases": ["drones_counter", "drones", "counter"],
     "horizon": "12-24 months",
     "binding_layer_taxonomy": [
-        "Drones & Counter-UAS — 미국 (AeroVironment · Kratos)",
-        "Drones & Counter-UAS — 비상장 (Anduril 비상장)",
+        "드론 및 대드론(UAS 대응) — 미국 (AeroVironment · Kratos)",
+        "드론 및 대드론(UAS 대응) — 비상장 (Anduril 비상장)",
     ],
     "catalyst_types": [
         "Boeing 737 MAX 월별 출하량 + Airbus A320neo backlog + 中 COMAC C919 ramp",
@@ -24,7 +24,7 @@ THEME = {
         "AUKUS Pillar 1 잠수함 인도 일정 + 美 NRC SMR 해군 추진 인허가",
     ],
     "regional_concentration": {
-        "Drones & Counter-UAS (미국)": "AeroVironment · Kratos",
-        "Drones & Counter-UAS (비상장)": "Anduril 비상장",
+        "드론 및 대드론(UAS 대응) (미국)": "AeroVironment · Kratos",
+        "드론 및 대드론(UAS 대응) (비상장)": "Anduril 비상장",
     },
 }

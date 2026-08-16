@@ -8,7 +8,7 @@ Specialty + Mortgage. Fed funds rate → 배당 매력 변화 + AI 데이터센�
 from __future__ import annotations
 
 THEME = {
-    "domain": "REITs (리츠)",
+    "domain": "리츠",
     "layer": "L3_INDUSTRY",
     "aliases": [
         "reits",
@@ -28,14 +28,14 @@ THEME = {
     ],
     "horizon": "9-24 months",
     "binding_layer_taxonomy": [
-        "Industrial REITs (Prologis · Rexford · First Industrial · Sun Comm)",
-        "Data Center REITs (Equinix · Digital Realty · Iron Mountain)",
-        "Residential REITs (AvalonBay · Equity Residential · Invitation Homes · MAA · Sun Comm)",
-        "Retail REITs (Simon · Realty Income · Regency · Kimco · Federal Realty)",
-        "Office REITs (Boston Properties · Vornado · Kilroy · Cousins · Highwoods)",
-        "Healthcare REITs (Welltower · Ventas · Healthpeak · Omega · National Health)",
-        "Specialty REITs (Public Storage · Extra Space · VICI · American Tower · Crown Castle)",
-        "Mortgage REITs (Annaly · Starwood · Blackstone Mortgage · AGNC · Hannon)",
+        "산업용 리츠(Prologis · Rexford · First Industrial · Sun Comm)",
+        "데이터센터 리츠(Equinix · Digital Realty · Iron Mountain)",
+        "주거용 리츠(AvalonBay · Equity Residential · Invitation Homes · MAA · Sun Comm)",
+        "소매 리츠(Simon · Realty Income · Regency · Kimco · Federal Realty)",
+        "오피스 리츠(Boston Properties · Vornado · Kilroy · Cousins · Highwoods)",
+        "헬스케어 리츠(Welltower · Ventas · Healthpeak · Omega · National Health)",
+        "특수 리츠(Public Storage · Extra Space · VICI · American Tower · Crown Castle)",
+        "모기지 리츠(Annaly · Starwood · Blackstone Mortgage · AGNC · Hannon)",
     ],
     "catalyst_types": [
         "Fed funds rate path + 美 10Y → REIT 배당 매력 변동",
@@ -56,6 +56,6 @@ THEME = {
         "Healthcare REITs": "Welltower WELL · Ventas VTR · Healthpeak DOC · Omega Healthcare OHI · National Health Investors NHI · Medical Properties MPW · Sabra Health Care SBRA · CareTrust REIT CTRE · Strawberry Fields 비상장 · Universal Health Realty UHT · NorthStar Healthcare 비상장",
         "Specialty REITs": "Public Storage PSA (Self-storage) · Extra Space EXR (Self-storage) · CubeSmart CUBE · Life Storage 비상장 (인수 후) · National Storage Affiliates NSA · VICI Properties VICI (Casinos) · Gaming and Leisure GLPI · MGM Growth 비상장 (VICI 인수) · Lamar Advertising LAMR · Outfront OUT · SBA Communications SBAC · American Tower AMT · Crown Castle CCI · Uniti Group UNIT · Iron Mountain IRM · Innovative Industrial IIPR (cannabis) · Spirit Realty SRC · NetSTREIT NTST",
         "Mortgage REITs": "Annaly NLY · Starwood STWD · Blackstone Mortgage BXMT · AGNC Investment AGNC · Two Harbors TWO · Hannon Armstrong HASI · New Residential NRZ (Rithm RITM) · Ladder Capital LADR · Apollo Commercial ARI · Granite Point GPMT · Arlington Asset AAIC · Cherry Hill CHMI · ARMOUR Residential ARR · Ellington Financial EFC · KKR Real Estate KREF · MFA Financial MFA · Western Asset WMC · Anchorman 비상장 (Western Asset 자회사) · Chimera Investment CIM · Dynex Capital DX · PennyMac Mortgage PMT",
-        "Asia REIT": "JP (Nippon Building Fund 8951.T · Japan Real Estate 8952.T · Japan Retail Fund 8953.T · GLP J-REIT 3281.T · Industrial & Infrastructure 3249.T · Activia 3279.T · Premier Investment 8956.T · Daiwa Office 8976.T · Top REIT 8982.T · Sekisui House 1928.T REIT · Hankyu Hanshin 9042.T 자회사), SG REIT (CapitaLand Integrated CICT.SI · Mapletree Logistics M44U.SI · Frasers Logistics BUOU.SI · Keppel DC AJBU.SI · Mapletree Pan Asia Commercial N2IU.SI · Ascendas A17U.SI · Mapletree Industrial ME8U.SI), HK (Link REIT 0823.HK · Champion REIT 2778.HK · Sunlight REIT 0435.HK · Yuexiu Property 0123.HK)",
+        "아시아 리츠": "JP (Nippon Building Fund 8951.T · Japan Real Estate 8952.T · Japan Retail Fund 8953.T · GLP J-REIT 3281.T · Industrial & Infrastructure 3249.T · Activia 3279.T · Premier Investment 8956.T · Daiwa Office 8976.T · Top REIT 8982.T · Sekisui House 1928.T REIT · Hankyu Hanshin 9042.T 자회사), SG REIT (CapitaLand Integrated CICT.SI · Mapletree Logistics M44U.SI · Frasers Logistics BUOU.SI · Keppel DC AJBU.SI · Mapletree Pan Asia Commercial N2IU.SI · Ascendas A17U.SI · Mapletree Industrial ME8U.SI), HK (Link REIT 0823.HK · Champion REIT 2778.HK · Sunlight REIT 0435.HK · Yuexiu Property 0123.HK)",
     },
 }

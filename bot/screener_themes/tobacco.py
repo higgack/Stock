@@ -8,7 +8,7 @@ Burn 침투율이 주 driver.
 from __future__ import annotations
 
 THEME = {
-    "domain": "Tobacco (담배)",
+    "domain": "담배",
     "layer": "L3_INDUSTRY",
     "aliases": [
         "tobacco",

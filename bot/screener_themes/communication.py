@@ -10,7 +10,7 @@ L3 sub-industries (4):
 from __future__ import annotations
 
 THEME = {
-    "domain": "Communication Services (커뮤니케이션 서비스)",
+    "domain": "커뮤니케이션 서비스",
     "layer": "L2_SECTOR",
     "aliases": [
         "communication",
@@ -38,7 +38,7 @@ THEME = {
         "Interactive Media & Services (인터랙티브 미디어 및 서비스)",
         "Entertainment (엔터테인먼트 — Film/TV + Music + Live)",
         "Gaming (게임)",
-        "Telecommunication Services (통신 서비스 — Integrated + Cable + Infra)",
+        "통신 서비스 — Integrated + Cable + Infra",
     ],
     "catalyst_types": [
         "Alphabet/Meta 광고 분기 매출 + GenAI 검색 disruption (Perplexity / ChatGPT) 정량화",

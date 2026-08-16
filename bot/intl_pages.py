@@ -15,6 +15,27 @@ _FLAG = {"JP": "🇯🇵 일본", "CN_A": "🇨🇳 중국 A주", "HK": "🇭�
 
 
 def render_intl_highlow52_page(market: str) -> str:
+    """JP/CN_A/HK/KR 52주 신고가·신저가 — 진입점. 실제 렌더는 _render_intl_highlow52
+    (아래)에 위임하고, 여기서는 무슨 예외가 나든(신규 버그 포함) 500 으로 새지
+    않고 최소 의존성(외부 헬퍼 호출 없음 — _tw_shell 등도 잠재 원인일 수 있어
+    제외) 안내 페이지로 대체 + 전체 traceback 로그(2026-08-16, 사용자 반복 500
+    재발 대응 최종 안전망)."""
+    try:
+        return _render_intl_highlow52(market)
+    except Exception as exc:
+        import traceback
+        log.error("intl 52w page CRASH (%s): %s\n%s", market, exc,
+                  traceback.format_exc())
+        flag = _FLAG.get(market, market)
+        return (f'<!doctype html><meta charset="utf-8">'
+                f'<title>{flag} 52주 신고가·신저가</title>'
+                '<body style="font-family:sans-serif;padding:24px">'
+                f'<h2>{flag} 52주 신고가·신저가</h2>'
+                '<p>일시적 오류로 표시할 수 없습니다. 잠시 후 다시 시도해 '
+                '주세요.</p><p><a href="/">← 홈으로</a></p></body>')
+
+
+def _render_intl_highlow52(market: str) -> str:
     """JP/CN_A/HK/KR 52주 신고가·신저가 — 미국 포맷 통일(사용자 2026-06-13):
     종목(+이름)·현재가·등락률·거래량·시총·업종 + 시총정렬 + 헤더정렬 + 업종분포."""
     try:
@@ -27,16 +48,21 @@ def render_intl_highlow52_page(market: str) -> str:
     ts = _html.escape(data.get("ts", ""))
     high, low = data.get("high", []), data.get("low", [])
     if not high and not low:
+        # body 미할당(UnboundLocalError->500) 재발 방지: building 여부만으로
+        # 2분기 고정(사용자 반복 500 에러, 2026-08-15). stale 캐시 서빙 시
+        # data["status"]가 없어({} 로 빠짐) 예전 3-way 분기(state/source 문자열
+        # 검사)가 어느 쪽도 안 걸려 body 가 끝까지 비는 경우가 실제 원인이었음.
+        st = data.get("status") or {}
+        tot = st.get("total")
+        prog = f" (주요종목 {tot})" if tot else ""
         if data.get("building"):
-            st = data.get("status") or {}
-            tot = st.get("total")
-            prog = f" (주요종목 {tot})" if tot else ""
             body = ('<div class="empty">⏳ 52주 신고가·신저가 산출 중'
                     f'{_html.escape(prog)}…<br>주요종목 1년 주봉 스캔. '
                     '잠시 후 새로고침해 주세요.</div>')
         else:
-            body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
-                    '(잠시 후 다시 시도해 주세요.)</div>')
+            body = ('<div class="empty">52주 신고가·신저가 결과가 없습니다'
+                    f'{_html.escape(prog)}.<br>이번 스캔에서는 기준을 넘은 종목이 '
+                    '없었습니다.</div>')
     else:
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
@@ -68,6 +94,9 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src, market_hours_label
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
+    # CN_A 라벨 인코딩 손상 복구 (2026-08-11).
+    if market == "CN_A" and "주요종목" not in src:
+        src = "중국 A주 주요종목 — 네이버 현재가 × 52주 baseline(live)"
     # JP/HK 52w 커버리지 = env HIGHLOW_UNIVERSE_CAP(기본 5000=사실상 전종목, 사용자
     # 2026-06-16 '전시장 다'). 기본값이면 full 이라 '전종목' 정확(옛 ~900 캡 라벨
     # 제거). env 로 캡 낮추면 시총 상위만 — 그 땐 라벨이 약간 낙관적.

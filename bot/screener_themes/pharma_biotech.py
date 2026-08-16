@@ -9,7 +9,7 @@ L1 trend `pharma.py` (좁은 GLP-1/CDMO/Biosimilar cycle) 와는 별개 lens
 from __future__ import annotations
 
 THEME = {
-    "domain": "Pharmaceuticals & Biotechnology (제약 및 바이오테크)",
+    "domain": "제약 및 바이오테크",
     "layer": "L3_INDUSTRY",
     "aliases": [
         "pharma_biotech",
