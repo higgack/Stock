@@ -196,23 +196,53 @@ def probe_backlog(ticker: str) -> None:
 
 
 def probe_vkospi() -> None:
-    """VKOSPI(코스피200 변동성지수) 네이버 국내지수 엔드포인트 확인.
+    """VKOSPI(코스피200 변동성지수) 소스 **진단**.
 
-    yfinance 에 표준 티커가 없어 네이버를 쓰는데, 샌드박스에서 실측할 수
-    없어 후보를 2개 넣어 뒀다(bot/market_timing._VKOSPI_CANDIDATES).
-    어느 코드가 통하는지 여기서 확정한다."""
-    print("── ⑤ VKOSPI 소스 확인 (시장타이밍 보드) " + "─" * 24)
-    from bot.market_timing import _VKOSPI_CANDIDATES, _fetch_vkospi_rows
-    print(f"  후보: {', '.join(_VKOSPI_CANDIDATES)}")
-    rows = _fetch_vkospi_rows()
-    if rows:
-        print(f"  ✅ {len(rows)}행 · 최근 {rows[-1]['date']} = {rows[-1]['close']}")
-        from bot.market_timing import vol_history
-        print(f"  과거창: {vol_history(rows)}")
-    else:
-        print("  ❌ 둘 다 실패 — 카드는 생략됩니다(값 날조 없음).")
-        print("     네이버 국내지수 페이지에서 실제 코드를 확인해 주세요:")
-        print("     https://finance.naver.com/sise/sise_index.naver?code=VKOSPI")
+    후보 코드를 바꿔가며 두 번 실패했다(2026-08-16). 더 추측하지 않고
+    엔드포인트 여러 형태를 실제로 때려 **status 와 응답 앞부분을 그대로**
+    찍는다 — 이 출력 하나로 어떤 URL·코드가 맞는지 확정한다
+    (CLAUDE.md 실수 #12: 같은 증상 2회+ = 추측 종료, 가시성 심기)."""
+    print("── ⑤ VKOSPI 소스 진단 (시장타이밍 보드) " + "─" * 22)
+    import datetime as _dt
+
+    import requests
+    try:
+        from bot.naver_quote import _HDRS
+    except Exception:
+        _HDRS = {"User-Agent": "Mozilla/5.0"}
+    end = _dt.date.today()
+    start = end - _dt.timedelta(days=400)
+    ymd = "%Y%m%d"
+    cands = []
+    # (a) 국내지수 차트 API — 현재 코드가 쓰는 형태
+    for code in ("VKOSPI", "VKOSPI200", "KOSPI"):   # KOSPI = 대조군(형태 검증)
+        cands.append((
+            f"chart/domestic/index/{code}/day",
+            f"https://api.stock.naver.com/chart/domestic/index/{code}/day",
+            {"startDateTime": start.strftime(ymd) + "0000",
+             "endDateTime": end.strftime(ymd) + "0000"}))
+    # (b) 지수 basic — 현재값만이라도 잡히는지
+    for code in ("VKOSPI", "VKOSPI200"):
+        cands.append((f"index/{code}/basic",
+                      f"https://api.stock.naver.com/index/{code}/basic", {}))
+    # (c) siseJson — 많은 라이브러리가 지수 일봉에 쓰는 경로
+    for sym in ("VKOSPI", "VKOSPI200"):
+        cands.append((
+            f"siseJson {sym}",
+            "https://api.finance.naver.com/siseJson.naver",
+            {"symbol": sym, "requestType": "1", "timeframe": "day",
+             "startTime": start.strftime(ymd), "endTime": end.strftime(ymd)}))
+    for label, url, params in cands:
+        try:
+            r = requests.get(url, headers=_HDRS, params=params, timeout=10)
+            body = (r.text or "")[:220].replace("\n", " ")
+            print(f"  [{r.status_code}] {label}")
+            print(f"        {body}")
+        except Exception as exc:
+            print(f"  [ERR] {label}: {exc}")
+    print("  → 200 이면서 숫자 시계열이 보이는 줄의 label 을 알려주시면 "
+          "그대로 배선합니다.")
+    print("     (KOSPI 대조군이 200 이면 URL 형태 자체는 맞고 코드만 다른 것)")
 
 
 def main(argv: list[str]) -> int:

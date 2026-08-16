@@ -14261,15 +14261,21 @@ _DART_FEED_CSS = """
 .df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400;margin-left:auto}
 .df-date-label{margin-left:8px}
 .df-date-cnt{margin-left:8px;font-weight:600;color:var(--text,#1f2937)}
-.df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:stretch}
 @media(max-width:900px){.df-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.df-grid{grid-template-columns:1fr}}
-.df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px}
+/* height:100% + border-box — 한 줄의 카드 3개가 항상 같은 높이가 되도록
+   명시한다. grid 기본 stretch 에 기대면 카드 안에 주입되는 요소(★메모⏰
+   도구·배지)나 내부 여백에 따라 한 장만 안 늘어나는 경우가 생긴다
+   (사용자 2026-08-16 '갑자기 카드 크기가 서로 달라졌어'). */
+.df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px;height:100%;box-sizing:border-box}
 .df-card.hidden{display:none}
 /* 중요(🔥 금색)/미파싱(⚠️ 파랑 점선) 색상 구별 — 두 색 명확 분리
    (사용자 2026-06-12 '중요랑 미파싱은 색깔을 다르게'; 옛 주황은 금색과
    혼동) */
-.df-card.df-significant{border-color:#d4a017;box-shadow:0 0 0 1px #d4a01755}
+/* 강조 링은 **안쪽**으로(inset) — 바깥 box-shadow 는 카드 바깥으로 1px
+   더 그려져 강조된 카드만 커 보인다(같은 지적). */
+.df-card.df-significant{border-color:#d4a017;box-shadow:inset 0 0 0 1px #d4a01755}
 .df-card.df-unparsed{border-style:dashed;border-color:#5c9ce6aa}
 /* 미파싱제외(의도) — 회색 점선, 진짜 미파싱(파랑 점선)과 구별(사용자 2026-06-14) */
 .df-card.df-noparse{border-style:dotted;border-color:#6b727e88}
@@ -14292,7 +14298,7 @@ _DART_FEED_CSS = """
 .df-detail-ln{color:var(--text,#1f2937);font-size:12px;line-height:1.5}
 /* list view */
 .df-grid.list-view{display:flex;flex-direction:column;gap:4px}
-.df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px}
+.df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px;height:auto}
 .df-grid.list-view .df-card-hd{flex-direction:row;align-items:center;min-width:160px}
 .df-grid.list-view .df-report{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .df-grid.list-view .df-detail-ln{display:none}

@@ -418,6 +418,11 @@ def breadth_from_closes(sector_closes: dict) -> dict:
         # 실제로는 11개로 계산한 값을 보여주게 된다(2026-08-16 독립 리뷰).
         "counted_20dma": counted20, "counted_50dma": counted50,
         "counted_200dma": counted200,
+        # 상회 개수 — 화면의 (n/m) 은 **이것**이 분자여야 한다. 옛 코드는
+        # counted/n_sectors 를 찍어 세 지표가 전부 (13/13) 으로 같아 보였고,
+        # 69%·54% 와 대놓고 모순됐다(사용자 2026-08-16 "왜 숫자는 다 같아?").
+        "above_20dma": above20, "above_50dma": above50,
+        "above_200dma": above200,
         "n_sectors": len(sector_closes),
     }
 
@@ -836,11 +841,17 @@ def render_market_timing_page(data: dict, now=None) -> str:
             v = b.get(f"pct_above_{key}")
             if v is None:
                 return "—"
-            # 분모를 함께 적는다 — 표본 13개라 써놓고 11개로 계산한 값을
-            # 보여주는 일이 없게(신규상장 ETF 는 200일치가 없다).
-            n = b.get(f"counted_{key}")
-            return f"{v:.0f}%" + (f" <small>({n}/{b.get('n_sectors', 0)})</small>"
-                                  if n is not None else "")
+            # (상회/집계) — 퍼센트와 **같은 분수**를 적는다. 옛 코드는
+            # (집계/표본) 을 적어 세 지표가 전부 (13/13) 으로 같았다.
+            up, n = b.get(f"above_{key}"), b.get(f"counted_{key}")
+            if up is None or n is None:
+                return f"{v:.0f}%"
+            # 집계 수가 표본보다 적으면(신규상장 ETF 는 200일치가 없다) 그
+            # 사실도 함께 밝힌다 — '표본 13개'라 써놓고 11개로 계산한 값을
+            # 보여주는 일이 없게.
+            total = b.get("n_sectors", 0)
+            short = "" if n == total else f" · 집계 {n}/{total}"
+            return f"{v:.0f}% <small>({up}/{n}{short})</small>"
 
         _miss = b.get("sectors_missing") or []
         _miss_html = (f'<div class="sub" style="margin:4px 0 0">⚠️ 제외: '

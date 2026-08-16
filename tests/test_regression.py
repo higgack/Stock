@@ -19282,7 +19282,10 @@ class TestMarketTimingBreadthVol20260726:
         assert result == {"pct_above_20dma": 50.0, "pct_above_50dma": 50.0,
                           "pct_above_200dma": 50.0, "n_sectors": 2,
                           "counted_20dma": 2, "counted_50dma": 2,
-                          "counted_200dma": 2}
+                          "counted_200dma": 2,
+                          # 상회 개수 — 화면의 (n/m) 분자(2026-08-16 추가).
+                          "above_20dma": 1, "above_50dma": 1,
+                          "above_200dma": 1}
 
     def test_breadth_from_closes_excludes_insufficient_data_sector(self):
         from bot import market_timing as mt
@@ -19303,7 +19306,8 @@ class TestMarketTimingBreadthVol20260726:
         assert mt.breadth_from_closes({}) == {
             "pct_above_20dma": None, "pct_above_50dma": None,
             "pct_above_200dma": None, "n_sectors": 0,
-            "counted_20dma": 0, "counted_50dma": 0, "counted_200dma": 0}
+            "counted_20dma": 0, "counted_50dma": 0, "counted_200dma": 0,
+            "above_20dma": 0, "above_50dma": 0, "above_200dma": 0}
 
     def test_fetch_market_breadth_unregistered_market_returns_empty(self):
         # KR 은 2026-08-16 부터 지원 — 등록 안 된 시장만 {} 여야 한다
@@ -21358,3 +21362,202 @@ class TestVolAndTableReviewFixes20260816:
         # 과거 경위 서술은 남겨도 되지만 **현재 지시**는 하나여야 한다.
         assert "표시 순서 = **오래된→최신**" in blk, "현재 방향 미명시"
         assert "뒤집지 말 것" in blk, "재-reverse 금지 경고 없음"
+
+
+class TestBreadthCountsAndCards20260816:
+    """사용자 2026-08-16 — (13/13) 표기 · DART 카드 높이 · DART 키 · Fwd PER."""
+
+    def test_breadth_fraction_matches_its_own_percentage(self):
+        """옛 표기는 (집계/표본) 이라 20/50/200일 세 지표가 전부 (13/13) 으로
+        같았고 69%·54% 와 대놓고 모순됐다 — 분수는 퍼센트와 같아야 한다."""
+        from bot.market_timing import breadth_from_closes
+        up = [100.0 + j for j in range(250)]          # 전 구간 상승 = 모든 MA 상회
+        dn = [400.0 - j for j in range(250)]          # 전 구간 하락 = 모두 하회
+        b = breadth_from_closes({**{f"u{i}": up for i in range(9)},
+                                 **{f"d{i}": dn for i in range(4)}})
+        assert b["above_20dma"] == 9 and b["counted_20dma"] == 13
+        assert round(b["pct_above_20dma"]) == round(9 / 13 * 100)
+        for k in ("20dma", "50dma", "200dma"):
+            assert b[f"above_{k}"] / b[f"counted_{k}"] * 100 == pytest.approx(
+                b[f"pct_above_{k}"], abs=0.05), k
+
+    def test_breadth_card_prints_above_over_counted(self):
+        from bot import market_timing as mt
+        b = {"pct_above_20dma": 100.0, "pct_above_50dma": 69.2,
+             "pct_above_200dma": 53.8,
+             "counted_20dma": 13, "counted_50dma": 13, "counted_200dma": 13,
+             "above_20dma": 13, "above_50dma": 9, "above_200dma": 7,
+             "n_sectors": 13, "market": "KR", "source_label": "KODEX 섹터 ETF",
+             "sectors_ok": [], "sectors_missing": []}
+        html = mt.render_market_timing_page({"breadth": {"KR": b}})
+        seg = html[html.index("시장 폭 (섹터 breadth, KR)"):]
+        seg = seg[:seg.index("</div></div>", seg.index("표본"))]
+        fracs = re.findall(r"<small>\((\d+)/(\d+)[^)]*\)</small>", seg)
+        assert fracs[:3] == [("13", "13"), ("9", "13"), ("7", "13")], fracs
+
+    def test_breadth_card_flags_a_smaller_denominator(self):
+        """신규상장 ETF 는 200일치가 없어 그 지표만 분모가 준다 — 표본과
+        다르면 그 사실을 화면에 밝혀야 한다."""
+        from bot import market_timing as mt
+        b = {"pct_above_20dma": 100.0, "pct_above_50dma": 100.0,
+             "pct_above_200dma": 50.0,
+             "counted_20dma": 13, "counted_50dma": 13, "counted_200dma": 10,
+             "above_20dma": 13, "above_50dma": 13, "above_200dma": 5,
+             "n_sectors": 13, "market": "KR", "source_label": "KODEX 섹터 ETF",
+             "sectors_ok": [], "sectors_missing": []}
+        html = mt.render_market_timing_page({"breadth": {"KR": b}})
+        assert "(5/10 · 집계 10/13)" in html, "축소된 분모를 안 밝힘"
+        assert "(13/13)" in html, "정상 지표엔 군더더기 없이"
+
+    def test_dart_cards_in_a_row_are_forced_equal_height(self):
+        """한 줄 카드 3장의 바깥 상자가 같아야 한다 — grid 기본 stretch 에만
+        기대면 카드 안에 주입되는 요소 때문에 한 장이 안 늘어난다."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        css = src[src.index(".df-grid{"):src.index(".df-card-hd{")]
+        assert "align-items:stretch" in css, "grid 정렬 미명시"
+        card = css[css.index(".df-card{"):css.index("\n", css.index(".df-card{"))]
+        assert "height:100%" in card and "box-sizing:border-box" in card, card
+        # 강조 링이 바깥으로 그려지면 그 카드만 커 보인다.
+        sig = css[css.index(".df-card.df-significant{"):]
+        sig = sig[:sig.index("}") + 1]
+        assert "inset" in sig, f"강조 링이 바깥 그림자: {sig}"
+        # 리스트 뷰는 세로 스택이라 height:100% 를 되돌려야 한다.
+        lv = src[src.index(".df-grid.list-view .df-card{"):]
+        assert "height:auto" in lv[:lv.index("}") + 1]
+
+    def test_dart_client_reads_the_key_from_env_file(self, tmp_path,
+                                                     monkeypatch):
+        """스크립트·프로브 진입점은 load_dotenv() 를 안 해서 DART 가
+        'status=100 인증키 누락' 을 돌려줬다(2026-08-16 프로브 실측)."""
+        import bot.dart_client as dc
+        monkeypatch.delenv("DART_API_KEY", raising=False)
+        (tmp_path / ".env").write_text(
+            "DART_API_KEY=TESTKEY123\nDASHBOARD_PASSWORD=secret\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(dc, "_ENV_KEY_TRIED", False)
+        monkeypatch.setattr(dc, "_ENV_KEY_CACHED", "")
+        # ⚠️ 플래그를 **한 번만** 리셋한다 — 매 생성 전에 리셋하면 '한 번만
+        # 시도' 버그(값을 캐시 안 해 두 번째 클라이언트가 키를 못 받음)를
+        # 못 잡는다(2026-08-16 독립 리뷰). 같은 프로세스의 2·3번째도 받아야.
+        assert [dc.DartClient().api_key for _ in range(3)] == ["TESTKEY123"] * 3
+        # 다른 비밀값을 프로세스 환경에 주입하면 안 된다.
+        import os
+        assert os.environ.get("DASHBOARD_PASSWORD") is None
+        # 명시 인자가 있으면 그쪽이 우선.
+        assert dc.DartClient("EXPLICIT").api_key == "EXPLICIT"
+
+    def test_empty_api_key_means_offline_not_read_from_disk(self, tmp_path,
+                                                            monkeypatch):
+        """`DartClient("")` 는 **명시적인 '키 없음'** 이다 — 여기서 .env 를
+        주워오면 오프라인 가드 테스트가 실제 DART 를 호출한다."""
+        import bot.dart_client as dc
+        monkeypatch.delenv("DART_API_KEY", raising=False)
+        (tmp_path / ".env").write_text("DART_API_KEY=REALKEY\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(dc, "_ENV_KEY_TRIED", False)
+        monkeypatch.setattr(dc, "_ENV_KEY_CACHED", "")
+        assert dc.DartClient("").api_key == ""
+        assert dc.DartClient(None).api_key == "REALKEY"
+
+    def test_forward_per_goes_live_even_without_forward_eps(self, monkeypatch):
+        """야후가 forwardPE 는 주고 forwardEps 는 안 주는 종목이 흔하다
+        (039030.KQ 실측). forwardPE 와 수집시점 주가로 EPS 를 역산해
+        라이브 주가로 다시 나눈다 — 근사가 아니라 정확한 변환."""
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_live_quote",
+                            lambda t, m, sh=None: {"price": 440_000.0})
+        qs = TestQuarterlyExtraChartsAndLive20260816._qs()
+        monkeypatch.setattr("bot.quarterly_series.series_from_yfinance",
+                            lambda snap, n=5: qs)
+        pl = qi.build_payload("AAPL", {"currency": "USD",
+                                       "current_price": 404_000.0,
+                                       "forwardPE": 30.7223})
+        # forwardEps = 404000/30.7223 → 라이브 PER = 440000/eps
+        want = 440_000.0 / (404_000.0 / 30.7223)
+        assert pl["per_forward"] == pytest.approx(want, rel=1e-9)
+        assert pl["per_forward"] > 30.7223, "주가가 올랐는데 배수가 그대로"
+
+    def test_forward_per_falls_back_when_it_cannot_be_recomputed(self, monkeypatch):
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_live_quote", lambda t, m, sh=None: {})
+        qs = TestQuarterlyExtraChartsAndLive20260816._qs()
+        monkeypatch.setattr("bot.quarterly_series.series_from_yfinance",
+                            lambda snap, n=5: qs)
+        pl = qi.build_payload("AAPL", {"currency": "USD", "forwardPE": 30.7})
+        assert pl["per_forward"] == 30.7
+
+    # ── 화면 설명(질문에 대한 답이 화면에 있어야 한다) ────────────────
+    def test_fng_is_labelled_as_a_us_index_on_the_kr_card(self):
+        """CNN F&G 는 미국 지표 — KR 카드에 'F&G 65' 만 적으면 한국 지표로
+        읽힌다(사용자 2026-08-16 "이건 한국 KOSPI인데?")."""
+        from bot import breadth_strategy as bs
+        d = {"market": "KR", "regime": "CONTRARIAN", "state": "CONTRARIAN_KOSPI",
+             "targets": [], "index_w": 0.75, "total_w": 0.75, "cash_w": 0.25,
+             "breadth_pct": 23.1, "dd_pct": -23.44, "bench_name": "KOSPI",
+             "breadth": {"pct": 23.1, "above": 3, "counted": 13,
+                         "skipped": [], "period": 120},
+             "source_label": "KODEX", "sectors_missing": [],
+             "rs_ranked": [{"name": "IT", "rs": 48.0}],
+             "fng": {"index": 65, "label": "탐욕"}, "asof": "2026-08-14",
+             "is_confirmed": False, "resolution_note": ""}
+        html = bs.render_page({"KR": d})
+        assert "美 CNN" in html, "F&G 출처(미국) 미표기"
+        assert "RS 순위(상위 5, 지수 대비 6개월)" in html, "RS 라벨이 모호"
+
+    def test_resolution_note_gives_integer_crossing_points(self):
+        """'3.9개 지점'은 존재하지 않는 수다 — 실제로 구간이 바뀌는 정수
+        개수를 적어야 행동 가능한 정보가 된다."""
+        from bot.breadth_strategy import _assemble
+        rows = [{"date": f"2026-0{1 + i // 28}-{i % 28 + 1:02d}",
+                 "close": 100.0 + i} for i in range(140)]
+        d = _assemble("KR", {f"t{i}": f"s{i}" for i in range(13)}, "KOSPI",
+                      rows, {f"s{i}": rows for i in range(13)}, [], cut=None)
+        note = d["resolution_note"]
+        assert "7.7%p" in note
+        assert "4·6·8개 이상" in note, note
+        assert "3.9" not in note, "소수 섹터 개수가 남아 있음"
+
+    def test_crossing_points_are_the_true_regime_boundary(self):
+        """화면에 적은 '몇 개 이상'이 **실제 판정과 일치**해야 한다.
+        경계는 '이상' 포함이라 딱 나누어떨어지면 그 수 자체가 답이다
+        (10개의 30% = 3개 — 올림이 4로 밀어내면 안 된다)."""
+        import bot.breadth_strategy as bs
+        # (a) 정의 자체 — k 는 pct 에 닿는 **최소** 정수다.
+        for n in range(2, 60):
+            for pct in (bs._B_RECOVERY, bs._B_NON_TREND, bs._B_TREND):
+                k = bs.min_sectors_for(n, pct)
+                assert k / n * 100 >= pct - 1e-9, (n, pct, k)
+                if k:
+                    assert (k - 1) / n * 100 < pct, (n, pct, k)
+        # 부동소수 오차로 정수가 살짝 넘는 경우 — 임계값을 반올림이 안 되는
+        # 값으로 바꾸면 실제로 발생한다(28 × 32.142857…% = 9.000000000000002).
+        # 여기서 올려버리면 화면이 '10개 이상'이라 적고 판정은 9개에서 바뀐다.
+        assert bs.min_sectors_for(28, 32.142857142857146) == 9
+        assert bs.min_sectors_for(14, 64.28571428571429) == 9
+        # 딱 나누어떨어지는 대표 사례(올림이 밀어내면 안 되는 지점).
+        assert bs.min_sectors_for(10, 30.0) == 3
+        assert bs.min_sectors_for(20, 60.0) == 12
+        assert bs.min_sectors_for(13, 40.0) == 6      # 5.2 → 6
+        # (b) 표본이 각 구간을 담을 만큼 크면 판정도 그 구간이어야 한다.
+        #     (2~3개짜리 표본은 30~40% 밴드 자체가 도달 불가라 제외)
+        for n in range(8, 40):
+            for pct, want in ((bs._B_RECOVERY, "RECOVERY"),
+                              (bs._B_NON_TREND, "NON_TREND"),
+                              (bs._B_TREND, "TREND")):
+                k = bs.min_sectors_for(n, pct)
+                got = bs.classify_regime(k / n * 100)
+                if want == "RECOVERY" and k / n * 100 >= bs._B_NON_TREND:
+                    continue          # 해상도가 거칠어 밴드를 건너뛴 경우
+                assert got == want, (n, pct, k, got)
+
+    def test_resolution_note_tracks_the_threshold_constants(self, monkeypatch):
+        """임계값을 바꾸면 각주도 따라가야 한다 — 리터럴 30/40/60 을 박으면
+        상수를 조정한 날 화면이 거짓말을 시작한다."""
+        import bot.breadth_strategy as bs
+        monkeypatch.setattr(bs, "_B_RECOVERY", 25.0)
+        rows = [{"date": f"2026-0{1 + i // 28}-{i % 28 + 1:02d}",
+                 "close": 100.0 + i} for i in range(140)]
+        d = bs._assemble("KR", {f"t{i}": f"s{i}" for i in range(13)}, "KOSPI",
+                         rows, {f"s{i}": rows for i in range(13)}, [], cut=None)
+        assert "25/40/60%" in d["resolution_note"], d["resolution_note"]
+        assert f"{bs.min_sectors_for(13, 25.0)}·" in d["resolution_note"]
