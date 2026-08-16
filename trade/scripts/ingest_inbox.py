@@ -31,6 +31,7 @@ from trade import cn_exports as _cn
 from trade import ignored as _ignored
 from trade import jp2_exports as _jp2
 from trade import jp_exports as _jp
+from trade import kr_stock_exports as _krs
 from trade import mx_exports as _mx
 from trade import my_exports as _my
 from trade import ph_exports as _ph
@@ -150,6 +151,7 @@ def _ingest_group(
     ph_conn=None,
     mx_conn=None,
     us_conn=None,
+    krs_conn=None,
 ) -> None:
     """Resolve one album/solo into a single alert row + media paths."""
     captioned = [r for r in group if r.get("caption_present")]
@@ -328,6 +330,23 @@ def _ingest_group(
                 media_paths=us_media)
             counters["us_inserted"] = counters.get("us_inserted", 0) + (1 if stored else 0)
             return
+        # 한국 수출(나쁜양파, 같은 채널) — 위 전부 아님. 유일한 **종목(회사)**
+        # 기준 소스라 11차 폴백 → 별도 kr_stock.db(사용자 2026-08-16).
+        if (krs_conn is not None
+                and _krs.parse_kr_stock_export(caption_text) is not None):
+            krs_media = []
+            for r in group:
+                p = _resolve_photo_path(media_root, r)
+                if p:
+                    krs_media.append(p)
+            stored = _krs.ingest(
+                krs_conn, caption_text,
+                source_message_id=primary.get("message_id"),
+                posted_at=primary.get("forward_origin_date")
+                or primary.get("date") or "",
+                media_paths=krs_media)
+            counters["krs_inserted"] = counters.get("krs_inserted", 0) + (1 if stored else 0)
+            return
         counters["unparseable"] += 1
         return
 
@@ -422,6 +441,9 @@ def main() -> int:
     ph_conn = _ph.open_ph_db(args.db.parent / "ph.db")
     mx_conn = _mx.open_mx_db(args.db.parent / "mx.db")
     us_conn = _us.open_us_db(args.db.parent / "us.db")
+    # 한국 수출(나쁜양파, 종목별) — PK 가 (stock_code, month) 라
+    # 품목 기반 DB 와 스키마가 달라 별도 파일(사용자 2026-08-16).
+    krs_conn = _krs.open_kr_stock_db(args.db.parent / "kr_stock.db")
 
     groups = _group_messages(rows)
     log.info("grouped into %d send units", len(groups))
@@ -446,6 +468,7 @@ def main() -> int:
         "ph_inserted": 0,
         "mx_inserted": 0,
         "us_inserted": 0,
+        "krs_inserted": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
         "media_relinked": 0,
@@ -453,7 +476,8 @@ def main() -> int:
     for grp in groups:
         _ingest_group(conn, grp, args.media_root, counters, ignored_ids,
                       jp_conn, tw_conn, cn_conn, jp2_conn,
-                      th_conn, my_conn, ph_conn, mx_conn, us_conn)
+                      th_conn, my_conn, ph_conn, mx_conn, us_conn,
+                      krs_conn)
 
     log.info("ingest counters: %s", counters)
     s = stats(conn)
