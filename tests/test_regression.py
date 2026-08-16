@@ -4974,7 +4974,55 @@ class TestDartQuarterlyFinancialsReprtCode:
                                               reprt_code="11012")
         assert r["reprt_code"] == "11012" and r["financials"]["영업이익"] == 260
         assert calls["n"] == 1
-        assert any(k.startswith("qfin_00126380_2026_11012_CFS") for k in written)
+        # qfin2 — financials_cumulative 추가로 캐시 키 버전업(2026-08-19,
+        # code-review 발견: 안 바꾸면 이 커밋 배포 전 조회된 구캐시가
+        # financials_cumulative 없이 7일간 서빙돼 4분기 파생이 조용히 실패함).
+        assert any(k.startswith("qfin2_00126380_2026_11012_CFS") for k in written)
+
+    def test_interim_report_includes_cumulative_from_add_amount(self, monkeypatch):
+        # 2026-08-19 VM 실측 확인 — 분기/반기보고서는 thstrm_amount 가 이미
+        # 단일분기, thstrm_add_amount 가 누적. 4분기 파생(연간-9개월누적)에
+        # 쓸 누적치를 financials_cumulative 로 별도 보존해야 한다.
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        monkeypatch.setattr(client, "_load_corp_code_map",
+                            lambda: {"005930": "00126380"})
+        monkeypatch.setattr(client, "_disk_get", lambda key: None)
+        monkeypatch.setattr(client, "_disk_set", lambda key, data: None)
+
+        class _Resp:
+            def raise_for_status(self): pass
+            def json(self):
+                return {"status": "000", "list": [
+                    {"account_id": "ifrs-full_Revenue",
+                     "thstrm_amount": "86061747000000",
+                     "thstrm_add_amount": "239768567000000"}]}
+
+        monkeypatch.setattr(dc.requests, "get", lambda *a, **k: _Resp())
+        r = client.get_normalized_financials("005930.KS", year=2025,
+                                              reprt_code="11014")
+        assert r["financials"]["매출"] == 86061747000000          # 단일분기(3분기)
+        assert r["financials_cumulative"]["매출"] == 239768567000000  # 9개월 누적
+
+    def test_annual_report_has_no_cumulative_field(self, monkeypatch):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        monkeypatch.setattr(client, "_load_corp_code_map",
+                            lambda: {"005930": "00126380"})
+        monkeypatch.setattr(client, "_disk_get", lambda key: None)
+        monkeypatch.setattr(client, "_disk_set", lambda key, data: None)
+
+        class _Resp:
+            def raise_for_status(self): pass
+            def json(self):
+                return {"status": "000", "list": [
+                    {"account_id": "ifrs-full_Revenue",
+                     "thstrm_amount": "333605938000000", "thstrm_add_amount": ""}]}
+
+        monkeypatch.setattr(dc.requests, "get", lambda *a, **k: _Resp())
+        r = client.get_normalized_financials("005930.KS", year=2025,
+                                              reprt_code="11011")
+        assert "financials_cumulative" not in r
 
     def test_disk_cache_hit_skips_network(self, monkeypatch):
         import bot.dart_client as dc
@@ -5052,9 +5100,14 @@ class TestDartFindPeriodicReport:
 
 
 class TestDartQuarterlySeries:
-    """bot.dart_quarterly — DART 정기보고서(누적치) → 단일분기 차분 +
-    트레일링 시계열 조립 + 최신분기 자동탐지(2026-08-16, 분기 실적분석
-    대시보드). 다음 분기가 공시되면 하드코딩 없이 자동 반영되는 것이 핵심."""
+    """bot.dart_quarterly — DART 정기보고서에서 단일분기 실적 추출 +
+    트레일링 시계열 조립 + 최신분기 자동탐지. **2026-08-19 사용자 VM 실측
+    (삼성전자 25.반기/25.3분기 원본 API 응답)으로 재작성** — 최초 구현은
+    "분기/반기보고서 손익계산서 thstrm_amount = 누적치"로 잘못 가정해
+    이미 단일분기인 값끼리 또 차분, 라이브에서 매출 음수(-4.57조 등)로
+    확인된 버그. 실측 결과 thstrm_amount 자체가 이미 '당기 3개월'(단일
+    분기)이고, thstrm_add_amount 가 누적 — 4분기만 연간-9개월누적 파생
+    필요. 다음 분기가 공시되면 하드코딩 없이 자동 반영되는 것은 그대로."""
 
     def test_quarter_label_format(self):
         from bot.dart_quarterly import quarter_label
@@ -5063,19 +5116,14 @@ class TestDartQuarterlySeries:
         assert quarter_label(2025, "11014") == "25.3Q"
         assert quarter_label(2026, "11011") == "26.4Q"
 
-    def test_diff_quarter_subtracts_flow_keeps_stock(self):
+    def test_diff_quarter_used_only_for_q4_derivation(self):
+        # 4분기 단독 = 연간(now) - 9개월누적(prev, 3분기보고서 thstrm_add_amount).
         from bot.dart_quarterly import _diff_quarter
-        cum_h1 = {"매출": 1237, "영업이익": 260, "자산총계": 50000}
-        cum_q1 = {"매출": 550, "영업이익": 100, "자산총계": 48000}
-        d = _diff_quarter(cum_h1, cum_q1)
-        assert d["매출"] == 687 and d["영업이익"] == 160
-        assert d["자산총계"] == 50000          # 시점값(저량) — 차분 안 함, now 값 유지
-
-    def test_diff_quarter_q1_passthrough(self):
-        from bot.dart_quarterly import _diff_quarter
-        cum_q1 = {"매출": 550, "자산총계": 48000}
-        d = _diff_quarter(cum_q1, None)
-        assert d == cum_q1
+        annual = {"매출": 333605938, "영업이익": 43601051, "자산총계": 400000}
+        nine_mo = {"매출": 239768567, "영업이익": 23527391}
+        d = _diff_quarter(annual, nine_mo)
+        assert d["매출"] == 93837371 and d["영업이익"] == 20073660
+        assert d["자산총계"] == 400000   # 시점값(저량) — 연간 그대로 유지
 
     def test_diff_quarter_none_value_stays_none(self):
         from bot.dart_quarterly import _diff_quarter
@@ -5087,29 +5135,28 @@ class TestDartQuarterlySeries:
         d = _diff_quarter({"매출": 100}, {"매출": 200})
         assert d["매출"] == -100
         assert d["_anomaly_revenue_negative"] is True
-        # 정상 케이스는 플래그 없음
         d2 = _diff_quarter({"매출": 300}, {"매출": 200})
         assert "_anomaly_revenue_negative" not in d2
 
-    def test_needed_pairs_same_year(self):
-        from bot.dart_quarterly import _needed_year_reprt_pairs
-        pairs = _needed_year_reprt_pairs(2026, "11011", 4)
-        assert set(pairs) == {(2026, "11011"), (2026, "11012"),
-                              (2026, "11013"), (2026, "11014")}
+    def test_anomaly_flag_also_applies_to_q1_q3_passthrough(self, monkeypatch):
+        # code-review 발견(2026-08-19): 1~3분기는 이제 _diff_quarter 를
+        # 안 거치므로, 그 경로에서 플래그가 빠지지 않았는지 확인 — DART
+        # 원자값 자체가 음수인 극단 케이스(예: 3분기 원문 자체가 정정
+        # 반영된 음수)도 동일하게 표시돼야 한다.
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2025, "11014"): {"financials": {"매출": -100, "영업이익": 10}},
+        }
 
-    def test_needed_pairs_crosses_year_boundary(self):
-        from bot.dart_quarterly import _needed_year_reprt_pairs
-        pairs = _needed_year_reprt_pairs(2026, "11012", 6)
-        assert set(pairs) == {(2025, "11011"), (2025, "11012"),
-                              (2025, "11013"), (2025, "11014"),
-                              (2026, "11012"), (2026, "11013")}
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
 
-    def test_needed_pairs_starting_at_q1(self):
-        from bot.dart_quarterly import _needed_year_reprt_pairs
-        # 26.1Q 부터 역산 3개 = 26.1Q, 25.4Q, 25.3Q — prev 는 25.4Q(11011)이 25.3Q(11014).
-        pairs = _needed_year_reprt_pairs(2026, "11013", 3)
-        assert set(pairs) == {(2026, "11013"), (2025, "11011"),
-                              (2025, "11014"), (2025, "11012")}
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2025, "11014"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=1)
+        assert series[0]["financials"]["_anomaly_revenue_negative"] is True
 
     def test_latest_candidate_matches_legal_due_dates(self):
         from bot.dart_quarterly import _latest_candidate
@@ -5148,22 +5195,19 @@ class TestDartQuarterlySeries:
 
         assert probe_latest_reprt_code(_FakeDart(), "005930.KS") is None
 
-    def test_get_quarterly_series_builds_ascending_trailing_window(self, monkeypatch):
+    def test_get_quarterly_series_q1_to_q3_used_as_is_no_double_diff(self, monkeypatch):
+        # 핵심 회귀 — 1~3분기는 DART 가 이미 표준화한 단일분기 값을 그대로
+        # 써야 하며 재차분(= 버그 재발)하면 안 된다. 삼성전자 실측 원본값.
         from bot.dart_quarterly import get_quarterly_series
         import bot.dart_quarterly as dq
         FAKE = {
-            (2026, "11012"): {"financials": {"매출": 1237, "영업이익": 260,
-                                             "자산총계": 50000}},
-            (2026, "11013"): {"financials": {"매출": 550, "영업이익": 100,
-                                             "자산총계": 48000}},
-            (2025, "11011"): {"financials": {"매출": 2100, "영업이익": 400,
-                                             "자산총계": 45000}},
-            (2025, "11014"): {"financials": {"매출": 1600, "영업이익": 300,
-                                             "자산총계": 44000}},
-            (2025, "11012"): {"financials": {"매출": 972, "영업이익": 222,
-                                             "자산총계": 43000}},
-            (2025, "11013"): {"financials": {"매출": 428, "영업이익": 90,
-                                             "자산총계": 42000}},
+            (2025, "11013"): {"financials": {"매출": 79140503, "영업이익": 6685272}},
+            (2025, "11012"): {"financials": {"매출": 74566317, "영업이익": 4676057},
+                              "financials_cumulative": {"매출": 153706820,
+                                                        "영업이익": 11361329}},
+            (2025, "11014"): {"financials": {"매출": 86061747, "영업이익": 12166062},
+                              "financials_cumulative": {"매출": 239768567,
+                                                        "영업이익": 23527391}},
         }
 
         class _FakeDart:
@@ -5171,15 +5215,62 @@ class TestDartQuarterlySeries:
                                           reprt_code="11011"):
                 return FAKE.get((year, reprt_code))
 
-        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
-        series = get_quarterly_series(_FakeDart(), "005610.KS", n=6)
-        assert [s["label"] for s in series] == [
-            "25.1Q", "25.2Q", "25.3Q", "25.4Q", "26.1Q", "26.2Q"]
-        assert series[-1]["financials"]["매출"] == 687        # 1237-550
-        assert series[-1]["financials"]["영업이익"] == 160    # 260-100
-        assert series[3]["financials"]["매출"] == 500          # 25.4Q: 2100-1600
-        assert series[0]["financials"]["매출"] == 428          # 25.1Q: Q1 그대로
-        assert all(s["fs_div"] == "CFS" for s in series)
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2025, "11014"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=3)
+        assert [s["label"] for s in series] == ["25.1Q", "25.2Q", "25.3Q"]
+        # 그대로 통과 — 재차분(예: 반기값-1분기값) 됐으면 74566317 이 아닌
+        # 다른 값(또는 음수)이 나온다.
+        assert series[0]["financials"]["매출"] == 79140503
+        assert series[1]["financials"]["매출"] == 74566317
+        assert series[2]["financials"]["매출"] == 86061747
+        assert all(v > 0 for s in series for v in
+                  (s["financials"]["매출"], s["financials"]["영업이익"]))
+
+    def test_get_quarterly_series_q4_derived_from_annual_minus_nine_month(self, monkeypatch):
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2025, "11014"): {"financials": {"매출": 86061747, "영업이익": 12166062},
+                              "financials_cumulative": {"매출": 239768567,
+                                                        "영업이익": 23527391}},
+            (2025, "11011"): {"financials": {"매출": 333605938, "영업이익": 43601051}},
+        }
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
+
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2025, "11011"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=1)
+        assert series[0]["label"] == "25.4Q"
+        assert series[0]["financials"]["매출"] == 333605938 - 239768567
+        assert series[0]["financials"]["영업이익"] == 43601051 - 23527391
+
+    def test_quarterly_sum_matches_annual_within_tolerance(self, monkeypatch):
+        # CLAUDE.md 축1 "분기합 ±10% vs 연간" — 실측 원본값으로 4분기 전체
+        # 합계가 연간과 정확히 일치하는지(디자인상 반드시 일치해야 함,
+        # ±10% 는 소스가 다른 경우의 관용치이고 여긴 같은 소스라 0%).
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2025, "11013"): {"financials": {"매출": 79140503}},
+            (2025, "11012"): {"financials": {"매출": 74566317},
+                              "financials_cumulative": {"매출": 153706820}},
+            (2025, "11014"): {"financials": {"매출": 86061747},
+                              "financials_cumulative": {"매출": 239768567}},
+            (2025, "11011"): {"financials": {"매출": 333605938}},
+        }
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
+
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2025, "11011"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=4)
+        q_sum = sum(s["financials"]["매출"] for s in series)
+        assert q_sum == 333605938
 
     def test_get_quarterly_series_none_when_probe_fails(self, monkeypatch):
         from bot.dart_quarterly import get_quarterly_series
@@ -5193,14 +5284,12 @@ class TestDartQuarterlySeries:
         assert get_quarterly_series(_FakeDart(), "005930.KS") is None
 
     def test_get_quarterly_series_partial_when_history_short(self, monkeypatch):
-        # 상장 이력이 짧아 과거 분기가 없으면 있는 만큼만 반환(전무가 아니면
-        # None 이 아니라 부분 리스트) — fabrication 없이 graceful truncation.
+        # 상장 이력이 짧아 과거 분기가 없으면 있는 만큼만 반환.
         from bot.dart_quarterly import get_quarterly_series
         import bot.dart_quarterly as dq
         FAKE = {
             (2026, "11012"): {"financials": {"매출": 1237}},
             (2026, "11013"): {"financials": {"매출": 550}},
-            # 2025년 데이터 전무(신규상장 가정)
         }
 
         class _FakeDart:
@@ -5213,16 +5302,15 @@ class TestDartQuarterlySeries:
         assert series is not None
         assert [s["label"] for s in series] == ["26.1Q", "26.2Q"]
 
-    def test_get_quarterly_series_skips_quarter_when_prev_fetch_missing(self, monkeypatch):
-        # code-review 발견(2026-08-19): 직전 분기(같은 연도 내 차분 기준)
-        # 조회가 네트워크 실패 등으로 None 이면, "진짜 1분기라 직전이 없는"
-        # 경우와 구분 못 해 몇 개월치 누적치를 단일분기 실적처럼 그대로
-        # 통과시켜 2~3배 부풀려 표시하던 버그. 이제 그 분기는 스킵돼야 한다.
+    def test_get_quarterly_series_q4_skipped_when_nine_month_cumulative_missing(
+            self, monkeypatch):
+        # 4분기는 3분기보고서의 financials_cumulative 가 없으면 안전하게
+        # 산출 불가 — 날조 대신 중단.
         from bot.dart_quarterly import get_quarterly_series
         import bot.dart_quarterly as dq
         FAKE = {
-            (2026, "11012"): {"financials": {"매출": 1237, "영업이익": 260}},
-            # (2026, "11013") 없음 — 직전분기 조회 실패 시뮬레이션
+            (2025, "11011"): {"financials": {"매출": 333605938}},
+            (2025, "11014"): {"financials": {"매출": 86061747}},  # cumulative 없음
         }
 
         class _FakeDart:
@@ -5230,33 +5318,8 @@ class TestDartQuarterlySeries:
                                           reprt_code="11011"):
                 return FAKE.get((year, reprt_code))
 
-        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
-        series = get_quarterly_series(_FakeDart(), "005930.KS", n=4)
-        assert series is None, ("26.2Q 가 유일한 후보였는데 직전분기 조회실패로 "
-                                "스킵되지 않고 누적치가 그대로 반환됨(재발)")
-
-    def test_get_quarterly_series_stops_cleanly_not_partial_fabrication(self, monkeypatch):
-        # 직전분기 미싱으로 멈춘 지점 이전(더 과거) 데이터가 있어도, 이
-        # 트레일링 walk 구조상 그 지점의 다음 스텝이 방문할 키가 곧 미싱된
-        # prev 와 동일 키라(_Q_PREV 설계상 불변식) 어차피 즉시 멈춘다 —
-        # 더 과거 원자료가 raw 에 있어도 쓰이지 않는 게 정상 동작임을 고정.
-        from bot.dart_quarterly import get_quarterly_series
-        import bot.dart_quarterly as dq
-        FAKE = {
-            (2026, "11012"): {"financials": {"매출": 1237, "영업이익": 260}},
-            # (2026, "11013") 없음 — 26.2Q 의 직전분기이자 다음 walk 스텝의
-            # 키라 여기서 멈춤. 아래 2025년 데이터는 도달 못 함(있어도 무관).
-            (2025, "11011"): {"financials": {"매출": 2100, "영업이익": 400}},
-            (2025, "11014"): {"financials": {"매출": 1600, "영업이익": 300}},
-        }
-
-        class _FakeDart:
-            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
-                                          reprt_code="11011"):
-                return FAKE.get((year, reprt_code))
-
-        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
-        series = get_quarterly_series(_FakeDart(), "005930.KS", n=4)
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2025, "11011"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=1)
         assert series is None
 
 
