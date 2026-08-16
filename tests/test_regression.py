@@ -5485,10 +5485,104 @@ class TestQuarterlyInfographic20260819:
         assert out["ok"] is False, "원문 없이 요약을 만들어내면 안 됨"
 
     def test_clean_list_caps_and_drops_placeholders(self):
-        from bot.dart_growth_risk import _clean_list
-        assert _clean_list(["a", "b", "c", "d", "e"]) == ["a", "b", "c", "d"]
+        from bot.dart_growth_risk import MAX_ITEMS, _clean_list
+        over = [str(i) for i in range(MAX_ITEMS + 3)]
+        assert _clean_list(over) == over[:MAX_ITEMS]
         assert _clean_list(["a", "", "  ", "none", "N/A", "b"]) == ["a", "b"]
         assert _clean_list(None) == [] and _clean_list("x") == []
+
+    def test_item_cap_has_a_single_source_of_truth(self, monkeypatch):
+        # 옛 코드는 생산 `cap=4` 와 렌더 `items[:4]` 가 따로 박혀 있어 한쪽만
+        # 바꾸면 조용히 어긋났다(사용자 2026-08-16 '최대 4번까지만?').
+        # ⚠️ 소스 grep 으로는 못 잡는다 — `items[:6]` 으로 되돌려도 통과한다
+        # (독립 리뷰 실측). 정본 상수를 **바꿔 놓고 렌더가 따라오는지** 본다.
+        import bot.dart_growth_risk as g
+        assert g.MAX_ITEMS >= 5, "상한을 올린 목적이 무효화됨"
+        assert g._clean_list([str(i) for i in range(9)]) == \
+            [str(i) for i in range(g.MAX_ITEMS)]
+        # 렌더러는 호출 시점에 임포트하므로 패치가 반영된다.
+        _m = TestQuarterlyChartLayout20260816._render_cards_and_measure
+        monkeypatch.setattr(g, "MAX_ITEMS", 2)
+        _, height2, n2 = _m(5, 5)
+        monkeypatch.setattr(g, "MAX_ITEMS", 5)
+        _, height5, n5 = _m(5, 5)
+        # 실제로 **그려진 항목 수**가 정본 상한을 따라야 한다(슬라이스 검증)
+        assert (n2, n5) == (2, 5), f"렌더 상한이 정본과 무관({n2}, {n5})"
+        # 상자 높이도 함께 따라와야 한다(높이는 별도 경로라 같이 고정)
+        assert height2 < height5, (
+            f"상자 높이가 정본 상한을 안 따름(2→{height2}, 5→{height5})")
+
+    def test_prompt_states_the_item_cap_but_forbids_padding(self):
+        # 프롬프트에 개수 지시가 없어 상한이 사실상 도달 불가였다. 단
+        # '억지로 채우지 마라'(규칙 4)가 우선이라는 점도 함께 유지돼야 한다.
+        from bot.dart_growth_risk import ITEM_CHARS, MAX_ITEMS, _prompt
+        p = _prompt("005930.KS", "삼성전자", "본문", {})
+        assert f"최대 {MAX_ITEMS}개" in p
+        assert "채우려고" in p and "빈 배열" in p
+        # 글자 수 지시가 렌더러 절단폭보다 **길면 매 항목이 중간에 끊긴다**
+        # (옛 프롬프트 '40자 내외' vs 카드 34자 — 독립 리뷰).
+        from bot.quarterly_infographic import _CARD_CHARS
+        assert f"{ITEM_CHARS}자 이내" in p
+        assert ITEM_CHARS < _CARD_CHARS, (ITEM_CHARS, _CARD_CHARS)
+
+    def test_help_text_item_cap_matches_the_source_of_truth(self):
+        # _HELP_TEXT 는 공개 spec(pin) — 상한을 또 손으로 적어두면 다음 bump 때
+        # 조용히 거짓말이 된다(독립 리뷰: 세 번째 하드코딩 사본).
+        import re
+        from bot.dart_growth_risk import MAX_ITEMS
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        t = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', src, re.DOTALL).group(1)
+        assert f"각 최대 {MAX_ITEMS}개" in t, "_HELP_TEXT 의 항목 상한이 어긋남"
+
+    def test_dotenv_fallback_does_not_inject_unrelated_secrets(self, tmp_path,
+                                                                monkeypatch):
+        # DART 키 하나를 읽는 함수가 .env 전체(텔레그램 토큰·대시보드 비밀번호
+        # ·KIS 키)를 프로세스 환경에 주입하면 안 된다(독립 리뷰).
+        # ⚠️ 소스 grep 은 못 쓴다 — 이 함수의 docstring 이 금지 대상을
+        # **설명**하느라 같은 문자열을 담고 있다(주석을 grep 으로 재는 함정).
+        import os as _os
+
+        import bot.dart_feed as m
+        env = tmp_path / ".env"
+        env.write_text("DART_API_KEY=KEY_FROM_ENV\n"
+                       "TELEGRAM_BOT_TOKEN=SHOULD_NOT_LEAK\n"
+                       "DASHBOARD_PASSWORD=ALSO_NOT\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("DART_API_KEY", raising=False)
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+        monkeypatch.setattr(m, "_ENV_TRIED", False)
+        try:
+            assert m._dart_api_key() == "KEY_FROM_ENV", ".env 폴백이 안 돎"
+            assert "TELEGRAM_BOT_TOKEN" not in _os.environ, "무관 시크릿 유출"
+            assert "DASHBOARD_PASSWORD" not in _os.environ, "무관 시크릿 유출"
+        finally:
+            _os.environ.pop("DART_API_KEY", None)
+
+    def test_schema_ver_bumped_and_no_automatic_recharge(self):
+        # 상한·프롬프트를 바꿨으면 캐시를 무효화해야 새 결과가 나온다.
+        # ⚠️ 다만 **자동 재과금 경로가 생기면 안 된다** — 캐시 미스 +
+        # run_llm=False 면 LLM 을 부르지 않고 버튼을 다시 띄워야 한다
+        # (사용자가 누른 종목만 1회 과금).
+        import bot.dart_growth_risk as g
+        assert g._SCHEMA_VER != "v1", "캐시 무효화 안 됨 — 옛 4개 요약이 그대로"
+
+        class _FakeDart:
+            api_key = "k"
+
+            def find_periodic_report(self, code, year, rc):
+                return {"rcept_no": "R-NOCACHE-XYZ"}
+
+        called = []
+        _orig = g.summarize_growth_risk
+        g.summarize_growth_risk = lambda *a, **k: called.append(1)
+        try:
+            out = g.build_growth_risk(_FakeDart(), "000000.KS", 2026, "11012",
+                                      {}, run_llm=False)
+        finally:
+            g.summarize_growth_risk = _orig
+        assert out["ok"] is False and out["error"] == "not_run"
+        assert not called, "캐시 미스에서 LLM 자동 호출 = 무단 재과금"
 
     def test_prompt_forbids_broker_citation_and_number_invention(self):
         from bot.dart_growth_risk import _prompt
@@ -6396,6 +6490,80 @@ class TestQuarterlyChartLayout20260816:
                           qs)
         assert len(more) > len(notes)
 
+    @staticmethod
+    def _render_cards_and_measure(n_drivers, n_risks):
+        """카드 섹션을 실제로 그린 뒤 (패널 하단 − 최하단 칩 하단) 반환.
+
+        데이터좌표 눈대중으로는 못 잡는다 — 옛 코드는 H_CARDS=20.0 고정이라
+        4번째 칩이 패널 밖으로 0.95 단위 튀어나왔고(사용자 스크린샷) 3개
+        이하에선 보이지 않았다. 그려서 실제 박스 좌표를 재는 게 유일한 검증.
+        """
+        import tempfile
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.axes as maxes
+        from matplotlib.patches import FancyBboxPatch
+
+        import bot.quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}} for i in (1, 2)]
+        p = {"ticker": "T", "company": "T", "market": "KOSPI",
+             "market_cap": 5e14, "quarters": qs, "ttm": {}, "per": 12.0,
+             "per_forward": 10.5, "per_self": False, "psr": 1.5,
+             "currency": "KRW", "trade_currency": "KRW",
+             "currency_mismatch": False, "fiscal_note": "",
+             "anomaly_keys": [], "anomaly_labels": [],
+             "component_accounts": {}, "source_label": "DART",
+             "asof": "2026-08-16",
+             "growth_risk": {"ok": True, "headline": "h", "risk_subline": "r",
+                             "growth_drivers": [f"동력{i}" for i in range(n_drivers)],
+                             "sustain_risks": [f"리스크{i}" for i in range(n_risks)]}}
+        rec, _orig_font, _ap = [], qi._font_ok, maxes.Axes.add_patch
+        qi._font_ok = lambda: True
+
+        def _spy(self, patch):
+            if isinstance(patch, FancyBboxPatch):
+                rec.append(patch.get_bbox())
+            return _ap(self, patch)
+
+        maxes.Axes.add_patch = _spy
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                assert qi._render_locked(p, f"{d}/x.png")
+        finally:
+            qi._font_ok, maxes.Axes.add_patch = _orig_font, _ap
+        # 카드 패널 = 폭 46.5, 번호 칩 = 폭 2.4 (렌더러 상수)
+        panels = [b for b in rec if abs(b.width - 46.5) < 0.01]
+        chips = [b for b in rec if abs(b.width - 2.4) < 0.01]
+        assert panels and chips, (len(panels), len(chips))
+        p_bottom = panels[0].y0 + panels[0].height
+        lowest_chip = max(c.y0 + c.height for c in chips)
+        # (상자바닥−최하단칩 여유, 패널 높이, **한 컬럼의 칩 수**)
+        # 칩 수를 같이 돌려주지 않으면 슬라이스 상한을 하드코딩해도 통과한다
+        # (높이는 _n_card 라는 별도 경로에서 오기 때문 — 독립 리뷰 후 실측).
+        per_col = len(chips) // len(panels) if panels else 0
+        return p_bottom - lowest_chip, panels[0].height, per_col
+
+    def test_card_box_grows_with_item_count(self):
+        # 사용자 2026-08-16 스크린샷: 4번 항목이 상자 밖으로 나갔다.
+        # 상자 높이가 항목 수와 무관한 고정값(20.0)이던 게 원인.
+        heights = {n: self._render_cards_and_measure(n, n)[1] for n in (1, 2, 4, 6)}
+        assert heights[1] < heights[2] < heights[4] < heights[6], heights
+        # 두 컬럼 개수가 다르면 **많은 쪽**에 맞춰야 한다(적은 쪽이 잘리면 안 됨)
+        assert (self._render_cards_and_measure(1, 6)[1]
+                == self._render_cards_and_measure(6, 6)[1])
+
+    def test_card_items_stay_inside_the_box(self):
+        # 항목 수와 무관하게 최하단 칩이 패널 안에 있어야 한다.
+        # (수정 전 4개에서 -0.95 단위 = 약 20px 튀어나왔다)
+        for nd, nr in ((1, 1), (2, 2), (4, 2), (4, 4), (1, 6), (6, 6)):
+            margin, _, _ = self._render_cards_and_measure(nd, nr)
+            assert margin > 1.0, f"동력{nd}/리스크{nr} 칩이 상자 밖({margin:+.2f})"
+
     def test_llm_card_section_actually_renders(self):
         # `cw` 가 정의된 적이 없어 카드가 붙는 KR 경로는 최초 구현부터
         # NameError → render_infographic 의 포괄 except 가 삼킴 → PNG 없이
@@ -7297,6 +7465,39 @@ class TestDartFeedBackfill:
         r = m._extract_contract_document("RX", "K")
         assert r and any("70억원" in l for l in r["lines"])
         assert any("LG전자" in l for l in r["lines"])
+
+    def test_api_key_loads_dotenv_when_env_is_empty(self, tmp_path,
+                                                    monkeypatch):
+        # 이 모듈은 호출부(telegram_bot)가 미리 load_dotenv() 한 것에 의존했고
+        # __main__ 만 ~/stock/.env 를 손으로 파싱했다 — 그래서 새 진입점
+        # (dart_coverage_probe)이 조용히 키 없이 돌았다(사용자 2026-08-16).
+        import os as _os
+
+        import bot.dart_feed as m
+        env = tmp_path / ".env"
+        env.write_text("DART_API_KEY=FROM_DOTENV\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("DART_API_KEY", raising=False)
+        monkeypatch.setattr(m, "_ENV_TRIED", False)
+        try:
+            assert m._dart_api_key() == "FROM_DOTENV", ".env 폴백이 안 돎"
+        finally:
+            _os.environ.pop("DART_API_KEY", None)
+
+    def test_api_key_does_not_reload_dotenv_every_call(self, monkeypatch):
+        # 매 fetch 마다 파일 I/O 를 하면 안 된다(_dart_api_key 는 핫패스).
+        import bot.dart_feed as m
+        monkeypatch.delenv("DART_API_KEY", raising=False)
+        monkeypatch.setattr(m, "_ENV_TRIED", False)
+        n = []
+        import dotenv
+        monkeypatch.setattr(dotenv, "dotenv_values",
+                            lambda *a, **k: (n.append(1), {})[1])
+        assert m._dart_api_key() is None
+        assert m._dart_api_key() is None
+        assert m._dart_api_key() is None
+        # 첫 호출에서만 시도(cwd·홈 두 경로라 최대 2회)
+        assert len(n) <= 2, f"매 호출마다 .env 재로드({len(n)}회)"
 
     def test_periodic_reports_are_their_own_category(self, tmp_path, monkeypatch):
         # 사용자 2026-08-16 '8/14 에 2Q 실적이 쏟아졌는데 DART 피드엔 15건뿐'.

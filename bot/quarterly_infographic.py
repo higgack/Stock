@@ -50,7 +50,9 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 # 그림이 그대로 뜬다("배포완료 ≠ 화면에 보임", 실수 #11). 렌더러의 출력이
 # 달라지는 변경을 하면 이 값을 **반드시** 올릴 것.
 #   v2 (2026-08-16) 타일 2줄 YoY/QoQ · Forward PER · 막대 값 라벨 · 축 확대
-_RENDER_VER = "v2"
+#   v3 (2026-08-16) 성장동력·리스크 카드 상자를 항목 수에 맞춰 가변 높이로
+#       (4번 항목이 상자 밖으로 넘치던 것) + 항목 상한 4→6
+_RENDER_VER = "v3"
 
 
 def _eok(v, currency: str = "KRW") -> str:
@@ -139,6 +141,11 @@ def render_infographic(payload: dict, out_path: str) -> str | None:
 # 로 반올림해 눈금이 불규칙해 보인다(렌더 실측). 1/2/5 계열만 쓴다.
 # nbins 은 최대 구간 수라 작으면 한 단계 굵은 간격으로 떨어진다 — 12 로는
 # 0~2.5 에서 0.2(12.5구간)가 탈락해 0.5 간격 5칸이 됐다(옛 7보다 성겼다).
+# 카드 항목 한 줄에 들어가는 글자 수 — 카드 폭 실측치(가용 812px, 8pt 기준
+# 34자 782px · 38자 874px 넘침). LLM 프롬프트는 dart_growth_risk.ITEM_CHARS
+# 로 이보다 짧게 요구해 말줄임이 예외가 되게 한다.
+_CARD_CHARS = 34
+
 _TICK_STEPS = [1, 2, 5, 10]
 # 상한 — 실제 nbins 는 **축의 픽셀 높이**에서 계산한다(_nbins_for).
 # 고정 상수는 두 방향으로 틀린다: 크면 낮은 축(% 패널은 142px 뿐)에서
@@ -263,7 +270,15 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 같은 델타가 더 많은 픽셀을 차지하게 하고, 눈금을 촘촘히 하고, 막대에
     # 값 라벨을 붙여 '변화가 안 보인다'를 세 겹으로 해결한다.
     H_TILE, H_CHART = 22.0, 88.0
-    H_CARDS = 20.0 if has_cards else 0.0
+    # 카드 상자 높이는 **항목 수에서 도출**한다(H_FOOT 을 각주 줄 수로 잡은
+    # 것과 같은 패턴). 옛 코드는 20.0 고정이라 패널이 17.0 뿐이었는데 4번
+    # 항목의 칩 하단이 17.95 라 **상자 밖으로 0.95 단위(≈20px) 튀어나갔다**
+    # (사용자 2026-08-16 스크린샷). 3개 이하에선 안 보이던 잠복 버그다.
+    # 1번 중심 6.6 + 간격 3.4×(n-1) + 칩 반높이 1.15 + 하단 여백 2.2.
+    from bot.dart_growth_risk import MAX_ITEMS as _MAX_CARD_ITEMS
+    _n_card = min(_MAX_CARD_ITEMS, max(len(drivers), len(risks)))
+    _card_h = 3.4 * _n_card + 6.55
+    H_CARDS = (_card_h + 3.0) if has_cards else 0.0
     # 각주를 **레이아웃 전에** 만들어 높이를 실제 줄 수로 잡는다. 옛 코드는
     # H_FOOT 을 15.0 으로 고정해 두고 아래에서 각주를 만들었다 — 각주가
     # 3줄을 넘으면 맨 아래 출처·면책 줄을 덮어쓴다(기준기간 각주를 추가하며
@@ -590,14 +605,20 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
                                    edgecolor="none"))
             txt(x0 + 2, y + 3.2, title, size=9.5, weight="bold")
             iy = y + 6.6
-            for i, s in enumerate(items[:4], 1):
+            # 상한은 dart_growth_risk.MAX_ITEMS 하나가 정본 — 여기 숫자를
+            # 따로 박으면 생산 단계 cap 과 어긋난다(옛 코드가 그랬다).
+            for i, s in enumerate(items[:_MAX_CARD_ITEMS], 1):
                 ax.add_patch(FancyBboxPatch(
                     (x0 + 2, iy - 1.15), 2.4, 2.3,
                     boxstyle="round,pad=0,rounding_size=1.15",
                     facecolor=color, edgecolor="none", mutation_aspect=1))
                 txt(x0 + 3.2, iy, str(i), size=7.5, color="#0b1020",
                     weight="bold", ha="center")
-                body = s if len(s) <= 34 else s[:33] + "…"
+                # 34 = 카드 폭 실측 한계(812px 가용, 8pt 34자 782px · 38자
+                # 874px 넘침). 프롬프트는 ITEM_CHARS(32)로 더 짧게 요구해
+                # 말줄임을 예외로 만든다 — 두 숫자가 어긋나면 문장이 매번
+                # 중간에 끊긴다(2026-08-16 독립 리뷰).
+                body = s if len(s) <= _CARD_CHARS else s[:_CARD_CHARS - 1] + "…"
                 txt(x0 + 5.6, iy, body, size=8)
                 iy += 3.4
         # ⚠️ `cw` 는 **정의된 적이 없다** — 최초 구현(c4397c4)부터 여기서
