@@ -48,6 +48,18 @@ def quarter_label(year: int, reprt_code: str) -> str:
     return f"{year % 100:02d}.{_Q_NUM[reprt_code]}Q"
 
 
+def _flag_revenue_anomaly(fin: dict) -> dict:
+    """매출은 K-IFRS상 논리적으로 음수가 나올 수 없는 항목 — 음수 발생은
+    거의 항상 전기 재무제표 정정(restatement)이 반영된 것(4분기 파생뿐
+    아니라 DART 가 준 1~3분기 원자값 자체가 음수인 경우도 이론상 있을 수
+    있어 두 경로 모두에 적용, 2026-08-19 code-review 발견 — 4분기 파생
+    경로에만 있던 걸 공용화). 값은 그대로 보존(날조 금지)하고 렌더러가
+    판단할 수 있게 플래그만 남긴다."""
+    if fin.get("매출") is not None and fin["매출"] < 0:
+        fin["_anomaly_revenue_negative"] = True
+    return fin
+
+
 def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     """4분기 단독 = 연간(now) − 9개월누적(prev). 저량(STOCK) 항목은
     차분하지 않고 연간 시점값 그대로 유지."""
@@ -63,12 +75,7 @@ def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
             out[k] = v
         else:
             out[k] = v - prev_v
-    # 매출은 K-IFRS상 논리적으로 음수가 나올 수 없는 항목 — 음수 발생은
-    # 거의 항상 전기 재무제표 정정(restatement)이 반영된 것. 값은 그대로
-    # 보존(날조 금지)하고 렌더러가 판단할 수 있게 플래그만 남긴다.
-    if out.get("매출") is not None and out["매출"] < 0:
-        out["_anomaly_revenue_negative"] = True
-    return out
+    return _flag_revenue_anomaly(out)
 
 
 def _latest_candidate(today: date) -> tuple[int, str]:
@@ -149,7 +156,9 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
                 break
             fin = _diff_quarter(entry["financials"], nine_mo)
         else:
-            fin = dict(entry["financials"])   # 이미 단일분기 — 재차분 금지
+            # 이미 단일분기(재차분 금지) — 그래도 DART 원자값 자체가
+            # 음수인 극단 케이스에 대비해 동일 anomaly 체크 적용.
+            fin = _flag_revenue_anomaly(dict(entry["financials"]))
         out.append({
             "label": quarter_label(y, rc), "year": y, "quarter": _Q_NUM[rc],
             "reprt_code": rc, "fs_div": effective_fs_div,

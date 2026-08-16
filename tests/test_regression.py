@@ -4974,7 +4974,10 @@ class TestDartQuarterlyFinancialsReprtCode:
                                               reprt_code="11012")
         assert r["reprt_code"] == "11012" and r["financials"]["영업이익"] == 260
         assert calls["n"] == 1
-        assert any(k.startswith("qfin_00126380_2026_11012_CFS") for k in written)
+        # qfin2 — financials_cumulative 추가로 캐시 키 버전업(2026-08-19,
+        # code-review 발견: 안 바꾸면 이 커밋 배포 전 조회된 구캐시가
+        # financials_cumulative 없이 7일간 서빙돼 4분기 파생이 조용히 실패함).
+        assert any(k.startswith("qfin2_00126380_2026_11012_CFS") for k in written)
 
     def test_interim_report_includes_cumulative_from_add_amount(self, monkeypatch):
         # 2026-08-19 VM 실측 확인 — 분기/반기보고서는 thstrm_amount 가 이미
@@ -5134,6 +5137,26 @@ class TestDartQuarterlySeries:
         assert d["_anomaly_revenue_negative"] is True
         d2 = _diff_quarter({"매출": 300}, {"매출": 200})
         assert "_anomaly_revenue_negative" not in d2
+
+    def test_anomaly_flag_also_applies_to_q1_q3_passthrough(self, monkeypatch):
+        # code-review 발견(2026-08-19): 1~3분기는 이제 _diff_quarter 를
+        # 안 거치므로, 그 경로에서 플래그가 빠지지 않았는지 확인 — DART
+        # 원자값 자체가 음수인 극단 케이스(예: 3분기 원문 자체가 정정
+        # 반영된 음수)도 동일하게 표시돼야 한다.
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2025, "11014"): {"financials": {"매출": -100, "영업이익": 10}},
+        }
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
+
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2025, "11014"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=1)
+        assert series[0]["financials"]["_anomaly_revenue_negative"] is True
 
     def test_latest_candidate_matches_legal_due_dates(self):
         from bot.dart_quarterly import _latest_candidate

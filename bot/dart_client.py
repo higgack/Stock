@@ -1082,7 +1082,13 @@ class DartClient:
         # 관례, 786-833행 참조). 확정된(과거) 분기는 안 바뀌므로 7일 충분 —
         # "이번 분기가 아직 미확정"인 최신분기 캐시 단축은 호출부(probe)가
         # 별도 6~12h 캐시로 처리(원자 조회 자체는 길게 캐시해도 무해).
-        ck = f"qfin_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
+        # ⚠️ 캐시 키 v2(2026-08-19, code-review 발견): financials_cumulative
+        # 필드를 이 커밋에서 추가했는데 키를 안 바꾸면, 오늘 이미 조회돼
+        # 캐시된(이 필드 없는 구버전) 엔트리가 7일간 그대로 서빙돼 4분기
+        # 파생이 계속 조용히 실패한다(nine_mo=None→break). qfin→qfin2 로
+        # 버저닝해 구 캐시를 자연스럽게 우회(dart_corpcode_v2.json 등 기존
+        # 관례와 동일).
+        ck = f"qfin2_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached
