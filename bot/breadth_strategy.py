@@ -401,9 +401,16 @@ def _assemble(market: str, sectors: dict, bench_name: str, bench_rows: list,
         "fng": {"index": fng.get("score"), "label": fng.get("rating_kr", "")},
         "asof": dates[-1] if dates else "",
         "is_confirmed": cut is not None,
+        # 해상도 각주 — 표본이 작으면 한 섹터가 큰 폭을 차지해 경계가 성기다.
+        # ⚠️ '3.9개 지점' 같은 소수는 실제로 존재하지 않는다(섹터는 정수) —
+        # **실제로 구간이 바뀌는 정수 개수**를 함께 적는다(사용자 2026-08-16
+        # "이건 무슨 뜻이야?").
         "resolution_note": (
-            f"표본 {n}개 — 1개 = {100 / n:.1f}%p. 구간 경계(30/40/60%)는 "
-            f"각각 {n * 0.30:.1f}·{n * 0.40:.1f}·{n * 0.60:.1f}개 지점"
+            f"표본 {n}개 — 섹터 1개 = {100 / n:.1f}%p. 구간 경계"
+            f"({_B_RECOVERY:.0f}/{_B_NON_TREND:.0f}/{_B_TREND:.0f}%)에 닿으려면 "
+            f"각각 {min_sectors_for(n, _B_RECOVERY)}·"
+            f"{min_sectors_for(n, _B_NON_TREND)}·"
+            f"{min_sectors_for(n, _B_TREND)}개 이상이 MA120 위여야 합니다"
         ) if n else "",
     }
 
@@ -521,6 +528,16 @@ _REGIME_TABLE = (
 )
 
 
+def min_sectors_for(n: int, pct: float) -> int:
+    """n개 표본에서 breadth 가 `pct`% **이상**이 되는 최소 섹터 수.
+
+    경계는 '이상' 포함이다(classify_regime 이 `<` 로 자른다). 딱 나누어
+    떨어지는 경우(10개의 30% = 3개)를 올림이 밀어내지 않도록 아주 작은
+    여유를 뺀 뒤 올린다 — 분기 없이 한 줄로 둘 다 맞는다."""
+    import math
+    return max(0, min(n, math.ceil(n * pct / 100.0 - 1e-9)))
+
+
 def _pct_s(v, digits: int = 2) -> str:
     return "—" if v is None else f"{v:,.{digits}f}%"
 
@@ -554,7 +571,10 @@ def _market_section(d: dict) -> str:
                  f"(데이터 없음 — 티커 확인 필요)</div>" if miss else "")
     b = d.get("breadth") or {}
     fng = d.get("fng") or {}
-    fng_s = (f"{fng['index']:.0f} ({_h.escape(fng.get('label', ''))})"
+    # ⚠️ CNN Fear &amp; Greed 는 **미국 증시** 지표다. KR 카드에 'F&G 65' 만
+    # 적으면 한국 지표로 읽힌다(사용자 2026-08-16 "F&G 65 는 한국기준이야?").
+    # 출처를 값 옆에 붙이고, 판정에 쓰지 않는다는 사실은 가이드에 있다.
+    fng_s = (f"{fng['index']:.0f} ({_h.escape(fng.get('label', ''))}, 美 CNN)"
              if fng.get("index") is not None else "—")
     hist = "".join(
         f"<tr><td>{_h.escape(str(r.get('month', '')))}</td>"
@@ -585,7 +605,7 @@ def _market_section(d: dict) -> str:
 <div class="stat"><div class="k">최종 투자비중</div><div class="v">{(d.get('total_w') or 0) * 100:.0f}%</div></div>
 <div class="stat"><div class="k">현금</div><div class="v">{(d.get('cash_w') or 0) * 100:.0f}%</div></div>
 </div>
-<div class="sub" style="margin-top:6px">투자 대상 <b>{tgt_html}</b> · RS 상위 {rs_html}
+<div class="sub" style="margin-top:6px">투자 대상 <b>{tgt_html}</b> · RS 순위(상위 5, 지수 대비 6개월) {rs_html}
 · F&amp;G {fng_s} · 기준일 {_h.escape(str(d.get('asof', '')))}</div>
 {miss_html}
 <div class="sub">표본 {_h.escape(str(d.get('source_label', '')))} {b.get('counted', 0)}개

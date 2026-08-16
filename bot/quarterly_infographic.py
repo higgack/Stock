@@ -955,7 +955,19 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         per = self_per(mcap, ttm.get("당기순이익"))
         per_self = per is not None
     # Forward PER — 라이브 주가 ÷ 야후 forwardEps(컨센서스라 장중 불변).
-    per_fwd = _live_per("forwardEps") or _clean_per(snap.get("forwardPE"))
+    per_fwd = _live_per("forwardEps")
+    if per_fwd is None:
+        # 야후가 forwardPE 는 주면서 forwardEps 는 안 주는 경우가 흔하다
+        # (039030.KQ 실측 2026-08-16: forwardPE 30.72 · forwardEps None).
+        # forwardPE = 수집시점주가 ÷ forwardEps 이므로 EPS 를 역산해 라이브
+        # 주가로 다시 나누면 **정확히** 같은 컨센서스 기준의 현재 배수가 된다
+        # (근사가 아니다 — 두 값이 같은 스냅샷에서 온다).
+        _sp, _fpe = snap.get("current_price"), _clean_per(snap.get("forwardPE"))
+        if (live.get("price") and _fpe and not cur_mismatch
+                and isinstance(_sp, (int, float)) and _sp > 0):
+            per_fwd = _clean_per(live["price"] / (_sp / _fpe))
+    if per_fwd is None:
+        per_fwd = _clean_per(snap.get("forwardPE"))
     psr = None
     _ttm_rev = ttm.get("매출")
     # 음수 분모 가드 — 옛 코드는 truthy 검사만 해서 매출이 음수여도 그대로

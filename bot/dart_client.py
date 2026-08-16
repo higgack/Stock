@@ -400,13 +400,61 @@ def calc_kr_financial_ratios(financials: dict) -> dict:
     }
 
 
+_ENV_KEY_TRIED = False
+# 파일에서 읽어낸 키를 **캐시**한다. 플래그만 두고 값을 안 남기면 프로세스에서
+# 두 번째로 만든 DartClient 부터 키가 빈 채로 생성돼, 첫 클라이언트만 동작하고
+# 나머지는 조용히 아무것도 못 한다(2026-08-16 독립 리뷰 실측 — governance 는
+# 한 흐름에 클라이언트를 2개 만든다).
+_ENV_KEY_CACHED = ""
+
+
+def _dart_key_from_env_file() -> str:
+    """.env 에서 DART_API_KEY 만 읽는다(파일 I/O 는 한 번). 실패 시 ''.
+
+    ⚠️ `load_dotenv()` 가 아니라 `dotenv_values()` — 전자는 .env 의 **모든
+    키**(TELEGRAM_BOT_TOKEN·DASHBOARD_PASSWORD·KIS_* …)를 프로세스 환경에
+    주입한다. 키 하나를 읽는 부작용으로는 과하다."""
+    global _ENV_KEY_TRIED, _ENV_KEY_CACHED
+    if _ENV_KEY_TRIED:
+        return _ENV_KEY_CACHED
+    _ENV_KEY_TRIED = True
+    try:
+        from pathlib import Path as _P
+
+        from dotenv import dotenv_values, find_dotenv
+        for _p in (find_dotenv(usecwd=True), str(_P.home() / "stock" / ".env")):
+            if not _p:
+                continue
+            v = ((dotenv_values(_p) or {}).get("DART_API_KEY") or "").strip()
+            if v:
+                _ENV_KEY_CACHED = v
+                break
+    except Exception as exc:
+        log.debug("dart: .env 직접 로드 실패: %s", exc)
+    return _ENV_KEY_CACHED
+
+
 class DartClient:
     """Single-key DART client. Cheap to instantiate; reuse across calls
     to amortize the corp_code mapping load."""
 
     def __init__(self, api_key: Optional[str] = None):
         # Read key lazily so a missing env var doesn't crash module import.
-        self.api_key = (api_key or os.getenv("DART_API_KEY") or "").strip()
+        # 환경변수가 비어 있으면 .env 를 **직접** 읽는다 — 이 클래스는
+        # 호출부가 미리 load_dotenv() 한 것에 의존해 왔고(운영 데몬은
+        # bot/telegram_bot.py 가 로드), 그래서 스크립트·프로브 진입점은
+        # 조용히 키 없이 돌아 DART 가 `status=100 인증키 누락` 을 반환했다
+        # (사용자 2026-08-16 프로브 실측). bot/dart_feed._dart_api_key 와
+        # 같은 규약 — dotenv_values 로 **그 키만** 읽어 다른 비밀값을
+        # 프로세스 환경에 주입하지 않는다.
+        # ⚠️ `api_key is not None` — 빈 문자열은 **명시적인 '키 없음'** 이다.
+        # `or` 체인으로 두면 `DartClient("")` 가 .env 에서 진짜 키를 주워와
+        # 오프라인 가드 테스트가 실제 DART 를 호출한다(2026-08-16 독립 리뷰).
+        if api_key is not None:
+            self.api_key = api_key.strip()
+        else:
+            self.api_key = (os.getenv("DART_API_KEY")
+                            or _dart_key_from_env_file() or "").strip()
         self._corp_code_map: dict[str, str] | None = None  # stock_code → corp_code
         # normalized name → list of {name, stock_code, corp_code} entries.
         # One normalized key can map to multiple companies when a search
