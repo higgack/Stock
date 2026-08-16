@@ -1096,7 +1096,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 ━━━━━━━━━
-<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🚦시장타이밍·📅경제캘린더(CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·JOLTS·소비자심리·산업생산, 분류: 5일변동성/정책민감/침체조기경보, 방향성: 최근발표대비·1M·3M·6M·1Y)·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
+<b>【대시보드】</b> 🌍 Main 단일 entry — 그 외(분석아카이브·자산·Screener·레딧·Daily Byte·블로그·밸류체인·🏭PPI·🛒CPI·💧유동성·🚦시장타이밍·🧭Breadth전략(4구간: 역추세/회복/비추세/추세 — 섹터 MA120 상회비율 기준, 월말 확정)·📅경제캘린더(CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·JOLTS·소비자심리·산업생산, 분류: 5일변동성/정책민감/침체조기경보, 방향성: 최근발표대비·1M·3M·6M·1Y)·🏆Market cap·부동산·청약·수출입)는 Main nav, 워치·도메인목록은 Screener nav
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터(정기보고서=사업/반기/분기, 반기=2Q 실적 원문)·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터) · 새 데이터 하단알림(1분 체크·30분 자동반영, 반영은 사용자 선택) · 종목검색·스크롤복원
  ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·CPI·유동성·시장타이밍·경제캘린더 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
    http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
@@ -4029,6 +4029,17 @@ async def _periodic_fred_boards() -> None:
             raise
         except Exception:
             log.exception("market timing 6h regen failed")
+        # Breadth 4구간 전략 보드(2026-08-16 사용자 캡처 전략) — 같은 6시간
+        # 주기. 매일 값은 중간점검이고 월말 종가에만 확정 신호가 기록되므로
+        # 이 빈도로 충분. 실패해도 위 보드들과 독립(try 분리).
+        try:
+            from bot.breadth_strategy import regenerate as _regen_breadth
+            await asyncio.to_thread(_regen_breadth)
+            log.info("breadth strategy 6h regen: ok")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("breadth strategy 6h regen failed")
         # 경제캘린더 보드(2026-07-26) — CPI/Core CPI/PPI/고용/AHE/실업률/실업수당(신규·연속)/소매/ECI/GDP/PCE/Core PCE/FOMC 발표일정.
         # 같은 6시간 주기(발표일 자체가 자주 안 바뀜, FRED 캐시도 12h) —
         # 실패해도 위 두 보드 갱신과 독립(try 분리).
@@ -4284,6 +4295,22 @@ async def _on_startup(application) -> None:
         _mt_thr.Thread(target=_market_timing_initial, daemon=True).start()
     except Exception as exc:
         log.warning("startup: market timing thread failed: %s", exc)
+    # Breadth 전략 보드(2026-08-16) — 같은 이유로 startup 무조건 재생성.
+    # nav 링크는 즉시 살아나므로 여기 없으면 배포 직후 최소 6시간 404 이고,
+    # watchdog 재시작이 6시간보다 잦으면 한 번도 안 만들어진다(실수 #11).
+    try:
+        import threading as _bs_thr
+
+        def _breadth_strategy_initial():
+            try:
+                from bot.breadth_strategy import regenerate as _regen_bs
+                _regen_bs()
+                log.info("startup: breadth strategy regenerated")
+            except Exception as exc:
+                log.warning("startup: breadth strategy regen failed: %s", exc)
+        _bs_thr.Thread(target=_breadth_strategy_initial, daemon=True).start()
+    except Exception as exc:
+        log.warning("startup: breadth strategy thread failed: %s", exc)
     # 경제캘린더 보드(2026-07-26) — 같은 이유로 startup 무조건 재생성.
     try:
         import threading as _ec_thr
