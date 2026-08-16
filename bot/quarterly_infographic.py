@@ -45,6 +45,13 @@ _POS = "#34d399"; _NEG = "#f87171"; _GOLD = "#fbbf24"; _PUR = "#a78bfa"
 
 _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_img"
 
+# 렌더 버전 — 파일명에 들어가 **레이아웃/표기 변경 시 캐시를 무효화**한다.
+# 캐시 키가 (티커, 분기, 날짜)뿐이면 오늘 이미 본 종목은 배포 후에도 옛
+# 그림이 그대로 뜬다("배포완료 ≠ 화면에 보임", 실수 #11). 렌더러의 출력이
+# 달라지는 변경을 하면 이 값을 **반드시** 올릴 것.
+#   v2 (2026-08-16) 타일 2줄 YoY/QoQ · Forward PER · 막대 값 라벨 · 축 확대
+_RENDER_VER = "v2"
+
 
 def _eok(v, currency: str = "KRW") -> str:
     """금액 표기 — 통화 인지(조/억 · 兆/億 · T/B/M). None 이면 '—'.
@@ -94,7 +101,8 @@ def cache_path(ticker: str, period_key, reprt_code=None,
     reprt_code 가 DART 전용 개념이라 멀티마켓에선 쓸 수 없다."""
     key = f"{period_key}{reprt_code}" if reprt_code is not None else str(period_key)
     return (_IMG_DIR /
-            f"{_safe_name(ticker)}_{key}_{asof or _today_kst()}.png")
+            f"{_safe_name(ticker)}_{key}_{asof or _today_kst()}"
+            f"_{_RENDER_VER}.png")
 
 
 def _font_ok() -> bool:
@@ -126,6 +134,99 @@ def render_infographic(payload: dict, out_path: str) -> str | None:
             return None
 
 
+# 차트 눈금 파라미터 — 함수 안에 박아두면 테스트가 소스 grep 밖에 못 한다.
+# ⚠️ steps 에서 **2.5 를 뺐다**: 0.25 간격이 잡히면 dec=1 포맷이 0.2·0.5·0.8
+# 로 반올림해 눈금이 불규칙해 보인다(렌더 실측). 1/2/5 계열만 쓴다.
+# nbins 은 최대 구간 수라 작으면 한 단계 굵은 간격으로 떨어진다 — 12 로는
+# 0~2.5 에서 0.2(12.5구간)가 탈락해 0.5 간격 5칸이 됐다(옛 7보다 성겼다).
+_TICK_STEPS = [1, 2, 5, 10]
+# 상한 — 실제 nbins 는 **축의 픽셀 높이**에서 계산한다(_nbins_for).
+# 고정 상수는 두 방향으로 틀린다: 크면 낮은 축(% 패널은 142px 뿐)에서
+# 9pt 라벨이 겹치고, 작으면 큰 축에서 한 단계 굵은 간격으로 떨어져
+# 오히려 성겨진다(둘 다 2026-08-16 렌더 실측). 픽셀 기준이면 레이아웃
+# 상수를 바꿔도 자동으로 따라온다.
+_AMT_NBINS, _PCT_NBINS = 16, 9
+# 라벨당 최소 세로 공간(px). 9pt @180dpi 의 em 은 ≈22.5px 이고 숫자 글리프
+# 자체는 그보다 낮아(≈16px) 23px 이면 눈에 보이는 간격이 남는다(렌더 실측).
+# ⚠️ 이 값을 조금만 키워도 한 단계 굵은 눈금으로 **떨어진다** — 실측 기준
+# 331px 축에서 23 → 14칸(0.2 간격), 25 → 13칸이라 0.2(13.1칸 필요)가
+# 탈락해 0.5 간격 6개가 됐다. 바꿀 땐 반드시 렌더로 확인할 것.
+_TICK_MIN_PX = 23.0
+
+
+def _nbins_for(height_px: float, cap: int) -> int:
+    """축 픽셀 높이에 들어가는 최대 눈금 수(라벨 겹침 없이). 상한은 cap."""
+    return max(3, min(cap, int((height_px or 0) // _TICK_MIN_PX)))
+
+
+def _label_decimals(scaled_peak: float, dec: int) -> int:
+    """막대 값 라벨의 소수 자릿수. **축 눈금(dec)보다 촘촘해야 한다** —
+    축 자릿수를 그대로 쓰면 2.15·2.24·2.31 이 전부 '2.1/2.2/2.3' 으로
+    뭉개져 라벨을 붙인 목적(분기간 차이 식별)이 사라진다(렌더 실측).
+
+    ⚠️ **시리즈별로** 호출할 것. 두 시리즈의 공통 peak 로 한 번만 정하면,
+    스케일이 100배 작은 쪽(매출 2.31B 옆 영업이익 4.8M)이 전 분기 '0.00'
+    으로 찍힌다(2026-08-16 독립 리뷰). 작은 값은 **유효숫자 2자리**가
+    보이도록 자릿수를 늘린다."""
+    import math
+    p = abs(scaled_peak or 0)
+    if p >= 100:
+        d = 0
+    elif p >= 10:
+        d = 1
+    elif p >= 1 or p == 0:
+        d = 2
+    else:
+        # 0.0048 → 4자리("0.0048") = 유효숫자 2개. 6자리에서 끊는다.
+        d = min(6, int(math.floor(-math.log10(p))) + 2)
+    return max(dec, d)
+
+
+def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
+    """푸터 각주 (문구, 색). **레이아웃보다 먼저** 호출돼 H_FOOT 높이를
+    정한다 — 줄 수 고정이면 각주가 늘 때 아래 출처줄을 덮어쓴다."""
+    cur = payload.get("currency") or "KRW"
+    label = (qs[-1] if qs else {}).get("label", "")
+    # 기준 기간 명시 — 사용자가 "이 영업이익률이 연간이야 분기야?"라고 물은
+    # 지점(2026-08-16). 값만 있고 기간 표기가 없어 판별 불가였다.
+    # ⚠️ 두 줄로 나눈다: 한 줄이면 100 단위 폭을 넘겨 bbox_inches="tight" 가
+    #    PNG 폭을 종목마다 다르게 늘린다(독립 리뷰 실측).
+    # ⚠️ "TTM PER = 최근 4분기 합" 은 **틀린 설명**이었다 — per 는 기본적으로
+    #    야후 trailingPE(후행 12개월)이고, 4분기 합을 직접 쓰는 건 PSR 과
+    #    자체계산 폴백뿐이다(per_self 각주가 그 경우를 따로 밝힌다).
+    notes: list[tuple[str, str]] = [
+        (f"* 상단 지표 타일 = {label} 단일분기 기준 "
+         f"(YoY = 전년 동기 · QoQ = 직전 분기, 이익률은 %p 차이)", _MUTED),
+        ("* TTM PER = 후행 12개월 · Forward PER = 예상실적 기준 "
+         "· PSR = 시총 ÷ 최근 4분기 매출 합", _MUTED),
+    ]
+    bad_keys = payload.get("anomaly_keys") or []
+    if bad_keys:
+        lbls = payload.get("anomaly_labels") or []
+        where = f"({', '.join(lbls)}) " if lbls else ""
+        notes.append((
+            f"! {'·'.join(bad_keys)} 이상치 감지 {where}— DART 계정 불일치 "
+            f"가능. 해당 TTM·PSR 산출 제외(추정 보정 없음)", _NEG))
+    if payload.get("per_self"):
+        notes.append(("* TTM PER = 시가총액 ÷ TTM 순이익 자체계산"
+                      "(데이터 소스가 PER 미제공)", _MUTED))
+    comp = payload.get("component_accounts") or {}
+    if comp:
+        # 이상치와 달리 값은 유효하다 — 막지 않고 '총액 아님'만 알린다.
+        notes.append((
+            "! " + " · ".join(f"{k} = {v}(구성요소 계정)"
+                              for k, v in sorted(comp.items()))
+            + " — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)",
+            _GOLD))
+    if payload.get("currency_mismatch"):
+        notes.append((f"! 재무({cur})와 시총({payload.get('trade_currency','')}) "
+                      "통화가 달라 PER·PSR 산출 제외(환산 없이 나누면 틀린 배수)",
+                      _NEG))
+    if payload.get("fiscal_note"):
+        notes.append((f"* {payload['fiscal_note']}", _MUTED))
+    return notes
+
+
 def _render_locked(payload: dict, out_path: str) -> str | None:
     if not _font_ok():
         log.warning("quarterly_infographic: Nanum 폰트 없음 — skip")
@@ -155,11 +256,20 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 바꿨다. 옛 배치는 inset 폭이 37.5 단위(≈652px)뿐이라 항목이 뭉갰다
     # (사용자 2026-08-16). 이제 86 단위(≈1500px) = 2.3배. 이 상수 하나로
     # H·figsize 가 자동으로 따라 커진다(아래 H 계산 + y 누적 방식).
-    H_TILE, H_CHART = 17.0, 62.0
+    # H_TILE 17 → 22: YoY/QoQ 를 한 줄 → **두 줄**로 나눠 폰트를 7.5→9.0 으로
+    # 키웠다(사용자 2026-08-16 '숫자가 잘 안 보여'). 두 줄이 들어갈 높이 확보.
+    # H_CHART 62 → 88: 같은 지시의 차트 판("더 길게"). 0 기준선 막대에서
+    # 매출 2.15→2.31B(+7%)는 짧은 축에선 눈으로 구분이 안 된다 — 축을 늘려
+    # 같은 델타가 더 많은 픽셀을 차지하게 하고, 눈금을 촘촘히 하고, 막대에
+    # 값 라벨을 붙여 '변화가 안 보인다'를 세 겹으로 해결한다.
+    H_TILE, H_CHART = 22.0, 88.0
     H_CARDS = 20.0 if has_cards else 0.0
-    # 11 → 15: 푸터 패널(6.4) 아래에 이상치·자체계산 각주가 최대 2줄 들어가고
-    # 그 아래 출처/면책 줄이 온다. 11 이면 각주와 출처줄이 붙어 버린다.
-    H_FOOT = 15.0
+    # 각주를 **레이아웃 전에** 만들어 높이를 실제 줄 수로 잡는다. 옛 코드는
+    # H_FOOT 을 15.0 으로 고정해 두고 아래에서 각주를 만들었다 — 각주가
+    # 3줄을 넘으면 맨 아래 출처·면책 줄을 덮어쓴다(기준기간 각주를 추가하며
+    # 실제로 그 한계에 닿았다). 줄 수에 따라 커지게 해 구조적으로 막는다.
+    notes = _footnotes(payload, qs)
+    H_FOOT = 8.4 + len(notes) * 2.4 + 4.2
     H = H_HEAD + H_CALL + H_TILE + H_CHART + H_CARDS + H_FOOT + 6
 
     fig_w = 11.6
@@ -230,38 +340,73 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
         y += H_CALL
 
     # ── 지표 타일 5종 ───────────────────────────────────────────────
+    def _fin(q, k):
+        return ((q or {}).get("financials") or {}).get(k)
+
+    def _rat(q, k):
+        return ((q or {}).get("ratios") or {}).get(k)
+
+    def _subs(now, yoy_v, qoq_v, *, pp: bool = False):
+        """YoY·QoQ 를 **두 줄**로. 옛 코드는 한 줄 size 7.5 _MUTED 라
+        사용자가 '숫자가 잘 안 보인다'고 지적했다(2026-08-16). 줄을 나눠
+        폰트를 키우고 부호색(증가 초록·감소 빨강)을 입힌다.
+
+        pp=True 는 **비율 지표**용 — 이익률의 변화는 '변화율(%)'이 아니라
+        **%p 차이**다. 20.8% → 21.0% 를 '+1.0%' 로 쓰면 0.2%p 상승을
+        1% 상승으로 오독시킨다."""
+        out = []
+        for tag, prev in (("YoY", yoy_v), ("QoQ", qoq_v)):
+            if now is None or prev is None:
+                continue
+            if pp:
+                d = now - prev
+                s = f"{tag} {d:+.1f}%p"
+            else:
+                d = _chg(now, prev)
+                if d is None:
+                    continue
+                s = f"{tag} {d:+.1f}%"
+            out.append((s, _POS if d >= 0 else _NEG))
+        return out
+
+    _fwd = payload.get("per_forward")
     tiles = [
         ("매출", amt(lf.get("매출")), _ACCENT,
-         _chg(lf.get("매출"), (yoy_q or {}).get("financials", {}).get("매출")),
-         _chg(lf.get("매출"), (prev_q or {}).get("financials", {}).get("매출"))),
+         _subs(lf.get("매출"), _fin(yoy_q, "매출"), _fin(prev_q, "매출"))),
         ("영업이익", amt(lf.get("영업이익")), _POS,
-         _chg(lf.get("영업이익"), (yoy_q or {}).get("financials", {}).get("영업이익")),
-         _chg(lf.get("영업이익"), (prev_q or {}).get("financials", {}).get("영업이익"))),
-        ("영업이익률", _pct(lr.get("영업이익률")), _GOLD, None, None),
+         _subs(lf.get("영업이익"), _fin(yoy_q, "영업이익"),
+               _fin(prev_q, "영업이익"))),
+        # ⚠️ **최근 단일분기** 이익률이다(연간 아님 — 헤더의 분기 라벨 기준).
+        # 사용자가 "이게 연간이야 분기야?"라고 물은 지점 — 값만 있고 비교가
+        # 없어 판별 불가였다. YoY/QoQ %p 를 붙이면 분기 기준이 자명해진다.
+        ("영업이익률", _pct(lr.get("영업이익률")), _GOLD,
+         _subs(lr.get("영업이익률"), _rat(yoy_q, "영업이익률"),
+               _rat(prev_q, "영업이익률"), pp=True)),
         ("당기순이익", amt(lf.get("당기순이익")), _PUR,
-         _chg(lf.get("당기순이익"), (yoy_q or {}).get("financials", {}).get("당기순이익")),
-         _chg(lf.get("당기순이익"), (prev_q or {}).get("financials", {}).get("당기순이익"))),
+         _subs(lf.get("당기순이익"), _fin(yoy_q, "당기순이익"),
+               _fin(prev_q, "당기순이익"))),
         # '*' = 자체계산(시총÷TTM순이익). ASCII 라 폰트 결손 위험이 없다
         # (이모지·특수기호는 NanumGothic 에서 두부로 나올 수 있음).
+        # 서브라인 = Forward PER(예상실적 기준). 미제공이면 'N/A' 를 **명시**
+        # — 빈칸이면 '계산 중'인지 '없는지' 구분이 안 된다(사용자 2026-08-16).
         ("TTM PER" + ("*" if payload.get("per_self") else ""),
          ("—" if payload.get("per") is None
-          else f"{payload['per']:,.2f}배"), _ACCENTW, None, None),
+          else f"{payload['per']:,.2f}배"), _ACCENTW,
+         [(f"Fwd {_fwd:,.2f}배" if _fwd is not None else "Fwd N/A",
+           _ACCENTW if _fwd is not None else _MUTED)]),
     ]
     tw, gap = 18.0, 1.5
     tx = 2.5
-    for name, val, col, yoy, qoq in tiles:
+    for name, val, col, subs in tiles:
         panel(tx, y, tw, H_TILE - 3, fc=_PANEL, rad=1.6)
         ax.add_patch(Rectangle((tx, y), tw, 0.7, facecolor=col,
                                edgecolor="none"))
-        txt(tx + 1.6, y + 3.2, name, size=8.5, color=_MUTED, weight="bold")
-        txt(tx + 1.6, y + 7.2, val, size=12.5, color=col, weight="bold")
-        sub = []
-        if yoy is not None:
-            sub.append(f"YoY {yoy:+.1f}%")
-        if qoq is not None:
-            sub.append(f"QoQ {qoq:+.1f}%")
-        if sub:
-            txt(tx + 1.6, y + 11.2, " · ".join(sub), size=7.5, color=_MUTED)
+        txt(tx + 1.6, y + 3.4, name, size=8.5, color=_MUTED, weight="bold")
+        txt(tx + 1.6, y + 7.8, val, size=12.5, color=col, weight="bold")
+        sy = y + 12.4
+        for s, scol in subs[:2]:
+            txt(tx + 1.6, sy, s, size=9.0, color=scol, weight="bold")
+            sy += 3.6
         tx += tw + gap
     y += H_TILE
 
@@ -340,16 +485,39 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
         vals = [[(nan if v is None else v / div) for v in b] for b in bars]
         width = 0.34 if len(bars) > 1 else 0.46
         offs = ([-width / 2, width / 2] if len(bars) > 1 else [0])
+        # 값 라벨 자릿수는 **축 눈금보다 촘촘해야 한다** — 축 자릿수(dec)를
+        # 그대로 쓰면 2.15·2.24·2.31 이 전부 '2.1/2.2/2.3' 으로 뭉개져
+        # 라벨을 붙인 목적(분기간 차이 식별)이 사라진다(렌더 실측).
         for k, series in enumerate(vals):
-            bax.bar([i + offs[k] for i in idx], series, width=width,
-                    color=bar_colors[k], label=bar_labels[k], zorder=2)
+            # 자릿수는 **이 시리즈의 peak** 기준 — 공통 peak 로 정하면
+            # 작은 쪽 시리즈가 전 분기 '0.00' 이 된다(독립 리뷰 실측).
+            _spk = max((abs(v) for v in series if v == v), default=0)
+            ldec = _label_decimals(_spk, dec)
+            _c = bax.bar([i + offs[k] for i in idx], series, width=width,
+                         color=bar_colors[k], label=bar_labels[k], zorder=2)
+            # 막대 값 라벨 — 0 기준선 막대는 분기간 델타가 축 높이의 몇 %에
+            # 불과해(매출 +7% = 눈으로 거의 동일) '변화가 안 보인다'는 지적의
+            # 근본 원인이다(사용자 2026-08-16). 숫자를 직접 얹으면 축 스케일과
+            # 무관하게 읽힌다. NaN(결측)은 빈 라벨 — 없는 값을 0 으로 쓰지 않는다.
+            bax.bar_label(
+                _c, labels=[("" if v != v else f"{v:,.{ldec}f}") for v in series],
+                fontsize=7.5, color=bar_colors[k], padding=1.5, fontweight="bold")
+        # 값 라벨이 축 경계에 붙으면 잘린다 — 헤드룸 8% 확보. **아래쪽도**
+        # 넓힌다: 적자 분기의 라벨은 막대 아래에 그려져 축 밖으로 나가
+        # x 라벨·아래 % 패널과 겹친다(2026-08-16 독립 리뷰 실측).
+        _b0, _b1 = bax.get_ylim()
+        _pad = (_b1 - _b0) * 0.08
+        bax.set_ylim(_b0 - (_pad if _b0 < 0 else 0), _b1 + _pad)
         # 지수 오프셋('1e6') 금지 — 위 단위 스케일링으로 자릿수를 이미 줄였고,
         # 오프셋 텍스트가 축 위에 그려져 제목을 침범한다.
         bax.ticklabel_format(axis="y", style="plain", useOffset=False)
         # 눈금 세밀화 — 옛 코드엔 locator 설정이 아예 없어 축 높이에 맞춰
         # 3~4개로 성기게 잡혔다(사용자 2026-08-16 '숫자간격 더 세밀하게').
-        bax.yaxis.set_major_locator(
-            MaxNLocator(nbins=7, steps=[1, 2, 2.5, 5, 10]))
+        # 눈금 세밀화(사용자 2026-08-16 '왼쪽 축의 숫자를 더 세밀하게').
+        # nbins 은 축의 실제 픽셀 높이에서 — 근거는 _nbins_for 참조.
+        bax.yaxis.set_major_locator(MaxNLocator(
+            nbins=_nbins_for(bax.get_window_extent().height, _AMT_NBINS),
+            steps=_TICK_STEPS))
         bax.yaxis.set_major_formatter(
             FuncFormatter(lambda v, _p: f"{v:,.{dec}f}"))
         bax.tick_params(axis="y", labelsize=9, colors=_MUTED, length=2)
@@ -359,8 +527,11 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
             pax.plot(idx, [nan if v is None else v for v in line],
                      color=line_color, marker="o", markersize=4.2,
                      linewidth=2.0, zorder=3)
-            pax.yaxis.set_major_locator(
-                MaxNLocator(nbins=4, steps=[1, 2, 2.5, 5, 10]))
+            # % 패널은 금액 패널의 ~30% 높이(실측 142px)뿐이라 같은 상수를
+            # 쓰면 라벨이 겹친다 — 여기서도 픽셀 기준으로 뽑는다.
+            pax.yaxis.set_major_locator(MaxNLocator(
+                nbins=_nbins_for(pax.get_window_extent().height, _PCT_NBINS),
+                steps=_TICK_STEPS))
             # 정수 %로 고정하면 마진 폭이 좁을 때 '11% 10% 10% 10%' 처럼 눈금이
             # 중복 표기된다(2026-08-16 독립 리뷰, 렌더 실측). 축 범위에 맞춰
             # 소수 자리를 자동 확보한다.
@@ -429,8 +600,14 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
                 body = s if len(s) <= 34 else s[:33] + "…"
                 txt(x0 + 5.6, iy, body, size=8)
                 iy += 3.4
-        card_col(2.5, cw, "확인된 성장동력", drivers, _POS)
-        card_col(51.0, cw, "지속조건 · 무효화 리스크", risks, _NEG)
+        # ⚠️ `cw` 는 **정의된 적이 없다** — 최초 구현(c4397c4)부터 여기서
+        # NameError 가 났고, render_infographic 의 포괄 except 가 그걸 삼켜
+        # LLM 카드가 붙는 KR 경로는 **PNG 가 아예 안 나오고** 표로 폴백해
+        # 왔다(과금까지 하는 경로인데 그림이 없었다, 2026-08-16 독립 리뷰).
+        # 좌 2.5 + 우 51.0 배치에 맞춰 폭을 정의한다(2.5+46.5=49, 51+46.5=97.5).
+        card_w = 46.5
+        card_col(2.5, card_w, "확인된 성장동력", drivers, _POS)
+        card_col(51.0, card_w, "지속조건 · 무효화 리스크", risks, _NEG)
         y += H_CARDS
 
     # ── 푸터(TTM + 출처 + 면책) ─────────────────────────────────────
@@ -443,42 +620,21 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
         ("TTM PER" + ("*" if payload.get("per_self") else ""),
          "—" if payload.get("per") is None
          else f"{payload['per']:,.2f}배"),
+        # 타일 서브라인과 같은 값 — 두 표면이 어긋나면 그게 곧 버그다.
+        ("Forward PER", "N/A" if payload.get("per_forward") is None
+         else f"{payload['per_forward']:,.2f}배"),
         ("PSR", "—" if payload.get("psr") is None
          else f"{payload['psr']:,.2f}배"),
     ]
     fx = 6.0
+    _fgap = 88.0 / max(len(foot_items), 1)   # 항목이 늘어도 패널 안에 들어오게
     for name, val in foot_items:
         txt(fx, y + 2.2, name, size=8, color=_MUTED)
         txt(fx, y + 4.6, val, size=10.5, weight="bold")
-        fx += 18.4
+        fx += _fgap
     # 이상치·자체계산 각주 — 값이 '—' 로 비었을 때 "왜 비었나"를 화면에서
     # 알 수 있어야 한다(빈칸만 두면 데이터 없음과 구분 불가). 이모지 대신
     # ASCII 마커 + 색으로 표기(NanumGothic 글리프 결손 회피).
-    notes: list[tuple[str, str]] = []
-    _bad_keys = payload.get("anomaly_keys") or []
-    if _bad_keys:
-        _lbls = payload.get("anomaly_labels") or []
-        _where = f"({', '.join(_lbls)}) " if _lbls else ""
-        notes.append((
-            f"! {'·'.join(_bad_keys)} 이상치 감지 {_where}— DART 계정 불일치 "
-            f"가능. 해당 TTM·PSR 산출 제외(추정 보정 없음)", _NEG))
-    if payload.get("per_self"):
-        notes.append(("* TTM PER = 시가총액 ÷ TTM 순이익 자체계산"
-                      "(데이터 소스가 PER 미제공)", _MUTED))
-    _comp = payload.get("component_accounts") or {}
-    if _comp:
-        # 이상치와 달리 값은 유효하다 — 막지 않고 '총액 아님'만 알린다.
-        notes.append((
-            "! " + " · ".join(f"{k} = {v}(구성요소 계정)"
-                              for k, v in sorted(_comp.items()))
-            + " — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)",
-            _GOLD))
-    if payload.get("currency_mismatch"):
-        notes.append((f"! 재무({cur})와 시총({payload.get('trade_currency','')}) "
-                      "통화가 달라 PER·PSR 산출 제외(환산 없이 나누면 틀린 배수)",
-                      _NEG))
-    if payload.get("fiscal_note"):
-        notes.append((f"* {payload['fiscal_note']}", _MUTED))
     _ny = y + 7.6
     for _note, _ncol in notes:
         txt(6.0, _ny, _note, size=7.5, color=_ncol)
@@ -626,13 +782,28 @@ def build_payload(ticker: str, snap: dict | None = None, *,
     # 시총 ÷ 매출·순이익은 서로 다른 통화라 그냥 나누면 틀린 배수가 된다.
     cur_mismatch = bool(trade_cur and fin_cur and trade_cur != fin_cur)
 
-    per = snap.get("trailingPE")
+    # 소스 제공 PER 은 **후행(TTM) · 선행(Forward) 둘 다 같은 규칙**으로
+    # 정제한다. 옛 코드는 trailingPE 를 그대로 썼는데, 그러면 (a) 문자열이
+    # 오면 f-string 포맷에서 터져 렌더 전체가 죽고 (b) 자체계산(self_per)엔
+    # 걸리는 _PER_MIN/_PER_MAX 범위 가드가 소스값엔 안 걸려 같은 타일에
+    # 'TTM 1,234.50배 / Fwd N/A' 같은 비대칭이 난다(2026-08-16 독립 리뷰).
+    # 둘 다 거래통화 안에서 계산돼 오므로 통화 불일치 가드는 불필요하다
+    # (자체계산 self_per 과 다른 점 — 그쪽은 시총÷재무통화 순이익).
+    def _clean_per(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if _PER_MIN < f < _PER_MAX else None
+
+    per = _clean_per(snap.get("trailingPE"))
     per_self = False
     if per is None and not cur_mismatch:
         # 야후가 trailingPE 를 안 주는 종목(보험·금융지주에서 흔함) 폴백 —
         # 옛 코드는 단일 소스라 그냥 '—' 였다(사용자 2026-08-16).
         per = self_per(mcap, ttm.get("당기순이익"))
         per_self = per is not None
+    per_fwd = _clean_per(snap.get("forwardPE"))
     psr = None
     _ttm_rev = ttm.get("매출")
     # 음수 분모 가드 — 옛 코드는 truthy 검사만 해서 매출이 음수여도 그대로
@@ -659,6 +830,7 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         "quarters": qs,
         "ttm": ttm,
         "per": per,
+        "per_forward": per_fwd,
         # 야후 제공값과 자체계산을 구분해 표기(출처 표기 의무).
         "per_self": per_self,
         "psr": psr,
@@ -733,15 +905,29 @@ def table_html(payload: dict) -> str:
         rows += f"<tr><td>{_h.escape(label)}</td>{cells}</tr>"
     tbl = ('<table class="si-table"><thead><tr>' + head
            + "</tr></thead><tbody>" + rows + "</tbody></table>")
-    # 각주는 PNG 쪽에만 있었는데, 이 표는 **폰트가 없어 PNG 를 못 만들 때**
-    # 뜨는 유일한 화면이다 — 정확히 그 경로에서 표기가 죽어 있었다
-    # (2026-08-16 독립 리뷰).
-    comp = payload.get("component_accounts") or {}
-    if comp:
-        tbl += ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
-                '⚠️ ' + _h.escape(" · ".join(f"{k} = {v}(구성요소 계정)"
-                                             for k, v in sorted(comp.items())))
-                + ' — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)</div>')
+    # 배수 요약 — PNG 타일·푸터와 같은 값을 같은 규칙으로. 이 표는 폰트가
+    # 없어 PNG 를 못 만들 때 뜨는 **유일한 화면**이라, 여기에만 없으면
+    # 그 경로에서 지표가 통째로 사라진다(실수 #10 표면 동기화).
+    _mults = [
+        ("TTM PER" + ("*" if payload.get("per_self") else ""),
+         "—" if payload.get("per") is None else f"{payload['per']:,.2f}배"),
+        ("Forward PER", "N/A" if payload.get("per_forward") is None
+         else f"{payload['per_forward']:,.2f}배"),
+        ("PSR", "—" if payload.get("psr") is None
+         else f"{payload['psr']:,.2f}배"),
+    ]
+    tbl += ('<div style="font-size:12px;color:var(--fg-soft);margin-top:6px">'
+            + " · ".join(f"{_h.escape(k)} <b>{_h.escape(v)}</b>"
+                         for k, v in _mults) + "</div>")
+    # 각주 — PNG 와 **같은 소스**(_footnotes)를 쓴다. 옛 코드는 구성요소
+    # 계정 한 줄만 따로 손으로 복제해, 통화 불일치·이상치로 값이 '—' 가
+    # 됐을 때 그 이유가 이 화면에서만 사라졌다(폰트 없는 서버에서 이게
+    # 유일한 화면이다 — 2026-08-16 독립 리뷰). 색은 PNG 팔레트를 그대로.
+    _fn = _footnotes(payload, payload.get("quarters") or [])
+    if _fn:
+        tbl += "".join(
+            f'<div style="font-size:11px;color:{c};margin-top:4px">'
+            f'{_h.escape(t)}</div>' for t, c in _fn)
     return tbl
 
 
