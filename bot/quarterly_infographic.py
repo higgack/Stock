@@ -465,6 +465,14 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     if payload.get("per_self"):
         notes.append(("* TTM PER = 시가총액 ÷ TTM 순이익 자체계산"
                       "(데이터 소스가 PER 미제공)", _MUTED))
+    _comp = payload.get("component_accounts") or {}
+    if _comp:
+        # 이상치와 달리 값은 유효하다 — 막지 않고 '총액 아님'만 알린다.
+        notes.append((
+            "! " + " · ".join(f"{k} = {v}(구성요소 계정)"
+                              for k, v in sorted(_comp.items()))
+            + " — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)",
+            _GOLD))
     if payload.get("currency_mismatch"):
         notes.append((f"! 재무({cur})와 시총({payload.get('trade_currency','')}) "
                       "통화가 달라 PER·PSR 산출 제외(환산 없이 나누면 틀린 배수)",
@@ -668,6 +676,12 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         # 빨간 x라벨로만 뜨고 각주가 안 붙는다(2026-08-16 독립 리뷰).
         "anomaly_keys": sorted(anomalous_keys(_window)),
         "anomaly_labels": anomalous_labels(_window),
+        # 구성요소 계정에서 온 값 — 이상치와 달리 **값은 유효**하므로 TTM 을
+        # 막지 않고 표기만 한다(총매출이 아니라는 사실만 알림).
+        "component_accounts": {
+            k: v for q in _window
+            for k, v in ((q.get("financials") or {}).get(
+                "_component_accounts") or {}).items()},
         "latest_year": latest.get("year"),
         "latest_reprt_code": latest.get("reprt_code"),
         # 캐시 키 — KR 은 (연도+보고서코드), 그 외는 분기 종료일.
@@ -717,8 +731,18 @@ def table_html(payload: dict) -> str:
             f"<td class='num'>{_pct((q.get('ratios') or {}).get(key))}</td>"
             for q in qs)
         rows += f"<tr><td>{_h.escape(label)}</td>{cells}</tr>"
-    return ('<table class="si-table"><thead><tr>' + head
-            + "</tr></thead><tbody>" + rows + "</tbody></table>")
+    tbl = ('<table class="si-table"><thead><tr>' + head
+           + "</tr></thead><tbody>" + rows + "</tbody></table>")
+    # 각주는 PNG 쪽에만 있었는데, 이 표는 **폰트가 없어 PNG 를 못 만들 때**
+    # 뜨는 유일한 화면이다 — 정확히 그 경로에서 표기가 죽어 있었다
+    # (2026-08-16 독립 리뷰).
+    comp = payload.get("component_accounts") or {}
+    if comp:
+        tbl += ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
+                '⚠️ ' + _h.escape(" · ".join(f"{k} = {v}(구성요소 계정)"
+                                             for k, v in sorted(comp.items())))
+                + ' — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)</div>')
+    return tbl
 
 
 def get_or_render(ticker: str, snap: dict | None = None, *,

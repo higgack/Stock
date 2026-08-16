@@ -4977,8 +4977,8 @@ class TestDartQuarterlyFinancialsReprtCode:
         # qfin2 — financials_cumulative 추가로 캐시 키 버전업(2026-08-19,
         # code-review 발견: 안 바꾸면 이 커밋 배포 전 조회된 구캐시가
         # financials_cumulative 없이 7일간 서빙돼 4분기 파생이 조용히 실패함).
-        # v3(2026-08-16): financials 에 `_src` 사이드채널 추가 → 키 상향.
-        assert any(k.startswith("qfin3_00126380_2026_11012_CFS") for k in written)
+        # v4(2026-08-16): `_src` + `_component_accounts` 추가 → 키 상향.
+        assert any(k.startswith("qfin4_00126380_2026_11012_CFS") for k in written)
 
     def test_interim_report_includes_cumulative_from_add_amount(self, monkeypatch):
         # 2026-08-19 VM 실측 확인 — 분기/반기보고서는 thstrm_amount 가 이미
@@ -5367,19 +5367,35 @@ class TestDartRoicAndQuarterlyPane:
         # 좌측(금액) 테이블은 6행이라 시각적으로 어긋남. 배당수익률을 좌측
         # 루프 뒤에 추가해 7행으로 맞춤 — 루프의 (라벨,키) 튜플 개수 +
         # 루프 밖에서 수동으로 덧붙인 행 수를 세어 좌우 동일한지 고정.
+        # 2026-08-16: 소스 문자열 패턴(`fin_rows += (f'<tr>` 횟수)으로 세던
+        # 옛 방식은 루프 본문 포맷이 바뀌자 깨졌다. **실제 렌더된 행 수**를
+        # 세도록 바꾼다 — 계약(좌우 표 행 수 일치)을 직접 검증한다.
         import re
-        src = open("bot/dashboard.py", encoding="utf-8").read()
-        fin_loop_src = src[src.index('for label, key in (("매출", "매출")'):
-                           src.index('ratio_rows = ""')]
-        ratio_loop_start = src.index('for label, key in (("영업이익률", "영업이익률")')
-        ratio_loop_src = src[ratio_loop_start:src.index('kr_financial_html = f"""')]
-        fin_tuple_count = len(re.findall(r'\("[^"]+", "[^"]+"\)', fin_loop_src))
-        ratio_tuple_count = len(re.findall(r'\("[^"]+", "[^"]+"\)', ratio_loop_src))
-        # 루프 밖에서 수동으로 fin_rows 에 덧붙이는 행(배당수익률) 카운트.
-        fin_extra_rows = fin_loop_src.count("fin_rows += (f'<tr>")
-        assert "배당수익률" in fin_loop_src, "K-IFRS 재무요약 좌측에 배당수익률 행 누락"
-        assert fin_tuple_count + fin_extra_rows == ratio_tuple_count == 7, \
-            (fin_tuple_count, fin_extra_rows, ratio_tuple_count)
+        from bot.dashboard import _render_stock_info_html
+        rec = {"ticker": "005930.KS", "stock_info": {
+            "dividendYield": 2.1, "current_price": 70000,
+            "kr": {"financials": {"year": 2025, "fs_div": "CFS",
+                                  "매출": 3e14, "영업이익": 3e13,
+                                  "당기순이익": 2e13, "자산총계": 5e14,
+                                  "부채총계": 1e14, "자본총계": 4e14,
+                                  "영업이익률": 10.0, "순이익률": 6.7,
+                                  "ROE": 5.0, "ROA": 4.0, "ROIC": 8.0,
+                                  "부채비율": 25.0, "유동비율": 200.0}}}}
+        r = _render_stock_info_html(rec)
+        h = ("".join(str(v) for v in r["panes"].values())
+             + str(r.get("other_panes", "")))
+        # ⚠️ 문자열 경계로 자르면 각주 한 줄 추가에도 슬라이스가 새 나가
+        # 무관한 표를 세게 된다(2026-08-16 독립 리뷰 — 3073자 오버런).
+        # 앞에서 2개만 뽑되 **정확히 2개인지** 검증해 오버런을 잡는다.
+        card = h[h.index("K-IFRS 재무 요약"):]
+        nxt = card.find('class="si-section-title"', 10)
+        if nxt > 0:
+            card = card[:nxt]
+        tables = re.findall(r"<tbody>(.*?)</tbody>", card, re.S)
+        assert len(tables) == 2, f"K-IFRS 요약 표가 2개가 아님({len(tables)})"
+        left, right = (t.count("<tr>") for t in tables)
+        assert "배당수익률" in tables[0], "좌측(금액)에 배당수익률 행 누락"
+        assert left == right == 7, (left, right)
 
     def test_roic_wired_into_stock_snapshot_compact_dict(self):
         src = open("bot/stock_snapshot.py", encoding="utf-8").read()
@@ -5749,7 +5765,116 @@ class TestDartAccountWinnerDeterminism20260816:
     def test_cache_key_bumped_for_src_schema(self):
         # 옛 캐시(7일 TTL)엔 _src 가 없어 가드가 조용히 무력화된다.
         src = open("bot/dart_client.py", encoding="utf-8").read()
-        assert "qfin3_" in src and 'f"qfin2_' not in src
+        assert "qfin4_" in src and 'f"qfin3_' not in src
+
+    def test_component_account_flagged_not_removed(self):
+        # VM probe(2026-08-16): 메리츠금융지주 2025 사업보고서엔 총수익
+        # (영업수익) 계정이 **아예 없고** 보험수익·이자수익 등 구성요소로만
+        # 공시된다. 그래서 승자가 이자수익 4.15조가 되는데, 실제 총수익은
+        # 3분기 누적만 24.95조라 6배 어긋난다. B안 = 값은 보존(매핑 제거 시
+        # 다른 종목 회귀)하고 '총액 아님'만 플래그.
+        from bot.dart_client import _extract_dart_financials as E
+        r = E([{"account_nm": "보험수익", "thstrm_amount": "9140000000000"},
+               {"account_nm": "이자수익", "thstrm_amount": "4145907904169"},
+               {"account_nm": "당기순이익", "thstrm_amount": "2350134643625"}])
+        assert r["매출"] == 4145907904169, "값을 버리면 안 됨(데이터 보존)"
+        assert r["_component_accounts"] == {"매출": "이자수익"}
+        # 총수익 계정이 있으면 무발화
+        r2 = E([{"account_nm": "영업수익", "thstrm_amount": "24952230060123"},
+                {"account_nm": "이자수익", "thstrm_amount": "3115403644999"}])
+        assert "_component_accounts" not in r2
+        assert r2["매출"] == 24952230060123
+        assert "_component_accounts" not in E(
+            [{"account_nm": "매출액", "thstrm_amount": "1000"}])
+
+    def test_component_flag_survives_quarterly_paths(self):
+        from bot.dart_quarterly import _diff_quarter, _mark_component
+        ann = {"매출": 4.15e12, "_src": {"매출": 2},
+               "_component_accounts": {"매출": "이자수익"}}
+        nine = {"매출": 3.1e12, "_src": {"매출": 2},
+                "_component_accounts": {"매출": "이자수익"}}
+        d = _diff_quarter(ann, nine)                      # 4분기 파생 경로
+        assert d["_component_accounts"] == {"매출": "이자수익"}
+        assert "_src" not in d
+        # Q1~Q3 원자값 경로 — 호출부는 값이 채워진 dict 를 넘긴다.
+        out = _mark_component({"매출": 4.15e12}, ann)
+        assert out["_component_accounts"] == {"매출": "이자수익"}
+        assert _mark_component({"매출": 1}, {"매출": 1}) == {"매출": 1}  # 무발화
+
+    def test_component_flag_relayed_and_rendered(self):
+        # 소스에 플래그만 심고 렌더러가 안 읽으면 dead code — 세 표면 전부.
+        snap_src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert snap_src.count("_component_accounts") >= 3, \
+            "연간 compact·연도별 시계열·분기 시계열 3곳 릴레이 필요"
+        from bot.dashboard import _render_stock_info_html
+        rec = {"ticker": "138040.KS", "stock_info": {"kr": {
+            "financials": {"year": 2025, "fs_div": "CFS", "매출": 4.14e12,
+                           "영업이익": 2.87e12, "당기순이익": 2.35e12,
+                           "_component_accounts": {"매출": "이자수익"}},
+            "financials_q": [
+                {"label": "25.4Q", "매출": 1.05e12, "영업이익": 5e11,
+                 "당기순이익": 3e11,
+                 "_component_accounts": {"매출": "이자수익"}},
+                {"label": "26.1Q", "매출": 1.1e12, "영업이익": 6e11,
+                 "당기순이익": 4e11,
+                 "_component_accounts": {"매출": "이자수익"}}]}}}
+        r = _render_stock_info_html(rec)
+        h = ("".join(str(v) for v in r["panes"].values())
+             + str(r.get("other_panes", "")))
+        assert "구성요소 계정" in h and "이자수익" in h
+        assert h.count("⚠️") >= 2, "기업탭·분기표 배지"
+        # 정상 회사엔 오발화 없어야(회귀)
+        h2 = "".join(str(v) for v in _render_stock_info_html(
+            {"ticker": "005930.KS", "stock_info": {"kr": {"financials": {
+                "year": 2025, "매출": 3e14, "영업이익": 3e13}}}}
+        )["panes"].values())
+        assert "구성요소" not in h2
+
+    def test_component_flag_skipped_when_value_already_blanked(self):
+        # 계정 불일치로 이미 None 이 된 셀에 구성요소 각주까지 붙으면
+        # "비워둠" 과 "원자료 그대로" 가 동시에 떠 서로 모순된다.
+        from bot.dart_quarterly import _diff_quarter
+        ann = {"매출": 4.15e12, "당기순이익": 2.35e12,
+               "_src": {"매출": 2, "당기순이익": 0},
+               "_component_accounts": {"매출": "이자수익"}}
+        nine = {"매출": 3.1e12, "당기순이익": 2.0e12,
+                "_src": {"매출": 0, "당기순이익": 0}}   # 그룹 불일치
+        d = _diff_quarter(ann, nine)
+        assert d["매출"] is None
+        assert "_component_accounts" not in d, "빈 셀에 모순된 각주 부착"
+
+    def test_table_fallback_also_shows_component_note(self):
+        # 이 표는 폰트 부재로 PNG 를 못 만들 때 뜨는 **유일한** 화면 —
+        # 각주가 PNG 쪽에만 있으면 정확히 그 경로에서 죽는다.
+        from bot.quarterly_infographic import table_html
+        payload = {"quarters": [{"label": "26.1Q",
+                                 "financials": {"매출": 1e12}, "ratios": {}}],
+                   "component_accounts": {"매출": "이자수익"},
+                   "currency": "KRW"}
+        html = table_html(payload)
+        assert "구성요소 계정" in html and "이자수익" in html
+        # 무발화 회귀
+        assert "구성요소" not in table_html({k: v for k, v in payload.items()
+                                            if k != "component_accounts"})
+
+    def test_analyst_prompt_warns_on_component_account(self):
+        # 최고 위험 표면 — 분석가가 이자수익을 총매출로 읽으면 마진·성장률이
+        # 통째로 틀린다. Rule G override 블록에 경고를 함께 주입해야 한다.
+        src = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                   encoding="utf-8").read()
+        blk = src.split("DART 정규화 재무 데이터", 1)[1][:3000]
+        assert "_component_accounts" in blk, "분석가 프롬프트에 경고 미주입"
+        assert "총액 계정이 아니라" in blk
+
+    def test_component_flag_does_not_block_ttm(self):
+        # 이상치와 달리 **값은 유효**하다 — TTM 을 막으면 데이터 손실이다.
+        from bot.quarterly_infographic import _ttm
+        qs = [{"label": f"25.{i}Q", "financials": {
+            "매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11,
+            "_component_accounts": {"매출": "이자수익"}}} for i in range(1, 5)]
+        assert _ttm(qs)["매출"] == 4e12
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "component_accounts" in src and "구성요소 계정" in src
 
     def test_public_series_schema_has_no_src_sidechannel(self):
         # `_src` 는 차분 검증용 내부 재료 — 공개 시리즈엔 싣지 않는다.

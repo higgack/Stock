@@ -5421,11 +5421,17 @@ def _render_stock_info_html(rec: dict) -> str:
             fy_label = f"FY{kf.get('year', '')}" if kf.get("year") else ""
             fs_label = "(연결)" if kf.get("fs_div") == "CFS" else "(별도)" if kf.get("fs_div") == "OFS" else ""
             fin_rows = ""
+            # 구성요소 계정에서 온 값은 '총액'이 아니다 — 금융지주처럼 총수익
+            # 계정을 아예 공시하지 않는 회사에서 이자수익이 매출로 표기되던
+            # 것을 막는다(사용자 2026-08-16 B안: 값은 보존, 오인만 차단).
+            _kf_comp = kf.get("_component_accounts") or {}
             for label, key in (("매출", "매출"), ("영업이익", "영업이익"),
                                ("당기순이익", "당기순이익"), ("자산총계", "자산총계"),
                                ("부채총계", "부채총계"), ("자본총계", "자본총계")):
                 v = kf.get(key)
-                fin_rows += f'<tr><td>{esc(label)}</td><td class="num">{_krw_eok(v)}</td></tr>\n'
+                _mark = " ⚠️" if key in _kf_comp else ""
+                fin_rows += (f'<tr><td>{esc(label)}{_mark}</td>'
+                             f'<td class="num">{_krw_eok(v)}</td></tr>\n')
             # 배당수익률 — 좌(금액)/우(비율) 테이블 행 수를 맞추기 위해 추가
             # (사용자 2026-08-19, ROIC 추가로 우측이 7행이 되며 어긋남).
             # 밸류에이션 탭(5569-5570행)과 동일한 표준 헬퍼 재사용 — 신규
@@ -5441,12 +5447,23 @@ def _render_stock_info_html(rec: dict) -> str:
                                ("부채비율", "부채비율"), ("유동비율", "유동비율")):
                 v = kf.get(key)
                 ratio_rows += f'<tr><td>{esc(label)}</td><td class="num">{f"{v:.1f}%" if v is not None else "—"}</td></tr>\n'
+            _kf_note = ""
+            if _kf_comp:
+                _kf_note = ('<div style="font-size:11px;color:var(--fg-soft);'
+                            'margin-top:6px">⚠️ '
+                            + esc(" · ".join(
+                                f"{k} = {v}(구성요소 계정)"
+                                for k, v in sorted(_kf_comp.items())))
+                            + " — 이 회사는 해당 총액 계정을 공시하지 않아 "
+                              "DART 원자료의 구성요소 값을 그대로 표시합니다"
+                              "(합산·추정 없음)</div>")
             kr_financial_html = f"""<div class="si-section">
     <div class="si-section-title">K-IFRS 재무 요약 {esc(fy_label)} {esc(fs_label)}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
       <table class="si-table"><thead><tr><th>항목</th><th class="num">금액 (₩)</th></tr></thead><tbody>{fin_rows}</tbody></table>
       <table class="si-table"><thead><tr><th>비율</th><th class="num">값</th></tr></thead><tbody>{ratio_rows}</tbody></table>
     </div>
+    {_kf_note}
   </div>"""
 
     _src_foot = '<div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">'
@@ -5714,6 +5731,8 @@ def _render_stock_info_html(rec: dict) -> str:
                 if key == "매출" and (it.get("_anomaly_revenue_negative")
                                      or it.get("_anomaly_account_mismatch")):
                     cell += " ⚠️"
+                elif key in (it.get("_component_accounts") or {}):
+                    cell += " ⚠️"
                 cells += f"<td class='num'>{cell}</td>"
             rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
         for label, key in (("영업이익률", "영업이익률"), ("ROE", "ROE"),
@@ -5732,6 +5751,12 @@ def _render_stock_info_html(rec: dict) -> str:
             _notes.append('⚠️ 매출 공백 = 연간·3분기 보고서가 서로 다른 계정'
                           '(영업수익/이자수익 등)을 써 차감이 불가 — 추정 대신 '
                           '비워둠')
+        _comp_seen = sorted({f"{k} = {v}" for it in items
+                             for k, v in (it.get("_component_accounts") or {}).items()})
+        if _comp_seen:
+            _notes.append('⚠️ ' + esc(" · ".join(_comp_seen))
+                          + '(구성요소 계정) — 총액 계정 미공시라 DART 원자료 '
+                            '그대로, 합산·추정 없음')
         if _notes:
             foot = ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
                     + '<br>'.join(_notes) + '</div>')
