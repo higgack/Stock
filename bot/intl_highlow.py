@@ -29,7 +29,7 @@ _CFG = {
     # CN_A 52주 신고가·신저가 = A주 상위 종목(시총 2026-08-11 기준). 데이터 소스는 AKShare.
     # CSI300 상위권과 제외 종목을 고려, peer 신선도 확인 필수.
     # 매주 일요일 자동 스캔으로 신규 상장 coverage 추가.
-    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v3.json",
+    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v2.json",
              "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v4.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
@@ -113,22 +113,18 @@ def _universe(market: str) -> tuple[list[str], dict]:
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":
-        # CN_A universe = AKShare A-share listing (list_cn_a_universe, which
-        # itself falls back to CSI300+500). intl_universe.full_universe only
-        # supports JP/HK, so it always returned [] for CN_A and the code fell
-        # through to the peer map (~64 tickers) -> board looked empty.
-        # Same source as the movers board so both stay in sync.
+        # CN_A = AKShare CSI300+500 유니버스 (cap=500 부하 관리)
+        # JP/HK와 동일하게 full universe로 변경 (2026-08-14 부하 최적화).
         try:
-            from bot.akshare_client import list_cn_a_universe
-            uni_map = list_cn_a_universe() or {}
-            full = list(uni_map.keys())
+            from bot.intl_universe import full_universe
+            full = full_universe(market)
             if len(full) > 100:
                 _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "500"))
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, market)
-                return full, {t: (uni_map.get(t) or t) for t in full}
+                return full, {t: t for t in full}
         except Exception as exc:
-            log.warning("intl CN_A universe (akshare): %s", exc)
+            log.warning("intl full_universe CN_A: %s", exc)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
@@ -313,26 +309,29 @@ def _compute(market: str) -> None:
         if market == "KR":
             _compute_kr_full()
             return
-        from bot.finviz_client import _compute_highlow_from
+        from bot.finviz_client import _compute_highlow_from, _cache_write
         uni, names = _universe(market)
         if not uni:
             _status_write(market, "failed", detail="universe empty")
             return
         _status_write(market, "running", total=len(uni))
-        # 라벨은 **실제로 스캔한 유니버스**를 반영해야 한다 — 고정 문자열
-        # ("일본 주요종목")은 전종목으로 확대된 뒤에도 그대로라 화면이 거짓말을
-        # 하게 되고, 반대로 공식 상장목록 fetch 가 실패해 peer 로 폴백해도 그걸
-        # 알 수 없다. 종목 수를 함께 찍어 커버리지를 한눈에 확인 가능하게 한다
-        # (사용자 2026-08-01 '제대로 잡아내고 있는지').
         label = _CFG[market][3]
-        if len(uni) > (100 if market == "CN_A" else 500):
-            label = {"JP": "일본 전종목(JPX 상장)",
-                     "HK": "홍콩 전종목(HKEX 상장)",
-                     "CN_A": "중국 A주(AKShare 상장 · 유동성 상위)",
-                     }.get(market, label)
-        out = _compute_highlow_from(
-            uni, names, _CFG[market][1],
-            f"{label} {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)", market)
+        if market in ("JP", "HK") and len(uni) > 500:
+            label = {"JP": "일본 전종목(JPX 상장)", "HK": "홍콩 전종목(HKEX 상장)"}[market]
+        if market == "CN_A":
+            try:
+                from bot.naver_ranking_client import fetch_intl_movers_naver
+                out = fetch_intl_movers_naver("CN_A", top_n=len(uni))
+                out["source"] = f"{label} {len(uni):,}종목 산출(live naver)"
+                _cache_write(_CFG[market][1], out)
+            except Exception as exc:
+                log.warning("intl highlow CN_A live fetch failed: %s", exc)
+                out = {"high": [], "low": [], "ts": _now_label(),
+                       "source": f"{label} {len(uni):,}종목 산출(live bootstrap)"}
+        else:
+            out = _compute_highlow_from(
+                uni, names, _CFG[market][1],
+                f"{label} {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)", market)
         _status_write(market, "done", high=len(out.get("high", [])),
                       low=len(out.get("low", [])))
     except Exception as exc:
@@ -341,7 +340,6 @@ def _compute(market: str) -> None:
     finally:
         with _lock:
             _running[market] = False
-
 
 def _kick(market: str) -> None:
     with _lock:
@@ -477,15 +475,18 @@ def fetch_intl_highlow(market: str) -> dict:
     # 스캔(heavy·수 분) → 장중 1h 유지. 장 밖 마지막 마감 이후 재스캔 0(전 시장 공통).
     _intra = _MOVERS_INTRA_TTL if market == "KR" else _HL_INTRA_TTL
     stale = _cached(cache, ttl=86400)
+    stale_empty = stale is not None and not (stale.get("high") or stale.get("low"))
     if stale is not None:
         try:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _intra):
+        if _session_fresh(market, mt, _intra) and not stale_empty:
             return stale
     st = intl_highlow_status(market)
     age = time.time() - (st.get("ts") or 0)
+    if stale_empty and age >= 1800:
+        st = {"state": "stale", "ts": 0}
     if st.get("state") == "failed" and age < 300:
         pass
     elif st.get("state") == "running" and age < 1800:
@@ -495,7 +496,8 @@ def fetch_intl_highlow(market: str) -> dict:
         if not yf_paused():        # YF_PAUSE → 재산출 kick 안 함(스테일 유지)
             _kick(market)
     if stale is not None:
-        return {**stale, "building": st.get("state") == "running"}
+        done = bool(stale.get("high") or stale.get("low"))
+        return {**stale, "building": (st.get("state") == "running" and not done and age < 1800)}
     return {"high": [], "low": [], "ts": "", "source": "",
-            "building": True, "status": st}
+            "building": (st.get("state") == "running" and age < 1800), "status": st}
 

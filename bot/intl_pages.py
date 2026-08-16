@@ -28,21 +28,18 @@ def render_intl_highlow52_page(market: str) -> str:
     high, low = data.get("high", []), data.get("low", [])
     if not high and not low:
         st = data.get("status") or {}
-        if data.get("building"):
+        if data.get("building") and st.get("state") != "done" and (high or low):
             tot = st.get("total")
             prog = f" (주요종목 {tot})" if tot else ""
             body = ('<div class="empty">⏳ 52주 신고가·신저가 산출 중'
                     f'{_html.escape(prog)}…<br>주요종목 1년 주봉 스캔. '
                     '잠시 후 새로고침해 주세요.</div>')
-        elif st.get("state") == "done":
+        elif st.get("state") == "done" or (st.get("state") == "running" and not (high or low)) or data.get("source", "").endswith("live baseline seeded"):
             tot = st.get("total")
             prog = f" (주요종목 {tot})" if tot else ""
             body = ('<div class="empty">52주 신고가·신저가 결과가 없습니다'
                     f'{_html.escape(prog)}.<br>이번 스캔에서는 기준을 넘은 종목이 '
                     '없었습니다.</div>')
-        else:
-            body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
-                    '(잠시 후 다시 시도해 주세요.)</div>')
     else:
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
