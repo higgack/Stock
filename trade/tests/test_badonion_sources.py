@@ -17,6 +17,11 @@ _CAPS = {
     "us": "🇺🇸 6월 수입 미국\n\n▶️ 테스트 품목\n\n"
           "26년06월: $12.3M  (+7.0% YoY)  (+1.5% MoM)",
     "krs": "HPSP (403870)\n한국 수출\n26년 7월 Update\n\n수출액 YoY: +260.2%",
+    # 일본 종목별 — 헤더가 **한 줄**이고 볼드(`**`)가 붙어 온다(실측 원문).
+    "jps": "**Kioxia (285A) 일본 수출 Update**\n**26년 6월**\n\n"
+           "**Yokkaichi NAND 웨이퍼**\n\n수출액: YoY +95.1%\n"
+           "3M 수출액: YoY +103.9%\n\n"
+           "* SanDisk와 동일한 공동생산 흐름이므로 두 지표를 합산하지 않습니다.",
 }
 
 
@@ -26,9 +31,14 @@ class RegistryTests(unittest.TestCase):
         # 캡션을 먼저 가져가 **조용한 오저장**이 된다.
         keys = [s.key for s in srcs.SOURCES]
         self.assertEqual(
-            keys, ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us", "krs"])
-        self.assertEqual(keys[-1], "krs",
-                         "한국(종목별)은 가장 좁은 마커라 마지막이어야")
+            keys,
+            ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us", "krs", "jps"])
+        # 계약은 리터럴 목록이 아니라 **품목(HS) 기준이 먼저, 종목(회사)
+        # 기준이 뒤**다 — 종목 파서가 더 좁은 마커라 앞서면 품목 캡션을
+        # 가로챌 위험이 없고, 반대로 앞서면 순서 의존이 생긴다.
+        stock_keys = {"krs", "jps"}
+        self.assertEqual(set(keys[-len(stock_keys):]), stock_keys,
+                         "종목(회사) 기준 소스는 뒤쪽에 몰려 있어야")
 
     def test_every_source_has_a_complete_contract(self):
         seen_keys, seen_dbs = set(), set()
@@ -89,7 +99,8 @@ class ConsumersUseRegistryTests(unittest.TestCase):
     )
     _PARSERS = ("parse_tw_export", "parse_cn_export", "parse_jp2_export",
                 "parse_th_export", "parse_my_export", "parse_ph_export",
-                "parse_mx_export", "parse_us_import", "parse_kr_stock_export")
+                "parse_mx_export", "parse_us_import", "parse_kr_stock_export",
+                "parse_jp_stock_export")
     # ⚠️ 호출 **형태**를 잡는다 — 그냥 "badonion_sources" substring 은 주석·
     # docstring 만으로도 통과해서, 실제 가드를 지워도 초록이 된다(순 커버리지
     # 후퇴). 각 소비처가 레지스트리를 실제로 **쓰는** 지점을 고정한다.
@@ -184,6 +195,17 @@ class RoutingRegressionTests(unittest.TestCase):
                    if k.endswith("_inserted") and v]
             self.assertEqual(hit, [f"{key}_inserted"], (key, counters))
             self.assertEqual(counters["unparseable"], 0, key)
+
+    def test_jp_stock_row_actually_persisted(self):
+        _, conns = self._run(_CAPS["jps"])
+        rows = conns["jps"].execute(
+            "SELECT ticker, month, export_yoy, note FROM jp_stock_exports"
+        ).fetchall()
+        self.assertEqual(
+            [dict(r) for r in rows],
+            [{"ticker": "285A", "month": "2026-06", "export_yoy": 95.1,
+              "note": "SanDisk와 동일한 공동생산 흐름이므로 두 지표를 "
+                      "합산하지 않습니다."}])
 
     def test_kr_row_actually_persisted(self):
         _, conns = self._run(_CAPS["krs"])
