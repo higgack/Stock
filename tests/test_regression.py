@@ -19305,7 +19305,7 @@ class TestMarketTimingBreadthVol20260726:
         for mkt in ("US", "KR"):
             calls = []
 
-            def fake_fetch(ticker, days=120):
+            def fake_fetch(ticker, days=120, min_rows=None):
                 calls.append(ticker)
                 return [{"close": 100.0 + i} for i in range(250)]
 
@@ -19320,9 +19320,99 @@ class TestMarketTimingBreadthVol20260726:
         # 표본 라벨이 시장마다 달라야 — 상품군이 다르다(SPDR vs KODEX).
         # 고정값이면 KR 카드에 "SPDR" 이라 적히는 거짓 표기가 된다.
         monkeypatch.setattr(mt, "fetch_index_history",
-                            lambda t, days=120: [{"close": 100.0}] * 250)
+                            lambda t, days=120, min_rows=None: [{"close": 100.0}] * 250)
         assert "SPDR" in mt.fetch_market_breadth("US")["source_label"]
         assert "KODEX" in mt.fetch_market_breadth("KR")["source_label"]
+
+    def test_short_history_falls_back_to_naver(self, monkeypatch):
+        # yfinance 가 일부 KR ETF 에 **짧은 시계열을 '성공'으로** 돌려준다
+        # (2026-08-16 실측: KODEX 반도체·IT·철강·에너지화학이 1년 요청에 18행,
+        # 같은 경로로 다른 9개는 243행). fetch_chart_payload 의 네이버 폴백은
+        # **빈 결과일 때만** 걸려 이 절단을 못 잡았다.
+        import bot.chart_data as cd
+
+        from bot import market_timing as mt
+        monkeypatch.setattr(cd, "fetch_chart_payload",
+                            lambda t, interval="1d", period="1y": {
+                                "times": ["d"] * 18, "close": [1.0] * 18})
+        naver_calls = []
+
+        def fake_naver(ticker, period="1y"):
+            naver_calls.append(ticker)
+            return {"times": ["d"] * 243, "close": [1.0] * 243}
+
+        monkeypatch.setattr(cd, "_fetch_naver_daily", fake_naver)
+        # min_rows 없으면 옛 동작 그대로(폴백 없음) — 무관 호출부 보호
+        assert len(mt.fetch_index_history("091160.KS", days=280)) == 18
+        assert naver_calls == []
+        # min_rows 를 넘기면 재시도해서 긴 시계열을 얻는다
+        assert len(mt.fetch_index_history("091160.KS", days=280,
+                                          min_rows=200)) == 243
+        assert naver_calls == ["091160.KS"]
+
+    def test_short_history_fallback_also_short_returns_original(self, monkeypatch):
+        # 네이버도 짧으면 억지로 바꾸지 않고 원본을 돌려준다(그리고 경고).
+        import bot.chart_data as cd
+
+        from bot import market_timing as mt
+        monkeypatch.setattr(cd, "fetch_chart_payload",
+                            lambda t, interval="1d", period="1y": {
+                                "times": ["d"] * 18, "close": [1.0] * 18})
+        monkeypatch.setattr(cd, "_fetch_naver_daily",
+                            lambda t, period="1y": None)
+        assert len(mt.fetch_index_history("X.KS", days=280, min_rows=200)) == 18
+
+    def test_empty_result_does_not_double_call_naver(self, monkeypatch):
+        # fetch_chart_payload 는 **빈 결과일 때 이미** 네이버를 시도한다.
+        # 여기서 또 부르면 10초 타임아웃 HTTP 호출이 티커마다 중복된다
+        # (12~13개 섹터 × 2회, 2026-08-16 독립 리뷰).
+        import bot.chart_data as cd
+
+        from bot import market_timing as mt
+        calls = []
+        monkeypatch.setattr(cd, "fetch_chart_payload",
+                            lambda t, interval="1d", period="1y": None)
+        monkeypatch.setattr(cd, "_fetch_naver_daily",
+                            lambda t, period="1y": calls.append(t))
+        assert mt.fetch_index_history("X.KS", days=280, min_rows=200) == []
+        assert calls == [], "빈 결과에 네이버를 중복 호출"
+
+    def test_long_request_uses_a_multi_year_period(self, monkeypatch):
+        # 1년(≈250봉) 요청으로는 252일 DD 를 **월말 확정분에서** 계산할
+        # 여유가 없다(앞쪽을 더 잘라내므로).
+        import bot.chart_data as cd
+
+        from bot import market_timing as mt
+        seen = []
+
+        def fake(t, interval="1d", period="1y"):
+            seen.append(period)
+            return {"times": ["d"] * 600, "close": [1.0] * 600}
+
+        monkeypatch.setattr(cd, "fetch_chart_payload", fake)
+        mt.fetch_index_history("X.KS", days=400)
+        mt.fetch_index_history("X.KS", days=280)
+        mt.fetch_index_history("X.KS", days=30)
+        assert seen == ["3y", "1y", "3mo"], seen
+        assert "3y" in cd._VALID_PERIODS, "chart_data 가 모르는 period"
+
+    def test_breadth_requests_enough_history_for_200dma(self, monkeypatch):
+        # 200일 SMA 가 이 지표의 절반인데 min_rows 없이 부르면 짧은 시계열이
+        # 조용히 200dma 분모에서만 빠진다.
+        # 소스 문자열 검사는 **호출 위 주석에도 매칭**돼 kwarg 를 지워도
+        # 통과한다(2026-08-16 독립 리뷰 실측) — 실제 호출 인자를 본다.
+        from bot import market_timing as mt
+        seen: list[dict] = []
+
+        def fake(ticker, **kw):
+            seen.append(kw)
+            return [{"date": f"d{i}", "close": 100.0 + i} for i in range(280)]
+
+        monkeypatch.setattr(mt, "fetch_index_history", fake)
+        mt.fetch_market_breadth("KR")
+        assert seen, "섹터 히스토리를 아예 안 부른다"
+        assert all(kw.get("min_rows") == 200 for kw in seen), \
+            "breadth 가 히스토리 길이를 방어 안 함"
 
     def test_kr_sector_registry_is_wellformed(self):
         # 오타 하나로 한 섹터가 조용히 빠지면 분모만 줄고 화면은 멀쩡하다.
@@ -19374,7 +19464,7 @@ class TestMarketTimingBreadthVol20260726:
         from bot import market_timing as mt
         dead = "091170.KS"
 
-        def fake_fetch(ticker, days=120):
+        def fake_fetch(ticker, days=120, min_rows=None):
             if ticker == dead:
                 raise RuntimeError("boom")
             return [{"close": 100.0}] * 250
@@ -19387,7 +19477,7 @@ class TestMarketTimingBreadthVol20260726:
         assert result["sectors_missing"] == [mt._BREADTH_SECTORS["KR"][dead]]
         # 빈 응답(예외 아님)도 같은 경로로 잡혀야
         monkeypatch.setattr(mt, "fetch_index_history",
-                            lambda t, days=120: [] if t == dead
+                            lambda t, days=120, min_rows=None: [] if t == dead
                             else [{"close": 100.0}] * 250)
         assert mt.fetch_market_breadth("KR")["sectors_missing"] == [
             mt._BREADTH_SECTORS["KR"][dead]]

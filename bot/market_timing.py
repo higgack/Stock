@@ -221,29 +221,60 @@ def crypto_regime_score(btc_price: float | None, btc_sma50: float | None,
 
 
 # ── I/O 래퍼(fetch) ─────────────────────────────────────────────────────────
-def fetch_index_history(ticker: str, days: int = 120) -> list[dict]:
+def _payload_to_rows(p: dict | None, days: int) -> list[dict]:
+    """chart payload → [{date, close, high, low, volume}] 오름차순."""
+    if not p:
+        return []
+    times = p.get("times") or []
+    closes = p.get("close") or []
+    highs = p.get("high") or closes
+    lows = p.get("low") or closes
+    vols = p.get("volume") or []
+    n = min(len(times), len(closes))
+    out = []
+    for i in range(n):
+        out.append({"date": times[i], "close": closes[i],
+                    "high": highs[i] if i < len(highs) else closes[i],
+                    "low": lows[i] if i < len(lows) else closes[i],
+                    "volume": vols[i] if i < len(vols) else None})
+    return out[-days:]
+
+
+def fetch_index_history(ticker: str, days: int = 120,
+                        min_rows: int | None = None) -> list[dict]:
     """지수/ETF 히스토리 [{date, close, high, low, volume}] 오름차순(과거→
     최신) — bot.chart_data.fetch_chart_payload 재사용(yfinance, 무료).
-    실패 시 []."""
+    실패 시 [].
+
+    `min_rows`: 이만큼 안 오면 **네이버 일봉으로 재시도**한다. yfinance 가
+    일부 KR ETF 에 대해 **짧은 시계열을 '성공'으로** 돌려주는 사례가 실측됐다
+    (2026-08-16 KODEX 반도체·IT·철강·에너지화학이 1년 요청에 18행 — 같은
+    경로로 다른 9개는 243행 정상). `fetch_chart_payload` 의 네이버 폴백은
+    **빈 결과일 때만** 걸려서 이 절단을 못 잡는다. 200일 SMA 처럼 길이가
+    의미를 좌우하는 호출부는 min_rows 를 넘겨 방어할 것.
+
+    `days` → period 매핑에 '3y' 단계가 있다. 1년(≈250 거래일) 요청으로는
+    252일 DD 를 잘라 쓸 여유가 없어(월말 확정분은 앞쪽을 더 잘라낸다)
+    300일 초과 요청은 3년치를 받아 뒤에서 days 만큼 취한다."""
     try:
-        from bot.chart_data import fetch_chart_payload
-        period = "1y" if days > 60 else "3mo"
+        from bot.chart_data import _fetch_naver_daily, fetch_chart_payload
+        period = "3y" if days > 300 else "1y" if days > 60 else "3mo"
         p = fetch_chart_payload(ticker, interval="1d", period=period)
-        if not p:
-            return []
-        times = p.get("times") or []
-        closes = p.get("close") or []
-        highs = p.get("high") or closes
-        lows = p.get("low") or closes
-        vols = p.get("volume") or []
-        n = min(len(times), len(closes))
-        out = []
-        for i in range(n):
-            out.append({"date": times[i], "close": closes[i],
-                       "high": highs[i] if i < len(highs) else closes[i],
-                       "low": lows[i] if i < len(lows) else closes[i],
-                       "volume": vols[i] if i < len(vols) else None})
-        return out[-days:]
+        out = _payload_to_rows(p, days)
+        # `out` 이 비었으면 fetch_chart_payload 가 **이미** 네이버를 시도한
+        # 뒤다(그 폴백은 빈 결과에서 걸린다) — 여기서 또 부르면 10초 타임아웃
+        # HTTP 호출만 티커마다 중복된다. 절단(0<len<min_rows)일 때만 재시도.
+        if min_rows and 0 < len(out) < min_rows:
+            # 조용한 대체 금지 — 폴백을 탄 사실을 남긴다(이 파일 기존 규약).
+            alt = _payload_to_rows(_fetch_naver_daily(ticker, period), days)
+            if len(alt) > len(out):
+                log.info("market_timing: %s 히스토리 %d행(<%d) — 네이버 폴백 "
+                         "%d행으로 대체", ticker, len(out), min_rows, len(alt))
+                return alt
+            log.warning("market_timing: %s 히스토리 %d행 — min_rows %d 미만이고 "
+                        "네이버 폴백도 %d행(그대로 반환)",
+                        ticker, len(out), min_rows, len(alt))
+        return out
     except Exception as exc:
         log.debug("market_timing: fetch_index_history(%s) failed: %s", ticker, exc)
         return []
@@ -337,7 +368,7 @@ _BREADTH_SECTORS: dict[str, dict[str, str]] = {
         "102970.KS": "증권", "140700.KS": "보험", "091180.KS": "자동차",
         "117700.KS": "건설", "117680.KS": "철강", "117460.KS": "에너지화학",
         "102960.KS": "기계장비", "140710.KS": "운송", "266420.KS": "헬스케어",
-        "266360.KS": "미디어엔터",
+        "266360.KS": "K콘텐츠",
     },
 }
 # 카드 표본 라벨 — 시장마다 상품군이 다르다(SPDR vs KODEX).
@@ -406,7 +437,10 @@ def fetch_market_breadth(market: str = "US") -> dict:
     missing: list[str] = []
     for ticker, label in sectors.items():
         try:
-            hist = fetch_index_history(ticker, days=280)
+            # min_rows=200 — 200일 SMA 가 이 지표의 절반이라 짧은 시계열이
+            # 오면 조용히 200dma 분모에서만 빠진다(실측: yfinance 가 일부
+            # KODEX ETF 에 18행만 반환). 네이버 폴백으로 재시도한다.
+            hist = fetch_index_history(ticker, days=280, min_rows=200)
         except Exception as exc:
             log.debug("market_timing: breadth fetch failed for %s: %s", ticker, exc)
             hist = None

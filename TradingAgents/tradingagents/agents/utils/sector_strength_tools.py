@@ -85,8 +85,10 @@ _KR_INDUSTRY_OVERRIDES = [
     ("chemical", ("102710.KS", "화학 (KODEX 화학)")),
     ("battery", ("305720.KS", "2차전지 (KODEX 2차전지산업)")),
     ("electronic gaming", ("300950.KS", "게임 (KODEX 게임산업)")),
-    ("entertainment", ("266360.KS", "미디어 (KODEX 미디어&엔터)")),
-    ("broadcasting", ("266360.KS", "미디어 (KODEX 미디어&엔터)")),
+    # 2026-08-16 상품명 변경 확인(breadth_etf_probe 라이브 조회):
+    # KODEX 미디어&엔터 → **KODEX K콘텐츠**. 티커는 그대로.
+    ("entertainment", ("266360.KS", "K콘텐츠 (KODEX K콘텐츠)")),
+    ("broadcasting", ("266360.KS", "K콘텐츠 (KODEX K콘텐츠)")),
     ("airlines", ("140710.KS", "운송 (KODEX 운송)")),
     ("marine shipping", ("140710.KS", "운송 (KODEX 운송)")),
     ("trucking", ("140710.KS", "운송 (KODEX 운송)")),
