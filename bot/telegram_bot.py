@@ -1488,11 +1488,19 @@ def _build_usage_report() -> str:
         r.get("cost_usd", 0) for r in calls if r.get("subsystem") in ("cheongyak", "realestate"))
     month_cost_blog = sum(
         r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "blog")
+    # 실적분석(분기 인포그래픽, subsystem='quarterly_infographic') break out —
+    # 종목분석과 별개 surface 로 보고(사용자 2026-08-16). 대시보드 비용카드의
+    # '실적분석' 버킷과 동시갱신(CLAUDE.md 비용합산 규칙).
+    month_cost_quarterly = sum(
+        r.get("cost_usd", 0) for r in calls
+        if r.get("subsystem") == "quarterly_infographic")
     today_cost_analysis = (today_cost - today_cost_screener - today_cost_daily_byte
                            - sum(r.get("cost_usd", 0) for r in today_calls
-                                 if r.get("subsystem") in ("cheongyak", "realestate", "blog")))
+                                 if r.get("subsystem") in ("cheongyak", "realestate",
+                                                           "blog", "quarterly_infographic")))
     month_cost_analysis = (month_cost - month_cost_screener - month_cost_daily_byte
-                           - month_cost_realestate - month_cost_blog)
+                           - month_cost_realestate - month_cost_blog
+                           - month_cost_quarterly)
 
     # Standard View 비용 reader 제거 (2026-06-12) — SV 폐기(#148, 타이머
     # 전부 disable)로 신규 비용 0. 6월 초 trailing 분은 총합에서 제외
@@ -1576,6 +1584,7 @@ def _build_usage_report() -> str:
         "",
         "📐 <b>월간 subsystem 분포</b>",
         f"  • 분석:        {krw(month_cost_analysis)}",
+        f"  • 실적분석:          {krw(month_cost_quarterly)}",
         f"  • Bottleneck Screener: {krw(month_cost_screener)}  ← /screener_cost",
         f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
         f"  • 부동산:            {krw(month_cost_realestate)}  ← /realestate_cost",

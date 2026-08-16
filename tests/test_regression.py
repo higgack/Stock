@@ -12726,6 +12726,150 @@ class TestNaverCommodityCharts:
         assert main_body.index("lookup_cache") < main_body.index("serve_forever"), \
             "캐시 clear 가 serve_forever 이후 — startup 전 비워야"
 
+    def test_spac_band_is_usd_only(self):
+        # 사용자 2026-08-16 중국 신고저 리뷰: SPAC 신탁가 밴드(9.4~11.0,
+        # |pct|<1%)는 미국 $10 신탁가 전용인데 통화 구분 없이 적용돼
+        # CNY/JPY/TWD/HKD 정상 종목을 무차별 제거하고 있었다.
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        seg = src.split("def _spac_band", 1)[1].split("_split_artifact", 1)[0]
+        assert "_usd_priced" in seg, "SPAC 밴드에 통화 가드 없음"
+        assert '_usd_priced = tag in ("S&P500", "전미국", "US")' in src, \
+            "USD 표시 시장 판정이 tag 기반이 아님"
+
+    def test_highlow_scan_diagnostics_persisted(self):
+        # '진짜 0건' vs '스캔 전멸' 구분자 — 캐시에 굳는 진단 카운터.
+        # 배치가 통째 실패해도 화면이 똑같이 '결과 없음'이던 것(실수 #12).
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        for key in ('"universe"', '"scanned"', '"batch_fail"', '"stale_skipped"'):
+            assert key in src, f"진단 카운터 {key} 미기록"
+        # 예외 경로에서도 확정 — try/except 밖에서 out 에 써야 함
+        tail = src.split('log.warning("finviz: %s highlow 산출 실패', 1)[1]
+        assert 'out["scanned"] = scanned' in tail.split("_cache_write(cache_name", 1)[0], \
+            "예외 발생 시 진단 카운터가 캐시에 안 남음"
+        # 페이지는 전 시장 공용 헬퍼를 써야 함(문구 복붙 금지 — UNIVERSAL)
+        from bot.highlow_render import empty_highlow_body
+        fail = empty_highlow_body({"universe": 500, "scanned": 0, "batch_fail": 5})
+        zero = empty_highlow_body({"universe": 500, "scanned": 498, "batch_fail": 0})
+        old_cache = empty_highlow_body({})
+        assert "스캔 실패" in fail and "0종목" in fail and "실패 배치 5개" in fail
+        assert "스캔 실패" not in zero and "498종목 처리" in zero
+        assert "스캔 실패" not in old_cache      # 옛 캐시(카운터 없음) graceful
+        assert "&lt;b&gt;" in empty_highlow_body({"universe": 1, "scanned": 0},
+                                                 "<b>x</b>")   # prog escape
+        for f in ("bot/intl_pages.py", "bot/tw_pages.py"):
+            assert "empty_highlow_body" in open(f, encoding="utf-8").read(), \
+                f"{f} 가 공용 빈결과 헬퍼를 안 씀"
+
+    def test_highlow_universe_cap_per_market(self):
+        # 옛 코드는 CN 과 JP/HK 가 HIGHLOW_UNIVERSE_CAP 하나를 공유해 독립
+        # 조정이 불가능했다(사용자 2026-08-16 리뷰). 시장별 override 추가.
+        import os as _os
+        import bot.intl_highlow as ih
+        _saved = {k: _os.environ.get(k) for k in
+                  ("HIGHLOW_UNIVERSE_CAP", "HIGHLOW_UNIVERSE_CAP_CN_A")}
+        try:
+            for k in _saved:
+                _os.environ.pop(k, None)
+            assert ih._universe_cap("CN_A", 500) == 500
+            assert ih._universe_cap("JP", 5000) == 5000
+            _os.environ["HIGHLOW_UNIVERSE_CAP"] = "1200"
+            assert ih._universe_cap("CN_A", 500) == 1200   # 공용 env 유효
+            _os.environ["HIGHLOW_UNIVERSE_CAP_CN_A"] = "2000"
+            assert ih._universe_cap("CN_A", 500) == 2000   # 시장별이 우선
+            assert ih._universe_cap("JP", 5000) == 1200    # JP 는 무오염
+            _os.environ["HIGHLOW_UNIVERSE_CAP_CN_A"] = "abc"
+            assert ih._universe_cap("CN_A", 500) == 1200   # 잘못된 값 → 폴백
+            _os.environ.pop("HIGHLOW_UNIVERSE_CAP")
+            _os.environ["HIGHLOW_UNIVERSE_CAP_CN_A"] = "0"
+            assert ih._universe_cap("CN_A", 500) == 500    # 0 → 기본값
+        finally:
+            for k, v in _saved.items():
+                if v is None:
+                    _os.environ.pop(k, None)
+                else:
+                    _os.environ[k] = v
+        # 옛 소스와 어긋난 CN 부제 라벨 제거(설명 out-of-sync = 버그).
+        # 주석의 이력 서술은 허용 — 실제 렌더 문자열만 검사.
+        page = open("bot/intl_pages.py", encoding="utf-8").read()
+        assert 'CSI300+500(대형·중형)" if market == "CN_A"' not in page, \
+            "CN 부제가 옛 유니버스(CSI300+500)를 계속 표기"
+
+    def test_quarterly_cost_reported_on_all_surfaces(self):
+        # 사용자 2026-08-16: 실적분석 비용도 종목분석처럼 '할때마다 얼마' +
+        # 보고루트(대시보드 비용카드 · /usage) 동일 표기. 비용 surface 추가 시
+        # _compute_stats + cmd_usage 동시갱신 규칙(CLAUDE.md).
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert "sum_subsystem_cost_krw" in srv and '"cost_krw": run_cost_krw' in srv, \
+            "/api/quarterly 가 이번 실행 비용을 안 돌려줌"
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"quarterly_infographic": "실적분석"' in db, "비용카드 subsystem 매핑 누락"
+        assert '"실적분석": 0.0' in db, "비용카드 버킷 초기화 누락"
+        assert '이번 실행 비용' in db, "분기실적 탭에 실행별 비용 표기 없음"
+        tg = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "month_cost_quarterly" in tg and "• 실적분석:" in tg, \
+            "/usage 월간 subsystem 분포에 실적분석 누락"
+        assert '"blog", "quarterly_infographic")' in tg, \
+            "실적분석이 '분석' 버킷에서 차감되지 않아 이중계상"
+        # 일반화 헬퍼가 기존 종목분석 집계를 그대로 재사용하는지(회귀)
+        from bot.usage_tracker import sum_analysis_cost_krw, sum_subsystem_cost_krw
+        assert callable(sum_analysis_cost_krw) and callable(sum_subsystem_cost_krw)
+        assert sum_subsystem_cost_krw("quarterly_infographic", 9e18) == 0
+
+    def test_financials_pane_quarterly_profit_chart(self):
+        # 사용자 2026-08-16: 재무제표 탭 차트가 연간만 있어 분기(5분기) 추가.
+        # yfinance income_statement 가 소스라 전 시장 동일 적용(시장 게이트 없음).
+        import re as _re
+        from bot.dashboard import _render_stock_info_html
+        _is = {
+            "annual": [{"period": f"{y}-12-31", "Total Revenue": 100 * (y - 2020),
+                        "Operating Income": 20 * (y - 2020),
+                        "Net Income": 10 * (y - 2020)}
+                       for y in (2022, 2023, 2024, 2025)],
+            "quarterly": [{"period": p, "Total Revenue": r,
+                           "Operating Income": r * 0.2, "Net Income": r * 0.1}
+                          for p, r in [("2025-06-30", 90), ("2025-09-30", 95),
+                                       ("2025-12-31", 120), ("2026-03-31", 100),
+                                       ("2026-06-30", 110)]],
+        }
+        rec = {"ticker": "AAPL",
+               "stock_info": {"financials": {"income_statement": _is}}}
+        h = _render_stock_info_html(rec)["panes"]["si-financials"]
+        assert "수익성 추이 — 분기 (최근 5분기)" in h, "분기 수익성 차트 없음"
+        assert h.index("분기 (최근 5분기)") < h.index("수익성 추이 — 연간"), \
+            "분기 차트가 연간 위에 와야 함(사용자 요청)"
+        for lab in ("25.2Q", "25.3Q", "25.4Q", "26.1Q", "26.2Q"):
+            assert lab in h, f"분기 라벨 {lab} 누락"
+        # 성장률 표는 최신 위 — 분기는 QoQ, 연간은 YoY
+        qtab = h.split("QoQ 성장률", 1)[1].split("</table>", 1)[0]
+        assert _re.findall(r"<tr><td>(\d\d\.\dQ)</td>", qtab) == \
+            ["26.2Q", "26.1Q", "25.4Q", "25.3Q"]
+        ytab = h.split("YoY 성장률", 1)[1].split("</table>", 1)[0]
+        assert _re.findall(r"<tr><td>(\d{4})</td>", ytab) == ["2025", "2024", "2023"]
+        # 분기 데이터 없는 종목은 연간만(회귀 — 기존 동작 보존)
+        h2 = _render_stock_info_html(
+            {"ticker": "X", "stock_info": {"financials": {
+                "income_statement": {"annual": _is["annual"]}}}}
+        )["panes"]["si-financials"]
+        assert "수익성 추이 — 연간" in h2 and "분기 (최근 5분기)" not in h2
+        # 시장 게이트 없음(universal) — 소스에 is_kr/is_us 조건이 붙지 않아야
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        seg = src.split("def _profit_trend", 1)[1].split("_is_stmt = ", 1)[0]
+        assert "is_kr" not in seg and "is_us" not in seg, \
+            "수익성 추이 차트에 시장 게이트 — UNIVERSAL CHANGES ONLY 위반"
+
+    def test_lookup_detail_swr_cache_code_mtime_guard(self):
+        # 사용자 2026-08-16: "분기실적 순서 최신-왼쪽" 코드가 맞는데 화면 미반영
+        # (스크린샷 탭바에 분기실적 탭 자체가 없음 = 배포 이전 HTML). startup-clear
+        # 만으로는 dashboard 재시작이 누락/실패한 경우를 못 막음 → /lookup 에 이미
+        # 있던 code-mtime 가드를 /api/lookup_detail SWR 경로에도 동일 적용(실수 #11).
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        body = src.split("detail_{safe}{_sfx}_v2.html", 1)[1].split("def _serve_search_error", 1)[0]
+        assert "_code_mtime" in body, "lookup_detail SWR 경로에 code-mtime 가드 없음"
+        assert "getmtime" in body, "dashboard.py mtime 비교 누락"
+        # 가드가 캐시 hit 분기보다 먼저 계산돼야(hit 판정에 반영)
+        assert body.index("_code_mtime") < body.index("_LOOKUP_DETAIL_STALE_SEC"), \
+            "code-mtime 가드가 캐시 hit 판정 이후 — 무효화가 적용되지 않음"
+
     def test_macro_commodities_wired_to_naver(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버
@@ -14556,7 +14700,9 @@ class TestAsiaTier2_20260616:
         # 2026-06-16: JP/HK 52w 캡을 env HIGHLOW_UNIVERSE_CAP(기본 5000=사실상
         # 전종목)로 전환 — 옛 하드코딩 ~900·'주요 ~900종목' 라벨 제거(전종목 커버).
         ih = open("bot/intl_highlow.py", encoding="utf-8").read()
-        assert "HIGHLOW_UNIVERSE_CAP" in ih and '"5000"' in ih
+        # 2026-08-16: 캡 조회가 _universe_cap(시장별 override 지원)으로 이동 —
+        # JP/HK 기본 5000 · env 조정 가능이라는 계약은 그대로.
+        assert "HIGHLOW_UNIVERSE_CAP" in ih and "_universe_cap(market, 5000)" in ih
         assert "_cap_by_liquidity(full, 900" not in ih   # 하드코딩 900 제거
         ip = open("bot/intl_pages.py", encoding="utf-8").read()
         assert "주요 ~900종목" not in ip                  # full 커버라 옛 캡 라벨 제거

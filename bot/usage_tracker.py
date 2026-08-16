@@ -241,6 +241,21 @@ def sum_analysis_cost_krw(since_ts: float, until_ts: float | None = None) -> int
     run's calls (ts < since_ts) never overlap this window. Best-effort —
     returns 0 on any read error so a cost-stamp failure can't break the
     archive write."""
+    return sum_subsystem_cost_krw(_ANALYSIS_COST_SUBSYSTEMS, since_ts, until_ts)
+
+
+def sum_subsystem_cost_krw(subsystems, since_ts: float,
+                           until_ts: float | None = None) -> int:
+    """KRW cost of one run of ``subsystems`` over ``[since_ts, until_ts]``.
+
+    `sum_analysis_cost_krw` 의 일반화 — 종목분석 외 surface(실적분석 등)도
+    "이번 실행 얼마" 를 같은 방식·같은 sink(usage.jsonl)로 보고하기 위해
+    subsystem 태그만 갈아끼워 재사용한다(사용자 2026-08-16 '실적분석도
+    비용 종목분석처럼 보고루트 따라서'). 전 surface 공용 — 시장/기능
+    특정 로직 없음. Best-effort: 읽기 실패 시 0."""
+    if isinstance(subsystems, (str, type(None))):
+        subsystems = (subsystems,)
+    wanted = set(subsystems)
     if until_ts is None:
         until_ts = time.time()
     if not USAGE_LOG.exists():
@@ -261,11 +276,11 @@ def sum_analysis_cost_krw(since_ts: float, until_ts: float | None = None) -> int
                 ts = rec.get("ts", 0)
                 if ts < since_ts or ts > until_ts:
                     continue
-                if rec.get("subsystem") not in _ANALYSIS_COST_SUBSYSTEMS:
+                if rec.get("subsystem") not in wanted:
                     continue
                 total_usd += rec.get("cost_usd", 0) or 0
     except Exception as exc:
-        log.warning("usage_tracker: sum_analysis_cost_krw failed: %s", exc)
+        log.warning("usage_tracker: sum_subsystem_cost_krw failed: %s", exc)
         return 0
     return int(round(total_usd * KRW_PER_USD))
 

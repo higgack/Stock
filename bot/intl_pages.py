@@ -60,9 +60,10 @@ def _render_intl_highlow52(market: str) -> str:
                     f'{_html.escape(prog)}…<br>주요종목 1년 주봉 스캔. '
                     '잠시 후 새로고침해 주세요.</div>')
         else:
-            body = ('<div class="empty">52주 신고가·신저가 결과가 없습니다'
-                    f'{_html.escape(prog)}.<br>이번 스캔에서는 기준을 넘은 종목이 '
-                    '없었습니다.</div>')
+            # "진짜 0건" vs "스캔 전멸" 구분 — 전 시장 공용 헬퍼(같은 스캐너를
+            # 쓰는 US/KR/JP/TW/CN_A/HK 가 동일 문구, 실수 #12 가시성).
+            from bot.highlow_render import empty_highlow_body
+            body = empty_highlow_body(data, prog)
     else:
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
@@ -113,9 +114,11 @@ def _render_intl_highlow52(market: str) -> str:
     else:
         _ind_lbl = "업종=yfinance · "
     _hrs = market_hours_label(market)
-    # CN_A 는 CSI 300+500(대형+중형 ~800, yfinance 커버 양호) — 사용자 2026-06-17.
-    # 전 A주 소형주는 yfinance 1년 커버 빈약해 제외. AKShare 미설치/실패 시 peer 폴백.
-    _scope = " · CSI300+500(대형·중형)" if market == "CN_A" else ""
+    # 2026-08-15 에 CN_A 유니버스가 CSI300+500 → AKShare A주 전종목(시총 상위
+    # HIGHLOW_UNIVERSE_CAP 캡)으로 바뀌었는데 이 라벨만 옛 소스를 그대로
+    # 표기하고 있었다(설명 out-of-sync = 버그, CLAUDE.md). src 라벨이 이미
+    # 실제 종목수를 담고 있으므로 중복 scope 는 제거.
+    _scope = ""
     # 국가명 중복 제거: 페이지 제목이 이미 flag(예 '🇯🇵 일본')를 보여주고 src 도
     # 유니버스 라벨('일본 주요종목'…)에 국가명을 포함 → 부제에 flag 를 또 붙이면
     # '🇯🇵 일본 일본 주요종목' 처럼 중복. 부제는 src 부터 시작(제목이 flag 담당).

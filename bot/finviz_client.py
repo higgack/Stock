@@ -1116,7 +1116,17 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
 
     2026-06-10 VM surfaced: 단일 yf.download 통째 실패 시 빈 결과
     → 120종목 배치 분할 + 배치별 try/except + 진단 로그."""
-    out: dict = {"high": [], "low": [], "ts": _now_label(), "source": source}
+    out: dict = {"high": [], "low": [], "ts": _now_label(), "source": source,
+                 # 진단 카운터 — 캐시에 함께 굳혀 "진짜 0건"과 "스캔 전멸"을
+                 # 구분한다. 이게 없으면 배치가 통째로 실패해도(아래 배치
+                 # try/except 는 continue) 화면엔 똑같이 '결과 없음'으로 보여
+                 # 원인 추적이 불가능하다(실수 #12 silent-fail 금지 — 사용자
+                 # 2026-08-16 '중국은 정말 0개야?').
+                 "universe": len(universe or []), "scanned": 0,
+                 "stale_skipped": 0, "batch_fail": 0}
+    scanned = 0
+    stale_skipped = 0    # 신선도 가드로 제외된 정지/휴면 종목 수 (가시화)
+    batch_fail = 0       # 다운로드 실패·빈응답 배치 수 (스캔 전멸 판별자)
     if yf_paused():
         log.info("finviz: %s highlow — yfinance 정지(YF_PAUSE) → 스캔 skip, 캐시 유지", tag)
         return _cached(cache_name, ttl=86400) or out
@@ -1129,8 +1139,6 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         log.info("finviz: %s highlow — universe %d, 배치 다운로드 시작",
                  tag, len(universe))
         _CHUNK = 120
-        scanned = 0
-        stale_skipped = 0    # 신선도 가드로 제외된 정지/휴면 종목 수 (가시화)
         recent_ref = None    # (최신 세션일, {최근 2세션}) — 전 배치 공용 신선도 기준
         _seen: set = set()   # yfinance 가 데이터를 반환한 티커 (벌크 누락 재시도 판별)
         _baseline: dict = {}  # {tk:{h52,l52,name}} 오늘 제외 52주 고저 — 네이버 live 비교용
@@ -1222,9 +1230,11 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
             except Exception as exc:
                 log.warning("finviz: %s 배치 %d 다운로드 실패: %s",
                             tag, ci // _CHUNK + 1, exc)
+                batch_fail += 1
                 continue
             if df is None or df.empty:
                 log.warning("finviz: %s 배치 %d 빈 응답", tag, ci // _CHUNK + 1)
+                batch_fail += 1
                 continue
             time.sleep(0.2)   # 대형 universe 벌크 사이 호흡 (yfinance 보호)
             _proc(df, chunk)
@@ -1255,8 +1265,18 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # 신저가에도 적용(평평한 신탁가는 52주 저가 1% 이내이기도 함 —
         # BDCI/CEPS 실사례). 진짜 소형주가 $10 부근에서 <1% 움직이며
         # 신고/신저 찍는 희귀 케이스를 잃는 비용 < SPAC 무더기 노이즈.
+        # ⚠️ 이 밴드는 **USD 표시가격 전용**이다 — 9.4~11.0 은 미국 SPAC 신탁가
+        # $10 을 겨냥한 숫자인데, 통화 구분 없이 적용하면 그 숫자대에 정상
+        # 종목이 밀집한 시장을 무차별로 지운다(CN_A 9.4~11 CNY, JP 円, TW 元,
+        # HK 港元 모두 해당 — 조용히 신저가를 갱신하는 종목이 정확히 |pct|<1%
+        # 패턴이라 오발화가 크다). 시장 게이트가 아니라 **통화 도메인 가드**라
+        # UNIVERSAL CHANGES ONLY 예외 아님 — 비-USD 시장엔 SPAC 신탁가 개념
+        # 자체가 없다(사용자 2026-08-16 중국 신고저 리뷰에서 발견).
+        _usd_priced = tag in ("S&P500", "전미국", "US")
+
         def _spac_band(r: dict) -> bool:
-            return (9.4 <= (r.get("price") or 0) <= 11.0
+            return (_usd_priced
+                    and 9.4 <= (r.get("price") or 0) <= 11.0
                     and abs(r.get("pct") or 0) < 1.0)
         out["high"] = [r for r in out["high"] if not _spac_band(r)]
         out["low"] = [r for r in out["low"] if not _spac_band(r)]
@@ -1312,9 +1332,10 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # 사용자 2026-06-14). 시총·업종·거래량 채워진 상태라 정확. 비-US 는 무발화.
         out["high"] = prune_non_stock(out["high"])
         out["low"] = prune_non_stock(out["low"])
-        log.info("finviz: %s highlow — scanned %d → high %d / low %d "
-                 "(mcap %d, 신선도제외 %d)", tag, scanned, len(out["high"]),
-                 len(out["low"]), len(mcaps), stale_skipped)
+        log.info("finviz: %s highlow — scanned %d/%d → high %d / low %d "
+                 "(mcap %d, 신선도제외 %d, 배치실패 %d)", tag, scanned,
+                 len(universe), len(out["high"]), len(out["low"]), len(mcaps),
+                 stale_skipped, batch_fail)
         # 네이버 live 비교용 baseline 저장(오늘 제외 52주 고저, 전 스캔 유니버스).
         # JP/CN_A/HK intl_highlow live 경로가 현재가와 비교(EOD 1회 산출 → 장중 저부하).
         if _baseline:
@@ -1324,6 +1345,11 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                 log.warning("finviz: %s baseline 저장 실패: %s", tag, _bexc)
     except Exception as exc:
         log.warning("finviz: %s highlow 산출 실패: %s", tag, exc)
+        out["error"] = str(exc)[:200]
+    # 진단 카운터 확정 — 예외로 중단된 경우에도 거기까지의 수치를 남긴다.
+    out["scanned"] = scanned
+    out["stale_skipped"] = stale_skipped
+    out["batch_fail"] = batch_fail
     # 0건(오늘 신고/신저 없음)이라도 **항상 기록** — 캐시를 스캔 성공 여부의
     # durable 증거로 쓴다(2026-08-16, CN_A '산출 중' 영구고정 fix). 옛 코드는
     # high/low 가 둘 다 비면 캐시를 아예 안 써서, 그 상태가 fetch_intl_highlow
