@@ -38,6 +38,8 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from trade.archive_template import back_nav_html
+from trade.archive_template import card_html
 
 # 헤더 = "종목명 (티커) 일본 수출 Update" **한 줄** → 다음 줄 "NN년 N월".
 # ⚠️ 세 마커를 따로 찾으면 안 된다 — 이 파서는 리스너의 관련성 필터이자
@@ -243,10 +245,11 @@ h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
 .kr-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
 .kr-card[open]{border-color:var(--accent)}
-.kr-sum{list-style:none;cursor:pointer;padding:13px 16px;
+.kr-sum{list-style:none;padding:13px 16px;
   display:flex;flex-direction:column;gap:7px}
 .kr-sum::-webkit-details-marker{display:none}
-.kr-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
+details.kr-card > .kr-sum{cursor:pointer}
+details.kr-card > .kr-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
 .kr-card[open] .kr-sum::after{content:"▾ 접기"}
 .kr-hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .kr-item{font-weight:680;font-size:15px;color:var(--item)}
@@ -306,7 +309,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     name = _html.escape(r.get("stock_name") or r.get("ticker") or "")
     tk = _html.escape(r.get("ticker") or "")
     mo = _html.escape(r.get("month") or "")
-    summary = [f'<summary class="kr-sum"><div class="kr-hd">'
+    summary = [f'<div class="kr-hd">'
                f'<span class="kr-item">{name}</span>'
                f'<span class="kr-code">{tk}</span>'
                f'<span class="kr-mo">📅 {mo}</span></div>']
@@ -318,7 +321,6 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     if r.get("note"):
         # 합산 금지 같은 해석 경고 — 카드에 그대로 노출한다(요약·의역 없음).
         summary.append(f'<div class="kr-lead">⚠️ {_html.escape(r["note"])}</div>')
-    summary.append("</summary>")
     chart = ""
     media = r.get("chart_media") or ""
     if media:
@@ -326,8 +328,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
                else media_prefix + media)
         chart = (f'<div class="kr-chart"><img loading="lazy" '
                  f'src="{_html.escape(src)}" alt=""></div>')
-    detail = f'<div class="kr-detail">{chart}{_hist_table(hist)}</div>'
-    return f'<details class="kr-card">{"".join(summary)}{detail}</details>'
+    return card_html("kr", summary, [chart, _hist_table(hist)])
 
 
 _HEAD = ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
@@ -343,7 +344,7 @@ _SUB = ("Badonions 일본 수출 캡션을 <b>종목별</b>로 정리한 별도 
 
 def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> str:
     rows = list_jp_stock(conn)
-    nav = "<div class='nav'><a href='index.html'>← 대시보드</a></div>"
+    nav = f"{back_nav_html()}"
     if not rows:
         # 빈 상태에서도 페이지를 만들어 nav 404 를 막는다(기존 모듈 규약).
         return (_HEAD + "<div class='wrap'>" + nav +

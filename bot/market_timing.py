@@ -508,16 +508,25 @@ def vol_history(rows: list) -> dict:
     return out
 
 
-# VKOSPI(코스피200 변동성지수) — KRX 산출. yfinance 에 표준 티커가 없어
-# 네이버 국내지수 차트 API 를 쓴다. ⚠️ 엔드포인트를 샌드박스에서 실측할 수
-# 없어(네이버 차단) **후보 2개를 순서대로** 시도하고, 어느 것이 통했는지
-# 로그로 남긴다. 둘 다 실패하면 값 없음 → 카드 자체를 렌더하지 않는다
-# (없는 지수를 0 이나 VIX 값으로 채우지 않는다).
-_VKOSPI_CANDIDATES = ("VKOSPI", "VKOSPI200")
+# VKOSPI(코스피200 변동성지수) — KRX 산출.
+#
+# ⚠️ 네이버는 **원리적으로 불가**다. VM 프로브(2026-08-16)가 확정했다:
+#   /chart/domestic/index/VKOSPI/day → 200 이지만 본문 `[]`(빈 배열)
+#   /index/VKOSPI/basic              → 409 {"code":"StockConflict",
+#                                      "message":"지원하지 않는 지수입니다"}
+#   siseJson VKOSPI                  → 헤더 행만, 데이터 0
+#   (대조군 KOSPI 는 같은 URL 로 정상 데이터 → URL 형태가 아니라 **지수 미지원**)
+# 그래서 네이버 후보 경로는 폐기하고, 메인 대시보드가 이미 쓰고 있는
+# **KIS 경로를 그대로 재사용**한다(사용자 2026-08-16 "메인대시보드보면 적용돼
+# 있어, 이거 참조해" · 화면 각주 '출처: KIS').
+#
+# 지수코드는 `naver_sector_client._KIS_VKOSPI_IDX_CODE` 를 **import 해서** 쓴다.
+# 복제하면 KIS 가 코드를 바꾼 날 메인 대시보드와 이 보드가 갈라진다.
+_VKOSPI_DAYS = 400          # 1년(252거래일) 창을 만들려면 200 으로는 모자라다
 # 변동성지수 타당 범위 — VKOSPI 는 연율화 %(역대 저점 ~10, 2008/2020 급등기
-# ~70~90). 코스피 지수(2,000~3,000)나 코스피200(300~400)이 잘못 잡히면 이
-# 범위 밖이라 걸린다. ⚠️ 엔드포인트를 실측 못 한 채로 넣은 후보라, 200 응답을
-# 그대로 믿으면 **가격지수를 VKOSPI 라고 표시**하게 된다(2026-08-16 독립 리뷰).
+# ~70~90). 코스피(2,000~3,000)나 코스피200(300~400)이 잘못 잡히면 범위 밖이라
+# 걸린다. **소스가 KIS 로 바뀌어도 유지한다** — 지수코드 오타·KIS 코드체계
+# 변경 시 '가격지수를 변동성지수로 표시'하는 실패모드는 그대로다.
 _VKOSPI_MIN, _VKOSPI_MAX = 3.0, 200.0
 _VKOSPI_MIN_ROWS = 30
 
@@ -531,45 +540,31 @@ def _vkospi_plausible(rows: list) -> bool:
     return all(_VKOSPI_MIN <= c <= _VKOSPI_MAX for c in closes)
 
 
-def _fetch_vkospi_rows(days: int = 400) -> list:
-    """[{date, close}] 오름차순. 실패 시 [] (graceful)."""
-    try:
-        import requests
+def fetch_vkospi_rows(days: int = _VKOSPI_DAYS) -> list:
+    """KIS 국내지수 일봉 → [{date, close}] 오름차순. 실패 시 [] (graceful).
 
-        from bot.chart_data import (_df_to_daily_payload, _parse_naver_daily,
-                                    _period_start_end, _rows_to_daily_df)
-        from bot.naver_quote import _HDRS
+    `kis_client.get_domestic_index_daily` 가 1시간 디스크 캐시를 갖고 있어
+    6시간 주기 재생성에서 실제 호출은 회당 1번뿐이다. 크리덴셜
+    (KIS_APP_KEY/KIS_APP_SECRET)이 없으면 None 을 돌려주고, 그러면 카드가
+    통째로 생략된다(0 이나 VIX 값으로 채우지 않는다)."""
+    try:
+        from bot.kis_client import get_kis
+        from bot.naver_sector_client import _KIS_VKOSPI_IDX_CODE
+        rows = get_kis().get_domestic_index_daily(_KIS_VKOSPI_IDX_CODE,
+                                                  days=days) or []
     except Exception as exc:
-        log.debug("market_timing: VKOSPI import 실패: %s", exc)
+        log.debug("market_timing: VKOSPI(KIS) 실패: %s", exc)
         return []
-    start, end = _period_start_end("3y")
-    params = {"startDateTime": start.strftime("%Y%m%d") + "0000",
-              "endDateTime": end.strftime("%Y%m%d") + "0000"}
-    for code in _VKOSPI_CANDIDATES:
-        url = f"https://api.stock.naver.com/chart/domestic/index/{code}/day"
-        try:
-            r = requests.get(url, headers=_HDRS, params=params, timeout=10)
-            if r.status_code != 200:
-                continue
-            df = _rows_to_daily_df(_parse_naver_daily(r.json()))
-            payload = _df_to_daily_payload(df, code, "3y")
-            rows = _payload_to_rows(payload, days)
-            if not rows:
-                continue
-            if not _vkospi_plausible(rows):
-                _c = [r.get("close") for r in rows[-3:]]
-                log.warning("market_timing: %s 응답이 변동성지수 범위 밖 — "
-                            "다른 지수일 가능성(최근값 %s, %d행). 채택 안 함.",
-                            code, _c, len(rows))
-                continue
-            log.info("market_timing: VKOSPI 소스 확인 — %s (%d행)",
-                     code, len(rows))
-            return rows
-        except Exception as exc:
-            log.debug("market_timing: VKOSPI %s 실패: %s", code, exc)
-    log.info("market_timing: VKOSPI 조회 실패 — 카드 생략(후보: %s)",
-             ", ".join(_VKOSPI_CANDIDATES))
-    return []
+    if not rows:
+        log.info("market_timing: VKOSPI 데이터 없음 — 카드 생략"
+                 "(KIS 크리덴셜 또는 지수코드 확인)")
+        return []
+    if not _vkospi_plausible(rows):
+        log.warning("market_timing: VKOSPI 응답이 변동성지수 범위 밖 — 다른 "
+                    "지수일 가능성(최근값 %s, %d행). 채택 안 함.",
+                    [r.get("close") for r in rows[-3:]], len(rows))
+        return []
+    return rows
 
 
 def fetch_volatility_snapshot() -> dict:
@@ -594,10 +589,10 @@ def fetch_volatility_snapshot() -> dict:
     except Exception as exc:
         log.debug("market_timing: VIX fetch failed: %s", exc)
     try:
-        vk = _fetch_vkospi_rows()
+        vk = fetch_vkospi_rows()
         if vk:
             out["vkospi"] = {"value": vk[-1]["close"], "date": vk[-1]["date"],
-                             "source": "네이버 국내지수",
+                             "source": "KIS",
                              "history": vol_history(vk)}
     except Exception as exc:
         log.debug("market_timing: VKOSPI fetch failed: %s", exc)

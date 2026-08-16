@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from trade.archive_template import FieldMap, Stat, render_archive_page
+from trade.archive_template import back_link_html
 
 log = logging.getLogger("trade.report_archive")
 
@@ -85,7 +86,7 @@ def _standalone(title: str, inner_html: str) -> str:
         # _OUR_ROOT_PAGES 로 가로채 NOAH 종목분석으로 보내므로 '../'(디렉토리)로
         # 트레이드 루트를 직접 가리킨다(사용자 2026-06-18 '한국수출입으로 가야지').
         "<div class='rb-back'><a href='../report_archive.html'>← AI 보고서 아카이브</a>"
-        " · <a href='../'>대시보드</a></div>"
+        f" · {back_link_html(1, '수출입 대시보드')}</div>"
         f"{inner_html}</div></body></html>"
     )
 
@@ -188,7 +189,7 @@ def regenerate(out_path: Path | None = None) -> Path:
         field_map=_FM,
         # './' = trade 대시보드 루트(/trade/). 'index.html' 은 NOAH 프록시가
         # 가로채 NOAH 로 보내므로 디렉토리로 직접 가리킨다(사용자 2026-06-18).
-        nav_html='<a href="./">← 대시보드</a>',
+        nav_html=back_link_html(),
         stats=stats,
         empty_message="아직 저장된 AI 보고서가 없습니다. '🏢 기업 보고서' 또는 "
                       "'🗂️ 전체 보고서'의 'AI 보고서 (유료)'를 실행하면 여기에 "

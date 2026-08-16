@@ -127,6 +127,63 @@ class Stat:
 _KST = timezone(timedelta(hours=9))
 
 
+def card_html(prefix: str, summary_parts: list[str],
+              detail_parts: list[str]) -> str:
+    """`<details>` 카드 조립 — **본문이 비면 `<details>` 자체를 만들지 않는다**.
+
+    badonion 카드들의 펼침 본문은 (차트 이미지 · 월별 히스토리 표) 둘뿐인데,
+    새로 시작한 소스는 **모든 카드가 1개월치**라 표가 생략되고(2개월 미만이면
+    `_hist_table` 이 "" 반환), 이미지 없는 텍스트 캡션이면 차트도 없다. 그러면
+    빈 `<div class="{p}-detail">` 만 남아 눌러도 아무것도 안 나오는 토글이 된다
+    (사용자 2026-08-16 SanDisk 카드 — 특정 종목 문제가 아니라 페이지 전체다).
+
+    `jp2`·`tw` 는 `if any(detail)` 로 빈 div 는 막았지만 `<details>` 와
+    "▸ 펼치기" 안내는 그대로 남아 증상이 같다. 여기서는 본문이 없으면 평면
+    `<div>` 로 내려 **누를 것이 아예 없게** 한다. CSS 의 펼치기 화살표는
+    `details.{p}-card > .{p}-sum::after` 로 스코프돼 평면 카드엔 안 붙는다.
+
+    `summary_parts` 는 `<summary>` 안에 들어갈 조각들(여는/닫는 태그 제외)."""
+    body = "".join(d for d in detail_parts if d)
+    inner = "".join(summary_parts)
+    if not body:
+        return (f'<div class="{prefix}-card">'
+                f'<div class="{prefix}-sum">{inner}</div></div>')
+    return (f'<details class="{prefix}-card">'
+            f'<summary class="{prefix}-sum">{inner}</summary>'
+            f'<div class="{prefix}-detail">{body}</div></details>')
+
+def back_nav_html(depth: int = 0) -> str:
+    """하위 페이지 → 수출입 대시보드 back-link. `depth` = 하위 디렉터리 깊이
+    (트레이드 루트의 형제 페이지는 0, 동결 아카이브처럼 한 단계 아래면 1).
+
+    ⚠️ **`index.html` 을 가리키면 안 된다.** NOAH 프록시가
+    `bot/dashboard_server.py` 의 `_OUR_ROOT_PAGES` 로 `/trade/...` 요청의
+    leaf 가 우리 루트 페이지명이면 밖으로 302 시킨다(원래는 "홈 눌렀는데
+    수출입" 오작동을 막으려던 장치). `index.html` 도 그 목록에 있어서,
+    수출입 하위 페이지가 `href='index.html'` 을 쓰면 **수출입이 아니라
+    종목분석 메인으로 튕긴다**(사용자 2026-08-16 재보고).
+
+    2026-06-28 에 같은 버그를 파일별로 하나씩 고쳤는데, 그 뒤 추가된 모듈
+    (kr_stock_exports·jp_stock_exports·us_imports)이 옛 패턴을 복사해 되살아났다.
+    forward nav 는 `badonion_sources.nav_html()` 로 일원화돼 있으니 back-link 도
+    한 곳으로 모은다 — 파일별로 고치면 또 갈라진다.
+
+    여기(archive_template)에 두는 이유: `badonion_sources` 는 소스 모듈들을
+    import 하므로 그쪽에 두면 **순환 import** 가 된다. 이 모듈은 trade 내부
+    의존이 0인 leaf 라 누구나 가져다 쓸 수 있다."""
+    return f'<div class="nav">{back_link_html(depth)}</div>'
+
+
+def back_link_html(depth: int = 0, label: str = "← 수출입 대시보드",
+                   style: str = "") -> str:
+    """back-link 앵커만(`<a>`). nav 컨테이너를 직접 조립하는 호출부용 —
+    `render_archive_page(nav_html=...)` 처럼 `<div class="nav">` 를 템플릿이
+    이미 씌워주는 경우, 아카이브 색인 링크와 나란히 놓는 경우 등.
+    URL 규칙은 `back_nav_html` 과 **같은 한 줄**이라 갈라질 수 없다."""
+    st = f' style="{style}"' if style else ""
+    return f'<a href="{"../" * depth or "./"}"{st}>{label}</a>'
+
+
 def _month_kr(ym: str) -> str:
     """'YYYY-MM' → 'YYYY년 M월' (Korean). Fallback to raw on parse error."""
     try:

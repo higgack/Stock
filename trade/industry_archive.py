@@ -29,6 +29,7 @@ from pathlib import Path
 from trade import industry, llm_insights
 from trade.archive_template import FieldMap, Stat, render_archive_page
 from trade.dashboard import _CSS as _DASH_CSS
+from trade.archive_template import back_link_html
 
 _KST = timezone(timedelta(hours=9))
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
@@ -157,8 +158,10 @@ def render_standalone(inner_html: str, *, latest: str,
 _ARCHIVE_NAV = (
     "<a href=\"../industry_archive.html\" style=\"color:var(--accent);"
     "text-decoration:none\">← 아카이브 색인</a> · "
-    "<a href=\"../\" style=\"color:var(--accent);text-decoration:none\">"
-    "대시보드</a>"
+    # 형제 링크와 **같은 인라인 스타일** — 동결 페이지 CSS 에 bare `a` 규칙이
+    # 없어 스타일을 빼면 기본 파랑·밑줄로 렌더돼 다크테마에서 안 읽힌다.
+    + back_link_html(1, "수출입 대시보드",
+                     "color:var(--accent);text-decoration:none")
 )
 
 
@@ -303,7 +306,7 @@ def regenerate(out_path: Path | None = None) -> Path:
         subtitle="각 월 카드 → '전체 화면 보기'로 그 시점 산업트렌드 전체를 그대로 "
                  "다시 봅니다 · 관세청 확정치 기준 · 월/일 접기·검색·테마 토글",
         field_map=_FM,
-        nav_html='<a href="./">← 대시보드</a>',   # './'=trade 루트(index.html 은 NOAH 가로챔)
+        nav_html=back_link_html(),
         stats=[Stat(value=str(len(runs)), label="동결 스냅샷"),
                Stat(value=str(months), label="확정월")],
         empty_message="아직 동결된 스냅샷이 없습니다. 다음 확정월(매월 ~15일) "

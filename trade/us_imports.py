@@ -11,6 +11,8 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from trade.archive_template import back_nav_html
+from trade.archive_template import card_html
 
 _MARKER_RE = re.compile(r"\d+\s*월\s*수입\s*미국")
 _RE_ITEM = re.compile(r"▶️\s*(.+)")
@@ -155,10 +157,11 @@ h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.014em}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
 .us-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
 .us-card[open]{border-color:var(--accent)}
-.us-sum{list-style:none;cursor:pointer;padding:13px 16px;
+.us-sum{list-style:none;padding:13px 16px;
   display:flex;flex-direction:column;gap:7px}
 .us-sum::-webkit-details-marker{display:none}
-.us-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
+details.us-card > .us-sum{cursor:pointer}
+details.us-card > .us-sum::after{content:"▸ 펼치기(차트·월별)";color:var(--muted);font-size:11px;margin-top:2px}
 .us-card[open] .us-sum::after{content:"▾ 접기"}
 .us-hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .us-item{font-weight:680;font-size:15px;color:var(--item)}
@@ -220,7 +223,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     mo = _html.escape(r.get("month") or "")
     co = (r.get("companies") or "").strip()
     co_html = (f'<div class="us-co">🏭 {_html.escape(co)}</div>' if co else "")
-    summary = [f'<summary class="us-sum"><div class="us-hd">'
+    summary = [f'<div class="us-hd">'
                f'<span class="us-item">{item}</span>'
                f'<span class="us-mo">📅 {mo}</span></div>']
     ev = r.get("import_value_musd")
@@ -230,15 +233,13 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
             f'<span class="us-mval">${ev:,.1f}M</span>{_delta_str(r.get("import_yoy"), r.get("import_mom"))}'
             f'</div>'
         )
-    summary.append("</summary>")
     chart = ""
     media = r.get("chart_media") or ""
     if media:
         src = media if media.startswith(("http://", "https://", "/")) else media_prefix + media
         chart = f'<div class="us-chart"><img loading="lazy" src="{_html.escape(src)}" alt=""></div>'
     htbl = _hist_table(hist)
-    detail = f'<div class="us-detail">{chart}{co_html}{htbl}</div>'
-    return f'<details class="us-card">{"".join(summary)}{detail}</details>'
+    return card_html("us", summary, [chart, co_html, htbl])
 
 
 def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> str:
@@ -249,7 +250,10 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             "<title>미국 수입 데이터</title><style>" + _CSS + "</style></head><body>"
             + _THEME_JS +
-            "<div class='wrap'><h1>🇺🇸 미국 수입 데이터</h1>"
+            # 빈 상태에도 back-link 필수 — 없으면 이 페이지에 들어온 사람이
+            # 수출입 대시보드로 돌아갈 방법이 없다(2026-08-16 독립 조사).
+            f"<div class='wrap'>{back_nav_html()}"
+            "<h1>🇺🇸 미국 수입 데이터</h1>"
             "<div class='empty'>아직 수집된 미국 수입 데이터(나쁜양파)가 없습니다.</div>"
             "</div></body></html>"
         )
@@ -261,7 +265,7 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<title>미국 수입 데이터</title><style>" + _CSS + "</style></head><body>"
         + _THEME_JS +
-        "<div class='wrap'><div class='nav'><a href='index.html'>← 대시보드</a></div>"
+        f"<div class='wrap'>{back_nav_html()}"
         "<h1>🇺🇸 미국 수입 데이터</h1><div class='sub'>Badonions 미국 수입 캡션을 월별로 정리한 별도 페이지</div>"
         "<div class='grid'>" + "".join(cards) + "</div></div></body></html>"
     )
