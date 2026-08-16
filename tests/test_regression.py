@@ -5419,6 +5419,236 @@ class TestDartRoicAndQuarterlyPane:
             "financials_q 적재 시 순서를 바꾸면 차트가 거꾸로 그려짐"
 
 
+class TestQuarterlyInfographic20260819:
+    """분기 실적분석 인포그래픽(2·3·4단계) — DART 공시 원문 근거 성장동력/
+    리스크 요약(bot.dart_growth_risk) + 스코어카드 PNG(bot.quarterly_
+    infographic) + 종목상세 '분기실적' 탭/API 배선. 핵심 계약: 숫자는 전부
+    DART 실측 주입(렌더러가 만들지 않음), LLM 실패 시 정성 카드 섹션을
+    통째로 생략(빈 카드 fabrication 금지), 증권사 리포트 인용 금지."""
+
+    # ── 2단계: 공시 원문 섹션 추출 ────────────────────────────────
+    def test_extract_narrative_picks_body_not_toc(self):
+        from bot.dart_growth_risk import extract_business_narrative as ex
+        toc = "I. 회사의 개요 II. 사업의 내용 III. 재무에 관한 사항 "
+        body = ("II. 사업의 내용 " + "당사는 반도체 장비를 제조합니다. " * 20
+                + "III. 재무에 관한 사항 연결재무제표")
+        r = ex(toc + body)
+        assert r and "반도체 장비" in r
+        assert "재무에 관한 사항" not in r, "종료 마커 이후까지 포함됨"
+        assert "회사의 개요" not in r, "목차(짧은 매칭)를 본문으로 오인"
+
+    def test_extract_narrative_none_when_only_toc_or_missing(self):
+        from bot.dart_growth_risk import extract_business_narrative as ex
+        assert ex("I. 회사의 개요 II. 사업의 내용 III. 재무에 관한 사항") is None
+        assert ex("관계없는 텍스트") is None
+        assert ex("") is None and ex(None) is None
+
+    def test_extract_narrative_absorbs_spacing_and_caps_length(self):
+        from bot.dart_growth_risk import extract_business_narrative as ex
+        spaced = "사 업 의 내 용 " + "가나다라마바사아자차 " * 20 + "재 무 에 관 한 사 항"
+        assert ex(spaced) is not None, "공백 변형 목차를 못 잡음"
+        r = ex("사업의 내용 " + "가" * 9000, max_chars=500)
+        assert r is not None and len(r) <= 500
+
+    def test_summarize_growth_risk_data_offline_without_key(self, monkeypatch):
+        import bot.dart_growth_risk as gr
+        monkeypatch.setattr(gr, "cached_summary", lambda t, r: None)
+        monkeypatch.setattr("bot.genai_factory.effective_key", lambda: "")
+        out = gr.summarize_growth_risk("005930.KS", "R1", "본문", {})
+        assert out["ok"] is False and "DATA OFFLINE" in out["error"]
+
+    def test_summarize_growth_risk_no_narrative_is_offline_not_fabricated(self):
+        from bot.dart_growth_risk import summarize_growth_risk
+        out = summarize_growth_risk("005930.KS", "R1", "", {})
+        assert out["ok"] is False, "원문 없이 요약을 만들어내면 안 됨"
+
+    def test_clean_list_caps_and_drops_placeholders(self):
+        from bot.dart_growth_risk import _clean_list
+        assert _clean_list(["a", "b", "c", "d", "e"]) == ["a", "b", "c", "d"]
+        assert _clean_list(["a", "", "  ", "none", "N/A", "b"]) == ["a", "b"]
+        assert _clean_list(None) == [] and _clean_list("x") == []
+
+    def test_prompt_forbids_broker_citation_and_number_invention(self):
+        from bot.dart_growth_risk import _prompt
+        p = _prompt("005930.KS", "삼성전자", "본문", {"매출": 1})
+        assert "증권사 리포트를 인용한 것처럼 쓰지 마라" in p
+        assert "지어내지 마라" in p and "빈 배열" in p
+
+    def test_build_growth_risk_costs_nothing_without_run_llm(self, monkeypatch):
+        # 기본(run_llm=False)은 캐시가 없으면 LLM 호출 없이 not_run 반환.
+        import bot.dart_growth_risk as gr
+        called = {"n": 0}
+        monkeypatch.setattr(gr, "summarize_growth_risk",
+                            lambda *a, **k: called.__setitem__("n", 1))
+        monkeypatch.setattr(gr, "cached_summary", lambda t, r: None)
+
+        class _D:
+            api_key = "K"
+            def find_periodic_report(self, code, y, rc):
+                return {"rcept_no": "20260814003699"}
+
+        out = gr.build_growth_risk(_D(), "005930.KS", 2026, "11012", {})
+        assert out["ok"] is False and out["error"] == "not_run"
+        assert called["n"] == 0, "run_llm=False 인데 LLM 을 호출함(무단 과금)"
+
+    def test_build_growth_risk_serves_cache_without_llm(self, monkeypatch):
+        import bot.dart_growth_risk as gr
+        monkeypatch.setattr(gr, "cached_summary",
+                            lambda t, r: {"ok": True, "headline": "h"})
+
+        class _D:
+            api_key = "K"
+            def find_periodic_report(self, code, y, rc):
+                return {"rcept_no": "R1"}
+
+        out = gr.build_growth_risk(_D(), "005930.KS", 2026, "11012", {})
+        assert out["ok"] is True and out["cached"] is True
+
+    # ── 3단계: 인포그래픽 ─────────────────────────────────────────
+    def test_cache_path_changes_with_quarter(self):
+        from bot.quarterly_infographic import cache_path
+        a = cache_path("005930.KS", 2026, "11012")
+        b = cache_path("005930.KS", 2026, "11014")
+        assert a != b, "새 분기인데 캐시 파일명이 같으면 갱신이 안 됨"
+        assert a.name.endswith(".png")
+
+    def test_render_returns_none_without_font(self, monkeypatch):
+        # 폰트 없으면 None → 호출부가 표 폴백(daily_byte 와 동일 규약).
+        import bot.quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_font_ok", lambda: False)
+        assert qi.render_infographic({"quarters": [{}]}, "/tmp/x.png") is None
+
+    def test_ttm_requires_four_quarters(self):
+        from bot.quarterly_infographic import _ttm
+        q = [{"financials": {"매출": 10, "영업이익": 1, "당기순이익": 1}}] * 3
+        assert _ttm(q) == {}, "4분기 미만인데 TTM 을 만들면 틀린 값"
+        assert _ttm(q + q)["매출"] == 40      # 최근 4개 합
+
+    def test_chg_guards_zero_and_negative_base(self):
+        from bot.quarterly_infographic import _chg
+        assert abs(_chg(120, 100) - 20) < 1e-9
+        assert _chg(100, 0) is None          # 분모 0
+        assert _chg(100, -50) is None        # 적자→흑자: % 무의미
+        assert _chg(None, 100) is None and _chg(100, None) is None
+
+    def test_table_fallback_is_newest_first(self):
+        from bot.quarterly_infographic import table_html
+        p = {"quarters": [
+            {"label": "25.4Q", "financials": {"매출": 100e8}, "ratios": {}},
+            {"label": "26.1Q", "financials": {"매출": 200e8}, "ratios": {}}]}
+        h = table_html(p)
+        assert h.index("26.1Q") < h.index("25.4Q")
+
+    def test_build_payload_is_kr_only(self):
+        from bot.quarterly_infographic import build_payload
+        assert build_payload("AAPL") is None
+        assert build_payload("7203.T") is None
+
+    # ── 4단계: 대시보드/서버 배선 ─────────────────────────────────
+    def test_quarterly_tab_and_pane_wired_kr_only(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'data-pane="si-quarterly"' in src, "분기실적 탭 버튼 누락"
+        assert "quarterly_pane" in src and "_QUARTERLY_JS" in src
+        assert "{quarterly_tab}" in src, "탭 바에 미삽입"
+        # KR 전용 게이트 — is_kr 조건부로 생성돼야 한다.
+        tab_def = src[src.index("quarterly_tab = ("):][:300]
+        assert "if is_kr else" in tab_def
+
+    def test_quarterly_api_route_and_cost_gate(self):
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"/api/quarterly"' in src and "def _handle_quarterly_api" in src
+        h = src[src.index("def _handle_quarterly_api"):]
+        h = h[:h.index("def _handle_technical_api")]
+        assert 'run = qs.get("run", ["0"])[0] == "1"' in h, "LLM 비용 게이트 누락"
+        assert "run_llm=run" in h
+        assert '.endswith((".KS", ".KQ"))' in h, "KR 전용 가드 누락"
+
+    # ── 독립 code-review 발견 결함 수정(2026-08-19) ──────────────
+    def test_cache_key_includes_date_so_price_values_dont_freeze(self):
+        # 이미지에 시총/PER/PSR(시세 기반)이 구워지므로 분기 키만 쓰면 다음
+        # 분기까지 얼어붙는다 → 날짜 포함으로 하루 1회 재렌더.
+        from bot.quarterly_infographic import cache_path
+        a = cache_path("005930.KS", 2026, "11012", "2026-08-19")
+        b = cache_path("005930.KS", 2026, "11012", "2026-08-20")
+        assert a != b, "같은 분기라도 날짜가 다르면 파일명이 달라야 함"
+
+    def test_footer_labels_asof_for_price_based_values(self):
+        # CLAUDE.md 실수기록 10-b — 데이터 위젯은 적용시각·소스 라벨 의무.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "기준(KST)" in src and "asof" in src
+
+    def test_missing_quarter_is_gap_not_zero_bar(self):
+        # 결측을 0 막대로 그리면 '실적 0'이라는 없는 사실을 그린 것("환각 0"
+        # 푸터와 모순). NaN 이어야 막대가 아예 안 그려진다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "(v or 0) / div" not in src, "결측이 0 막대로 그려짐(재발)"
+        assert 'nan = float("nan")' in src
+
+    def test_header_uses_actual_fs_div_not_hardcoded(self):
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert '· 연결", size=9' not in src, "헤더에 '연결' 하드코딩(별도와 모순)"
+        assert 'fs_kr = "연결" if last.get("fs_div") == "CFS" else "별도"' in src
+
+    def test_company_fallback_uses_snapshot_key_long_name(self):
+        # 스냅샷은 long_name(스네이크) 키 — longName 은 절대 안 잡힌다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert 'snap.get("long_name")' in src
+        assert 'snap.get("longName")' not in src
+
+    def test_render_returns_none_on_draw_exception(self, monkeypatch):
+        # 그리기 예외가 새면 API 가 500 → 무료 표 폴백조차 못 준다.
+        import bot.quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_render_locked",
+                            lambda p, o: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert qi.render_infographic({"quarters": [{}]}, "/tmp/x.png") is None
+
+    def test_render_is_serialized_by_lock(self):
+        import bot.quarterly_infographic as qi
+        import threading
+        assert isinstance(qi._RENDER_LOCK, type(threading.Lock()))
+
+    def test_image_url_prefixed_with_base_in_js(self):
+        # 상세 페이지는 하위 경로라 base() 없이는 404.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        js = src[src.index("_QUARTERLY_JS = r\"\"\""):]
+        js = js[:js.index("\"\"\"", 30)]
+        assert "base()+j.image_url" in js, "이미지 URL 에 base() 누락 → 404"
+
+    def test_js_reenables_button_on_failure(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        js = src[src.index("_QUARTERLY_JS = r\"\"\""):]
+        js = js[:js.index("\"\"\"", 30)]
+        assert "ob.disabled=false" in js, "실패 시 버튼이 '생성 중…'으로 영구 잠김"
+
+    def test_js_renders_growth_risk_html_when_image_missing(self):
+        # 폰트 없는 호스트에서 유료 생성했는데 아무것도 안 보이면 안 됨.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        js = src[src.index("_QUARTERLY_JS = r\"\"\""):]
+        js = js[:js.index("\"\"\"", 30)]
+        assert "bullets(" in js and "gr.growth_drivers" in js
+
+    def test_api_image_url_has_cache_buster(self):
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert "?v={int(Path(img).stat().st_mtime)}" in src, \
+            "재렌더 후에도 브라우저가 옛 이미지를 보여줌"
+
+    def test_api_skips_cold_snapshot_on_free_path(self):
+        # cold collect_stock_snapshot 은 10~30초 — 무료 탭-오픈을 막으면 안 됨.
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        h = src[src.index("def _handle_quarterly_api"):]
+        h = h[:h.index("def _handle_technical_api")]
+        assert "_SNAP_CACHE" in h and "warm or run" in h, \
+            "무료 경로에서 cold 스냅샷 수집(10~30초) 위험"
+
+    def test_help_text_documents_quarterly_tab_and_cost(self):
+        import re
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        t = re.search(r'_HELP_TEXT = """(.*?)"""', src, re.S).group(1)
+        assert "분기실적" in t, "새 대시보드 표면이 Help 에 미등록"
+        assert "과금" in t, "AI 버튼 과금 사실이 Help 에 없음"
+        assert len(t.encode("utf-16-le")) // 2 < 4096
+
+
 class TestKrNewsQuery:
     """KR 뉴스 검색어 = 한글 브랜드 (NAVER 0-news 2026-06-08).
 
