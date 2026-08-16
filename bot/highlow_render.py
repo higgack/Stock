@@ -654,6 +654,32 @@ def clean_source(src: str) -> str:
     return (src or "").replace("52주 고저 1% 근접", "당일 52주 고저 갱신")
 
 
+def empty_highlow_body(data: dict, prog: str = "") -> str:
+    """빈 신고저 결과 화면 — "진짜 0건"과 "스캔 전멸"을 구분한 공용 문구.
+
+    `finviz_client._compute_highlow_from` 이 캐시에 굳혀 둔 진단 카운터
+    (universe/scanned/batch_fail)를 읽는다. 그게 없으면 배치가 통째로
+    실패해도 화면은 '기준을 넘은 종목이 없었습니다'로 똑같이 보여, 소스
+    장애가 정상 결과로 위장된다(실수 #12 — 사용자 2026-08-16 '중국은 정말
+    신고가·신저가가 없는거야?'). 전 시장 공용 — US/KR/JP/TW/CN_A/HK 가 같은
+    스캐너를 쓰므로 페이지별 문구 분기 금지. 옛 캐시(카운터 없음)는 기존
+    문구 그대로(graceful)."""
+    scanned = data.get("scanned")
+    uni = data.get("universe")
+    prog_esc = _html.escape(prog or "")
+    if scanned == 0 and uni:
+        return ('<div class="empty">⚠️ 52주 신고가·신저가 스캔 실패'
+                f'{prog_esc}.<br>대상 {uni:,}종목 중 <b>0종목</b>만 처리됨'
+                f'(실패 배치 {data.get("batch_fail") or 0}개) — 데이터 소스 '
+                "응답 문제이지 '해당 종목 없음'이 아닙니다. 다음 스캔에서 "
+                '자동 재시도합니다.</div>')
+    detail = (f'<br>대상 {uni:,}종목 중 {scanned:,}종목 처리'
+              if uni and scanned else '')
+    return ('<div class="empty">52주 신고가·신저가 결과가 없습니다'
+            f'{prog_esc}.<br>이번 스캔에서는 기준을 넘은 종목이 '
+            f'없었습니다.{detail}</div>')
+
+
 def sort_by_mcap(items: list) -> list:
     """시총 내림차순(없으면 뒤로) — 사용자 '시총순위대로 표시'. 52주 신고저용."""
     return sorted(items, key=lambda it: (it.get("mcap") is None,

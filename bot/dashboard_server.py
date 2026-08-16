@@ -844,8 +844,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 log.debug("quarterly_api: snapshot skipped — %s", exc)
             from bot import quarterly_infographic as _qi
+            _t0 = time.time()
             res = _qi.get_or_render(ticker, snap, run_llm=run)
+            # 이번 실행 비용 — 종목분석(archive 의 cost_krw 스탬프)과 동일
+            # 방식·동일 sink(usage.jsonl). 무료 경로(run=0)는 LLM 콜이 없어
+            # 0 이 정상. 사용자 2026-08-16 '할때마다 얼마인지'.
+            run_cost_krw = 0
+            try:
+                from bot.usage_tracker import sum_subsystem_cost_krw
+                run_cost_krw = sum_subsystem_cost_krw(
+                    "quarterly_infographic", _t0)
+            except Exception as exc:
+                log.debug("quarterly_api: cost stamp skipped — %s", exc)
             if not res.get("ok"):
+                res = dict(res)
+                res["cost_krw"] = run_cost_krw
                 self._reply_json(200, res)
                 return
             payload = res.get("payload") or {}
@@ -864,6 +877,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "growth_risk": payload.get("growth_risk") or {"ok": False},
                 "latest": (payload.get("quarters") or [{}])[-1].get("label"),
                 "cached": res.get("cached"),
+                "cost_krw": run_cost_krw,
             }
             self._reply_json(200, out)
         except Exception as exc:
@@ -1704,10 +1718,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             _sfx = "_core" if not enrich else ""
             cache_f = cache_dir / f"detail_{safe}{_sfx}_v2.html"
 
+            # 코드 배포 시 자동 무효화 — 캐시가 dashboard.py 보다 오래되면 옛
+            # 마크업(사라진 탭·옛 정렬)을 최대 24h 서빙하게 됨. /lookup 핸들러엔
+            # 이미 있던 가드를 SWR 경로에도 동일 적용(사용자 2026-08-16 분기실적
+            # 정렬 미반영 — 코드는 맞는데 캐시가 옛 HTML 서빙).
+            try:
+                import bot.dashboard as _dmod
+                _code_mtime = os.path.getmtime(_dmod.__file__)
+            except Exception:
+                _code_mtime = 0.0
+
             age = None
             if cache_f.exists():
                 try:
-                    age = time.time() - cache_f.stat().st_mtime
+                    _st = cache_f.stat()
+                    age = time.time() - _st.st_mtime
+                    if _st.st_mtime <= _code_mtime:
+                        age = None  # 배포 이전 캐시 → 무효(동기 재렌더)
                 except Exception:
                     age = None
 

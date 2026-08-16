@@ -46,6 +46,29 @@ _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
 
+def _universe_cap(market: str, default: int) -> int:
+    """52주 스캔 유니버스 상한 — 시장별 override 우선.
+
+    옛 코드는 전 시장이 `HIGHLOW_UNIVERSE_CAP` 하나를 공유하면서 기본값만
+    달랐다(JP/HK 5000 · CN_A 500). 그래서 CN 커버리지를 넓히려고 env 를
+    올리면 JP/HK 가 같이 흔들리고, JP/HK 를 조이면 CN 이 따라 조여져
+    **시장별 독립 조정이 불가능**했다(사용자 2026-08-16 중국 신고저 리뷰).
+    `HIGHLOW_UNIVERSE_CAP_<MARKET>`(예 `HIGHLOW_UNIVERSE_CAP_CN_A`)가 있으면
+    그것, 없으면 공용 env, 없으면 시장별 기본값. 전 시장 동일 규칙."""
+    for key in (f"HIGHLOW_UNIVERSE_CAP_{(market or '').upper()}",
+                "HIGHLOW_UNIVERSE_CAP"):
+        raw = (os.getenv(key) or "").strip()
+        if raw:
+            try:
+                val = int(raw)
+            except ValueError:
+                log.warning("intl highlow: %s=%r 정수 아님 — 무시", key, raw)
+                continue
+            if val > 0:
+                return val
+    return default
+
+
 def _cap_by_liquidity(full: list[str], cap: int, market: str) -> list[str]:
     """전종목을 네이버 worldstock 시총 상위 N 으로 캡 — yfinance 1y 스캔 부하↓.
     HK 코드(5자리 '00700')↔yfinance(4자리 '0700')·JP 4자리는 선행 0 제거 정수로
@@ -106,7 +129,7 @@ def _universe(market: str) -> tuple[list[str], dict]:
                 # 도 #546 영숫자 fix 로 공식 유니버스 3733 에 포함) → 공식 소스 단독이
                 # 정답. '신규종목 누락 방지'는 _jp_pick 의 일반 규칙(4자 영숫자, 형식 무관)
                 # + 라이브 공식목록 + 벌크 누락 재시도(_compute_highlow_from)로 보장.
-                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+                _cap = _universe_cap(market, 5000)
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, market)
                 return full, {t: t for t in full}
@@ -124,7 +147,7 @@ def _universe(market: str) -> tuple[list[str], dict]:
             uni_map = list_cn_a_universe() or {}
             full = list(uni_map.keys())
             if len(full) > 100:
-                _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "500"))
+                _cap = _universe_cap(market, 500)
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, market)
                 return full, {t: (uni_map.get(t) or t) for t in full}

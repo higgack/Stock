@@ -446,7 +446,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # surfaces where the total bill is coming from. Screener Pro calls
     # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
     # — Standard View 폐기 #148 + 소스 삭제.)
-    _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
+    _sub_keys = {"분석": 0.0, "실적분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
                  "부동산": 0.0, "블로그": 0.0, "관계후보": 0.0,
                  "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
@@ -465,7 +465,10 @@ def _compute_stats(records: list[dict]) -> dict:
         _subsys = r.get("subsystem")
         sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
                 "cheongyak": "부동산", "realestate": "부동산",
-                "blog": "블로그"}.get(_subsys, "분석"))
+                "blog": "블로그",
+                # 실적분석(분기 인포그래픽) — 종목분석과 별개 surface 로
+                # 분리집계(사용자 2026-08-16 '종목분석처럼 보고루트 따라서').
+                "quarterly_infographic": "실적분석"}.get(_subsys, "분석"))
         if rec_day.startswith(month_prefix):
             month_cost_usd += cost
             m = r.get("model") or "unknown"
@@ -684,7 +687,8 @@ def _render_stats_panel(stats: dict) -> str:
     # Per-subsystem breakdown. Surface only buckets with non-zero
     # this-month cost — keeps the sub-label compact. (SV 제거 2026-06-12.)
     sub_parts: list[str] = []
-    for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
+    for key, label in [("분석", "분석"), ("실적분석", "실적분석"),
+                       ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
                        ("부동산", "부동산"), ("블로그", "블로그"),
                        ("관계후보", "관계후보"), ("수출입", "수출입")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
@@ -5065,6 +5069,12 @@ _QUARTERLY_JS = r"""
        + '<span style="font-size:11px;color:var(--fg-soft);margin-left:8px">'
        + 'DART 공시 원문 근거 요약 · 분기당 1회만 과금</span></div>';
     }
+    // 이번 실행 비용 — 종목분석 상세의 cost_krw 스탬프와 동일 표기.
+    // 0원(무료 경로·캐시 재사용)도 명시해 "얼마 썼나"가 항상 보이게 한다.
+    h+='<div style="margin-top:8px;font-size:11px;color:var(--fg-soft)">'
+     + '💰 이번 실행 비용: <b>₩'+Number(j.cost_krw||0).toLocaleString()+'</b>'
+     + (j.cost_krw?'':' (무과금 — DART 숫자·캐시)')
+     + ' · 누적 비용은 메인 대시보드 비용 카드 / <code>/usage</code> 의 «실적분석» 항목</div>';
     if(box)box.innerHTML=h;
     var btn=document.getElementById('si-q-run');
     if(btn)btn.addEventListener('click',function(){
@@ -7105,45 +7115,51 @@ def _render_stock_info_html(rec: dict) -> str:
         cf_html = _fin_table(fins.get("cash_flow", {}), cf_items, "현금흐름표")
 
         # Revenue / Operating / Net Income bar chart (inline SVG)
-        chart_svg = ""
-        is_annual = fins.get("income_statement", {}).get("annual", [])
-        if is_annual and len(is_annual) >= 2:
-            # 야후 annual 정렬이 종목마다 달라(최신우선/과거우선 혼재) → 순서 가정
-            # 제거: period(연도)로 명시 정렬 후 최근 4개. 차트=오름차순(좌→우 시간순),
-            # YoY 표=내림차순(최신 위, 아래 sort). blind reversed 가 일부 종목서 거꾸로
-            # 나오던 것 차단(사용자 2026-06-17 AMAT YoY 최신 아래로). 정렬 전 [:4] 가
-            # 과거 4개를 자르던 위험도 해소(이제 정렬 후 최근 4개).
-            _annual_sorted = sorted(is_annual, key=lambda r: str(r.get("period", "")))
+        # 연간·분기 공용 렌더러 — 데이터 소스가 yfinance income_statement 로
+        # 동일하므로 전 시장(US/KR/JP/TW/CN_A/HK) 동일 적용(시장 게이트 없음).
+        def _profit_trend(rows: list, n: int, label_fn, title: str,
+                          growth_title: str, growth_col: str) -> str:
+            if not rows or len(rows) < 2:
+                return ""
+            # 야후 정렬이 종목마다 달라(최신우선/과거우선 혼재) → period 로 명시
+            # 정렬 후 최근 n 개. 차트=오름차순(좌→우 시간순), 성장률 표=내림차순
+            # (최신 위). blind reversed 가 일부 종목서 거꾸로 나오던 것 차단
+            # (사용자 2026-06-17 AMAT YoY 최신 아래로). 정렬 전 슬라이스가 과거
+            # 구간을 자르던 위험도 해소(이제 정렬 후 최근 n 개).
+            _sorted = sorted(rows, key=lambda r: str(r.get("period", "")))
             chart_items = []
-            for r in _annual_sorted[-4:]:
+            for r in _sorted[-n:]:
+                _raw = str(r.get("period", "?"))
                 chart_items.append({
-                    "period": r.get("period", "?")[:4],
+                    "period": label_fn(_raw),
+                    "sort": _raw,
                     "revenue": r.get("Total Revenue", 0) or 0,
                     "op_income": r.get("Operating Income", 0) or 0,
                     "net_income": r.get("Net Income", 0) or 0,
                 })
-            if any(c["revenue"] for c in chart_items):
-                max_val = max(abs(c["revenue"]) for c in chart_items) or 1
-                bar_w = 180 // len(chart_items)
-                svg_w = bar_w * len(chart_items) * 3 + 120
-                bars = ""
-                labels = ""
-                legend = ('<text x="10" y="14" font-size="11" fill="#999">● <tspan fill="#42a5f5">매출</tspan>'
-                          ' ● <tspan fill="#66bb6a">영업이익</tspan>'
-                          ' ● <tspan fill="#ffa726">순이익</tspan></text>')
-                for i, c in enumerate(chart_items):
-                    x_base = 40 + i * (bar_w * 3 + 16)
-                    for j, (val, color) in enumerate([
-                        (c["revenue"], "#42a5f5"),
-                        (c["op_income"], "#66bb6a"),
-                        (c["net_income"], "#ffa726"),
-                    ]):
-                        h = max(abs(val) / max_val * 120, 2)
-                        y = 150 - h if val >= 0 else 150
-                        bars += f'<rect x="{x_base + j * bar_w}" y="{y}" width="{bar_w - 2}" height="{h}" fill="{color}" rx="2"/>\n'
-                    labels += f'<text x="{x_base + bar_w}" y="170" font-size="11" fill="#999" text-anchor="middle">{c["period"]}</text>\n'
-                chart_svg = f"""<div class="si-section" style="margin-top:12px">
-        <div class="si-section-title">수익성 추이</div>
+            if not any(c["revenue"] for c in chart_items):
+                return ""
+            max_val = max(abs(c["revenue"]) for c in chart_items) or 1
+            bar_w = 180 // len(chart_items)
+            svg_w = bar_w * len(chart_items) * 3 + 120
+            bars = ""
+            labels = ""
+            legend = ('<text x="10" y="14" font-size="11" fill="#999">● <tspan fill="#42a5f5">매출</tspan>'
+                      ' ● <tspan fill="#66bb6a">영업이익</tspan>'
+                      ' ● <tspan fill="#ffa726">순이익</tspan></text>')
+            for i, c in enumerate(chart_items):
+                x_base = 40 + i * (bar_w * 3 + 16)
+                for j, (val, color) in enumerate([
+                    (c["revenue"], "#42a5f5"),
+                    (c["op_income"], "#66bb6a"),
+                    (c["net_income"], "#ffa726"),
+                ]):
+                    h = max(abs(val) / max_val * 120, 2)
+                    y = 150 - h if val >= 0 else 150
+                    bars += f'<rect x="{x_base + j * bar_w}" y="{y}" width="{bar_w - 2}" height="{h}" fill="{color}" rx="2"/>\n'
+                labels += f'<text x="{x_base + bar_w}" y="170" font-size="11" fill="#999" text-anchor="middle">{esc(c["period"])}</text>\n'
+            out = f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">{esc(title)}</div>
         <svg width="{svg_w}" height="185" style="display:block;margin:auto">
           {legend}
           <line x1="38" y1="150" x2="{svg_w - 10}" y2="150" stroke="#555" stroke-width="1"/>
@@ -7152,34 +7168,52 @@ def _render_stock_info_html(rec: dict) -> str:
         </svg>
       </div>"""
 
-                # YoY growth rates — 최신 연도가 위로 (사용자 2026-06-17 '최신이
-                # 위쪽'). 차트(수익성 추이)는 시간순 좌→우 유지, 표만 내림차순.
-                _grows = []
-                for i in range(1, len(chart_items)):
-                    prev = chart_items[i - 1]
-                    cur = chart_items[i]
-                    period = cur["period"]
-                    cells = ""
-                    for key in ("revenue", "op_income", "net_income"):
-                        p = prev[key]
-                        c = cur[key]
-                        if p and p != 0:
-                            g = (c - p) / abs(p) * 100
-                            color = "#26a69a" if g >= 0 else "#e2574c"
-                            sign = "+" if g >= 0 else ""
-                            cells += f'<td class="num" style="color:{color}">{sign}{g:.1f}%</td>'
-                        else:
-                            cells += '<td class="num">—</td>'
-                    _grows.append((period, f"<tr><td>{period}</td>{cells}</tr>"))
-                # 최신 연도 위로 — period(연도) 기준 내림차순(blind reverse 아님,
-                # 입력 순서 무관 → 종목마다 야후 정렬 달라도 항상 최신 top).
-                _grows.sort(key=lambda x: x[0], reverse=True)
-                growth_rows = "\n".join(row for _, row in _grows)
-                if growth_rows:
-                    chart_svg += f"""<div class="si-section" style="margin-top:12px">
-        <div class="si-section-title">YoY 성장률</div>
-        <table class="si-table"><thead><tr><th>연도</th><th class="num">매출</th><th class="num">영업이익</th><th class="num">순이익</th></tr></thead><tbody>{growth_rows}</tbody></table>
+            _grows = []
+            for i in range(1, len(chart_items)):
+                prev = chart_items[i - 1]
+                cur = chart_items[i]
+                cells = ""
+                for key in ("revenue", "op_income", "net_income"):
+                    p = prev[key]
+                    c = cur[key]
+                    if p and p != 0:
+                        g = (c - p) / abs(p) * 100
+                        color = "#26a69a" if g >= 0 else "#e2574c"
+                        sign = "+" if g >= 0 else ""
+                        cells += f'<td class="num" style="color:{color}">{sign}{g:.1f}%</td>'
+                    else:
+                        cells += '<td class="num">—</td>'
+                _grows.append((cur["sort"],
+                               f'<tr><td>{esc(cur["period"])}</td>{cells}</tr>'))
+            # 최신 위로 — 원본 period 기준 내림차순(blind reverse 아님, 입력
+            # 순서 무관 → 종목마다 야후 정렬 달라도 항상 최신 top).
+            _grows.sort(key=lambda x: x[0], reverse=True)
+            growth_rows = "\n".join(row for _, row in _grows)
+            if growth_rows:
+                out += f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">{esc(growth_title)}</div>
+        <table class="si-table"><thead><tr><th>{esc(growth_col)}</th><th class="num">매출</th><th class="num">영업이익</th><th class="num">순이익</th></tr></thead><tbody>{growth_rows}</tbody></table>
       </div>"""
+            return out
+
+        def _q_label(period: str) -> str:
+            """'2026-06-30' → '26.2Q' (파싱 실패 시 원문 앞 7자)."""
+            try:
+                y, m = int(period[:4]), int(period[5:7])
+                if 1 <= m <= 12:
+                    return f"{y % 100:02d}.{(m - 1) // 3 + 1}Q"
+            except (ValueError, IndexError):
+                pass
+            return period[:7]
+
+        _is_stmt = fins.get("income_statement", {})
+        # 분기(최근 5분기)를 연간 위에 — 사용자 2026-08-16.
+        chart_svg = _profit_trend(_is_stmt.get("quarterly", []), 5, _q_label,
+                                  "수익성 추이 — 분기 (최근 5분기)",
+                                  "QoQ 성장률", "분기")
+        chart_svg += _profit_trend(_is_stmt.get("annual", []), 4,
+                                   lambda p: p[:4], "수익성 추이 — 연간",
+                                   "YoY 성장률", "연도")
 
         financials_pane = f"""<div class="si-pane" id="si-financials">
   {chart_svg}
