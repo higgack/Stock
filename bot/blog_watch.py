@@ -1,9 +1,10 @@
-"""블로그 Watcher — 네이버 블로그 '변화하는 기업을 찾아서' (beatthemkt)
-새 글 자동 감지 → NOAH 채널 포워드 + 아카이브(ingest).
+"""블로그 Watcher — 네이버 블로그(_BLOGS 목록) 새 글 자동 감지 →
+NOAH 채널 포워드 + 아카이브(ingest).
 
-흐름: RSS poll → 새 GUID 중 카테고리 '관심종목*'/'기업탐방*' 만 → 원문
-전문 fetch(m.blog.naver.com) → 텔레그램 push(제목 한 줄, 링크 임베드) +
-JSON 아카이브(대시보드 blog.html — 전문 + 맨 밑 원문 링크 + 🗑️).
+흐름: RSS poll → 새 GUID(블로그별 categories 설정이 있으면 그 prefix 만,
+None 이면 전체 글) → 원문 전문 fetch(m.blog.naver.com) → 텔레그램 push
+(제목 한 줄, 링크 임베드) + JSON 아카이브(대시보드 blog.html — 전문 +
+맨 밑 원문 링크 + 🗑️).
 
 **LLM 0 → 비용 ₩0** (요약 제거, 사용자 2026-06-11). RSS 실패 시 graceful
 skip. 첫 run 은 폭주 방지 위해 기존 글 seen 처리만(initialized 플래그).
@@ -29,8 +30,6 @@ _KST = timezone(timedelta(hours=9))
 # categories(수집 카테고리 prefix; None = 전체 글). 새 블로그는 첫 run 에
 # **per-blog 초기화**로 기존 글 seen 처리(폭주 방지) → 이후 새 글만 push.
 _BLOGS = (
-    {"id": "beatthemkt", "title": "변화하는 기업을 찾아서",
-     "categories": ("관심종목", "기업탐방")},
     {"id": "teasky0221", "title": "필승", "categories": None},   # 전체 글 (사용자 2026-06-15)
     {"id": "doctordk", "title": "의교창", "categories": None},   # 전체 글 (사용자 2026-06-15)
     {"id": "jkhan012", "title": "천상천하", "categories": None},  # 전체 글 (사용자 2026-06-18)
@@ -41,6 +40,11 @@ _BLOGS = (
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
+# 제거: beatthemkt("변화하는 기업을 찾아서") — 사용자 2026-08-19 요청으로
+# 자동수집 중단(앞으로 새 글 push/아카이브 안 함). 기존 아카이브 글은 그대로
+# 유지(blog.html 에서 개별 🗑️ 로 삭제 가능) — 수집만 멈추고 과거 기록은
+# 보존. 재개하려면 이 항목을 _BLOGS 로 되돌리면 됨(state 의 init 플래그가
+# 남아 있어 재개 시 옛 글 폭주 없이 새 글부터 수집).
 _HOME = os.path.expanduser("~")
 _STATE = os.path.join(_HOME, ".tradingagents", "blog_watch_state.json")
 _ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "blog_archive")
