@@ -822,9 +822,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not _TICKER_RE.match(ticker):
                 self._reply_json(400, {"ok": False, "error": "bad ticker"})
                 return
-            if not ticker.endswith((".KS", ".KQ")):
+            from bot.market import detect_market as _dm
+            from bot.quarterly_infographic import SUPPORTED_MARKETS as _SM
+            _mkt = _dm(ticker)
+            if _mkt not in _SM:
                 self._reply_json(200, {"ok": False,
-                                       "error": "KR 종목만 지원(DART 데이터소스)"})
+                                       "error": "분기 손익 데이터 미지원 시장"})
                 return
             # 시총·PER 은 **이미 수집된 스냅샷이 있을 때만** 사용한다.
             # collect_stock_snapshot 은 cold 면 yfinance 직렬 수집으로 10~30초가
@@ -839,7 +842,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 with _ss._SNAP_CACHE_LOCK:
                     ent = _ss._SNAP_CACHE.get(ticker)
                     warm = bool(ent and (time.time() - ent[0]) < _ss._SNAP_CACHE_TTL)
-                if warm or run:
+                # 비-KR 은 스냅샷이 **유일한 데이터 소스**(yfinance 분기 손익)라
+                # warm 게이트가 곧 '데이터 없음'이 된다 → 항상 수집한다.
+                # KR 은 DART 가 숫자를 주므로 cold 면 시총·PER 만 '—'(현행).
+                if warm or run or _mkt != "KR":
                     snap = _ss.collect_stock_snapshot(ticker)
             except Exception as exc:
                 log.debug("quarterly_api: snapshot skipped — %s", exc)
@@ -877,6 +883,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "growth_risk": payload.get("growth_risk") or {"ok": False},
                 "latest": (payload.get("quarters") or [{}])[-1].get("label"),
                 "cached": res.get("cached"),
+                # 성장동력·리스크는 DART 원문 전용 — 비-KR 은 프런트가
+                # 버튼을 아예 숨긴다(누를 수 없는 버튼 노출 금지).
+                "llm_supported": bool(payload.get("llm_supported")),
+                "source_label": payload.get("source_label") or "",
                 "cost_krw": run_cost_krw,
             }
             self._reply_json(200, out)

@@ -523,8 +523,13 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                         v = q["ratios"].get(k)
                         if v is not None:
                             qentry[k] = v
-                    if q["financials"].get("_anomaly_revenue_negative"):
-                        qentry["_anomaly_revenue_negative"] = True
+                    # 이상치 플래그 전량 릴레이 — 하나라도 빠뜨리면 대시보드
+                    # 배지·각주가 dead code 가 되고 '—' 의 이유가 사라진다
+                    # (2026-08-16 독립 리뷰: 계정 불일치 플래그가 누락돼 있었음).
+                    for _f in ("_anomaly_revenue_negative",
+                               "_anomaly_account_mismatch"):
+                        if q["financials"].get(_f):
+                            qentry[_f] = True
                     q_ts.append(qentry)
                 if q_ts:
                     out.setdefault("kr", {})["financials_q"] = q_ts

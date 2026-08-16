@@ -231,6 +231,46 @@ def _parse_dart_amount(raw: str, as_float: bool = False):
     return -v if negative else v
 
 
+# 한 canonical 키에 여러 계정이 매핑되는 경우의 **결정론적 우선순위**.
+# 배경(사용자 2026-08-16 메리츠금융지주 TTM 매출 -10.30조): `_DART_NAME_MAP`
+# 은 영업수익·매출액·이자수익을 모두 `매출` 로 보내는데, 금융지주 손익
+# 계산서엔 이들이 동시에 존재한다. 옛 코드는 "절댓값 최대 row" 만으로
+# 승자를 뽑았고, 4분기 파생은 연간(thstrm_amount)과 9개월 누적
+# (thstrm_add_amount)에서 **각각 독립적으로** 승자를 뽑았다. 승자가 서로
+# 다르면 다른 계정끼리 빼서 대규모 음수가 나온다(순이익은 계정이 유일해
+# 정상이었던 것과 정합). 순위를 고정하면 두 보고서가 같은 계정을 고른다.
+#
+# **동의어 그룹** 단위로 정의한다 — 같은 그룹 안의 이름들은 회사·양식마다
+# 다르게 쓰는 같은 개념이다(연간보고서는 '매출액', 분기보고서는 '수익
+# (매출액)' 처럼 한 회사 안에서도 갈린다). 그룹이 같으면 계정이 바뀐 게
+# 아니므로 차분 가드가 발화하면 안 된다 — 이름 문자열을 직접 비교하면
+# 멀쩡한 회사의 4분기 매출·TTM·PSR 이 통째로 비어 버린다.
+_ACCOUNT_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    # 앞 그룹일수록 우선. 금융·보험은 '영업수익'이 손익계산서 최상단
+    # 총수익이고, '이자수익'은 그 구성요소라 총액을 대표할 수 없다.
+    "매출": (
+        ("영업수익",),
+        ("매출액", "수익(매출액)", "매출", "도급공사수익", "분양수익"),
+        ("이자수익",),
+    ),
+}
+
+
+def _account_rank(canonical: str, acct_nm: str) -> int:
+    """동의어 그룹 인덱스(작을수록 우선). 미정의/미등재는 동순위(맨 뒤).
+
+    승자 선택의 우선순위이자, `dart_quarterly._diff_quarter` 의 계정 일치
+    판정 단위이기도 하다(같은 그룹 = 같은 계정으로 취급)."""
+    groups = _ACCOUNT_GROUPS.get(canonical)
+    if not groups:
+        return 0
+    nm = (acct_nm or "").strip()
+    for i, grp in enumerate(groups):
+        if nm in grp:
+            return i
+    return len(groups)
+
+
 def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -> dict:
     """DART fnlttSinglAcntAll.json 응답의 list[item] → 정규화 dict.
 
@@ -251,6 +291,8 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
     if not items:
         return {}
     res: dict = {}
+    src: dict = {}      # canonical → 채택된 원 계정명 (승자 추적)
+    rank: dict = {}     # canonical → 채택된 계정의 우선순위(작을수록 우선)
     for item in items:
         acct_id = (item.get("account_id") or "").strip()
         acct_nm = (item.get("account_nm") or "").strip()
@@ -263,9 +305,23 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
         )
         if v is None:
             continue
-        # absolute value 큰 row 선택 (consolidated 우선)
-        if canonical not in res or abs(v) > abs(res[canonical]):
+        pr = _account_rank(canonical, acct_nm)
+        prev = rank.get(canonical)
+        # 우선순위가 높은(작은) 계정이 무조건 이긴다. 동순위 안에서만
+        # 기존 규칙(absolute value 큰 row = consolidated 우선)을 적용.
+        if canonical not in res or pr < prev or (
+                pr == prev and abs(v) > abs(res[canonical])):
             res[canonical] = v
+            # 이름이 아니라 **동의어 그룹 인덱스**를 남긴다 — 같은 개념을
+            # 연간·분기 보고서가 다른 이름으로 쓰는 게 정상이라, 이름을
+            # 비교하면 멀쩡한 회사에서 차분 가드가 오발화한다.
+            src[canonical] = pr
+            rank[canonical] = pr
+    if src:
+        # 어느 계정 그룹이 채택됐는지 — 보고서 간 차분(4분기 = 연간 − 9개월
+        # 누적) 시 양쪽이 같은 개념인지 검증하는 재료. `_` 접두 사이드채널
+        # 이라 숫자 항목 순회에는 걸리지 않는다.
+        res["_src"] = src
     return res
 
 
@@ -1088,7 +1144,10 @@ class DartClient:
         # 파생이 계속 조용히 실패한다(nine_mo=None→break). qfin→qfin2 로
         # 버저닝해 구 캐시를 자연스럽게 우회(dart_corpcode_v2.json 등 기존
         # 관례와 동일).
-        ck = f"qfin2_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
+        # v3(2026-08-16): financials 에 `_src`(채택 계정명) 사이드채널이
+        # 추가됐다. 옛 캐시(7일 TTL)엔 그게 없어 `_diff_quarter` 의 계정
+        # 일치 가드가 조용히 무력화되므로 키를 올려 즉시 반영시킨다.
+        ck = f"qfin3_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached

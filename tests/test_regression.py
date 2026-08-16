@@ -4977,7 +4977,8 @@ class TestDartQuarterlyFinancialsReprtCode:
         # qfin2 — financials_cumulative 추가로 캐시 키 버전업(2026-08-19,
         # code-review 발견: 안 바꾸면 이 커밋 배포 전 조회된 구캐시가
         # financials_cumulative 없이 7일간 서빙돼 4분기 파생이 조용히 실패함).
-        assert any(k.startswith("qfin2_00126380_2026_11012_CFS") for k in written)
+        # v3(2026-08-16): financials 에 `_src` 사이드채널 추가 → 키 상향.
+        assert any(k.startswith("qfin3_00126380_2026_11012_CFS") for k in written)
 
     def test_interim_report_includes_cumulative_from_add_amount(self, monkeypatch):
         # 2026-08-19 VM 실측 확인 — 분기/반기보고서는 thstrm_amount 가 이미
@@ -5545,14 +5546,18 @@ class TestQuarterlyInfographic20260819:
         assert build_payload("7203.T") is None
 
     # ── 4단계: 대시보드/서버 배선 ─────────────────────────────────
-    def test_quarterly_tab_and_pane_wired_kr_only(self):
+    def test_quarterly_tab_and_pane_wired_all_markets(self):
+        # 2026-08-16: KR 전용 → 전 시장(KR=DART · 그 외=yfinance 분기 손익).
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'data-pane="si-quarterly"' in src, "분기실적 탭 버튼 누락"
         assert "quarterly_pane" in src and "_QUARTERLY_JS" in src
         assert "{quarterly_tab}" in src, "탭 바에 미삽입"
-        # KR 전용 게이트 — is_kr 조건부로 생성돼야 한다.
-        tab_def = src[src.index("quarterly_tab = ("):][:300]
-        assert "if is_kr else" in tab_def
+        tab_def = src[src.index("quarterly_tab = ("):][:400]
+        assert "if is_kr else" not in tab_def, "KR 게이트 잔존(전 시장 노출이어야)"
+        # pane 설명문이 소스별로 갈려야 한다(out-of-sync = 버그)
+        assert "yfinance 분기 손익계산서" in src and "DART 정기보고서" in src
+        # 비-KR 은 LLM 버튼을 숨긴다(누를 수 없는 버튼 노출 금지)
+        assert "else if(j.llm_supported)" in src
 
     def test_quarterly_api_route_and_cost_gate(self):
         src = open("bot/dashboard_server.py", encoding="utf-8").read()
@@ -5561,7 +5566,12 @@ class TestQuarterlyInfographic20260819:
         h = h[:h.index("def _handle_technical_api")]
         assert 'run = qs.get("run", ["0"])[0] == "1"' in h, "LLM 비용 게이트 누락"
         assert "run_llm=run" in h
-        assert '.endswith((".KS", ".KQ"))' in h, "KR 전용 가드 누락"
+        # 2026-08-16: KR 하드코딩 → 지원 시장 목록 기반
+        assert '.endswith((".KS", ".KQ"))' not in h, "KR 전용 가드 잔존"
+        assert "SUPPORTED_MARKETS" in h, "지원 시장 게이트 미배선"
+        # 비-KR 은 스냅샷이 유일한 소스라 cold 여도 수집해야 한다
+        assert 'or _mkt != "KR"' in h, "비-KR cold 스냅샷 스킵 → 데이터 없음"
+        assert '"llm_supported"' in h
 
     # ── 독립 code-review 발견 결함 수정(2026-08-19) ──────────────
     def test_cache_key_includes_date_so_price_values_dont_freeze(self):
@@ -5577,6 +5587,389 @@ class TestQuarterlyInfographic20260819:
         src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
         assert "기준(KST)" in src and "asof" in src
 
+
+class TestQuarterlyAnomalyAndPer20260816:
+    """사용자 2026-08-16 메리츠금융지주 스크린샷 — TTM 매출 -10.30조 ·
+    PSR -1.87배 · TTM PER '—'. 원인 3종을 고정한다: (a) 이상치 플래그를
+    인포그래픽이 전혀 안 읽어 오염된 합계를 TTM 이라 부름 (b) PSR 음수
+    분모 가드 부재 (c) trailingPE 단일 소스에 폴백 경로 0."""
+
+    @staticmethod
+    def _q(label, rev, op, ni, **flags):
+        fin = {"매출": rev, "영업이익": op, "당기순이익": ni}
+        fin.update(flags)
+        return {"label": label, "financials": fin, "ratios": {}}
+
+    def test_ttm_excludes_item_when_window_has_anomaly(self):
+        from bot.quarterly_infographic import _ttm
+        good = [self._q(f"25.{i}Q", 10.0, 2.0, 1.0) for i in range(1, 5)]
+        assert _ttm(good) == {"매출": 40.0, "영업이익": 8.0, "당기순이익": 4.0}
+        # 한 분기 매출이 이상치 → 매출만 빠지고 나머지는 그대로 산출
+        bad = list(good)
+        bad[2] = self._q("25.3Q", -30.0, 2.0, 1.0,
+                         _anomaly_revenue_negative=True)
+        out = _ttm(bad)
+        assert "매출" not in out, "오염된 합계를 TTM 매출로 내보냄(재발)"
+        assert out["영업이익"] == 8.0 and out["당기순이익"] == 4.0, \
+            "무관한 항목까지 막으면 안 됨(계정이 다르므로)"
+
+    def test_ttm_excludes_on_account_mismatch_flag(self):
+        from bot.quarterly_infographic import _ttm
+        qs = [self._q(f"25.{i}Q", 10.0, 2.0, 1.0) for i in range(1, 5)]
+        qs[0] = self._q("25.1Q", None, 2.0, 1.0, _anomaly_account_mismatch=True)
+        assert "매출" not in _ttm(qs)
+
+    def test_anomaly_labels_identify_which_quarter(self):
+        from bot.quarterly_infographic import anomalous_keys, anomalous_labels
+        qs = [self._q("25.1Q", 10.0, 2.0, 1.0),
+              self._q("25.2Q", -5.0, 2.0, 1.0, _anomaly_revenue_negative=True)]
+        assert anomalous_keys(qs) == {"매출"}
+        assert anomalous_labels(qs) == ["25.2Q"]
+        assert anomalous_keys([]) == set()      # graceful
+
+    def test_psr_guards_negative_and_zero_revenue(self):
+        # 옛 코드는 truthy 검사만 해서 음수 매출로 나눠 PSR -1.87배를 찍었다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "_ttm_rev > 0" in src, "PSR 음수 분모 가드 없음"
+        assert 'if mcap and ttm.get("매출"):' not in src, "옛 truthy 가드 잔존"
+
+    def test_self_per_fallback_and_range_guard(self):
+        from bot.quarterly_infographic import _PER_MAX, self_per
+        # 메리츠금융지주 실측: 19.23조 / 4.44조 ≈ 4.33배
+        per = self_per(19.23e12, 4.44e12)
+        assert per is not None and 4.2 < per < 4.4
+        assert self_per(19.23e12, -1.0) is None    # 적자 → PER 무의미
+        assert self_per(19.23e12, 0) is None       # 0 나눗셈
+        assert self_per(None, 4.44e12) is None
+        assert self_per(0, 4.44e12) is None
+        # 범위 가드 — 비현실 배수 차단(dart_feed._compute_per 와 동일 기준)
+        assert self_per(1e12, 1e12 / (_PER_MAX + 1)) is None
+        assert self_per(1e12, 1e12 / (_PER_MAX - 1)) is not None
+
+    def test_build_payload_marks_self_calculated_per(self):
+        # 야후 제공값과 자체계산을 구분 표기해야 한다(출처 표기 의무).
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert '"per_self": per_self' in src
+        assert "자체계산" in src, "자체계산 각주 없음"
+        # 죽은 camel 키 제거 — 스냅샷 최상위는 snake market_cap 뿐
+        assert 'snap.get("marketCap")' not in src
+
+    def test_renderer_surfaces_why_the_value_is_blank(self):
+        # 값이 '—' 로 비었을 때 '왜 비었는지'가 화면에 있어야 한다 —
+        # 빈칸만 두면 "데이터 없음"과 "이상치라 제외"를 구분할 수 없다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "이상치 감지" in src and "산출 제외" in src
+        assert "anomaly_labels" in src, "어느 분기가 문제인지 미표시"
+        # 이상치 분기는 x 라벨을 경고색으로 — 그림 안에서 바로 보이게
+        assert "bad_labels" in src and "t_.set_color(_NEG)" in src
+
+
+class TestDartAccountWinnerDeterminism20260816:
+    """사용자 2026-08-16 메리츠금융지주 TTM 매출 -10.30조의 근본 원인.
+    `_DART_NAME_MAP` 이 영업수익·매출액·이자수익을 모두 `매출` 로 보내는데
+    옛 승자 규칙은 '절댓값 최대' 뿐이었고, 4분기 파생은 연간과 9개월누적
+    에서 각각 독립적으로 승자를 뽑아 **다른 계정끼리 뺐다**."""
+
+    def test_priority_beats_absolute_value(self):
+        from bot.dart_client import _extract_dart_financials as E
+        items = [{"account_nm": "이자수익", "thstrm_amount": "9000000000000"},
+                 {"account_nm": "영업수익", "thstrm_amount": "2130000000000"},
+                 {"account_nm": "당기순이익", "thstrm_amount": "1440000000000"}]
+        r = E(items)
+        assert r["매출"] == 2130000000000, "절댓값 큰 이자수익이 이김(재발)"
+        # `_src` 는 계정 '이름'이 아니라 동의어 **그룹 인덱스**(0=영업수익)
+        assert r["_src"]["매출"] == 0
+        assert r["당기순이익"] == 1440000000000
+
+    def test_same_rank_still_prefers_larger_absolute(self):
+        # 동순위(우선순위 목록에 없는 계정)에서는 기존 규칙 보존.
+        from bot.dart_client import _extract_dart_financials as E
+        r = E([{"account_nm": "영업이익", "thstrm_amount": "100"},
+               {"account_nm": "영업이익(손실)", "thstrm_amount": "300"}])
+        assert r["영업이익"] == 300
+
+    def test_account_rank_is_group_based_not_name_based(self):
+        from bot.dart_client import _account_rank
+        assert _account_rank("매출", "영업수익") < _account_rank("매출", "이자수익")
+        assert _account_rank("매출", "매출액") < _account_rank("매출", "이자수익")
+        # ⭐ 동의어는 **같은 그룹** — 연간 '매출액' vs 분기 '수익(매출액)' 처럼
+        # 한 회사가 양식별로 다른 라벨을 쓰는 게 정상이라, 이름으로 비교하면
+        # 멀쩡한 회사의 4분기가 통째로 비어 버린다(2026-08-16 독립 리뷰).
+        assert _account_rank("매출", "매출액") == _account_rank("매출", "수익(매출액)")
+        assert _account_rank("매출", "매출액") == _account_rank("매출", "매출")
+        # 목록에 없는 계정은 맨 뒤(동순위)
+        assert _account_rank("매출", "듣도보도못한수익") == 3
+        # 우선순위 정의가 없는 canonical 은 전부 동순위
+        assert _account_rank("당기순이익", "무엇이든") == 0
+
+    def test_synonym_labels_do_not_trip_the_guard(self):
+        # 리뷰 지적: 이름 비교였다면 여기서 멀쩡한 매출이 통째로 사라졌다.
+        from bot.dart_client import _extract_dart_financials as E
+        from bot.dart_quarterly import _diff_quarter
+        ann = E([{"account_nm": "매출액", "thstrm_amount": "8000000000000"}])
+        nine = E([{"account_nm": "수익(매출액)", "thstrm_amount": "6000000000000"}])
+        d = _diff_quarter(ann, nine)
+        assert d["매출"] == 2000000000000, "동의어 라벨에 가드 오발화"
+        assert "_anomaly_account_mismatch" not in d
+
+    def test_snapshot_relays_all_anomaly_flags(self):
+        # 플래그를 하나라도 안 넘기면 대시보드 배지·각주가 dead code 가 되고
+        # '—' 의 이유가 사라진다(2026-08-16 독립 리뷰).
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "_anomaly_account_mismatch" in src, "계정 불일치 플래그 미릴레이"
+        assert '"_anomaly_revenue_negative",' in src
+
+    def test_diff_quarter_blocks_cross_account_subtraction(self):
+        from bot.dart_quarterly import _diff_quarter
+        ann = {"매출": 8e12, "당기순이익": 4e12,
+               "_src": {"매출": 0, "당기순이익": 0}}       # 0 = 영업수익 그룹
+        nine = {"매출": 21e12, "당기순이익": 2.5e12,
+                "_src": {"매출": 2, "당기순이익": 0}}      # 2 = 이자수익 그룹
+        d = _diff_quarter(ann, nine)
+        assert d["매출"] is None, "다른 계정끼리 빼서 -13조를 만듦(재발)"
+        assert d["_anomaly_account_mismatch"] is True
+        assert d["_mismatched_accounts"] == ["매출"]
+        # 계정이 같은 항목은 정상 차분
+        assert d["당기순이익"] == 1.5e12
+        # 사이드채널은 결과에 실리지 않는다
+        assert "_src" not in d
+
+    def test_diff_quarter_normal_when_accounts_match(self):
+        from bot.dart_quarterly import _diff_quarter
+        ann = {"매출": 8e12, "_src": {"매출": 0}}
+        nine = {"매출": 6e12, "_src": {"매출": 0}}
+        d = _diff_quarter(ann, nine)
+        assert d["매출"] == 2e12 and "_anomaly_account_mismatch" not in d
+
+    def test_diff_quarter_graceful_without_src(self):
+        # 옛 캐시엔 _src 가 없다 — 비교 불가면 종전대로 차분(무해).
+        from bot.dart_quarterly import _diff_quarter
+        assert _diff_quarter({"매출": 8.0}, {"매출": 6.0})["매출"] == 2.0
+
+    def test_cache_key_bumped_for_src_schema(self):
+        # 옛 캐시(7일 TTL)엔 _src 가 없어 가드가 조용히 무력화된다.
+        src = open("bot/dart_client.py", encoding="utf-8").read()
+        assert "qfin3_" in src and 'f"qfin2_' not in src
+
+    def test_public_series_schema_has_no_src_sidechannel(self):
+        # `_src` 는 차분 검증용 내부 재료 — 공개 시리즈엔 싣지 않는다.
+        src = open("bot/dart_quarterly.py", encoding="utf-8").read()
+        assert 'if k != "_src"' in src
+
+    def test_dashboard_table_explains_blank_from_account_mismatch(self):
+        # 같은 사실엔 같은 표현 — 표도 '—' 의 이유를 밝혀야 한다(옛 각주는
+        # 음수 케이스만 알고 있었다).
+        from bot.dashboard import _render_stock_info_html
+        rec = {"ticker": "138040.KS", "stock_info": {"kr": {"financials_q": [
+            {"label": "25.4Q", "매출": None, "영업이익": 5e11,
+             "당기순이익": 3e11, "_anomaly_account_mismatch": True},
+            {"label": "26.1Q", "매출": 1e12, "영업이익": 8e11,
+             "당기순이익": 6e11},
+        ]}}}
+        r = _render_stock_info_html(rec)
+        # 밸류에이션 분기표는 other_panes 쪽에 실린다 — 두 곳 다 훑는다.
+        h = ("".join(str(v) for v in r["panes"].values())
+             + str(r.get("other_panes", "")))
+        assert "서로 다른 계정" in h, "계정 불일치 각주 미표시"
+        assert "⚠️" in h
+
+
+class TestQuarterlyMultiMarket20260816:
+    """사용자 2026-08-16 '분기실적을 다른 나라도'. 야후 분기 손익계산서가
+    이미 전 시장 무게이트로 스냅샷에 8분기치 수집돼 있어 어댑터만 붙인다
+    (추가 네트워크 호출 0). LLM 성장동력/리스크는 DART 원문 전용이라 KR 만."""
+
+    @staticmethod
+    def _snap(rows, **kw):
+        s = {"financials": {"income_statement": {"quarterly": rows}},
+             "market_cap": 3.4e12, "currency": "USD",
+             "financial_currency": "USD", "long_name": "Test Inc.",
+             "exchange": "NASDAQ", "fiscal_year_end": "12-31"}
+        s.update(kw)
+        return s
+
+    @staticmethod
+    def _rows(vals):
+        return [{"period": p, "Total Revenue": r, "Operating Income": r * 0.3,
+                 "Net Income": r * 0.25} for p, r in vals]
+
+    def test_q_label_from_period(self):
+        from bot.quarterly_series import q_label_from_period as f
+        assert f("2026-06-30") == "26.2Q"
+        assert f("2026-01-31") == "26.1Q"
+        assert f("2025-12-31") == "25.4Q"
+        assert f("2025-09-30") == "25.3Q"
+        assert f("") == "" and f("bogus") == "bogus"   # 날조 대신 원문
+        assert f(None) == ""
+
+    def test_label_helper_is_shared_not_duplicated(self):
+        # dashboard.py 내부 스코프에 갇혀 있던 _q_label 을 모듈로 올려 공용화.
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "q_label_from_period" in db, "대시보드가 공용 헬퍼를 안 씀"
+        assert "def _q_label(period: str)" not in db, "중복 정의 잔존"
+
+    def test_series_sorts_and_maps_yfinance_rows(self):
+        from bot.quarterly_series import series_from_yfinance
+        # 야후는 종목마다 최신우선/과거우선을 섞어 준다 → 명시 정렬 필수
+        rows = [{"period": "2026-06-30", "Operating Revenue": 100,
+                 "EBIT": 20, "Net Income": 10},
+                {"period": "2025-06-30", "Total Revenue": 80,
+                 "Operating Income": 16, "Net Income": 8},
+                {"period": "2026-03-31", "Total Revenue": 90,
+                 "Operating Income": 18, "Net Income": 9}]
+        s = series_from_yfinance({"financials":
+                                  {"income_statement": {"quarterly": rows}}})
+        assert [q["label"] for q in s] == ["25.2Q", "26.1Q", "26.2Q"], \
+            "오래된→최신 정렬 아님(렌더러가 qs[-1]=최신을 전제)"
+        # Operating Revenue / EBIT 폴백
+        assert s[-1]["financials"] == {"매출": 100, "영업이익": 20,
+                                       "당기순이익": 10}
+        assert round(s[-1]["ratios"]["영업이익률"], 1) == 20.0
+        assert round(s[-1]["ratios"]["순이익률"], 1) == 10.0
+
+    def test_series_graceful_on_missing_or_empty(self):
+        from bot.quarterly_series import series_from_yfinance
+        assert series_from_yfinance(None) is None
+        assert series_from_yfinance({}) is None
+        assert series_from_yfinance({"financials": {}}) is None
+        # 기간만 있고 값이 전무 → 데이터 없음과 같다
+        assert series_from_yfinance({"financials": {"income_statement": {
+            "quarterly": [{"period": "2026-06-30"}]}}}) is None
+        # 매출 0/음수면 비율을 만들지 않는다(억지 숫자 금지)
+        s = series_from_yfinance({"financials": {"income_statement": {
+            "quarterly": [{"period": "2026-06-30", "Total Revenue": 0,
+                           "Net Income": 5}]}}})
+        assert s and s[0]["ratios"] == {}
+
+    def test_build_payload_non_kr_uses_yfinance_and_no_llm(self):
+        from bot.quarterly_infographic import build_payload
+        snap = self._snap(self._rows([("2025-03-31", 90e9), ("2025-06-30", 94e9),
+                                      ("2025-09-30", 102e9), ("2025-12-31", 124e9),
+                                      ("2026-03-31", 95e9)]))
+        p = build_payload("AAPL", snap)
+        assert p is not None
+        assert p["source_label"] == "yfinance 분기 손익계산서"
+        assert p["market"] == "NASDAQ" and p["currency"] == "USD"
+        assert p["llm_supported"] is False, "비-KR 에 DART LLM 경로가 열림"
+        assert p["growth_risk"]["error"] == "not_supported"
+        assert p["period_key"] == "20260331", "캐시 키가 분기 종료일이어야"
+        # PER 자체계산 + PSR 이 전 시장에서 동작
+        assert p["per_self"] is True and p["per"] and p["psr"]
+
+    def test_currency_mismatch_blocks_per_and_psr(self):
+        # HK 본토 자회사: 거래 HKD · 재무 CNY. 그냥 나누면 틀린 배수가 된다.
+        from bot.quarterly_infographic import build_payload
+        snap = self._snap(self._rows([("2025-03-31", 160e9), ("2025-06-30", 172e9),
+                                      ("2025-09-30", 167e9), ("2025-12-31", 175e9),
+                                      ("2026-03-31", 180e9)]),
+                          currency="HKD", financial_currency="CNY",
+                          exchange="HKG")
+        p = build_payload("0700.HK", snap)
+        assert p["currency_mismatch"] is True
+        assert p["per"] is None and p["psr"] is None, "통화 불일치인데 배수 산출"
+        assert p["currency"] == "CNY" and p["trade_currency"] == "HKD"
+        # 화면에 이유가 보여야 한다
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "통화가 달라" in src
+
+    def test_market_cap_uses_trade_currency_not_financial(self):
+        # 렌더 스모크 실측: HKD 시총이 재무통화(¥)로 표기됐다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert '_eok(mcap, payload.get("trade_currency") or cur)' in src
+
+    def test_fiscal_note_only_when_not_december_year_end(self):
+        from bot.quarterly_series import fiscal_note
+        assert fiscal_note("12-31") == "" and fiscal_note(None) == ""
+        assert "달력" in fiscal_note("03-31") and "03-31" in fiscal_note("03-31")
+
+    def test_amount_formatting_is_currency_aware(self):
+        from bot.quarterly_series import chart_unit, fmt_money
+        assert fmt_money(2.13e12, "KRW") == "₩2.13조"
+        assert fmt_money(-4.5e12, "KRW").startswith("-₩4.50조")   # 적자 부호 보존
+        assert fmt_money(9.5e10, "USD") == "$95.00B"
+        assert fmt_money(3.2e12, "JPY") == "¥3.20兆"
+        assert fmt_money(None, "USD") == "—"
+        assert fmt_money("bogus", "USD") == "—"
+        # 차트 축 단위 — 달러는 억/조가 아니라 B/M
+        assert chart_unit("KRW", 2e12) == (1e12, "조", 1)
+        assert chart_unit("KRW", 5e10) == (1e8, "억", 0)
+        assert chart_unit("JPY", 2e12) == (1e12, "兆", 1)
+        assert chart_unit("USD", 9e10) == (1e9, "B", 1)
+        assert chart_unit("USD", 5e8) == (1e6, "M", 0)
+
+    def test_cache_key_generalized_off_reprt_code(self):
+        # reprt_code 는 DART 전용 개념 — 멀티마켓에선 쓸 수 없다.
+        from bot.quarterly_infographic import cache_path
+        kr_a = cache_path("005930.KS", 2026, "11012", "2026-08-16")
+        kr_b = cache_path("005930.KS", 2026, "11014", "2026-08-16")
+        assert kr_a != kr_b, "KR 분기 구분 상실"
+        us_a = cache_path("AAPL", "20260331", asof="2026-08-16")
+        us_b = cache_path("AAPL", "20260630", asof="2026-08-16")
+        assert us_a != us_b, "비-KR 분기 구분 상실"
+        # 날짜는 여전히 키에 포함(시세 기반 값이 얼어붙는 것 방지)
+        assert cache_path("AAPL", "20260331", asof="2026-08-17") != us_a
+
+    def test_help_text_documents_multi_market_scope(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        line = [ln for ln in src.splitlines() if "<b>분기실적</b> 탭" in ln]
+        assert line, "_HELP_TEXT 에 분기실적 항목 없음"
+        assert "한국종목)" not in line[0], "옛 KR 전용 문구 잔존"
+        assert "yfinance" in line[0] and "한국 종목만" in line[0]
+
+
+class TestQuarterlyChartLayout20260816:
+    """사용자 2026-08-16 '차트 더 크게 · 숫자간격 세밀하게'. 옛 차트는 좌우
+    2분할이라 각 652×270px 뿐이었고 y축 locator 설정이 아예 없었다."""
+
+    def test_charts_stacked_full_width_not_side_by_side(self):
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "H_TILE, H_CHART = 17.0, 62.0" in src, "차트 섹션 높이 미확대"
+        assert "cw = 46.5" not in src, "좌우 2분할 잔존"
+        # 두 콤보 모두 전체폭(95)
+        assert src.count("combo((2.5, y") >= 1 and "95, _ch" in src
+
+    def test_axis_tick_locator_wired_on_both_axes(self):
+        # "숫자 간격 세밀하게" 의 핵심 — 옛 코드엔 locator 가 0건이었다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert src.count("set_major_locator(") >= 2, "금액축·%축 둘 다 필요"
+        assert "MaxNLocator" in src and "FuncFormatter" in src
+
+    def test_no_dual_axis_twinx(self):
+        # 이중 Y축은 두 스케일 정렬이 임의라 없는 상관을 만든다 —
+        # 실제로 '매출 -21조인데 이익률 0% 근처'로 읽혔다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        code = "\n".join(ln for ln in src.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        assert ".twinx()" not in code, "이중 Y축 잔존"
+
+    def test_legend_moved_outside_plot_area(self):
+        # 옛 loc="upper left" 는 가장 높은 첫 분기 막대와 정면 충돌했다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "bbox_to_anchor=(0, 1.02)" in src
+        assert 'legend(loc="upper left"' not in src
+        # 단일 시리즈 축엔 범례 없음(패널 제목이 이름 담당)
+        assert "if len(bars) > 1:" in src
+
+    def test_pct_panel_skipped_when_all_margins_missing(self):
+        # 빈 축을 그리면 '0% / 0% / -0%' 눈금이 붙어 **마진 0%** 로 읽힌다
+        # (없는 사실을 그린 셈 — "환각 0" 원칙). 2026-08-16 독립 리뷰.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "has_pct = any(v is not None for v in (line or []))" in src
+        assert "if has_pct else None" in src
+        # % 패널이 없으면 x 라벨은 막대 축으로 내려와야 한다
+        assert "x_ax = pax if pax is not None else bax" in src
+
+    def test_pct_axis_avoids_duplicate_tick_labels(self):
+        # 정수 %로 고정하면 마진 폭이 좁을 때 '11% 10% 10% 10%' 로 중복된다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "_pdec" in src and 'f"{v:,.0f}%"' not in src
+
+    def test_pct_panel_uses_horizontal_title_not_vertical_ylabel(self):
+        # 축이 낮아 세로쓰기 한글이 글자끼리 겹쳐 뭉갠다(렌더 스모크 실측).
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert "pax.set_ylabel(" not in src
+        assert 'pax.set_title(line_title' in src
+
     def test_missing_quarter_is_gap_not_zero_bar(self):
         # 결측을 0 막대로 그리면 '실적 0'이라는 없는 사실을 그린 것("환각 0"
         # 푸터와 모순). NaN 이어야 막대가 아예 안 그려진다.
@@ -5584,10 +5977,12 @@ class TestQuarterlyInfographic20260819:
         assert "(v or 0) / div" not in src, "결측이 0 막대로 그려짐(재발)"
         assert 'nan = float("nan")' in src
 
-    def test_header_uses_actual_fs_div_not_hardcoded(self):
+    def test_header_uses_actual_fs_div_and_omits_it_off_kr(self):
         src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
         assert '· 연결", size=9' not in src, "헤더에 '연결' 하드코딩(별도와 모순)"
-        assert 'fs_kr = "연결" if last.get("fs_div") == "CFS" else "별도"' in src
+        # 연결/별도는 DART 전용 개념 — fs_div 가 있을 때만 표기
+        assert 'if last.get("fs_div"):' in src
+        assert '"연결" if last.get("fs_div") == "CFS" else "별도"' in src
 
     def test_company_fallback_uses_snapshot_key_long_name(self):
         # 스냅샷은 long_name(스네이크) 키 — longName 은 절대 안 잡힌다.

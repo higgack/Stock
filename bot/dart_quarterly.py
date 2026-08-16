@@ -62,9 +62,27 @@ def _flag_revenue_anomaly(fin: dict) -> dict:
 
 def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     """4분기 단독 = 연간(now) − 9개월누적(prev). 저량(STOCK) 항목은
-    차분하지 않고 연간 시점값 그대로 유지."""
+    차분하지 않고 연간 시점값 그대로 유지.
+
+    ⚠️ **계정 일치 가드**: 한 canonical 키에 여러 DART 계정이 매핑되는
+    항목(금융지주의 `매출` = 영업수익/매출액/이자수익)은 두 보고서에서
+    서로 다른 계정이 채택될 수 있고, 그러면 **다른 계정끼리 빼게 된다**.
+    실제로 메리츠금융지주 TTM 매출이 -10.30조로 나온 원인이 이것이었다
+    (사용자 2026-08-16). `_extract_dart_financials` 가 남긴 `_src`(채택된
+    **동의어 그룹 인덱스**)를 비교해 다르면 그 항목을 `None` 으로 두고
+    플래그만 남긴다 — 틀린 숫자보다 빈칸이 낫다(날조 금지).
+
+    ⚠️ 비교 단위가 계정 '이름'이 아니라 '그룹'인 이유: 같은 회사도 연간
+    보고서엔 '매출액', 분기보고서엔 '수익(매출액)' 처럼 다른 라벨을 쓴다.
+    이름을 직접 비교하면 멀쩡한 회사의 4분기 매출·TTM·PSR 이 통째로
+    비어 버린다(2026-08-16 독립 리뷰 지적)."""
+    now_src = (cum_now or {}).get("_src") or {}
+    prev_src = (cum_prev or {}).get("_src") or {}
     out: dict = {}
+    mismatched: list[str] = []
     for k, v in (cum_now or {}).items():
+        if k.startswith("_"):
+            continue        # 사이드채널(_src 등)은 산술 대상이 아니다
         if k in _STOCK_KEYS:
             out[k] = v
             continue
@@ -74,7 +92,17 @@ def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
         elif prev_v is None:
             out[k] = v
         else:
+            # 양쪽 다 그룹을 알 때만 비교(옛 캐시엔 _src 가 없다 →
+            # 비교 불가면 종전대로 차분, graceful).
+            a, b = now_src.get(k), prev_src.get(k)
+            if a is not None and b is not None and a != b:
+                out[k] = None
+                mismatched.append(k)
+                continue
             out[k] = v - prev_v
+    if mismatched:
+        out["_anomaly_account_mismatch"] = True
+        out["_mismatched_accounts"] = mismatched
     return _flag_revenue_anomaly(out)
 
 
@@ -158,7 +186,11 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
         else:
             # 이미 단일분기(재차분 금지) — 그래도 DART 원자값 자체가
             # 음수인 극단 케이스에 대비해 동일 anomaly 체크 적용.
-            fin = _flag_revenue_anomaly(dict(entry["financials"]))
+            # `_src`(채택 계정명)는 보고서 간 차분 검증용 내부 재료라
+            # 공개 시리즈 스키마엔 싣지 않는다(4분기 경로는 _diff_quarter
+            # 가 이미 `_` 접두 키를 걸러낸다).
+            fin = _flag_revenue_anomaly(
+                {k: v for k, v in entry["financials"].items() if k != "_src"})
         out.append({
             "label": quarter_label(y, rc), "year": y, "quarter": _Q_NUM[rc],
             "reprt_code": rc, "fs_div": effective_fs_div,
