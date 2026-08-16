@@ -5214,6 +5214,63 @@ class TestDartQuarterlySeries:
         assert [s["label"] for s in series] == ["26.1Q", "26.2Q"]
 
 
+class TestDartRoicAndQuarterlyPane:
+    """ROIC 추가(calc_kr_financial_ratios) + 밸류에이션 탭 분기별 재무추이
+    (사용자 2026-08-19 '기업탭 ROIC 추가' + '연도별 재무추이 위에 분기별')."""
+
+    def test_roic_uses_effective_tax_rate(self):
+        from bot.dart_client import calc_kr_financial_ratios
+        fin = {"영업이익": 26000, "세전이익": 40000, "법인세비용": 6000,
+              "자산총계": 255300, "유동부채": 30000}
+        r = calc_kr_financial_ratios(fin)
+        # NOPAT = 26000*(1-6000/40000) = 22100, IC = 255300-30000 = 225300
+        expected = 22100 / 225300 * 100
+        assert r["ROIC"] is not None and abs(r["ROIC"] - expected) < 1e-6
+
+    def test_roic_falls_back_to_operating_income_without_tax_data(self):
+        from bot.dart_client import calc_kr_financial_ratios
+        fin = {"영업이익": 26000, "자산총계": 255300, "유동부채": 30000}
+        r = calc_kr_financial_ratios(fin)
+        expected = 26000 / 225300 * 100
+        assert abs(r["ROIC"] - expected) < 1e-6
+
+    def test_roic_falls_back_when_effective_tax_rate_out_of_range(self):
+        from bot.dart_client import calc_kr_financial_ratios
+        # 세전이익이 비정상적으로 작아 실효세율이 1을 훌쩍 넘는 왜곡 케이스 —
+        # 고정 세율을 창작해 보정하지 않고 영업이익 그대로 사용해야 한다.
+        fin = {"영업이익": 26000, "세전이익": 100, "법인세비용": 6000,
+              "자산총계": 255300, "유동부채": 30000}
+        r = calc_kr_financial_ratios(fin)
+        expected = 26000 / 225300 * 100
+        assert abs(r["ROIC"] - expected) < 1e-6
+
+    def test_roic_none_when_invested_capital_missing(self):
+        from bot.dart_client import calc_kr_financial_ratios
+        assert calc_kr_financial_ratios({"영업이익": 26000})["ROIC"] is None
+
+    def test_roic_wired_into_company_tab_ratio_rows(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '("ROIC", "ROIC")' in src, "기업탭 K-IFRS 재무요약에 ROIC 행 누락"
+
+    def test_roic_wired_into_stock_snapshot_compact_dict(self):
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert '"ROIC"' in src, "kr.financials(compact) 로 ROIC 값이 안 넘어감"
+
+    def test_quarterly_pane_rendered_above_annual_trend(self):
+        # render_lookup_detail 은 내부에서 실데이터를 fetch 해 독립 단위테스트가
+        # 어려움(기존 관례 동일, financials_ts 쪽도 전용 테스트 없음) — 소스
+        # 배치 순서로 계약 고정: 분기 섹션이 연도 섹션보다 먼저 삽입돼야 한다.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "kr_fin_q_html" in src and "분기별 재무추이" in src
+        q_idx = src.index("{kr_fin_q_html}")
+        ts_idx = src.index("{kr_fin_ts_html}")
+        assert q_idx < ts_idx, "분기별 재무추이가 연도별 재무추이보다 아래에 배치됨"
+
+    def test_stock_snapshot_quarterly_task_uses_get_quarterly_series(self):
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "get_quarterly_series" in src and "financials_q" in src
+
+
 class TestKrNewsQuery:
     """KR 뉴스 검색어 = 한글 브랜드 (NAVER 0-news 2026-06-08).
 

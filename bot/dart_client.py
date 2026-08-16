@@ -260,9 +260,9 @@ def _extract_dart_financials(items: list) -> dict:
 
 
 def calc_kr_financial_ratios(financials: dict) -> dict:
-    """DART 정규화 dict → 9 재무비율 (영업이익률 / 순이익률 / ROE /
+    """DART 정규화 dict → 10 재무비율 (영업이익률 / 순이익률 / ROE /
     ROA / 부채비율 / 유동비율 / 이자보상배율 / 매출총이익률 / 이익잉여금
-    비율). 분모 0 / None 시 해당 row 만 None — graceful.
+    비율 / ROIC). 분모 0 / None 시 해당 row 만 None — graceful.
 
     StandardView (StanLee5767/standardview) 의 calc_ratios 차용 (license
     동의 2026-05-19). 단위는 % (백분율).
@@ -278,6 +278,22 @@ def calc_kr_financial_ratios(financials: dict) -> dict:
     fc = financials.get("금융비용") or 0
     gp = financials.get("매출총이익") or 0
     er = financials.get("이익잉여금") or 0
+    pretax = financials.get("세전이익")
+    tax = financials.get("법인세비용")
+    # ROIC(투하자본이익률) 근사치(2026-08-16) — DART 표준 요약 API 는
+    # 이자부채/비이자부채를 구분해 주지 않아, 투하자본은 통상적 근사식
+    # 자산총계-유동부채(≈자기자본+비유동부채) 사용. 실효세율은 DART 실측값
+    # (법인세비용/세전이익)을 그대로 쓰고, 세전이익이 없거나 실효세율이
+    # 0~1 범위를 벗어나면(적자 등으로 왜곡) 세후조정 없이 영업이익 그대로
+    # 사용(고정 법인세율 가정 = 창작이라 지양, 데이터 없으면 보정 생략).
+    invested_capital = (asset - cl) if asset else None
+    nopat = None
+    if op is not None:
+        eff_tax_rate = (tax / pretax) if (tax is not None and pretax) else None
+        if eff_tax_rate is not None and 0 <= eff_tax_rate <= 1:
+            nopat = op * (1 - eff_tax_rate)
+        else:
+            nopat = op
     return {
         "영업이익률": (op / rev * 100) if (op is not None and rev) else None,
         "순이익률": (net / rev * 100) if (net is not None and rev) else None,
@@ -288,6 +304,8 @@ def calc_kr_financial_ratios(financials: dict) -> dict:
         "이자보상배율": (op / fc) if (op is not None and fc) else None,
         "매출총이익률": (gp / rev * 100) if (gp and rev) else None,
         "이익잉여금비율": (er / asset * 100) if (er and asset) else None,
+        "ROIC": (nopat / invested_capital * 100)
+                if (nopat is not None and invested_capital) else None,
     }
 
 

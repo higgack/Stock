@@ -5322,7 +5322,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 fin_rows += f'<tr><td>{esc(label)}</td><td class="num">{_krw_eok(v)}</td></tr>\n'
             ratio_rows = ""
             for label, key in (("영업이익률", "영업이익률"), ("순이익률", "순이익률"),
-                               ("ROE", "ROE"), ("ROA", "ROA"),
+                               ("ROE", "ROE"), ("ROA", "ROA"), ("ROIC", "ROIC"),
                                ("부채비율", "부채비율"), ("유동비율", "유동비율")):
                 v = kf.get(key)
                 ratio_rows += f'<tr><td>{esc(label)}</td><td class="num">{f"{v:.1f}%" if v is not None else "—"}</td></tr>\n'
@@ -5576,6 +5576,31 @@ def _render_stock_info_html(rec: dict) -> str:
     val_per_share += _val_row("BPS (주당순자산)", si.get("bookValue"), "", "bookValue")
     val_per_share += _val_row("50일 이동평균", si.get("fiftyDayAverage"), "", "fiftyDayAverage")
     val_per_share += _val_row("200일 이동평균", si.get("twoHundredDayAverage"), "", "twoHundredDayAverage")
+
+    # KR financials quarterly (최근 4분기, bot.dart_quarterly) — 사용자
+    # 2026-08-19 "밸류에이션 탭 연도별 재무추이 위에 분기별 추가, 항목은
+    # 연도별과 동일". 렌더 구조는 kr_fin_ts_html 과 동일 패턴(연/분기만 다름).
+    kr_fin_q_html = ""
+    kr_fin_q = kr.get("financials_q")
+    if kr_fin_q and len(kr_fin_q) > 1:
+        q_header = "<th>항목</th>" + "".join(f"<th class='num'>{esc(str(q.get('label','')))}</th>" for q in kr_fin_q)
+        q_rows = ""
+        for label, key in (("매출", "매출"), ("영업이익", "영업이익"), ("당기순이익", "당기순이익")):
+            cells = ""
+            for q in kr_fin_q:
+                v = q.get(key)
+                cells += f"<td class='num'>{v / 1e8:,.0f}억</td>" if v else "<td class='num'>—</td>"
+            q_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
+        for label, key in (("영업이익률", "영업이익률"), ("ROE", "ROE"), ("부채비율", "부채비율")):
+            cells = ""
+            for q in kr_fin_q:
+                v = q.get(key)
+                cells += f"<td class='num'>{v:.1f}%</td>" if v is not None else "<td class='num'>—</td>"
+            q_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
+        kr_fin_q_html = f"""<div class="si-section">
+    <div class="si-section-title">분기별 재무추이 (K-IFRS, 최근 4분기)</div>
+    <table class="si-table"><thead><tr>{q_header}</tr></thead><tbody>{q_rows}</tbody></table>
+  </div>"""
 
     # KR financials multi-year (if available)
     kr_fin_ts_html = ""
@@ -6838,6 +6863,7 @@ def _render_stock_info_html(rec: dict) -> str:
       <table class="si-table"><thead><tr><th>지표</th><th class="num">값</th></tr></thead><tbody>{val_per_share}</tbody></table>
     </div>
   </div>
+  {kr_fin_q_html}
   {kr_fin_ts_html}
   {us_xbrl_html}
   {tw_fin_html}
