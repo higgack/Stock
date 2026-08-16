@@ -476,7 +476,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                 if v is not None:
                     compact[k] = v
             ratios = fin.get("ratios", {})
-            for k in ("영업이익률", "순이익률", "ROE", "ROA",
+            for k in ("영업이익률", "순이익률", "ROE", "ROA", "ROIC",
                       "부채비율", "유동비율"):
                 v = ratios.get(k)
                 if v is not None:
@@ -502,6 +502,34 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                 ts.append(entry)
         if ts:
             out.setdefault("kr", {})["financials_ts"] = ts
+        # 분기별 시계열(최근 4분기) — 밸류에이션 탭 "분기별 재무추이"용
+        # (bot.dart_quarterly, 사용자 2026-08-16). 연도별 시계열과 동일
+        # 항목만 저장(렌더 쪽 표 구성을 그대로 재사용하기 위함).
+        try:
+            from bot.dart_quarterly import get_quarterly_series
+            q_series = get_quarterly_series(dart, ticker, n=4)
+            if q_series:
+                q_ts = []
+                for q in q_series:
+                    qentry = {"label": q["label"], "year": q["year"],
+                             "quarter": q["quarter"], "fs_div": q["fs_div"]}
+                    for k in ("매출", "영업이익", "당기순이익", "자산총계",
+                              "부채총계", "자본총계"):
+                        v = q["financials"].get(k)
+                        if v is not None:
+                            qentry[k] = v
+                    for k in ("영업이익률", "순이익률", "ROE", "ROA",
+                              "부채비율", "유동비율"):
+                        v = q["ratios"].get(k)
+                        if v is not None:
+                            qentry[k] = v
+                    if q["financials"].get("_anomaly_revenue_negative"):
+                        qentry["_anomaly_revenue_negative"] = True
+                    q_ts.append(qentry)
+                if q_ts:
+                    out.setdefault("kr", {})["financials_q"] = q_ts
+        except Exception as exc:
+            log.debug("stock_snapshot: DART quarterly financials skipped: %s", exc)
         return out
 
     def _t_fsc_minority() -> dict:
