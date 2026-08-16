@@ -231,13 +231,23 @@ def _parse_dart_amount(raw: str, as_float: bool = False):
     return -v if negative else v
 
 
-def _extract_dart_financials(items: list) -> dict:
+def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -> dict:
     """DART fnlttSinglAcntAll.json 응답의 list[item] → 정규화 dict.
 
     Item 각각 account_id (K-IFRS / dart_ / us-gaap 표준) 또는 account_nm
     (한글 텍스트) 보유. CODE_MAP 우선 매칭, 미매칭 시 NAME_MAP fallback.
     같은 canonical 키에 여러 row 매칭 시 absolute value 큰 것 선택
-    (parent vs consolidated / 본사 vs 종속 등 표준 row 우선)."""
+    (parent vs consolidated / 본사 vs 종속 등 표준 row 우선).
+
+    amount_field(2026-08-19, VM 실측 확인 — 삼성전자 25.반기/25.3분기 원본
+    응답): 분기/반기보고서(reprt_code 11012/11013/11014)의 손익계산서
+    (sj_div=IS) 항목은 **thstrm_amount 자체가 이미 '당기 3개월'(단일분기)
+    값**이고, thstrm_add_amount 가 '당기누적'(연초~해당분기말 누적)이다 —
+    반대로 짐작하기 쉽지만(라벨이 '반기'/'3분기'라 누적처럼 보임) 실측
+    결과 정반대. 사업연도(11011)엔 thstrm_add_amount 자체가 없음(전체가
+    이미 연간 누적이라 구분 불요). amount_field='thstrm_add_amount' 로
+    호출하면 그 누적치를 뽑을 수 있음 — 4분기(연간-9개월누적) 단독 산출
+    에만 필요(bot/dart_quarterly.py)."""
     if not items:
         return {}
     res: dict = {}
@@ -248,7 +258,7 @@ def _extract_dart_financials(items: list) -> dict:
         if not canonical:
             continue
         v = _parse_dart_amount(
-            item.get("thstrm_amount", ""),
+            item.get(amount_field, ""),
             as_float=(canonical in _EPS_KEYS),
         )
         if v is None:
@@ -1117,6 +1127,14 @@ class DartClient:
             "financials": financials,
             "ratios": ratios,
         }
+        # 분기/반기보고서는 thstrm_add_amount(당기누적)도 함께 보존 — 4분기
+        # 단독 실적(연간-9개월누적)을 산출하려면 3분기보고서(11014)의 이
+        # 누적치가 필요하다(bot/dart_quarterly.py, 2026-08-19 VM 실측 확인).
+        # 사업보고서(11011)는 add_amount 필드 자체가 없어 None.
+        if reprt_code != "11011":
+            cum = _extract_dart_financials(items, amount_field="thstrm_add_amount")
+            if cum:
+                result["financials_cumulative"] = cum
         self._disk_set(ck, result)
         return result
 
