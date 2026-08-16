@@ -481,6 +481,12 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                 v = ratios.get(k)
                 if v is not None:
                     compact[k] = v
+            # 구성요소 계정('이자수익' 등)이 매출 승자였으면 그 사실을 실어
+            # 보낸다 — 총매출이 아닌 값이 '매출'로 표기되는 것을 막는다
+            # (사용자 2026-08-16 B안, VM probe 로 메리츠금융지주 확인).
+            _comp = fin["financials"].get("_component_accounts")
+            if _comp:
+                compact["_component_accounts"] = dict(_comp)
             out.setdefault("kr", {})["financials"] = compact
         current_year = _dt.now().year
         ts = []
@@ -493,6 +499,9 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                     v = fin["financials"].get(k)
                     if v is not None:
                         entry[k] = v
+                _comp = fin["financials"].get("_component_accounts")
+                if _comp:
+                    entry["_component_accounts"] = dict(_comp)
                 ratios = fin.get("ratios", {})
                 for k in ("영업이익률", "순이익률", "ROE", "ROA",
                           "부채비율", "유동비율"):
@@ -530,6 +539,9 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                                "_anomaly_account_mismatch"):
                         if q["financials"].get(_f):
                             qentry[_f] = True
+                    _c = q["financials"].get("_component_accounts")
+                    if _c:
+                        qentry["_component_accounts"] = dict(_c)
                     q_ts.append(qentry)
                 if q_ts:
                     out.setdefault("kr", {})["financials_q"] = q_ts

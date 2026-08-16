@@ -249,11 +249,19 @@ _ACCOUNT_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
     # 앞 그룹일수록 우선. 금융·보험은 '영업수익'이 손익계산서 최상단
     # 총수익이고, '이자수익'은 그 구성요소라 총액을 대표할 수 없다.
     "매출": (
-        ("영업수익",),
-        ("매출액", "수익(매출액)", "매출", "도급공사수익", "분양수익"),
-        ("이자수익",),
+        ("영업수익",),                                              # 0 총수익
+        ("매출액", "수익(매출액)", "매출", "도급공사수익", "분양수익"),  # 1 일반 매출액
+        ("이자수익",),                                              # 2 구성요소
     ),
 }
+
+# **구성요소** 그룹 — 총액을 대표하지 못하는 계정. 값은 그대로 쓰되(제거하면
+# 다른 종목이 회귀) '이건 총매출이 아니다'를 플래그로 알린다.
+# 배경(사용자 2026-08-16 VM probe): 메리츠금융지주 2025 사업보고서엔
+# 총수익(영업수익) 계정이 **아예 없고** 보험수익·이자수익 등 구성요소로만
+# 공시된다. 그래서 연간 경로에서 승자가 이자수익(4.15조)이 되는데, 이걸
+# 그냥 '매출'로 표기하면 실제 총수익(3분기 누적만 24.95조)과 6배 어긋난다.
+_COMPONENT_GROUPS: dict[str, set[int]] = {"매출": {2}}
 
 
 def _account_rank(canonical: str, acct_nm: str) -> int:
@@ -291,8 +299,9 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
     if not items:
         return {}
     res: dict = {}
-    src: dict = {}      # canonical → 채택된 원 계정명 (승자 추적)
+    src: dict = {}      # canonical → 채택된 동의어 그룹 인덱스 (승자 추적)
     rank: dict = {}     # canonical → 채택된 계정의 우선순위(작을수록 우선)
+    comp_nm: dict = {}  # canonical → 구성요소 계정명(총액 대표 불가) 또는 None
     for item in items:
         acct_id = (item.get("account_id") or "").strip()
         acct_nm = (item.get("account_nm") or "").strip()
@@ -317,6 +326,13 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
             # 비교하면 멀쩡한 회사에서 차분 가드가 오발화한다.
             src[canonical] = pr
             rank[canonical] = pr
+            comp_nm[canonical] = (acct_nm or acct_id
+                                  if pr in _COMPONENT_GROUPS.get(canonical, ())
+                                  else None)
+    # 구성요소 계정이 승자가 된 항목 — 값은 보존하고 '총액 아님'만 알린다.
+    _comp = {k: v for k, v in comp_nm.items() if v}
+    if _comp:
+        res["_component_accounts"] = _comp
     if src:
         # 어느 계정 그룹이 채택됐는지 — 보고서 간 차분(4분기 = 연간 − 9개월
         # 누적) 시 양쪽이 같은 개념인지 검증하는 재료. `_` 접두 사이드채널
@@ -1144,10 +1160,12 @@ class DartClient:
         # 파생이 계속 조용히 실패한다(nine_mo=None→break). qfin→qfin2 로
         # 버저닝해 구 캐시를 자연스럽게 우회(dart_corpcode_v2.json 등 기존
         # 관례와 동일).
-        # v3(2026-08-16): financials 에 `_src`(채택 계정명) 사이드채널이
-        # 추가됐다. 옛 캐시(7일 TTL)엔 그게 없어 `_diff_quarter` 의 계정
-        # 일치 가드가 조용히 무력화되므로 키를 올려 즉시 반영시킨다.
-        ck = f"qfin3_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
+        # v4(2026-08-16): financials 에 `_src`(채택 그룹) + `_component_accounts`
+        # (구성요소 계정) 사이드채널이 추가됐다. 옛 캐시(7일 TTL)엔 그게 없어
+        # 계정 일치 가드와 '총액 아님' 표기가 최대 일주일 조용히 무력화된다
+        # — 정작 이 fix 를 유발한 138040.KS 가 그 캐시에 들어 있다.
+        # 같은 실패를 이 함수에서만 두 번 겪었다(qfin→qfin2→qfin3).
+        ck = f"qfin4_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached

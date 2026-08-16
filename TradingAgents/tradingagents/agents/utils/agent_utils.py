@@ -4299,6 +4299,19 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                                     else:
                                         v_str = f"{v:,.0f}원"
                                     override_lines.append(f"  • {key}: {v_str}")
+                            # 구성요소 계정에서 온 값은 '총액'이 아니다 —
+                            # 이걸 안 밝히면 분석가가 이자수익 4.15조를
+                            # 총매출로 읽고 마진·성장률을 통째로 오산한다
+                            # (사용자 2026-08-16, 메리츠금융지주 실측:
+                            # 실제 영업수익은 3분기 누적만 24.95조).
+                            _comp = f.get("_component_accounts") or {}
+                            for _k, _acct in sorted(_comp.items()):
+                                override_lines.append(
+                                    f"  ⚠️ 위 '{_k}' 는 총액 계정이 아니라"
+                                    f" '{_acct}'(구성요소) 값이다 — 이 회사는"
+                                    f" 해당 총액 계정을 공시하지 않는다."
+                                    f" 총매출/총수익으로 해석하지 말고,"
+                                    f" 이 값 기반 비율·성장률 계산도 하지 마라.")
                             eps = f.get("EPS")
                             if isinstance(eps, (int, float)) and eps != 0:
                                 override_lines.append(f"  • EPS: ₩{eps:,.0f}")

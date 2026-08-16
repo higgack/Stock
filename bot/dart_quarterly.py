@@ -60,6 +60,24 @@ def _flag_revenue_anomaly(fin: dict) -> dict:
     return fin
 
 
+def _mark_component(out: dict, src_fin: dict) -> dict:
+    """`_component_accounts`(dart_client 가 심음)를 결과 dict 로 이어 나른다.
+
+    '총액을 대표하지 못하는 계정에서 온 값' 이라는 사실만 옮긴다 — 값은
+    보존하고 렌더러가 표기한다(사용자 2026-08-16 B안: 매핑 제거 시 다른
+    종목이 회귀하므로 데이터는 살리고 오인만 막는다)."""
+    comp = (src_fin or {}).get("_component_accounts")
+    if not comp:
+        return out
+    # 계정 불일치 가드가 이미 None 으로 비운 항목은 제외 — 안 그러면 한 셀에
+    # "매출 공백 … 비워둠" 과 "매출 = 이자수익 … 원자료 그대로" 가 동시에
+    # 붙어 서로 모순된다("— ⚠️", 2026-08-16 독립 리뷰).
+    kept = {k: v for k, v in comp.items() if out.get(k) is not None}
+    if kept:
+        out["_component_accounts"] = kept
+    return out
+
+
 def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     """4분기 단독 = 연간(now) − 9개월누적(prev). 저량(STOCK) 항목은
     차분하지 않고 연간 시점값 그대로 유지.
@@ -103,6 +121,9 @@ def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     if mismatched:
         out["_anomaly_account_mismatch"] = True
         out["_mismatched_accounts"] = mismatched
+    # 구성요소 계정('이자수익' 등)이 승자였던 항목은 값이 총액이 아니다 —
+    # 값은 그대로 두고 그 사실만 이어 나른다(사용자 2026-08-16 B안).
+    _mark_component(out, cum_now)
     return _flag_revenue_anomaly(out)
 
 
@@ -191,6 +212,7 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
             # 가 이미 `_` 접두 키를 걸러낸다).
             fin = _flag_revenue_anomaly(
                 {k: v for k, v in entry["financials"].items() if k != "_src"})
+            _mark_component(fin, entry["financials"])
         out.append({
             "label": quarter_label(y, rc), "year": y, "quarter": _Q_NUM[rc],
             "reprt_code": rc, "fs_div": effective_fs_div,
