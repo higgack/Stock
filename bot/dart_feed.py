@@ -332,8 +332,45 @@ def fetch_kr_ir_month(year: int, month: int) -> list[dict]:
     return result
 
 
+_ENV_TRIED = False
+
+
 def _dart_api_key() -> str | None:
-    return (os.environ.get("DART_API_KEY") or "").strip() or None
+    """DART API 키. 없으면 **한 번만** .env 로드를 시도한다.
+
+    이 모듈은 지금까지 호출부가 미리 `load_dotenv()` 한 것에 의존했고
+    (`bot/telegram_bot.py:42`), `python -m bot.dart_feed` 는 `__main__` 이
+    `~/stock/.env` 를 손으로 파싱했다. 그래서 **새 진입점마다 그걸 따로
+    기억해야 했고**, 실제로 `bot/scripts/dart_coverage_probe.py` 가 키 없이
+    조용히 돌았다(사용자 2026-08-16 'DART_API_KEY 없음'). 원천에서 막는다.
+    운영 데몬은 이미 로드돼 있어 첫 분기에서 바로 반환 — 무영향이고,
+    플래그 때문에 매 fetch 마다 파일 I/O 를 하지도 않는다.
+
+    ⚠️ `load_dotenv()` 가 아니라 `dotenv_values()` 를 쓴다 — 전자는 .env 의
+    **모든 키**(TELEGRAM_BOT_TOKEN·DASHBOARD_PASSWORD·KIS_* …)를 프로세스
+    환경에 주입한다. DART 키 하나를 읽는 함수의 부작용으로는 과하다
+    (2026-08-16 독립 리뷰). 필요한 키만 골라 넣는다."""
+    global _ENV_TRIED
+    key = (os.environ.get("DART_API_KEY") or "").strip()
+    if not key and not _ENV_TRIED:
+        _ENV_TRIED = True
+        try:
+            from dotenv import dotenv_values, find_dotenv
+            # cwd 에서 위로 탐색(진입점이 리포 어디서 실행되든) → 데몬 경로 폴백.
+            for _p in (find_dotenv(usecwd=True),
+                       str(Path.home() / "stock" / ".env")):
+                if not _p:
+                    continue
+                _v = ((dotenv_values(_p) or {}).get("DART_API_KEY") or "").strip()
+                if _v:
+                    os.environ.setdefault("DART_API_KEY", _v)
+                    key = _v
+                    break
+        except ModuleNotFoundError:    # 테스트 환경(unstored_check 와 동일 관례)
+            pass
+        except OSError as exc:
+            log.warning("dart_feed: .env 읽기 실패: %s", exc)
+    return key or None
 
 
 # ── 구조화 상세 추출 ──
