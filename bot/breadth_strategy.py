@@ -533,7 +533,10 @@ def _market_section(d: dict) -> str:
     regime = d.get("regime")
     state = d.get("state") or "—"
     badge = ("<span class='sub'>월말 종가 확정 신호</span>" if d.get("is_confirmed")
-             else "<span class='sub'>중간점검 — 확정은 월말 종가 기준</span>")
+             else "<span class='sub'>중간점검 — 6시간마다 재계산(봇 기동 직후 1회) · "
+                  "Breadth·DD·RS 는 <b>일봉 종가</b> 입력이라 거래일마다 한 번 "
+                  "바뀝니다(F&amp;G 는 재계산 때마다 갱신) · "
+                  "확정은 월말 종가 기준</span>")
     rows = "".join(
         f"<tr class='{'on' if key == regime else ''}'>"
         f"<td>{_h.escape(label)}</td><td>{rng}</td><td>{_h.escape(st)}</td>"
@@ -562,9 +565,13 @@ def _market_section(d: dict) -> str:
         f"<td class='num'>{(r.get('total_w') or 0) * 100:.0f}%</td>"
         f"<td class='num'>{(r.get('cash_w') or 0) * 100:.0f}%</td></tr>"
         for r in reversed(load_signals(mkt, limit=24)))
-    hist_html = (f"<table class='bs-tbl'><tr><th>월</th><th>상태</th>"
-                 f"<th>Breadth</th><th>지수 DD</th><th>지수비중</th>"
-                 f"<th>최종비중</th><th>현금</th></tr>{hist}</table>"
+    # ⚠️ 숫자 컬럼은 **헤더도** 우측정렬(class="num") — 셀만 우측이고 헤더가
+    # 좌측이면 제목과 값이 어긋나 보인다(사용자 2026-08-16 스크린샷).
+    hist_html = (f"<table class='bs-tbl'><thead><tr><th>월</th><th>상태</th>"
+                 f"<th class='num'>Breadth</th><th class='num'>지수 DD</th>"
+                 f"<th class='num'>지수비중</th><th class='num'>최종비중</th>"
+                 f"<th class='num'>현금</th></tr></thead><tbody>{hist}"
+                 f"</tbody></table>"
                  if hist else
                  "<div class='sub'>아직 확정 신호 이력이 없습니다 — "
                  "첫 월말 종가에 기록됩니다.</div>")
@@ -595,7 +602,7 @@ _BS_CSS = """
 .bs-tbl{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
 .bs-tbl th,.bs-tbl td{padding:5px 8px;border-bottom:1px solid var(--border,#2a3656);text-align:left}
 .bs-tbl th{color:var(--fg-soft,#93a0bd);font-weight:500}
-.bs-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.bs-tbl th.num,.bs-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
 .bs-tbl tr.on{background:rgba(77,163,255,.14);font-weight:600}
 </style>
 """
@@ -628,7 +635,13 @@ def render_page(data: dict, now=None) -> str:
 <b>현금 대기</b> — 역추세 구간이어도 지수 낙폭이 −12%에 못 미치면 매수 트랜치가 0이라
 현금입니다(별도 구간이 아니라 이 조건의 결과).<br>
 <b>중간점검 vs 확정</b> — 원 전략은 <b>월말 종가 신호를 다음 거래일부터 적용</b>합니다.
-매일 값은 참고용 중간점검이고, 월말 값만 이력에 기록됩니다.<br>
+위쪽 카드(중간점검)는 <b>6시간 주기</b>로 다시 계산되고 봇 기동 직후에도 한 번 돕니다.
+다만 판정 입력(Breadth·지수 DD·RS)이 <b>일봉 종가</b>라 그 값들이 실제로 바뀌는 건
+거래일마다 한 번(그 시장의 직전 거래일 종가가 확정된 뒤)이고, 기준일을 카드에
+<b>기준일 YYYY-MM-DD</b> 로 적어 둡니다. 같은 줄의 F&amp;G 는 판정에 쓰지 않는
+표시용이라 재계산 때마다(6시간) 최신값으로 바뀝니다.
+아래 <b>확정 신호 이력</b>만 월말 종가 기준이며, 이력에 기록되는 값은 그 달 마지막
+거래일까지만 잘라 계산해 장중에 조회해도 달라지지 않습니다.<br>
 <b>비추세 구간의 'RS 강도'</b> — 원 전략은 25/50/75/100% 4단계만 밝히고 강도의 정의를
 주지 않아, 여기서는 <b>지수를 이긴 섹터의 비율</b>을 4분위로 나눠 씁니다(≤25%→25% …
 &gt;75%→100%). 표본 수와 무관한 정의라 KR·US 에 같은 뜻으로 적용됩니다 —

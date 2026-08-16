@@ -484,22 +484,118 @@ def _fetch_vix_naver():
     return None
 
 
+# 변동성 지수 과거 비교창 — CNN F&G 카드와 **같은 라벨·같은 순서**로 통일
+# (사용자 2026-08-16 "시장 센티먼트처럼 전일·1주·한달·1년"). 거래일 기준
+# 오프셋: 1주=5, 1달=21, 1년=252.
+_VOL_LOOKBACKS = (("전일", 1), ("1주", 5), ("1달", 21), ("1년", 252))
+
+
+def vol_history(rows: list) -> dict:
+    """오름차순 히스토리 → {전일, 1주, 1달, 1년} 종가. 부족한 창은 생략한다
+    (없는 값을 가장 오래된 값으로 대체하면 '1년 전'이 거짓이 된다)."""
+    out: dict = {}
+    if not rows:
+        return out
+    closes = [r.get("close") for r in rows if r.get("close") is not None]
+    for label, back in _VOL_LOOKBACKS:
+        if len(closes) > back:
+            out[label] = closes[-1 - back]
+    return out
+
+
+# VKOSPI(코스피200 변동성지수) — KRX 산출. yfinance 에 표준 티커가 없어
+# 네이버 국내지수 차트 API 를 쓴다. ⚠️ 엔드포인트를 샌드박스에서 실측할 수
+# 없어(네이버 차단) **후보 2개를 순서대로** 시도하고, 어느 것이 통했는지
+# 로그로 남긴다. 둘 다 실패하면 값 없음 → 카드 자체를 렌더하지 않는다
+# (없는 지수를 0 이나 VIX 값으로 채우지 않는다).
+_VKOSPI_CANDIDATES = ("VKOSPI", "VKOSPI200")
+# 변동성지수 타당 범위 — VKOSPI 는 연율화 %(역대 저점 ~10, 2008/2020 급등기
+# ~70~90). 코스피 지수(2,000~3,000)나 코스피200(300~400)이 잘못 잡히면 이
+# 범위 밖이라 걸린다. ⚠️ 엔드포인트를 실측 못 한 채로 넣은 후보라, 200 응답을
+# 그대로 믿으면 **가격지수를 VKOSPI 라고 표시**하게 된다(2026-08-16 독립 리뷰).
+_VKOSPI_MIN, _VKOSPI_MAX = 3.0, 200.0
+_VKOSPI_MIN_ROWS = 30
+
+
+def _vkospi_plausible(rows: list) -> bool:
+    """값이 변동성지수 범위 안이고 행 수가 충분한가. 아니면 채택하지 않는다."""
+    closes = [r.get("close") for r in rows or []
+              if isinstance(r.get("close"), (int, float))]
+    if len(closes) < _VKOSPI_MIN_ROWS:
+        return False
+    return all(_VKOSPI_MIN <= c <= _VKOSPI_MAX for c in closes)
+
+
+def _fetch_vkospi_rows(days: int = 400) -> list:
+    """[{date, close}] 오름차순. 실패 시 [] (graceful)."""
+    try:
+        import requests
+
+        from bot.chart_data import (_df_to_daily_payload, _parse_naver_daily,
+                                    _period_start_end, _rows_to_daily_df)
+        from bot.naver_quote import _HDRS
+    except Exception as exc:
+        log.debug("market_timing: VKOSPI import 실패: %s", exc)
+        return []
+    start, end = _period_start_end("3y")
+    params = {"startDateTime": start.strftime("%Y%m%d") + "0000",
+              "endDateTime": end.strftime("%Y%m%d") + "0000"}
+    for code in _VKOSPI_CANDIDATES:
+        url = f"https://api.stock.naver.com/chart/domestic/index/{code}/day"
+        try:
+            r = requests.get(url, headers=_HDRS, params=params, timeout=10)
+            if r.status_code != 200:
+                continue
+            df = _rows_to_daily_df(_parse_naver_daily(r.json()))
+            payload = _df_to_daily_payload(df, code, "3y")
+            rows = _payload_to_rows(payload, days)
+            if not rows:
+                continue
+            if not _vkospi_plausible(rows):
+                _c = [r.get("close") for r in rows[-3:]]
+                log.warning("market_timing: %s 응답이 변동성지수 범위 밖 — "
+                            "다른 지수일 가능성(최근값 %s, %d행). 채택 안 함.",
+                            code, _c, len(rows))
+                continue
+            log.info("market_timing: VKOSPI 소스 확인 — %s (%d행)",
+                     code, len(rows))
+            return rows
+        except Exception as exc:
+            log.debug("market_timing: VKOSPI %s 실패: %s", code, exc)
+    log.info("market_timing: VKOSPI 조회 실패 — 카드 생략(후보: %s)",
+             ", ".join(_VKOSPI_CANDIDATES))
+    return []
+
+
 def fetch_volatility_snapshot() -> dict:
-    """{"vix": {value, date, source}, "move": {value, date}|None} — VIX 는
-    네이버(메인 대시보드와 canonical 값 일치) → yfinance 2단 폴백. 실패한
-    쪽만 생략(그 항목 없이 반환)."""
+    """{"vix": {...}, "vkospi": {...}|None, "move": {...}|None}.
+
+    VIX 는 네이버(메인 대시보드와 canonical 값 일치) → yfinance 2단 폴백.
+    VIX·VKOSPI 는 CNN F&G 카드와 같은 형식으로 **전일·1주·1달·1년** 과거값을
+    함께 싣는다(사용자 2026-08-16). 실패한 쪽만 생략한다."""
     out: dict = {}
     try:
+        vix_hist = fetch_index_history("^VIX", days=400, min_rows=200)
         nv = _fetch_vix_naver()
         if nv is not None:
             out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
-        else:
-            vix_hist = fetch_index_history("^VIX", days=10)
-            if vix_hist:
-                out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
-                             "source": "yfinance(폴백)"}
+        elif vix_hist:
+            out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
+                          "source": "yfinance(폴백)"}
+        if out.get("vix"):
+            # 과거값은 항상 히스토리에서 — 현재값 소스(네이버 실시간)와
+            # 달라도 '전일 대비' 의 비교 대상은 종가 시계열이 맞다.
+            out["vix"]["history"] = vol_history(vix_hist)
     except Exception as exc:
         log.debug("market_timing: VIX fetch failed: %s", exc)
+    try:
+        vk = _fetch_vkospi_rows()
+        if vk:
+            out["vkospi"] = {"value": vk[-1]["close"], "date": vk[-1]["date"],
+                             "source": "네이버 국내지수",
+                             "history": vol_history(vk)}
+    except Exception as exc:
+        log.debug("market_timing: VKOSPI fetch failed: %s", exc)
     try:
         move_hist = fetch_index_history("^MOVE", days=10)
         if move_hist:
@@ -774,23 +870,48 @@ def render_market_timing_page(data: dict, now=None) -> str:
     vol_card = ""
     if vol:
         vix = vol.get("vix")
+        vkospi = vol.get("vkospi")
         move = vol.get("move")
-        vol_rows = ""
+
+        def _vol_panel(title, rec, note):
+            """CNN F&G 카드와 **같은 형식** — 현재 + 전일·1주·1달·1년
+            (사용자 2026-08-16). 없는 창은 칸 자체를 만들지 않는다."""
+            src = rec.get("source", "")
+            cells = (f'<div class="stat"><div class="k">현재'
+                     f'{f" ({_h.escape(src)})" if src else ""}</div>'
+                     f'<div class="v">{rec["value"]:.1f}</div></div>')
+            hist = rec.get("history") or {}
+            for _lb, _ in _VOL_LOOKBACKS:
+                if hist.get(_lb) is not None:
+                    cells += (f'<div class="stat"><div class="k">{_lb}</div>'
+                              f'<div class="v" style="font-size:16px">'
+                              f'{hist[_lb]:.1f}</div></div>')
+            return (f'<div class="panel"><div class="panel-title">{title}</div>'
+                    f'<div class="stat-grid">{cells}</div>'
+                    f'<div class="note">{note}</div></div>')
+
+        # ⚠️ 국내(VKOSPI)를 위, 미국(VIX)을 아래 — 사용자 2026-08-16
+        # "현재 VIX 는 미국꺼니까 그 VIX 바로 위에 VKOSPI 를".
+        if vkospi:
+            vol_card += _vol_panel(
+                "🌪️ 변동성 — 국내 (VKOSPI)", vkospi,
+                "VKOSPI = 코스피200 옵션 내재변동성(KRX 산출) — 국내 증시의 "
+                "공포지수. VIX 와 <b>직접 비교하지 마세요</b>: 기초자산·산출 "
+                "옵션군이 달라 같은 값이 같은 긴장도가 아닙니다.")
         if vix:
-            _vix_src = vix.get("source", "")
-            vol_rows += (f'<div class="stat"><div class="k">VIX'
-                        f'{f" ({_h.escape(_vix_src)})" if _vix_src else ""}</div>'
-                        f'<div class="v">{vix["value"]:.1f}</div></div>')
+            vol_card += _vol_panel(
+                "🌪️ 변동성 — 미국 (VIX)", vix,
+                "VIX = S&amp;P 500 옵션 내재변동성(공포지수). 현재값은 메인 "
+                "대시보드와 동일 네이버 소스(canonical 일치)이고, 과거 비교값은 "
+                "종가 시계열 기준입니다.")
         if move:
-            vol_rows += (f'<div class="stat"><div class="k">MOVE</div>'
-                        f'<div class="v">{move["value"]:.1f}</div></div>')
-        if vol_rows:
-            vol_card = f"""
-<div class="panel"><div class="panel-title">🌪️ 변동성 (VIX·MOVE)</div>
-<div class="stat-grid">{vol_rows}</div>
-<div class="note">VIX=주식시장 변동성(공포지수, 메인 대시보드와 동일 네이버 소스 — canonical 일치) ·
-MOVE=채권시장 변동성(ICE BofA, 커버리지 불안정 시 생략).
-금리변동성이 기술주/반도체 장세에 선행 신호가 되는 경우가 있어 병기.</div></div>"""
+            vol_card += (
+                '<div class="panel"><div class="panel-title">🌪️ 채권 변동성 (MOVE)</div>'
+                f'<div class="stat-grid"><div class="stat"><div class="k">현재</div>'
+                f'<div class="v">{move["value"]:.1f}</div></div></div>'
+                '<div class="note">MOVE = 미국 국채 옵션 변동성(ICE BofA). '
+                '금리변동성이 기술주/반도체 장세에 선행 신호가 되는 경우가 있어 '
+                '병기(커버리지 불안정 시 생략).</div></div>')
 
     sent = data.get("sentiment") or {}
     sent_card = ""

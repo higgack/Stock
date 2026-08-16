@@ -5822,13 +5822,21 @@ def _render_stock_info_html(rec: dict) -> str:
     val_per_share += _val_row("50일 이동평균", si.get("fiftyDayAverage"), "", "fiftyDayAverage")
     val_per_share += _val_row("200일 이동평균", si.get("twoHundredDayAverage"), "", "twoHundredDayAverage")
 
-    # KR 재무추이 표(연도별·분기별 공용) — 2026-08-19 code-review 발견:
+    # KR 재무추이 표(연도별·분기별 공용). 컬럼 방향은 렌더러가 정한다
+    # (오래된→최신, 사용자 2026-08-16 "최신이 뒤쪽으로 · 모든 나라") —
+    # 호출부에서 다시 뒤집지 말 것. 2026-08-19 code-review 발견:
     # 두 블록이 컬럼헤더 생성 방식만 다르고 나머지가 완전 복붙이라 한쪽만
     # 고치고 잊기 쉬웠음(dedup) + 분기 쪽 _anomaly_revenue_negative 플래그
     # (dart_quarterly._diff_quarter 가 세팅)를 아무도 안 읽어 매출 음수가
     # 설명 없이 그냥 찍히던 문제도 같이 해결(플래그를 만든 목적 자체가
     # "렌더러가 판단"이었는데 판단하는 렌더러가 없었음).
     def _kr_fin_trend_table(title: str, items: list, col_label) -> str:
+        # 컬럼은 항상 **오래된→최신**(최신이 오른쪽) — 사용자 2026-08-16
+        # "최신이 뒤쪽으로". 소스 순서(연간은 최신 우선, 분기는 오래된 우선)가
+        # 제각각이라 호출부마다 뒤집는 대신 여기서 한 번에 정렬한다.
+        # 연간 항목엔 quarter 가 없어 0 이 되고, 같은 해 비교가 없어 안전하다.
+        items = sorted(items, key=lambda it: (it.get("year") or 0,
+                                              it.get("quarter") or 0))
         header = "<th>항목</th>" + "".join(
             f"<th class='num'>{esc(str(col_label(it)))}</th>" for it in items)
         rows = ""
@@ -5885,14 +5893,14 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_fin_q_html = ""
     kr_fin_q = kr.get("financials_q")
     if kr_fin_q and len(kr_fin_q) > 1:
-        # 표시 순서 = **최신이 왼쪽**(사용자 2026-08-19) — 바로 아래 연도별
-        # 표(financials_ts 가 이미 최신→과거)와 방향을 맞춘다. 저장된
-        # financials_q 자체는 과거→최신(시계열 자연순, dart_quarterly 가
-        # 그렇게 반환)로 두고 **렌더 시점에만** 뒤집는다 — 이후 분기 추이
-        # 차트(실적분석 인포그래픽)는 과거→최신이 맞으므로 데이터 순서를
-        # 바꾸면 그쪽이 거꾸로 그려진다.
+        # 표시 순서 = **오래된→최신**(최신이 오른쪽). 사용자 2026-08-19
+        # 에 '최신이 왼쪽'으로 맞췄다가 2026-08-16 에 뒤집었다("최신이
+        # 뒤쪽으로 · 모든 나라 적용"). 정렬은 _kr_fin_trend_table 이
+        # (year, quarter) 로 직접 하므로 **여기서 뒤집지 말 것** — 저장된
+        # financials_q 는 시계열 자연순 그대로 둔다(분기 추이 차트가
+        # 그 순서를 쓴다).
         kr_fin_q_html = _kr_fin_trend_table(
-            "분기별 재무추이 (K-IFRS, 최근 4분기)", list(reversed(kr_fin_q)),
+            "분기별 재무추이 (K-IFRS, 최근 4분기)", kr_fin_q,
             lambda q: q.get("label", ""))
 
     # KR financials multi-year (if available)
@@ -7220,6 +7228,10 @@ def _render_stock_info_html(rec: dict) -> str:
             for view_label, rows in (("연간", annual), ("분기", quarterly)):
                 if not rows:
                     continue
+                # 최신이 오른쪽(사용자 2026-08-16, 전 시장 공통). yfinance 는
+                # 최신 우선으로 주는데 표는 시간순으로 읽는 게 자연스럽다.
+                # period 는 'YYYY-MM-DD' 라 사전순 = 시간순이다.
+                rows = sorted(rows, key=lambda r: str(r.get("period") or ""))
                 periods = [r.get("period", "?")[:7] for r in rows]
                 hdr = "".join(f'<th class="num">{esc(p)}</th>' for p in periods)
                 all_items = set()

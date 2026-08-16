@@ -5421,18 +5421,19 @@ class TestDartRoicAndQuarterlyPane:
         assert "get_quarterly_series" in src and "financials_q" in src
 
     def test_quarterly_table_renders_newest_first_but_data_stays_chronological(self):
-        # 사용자 2026-08-19 — 분기표도 연도표(FY2025·FY2024·FY2023)처럼
-        # 최신이 왼쪽. 단 저장 데이터(financials_q)는 과거→최신 유지 —
-        # 이후 분기 추이 차트(실적분석 인포그래픽)가 그 순서를 쓰므로
-        # 데이터를 뒤집으면 차트가 거꾸로 그려진다. 렌더 시점에만 reverse.
+        # ⚠️ 계약 반전 — 옛 요구(2026-08-19 "최신이 왼쪽")를 사용자가
+        # 2026-08-16 에 뒤집었다("최신이 뒤쪽으로, 모든 나라 적용").
+        # 이제 **표 렌더러가 항상 오래된→최신으로 정렬**하고 호출부는
+        # 순서를 손대지 않는다(정렬 책임 일원화 — 소스 순서가 달라져도
+        # 화면은 같다). 실제 컬럼 순서는 TestChronologicalTablesAndVol 이
+        # 렌더 결과로 검증한다. 여기서는 **호출부가 다시 뒤집지 않는지**만.
         src = open("bot/dashboard.py", encoding="utf-8").read()
         # 각 호출부의 인자 부분만 잘라서 검사(제목 문자열 자체에 괄호가
         # 있어 ')' 로는 못 자름 → 다음 줄까지 고정 윈도).
         q_call = src[src.index('"분기별 재무추이'):][:300]
-        assert "reversed(kr_fin_q)" in q_call, "분기표가 최신-왼쪽으로 정렬되지 않음"
-        # 연도별은 이미 최신→과거로 적재돼 있어 뒤집으면 안 됨.
+        assert "reversed" not in q_call, "호출부가 다시 뒤집어 최신이 왼쪽이 됨"
         ts_call = src[src.index('"재무 추이 (K-IFRS 연결)"'):][:300]
-        assert "reversed" not in ts_call, "연도별 표를 뒤집으면 최신이 오른쪽이 됨"
+        assert "reversed" not in ts_call, "호출부가 다시 뒤집음"
         # 데이터 적재 쪽은 정렬을 건드리지 않아야 한다(시계열 자연순 보존).
         snap = open("bot/stock_snapshot.py", encoding="utf-8").read()
         q_block = snap[snap.index("get_quarterly_series"):]
@@ -5647,13 +5648,16 @@ class TestQuarterlyInfographic20260819:
         assert _chg(100, -50) is None        # 적자→흑자: % 무의미
         assert _chg(None, 100) is None and _chg(100, None) is None
 
-    def test_table_fallback_is_newest_first(self):
+    def test_table_fallback_is_oldest_first(self):
+        """계약 반전 — 사용자 2026-08-16 "최신이 뒤쪽으로 · 모든 나라".
+        이 표는 폰트 없는 서버에서 PNG 차트를 대신하므로 차트와 같은
+        방향(오래된→최신)이어야 한다."""
         from bot.quarterly_infographic import table_html
         p = {"quarters": [
             {"label": "25.4Q", "financials": {"매출": 100e8}, "ratios": {}},
             {"label": "26.1Q", "financials": {"매출": 200e8}, "ratios": {}}]}
         h = table_html(p)
-        assert h.index("26.1Q") < h.index("25.4Q")
+        assert h.index("25.4Q") < h.index("26.1Q")
 
     def test_build_payload_is_kr_only(self):
         from bot.quarterly_infographic import build_payload
@@ -19497,35 +19501,61 @@ class TestMarketTimingBreadthVol20260726:
         # 네이버 소스를 우선 써야 canonical 값이 일치. (CNN 을 VIX 최우선
         # 소스로 쓰려던 시도는 잘못된 전제로 밝혀져 되돌림 — 사용자가 말한
         # "CNN 값"은 VIX 가 아니라 F&G 지수 자체였음, 아래 sentiment 테스트
-        # 참조.) yfinance 는 호출조차 안 돼야 함(불필요한 콜 회피 확인).
+        # 참조.)
+        # ⚠️ 옛 계약은 '네이버 성공 시 yfinance 호출 금지'였는데, 카드에
+        # 전일·1주·1달·1년 과거값이 붙으면서(사용자 2026-08-16) 시계열이
+        # **필요한 데이터**가 됐다. 계약은 이제 '현재값은 네이버가 이긴다'
+        # 이고, 히스토리는 종가 시계열에서 온다.
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
+        monkeypatch.setattr(mt, "_fetch_vkospi_rows", lambda days=400: [])
+        seen = []
 
-        def fail_if_called(ticker, days=10):
-            raise AssertionError(f"naver 성공 시 yfinance({ticker}) 호출 금지")
+        def fake_fetch(ticker, days=120, min_rows=None):
+            seen.append(ticker)
+            if ticker == "^VIX":
+                return [{"close": 14.0 + i, "date": f"d{i}"} for i in range(300)]
+            raise RuntimeError("MOVE unavailable")
 
-        monkeypatch.setattr(mt, "fetch_index_history", fail_if_called)
+        monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
         result = mt.fetch_volatility_snapshot()
-        assert result["vix"] == {"value": 18.6, "date": None, "source": "네이버(실시간)"}
+        assert result["vix"]["value"] == 18.6, "네이버 현재값이 져서는 안 된다"
+        assert result["vix"]["source"] == "네이버(실시간)"
+        assert result["vix"]["history"]["전일"] == 312.0
+        assert seen.count("^VIX") == 1, f"^VIX 를 중복 조회: {seen}"
 
     def test_fetch_volatility_snapshot_vix_falls_back_to_yfinance(self, monkeypatch):
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
 
-        def fake_fetch(ticker, days=10):
+        monkeypatch.setattr(mt, "_fetch_vkospi_rows", lambda days=400: [])
+
+        def fake_fetch(ticker, days=120, min_rows=None):
             if ticker == "^VIX":
                 return [{"close": 14.2, "date": "2026-07-25"}]
             raise RuntimeError("MOVE unavailable")   # 독립 실패 — VIX 는 살아있어야
 
         monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
         result = mt.fetch_volatility_snapshot()
-        assert result == {"vix": {"value": 14.2, "date": "2026-07-25", "source": "yfinance(폴백)"}}
+        assert result["vix"]["value"] == 14.2
+        assert result["vix"]["date"] == "2026-07-25"
+        assert result["vix"]["source"] == "yfinance(폴백)"
+        # 1행뿐이라 과거창은 만들 수 없다 — 빈 dict(억지 채움 금지).
+        assert result["vix"]["history"] == {}
+        assert "vkospi" not in result
 
     def test_fetch_volatility_snapshot_both_fail_graceful(self, monkeypatch):
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
-        monkeypatch.setattr(mt, "fetch_index_history",
-                           lambda ticker, days=10: (_ for _ in ()).throw(RuntimeError("x")))
+        # ⚠️ VKOSPI 도 반드시 스텁 — 안 하면 이 테스트가 **실제 HTTPS** 를
+        # 때리고, 엔드포인트가 살아나는 순간 VM 에서 `make test` 가 깨진다
+        # (2026-08-16 독립 리뷰 실측).
+        monkeypatch.setattr(mt, "_fetch_vkospi_rows", lambda days=400: [])
+
+        def boom(ticker, days=120, min_rows=None):
+            raise RuntimeError("x")
+
+        monkeypatch.setattr(mt, "fetch_index_history", boom)
         assert mt.fetch_volatility_snapshot() == {}
 
     def test_no_fetch_vix_cnn_reverted(self):
@@ -21024,3 +21054,307 @@ class TestQuarterlyReviewFixes20260816:
         txt = _derived_desc(si)
         assert "PER(후행)(TTM)" in txt and "PBR(최근분기말)" in txt
         assert "비지배지분 포함" in txt
+
+
+class TestChronologicalTablesAndVol20260816:
+    """사용자 2026-08-16 5문항 — 표 정렬 · Breadth 헤더 · VIX/VKOSPI 이력."""
+
+    # ── ①② 재무 표는 최신이 오른쪽(전 시장) ──────────────────────────
+    def test_kr_quarterly_trend_is_oldest_to_newest(self):
+        from bot.dashboard import _render_stock_info_html
+        q = [{"label": f"25.{i}Q", "year": 2025, "quarter": i,
+              "매출": 1e11 * i, "영업이익": 1e10, "당기순이익": 1e10}
+             for i in (3, 4)]
+        q += [{"label": f"26.{i}Q", "year": 2026, "quarter": i,
+               "매출": 2e11 * i, "영업이익": 2e10, "당기순이익": 2e10}
+              for i in (1, 2)]
+        # 소스가 최신 우선으로 와도 표는 시간순이어야 한다.
+        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": {
+            "currency": "KRW", "kr": {"financials_q": list(reversed(q))}}})
+        html = out["other_panes"]
+        cols = re.findall(r"<th class='num'>(2[56]\.\dQ)</th>", html)
+        assert cols == ["25.3Q", "25.4Q", "26.1Q", "26.2Q"], cols
+
+    def test_kr_annual_trend_is_oldest_to_newest(self):
+        from bot.dashboard import _render_stock_info_html
+        ts = [{"year": y, "매출": 1e12, "영업이익": 1e11, "당기순이익": 1e11}
+              for y in (2025, 2024, 2023)]        # 소스는 최신 우선
+        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": {
+            "currency": "KRW", "kr": {"financials_ts": ts}}})
+        cols = re.findall(r"<th class='num'>FY(\d{4})</th>", out["other_panes"])
+        assert cols == ["2023", "2024", "2025"], cols
+
+    def test_financial_statements_are_oldest_to_newest(self):
+        """손익계산서·재무상태표·현금흐름표 · 연간/분기 · 전 시장 공통."""
+        from bot.dashboard import _render_stock_info_html
+        def _rows(periods):
+            return [{"period": p, "Total Revenue": 1e9} for p in periods]
+        # ⚠️ 소스 순서를 **뒤섞어** 둔다 — 최신-우선 그대로면 단순 reverse
+        # 로도 통과해서 '정렬한다'는 계약을 검증하지 못한다(2026-08-16 실측).
+        fins = {
+            "income_statement": {
+                "annual": _rows(["2024-12-31", "2025-12-31", "2023-12-31"]),
+                "quarterly": _rows(["2026-03-31", "2025-12-31", "2026-06-30"]),
+            },
+            "balance_sheet": {"annual": _rows(["2025-12-31", "2023-12-31"])},
+            "cash_flow": {"annual": _rows(["2024-12-31", "2025-12-31"])},
+        }
+        out = _render_stock_info_html({"ticker": "AAPL", "stock_info": {
+            "currency": "USD", "financials": fins}})
+        html = out["other_panes"]
+        # ⚠️ 제목 문자열이 다른 pane 의 **설명문**에도 나온다 — 표 앞의
+        # 헤더 마크업으로 앵커해야 한다(그냥 index 로 자르면 매칭이 0개라
+        # `cols == sorted(cols)` 가 공허하게 통과한다, 2026-08-16 독립 리뷰).
+        seen = 0
+        for label in ("손익계산서", "재무상태표", "현금흐름표"):
+            anchor = f'>{label} '          # "손익계산서 — 연간" / "… — 분기"
+            pos = 0
+            while True:
+                i = html.find(anchor, pos)
+                if i < 0:
+                    break
+                seg = html[i:]
+                seg = seg[:seg.index("</table>") + 8]
+                cols = re.findall(r'<th class="num">(\d{4}-\d{2})</th>', seg)
+                assert cols, f"{label} 표에서 기간 헤더를 못 찾음"
+                assert cols == sorted(cols), f"{label} 역순: {cols}"
+                seen += 1
+                pos = i + 1
+        # 연간 3 + 분기 1(손익) + 연간 1(재무상태) + 연간 1(현금흐름) 최소 4개.
+        assert seen >= 4, f"검사된 표가 {seen}개뿐 — 앵커가 안 맞는다"
+
+    def test_ordering_is_source_independent(self):
+        """정렬 책임이 호출부가 아니라 표 렌더러에 있어야 한다 — 소스 순서가
+        바뀌어도(또는 섞여 와도) 화면은 항상 시간순."""
+        from bot.dashboard import _render_stock_info_html
+        import random
+        q = [{"label": f"26.{i}Q", "year": 2026, "quarter": i, "매출": 1e11}
+             for i in (1, 2, 3, 4)]
+        random.Random(7).shuffle(q)
+        out = _render_stock_info_html({"ticker": "X.KQ", "stock_info": {
+            "currency": "KRW", "kr": {"financials_q": q}}})
+        cols = re.findall(r"<th class='num'>(26\.\dQ)</th>", out["other_panes"])
+        assert cols == ["26.1Q", "26.2Q", "26.3Q", "26.4Q"], cols
+
+    # ── ③ Breadth 확정 신호 표 헤더 정렬 ─────────────────────────────
+    def test_breadth_history_numeric_headers_are_right_aligned(self, tmp_path,
+                                                               monkeypatch):
+        """셀만 우측이고 헤더가 좌측이면 제목과 값이 어긋나 보인다."""
+        from bot import breadth_strategy as bs
+        monkeypatch.setattr(bs, "_SIGNAL_DIR", tmp_path)
+        bs.append_signal("KR", {"month": "2026-07", "state": "CONTRARIAN_KOSPI",
+                                "breadth_pct": 23.1, "dd_pct": -27.6,
+                                "index_w": 1.0, "total_w": 1.0, "cash_w": 0.0})
+        d = {"market": "KR", "regime": "CONTRARIAN", "state": "CONTRARIAN_KOSPI",
+             "targets": [], "index_w": 1.0, "total_w": 1.0, "cash_w": 0.0,
+             "breadth_pct": 23.1, "dd_pct": -27.6, "bench_name": "KOSPI",
+             "breadth": {"pct": 23.1, "above": 3, "counted": 13,
+                         "skipped": [], "period": 120},
+             "source_label": "KODEX 섹터 ETF", "sectors_missing": [],
+             "rs_ranked": [], "fng": {"index": 65, "label": "탐욕"},
+             "asof": "2026-08-14", "is_confirmed": False,
+             "resolution_note": "n"}
+        html = bs.render_page({"KR": d})
+        # 가이드 문구에도 같은 표현이 있어 **마지막** 등장(실제 표)을 쓴다.
+        seg = html[html.rindex("확정 신호 이력"):]
+        hdr = re.findall(r"<th( class='num')?>([^<]+)</th>", seg)[:7]
+        got = {name: bool(cls) for cls, name in hdr}
+        assert got["월"] is False and got["상태"] is False, got
+        for k in ("Breadth", "지수 DD", "지수비중", "최종비중", "현금"):
+            assert got.get(k) is True, f"{k} 헤더가 좌측정렬: {got}"
+        assert ".bs-tbl th.num" in html, "헤더 우측정렬 CSS 없음"
+        # 헤더 수 == 데이터 셀 수 (컬럼 어긋남 방지)
+        body = seg[seg.index("<tbody>"):]
+        assert body.count("<td") // max(body.count("<tr>"), 1) == 7
+
+    # ── ④ 갱신 주기가 화면에 적혀 있어야 한다 ────────────────────────
+    def test_refresh_cadence_is_stated_on_screen(self):
+        """'얼마나 자주 갱신되나'를 화면만 보고 알 수 있어야 한다
+        (CLAUDE.md 실수 #10-b 기준시각 표기 의무)."""
+        from bot import breadth_strategy as bs
+        d = {"market": "KR", "regime": "TREND", "state": "TREND_RS_TOP3",
+             "targets": [], "index_w": 0.0, "total_w": 1.0, "cash_w": 0.0,
+             "breadth_pct": 70.0, "dd_pct": -1.0, "bench_name": "KOSPI",
+             "breadth": {"pct": 70.0, "above": 9, "counted": 13,
+                         "skipped": [], "period": 120},
+             "source_label": "KODEX", "sectors_missing": [], "rs_ranked": [],
+             "fng": {}, "asof": "2026-08-14", "is_confirmed": False,
+             "resolution_note": ""}
+        html = bs.render_page({"KR": d})
+        # 배지(패널 제목 바로 아래 = 사용자가 보는 자리)와 가이드 **둘 다**.
+        # 배지 안에 <b> 강조가 들어 있어 [^<]* 로는 못 잡는다.
+        badge = re.search(r"<span class='sub'>((?:(?!</span>).)*중간점검"
+                          r"(?:(?!</span>).)*)</span>", html, re.S)
+        assert badge, "중간점검 배지 자체가 없음"
+        assert "6시간" in badge.group(1), f"배지에 주기 없음: {badge.group(1)}"
+        guide = html[html.index("<details"):html.index("</details>")]
+        assert "6시간" in guide, "가이드에 주기 설명 없음"
+        assert "기준일 2026-08-14" in html, "기준일 미표기"
+        # 확정 배지에는 주기 문구가 붙으면 안 된다(월말 기준이므로).
+        conf = bs.render_page({"KR": {**d, "is_confirmed": True}})
+        assert "월말 종가 확정" in conf
+
+    # ── ⑤ VIX·VKOSPI 이력 카드 ───────────────────────────────────────
+    def test_vol_history_picks_trading_day_offsets(self):
+        from bot.market_timing import vol_history
+        rows = [{"date": f"d{i}", "close": float(i)} for i in range(300)]
+        h = vol_history(rows)
+        assert h == {"전일": 298.0, "1주": 294.0, "1달": 278.0, "1년": 47.0}
+
+    def test_vol_history_omits_windows_it_cannot_fill(self):
+        """짧은 시계열에서 없는 창을 가장 오래된 값으로 채우면 '1년 전'이
+        거짓이 된다 — 칸 자체를 만들지 않는다."""
+        from bot.market_timing import vol_history
+        h = vol_history([{"date": f"d{i}", "close": float(i)} for i in range(10)])
+        assert set(h) == {"전일", "1주"}, h
+        assert vol_history([]) == {} and vol_history(None) == {}
+
+    def test_vkospi_renders_above_vix_in_the_fng_format(self):
+        from bot import market_timing as mt
+        data = {"volatility": {
+            "vix": {"value": 14.2, "source": "네이버(실시간)",
+                    "history": {"전일": 14.9, "1주": 15.3, "1달": 18.1, "1년": 13.4}},
+            "vkospi": {"value": 17.8, "source": "네이버 국내지수",
+                       "history": {"전일": 18.2, "1주": 19.0, "1달": 21.5, "1년": 16.0}},
+            "move": {"value": 88.0}}}
+        html = mt.render_market_timing_page(data)
+        titles = re.findall(r'panel-title">([^<]*변동성[^<]*)<', html)
+        assert titles[0].endswith("(VKOSPI)"), f"VKOSPI 가 VIX 위가 아님: {titles}"
+        assert "(VIX)" in titles[1]
+        # CNN F&G 카드와 같은 라벨·같은 순서
+        seg = html[html.index("VKOSPI"):html.index("미국 (VIX)")]
+        assert re.findall(r'class="k">([^<]+)</div>', seg)[1:] == [
+            "전일", "1주", "1달", "1년"]
+
+    def test_vkospi_card_is_omitted_when_unavailable(self):
+        """소스 미확정이므로 실패가 정상 경로다 — 0 이나 VIX 값으로 채우지
+        않고 카드를 통째로 생략한다."""
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"volatility": {"vix": {"value": 14.2}}})
+        assert "VKOSPI" not in html
+        assert "(VIX)" in html
+
+    def test_vkospi_fetch_is_graceful_and_tries_every_candidate(self, monkeypatch):
+        from bot import market_timing as mt
+        tried = []
+
+        class _R:
+            status_code = 404
+
+            def json(self):
+                return {}
+
+        def fake_get(url, **kw):
+            tried.append(url)
+            return _R()
+
+        monkeypatch.setattr("requests.get", fake_get)
+        assert mt._fetch_vkospi_rows() == []
+        assert len(tried) == len(mt._VKOSPI_CANDIDATES), tried
+        for code in mt._VKOSPI_CANDIDATES:
+            assert any(f"/index/{code}/day" in u for u in tried), code
+
+    def test_volatility_snapshot_survives_a_vkospi_failure(self, monkeypatch):
+        # VKOSPI 가 죽어도 VIX 카드는 살아야 한다(독립 try).
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 14.2)
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda t, days=120, min_rows=None: [
+                                {"date": f"d{i}", "close": 14.0} for i in range(300)])
+
+        def boom(*a, **k):
+            raise RuntimeError("네이버 down")
+
+        monkeypatch.setattr(mt, "_fetch_vkospi_rows", boom)
+        out = mt.fetch_volatility_snapshot()
+        assert out["vix"]["value"] == 14.2
+        assert out["vix"]["history"], "VIX 과거창 미첨부"
+        assert "vkospi" not in out
+
+
+class TestVolAndTableReviewFixes20260816:
+    """2026-08-16 2차 독립 리뷰 6건 fail-before 가드."""
+
+    def test_vkospi_rejects_a_response_that_is_not_a_volatility_index(self):
+        """엔드포인트를 실측 못 한 채 넣은 후보라, 200 응답을 그대로 믿으면
+        **가격지수를 VKOSPI 라고 표시**하게 된다."""
+        from bot.market_timing import _vkospi_plausible
+        vol = [{"date": f"d{i}", "close": 15.0 + (i % 10)} for i in range(120)]
+        assert _vkospi_plausible(vol)
+        kospi = [{"date": f"d{i}", "close": 2500.0 + i} for i in range(120)]
+        assert not _vkospi_plausible(kospi), "코스피 지수를 VKOSPI 로 채택"
+        k200 = [{"date": f"d{i}", "close": 340.0 + i} for i in range(120)]
+        assert not _vkospi_plausible(k200), "코스피200 을 VKOSPI 로 채택"
+        # 한 값만 범위를 벗어나도 전체를 버린다(섞인 시계열 = 잘못된 코드).
+        mixed = vol[:-1] + [{"date": "x", "close": 2500.0}]
+        assert not _vkospi_plausible(mixed)
+        # 너무 짧으면 판단 불가 → 채택하지 않는다.
+        assert not _vkospi_plausible(vol[:5])
+        assert not _vkospi_plausible([]) and not _vkospi_plausible(None)
+
+    def test_vkospi_fetch_skips_an_implausible_candidate(self, monkeypatch):
+        from bot import market_timing as mt
+        tried = []
+
+        class _R:
+            status_code = 200
+
+            def json(self):
+                return {}
+
+        monkeypatch.setattr("requests.get",
+                            lambda url, **kw: tried.append(url) or _R())
+        # 파싱은 되지만 값이 코스피 지수대 → 두 후보 모두 거절 → []
+        monkeypatch.setattr(mt, "_payload_to_rows", lambda p, d: [
+            {"date": f"d{i}", "close": 2500.0} for i in range(120)])
+        monkeypatch.setattr("bot.chart_data._rows_to_daily_df", lambda r: r)
+        monkeypatch.setattr("bot.chart_data._parse_naver_daily", lambda j: [])
+        monkeypatch.setattr("bot.chart_data._df_to_daily_payload",
+                            lambda df, t, p: {"times": ["d"], "close": [1.0]})
+        assert mt._fetch_vkospi_rows() == []
+        assert len(tried) == len(mt._VKOSPI_CANDIDATES), "거절 후 다음 후보 미시도"
+
+    def test_infographic_fallback_table_matches_the_chart_direction(self):
+        """폰트 없는 서버에서 이 표가 PNG 를 대신한다 — 방향이 반대면
+        한 화면의 두 분기표가 서로 반대를 가리킨다."""
+        from bot import quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q", "financials": {"매출": 1e11 * i},
+               "ratios": {}} for i in (1, 2, 3)]
+        html = qi.table_html({"quarters": qs, "currency": "KRW"})
+        cols = re.findall(r"<th class='num'>(26\.\dQ)</th>", html)
+        assert cols == ["26.1Q", "26.2Q", "26.3Q"], cols
+
+    def test_volatility_tests_do_not_hit_the_network(self):
+        """VKOSPI 스텁을 빠뜨리면 테스트가 실제 HTTPS 를 때리고, 엔드포인트가
+        살아나는 순간 VM 에서 make test 가 깨진다."""
+        src = open("tests/test_regression.py", encoding="utf-8").read()
+        blk = src[src.index("def test_fetch_volatility_snapshot_both_fail_graceful"):]
+        blk = blk[:blk.index("\n    def ", 1)]
+        assert "_fetch_vkospi_rows" in blk, "VKOSPI 스텁 누락 — 라이브 호출"
+
+    def test_badge_does_not_overclaim_daily_only_updates(self):
+        """F&G 는 6시간마다 갱신되므로 '하루 1회만 변한다'는 배지 문구는
+        거짓이었다 — 무엇이 일 단위인지 항목을 특정한다."""
+        from bot import breadth_strategy as bs
+        d = {"market": "KR", "regime": "TREND", "state": "TREND_RS_TOP3",
+             "targets": [], "index_w": 0.0, "total_w": 1.0, "cash_w": 0.0,
+             "breadth_pct": 70.0, "dd_pct": -1.0, "bench_name": "KOSPI",
+             "breadth": {"pct": 70.0, "above": 9, "counted": 13,
+                         "skipped": [], "period": 120},
+             "source_label": "KODEX", "sectors_missing": [], "rs_ranked": [],
+             "fng": {"index": 65, "label": "탐욕"}, "asof": "2026-08-14",
+             "is_confirmed": False, "resolution_note": ""}
+        html = bs.render_page({"KR": d})
+        badge = re.search(r"<span class='sub'>([^<]*중간점검.*?)</span>",
+                          html, re.S).group(1)
+        assert "실질 하루 1회 변합니다" not in badge, "F&G 를 포함해 과장"
+        assert "일봉 종가" in badge, "무엇이 일 단위인지 미특정"
+
+    def test_call_site_comment_matches_the_code(self):
+        # 주석이 반대를 지시하면 다음 사람이 reversed() 를 되살린다.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        blk = src[src.index('kr_fin_q = kr.get("financials_q")'):]
+        blk = blk[:blk.index('"분기별 재무추이')]
+        # 과거 경위 서술은 남겨도 되지만 **현재 지시**는 하나여야 한다.
+        assert "표시 순서 = **오래된→최신**" in blk, "현재 방향 미명시"
+        assert "뒤집지 말 것" in blk, "재-reverse 금지 경고 없음"

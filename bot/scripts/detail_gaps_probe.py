@@ -8,8 +8,8 @@
   ③ DART 재무 API 가 '재고자산' 을 주는지(계정명 그대로 확인)
   ④ 정기보고서 원문에 '수주잔고' 표가 있는지 + 파싱 가능한 형태인지
 
-실행:
-    cd ~/stock && python3 -m bot.scripts.detail_gaps_probe 039030.KQ
+실행 (⚠️ **venv 파이썬**으로 — 시스템 python3 는 yfinance 도 .env 도 없다):
+    cd ~/stock && .venv/bin/python -m bot.scripts.detail_gaps_probe 039030.KQ
     (여러 개도 가능: ... 039030.KQ 005930.KS 042700.KS)
 
 출력은 그대로 복사해서 붙여넣어 주시면 됩니다. 키·비밀값은 찍지 않습니다.
@@ -195,6 +195,26 @@ def probe_backlog(ticker: str) -> None:
         print(f"  ❌ 실패: {exc}")
 
 
+def probe_vkospi() -> None:
+    """VKOSPI(코스피200 변동성지수) 네이버 국내지수 엔드포인트 확인.
+
+    yfinance 에 표준 티커가 없어 네이버를 쓰는데, 샌드박스에서 실측할 수
+    없어 후보를 2개 넣어 뒀다(bot/market_timing._VKOSPI_CANDIDATES).
+    어느 코드가 통하는지 여기서 확정한다."""
+    print("── ⑤ VKOSPI 소스 확인 (시장타이밍 보드) " + "─" * 24)
+    from bot.market_timing import _VKOSPI_CANDIDATES, _fetch_vkospi_rows
+    print(f"  후보: {', '.join(_VKOSPI_CANDIDATES)}")
+    rows = _fetch_vkospi_rows()
+    if rows:
+        print(f"  ✅ {len(rows)}행 · 최근 {rows[-1]['date']} = {rows[-1]['close']}")
+        from bot.market_timing import vol_history
+        print(f"  과거창: {vol_history(rows)}")
+    else:
+        print("  ❌ 둘 다 실패 — 카드는 생략됩니다(값 날조 없음).")
+        print("     네이버 국내지수 페이지에서 실제 코드를 확인해 주세요:")
+        print("     https://finance.naver.com/sise/sise_index.naver?code=VKOSPI")
+
+
 def main(argv: list[str]) -> int:
     tickers = argv[1:] or ["039030.KQ"]
     for t in tickers:
@@ -206,6 +226,8 @@ def main(argv: list[str]) -> int:
         probe_dart_accounts(t)
         probe_backlog(t)
         print()
+    probe_vkospi()
+    print()
     return 0
 
 
