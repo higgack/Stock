@@ -139,8 +139,16 @@ def render_tw_highlow52_page() -> str:
                     f'{_html.escape(prog)}…<br>전종목 1년 주봉 스캔(수 분). '
                     '잠시 후 새로고침해 주세요.</div>')
         else:
-            body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
-                    '(잠시 후 다시 시도해 주세요.)</div>')
+            # 0건(오늘 신고/신저 없음)과 진짜 실패를 구분(2026-08-16, finviz_client
+            # 캐시-항상-기록 fix 이후 0건 완료도 이 분기를 타게 됨 — intl_pages.py
+            # CN_A 쪽 메시지 패턴과 통일).
+            st = data.get("status") or {}
+            if st.get("state") == "done":
+                body = ('<div class="empty">52주 신고가·신저가 결과가 없습니다.<br>'
+                        '이번 스캔에서는 기준을 넘은 종목이 없었습니다.</div>')
+            else:
+                body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
+                        '(잠시 후 다시 시도해 주세요.)</div>')
     else:
         # 미국 포맷 통일 — 시총·업종·정렬·업종분포.
         from bot.highlow_render import (HL_SORT_JS, enrich_for_panel,

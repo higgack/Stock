@@ -125,6 +125,11 @@ def fetch_tw_highlow() -> dict:
         if not yf_paused():        # YF_PAUSE → 재산출 kick 안 함(스테일 유지)
             _kick_tw_highlow()
     if stale is not None:
-        return {**stale, "building": st.get("state") == "running"}
+        return {**stale, "building": st.get("state") == "running", "status": st}
+    # 캐시가 한 번도 안 써진 경우도 실제 state 를 반영 — "done"(0건 포함)/
+    # "failed" 처럼 이미 결론 난 상태면 building=False(intl_highlow.py 와 동일
+    # fix, 2026-08-16). 상태가 아예 없거나("") 방금 kick 한 running 이면 그대로
+    # True(첫 조회 race 보호, 기존 동작 유지).
+    settled = st.get("state") in ("done", "failed")
     return {"high": [], "low": [], "ts": "", "source": "",
-            "building": True, "status": st}
+            "building": not settled, "status": st}
