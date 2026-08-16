@@ -84,6 +84,38 @@ def _cache_file(ticker: str, rcept_no: str) -> Path:
     return _CACHE_DIR / f"{safe}__{rcept_no}__{_SCHEMA_VER}.json"
 
 
+def _fail_file(ticker: str, rcept_no: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", (ticker or "").upper())
+    return _CACHE_DIR / f"{safe}__{rcept_no}__{_SCHEMA_VER}.fail"
+
+
+def _fail_recent(ticker: str, rcept_no: str, ttl_sec: int = 86_400) -> str | None:
+    """이 보고서에 대해 최근 실패한 사유(있으면). TTL 안이면 재시도하지 않는다.
+
+    TTL 을 두는 이유: 원문 수신 실패·AI 키 일시 미설정 같은 **일시적** 사유도
+    같은 파일에 기록되므로 영구 차단이면 복구가 안 된다. 하루 뒤 1회 재시도."""
+    f = _fail_file(ticker, rcept_no)
+    try:
+        if not f.exists():
+            return None
+        import time
+        if time.time() - f.stat().st_mtime > ttl_sec:
+            return None
+        return f.read_text("utf-8").strip() or "이전 시도 실패"
+    except OSError:
+        return None
+
+
+def _fail_mark(ticker: str, rcept_no: str, reason: str) -> None:
+    if not rcept_no:
+        return
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _fail_file(ticker, rcept_no).write_text(reason[:200], encoding="utf-8")
+    except OSError as exc:
+        log.debug("dart_growth_risk: fail-mark 실패: %s", exc)
+
+
 def cached_summary(ticker: str, rcept_no: str) -> dict | None:
     """이 분기 보고서에 대해 이미 산출된 요약(있으면). 비용 0."""
     if not rcept_no:
@@ -268,6 +300,14 @@ def build_growth_risk(dart, ticker: str, year: int, reprt_code: str,
         return cached
     if not run_llm:
         return {"ok": False, "error": "not_run", "rcept_no": rcept_no}
+    # 실패 negative-cache — 성공만 캐시하던 옛 구조는, 탭을 열 때마다
+    # 자동 실행되도록 바뀐 뒤(사용자 2026-08-16) **실패하는 종목마다 매
+    # 방문 3MB 원문 재수신 + Gemini 재과금**이 된다(2026-08-16 독립 리뷰).
+    # 보고서 단위라 같은 분기 안에서는 결과가 달라질 이유가 없다.
+    _fail = _fail_recent(ticker, rcept_no)
+    if _fail:
+        return {"ok": False, "error": _fail, "rcept_no": rcept_no,
+                "cached": True}
     try:
         from bot.dart_feed import _fetch_doc_text
         api_key = getattr(dart, "api_key", "") or ""
@@ -277,7 +317,12 @@ def build_growth_risk(dart, ticker: str, year: int, reprt_code: str,
         raw = None
     narrative = extract_business_narrative(raw)
     if not narrative:
+        _fail_mark(ticker, rcept_no, "공시 원문 섹션 추출 실패(DATA OFFLINE)")
         return {"ok": False, "error": "공시 원문 섹션 추출 실패(DATA OFFLINE)",
                 "rcept_no": rcept_no}
-    return summarize_growth_risk(ticker, rcept_no, narrative,
-                                 quarterly_context, company)
+    res = summarize_growth_risk(ticker, rcept_no, narrative,
+                                quarterly_context, company)
+    if not res.get("ok"):
+        # 성공만 캐시하는 구조라 실패는 여기서 표시해 둔다(위 주석 참조).
+        _fail_mark(ticker, rcept_no, str(res.get("error") or "요약 실패"))
+    return res

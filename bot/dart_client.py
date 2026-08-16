@@ -149,6 +149,11 @@ _DART_CODE_MAP: dict[str, str] = {
     "ifrs-full_BasicEarningsLossPerShare": "EPS",
     "ifrs-full_BasicEarningsPerShare": "EPS",
     "dart_BasicEarningsLossPerShare": "EPS",
+    # 재고자산 — 분기실적 탭 '재고자산 추이' 차트(사용자 2026-08-16 "미래의
+    # 수익을 가늠"). 저량 항목이라 4분기 차분 금지(_STOCK_KEYS 등재).
+    "ifrs-full_Inventories": "재고자산",
+    "dart_Inventories": "재고자산",
+    "us-gaap_InventoryNet": "재고자산",
     "ifrs-full_CurrentAssets": "유동자산",
     "ifrs-full_NoncurrentAssets": "비유동자산",
     "ifrs-full_Assets": "자산총계",
@@ -187,6 +192,10 @@ _DART_NAME_MAP: dict[str, str] = {
     "당기순손익": "당기순이익",
     "기본주당순이익": "EPS", "기본주당이익": "EPS",
     "기본주당순이익(손실)": "EPS", "보통주기본주당이익(손실)": "EPS",
+    # ⚠️ 총액 계정만. '상품및제품' 같은 **구성요소**를 별칭으로 넣으면
+    # 총액이 없는 회사에서 부분값이 재고자산으로 표시된다(과소 표기).
+    "재고자산": "재고자산", "재고자산(순액)": "재고자산",
+    "재고자산 순액": "재고자산",
     "유동자산": "유동자산",
     "비유동자산": "비유동자산", "고정자산": "비유동자산",
     "자산총계": "자산총계", "자산 합계": "자산총계",

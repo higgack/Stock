@@ -52,7 +52,9 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #   v2 (2026-08-16) 타일 2줄 YoY/QoQ · Forward PER · 막대 값 라벨 · 축 확대
 #   v3 (2026-08-16) 성장동력·리스크 카드 상자를 항목 수에 맞춰 가변 높이로
 #       (4번 항목이 상자 밖으로 넘치던 것) + 항목 상한 4→6
-_RENDER_VER = "v3"
+#   v4 (2026-08-16) 수주잔고·재고자산 막대차트(데이터 있는 것만) + 시총·PER·
+#       PSR 라이브화(캐시 버킷 일→시)
+_RENDER_VER = "v4"
 
 
 def _eok(v, currency: str = "KRW") -> str:
@@ -89,21 +91,29 @@ def _today_kst() -> str:
     return datetime.now(timezone(timedelta(hours=9))).date().isoformat()
 
 
+def _now_hour_kst() -> str:
+    """캐시 버킷 = KST 날짜+시(YYYY-MM-DD_HH). 시세 기반 값의 갱신 주기."""
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d_%H")
+
+
 def cache_path(ticker: str, period_key, reprt_code=None,
                asof: str | None = None) -> Path:
     """캐시 파일 경로 = 캐시 키. 새 분기면 파일명이 달라져 자동 재렌더.
 
-    ⚠️ 파일명에 날짜(KST)를 포함한다 — 이미지에 시가총액·TTM PER·PSR 같은
-    **시세 기반 값**이 구워지는데, 분기 키만 쓰면 다음 분기까지(최대 3개월)
-    그 값이 얼어붙는다(2026-08-19 code-review). 날짜를 넣어 하루 1회 재렌더
-    (LLM 은 rcept_no 캐시라 재과금 없음 — 이미지만 다시 그린다).
+    ⚠️ 파일명에 **KST 날짜+시**를 포함한다 — 이미지에 시가총액·TTM PER·PSR
+    같은 **시세 기반 값**이 구워지는데, 분기 키만 쓰면 다음 분기까지(최대
+    3개월) 그 값이 얼어붙는다(2026-08-19 code-review). 하루 1회로는 아침에
+    한 번 그린 값이 종일 남아 장중에 보면 어긋난다(사용자 2026-08-16
+    "스냅샷이 되면 안돼") → 시 단위 버킷으로 바꿨다. 재렌더는 matplotlib
+    1회(₩0)이고 LLM 은 rcept_no 캐시라 재과금 없다.
 
     `period_key` 는 분기 식별자다. KR 은 (연도, 보고서코드) 2인자 형태를
     유지하고(하위호환), 비-KR 은 분기 종료일 문자열 하나를 준다 —
     reprt_code 가 DART 전용 개념이라 멀티마켓에선 쓸 수 없다."""
     key = f"{period_key}{reprt_code}" if reprt_code is not None else str(period_key)
     return (_IMG_DIR /
-            f"{_safe_name(ticker)}_{key}_{asof or _today_kst()}"
+            f"{_safe_name(ticker)}_{key}_{asof or _now_hour_kst()}"
             f"_{_RENDER_VER}.png")
 
 
@@ -189,6 +199,28 @@ def _label_decimals(scaled_peak: float, dec: int) -> int:
     return max(dec, d)
 
 
+# 분기실적 탭 추가 막대차트 — (financials 키, 화면 제목) 순서대로 그린다.
+# 사용자 2026-08-16: "여기는 영업이익률이나 순이익률은 필요없고 막대그래프만".
+# 시장 게이트가 아니라 **데이터 유무 게이트**다(값이 없으면 패널 자체가 생략)
+# — 지금은 재고자산만 소스가 있고(DART 재무제표 계정), 다른 시장·항목에
+# 소스가 생기면 이 목록에 한 줄 추가하면 켜진다.
+# ⚠️ **생산자가 있는 키만 올린다.** 수주잔고는 DART 사업보고서 「수주상황」
+# 표에 있지만 아직 파서가 없어(원문 평문의 실제 배열을 확인해야 한다 —
+# bot/scripts/detail_gaps_probe.py) 여기 올리면 영원히 안 그려지는 죽은
+# 항목이 되고 Help 에도 없는 기능을 광고하게 된다(2026-08-16 독립 리뷰).
+_EXTRA_CHARTS = (("재고자산", "재고자산"),)
+
+
+def _extra_series(qs: list) -> list[tuple[str, str, list]]:
+    """[(키, 제목, 값들)] — **값이 하나라도 있는 항목만**. 없으면 빈 목록."""
+    out = []
+    for key, title in _EXTRA_CHARTS:
+        vals = [(q.get("financials") or {}).get(key) for q in qs]
+        if any(v is not None for v in vals):
+            out.append((key, title, vals))
+    return out
+
+
 def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
     """푸터 각주 (문구, 색). **레이아웃보다 먼저** 호출돼 H_FOOT 높이를
     정한다 — 줄 수 고정이면 각주가 늘 때 아래 출처줄을 덮어쓴다."""
@@ -270,6 +302,13 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 같은 델타가 더 많은 픽셀을 차지하게 하고, 눈금을 촘촘히 하고, 막대에
     # 값 라벨을 붙여 '변화가 안 보인다'를 세 겹으로 해결한다.
     H_TILE, H_CHART = 22.0, 88.0
+    # 추가 막대차트(수주잔고·재고자산) — 사용자 2026-08-16 "미래의 수익을
+    # 가늠해보고 싶어서". **데이터가 있는 것만** 그리고, 없으면 높이 0 이라
+    # 레이아웃이 통째로 줄어든다(빈 패널 = 없는 사실을 그린 것).
+    # 이익률 선이 없는 순수 막대라 한 단은 위 2단보다 낮게 잡는다.
+    _extra = _extra_series(qs)
+    _EXTRA_H = 34.0
+    H_EXTRA = _EXTRA_H * len(_extra)
     # 카드 상자 높이는 **항목 수에서 도출**한다(H_FOOT 을 각주 줄 수로 잡은
     # 것과 같은 패턴). 옛 코드는 20.0 고정이라 패널이 17.0 뿐이었는데 4번
     # 항목의 칩 하단이 17.95 라 **상자 밖으로 0.95 단위(≈20px) 튀어나갔다**
@@ -285,7 +324,8 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 실제로 그 한계에 닿았다). 줄 수에 따라 커지게 해 구조적으로 막는다.
     notes = _footnotes(payload, qs)
     H_FOOT = 8.4 + len(notes) * 2.4 + 4.2
-    H = H_HEAD + H_CALL + H_TILE + H_CHART + H_CARDS + H_FOOT + 6
+    H = (H_HEAD + H_CALL + H_TILE + H_CHART + H_EXTRA + H_CARDS
+         + H_FOOT + 6)
 
     fig_w = 11.6
     fig, ax = plt.subplots(figsize=(fig_w, fig_w * (H / W)), dpi=180)
@@ -597,6 +637,16 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
           nim, _NEG, "순이익률", "당기순이익")
     y += H_CHART
 
+    # ── 수주잔고 · 재고자산 (막대만, 있는 항목만) ───────────────────
+    # line 을 전부 None 으로 넘기면 combo 의 has_pct 가 False → % 패널을
+    # 만들지 않고 막대가 패널 전체를 쓴다(사용자가 요청한 형태).
+    _EX_COLOR = {"수주잔고": _ACCENTW, "재고자산": _GOLD}
+    for _i, (_k, _title, _vals) in enumerate(_extra):
+        combo((2.5, y + _i * _EXTRA_H, 95, _EXTRA_H - 2.0), [_vals], [_title],
+              [_EX_COLOR.get(_k, _ACCENT)], [None] * len(labels), _MUTED,
+              "", _title)
+    y += H_EXTRA
+
     # ── 성장동력 / 리스크 카드(LLM, 없으면 섹션 자체 생략) ──────────
     if has_cards:
         def card_col(x0, w, title, items, color):
@@ -663,8 +713,11 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 기준시각 표기 의무(CLAUDE.md 실수기록 10-b) — 시총/PER/PSR 은 시세
     # 기반이라 '언제 기준'인지 없으면 오래된 값을 현재값으로 오인한다.
     src = payload.get("source_label") or "DART 정기보고서(K-IFRS 연결)"
-    asof = payload.get("asof") or _today_kst()
-    txt(2.5, H - 2.6, f"수치: {src} · 시총·PER {asof} 기준(KST) · 환각 0",
+    # asof 는 캐시 버킷(YYYY-MM-DD_HH) 이라 그대로 찍으면 '2026-08-16_14'
+    # 라는 날것이 화면에 나간다 — 사람이 읽는 형태로 바꾼다(독립 리뷰).
+    asof = payload.get("asof") or _now_hour_kst()
+    _asof_s = asof.replace("_", " ") + "시" if "_" in asof else asof
+    txt(2.5, H - 2.6, f"수치: {src} · 시총·PER {_asof_s} 기준(KST) · 환각 0",
         size=8, color=_MUTED)
     txt(97.5, H - 2.6, "투자 참고용이며 매수·매도를 권유하지 않습니다",
         size=8, color=_MUTED, ha="right")
@@ -755,6 +808,61 @@ _MARKET_LABEL = {"US": "US", "JP": "TSE", "TW": "TWSE", "CN_A": "A주",
                  "HK": "HKEX"}
 
 
+def _live_quote(ticker: str, market: str, shares: float | None = None) -> dict:
+    """장중 라이브 시세 {price, mcap}. 실패하면 {}(호출부가 스냅샷 폴백).
+
+    `dashboard.build_live_quote` 의 LIGHT 경로와 **같은 소스**를 쓴다 —
+    KR=네이버 국내, US/JP/HK/CN=네이버 해외, TW=TWSE. 키 불필요·₩0·
+    VM 차단 없음. 두 화면이 다른 소스를 쓰면 같은 종목의 시총이 탭마다
+    달라진다(사용자 2026-08-16 "스냅샷이 되면 안돼").
+
+    ⚠️ **해외 시총은 단위 sanity 통과 시에만** 채택한다. 네이버 해외
+    `marketValueFullRaw` 는 단위가 불확실해 원/달러가 섞여 나오는 사례가
+    있고(`market_favorites.py` 가 같은 이유로 같은 게이트를 건다), 그대로
+    쓰면 PSR·시총이 통째로 자릿수가 틀린다(2026-08-16 독립 리뷰).
+    주식수를 모르면 검증할 수 없으므로 해외 시총은 채택하지 않는다 —
+    스냅샷 시총으로 폴백하는 편이 안전하다. KR 국내는 원 단위가 확정이다."""
+    try:
+        if market == "KR":
+            from bot.naver_quote import fetch_kr_quote
+            q = fetch_kr_quote(ticker)
+        elif market == "TW":
+            from bot.tw_quote import fetch_tw_quote
+            q = fetch_tw_quote(ticker)
+        elif market in ("US", "JP", "HK", "CN_A"):
+            from bot.world_quote import fetch_world_quote
+            q = fetch_world_quote(ticker)
+        else:
+            return {}
+    except Exception as exc:
+        log.debug("quarterly_infographic: live quote %s: %s", ticker, exc)
+        return {}
+    out: dict = {}
+    for k in ("price", "mcap"):
+        v = (q or {}).get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            out[k] = float(v)
+    if "mcap" in out and market != "KR":
+        implied = (out.get("price") or 0) * (shares or 0)
+        if not implied or not (0.5 <= out["mcap"] / implied <= 2.0):
+            log.debug("quarterly_infographic: %s 해외 시총 단위 sanity 실패 "
+                      "(mcap=%s implied=%s) — 스냅샷 사용", ticker,
+                      out["mcap"], implied or None)
+            out.pop("mcap")
+    return out
+
+
+def _dart_name(dart, ticker: str) -> str | None:
+    """DART corp_code 맵의 회사명(디스크 캐시 · 네트워크 0). 실패 시 None."""
+    if not dart:
+        return None
+    try:
+        return dart.stock_code_to_name((ticker or "").upper().split(".")[0])
+    except Exception as exc:
+        log.debug("quarterly_infographic: corp name %s: %s", ticker, exc)
+        return None
+
+
 def build_payload(ticker: str, snap: dict | None = None, *,
                   run_llm: bool = False) -> dict | None:
     """분기 시계열 + 스냅샷(시총/PER) + (선택)LLM 카드 → 렌더 payload.
@@ -791,7 +899,11 @@ def build_payload(ticker: str, snap: dict | None = None, *,
     ttm = _ttm(qs)
     # 스냅샷 최상위는 snake `market_cap` 하나뿐 — 옛 camel 시도는 항상
     # 죽은 코드였다(stock_snapshot.py 는 marketCap 을 그 이름으로 저장하지 않음).
-    mcap = snap.get("market_cap")
+    # 라이브 시총 우선 — 스냅샷 시총은 (a) 마지막 수집 시각에 얼어붙고
+    # (b) KR 은 캐시가 cold 면 아예 없어 '—' 로 뜬다(사용자 2026-08-16
+    # "일주일 후에 다시 보면 그때 시점의 시총이 되어야 돼").
+    live = _live_quote(t, mkt, snap.get("shares_outstanding"))
+    mcap = live.get("mcap") or snap.get("market_cap")
     # 통화 — 재무제표는 financialCurrency 기준, 시총·주가는 currency 기준.
     trade_cur = (snap.get("currency") or "").upper()
     fin_cur = (snap.get("financial_currency") or "").upper() or trade_cur
@@ -817,14 +929,33 @@ def build_payload(ticker: str, snap: dict | None = None, *,
             return None
         return f if _PER_MIN < f < _PER_MAX else None
 
-    per = _clean_per(snap.get("trailingPE"))
+    # PER 을 라이브화하되 **다른 탭과 같은 분모**를 쓴다.
+    #   1순위: 라이브 주가 ÷ 야후 EPS — `dashboard.build_live_quote` 가
+    #          PER/PBR 을 재산출하는 것과 **똑같은 공식**이라 분기실적 탭과
+    #          종합·밸류에이션 탭의 PER 이 어긋나지 않는다.
+    #   2순위: 스냅샷 trailingPE(수집 시점 주가로 굳은 값)
+    #   3순위: 시총 ÷ DART TTM 순이익 자체계산(`*` 각주로 출처 표기)
+    # 옛 시도는 곧장 3순위를 우선했는데, 그러면 같은 종목의 PER 이 탭마다
+    # 달라 보인다(연결 총이익 vs 지배주주 EPS 분모, 2026-08-16 독립 리뷰).
+    # ⚠️ EPS 는 재무통화 기준이라 거래통화 주가와 나누려면 통화가 같아야
+    # 한다 — cur_mismatch 면 1순위·3순위 모두 건너뛴다.
+    def _live_per(eps_key):
+        eps = snap.get(eps_key)
+        if (live.get("price") and not cur_mismatch
+                and isinstance(eps, (int, float)) and not isinstance(eps, bool)
+                and eps > 0):
+            return _clean_per(live["price"] / eps)
+        return None
+
     per_self = False
+    per = _live_per("trailingEps") or _clean_per(snap.get("trailingPE"))
     if per is None and not cur_mismatch:
-        # 야후가 trailingPE 를 안 주는 종목(보험·금융지주에서 흔함) 폴백 —
+        # 야후가 trailingPE·EPS 를 안 주는 종목(보험·금융지주에서 흔함) 폴백 —
         # 옛 코드는 단일 소스라 그냥 '—' 였다(사용자 2026-08-16).
         per = self_per(mcap, ttm.get("당기순이익"))
         per_self = per is not None
-    per_fwd = _clean_per(snap.get("forwardPE"))
+    # Forward PER — 라이브 주가 ÷ 야후 forwardEps(컨센서스라 장중 불변).
+    per_fwd = _live_per("forwardEps") or _clean_per(snap.get("forwardPE"))
     psr = None
     _ttm_rev = ttm.get("매출")
     # 음수 분모 가드 — 옛 코드는 truthy 검사만 해서 매출이 음수여도 그대로
@@ -844,8 +975,10 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         "ticker": t,
         # 스냅샷은 long_name(스네이크) 키를 쓴다 — longName/shortName 은
         # 절대 안 잡혀 폴백이 죽어 있었다(2026-08-19 code-review).
-        "company": (snap.get("kr", {}) or {}).get("corp_name")
-                   or snap.get("long_name") or t,
+        # KR 은 스냅샷이 cold 여도 DART corp_code 맵(디스크 캐시)에서 회사명을
+        # 얻는다 — 그게 없으면 헤더가 '039030.KQ' 로 뜬다(독립 리뷰).
+        "company": ((snap.get("kr", {}) or {}).get("corp_name")
+                    or snap.get("long_name") or _dart_name(dart, t) or t),
         "market": mkt_label,
         "market_cap": mcap,
         "quarters": qs,
@@ -882,7 +1015,9 @@ def build_payload(ticker: str, snap: dict | None = None, *,
                        if is_kr else
                        str(latest.get("period", "")).replace("-", "")),
         "source_label": src_label,
-        "asof": _today_kst(),
+        # 시세 기반 값(시총·PER·PSR)의 기준시각 = 렌더 시각(KST, 시 단위).
+        # 캐시 키와 **같은 값**이라 화면 스탬프와 재렌더 주기가 어긋나지 않는다.
+        "asof": _now_hour_kst(),
     }
     if not is_kr:
         payload["growth_risk"] = {"ok": False, "error": "not_supported"}
@@ -962,9 +1097,29 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
                 "error": "분기 재무 데이터 없음(소스 미제공 또는 미지원 시장)"}
     p = cache_path(ticker, payload.get("period_key") or "na",
                    asof=payload.get("asof"))
-    # LLM 카드가 이번에 새로 붙었으면 기존(카드 없는) PNG 를 재사용하면 안 된다.
-    fresh_llm = bool((payload.get("growth_risk") or {}).get("ok")) and run_llm
+    # LLM 카드가 **이번에 새로** 붙었을 때만 기존 PNG 를 버린다.
+    # ⚠️ 옛 조건은 `ok and run_llm` 이었다 — 탭을 열면 항상 run_llm=True 가
+    # 된 뒤로(사용자 2026-08-16 자동 실행) 캐시가 **영구 미스**가 되어 매
+    # 조회마다 전체 인포그래픽을 다시 그리고 저장했다(2026-08-16 독립 리뷰).
+    # `cached` 는 dart_growth_risk 가 캐시에서 꺼냈을 때만 True 다.
+    _gr = payload.get("growth_risk") or {}
+    fresh_llm = bool(_gr.get("ok")) and not _gr.get("cached")
     if p.exists() and not fresh_llm:
         return {"ok": True, "image": str(p), "payload": payload, "cached": True}
     img = render_infographic(payload, str(p))
+    if img:
+        _purge_stale(ticker, p)
     return {"ok": True, "image": img, "payload": payload, "cached": False}
+
+
+def _purge_stale(ticker: str, keep: Path) -> None:
+    """같은 티커의 옛 PNG 정리. 캐시 키에 **시**가 들어가 하루 최대 24장씩
+    쌓이는데(분기·렌더버전까지 곱해지면 더) 지우는 곳이 아무 데도 없었다
+    (2026-08-16 독립 리뷰). 방금 만든 것만 남긴다 — 옛 파일은 캐시 키가
+    달라 어차피 다시 안 읽힌다."""
+    try:
+        for old in _IMG_DIR.glob(f"{_safe_name(ticker)}_*.png"):
+            if old != keep:
+                old.unlink(missing_ok=True)
+    except OSError as exc:
+        log.debug("quarterly_infographic: 옛 PNG 정리 실패: %s", exc)

@@ -471,7 +471,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         if fin and fin.get("financials"):
             compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
             for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                      "부채총계", "자본총계"):
+                      "부채총계", "자본총계", "재고자산"):
                 v = fin["financials"].get(k)
                 if v is not None:
                     compact[k] = v
@@ -495,7 +495,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
             if fin and fin.get("financials"):
                 entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
                 for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                          "부채총계", "자본총계"):
+                          "부채총계", "자본총계", "재고자산"):
                     v = fin["financials"].get(k)
                     if v is not None:
                         entry[k] = v
@@ -523,7 +523,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                     qentry = {"label": q["label"], "year": q["year"],
                              "quarter": q["quarter"], "fs_div": q["fs_div"]}
                     for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                              "부채총계", "자본총계"):
+                              "부채총계", "자본총계", "재고자산"):
                         v = q["financials"].get(k)
                         if v is not None:
                             qentry[k] = v
