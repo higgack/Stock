@@ -5398,6 +5398,26 @@ class TestDartRoicAndQuarterlyPane:
         src = open("bot/stock_snapshot.py", encoding="utf-8").read()
         assert "get_quarterly_series" in src and "financials_q" in src
 
+    def test_quarterly_table_renders_newest_first_but_data_stays_chronological(self):
+        # 사용자 2026-08-19 — 분기표도 연도표(FY2025·FY2024·FY2023)처럼
+        # 최신이 왼쪽. 단 저장 데이터(financials_q)는 과거→최신 유지 —
+        # 이후 분기 추이 차트(실적분석 인포그래픽)가 그 순서를 쓰므로
+        # 데이터를 뒤집으면 차트가 거꾸로 그려진다. 렌더 시점에만 reverse.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        # 각 호출부의 인자 부분만 잘라서 검사(제목 문자열 자체에 괄호가
+        # 있어 ')' 로는 못 자름 → 다음 줄까지 고정 윈도).
+        q_call = src[src.index('"분기별 재무추이'):][:300]
+        assert "reversed(kr_fin_q)" in q_call, "분기표가 최신-왼쪽으로 정렬되지 않음"
+        # 연도별은 이미 최신→과거로 적재돼 있어 뒤집으면 안 됨.
+        ts_call = src[src.index('"재무 추이 (K-IFRS 연결)"'):][:300]
+        assert "reversed" not in ts_call, "연도별 표를 뒤집으면 최신이 오른쪽이 됨"
+        # 데이터 적재 쪽은 정렬을 건드리지 않아야 한다(시계열 자연순 보존).
+        snap = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        q_block = snap[snap.index("get_quarterly_series"):]
+        q_block = q_block[:q_block.index("financials_q")]
+        assert "reversed" not in q_block and ".sort(" not in q_block, \
+            "financials_q 적재 시 순서를 바꾸면 차트가 거꾸로 그려짐"
+
 
 class TestKrNewsQuery:
     """KR 뉴스 검색어 = 한글 브랜드 (NAVER 0-news 2026-06-08).

@@ -5630,8 +5630,14 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_fin_q_html = ""
     kr_fin_q = kr.get("financials_q")
     if kr_fin_q and len(kr_fin_q) > 1:
+        # 표시 순서 = **최신이 왼쪽**(사용자 2026-08-19) — 바로 아래 연도별
+        # 표(financials_ts 가 이미 최신→과거)와 방향을 맞춘다. 저장된
+        # financials_q 자체는 과거→최신(시계열 자연순, dart_quarterly 가
+        # 그렇게 반환)로 두고 **렌더 시점에만** 뒤집는다 — 이후 분기 추이
+        # 차트(실적분석 인포그래픽)는 과거→최신이 맞으므로 데이터 순서를
+        # 바꾸면 그쪽이 거꾸로 그려진다.
         kr_fin_q_html = _kr_fin_trend_table(
-            "분기별 재무추이 (K-IFRS, 최근 4분기)", kr_fin_q,
+            "분기별 재무추이 (K-IFRS, 최근 4분기)", list(reversed(kr_fin_q)),
             lambda q: q.get("label", ""))
 
     # KR financials multi-year (if available)
