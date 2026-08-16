@@ -584,6 +584,59 @@ class DartClient:
             page_no += 1
         return out[:limit]
 
+    # 사업연도(year)·reprt_code → (report_nm 키워드, 검색 시작일, 검색 종료일).
+    # next_earnings_window()(1052-1079행)의 법정 제출기한(분기 45일/연간 90일)
+    # 을 그대로 근거로 삼되, 조기제출·소폭지연을 흡수하도록 앞뒤 여유를 둠.
+    # 11013(1분기)·11014(3분기)는 report_nm 이 둘 다 "분기보고서"라 서로
+    # 겹치지 않는 이 날짜창으로만 구분한다(4~5월 vs 10~11월, 안전하게 분리).
+    def _periodic_report_window(self, year: int, reprt_code: str) -> tuple[str, str, str]:
+        y = str(year)
+        y1 = str(year + 1)
+        return {
+            "11013": ("분기보고서", f"{y}0401", f"{y}0531"),
+            "11012": ("반기보고서", f"{y}0701", f"{y}0831"),
+            "11014": ("분기보고서", f"{y}1001", f"{y}1130"),
+            "11011": ("사업보고서", f"{y1}0101", f"{y1}0430"),
+        }[reprt_code]
+
+    def find_periodic_report(self, stock_code: str, year: int,
+                             reprt_code: str) -> Optional[dict]:
+        """분기 실적분석 대시보드(2026-08-16) — 해당 (year, reprt_code) 정기
+        보고서의 rcept_no 확보(document.xml 원문 요청에 필요). list.json 을
+        pblntf_ty='A'(정기공시)로 좁혀 report_nm 키워드+법정 제출기한 기반
+        날짜창으로 매칭. 여러 건 매치 시(정정보고서 등) 가장 최근 접수건.
+        DART 키 없음/corp_code 미상/매치 없음 시 None(graceful)."""
+        if not self.api_key:
+            return None
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return None
+        keyword, bgn, end = self._periodic_report_window(year, reprt_code)
+        try:
+            resp = requests.get(
+                f"{_DART_BASE}/list.json",
+                params={
+                    "crtfc_key": self.api_key, "corp_code": corp_code,
+                    "bgn_de": bgn, "end_de": end, "pblntf_ty": "A",
+                    "page_count": 20,
+                },
+                timeout=_HTTP_TIMEOUT,
+            )
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("find_periodic_report: list.json fetch for %s failed: %s",
+                        stock_code, exc)
+            return None
+        if payload.get("status") != "000":
+            return None
+        matches = [r for r in payload.get("list") or []
+                  if keyword in (r.get("report_nm") or "")]
+        if not matches:
+            return None
+        best = max(matches, key=lambda r: r.get("rcept_dt") or "")
+        return {"rcept_no": best.get("rcept_no"), "report_nm": best.get("report_nm"),
+               "rcept_dt": best.get("rcept_dt")}
+
     # ── /api/elestock.json — insider / major shareholder holdings ──────
     @_disk_cache_daily
     def get_insider_holdings(self, stock_code: str) -> list[dict]:
@@ -942,15 +995,21 @@ class DartClient:
         ticker: str,
         year: Optional[int] = None,
         fs_div: str = "CFS",
+        reprt_code: str = "11011",
     ) -> Optional[dict]:
         """yfinance 의 KR 종목 재무 corruption (단위 mismatch / financial
         Currency=USD glitch / TTM vs FY divergence) 발생 시 DART 의
         K-IFRS 정기보고서에서 직접 추출한 KRW 단위 재무 데이터로
-        override. D1 Phase 2 (2026-05-19).
+        override. D1 Phase 2 (2026-05-19). reprt_code 확장(2026-08-16,
+        분기 실적분석 대시보드) — 분기 재무는 **누적치**(11012=반기누적,
+        11014=3분기누적)라 단일분기 산출은 호출부(bot/dart_quarterly.py)가
+        인접 reprt_code 결과를 차분해야 함(이 함수는 원자 조회만 담당).
 
         Returns dict like:
             {
                 "year": 2025,
+                "reprt_code": "11011",  # 11011=사업보고서(연간) 11012=반기
+                                         # 11013=1분기 11014=3분기(모두 누적)
                 "fs_div": "CFS",  # 연결 (CFS) / 별도 (OFS)
                 "financials": {
                     "매출": int (원), "영업이익": int, "당기순이익": int,
@@ -970,6 +1029,8 @@ class DartClient:
             ticker: yfinance ticker (005930.KS / 035720.KQ 등).
             year: 사업연도. None 시 직전 사업연도 자동 (date.today().year - 1).
             fs_div: 'CFS' = 연결재무제표 (default), 'OFS' = 별도재무제표.
+            reprt_code: '11011'=사업보고서(연간, default, 하위호환) '11012'=
+                반기보고서 '11013'=1분기보고서 '11014'=3분기보고서.
         """
         if not self.api_key:
             return None
@@ -987,15 +1048,24 @@ class DartClient:
 
         target_year = year or (date.today().year - 1)
 
+        # 7일 디스크 캐시 — reprt_code 확장(최대 4종×연도)으로 분기 시계열
+        # 조립 시 콜 수가 늘어나 캐시 없이는 페이지 방문마다 DART 를 수 회
+        # 두드리게 됨(get_major_shareholders 등과 동일 _disk_get/_disk_set
+        # 관례, 786-833행 참조). 확정된(과거) 분기는 안 바뀌므로 7일 충분 —
+        # "이번 분기가 아직 미확정"인 최신분기 캐시 단축은 호출부(probe)가
+        # 별도 6~12h 캐시로 처리(원자 조회 자체는 길게 캐시해도 무해).
+        ck = f"qfin_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
+        cached = self._disk_get(ck)
+        if cached is not None:
+            return cached
+
         # fnlttSinglAcntAll.json — 단일 회사 전체 재무제표 (전체 항목)
-        # reprt_code 11011 = 사업보고서 (annual). 분기 보고서가 필요하면
-        # 11013/11012/11014 로 변경 가능 (이번 MVP 는 annual 만).
         url = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
         params = {
             "crtfc_key": self.api_key,
             "corp_code": corp_code,
             "bsns_year": str(target_year),
-            "reprt_code": "11011",
+            "reprt_code": reprt_code,
             "fs_div": fs_div,
         }
         try:
@@ -1004,16 +1074,16 @@ class DartClient:
             payload = resp.json()
         except Exception as exc:
             log.warning(
-                "get_normalized_financials: fetch failed for %s (%d, %s): %s",
-                code, target_year, fs_div, exc,
+                "get_normalized_financials: fetch failed for %s (%d, %s, %s): %s",
+                code, target_year, reprt_code, fs_div, exc,
             )
             return None
 
         if payload.get("status") != "000":
             # 013 = 조회된 데이터 없음, 020 = 사용 한도 초과, etc.
             log.info(
-                "get_normalized_financials: DART status=%s for %s (%d) — skipping",
-                payload.get("status"), code, target_year,
+                "get_normalized_financials: DART status=%s for %s (%d, %s) — skipping",
+                payload.get("status"), code, target_year, reprt_code,
             )
             return None
 
@@ -1022,12 +1092,15 @@ class DartClient:
         if not financials:
             return None
         ratios = calc_kr_financial_ratios(financials)
-        return {
+        result = {
             "year": target_year,
+            "reprt_code": reprt_code,
             "fs_div": fs_div,
             "financials": financials,
             "ratios": ratios,
         }
+        self._disk_set(ck, result)
+        return result
 
     def next_earnings_window(self, stock_code: str, today: date | None = None) -> Optional[tuple[date, date]]:
         """Infer the most-likely next KR earnings disclosure window.

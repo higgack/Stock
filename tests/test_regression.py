@@ -4916,6 +4916,304 @@ class TestLiveQuoteOverlay:
         assert "diagnose_detail_sources" in src, "진단 함수 호출 누락"
 
 
+class TestDartQuarterlyFinancialsReprtCode:
+    """DART get_normalized_financials 의 reprt_code 확장(2026-08-16, 분기
+    실적분석 대시보드) — 기존 연간 전용 하드코딩(reprt_code='11011')을
+    분기(11013/11012/11014)까지 열되, 인자 미지정 호출은 완전히 하위호환."""
+
+    def test_default_reprt_code_still_annual(self, monkeypatch):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        monkeypatch.setattr(client, "_load_corp_code_map",
+                            lambda: {"005930": "00126380"})
+        monkeypatch.setattr(client, "_disk_get", lambda key: None)
+        monkeypatch.setattr(client, "_disk_set", lambda key, data: None)
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                return {"status": "000", "list": [
+                    {"account_id": "ifrs-full_Revenue", "thstrm_amount": "1,000"}]}
+
+        def _fake_get(url, params=None, timeout=None):
+            seen["params"] = params
+            return _Resp()
+
+        monkeypatch.setattr(dc.requests, "get", _fake_get)
+        r = client.get_normalized_financials("005930.KS")
+        assert seen["params"]["reprt_code"] == "11011"
+        assert r["reprt_code"] == "11011"
+        assert r["financials"]["매출"] == 1000
+
+    def test_quarterly_reprt_code_passed_through_and_cached(self, monkeypatch):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        monkeypatch.setattr(client, "_load_corp_code_map",
+                            lambda: {"005930": "00126380"})
+        written = {}
+        monkeypatch.setattr(client, "_disk_get", lambda key: None)
+        monkeypatch.setattr(client, "_disk_set",
+                            lambda key, data: written.__setitem__(key, data))
+        calls = {"n": 0}
+
+        class _Resp:
+            def raise_for_status(self): pass
+            def json(self):
+                return {"status": "000", "list": [
+                    {"account_id": "dart_OperatingIncomeLoss", "thstrm_amount": "260"}]}
+
+        def _fake_get(url, params=None, timeout=None):
+            calls["n"] += 1
+            assert params["reprt_code"] == "11012"
+            return _Resp()
+
+        monkeypatch.setattr(dc.requests, "get", _fake_get)
+        r = client.get_normalized_financials("005930.KS", year=2026,
+                                              reprt_code="11012")
+        assert r["reprt_code"] == "11012" and r["financials"]["영업이익"] == 260
+        assert calls["n"] == 1
+        assert any(k.startswith("qfin_00126380_2026_11012_CFS") for k in written)
+
+    def test_disk_cache_hit_skips_network(self, monkeypatch):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        monkeypatch.setattr(client, "_load_corp_code_map",
+                            lambda: {"005930": "00126380"})
+        cached = {"year": 2026, "reprt_code": "11013", "fs_div": "CFS",
+                  "financials": {"매출": 550}, "ratios": {}}
+        monkeypatch.setattr(client, "_disk_get", lambda key: cached)
+        called = {"n": 0}
+        monkeypatch.setattr(dc.requests, "get",
+                            lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+        r = client.get_normalized_financials("005930.KS", year=2026, reprt_code="11013")
+        assert r == cached and called["n"] == 0
+
+
+class TestDartFindPeriodicReport:
+    """find_periodic_report — document.xml 원문 요청용 rcept_no 확보.
+    1분기(11013)·3분기(11014) 둘 다 report_nm='분기보고서'라 법정 제출기한
+    기반 날짜창으로만 구분(4~5월 vs 10~11월)."""
+
+    def test_matches_by_keyword_and_picks_latest(self, monkeypatch):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        monkeypatch.setattr(client, "stock_code_to_corp_code",
+                            lambda code: "00126380")
+        seen = {}
+
+        class _Resp:
+            def json(self):
+                return {"status": "000", "list": [
+                    {"report_nm": "반기보고서", "rcept_no": "20260814000123",
+                     "rcept_dt": "20260814"},
+                    {"report_nm": "[기재정정]반기보고서", "rcept_no": "20260816000456",
+                     "rcept_dt": "20260816"},
+                    {"report_nm": "임원ㆍ주요주주특정증권등소유상황보고서",
+                     "rcept_no": "20260810000001", "rcept_dt": "20260810"},
+                ]}
+
+        def _fake_get(url, params=None, timeout=None):
+            seen["params"] = params
+            return _Resp()
+
+        monkeypatch.setattr(dc.requests, "get", _fake_get)
+        r = client.find_periodic_report("005930", 2026, "11012")
+        assert seen["params"]["pblntf_ty"] == "A"
+        assert seen["params"]["bgn_de"] == "20260701" and seen["params"]["end_de"] == "20260831"
+        # 두 건 매치 → 접수일 가장 최근(정정보고서) 선택
+        assert r["rcept_no"] == "20260816000456"
+
+    def test_q1_and_q3_windows_do_not_overlap(self):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        _, bgn1, end1 = client._periodic_report_window(2026, "11013")
+        _, bgn3, end3 = client._periodic_report_window(2026, "11014")
+        assert end1 < bgn3, (end1, bgn3)   # 1분기 검색창이 3분기 검색창보다 앞
+
+    def test_no_match_returns_none(self, monkeypatch):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="K")
+        monkeypatch.setattr(client, "stock_code_to_corp_code",
+                            lambda code: "00126380")
+
+        class _Resp:
+            def json(self):
+                return {"status": "000", "list": []}
+
+        monkeypatch.setattr(dc.requests, "get", lambda *a, **k: _Resp())
+        assert client.find_periodic_report("005930", 2026, "11012") is None
+
+    def test_no_api_key_graceful(self):
+        import bot.dart_client as dc
+        client = dc.DartClient(api_key="")
+        assert client.find_periodic_report("005930", 2026, "11012") is None
+
+
+class TestDartQuarterlySeries:
+    """bot.dart_quarterly — DART 정기보고서(누적치) → 단일분기 차분 +
+    트레일링 시계열 조립 + 최신분기 자동탐지(2026-08-16, 분기 실적분석
+    대시보드). 다음 분기가 공시되면 하드코딩 없이 자동 반영되는 것이 핵심."""
+
+    def test_quarter_label_format(self):
+        from bot.dart_quarterly import quarter_label
+        assert quarter_label(2026, "11013") == "26.1Q"
+        assert quarter_label(2026, "11012") == "26.2Q"
+        assert quarter_label(2025, "11014") == "25.3Q"
+        assert quarter_label(2026, "11011") == "26.4Q"
+
+    def test_diff_quarter_subtracts_flow_keeps_stock(self):
+        from bot.dart_quarterly import _diff_quarter
+        cum_h1 = {"매출": 1237, "영업이익": 260, "자산총계": 50000}
+        cum_q1 = {"매출": 550, "영업이익": 100, "자산총계": 48000}
+        d = _diff_quarter(cum_h1, cum_q1)
+        assert d["매출"] == 687 and d["영업이익"] == 160
+        assert d["자산총계"] == 50000          # 시점값(저량) — 차분 안 함, now 값 유지
+
+    def test_diff_quarter_q1_passthrough(self):
+        from bot.dart_quarterly import _diff_quarter
+        cum_q1 = {"매출": 550, "자산총계": 48000}
+        d = _diff_quarter(cum_q1, None)
+        assert d == cum_q1
+
+    def test_diff_quarter_none_value_stays_none(self):
+        from bot.dart_quarterly import _diff_quarter
+        d = _diff_quarter({"영업이익": None}, {"영업이익": 100})
+        assert d["영업이익"] is None
+
+    def test_diff_quarter_negative_revenue_anomaly_flag(self):
+        from bot.dart_quarterly import _diff_quarter
+        d = _diff_quarter({"매출": 100}, {"매출": 200})
+        assert d["매출"] == -100
+        assert d["_anomaly_revenue_negative"] is True
+        # 정상 케이스는 플래그 없음
+        d2 = _diff_quarter({"매출": 300}, {"매출": 200})
+        assert "_anomaly_revenue_negative" not in d2
+
+    def test_needed_pairs_same_year(self):
+        from bot.dart_quarterly import _needed_year_reprt_pairs
+        pairs = _needed_year_reprt_pairs(2026, "11011", 4)
+        assert set(pairs) == {(2026, "11011"), (2026, "11012"),
+                              (2026, "11013"), (2026, "11014")}
+
+    def test_needed_pairs_crosses_year_boundary(self):
+        from bot.dart_quarterly import _needed_year_reprt_pairs
+        pairs = _needed_year_reprt_pairs(2026, "11012", 6)
+        assert set(pairs) == {(2025, "11011"), (2025, "11012"),
+                              (2025, "11013"), (2025, "11014"),
+                              (2026, "11012"), (2026, "11013")}
+
+    def test_needed_pairs_starting_at_q1(self):
+        from bot.dart_quarterly import _needed_year_reprt_pairs
+        # 26.1Q 부터 역산 3개 = 26.1Q, 25.4Q, 25.3Q — prev 는 25.4Q(11011)이 25.3Q(11014).
+        pairs = _needed_year_reprt_pairs(2026, "11013", 3)
+        assert set(pairs) == {(2026, "11013"), (2025, "11011"),
+                              (2025, "11014"), (2025, "11012")}
+
+    def test_latest_candidate_matches_legal_due_dates(self):
+        from bot.dart_quarterly import _latest_candidate
+        from datetime import date
+        assert _latest_candidate(date(2026, 3, 1)) == (2025, "11014")
+        assert _latest_candidate(date(2026, 4, 15)) == (2025, "11011")
+        assert _latest_candidate(date(2026, 8, 16)) == (2026, "11012")
+        assert _latest_candidate(date(2026, 12, 25)) == (2026, "11014")
+
+    def test_probe_latest_reprt_code_steps_back_on_failure(self, monkeypatch):
+        from bot.dart_quarterly import probe_latest_reprt_code
+        import bot.dart_quarterly as dq
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
+        calls = []
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                calls.append((year, reprt_code))
+                if (year, reprt_code) == (2025, "11011"):   # 3번째 시도에 성공
+                    return {"financials": {"매출": 1}}
+                return None
+
+        r = probe_latest_reprt_code(_FakeDart(), "005930.KS")
+        assert r == (2025, "11011")
+        assert calls == [(2026, "11012"), (2026, "11013"), (2025, "11011")]
+
+    def test_probe_latest_reprt_code_all_fail_returns_none(self, monkeypatch):
+        from bot.dart_quarterly import probe_latest_reprt_code
+        import bot.dart_quarterly as dq
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
+
+        class _FakeDart:
+            def get_normalized_financials(self, *a, **k):
+                return None
+
+        assert probe_latest_reprt_code(_FakeDart(), "005930.KS") is None
+
+    def test_get_quarterly_series_builds_ascending_trailing_window(self, monkeypatch):
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2026, "11012"): {"financials": {"매출": 1237, "영업이익": 260,
+                                             "자산총계": 50000}},
+            (2026, "11013"): {"financials": {"매출": 550, "영업이익": 100,
+                                             "자산총계": 48000}},
+            (2025, "11011"): {"financials": {"매출": 2100, "영업이익": 400,
+                                             "자산총계": 45000}},
+            (2025, "11014"): {"financials": {"매출": 1600, "영업이익": 300,
+                                             "자산총계": 44000}},
+            (2025, "11012"): {"financials": {"매출": 972, "영업이익": 222,
+                                             "자산총계": 43000}},
+            (2025, "11013"): {"financials": {"매출": 428, "영업이익": 90,
+                                             "자산총계": 42000}},
+        }
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
+
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
+        series = get_quarterly_series(_FakeDart(), "005610.KS", n=6)
+        assert [s["label"] for s in series] == [
+            "25.1Q", "25.2Q", "25.3Q", "25.4Q", "26.1Q", "26.2Q"]
+        assert series[-1]["financials"]["매출"] == 687        # 1237-550
+        assert series[-1]["financials"]["영업이익"] == 160    # 260-100
+        assert series[3]["financials"]["매출"] == 500          # 25.4Q: 2100-1600
+        assert series[0]["financials"]["매출"] == 428          # 25.1Q: Q1 그대로
+        assert all(s["fs_div"] == "CFS" for s in series)
+
+    def test_get_quarterly_series_none_when_probe_fails(self, monkeypatch):
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
+
+        class _FakeDart:
+            def get_normalized_financials(self, *a, **k):
+                return None
+
+        assert get_quarterly_series(_FakeDart(), "005930.KS") is None
+
+    def test_get_quarterly_series_partial_when_history_short(self, monkeypatch):
+        # 상장 이력이 짧아 과거 분기가 없으면 있는 만큼만 반환(전무가 아니면
+        # None 이 아니라 부분 리스트) — fabrication 없이 graceful truncation.
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2026, "11012"): {"financials": {"매출": 1237}},
+            (2026, "11013"): {"financials": {"매출": 550}},
+            # 2025년 데이터 전무(신규상장 가정)
+        }
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
+
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=6)
+        assert series is not None
+        assert [s["label"] for s in series] == ["26.1Q", "26.2Q"]
+
+
 class TestKrNewsQuery:
     """KR 뉴스 검색어 = 한글 브랜드 (NAVER 0-news 2026-06-08).
 
