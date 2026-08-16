@@ -1039,9 +1039,13 @@ def build_payload(ticker: str, snap: dict | None = None, *,
 
 def table_html(payload: dict) -> str:
     """PNG 폴백 — 서버에 한글 폰트가 없어 렌더가 None 일 때 같은 숫자를 표로.
-    최신이 왼쪽(대시보드 분기표와 동일 방향)."""
+
+    ⚠️ 컬럼은 **오래된→최신**(최신이 오른쪽) — 이 표가 대신하는 PNG 차트가
+    그 방향이고, 같은 페이지의 밸류에이션 탭 분기표도 2026-08-16 사용자
+    지시로 같은 방향이 됐다. 여기만 뒤집혀 있으면 폰트 없는 서버에서 한
+    화면의 두 분기표가 서로 반대를 가리킨다(2026-08-16 독립 리뷰)."""
     import html as _h
-    qs = list(reversed(payload.get("quarters") or []))
+    qs = list(payload.get("quarters") or [])
     if not qs:
         return ""
     cur = payload.get("currency") or "KRW"
