@@ -8281,7 +8281,9 @@ class TestBlogWatchMultiBlog:
         assert ids["teasky0221"]["categories"] is None         # 전체 글
         assert "doctordk" in ids and ids["doctordk"]["title"] == "의교창"
         assert ids["doctordk"]["categories"] is None           # 전체 글
-        assert ids["beatthemkt"]["categories"] == ("관심종목", "기업탐방")
+        # beatthemkt('변화하는 기업을 찾아서') — 사용자 2026-08-19 자동수집 중단
+        # 요청으로 _BLOGS 에서 제거. 실수로 되살아나면(복붙·revert) 여기서 잡힘.
+        assert "beatthemkt" not in ids, "제거 요청된 블로그가 감시 목록에 재등장"
         assert "jkhan012" in ids and ids["jkhan012"]["title"] == "천상천하"  # 사용자 2026-06-18
         assert "ranto28" in ids and ids["ranto28"]["title"] == "메르"        # 사용자 2026-06-18
         assert "richyun0108" in ids and ids["richyun0108"]["title"] == "작은 투자자"  # 사용자 2026-06-22
