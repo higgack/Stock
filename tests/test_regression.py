@@ -5213,6 +5213,52 @@ class TestDartQuarterlySeries:
         assert series is not None
         assert [s["label"] for s in series] == ["26.1Q", "26.2Q"]
 
+    def test_get_quarterly_series_skips_quarter_when_prev_fetch_missing(self, monkeypatch):
+        # code-review 발견(2026-08-19): 직전 분기(같은 연도 내 차분 기준)
+        # 조회가 네트워크 실패 등으로 None 이면, "진짜 1분기라 직전이 없는"
+        # 경우와 구분 못 해 몇 개월치 누적치를 단일분기 실적처럼 그대로
+        # 통과시켜 2~3배 부풀려 표시하던 버그. 이제 그 분기는 스킵돼야 한다.
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2026, "11012"): {"financials": {"매출": 1237, "영업이익": 260}},
+            # (2026, "11013") 없음 — 직전분기 조회 실패 시뮬레이션
+        }
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
+
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=4)
+        assert series is None, ("26.2Q 가 유일한 후보였는데 직전분기 조회실패로 "
+                                "스킵되지 않고 누적치가 그대로 반환됨(재발)")
+
+    def test_get_quarterly_series_stops_cleanly_not_partial_fabrication(self, monkeypatch):
+        # 직전분기 미싱으로 멈춘 지점 이전(더 과거) 데이터가 있어도, 이
+        # 트레일링 walk 구조상 그 지점의 다음 스텝이 방문할 키가 곧 미싱된
+        # prev 와 동일 키라(_Q_PREV 설계상 불변식) 어차피 즉시 멈춘다 —
+        # 더 과거 원자료가 raw 에 있어도 쓰이지 않는 게 정상 동작임을 고정.
+        from bot.dart_quarterly import get_quarterly_series
+        import bot.dart_quarterly as dq
+        FAKE = {
+            (2026, "11012"): {"financials": {"매출": 1237, "영업이익": 260}},
+            # (2026, "11013") 없음 — 26.2Q 의 직전분기이자 다음 walk 스텝의
+            # 키라 여기서 멈춤. 아래 2025년 데이터는 도달 못 함(있어도 무관).
+            (2025, "11011"): {"financials": {"매출": 2100, "영업이익": 400}},
+            (2025, "11014"): {"financials": {"매출": 1600, "영업이익": 300}},
+        }
+
+        class _FakeDart:
+            def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                          reprt_code="11011"):
+                return FAKE.get((year, reprt_code))
+
+        monkeypatch.setattr(dq, "_latest_candidate", lambda today: (2026, "11012"))
+        series = get_quarterly_series(_FakeDart(), "005930.KS", n=4)
+        assert series is None
+
 
 class TestDartRoicAndQuarterlyPane:
     """ROIC 추가(calc_kr_financial_ratios) + 밸류에이션 탭 분기별 재무추이

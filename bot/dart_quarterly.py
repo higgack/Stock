@@ -158,8 +158,27 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
         if cum_now is None:
             break   # 과거로 갈수록 데이터 없음 — 있는 만큼만 반환
         prev_rc = _Q_PREV[rc]
-        cum_prev = ((raw.get((y, prev_rc)) or {}).get("financials")
-                   if prev_rc else None)
+        if prev_rc is None:
+            cum_prev = None                    # 진짜 1분기 — 직전 불요
+        else:
+            prev_entry = raw.get((y, prev_rc))
+            if prev_entry is None:
+                # 직전 분기 조회가 실패한 경우(네트워크 일시 장애 등)를
+                # "진짜 1분기라 직전이 없는" 경우와 구분해야 한다 — 구분
+                # 안 하면 _diff_quarter 가 cum_prev=None 을 1분기로 오인해
+                # 몇 개월치 누적 매출/이익을 단일분기 실적처럼 그대로
+                # 통과시켜 2~3배 부풀려 표시한다(2026-08-19 code-review
+                # 발견). (year,prev_rc) 는 이 트레일링 walk 의 다음 스텝이
+                # 방문할 키와 항상 동일(_Q_PREV 설계상 구조적 불변식)이라
+                # 여기서 멈추나 continue 하나 다음 반복에서 어차피 같은
+                # 미싱 데이터로 break 된다 — break 로 단순화.
+                log.warning(
+                    "dart_quarterly: %s stop at %s(reprt=%s) — prev report(%s) "
+                    "fetch missing, would mislabel cumulative as single-quarter",
+                    ticker, y, rc, prev_rc,
+                )
+                break
+            cum_prev = prev_entry.get("financials")
         fin = _diff_quarter(cum_now, cum_prev)
         out.append({
             "label": quarter_label(y, rc), "year": y, "quarter": _Q_NUM[rc],

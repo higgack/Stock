@@ -5577,54 +5577,61 @@ def _render_stock_info_html(rec: dict) -> str:
     val_per_share += _val_row("50일 이동평균", si.get("fiftyDayAverage"), "", "fiftyDayAverage")
     val_per_share += _val_row("200일 이동평균", si.get("twoHundredDayAverage"), "", "twoHundredDayAverage")
 
+    # KR 재무추이 표(연도별·분기별 공용) — 2026-08-19 code-review 발견:
+    # 두 블록이 컬럼헤더 생성 방식만 다르고 나머지가 완전 복붙이라 한쪽만
+    # 고치고 잊기 쉬웠음(dedup) + 분기 쪽 _anomaly_revenue_negative 플래그
+    # (dart_quarterly._diff_quarter 가 세팅)를 아무도 안 읽어 매출 음수가
+    # 설명 없이 그냥 찍히던 문제도 같이 해결(플래그를 만든 목적 자체가
+    # "렌더러가 판단"이었는데 판단하는 렌더러가 없었음).
+    def _kr_fin_trend_table(title: str, items: list, col_label) -> str:
+        header = "<th>항목</th>" + "".join(
+            f"<th class='num'>{esc(str(col_label(it)))}</th>" for it in items)
+        rows = ""
+        for label, key in (("매출", "매출"), ("영업이익", "영업이익"),
+                           ("당기순이익", "당기순이익")):
+            cells = ""
+            for it in items:
+                v = it.get(key)
+                cell = f"{v / 1e8:,.0f}억" if v else "—"
+                if key == "매출" and it.get("_anomaly_revenue_negative"):
+                    cell += " ⚠️"
+                cells += f"<td class='num'>{cell}</td>"
+            rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
+        for label, key in (("영업이익률", "영업이익률"), ("ROE", "ROE"),
+                           ("부채비율", "부채비율")):
+            cells = ""
+            for it in items:
+                v = it.get(key)
+                cells += f"<td class='num'>{v:.1f}%</td>" if v is not None else "<td class='num'>—</td>"
+            rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
+        foot = ""
+        if any(it.get("_anomaly_revenue_negative") for it in items):
+            foot = ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
+                    '⚠️ 매출 음수 = 전기 재무제표 정정(restatement)이 반영된 DART '
+                    '원자료 그대로 — 임의 보정 없음</div>')
+        return f"""<div class="si-section">
+    <div class="si-section-title">{esc(title)}</div>
+    <table class="si-table"><thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table>
+    {foot}
+  </div>"""
+
     # KR financials quarterly (최근 4분기, bot.dart_quarterly) — 사용자
     # 2026-08-19 "밸류에이션 탭 연도별 재무추이 위에 분기별 추가, 항목은
-    # 연도별과 동일". 렌더 구조는 kr_fin_ts_html 과 동일 패턴(연/분기만 다름).
+    # 연도별과 동일".
     kr_fin_q_html = ""
     kr_fin_q = kr.get("financials_q")
     if kr_fin_q and len(kr_fin_q) > 1:
-        q_header = "<th>항목</th>" + "".join(f"<th class='num'>{esc(str(q.get('label','')))}</th>" for q in kr_fin_q)
-        q_rows = ""
-        for label, key in (("매출", "매출"), ("영업이익", "영업이익"), ("당기순이익", "당기순이익")):
-            cells = ""
-            for q in kr_fin_q:
-                v = q.get(key)
-                cells += f"<td class='num'>{v / 1e8:,.0f}억</td>" if v else "<td class='num'>—</td>"
-            q_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
-        for label, key in (("영업이익률", "영업이익률"), ("ROE", "ROE"), ("부채비율", "부채비율")):
-            cells = ""
-            for q in kr_fin_q:
-                v = q.get(key)
-                cells += f"<td class='num'>{v:.1f}%</td>" if v is not None else "<td class='num'>—</td>"
-            q_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
-        kr_fin_q_html = f"""<div class="si-section">
-    <div class="si-section-title">분기별 재무추이 (K-IFRS, 최근 4분기)</div>
-    <table class="si-table"><thead><tr>{q_header}</tr></thead><tbody>{q_rows}</tbody></table>
-  </div>"""
+        kr_fin_q_html = _kr_fin_trend_table(
+            "분기별 재무추이 (K-IFRS, 최근 4분기)", kr_fin_q,
+            lambda q: q.get("label", ""))
 
     # KR financials multi-year (if available)
     kr_fin_ts_html = ""
     kr_fin_ts = kr.get("financials_ts")
     if kr_fin_ts and len(kr_fin_ts) > 1:
-        ts_header = "<th>항목</th>" + "".join(f"<th class='num'>FY{esc(str(yr.get('year','')))}</th>" for yr in kr_fin_ts)
-        ts_rows = ""
-        for label, key in (("매출", "매출"), ("영업이익", "영업이익"), ("당기순이익", "당기순이익")):
-            cells = ""
-            for yr in kr_fin_ts:
-                v = yr.get(key)
-                cells += f"<td class='num'>{v / 1e8:,.0f}억</td>" if v else "<td class='num'>—</td>"
-            ts_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
-        # Ratios
-        for label, key in (("영업이익률", "영업이익률"), ("ROE", "ROE"), ("부채비율", "부채비율")):
-            cells = ""
-            for yr in kr_fin_ts:
-                v = yr.get(key)
-                cells += f"<td class='num'>{v:.1f}%</td>" if v is not None else "<td class='num'>—</td>"
-            ts_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
-        kr_fin_ts_html = f"""<div class="si-section">
-    <div class="si-section-title">재무 추이 (K-IFRS 연결)</div>
-    <table class="si-table"><thead><tr>{ts_header}</tr></thead><tbody>{ts_rows}</tbody></table>
-  </div>"""
+        kr_fin_ts_html = _kr_fin_trend_table(
+            "재무 추이 (K-IFRS 연결)", kr_fin_ts,
+            lambda yr: f"FY{yr.get('year', '')}")
 
     # valuation_pane assembled later (after div_html / us_xbrl_html defined)
 
