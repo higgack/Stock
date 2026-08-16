@@ -30,15 +30,16 @@ ALBUM_DEBOUNCE_S seconds, then forward as a single forward_messages([...])
 call so trade-bot's media_group_id grouping still works.
 
 Relevance filter (differs from listen_beon.py, 사용자 2026-07-11 — 실백필 중
-애널리스트 레이팅표 등 무관 콘텐츠가 trade 채널로 넘어간 걸 확인): 나쁜양파는
-대만·중국·일본(같은 채널, 사용자 2026-07-11 — 일본은 BeOn 과 별도 두 번째
-소스)·태국·말레이시아·필리핀·멕시코(사용자 2026-07-26) 수출 데이터 외 다른
-트레이딩 정보도 섞어 올리는 일반 채널이라, 캡션이 7개국 파서
-(`tw_exports.parse_tw_export()`/`cn_exports.parse_cn_export()`/
-`jp2_exports.parse_jp2_export()`/`th_exports.parse_th_export()`/
-`my_exports.parse_my_export()`/`ph_exports.parse_ph_export()`/
-`mx_exports.parse_mx_export()`) 중 하나로 파싱되는 메시지(앨범이면 멤버 중
-하나라도)만 forward 한다. BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음.
+애널리스트 레이팅표 등 무관 콘텐츠가 trade 채널로 넘어간 걸 확인):
+나쁜양파는 수출 데이터 외 애널리스트 레이팅표 등 무관한 트레이딩 정보도
+섞어 올리는 일반 채널이라, 캡션이 나쁜양파 소스 파서 중 하나로 파싱되는
+메시지(앨범이면 멤버 중 하나라도)만 forward 한다. BeOn 은 채널 자체가 단일
+목적이라 이 필터가 없음.
+
+⚠️ 소스 목록을 여기에 나열하지 않는다 — `trade/badonion_sources.py` 단일
+레지스트리가 유일한 출처다. 옛 문서는 국가명을 하드코딩해 뒀고, 2026-08-16
+한국 수출을 추가할 때 실제로 로그 문구가 어긋났다(필터는 통과시키는데
+로그엔 '한국'이 없었다).
 
 Lifecycle alerts (best-effort, never raise):
   🟢 <b>나쁜양파 리스너 가동</b>
@@ -66,34 +67,20 @@ from telethon.errors import (
     SessionPasswordNeededError,
 )
 
-from trade import cn_exports as _cn
-from trade import jp2_exports as _jp2
-from trade import kr_stock_exports as _krs
-from trade import mx_exports as _mx
-from trade import my_exports as _my
-from trade import ph_exports as _ph
-from trade import th_exports as _th
-from trade import tw_exports as _tw
-from trade import us_imports as _us
+from trade import badonion_sources as _srcs
 
 load_dotenv()
 
 
 def _is_relevant(text: str) -> bool:
-    """대만·중국·일본(나쁜양파 두 번째 소스)·태국·말레이시아·필리핀·멕시코·미국
-    수출 데이터 + 한국 수출(종목별) 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터, 사용자 2026-07-11
-    중국·일본 추가 + 2026-07-26 태국·말레이시아·필리핀·멕시코 추가)."""
-    return (_tw.parse_tw_export(text) is not None
-            or _cn.parse_cn_export(text) is not None
-            or _jp2.parse_jp2_export(text) is not None
-            or _th.parse_th_export(text) is not None
-            or _my.parse_my_export(text) is not None
-            or _ph.parse_ph_export(text) is not None
-            or _mx.parse_mx_export(text) is not None
-            or _us.parse_us_import(text) is not None
-            # 한국 수출(종목별) — 유일한 회사 기준 소스. 이게 없으면
-            # 나쁜양파의 한국 종목 메시지가 여기서 전량 드랍된다.
-            or _krs.parse_kr_stock_export(text) is not None)
+    """나쁜양파 채널의 무관 콘텐츠(애널리스트 레이팅표 등) 필터.
+
+    소스 목록은 `trade/badonion_sources.py` 단일 레지스트리 — 리스너·
+    백필·ingest·unstored_check·dashboard 가 모두 그걸 본다. 옛 구현은
+    5개 파일에 같은 or-체인을 복붙해 뒀고, 한국 수출을 추가할 때 실제로
+    로그 문구가 어긋났다(2026-08-16).
+    """
+    return _srcs.is_relevant(text)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -236,7 +223,7 @@ async def _run_listener() -> int:
                          gid, len(ids), fwd_q.qsize())
             else:
                 log.info("dropped irrelevant album gid=%d (%d msgs) — "
-                          "no 대만·중국·일본·태국·말레이시아·필리핀·멕시코 수출 caption", gid, len(ids))
+                          "no [%s] caption", gid, len(ids), _srcs.labels())
         except Exception as e:
             log.exception("flush_album error: %s", e)
 
@@ -250,8 +237,8 @@ async def _run_listener() -> int:
                 fwd_q.put_nowait([msg.id])
                 log.info("queued msg=%d (q=%d)", msg.id, fwd_q.qsize())
             else:
-                log.info("dropped irrelevant msg=%d — no 대만·중국·일본·태국·말레이시아·필리핀·멕시코 수출 caption",
-                          msg.id)
+                log.info("dropped irrelevant msg=%d — no [%s] caption",
+                         msg.id, _srcs.labels())
             return
         album_buf.setdefault(gid, []).append(msg.id)
         if relevant_msg:

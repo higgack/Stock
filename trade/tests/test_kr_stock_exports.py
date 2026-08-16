@@ -1,3 +1,4 @@
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -223,39 +224,50 @@ class RoutingTests(unittest.TestCase):
 
 
 class WiringTests(unittest.TestCase):
-    """파이프라인 배선 — 이게 빠지면 메시지가 조용히 드랍된다."""
+    """파이프라인 배선 — 이게 빠지면 메시지가 조용히 드랍된다.
 
-    def test_listener_and_backfill_relevance_filter(self):
-        # 리스너 필터에 없으면 나쁜양파의 한국 종목 메시지가 forward 자체가
-        # 안 돼 저장 로직이 아무리 맞아도 데이터가 0건이 된다.
-        for f in ("trade/scripts/listen_badonion.py",
-                  "trade/scripts/backfill_badonion.py"):
-            src = Path(f).read_text(encoding="utf-8")
-            self.assertIn("kr_stock_exports", src, f)
-            self.assertIn("parse_kr_stock_export(text)", src, f)
+    2026-08-16 레지스트리 통합 이후, 소비처마다 하드코딩을 grep 하는 대신
+    **레지스트리 등재**를 검증한다(등재만 되면 리스너·백필·ingest·
+    unstored_check·dashboard 5곳이 자동으로 따라온다). 그 5곳이 실제로
+    레지스트리를 보는지는 `test_badonion_sources.py` 가 고정한다."""
 
-    def test_ingest_routes_to_separate_db(self):
-        src = Path("trade/scripts/ingest_inbox.py").read_text(encoding="utf-8")
-        self.assertIn("open_kr_stock_db", src)
-        self.assertIn('"kr_stock.db"', src)
-        self.assertIn("krs_inserted", src)
-        self.assertIn("krs_conn", src)
+    def test_registered_in_badonion_registry(self):
+        # 레지스트리에 없으면 리스너 필터를 못 통과해 forward 자체가 안 되고,
+        # 저장 로직이 아무리 맞아도 데이터가 0건이 된다.
+        from trade import badonion_sources as bsrc
+        s = bsrc.by_key("krs")
+        self.assertIsNotNone(s, "한국 수출(종목별)이 레지스트리에 미등재")
+        self.assertIs(s.parse, krs.parse_kr_stock_export)
+        self.assertIs(s.open_db, krs.open_kr_stock_db)
+        self.assertIs(s.ingest, krs.ingest)
+        self.assertEqual(s.db_file, "kr_stock.db")
+        self.assertEqual(s.html_file, "kr_stock.html")
+        self.assertTrue(bsrc.is_relevant(_JUL), "필터가 한국 캡션을 거부")
 
     def test_dashboard_nav_and_regenerate(self):
         # nav 링크가 index.html 에 실제로 들어가는지 검증하는 테스트가
         # 기존엔 없어서 </div> 위치를 잘못 건드려도 못 잡았다.
         src = Path("trade/dashboard.py").read_text(encoding="utf-8")
-        self.assertIn('href="kr_stock.html"', src)
-        self.assertIn("kr_stock_exports.regenerate", src)
+        # nav 링크는 이제 dashboard 소스가 아니라 레지스트리가 만든다 —
+        # **렌더 결과**를 본다(소스 grep 보다 강한 검증).
+        from trade.dashboard import _srcs_nav_html
+        self.assertIn('href="kr_stock.html"', _srcs_nav_html())
+        # regenerate 는 더 이상 dashboard 에 하드코딩돼 있지 않다 —
+        # badonion_sources 레지스트리가 돌린다. 그래서 grep 이 아니라
+        # **레지스트리 엔트리**를 검증한다(2026-08-16 레지스트리 통합).
+        from trade import badonion_sources as _srcs
+        from trade import kr_stock_exports as _krs
+        s = _srcs.by_key("krs")
+        self.assertIsNotNone(s, "krs 소스가 레지스트리에서 사라짐")
+        self.assertEqual(s.html_file, "kr_stock.html")
+        self.assertIs(s.regenerate, _krs.regenerate)
         # 렌더 실패를 조용히 삼키면 nav 가 404 인데 단서가 0 이다(실수 #12)
-        blk = src.split("kr_stock_exports.regenerate", 1)[1][:600]
+        blk = src.split("for _s in _srcs.SOURCES:", 1)[1][:800]
         self.assertIn("logging.getLogger", blk, "regenerate 실패가 무로그")
-        # 미매칭 집계에서 제외(정상 처리 경로인데 '누락'으로 잡히면 오탐)
-        self.assertIn("parse_kr_stock_export(cap)", src)
-
-    def test_unstored_check_suppresses(self):
-        src = Path("trade/scripts/unstored_check.py").read_text(encoding="utf-8")
-        self.assertIn("parse_kr_stock_export(caption)", src)
+        # 들여쓰기를 리터럴로 박으면 어떤 코드에도 안 맞는 무력한 assert 가
+        # 된다 — 핸들러 본문이 pass 뿐인 **형태**를 정규식으로 잡는다.
+        self.assertIsNone(re.search(r"except[^\n]*:\s*\n\s*pass", blk),
+                          "regenerate 실패를 조용히 삼킴(실수 #12)")
 
 
 if __name__ == "__main__":
