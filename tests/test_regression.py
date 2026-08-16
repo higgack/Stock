@@ -5361,6 +5361,25 @@ class TestDartRoicAndQuarterlyPane:
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert '("ROIC", "ROIC")' in src, "기업탭 K-IFRS 재무요약에 ROIC 행 누락"
 
+    def test_kifrs_summary_left_right_table_row_counts_match(self):
+        # 사용자 2026-08-19 — ROIC 추가로 우측(비율) 테이블이 7행이 됐는데
+        # 좌측(금액) 테이블은 6행이라 시각적으로 어긋남. 배당수익률을 좌측
+        # 루프 뒤에 추가해 7행으로 맞춤 — 루프의 (라벨,키) 튜플 개수 +
+        # 루프 밖에서 수동으로 덧붙인 행 수를 세어 좌우 동일한지 고정.
+        import re
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        fin_loop_src = src[src.index('for label, key in (("매출", "매출")'):
+                           src.index('ratio_rows = ""')]
+        ratio_loop_start = src.index('for label, key in (("영업이익률", "영업이익률")')
+        ratio_loop_src = src[ratio_loop_start:src.index('kr_financial_html = f"""')]
+        fin_tuple_count = len(re.findall(r'\("[^"]+", "[^"]+"\)', fin_loop_src))
+        ratio_tuple_count = len(re.findall(r'\("[^"]+", "[^"]+"\)', ratio_loop_src))
+        # 루프 밖에서 수동으로 fin_rows 에 덧붙이는 행(배당수익률) 카운트.
+        fin_extra_rows = fin_loop_src.count("fin_rows += (f'<tr>")
+        assert "배당수익률" in fin_loop_src, "K-IFRS 재무요약 좌측에 배당수익률 행 누락"
+        assert fin_tuple_count + fin_extra_rows == ratio_tuple_count == 7, \
+            (fin_tuple_count, fin_extra_rows, ratio_tuple_count)
+
     def test_roic_wired_into_stock_snapshot_compact_dict(self):
         src = open("bot/stock_snapshot.py", encoding="utf-8").read()
         assert '"ROIC"' in src, "kr.financials(compact) 로 ROIC 값이 안 넘어감"
