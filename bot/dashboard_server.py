@@ -833,9 +833,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # collect_stock_snapshot 은 cold 면 yfinance 직렬 수집으로 10~30초가
             # 걸려(이 파일 상단 주석 참조) 무료 탭-오픈 경로를 막는다 —
             # 120초 in-process 캐시가 warm 일 때만 읽고(상세 페이지를 방금
-            # 렌더했으면 warm), cold 면 건너뛴다(타일이 '—'로 표시될 뿐 분기
-            # 숫자·차트는 정상). run=1(사용자가 이미 느린 유료 작업을 선택)
-            # 일 때만 cold 수집 허용. 2026-08-19 code-review.
+            # 렌더했으면 warm), cold 면 건너뛴다(스냅샷 전용 필드인
+            # forwardEps 만 '—'로 빠질 뿐 분기 숫자·차트·시총은 정상).
+            # ⚠️ 옛 게이트에 있던 `run` 항은 뺐다 — 성장동력·리스크가 탭
+            # 열자마자 자동 실행되도록 바뀌어(사용자 2026-08-16) run 이 늘
+            # 1 이라, 그대로 두면 모든 탭-오픈이 cold 수집 10~30초를 탄다.
+            # 시총·주가는 이제 quarterly_infographic 이 라이브로 직접 받는다.
             snap = None
             try:
                 import bot.stock_snapshot as _ss
@@ -844,8 +847,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     warm = bool(ent and (time.time() - ent[0]) < _ss._SNAP_CACHE_TTL)
                 # 비-KR 은 스냅샷이 **유일한 데이터 소스**(yfinance 분기 손익)라
                 # warm 게이트가 곧 '데이터 없음'이 된다 → 항상 수집한다.
-                # KR 은 DART 가 숫자를 주므로 cold 면 시총·PER 만 '—'(현행).
-                if warm or run or _mkt != "KR":
+                if warm or _mkt != "KR":
                     snap = _ss.collect_stock_snapshot(ticker)
             except Exception as exc:
                 log.debug("quarterly_api: snapshot skipped — %s", exc)

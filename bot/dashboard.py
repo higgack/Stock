@@ -5037,8 +5037,6 @@ _QUARTERLY_JS = r"""
     // 으로 영구 비활성 → 새로고침해야만 복구).
     if(!j||!j.ok){
       if(st){ st.style.display=''; st.textContent=(j&&j.error)?j.error:'분기 실적 데이터를 불러올 수 없습니다.'; }
-      var ob=document.getElementById('si-q-run');
-      if(ob){ ob.disabled=false; ob.textContent='성장동력 · 리스크 생성 (AI 1회)'; }
       return;
     }
     if(st)st.style.display='none';
@@ -5063,11 +5061,13 @@ _QUARTERLY_JS = r"""
         h+='<div style="font-size:11px;color:var(--fg-soft)">출처: '+esc(gr.source||'DART 공시')+'</div></div>';
       }
     }else if(j.llm_supported){
-      h+='<div style="margin-top:10px"><button type="button" id="si-q-run" '
-       + 'style="padding:6px 12px;border-radius:8px;cursor:pointer">'
-       + '성장동력 · 리스크 생성 (AI 1회)</button>'
-       + '<span style="font-size:11px;color:var(--fg-soft);margin-left:8px">'
-       + 'DART 공시 원문 근거 요약 · 분기당 1회만 과금</span></div>';
+      // 탭을 열면 이미 &run=1 로 요청했는데도 카드가 없다 = 그 분기 보고서
+      // 에서 근거 문단을 못 뽑았거나 LLM 이 실패한 것. 버튼을 다시 보여주는
+      // 대신 왜 없는지 밝힌다(사용자 2026-08-16 버튼 제거 요청).
+      h+='<div style="margin-top:10px;font-size:11px;color:var(--fg-soft)">'
+       + '성장동력 · 리스크 요약을 생성하지 못했습니다'
+       + (gr.error?(' — '+esc(gr.error)):' (공시 원문에서 근거 문단 미확인)')
+       + '.</div>';
     }else{
       // 비-KR: 근거가 될 공시 원문 소스가 없다 — 누를 수 없는 버튼을
       // 보여주는 대신 왜 없는지 밝힌다.
@@ -5082,26 +5082,29 @@ _QUARTERLY_JS = r"""
      + (j.cost_krw?'':' (무과금 — DART 숫자·캐시)')
      + ' · 누적 비용은 메인 대시보드 비용 카드 / <code>/usage</code> 의 «실적분석» 항목</div>';
     if(box)box.innerHTML=h;
-    var btn=document.getElementById('si-q-run');
-    if(btn)btn.addEventListener('click',function(){
-      btn.disabled=true; btn.textContent='생성 중…'; load(true);
-    });
   }
   function load(run){
-    if(fetching||(loaded&&!run)) return; fetching=true;
+    // 버튼이 없어져 재요청 경로가 사라졌으므로 성공 1회로 끝낸다 — 탭을
+    // 다시 눌러도 재요청하지 않는다(실패했을 때만 재시도 가능).
+    if(fetching||loaded) return; fetching=true;
     var st=document.getElementById('si-q-status');
-    if(st){ st.style.display=''; st.textContent='분기 실적 불러오는 중…'; }
+    if(st){ st.style.display=''; st.textContent='분기 실적 불러오는 중…'
+      + (run?' (성장동력·리스크 요약 포함 — 새 분기 보고서면 몇 초)':''); }
     fetch(base()+'api/quarterly?ticker='+encodeURIComponent(tkr())+(run?'&run=1':''),
           {cache:'no-store'})
       .then(function(r){return r.json();})
-      .then(function(j){ fetching=false; loaded=true; render(j); })
+      .then(function(j){ fetching=false; loaded=!!(j&&j.ok); render(j); })
       .catch(function(){ fetching=false;
-        if(st)st.textContent='분기 실적 로딩 실패.'; });
+        if(st)st.textContent='분기 실적 로딩 실패 — 탭을 다시 누르면 재시도합니다.'; });
   }
+  // ⚠️ run=1 로 연다 — 성장동력·리스크까지 한 번에(사용자 2026-08-16
+  // "버튼 없애고 탭 클릭하면 처음부터 같이 나오게"). **탭을 클릭해야만**
+  // 발사되므로 종목 검색·페이지 로딩은 그대로다(lazy 유지). 과금은
+  // rcept_no 캐시라 분기당 1회뿐이고, 같은 분기 재방문은 ₩0 이다.
   document.addEventListener('click',function(e){
     var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-quarterly"]');
-    if(b) setTimeout(function(){load(false);},30); });
-  if(pane.classList.contains('active')) setTimeout(function(){load(false);},60);
+    if(b) setTimeout(function(){load(true);},30); });
+  if(pane.classList.contains('active')) setTimeout(function(){load(true);},60);
 })();
 """
 
@@ -5220,11 +5223,121 @@ _TECHNICAL_JS = r"""
 """
 
 
+# 파생값 출처 표기 의무 — 소스가 준 값과 우리가 나눠 만든 값을 화면에서
+# 구분할 수 있어야 한다(CLAUDE.md 데이터 vs 환각). 종합·밸류에이션 두 탭이
+# 같은 문구를 써야 해서 모듈 레벨에 둔다.
+_DERIVED_LABEL = {"trailingPE": "PER(후행)", "priceToBook": "PBR",
+                  "trailingEps": "EPS(후행)", "bookValue": "BPS",
+                  "priceToSalesTrailing12Months": "PSR"}
+
+
+def _derived_desc(si: dict) -> str:
+    """파생 항목을 **기준과 함께** 나열. 항목마다 기준이 달라 한 덩어리로
+    묶으면 틀린 출처를 표기하게 된다(예: PBR 에 'TTM' 을 붙이는 것)."""
+    basis = si.get("_derived_basis") or {}
+    items = si.get("_derived_multiples") or []
+    parts = []
+    for k in items:
+        lb = _DERIVED_LABEL.get(k, k)
+        b = basis.get(k) if isinstance(basis, dict) else None
+        parts.append(f"{lb}({b})" if b else lb)
+    return (", ".join(parts)
+            + " — 시총·상장주식수와 DART 연결 재무(비지배지분 포함)로 산출")
+
+
+def _derive_missing_multiples(si: dict) -> dict:
+    """소스가 안 준 멀티플·주당지표를 **이미 가진 값에서** 파생해 채운다.
+
+    사용자 2026-08-16: 종합 탭 '투자정보 요약'과 밸류에이션 탭에서 PER(후행)·
+    PBR·EPS(후행)·BPS 가 '—' 로 비는 종목이 있다(039030.KQ 등). 원인은
+    yfinance `.info` 가 그 키를 안 주는 것인데, 우리는 같은 스냅샷 안에
+    시총·주식수·DART 순이익·자본총계를 이미 들고 있다 — 나눗셈 하나로
+    나오는 값을 빈칸으로 두는 건 데이터 부재가 아니라 배선 누락이다.
+
+    ⚠️ 원칙: (a) 소스값이 있으면 **절대 덮어쓰지 않는다** (b) 분모가
+    0·음수·None 이면 만들지 않는다(적자 기업의 PER 은 없는 게 맞다)
+    (c) 파생한 항목은 `_derived` 집합에 담아 화면이 출처를 밝힌다.
+    부작용 없이 새 dict 를 돌려준다."""
+    out = dict(si or {})
+    derived: set = set()
+
+    def _num(v):
+        return (float(v) if isinstance(v, (int, float))
+                and not isinstance(v, bool) else None)
+
+    mcap = _num(out.get("market_cap"))
+    shares = _num(out.get("shares_outstanding"))
+    kr = out.get("kr") or {}
+    fin = kr.get("financials") or {}
+    qs = kr.get("financials_q") or []
+
+    def _ttm(key):
+        """최근 4분기 합. 한 분기라도 비거나 이상치면 None — 3분기 합을
+        1년치인 척 쓰면 PER 이 33% 부풀어 보인다."""
+        if len(qs) < 4:
+            return None
+        vals = []
+        for q in qs[-4:]:
+            if q.get("_anomaly_revenue_negative") or q.get("_anomaly_account_mismatch"):
+                return None
+            v = _num(q.get(key))
+            if v is None:
+                return None
+            vals.append(v)
+        return sum(vals)
+
+    # 유량(순이익·매출)은 TTM 우선, 없으면 직전 연간. 저량(자본총계)은
+    # **최근 분기 잔액**이 정답이고 연간은 폴백이다.
+    net = _ttm("당기순이익")
+    net_basis = "TTM" if net is not None else "연간"
+    if net is None:
+        net = _num(fin.get("당기순이익"))
+    rev = _ttm("매출")
+    rev_basis = "TTM" if rev is not None else "연간"
+    if rev is None:
+        rev = _num(fin.get("매출"))
+    equity = next((_num(q.get("자본총계")) for q in reversed(qs)
+                   if _num(q.get("자본총계"))), None) or _num(fin.get("자본총계"))
+
+    if out.get("bookValue") is None and equity and shares and shares > 0:
+        out["bookValue"] = equity / shares
+        derived.add("bookValue")
+    if out.get("trailingEps") is None and net and net > 0 and shares and shares > 0:
+        out["trailingEps"] = net / shares
+        derived.add("trailingEps")
+    if out.get("priceToBook") is None and mcap and equity and equity > 0:
+        out["priceToBook"] = mcap / equity
+        derived.add("priceToBook")
+    if out.get("trailingPE") is None and mcap and net and net > 0:
+        out["trailingPE"] = mcap / net
+        derived.add("trailingPE")
+    if (out.get("priceToSalesTrailing12Months") is None and mcap
+            and rev and rev > 0):
+        out["priceToSalesTrailing12Months"] = mcap / rev
+        derived.add("priceToSalesTrailing12Months")
+    # forwardPE 는 컨센서스 EPS 가 필요해 파생 불가 — 없으면 없는 게 맞다.
+    if derived:
+        out["_derived_multiples"] = sorted(derived)
+        # ⚠️ 기준이 항목마다 다르다 — 이익 기반(PER·EPS)과 매출 기반(PSR)은
+        # 각자 TTM/연간 폴백을 따로 타고, 자산 기반(PBR·BPS)은 **시점 잔액**
+        # 이라 TTM 이라는 개념 자체가 없다. 하나로 뭉뚱그려 라벨하면 틀린
+        # 출처를 표기하게 된다(2026-08-16 독립 리뷰).
+        _basis = {"trailingPE": net_basis, "trailingEps": net_basis,
+                  "priceToSalesTrailing12Months": rev_basis,
+                  "priceToBook": "최근분기말", "bookValue": "최근분기말"}
+        out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
+    return out
+
+
 def _render_stock_info_html(rec: dict) -> str:
     """Render header cards + tabbed company info sections from stock_info."""
     si = rec.get("stock_info")
     if not si:
         return ""
+    # 소스 결측을 보유 데이터로 메운다(빈칸의 절반은 데이터 부재가 아니라
+    # 배선 누락이었다 — 사용자 2026-08-16 '안나오는건 불러오는곳에 내용이
+    # 없는거야?'). 소스값은 절대 덮어쓰지 않는다.
+    si = _derive_missing_multiples(si)
     esc = _html.escape
 
     ticker = rec.get("ticker", "")
@@ -7015,6 +7128,10 @@ def _render_stock_info_html(rec: dict) -> str:
 
     _val_src = "yfinance" + (" · SEC XBRL" if is_us else " · DART" if is_kr
                              else " · AKShare" if is_cn else " · FinMind" if is_tw else "")
+    # 파생값이 섞였으면 이 표에서도 밝힌다 — 종합 탭만 표기하면 같은 숫자가
+    # 탭에 따라 출처가 달라 보인다(사용자 2026-08-16 두 표면 모두 지적).
+    _val_src += ((" · ⚙️ 자체계산(소스 미제공): " + _derived_desc(si))
+                 if si.get("_derived_multiples") else "")
     valuation_pane = f"""<div class="si-pane" id="si-valuation">
   {w52_bar_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -7508,6 +7625,8 @@ def _render_stock_info_html(rec: dict) -> str:
                    if isinstance(target_low, (int, float))
                    and isinstance(target_high, (int, float)) else "—")
     _ic_analysts_s = f"{n_analysts}명" if n_analysts else "—"
+    _dv = si.get("_derived_multiples") or []
+    _derived_note = (" · ⚙️ 자체계산(소스 미제공): " + _derived_desc(si)) if _dv else ""
     _ic_left = (
         f'<tr><td>PER (후행)</td><td class="num" data-q="trailingPE">{_ic_mult("trailingPE")}</td></tr>'
         f'<tr><td>PER (선행)</td><td class="num" data-q="forwardPE">{_ic_mult("forwardPE")}</td></tr>'
@@ -7530,7 +7649,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>멀티플·주당</th><th class="num">값</th></tr></thead><tbody>{_ic_left}</tbody></table>
     <table class="si-table"><thead><tr><th>컨센서스</th><th class="num">값</th></tr></thead><tbody>{_ic_right}</tbody></table>
   </div>
-  <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">멀티플=밸류에이션 탭 · 컨센서스=컨센서스 탭 상세 · 상승여력·목표가범위=현재가 대비</div>
+  <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">멀티플=밸류에이션 탭 · 컨센서스=컨센서스 탭 상세 · 상승여력·목표가범위=현재가 대비{_derived_note}</div>
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap

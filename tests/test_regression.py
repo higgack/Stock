@@ -6811,11 +6811,18 @@ class TestQuarterlyChartLayout20260816:
         js = js[:js.index("\"\"\"", 30)]
         assert "base()+j.image_url" in js, "이미지 URL 에 base() 누락 → 404"
 
-    def test_js_reenables_button_on_failure(self):
+    def test_js_allows_retry_after_a_failed_load(self):
+        """실패가 영구 잠김이 되면 안 된다.
+
+        옛 계약은 '실패 시 버튼 재활성화'(`ob.disabled=false`)였는데, 버튼
+        자체가 없어졌다(사용자 2026-08-16 자동 실행). 같은 의도의 새 계약:
+        **성공했을 때만** loaded 를 세워 실패 후 탭 재클릭이 재시도가 되게
+        한다. 옛 코드는 `loaded=true` 를 무조건 세워 실패가 굳었다."""
         src = open("bot/dashboard.py", encoding="utf-8").read()
         js = src[src.index("_QUARTERLY_JS = r\"\"\""):]
         js = js[:js.index("\"\"\"", 30)]
-        assert "ob.disabled=false" in js, "실패 시 버튼이 '생성 중…'으로 영구 잠김"
+        assert "loaded=!!(j&&j.ok)" in js, "실패 후 재시도 불가"
+        assert "loaded=true" not in js.replace("loaded=!!(j&&j.ok)", "")
 
     def test_js_renders_growth_risk_html_when_image_missing(self):
         # 폰트 없는 호스트에서 유료 생성했는데 아무것도 안 보이면 안 됨.
@@ -6831,10 +6838,12 @@ class TestQuarterlyChartLayout20260816:
 
     def test_api_skips_cold_snapshot_on_free_path(self):
         # cold collect_stock_snapshot 은 10~30초 — 무료 탭-오픈을 막으면 안 됨.
+        # 옛 게이트의 `or run` 항은 제거됐다 — run=1 이 상시가 되면서
+        # 그 항이 곧 '항상 cold 수집' 이 되기 때문(2026-08-16).
         src = open("bot/dashboard_server.py", encoding="utf-8").read()
         h = src[src.index("def _handle_quarterly_api"):]
         h = h[:h.index("def _handle_technical_api")]
-        assert "_SNAP_CACHE" in h and "warm or run" in h, \
+        assert "_SNAP_CACHE" in h and "if warm or _mkt != \"KR\":" in h, \
             "무료 경로에서 cold 스냅샷 수집(10~30초) 위험"
 
     def test_help_text_documents_quarterly_tab_and_cost(self):
@@ -20528,3 +20537,490 @@ class TestRealestateInfographicPppReadability20260808:
         result = ri.render_infographic(mock, out)
         assert result == out
         assert (tmp_path / "re_test.png").stat().st_size > 0
+
+
+class TestQuarterlyExtraChartsAndLive20260816:
+    """사용자 2026-08-16 분기실적 탭 5문항.
+
+    ① 수주잔고·재고자산 막대차트(KR, 데이터 있는 종목만)
+    ② 시총·PER·PSR 이 조회 시점 값이어야 함(스냅샷 금지)
+    ③④ 종합·밸류에이션 탭 멀티플 빈칸을 보유 데이터로 파생
+    ⑤ 성장동력·리스크 버튼 제거 → 탭 클릭 시 자동 포함
+    """
+
+    # ── ① 추가 막대차트 ────────────────────────────────────────────
+    @staticmethod
+    def _qs(n=5, **extra):
+        out = []
+        for i in range(1, n + 1):
+            fin = {"매출": 3.0e11 + i * 2e10, "영업이익": 5e10 + i * 3e9,
+                   "당기순이익": 4e10 + i * 2e9}
+            for k, v in extra.items():
+                fin[k] = v + i * 1e10
+            out.append({"label": f"26.{i}Q", "financials": fin,
+                        "ratios": {"영업이익률": 10.0, "순이익률": 8.0}})
+        return out
+
+    def test_extra_series_only_when_data_exists(self):
+        from bot import quarterly_infographic as qi
+        assert qi._extra_series(self._qs()) == []
+        got = qi._extra_series(self._qs(재고자산=2e11))
+        assert [g[0] for g in got] == ["재고자산"]
+
+    def test_registry_lists_only_keys_with_a_producer(self):
+        """생산자 없는 키를 올리면 영원히 안 그려지는 죽은 항목이 되고
+        Help 가 없는 기능을 광고하게 된다(2026-08-16 독립 리뷰).
+
+        수주잔고는 DART 「수주상황」표 파서가 생기면 여기에 추가한다."""
+        from bot import quarterly_infographic as qi
+        from bot.dart_client import _DART_NAME_MAP
+        for key, _title in qi._EXTRA_CHARTS:
+            assert key in _DART_NAME_MAP.values(), f"{key} 생산자 없음"
+        import re
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        t = re.search(r'_HELP_TEXT = """(.*?)"""', src, re.S).group(1)
+        assert "수주잔고" not in t, "미구현 항목을 Help 가 광고"
+        assert "재고자산" in t, "구현된 항목이 Help 에 미등록"
+
+    def test_multiple_extra_panels_keep_registry_order(self):
+        # 항목이 늘어도 순서는 레지스트리 순서 그대로여야 한다.
+        from bot import quarterly_infographic as qi
+        orig = qi._EXTRA_CHARTS
+        qi._EXTRA_CHARTS = (("수주잔고", "수주잔고"), ("재고자산", "재고자산"))
+        try:
+            got = qi._extra_series(self._qs(재고자산=2e11, 수주잔고=8e11))
+            assert [g[0] for g in got] == ["수주잔고", "재고자산"]
+        finally:
+            qi._EXTRA_CHARTS = orig
+
+    def test_all_none_column_is_not_a_chart(self):
+        # 값이 전부 None 이면 빈 패널을 그리면 안 된다(없는 사실 그리기).
+        from bot import quarterly_infographic as qi
+        qs = self._qs()
+        for q in qs:
+            q["financials"]["재고자산"] = None
+        assert qi._extra_series(qs) == []
+
+    def test_layout_reserves_height_for_extra_panels(self, monkeypatch):
+        """패널이 늘면 **캔버스 높이**가 그만큼 늘어야 한다.
+
+        ⚠️ 저장된 PNG 크기로는 못 잡는다 — `bbox_inches="tight"` 는 figure
+        밖으로 삐져나간 artist 까지 포함해 잘라내므로, 공간을 하나도 안
+        잡아도(H_EXTRA=0) 이미지 높이는 커진다(2026-08-16 실측). 그 경우
+        추가 차트가 카드·푸터 위에 겹쳐 그려진다 — 카드 넘침과 같은
+        실패모드다. 그래서 figure 자체의 높이를 잰다."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import tempfile
+
+        import matplotlib.pyplot as plt
+
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_font_ok", lambda: True)
+        seen: list = []
+        orig = plt.subplots
+
+        def spy(*a, **k):
+            fig, ax = orig(*a, **k)
+            seen.append(fig.get_figheight())
+            return fig, ax
+
+        monkeypatch.setattr(plt, "subplots", spy)
+
+        def _render(qs):
+            pl = {"ticker": "X.KQ", "company": "T", "market": "KOSDAQ",
+                  "market_cap": 4.98e12, "quarters": qs, "ttm": qi._ttm(qs),
+                  "per": 22.0, "per_forward": 11.4, "per_self": True,
+                  "psr": 2.7, "currency": "KRW", "trade_currency": "KRW",
+                  "currency_mismatch": False, "fiscal_note": "",
+                  "llm_supported": True, "anomaly_keys": [],
+                  "anomaly_labels": [], "asof": qi._now_hour_kst(),
+                  "source_label": "S", "period_key": "k",
+                  "growth_risk": {"ok": False}}
+            seen.clear()
+            p = qi.render_infographic(pl, f"{tempfile.mkdtemp()}/t.png")
+            assert p and seen, "렌더 실패"
+            return seen[-1]
+
+        h0 = _render(self._qs())
+        h1 = _render(self._qs(재고자산=2e11))
+        monkeypatch.setattr(qi, "_EXTRA_CHARTS",
+                            (("수주잔고", "수주잔고"), ("재고자산", "재고자산")))
+        h2 = _render(self._qs(재고자산=2e11, 수주잔고=8e11))
+        assert h0 < h1 < h2, f"캔버스 높이가 안 늘어남: {h0}/{h1}/{h2}"
+        # 두 패널이면 한 패널의 정확히 2배만큼 늘어야 한다(등간격 배치).
+        assert abs((h1 - h0) - (h2 - h1)) < 1e-6, f"{h0}/{h1}/{h2}"
+
+    def test_inventory_is_a_stock_account_not_differenced(self):
+        # 연말 재고 − 3분기말 재고 = 재고 '증감' 이지 4분기 재고가 아니다.
+        from bot.dart_quarterly import _STOCK_KEYS, _diff_quarter
+        assert "재고자산" in _STOCK_KEYS
+        out = _diff_quarter({"매출": 100, "재고자산": 70},
+                            {"매출": 60, "재고자산": 50})
+        assert out["매출"] == 40, "유량은 차분"
+        assert out["재고자산"] == 70, "저량은 시점값 유지"
+
+    def test_inventory_account_mapped_total_only(self):
+        from bot.dart_client import _DART_CODE_MAP, _DART_NAME_MAP
+        assert _DART_CODE_MAP.get("ifrs-full_Inventories") == "재고자산"
+        assert _DART_NAME_MAP.get("재고자산") == "재고자산"
+        # 구성요소를 별칭으로 넣으면 총액 없는 회사에서 부분값이 표시된다.
+        assert "상품및제품" not in _DART_NAME_MAP
+
+    def test_inventory_survives_the_snapshot_whitelist(self):
+        # 화이트리스트에 빠지면 계정은 잡히는데 화면까지 못 온다.
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert src.count('"자본총계", "재고자산"') >= 3, "연간·시계열·분기 3곳"
+
+    # ── ② 시총·PER·PSR 라이브 ──────────────────────────────────────
+    def test_cache_bucket_is_hourly_not_daily(self):
+        from bot import quarterly_infographic as qi
+        a = qi._now_hour_kst()
+        assert len(a) == 13 and a[10] == "_", a      # YYYY-MM-DD_HH
+        assert qi._today_kst() not in str(qi.cache_path("X.KQ", "k")).split("/")[-1].replace(a, "")
+        assert a in str(qi.cache_path("X.KQ", "k"))
+
+    def test_live_quote_is_used_before_the_snapshot(self, monkeypatch):
+        """스냅샷 시총은 마지막 수집 시각에 얼어붙는다 — 라이브가 이긴다."""
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_live_quote",
+                            lambda t, m, sh=None: {"price": 220_000.0, "mcap": 9.9e12})
+        qs = self._qs()
+        monkeypatch.setattr("bot.quarterly_series.series_from_yfinance",
+                            lambda snap, n=5: qs)
+        pl = qi.build_payload("AAPL", {"market_cap": 1.0e12,
+                                       "currency": "USD",
+                                       "forwardEps": 19_300.0,
+                                       "forwardPE": 30.0})
+        assert pl["market_cap"] == 9.9e12, "스냅샷 시총이 이겼다"
+        # PSR·Forward PER 도 같은 라이브 값에서 파생돼야 한다 — 스냅샷의
+        # forwardPE(30.0)는 수집 시점 주가로 굳은 값이라 져야 한다.
+        assert abs(pl["psr"] - 9.9e12 / pl["ttm"]["매출"]) < 1e-6
+        assert abs(pl["per_forward"] - 220_000.0 / 19_300.0) < 1e-9, \
+            pl["per_forward"]
+
+    def test_live_failure_falls_back_to_snapshot(self, monkeypatch):
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_live_quote", lambda t, m, sh=None: {})
+        qs = self._qs()
+        monkeypatch.setattr("bot.quarterly_series.series_from_yfinance",
+                            lambda snap, n=5: qs)
+        pl = qi.build_payload("AAPL", {"market_cap": 1.0e12,
+                                       "currency": "USD", "forwardPE": 30.0})
+        assert pl["market_cap"] == 1.0e12
+        assert pl["per_forward"] == 30.0
+
+    def test_live_quote_never_raises(self, monkeypatch):
+        from bot import quarterly_infographic as qi
+
+        def boom(*a, **k):
+            raise RuntimeError("네이버 down")
+
+        monkeypatch.setattr("bot.naver_quote.fetch_kr_quote", boom)
+        assert qi._live_quote("005930.KS", "KR") == {}
+        assert qi._live_quote("X.XX", "UNKNOWN") == {}
+
+    # ── ③④ 멀티플 파생 ────────────────────────────────────────────
+    @staticmethod
+    def _si(**over):
+        q = [{"label": f"26.{i}Q", "당기순이익": 1.7e10, "매출": 4.0e11,
+              "자본총계": 1.1e12} for i in range(1, 5)]
+        si = {"market_cap": 4.98e12, "shares_outstanding": 1.22e7,
+              "kr": {"financials": {"당기순이익": 6.0e10, "매출": 1.5e12,
+                                    "자본총계": 1.0e12},
+                     "financials_q": q}}
+        si.update(over)
+        return si
+
+    def test_derives_only_what_the_source_omitted(self):
+        """소스값은 **한 항목도** 덮어쓰지 않는다 — 파생은 빈칸 채우기다."""
+        from bot.dashboard import _derive_missing_multiples as d
+        given = {"trailingPE": 99.0, "priceToBook": 88.0,
+                 "trailingEps": 77.0, "bookValue": 66.0,
+                 "priceToSalesTrailing12Months": 55.0}
+        out = d(self._si(**given))
+        for k, v in given.items():
+            assert out[k] == v, f"{k} 소스값을 덮어썼다"
+        assert not out.get("_derived_multiples"), out.get("_derived_multiples")
+        # 하나만 비면 그 하나만 파생된다.
+        partial = dict(given)
+        partial.pop("bookValue")
+        out2 = d(self._si(**partial))
+        assert out2["_derived_multiples"] == ["bookValue"]
+
+    def test_ttm_preferred_over_annual_and_labelled(self):
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d(self._si())
+        assert out["_derived_basis"]["trailingPE"] == "TTM"
+        assert out["_derived_basis"]["priceToBook"] == "최근분기말"
+        assert abs(out["trailingPE"] - 4.98e12 / (1.7e10 * 4)) < 1e-6
+
+    def test_partial_quarters_do_not_masquerade_as_ttm(self):
+        # 3분기 합을 1년치로 쓰면 PER 이 33% 부풀어 보인다.
+        from bot.dashboard import _derive_missing_multiples as d
+        si = self._si()
+        si["kr"]["financials_q"] = si["kr"]["financials_q"][:3]
+        out = d(si)
+        assert out["_derived_basis"]["trailingPE"] == "연간"
+        assert abs(out["trailingPE"] - 4.98e12 / 6.0e10) < 1e-6
+
+    def test_anomalous_quarter_blocks_the_ttm_sum(self):
+        from bot.dashboard import _derive_missing_multiples as d
+        si = self._si()
+        si["kr"]["financials_q"][1]["_anomaly_account_mismatch"] = True
+        assert d(si)["_derived_basis"]["trailingPE"] == "연간"
+
+    def test_no_per_for_a_loss_making_company(self):
+        # 적자 기업의 PER 은 '없는' 게 맞다 — 음수 배수를 만들지 않는다.
+        from bot.dashboard import _derive_missing_multiples as d
+        si = self._si()
+        for q in si["kr"]["financials_q"]:
+            q["당기순이익"] = -1e10
+        si["kr"]["financials"]["당기순이익"] = -4e10
+        out = d(si)
+        assert out.get("trailingPE") is None
+        assert out.get("trailingEps") is None
+        assert "priceToBook" in out["_derived_multiples"], "PBR 은 나와야"
+
+    def test_missing_inputs_are_safe(self):
+        from bot.dashboard import _derive_missing_multiples as d
+        assert d({}) == {}
+        assert d(None) == {}
+        assert d({"market_cap": 0, "kr": {}}) .get("_derived_multiples") is None
+
+    def test_derived_values_are_labelled_on_screen(self):
+        # 출처 표기 의무 — 소스값과 자체계산을 화면에서 구분할 수 있어야.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_derived_note" in src and "자체계산" in src
+        assert "_derive_missing_multiples(si)" in src, "렌더 경로 미배선"
+
+    # ── ⑤ AI 카드 자동 생성 ────────────────────────────────────────
+    def test_growth_risk_button_removed_and_autoruns(self):
+        from bot.dashboard import _QUARTERLY_JS as js
+        assert "si-q-run" not in js, "버튼 잔존"
+        assert "생성 (AI 1회)" not in js
+        # 탭 클릭 → run=1 (자동 포함). 두 진입점(클릭·활성 상태) 모두.
+        assert js.count("load(true)") >= 2, "자동 실행 미배선"
+        assert "load(false)" not in js
+
+    def test_quarterly_pane_stays_lazy(self):
+        """자동 실행이 **종목 검색 로딩**을 늦추면 안 된다 — 탭을 눌러야만
+        발사되는 구조가 유지돼야 한다(사용자 확인 질문)."""
+        from bot.dashboard import _QUARTERLY_JS as js
+        assert "data-pane=\"si-quarterly\"" in js, "탭 클릭 트리거 소실"
+        assert "addEventListener('click'" in js
+        # 페이지 로드 시 무조건 fetch 하는 경로가 없어야 한다.
+        assert "pane.classList.contains('active')" in js
+
+    def test_server_does_not_cold_collect_just_because_run_is_set(self):
+        """run=1 이 상시가 됐으므로 옛 `or run` 게이트를 남기면 모든 탭
+        열기가 10~30초 cold 스냅샷을 탄다."""
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        blk = src[src.index("def _handle_quarterly_api"):]
+        blk = blk[:blk.index("\n    def ", 1)]
+        assert "if warm or _mkt != \"KR\":" in blk, "cold 수집 게이트 회귀"
+        assert "warm or run" not in blk
+
+
+class TestQuarterlyReviewFixes20260816:
+    """2026-08-16 독립 리뷰 12건 — 각 항목의 fail-before 가드."""
+
+    def test_cached_llm_does_not_bust_the_png_cache(self, monkeypatch):
+        """run=1 이 상시가 된 뒤 옛 `ok and run_llm` 조건은 **영구 캐시 미스**
+        였다 — 매 조회마다 인포그래픽 전체를 다시 그리고 저장했다."""
+        from bot import quarterly_infographic as qi
+        calls = []
+        monkeypatch.setattr(qi, "render_infographic",
+                            lambda pl, out: calls.append(out) or out)
+
+        def _payload(gr):
+            return {"period_key": "k", "asof": qi._now_hour_kst(),
+                    "growth_risk": gr, "quarters": [{"label": "26.2Q"}]}
+
+        p = qi.cache_path("X.KQ", "k", asof=qi._now_hour_kst())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("png", encoding="utf-8")
+        try:
+            monkeypatch.setattr(qi, "build_payload",
+                                lambda *a, **k: _payload({"ok": True, "cached": True}))
+            r = qi.get_or_render("X.KQ", {}, run_llm=True)
+            assert r["cached"] is True and not calls, "캐시된 요약인데 재렌더"
+            # 반대로 **새로** 생성된 요약이면 옛 PNG(카드 없음)를 버려야 한다.
+            monkeypatch.setattr(qi, "build_payload",
+                                lambda *a, **k: _payload({"ok": True}))
+            r2 = qi.get_or_render("X.KQ", {}, run_llm=True)
+            assert r2["cached"] is False and calls, "새 카드인데 옛 PNG 재사용"
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_overseas_market_cap_needs_a_unit_sanity_check(self, monkeypatch):
+        """네이버 해외 시총은 단위가 불확실하다(market_favorites 가 같은 이유로
+        같은 게이트를 건다). 통과 못 하면 스냅샷으로 폴백."""
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr("bot.world_quote.fetch_world_quote",
+                            lambda t: {"price": 100.0, "mcap": 1.3e11})
+        # 주식수 10억 → implied 1000억. 1.3배는 통과.
+        assert qi._live_quote("AAPL", "US", 1.0e9).get("mcap") == 1.3e11
+        # 같은 시총인데 주식수가 100배면 단위가 어긋난 것 → 채택 금지.
+        assert "mcap" not in qi._live_quote("AAPL", "US", 1.0e11)
+        # 주식수를 모르면 검증 불가 → 채택 금지(가격은 그대로 씀).
+        got = qi._live_quote("AAPL", "US", None)
+        assert "mcap" not in got and got["price"] == 100.0
+
+    def test_kr_market_cap_is_trusted_without_shares(self, monkeypatch):
+        # 국내 marketValueFullRaw 는 원 단위가 확정이라 게이트를 걸지 않는다.
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr("bot.naver_quote.fetch_kr_quote",
+                            lambda t: {"price": 218_500.0, "mcap": 4.98e12})
+        assert qi._live_quote("039030.KQ", "KR", None)["mcap"] == 4.98e12
+
+    def test_per_uses_the_same_formula_as_the_live_overlay(self, monkeypatch):
+        """분기실적 탭 PER 이 종합·밸류에이션 탭과 어긋나면 안 된다 —
+        둘 다 '라이브 주가 ÷ EPS' 로 맞춘다."""
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_live_quote",
+                            lambda t, m, sh=None: {"price": 200.0, "mcap": 1e12})
+        qs = TestQuarterlyExtraChartsAndLive20260816._qs()
+        monkeypatch.setattr("bot.quarterly_series.series_from_yfinance",
+                            lambda snap, n=5: qs)
+        pl = qi.build_payload("AAPL", {"currency": "USD", "trailingEps": 8.0,
+                                       "trailingPE": 99.0})
+        assert abs(pl["per"] - 200.0 / 8.0) < 1e-9, pl["per"]
+        assert not pl["per_self"], "소스 EPS 가 있는데 자체계산으로 표기"
+
+    def test_self_computed_per_only_when_the_source_has_neither(self, monkeypatch):
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_live_quote",
+                            lambda t, m, sh=None: {"price": 200.0, "mcap": 1e12})
+        qs = TestQuarterlyExtraChartsAndLive20260816._qs()
+        monkeypatch.setattr("bot.quarterly_series.series_from_yfinance",
+                            lambda snap, n=5: qs)
+        pl = qi.build_payload("AAPL", {"currency": "USD"})
+        assert pl["per_self"] is True and pl["per"] is not None
+
+    def test_currency_mismatch_blocks_the_live_per(self, monkeypatch):
+        """EPS 는 재무통화, 주가는 거래통화 — 다르면 나누면 안 된다
+        (HK 본토 자회사: 거래 HKD · 재무 CNY)."""
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_live_quote",
+                            lambda t, m, sh=None: {"price": 200.0})
+        qs = TestQuarterlyExtraChartsAndLive20260816._qs()
+        monkeypatch.setattr("bot.quarterly_series.series_from_yfinance",
+                            lambda snap, n=5: qs)
+        pl = qi.build_payload("0700.HK", {"currency": "HKD",
+                                          "financial_currency": "CNY",
+                                          "trailingEps": 8.0,
+                                          "forwardEps": 10.0})
+        assert pl["currency_mismatch"] is True
+        assert pl["per"] is None, "통화 불일치인데 PER 을 만들었다"
+        assert pl["per_forward"] is None, "통화 불일치인데 Fwd PER 을 만들었다"
+
+    def test_failed_llm_is_negative_cached(self, tmp_path, monkeypatch):
+        """탭을 열 때마다 자동 실행되므로, 실패를 캐시하지 않으면 실패하는
+        종목마다 매 방문 3MB 원문 재수신 + Gemini 재과금이 된다."""
+        from bot import dart_growth_risk as gr
+        monkeypatch.setattr(gr, "_CACHE_DIR", tmp_path)
+        fetches = []
+
+        class _Dart:
+            api_key = "k"
+
+            def find_periodic_report(self, code, year, rc):
+                return {"rcept_no": "20260814000001"}
+
+        monkeypatch.setattr("bot.dart_feed._fetch_doc_text",
+                            lambda r, k: fetches.append(r) or None)
+        for _ in range(3):
+            out = gr.build_growth_risk(_Dart(), "039030.KQ", 2026, "11012",
+                                       {}, run_llm=True)
+            assert out["ok"] is False
+        assert len(fetches) == 1, f"실패가 매번 재시도됨({len(fetches)}회)"
+        assert gr._fail_recent("039030.KQ", "20260814000001")
+
+    def test_negative_cache_expires_so_transient_failures_recover(self, tmp_path,
+                                                                  monkeypatch):
+        import os
+        import time
+        from bot import dart_growth_risk as gr
+        monkeypatch.setattr(gr, "_CACHE_DIR", tmp_path)
+        gr._fail_mark("X.KQ", "R1", "일시 실패")
+        assert gr._fail_recent("X.KQ", "R1")
+        f = gr._fail_file("X.KQ", "R1")
+        old = time.time() - 100_000
+        os.utime(f, (old, old))
+        assert gr._fail_recent("X.KQ", "R1") is None, "영구 차단 — 복구 불가"
+
+    def test_asof_stamp_is_human_readable(self, monkeypatch):
+        # 캐시 버킷 원문('2026-08-16_14')이 화면에 그대로 나가면 안 된다.
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert '_asof_s = asof.replace("_", " ")' in src
+        from bot import quarterly_infographic as qi
+        assert "_" in qi._now_hour_kst()      # 버킷 자체는 파일명 안전 형식
+
+    def test_old_pngs_are_purged(self, tmp_path, monkeypatch):
+        """캐시 키에 '시'가 들어가 하루 24장씩 쌓이는데 지우는 곳이 없었다."""
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_IMG_DIR", tmp_path)
+        for name in ("X.KQ_k_2026-08-16_09_v4.png",
+                     "X.KQ_k_2026-08-16_10_v4.png",
+                     "Y.KS_k_2026-08-16_09_v4.png"):
+            (tmp_path / name).write_text("x")
+        keep = tmp_path / "X.KQ_k_2026-08-16_11_v4.png"
+        keep.write_text("new")
+        qi._purge_stale("X.KQ", keep)
+        left = sorted(p.name for p in tmp_path.glob("*.png"))
+        # 방금 만든 것 + **다른 티커**는 남고, 같은 티커의 옛 파일만 지운다.
+        assert left == sorted([keep.name, "Y.KS_k_2026-08-16_09_v4.png"]), left
+
+    def test_purge_is_wired_into_the_render_path(self, tmp_path, monkeypatch):
+        """헬퍼만 만들고 호출부에 안 붙이면 아무것도 안 지운다(실수 #12)."""
+        from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_IMG_DIR", tmp_path)
+        stale = tmp_path / "Z.KQ_k_2026-01-01_09_v4.png"
+        stale.write_text("old")
+        monkeypatch.setattr(qi, "build_payload", lambda *a, **k: {
+            "period_key": "k", "asof": qi._now_hour_kst(),
+            "growth_risk": {"ok": False}, "quarters": [{"label": "26.2Q"}]})
+        monkeypatch.setattr(qi, "cache_path",
+                            lambda *a, **k: tmp_path / "Z.KQ_k_now_v4.png")
+        monkeypatch.setattr(qi, "render_infographic",
+                            lambda pl, out: (open(out, "w").write("new"), out)[1])
+        qi.get_or_render("Z.KQ", {}, run_llm=False)
+        assert not stale.exists(), "렌더 경로에 정리가 배선되지 않음"
+
+    def test_company_name_falls_back_to_dart_on_a_cold_snapshot(self, monkeypatch):
+        """KR cold 경로에서 스냅샷이 없으면 헤더가 '039030.KQ' 로 뜬다."""
+        from bot import quarterly_infographic as qi
+        assert qi._dart_name(None, "039030.KQ") is None
+
+        class _D:
+            def stock_code_to_name(self, code):
+                assert code == "039030"
+                return "(주)이오테크닉스"
+
+        assert qi._dart_name(_D(), "039030.KQ") == "(주)이오테크닉스"
+
+        class _Boom:
+            def stock_code_to_name(self, code):
+                raise RuntimeError("map 없음")
+
+        assert qi._dart_name(_Boom(), "039030.KQ") is None
+
+    def test_derived_basis_is_per_metric_not_one_label(self):
+        """PBR·BPS 는 시점 잔액이라 'TTM' 이라는 개념 자체가 없다."""
+        from bot.dashboard import _derive_missing_multiples as d
+        si = TestQuarterlyExtraChartsAndLive20260816._si()
+        b = d(si)["_derived_basis"]
+        assert isinstance(b, dict)
+        assert b["trailingPE"] == "TTM"
+        assert b["priceToBook"] == "최근분기말" and b["bookValue"] == "최근분기말"
+
+    def test_derived_note_names_the_consolidated_basis(self):
+        # 지배주주 EPS 를 쓰는 야후 행과 분모가 달라 그 사실을 밝혀야 한다.
+        from bot.dashboard import _derived_desc
+        si = {"_derived_multiples": ["trailingPE", "priceToBook"],
+              "_derived_basis": {"trailingPE": "TTM",
+                                 "priceToBook": "최근분기말"}}
+        txt = _derived_desc(si)
+        assert "PER(후행)(TTM)" in txt and "PBR(최근분기말)" in txt
+        assert "비지배지분 포함" in txt
