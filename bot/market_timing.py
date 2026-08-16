@@ -300,11 +300,48 @@ def fetch_crypto_snapshot() -> dict:
 # 사용자 2026-07-26 "중기말고 단기도 추가해줘" 요청으로 추가). 개별종목
 # breadth 보다 해상도는 낮지만(섹터 단위) '소수 대형주가 지수를 방어 중인지
 # vs 전반적 상승인지' 판별에는 충분 — 이미 계산 중인 RSP/SPY(macro 레짐)와
-# 상호보완(그쪽은 대형/소형 비율, 이쪽은 섹터 참여도). US 전용(SPDR 섹터
-# ETF가 미국 고유 상품 — 데이터소스 공백, market gate 아님).
-_BREADTH_SECTOR_ETFS_US = (
-    "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLRE", "XLU", "XLC",
-)
+# 상호보완(그쪽은 대형/소형 비율, 이쪽은 섹터 참여도).
+#
+# 2026-08-16 KR 추가(사용자 "US 위에 KR 을 만들어줘"). 한국은 삼성전자+하이닉스
+# 비중이 커 '소수 대형주가 지수를 방어 중인가' 판별이 미국보다 더 중요하다.
+# 표본은 **KODEX 섹터 시리즈** — 미국 SPDR `XL*` 가 GICS 11섹터와 1:1 인 것과
+# 같은 구조적 위치(단일 운용사·KRX 업종지수 1:1·최장 히스토리). GICS 11개로
+# 강제 매핑하지 않는 이유: 한국은 커뮤니케이션·부동산 섹터 ETF 가 빈약해 억지
+# 매핑이 생기고, 반대로 조선·건설·증권처럼 한국 고유의 큰 업종이 GICS 버킷에
+# 묻힌다. breadth 의 목적(참여도)에는 실제 업종 구조가 맞다 — 그래서 카드에도
+# "GICS" 가 아니라 "KODEX 섹터 ETF(KRX 업종)" 라고 적는다.
+#
+# 티커→라벨 dict 인 이유: 데이터를 못 받은 섹터를 **이름으로** 알리기 위해서다
+# (분모가 조용히 줄면 '수집은 됐는데 화면에서 사라진' 실패모드가 된다).
+#
+# 티커 출처: `TradingAgents/.../sector_strength_tools.py` 의 `_KR_INDUSTRY_
+# OVERRIDES`(주석에 "Source: KRX ETF listings as of 2026"). 그 표는 산업→ETF
+# **매핑**이고 이건 breadth **바스켓**이라 성격이 달라 합치지 않았지만, 여기
+# 티커·라벨이 그 표와 어긋나면 테스트가 잡는다(레포 내 유일한 검증 출처와
+# 대조 — 두 표가 갈라지는 걸 막는다). 중복 업종은 뺐다: 화학(102710)은
+# 에너지화학과, 바이오(244580)는 헬스케어와, 게임(300950)은 미디어엔터와
+# 종목이 겹쳐 breadth 에서 이중계산이 된다.
+#
+# JP/TW/CN_A/HK 는 아직 미등록 — JP 는 NEXT FUNDS TOPIX-17 시리즈가 위 파일에
+# 이미 있어 확장 가능하고(후속), TW/CN_A/HK 는 동급 섹터 ETF 시리즈 확인이
+# 안 된 상태다. 어느 쪽도 market gate 가 아니라 데이터소스 미연결이다.
+_BREADTH_SECTORS: dict[str, dict[str, str]] = {
+    "US": {
+        "XLK": "기술", "XLF": "금융", "XLE": "에너지", "XLV": "헬스케어",
+        "XLY": "경기소비재", "XLP": "필수소비재", "XLI": "산업재",
+        "XLB": "소재", "XLRE": "부동산", "XLU": "유틸리티",
+        "XLC": "커뮤니케이션",
+    },
+    "KR": {
+        "091160.KS": "반도체", "266370.KS": "IT", "091170.KS": "은행",
+        "102970.KS": "증권", "140700.KS": "보험", "091180.KS": "자동차",
+        "117700.KS": "건설", "117680.KS": "철강", "117460.KS": "에너지화학",
+        "102960.KS": "기계장비", "140710.KS": "운송", "266420.KS": "헬스케어",
+        "266360.KS": "미디어엔터",
+    },
+}
+# 카드 표본 라벨 — 시장마다 상품군이 다르다(SPDR vs KODEX).
+_BREADTH_SOURCE_LABEL = {"US": "SPDR 섹터 ETF", "KR": "KODEX 섹터 ETF"}
 
 
 def sma(closes: list, period: int):
@@ -345,27 +382,45 @@ def breadth_from_closes(sector_closes: dict) -> dict:
         "pct_above_20dma": round(above20 / counted20 * 100, 1) if counted20 else None,
         "pct_above_50dma": round(above50 / counted50 * 100, 1) if counted50 else None,
         "pct_above_200dma": round(above200 / counted200 * 100, 1) if counted200 else None,
+        # 지표별 분모 — n_sectors 와 다를 수 있다(신규상장 ETF 는 200일치가
+        # 없어 200dma 에서만 빠진다). 노출 안 하면 '표본 13개'라 적어놓고
+        # 실제로는 11개로 계산한 값을 보여주게 된다(2026-08-16 독립 리뷰).
+        "counted_20dma": counted20, "counted_50dma": counted50,
+        "counted_200dma": counted200,
         "n_sectors": len(sector_closes),
     }
 
 
 def fetch_market_breadth(market: str = "US") -> dict:
-    """market='US' 만 지원(SPDR 섹터 ETF 데이터소스 공백 — 모듈 상단 주석).
+    """`_BREADTH_SECTORS` 에 등록된 시장(US·KR)만 지원 — 미등록은 {}.
     각 섹터 ETF 280일 히스토리(200일 SMA 계산 여유분 포함) → breadth_from_
-    closes. 실패한 섹터는 개별 스킵(전체 실패 아님)."""
-    if market.upper() != "US":
+    closes. 실패한 섹터는 개별 스킵(전체 실패 아님).
+
+    ⚠️ 실패한 섹터를 `sectors_missing` 에 **라벨로** 담아 돌려준다. 옛 코드는
+    조용히 분모에서만 빠졌는데, 그러면 ETF 가 상장폐지·티커변경돼도 화면엔
+    비율만 멀쩡히 뜬다(수집 실패가 보이지 않는 실패모드)."""
+    sectors = _BREADTH_SECTORS.get(market.upper())
+    if not sectors:
         return {}
     sector_closes: dict = {}
-    for ticker in _BREADTH_SECTOR_ETFS_US:
+    missing: list[str] = []
+    for ticker, label in sectors.items():
         try:
             hist = fetch_index_history(ticker, days=280)
-            if hist:
-                sector_closes[ticker] = [h["close"] for h in hist]
         except Exception as exc:
             log.debug("market_timing: breadth fetch failed for %s: %s", ticker, exc)
+            hist = None
+        if hist:
+            sector_closes[ticker] = [h["close"] for h in hist]
+        else:
+            missing.append(label)
     if not sector_closes:
         return {}
-    return {**breadth_from_closes(sector_closes), "sectors_ok": sorted(sector_closes)}
+    return {**breadth_from_closes(sector_closes),
+            "market": market.upper(),
+            "source_label": _BREADTH_SOURCE_LABEL.get(market.upper(), "섹터 ETF"),
+            "sectors_ok": sorted(sector_closes),
+            "sectors_missing": missing}
 
 
 # ── 변동성(VIX + MOVE, 2026-07-26 사용자 추천 추가) ──────────────────────────
@@ -500,12 +555,16 @@ def _load_market_timing() -> dict:
     except Exception as exc:
         log.debug("market_timing: COT gate failed: %s", exc)
 
-    # 시장 폭(2026-07-26 사용자 추천) — US 전용(SPDR 섹터 ETF 데이터소스 공백).
+    # 시장 폭(2026-07-26 사용자 추천, 2026-08-16 KR 추가) — 시장별로 분리해
+    # 한쪽이 죽어도 다른 쪽은 살린다(기존 graceful 관례).
     breadth: dict = {}
-    try:
-        breadth = fetch_market_breadth("US")
-    except Exception as exc:
-        log.debug("market_timing: breadth panel failed: %s", exc)
+    for _mkt in _BREADTH_SECTORS:
+        try:
+            _b = fetch_market_breadth(_mkt)
+            if _b:
+                breadth[_mkt] = _b
+        except Exception as exc:
+            log.debug("market_timing: breadth panel %s failed: %s", _mkt, exc)
 
     # 변동성 VIX+MOVE(2026-07-26 사용자 추천).
     volatility: dict = {}
@@ -615,26 +674,67 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="note">대형투기자(non-commercial) 순포지션의 트레일링 3년 대비 백분위(고전 COT Index) —
 ≥80 과열매수(역발상 매도경계) · ≤20 과열매도(역발상 매수경계). 개별종목 게이트 아닌 매크로 참고신호.</div></div>"""
 
-    breadth = data.get("breadth", {})
-    breadth_card = ""
-    if breadth and breadth.get("pct_above_50dma") is not None:
-        _b20 = (f'{breadth["pct_above_20dma"]:.0f}%'
-                if breadth.get("pct_above_20dma") is not None else "—")
-        _b50 = f'{breadth["pct_above_50dma"]:.0f}%'
-        _b200 = (f'{breadth["pct_above_200dma"]:.0f}%'
-                if breadth.get("pct_above_200dma") is not None else "—")
-        breadth_card = f"""
-<div class="panel"><div class="panel-title">📊 시장 폭 (섹터 breadth, US 전용)</div>
+    # 시장 폭 — 시장별 카드(사용자 2026-08-16 "US 위에 KR"). HTML 이 한 벌뿐이라
+    # 헬퍼로 뽑아 두 번 호출한다(복붙 금지).
+    # 설명 문구의 섹터 나열·개수는 **레지스트리에서 만든다** — 손으로 적으면
+    # 티커를 하나 바꾸는 순간 거짓말이 된다(2026-08-16 독립 리뷰).
+    _BREADTH_WHY = {
+        "US": "개별종목(500종목) breadth 의 섹터-레벨 근사(비용상 전수스캔 대신 채택, "
+              "문서화된 스코프).",
+        "KR": "KRX 업종 기준(GICS 강제 매핑이 아니라 한국 시장의 실제 업종 구조). "
+              "삼성전자·하이닉스 비중이 큰 시장이라 '소수 대형주만 지수를 방어 중인지' "
+              "판별에 특히 유용.",
+    }
+
+    def _breadth_card(mkt: str, b: dict) -> str:
+        """mkt 는 **호출부가 명시**한다 — payload 에서 꺼내 기본값 'US' 를 쓰면
+        market 키가 없는 KR payload 가 US 제목·US 설명으로 렌더된다(독립 리뷰)."""
+        sectors = _BREADTH_SECTORS.get(mkt) or {}
+        if not b:
+            # 등록된 시장인데 데이터가 통째로 없으면 **그 사실을 보여준다**.
+            # 카드가 그냥 사라지면 안내문("KR=KODEX 13개")과 화면이 어긋난다.
+            if not sectors:
+                return ""
+            return (f'<div class="panel"><div class="panel-title">📊 시장 폭 '
+                    f'(섹터 breadth, {_h.escape(mkt)})</div>'
+                    f'<div class="sub">데이터 없음 — 섹터 ETF 히스토리를 하나도 '
+                    f'받지 못했습니다(티커·네트워크 확인 필요).</div></div>')
+        if b.get("pct_above_50dma") is None:
+            return ""
+
+        def _pct(key: str) -> str:
+            v = b.get(f"pct_above_{key}")
+            if v is None:
+                return "—"
+            # 분모를 함께 적는다 — 표본 13개라 써놓고 11개로 계산한 값을
+            # 보여주는 일이 없게(신규상장 ETF 는 200일치가 없다).
+            n = b.get(f"counted_{key}")
+            return f"{v:.0f}%" + (f" <small>({n}/{b.get('n_sectors', 0)})</small>"
+                                  if n is not None else "")
+
+        _miss = b.get("sectors_missing") or []
+        _miss_html = (f'<div class="sub" style="margin:4px 0 0">⚠️ 제외: '
+                      f'{_h.escape("·".join(_miss))} (데이터 없음 — 티커 확인 필요)</div>'
+                      if _miss else "")
+        _names = "·".join(sectors.values())
+        return f"""
+<div class="panel"><div class="panel-title">📊 시장 폭 (섹터 breadth, {_h.escape(mkt)})</div>
 <div class="stat-grid">
-<div class="stat"><div class="k">20일선 상회 섹터</div><div class="v">{_b20}</div></div>
-<div class="stat"><div class="k">50일선 상회 섹터</div><div class="v">{_b50}</div></div>
-<div class="stat"><div class="k">200일선 상회 섹터</div><div class="v">{_b200}</div></div>
-<div class="stat"><div class="k">표본</div><div class="v" style="font-size:14px">SPDR 섹터 ETF {breadth.get("n_sectors",0)}개</div></div>
-</div>
-<div class="note">11개 GICS 섹터 ETF(XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLRE/XLU/XLC) 중 자신의 20/50/200일
-이평선 위에 있는 비율(20일=단기 모멘텀·50일=중기·200일=장기 추세) — 개별종목(500종목) breadth 의
-섹터-레벨 근사(비용상 전수스캔 대신 채택, 문서화된 스코프). 낮으면 소수 대형주만 지수를 방어 중일
-가능성, 높으면 전반적 참여.</div></div>"""
+<div class="stat"><div class="k">20일선 상회 섹터</div><div class="v">{_pct("20dma")}</div></div>
+<div class="stat"><div class="k">50일선 상회 섹터</div><div class="v">{_pct("50dma")}</div></div>
+<div class="stat"><div class="k">200일선 상회 섹터</div><div class="v">{_pct("200dma")}</div></div>
+<div class="stat"><div class="k">표본</div><div class="v" style="font-size:14px">{_h.escape(str(b.get("source_label","섹터 ETF")))} {b.get("n_sectors",0)}개</div></div>
+</div>{_miss_html}
+<div class="note">{_h.escape(str(b.get("source_label","섹터 ETF")))} {len(sectors)}개({_h.escape(_names)})
+중 자신의 20/50/200일 이평선 위에 있는 비율 — {_BREADTH_WHY.get(mkt, "")}
+20일=단기 모멘텀·50일=중기·200일=장기 추세. 낮으면 소수 대형주만 지수를 방어 중일 가능성,
+높으면 전반적 참여. <b>⚠️ 시장 간 %를 직접 비교하지 말 것</b> — 표본(SPDR/GICS vs KODEX/KRX
+업종)과 섹터 수가 달라 같은 값이 같은 의미가 아니다. 같은 시장의 시계열 변화를 볼 것.</div></div>"""
+
+    breadth = data.get("breadth") or {}
+    # KR 을 US 위에(사용자 지시). 없는 시장은 빈 문자열이라 자동 생략.
+    breadth_card = _breadth_card("KR", breadth.get("KR") or {}) + _breadth_card(
+        "US", breadth.get("US") or {})
 
     vol = data.get("volatility", {})
     vol_card = ""
@@ -696,9 +796,10 @@ D25≥5·D15≥3·D5≥2 중 하나만 충족 · SEVERE D25≥6·D15≥4 중 하
 <b>2) 팔로우스루데이(FTD)</b> — 3%+ 조정(3거래일+ 연속 하락) 후 반등 4~10일째
 +1.25%+ 상승·거래량 증가 = 바닥 확인 신호(O'Neil 방법론). 🟢 FTD 확정만 유효 신호,
 나머지는 대기/무효.<br>
-<b>3) 시장 폭</b> — 11개 GICS 섹터 ETF 중 20/50/200일선 상회 비율(US 전용, 개별종목
-breadth 의 섹터-레벨 근사) — 20일=단기 모멘텀·50일=중기·200일=장기 추세. 낮으면
-소수 대형주만 지수 방어, 높으면 전반적 참여.<br>
+<b>3) 시장 폭</b> — 섹터 ETF 중 20/50/200일선 상회 비율(개별종목 breadth 의 섹터-레벨
+근사) — 20일=단기 모멘텀·50일=중기·200일=장기 추세. 낮으면 소수 대형주만 지수 방어,
+높으면 전반적 참여. <b>KR</b>=KODEX 섹터 12개(KRX 업종) · <b>US</b>=SPDR GICS 11개.
+표본이 다르므로 두 시장의 %를 직접 비교하지 말 것(같은 시장의 시계열 변화를 볼 것).<br>
 <b>4) 변동성(VIX·MOVE)</b> — VIX=주식 공포지수(메인 대시보드와 동일 네이버 소스),
 MOVE=채권 변동성(커버리지 불안정 시 생략).<br>
 <b>5) 시장 센티먼트</b> — CNN Fear &amp; Greed 지수(메인 대시보드와 동일 소스). VIX 와는 다른

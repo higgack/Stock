@@ -19267,7 +19267,9 @@ class TestMarketTimingBreadthVol20260726:
         below = flat + [50.0]    # last close well below all SMAs
         result = mt.breadth_from_closes({"A": above, "B": below})
         assert result == {"pct_above_20dma": 50.0, "pct_above_50dma": 50.0,
-                          "pct_above_200dma": 50.0, "n_sectors": 2}
+                          "pct_above_200dma": 50.0, "n_sectors": 2,
+                          "counted_20dma": 2, "counted_50dma": 2,
+                          "counted_200dma": 2}
 
     def test_breadth_from_closes_excludes_insufficient_data_sector(self):
         from bot import market_timing as mt
@@ -19279,44 +19281,116 @@ class TestMarketTimingBreadthVol20260726:
         assert result["pct_above_50dma"] == 100.0
         assert result["pct_above_200dma"] == 100.0
         assert result["n_sectors"] == 2   # n_sectors counts all input, ratios don't
+        # 지표별 분모가 n_sectors 와 다르다는 사실이 **드러나야** 한다 —
+        # 안 그러면 '표본 2개'라 써놓고 1개로 계산한 값을 보여준다.
+        assert result["counted_20dma"] == 1 and result["counted_200dma"] == 1
 
     def test_breadth_from_closes_empty(self):
         from bot import market_timing as mt
         assert mt.breadth_from_closes({}) == {
             "pct_above_20dma": None, "pct_above_50dma": None,
-            "pct_above_200dma": None, "n_sectors": 0}
+            "pct_above_200dma": None, "n_sectors": 0,
+            "counted_20dma": 0, "counted_50dma": 0, "counted_200dma": 0}
 
-    def test_fetch_market_breadth_non_us_returns_empty(self):
+    def test_fetch_market_breadth_unregistered_market_returns_empty(self):
+        # KR 은 2026-08-16 부터 지원 — 등록 안 된 시장만 {} 여야 한다
+        # (동급 섹터 ETF 시리즈가 없는 데이터소스 공백, market gate 아님).
         from bot import market_timing as mt
-        assert mt.fetch_market_breadth("KR") == {}
-        assert mt.fetch_market_breadth("JP") == {}
+        for mkt in ("JP", "TW", "CN_A", "HK", "XX"):
+            assert mt.fetch_market_breadth(mkt) == {}, mkt
+        assert set(mt._BREADTH_SECTORS) == {"US", "KR"}
 
-    def test_fetch_market_breadth_us_uses_sector_etfs(self, monkeypatch):
+    def test_fetch_market_breadth_uses_sector_etfs(self, monkeypatch):
         from bot import market_timing as mt
-        calls = []
+        for mkt in ("US", "KR"):
+            calls = []
+
+            def fake_fetch(ticker, days=120):
+                calls.append(ticker)
+                return [{"close": 100.0 + i} for i in range(250)]
+
+            monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
+            result = mt.fetch_market_breadth(mkt)
+            # 레지스트리를 **실제로** 순회했는지(소스 grep 아님)
+            assert set(calls) == set(mt._BREADTH_SECTORS[mkt]), mkt
+            assert result["n_sectors"] == len(mt._BREADTH_SECTORS[mkt]), mkt
+            assert result["market"] == mkt
+            assert result["pct_above_50dma"] == 100.0  # 순증가라 전부 상회
+            assert result["sectors_missing"] == []
+        # 표본 라벨이 시장마다 달라야 — 상품군이 다르다(SPDR vs KODEX).
+        # 고정값이면 KR 카드에 "SPDR" 이라 적히는 거짓 표기가 된다.
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda t, days=120: [{"close": 100.0}] * 250)
+        assert "SPDR" in mt.fetch_market_breadth("US")["source_label"]
+        assert "KODEX" in mt.fetch_market_breadth("KR")["source_label"]
+
+    def test_kr_sector_registry_is_wellformed(self):
+        # 오타 하나로 한 섹터가 조용히 빠지면 분모만 줄고 화면은 멀쩡하다.
+        from bot import market_timing as mt
+        kr = mt._BREADTH_SECTORS["KR"]
+        assert len(kr) >= 10, f"표본이 너무 작다({len(kr)}개) — 백분율이 거칠어짐"
+        assert all(t.endswith(".KS") for t in kr), "KR ETF 는 .KS 접미"
+        assert all(t[:6].isdigit() for t in kr), "KR 티커는 6자리 숫자"
+        assert len(set(kr.values())) == len(kr), "섹터 라벨 중복"
+        assert all(v.strip() for v in kr.values()), "빈 라벨"
+        # 레포에 검증값이 있는 유일한 티커(bot/kr_etf_metadata.py 출처)
+        from bot.kr_etf_metadata import _KR_ETF_METADATA
+        assert "091160.KS" in kr
+        assert "반도체" in _KR_ETF_METADATA["091160.KS"]["name_ko"]
+
+    def test_kr_basket_matches_repo_attested_etf_table(self):
+        # 티커를 기억으로 찍으면 안 된다 — 레포에 출처가 명시된 표
+        # (`_KR_INDUSTRY_OVERRIDES`, "Source: KRX ETF listings as of 2026")와
+        # **대조**한다. 두 표가 갈라지는 순간 breadth 가 조용히 엉뚱한 상품을
+        # 섞게 된다. 소스를 텍스트로 읽는 이유: 그 모듈은 langchain 을 끌어와
+        # 경량 테스트 환경에서 임포트가 안 된다(동작이 아니라 **데이터** 대조).
+        import re
+        from pathlib import Path as _P
+
+        from bot.market_timing import _BREADTH_SECTORS
+        src = _P("TradingAgents/tradingagents/agents/utils/"
+                 "sector_strength_tools.py").read_text(encoding="utf-8")
+        blk = src[src.index("_KR_INDUSTRY_OVERRIDES"):
+                  src.index("_KR_BROAD_FALLBACK")]
+        attested = dict(re.findall(r'\("(\d{6}\.KS)", "([^"]+)"\)', blk))
+        assert attested, "출처 표를 못 읽음 — 파일 구조가 바뀌었나"
+        for ticker, label in _BREADTH_SECTORS["KR"].items():
+            assert ticker in attested, f"{ticker}({label}) 가 출처 표에 없음"
+            # 라벨 표기는 조금 다를 수 있다(기계장비 vs 기계) — 앞 2글자 일치
+            assert label[:2] in attested[ticker], (
+                f"{ticker}: 바스켓 '{label}' vs 출처 '{attested[ticker]}'")
+
+    def test_kr_basket_has_no_overlapping_sectors(self):
+        # 화학·바이오·게임은 각각 에너지화학·헬스케어·미디어엔터와 구성종목이
+        # 겹쳐 breadth 에서 이중계산이 된다 — 의도적으로 뺐다는 계약 고정.
+        from bot.market_timing import _BREADTH_SECTORS
+        kr = _BREADTH_SECTORS["KR"]
+        for dup in ("102710.KS", "244580.KS", "300950.KS"):
+            assert dup not in kr, f"{dup} 는 기존 섹터와 종목이 겹친다"
+
+    def test_fetch_market_breadth_partial_failure_is_visible(self, monkeypatch):
+        # 옛 코드는 실패한 섹터가 **조용히 분모에서만** 빠졌다 — ETF 가
+        # 상장폐지·티커변경돼도 화면엔 비율만 멀쩡히 뜬다(2026-08-16).
+        from bot import market_timing as mt
+        dead = "091170.KS"
 
         def fake_fetch(ticker, days=120):
-            calls.append(ticker)
-            return [{"close": 100.0 + i} for i in range(250)]
-
-        monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
-        result = mt.fetch_market_breadth("US")
-        assert set(calls) == set(mt._BREADTH_SECTOR_ETFS_US)
-        assert result["n_sectors"] == 11
-        assert result["pct_above_50dma"] == 100.0   # 순증가 시계열이라 전부 상회
-
-    def test_fetch_market_breadth_partial_failure_graceful(self, monkeypatch):
-        from bot import market_timing as mt
-
-        def fake_fetch(ticker, days=120):
-            if ticker == "XLK":
+            if ticker == dead:
                 raise RuntimeError("boom")
             return [{"close": 100.0}] * 250
 
         monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
-        result = mt.fetch_market_breadth("US")
-        assert result["n_sectors"] == len(mt._BREADTH_SECTOR_ETFS_US) - 1
-        assert "XLK" not in result["sectors_ok"]
+        result = mt.fetch_market_breadth("KR")
+        assert result["n_sectors"] == len(mt._BREADTH_SECTORS["KR"]) - 1
+        assert dead not in result["sectors_ok"]
+        # 라벨로 드러나야 한다(티커만으론 뭐가 빠졌는지 모른다)
+        assert result["sectors_missing"] == [mt._BREADTH_SECTORS["KR"][dead]]
+        # 빈 응답(예외 아님)도 같은 경로로 잡혀야
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda t, days=120: [] if t == dead
+                            else [{"close": 100.0}] * 250)
+        assert mt.fetch_market_breadth("KR")["sectors_missing"] == [
+            mt._BREADTH_SECTORS["KR"][dead]]
 
     def test_fetch_volatility_snapshot_vix_prefers_naver(self, monkeypatch):
         # 사용자 리포트(2026-07-26) '빅스지수가 다른데 메인대시보드랑
@@ -19397,8 +19471,9 @@ class TestMarketTimingBreadthVol20260726:
         from bot import market_timing as mt
         data = {
             "markets": {}, "macro": {}, "crypto": {}, "cot": {},
-            "breadth": {"pct_above_20dma": 45.5, "pct_above_50dma": 63.6,
-                       "pct_above_200dma": 81.8, "n_sectors": 11},
+            "breadth": {"US": {"pct_above_20dma": 45.5, "pct_above_50dma": 63.6,
+                               "pct_above_200dma": 81.8, "n_sectors": 11,
+                               "market": "US", "source_label": "SPDR 섹터 ETF"}},
             "volatility": {"vix": {"value": 14.2, "date": "2026-07-25"},
                           "move": {"value": 92.5, "date": "2026-07-25"}},
         }
@@ -19407,11 +19482,83 @@ class TestMarketTimingBreadthVol20260726:
         assert "VIX" in html and "14.2" in html
         assert "MOVE" in html and "92.5" in html
 
+    def test_render_kr_breadth_card_above_us(self):
+        # 사용자 2026-08-16 "US 위에 KR 을 만들어줘" — 순서가 요구사항이다.
+        from bot import market_timing as mt
+        data = {"markets": {}, "macro": {}, "crypto": {}, "breadth": {
+            "US": {"pct_above_20dma": 91.0, "pct_above_50dma": 91.0,
+                   "pct_above_200dma": 82.0, "n_sectors": 11, "market": "US",
+                   "source_label": "SPDR 섹터 ETF"},
+            "KR": {"pct_above_20dma": 33.0, "pct_above_50dma": 42.0,
+                   "pct_above_200dma": 25.0, "n_sectors": 12, "market": "KR",
+                   "source_label": "KODEX 섹터 ETF"},
+        }}
+        html = mt.render_market_timing_page(data)
+        i_kr = html.index("시장 폭 (섹터 breadth, KR)")
+        i_us = html.index("시장 폭 (섹터 breadth, US)")
+        assert i_kr < i_us, "KR 카드가 US 아래에 있음(사용자 지시 위반)"
+        # 표본 라벨이 시장별로 달라야(SPDR 을 KR 카드에 쓰면 거짓 표기)
+        assert "KODEX 섹터 ETF 12개" in html and "SPDR 섹터 ETF 11개" in html
+        assert "33%" in html and "91%" in html
+        # 표본이 다르므로 직접 비교하지 말라는 안내가 있어야
+        assert "직접 비교하지 말" in html
+
+    def test_render_uses_caller_market_not_payload_default(self):
+        # payload 에 market 키가 없을 때 기본값 'US' 로 떨어지면 KR 데이터가
+        # US 제목 + US 설명(XLK/GICS)으로 렌더된다(2026-08-16 독립 리뷰).
+        # 시장은 **호출부가 명시**하는 값이어야 한다.
+        from bot import market_timing as mt
+        data = {"markets": {}, "macro": {}, "crypto": {}, "breadth": {
+            "KR": {"pct_above_20dma": 30.0, "pct_above_50dma": 40.0,
+                   "pct_above_200dma": 50.0, "n_sectors": 13,
+                   "source_label": "KODEX 섹터 ETF"},   # market 키 없음
+        }}
+        html = mt.render_market_timing_page(data)
+        assert "breadth, KR)" in html, "market 키 부재 시 US 로 오표기"
+        assert "breadth, US)" not in html.split("breadth, KR)")[0]
+        # 설명도 KR 것이어야(US 의 XLK/GICS 문구가 새면 안 됨)
+        kr_note = html.split("breadth, KR)")[1][:1200]
+        assert "XLK" not in kr_note and "KRX 업종" in kr_note
+
+    def test_render_breadth_shows_missing_sectors(self):
+        # 데이터를 못 받은 섹터가 화면에 안 보이면 분모만 조용히 줄어든다.
+        from bot import market_timing as mt
+        data = {"markets": {}, "macro": {}, "crypto": {}, "breadth": {
+            "KR": {"pct_above_20dma": 50.0, "pct_above_50dma": 50.0,
+                   "pct_above_200dma": 50.0, "n_sectors": 10, "market": "KR",
+                   "source_label": "KODEX 섹터 ETF",
+                   "sectors_missing": ["보험", "운송"]},
+        }}
+        html = mt.render_market_timing_page(data)
+        assert "제외" in html and "보험·운송" in html
+        # 실패가 없으면 그 줄이 아예 없어야(불필요한 경고 노이즈 금지)
+        data["breadth"]["KR"]["sectors_missing"] = []
+        assert "제외" not in mt.render_market_timing_page(data)
+
+    def test_render_breadth_only_one_market_available(self):
+        # KR 만 있고 US 가 실패해도(또는 반대) 있는 쪽만 그려야 한다.
+        from bot import market_timing as mt
+        base = {"markets": {}, "macro": {}, "crypto": {}}
+        kr_only = {**base, "breadth": {"KR": {
+            "pct_above_20dma": 10.0, "pct_above_50dma": 20.0,
+            "pct_above_200dma": 30.0, "n_sectors": 12, "market": "KR",
+            "source_label": "KODEX 섹터 ETF"}}}
+        html = mt.render_market_timing_page(kr_only)
+        assert "breadth, KR)" in html
+        # ⚠️ US 는 **사라지지 않고** '데이터 없음' 으로 남아야 한다 — 카드가
+        # 그냥 없어지면 안내문("US=SPDR 11개")과 화면이 어긋나고, 수집 실패를
+        # 알 방법이 없다(2026-08-16 독립 리뷰).
+        assert "breadth, US)" in html and "데이터 없음" in html
+        # breadth 가 통째로 비어도 죽지 않고, 두 시장 다 '데이터 없음'
+        empty = mt.render_market_timing_page({**base, "breadth": {}})
+        assert empty.count("데이터 없음") == 2
+
     def test_render_breadth_none_200dma_no_crash(self):
         from bot import market_timing as mt
         data = {"markets": {}, "macro": {}, "crypto": {},
-                "breadth": {"pct_above_20dma": None, "pct_above_50dma": 50.0,
-                           "pct_above_200dma": None, "n_sectors": 3}}
+                "breadth": {"US": {"pct_above_20dma": None, "pct_above_50dma": 50.0,
+                                  "pct_above_200dma": None, "n_sectors": 3,
+                                  "market": "US"}}}
         html = mt.render_market_timing_page(data)
         assert "50%" in html and "None" not in html
 
