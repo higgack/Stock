@@ -5062,12 +5062,18 @@ _QUARTERLY_JS = r"""
         h+=bullets('지속조건 · 무효화 리스크',gr.sustain_risks,'#f87171');
         h+='<div style="font-size:11px;color:var(--fg-soft)">출처: '+esc(gr.source||'DART 공시')+'</div></div>';
       }
-    }else{
+    }else if(j.llm_supported){
       h+='<div style="margin-top:10px"><button type="button" id="si-q-run" '
        + 'style="padding:6px 12px;border-radius:8px;cursor:pointer">'
        + '성장동력 · 리스크 생성 (AI 1회)</button>'
        + '<span style="font-size:11px;color:var(--fg-soft);margin-left:8px">'
        + 'DART 공시 원문 근거 요약 · 분기당 1회만 과금</span></div>';
+    }else{
+      // 비-KR: 근거가 될 공시 원문 소스가 없다 — 누를 수 없는 버튼을
+      // 보여주는 대신 왜 없는지 밝힌다.
+      h+='<div style="margin-top:10px;font-size:11px;color:var(--fg-soft)">'
+       + '성장동력 · 리스크 요약은 DART 공시 원문 기반이라 한국 종목에서만 '
+       + '제공됩니다.</div>';
     }
     // 이번 실행 비용 — 종목분석 상세의 cost_krw 스탬프와 동일 표기.
     // 0원(무료 경로·캐시 재사용)도 명시해 "얼마 썼나"가 항상 보이게 한다.
@@ -5295,12 +5301,14 @@ def _render_stock_info_html(rec: dict) -> str:
     band_tab = ('  <button type="button" class="si-tab" data-pane="si-bandchart">밴드차트</button>\n'
                 if is_kr else "")
 
-    # ── 분기실적 탭 (DART 분기 스코어카드 인포그래픽, KR 전용) ──────
-    # 탭 활성화 시 /api/quarterly 로 lazy fetch. 숫자·차트는 무료(DART),
-    # 성장동력/리스크 카드만 LLM 이라 버튼(&run=1)으로 명시 실행 — 기술
-    # 분석 탭(_handle_technical_api)과 동일한 비용 게이트 패턴.
-    quarterly_tab = ('  <button type="button" class="si-tab" data-pane="si-quarterly">분기실적</button>\n'
-                     if is_kr else "")
+    # ── 분기실적 탭 (분기 스코어카드 인포그래픽) ────────────────────
+    # 탭 활성화 시 /api/quarterly 로 lazy fetch. 숫자·차트는 무료(KR=DART ·
+    # 그 외=yfinance 분기 손익), 성장동력/리스크 카드만 LLM 이라 버튼
+    # (&run=1)으로 명시 실행 — 기술분석 탭과 동일한 비용 게이트 패턴.
+    # 전 시장 노출(사용자 2026-08-16 '다른 나라도') — 데이터가 없으면
+    # pane 이 graceful 메시지를 띄운다.
+    quarterly_tab = ('  <button type="button" class="si-tab" '
+                     'data-pane="si-quarterly">분기실적</button>\n')
 
     # ── tab navigation ──────────────────────────────────────────
     # 공시 버튼은 항상 노출 (사용자 2026-06-16 A2): 옛 분석은 정적 저장분에
@@ -5700,7 +5708,11 @@ def _render_stock_info_html(rec: dict) -> str:
             for it in items:
                 v = it.get(key)
                 cell = f"{v / 1e8:,.0f}억" if v else "—"
-                if key == "매출" and it.get("_anomaly_revenue_negative"):
+                # 두 이상치 플래그 모두 매출 계정 판정에서 나온다 —
+                # 계정 불일치(4분기 = 연간 − 9개월누적을 서로 다른 계정으로
+                # 뺀 경우)도 같은 배지로 표기해야 '—' 의 이유가 보인다.
+                if key == "매출" and (it.get("_anomaly_revenue_negative")
+                                     or it.get("_anomaly_account_mismatch")):
                     cell += " ⚠️"
                 cells += f"<td class='num'>{cell}</td>"
             rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
@@ -5712,10 +5724,17 @@ def _render_stock_info_html(rec: dict) -> str:
                 cells += f"<td class='num'>{v:.1f}%</td>" if v is not None else "<td class='num'>—</td>"
             rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
         foot = ""
+        _notes = []
         if any(it.get("_anomaly_revenue_negative") for it in items):
+            _notes.append('⚠️ 매출 음수 = 전기 재무제표 정정(restatement)이 반영된 '
+                          'DART 원자료 그대로 — 임의 보정 없음')
+        if any(it.get("_anomaly_account_mismatch") for it in items):
+            _notes.append('⚠️ 매출 공백 = 연간·3분기 보고서가 서로 다른 계정'
+                          '(영업수익/이자수익 등)을 써 차감이 불가 — 추정 대신 '
+                          '비워둠')
+        if _notes:
             foot = ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
-                    '⚠️ 매출 음수 = 전기 재무제표 정정(restatement)이 반영된 DART '
-                    '원자료 그대로 — 임의 보정 없음</div>')
+                    + '<br>'.join(_notes) + '</div>')
         return f"""<div class="si-section">
     <div class="si-section-title">{esc(title)}</div>
     <table class="si-table"><thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table>
@@ -7015,20 +7034,32 @@ def _render_stock_info_html(rec: dict) -> str:
   <script>{_BAND_JS}</script>
 </div>"""
 
-    # ── 분기실적 pane (DART 분기 스코어카드, KR 전용) ───────────────
-    quarterly_pane = ""
-    if quarterly_tab:
-        quarterly_pane = f"""<div class="si-pane" id="si-quarterly">
+    # ── 분기실적 pane (분기 스코어카드) ─────────────────────────────
+    # 설명문은 실제 소스와 동기(out-of-sync = 버그, CLAUDE.md).
+    if is_kr:
+        _q_title = "분기 실적분석 (DART 정기보고서)"
+        _q_desc = ("최근 5분기 매출·영업이익·순이익 추이와 YoY/QoQ. 1~3분기는 "
+                   "DART 가 제공하는 단일분기 값, 4분기는 연간에서 3분기 누적을 "
+                   "뺀 값입니다. 성장동력·리스크는 <b>DART 공시 원문</b>만 근거로 "
+                   "요약합니다(증권사 리포트 아님).")
+        _q_src = "출처: DART 정기보고서 · 시총/PER yfinance"
+    else:
+        _q_title = "분기 실적분석 (yfinance 분기 손익계산서)"
+        _q_desc = ("최근 5분기 매출·영업이익·순이익 추이와 YoY/QoQ. 금액은 "
+                   "재무제표 표시통화 기준이며, 분기 라벨은 달력 분기입니다"
+                   "(회계연도가 12월 결산이 아니면 이미지에 표기). 성장동력·"
+                   "리스크 요약은 DART 공시 원문 기반이라 <b>한국 종목에서만</b> "
+                   "제공됩니다.")
+        _q_src = "출처: yfinance 분기 손익계산서 · 시총/PER yfinance"
+    quarterly_pane = f"""<div class="si-pane" id="si-quarterly">
   <div class="si-section">
-    <div class="si-section-title">분기 실적분석 (DART 정기보고서)</div>
+    <div class="si-section-title">{_q_title}</div>
     <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
-      최근 5분기 매출·영업이익·순이익 추이와 YoY/QoQ. 1~3분기는 DART 가 제공하는
-      단일분기 값, 4분기는 연간에서 3분기 누적을 뺀 값입니다.
-      성장동력·리스크는 <b>DART 공시 원문</b>만 근거로 요약합니다(증권사 리포트 아님).
+      {_q_desc}
     </div>
     <div id="si-q-status" style="font-size:12px;color:var(--fg-soft)">탭을 열면 불러옵니다…</div>
     <div id="si-q-body"></div>
-    {_src_foot}출처: DART 정기보고서 · 시총/PER yfinance</div>
+    {_src_foot}{_q_src}</div>
   </div>
   <script>{_QUARTERLY_JS}</script>
 </div>"""
@@ -7196,15 +7227,9 @@ def _render_stock_info_html(rec: dict) -> str:
       </div>"""
             return out
 
-        def _q_label(period: str) -> str:
-            """'2026-06-30' → '26.2Q' (파싱 실패 시 원문 앞 7자)."""
-            try:
-                y, m = int(period[:4]), int(period[5:7])
-                if 1 <= m <= 12:
-                    return f"{y % 100:02d}.{(m - 1) // 3 + 1}Q"
-            except (ValueError, IndexError):
-                pass
-            return period[:7]
+        # 분기 라벨은 분기실적 인포그래픽과 **같은 규약**을 써야 한다
+        # (한 종목의 두 화면이 다른 라벨을 쓰면 그 자체로 버그) — 공용 헬퍼.
+        from bot.quarterly_series import q_label_from_period as _q_label
 
         _is_stmt = fins.get("income_statement", {})
         # 분기(최근 5분기)를 연간 위에 — 사용자 2026-08-16.
