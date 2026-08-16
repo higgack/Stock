@@ -360,6 +360,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 강세/약세 토론(Gemini 1콜, cost-gated, 캐시). 탭 클릭/실행버튼 lazy fetch.
         if self.path.split("?", 1)[0] == "/api/technical":
             return self._handle_technical_api()
+        # /api/quarterly?ticker=..[&run=1] — 분기실적 탭(KR). DART 분기 숫자·
+        # 인포그래픽(무료) + run=1 시 성장동력/리스크 요약(Gemini 1콜, 분기당
+        # 1회 캐시). technical 과 동일 비용 게이트.
+        if self.path.split("?", 1)[0] == "/api/quarterly":
+            return self._handle_quarterly_api()
         # /api/usdkrw · usdjpy · usdcny · usdeur · usdgbp · usdchf — 환율
         # 실시간(네이버 marketindex, 30초 캐시 내장). 유동성 보드가 FRED
         # DEX*(1영업일 지연) 최신값을 실시간으로 덮는 용(사용자 2026-07-02
@@ -801,6 +806,68 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(200, {"ok": True, "band": data})
         except Exception as exc:
             log.warning("band_api: failed — %s", exc)
+            self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_quarterly_api(self) -> None:
+        """분기실적 탭(KR 전용). ?ticker= → DART 분기 숫자 + 인포그래픽 PNG
+        (무료). &run=1 → 성장동력/리스크 요약(Gemini 1콜, 분기 보고서 단위
+        캐시라 같은 분기 재조회는 무과금). Read-only GET — _authorize() 게이트
+        통과분. _handle_technical_api 패턴 mirror."""
+        import time
+        import urllib.parse as _uparse
+        try:
+            qs = _uparse.parse_qs(_uparse.urlparse(self.path).query)
+            ticker = (qs.get("ticker", [""])[0] or "").strip().upper()
+            run = qs.get("run", ["0"])[0] == "1"
+            if not _TICKER_RE.match(ticker):
+                self._reply_json(400, {"ok": False, "error": "bad ticker"})
+                return
+            if not ticker.endswith((".KS", ".KQ")):
+                self._reply_json(200, {"ok": False,
+                                       "error": "KR 종목만 지원(DART 데이터소스)"})
+                return
+            # 시총·PER 은 **이미 수집된 스냅샷이 있을 때만** 사용한다.
+            # collect_stock_snapshot 은 cold 면 yfinance 직렬 수집으로 10~30초가
+            # 걸려(이 파일 상단 주석 참조) 무료 탭-오픈 경로를 막는다 —
+            # 120초 in-process 캐시가 warm 일 때만 읽고(상세 페이지를 방금
+            # 렌더했으면 warm), cold 면 건너뛴다(타일이 '—'로 표시될 뿐 분기
+            # 숫자·차트는 정상). run=1(사용자가 이미 느린 유료 작업을 선택)
+            # 일 때만 cold 수집 허용. 2026-08-19 code-review.
+            snap = None
+            try:
+                import bot.stock_snapshot as _ss
+                with _ss._SNAP_CACHE_LOCK:
+                    ent = _ss._SNAP_CACHE.get(ticker)
+                    warm = bool(ent and (time.time() - ent[0]) < _ss._SNAP_CACHE_TTL)
+                if warm or run:
+                    snap = _ss.collect_stock_snapshot(ticker)
+            except Exception as exc:
+                log.debug("quarterly_api: snapshot skipped — %s", exc)
+            from bot import quarterly_infographic as _qi
+            res = _qi.get_or_render(ticker, snap, run_llm=run)
+            if not res.get("ok"):
+                self._reply_json(200, res)
+                return
+            payload = res.get("payload") or {}
+            img = res.get("image")
+            out = {
+                "ok": True,
+                # 아카이브 루트가 정적 서빙되므로 상대경로만 넘기면 된다
+                # (프런트가 NOAH_BASE 를 붙임). 렌더 실패 시 None → 표 폴백.
+                # ?v=mtime — AI 카드 생성 후 같은 파일명으로 다시 그리므로,
+                # 캐시 버스터가 없으면 브라우저가 생성 전 이미지를 계속
+                # 보여준다(유료 실행이 반영 안 된 것처럼 보임).
+                "image_url": (f"quarterly_infographic_img/{Path(img).name}"
+                              f"?v={int(Path(img).stat().st_mtime)}"
+                              if img else None),
+                "table_html": ("" if img else _qi.table_html(payload)),
+                "growth_risk": payload.get("growth_risk") or {"ok": False},
+                "latest": (payload.get("quarters") or [{}])[-1].get("label"),
+                "cached": res.get("cached"),
+            }
+            self._reply_json(200, out)
+        except Exception as exc:
+            log.warning("quarterly_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _handle_technical_api(self) -> None:

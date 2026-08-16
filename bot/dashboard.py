@@ -5009,6 +5009,87 @@ _BAND_JS = r"""
 """
 
 
+# 분기실적 탭 — 탭 활성화 시 /api/quarterly 로 인포그래픽 lazy fetch(무과금:
+# DART 숫자·차트만). '성장동력/리스크 생성' 버튼은 &run=1 로 LLM 1콜(분기당
+# 1회, 이후 같은 분기 보고서는 캐시라 재과금 0) — 기술 분석 탭과 동일 게이트.
+_QUARTERLY_JS = r"""
+(function(){
+  var pane=document.getElementById('si-quarterly'); if(!pane) return;
+  var fetching=false, loaded=false;
+  function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
+  function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function bullets(title,arr,color){
+    if(!arr||!arr.length) return '';
+    var h='<div class="si-section-title" style="font-size:13px;color:'+color+'">'+esc(title)+'</div><ul style="margin:4px 0 10px 18px;padding:0">';
+    for(var i=0;i<arr.length;i++) h+='<li style="margin:2px 0">'+esc(arr[i])+'</li>';
+    return h+'</ul>';
+  }
+  function render(j){
+    var st=document.getElementById('si-q-status');
+    var box=document.getElementById('si-q-body');
+    // 실패해도 버튼 상태를 되돌려야 재시도가 가능하다(안 그러면 '생성 중…'
+    // 으로 영구 비활성 → 새로고침해야만 복구).
+    if(!j||!j.ok){
+      if(st){ st.style.display=''; st.textContent=(j&&j.error)?j.error:'분기 실적 데이터를 불러올 수 없습니다.'; }
+      var ob=document.getElementById('si-q-run');
+      if(ob){ ob.disabled=false; ob.textContent='성장동력 · 리스크 생성 (AI 1회)'; }
+      return;
+    }
+    if(st)st.style.display='none';
+    var h='';
+    if(j.image_url){
+      // ⚠️ base() 필수 — 상세 페이지는 하위 경로라 상대경로만 쓰면 404.
+      h+='<img src="'+base()+j.image_url+'" alt="분기 실적분석" style="width:100%;border-radius:10px">';
+    }else{
+      h+='<div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px">'
+       + '이미지 렌더 불가(서버 한글 폰트 미설치) — 표로 표시합니다.</div>';
+    }
+    if(j.table_html) h+=j.table_html;
+    var gr=j.growth_risk||{};
+    if(gr.ok){
+      // 이미지가 없을 때도(폰트 부재) 유료로 생성한 요약은 반드시 보여준다.
+      if(!j.image_url){
+        h+='<div style="margin-top:10px">';
+        if(gr.headline) h+='<div style="font-weight:600;margin-bottom:2px">'+esc(gr.headline)+'</div>';
+        if(gr.risk_subline) h+='<div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px">확인할 리스크 · '+esc(gr.risk_subline)+'</div>';
+        h+=bullets('확인된 성장동력',gr.growth_drivers,'#34d399');
+        h+=bullets('지속조건 · 무효화 리스크',gr.sustain_risks,'#f87171');
+        h+='<div style="font-size:11px;color:var(--fg-soft)">출처: '+esc(gr.source||'DART 공시')+'</div></div>';
+      }
+    }else{
+      h+='<div style="margin-top:10px"><button type="button" id="si-q-run" '
+       + 'style="padding:6px 12px;border-radius:8px;cursor:pointer">'
+       + '성장동력 · 리스크 생성 (AI 1회)</button>'
+       + '<span style="font-size:11px;color:var(--fg-soft);margin-left:8px">'
+       + 'DART 공시 원문 근거 요약 · 분기당 1회만 과금</span></div>';
+    }
+    if(box)box.innerHTML=h;
+    var btn=document.getElementById('si-q-run');
+    if(btn)btn.addEventListener('click',function(){
+      btn.disabled=true; btn.textContent='생성 중…'; load(true);
+    });
+  }
+  function load(run){
+    if(fetching||(loaded&&!run)) return; fetching=true;
+    var st=document.getElementById('si-q-status');
+    if(st){ st.style.display=''; st.textContent='분기 실적 불러오는 중…'; }
+    fetch(base()+'api/quarterly?ticker='+encodeURIComponent(tkr())+(run?'&run=1':''),
+          {cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(j){ fetching=false; loaded=true; render(j); })
+      .catch(function(){ fetching=false;
+        if(st)st.textContent='분기 실적 로딩 실패.'; });
+  }
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-quarterly"]');
+    if(b) setTimeout(function(){load(false);},30); });
+  if(pane.classList.contains('active')) setTimeout(function(){load(false);},60);
+})();
+"""
+
+
 # 기술 분석 탭 — 탭 활성화 시 /api/technical 로 지표 lazy fetch(무과금·즉시 표),
 # '실행' 버튼 클릭 시에만 &run=1 단일 LLM 호출 → 강세/약세·축별판정·시나리오 렌더.
 _TECHNICAL_JS = r"""
@@ -5204,6 +5285,13 @@ def _render_stock_info_html(rec: dict) -> str:
     band_tab = ('  <button type="button" class="si-tab" data-pane="si-bandchart">밴드차트</button>\n'
                 if is_kr else "")
 
+    # ── 분기실적 탭 (DART 분기 스코어카드 인포그래픽, KR 전용) ──────
+    # 탭 활성화 시 /api/quarterly 로 lazy fetch. 숫자·차트는 무료(DART),
+    # 성장동력/리스크 카드만 LLM 이라 버튼(&run=1)으로 명시 실행 — 기술
+    # 분석 탭(_handle_technical_api)과 동일한 비용 게이트 패턴.
+    quarterly_tab = ('  <button type="button" class="si-tab" data-pane="si-quarterly">분기실적</button>\n'
+                     if is_kr else "")
+
     # ── tab navigation ──────────────────────────────────────────
     # 공시 버튼은 항상 노출 (사용자 2026-06-16 A2): 옛 분석은 정적 저장분에
     # 공시가 없어 has_disclosures=False 였고, 그러면 버튼이 안 떠 라이브
@@ -5228,7 +5316,7 @@ def _render_stock_info_html(rec: dict) -> str:
   <button type="button" class="si-tab" data-pane="si-company">기업</button>
   <button type="button" class="si-tab" data-pane="si-consensus">컨센서스</button>
   <button type="button" class="si-tab" data-pane="si-valuation">밸류에이션</button>
-{band_tab}{financials_tab}{peers_tab}  <button type="button" class="si-tab" data-pane="si-earnings">실적</button>
+{band_tab}{quarterly_tab}{financials_tab}{peers_tab}  <button type="button" class="si-tab" data-pane="si-earnings">실적</button>
   <button type="button" class="si-tab" data-pane="si-research">리서치</button>
   <button type="button" class="si-tab" data-pane="si-holders">주주</button>
 {flow_tab}{disclosure_tab}{risk_tab}  <button type="button" class="si-tab" data-pane="si-news">뉴스</button>
@@ -6917,6 +7005,24 @@ def _render_stock_info_html(rec: dict) -> str:
   <script>{_BAND_JS}</script>
 </div>"""
 
+    # ── 분기실적 pane (DART 분기 스코어카드, KR 전용) ───────────────
+    quarterly_pane = ""
+    if quarterly_tab:
+        quarterly_pane = f"""<div class="si-pane" id="si-quarterly">
+  <div class="si-section">
+    <div class="si-section-title">분기 실적분석 (DART 정기보고서)</div>
+    <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
+      최근 5분기 매출·영업이익·순이익 추이와 YoY/QoQ. 1~3분기는 DART 가 제공하는
+      단일분기 값, 4분기는 연간에서 3분기 누적을 뺀 값입니다.
+      성장동력·리스크는 <b>DART 공시 원문</b>만 근거로 요약합니다(증권사 리포트 아님).
+    </div>
+    <div id="si-q-status" style="font-size:12px;color:var(--fg-soft)">탭을 열면 불러옵니다…</div>
+    <div id="si-q-body"></div>
+    {_src_foot}출처: DART 정기보고서 · 시총/PER yfinance</div>
+  </div>
+  <script>{_QUARTERLY_JS}</script>
+</div>"""
+
     # ── 재무제표 pane (IS / BS / CF + 수익성 차트) ──────────────────
     financials_pane = ""
     fins = si.get("financials", {})
@@ -7353,7 +7459,8 @@ def _render_stock_info_html(rec: dict) -> str:
         "overview_card": overview_card,
         "tab_js": tab_js,
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
-                       valuation_pane + "\n" + band_pane + "\n" + financials_pane + "\n" +
+                       valuation_pane + "\n" + band_pane + "\n" +
+                       quarterly_pane + "\n" + financials_pane + "\n" +
                        peers_pane + "\n" + earnings_pane + "\n" +
                        research_pane + "\n" + holders_pane + "\n" +
                        flow_pane + "\n" + disclosures_pane + "\n" +
