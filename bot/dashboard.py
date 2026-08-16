@@ -5320,6 +5320,15 @@ def _render_stock_info_html(rec: dict) -> str:
                                ("부채총계", "부채총계"), ("자본총계", "자본총계")):
                 v = kf.get(key)
                 fin_rows += f'<tr><td>{esc(label)}</td><td class="num">{_krw_eok(v)}</td></tr>\n'
+            # 배당수익률 — 좌(금액)/우(비율) 테이블 행 수를 맞추기 위해 추가
+            # (사용자 2026-08-19, ROIC 추가로 우측이 7행이 되며 어긋남).
+            # 밸류에이션 탭(5569-5570행)과 동일한 표준 헬퍼 재사용 — 신규
+            # 데이터소스 불요, si 는 이미 이 함수 스코프에 있음(5128행).
+            _kf_dy_pct = _safe_dy_pct(si.get("dividendYield"),
+                                      si.get("dividendRate"), si.get("current_price"))
+            fin_rows += (f'<tr><td>배당수익률</td><td class="num">'
+                        f'{f"{_kf_dy_pct:.2f}%" if _kf_dy_pct is not None else "—"}'
+                        f'</td></tr>\n')
             ratio_rows = ""
             for label, key in (("영업이익률", "영업이익률"), ("순이익률", "순이익률"),
                                ("ROE", "ROE"), ("ROA", "ROA"), ("ROIC", "ROIC"),
