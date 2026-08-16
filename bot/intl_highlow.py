@@ -314,7 +314,7 @@ def _compute(market: str) -> None:
         if market == "KR":
             _compute_kr_full()
             return
-        from bot.finviz_client import _compute_highlow_from, _cache_write
+        from bot.finviz_client import _compute_highlow_from
         uni, names = _universe(market)
         if not uni:
             _status_write(market, "failed", detail="universe empty")
@@ -500,8 +500,16 @@ def fetch_intl_highlow(market: str) -> dict:
             _kick(market)
             just_kicked = True
     if stale is not None:
+        # SWR — stale(0건 포함)이 있으면 항상 그 데이터를 보여준다. just_kicked
+        # 는 여기서 제외: 0건이 지속되는 시장(작은 peer 폴백 유니버스 등)은 매
+        # 요청마다 재kick 이 걸리는데, just_kicked 를 여기 섞으면 실제로는 유효한
+        # "오늘 0건" 결과를 갖고 있는데도 매번 "산출 중" 스피너로 되돌아가는
+        # 새 무한루프가 생긴다(2026-08-16, finviz_client 캐시-항상-기록 fix와
+        # 짝지어 발견). building 은 "지금 이 순간 정말 running 중"일 때만 True.
         done = bool(stale.get("high") or stale.get("low"))
-        return {**stale, "building": (not done and (just_kicked or (st.get("state") == "running" and age < 1800)))}
+        return {**stale,
+                "building": (not done and st.get("state") == "running" and age < 1800),
+                "status": st}
     return {"high": [], "low": [], "ts": "", "source": "",
             "building": (just_kicked or (st.get("state") == "running" and age < 1800)), "status": st}
 

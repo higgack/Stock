@@ -7030,6 +7030,135 @@ class TestIntlHighLow52:
         assert "005930.KS" in h and "한국" in h and "52주 신고가" in h
 
 
+class TestHighLowZeroHitCacheFix20260816:
+    """CN_A(및 JP/HK/KR peer/TW 공용) 52주 신고가·신저가 '산출 중' 영구고정
+    fix (사용자 2026-08-16 재신고, '다른곳에서 계속 시도해도 안 풀림'). 근본
+    원인 확증: (1) finviz_client._compute_highlow_from 이 0건 결과면 캐시를
+    아예 안 써서 (2) intl_highlow.fetch_intl_highlow 의 '캐시 없음=building'
+    판정과 맞물려, 유니버스가 작은 시장(peer 폴백)에서 0건인 날 새로고침을
+    해도 절대 안 풀리는 영구 스피너가 됐다. 캐시 항상 기록 + building 이
+    '진짜 running 중'만 반영하도록 수정."""
+
+    def test_compute_highlow_from_writes_cache_on_zero_hits(self, monkeypatch):
+        import bot.finviz_client as fc
+
+        # 유니버스가 있지만 신고/신저 기준을 하나도 못 넘는(0건) 시나리오 —
+        # yf.download 자체를 실패시켜 scanned=0/high=low=[] 로 자연 유도.
+        class _FakeYf:
+            @staticmethod
+            def download(*a, **k):
+                raise RuntimeError("no data")
+        monkeypatch.setitem(__import__("sys").modules, "yfinance", _FakeYf())
+        written = {}
+        monkeypatch.setattr(fc, "_cache_write",
+                            lambda name, obj: written.__setitem__(name, obj))
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        out = fc._compute_highlow_from(["600000.SS"], {}, "zero.json", "src", "CN_A")
+        assert out["high"] == [] and out["low"] == []
+        assert "zero.json" in written, "0건이라도 캐시가 기록돼야 한다(옛 버그: 미기록)"
+        assert written["zero.json"]["high"] == [] and written["zero.json"]["low"] == []
+
+    def test_compute_highlow_from_skips_write_when_universe_empty(self, monkeypatch):
+        # 시도조차 안 한 경우(유니버스 자체가 빈 경우)는 그대로 스킵 — _compute()
+        # 가 이미 별도로 "failed(universe empty)" 상태를 쓰므로 여기선 기록 불요.
+        import bot.finviz_client as fc
+        written = {"n": 0}
+        monkeypatch.setattr(fc, "_cache_write",
+                            lambda name, obj: written.__setitem__("n", written["n"] + 1))
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        fc._compute_highlow_from([], {}, "empty.json", "src", "CN_A")
+        assert written["n"] == 0
+
+    def test_fetch_intl_highlow_zero_hit_stale_is_not_building(self, monkeypatch):
+        # stale 캐시가 0건(high=low=[])이고 status.state=='done' 이면 —
+        # 재kick 이 걸리더라도(0건이 지속될 수 있는 시장) building 은 False 여야
+        # 한다. 옛 버그(just_kicked 를 stale-존재 분기에도 섞음)는 매 요청마다
+        # True 로 되돌아가 새로고침해도 영원히 '산출 중'이었다.
+        import bot.intl_highlow as ih
+        import bot.finviz_client as fc
+        import time as _t
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: {
+            "high": [], "low": [], "ts": "x", "source": "s"})
+        monkeypatch.setattr(fc, "_session_fresh", lambda *a, **k: False)
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        monkeypatch.setattr(ih, "intl_highlow_status",
+                            lambda m: {"state": "done", "ts": _t.time()})
+        kicked = {"n": 0}
+        monkeypatch.setattr(ih, "_kick", lambda m: kicked.__setitem__("n", kicked["n"] + 1))
+        r = ih.fetch_intl_highlow("CN_A")
+        assert r["high"] == [] and r["low"] == []
+        assert r["building"] is False, "0건 stale + done 상태인데도 building=True(재발)"
+        assert r["status"]["state"] == "done"
+        assert kicked["n"] == 1, "백그라운드 재kick 은 계속 걸려야 한다(SWR)"
+
+    def test_fetch_intl_highlow_zero_hit_stale_building_while_running(self, monkeypatch):
+        # 0건 stale 이지만 상태가 진짜 running(방금 kick 된 백그라운드 스레드가
+        # 아직 안 끝남) 이면 building=True 로 정확히 반영돼야 한다.
+        import bot.intl_highlow as ih
+        import bot.finviz_client as fc
+        import time as _t
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: {
+            "high": [], "low": [], "ts": "x", "source": "s"})
+        monkeypatch.setattr(fc, "_session_fresh", lambda *a, **k: False)
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        monkeypatch.setattr(ih, "intl_highlow_status",
+                            lambda m: {"state": "running", "ts": _t.time()})
+        monkeypatch.setattr(ih, "_kick", lambda m: None)
+        r = ih.fetch_intl_highlow("CN_A")
+        assert r["building"] is True
+
+    def test_fetch_intl_highlow_nonempty_stale_carries_status(self, monkeypatch):
+        # 세션-fresh 아닌(=상태 판정까지 내려가는) 정상 hit 케이스 — status 키가
+        # 실려오는지(1번 fix 전엔 stale-존재 분기에 status 자체가 없었다).
+        import bot.intl_highlow as ih
+        import bot.finviz_client as fc
+        import time as _t
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: {
+            "high": [{"ticker": "600000.SS", "name": "x", "price": 10, "pct": 1}],
+            "low": [], "ts": "x", "source": "s"})
+        monkeypatch.setattr(fc, "_session_fresh", lambda *a, **k: False)
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        monkeypatch.setattr(ih, "intl_highlow_status",
+                            lambda m: {"state": "done", "ts": _t.time()})
+        monkeypatch.setattr(ih, "_kick", lambda m: None)
+        r = ih.fetch_intl_highlow("CN_A")
+        assert r["building"] is False     # 실제 hit 이 있으면 재kick 걸려도 building=False
+        assert r["status"]["state"] == "done"
+
+    def test_fetch_tw_highlow_settled_state_not_building(self, monkeypatch):
+        import bot.tw_highlow as th
+        import bot.finviz_client as fc
+        import time as _t
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        monkeypatch.setattr(th, "tw_highlow_status",
+                            lambda: {"state": "done", "ts": _t.time()})
+        monkeypatch.setattr(th, "_kick_tw_highlow", lambda: None)
+        r = th.fetch_tw_highlow()
+        assert r["building"] is False, "done(0건) 상태인데 building=True(옛 하드코딩 재발)"
+        assert r["status"]["state"] == "done"
+
+    def test_fetch_tw_highlow_unknown_state_still_building(self, monkeypatch):
+        # 상태 파일이 아예 없는(최초 1회) 경우는 기존 동작(building=True) 유지.
+        import bot.tw_highlow as th
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        monkeypatch.setattr(th, "tw_highlow_status", lambda: {})
+        monkeypatch.setattr(th, "_kick_tw_highlow", lambda: None)
+        r = th.fetch_tw_highlow()
+        assert r["building"] is True
+
+    def test_tw_page_zero_hit_message_not_generic_failure(self, monkeypatch):
+        import bot.tw_highlow as th
+        monkeypatch.setattr(th, "fetch_tw_highlow", lambda: {
+            "high": [], "low": [], "ts": "x", "building": False,
+            "status": {"state": "done"}})
+        from bot.tw_pages import render_tw_highlow52_page
+        h = render_tw_highlow52_page()
+        assert "산출 중" not in h
+        assert "결과가 없습니다" in h
+        assert "데이터를 불러올 수 없습니다" not in h
+
+
 class TestTwHighLow52:
     """대만 52주 신고가/신저가 — yfinance 유니버스 백그라운드 SWR (사용자
     2026-06-13, VM 10/10 검증). 동기계산 금지 + building + 페이지."""

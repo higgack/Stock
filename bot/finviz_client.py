@@ -1315,8 +1315,6 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         log.info("finviz: %s highlow — scanned %d → high %d / low %d "
                  "(mcap %d, 신선도제외 %d)", tag, scanned, len(out["high"]),
                  len(out["low"]), len(mcaps), stale_skipped)
-        if out["high"] or out["low"]:
-            _cache_write(cache_name, out)
         # 네이버 live 비교용 baseline 저장(오늘 제외 52주 고저, 전 스캔 유니버스).
         # JP/CN_A/HK intl_highlow live 경로가 현재가와 비교(EOD 1회 산출 → 장중 저부하).
         if _baseline:
@@ -1326,6 +1324,14 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                 log.warning("finviz: %s baseline 저장 실패: %s", tag, _bexc)
     except Exception as exc:
         log.warning("finviz: %s highlow 산출 실패: %s", tag, exc)
+    # 0건(오늘 신고/신저 없음)이라도 **항상 기록** — 캐시를 스캔 성공 여부의
+    # durable 증거로 쓴다(2026-08-16, CN_A '산출 중' 영구고정 fix). 옛 코드는
+    # high/low 가 둘 다 비면 캐시를 아예 안 써서, 그 상태가 fetch_intl_highlow
+    # 의 "캐시 없음=building" 판정과 맞물려 0건인 날(특히 peer 폴백처럼 유니버스
+    # 가 작은 시장)엔 새로고침을 해도 절대 안 풀리는 영구 스피너가 됐다. 스캔
+    # 도중 예외가 나 부분결과인 경우도 durable 기록(반복 실패로 한 번도 캐시가
+    # 안 써지는 잔여 케이스까지 차단) — try/except 밖 단일 지점.
+    _cache_write(cache_name, out)
     return out
 
 
