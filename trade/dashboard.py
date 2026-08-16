@@ -424,17 +424,9 @@ def _load_eval_miss_summary(
     # 스킵, 옛 39건 stale 로그). (2) 운영자 /ignore 한 msg_id — find_unstored 는
     # 이미 ignored_ids 를 스킵하지만 그 전에 적재된 옛 entry 는 카운트에 남아있어
     # 불일치 → msg_id 도 제외해 일관. read-only(파일 미변경)·다음 렌더 즉시 반영.
-    from trade import cn_exports as _cn
+    from trade import badonion_sources as _srcs
     from trade import ignored as _ignored
-    from trade import jp2_exports as _jp2
     from trade import jp_exports as _jp
-    from trade import kr_stock_exports as _krs
-    from trade import mx_exports as _mx
-    from trade import us_imports as _us
-    from trade import my_exports as _my
-    from trade import ph_exports as _ph
-    from trade import th_exports as _th
-    from trade import tw_exports as _tw
     ignored_ids = _ignored.load()
     count = 0
     oldest: datetime | None = None
@@ -457,23 +449,11 @@ def _load_eval_miss_summary(
                     continue
                 if _jp.parse_jp_export(cap) is not None:    # JP → jp.db 정상 처리
                     continue
-                if _tw.parse_tw_export(cap) is not None:    # TW → tw.db 정상 처리
-                    continue
-                if _cn.parse_cn_export(cap) is not None:    # CN → cn.db 정상 처리
-                    continue
-                if _jp2.parse_jp2_export(cap) is not None:  # JP2 → jp2.db 정상 처리
-                    continue
-                if _th.parse_th_export(cap) is not None:    # TH → th.db 정상 처리
-                    continue
-                if _my.parse_my_export(cap) is not None:    # MY → my.db 정상 처리
-                    continue
-                if _ph.parse_ph_export(cap) is not None:    # PH → ph.db 정상 처리
-                    continue
-                if _mx.parse_mx_export(cap) is not None:    # MX → mx.db 정상 처리
-                    continue
-                if _us.parse_us_import(cap) is not None:    # US → us.db 정상 처리
-                    continue
-                if _krs.parse_kr_stock_export(cap) is not None:  # KR종목 → kr_stock.db
+                # 나쁜양파 소스 전체 — 각자 별도 DB 로 정상 처리되는
+                # 경로라 미매칭 집계에서 제외.
+                # badonion_sources 단일 레지스트리(리스너·백필·ingest·
+                # unstored_check 와 동일 판정 — 판정이 갈리면 오탐/누락).
+                if _srcs.is_relevant(cap):
                     continue
                 count += 1
                 detected = rec.get("detected_at")
@@ -640,6 +620,13 @@ def _customs_panel_html(rows: list[dict]) -> str:
         surge_block = ""
 
     return pins_block + surge_block
+
+
+def _srcs_nav_html() -> str:
+    """나쁜양파 형제 대시보드 nav 링크 — 단일 레지스트리에서 조립.
+    로컬 임포트는 이 파일의 기존 관례(순환 임포트 회피)."""
+    from trade import badonion_sources as _srcs
+    return _srcs.nav_html()
 
 
 def _build_html(
@@ -875,39 +862,11 @@ def _build_html(
         # 일본(jp2.html)과 구분).
         ' &nbsp;·&nbsp; <a href="jp.html">'
         '🗾 일본 수출 데이터(비온) →</a>'
-        # 🎌 일본 수출 데이터 — 나쁜양파(두 번째 소스, 사용자 2026-07-11 "일본은
-        # 2개의 서로 다른 채널에서 2개의 대쉬보드로 갈거야"). 위 jp.html(BeOn)과는
-        # 별도 페이지 — 🎌(교차깃발, flag-sequence 아니라 폰트문제 없음)로 구분.
-        # 일본(비온) 바로 다음 순서로 배치(사용자 2026-07-11).
-        ' &nbsp;·&nbsp; <a href="jp2.html">'
-        '🎌 일본 수출 데이터(나쁜양파) →</a>'
-        # 🇹🇼 대만 수출 데이터 (나쁜양파, 사용자 2026-07-10) — 일본 옆. 🇹🇼 flag 도
-        # JP 와 동일 폰트문제(일부 폰트에서 'tw' 텍스트로 렌더, 사용자 2026-07-11
-        # 스크린샷 확인) → 항상 보이는 🧋(버블티, 대만 상징) 사용. 소스 라벨
-        # "(나쁜양파)" 부착(사용자 2026-07-11).
-        ' &nbsp;·&nbsp; <a href="tw.html">'
-        '🧋 대만 수출 데이터(나쁜양파) →</a>'
-        # 🐼 중국 수출 데이터 (나쁜양파, 같은 채널, 사용자 2026-07-11) — 대만 옆.
-        # 🇨🇳 flag 도 동일 폰트문제 우려 → 처음부터 논-플래그 이모지(🐼) 사용.
-        ' &nbsp;·&nbsp; <a href="cn.html">'
-        '🐼 중국 수출 데이터(나쁜양파) →</a>'
-        # 🐘🐯🥭🌮 태국·말레이시아·필리핀·멕시코 수출 데이터 (나쁜양파, 같은
-        # 채널, 사용자 2026-07-26) — 중국 옆. 전부 논-플래그 이모지(국가 상징
-        # 동물/음식)로 TW/CN 과 동일 폰트문제 회피(사용자 2026-07-11 교훈).
-        ' &nbsp;·&nbsp; <a href="th.html">'
-        '🐘 태국 수출 데이터(나쁜양파) →</a>'
-        ' &nbsp;·&nbsp; <a href="my.html">'
-        '🐯 말레이시아 수출 데이터(나쁜양파) →</a>'
-        ' &nbsp;·&nbsp; <a href="ph.html">'
-        '🥭 필리핀 수출 데이터(나쁜양파) →</a>'
-        ' &nbsp;·&nbsp; <a href="mx.html">'
-        '🌮 멕시코 수출 데이터(나쁜양파) →</a>'
-        ' &nbsp;·&nbsp; <a href="us.html">'
-        '🇺🇸 미국 수입 데이터(나쁜양파) →</a>'
-        # 한국만 품목(HS)이 아니라 **종목(회사)** 기준이라 라벨에 명시한다
-        # (사용자 2026-08-16). 이모지는 flag-sequence 회피 규칙 준수.
-        ' &nbsp;·&nbsp; <a href="kr_stock.html">'
-        '🏢 한국 수출 데이터(종목별·나쁜양파) →</a></div>'
+        # 나쁜양파 소스 링크는 badonion_sources 레지스트리가 만든다 — 옛 코드는
+        # 9개를 여기 하드코딩해서, 소스를 추가해도 nav 를 빠뜨리면 페이지는
+        # 생성되는데 **도달 불가**였다(게다가 is_relevant 가 미매칭 알림까지
+        # 눌러 조용한 유실). 표시 순서·라벨·이모지 규칙은 그 파일에 있다.
+        + _srcs_nav_html() + '</div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="industries">산업별</button>'
         '<button class="tab" data-tab="items">품목별</button>'
@@ -2808,91 +2767,34 @@ def main() -> int:
         pass
     # 🇯🇵 일본 수출 데이터(BeOn) — 별도 jp.db → jp.html (한국 대시보드 옆 형제 파일).
     # 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
+    import logging          # 이 파일의 기존 관례(로컬 임포트, :323 참조)
     try:
         from trade import jp_exports
         jp_exports.regenerate(
             args.db.parent / "jp.db", args.out.parent / "jp.html",
             media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    # 🇹🇼 대만 수출 데이터(나쁜양파) — 별도 tw.db → tw.html (일본 옆 형제 파일,
-    # 사용자 2026-07-10). 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
-    try:
-        from trade import tw_exports
-        tw_exports.regenerate(
-            args.db.parent / "tw.db", args.out.parent / "tw.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    # 🐼 중국 수출 데이터(나쁜양파, 같은 채널) — 별도 cn.db → cn.html (대만 옆
-    # 형제 파일, 사용자 2026-07-11). 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
-    try:
-        from trade import cn_exports
-        cn_exports.regenerate(
-            args.db.parent / "cn.db", args.out.parent / "cn.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    # 🎌 일본 수출 데이터 — 나쁜양파 두 번째 소스(BeOn 의 jp.html 과 별도 페이지,
-    # 사용자 2026-07-11 "일본은 2개의 서로 다른 채널에서 2개의 대쉬보드로 갈거야").
-    # 별도 jp2.db → jp2.html. 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
-    try:
-        from trade import jp2_exports
-        jp2_exports.regenerate(
-            args.db.parent / "jp2.db", args.out.parent / "jp2.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    # 🐘🐯🥭🌮🇺🇸 태국·말레이시아·필리핀·멕시코·미국 수입 데이터(나쁜양파, 같은 채널,
-    # 사용자 2026-07-26) — 별도 th.db/my.db/ph.db/mx.db/us.db → 동명 .html (jp2 옆
-    # 형제 파일). 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
-    try:
-        from trade import th_exports
-        th_exports.regenerate(
-            args.db.parent / "th.db", args.out.parent / "th.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    try:
-        from trade import my_exports
-        my_exports.regenerate(
-            args.db.parent / "my.db", args.out.parent / "my.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    try:
-        from trade import ph_exports
-        ph_exports.regenerate(
-            args.db.parent / "ph.db", args.out.parent / "ph.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    try:
-        from trade import mx_exports
-        mx_exports.regenerate(
-            args.db.parent / "mx.db", args.out.parent / "mx.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    try:
-        from trade import us_imports
-        us_imports.regenerate(
-            args.db.parent / "us.db", args.out.parent / "us.html",
-            media_url_prefix=args.media_url)
-    except Exception:
-        pass
-    try:
-        from trade import kr_stock_exports
-        kr_stock_exports.regenerate(
-            args.db.parent / "kr_stock.db", args.out.parent / "kr_stock.html",
-            media_url_prefix=args.media_url)
     except Exception as exc:
-        # nav 링크는 무조건 나가므로, 여기서 조용히 삼키면 404 가 되고
-        # 원인 단서가 0 이 된다(실수 #12 silent-fail 금지). 형제 블록들도
-        # bare pass 지만 이 경로가 가장 새 코드라 최소한 로그는 남긴다.
-        import logging          # 이 파일의 기존 관례(로컬 임포트, :323 참조)
+        # BeOn 소스라 레지스트리 밖이지만 실패 처리 규칙은 동일 — bare pass 면
+        # nav 는 살아있고 404 만 나며 단서가 0 이다(실수 #12 silent-fail 금지).
         logging.getLogger("trade-dashboard").warning(
-            "kr_stock.html 생성 실패 — nav 링크가 404 가 됩니다: %s", exc)
+            "jp.html 생성 실패 — nav 링크가 404 가 됩니다: %s", exc)
+    # 나쁜양파 소스별 형제 페이지 — badonion_sources 레지스트리 순회.
+    # 데이터가 없어도 빈 페이지를 만든다(nav 링크 404 방지).
+    # 옛 코드는 소스마다 try 블록을 복붙(9회 × 7줄)했고 전부 bare
+    # `except: pass` 라, 렌더가 깨지면 nav 는 살아 있는데 404 만 나고
+    # 단서가 0 이었다(실수 #12). 순회 + 공통 경고 로그로 통일한다.
+    from trade import badonion_sources as _srcs
+    for _s in _srcs.SOURCES:
+        if not _s.html_file:
+            continue
+        try:
+            _s.regenerate(args.db.parent / _s.db_file,
+                          args.out.parent / _s.html_file,
+                          media_url_prefix=args.media_url)
+        except Exception as exc:
+            logging.getLogger("trade-dashboard").warning(
+                "%s 생성 실패 — nav 링크가 404 가 됩니다: %s",
+                _s.html_file, exc)
     return 0
 
 

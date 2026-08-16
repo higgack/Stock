@@ -2,22 +2,23 @@
 private trade channel so trade-bot can ingest them like live forwards.
 
 미러 of backfill_beon.py (사용자 2026-07-10 — "일본이랑 똑같은 방식으로 대만
-가져와줘"). 나쁜양파는 대만·중국(사용자 2026-07-11 — "같은 텔레그램")·일본
-(사용자 2026-07-11 — "일본은 2개의 서로 다른 채널에서 2개의 대쉬보드로
-갈거야", BeOn 과 별도 두 번째 소스)에 더해 태국·말레이시아·필리핀·멕시코
-(사용자 2026-07-26) 관세 월별 품목 수출통계(품목당 관련기업 여러 개 +
-최신월/과거 히스토리 동봉)를 텔레그램으로 발행 — 각각 별도 tw.db/cn.db/
-jp2.db/th.db/my.db/ph.db/mx.db 로 적재되어 동명 .html 대시보드에 렌더된다
-(trade/{tw,cn,jp2,th,my,ph,mx}_exports.py, trade/dashboard.py).
+가져와줘"). 나쁜양파는 여러 나라의 월별 품목 수출통계(품목당 관련기업 여러
+개 + 최신월/과거 히스토리 동봉)와 한국 종목별 수출 데이터를 텔레그램으로
+발행 — 소스마다 별도 .db 로 적재되어 동명 .html 대시보드에 렌더된다.
+
+⚠️ 어떤 소스가 있는지는 여기에 나열하지 않는다 — `trade/badonion_sources.py`
+단일 레지스트리가 유일한 출처다(옛 docstring 은 국가 목록을 하드코딩해 뒀고,
+소스가 늘 때마다 실제로 stale 해졌다).
 
 ⚠️ BeOn 과의 차이점(사용자 2026-07-11, 실백필 중 애널리스트 레이팅표가 trade
-채널로 넘어간 걸 확인): 나쁜양파는 위 7개국 수출 데이터 외에 애널리스트
+채널로 넘어간 걸 확인): 나쁜양파는 위 수출 데이터 외에 애널리스트
 레이팅표·Capex 비교차트 등 무관한 트레이딩 정보도 섞어 올리는 일반 채널 —
 BeOn 처럼 '전부 forward 후 다운스트림에서 파싱 실패분만 버림' 방식을 쓰면
 무관 콘텐츠가 전부 private trade 채널에 그대로 쌓인다. 그래서 이 스크립트는
-forward 시점에 `_is_relevant()`(7개국 파서 전부 시도)로 수출 캡션인 unit
-(앨범이면 멤버 중 하나라도 매칭)만 골라 보낸다 — BeOn 은 채널 자체가
-단일 목적이라 이 필터가 없음.
+forward 시점에 `_is_relevant()`(= `badonion_sources` 레지스트리의 파서 전부
+시도)로 수출 캡션인 unit(앨범이면 멤버 중 하나라도 매칭)만 골라 보낸다 —
+BeOn 은 채널 자체가 단일 목적이라 이 필터가 없음. 소스 목록은
+`trade/badonion_sources.py` 한 곳에만 있다(문구 드리프트 차단).
 
 Works both as a one-off catch-up and as a periodic sync driven by
 trade-bot-badonion-sync.timer. Idempotent — scans inbox.jsonl and skips
@@ -81,34 +82,19 @@ from telethon.tl.custom.message import Message
 # (backfill_beon.py 와 동일 사유, 2026-06-15).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from trade import cn_exports as _cn
+from trade import badonion_sources as _srcs
 from trade import ignored as _ignored
-from trade import jp2_exports as _jp2
-from trade import kr_stock_exports as _krs
-from trade import mx_exports as _mx
-from trade import my_exports as _my
-from trade import ph_exports as _ph
-from trade import th_exports as _th
-from trade import tw_exports as _tw
-from trade import us_imports as _us
 
 
 def _is_relevant(text: str) -> bool:
-    """대만·중국·일본(나쁜양파 두 번째 소스)·태국·말레이시아·필리핀·멕시코·미국
-    수출 데이터 + 한국 수출(종목별) 캡션인지(나쁜양파 채널의 무관 콘텐츠 필터, 사용자 2026-07-11
-    중국·일본 추가 + 2026-07-26 태국·말레이시아·필리핀·멕시코 추가) —
-    listen_badonion.py 와 동일 필터(미러)."""
-    return (_tw.parse_tw_export(text) is not None
-            or _cn.parse_cn_export(text) is not None
-            or _jp2.parse_jp2_export(text) is not None
-            or _th.parse_th_export(text) is not None
-            or _my.parse_my_export(text) is not None
-            or _ph.parse_ph_export(text) is not None
-            or _mx.parse_mx_export(text) is not None
-            or _us.parse_us_import(text) is not None
-            # 한국 수출(종목별) — 유일한 회사 기준 소스. 이게 없으면
-            # 나쁜양파의 한국 종목 메시지가 여기서 전량 드랍된다.
-            or _krs.parse_kr_stock_export(text) is not None)
+    """나쁜양파 채널의 무관 콘텐츠(애널리스트 레이팅표 등) 필터.
+
+    소스 목록은 `trade/badonion_sources.py` 단일 레지스트리 — 리스너·
+    백필·ingest·unstored_check·dashboard 가 모두 그걸 본다. 옛 구현은
+    5개 파일에 같은 or-체인을 복붙해 뒀고, 한국 수출을 추가할 때 실제로
+    로그 문구가 어긋났다(2026-08-16).
+    """
+    return _srcs.is_relevant(text)
 
 load_dotenv()
 
@@ -449,22 +435,23 @@ async def run(
             "grouped into %d send units (singles + albums)", len(units_all)
         )
 
-        # 관련성 필터 — 나쁜양파는 7개국 수출/미국 수입 데이터 외 콘텐츠도 섞인 일반
-        # 채널(사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간
-        # 걸 확인). 앨범이면 멤버 중 하나라도 대상 캡션이면 유닛
-        # 전체(사진 포함) 유지(_is_relevant, 2026-07-26 태국·말레이시아·
-        # 필리핀·멕시코 추가).
+        # 관련성 필터 — 나쁜양파는 수출 데이터 외 콘텐츠도 섞인 일반 채널
+        # (사용자 2026-07-11, 애널리스트 레이팅표가 trade 채널로 넘어간 걸
+        # 확인). 앨범이면 멤버 중 하나라도 대상 캡션이면 유닛 전체(사진
+        # 포함) 유지. 대상 소스 목록은 badonion_sources 레지스트리.
         units = [
             u for u in units_all
             if any(_is_relevant(m.text or "") for m in u)
         ]
         skipped_irrelevant = len(units_all) - len(units)
         total_msgs = sum(len(u) for u in units)
+        # 소스 나열은 레지스트리에서 조립 — 하드코딩 문자열이 실제로
+        # 어긋났었다(한국 추가 후에도 '한국' 이 안 나왔다, 2026-08-16).
         log.info(
-            "relevance filter: %d/%d units are 대만·중국·일본·태국·말레이시아·"
-            "필리핀·멕시코 수출/미국 수입 데이터 "
+            "relevance filter: %d/%d units are [%s] 데이터 "
             "(%d irrelevant skipped, %d candidate msgs total)",
-            len(units), len(units_all), skipped_irrelevant, len(candidates),
+            len(units), len(units_all), _srcs.labels(),
+            skipped_irrelevant, len(candidates),
         )
 
         if dry_run:

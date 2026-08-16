@@ -34,17 +34,9 @@ except ModuleNotFoundError:  # test env fallback
     def load_dotenv(*args, **kwargs):
         return False
 
-from trade import cn_exports as _cn
+from trade import badonion_sources as _srcs
 from trade import ignored as _ignored
-from trade import jp2_exports as _jp2
 from trade import jp_exports as _jp
-from trade import kr_stock_exports as _krs
-from trade import mx_exports as _mx
-from trade import my_exports as _my
-from trade import ph_exports as _ph
-from trade import th_exports as _th
-from trade import tw_exports as _tw
-from trade import us_imports as _us
 from trade.store import open_db
 
 load_dotenv()
@@ -169,31 +161,10 @@ def find_unstored() -> list[dict]:
             # 자체 적재 카운트는 ingest_inbox 의 jp_inserted 로그가 별도 추적.
             if _jp.parse_jp_export(caption) is not None:
                 continue
-            # 대만 수출 데이터(나쁜양파) — 별도 tw.db, 동일 사유로 제외(사용자 2026-07-10).
-            if _tw.parse_tw_export(caption) is not None:
-                continue
-            # 중국 수출 데이터(나쁜양파) — 별도 cn.db, 동일 사유로 제외(사용자 2026-07-11).
-            if _cn.parse_cn_export(caption) is not None:
-                continue
-            # 일본 수출 데이터(나쁜양파, BeOn 과 별도 두 번째 소스) — 별도 jp2.db,
-            # 동일 사유로 제외(사용자 2026-07-11).
-            if _jp2.parse_jp2_export(caption) is not None:
-                continue
-            # 태국·말레이시아·필리핀·멕시코 수출 데이터(나쁜양파, 같은 채널) —
-            # 각각 별도 th.db/my.db/ph.db/mx.db, 동일 사유로 제외(사용자 2026-07-26).
-            if _th.parse_th_export(caption) is not None:
-                continue
-            if _my.parse_my_export(caption) is not None:
-                continue
-            if _ph.parse_ph_export(caption) is not None:
-                continue
-            if _mx.parse_mx_export(caption) is not None:
-                continue
-            # 미국 수입 데이터(나쁜양파, 같은 채널) — 별도 us.db, 동일 사유로 제외.
-            if _us.parse_us_import(caption) is not None:
-                continue
-            # 한국 수출(나쁜양파, 종목별) — 별도 kr_stock.db, 동일 사유로 제외.
-            if _krs.parse_kr_stock_export(caption) is not None:
+            # 나쁜양파 소스 전체 — 각자 별도 DB 로 정상 처리되는 경로라
+            # "미저장" 집계에서 제외. 목록은 badonion_sources 레지스트리
+            # (여기에 다시 나열하면 그게 곧 드리프트 표면이 된다).
+            if _srcs.is_relevant(caption):
                 continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))
