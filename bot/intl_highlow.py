@@ -113,18 +113,23 @@ def _universe(market: str) -> tuple[list[str], dict]:
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":
-        # CN_A = AKShare CSI300+500 유니버스 (cap=500 부하 관리)
-        # JP/HK와 동일하게 full universe로 변경 (2026-08-14 부하 최적화).
+        # CN_A 유니버스 = AKShare A주 전종목(list_cn_a_universe, 내부적으로
+        # CSI300+500 폴백) — 2026-08-15. intl_universe.full_universe()는 JP/HK
+        # 만 _SPEC 에 정의돼 있어 CN_A 로 부르면 항상 [] 를 반환하고 조용히
+        # peer(~64종목) 폴백으로 축소됐던 게 '신고가/신저가 종목이 거의 없다'는
+        # 원래 사용자 불만의 실제 원인이었다(intl_movers.py 급등락과 동일 소스로
+        # 통일 — UNIVERSAL CHANGES ONLY).
         try:
-            from bot.intl_universe import full_universe
-            full = full_universe(market)
+            from bot.akshare_client import list_cn_a_universe
+            uni_map = list_cn_a_universe() or {}
+            full = list(uni_map.keys())
             if len(full) > 100:
                 _cap = int(os.getenv("HIGHLOW_UNIVERSE_CAP", "500"))
                 if len(full) > _cap:
                     full = _cap_by_liquidity(full, _cap, market)
-                return full, {t: t for t in full}
+                return full, {t: (uni_map.get(t) or t) for t in full}
         except Exception as exc:
-            log.warning("intl full_universe CN_A: %s", exc)
+            log.warning("intl CN_A universe via akshare: %s", exc)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
@@ -318,20 +323,14 @@ def _compute(market: str) -> None:
         label = _CFG[market][3]
         if market in ("JP", "HK") and len(uni) > 500:
             label = {"JP": "일본 전종목(JPX 상장)", "HK": "홍콩 전종목(HKEX 상장)"}[market]
-        if market == "CN_A":
-            try:
-                from bot.naver_ranking_client import fetch_intl_movers_naver
-                out = fetch_intl_movers_naver("CN_A", top_n=len(uni))
-                out["source"] = f"{label} {len(uni):,}종목 산출(live naver)"
-                _cache_write(_CFG[market][1], out)
-            except Exception as exc:
-                log.warning("intl highlow CN_A live fetch failed: %s", exc)
-                out = {"high": [], "low": [], "ts": _now_label(),
-                       "source": f"{label} {len(uni):,}종목 산출(live bootstrap)"}
-        else:
-            out = _compute_highlow_from(
-                uni, names, _CFG[market][1],
-                f"{label} {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)", market)
+        # CN_A 도 JP/HK 와 동일한 yfinance 52주 baseline 경로 사용(2026-08-15
+        # 되돌림). fetch_intl_movers_naver 는 '급등락 TOP'용 함수(up/down 스키마)라
+        # high/low 키가 없어 캐시가 영구 빈 결과로 남고 highlow_baseline_CN_A.json
+        # 도 못 만들어 live 비교 경로까지 죽었던 게 실제 원인(UNIVERSAL CHANGES
+        # ONLY — CN_A 만 다른 데이터 경로를 쓸 문서화된 이유 없음, JP/HK 와 통일).
+        out = _compute_highlow_from(
+            uni, names, _CFG[market][1],
+            f"{label} {len(uni):,}종목 산출(yfinance · 당일 52주 고저 갱신)", market)
         _status_write(market, "done", high=len(out.get("high", [])),
                       low=len(out.get("low", [])))
     except Exception as exc:
@@ -487,6 +486,10 @@ def fetch_intl_highlow(market: str) -> dict:
     age = time.time() - (st.get("ts") or 0)
     if stale_empty and age >= 1800:
         st = {"state": "stale", "ts": 0}
+    # just_kicked: 이번 호출에서 방금 _kick() 을 호출했으면 building=True 로 즉시
+    # 반영(상태파일은 백그라운드 스레드가 나중에 "running" 을 쓰므로 그 전까지는
+    # st.get("state")만 보면 building=False 로 새는 race 가 있었음, 2026-08-15).
+    just_kicked = False
     if st.get("state") == "failed" and age < 300:
         pass
     elif st.get("state") == "running" and age < 1800:
@@ -495,9 +498,10 @@ def fetch_intl_highlow(market: str) -> dict:
         from bot.finviz_client import yf_paused
         if not yf_paused():        # YF_PAUSE → 재산출 kick 안 함(스테일 유지)
             _kick(market)
+            just_kicked = True
     if stale is not None:
         done = bool(stale.get("high") or stale.get("low"))
-        return {**stale, "building": (st.get("state") == "running" and not done and age < 1800)}
+        return {**stale, "building": (not done and (just_kicked or (st.get("state") == "running" and age < 1800)))}
     return {"high": [], "low": [], "ts": "", "source": "",
-            "building": (st.get("state") == "running" and age < 1800), "status": st}
+            "building": (just_kicked or (st.get("state") == "running" and age < 1800)), "status": st}
 

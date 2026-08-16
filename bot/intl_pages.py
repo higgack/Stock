@@ -27,16 +27,18 @@ def render_intl_highlow52_page(market: str) -> str:
     ts = _html.escape(data.get("ts", ""))
     high, low = data.get("high", []), data.get("low", [])
     if not high and not low:
+        # body 미할당(UnboundLocalError->500) 재발 방지: building 여부만으로
+        # 2분기 고정(사용자 반복 500 에러, 2026-08-15). stale 캐시 서빙 시
+        # data["status"]가 없어({} 로 빠짐) 예전 3-way 분기(state/source 문자열
+        # 검사)가 어느 쪽도 안 걸려 body 가 끝까지 비는 경우가 실제 원인이었음.
         st = data.get("status") or {}
-        if data.get("building") and st.get("state") != "done" and (high or low):
-            tot = st.get("total")
-            prog = f" (주요종목 {tot})" if tot else ""
+        tot = st.get("total")
+        prog = f" (주요종목 {tot})" if tot else ""
+        if data.get("building"):
             body = ('<div class="empty">⏳ 52주 신고가·신저가 산출 중'
                     f'{_html.escape(prog)}…<br>주요종목 1년 주봉 스캔. '
                     '잠시 후 새로고침해 주세요.</div>')
-        elif st.get("state") == "done" or (st.get("state") == "running" and not (high or low)) or data.get("source", "").endswith("live baseline seeded"):
-            tot = st.get("total")
-            prog = f" (주요종목 {tot})" if tot else ""
+        else:
             body = ('<div class="empty">52주 신고가·신저가 결과가 없습니다'
                     f'{_html.escape(prog)}.<br>이번 스캔에서는 기준을 넘은 종목이 '
                     '없었습니다.</div>')

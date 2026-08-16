@@ -118,7 +118,7 @@ def _cache_get(cache_key: str, ttl_hours: float = _CACHE_TTL_HOURS):
     try:
         age_h = (time.time() - cache_file.stat().st_mtime) / 3600
         if age_h < ttl_hours:
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
     except Exception as exc:
         log.warning("akshare: cache read failed for %s: %s", cache_key, exc)
     return None
@@ -128,7 +128,7 @@ def _cache_put(cache_key: str, value) -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         (_CACHE_DIR / cache_key).write_text(
-            json.dumps(value, ensure_ascii=False, default=str)
+            json.dumps(value, ensure_ascii=False, default=str), encoding="utf-8"
         )
     except Exception as exc:
         log.warning("akshare: cache write failed for %s: %s", cache_key, exc)

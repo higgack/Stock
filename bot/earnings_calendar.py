@@ -1,4 +1,4 @@
-﻿"""Earnings calendar page — Finnhub monthly view.
+"""Earnings calendar page — Finnhub monthly view.
 
 Renders a standalone calendar page showing upcoming/past earnings by
 date, with monthly navigation. Data from Finnhub free tier (same API
