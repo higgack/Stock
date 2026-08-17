@@ -21586,3 +21586,194 @@ class TestBreadthCountsAndCards20260816:
                          rows, {f"s{i}": rows for i in range(13)}, [], cut=None)
         assert "25/40/60%" in d["resolution_note"], d["resolution_note"]
         assert f"{bs.min_sectors_for(13, 25.0)}·" in d["resolution_note"]
+
+
+class TestDartCardWidth20260816:
+    """사용자 2026-08-16 '높이가 아니라 **가로폭**이었어'.
+
+    `repeat(3,1fr)` 은 `repeat(3,minmax(auto,1fr))` 이라 트랙 최소폭이
+    콘텐츠 min-content 다. DART 보고서명에는 공백 없는 긴 토큰이 흔해
+    (예: '반기검토(감사)의견부적정등사실확인(자본잠식률100분의50이상또는
+    자기자본10억원미만포함)') 그 카드가 자기 몫을 넘고 옆 카드가 눌린다.
+    """
+
+    def _css(self):
+        """DART 피드 CSS 블록 전체 — `.df-report` 등이 `.df-card-hd` 뒤에
+        오므로 리스트뷰 시작(`/* list view */`)까지 잡는다."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index(".df-grid{")
+        return src[i:src.index("/* list view */", i)]
+
+    def test_grid_tracks_can_shrink_below_content(self):
+        css = self._css()
+        assert "repeat(3,minmax(0,1fr))" in css, "3열 트랙이 minmax(0,·) 아님"
+        # 반응형 분기도 같이 — 한 곳만 고치면 태블릿 폭에서 재발한다.
+        assert "repeat(2,minmax(0,1fr))" in css, "2열 분기 누락"
+        # 부재 단언(`1fr}` 없음)은 규칙을 통째로 지워도 통과한다 — 존재를 본다.
+        assert ("@media(max-width:600px){.df-grid{"
+                "grid-template-columns:minmax(0,1fr)}}") in css, "1열 분기 누락"
+
+    def test_no_bare_1fr_track_remains(self):
+        import re
+        css = self._css()
+        # `1fr` 이 minmax 밖에서 트랙으로 쓰이면 같은 버그가 남아 있다.
+        bare = re.findall(r"grid-template-columns:(?!.*minmax)[^;}]*1fr", css)
+        assert not bare, f"minmax 없는 1fr 트랙: {bare}"
+
+    def test_long_unbroken_text_wraps_instead_of_overflowing(self):
+        """트랙만 고치면 긴 토큰이 카드를 삐져나간다 — 줄바꿈도 필요."""
+        css = self._css()
+        for sel in (".df-report{", ".df-detail-ln{"):
+            i = css.index(sel)
+            assert "overflow-wrap:anywhere" in css[i:css.index("}", i)], sel
+
+    def test_height_fix_is_retained(self):
+        """앞선 높이 균일화(#869)를 되돌리지 않았는지 — 두 축 모두 유지."""
+        css = self._css()
+        assert "align-items:stretch" in css
+        assert "height:100%" in css and "box-sizing:border-box" in css
+
+
+class TestPeerCompsGuards20260816:
+    """사용자 2026-08-16 '동종비교 데이터는 언제 기준이야? 시총도 안 맞잖아'.
+
+    스크린샷 실측: ASML 행이 PBR **1563.2** · EV/EBITDA **2917.0**. 이 표에는
+    **어떤 가드도 없었고** 기준시각 표기도 없었다.
+
+    ⚠️ 가드 설계(2026-08-16 독립 리뷰로 1회 교정): 통화 불일치로 열을 통째로
+    비우는 건 과잉이었다 — HK H주는 거의 전부 CNY 재무·HKD 거래인데 왜곡이
+    ~1.09배뿐이다. ASML 의 60배 오차는 환율로 설명이 안 되므로 **절대값 범위
+    가드**가 진짜 가드이고, 통화 불일치는 ⚠ 표시로만 알린다.
+    """
+
+    @staticmethod
+    def _render(peers, asof="2026-08-16 21:40"):
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "USD", "peer_comps": peers}
+        if asof:
+            si["peer_comps_asof"] = asof
+        out = _render_stock_info_html({"ticker": "AMAT", "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        return seg[i:seg.index("</div>\n</div>", i) + 13]
+
+    @staticmethod
+    def _cells(pane, ticker):
+        row = re.search(
+            rf"<tr[^>]*>(?:(?!</tr>).)*?>{re.escape(ticker)}[ <].*?</tr>",
+            pane, re.S)
+        assert row, f"{ticker} 행 없음"
+        return [re.sub(r"<[^>]+>", "", c).strip()
+                for c in re.findall(r"<td[^>]*>(.*?)</td>", row.group(0), re.S)]
+
+    # 컬럼: 0 회사 1 티커 2 시총 3 PER 4 선행PER 5 PBR 6 PSR 7 EV/EBITDA 8 배당
+    _ASML = {"ticker": "ASML", "name": "ASML", "currency": "USD",
+             "financial_currency": "EUR", "market_cap": 708.31e9,
+             "trailingPE": 62.9, "priceToBook": 1563.2,
+             "priceToSalesTrailing12Months": 20.0, "enterpriseToEbitda": 2917.0}
+    _SUBJ = {"ticker": "AMAT", "name": "AMAT", "currency": "USD",
+             "financial_currency": "USD", "market_cap": 402.68e9,
+             "trailingPE": 43.7, "priceToBook": 15.7, "is_subject": True}
+
+    def test_broken_multiples_are_not_printed_as_numbers(self):
+        """실제 관측된 파손 2셀만 잡고 멀쩡한 PSR 은 남긴다."""
+        pane = self._render([self._SUBJ, self._ASML])
+        c = self._cells(pane, "ASML")
+        assert c[5] == "—!" and c[7] == "—!", c          # PBR · EV/EBITDA
+        assert c[6] == "20.0", c                          # PSR 은 정상 범위
+        assert c[3] == "62.9", c                          # PER 유지
+        assert "1563" not in pane and "2917" not in pane
+
+    def test_negative_multiples_survive(self):
+        """적자 기업의 선행 PER·EV/EBITDA 는 음수가 **정상**이다 — 하한 0 으로
+        자르면 멀쩡한 값이 지워진다(독립 리뷰가 잡은 내 회귀)."""
+        pane = self._render([self._SUBJ,
+                             {"ticker": "LOSS", "name": "적자", "currency": "USD",
+                              "financial_currency": "USD", "market_cap": 1e9,
+                              "forwardPE": -12.4, "enterpriseToEbitda": -8.3}])
+        c = self._cells(pane, "LOSS")
+        assert c[4] == "-12.4" and c[7] == "-8.3", c
+
+    def test_currency_mismatch_marks_but_does_not_blank(self):
+        """HK H주는 CNY 재무·HKD 거래가 정상이고 왜곡이 ~1.09배뿐 — 비우면
+        열 전체가 사라져 오히려 정보가 준다."""
+        pane = self._render([{"ticker": "0700.HK", "name": "Tencent",
+                              "currency": "HKD", "financial_currency": "CNY",
+                              "market_cap": 4e12, "priceToBook": 4.2,
+                              "trailingPE": 22.1, "is_subject": True}])
+        c = self._cells(pane, "0700.HK")
+        assert c[5] == "4.2", c                 # 값은 남는다
+        assert "⚠" in c[1], c                   # 티커에 경고 표시
+        assert "0700.HK(CNY↔HKD)" in pane       # 각주가 사유를 밝힘
+
+    def test_pence_is_not_a_mismatch(self):
+        """GBp/GBX(펜스)는 GBP 와 같은 통화 — 표기 차이로 오탐하면 안 된다.
+
+        ⚠️ `GBX` 를 반드시 포함할 것: `GBp` 만 쓰면 정규화를 `c.upper()` 로
+        축약해도 통과해서(`"GBp".upper() == "GBP"`) 가드가 사라진 걸 못 잡는다
+        (2026-08-16 mutation 테스트로 발각)."""
+        for cur in ("GBp", "GBX", "gbp"):
+            pane = self._render([{"ticker": "SHEL.L", "name": "Shell",
+                                  "currency": cur, "financial_currency": "GBP",
+                                  "market_cap": 2e11, "priceToBook": 1.2,
+                                  "is_subject": True}])
+            assert "⚠" not in self._cells(pane, "SHEL.L")[1], cur
+            assert "환산 오차" not in pane, cur
+
+    def test_inferred_currency_does_not_raise_a_false_flag(self):
+        """거래통화를 티커 접미사로 추정한 경우(.L/.PA/.DE 는 USD 로 떨어짐)
+        비교하면 멀쩡한 유럽 종목에 경고가 붙는다."""
+        pane = self._render([{"ticker": "AIR.PA", "name": "Airbus",
+                              "financial_currency": "EUR",     # currency 없음
+                              "market_cap": 1e11, "priceToBook": 8.0,
+                              "is_subject": True}])
+        assert "⚠" not in self._cells(pane, "AIR.PA")[1]
+
+    def test_legend_only_appears_for_symbols_actually_used(self):
+        """없는 기호를 설명하면 사용자가 표에서 찾다가 헤맨다."""
+        clean = self._render([self._SUBJ])
+        assert "—!" not in clean and "⚠" not in clean
+        assert "범위 밖" not in clean and "환산 오차" not in clean
+
+    def test_zero_is_distinguishable_from_missing(self):
+        """0.0 은 '없음'이 아니라 소스가 준 이상값 — 다른 기호로 구분한다."""
+        pane = self._render([self._SUBJ,
+                             {"ticker": "X", "name": "X", "currency": "USD",
+                              "financial_currency": "USD", "market_cap": 1e9,
+                              "trailingPE": 0.0}])
+        c = self._cells(pane, "X")
+        assert c[3] == "—!" and c[4] == "—", c
+
+    def test_string_value_does_not_crash_the_pane(self):
+        """옛 `f"{v:.1f}"` 는 문자열이 오면 ValueError 로 탭 전체를 죽였다."""
+        pane = self._render([self._SUBJ,
+                             {"ticker": "Y", "name": "Y", "currency": "USD",
+                              "financial_currency": "USD", "market_cap": 1e9,
+                              "trailingPE": "N/A"}])
+        assert self._cells(pane, "Y")[3] == "—"
+
+    def test_asof_is_shown(self):
+        """이 표는 분석 시점 스냅샷에 구워진 뒤 게으르게 갱신된다 — 기준시각이
+        없으면 며칠 전 값을 현재값으로 오인한다(실수기록 10-b)."""
+        assert "기준 2026-08-16 21:40 (KST)" in self._render([self._SUBJ])
+        assert "수집시각 미기록" in self._render([self._SUBJ], asof=None)
+
+    def test_snapshot_captures_the_fields_the_guard_needs(self):
+        """`financial_currency` 를 안 담으면 가드를 걸 수조차 없다."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        i = src.index("def _collect_peer_multiples")
+        j = src.find("\ndef ", i + 1)
+        blk = src[i:j if j > 0 else len(src)]
+        assert '"financial_currency": pi.get("financialCurrency"' in blk
+        assert "peer_comps_asof" in blk, "기준시각 미기록"
+
+    def test_old_archives_are_upgraded_not_frozen(self):
+        """`peer_comps 있으면 skip` 만 하면 옛 아카이브는 영원히 통화 경고를
+        못 달고 기준시각이 '미기록'으로 굳는다(독립 리뷰)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("def _e_peers():")
+        # `_e_peers` 본문만 — 다음 `def ` 까지(같은 함수 안의 조건만 본다).
+        blk = src[i:src.index("\n    def ", i + 1)]
+        # 변수 **정의**만 보면 조건절에서 빼도 통과한다 — 분기 자체를 본다.
+        assert "if not _pc or _stale_schema:" in blk, "낡은 스키마가 분기에 없음"
+        assert "peer_comps_asof" in blk and "financial_currency" in blk
