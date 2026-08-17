@@ -21709,6 +21709,115 @@ class TestDartBacklogParser20260817:
         assert abs(got["value"] - want_won) < 1.0, (name, got["value"], want_won)
         assert got["form"] == form, (name, got["form"])
 
+    # ══ 2차 프로브(2026-08-17) — 형식 4종 추가. 전부 실제 원문. ══
+    _TECHWING = ("기준일: 2026.06.30 (단위: 백만원) 구분 주요 고객 수주잔고금액 "
+                 "반도체 장비 Micron, SK hynix 등 55,508 디스플레이장비 "
+                 "삼성디스플레이 등 4,760 합계 - 60,268 * 상기 수주잔고에는 "
+                 "부품에 대한 수주잔고가 포함되지 않았습니다.")
+    _JT = ("(단위 : 백만원) 품목 수주일자 납기 수주총액 기납품액 수주잔고 수량 금액 "
+           "수량 금액 수량 금액 기타 - - - 67,523 - 29,147 - 38,376 "
+           "주1) 해외수주 PJT의 경우,")
+    _TSE = ("(단위 : 개, 백만원) 품목 수주일자 납기 수주총액 기납품액 수주잔고 수량 "
+            "금액 수량 금액 수량 금액 Probe Card 2026.01.01 ~ 2026.06.30 2026-12-31 "
+            "6,240 187,765 5,057 103,288 1,183 84,477 합 계 552,805 281,340 390,228 "
+            "149,428 162,577 131,912 5. 위험관리")
+    _SEA = ("(기준일 : 2026년 6월 30일) (단위 : 억원) 구분 발주처 품목 수주총액 "
+            "기납품액 수주잔고 국내 관급 천안시청 민자운영 2,763 1,565 1,198 국내 민간 "
+            "삼성전자 등 플랜트 건설 등 219,474 159,274 60,200 해외 Saudi Arabian Oil "
+            "Company 등 플랜트 건설 등 456,522 316,046 140,476 ※ 기본 도급액 903억원 이상")
+    _HYOSUNG = ("(단위 : 백만원) 사업부문 지배회사 및 주요종속회사 품목 전기말 "
+                "수주잔(2025.12.31) 당기 수주액(2026.1~6월) 당기 매출액(2026.1~6월) "
+                "당기말 수주잔(2026.6.30) 비고 중공업 효성중공업(주) 변압기, 차단기, "
+                "전동기 등전력기기 15,936,349 11,010,478 2,924,567 23,834,404 "
+                "공시서류작성기준일(2026.6.30)환율 적용 환산금액 Nantong Hyosung "
+                "Transformer Co., Ltd. 건설 효성중공업(주) 아파트, 상업시설, 도로, 철도 "
+                "등 5,518,255 447,126 642,766 5,322,614 - 진흥기업(주) 3,531,186 "
+                "673,807 403,762 3,801,231 ※ 수주의 계절적 변동요인")
+    _KAI_PROSE = ("58 536,723 590,098 432,199,679 833,328,872 828,336,336 1,527,592,928 "
+                  "고객과의 계약 관련 수주잔고 한편 당반기말 현재 연결회사의 고객과의 "
+                  "계약 관련 수주잔고는 25,808,760백만원입니다")
+    _TES = ("(단위 : 백만원 ) 품목 수주일자 납기 수주총액 기납품액 수주잔고 수량 금액 수량 "
+            "금액 수량 금액 반도체 /디스플레이/UVC LED 장비 등 - - - 427,858 - 220,914 "
+            "- 206,944 합 계 - 427,858 - 220,914 - 206,944 (*) 세부내역")
+    _PARK = ("(단위 : 백만원) 품목 전기말수주잔고 당반기수주총액 당반기납품액 "
+             "당반기말수주잔고 산업용 49,679 95,978 59,777 85,880 연구용 11,547 36,624 "
+             "25,719 22,452 기타 2,407 8,674 6,904 4,177 합 계 63,633 141,276 92,400 "
+             "112,509 주1) 상기 재무수치는 K-IFRS 연결기준입니다. 주2) 보고서 제출일 "
+             "현재 연결기준 수주잔고는 약 1,023억원입니다.")
+
+    @pytest.mark.parametrize("name,text,want_won,form", [
+        ("테크윙",      _TECHWING, 60_268 * 1e6,                      "표·잔고열"),
+        ("제이티",      _JT,       38_376 * 1e6,                      "표·행합산"),
+        ("티에스이",    _TSE,      131_912 * 1e6,                     "표·합계행"),
+        ("삼성E&A",    _SEA,      (1_198 + 60_200 + 140_476) * 1e8,  "표·행합산"),
+        ("효성중공업",  _HYOSUNG,  (23_834_404 + 5_322_614
+                                    + 3_801_231) * 1e6,              "표·행합산"),
+        ("한국항공우주", _KAI_PROSE, 25_808_760 * 1e6,          "산문·인라인단위"),
+        ("테스",        _TES,      206_944 * 1e6,                     "표·합계행"),
+        ("파크시스템스", _PARK,     112_509 * 1e6,                     "표·합계행"),
+    ])
+    def test_second_probe_formats(self, name, text, want_won, form):
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(text)
+        assert got, f"{name} 파싱 실패"
+        assert abs(got["value"] - want_won) < 1.0, (name, got["value"], want_won)
+        assert got["form"] == form, (name, got["form"])
+
+    def test_quantity_columns_do_not_shift_the_balance(self):
+        """티에스이는 `(단위 : 개, 백만원)` 이라 수량까지 숫자다 — 합계행이 6개.
+        홀수 인덱스(금액)만 안 뽑으면 수량(162,577개)을 잔고로 읽는다."""
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(self._TSE)
+        assert got["value"] == 131_912 * 1e6          # 금액
+        assert got["value"] != 162_577 * 1e6          # 수량이 아니다
+
+    def test_a_present_but_failing_total_row_blocks_row_summing(self):
+        """합계행이 **있는데** 검산에 실패했다면 내 컬럼 모델이 틀린 것이다.
+        거기서 행을 더 파면 틀린 값을 그럴듯하게 만들어낸다 — 그냥 버린다.
+        (행 중 하나가 실은 소계인 경우 이중계상이 된다.)
+
+        ⚠️ 합계가 **2칸**이어야 이 분기가 갈린다. 3칸 이상이면 행 스캔에도
+        잡혀서 어차피 거부되므로 폴백을 켜도 결과가 같다(mutation 으로 확인).
+        2칸 합계는 한국항공우주(`합 계 - 273,437 - 257,502 -`)의 실제 형태이고
+        행은 삼성E&A 의 실제 형태다 — 둘 다 관측된 구조를 합친 것이다."""
+        from bot.dart_backlog import parse_backlog
+        assert parse_backlog(self._SEA) is not None      # 행만 있을 땐 통과
+        with_total = self._SEA.replace("※ 기본 도급액",
+                                       "합 계 - 273,437 - 257,502 - ※ 기본 도급액")
+        assert parse_backlog(with_total) is None, "검산 실패한 합계인데 행으로 폴백"
+
+    def test_row_summing_requires_every_row_to_verify(self):
+        """행 하나라도 항등식을 못 맞추면 표를 잘못 읽고 있다는 뜻이라
+        부분 합계를 내지 않는다(조용한 과소집계 방지)."""
+        from bot.dart_backlog import parse_backlog
+        assert parse_backlog(self._SEA) is not None
+        bad = self._SEA.replace("456,522 316,046 140,476",
+                                "456,522 316,046 999,999")
+        assert parse_backlog(bad) is None
+
+    def test_balance_only_table_is_checked_by_segments_summing(self):
+        """테크윙은 총액·납품 열이 없어 A 의 항등식을 못 쓴다. 대신
+        **부문 합 = 합계**가 검산이다 — 이게 없으면 아무 숫자나 통과한다."""
+        from bot.dart_backlog import parse_backlog
+        bad = self._TECHWING.replace("합계 - 60,268", "합계 - 99,999")
+        assert parse_backlog(bad) is None
+
+    def test_prose_form_requires_a_won_denominated_inline_unit(self):
+        """한국항공우주 주석은 표(억원)와 단위가 달라 문장에서 직접 읽는다.
+        ⚠️ 통화를 `…원` 으로 끝나게 강제하는 것이 외화 차단이다 — 씨에스윈드
+        `1,097백만USD` 가 산문형에 걸리면 1,400배 과소값이 올라간다."""
+        from bot.dart_backlog import parse_backlog
+        assert parse_backlog(self._KAI_PROSE)["value"] == 25_808_760 * 1e6
+        usd = ("2026년 6월말 기납품액 대비 수주잔고는 1,097백만USD입니다.")
+        assert parse_backlog(usd) is None
+
+    def test_table_wins_over_a_prose_figure_with_another_as_of_date(self):
+        """파크시스템스는 표(기준일 112,509백만원)와 주석("제출일 현재 약
+        1,023억원")이 **기준일이 달라** 값이 다르다. 표가 먼저 잡혀야 한다."""
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(self._PARK)
+        assert got["value"] == 112_509 * 1e6 and got["form"] == "표·합계행"
+
     def test_units_are_not_assumed(self):
         """억원·백만원·원이 섞여 있다 — 단위 표기가 없으면 **거부**한다.
         가정하면 100배(백만원↔억원) 오차가 조용히 들어간다."""
