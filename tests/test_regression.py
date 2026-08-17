@@ -21096,6 +21096,28 @@ class TestChronologicalTablesAndVol20260816:
         cols = re.findall(r"<th class='num'>FY(\d{4})</th>", out["other_panes"])
         assert cols == ["2023", "2024", "2025"], cols
 
+    def test_quarterly_section_comes_before_annual(self):
+        """사용자 2026-08-17 '분기가 먼저 나오고 연도가 나오는 순서로. 모든 나라'.
+
+        재무제표 탭은 위쪽이 '수익성 추이 — 분기' 차트라 그 아래 표도 분기부터
+        이어져야 눈이 끊기지 않는다. `_fin_table` 이 손익·재무상태·현금흐름 셋을
+        모두 그리는 단일 렌더러라 시장 게이트가 없다 — US 픽스처로 검증해도
+        KR/JP/TW/CN/HK 가 같은 경로를 탄다."""
+        from bot.dashboard import _render_stock_info_html
+
+        def _rows(periods):
+            return [{"period": p, "Total Revenue": 1e9} for p in periods]
+        fins = {k: {"annual": _rows(["2024-12-31", "2025-12-31"]),
+                    "quarterly": _rows(["2026-03-31", "2026-06-30"])}
+                for k in ("income_statement", "balance_sheet", "cash_flow")}
+        html = _render_stock_info_html({"ticker": "AAPL", "stock_info": {
+            "currency": "USD", "financials": fins}})["other_panes"]
+        for label in ("손익계산서", "재무상태표", "현금흐름표"):
+            q = html.find(f">{label} — 분기")
+            a = html.find(f">{label} — 연간")
+            assert q >= 0 and a >= 0, f"{label} 섹션 누락 q={q} a={a}"
+            assert q < a, f"{label}: 연간이 분기보다 먼저 나온다"
+
     def test_financial_statements_are_oldest_to_newest(self):
         """손익계산서·재무상태표·현금흐름표 · 연간/분기 · 전 시장 공통."""
         from bot.dashboard import _render_stock_info_html
