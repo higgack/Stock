@@ -600,6 +600,7 @@ def _doc_fail_mark(rcept_no: str, hours: float = 0.5) -> None:
 # 후에도 같은 enrich 시도 안에서 generic 폴백이 재다운로드 0·게이트 무관
 # 으로 본문을 받게 (2026-06-12 '조금 다른 양식은 알아서').
 _DOC_TEXT_MEM: dict[str, str] = {}
+_DOC_MEM_MAX = 120_000_000    # 평문 총 보관량 상한(자)
 
 # 기본 절단 — 짧은 계약공시용. 사업/반기보고서는 이걸론 모자란다:
 # 「매출 및 수주상황」은 목차상 II.사업의 내용 뒤라 3MB 밖으로 밀리는 게
@@ -647,9 +648,16 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
             text = raw.decode("cp949", errors="ignore")
         txt = re.sub(r"<[^>]+>", " ", text)
         out = re.sub(r"\s+", " ", txt)
-        if len(_DOC_TEXT_MEM) >= 64:
-            _DOC_TEXT_MEM.pop(next(iter(_DOC_TEXT_MEM)))
+        # ⚠️ 개수가 아니라 **총량**으로 제한한다. 옛 코드는 64개까지
+        # 보관했는데, 정기보고서 전문(최대 40MB)이 섞이면서 이론상 2.5GB 까지
+        # 부풀 수 있게 됐다(2026-08-17 상한 인상의 부작용). 짧은 계약공시는
+        # 여전히 수십 개가 남고, 큰 본문만 먼저 밀려난다.
         _DOC_TEXT_MEM[ck] = out
+        while (len(_DOC_TEXT_MEM) > 64
+               or sum(len(v) for v in _DOC_TEXT_MEM.values()) > _DOC_MEM_MAX):
+            if len(_DOC_TEXT_MEM) <= 1:
+                break
+            _DOC_TEXT_MEM.pop(next(iter(_DOC_TEXT_MEM)))
         return out
     except Exception:
         _doc_fail_mark(rcept_no)

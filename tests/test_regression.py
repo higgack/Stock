@@ -21664,6 +21664,72 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestBacklogObservability20260817:
+    """사용자 2026-08-17 '런타임 로깅 진행해줘' + '아직도 연간→분기인 게 있다'."""
+
+    @pytest.mark.parametrize("text,want", [
+        ("", "본문없음"),
+        ("매출액 100,000 영업이익 1,000", "미공시"),
+        # ↓ 전부 실제 원문 문구 — 원천에 값이 없다(파서로 해결 불가).
+        ("당사는 업종의 특성상 총수주액 및 수주잔고 산정은 불가능합니다.",
+         "명시적미공시"),
+        ("수주물량, 수주잔고는 관리하고 있지 않습니다.", "명시적미공시"),
+        ("공시서류 작성기준일 현재 수주잔고는 없습니다.", "명시적미공시"),
+        ("항목(수량, 금액, 기납품액, 수주잔고 등)의 기재는 생략하였습니다.",
+         "명시적미공시"),
+        # ↓ 파서 개선 여지가 있는 사유들
+        ("수주총액 기납품액 수주잔고 합 계 571,122 221,121 350,001", "단위없음"),
+        ("(단위 : 억원) 수주총액 기납품액 수주잔고 조선 1,000 400 600", "합계없음"),
+        ("(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 999 111 222", "형식미지원"),
+    ])
+    def test_miss_reasons_separate_no_data_from_parser_gaps(self, text, want):
+        """⚠️ 이 구분이 로그의 전부다 — 미공시까지 남기면 노이즈에 묻혀
+        '새 형식이 나타났다'는 신호를 못 본다."""
+        from bot.dart_backlog import diagnose
+        assert diagnose(text) == want
+
+    def test_no_data_reasons_are_not_logged(self, tmp_path, monkeypatch):
+        """원천에 값이 없는 건 파서를 고칠 여지가 없다 — 기록 대상 아님."""
+        from bot import dart_backlog as bl
+        f = tmp_path / "misses.jsonl"
+        monkeypatch.setattr(bl, "_MISS_LOG", f)
+        for r in ("미공시", "명시적미공시", "본문없음"):
+            bl._log_miss("005930.KS", 2026, "11012", r)
+        assert not f.exists(), "미공시류가 기록됐다"
+        bl._log_miss("012450.KS", 2026, "11013", "형식미지원")
+        bl._log_miss("012450.KS", 2026, "11013", "형식미지원")   # 중복
+        lines = f.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1, f"중복 기록: {lines}"
+        assert "012450.KS" in lines[0] and "형식미지원" in lines[0]
+
+    def test_backlog_for_records_its_misses(self):
+        """헬퍼만 만들고 호출부에 안 걸면 로그는 영원히 빈다(실수 #12)."""
+        import inspect
+        from bot import dart_backlog as bl
+        src = inspect.getsource(bl.backlog_for)
+        assert "_log_miss(ticker, year, reprt_code, diagnose(" in src
+
+    def test_render_version_busts_the_full_quote_cache(self):
+        """`/api/quote?full=1` 디스크 캐시는 TTL 4h 인데다 stale-while-
+        revalidate 라 **아무리 오래된 파일도 먼저 서빙**한다 — 렌더러를 고쳐도
+        옛 HTML 이 무기한 남는다(사용자 2026-08-17 '아직도 연간→분기'). 캐시
+        키가 렌더러 버전 상수를 참조해야 한 번 올리면 전부 무효화된다."""
+        import inspect
+        from bot import dashboard, dashboard_server
+        assert isinstance(dashboard._RENDER_VER, int)
+        src = inspect.getsource(dashboard_server)
+        assert 'f"{safe}_{kind}_v{_RENDER_VER}.json"' in src, "캐시키 미배선"
+        assert "_full_v5.json" not in src and "_v5.json" not in src
+
+    def test_doc_text_memo_is_capped_by_bytes_not_count(self):
+        """상한을 40MB 로 올리면서 개수 기반(64개) 캐시가 이론상 2.5GB 가 됐다.
+        총량으로 제한해야 큰 본문만 먼저 밀려난다."""
+        from bot import dart_feed
+        assert dart_feed._DOC_MEM_MAX <= 200_000_000
+        src = __import__("inspect").getsource(dart_feed._fetch_doc_text)
+        assert "_DOC_MEM_MAX" in src, "총량 제한이 배선되지 않음"
+
+
 class TestPerShareAndPriceConsistency20260817:
     """사용자 2026-08-17 두 건 — EPS 축약 · 제닉 가격/시총 불일치 경고."""
 

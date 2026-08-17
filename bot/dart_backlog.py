@@ -54,8 +54,10 @@
 """
 from __future__ import annotations
 
+import json as _json
 import logging
 import re
+from pathlib import Path as _Path
 
 log = logging.getLogger("bot.dart_backlog")
 
@@ -446,6 +448,65 @@ def _parse_single(text: str) -> tuple[float, str] | None:
     return v * mult, "단일값"
 
 
+# ── 런타임 관측 (사용자 2026-08-17) ──────────────────────────────────
+# 프로브를 손으로 도는 건 확장이 안 된다 — 상장사 2,700개 중 88개를 내 감으로
+# 골랐고 그 과정에서 회사명을 두 번 잘못 붙였다. 대신 **실사용이 곧 프로브**가
+# 되게 한다: 파서가 값을 못 내면 사유를 남기고, 나중에 사유별로 훑어 진짜
+# 파서 개선 여지(형식미지원·검산실패)만 골라낸다. 미공시는 원천에 값이 없는
+# 것이라 개선 대상이 아니다. CLAUDE.md Automation-first.
+_MISS_LOG = _Path.home() / ".tradingagents" / "backlog_misses.jsonl"
+_MISS_CAP = 4000          # 줄 수 상한 — 장수 프로세스에서 무한 증가 방지
+
+# 원문이 스스로 미공시를 밝히는 문구. 실측: 영화금속 "산정은 불가능합니다" ·
+# SNT모티브 "관리하고 있지 않습니다" · 상아프론테크 "수주잔고는 없습니다" ·
+# HD현대건설기계·HPSP "기재는 생략". 파서로 해결 불가 — 개선 대상이 아니다.
+_NO_DATA_RE = re.compile(
+    r"수주잔고[^.]{0,30}?(?:산정[^.]{0,10}?불가|없습니다|기재[^.]{0,10}?생략)"
+    r"|(?:수주물량[^.]{0,20}?)?수주잔고[^.]{0,20}?관리하고\s*있지\s*않"
+    r"|기재[는를]?\s*생략[^.]{0,40}?수주잔고")
+
+
+def diagnose(text: str) -> str:
+    """값을 못 낸 이유를 짧은 코드로 분류한다.
+
+    ⚠️ 분류가 곧 **개선 여지 판정**이다 — `미공시`·`명시적미공시` 는 원천에
+    값이 없어 파서를 고칠 여지가 없고, `형식미지원`·`검산실패`·`단위없음` 만
+    새 형식이 필요하다는 신호다. 이 구분이 없으면 로그가 노이즈가 된다."""
+    if not text:
+        return "본문없음"
+    hits = len(re.findall("|".join(_BAL_LABELS), text))
+    if not hits:
+        return "미공시"
+    if _NO_DATA_RE.search(text):
+        return "명시적미공시"
+    # 잔고 라벨은 있는데 그 앞에 단위 캡션이 없으면 스케일을 못 정한다.
+    first = min(text.find(k) for k in _BAL_LABELS if k in text)
+    if _unit_mult(text, first) is None:
+        return "단위없음"
+    if not re.search(r"합\s*계", text[first:first + 2500]):
+        return "합계없음"
+    return "형식미지원"
+
+
+def _log_miss(ticker: str, year, reprt_code, reason: str) -> None:
+    """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
+    if reason in ("미공시", "명시적미공시", "본문없음"):
+        return                      # 원천에 값이 없다 — 개선 대상 아님
+    try:
+        _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        line = _json.dumps({"ticker": ticker, "year": year,
+                            "reprt": reprt_code, "reason": reason},
+                           ensure_ascii=False)
+        old = []
+        if _MISS_LOG.exists():
+            old = _MISS_LOG.read_text(encoding="utf-8").splitlines()[-_MISS_CAP:]
+        if line in old:
+            return                  # 같은 종목·분기 중복 기록 안 함
+        _MISS_LOG.write_text("\n".join(old + [line]) + "\n", encoding="utf-8")
+    except Exception as exc:
+        log.debug("dart_backlog: 미스 로그 실패: %s", exc)
+
+
 def parse_backlog(text: str) -> dict | None:
     """정기보고서 평문 → {value(원), unit_src, form} 또는 None.
 
@@ -492,7 +553,11 @@ def backlog_for(dart, ticker: str, year: int, reprt_code: str) -> float | None:
         text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
                                max_bytes=_DOC_TEXT_MAX_FULL)
         got = parse_backlog(text or "")
-        return got["value"] if got else None
+        if got:
+            return got["value"]
+        # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
+        _log_miss(ticker, year, reprt_code, diagnose(text or ""))
+        return None
     except Exception as exc:
         log.debug("dart_backlog: %s %s/%s: %s", ticker, year, reprt_code, exc)
         return None
