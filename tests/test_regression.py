@@ -21664,6 +21664,62 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestPerShareAndPriceConsistency20260817:
+    """사용자 2026-08-17 두 건 — EPS 축약 · 제닉 가격/시총 불일치 경고."""
+
+    def test_per_share_items_are_not_abbreviated(self):
+        """EPS 12,468원이 "1만"으로 반올림되면 연도 비교가 불가능하다
+        (사용자 스크린샷: 기본/희석 EPS 가 4년 내내 "1만"). 매출·이익에 맞는
+        조/억/만 축약이 주당 값에는 안 맞는다 — 전 시장 공통."""
+        from bot.dashboard import _render_stock_info_html
+        rows = [{"period": f"202{y}-12-31", "Total Revenue": 2.85e13,
+                 "Basic EPS": 10000 + y * 1234} for y in (2, 3, 4, 5)]
+        html = _render_stock_info_html({"ticker": "005930.KS", "stock_info": {
+            "currency": "KRW",
+            "financials": {"income_statement": {"annual": rows}}},
+        })["other_panes"]
+        i = html.find(">손익계산서 — 연간")
+        seg = html[i:html.index("</table>", i)]
+        eps = re.search(r"<tr><td>기본 EPS</td>(.*?)</tr>", seg, re.S).group(1)
+        cells = [re.sub(r"<[^>]+>", "", c)
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", eps, re.S)]
+        assert cells == ["12,468", "13,702", "14,936", "16,170"], cells
+        # 매출은 그대로 축약돼야 한다 — 주당 지표만 예외다.
+        rev = re.search(r"<tr><td>매출액</td>(.*?)</tr>", seg, re.S).group(1)
+        assert "조" in rev, rev
+
+    def test_market_cap_uses_the_same_price_basis_as_the_shown_price(self):
+        """제닉 123330 실측: 현재가 ₩27,300(조정종가로 보정) 인데 시총은
+        ₩2,175억(야후 marketCap = 수신가 3,060 기준)이 나란히 떴다.
+        보정 전 주식수가 없으면 옛 코드가 시총을 **손대지 않아서** 두 카드가
+        서로 다른 가격 기준이 됐다. 주식수가 없어도 (시총 ÷ 수신가)로 역산해
+        기준을 맞춘다."""
+        from bot.stock_snapshot import _consistent_mcap
+        mc = _consistent_mcap(27300, None, 3060, 217.5e9)
+        assert mc is not None, "주식수 없다고 시총을 포기하면 불일치가 남는다"
+        assert abs(mc / 27300 - 217.5e9 / 3060) < 1.0     # 주식수가 보존된다
+        assert abs(mc - 27300 * (217.5e9 / 3060)) < 1.0
+        # 주식수가 있으면 그대로 쓴다.
+        assert _consistent_mcap(27300, 7_107_843, 3060, 217.5e9) == \
+            27300 * 7_107_843
+        # 역산 재료가 없으면 **None** — 모순된 시총을 남기느니 비운다.
+        assert _consistent_mcap(27300, None, 0, None) is None
+        assert _consistent_mcap(0, None, 3060, 217.5e9) is None
+
+    def test_kr_price_conflict_is_arbitrated_by_naver_not_guessed(self):
+        """야후 수신가와 조정종가가 ±75% 넘게 갈릴 때 **크기만으론 못 가른다**
+        — 액면분할이면 낮은 쪽이, 감자·병합이면 높은 쪽이 맞다. 한국 종목은
+        네이버 실시간이 원천이므로 그쪽에 가까운 값을 채택해 추측을 없앤다."""
+        import inspect
+        from bot import stock_snapshot as ss
+        assert ss._kr_arbiter("AAPL") is None, "US 는 네이버를 부르면 안 된다"
+        src = inspect.getsource(ss._collect_stock_snapshot_uncached)
+        assert "_kr_arbiter(ticker)" in src, "중재자가 배선되지 않음"
+        assert "_consistent_mcap(" in src, "시총 정합 보정이 배선되지 않음"
+        # 네이버가 없으면 기존 동작(조정 종가 채택)이 유지돼야 한다.
+        assert "조정 종가로 표시" in src
+
+
 class TestDartBacklogParser20260817:
     """수주잔고 파서 — 사용자 2026-08-17 "공시하는 회사는 최대한 걸러내고 싶다".
 
@@ -21969,6 +22025,40 @@ class TestDartBacklogParser20260817:
                  "1,951,532 1,391,165 285,957 7,712,140 287,314 222,408 11,850,516 계약에")
         got = parse_backlog(kolon)
         assert got["value"] == 11_850_516 * 1e6, "부문 열을 집었다"
+
+    _PS = ("다. 수주상황 당사가 수주하는 제품은 대부분 방산제품으로 보안관계상 "
+           "수주상황에 대해 상세히 기재하지 아니하고 기말잔액을 표시하였습니다. "
+           "(단위 : 백만원) 품목 수주잔고 금액 방산사업 944,080 5. 위험관리")
+    _SFA = ("나. 수주에 관한 사황 (1) 수주/매출/수주잔고 현황 (단위 : 백만원) 구 분 "
+            "당기 신규수주액(제29기 반기) 당기 매출액(제29기 반기) 기말 수주잔고액"
+            "(제29기 반기 말) 로봇AI물류자동화 내수 122,926 166,341 314,323 수출 "
+            "143,203 92,651 354,403 소계 266,130 258,992 668,726 로봇AI제조자동화 "
+            "내수 48,152 22,822 41,528 수출 68,766 54,934 136,482 소계 116,918 "
+            "77,756 178,011 AI인프라 내수 1,589 12,795 19,729 수출 58,000 30,025 "
+            "121,033 소계 59,589 42,820 140,762 합계 내수 172,667 201,958 375,581 "
+            "수출 269,970 177,610 611,918 소계 442,637 379,568 987,499 "
+            "주1) 당기 중의 해외 법인 분할 수주액")
+
+    def test_fourth_probe_formats(self):
+        """4차 프로브(34종목)에서 추가로 필요해진 형식 2종."""
+        from bot.dart_backlog import parse_backlog
+        # 퍼스텍 — 헤더가 `구 분` 이 아니라 `품목 수주잔고 금액`, 행 하나뿐.
+        got = parse_backlog(self._PS)
+        assert got and got["value"] == 944_080 * 1e6, got
+        # 에스에프에이 — 기초 열이 없어 A 의 항등식을 못 쓴다.
+        got = parse_backlog(self._SFA)
+        assert got and got["value"] == 987_499 * 1e6, got
+        assert got["form"] == "내수·수출 소계"
+
+    def test_domestic_plus_export_must_equal_the_subtotal(self):
+        """⚠️ 이게 형태 J 의 **유일한** 검산이다. 세 열 모두에서
+        내수+수출=소계가 성립해야 하고, 열을 잘못 집으면 동시에 맞을 수 없다."""
+        from bot.dart_backlog import parse_backlog
+        for old, new in (("소계 442,637 379,568 987,499",
+                          "소계 442,637 379,568 999,999"),
+                         ("수출 269,970 177,610 611,918",
+                          "수출 269,970 177,610 111,111")):
+            assert parse_backlog(self._SFA.replace(old, new)) is None, new
 
     @pytest.mark.parametrize("name,text,want_won", [
         ("넥스틴·다음표 침범",

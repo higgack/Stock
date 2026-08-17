@@ -327,6 +327,36 @@ def _parse_contract_table(text: str) -> tuple[float, str] | None:
     return None
 
 
+def _parse_domestic_export(text: str) -> tuple[float, str] | None:
+    """형태 J — `신규수주 / 매출 / 기말수주잔고` 3열이 내수·수출·소계로 쌓인
+    블록(에스에프에이).
+
+    기초 잔고 열이 없어 A 의 항등식(기초+신규−납품=잔고)을 세울 수 없다.
+    대신 **내수 + 수출 = 소계**가 세 열 모두에서 성립해야 하고, 이게 검산이
+    된다 — 열을 잘못 집으면 세 등식이 동시에 맞을 수 없다."""
+    for m in re.finditer(r"수주잔고액|기말\s*수주잔고", text):
+        if "신규수주" not in text[max(0, m.start() - 200):m.start()]:
+            continue
+        mult = _unit_mult(text, m.start())
+        if mult is None:
+            continue
+        seg = _cut_table(text[m.end():m.end() + 3000])
+        tms = list(re.finditer(r"합\s*계", seg))
+        if not tms:
+            continue
+        runs = [r for r in _runs(seg[tms[-1].end():]) if len(r) == 3][:3]
+        if len(runs) != 3:
+            continue
+        dom, exp_, tot = runs
+        if any(abs(dom[i] + exp_[i] - tot[i]) > _TOL * max(abs(tot[i]), 1.0)
+               for i in range(3)):
+            continue
+        if tot[2] <= 0:
+            continue
+        return tot[2] * mult, "내수·수출 소계"
+    return None
+
+
 def _parse_balance_column(text: str) -> tuple[float, str] | None:
     """형태 D — 잔고 **한 열만** 있는 표(테크윙).
 
@@ -395,10 +425,12 @@ def _parse_xbrl(text: str) -> tuple[float, str] | None:
 def _parse_single(text: str) -> tuple[float, str] | None:
     """형태 C — 방산 보안 등으로 잔액 한 칸만 공시.
 
-    `구 분 수주잔액 제25기(2026년 2분기) 245,781` — 라벨과 값 사이에 기수
-    표기가 끼므로 **첫 값 토큰까지 건너뛴다**. 다만 건너뛰는 구간에 다른 표가
-    끼어들지 않도록 좁게(120자) 본다."""
-    m = re.search(r"구\s*분\s*(?:수주잔액|수주잔고)", text)
+    · LIG넥스원 `구 분 수주잔액 제25기(2026년 2분기) 245,781`
+    · 퍼스텍   `품목 수주잔고 금액 방산사업 944,080`
+    라벨과 값 사이에 기수·부문명이 끼므로 **첫 값 토큰까지 건너뛴다**. 다만
+    건너뛰는 구간에 다른 표가 끼어들지 않도록 좁게(120자) 본다."""
+    m = re.search(r"(?:구\s*분|품\s*목)\s*(?:수주잔액|수주잔고)"
+                  r"(?:\s*금\s*액)?", text)
     if not m:
         return None
     seg = text[m.end():m.end() + 120]
@@ -428,7 +460,8 @@ def parse_backlog(text: str) -> dict | None:
     # 순서 = 신뢰도 순. 검산 가능한 표가 먼저이고, 산문은 검산할 항등식이
     # 없으므로 **마지막**이다(파크시스템스는 표 112,509백만원과 주석의 "약
     # 1,023억원"이 기준일이 달라 다른데, 표가 먼저 잡혀 기준일 값이 이긴다).
-    for fn in (_parse_table, _parse_balance_column, _parse_transposed,
+    for fn in (_parse_table, _parse_domestic_export,
+               _parse_balance_column, _parse_transposed,
                _parse_contract_table, _parse_xbrl, _parse_single,
                _parse_prose):
         try:
