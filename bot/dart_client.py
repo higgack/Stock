@@ -794,6 +794,45 @@ class DartClient:
         return {"rcept_no": best.get("rcept_no"), "report_nm": best.get("report_nm"),
                "rcept_dt": best.get("rcept_dt")}
 
+    def find_periodic_reports(self, stock_code: str, year: int,
+                              reprt_code: str) -> list[dict]:
+        """같은 (year, reprt_code) 에 매치되는 정기보고서 **후보 전부**
+        (최근 접수 순).
+
+        ⚠️ `find_periodic_report` 는 가장 최근 1건만 준다. 그런데 그 1건에
+        **문서가 없는 경우가 있다** — 한화에어로 2025 사업보고서(rcept
+        20260319000633)·2026 1분기보고서(20260513000860)가 실측 사례로,
+        document.xml 이 `status=014 파일이 존재하지 않습니다` 를 돌려준다
+        (정정·첨부 계열 접수건은 원본을 참조만 하고 자체 문서가 없다).
+        그러면 원본이 가려져 그 분기가 통째로 빈다 — 차트 막대가 두 칸
+        비어 있던 원인이다(사용자 2026-08-17). 호출부가 순서대로 시도해야
+        한다."""
+        if not self.api_key:
+            return []
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return []
+        keyword, bgn, end = self._periodic_report_window(year, reprt_code)
+        try:
+            resp = requests.get(
+                f"{_DART_BASE}/list.json",
+                params={"crtfc_key": self.api_key, "corp_code": corp_code,
+                        "bgn_de": bgn, "end_de": end, "pblntf_ty": "A",
+                        "page_count": 20},
+                timeout=_HTTP_TIMEOUT,
+            )
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("dart: list.json for %s failed: %s", stock_code, exc)
+            return []
+        if payload.get("status") != "000":
+            return []
+        matches = [r for r in payload.get("list") or []
+                   if keyword in (r.get("report_nm") or "")]
+        matches.sort(key=lambda r: r.get("rcept_dt") or "", reverse=True)
+        return [{"rcept_no": r.get("rcept_no"), "report_nm": r.get("report_nm"),
+                 "rcept_dt": r.get("rcept_dt")} for r in matches]
+
     # ── /api/elestock.json — insider / major shareholder holdings ──────
     @_disk_cache_daily
     def get_insider_holdings(self, stock_code: str) -> list[dict]:

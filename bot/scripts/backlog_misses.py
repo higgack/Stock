@@ -75,13 +75,24 @@ def per_quarter(ticker: str) -> int:
     print("=" * 74)
     for q in qs:
         y, rc, label = q["year"], q["reprt_code"], q.get("label", "?")
-        rep = dart.find_periodic_report(ticker, y, rc)
-        if not rep or not rep.get("rcept_no"):
+        reps = dart.find_periodic_reports(ticker, y, rc)
+        if not reps:
             print(f"  {label:8s} {y}/{rc}  ❌ 정기보고서 미확인 "
                   f"— 이 분기는 원문 자체가 없다")
             continue
-        text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
-                               max_bytes=_DOC_TEXT_MAX_FULL) or ""
+        # 후보를 전부 보여준다 — 어떤 접수건이 뽑혔고 왜 문서가 없는지가
+        # 여기서 갈린다(정정·첨부 계열은 자체 문서가 없다).
+        text, used = "", None
+        for rep in reps:
+            text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
+                                   max_bytes=_DOC_TEXT_MAX_FULL) or ""
+            mark = "✔" if text else "✗문서없음"
+            print(f"      후보 {rep['rcept_no']} {rep.get('rcept_dt','')} "
+                  f"{mark}  {rep.get('report_nm','')}")
+            if text:
+                used = rep
+                break
+        rep = used or reps[0]
         got = parse_backlog(text)
         if got:
             print(f"  {label:8s} {y}/{rc}  ✅ {got['value']/1e12:.3f}조 "
