@@ -36,6 +36,42 @@ _SNAP_CACHE: dict[str, tuple[float, dict]] = {}
 _SNAP_CACHE_LOCK = threading.Lock()
 
 
+def _kr_arbiter(ticker: str) -> dict | None:
+    """KR 종목의 네이버 실시간 시세 {price, mcap} — 실패하면 None(graceful).
+
+    야후 .info 와 조정 히스토리가 크게 갈릴 때 **어느 쪽이 옳은지** 판정하는
+    제3의 원천이다. 크기만으론 못 가른다 — 액면분할이면 낮은 쪽(수신가)이,
+    감자·병합이면 높은 쪽(조정종가)이 맞기 때문이다."""
+    if not (ticker or "").upper().endswith((".KS", ".KQ")):
+        return None
+    try:
+        from bot.naver_quote import fetch_kr_quote
+        return fetch_kr_quote(ticker)
+    except Exception as exc:
+        log.debug("_kr_arbiter %s: %s", ticker, exc)
+        return None
+
+
+def _consistent_mcap(price, shares, orig_price, orig_mcap):
+    """표시가와 **같은 기준**의 시총. 못 만들면 None(그럼 시총을 비운다).
+
+    ⚠️ 주식수가 없어도 포기하지 않는다 — 야후 marketCap 은 야후 자신의
+    가격과 정합하므로 `주식수 = 시총 ÷ 수신가` 로 역산하면 보정가 기준
+    시총을 만들 수 있다. 이걸 안 하면 현재가와 시총이 서로 다른 가격
+    기준으로 나란히 표시된다(제닉 실측)."""
+    try:
+        price = float(price or 0)
+        if price <= 0:
+            return None
+        if shares:
+            return price * float(shares)
+        if orig_price and orig_mcap and float(orig_price) > 0:
+            return price * (float(orig_mcap) / float(orig_price))
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+    return None
+
+
 def collect_stock_snapshot(ticker: str, *, use_cache: bool = True) -> dict | None:
     """Company/market facts dict, or *None* on failure.
 
@@ -131,6 +167,8 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         # 종가 가드를 적용 → KLAC 보호는 유지(.info 52주는 조정 기준).
         in_52w = within_52w_range(price, _g("fiftyTwoWeekLow"),
                                   _g("fiftyTwoWeekHigh"))
+        # 보정 전 수신가 — 시총 역산에 쓴다(야후 marketCap 은 이 가격 기준).
+        _orig_price = price
         if price and not in_52w:
             try:
                 if (prev and float(prev) > 0
@@ -153,13 +191,44 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
                 if hist is not None and len(hist) and "Close" in hist:
                     hc = float(hist["Close"].dropna().iloc[-1])
                     if hc > 0 and abs(float(price) / hc - 1) > 0.75:
-                        snap["price_glitch_note"] = (
-                            f"소스 이상치 보정 — 수신가 {float(price):,.2f} 가 "
-                            f"조정 종가 {hc:,.2f} 대비 ±75% 초과(분할 미조정) "
-                            f"→ 조정 종가로 표시")
-                        price = hc
-                        if shares:
-                            snap["market_cap"] = hc * float(shares)
+                        # ⚠️ KR 은 **네이버가 중재한다.** 야후 .info 와 조정
+                        # 히스토리 중 어느 쪽이 옳은지 크기만으론 못 가른다 —
+                        # 액면분할이면 수신가가, 감자·병합이면 조정종가가 맞다.
+                        # 한국 종목은 네이버 실시간 시세가 원천이라 그쪽에
+                        # 가까운 값을 채택하면 추측이 사라진다(제닉 123330:
+                        # 수신 3,060 vs 조정 27,300 으로 화면에 경고가 떴다,
+                        # 사용자 2026-08-17). 네이버 실패 시 기존대로 조정종가.
+                        _kr = _kr_arbiter(ticker)
+                        if _kr and _kr.get("price"):
+                            _ref = float(_kr["price"])
+                            _pick_hist = (abs(hc - _ref)
+                                          <= abs(float(price) - _ref))
+                            if _kr.get("mcap"):
+                                snap["market_cap"] = float(_kr["mcap"])
+                            price = hc if _pick_hist else float(price)
+                            snap["price_glitch_note"] = (
+                                f"소스 교차검증 — 야후 {float(price):,.2f} vs "
+                                f"조정 종가 {hc:,.2f} 가 ±75% 초과로 갈려 "
+                                f"네이버 실시간 {_ref:,.0f} 에 가까운 값 채택")
+                        else:
+                            snap["price_glitch_note"] = (
+                                f"소스 이상치 보정 — 수신가 {float(price):,.2f} 가 "
+                                f"조정 종가 {hc:,.2f} 대비 ±75% 초과(분할 미조정) "
+                                f"→ 조정 종가로 표시")
+                            price = hc
+                        # ⚠️ 시총은 **반드시 표시가와 같은 기준**이어야 한다.
+                        # 옛 코드는 `shares` 가 없으면 시총을 손대지 않아,
+                        # 야후 marketCap(수신가 기준)과 화면 현재가(조정종가)가
+                        # 다른 가격 기준으로 나란히 떴다 — 제닉이 현재가
+                        # ₩27,300 인데 시총 ₩2,175억(≈3,060 기준)이던 원인.
+                        # 주식수가 없으면 (원래 시총 ÷ 원래 가격)으로 역산한다.
+                        _mc_fix = _consistent_mcap(price, shares,
+                                                   float(_orig_price or 0),
+                                                   _g("marketCap"))
+                        if _mc_fix is not None:
+                            snap["market_cap"] = _mc_fix
+                            if not shares and _orig_price:
+                                shares = _mc_fix / price
             except Exception:
                 pass
         if price:

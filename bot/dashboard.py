@@ -4072,6 +4072,14 @@ def _currency_sym(currency: str) -> str:
             "CNY": "¥", "EUR": "€", "GBP": "£"}.get(currency or "", "$")
 
 
+# 주당 지표 — 조/억/만 축약을 **적용하지 않는다**(사용자 2026-08-17).
+# EPS 12,345원이 "1만"으로 반올림되면 연도별 비교가 불가능하다.
+# 야후 항목명 기준이라 전 시장 공통(US/KR/JP/TW/CN_A/HK 동일 소스).
+_PER_SHARE_ITEMS = frozenset({
+    "Basic EPS", "Diluted EPS", "Book Value Per Share",
+    "Tangible Book Value Per Share", "Dividend Per Share",
+})
+
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
     "Cost Of Revenue": "매출원가", "Gross Profit": "매출총이익",
@@ -7267,7 +7275,16 @@ def _render_stock_info_html(rec: dict) -> str:
                     for r in rows:
                         v = r.get(item)
                         if v is not None:
-                            if currency == "KRW":
+                            if item in _PER_SHARE_ITEMS:
+                                # ⚠️ 주당 지표는 **축약 금지**. 만/억 단위로
+                                # 반올림하면 EPS 10,000~19,999원이 전부 "1만"이
+                                # 되어 연도 비교가 불가능해진다(사용자 2026-08-17
+                                # 스크린샷: 4년 내내 "1만"). 매출·이익에 맞는
+                                # 축약이 주당 값에는 안 맞는다. 전 시장 공통 —
+                                # $2.34 든 ¥250 이든 주당 값은 원 단위로 읽는다.
+                                vs = (f"{v:,.0f}" if abs(v) >= 100
+                                      else f"{v:,.2f}")
+                            elif currency == "KRW":
                                 if abs(v) >= 1e12:
                                     vs = f"{v/1e12:.1f}조"
                                 elif abs(v) >= 1e8:
