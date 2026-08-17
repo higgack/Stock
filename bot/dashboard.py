@@ -7241,7 +7241,12 @@ def _render_stock_info_html(rec: dict) -> str:
             if not annual and not quarterly:
                 return ""
             parts: list[str] = []
-            for view_label, rows in (("연간", annual), ("분기", quarterly)):
+            # ⚠️ **분기가 먼저, 연간이 나중** (사용자 2026-08-17, 전 시장 공통).
+            # 위쪽 차트가 '수익성 추이 — 분기'로 시작하므로 그 아래 표도 분기부터
+            # 이어져야 눈이 끊기지 않는다. `_fin_table` 이 손익계산서·재무상태표·
+            # 현금흐름표 셋을 모두 그리는 단일 렌더러라 여기 한 줄이 곧 전 시장
+            # 적용이다(시장 게이트 없음).
+            for view_label, rows in (("분기", quarterly), ("연간", annual)):
                 if not rows:
                     continue
                 # 최신이 오른쪽(사용자 2026-08-16, 전 시장 공통). yfinance 는
