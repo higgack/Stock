@@ -21664,6 +21664,72 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestPeriodicReportCandidates20260817:
+    """한화에어로 25.4Q·26.1Q 막대가 비어 있던 **최종 원인**(사용자 2026-08-17
+    진단 실행): `find_periodic_report` 가 고른 가장 최근 접수건에 **문서가
+    없었다** — document.xml 이 `status=014 파일이 존재하지 않습니다`.
+    정정·첨부 계열 접수건은 원본을 참조만 하고 자체 문서가 없어서, 1건만
+    보면 원본이 가려지고 그 분기가 통째로 빈다."""
+
+    def test_candidates_are_returned_newest_first(self, monkeypatch):
+        from bot.dart_client import DartClient
+
+        class _R:
+            @staticmethod
+            def json():
+                return {"status": "000", "list": [
+                    {"rcept_no": "A1", "report_nm": "사업보고서 (2025.12)",
+                     "rcept_dt": "20260317"},
+                    {"rcept_no": "A2",
+                     "report_nm": "[기재정정]사업보고서 (2025.12)",
+                     "rcept_dt": "20260319"},
+                    {"rcept_no": "B1", "report_nm": "감사보고서",
+                     "rcept_dt": "20260318"},
+                ]}
+        d = DartClient("k")
+        monkeypatch.setattr(d, "stock_code_to_corp_code", lambda t: "00000001")
+        monkeypatch.setattr("bot.dart_client.requests.get",
+                            lambda *a, **k: _R())
+        got = d.find_periodic_reports("012450.KS", 2025, "11011")
+        assert [r["rcept_no"] for r in got] == ["A2", "A1"], got
+        assert "감사보고서" not in str(got), "키워드 필터가 풀렸다"
+
+    def test_backlog_falls_through_to_the_next_candidate(self):
+        """가장 최근 접수건이 문서 없음(빈 본문)이면 다음 후보를 써야 한다."""
+        from bot import dart_backlog as bl
+        seen = []
+
+        class _Dart:
+            api_key = "k"
+
+            @staticmethod
+            def find_periodic_reports(t, y, rc):
+                return [{"rcept_no": "NO_DOC"}, {"rcept_no": "REAL"}]
+
+        def _fake_fetch(rcept_no, api_key, max_bytes=0):
+            seen.append(rcept_no)
+            if rcept_no == "NO_DOC":
+                return None                    # status=014 재현
+            return ("(단위 : 백만원) 품목 수주총액 기납품액 수주잔고 "
+                    "합 계 1,000,000 400,000 600,000 ※ 끝")
+        import bot.dart_feed as df
+        orig = df._fetch_doc_text
+        df._fetch_doc_text = _fake_fetch
+        try:
+            got = bl.backlog_for(_Dart(), "012450.KS", 2025, "11011")
+        finally:
+            df._fetch_doc_text = orig
+        assert seen == ["NO_DOC", "REAL"], f"후보 순회 안 함: {seen}"
+        assert got == 600_000 * 1e6, got
+
+    def test_wiring_is_present(self):
+        import inspect
+        from bot import dart_backlog as bl
+        src = inspect.getsource(bl.backlog_for)
+        assert "find_periodic_reports(" in src, "복수 후보 조회 미배선"
+        assert "for rep in reps:" in src and "if text:" in src
+
+
 class TestBiweeklyBacklogReview20260817:
     """사용자 2026-08-17 "2주에 한번(금요일 16:00) 오류 잡아줘, 내가 기억을
     못하니까". 사람이 기억해야 하는 일은 자동화한다(CLAUDE.md Automation-first)."""

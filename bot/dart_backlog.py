@@ -577,12 +577,22 @@ def backlog_for(dart, ticker: str, year: int, reprt_code: str) -> float | None:
         return None
     try:
         from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
-        rep = dart.find_periodic_report(ticker, year, reprt_code)
-        if not rep or not rep.get("rcept_no"):
-            return None
-        text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
-                               max_bytes=_DOC_TEXT_MAX_FULL)
-        got = parse_backlog(text or "")
+        # ⚠️ 후보를 **순서대로** 시도한다. 가장 최근 접수건에 문서가 없는
+        # 경우가 있어(한화에어로 사업보고서·1분기보고서 실측: document.xml 이
+        # `status=014 파일이 존재하지 않습니다`) 1건만 보면 원본이 가려진다.
+        reps = dart.find_periodic_reports(ticker, year, reprt_code)
+        if not reps:
+            rep = dart.find_periodic_report(ticker, year, reprt_code)
+            reps = [rep] if rep and rep.get("rcept_no") else []
+        text = ""
+        for rep in reps:
+            if not rep.get("rcept_no"):
+                continue
+            text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
+                                   max_bytes=_DOC_TEXT_MAX_FULL) or ""
+            if text:
+                break
+        got = parse_backlog(text)
         if got:
             return got["value"]
         # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
