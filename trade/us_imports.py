@@ -253,7 +253,7 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
             # 빈 상태에도 back-link 필수 — 없으면 이 페이지에 들어온 사람이
             # 수출입 대시보드로 돌아갈 방법이 없다(2026-08-16 독립 조사).
             f"<div class='wrap'>{back_nav_html()}"
-            "<h1>🇺🇸 미국 수입 데이터</h1>"
+            "<h1>🗽 미국 수입 데이터</h1>"
             "<div class='empty'>아직 수집된 미국 수입 데이터(나쁜양파)가 없습니다.</div>"
             "</div></body></html>"
         )
@@ -266,7 +266,7 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
         "<title>미국 수입 데이터</title><style>" + _CSS + "</style></head><body>"
         + _THEME_JS +
         f"<div class='wrap'>{back_nav_html()}"
-        "<h1>🇺🇸 미국 수입 데이터</h1><div class='sub'>Badonions 미국 수입 캡션을 월별로 정리한 별도 페이지</div>"
+        "<h1>🗽 미국 수입 데이터</h1><div class='sub'>Badonions 미국 수입 캡션을 월별로 정리한 별도 페이지</div>"
         "<div class='grid'>" + "".join(cards) + "</div></div></body></html>"
     )
 

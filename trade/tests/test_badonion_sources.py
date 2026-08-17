@@ -155,6 +155,27 @@ class ConsumersUseRegistryTests(unittest.TestCase):
         self.assertIn("_srcs_nav_html()", Path("trade/dashboard.py").read_text(
             encoding="utf-8"), "대시보드가 nav 를 레지스트리에서 안 받음")
 
+    def test_no_flag_emoji_in_display_labels(self):
+        """국기 이모지(regional indicator)는 **표시 문자열에 금지**.
+
+        flag-sequence 는 폰트가 없으면 두 글자 코드로 폴백한다 — Windows
+        Chrome 에서 실제로 그렇게 렌더됐다(사용자 2026-07-11 '🇹🇼 가 tw 로',
+        2026-08-17 '🇺🇸 만 us 로'). 두 번 다 스크린샷을 받고서야 알았으니
+        규칙을 주석이 아니라 테스트로 고정한다.
+
+        ⚠️ **표시 문자열만** 검사한다 — 텔레그램 캡션(파서 입력)의 국기는
+        원문 마커라 지우면 ingest 가 통째로 깨진다."""
+        import re
+        flag = re.compile("[\U0001F1E6-\U0001F1FF]")
+        for s in srcs.SOURCES:
+            self.assertIsNone(flag.search(s.nav_label),
+                              f"{s.key} nav_label 국기 이모지: {s.nav_label}")
+        # 각 페이지 <h1> 도 같은 표시 계열 — nav 만 고치면 페이지에 남는다.
+        for p in sorted(Path("trade").glob("*.py")):
+            for i, ln in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                if "<h1>" in ln and flag.search(ln):
+                    self.fail(f"{p}:{i} 페이지 h1 국기 이모지: {ln.strip()}")
+
     def test_ingest_routes_via_registry_loop(self):
         src = Path("trade/scripts/ingest_inbox.py").read_text(encoding="utf-8")
         self.assertIn("for _src in _srcs.SOURCES:", src, "순회 라우팅 미배선")
