@@ -202,13 +202,44 @@ def _label_decimals(scaled_peak: float, dec: int) -> int:
 # 분기실적 탭 추가 막대차트 — (financials 키, 화면 제목) 순서대로 그린다.
 # 사용자 2026-08-16: "여기는 영업이익률이나 순이익률은 필요없고 막대그래프만".
 # 시장 게이트가 아니라 **데이터 유무 게이트**다(값이 없으면 패널 자체가 생략)
-# — 지금은 재고자산만 소스가 있고(DART 재무제표 계정), 다른 시장·항목에
-# 소스가 생기면 이 목록에 한 줄 추가하면 켜진다.
-# ⚠️ **생산자가 있는 키만 올린다.** 수주잔고는 DART 사업보고서 「수주상황」
-# 표에 있지만 아직 파서가 없어(원문 평문의 실제 배열을 확인해야 한다 —
-# bot/scripts/detail_gaps_probe.py) 여기 올리면 영원히 안 그려지는 죽은
-# 항목이 되고 Help 에도 없는 기능을 광고하게 된다(2026-08-16 독립 리뷰).
-_EXTRA_CHARTS = (("재고자산", "재고자산"),)
+# — 다른 시장·항목에 소스가 생기면 이 목록에 한 줄 추가하면 켜진다.
+# ⚠️ **생산자가 있는 키만 올린다.** 올리는 순간 Help 에도 등록해야 하고,
+# 생산자가 없으면 영원히 안 그려지는 죽은 항목이 된다(2026-08-16 독립 리뷰).
+#   · 재고자산 = DART 재무제표 계정(`_DART_NAME_MAP`)
+#   · 수주잔고 = 정기보고서 본문 파서(`bot/dart_backlog` → `_fill_backlog`)
+#     2026-08-17 VM 프로브로 16종목 원문을 받아 3형식 파서를 짠 뒤 켰다.
+_EXTRA_CHARTS = (("수주잔고", "수주잔고"), ("재고자산", "재고자산"))
+
+
+def _fill_backlog(dart, ticker: str, qs: list) -> None:
+    """분기별 수주잔고를 `financials["수주잔고"]` 에 채운다(제자리 수정).
+
+    재고자산과 달리 수주잔고는 재무제표 계정이 아니라 **정기보고서 본문**의
+    「매출 및 수주상황」표에서 나온다 — 분기마다 원문(최대 40MB)을 받아야 한다.
+
+    ⚠️ 그래서 **최신 분기를 먼저 본다.** 수주잔고는 의무 공시가 아니라 안 쓰는
+    회사가 다수인데(프로브 16종목 중 2곳은 아예, 3곳은 형식 미지원), 전 분기를
+    먼저 받으면 대부분의 종목에서 5회 대용량 다운로드가 통째로 버려진다.
+    최신이 없으면 그 종목은 공시 안 하는 회사로 보고 즉시 중단한다.
+
+    graceful: 실패·부재는 조용히 건너뛴다 — 값이 없으면 `_extra_series` 가
+    패널 자체를 생략하므로 화면에 빈 축이나 0 막대가 남지 않는다."""
+    if not dart or not qs:
+        return
+    try:
+        from bot.dart_backlog import backlog_for
+    except Exception as exc:
+        log.debug("quarterly_infographic: dart_backlog import: %s", exc)
+        return
+    latest = qs[-1]
+    got = backlog_for(dart, ticker, latest["year"], latest["reprt_code"])
+    if got is None:
+        return          # 이 회사는 수주잔고를 안 쓴다 — 과거분 조회 불필요
+    latest["financials"]["수주잔고"] = got
+    for q in qs[:-1]:
+        v = backlog_for(dart, ticker, q["year"], q["reprt_code"])
+        if v is not None:
+            q["financials"]["수주잔고"] = v
 
 
 def _extra_series(qs: list) -> list[tuple[str, str, list]]:
@@ -889,6 +920,7 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         except Exception as exc:
             log.warning("quarterly_infographic: series %s: %s", t, exc)
             return None
+        _fill_backlog(dart, t, qs)
     else:
         # KR 은 야후로 폴백하지 않는다 — DART 가 단일분기를 직접 주므로
         # 소스를 섞으면 같은 화면에서 숫자 성격이 달라진다.

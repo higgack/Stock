@@ -20605,16 +20605,24 @@ class TestQuarterlyExtraChartsAndLive20260816:
         """생산자 없는 키를 올리면 영원히 안 그려지는 죽은 항목이 되고
         Help 가 없는 기능을 광고하게 된다(2026-08-16 독립 리뷰).
 
-        수주잔고는 DART 「수주상황」표 파서가 생기면 여기에 추가한다."""
+        생산자는 두 갈래다 — 재무제표 계정(`_DART_NAME_MAP`)이거나 본문 파서
+        (`_fill_backlog` 가 채우는 키). 2026-08-17 수주잔고 파서가 생겨
+        후자가 실제로 쓰이기 시작했다."""
+        import inspect
         from bot import quarterly_infographic as qi
         from bot.dart_client import _DART_NAME_MAP
+        _filled = inspect.getsource(qi._fill_backlog)
         for key, _title in qi._EXTRA_CHARTS:
-            assert key in _DART_NAME_MAP.values(), f"{key} 생산자 없음"
+            assert (key in _DART_NAME_MAP.values()
+                    or f'"{key}"' in _filled), f"{key} 생산자 없음"
+        # 생산자가 **호출부에 배선**돼 있어야 한다 — 함수만 있고 아무도 안
+        # 부르면 그래프는 영원히 빈다(실수 #12 '헬퍼 만들면 호출부 grep E2E').
+        assert "_fill_backlog(dart, t, qs)" in inspect.getsource(qi.build_payload)
         import re
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         t = re.search(r'_HELP_TEXT = """(.*?)"""', src, re.S).group(1)
-        assert "수주잔고" not in t, "미구현 항목을 Help 가 광고"
-        assert "재고자산" in t, "구현된 항목이 Help 에 미등록"
+        for key, _title in qi._EXTRA_CHARTS:
+            assert key in t, f"구현된 항목 {key} 가 Help 에 미등록"
 
     def test_multiple_extra_panels_keep_registry_order(self):
         # 항목이 늘어도 순서는 레지스트리 순서 그대로여야 한다.
@@ -21632,6 +21640,205 @@ class TestDartCardWidth20260816:
         css = self._css()
         assert "align-items:stretch" in css
         assert "height:100%" in css and "box-sizing:border-box" in css
+
+
+class TestDartBacklogParser20260817:
+    """수주잔고 파서 — 사용자 2026-08-17 "공시하는 회사는 최대한 걸러내고 싶다".
+
+    ⚠️ **아래 픽스처는 전부 VM 프로브가 찍은 실제 DART 원문이다.** 손으로 지어낸
+    문자열로 테스트하면 파서가 아니라 내 상상을 테스트하게 된다(실수 #12).
+    16종목을 받아 3형식(표·합계행 / XBRL주석 / 단일값)을 확정했고, 값을 내면
+    안 되는 함정 4종도 전부 실물이다.
+    """
+
+    # ── 형식 A: 표 + 합계행 (관측 7/16 — 압도적 다수) ──────────────
+    _SHI = ("다. 수주상황 (단위 : 억원) 품목 수주일자 납기 수주총액 기납품액 수주잔고 "
+            "금액 금액 금액 조선해양 ~ 2026.06.30 - 557,153 210,086 347,067 "
+            "토건 ~ 2026.06.30 - 13,969 11,035 2,934 "
+            "합 계 571,122 221,121 350,001 5. 위험관리 및 파생거래 회사는")
+    _KSOE = ("나. 수주상황 (단위 : 백만원) 품 목 수주일자 납기 기초계약잔액 신규계약액 "
+             "기납품액 수주잔고 수량 금액 수량 금액 수량 금액 수량 금액 "
+             "조 선 \'26.06.30 까지 - - 70,801,620 - 28,488,584 - 14,147,343 - 85,142,861 "
+             "합 계 - 82,236,880 - 33,642,412 - 17,070,572 - 98,808,720 "
+             "※ 수주잔고 = 기초계약잔액 + 신규계약액 - 기납품액")
+    _HHI = ("다. 수주상황 (기준일: 2026년 06월 30일) (단위 : 백만원) 품목 수주일자 납기 "
+            "기초수주잔액 신규증감 기납품액 기말수주잔고 수량 금액 수량 금액 수량 금액 수량 금액 "
+            "합 계 - 56,384,472 - 25,378,169 - (12,248,487) - 69,514,154 ※ 기말수주잔고 =")
+    _HAS = ("다. 수주상황(요약) (기준일 : 2026년 06월 30일 ) (단위 : 백만원) 해당회사 사업 "
+            "품목 수주일자 납기 수주총액 기납품액 수주잔고 수량 금액 수량 금액 수량 금액 "
+            "한화에어로스페이스㈜및 해외 종속회사 항공 상세내역 참조 - 45,251,917 - 13,528,816 "
+            "- 31,723,101 합 계 - 158,551,529 - 43,633,291 - 114,918,238 ※ 항공과")
+    _LSE = ("다. 수주 상황 [LS ELECTRIC] (기준일 : 2026.06.30) (단위 : 억원 ) 사업부문 품목 "
+            "수주일자 납기 이월 수주잔액 당기 수주금액 기납품액 수주잔고 수량 금액 수량 금액 "
+            "수량 금액 수량 금액 전력 T&D ~\'26.12 \'26.01~ - 48,902 - 34,293 - 14,299 - 68,896 "
+            "합 계 - 50,154 - 34,677 - 14,833 - 69,998 ※ T&D")
+    _AE = ("마. 수주잔고 당사의 수주잔고 현황은 아래와 같습니다. (단위 : 억원) 품목 수주일자 "
+           "납기 수주총액 기납품액 수주잔고 수량 금액 수량 금액 수량 금액 "
+           "시스템 구축 - - - 18,896 - 6,155 - 12,741 "
+           "합 계 - 18,896 - 6,155 - 12,741 ※ 상기 금액은")
+    # ── 형식 B: 재무제표 주석(XBRL) ─────────────────────────────────
+    _KPS = ("고객과의 계약에서 생기는 계약잔액 및 변동에 대한 공시 당반기말 (단위 : 원) "
+            "공시금액 장부금액 합계 수주잔고, 기초 2,377,039,189,867 2,377,039,189,867 "
+            "증가(감소), 수주잔고 588,722,845,609 588,722,845,609 공사수익 "
+            "(788,235,663,014) (788,235,663,014) 수주잔고, 기말 2,177,526,372,462 "
+            "2,177,526,372,462 누적공사수익")
+    _HDEC = ("건설계약으로 인한 수익 776,945 1,417,102 3,455,437 (단위 : 백만원) 건설계약 "
+             "관련하여 수익으로 인식한 계약수익에 대한 설명 한 시점에 수익을 인식하는 "
+             "분양계약을 제외하였습니다. 건설계약 수주잔고 103,983,136 전반기")
+    # ── 형식 C: 단일값(방산 보안) ───────────────────────────────────
+    _LIG = ("라. 수주상황 연결회사가 수주하는 제품은 대부분 방산제품으로 보안관계상 수주상황에 "
+            "대해 상세히 기재하지 아니하고 기말잔액을 표시하였습니다. 당반기 말 현재 연결회사의 "
+            "수주잔액 현황은 아래와 같습니다. (단위 : 억원) 구 분 수주잔액 "
+            "제25기(2026년 2분기) 245,781 ※ 특정계약의 경우")
+
+    @pytest.mark.parametrize("name,text,want_won,form", [
+        ("삼성중공업",        _SHI,  350_001 * 1e8,       "표·합계행"),
+        ("HD한국조선해양",     _KSOE, 98_808_720 * 1e6,    "표·합계행"),
+        ("HD현대중공업",       _HHI,  69_514_154 * 1e6,    "표·합계행"),
+        ("한화에어로스페이스",   _HAS,  114_918_238 * 1e6,   "표·합계행"),
+        ("LS ELECTRIC",     _LSE,  69_998 * 1e8,        "표·합계행"),
+        ("현대오토에버",       _AE,   12_741 * 1e8,        "표·합계행"),
+        ("한전KPS",          _KPS,  2_177_526_372_462.0, "주석·건설계약"),
+        ("현대건설",          _HDEC, 103_983_136 * 1e6,   "주석·건설계약"),
+        ("LIG넥스원",         _LIG,  245_781 * 1e8,       "단일값"),
+    ])
+    def test_real_filings_parse_to_won(self, name, text, want_won, form):
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(text)
+        assert got, f"{name} 파싱 실패"
+        assert abs(got["value"] - want_won) < 1.0, (name, got["value"], want_won)
+        assert got["form"] == form, (name, got["form"])
+
+    def test_units_are_not_assumed(self):
+        """억원·백만원·원이 섞여 있다 — 단위 표기가 없으면 **거부**한다.
+        가정하면 100배(백만원↔억원) 오차가 조용히 들어간다."""
+        from bot.dart_backlog import parse_backlog
+        bare = "수주총액 기납품액 수주잔고 합 계 571,122 221,121 350,001"
+        assert parse_backlog(bare) is None
+        # 같은 표라도 단위가 붙으면 그 배수로 환산된다(억원 ↔ 백만원 = 100배).
+        a = parse_backlog("(단위 : 억원) " + bare)["value"]
+        b = parse_backlog("(단위 : 백만원) " + bare)["value"]
+        assert a == b * 100
+
+    def test_arithmetic_identity_rejects_wrong_columns(self):
+        """원문이 계산식을 직접 밝힌다(`수주잔고 = 기초 + 신규 - 기납품액`).
+        그래서 뽑은 값이 항등식을 못 맞추면 **컬럼을 잘못 집은 것**으로 보고
+        버린다 — 표 구조가 바뀌어도 조용히 틀린 숫자가 나가지 않는다."""
+        from bot.dart_backlog import parse_backlog
+        broken = self._SHI.replace("350,001 5. 위험관리", "999,999 5. 위험관리")
+        assert parse_backlog(broken) is None
+
+    def test_section_number_is_not_mistaken_for_a_value(self):
+        """`합 계 571,122 221,121 350,001 5. 위험관리` — 뒤의 절 번호 `5.` 를
+        값으로 읽으면 검산이 깨지고 멀쩡한 종목이 통째로 빠진다."""
+        from bot.dart_backlog import parse_backlog
+        assert parse_backlog(self._SHI)["value"] == 350_001 * 1e8
+
+    def test_accounting_parentheses_are_negative(self):
+        """HD현대중공업은 기납품액을 `(12,248,487)` 로 쓴다 — 이미 음수라
+        그대로 빼면 부호가 두 번 뒤집혀 검산이 깨진다."""
+        from bot.dart_backlog import _to_num
+        assert _to_num("(12,248,487)") == -12_248_487.0
+        assert _to_num("12,248,487") == 12_248_487.0
+
+    @pytest.mark.parametrize("name,text", [
+        # 키워드는 있는데 **값이 없다.** 근처 숫자(계약금액 1,102억)를 집으면 대형 오류.
+        ("HD현대건설기계·기재생략",
+         "※ 당사의 제품가격, 생산능력, 납품상황 등 영업비밀에 해당하는 정보의 누설 우려가 "
+         "있는 항목(수량, 금액, 기납품액, 수주잔고 등)의 기재는 생략하였습니다. "
+         "계약금액은 110,200,000,000원이며 (단위 : 백만원)"),
+        # 계약잔액 ≠ 수주잔고. 원문이 스스로 "회사 전체와 다릅니다"라고 밝힌다.
+        ("한전기술·계약잔액만",
+         "다. 프로젝트 종류별 완성도 현황 (단위 : 백만원) 구분 사업건수 수익인식액 계약잔액 "
+         "원도급액 평균 도급액 합계 321 216,618 3,099,100 6,684,108 20,823 "
+         "주1) 상기 계약 잔액은 회사 전체의 계약 잔액과 다릅니다."),
+        # 외화 — 환산 없이 원화 축에 올리면 1400배 오차.
+        ("씨에스윈드·USD",
+         "2026년 풍력타워부문의 상반기 수주총액은 645백만USD이며, 2026년 6월말 기납품액 "
+         "대비 수주잔고는 1,097백만USD입니다."),
+        ("빈 문자열", ""),
+    ])
+    def test_traps_yield_nothing_rather_than_a_wrong_number(self, name, text):
+        from bot.dart_backlog import parse_backlog
+        assert parse_backlog(text) is None, name
+
+    def test_bare_integers_never_enter_a_value_row(self):
+        """값 토큰은 **콤마 필수**다. 실측 두 곳이 이걸 요구한다:
+        ① 삼성중공업 `합 계 … 350,001 5. 위험관리` 의 절 번호
+        ② 한전기술 `합계 321 216,618 …` 의 사업건수(321) — 콤마를 안 따지면
+           건수가 첫 컬럼으로 들어가 전 열이 한 칸씩 밀린다.
+
+        콤마 없는 토큰은 건너뛰는 게 아니라 **행을 끊는다** — 한전기술 합계행은
+        통째로 버려지고, 그래서 계약잔액이 수주잔고로 새지 않는다."""
+        from bot.dart_backlog import _row_values
+        row = "합계 321 216,618 3,099,100 6,684,108 20,823 주1) 상기"
+        assert _row_values(row, len("합계")) == [], "건수(321)에서 안 끊김"
+        tail = "합 계 571,122 221,121 350,001 5. 위험관리"
+        assert _row_values(tail, len("합 계")) == [571_122.0, 221_121.0,
+                                                  350_001.0]
+
+    def test_foreign_currency_units_yield_no_multiplier(self):
+        """외화는 환산 소스가 없어 **단위를 못 정하는 것이 곧 거부**다.
+        `_UNIT_MULT` 에 USD 를 넣는 순간 씨에스윈드의 1,097백만USD 가 원화
+        축에 1,097백만원으로 올라간다(약 1,400배 과소)."""
+        from bot.dart_backlog import _unit_mult
+        for bad in ("(단위 : 백만USD)", "(단위 : 천불)", "(단위 : 백만달러)"):
+            assert _unit_mult(bad + " 합 계 1,097", len(bad) + 1) is None, bad
+        ok = "(단위 : 백만원)"
+        assert _unit_mult(ok + " 합 계 1,097", len(ok) + 1) == 1e6
+
+    def test_security_boilerplate_is_not_an_omission(self):
+        """방산은 거의 전부 "보안관계상 상세히 기재하지 아니하고 **기말잔액을
+        표시**"라고 쓴다 — 상세만 생략할 뿐 잔고는 준다. 이걸 생략 선언으로
+        읽었다가 LIG넥스원·한국항공우주가 통째로 거부됐다(2026-08-17)."""
+        from bot.dart_backlog import parse_backlog
+        assert parse_backlog(self._LIG) is not None
+
+    def test_latest_quarter_gates_the_expensive_backfill(self):
+        """수주잔고는 분기마다 원문(최대 40MB)을 받아야 한다. 안 쓰는 회사가
+        다수라, 최신 분기가 비면 **즉시 중단**해야 5회 대용량 다운로드가
+        통째로 버려지지 않는다."""
+        from bot import quarterly_infographic as qi
+        calls = []
+
+        def fake(dart, ticker, year, rc):
+            calls.append((year, rc))
+            return None
+        qs = [{"year": 2025 + i // 4, "reprt_code": "1101%d" % (1 + i % 4),
+               "financials": {}} for i in range(5)]
+        import bot.dart_backlog as bl
+        orig = bl.backlog_for
+        bl.backlog_for = fake
+        try:
+            qi._fill_backlog(object(), "042660.KS", qs)
+            assert len(calls) == 1, f"미공시인데 {len(calls)}회 조회"
+            calls.clear()
+            bl.backlog_for = lambda d, t, y, r: 1.0e12
+            qi._fill_backlog(object(), "042660.KS", qs)
+            assert all(q["financials"]["수주잔고"] == 1.0e12 for q in qs)
+        finally:
+            bl.backlog_for = orig
+
+    def test_chart_registry_and_help_are_in_sync(self):
+        """생산자가 생겼으니 차트 레지스트리와 Help 가 같이 켜져야 한다."""
+        from bot import quarterly_infographic as qi
+        keys = [k for k, _ in qi._EXTRA_CHARTS]
+        assert "수주잔고" in keys and "재고자산" in keys
+        got = qi._extra_series([{"financials": {"수주잔고": 3.5e13}}])
+        assert [g[0] for g in got] == ["수주잔고"]
+
+    def test_full_report_text_cap_is_separate_from_the_default(self):
+        """「매출 및 수주상황」은 3MB 밖으로 밀리는 게 보통이라 정기보고서는
+        더 크게 받는다. ⚠️ 캐시 키에 상한이 들어가야 3MB 요청과 40MB 요청이
+        서로의 본문을 서빙하지 않는다(KIS idxdaily 와 동일 버그 클래스)."""
+        import inspect
+        from bot import dart_feed
+        assert dart_feed._DOC_TEXT_MAX_FULL > dart_feed._DOC_TEXT_MAX
+        src = inspect.getsource(dart_feed._fetch_doc_text)
+        assert "max_bytes" in src and "_DOC_TEXT_MEM[ck]" in src
+        assert 'ck = f"{rcept_no}:{int(max_bytes)}"' in src
+        assert "backlog_for" in inspect.getsource(
+            __import__("bot.dart_backlog", fromlist=["x"]))
 
 
 class TestPeerCompsGuards20260816:
