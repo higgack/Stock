@@ -4521,7 +4521,15 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                 log.debug("_ensure_detail_enrichment: financials %s: %s", ticker, exc)
 
     def _e_peers():
-        if not si.get("peer_comps"):
+        # 옛 아카이브는 peer_comps 는 있는데 `financial_currency`·
+        # `peer_comps_asof` 가 없다(2026-08-16 추가 필드). `있으면 skip` 만
+        # 하면 그 페이지들은 **영원히** 통화 경고를 못 달고 기준시각이
+        # '미기록'으로 굳는다 → 스키마가 낡았으면 다시 채운다(독립 리뷰).
+        _pc = si.get("peer_comps") or []
+        _stale_schema = bool(_pc) and (
+            not si.get("peer_comps_asof")
+            or not any("financial_currency" in e for e in _pc))
+        if not _pc or _stale_schema:
             try:
                 import yfinance as yf
                 from bot.stock_snapshot import _collect_peer_multiples
@@ -5226,6 +5234,14 @@ _TECHNICAL_JS = r"""
 # 파생값 출처 표기 의무 — 소스가 준 값과 우리가 나눠 만든 값을 화면에서
 # 구분할 수 있어야 한다(CLAUDE.md 데이터 vs 환각). 종합·밸류에이션 두 탭이
 # 같은 문구를 써야 해서 모듈 레벨에 둔다.
+# 동종비교 배수 타당범위 — 소스(yfinance)가 준 값이라도 배수로 성립하지
+# 않으면 숫자처럼 보여주지 않는다. quarterly_infographic._PER_MIN/_PER_MAX 와
+# 같은 규약이고, 이 표엔 지금까지 **어떤 가드도 없었다**(사용자 2026-08-16
+# ASML PBR 1563.2 · EV/EBITDA 2917.0 스크린샷).
+# **절대값** 상한 — 적자 기업의 선행 PER·EV/EBITDA 는 음수가 정상이라
+# 하한을 0 으로 잡으면 멀쩡한 값이 지워진다(2026-08-16 독립 리뷰).
+_PEER_MULT_ABS_MAX = 500.0
+
 _DERIVED_LABEL = {"trailingPE": "PER(후행)", "priceToBook": "PBR",
                   "trailingEps": "EPS(후행)", "bookValue": "BPS",
                   "priceToSalesTrailing12Months": "PSR"}
@@ -7412,6 +7428,8 @@ def _render_stock_info_html(rec: dict) -> str:
     peer_comps = si.get("peer_comps", [])
     if peer_comps:
         pc_rows = ""
+        _peer_flags: set = set()
+        _peer_oob = False
         for pc in peer_comps:
             is_subj = pc.get("is_subject")
             style = ' style="background:rgba(66,165,245,0.12);font-weight:600"' if is_subj else ""
@@ -7424,15 +7442,61 @@ def _render_stock_info_html(rec: dict) -> str:
                 peer_cur = {"KS": "KRW", "KQ": "KRW", "T": "JPY", "TW": "TWD",
                             "HK": "HKD", "SS": "CNY", "SZ": "CNY"}.get(_psuf, "USD")
             mc_str = _fmt_mcap(mc, _currency_sym(peer_cur), peer_cur) if mc else "—"
+            # 재무통화 ≠ 거래통화 — **표시는 하되 표시(⚠)만** 한다.
+            # 옛 시도는 PBR·PSR·EV/EBITDA 를 통째로 비웠는데 과잉이었다
+            # (2026-08-16 독립 리뷰): HK H주는 거의 전부 CNY 재무·HKD 거래인데
+            # 환율 왜곡이 ~1.09배뿐이라 열 전체가 빈다. 실제로 관측된 파손
+            # (ASML PBR 1563.2 · EV/EBITDA 2917.0)은 환율 배수(~1.08)로 설명이
+            # 안 되는 60배 오차라 **범위 가드**가 잡는다 — 그쪽이 진짜 가드다.
+            # GBp(펜스)는 GBP 와 같은 통화라 대문자화로 동일 취급한다.
+            def _norm_cur(c):
+                c = (c or "").strip()
+                return "GBP" if c in ("GBp", "GBX", "gbp") else c.upper()
+
+            _fin_cur, _trd_cur = _norm_cur(pc.get("financial_currency")), _norm_cur(peer_cur)
+            # 거래통화를 티커 접미사로 **추정**한 경우엔 비교하지 않는다 —
+            # .L/.PA/.DE 등 미등록 접미사가 USD 로 떨어져 멀쩡한 행에 경고가
+            # 붙는다(같은 리뷰).
+            _cur_known = bool(pc.get("currency"))
+            _mismatch = bool(_fin_cur and _trd_cur and _cur_known
+                             and _fin_cur != _trd_cur)
+
             def _pv(k):
+                """배수 셀. — = 소스 미제공 / —! = 배수로 성립 안 하는 값.
+
+                ⚠️ `if v` 가 아니라 타입 검사 — 문자열이 오면 f-string 포맷에서
+                터져 탭 전체가 죽고, 0.0 은 '없음'이 아니라 소스가 준 이상값이다.
+                범위는 **절대값** 기준 — 적자 기업의 선행 PER·EV/EBITDA 는 음수가
+                정상이라 하한 0 으로 자르면 멀쩡한 값이 지워진다(독립 리뷰)."""
                 v = pc.get(k)
-                return f"{v:.1f}" if v else "—"
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    return "—"
+                if not (0 < abs(float(v)) < _PEER_MULT_ABS_MAX):
+                    return '<span title="배수 범위 밖 — 소스값 이상">—!</span>'
+                return f"{float(v):.1f}"
             _pc_dy = _safe_dy_pct(pc.get("dividendYield"), pc.get("dividendRate"), pc.get("currentPrice"))
             dy_str = f"{_pc_dy:.1f}%" if _pc_dy is not None else "—"
-            pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}</td><td class="num">{mc_str}</td>'
-            pc_rows += f'<td class="num">{_pv("trailingPE")}</td><td class="num">{_pv("forwardPE")}</td>'
-            pc_rows += f'<td class="num">{_pv("priceToBook")}</td><td class="num">{_pv("priceToSalesTrailing12Months")}</td>'
-            pc_rows += f'<td class="num">{_pv("enterpriseToEbitda")}</td><td class="num">{dy_str}</td></tr>\n'
+            _mark = (f' <span title="재무통화 {esc(_fin_cur)} ≠ 거래통화 '
+                     f'{esc(_trd_cur)} — 자산·매출 기반 배수에 환산 오차">⚠</span>'
+                     if _mismatch else "")
+            _cells = [_pv(k) for k in
+                      ("trailingPE", "forwardPE", "priceToBook",
+                       "priceToSalesTrailing12Months", "enterpriseToEbitda")]
+            pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}{_mark}</td><td class="num">{mc_str}</td>'
+            pc_rows += "".join(f'<td class="num">{c}</td>' for c in _cells)
+            pc_rows += f'<td class="num">{dy_str}</td></tr>\n'
+            if _mismatch:
+                _peer_flags.add(f'{ptk}({_fin_cur}↔{_trd_cur})')
+            # 범례는 **실제로 찍힌 셀** 기준 — 없는 기호를 설명하지 않는다.
+            _peer_oob |= any("—!" in c for c in _cells)
+        _peer_note = ""
+        if _peer_oob:
+            _peer_note += (' · <b>—!</b> = 소스가 준 값이 배수로 성립하지 않음'
+                           '(범위 밖) — 숫자처럼 보여주지 않습니다')
+        if _peer_flags:
+            _peer_note += (' · <b>⚠</b> = 재무통화≠거래통화라 자산·매출 기반 '
+                           '배수(PBR·PSR·EV/EBITDA)에 환산 오차: '
+                           + esc(" · ".join(sorted(_peer_flags))))
         peers_pane = f"""<div class="si-pane" id="si-peers">
   <div class="si-section">
     <div class="si-section-title">동종업계 밸류에이션 비교</div>
@@ -7443,7 +7507,7 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
     </div>
   </div>
-  {_src_foot}출처: yfinance</div>
+  {_src_foot}출처: yfinance · 기준 {esc(str(si.get("peer_comps_asof") or "수집시각 미기록"))} (KST){_peer_note}</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -14261,9 +14325,18 @@ _DART_FEED_CSS = """
 .df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400;margin-left:auto}
 .df-date-label{margin-left:8px}
 .df-date-cnt{margin-left:8px;font-weight:600;color:var(--text,#1f2937)}
-.df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:stretch}
-@media(max-width:900px){.df-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:600px){.df-grid{grid-template-columns:1fr}}
+/* ⚠️ `1fr` 이 아니라 `minmax(0,1fr)` — `1fr` 은 `minmax(auto,1fr)` 이라
+   트랙의 **최소폭이 콘텐츠 min-content** 다. DART 보고서명에는 공백 없는
+   긴 토큰이 흔해서(예: '반기검토(감사)의견부적정등사실확인(자본잠식률100분의
+   50이상또는자기자본10억원미만포함)') 그 카드가 자기 몫보다 넓어지고 옆
+   카드들이 눌린다 — 한 줄의 카드 3장 **가로폭이 제각각**이 되는 원인
+   (사용자 2026-08-16 '높이가 아니라 가로폭이었어'). minmax(0,·) 로 트랙이
+   콘텐츠보다 좁아질 수 있게 해야 3등분이 지켜진다.
+   여기에 더해 `.df-report`·`.df-detail-ln` 에 overflow-wrap 을 줘서 긴
+   토큰이 넘치는 대신 줄바꿈되게 한다(트랙만 고치면 글자가 카드를 삐져나감). */
+.df-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:stretch}
+@media(max-width:900px){.df-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.df-grid{grid-template-columns:minmax(0,1fr)}}
 /* height:100% + border-box — 한 줄의 카드 3개가 항상 같은 높이가 되도록
    명시한다. grid 기본 stretch 에 기대면 카드 안에 주입되는 요소(★메모⏰
    도구·배지)나 내부 여백에 따라 한 장만 안 늘어나는 경우가 생긴다
@@ -14294,8 +14367,9 @@ _DART_FEED_CSS = """
 .df-meta{display:flex;align-items:center;gap:6px;flex-shrink:0}
 .df-dt{font-size:12px;color:var(--muted,#888)}
 .df-cat{font-size:11px;padding:2px 8px;border-radius:4px;color:#fff;white-space:nowrap}
-.df-report{color:var(--muted,#6b7280);font-size:12px;line-height:1.4}
-.df-detail-ln{color:var(--text,#1f2937);font-size:12px;line-height:1.5}
+.df-report{color:var(--muted,#6b7280);font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.df-detail-ln{color:var(--text,#1f2937);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.df-corp{overflow-wrap:anywhere}
 /* list view */
 .df-grid.list-view{display:flex;flex-direction:column;gap:4px}
 .df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px;height:auto}

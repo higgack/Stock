@@ -1228,6 +1228,13 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
                 "ticker": pt,
                 "name": name[:30],
                 "currency": pi.get("currency", ""),
+                # ⚠️ 재무통화 — PBR·PSR·EV/EBITDA 는 **재무제표에서 나온 분모**를
+                # 거래통화 가격으로 나눈 값이라, 둘이 다르면 배수가 통째로
+                # 틀린다. ASML NY ADR 이 실측 사례다(가격 USD · 재무 EUR →
+                # PBR 1563.2 · EV/EBITDA 2917.0, 사용자 2026-08-16 스크린샷).
+                # HK/CN 은 이 불일치가 가장 흔한 시장이라 같은 파손이 재발한다.
+                # 이 필드가 없어 지금까지 가드를 걸 수조차 없었다.
+                "financial_currency": pi.get("financialCurrency", ""),
                 "market_cap": pi.get("marketCap"),
                 "trailingPE": pi.get("trailingPE"),
                 "forwardPE": pi.get("forwardPE"),
@@ -1264,3 +1271,10 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
     subject_added = any(e.get("is_subject") for e in comps)
     if comps and subject_added:
         snap["peer_comps"] = comps
+        # 기준시각 — 이 표는 분석 시점 스냅샷에 구워진 뒤 FULL 오버레이가
+        # 게으르게 갱신한다. 화면에 '언제 기준'이 없으면 며칠 전 값을 현재값
+        # 으로 오인한다(사용자 2026-08-16 "언제 기준인거야?").
+        # CLAUDE.md 실수기록 10-b: 데이터 위젯은 적용시각·소스 라벨 의무.
+        import datetime as _dt
+        snap["peer_comps_asof"] = _dt.datetime.now(
+            _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
