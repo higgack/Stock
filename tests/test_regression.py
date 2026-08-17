@@ -21664,6 +21664,63 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestDocFetchDiagnostics20260817:
+    """한화에어로 2025 사업보고서·2026 1분기가 `본문없음 0자` 로만 보이던 건
+    (사용자 2026-08-17) `_fetch_doc_text` 가 **모든 실패를 조용히 삼켰기**
+    때문이다. 사유를 남기고, 여러 XML 로 쪼개진 본문도 전부 읽는다."""
+
+    def test_every_failure_path_logs_why(self):
+        """silent-fail 금지(실수 #12). 각 return None 앞에 사유 로그가 있어야
+        운영자가 '왜 0자인지'를 로그만 보고 알 수 있다."""
+        import inspect
+        from bot import dart_feed
+        src = inspect.getsource(dart_feed._fetch_doc_text)
+        lines = src.splitlines()
+        marks = [i for i, ln in enumerate(lines)
+                 if "_doc_fail_mark(rcept_no)" in ln]
+        assert marks, "실패 마킹 자체가 없다"
+        for i in marks:
+            # 실패 마킹 **직전 2줄 안에** 사유 로그가 있어야 한다. 창을 넓히면 옆
+            # 분기의 로그가 잡혀 공허해지고(4줄로 했다가 실측), 개수 비교로는
+            # 안 된다 — 경고 중 하나는 실패가 아니라 폴백 알림이다.
+            near = "\n".join(lines[max(0, i - 2):i])
+            assert 'log.warning("_fetch_doc_text' in near, \
+                f"{i}행 실패가 조용하다:\n{near}"
+        assert "type(exc).__name__" in src, "예외 종류를 안 남긴다"
+
+    def test_all_zip_entries_are_read_not_just_the_largest(self):
+        """정기보고서는 본문이 여러 XML 로 쪼개져 오는 경우가 있다 — 가장 큰
+        엔트리 하나만 읽으면 뒷부분(「매출 및 수주상황」 포함)이 통째로 빠진다.
+        큰 것부터 이어붙인다(파서가 첫 매치를 쓰므로 순서가 중요)."""
+        import inspect
+        from bot import dart_feed
+        src = inspect.getsource(dart_feed._fetch_doc_text)
+        assert "for n in names:" in src and "chunks" in src, "엔트리 순회 없음"
+        assert "reverse=True" in src, "큰 엔트리 우선이 아니다"
+        # 확장자가 예상과 달라도 버리지 않는다.
+        assert "zf.namelist() if not n.endswith" in src, "확장자 폴백 없음"
+
+    def test_concatenation_preserves_a_split_body(self):
+        """실제 zip 으로 검증 — 뒤쪽 조각의 수주표가 살아 있어야 한다."""
+        import io as _io
+        import re as _re
+        import zipfile
+        buf = _io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("part1.xml", "<p>" + "가" * 500 + "</p>")
+            z.writestr("part2.xml",
+                       "<p>(단위 : 억원) 수주총액 기납품액 수주잔고 "
+                       "합 계 1,000 400 600</p>")
+        zf = zipfile.ZipFile(_io.BytesIO(buf.getvalue()))
+        names = sorted(zf.namelist(),
+                       key=lambda n: zf.getinfo(n).file_size, reverse=True)
+        out = _re.sub(r"\s+", " ", _re.sub(
+            r"<[^>]+>", " ", " ".join(zf.read(n).decode("utf-8") for n in names)))
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(out)
+        assert got and got["value"] == 600 * 1e8, got
+
+
 class TestBacklogObservability20260817:
     """사용자 2026-08-17 '런타임 로깅 진행해줘' + '아직도 연간→분기인 게 있다'."""
 

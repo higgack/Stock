@@ -15,6 +15,8 @@
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --ticker 012450.KS
         → 그 종목의 5분기를 **실제로 다시 조회**해 분기별 성공/실패 사유를 찍는다
           (차트에서 특정 분기 막대만 비어 있을 때 원인 특정용).
+    cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --doc 20260319000633
+        → `본문없음 0자` 일 때 원문 수신을 해부한다(HTTP 상태·바이트수·zip 엔트리).
 """
 from __future__ import annotations
 
@@ -90,9 +92,50 @@ def per_quarter(ticker: str) -> int:
     return 0
 
 
+def doc_probe(rcept_no: str) -> int:
+    """`document.xml` 수신 자체를 해부한다 — HTTP 상태·바이트수·zip 엔트리.
+
+    `본문없음 · 원문 0자` 는 rcept_no 는 찾았는데 원문 수신이 실패했다는 뜻이고,
+    옛 코드는 그 사유를 통째로 삼켰다(한화에어로 2025 사업보고서·2026 1분기,
+    사용자 2026-08-17). 여기서 응답을 직접 보면 원인이 확정된다."""
+    import io as _io
+    import zipfile
+
+    import requests
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    if not dart:
+        print("❌ DART_API_KEY 없음")
+        return 1
+    r = requests.get("https://opendart.fss.or.kr/api/document.xml",
+                     params={"crtfc_key": dart.api_key, "rcept_no": rcept_no},
+                     timeout=30)
+    blob = r.content or b""
+    print(f"■ rcept_no={rcept_no}")
+    print(f"  HTTP {r.status_code} · Content-Type {r.headers.get('Content-Type')}")
+    print(f"  수신 {len(blob):,} bytes · 선두 {blob[:200]!r}")
+    if len(blob) < 200:
+        print("  → 본문이 아니다. DART 가 오류 JSON/XML 을 돌려준 것 "
+              "(키 권한·일일한도·존재하지 않는 접수번호 등).")
+        return 0
+    try:
+        zf = zipfile.ZipFile(_io.BytesIO(blob))
+    except Exception as exc:
+        print(f"  ❌ zip 열기 실패: {type(exc).__name__}: {exc}")
+        return 0
+    print(f"  zip 엔트리 {len(zf.namelist())}개:")
+    for n in zf.namelist():
+        print(f"    {zf.getinfo(n).file_size:>12,} bytes  {n}")
+    tot = sum(zf.getinfo(n).file_size for n in zf.namelist())
+    print(f"  합계 {tot:,} bytes")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) > 2 and argv[1] == "--ticker":
         return per_quarter(argv[2])
+    if len(argv) > 2 and argv[1] == "--doc":
+        return doc_probe(argv[2])
     return summarize()
 
 

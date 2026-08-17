@@ -631,21 +631,41 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
                          params={"crtfc_key": api_key, "rcept_no": rcept_no},
                          timeout=20)
         blob = r.content or b""
+        # ⚠️ 실패 사유를 **반드시 남긴다.** 옛 코드는 전부 조용히 None 을
+        # 돌려서, 한화에어로 사업보고서·1분기보고서가 '본문없음 0자'로만
+        # 보였다(사용자 2026-08-17). silent-fail 금지 — CLAUDE.md 실수 #12.
         if len(blob) < 200 or blob[:1] in (b"{", b"<") and b"status" in blob[:200]:
+            log.warning("_fetch_doc_text %s: 본문 아님 (HTTP %s · %d bytes · %r)",
+                        rcept_no, r.status_code, len(blob), blob[:120])
             _doc_fail_mark(rcept_no)
             return None
         zf = zipfile.ZipFile(io.BytesIO(blob))
+        # 본문 = 가장 큰 엔트리 우선, **나머지도 이어붙인다.** 정기보고서는
+        # 본문이 여러 XML 로 쪼개져 오는 경우가 있어 하나만 읽으면 뒷부분
+        # (「매출 및 수주상황」 포함)이 통째로 빠진다. 파서는 첫 매치를 쓰므로
+        # 큰 엔트리를 앞에 둔다.
         names = [n for n in zf.namelist() if n.lower().endswith((".xml", ".html"))]
         if not names:
+            # 확장자가 예상과 다른 경우(.txt 등) — 버리지 말고 전부 시도한다.
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+            log.warning("_fetch_doc_text %s: xml/html 엔트리 없음 → 전체 시도 %r",
+                        rcept_no, zf.namelist()[:10])
+        if not names:
+            log.warning("_fetch_doc_text %s: zip 이 비어 있음", rcept_no)
             _doc_fail_mark(rcept_no)
             return None
-        # 본문 = 가장 큰 엔트리 (첨부/표지가 작은 파일로 따로 옴)
-        name = max(names, key=lambda n: zf.getinfo(n).file_size)
-        raw = zf.read(name)[:max_bytes]
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw.decode("cp949", errors="ignore")
+        names.sort(key=lambda n: zf.getinfo(n).file_size, reverse=True)
+        chunks, budget = [], max_bytes
+        for n in names:
+            if budget <= 0:
+                break
+            raw = zf.read(n)[:budget]
+            budget -= len(raw)
+            try:
+                chunks.append(raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                chunks.append(raw.decode("cp949", errors="ignore"))
+        text = " ".join(chunks)
         txt = re.sub(r"<[^>]+>", " ", text)
         out = re.sub(r"\s+", " ", txt)
         # ⚠️ 개수가 아니라 **총량**으로 제한한다. 옛 코드는 64개까지
@@ -659,7 +679,9 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
                 break
             _DOC_TEXT_MEM.pop(next(iter(_DOC_TEXT_MEM)))
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("_fetch_doc_text %s 실패: %s: %s",
+                    rcept_no, type(exc).__name__, exc)
         _doc_fail_mark(rcept_no)
         return None
 
