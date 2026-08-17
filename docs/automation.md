@@ -81,3 +81,5 @@
 운영자가 같은 명령을 두 번 이상 반복 실행해야 하는 fix 는 잘못된 fix — 우선순위
 in-process scheduler > systemd timer > cron > (일회성만) 수동. 새 반복작업 추가 = 이 표에
 한 줄 + 실제 자동화 메커니즘 구현이 같은 커밋.
+
+- **수주잔고 파서 리뷰** (`_periodic_backlog_review`, telegram_bot) — 격주 금요일 16:00 KST. `dart_backlog._MISS_LOG` 에 쌓인 '파서가 값을 못 낸 사유'를 요약해 텔레그램 발송. **새 미스가 없으면 무음**(격주 무음 알림은 곧 무시된다). 격주 판정은 ISO 주차 짝수 + 금요일 + 16시 — 상태 파일 없이 시각만으로 결정돼 봇 재시작에 흔들리지 않는다. 수신자는 DART 공시알림 chat_id 재사용.

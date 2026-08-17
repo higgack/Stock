@@ -537,6 +537,36 @@ def parse_backlog(text: str) -> dict | None:
     return None
 
 
+def review_text() -> str:
+    """미스 요약 HTML — 보낼 게 없으면 빈 문자열.
+
+    ⚠️ 기록 자체가 **개선 여지 있는 사유만** 담는다(미공시는 `_log_miss` 가
+    거른다). 그래서 여기 뭔가 있다는 건 곧 '새 형식이 나타났다' 는 뜻이다."""
+    import json
+    from collections import Counter
+    if not _MISS_LOG.exists():
+        return ""
+    rows = []
+    for ln in _MISS_LOG.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(ln))
+        except Exception:
+            continue
+    if not rows:
+        return ""
+    by = Counter(r.get("reason", "?") for r in rows)
+    tick = Counter(r.get("ticker") for r in rows)
+    out = [f"📐 <b>수주잔고 파서 리뷰</b> (격주 금요일)",
+           f"막힌 조회 {len(rows)}건 · 종목 {len(tick)}개",
+           ""]
+    out += [f"· {r}: {n}건" for r, n in by.most_common()]
+    out += ["", "<b>종목</b> (상위 10)"]
+    out += [f"· {t} ×{n}" for t, n in tick.most_common(10)]
+    out += ["", "이 목록을 Claude 에게 그대로 붙여넣으면 파서를 확장합니다.",
+            "원문 확인: <code>backlog_misses --ticker &lt;코드&gt;</code>"]
+    return "\n".join(out)
+
+
 def backlog_for(dart, ticker: str, year: int, reprt_code: str) -> float | None:
     """해당 분기 정기보고서의 수주잔고(원). 없으면 None.
 
