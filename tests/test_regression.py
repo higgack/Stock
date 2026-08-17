@@ -21664,6 +21664,76 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestBiweeklyBacklogReview20260817:
+    """사용자 2026-08-17 "2주에 한번(금요일 16:00) 오류 잡아줘, 내가 기억을
+    못하니까". 사람이 기억해야 하는 일은 자동화한다(CLAUDE.md Automation-first)."""
+
+    @staticmethod
+    def _rows(tmp_path, rows):
+        import json
+        f = tmp_path / "m.jsonl"
+        f.write_text("\n".join(json.dumps(r, ensure_ascii=False)
+                                for r in rows) + "\n", encoding="utf-8")
+        return f
+
+    def test_silent_when_nothing_is_stuck(self, tmp_path, monkeypatch):
+        """⚠️ 격주 무음 알림은 곧 무시되고, 그러면 진짜 신호가 왔을 때도
+        안 읽힌다. 새 미스가 없으면 **아무것도 보내지 않는다**."""
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", tmp_path / "none.jsonl")
+        assert bl.review_text() == ""
+        monkeypatch.setattr(bl, "_MISS_LOG", self._rows(tmp_path, []))
+        assert bl.review_text() == ""
+
+    def test_report_names_the_reasons_and_tickers(self, tmp_path, monkeypatch):
+        from bot import dart_backlog as bl
+        monkeypatch.setattr(bl, "_MISS_LOG", self._rows(tmp_path, [
+            {"ticker": "012450.KS", "year": 2026, "reprt": "11013",
+             "reason": "형식미지원"},
+            {"ticker": "012450.KS", "year": 2025, "reprt": "11011",
+             "reason": "형식미지원"},
+            {"ticker": "034020.KS", "year": 2026, "reprt": "11012",
+             "reason": "검산실패"}]))
+        t = bl.review_text()
+        assert "형식미지원: 2건" in t and "검산실패: 1건" in t
+        assert "012450.KS ×2" in t and "034020.KS ×1" in t
+        assert "붙여넣으면" in t, "다음 행동이 안 적혀 있다"
+
+    def test_schedule_is_biweekly_friday_16h_kst(self):
+        """격주 판정은 **시각만으로** 결정돼야 한다 — 상태 파일을 두면 봇
+        재시작 때 기준점이 흔들린다. ISO 주차 짝수 + 금요일 + 16시."""
+        import datetime as dt
+        # ⚠️ import 대신 **소스를 읽는다** — telegram 미설치 환경에서도 스케줄
+        # 규약이 검증돼야 한다(샌드박스 CI 는 python-telegram-bot 이 없다).
+        full = open("bot/telegram_bot.py", encoding="utf-8").read()
+        i = full.index("async def _periodic_backlog_review(")
+        src = full[i:full.index("\nasync def ", i + 1)]
+        assert "now.weekday() == 4" in src and "now.hour == 16" in src
+        assert "iso_week % 2 == 0" in src
+        assert "datetime.now(_KST)" in src, "서버 로컬타임 의존(실수기록 10-a)"
+        # 실제로 격주 금요일만 걸리는지
+        kst = dt.timezone(dt.timedelta(hours=9))
+        hits = [d for d in (dt.datetime(2026, 8, 1, 16, tzinfo=kst)
+                            + dt.timedelta(days=i) for i in range(70))
+                if d.weekday() == 4 and d.isocalendar()[1] % 2 == 0]
+        gaps = {(b - a).days for a, b in zip(hits, hits[1:])}
+        assert gaps == {14}, f"격주가 아니다: {sorted(gaps)}"
+
+    def test_task_is_actually_registered(self):
+        """태스크를 만들고 create_task 를 안 하면 영원히 안 돈다(실수 #12)."""
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "_periodic_backlog_review(application))" in src
+        assert "application._backlog_review_task = asyncio.create_task(" in src
+
+    def test_duplicate_sends_are_suppressed_within_the_window(self):
+        """루프가 1시간마다 깨는데 16시대는 한 번뿐이라 괜찮지만, 재시작이
+        겹치면 같은 창에서 두 번 갈 수 있다 — 주차 키로 막는다."""
+        full = open("bot/telegram_bot.py", encoding="utf-8").read()
+        i = full.index("async def _periodic_backlog_review(")
+        src = full[i:full.index("\nasync def ", i + 1)]
+        assert "if key == sent_key:" in src and "sent_key = key" in src
+
+
 class TestDocFetchDiagnostics20260817:
     """한화에어로 2025 사업보고서·2026 1분기가 `본문없음 0자` 로만 보이던 건
     (사용자 2026-08-17) `_fetch_doc_text` 가 **모든 실패를 조용히 삼켰기**

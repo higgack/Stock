@@ -1100,7 +1100,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터(정기보고서=사업/반기/분기, 반기=2Q 실적 원문)·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터) · 새 데이터 하단알림(1분 체크·30분 자동반영, 반영은 사용자 선택) · 종목검색·스크롤복원
  ★📝⏰ <b>카드 도구</b> (카드형 대시보드 공통 · 차트보드 PPI·CPI·유동성·시장타이밍·경제캘린더 제외) — 카드마다 ★중요·📝메모·⏰알람 토글(서버 저장→모바일↔PC 동기화). 검색창 옆 ⭐중요/📝메모 필터로 표시한 것만 보기. ⏰알람=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 텔레그램 발송(메모+카드), ✅확인 시 종료·미확인 시 다음날 재발송
    http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
- 📊 <b>분기실적</b> 탭 (종목 상세 · 전 시장) — 최근 5분기 매출·영업이익·순이익 추이(막대 값 라벨) + 단일분기 YoY/QoQ(이익률은 %p) + 수주잔고·재고자산 막대(KR·공시하는 종목만) + TTM·Forward PER·PSR 스코어카드(시총 기준 라이브, 시간 단위 갱신). 소스: KR=DART 정기보고서 · 그 외=yfinance 분기 손익. 성장동력·리스크 카드(각 최대 6개)는 DART 공시 원문 근거라 <b>한국 종목만</b>, 탭 열면 자동 생성(분기당 1회 과금, 이후 캐시)
+ 📊 <b>분기실적</b> 탭 (종목 상세 · 전 시장) — 최근 5분기 매출·영업이익·순이익 추이(막대 값 라벨) + 단일분기 YoY/QoQ(이익률은 %p) + 수주잔고·재고자산 막대(KR·공시하는 종목만, 파서 미스는 격주 금 16시 자동 리포트) + TTM·Forward PER·PSR 스코어카드(시총 기준 라이브, 시간 단위 갱신). 소스: KR=DART 정기보고서 · 그 외=yfinance 분기 손익. 성장동력·리스크 카드(각 최대 6개)는 DART 공시 원문 근거라 <b>한국 종목만</b>, 탭 열면 자동 생성(분기당 1회 과금, 이후 캐시)
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
 ━━━━━━━━━
@@ -4003,6 +4003,53 @@ async def _periodic_marketcap() -> None:
             log.exception("marketcap regen failed")
 
 
+async def _periodic_backlog_review(application) -> None:
+    """수주잔고 파서 미스 리포트 — **격주 금요일 16:00 KST** (사용자 2026-08-17
+    "2주에 한번 해서 오류 잡아줘, 내가 기억을 못하니까").
+
+    파서가 값을 못 낸 사유가 `dart_backlog._MISS_LOG` 에 쌓인다(실사용이 곧
+    프로브). 그걸 사람이 SSH 로 훑는 건 CLAUDE.md 자동화 원칙 위반이자
+    '기억해야 하는 일'이라, 봇이 알아서 요약해 보낸다.
+
+    ⚠️ **새 미스가 없으면 아무것도 안 보낸다** — 격주 무음 알림은 곧 무시되고,
+    그러면 진짜 신호가 왔을 때도 안 읽힌다.
+
+    격주 판정: ISO 주차 번호가 짝수인 금요일. 스케줄 파일 없이 시각만으로
+    결정되므로 봇이 재시작해도 흔들리지 않는다(상태 없는 스케줄).
+    루프는 1시간마다 깨어 '지금이 그 시각인지'만 본다 — 긴 sleep 은 재시작
+    때마다 기준점이 밀린다."""
+    sent_key = None
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            now = datetime.now(_KST)
+            iso_week = now.isocalendar()[1]
+            if not (now.weekday() == 4 and now.hour == 16 and iso_week % 2 == 0):
+                continue
+            key = f"{now.year}-{iso_week}"
+            if key == sent_key:            # 같은 창에서 중복 발송 방지
+                continue
+            sent_key = key
+            from bot.dart_backlog import review_text
+            body = await asyncio.to_thread(review_text)
+            if not body:
+                continue                   # 새 미스 없음 — 무음
+            # 수신자는 DART 공시알림에 이미 등록된 chat_id 를 재사용한다 —
+            # 별도 등록 절차를 만들면 그것부터 기억해야 해서 취지에 어긋난다.
+            # 미등록이면 조용히 건너뛴다(알림을 켠 적 없는 사용자에게 안 보냄).
+            from bot.dart_fav_alerts import status as _dfa_status
+            chat_id = (_dfa_status() or {}).get("chat_id")
+            if not chat_id:
+                log.info("backlog review: 수신 chat_id 없음 — 발송 생략")
+                continue
+            await application.bot.send_message(
+                chat_id=chat_id, text=body, parse_mode="HTML")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("backlog review failed")
+
+
 async def _periodic_fred_boards() -> None:
     """FRED 보드(ppi/liquidity.html) 6시간 주기 재생성(사용자 2026-07-02) —
     유동성 일간 지표(VIX·스프레드·커브·환율 히스토리)가 당일 반영되게. 자정
@@ -4667,6 +4714,8 @@ async def _on_startup(application) -> None:
     # 스프레드·커브) 당일 반영. 자정 regen 과 별개, 첫 사이클은 6h 후(startup
     # 스레드가 방금 생성). to_thread(네트워크 ~120콜, 이벤트루프 차단 금지).
     application._fred_boards_task = asyncio.create_task(_periodic_fred_boards())
+    application._backlog_review_task = asyncio.create_task(
+        _periodic_backlog_review(application))
     application._marketcap_task = asyncio.create_task(_periodic_marketcap())
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
