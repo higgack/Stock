@@ -56,7 +56,12 @@ class Source:
 #
 # nav_label 이모지 규칙(사용자 2026-07-11 스크린샷 교훈): 🇹🇼/🇨🇳 같은
 # **flag-sequence 는 일부 폰트에서 'tw' 문자로 렌더**되므로 논-플래그
-# 이모지(국가 상징 동물/음식)를 쓴다. 🇺🇸 만 예외적으로 유지(기존 표기).
+# 이모지(국가 상징 동물/음식)를 쓴다.
+# 2026-08-17: 예외로 남겨뒀던 🇺🇸 도 결국 같은 증상이 났다(사용자 스크린샷 —
+# 미국만 'us' 글자로 렌더). 예외 없이 전 소스 논-플래그로 통일하고, 테스트가
+# regional-indicator(U+1F1E6~U+1F1FF)를 nav_label·페이지 h1 에서 금지한다.
+# ⚠️ 이 금지는 **표시 문자열만** — 텔레그램 캡션(파서 입력)의 🇺🇸/🇹🇼 는 원문
+# 마커라 손대면 ingest 가 통째로 깨진다.
 SOURCES: tuple[Source, ...] = (
     Source("tw", "대만", _tw.parse_tw_export, _tw.open_tw_db, _tw.ingest,
            _tw.regenerate, "tw.db", "tw.html", "🧋 대만 수출 데이터(나쁜양파)"),
@@ -76,7 +81,7 @@ SOURCES: tuple[Source, ...] = (
     Source("mx", "멕시코", _mx.parse_mx_export, _mx.open_mx_db, _mx.ingest,
            _mx.regenerate, "mx.db", "mx.html", "🌮 멕시코 수출 데이터(나쁜양파)"),
     Source("us", "미국 수입", _us.parse_us_import, _us.open_us_db, _us.ingest,
-           _us.regenerate, "us.db", "us.html", "🇺🇸 미국 수입 데이터(나쁜양파)"),
+           _us.regenerate, "us.db", "us.html", "🗽 미국 수입 데이터(나쁜양파)"),
     Source("krs", "한국 수출(종목별)", _krs.parse_kr_stock_export,
            _krs.open_kr_stock_db, _krs.ingest, _krs.regenerate,
            "kr_stock.db", "kr_stock.html",
