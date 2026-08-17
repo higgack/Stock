@@ -1018,7 +1018,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
             kind = "full" if full else "light"
-            cache_f = cache_dir / f"{safe}_{kind}_v5.json"
+            # ⚠️ 버전은 `dashboard._RENDER_VER` 단일 출처 — 렌더러를 고치고
+            # 여기를 안 올리면 stale-while-revalidate 가 옛 HTML 을 무기한
+            # 서빙한다(TTL 만료도 소용없다, 2026-08-17 실측).
+            from bot.dashboard import _RENDER_VER
+            cache_f = cache_dir / f"{safe}_{kind}_v{_RENDER_VER}.json"
             # FULL is slow-moving (filings quarterly, 수급 daily) → 4 h.
             # LIGHT is intraday → 5 min (matches the chart API cadence).
             ttl = 14400 if full else 300  # FULL=4h, LIGHT=5min

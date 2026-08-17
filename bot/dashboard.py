@@ -4080,6 +4080,14 @@ _PER_SHARE_ITEMS = frozenset({
     "Tangible Book Value Per Share", "Dividend Per Share",
 })
 
+# ⚠️ **렌더러 버전.** `/api/quote?full=1` 의 디스크 캐시 키에 들어간다
+# (`{ticker}_full_v{N}.json`). 그 캐시는 TTL 4h 인데다 stale-while-revalidate
+# 라 **아무리 오래된 파일도 먼저 서빙**한다 — 렌더 로직을 고쳐도 옛 HTML 이
+# 계속 나오는 이유다(사용자 2026-08-17 '아직도 연간→분기 순서인 게 있다').
+# 표 순서·포맷·섹션 구성 등 **화면 산출물이 바뀌는 변경을 하면 반드시 올린다.**
+#   v6 (2026-08-17) 분기→연간 순서 + 주당지표 축약 해제
+_RENDER_VER = 6
+
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
     "Cost Of Revenue": "매출원가", "Gross Profit": "매출총이익",
