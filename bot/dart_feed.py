@@ -601,12 +601,26 @@ def _doc_fail_mark(rcept_no: str, hours: float = 0.5) -> None:
 # 으로 본문을 받게 (2026-06-12 '조금 다른 양식은 알아서').
 _DOC_TEXT_MEM: dict[str, str] = {}
 
+# 기본 절단 — 짧은 계약공시용. 사업/반기보고서는 이걸론 모자란다:
+# 「매출 및 수주상황」은 목차상 II.사업의 내용 뒤라 3MB 밖으로 밀리는 게
+# 보통이고, 그러면 **공시하는 회사도 '수주잔고 없음'으로 오판된다**.
+# trade/scripts/probe_dart_revenue 가 같은 이유로 자체 상한을 따로 올려 썼다.
+_DOC_TEXT_MAX = 3_000_000
+_DOC_TEXT_MAX_FULL = 40_000_000   # 정기보고서 전문(수주상황·매출구성 파서용)
 
-def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
+
+def _fetch_doc_text(rcept_no: str, api_key: str,
+                    max_bytes: int = _DOC_TEXT_MAX) -> str | None:
     """공시 원문(document.xml zip) → 태그 제거 평문. 실패 시 None +
-    negative-cache (₩0·LLM 0·stdlib)."""
-    if rcept_no in _DOC_TEXT_MEM:   # fail-mark 게이트보다 먼저 (이미 받음)
-        return _DOC_TEXT_MEM[rcept_no]
+    negative-cache (₩0·LLM 0·stdlib).
+
+    ⚠️ 캐시 키에 **max_bytes 포함** — 없으면 3MB 요청과 40MB 요청이 같은
+    항목을 공유해, 먼저 받은 쪽 길이가 상대에게 서빙된다(계약공시 파서가
+    먼저 돌면 정기보고서 파서가 조용히 잘린 본문을 보게 된다). 2026-08-16
+    KIS `idxdaily` 캐시에서 똑같이 났던 버그다."""
+    ck = f"{rcept_no}:{int(max_bytes)}"
+    if ck in _DOC_TEXT_MEM:   # fail-mark 게이트보다 먼저 (이미 받음)
+        return _DOC_TEXT_MEM[ck]
     if not rcept_no or _doc_fail_recent(rcept_no):
         return None
     import io
@@ -626,7 +640,7 @@ def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
             return None
         # 본문 = 가장 큰 엔트리 (첨부/표지가 작은 파일로 따로 옴)
         name = max(names, key=lambda n: zf.getinfo(n).file_size)
-        raw = zf.read(name)[:3_000_000]
+        raw = zf.read(name)[:max_bytes]
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -635,7 +649,7 @@ def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
         out = re.sub(r"\s+", " ", txt)
         if len(_DOC_TEXT_MEM) >= 64:
             _DOC_TEXT_MEM.pop(next(iter(_DOC_TEXT_MEM)))
-        _DOC_TEXT_MEM[rcept_no] = out
+        _DOC_TEXT_MEM[ck] = out
         return out
     except Exception:
         _doc_fail_mark(rcept_no)
