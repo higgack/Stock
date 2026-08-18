@@ -4092,7 +4092,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v10 (2026-08-18) 자체계산 기준 툴팁을 yfinance 파생분에도 (한 행에 기준 혼재)
 #   v11 (2026-08-18) 재무제표 수집시각·표의 최신분기 라벨 + 주체행 PER 정본 통일
 #   v12 (2026-08-18) 동종비교 KR 피어를 DART TTM 기준으로(yfinance 재무 지연 회피)
-_RENDER_VER = 12
+#   v13 (2026-08-18) 실적 탭 KR=WISEreport + 낡은 이력 경고(전 시장)
+_RENDER_VER = 13
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -5727,11 +5728,10 @@ def _render_stock_info_html(rec: dict) -> str:
     <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">컨센서스·잠정치=억원 · Surprise·전년동기대비=% · 잠정치 ●=지배주주 기준</div>
   </div>"""
 
+    # ⚠️ 이 표는 **실적 탭**으로 옮겼다(2026-08-18) — 실적 발표 이력의
+    # 제자리가 거기고, yfinance KR 이력이 몇 년씩 묵어 그 탭이 비어 있었다.
+    # 같은 표를 두 곳에 두면 한쪽만 고쳐져 어긋난다(단일 배치).
     surprise_html = ""
-    if is_kr:
-        _es = mkt.get("earnings_surprise")
-        if _es:
-            surprise_html = _es_table(_es)
 
     rec_key = (si.get("recommendation_key") or "").lower()
     rec_map = {"buy": "매수", "strong_buy": "강력 매수", "hold": "보유",
@@ -5999,6 +5999,43 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         earnings_table = '<div class="si-empty">실적 데이터가 없습니다.</div>'
 
+    # ⚠️ **낡은 표를 '최근 실적'이라고 부르지 않는다.** yfinance 의 KR 실적
+    # 이력은 몇 년씩 묵어 있다 — 사용자 2026-08-18 한화엔진 082740.KS 는
+    # 2017~2020 만 나왔다(마지막 발표일 2020-11). 종목마다 커버리지가 달라
+    # 어떤 종목은 최신, 어떤 종목은 6년 전이라 화면만 보고는 구분이 안 된다.
+    # 전 시장 공통 — JP/TW/CN 도 같은 소스라 같은 함정이 있다.
+    _EARN_STALE_DAYS = 550          # 약 18개월 = 분기 발표 6회를 놓친 셈
+    _e_dates = sorted(str(e.get("date") or "")[:10] for e in (earnings or [])
+                      if e.get("date"))
+    _e_latest = _e_dates[-1] if _e_dates else ""
+    _e_stale = False
+    if _e_latest:
+        try:
+            _kst = datetime.timezone(datetime.timedelta(hours=9))
+            _d0 = datetime.datetime.strptime(_e_latest, "%Y-%m-%d").replace(tzinfo=_kst)
+            _e_stale = (datetime.datetime.now(_kst) - _d0).days > _EARN_STALE_DAYS
+        except Exception:
+            _e_stale = False
+    _e_note = (f" · 최신 발표일 {esc(_e_latest)}" if _e_latest else "")
+    _e_warn = ('<div style="font-size:12px;color:#f5a623;margin-bottom:8px">'
+               f'⚠️ 소스의 마지막 발표일이 {esc(_e_latest)} 입니다 — 최근 실적이 '
+               '아닙니다(yfinance 커버리지 한계). 최신 실적은 분기실적 탭'
+               '(DART/공시 기준)을 보세요.</div>' if _e_stale else "")
+
+    # KR 은 **더 나은 소스가 이미 있다**: WISEreport 어닝서프라이즈(컨센서스·
+    # 잠정치·Surprise·전년동기, 최근 분기). 실적 이력의 제자리가 여기이므로
+    # 이 탭에서 렌더하고, 컨센서스 탭에서는 뺀다(같은 표가 두 곳에 있으면
+    # 한쪽만 고쳐져 어긋난다).
+    _kr_earn = mkt.get("earnings_surprise") if is_kr else None
+    if _kr_earn:
+        earnings_table = _es_table(_kr_earn)
+        _e_warn = ""
+        _e_note = " · KR 실적은 WISEreport(FnGuide) 기준"
+    elif is_kr and _e_stale:
+        # 6년 전 EPS 를 '최근 실적'으로 보여주느니 없다고 하는 게 낫다.
+        earnings_table = ('<div class="si-empty">최근 실적 이력을 제공하는 KR '
+                          '소스가 없습니다 — 분기실적 탭(DART 기준)을 보세요.</div>')
+
     # ── TW 월매출 (營收) ────────────────────────────────────────
     tw_revenue_html = ""
     tw_rev = si.get("tw", {}).get("monthly_revenue") if isinstance(si.get("tw"), dict) else None
@@ -6058,14 +6095,15 @@ def _render_stock_info_html(rec: dict) -> str:
     # 최근 실적(EPS 예상/실제/서프라이즈) 표는 전 시장 yfinance earnings_history.
     # TW 월매출만 FinMind/TWSE(자체 풋노트 보유). 옛 코드가 KR=DART·TW=MOPS·
     # CN=AKShare 로 표기했으나 실제 소스와 불일치 → yfinance 로 정정(사용자 2026-06-16).
-    earn_src = "yfinance" + (" · FinMind/TWSE(월매출)" if (is_tw and tw_revenue_html) else "")
+    earn_src = ("WISEreport(FnGuide)" if _kr_earn else "yfinance") + (
+        " · FinMind/TWSE(월매출)" if (is_tw and tw_revenue_html) else "")
     earnings_pane = f"""<div class="si-pane" id="si-earnings">
   <div class="si-section">
     <div class="si-section-title">최근 실적</div>
-    {earnings_table}
+    {_e_warn}{earnings_table}
   </div>
   {tw_revenue_html}
-  {_src_foot}출처: {earn_src}</div>
+  {_src_foot}출처: {earn_src}{_e_note}</div>
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
