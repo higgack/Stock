@@ -9845,17 +9845,21 @@ def _render_screener_domains_page() -> str:
     # 2026-05-29: dashboard reorganized by 3-layer model; previous full
     # change-history section collapsed into a single footer line ("최근
     # 추가 N개" — actionable summary instead of chronological log).
+    # 헤딩 문자열은 단일 레지스트리(bot/screener_domain_labels.LAYER_LABELS) —
+    # 텔레그램 /screener_list 와 **같은 표**를 쓴다. 예전엔 두 곳에 하드코딩돼
+    # 대시보드만 한글로 바뀌고 텔레그램은 영문에 남아 있었다(2026-08-18).
+    from bot.screener_domain_labels import layer_label as _ll
     _LAYER_META = [
-        ("L1_TREND",    "📈 L1 Trend",   "Cross-cutting cycle 베팅 — 공식 sector 분류 외"),
-        ("L2_SECTOR",   "🏢 L2 Sector",  "11 공식 sector (미국 GICS-like)"),
-        ("L3_INDUSTRY", "🔬 L3 Industry","각 L2 아래 sub-industry"),
+        ("L1_TREND",    _ll("L1_TREND"),   "Cross-cutting cycle 베팅 — 공식 sector 분류 외"),
+        ("L2_SECTOR",   _ll("L2_SECTOR"),  "11 공식 sector (미국 GICS-like)"),
+        ("L3_INDUSTRY", _ll("L3_INDUSTRY"),"각 L2 아래 sub-industry"),
         # L4 = 각 L3 아래 세부 sub-industry (2026-06-14, GICS sub-industry 깊이).
         # 예: Semiconductors → Memory/Foundry/Equipment/Logic AI ...
-        ("L4_SUBINDUSTRY", "🎯 L4 세부 업종", "각 L3 아래 세부 업종 (slug/별칭 접근)"),
+        ("L4_SUBINDUSTRY", _ll("L4_SUBINDUSTRY"), "각 L3 아래 세부 업종 (slug/별칭 접근)"),
         # AD_HOC = `/screener <자유어>` 5회+ 사용 후 자동 promoted 정식 모듈
         # (bot/screener_freetext.promote_to_module). 사용자 수동 reclassify
         # 전까지 별도 layer 로 노출.
-        ("AD_HOC",      "🆕 자유어 promoted", "자유어 5회+ 사용 → 정식 모듈 자동 생성 (수동 reclassify 대기)"),
+        ("AD_HOC",      _ll("AD_HOC"), "자유어 5회+ 사용 → 정식 모듈 자동 생성 (수동 reclassify 대기)"),
     ]
     by_layer: dict[str, list[dict]] = defaultdict(list)
     for d in ds:
@@ -9863,11 +9867,10 @@ def _render_screener_domains_page() -> str:
 
     def _render_card(d: dict) -> str:
         slug = d["slug"]
-        domain_raw = d["domain"]
-        if d.get("layer") == "L4_SUBINDUSTRY" and " (" in domain_raw:
-            base, rest = domain_raw.split(" (", 1)
-            domain_raw = base + " (" + rest.replace(")", "") + ")"
-        domain = _html.escape(domain_raw)
+        # 라벨 형식은 `list_domains()` 가 이미 `영문 (한글)` 로 통일한다
+        # (bot/screener_domain_labels). 옛 L4 전용 괄호 정리 로직은 제거 —
+        # 두 곳에서 문자열을 만지면 또 갈라진다(2026-08-18).
+        domain = _html.escape(d["domain"])
         aliases = [a for a in d["aliases"] if a.lower() != slug]
         aliases = [a for a in d["aliases"] if a.lower() != slug]
         alias_html = ""
@@ -16826,9 +16829,12 @@ def _render_market_page(data: dict) -> str:
     # 7d 캐시). 실적·리서치 US 행에 주입 → '티커 (한글명)' 표시(사용자 2026-06-15
     # '미국도 다른나라처럼 한글명'). 미매핑(소형주)은 티커만. 1회 fetch·graceful.
     # ⚠️ 반드시 _etab_panes(실적표) 빌드 **전**에 — 표 렌더가 name 을 읽으므로.
+    # 업종 맵(상위 300/업종)만 쓰면 소형주가 티커만 뜬다(ABHBY·ACRG·ARMP —
+    # 사용자 2026-08-18 "한글화 안된것들 최대한"). worldstock 목록을 얹은
+    # 병합 맵으로 교체 — 한글 없는 이름은 걸러내므로 원천이 영문이면 무변화.
     try:
-        from bot.naver_ranking_client import world_upjong_name as _wun
-        _us_kr = _wun("US") or {}
+        from bot.naver_ranking_client import korean_name_map as _knm
+        _us_kr = _knm("US") or {}
     except Exception:
         _us_kr = {}
     for _r in _earn_us:

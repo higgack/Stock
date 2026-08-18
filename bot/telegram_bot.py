@@ -1811,6 +1811,7 @@ def _format_screener_domains_list() -> list[str]:
     message, attaching the inline keyboard to the FIRST chunk only.
     """
     from collections import defaultdict
+    from bot.screener_domain_labels import layer_label as _ll
     from bot.screener_themes import list_domains
     ds = list_domains()
     by_layer: dict[str, list[dict]] = defaultdict(list)
@@ -1843,9 +1844,9 @@ def _format_screener_domains_list() -> list[str]:
         "",
     ]
     for layer_key, layer_label, layer_desc in [
-        ("L1_TREND", "📈 L1 Trend", "Cross-cutting cycle 베팅"),
-        ("L2_SECTOR", "🏢 L2 Sector", "11 공식 sector (미국 GICS-like)"),
-        ("AD_HOC",    "🆕 자유어 promoted",
+        ("L1_TREND", _ll("L1_TREND"), "Cross-cutting cycle 베팅"),
+        ("L2_SECTOR", _ll("L2_SECTOR"), "11 공식 sector (미국 GICS-like)"),
+        ("AD_HOC",    _ll("AD_HOC"),
                       "/screener &lt;자유어&gt; 5회+ 사용 → 자동 모듈"),
     ]:
         items = by_layer.get(layer_key, [])
@@ -1870,7 +1871,8 @@ def _format_screener_domains_list() -> list[str]:
     # ≤ 3800 UTF-16 units per chunk for headroom under the 4096 cap.
     l3_items = by_layer.get("L3_INDUSTRY", [])
     if l3_items:
-        l3_header = f"━━━ <b>🔬 L3 Industry</b> ({len(l3_items)}개) — 각 L2 아래 sub-industry ━━━"
+        l3_header = (f"━━━ <b>{_ll('L3_INDUSTRY')}</b> ({len(l3_items)}개)"
+                     " — 각 L2 아래 sub-industry ━━━")
         footer = (
             "\n\n📜 변경 이력: <code>archive/screener_domains.html</code>"
             " 페이지 하단 footer"
@@ -1900,7 +1902,7 @@ def _format_screener_domains_list() -> list[str]:
     l4_items = by_layer.get("L4_SUBINDUSTRY", [])
     if l4_items:
         chunks.append(
-            f"━━━ <b>🎯 L4 Sub-industry</b> ({len(l4_items)}개) ━━━\n\n"
+            f"━━━ <b>{_ll('L4_SUBINDUSTRY')}</b> ({len(l4_items)}개) ━━━\n\n"
             "각 L3 아래 GICS sub-industry 깊이 (예: Semiconductors → Memory · "
             "Foundry · Equipment · Logic AI ...).\n\n"
             "• 전체 목록 + 검색: 대시보드 <code>screener_domains.html</code> 🎯 L4 섹션\n"
