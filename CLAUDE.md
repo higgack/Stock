@@ -81,6 +81,12 @@ Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기
     다음 작업 전 **매번** dev 를 base 로 동기화(`git merge origin/<base>` 또는
     rebase) — 실수#17 방지+ 실수 규칙(a) "매 세션 시작 시 base fetch" 의 실제
     발동 사례. merge 직후 파일 diff 를 훑어 반복 삽입 없는지 확인 습관화.
+18. 아카이브에 **구워진** 데이터는 코드를 고쳐도 안 바뀐다(2026-08-18 동종비교):
+    `if not si.get("peer_comps")` 식 '있으면 skip' 게이트는 수집 로직을 개선해도
+    이미 분석한 종목 화면엔 영원히 안 붙는다 — 필드 유무 냄새맡기도 새 필드마다 조건을
+    같이 고쳐야 해 매번 잊는다. 수집기에 **스키마 버전**을 찍고 게이트가 대조하게 할 것
+    (peer_comps 는 `_PEER_SCHEMA_VER` 로 구조화 완료 — news/financials/kr.flow 등
+    나머지 skip-if-present 키엔 아직 규율로 적용).
    (새 실수 = 날짜 + 한 줄 추가 의무. 항목이 구조적으로 막히면[코드가 그 실패모드
    자체를 불가능하게 바꾼 경우 — 규율로 매번 기억하는 게 아니라] "#N SUPERSEDED by
    <커밋/PR>" 태그 추가, 2026-08-09 Cerebras 지식베이스 블로그 검토 — age-decay

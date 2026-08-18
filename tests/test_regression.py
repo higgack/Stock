@@ -22876,4 +22876,84 @@ class TestPeerCompsGuards20260816:
         blk = src[i:src.index("\n    def ", i + 1)]
         # 변수 **정의**만 보면 조건절에서 빼도 통과한다 — 분기 자체를 본다.
         assert "if not _pc or _stale_schema:" in blk, "낡은 스키마가 분기에 없음"
-        assert "peer_comps_asof" in blk and "financial_currency" in blk
+        # ⚠️ 필드 유무 냄새맡기(`financial_currency` 가 있나?)는 **새 필드를
+        # 넣을 때마다 이 조건도 같이 고쳐야** 해서 매번 잊는다 — 실제로
+        # #885(접미사 폴백·이름 정화·자체계산 PER/PBR)가 옛 아카이브에
+        # 영원히 안 붙었다(사용자 2026-08-18). 버전 대조로 강제한다.
+        assert "peer_comps_ver" in blk and "_PEER_SCHEMA_VER" in blk, \
+            "스키마 버전 대조가 아님 — 필드 냄새맡기로는 새 필드를 놓친다"
+
+    def test_collector_stamps_its_schema_version(self):
+        """수집기가 버전을 안 찍으면 대시보드 게이트가 항상 '낡음'이 되어
+        페이지마다 재수집이 돈다(느려지고, 반대로 조건을 뒤집으면 영원히
+        안 돈다). 버전은 수집기와 게이트의 **단일 계약**이다."""
+        from bot.stock_snapshot import _PEER_SCHEMA_VER
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        blk = src[src.index("def _collect_peer_multiples"):]
+        assert 'snap["peer_comps_ver"] = _PEER_SCHEMA_VER' in blk, "버전 미스탬프"
+        assert isinstance(_PEER_SCHEMA_VER, int) and _PEER_SCHEMA_VER >= 2
+
+    # ── 주체 행 파생값 재사용 (사용자 2026-08-18 이오테크닉스) ──────────
+    def test_subject_row_reuses_the_derived_values_already_on_the_page(self):
+        """yfinance 는 KR 종목의 PER·PBR 을 거의 안 준다. 종합·밸류에이션
+        탭은 DART 재무제표로 그걸 파생해 **이미 화면에 띄우고 있는데**
+        동종비교 표의 같은 회사 행만 비어 있었다 — 데이터 부재가 아니라
+        배선 누락이다. 없는 숫자를 만드는 게 아니라 있는 값을 옮긴다."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "peer_comps_asof": "2026-08-18 11:16",
+              "market_cap": 5.35e12, "shares_outstanding": 12_000_000,
+              # DART 재무제표 — `_derive_missing_multiples` 의 입력.
+              "kr": {"financials": {"당기순이익": 2.0e11, "자본총계": 1.0e12}},
+              "peer_comps": [
+                  {"ticker": "039030.KQ", "name": "이오테크닉스",
+                   "currency": "KRW", "financial_currency": "KRW",
+                   "market_cap": 5.35e12, "is_subject": True},
+              ]}
+        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        c = self._cells(pane, "039030.KQ")
+        assert c[3] == "26.8＊", c        # PER = 5.35조 ÷ 2000억
+        assert c[5] == "5.3＊", c         # PBR = 5.35조 ÷ 1조
+        assert "자체계산" in pane and "PER=시총÷순이익" in pane
+
+    def test_source_values_are_never_overwritten_on_the_subject_row(self):
+        """소스가 준 값이 있으면 그대로 둔다 — 파생으로 덮으면 화면 숫자가
+        조용히 바뀐다(데이터 vs 환각)."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "market_cap": 5.35e12,
+              "shares_outstanding": 12_000_000,
+              "kr": {"financials": {"당기순이익": 2.0e11, "자본총계": 1.0e12}},
+              "peer_comps": [
+                  {"ticker": "039030.KQ", "name": "이오테크닉스",
+                   "currency": "KRW", "financial_currency": "KRW",
+                   "market_cap": 5.35e12, "trailingPE": 11.1,
+                   "is_subject": True}]}
+        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        c = self._cells(pane, "039030.KQ")
+        assert c[3] == "11.1", c          # 소스값 유지 · ＊ 없음
+
+    def test_peer_rows_are_not_filled_from_the_subject(self):
+        """⚠️ 파생 재사용은 **주체 행 한정**이다. 피어 행에 주체의 PER 을
+        흘리면 남의 회사 자리에 우리 숫자가 찍힌다 — 가장 나쁜 환각이다."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "market_cap": 5.35e12,
+              "shares_outstanding": 12_000_000,
+              "kr": {"financials": {"당기순이익": 2.0e11, "자본총계": 1.0e12}},
+              "peer_comps": [
+                  {"ticker": "039030.KQ", "name": "이오테크닉스",
+                   "currency": "KRW", "financial_currency": "KRW",
+                   "market_cap": 5.35e12, "is_subject": True},
+                  {"ticker": "042700.KS", "name": "한미반도체",
+                   "currency": "KRW", "financial_currency": "KRW",
+                   "market_cap": 22.34e12}]}
+        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        c = self._cells(pane, "042700.KS")
+        assert c[3] == "—" and c[5] == "—", c
