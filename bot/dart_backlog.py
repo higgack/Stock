@@ -473,7 +473,13 @@ def diagnose(text: str) -> str:
     값이 없어 파서를 고칠 여지가 없고, `형식미지원`·`검산실패`·`단위없음` 만
     새 형식이 필요하다는 신호다. 이 구분이 없으면 로그가 노이즈가 된다."""
     if not text:
-        return "본문없음"
+        # ⚠️ 미공시와 **다른 신호**다. 원천에 값이 없는 게 아니라 DART 가 그
+        # 접수건의 원문을 안 준다(`status=014 파일이 존재하지 않습니다`).
+        # 한화에어로 2026 1분기 실측 — 정정도 없는 원본인데 문서가 없다
+        # (`--list` 로 확대 창까지 훑어 정정 부재를 확인, 2026-08-18).
+        # 여러 종목에서 몰리면 키 권한·일일한도 같은 계정 문제일 수 있으므로
+        # 격주 리포트에 **보여야 한다**.
+        return "원문미제공"
     hits = len(re.findall("|".join(_BAL_LABELS), text))
     if not hits:
         return "미공시"
@@ -490,7 +496,7 @@ def diagnose(text: str) -> str:
 
 def _log_miss(ticker: str, year, reprt_code, reason: str) -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
-    if reason in ("미공시", "명시적미공시", "본문없음"):
+    if reason in ("미공시", "명시적미공시"):
         return                      # 원천에 값이 없다 — 개선 대상 아님
     try:
         _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)

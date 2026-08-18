@@ -236,10 +236,19 @@ def _fill_backlog(dart, ticker: str, qs: list) -> None:
     if got is None:
         return          # 이 회사는 수주잔고를 안 쓴다 — 과거분 조회 불필요
     latest["financials"]["수주잔고"] = got
+    missing = []
     for q in qs[:-1]:
         v = backlog_for(dart, ticker, q["year"], q["reprt_code"])
         if v is not None:
             q["financials"]["수주잔고"] = v
+        else:
+            missing.append(q.get("label") or "?")
+    # ⚠️ 빈 막대에 **이유를 붙인다.** 값이 없으면 막대만 사라져서 화면만 봐선
+    # '집계 실패'인지 '원천에 없음'인지 알 수 없다 — 사용자가 "2분기는 아예
+    # 안 나오네"라고 물은 지점(2026-08-17). 실측된 사유는 DART 가 그 접수건의
+    # 원문을 안 주는 것이다(`status=014`, 한화에어로 2026 1분기 — 정정도 없다).
+    if missing:
+        qs[-1].setdefault("_meta", {})["backlog_missing"] = missing
 
 
 def _extra_series(qs: list) -> list[tuple[str, str, list]]:
@@ -294,6 +303,11 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
                       _NEG))
     if payload.get("fiscal_note"):
         notes.append((f"* {payload['fiscal_note']}", _MUTED))
+    miss = payload.get("backlog_missing") or []
+    if miss:
+        notes.append((f"* 수주잔고 {', '.join(miss)} 미표시 — 해당 분기 "
+                      "정기보고서 원문을 DART 가 제공하지 않음(추정 보정 없음)",
+                      _MUTED))
     return notes
 
 
@@ -1036,6 +1050,9 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         "trade_currency": trade_cur or fin_cur or "KRW",
         "currency_mismatch": cur_mismatch,
         "fiscal_note": fiscal_note(snap.get("fiscal_year_end")) if not is_kr else "",
+        # 수주잔고 빈 분기 사유(각주). `_fill_backlog` 이 최신 분기에 심는다.
+        "backlog_missing": (qs[-1].get("_meta") or {}).get("backlog_missing")
+        if qs else None,
         # LLM 성장동력/리스크는 DART 원문 전용 — 비-KR 은 버튼 자체를 숨긴다
         # (누를 수 없는 버튼을 보여주지 않는다).
         "llm_supported": is_kr,

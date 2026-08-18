@@ -21664,6 +21664,69 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestBacklogMissingQuarters20260818:
+    """한화에어로 26.1Q 최종 결론(사용자 2026-08-18 `--list` 실행): 확대 창
+    2026-01-31~2027-03-27 의 정기공시가 **4건뿐이고 1분기 정정은 없다.**
+    원본(20260513000860)에 DART 가 문서를 안 준다(`status=014`) — 파싱으로
+    해결 불가한 원천 문제다. 추측 대신 (a) 사유를 격주 리포트에 올리고
+    (b) 화면 각주로 빈 막대를 설명한다."""
+
+    def test_empty_body_is_a_distinct_signal_from_no_disclosure(self):
+        """`미공시`(원천에 값 없음)와 `원문미제공`(DART 가 문서를 안 줌)은
+        다른 신호다 — 후자가 여러 종목에서 몰리면 키 권한·일일한도 문제일
+        수 있어 **리포트에 보여야** 한다."""
+        from bot.dart_backlog import diagnose
+        assert diagnose("") == "원문미제공"
+        assert diagnose("매출액 100,000 영업이익 1,000") == "미공시"
+
+    def test_missing_document_is_logged_but_no_disclosure_is_not(
+            self, tmp_path, monkeypatch):
+        from bot import dart_backlog as bl
+        f = tmp_path / "m.jsonl"
+        monkeypatch.setattr(bl, "_MISS_LOG", f)
+        bl._log_miss("012450.KS", 2026, "11013", "미공시")
+        bl._log_miss("012450.KS", 2026, "11013", "명시적미공시")
+        assert not f.exists(), "미공시류가 기록됐다"
+        bl._log_miss("012450.KS", 2026, "11013", "원문미제공")
+        assert "원문미제공" in f.read_text(encoding="utf-8")
+
+    def test_missing_quarters_get_a_footnote_not_a_silent_gap(self):
+        """값이 없으면 막대만 사라져 '집계 실패'인지 '원천에 없음'인지
+        화면만 봐선 알 수 없다 — 사용자가 "2분기는 아예 안 나오네"라고 물은
+        지점이다. 사유를 각주로 붙인다."""
+        from bot.quarterly_infographic import _footnotes
+        notes = [n for n, _c in _footnotes(
+            {"currency": "KRW", "backlog_missing": ["25.4Q", "26.1Q"]}, [])]
+        hit = [n for n in notes if "수주잔고" in n]
+        assert hit, notes
+        assert "25.4Q, 26.1Q" in hit[0] and "DART 가 제공하지 않음" in hit[0]
+        assert "추정 보정 없음" in hit[0], "날조 안 함을 명시해야 한다"
+        # 빈 분기가 없으면 각주도 없어야 한다(불필요한 경고는 노이즈).
+        clean = [n for n, _c in _footnotes({"currency": "KRW"}, [])]
+        assert not [n for n in clean if "수주잔고" in n], clean
+
+    def test_fill_backlog_records_which_quarters_are_missing(self):
+        from bot import dart_backlog as bl
+        from bot.quarterly_infographic import _fill_backlog
+        orig = bl.backlog_for
+        bl.backlog_for = lambda d, t, y, r: 1e12 if r == "11012" else None
+        qs = [{"label": lb, "year": 2026, "reprt_code": rc, "financials": {}}
+              for lb, rc in (("25.4Q", "11011"), ("26.1Q", "11013"),
+                             ("26.2Q", "11012"))]
+        try:
+            _fill_backlog(object(), "012450.KS", qs)
+        finally:
+            bl.backlog_for = orig
+        assert qs[-1]["financials"]["수주잔고"] == 1e12
+        assert qs[-1]["_meta"]["backlog_missing"] == ["25.4Q", "26.1Q"]
+
+    def test_payload_carries_the_reason_to_the_footnotes(self):
+        """`_fill_backlog` 이 기록만 하고 payload 에 안 실으면 각주는 영원히
+        안 뜬다(실수 #12 — 헬퍼 만들고 배선 확인)."""
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert '"backlog_missing": (qs[-1].get("_meta") or {})' in src
+
+
 class TestPeriodicReportCandidates20260817:
     """한화에어로 25.4Q·26.1Q 막대가 비어 있던 **최종 원인**(사용자 2026-08-17
     진단 실행): `find_periodic_report` 가 고른 가장 최근 접수건에 **문서가
@@ -21898,7 +21961,9 @@ class TestBacklogObservability20260817:
     """사용자 2026-08-17 '런타임 로깅 진행해줘' + '아직도 연간→분기인 게 있다'."""
 
     @pytest.mark.parametrize("text,want", [
-        ("", "본문없음"),
+        # 2026-08-18: 빈 본문은 `미공시` 와 **다른 신호**라 이름을 바꿨다
+        # — DART 가 문서를 안 주는 것이고, 리포트에 보여야 한다.
+        ("", "원문미제공"),
         ("매출액 100,000 영업이익 1,000", "미공시"),
         # ↓ 전부 실제 원문 문구 — 원천에 값이 없다(파서로 해결 불가).
         ("당사는 업종의 특성상 총수주액 및 수주잔고 산정은 불가능합니다.",
@@ -21923,9 +21988,14 @@ class TestBacklogObservability20260817:
         from bot import dart_backlog as bl
         f = tmp_path / "misses.jsonl"
         monkeypatch.setattr(bl, "_MISS_LOG", f)
-        for r in ("미공시", "명시적미공시", "본문없음"):
+        for r in ("미공시", "명시적미공시"):
             bl._log_miss("005930.KS", 2026, "11012", r)
         assert not f.exists(), "미공시류가 기록됐다"
+        # ⚠️ `원문미제공` 은 원천에 값이 없는 게 아니라 DART 가 문서를 안 주는
+        #    것이라 **기록 대상이다**(2026-08-18 분리).
+        bl._log_miss("005930.KS", 2026, "11012", "원문미제공")
+        assert f.exists() and "원문미제공" in f.read_text(encoding="utf-8")
+        f.unlink()
         bl._log_miss("012450.KS", 2026, "11013", "형식미지원")
         bl._log_miss("012450.KS", 2026, "11013", "형식미지원")   # 중복
         lines = f.read_text(encoding="utf-8").strip().splitlines()
