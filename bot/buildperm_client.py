@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 import os
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.buildperm")
 
 _TIMEOUT = 20
@@ -58,7 +60,7 @@ _PERMIT_REGIONS = [
 
 def buildperm_key_ready() -> bool:
     global _KEY_WARNED
-    ready = bool(os.environ.get("DATA_GO_KR_API_KEY"))
+    ready = bool(_env_key("DATA_GO_KR_API_KEY"))
     if not ready and not _KEY_WARNED:
         log.warning("buildperm: DATA_GO_KR_API_KEY 미설정 — 건축인허가/착공 skip.")
         _KEY_WARNED = True
@@ -182,7 +184,7 @@ def permits_aggregate(regions: list[tuple[str, str, str]],
 def _http_get(url: str, params: dict, accept_xml: bool = False):
     """공통 GET. serviceKey 인코딩 자동 처리. (status, text) 반환."""
     import httpx
-    key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+    key = _env_key("DATA_GO_KR_API_KEY")
     h = {"User-Agent": _UA,
          "Accept": ("application/xml, text/xml, */*" if accept_xml
                     else "application/json, */*")}

@@ -20,6 +20,8 @@ from typing import Any
 
 import requests
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.earnings_calendar")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "earnings_cal"
@@ -33,7 +35,7 @@ _KIND_COMPANY_URL = ("https://kind.krx.co.kr/common/companysummary.do"
 
 
 def _api_key() -> str:
-    return os.getenv("FINNHUB_API_KEY", "").strip()
+    return _env_key("FINNHUB_API_KEY")
 
 
 def _us_name_map() -> dict[str, str]:

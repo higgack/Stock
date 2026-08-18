@@ -19,6 +19,8 @@ from pathlib import Path
 
 import requests
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.dart_feed")
 
 _DART_BASE = "https://opendart.fss.or.kr/api"
@@ -351,7 +353,7 @@ def _dart_api_key() -> str | None:
     환경에 주입한다. DART 키 하나를 읽는 함수의 부작용으로는 과하다
     (2026-08-16 독립 리뷰). 필요한 키만 골라 넣는다."""
     global _ENV_TRIED
-    key = (os.environ.get("DART_API_KEY") or "").strip()
+    key = _env_key("DART_API_KEY")
     if not key and not _ENV_TRIED:
         _ENV_TRIED = True
         try:

@@ -33,6 +33,8 @@ from typing import Optional
 
 import requests
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.bok_ecos")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "bok_ecos"
@@ -155,7 +157,7 @@ def _fetch_indicator(key: str) -> Optional[dict]:
     if not cfg:
         return None
 
-    api_key = os.getenv("BOK_ECOS_API_KEY", "").strip()
+    api_key = _env_key("BOK_ECOS_API_KEY")
     if not api_key:
         log.warning("ecos: BOK_ECOS_API_KEY missing — %s unavailable", key)
         return None
@@ -271,7 +273,7 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
     cfg = _SERIES.get(key)
     if not cfg:
         return []
-    api_key = os.getenv("BOK_ECOS_API_KEY", "").strip()
+    api_key = _env_key("BOK_ECOS_API_KEY")
     if not api_key:
         return []
 
@@ -498,7 +500,7 @@ def fetch_kr_price_index_history(
     KR CPI 도 재사용하도록 일반화) — cache_key 로 물가종류별 캐시파일 분리
     (같은 날 두 물가지수가 파일을 덮어쓰지 않도록). 키 부재/실패 → {} 또는
     해당 항목 생략(graceful). 일 1회 재생성용(12h 캐시)."""
-    api_key = os.getenv("BOK_ECOS_API_KEY", "").strip()
+    api_key = _env_key("BOK_ECOS_API_KEY")
     if not api_key:
         log.info("ecos: BOK_ECOS_API_KEY missing — %s unavailable", cache_key)
         return {}

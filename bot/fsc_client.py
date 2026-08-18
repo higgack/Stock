@@ -24,6 +24,8 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.fsc")
 
 _HOST = "https://apis.data.go.kr/1160100"
@@ -42,7 +44,7 @@ _CACHE_TTL = 12 * 3600
 
 def fsc_key_ready() -> bool:
     global _KEY_WARNED
-    ready = bool(os.environ.get("DATA_GO_KR_API_KEY"))
+    ready = bool(_env_key("DATA_GO_KR_API_KEY"))
     if not ready and not _KEY_WARNED:
         log.warning("fsc: DATA_GO_KR_API_KEY 미설정 — 금융위 증권데이터 skip.")
         _KEY_WARNED = True
@@ -87,7 +89,7 @@ def _fetch(base: str, op: str, params: dict) -> list[dict]:
     if not fsc_key_ready():
         return []
     import httpx
-    key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+    key = _env_key("DATA_GO_KR_API_KEY")
     q = {"resultType": "json", "numOfRows": params.pop("numOfRows", 100),
          "pageNo": 1, **params}
     url = f"{base}/{op}"

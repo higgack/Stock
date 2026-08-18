@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 import os
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.cheongyak")
 
 # odcloud 청약홈 분양정보 조회 서비스 — APT 분양정보 상세
@@ -34,7 +36,7 @@ _RESOLVED: dict[str, str] = {}
 
 def cheongyak_key_ready() -> bool:
     global _KEY_WARNED
-    ready = bool(os.environ.get("DATA_GO_KR_API_KEY"))
+    ready = bool(_env_key("DATA_GO_KR_API_KEY"))
     if not ready and not _KEY_WARNED:
         log.warning("cheongyak: DATA_GO_KR_API_KEY 미설정 — 청약홈 분양정보 skip.")
         _KEY_WARNED = True
@@ -46,7 +48,7 @@ def _get(endpoint: str, per_page: int = 100, page: int = 1,
     """odcloud GET → JSON dict. serviceKey 인코딩 자동 처리, 실패 시 None.
     base 미지정 시 분양정보 서비스(_BASE)."""
     import httpx
-    key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+    key = _env_key("DATA_GO_KR_API_KEY")
     params = {"page": page, "perPage": per_page, "returnType": "JSON",
               **(extra or {})}
     _h = {"User-Agent": _UA, "Accept": "application/json, */*"}
@@ -253,7 +255,7 @@ if __name__ == "__main__":
         # 경쟁률 엔드포인트 discovery — 후보별 HTTP 상태 + 본문 직접 출력
         # (404=경로오류 vs 미등록서비스=활용신청 필요 를 구분하기 위함)
         import httpx as _hx
-        _key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+        _key = _env_key("DATA_GO_KR_API_KEY")
         print("=== 청약 경쟁률 엔드포인트 탐색 (status + body) ===")
         for base, ep in _COMPET_CANDIDATES:
             url = f"{base}/{ep}"
