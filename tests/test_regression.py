@@ -21733,6 +21733,79 @@ class TestProbeOutputStreaming20260818:
     # 실제 스트리밍은 VM 에서 눈으로 확인한다.
 
 
+class TestBacklogSeriesSanity20260818:
+    """스윕 실측(2026-08-18, 53종목): 실패의 최악은 빈칸이 아니라 **틀린 숫자**
+    였다 — 한국항공우주 `0.00조 · 0.08조 · 26.63조 · 0.00조`(실제 ~26조라
+    26.63 만 맞다), 한전KPS `2.38조 … 0.06조`. 둘 다 「형식혼재」로 분기마다
+    다른 표를 잡아 한쪽이 1000배 틀렸다."""
+
+    # ⚠️ 분기마다 **다른** reprt_code 를 준다 — 같으면 스텁이 어느 분기
+    # 요청인지 못 갈라 전 분기가 같은 값으로 채워지고, 격차가 늘 1이 된다
+    # (첫 시도에서 실제로 그렇게 새어나갔다).
+    _RC = ["11013", "11012", "11014", "11011", "11013"]
+
+    @classmethod
+    def _qs(cls, vals):
+        return [{"year": 2026 - (i == 0), "reprt_code": cls._RC[i],
+                 "label": f"q{i}", "financials": {}}
+                for i, _ in enumerate(vals)]
+
+    def _fill(self, monkeypatch, vals):
+        from bot import quarterly_infographic as qi
+        qs = self._qs(vals)
+        by_rc = {q["reprt_code"]: v for q, v in zip(qs, vals)}
+        monkeypatch.setattr("bot.dart_backlog.backlog_for",
+                            lambda d, t, y, r: by_rc.get(r))
+        monkeypatch.setattr("bot.dart_backlog._log_miss", lambda *a, **k: None)
+        qi._fill_backlog(object(), "047810.KS", qs)
+        return (qs[-1].get("_meta") or {})
+
+    def test_wildly_inconsistent_series_is_flagged(self, monkeypatch):
+        """수주잔고는 **저량**이라 계속기업이 분기 사이 20배씩 변할 수 없다.
+        한국항공우주 실측 배수는 333배."""
+        meta = self._fill(monkeypatch, [8e10, 2.663e13])
+        assert meta.get("backlog_spread"), meta
+
+    def test_normal_swings_are_not_flagged(self, monkeypatch):
+        """⚠️ 임계가 낮으면 정상 급변까지 의심 딱지가 붙어 경고가 소음이 된다
+        — 테스 5배·테크윙 6배·넥스틴 3배·HD현대 3배는 실제 값이다."""
+        for lo, hi in ((4e10, 2.1e11), (1e10, 6e10), (1.29e12, 4.22e12)):
+            meta = self._fill(monkeypatch, [lo, hi])
+            assert not meta.get("backlog_spread"), (lo, hi, meta)
+
+    def test_suspect_values_are_shown_not_deleted(self, monkeypatch):
+        """⚠️ 지우면 안 된다 — KAI 는 오히려 **튀는 값이 정답**이었다.
+        어느 분기가 틀렸는지 원문 없이는 못 가른다."""
+        from bot import quarterly_infographic as qi
+        vals = [8e10, 2.663e13]
+        qs = self._qs(vals)
+        by_rc = {q["reprt_code"]: v for q, v in zip(qs, vals)}
+        monkeypatch.setattr("bot.dart_backlog.backlog_for",
+                            lambda d, t, y, r: by_rc.get(r))
+        monkeypatch.setattr("bot.dart_backlog._log_miss", lambda *a, **k: None)
+        qi._fill_backlog(object(), "047810.KS", qs)
+        assert qs[0]["financials"]["수주잔고"] == 8e10, "값을 지웠다"
+        assert qs[-1]["financials"]["수주잔고"] == 2.663e13, "값을 지웠다"
+        assert (qs[-1].get("_meta") or {}).get("backlog_spread"), "의심 표시 없음"
+
+    def test_footnote_tells_the_user(self, monkeypatch):
+        """화면에 안 나오면 심어도 소용없다(실수기록 #12 배선 확인)."""
+        from bot.quarterly_infographic import _footnotes
+        notes = _footnotes({"backlog_spread": 333.0}, [])
+        assert any("분기 간 격차 333.0배" in n[0] for n in notes), notes
+        assert not any("격차" in n[0] for n in _footnotes({}, [])), "무조건 뜬다"
+
+    def test_explain_mode_shows_which_table_was_matched(self):
+        """값만 봐서는 파서를 못 고친다 — **어느 표를 왜 골랐는지** 봐야 한다."""
+        src = open("bot/scripts/backlog_misses.py", encoding="utf-8").read()
+        assert 'argv[1] == "--explain"' in src, "모드가 배선되지 않았다"
+        i = src.index("def explain(")
+        blk = src[i:src.index("\ndef main(", i)]
+        assert "parse_backlog(text)" in blk, "선택된 형식을 안 찍는다"
+        assert "get_quarterly_series" in blk, "실제 분기 시리즈를 안 쓴다"
+        assert "키워드" in blk and "표 @" in blk, "원문 근거를 안 찍는다"
+
+
 class TestFlowTrendDiagnosis20260818:
     """사용자 2026-08-18(삼성에스디에스 수급): 외국인 보유율·공매도 잔고율의
     **현재값은 나오는데** 5/10/20/30/60일이 전부 `—` 였다. 각주는 "데이터가

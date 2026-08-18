@@ -211,6 +211,10 @@ def _label_decimals(scaled_peak: float, dec: int) -> int:
 _EXTRA_CHARTS = (("수주잔고", "수주잔고"), ("재고자산", "재고자산"))
 
 
+# 분기 간 최대/최소 배수가 이 값 이상이면 **파싱 의심**(위 주석의 실측 근거).
+_BACKLOG_SPREAD_MAX = 20.0
+
+
 def _fill_backlog(dart, ticker: str, qs: list) -> None:
     """분기별 수주잔고를 `financials["수주잔고"]` 에 채운다(제자리 수정).
 
@@ -249,6 +253,27 @@ def _fill_backlog(dart, ticker: str, qs: list) -> None:
     # 원문을 안 주는 것이다(`status=014`, 한화에어로 2026 1분기 — 정정도 없다).
     if missing:
         qs[-1].setdefault("_meta", {})["backlog_missing"] = missing
+
+    # ⚠️ **빈칸보다 나쁜 건 틀린 숫자다.** 스윕 실측(2026-08-18, 53종목):
+    #   한국항공우주 0.00조·0.08조·26.63조·0.00조 (실제 ~26조 — 26.63 만 맞다)
+    #   한전KPS      2.38조 … 0.06조            (실제 ~2조대)
+    # 둘 다 「형식혼재」였다 — 분기마다 다른 표를 잡아 한쪽이 1000배 틀렸다.
+    # 수주잔고는 **저량**이라 계속기업이 분기 사이에 20배씩 변할 수 없다.
+    # 임계 20배는 실측으로 정했다: 위 둘만 걸리고(333배·40배), 정상 급변인
+    # 테스 5배·테크윙 6배·넥스틴 3배·HD현대 3배는 안 걸린다.
+    # ⚠️ **지우지는 않는다** — 어느 분기가 틀렸는지 원문 없이는 못 가른다
+    # (KAI 는 오히려 '튀는 값'이 정답이었다). 화면에 의심을 표시하고
+    # 미스로그에 남겨 격주 리포트가 잡게 한다.
+    _vals = [v for v in ((q.get("financials") or {}).get("수주잔고") for q in qs)
+             if isinstance(v, (int, float)) and v > 0]
+    if len(_vals) >= 2 and max(_vals) / min(_vals) >= _BACKLOG_SPREAD_MAX:
+        qs[-1].setdefault("_meta", {})["backlog_spread"] = round(
+            max(_vals) / min(_vals), 1)
+        try:
+            from bot.dart_backlog import _log_miss
+            _log_miss(ticker, qs[-1]["year"], qs[-1]["reprt_code"], "시계열이상")
+        except Exception as exc:
+            log.debug("quarterly_infographic: backlog spread log: %s", exc)
 
 
 def _extra_series(qs: list) -> list[tuple[str, str, list]]:
@@ -308,6 +333,11 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
         notes.append((f"* 수주잔고 {', '.join(miss)} 미표시 — 해당 분기 "
                       "정기보고서 원문을 DART 가 제공하지 않음(추정 보정 없음)",
                       _MUTED))
+    spread = payload.get("backlog_spread")
+    if spread:
+        notes.append((f"! 수주잔고 분기 간 격차 {spread}배 — 일부 분기 파싱이 "
+                      "틀렸을 수 있음(수주잔고는 저량이라 이런 변동이 정상적이지 "
+                      "않음). 값을 지우지 않고 표시만 함", _NEG))
     return notes
 
 
@@ -1052,6 +1082,11 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         "fiscal_note": fiscal_note(snap.get("fiscal_year_end")) if not is_kr else "",
         # 수주잔고 빈 분기 사유(각주). `_fill_backlog` 이 최신 분기에 심는다.
         "backlog_missing": (qs[-1].get("_meta") or {}).get("backlog_missing")
+        if qs else None,
+        # 분기 간 배수가 비정상이면 어느 한 분기의 파싱이 틀렸다는 뜻 —
+        # 숫자를 지우지 않고 '의심'을 화면에 밝힌다(어느 쪽이 틀렸는지는
+        # 원문 없이 못 가른다).
+        "backlog_spread": (qs[-1].get("_meta") or {}).get("backlog_spread")
         if qs else None,
         # LLM 성장동력/리스크는 DART 원문 전용 — 비-KR 은 버튼 자체를 숨긴다
         # (누를 수 없는 버튼을 보여주지 않는다).
