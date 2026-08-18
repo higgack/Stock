@@ -21733,6 +21733,63 @@ class TestProbeOutputStreaming20260818:
     # 실제 스트리밍은 VM 에서 눈으로 확인한다.
 
 
+class TestFlowTrendDiagnosis20260818:
+    """사용자 2026-08-18(삼성에스디에스 수급): 외국인 보유율·공매도 잔고율의
+    **현재값은 나오는데** 5/10/20/30/60일이 전부 `—` 였다. 각주는 "데이터가
+    없으면 —" 이라고만 해서 자격증명 미설정인지 소스 부재인지 구분이 안 됐다."""
+
+    @staticmethod
+    def _flow(monkeypatch, *, logged_in: bool, periods: dict):
+        import bot.dashboard as dash
+        monkeypatch.setattr("bot.pykrx_client.krx_login_ready",
+                            lambda: logged_in)
+        monkeypatch.setattr("bot.pykrx_client.get_kr_multi_period_trends",
+                            lambda t, **kw: {
+                                "foreign": {"current_pct": 18.30, "periods": periods},
+                                "short": {"current_pct": 1.92, "periods": {}}})
+        si = {"currency": "KRW", "kr": {"flow": {"investor_flow": {
+            "investors": {"외국인": {"1d": 94.6}}, "unit": "억원"}}}}
+        seg = dash._render_stock_info_html({"ticker": "018260.KS",
+                                            "stock_info": si})["other_panes"]
+        i = seg.index('id="si-flow"')
+        return seg[i:seg.index("</div>\n</div>", i) + 13]
+
+    def test_missing_credentials_are_named_on_screen(self, monkeypatch):
+        """자격증명은 **렌더 시점에 확인 가능**하다 — 빈칸만 보여주고 이유를
+        숨길 이유가 없다."""
+        pane = self._flow(monkeypatch, logged_in=False,
+                          periods={5: None, 10: None, 20: None, 30: None, 60: None})
+        assert "KRX_ID/KRX_PW" in pane, pane[-900:]
+        assert "기간 칸이 빈 이유" in pane, pane[-900:]
+
+    def test_logged_in_but_empty_does_not_blame_credentials(self, monkeypatch):
+        """⚠️ 로그인이 되는데도 비면 원인은 소스 구간 부족이다 — 자격증명을
+        탓하면 사용자가 멀쩡한 .env 를 뒤지게 된다."""
+        pane = self._flow(monkeypatch, logged_in=True,
+                          periods={5: None, 10: None, 20: None, 30: None, 60: None})
+        assert "KRX_ID/KRX_PW" not in pane, pane[-900:]
+
+    def test_no_warning_when_periods_have_data(self, monkeypatch):
+        """값이 있으면 조용해야 한다 — 항상 뜨면 경고가 소음이 된다."""
+        # ⚠️ 값을 **전부** 채운다. 일부만 채우면 `is not None`→`is None`
+        # 뮤테이션이 같은 결과를 내 판별을 못 한다(실측).
+        pane = self._flow(monkeypatch, logged_in=False,
+                          periods={5: 0.5, 10: 0.4, 20: 0.3, 30: 0.2, 60: 0.1})
+        assert "기간 칸이 빈 이유" not in pane, pane[-900:]
+
+    def test_probe_separates_the_three_causes(self):
+        """프로브가 ①자격증명 ②원자료 구간 ③컬럼 매칭을 **각 단계로** 찍어야
+        가른다. ⚠️ 자격증명은 설정 여부만 — 값은 절대 출력하지 않는다."""
+        src = open("bot/scripts/kr_flow_trend_probe.py", encoding="utf-8").read()
+        assert "krx_login_ready" in src and "_extract_dated_series" in src
+        assert "_pp_from_dated_series" in src, "기간 계산 단계가 없다"
+        assert "get_kr_multi_period_trends" in src, "화면 입력 확인 단계가 없다"
+        # 비밀값 출력 금지 — 존재 여부만 찍는다.
+        assert 'os.environ.get("KRX_PW")' in src
+        assert "'설정' if has_pw else '미설정'" in src
+        assert "print(os.environ" not in src
+
+
 class TestHoldersTab20260818:
     """사용자 2026-08-18 삼성에스디에스 주주 탭 스크린샷 — 세 가지가 보였다:
     소액주주 `98,400.0명`(float 누수) · `비율 100.0%`(주주 수 비율인데 지분율로
