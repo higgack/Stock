@@ -21733,6 +21733,92 @@ class TestProbeOutputStreaming20260818:
     # 실제 스트리밍은 VM 에서 눈으로 확인한다.
 
 
+class TestHoldersTab20260818:
+    """사용자 2026-08-18 삼성에스디에스 주주 탭 스크린샷 — 세 가지가 보였다:
+    소액주주 `98,400.0명`(float 누수) · `비율 100.0%`(주주 수 비율인데 지분율로
+    읽힌다) · 최대주주 표 맨 아래 값 없는 `계` 행."""
+
+    @staticmethod
+    def _pane(si):
+        from bot.dashboard import _render_stock_info_html
+        seg = _render_stock_info_html({"ticker": "018260.KS",
+                                       "stock_info": si})["other_panes"]
+        i = seg.index('id="si-holders"')
+        return seg[i:seg.index("</div>\n</div>", i) + 13]
+
+    def test_minority_counts_are_whole_people(self):
+        """사람 수에 소수점이 붙어 있었다 — FSC 파서가 float 로 담는데
+        `:,` 만 쓰면 `98,400.0명` 이 된다."""
+        pane = self._pane({"currency": "KRW", "shares_outstanding": 77_377_800,
+                           "kr": {"minority": {"smam_cnt": 98400.0,
+                                               "whole_cnt": 98439.0,
+                                               "smam_ratio": 99.96,
+                                               "hold_shares": 39_000_000.0,
+                                               "biz_year": "2025"}}})
+        assert "98,400명" in pane and "98,400.0" not in pane, pane
+        assert "98,439명" in pane, pane
+
+    def test_ratio_says_what_it_is_a_ratio_of(self):
+        """`smamSthdRto` 는 **주주 수** 비율이다(98,400/98,439 = 100.0%).
+        그냥 '비율'로 적으면 지분율로 읽히는데, 소액주주 지분율은 보통
+        절반 안팎이라 오해가 크다. 지분율은 보유주식수로 따로 낸다."""
+        pane = self._pane({"currency": "KRW", "shares_outstanding": 77_377_800,
+                           "kr": {"minority": {"smam_cnt": 98400.0,
+                                               "whole_cnt": 98439.0,
+                                               "smam_ratio": 99.96,
+                                               "hold_shares": 39_000_000.0,
+                                               "biz_year": "2025"}}})
+        assert "주주 수 비율 100.0%" in pane, pane
+        assert "지분율 50.4%" in pane, pane        # 3900만 / 7737만
+
+    def test_stake_is_omitted_when_it_cannot_be_computed(self):
+        """총발행주식수가 없으면 지분율을 만들지 않는다 — 없는 걸 지어내지
+        않는다(보유주식수만으로는 비율이 안 나온다)."""
+        pane = self._pane({"currency": "KRW",
+                           "kr": {"minority": {"smam_cnt": 98400.0,
+                                               "whole_cnt": 98439.0,
+                                               "smam_ratio": 99.96,
+                                               "hold_shares": 39_000_000.0,
+                                               "biz_year": "2025"}}})
+        assert "주주 수 비율" in pane and "지분율" not in pane, pane
+
+    def test_empty_total_row_is_dropped_from_major_shareholders(self, monkeypatch):
+        """DART 원문엔 당기/전기 '계' 행이 둘 다 들어 있어 두 번째가 값 없이
+        `— —` 로 찍혔다(사용자 2026-08-18 스크린샷 맨 아래). 수치가 하나도
+        없는 합계행은 정보가 0이다. ⚠️ 값이 **있는** 합계행은 남겨야 한다."""
+        import types
+
+        from bot.dashboard import _render_stock_info_html
+        rows = [{"name": "삼성전자", "relation": "최대주주 본인",
+                 "shares": 17_472_110, "pct": 22.58, "note": ""},
+                {"name": "계", "relation": "", "shares": 37_862_785,
+                 "pct": 48.93, "note": ""},
+                {"name": "계", "relation": "", "shares": None,
+                 "pct": None, "note": ""}]
+        monkeypatch.setattr("bot.dart_client.get_dart",
+                            lambda: types.SimpleNamespace(
+                                get_major_shareholders=lambda c: rows,
+                                get_affiliate_investments=lambda c: [],
+                                get_recent_disclosures=lambda *a, **k: []))
+        seg = _render_stock_info_html({"ticker": "018260.KS",
+                                       "stock_info": {"currency": "KRW"}})["other_panes"]
+        i = seg.index('id="si-holders"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        assert "48.93%" in pane, "값 있는 합계행까지 지웠다"
+        assert pane.count("<td>계</td>") == 1, \
+            f"빈 합계행이 남아 있다: {pane.count('<td>계</td>')}개"
+
+    def test_insider_table_says_when_it_was_last_updated(self):
+        """마지막 변동일이 1년 전일 때 **수집이 멈춘 건지 실제로 거래가
+        없었던 건지** 화면에서 구분이 안 됐다."""
+        pane = self._pane({"currency": "KRW", "kr": {"insider_holdings": [
+            {"name": "홍길동", "role": "상무", "shares": 100,
+             "changed_on": "2024-12-05"},
+            {"name": "김영희", "role": "사외이사", "shares": 200,
+             "changed_on": "2025-05-07"}]}})
+        assert "최신 변동일 2025-05-07" in pane, pane
+
+
 class TestEarningsTabSource20260818:
     """사용자 2026-08-18(한화엔진 082740.KS): 실적 탭이 **2017~2020** 을
     '최근 실적'으로 보여줬다. yfinance 의 KR 실적 이력은 종목마다 커버리지가
