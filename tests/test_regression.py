@@ -21796,6 +21796,51 @@ class TestPeerCompsEmptyTable20260818:
         assert sorted(seen) == sorted(["SUBJ", "7203.T", "0700.HK", "AMAT"]), \
             f"단일보드 종목을 두 번 조회했다: {seen}"
 
+    # ── 통화 불일치면 **만들지 않는다** (2026-08-18 전시장 프로브) ──────
+    def test_derivation_is_refused_across_currencies(self):
+        """시총(거래통화) ÷ 순이익(재무통화) = 환율만큼 틀린 수를 새로
+        만드는 짓이다. 소스가 준 값은 화면이 ⚠ 로 알리기라도 하지만,
+        우리가 만든 값엔 그런 근거가 없다.
+
+        실측: ASML=USD 거래·EUR 재무 · HK H주=HKD·CNY · TSM ADR=USD·TWD.
+        드문 예외가 아니라 흔한 형태다."""
+        from bot.stock_snapshot import _derive_peer_multiples
+        pi = {"netIncomeToCommon": 1.0e11, "bookValue": 10.0,
+              "sharesOutstanding": 5.0e10, "financialCurrency": "CNY"}
+        e = {"market_cap": 2.0e12, "currency": "HKD"}
+        assert _derive_peer_multiples(e, pi) == []
+        assert "trailingPE" not in e and "priceToBook" not in e
+        # 같은 통화면 정상 파생 — 가드가 전부를 막아버리면 안 된다.
+        e2 = {"market_cap": 2.0e12, "currency": "CNY"}
+        assert _derive_peer_multiples(e2, pi) == ["PER", "PBR"]
+
+    def test_pence_is_not_a_currency_mismatch_for_derivation(self):
+        """GBp(펜스)는 GBP 와 같은 통화다 — 다르다고 보면 런던 종목의
+        파생이 통째로 막힌다. 렌더의 ⚠ 판정과 **같은 함수**를 써야 한다."""
+        from bot.stock_snapshot import _derive_peer_multiples, norm_cur
+        assert norm_cur("GBp") == norm_cur("GBX") == norm_cur("gbp") == "GBP"
+        pi = {"netIncomeToCommon": 1.0e11, "financialCurrency": "GBp"}
+        e = {"market_cap": 2.0e12, "currency": "GBP"}
+        assert _derive_peer_multiples(e, pi) == ["PER"]
+
+    def test_dart_derivation_refuses_non_krw_trading_currency(self, monkeypatch):
+        """DART 숫자는 KRW 다 — 거래통화가 다르면 같은 환산 오차가 난다."""
+        from bot.stock_snapshot import _dart_peer_multiples
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11})
+        e = {"market_cap": 2.0e12, "currency": "USD"}
+        assert _dart_peer_multiples(e, "005930.KS") == {}
+        assert "trailingPE" not in e
+
+    def test_render_shares_the_normalizer_with_the_collector(self):
+        """복제하면 '만들지 않는 조건'과 '⚠ 를 붙이는 조건'이 갈라져,
+        경고 없는 환산오차 값이 생긴다(VKOSPI 복제 교훈과 같은 실패모드)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("peers_pane = \"\"")
+        blk = src[i:src.index("if not peers_pane:", i)]
+        assert "from bot.stock_snapshot import norm_cur as _norm_cur" in blk, \
+            "렌더가 자체 정규화를 다시 정의하고 있다"
+        assert "def _norm_cur(c)" not in blk, "복제된 정규화가 남아 있다"
+
     def test_the_wiring_is_actually_called(self, monkeypatch):
         """헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12)."""
         import inspect
