@@ -5109,8 +5109,10 @@ _QUARTERLY_JS = r"""
       // ⚠️ base() 필수 — 상세 페이지는 하위 경로라 상대경로만 쓰면 404.
       h+='<img src="'+base()+j.image_url+'" alt="분기 실적분석" style="width:100%;border-radius:10px">';
     }else{
+      // 서버가 준 **진짜 이유**를 그대로 보여준다. 옛 문구는 원인과 무관하게
+      // 늘 폰트 탓으로 단정해 오진을 유발했다(사용자 2026-08-18 LPK.DE).
       h+='<div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px">'
-       + '이미지 렌더 불가(서버 한글 폰트 미설치) — 표로 표시합니다.</div>';
+       + esc(j.render_note||'이미지 렌더 불가 — 표로 표시합니다.')+'</div>';
     }
     if(j.table_html) h+=j.table_html;
     var gr=j.growth_risk||{};

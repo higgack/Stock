@@ -108,6 +108,17 @@ _GZIP_MIME_PREFIXES = ("text/html", "text/css", "application/javascript",
                        "text/plain")
 
 
+def _render_note() -> str:
+    """분기 인포그래픽 이미지가 없을 때의 **진짜 이유** 한 문장."""
+    try:
+        from bot.korean_font import diagnose, find_font
+        if not find_font():
+            return diagnose()
+        return "이미지 렌더 실패 — 표로 표시합니다(폰트는 정상)."
+    except Exception as exc:                       # noqa: BLE001
+        return f"이미지 렌더 실패({type(exc).__name__}) — 표로 표시합니다."
+
+
 class _CapturingWFile:
     """SimpleHTTPRequestHandler 가 쓰는 헤더+바디를 버퍼링 → 핸들러 종료 후
     Content-Type 검사·gzip 적용."""
@@ -882,6 +893,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                               f"?v={int(Path(img).stat().st_mtime)}"
                               if img else None),
                 "table_html": ("" if img else _qi.table_html(payload)),
+                # 이미지가 없으면 **왜** 없는지 화면이 말해야 한다 — 옛 문구는
+                # 무조건 "서버 한글 폰트 미설치" 라 폰트가 멀쩡한데 다른 이유로
+                # 실패한 경우까지 오진했다(사용자 2026-08-18 LPK.DE).
+                "render_note": ("" if img else _render_note()),
                 "growth_risk": payload.get("growth_risk") or {"ok": False},
                 "latest": (payload.get("quarters") or [{}])[-1].get("label"),
                 "cached": res.get("cached"),

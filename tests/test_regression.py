@@ -22415,6 +22415,77 @@ class TestFlowTrendDiagnosis20260818:
         dd = _p.Path("bot/dashboard.py").read_text(encoding="utf-8")
         assert "korean_name_map as _knm" in dd and '_us_kr = _knm("US")' in dd
 
+    def test_korean_font_is_found_by_glyphs_not_by_name(self, tmp_path):
+        """⚠️ 옛 판정은 `NanumGothic.ttf` 경로 3개 + 이름에 "Nanum" 이 있는지
+        만 봤다 — Noto CJK 처럼 한글이 완벽한 폰트가 깔린 서버에서도 "폰트
+        미설치"로 단정하고 이미지를 포기했다(사용자 2026-08-18 LPK.DE,
+        실수 #24 목록형 판정). 이름이 아니라 **글리프**로 판정한다."""
+        from bot import korean_font as kf
+        import matplotlib, pathlib as _p
+        mpl = _p.Path(matplotlib.__file__).parent / "mpl-data" / "fonts" / "ttf"
+        # (a) 한글 없는 폰트는 거부.
+        dejavu = mpl / "DejaVuSans.ttf"
+        assert dejavu.exists()
+        assert kf._has_hangul(str(dejavu)) is False
+
+        # (b) ⚠️ **만능 폴백 폰트도 거부해야 한다.** matplotlib 동봉
+        # LastResort 는 모든 코드포인트에 글리프를 주지만 실제로는 네모만
+        # 그린다 — 한글 검사만 하면 통과하고 화면은 두부가 된다.
+        last = next(iter(mpl.glob("LastResort*.ttf")), None)
+        if last is not None:
+            from matplotlib.ft2font import FT2Font
+            f = FT2Font(str(last))
+            assert f.get_char_index(0xAC00), "전제 확인: 한글 글리프는 있다"
+            assert kf._has_hangul(str(last)) is False, "폴백 폰트를 받아들였다"
+
+        # (c) 이름 목록이 아니라 실측이므로 Nanum 이 아니어도 통과한다.
+        found = kf.find_font()
+        if found:
+            assert kf._has_hangul(found)
+            assert "폰트 사용" in kf.diagnose()
+        else:
+            assert "설치" in kf.diagnose(), "없으면 설치 방법을 말해야 한다"
+
+    def test_render_failure_states_the_actual_reason(self, monkeypatch):
+        """⚠️ 옛 화면은 원인과 무관하게 늘 "서버 한글 폰트 미설치" 라고 했다
+        — 폰트가 멀쩡한데 다른 이유로 실패해도 사용자를 폰트 설치로 보냈다."""
+        import bot.dashboard_server as ds
+        from bot import korean_font as kf
+        monkeypatch.setattr(kf, "find_font", lambda: "/x/NotoSansKR.otf")
+        assert "폰트는 정상" in ds._render_note()
+        monkeypatch.setattr(kf, "find_font", lambda: None)
+        monkeypatch.setattr(kf, "diagnose", lambda: "한글 글리프를 가진 폰트 없음 — 설치: ...")
+        assert "설치" in ds._render_note()
+        # 프런트가 서버 문구를 쓰는지(배선, 실수 #20).
+        import pathlib as _p
+        dd = _p.Path("bot/dashboard.py").read_text(encoding="utf-8")
+        assert "j.render_note" in dd
+        assert "서버 한글 폰트 미설치" not in dd, "하드코딩 문구 재발"
+
+    def test_missing_quarter_is_named_not_silently_skipped(self):
+        """⚠️ LPK.DE 표가 25.1Q·25.2Q·**25.4Q**·26.1Q·26.2Q 로 이어져 25.3Q 가
+        통째로 없는데 화면엔 아무 표시가 없었다(사용자 2026-08-18) — 원천
+        결측인지 우리가 흘린 건지 볼 방법이 없었다. 채우지 않고 밝힌다."""
+        from bot.quarterly_series import missing_quarters
+        from bot.quarterly_infographic import _footnotes
+        qs = [{"period": "2025-03-31", "label": "25.1Q"},
+              {"period": "2025-06-30", "label": "25.2Q"},
+              {"period": "2025-12-31", "label": "25.4Q"},
+              {"period": "2026-03-31", "label": "26.1Q"},
+              {"period": "2026-06-30", "label": "26.2Q"}]
+        assert missing_quarters(qs) == ["25.3Q"]
+        # 연속이면 아무 말도 하지 않는다(가짜 경고 금지).
+        cont = [{"period": "2026-03-31", "label": "26.1Q"},
+                {"period": "2026-06-30", "label": "26.2Q"}]
+        assert missing_quarters(cont) == []
+        # 형식을 모르면 **판정하지 않는다**(추측 금지).
+        assert missing_quarters([{"period": "2026Q1"}, {"period": "2026Q3"}]) == []
+        # PNG·표가 공유하는 각주에 실제로 실린다(배선, 실수 #20).
+        notes = " ".join(t for t, _c in _footnotes({"currency": "EUR"}, qs))
+        assert "25.3Q" in notes and "채우지 않습니다" in notes
+        assert "25.3Q" not in " ".join(
+            t for t, _c in _footnotes({"currency": "EUR"}, cont))
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
