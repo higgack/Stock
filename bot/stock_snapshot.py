@@ -1284,7 +1284,7 @@ def _collect_financials(t, snap: dict) -> None:
 # 그대로였다(사용자 스크린샷 — 머지 뒤에도 `240810.KS` 행이 통째로 비어
 # 있었다). 필드 유무를 하나씩 냄새맡는 옛 방식은 새 필드를 넣을 때마다
 # 조건을 같이 고쳐야 해서 매번 잊는다 → 버전 하나로 강제한다.
-_PEER_SCHEMA_VER = 6
+_PEER_SCHEMA_VER = 7
 
 
 # 같은 시장의 **자매 보드**. 목록이 한쪽으로 쏠려 있어(실측: `.KS` 114 :
@@ -1401,24 +1401,57 @@ def _dart_peer_multiples(entry: dict, pt: str) -> dict[str, str]:
         dart = get_dart()
         if not dart:
             return out
-        rec = None
-        # 직전 사업연도 → 미발표면 그 전 해. 연초엔 직전연도 사업보고서가
-        # 아직 없어서(status 013) 한 해 더 물러나지 않으면 전부 빈다.
-        for _y in (None, _dt.date.today().year - 2):
-            rec = dart.get_normalized_financials(pt, year=_y)
-            if rec:
+        net = eq = None
+        b_net = b_eq = ""
+        # ① **TTM 우선** — 소스가 준 PER 은 TTM 기준인데 우리만 연간 확정치를
+        #    쓰면 같은 표 안에서 시점이 어긋난다(사용자 2026-08-18 한화오션:
+        #    자체계산 PER 13.5 옆에 선행 PER 14.2 — 후행이 선행보다 낮게 나올
+        #    만큼 오래된 이익을 쓰고 있었다). 주체 행(밸류에이션 탭)도 TTM
+        #    우선이라 이래야 한 페이지 안에서 기준이 하나가 된다.
+        qs = []
+        try:
+            from bot.dart_quarterly import get_quarterly_series
+            qs = get_quarterly_series(dart, pt, n=4) or []
+        except Exception:
+            qs = []
+        _clean = [q for q in qs
+                  if not (q.get("financials") or {}).get("_anomaly_revenue_negative")
+                  and not (q.get("financials") or {}).get("_anomaly_account_mismatch")]
+        if len(_clean) == 4:
+            _n = [(q.get("financials") or {}).get("당기순이익") for q in _clean]
+            if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in _n):
+                net = sum(_n)
+                b_net = f"DART TTM({_clean[0]['label']}~{_clean[-1]['label']})"
+        # 자본총계는 **저량**이라 합산이 아니라 최근 분기말 잔액이 정답이다.
+        for q in reversed(_clean):
+            _e = (q.get("financials") or {}).get("자본총계")
+            if isinstance(_e, (int, float)) and not isinstance(_e, bool) and _e > 0:
+                eq, b_eq = _e, f"DART {q['label']} 자본총계"
                 break
-        fin = (rec or {}).get("financials") or {}
-        yr = (rec or {}).get("year")
-        net, eq = fin.get("당기순이익"), fin.get("자본총계")
+        # ② 연간 폴백 — 분기 시계열을 못 만든 경우에만.
+        if net is None or eq is None:
+            rec = None
+            # 직전 사업연도 → 미발표면 그 전 해. 연초엔 직전연도 사업보고서가
+            # 아직 없어서(status 013) 한 해 더 물러나지 않으면 전부 빈다.
+            for _y in (None, _dt.date.today().year - 2):
+                rec = dart.get_normalized_financials(pt, year=_y)
+                if rec:
+                    break
+            fin = (rec or {}).get("financials") or {}
+            yr = (rec or {}).get("year")
+            if net is None and fin.get("당기순이익") is not None:
+                net, b_net = fin["당기순이익"], f"DART {yr} 연간 순이익"
+            if eq is None and fin.get("자본총계") is not None:
+                eq, b_eq = fin["자본총계"], f"DART {yr} 연말 자본총계"
+
         if (entry.get("trailingPE") is None and isinstance(net, (int, float))
                 and net > 0 and _ok(mc / net)):
             entry["trailingPE"] = mc / net
-            out["PER"] = f"DART {yr} 연간 순이익"
+            out["PER"] = b_net
         if (entry.get("priceToBook") is None and isinstance(eq, (int, float))
                 and eq > 0 and _ok(mc / eq)):
             entry["priceToBook"] = mc / eq
-            out["PBR"] = f"DART {yr} 연말 자본총계"
+            out["PBR"] = b_eq
     except Exception:
         return out
     return out
@@ -1486,14 +1519,15 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             # 표의 PER·PBR 열이 통째로 비어 비교가 불가능하다. 소스가 주는
             # 재료로 **같은 정의대로** 계산해 채우고, 자체계산분은 표시한다
             # (종합·밸류에이션 탭의 `_derive_missing_multiples` 와 동일 규약).
-            _basis = _derive_peer_multiples(entry, pi)
-            # 소스도 없고 `.info` 재료도 없으면 DART 확정 재무제표로 (KR).
-            # ⚠️ **주체 행은 제외한다.** 주체의 PER·PBR 은 렌더가 종합·
-            # 밸류에이션 탭과 같은 값(`_derive_missing_multiples`, TTM 우선)
-            # 으로 채운다 — 여기서 연간 확정치를 넣으면 같은 페이지의 두 탭이
-            # 서로 다른 PER 을 보여준다(검증 7축 ①'전섹션 일치').
-            if pt != ticker:
-                _basis.update(_dart_peer_multiples(entry, pt))
+            # ⚠️ **DART 를 먼저** 태운다(KR 만 실제 동작). yfinance 는 KR
+            # 재무를 몇 분기씩 늦게 준다 — 프로브 실측(2026-08-18 삼양식품):
+            # 소스 분기가 2025-12 까지뿐이고 2026년 1·2분기가 아예 없다.
+            # 늦은 재료로 만든 배수를 최신 소스값 옆에 나란히 놓으면 표 자체가
+            # 거짓말이 된다. 최신(DART)이 이기고 `.info` 는 남은 칸만 채운다.
+            # ⚠️ 주체 행은 제외 — 렌더가 종합·밸류에이션 탭과 같은 값으로
+            # 채운다(검증 7축 ①'전섹션 일치').
+            _basis = {} if pt == ticker else _dart_peer_multiples(entry, pt)
+            _basis.update(_derive_peer_multiples(entry, pi))
             entry = {k: v for k, v in entry.items() if v is not None}
             if _basis:
                 entry["derived"] = sorted(_basis)
@@ -1524,7 +1558,9 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             results = []
             for fut in futs:
                 try:
-                    results.append(fut.result(timeout=30))
+                    # DART 분기 시계열은 콜이 늘어 30초로는 모자란다
+                    # — 타임아웃이 나면 그 행이 통째로 빠진다.
+                    results.append(fut.result(timeout=60))
                 except Exception:
                     results.append(None)
     except Exception:

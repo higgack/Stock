@@ -21992,13 +21992,98 @@ class TestPeerCompsEmptyTable20260818:
         assert "_peer_name(pi, pt)" in src, "이름 정화 미배선"
 
     # ── KR 피어 PER·PBR 을 DART 로 (2026-08-18 프로브 실측) ──────────
-    def _dart_stub(self, monkeypatch, fin: dict, year: int = 2025):
+    def _dart_stub(self, monkeypatch, fin: dict, year: int = 2025, qs=None):
+        """`qs=None` 이면 분기 시계열이 없는 상태 = **연간 폴백** 경로."""
         import types
         rec = {"year": year, "financials": fin}
         monkeypatch.setattr(
             "bot.dart_client.get_dart",
             lambda: types.SimpleNamespace(
                 get_normalized_financials=lambda t, year=None, **kw: rec))
+        monkeypatch.setattr("bot.dart_quarterly.get_quarterly_series",
+                            lambda d, t, n=6, **kw: qs)
+
+    def test_dart_ttm_beats_the_annual_figure(self, monkeypatch):
+        """⚠️ 소스가 준 PER 은 TTM 기준인데 우리만 연간 확정치를 쓰면 같은
+        표 안에서 시점이 어긋난다 — 사용자 2026-08-18 한화오션: 자체계산
+        PER 13.5 옆에 **선행** PER 14.2. 후행이 선행보다 낮게 나올 만큼
+        오래된 이익을 쓰고 있었다는 뜻이다.
+
+        순이익은 4분기 **합**, 자본총계는 최근 분기말 **잔액**(저량이라
+        합산하면 4배가 된다)."""
+        from bot.stock_snapshot import _dart_peer_multiples
+        # 자본총계는 분기마다 다르게 둔다 — 합산하면 1조가 되어 PBR 이 2.0
+        # 으로 나오므로, 최근 분기말 잔액을 쓰는지 값으로 갈린다.
+        qs = [{"label": f"25.{q}Q",
+               "financials": {"당기순이익": 5.0e10, "자본총계": q * 1.0e11}}
+              for q in (1, 2, 3, 4)]
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e10, "자본총계": 9.9e11},
+                        qs=qs)
+        e = {"market_cap": 2.0e12, "currency": "KRW"}
+        got = _dart_peer_multiples(e, "042660.KS")
+        assert e["trailingPE"] == 10.0, e          # 2조 ÷ (5백억×4)
+        assert e["priceToBook"] == 5.0, e          # 2조 ÷ 4천억(최근 분기말)
+        assert got["PER"].startswith("DART TTM("), got
+        assert "25.4Q" in got["PBR"], got
+
+    def test_dart_ttm_refuses_a_short_or_anomalous_series(self, monkeypatch):
+        """4분기가 안 되면 TTM 이 아니다 — 3분기 합을 1년치인 척 쓰면 PER 이
+        33% 부풀어 보인다. 이상치 표시된 분기도 빼고, 그러면 연간으로 내려간다."""
+        from bot.stock_snapshot import _dart_peer_multiples
+        short = [{"label": f"25.{q}Q",
+                  "financials": {"당기순이익": 5.0e10, "자본총계": 4.0e11}}
+                 for q in (1, 2, 3)]
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11},
+                        qs=short)
+        e = {"market_cap": 2.0e12, "currency": "KRW"}
+        got = _dart_peer_multiples(e, "042660.KS")
+        assert got["PER"] == "DART 2025 연간 순이익", got
+        assert e["trailingPE"] == 20.0, e
+        # 이상치 분기가 섞이면 4개여도 TTM 을 만들지 않는다.
+        bad = [{"label": f"25.{q}Q",
+                "financials": {"당기순이익": 5.0e10, "자본총계": 4.0e11,
+                               **({"_anomaly_account_mismatch": True} if q == 2 else {})}}
+               for q in (1, 2, 3, 4)]
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11},
+                        qs=bad)
+        e2 = {"market_cap": 2.0e12, "currency": "KRW"}
+        assert _dart_peer_multiples(e2, "042660.KS")["PER"] == "DART 2025 연간 순이익"
+
+    def test_dart_wins_over_stale_yfinance_info_for_kr(self, monkeypatch):
+        """⚠️ yfinance 는 KR 재무를 몇 분기씩 늦게 준다 — 프로브 실측
+        (2026-08-18 삼양식품): 소스 분기가 2025-12 까지뿐이고 2026년 1·2분기가
+        아예 없다. 늦은 재료로 만든 배수를 최신 소스값 옆에 놓으면 표가
+        거짓말이 된다. **최신(DART)이 이겨야 한다.**"""
+        import sys
+        import types
+
+        from bot import stock_snapshot as ss
+
+        class _T:
+            def __init__(self, sym):
+                self.sym = sym
+
+            @property
+            def info(self):
+                # `.info` 에도 재료는 있다 — 다만 낡았다.
+                return {"shortName": self.sym, "currency": "KRW",
+                        "financialCurrency": "KRW", "marketCap": 2.0e12,
+                        "netIncomeToCommon": 1.0e10}      # → PER 200 (낡음)
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        monkeypatch.setattr("bot.market.resolve_peer_set",
+                            lambda t, ind: ["042660.KS"])
+        qs = [{"label": f"25.{q}Q",
+               "financials": {"당기순이익": 5.0e10, "자본총계": 4.0e11}}
+              for q in (1, 2, 3, 4)]
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e10, "자본총계": 9.9e11},
+                        qs=qs)
+        snap: dict = {}
+        ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
+        row = next(e for e in snap["peer_comps"] if e["ticker"] == "042660.KS")
+        assert row["trailingPE"] == 10.0, f"낡은 .info 가 DART 를 이겼다: {row}"
+        assert row["derived_basis"]["PER"].startswith("DART TTM("), row
 
     def test_kr_peer_pbr_comes_from_dart_when_yfinance_omits_it(self, monkeypatch):
         """프로브 실측: 피어 6종 **전원** `priceToBook=None` 이고 절반은
@@ -22120,7 +22205,8 @@ class TestPeerCompsEmptyTable20260818:
                             types.SimpleNamespace(Ticker=_T))
         monkeypatch.setattr("bot.market.resolve_peer_set",
                             lambda t, ind: ["042700.KS"])
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 6.9e11})
+        # DART 는 자본만 있고 순이익이 없는 상태 — PER 은 `.info` 가 채운다.
+        self._dart_stub(monkeypatch, {"자본총계": 6.9e11})
         snap: dict = {}
         ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
         row = next(e for e in snap["peer_comps"] if e["ticker"] == "042700.KS")
