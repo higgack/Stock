@@ -1055,6 +1055,27 @@ def _seibro_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
         return None
 
 
+def _int_period_keys(d: Optional[dict]) -> dict:
+    """`{"5": 0.15}` → `{5: 0.15}`.
+
+    ⚠️ **JSON 은 dict 키를 문자열로 만든다.** `_pp_from_dated_series` 는
+    `{5: pp, 10: pp, ...}`(int 키)를 돌려주는데, 디스크 캐시에 `json.dumps`
+    로 저장했다가 다시 읽으면 `{"5": pp, ...}` 가 된다. 화면은 `pds.get(5)`
+    (int)로 찾으므로 **캐시가 살아있는 12시간 동안 기간 칸이 전부 `—`** 로
+    나온다 — 신선 수집 직후에만 제대로 보이는 유령 버그다(사용자 2026-08-18
+    삼성에스디에스, 프로브가 `기간={'5': 0.156, ...}` 로 잡아냄).
+    캐시를 읽는 지점에서 되돌린다."""
+    if not isinstance(d, dict):
+        return {}
+    out: dict = {}
+    for k, v in d.items():
+        try:
+            out[int(k)] = v
+        except (TypeError, ValueError):
+            out[k] = v
+    return out
+
+
 def _has_any_period(pds: Optional[dict]) -> bool:
     """True if at least one period has a non-None value."""
     if not pds:
@@ -1091,6 +1112,11 @@ def get_kr_multi_period_trends(ticker: str, *, cache_only: bool = False) -> Opti
             if age_h < _CACHE_TTL_HOURS:
                 cached = json.loads(cache_file.read_text())
                 if cached and _has_any_period(cached.get("foreign", {}).get("periods")):
+                    # ⚠️ JSON 왕복이 int 키를 문자열로 바꿔 놓는다 — 되돌린다.
+                    for _k in ("foreign", "short"):
+                        if isinstance(cached.get(_k), dict):
+                            cached[_k]["periods"] = _int_period_keys(
+                                cached[_k].get("periods"))
                     return cached
         except Exception:
             pass
