@@ -19,6 +19,9 @@
         → `본문없음 0자` 일 때 원문 수신을 해부한다(HTTP 상태·바이트수·zip 엔트리).
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --list 012450.KS 2026 11013
         → 그 분기 전후의 정기공시 원시 목록을 넓은 창으로 찍는다(창 밖 정정 확인).
+    cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --sweep
+        → 공시 확정 종목 전체(형식 8종 전부 포함)를 한 줄씩 훑는다. 분기별
+          빈칸 유무 + **분기간 급변**(파싱 오류 의심)까지 본다. 종목 지정 가능.
 """
 from __future__ import annotations
 
@@ -186,6 +189,119 @@ def list_probe(ticker: str, year: str, reprt: str) -> int:
     return 0
 
 
+# 수주잔고를 **공시한다고 확정된** 종목들(1~4차 프로브 88건 중). 형식 8종을
+# 모두 덮도록 골랐다 — 이 스윕이 곧 형식 회귀 테스트다.
+# ⚠️ 미공시 종목은 넣지 않는다. 빈칸이 정상이라 신호가 되지 않는다.
+_SWEEP: list[tuple[str, str]] = [
+    ("010140", "삼성중공업"), ("009540", "HD한국조선해양"),
+    ("329180", "HD현대중공업"), ("042660", "한화오션"),
+    ("012450", "한화에어로스페이스"), ("010120", "LS ELECTRIC"),
+    ("307950", "현대오토에버"), ("095610", "테스"), ("240810", "원익IPS"),
+    ("140860", "파크시스템스"), ("131290", "티에스이"), ("259630", "엠플러스"),
+    ("083650", "비에이치아이"), ("036930", "주성엔지니어링"),
+    ("039440", "에스티아이"), ("265520", "AP시스템"), ("378340", "필에너지"),
+    ("299030", "하나기술"), ("372170", "윤성에프앤씨"), ("017960", "한국카본"),
+    ("033500", "동성화인텍"), ("100090", "SK오션플랜트"),
+    ("443060", "HD현대마린솔루션"), ("071970", "HD현대마린엔진"),
+    ("105840", "우진"), ("045390", "대아티아이"), ("017040", "광명전기"),
+    ("082740", "한화엔진"), ("267250", "HD현대"), ("099320", "쎄트렉아이"),
+    ("232140", "와이씨"), ("214150", "클래시스"), ("018260", "삼성에스디에스"),
+    ("022100", "포스코DX"), ("272210", "한화시스템"),
+    # 합계행 없는 표(행합산)
+    ("028050", "삼성E&A"), ("298040", "효성중공업"), ("089790", "제이티"),
+    ("348210", "넥스틴"), ("075580", "세진중공업"), ("084370", "유진테크"),
+    # 주석·단일값·잔고열·산문·전치·건설
+    ("051600", "한전KPS"), ("000720", "현대건설"), ("079550", "LIG넥스원"),
+    ("010820", "퍼스텍"), ("089030", "테크윙"), ("047810", "한국항공우주"),
+    ("281820", "케이씨텍"), ("003070", "코오롱글로벌"), ("047040", "대우건설"),
+    ("006360", "GS건설"), ("375500", "DL이앤씨"), ("056190", "SFA"),
+]
+
+# 분기간 급변 임계. 수주잔고는 **잔고(스톡)**라 분기마다 반토막·두 배가 나긴
+# 어렵다 — 그 정도 튀면 단위 오인·다른 표 채택 같은 파싱 오류를 의심해야 한다.
+# 값이 '있다'는 것과 '맞다'는 건 다르므로, 스윕은 정합성까지 본다.
+_JUMP = 0.60
+
+
+def _one(dart, ticker: str, n: int = 5):
+    """→ (분기 리스트[(label, 값|None, 사유)], ) — 조용히 수집."""
+    from bot.dart_backlog import diagnose, parse_backlog
+    from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
+    from bot.dart_quarterly import get_quarterly_series
+    qs = get_quarterly_series(dart, ticker, n=n) or []
+    out = []
+    for q in qs:
+        y, rc, label = q["year"], q["reprt_code"], q.get("label", "?")
+        text = ""
+        for rep in dart.find_periodic_reports(ticker, y, rc):
+            text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
+                                   max_bytes=_DOC_TEXT_MAX_FULL) or ""
+            if text:
+                break
+        got = parse_backlog(text)
+        out.append((label, got["value"] if got else None,
+                    got["form"] if got else diagnose(text)))
+    return out
+
+
+def sweep(tickers: list[str]) -> int:
+    """여러 종목의 5분기를 한 줄씩 훑는다 — 빈칸 유무 + 값 정합성.
+
+    ⚠️ 종목당 5개 정기보고서 원문(각 수 MB)을 받는다. 50종목이면 수십 분
+    걸릴 수 있어 **한 줄씩 즉시 출력**한다(중간에 끊어도 결과가 남는다)."""
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    if not dart:
+        print("❌ DART_API_KEY 없음")
+        return 1
+    items = ([(t.split(".")[0], "") for t in tickers] if tickers else _SWEEP)
+    full, partial, empty, jumpy = [], [], [], []
+    print(f"■ 수주잔고 스윕 {len(items)}종목 × 5분기 "
+          f"(종목당 원문 5건 다운로드 — 오래 걸립니다)")
+    print("=" * 96)
+    for code, name in items:
+        nm = dart.stock_code_to_name(code) or name or "?"
+        try:
+            rows = _one(dart, code)
+        except Exception as exc:
+            print(f"■ {code} {nm:16s} ❌ {type(exc).__name__}: {exc}")
+            continue
+        if not rows:
+            print(f"■ {code} {nm:16s} ❌ 분기 시리즈 없음")
+            continue
+        cells, vals, forms = [], [], set()
+        for label, v, why in rows:
+            if v is None:
+                cells.append(f"{label} —({why})")
+            else:
+                cells.append(f"{label} {v/1e12:.2f}조")
+                vals.append((label, v))
+                forms.add(why)
+        got_n = len(vals)
+        # 분기간 급변 — 값이 '있다'와 '맞다'는 다르다.
+        warn = ""
+        for (l0, v0), (l1, v1) in zip(vals, vals[1:]):
+            if v0 > 0 and abs(v1 / v0 - 1) > _JUMP:
+                warn = f"  ⚠️급변 {l0}→{l1} {v1/v0:.1f}배"
+                jumpy.append(f"{code} {nm}{warn}")
+                break
+        # 형식이 분기마다 갈리면 표가 바뀐 것 — 값 신뢰도가 떨어진다.
+        if len(forms) > 1:
+            warn += f"  ⚠️형식혼재 {'/'.join(sorted(forms))}"
+        tag = "✅" if got_n == len(rows) else ("◐" if got_n else "❌")
+        (full if got_n == len(rows) else partial if got_n else empty).append(
+            f"{code} {nm}")
+        print(f"■ {code} {nm:16s} {tag}{got_n}/{len(rows)}  "
+              + " · ".join(cells) + warn)
+    print("=" * 96)
+    print(f"■ 요약  ✅전분기 {len(full)} · ◐일부 {len(partial)} · ❌전무 {len(empty)}")
+    for label, group in (("◐ 일부 빈칸", partial), ("❌ 전무", empty),
+                         ("⚠️ 분기간 급변(파싱 의심)", jumpy)):
+        if group:
+            print(f"  {label}: " + " · ".join(group))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) > 2 and argv[1] == "--ticker":
         return per_quarter(argv[2])
@@ -193,6 +309,8 @@ def main(argv: list[str]) -> int:
         return doc_probe(argv[2])
     if len(argv) > 4 and argv[1] == "--list":
         return list_probe(argv[2], argv[3], argv[4])
+    if len(argv) > 1 and argv[1] == "--sweep":
+        return sweep(argv[2:])
     return summarize()
 
 
