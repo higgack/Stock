@@ -21851,6 +21851,27 @@ class TestPeerCompsEmptyTable20260818:
         assert "2330.TW" in semi, "홈상장이 빠졌다"
         assert "TSM" not in semi, "ADR 이 남아 있다 — PBR 이 9배 틀린다"
 
+    def test_kr_auto_peers_use_the_home_listing_not_the_adr(self):
+        """감사 실측(2026-08-18): TM(도요타 ADR)은 USD 거래·JPY 재무라
+        PBR **15.29** · PSR **0.0043** 인데 홈상장 7203.T 는 PBR **0.959**
+        — 16배 오차(TSM 과 같은 형태)."""
+        from bot.market import _KR_INDUSTRY_PEERS
+        auto = _KR_INDUSTRY_PEERS["Auto Manufacturers"]
+        assert "7203.T" in auto and "TM" not in auto, auto
+
+    def test_audit_applies_the_same_board_fallback_as_the_collector(self):
+        """⚠️ 감사가 폴백을 안 쓰면 `240810.KS`(원익IPS)처럼 **수집기는
+        멀쩡히 처리하는** 종목이 '조회 실패'로 찍혀, 죽은 티커와 구분이
+        안 된다 — 멀쩡한 종목을 목록에서 빼게 된다."""
+        import inspect
+
+        from bot.scripts import peer_currency_audit as au
+        src = inspect.getsource(au)
+        assert "_BOARD_ALT" in src, "수집기와 같은 보드표를 안 쓴다"
+        assert "_info_resolved(yf, t)" in src, "감사 본문이 폴백 경로를 안 탄다"
+        # 레이트리밋을 죽은 티커로 보고하면 안 된다 — 재시도 단계가 있어야.
+        assert "재시도" in src and "dead" in src, "1회 실패를 그대로 사망 처리한다"
+
     def test_home_candidate_search_does_not_confuse_similar_names(self):
         """감사 도구가 제시하는 교체 후보는 **레포 별칭표**에서 온다. 앞
         몇 글자만 보면 TAIWANSEMI 와 TAIWANMOBILE 이 같은 회사로 붙어,
@@ -21861,6 +21882,11 @@ class TestPeerCompsEmptyTable20260818:
         # 홈상장이 미지원 시장이면 후보가 없어야 한다 — 억지 매칭 금지.
         assert _home_candidates("ASML Holding N.V.") == []
         assert _home_candidates("Intel Corporation") == []
+        # ⚠️ 자기 자신은 후보가 아니다 — 별칭표가 같은 티커를 가리키면
+        # "후보 부적합"만 잔뜩 찍혀 진짜 후보가 묻힌다(감사 실측).
+        assert _home_candidates("TENCENT HOLDINGS", "0700.HK") == []
+        # 별칭표에 없는 제안 후보는 **도구가 조회해서** 확인한다.
+        assert _home_candidates("Denso Corp.", "DNZOY") == ["6902.T"]
 
     def test_the_wiring_is_actually_called(self, monkeypatch):
         """헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12)."""

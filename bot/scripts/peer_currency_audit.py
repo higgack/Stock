@@ -52,7 +52,7 @@ def _tickers(market: str) -> dict[str, list[str]]:
     return out
 
 
-def _home_candidates(name: str) -> list[str]:
+def _home_candidates(name: str, self_ticker: str = "") -> list[str]:
     """레포의 별칭표에서 회사명이 겹치는 홈상장 티커. 내 기억이 아니라
     이미 큐레이션된 레포 데이터를 쓴다."""
     from bot import market as m
@@ -60,15 +60,28 @@ def _home_candidates(name: str) -> list[str]:
     if len(key) < 6:
         return []
     hits: list[str] = []
+    hits.extend(_EXTRA_CANDIDATES.get(self_ticker, []))
     for attr in _ALIAS:
         for alias, tk in (getattr(m, attr, None) or {}).items():
             a = re.sub(r"[^A-Z]", "", alias.upper())
             # ⚠️ 짧은 쪽이 긴 쪽의 **접두사**여야 한다. 앞 5글자만 보면
             # TAIWANSEMI 와 TAIWANMOBILE 이 같은 회사로 붙는다(실측).
             short, long = sorted((a, key), key=len)
-            if tk and len(short) >= 6 and long.startswith(short) and tk not in hits:
+            # ⚠️ 자기 자신은 후보가 아니다 — 별칭표가 같은 티커를 가리키면
+            # "후보 부적합"만 잔뜩 찍혀 진짜 후보가 묻힌다(감사 실측).
+            if (tk and tk != self_ticker and len(short) >= 6
+                    and long.startswith(short) and tk not in hits):
                 hits.append(tk)
     return hits[:3]
+
+
+# ⚠️ 별칭표에 없는 **제안** 후보. 내 기억이라 그 자체로는 근거가 아니다 —
+# 도구가 실제로 조회해서 이름·통화를 찍고, `✅ 교체 가능` 이 떠야만 반영한다
+# (2026-08-18 감사에서 DNZOY=Denso ADR 이 USD 거래·JPY 재무로 PSR 0.0039,
+#  150배 오차로 잡혔는데 별칭표엔 Denso 항목이 없었다).
+_EXTRA_CANDIDATES = {
+    "DNZOY": ["6902.T"],       # Denso — 홈상장 도쿄
+}
 
 
 def _info(yf, t: str) -> dict:
@@ -78,6 +91,23 @@ def _info(yf, t: str) -> dict:
         return {}
 
 
+def _info_resolved(yf, t: str) -> tuple[dict, str]:
+    """수집기와 **같은 보드 폴백**을 적용한 조회 → (info, 실제 티커).
+
+    ⚠️ 이게 없으면 `240810.KS`(원익IPS·실제 코스닥)처럼 수집기는 멀쩡히
+    처리하는 종목이 감사에서만 '조회 실패'로 찍혀, 죽은 티커와 구분이 안 된다."""
+    from bot.stock_snapshot import _BOARD_ALT
+    pi = _info(yf, t)
+    if not pi.get("marketCap") and "." in t:
+        alt_sfx = _BOARD_ALT.get(t.rsplit(".", 1)[-1].upper())
+        if alt_sfx:
+            alt = t.rsplit(".", 1)[0] + "." + alt_sfx
+            alt_pi = _info(yf, alt)
+            if alt_pi.get("marketCap"):
+                return alt_pi, alt
+    return pi, t
+
+
 def audit(market: str = "") -> int:
     import yfinance as yf
 
@@ -85,32 +115,55 @@ def audit(market: str = "") -> int:
     items = _tickers(market)
     print(f"■ 대상 {len(items)}종목" + (f" ({market})" if market else " (전 시장)"))
     bad = 0
+    failed: list[tuple[str, list[str]]] = []
     for i, (t, where) in enumerate(sorted(items.items()), 1):
-        pi = _info(yf, t)
-        cur, fin = norm_cur(pi.get("currency")), norm_cur(pi.get("financialCurrency"))
+        pi, rt = _info_resolved(yf, t)
         if not pi.get("marketCap"):
-            print(f"[{i:3d}/{len(items)}] {t:<12} ❌ 조회 실패 — {', '.join(where)}")
+            failed.append((t, where))
             continue
+        if rt != t:
+            print(f"[{i:3d}/{len(items)}] {t:<12} ↪ {rt} (보드 폴백 — 수집기는 정상)")
+        cur, fin = norm_cur(pi.get("currency")), norm_cur(pi.get("financialCurrency"))
         if not cur or not fin or cur == fin:
             continue
         bad += 1
         nm = (pi.get("shortName") or "")[:28]
-        print(f"[{i:3d}/{len(items)}] {t:<12} ⚠ {nm:<28} "
+        print(f"[{i:3d}/{len(items)}] {rt:<12} ⚠ {nm:<28} "
               f"거래={cur} 재무={fin} PBR={pi.get('priceToBook')} "
               f"PSR={pi.get('priceToSalesTrailing12Months')}")
         print(f"              쓰이는 곳: {', '.join(where)}")
-        for c in _home_candidates(nm):
-            ci = _info(yf, c)
+        cands = _home_candidates(nm, rt)
+        for c in cands:
+            ci, _ = _info_resolved(yf, c)
             ccur, cfin = norm_cur(ci.get("currency")), norm_cur(ci.get("financialCurrency"))
             ok = "✅ 교체 가능" if ci.get("marketCap") and ccur == cfin else "❌ 후보 부적합"
-            print(f"              후보 {c:<12} {ok} 거래={ccur or '—'} "
-                  f"재무={cfin or '—'} PBR={ci.get('priceToBook')}")
-        if not _home_candidates(nm):
+            print(f"              후보 {c:<12} {ok} {(ci.get('shortName') or '?')[:20]:<20} "
+                  f"거래={ccur or '—'} 재무={cfin or '—'} PBR={ci.get('priceToBook')}")
+        if not cands:
             print("              후보 없음 — 홈상장이 미지원 시장이면 그대로 둔다"
                   "(⚠ 표시 + 범위 가드가 남는다).")
+
+    # ⚠️ 실패는 **한 번 더** 본다. 671종목을 연달아 두드리면 yfinance 가
+    # 레이트리밋으로 빈 응답을 준다 — 그걸 '죽은 티커'로 보고하면 멀쩡한
+    # 종목을 목록에서 빼게 된다(HD·CRM·TGT 가 실패로 찍혔던 이유).
+    # 2회차에도 실패하면 그건 진짜 안 되는 티커다.
+    dead: list[tuple[str, list[str]]] = []
+    if failed:
+        print(f"\n■ 1차 실패 {len(failed)}종목 — 재시도(레이트리밋 vs 죽은 티커 판별)")
+        for t, where in failed:
+            pi, rt = _info_resolved(yf, t)
+            if pi.get("marketCap"):
+                print(f"  {t:<12} ✅ 재시도 성공 — 1차는 레이트리밋"
+                      + (f" (↪ {rt})" if rt != t else ""))
+            else:
+                dead.append((t, where))
+
     print(f"\n■ 통화 불일치 {bad}종목 / {len(items)}종목")
     if not bad:
         print("  전부 일치 — 교체할 것이 없다.")
+    print(f"■ 2회 연속 조회 실패 {len(dead)}종목 — **목록에서 빼거나 고칠 것**")
+    for t, where in dead:
+        print(f"  {t:<12} {', '.join(where)}")
     return 0
 
 
