@@ -58,7 +58,8 @@ _KEY_WARNED = False
 def realestate_key_ready() -> bool:
     """DATA_GO_KR_API_KEY 존재 여부. 없으면 최초 1회 가입 안내 후 False."""
     global _KEY_WARNED
-    ready = bool(os.environ.get("DATA_GO_KR_API_KEY"))
+    from bot.env_keys import env_ready
+    ready = env_ready("DATA_GO_KR_API_KEY")
     if not ready and not _KEY_WARNED:
         log.warning(
             "realestate: DATA_GO_KR_API_KEY 미설정 — data.go.kr 무료 가입 후 "
@@ -114,7 +115,8 @@ _RESOLVED: dict[str, str] = {}
 def _call(path: str, lawd_cd: str, deal_ymd: str):
     """단일 호출 → (status_code, text). serviceKey 인코딩 자동 처리."""
     import httpx
-    key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+    from bot.env_keys import env_key
+    key = env_key("DATA_GO_KR_API_KEY")
     base_params = {"LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd,
                    "numOfRows": 1000, "pageNo": 1}
     _h = {"User-Agent": _UA, "Accept": "application/xml, text/xml, */*"}

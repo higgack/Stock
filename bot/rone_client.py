@@ -45,7 +45,8 @@ STATBL_NEWSALE = "T244633134443498"  # 지역별 신규 분양세대수
 
 def rone_key_ready() -> bool:
     global _KEY_WARNED
-    ready = bool(os.environ.get("REB_RONE_API_KEY"))
+    from bot.env_keys import env_ready
+    ready = env_ready("REB_RONE_API_KEY")
     if not ready and not _KEY_WARNED:
         log.warning(
             "rone: REB_RONE_API_KEY 미설정 — reb.or.kr R-ONE OpenAPI 키 발급 후 "
@@ -57,7 +58,8 @@ def rone_key_ready() -> bool:
 def _get(endpoint: str, params: dict) -> dict | None:
     """R-ONE OpenAPI 호출 → JSON dict. 실패 시 None + 진단 로그."""
     import httpx
-    key = (os.environ.get("REB_RONE_API_KEY") or "").strip()
+    from bot.env_keys import env_key
+    key = env_key("REB_RONE_API_KEY")
     q = {"KEY": key, "Type": "json", "pIndex": 1, "pSize": 100, **params}
     try:
         r = httpx.get(f"{_BASE}/{endpoint}", params=q,

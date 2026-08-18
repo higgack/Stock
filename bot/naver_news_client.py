@@ -139,8 +139,9 @@ def fetch_news(query: str, days_back: int = 28, max_items: int = 10) -> Optional
     if not (query and query.strip()):
         return None
 
-    client_id = os.getenv("NAVER_CLIENT_ID", "").strip()
-    client_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
+    from bot.env_keys import env_key as _env_key
+    client_id = _env_key("NAVER_CLIENT_ID")
+    client_secret = _env_key("NAVER_CLIENT_SECRET")
     if not (client_id and client_secret):
         log.warning("naver: NAVER_CLIENT_ID/SECRET missing — news unavailable")
         return None
