@@ -15,6 +15,7 @@ VM 실측으로 엔드포인트·필드·파라미터 전부 확인(2026-06-13, 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 
 log = logging.getLogger("bot.naver_ranking")
@@ -554,6 +555,58 @@ def _build_quote_map(market: str) -> None:
                 out[tk] = {"vol": vol, "value": value, "mcap": mcap}
     if out:
         _cache_write(f"naver_quote_{market}.json", out)
+
+
+_KOR_NAME_BUILDING: set = set()
+_KOR_NAME_LOCK = threading.Lock()
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+
+def korean_name_map(market: str) -> dict:
+    """{yfinance 티커 → 한글 종목명} — **두 원천 병합**(사용자 2026-08-18
+    "다가오는 실적 미국종목, 한글화 안된것들 최대한").
+
+    업종 endpoint(`world_upjong_name`)는 업종별 상위 300종목까지라 소형주가
+    빠진다(ABHBY·ACRG·ARMP 처럼 티커만 뜨던 행). worldstock 목록
+    (`world_name_map`, 시장당 ~2000종목)을 얹어 커버리지를 넓힌다.
+
+    ⚠️ **한글이 든 이름만 받는다.** worldstock 이 시장에 따라 영문명을 줄 수
+    있는데, 그걸 그대로 쓰면 '한글명' 자리에 영문이 들어가 되레 헷갈린다 —
+    필터가 있으니 원천이 영문이면 조용히 아무것도 안 바뀐다(추측 배선 금지).
+
+    렌더 블로킹 안 함: 캐시가 없으면 지금 있는 것(업종 맵)만 주고 병합은
+    백그라운드 1회. 다음 방문부터 넓어진 맵. 7d 캐시·graceful."""
+    from bot.finviz_client import _cache_write, _cached
+    cache = f"naver_kor_names_{market}.json"
+    c = _cached(cache, ttl=7 * 86400)
+    if isinstance(c, dict) and c:
+        return c
+    base = {k: v for k, v in (world_upjong_name(market) or {}).items()
+            if _HANGUL_RE.search(str(v))}
+    with _KOR_NAME_LOCK:
+        if market in _KOR_NAME_BUILDING:
+            return base
+        _KOR_NAME_BUILDING.add(market)
+
+    def _build() -> None:
+        try:
+            merged = {k: v for k, v in (world_name_map(market) or {}).items()
+                      if _HANGUL_RE.search(str(v))}
+            # 업종 맵 우선(koreanCodeName 이 정식 한글명) — worldstock 은 보충.
+            merged.update({k: v for k, v in (world_upjong_name(market) or {}).items()
+                           if _HANGUL_RE.search(str(v))})
+            if merged:
+                _cache_write(cache, merged)
+                log.info("naver: %s 한글명 %d개(업종+worldstock 병합)",
+                         market, len(merged))
+        except Exception as exc:                       # noqa: BLE001
+            log.info("naver: %s 한글명 병합 실패: %s", market, exc)
+        finally:
+            with _KOR_NAME_LOCK:
+                _KOR_NAME_BUILDING.discard(market)
+    threading.Thread(target=_build, daemon=True,
+                     name=f"kor-name-{market}").start()
+    return base
 
 
 def world_quote_map(market: str) -> dict:

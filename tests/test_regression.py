@@ -238,10 +238,16 @@ class TestScreenerL4Subindustry:
         # 대시보드 _LAYER_META 는 L4 노출. 소스 검증(telegram import 무거움).
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert 'if d.get("layer") == "L4_SUBINDUSTRY":' in tb       # 메뉴 skip
-        assert "🎯 L4 Sub-industry" in tb                          # /screener_list
         dd = open("bot/dashboard.py", encoding="utf-8").read()
-        assert '"L4_SUBINDUSTRY", "🎯 L4 Sub-industry"' in dd        # 대시보드 그룹
         assert '"L4_SUBINDUSTRY": "l4"' in dd                       # CSS 클래스
+        # ⚠️ 헤딩 **문자열**을 단언하면 문구가 좋아질 때 테스트가 막는다
+        # (실제로 이 줄이 대시보드만 한글로 바뀐 뒤 계속 빨간 채였다 —
+        # 실수 #19). 두 표면이 **같은 레지스트리**를 쓰는지를 본다.
+        from bot.screener_domain_labels import layer_label
+        assert "L4" in layer_label("L4_SUBINDUSTRY")
+        for src in (tb, dd):
+            assert "layer_label" in src, "계층 헤딩이 단일 레지스트리가 아니다"
+            assert "🎯 L4 Sub-industry" not in src, "헤딩 문자열 하드코딩 재발"
 
 
 class TestScreenerPostProcessIdempotent:
@@ -20202,10 +20208,17 @@ class TestFredCardDailyDateAndJoltsScale20260803:
     def test_non_daily_series_still_month_truncated(self):
         # 월간/분기 series(CPI 등)는 원래대로 월 라벨 유지 — 회귀 방지.
         import bot.dashboard as d
+        # ⚠️ 관측일을 **고정 문자열**로 두면 시간이 지나면서 그 값이 공표
+        # 규약상 '지연'이 되어 `⚠ 지연` 배지가 붙는다(2026-08-19 실제 발생 —
+        # 하드코딩한 2026-06-15 가 CPI 규약을 넘김). 이 테스트가 보려는 건
+        # **월 잘림**이므로 오늘 기준 상대 날짜를 쓴다.
+        from datetime import datetime, timedelta
+        _t = (datetime.utcnow() + timedelta(hours=9)).date()
         fred_data = [{"label": "CPI (YoY)", "unit": "%", "series_id": "CPIAUCSL",
-                      "data": {"value": 3.46, "change": -0.70, "time": "2026-06-15"}}]
+                      "data": {"value": 3.46, "change": -0.70,
+                               "time": _t.isoformat()}}]
         html = d._render_fred_card(fred_data, None)
-        assert "(2026-06)</span>" in html
+        assert f"({_t:%Y-%m})</span>" in html
         assert "2026-06-15" not in html
 
     def test_jolts_change_scaled_to_millions(self):
@@ -22344,6 +22357,63 @@ class TestFlowTrendDiagnosis20260818:
         # 같은 버전 캐시는 정상적으로 재사용한다(무조건 재수집이 아니다).
         again = mo._fred_fetch_series("UNRATE", 30)
         assert again["time"] == "2026-08-17"
+
+    def test_every_screener_domain_label_is_english_then_korean(self):
+        """사용자 2026-08-18: "L1~L4 를 영어 (한글) 형식으로 통일".
+        339개가 네 갈래로 갈려 있었다 — 영문(부모영문) 251 · 영문(한글) 62 ·
+        한글만 10 · 영문만 5. 새 도메인 모듈이 들어와도 규약을 지키도록
+        **전수 대조**한다(#24: 목록형 가드는 새 파일을 못 잡는다)."""
+        import bot.screener_themes as T
+        from bot.screener_domain_labels import missing_labels
+        T._discover()
+        raw = {k: v.get("domain", k) for k, v in T._THEMES.items()}
+        assert len(raw) > 300
+        assert not missing_labels(raw), (
+            "라벨 규약(영문 (한글)) 미충족 — bot/screener_domain_labels.KO 에 "
+            "한글을 추가하라")
+        # 화면에 실제로 그 형식으로 나가는지(배선 확인, 실수 #20).
+        ds = {d["slug"]: d["domain"] for d in T.list_domains()}
+        assert ds["transport_logistics_air_freight_logistics"] == \
+            "Air Freight & Logistics (항공화물 및 물류)"
+        assert ds["aerospace_defense_drones_counter_uas"] == \
+            "Drones & Counter-UAS (드론 및 대드론)"
+        # 원본 THEME 은 건드리지 않는다(프롬프트·아카이브가 쓰는 문자열).
+        assert T._THEMES["aerospace_defense_drones_counter_uas"]["domain"] == \
+            "드론 및 대드론(UAS 대응)"
+
+    def test_us_korean_names_merge_two_sources_and_reject_english(
+            self, monkeypatch, tmp_path):
+        """⚠️ 업종 endpoint 는 업종당 상위 300종목까지라 소형주가 빠진다 —
+        실적 캘린더에서 ABHBY·ACRG·ARMP 가 티커만 떴다(사용자 2026-08-18).
+        worldstock 목록을 얹되, **한글이 든 이름만** 받는다: 원천이 영문을
+        주면 '한글명' 자리에 영문이 들어가 되레 헷갈린다."""
+        import bot.finviz_client as fvc
+        import bot.naver_ranking_client as nrc
+        monkeypatch.setattr(nrc, "world_upjong_name",
+                            lambda m: {"AAPL": "애플", "MSFT": "Microsoft"})
+        monkeypatch.setattr(nrc, "world_name_map",
+                            lambda m, **k: {"ARMP": "아르마타", "ACRG": "Acreage"})
+        # ⚠️ `_cached`/`_cache_write` 는 함수 **안에서** finviz_client 로부터
+        # import 된다 — nrc 에 패치하면 안 먹고 진짜 디스크 캐시를 읽는다
+        # (그리고 테스트가 실 캐시를 오염시킨다).
+        monkeypatch.setattr(fvc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fvc, "_cache_write", lambda *a, **k: None)
+        nrc._KOR_NAME_BUILDING.discard("US")
+        # 즉시 반환분: 업종 맵 중 한글만.
+        got = nrc.korean_name_map("US")
+        assert got == {"AAPL": "애플"}, got
+        # 백그라운드 병합 결과를 직접 검증(스레드 대기 대신 같은 로직 호출).
+        merged = {k: v for k, v in nrc.world_name_map("US").items()
+                  if nrc._HANGUL_RE.search(v)}
+        merged.update({k: v for k, v in nrc.world_upjong_name("US").items()
+                       if nrc._HANGUL_RE.search(v)})
+        assert merged == {"ARMP": "아르마타", "AAPL": "애플"}
+        assert "Microsoft" not in merged.values()
+        assert "Acreage" not in merged.values()
+        # 배선 — 실적 캘린더가 병합 맵을 쓰는지(실수 #20).
+        import pathlib as _p
+        dd = _p.Path("bot/dashboard.py").read_text(encoding="utf-8")
+        assert "korean_name_map as _knm" in dd and '_us_kr = _knm("US")' in dd
 
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
