@@ -1277,7 +1277,7 @@ def _collect_financials(t, snap: dict) -> None:
 # 그대로였다(사용자 스크린샷 — 머지 뒤에도 `240810.KS` 행이 통째로 비어
 # 있었다). 필드 유무를 하나씩 냄새맡는 옛 방식은 새 필드를 넣을 때마다
 # 조건을 같이 고쳐야 해서 매번 잊는다 → 버전 하나로 강제한다.
-_PEER_SCHEMA_VER = 2
+_PEER_SCHEMA_VER = 3
 
 
 def _peer_name(pi: dict, pt: str) -> str:
@@ -1324,6 +1324,65 @@ def _derive_peer_multiples(entry: dict, pi: dict) -> list[str]:
     return out
 
 
+def _dart_peer_multiples(entry: dict, pt: str) -> dict[str, str]:
+    """KR 피어의 PER·PBR 을 **DART 재무제표**로 채운다 → {라벨: 기준}.
+
+    yfinance 는 KR 종목의 PER·PBR 을 사실상 안 준다 — 2026-08-18 VM 프로브
+    실측(이오테크닉스 피어 6종): `priceToBook` 은 **전원** None, `netIncome
+    ToCommon` 도 절반이 None 이라 시총÷순이익조차 못 만든다. 그래서 표의
+    PER·PBR 열이 통째로 비었다(사용자 '동종비교가 왜케 안나오는거야').
+
+    그런데 우리는 같은 종목의 **확정 재무제표를 DART 에서 공짜로** 받는다.
+    주체 행은 이미 그렇게 채우고 있었다(`_derive_missing_multiples`) —
+    피어만 비워둘 이유가 없다. 지어내는 숫자가 아니라 공시 원문이다.
+
+    ⚠️ 기준이 주체 행과 다를 수 있다(주체=TTM 우선, 피어=연간 확정치).
+    라벨을 돌려줘 화면이 **행마다** 표기한다 — 같은 ＊ 로 뭉뚱그리면 서로
+    다른 기준을 같은 것처럼 보여주게 된다.
+
+    ⚠️ DART 는 KR 전용이라 이 경로만 시장 특정이다(문서화된 데이터소스
+    사유). 계산식·표기·가드는 전시장 공통 경로를 그대로 탄다.
+    """
+    out: dict[str, str] = {}
+    mc = entry.get("market_cap")
+    if (not mc or mc <= 0 or not pt.upper().endswith((".KS", ".KQ"))
+            or (entry.get("trailingPE") is not None
+                and entry.get("priceToBook") is not None)):
+        return out
+
+    def _ok(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 500
+
+    try:
+        import datetime as _dt
+
+        from bot.dart_client import get_dart
+        dart = get_dart()
+        if not dart:
+            return out
+        rec = None
+        # 직전 사업연도 → 미발표면 그 전 해. 연초엔 직전연도 사업보고서가
+        # 아직 없어서(status 013) 한 해 더 물러나지 않으면 전부 빈다.
+        for _y in (None, _dt.date.today().year - 2):
+            rec = dart.get_normalized_financials(pt, year=_y)
+            if rec:
+                break
+        fin = (rec or {}).get("financials") or {}
+        yr = (rec or {}).get("year")
+        net, eq = fin.get("당기순이익"), fin.get("자본총계")
+        if (entry.get("trailingPE") is None and isinstance(net, (int, float))
+                and net > 0 and _ok(mc / net)):
+            entry["trailingPE"] = mc / net
+            out["PER"] = f"DART {yr} 연간 순이익"
+        if (entry.get("priceToBook") is None and isinstance(eq, (int, float))
+                and eq > 0 and _ok(mc / eq)):
+            entry["priceToBook"] = mc / eq
+            out["PBR"] = f"DART {yr} 연말 자본총계"
+    except Exception:
+        return out
+    return out
+
+
 def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
     """Collect peer company multiples for the comps tab.
 
@@ -1353,7 +1412,10 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             # 두 번 잘못 적었다 — 실수 #12). 조회 결과로 판정해 반대쪽을
             # 한 번 더 시도한다: 시총조차 없으면 그 보드가 아니라는 뜻이다.
             if not pi.get("marketCap") and pt.upper().endswith((".KS", ".KQ")):
-                alt = pt[:-3] + ("KQ" if pt.upper().endswith(".KS") else "KS")
+                # ⚠️ 점을 빼먹으면 `240810KQ` 가 되어 **항상 404** 다 —
+                # 폴백이 있는 줄 알았지 실제로는 한 번도 동작한 적이 없다
+                # (2026-08-18 VM 프로브가 404 응답 원문으로 잡아냄).
+                alt = pt[:-3] + (".KQ" if pt.upper().endswith(".KS") else ".KS")
                 alt_pi = yf.Ticker(alt).info or {}
                 if alt_pi.get("marketCap"):
                     pi, pt = alt_pi, alt
@@ -1385,9 +1447,17 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             # 재료로 **같은 정의대로** 계산해 채우고, 자체계산분은 표시한다
             # (종합·밸류에이션 탭의 `_derive_missing_multiples` 와 동일 규약).
             _derived = _derive_peer_multiples(entry, pi)
+            # 소스도 없고 `.info` 재료도 없으면 DART 확정 재무제표로 (KR).
+            # ⚠️ **주체 행은 제외한다.** 주체의 PER·PBR 은 렌더가 종합·
+            # 밸류에이션 탭과 같은 값(`_derive_missing_multiples`, TTM 우선)
+            # 으로 채운다 — 여기서 연간 확정치를 넣으면 같은 페이지의 두 탭이
+            # 서로 다른 PER 을 보여준다(검증 7축 ①'전섹션 일치').
+            _basis = {} if pt == ticker else _dart_peer_multiples(entry, pt)
             entry = {k: v for k, v in entry.items() if v is not None}
-            if _derived:
-                entry["derived"] = _derived
+            if _derived or _basis:
+                entry["derived"] = sorted(set(_derived) | set(_basis))
+            if _basis:
+                entry["derived_basis"] = _basis
             if pt == ticker:
                 entry["is_subject"] = True
             return entry
@@ -1395,6 +1465,17 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             return None
 
     targets = [ticker] + peers[:7]
+    # ⚠️ corp_code 맵(zip 다운로드)을 **풀 밖에서** 한 번 데운다. 스레드마다
+    # 처음 만나면 6개가 동시에 같은 zip 을 받으러 가고, 그게 아래 30초
+    # future timeout 을 먹어 행이 통째로 빠진다.
+    if any(t.upper().endswith((".KS", ".KQ")) for t in targets):
+        try:
+            from bot.dart_client import get_dart
+            _d = get_dart()
+            if _d:
+                _d._load_corp_code_map()
+        except Exception:
+            pass
     results: list[dict | None]
     try:
         from concurrent.futures import ThreadPoolExecutor
