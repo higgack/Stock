@@ -21872,6 +21872,59 @@ class TestPeerCompsEmptyTable20260818:
         # 레이트리밋을 죽은 티커로 보고하면 안 된다 — 재시도 단계가 있어야.
         assert "재시도" in src and "dead" in src, "1회 실패를 그대로 사망 처리한다"
 
+    def test_audit_throttles_and_cools_down_before_retry(self, monkeypatch):
+        """⚠️ 무지연으로 671종목을 두드리면 **레이트리밋 벽**에 부딪힌다 —
+        실측(2026-08-18): [623]번째부터 끝까지 49종목이 연속 실패했고
+        거기엔 TSLA·WMT·XOM 처럼 명백히 살아있는 종목이 들어 있었다.
+        그걸 '죽은 티커'로 보고하면 멀쩡한 피어를 목록에서 빼게 된다.
+        재시도도 벽에 부딪힌 직후 곧바로 하면 같이 실패해 판별이 안 된다."""
+        import sys
+        import types
+
+        from bot.scripts import peer_currency_audit as au
+        slept: list[float] = []
+        monkeypatch.setattr(au.time, "sleep", lambda s: slept.append(s))
+
+        class _T:
+            def __init__(self, sym):
+                self.sym = sym
+
+            @property
+            def info(self):
+                if self.sym == "DEAD":
+                    return {}
+                return {"shortName": self.sym, "currency": "USD",
+                        "financialCurrency": "USD", "marketCap": 1e9}
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        monkeypatch.setattr(au, "_tickers",
+                            lambda m: {"LIVE": ["US/x"], "DEAD": ["US/y"]})
+        au.audit("")
+        assert slept.count(au._DELAY) == 2, f"종목마다 간격을 안 준다: {slept}"
+        assert slept.count(au._COOLDOWN) == 2, \
+            f"재시도 전 냉각이 없다(재시도도 같이 레이트리밋된다): {slept}"
+
+    def test_audit_banner_names_the_code_version(self, monkeypatch):
+        """⚠️ 배포 전 스크립트의 출력을 새 결과로 착각하면 **이미 고친
+        문제를 다시 쫓는다**(2026-08-18 실측: `↪`·재시도 블록이 통째로
+        없는 출력을 받고 원인을 한참 찾았다). 배너로 못박는다."""
+        import sys
+        import types
+
+        from bot.scripts import peer_currency_audit as au
+        from bot.stock_snapshot import _PEER_SCHEMA_VER
+        monkeypatch.setattr(au.time, "sleep", lambda s: None)
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=lambda s: None))
+        monkeypatch.setattr(au, "_tickers", lambda m: {})
+        out: list[str] = []
+        monkeypatch.setattr("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a))))
+        au.audit("")
+        banner = "\n".join(out)
+        assert f"감사 v{au._AUDIT_VER}" in banner, banner
+        assert f"피어스키마 v{_PEER_SCHEMA_VER}" in banner, banner
+
     def test_home_candidate_search_does_not_confuse_similar_names(self):
         """감사 도구가 제시하는 교체 후보는 **레포 별칭표**에서 온다. 앞
         몇 글자만 보면 TAIWANSEMI 와 TAIWANMOBILE 이 같은 회사로 붙어,

@@ -31,6 +31,20 @@ from __future__ import annotations
 
 import re
 import sys
+import time
+
+# 이 스크립트의 버전. ⚠️ 시작 배너에 찍는다 — 배포 전 코드로 돌린 출력을
+# 새 결과인 줄 알고 분석하면 없는 문제를 쫓게 된다(2026-08-18 실측: `↪`·
+# 재시도 블록이 통째로 없는 출력을 받아 원인을 한참 찾았다).
+_AUDIT_VER = 2
+
+# 종목 간 간격(초). ⚠️ 없으면 **레이트리밋 벽**에 부딪힌다 — 671종목 무지연
+# 실행에서 [623]번째부터 끝까지 49종목이 연속 실패했다(STX·TSLA·WMT·XOM
+# 처럼 명백히 살아있는 종목들). 그걸 '죽은 티커'로 보고하면 목록을 망친다.
+_DELAY = 0.4
+# 재시도 전 대기. 레이트리밋 창이 풀릴 시간을 준다 — 벽에 부딪힌 직후
+# 곧바로 재조회하면 재시도도 같이 실패해 판별이 안 된다.
+_COOLDOWN = 90
 
 _MAPS = (("KR", "_KR_INDUSTRY_PEERS"), ("JP", "_JP_INDUSTRY_PEERS"),
          ("TW", "_TW_INDUSTRY_PEERS"), ("CN", "_CN_A_INDUSTRY_PEERS"),
@@ -112,11 +126,18 @@ def audit(market: str = "") -> int:
     import yfinance as yf
 
     from bot.stock_snapshot import norm_cur
+    from bot.stock_snapshot import _PEER_SCHEMA_VER
     items = _tickers(market)
-    print(f"■ 대상 {len(items)}종목" + (f" ({market})" if market else " (전 시장)"))
+    # ⚠️ 배너로 **어느 코드로 돈 출력인지** 못박는다. 배포 전 스크립트의
+    # 출력을 새 결과로 착각하면 이미 고친 문제를 다시 쫓는다.
+    print(f"■ 감사 v{_AUDIT_VER} · 피어스키마 v{_PEER_SCHEMA_VER} · "
+          f"간격 {_DELAY}s · 재시도 대기 {_COOLDOWN}s")
+    print(f"■ 대상 {len(items)}종목" + (f" ({market})" if market else " (전 시장)")
+          + f" — 예상 {int(len(items) * _DELAY / 60) + 1}분+")
     bad = 0
     failed: list[tuple[str, list[str]]] = []
     for i, (t, where) in enumerate(sorted(items.items()), 1):
+        time.sleep(_DELAY)
         pi, rt = _info_resolved(yf, t)
         if not pi.get("marketCap"):
             failed.append((t, where))
@@ -147,21 +168,30 @@ def audit(market: str = "") -> int:
     # 레이트리밋으로 빈 응답을 준다 — 그걸 '죽은 티커'로 보고하면 멀쩡한
     # 종목을 목록에서 빼게 된다(HD·CRM·TGT 가 실패로 찍혔던 이유).
     # 2회차에도 실패하면 그건 진짜 안 되는 티커다.
-    dead: list[tuple[str, list[str]]] = []
-    if failed:
-        print(f"\n■ 1차 실패 {len(failed)}종목 — 재시도(레이트리밋 vs 죽은 티커 판별)")
-        for t, where in failed:
+    dead: list[tuple[str, list[str]]] = list(failed)
+    for rnd in (1, 2):
+        if not dead:
+            break
+        print(f"\n■ 재시도 {rnd}차 — {len(dead)}종목 "
+              f"({_COOLDOWN}초 대기 후, 레이트리밋 vs 죽은 티커 판별)")
+        time.sleep(_COOLDOWN)
+        still: list[tuple[str, list[str]]] = []
+        for t, where in dead:
+            time.sleep(_DELAY * 2)
             pi, rt = _info_resolved(yf, t)
             if pi.get("marketCap"):
-                print(f"  {t:<12} ✅ 재시도 성공 — 1차는 레이트리밋"
+                print(f"  {t:<12} ✅ 성공 — 앞선 실패는 레이트리밋"
                       + (f" (↪ {rt})" if rt != t else ""))
             else:
-                dead.append((t, where))
+                still.append((t, where))
+        dead = still
 
     print(f"\n■ 통화 불일치 {bad}종목 / {len(items)}종목")
     if not bad:
         print("  전부 일치 — 교체할 것이 없다.")
-    print(f"■ 2회 연속 조회 실패 {len(dead)}종목 — **목록에서 빼거나 고칠 것**")
+    print(f"■ 3회 연속 조회 실패 {len(dead)}종목 — **목록에서 빼거나 고칠 것**")
+    if not dead:
+        print("  없음 — 앞선 실패는 전부 레이트리밋이었다.")
     for t, where in dead:
         print(f"  {t:<12} {', '.join(where)}")
     return 0
@@ -172,7 +202,13 @@ def main(argv: list[str]) -> int:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
-    args = [a.upper() for a in argv[1:]]
+    global _DELAY
+    args = []
+    for a in argv[1:]:
+        if a.startswith("--sleep="):
+            _DELAY = float(a.split("=", 1)[1])
+        else:
+            args.append(a.upper())
     for mk in (args or [""]):
         audit(mk)
     return 0
