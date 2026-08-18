@@ -1277,7 +1277,18 @@ def _collect_financials(t, snap: dict) -> None:
 # 그대로였다(사용자 스크린샷 — 머지 뒤에도 `240810.KS` 행이 통째로 비어
 # 있었다). 필드 유무를 하나씩 냄새맡는 옛 방식은 새 필드를 넣을 때마다
 # 조건을 같이 고쳐야 해서 매번 잊는다 → 버전 하나로 강제한다.
-_PEER_SCHEMA_VER = 3
+_PEER_SCHEMA_VER = 4
+
+
+# 같은 시장의 **자매 보드**. 목록이 한쪽으로 쏠려 있어(실측: `.KS` 114 :
+# `.KQ` 4 · `.TW` 145 : `.TWO` 10) 반대 보드 종목이 통째로 빈 행이 된다.
+# ⚠️ 이 4개 시장은 종목코드가 두 보드에 **겹치지 않는다** — KRX 는 단일
+# 번호체계, TWSE/TPEx 도 유일, 상하이는 6·68 로 선전은 0·3 으로 시작한다.
+# 그래서 "반대쪽에서 조회되면 그게 맞다"가 성립한다(겹치는 시장이라면
+# 다른 회사를 끌어올 수 있으니 이 표에 넣으면 안 된다).
+# JP(.T)·HK(.HK)·US 는 단일 보드라 폴백 대상이 아니다.
+_BOARD_ALT = {"KS": "KQ", "KQ": "KS", "TW": "TWO", "TWO": "TW",
+              "SS": "SZ", "SZ": "SS"}
 
 
 def _peer_name(pi: dict, pt: str) -> str:
@@ -1405,17 +1416,16 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
     def _fetch_one(pt: str) -> dict | None:
         try:
             pi = yf.Ticker(pt).info or {}
-            # ⚠️ **접미사 자동 폴백.** 피어 목록의 `.KS`/`.KQ` 가 틀리면 그 행이
+            # ⚠️ **보드 접미사 자동 폴백.** 피어 목록의 접미사가 틀리면 그 행이
             # 통째로 빈다 — `240810.KS`(원익IPS)·`319660.KS`(피에스케이)는
             # 실제로 코스닥이라 전 컬럼이 `—` 였다(사용자 2026-08-18 스크린샷).
             # 목록의 접미사를 손으로 고치면 또 틀린다(이번 세션에만 종목코드를
             # 두 번 잘못 적었다 — 실수 #12). 조회 결과로 판정해 반대쪽을
             # 한 번 더 시도한다: 시총조차 없으면 그 보드가 아니라는 뜻이다.
-            if not pi.get("marketCap") and pt.upper().endswith((".KS", ".KQ")):
-                # ⚠️ 점을 빼먹으면 `240810KQ` 가 되어 **항상 404** 다 —
-                # 폴백이 있는 줄 알았지 실제로는 한 번도 동작한 적이 없다
-                # (2026-08-18 VM 프로브가 404 응답 원문으로 잡아냄).
-                alt = pt[:-3] + (".KQ" if pt.upper().endswith(".KS") else ".KS")
+            _alt_sfx = (_BOARD_ALT.get(pt.rsplit(".", 1)[-1].upper())
+                        if "." in pt else None)
+            if not pi.get("marketCap") and _alt_sfx:
+                alt = pt.rsplit(".", 1)[0] + "." + _alt_sfx
                 alt_pi = yf.Ticker(alt).info or {}
                 if alt_pi.get("marketCap"):
                     pi, pt = alt_pi, alt
