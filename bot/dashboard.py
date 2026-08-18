@@ -4097,7 +4097,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v15 (2026-08-18) 수급 다기간추이가 빈 이유 표기(자격증명 미설정 판별)
 #   v16 (2026-08-18) 매출 공백 각주가 **실제 어긋난 계정**을 이름으로 표기
 #   v17 (2026-08-18) 임원·주요주주 최신순 정렬 + 수주잔고 파서 2형식(KAI·한전KPS)
-_RENDER_VER = 17
+#   v18 (2026-08-18) 보조 컨센서스에 출처 표기 + 두 컨센서스 차이 설명
+_RENDER_VER = 18
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -5799,10 +5800,20 @@ def _render_stock_info_html(rec: dict) -> str:
             sc_sign = "+" if sc_up >= 0 else ""
             sc_color = "#26a69a" if sc_up >= 0 else "#e2574c"
             sc_upside = f' <span style="color:{sc_color}">{sc_sign}{sc_up:.1f}%</span>'
+        # ⚠️ 출처를 안 찍으면 두 컨센서스가 왜 다른지 화면에서 알 수 없다 —
+        # POSCO홀딩스에서 ₩461,888(18명) vs ₩557,500(6명) 이 나란히 떠
+        # 사용자가 "이 둘 차이가 뭐냐"고 물었다(2026-08-18). `sc_src` 는
+        # 이미 계산돼 있었는데 HTML 에 안 쓰이던 죽은 변수였다(규칙 #10b).
+        sc_src_str = f" · 출처 {sc_src}" if sc_src else ""
         supp_consensus_html = f"""<div class="si-section" style="margin-top:16px">
     <div class="si-section-title">보조 컨센서스</div>
     <div style="font-size:14px">
-      목표가 {csym}{_fmt_num(sc_target, decimals=2 if currency not in _0dec else 0)}{sc_upside} · {sc_rating}{sc_n_str}{sc_lrd_str}
+      목표가 {csym}{_fmt_num(sc_target, decimals=2 if currency not in _0dec else 0)}{sc_upside} · {sc_rating}{sc_n_str}{sc_lrd_str}{sc_src_str}
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:4px">
+      위쪽은 <b>yfinance 집계</b>(주로 글로벌·외국계 커버리지), 이쪽은 <b>현지 원천</b>
+      ({sc_src or "현지"}) 집계입니다. 애널리스트 구성과 집계 시점이 달라 목표가가
+      벌어질 수 있습니다 — 둘 중 하나가 틀린 것이 아닙니다.
     </div>
   </div>"""
 
