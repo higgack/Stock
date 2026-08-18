@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
 def _periods(rows) -> list[str]:
@@ -63,6 +63,40 @@ def probe(ticker: str) -> None:
     kr_q = [str(q.get("period") or q.get("quarter") or "?")
             for q in ((si.get("kr") or {}).get("financials_q") or [])]
     print(f"  [DART kr.financials_q] {len(kr_q)}개: {', '.join(kr_q[-6:]) or '없음'}")
+
+    # ③-b DART 분기 후보 — **분기실적 탭이 어디서 멈췄는지**.
+    # 사용자 2026-08-18 노바렉스: 26.2Q 까지 공시됐는데 화면은 25.4Q 까지였다.
+    # `probe_latest_reprt_code` 는 달력상 최신 후보에서 4단계만 역순 탐색하고,
+    # CFS 가 전부 비면 OFS 로 1회 폴백한다 — 어느 후보가 비었는지 봐야 안다.
+    if ticker.upper().endswith((".KS", ".KQ")):
+        try:
+            import datetime as _dt
+
+            from bot.dart_client import get_dart
+            from bot.dart_quarterly import quarter_label
+            dart = get_dart()
+            if not dart:
+                print("  [DART 후보] ❌ DART_API_KEY 없음")
+            else:
+                _y = _dt.date.today().year
+                cands = [(_y, "11012"), (_y, "11013"), (_y - 1, "11011"),
+                         (_y - 1, "11014"), (_y - 1, "11012")]
+                print("  [DART 후보] 분기별 응답 유무 (CFS / OFS)")
+                for cy, crc in cands:
+                    row = []
+                    for fs in ("CFS", "OFS"):
+                        r = dart.get_normalized_financials(ticker, year=cy,
+                                                           fs_div=fs,
+                                                           reprt_code=crc)
+                        fin = (r or {}).get("financials") or {}
+                        rev = fin.get("매출")
+                        row.append(f"{fs}={'있음' if fin else '없음'}"
+                                   + (f"(매출 {rev/1e8:,.0f}억)" if rev else ""))
+                    print(f"    {quarter_label(cy, crc)}  " + " · ".join(row))
+                print("    → 최신 분기가 '없음'이면 DART 미제공(원천), "
+                      "CFS 만 없고 OFS 만 있으면 연결 미작성 회사다.")
+        except Exception as exc:
+            print(f"  [DART 후보] ❌ {type(exc).__name__}: {exc}")
 
     # 판정 — 셋을 비교해야 원인이 하나로 좁혀진다.
     if not src_q:

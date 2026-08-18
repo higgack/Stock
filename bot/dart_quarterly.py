@@ -81,6 +81,15 @@ def _mark_component(out: dict, src_fin: dict) -> dict:
     return out
 
 
+def _group_name(canonical: str, idx) -> str:
+    """계정 그룹 인덱스 → 사람이 읽는 대표 계정명. 모르면 `그룹N`."""
+    try:
+        from bot.dart_client import _ACCOUNT_GROUPS
+        return _ACCOUNT_GROUPS[canonical][int(idx)][0]
+    except Exception:
+        return f"그룹{idx}"
+
+
 def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     """4분기 단독 = 연간(now) − 9개월누적(prev). 저량(STOCK) 항목은
     차분하지 않고 연간 시점값 그대로 유지.
@@ -118,7 +127,11 @@ def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
             a, b = now_src.get(k), prev_src.get(k)
             if a is not None and b is not None and a != b:
                 out[k] = None
-                mismatched.append(k)
+                # ⚠️ **어느 계정끼리 어긋났는지**를 남긴다. 정규화 키("매출")만
+                # 남기면 화면 각주가 "서로 다른 계정" 이라고만 말해, 이게
+                # 고칠 수 있는 건지(총액끼리 라벨만 다름) 원천 한계인지
+                # (구성요소가 끼어듦) 아무도 못 가른다(사용자 2026-08-18 CJ).
+                mismatched.append(f"{k}: {_group_name(k, a)} ↔ {_group_name(k, b)}")
                 continue
             out[k] = v - prev_v
     if mismatched:
