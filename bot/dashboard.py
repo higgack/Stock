@@ -15522,6 +15522,10 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         # 일별 series 는 월 잘림 없이 정확한 날짜(macro_snapshot 과 동일 규칙).
         _full = item.get("series_id") in _DAILY_SIDS
         _asof = _fmt_asof(d.get("time", ""), full=_full)
+        # 국채금리는 FRED 보다 하루 빠른 **미 재무부** 값으로 대체될 수
+        # 있다 — 어느 원천의 숫자인지 표기한다(규칙 #10b, 조용한 대체 금지).
+        if _asof and d.get("src") == "UST":
+            _asof += " · 미 재무부"
         _asof_html = (f' <span style="font-size:9px;color:var(--muted)">({_html.escape(_asof)})</span>'
                       if _asof else "")
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
