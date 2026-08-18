@@ -4088,7 +4088,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v6 (2026-08-17) 분기→연간 순서 + 주당지표 축약 해제
 #   v7 (2026-08-18) 동종비교 파생 PER·PBR 표시(＊) + 피어 이름 정화
 #   v8 (2026-08-18) 동종비교 주체행에 파생 PER·PBR·PSR 재사용 + 스키마 버전 게이트
-_RENDER_VER = 8
+#   v9 (2026-08-18) 동종비교 KR 피어 PER·PBR 을 DART 로 파생 + 기준 툴팁
+_RENDER_VER = 9
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -7485,14 +7486,16 @@ def _render_stock_info_html(rec: dict) -> str:
             # 동종비교 표의 같은 회사 행만 비어 있었다(사용자 2026-08-18
             # 이오테크닉스). 데이터 부재가 아니라 배선 누락이다. 새 숫자를
             # 만드는 게 아니라 화면에 이미 떠 있는 값 그대로 옮긴다.
-            _extra_calc: set = set()
+            _extra_basis: dict = {}
             if is_subj:
                 _fill = {k: si.get(k) for k in _mult_keys
                          if pc.get(k) is None and si.get(k) is not None}
                 if _fill:
                     pc = {**pc, **_fill}
-                    _extra_calc = {_dmark[k] for k in _fill
-                                   if k in _si_derived and k in _dmark}
+                    _sb = si.get("_derived_basis") or {}
+                    _extra_basis = {_dmark[k]: _sb.get(k, "자체계산")
+                                    for k in _fill
+                                    if k in _si_derived and k in _dmark}
             style = ' style="background:rgba(66,165,245,0.12);font-weight:600"' if is_subj else ""
             name = esc(pc.get("name", "?"))
             ptk = esc(pc.get("ticker", ""))
@@ -7543,13 +7546,17 @@ def _render_stock_info_html(rec: dict) -> str:
             # 자체계산분은 소스값과 **구분해서** 보여준다(데이터 vs 환각).
             # yfinance 가 KR 종목의 PER·PBR 을 자주 안 줘서 시총÷순이익·
             # 시총÷자본으로 채운다 — 정의는 같지만 출처가 다르다.
-            _derived = set(pc.get("derived") or []) | _extra_calc
+            # 기준(TTM / DART 연간 …)은 **행마다 다르다** — 같은 ＊ 로
+            # 뭉뚱그리면 서로 다른 기준을 같은 것처럼 보여준다. 툴팁에 박는다.
+            _dbasis = {**(pc.get("derived_basis") or {}), **_extra_basis}
+            _derived = set(pc.get("derived") or []) | set(_extra_basis)
 
             def _pvd(k):
                 cell = _pv(k)
                 if _dmark.get(k) in _derived and cell not in ("—",):
                     _peer_calc.add(_dmark[k])
-                    return cell + '<span title="자체계산">＊</span>'
+                    _t = "자체계산 · " + _dbasis.get(_dmark[k], "기준 미기록")
+                    return cell + f'<span title="{esc(_t)}">＊</span>'
                 return cell
 
             _cells = [_pvd(k) for k in _mult_keys]
@@ -7567,7 +7574,8 @@ def _render_stock_info_html(rec: dict) -> str:
             _peer_note += (' · <b>＊</b> = 소스 미제공분 자체계산('
                            + esc(" · ".join(sorted(_peer_calc))) + ' — '
                            + esc(", ".join(_defs[k] for k in sorted(_peer_calc)
-                                           if k in _defs)) + ')')
+                                           if k in _defs))
+                           + ' · 기준은 ＊ 에 마우스를 올리면 행별로 표시)')
         if _peer_oob:
             _peer_note += (' · <b>—!</b> = 소스가 준 값이 배수로 성립하지 않음'
                            '(범위 밖) — 숫자처럼 보여주지 않습니다')

@@ -21712,22 +21712,169 @@ class TestPeerCompsEmptyTable20260818:
     6행 중 2행은 **전 컬럼 `—`** 에 회사명이 `240810.KS,0P00017YB3,330568`,
     나머지도 PER·PBR 이 전부 비어 있었다. 원인 3가지를 각각 고친다."""
 
-    def test_wrong_board_suffix_falls_back_to_the_other_one(self):
+    @staticmethod
+    def _stub_yf(monkeypatch, real: set, seen: list):
+        """yfinance 를 심볼 화이트리스트로 가짜화. `real` 에 없는 심볼은
+        빈 dict — 실제 404 와 같은 모양이다."""
+        import sys
+        import types
+
+        class _T:
+            def __init__(self, sym):
+                self.sym = sym
+
+            @property
+            def info(self):
+                seen.append(self.sym)
+                if self.sym not in real:
+                    return {}
+                return {"shortName": "OK-" + self.sym, "currency": "KRW",
+                        "financialCurrency": "KRW", "marketCap": 1e12,
+                        "trailingPE": 10.0, "priceToBook": 2.0}
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        # 오프라인 고정 — DART 파생·corp_code 맵 예열이 네트워크를 안 타게.
+        monkeypatch.setattr("bot.dart_client.get_dart", lambda: None)
+
+    def test_wrong_board_suffix_falls_back_to_the_other_one(self, monkeypatch):
         """피어 목록의 `.KS`/`.KQ` 가 틀리면 그 행이 통째로 빈다 —
         `240810.KS`(원익IPS)·`319660.KS`(피에스케이)는 실제로 코스닥이다.
-        ⚠️ 목록의 접미사를 손으로 고치면 또 틀린다(이번 세션에만 종목코드를
-        두 번 잘못 적었다). **조회 결과로 판정**해 반대쪽을 시도해야 한다."""
+        ⚠️ 목록의 접미사를 손으로 고치면 또 틀린다. **조회 결과로 판정**해
+        반대쪽을 시도해야 한다.
+
+        ⚠️⚠️ 이 테스트는 원래 소스 **문자열**을 단언했다 — 그래서 점이 빠진
+        `pt[:-3] + "KQ"`(= `240810KQ`, 서버가 항상 404)를 통과시켰고, 폴백은
+        배포된 채로 **단 한 번도 동작하지 않았다**(2026-08-18 VM 프로브가
+        404 응답 원문으로 발견). 실제로 조회되는 심볼인지 동작으로 본다."""
+        from bot import stock_snapshot as ss
+        seen: list = []
+        self._stub_yf(monkeypatch, {"039030.KQ", "240810.KQ"}, seen)
+        monkeypatch.setattr("bot.market.resolve_peer_set",
+                            lambda t, ind: ["240810.KS"])
+        snap: dict = {}
+        ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
+        rows = {e["ticker"]: e for e in snap.get("peer_comps") or []}
+        assert not any("." not in x for x in seen), \
+            f"점 없는 심볼로 조회했다 — 서버는 항상 404 다: {seen}"
+        assert "240810.KQ" in rows, f"폴백 실패 — 시도한 심볼: {seen}"
+        assert rows["240810.KQ"]["market_cap"] == 1e12
+
+    def test_the_wiring_is_actually_called(self, monkeypatch):
+        """헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12)."""
         import inspect
         from bot import stock_snapshot as ss
         src = inspect.getsource(ss._collect_peer_multiples)
-        assert 'if not pi.get("marketCap") and pt.upper().endswith((".KS", ".KQ"))' \
-            in src, "접미사 폴백 미배선"
-        assert 'alt = pt[:-3] + ("KQ" if pt.upper().endswith(".KS") else "KS")' in src
-        assert 'pi, pt = alt_pi, alt' in src, "폴백 성공 시 티커도 교체해야 한다"
-        # ⚠️ 헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12).
         assert "_derive_peer_multiples(entry, pi)" in src, "파생 미배선"
-        assert 'entry["derived"] = _derived' in src, "파생 표시가 안 실린다"
+        assert "_dart_peer_multiples(entry, pt)" in src, "DART 파생 미배선"
+        assert 'entry["derived"] =' in src, "파생 표시가 안 실린다"
+        assert 'entry["derived_basis"] = _basis' in src, "기준 라벨이 안 실린다"
         assert "_peer_name(pi, pt)" in src, "이름 정화 미배선"
+
+    # ── KR 피어 PER·PBR 을 DART 로 (2026-08-18 프로브 실측) ──────────
+    def _dart_stub(self, monkeypatch, fin: dict, year: int = 2025):
+        import types
+        rec = {"year": year, "financials": fin}
+        monkeypatch.setattr(
+            "bot.dart_client.get_dart",
+            lambda: types.SimpleNamespace(
+                get_normalized_financials=lambda t, year=None, **kw: rec))
+
+    def test_kr_peer_pbr_comes_from_dart_when_yfinance_omits_it(self, monkeypatch):
+        """프로브 실측: 피어 6종 **전원** `priceToBook=None` 이고 절반은
+        `netIncomeToCommon` 까지 없다 — `.info` 재료만으로는 PER·PBR 열이
+        영원히 빈다. DART 확정 재무제표는 지어낸 숫자가 아니라 공시 원문."""
+        from bot.stock_snapshot import _dart_peer_multiples
+        self._dart_stub(monkeypatch,
+                        {"당기순이익": 1.0e11, "자본총계": 5.0e11})
+        e = {"market_cap": 2.0e12}
+        got = _dart_peer_multiples(e, "036930.KQ")
+        assert e["trailingPE"] == 20.0 and e["priceToBook"] == 4.0
+        assert got == {"PER": "DART 2025 연간 순이익",
+                       "PBR": "DART 2025 연말 자본총계"}
+
+    def test_dart_never_overwrites_a_source_value(self, monkeypatch):
+        """소스가 준 값을 파생으로 덮으면 화면 숫자가 조용히 바뀐다."""
+        from bot.stock_snapshot import _dart_peer_multiples
+        self._dart_stub(monkeypatch,
+                        {"당기순이익": 1.0e11, "자본총계": 5.0e11})
+        e = {"market_cap": 2.0e12, "trailingPE": 11.1}
+        got = _dart_peer_multiples(e, "036930.KQ")
+        assert e["trailingPE"] == 11.1 and "PER" not in got
+
+    def test_dart_path_is_kr_only_and_skips_loss_makers(self, monkeypatch):
+        """DART 는 KR 전용 소스다(문서화된 시장특정 예외). 적자·0 자본은
+        배수로 의미가 없어 만들지 않는다 — 빈칸이 정답이다."""
+        from bot.stock_snapshot import _dart_peer_multiples
+        self._dart_stub(monkeypatch,
+                        {"당기순이익": 1.0e11, "자본총계": 5.0e11})
+        us = {"market_cap": 2.0e12}
+        assert _dart_peer_multiples(us, "AMAT") == {} and "trailingPE" not in us
+        self._dart_stub(monkeypatch, {"당기순이익": -5.0e10, "자본총계": 0})
+        kr = {"market_cap": 2.0e12}
+        assert _dart_peer_multiples(kr, "036930.KQ") == {}
+        assert "trailingPE" not in kr and "priceToBook" not in kr
+
+    def test_out_of_range_derived_values_are_not_created(self, monkeypatch):
+        """순이익이 티끌이면 PER 이 수천배로 나온다 — 화면 가드가 `—!` 로
+        지울 값을 굳이 만들 이유가 없다."""
+        from bot.stock_snapshot import _dart_peer_multiples
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e6, "자본총계": 5.0e11})
+        e = {"market_cap": 2.0e12}
+        got = _dart_peer_multiples(e, "036930.KQ")
+        assert "PER" not in got and "trailingPE" not in e
+        assert got.get("PBR"), "PBR 은 정상 범위라 채워져야 한다"
+
+    def test_subject_row_is_not_filled_from_dart(self, monkeypatch):
+        """주체의 PER·PBR 은 렌더가 종합·밸류에이션 탭과 **같은 값**(TTM 우선)
+        으로 채운다. 수집기가 여기서 연간 확정치를 넣으면 같은 페이지의 두
+        탭이 서로 다른 PER 을 보여준다(검증 7축 ① '전섹션 일치')."""
+        from bot import stock_snapshot as ss
+        seen: list = []
+        self._stub_yf(monkeypatch, set(), seen)          # 전부 빈 .info
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11})
+        monkeypatch.setattr("bot.market.resolve_peer_set",
+                            lambda t, ind: ["036930.KQ"])
+        # 시총만 있는 상태를 만들기 위해 .info 를 종목별로 다르게 준다.
+        import sys
+        import types
+
+        class _T:
+            def __init__(self, sym):
+                self.sym = sym
+
+            @property
+            def info(self):
+                return {"shortName": self.sym, "currency": "KRW",
+                        "financialCurrency": "KRW", "marketCap": 2.0e12}
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        snap: dict = {}
+        ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
+        rows = {e["ticker"]: e for e in snap.get("peer_comps") or []}
+        assert rows["036930.KQ"]["trailingPE"] == 20.0, "피어는 DART 로 채운다"
+        assert "trailingPE" not in rows["039030.KQ"], "주체 행엔 넣지 않는다"
+        assert "derived_basis" not in rows["039030.KQ"]
+
+    def test_derived_basis_is_shown_per_row(self):
+        """기준이 행마다 다르다(주체=TTM, 피어=DART 연간). 같은 ＊ 로
+        뭉뚱그리면 서로 다른 기준을 같은 것처럼 보여준다."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "peer_comps": [
+            {"ticker": "039030.KQ", "name": "이오테크닉스", "currency": "KRW",
+             "financial_currency": "KRW", "market_cap": 5.2e12,
+             "trailingPE": 70.8, "is_subject": True},
+            {"ticker": "036930.KQ", "name": "JEL", "currency": "KRW",
+             "financial_currency": "KRW", "market_cap": 8.4e12,
+             "priceToBook": 4.0, "derived": ["PBR"],
+             "derived_basis": {"PBR": "DART 2025 연말 자본총계"}}]}
+        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        assert 'title="자체계산 · DART 2025 연말 자본총계"' in pane, pane[-900:]
+        assert "기준은 ＊ 에 마우스를 올리면" in pane
 
     @pytest.mark.parametrize("info,pt,want", [
         # yfinance 가 조회에 실패하면 shortName 에 **식별자 나열**을 준다.
