@@ -830,8 +830,45 @@ class DartClient:
         matches = [r for r in payload.get("list") or []
                    if keyword in (r.get("report_nm") or "")]
         matches.sort(key=lambda r: r.get("rcept_dt") or "", reverse=True)
-        return [{"rcept_no": r.get("rcept_no"), "report_nm": r.get("report_nm"),
-                 "rcept_dt": r.get("rcept_dt")} for r in matches]
+        out = [{"rcept_no": r.get("rcept_no"), "report_nm": r.get("report_nm"),
+                "rcept_dt": r.get("rcept_dt")} for r in matches]
+
+        # 2차 — **창 밖에 늦게 접수된 정정**. 제출기한 창(예: 1분기 4/01~5/31)만
+        # 보면 그 뒤에 낸 정정이 통째로 안 보인다. 정정이 나오면 원본 문서가
+        # 내려가는 경우가 있어(한화에어로 2026 1분기: 원본 20260513000860 이
+        # `status=014 파일이 존재하지 않습니다`) 그 분기가 영영 빈다.
+        # ⚠️ 창을 넓히면 **같은 키워드의 다음 분기**가 딸려온다(1분기와 3분기가
+        # 둘 다 '분기보고서'). 그래서 보고서명의 기간 접미사 `(YYYY.MM)` 로
+        # 정확히 걸러낸다. 접미사가 없거나 결산월이 달라 안 맞는 회사는 이
+        # 2차 목록이 비므로 기존 동작 그대로다(1차 결과만 쓴다).
+        period = {"11013": f"{year}.03", "11012": f"{year}.06",
+                  "11014": f"{year}.09", "11011": f"{year}.12"}[reprt_code]
+        try:
+            import datetime as _dt
+            end2 = (_dt.datetime.strptime(end, "%Y%m%d")
+                    + _dt.timedelta(days=210)).strftime("%Y%m%d")
+            resp2 = requests.get(
+                f"{_DART_BASE}/list.json",
+                params={"crtfc_key": self.api_key, "corp_code": corp_code,
+                        "bgn_de": end, "end_de": end2, "pblntf_ty": "A",
+                        "page_count": 50},
+                timeout=_HTTP_TIMEOUT,
+            )
+            pay2 = resp2.json()
+            if pay2.get("status") == "000":
+                seen = {r["rcept_no"] for r in out}
+                late = [r for r in pay2.get("list") or []
+                        if keyword in (r.get("report_nm") or "")
+                        and period in (r.get("report_nm") or "")
+                        and r.get("rcept_no") not in seen]
+                late.sort(key=lambda r: r.get("rcept_dt") or "", reverse=True)
+                out += [{"rcept_no": r.get("rcept_no"),
+                         "report_nm": r.get("report_nm"),
+                         "rcept_dt": r.get("rcept_dt")} for r in late]
+        except Exception as exc:
+            log.debug("find_periodic_reports: 후행 정정 조회 실패 %s: %s",
+                      stock_code, exc)
+        return out
 
     # ── /api/elestock.json — insider / major shareholder holdings ──────
     @_disk_cache_daily
