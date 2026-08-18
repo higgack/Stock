@@ -4094,7 +4094,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v12 (2026-08-18) 동종비교 KR 피어를 DART TTM 기준으로(yfinance 재무 지연 회피)
 #   v13 (2026-08-18) 실적 탭 KR=WISEreport + 낡은 이력 경고(전 시장)
 #   v14 (2026-08-18) 주주 탭 소액주주 정수·지분율 분리 + 빈 합계행 제거 + 기준 라벨
-_RENDER_VER = 14
+#   v15 (2026-08-18) 수급 다기간추이가 빈 이유 표기(자격증명 미설정 판별)
+_RENDER_VER = 15
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -6623,11 +6624,29 @@ def _render_stock_info_html(rec: dict) -> str:
                     pds = sh.get("periods", {})
                     cells = "".join(_pp_cell(pds.get(p), invert=True) for p in (5, 10, 20, 30, 60))
                     t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
+                # ⚠️ 기간 칸이 전부 비었을 때 **왜** 비었는지 밝힌다. 각주는
+                # "데이터가 없으면 —" 이라고만 해서, 자격증명 미설정인지
+                # 소스가 그 구간을 안 주는 건지 화면에서 구분이 안 됐다
+                # (사용자 2026-08-18). 자격증명은 렌더 시점에 확인 가능하다.
+                _pd_any = any(v is not None
+                              for _k in ("foreign", "short")
+                              for v in ((mp.get(_k) or {}).get("periods") or {}).values())
+                _why = ""
+                if not _pd_any:
+                    try:
+                        from bot.pykrx_client import krx_login_ready
+                        _why = ("" if krx_login_ready() else
+                                ' <b style="color:#f5a623">기간 칸이 빈 이유: '
+                                'KRX 로그인 자격증명(KRX_ID/KRX_PW) 미설정 — '
+                                'KRX 가 2025-12-27 부터 로그인 필수라 일별 시계열을 '
+                                '못 받습니다. 현재값은 폴백 소스입니다.</b>')
+                    except Exception:
+                        _why = ""
                 if t_rows:
                     trend_html = f"""<div class="si-section">
       <div class="si-section-title">다기간 추이 · 외국인보유율·공매도 잔고율</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th>{period_hdrs}</tr></thead><tbody>{t_rows}</tbody></table>
-      <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ pp = 퍼센트포인트 = 현재 비율 − N거래일 전 비율(절대 차이). 예: 외국인 39.9%→40.4% = +0.5pp. 데이터가 그 기간만큼 없으면 부정확한 근사 대신 — 표시. 기관·연기금은 일별 보유비율 공시가 없어(외국인 보유율·공매도 잔고율만 일별 비율 존재) 이 표에 못 넣음 — 대신 위 「투자주체별 순매수 다기간」 표에 기관·연기금 순매수가 기간별로 있음.</div>
+      <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ pp = 퍼센트포인트 = 현재 비율 − N거래일 전 비율(절대 차이). 예: 외국인 39.9%→40.4% = +0.5pp. 데이터가 그 기간만큼 없으면 부정확한 근사 대신 — 표시. 기관·연기금은 일별 보유비율 공시가 없어(외국인 보유율·공매도 잔고율만 일별 비율 존재) 이 표에 못 넣음 — 대신 위 「투자주체별 순매수 다기간」 표에 기관·연기금 순매수가 기간별로 있음.{_why}</div>
     </div>"""
         except Exception as exc:
             log.info("detail: multi-period trends %s: %s", ticker, exc)
