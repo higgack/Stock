@@ -46,11 +46,51 @@ import os as _os
 _KRX_CRED_WARNED = False
 
 
+_KRX_ENV_FILE_TRIED = False
+
+
+def _krx_creds_from_env_file() -> None:
+    """`.env` 에서 **KRX_ID/KRX_PW 만** 환경에 채운다(파일 I/O 는 한 번).
+
+    ⚠️ 이게 없으면 `.env` 에 키가 **있는데도** '미설정'으로 보고된다 —
+    `load_dotenv()` 를 부르는 건 봇 엔트리포인트(`telegram_bot.py`)뿐이라,
+    `python -m bot.scripts.…` 로 도는 진단·크론 스크립트는 전부 False 를
+    받는다. 실제로 프로브가 "KRX_ID=미설정"이라고 오보해 사용자를 이미
+    설정된 키를 다시 넣게 만들 뻔했다(2026-08-18).
+
+    ⚠️ `load_dotenv()` 가 아니라 `dotenv_values()` — 전자는 .env 의 **모든**
+    키(TELEGRAM_BOT_TOKEN·DASHBOARD_PASSWORD·SMTP_PASS …)를 프로세스 환경에
+    주입한다. 두 개를 읽는 부작용으로는 과하다(`dart_client._dart_key_from_
+    env_file` 과 같은 규약)."""
+    global _KRX_ENV_FILE_TRIED
+    if _KRX_ENV_FILE_TRIED:
+        return
+    _KRX_ENV_FILE_TRIED = True
+    if _os.environ.get("KRX_ID") and _os.environ.get("KRX_PW"):
+        return
+    try:
+        from pathlib import Path as _P
+
+        from dotenv import dotenv_values, find_dotenv
+        for _p in (find_dotenv(usecwd=True), str(_P.home() / "stock" / ".env")):
+            if not _p:
+                continue
+            vals = dotenv_values(_p) or {}
+            for _k in ("KRX_ID", "KRX_PW"):
+                if not _os.environ.get(_k) and vals.get(_k):
+                    _os.environ[_k] = str(vals[_k])
+            if _os.environ.get("KRX_ID") and _os.environ.get("KRX_PW"):
+                return
+    except Exception:
+        pass
+
+
 def krx_login_ready() -> bool:
     """KRX_ID/KRX_PW 둘 다 .env 에 있으면 True. 미설정 시 최초 1회만
     가입 안내 경고를 남기고 False. pykrx 를 호출하는 모든 함수의 preflight
     gate — universal (main /ticker KR 수급 + Daily Byte 양쪽 적용)."""
     global _KRX_CRED_WARNED
+    _krx_creds_from_env_file()
     ready = bool(_os.environ.get("KRX_ID") and _os.environ.get("KRX_PW"))
     if not ready and not _KRX_CRED_WARNED:
         log.warning(
