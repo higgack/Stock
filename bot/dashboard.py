@@ -7478,6 +7478,7 @@ def _render_stock_info_html(rec: dict) -> str:
         _mult_keys = ("trailingPE", "forwardPE", "priceToBook",
                       "priceToSalesTrailing12Months", "enterpriseToEbitda")
         _si_derived = set(si.get("_derived_multiples") or [])
+        from bot.stock_snapshot import norm_cur as _norm_cur
         for pc in peer_comps:
             is_subj = pc.get("is_subject")
             # ⚠️ 주체 행은 **같은 페이지가 이미 가진 값**을 재사용한다.
@@ -7513,11 +7514,11 @@ def _render_stock_info_html(rec: dict) -> str:
             # (ASML PBR 1563.2 · EV/EBITDA 2917.0)은 환율 배수(~1.08)로 설명이
             # 안 되는 60배 오차라 **범위 가드**가 잡는다 — 그쪽이 진짜 가드다.
             # GBp(펜스)는 GBP 와 같은 통화라 대문자화로 동일 취급한다.
-            def _norm_cur(c):
-                c = (c or "").strip()
-                return "GBP" if c in ("GBp", "GBX", "gbp") else c.upper()
-
-            _fin_cur, _trd_cur = _norm_cur(pc.get("financial_currency")), _norm_cur(peer_cur)
+            # ⚠️ 정규화는 `stock_snapshot.norm_cur` 단일 출처 — 수집기의
+            # "만들지 않는 조건"과 여기의 "⚠ 를 붙이는 조건"이 갈라지면
+            # 경고 없는 환산오차 값이 생긴다.
+            _fin_cur, _trd_cur = (_norm_cur(pc.get("financial_currency")),
+                                  _norm_cur(peer_cur))
             # 거래통화를 티커 접미사로 **추정**한 경우엔 비교하지 않는다 —
             # .L/.PA/.DE 등 미등록 접미사가 USD 로 떨어져 멀쩡한 행에 경고가
             # 붙는다(같은 리뷰).

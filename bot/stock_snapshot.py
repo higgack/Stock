@@ -1277,7 +1277,7 @@ def _collect_financials(t, snap: dict) -> None:
 # 그대로였다(사용자 스크린샷 — 머지 뒤에도 `240810.KS` 행이 통째로 비어
 # 있었다). 필드 유무를 하나씩 냄새맡는 옛 방식은 새 필드를 넣을 때마다
 # 조건을 같이 고쳐야 해서 매번 잊는다 → 버전 하나로 강제한다.
-_PEER_SCHEMA_VER = 4
+_PEER_SCHEMA_VER = 5
 
 
 # 같은 시장의 **자매 보드**. 목록이 한쪽으로 쏠려 있어(실측: `.KS` 114 :
@@ -1289,6 +1289,15 @@ _PEER_SCHEMA_VER = 4
 # JP(.T)·HK(.HK)·US 는 단일 보드라 폴백 대상이 아니다.
 _BOARD_ALT = {"KS": "KQ", "KQ": "KS", "TW": "TWO", "TWO": "TW",
               "SS": "SZ", "SZ": "SS"}
+
+
+def norm_cur(c: str | None) -> str:
+    """통화코드 정규화. GBp(펜스)는 GBP 와 같은 통화다.
+
+    ⚠️ 대시보드 렌더도 이걸 쓴다(단일 출처). 복제하면 "만들지 않는 조건"과
+    "⚠ 를 붙이는 조건"이 갈라져, 화면은 경고 없는데 값은 환산 오차인 상태가
+    생긴다(시장타이밍 VKOSPI 복제 교훈과 같은 실패모드)."""
+    return (c or "").strip().upper().replace("GBX", "GBP")
 
 
 def _peer_name(pi: dict, pt: str) -> str:
@@ -1316,6 +1325,14 @@ def _derive_peer_multiples(entry: dict, pi: dict) -> list[str]:
     mc = entry.get("market_cap")
     out: list[str] = []
     if not mc or mc <= 0:
+        return out
+    # ⚠️ 재무통화 ≠ 거래통화면 **만들지 않는다.** 시총(거래통화) ÷ 순이익
+    # (재무통화)은 환율만큼 틀린 수를 새로 만드는 짓이다. 소스가 준 값은
+    # 화면이 ⚠ 로 알리기라도 하지만, 우리가 만든 값엔 그런 근거가 없다.
+    # 실측(2026-08-18): ASML 은 USD 거래·EUR 재무, HK H주는 HKD 거래·CNY
+    # 재무, TSM ADR 은 USD 거래·TWD 재무다 — 드문 예외가 아니다.
+    _fc, _tc = norm_cur(pi.get("financialCurrency")), norm_cur(entry.get("currency"))
+    if _fc and _tc and _fc != _tc:
         return out
 
     def _ok(v):
@@ -1356,6 +1373,9 @@ def _dart_peer_multiples(entry: dict, pt: str) -> dict[str, str]:
     """
     out: dict[str, str] = {}
     mc = entry.get("market_cap")
+    # DART 는 KRW 다 — 거래통화가 KRW 가 아니면 같은 환산 오차가 생긴다.
+    if norm_cur(entry.get("currency")) not in ("", "KRW"):
+        return out
     if (not mc or mc <= 0 or not pt.upper().endswith((".KS", ".KQ"))
             or (entry.get("trailingPE") is not None
                 and entry.get("priceToBook") is not None)):
