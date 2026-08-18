@@ -20,6 +20,8 @@
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --list 012450.KS 2026 11013
         → 그 분기 전후의 정기공시 원시 목록을 넓은 창으로 찍는다(창 밖 정정 확인).
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --sweep
+    # 값이 **틀린** 종목의 파싱 근거(어느 표를 잡았나):
+    cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --explain 047810
         → 공시 확정 종목 전체(형식 8종 전부 포함)를 한 줄씩 훑는다. 분기별
           빈칸 유무 + **분기간 급변**(파싱 오류 의심)까지 본다. 종목 지정 가능.
 """
@@ -303,6 +305,71 @@ def sweep(tickers: list[str]) -> int:
     return 0
 
 
+_EXPLAIN_KW = None      # lazy: dart_backlog 의 키워드 정규식 재사용
+
+
+def explain(ticker: str) -> int:
+    """분기별로 **어느 표를 잡아 그 값이 나왔는지** 원문과 함께 찍는다.
+
+    ⚠️ 스윕(2026-08-18)이 잡아낸 실패는 빈칸이 아니라 **틀린 숫자**였다:
+    한국항공우주가 0.00조·0.08조·26.63조·0.00조(실제 ~26조 — 26.63 만 맞다),
+    한전KPS 가 2.38조 … 0.06조. 둘 다 「형식혼재」로, 분기마다 다른 표를
+    잡아 한쪽이 1000배 틀렸다는 뜻이다. 어느 표를 왜 골랐는지 봐야 고친다 —
+    값만 봐서는 파서를 못 고친다.
+    """
+    import re
+
+    from bot.dart_backlog import parse_backlog
+    from bot.dart_client import get_dart
+    from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
+    dart = get_dart()
+    if not dart:
+        print("  ❌ DART_API_KEY 없음")
+        return 1
+    code = ticker.split(".")[0]
+    name = dart.stock_code_to_name(code) or "?"
+    print(f"■ {code} {name} — 분기별 파싱 근거")
+    kw = re.compile(r"기말수주잔고|수주잔고|수주잔액|계약잔액")
+    unit = re.compile(r"\(\s*단위\s*[:：][^)]{0,30}\)")
+    from bot.dart_quarterly import get_quarterly_series
+    qs = get_quarterly_series(dart, ticker, n=5) or []
+    if not qs:
+        print("  ❌ 분기 시리즈 없음")
+        return 1
+    for q in qs:
+        year, rc = q["year"], q["reprt_code"]
+        label = q.get("label", "?")
+        reps = dart.find_periodic_reports(code, year, rc) or []
+        text = ""
+        for rep in reps:
+            if rep.get("rcept_no"):
+                text = _fetch_doc_text(rep["rcept_no"], dart.api_key,
+                                       max_bytes=_DOC_TEXT_MAX_FULL) or ""
+                if text:
+                    break
+        if not text:
+            print(f"\n── {label} — 원문 없음")
+            continue
+        got = parse_backlog(text)
+        print(f"\n── {label} — "
+              + (f"{got['value']/1e12:.3f}조 [{got['form']}]" if got else "미검출")
+              + f" · 원문 {len(text):,}자")
+        hits = [m.start() for m in kw.finditer(text)]
+        print(f"   키워드 {len(hits)}회 @ "
+              + ", ".join(f"{h:,}" for h in hits[:10])
+              + (" …" if len(hits) > 10 else ""))
+        shown = 0
+        while hits and shown < 2:
+            h = hits[0]
+            caps = [m for m in unit.finditer(text, 0, h)]
+            start = caps[-1].start() if caps and h - caps[-1].end() < 3000 else h - 250
+            print(f"   ┌ 표 @{max(0, start):,} (키워드 @{h:,})")
+            print("   " + text[max(0, start):h + 900].replace("\n", "\n   "))
+            shown += 1
+            hits = [x for x in hits if x > h + 900]
+    return 0
+
+
 def main(argv: list[str]) -> int:
     # ⚠️ **파이프로 태우면 stdout 이 블록 버퍼링된다.** 이 스크립트들은
     # 수십 분 도는 진단이라 `| tee` 로 받는 게 정상 사용인데, 그러면 버퍼가
@@ -318,6 +385,8 @@ def main(argv: list[str]) -> int:
         return doc_probe(argv[2])
     if len(argv) > 4 and argv[1] == "--list":
         return list_probe(argv[2], argv[3], argv[4])
+    if len(argv) > 2 and argv[1] == "--explain":
+        return explain(argv[2])
     if len(argv) > 1 and argv[1] == "--sweep":
         return sweep(argv[2:])
     return summarize()
