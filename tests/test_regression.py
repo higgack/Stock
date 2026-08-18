@@ -21808,11 +21808,11 @@ class TestPeerCompsEmptyTable20260818:
         pi = {"netIncomeToCommon": 1.0e11, "bookValue": 10.0,
               "sharesOutstanding": 5.0e10, "financialCurrency": "CNY"}
         e = {"market_cap": 2.0e12, "currency": "HKD"}
-        assert _derive_peer_multiples(e, pi) == []
+        assert _derive_peer_multiples(e, pi) == {}
         assert "trailingPE" not in e and "priceToBook" not in e
         # 같은 통화면 정상 파생 — 가드가 전부를 막아버리면 안 된다.
         e2 = {"market_cap": 2.0e12, "currency": "CNY"}
-        assert _derive_peer_multiples(e2, pi) == ["PER", "PBR"]
+        assert sorted(_derive_peer_multiples(e2, pi)) == ["PBR", "PER"]
 
     def test_pence_is_not_a_currency_mismatch_for_derivation(self):
         """GBp(펜스)는 GBP 와 같은 통화다 — 다르다고 보면 런던 종목의
@@ -21821,7 +21821,7 @@ class TestPeerCompsEmptyTable20260818:
         assert norm_cur("GBp") == norm_cur("GBX") == norm_cur("gbp") == "GBP"
         pi = {"netIncomeToCommon": 1.0e11, "financialCurrency": "GBp"}
         e = {"market_cap": 2.0e12, "currency": "GBP"}
-        assert _derive_peer_multiples(e, pi) == ["PER"]
+        assert _derive_peer_multiples(e, pi) == {"PER": "yfinance 순이익(TTM)"}
 
     def test_dart_derivation_refuses_non_krw_trading_currency(self, monkeypatch):
         """DART 숫자는 KRW 다 — 거래통화가 다르면 같은 환산 오차가 난다."""
@@ -21959,6 +21959,60 @@ class TestPeerCompsEmptyTable20260818:
         assert "trailingPE" not in rows["039030.KQ"], "주체 행엔 넣지 않는다"
         assert "derived_basis" not in rows["039030.KQ"]
 
+    def test_every_derived_cell_carries_its_basis(self, monkeypatch):
+        """한 행 안에서도 기준이 갈린다 — 실측(한미반도체 042700.KS):
+        PER 은 `.info` 순이익(TTM), PBR 은 DART 연말 자본총계. 라벨만
+        넘기면 화면 툴팁이 '기준 미기록'으로 뜬다."""
+        from bot.stock_snapshot import (_dart_peer_multiples,
+                                        _derive_peer_multiples)
+        e = {"market_cap": 21.7e12, "currency": "KRW"}
+        pi = {"netIncomeToCommon": 1.78e11, "financialCurrency": "KRW"}
+        basis = _derive_peer_multiples(e, pi)          # PER 만 채워짐
+        assert set(basis) == {"PER"} and "PBR" not in e
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 6.9e11})
+        basis.update(_dart_peer_multiples(e, "042700.KS"))
+        assert set(basis) == {"PER", "PBR"}, basis
+        assert basis["PER"].startswith("yfinance"), basis
+        assert basis["PBR"].startswith("DART"), basis
+        # 이미 채워진 PER 을 DART 가 덮지 않는다(기준도 안 바뀐다).
+        assert abs(e["trailingPE"] - 21.7e12 / 1.78e11) < 1e-6
+
+    def test_mixed_basis_survives_the_collector_end_to_end(self, monkeypatch):
+        """⚠️ 헬퍼만 직접 부르는 테스트는 **수집기 배선 변형을 못 잡는다**
+        (실측: `_fetch_one` 에서 yfinance 파생값을 지우고 DART 로 덮는
+        뮤테이션이 헬퍼 테스트 30개를 전부 통과했다). 한 행에 두 출처가
+        섞이는 실제 경로를 통째로 태운다 — 한미반도체가 정확히 그 모양이다."""
+        import sys
+        import types
+
+        from bot import stock_snapshot as ss
+
+        class _T:
+            def __init__(self, sym):
+                self.sym = sym
+
+            @property
+            def info(self):
+                # PER 재료는 주지만 자본(bookValue)은 안 준다 = KR 실측 형태.
+                return {"shortName": self.sym, "currency": "KRW",
+                        "financialCurrency": "KRW", "marketCap": 21.7e12,
+                        "netIncomeToCommon": 1.78e11}
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        monkeypatch.setattr("bot.market.resolve_peer_set",
+                            lambda t, ind: ["042700.KS"])
+        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 6.9e11})
+        snap: dict = {}
+        ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
+        row = next(e for e in snap["peer_comps"] if e["ticker"] == "042700.KS")
+        assert sorted(row["derived"]) == ["PBR", "PER"], row
+        b = row["derived_basis"]
+        assert b["PER"].startswith("yfinance"), b
+        assert b["PBR"].startswith("DART"), b
+        # DART 가 이미 채워진 PER 을 덮지 않았다 — 값으로 확인한다.
+        assert abs(row["trailingPE"] - 21.7e12 / 1.78e11) < 1e-6, row
+
     def test_derived_basis_is_shown_per_row(self):
         """기준이 행마다 다르다(주체=TTM, 피어=DART 연간). 같은 ＊ 로
         뭉뚱그리면 서로 다른 기준을 같은 것처럼 보여준다."""
@@ -22014,7 +22068,7 @@ class TestPeerCompsEmptyTable20260818:
                    {"netIncomeToCommon": 1e6},              # 시총/순이익 = 100만배
                    {"bookValue": 0, "sharesOutstanding": 1e7}):
             e = {"market_cap": 1e12, "trailingPE": None, "priceToBook": None}
-            assert _derive_peer_multiples(e, pi) == [], pi
+            assert _derive_peer_multiples(e, pi) == {}, pi
             assert e["trailingPE"] is None and e["priceToBook"] is None
         # 소스가 준 값은 덮어쓰지 않는다.
         e = {"market_cap": 1e12, "trailingPE": 15.0, "priceToBook": None}
