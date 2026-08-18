@@ -36,7 +36,7 @@ import time
 # 이 스크립트의 버전. ⚠️ 시작 배너에 찍는다 — 배포 전 코드로 돌린 출력을
 # 새 결과인 줄 알고 분석하면 없는 문제를 쫓게 된다(2026-08-18 실측: `↪`·
 # 재시도 블록이 통째로 없는 출력을 받아 원인을 한참 찾았다).
-_AUDIT_VER = 3
+_AUDIT_VER = 4
 
 # 종목 간 간격(초). ⚠️ 없으면 **레이트리밋 벽**에 부딪힌다 — 671종목 무지연
 # 실행에서 [623]번째부터 끝까지 49종목이 연속 실패했다(STX·TSLA·WMT·XOM
@@ -94,32 +94,48 @@ def _home_candidates(name: str, self_ticker: str = "") -> list[str]:
 # (2026-08-18 감사에서 DNZOY=Denso ADR 이 USD 거래·JPY 재무로 PSR 0.0039,
 #  150배 오차로 잡혔는데 별칭표엔 Denso 항목이 없었다).
 _EXTRA_CANDIDATES = {
-    "DNZOY": ["6902.T"],       # Denso — 홈상장 도쿄
+    "DNZOY": ["6902.T"],       # Denso — 홈상장 도쿄 (2026-08-18 ✅ 확인 후 반영)
+    "BLL": ["BALL"],           # Ball Corp — 티커 변경 추정(도구가 확인한다)
 }
 
 
-def _info(yf, t: str) -> dict:
+def _info(yf, t: str) -> tuple[dict, bool]:
+    """→ (info, 심볼없음). ⚠️ 두 번째 값이 **핵심 판별자**다.
+
+    yfinance 는 없는 심볼엔 `Quote not found for symbol: X` 를 찍고, 레이트
+    리밋엔 그냥 빈 응답을 준다 — 호출 결과만 보면 둘이 똑같이 `{}` 다.
+    2026-08-18 실측: 3회 연속 실패 17종목 안에 CRM·MU·MDT·EL 처럼 명백히
+    살아있는 종목이 섞여 있었다. 그 목록을 믿고 지웠으면 멀쩡한 피어를
+    날렸다. 출력을 가로채 404 를 본 것만 '심볼 없음'으로 못박는다."""
+    import contextlib
+    import io
+    buf = io.StringIO()
     try:
-        return yf.Ticker(t).info or {}
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            pi = yf.Ticker(t).info or {}
     except Exception:
-        return {}
+        pi = {}
+    txt = buf.getvalue()
+    sys.stdout.write(txt)
+    return pi, (f"symbol: {t}" in txt or "Quote not found" in txt)
 
 
-def _info_resolved(yf, t: str) -> tuple[dict, str]:
-    """수집기와 **같은 보드 폴백**을 적용한 조회 → (info, 실제 티커).
+def _info_resolved(yf, t: str) -> tuple[dict, str, bool]:
+    """수집기와 **같은 보드 폴백**을 적용한 조회 → (info, 실제 티커, 심볼없음).
 
     ⚠️ 이게 없으면 `240810.KS`(원익IPS·실제 코스닥)처럼 수집기는 멀쩡히
     처리하는 종목이 감사에서만 '조회 실패'로 찍혀, 죽은 티커와 구분이 안 된다."""
     from bot.stock_snapshot import _BOARD_ALT
-    pi = _info(yf, t)
+    pi, nf = _info(yf, t)
     if not pi.get("marketCap") and "." in t:
         alt_sfx = _BOARD_ALT.get(t.rsplit(".", 1)[-1].upper())
         if alt_sfx:
             alt = t.rsplit(".", 1)[0] + "." + alt_sfx
-            alt_pi = _info(yf, alt)
+            alt_pi, alt_nf = _info(yf, alt)
             if alt_pi.get("marketCap"):
-                return alt_pi, alt
-    return pi, t
+                return alt_pi, alt, False
+            nf = nf and alt_nf      # 양쪽 보드 모두 404 여야 '심볼 없음'
+    return pi, t, nf
 
 
 def audit(market: str = "") -> int:
@@ -136,10 +152,14 @@ def audit(market: str = "") -> int:
           + f" — 예상 {int(len(items) * _DELAY / 60) + 1}분+")
     bad = 0
     failed: list[tuple[str, list[str]]] = []
+    # 티커별로 "매번 404 를 봤는가". 한 번이라도 조용히 실패한 적이 있으면
+    # 심볼 없음이라 단정하지 않는다 — 지우면 되돌릴 수 없다.
+    nf_seen: dict[str, bool] = {}
     for i, (t, where) in enumerate(sorted(items.items()), 1):
         time.sleep(_DELAY)
-        pi, rt = _info_resolved(yf, t)
+        pi, rt, _nf = _info_resolved(yf, t)
         if not pi.get("marketCap"):
+            nf_seen[t] = _nf
             # ⚠️ 1차 실패를 **그 자리에서** 찍는다. 조용히 모으기만 하면
             # 레이트리밋 벽이 몇 번째부터 시작됐는지 알 수가 없어, 나중에
             # 나오는 실패 목록이 죽은 티커인지 벽인지 판별이 안 된다
@@ -160,7 +180,7 @@ def audit(market: str = "") -> int:
         print(f"              쓰이는 곳: {', '.join(where)}")
         cands = _home_candidates(nm, rt)
         for c in cands:
-            ci, _ = _info_resolved(yf, c)
+            ci, _, _ = _info_resolved(yf, c)
             ccur, cfin = norm_cur(ci.get("currency")), norm_cur(ci.get("financialCurrency"))
             ok = "✅ 교체 가능" if ci.get("marketCap") and ccur == cfin else "❌ 후보 부적합"
             print(f"              후보 {c:<12} {ok} {(ci.get('shortName') or '?')[:20]:<20} "
@@ -183,7 +203,8 @@ def audit(market: str = "") -> int:
         still: list[tuple[str, list[str]]] = []
         for t, where in dead:
             time.sleep(_DELAY * 2)
-            pi, rt = _info_resolved(yf, t)
+            pi, rt, _nf = _info_resolved(yf, t)
+            nf_seen[t] = nf_seen.get(t, True) and _nf
             if pi.get("marketCap"):
                 print(f"  {t:<12} ✅ 성공 — 앞선 실패는 레이트리밋"
                       + (f" (↪ {rt})" if rt != t else ""))
@@ -194,11 +215,22 @@ def audit(market: str = "") -> int:
     print(f"\n■ 통화 불일치 {bad}종목 / {len(items)}종목")
     if not bad:
         print("  전부 일치 — 교체할 것이 없다.")
-    print(f"■ 3회 연속 조회 실패 {len(dead)}종목 — **목록에서 빼거나 고칠 것**")
-    if not dead:
-        print("  없음 — 앞선 실패는 전부 레이트리밋이었다.")
-    for t, where in dead:
+    # ⚠️ 두 통을 **갈라서** 보고한다. 섞으면 레이트리밋 종목을 지운다
+    # (2026-08-18 실측: 실패 17종목 안에 CRM·MU·MDT·EL 이 섞여 있었다).
+    gone = [(t, w) for t, w in dead if nf_seen.get(t)]
+    unknown = [(t, w) for t, w in dead if not nf_seen.get(t)]
+    print(f"■ 심볼 없음 확정 {len(gone)}종목 — 매 시도마다 404"
+          " → **목록에서 빼거나 고칠 것**")
+    for t, where in gone:
         print(f"  {t:<12} {', '.join(where)}")
+    if not gone:
+        print("  없음.")
+    print(f"■ 원인 불명 {len(unknown)}종목 — 404 를 못 봤다(레이트리밋 가능)"
+          " → **건드리지 말 것**")
+    for t, where in unknown:
+        print(f"  {t:<12} {', '.join(where)}")
+    if not unknown:
+        print("  없음.")
     return 0
 
 

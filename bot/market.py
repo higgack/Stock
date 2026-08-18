@@ -579,7 +579,11 @@ _KR_INDUSTRY_PEERS = {
         "005380.KS", "000270.KS", "7203.T", "F", "GM",
     ],
     "Auto Parts": [
-        "012330.KS", "204320.KS", "018880.KS", "DNZOY",
+        # ⚠️ DNZOY(덴소 ADR)가 아니라 홈상장 6902.T. 감사 실측(2026-08-18):
+        # ADR 은 USD 거래·JPY 재무라 PSR **0.0039**(150배 오차) — 도구가
+        # 후보 6902.T 를 조회해 `✅ 교체 가능 DENSO CORP 거래=JPY 재무=JPY`
+        # 로 확인했다(TSM·TM 과 같은 형태).
+        "012330.KS", "204320.KS", "018880.KS", "6902.T",
     ],
     "Banks - Regional": [
         "086790.KS", "316140.KS", "024110.KS", "138930.KS",
@@ -631,7 +635,6 @@ _KR_INDUSTRY_PEERS = {
         "097950.KS",  # CJ제일제당
         "004370.KS",  # 농심
         "007310.KS",  # 오뚜기
-        "049770.KS",  # 동원F&B
         "005180.KS",  # 빙그레
         "271560.KS",  # 오리온
     ],
@@ -646,7 +649,6 @@ _KR_INDUSTRY_PEERS = {
         "009540.KS",  # HD한국조선해양 (지주사)
         "329180.KS",  # HD현대중공업
         "042660.KS",  # 한화오션
-        "010620.KS",  # 현대미포조선
     ],
     "Aerospace & Defense": [
         "047810.KS", "012450.KS", "079550.KS", "LMT", "RTX",
@@ -951,7 +953,7 @@ _JP_INDUSTRY_PEERS = {
         "4307.T", "6098.T", "4684.T", "4751.T",
     ],
     "Software - Infrastructure": [
-        "9613.T", "4307.T", "4684.T",
+        "4307.T", "4684.T",
     ],
     "Telecom Services": [
         "9432.T", "9433.T", "9434.T", "9984.T",
@@ -1197,7 +1199,7 @@ _TW_INDUSTRY_PEERS = {
         "2881.TW", "2882.TW", "2891.TW",
     ],
     "Insurance - Diversified": [
-        "2881.TW", "2882.TW", "2888.TW", "2885.TW",   # Fubon/Cathay/Shinkong/Yuanta
+        "2881.TW", "2882.TW", "2885.TW",   # Fubon/Cathay/Yuanta (2888 신광금 소멸)
     ],
     # ─── Telecom
     "Telecom Services": [
@@ -1495,7 +1497,7 @@ _US_INDUSTRY_PEERS = {
     "Beverages - Non-Alcoholic": ["KO", "PEP", "MNST", "CELH"],
     "Beverages - Wineries & Distilleries": ["STZ", "DEO"],
     "Beverages - Brewers": ["BUD", "TAP"],
-    "Packaged Foods": ["GIS", "K", "CPB", "SJM", "KHC", "MDLZ"],
+    "Packaged Foods": ["GIS", "CPB", "SJM", "KHC", "MDLZ"],
     "Confectioners": ["HSY", "MDLZ"],
     "Household & Personal Products": ["PG", "CL", "KMB", "EL"],
     "Tobacco": ["MO", "PM", "BTI"],
@@ -1515,7 +1517,7 @@ _US_INDUSTRY_PEERS = {
     "Specialty Chemicals": ["PPG", "LIN", "APD", "ECL"],
     "Chemicals": ["DOW", "DD", "LYB", "CE", "EMN"],
     "Agricultural Inputs": ["NTR", "MOS", "CF"],
-    "Containers & Packaging": ["BLL", "IP", "PKG", "AMCR"],
+    "Containers & Packaging": ["IP", "PKG", "AMCR"],
     "Steel": ["NUE", "STLD", "X"],
     "Copper": ["FCX", "SCCO"],
     "Gold": ["NEM", "GOLD"],
