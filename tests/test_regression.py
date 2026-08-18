@@ -21832,6 +21832,31 @@ class TestFlowTrendDiagnosis20260818:
         assert "-1.05" in pane, f"60일 칸이 숫자로 안 찍혔다:\n{pane[-1500:]}"
         assert "기간 칸이 빈 이유" not in pane, "값이 있는데 경고가 떴다"
 
+    def test_krx_credentials_are_read_from_the_env_file(self, tmp_path,
+                                                        monkeypatch):
+        """⚠️ `load_dotenv()` 를 부르는 건 봇 엔트리포인트뿐이다 — 진단·크론
+        스크립트는 `.env` 에 키가 **있는데도** '미설정'을 받는다. 실제로
+        프로브가 그렇게 오보해, 이미 넣어둔 키를 사용자가 다시 넣게 만들
+        뻔했다(2026-08-18). 읽기는 `dotenv_values` 로 **필요한 키만** —
+        전체 주입은 부작용이 과하다(`_dart_key_from_env_file` 규약)."""
+        import importlib
+
+        from bot import pykrx_client as pk
+        env = tmp_path / ".env"
+        env.write_text("KRX_ID=someid\nKRX_PW=somepw\n"
+                       "TELEGRAM_BOT_TOKEN=must-not-leak\n")
+        monkeypatch.delenv("KRX_ID", raising=False)
+        monkeypatch.delenv("KRX_PW", raising=False)
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.setattr(pk, "_KRX_ENV_FILE_TRIED", False)
+        monkeypatch.setattr("dotenv.find_dotenv", lambda **kw: str(env))
+        importlib.import_module("dotenv")
+        assert pk.krx_login_ready() is True, ".env 의 키를 못 읽었다"
+        # ⚠️ 필요한 키만 — 전체 주입이면 봇 토큰까지 환경에 들어온다.
+        import os as _os
+        assert _os.environ.get("TELEGRAM_BOT_TOKEN") is None, \
+            ".env 전체를 주입했다 — dotenv_values 로 필요한 키만 읽어야 한다"
+
     def test_probe_separates_the_three_causes(self):
         """프로브가 ①자격증명 ②원자료 구간 ③컬럼 매칭을 **각 단계로** 찍어야
         가른다. ⚠️ 자격증명은 설정 여부만 — 값은 절대 출력하지 않는다."""

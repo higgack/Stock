@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 _PERIODS = [5, 10, 20, 30, 60]
 
 
@@ -48,10 +48,16 @@ def probe(ticker: str) -> None:
     from bot import pykrx_client as pk
 
     # ① 자격증명 — **설정 여부만**. 값은 찍지 않는다.
+    # ⚠️ v1 은 `os.environ` 만 봐서 **`.env` 에 키가 있는데도 '미설정'** 이라고
+    # 오보했다(2026-08-18). `load_dotenv()` 는 봇 엔트리포인트만 부르므로
+    # 스크립트에선 환경이 비어 있다 — 어디서 왔는지까지 찍는다.
+    _pre = bool(os.environ.get("KRX_ID") and os.environ.get("KRX_PW"))
+    ready = pk.krx_login_ready()          # 내부에서 .env 를 한 번 채운다
     has_id, has_pw = bool(os.environ.get("KRX_ID")), bool(os.environ.get("KRX_PW"))
-    ready = pk.krx_login_ready()
+    _src = "환경변수" if _pre else (".env 파일" if has_id and has_pw else "없음")
     print(f"  [① 자격증명] KRX_ID={'설정' if has_id else '미설정'} · "
-          f"KRX_PW={'설정' if has_pw else '미설정'} → krx_login_ready={ready}")
+          f"KRX_PW={'설정' if has_pw else '미설정'} · 출처={_src} → "
+          f"krx_login_ready={ready}")
     if not ready:
         print("    ⚠️ 원인 ① 확정 — pykrx 경로가 통째로 skip 된다.")
         print("       현재값만 Seibro/네이버 폴백으로 채워지고 기간 칸은 못 만든다.")

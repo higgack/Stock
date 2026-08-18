@@ -44,8 +44,38 @@ _HEADERS = {
 _KEY_WARNED = False
 
 
+_ENV_FILE_TRIED = False
+
+
+def _key_from_env_file() -> None:
+    """`.env` 에서 **DATA_GO_KR_API_KEY 만** 환경에 채운다(파일 I/O 는 한 번).
+
+    ⚠️ `load_dotenv()` 를 부르는 건 봇 엔트리포인트뿐이라, 진단·크론
+    스크립트는 키가 **있는데도** '미설정'을 받는다(2026-08-18 프로브 오보).
+    전체 주입이 아니라 이 키 하나만 — `dart_client._dart_key_from_env_file`
+    과 같은 규약."""
+    global _ENV_FILE_TRIED
+    if _ENV_FILE_TRIED or os.environ.get("DATA_GO_KR_API_KEY"):
+        return
+    _ENV_FILE_TRIED = True
+    try:
+        from pathlib import Path as _P
+
+        from dotenv import dotenv_values, find_dotenv
+        for _p in (find_dotenv(usecwd=True), str(_P.home() / "stock" / ".env")):
+            if not _p:
+                continue
+            v = (dotenv_values(_p) or {}).get("DATA_GO_KR_API_KEY")
+            if v:
+                os.environ["DATA_GO_KR_API_KEY"] = str(v)
+                return
+    except Exception:
+        pass
+
+
 def seibro_key_ready() -> bool:
     global _KEY_WARNED
+    _key_from_env_file()
     ready = bool(os.environ.get("DATA_GO_KR_API_KEY"))
     if not ready and not _KEY_WARNED:
         log.warning("seibro: DATA_GO_KR_API_KEY 미설정 — 외국인보유 skip.")
