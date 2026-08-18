@@ -523,19 +523,32 @@ def _fetch_etf_quotes(nve_codes: list) -> dict:
 
 # ── FRED fetch ──────────────────────────────────────────────────────
 
+# **일별** 시리즈 — 국채금리·크레딧 스프레드. 월간/분기 지표와 달리 하루에
+# 한 번 새 관측이 붙으므로 캐시를 길게 잡으면 **최신 관측을 통째로 놓친다**.
+# 실측(2026-08-18 22:51 KST): FRED 에 8-14 가 있는데 화면은 8-13 이었다 —
+# 24시간 캐시가 전날 받은 사본을 들고 있었기 때문이다. 사용자가 "금리가
+# 매우 중요, 가장 최신을 빠르게" 라고 한 지점이다.
+_FRED_DAILY_SIDS = {"DGS2", "DGS10", "DGS30", "BAMLH0A0HYM2", "BAMLC0A0CM"}
+_FRED_TTL_DAILY_H = 1.0
+_FRED_TTL_OTHER_H = 24.0
+
+
 def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     """Minimal FRED series fetch (reuses fred_client pattern)."""
-    api_key = os.getenv("FRED_API_KEY", "").strip()
+    from bot.env_keys import env_key as _env_key
+    api_key = _env_key("FRED_API_KEY")
     if not api_key:
         return None
     cache_dir = _CACHE_DIR / "fred"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today_str = date.today().isoformat()
     cache_file = cache_dir / f"{series_id}_{today_str}.json"
+    _ttl = (_FRED_TTL_DAILY_H if series_id in _FRED_DAILY_SIDS
+            else _FRED_TTL_OTHER_H)
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 24:
+            if age_h < _ttl:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
@@ -580,7 +593,8 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
 
 def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
     """Fetch index-level FRED series and compute YoY %."""
-    api_key = os.getenv("FRED_API_KEY", "").strip()
+    from bot.env_keys import env_key as _env_key
+    api_key = _env_key("FRED_API_KEY")
     if not api_key:
         return None
     cache_dir = _CACHE_DIR / "fred"
@@ -687,7 +701,8 @@ def _fetch_all_fred() -> list[dict]:
 
 def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
     """Fetch upcoming earnings from Finnhub. Returns list of earnings events."""
-    api_key = os.getenv("FINNHUB_API_KEY", "").strip()
+    from bot.env_keys import env_key as _env_key
+    api_key = _env_key("FINNHUB_API_KEY")
     if not api_key:
         return []
 

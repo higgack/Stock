@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 _SIDS = ("DGS2", "DGS10", "DGS30")
 
 
@@ -77,6 +77,33 @@ def main(argv: list[str]) -> int:
             print(f"   [화면 _fetch_series] {picked}")
         except Exception as exc:
             print(f"   [화면 _fetch_series] ❌ {type(exc).__name__}: {exc}")
+
+    # ④ 미 재무부 원천 — FRED 보다 하루 빠른지 **실측**한다.
+    #    ⚠️ 아직 화면에 안 붙였다. 필드명을 내가 외워 쓰면 틀린 금리가
+    #    올라간다 — 겹치는 날 값이 FRED 와 맞는지 확인하고 붙인다.
+    print("\n── 미 재무부 일별 수익률곡선(당일 15:30 ET · 미배선)")
+    try:
+        from bot.treasury_yield_client import fetch_daily_curve, fresher_than
+        curve = fetch_daily_curve()
+        if not curve:
+            print("   ❌ 조회 실패 또는 파싱 0건 — 붙이면 안 된다.")
+        else:
+            days = sorted(curve)
+            print(f"   관측 {len(days)}일 · 마지막 3일: "
+                  + " · ".join(f"{d} {curve[d]}" for d in days[-3:]))
+            for sid in _SIDS:
+                got = fc._fetch_series(sid, 400)
+                if not got:
+                    continue
+                same = (curve.get(got["time"]) or {}).get(sid)
+                mark = ("일치" if same is not None
+                        and abs(same - got["value"]) <= 0.10 else "불일치")
+                nf = fresher_than(got["time"], got["value"], sid)
+                print(f"   {sid}: FRED {got['time']}={got['value']} · "
+                      f"재무부 같은날={same}({mark}) · "
+                      + (f"더 최신 {nf[0]}={nf[1]}" if nf else "더 최신 없음"))
+    except Exception as exc:
+        print(f"   ❌ {type(exc).__name__}: {exc}")
 
     print("\n■ 판정 기준")
     print("  · 원천 마지막 관측이 화면 기준일과 같다 → 원인 ①(FRED 지연).")
