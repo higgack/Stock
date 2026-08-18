@@ -21858,6 +21858,26 @@ class TestPeerCompsEmptyTable20260818:
         from bot.market import _KR_INDUSTRY_PEERS
         auto = _KR_INDUSTRY_PEERS["Auto Manufacturers"]
         assert "7203.T" in auto and "TM" not in auto, auto
+        # 덴소 ADR 도 같은 형태 — 감사가 `✅ 교체 가능 DENSO CORP` 로 확인.
+        parts = _KR_INDUSTRY_PEERS["Auto Parts"]
+        assert "6902.T" in parts and "DNZOY" not in parts, parts
+
+    def test_confirmed_dead_tickers_are_out_of_the_peer_lists(self):
+        """매 시도마다 404 를 받은 종목만 뺀다(2026-08-18 감사). 상장폐지·
+        피인수로 심볼이 사라진 것들이라 두면 그 행이 영원히 빈다.
+        ⚠️ 반대로 **조용히 실패한 종목은 빼지 않았다** — CRM·MU·MDT·EL 은
+        레이트리밋이었고, 지웠으면 멀쩡한 피어를 날렸다."""
+        from bot import market as m
+        seen: set = set()
+        for attr in ("_KR_INDUSTRY_PEERS", "_JP_INDUSTRY_PEERS",
+                     "_TW_INDUSTRY_PEERS", "_CN_A_INDUSTRY_PEERS",
+                     "_HK_INDUSTRY_PEERS", "_US_INDUSTRY_PEERS"):
+            for peers in (getattr(m, attr, None) or {}).values():
+                seen.update(peers)
+        gone = {"010620.KS", "049770.KS", "2888.TW", "9613.T", "BLL", "K"}
+        assert not (seen & gone), f"소멸 티커가 남아 있다: {seen & gone}"
+        alive = {"CRM", "MU", "MDT", "EL", "PXD", "X"}
+        assert alive <= seen, f"레이트리밋 종목을 지웠다: {alive - seen}"
 
     def test_audit_applies_the_same_board_fallback_as_the_collector(self):
         """⚠️ 감사가 폴백을 안 쓰면 `240810.KS`(원익IPS)처럼 **수집기는
@@ -21963,6 +21983,47 @@ class TestPeerCompsEmptyTable20260818:
         body = "\n".join(out)
         assert "1차 실패(재시도 대상)" in body, body
         assert "DEAD" in body
+
+    def test_audit_separates_confirmed_404_from_unknown_failures(self, monkeypatch, capsys):
+        """⚠️ 섞어서 보고하면 **레이트리밋 종목을 지운다** — 2026-08-18 실측:
+        3회 연속 실패 17종목 안에 CRM·MU·MDT·EL 처럼 명백히 살아있는 종목이
+        섞여 있었다. yfinance 는 없는 심볼엔 `Quote not found` 를 찍고
+        레이트리밋엔 조용히 빈 응답을 준다 — 호출 결과는 둘 다 `{}` 라
+        **출력을 가로채야** 갈린다."""
+        import sys
+        import types
+
+        from bot.scripts import peer_currency_audit as au
+        monkeypatch.setattr(au.time, "sleep", lambda s: None)
+
+        class _T:
+            def __init__(self, sym):
+                self.sym = sym
+
+            @property
+            def info(self):
+                if self.sym == "GONE":
+                    print(f"HTTP Error 404: Quote not found for symbol: {self.sym}")
+                    return {}
+                if self.sym == "SLOW":
+                    return {}          # 레이트리밋 — 조용히 빈 응답
+                return {"shortName": self.sym, "currency": "USD",
+                        "financialCurrency": "USD", "marketCap": 1e9}
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        monkeypatch.setattr(au, "_tickers",
+                            lambda m: {"GONE": ["US/x"], "SLOW": ["US/y"]})
+        # ⚠️ `print` 를 가로채면 안 된다 — 404 판별이 **stdout 리다이렉트**로
+        # 동작하므로 print 를 바꿔치면 검사 대상 자체가 무력화된다.
+        au.audit("")
+        body = capsys.readouterr().out
+        g = body.index("심볼 없음 확정")
+        u = body.index("원인 불명")
+        assert "GONE" in body[g:u], f"404 확정 통에 GONE 이 없다:\n{body[g:u]}"
+        assert "SLOW" not in body[g:u], f"레이트리밋을 사망 처리했다:\n{body[g:u]}"
+        assert "SLOW" in body[u:], f"원인불명 통에 SLOW 가 없다:\n{body[u:]}"
+        assert "건드리지 말 것" in body[u:]
 
     def test_home_candidate_search_does_not_confuse_similar_names(self):
         """감사 도구가 제시하는 교체 후보는 **레포 별칭표**에서 온다. 앞
