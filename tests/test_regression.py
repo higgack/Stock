@@ -21777,6 +21777,61 @@ class TestFlowTrendDiagnosis20260818:
                           periods={5: 0.5, 10: 0.4, 20: 0.3, 30: 0.2, 60: 0.1})
         assert "기간 칸이 빈 이유" not in pane, pane[-900:]
 
+    def test_cached_period_keys_survive_the_json_round_trip(self, tmp_path,
+                                                            monkeypatch):
+        """⚠️ **JSON 은 dict 키를 문자열로 만든다.** `_pp_from_dated_series` 는
+        `{5: pp}`(int)를 돌려주는데 디스크 캐시를 거치면 `{"5": pp}` 가 되고,
+        화면은 `pds.get(5)` 로 찾아 **캐시가 사는 12시간 내내 전 칸이 `—`** 였다
+        — 신선 수집 직후에만 보이는 유령 버그(사용자 2026-08-18 프로브가
+        `기간={'5': 0.156, ...}` 로 잡아냄)."""
+        import json
+
+        from bot import pykrx_client as pk
+        monkeypatch.setattr(pk, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pk, "krx_login_ready", lambda: False)
+        import datetime as _dt
+        code = "018260"
+        cf = tmp_path / f"multi_trend_{code}_{_dt.date.today().isoformat()}.json"
+        # 실제 캐시가 저장되는 모양 그대로 — json.dumps 가 키를 문자열로 만든다.
+        cf.write_text(json.dumps({
+            "foreign": {"current_pct": 18.3,
+                        "periods": {5: 0.156, 10: 0.094, 60: -1.047}},
+            "short": {"current_pct": 1.92, "periods": {5: 0.02, 60: 0.73}}}))
+        got = pk.get_kr_multi_period_trends("018260.KS")
+        assert got, "캐시를 못 읽었다"
+        for key in ("foreign", "short"):
+            pds = got[key]["periods"]
+            assert 5 in pds and 60 in pds, f"{key} 키가 int 가 아니다: {pds}"
+            assert "5" not in pds, f"{key} 에 문자열 키가 남아 있다: {pds}"
+        assert got["foreign"]["periods"][60] == -1.047
+
+    def test_cached_trends_render_as_numbers_not_dashes(self, tmp_path,
+                                                        monkeypatch):
+        """⚠️ 헬퍼 테스트만으론 **배선을 못 잡는다**(실수기록 #20). 사용자가
+        본 증상은 '캐시에서 읽은 표의 기간 칸이 전부 `—`' 였으므로, 캐시 →
+        `get_kr_multi_period_trends` → 렌더까지 통째로 태워 숫자가 찍히는지
+        본다."""
+        import datetime as _dt
+        import json
+
+        import bot.dashboard as dash
+        from bot import pykrx_client as pk
+        monkeypatch.setattr(pk, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pk, "krx_login_ready", lambda: False)
+        cf = tmp_path / f"multi_trend_018260_{_dt.date.today().isoformat()}.json"
+        cf.write_text(json.dumps({
+            "foreign": {"current_pct": 18.3, "periods": {5: 0.156, 60: -1.047}},
+            "short": {"current_pct": 1.92, "periods": {5: 0.02, 60: 0.73}}}))
+        si = {"currency": "KRW", "kr": {"flow": {"investor_flow": {
+            "investors": {"외국인": {"1d": 94.6}}, "unit": "억원"}}}}
+        seg = dash._render_stock_info_html({"ticker": "018260.KS",
+                                            "stock_info": si})["other_panes"]
+        i = seg.index('id="si-flow"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        assert "+0.16" in pane, f"5일 칸이 숫자로 안 찍혔다:\n{pane[-1500:]}"
+        assert "-1.05" in pane, f"60일 칸이 숫자로 안 찍혔다:\n{pane[-1500:]}"
+        assert "기간 칸이 빈 이유" not in pane, "값이 있는데 경고가 떴다"
+
     def test_probe_separates_the_three_causes(self):
         """프로브가 ①자격증명 ②원자료 구간 ③컬럼 매칭을 **각 단계로** 찍어야
         가른다. ⚠️ 자격증명은 설정 여부만 — 값은 절대 출력하지 않는다."""
