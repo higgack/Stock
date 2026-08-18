@@ -21664,6 +21664,90 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestBacklogSweep20260818:
+    """사용자 2026-08-18 "다른 종목들도 분기별 빈칸이 있는지랑 수주잔고 제대로
+    가져오는지 점검해줘". 한 종목씩 보는 `--ticker` 로는 확장이 안 된다."""
+
+    def test_sweep_list_covers_every_parser_form(self):
+        """⚠️ 스윕이 곧 **형식 회귀 테스트**다 — 형식 8종을 하나라도 빼면
+        그 경로가 깨져도 스윕이 초록으로 보인다. 대표 종목이 다 들어 있어야
+        한다(각 형식의 실측 확정 종목)."""
+        import re
+        src = open("bot/scripts/backlog_misses.py", encoding="utf-8").read()
+        blk = src[src.index("_SWEEP: list"):src.index("_JUMP")]
+        codes = set(re.findall(r'\("(\d{6})"', blk))
+        for code, form in (("010140", "표·합계행"), ("028050", "표·행합산"),
+                           ("051600", "주석·건설계약"), ("079550", "단일값"),
+                           ("089030", "표·잔고열"), ("047810", "산문·인라인단위"),
+                           ("281820", "전치·계약잔액"), ("047040", "건설·계약잔액"),
+                           ("056190", "내수·수출 소계")):
+            assert code in codes, f"{form} 대표({code}) 누락"
+        # 미공시 종목은 넣지 않는다 — 빈칸이 정상이라 신호가 되지 않는다.
+        for code, why in (("039030", "이오테크닉스·미공시"),
+                          ("007070", "GS리테일·비수주업")):
+            assert code not in codes, f"미공시 종목 포함: {why}"
+
+    def test_sweep_flags_quarter_over_quarter_jumps(self, capsys, monkeypatch):
+        """값이 **있다**와 **맞다**는 다르다. 수주잔고는 잔고(스톡)라 분기마다
+        두 배가 되긴 어렵다 — 그 정도 튀면 단위 오인·다른 표 채택을 의심한다."""
+        import bot.scripts.backlog_misses as bm
+
+        class _D:
+            api_key = "k"
+
+            @staticmethod
+            def stock_code_to_name(c):
+                return "테스트"
+        monkeypatch.setattr("bot.dart_client.get_dart", lambda: _D())
+        monkeypatch.setattr(bm, "_one", lambda dart, t, n=5: [
+            ("25.2Q", 1.0e14, "표·합계행"), ("25.3Q", 3.0e14, "표·합계행")])
+        bm.sweep(["010140"])
+        out = capsys.readouterr().out
+        assert "⚠️급변" in out and "3.0배" in out, out
+        # 완만한 변화는 경고하지 않는다(과잉 경고는 노이즈).
+        monkeypatch.setattr(bm, "_one", lambda dart, t, n=5: [
+            ("25.2Q", 1.00e14, "표·합계행"), ("25.3Q", 1.05e14, "표·합계행")])
+        bm.sweep(["010140"])
+        assert "⚠️급변" not in capsys.readouterr().out
+
+    def test_sweep_separates_filled_partial_and_empty(self, capsys, monkeypatch):
+        import bot.scripts.backlog_misses as bm
+
+        class _D:
+            api_key = "k"
+
+            @staticmethod
+            def stock_code_to_name(c):
+                return {"A": "가", "B": "나", "C": "다"}.get(c, "?")
+        data = {
+            "A": [("q1", 1e13, "표·합계행"), ("q2", 1.01e13, "표·합계행")],
+            "B": [("q1", 1e13, "표·합계행"), ("q2", None, "원문미제공")],
+            "C": [("q1", None, "미공시"), ("q2", None, "미공시")],
+        }
+        monkeypatch.setattr("bot.dart_client.get_dart", lambda: _D())
+        monkeypatch.setattr(bm, "_one", lambda dart, t, n=5: data[t])
+        bm.sweep(["A", "B", "C"])
+        out = capsys.readouterr().out
+        assert "✅전분기 1 · ◐일부 1 · ❌전무 1" in out, out
+        assert "—(원문미제공)" in out, "빈칸 사유가 안 보인다"
+
+    def test_sweep_flags_mixed_forms_across_quarters(self, capsys, monkeypatch):
+        """분기마다 다른 형식으로 잡히면 표가 바뀐 것이라 값 신뢰도가 낮다."""
+        import bot.scripts.backlog_misses as bm
+
+        class _D:
+            api_key = "k"
+
+            @staticmethod
+            def stock_code_to_name(c):
+                return "테스트"
+        monkeypatch.setattr("bot.dart_client.get_dart", lambda: _D())
+        monkeypatch.setattr(bm, "_one", lambda dart, t, n=5: [
+            ("q1", 1.00e13, "표·합계행"), ("q2", 1.02e13, "전치·계약잔액")])
+        bm.sweep(["X"])
+        assert "⚠️형식혼재" in capsys.readouterr().out
+
+
 class TestBacklogMissingQuarters20260818:
     """한화에어로 26.1Q 최종 결론(사용자 2026-08-18 `--list` 실행): 확대 창
     2026-01-31~2027-03-27 의 정기공시가 **4건뿐이고 1분기 정정은 없다.**
