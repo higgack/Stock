@@ -18,7 +18,9 @@
 
 사용:
     cd ~/stock && .venv/bin/python -m bot.scripts.peer_probe 039030.KQ
-    cd ~/stock && .venv/bin/python -m bot.scripts.peer_probe 039030.KQ 089030.KQ
+    # 시장별 커버리지 비교(2 종목 이상이면 끝에 요약표):
+    cd ~/stock && .venv/bin/python -m bot.scripts.peer_probe \\
+        AMAT 6857.T 2330.TW 000660.KS 0700.HK 600519.SS
 
 ⚠️ 반드시 `.venv/bin/python` — 시스템 python3 은 의존성이 없어 전부 실패한다.
 """
@@ -46,7 +48,7 @@ def _row(e: dict) -> str:
             f"자체계산={','.join(e.get('derived') or []) or '-'}")
 
 
-def probe(ticker: str) -> None:
+def probe(ticker: str) -> dict:
     print("=" * 78)
     print(f"■ {ticker}")
     print("=" * 78)
@@ -74,7 +76,7 @@ def probe(ticker: str) -> None:
     print(f"  [피어목록] industry={industry!r} → {peers}")
     if not peers:
         print("    ⚠️ 피어 목록이 비었다 — 업종 매핑 문제(표가 아예 안 뜬다).")
-        return
+        return {"ticker": ticker, "rows": 0, "mcap": 0, "per": 0, "pbr": 0}
 
     # ②·③ 원재료. 여기서 비는 칸이 화면에서 비는 칸의 원인이다.
     print("  [원재료] yfinance .info — 자체계산 재료가 있는지가 관건")
@@ -103,6 +105,10 @@ def probe(ticker: str) -> None:
         print("    → PER·PBR 둘 다 못 채운 행: " + ", ".join(_blank))
         print("       원재료에 순이익·자본이 없으면 **고칠 수 없다** — "
               "억지로 숫자를 만들지 않는다(원인 ③).")
+    return {"ticker": ticker, "rows": len(rows),
+            "mcap": sum(1 for e in rows if e.get("market_cap")),
+            "per": sum(1 for e in rows if e.get("trailingPE") is not None),
+            "pbr": sum(1 for e in rows if e.get("priceToBook") is not None)}
 
 
 def main(argv: list[str]) -> int:
@@ -110,11 +116,25 @@ def main(argv: list[str]) -> int:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
+    tally: list[dict] = []
     for t in (argv[1:] or ["039030.KQ"]):
         try:
-            probe(t.upper())
+            got = probe(t.upper())
+            if got:
+                tally.append(got)
         except Exception as exc:
             print(f"  ❌ {t} 실패: {type(exc).__name__}: {exc}")
+    # 여러 시장을 한 번에 돌릴 때 본문만으로는 안 읽힌다 — 시장별 충족률.
+    if len(tally) > 1:
+        print("\n" + "=" * 78)
+        print("■ 요약 — 행 대비 채워진 비율(시장별로 소스 커버리지가 다르다)")
+        print("=" * 78)
+        print(f"  {'종목':<14}{'행':>4}{'시총':>7}{'PER':>7}{'PBR':>7}")
+        for r in tally:
+            print(f"  {r['ticker']:<14}{r['rows']:>4}{r['mcap']:>7}"
+                  f"{r['per']:>7}{r['pbr']:>7}")
+        print("  ⚠️ '시총' 이 행 수보다 작으면 티커/보드 오류, PER·PBR 이 작으면"
+              " 소스 결측이다.")
     return 0
 
 

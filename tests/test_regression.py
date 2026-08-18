@@ -21760,6 +21760,42 @@ class TestPeerCompsEmptyTable20260818:
         assert "240810.KQ" in rows, f"폴백 실패 — 시도한 심볼: {seen}"
         assert rows["240810.KQ"]["market_cap"] == 1e12
 
+    @pytest.mark.parametrize("listed,real", [
+        ("240810.KS", "240810.KQ"),   # 원익IPS — 실제 코스닥 (실측 사례)
+        ("035720.KQ", "035720.KS"),   # 반대 방향도 대칭이어야 한다
+        ("6488.TW", "6488.TWO"),      # 대만 TPEx — 목록이 .TW 로 쏠려 있다
+        ("3105.TWO", "3105.TW"),
+        ("000001.SS", "000001.SZ"),   # 중국 상하이↔선전
+        ("600000.SZ", "600000.SS"),
+    ])
+    def test_board_fallback_covers_every_two_board_market(
+            self, monkeypatch, listed, real):
+        """⚠️ UNIVERSAL — 한 시장이 드러낸 버그의 fix 는 전 시장 코드패스에.
+        KR 만 폴백이 있었는데 대만(TWSE↔TPEx)·중국(상하이↔선전)도 똑같은
+        2보드 구조이고, 피어 목록은 실측상 한쪽으로 쏠려 있다
+        (`.KS` 114 : `.KQ` 4 · `.TW` 145 : `.TWO` 10)."""
+        from bot import stock_snapshot as ss
+        seen: list = []
+        self._stub_yf(monkeypatch, {"SUBJ", real}, seen)
+        monkeypatch.setattr("bot.market.resolve_peer_set",
+                            lambda t, ind: [listed])
+        snap: dict = {}
+        ss._collect_peer_multiples("SUBJ", {"industry": "X"}, snap)
+        rows = {e["ticker"]: e for e in snap.get("peer_comps") or []}
+        assert real in rows, f"{listed} → {real} 폴백 실패 (시도: {seen})"
+
+    def test_single_board_markets_are_not_probed_twice(self, monkeypatch):
+        """JP(.T)·HK(.HK)·US 는 자매 보드가 없다 — 없는 접미사로 한 번 더
+        두드리면 매 피어마다 404 왕복이 공짜로 늘어난다."""
+        from bot import stock_snapshot as ss
+        seen: list = []
+        self._stub_yf(monkeypatch, {"SUBJ"}, seen)
+        monkeypatch.setattr("bot.market.resolve_peer_set",
+                            lambda t, ind: ["7203.T", "0700.HK", "AMAT"])
+        ss._collect_peer_multiples("SUBJ", {"industry": "X"}, {})
+        assert sorted(seen) == sorted(["SUBJ", "7203.T", "0700.HK", "AMAT"]), \
+            f"단일보드 종목을 두 번 조회했다: {seen}"
+
     def test_the_wiring_is_actually_called(self, monkeypatch):
         """헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12)."""
         import inspect
