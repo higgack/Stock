@@ -4093,7 +4093,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v11 (2026-08-18) 재무제표 수집시각·표의 최신분기 라벨 + 주체행 PER 정본 통일
 #   v12 (2026-08-18) 동종비교 KR 피어를 DART TTM 기준으로(yfinance 재무 지연 회피)
 #   v13 (2026-08-18) 실적 탭 KR=WISEreport + 낡은 이력 경고(전 시장)
-_RENDER_VER = 13
+#   v14 (2026-08-18) 주주 탭 소액주주 정수·지분율 분리 + 빈 합계행 제거 + 기준 라벨
+_RENDER_VER = 14
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -6241,8 +6242,16 @@ def _render_stock_info_html(rec: dict) -> str:
             pct_i_str = f"{pct_i:.2f}%" if pct_i is not None else "—"
             ch_date = esc(str(ih.get("changed_on", "—")))
             ki_rows += f"<tr><td>{nm}</td><td>{role}</td><td class='num'>{shares_i_str}</td><td class='num'>{pct_i_str}</td><td>{ch_date}</td></tr>\n"
+        # ⚠️ 기준시각 라벨. 이 표는 '최근 변동'만 담는데 라벨이 없어서,
+        # 마지막 변동일이 1년 전이면 **수집이 멈춘 건지 실제로 거래가
+        # 없었던 건지** 구분이 안 된다(사용자 2026-08-18: 마지막 2025-05).
+        _ki_dates = sorted(str(ih.get("changed_on") or "")[:10]
+                           for ih in kr_insiders if ih.get("changed_on"))
+        _ki_note = (' <span style="font-weight:400;color:var(--fg-soft);'
+                    'font-size:11px">(DART 임원·주요주주 소유보고 · 최신 변동일 '
+                    f'{esc(_ki_dates[-1])})</span>' if _ki_dates else "")
         kr_insider_html = f"""<div class="si-section">
-    <div class="si-section-title">임원 · 주요주주 지분</div>
+    <div class="si-section-title">임원 · 주요주주 지분{_ki_note}</div>
     <table class="si-table">
       <thead><tr><th>성명</th><th>직위</th><th class="num">보유주식</th><th class="num">지분율</th><th>변동일</th></tr></thead>
       <tbody>{ki_rows}</tbody>
@@ -6254,8 +6263,24 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_minority = kr.get("minority", {})
     if kr_minority.get("smam_ratio") is not None:
         smam = kr_minority
+
+        def _cnt(v):
+            # ⚠️ 사람 수를 `98,400.0명` 으로 찍고 있었다 — FSC 파서가 float 로
+            # 담는데 `:,` 만 쓰면 소수점이 남는다(사용자 2026-08-18 스크린샷).
+            return f"{int(v):,}" if isinstance(v, (int, float)) else "—"
+
+        # ⚠️ `smamSthdRto` 는 **주주 수** 비율이다(98,400/98,439 = 100.0%).
+        # 그냥 '비율'로 적으면 지분율로 읽힌다 — 소액주주 지분율은 보통
+        # 절반 안팎이라 오해가 크다. 무엇의 비율인지 못박고, 보유주식수가
+        # 있으면 총발행주식수로 나눠 **지분율**을 따로 보여준다.
+        _shrs = smam.get("hold_shares")
+        _tot = si.get("shares_outstanding")
+        _stake = ""
+        if (isinstance(_shrs, (int, float)) and isinstance(_tot, (int, float))
+                and _shrs > 0 and _tot > 0 and _shrs <= _tot):
+            _stake = f" · 보유주식 {int(_shrs):,}주(지분율 {100.0 * _shrs / _tot:.1f}%)"
         kr_minority_html = f"""<div style="margin:10px 0;font-size:13px;color:var(--fg-soft)">
-  소액주주: {smam.get('smam_cnt', '—'):,}명 / 전체 {smam.get('whole_cnt', '—'):,}명 · 비율 {smam.get('smam_ratio', 0):.1f}% · 기준 {esc(str(smam.get('biz_year', '')))}
+  소액주주: {_cnt(smam.get('smam_cnt'))}명 / 전체 {_cnt(smam.get('whole_cnt'))}명 · 주주 수 비율 {smam.get('smam_ratio', 0):.1f}%{_stake} · 기준 {esc(str(smam.get('biz_year', '')))} 사업연도
 </div>"""
 
     # ── P5 KR: 외국인보유 상세 (pykrx → Seibro → Naver fallback) ──
@@ -6321,6 +6346,12 @@ def _render_stock_info_html(rec: dict) -> str:
                         sh_shares_str = f"{sh_shares:,}" if sh_shares not in (None, 0) else "—"
                         sh_pct_str = f"{sh_pct:.2f}%" if sh_pct not in (None, 0, 0.0) else "—"
                         sh_note = esc(sh.get("note", ""))
+                        # ⚠️ DART 원문엔 당기/전기 '계' 행이 둘 다 들어 있어
+                        # 두 번째가 값 없이 `— —` 로 찍혔다(사용자 2026-08-18
+                        # 스크린샷). 수치가 하나도 없는 합계행은 정보가 0이다.
+                        if (sh_shares_str == "—" and sh_pct_str == "—"
+                                and sh_nm.strip() in ("계", "합계", "소계")):
+                            continue
                         sh_rows += f"<tr><td>{sh_nm}</td><td>{sh_rel}</td><td class='num'>{sh_shares_str}</td><td class='num'>{sh_pct_str}</td></tr>\n"
                     kr_affiliates_html = f"""<div class="si-section">
     <div class="si-section-title">최대주주 현황 (DART 사업보고서 · {len(shareholders)}명)</div>
