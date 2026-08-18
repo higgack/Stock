@@ -4096,7 +4096,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v14 (2026-08-18) 주주 탭 소액주주 정수·지분율 분리 + 빈 합계행 제거 + 기준 라벨
 #   v15 (2026-08-18) 수급 다기간추이가 빈 이유 표기(자격증명 미설정 판별)
 #   v16 (2026-08-18) 매출 공백 각주가 **실제 어긋난 계정**을 이름으로 표기
-_RENDER_VER = 16
+#   v17 (2026-08-18) 임원·주요주주 최신순 정렬 + 수주잔고 파서 2형식(KAI·한전KPS)
+_RENDER_VER = 17
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -6240,6 +6241,13 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_insider_html = ""
     kr_insiders = kr.get("insider_holdings", [])
     if kr_insiders:
+        # ⚠️ **최신이 위로.** DART 소유보고는 접수 순(오래된 것부터)으로 오는데
+        # 그대로 그리면 1년 전 변동이 맨 위에 있고 최근 거래는 스크롤 끝에
+        # 묻힌다 — 이 표를 보는 이유가 '최근 누가 샀나' 인데 정반대였다
+        # (사용자 2026-08-18). 날짜 없는 행은 뒤로 보낸다.
+        kr_insiders = sorted(kr_insiders,
+                             key=lambda ih: str(ih.get("changed_on") or ""),
+                             reverse=True)
         ki_rows = ""
         for ih in kr_insiders:
             nm = esc(str(ih.get("name", "—")))
