@@ -1277,7 +1277,7 @@ def _collect_financials(t, snap: dict) -> None:
 # 그대로였다(사용자 스크린샷 — 머지 뒤에도 `240810.KS` 행이 통째로 비어
 # 있었다). 필드 유무를 하나씩 냄새맡는 옛 방식은 새 필드를 넣을 때마다
 # 조건을 같이 고쳐야 해서 매번 잊는다 → 버전 하나로 강제한다.
-_PEER_SCHEMA_VER = 5
+_PEER_SCHEMA_VER = 6
 
 
 # 같은 시장의 **자매 보드**. 목록이 한쪽으로 쏠려 있어(실측: `.KS` 114 :
@@ -1313,8 +1313,8 @@ def _peer_name(pi: dict, pt: str) -> str:
     return nm[:30]
 
 
-def _derive_peer_multiples(entry: dict, pi: dict) -> list[str]:
-    """소스가 안 준 PER·PBR 을 **같은 정의**로 계산해 채운다 → 채운 키 목록.
+def _derive_peer_multiples(entry: dict, pi: dict) -> dict[str, str]:
+    """소스가 안 준 PER·PBR 을 **같은 정의**로 계산해 채운다 → {라벨: 기준}.
 
     · PER = 시가총액 ÷ 순이익(TTM)      · PBR = 시가총액 ÷ 자본총계
     자본총계 = 주당순자산(bookValue) × 발행주식수.
@@ -1323,7 +1323,10 @@ def _derive_peer_multiples(entry: dict, pi: dict) -> list[str]:
     분모가 0 이면 무한대가 된다). 범위 밖 값도 안 채운다 — 화면 가드가
     어차피 `—!` 로 지우므로 자체계산으로 이상치를 만들 이유가 없다."""
     mc = entry.get("market_cap")
-    out: list[str] = []
+    # ⚠️ 기준 문자열을 같이 돌려준다. 한 행 안에서도 PER 은 yfinance(TTM),
+    # PBR 은 DART(연말)로 갈릴 수 있어(실측: 한미반도체) 라벨만 넘기면
+    # 화면 툴팁이 '기준 미기록'으로 뜬다.
+    out: dict[str, str] = {}
     if not mc or mc <= 0:
         return out
     # ⚠️ 재무통화 ≠ 거래통화면 **만들지 않는다.** 시총(거래통화) ÷ 순이익
@@ -1342,13 +1345,13 @@ def _derive_peer_multiples(entry: dict, pi: dict) -> list[str]:
         ni = pi.get("netIncomeToCommon")
         if isinstance(ni, (int, float)) and ni > 0 and _ok(mc / ni):
             entry["trailingPE"] = mc / ni
-            out.append("PER")
+            out["PER"] = "yfinance 순이익(TTM)"
     if entry.get("priceToBook") is None:
         bvps, sh = pi.get("bookValue"), pi.get("sharesOutstanding")
         if (isinstance(bvps, (int, float)) and isinstance(sh, (int, float))
                 and bvps > 0 and sh > 0 and _ok(mc / (bvps * sh))):
             entry["priceToBook"] = mc / (bvps * sh)
-            out.append("PBR")
+            out["PBR"] = "yfinance 주당순자산×주식수"
     return out
 
 
@@ -1476,17 +1479,17 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             # 표의 PER·PBR 열이 통째로 비어 비교가 불가능하다. 소스가 주는
             # 재료로 **같은 정의대로** 계산해 채우고, 자체계산분은 표시한다
             # (종합·밸류에이션 탭의 `_derive_missing_multiples` 와 동일 규약).
-            _derived = _derive_peer_multiples(entry, pi)
+            _basis = _derive_peer_multiples(entry, pi)
             # 소스도 없고 `.info` 재료도 없으면 DART 확정 재무제표로 (KR).
             # ⚠️ **주체 행은 제외한다.** 주체의 PER·PBR 은 렌더가 종합·
             # 밸류에이션 탭과 같은 값(`_derive_missing_multiples`, TTM 우선)
             # 으로 채운다 — 여기서 연간 확정치를 넣으면 같은 페이지의 두 탭이
             # 서로 다른 PER 을 보여준다(검증 7축 ①'전섹션 일치').
-            _basis = {} if pt == ticker else _dart_peer_multiples(entry, pt)
+            if pt != ticker:
+                _basis.update(_dart_peer_multiples(entry, pt))
             entry = {k: v for k, v in entry.items() if v is not None}
-            if _derived or _basis:
-                entry["derived"] = sorted(set(_derived) | set(_basis))
             if _basis:
+                entry["derived"] = sorted(_basis)
                 entry["derived_basis"] = _basis
             if pt == ticker:
                 entry["is_subject"] = True

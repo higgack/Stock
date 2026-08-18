@@ -4089,7 +4089,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v7 (2026-08-18) 동종비교 파생 PER·PBR 표시(＊) + 피어 이름 정화
 #   v8 (2026-08-18) 동종비교 주체행에 파생 PER·PBR·PSR 재사용 + 스키마 버전 게이트
 #   v9 (2026-08-18) 동종비교 KR 피어 PER·PBR 을 DART 로 파생 + 기준 툴팁
-_RENDER_VER = 9
+#   v10 (2026-08-18) 자체계산 기준 툴팁을 yfinance 파생분에도 (한 행에 기준 혼재)
+_RENDER_VER = 10
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
