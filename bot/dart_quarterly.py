@@ -161,6 +161,12 @@ def _latest_candidate(today: date) -> tuple[int, str]:
     return (y, "11014")                # 올해 3분기(11/14 마감)
 
 
+def _Q_SORT_KEY(yr_rc: tuple[int, str]) -> tuple[int, int]:
+    """(연도, 분기순번) — 어느 쪽이 더 최신 분기인지 비교용."""
+    y, rc = yr_rc
+    return (y, _Q_ORDER.index(rc) if rc in _Q_ORDER else -1)
+
+
 def probe_latest_reprt_code(dart, ticker: str, fs_div: str = "CFS"
                             ) -> tuple[int, str] | None:
     """달력상 최신 후보에서 최대 4단계 역순으로 실제 DART 응답을 프로브해
@@ -193,9 +199,15 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
     만큼만 반환, 전무하면 None(DATA OFFLINE)."""
     latest = probe_latest_reprt_code(dart, ticker, fs_div=fs_div)
     effective_fs_div = fs_div
-    if not latest and fs_div == "CFS":
-        latest = probe_latest_reprt_code(dart, ticker, fs_div="OFS")
-        effective_fs_div = "OFS"
+    if fs_div == "CFS":
+        # ⚠️ CFS 가 **아예 없을 때만** OFS 로 넘어가면, 연결 작성을 중단한
+        # 회사는 옛 분기에서 멈춘 채로 굳는다 — 노바렉스 194700 은 26.1Q·
+        # 26.2Q 가 OFS 에만 있는데 CFS 에서 25.4Q 가 잡혀 화면이 **두 분기
+        # 뒤처졌다**(2026-08-18 프로브: `26.2Q CFS=없음 · OFS=있음`).
+        # 어느 쪽이 더 **최신 분기**를 갖는지로 정한다.
+        alt = probe_latest_reprt_code(dart, ticker, fs_div="OFS")
+        if alt and (not latest or _Q_SORT_KEY(alt) > _Q_SORT_KEY(latest)):
+            latest, effective_fs_div = alt, "OFS"
     if not latest:
         return None
     latest_year, latest_rc = latest

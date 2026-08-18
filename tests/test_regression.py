@@ -21735,6 +21735,97 @@ class TestProbeOutputStreaming20260818:
     # 실제 스트리밍은 VM 에서 눈으로 확인한다.
 
 
+class TestBacklogParentScope20260818:
+    """`--explain` 실측(2026-08-18)이 KAI·한전KPS 오답의 원인을 확정했다.
+    둘 다 **종속회사 표를 본사 값으로 잡았거나**, 본사 표 형식을 파서가
+    지원하지 않아 엉뚱한 표로 흘러간 경우다."""
+
+    # 실제 원문에서 그대로 옮긴 조각(수치 변경 없음).
+    _KAI = ("(단위 : 백만원) 매출처 구분 매출액 2025년 반기 한국항공우주(주) 용역제공 128 - - "
+            "※ 나. 수주에 관한 사항 [ 지배회사의 내용 ] 기초 수주잔고에서 당기 중 납품액과 "
+            "신규 수주분을 감안한 순증감액을 표시한 후 기말잔고를 표시하였습니다. "
+            "(단위 : 억원) 구 분 기 초(2025.01.01) 기 말(2025.06.30) 비 고 수량 금액 수량 금액 "
+            "방 산 - 83,618 - 99,437 - 완제기 - 52,919 - 59,935 - 기체부품 등 - 102,948 - 100,415 - "
+            "위성사업 등 - 7,509 - 6,946 - 합 계 - 246,994 - 266,733 - "
+            "※ 별도재무제표 기준 [ 종속회사의 내용 ] (주)에비오시스 (단위 : 백만원) "
+            "구 분 기 초(2025.01.01) 기 말(2025.06.30) 비 고 수량 금액 수량 금액 "
+            "수리온 계열 - 1,111 - 101 - LAH 계열 - 15,344 - 13,036 - 합 계 - 18,598 - 13,878 -")
+
+    _KPS = ("(단위 : 백만원) 구분 발주처 공사명 최초계약일 완공예정일 기본도급액 완성공사액 계약잔액 "
+            "화력 한국동서발전(주) 등 17건 2013-04-01 등 2025-09-30 등 547,499 492,810 56,060 "
+            "원자력/양수 한국수력원자력(주) 등 36건 2020-03-01 등 2021-03-31 등 3,942,257 2,309,657 1,632,600 "
+            "송변전 한국전력공사 등 5건 2020-01-02 등 2025-12-31 등 228,135 142,363 85,772 "
+            "대외 광양그린에너지(주) 등 10건 2022-11-14 등 2026-12-31 등 296,106 80,835 215,271 "
+            "해외 Dynatec 등 9건 2012-11-28 등 2025-11-02 등 2,228,801 1,148,169 1,176,251 "
+            "주) 1. 기본도급액 100억원 이상 ○ 종속회사 : KEPCO KPS PHILIPPINES CORP "
+            "(단위 : 백만원) 구분 기본도급액 완성공사액 계약잔액 관계사 - - - "
+            "비관계사 6,921 3,761 3,160 소계 6,921 3,761 3,160")
+
+    def test_kai_reads_the_parent_table_not_the_subsidiary(self):
+        """실측: 25.3Q 가 제노코(자회사) 821억을 잡아 **26조를 0.08조로**
+        보고했다. 정답은 지배회사 표의 기말 266,733억원."""
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(self._KAI)
+        assert got, "미검출"
+        assert abs(got["value"] - 266_733 * 1e8) < 1e8, got
+        assert got["form"] == "표·기초기말2열", got
+
+    # 25.3Q 실측 — 자회사(제노코) 표에 `수주총액/기납품액/수주잔고` 헤더가
+    # 있어 `_parse_table` 이 **먼저** 걸리고 821억이 이겼다. 지배회사 표는
+    # 그 앞에 있는데도 형식(기초/기말 2열)을 몰라 밀렸다.
+    _KAI_Q3 = (_KAI.split("[ 종속회사의 내용 ]")[0]
+               + "[ 종속회사의 내용 ] (주)제노코 (단위 : 천원) 품목 수주일자 납기 "
+                 "수주총액 기납품액 수주잔고 수량 금액 수량 금액 수량 금액 "
+                 "위성통신 2016년 ~28년 - 42,037,202 - 18,877,869 - 23,159,333 "
+                 "항공전자 등 2019년 ~29년 - 35,221,104 - 19,628,992 - 15,592,112 "
+                 "합 계 - 206,659,706 - 124,510,413 - 82,149,293")
+
+    def test_subsidiary_table_cannot_win_over_the_parent(self):
+        """⚠️ 이게 실제 오답 경로다 — 자회사 표가 지원되는 형식이라 먼저
+        걸리고, 본사 표는 미지원 형식이라 밀렸다. 스코핑이 없으면 26조
+        자리에 자회사 821억이 들어간다(2026-08-18 `--explain 047810`)."""
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(self._KAI_Q3)
+        assert got, "미검출"
+        assert abs(got["value"] - 266_733 * 1e8) < 1e8, \
+            f"자회사 표가 이겼다: {got}"
+
+    def test_kai_verifies_both_columns(self):
+        """부문 합 = 합계가 **두 열 모두** 맞아야 한다 — 한 열만 보면 열을
+        잘못 집어도 우연히 통과한다."""
+        from bot.dart_backlog import parse_backlog
+        # ⚠️ 오차는 **자릿수 단위**로 낸다 — 열을 잘못 집으면 그렇게 어긋난다.
+        # 0.2% 수준으로 흔들면 허용오차(1%) 안이라 통과하는 게 맞다(원문이
+        # "단순 가감과 차이가 있을 수 있다"고 밝힌다).
+        broken = self._KAI.replace("방 산 - 83,618 - 99,437 -",
+                                   "방 산 - 83,618 - 9,437 -")
+        assert parse_backlog(broken) is None, "검산이 통과했다"
+
+    def test_kps_sums_project_rows_without_a_total(self):
+        """합계행이 없는 도급표 — 5행 계약잔액 합 3.166조가 정답이다.
+        실측에서는 첫 행 하나만 잡아 0.064조로 보고했다."""
+        from bot.dart_backlog import parse_backlog
+        got = parse_backlog(self._KPS)
+        assert got, "미검출"
+        assert abs(got["value"] - 3_165_954 * 1e6) < 1e6, got
+        assert got["form"] == "건설·행별계약잔액", got
+
+    def test_kps_rows_must_satisfy_the_contract_identity(self):
+        """기본도급액 − 완성공사액 ≈ 계약잔액. 이 검산이 열 오집을 막는다."""
+        from bot.dart_backlog import parse_backlog
+        broken = self._KPS.replace("547,499 492,810 56,060",
+                                   "547,499 492,810 999,999")
+        got = parse_backlog(broken)
+        # 깨진 행은 빠지고 나머지 4행만 합산되거나(=정답보다 작음) 미검출.
+        assert got is None or got["value"] < 3_165_954 * 1e6, got
+
+    def test_parent_scope_is_skipped_when_there_is_no_marker(self):
+        """종속회사 마커가 없는 회사는 **전문 그대로** 훑어야 한다 —
+        스코핑이 무조건 걸리면 43종목이 회귀한다."""
+        from bot.dart_backlog import _parent_scope
+        assert _parent_scope("수주잔고 합 계 100") is None
+
+
 class TestQuarterlyAccountMismatch20260818:
     """사용자 2026-08-18 CJ 001040: 25.4Q 매출이 `—` 이고 각주는 "서로 다른
     계정(영업수익/이자수익 등)" 이라고만 했다. **예시 나열로는** 이게 고칠
@@ -21777,6 +21868,50 @@ class TestQuarterlyAccountMismatch20260818:
         # 예시 나열로 되돌아가면 안 된다(옛 문구는 주석이 아니라 **출력**
         # 문자열이었다 — 주석에 남은 설명과 구분해 그 문구만 본다).
         assert "등)을 써 차감이 불가" not in blk
+
+    def test_ofs_wins_when_it_has_a_newer_quarter(self, monkeypatch):
+        """⚠️ CFS 가 **아예 없을 때만** OFS 로 넘어가면, 연결 작성을 중단한
+        회사가 옛 분기에서 굳는다 — 노바렉스 194700 은 26.1Q·26.2Q 가 OFS
+        에만 있는데 CFS 에서 25.4Q 가 잡혀 화면이 두 분기 뒤처졌다
+        (2026-08-18 프로브: `26.2Q CFS=없음 · OFS=있음`)."""
+        from bot import dart_quarterly as dq
+        seen = {}
+
+        def _probe(dart, ticker, fs_div="CFS"):
+            return {"CFS": (2025, "11011"), "OFS": (2026, "11012")}[fs_div]
+
+        monkeypatch.setattr(dq, "probe_latest_reprt_code", _probe)
+        monkeypatch.setattr(
+            "bot.dart_client.calc_kr_financial_ratios", lambda f: {})
+
+        class _D:
+            def get_normalized_financials(self, t, year=None, fs_div="CFS",
+                                          reprt_code=None):
+                seen["fs"] = fs_div
+                return {"financials": {"매출": 1.0e11}}
+
+        out = dq.get_quarterly_series(_D(), "194700.KS", n=1)
+        assert seen.get("fs") == "OFS", f"CFS 로 굳었다: {seen}"
+        assert out and out[-1]["fs_div"] == "OFS", out
+
+    def test_cfs_wins_when_it_is_equally_fresh(self, monkeypatch):
+        """⚠️ 동률이면 연결(CFS)이 기본이다 — OFS 가 이기면 멀쩡한 연결
+        회사가 별도 숫자로 바뀐다(대부분 종목이 회귀)."""
+        from bot import dart_quarterly as dq
+        seen = {}
+        monkeypatch.setattr(dq, "probe_latest_reprt_code",
+                            lambda d, t, fs_div="CFS": (2026, "11012"))
+        monkeypatch.setattr(
+            "bot.dart_client.calc_kr_financial_ratios", lambda f: {})
+
+        class _D:
+            def get_normalized_financials(self, t, year=None, fs_div="CFS",
+                                          reprt_code=None):
+                seen["fs"] = fs_div
+                return {"financials": {"매출": 1.0e11}}
+
+        dq.get_quarterly_series(_D(), "005930.KS", n=1)
+        assert seen.get("fs") == "CFS", f"연결이 밀렸다: {seen}"
 
     def test_probe_shows_which_dart_quarter_is_missing(self):
         """사용자 2026-08-18 노바렉스: 26.2Q 까지 공시됐는데 화면은 25.4Q
@@ -22071,6 +22206,21 @@ class TestHoldersTab20260818:
         assert "48.93%" in pane, "값 있는 합계행까지 지웠다"
         assert pane.count("<td>계</td>") == 1, \
             f"빈 합계행이 남아 있다: {pane.count('<td>계</td>')}개"
+
+    def test_insider_rows_are_newest_first(self):
+        """DART 소유보고는 접수 순(오래된 것부터)으로 온다 — 그대로 그리면
+        1년 전 변동이 맨 위고 최근 거래가 스크롤 끝에 묻힌다. 이 표를 보는
+        이유가 '최근 누가 샀나' 인데 정반대였다(사용자 2026-08-18)."""
+        import re
+        pane = self._pane({"currency": "KRW", "kr": {"insider_holdings": [
+            {"name": "국민연금공단", "role": "-", "shares": 4281197,
+             "changed_on": "2024-10-08"},
+            {"name": "김미경", "role": "전무이사", "shares": 100,
+             "changed_on": "2026-06-04"},
+            {"name": "김경", "role": "대표이사", "shares": 3000,
+             "changed_on": "2025-09-17"}]}})
+        got = re.findall(r"<td>(20\d\d-\d\d-\d\d)</td>", pane)
+        assert got == ["2026-06-04", "2025-09-17", "2024-10-08"], got
 
     def test_insider_table_says_when_it_was_last_updated(self):
         """마지막 변동일이 1년 전일 때 **수집이 멈춘 건지 실제로 거래가

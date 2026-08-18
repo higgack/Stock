@@ -329,6 +329,74 @@ def _parse_contract_table(text: str) -> tuple[float, str] | None:
     return None
 
 
+_OPEN_CLOSE_HEAD = re.compile(
+    r"기\s*초\s*\([^)]{4,20}\).{0,40}?기\s*말\s*\([^)]{4,20}\)")
+
+
+def _parse_open_close(text: str) -> tuple[float, str] | None:
+    """형태 L — `기 초(YYYY.MM.DD) / 기 말(YYYY.MM.DD)` **2열**형(한국항공우주).
+
+    방산은 보안상 수주액·납품액을 안 쓰고 기초·기말 잔고만 적는다. 그래서
+    `_verify` 의 3·4열 항등식(총액−납품=잔고)이 성립하지 않아 2차 프로브
+    때부터 미해결로 남아 있었다 — 그 결과 파서가 **자회사 표**를 대신 잡아
+    26조를 0.08조로 보고했다(2026-08-18 `--explain 047810`).
+
+    ⚠️ 검산은 **부문 합 = 합계**(형태 D 와 같은 규약)로 세운다. 실측:
+    83,618+52,919+102,948+7,509 = 246,994(기초),
+    99,437+59,935+100,415+6,946 = 266,733(기말) — 두 열 모두 맞아야 한다.
+    한 열만 보면 열을 잘못 집어도 우연히 맞을 수 있다."""
+    for m in _OPEN_CLOSE_HEAD.finditer(text):
+        mult = _unit_mult(text, m.start())
+        if mult is None:
+            continue
+        seg = _cut_table(text[m.end():m.end() + 6000])
+        tm = re.search(r"합\s*계", seg)
+        if not tm:
+            continue
+        total = _row_values(seg, tm.end())
+        rows = [r for r in _runs(seg[:tm.start()]) if len(r) == 2]
+        if len(total) != 2 or len(rows) < 2:
+            continue
+        ok = True
+        for col in (0, 1):
+            exp = sum(r[col] for r in rows)
+            if exp <= 0 or abs(exp - total[col]) > _TOL * max(exp, total[col]):
+                ok = False
+                break
+        if not ok:
+            continue
+        return total[1] * mult, "표·기초기말2열"
+    return None
+
+
+def _parse_project_rows(text: str) -> tuple[float, str] | None:
+    """형태 K — `기본도급액·완성공사액·계약잔액` 3열이 **합계행 없이** 사업
+    구분별로 나열되는 표(한전KPS).
+
+    실측(2026-08-18 `--explain 051600`): 화력/원자력/송변전/대외/해외 5행에
+    합계가 없다. `_parse_contract_table` 은 `합 계` 를 요구해 첫 행 하나만
+    잡거나(0.064조) 아예 놓쳤다 — 실제 잔고는 5행 합인 3.17조다.
+
+    ⚠️ 검산: 각 행이 **기본도급액 − 완성공사액 ≈ 계약잔액** 을 만족해야
+    한다(원문 주석: 초과준공으로 차이가 날 수 있어 관대한 허용오차).
+    이 항등식이 열을 잘못 집는 것을 막는다 — 만족하는 행이 2개 미만이면
+    표가 아니라고 보고 포기한다."""
+    for m in _CONTRACT_HEAD.finditer(text):
+        mult = _unit_mult(text, m.start())
+        if mult is None:
+            continue
+        seg = text[m.end():m.end() + 12000]
+        if re.search(r"합\s*계", seg[:2000]):
+            continue                        # 합계행이 있으면 그쪽 파서 소관
+        rows = [r for r in _runs(seg) if len(r) == 3]
+        good = [r[2] for r in rows
+                if r[0] > 0 and abs((r[0] - r[1]) - r[2]) <= r[0] * 0.35]
+        if len(good) < 2:
+            continue
+        return sum(good) * mult, "건설·행별계약잔액"
+    return None
+
+
 def _parse_domestic_export(text: str) -> tuple[float, str] | None:
     """형태 J — `신규수주 / 매출 / 기말수주잔고` 3열이 내수·수출·소계로 쌓인
     블록(에스에프에이).
@@ -513,6 +581,23 @@ def _log_miss(ticker: str, year, reprt_code, reason: str) -> None:
         log.debug("dart_backlog: 미스 로그 실패: %s", exc)
 
 
+# 「나. 수주에 관한 사항」은 **지배회사 → 종속회사** 순으로 쓴다. 종속회사
+# 표가 먼저 잡히면 본사 잔고 대신 자회사 잔고가 화면에 찍힌다 — 실측
+# (2026-08-18 `--explain 047810`): 한국항공우주 25.3Q 가 제노코(자회사)의
+# 821억을 잡아 **26조를 0.08조로** 보고했다. 종속회사 구간을 잘라낸다.
+_SUBSIDIARY_HEAD = re.compile(r"\[\s*종속회사의\s*내용\s*\]|○\s*종속회사")
+_SCOPE_KW = re.compile(r"수주잔고|수주잔액|계약잔액|기말수주잔")
+
+
+def _parent_scope(text: str) -> str | None:
+    """종속회사 구간 앞까지 = 지배회사(본사) 영역. 마커가 없으면 None."""
+    m = _SUBSIDIARY_HEAD.search(text)
+    if not m or m.start() < 200:
+        return None
+    head = text[:m.start()]
+    return head if _SCOPE_KW.search(head) else None
+
+
 def parse_backlog(text: str) -> dict | None:
     """정기보고서 평문 → {value(원), unit_src, form} 또는 None.
 
@@ -527,19 +612,25 @@ def parse_backlog(text: str) -> dict | None:
     # 순서 = 신뢰도 순. 검산 가능한 표가 먼저이고, 산문은 검산할 항등식이
     # 없으므로 **마지막**이다(파크시스템스는 표 112,509백만원과 주석의 "약
     # 1,023억원"이 기준일이 달라 다른데, 표가 먼저 잡혀 기준일 값이 이긴다).
-    for fn in (_parse_table, _parse_domestic_export,
-               _parse_balance_column, _parse_transposed,
-               _parse_contract_table, _parse_xbrl, _parse_single,
-               _parse_prose):
-        try:
-            got = fn(text)
-        except Exception as exc:            # 한 형태의 실패가 나머지를 막지 않게
-            log.debug("dart_backlog: %s 실패: %s", fn.__name__, exc)
+    _fns = (_parse_table, _parse_domestic_export,
+            _parse_balance_column, _parse_transposed,
+            _parse_open_close, _parse_contract_table, _parse_project_rows,
+            _parse_xbrl, _parse_single, _parse_prose)
+    # ⚠️ **지배회사 구간을 먼저** 훑는다. 전체를 훑으면 종속회사 표가 먼저
+    # 걸려 본사 잔고 자리에 자회사 값이 들어간다(위 주석의 실측 사례).
+    for scope in (_parent_scope(text), text):
+        if not scope:
             continue
-        if not got:
-            continue
-        value, form = got
-        return {"value": value, "form": form}
+        for fn in _fns:
+            try:
+                got = fn(scope)
+            except Exception as exc:        # 한 형태의 실패가 나머지를 막지 않게
+                log.debug("dart_backlog: %s 실패: %s", fn.__name__, exc)
+                continue
+            if not got:
+                continue
+            value, form = got
+            return {"value": value, "form": form}
     return None
 
 
