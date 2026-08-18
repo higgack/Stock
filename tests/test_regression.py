@@ -5847,7 +5847,9 @@ class TestDartAccountWinnerDeterminism20260816:
         d = _diff_quarter(ann, nine)
         assert d["매출"] is None, "다른 계정끼리 빼서 -13조를 만듦(재발)"
         assert d["_anomaly_account_mismatch"] is True
-        assert d["_mismatched_accounts"] == ["매출"]
+        # 2026-08-18: 어긋난 **계정명**까지 남긴다 — 정규화 키만으론 화면이
+        # "서로 다른 계정" 이라고만 말해 고칠 수 있는 건지 못 가른다(CJ 사례).
+        assert d["_mismatched_accounts"] == ["매출: 영업수익 ↔ 이자수익"]
         # 계정이 같은 항목은 정상 차분
         assert d["당기순이익"] == 1.5e12
         # 사이드채널은 결과에 실리지 않는다
@@ -21731,6 +21733,58 @@ class TestProbeOutputStreaming20260818:
     # 폴링도 부하에 따라 자식이 먼저 끝나 결과가 뒤집혔다(전체 스위트에서 실제
     # 실패). 규약(위 두 테스트)은 mutation 으로 확실히 잡히므로 그걸로 족하고,
     # 실제 스트리밍은 VM 에서 눈으로 확인한다.
+
+
+class TestQuarterlyAccountMismatch20260818:
+    """사용자 2026-08-18 CJ 001040: 25.4Q 매출이 `—` 이고 각주는 "서로 다른
+    계정(영업수익/이자수익 등)" 이라고만 했다. **예시 나열로는** 이게 고칠
+    수 있는 건지(총액끼리 라벨만 다름) 원천 한계인지(구성요소가 끼어듦)
+    가릴 수 없다 — 실제로 어긋난 계정을 이름으로 밝혀야 판단이 된다."""
+
+    def test_mismatch_records_the_actual_account_names(self):
+        """정규화 키('매출')만 남기면 화면이 아무 정보도 못 준다."""
+        from bot.dart_quarterly import _diff_quarter
+        now = {"매출": 1000, "_src": {"매출": 0}}
+        prev = {"매출": 700, "_src": {"매출": 2}}
+        out = _diff_quarter(now, prev)
+        assert out["매출"] is None, "구성요소와 차감했다"
+        got = out["_mismatched_accounts"]
+        assert got == ["매출: 영업수익 ↔ 이자수익"], got
+
+    def test_same_group_still_differences(self):
+        """같은 그룹이면 라벨이 달라도 차감한다 — 가드가 과잉이면 멀쩡한
+        4분기가 통째로 빈다."""
+        from bot.dart_quarterly import _diff_quarter
+        out = _diff_quarter({"매출": 1000, "_src": {"매출": 1}},
+                            {"매출": 700, "_src": {"매출": 1}})
+        assert out["매출"] == 300, out
+        assert not out.get("_anomaly_account_mismatch")
+
+    def test_group_name_falls_back_when_unknown(self):
+        """모르는 항목·인덱스는 `그룹N` 으로 — 예외로 렌더를 죽이지 않는다."""
+        from bot.dart_quarterly import _group_name
+        assert _group_name("매출", 0) == "영업수익"
+        assert _group_name("영업이익", 0) == "그룹0"
+        assert _group_name("매출", 99) == "그룹99"
+
+    def test_footnote_names_the_accounts(self):
+        """화면에 안 나오면 심어도 소용없다(실수기록 #12 배선 확인)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index('_anomaly_account_mismatch") for it in items')
+        blk = src[i:i + 1200]
+        assert "_mismatched_accounts" in blk, "각주가 실제 계정을 안 읽는다"
+        assert "어긋난 항목" in blk, "각주에 계정명이 안 실린다"
+        # 예시 나열로 되돌아가면 안 된다(옛 문구는 주석이 아니라 **출력**
+        # 문자열이었다 — 주석에 남은 설명과 구분해 그 문구만 본다).
+        assert "등)을 써 차감이 불가" not in blk
+
+    def test_probe_shows_which_dart_quarter_is_missing(self):
+        """사용자 2026-08-18 노바렉스: 26.2Q 까지 공시됐는데 화면은 25.4Q
+        까지였다. 어느 후보가 비었는지 봐야 원천/코드가 갈린다."""
+        src = open("bot/scripts/fin_freshness_probe.py", encoding="utf-8").read()
+        assert "DART 후보" in src, "분기 후보 프로브가 없다"
+        assert 'fs_div=fs' in src and '"CFS", "OFS"' in src, \
+            "CFS/OFS 를 갈라 보지 않는다 — 연결 미작성 회사를 구분 못 한다"
 
 
 class TestBacklogSeriesSanity20260818:

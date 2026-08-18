@@ -4095,7 +4095,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v13 (2026-08-18) 실적 탭 KR=WISEreport + 낡은 이력 경고(전 시장)
 #   v14 (2026-08-18) 주주 탭 소액주주 정수·지분율 분리 + 빈 합계행 제거 + 기준 라벨
 #   v15 (2026-08-18) 수급 다기간추이가 빈 이유 표기(자격증명 미설정 판별)
-_RENDER_VER = 15
+#   v16 (2026-08-18) 매출 공백 각주가 **실제 어긋난 계정**을 이름으로 표기
+_RENDER_VER = 16
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -5933,9 +5934,15 @@ def _render_stock_info_html(rec: dict) -> str:
             _notes.append('⚠️ 매출 음수 = 전기 재무제표 정정(restatement)이 반영된 '
                           'DART 원자료 그대로 — 임의 보정 없음')
         if any(it.get("_anomaly_account_mismatch") for it in items):
-            _notes.append('⚠️ 매출 공백 = 연간·3분기 보고서가 서로 다른 계정'
-                          '(영업수익/이자수익 등)을 써 차감이 불가 — 추정 대신 '
-                          '비워둠')
+            # ⚠️ **실제로 어긋난 계정을 이름으로 밝힌다.** 예시만 나열하면
+            # (영업수익/이자수익 등) 사용자도 나도 이게 고칠 수 있는 건지
+            # 원천 한계인지 못 가른다 — 총액끼리 라벨만 다른 건 고칠 여지가
+            # 있고, 구성요소(이자수익)가 끼면 못 고친다(사용자 2026-08-18 CJ).
+            _mm = sorted({a for it in items
+                          for a in (it.get("_mismatched_accounts") or [])})
+            _notes.append('⚠️ 매출 공백 = 연간·3분기 보고서가 서로 다른 계정을 써 '
+                          '차감이 불가 — 추정 대신 비워둠'
+                          + (f'(어긋난 항목: {esc(" · ".join(_mm))})' if _mm else ''))
         _comp_seen = sorted({f"{k} = {v}" for it in items
                              for k, v in (it.get("_component_accounts") or {}).items()})
         if _comp_seen:
