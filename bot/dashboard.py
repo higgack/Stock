@@ -4087,7 +4087,8 @@ _PER_SHARE_ITEMS = frozenset({
 # 표 순서·포맷·섹션 구성 등 **화면 산출물이 바뀌는 변경을 하면 반드시 올린다.**
 #   v6 (2026-08-17) 분기→연간 순서 + 주당지표 축약 해제
 #   v7 (2026-08-18) 동종비교 파생 PER·PBR 표시(＊) + 피어 이름 정화
-_RENDER_VER = 7
+#   v8 (2026-08-18) 동종비교 주체행에 파생 PER·PBR·PSR 재사용 + 스키마 버전 게이트
+_RENDER_VER = 8
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -4538,18 +4539,25 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                 log.debug("_ensure_detail_enrichment: financials %s: %s", ticker, exc)
 
     def _e_peers():
-        # 옛 아카이브는 peer_comps 는 있는데 `financial_currency`·
-        # `peer_comps_asof` 가 없다(2026-08-16 추가 필드). `있으면 skip` 만
-        # 하면 그 페이지들은 **영원히** 통화 경고를 못 달고 기준시각이
-        # '미기록'으로 굳는다 → 스키마가 낡았으면 다시 채운다(독립 리뷰).
+        try:
+            from bot.stock_snapshot import (_PEER_SCHEMA_VER,
+                                            _collect_peer_multiples)
+        except Exception as exc:
+            log.debug("_ensure_detail_enrichment: peer import %s: %s", ticker, exc)
+            return
+        # 옛 아카이브는 `peer_comps` 가 있어도 **옛 수집 로직의 결과**다.
+        # `있으면 skip` 만 하면 그 페이지들은 영원히 옛 결과로 굳는다 —
+        # 통화 경고(2026-08-16)도, 보드 접미사 폴백·이름 정화·자체계산
+        # PER/PBR(#885)도 이미 분석한 종목엔 안 붙었다(사용자 2026-08-18:
+        # 머지 뒤에도 `240810.KS` 행이 통째로 비어 있었다).
+        # ⚠️ 필드 유무로 냄새맡지 않는다 — 새 필드를 넣을 때마다 이 조건도
+        # 같이 고쳐야 해서 매번 잊는다. 수집기의 스키마 버전과 대조한다.
         _pc = si.get("peer_comps") or []
         _stale_schema = bool(_pc) and (
-            not si.get("peer_comps_asof")
-            or not any("financial_currency" in e for e in _pc))
+            si.get("peer_comps_ver") or 0) < _PEER_SCHEMA_VER
         if not _pc or _stale_schema:
             try:
                 import yfinance as yf
-                from bot.stock_snapshot import _collect_peer_multiples
                 t = yf.Ticker(ticker)
                 info = t.info or {}
                 if info.get("industry"):
@@ -7462,8 +7470,29 @@ def _render_stock_info_html(rec: dict) -> str:
         _peer_flags: set = set()
         _peer_calc: set = set()
         _peer_oob = False
+        # 배수 열 ↔ 범례 라벨. `_derive_peer_multiples` 가 돌려주는 라벨과
+        # 같은 문자열을 써야 ＊ 표시가 맞는다.
+        _dmark = {"trailingPE": "PER", "priceToBook": "PBR",
+                  "priceToSalesTrailing12Months": "PSR"}
+        _mult_keys = ("trailingPE", "forwardPE", "priceToBook",
+                      "priceToSalesTrailing12Months", "enterpriseToEbitda")
+        _si_derived = set(si.get("_derived_multiples") or [])
         for pc in peer_comps:
             is_subj = pc.get("is_subject")
+            # ⚠️ 주체 행은 **같은 페이지가 이미 가진 값**을 재사용한다.
+            # yfinance 는 KR 종목의 PER·PBR 을 거의 안 주는데, 종합·밸류에이션
+            # 탭은 DART 재무제표로 그걸 파생해 이미 띄우고 있다 — 그런데
+            # 동종비교 표의 같은 회사 행만 비어 있었다(사용자 2026-08-18
+            # 이오테크닉스). 데이터 부재가 아니라 배선 누락이다. 새 숫자를
+            # 만드는 게 아니라 화면에 이미 떠 있는 값 그대로 옮긴다.
+            _extra_calc: set = set()
+            if is_subj:
+                _fill = {k: si.get(k) for k in _mult_keys
+                         if pc.get(k) is None and si.get(k) is not None}
+                if _fill:
+                    pc = {**pc, **_fill}
+                    _extra_calc = {_dmark[k] for k in _fill
+                                   if k in _si_derived and k in _dmark}
             style = ' style="background:rgba(66,165,245,0.12);font-weight:600"' if is_subj else ""
             name = esc(pc.get("name", "?"))
             ptk = esc(pc.get("ticker", ""))
@@ -7514,8 +7543,7 @@ def _render_stock_info_html(rec: dict) -> str:
             # 자체계산분은 소스값과 **구분해서** 보여준다(데이터 vs 환각).
             # yfinance 가 KR 종목의 PER·PBR 을 자주 안 줘서 시총÷순이익·
             # 시총÷자본으로 채운다 — 정의는 같지만 출처가 다르다.
-            _derived = set(pc.get("derived") or [])
-            _dmark = {"trailingPE": "PER", "priceToBook": "PBR"}
+            _derived = set(pc.get("derived") or []) | _extra_calc
 
             def _pvd(k):
                 cell = _pv(k)
@@ -7524,9 +7552,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     return cell + '<span title="자체계산">＊</span>'
                 return cell
 
-            _cells = [_pvd(k) for k in
-                      ("trailingPE", "forwardPE", "priceToBook",
-                       "priceToSalesTrailing12Months", "enterpriseToEbitda")]
+            _cells = [_pvd(k) for k in _mult_keys]
             pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}{_mark}</td><td class="num">{mc_str}</td>'
             pc_rows += "".join(f'<td class="num">{c}</td>' for c in _cells)
             pc_rows += f'<td class="num">{dy_str}</td></tr>\n'
@@ -7536,9 +7562,12 @@ def _render_stock_info_html(rec: dict) -> str:
             _peer_oob |= any("—!" in c for c in _cells)
         _peer_note = ""
         if _peer_calc:
+            _defs = {"PER": "PER=시총÷순이익", "PBR": "PBR=시총÷자본",
+                     "PSR": "PSR=시총÷매출"}
             _peer_note += (' · <b>＊</b> = 소스 미제공분 자체계산('
-                           + esc(" · ".join(sorted(_peer_calc)))
-                           + ' — PER=시총÷순이익, PBR=시총÷자본)')
+                           + esc(" · ".join(sorted(_peer_calc))) + ' — '
+                           + esc(", ".join(_defs[k] for k in sorted(_peer_calc)
+                                           if k in _defs)) + ')')
         if _peer_oob:
             _peer_note += (' · <b>—!</b> = 소스가 준 값이 배수로 성립하지 않음'
                            '(범위 밖) — 숫자처럼 보여주지 않습니다')

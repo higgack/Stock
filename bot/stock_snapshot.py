@@ -1270,6 +1270,16 @@ def _collect_financials(t, snap: dict) -> None:
         snap["financials"] = fins
 
 
+# 동종비교 수집기의 **스키마 버전**. 수집 로직이 달라질 때마다 올린다.
+# ⚠️ 이게 없으면 옛 아카이브가 영원히 옛 결과로 굳는다: 대시보드는
+# `peer_comps` 가 있으면 재수집을 건너뛰므로, 접미사 폴백·이름 정화·
+# 자체계산 PER/PBR 을 넣어도(2026-08-18 #885) 이미 분석한 종목 화면은
+# 그대로였다(사용자 스크린샷 — 머지 뒤에도 `240810.KS` 행이 통째로 비어
+# 있었다). 필드 유무를 하나씩 냄새맡는 옛 방식은 새 필드를 넣을 때마다
+# 조건을 같이 고쳐야 해서 매번 잊는다 → 버전 하나로 강제한다.
+_PEER_SCHEMA_VER = 2
+
+
 def _peer_name(pi: dict, pt: str) -> str:
     """피어 표시명. 쓸 수 없는 이름이면 티커로 떨어진다.
 
@@ -1410,3 +1420,4 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
         import datetime as _dt
         snap["peer_comps_asof"] = _dt.datetime.now(
             _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
+        snap["peer_comps_ver"] = _PEER_SCHEMA_VER
