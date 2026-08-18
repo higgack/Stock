@@ -15914,9 +15914,35 @@ class TestDetailTabEnhancements20260616:
         assert 'data-pane="si-disclosures"' in h, "공시 탭 버튼 누락"
 
     def test_a1_earnings_footer_honest(self):
-        # 실적 풋노트가 시장 무관 yfinance(거짓 DART/MOPS/AKShare 표기 제거).
-        src = open("bot/dashboard.py", encoding="utf-8").read()
-        assert 'earn_src = "yfinance"' in src, "실적 풋노트 정직화 누락"
+        """실적 풋노트는 **실제로 쓴 소스**를 적어야 한다(2026-06-16: 거짓
+        DART/MOPS/AKShare 표기 제거). ⚠️ 원래 소스 문자열(`earn_src =
+        "yfinance"`)을 단언했는데, KR 이 진짜로 WISEreport 를 쓰게 된
+        2026-08-18 에 정직해진 코드를 오히려 실패시켰다 — 값이 걸린
+        곳은 동작으로 본다(실수기록 #19)."""
+        from bot.dashboard import _render_stock_info_html
+
+        def _foot(ticker, si):
+            seg = _render_stock_info_html({"ticker": ticker,
+                                           "stock_info": si})["other_panes"]
+            i = seg.index('id="si-earnings"')
+            return seg[i:seg.index("</div>\n</div>", i) + 13]
+
+        us = _foot("AMAT", {"currency": "USD", "earnings_history": [
+            {"date": "2026-08-01", "EPS Estimate": 1.0,
+             "Reported EPS": 1.1, "Surprise(%)": 10.0}]})
+        assert "출처: yfinance" in us, us[-300:]
+        kr = _foot("082740.KS", {"currency": "KRW", "kr": {"earnings_surprise": {
+            "periods": ["2026/03"], "op": {"consensus": [1], "actual": [2],
+                                           "surprise": [1.0], "yoy": [1.0]},
+            "ni": {"consensus": [1], "actual": [2], "surprise": [1.0],
+                   "yoy": [1.0]}, "announce": ["2026/05/12"], "unit": "억원"}}})
+        # ⚠️ `출처:` 접두사까지 본다 — 각주 다른 곳(기준 표기)에도
+        # WISEreport 가 나오므로, 그것만 보면 풋노트가 계속 yfinance 를
+        # 주장해도 통과한다(뮤테이션으로 실측).
+        assert "출처: WISEreport(FnGuide)" in kr, kr[-300:]
+        # 실적 표가 쓰지도 않는 소스를 주장하면 안 된다.
+        for foot in (us, kr):
+            assert "MOPS" not in foot and "AKShare" not in foot, foot[-300:]
 
     def test_a3_consensus_clients_cached(self):
         fg = open("bot/fnguide_consensus.py", encoding="utf-8").read()
@@ -21705,6 +21731,81 @@ class TestProbeOutputStreaming20260818:
     # 폴링도 부하에 따라 자식이 먼저 끝나 결과가 뒤집혔다(전체 스위트에서 실제
     # 실패). 규약(위 두 테스트)은 mutation 으로 확실히 잡히므로 그걸로 족하고,
     # 실제 스트리밍은 VM 에서 눈으로 확인한다.
+
+
+class TestEarningsTabSource20260818:
+    """사용자 2026-08-18(한화엔진 082740.KS): 실적 탭이 **2017~2020** 을
+    '최근 실적'으로 보여줬다. yfinance 의 KR 실적 이력은 종목마다 커버리지가
+    달라 어떤 건 최신, 어떤 건 6년 전이라 화면만 보고는 구분이 안 된다."""
+
+    @staticmethod
+    def _pane(si, ticker="082740.KS"):
+        from bot.dashboard import _render_stock_info_html
+        out = _render_stock_info_html({"ticker": ticker, "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-earnings"')
+        return seg[i:seg.index("</div>\n</div>", i) + 13]
+
+    _OLD = [{"date": "2020-11-13", "EPS Estimate": 11.0,
+             "Reported EPS": -42.0, "Surprise(%)": -484.6}]
+    _ES = {"periods": ["2025/12", "2026/03"],
+           "op": {"consensus": [100, 120], "actual": [110, 130],
+                  "surprise": [10.0, 8.3], "yoy": [5.0, 6.0]},
+           "ni": {"consensus": [80, 90], "actual": [85, 95],
+                  "surprise": [6.2, 5.5], "yoy": [4.0, 4.5]},
+           "announce": ["2026/02/10(연결)", "2026/05/12(연결)"], "unit": "억원"}
+
+    def test_kr_uses_wisereport_instead_of_yfinance(self):
+        """KR 은 **더 나은 소스가 이미 있었다** — WISEreport 어닝서프라이즈를
+        수집해 놓고 컨센서스 탭에만 쓰고 있었다. 실적 이력의 제자리는 여기다."""
+        pane = self._pane({"currency": "KRW", "earnings_history": self._OLD,
+                           "kr": {"earnings_surprise": self._ES}})
+        assert "실적 서프라이즈" in pane, pane[:600]
+        assert "WISEreport" in pane, pane[-400:]
+        assert "2020-11-13" not in pane, "낡은 yfinance 표가 남아 있다"
+
+    def test_kr_without_wisereport_says_so_instead_of_showing_2020(self):
+        """6년 전 EPS 를 '최근 실적'으로 보여주느니 없다고 하는 게 낫다."""
+        pane = self._pane({"currency": "KRW", "earnings_history": self._OLD})
+        # 날짜는 **경고 문구**에 남아야 한다(왜 비었는지 알아야 하니까).
+        # 사라져야 하는 건 그 낡은 수치를 '실적'처럼 보여주던 표다.
+        assert "EPS 예상" not in pane and "-484.6" not in pane, pane
+        assert "분기실적 탭" in pane, pane
+
+    def test_stale_history_is_flagged_in_every_market(self):
+        """⚠️ UNIVERSAL — JP/TW/CN/US 도 같은 소스라 같은 함정이 있다.
+        낡았다고 지우지는 않는다(비KR 은 대체 소스가 없다) — 대신 마지막
+        발표일을 못박아 '최근'이 아님을 알린다."""
+        pane = self._pane({"currency": "USD", "earnings_history": self._OLD},
+                          ticker="AMAT")
+        assert "2020-11-13" in pane, "비KR 은 표를 유지해야 한다"
+        assert "최근 실적이 아닙니다" in pane, pane[:800]
+        assert "최신 발표일 2020-11-13" in pane, pane[-400:]
+
+    def test_fresh_history_is_not_flagged(self):
+        """가드가 전부에 걸리면 경고가 소음이 된다 — 최신이면 조용해야."""
+        import datetime as _dt
+        recent = (_dt.date.today() - _dt.timedelta(days=30)).strftime("%Y-%m-%d")
+        pane = self._pane({"currency": "USD",
+                           "earnings_history": [{"date": recent,
+                                                 "EPS Estimate": 1.0,
+                                                 "Reported EPS": 1.1,
+                                                 "Surprise(%)": 10.0}]},
+                          ticker="AMAT")
+        assert "최근 실적이 아닙니다" not in pane, pane[:800]
+        assert recent in pane
+
+    def test_the_table_lives_in_one_place_only(self):
+        """같은 표가 두 탭에 있으면 한쪽만 고쳐져 어긋난다 — 컨센서스 탭에서
+        뺐다는 것을 고정한다."""
+        pane_all = None
+        from bot.dashboard import _render_stock_info_html
+        out = _render_stock_info_html({"ticker": "082740.KS", "stock_info": {
+            "currency": "KRW", "kr": {"earnings_surprise": self._ES}}})
+        seg = out["other_panes"]
+        pane_all = seg
+        assert pane_all.count("실적 서프라이즈") == 1, \
+            f"서프라이즈 표가 {pane_all.count('실적 서프라이즈')}곳에 있다"
 
 
 class TestPeerCompsEmptyTable20260818:
