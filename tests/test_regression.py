@@ -21925,6 +21925,45 @@ class TestPeerCompsEmptyTable20260818:
         assert f"감사 v{au._AUDIT_VER}" in banner, banner
         assert f"피어스키마 v{_PEER_SCHEMA_VER}" in banner, banner
 
+    def test_peer_lists_use_the_board_the_stock_is_actually_on(self):
+        """감사의 `↪` 줄이 실측 증거다(2026-08-18) — 목록이 `.KS`/`.TW` 로
+        쏠려 있어 코스닥·TPEx 종목이 잘못 적혀 있었다. 런타임 폴백이
+        덮어주긴 하지만 종목마다 왕복이 한 번씩 늘고, 목록이 틀렸다는
+        사실 자체가 다음 편집 때 또 틀리게 만든다."""
+        from bot import market as m
+        wrong = {"005290.KS", "035080.KS", "036830.KS", "102710.KS",
+                 "194700.KS", "200130.KS", "240810.KS", "319660.KS",
+                 "3105.TW", "3324.TW"}
+        seen: set = set()
+        for attr in ("_KR_INDUSTRY_PEERS", "_JP_INDUSTRY_PEERS",
+                     "_TW_INDUSTRY_PEERS", "_CN_A_INDUSTRY_PEERS",
+                     "_HK_INDUSTRY_PEERS", "_US_INDUSTRY_PEERS"):
+            for peers in (getattr(m, attr, None) or {}).values():
+                seen.update(peers)
+        assert not (seen & wrong), f"잘못된 보드 접미사가 남아 있다: {seen & wrong}"
+        # 고친 쪽이 실제로 들어가 있어야 한다 — 그냥 지우기만 하면 안 된다.
+        assert {"240810.KQ", "319660.KQ", "3105.TWO"} <= seen, seen
+
+    def test_audit_prints_first_pass_failures_where_they_happen(self, monkeypatch):
+        """조용히 모으기만 하면 레이트리밋 벽이 몇 번째부터인지 알 수 없어,
+        최종 실패 목록이 죽은 티커인지 벽인지 판별이 안 된다(2026-08-18
+        실측: 372종목 목록만 보고는 못 갈랐다)."""
+        import sys
+        import types
+
+        from bot.scripts import peer_currency_audit as au
+        monkeypatch.setattr(au.time, "sleep", lambda s: None)
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=lambda s: types.SimpleNamespace(info={})))
+        monkeypatch.setattr(au, "_tickers", lambda m: {"DEAD": ["US/x"]})
+        out: list[str] = []
+        monkeypatch.setattr("builtins.print",
+                            lambda *a, **k: out.append(" ".join(map(str, a))))
+        au.audit("")
+        body = "\n".join(out)
+        assert "1차 실패(재시도 대상)" in body, body
+        assert "DEAD" in body
+
     def test_home_candidate_search_does_not_confuse_similar_names(self):
         """감사 도구가 제시하는 교체 후보는 **레포 별칭표**에서 온다. 앞
         몇 글자만 보면 TAIWANSEMI 와 TAIWANMOBILE 이 같은 회사로 붙어,

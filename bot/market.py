@@ -339,7 +339,7 @@ _TW_ENGLISH_ALIAS = {
     "UMC": "2303.TW",
     "VANGUARD": "5347.TWO",          # 世界先進 Vanguard International Semi
     "MOSEL": "2342.TW",              # 茂矽
-    "WIN": "3105.TW",                # 穩懋 WIN Semi (GaAs)
+    "WIN": "3105.TWO",                # 穩懋 WIN Semi (GaAs)
     # ─── Semiconductor IC design / fabless
     "MEDIATEK": "2454.TW",
     "REALTEK": "2379.TW",
@@ -362,7 +362,7 @@ _TW_ENGLISH_ALIAS = {
     "WISTRON": "3231.TW",
     "INVENTEC": "2356.TW",
     # ─── Thermal / AI server cooling (Blackwell-cycle plays)
-    "AURAS": "3324.TW",              # 雙鴻 Auras Technology
+    "AURAS": "3324.TWO",              # 雙鴻 Auras Technology
     "ASIAVITAL": "3017.TW",          # 奇鋐 AVC (AI server thermal)
     "AVC": "3017.TW",
     "SUNON": "2421.TW",              # 建準 (PC cooling fans)
@@ -543,11 +543,11 @@ _KR_INDUSTRY_PEERS = {
         "000660.KS", "005930.KS", "2330.TW", "INTC", "AMD", "NVDA",
     ],
     "Semiconductor Equipment & Materials": [
-        "240810.KS", "042700.KS", "036930.KQ", "095610.KQ",
-        "319660.KS", "AMAT", "LRCX", "KLAC",
+        "240810.KQ", "042700.KS", "036930.KQ", "095610.KQ",
+        "319660.KQ", "AMAT", "LRCX", "KLAC",
     ],
     "Specialty Chemicals": [
-        "005290.KS", "036830.KS", "093370.KS", "102710.KS",
+        "005290.KQ", "036830.KQ", "093370.KS", "102710.KQ",
         "014680.KS",
     ],
     "Electronic Components": [
@@ -570,7 +570,7 @@ _KR_INDUSTRY_PEERS = {
         "004170.KS", "004990.KS", "069960.KS", "M", "JWN",
     ],
     "Internet Content & Information": [
-        "035420.KS", "035720.KS", "067160.KQ", "035080.KS", "4689.T",
+        "035420.KS", "035720.KS", "067160.KQ", "035080.KQ", "4689.T",
     ],
     "Auto Manufacturers": [
         # ⚠️ TM(도요타 ADR) 이 아니라 홈상장 7203.T. 감사 실측(2026-08-18):
@@ -603,17 +603,17 @@ _KR_INDUSTRY_PEERS = {
         "170900.KS",  # 동아ST
         "271980.KS",  # 제일약품
         "002310.KS",  # 아세아제지 (대원제약 우선주 등은 일부 매핑 까다로움)
-        "194700.KS",  # 노바렉스 — 자체 OK (subject 필터 됨)
-        "200130.KS",  # 콜마비앤에이치
+        "194700.KQ",  # 노바렉스 — 자체 OK (subject 필터 됨)
+        "200130.KQ",  # 콜마비앤에이치
         "183490.KQ",  # 엔지켐생명과학
     ],
     "Personal Products": [
         "051900.KS",  # LG생활건강
         "090430.KS",  # 아모레퍼시픽
         "192820.KS",  # 코스맥스
-        "200130.KS",  # 콜마비앤에이치
+        "200130.KQ",  # 콜마비앤에이치
         "161890.KS",  # 한국콜마
-        "194700.KS",  # 노바렉스 (건기식 ODM)
+        "194700.KQ",  # 노바렉스 (건기식 ODM)
     ],
     # Fix M (2026-05-19 LG생활건강 051900.KS surfaced): yfinance 가
     # 일부 KR 종목을 'Household & Personal Products' (긴 form) 로
@@ -623,9 +623,9 @@ _KR_INDUSTRY_PEERS = {
         "051900.KS",  # LG생활건강
         "090430.KS",  # 아모레퍼시픽
         "192820.KS",  # 코스맥스
-        "200130.KS",  # 콜마비앤에이치
+        "200130.KQ",  # 콜마비앤에이치
         "161890.KS",  # 한국콜마
-        "194700.KS",  # 노바렉스
+        "194700.KQ",  # 노바렉스
     ],
     "Packaged Foods": [
         "097950.KS",  # CJ제일제당
@@ -1149,7 +1149,7 @@ _TW_INDUSTRY_PEERS = {
         "3034.TW", "8299.TWO",                         # Novatek/Phison
     ],
     "Semiconductor Equipment & Materials": [
-        "6488.TWO", "3105.TW", "5347.TWO",            # GlobalWafers/WIN/VIS
+        "6488.TWO", "3105.TWO", "5347.TWO",            # GlobalWafers/WIN/VIS
     ],
     # ─── OSAT / packaging (TW dominates the back-end)
     "Electronic Components": [
@@ -1169,7 +1169,7 @@ _TW_INDUSTRY_PEERS = {
     ],
     # ─── Thermal / cooling (AI server cycle)
     "Industrial Machinery": [
-        "3017.TW", "3324.TW", "2421.TW",              # AVC/Auras/Sunon
+        "3017.TW", "3324.TWO", "2421.TW",              # AVC/Auras/Sunon
     ],
     # ─── PCB / 載板 (AI substrate cycle)
     "Electronic Components — PCB": [
