@@ -1270,6 +1270,50 @@ def _collect_financials(t, snap: dict) -> None:
         snap["financials"] = fins
 
 
+def _peer_name(pi: dict, pt: str) -> str:
+    """피어 표시명. 쓸 수 없는 이름이면 티커로 떨어진다.
+
+    ⚠️ yfinance 는 조회가 빗나가면 `shortName` 에 **식별자 나열**을 돌려준다
+    — `240810.KS,0P00017YB3,330568` 이 화면에 회사명으로 찍혔다(사용자
+    2026-08-18). 콤마로 이어진 토큰 뭉치는 회사명이 아니다."""
+    nm = (pi.get("shortName") or pi.get("longName") or "").strip()
+    code = pt.split(".")[0]
+    if not nm or (("," in nm) and (code in nm or nm.count(",") >= 2)):
+        return pt
+    return nm[:30]
+
+
+def _derive_peer_multiples(entry: dict, pi: dict) -> list[str]:
+    """소스가 안 준 PER·PBR 을 **같은 정의**로 계산해 채운다 → 채운 키 목록.
+
+    · PER = 시가총액 ÷ 순이익(TTM)      · PBR = 시가총액 ÷ 자본총계
+    자본총계 = 주당순자산(bookValue) × 발행주식수.
+
+    ⚠️ 음수·0 은 계산하지 않는다(적자 기업의 PER 은 배수로 의미가 없고,
+    분모가 0 이면 무한대가 된다). 범위 밖 값도 안 채운다 — 화면 가드가
+    어차피 `—!` 로 지우므로 자체계산으로 이상치를 만들 이유가 없다."""
+    mc = entry.get("market_cap")
+    out: list[str] = []
+    if not mc or mc <= 0:
+        return out
+
+    def _ok(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 500
+
+    if entry.get("trailingPE") is None:
+        ni = pi.get("netIncomeToCommon")
+        if isinstance(ni, (int, float)) and ni > 0 and _ok(mc / ni):
+            entry["trailingPE"] = mc / ni
+            out.append("PER")
+    if entry.get("priceToBook") is None:
+        bvps, sh = pi.get("bookValue"), pi.get("sharesOutstanding")
+        if (isinstance(bvps, (int, float)) and isinstance(sh, (int, float))
+                and bvps > 0 and sh > 0 and _ok(mc / (bvps * sh))):
+            entry["priceToBook"] = mc / (bvps * sh)
+            out.append("PBR")
+    return out
+
+
 def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
     """Collect peer company multiples for the comps tab.
 
@@ -1292,7 +1336,18 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
     def _fetch_one(pt: str) -> dict | None:
         try:
             pi = yf.Ticker(pt).info or {}
-            name = pi.get("shortName") or pi.get("longName") or pt
+            # ⚠️ **접미사 자동 폴백.** 피어 목록의 `.KS`/`.KQ` 가 틀리면 그 행이
+            # 통째로 빈다 — `240810.KS`(원익IPS)·`319660.KS`(피에스케이)는
+            # 실제로 코스닥이라 전 컬럼이 `—` 였다(사용자 2026-08-18 스크린샷).
+            # 목록의 접미사를 손으로 고치면 또 틀린다(이번 세션에만 종목코드를
+            # 두 번 잘못 적었다 — 실수 #12). 조회 결과로 판정해 반대쪽을
+            # 한 번 더 시도한다: 시총조차 없으면 그 보드가 아니라는 뜻이다.
+            if not pi.get("marketCap") and pt.upper().endswith((".KS", ".KQ")):
+                alt = pt[:-3] + ("KQ" if pt.upper().endswith(".KS") else "KS")
+                alt_pi = yf.Ticker(alt).info or {}
+                if alt_pi.get("marketCap"):
+                    pi, pt = alt_pi, alt
+            name = _peer_name(pi, pt)
             entry = {
                 "ticker": pt,
                 "name": name[:30],
@@ -1314,7 +1369,15 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
                 "dividendRate": pi.get("dividendRate"),
                 "currentPrice": pi.get("currentPrice") or pi.get("regularMarketPrice"),
             }
+            # yfinance 는 KR 종목의 `trailingPE`·`priceToBook` 을 자주 안 준다
+            # (2026-08-16 프로브로 확정 — 5개 키 전부 None). 그러면 동종비교
+            # 표의 PER·PBR 열이 통째로 비어 비교가 불가능하다. 소스가 주는
+            # 재료로 **같은 정의대로** 계산해 채우고, 자체계산분은 표시한다
+            # (종합·밸류에이션 탭의 `_derive_missing_multiples` 와 동일 규약).
+            _derived = _derive_peer_multiples(entry, pi)
             entry = {k: v for k, v in entry.items() if v is not None}
+            if _derived:
+                entry["derived"] = _derived
             if pt == ticker:
                 entry["is_subject"] = True
             return entry
