@@ -22274,6 +22274,31 @@ class TestFlowTrendDiagnosis20260818:
         assert '"asof_stale": _cadence_stale(src, sid, asof_raw),' in src, \
             "페이로드에 asof_stale 이 실리지 않는다"
 
+    def test_audit_says_out_loud_when_treasury_enrichment_is_not_live(
+            self, tmp_path, capsys):
+        """⚠️ 재무부 보강은 try/except 안이라 실패해도 화면은 그냥 FRED
+        값(D+1)을 보여준다 — 조용한 되돌림. 감사 프로브가 그 상태를
+        **말하게** 한다(실수 #12 silent-fail 가시화)."""
+        import json, types
+        from datetime import date
+        from bot.scripts.macro_staleness_audit import _treasury_status
+        d = tmp_path / "fred"
+        d.mkdir(parents=True)
+        today = date.today().isoformat()
+        (d / f"DGS10_{today}.json").write_text(json.dumps(
+            {"value": 4.68, "time": "2026-08-14"}))      # src 없음 = FRED
+        fake = types.SimpleNamespace(_CACHE_DIR=tmp_path,
+                                     _TREASURY_SIDS={"DGS10"},
+                                     _FRED_TTL_DAILY_H=1.0)
+        _treasury_status(fake)
+        out = capsys.readouterr().out
+        assert "재무부 미적용" in out, "FRED 로 되돌아간 사실이 안 보인다"
+        # 반대로 보강이 살아 있으면 경고를 띄우지 않는다.
+        (d / f"DGS10_{today}.json").write_text(json.dumps(
+            {"value": 4.72, "time": "2026-08-17", "src": "UST"}))
+        _treasury_status(fake)
+        assert "재무부 미적용" not in capsys.readouterr().out
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를

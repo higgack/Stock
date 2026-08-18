@@ -15,11 +15,70 @@ from __future__ import annotations
 import sys
 from datetime import date, datetime, timedelta
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
 def _p(*a):
     print(*a, flush=True)
+
+
+def _treasury_status(mo) -> None:
+    """국채금리가 **재무부로 당겨졌는지** 그 자리에서 검증한다.
+
+    ⚠️ 보강은 try/except 안에 있어 실패해도 화면엔 아무 표시가 없다 —
+    조용히 FRED 값(D+1)으로 되돌아갈 뿐이다(실수 #12 silent-fail 가시화).
+    여기서 ① FRED 디스크 캐시 나이·내용 ② 재무부 원천 직접 조회 ③ 검산
+    결과를 셋 다 찍어, '왜 어제 날짜인가'를 추측 없이 가른다."""
+    import time
+    from datetime import date as _date
+    _p("── 재무부 보강(국채금리 DGS2/10/30) 상태")
+    cache_dir = mo._CACHE_DIR / "fred"
+    for sid in sorted(mo._TREASURY_SIDS):
+        f = cache_dir / f"{sid}_{_date.today().isoformat()}.json"
+        if f.exists():
+            import json
+            age_m = (time.time() - f.stat().st_mtime) / 60
+            try:
+                d = json.loads(f.read_text())
+            except Exception:
+                d = {}
+            src = d.get("src") or "FRED"
+            _p(f"   {sid}: 디스크캐시 {age_m:.0f}분 전 · 관측 {d.get('time')} "
+               f"· 원천 {src}"
+               + ("" if src == "UST" else
+                  f"  ⚠️ 재무부 미적용 (캐시 TTL {mo._FRED_TTL_DAILY_H}h 지나면 재시도)"))
+        else:
+            _p(f"   {sid}: 디스크캐시 없음")
+    try:
+        from bot.treasury_yield_client import fetch_daily_curve, fresher_than
+        curve = fetch_daily_curve()
+    except Exception as exc:                          # noqa: BLE001
+        _p(f"   ❗ 재무부 원천 조회 자체가 실패: {type(exc).__name__}: {exc}")
+        return
+    if not curve:
+        _p("   ❗ 재무부 원천이 빈 값 — 차단·양식변경 의심. FRED(D+1)로만 돈다.")
+        return
+    days = sorted(curve)
+    _p(f"   재무부 원천: 관측 {len(days)}일 · 최신 {days[-1]} {curve[days[-1]]}")
+    for sid in sorted(mo._TREASURY_SIDS):
+        f = cache_dir / f"{sid}_{_date.today().isoformat()}.json"
+        base_date = base_val = None
+        if f.exists():
+            import json
+            try:
+                d = json.loads(f.read_text())
+                # 캐시가 이미 UST 면 prev_value 가 FRED 마지막 값이다.
+                base_date = d.get("time")
+                base_val = d.get("value")
+            except Exception:
+                pass
+        if base_date is None or base_val is None:
+            _p(f"   {sid}: 비교 기준(캐시) 없음 — 판정 생략")
+            continue
+        nf = fresher_than(base_date, float(base_val), sid)
+        _p(f"   {sid}: 현재값 {base_date}={base_val} → "
+           + (f"재무부 더 최신 {nf[0]}={nf[1]}" if nf
+              else "재무부에 더 새 관측 없음(또는 겹치는 날 불일치로 거부)"))
 
 
 def main() -> int:
@@ -63,6 +122,8 @@ def main() -> int:
             else:
                 spot = mo._fred_fetch_series(sid, 400)
                 raw = (spot or {}).get("time", "")
+                if (spot or {}).get("src") == "UST":
+                    key += " ·UST"          # 재무부로 하루 당겨진 행
         except Exception as exc:                     # noqa: BLE001
             _p(f"  {label:<18} {key:<28} ❗ 조회 실패: {exc}")
             continue
@@ -101,6 +162,8 @@ def main() -> int:
         if j["freq"] != "E" and j.get("why"):
             _p(f"  {'':<18} {'':<28} └ {j['why']}")
 
+    _p("")
+    _treasury_status(mo)
     _p("")
     _p(f"── 요약: 대상 {len(rows)}개 · 지연 의심 {len(late)}개 · "
        f"규약 없음 {len(unknown)}개")
