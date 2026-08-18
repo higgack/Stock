@@ -130,6 +130,14 @@ def probe(ticker: str) -> None:
 
 
 def main(argv: list[str]) -> int:
+    # ⚠️ **파이프로 태우면 stdout 이 블록 버퍼링된다.** 이 스크립트들은
+    # 수십 분 도는 진단이라 `| tee` 로 받는 게 정상 사용인데, 그러면 버퍼가
+    # 찰 때까지 아무것도 안 보이고 Ctrl-C 하면 **결과가 통째로 사라진다**
+    # (사용자 2026-08-18 실측). 라인 버퍼링으로 되돌린다.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     for t in (argv[1:] or _CANDIDATES):
         try:
             probe(t)

@@ -21668,6 +21668,45 @@ class TestDartCardWidth20260816:
         assert "height:100%" in css and "box-sizing:border-box" in css
 
 
+class TestProbeOutputStreaming20260818:
+    """사용자 2026-08-18: `--sweep 2>&1 | tee` 를 돌렸는데 **아무것도 안 나와**
+    Ctrl-C 했다. 파이프로 태우면 stdout 이 블록 버퍼링되기 때문이다.
+
+    이 스크립트들은 수십 분 도는 진단이라 `| tee` 가 정상 사용이고, '한 줄씩
+    즉시 출력'이 설계의 핵심이었다(중간에 끊어도 결과가 남게). 버퍼링이 그걸
+    통째로 무력화했다 — 기능이 아니라 **사용 방식과의 불일치**였다."""
+
+    _SCRIPTS = ("backlog_misses", "backlog_format_probe", "backlog_format_probe2",
+                "backlog_format_probe3", "backlog_format_probe4",
+                "detail_gaps_probe")
+
+    @pytest.mark.parametrize("mod", _SCRIPTS)
+    def test_entry_points_force_line_buffering(self, mod):
+        src = open(f"bot/scripts/{mod}.py", encoding="utf-8").read()
+        i = src.index("def main(argv")
+        head = src[i:i + 700]
+        assert "sys.stdout.reconfigure(line_buffering=True)" in head, \
+            f"{mod}: 파이프에서 출력이 버퍼에 갇힌다"
+        # 재설정 실패가 진단 전체를 죽이면 안 된다(구형 스트림 등).
+        assert "except Exception" in head, f"{mod}: reconfigure 실패가 무방비"
+
+    def test_sweep_lines_flush_individually(self):
+        """라인 버퍼링에 더해 **명시적 flush** 도 둔다 — 재설정이 안 먹는
+        환경(파일 리다이렉트 등)에서도 종목별 진행이 보여야 한다."""
+        src = open("bot/scripts/backlog_misses.py", encoding="utf-8").read()
+        i = src.index("def sweep(")
+        body = src[i:src.index("\ndef ", i + 1)]
+        assert body.count("flush=True") >= 4, "스윕 진행 출력이 안 흘러간다"
+        assert "[{i:2d}/{len(items)}]" in body, "진행 카운터가 없어 살아있는지 모른다"
+
+    # ⚠️ **실제 파이프로 흐르는지 재는 테스트는 두지 않는다.** 두 번 시도했고
+    # 둘 다 가짜였다: (a) 이 환경은 `PYTHONUNBUFFERED=1` 이라 자식이 무조건
+    # 무버퍼여서 버퍼링 제거 mutation 을 **판별하지 못했고**, (b) 고정 sleep 도
+    # 폴링도 부하에 따라 자식이 먼저 끝나 결과가 뒤집혔다(전체 스위트에서 실제
+    # 실패). 규약(위 두 테스트)은 mutation 으로 확실히 잡히므로 그걸로 족하고,
+    # 실제 스트리밍은 VM 에서 눈으로 확인한다.
+
+
 class TestPeerCompsEmptyTable20260818:
     """사용자 2026-08-18 "동종비교가 왜케 안나오는거야?" — 테크윙 표에서
     6행 중 2행은 **전 컬럼 `—`** 에 회사명이 `240810.KS,0P00017YB3,330568`,

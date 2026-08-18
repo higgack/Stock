@@ -257,17 +257,18 @@ def sweep(tickers: list[str]) -> int:
     items = ([(t.split(".")[0], "") for t in tickers] if tickers else _SWEEP)
     full, partial, empty, jumpy = [], [], [], []
     print(f"■ 수주잔고 스윕 {len(items)}종목 × 5분기 "
-          f"(종목당 원문 5건 다운로드 — 오래 걸립니다)")
-    print("=" * 96)
-    for code, name in items:
+          f"(종목당 원문 5건 다운로드 — 오래 걸립니다)", flush=True)
+    print("=" * 96, flush=True)
+    for i, (code, name) in enumerate(items, 1):
         nm = dart.stock_code_to_name(code) or name or "?"
         try:
             rows = _one(dart, code)
         except Exception as exc:
-            print(f"■ {code} {nm:16s} ❌ {type(exc).__name__}: {exc}")
+            print(f"[{i:2d}/{len(items)}] {code} {nm:16s} "
+                  f"❌ {type(exc).__name__}: {exc}", flush=True)
             continue
         if not rows:
-            print(f"■ {code} {nm:16s} ❌ 분기 시리즈 없음")
+            print(f"[{i:2d}/{len(items)}] {code} {nm:16s} ❌ 분기 시리즈 없음", flush=True)
             continue
         cells, vals, forms = [], [], set()
         for label, v, why in rows:
@@ -291,9 +292,9 @@ def sweep(tickers: list[str]) -> int:
         tag = "✅" if got_n == len(rows) else ("◐" if got_n else "❌")
         (full if got_n == len(rows) else partial if got_n else empty).append(
             f"{code} {nm}")
-        print(f"■ {code} {nm:16s} {tag}{got_n}/{len(rows)}  "
-              + " · ".join(cells) + warn)
-    print("=" * 96)
+        print(f"[{i:2d}/{len(items)}] {code} {nm:16s} {tag}{got_n}/{len(rows)}  "
+              + " · ".join(cells) + warn, flush=True)
+    print("=" * 96, flush=True)
     print(f"■ 요약  ✅전분기 {len(full)} · ◐일부 {len(partial)} · ❌전무 {len(empty)}")
     for label, group in (("◐ 일부 빈칸", partial), ("❌ 전무", empty),
                          ("⚠️ 분기간 급변(파싱 의심)", jumpy)):
@@ -303,6 +304,14 @@ def sweep(tickers: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # ⚠️ **파이프로 태우면 stdout 이 블록 버퍼링된다.** 이 스크립트들은
+    # 수십 분 도는 진단이라 `| tee` 로 받는 게 정상 사용인데, 그러면 버퍼가
+    # 찰 때까지 아무것도 안 보이고 Ctrl-C 하면 **결과가 통째로 사라진다**
+    # (사용자 2026-08-18 실측). 라인 버퍼링으로 되돌린다.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     if len(argv) > 2 and argv[1] == "--ticker":
         return per_quarter(argv[2])
     if len(argv) > 2 and argv[1] == "--doc":
