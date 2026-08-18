@@ -23339,6 +23339,103 @@ class TestPeerCompsGuards20260816:
         assert c[5] == "5.3＊", c         # PBR = 5.35조 ÷ 1조
         assert "자체계산" in pane and "PER=시총÷순이익" in pane
 
+    def test_financials_pane_shows_when_it_was_collected_and_how_old(self):
+        """⚠️ 라벨이 없어 **몇 분기 묵은 표를 최신으로 오인**했다(사용자
+        2026-08-18 삼양식품: 2026년 1·2분기가 나왔는데 화면은 2025-12 까지).
+        '수집시각'과 '표의 최신 분기'는 **다른 사실**이다 — 소스가 안 주면
+        오늘 수집해도 표는 묵은 채다. 둘 다 밝혀야 구분이 된다."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "financials_asof": "2026-08-18 20:23",
+              "financials": {"income_statement": {"quarterly": [
+                  {"period": "2025-09-30", "Total Revenue": 6.32e11,
+                   "Operating Income": 1.3e11, "Net Income": 1.1e11},
+                  {"period": "2025-12-31", "Total Revenue": 6.37e11,
+                   "Operating Income": 1.39e11, "Net Income": 9.5e10}]}}}
+        out = _render_stock_info_html({"ticker": "003230.KS", "stock_info": si})
+        pane = out["other_panes"]
+        i = pane.index('id="si-financials"')
+        blk = pane[i:i + 6000]
+        assert "수집 2026-08-18 20:23 (KST)" in blk, blk[-400:]
+        assert "표의 최신 분기 2025-12-31" in blk, blk[-400:]
+
+    def test_collector_stamps_when_the_financials_were_fetched(self):
+        """⚠️ 수집기가 시각을 안 찍으면 낡음 게이트가 **항상 낡음**으로 보고
+        페이지마다 재수집이 돈다(느려진다). 화면 라벨도 '시각 미기록'으로
+        굳는다 — 렌더 테스트는 fixture 로 시각을 주므로 이걸 못 잡는다."""
+        import types
+
+        import pandas as pd
+
+        from bot.stock_snapshot import _collect_financials
+        df = pd.DataFrame(
+            {pd.Timestamp("2025-12-31"): [1.0], pd.Timestamp("2025-09-30"): [2.0]},
+            index=["Total Revenue"])
+        empty = pd.DataFrame()
+        t = types.SimpleNamespace(
+            financials=df, quarterly_financials=df,
+            balance_sheet=empty, quarterly_balance_sheet=empty,
+            cashflow=empty, quarterly_cashflow=empty)
+        snap: dict = {}
+        _collect_financials(t, snap)
+        assert snap.get("financials"), "수집 자체가 실패했다"
+        asof = snap.get("financials_asof") or ""
+        assert len(asof) == 16 and asof[4] == "-" and asof[13] == ":", asof
+
+    def test_financials_are_refetched_when_the_snapshot_goes_stale(self):
+        """재무제표는 **분기마다 낡는다** — `있으면 skip` 만 하면 아카이브에
+        구워진 표가 영원히 그대로다(peer_comps 와 같은 실패모드, 실수 #18).
+        여기선 스키마가 아니라 데이터 자체가 낡으므로 수집시각으로 판정한다."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("def _fin_stale()")
+        blk = src[i:src.index("\n    try:", i)]
+        assert "financials_asof" in blk, "수집시각을 안 본다"
+        assert "_FIN_MAX_AGE_DAYS" in blk, "나이 기준이 없다"
+        assert "if not si.get(\"financials\") or _fin_stale():" in blk, \
+            "낡음 판정이 분기에 안 걸렸다"
+        # 시각이 없거나 깨진 옛 아카이브는 **낡음**으로 봐야 다시 받는다.
+        assert "return True" in blk
+
+    def test_subject_row_matches_the_valuation_tab(self):
+        """⚠️ 같은 페이지의 두 탭이 다른 PER 을 보여주면 안 된다 — 사용자
+        2026-08-18 삼양식품: 동종비교 **23.1＊**, 밸류에이션 **12.30x**.
+        수집기 파생은 yfinance `.info` 한 칸에 기대지만 si 는 DART 분기
+        TTM 까지 쓴다 — 정본은 si 다."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "market_cap": 10.05e12,
+              "shares_outstanding": 7_500_000,
+              "kr": {"financials": {"당기순이익": 8.17e11, "자본총계": 1.55e12}},
+              "peer_comps": [
+                  {"ticker": "003230.KS", "name": "SamyangFood",
+                   "currency": "KRW", "financial_currency": "KRW",
+                   "market_cap": 10.05e12, "is_subject": True,
+                   # 수집기가 `.info` 로 계산한 값 — 페이지 정본과 어긋난다.
+                   "trailingPE": 23.1, "derived": ["PER"],
+                   "derived_basis": {"PER": "yfinance 순이익(TTM)"}}]}
+        out = _render_stock_info_html({"ticker": "003230.KS", "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        c = self._cells(pane, "003230.KS")
+        assert c[3] == "12.3＊", f"수집기 파생값이 정본을 이겼다: {c}"
+
+    def test_star_is_removed_when_a_source_value_replaces_a_derived_one(self):
+        """덮어쓴 칸이 si 의 **소스값**이면 ＊(자체계산)를 떼야 한다 —
+        안 그러면 소스가 준 숫자에 자체계산 표시가 붙어 출처를 거꾸로 알린다."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "market_cap": 10.05e12,
+              "trailingPE": 12.3,          # 소스값(파생 아님 — _derived_multiples 없음)
+              "peer_comps": [
+                  {"ticker": "003230.KS", "name": "SamyangFood",
+                   "currency": "KRW", "financial_currency": "KRW",
+                   "market_cap": 10.05e12, "is_subject": True,
+                   "trailingPE": 23.1, "derived": ["PER"]}]}
+        out = _render_stock_info_html({"ticker": "003230.KS", "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
+        c = self._cells(pane, "003230.KS")
+        assert c[3] == "12.3", f"소스값에 ＊ 가 붙었다: {c}"
+
     def test_source_values_are_never_overwritten_on_the_subject_row(self):
         """소스가 준 값이 있으면 그대로 둔다 — 파생으로 덮으면 화면 숫자가
         조용히 바뀐다(데이터 vs 환각)."""
