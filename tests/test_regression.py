@@ -22094,6 +22094,50 @@ class TestFlowTrendDiagnosis20260818:
         assert "-1.05" in pane, f"60일 칸이 숫자로 안 찍혔다:\n{pane[-1500:]}"
         assert "기간 칸이 빈 이유" not in pane, "값이 있는데 경고가 떴다"
 
+    def test_daily_rate_series_are_not_cached_for_a_day(self):
+        """⚠️ 실측(2026-08-18 22:51 KST): FRED 에 8-14 가 있는데 화면은 8-13
+        이었다 — 카드가 쓰는 `_fred_fetch_series` 가 **24시간 캐시**라 전날
+        사본을 하루 종일 들고 있었다. 일별 시리즈는 하루 한 번 새 관측이
+        붙으므로 캐시가 길면 최신을 통째로 놓친다."""
+        from bot.market_overview import (_FRED_DAILY_SIDS, _FRED_TTL_DAILY_H,
+                                         _FRED_TTL_OTHER_H)
+        assert {"DGS2", "DGS10", "DGS30"} <= _FRED_DAILY_SIDS
+        assert _FRED_TTL_DAILY_H <= 2.0, "일별 시리즈 캐시가 너무 길다"
+        # 월간·분기 지표까지 짧게 하면 FRED 호출만 늘고 얻는 게 없다.
+        assert _FRED_TTL_OTHER_H >= 12.0
+
+    def test_treasury_client_refuses_a_mismatched_field(self, monkeypatch):
+        """⚠️ 재무부 XML 태그를 잘못 집으면(2년물 자리에 1개월물) 화면에
+        틀린 금리가 올라간다. 겹치는 날 값이 FRED 와 0.10%p 이내로 맞아야만
+        쓴다 — 만기가 다르면 절대 못 맞는다. 이게 검산이다."""
+        from bot import treasury_yield_client as ty
+        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None: {
+            "2026-08-14": {"DGS10": 4.68}, "2026-08-17": {"DGS10": 4.71}})
+        assert ty.fresher_than("2026-08-14", 4.68, "DGS10") == ("2026-08-17", 4.71)
+        # 같은 날 값이 어긋나면(=필드 오집) 새 값을 쓰지 않는다.
+        assert ty.fresher_than("2026-08-14", 4.10, "DGS10") is None
+        # 더 최신 날짜가 없으면 None — FRED 를 그대로 쓴다.
+        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None: {
+            "2026-08-14": {"DGS10": 4.68}})
+        assert ty.fresher_than("2026-08-14", 4.68, "DGS10") is None
+
+    def test_treasury_client_drops_out_of_range_values(self):
+        """상식 범위(0~20%) 밖은 파싱 사고다 — 값으로 받지 않는다."""
+        from bot.treasury_yield_client import _num
+        assert _num("4.68") == 4.68
+        assert _num("") is None and _num("N/A") is None
+        assert _num("-1") is None and _num("120") is None
+
+    def test_treasury_is_not_wired_into_the_screen_yet(self):
+        """⚠️ 검증 안 된 파서를 금리 자리에 붙이지 않는다 — 프로브로 확인
+        후에 배선한다(실수 #12). 이 테스트는 배선하는 순간 함께 지운다."""
+        import pathlib
+        for f in ("bot/market_overview.py", "bot/dashboard.py",
+                  "bot/macro_snapshot.py"):
+            src = pathlib.Path(f).read_text(encoding="utf-8")
+            assert "treasury_yield_client" not in src, \
+                f"{f} 가 미검증 소스를 이미 쓰고 있다"
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
@@ -22112,6 +22156,7 @@ class TestFlowTrendDiagnosis20260818:
         # 키를 읽는 클라이언트가 raw os.environ 으로 되돌아가면 안 된다.
         bad = []
         for f in ("fred_client", "bok_ecos_client", "finnhub_client",
+                  "market_overview",
                   "earnings_calendar", "av_sentiment_client", "edinet_client",
                   "fsc_client", "buildperm_client", "cheongyak_client",
                   "dart_feed", "pykrx_client", "seibro_client"):
