@@ -17,6 +17,8 @@
           (차트에서 특정 분기 막대만 비어 있을 때 원인 특정용).
     cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --doc 20260319000633
         → `본문없음 0자` 일 때 원문 수신을 해부한다(HTTP 상태·바이트수·zip 엔트리).
+    cd ~/stock && .venv/bin/python -m bot.scripts.backlog_misses --list 012450.KS 2026 11013
+        → 그 분기 전후의 정기공시 원시 목록을 넓은 창으로 찍는다(창 밖 정정 확인).
 """
 from __future__ import annotations
 
@@ -142,11 +144,55 @@ def doc_probe(rcept_no: str) -> int:
     return 0
 
 
+def list_probe(ticker: str, year: str, reprt: str) -> int:
+    """해당 분기 전후의 **정기공시 원시 목록**을 넓은 창으로 그대로 찍는다.
+
+    `후보 … ✗문서없음` 인데 대안이 없을 때, 창 밖에 다른 접수건이 있는지를
+    눈으로 확인하는 용도다. 추측 대신 목록을 본다(실수 #12)."""
+    import datetime as dt
+
+    import requests
+    from bot.dart_client import _DART_BASE, get_dart
+    dart = get_dart()
+    if not dart:
+        print("❌ DART_API_KEY 없음")
+        return 1
+    corp = dart.stock_code_to_corp_code(ticker)
+    if not corp:
+        print(f"❌ {ticker} corp_code 미상")
+        return 1
+    kw, bgn, end = dart._periodic_report_window(int(year), reprt)
+    wide_b = (dt.datetime.strptime(bgn, "%Y%m%d") - dt.timedelta(days=60)
+              ).strftime("%Y%m%d")
+    wide_e = (dt.datetime.strptime(end, "%Y%m%d") + dt.timedelta(days=300)
+              ).strftime("%Y%m%d")
+    print(f"■ {ticker} {year}/{reprt}  키워드='{kw}'")
+    print(f"  기본 창 {bgn}~{end} · 확대 창 {wide_b}~{wide_e}")
+    print("=" * 74)
+    r = requests.get(f"{_DART_BASE}/list.json",
+                     params={"crtfc_key": dart.api_key, "corp_code": corp,
+                             "bgn_de": wide_b, "end_de": wide_e,
+                             "pblntf_ty": "A", "page_count": 100}, timeout=30)
+    pay = r.json()
+    if pay.get("status") != "000":
+        print(f"  ❌ list.json status={pay.get('status')} {pay.get('message')}")
+        return 0
+    rows = pay.get("list") or []
+    print(f"  정기공시 {len(rows)}건 (★=키워드 매치, ●=기본 창 안)")
+    for x in sorted(rows, key=lambda z: z.get("rcept_dt") or ""):
+        nm, no, dtv = (x.get("report_nm") or ""), x.get("rcept_no"), x.get("rcept_dt")
+        mark = ("★" if kw in nm else " ") + ("●" if bgn <= (dtv or "") <= end else " ")
+        print(f"    {mark} {no} {dtv}  {nm}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) > 2 and argv[1] == "--ticker":
         return per_quarter(argv[2])
     if len(argv) > 2 and argv[1] == "--doc":
         return doc_probe(argv[2])
+    if len(argv) > 4 and argv[1] == "--list":
+        return list_probe(argv[2], argv[3], argv[4])
     return summarize()
 
 

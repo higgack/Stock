@@ -21694,6 +21694,43 @@ class TestPeriodicReportCandidates20260817:
         assert [r["rcept_no"] for r in got] == ["A2", "A1"], got
         assert "감사보고서" not in str(got), "키워드 필터가 풀렸다"
 
+    def test_late_corrections_outside_the_window_are_found(self, monkeypatch):
+        """1분기 창은 4/01~5/31 이라 **그 뒤에 낸 정정이 안 보인다.** 정정이
+        나오면 원본 문서가 내려가는 경우가 있어(한화에어로 2026 1분기 실측:
+        원본 20260513000860 이 status=014) 그 분기가 영영 빈다.
+
+        ⚠️ 창을 넓히면 같은 키워드의 **다음 분기**가 딸려온다 — 1분기와 3분기가
+        둘 다 '분기보고서'다. 기간 접미사 `(YYYY.MM)` 로 정확히 갈라야 한다."""
+        from bot.dart_client import DartClient
+        calls = []
+
+        class _R:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def json(self):
+                return {"status": "000", "list": self._rows}
+
+        def _get(url, params=None, timeout=None):
+            calls.append((params["bgn_de"], params["end_de"]))
+            if len(calls) == 1:              # 기본 창 — 원본만
+                return _R([{"rcept_no": "ORIG", "rcept_dt": "20260513",
+                            "report_nm": "분기보고서 (2026.03)"}])
+            return _R([                      # 확대 창 — 늦은 정정 + 다음 분기
+                {"rcept_no": "FIX", "rcept_dt": "20260702",
+                 "report_nm": "[기재정정]분기보고서 (2026.03)"},
+                {"rcept_no": "Q3", "rcept_dt": "20261113",
+                 "report_nm": "분기보고서 (2026.09)"},
+            ])
+        d = DartClient("k")
+        monkeypatch.setattr(d, "stock_code_to_corp_code", lambda t: "00000001")
+        monkeypatch.setattr("bot.dart_client.requests.get", _get)
+        got = [r["rcept_no"] for r in
+               d.find_periodic_reports("012450.KS", 2026, "11013")]
+        assert got == ["ORIG", "FIX"], got
+        assert "Q3" not in got, "다음 분기(2026.09)가 딸려왔다"
+        assert calls[1][0] == "20260531", calls   # 2차는 기본 창 끝부터
+
     def test_backlog_falls_through_to_the_next_candidate(self):
         """가장 최근 접수건이 문서 없음(빈 본문)이면 다음 후보를 써야 한다."""
         from bot import dart_backlog as bl
