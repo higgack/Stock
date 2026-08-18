@@ -535,7 +535,12 @@ _CN_ENGLISH_ALIAS = {
 # never compares a company to itself.
 _KR_INDUSTRY_PEERS = {
     "Semiconductors": [
-        "000660.KS", "005930.KS", "TSM", "INTC", "AMD", "NVDA",
+        # ⚠️ TSM(ADR) 이 아니라 홈상장 2330.TW 를 쓴다. yfinance 는 ADR 에
+        # 가격은 USD, 재무는 TWD 로 줘서 자산·매출 기반 배수가 통째로
+        # 틀린다 — 실측(2026-08-18): TSM PBR **89.88** vs 2330.TW **9.575**
+        # (같은 회사, 같은 시점). 화면의 ⚠ 는 오차가 있다고만 알릴 뿐
+        # 9배 틀린 숫자를 그대로 보여준다(사용자 판단: 홈상장으로 교체).
+        "000660.KS", "005930.KS", "2330.TW", "INTC", "AMD", "NVDA",
     ],
     "Semiconductor Equipment & Materials": [
         "240810.KS", "042700.KS", "036930.KQ", "095610.KQ",

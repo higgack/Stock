@@ -21841,6 +21841,27 @@ class TestPeerCompsEmptyTable20260818:
             "렌더가 자체 정규화를 다시 정의하고 있다"
         assert "def _norm_cur(c)" not in blk, "복제된 정규화가 남아 있다"
 
+    def test_kr_semi_peers_use_the_home_listing_not_the_adr(self):
+        """ADR 은 가격 USD · 재무 TWD 라 자산·매출 기반 배수가 통째로 틀린다
+        — 실측(2026-08-18): TSM PBR **89.88** vs 2330.TW **9.575**(같은 회사,
+        같은 시점). 화면의 ⚠ 는 오차가 있다고만 알릴 뿐 9배 틀린 숫자를
+        그대로 보여준다(사용자 판단: 홈상장으로 교체)."""
+        from bot.market import _KR_INDUSTRY_PEERS
+        semi = _KR_INDUSTRY_PEERS["Semiconductors"]
+        assert "2330.TW" in semi, "홈상장이 빠졌다"
+        assert "TSM" not in semi, "ADR 이 남아 있다 — PBR 이 9배 틀린다"
+
+    def test_home_candidate_search_does_not_confuse_similar_names(self):
+        """감사 도구가 제시하는 교체 후보는 **레포 별칭표**에서 온다. 앞
+        몇 글자만 보면 TAIWANSEMI 와 TAIWANMOBILE 이 같은 회사로 붙어,
+        엉뚱한 종목으로 교체하라고 권하게 된다(실측)."""
+        from bot.scripts.peer_currency_audit import _home_candidates
+        assert _home_candidates("TAIWAN SEMICONDUCTOR MANU") == ["2330.TW"]
+        assert _home_candidates("TOYOTA MOTOR CORP") == ["7203.T"]
+        # 홈상장이 미지원 시장이면 후보가 없어야 한다 — 억지 매칭 금지.
+        assert _home_candidates("ASML Holding N.V.") == []
+        assert _home_candidates("Intel Corporation") == []
+
     def test_the_wiring_is_actually_called(self, monkeypatch):
         """헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12)."""
         import inspect
