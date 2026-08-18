@@ -21,47 +21,20 @@ _TEXT = "#e8ecf6"; _MUTED = "#93a0bd"; _ACCENT = "#4da3ff"; _ACCENTW = "#22d3ee"
 _POS = "#34d399"; _GOLD = "#fbbf24"; _PUR = "#a78bfa"
 
 
-# NanumGothic 디스크 경로 (matplotlib 폰트캐시가 stale 해도 직접 등록)
-_NANUM_PATHS = (
-    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-    "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
-    "/usr/share/fonts/opentype/nanum/NanumGothic.ttf",
-)
+# ⚠️ 한글 폰트 판정은 `bot/korean_font` 단일 헬퍼로 (2026-08-18).
+# 옛 구현은 Nanum 이름·경로 3개만 봐서, Noto CJK 처럼 한글이 완벽히 되는
+# 폰트가 깔린 서버에서도 "미설치"로 단정하고 이미지를 포기했다(실수 #24
+# 목록형 판정). 지금은 글리프 실측 — 이름이 무엇이든 한글이 그려지면 쓴다.
 
 
 def _font_ready() -> bool:
-    try:
-        import matplotlib.font_manager as fm
-        if any("Nanum" in f.name for f in fm.fontManager.ttflist):
-            return True
-    except Exception:
-        pass
-    return any(os.path.exists(p) for p in _NANUM_PATHS)
+    from bot.korean_font import find_font
+    return bool(find_font())
 
 
 def _setup_font() -> bool:
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.font_manager as fm
-        from matplotlib import rcParams
-        names = {f.name for f in fm.fontManager.ttflist}
-        for cand in ("NanumGothic", "NanumBarunGothic", "NanumSquare"):
-            if cand in names:
-                rcParams["font.family"] = cand
-                rcParams["axes.unicode_minus"] = False
-                return True
-        # 캐시에 없으면 디스크에서 직접 등록 (fonts-nanum 설치 후 matplotlib
-        # 캐시 미갱신 케이스 — realestate 2026-05-31 surfaced)
-        for p in _NANUM_PATHS:
-            if os.path.exists(p):
-                fm.fontManager.addfont(p)
-                rcParams["font.family"] = fm.FontProperties(fname=p).get_name()
-                rcParams["axes.unicode_minus"] = False
-                return True
-    except Exception as exc:
-        log.warning("re-infographic: font setup failed: %s", exc)
-    return False
+    from bot.korean_font import setup_matplotlib
+    return setup_matplotlib()
 
 
 def _eok(manwon: float) -> str:

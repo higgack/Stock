@@ -304,6 +304,13 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
         ("* TTM PER = 후행 12개월 · Forward PER = 예상실적 기준 "
          "· PSR = 시총 ÷ 최근 4분기 매출 합", _MUTED),
     ]
+    # 원천에 없는 분기는 **채우지 않고 밝힌다**(사용자 2026-08-18 LPK.DE —
+    # 25.3Q 가 통째로 빠졌는데 화면엔 아무 표시가 없었다).
+    from bot.quarterly_series import missing_quarters
+    _miss = missing_quarters(qs)
+    if _miss:
+        notes.append((f"! {', '.join(_miss)} 는 원천에 없어 표에서 빠졌습니다 "
+                      f"— 임의로 채우지 않습니다", _NEG))
     bad_keys = payload.get("anomaly_keys") or []
     if bad_keys:
         lbls = payload.get("anomaly_labels") or []

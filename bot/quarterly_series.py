@@ -104,6 +104,31 @@ def series_from_yfinance(snap: dict | None, n: int = 5) -> list[dict] | None:
     return out
 
 
+def missing_quarters(qs: list | None) -> list[str]:
+    """표에 **빠진 달력 분기** 라벨 — 원천에 없는 것이지 우리가 지운 게 아니다.
+
+    ⚠️ 왜 필요한가(사용자 2026-08-18 LPK.DE): 표가 25.1Q·25.2Q·**25.4Q**·
+    26.1Q·26.2Q 로 이어져 25.3Q 가 통째로 없는데 화면엔 아무 표시가 없었다 —
+    원천 결측인지 우리가 흘린 건지 볼 방법이 없다. 채우지 않고 **말한다**.
+    """
+    idx: list[tuple[int, str]] = []
+    for q in (qs or []):
+        per = str(q.get("period") or "")
+        if len(per) < 7 or per[4] != "-":
+            return []                     # 형식을 모르면 판정하지 않는다
+        try:
+            y, m = int(per[:4]), int(per[5:7])
+        except ValueError:
+            return []
+        idx.append((y * 4 + (m - 1) // 3, str(q.get("label") or "")))
+    out: list[str] = []
+    for (a, _la), (b, _lb) in zip(idx, idx[1:]):
+        for k in range(a + 1, b):
+            y, qn = divmod(k, 4)
+            out.append(f"{y % 100:02d}.{qn + 1}Q")
+    return out
+
+
 def fmt_money(v, currency: str = "KRW") -> str:
     """통화 인지 금액 표기(조/억 · 兆/億 · T/B/M). None → '—'.
 
