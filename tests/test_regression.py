@@ -22299,6 +22299,52 @@ class TestFlowTrendDiagnosis20260818:
         _treasury_status(fake)
         assert "재무부 미적용" not in capsys.readouterr().out
 
+    def test_supplementary_consensus_names_its_source(self):
+        """⚠️ POSCO홀딩스에서 ₩461,888(18명)과 ₩557,500(6명)이 나란히 떠
+        사용자가 "이 둘 차이가 뭐냐"고 물었다(2026-08-18) — 화면이 출처를
+        안 찍었기 때문이다. `sc_src` 는 계산만 되고 안 쓰이던 죽은 변수였다."""
+        import pathlib
+        src = pathlib.Path("bot/dashboard.py").read_text(encoding="utf-8")
+        i = src.index("supp_consensus_html = f\"\"\"")
+        blk = src[i:i + 1400]
+        assert "sc_src_str" in blk, "보조 컨센서스가 출처를 표기하지 않는다"
+        assert "yfinance 집계" in blk and "현지 원천" in blk, \
+            "두 컨센서스가 왜 다른지 설명이 없다"
+        # 죽은 변수로 되돌아가지 않게 — 계산과 사용이 같이 있어야 한다.
+        assert 'sc_src = esc(supp_con.get("source", ""))' in src
+
+    def test_fred_cache_is_invalidated_when_collection_logic_changes(
+            self, tmp_path, monkeypatch):
+        """⚠️ 코드를 배포해도 **디스크 캐시는 안 바뀐다**(실수 #18 캐시판).
+        #909 재무부 보강 후에도 VM 은 39분 된 배포 전 사본을 서빙했다.
+        버전을 찍고 대조해 수집 로직이 바뀌면 캐시가 즉시 무효가 되게 한다."""
+        import json
+        from datetime import date
+        from bot import market_overview as mo, env_keys
+        monkeypatch.setattr(env_keys, "env_key", lambda n: "K")
+        monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path)
+        d = tmp_path / "fred"
+        d.mkdir(parents=True)
+        old = {"value": 4.68, "time": "2026-08-14", "prev_value": 4.66,
+               "change": 0.02}                      # cv 없음 = 옛 버전
+        (d / f"UNRATE_{date.today().isoformat()}.json").write_text(
+            json.dumps(old))
+
+        class _R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"observations": [{"date": "2026-08-17", "value": "4.9"}]}
+
+        monkeypatch.setattr(mo.requests, "get", lambda *a, **k: _R())
+        got = mo._fred_fetch_series("UNRATE", 30)
+        assert got["time"] == "2026-08-17", "옛 버전 캐시를 그대로 서빙했다"
+        assert got["cv"] == mo._FRED_CACHE_VER
+        # 같은 버전 캐시는 정상적으로 재사용한다(무조건 재수집이 아니다).
+        again = mo._fred_fetch_series("UNRATE", 30)
+        assert again["time"] == "2026-08-17"
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를

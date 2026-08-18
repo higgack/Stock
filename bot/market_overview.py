@@ -533,6 +533,13 @@ _FRED_DAILY_SIDS = {"DGS2", "DGS10", "DGS30", "BAMLH0A0HYM2", "BAMLC0A0CM"}
 _TREASURY_SIDS = {"DGS2", "DGS10", "DGS30"}
 _FRED_TTL_DAILY_H = 1.0
 _FRED_TTL_OTHER_H = 24.0
+# ⚠️ **캐시는 코드 배포로 안 바뀐다**(실수 #18 의 캐시판). #909 로 국채금리를
+# 재무부 원천으로 당겼는데, VM 감사(2026-08-18)에서 여전히 08-14 가 나왔다 —
+# 39분 전 배포 전 코드가 쓴 사본이 TTL 안이라 그대로 서빙됐다. TTL 이 지나면
+# 자연 해소되지만 24h 캐시였다면 하루를 묵었을 것이다. 결과에 버전을 찍고
+# 읽을 때 대조해, **수집 로직이 바뀌면 캐시가 즉시 무효**가 되게 한다.
+#   v1 = 재무부 보강 이전 · v2 = DGS* 재무부 보강 포함
+_FRED_CACHE_VER = 2
 
 
 def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
@@ -551,7 +558,9 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _ttl:
-                return json.loads(cache_file.read_text())
+                _c = json.loads(cache_file.read_text())
+                if _c.get("cv") == _FRED_CACHE_VER:
+                    return _c
         except Exception:
             pass
 
@@ -585,7 +594,8 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     prev_val = clean[1][1] if len(clean) >= 2 else None
     change = (latest_val - prev_val) if prev_val is not None else None
 
-    result = {"value": latest_val, "time": latest_date, "prev_value": prev_val, "change": change}
+    result = {"value": latest_val, "time": latest_date, "prev_value": prev_val,
+              "change": change, "cv": _FRED_CACHE_VER}
 
     # ⚠️ **미 재무부 원천으로 하루 당긴다.** FRED `DGS*` 는 D일 값을 D+1 에
     # 올린다 — 화요일에 최신이 금요일이었다(2026-08-18 실측). 재무부는 같은
@@ -601,7 +611,8 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
             if nf:
                 result = {"value": nf[1], "time": nf[0],
                           "prev_value": latest_val,
-                          "change": nf[1] - latest_val, "src": "UST"}
+                          "change": nf[1] - latest_val, "src": "UST",
+                          "cv": _FRED_CACHE_VER}
         except Exception as exc:
             log.info("treasury: %s 보강 건너뜀: %s", series_id, exc)
     try:
@@ -625,7 +636,9 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < 24:
-                return json.loads(cache_file.read_text())
+                _c = json.loads(cache_file.read_text())
+                if _c.get("cv") == _FRED_CACHE_VER:
+                    return _c
         except Exception:
             pass
 
@@ -692,7 +705,8 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
     change = (yoy - prev_change) if yoy is not None and prev_change is not None else None
     result = {"value": round(yoy, 2) if yoy is not None else None,
               "time": latest_date, "prev_value": round(prev_change, 2) if prev_change else None,
-              "change": round(change, 2) if change is not None else None}
+              "change": round(change, 2) if change is not None else None,
+              "cv": _FRED_CACHE_VER}
     try:
         cache_file.write_text(json.dumps(result))
     except Exception:
