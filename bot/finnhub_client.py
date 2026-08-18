@@ -24,6 +24,8 @@ from typing import Optional
 
 import requests
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.finnhub")
 
 _API = "https://finnhub.io/api/v1"
@@ -33,7 +35,7 @@ _TIMEOUT = 15
 
 
 def _api_key() -> Optional[str]:
-    return os.environ.get("FINNHUB_API_KEY")
+    return _env_key("FINNHUB_API_KEY") or None
 
 
 def _cache_get(key: str) -> Optional[dict]:

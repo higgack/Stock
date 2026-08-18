@@ -30,6 +30,8 @@ from typing import Optional
 
 import requests
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.fred")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "fred"
@@ -101,7 +103,7 @@ _MARKETS = {
 def _fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     """Fetch latest observation from a FRED series. Returns dict with
     value / time / prev_value / change, or None on any failure."""
-    api_key = os.getenv("FRED_API_KEY", "").strip()
+    api_key = _env_key("FRED_API_KEY")
     if not api_key:
         log.warning("fred: FRED_API_KEY missing — %s unavailable", series_id)
         return None
@@ -178,7 +180,7 @@ def fetch_history(series_id: str, start: str = "2018-01-01",
     대시보드)용 — _fetch_series(최신값)와 달리 시계열 전량. 실패/키부재 → [].
     캐시 per series+today, 기본 5h — 보드 6시간 주기 재생성(사용자 2026-07-02)이
     매 사이클 신선한 값을 받게(12h 면 두 사이클이 같은 캐시)."""
-    api_key = os.getenv("FRED_API_KEY", "").strip()
+    api_key = _env_key("FRED_API_KEY")
     if not api_key:
         log.warning("fred: FRED_API_KEY missing — history %s unavailable", series_id)
         return []
@@ -230,7 +232,7 @@ def fetch_releases_catalog(ttl_hours: float = 24.0) -> list[dict]:
     숫자로 하드코딩하지 않고 이름 검색으로 찾기 위함(release_id 는 문서마다
     다르게 인용되어 오기 위험 — 경제캘린더(bot/econ_calendar.py)가 이 카탈로그
     에서 이름으로 조회). 키 부재/실패 → []."""
-    api_key = os.getenv("FRED_API_KEY", "").strip()
+    api_key = _env_key("FRED_API_KEY")
     if not api_key:
         log.warning("fred: FRED_API_KEY missing — releases catalog unavailable")
         return []
@@ -279,7 +281,7 @@ def fetch_release_dates(release_id: int, start: str, end: str,
     """release_id 의 예정/과거 발표일 목록(YYYY-MM-DD, 오름차순) — [start,end]
     구간. FRED 는 발표 몇 달~1년 전부터 예정일을 공개하므로 미래 구간도 조회
     가능(예: FOMC/CPI/고용동향). 키 부재/실패 → []."""
-    api_key = os.getenv("FRED_API_KEY", "").strip()
+    api_key = _env_key("FRED_API_KEY")
     if not api_key:
         log.warning("fred: FRED_API_KEY missing — release %s dates unavailable", release_id)
         return []

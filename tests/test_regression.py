@@ -22094,6 +22094,33 @@ class TestFlowTrendDiagnosis20260818:
         assert "-1.05" in pane, f"60일 칸이 숫자로 안 찍혔다:\n{pane[-1500:]}"
         assert "기간 칸이 빈 이유" not in pane, "값이 있는데 경고가 떴다"
 
+    def test_every_api_key_reader_uses_the_shared_env_helper(self):
+        """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
+        빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
+        빠뜨려 금리 지연 원인을 못 가렸다(2026-08-18). 헬퍼 하나로 통일.
+
+        ⚠️ 헬퍼는 `dotenv_values` 로 **그 키만** 읽어야 한다 — `load_dotenv`
+        는 봇 토큰·대시보드 비번까지 프로세스 환경에 주입한다."""
+        import re
+        from pathlib import Path
+        helper = Path("bot/env_keys.py").read_text(encoding="utf-8")
+        # 모듈 docstring 은 `load_dotenv` 를 **설명**하므로 본문만 본다.
+        body = helper.split('"""', 2)[-1]
+        assert "dotenv_values" in body, "필요한 키만 읽는 방식이 아니다"
+        assert "load_dotenv" not in body, ".env 전체를 주입한다"
+
+        # 키를 읽는 클라이언트가 raw os.environ 으로 되돌아가면 안 된다.
+        bad = []
+        for f in ("fred_client", "bok_ecos_client", "finnhub_client",
+                  "earnings_calendar", "av_sentiment_client", "edinet_client",
+                  "fsc_client", "buildperm_client", "cheongyak_client",
+                  "dart_feed", "pykrx_client", "seibro_client"):
+            src = Path(f"bot/{f}.py").read_text(encoding="utf-8")
+            if re.search(r'os\.(environ\.get|getenv)\(\s*"[A-Z_]*'
+                         r'(API_KEY|KRX_ID|KRX_PW)"', src):
+                bad.append(f)
+        assert not bad, f"공용 헬퍼를 안 쓰는 키 읽기: {bad}"
+
     def test_krx_credentials_are_read_from_the_env_file(self, tmp_path,
                                                         monkeypatch):
         """⚠️ `load_dotenv()` 를 부르는 건 봇 엔트리포인트뿐이다 — 진단·크론
@@ -22110,7 +22137,8 @@ class TestFlowTrendDiagnosis20260818:
         monkeypatch.delenv("KRX_ID", raising=False)
         monkeypatch.delenv("KRX_PW", raising=False)
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-        monkeypatch.setattr(pk, "_KRX_ENV_FILE_TRIED", False)
+        import bot.env_keys as _ek
+        monkeypatch.setattr(_ek, "_TRIED", set())
         monkeypatch.setattr("dotenv.find_dotenv", lambda **kw: str(env))
         importlib.import_module("dotenv")
         assert pk.krx_login_ready() is True, ".env 의 키를 못 읽었다"

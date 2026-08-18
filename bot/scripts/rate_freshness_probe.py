@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 _SIDS = ("DGS2", "DGS10", "DGS30")
 
 
@@ -40,8 +40,13 @@ def main(argv: list[str]) -> int:
           f"{_dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))):%Y-%m-%d %H:%M} KST")
 
     from bot import fred_client as fc
+    from bot.env_keys import env_key, env_source
+    # ⚠️ v1 은 `os.environ` 만 봐서 `.env` 에 있는 키를 '미설정'이라 오보했다
+    # (실수기록 #23 을 적어놓고 바로 다음 프로브에서 반복). 공용 헬퍼가
+    # `.env` 까지 보고, 출처도 함께 찍는다 — 값은 절대 출력하지 않는다.
+    _src = env_source("FRED_API_KEY")
     print(f"  [키] FRED_API_KEY="
-          f"{'설정' if os.environ.get('FRED_API_KEY') else '미설정'}"
+          f"{'설정' if env_key('FRED_API_KEY') else '미설정'} · 출처={_src}"
           f" · 캐시 TTL {fc._CACHE_TTL_HOURS}h")
 
     for sid in _SIDS:

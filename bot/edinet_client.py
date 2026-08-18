@@ -46,6 +46,8 @@ from typing import Optional
 
 import requests
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.edinet")
 
 _BASE = "https://api.edinet-fsa.go.jp/api/v2"
@@ -91,7 +93,7 @@ class EdinetClient:
     process-wide instance via `get_edinet()` to amortize per-day cache hits."""
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = (api_key or os.getenv("EDINET_API_KEY") or "").strip()
+        self.api_key = (api_key or _env_key("EDINET_API_KEY")).strip()
 
     # ---- low-level day fetch -------------------------------------------------
 
