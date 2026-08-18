@@ -1268,6 +1268,13 @@ def _collect_financials(t, snap: dict) -> None:
                 fins[label]["quarterly"] = q_rows
     if fins:
         snap["financials"] = fins
+        # ⚠️ 수집시각을 남긴다. 이 표는 스냅샷에 구워진 뒤 게으르게 갱신되는데
+        # 라벨이 없어서 **몇 분기 묵은 표를 최신으로 오인**했다(사용자
+        # 2026-08-18 삼양식품: 2026년 1·2분기가 나왔는데 화면은 2025-12 까지).
+        # CLAUDE.md 실수기록 10-b: 데이터 위젯은 적용시각·소스 라벨 의무.
+        import datetime as _dt
+        snap["financials_asof"] = _dt.datetime.now(
+            _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
 
 
 # 동종비교 수집기의 **스키마 버전**. 수집 로직이 달라질 때마다 올린다.

@@ -4090,7 +4090,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v8 (2026-08-18) 동종비교 주체행에 파생 PER·PBR·PSR 재사용 + 스키마 버전 게이트
 #   v9 (2026-08-18) 동종비교 KR 피어 PER·PBR 을 DART 로 파생 + 기준 툴팁
 #   v10 (2026-08-18) 자체계산 기준 툴팁을 yfinance 파생분에도 (한 행에 기준 혼재)
-_RENDER_VER = 10
+#   v11 (2026-08-18) 재무제표 수집시각·표의 최신분기 라벨 + 주체행 PER 정본 통일
+_RENDER_VER = 11
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -4531,8 +4532,25 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
     # ⑤⑥ 재무제표 + 동종비교 (yfinance, 독립 키 si["financials"]/si["peer_comps"])
     # — 둘 다 느린 yfinance 호출이라 병렬 실행해 종목분석 지연 단축(사용자
     # 2026-06-10 '종목지연 다시봐'). 키가 달라 race 없음, 각 try/except 로 격리.
+    # 재무제표는 **분기마다 낡는다** — `있으면 skip` 만 하면 아카이브에 구워진
+    # 표가 영원히 그대로다(peer_comps 와 같은 실패모드, 실수기록 #18). 다만
+    # 여기선 스키마가 아니라 **데이터 자체가** 낡으므로 수집시각으로 판정한다.
+    _FIN_MAX_AGE_DAYS = 7
+
+    def _fin_stale() -> bool:
+        _asof = si.get("financials_asof")
+        if not _asof:
+            return True                      # 옛 아카이브 = 시각 미기록
+        try:
+            import datetime as _dt
+            _kst = _dt.timezone(_dt.timedelta(hours=9))
+            _t = _dt.datetime.strptime(_asof, "%Y-%m-%d %H:%M").replace(tzinfo=_kst)
+            return (_dt.datetime.now(_kst) - _t).days >= _FIN_MAX_AGE_DAYS
+        except Exception:
+            return True                      # 형식이 깨졌으면 다시 받는다
+
     def _e_financials():
-        if not si.get("financials"):
+        if not si.get("financials") or _fin_stale():
             try:
                 import yfinance as yf
                 from bot.stock_snapshot import _collect_financials
@@ -7352,6 +7370,13 @@ def _render_stock_info_html(rec: dict) -> str:
                      "Financing Cash Flow", "End Cash Position",
                      "Repurchase Of Capital Stock", "Cash Dividends Paid"]
 
+        # ⚠️ **표에 담긴 최신 분기**를 같이 밝힌다. 수집시각이 오늘이어도
+        # 소스가 안 주면 표는 몇 분기 묵은 채다 — 둘은 다른 사실이고,
+        # 사용자가 화면만 보고 구분할 수 있어야 한다(2026-08-18 삼양식품).
+        _fin_q = (fins.get("income_statement", {}) or {}).get("quarterly") or []
+        _fin_max = max((str(r.get("period", "")) for r in _fin_q), default="")
+        _fin_latest = (f" · 표의 최신 분기 {esc(_fin_max[:10])}" if _fin_max else "")
+
         is_html = _fin_table(fins.get("income_statement", {}), is_items, "손익계산서")
         bs_html = _fin_table(fins.get("balance_sheet", {}), bs_items, "재무상태표")
         cf_html = _fin_table(fins.get("cash_flow", {}), cf_items, "현금흐름표")
@@ -7456,7 +7481,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {is_html}
   {bs_html}
   {cf_html}
-  {_src_foot}출처: yfinance</div>
+  {_src_foot}출처: yfinance · 수집 {esc(str(si.get("financials_asof") or "시각 미기록"))} (KST){_fin_latest}</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -7490,14 +7515,30 @@ def _render_stock_info_html(rec: dict) -> str:
             # 만드는 게 아니라 화면에 이미 떠 있는 값 그대로 옮긴다.
             _extra_basis: dict = {}
             if is_subj:
+                # ⚠️ 주체 행에서 **수집기가 자체계산한 값은 버리고** 페이지의
+                # 정본(si)을 쓴다. 사용자 2026-08-18 삼양식품: 동종비교가
+                # PER 23.1＊, 밸류에이션 탭이 12.30x — 같은 페이지 두 탭이
+                # 다른 PER 을 보여줬다. 수집기 파생은 yfinance `.info` 한 칸에
+                # 기대지만 si 는 DART 분기 TTM 까지 쓰므로 정본은 si 다.
+                # 소스가 준 값은 그대로 둔다(si 도 같은 소스값을 갖는다).
+                _pc_calc = set(pc.get("derived") or [])
                 _fill = {k: si.get(k) for k in _mult_keys
-                         if pc.get(k) is None and si.get(k) is not None}
+                         if si.get(k) is not None
+                         and (pc.get(k) is None or _dmark.get(k) in _pc_calc)}
                 if _fill:
                     pc = {**pc, **_fill}
                     _sb = si.get("_derived_basis") or {}
                     _extra_basis = {_dmark[k]: _sb.get(k, "자체계산")
                                     for k in _fill
                                     if k in _si_derived and k in _dmark}
+                    # ⚠️ 덮어쓴 칸이 si 의 **소스값**이면 ＊(자체계산)를 떼야
+                    # 한다. 안 그러면 소스가 준 숫자에 자체계산 표시가 붙어
+                    # 출처를 거꾸로 알리게 된다.
+                    _pc_over = {_dmark[k] for k in _fill
+                                if k in _dmark and k not in _si_derived}
+                    if _pc_over:
+                        pc = {**pc, "derived": sorted(set(pc.get("derived") or [])
+                                                      - _pc_over)}
             style = ' style="background:rgba(66,165,245,0.12);font-weight:600"' if is_subj else ""
             name = esc(pc.get("name", "?"))
             ptk = esc(pc.get("ticker", ""))
