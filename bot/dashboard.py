@@ -15286,10 +15286,13 @@ _MARKET_CSS = (
     "color:var(--text);padding-bottom:6px;border-bottom:1px solid var(--border)}"
     ".mcard table{width:100%;border-collapse:collapse;font-size:13px}"
     ".mcard td{padding:3px 0}"
-    ".mcard td:first-child{color:var(--muted)}"
+    ".mcard td:first-child{color:var(--muted);padding-right:8px}"
     ".mcard td:nth-child(2){text-align:right;font-weight:600;"
     "font-variant-numeric:tabular-nums}"
-    ".mcard td:nth-child(3){text-align:right;width:90px;"
+    # ⚠️ 90px → 64px. 변동 칸이 실제 폭보다 넓게 잡혀 있어 라벨 칸을 눌렀고,
+    # 그래서 "US 미국채 10년 (2026-08-17)" 같은 행만 두 줄로 접혀 옆 카드와
+    # 높이가 어긋났다(사용자 2026-08-18). 가장 긴 변동값(▲9000.00)도 64px 안.
+    ".mcard td:nth-child(3){text-align:right;width:64px;"
     "font-variant-numeric:tabular-nums;font-size:12px}"
     ".up{color:var(--pos)}.dn{color:var(--neg)}"
     ".tbl-wrap{overflow-x:auto;margin-bottom:28px}"
@@ -15542,11 +15545,13 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         # 일별 series 는 월 잘림 없이 정확한 날짜(macro_snapshot 과 동일 규칙).
         _full = item.get("series_id") in _DAILY_SIDS
         _asof = _fmt_asof(d.get("time", ""), full=_full)
-        # 국채금리는 FRED 보다 하루 빠른 **미 재무부** 값으로 대체될 수
-        # 있다 — 어느 원천의 숫자인지 표기한다(규칙 #10b, 조용한 대체 금지).
-        if _asof and d.get("src") == "UST":
-            _asof += " · 미 재무부"
+        # 국채금리는 FRED 보다 하루 빠른 **미 재무부** 값으로 대체될 수 있다.
+        # 원천은 밝히되 **툴팁**으로 — 라벨 옆에 글자를 더 붙이면 300px 카드가
+        # 두 줄로 접혀 옆 카드와 행 높이가 어긋난다(사용자 2026-08-18).
+        _src_tip = ("미 재무부 일별 수익률곡선(당일 공표) — FRED 는 D+1"
+                    if d.get("src") == "UST" else "FRED")
         # Macro Snapshot 과 같은 규약으로 지연 표기(두 표면 동일).
+        # ⚠️ 경고는 툴팁에 숨기지 않는다 — 지연은 눈에 보여야 한다.
         try:
             from bot.macro_cadence import judge as _cad_judge
             _cj = _cad_judge(item.get("series_id") or "", d.get("time", ""))
@@ -15554,8 +15559,9 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
             _cj = None
         if _asof and _cj and _cj.get("stale"):
             _asof += " ⚠ 지연"
-        _asof_html = (f' <span style="font-size:9px;color:var(--muted)">({_html.escape(_asof)})</span>'
-                      if _asof else "")
+        _asof_html = (f' <span style="font-size:9px;color:var(--muted);'
+                      f'white-space:nowrap" title="출처: {_html.escape(_src_tip)}">'
+                      f'({_html.escape(_asof)})</span>' if _asof else "")
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
                     f'<td>{val_str}{_asof_html}</td>{chg_cell}</tr>')
     return ('<div class="mcard"><div class="mcard-title">'
@@ -16420,19 +16426,19 @@ def _render_macro_snapshot(macro: dict) -> str:
     <h2>Macro Snapshot</h2>
     <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 새 데이터 시 하단 알림(1분 체크·30분 자동반영)</span>
   </div>
-  <div class="macro-note" style="font-size:11px;color:var(--muted);margin:-2px 0 8px">
-    카드의 <b>기준 YYYY-MM</b> = 그 통계의 <b>최신 공표치</b>입니다. 발표지표는 공표 일정상
-    지연이 정상이라(통관 수출입·물가 ≈ 1개월 · 한은 국제수지 ≈ 2개월 · 미국 GDP는 분기),
-    8월 초에 6월(경상수지는 5월) 기준이 최신인 것이 맞습니다. 옆의 <b>(N개월 전)</b>은 오늘
-    기준 경과 개월입니다 — 다만 경과만으론 정상 지연인지 갱신이 막힌 건지 알 수 없어,
-    지표마다 <b>통상 공표 일정</b>(예: 외환보유액 익월 초 · 국제수지 익익월 초 · JOLTS 약 6주)을
-    등록해두고 그보다 뒤처진 카드에만 <b>⚠ 지연</b>을 붙입니다. 배지가 없으면 그 지표 기준으로는
-    최신입니다.
-    지수·원자재·환율 카드는 기준월 없이 <b>실시간 현재가</b>입니다.
-    국채금리·기준금리처럼 매일(영업일) 갱신되는 카드는 정확한 <b>기준 YYYY-MM-DD</b>
-    날짜를 보여주고, 주말 등 정상 지연폭 이내면 배지 없이 최신으로 취급합니다 —
-    실제로 여러 날 정체된 경우만 <b>(N일 전)</b>으로 경고합니다.
-  </div>""")
+  <details class="macro-note" style="font-size:11px;color:var(--muted);margin:-2px 0 8px">
+    <summary style="cursor:pointer;list-style:none">ℹ️ 기준 날짜·<b>⚠ 지연</b> 배지 읽는 법</summary>
+    <ul style="margin:6px 0 0 16px;padding:0;line-height:1.7">
+      <li><b>기준 YYYY-MM</b> = 그 통계의 최신 <b>공표치</b>. 발표지표는 공표 일정상
+          지연이 정상입니다(통관 수출입·물가 ≈ 1개월 · 국제수지 ≈ 2개월 · GDP 분기).</li>
+      <li><b>(N개월 전)</b> = 오늘 기준 경과. 경과만으론 정상인지 알 수 없어, 지표마다
+          <b>통상 공표 일정</b>을 등록해두고 그보다 뒤처진 카드에만 <b>⚠ 지연</b>을 붙입니다.
+          <b>배지가 없으면 그 지표 기준으로는 최신</b>입니다.</li>
+      <li>지수·원자재·환율은 기준월 없이 <b>실시간 현재가</b>. 국채·기준금리처럼 매일
+          갱신되는 카드는 <b>기준 YYYY-MM-DD</b> 를 보여주고, 여러 날 정체된 경우만
+          <b>(N일 전)</b>으로 경고합니다.</li>
+    </ul>
+  </details>""")
 
     # 국내/글로벌 지표 = 접기 토글(details, 기본 펼침·localStorage 상태 유지,
     # 사용자 2026-07-03 '토글같은걸 달아서 밑에 카드들을 접을수 있게').

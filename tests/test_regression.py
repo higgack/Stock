@@ -14331,7 +14331,10 @@ class TestNaverCommodityCharts:
         # 안내문은 **현재 동작**을 설명해야 한다(2026-08-18: 경과 개월만
         # 찍던 것 → 지표별 공표 규약 대비 ⚠ 지연 배지). 옛 문구를 단언하면
         # 동작이 좋아질 때 테스트가 그걸 막는다(실수 #19).
-        assert "최신 공표치" in db and "통상 공표 일정" in db, "공표 지연 안내 누락"
+        # ⚠️ 태그가 낀 문구를 substring 으로 단언하면 <b> 하나에 깨진다.
+        # 태그를 벗겨 **뜻**을 확인한다(실수 #19 문자열 단언 회피).
+        _txt = _re.sub(r"<[^>]+>", "", db)
+        assert "최신 공표치" in _txt and "통상 공표 일정" in _txt, "공표 지연 안내 누락"
 
     def test_daily_cadence_cards_show_current_not_monthly_lag(self):
         """미국 국채(2Y/10Y/장단기금리차/하이일드)·한국 국고채/기준금리처럼
@@ -14378,9 +14381,15 @@ class TestNaverCommodityCharts:
         })).split())
         assert "23일 전" in stale, "진짜 정체 시 일 단위 경고가 안 뜸"
         # 섹션 안내문도 새 동작을 설명해야 함(설명-동작 동기화)
+        # ⚠️ 안내문은 줄바꿈·태그가 낀 HTML 이라 **원문 substring** 을 단언하면
+        # 문구를 다듬는 순간 깨진다(2026-08-18 접기 전환에서 실제로 깨졌다).
+        # 공백을 접고 태그를 벗겨 **뜻**을 확인한다(실수 #19).
+        import re as _re2
         db2 = open("bot/dashboard.py", encoding="utf-8").read()
-        assert "매일(영업일) 갱신되는 카드" in db2 and "(N일 전)" in db2, \
+        _flat = _re2.sub(r"\s+", " ", _re2.sub(r"<[^>]+>", "", db2))
+        assert "매일 갱신되는 카드" in _flat or "매일(영업일) 갱신" in _flat, \
             "매크로 섹션 안내문에 일별 카드 설명 누락"
+        assert "(N일 전)" in _flat
 
     def test_macro_card_change_matches_its_own_period(self):
         """카드 헤드라인 변동은 **그 카드가 그리는 기간** 기준이어야 한다.
@@ -17405,8 +17414,11 @@ class TestFilterLazyAllAndMarketSections20260704:
         html = d._render_macro_snapshot({
             "ts": "x", "domestic": [{"label": "국내지표"}],
             "global": [{"label": "글로벌지표"}], "charts": {}})
+        # 카드 섹션 토글 2개(국내·글로벌). ⚠️ 페이지 전체의 `</details>` 를
+        # 세면 안내문 같은 다른 토글이 늘 때마다 깨진다(2026-08-18 실제 발생)
+        # — 세는 대상을 `csec` 로 한정한다.
         assert html.count('<details class="csec"') == 2
-        assert html.count("</details>") == 2
+        assert html.count("<details") == html.count("</details>"), "<details> 불균형"
         assert "<summary>" in html and "macro-sub" in html
 
 
@@ -22209,11 +22221,15 @@ class TestFlowTrendDiagnosis20260818:
                 "data": {"value": 4.72, "time": "2026-08-17",
                          "change": 0.04, "src": "UST"}}
         html = _render_fred_card([item], None)
-        assert "미 재무부" in html, "재무부 값인데 화면에 원천이 없다"
+        # ⚠️ 원천은 **툴팁**으로 — 값 옆에 글자를 더 붙이면 300px 카드가 두
+        # 줄로 접혀 옆 카드와 행 높이가 어긋난다(사용자 2026-08-18).
+        assert 'title="출처: 미 재무부' in html, "재무부 값인데 원천 표기가 없다"
+        assert ">(2026-08-17)<" in html, "본문에는 날짜만 남아야 한다"
         item["data"] = dict(item["data"])
         item["data"].pop("src")
-        assert "미 재무부" not in _render_fred_card([item], None), \
-            "FRED 값에까지 재무부 라벨이 붙었다"
+        h2 = _render_fred_card([item], None)
+        assert "미 재무부" not in h2, "FRED 값에까지 재무부 표기가 붙었다"
+        assert 'title="출처: FRED"' in h2
 
     def test_macro_cadence_flags_only_the_actually_late(self):
         """⚠️ 경과 개월만 찍으면 정상 지연(경상수지 2개월)과 갱신 중단
@@ -22485,6 +22501,40 @@ class TestFlowTrendDiagnosis20260818:
         assert "25.3Q" in notes and "채우지 않습니다" in notes
         assert "25.3Q" not in " ".join(
             t for t, _c in _footnotes({"currency": "EUR"}, cont))
+
+    def test_core_indicator_rows_stay_one_line(self):
+        """⚠️ 핵심 지표 카드는 300px 그리드다. 라벨이 길면 두 줄로 접혀 옆
+        카드와 행 높이가 어긋난다(사용자 2026-08-18 "(금리) 같은 글자 빼서
+        옆과 높이를 맞춰줘"). 라벨 길이와 줄바꿈 금지를 함께 강제한다."""
+        import pathlib
+        import re
+        from bot.market_overview import FRED_INDICATORS
+        for label, sid, _u, _lb in FRED_INDICATORS:
+            assert "(금리)" not in label, f"카드 제목과 중복: {label}"
+            assert len(label) <= 14, f"라벨이 너무 길다({len(label)}자): {label}"
+        # 변동 칸이 실제 폭보다 넓으면 라벨 칸을 눌러 그 행만 두 줄이 된다.
+        dd = pathlib.Path("bot/dashboard.py").read_text(encoding="utf-8")
+        i = dd.index('".mcard td:nth-child(3)')
+        w = int(re.search(r"width:(\d+)px", dd[i:i + 120]).group(1))
+        assert w <= 70, f"변동 칸이 너무 넓다({w}px) — 라벨이 접힌다"
+
+    def test_macro_note_is_collapsed_not_a_growing_paragraph(self):
+        """⚠️ 안내문에 설명을 계속 덧붙이다 문단이 길어져 카드보다 눈에 띄었다
+        (사용자 2026-08-18 "설명이 계속 rolling 되는데 적절하지 않다").
+        접기(details)로 넣고 줄 수를 묶는다 — 다음에 또 덧붙이면 테스트가 잡는다."""
+        import re
+        from bot.dashboard import _render_macro_snapshot
+        html = _render_macro_snapshot({
+            "domestic": [{"label": "X", "value": 1, "decimals": 0,
+                          "unit": "", "asof": "2026-06"}],
+            "global": [], "charts": {}, "ts": "08.19"})
+        m = re.search(r'<details class="macro-note".*?</details>', html, re.S)
+        assert m, "안내문이 접기(details)가 아니다"
+        blk = m.group(0)
+        assert "<summary" in blk and "읽는 법" in blk
+        assert blk.count("<li>") <= 4, "안내문 항목이 또 불어났다"
+        # 안내문이 항상 펼쳐진 채로 돌아가지 않게(open 속성 금지).
+        assert not re.search(r"<details[^>]*\bopen\b", blk)
 
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
