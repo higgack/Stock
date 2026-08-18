@@ -7073,7 +7073,11 @@ class TestDividendYieldSanity:
         # _collect_peer_multiples 함수 정의 내부에 두 필드 존재 확인
         idx = src.find("def _collect_peer_multiples")
         assert idx > 0
-        segment = src[idx:idx+2000]
+        # ⚠️ 고정 길이 창(옛 2000자)은 함수 안에 주석 몇 줄만 늘어도 필드를
+        # 놓쳐 **멀쩡한 코드에 빨간불**이 켜진다(2026-08-18 실측).
+        # 다음 최상위 def 까지 = 함수 전체를 본다.
+        nxt = src.find("\ndef ", idx + 1)
+        segment = src[idx:nxt if nxt > 0 else len(src)]
         assert "dividendRate" in segment
         assert "currentPrice" in segment
 
@@ -21662,6 +21666,94 @@ class TestDartCardWidth20260816:
         css = self._css()
         assert "align-items:stretch" in css
         assert "height:100%" in css and "box-sizing:border-box" in css
+
+
+class TestPeerCompsEmptyTable20260818:
+    """사용자 2026-08-18 "동종비교가 왜케 안나오는거야?" — 테크윙 표에서
+    6행 중 2행은 **전 컬럼 `—`** 에 회사명이 `240810.KS,0P00017YB3,330568`,
+    나머지도 PER·PBR 이 전부 비어 있었다. 원인 3가지를 각각 고친다."""
+
+    def test_wrong_board_suffix_falls_back_to_the_other_one(self):
+        """피어 목록의 `.KS`/`.KQ` 가 틀리면 그 행이 통째로 빈다 —
+        `240810.KS`(원익IPS)·`319660.KS`(피에스케이)는 실제로 코스닥이다.
+        ⚠️ 목록의 접미사를 손으로 고치면 또 틀린다(이번 세션에만 종목코드를
+        두 번 잘못 적었다). **조회 결과로 판정**해 반대쪽을 시도해야 한다."""
+        import inspect
+        from bot import stock_snapshot as ss
+        src = inspect.getsource(ss._collect_peer_multiples)
+        assert 'if not pi.get("marketCap") and pt.upper().endswith((".KS", ".KQ"))' \
+            in src, "접미사 폴백 미배선"
+        assert 'alt = pt[:-3] + ("KQ" if pt.upper().endswith(".KS") else "KS")' in src
+        assert 'pi, pt = alt_pi, alt' in src, "폴백 성공 시 티커도 교체해야 한다"
+        # ⚠️ 헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12).
+        assert "_derive_peer_multiples(entry, pi)" in src, "파생 미배선"
+        assert 'entry["derived"] = _derived' in src, "파생 표시가 안 실린다"
+        assert "_peer_name(pi, pt)" in src, "이름 정화 미배선"
+
+    @pytest.mark.parametrize("info,pt,want", [
+        # yfinance 가 조회에 실패하면 shortName 에 **식별자 나열**을 준다.
+        ({"shortName": "240810.KS,0P00017YB3,330568"}, "240810.KS", "240810.KS"),
+        ({"shortName": "319660.KS,0P0000AYPF,233950"}, "319660.KS", "319660.KS"),
+        ({}, "095610.KQ", "095610.KQ"),
+        # 정상 이름은 그대로 — 콤마가 있어도 회사명일 수 있다.
+        ({"shortName": "Techwing"}, "089030.KQ", "Techwing"),
+        ({"shortName": "Samsung Elec, Ltd"}, "005930.KS", "Samsung Elec, Ltd"),
+    ])
+    def test_identifier_blobs_are_not_shown_as_company_names(self, info, pt, want):
+        from bot.stock_snapshot import _peer_name
+        assert _peer_name(info, pt) == want
+
+    def test_missing_per_pbr_are_derived_with_the_same_definition(self):
+        """yfinance 는 KR 종목의 `trailingPE`·`priceToBook` 을 자주 안 준다
+        (2026-08-16 프로브로 확정). 그러면 PER·PBR 열이 통째로 비어 비교가
+        불가능하다 — 소스가 주는 재료로 같은 정의대로 계산한다."""
+        from bot.stock_snapshot import _derive_peer_multiples
+        e = {"market_cap": 1.83e12, "trailingPE": None, "priceToBook": None}
+        got = _derive_peer_multiples(e, {"netIncomeToCommon": 9.0e10,
+                                         "bookValue": 12000,
+                                         "sharesOutstanding": 6.0e7})
+        assert set(got) == {"PER", "PBR"}
+        assert abs(e["trailingPE"] - 1.83e12 / 9.0e10) < 1e-9
+        assert abs(e["priceToBook"] - 1.83e12 / (12000 * 6.0e7)) < 1e-9
+
+    def test_derivation_refuses_meaningless_or_out_of_range_inputs(self):
+        """⚠️ 적자 기업의 PER 은 배수로 의미가 없고, 분모 0 은 무한대가 된다.
+        범위 밖도 안 채운다 — 화면 가드가 어차피 `—!` 로 지우므로 자체계산으로
+        이상치를 만들 이유가 없다."""
+        from bot.stock_snapshot import _derive_peer_multiples
+        for pi in ({"netIncomeToCommon": -5e10},            # 적자
+                   {"netIncomeToCommon": 0},                # 0 분모
+                   {"netIncomeToCommon": 1e6},              # 시총/순이익 = 100만배
+                   {"bookValue": 0, "sharesOutstanding": 1e7}):
+            e = {"market_cap": 1e12, "trailingPE": None, "priceToBook": None}
+            assert _derive_peer_multiples(e, pi) == [], pi
+            assert e["trailingPE"] is None and e["priceToBook"] is None
+        # 소스가 준 값은 덮어쓰지 않는다.
+        e = {"market_cap": 1e12, "trailingPE": 15.0, "priceToBook": None}
+        _derive_peer_multiples(e, {"netIncomeToCommon": 1e11})
+        assert e["trailingPE"] == 15.0, "소스값을 자체계산으로 덮어썼다"
+
+    def test_derived_cells_are_marked_and_explained(self):
+        """자체계산분을 소스값처럼 보여주면 데이터 vs 환각 구분이 무너진다."""
+        from bot.dashboard import _render_stock_info_html
+        si = {"currency": "KRW", "peer_comps_asof": "2026-08-18 10:57",
+              "peer_comps": [{"ticker": "089030.KQ", "name": "Techwing",
+                              "currency": "KRW", "financial_currency": "KRW",
+                              "market_cap": 1.83e12, "trailingPE": 20.3,
+                              "priceToBook": 3.1, "derived": ["PER", "PBR"],
+                              "is_subject": True}]}
+        out = _render_stock_info_html({"ticker": "089030.KQ",
+                                       "stock_info": si})["other_panes"]
+        seg = out[out.index('id="si-peers"'):]
+        seg = seg[:seg.index("</div>\n</div>") + 13]
+        assert "＊" in seg and "자체계산" in seg, seg[-400:]
+        assert "PER=시총÷순이익" in seg and "PBR=시총÷자본" in seg
+        # 파생이 없으면 범례도 없어야 한다(없는 기호 설명 금지).
+        si2 = dict(si)
+        si2["peer_comps"] = [dict(si["peer_comps"][0], derived=[])]
+        out2 = _render_stock_info_html({"ticker": "089030.KQ",
+                                        "stock_info": si2})["other_panes"]
+        assert "자체계산" not in out2
 
 
 class TestBacklogSweep20260818:

@@ -4086,7 +4086,8 @@ _PER_SHARE_ITEMS = frozenset({
 # 계속 나오는 이유다(사용자 2026-08-17 '아직도 연간→분기 순서인 게 있다').
 # 표 순서·포맷·섹션 구성 등 **화면 산출물이 바뀌는 변경을 하면 반드시 올린다.**
 #   v6 (2026-08-17) 분기→연간 순서 + 주당지표 축약 해제
-_RENDER_VER = 6
+#   v7 (2026-08-18) 동종비교 파생 PER·PBR 표시(＊) + 피어 이름 정화
+_RENDER_VER = 7
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -7459,6 +7460,7 @@ def _render_stock_info_html(rec: dict) -> str:
     if peer_comps:
         pc_rows = ""
         _peer_flags: set = set()
+        _peer_calc: set = set()
         _peer_oob = False
         for pc in peer_comps:
             is_subj = pc.get("is_subject")
@@ -7509,7 +7511,20 @@ def _render_stock_info_html(rec: dict) -> str:
             _mark = (f' <span title="재무통화 {esc(_fin_cur)} ≠ 거래통화 '
                      f'{esc(_trd_cur)} — 자산·매출 기반 배수에 환산 오차">⚠</span>'
                      if _mismatch else "")
-            _cells = [_pv(k) for k in
+            # 자체계산분은 소스값과 **구분해서** 보여준다(데이터 vs 환각).
+            # yfinance 가 KR 종목의 PER·PBR 을 자주 안 줘서 시총÷순이익·
+            # 시총÷자본으로 채운다 — 정의는 같지만 출처가 다르다.
+            _derived = set(pc.get("derived") or [])
+            _dmark = {"trailingPE": "PER", "priceToBook": "PBR"}
+
+            def _pvd(k):
+                cell = _pv(k)
+                if _dmark.get(k) in _derived and cell not in ("—",):
+                    _peer_calc.add(_dmark[k])
+                    return cell + '<span title="자체계산">＊</span>'
+                return cell
+
+            _cells = [_pvd(k) for k in
                       ("trailingPE", "forwardPE", "priceToBook",
                        "priceToSalesTrailing12Months", "enterpriseToEbitda")]
             pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}{_mark}</td><td class="num">{mc_str}</td>'
@@ -7520,6 +7535,10 @@ def _render_stock_info_html(rec: dict) -> str:
             # 범례는 **실제로 찍힌 셀** 기준 — 없는 기호를 설명하지 않는다.
             _peer_oob |= any("—!" in c for c in _cells)
         _peer_note = ""
+        if _peer_calc:
+            _peer_note += (' · <b>＊</b> = 소스 미제공분 자체계산('
+                           + esc(" · ".join(sorted(_peer_calc)))
+                           + ' — PER=시총÷순이익, PBR=시총÷자본)')
         if _peer_oob:
             _peer_note += (' · <b>—!</b> = 소스가 준 값이 배수로 성립하지 않음'
                            '(범위 밖) — 숫자처럼 보여주지 않습니다')
