@@ -4176,10 +4176,13 @@ def diagnose_detail_sources(ticker: str) -> dict:
 
     if tkr.endswith((".KS", ".KQ")):
         out["market"] = "KR"
+        # ⚠️ 키 **존재 여부를 보고하는** 자리는 특히 `.env` 폴백이 필요하다 —
+        # 키가 있는데 '미설정'으로 찍어 사용자를 헛수고시킨 적이 있다(실수 #23).
+        from bot.env_keys import env_ready as _env_ready
         out["env"] = {
-            "NAVER_CLIENT_ID": bool(_os.getenv("NAVER_CLIENT_ID", "").strip()),
-            "NAVER_CLIENT_SECRET": bool(_os.getenv("NAVER_CLIENT_SECRET", "").strip()),
-            "DART_API_KEY": bool(_os.getenv("DART_API_KEY", "").strip()),
+            "NAVER_CLIENT_ID": _env_ready("NAVER_CLIENT_ID"),
+            "NAVER_CLIENT_SECRET": _env_ready("NAVER_CLIENT_SECRET"),
+            "DART_API_KEY": _env_ready("DART_API_KEY"),
         }
         code = tkr.split(".")[0]
 
@@ -4216,8 +4219,9 @@ def diagnose_detail_sources(ticker: str) -> dict:
             raw = {}
             if not items:
                 import requests as _rq
-                cid = _os.getenv("NAVER_CLIENT_ID", "").strip()
-                csec = _os.getenv("NAVER_CLIENT_SECRET", "").strip()
+                from bot.env_keys import env_key as _ek
+                cid = _ek("NAVER_CLIENT_ID")
+                csec = _ek("NAVER_CLIENT_SECRET")
                 try:
                     rr = _rq.get(_API_URL,
                                  params={"query": q, "display": 5, "sort": "date"},
@@ -15526,6 +15530,14 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         # 있다 — 어느 원천의 숫자인지 표기한다(규칙 #10b, 조용한 대체 금지).
         if _asof and d.get("src") == "UST":
             _asof += " · 미 재무부"
+        # Macro Snapshot 과 같은 규약으로 지연 표기(두 표면 동일).
+        try:
+            from bot.macro_cadence import judge as _cad_judge
+            _cj = _cad_judge(item.get("series_id") or "", d.get("time", ""))
+        except Exception:
+            _cj = None
+        if _asof and _cj and _cj.get("stale"):
+            _asof += " ⚠ 지연"
         _asof_html = (f' <span style="font-size:9px;color:var(--muted)">({_html.escape(_asof)})</span>'
                       if _asof else "")
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
@@ -15922,6 +15934,10 @@ def _render_macro_card(ind: dict) -> str:
         _lag_html = f' <span style="opacity:.75">({_lag}개월 전)</span>'
     else:
         _lag_html = ""
+    # 통상 공표 일정보다 뒤처진 지표 — 경과만 찍으면 정상 지연과 구분이 안 된다
+    # (사용자 2026-08-18 "제때제때 잘 가져오는지"). 규약 = bot/macro_cadence.
+    if ind.get("asof_stale"):
+        _lag_html += ' <span style="color:#d97706">⚠ 지연</span>'
     asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
                  f'margin-top:2px">기준 {asof}{_lag_html}</div>') if asof else ""
     # 기간 시작값 + 직전 관측 대비 — "얼마나 올랐나"의 기준점을 보여준다
@@ -16392,7 +16408,10 @@ def _render_macro_snapshot(macro: dict) -> str:
     카드의 <b>기준 YYYY-MM</b> = 그 통계의 <b>최신 공표치</b>입니다. 발표지표는 공표 일정상
     지연이 정상이라(통관 수출입·물가 ≈ 1개월 · 한은 국제수지 ≈ 2개월 · 미국 GDP는 분기),
     8월 초에 6월(경상수지는 5월) 기준이 최신인 것이 맞습니다. 옆의 <b>(N개월 전)</b>은 오늘
-    기준 경과 개월 — 평소보다 크게 벌어지면 그때는 갱신이 막힌 것입니다.
+    기준 경과 개월입니다 — 다만 경과만으론 정상 지연인지 갱신이 막힌 건지 알 수 없어,
+    지표마다 <b>통상 공표 일정</b>(예: 외환보유액 익월 초 · 국제수지 익익월 초 · JOLTS 약 6주)을
+    등록해두고 그보다 뒤처진 카드에만 <b>⚠ 지연</b>을 붙입니다. 배지가 없으면 그 지표 기준으로는
+    최신입니다.
     지수·원자재·환율 카드는 기준월 없이 <b>실시간 현재가</b>입니다.
     국채금리·기준금리처럼 매일(영업일) 갱신되는 카드는 정확한 <b>기준 YYYY-MM-DD</b>
     날짜를 보여주고, 주말 등 정상 지연폭 이내면 배지 없이 최신으로 취급합니다 —

@@ -14322,7 +14322,10 @@ class TestNaverCommodityCharts:
         assert "_asof_lag_months(asof_raw)" in ms_src
         assert '"asof_lag_days"' in ms_src, "일별 카드 lag 필드 배선 누락"
         db = open("bot/dashboard.py", encoding="utf-8").read()
-        assert "최신 공표치" in db and "갱신이 막힌 것" in db, "공표 지연 안내 누락"
+        # 안내문은 **현재 동작**을 설명해야 한다(2026-08-18: 경과 개월만
+        # 찍던 것 → 지표별 공표 규약 대비 ⚠ 지연 배지). 옛 문구를 단언하면
+        # 동작이 좋아질 때 테스트가 그걸 막는다(실수 #19).
+        assert "최신 공표치" in db and "통상 공표 일정" in db, "공표 지연 안내 누락"
 
     def test_daily_cadence_cards_show_current_not_monthly_lag(self):
         """미국 국채(2Y/10Y/장단기금리차/하이일드)·한국 국고채/기준금리처럼
@@ -22199,6 +22202,78 @@ class TestFlowTrendDiagnosis20260818:
         assert "미 재무부" not in _render_fred_card([item], None), \
             "FRED 값에까지 재무부 라벨이 붙었다"
 
+    def test_macro_cadence_flags_only_the_actually_late(self):
+        """⚠️ 경과 개월만 찍으면 정상 지연(경상수지 2개월)과 갱신 중단
+        (수출 2개월)이 화면에서 똑같이 보인다 — 사용자 2026-08-18
+        "제때제때 잘 가져오는지". 공표 규약으로 **판정**한다."""
+        from datetime import date
+        from bot.macro_cadence import judge
+        t = date(2026, 8, 18)
+        # 국제수지는 익익월 초라 6월치가 8월 중순에 최신인 게 정상.
+        assert judge("current_account", "202606", t)["stale"] is False
+        # 같은 6월치라도 외환보유액(익월 초)은 7월치가 나왔어야 한다.
+        assert judge("fx_reserve", "202606", t)["stale"] is True
+        assert judge("fx_reserve", "202607", t)["stale"] is False
+        # 일별 국채금리 — 주말 낀 정상 지연은 통과, 일주일 묵으면 걸린다.
+        assert judge("DGS10", "2026-08-14", t)["stale"] is False
+        assert judge("DGS10", "2026-08-07", t)["stale"] is True
+        # 규약 없는 id 는 **판정 안 함**(None) — 조용히 '정상'이 아니다.
+        assert judge("NOPE", "2026-08-14", t) is None
+
+    def test_every_published_indicator_has_a_cadence_rule(self):
+        """⚠️ 새 발표지표를 카드에 넣고 규약을 안 넣으면 그 카드만 영원히
+        무판정으로 남는다(실수 #18 계열 — 게이트가 조용히 비활성). 목록과
+        규약을 **한 곳에서** 대조해 강제한다."""
+        from bot.macro_cadence import CADENCE
+        from bot import macro_snapshot as ms
+        from bot import market_overview as mo
+        missing = []
+        for defs in (ms.DOMESTIC, ms.GLOBAL):
+            for _k, label, _u, src, sid, _d in defs:
+                if src in ("fred", "fred_yoy", "ecos") and sid not in CADENCE:
+                    missing.append(f"{label}({src}:{sid})")
+        for label, sid, _u, _lb in mo.FRED_INDICATORS:
+            if sid not in CADENCE:
+                missing.append(f"{label}(fred:{sid})")
+        assert not missing, f"macro_cadence.CADENCE 누락: {missing}"
+
+    def test_stale_indicator_is_marked_on_both_surfaces(self):
+        """두 표면(글로벌 스냅샷 · Macro Snapshot)이 같은 규약으로 표기."""
+        from bot.dashboard import _render_macro_card, _render_fred_card
+        card = _render_macro_card({"label": "외환보유액", "value": 1.0,
+                                   "decimals": 0, "unit": "억$",
+                                   "asof": "2026-06", "asof_lag": 2,
+                                   "asof_stale": True})
+        assert "⚠ 지연" in card
+        fresh = _render_macro_card({"label": "경상수지", "value": 1.0,
+                                    "decimals": 0, "unit": "억$",
+                                    "asof": "2026-06", "asof_lag": 2,
+                                    "asof_stale": False})
+        assert "⚠ 지연" not in fresh, "정상 지연에까지 경고가 붙었다"
+
+        def _fred(sid, when):
+            return _render_fred_card([{"label": sid, "unit": "%",
+                                       "series_id": sid,
+                                       "data": {"value": 4.5, "time": when,
+                                                "change": 0.0}}], None)
+        # 관측일이 규약보다 뒤처지면 표기 — 날짜는 테스트 실행일 기준으로
+        # 계산되므로 **아주 오래된 값**으로 판정을 고정한다.
+        assert "⚠ 지연" in _fred("DGS10", "2020-01-02")
+        assert "⚠ 지연" not in _fred("DGS10", "2999-01-02")
+
+    def test_macro_snapshot_row_carries_the_stale_flag(self):
+        """⚠️ 헬퍼만 테스트하면 **배선 변형을 못 잡는다**(실수 #20).
+        페이로드 필드를 만드는 함수를 직접 태운다."""
+        from bot.macro_snapshot import _cadence_stale
+        assert _cadence_stale("ecos", "fx_reserve", "202001") is True
+        assert _cadence_stale("yf", "fx_reserve", "202001") is False, \
+            "실시간 가격 카드에까지 공표규약을 적용하면 안 된다"
+        assert _cadence_stale("ecos", "fx_reserve", "") is False
+        import pathlib
+        src = pathlib.Path("bot/macro_snapshot.py").read_text(encoding="utf-8")
+        assert '"asof_stale": _cadence_stale(src, sid, asof_raw),' in src, \
+            "페이로드에 asof_stale 이 실리지 않는다"
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
@@ -22214,17 +22289,25 @@ class TestFlowTrendDiagnosis20260818:
         assert "dotenv_values" in body, "필요한 키만 읽는 방식이 아니다"
         assert "load_dotenv" not in body, ".env 전체를 주입한다"
 
-        # 키를 읽는 클라이언트가 raw os.environ 으로 되돌아가면 안 된다.
+        # ⚠️ 이 검사는 원래 **파일 목록**이었는데, 목록에 없던
+        # `macro_snapshot._fred_monthly` 가 그대로 raw `os.getenv` 를 쓰고 있었다
+        # (2026-08-18 발견 — 목록형 가드는 새 파일을 못 잡는다). bot/ 전체를
+        # 훑고 **의도적 예외만** 아래에 명시한다.
+        _ALLOWED = {
+            # Google SDK 가 환경변수 자체를 읽어가는 자리(키를 주입해야 한다).
+            "genai_factory", "gemini_cache_manager",
+            # 자체 .env 폴백(_dart_key_from_env_file)을 이미 갖고 있다.
+            "dart_client",
+        }
         bad = []
-        for f in ("fred_client", "bok_ecos_client", "finnhub_client",
-                  "market_overview",
-                  "earnings_calendar", "av_sentiment_client", "edinet_client",
-                  "fsc_client", "buildperm_client", "cheongyak_client",
-                  "dart_feed", "pykrx_client", "seibro_client"):
-            src = Path(f"bot/{f}.py").read_text(encoding="utf-8")
+        for path in sorted(Path("bot").glob("*.py")):
+            if path.stem in _ALLOWED:
+                continue
+            src = path.read_text(encoding="utf-8")
             if re.search(r'os\.(environ\.get|getenv)\(\s*"[A-Z_]*'
-                         r'(API_KEY|KRX_ID|KRX_PW)"', src):
-                bad.append(f)
+                         r'(API_KEY|KRX_ID|KRX_PW|CLIENT_ID|CLIENT_SECRET)"',
+                         src):
+                bad.append(path.stem)
         assert not bad, f"공용 헬퍼를 안 쓰는 키 읽기: {bad}"
 
     def test_krx_credentials_are_read_from_the_env_file(self, tmp_path,

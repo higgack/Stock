@@ -135,7 +135,11 @@ _FRED_QUARTERLY = {"A191RL1Q225SBEA"}
 def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
     """FRED observations, oldest→newest, last `months` values. 분기 series 는
     frequency=q(monthly 요청 시 FRED 400)."""
-    api_key = os.getenv("FRED_API_KEY", "").strip()
+    # ⚠️ `os.getenv` 로 직접 읽으면 `load_dotenv()` 를 부르는 봇 엔트리포인트
+    # 밖(진단 스크립트·크론)에서 **키가 있는데도 빈 리스트**를 준다 —
+    # 스파크라인만 조용히 사라진다(실수 #23). 공용 헬퍼로 통일.
+    from bot.env_keys import env_key as _env_key
+    api_key = _env_key("FRED_API_KEY")
     if not api_key:
         return []
     freq = "q" if series_id in _FRED_QUARTERLY else "m"
@@ -460,6 +464,23 @@ def _ecos_series(key: str) -> list[tuple[str, float]]:
         return []
 
 
+def _cadence_stale(src: str, sid: str, raw: str) -> bool:
+    """이 관측이 **통상 공표 일정보다 뒤처졌는지**(bot/macro_cadence 규약).
+
+    경과 개월만 찍던 배지는 "경상수지 2개월 전"(정상)과 "수출 2개월 전"
+    (지연)을 구분 못 했다 — 사용자 2026-08-18 "제때제때 잘 가져오는지".
+    판정 불가는 False(배지 없음) — 감사 프로브가 '규약 없음'으로 따로 본다."""
+    if src not in ("fred", "fred_yoy", "ecos") or not raw:
+        return False
+    try:
+        from bot.macro_cadence import judge
+        j = judge(sid, raw)
+    except Exception as exc:                       # noqa: BLE001
+        log.info("macro: cadence 판정 실패 %s: %s", sid, exc)
+        return False
+    return bool(j and j.get("stale"))
+
+
 def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> list[float]:
     """Collapse points to one-per-month (last value of each month), last n."""
     if not points:
@@ -731,6 +752,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 "asof": (_fmt_asof(asof_raw, full=_is_daily_card)
                          + (_src_note if asof_raw else "")),
                 "asof_lag": None if _is_daily_card else _asof_lag_months(asof_raw),
+                # 통상 공표 일정 대비 뒤처졌는지 — 경과 개월만으론 정상 지연과
+                # 갱신 중단을 구분 못 한다(사용자 2026-08-18).
+                "asof_stale": _cadence_stale(src, sid, asof_raw),
                 "asof_lag_days": (_lag_d if _lag_d is not None
                                    and _lag_d > _DAILY_STALE_DAYS else None),
             })
