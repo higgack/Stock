@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import date
 
 log = logging.getLogger("bot.treasury_yield")
@@ -44,10 +45,20 @@ def _num(s: str) -> float | None:
     return v if 0.0 <= v <= 20.0 else None      # 상식 범위 밖은 버린다
 
 
+_CACHE: dict[str, tuple[float, dict]] = {}
+_TTL_SEC = 1800.0          # 30분 — 재무부는 하루 한 번(15:30 ET) 갱신
+
+
 def fetch_daily_curve(ym: str | None = None) -> dict[str, dict[str, float]]:
-    """{'YYYY-MM-DD': {'DGS2': 4.17, ...}} — 실패 시 빈 dict(graceful)."""
+    """{'YYYY-MM-DD': {'DGS2': 4.17, ...}} — 실패 시 빈 dict(graceful).
+
+    ⚠️ 30분 메모리 캐시. 이 함수는 시리즈마다 불리므로(2Y·10Y·30Y) 캐시가
+    없으면 한 렌더에 같은 XML 을 세 번 받는다."""
     import requests
     ym = ym or date.today().strftime("%Y%m")
+    _hit = _CACHE.get(ym)
+    if _hit and time.time() - _hit[0] < _TTL_SEC:
+        return _hit[1]
     try:
         r = requests.get(_URL.format(ym=ym), timeout=12)
         r.raise_for_status()
@@ -78,6 +89,7 @@ def fetch_daily_curve(ym: str | None = None) -> dict[str, dict[str, float]]:
                     break
         if row:
             out[d] = row
+    _CACHE[ym] = (time.time(), out)
     return out
 
 

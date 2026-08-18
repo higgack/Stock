@@ -22128,15 +22128,76 @@ class TestFlowTrendDiagnosis20260818:
         assert _num("") is None and _num("N/A") is None
         assert _num("-1") is None and _num("120") is None
 
-    def test_treasury_is_not_wired_into_the_screen_yet(self):
-        """⚠️ 검증 안 된 파서를 금리 자리에 붙이지 않는다 — 프로브로 확인
-        후에 배선한다(실수 #12). 이 테스트는 배선하는 순간 함께 지운다."""
-        import pathlib
-        for f in ("bot/market_overview.py", "bot/dashboard.py",
-                  "bot/macro_snapshot.py"):
-            src = pathlib.Path(f).read_text(encoding="utf-8")
-            assert "treasury_yield_client" not in src, \
-                f"{f} 가 미검증 소스를 이미 쓰고 있다"
+    def test_treasury_overrides_fred_only_when_it_checks_out(self, monkeypatch, tmp_path):
+        """프로브 v3 실측(2026-08-18)으로 배선했다 — 2Y·10Y·30Y 모두 겹치는
+        날(8-14) 값이 **정확히 일치**하고 8-17 이 추가로 있었다.
+
+        ⚠️ 배선했어도 가드는 그대로다: 겹치는 날이 어긋나면(태그 오집)
+        FRED 값을 그대로 쓴다. 금리 자리에 틀린 숫자를 올릴 수는 없다."""
+        from bot import market_overview as mo
+        assert mo._TREASURY_SIDS == {"DGS2", "DGS10", "DGS30"}
+
+        # ⚠️ 헬퍼 단위테스트만으로는 **배선 변형을 못 잡는다**(실수 #20).
+        # 그래서 `_fred_fetch_series` 를 통째로 태운다 — FRED 응답과 재무부
+        # 곡선을 둘 다 스텁으로 주고 화면에 올라갈 dict 를 직접 본다.
+        def _run(sub, sid, curve, obs=None):
+            from bot import env_keys, treasury_yield_client as ty
+            monkeypatch.setattr(env_keys, "env_key", lambda n: "K")
+            d = tmp_path / sub
+            d.mkdir(parents=True, exist_ok=True)
+            monkeypatch.setattr(mo, "_CACHE_DIR", d)
+
+            class _R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"observations": obs or [
+                        {"date": "2026-08-14", "value": "4.68"},
+                        {"date": "2026-08-13", "value": "4.66"}]}
+
+            monkeypatch.setattr(mo.requests, "get", lambda *a, **k: _R())
+            monkeypatch.setattr(ty, "fetch_daily_curve", curve)
+            return mo._fred_fetch_series(sid, 30)
+
+        # (a) 겹치는 날 일치 + 더 최신 관측 → 재무부 값으로 하루 당긴다.
+        ok = {"2026-08-14": {"DGS10": 4.68}, "2026-08-17": {"DGS10": 4.72}}
+        r = _run("a", "DGS10", lambda ym=None: ok)
+        assert r["time"] == "2026-08-17" and r["value"] == 4.72
+        assert r["prev_value"] == 4.68 and abs(r["change"] - 0.04) < 1e-9
+
+        # (b) 겹치는 날이 어긋나면(태그 오집) FRED 를 그대로 쓴다.
+        bad = {"2026-08-14": {"DGS10": 4.20}, "2026-08-17": {"DGS10": 4.25}}
+        r = _run("b", "DGS10", lambda ym=None: bad)
+        assert r["time"] == "2026-08-14" and r["value"] == 4.68
+
+        # (c) 국채가 아닌 시리즈는 재무부를 **아예 조회하지 않는다**.
+        seen = []
+
+        def _spy(ym=None):
+            seen.append(ym)
+            return ok
+
+        r = _run("c", "BAMLH0A0HYM2", _spy)
+        assert seen == [], "국채 외 시리즈까지 재무부를 두드리고 있다"
+        assert r["time"] == "2026-08-14"
+
+    def test_treasury_sourced_rate_is_labelled_not_silently_swapped(self):
+        """⚠️ 소스를 바꿔놓고 화면에 안 적으면 조용한 대체다(규칙 #10b).
+        FRED 대신 미 재무부 값을 쓴 행은 그 사실이 보여야 한다."""
+        from bot.dashboard import _render_fred_card
+        from bot.macro_snapshot import _fmt_asof
+        assert _fmt_asof("2026-08-17", full=True)      # 포맷 전제 확인
+        item = {"label": "US 미국채 10년 (금리)", "unit": "%",
+                "series_id": "DGS10",
+                "data": {"value": 4.72, "time": "2026-08-17",
+                         "change": 0.04, "src": "UST"}}
+        html = _render_fred_card([item], None)
+        assert "미 재무부" in html, "재무부 값인데 화면에 원천이 없다"
+        item["data"] = dict(item["data"])
+        item["data"].pop("src")
+        assert "미 재무부" not in _render_fred_card([item], None), \
+            "FRED 값에까지 재무부 라벨이 붙었다"
 
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를

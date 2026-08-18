@@ -1126,7 +1126,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
  • <code>/티커</code> → 사전 fetch(매크로9·리스크·섹터ETF·컨센서스·공매도/내부자/기관·실적일) → 분석가 4명(📈시장 💬감정 📰뉴스 💰펀더멘털) → Bull/Bear 토론 → Trader→Risk 3인→PM(5거래일 평가 윈도)
  • 요약: 🎯판정 · 📒지난추천 5거래일 결과 · ⚠️실적±10일·뉴스스킵 · 4명 stance+mismatch · [📋 전체 리포트]
  • 같은 종목 재분석 = 캐시 즉시(무료) · /usage 비용차트
- • 데이터: yfinance·네이버·Kabutan·DART/EDINET/MOPS/EDGAR+XBRL·ECOS/FRED·US옵션·KRX수급·KIS
+ • 데이터: yfinance·네이버·Kabutan·DART/EDINET/MOPS/EDGAR+XBRL·ECOS/FRED+미재무부·US옵션·KRX수급·KIS
 
 ━━━━━━━━━
 <b>【진행 중 / 예정】</b>

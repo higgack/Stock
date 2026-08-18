@@ -601,6 +601,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             spark_dir = 0
             spark_span = "12개월"           # 라인 기간 라벨(작게 표기)
             asof_raw = ""                   # 헤드라인 값의 기준 기간(ECOS/FRED 관측월)
+            _src_note = ""                  # 소스가 FRED 아닌 것으로 대체됐을 때 표기
             if src == "yf":
                 # 현재값 = 네이버 우선(카드 안 사라짐), 미매핑/실패는 yf 폴백.
                 nv = macro_nv.get(sid)
@@ -670,6 +671,10 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     value = _spot["value"]
                     change = _spot.get("change")
                     asof_raw = _spot.get("time", "")   # FRED 관측일(YYYY-MM-DD)
+                    # 국채금리는 FRED 보다 하루 빠른 **미 재무부** 값으로
+                    # 대체될 수 있다 — 조용한 소스 교체 금지(규칙 #10b).
+                    if _spot.get("src") == "UST":
+                        _src_note = " · 미 재무부"
                 elif chart_spark:
                     value = chart_spark[-1]
                     if len(chart_spark) >= 2:
@@ -723,7 +728,8 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # 단 환율(_ABS_CHANGE_SIDS)은 ₩ 절대값이 직관적이라 예외.
                 "pct_style": bool(spark_span == "1개월"
                                   and sid not in _ABS_CHANGE_SIDS),
-                "asof": _fmt_asof(asof_raw, full=_is_daily_card),
+                "asof": (_fmt_asof(asof_raw, full=_is_daily_card)
+                         + (_src_note if asof_raw else "")),
                 "asof_lag": None if _is_daily_card else _asof_lag_months(asof_raw),
                 "asof_lag_days": (_lag_d if _lag_d is not None
                                    and _lag_d > _DAILY_STALE_DAYS else None),

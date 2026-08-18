@@ -529,6 +529,8 @@ def _fetch_etf_quotes(nve_codes: list) -> dict:
 # 24시간 캐시가 전날 받은 사본을 들고 있었기 때문이다. 사용자가 "금리가
 # 매우 중요, 가장 최신을 빠르게" 라고 한 지점이다.
 _FRED_DAILY_SIDS = {"DGS2", "DGS10", "DGS30", "BAMLH0A0HYM2", "BAMLC0A0CM"}
+# 미 재무부가 같은 값을 **하루 먼저** 내는 시리즈(국채 수익률만).
+_TREASURY_SIDS = {"DGS2", "DGS10", "DGS30"}
 _FRED_TTL_DAILY_H = 1.0
 _FRED_TTL_OTHER_H = 24.0
 
@@ -584,6 +586,24 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     change = (latest_val - prev_val) if prev_val is not None else None
 
     result = {"value": latest_val, "time": latest_date, "prev_value": prev_val, "change": change}
+
+    # ⚠️ **미 재무부 원천으로 하루 당긴다.** FRED `DGS*` 는 D일 값을 D+1 에
+    # 올린다 — 화요일에 최신이 금요일이었다(2026-08-18 실측). 재무부는 같은
+    # 값을 당일 15:30 ET 에 공표한다.
+    # 안전장치: `fresher_than` 은 **FRED 와 겹치는 날 값이 0.10%p 이내로
+    # 일치할 때만** 새 값을 준다(태그 오집이면 만기가 달라 못 맞는다).
+    # 실측 확인(2026-08-18 프로브 v3): 2Y·10Y·30Y 모두 8-14 값이 정확히
+    # 일치하고 8-17 이 추가로 있었다 — 그 확인 뒤에 배선했다.
+    if series_id in _TREASURY_SIDS:
+        try:
+            from bot.treasury_yield_client import fresher_than
+            nf = fresher_than(latest_date, latest_val, series_id)
+            if nf:
+                result = {"value": nf[1], "time": nf[0],
+                          "prev_value": latest_val,
+                          "change": nf[1] - latest_val, "src": "UST"}
+        except Exception as exc:
+            log.info("treasury: %s 보강 건너뜀: %s", series_id, exc)
     try:
         cache_file.write_text(json.dumps(result))
     except Exception:
