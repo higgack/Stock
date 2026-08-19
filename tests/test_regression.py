@@ -21611,9 +21611,15 @@ class TestChronologicalTablesAndVol20260816:
         badge = re.search(r"<span class='sub'>((?:(?!</span>).)*중간점검"
                           r"(?:(?!</span>).)*)</span>", html, re.S)
         assert badge, "중간점검 배지 자체가 없음"
-        assert "6시간" in badge.group(1), f"배지에 주기 없음: {badge.group(1)}"
+        # 2026-08-20 6h→3h. 숫자를 박지 않고 **주기 문구가 있는지**와
+        # 스케줄러 상수와의 **일치**를 본다(설명 out-of-sync = 버그).
+        import re as _re
+        _tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        _hours = int(_re.search(r"^_BOARD_REGEN_HOURS = (\d+)", _tb, _re.M).group(1))
+        assert f"{_hours}시간" in badge.group(1), \
+            f"배지 주기가 스케줄러({_hours}h)와 다름: {badge.group(1)}"
         guide = html[html.index("<details"):html.index("</details>")]
-        assert "6시간" in guide, "가이드에 주기 설명 없음"
+        assert f"{_hours}시간" in guide, "가이드 주기가 스케줄러와 다름"
         assert "기준일 2026-08-14" in html, "기준일 미표기"
         # 확정 배지에는 주기 문구가 붙으면 안 된다(월말 기준이므로).
         conf = bs.render_page({"KR": {**d, "is_confirmed": True}})
@@ -26476,3 +26482,138 @@ class TestSurfaceArithmeticAndCrossConsistency20260820:
         blk = dash[i:i + 400]
         assert "대비" in blk and "f'{span} 전'" in blk, \
             "날짜가 있으면 날짜로, 없을 때만 어림 라벨이어야 한다"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-20 (2차) 사용자 전수 검증 요청에서 나온 것들. 앞선 감사가 전부 ✅
+# 였는데도 화면이 틀렸던 이유가 또 나왔다 — **판정 기준 자체가 관대**했거나,
+# 라벨이 계산과 무관했다.
+class TestSecondSweep20260820:
+    # ── ① 지수 신선도 재질의가 3년 요청에서만 걸리던 것 ────────────────
+    def test_index_retry_fires_on_a_one_year_request_too(self, monkeypatch):
+        """사용자: "한국일본 이미 장종료 6시간 지났을텐데 KR KOSPI 같은건
+        금일 기준도 아니야." 재질의가 `period == "3y"` 에서만 걸려 있었는데
+        시장타이밍은 days=120(=1년)이라 **한 번도 안 탔다**."""
+        from datetime import timedelta
+        import bot.chart_data as cd
+        import bot.market_timing as mt
+        today = mt._kst_now().date()
+
+        def payload(n, end):
+            ts = [(end - timedelta(days=i)).isoformat() for i in range(n)][::-1]
+            return {"times": ts, "close": [100.0 + i for i in range(n)]}
+
+        seen = []
+
+        def fake(ticker, interval="1d", period="1y", prefer_period=False):
+            seen.append((period, prefer_period))
+            if prefer_period:
+                return payload(120, today - timedelta(days=1))   # 신선
+            return payload(120, today - timedelta(days=2))       # 하루 뒤처짐
+
+        # `fetch_index_history` 는 함수 안에서 import 하므로 원본 모듈만 패치.
+        monkeypatch.setattr(cd, "fetch_chart_payload", fake)
+        out = mt.fetch_index_history("^KS11", days=120)
+        assert len(seen) > 1, f"1년 요청에서 재질의가 안 걸렸다: {seen}"
+        assert out[-1]["date"] == (today - timedelta(days=1)).isoformat()
+
+    def test_volatility_tickers_keep_the_looser_gate(self):
+        """^VIX·^MOVE 는 원천이 성겨 매번 재질의하면 야후 호출만 두 배 된다."""
+        import bot.market_timing as mt
+        assert mt._idx_stale_days("^KS11") == mt._IDX_RETRY_STALE_DAYS == 1
+        assert mt._idx_stale_days("^MOVE") == mt._VOL_STALE_DAYS > 1
+
+    # ── ② 유동성 보드 표기 ──────────────────────────────────────────
+    def test_ratio_series_are_not_rendered_as_percent(self):
+        """통화유통속도가 "1.41%" 로 떴다 — 유통속도는 배수지 퍼센트가 아니다.
+        `is_rate` 가 지수·비율 계열에도 켜져 있어서 생긴 오표기."""
+        from bot import fred_boards as fb
+        js = fb._BOARD_JS_COMMON + open("bot/fred_boards.py", encoding="utf-8").read()
+        assert "if(u==='Ratio')return v.toFixed(2);" in js, "Ratio 분기 없음"
+        assert "if(r.is_rate&&(!u||u==='%'))" in js, \
+            "is_rate 가 단위와 무관하게 %를 붙인다"
+        # 카탈로그에 Ratio·is_rate 조합이 실재해야 이 가드가 의미 있다.
+        from bot.fred_boards_catalog import LIQ_SERIES
+        assert any(s.get("unit") == "Ratio" and s.get("is_rate")
+                   for s in LIQ_SERIES)
+
+    def test_windows_shorter_than_the_series_period_are_blank(self):
+        """분기 시리즈의 '1M' 은 사실 직전 **분기** 비교라 "+0.00%" 가
+        '변화 없음'처럼 보였다 — 계산 불가한 창은 빈칸이 낫다.
+        카탈로그 플래그가 아니라 **관측 간격 실측**으로 판정한다(#24)."""
+        from bot.fred_boards import _median_month_gap, series_metrics
+        monthly = [(f"2025-{m:02d}-01", 100.0 + m) for m in range(1, 13)] + \
+                  [(f"2026-{m:02d}-01", 112.0 + m) for m in range(1, 8)]
+        quarterly = sorted(
+            [(f"{y}-{m:02d}-01", 1.30 + i * 0.01)
+             for i, (y, m) in enumerate([(2024, 1), (2024, 4), (2024, 7),
+                                         (2024, 10), (2025, 1), (2025, 4),
+                                         (2025, 7), (2025, 10), (2026, 1),
+                                         (2026, 4)])])
+        assert _median_month_gap(monthly) == 1
+        assert _median_month_gap(quarterly) == 3
+        mm, qm = series_metrics(monthly), series_metrics(quarterly)
+        assert mm["mom"] is not None and mm["m3"] is not None
+        assert qm["mom"] is None, "분기 시리즈에 1M 이 숫자로 남았다"
+        assert qm["m3"] is not None and qm["yoy"] is not None, "과잉 삭제"
+
+    def test_month_gap_handles_short_series(self):
+        """`zip(hist[-13:], hist[-12:])` 는 길이 13 미만이면 **같은 리스트**를
+        짝지어 간격이 전부 0 이 된다(직접 실측한 오작성)."""
+        from bot.fred_boards import _median_month_gap
+        short_q = [("2025-07-01", 1.0), ("2025-10-01", 1.1), ("2026-01-01", 1.2)]
+        assert _median_month_gap(short_q) == 3
+
+    # ── ③ 경제캘린더 라벨 ───────────────────────────────────────────
+    def test_observation_label_says_the_period_not_the_day(self):
+        """사용자: "7/14일, 8/12일이 실제치인데 어떻게 06/01, 07/01에 관측이
+        되지?" 동작은 정상 — 7/14 발표는 **6월분**이고 FRED 는 월간 관측을
+        그 달 1일자로 적는다. 표기가 그걸 못 전해 데이터가 틀린 것처럼 보였다."""
+        from bot.econ_calendar import _obs_period_label as f
+        assert f("2026-06-01") == "2026년 6월분"
+        assert f("2026-07-01") == "2026년 7월분"
+        assert f("2026-08-08") == "2026-08-08 관측"   # 주간은 날짜 그대로
+        assert f("") == "관측기간 미상"
+        page = open("bot/econ_calendar.py", encoding="utf-8").read()
+        assert "_obs_period_label(a[\"obs_date\"])" in page, "렌더 미배선"
+        assert "7/14 발표의 실제치는" in page, "사용법 설명이 out-of-sync"
+
+    # ── ④ 재생성 주기 6h→3h ────────────────────────────────────────
+    def test_board_regen_is_three_hours_and_cache_is_shorter(self):
+        """주기만 줄이고 캐시 TTL 을 그대로 두면 **하나도 안 신선해진다**
+        (3h 사이클의 절반이 5h 캐시에 걸린다). 둘은 한 쌍이다."""
+        import re
+        from bot import fred_boards as fb
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        m = re.search(r"^_BOARD_REGEN_HOURS = (\d+)", tb, re.M)
+        assert m and int(m.group(1)) == 3, "보드 주기가 3시간이 아니다"
+        assert "_BOARD_REGEN_HOURS * 3600" in tb, "상수가 실제 sleep 에 안 쓰인다"
+        assert fb._HIST_TTL_H < int(m.group(1)), (
+            f"캐시 TTL {fb._HIST_TTL_H}h 가 주기 {m.group(1)}h 이상 — "
+            f"사이클 절반이 캐시에 걸려 신선해지지 않는다")
+        assert "ttl_hours=_HIST_TTL_H" in open(
+            "bot/fred_boards.py", encoding="utf-8").read()
+
+    def test_regen_period_text_matches_the_schedule(self):
+        """화면 설명이 '6시간 주기'로 남으면 동작과 out-of-sync = 버그."""
+        for f in ("bot/fred_boards.py", "bot/econ_calendar.py",
+                  "bot/market_timing.py", "bot/breadth_strategy.py"):
+            src = open(f, encoding="utf-8").read()
+            assert "6시간 주기 자동" not in src, f
+            assert "6시간마다 재계산" not in src, f
+
+    # ── ⑤ 관심종목 콜드 로드가 옛 값을 '현재'로 내보내던 것 ─────────
+    def test_cold_load_does_not_serve_stale_derived_values(self):
+        """감사가 발각: 108행이 `현재가 None` 인데 PER 은 6.289547 — 종목을
+        **담던 날**의 값이 디스크에 굳어 콜드 로드에서 그대로 나갔다.
+        docstring 은 "첫 로드 — 이름만" 이라 적혀 있었는데 구현이 안 지켰다."""
+        import bot.market_favorites as mf
+        rows = [{"ticker": "A", "name": "A", "saved_price": 100,
+                 "saved_date": "2026-06-10", "per": 3.7, "current_price": 999,
+                 "eps_estimate": 1.0, "market_cap": 5}]
+        mf._load = lambda: [dict(r) for r in rows]
+        cold = mf._cold_rows()
+        assert cold[0]["per"] is None and cold[0]["current_price"] is None
+        assert cold[0]["eps_estimate"] is None and cold[0]["market_cap"] is None
+        # 저장가격·저장일은 **의도적 과거값**이라 남아야 한다.
+        assert cold[0]["saved_price"] == 100 and cold[0]["saved_date"]

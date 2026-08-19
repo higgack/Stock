@@ -231,6 +231,20 @@ def crypto_regime_score(btc_price: float | None, btc_sma50: float | None,
 
 
 # ── I/O 래퍼(fetch) ─────────────────────────────────────────────────────────
+# 지수는 **1거래일만 늦어도** 재질의한다(사용자 2026-08-20: 장 마감 6시간
+# 뒤인데 전일 기준). 변동성 지수(^VIX·^MOVE)는 원천 자체가 성겨서 5일을
+# 유지 — 매번 재질의하면 야후 호출만 두 배가 된다.
+_IDX_RETRY_STALE_DAYS = 1
+
+
+def _idx_stale_days(ticker: str) -> int:
+    return (_VOL_STALE_DAYS if str(ticker).upper() in _VOL_TICKERS
+            else _IDX_RETRY_STALE_DAYS)
+
+
+_VOL_TICKERS = ("^VIX", "^MOVE", "MOVE", "^VXTLT", "^TYVIX")
+
+
 def _payload_to_rows(p: dict | None, days: int) -> list[dict]:
     """chart payload → [{date, close, high, low, volume}] 오름차순."""
     if not p:
@@ -278,38 +292,39 @@ def fetch_index_history(ticker: str, days: int = 120,
         # 1년으로 부르면 227행이 정상적으로 온다 — 심볼이 죽은 게 아니라
         # **긴 레인지 응답이 불안정**한 것이다(그래서 카드가 나타났다
         # 사라졌다 했다). 짧은 레인지로 한 번 더 물어 더 최신인 쪽을 쓴다.
-        if period == "3y":
-            age = _vol_age_days(out[-1]["date"]) if out else None
-            if not out or (age is not None and age > _VOL_STALE_DAYS):
-                # ⚠️ 같은 '1년'이라도 **묻는 방식**이 결과를 가른다(2026-08-19
-                # `^MOVE` 실측): 날짜범위 질의는 07-17 에서 끊긴 데이터를 주고
-                # 기간 키워드(`period="1y"`) 질의는 227행·최신 08-18 을 준다.
-                # #944 의 재질의가 여전히 낡은 값을 받은 이유가 이것이었다 —
-                # 기간을 줄여도 **같은 방식**으로 물었기 때문.
-                # 2026-08-20 실측: `^MOVE` 는 **1년 날짜범위 226행(최신
-                # 07-17)** · **1년 기간키워드 0행** 이었다 — 어느 쪽이 이길지
-                # 날마다 뒤바뀐다. 한쪽만 재질의하면 그날 진 쪽에 걸린다.
-                # 둘 다 물어 **가장 신선한** 쪽을 쓴다(같으면 긴 쪽).
-                cands = []
-                for pp in (True, False):
-                    got = _payload_to_rows(
-                        fetch_chart_payload(ticker, interval="1d", period="1y",
-                                            prefer_period=pp), days)
-                    if got:
-                        cands.append(got)
-                alt = min(cands,
-                          key=lambda r: (_vol_age_days(r[-1]["date"]) or 10 ** 6,
-                                         -len(r))) if cands else []
-                alt_age = _vol_age_days(alt[-1]["date"]) if alt else None
-                if alt and (age is None or (alt_age is not None
-                                            and alt_age < age)):
-                    # 조용한 대체 금지 — 폴백을 탄 사실을 남긴다.
-                    log.info("market_timing: %s 3년 레인지 %d행(최신 %s) — "
-                             "1년 레인지 %d행(최신 %s)으로 대체",
-                             ticker, len(out),
-                             out[-1]["date"] if out else "—",
-                             len(alt), alt[-1]["date"])
-                    out = alt
+        # ⚠️ 2026-08-20 사용자: "한국일본 이미 장종료 6시간 지났을텐데 KR
+        # KOSPI 같은건 금일 기준도 아니야." 재질의가 **3년 요청일 때만**
+        # 걸려 있었는데 시장타이밍은 days=120(=1년)이라 한 번도 안 탔다 —
+        # `^MOVE` 에서 배운 '묻는 방식이 결과를 가른다'를 정작 지수에는
+        # 적용하지 않고 있었다. 이제 **모든 기간**에서 신선도로 판정한다.
+        _stale_gate = _idx_stale_days(ticker)
+        age = _vol_age_days(out[-1]["date"]) if out else None
+        if not out or (age is not None and age > _stale_gate):
+            # ⚠️ 같은 '1년'이라도 **묻는 방식**이 결과를 가른다(2026-08-19
+            # `^MOVE` 실측): 날짜범위 질의는 07-17 에서 끊긴 데이터를 주고
+            # 기간 키워드(`period="1y"`) 질의는 227행·최신 08-18 을 준다.
+            # 어느 쪽이 이길지 날마다 뒤바뀌므로 **둘 다** 물어 가장 신선한
+            # 쪽을 쓴다(같으면 긴 쪽).
+            cands = []
+            for pp in (True, False):
+                got = _payload_to_rows(
+                    fetch_chart_payload(ticker, interval="1d",
+                                        period="1y", prefer_period=pp), days)
+                if got:
+                    cands.append(got)
+            alt = min(cands,
+                      key=lambda r: (_vol_age_days(r[-1]["date"]) or 10 ** 6,
+                                     -len(r))) if cands else []
+            alt_age = _vol_age_days(alt[-1]["date"]) if alt else None
+            if alt and (age is None or (alt_age is not None
+                                        and alt_age < age)):
+                # 조용한 대체 금지 — 폴백을 탄 사실을 남긴다.
+                log.info("market_timing: %s %s 질의 %d행(최신 %s) — "
+                         "재질의 %d행(최신 %s)으로 대체",
+                         ticker, period, len(out),
+                         out[-1]["date"] if out else "—",
+                         len(alt), alt[-1]["date"])
+                out = alt
         # `out` 이 비었으면 fetch_chart_payload 가 **이미** 네이버를 시도한
         # 뒤다(그 폴백은 빈 결과에서 걸린다) — 여기서 또 부르면 10초 타임아웃
         # HTTP 호출만 티커마다 중복된다. 절단(0<len<min_rows)일 때만 재시도.
@@ -617,7 +632,7 @@ def fetch_vkospi_rows(days: int = _VKOSPI_DAYS) -> list:
     """KIS 국내지수 일봉 → [{date, close}] 오름차순. 실패 시 [] (graceful).
 
     `kis_client.get_domestic_index_daily` 가 1시간 디스크 캐시를 갖고 있어
-    6시간 주기 재생성에서 실제 호출은 회당 1번뿐이다. 크리덴셜
+    3시간 주기 재생성에서 실제 호출은 회당 1번뿐이다. 크리덴셜
     (KIS_APP_KEY/KIS_APP_SECRET)이 없으면 None 을 돌려주고, 그러면 카드가
     통째로 생략된다(0 이나 VIX 값으로 채우지 않는다)."""
     try:
@@ -1397,7 +1412,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
 {_NAV}
 <h1>🚦 <em>시장타이밍</em> 보드</h1>
 <p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·시장폭·변동성·센티먼트·매크로 레짐·크립토·COT — 데이터 적용시각 {ts} ·
-소스 yfinance + FRED + CoinGecko + CFTC + 네이버(VIX) + CNN(센티먼트)(전부 무료, 6시간 주기 자동 갱신)</p>
+소스 yfinance + FRED + CoinGecko + CFTC + 네이버(VIX) + CNN(센티먼트)(전부 무료, 3시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 분산일(Distribution Day)</b> — 종가 -0.2%+ 하락 & 거래량 증가 = 기관 매도 신호.
 D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. 위험도는 셋 중 가장 높은 신호로 판정
@@ -1442,7 +1457,7 @@ MOVE=채권 변동성(ICE BofA, bp 단위). 종가 기반 카드는 '현재' 칸
 
 
 def regenerate_market_timing() -> None:
-    """market_timing.html 재생성 — 자정/6시간 주기 + startup. 실패해도 기존
+    """market_timing.html 재생성 — 자정/3시간 주기 + startup. 실패해도 기존
     파일 유지(graceful). ⚠️ 네트워크 다수콜 — to_thread 필수(이벤트루프 차단 금지)."""
     from bot.dashboard import ARCHIVE_ROOT, _inject_update_banner
     try:

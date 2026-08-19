@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 
 def _p(*a):
@@ -203,28 +203,42 @@ def _audit_home_surfaces(show_all):
     _p("── 관심종목 (검산: 예상 PER = 현재가 ÷ 예상 EPS)")
     try:
         from bot import market_favorites as mf
-        favs = mf.get_favorites_with_prices()
-        bad, checked, blank = [], 0, 0
+        # ⚠️ v3 는 `get_favorites_with_prices()` 를 그냥 불렀다가 **콜드 캐시**
+        # 라 디스크 원본을 받았다 — 현재가는 None 인데 PER 은 종목 담던 날의
+        # 값이 남아 108행 전부 '❌ 불일치' 로 오보했다(2026-08-20). 프로브는
+        # 화면과 **같은 값**을 봐야 하므로 갱신을 동기로 돌린다.
+        favs = mf._compute_favorites_with_prices()
+        bad, ok, blank, noprice = [], 0, 0, 0
         for f in favs:
             px, eps, per = (f.get("current_price"), f.get("eps_estimate"),
                             f.get("per"))
-            if per is None:
-                blank += 1
+            if px is None:
+                noprice += 1          # 가격을 못 받은 종목 — 검산 대상 아님
                 continue
-            if px is None or not eps:
+            if per is None:
+                blank += 1            # EPS 없음 → PER 빈칸(정상 동작)
+                continue
+            if not eps:
                 bad.append((f, per, None))
                 continue
             calc = px / eps
-            checked += 1
-            if abs(calc - per) > max(0.05 * abs(per), 0.1):
+            if abs(calc - per) <= max(0.02 * abs(per), 0.05):
+                ok += 1
+            else:
                 bad.append((f, per, calc))
-        _p(f"   {len(favs)}종목 · 검산 통과 {checked - len([b for b in bad if b[2]])}"
-           f" · ❌ 불일치 {len(bad)} · PER 빈칸 {blank}")
+        _p(f"   {len(favs)}종목 · ✅ 검산통과 {ok} · ❌ 불일치 {len(bad)}"
+           f" · PER 빈칸(EPS 없음) {blank} · 가격 미수신 {noprice}")
+        if noprice:
+            _p(f"      ↪ 가격 미수신 {noprice}건은 상장폐지·심볼 오류 후보 —"
+               f" 아래 목록 참고")
+            for f in [x for x in favs if x.get("current_price") is None][:8]:
+                _p(f"      · {str(f.get('name_kr') or f.get('name'))[:18]:18} "
+                   f"{f.get('ticker','')}")
         for f, per, calc in bad[:12]:
             _p(f"   ❌ {str(f.get('name_kr') or f.get('name'))[:16]:16} "
-               f"{f.get('ticker',''):12} 화면 PER {per} · "
+               f"{f.get('ticker',''):12} 화면 PER {per:.2f} · "
                f"현재가 {f.get('current_price')} ÷ EPS {f.get('eps_estimate')} = "
-               f"{f'{calc:.1f}' if calc else '계산불가'}")
+               f"{f'{calc:.2f}' if calc else '계산불가(EPS 0/없음)'}")
     except Exception as exc:                                   # noqa: BLE001
         _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 

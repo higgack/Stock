@@ -36,6 +36,12 @@ log = logging.getLogger("bot.fred_boards")
 
 _KST = timezone(timedelta(hours=9))   # 모든 시각 KST 명시(서버 로컬타임 의존 금지)
 
+# ⚠️ 히스토리 캐시 TTL 은 **재생성 주기보다 짧아야** 한다. 2026-08-20 에
+# 보드 주기를 6h→3h 로 줄였는데 TTL 이 5h 그대로면 3h 사이클의 절반이 캐시에
+# 걸려 화면이 **하나도 안 신선해진다**(주기만 바꾸고 캐시를 안 본 채 "3시간
+# 주기로 바꿨다"고 보고하면 거짓말이 된다). 주기 3h − 여유 = 2.5h.
+_HIST_TTL_H = 2.5
+
 _PPI_START = "2019-01-01"    # 원본과 동일 기준(2019-01~)
 _LIQ_START = "2018-01-01"    # 점수 히스토리 2018~(원본 동일)
 
@@ -98,6 +104,26 @@ def _value_at(hist: list[tuple[str, float]], months_back: int):
     return prev[-1] if prev else None
 
 
+def _median_month_gap(hist: list[tuple[str, float]]) -> int:
+    """월 단위 정규화된 시계열의 **관측 간격 중앙값**(개월). 관측이 부족하면 1."""
+    if len(hist) < 3:
+        return 1
+    # ⚠️ `zip(hist[-13:], hist[-12:])` 는 길이가 13 미만이면 **같은 리스트**를
+    # 짝지어 간격이 전부 0 이 된다(직접 실측). 인접쌍은 zip(x, x[1:]) 이다.
+    recent = hist[-13:]
+    gaps = []
+    for (d0, _), (d1, _) in zip(recent, recent[1:]):
+        y0, m0 = int(d0[:4]), int(d0[5:7])
+        y1, m1 = int(d1[:4]), int(d1[5:7])
+        g = (y1 - y0) * 12 + (m1 - m0)
+        if g > 0:
+            gaps.append(g)
+    if not gaps:
+        return 1
+    gaps.sort()
+    return gaps[len(gaps) // 2]
+
+
 def series_metrics(hist: list[tuple[str, float]]) -> dict | None:
     """히스토리 → {latest, latest_date, mom, m3, m6, yoy, total, peak,
     peak_date, from_peak, trough_after_peak, recovery, momentum}. 원본 PPI
@@ -111,13 +137,20 @@ def series_metrics(hist: list[tuple[str, float]]) -> dict | None:
     after = [x for x in hist if x[0] >= peak_d]
     trough_d, trough = min(after, key=lambda x: x[1]) if after else (latest_d, latest)
     m6 = _value_at(hist, 6)
+    # ⚠️ **시리즈 자체 주기보다 짧은 창은 계산할 수 없다**. 분기 시리즈
+    # (M2V/M1V)는 월간 정규화 후에도 관측이 1·4·7·10월뿐이라 '1M' 이 사실은
+    # 직전 **분기** 값과의 비교다 — 화면엔 "+0.00%" 로 떠서 '변화 없음'
+    # 처럼 보였다(2026-08-20 사용자 캡처). 라벨이 거짓이면 빈칸이 낫다.
+    # 카탈로그 플래그가 아니라 **관측 간격 실측**으로 판정한다(#24 — 목록형
+    # 판정은 새 시리즈를 놓친다).
+    _gap = _median_month_gap(hist)
     momentum = None
     if m6 is not None and m6 > 0 and latest > 0:
         momentum = ((latest / m6) ** (1 / 6) - 1) * 100.0
     return {
         "latest": latest, "latest_date": latest_d[:7],
-        "mom": _pct(latest, _value_at(hist, 1)),
-        "m3": _pct(latest, _value_at(hist, 3)),
+        "mom": None if _gap > 1 else _pct(latest, _value_at(hist, 1)),
+        "m3": None if _gap > 3 else _pct(latest, _value_at(hist, 3)),
         "m6": _pct(latest, m6),
         "yoy": _pct(latest, _value_at(hist, 12)),
         "total": _pct(latest, hist[0][1]),
@@ -587,7 +620,7 @@ def _load_ppi() -> tuple[list[dict], list[dict], list[str]]:
     ids = [s["id"] for s in PPI_SERIES]
     extra = {p["out"] for p in _MARGIN_PAIRS} | {p["inp"] for p in _MARGIN_PAIRS}
     for sid in ids + sorted(extra - set(ids)):
-        H[sid] = fred_client.fetch_history(sid, _PPI_START)
+        H[sid] = fred_client.fetch_history(sid, _PPI_START, ttl_hours=_HIST_TTL_H)
     rows = []
     dropped: list[str] = []
     for s in PPI_SERIES:
@@ -631,7 +664,7 @@ def _load_cpi() -> tuple[list[dict], list[str]]:
     H: dict[str, list] = {}
     ids = [s["id"] for s in CPI_SERIES]
     for sid in ids:
-        H[sid] = fred_client.fetch_history(sid, _PPI_START)
+        H[sid] = fred_client.fetch_history(sid, _PPI_START, ttl_hours=_HIST_TTL_H)
     rows = []
     dropped: list[str] = []
     for s in CPI_SERIES:
@@ -672,7 +705,7 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
         if s.get("src"):
             H[s["id"]] = _alt_history(s["src"])
         else:
-            H[s["id"]] = fred_client.fetch_history(s["id"], _LIQ_START)
+            H[s["id"]] = fred_client.fetch_history(s["id"], _LIQ_START, ttl_hours=_HIST_TTL_H)
     rows = []
     dropped: list[str] = []
     for s in LIQ_SERIES:
@@ -907,7 +940,7 @@ def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
 {_NAV}
 <h1>🏭 <em>PPI</em> 투자신호 보드</h1>
 <p class="sub">미 생산자물가(FRED) 산업별 가격 추세 → 관련주 신호 · {len(rows)}개 시리즈(2019-01~) ·
-관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(6시간 주기 자동 갱신)</p>
+관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(3시간 주기 자동 갱신)</p>
 {_dropped_note(dropped)}
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 신호 필터</b> — 상단 알약(전체/🔴/🟠/🟡/🔵/⚪) 클릭 = 그 신호만. 두 번째 줄 = 카테고리 필터.<br>
@@ -919,7 +952,7 @@ def render_ppi_page(rows: list[dict], margins: list[dict] | None = None,
 자동 신호이므로 참고용 — 확정 판단 금지.<br>
 <b>5) 💹 마진 스프레드</b> — 판가(산업 PPI) YoY − 원가(원재료 PPI) YoY. 양수·확대 = 그 산업 마진 개선 압력(원가는 단일 proxy — 방향 신호용).<br>
 <b>6) 🇰🇷 한국 PPI</b> — 카테고리 '한국 PPI(ECOS)' = 한국은행 생산자물가(월간)를 같은 신호 룰로 — 미국(FRED)과 나란히 비교.<br>
-<b>7) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
+<b>7) 갱신</b> — 3시간 주기 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
 </details>
 {empty}
 {_margin_panel(margins)}
@@ -1015,7 +1048,7 @@ def render_cpi_page(rows: list[dict], now: datetime | None = None,
 {_NAV}
 <h1>🛒 <em>CPI</em> 투자신호 보드</h1>
 <p class="sub">미 소비자물가(FRED) 세부항목별 가격 추세 → 관련주 신호 · {len(rows)}개 시리즈(2019-01~) ·
-관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(6시간 주기 자동 갱신)</p>
+관련주 US·KR·JP·TW · 데이터 적용시각 {ts} · 소스 FRED API(3시간 주기 자동 갱신)</p>
 {_dropped_note(dropped)}
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 신호 필터</b> — 상단 알약(전체/🔴/🟠/🟡/🔵/⚪) 클릭 = 그 신호만. 두 번째 줄 = 카테고리 필터.<br>
@@ -1027,7 +1060,7 @@ def render_cpi_page(rows: list[dict], now: datetime | None = None,
 주거비 CPI 상승↔임대인·리츠 수혜, 유가 CPI 상승↔항공·물류 원가부담). 각 행 관련주 설명에 방향 참고 표기.
 자동 신호이므로 참고용 — 확정 판단 금지.<br>
 <b>5) 🇰🇷 한국 CPI</b> — 카테고리 '한국 CPI(ECOS)' = 한국은행 소비자물가(월간)를 같은 신호 룰로 — 미국(FRED)과 나란히 비교.<br>
-<b>6) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
+<b>6) 갱신</b> — 3시간 주기 자동 재생성(FRED·ECOS 무료 API). 원본 대비: 박제 아님·자동 갱신.
 </details>
 {empty}
 <div class="pills" id="pills" data-counts='{_json.dumps(sig_counts)}'></div>
@@ -1125,7 +1158,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 {_NAV}
 <h1>💧 <em>글로벌 유동성</em> 보드</h1>
 <p class="sub">Fed 순유동성(WALCL−TGA−RRP)·M2·중앙은행 자산·크레딧 스프레드·스트레스 지표 {len(rows)}종 ·
-데이터 적용시각 {ts} · 소스 FRED + 한국은행 ECOS + 인민은행 LPR(6시간 주기 자동 갱신)</p>
+데이터 적용시각 {ts} · 소스 FRED + 한국은행 ECOS + 인민은행 LPR(3시간 주기 자동 갱신)</p>
 {_dropped_note(derived.get("dropped"))}
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 종합점수(0~100)</b> — 구성요소 8개 각각의 <b>최근값이 최근 5년 분포에서 어디쯤인지</b>(백분위)를
@@ -1136,7 +1169,7 @@ TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
 <b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
 금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 각 시리즈의 <b>실제 공표일정</b>(주기+통상 지연일)을 기준으로 늦은 것만 <b>⚠️지연</b> 배지 — 배지에 마우스를 올리면 기대 관측기간과 근거가 뜹니다. 분기·반년 지연 계열(예 외국인 보유 미 연방부채)은 정상 지연이라 배지가 뜨지 않습니다. 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
-<b>5) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(전부 무료 API).
+<b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API).
 </details>
 {empty}
 <div class="panel"><div class="panel-title">종합 유동성 점수</div>
@@ -1175,7 +1208,12 @@ var UM={{'M USD':[1e6,'$'],'B USD':[1e9,'$'],'M EUR':[1e6,'€'],'100M JPY':[1e8
 function fv(r){{var v=r.latest,u=r.unit||'';
  if(u==='%')return v.toFixed(2)+'%';
  if(u==='Index'||u==='pt')return v.toFixed(1);
- if(r.is_rate)return v.toFixed(2)+'%';
+ // ⚠️ 단위가 %가 아니면 %를 붙이지 않는다. `is_rate` 는 지수·비율 계열에도
+ // 켜져 있어(카탈로그 실측: Index 4종·Ratio 2종) 그대로 쓰면 통화유통속도가
+ // "1.41%" 로 나온다 — 유통속도는 배수지 퍼센트가 아니다(2026-08-20 사용자
+ // 캡처). 서버쪽 %p 규칙(_rate_deltas)과 **같은 조건**으로 맞춘다.
+ if(u==='Ratio')return v.toFixed(2);
+ if(r.is_rate&&(!u||u==='%'))return v.toFixed(2)+'%';
  var m=UM[u];
  if(!m)return v.toLocaleString(undefined,{{maximumFractionDigits:2}})+(u?' '+u:'');
  var a=v*m[0],c=m[1],ab=Math.abs(a);

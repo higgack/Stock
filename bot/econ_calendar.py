@@ -353,6 +353,24 @@ def _load_econ_calendar(today: Optional[str] = None) -> dict:
     return {"events": events, "as_of": t, "megatech_earnings": megatech}
 
 
+def _obs_period_label(obs_date: str) -> str:
+    """관측 **기간**을 사람 말로 — "2026-06-01 관측" → "2026년 6월분".
+
+    사용자 2026-08-20: "7/14일, 8/12일이 실제치인데 어떻게 06/01, 07/01에
+    관측이 되지?" 동작은 정상이다 — 7/14 발표는 **6월분** CPI 를 낸 것이고
+    FRED 는 월간 관측을 그 달 **1일자**로 적는다. 즉 화면의 '2026-06-01' 은
+    '6월 한 달'이라는 뜻이지 '6월 1일에 쟀다'가 아니다. 표기가 그걸 못
+    전달해서 데이터가 틀린 것처럼 보였다 — 라벨을 기간으로 바꾼다.
+    분기·주간 관측은 그대로 날짜로 둔다(월초가 아니면 월분이 아니다)."""
+    d = str(obs_date or "").strip()
+    if not d:
+        return "관측기간 미상"
+    if len(d) == 10 and d.endswith("-01"):
+        y, m = d[:4], d[5:7]
+        return f"{y}년 {int(m)}월분"
+    return f"{d} 관측"
+
+
 def render_econ_calendar_page(data: dict, now=None) -> str:
     """econ_calendar.html — 이벤트별 다음 발표일 + 최근 발표일 카드.
     fred_boards 의 공용 테마/nav/CSS 재사용(신규 보드 CSS 중복 방지)."""
@@ -387,7 +405,7 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
             rows = "".join(
                 f'<div class="stat"><div class="k">{_h.escape(a["release_date"])} 실제치</div>'
                 f'<div class="v" style="font-size:16px">{a["value"]:,.1f} '
-                f'<span class="sub" style="font-size:12px">({_h.escape(a["obs_date"])} 관측)</span></div></div>'
+                f'<span class="sub" style="font-size:12px">({_obs_period_label(a["obs_date"])})</span></div></div>'
                 for a in e["actuals"]
             )
             actuals_html = f'<div class="stat-grid" style="margin-top:6px">{rows}</div>'
@@ -442,12 +460,15 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
 {_NAV}
 <h1>📅 <em>경제 캘린더</em></h1>
 <p class="sub">CPI·Core CPI·PPI·고용·AHE·실업률·실업수당(신규/연속)·소매·ECI·GDP·PCE·Core PCE·FOMC·JOLTS·소비자심리·산업생산·메가테크 실적 — 데이터 적용시각 {_h.escape(ts)} ·
-소스 FRED release-dates API + Finnhub(무료, 6시간 주기 자동 갱신)</p>
+소스 FRED release-dates API + Finnhub(무료, 3시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 거시지표 발표일 전후는 변동성이 커지는 구간 — 진입/청산 타이밍 참고용.
 '다음 발표일'이 임박했다면 신규 진입 전 리스크 인지, '최근 발표일'은 직후
-반응(gap/드리프트)을 되짚어볼 때 참고. '실제치'는 해당 발표일에 나온 FRED
-관측값(컨센서스/예측치는 유료 설문데이터라 미제공 — 실제치만). 카드 상단 '분류'에서 미국 5거래일 변동성/정책민감도/경기침체 조기경보 구분을 확인할 수 있다. '최근 발표일'은 릴리스 일정(수정치 포함) 기준이며, 실제치 매칭은 지표별 발표-관측 시차를 반영한다. 하단 '방향성'은 최근 발표대비·1M·3M·6M·1Y 변화를 함께 보여준다. 메가테크
+반응(gap/드리프트)을 되짚어볼 때 참고. '실제치'는 해당 발표일에 **그 시점 FRED 에 실제로 공표돼 있던 값**
+(원천 vintage 질의 — 추정 없음. 컨센서스/예측치는 유료 설문데이터라 미제공).
+괄호 안은 그 값이 <b>어느 기간의 지표인지</b>다 — 예컨대 7/14 발표의 실제치는
+<b>6월분</b>이다(월간 지표는 익월에 발표된다). 발표일과 대상 기간이 다른 게
+정상이며, 두 발표가 같은 값이면 오히려 빈티지가 오염된 것이다. 카드 상단 '분류'에서 미국 5거래일 변동성/정책민감도/경기침체 조기경보 구분을 확인할 수 있다. '최근 발표일'은 릴리스 일정(수정치 포함) 기준이며, 실제치 매칭은 지표별 발표-관측 시차를 반영한다. 하단 '방향성'은 최근 발표대비·1M·3M·6M·1Y 변화를 함께 보여준다. 메가테크
 실적일(AI/반도체/빅테크 24종)은 AI/반도체 사이클 변곡점 참고용. 현재 US(연준/
 BLS/BEA) 발표 중심 — KR/JP 는 FRED 개별 발표일정 커버리지 공백으로 미포함
 (추후 확장 여지, 시장 게이트 아닌 데이터소스 제약). 미 재무부 QRA(분기
@@ -462,7 +483,7 @@ treasurydirect.gov 재무부 공지 직접 확인 권장.
 
 
 def regenerate_econ_calendar() -> None:
-    """econ_calendar.html 재생성 — 자정/6시간 주기 + startup. 실패해도 기존
+    """econ_calendar.html 재생성 — 자정/3시간 주기 + startup. 실패해도 기존
     파일 유지(graceful). ⚠️ 네트워크 호출 — to_thread 필수(이벤트루프 차단 금지)."""
     from bot.dashboard import ARCHIVE_ROOT, _inject_update_banner
     try:
