@@ -25902,3 +25902,64 @@ class TestLongRangeFallback20260819:
         assert len(q) == ss._Q_TABLE, "표시 구간이 늘어나면 안 된다"
         assert all(e.get("ROE") is not None for e in q), \
             [e.get("ROE") for e in q]
+
+
+class TestUsIndustryKr20260819:
+    """사용자 2026-08-19: 미국 신고저·급등락·장전장후만 업종이 영문이었다.
+
+    원인은 **어휘 계열이 다른 것**이었다 — 한국·일본은 yfinance/GICS
+    ("Software - Infrastructure")인데 미국 페이지는 NASDAQ screener 분류
+    ("EDP Services")라, 사전이 앞 계열만 갖고 있었다."""
+
+    def test_nasdaq_vocabulary_is_translated(self):
+        from bot.translate import industry_kr
+        # 사용자 화면에서 **전체 문자열이 보인 것**만 단언한다(잘린 라벨을
+        # 추측해 넣으면 엉뚱한 번역이 굳는다).
+        seen = ["Pharmaceuticals", "Major Banks", "Commercial Banks",
+                "Biotechnology: Pharmaceutical Preparations",
+                "Biotechnology: Biological Products (No Diagnostic Substances)",
+                "Oil & Gas Production", "Marine Transportation",
+                "EDP Services", "Finance: Consumer Services",
+                "Computer Software: Prepackaged Software",
+                "Computer Software: Programming Data Processing",
+                "Industrial Machinery/Components", "Medical/Dental Instruments",
+                "Beverages (Production/Distribution)", "Auto Parts:O.E.M.",
+                "Durable Goods", "Telecommunications Equipment",
+                "Professional Services", "Real Estate", "Miscellaneous",
+                "Other Pharmaceuticals", "Recreational Games/Products/Toys",
+                "Oilfield Services/Equipment",
+                "Biotechnology: Laboratory Analytical Instruments"]
+        bad = [s for s in seen if industry_kr(s) == s]
+        assert not bad, f"미번역: {bad}"
+        # 번역 결과에 한글이 있어야 한다(영문→영문 자기복사 방지).
+        for s in seen:
+            v = industry_kr(s)
+            assert any("가" <= ch <= "힣" for ch in v), (s, v)
+
+    def test_gics_vocabulary_untouched(self):
+        """기존 계열을 덮어쓰면 한국·일본 화면이 깨진다."""
+        from bot.translate import industry_kr
+        assert industry_kr("Software - Infrastructure") == "소프트웨어 - 인프라"
+        assert industry_kr("Semiconductors") == "반도체"
+
+    def test_dictionary_has_no_duplicate_keys(self):
+        """중복 키는 파이썬이 조용히 마지막 것만 남긴다 — 앞의 번역이
+        사라져도 아무도 모른다(실제로 5건 넣을 뻔했다)."""
+        import re
+        from collections import Counter
+        from pathlib import Path
+        src = Path("bot/translate.py").read_text(encoding="utf-8")
+        blk = src[src.index("_INDUSTRY_KR"):src.index("_COUNTRY_KR")]
+        keys = re.findall(r'^\s{4}"([^"]+)":', blk, re.M)
+        dup = [k for k, c in Counter(keys).items() if c > 1]
+        assert not dup, f"중복 키: {dup}"
+
+    def test_probe_reports_untranslated_values(self):
+        """번역을 늘리는 유일한 안전한 방법 = 원천에서 **전체 문자열**을
+        세는 것. 프로브가 그 목록을 준다(추측 0)."""
+        import inspect
+        from bot.scripts import industry_kr_probe as p
+        src = inspect.getsource(p.main)
+        assert "industry_kr(k) == k" in src      # 미번역 판정
+        assert "most_common" in src              # 빈도순
+        assert "nasdaq_industries.json" in inspect.getsource(p)
