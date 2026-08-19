@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 6
+_PROBE_VER = 7
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -285,7 +285,12 @@ def main(argv: list[str]) -> int:
                                  _extract_dart_financials,
                                  calc_kr_financial_ratios, get_dart)
     tickers = [a for a in argv[1:] if not a.startswith("-")]
-    _p(f"kr_revenue_probe v{_PROBE_VER} · 매출 그룹={_ACCOUNT_GROUPS['매출']}")
+    try:
+        from bot.wisereport_financials import _PARSE_VER as _fgv
+    except Exception:
+        _fgv = "?"
+    _p(f"kr_revenue_probe v{_PROBE_VER} · FnGuide 파서 v{_fgv} · "
+       f"매출 그룹={_ACCOUNT_GROUPS['매출']}")
     if "--fnguide-discover" in argv:
         return _fnguide_discover(tickers)
     if "--fnguide-debug" in argv:

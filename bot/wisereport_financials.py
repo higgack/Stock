@@ -50,6 +50,12 @@ _HEADERS = {
 }
 _TIMEOUT = 12
 _CACHE_TTL_H = 12
+# ⚠️ **파싱 버전.** 12h 디스크 캐시는 코드를 고쳐도 안 바뀐다 — 그룹 헤더
+# 분리(#923)를 배포하고도 스윕 출력이 **한 글자도 안 변했다**(2026-08-19).
+# 캐시된 옛 파싱 결과가 그대로 서빙됐기 때문이다(실수 #18 의 세 번째 재발).
+# 파서를 고치면 이 숫자를 올린다 — 옛 캐시는 즉시 무효.
+#   v1 = 표 전체를 한 종류로 분류 · v2 = 그룹 헤더(연간/분기)로 컬럼별 분리
+_PARSE_VER = 2
 
 # ⚠️ 실패 이유를 남긴다 — "표 없음" 한 마디로는 (a) 요청 실패 (b) 표가 AJAX
 # 라 HTML 에 없음 (c) 파싱 규칙 문제를 못 가른다(실수 #12 silent-fail).
@@ -174,7 +180,7 @@ def fetch_financial_summary(stock_code: str) -> Optional[dict]:
     ck = f"wisereport_finsum_{code}.json"
     if _cached:
         c = _cached(ck, ttl=_CACHE_TTL_H * 3600)
-        if isinstance(c, dict) and c:
+        if isinstance(c, dict) and c.get("_ver") == _PARSE_VER:
             return c
     out: dict = {"annual": {}, "quarter": {}}
     seen_rev = False
@@ -207,6 +213,7 @@ def fetch_financial_summary(stock_code: str) -> Optional[dict]:
         log.info("wisereport_fin: %s — %s", code, _LAST_REASON[code])
         return None
     _LAST_REASON.pop(code, None)
+    out["_ver"] = _PARSE_VER
     if _cache_write:
         _cache_write(ck, out)
     return out
