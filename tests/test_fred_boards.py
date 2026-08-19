@@ -112,20 +112,24 @@ class SignalTests(unittest.TestCase):
 
 class LiquidityTests(unittest.TestCase):
     def test_net_liquidity_units(self):
-        # FRED 원시 단위: WALCL=M$, TGA(WTREGEN)=B$, RRP=B$ (리뷰 교정 —
-        # 공식 FRED 그래프 WALCL/1000 − RRPONTSYD − WTREGEN 와 동일).
-        # 7,000,000M(=7000B) − 800B − 200B = 6000B.
+        # FRED 원시 단위: WALCL=M$, **TGA(WTREGEN)=M$**, RRP=B$.
+        # ⚠️ 옛 fixture 는 TGA 를 손으로 십억$ 로 바꿔 넣어(800.0) 실제
+        # 원시값(800,000)과 달랐다 — 그래서 파이프라인이 1000배 틀린 채로
+        # 테스트만 통과했다(실수 #19: 가공한 입력은 버그를 축복한다).
+        # 7,000,000M(=7000B) − 800,000M(=800B) − 200B = 6000B.
         walcl = [("2026-01-01", 7_000_000.0)]
-        tga = [("2026-01-01", 800.0)]
+        tga = [("2026-01-01", 800_000.0)]
         rrp = [("2026-01-01", 200.0)]
         nl = fb.net_liquidity(walcl, tga, rrp)
         self.assertEqual(nl, [("2026-01-01", 6000.0)])
 
     def test_net_liquidity_real_values_lock(self):
-        # 2026-03 실측 잠금: WALCL 6,628,894M · TGA 832.053B · RRP 0.332B →
-        # ≈5,796.5B (외부 실측 Fed Net Liquidity ~5.8T 와 일치). 단위 회귀 방지.
+        # 2026-03 실측 잠금: WALCL 6,628,894M · TGA **832,053M** · RRP 0.332B
+        # → ≈5,796.5B (외부 실측 Fed Net Liquidity ~5.8T 와 일치).
+        # TGA 를 백만$ 원시값으로 넣는다 — 화면 실측(2026-08-19)에서 표기가
+        # `$963.95T` 로 뜬 것이 원시가 백만 단위임을 확정했다(963,950 × 1e9).
         nl = fb.net_liquidity([("2026-03-01", 6_628_894.0)],
-                              [("2026-03-01", 832.053)],
+                              [("2026-03-01", 832_053.0)],
                               [("2026-03-01", 0.332)])
         self.assertAlmostEqual(nl[0][1], 5796.509, places=2)
 
@@ -371,7 +375,9 @@ class RenderTests(unittest.TestCase):
         self.assertIn("'100M JPY':[1e8,'¥']", html)
         wt = next(s for s in LIQ_SERIES if s["id"] == "WTREGEN")
         bm = next(s for s in LIQ_SERIES if s["id"] == "BOGMBASE")
-        self.assertEqual(wt["unit"], "B USD")           # FRED 원시(표시변환 아님)
+        # ⚠️ WTREGEN 은 **백만$** 다(2026-08-19 교정). 십억$ 로 잡아 화면에
+        # `$963.95T`(실제 $963.95B)가 떴고 순유동성도 1000배 어긋났다.
+        self.assertEqual(wt["unit"], "M USD")           # FRED 원시(표시변환 아님)
         self.assertEqual(bm["unit"], "M USD")
 
     def test_time_theme_wired(self):

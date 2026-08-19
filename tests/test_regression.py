@@ -22939,6 +22939,48 @@ class TestFlowTrendDiagnosis20260818:
             assert got[covered] == "해운"
             assert got[missing] == "금속 가공", f"{mkt} 폴백분 미번역"
 
+    def test_liquidity_board_units_match_freds_native_units(self):
+        """⚠️ TGA 가 화면에 **$963.95T**(실제 $963.95B, 1000배)로 떠 있었다
+        — FRED `WTREGEN` 은 백만$ 인데 카탈로그가 십억$ 로 잡고 있었다
+        (사용자 2026-08-19 유동성 대시보드 점검에서 발각). 표기값만 틀린 게
+        아니라 **순유동성 = WALCL − TGA − RRP** 도 TGA 를 1000배로 빼고
+        있었다. 단위는 눈으로 지키는 게 아니라 표로 못 박는다."""
+        from bot.fred_boards_catalog import LIQ_SERIES
+        # FRED 가 문서화한 원시 단위(경험적 확인은 VM 프로브의 상식범위 검사).
+        native = {
+            "M2SL": "B USD", "M1SL": "B USD", "RMFSL": "B USD",
+            "WALCL": "M USD", "WTREGEN": "M USD", "WRESBAL": "B USD",
+            "WLCFLPCL": "M USD", "RRPONTSYD": "B USD", "BOGMBASE": "M USD",
+            "JPNASSETS": "100M JPY", "ECBASSETSW": "M EUR",
+            "TOTBKCR": "B USD", "BUSLOANS": "B USD", "COMPOUT": "B USD",
+            "DPSACBW027SBOG": "B USD", "TRESEGCNM052N": "M USD",
+            "FDHBFIN": "B USD",
+        }
+        got = {s["id"]: s.get("unit") for s in LIQ_SERIES}
+        bad = {k: (got.get(k), v) for k, v in native.items()
+               if got.get(k) != v}
+        assert not bad, f"단위 불일치(카탈로그, FRED): {bad}"
+
+    def test_net_liquidity_converts_tga_from_millions(self):
+        """순유동성은 세 시리즈의 **단위가 제각각**이다(WALCL 백만$ ·
+        TGA 백만$ · RRP 십억$). 하나만 안 맞춰도 조 단위로 어긋난다."""
+        from bot.fred_boards import net_liquidity
+        out = net_liquidity([("2026-08-13", 6_760_000.0)],      # 6.76조$
+                            [("2026-08-13", 963_950.0)],        # 963.95십억$
+                            [("2026-08-13", 0.155)])            # 0.155십억$
+        assert len(out) == 1
+        # 6760 − 964 − 0.155 ≈ 5795.9 (십억$)
+        assert abs(out[0][1] - 5795.895) < 0.5, out
+
+    def test_every_liquidity_series_has_a_cadence_rule(self):
+        """"최신 데이터를 제때 불러오는지" 를 판정하려면 항목마다 공표 규약이
+        있어야 한다 — 새 시리즈를 추가하고 규약을 빼먹으면 그 항목만 영원히
+        무판정으로 남는다(실수 #18 계열)."""
+        from bot.fred_boards_catalog import LIQ_SERIES
+        from bot.macro_cadence import CADENCE
+        missing = [s["id"] for s in LIQ_SERIES if s["id"] not in CADENCE]
+        assert not missing, f"macro_cadence.CADENCE 누락: {missing}"
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를

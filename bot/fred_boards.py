@@ -12,7 +12,7 @@ LLM 0·FRED 무료(₩0, ~90콜/일). Chart.js 는 CDN 아닌 **로컬 벤더링
 PPI 15종·유동성 8종 확장). 카탈로그만 고치면 페이지 자동 반영.
 
 단위 주의(리뷰 2026-07-02에서 교정): FRED 원시 단위 기준 — WALCL=M$,
-WTREGEN(TGA)=B$, RRPONTSYD=B$ → 순유동성(B$) = WALCL/1000 − WTREGEN − RRP.
+WTREGEN(TGA)=**M$**, RRPONTSYD=B$ → 순유동성(B$) = WALCL/1000 − WTREGEN/1000 − RRP.
 (원본 파일의 WTREGEN 832053 은 빌더가 표시용 M$ 로 변환한 값 — 원시가 아님.)
 
 신호(PPI)·종합점수(유동성)는 **투명한 룰**로 재정의(원본은 사전계산 임베드라
@@ -255,9 +255,13 @@ def _signal(m: dict) -> tuple[str, str, str]:
 
 # ── 유동성 파생·점수(순수 — 테스트 대상) ──────────────────────────────────
 def net_liquidity(walcl, tga, rrp) -> list[tuple[str, float]]:
-    """Fed 순유동성(B USD) = WALCL(M$)/1000 − TGA(B$) − RRP(B$).
-    FRED 원시 단위: WALCL=백만$, WTREGEN·RRPONTSYD=십억$ (공식 FRED 그래프
-    수식 WALCL/1000 − RRPONTSYD − WTREGEN 와 동일 — 리뷰 2026-07-02 교정).
+    """Fed 순유동성(B USD) = WALCL(M$)/1000 − TGA(M$)/1000 − RRP(B$).
+
+    ⚠️ **FRED 원시 단위**(2026-08-19 교정): WALCL=백만$ · **WTREGEN=백만$** ·
+    RRPONTSYD=십억$. 옛 주석은 WTREGEN 을 십억$ 로 적어 두 곳이 틀렸다 —
+    화면의 TGA 가 `$963.95T`(실제 $963.95B, 1000배)로 떴고, 순유동성은
+    TGA 를 1000배로 빼 **수천 조 달러 마이너스**가 됐다(사용자 2026-08-19
+    유동성 대시보드 점검 지시에서 발각).
     주간(WALCL) 날짜축 기준, TGA/RRP는 해당일 이하 최근값 매칭."""
     def at(hist, d):
         prev = [v for dd, v in hist if dd <= d]
@@ -267,7 +271,7 @@ def net_liquidity(walcl, tga, rrp) -> list[tuple[str, float]]:
         t, r = at(tga, d), at(rrp, d)
         if t is None or r is None:
             continue
-        out.append((d, w / 1000.0 - t - r))
+        out.append((d, w / 1000.0 - t / 1000.0 - r))
     return out
 
 
