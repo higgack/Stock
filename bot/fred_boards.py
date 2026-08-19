@@ -28,6 +28,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from bot.fred_boards_catalog import CPI_SERIES, LIQ_SERIES, PPI_SERIES
+from bot.macro_cadence import (BLS_MONTHLY as _BLS_MONTHLY,
+                               KR_CPI_MONTHLY as _KR_CPI_CADENCE,
+                               KR_PPI_MONTHLY as _KR_PPI_CADENCE)
 
 log = logging.getLogger("bot.fred_boards")
 
@@ -163,7 +166,7 @@ def _staleness(latest_date: str) -> int | None:
         return None
 
 
-def _mark_stale(row: dict, months: int = 6) -> None:
+def _mark_stale(row: dict, months: int = 6, default: tuple | None = None) -> None:
     """기준일이 months(기본 6)개월 이상 과거면 stale 플래그(⚠️지연 배지) —
     소스가 끊기기 시작한 시리즈의 조기 경고. 12개월 이상은 로더가 목록에서
     자동 제외(사용자 2026-07-04 '중단된거는 삭제' — BLS 2025 감축분 포함
@@ -184,7 +187,10 @@ def _mark_stale(row: dict, months: int = 6) -> None:
     """
     try:
         from bot.macro_cadence import judge
-        j = judge(str(row.get("id") or ""), str(row.get("latest_date") or ""))
+        # `cadence_id` 는 화면 id 와 공표규약 키가 다를 때(ECOS:반도체 처럼
+        # 품목별로 쪼개진 행이 같은 규약을 공유) 쓰는 우회로.
+        j = judge(str(row.get("cadence_id") or row.get("id") or ""),
+                  str(row.get("latest_date") or ""), default=default)
     except Exception as exc:                                   # noqa: BLE001
         log.debug("_mark_stale: cadence judge failed: %s", exc)
         j = None
@@ -508,10 +514,11 @@ def _load_kr_ppi() -> list[dict]:
         if not m:
             continue
         key, label, note = _signal(m)
-        row = {"id": f"ECOS:{pat}", "name": name, "cat": "한국 PPI(ECOS)",
+        row = {"id": f"ECOS:{pat}", "cadence_id": "ECOS:KRPPI",
+               "name": name, "cat": "한국 PPI(ECOS)",
                "stocks": stocks, **m, "sig": key, "sig_label": label,
                "note": note, "hist": [(d[:7], v) for d, v in hist]}
-        _mark_stale(row)
+        _mark_stale(row, default=_KR_PPI_CADENCE)
         rows.append(row)
     return rows
 
@@ -552,10 +559,11 @@ def _load_kr_cpi() -> list[dict]:
         if not m:
             continue
         key, label, note = _signal(m)
-        row = {"id": f"ECOS:{pat}", "name": name, "cat": "한국 CPI(ECOS)",
+        row = {"id": f"ECOS:{pat}", "cadence_id": "ECOS:KRCPI",
+               "name": name, "cat": "한국 CPI(ECOS)",
                "stocks": stocks, **m, "sig": key, "sig_label": label,
                "note": note, "hist": [(d[:7], v) for d, v in hist]}
-        _mark_stale(row)
+        _mark_stale(row, default=_KR_CPI_CADENCE)
         rows.append(row)
     return rows
 
@@ -595,7 +603,7 @@ def _load_ppi() -> tuple[list[dict], list[dict], list[str]]:
         key, label, note = _signal(m)
         row = {**s, **m, "sig": key, "sig_label": label, "note": note,
                "hist": [(d[:7], v) for d, v in hist]}
-        _mark_stale(row)   # 공표규약 대비 지연 배지(전 보드 공통)
+        _mark_stale(row, default=_BLS_MONTHLY)   # 공표규약 대비 지연 배지
         rows.append(row)
     rows += _load_kr_ppi()
     # 12개월+ 미갱신 = 중단 간주 → 자동 제외(사용자 2026-07-04 '삭제').
@@ -637,7 +645,7 @@ def _load_cpi() -> tuple[list[dict], list[str]]:
         key, label, note = _signal(m)
         row = {**s, **m, "sig": key, "sig_label": label, "note": note,
                "hist": [(d[:7], v) for d, v in hist]}
-        _mark_stale(row)
+        _mark_stale(row, default=_BLS_MONTHLY)
         rows.append(row)
     rows += _load_kr_cpi()
     kept = []

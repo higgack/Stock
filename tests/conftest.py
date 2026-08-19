@@ -28,3 +28,25 @@ def _clear_snapshot_cache():
     except Exception:
         pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_disk_caches(tmp_path_factory, monkeypatch):
+    """디스크 캐시를 쓰는 모듈은 테스트에서 **사용자 실제 캐시**를 만진다.
+
+    2026-08-20 실측(board_audit 이 발각): `make test` 를 돌린 뒤 변동성
+    last-good 캐시에 `{"value": 369.0, "date": "d299"}` 라는 **테스트 픽스처
+    값**이 들어 있었다. VM 에서 커밋 전 회귀를 돌리면 그 가짜 값이 운영
+    캐시를 덮고, 원천이 실패하는 날 화면이 그걸 '저장분'으로 표시한다 —
+    테스트가 프로덕션 데이터를 오염시키는 경로다.
+
+    개별 테스트가 직접 monkeypatch 하는 것보다 여기서 한 번에 막는 게 맞다
+    (목록형 방어는 새 테스트를 못 잡는다 — 실수 #24).
+    """
+    root = tmp_path_factory.mktemp("caches")
+    try:
+        import bot.market_timing as _mt
+        monkeypatch.setattr(_mt, "_VOL_CACHE_DIR", root / "market_timing")
+    except Exception:
+        pass
+    yield

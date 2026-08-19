@@ -454,7 +454,9 @@ class DiscontinuedSweepTests(unittest.TestCase):
         # — 대만달러는 FRED 미수록 히스토리 없이 추가했다가 사용자 요청으로 제외)
         # +5(리서치 에이전트 4차 확장, 2026-07-24 — China M2 는 AK:CNM2 재발
         # 리스크로 제외)
-        self.assertEqual(len(LIQ_SERIES), 54)
+        # 2026-08-20: FDHBFIN 제거(원천 공표 ~170일 지연 → 화면에 늘
+        # 반년+ 옛값). 54 → 53.
+        self.assertEqual(len(LIQ_SERIES), 53)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
@@ -551,9 +553,10 @@ class DiscontinuedSweepTests(unittest.TestCase):
         self.assertEqual(fb._drop_after_months({}), 12)
 
     def test_liq_quarterly_series_tagged(self):
-        # M2V·M1V(GDP/M2·M1, 분기)·FDHBFIN(재무부 TIC, 분기) — 카탈로그 freq
-        # 태깅 실재 확인(위 임계값 배가 로직이 실제로 적용될 대상).
-        for want in ("M2V", "M1V", "FDHBFIN"):
+        # M2V·M1V(GDP/M2·M1, 분기) — 카탈로그 freq 태깅 실재 확인(위 임계값
+        # 배가 로직이 실제로 적용될 대상). FDHBFIN 은 2026-08-20 제거
+        # (원천 공표 ~170일 지연 → 화면에 늘 반년+ 옛값, 사용자 요청).
+        for want in ("M2V", "M1V"):
             s = next(x for x in LIQ_SERIES if x["id"] == want)
             self.assertEqual(s.get("freq"), "Q", f"{want} missing freq='Q'")
 
@@ -801,9 +804,10 @@ class MarginPpiLiqExpansion20260724Tests(unittest.TestCase):
 
     def test_liq_fourth_batch_ids_and_wiring(self):
         ids = {s["id"] for s in LIQ_SERIES}
-        for want in ("EFFR", "ECOS:FXRESERVE", "TRESEGCNM052N", "FDHBFIN",
-                     "ANFCI"):
+        for want in ("EFFR", "ECOS:FXRESERVE", "TRESEGCNM052N", "ANFCI"):
             self.assertIn(want, ids)
+        # 2026-08-20 제거 — 되살리려면 카탈로그 주석의 사유를 먼저 볼 것.
+        self.assertNotIn("FDHBFIN", ids)
         self.assertNotIn("AK:CNM2", ids)   # 재검증 없이 재등재 금지(위 독스트링)
         fxr = next(s for s in LIQ_SERIES if s["id"] == "ECOS:FXRESERVE")
         self.assertEqual(fxr["src"], "ecos:fx_reserve")
