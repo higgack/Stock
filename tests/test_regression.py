@@ -13079,7 +13079,10 @@ class TestHighlowRenderShared:
         items = [{"ind": "Semis"}, {"ind": "Semis"}, {"ind": "Banks"},
                  {"ind": None}]
         line = ind_dist_line(items)
-        assert "업종 분포" in line and "Semis 2" in line and "Banks 1" in line
+        # ⚠️ `Banks` 는 2026-08-19 사전 확장으로 **실제 키**가 됐다(→'은행').
+        # 이 줄도 번역을 타는 게 맞다(사용자 "업종 최대한 한글화") — 픽스처가
+        # 우연히 미번역이던 것에 기대고 있었을 뿐이라 기대값을 고친다.
+        assert "업종 분포" in line and "Semis 2" in line and "은행 1" in line
         assert ind_dist_line([]) == ""
 
     def test_sort_by_mcap_desc_none_last(self):
@@ -25928,7 +25931,19 @@ class TestUsIndustryKr20260819:
                 "Professional Services", "Real Estate", "Miscellaneous",
                 "Other Pharmaceuticals", "Recreational Games/Products/Toys",
                 "Oilfield Services/Equipment",
-                "Biotechnology: Laboratory Analytical Instruments"]
+                "Biotechnology: Laboratory Analytical Instruments",
+                # 2차 — `industry_kr_probe` 가 원천에서 세어 준 빈도 상위
+                # (전체 문자열이라 잘림 위험 없음).
+                "Blank Checks", "Business Services", "Property-Casualty Insurers",
+                "Investment Bankers/Brokers/Service", "Metal Mining",
+                "Hotels/Resorts", "Life Insurance", "Banks", "Coal Mining",
+                "Movies/Entertainment", "Water Supply",
+                # GICS sub-industry 계열(S&P500 경로) — 한글화가 20.9% 였다.
+                "Health Care Equipment", "Electric Utilities",
+                "Application Software", "Asset Management & Custody Banks",
+                "Investment Banking & Brokerage", "Regional Banks",
+                "Systems Software", "Air Freight & Logistics",
+                "Managed Health Care", "Construction & Engineering"]
         bad = [s for s in seen if industry_kr(s) == s]
         assert not bad, f"미번역: {bad}"
         # 번역 결과에 한글이 있어야 한다(영문→영문 자기복사 방지).
@@ -25963,3 +25978,62 @@ class TestUsIndustryKr20260819:
         assert "industry_kr(k) == k" in src      # 미번역 판정
         assert "most_common" in src              # 빈도순
         assert "nasdaq_industries.json" in inspect.getsource(p)
+
+
+class TestTwOtcIndustry20260819:
+    """사용자 2026-08-19(대만 급등·급락 업종 공백). 프로브가 원인을 확정했다 —
+    소형주가 아니라 **上櫃(TPEx) 대역이 통째로 빈 것**:
+
+      · TPEx OpenAPI 가 필드명을 영문화(`SecuritiesCompanyCode`)하고 업종을
+        **번호**로만 준다(`SecuritiesIndustryCode='33'`) → 이름 매핑 불가
+      · 야후는 上櫃를 `.TW` 가 아니라 **`.TWO`** 로 받는다 → `.TW` 조회는 404
+
+    `.TWO` 로 물으니 표본 11개 중 10개가 채워졌다(포장·용기·반도체·부동산
+    개발…). 번호→이름 표를 **지어내지 않고** 이 경로로 해결한다."""
+
+    def test_otc_tickers_fall_back_to_two_suffix(self, monkeypatch):
+        import bot.finviz_client as fc
+        import bot.twse_client as tw
+
+        # 上市 맵엔 2601 만 있다(프로브 실측과 같은 형태).
+        monkeypatch.setattr(tw, "fetch_tw_industry_map", lambda: {"2601": "해운"})
+        monkeypatch.setattr(fc, "fetch_tw_industry_map",
+                            lambda: {"2601": "해운"}, raising=False)
+        asked = []
+
+        def fake(tickers, allow_slow=True):
+            asked.append(list(tickers))
+            # `.TW` 는 404(빈 값), `.TWO` 만 답한다 — 야후 실측 그대로.
+            return {t: "Semiconductors" for t in tickers
+                    if str(t).endswith(".TWO")}
+
+        monkeypatch.setattr(fc, "_fetch_industries", fake)
+        out = fc._industries_for(["2601.TW", "5351.TW"], "TW", allow_slow=True)
+        assert out["2601.TW"] == "해운"
+        assert out["5351.TW"] == "반도체", out
+        # 순서 계약: `.TW` 를 먼저 시도하고, 남은 것만 `.TWO` 로 재질의.
+        assert asked[0] == ["5351.TW"]
+        assert asked[1] == ["5351.TWO"], asked
+
+    def test_no_extra_call_when_the_bulk_map_covers_everything(self, monkeypatch):
+        """전부 채워졌는데도 매번 두 번 물으면 무버 갱신마다 왕복이 는다."""
+        import bot.finviz_client as fc
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "fetch_tw_industry_map",
+                            lambda: {"2601": "해운", "5351": "반도체"})
+        calls = []
+        monkeypatch.setattr(fc, "_fetch_industries",
+                            lambda t, allow_slow=True: calls.append(t) or {})
+        fc._industries_for(["2601.TW", "5351.TW"], "TW", allow_slow=True)
+        assert calls == [], calls
+
+    def test_parser_says_why_it_skips_the_numeric_schema(self):
+        """'스키마 변경 의심'은 다음 사람이 또 조사하게 만든다 — 무엇이
+        없는지(이름 필드)와 누가 대신 채우는지(.TWO)를 로그에 적는다."""
+        import inspect
+        from bot import twse_client as tw
+        # ⚠️ 소스 전체를 보면 **내가 쓴 주석**에 걸려 뮤테이션이 통과한다
+        # (실측: 로그를 지워도 green). 로그 문자열 자체를 단언한다.
+        src = inspect.getsource(tw._fetch_one_industry_source)
+        assert "업종 '이름' 필드 없음" in src
+        assert ".TWO yfinance 폴백이 담당" in src

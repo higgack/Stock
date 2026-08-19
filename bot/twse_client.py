@@ -422,8 +422,17 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
     code_key = next((k for k in sample if "代號" in k), None)
     ind_key = next((k for k in sample if "產業" in k), None)
     if not code_key or not ind_key:
-        log.warning("twse industry map (%s): 필드 미탐색(code=%s ind=%s, keys=%s) — "
-                   "스키마 변경 의심, 스킵", label, code_key, ind_key, list(sample)[:12])
+        # ⚠️ TPEx 는 2026-08 경 필드명을 **영문화**했고(`SecuritiesCompanyCode`·
+        # `SecuritiesIndustryCode`), 업종이 이름이 아니라 **번호**('33'·'16')로
+        # 온다(2026-08-19 프로브 실측 890행). 번호→이름 표가 없으니 여기서
+        # 이름을 만들 수 없다 — 지어내지 않고 스킵하고, 上櫃 종목의 업종은
+        # `finviz_client._industries_for` 의 `.TWO` yfinance 폴백이 채운다.
+        _en = next((k for k in sample if "SecuritiesIndustryCode" in k), None)
+        log.warning("twse industry map (%s): 업종 '이름' 필드 없음(code=%s ind=%s"
+                    "%s) — 스킵(上櫃는 .TWO yfinance 폴백이 담당). keys=%s",
+                    label, code_key, ind_key,
+                    ", 번호 필드만 있음: SecuritiesIndustryCode" if _en else "",
+                    list(sample)[:12])
         return {}
     out: dict[str, str] = {}
     for row in rows:
