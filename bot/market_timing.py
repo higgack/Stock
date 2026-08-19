@@ -264,6 +264,85 @@ def _payload_to_rows(p: dict | None, days: int) -> list[dict]:
     return out[-days:]
 
 
+# ── 야후가 하루 늦을 때 네이버 지수 종가로 보강 ──────────────────────
+# 사용자 2026-08-20: "한국일본 이미 장종료 6시간 지났을텐데 … 난 모두 나라다
+# 가장 최신으로 하는걸 원해." 재질의(두 질의 방식)로도 야후가 KR/JP 지수를
+# 하루 늦게 주는 날이 있다 — 반면 **글로벌 시장 스냅샷은 네이버**라 같은
+# 시각에 최신이었다(실측: 시장타이밍 KOSPI 08-18 6,869.83 / 글로벌 스냅샷
+# 08-19 6,471.17).
+#
+# ⚠️ 네이버 지수 시세엔 **날짜가 없다**. 그래서 날짜를 추측하지 않고
+# **자기검증**한다: 네이버가 주는 `prev`(전일종가)가 야후의 마지막 봉과
+# 같으면, 네이버 `close` 는 그 **다음 세션**이 확실하다. 안 맞으면 그냥
+# 버린다(장중이라 close 가 미완성인 경우가 여기서 걸러진다).
+#
+# TW/CN_A/HK 는 시장타이밍이 **ETF**(0050.TW·510300.SS·2800.HK)를 쓰므로
+# 지수(.TWII/.SSEC/.HSI)로 대체할 수 없다 — 다른 상품이다. 매핑하지 않는다.
+# 티커 → (시장, 네이버종류, 네이버코드)
+_NAVER_INDEX_FOR = {
+    "^KS11": ("KR", "domestic", "KOSPI"),
+    "^KQ11": ("KR", "domestic", "KOSDAQ"),
+    "^N225": ("JP", "world", ".N225"),
+    "^GSPC": ("US", "world", ".INX"),
+    "^IXIC": ("US", "world", ".IXIC"),
+}
+_NAVER_TAIL_TOL = 0.001      # 전일종가 일치 허용오차 0.1%
+_NAVER_TAIL_MAX_MOVE = 0.20  # 하루 ±20% 초과면 정렬이 틀린 것으로 보고 폐기
+
+
+def _naver_index_quote(ticker: str) -> dict | None:
+    """{close, prev} 또는 None. 네이버 지수 시세(글로벌 스냅샷과 같은 소스)."""
+    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
+    if not spec:
+        return None
+    _mkt, kind, code = spec
+    try:
+        from bot import naver_marketindex as nm
+        got = (nm.fetch_domestic_indices((code,)) if kind == "domestic"
+               else nm.fetch_world_indices((code,)))
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: 네이버 지수 %s 실패: %s", ticker, exc)
+        return None
+    rec = (got or {}).get(code)
+    if not isinstance(rec, dict):
+        return None
+    c, pv = rec.get("close"), rec.get("prev")
+    return {"close": c, "prev": pv} if c and pv else None
+
+
+def _naver_index_tail(ticker: str, rows: list[dict]) -> list[dict]:
+    """야후 시계열이 기대 거래일보다 뒤처졌으면 네이버 종가 한 봉을 덧붙인다.
+
+    **정렬이 확인될 때만** 붙인다 — 네이버 `prev` 가 야후 마지막 봉과 같아야
+    네이버 `close` 가 그 다음 세션임이 보장된다. 추측으로 날짜를 붙이지
+    않는다(장중이면 여기서 자동으로 걸러진다)."""
+    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
+    if not rows or not spec:
+        return rows
+    expected, _grace = _expected_session(spec[0])
+    last = str(rows[-1].get("date") or "")[:10]
+    if not expected or last >= expected:
+        return rows                     # 이미 최신 — 건드리지 않는다
+    q = _naver_index_quote(ticker)
+    if not q:
+        return rows
+    prev_y = float(rows[-1]["close"])
+    if not prev_y or abs(q["prev"] - prev_y) / prev_y > _NAVER_TAIL_TOL:
+        log.info("market_timing: %s 네이버 전일종가 %.2f ≠ 야후 마지막 봉 "
+                 "%.2f — 정렬 불가로 보강 생략(장중 추정)",
+                 ticker, q["prev"], prev_y)
+        return rows
+    move = abs(q["close"] - prev_y) / prev_y
+    if move > _NAVER_TAIL_MAX_MOVE:
+        log.warning("market_timing: %s 네이버 종가 %.2f 가 전일 대비 %.1f%% — "
+                    "정렬 오류 의심으로 폐기", ticker, q["close"], move * 100)
+        return rows
+    log.info("market_timing: %s 야후 %s → 네이버 %s 종가 %.2f 보강",
+             ticker, last, expected, q["close"])
+    return rows + [{"date": expected, "close": q["close"],
+                    "high": q["close"], "low": q["close"], "volume": None}]
+
+
 def fetch_index_history(ticker: str, days: int = 120,
                         min_rows: int | None = None) -> list[dict]:
     """지수/ETF 히스토리 [{date, close, high, low, volume}] 오름차순(과거→
@@ -338,7 +417,9 @@ def fetch_index_history(ticker: str, days: int = 120,
             log.warning("market_timing: %s 히스토리 %d행 — min_rows %d 미만이고 "
                         "네이버 폴백도 %d행(그대로 반환)",
                         ticker, len(out), min_rows, len(alt))
-        return out
+        # ⚠️ **여기서** 붙인다 — 시장타이밍과 Breadth 가 둘 다 이 함수를 쓰므로
+        # 호출부마다 배선하면 한쪽을 빠뜨린다(실수 #12 배선 누락).
+        return _naver_index_tail(ticker, out)
     except Exception as exc:
         log.debug("market_timing: fetch_index_history(%s) failed: %s", ticker, exc)
         return []

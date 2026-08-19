@@ -26665,3 +26665,66 @@ class TestSecondSweep20260820:
                          "recent": ["2026-08-07"], "trend": t}],
              "as_of": "2026-08-20"})
         assert "1M -0.1%p" in html, "화면에 %p 가 안 붙는다"
+
+    # ── ⑦ "모든 나라 최신" — 야후가 늦으면 네이버 지수로 보강 ──────────
+    def test_naver_tail_appends_only_when_alignment_is_proven(self, monkeypatch):
+        """네이버 지수 시세엔 **날짜가 없다**. 날짜를 추측하지 않고, 네이버
+        `prev`(전일종가)가 야후 마지막 봉과 같을 때만 `close` 를 다음 세션으로
+        붙인다 — 장중이면 여기서 자동으로 걸러진다."""
+        import bot.market_timing as mt
+        rows = [{"date": "2026-08-17", "close": 6900.0},
+                {"date": "2026-08-18", "close": 6869.83}]
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
+        monkeypatch.setattr(mt, "_naver_index_quote",
+                            lambda t: {"close": 6471.17, "prev": 6869.83})
+        out = mt._naver_index_tail("^KS11", rows)
+        assert out[-1] == {"date": "2026-08-19", "close": 6471.17,
+                           "high": 6471.17, "low": 6471.17, "volume": None}
+        monkeypatch.setattr(mt, "_naver_index_quote",
+                            lambda t: {"close": 6500.0, "prev": 6471.17})
+        assert mt._naver_index_tail("^KS11", rows) == rows
+        monkeypatch.setattr(mt, "_naver_index_quote",
+                            lambda t: {"close": 100.0, "prev": 6869.83})
+        assert mt._naver_index_tail("^KS11", rows) == rows
+
+    def test_naver_tail_leaves_fresh_and_unmapped_alone(self, monkeypatch):
+        """이미 최신이면 손대지 않고, ETF(TW/CN/HK)는 지수로 대체하면 **다른
+        상품**이 되므로 매핑 자체를 두지 않는다."""
+        import bot.market_timing as mt
+        rows = [{"date": "2026-08-19", "close": 6471.17}]
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
+        monkeypatch.setattr(mt, "_naver_index_quote",
+                            lambda t: {"close": 9999.0, "prev": 6471.17})
+        assert mt._naver_index_tail("^KS11", rows) == rows
+        for etf in ("0050.TW", "510300.SS", "2800.HK"):
+            assert etf.upper() not in mt._NAVER_INDEX_FOR, f"{etf} 지수 대체 금지"
+            assert mt._naver_index_tail(etf, rows) == rows
+
+    def test_naver_tail_is_wired_inside_fetch_index_history(self):
+        """시장타이밍과 Breadth 가 **둘 다** 이 함수를 쓰므로 호출부마다
+        배선하면 한쪽을 빠뜨린다(실수 #12) — 반환 직전에 한 번."""
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        i = src.index("def fetch_index_history(")
+        blk = src[i:src.index("\ndef ", i + 10)]
+        assert "return _naver_index_tail(ticker, out)" in blk, "배선 없음"
+        bs = open("bot/breadth_strategy.py", encoding="utf-8").read()
+        assert "from bot.market_timing import fetch_index_history" in bs, \
+            "Breadth 가 같은 경로를 안 쓴다 — 보강이 한쪽에만 걸린다"
+
+    def test_all_four_boards_share_the_three_hour_loop(self):
+        """사용자 2026-08-20: "시장타이밍+Breadth 모두 3시간으로 바뀐거야?"
+        네 보드가 **같은 루프**에 있어야 주기 상수 하나로 관리된다."""
+        import re
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        loop = re.search(r"async def _periodic_fred_boards.*?(?=\nasync def )",
+                         src, re.S).group(0)
+        assert "asyncio.sleep(_BOARD_REGEN_HOURS * 3600)" in loop
+        for fn in ("regenerate_fred_boards", "regenerate_market_timing",
+                   "breadth_strategy import regenerate",
+                   "regenerate_econ_calendar"):
+            assert fn in loop, f"{fn} 이 3시간 루프 밖에 있다"
+
+    def test_audit_does_not_pass_a_missing_asof(self):
+        """기준일이 **비었는데 ✅** 를 찍으면 거짓 안심이다(직접 실측)."""
+        src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
+        assert "기준일 없음(수집 실패)" in src
