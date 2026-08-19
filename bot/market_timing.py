@@ -271,6 +271,29 @@ def fetch_index_history(ticker: str, days: int = 120,
         period = "3y" if days > 300 else "1y" if days > 60 else "3mo"
         p = fetch_chart_payload(ticker, interval="1d", period=period)
         out = _payload_to_rows(p, days)
+        # ⚠️ **장기 레인지가 조용히 낡거나 비는 종목이 있다**(2026-08-19
+        # vol_probe 실측, `^MOVE`): 야후에 최신값이 분명히 있는데(메타
+        # regularMarketPrice 74.98 · 최신 봉 08-18) 우리 3년 요청은 어떤 날은
+        # 07-17 에서 끊긴 400행을, 어떤 날은 **0행**을 준다. 같은 심볼을
+        # 1년으로 부르면 227행이 정상적으로 온다 — 심볼이 죽은 게 아니라
+        # **긴 레인지 응답이 불안정**한 것이다(그래서 카드가 나타났다
+        # 사라졌다 했다). 짧은 레인지로 한 번 더 물어 더 최신인 쪽을 쓴다.
+        if period == "3y":
+            age = _vol_age_days(out[-1]["date"]) if out else None
+            if not out or (age is not None and age > _VOL_STALE_DAYS):
+                alt = _payload_to_rows(
+                    fetch_chart_payload(ticker, interval="1d", period="1y"),
+                    days)
+                alt_age = _vol_age_days(alt[-1]["date"]) if alt else None
+                if alt and (age is None or (alt_age is not None
+                                            and alt_age < age)):
+                    # 조용한 대체 금지 — 폴백을 탄 사실을 남긴다.
+                    log.info("market_timing: %s 3년 레인지 %d행(최신 %s) — "
+                             "1년 레인지 %d행(최신 %s)으로 대체",
+                             ticker, len(out),
+                             out[-1]["date"] if out else "—",
+                             len(alt), alt[-1]["date"])
+                    out = alt
         # `out` 이 비었으면 fetch_chart_payload 가 **이미** 네이버를 시도한
         # 뒤다(그 폴백은 빈 결과에서 걸린다) — 여기서 또 부르면 10초 타임아웃
         # HTTP 호출만 티커마다 중복된다. 절단(0<len<min_rows)일 때만 재시도.
@@ -1037,8 +1060,11 @@ def render_market_timing_page(data: dict, now=None) -> str:
                 "먼저 반응</b>하는 경우가 많습니다. 주가지수만 보면 안 보이는 "
                 "위험이 채권 쪽에서 먼저 나타나는지 확인하는 용도입니다."
                 "<br><span style=\"opacity:.75\">현재값·과거 비교값 모두 종가 "
-                "시계열 기준. 커버리지가 불안정한 지수라 받지 못한 날은 카드나 "
-                "일부 칸이 생략됩니다.</span>")
+                "시계열 기준. 이 지수는 <b>야후 파이낸스(ICE BofA MOVE 미러)</b>"
+                "에서 받는데 긴 기간 요청이 간헐적으로 비거나 낡게 오므로, "
+                "짧은 기간으로 한 번 더 물어 더 최신인 쪽을 씁니다. 그래도 "
+                "못 받으면 마지막 성공분으로 카드를 유지하고 기준일을 "
+                "표시합니다.</span>")
 
     sent = data.get("sentiment") or {}
     sent_card = ""

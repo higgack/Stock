@@ -25795,3 +25795,72 @@ class TestTtmReturns20260819:
         assert "apply_ttm_returns(out)" in src
         assert src.index('e["ratios"] = _ratios(') < src.index(
             "apply_ttm_returns(out)"), "TTM 이 매출 보강보다 먼저다 — 덮인다"
+
+
+class TestLongRangeFallback20260819:
+    """사용자 2026-08-19: MOVE 카드가 나타났다 사라졌다 하고, 나올 땐 한 달
+    전 값이었다. vol_probe v3 가 원인을 뒤집었다 — **심볼은 멀쩡하다**
+    (야후 메타: regularMarketPrice 74.98 · 최신 봉 08-18). 우리 3년 요청이
+    어떤 날은 07-17 에서 끊긴 400행을, 어떤 날은 0행을 준다. 같은 심볼을
+    1년으로 부르면 227행이 정상적으로 온다 — **긴 레인지 응답이 불안정**한
+    것이지 커버리지 문제가 아니었다."""
+
+    @staticmethod
+    def _payload(n, end):
+        from datetime import timedelta
+        ts = [(end - timedelta(days=i)).isoformat() for i in range(n)][::-1]
+        return {"times": ts, "close": [70.0 + i for i in range(n)]}
+
+    def _run(self, monkeypatch, three_y, one_y):
+        import bot.chart_data as cd
+        import bot.market_timing as mt
+        calls = []
+
+        def fake(ticker, interval="1d", period="1y"):
+            calls.append(period)
+            return three_y if period == "3y" else one_y
+
+        monkeypatch.setattr(cd, "fetch_chart_payload", fake)
+        return mt.fetch_index_history("^MOVE", days=400), calls
+
+    def test_stale_long_range_falls_back_to_one_year(self, monkeypatch):
+        from datetime import timedelta
+        import bot.market_timing as mt
+        today = mt._kst_now().date()
+        out, calls = self._run(
+            monkeypatch,
+            self._payload(400, today - timedelta(days=33)),   # 실측 증상
+            self._payload(227, today - timedelta(days=1)))
+        assert calls == ["3y", "1y"]
+        assert out[-1]["date"] == (today - timedelta(days=1)).isoformat()
+
+    def test_empty_long_range_falls_back(self, monkeypatch):
+        from datetime import timedelta
+        import bot.market_timing as mt
+        today = mt._kst_now().date()
+        out, calls = self._run(monkeypatch, None,
+                               self._payload(227, today - timedelta(days=1)))
+        assert calls == ["3y", "1y"]
+        assert len(out) == 227
+
+    def test_healthy_long_range_is_not_refetched(self, monkeypatch):
+        """멀쩡할 때 매번 두 번 부르면 티커마다 HTTP 왕복이 두 배가 된다."""
+        from datetime import timedelta
+        import bot.market_timing as mt
+        today = mt._kst_now().date()
+        out, calls = self._run(
+            monkeypatch, self._payload(400, today - timedelta(days=1)),
+            self._payload(227, today - timedelta(days=1)))
+        assert calls == ["3y"], calls
+        assert len(out) == 400
+
+    def test_keeps_the_longer_series_when_both_are_stale(self, monkeypatch):
+        """폴백이 **더 낡은** 데이터로 갈아타면 개악이다 — 더 최신일 때만."""
+        from datetime import timedelta
+        import bot.market_timing as mt
+        today = mt._kst_now().date()
+        out, _ = self._run(
+            monkeypatch, self._payload(400, today - timedelta(days=33)),
+            self._payload(227, today - timedelta(days=40)))
+        assert len(out) == 400
+        assert out[-1]["date"] == (today - timedelta(days=33)).isoformat()
