@@ -375,10 +375,15 @@ class RenderTests(unittest.TestCase):
         self.assertIn("'100M JPY':[1e8,'¥']", html)
         wt = next(s for s in LIQ_SERIES if s["id"] == "WTREGEN")
         bm = next(s for s in LIQ_SERIES if s["id"] == "BOGMBASE")
+        wr = next(s for s in LIQ_SERIES if s["id"] == "WRESBAL")
         # ⚠️ WTREGEN 은 **백만$** 다(2026-08-19 교정). 십억$ 로 잡아 화면에
         # `$963.95T`(실제 $963.95B)가 떴고 순유동성도 1000배 어긋났다.
         self.assertEqual(wt["unit"], "M USD")           # FRED 원시(표시변환 아님)
-        self.assertEqual(bm["unit"], "M USD")
+        # ⚠️ BOGMBASE(십억$)·WRESBAL(백만$)는 내가 기억으로 반대로 적었고
+        # VM 프로브의 **상식범위 검사**가 잡아냈다(2026-08-19: 본원통화가
+        # `$5.49B`, 지준잔고가 `$2,944T` 로 표시). 기준은 기억이 아니라 실측.
+        self.assertEqual(bm["unit"], "B USD")
+        self.assertEqual(wr["unit"], "M USD")
 
     def test_time_theme_wired(self):
         # 시간 테마(19~07 KST 다크) — dashboard._THEME_JS 재사용 + 라이트 기본

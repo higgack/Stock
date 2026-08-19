@@ -22949,8 +22949,12 @@ class TestFlowTrendDiagnosis20260818:
         # FRED 가 문서화한 원시 단위(경험적 확인은 VM 프로브의 상식범위 검사).
         native = {
             "M2SL": "B USD", "M1SL": "B USD", "RMFSL": "B USD",
-            "WALCL": "M USD", "WTREGEN": "M USD", "WRESBAL": "B USD",
-            "WLCFLPCL": "M USD", "RRPONTSYD": "B USD", "BOGMBASE": "M USD",
+            # ⚠️ WRESBAL·BOGMBASE 는 내가 이 표에 **틀리게 적었고** VM
+            # 프로브의 상식범위 검사가 잡아냈다(2026-08-19): WRESBAL 원시
+            # 2,944,060 을 십억$ 로 보면 $2.9경, BOGMBASE 5,490 을 백만$ 로
+            # 보면 $5.49B — 둘 다 불가능한 값이다. 기억이 아니라 실측이 기준.
+            "WALCL": "M USD", "WTREGEN": "M USD", "WRESBAL": "M USD",
+            "WLCFLPCL": "M USD", "RRPONTSYD": "B USD", "BOGMBASE": "B USD",
             "JPNASSETS": "100M JPY", "ECBASSETSW": "M EUR",
             "TOTBKCR": "B USD", "BUSLOANS": "B USD", "COMPOUT": "B USD",
             "DPSACBW027SBOG": "B USD", "TRESEGCNM052N": "M USD",
