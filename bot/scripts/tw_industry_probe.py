@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 # 사용자 스크린샷(2026-08-19)의 무버 코드 — 인자를 안 주면 이걸 본다.
 _SAMPLE = ["2601", "3167", "5608", "6907", "6869", "4304", "6226", "8070",
@@ -55,6 +55,25 @@ def main() -> int:
         merged.update(m)
     _p(f"   합계 {len(merged)}종목")
 
+    # v2: 上櫃가 0이면 **스키마를 봐야** 고칠 수 있다(필드명이 바뀌었는지,
+    # 업종이 이름인지 코드인지). 원문 2행을 그대로 찍는다 — 추측 금지.
+    if not per_src.get("上櫃(TPEx)"):
+        _p("")
+        _p("①-b 上櫃(TPEx) 원문 2행 — 어느 필드가 코드/업종인가")
+        try:
+            import requests
+            r = requests.get(tw._OPENAPI_OTC_INFO, headers=tw._HDRS, timeout=15)
+            rows = r.json() if r.status_code == 200 else None
+            if not isinstance(rows, list) or not rows:
+                _p(f"   HTTP {r.status_code} · 리스트 아님 — 응답 앞 200자:")
+                _p(f"   {str(r.text)[:200]}")
+            else:
+                _p(f"   {len(rows)}행 · 키 {list(rows[0])}")
+                for row in rows[:2]:
+                    _p("   " + " · ".join(f"{k}={row[k]!r}" for k in list(row)[:8]))
+        except Exception as exc:                               # noqa: BLE001
+            _p(f"   실패 {type(exc).__name__}: {exc}")
+
     _p("")
     _p("② 표본 코드가 맵에 있나")
     miss = []
@@ -78,6 +97,24 @@ def main() -> int:
             for c in miss:
                 v = got.get(f"{c}.TW")
                 _p(f"   {c:6} {('✅ ' + industry_kr(v)) if v else '❌ yfinance 도 없음'}")
+        except Exception as exc:                               # noqa: BLE001
+            _p(f"   실패 {type(exc).__name__}: {exc}")
+
+        # v2: 上櫃 종목은 야후에서 `.TWO` 접미사다(우리는 `.TW` 로 물어 404).
+        # 접미사만 바꾸면 채워지는지 **실측**한다 — 맞으면 폴백에 반영한다.
+        _p("")
+        _p("③-b 같은 코드를 `.TWO`(上櫃 접미사)로 물으면?")
+        try:
+            from bot.finviz_client import _fetch_industries as _fi
+            from bot.translate import industry_kr as _ikr
+            got2 = _fi([f"{c}.TWO" for c in miss], allow_slow=True)
+            hit = 0
+            for c in miss:
+                v = got2.get(f"{c}.TWO")
+                if v:
+                    hit += 1
+                _p(f"   {c:6} {('✅ ' + _ikr(v)) if v else '❌ 없음'}")
+            _p(f"   → `.TWO` 로 {hit}/{len(miss)} 해결")
         except Exception as exc:                               # noqa: BLE001
             _p(f"   실패 {type(exc).__name__}: {exc}")
 
