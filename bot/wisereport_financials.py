@@ -58,6 +58,9 @@ _LAST_REASON: dict[str, str] = {}
 _TABLE = re.compile(r"<table[^>]*>.*?</table>", re.S | re.I)
 _ROW = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
 _CELL = re.compile(r"<t[hd][^>]*>(.*?)</t[hd]>", re.S | re.I)
+# colspan 까지 보는 판(그룹 헤더 '연간'/'분기' 를 컬럼별로 펼치려면 필요).
+_CELL_SPAN = re.compile(r"<t[hd]([^>]*)>(.*?)</t[hd]>", re.S | re.I)
+_COLSPAN = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.I)
 _TAG = re.compile(r"<[^>]+>")
 _PERIOD = re.compile(r"\b(\d{4})/(\d{2})\b")
 
@@ -65,6 +68,20 @@ _PERIOD = re.compile(r"\b(\d{4})/(\d{2})\b")
 # 이름이 달라 자동으로 걸러진다.
 _WANT = ("매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계")
 _EOK = 1e8          # 억원 → 원
+
+
+def _expand_group(row_html: str) -> list[str]:
+    """그룹 헤더 줄을 **컬럼 수만큼 펼친다**(colspan 반영).
+
+    ⚠️ 왜(2026-08-19 실측): 이 표는 '전체' 탭이면 **연간 컬럼과 분기 컬럼이
+    한 표에 섞여** 있고, 어느 쪽인지는 위 줄의 그룹 헤더(연간/분기)가 말한다.
+    월(12월)만 보고 가르면 연간 2025/12 와 4분기 2025/12 를 구분 못 하고,
+    실제로 연간 추정치가 '분기 2026/12' 로 들어갔다."""
+    out: list[str] = []
+    for attrs, body in _CELL_SPAN.findall(row_html):
+        m = _COLSPAN.search(attrs or "")
+        out.extend([_text(body)] * max(1, int(m.group(1)) if m else 1))
+    return out
 
 
 def _text(html: str) -> str:
@@ -87,8 +104,11 @@ def parse_financial_summary(html: str) -> dict:
     분기/연간 구분도 헤더 월로 판정한다(12월만 있으면 연간)."""
     out: dict = {"annual": {}, "quarter": {}}
     for tbl in _TABLE.findall(html or ""):
-        rows = [[_text(c) for c in _CELL.findall(r)] for r in _ROW.findall(tbl)]
-        rows = [r for r in rows if r]
+        raw_rows = _ROW.findall(tbl)
+        rows = [[_text(c) for c in _CELL.findall(r)] for r in raw_rows]
+        keep = [i for i, r in enumerate(rows) if r]
+        raw_rows = [raw_rows[i] for i in keep]
+        rows = [rows[i] for i in keep]
         # 헤더 = 기간이 2개 이상 있는 줄
         hdr_i = periods = None
         for i, r in enumerate(rows):
@@ -104,17 +124,29 @@ def parse_financial_summary(html: str) -> dict:
         labels = {(r[0] or "").replace(" ", "") for r in rows[hdr_i + 1:]}
         if "매출액" not in labels or "영업이익" not in labels:
             continue                      # Financial Summary 표가 아니다
+        # 컬럼별 종류 — 그룹 헤더(연간/분기)가 있으면 **그걸 따른다**.
+        cols_kind: list[str] = []
+        if hdr_i > 0:
+            grp = _expand_group(raw_rows[hdr_i - 1])
+            if any("연간" in g or "분기" in g for g in grp):
+                # 기간 줄에 라벨 칸이 없을 수 있으니 오른쪽 정렬로 맞춘다.
+                # ⚠️ 그룹 줄이 컬럼 수를 못 채우면(colspan 해석 실패 등)
+                # **부분 적용하지 않는다** — 일부만 맞으면 조용히 어긋난다.
+                if len(grp) >= len(periods):
+                    tail = grp[-len(periods):]
+                    cols_kind = ["annual" if "연간" in g else
+                                 "quarter" if "분기" in g else "" for g in tail]
         months = {p.split("/")[1] for p in periods if p}
-        # 연간 표는 12월만 있고 **해가 다르다**. 분기 표도 12월 컬럼을 갖지만
-        # 같은 해 3·6·9 가 함께 있다.
-        kind = "annual" if months <= {"12"} else "quarter"
-        bucket = out[kind]
+        # 그룹 헤더가 없으면 월로 추정 — 연간 표는 12월만 있다.
+        default_kind = "annual" if months <= {"12"} else "quarter"
         # ⚠️ **절대 인덱스로 맞추면 한 칸씩 밀린다**(2026-08-19 실측: 2026/03
         # 자리에 2025/12 값이 들어갔다). 실제 표는 헤더가 2행이라 기간 줄에는
         # 라벨 칸이 없는데 데이터 줄에는 있기 때문이다. 기간 목록과 '라벨을
         # 뺀 값들'을 순서대로 맞춘다 — 헤더가 1행이든 2행이든 같은 결과.
         cols = [p for p in periods if p]
         col_at = [i for i, p in enumerate(periods) if p]
+        kinds = [(cols_kind[i] if i < len(cols_kind) and cols_kind[i]
+                  else default_kind) for i in col_at]
         for r in rows[hdr_i + 1:]:
             name = (r[0] or "").replace(" ", "")
             if name not in _WANT:
@@ -123,10 +155,10 @@ def parse_financial_summary(html: str) -> dict:
             if len(r) == len(periods):
                 # 헤더와 데이터의 칸 수가 같다 = 헤더에도 라벨 칸이 있다.
                 vals = [r[i] for i in col_at]
-            for per, cell in zip(cols, vals):
+            for per, cell, kd in zip(cols, vals, kinds):
                 v = _num(cell)
                 if v is not None:
-                    bucket.setdefault(per, {})[name] = v * _EOK
+                    out[kd].setdefault(per, {})[name] = v * _EOK
     return out
 
 
