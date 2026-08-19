@@ -36,6 +36,7 @@ from trade import ph_exports as _ph
 from trade import th_exports as _th
 from trade import tw_exports as _tw
 from trade import us_imports as _us
+from trade import us_ppi as _uppi
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,12 @@ SOURCES: tuple[Source, ...] = (
            _mx.regenerate, "mx.db", "mx.html", "🌮 멕시코 수출 데이터(나쁜양파)"),
     Source("us", "미국 수입", _us.parse_us_import, _us.open_us_db, _us.ingest,
            _us.regenerate, "us.db", "us.html", "🗽 미국 수입 데이터(나쁜양파)"),
+    # 미국 PPI(사용자 2026-08-19) — 유일하게 **금액이 아니라 지수** 소스.
+    # 마커('미국 PPI')는 us_imports 의 'N월 수입 미국' 과 겹치지 않지만,
+    # 품목(HS) 기준이므로 **종목 기준(krs/jps) 앞**에 둔다(아래 계약).
+    Source("uppi", "미국 PPI", _uppi.parse_us_ppi, _uppi.open_us_ppi_db,
+           _uppi.ingest, _uppi.regenerate, "us_ppi.db", "us_ppi.html",
+           "📈 미국 PPI 데이터(나쁜양파)"),
     Source("krs", "한국 수출(종목별)", _krs.parse_kr_stock_export,
            _krs.open_kr_stock_db, _krs.ingest, _krs.regenerate,
            "kr_stock.db", "kr_stock.html",
@@ -102,7 +109,7 @@ SOURCES: tuple[Source, ...] = (
 # 생성은 되는데 nav 에 없어 **도달 불가** — is_relevant 가 미매칭 알림까지
 # 눌러버려 조용한 유실이 된다).
 NAV_ORDER: tuple[str, ...] = ("jp2", "jps", "tw", "cn", "th", "my", "ph",
-                              "mx", "us", "krs")
+                              "mx", "us", "krs", "uppi")
 
 
 def is_relevant(text: str) -> bool:
