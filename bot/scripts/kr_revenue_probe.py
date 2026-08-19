@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 8
+_PROBE_VER = 9
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -123,6 +123,11 @@ def _fnguide_debug(codes: list[str]) -> int:
     return 0
 
 
+def _clean(x: str) -> str:
+    import re as _r
+    return _r.sub(r"\s+", " ", x or "").strip()
+
+
 def _fnguide_dump(codes: list[str]) -> int:
     """매출액이 든 표의 **헤더 줄 원문**을 그대로 찍는다.
 
@@ -153,6 +158,14 @@ def _fnguide_dump(codes: list[str]) -> int:
                 continue
             rows = _ROW.findall(tbl)
             _p(f"   표 #{ti} · <tr> {len(rows)}개")
+            # ⚠️ 헤더(tr1)에 **숨은 컬럼**이 섞여 있다 — 실측: 헤더 20칸 vs
+            # 데이터 9칸(라벨+8). 어떤 속성이 보이는/숨은 칸을 가르는지 알아야
+            # 컬럼을 맞출 수 있으므로 셀 속성을 하나씩 찍는다.
+            for ri, rw in enumerate(rows[:3]):
+                attrs = _re.findall(r"<t[hd]([^>]*)>", rw)
+                _p(f"      tr{ri} 셀 속성 {len(attrs)}개:")
+                for ai, at in enumerate(attrs):
+                    _p(f"         [{ai}] {_clean(at)[:160]}")
             for ri, rw in enumerate(rows[:4]):
                 cells = [_text(c2) for c2 in _CELL.findall(rw)]
                 pers = [p for c2 in cells

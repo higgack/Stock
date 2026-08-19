@@ -926,9 +926,11 @@ def _industries_for(tickers: list, market: str | None,
     if market == "HK":
         try:
             from bot.naver_ranking_client import world_industry_map
+            from bot.translate import industry_kr
             m = world_industry_map("HK")
             if not m:
-                return _fetch_industries(tickers, allow_slow=allow_slow)
+                return {tk: industry_kr(v) if v else v for tk, v in
+                        _fetch_industries(tickers, allow_slow=allow_slow).items()}
             got = {tk: None for tk in tickers}
             norm: dict = {}
             for k, v in m.items():
@@ -950,13 +952,18 @@ def _industries_for(tickers: list, market: str | None,
                     got[tk] = v
             miss = [tk for tk in tickers if not got.get(tk)]
             if miss:
+                # ⚠️ 네이버 값은 이미 한글이지만 **yfinance 폴백분은 영문**이다.
+                # 번역을 안 걸어 화면에 "Metal Fabrication" 같은 영문이 섞여
+                # 나왔다(사용자 2026-08-19). TW 경로엔 있고 여기만 빠져 있었다.
                 yf = _fetch_industries(miss, allow_slow=allow_slow)
                 for tk in miss:
                     if yf.get(tk):
-                        got[tk] = yf[tk]
+                        got[tk] = industry_kr(yf[tk])
         except Exception as exc:
             log.warning("naver 업종맵 (HK) 폴백 실패: %s", exc)
-            return _fetch_industries(tickers, allow_slow=allow_slow)
+            from bot.translate import industry_kr
+            return {tk: industry_kr(v) if v else v for tk, v in
+                    _fetch_industries(tickers, allow_slow=allow_slow).items()}
         return got
 
     # CN/JP/US — 네이버 업종맵 우선(reliable·fast_info 우회). US 도 네이버 USA
@@ -990,15 +997,21 @@ def _industries_for(tickers: list, market: str | None,
                 got = {tk: _look(tk) for tk in tickers}
                 miss = [tk for tk in tickers if not got.get(tk)]
                 if miss:
+                    # HK 와 동일 — yfinance 폴백분만 영문이라 번역이 필요하다.
+                    from bot.translate import industry_kr
                     yf = _fetch_industries(miss, allow_slow=allow_slow)
                     for tk in miss:
                         if yf.get(tk):
-                            got[tk] = yf[tk]
+                            got[tk] = industry_kr(yf[tk])
                 return got
         except Exception as exc:
             log.warning("naver 업종맵 (%s) → yfinance 폴백: %s", market, exc)
-        return _fetch_industries(tickers, allow_slow=allow_slow)
-    return _fetch_industries(tickers, allow_slow=allow_slow)
+        from bot.translate import industry_kr
+        return {tk: industry_kr(v) if v else v for tk, v in
+                _fetch_industries(tickers, allow_slow=allow_slow).items()}
+    from bot.translate import industry_kr
+    return {tk: industry_kr(v) if v else v for tk, v in
+            _fetch_industries(tickers, allow_slow=allow_slow).items()}
 
 
 # ── 비-주식 가지치기 (CEF 펀드 vehicle · 유령티커 · 이중클래스 dedupe) ──────

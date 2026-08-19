@@ -22905,6 +22905,42 @@ class TestFlowTrendDiagnosis20260818:
         j = src.index('if move:')
         assert "_vol_panel(" in src[j:j + 400], "MOVE 가 공용 패널을 안 쓴다"
 
+    def test_industry_labels_are_korean_on_every_market(self, monkeypatch):
+        """사용자 2026-08-19(JP/CN/HK/TW 신고저·급등락 스크린샷): 업종 칸에
+        "Metal Fabrication"·"Furnishings, Fixtures & App…" 같은 영문이 섞여
+        나왔다. 네이버 업종맵은 한글인데 **yfinance 폴백분만 번역이 빠져**
+        있었다(TW 경로엔 있고 HK·CN/JP/US 엔 없었다)."""
+        from bot.translate import _INDUSTRY_KR, industry_kr
+        # 화면에서 실제로 목격된 미번역 항목들.
+        for en in ("Metal Fabrication", "Furnishings, Fixtures & Appliances",
+                   "Medical Distribution", "Electronics & Computer Distribution",
+                   "Specialty Business Services"):
+            assert en in _INDUSTRY_KR, f"{en} 번역 누락"
+            assert industry_kr(en) != en
+        # 이미 한글인 값은 그대로 통과(네이버 경로 무해).
+        assert industry_kr("해운") == "해운"
+
+        # 배선 — yfinance 폴백 경로에 번역이 걸려 있는지(실수 #20).
+        import bot.finviz_client as fvc
+        import bot.naver_ranking_client as nrc
+        monkeypatch.setattr(fvc, "_fetch_industries",
+                            lambda tks, **k: {t: "Metal Fabrication" for t in tks})
+        monkeypatch.setattr(nrc, "world_industry_map", lambda m: {})
+        for mkt in ("HK", "CN_A", "JP", "US", "KR", None):
+            got = fvc._industries_for(["9999.HK"], mkt, allow_slow=False)
+            assert got["9999.HK"] == "금속 가공", f"{mkt} 경로에서 미번역"
+
+        # ⚠️ 위는 네이버 맵이 **통째로 빈** 경우다. 실제로 영문이 새던 곳은
+        # 맵이 일부만 덮고 **나머지를 yfinance 로 채우는 분기**다 — 그쪽을
+        # 따로 태운다(빈 맵만 시험하면 이 fix 를 지워도 통과한다).
+        monkeypatch.setattr(nrc, "world_industry_map",
+                            lambda m: {"0001.HK": "해운", "000001.SZ": "해운"})
+        for mkt, covered, missing in (("HK", "0001.HK", "9999.HK"),
+                                      ("CN_A", "000001.SZ", "999999.SZ")):
+            got = fvc._industries_for([covered, missing], mkt, allow_slow=False)
+            assert got[covered] == "해운"
+            assert got[missing] == "금속 가공", f"{mkt} 폴백분 미번역"
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
