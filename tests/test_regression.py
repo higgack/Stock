@@ -25702,3 +25702,96 @@ class TestQuarterlyNetIncomeFromSCE20260819:
         from bot.dart_client import _extract_dart_financials as E
         cum = E(self._HALF, amount_field="thstrm_add_amount")
         assert cum["당기순이익"] == 465_100_000_000    # CIS 누적
+
+
+class TestTtmReturns20260819:
+    """사용자 2026-08-19(NH투자증권): 우리 25.3Q ROE 3.1% vs 네이버 10.08%.
+
+    값이 틀린 게 아니라 **관례가 달랐다** — `calc_kr_financial_ratios` 는 한
+    기간만 보므로 분기 항목이 '분기 순이익 ÷ 자본'이 된다. 시장 표기는
+    연율(TTM)이라 두 화면을 나란히 놓으면 3배 차이로 보인다."""
+
+    @staticmethod
+    def _series(nets, eq=94_381e8, asset=833_854e8):
+        return [{"financials": {"당기순이익": n, "자본총계": eq,
+                                "자산총계": asset},
+                 "ratios": {"ROE": 999.0, "ROA": 999.0}} for n in nets]
+
+    def test_roe_uses_trailing_four_quarters(self):
+        from bot.dart_client import apply_ttm_returns
+        # 실측(네이버 2025 분기): 2,082 · 2,569 · 2,831 · 2,834 억
+        es = self._series([2_082e8, 2_569e8, 2_831e8, 2_834e8])
+        assert apply_ttm_returns(es) == 1
+        # 앞 3칸은 4분기가 안 모여 **비운다**(분기 하나로 연율 흉내 금지).
+        assert [e["ratios"]["ROE"] for e in es[:3]] == [None, None, None]
+        ttm = (2_082 + 2_569 + 2_831 + 2_834) * 1e8
+        assert abs(es[-1]["ratios"]["ROE"] - ttm / 94_381e8 * 100) < 1e-9
+        # 분기 하나로 계산하던 옛 값(약 3%)이 아니라 연율(약 11%)이어야.
+        assert 9.0 < es[-1]["ratios"]["ROE"] < 13.0, es[-1]["ratios"]["ROE"]
+
+    def test_missing_quarter_blanks_the_ratio(self):
+        from bot.dart_client import apply_ttm_returns
+        es = self._series([2_082e8, None, 2_831e8, 2_834e8])
+        assert apply_ttm_returns(es) == 0
+        assert all(e["ratios"]["ROE"] is None for e in es)
+
+    def test_roa_follows_the_same_rule(self):
+        from bot.dart_client import apply_ttm_returns
+        es = self._series([1e11] * 4)
+        apply_ttm_returns(es)
+        assert abs(es[-1]["ratios"]["ROA"] - 4e11 / 833_854e8 * 100) < 1e-9
+
+    def test_quarterly_series_applies_ttm_after_revenue_fallback(self,
+                                                                monkeypatch):
+        """⚠️ 순서가 계약이다 — 매출 보강이 ratios 를 통째로 다시 만들므로
+        TTM 을 먼저 계산하면 덮여서 사라진다(배선 grep 으로는 못 잡는다)."""
+        from bot import dart_quarterly as dq
+
+        def fin(net):
+            return {"매출": 5e11, "영업이익": 6e11, "당기순이익": net,
+                    "자본총계": 94_381e8, "자산총계": 833_854e8,
+                    "_component_accounts": {"매출": "이자수익"}}
+
+        rows = {("2026", "11012"): fin(2_834e8), ("2026", "11013"): fin(2_831e8),
+                ("2025", "11011"): fin(2_569e8), ("2025", "11014"): fin(2_082e8)}
+
+        class _Dart:
+            @staticmethod
+            def get_normalized_financials(t, year=None, fs_div=None,
+                                          reprt_code=None):
+                f = rows.get((str(year), reprt_code))
+                if f is None:
+                    return None
+                return {"financials": dict(f),
+                        "financials_cumulative": dict(f)}
+
+        monkeypatch.setattr(dq, "probe_latest_reprt_code",
+                            lambda d, t, fs_div="CFS":
+                            (2026, "11012") if fs_div == "CFS" else None)
+        import bot.wisereport_financials as wf
+        monkeypatch.setattr(wf, "fetch_financial_summary", lambda code: {})
+        out = dq.get_quarterly_series(_Dart(), "005940.KS", n=4)
+        assert out and len(out) == 4
+        roe = out[-1]["ratios"].get("ROE")
+        assert roe is not None, "매출 보강이 TTM 을 덮어썼다"
+        # 밴드를 손으로 박으면 픽스처를 바꿀 때마다 깨진다 — **같은 항목의
+        # 분기 ROE 대비 몇 배인지**로 본다(4분기 합이니 대략 4배).
+        one_q = (out[-1]["financials"]["당기순이익"]
+                 / out[-1]["financials"]["자본총계"] * 100)
+        # 정확한 배수는 분기 구성에 따라 다르다(4분기 파생이 섞인다) —
+        # 계약은 "**분기 하나 기준이 아니다**" 하나다.
+        assert roe > one_q * 2, (roe, one_q)
+        assert out[0]["ratios"].get("ROE") is None, "4분기 미만인데 값이 있다"
+
+    def test_ttm_runs_after_the_revenue_fallback_rebuilds_ratios(self):
+        """순서 계약을 소스에서도 고정한다 — 매출 보강 블록이 `ratios` 를
+        통째로 다시 만들므로 TTM 이 그 **앞**에 오면 조용히 덮인다. 위
+        E2E 는 보강이 실제로 발동하는 픽스처를 만들기 까다로워 이 자리에서
+        순서만 못 박는다(무엇을 검사하는지 명시 — grep 가드)."""
+        import inspect
+        from bot import dart_quarterly as dq
+        src = inspect.getsource(dq.get_quarterly_series)
+        assert 'e["ratios"] = _ratios(' in src
+        assert "apply_ttm_returns(out)" in src
+        assert src.index('e["ratios"] = _ratios(') < src.index(
+            "apply_ttm_returns(out)"), "TTM 이 매출 보강보다 먼저다 — 덮인다"

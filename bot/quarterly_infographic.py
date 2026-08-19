@@ -59,7 +59,9 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #       "매출 5,787억 < 영업이익 6,812억" 으로 읽혔다
 #   v6 (2026-08-19) 손익 계정을 손익계산서에서만 채택 — 자본변동표(SCE)의
 #       **누적** 당기순이익이 이겨 2·3분기 순이익이 부풀어 있었다
-_RENDER_VER = "v6"
+#   v7 (2026-08-19) ROE·ROA 를 TTM(최근 4분기 합) 기준으로 — 분기 하나로
+#       계산해 네이버(10.08%)와 3배 어긋나 보였다
+_RENDER_VER = "v7"
 
 
 def _eok(v, currency: str = "KRW") -> str:

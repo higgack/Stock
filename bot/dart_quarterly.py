@@ -263,4 +263,12 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
                 e["ratios"] = _ratios(e["financials"])
     except Exception as exc:                                   # noqa: BLE001
         log.info("dart_quarterly: %s 매출 총액 보강 건너뜀: %s", ticker, exc)
+    # ROE·ROA 는 **TTM(최근 4분기 합)** 으로 — 분기 순이익 하나로 계산하면
+    # 시장 표기(네이버·FnGuide)와 3배 어긋난다(사용자 2026-08-19).
+    # ⚠️ 반드시 매출 보강 **뒤에** — 위 블록이 ratios 를 통째로 다시 만든다.
+    try:
+        from bot.dart_client import apply_ttm_returns
+        apply_ttm_returns(out)
+    except Exception as exc:                                   # noqa: BLE001
+        log.info("dart_quarterly: %s TTM 수익성 계산 건너뜀: %s", ticker, exc)
     return out or None

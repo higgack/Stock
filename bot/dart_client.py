@@ -444,6 +444,44 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
     return res
 
 
+_TTM_QUARTERS = 4
+
+
+def apply_ttm_returns(entries: list) -> int:
+    """분기 시리즈의 ROE·ROA 를 **TTM(최근 4분기 합)** 기준으로 다시 계산.
+
+    ⚠️ 왜(사용자 2026-08-19 NH투자증권): `calc_kr_financial_ratios` 는 한
+    기간만 보므로 분기 항목의 ROE 가 `분기 순이익 ÷ 자본`(NH 25.3Q 3.1%)이
+    된다. 네이버·FnGuide 를 비롯한 시장 표기는 **연율(TTM)** 이라(같은 분기
+    10.08%) 사용자가 두 화면을 나란히 놓으면 3배 차이로 보인다. 값이 틀린 게
+    아니라 **관례가 다른 것**이라, 시장 관례에 맞춘다.
+
+    `entries` = 오래된→최신 [{financials, ratios}]. 4분기가 안 모이는 앞쪽
+    항목은 **비운다** — 분기 하나로 연율을 흉내 내면 틀린 숫자가 된다.
+
+    분모는 **기말 자본·자산**이다(평균이 아니라). 평균을 쓰는 벤더도 있어
+    네이버와 소수점이 다를 수 있으나, 우리 표 안에서는 일관된다.
+
+    반환 = 값을 채운 항목 수."""
+    n = 0
+    for i, e in enumerate(entries):
+        fin = e.get("financials") or {}
+        rat = e.setdefault("ratios", {})
+        window = entries[i - _TTM_QUARTERS + 1:i + 1]
+        nets = [(w.get("financials") or {}).get("당기순이익")
+                for w in window]
+        if len(window) < _TTM_QUARTERS or any(v is None for v in nets):
+            rat["ROE"] = None
+            rat["ROA"] = None
+            continue
+        ttm = sum(nets)
+        eq, asset = fin.get("자본총계"), fin.get("자산총계")
+        rat["ROE"] = (ttm / eq * 100) if eq else None
+        rat["ROA"] = (ttm / asset * 100) if asset else None
+        n += 1
+    return n
+
+
 def calc_kr_financial_ratios(financials: dict) -> dict:
     """DART 정규화 dict → 10 재무비율 (영업이익률 / 순이익률 / ROE /
     ROA / 부채비율 / 유동비율 / 이자보상배율 / 매출총이익률 / 이익잉여금

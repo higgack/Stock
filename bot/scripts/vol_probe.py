@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 
 def _p(*a):
@@ -58,6 +58,37 @@ def main() -> int:
                    f"{' (빈 응답 = 커버리지/차단)' if h.empty else ''}")
             except Exception as exc:                           # noqa: BLE001
                 _p(f"           yfinance 직접호출 예외 {type(exc).__name__}: {exc}")
+
+    _p("")
+    _p("①-b ^MOVE 가 왜 멈췄나 — 야후 원본 메타")
+    # 우리 값은 yfinance(=Yahoo Finance) 의 `^MOVE` 미러다. 시계열이 멈춘
+    # 이유는 '우리 코드' 밖이므로 **야후가 뭐라고 하는지**를 그대로 찍는다:
+    # 마지막 거래시각·거래소·통화, 그리고 대체 심볼 후보의 상태.
+    try:
+        import yfinance as yf
+        t = yf.Ticker("^MOVE")
+        meta = {}
+        try:
+            meta = t.history_metadata or {}
+        except Exception as exc:                               # noqa: BLE001
+            _p(f"   history_metadata 실패: {type(exc).__name__}: {exc}")
+        for k in ("symbol", "exchangeName", "fullExchangeName", "currency",
+                  "instrumentType", "regularMarketTime", "firstTradeDate",
+                  "regularMarketPrice"):
+            if k in meta:
+                _p(f"   {k:20} {meta[k]}")
+        if not meta:
+            _p("   (메타 없음 — 심볼이 야후에서 내려갔을 가능성)")
+        # 대체 심볼 후보 — 있는지 없는지만 본다(값을 추측하지 않는다).
+        for alt in ("^MOVE", "MOVE", "^TYVIX", "^VXTLT"):
+            try:
+                h = yf.Ticker(alt).history(period="1mo")
+                last = h.index[-1].date() if len(h) else "—"
+                _p(f"   대체후보 {alt:8} {len(h):>3}행 · 최신 {last}")
+            except Exception as exc:                           # noqa: BLE001
+                _p(f"   대체후보 {alt:8} 실패 {type(exc).__name__}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   yfinance import 실패: {type(exc).__name__}: {exc}")
 
     _p("")
     _p("② last-good 캐시")
