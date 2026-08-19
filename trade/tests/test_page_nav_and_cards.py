@@ -12,15 +12,21 @@ import re
 import unittest
 
 # (모듈, DB 오프너) — badonion 하위 페이지 전량.
-_MODULES = [
-    ("cn_exports", "open_cn_db"), ("jp2_exports", "open_jp2_db"),
-    ("jp_exports", "open_jp_db"), ("mx_exports", "open_mx_db"),
-    ("my_exports", "open_my_db"), ("ph_exports", "open_ph_db"),
-    ("th_exports", "open_th_db"), ("tw_exports", "open_tw_db"),
-    ("kr_stock_exports", "open_kr_stock_db"),
-    ("jp_stock_exports", "open_jp_stock_db"),
-    ("us_imports", "open_us_db"),
-]
+#
+# ⚠️ 예전엔 11개를 **손으로 나열**했다. 그러면 새 소스가 목록 밖에 있어
+# 두 계약(back-link·빈 토글)이 아무도 안 보는 채로 배포된다(2026-08-19
+# 미국 PPI 추가 때 실제로 그럴 뻔했다 — NOAH 실수 #24 '목록형 가드는 새
+# 파일을 못 잡는다'). 레지스트리에서 **파생**하고, 레지스트리 밖 페이지만
+# 예외로 명시한다.
+def _modules() -> list[tuple[str, str]]:
+    from trade import badonion_sources as _srcs
+    out = [(s.open_db.__module__.rsplit(".", 1)[-1], s.open_db.__name__)
+           for s in _srcs.SOURCES if s.html_file]
+    out.append(("jp_exports", "open_jp_db"))   # 비온 채널 — SOURCES 밖
+    return sorted(set(out))
+
+
+_MODULES = _modules()
 
 
 def _render_empty(name, opener):

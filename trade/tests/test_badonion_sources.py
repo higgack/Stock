@@ -32,7 +32,9 @@ class RegistryTests(unittest.TestCase):
         keys = [s.key for s in srcs.SOURCES]
         self.assertEqual(
             keys,
-            ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us", "krs", "jps"])
+            ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us",
+             # 2026-08-19 미국 PPI — 품목 기준이라 종목 기준 앞.
+             "uppi", "krs", "jps"])
         # 계약은 리터럴 목록이 아니라 **품목(HS) 기준이 먼저, 종목(회사)
         # 기준이 뒤**다 — 종목 파서가 더 좁은 마커라 앞서면 품목 캡션을
         # 가로챌 위험이 없고, 반대로 앞서면 순서 의존이 생긴다.
