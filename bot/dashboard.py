@@ -5648,8 +5648,9 @@ def _render_stock_info_html(rec: dict) -> str:
                                 for k, v in sorted(_kf_comp.items())))
                             + " — 이 회사는 해당 총액 계정을 공시하지 않아 "
                               "DART 원자료의 구성요소 값을 그대로 표시합니다"
-                              "(합산·추정 없음). 총액이 아니므로 영업이익률·"
-                              "순이익률은 비웁니다</div>")
+                              " — <b>총수익의 일부</b>입니다(다른 구성요소는 "
+                              "별도 계정, 합산·추정 없음). 총액이 아니므로 "
+                              "영업이익률·순이익률은 비웁니다</div>")
             kr_financial_html = f"""<div class="si-section">
     <div class="si-section-title">K-IFRS 재무 요약 {esc(fy_label)} {esc(fs_label)}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -5975,8 +5976,9 @@ def _render_stock_info_html(rec: dict) -> str:
                              for k, v in (it.get("_component_accounts") or {}).items()})
         if _comp_seen:
             _notes.append('⚠️ ' + esc(" · ".join(_comp_seen))
-                          + '(구성요소 계정) — 총액 계정 미공시라 DART 원자료 '
-                            '그대로, 합산·추정 없음. 총액이 아니므로 '
+                          + '(구성요소 계정) — 이 회사는 총수익 계정을 공시하지 '
+                            '않아 <b>총수익의 일부</b>만 표시됩니다(다른 구성요소는 '
+                            '별도 계정, 합산·추정 없음). 총액이 아니므로 '
                             '<b>영업이익률 등 매출로 나누는 비율은 비웁니다</b>')
         if _notes:
             foot = ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
