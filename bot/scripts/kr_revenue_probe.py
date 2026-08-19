@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -49,6 +49,9 @@ _FG_CANDIDATES = [
     ("navercomp cF1001 Q",
      "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
      "?cmp_cd={c}&fin_typ=0&freq_typ=Q"),
+    ("navercomp cF1001 A",
+     "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
+     "?cmp_cd={c}&fin_typ=0&freq_typ=A"),
     ("navercomp cF1001 Y",
      "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
      "?cmp_cd={c}&fin_typ=0&freq_typ=Y"),
