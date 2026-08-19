@@ -71,7 +71,7 @@ GLOBAL = [
     ("us_hy", "미국 하이일드", "%", "fred", "BAMLH0A0HYM2", 2),
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
     # CPI 오른쪽 PPI(생산자물가, 헤드라인=최종수요 PPIFIS, 지수레벨, 사용자 2026-06-23).
-    ("us_ppi", "미국 PPI", "", "fred", "PPIFIS", 2),
+    ("us_ppi", "미국 PPI (최종수요)", "", "fred", "PPIFIS", 2),
     # PPI 옆 근원 PCE(Fed 타깃 물가 지표, 지수레벨, 사용자 2026-06-26). 헤드라인 대신
     # 근원(PCEPILFE) — Fed 2% 타깃이 Core PCE.
     ("us_pce", "미국 근원PCE", "", "fred", "PCEPILFE", 2),
@@ -132,6 +132,11 @@ _FRED_QUARTERLY = {"A191RL1Q225SBEA"}
 
 
 # ── FRED monthly fetch ──────────────────────────────────────────────
+# series_id → 그 시리즈 스파크라인 창의 **첫 관측 기간**(YYYY-MM-DD).
+# `_fred_monthly` 가 값만 돌려주는 계약이라(호출부 다수) 옆에 남긴다.
+_FRED_SPARK_START: dict[str, str] = {}
+
+
 def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
     """FRED observations, oldest→newest, last `months` values. 분기 series 는
     frequency=q(monthly 요청 시 FRED 400)."""
@@ -162,6 +167,7 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
         log.warning("macro: FRED %s monthly failed: %s", series_id, exc)
         return []
     vals: list[float] = []
+    dates: list[str] = []
     for o in obs:
         v = o.get("value", "")
         if not v or v == ".":
@@ -170,8 +176,15 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
             vals.append(float(v))
         except ValueError:
             continue
+        dates.append(str(o.get("date") or ""))
         if len(vals) >= months:
             break
+    # ⚠️ 창의 **첫 관측 기간**을 함께 남긴다. 카드가 "12개월 전" 이라고
+    # 적어 왔는데 이 창은 **최근 N개 관측**이라 실제로는 N−1개월 전이다
+    # (2026-08-20 실측: 근원PCE 카드 '12개월 전 126.43' 은 11개월 전 값이라
+    # 글로벌 스냅샷의 YoY 3.29% 와 계산이 안 맞았다). 라벨을 날짜로 바꿔
+    # 검산 가능하게 한다 — vol_history 와 같은 처방(#29).
+    _FRED_SPARK_START[series_id] = dates[-1] if dates else ""
     return list(reversed(vals))
 
 
@@ -740,6 +753,10 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 "spark": card_spark, "spark_dir": spark_dir,
                 "spark_span": spark_span,
                 "period_start": period_start,
+                # 기간 시작점의 **실제 관측 기간** — "12개월 전" 같은 어림
+                # 라벨 대신 이 값으로 표기해 사용자가 검산할 수 있게 한다.
+                "period_start_asof": (_FRED_SPARK_START.get(sid, "")[:7]
+                                      if src == "fred" else ""),
                 "period_change": period_change,
                 "period_change_pct": period_change_pct,
                 # 변동 표기 단위를 **서버가 명시** — 프론트가 change_pct 유무로

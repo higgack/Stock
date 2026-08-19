@@ -14486,7 +14486,11 @@ class TestNaverCommodityCharts:
         assert "FEDFUNDS" not in gsids, "미국 FFR 미제거"
         assert "PPIFIS" in gsids, "미국 PPI 누락"
         labels = [lbl for _, lbl, *_ in m.GLOBAL]
-        assert labels.index("미국 PPI") == labels.index("미국 CPI") + 1, "PPI 가 CPI 바로 오른쪽 아님"
+        # 2026-08-20: 라벨에 기준을 박았다("미국 PPI (최종수요)") — 글로벌
+        # 스냅샷의 PPIACO 와 이름이 같아 한쪽이 틀린 것처럼 보였기 때문.
+        # 순서 계약은 그대로라 **접두 일치**로 확인한다.
+        _ppi_i = next(i for i, l in enumerate(labels) if l.startswith("미국 PPI"))
+        assert _ppi_i == labels.index("미국 CPI") + 1, "PPI 가 CPI 바로 오른쪽 아님"
         # FRED 헤드라인 값 = 글로벌 핵심지표와 동일 소스(_fred_fetch_series spot)로 통일
         # (사용자 2026-06-23 '두 표면 일치' — 일별 series 2Y/10Y 가 월평균 vs spot 불일치
         # 였음). 차트(스파크라인)는 _fred_monthly(월간) 유지.
@@ -26371,3 +26375,104 @@ class TestPeerTableSourceValuesOnly20260820:
               "peer_comps": [{"ticker": "AAA", "name": "A", "currency": "USD",
                               "market_cap": 1e10, "is_subject": True}]}
         assert "12.0" in self._pane(si)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-20 사용자: "제대로 돌아가는지 정말 못믿겠어. … 모두 하나씩 꼼꼼히
+# 제대로 업데이트되고 제대로 가져오는지 검증해줘."
+#
+# 신선도 감사(board_audit)만으로는 못 잡는 두 부류가 실제로 나왔다.
+#
+# ① **검산 실패** — 관심종목의 `예상 PER` 이 옆 칸의 `현재가 ÷ 예상 EPS` 와
+#    안 맞았다. 세 칸이 서로 다른 출처였기 때문:
+#      현재가 = 네이버 실시간(KR) · 예상 EPS = forwardEps→trailingEps→
+#      calendar 컨센서스 · 예상 PER = yfinance forwardPE(자기 EPS·자기 가격)
+#    미국 종목은 우연히 맞아 눈에 안 보였고(SKHY 157.01÷32.14=4.9 ✓) 국내만
+#    틀렸다(삼성전자 247,500÷14,227=17.4 인데 화면 3.7 · 쿠콘 10.7 인데 8.9).
+# ② **교차 불일치** — 'PPI' 가 글로벌 스냅샷은 PPIACO(8.27%), 매크로 스냅샷은
+#    PPIFIS(4.84%). 둘 다 맞는 값인데 이름이 같아 한쪽이 틀린 것처럼 보였다.
+# ③ **어림 라벨** — 매크로 카드의 "12개월 전"은 창이 *최근 12개 관측*이라
+#    실제론 11개월 전이다. 사용자가 YoY 로 검산하면 안 맞는다(#29 와 같은 병).
+class TestSurfaceArithmeticAndCrossConsistency20260820:
+    def test_watchlist_per_is_derivable_from_the_two_cells_beside_it(self):
+        from bot.market_favorites import _per_from_shown
+        # 캡처 실측값 — 미국은 원래 맞았고 국내가 틀렸다.
+        for px, eps, want in ((157.01, 32.14, 4.9), (53.8, 3.34, 16.1),
+                              (119.49, 5.14, 23.2), (11.05, 1.67, 6.6),
+                              (20600, 1921, 10.7), (247500, 14227.34, 17.4)):
+            got = _per_from_shown(px, eps)
+            assert got is not None and round(got, 1) == want, (px, eps, got)
+
+    def test_watchlist_per_is_blank_when_eps_is_missing(self):
+        """'EPS 는 —인데 PER 은 6.2' 같은 설명 불가능한 행을 만들지 않는다."""
+        from bot.market_favorites import _per_from_shown
+        for px, eps in ((24650, None), (None, 5.0), (100, 0), (0, 5.0)):
+            assert _per_from_shown(px, eps) is None, (px, eps)
+
+    def test_watchlist_never_stores_the_sources_own_pe(self):
+        """소스 PER 을 그대로 싣는 배선이 되살아나면 다시 어긋난다."""
+        import inspect
+        import bot.market_favorites as mf
+        src = inspect.getsource(mf)
+        for bad in ('f["per"] = fwd_pe', 'per_val = info.get("forwardPE")',
+                    '"per": per_val'):
+            assert bad not in src, f"소스 PER 배선이 되살아났다: {bad}"
+        assert '_per_from_shown(f.get("current_price")' in src, "검산 배선 없음"
+
+    def test_per_is_computed_after_the_calendar_may_replace_eps(self):
+        """PER 을 EPS 확정 **전에** 만들면 이 버그의 원래 형태가 재현된다 —
+        calendar 블록이 eps_estimate 를 컨센서스로 갈아끼우기 때문."""
+        import re
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        # ⚠️ 모듈 전체에서 찾으면 `add_favorite` 의 calendar 블록이 먼저
+        # 걸려 순서가 뒤바뀐 뮤테이션도 통과한다(실측) — **갱신 함수 본문**
+        # 으로 좁힌다.
+        m = re.search(r"\n    def _refresh\(f: dict\) -> None:.*?"
+                      r"(?=\n    with ThreadPoolExecutor)", src, re.S)
+        assert m, "_refresh 본문을 못 찾았다 — 배선 확인"
+        blk = m.group(0)
+        i_cal = blk.index('cal.get("Earnings Average")')
+        i_per = blk.index('f["per"] = _per_from_shown(')
+        assert i_per > i_cal, "PER 계산이 EPS 확정(calendar 갈아끼우기)보다 앞선다"
+
+    def test_two_screens_do_not_call_different_series_the_same_name(self):
+        """PPI 처럼 다른 시리즈를 같은 이름으로 부르면 사용자는 둘 중 하나가
+        틀렸다고 읽는다 — 라벨에 기준이 들어가야 한다."""
+        import re
+        mo = open("bot/market_overview.py", encoding="utf-8").read()
+        ms = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        mo_ids = {lbl: sid for lbl, sid in re.findall(
+            r'\("([^"]*(?:PPI|CPI|PCE)[^"]*)",\s*"([A-Z0-9]+)"', mo)
+            if not re.fullmatch(r"[A-Z0-9]+", lbl)}
+        ms_ids = {sid: lbl for lbl, sid in re.findall(
+            r'\("[a-z_]+",\s*"([^"]+)",\s*"[^"]*",\s*"fred",\s*"([A-Z0-9]+)"', ms)}
+
+        def topic(l):
+            return next((t for t in ("PPI", "CPI", "PCE") if t in l.upper()), "")
+
+        def qual(l, t):
+            return re.sub(r"[\s()]+", "",
+                          re.sub(r"\(YoY\)|미국|글로벌|US\b", "", l).replace(t, ""))
+
+        for lbl, sid in mo_ids.items():
+            if sid in ms_ids:
+                continue
+            t = topic(lbl)
+            for rs, rl in ms_ids.items():
+                if rs == sid or topic(rl) != t:
+                    continue
+                assert qual(lbl, t) and qual(rl, t), (
+                    f"'{lbl}'({sid}) 와 '{rl}'({rs}) 가 같은 이름·다른 시리즈")
+
+    def test_macro_card_period_label_carries_a_real_date(self):
+        """"12개월 전"은 어림이다 — 창이 최근 N개 관측이라 실제론 N−1개월 전.
+        실제 관측 기간을 실어 사용자가 검산할 수 있어야 한다."""
+        import inspect
+        import bot.macro_snapshot as ms
+        assert "period_start_asof" in inspect.getsource(ms), "실제 기간 미전달"
+        dash = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "period_start_asof" in dash, "렌더가 실제 기간을 안 쓴다"
+        i = dash.index('_ps_asof = str(ind.get("period_start_asof")')
+        blk = dash[i:i + 400]
+        assert "대비" in blk and "f'{span} 전'" in blk, \
+            "날짜가 있으면 날짜로, 없을 때만 어림 라벨이어야 한다"
