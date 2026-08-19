@@ -19760,7 +19760,8 @@ class TestMarketTimingBreadthVol20260726:
         assert mt.fetch_market_breadth("KR")["sectors_missing"] == [
             mt._BREADTH_SECTORS["KR"][dead]]
 
-    def test_fetch_volatility_snapshot_vix_prefers_naver(self, monkeypatch):
+    def test_fetch_volatility_snapshot_vix_prefers_naver(self, monkeypatch,
+                                                        tmp_path):
         # 사용자 리포트(2026-07-26) '빅스지수가 다른데 메인대시보드랑
         # 시장타이밍이랑' — 메인 대시보드(bot/macro_snapshot.py)와 동일
         # 네이버 소스를 우선 써야 canonical 값이 일치. (CNN 을 VIX 최우선
@@ -19774,6 +19775,9 @@ class TestMarketTimingBreadthVol20260726:
         from bot import market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
         monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda days=400: [])
+        # 관측 누적 시계열(2026-08-19)이 생기면서 이 경로가 디스크를 만진다 —
+        # 테스트가 사용자 실제 캐시를 오염시키지 않게 격리.
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
         seen = []
 
         def fake_fetch(ticker, days=120, min_rows=None):
@@ -26341,3 +26345,197 @@ class TestMoveSymbolLadder:
         monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda: [])
         snap = mt.fetch_volatility_snapshot()
         assert snap["move"]["source"] == "yfinance MOVE", snap["move"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-19 vol_probe v5 — MOVE 의 진짜 원인이 확정됐다.
+#   · 캐럿 없는 `MOVE` = **Corvex, Inc. (EQUITY, $9.80)** — 사다리의 대역
+#     관문이 실제로 폐기했다(그대로 썼으면 채권 변동성 자리에 주가 9.80).
+#   · `^MOVE` 는 살아 있다(INDEX · regularMarketPrice 74.98 · 08-18 마감)
+#     — 다만 야후가 **차트를 1봉만** 준다. 우리 차트 경로는 "선을 그으려면
+#     2점" 이라 1봉을 버려서 0행이 됐다. 지수 카드는 차트가 아니라 값이
+#     필요하므로 시세 메타에서 한 점을 건진다.
+#   · 한 점으로는 창(전일·1주·1달·1년)을 못 만드니 관측을 디스크에 누적한다.
+class TestVolQuoteFallbackAndSeries:
+    def test_quote_fallback_when_chart_series_empty(self, monkeypatch):
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history", lambda tk, **kw: [])
+        monkeypatch.setattr(mt, "_index_quote_row",
+                            lambda tk: [{"date": "2026-08-18", "close": 74.98}])
+        rows, sym = mt.fetch_move_rows()
+        assert sym == "^MOVE" and rows[-1]["close"] == 74.98
+
+    def test_quote_fallback_still_obeys_the_band_gate(self, monkeypatch):
+        """메타 경로가 관문을 비켜 가는 뒷문이 되면 안 된다."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history", lambda tk, **kw: [])
+        monkeypatch.setattr(mt, "_index_quote_row",
+                            lambda tk: [{"date": "2026-08-18", "close": 9.80}])
+        rows, sym = mt.fetch_move_rows()
+        assert rows == [] and sym is None
+
+    def test_quote_row_reads_metadata_price_and_date(self, monkeypatch):
+        import sys
+        import types
+        fake = types.ModuleType("yfinance")
+
+        class _T:
+            def __init__(self, tk):
+                pass
+
+            history_metadata = {"regularMarketPrice": 74.9787,
+                                "regularMarketTime": 1787085030}
+
+        fake.Ticker = _T
+        monkeypatch.setitem(sys.modules, "yfinance", fake)
+        import bot.market_timing as mt
+        assert mt._index_quote_row("^MOVE") == [
+            {"date": "2026-08-18", "close": 74.9787}]   # 미 장마감 = UTC 같은 날
+
+    def test_series_accumulates_across_runs(self, monkeypatch, tmp_path):
+        """하루 한 점씩만 와도 창이 시간이 지나며 복원되는가."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        for d, c in (("2026-08-17", 70.0), ("2026-08-18", 74.98)):
+            got = mt._vol_series_merge("move", [{"date": d, "close": c}])
+        assert [r["date"] for r in got] == ["2026-08-17", "2026-08-18"]
+        assert mt.vol_history(got)["전일"] == 70.0
+
+    def test_series_overwrites_same_date_and_keeps_order(self, monkeypatch,
+                                                        tmp_path):
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        mt._vol_series_merge("move", [{"date": "2026-08-18", "close": 70.0}])
+        got = mt._vol_series_merge("move", [{"date": "2026-08-18", "close": 74.98},
+                                            {"date": "2026-08-14", "close": 68.0}])
+        assert got == [{"date": "2026-08-14", "close": 68.0},
+                       {"date": "2026-08-18", "close": 74.98}]
+
+    def test_value_comes_from_this_fetch_not_the_accumulation(self, monkeypatch,
+                                                              tmp_path):
+        """누적분을 값으로 쓰면 원천이 죽은 날 옛 값이 '최신'으로 둔갑한다 —
+        값·기준일은 이번에 받은 관측, 창만 누적에서."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        mt._vol_series_merge("move", [{"date": "2026-07-17", "close": 60.0},
+                                      {"date": "2026-07-16", "close": 59.0}])
+        monkeypatch.setattr(mt, "fetch_move_rows",
+                            lambda: ([{"date": "2026-08-18", "close": 74.98}],
+                                     "^MOVE"))
+        monkeypatch.setattr(mt, "_vol_cache_save", lambda *a, **k: None)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda: [])
+        snap = mt.fetch_volatility_snapshot()
+        assert snap["move"]["value"] == 74.98
+        assert snap["move"]["date"] == "2026-08-18"
+
+    def test_series_never_resurrects_when_this_fetch_is_empty(self, monkeypatch,
+                                                              tmp_path):
+        """원천이 죽은 날 누적분으로 창을 채우면 화면이 거짓말한다 —
+        그 경우는 '저장분' 라벨이 붙는 캐시 경로가 담당한다."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        mt._vol_series_merge("move", [{"date": "2026-07-17", "close": 60.0}])
+        assert mt._vol_series_merge("move", []) == []
+
+    def test_series_trims_entries_newer_than_this_fetch(self, monkeypatch,
+                                                       tmp_path):
+        """창의 기준점이 화면의 '현재'보다 미래면 전일·1주가 어긋난다."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        mt._vol_series_merge("move", [{"date": "2026-08-18", "close": 74.98}])
+        got = mt._vol_series_merge("move", [{"date": "2026-08-14", "close": 68.0}])
+        assert [r["date"] for r in got] == ["2026-08-14"], got
+    def test_healthy_source_windows_are_untouched_by_accumulation(
+            self, monkeypatch, tmp_path):
+        """건강한 원천(최장 창을 이미 덮음)은 누적분을 섞지 않는다 —
+        섞으면 얻는 것 없이 전일·1주 의 의미만 흔들린다(2026-08-19 VIX
+        회귀 실측: 옛 관측이 끼어들어 '전일' 이 다른 값이 됐다)."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        mt._vol_series_merge("vix", [{"date": "1990-01-01", "close": 99.0}])
+        fresh = [{"date": f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}",
+                  "close": float(i)} for i in range(300)]
+        got = mt._vol_series_merge("vix", fresh)
+        assert got == fresh, "건강한 원천에 누적분이 섞였다"
+        # 그래도 저장은 돼 있어야 한다(훗날 무너질 때의 보험).
+        assert (tmp_path / "series_vix.json").exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-19 econ_actual_probe v1 실측 — 실제치가 **채워졌는데 틀렸다**:
+#   CPI 2026-07-14 발표 ✅ 332.813 (2026-07-01 관측)
+#   CPI 2026-08-12 발표 ✅ 332.813 (2026-07-01 관측)   ← 같은 숫자
+# 7/14 는 **6월분**을 낸 발표인데, 지금 받은 시계열에서 "발표일 이전 마지막
+# 관측"을 고르니 그때는 아직 없던 7월 관측이 붙었다. 시차 창을 지표마다 손으로
+# 맞추는 방식은 사람이 규약을 외우는 일이라 매번 틀린다(#24·#27).
+# → 원천 vintage(ALFRED `realtime_start=realtime_end=발표일`)를 먼저 묻는다.
+#   그 날짜의 FRED 데이터베이스를 그대로 받으므로 추정이 0 이다.
+class TestEconActualUsesVintage:
+    def test_vintage_is_preferred_over_the_lag_window(self, monkeypatch):
+        from bot import econ_calendar as ec
+        from bot import fred_client
+        monkeypatch.setattr(fred_client, "find_release_id", lambda s: 10)
+        monkeypatch.setattr(fred_client, "fetch_release_dates",
+                            lambda rid, a, b: ["2026-07-14", "2026-08-12",
+                                               "2026-09-10"])
+        # 지금 받은 시계열 — 7월 관측이 이미 들어 있다(창 방식이 속는 지점).
+        monkeypatch.setattr(fred_client, "fetch_history", lambda sid, start=None:
+                            [("2026-05-01", 331.0), ("2026-06-01", 332.0),
+                             ("2026-07-01", 332.813)])
+        vintages = {"2026-07-14": ("2026-06-01", 332.0),
+                    "2026-08-12": ("2026-07-01", 332.813)}
+        monkeypatch.setattr(fred_client, "fetch_observation_asof",
+                            lambda sid, asof, **kw: vintages.get(asof))
+        monkeypatch.setattr(ec, "_load_megatech_earnings", lambda t=None: [])
+        data = ec._load_econ_calendar("2026-08-19")
+        cpi = next(e for e in data["events"] if e["key"] == "cpi")
+        got = {a["release_date"]: a["value"] for a in cpi["actuals"]}
+        assert got == {"2026-07-14": 332.0, "2026-08-12": 332.813}, got
+        assert len(set(got.values())) == 2, "인접 발표일이 같은 값 = 빈티지 오염"
+
+    def test_falls_back_to_window_when_vintage_unavailable(self, monkeypatch):
+        """키부재·API 실패로 vintage 가 없어도 실제치가 사라지면 안 된다."""
+        from bot import econ_calendar as ec
+        from bot import fred_client
+        monkeypatch.setattr(fred_client, "find_release_id", lambda s: 10)
+        monkeypatch.setattr(fred_client, "fetch_release_dates",
+                            lambda rid, a, b: ["2026-07-14", "2026-08-12"])
+        monkeypatch.setattr(fred_client, "fetch_history", lambda sid, start=None:
+                            [("2026-06-01", 332.0), ("2026-07-01", 332.813)])
+        monkeypatch.setattr(fred_client, "fetch_observation_asof",
+                            lambda sid, asof, **kw: None)
+        monkeypatch.setattr(ec, "_load_megatech_earnings", lambda t=None: [])
+        data = ec._load_econ_calendar("2026-08-19")
+        cpi = next(e for e in data["events"] if e["key"] == "cpi")
+        assert cpi.get("actuals"), "vintage 실패 시 실제치가 통째로 사라졌다"
+
+    def test_asof_query_pins_both_realtime_bounds(self, monkeypatch, tmp_path):
+        """`realtime_start`·`realtime_end` 를 **둘 다** 발표일로 고정해야
+        그 시점 데이터베이스가 온다 — 한쪽만 주면 현재값이 섞인다."""
+        import bot.fred_client as fc
+        seen = {}
+
+        class _R:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"observations": [{"date": "2026-06-01", "value": "332.0"}]}
+
+        def fake_get(url, **kw):
+            seen["url"] = url
+            return _R()
+
+        monkeypatch.setattr(fc, "_env_key", lambda k: "dummy")
+        monkeypatch.setattr(fc.requests, "get", fake_get)
+        # ⚠️ 고정 경로를 쓰면 이 테스트가 **스스로 캐시를 남겨** 두 번째
+        # 실행부터 requests 를 안 타고 통과한다(실측). tmp_path 로 격리.
+        monkeypatch.setattr(fc, "_CACHE_DIR", tmp_path)
+        got = fc.fetch_observation_asof("CPIAUCSL", "2026-07-14")
+        assert got == ("2026-06-01", 332.0)
+        assert "realtime_start=2026-07-14" in seen["url"], seen["url"]
+        assert "realtime_end=2026-07-14" in seen["url"], seen["url"]

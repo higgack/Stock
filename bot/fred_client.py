@@ -227,6 +227,61 @@ def fetch_history(series_id: str, start: str = "2018-01-01",
     return clean
 
 
+def fetch_observation_asof(series_id: str, asof: str,
+                           ttl_hours: float = 24.0) -> Optional[tuple[str, float]]:
+    """`asof` **당시 FRED 에 실제로 공표돼 있던** 마지막 관측 (date, value).
+
+    FRED 의 vintage(ALFRED) 질의 — `realtime_start=realtime_end=asof` 를 주면
+    그 날짜 시점의 데이터베이스를 그대로 돌려준다. 왜 필요한가(2026-08-19
+    econ_actual_probe 실측): 지금 받은 시계열로 과거 발표일의 실제치를 고르면
+    **그때는 아직 없던 관측**이 붙는다 — CPI 7/14 발표(6월분)에 7월 관측이
+    붙어 8/12 발표와 **같은 숫자**가 나왔다. 시차 창을 손으로 맞추는 건
+    지표마다 다른 규약을 사람이 외우는 일이라 매번 틀린다(#24·#27).
+    여기선 원천이 스스로 답한다 — 추정 0.
+
+    과거 시점 질의라 답이 변하지 않는다 → 캐시 기본 24h. 실패/키부재 → None
+    (호출부는 기존 시차-창 경로로 폴백한다)."""
+    api_key = _env_key("FRED_API_KEY")
+    if not api_key:
+        return None
+    cache_file = _CACHE_DIR / f"asof_{series_id}_{asof}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < ttl_hours:
+                got = json.loads(cache_file.read_text())
+                return (got[0], got[1]) if got else None
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("fred: asof cache read failed %s@%s: %s",
+                        series_id, asof, exc)
+    url = (f"{_BASE_URL}/series/observations?series_id={series_id}"
+           f"&api_key={api_key}&file_type=json"
+           f"&realtime_start={asof}&realtime_end={asof}"
+           f"&sort_order=desc&limit=10")
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        obs = resp.json().get("observations") or []
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("fred: asof fetch failed %s@%s: %s", series_id, asof, exc)
+        return None
+    out: Optional[tuple[str, float]] = None
+    for row in obs:                     # desc 정렬 — 값이 있는 첫 행이 최신
+        v, d = row.get("value", ""), row.get("date", "")
+        if not v or v == "." or not d:
+            continue
+        try:
+            out = (d, float(v))
+        except ValueError:
+            continue
+        break
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(list(out) if out else None))
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("fred: asof cache write failed %s@%s: %s", series_id, asof, exc)
+    return out
+
+
 def fetch_series_meta(series_id: str) -> Optional[dict]:
     """FRED 가 스스로 보고하는 시리즈 메타 — `observation_end`(원천이 가진
     마지막 관측일) · `last_updated` · `frequency` · `title`. 실패/키부재 → None.

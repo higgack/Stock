@@ -316,11 +316,18 @@ def _load_econ_calendar(today: Optional[str] = None) -> dict:
                     obs = fred_client.fetch_history(series_id, start=hist_start)
                     actuals = []
                     for rdate in info["recent"]:
-                        hit = find_actual_value(
-                            obs, rdate,
-                            max_lag_days=actual_max_lag,
-                            min_lag_days=actual_min_lag,
-                        )
+                        # ① 원천 vintage — 그 발표일 **당시** FRED 에 있던 값.
+                        #    시차 창 추정과 달리 틀릴 여지가 없다(2026-08-19:
+                        #    창 방식은 CPI 7/14 발표에 7월 관측을 붙여 8/12 와
+                        #    같은 숫자를 냈다). 키부재·실패면 None.
+                        hit = fred_client.fetch_observation_asof(series_id, rdate)
+                        # ② 폴백 — vintage 를 못 받으면 기존 시차 창.
+                        if not hit:
+                            hit = find_actual_value(
+                                obs, rdate,
+                                max_lag_days=actual_max_lag,
+                                min_lag_days=actual_min_lag,
+                            )
                         if hit:
                             actuals.append({"release_date": rdate,
                                            "obs_date": hit[0], "value": hit[1]})
