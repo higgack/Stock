@@ -917,6 +917,25 @@ def _industries_for(tickers: list, market: str | None,
                 for tk in miss:
                     if yf.get(tk):
                         got[tk] = yf[tk]
+            # ⚠️ 남은 미스는 대부분 **上櫃(TPEx)** 종목이다(2026-08-19 프로브
+            # 실측): TPEx OpenAPI 가 필드명을 영문화하면서 업종을 **번호**로만
+            # 주게 돼(`SecuritiesIndustryCode='33'`) 이름 매핑이 없고, 야후는
+            # 上櫃를 `.TW` 가 아니라 **`.TWO`** 로 받아 `.TW` 조회가 404 였다.
+            # 접미사만 바꾸면 표본 11개 중 10개가 채워졌다 — 번호→이름 표를
+            # 지어내지 않고 이 경로로 해결한다.
+            miss2 = [tk for tk in tickers if not got.get(tk)]
+            if miss2:
+                alt = {tk: f"{str(tk).split('.')[0]}.TWO" for tk in miss2}
+                yf2 = _fetch_industries(list(alt.values()),
+                                        allow_slow=allow_slow)
+                hit = 0
+                for tk, a in alt.items():
+                    if yf2.get(a):
+                        got[tk] = yf2[a]
+                        hit += 1
+                if hit:
+                    log.info("tw 업종: 上櫃 `.TWO` 폴백으로 %d/%d 보강",
+                             hit, len(miss2))
             return {tk: industry_kr(ind) if ind else ind for tk, ind in got.items()}
         except Exception as exc:
             log.warning("twse 업종맵 → yfinance 폴백: %s", exc)
