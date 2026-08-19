@@ -4989,7 +4989,10 @@ class TestDartQuarterlyFinancialsReprtCode:
         # code-review 발견: 안 바꾸면 이 커밋 배포 전 조회된 구캐시가
         # financials_cumulative 없이 7일간 서빙돼 4분기 파생이 조용히 실패함).
         # v4(2026-08-16): `_src` + `_component_accounts` 추가 → 키 상향.
-        assert any(k.startswith("qfin4_00126380_2026_11012_CFS") for k in written)
+        import re as _re
+        _re_qfin = _re.compile(r"qfin\d+_00126380_2026_11012_CFS")
+        # 버전 숫자는 스키마가 바뀔 때마다 올라간다 — 접두사만 확인한다.
+        assert any(_re_qfin.match(k) for k in written), written
 
     def test_interim_report_includes_cumulative_from_add_amount(self, monkeypatch):
         # 2026-08-19 VM 실측 확인 — 분기/반기보고서는 thstrm_amount 가 이미
@@ -5874,9 +5877,16 @@ class TestDartAccountWinnerDeterminism20260816:
         assert _diff_quarter({"매출": 8.0}, {"매출": 6.0})["매출"] == 2.0
 
     def test_cache_key_bumped_for_src_schema(self):
-        # 옛 캐시(7일 TTL)엔 _src 가 없어 가드가 조용히 무력화된다.
+        """옛 캐시(7일 TTL)엔 새 스키마가 없어 가드가 조용히 무력화된다.
+
+        ⚠️ 특정 버전(`qfin4`)을 단언하면 **다음에 올릴 때 이 테스트가 막는다**
+        (2026-08-19 실제로 막혔다 — 실수 #19). 지켜야 할 성질은 "버전이
+        단조 증가하고 옛 키가 코드에 남아 있지 않다"는 것이다."""
+        import re as _re
         src = open("bot/dart_client.py", encoding="utf-8").read()
-        assert "qfin4_" in src and 'f"qfin3_' not in src
+        vers = sorted(int(m) for m in _re.findall(r'f"qfin(\d+)_', src))
+        assert len(vers) == 1, f"캐시 키가 여러 버전으로 갈렸다: {vers}"
+        assert vers[0] >= 4, "스키마 변경 시 캐시 키를 올려야 한다"
 
     def test_component_account_flagged_not_removed(self):
         # VM probe(2026-08-16): 메리츠금융지주 2025 사업보고서엔 총수익
@@ -22535,6 +22545,82 @@ class TestFlowTrendDiagnosis20260818:
         assert blk.count("<li>") <= 4, "안내문 항목이 또 불어났다"
         # 안내문이 항상 펼쳐진 채로 돌아가지 않게(open 속성 금지).
         assert not re.search(r"<details[^>]*\bopen\b", blk)
+
+    def test_component_revenue_never_produces_impossible_ratios(self):
+        """⚠️ NH투자증권(2026-08-19 사용자): 화면에 영업이익률 117.7%, 매출
+        5,787억 < 영업이익 6,812억. 총수익 계정을 공시하지 않는 금융사라
+        '매출' 자리에 **이자수익**(구성요소)이 들어갔는데, 그걸 분모로 나눠
+        불가능한 비율을 그대로 찍었다. 값은 보존하되 비율은 비운다."""
+        from bot.dart_client import calc_kr_financial_ratios, revenue_label
+        base = {"매출": 1.97e12, "영업이익": 1.42e12, "당기순이익": 1.03e12,
+                "자본총계": 9.4e12, "자산총계": 8.3e13, "부채총계": 7.4e13,
+                "매출총이익": 1.0e12}
+        ok = calc_kr_financial_ratios(base)
+        assert round(ok["영업이익률"], 1) == 72.1        # 총액이면 그대로 낸다
+        comp = dict(base, _component_accounts={"매출": "이자수익"})
+        bad = calc_kr_financial_ratios(comp)
+        for k in ("영업이익률", "순이익률", "매출총이익률"):
+            assert bad[k] is None, f"{k} 가 구성요소를 분모로 계산됐다"
+        # 매출과 무관한 비율은 살아 있어야 한다(과잉 차단 금지).
+        assert bad["ROE"] is not None and bad["부채비율"] is not None
+        # 행 이름도 실제 계정으로 — '매출'이라 부르면 모순돼 보인다.
+        assert revenue_label(comp) == "이자수익"
+        assert revenue_label(base) == "매출"
+
+    def test_total_revenue_wins_even_when_its_korean_name_is_unlisted(self):
+        """⚠️ **근본 원인.** 우선순위를 한글 이름으로만 매겨서, 표준 태그
+        (`ifrs-full_Revenue`)로 총액이 정확히 잡혀도 이름이 목록에 없으면
+        최하위로 밀려 구성요소(이자수익)에게 졌다. 이름 앞 번호("Ⅰ.")만
+        붙어도 같은 일이 벌어진다(2026-08-19 실측)."""
+        from bot.dart_client import _account_rank, _extract_dart_financials
+        # (a) 이름 앞 번호·공백은 벗기고 본다.
+        assert _account_rank("매출", "Ⅰ. 영업수익") == 0
+        assert _account_rank("매출", "영업수익 ") == 0
+        assert _account_rank("매출", "1. 영업수익") == 0
+        # (b) 이름을 몰라도 표준 총액 태그면 구성요소보다 앞선다.
+        assert _account_rank("매출", "순영업손익", "ifrs-full_Revenue") < \
+            _account_rank("매출", "이자수익")
+        # (c) 태그도 이름도 모르면 종전대로 맨 뒤(없는 규칙을 만들지 않는다).
+        assert _account_rank("매출", "순영업손익", "") == 3
+
+        # (d) E2E — 추출기를 통째로 태워 **승자**가 바뀌는지 본다(실수 #20:
+        # 헬퍼 테스트만으로는 배선 변형을 못 잡는다).
+        items = [
+            {"account_id": "ifrs-full_Revenue", "account_nm": "Ⅰ. 영업수익",
+             "thstrm_amount": "10,000,000,000", "sj_div": "IS"},
+            {"account_id": "dart_InterestIncome", "account_nm": "이자수익",
+             "thstrm_amount": "1,970,000,000", "sj_div": "IS"},
+        ]
+        fin = _extract_dart_financials(items)
+        assert fin["매출"] == 1e10, "총액이 아니라 구성요소가 이겼다"
+        assert "매출" not in (fin.get("_component_accounts") or {}), \
+            "총액을 잡았는데 구성요소로 표기했다"
+        # 총액이 아예 없을 때만 구성요소가 승자가 되고, 그 사실이 남는다.
+        only_comp = _extract_dart_financials([items[1]])
+        assert only_comp["매출"] == 1.97e9
+        assert (only_comp.get("_component_accounts") or {})["매출"] == "이자수익"
+
+    def test_component_revenue_surfaces_say_so(self):
+        """세 화면(요약·추이표·인포그래픽)이 **같은 이름**을 쓰고, 매출로
+        나누는 지표를 만들지 않는지."""
+        from bot.quarterly_infographic import _footnotes, table_html
+        qs = [{"label": "26.2Q", "period": "2026-06-30",
+               "financials": {"매출": 5.787e11, "영업이익": 6.812e11,
+                              "당기순이익": 9.652e11,
+                              "_component_accounts": {"매출": "이자수익"}},
+               "ratios": {"영업이익률": None, "순이익률": None}}]
+        pl = {"currency": "KRW", "quarters": qs, "psr": None,
+              "component_accounts": {"매출": "이자수익"}}
+        import re
+        assert re.findall(r"<tr><td>([^<]+)</td>", table_html(pl))[0] == "이자수익"
+        note = " ".join(t for t, _c in _footnotes(pl, qs))
+        assert "이자수익(구성요소 계정)" in note
+        assert "PSR 은 산출 제외" in note, "왜 비었는지 설명이 없다"
+        # PSR 가드가 배선돼 있는지(실수 #20).
+        import pathlib as _p
+        src = _p.Path("bot/quarterly_infographic.py").read_text(encoding="utf-8")
+        i = src.index("psr = mcap / _ttm_rev")
+        assert "not _rev_is_comp" in src[i - 400:i]
 
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
