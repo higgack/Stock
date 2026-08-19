@@ -1168,7 +1168,7 @@ def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
 #   v1 (2026-08-19) 구성요소 매출 = 비율 억제 + 계정 랭킹(표준 태그·이름 정규화)
 #   v2 (2026-08-19) 총액 미공시사(증권·은행·보험) 매출을 FnGuide 총액으로 보강
 #   v3 (2026-08-19) FnGuide 컬럼 매핑 수정 — v2 는 파서가 못 읽어 보강이 0건이었다
-_KR_FIN_SCHEMA_VER = 4
+_KR_FIN_SCHEMA_VER = 5
 
 
 def collect_kr_financials(ticker: str) -> dict:
@@ -1274,35 +1274,42 @@ def collect_kr_financials(ticker: str) -> dict:
 def _apply_revenue_fallback(ticker: str, kr: dict) -> None:
     """총액 계정을 안 주는 회사(증권·은행·보험)의 매출을 FnGuide 총액으로.
 
-    ⚠️ 검산은 `kr_revenue_fallback` 안에 있다 — 기간 일치·영업이익 교차
-    확인·총액>구성요소. 하나라도 어긋나면 그 항목은 그대로 둔다(옛 동작 =
-    구성요소 + 비율 비움). 페이지는 **1회만** 받아 전 기간에 재사용한다."""
+    ⚠️ **한 표 안에서 기준을 섞지 않는다**(사용자 2026-08-19 NH투자증권):
+    옛 코드는 기간마다 독립적으로 채워, 분기 표가 `26,840억 · 48,641억 ·
+    81,720억 · 5,787억` 이 됐다 — 앞 세 칸은 총액인데 마지막만 이자수익이라
+    한 행에 두 기준이 섞였고, 행 이름은 '이자수익' 하나였다. 그래서 연간
+    묶음과 분기 묶음을 **각각 전부-아니면-전무**로 채운다(`fill_series`).
+    연간이 되고 분기가 안 되는 건 정상 — 서로 다른 표라 섞이지 않는다.
+
+    검산은 `kr_revenue_fallback` 안에 있다 — 기간 일치·영업이익 교차 확인·
+    총액>구성요소. 페이지는 묶음당 1회만 받는다(헬퍼 내부 캐시 재사용)."""
     if not kr:
         return
-    need = [e for e in ([kr.get("financials")] + list(kr.get("financials_ts") or [])
-                        + list(kr.get("financials_q") or []))
-            if isinstance(e, dict) and (e.get("_component_accounts") or {}).get("매출")]
-    if not need:
-        return
+    groups = {
+        # 연간 표는 `financials`(최신) + `financials_ts`(추이)를 함께 그린다.
+        "연간": [e for e in ([kr.get("financials")]
+                            + list(kr.get("financials_ts") or []))
+               if isinstance(e, dict)],
+        "분기": [e for e in (kr.get("financials_q") or []) if isinstance(e, dict)],
+    }
     try:
-        from bot.kr_revenue_fallback import fill_total_revenue
-        from bot.wisereport_financials import fetch_financial_summary
-        summary = fetch_financial_summary(ticker)
+        from bot.kr_revenue_fallback import fill_series
     except Exception as exc:                            # noqa: BLE001
         log.info("stock_snapshot: 매출 총액 보강 건너뜀(%s): %s", ticker, exc)
         return
-    if not summary:
-        return
-    n = 0
-    for e in need:
+    for label, entries in groups.items():
+        if not entries:
+            continue
         try:
-            if fill_total_revenue(ticker, e, year=e.get("year"),
-                                  quarter=e.get("quarter"), summary=summary):
-                n += 1
+            n = fill_series(ticker, [(e.get("year"), e.get("quarter"), e)
+                                     for e in entries])
         except Exception as exc:                        # noqa: BLE001
-            log.info("stock_snapshot: 매출 보강 실패(%s): %s", ticker, exc)
-    if n:
-        log.info("stock_snapshot: %s 매출 총액 %d개 기간 보강(FnGuide)", ticker, n)
+            log.info("stock_snapshot: %s %s 매출 보강 실패: %s",
+                     ticker, label, exc)
+            continue
+        if n:
+            log.info("stock_snapshot: %s %s 매출 총액 %d개 기간 보강(FnGuide)",
+                     ticker, label, n)
 
 
 def _collect_financials(t, snap: dict) -> None:

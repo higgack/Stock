@@ -6291,6 +6291,59 @@ class TestQuarterlyChartLayout20260816:
         # 2.15 vs 2.10 vs 2.24 가 같은 문자열이 되면 라벨의 의미가 없다
         assert len(set(rev)) == 4, f"라벨이 뭉개짐: {rev}"
 
+    def test_snapshot_fallback_never_mixes_bases_in_one_table(self, monkeypatch):
+        """사용자 2026-08-19(NH투자증권 분기 표): `26,840억 · 48,641억 ·
+        81,720억 · 5,787억` — 앞 세 칸은 FnGuide 총액인데 마지막만 이자수익
+        이었다. 기간마다 독립적으로 채우면 **한 행에 두 기준**이 섞이고,
+        행 이름은 '이자수익' 하나라 어느 칸이 뭔지 알 수 없다.
+
+        연간/분기는 서로 다른 표라 각각 판정한다 — 연간만 되는 건 정상."""
+        from bot import stock_snapshot as ss
+        import bot.wisereport_financials as wf
+
+        def q(y, quarter, rev, op):
+            return {"year": y, "quarter": quarter, "매출": rev, "영업이익": op,
+                    "_component_accounts": {"매출": "이자수익"}}
+
+        kr = {
+            "financials": q(2025, None, 1.0e12, 1.5e12),
+            "financials_ts": [q(2024, None, 0.9e12, 1.2e12)],
+            "financials_q": [q(2025, 3, 5.004e11, 3.913e11),
+                             q(2025, 4, 5.511e11, 4.183e11),
+                             q(2026, 1, 5.532e11, 6.367e11),
+                             q(2026, 2, 5.787e11, 6.812e11)],
+        }
+        monkeypatch.setattr(wf, "fetch_financial_summary", lambda code: {
+            "annual": {"2025/12": {"매출액": 1.382e13, "영업이익": 1.5e12},
+                       "2024/12": {"매출액": 1.1e13, "영업이익": 1.2e12}},
+            # 분기는 2026/06 이 아직 없다 — 실제 상황.
+            "quarter": {"2025/09": {"매출액": 2.6840e12, "영업이익": 3.913e11},
+                        "2025/12": {"매출액": 4.8641e12, "영업이익": 4.183e11},
+                        "2026/03": {"매출액": 8.1720e12, "영업이익": 6.367e11}}})
+        ss._apply_revenue_fallback("005940.KS", kr)
+
+        # 연간은 전부 채워진다.
+        assert kr["financials"]["매출"] == 1.382e13
+        assert kr["financials_ts"][0]["매출"] == 1.1e13
+        # 분기는 한 칸이 안 되므로 **전부** 원래대로 — 섞이지 않는다.
+        revs = [e["매출"] for e in kr["financials_q"]]
+        assert revs == [5.004e11, 5.511e11, 5.532e11, 5.787e11], revs
+        assert all("_component_accounts" in e for e in kr["financials_q"])
+
+        # ⚠️ 여기서 멈추면 '분기 묶음을 통째로 빼는' 뮤테이션도 통과한다
+        # (어차피 안 채워지니까). FnGuide 가 마지막 분기를 수록하면 **네 칸
+        # 모두** 총액이 되는지까지 봐야 배선이 검증된다.
+        monkeypatch.setattr(wf, "fetch_financial_summary", lambda code: {
+            "annual": {},
+            "quarter": {"2025/09": {"매출액": 2.6840e12, "영업이익": 3.913e11},
+                        "2025/12": {"매출액": 4.8641e12, "영업이익": 4.183e11},
+                        "2026/03": {"매출액": 8.1720e12, "영업이익": 6.367e11},
+                        "2026/06": {"매출액": 9.0e12, "영업이익": 6.812e11}}})
+        ss._apply_revenue_fallback("005940.KS", kr)
+        revs2 = [e["매출"] for e in kr["financials_q"]]
+        assert revs2 == [2.6840e12, 4.8641e12, 8.1720e12, 9.0e12], revs2
+        assert all("_component_accounts" not in e for e in kr["financials_q"])
+
     def test_series_fill_is_all_or_nothing(self):
         """분기 차트에 **없던 절벽**이 생기는 걸 막는다(2026-08-19 NH투자증권).
         한 분기만 총액(3.2조)으로 바뀌고 옆 분기가 구성요소(0.46조)로 남으면
