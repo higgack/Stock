@@ -6291,6 +6291,139 @@ class TestQuarterlyChartLayout20260816:
         # 2.15 vs 2.10 vs 2.24 가 같은 문자열이 되면 라벨의 의미가 없다
         assert len(set(rev)) == 4, f"라벨이 뭉개짐: {rev}"
 
+    def test_series_fill_is_all_or_nothing(self):
+        """분기 차트에 **없던 절벽**이 생기는 걸 막는다(2026-08-19 NH투자증권).
+        한 분기만 총액(3.2조)으로 바뀌고 옆 분기가 구성요소(0.46조)로 남으면
+        개별 칸이 맞아도 그림은 거짓이 된다 — 두 축의 수치를 한 계열에
+        섞기 때문이다."""
+        from bot import kr_revenue_fallback as krf
+
+        def fin(rev, op):
+            return {"매출": rev, "영업이익": op,
+                    "_component_accounts": {"매출": "이자수익"}}
+
+        summary = {"quarter": {
+            "2025/06": {"매출액": 3.2645e12, "영업이익": 3.219e11},
+            "2025/09": {"매출액": 2.6840e12, "영업이익": 3.913e11},
+        }}
+        items = [(2025, 2, fin(4.657e11, 3.219e11)),
+                 (2025, 3, fin(5.004e11, 3.913e11)),
+                 (2026, 2, fin(5.787e11, 6.812e11))]   # FnGuide 에 없는 분기
+        import bot.wisereport_financials as wf
+        _orig = wf.fetch_financial_summary
+        wf.fetch_financial_summary = lambda code: summary
+        try:
+            n = krf.fill_series("005940", items)
+            assert n == 0, "일부만 채우면 안 된다"
+            assert all(f["매출"] in (4.657e11, 5.004e11, 5.787e11)
+                       for _y, _q, f in items), items
+            assert all("_component_accounts" in f for _y, _q, f in items)
+
+            # 전 분기를 채울 수 있으면 전부 바뀐다.
+            summary["quarter"]["2026/06"] = {"매출액": 8.1720e12,
+                                             "영업이익": 6.812e11}
+            n = krf.fill_series("005940", items)
+            assert n == 3, n
+            assert [round(f["매출"]) for _y, _q, f in items] == [
+                round(3.2645e12), round(2.6840e12), round(8.1720e12)]
+            for _y, _q, f in items:
+                assert "_component_accounts" not in f
+                assert f["_revenue_source"] == "FnGuide"
+        finally:
+            wf.fetch_financial_summary = _orig
+
+    def test_quarterly_series_applies_the_revenue_fallback(self, monkeypatch):
+        """⚠️ 배선 grep 은 존재만 본다(실수 #20) — 시리즈 빌더를 통째로 태워
+        총액이 실제로 들어가는지 본다. `stock_snapshot` 만 보강돼 있어서
+        K-IFRS 요약은 총액인데 **분기 차트·타일은 이자수익**이었다."""
+        from bot import dart_quarterly as dq
+
+        rows = {("2026", "11012"): {"매출": 5.787e11, "영업이익": 6.812e11,
+                                    "당기순이익": 9.652e11,
+                                    "_component_accounts": {"매출": "이자수익"}},
+                ("2026", "11013"): {"매출": 5.532e11, "영업이익": 6.367e11,
+                                    "당기순이익": 4.757e11,
+                                    "_component_accounts": {"매출": "이자수익"}}}
+
+        class _Dart:
+            @staticmethod
+            def get_normalized_financials(t, year=None, fs_div=None,
+                                          reprt_code=None):
+                fin = rows.get((str(year), reprt_code))
+                return {"financials": dict(fin)} if fin else None
+
+        monkeypatch.setattr(dq, "probe_latest_reprt_code",
+                            lambda d, t, fs_div="CFS":
+                            (2026, "11012") if fs_div == "CFS" else None)
+        import bot.wisereport_financials as wf
+        monkeypatch.setattr(wf, "fetch_financial_summary", lambda code: {
+            "quarter": {"2026/06": {"매출액": 8.1720e12, "영업이익": 6.812e11},
+                        "2026/03": {"매출액": 4.8641e12, "영업이익": 6.367e11}}})
+        out = dq.get_quarterly_series(_Dart(), "005940.KS", n=2)
+        assert out and len(out) == 2
+        latest = out[-1]["financials"]
+        assert round(latest["매출"]) == round(8.1720e12), latest
+        assert "_component_accounts" not in latest
+        # 비율도 새 분모로 다시 계산돼야 한다(옛 값은 비어 있었다).
+        opm = (out[-1].get("ratios") or {}).get("영업이익률")
+        assert opm is not None and abs(opm - 8.34) < 0.5, opm
+
+    def test_component_revenue_named_in_chart_not_called_매출(self):
+        """사용자 2026-08-19(NH투자증권 26.2Q): 타일은 '이자수익'으로 고쳤는데
+        **차트만 '매출'** 이라, 이자수익 막대가 영업이익보다 낮은 그림이
+        "매출 5,787억 < 영업이익 6,812억" 으로 읽혔다. 같은 값에 두 이름을
+        쓰면 화면이 스스로 모순된다."""
+        import tempfile
+        import warnings
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import bot.quarterly_infographic as qi
+
+        seen: list = []
+        _orig_txt = qi.__dict__.get("txt")
+
+        def q(lab, r, o, n):
+            return {"label": lab,
+                    "financials": {"매출": r, "영업이익": o, "당기순이익": n,
+                                   "_component_accounts": {"매출": "이자수익"}},
+                    "ratios": {}}
+
+        qs = [q("25.2Q", 4.657e11, 3.219e11, 2.0e11),
+              q("25.3Q", 5.004e11, 3.913e11, 2.1e11),
+              q("26.2Q", 5.787e11, 6.812e11, 9.6e11)]
+        p = {"ticker": "005940.KS", "company": "NH", "market": "KR",
+             "market_cap": 9.54e12, "quarters": qs, "ttm": qi._ttm(qs),
+             "per": None, "per_forward": None, "per_self": False, "psr": None,
+             "currency": "KRW", "trade_currency": "KRW",
+             "currency_mismatch": False, "fiscal_note": "",
+             "anomaly_keys": [], "anomaly_labels": [],
+             "component_accounts": {"매출": "이자수익"}, "source_label": "s",
+             "asof": "2026-08-19", "growth_risk": {"ok": False}}
+        _orig_font = qi._font_ok
+        try:
+            qi._font_ok = lambda: True
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                import matplotlib.axes as _ax
+                real_text = _ax.Axes.text
+
+                def spy(self, x, y, sx, *a, **k):
+                    seen.append(str(sx))
+                    return real_text(self, x, y, sx, *a, **k)
+
+                _ax.Axes.text = spy
+                try:
+                    assert qi._render_locked(p, f"{d}/x.png")
+                finally:
+                    _ax.Axes.text = real_text
+        finally:
+            qi._font_ok = _orig_font
+        joined = " | ".join(seen)
+        assert "이자수익" in joined, joined[:400]
+        # 차트 제목이 '매출 · 영업이익' 이면 안 된다.
+        assert not any(t.startswith("매출 · 영업이익") for t in seen), joined[:400]
+
     def test_small_second_series_is_not_labelled_all_zero(self):
         # 두 시리즈의 **공통** peak 로 자릿수를 정하면 스케일이 훨씬 작은
         # 쪽(매출 2.31B 옆 영업이익 4.8M)이 전 분기 '0.00' 이 된다

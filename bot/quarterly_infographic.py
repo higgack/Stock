@@ -54,7 +54,10 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #       (4번 항목이 상자 밖으로 넘치던 것) + 항목 상한 4→6
 #   v4 (2026-08-16) 수주잔고·재고자산 막대차트(데이터 있는 것만) + 시총·PER·
 #       PSR 라이브화(캐시 버킷 일→시)
-_RENDER_VER = "v4"
+#   v5 (2026-08-19) 구성요소 매출(증권·은행·보험)을 FnGuide 총액으로 보강 +
+#       못 채우면 차트 범례·제목도 실제 계정명(이자수익)으로 — 옛 그림은
+#       "매출 5,787억 < 영업이익 6,812억" 으로 읽혔다
+_RENDER_VER = "v5"
 
 
 def _eok(v, currency: str = "KRW") -> str:
@@ -725,9 +728,14 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
                 lg.set_zorder(4)
 
     _ch = (H_CHART - 4) / 2.0        # 두 단 각각의 패널 높이
-    combo((2.5, y, 95, _ch), [rev, op], ["매출", "영업이익"],
+    # ⚠️ 범례·제목도 **실제 계정명**으로 부른다(2026-08-19 NH투자증권).
+    # 타일은 '이자수익'이라 고쳤는데 차트만 '매출'이라, 이자수익 막대가
+    # 영업이익보다 낮은 그림이 "매출 < 영업이익" 으로 읽혔다. 같은 값에
+    # 두 이름을 쓰면 화면이 스스로 모순된다.
+    _rev_lbl = (payload.get("component_accounts") or {}).get("매출") or "매출"
+    combo((2.5, y, 95, _ch), [rev, op], [_rev_lbl, "영업이익"],
           [_ACCENT, _POS], opm, _GOLD, "영업이익률",
-          "매출 · 영업이익")
+          f"{_rev_lbl} · 영업이익")
     combo((2.5, y + _ch + 2.0, 95, _ch), [ni], ["당기순이익"], [_PUR],
           nim, _NEG, "순이익률", "당기순이익")
     y += H_CHART
