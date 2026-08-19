@@ -13,14 +13,108 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
 
 
+# 스윕 기본 대상 — 총액 계정을 안 쓰기 쉬운 업종(금융·지주·건설) 위주로
+# 손으로 고른 표본. 전 종목 스윕은 DART 일일 한도(20,000)를 크게 먹는다.
+_SWEEP_DEFAULT = [
+    # 증권
+    "005940.KS", "016360.KS", "006800.KS", "003530.KS", "071050.KS",
+    # 은행·금융지주
+    "105560.KS", "055550.KS", "086790.KS", "316140.KS", "138040.KS",
+    "138930.KS", "175330.KS", "024110.KS",
+    # 보험
+    "032830.KS", "088350.KS", "005830.KS", "001450.KS", "000810.KS",
+    # 지주·기타
+    "003550.KS", "034730.KS", "001040.KS", "000070.KS", "004990.KS",
+    # 건설(도급공사수익 계열)
+    "000720.KS", "006360.KS", "047040.KS", "028050.KS",
+]
+
+
 def _p(*a):
     print(*a, flush=True)
+
+
+def _sweep(dart, tickers: list[str]) -> int:
+    """여러 종목을 훑어 **세 부류로 가른다** — 사용자 2026-08-19 "비슷한
+    종목들도 고쳐진 거라고 봐야지?" 에 사실로 답하기 위한 것.
+
+      ① 총액 정상            — 손볼 것 없음
+      ② 구성요소만 공시      — 원천 한계. 비율 비우고 계정명 표기(고칠 수 없음)
+      ③ 표준 태그로 구제됨   — **이번 fix 의 실제 수혜자**(이름이 목록 밖인데
+                              `ifrs-full_Revenue` 라 총액으로 인정된 경우)
+    """
+    import requests
+    from bot.dart_client import (_ACCOUNT_GROUPS, _DART_CODE_MAP,
+                                 _DART_NAME_MAP, _NAME_MAP_NORM,
+                                 _account_rank, _norm_acct_nm,
+                                 _extract_dart_financials,
+                                 calc_kr_financial_ratios)
+    buckets: dict[str, list[str]] = {"총액": [], "구성요소": [], "태그구제": [],
+                                     "데이터없음": []}
+    _p(f"── 스윕 {len(tickers)}종목 (2025 사업보고서·CFS)")
+    for n, tk in enumerate(tickers, 1):
+        code = tk.split(".")[0]
+        corp = dart.stock_code_to_corp_code(code)
+        if not corp:
+            buckets["데이터없음"].append(f"{tk}(corp_code 없음)")
+            continue
+        try:
+            js = requests.get(
+                "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json",
+                params={"crtfc_key": dart.api_key, "corp_code": corp,
+                        "bsns_year": "2025", "reprt_code": "11011",
+                        "fs_div": "CFS"}, timeout=20).json()
+        except Exception as exc:                        # noqa: BLE001
+            buckets["데이터없음"].append(f"{tk}({type(exc).__name__})")
+            continue
+        if js.get("status") != "000":
+            buckets["데이터없음"].append(f"{tk}(status={js.get('status')})")
+            continue
+        items = [i for i in (js.get("list") or [])
+                 if (i.get("sj_div") or "") in ("IS", "CIS")]
+        fin = _extract_dart_financials(items)
+        comp = (fin.get("_component_accounts") or {}).get("매출")
+        rat = calc_kr_financial_ratios(fin)
+        # 승자의 이름·랭크를 다시 구해 '태그로 구제된' 경우를 식별한다.
+        winner = None
+        for i in items:
+            nm, aid = (i.get("account_nm") or "").strip(), (i.get("account_id") or "").strip()
+            canon = (_DART_CODE_MAP.get(aid) or _DART_NAME_MAP.get(nm)
+                     or _NAME_MAP_NORM.get(_norm_acct_nm(nm)))
+            if canon == "매출":
+                r = _account_rank(canon, nm, aid)
+                if winner is None or r < winner[0]:
+                    winner = (r, nm, aid)
+        if comp:
+            buckets["구성요소"].append(
+                f"{tk} 매출={comp} · 영업이익률={rat.get('영업이익률')}")
+        elif winner and winner[0] == 1 and _norm_acct_nm(winner[1]) not in {
+                _norm_acct_nm(g) for grp in _ACCOUNT_GROUPS["매출"] for g in grp}:
+            buckets["태그구제"].append(f"{tk} 승자='{winner[1]}' id={winner[2]}")
+        elif fin.get("매출"):
+            buckets["총액"].append(tk)
+        else:
+            buckets["데이터없음"].append(f"{tk}(매출 계정 없음)")
+        if n % 10 == 0:
+            _p(f"   … {n}/{len(tickers)}")
+    _p("")
+    for k, label in (("태그구제", "③ 표준 태그로 구제 — 이번 fix 의 실제 수혜자"),
+                     ("구성요소", "② 구성요소만 공시 — 원천 한계(비율 비움이 정답)"),
+                     ("총액", "① 총액 정상"),
+                     ("데이터없음", "· 조회 불가")):
+        v = buckets[k]
+        _p(f"{label}: {len(v)}개")
+        for x in v[:40]:
+            _p(f"   {x}")
+        if len(v) > 40:
+            _p(f"   … 외 {len(v) - 40}개")
+    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -29,12 +123,15 @@ def main(argv: list[str]) -> int:
                                  _account_rank, _norm_acct_nm,
                                  _extract_dart_financials,
                                  calc_kr_financial_ratios, get_dart)
-    tickers = [a for a in argv[1:] if not a.startswith("-")] or ["005940.KS"]
+    tickers = [a for a in argv[1:] if not a.startswith("-")]
     _p(f"kr_revenue_probe v{_PROBE_VER} · 매출 그룹={_ACCOUNT_GROUPS['매출']}")
     dart = get_dart()
     if not dart:
         _p("❗ DART 클라이언트 없음 — DART_API_KEY 확인")
         return 1
+    if "--sweep" in argv:
+        return _sweep(dart, tickers or _SWEEP_DEFAULT)
+    tickers = tickers or ["005940.KS"]
     import requests
     for tk in tickers:
         code = tk.split(".")[0]

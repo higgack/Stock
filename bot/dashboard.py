@@ -4570,6 +4570,33 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: financials %s: %s", ticker, exc)
 
+    def _e_kr_financials():
+        """⚠️ KR 재무는 **아카이브에 구워져** 있다(실수 #18). 계정 우선순위·
+        비율 규칙을 고쳐도 이미 분석한 종목은 옛 값을 영원히 보여준다 —
+        NH투자증권의 영업이익률 117.7% 가 fix 후에도 그대로 남는다.
+        수집기의 스키마 버전과 대조해 낡은 것만 다시 받는다(peer_comps 와
+        같은 방식 — 필드 유무로 냄새맡지 않는다)."""
+        if not str(ticker).endswith((".KS", ".KQ")):
+            return
+        try:
+            from bot.stock_snapshot import (_KR_FIN_SCHEMA_VER,
+                                            collect_kr_financials)
+        except Exception as exc:
+            log.debug("_ensure_detail_enrichment: kr fin import %s: %s", ticker, exc)
+            return
+        _kr = si.get("kr") or {}
+        if not _kr.get("financials"):
+            return                       # 애초에 없던 것 — 새로 받지 않는다
+        if (_kr.get("financials_ver") or 0) >= _KR_FIN_SCHEMA_VER:
+            return
+        try:
+            fresh = (collect_kr_financials(ticker) or {}).get("kr") or {}
+        except Exception as exc:
+            log.debug("_ensure_detail_enrichment: kr fin %s: %s", ticker, exc)
+            return
+        if fresh.get("financials"):
+            si.setdefault("kr", {}).update(fresh)
+
     def _e_peers():
         try:
             from bot.stock_snapshot import (_PEER_SCHEMA_VER,
@@ -4600,10 +4627,12 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
     try:
         from concurrent.futures import ThreadPoolExecutor as _TPE
         with _TPE(max_workers=2) as _pool:
-            for _fut in (_pool.submit(_e_financials), _pool.submit(_e_peers)):
+            for _fut in (_pool.submit(_e_financials), _pool.submit(_e_peers),
+                         _pool.submit(_e_kr_financials)):
                 _fut.result()
     except Exception:
         _e_financials()
+        _e_kr_financials()
         _e_peers()  # 폴백: 순차
 
     # ⑦ KR flow data (수급 tab — KIS + pykrx)

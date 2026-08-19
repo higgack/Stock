@@ -22628,6 +22628,44 @@ class TestFlowTrendDiagnosis20260818:
         i = src.index("psr = mcap / _ttm_rev")
         assert "not _rev_is_comp" in src[i - 400:i]
 
+    def test_archived_kr_financials_are_refreshed_when_schema_moves(self):
+        """⚠️ **fix 를 배포해도 이미 분석한 종목은 안 바뀐다**(실수 #18).
+        KR 재무는 분석 시점에 아카이브 JSON 으로 구워지고, 옛 `_e_financials`
+        는 yfinance 만 다시 받았다 — NH투자증권의 영업이익률 117.7% 가
+        #916 배포 후에도 화면에 그대로 남는다는 뜻이다(사용자 2026-08-19
+        "비슷한 종목들도 고쳐진 거라고 봐야지?"). 스키마 버전으로 대조한다."""
+        import pathlib
+        from bot.stock_snapshot import _KR_FIN_SCHEMA_VER, collect_kr_financials
+        assert _KR_FIN_SCHEMA_VER >= 1
+        assert callable(collect_kr_financials)      # 밖에서 부를 수 있어야 한다
+        src = pathlib.Path("bot/dashboard.py").read_text(encoding="utf-8")
+        i = src.index("def _e_kr_financials()")
+        blk = src[i:src.index("def _e_peers()", i)]
+        assert "_KR_FIN_SCHEMA_VER" in blk, "버전 대조 없이 냄새만 맡고 있다"
+        assert "collect_kr_financials" in blk
+        # 이미 최신이면 재수집하지 않는다(매 렌더 DART 재호출 방지).
+        assert 'financials_ver") or 0) >= _KR_FIN_SCHEMA_VER' in blk
+        # 애초에 없던 종목에 새로 만들지 않는다(비-KR·미수집 보존).
+        assert 'if not _kr.get("financials")' in blk
+        # 실행 경로 둘 다에 배선돼 있어야 한다(병렬·순차).
+        assert src.count("_e_kr_financials()") >= 1
+        assert "_pool.submit(_e_kr_financials)" in src
+
+        # 수집기가 버전을 실제로 찍는지 — 스텁으로 통째로 태운다(실수 #20).
+        import bot.stock_snapshot as ss
+
+        class _FakeDart:
+            def get_normalized_financials(self, tk, year=None):
+                return {"year": year or 2025, "fs_div": "CFS",
+                        "financials": {"매출": 100.0, "영업이익": 10.0},
+                        "ratios": {"영업이익률": 10.0}}
+
+        import unittest.mock as _m
+        with _m.patch("bot.dart_client.get_dart", lambda: _FakeDart()):
+            out = collect_kr_financials("005930.KS")
+        assert out["kr"]["financials_ver"] == _KR_FIN_SCHEMA_VER
+        assert out["kr"]["financials"]["매출"] == 100.0
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
