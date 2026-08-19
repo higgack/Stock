@@ -35,6 +35,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 import zipfile
@@ -254,6 +255,8 @@ def _parse_dart_amount(raw: str, as_float: bool = False):
 # (매출액)' 처럼 한 회사 안에서도 갈린다). 그룹이 같으면 계정이 바뀐 게
 # 아니므로 차분 가드가 발화하면 안 된다 — 이름 문자열을 직접 비교하면
 # 멀쩡한 회사의 4분기 매출·TTM·PSR 이 통째로 비어 버린다.
+_NAME_MAP_NORM: dict[str, str] = {}   # _norm_acct_nm(이름) → canonical (아래에서 채움)
+
 _ACCOUNT_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
     # 앞 그룹일수록 우선. 금융·보험은 '영업수익'이 손익계산서 최상단
     # 총수익이고, '이자수익'은 그 구성요소라 총액을 대표할 수 없다.
@@ -273,19 +276,61 @@ _ACCOUNT_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
 _COMPONENT_GROUPS: dict[str, set[int]] = {"매출": {2}}
 
 
-def _account_rank(canonical: str, acct_nm: str) -> int:
+# 계정명 앞머리 번호("Ⅰ.", "I.", "1.", "가.")와 공백은 회사마다 붙였다 뗐다
+# 한다 — 이름 비교 전에 벗긴다. 이게 없으면 "Ⅰ. 영업수익" 이 목록에 없는
+# 이름으로 취급돼 **구성요소보다 뒤로 밀린다**(2026-08-19 실측).
+_ACCT_PREFIX = re.compile(r"^[\s\dⅠ-ⅩIVXivx가-힣]{0,4}[.．)\]]\s*")
+
+
+def _norm_acct_nm(acct_nm: str) -> str:
+    nm = (acct_nm or "").strip()
+    nm = _ACCT_PREFIX.sub("", nm).strip()
+    return nm.replace(" ", "")
+
+
+# 공백·번호를 벗긴 이름으로도 찾을 수 있게 미리 만들어 둔다.
+_NAME_MAP_NORM.update({_norm_acct_nm(k): v for k, v in _DART_NAME_MAP.items()})
+
+
+# **총액을 뜻하는 표준 태그.** 이름이 목록에 없어도 이 태그면 총액이다.
+_TOTAL_REVENUE_CODES = frozenset({
+    "ifrs-full_Revenue", "ifrs-full_RevenueFromContractsWithCustomers",
+    "dart_Revenue",
+})
+
+
+def _account_rank(canonical: str, acct_nm: str, acct_id: str = "") -> int:
     """동의어 그룹 인덱스(작을수록 우선). 미정의/미등재는 동순위(맨 뒤).
 
     승자 선택의 우선순위이자, `dart_quarterly._diff_quarter` 의 계정 일치
-    판정 단위이기도 하다(같은 그룹 = 같은 계정으로 취급)."""
+    판정 단위이기도 하다(같은 그룹 = 같은 계정으로 취급).
+
+    ⚠️ **이름만 보면 안 된다**(2026-08-19 NH투자증권). `ifrs-full_Revenue`
+    같은 표준 태그로 총액이 정확히 잡혀도, 한글 이름이 그룹 목록에 없으면
+    최하위(3)로 밀려 구성요소인 이자수익(2)에게 진다 — 그러면 화면에
+    영업이익이 매출보다 큰 표가 뜬다. 태그가 총액을 말하면 총액으로 친다."""
     groups = _ACCOUNT_GROUPS.get(canonical)
     if not groups:
         return 0
-    nm = (acct_nm or "").strip()
+    nm = _norm_acct_nm(acct_nm)
     for i, grp in enumerate(groups):
-        if nm in grp:
+        if nm in {_norm_acct_nm(g) for g in grp}:
             return i
+    if canonical == "매출" and (acct_id or "").strip() in _TOTAL_REVENUE_CODES:
+        # 표준 총액 태그 — 이름을 몰라도 '일반 매출액' 급으로 본다.
+        return 1
     return len(groups)
+
+
+def revenue_label(financials: dict | None) -> str:
+    """손익 최상단 행에 쓸 이름. 총액 계정이면 "매출", 구성요소가 승자면
+    **그 계정명**(예: "이자수익").
+
+    ⚠️ 왜(사용자 2026-08-19 NH투자증권 "매출보다 영익이 더 나오는데"):
+    이자수익을 '매출'이라 부르면 영업이익이 매출보다 큰 표가 되어 읽는
+    사람이 데이터 오류로 오해한다. 실제 계정명을 쓰면 모순이 사라진다.
+    """
+    return ((financials or {}).get("_component_accounts") or {}).get("매출") or "매출"
 
 
 def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -> dict:
@@ -314,7 +359,9 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
     for item in items:
         acct_id = (item.get("account_id") or "").strip()
         acct_nm = (item.get("account_nm") or "").strip()
-        canonical = _DART_CODE_MAP.get(acct_id) or _DART_NAME_MAP.get(acct_nm)
+        canonical = (_DART_CODE_MAP.get(acct_id)
+                     or _DART_NAME_MAP.get(acct_nm)
+                     or _NAME_MAP_NORM.get(_norm_acct_nm(acct_nm)))
         if not canonical:
             continue
         v = _parse_dart_amount(
@@ -323,7 +370,7 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
         )
         if v is None:
             continue
-        pr = _account_rank(canonical, acct_nm)
+        pr = _account_rank(canonical, acct_nm, acct_id)
         prev = rank.get(canonical)
         # 우선순위가 높은(작은) 계정이 무조건 이긴다. 동순위 안에서만
         # 기존 규칙(absolute value 큰 row = consolidated 우선)을 적용.
@@ -385,15 +432,21 @@ def calc_kr_financial_ratios(financials: dict) -> dict:
             nopat = op * (1 - eff_tax_rate)
         else:
             nopat = op
+    # ⚠️ **분모가 총액이 아니면 비율을 만들지 않는다.** NH투자증권(2026-08-19
+    # 사용자 지적)은 총수익 계정을 공시하지 않아 '매출' 자리에 이자수익이
+    # 들어간다 — 그대로 나누면 영업이익률 117.7% 처럼 **불가능한 숫자**가
+    # 화면에 오른다. 값(이자수익)은 보존하되 비율은 비운다(빈칸 > 틀린 숫자).
+    _rev_is_component = "매출" in (financials.get("_component_accounts") or {})
+    _rev_ok = rev if not _rev_is_component else 0
     return {
-        "영업이익률": (op / rev * 100) if (op is not None and rev) else None,
-        "순이익률": (net / rev * 100) if (net is not None and rev) else None,
+        "영업이익률": (op / _rev_ok * 100) if (op is not None and _rev_ok) else None,
+        "순이익률": (net / _rev_ok * 100) if (net is not None and _rev_ok) else None,
         "ROE": (net / eq * 100) if (net is not None and eq) else None,
         "ROA": (net / asset * 100) if (net is not None and asset) else None,
         "부채비율": (dbt / eq * 100) if eq else None,
         "유동비율": (ca / cl * 100) if cl else None,
         "이자보상배율": (op / fc) if (op is not None and fc) else None,
-        "매출총이익률": (gp / rev * 100) if (gp and rev) else None,
+        "매출총이익률": (gp / _rev_ok * 100) if (gp and _rev_ok) else None,
         "이익잉여금비율": (er / asset * 100) if (er and asset) else None,
         "ROIC": (nopat / invested_capital * 100)
                 if (nopat is not None and invested_capital) else None,
@@ -1298,7 +1351,10 @@ class DartClient:
         # 계정 일치 가드와 '총액 아님' 표기가 최대 일주일 조용히 무력화된다
         # — 정작 이 fix 를 유발한 138040.KS 가 그 캐시에 들어 있다.
         # 같은 실패를 이 함수에서만 두 번 겪었다(qfin→qfin2→qfin3).
-        ck = f"qfin4_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
+        # v5(2026-08-19): 계정 우선순위가 바뀌었다(표준 태그·이름 정규화) —
+        # 옛 캐시엔 이자수익이 '매출'로 굳어 있어 7일간 그대로 서빙된다.
+        # **코드를 고쳐도 캐시는 안 바뀐다**(실수 #18) → 키를 올려 즉시 무효화.
+        ck = f"qfin5_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached

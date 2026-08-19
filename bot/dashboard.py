@@ -4098,7 +4098,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v16 (2026-08-18) 매출 공백 각주가 **실제 어긋난 계정**을 이름으로 표기
 #   v17 (2026-08-18) 임원·주요주주 최신순 정렬 + 수주잔고 파서 2형식(KAI·한전KPS)
 #   v18 (2026-08-18) 보조 컨센서스에 출처 표기 + 두 컨센서스 차이 설명
-_RENDER_VER = 18
+#   v19 (2026-08-19) 구성요소 매출(금융사) — 행 이름 실제 계정 + 비율 비움
+_RENDER_VER = 19
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -5612,7 +5613,11 @@ def _render_stock_info_html(rec: dict) -> str:
             # 계정을 아예 공시하지 않는 회사에서 이자수익이 매출로 표기되던
             # 것을 막는다(사용자 2026-08-16 B안: 값은 보존, 오인만 차단).
             _kf_comp = kf.get("_component_accounts") or {}
-            for label, key in (("매출", "매출"), ("영업이익", "영업이익"),
+            # 구성요소가 승자면 행 이름도 그 계정으로 — '매출'이라 부르면
+            # 영업이익이 매출보다 큰 표가 되어 데이터 오류로 오해한다
+            # (사용자 2026-08-19 NH투자증권).
+            from bot.dart_client import revenue_label as _rev_lbl
+            for label, key in ((_rev_lbl(kf), "매출"), ("영업이익", "영업이익"),
                                ("당기순이익", "당기순이익"), ("자산총계", "자산총계"),
                                ("부채총계", "부채총계"), ("자본총계", "자본총계")):
                 v = kf.get(key)
@@ -5643,7 +5648,8 @@ def _render_stock_info_html(rec: dict) -> str:
                                 for k, v in sorted(_kf_comp.items())))
                             + " — 이 회사는 해당 총액 계정을 공시하지 않아 "
                               "DART 원자료의 구성요소 값을 그대로 표시합니다"
-                              "(합산·추정 없음)</div>")
+                              "(합산·추정 없음). 총액이 아니므로 영업이익률·"
+                              "순이익률은 비웁니다</div>")
             kr_financial_html = f"""<div class="si-section">
     <div class="si-section-title">K-IFRS 재무 요약 {esc(fy_label)} {esc(fs_label)}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -5923,7 +5929,11 @@ def _render_stock_info_html(rec: dict) -> str:
         header = "<th>항목</th>" + "".join(
             f"<th class='num'>{esc(str(col_label(it)))}</th>" for it in items)
         rows = ""
-        for label, key in (("매출", "매출"), ("영업이익", "영업이익"),
+        from bot.dart_client import revenue_label as _rev_lbl
+        # 열마다 계정이 다를 수 있으니 **하나라도** 구성요소면 그 이름을 쓴다.
+        _rev_name = next((_rev_lbl(it) for it in items
+                          if _rev_lbl(it) != "매출"), "매출")
+        for label, key in ((_rev_name, "매출"), ("영업이익", "영업이익"),
                            ("당기순이익", "당기순이익")):
             cells = ""
             for it in items:
@@ -5966,7 +5976,8 @@ def _render_stock_info_html(rec: dict) -> str:
         if _comp_seen:
             _notes.append('⚠️ ' + esc(" · ".join(_comp_seen))
                           + '(구성요소 계정) — 총액 계정 미공시라 DART 원자료 '
-                            '그대로, 합산·추정 없음')
+                            '그대로, 합산·추정 없음. 총액이 아니므로 '
+                            '<b>영업이익률 등 매출로 나누는 비율은 비웁니다</b>')
         if _notes:
             foot = ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
                     + '<br>'.join(_notes) + '</div>')

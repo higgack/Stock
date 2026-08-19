@@ -327,7 +327,9 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
         notes.append((
             "! " + " · ".join(f"{k} = {v}(구성요소 계정)"
                               for k, v in sorted(comp.items()))
-            + " — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)",
+            + " — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)."
+            + (" 총액이 아니므로 영업이익률·순이익률·PSR 은 산출 제외"
+               if "매출" in comp else ""),
             _GOLD))
     if payload.get("currency_mismatch"):
         notes.append((f"! 재무({cur})와 시총({payload.get('trade_currency','')}) "
@@ -507,8 +509,12 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
         return out
 
     _fwd = payload.get("per_forward")
+    # '매출' 자리에 구성요소(이자수익)가 들어간 회사는 이름을 바꿔 부른다 —
+    # 안 그러면 "매출 5,787억 · 영업이익 6,812억" 처럼 모순돼 보인다
+    # (사용자 2026-08-19 NH투자증권 "매출보다 영익이 더 나오는데").
+    _rev_nm = (payload.get("component_accounts") or {}).get("매출") or "매출"
     tiles = [
-        ("매출", amt(lf.get("매출")), _ACCENT,
+        (_rev_nm, amt(lf.get("매출")), _ACCENT,
          _subs(lf.get("매출"), _fin(yoy_q, "매출"), _fin(prev_q, "매출"))),
         ("영업이익", amt(lf.get("영업이익")), _POS,
          _subs(lf.get("영업이익"), _fin(yoy_q, "영업이익"),
@@ -516,7 +522,8 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
         # ⚠️ **최근 단일분기** 이익률이다(연간 아님 — 헤더의 분기 라벨 기준).
         # 사용자가 "이게 연간이야 분기야?"라고 물은 지점 — 값만 있고 비교가
         # 없어 판별 불가였다. YoY/QoQ %p 를 붙이면 분기 기준이 자명해진다.
-        ("영업이익률", _pct(lr.get("영업이익률")), _GOLD,
+        ("영업이익률" if _rev_nm == "매출" else "영업이익률(산출불가)",
+         _pct(lr.get("영업이익률")), _GOLD,
          _subs(lr.get("영업이익률"), _rat(yoy_q, "영업이익률"),
                _rat(prev_q, "영업이익률"), pp=True)),
         ("당기순이익", amt(lf.get("당기순이익")), _PUR,
@@ -1053,9 +1060,14 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         per_fwd = _clean_per(snap.get("forwardPE"))
     psr = None
     _ttm_rev = ttm.get("매출")
+    # ⚠️ 분모가 **총액이 아니면** PSR 을 만들지 않는다. NH투자증권처럼 총수익
+    # 계정을 공시하지 않는 금융사는 '매출' 자리에 이자수익이 들어가, 그대로
+    # 나누면 실제보다 몇 배 높은 PSR 이 나온다(사용자 2026-08-19).
+    _rev_is_comp = any("매출" in ((q.get("financials") or {}).get(
+        "_component_accounts") or {}) for q in (qs[-4:] if len(qs) >= 4 else qs))
     # 음수 분모 가드 — 옛 코드는 truthy 검사만 해서 매출이 음수여도 그대로
     # 나눠 PSR -1.87배를 찍었다.
-    if mcap and _ttm_rev and _ttm_rev > 0 and not cur_mismatch:
+    if mcap and _ttm_rev and _ttm_rev > 0 and not cur_mismatch and not _rev_is_comp:
         psr = mcap / _ttm_rev
     _window = qs[-4:] if len(qs) >= 4 else qs
     _fs_div = latest.get("fs_div")
@@ -1127,8 +1139,14 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         return payload
     try:
         from bot.dart_growth_risk import build_growth_risk
+        # ⚠️ LLM 에도 **실제 계정명**을 준다 — '매출'이라 넘기면 요약 headline 이
+        # "매출 5787억, 영업이익 6812억" 처럼 모순돼 보인다(사용자 2026-08-19
+        # NH투자증권). 이 회사는 총수익 계정을 공시하지 않아 이자수익이 그
+        # 자리에 온다.
+        _ctx_rev = ((latest.get("financials") or {}).get(
+            "_component_accounts") or {}).get("매출") or "매출"
         ctx = {"분기": latest.get("label"),
-               "매출": (latest.get("financials") or {}).get("매출"),
+               _ctx_rev: (latest.get("financials") or {}).get("매출"),
                "영업이익": (latest.get("financials") or {}).get("영업이익"),
                "당기순이익": (latest.get("financials") or {}).get("당기순이익")}
         payload["growth_risk"] = build_growth_risk(
@@ -1155,7 +1173,10 @@ def table_html(payload: dict) -> str:
     head = "<th>항목</th>" + "".join(
         f"<th class='num'>{_h.escape(str(q.get('label','')))}</th>" for q in qs)
     rows = ""
-    for label, key in (("매출", "매출"), ("영업이익", "영업이익"),
+    # 폰트 없는 서버에서는 이 표가 유일한 화면이다 — PNG 와 **같은 이름**을
+    # 써야 한다(구성요소 계정이면 '이자수익' 등, 사용자 2026-08-19).
+    _rev_nm = (payload.get("component_accounts") or {}).get("매출") or "매출"
+    for label, key in ((_rev_nm, "매출"), ("영업이익", "영업이익"),
                        ("당기순이익", "당기순이익")):
         cells = "".join(
             f"<td class='num'>{_eok((q.get('financials') or {}).get(key), cur)}</td>"
