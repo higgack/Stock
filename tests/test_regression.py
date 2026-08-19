@@ -5898,8 +5898,11 @@ class TestDartAccountWinnerDeterminism20260816:
         r = E([{"account_nm": "보험수익", "thstrm_amount": "9140000000000"},
                {"account_nm": "이자수익", "thstrm_amount": "4145907904169"},
                {"account_nm": "당기순이익", "thstrm_amount": "2350134643625"}])
-        assert r["매출"] == 4145907904169, "값을 버리면 안 됨(데이터 보존)"
-        assert r["_component_accounts"] == {"매출": "이자수익"}
+        # 2026-08-19: 보험사(IFRS17) 계정을 매핑에 넣으면서 **같은 구성요소
+        # 그룹 안에서 더 큰 보험수익이 이긴다**(둘 다 총액이 아니고 플래그도
+        # 그대로 — 총액은 FnGuide 폴백이 채운다). 값 보존 계약은 유지.
+        assert r["매출"] == 9140000000000, "값을 버리면 안 됨(데이터 보존)"
+        assert r["_component_accounts"] == {"매출": "보험수익"}
         # 총수익 계정이 있으면 무발화
         r2 = E([{"account_nm": "영업수익", "thstrm_amount": "24952230060123"},
                 {"account_nm": "이자수익", "thstrm_amount": "3115403644999"}])
@@ -25284,3 +25287,35 @@ class TestStalenessSourceEvidence20260819:
         # (규칙 10b: 데이터 위젯은 적용시각·근거를 같이).
         import bot.fred_boards as fb
         assert "r.stale_why" in fb._BOARD_JS_COMMON
+
+    def test_insurer_ifrs17_accounts_are_components(self):
+        # VM 프로브(2026-08-19 현대해상 001450): 손보사는 총수익 계정이 없고
+        # 보험영업수익 14.73조 · 보험수익 14.14조 · 투자영업수익 3.16조로
+        # 쪼개 공시한다. 예전엔 셋 다 미매핑이라 **매출이 통째로 비어**
+        # '조회 불가'였다. 이제 은행 이자수익과 같은 취급 — 값은 남기고
+        # '총액 아님' 플래그, 총액은 FnGuide 폴백이 채운다.
+        from bot.dart_client import (_extract_dart_financials as E,
+                                     calc_kr_financial_ratios, revenue_label)
+        r = E([
+            {"account_nm": "보험영업수익", "thstrm_amount": "14726800000000",
+             "account_id": "dart_OperatingIncomeInsurance"},
+            {"account_nm": "보험수익", "thstrm_amount": "14142900000000",
+             "account_id": "ifrs-full_InsuranceRevenue"},
+            {"account_nm": "투자영업수익", "thstrm_amount": "3163900000000",
+             "account_id": "ifrs-full_InvestmentIncome"},
+            {"account_nm": "영업이익(손실)", "thstrm_amount": "1261000000000"},
+        ])
+        assert r["매출"] == 14726800000000
+        assert r["_component_accounts"] == {"매출": "보험영업수익"}
+        assert revenue_label(r) == "보험영업수익"
+        # 구성요소가 분모면 마진율은 **비운다** — 틀린 숫자보다 빈칸이 낫다.
+        assert calc_kr_financial_ratios(r).get("영업이익률") is None
+
+    def test_insurer_total_revenue_account_still_wins(self):
+        # 총수익(영업수익)을 공시하는 보험사는 그대로 총액을 쓴다 —
+        # 구성요소 매핑이 정상 종목을 끌어내리면 안 된다.
+        from bot.dart_client import _extract_dart_financials as E
+        r = E([{"account_nm": "영업수익", "thstrm_amount": "20000000000000"},
+               {"account_nm": "보험영업수익", "thstrm_amount": "14726800000000"}])
+        assert r["매출"] == 20000000000000
+        assert "_component_accounts" not in r
