@@ -227,6 +227,29 @@ def fetch_history(series_id: str, start: str = "2018-01-01",
     return clean
 
 
+def fetch_series_meta(series_id: str) -> Optional[dict]:
+    """FRED 가 스스로 보고하는 시리즈 메타 — `observation_end`(원천이 가진
+    마지막 관측일) · `last_updated` · `frequency` · `title`. 실패/키부재 → None.
+
+    ⚠️ 신선도 조사에서 **'우리 수집이 끊긴 것'과 '원천이 늦는 것'을 가르는
+    유일한 증거**다(2026-08-19 FDHBFIN). 관측치만 보면 둘이 똑같이 보이므로
+    지연 판정 때는 이 값을 같이 읽는다 — 캐시 없음(진단 경로, 매번 원천 확인).
+    """
+    api_key = _env_key("FRED_API_KEY")
+    if not api_key:
+        return None
+    url = (f"{_BASE_URL}/series?series_id={series_id}"
+           f"&api_key={api_key}&file_type=json")
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        rows = resp.json().get("seriess") or []
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("fred: series meta failed for %s: %s", series_id, exc)
+        return None
+    return rows[0] if rows else None
+
+
 def fetch_releases_catalog(ttl_hours: float = 24.0) -> list[dict]:
     """FRED 전체 release 카탈로그([{id,name}, ...]) — 24h 캐시. release_id 를
     숫자로 하드코딩하지 않고 이름 검색으로 찾기 위함(release_id 는 문서마다

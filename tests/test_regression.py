@@ -25151,3 +25151,76 @@ class TestPeerCompsGuards20260816:
         pane = seg[i:seg.index("</div>\n</div>", i) + 13]
         c = self._cells(pane, "042700.KS")
         assert c[3] == "—" and c[5] == "—", c
+
+
+class _R404:
+    """네트워크 스텁 — 호출되면 성공 응답처럼 보이게 해서, '가드가 막았다'와
+    '호출은 했지만 예외로 None 이 됐다'를 테스트가 구분하게 한다."""
+
+    @staticmethod
+    def raise_for_status():
+        return None
+
+    @staticmethod
+    def json():
+        return {"seriess": [{"id": "X", "observation_end": "2099-01-01"}]}
+
+
+class TestStalenessSourceEvidence20260819:
+    """사용자 2026-08-19(유동성 대시보드 점검): `FDHBFIN` 만 지연으로 남았는데
+    관측치만 보면 **우리 수집이 끊긴 것**인지 **원천이 늦는 것**인지 구분이
+    안 된다. 둘은 처방이 정반대(캐시·수집 점검 vs 규약 확대)라 추측하면
+    반드시 한 번은 틀린다 — FRED 가 스스로 보고하는 `observation_end` 를
+    읽어 가른다(실수 #12 '추측보고 금지'의 실행형)."""
+
+    def test_series_meta_returns_none_without_key(self, monkeypatch):
+        # 키가 없으면 네트워크를 때리지 않고 None — 진단이 조용히 오답을
+        # 내는 대신 '판정 보류'로 가게 하는 계약(실수 #23 연장).
+        import bot.fred_client as fc
+
+        # ⚠️ 예외를 던지는 스텁으론 판별이 안 된다 — 함수가 `except
+        # Exception` 으로 삼켜 똑같이 None 을 내기 때문(가드를 지워도 통과
+        # 하는 테스트였다). **호출 여부 자체**를 기록해서 본다.
+        calls: list = []
+        monkeypatch.setattr(fc, "_env_key", lambda _k: "")
+        monkeypatch.setattr(fc.requests, "get",
+                            lambda *a, **k: calls.append(a) or _R404())
+        assert fc.fetch_series_meta("FDHBFIN") is None
+        assert calls == [], "키가 없는데 네트워크를 때렸다"
+
+    def test_series_meta_parses_observation_end(self, monkeypatch):
+        import bot.fred_client as fc
+
+        class _R:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {"seriess": [{"id": "FDHBFIN",
+                                     "observation_end": "2025-10-01",
+                                     "last_updated": "2026-03-12 08:01:05-05",
+                                     "frequency": "Quarterly"}]}
+
+        monkeypatch.setattr(fc, "_env_key", lambda _k: "k")
+        monkeypatch.setattr(fc.requests, "get", lambda *a, **k: _R())
+        meta = fc.fetch_series_meta("FDHBFIN")
+        assert meta["observation_end"] == "2025-10-01"
+
+    def test_audit_asks_source_only_for_fred_ids(self):
+        # ECOS:/AK: 등 비-FRED 시리즈에 FRED 메타를 묻지 않는다(엉뚱한
+        # 404 를 '수집 문제'로 오보하는 경로 차단).
+        from bot.scripts.liquidity_audit import _series_meta
+        assert _series_meta("ECOS:M2") is None
+        assert _series_meta("AK:LPR1Y") is None
+
+    def test_audit_wires_meta_into_stale_branch(self):
+        # 배선 확인 — 지연 판정 블록 안에서 원천 메타를 읽고 두 처방을
+        # 문장으로 갈라 준다(grep 은 존재만 보므로 문구 두 개를 함께 본다).
+        import inspect
+        from bot.scripts import liquidity_audit as la
+        src = inspect.getsource(la.main)
+        assert "_series_meta(sid)" in src
+        assert "observation_end" in src
+        assert "규약을 늘린다" in src and "수집 경로 점검" in src
