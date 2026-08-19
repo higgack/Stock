@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 7
+_PROBE_VER = 8
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -120,6 +120,55 @@ def _fnguide_debug(codes: list[str]) -> int:
                 i = html.index("매출액")
                 _p("      ↪ '매출액' 주변 원문 200자: "
                    + _re.sub(r"\s+", " ", html[max(0, i - 100):i + 100]))
+    return 0
+
+
+def _fnguide_dump(codes: list[str]) -> int:
+    """매출액이 든 표의 **헤더 줄 원문**을 그대로 찍는다.
+
+    파서 v2(그룹 헤더 분리)를 돌렸는데도 출력이 같았다(2026-08-19) — 표에
+    내가 기대한 구조가 없다는 뜻이다. 더 추측하지 말고 원문을 본다:
+    어떤 줄이 헤더인지 · 셀 속성(colspan/class)이 무엇인지 · 추정치를 어떻게
+    표시하는지((E) 텍스트인지 CSS 음영인지)."""
+    import re as _re
+
+    import requests
+    from bot.wisereport_financials import (_CELL, _HEADERS, _PERIOD, _ROW,
+                                           _TABLE, _URL_TMPL, _text)
+    for tk in (codes or ["005940.KS"]):
+        c = tk.split(".")[0]
+        _p("")
+        _p(f"── {tk}")
+        try:
+            r = requests.get(_URL_TMPL.format(code=c, freq="Q"),
+                             headers=_HEADERS, timeout=15)
+            if not r.encoding or r.encoding.lower() == "iso-8859-1":
+                r.encoding = r.apparent_encoding or "utf-8"
+            html = r.text
+        except Exception as exc:                        # noqa: BLE001
+            _p(f"   ❗ {type(exc).__name__}: {exc}")
+            continue
+        for ti, tbl in enumerate(_TABLE.findall(html)):
+            if "매출액" not in tbl:
+                continue
+            rows = _ROW.findall(tbl)
+            _p(f"   표 #{ti} · <tr> {len(rows)}개")
+            for ri, rw in enumerate(rows[:4]):
+                cells = [_text(c2) for c2 in _CELL.findall(rw)]
+                pers = [p for c2 in cells
+                        for p in ([_PERIOD.search(c2).group(0)]
+                                  if _PERIOD.search(c2) else [])]
+                _p(f"      tr{ri} 셀 {len(cells)}개 · 기간 {pers}")
+                _p(f"        텍스트: {cells}")
+                _flat = _re.sub(r"\s+", " ", rw)[:600]
+                _p(f"        원문: {_flat}")
+            # 매출액 줄도 하나
+            for rw in rows:
+                if "매출액" in rw:
+                    cells = [_text(c2) for c2 in _CELL.findall(rw)]
+                    _p(f"      [매출액] 셀 {len(cells)}개: {cells}")
+                    break
+            break
     return 0
 
 
@@ -291,6 +340,8 @@ def main(argv: list[str]) -> int:
         _fgv = "?"
     _p(f"kr_revenue_probe v{_PROBE_VER} · FnGuide 파서 v{_fgv} · "
        f"매출 그룹={_ACCOUNT_GROUPS['매출']}")
+    if "--fnguide-dump" in argv:
+        return _fnguide_dump(tickers)
     if "--fnguide-discover" in argv:
         return _fnguide_discover(tickers)
     if "--fnguide-debug" in argv:
