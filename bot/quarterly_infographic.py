@@ -57,7 +57,9 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #   v5 (2026-08-19) 구성요소 매출(증권·은행·보험)을 FnGuide 총액으로 보강 +
 #       못 채우면 차트 범례·제목도 실제 계정명(이자수익)으로 — 옛 그림은
 #       "매출 5,787억 < 영업이익 6,812억" 으로 읽혔다
-_RENDER_VER = "v5"
+#   v6 (2026-08-19) 손익 계정을 손익계산서에서만 채택 — 자본변동표(SCE)의
+#       **누적** 당기순이익이 이겨 2·3분기 순이익이 부풀어 있었다
+_RENDER_VER = "v6"
 
 
 def _eok(v, currency: str = "KRW") -> str:
