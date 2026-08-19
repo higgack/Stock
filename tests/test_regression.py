@@ -1409,7 +1409,12 @@ class TestMarketCalendar:
     def test_fetch_returns_gate_blocks_on_future_target(self, monkeypatch):
         # 정밀 gate: add_trading_days 가 미래 만기 반환 → yfinance 호출 전 조기 None.
         import pytest as _pt
-        _pt.importorskip("yfinance")   # auto_resolve 가 top-level import (VM 검증)
+        # auto_resolve 는 yfinance 와 tradingagents 를 top-level import 한다
+        # — 둘 다 봇 호스트에만 설치돼 있어, 샌드박스에서 이 테스트가 **항상
+        # 빨간 채로** 남아 있었다(2026-08-19: 매 실행마다 '기존 2건 실패'로
+        # 넘겨야 했다 = 진짜 실패를 가리는 소음). 없는 의존은 skip 이 맞다.
+        _pt.importorskip("yfinance")
+        _pt.importorskip("tradingagents")
         import bot.market_calendar as mc, bot.auto_resolve as ar
         monkeypatch.setattr(mc, "add_trading_days", lambda m, d, n: "2099-01-01")
         assert ar._fetch_returns("AAPL", "2026-06-01", holding_days=5) == (None, None, None)
@@ -1417,6 +1422,7 @@ class TestMarketCalendar:
     def test_fetch_returns_calendar_gate_blocks_on_future(self, monkeypatch):
         import pytest as _pt
         _pt.importorskip("yfinance")
+        _pt.importorskip("tradingagents")
         import bot.market_calendar as mc, bot.auto_resolve as ar
         monkeypatch.setattr(mc, "next_trading_day", lambda m, d: "2099-01-01")
         assert ar._fetch_returns_calendar("AAPL", "2026-06-01", 30) == (None, None, None)
