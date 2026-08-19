@@ -22821,6 +22821,46 @@ class TestFlowTrendDiagnosis20260818:
         assert wf.fetch_financial_summary("005940") is None
         assert "요청 실패" in wf._LAST_REASON["005940"]
 
+    def test_scraper_cache_is_invalidated_when_the_parser_changes(
+            self, monkeypatch):
+        """⚠️ **세 번째 재발**(실수 #18). 그룹 헤더 분리(#923)를 배포하고도
+        스윕 출력이 한 글자도 안 변했다 — 12h 디스크 캐시가 옛 파싱 결과를
+        그대로 서빙했기 때문이다. 파서를 고치면 캐시가 즉시 무효여야 한다."""
+        import bot.finviz_client as fvc
+        import bot.wisereport_financials as wf
+        assert wf._PARSE_VER >= 2
+
+        class _R:
+            status_code = 200
+            encoding = "utf-8"
+            text = ("<table><tr><th>주요재무정보</th><th>2026/03</th>"
+                    "<th>2026/06</th></tr>"
+                    "<tr><td>매출액</td><td>10</td><td>20</td></tr>"
+                    "<tr><td>영업이익</td><td>1</td><td>2</td></tr></table>")
+
+            def raise_for_status(self):
+                pass
+
+        # 옛 버전 캐시는 무시하고 다시 받는다.
+        monkeypatch.setattr(fvc, "_cached",
+                            lambda *a, **k: {"annual": {}, "quarter": {"X": {}},
+                                             "_ver": wf._PARSE_VER - 1})
+        wrote = {}
+        monkeypatch.setattr(fvc, "_cache_write",
+                            lambda k, v: wrote.update({k: v}))
+        monkeypatch.setattr(wf.requests, "get", lambda *a, **k: _R())
+        got = wf.fetch_financial_summary("005940")
+        assert got and "X" not in got["quarter"], "옛 버전 캐시를 그대로 썼다"
+        assert got["_ver"] == wf._PARSE_VER
+        assert wrote and list(wrote.values())[0]["_ver"] == wf._PARSE_VER
+
+        # 같은 버전 캐시는 정상 재사용(매번 재수집이 아니다).
+        monkeypatch.setattr(fvc, "_cached",
+                            lambda *a, **k: {"annual": {}, "quarter": {"OK": {}},
+                                             "_ver": wf._PARSE_VER})
+        again = wf.fetch_financial_summary("005940")
+        assert "OK" in again["quarter"]
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
