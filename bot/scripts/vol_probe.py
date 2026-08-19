@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
 def _p(*a):
@@ -38,8 +38,15 @@ def main() -> int:
             _p(f"  {tk:8} 예외 {type(exc).__name__}: {exc}")
             continue
         if rows:
+            age = mt._vol_age_days(rows[-1]["date"])
+            flag = ""
+            if age is not None and age > mt._VOL_STALE_DAYS:
+                # ⚠️ v1 은 행 수만 찍어 '성공'으로 보였다 — 실제로 ^MOVE 는
+                # 400행을 주면서 최신 관측이 33일 전이었다(2026-08-19).
+                # **행이 있는데 멈춰 있는** 경우가 진짜 함정이다.
+                flag = f"  ❌ {age}일 지연 — 원천 시계열이 멈춤(fetch 는 성공)"
             _p(f"  {tk:8} {len(rows):>4}행 · 최신 {rows[-1]['date']} "
-               f"{rows[-1]['close']:.2f}")
+               f"{rows[-1]['close']:.2f}{flag}")
         else:
             # 0행이면 원인이 커버리지인지 레이트리밋인지 구분이 안 된다 —
             # yfinance 를 직접 한 번 더 때려 원문 예외를 그대로 보여준다.

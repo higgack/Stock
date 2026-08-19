@@ -35,6 +35,8 @@ from typing import Optional
 
 import requests
 
+from bot.env_keys import env_key as _env_key
+
 log = logging.getLogger("bot.kis")
 
 _BASE_PROD = "https://openapi.koreainvestment.com:9443"
@@ -123,12 +125,17 @@ def _cache_put(key: str, value: dict) -> None:
         log.debug("kis cache write fail %s: %s", key, exc)
 
 
+# ⚠️ 공용 헬퍼로 읽는다(실수 #23). raw `os.environ` 이면 `load_dotenv()` 를
+# 부르는 **봇 엔트리포인트에서만** 자격증명이 보이고, 진단·크론(`python -m
+# bot.scripts.…`)에서는 키가 `.env` 에 **있는데도** '미설정'이 된다 —
+# 2026-08-19 vol_probe 가 "KIS_APP_KEY not set" 을 6번 찍으면서 드러났다
+# (VKOSPI 값은 디스크 캐시로 나와 있어 더 헷갈렸다).
 def _app_key() -> str:
-    return os.environ.get("KIS_APP_KEY", "").strip()
+    return _env_key("KIS_APP_KEY")
 
 
 def _app_secret() -> str:
-    return os.environ.get("KIS_APP_SECRET", "").strip()
+    return _env_key("KIS_APP_SECRET")
 
 
 # ─── OAuth2 token ────────────────────────────────────────────────────────────

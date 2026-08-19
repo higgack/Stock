@@ -19683,6 +19683,61 @@ class TestMarketTimingBreadthVol20260726:
         p.write_text(json.dumps(blob), encoding="utf-8")
         assert mt._vol_cache_load("move") is None
 
+    def test_stale_vol_series_is_labelled_not_passed_off_as_current(self):
+        """vol_probe 실측(2026-08-19): `^MOVE` 는 **fetch 400행 성공**인데
+        최신 관측이 2026-07-17(33일 전)이었다. 값이 없어서 카드가 빈 게
+        아니라 **원천 시계열이 멈춰** 있었고, 그동안 화면은 그 값을 '현재'·
+        '전일'로 표기했다. 없는 것보다 나쁜 게 낡은 것을 최신인 척 보여주는
+        것이다 — 기준일을 찍고 지연을 명시한다."""
+        from datetime import timedelta
+        from bot import market_timing as mt
+        # ⚠️ 임계값 상수로 offset 을 만들면 상수를 키우는 뮤테이션에 테스트가
+        # 같이 끌려가 통과한다(실측). 실제로 관측된 지연폭(33일)을 고정한다.
+        old_day = (mt._kst_now().date() - timedelta(days=33)).isoformat()
+        fresh_day = (mt._kst_now().date() - timedelta(days=1)).isoformat()
+        html = mt.render_market_timing_page({
+            "markets": {}, "generated_at": "",
+            "volatility": {
+                "move": {"value": 70.9, "date": old_day, "source": "yfinance",
+                         "history": {"전일": 68.2}},
+                "vkospi": {"value": 60.5, "date": fresh_day, "source": "KIS",
+                           "history": {"전일": 57.0}},
+                "vix": {"value": 15.8, "date": None,
+                        "source": "네이버(실시간)", "history": {"전일": 14.2}},
+            }})
+        # 낡은 계열: 기준일 + 며칠째인지.
+        assert f"{old_day[5:]} 종가" in html
+        assert "일째" in html and "오늘 기준이 아닙니다" in html
+        # 신선한 계열엔 경고가 붙지 않는다(오탐은 경고를 무시하게 만든다).
+        vk = html[html.index("VKOSPI"):html.index("VKOSPI") + 900]
+        assert "일째" not in vk, vk
+        assert f"KIS · {fresh_day[5:]} 종가" in html
+        # 실시간 소스(날짜 없음)는 종가 라벨을 붙이지 않는다.
+        assert "네이버(실시간) · " not in html
+
+    def test_kis_credentials_use_the_shared_env_helper(self, tmp_path,
+                                                       monkeypatch):
+        """vol_probe 가 크론 맥락에서 "KIS_APP_KEY not set" 을 찍어 드러났다
+        — `kis_client` 만 raw `os.environ` 이라 `.env` 에 키가 **있는데도**
+        진단·크론에서는 미설정이었다(VKOSPI 값은 디스크 캐시로 나와 있어
+        증상이 가려졌다). 실수 #23 의 재발이고, 가드 정규식이 `*API_KEY` 만
+        보고 있어 못 잡았다(실수 #24)."""
+        import importlib
+        from bot import env_keys, kis_client
+        env = tmp_path / ".env"
+        env.write_text("KIS_APP_KEY=fromdotenv\nKIS_APP_SECRET=secret\n",
+                       encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("KIS_APP_KEY", raising=False)
+        monkeypatch.delenv("KIS_APP_SECRET", raising=False)
+        importlib.reload(env_keys)
+        monkeypatch.setattr(kis_client, "_env_key", env_keys.env_key)
+        try:
+            assert kis_client._app_key() == "fromdotenv"
+            assert kis_client._app_secret() == "secret"
+        finally:
+            importlib.reload(env_keys)
+
     def test_move_guide_text_matches_behavior(self):
         """설명이 동작과 어긋나면 그 자체가 버그(§Help/Dashboard 등록)."""
         from bot import market_timing as mt
@@ -22943,14 +22998,22 @@ class TestFlowTrendDiagnosis20260818:
             assert hist.get(lb) is not None, f"{lb} 창이 비었다 — 수집 기간 부족"
 
         # (2) 렌더 — VIX 와 같은 패널로 기간 칸이 붙는지.
+        # ⚠️ 날짜를 하드코딩하면 시계가 지나면서 '지연' 라벨이 붙어 깨진다
+        # (2026-08-19 실측 함정) — 오늘 기준 상대일로 만든다.
+        from datetime import timedelta
+        yday = (mt._kst_now().date() - timedelta(days=1)).isoformat()
         html = mt.render_market_timing_page({"volatility": {"move": {
-            "value": 75.0, "date": "2026-08-18",
+            "value": 75.0, "date": yday,
             "history": {"전일": 74.1, "1주": 72.8, "1달": 80.3, "1년": 95.2}}}})
         i = html.index("채권 변동성 (MOVE)")
         blk = html[i:i + 3000]
         cells = dict(re.findall(
             r'class="k">([^<]+)</div><div class="v"[^>]*>([\d.]+)', blk))
-        assert cells.get("현재") == "75.0"
+        # '현재' 칸은 **며칠 종가인지**를 라벨에 달고 나온다(2026-08-19 —
+        # ^MOVE 가 한 달 멈춘 값을 '현재'로 보여주던 것을 고치면서).
+        cur = next((k for k in cells if k.startswith("현재")), None)
+        assert cur is not None and cells[cur] == "75.0", cells
+        assert yday[5:] in cur, cur
         for lb in ("전일", "1주", "1달", "1년"):
             assert lb in cells, f"{lb} 칸이 없다"
 
@@ -23080,8 +23143,19 @@ class TestFlowTrendDiagnosis20260818:
             if path.stem in _ALLOWED:
                 continue
             src = path.read_text(encoding="utf-8")
-            if re.search(r'os\.(environ\.get|getenv)\(\s*"[A-Z_]*'
-                         r'(API_KEY|KRX_ID|KRX_PW|CLIENT_ID|CLIENT_SECRET)"',
+            # ⚠️ 2026-08-19 재발: 패턴이 `*API_KEY` 로 끝나는 이름만 봐서
+            # `KIS_APP_KEY`·`KIS_APP_SECRET` 이 **그대로 raw os.environ** 이었다
+            # (vol_probe 가 크론 맥락에서 "not set" 을 찍어 발각 — VKOSPI 값은
+            # 디스크 캐시로 나와 있어 증상이 가려져 있었다). 목록뿐 아니라
+            # **패턴도** 새 이름을 못 잡는다(실수 #24). 외부 API 자격증명
+            # 일반형(`*_KEY` / `*_SECRET` + 기존 항목)으로 넓힌다.
+            #
+            # 경계: 우리 봇/대시보드 자신의 토큰·비밀번호(TELEGRAM_BOT_TOKEN,
+            # DASHBOARD_PASSWORD, BANKSALAD_ZIP_PW 등)는 여기 포함하지 않는다 —
+            # 엔트리포인트가 `load_dotenv()` 로 주입하는 프로세스 설정이지
+            # 개별 클라이언트가 조회하는 외부 API 키가 아니다.
+            if re.search(r'os\.(environ\.get|getenv)\(\s*"[A-Z][A-Z0-9_]*'
+                         r'(_KEY|_SECRET|KRX_ID|KRX_PW|CLIENT_ID)"',
                          src):
                 bad.append(path.stem)
         assert not bad, f"공용 헬퍼를 안 쓰는 키 읽기: {bad}"
