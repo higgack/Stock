@@ -5990,7 +5990,12 @@ def _render_stock_info_html(rec: dict) -> str:
                     cell += " ⚠️"
                 cells += f"<td class='num'>{cell}</td>"
             rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
-        for label, key in (("영업이익률", "영업이익률"), ("ROE", "ROE"),
+        # 분기 표의 ROE 는 **TTM(최근 4분기 합)** 기준이라 라벨에 명시한다
+        # — 안 적으면 '분기 순이익 ÷ 자본'으로 읽혀 네이버와 3배 어긋나
+        # 보인다(사용자 2026-08-19). 연간 표는 그대로 'ROE'.
+        _is_q = any(it.get("quarter") for it in items)
+        for label, key in (("영업이익률", "영업이익률"),
+                           ("ROE(TTM)" if _is_q else "ROE", "ROE"),
                            ("부채비율", "부채비율")):
             cells = ""
             for it in items:
@@ -6012,6 +6017,10 @@ def _render_stock_info_html(rec: dict) -> str:
             _notes.append('⚠️ 매출 공백 = 연간·3분기 보고서가 서로 다른 계정을 써 '
                           '차감이 불가 — 추정 대신 비워둠'
                           + (f'(어긋난 항목: {esc(" · ".join(_mm))})' if _mm else ''))
+        if _is_q:
+            _notes.append('ℹ️ ROE = <b>최근 4분기 순이익 합 ÷ 기말 자본</b>'
+                          '(TTM) — 시장 표기(네이버·FnGuide)와 같은 연율 '
+                          '기준입니다. 4분기가 안 모인 구간은 비웁니다')
         _rev_src = sorted({str(it.get("_revenue_source")) for it in items
                            if it.get("_revenue_source")})
         if _rev_src:

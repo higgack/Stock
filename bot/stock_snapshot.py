@@ -1168,7 +1168,7 @@ def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
 #   v1 (2026-08-19) 구성요소 매출 = 비율 억제 + 계정 랭킹(표준 태그·이름 정규화)
 #   v2 (2026-08-19) 총액 미공시사(증권·은행·보험) 매출을 FnGuide 총액으로 보강
 #   v3 (2026-08-19) FnGuide 컬럼 매핑 수정 — v2 는 파서가 못 읽어 보강이 0건이었다
-_KR_FIN_SCHEMA_VER = 6
+_KR_FIN_SCHEMA_VER = 7
 
 
 def collect_kr_financials(ticker: str) -> dict:
