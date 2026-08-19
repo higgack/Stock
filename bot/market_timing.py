@@ -281,8 +281,14 @@ def fetch_index_history(ticker: str, days: int = 120,
         if period == "3y":
             age = _vol_age_days(out[-1]["date"]) if out else None
             if not out or (age is not None and age > _VOL_STALE_DAYS):
+                # ⚠️ 같은 '1년'이라도 **묻는 방식**이 결과를 가른다(2026-08-19
+                # `^MOVE` 실측): 날짜범위 질의는 07-17 에서 끊긴 데이터를 주고
+                # 기간 키워드(`period="1y"`) 질의는 227행·최신 08-18 을 준다.
+                # #944 의 재질의가 여전히 낡은 값을 받은 이유가 이것이었다 —
+                # 기간을 줄여도 **같은 방식**으로 물었기 때문.
                 alt = _payload_to_rows(
-                    fetch_chart_payload(ticker, interval="1d", period="1y"),
+                    fetch_chart_payload(ticker, interval="1d", period="1y",
+                                        prefer_period=True),
                     days)
                 alt_age = _vol_age_days(alt[-1]["date"]) if alt else None
                 if alt and (age is None or (alt_age is not None

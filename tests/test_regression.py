@@ -25819,7 +25819,10 @@ class TestLongRangeFallback20260819:
         import bot.market_timing as mt
         calls = []
 
-        def fake(ticker, interval="1d", period="1y"):
+        # ⚠️ 스텁 시그니처를 고정하면 프로덕션에 인자가 하나 늘 때 **조용히
+        # TypeError** 로 죽어 폴백이 안 도는 것처럼 보인다(2026-08-19
+        # `prefer_period` 추가 때 실제로 이 테스트 3개가 그렇게 깨졌다).
+        def fake(ticker, interval="1d", period="1y", **kw):
             calls.append(period)
             return three_y if period == "3y" else one_y
 
@@ -26047,3 +26050,68 @@ class TestTwOtcIndustry20260819:
         src = inspect.getsource(tw._fetch_one_industry_source)
         assert "업종 '이름' 필드 없음" in src
         assert ".TWO yfinance 폴백이 담당" in src
+
+
+class TestPeriodQueryFallback20260819:
+    """사용자 2026-08-19: #944 를 배포했는데도 MOVE 가 `yfinance · 07-17 종가`
+    로 남았다. 폴백은 **돌았다**(소스 라벨이 '저장분'이 아니라 'yfinance').
+    같은 프로브 출력이 이유를 갖고 있었다 — 같은 '1년'이라도 **묻는 방식**이
+    결과를 가른다:
+
+        yf.Ticker("^MOVE").history(period="1y")   → 227행 · 최신 08-18
+        우리 경로(start/end 날짜범위)              → 07-17 에서 끊김(또는 0행)
+
+    #944 는 기간만 줄이고 **같은 방식**으로 물어서 같은 낡은 값을 받았다."""
+
+    def test_retry_asks_by_period_keyword(self, monkeypatch):
+        from datetime import timedelta
+        import bot.chart_data as cd
+        import bot.market_timing as mt
+        today = mt._kst_now().date()
+
+        def payload(n, end):
+            ts = [(end - timedelta(days=i)).isoformat() for i in range(n)][::-1]
+            return {"times": ts, "close": [70.0 + i for i in range(n)]}
+
+        seen = []
+
+        def fake(ticker, interval="1d", period="1y", prefer_period=False):
+            seen.append((period, prefer_period))
+            if not prefer_period:
+                return payload(400, today - timedelta(days=34))   # 실측 증상
+            return payload(227, today - timedelta(days=1))
+
+        monkeypatch.setattr(cd, "fetch_chart_payload", fake)
+        out = mt.fetch_index_history("^MOVE", days=400)
+        assert seen == [("3y", False), ("1y", True)], seen
+        assert out[-1]["date"] == (today - timedelta(days=1)).isoformat()
+
+    def test_chart_payload_uses_period_not_date_range(self, monkeypatch):
+        """스위치가 실제로 **다른 질의**를 만드는지 — 파라미터만 받고 같은
+        호출을 하면 아무것도 달라지지 않는다(#944 가 그랬다)."""
+        import sys
+        import types
+        calls = []
+
+        class _T:
+            def __init__(self, tk):
+                pass
+
+            def history(self, **kw):
+                calls.append(kw)
+                import pandas as pd
+                return pd.DataFrame()
+
+        fake_yf = types.ModuleType("yfinance")
+        fake_yf.Ticker = _T
+        monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+        import bot.chart_data as cd
+        monkeypatch.setattr(cd, "_fetch_series_fallback", lambda *a, **k: None)
+
+        cd.fetch_chart_payload("^MOVE", interval="1d", period="1y")
+        assert "start" in calls[0] and "period" not in calls[0], calls[0]
+
+        calls.clear()
+        cd.fetch_chart_payload("^MOVE", interval="1d", period="1y",
+                               prefer_period=True)
+        assert calls[0].get("period") == "1y" and "start" not in calls[0], calls[0]
