@@ -837,7 +837,9 @@ class CpiBoardTests(unittest.TestCase):
     def test_catalog_fields(self):
         ids = [s["id"] for s in CPI_SERIES]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(len(ids), 52)   # 1차 40(2026-07-24) + 2차 감사 12종
+        # 1차 40(2026-07-24) + 2차 감사 12종 − CUSR0000SETE
+        # (자동차보험 CPI — FRED 가 400 을 주는 죽은 시리즈, 2026-08-20 제거)
+        self.assertEqual(len(ids), 51)
         for s in CPI_SERIES:
             for k in ("id", "name", "cat", "stocks"):
                 self.assertTrue(s.get(k), f"{s.get('id')} missing {k}")

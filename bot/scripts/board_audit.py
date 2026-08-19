@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
 def _p(*a):
@@ -81,7 +81,18 @@ def main() -> int:
 
     _p(f"board_audit v{_PROBE_VER} · 공표규약 여유 {GRACE_DAYS}일")
     # 실수 #23 — 프로브는 .env 를 안 읽는다. 어느 키가 살아 있는지 먼저.
-    for k in ("FRED_API_KEY", "ECOS_API_KEY"):
+    # ⚠️ 키 **이름을 틀리면** 있는 키를 '없음'으로 오보한다(v1 이 정확히
+    # 그랬다: 실제 이름은 `BOK_ECOS_API_KEY` 인데 `ECOS_API_KEY` 로 물어
+    # "❌ 없음" 을 찍었고, 정작 한국 행은 멀쩡히 14/12행 들어왔다).
+    # 이름을 손으로 적지 말고 **클라이언트가 쓰는 그대로** 가져온다.
+    import re as _re
+    keys = ["FRED_API_KEY"]
+    try:
+        _src = open("bot/bok_ecos_client.py", encoding="utf-8").read()
+        keys += sorted(set(_re.findall(r'_env_key\("([A-Z0-9_]+)"\)', _src)))
+    except OSError:
+        keys.append("BOK_ECOS_API_KEY")
+    for k in keys:
         _p(f"   {k}: {'있음' if env_key(k) else '❌ 없음 — 해당 보드는 0행이 된다'}")
 
     if not want or "ppi" in want:

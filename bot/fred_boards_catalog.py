@@ -162,7 +162,6 @@ CPI_SERIES = [
     {'id': 'CPITRNSL', 'name': 'CPI: Transportation', 'cat': 'Auto & Transport', 'stocks': '교통비 종합 — 자동차·보험·정비 밸류체인 참고지표'},
     {'id': 'CUSR0000SETA01', 'name': 'CPI: New Vehicles', 'cat': 'Auto & Transport', 'stocks': '신차가격 전가력 — KR: 현대차·기아 / US: GM·Ford / JP: 토요타'},
     {'id': 'CUSR0000SETA02', 'name': 'CPI: Used Cars and Trucks', 'cat': 'Auto & Transport', 'stocks': '중고차가격 — US: CarMax·Carvana·KAR Global'},
-    {'id': 'CUSR0000SETE', 'name': 'CPI: Motor Vehicle Insurance', 'cat': 'Auto & Transport', 'stocks': '자동차보험료 — US: Progressive·Allstate / KR: 삼성화재·DB손해보험'},
     # SETE 재검증(2026-07-24 2차 감사): BLS 원천(download.bls.gov cu.series
     # 마스터파일)에 1985M01~2026M05 데이터로 직접 명시 확인(1차보다 확신 상향)
     # — 다만 FRED 미러 페이지 자체는 여전히 검색 미노출, 브라우저 직접확인 전까지

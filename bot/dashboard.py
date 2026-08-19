@@ -7686,8 +7686,9 @@ def _render_stock_info_html(rec: dict) -> str:
         _peer_flags: set = set()
         _peer_calc: set = set()
         _peer_oob = False
-        # 배수 열 ↔ 범례 라벨. `_derive_peer_multiples` 가 돌려주는 라벨과
-        # 같은 문자열을 써야 ＊ 표시가 맞는다.
+        # 배수 열 ↔ 라벨. 옛 아카이브의 `derived` 목록이 이 라벨을 쓰므로
+        # 같은 문자열이어야 그 칸을 빈칸으로 내릴 수 있다(수집기의 자체계산은
+        # 2026-08-20 제거됐지만 이미 쌓인 분석엔 남아 있다).
         _dmark = {"trailingPE": "PER", "priceToBook": "PBR",
                   "priceToSalesTrailing12Months": "PSR"}
         _mult_keys = ("trailingPE", "forwardPE", "priceToBook",
@@ -7702,7 +7703,6 @@ def _render_stock_info_html(rec: dict) -> str:
             # 동종비교 표의 같은 회사 행만 비어 있었다(사용자 2026-08-18
             # 이오테크닉스). 데이터 부재가 아니라 배선 누락이다. 새 숫자를
             # 만드는 게 아니라 화면에 이미 떠 있는 값 그대로 옮긴다.
-            _extra_basis: dict = {}
             if is_subj:
                 # ⚠️ 주체 행에서 **수집기가 자체계산한 값은 버리고** 페이지의
                 # 정본(si)을 쓴다. 사용자 2026-08-18 삼양식품: 동종비교가
@@ -7710,24 +7710,19 @@ def _render_stock_info_html(rec: dict) -> str:
                 # 다른 PER 을 보여줬다. 수집기 파생은 yfinance `.info` 한 칸에
                 # 기대지만 si 는 DART 분기 TTM 까지 쓰므로 정본은 si 다.
                 # 소스가 준 값은 그대로 둔다(si 도 같은 소스값을 갖는다).
+                # ⚠️ 2026-08-20 사용자: "억지로 없는거 계산해서 넣지마.
+                # ＊표시된거. 더 이상해져." — si 에서 가져오는 것도 **소스값만**.
+                # 자체계산분(`_derived_multiples`)은 가져오지 않는다.
                 _pc_calc = set(pc.get("derived") or [])
                 _fill = {k: si.get(k) for k in _mult_keys
-                         if si.get(k) is not None
+                         if si.get(k) is not None and k not in _si_derived
                          and (pc.get(k) is None or _dmark.get(k) in _pc_calc)}
                 if _fill:
-                    pc = {**pc, **_fill}
-                    _sb = si.get("_derived_basis") or {}
-                    _extra_basis = {_dmark[k]: _sb.get(k, "자체계산")
-                                    for k in _fill
-                                    if k in _si_derived and k in _dmark}
-                    # ⚠️ 덮어쓴 칸이 si 의 **소스값**이면 ＊(자체계산)를 떼야
-                    # 한다. 안 그러면 소스가 준 숫자에 자체계산 표시가 붙어
-                    # 출처를 거꾸로 알리게 된다.
-                    _pc_over = {_dmark[k] for k in _fill
-                                if k in _dmark and k not in _si_derived}
-                    if _pc_over:
-                        pc = {**pc, "derived": sorted(set(pc.get("derived") or [])
-                                                      - _pc_over)}
+                    # 소스값으로 덮었으니 그 칸의 ＊ 표식은 뗀다.
+                    pc = {**pc, **_fill,
+                          "derived": sorted(set(pc.get("derived") or [])
+                                            - {_dmark[k] for k in _fill
+                                               if k in _dmark})}
             style = ' style="background:rgba(66,165,245,0.12);font-weight:600"' if is_subj else ""
             name = esc(pc.get("name", "?"))
             ptk = esc(pc.get("ticker", ""))
@@ -7775,21 +7770,26 @@ def _render_stock_info_html(rec: dict) -> str:
             _mark = (f' <span title="재무통화 {esc(_fin_cur)} ≠ 거래통화 '
                      f'{esc(_trd_cur)} — 자산·매출 기반 배수에 환산 오차">⚠</span>'
                      if _mismatch else "")
-            # 자체계산분은 소스값과 **구분해서** 보여준다(데이터 vs 환각).
-            # yfinance 가 KR 종목의 PER·PBR 을 자주 안 줘서 시총÷순이익·
-            # 시총÷자본으로 채운다 — 정의는 같지만 출처가 다르다.
-            # 기준(TTM / DART 연간 …)은 **행마다 다르다** — 같은 ＊ 로
-            # 뭉뚱그리면 서로 다른 기준을 같은 것처럼 보여준다. 툴팁에 박는다.
-            _dbasis = {**(pc.get("derived_basis") or {}), **_extra_basis}
-            _derived = set(pc.get("derived") or []) | set(_extra_basis)
+            # 옛 아카이브가 자체계산으로 채워 둔 칸 — 아래에서 빈칸으로 내린다
+            # (재수집 없이 이미 쌓인 분석까지 같이 정리된다).
+            _derived = set(pc.get("derived") or [])
 
             def _pvd(k):
-                cell = _pv(k)
-                if _dmark.get(k) in _derived and cell not in ("—",):
+                """⚠️ 자체계산분은 **숫자를 내지 않는다**(사용자 2026-08-20).
+
+                이 표는 회사들을 **한 열에서 나란히** 비교하는 자리다. 소스가
+                준 PER 옆에 우리가 시총÷순이익으로 만든 PER 을 놓으면 기준이
+                섞여 비교 자체가 거짓이 된다 — 실측(Neosem 화면): SK하이닉스
+                6.6＊ · 삼성전자 10.8＊ 는 자체계산인데 TSMC 27.5 · AMD 119.0
+                은 소스값이라, 같은 열의 숫자가 서로 다른 정의였다.
+                ＊ 로 구분 표시를 해도 눈은 세로로 비교한다. 빈칸이 낫다.
+                (단일 회사만 보는 종합·밸류에이션 탭은 나란히 놓이지 않으므로
+                거기 자체계산은 그대로 둔다 — 이 규칙은 비교표 전용.)"""
+                if _dmark.get(k) in _derived:
                     _peer_calc.add(_dmark[k])
-                    _t = "자체계산 · " + _dbasis.get(_dmark[k], "기준 미기록")
-                    return cell + f'<span title="{esc(_t)}">＊</span>'
-                return cell
+                    return ('<span title="소스 미제공 — 다른 회사와 기준이 '
+                            '섞이지 않게 자체계산은 넣지 않습니다">—</span>')
+                return _pv(k)
 
             _cells = [_pvd(k) for k in _mult_keys]
             pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}{_mark}</td><td class="num">{mc_str}</td>'
@@ -7801,13 +7801,12 @@ def _render_stock_info_html(rec: dict) -> str:
             _peer_oob |= any("—!" in c for c in _cells)
         _peer_note = ""
         if _peer_calc:
-            _defs = {"PER": "PER=시총÷순이익", "PBR": "PBR=시총÷자본",
-                     "PSR": "PSR=시총÷매출"}
-            _peer_note += (' · <b>＊</b> = 소스 미제공분 자체계산('
-                           + esc(" · ".join(sorted(_peer_calc))) + ' — '
-                           + esc(", ".join(_defs[k] for k in sorted(_peer_calc)
-                                           if k in _defs))
-                           + ' · 기준은 ＊ 에 마우스를 올리면 행별로 표시)')
+            _peer_note += (' · 일부 <b>'
+                           + esc(" · ".join(sorted(_peer_calc)))
+                           + '</b> 칸이 빈 것은 소스가 그 회사 값을 주지 '
+                           '않아서입니다 — 자체계산으로 채우면 같은 열에 '
+                           '기준이 다른 숫자가 섞여 비교가 어긋나므로 '
+                           '비워 둡니다')
         if _peer_oob:
             _peer_note += (' · <b>—!</b> = 소스가 준 값이 배수로 성립하지 않음'
                            '(범위 밖) — 숫자처럼 보여주지 않습니다')
