@@ -207,11 +207,24 @@ def _periods_behind(actual: date, expected: date, freq: str) -> int:
     return (expected - actual).days          # D — 달력일수(영업일 근사)
 
 
-def judge(sid: str, raw: str, today: Optional[date] = None) -> Optional[dict]:
+# 보드 단위 **그룹 기본 규약**. 개별 id 를 열거하면 새 시리즈가 목록 밖으로
+# 새어 나간다(#24) — PPI 105종·CPI 52종은 전부 BLS 월간이라 한 줄이면 된다.
+# 개별 CADENCE 항목이 있으면 그쪽이 이긴다(벤치마크 CPIAUCSL 등).
+BLS_MONTHLY = ("M", 20, "BLS 월간 물가지수, 익월 중순~하순 공표")
+KR_PPI_MONTHLY = ("M", 22, "한국 PPI(한국은행) 익월 하순 공표")
+KR_CPI_MONTHLY = ("M", 5, "한국 CPI(통계청) 익월 초 공표")
+
+
+def judge(sid: str, raw: str, today: Optional[date] = None,
+          default: Optional[tuple] = None) -> Optional[dict]:
     """{'freq','lag','why','actual','expected','behind','stale'} 또는 None
     (규약 미등록·라벨 판독 불가·이벤트성). None = **판정 안 함**이지 정상이
-    아니다 — 호출부는 배지를 안 띄우되 감사 프로브는 '규약 없음'으로 찍는다."""
-    spec = CADENCE.get(sid)
+    아니다 — 호출부는 배지를 안 띄우되 감사 프로브는 '규약 없음'으로 찍는다.
+
+    `default`: id 별 규약이 없을 때 쓸 **그룹 규약**(freq, lag, why).
+    보드가 통째로 같은 원천·주기를 쓰는 경우(BLS 물가, ECOS 한국 물가)
+    시리즈를 하나씩 등록하는 대신 이걸 넘긴다."""
+    spec = CADENCE.get(sid) or default
     if not spec:
         return None
     freq, lag, why = spec

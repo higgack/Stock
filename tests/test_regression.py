@@ -19783,7 +19783,11 @@ class TestMarketTimingBreadthVol20260726:
         def fake_fetch(ticker, days=120, min_rows=None):
             seen.append(ticker)
             if ticker == "^VIX":
-                return [{"close": 14.0 + i, "date": f"d{i}"} for i in range(300)]
+                from datetime import date, timedelta
+                b = date(2026, 8, 19)
+                return [{"close": 14.0 + i,
+                         "date": (b - timedelta(days=299 - i)).isoformat()}
+                        for i in range(300)]
             raise RuntimeError("MOVE unavailable")
 
         monkeypatch.setattr(mt, "fetch_index_history", fake_fetch)
@@ -21612,17 +21616,26 @@ class TestChronologicalTablesAndVol20260816:
         assert "월말 종가 확정" in conf
 
     # ── ⑤ VIX·VKOSPI 이력 카드 ───────────────────────────────────────
-    def test_vol_history_picks_trading_day_offsets(self):
+    def test_vol_history_picks_calendar_offsets(self):
+        """⚠️ 2026-08-20 계약 변경: 위치(-1-N행) → **날짜**. 관측이 성기면
+        위치 기반은 라벨이 거짓말을 한다(`^MOVE` 가 07-17 에서 끊긴 뒤
+        08-18 한 점이 붙자 '전일' 이 32일 전 값이 됐다)."""
+        from datetime import date, timedelta
         from bot.market_timing import vol_history
-        rows = [{"date": f"d{i}", "close": float(i)} for i in range(300)]
+        base = date(2026, 8, 19)
+        rows = [{"date": (base - timedelta(days=i)).isoformat(),
+                 "close": float(400 - i)} for i in range(400)][::-1]
         h = vol_history(rows)
-        assert h == {"전일": 298.0, "1주": 294.0, "1달": 278.0, "1년": 47.0}
+        assert h == {"전일": 399.0, "1주": 393.0, "1달": 370.0, "1년": 35.0}, h
 
     def test_vol_history_omits_windows_it_cannot_fill(self):
         """짧은 시계열에서 없는 창을 가장 오래된 값으로 채우면 '1년 전'이
         거짓이 된다 — 칸 자체를 만들지 않는다."""
         from bot.market_timing import vol_history
-        h = vol_history([{"date": f"d{i}", "close": float(i)} for i in range(10)])
+        from datetime import date, timedelta
+        base = date(2026, 8, 19)
+        h = vol_history([{"date": (base - timedelta(days=i)).isoformat(),
+                          "close": float(i)} for i in range(10)][::-1])
         assert set(h) == {"전일", "1주"}, h
         assert vol_history([]) == {} and vol_history(None) == {}
 
@@ -21702,7 +21715,10 @@ class TestChronologicalTablesAndVol20260816:
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 14.2)
         monkeypatch.setattr(mt, "fetch_index_history",
                             lambda t, days=120, min_rows=None: [
-                                {"date": f"d{i}", "close": 14.0} for i in range(300)])
+                                {"date": (__import__("datetime").date(2026, 8, 19)
+                                          - __import__("datetime").timedelta(days=299 - i)
+                                          ).isoformat(), "close": 14.0}
+                                for i in range(300)])
 
         def boom(*a, **k):
             raise RuntimeError("네이버 down")
@@ -23180,9 +23196,15 @@ class TestFlowTrendDiagnosis20260818:
         import bot.market_timing as mt
 
         # (1) 수집 — 히스토리를 실제로 싣는지(창을 못 만들던 것이 진짜 원인).
-        rows = [{"date": f"d{i}", "close": 70.0 + i} for i in range(300)]
+        # ⚠️ 2026-08-20: 창 조회가 위치→**날짜** 기반이 되어 픽스처도 실제
+        # 날짜여야 의미가 있다(가짜 'd0' 은 파싱 실패로 창이 통째로 빈다).
+        from datetime import date, timedelta
+        _b = date(2026, 8, 19)
+        rows = [{"date": (_b - timedelta(days=399 - i)).isoformat(),
+                 "close": 70.0 + i * 0.25} for i in range(400)]
         monkeypatch.setattr(mt, "fetch_index_history",
                             lambda t, **k: rows if t == "^MOVE" else [])
+        monkeypatch.setattr(mt, "_index_quote_row", lambda t: [])
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
         monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda: [])
         snap = mt.fetch_volatility_snapshot()
@@ -23284,6 +23306,7 @@ class TestFlowTrendDiagnosis20260818:
         got = {s["id"]: s.get("unit") for s in LIQ_SERIES}
         bad = {k: (got.get(k), v) for k, v in native.items()
                if got.get(k) != v}
+        bad.pop("FDHBFIN", None)   # 2026-08-20 카탈로그에서 제거된 시리즈
         assert not bad, f"단위 불일치(카탈로그, FRED): {bad}"
 
     def test_net_liquidity_converts_tga_from_millions(self):
@@ -25841,7 +25864,9 @@ class TestLongRangeFallback20260819:
             monkeypatch,
             self._payload(400, today - timedelta(days=33)),   # 실측 증상
             self._payload(227, today - timedelta(days=1)))
-        assert calls == ["3y", "1y"]
+        # 2026-08-20: 같은 1년이라도 날짜범위/기간키워드가 날마다 이기고 진다
+        # (`^MOVE` 실측) — 둘 다 물어 신선한 쪽을 쓴다.
+        assert calls == ["3y", "1y", "1y"], calls
         assert out[-1]["date"] == (today - timedelta(days=1)).isoformat()
 
     def test_empty_long_range_falls_back(self, monkeypatch):
@@ -25850,7 +25875,9 @@ class TestLongRangeFallback20260819:
         today = mt._kst_now().date()
         out, calls = self._run(monkeypatch, None,
                                self._payload(227, today - timedelta(days=1)))
-        assert calls == ["3y", "1y"]
+        # 2026-08-20: 같은 1년이라도 날짜범위/기간키워드가 날마다 이기고 진다
+        # (`^MOVE` 실측) — 둘 다 물어 신선한 쪽을 쓴다.
+        assert calls == ["3y", "1y", "1y"], calls
         assert len(out) == 227
 
     def test_healthy_long_range_is_not_refetched(self, monkeypatch):
@@ -26087,7 +26114,7 @@ class TestPeriodQueryFallback20260819:
 
         monkeypatch.setattr(cd, "fetch_chart_payload", fake)
         out = mt.fetch_index_history("^MOVE", days=400)
-        assert seen == [("3y", False), ("1y", True)], seen
+        assert seen == [("3y", False), ("1y", True), ("1y", False)], seen
         assert out[-1]["date"] == (today - timedelta(days=1)).isoformat()
 
     def test_chart_payload_uses_period_not_date_range(self, monkeypatch):
@@ -26539,3 +26566,84 @@ class TestEconActualUsesVintage:
         assert got == ("2026-06-01", 332.0)
         assert "realtime_start=2026-07-14" in seen["url"], seen["url"]
         assert "realtime_end=2026-07-14" in seen["url"], seen["url"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-20 사용자 4개 보드 전수 점검 요청에서 나온 것들.
+#
+# (1) PPI 105종·CPI 52종·한국 ECOS 행에 **공표규약이 하나도 없었다** — 전부
+#     '6개월' 월수 휴리스틱이라, BLS 월간 지표가 넉 달 밀려도 화면은 조용했다.
+#     개별 등록은 새 시리즈를 못 잡으므로(#24) **보드 그룹 기본값**으로.
+# (2) 지수 기준일이 마지막 거래일보다 뒤처져도 표기가 없었다.
+# (3) 테스트가 사용자 **실제 캐시 디렉터리**에 픽스처 값을 쓰고 있었다.
+class TestBoardFreshnessGroupCadence:
+    def test_every_board_row_is_judgeable(self):
+        """어느 보드 행도 '규약 없음'으로 남으면 안 된다 — 판정 못 하는 행이
+        가장 위험하다(조용히 낡는다). 시리즈를 열거하지 않고 카탈로그를
+        통째로 훑는다."""
+        from bot.fred_boards_catalog import CPI_SERIES, LIQ_SERIES, PPI_SERIES
+        from bot.macro_cadence import CADENCE, BLS_MONTHLY, judge
+        for label, cat, default in (("PPI", PPI_SERIES, BLS_MONTHLY),
+                                    ("CPI", CPI_SERIES, BLS_MONTHLY),
+                                    ("LIQ", LIQ_SERIES, None)):
+            missing = [s["id"] for s in cat
+                       if judge(s["id"], "2026-07", default=default) is None]
+            assert not missing, (
+                f"{label} 보드에 공표규약 없는 시리즈: {missing[:8]}"
+                f"{' …' if len(missing) > 8 else ''} — CADENCE 등록 또는 "
+                f"보드 그룹 기본값 필요")
+        assert "FDHBFIN" not in {s["id"] for s in LIQ_SERIES}, \
+            "원천이 ~170일 늦어 화면에 늘 반년+ 옛값이던 행 — 제거 상태 유지"
+
+    def test_kr_rows_carry_their_own_cadence_key(self):
+        """ECOS 행은 품목별로 id 가 쪼개져 있어(ECOS:반도체) 규약을 못 찾는다
+        — `cadence_id` 로 한 규약을 공유한다."""
+        import bot.fred_boards as fb
+        from bot.macro_cadence import judge
+        for loader, expect, cad in (("_load_kr_ppi", "ECOS:KRPPI",
+                                     fb._KR_PPI_CADENCE),
+                                    ("_load_kr_cpi", "ECOS:KRCPI",
+                                     fb._KR_CPI_CADENCE)):
+            src = __import__("inspect").getsource(getattr(fb, loader))
+            assert f'"cadence_id": "{expect}"' in src, loader
+            assert judge(expect, "2026-07", default=cad) is not None
+
+    def test_kr_ppi_june_is_on_time_in_late_august(self):
+        """사용자 2026-08-20 "한국 PPI 는 여전히 6월인데" — 한은은 익월
+        하순 공표라 8/20 시점 기대치가 6월이다(정상). 값 자체가 아니라
+        **규약이 그렇게 판정하는지**를 고정한다."""
+        from datetime import date
+        import bot.fred_boards as fb
+        from bot.macro_cadence import judge
+        t = date(2026, 8, 20)
+        assert not judge("ECOS:KRPPI", "2026-06", today=t,
+                         default=fb._KR_PPI_CADENCE)["stale"]
+        # 한 달 더 밀리면 반드시 걸려야 한다(규약이 무력하지 않다는 증거).
+        assert judge("ECOS:KRPPI", "2026-05", today=t,
+                     default=fb._KR_PPI_CADENCE)["stale"]
+
+    def test_index_staleness_is_labelled(self, monkeypatch):
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
+        assert mt._idx_stale("KR", "2026-08-19") == ""
+        out = mt._idx_stale("KR", "2026-08-14")
+        assert "거래일 지연" in out and "2026-08-19" in out, out
+
+    def test_expected_session_survives_without_a_holiday_calendar(self,
+                                                                 monkeypatch):
+        """`exchange_calendars` 가 없어도 판정을 포기하지 않는다 —
+        조용히 no-op 되면 화면이 낡아도 아무도 모른다(실수 #12)."""
+        import bot.market_calendar as mc
+        import bot.market_timing as mt
+        monkeypatch.setattr(mc, "is_trading_day", lambda *a, **k: None)
+        monkeypatch.setattr(mc, "add_trading_days", lambda *a, **k: None)
+        exp, grace = mt._expected_session("KR")
+        assert exp and grace >= 1, (exp, grace)
+
+    def test_tests_do_not_write_into_the_real_vol_cache(self):
+        """conftest 의 autouse 격리가 살아 있는가 — 이게 꺼지면 VM 에서
+        `make test` 가 운영 last-good 캐시에 픽스처 값을 덮어쓴다."""
+        from pathlib import Path
+        import bot.market_timing as mt
+        assert Path.home() not in Path(mt._VOL_CACHE_DIR).parents, \
+            f"테스트가 실제 캐시를 가리키고 있다: {mt._VOL_CACHE_DIR}"

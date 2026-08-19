@@ -286,10 +286,20 @@ def fetch_index_history(ticker: str, days: int = 120,
                 # 기간 키워드(`period="1y"`) 질의는 227행·최신 08-18 을 준다.
                 # #944 의 재질의가 여전히 낡은 값을 받은 이유가 이것이었다 —
                 # 기간을 줄여도 **같은 방식**으로 물었기 때문.
-                alt = _payload_to_rows(
-                    fetch_chart_payload(ticker, interval="1d", period="1y",
-                                        prefer_period=True),
-                    days)
+                # 2026-08-20 실측: `^MOVE` 는 **1년 날짜범위 226행(최신
+                # 07-17)** · **1년 기간키워드 0행** 이었다 — 어느 쪽이 이길지
+                # 날마다 뒤바뀐다. 한쪽만 재질의하면 그날 진 쪽에 걸린다.
+                # 둘 다 물어 **가장 신선한** 쪽을 쓴다(같으면 긴 쪽).
+                cands = []
+                for pp in (True, False):
+                    got = _payload_to_rows(
+                        fetch_chart_payload(ticker, interval="1d", period="1y",
+                                            prefer_period=pp), days)
+                    if got:
+                        cands.append(got)
+                alt = min(cands,
+                          key=lambda r: (_vol_age_days(r[-1]["date"]) or 10 ** 6,
+                                         -len(r))) if cands else []
                 alt_age = _vol_age_days(alt[-1]["date"]) if alt else None
                 if alt and (age is None or (alt_age is not None
                                             and alt_age < age)):
@@ -534,16 +544,40 @@ def _fetch_vix_naver():
 _VOL_LOOKBACKS = (("전일", 1), ("1주", 5), ("1달", 21), ("1년", 252))
 
 
+# 라벨 → (되짚을 달력일, 허용 오차일). 위치(-1-back) 대신 **날짜**로 되짚는다.
+# 2026-08-20 실측: `^MOVE` 차트가 07-17 에서 끊긴 226행 + 08-18 한 점이면
+# 위치 기반 '전일' 은 **32일 전** 값이 된다 — 라벨이 거짓말을 한다.
+# 오차 안에 관측이 없으면 그 칸을 생략한다(없는 것보다 나쁜 게 틀린 것).
+_VOL_LOOKBACK_DAYS = {"전일": (1, 4), "1주": (7, 5), "1달": (30, 10),
+                      "1년": (365, 30)}
+
+
 def vol_history(rows: list) -> dict:
-    """오름차순 히스토리 → {전일, 1주, 1달, 1년} 종가. 부족한 창은 생략한다
-    (없는 값을 가장 오래된 값으로 대체하면 '1년 전'이 거짓이 된다)."""
+    """오름차순 히스토리 → {전일, 1주, 1달, 1년} 종가. 부족하거나 기대
+    시점에서 너무 먼 창은 생략한다(없는 값을 가장 오래된 값으로 대체하면
+    '1년 전'이 거짓이 된다)."""
     out: dict = {}
-    if not rows:
+    pts = [(str(r["date"])[:10], r["close"]) for r in rows or []
+           if r.get("date") and r.get("close") is not None]
+    if not pts:
         return out
-    closes = [r.get("close") for r in rows if r.get("close") is not None]
-    for label, back in _VOL_LOOKBACKS:
-        if len(closes) > back:
-            out[label] = closes[-1 - back]
+    try:
+        latest = datetime.strptime(pts[-1][0], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return out
+    for label, _ in _VOL_LOOKBACKS:
+        cal, tol = _VOL_LOOKBACK_DAYS[label]
+        target = latest - timedelta(days=cal)
+        hit = None
+        for d, c in pts[:-1]:            # 최신 자신은 비교 대상이 아니다
+            try:
+                dd = datetime.strptime(d, "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+            if dd <= target:
+                hit = (dd, c)
+        if hit and (target - hit[0]).days <= tol:
+            out[label] = hit[1]
     return out
 
 
@@ -807,7 +841,7 @@ def fetch_move_rows() -> tuple[list, str | None]:
         if i:
             log.info("market_timing: MOVE 를 대체 심볼 %s 로 받았다"
                      "(최신 %s)", sym, rows[-1]["date"])
-        return rows, sym
+        return _with_fresh_quote(sym, rows, _MOVE_RANGE), sym
     # 차트 시계열이 전부 비었어도 **시세 메타**엔 현재 레벨이 남아 있다
     # (2026-08-19 실측: 차트 1봉 → 차트 경로는 0행, 메타는 74.98).
     # 같은 대역 관문을 통과해야 쓴다 — 관문을 비켜 가는 뒷문이 되면 안 된다.
@@ -820,6 +854,109 @@ def fetch_move_rows() -> tuple[list, str | None]:
         log.warning("market_timing: MOVE 시세 메타 %.2f 가 지수 대역 %s 밖 — 폐기",
                     q[-1]["close"], _MOVE_RANGE)
     return [], None
+
+
+def _with_fresh_quote(ticker: str, rows: list[dict],
+                      band: tuple[float, float]) -> list[dict]:
+    """차트가 **낡았을 때** 시세 메타의 최신 한 점을 뒤에 붙인다.
+
+    2026-08-20 실측: `^MOVE` 는 차트가 226행(07-17 에서 끊김)인데 메타는
+    08-18 74.98 이다 — 둘 중 하나만 쓰면 '창은 있는데 값이 낡거나' '값은
+    최신인데 창이 없거나' 가 된다. 둘을 합치면 둘 다 산다."""
+    if not rows:
+        return rows
+    q = _index_quote_row(ticker)
+    if not q or not band[0] <= q[-1]["close"] <= band[1]:
+        return rows
+    if q[-1]["date"] <= rows[-1]["date"]:
+        return rows
+    log.info("market_timing: %s 차트 최신 %s → 시세 메타 %s 한 점 추가",
+             ticker, rows[-1]["date"], q[-1]["date"])
+    return rows + q
+
+
+# 시장별 지수 기준일이 **마지막 거래일**보다 뒤처졌는지 — 사용자 2026-08-20
+# "왜 제때 못받아오는게 있어?"(KOSPI·니케이가 08-20 인데 기준 08-18).
+# 야후가 KR/JP 종가를 하루 늦게 올리는 날이 있어 화면만 보면 구분이 안 된다.
+# 휴장일 캘린더로 **기대 거래일**을 구해 비교하고, 뒤처진 만큼을 표기한다
+# (캘린더가 없으면 판정하지 않는다 — 추측 금지).
+# 기대치가 이미 '직전 세션'(오늘 장은 안 끝났을 수 있으므로)이라 여유는 0 이
+# 맞다 — 사용자 2026-08-20 이 지적한 건 정확히 **1거래일** 뒤처진 화면이었다.
+# 캘린더가 없어 주중으로 세는 경우만 연휴 오탐을 피해 1 을 더한다.
+_IDX_GRACE_SESSIONS = 0
+
+
+def _idx_stale(market: str, latest: str | None) -> str:
+    """지수 기준일이 늦으면 ' ⚠️ N거래일 지연' 문구, 아니면 빈 문자열."""
+    if not latest:
+        return ""
+    try:
+        import html as _hh
+        expected, grace = _expected_session(market)
+        got = str(latest)[:10]
+        if not expected or got >= expected:
+            return ""
+        behind = _sessions_between(market, got, expected)
+        if behind is None or behind <= grace:
+            return ""
+        return (f' <span style="color:#f0a020">⚠️ {behind}거래일 지연'
+                f'(기대 {_hh.escape(expected)})</span>')
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 지수 신선도 판정 실패: %s", market, exc)
+        return ""
+
+
+def _prev_weekday(d):
+    while d.weekday() >= 5:          # 토(5)·일(6)
+        d -= timedelta(days=1)
+    return d
+
+
+def _expected_session(market: str) -> tuple[str | None, int]:
+    """(기대 최신 거래일, 허용 세션수). 휴장일 캘린더가 있으면 정확히,
+    없으면 **주중 기준**으로 판정하되 연휴 오탐을 피하려 여유를 넓힌다 —
+    캘린더가 없다고 판정을 통째로 포기하면 화면이 조용해진다(실수 #12)."""
+    today = _kst_now().date()
+    try:
+        from bot.market_calendar import add_trading_days, is_trading_day
+        t = today.isoformat()
+        trading = is_trading_day(market, t)
+        if trading is not None:
+            exp = (add_trading_days(market, t, -1) if trading
+                   else add_trading_days(market, t, 0))
+            if exp:
+                return exp, _IDX_GRACE_SESSIONS
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 캘린더 조회 실패: %s", market, exc)
+    return _prev_weekday(today - timedelta(days=1)).isoformat(), _IDX_GRACE_SESSIONS + 1
+
+
+def _sessions_between(market: str, start: str, end: str) -> int | None:
+    """start(제외) ~ end(포함) 사이 거래일 수. 캘린더 없으면 주중일 수."""
+    try:
+        from bot.market_calendar import add_trading_days
+        cur, n = end, 0
+        while cur and cur > start and n < 40:
+            n += 1
+            nxt = add_trading_days(market, cur, -1)
+            if not nxt:
+                break
+            cur = nxt
+        else:
+            return n
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 세션수 계산 실패: %s", market, exc)
+    try:
+        a = datetime.strptime(start, "%Y-%m-%d").date()
+        b = datetime.strptime(end, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    n, cur = 0, b
+    while cur > a and n < 40:
+        if cur.weekday() < 5:
+            n += 1
+        cur -= timedelta(days=1)
+    return n
 
 
 def fetch_volatility_snapshot() -> dict:
@@ -1045,7 +1182,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="stat"><div class="k">팔로우스루데이(FTD)</div>
 <div class="v" style="font-size:14px">{ftd_label}{_h.escape(extra)}</div></div>
 </div>
-<div class="sub" style="margin:4px 0 0">기준 {_h.escape(str(m.get("latest_date","—")))} ·
+<div class="sub" style="margin:4px 0 0">기준 {_h.escape(str(m.get("latest_date","—")))}{_idx_stale(mkt, m.get("latest_date"))} ·
 최근 종가 {m.get("latest_close","—")}</div></div>"""
 
     macro = data.get("macro", {})
