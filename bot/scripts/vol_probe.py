@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 
 
 def _p(*a):
@@ -79,14 +79,27 @@ def main() -> int:
                 _p(f"   {k:20} {meta[k]}")
         if not meta:
             _p("   (메타 없음 — 심볼이 야후에서 내려갔을 가능성)")
-        # 대체 심볼 후보 — 있는지 없는지만 본다(값을 추측하지 않는다).
+        # 대체 심볼 후보 — v4 는 행 수만 찍어서 "MOVE 20행" 이 **지수인지
+        # 동명 주식인지** 구분이 안 됐다. 값을 갖다 쓰기 전에 정체부터 본다:
+        # instrumentType·이름·거래소·최신 종가. 주식이면 여기서 드러난다.
         for alt in ("^MOVE", "MOVE", "^TYVIX", "^VXTLT"):
             try:
-                h = yf.Ticker(alt).history(period="1mo")
+                t2 = yf.Ticker(alt)
+                h = t2.history(period="1mo")
                 last = h.index[-1].date() if len(h) else "—"
-                _p(f"   대체후보 {alt:8} {len(h):>3}행 · 최신 {last}")
+                close = f"{h['Close'].iloc[-1]:.2f}" if len(h) else "—"
+                try:
+                    m2 = t2.history_metadata or {}
+                except Exception:                              # noqa: BLE001
+                    m2 = {}
+                kind = str(m2.get("instrumentType") or "?")
+                nm = m2.get("shortName") or m2.get("longName") or "?"
+                _p(f"   대체후보 {alt:8} {len(h):>3}행 · 최신 {last} {close:>8}"
+                   f" · {kind:6} · {nm}")
             except Exception as exc:                           # noqa: BLE001
                 _p(f"   대체후보 {alt:8} 실패 {type(exc).__name__}")
+        _p("   ↑ MOVE 지수라면 INDEX + 값이 40~200 대역. EQUITY 거나 값이 한 자리면")
+        _p("     **동명 주식**이라 쓰면 안 된다(프로덕션 사다리가 자동 폐기).")
     except Exception as exc:                                   # noqa: BLE001
         _p(f"   yfinance import 실패: {type(exc).__name__}: {exc}")
 
@@ -104,6 +117,21 @@ def main() -> int:
             age = mt._vol_age_days(last) if rows else None
             _p(f"   {label:22} {len(rows):>4}행 · 최신 {last}"
                f"{f' (❌ {age}일 지연)' if age and age > mt._VOL_STALE_DAYS else ''}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   실패 {type(exc).__name__}: {exc}")
+
+    _p("")
+    _p("①-d 프로덕션 사다리 `fetch_move_rows()` — 검증 관문까지 통과한 결과")
+    try:
+        rows, sym = mt.fetch_move_rows()
+        if rows:
+            age = mt._vol_age_days(rows[-1]["date"])
+            _p(f"   채택 심볼 {sym} · {len(rows)}행 · 최신 {rows[-1]['date']} "
+               f"{rows[-1]['close']:.2f}"
+               f"{f'  ⚠️ {age}일 지연' if age and age > mt._VOL_STALE_DAYS else ''}")
+        else:
+            _p(f"   ❌ 후보 {list(mt._MOVE_SYMBOLS)} 전부 폐기 — 위 로그의 사유 확인"
+               f"(0행 / 대역 밖 / 지수 확인 실패)")
     except Exception as exc:                                   # noqa: BLE001
         _p(f"   실패 {type(exc).__name__}: {exc}")
 

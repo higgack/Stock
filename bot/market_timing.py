@@ -674,6 +674,61 @@ def _vol_age_days(date_str: str | None) -> int | None:
     return (_kst_now().date() - d).days
 
 
+# ── MOVE 심볼 사다리 + 정체 확인 ────────────────────────────────────────
+# 사용자 2026-08-19: "혹시 야후파이낸스말고 다른곳에서 가져올수는 없어?"
+# ICE BofA MOVE 는 유료 독점 지수라 검증 가능한 무료 비-야후 피드가 없다.
+# 대신 같은 프로브(v4)에서 **캐럿 없는 `MOVE`** 가 20행·최신 당일을 줬다
+# (`^MOVE` 는 두 질의 방식 모두 0행). 그런데 `MOVE` 는 **주식 티커로도 존재
+# 가능한 이름**이라 그대로 갖다 쓰면 채권 변동성 자리에 엉뚱한 주가가 박힌다
+# — 숫자를 지어내는 것과 같다. 그래서 대체 후보는 반드시 두 관문을 통과해야
+# 쓴다: (a) 값이 MOVE 지수 대역인가 (b) 야후 메타가 **지수**로 보는가.
+# 통과 못 하면 폐기하고 캐시로 간다 — 빈칸이 틀린 숫자보다 낫다.
+_MOVE_SYMBOLS = ("^MOVE", "MOVE")
+_MOVE_RANGE = (20.0, 400.0)   # 역사적 저점 ~36 · 고점 ~265 를 넉넉히 감싼 대역
+
+
+def _is_index_symbol(ticker: str) -> bool | None:
+    """야후 메타가 이 심볼을 **지수**로 보는가. 확인 불가면 None(모름)."""
+    try:
+        import yfinance as yf
+        meta = yf.Ticker(ticker).history_metadata or {}
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 메타 조회 실패: %s", ticker, exc)
+        return None
+    kind = str(meta.get("instrumentType") or "").upper()
+    return (kind == "INDEX") if kind else None
+
+
+def fetch_move_rows() -> tuple[list, str | None]:
+    """MOVE 후보를 순서대로 시도 — 검증 통과한 첫 심볼의 (행, 심볼).
+
+    1순위 `^MOVE` 는 캐럿 네임스페이스라 주식과 겹칠 수 없어 대역만 본다.
+    2순위부터는 **지수 확인까지** 요구한다(동명 주식 오염 차단)."""
+    for i, sym in enumerate(_MOVE_SYMBOLS):
+        try:
+            rows = fetch_index_history(sym, days=400)
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("market_timing: MOVE 후보 %s fetch 실패(%s)", sym, exc)
+            continue
+        if not rows:
+            log.warning("market_timing: MOVE 후보 %s 히스토리 0행 — 다음 후보", sym)
+            continue
+        last = rows[-1]["close"]
+        if not _MOVE_RANGE[0] <= last <= _MOVE_RANGE[1]:
+            log.warning("market_timing: MOVE 후보 %s 최신값 %.2f 가 지수 대역"
+                        " %s 밖 — 폐기(동명 주식 의심)", sym, last, _MOVE_RANGE)
+            continue
+        if i and _is_index_symbol(sym) is not True:
+            log.warning("market_timing: MOVE 후보 %s 가 지수로 확인되지 않음"
+                        " — 폐기(동명 주식 오염 차단)", sym)
+            continue
+        if i:
+            log.info("market_timing: MOVE 를 대체 심볼 %s 로 받았다"
+                     "(최신 %s)", sym, rows[-1]["date"])
+        return rows, sym
+    return [], None
+
+
 def fetch_volatility_snapshot() -> dict:
     """{"vix": {...}, "vkospi": {...}|None, "move": {...}|None}.
 
@@ -708,16 +763,20 @@ def fetch_volatility_snapshot() -> dict:
         # 기간 비교를 붙이려면 히스토리를 그만큼 받아야 한다(사용자 2026-08-19
         # "채권변동성도 VIX 처럼 기간으로"). 커버리지가 불안정한 지수라
         # min_rows 를 걸지 않는다 — 있는 창만 채우고 없으면 그 칸을 생략한다.
-        move_hist = fetch_index_history("^MOVE", days=400)
+        move_hist, move_sym = fetch_move_rows()
         if move_hist:
+            # 어느 심볼로 받았는지 화면에 드러낸다 — 대체 심볼로 받은 걸
+            # 'yfinance' 로만 적으면 화면이 출처를 숨기는 셈이다(규칙 10b).
             out["move"] = {"value": move_hist[-1]["close"],
                            "date": move_hist[-1]["date"],
-                           "source": "yfinance",
+                           "source": ("yfinance" if move_sym == _MOVE_SYMBOLS[0]
+                                      else f"yfinance {move_sym}"),
                            "history": vol_history(move_hist)}
             _vol_cache_save("move", out["move"])
         else:
             # 조용히 사라지지 않는다 — 왜 없는지 로그에 남긴다(실수 #12).
-            log.warning("market_timing: ^MOVE 히스토리 0행 — 캐시로 대체 시도")
+            log.warning("market_timing: MOVE 후보 %s 전부 실패 — 캐시로 대체 시도",
+                        list(_MOVE_SYMBOLS))
     except Exception as exc:
         log.warning("market_timing: MOVE fetch 실패(%s) — 캐시로 대체 시도", exc)
     if not out.get("move"):
@@ -1069,8 +1128,11 @@ def render_market_timing_page(data: dict, now=None) -> str:
                 "시계열 기준. 이 지수는 <b>야후 파이낸스(ICE BofA MOVE 미러)</b>"
                 "에서 받는데 긴 기간 요청이 간헐적으로 비거나 낡게 오므로, "
                 "짧은 기간으로 한 번 더 물어 더 최신인 쪽을 씁니다. 그래도 "
-                "못 받으면 마지막 성공분으로 카드를 유지하고 기준일을 "
-                "표시합니다.</span>")
+                "비면 <b>대체 심볼</b>로 한 번 더 받아 보되, 값이 지수 대역에 "
+                "들어오고 야후 메타가 <b>지수</b>로 확인해 준 경우에만 씁니다"
+                "(같은 이름의 주식이 섞여 들어오지 않게). 대체 심볼로 받은 "
+                "값은 '현재' 옆 출처에 심볼이 함께 표시됩니다. 끝내 못 받으면 "
+                "마지막 성공분으로 카드를 유지하고 기준일을 표시합니다.</span>")
 
     sent = data.get("sentiment") or {}
     sent_card = ""
