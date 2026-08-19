@@ -22615,7 +22615,13 @@ class TestFlowTrendDiagnosis20260818:
         assert re.findall(r"<tr><td>([^<]+)</td>", table_html(pl))[0] == "이자수익"
         note = " ".join(t for t, _c in _footnotes(pl, qs))
         assert "이자수익(구성요소 계정)" in note
-        assert "PSR 은 산출 제외" in note, "왜 비었는지 설명이 없다"
+        assert "PSR 산출 제외" in note, "왜 비었는지 설명이 없다"
+        # VM 프로브(2026-08-19 005940.KS)로 확정: 손익 40개 항목에 영업수익이
+        # 없고 수수료수익·이자수익 등 구성요소만 있다 — 이 값은 총수익의
+        # **일부**다. 각주가 그 사실을 말해야 총액으로 오해하지 않는다.
+        assert "총수익의 일부" in note
+        # PNG 각주는 plain text — 마크다운 별표가 그려지면 안 된다.
+        assert "**" not in note
         # PSR 가드가 배선돼 있는지(실수 #20).
         import pathlib as _p
         src = _p.Path("bot/quarterly_infographic.py").read_text(encoding="utf-8")

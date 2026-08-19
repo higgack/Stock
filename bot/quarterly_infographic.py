@@ -327,8 +327,10 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
         notes.append((
             "! " + " · ".join(f"{k} = {v}(구성요소 계정)"
                               for k, v in sorted(comp.items()))
-            + " — 총액 계정 미공시라 DART 원자료 그대로(합산·추정 없음)."
-            + (" 총액이 아니므로 영업이익률·순이익률·PSR 은 산출 제외"
+            # ⚠️ PNG 각주는 plain text 다 — 마크다운 강조를 쓰면 별표가 그대로
+            # 그려진다. 한 줄이 길면 bbox_inches="tight" 가 PNG 폭을 늘린다.
+            + " — 총수익 계정 미공시, 총수익의 일부만 표시(합산·추정 없음)"
+            + (". 영업이익률·순이익률·PSR 산출 제외"
                if "매출" in comp else ""),
             _GOLD))
     if payload.get("currency_mismatch"):
