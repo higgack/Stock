@@ -93,7 +93,12 @@ _RELEASES = [
     {"key": "retail", "label": "🛍️ 소매판매 (Retail Sales)", "search": "Advance Monthly Sales for Retail and Food Services", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
     {"key": "eci", "label": "🧮 고용비용지수 (ECI)", "search": "Employment Cost Index", "actual_min_lag_days": 70, "actual_max_lag_days": 220, "groups": ["정책민감도", "경기침체 조기경보"]},
     {"key": "gdp", "label": "📈 GDP (국내총생산)", "search": "Gross Domestic Product", "actual_min_lag_days": 100, "actual_max_lag_days": 220, "groups": ["경기침체 조기경보"]},
-    {"key": "pce", "label": "💰 PCE (개인소비지출)", "search": "Personal Income and Outlays", "groups": ["정책민감도"]},
+    # ⚠️ PCE 는 Core PCE 와 **같은 릴리스·같은 월간 주기**인데 시차 설정이
+    # 빠져 있었다(기본 0~45일). PCEPI 관측은 월초(M-01) 날짜인데 발표는
+    # 익월 말이라 간격이 항상 ~60일 — 45일 창엔 **절대** 안 들어와 실제치가
+    # 영구 빈칸이었다(사용자 2026-08-19 캡처). 형제 항목만 고치고 이쪽을
+    # 빠뜨린 전형적인 열거형 누락(#24).
+    {"key": "pce", "label": "💰 PCE (개인소비지출)", "search": "Personal Income and Outlays", "actual_min_lag_days": 20, "actual_max_lag_days": 70, "groups": ["정책민감도"]},
     {"key": "core_pce", "label": "🧠 Core PCE (근원 PCE)", "search": "Personal Income and Outlays", "actual_min_lag_days": 20, "actual_max_lag_days": 70, "groups": ["정책민감도"]},
     {"key": "fomc", "label": "🏛️ FOMC", "search": "FOMC", "groups": ["미국 5거래일 변동성", "정책민감도"]},
     # 2026-08-06 사용자 요청 검토 후 추가(3건, 이하 참조):
@@ -167,7 +172,17 @@ def _is_plausible_release_cadence(dates: list, *, min_avg_gap_days: int = 10) ->
     return avg_gap >= min_avg_gap_days
 
 
-def find_actual_value(observations: list, release_date: str, max_lag_days: int = 45,
+# 실제치 매칭 창의 **상한** 기본값. 45일이었는데, 상한은 정확도에 기여하지
+# 않는다 — `find_actual_value` 는 창 안의 **가장 마지막(최신)** 관측을 고르므로
+# 상한을 넓혀도 이미 잡히던 값은 바뀌지 않고(창은 아래로만 자란다) **빈칸만
+# 채워진다**. 반대로 좁으면 월간·분기 지표가 통째로 빈칸이 된다(PCE 사례).
+# 빈티지(발표 시점에 아직 공표되지 않은 관측) 보호는 상한이 아니라
+# `actual_min_lag_days`(하한) 담당이다.
+_DEFAULT_MAX_LAG = 400
+
+
+def find_actual_value(observations: list, release_date: str,
+                      max_lag_days: int = _DEFAULT_MAX_LAG,
                       min_lag_days: int = 0):
     """observations([(date,value)], 오름차순)에서 release_date 시점에
     유효한 실제치 근사값을 선택. [release_date-max_lag_days,
@@ -294,7 +309,7 @@ def _load_econ_calendar(today: Optional[str] = None) -> dict:
             series_id = _SERIES_FOR_ACTUAL.get(r["key"])
             if series_id and info["recent"]:
                 try:
-                    actual_max_lag = int(r.get("actual_max_lag_days", 45))
+                    actual_max_lag = int(r.get("actual_max_lag_days", _DEFAULT_MAX_LAG))
                     actual_min_lag = int(r.get("actual_min_lag_days", 0))
                     lookback_days = max(400, actual_max_lag + 400)
                     hist_start = (date.fromisoformat(t) - timedelta(days=lookback_days)).isoformat()

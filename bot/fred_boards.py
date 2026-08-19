@@ -808,7 +808,12 @@ function pcd(r,v,dg){if(v==null)return"<span class='flat'>—</span>";
  return pc(v,dg);}
 // 기준일 셀 — 공표규약(macro_cadence) 대비 지연 배지. 배지에 마우스를
 // 올리면 '기대 관측기간 + 근거'가 뜬다(12개월+ 미갱신은 서버가 제외).
-function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale' title=\""+esc(r.stale_why||'')+"\">⚠️지연</span>":"");}
+// ⚠️ 속성 따옴표는 백슬래시 2개로 이스케이프한다 — 이 파이썬 문자열은 raw 가
+// 아니라 1개로 쓰면 파이썬이 먹어버려 JS 가 `title=""+…+""`(문자열 3개 연접)
+// SyntaxError 가 되고, 스크립트 전체가 죽어 표·필터·차트가 통째로 빈다
+// (2026-08-19 PPI·CPI·유동성 보드 3종 동시 백지 실측).
+function aesc(s){return esc(s).split('"').join('&quot;');}
+function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale' title=\\""+aesc(r.stale_why)+"\\">⚠️지연</span>":"");}
 var CHART_OPTS={plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8a8f98',maxTicksLimit:12},grid:{color:'rgba(128,132,140,.18)'}},y:{ticks:{color:'#8a8f98'},grid:{color:'rgba(128,132,140,.18)'}}},maintainAspectRatio:false};
 function mkChart(el,labels,data,color,fill){
  if(typeof Chart==='undefined'||!el)return null;

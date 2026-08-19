@@ -26115,3 +26115,229 @@ class TestPeriodQueryFallback20260819:
         cd.fetch_chart_payload("^MOVE", interval="1d", period="1y",
                                prefer_period=True)
         assert calls[0].get("period") == "1y" and "start" not in calls[0], calls[0]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-19 — PPI·CPI·유동성 보드 3종이 **동시에** 백지(표·필터·차트 전부
+# 빈칸)가 된 사건. 헤더는 "63개 시리즈 · 적용시각 …" 까지 정상이라 데이터
+# 문제로 보였지만, 원인은 **인라인 JS 의 SyntaxError** 였다:
+#
+#   `_BOARD_JS_COMMON` 은 raw 가 아닌 `"""…"""` 인데 툴팁 속성을 `title=\"`
+#   로 썼다 → 파이썬이 백슬래시를 먹어 JS 에 `title=""+esc(...)+""` 가 나갔고
+#   (문자열 3개 연접) 스크립트 전체가 파싱 실패 → tbody·pills·chart 를 채우는
+#   코드가 **한 줄도** 실행되지 않았다. 같은 파일의 다른 3곳은 `\\"` 로 맞게
+#   써 있었으니 규율로는 못 막는다 — 아래 두 테스트가 막는다.
+#
+# ① 동작: 세 보드를 실제로 렌더해 인라인 JS 를 파서에 통과시킨다(#19 —
+#    소스 문자열 단언은 틀린 값을 축복한다. 여기선 **파싱**이 판정자).
+# ② 소스: 비-raw 삼중따옴표 안의 `\"` 는 파이썬이 항상 먹으므로 무의미하거나
+#    (이 건처럼) 버그다 — 디렉터리 전체를 훑고 예외만 allowlist(#24).
+class TestBoardInlineJsParses:
+    _ROW = {"id": "CPIAUCSL", "name": "테스트", "cat": "Benchmark", "sig": "mild",
+            "sig_label": "중립", "note": "n", "stocks": "s", "latest": 1.0,
+            "latest_date": "2026-07", "yoy": 1.0, "mom": 0.1, "m3": 0.2,
+            "m6": 0.3, "from_peak": -1.0, "recovery": 1.0, "momentum": 0.1,
+            "total": 5.0, "stale": True,
+            "stale_why": '기대 2026-06 이후 — 월간 "규약" <b>15일</b>',
+            "hist": [("2026-06", 1.0), ("2026-07", 1.1)]}
+
+    def _pages(self):
+        from bot import fred_boards as fb
+        r = dict(self._ROW)
+        return {"ppi": fb.render_ppi_page([r], []),
+                "cpi": fb.render_cpi_page([r]),
+                "liquidity": fb.render_liquidity_page([r], {}, 50.0)}
+
+    def test_inline_js_has_no_syntax_error(self, tmp_path):
+        import shutil
+        import subprocess
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            pytest.skip("node 없음 — 소스 가드(test_no_eaten_escape…)가 남는다")
+        for name, html in self._pages().items():
+            blocks = re.findall(r"<script>(.*?)</script>", html, re.S)
+            assert blocks, f"{name}: 인라인 스크립트가 없다 — 렌더 계약 변경?"
+            for i, js in enumerate(blocks):
+                f = tmp_path / f"{name}{i}.js"
+                f.write_text(js, encoding="utf-8")
+                p = subprocess.run([node, "--check", str(f)],
+                                   capture_output=True, text=True, timeout=60)
+                assert p.returncode == 0, f"{name} 블록{i} JS 파싱 실패:\n{p.stderr}"
+
+    def test_tooltip_attribute_survives_quotes(self):
+        """툴팁 값에 따옴표가 들어와도 속성이 안 깨지는가 — 이스케이프를
+        되돌리는 뮤테이션은 위 파싱 테스트가, 값 누수는 이 테스트가 잡는다."""
+        from bot import fred_boards as fb
+        js = fb._BOARD_JS_COMMON
+        assert 'title=\\"' in js, "JS 에 나갈 속성 따옴표가 이스케이프되지 않았다"
+        assert "&quot;" in js, "속성값의 따옴표 이스케이프(aesc)가 없다"
+
+    def test_no_eaten_escape_in_triple_quoted_sources(self):
+        """비-raw 삼중따옴표 안의 `\\"`(백슬래시 1개)는 파이썬이 먹는다 —
+        JS/HTML 로 나갈 이스케이프였다면 조용히 사라진다. 파일을 열거하지
+        않고 디렉터리 전체를 훑는다(#24 — 목록형 가드는 새 파일을 못 잡는다)."""
+        import io
+        import pathlib
+        import tokenize
+        roots = [pathlib.Path("bot"), pathlib.Path("trade")]
+        allow: set[tuple[str, int]] = set()      # (파일, 줄) — 의도된 예외만
+        bad = []
+        for root in roots:
+            for p in sorted(root.rglob("*.py")):
+                src = p.read_text(encoding="utf-8")
+                try:
+                    toks = tokenize.generate_tokens(io.StringIO(src).readline)
+                    strings = [t for t in toks if t.type == tokenize.STRING]
+                except (SyntaxError, tokenize.TokenError):
+                    continue
+                for t in strings:
+                    body = t.string.lstrip("rbfuRBFU")
+                    prefix = t.string[:len(t.string) - len(body)].lower()
+                    if "r" in prefix or not body.startswith(('"""', "'''")):
+                        continue
+                    if re.search(r'(?<!\\)\\"', t.string) and \
+                            (str(p), t.start[0]) not in allow:
+                        bad.append(f"{p}:{t.start[0]}")
+        assert not bad, ("비-raw 삼중따옴표 안에서 백슬래시가 먹히는 `\\\"`: "
+                         + ", ".join(bad))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-19 — 경제캘린더 카드에 **실제치가 영구 빈칸**(사용자 캡처: PCE·
+# UMich). 방향성(1M/3M/6M/1Y)은 나오니 관측 시계열은 정상 — 빈 건 발표일↔관측
+# 매칭이었다.
+#
+#   PCE(PCEPI)는 월간이라 관측 날짜가 **월초(M-01)**, 발표는 **익월 말** —
+#   간격이 항상 55~62일인데 매칭 창 상한이 45일이라 **구조적으로** 못 맞춘다.
+#   같은 릴리스·같은 주기인 Core PCE 에만 20~70 이 붙어 있었다(#24 열거 누락).
+#
+# 상한을 넓히는 게 안전한 이유도 함께 고정한다: `find_actual_value` 는 창의
+# **마지막(최신)** 관측을 고르므로 상한 확대는 창을 아래로만 넓혀 이미 잡히던
+# 값을 바꾸지 못한다 — 빈칸만 채운다.
+class TestEconCalendarActuals:
+    @staticmethod
+    def _monthly_obs(n=30, end_year=2026, end_month=8):
+        """월초 날짜 관측 n개(오름차순) — FRED 월간 시리즈 형태."""
+        from datetime import date
+        out, y, m = [], end_year, end_month
+        for i in range(n):
+            out.append((date(y, m, 1).isoformat(), 100.0 + (n - i)))
+            m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+        return out[::-1]
+
+    def test_pce_release_matches_its_observation(self):
+        """PCE 발표(익월 말)에서 실제치가 나오는가 — 배포된 설정 그대로.
+
+        관측 시계열은 **페이지를 만드는 시점에 FRED 가 실제로 갖고 있는
+        만큼**만 준다(7/31 발표 시점의 최신 관측 = 6월분). 미래 관측까지
+        넣은 픽스처는 실제로 못 겪는 상황을 시험해 판단을 흐린다."""
+        from bot import econ_calendar as ec
+        cfg = next(r for r in ec._RELEASES if r["key"] == "pce")
+        obs = self._monthly_obs(end_year=2026, end_month=6)
+        hit = ec.find_actual_value(
+            obs, "2026-07-31",
+            max_lag_days=int(cfg.get("actual_max_lag_days", ec._DEFAULT_MAX_LAG)),
+            min_lag_days=int(cfg.get("actual_min_lag_days", 0)))
+        assert hit is not None, "PCE 실제치가 빈칸 — 매칭 창이 관측을 못 덮는다"
+        assert hit[0] == "2026-06-01", hit   # 7월 말 발표 = 6월분
+
+    def test_siblings_of_one_release_share_lag_config(self):
+        """같은 FRED 릴리스를 보는 항목끼리 시차 설정이 갈리면 한쪽만 조용히
+        빈칸이 된다 — 형제를 이름으로 열거하지 않고 search 로 묶는다(#24)."""
+        from bot import econ_calendar as ec
+        by_search: dict = {}
+        for r in ec._RELEASES:
+            if r["key"] in ec._SERIES_FOR_ACTUAL:
+                by_search.setdefault(r["search"], []).append(r)
+        for search, group in by_search.items():
+            lags = {(r.get("actual_min_lag_days", 0),
+                     r.get("actual_max_lag_days", ec._DEFAULT_MAX_LAG))
+                    for r in group}
+            assert len(lags) == 1, (
+                f"릴리스 '{search}' 안에서 시차 설정이 갈린다: "
+                + ", ".join(f"{r['key']}={lags}" for r in group))
+
+    def test_widening_upper_bound_never_changes_an_existing_hit(self):
+        """상한 확대의 안전성 — 이미 값이 잡히던 발표일은 그대로여야 한다."""
+        from bot import econ_calendar as ec
+        obs = self._monthly_obs()
+        for rd in ("2026-08-12", "2026-07-15", "2026-06-10"):
+            tight = ec.find_actual_value(obs, rd, max_lag_days=45)
+            wide = ec.find_actual_value(obs, rd, max_lag_days=400)
+            if tight is not None:
+                assert wide == tight, (rd, tight, wide)
+
+    def test_default_upper_bound_covers_a_monthly_release_cycle(self):
+        """월초 관측 + 익월 말 발표 = 항상 55일 이상 — 기본 상한이 이보다
+        좁으면 시차 설정을 빠뜨린 신규 항목이 조용히 빈칸이 된다."""
+        from bot import econ_calendar as ec
+        assert ec._DEFAULT_MAX_LAG >= 62, ec._DEFAULT_MAX_LAG
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-19 — MOVE 카드가 캐시로만 연명(vol_probe v4: `^MOVE` 가 **두 질의
+# 방식 모두 0행**). 같은 프로브에서 캐럿 없는 `MOVE` 는 당일치를 줬지만,
+# `MOVE` 는 주식 티커로도 있을 수 있는 이름이라 그대로 쓰면 채권 변동성
+# 자리에 주가가 박힌다 — 숫자를 지어내는 것과 같다.
+# 그래서 대체 후보는 (a) 값 대역 (b) 야후 메타의 '지수' 확인을 통과해야만
+# 쓰이고, 통과 못 하면 캐시로 간다.
+class TestMoveSymbolLadder:
+    @staticmethod
+    def _rows(close, date="2026-08-19"):
+        return [{"date": date, "close": close}]
+
+    def test_falls_through_to_alternate_when_primary_empty(self, monkeypatch):
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda tk, **kw: [] if tk == "^MOVE"
+                            else self._rows(70.9))
+        monkeypatch.setattr(mt, "_is_index_symbol", lambda tk: True)
+        rows, sym = mt.fetch_move_rows()
+        assert sym == "MOVE" and rows[-1]["close"] == 70.9
+
+    def test_alternate_rejected_when_not_an_index(self, monkeypatch):
+        """야후가 지수로 확인해 주지 않으면(=동명 주식) 값을 버린다."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda tk, **kw: [] if tk == "^MOVE"
+                            else self._rows(70.9))
+        monkeypatch.setattr(mt, "_is_index_symbol", lambda tk: False)
+        rows, sym = mt.fetch_move_rows()
+        assert rows == [] and sym is None
+
+    def test_alternate_rejected_when_value_out_of_band(self, monkeypatch):
+        """주식이면 값부터 지수 대역 밖이다 — 메타 조회 전에 걸러진다."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda tk, **kw: [] if tk == "^MOVE"
+                            else self._rows(3.42))
+        monkeypatch.setattr(mt, "_is_index_symbol",
+                            lambda tk: pytest.fail("대역에서 이미 걸렀어야 한다"))
+        rows, sym = mt.fetch_move_rows()
+        assert rows == [] and sym is None
+
+    def test_primary_symbol_needs_no_index_lookup(self, monkeypatch):
+        """`^MOVE` 는 캐럿 네임스페이스라 주식과 겹칠 수 없다 — 네트워크
+        한 번을 아끼되, 이 계약이 깨지면(2순위에도 확인 생략) 테스트가 막는다."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda tk, **kw: self._rows(70.9))
+        monkeypatch.setattr(mt, "_is_index_symbol",
+                            lambda tk: pytest.fail("1순위엔 메타 조회 불필요"))
+        rows, sym = mt.fetch_move_rows()
+        assert sym == "^MOVE"
+
+    def test_snapshot_labels_the_alternate_symbol(self, monkeypatch):
+        """대체 심볼로 받았으면 출처에 심볼이 드러나야 한다 — 화면이 출처를
+        숨기면 사용자는 같은 값이라고 믿는다(규칙 10b)."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_move_rows",
+                            lambda: (self._rows(70.9), "MOVE"))
+        monkeypatch.setattr(mt, "_vol_cache_save", lambda *a, **k: None)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda: [])
+        snap = mt.fetch_volatility_snapshot()
+        assert snap["move"]["source"] == "yfinance MOVE", snap["move"]
