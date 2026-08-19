@@ -626,6 +626,25 @@ def _vol_cache_load(key: str) -> dict | None:
         return None
 
 
+# 변동성 카드의 '현재'가 며칠 전 종가인지 — 화면이 거짓말하지 않게 한다.
+# 2026-08-19 vol_probe 실측: `^MOVE` 는 fetch 400행 **성공**인데 최신 관측이
+# 2026-07-17(33일 전)이었다. 값이 없어서가 아니라 **원천 시계열이 멈춰서**
+# 였고, 그동안 화면은 그 값을 '현재'·'전일'로 표기하고 있었다. 없는 것보다
+# 나쁜 건 낡은 것을 최신인 척 보여주는 것이다(실수 #10b·#12).
+_VOL_STALE_DAYS = 5          # 이보다 오래되면 카드에 지연 표시
+
+
+def _vol_age_days(date_str: str | None) -> int | None:
+    """'YYYY-MM-DD' → KST 오늘 기준 경과일. 못 읽으면 None."""
+    if not date_str:
+        return None
+    try:
+        d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    return (_kst_now().date() - d).days
+
+
 def fetch_volatility_snapshot() -> dict:
     """{"vix": {...}, "vkospi": {...}|None, "move": {...}|None}.
 
@@ -957,6 +976,19 @@ def render_market_timing_page(data: dict, now=None) -> str:
             """CNN F&G 카드와 **같은 형식** — 현재 + 전일·1주·1달·1년
             (사용자 2026-08-16). 없는 창은 칸 자체를 만들지 않는다."""
             src = rec.get("source", "")
+            # 종가 기반 값은 **며칠 종가인지**를 같이 낸다(규칙 10b).
+            age = _vol_age_days(rec.get("date"))
+            if rec.get("date"):
+                src = f'{src} · {str(rec["date"])[5:]} 종가' if src \
+                    else f'{str(rec["date"])[5:]} 종가'
+            stale_note = ""
+            if age is not None and age > _VOL_STALE_DAYS:
+                src += " ⚠"
+                stale_note = (f'<div class="note">⚠️ 이 지수는 원천 시계열이 '
+                              f'<b>{age}일째</b> 갱신되지 않았습니다 — 아래 '
+                              f'현재·전일·1주·1달·1년은 모두 '
+                              f'<b>{rec["date"]} 종가</b>를 기준으로 뒤로 센 '
+                              f'값입니다(오늘 기준이 아닙니다).</div>')
             cells = (f'<div class="stat"><div class="k">현재'
                      f'{f" ({_h.escape(src)})" if src else ""}</div>'
                      f'<div class="v">{rec["value"]:.1f}</div></div>')
@@ -968,6 +1000,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
                               f'{hist[_lb]:.1f}</div></div>')
             return (f'<div class="panel"><div class="panel-title">{title}</div>'
                     f'<div class="stat-grid">{cells}</div>'
+                    f'{stale_note}'
                     f'<div class="note">{note}</div></div>')
 
         # ⚠️ 국내(VKOSPI)를 위, 미국(VIX)을 아래 — 사용자 2026-08-16
@@ -1050,9 +1083,11 @@ D25≥5·D15≥3·D5≥2 중 하나만 충족 · SEVERE D25≥6·D15≥4 중 하
 높으면 전반적 참여. <b>KR</b>=KODEX 섹터 12개(KRX 업종) · <b>US</b>=SPDR GICS 11개.
 표본이 다르므로 두 시장의 %를 직접 비교하지 말 것(같은 시장의 시계열 변화를 볼 것).<br>
 <b>4) 변동성(VIX·MOVE)</b> — VIX=주식 공포지수(메인 대시보드와 동일 네이버 소스),
-MOVE=채권 변동성(ICE BofA, bp 단위). MOVE 는 원천 커버리지가 불안정해 한 사이클
-비는 일이 있는데, 그럴 땐 <b>마지막 성공분</b>으로 카드를 유지하고 '현재' 칸에
-<b>「MM-DD 기준 저장분」</b>이라고 표시합니다(7일 넘게 낡으면 그때는 생략).<br>
+MOVE=채권 변동성(ICE BofA, bp 단위). 종가 기반 카드는 '현재' 칸에 <b>몇 월 며칠
+종가</b>인지 같이 적습니다 — 원천 시계열이 며칠째 멈춰 있으면 <b>⚠ 표시와 지연
+일수</b>를 붙여, 낡은 값이 오늘 값처럼 보이지 않게 합니다. 원천이 한 사이클 통째로
+비면 <b>마지막 성공분</b>으로 카드를 유지하고 '현재' 칸에 「MM-DD 기준 저장분」이라고
+적습니다(7일 넘게 낡으면 그때는 생략).<br>
 <b>5) 시장 센티먼트</b> — CNN Fear &amp; Greed 지수(메인 대시보드와 동일 소스). VIX 와는 다른
 지표(VIX=변동성 하나, F&amp;G=7개 컴포넌트 종합 심리지수) — 혼동 주의.<br>
 <b>6) 매크로 레짐</b> — 크로스에셋 비율 다수결로 시장 국면(집중/확산/긴축/인플레) 판정,
