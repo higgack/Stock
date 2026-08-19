@@ -41,6 +41,10 @@ _HEADERS = {
 _TIMEOUT = 12
 _CACHE_TTL_H = 12
 
+# ⚠️ 실패 이유를 남긴다 — "표 없음" 한 마디로는 (a) 요청 실패 (b) 표가 AJAX
+# 라 HTML 에 없음 (c) 파싱 규칙 문제를 못 가른다(실수 #12 silent-fail).
+_LAST_REASON: dict[str, str] = {}
+
 _TABLE = re.compile(r"<table[^>]*>.*?</table>", re.S | re.I)
 _ROW = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
 _CELL = re.compile(r"<t[hd][^>]*>(.*?)</t[hd]>", re.S | re.I)
@@ -129,11 +133,16 @@ def fetch_financial_summary(stock_code: str) -> Optional[dict]:
             resp.encoding = resp.apparent_encoding or "utf-8"
         out = parse_financial_summary(resp.text)
     except Exception as exc:                            # noqa: BLE001
+        _LAST_REASON[code] = f"요청 실패({type(exc).__name__})"
         log.info("wisereport_fin: %s 실패: %s", code, exc)
         return None
     if not (out.get("annual") or out.get("quarter")):
-        log.info("wisereport_fin: %s Financial Summary 표를 못 찾음", code)
+        _LAST_REASON[code] = (
+            "HTML 에 '매출액' 은 있으나 표 파싱 실패"
+            if "매출액" in resp.text else "HTML 에 Financial Summary 없음(AJAX 의심)")
+        log.info("wisereport_fin: %s — %s", code, _LAST_REASON[code])
         return None
+    _LAST_REASON.pop(code, None)
     if _cache_write:
         _cache_write(ck, out)
     return out
