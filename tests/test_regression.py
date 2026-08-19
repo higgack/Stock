@@ -23681,40 +23681,6 @@ class TestPeerCompsEmptyTable20260818:
             f"단일보드 종목을 두 번 조회했다: {seen}"
 
     # ── 통화 불일치면 **만들지 않는다** (2026-08-18 전시장 프로브) ──────
-    def test_derivation_is_refused_across_currencies(self):
-        """시총(거래통화) ÷ 순이익(재무통화) = 환율만큼 틀린 수를 새로
-        만드는 짓이다. 소스가 준 값은 화면이 ⚠ 로 알리기라도 하지만,
-        우리가 만든 값엔 그런 근거가 없다.
-
-        실측: ASML=USD 거래·EUR 재무 · HK H주=HKD·CNY · TSM ADR=USD·TWD.
-        드문 예외가 아니라 흔한 형태다."""
-        from bot.stock_snapshot import _derive_peer_multiples
-        pi = {"netIncomeToCommon": 1.0e11, "bookValue": 10.0,
-              "sharesOutstanding": 5.0e10, "financialCurrency": "CNY"}
-        e = {"market_cap": 2.0e12, "currency": "HKD"}
-        assert _derive_peer_multiples(e, pi) == {}
-        assert "trailingPE" not in e and "priceToBook" not in e
-        # 같은 통화면 정상 파생 — 가드가 전부를 막아버리면 안 된다.
-        e2 = {"market_cap": 2.0e12, "currency": "CNY"}
-        assert sorted(_derive_peer_multiples(e2, pi)) == ["PBR", "PER"]
-
-    def test_pence_is_not_a_currency_mismatch_for_derivation(self):
-        """GBp(펜스)는 GBP 와 같은 통화다 — 다르다고 보면 런던 종목의
-        파생이 통째로 막힌다. 렌더의 ⚠ 판정과 **같은 함수**를 써야 한다."""
-        from bot.stock_snapshot import _derive_peer_multiples, norm_cur
-        assert norm_cur("GBp") == norm_cur("GBX") == norm_cur("gbp") == "GBP"
-        pi = {"netIncomeToCommon": 1.0e11, "financialCurrency": "GBp"}
-        e = {"market_cap": 2.0e12, "currency": "GBP"}
-        assert _derive_peer_multiples(e, pi) == {"PER": "yfinance 순이익(TTM)"}
-
-    def test_dart_derivation_refuses_non_krw_trading_currency(self, monkeypatch):
-        """DART 숫자는 KRW 다 — 거래통화가 다르면 같은 환산 오차가 난다."""
-        from bot.stock_snapshot import _dart_peer_multiples
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11})
-        e = {"market_cap": 2.0e12, "currency": "USD"}
-        assert _dart_peer_multiples(e, "005930.KS") == {}
-        assert "trailingPE" not in e
-
     def test_render_shares_the_normalizer_with_the_collector(self):
         """복제하면 '만들지 않는 조건'과 '⚠ 를 붙이는 조건'이 갈라져,
         경고 없는 환산오차 값이 생긴다(VKOSPI 복제 교훈과 같은 실패모드)."""
@@ -23925,18 +23891,6 @@ class TestPeerCompsEmptyTable20260818:
         # 별칭표에 없는 제안 후보는 **도구가 조회해서** 확인한다.
         assert _home_candidates("Denso Corp.", "DNZOY") == ["6902.T"]
 
-    def test_the_wiring_is_actually_called(self, monkeypatch):
-        """헬퍼만 만들고 호출부에 안 걸면 화면은 그대로다(실수 #12)."""
-        import inspect
-        from bot import stock_snapshot as ss
-        src = inspect.getsource(ss._collect_peer_multiples)
-        assert "_derive_peer_multiples(entry, pi)" in src, "파생 미배선"
-        assert "_dart_peer_multiples(entry, pt)" in src, "DART 파생 미배선"
-        assert 'entry["derived"] =' in src, "파생 표시가 안 실린다"
-        assert 'entry["derived_basis"] = _basis' in src, "기준 라벨이 안 실린다"
-        assert "_peer_name(pi, pt)" in src, "이름 정화 미배선"
-
-    # ── KR 피어 PER·PBR 을 DART 로 (2026-08-18 프로브 실측) ──────────
     def _dart_stub(self, monkeypatch, fin: dict, year: int = 2025, qs=None):
         """`qs=None` 이면 분기 시계열이 없는 상태 = **연간 폴백** 경로."""
         import types
@@ -23947,239 +23901,6 @@ class TestPeerCompsEmptyTable20260818:
                 get_normalized_financials=lambda t, year=None, **kw: rec))
         monkeypatch.setattr("bot.dart_quarterly.get_quarterly_series",
                             lambda d, t, n=6, **kw: qs)
-
-    def test_dart_ttm_beats_the_annual_figure(self, monkeypatch):
-        """⚠️ 소스가 준 PER 은 TTM 기준인데 우리만 연간 확정치를 쓰면 같은
-        표 안에서 시점이 어긋난다 — 사용자 2026-08-18 한화오션: 자체계산
-        PER 13.5 옆에 **선행** PER 14.2. 후행이 선행보다 낮게 나올 만큼
-        오래된 이익을 쓰고 있었다는 뜻이다.
-
-        순이익은 4분기 **합**, 자본총계는 최근 분기말 **잔액**(저량이라
-        합산하면 4배가 된다)."""
-        from bot.stock_snapshot import _dart_peer_multiples
-        # 자본총계는 분기마다 다르게 둔다 — 합산하면 1조가 되어 PBR 이 2.0
-        # 으로 나오므로, 최근 분기말 잔액을 쓰는지 값으로 갈린다.
-        qs = [{"label": f"25.{q}Q",
-               "financials": {"당기순이익": 5.0e10, "자본총계": q * 1.0e11}}
-              for q in (1, 2, 3, 4)]
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e10, "자본총계": 9.9e11},
-                        qs=qs)
-        e = {"market_cap": 2.0e12, "currency": "KRW"}
-        got = _dart_peer_multiples(e, "042660.KS")
-        assert e["trailingPE"] == 10.0, e          # 2조 ÷ (5백억×4)
-        assert e["priceToBook"] == 5.0, e          # 2조 ÷ 4천억(최근 분기말)
-        assert got["PER"].startswith("DART TTM("), got
-        assert "25.4Q" in got["PBR"], got
-
-    def test_dart_ttm_refuses_a_short_or_anomalous_series(self, monkeypatch):
-        """4분기가 안 되면 TTM 이 아니다 — 3분기 합을 1년치인 척 쓰면 PER 이
-        33% 부풀어 보인다. 이상치 표시된 분기도 빼고, 그러면 연간으로 내려간다."""
-        from bot.stock_snapshot import _dart_peer_multiples
-        short = [{"label": f"25.{q}Q",
-                  "financials": {"당기순이익": 5.0e10, "자본총계": 4.0e11}}
-                 for q in (1, 2, 3)]
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11},
-                        qs=short)
-        e = {"market_cap": 2.0e12, "currency": "KRW"}
-        got = _dart_peer_multiples(e, "042660.KS")
-        assert got["PER"] == "DART 2025 연간 순이익", got
-        assert e["trailingPE"] == 20.0, e
-        # 이상치 분기가 섞이면 4개여도 TTM 을 만들지 않는다.
-        bad = [{"label": f"25.{q}Q",
-                "financials": {"당기순이익": 5.0e10, "자본총계": 4.0e11,
-                               **({"_anomaly_account_mismatch": True} if q == 2 else {})}}
-               for q in (1, 2, 3, 4)]
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11},
-                        qs=bad)
-        e2 = {"market_cap": 2.0e12, "currency": "KRW"}
-        assert _dart_peer_multiples(e2, "042660.KS")["PER"] == "DART 2025 연간 순이익"
-
-    def test_dart_wins_over_stale_yfinance_info_for_kr(self, monkeypatch):
-        """⚠️ yfinance 는 KR 재무를 몇 분기씩 늦게 준다 — 프로브 실측
-        (2026-08-18 삼양식품): 소스 분기가 2025-12 까지뿐이고 2026년 1·2분기가
-        아예 없다. 늦은 재료로 만든 배수를 최신 소스값 옆에 놓으면 표가
-        거짓말이 된다. **최신(DART)이 이겨야 한다.**"""
-        import sys
-        import types
-
-        from bot import stock_snapshot as ss
-
-        class _T:
-            def __init__(self, sym):
-                self.sym = sym
-
-            @property
-            def info(self):
-                # `.info` 에도 재료는 있다 — 다만 낡았다.
-                return {"shortName": self.sym, "currency": "KRW",
-                        "financialCurrency": "KRW", "marketCap": 2.0e12,
-                        "netIncomeToCommon": 1.0e10}      # → PER 200 (낡음)
-
-        monkeypatch.setitem(sys.modules, "yfinance",
-                            types.SimpleNamespace(Ticker=_T))
-        monkeypatch.setattr("bot.market.resolve_peer_set",
-                            lambda t, ind: ["042660.KS"])
-        qs = [{"label": f"25.{q}Q",
-               "financials": {"당기순이익": 5.0e10, "자본총계": 4.0e11}}
-              for q in (1, 2, 3, 4)]
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e10, "자본총계": 9.9e11},
-                        qs=qs)
-        snap: dict = {}
-        ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
-        row = next(e for e in snap["peer_comps"] if e["ticker"] == "042660.KS")
-        assert row["trailingPE"] == 10.0, f"낡은 .info 가 DART 를 이겼다: {row}"
-        assert row["derived_basis"]["PER"].startswith("DART TTM("), row
-
-    def test_kr_peer_pbr_comes_from_dart_when_yfinance_omits_it(self, monkeypatch):
-        """프로브 실측: 피어 6종 **전원** `priceToBook=None` 이고 절반은
-        `netIncomeToCommon` 까지 없다 — `.info` 재료만으로는 PER·PBR 열이
-        영원히 빈다. DART 확정 재무제표는 지어낸 숫자가 아니라 공시 원문."""
-        from bot.stock_snapshot import _dart_peer_multiples
-        self._dart_stub(monkeypatch,
-                        {"당기순이익": 1.0e11, "자본총계": 5.0e11})
-        e = {"market_cap": 2.0e12}
-        got = _dart_peer_multiples(e, "036930.KQ")
-        assert e["trailingPE"] == 20.0 and e["priceToBook"] == 4.0
-        assert got == {"PER": "DART 2025 연간 순이익",
-                       "PBR": "DART 2025 연말 자본총계"}
-
-    def test_dart_never_overwrites_a_source_value(self, monkeypatch):
-        """소스가 준 값을 파생으로 덮으면 화면 숫자가 조용히 바뀐다."""
-        from bot.stock_snapshot import _dart_peer_multiples
-        self._dart_stub(monkeypatch,
-                        {"당기순이익": 1.0e11, "자본총계": 5.0e11})
-        e = {"market_cap": 2.0e12, "trailingPE": 11.1}
-        got = _dart_peer_multiples(e, "036930.KQ")
-        assert e["trailingPE"] == 11.1 and "PER" not in got
-
-    def test_dart_path_is_kr_only_and_skips_loss_makers(self, monkeypatch):
-        """DART 는 KR 전용 소스다(문서화된 시장특정 예외). 적자·0 자본은
-        배수로 의미가 없어 만들지 않는다 — 빈칸이 정답이다."""
-        from bot.stock_snapshot import _dart_peer_multiples
-        self._dart_stub(monkeypatch,
-                        {"당기순이익": 1.0e11, "자본총계": 5.0e11})
-        us = {"market_cap": 2.0e12}
-        assert _dart_peer_multiples(us, "AMAT") == {} and "trailingPE" not in us
-        self._dart_stub(monkeypatch, {"당기순이익": -5.0e10, "자본총계": 0})
-        kr = {"market_cap": 2.0e12}
-        assert _dart_peer_multiples(kr, "036930.KQ") == {}
-        assert "trailingPE" not in kr and "priceToBook" not in kr
-
-    def test_out_of_range_derived_values_are_not_created(self, monkeypatch):
-        """순이익이 티끌이면 PER 이 수천배로 나온다 — 화면 가드가 `—!` 로
-        지울 값을 굳이 만들 이유가 없다."""
-        from bot.stock_snapshot import _dart_peer_multiples
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e6, "자본총계": 5.0e11})
-        e = {"market_cap": 2.0e12}
-        got = _dart_peer_multiples(e, "036930.KQ")
-        assert "PER" not in got and "trailingPE" not in e
-        assert got.get("PBR"), "PBR 은 정상 범위라 채워져야 한다"
-
-    def test_subject_row_is_not_filled_from_dart(self, monkeypatch):
-        """주체의 PER·PBR 은 렌더가 종합·밸류에이션 탭과 **같은 값**(TTM 우선)
-        으로 채운다. 수집기가 여기서 연간 확정치를 넣으면 같은 페이지의 두
-        탭이 서로 다른 PER 을 보여준다(검증 7축 ① '전섹션 일치')."""
-        from bot import stock_snapshot as ss
-        seen: list = []
-        self._stub_yf(monkeypatch, set(), seen)          # 전부 빈 .info
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 5.0e11})
-        monkeypatch.setattr("bot.market.resolve_peer_set",
-                            lambda t, ind: ["036930.KQ"])
-        # 시총만 있는 상태를 만들기 위해 .info 를 종목별로 다르게 준다.
-        import sys
-        import types
-
-        class _T:
-            def __init__(self, sym):
-                self.sym = sym
-
-            @property
-            def info(self):
-                return {"shortName": self.sym, "currency": "KRW",
-                        "financialCurrency": "KRW", "marketCap": 2.0e12}
-
-        monkeypatch.setitem(sys.modules, "yfinance",
-                            types.SimpleNamespace(Ticker=_T))
-        snap: dict = {}
-        ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
-        rows = {e["ticker"]: e for e in snap.get("peer_comps") or []}
-        assert rows["036930.KQ"]["trailingPE"] == 20.0, "피어는 DART 로 채운다"
-        assert "trailingPE" not in rows["039030.KQ"], "주체 행엔 넣지 않는다"
-        assert "derived_basis" not in rows["039030.KQ"]
-
-    def test_every_derived_cell_carries_its_basis(self, monkeypatch):
-        """한 행 안에서도 기준이 갈린다 — 실측(한미반도체 042700.KS):
-        PER 은 `.info` 순이익(TTM), PBR 은 DART 연말 자본총계. 라벨만
-        넘기면 화면 툴팁이 '기준 미기록'으로 뜬다."""
-        from bot.stock_snapshot import (_dart_peer_multiples,
-                                        _derive_peer_multiples)
-        e = {"market_cap": 21.7e12, "currency": "KRW"}
-        pi = {"netIncomeToCommon": 1.78e11, "financialCurrency": "KRW"}
-        basis = _derive_peer_multiples(e, pi)          # PER 만 채워짐
-        assert set(basis) == {"PER"} and "PBR" not in e
-        self._dart_stub(monkeypatch, {"당기순이익": 1.0e11, "자본총계": 6.9e11})
-        basis.update(_dart_peer_multiples(e, "042700.KS"))
-        assert set(basis) == {"PER", "PBR"}, basis
-        assert basis["PER"].startswith("yfinance"), basis
-        assert basis["PBR"].startswith("DART"), basis
-        # 이미 채워진 PER 을 DART 가 덮지 않는다(기준도 안 바뀐다).
-        assert abs(e["trailingPE"] - 21.7e12 / 1.78e11) < 1e-6
-
-    def test_mixed_basis_survives_the_collector_end_to_end(self, monkeypatch):
-        """⚠️ 헬퍼만 직접 부르는 테스트는 **수집기 배선 변형을 못 잡는다**
-        (실측: `_fetch_one` 에서 yfinance 파생값을 지우고 DART 로 덮는
-        뮤테이션이 헬퍼 테스트 30개를 전부 통과했다). 한 행에 두 출처가
-        섞이는 실제 경로를 통째로 태운다 — 한미반도체가 정확히 그 모양이다."""
-        import sys
-        import types
-
-        from bot import stock_snapshot as ss
-
-        class _T:
-            def __init__(self, sym):
-                self.sym = sym
-
-            @property
-            def info(self):
-                # PER 재료는 주지만 자본(bookValue)은 안 준다 = KR 실측 형태.
-                return {"shortName": self.sym, "currency": "KRW",
-                        "financialCurrency": "KRW", "marketCap": 21.7e12,
-                        "netIncomeToCommon": 1.78e11}
-
-        monkeypatch.setitem(sys.modules, "yfinance",
-                            types.SimpleNamespace(Ticker=_T))
-        monkeypatch.setattr("bot.market.resolve_peer_set",
-                            lambda t, ind: ["042700.KS"])
-        # DART 는 자본만 있고 순이익이 없는 상태 — PER 은 `.info` 가 채운다.
-        self._dart_stub(monkeypatch, {"자본총계": 6.9e11})
-        snap: dict = {}
-        ss._collect_peer_multiples("039030.KQ", {"industry": "X"}, snap)
-        row = next(e for e in snap["peer_comps"] if e["ticker"] == "042700.KS")
-        assert sorted(row["derived"]) == ["PBR", "PER"], row
-        b = row["derived_basis"]
-        assert b["PER"].startswith("yfinance"), b
-        assert b["PBR"].startswith("DART"), b
-        # DART 가 이미 채워진 PER 을 덮지 않았다 — 값으로 확인한다.
-        assert abs(row["trailingPE"] - 21.7e12 / 1.78e11) < 1e-6, row
-
-    def test_derived_basis_is_shown_per_row(self):
-        """기준이 행마다 다르다(주체=TTM, 피어=DART 연간). 같은 ＊ 로
-        뭉뚱그리면 서로 다른 기준을 같은 것처럼 보여준다."""
-        from bot.dashboard import _render_stock_info_html
-        si = {"currency": "KRW", "peer_comps": [
-            {"ticker": "039030.KQ", "name": "이오테크닉스", "currency": "KRW",
-             "financial_currency": "KRW", "market_cap": 5.2e12,
-             "trailingPE": 70.8, "is_subject": True},
-            {"ticker": "036930.KQ", "name": "JEL", "currency": "KRW",
-             "financial_currency": "KRW", "market_cap": 8.4e12,
-             "priceToBook": 4.0, "derived": ["PBR"],
-             "derived_basis": {"PBR": "DART 2025 연말 자본총계"}}]}
-        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": si})
-        seg = out["other_panes"]
-        i = seg.index('id="si-peers"')
-        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
-        assert 'title="자체계산 · DART 2025 연말 자본총계"' in pane, pane[-900:]
-        assert "기준은 ＊ 에 마우스를 올리면" in pane
 
     @pytest.mark.parametrize("info,pt,want", [
         # yfinance 가 조회에 실패하면 shortName 에 **식별자 나열**을 준다.
@@ -24193,59 +23914,6 @@ class TestPeerCompsEmptyTable20260818:
     def test_identifier_blobs_are_not_shown_as_company_names(self, info, pt, want):
         from bot.stock_snapshot import _peer_name
         assert _peer_name(info, pt) == want
-
-    def test_missing_per_pbr_are_derived_with_the_same_definition(self):
-        """yfinance 는 KR 종목의 `trailingPE`·`priceToBook` 을 자주 안 준다
-        (2026-08-16 프로브로 확정). 그러면 PER·PBR 열이 통째로 비어 비교가
-        불가능하다 — 소스가 주는 재료로 같은 정의대로 계산한다."""
-        from bot.stock_snapshot import _derive_peer_multiples
-        e = {"market_cap": 1.83e12, "trailingPE": None, "priceToBook": None}
-        got = _derive_peer_multiples(e, {"netIncomeToCommon": 9.0e10,
-                                         "bookValue": 12000,
-                                         "sharesOutstanding": 6.0e7})
-        assert set(got) == {"PER", "PBR"}
-        assert abs(e["trailingPE"] - 1.83e12 / 9.0e10) < 1e-9
-        assert abs(e["priceToBook"] - 1.83e12 / (12000 * 6.0e7)) < 1e-9
-
-    def test_derivation_refuses_meaningless_or_out_of_range_inputs(self):
-        """⚠️ 적자 기업의 PER 은 배수로 의미가 없고, 분모 0 은 무한대가 된다.
-        범위 밖도 안 채운다 — 화면 가드가 어차피 `—!` 로 지우므로 자체계산으로
-        이상치를 만들 이유가 없다."""
-        from bot.stock_snapshot import _derive_peer_multiples
-        for pi in ({"netIncomeToCommon": -5e10},            # 적자
-                   {"netIncomeToCommon": 0},                # 0 분모
-                   {"netIncomeToCommon": 1e6},              # 시총/순이익 = 100만배
-                   {"bookValue": 0, "sharesOutstanding": 1e7}):
-            e = {"market_cap": 1e12, "trailingPE": None, "priceToBook": None}
-            assert _derive_peer_multiples(e, pi) == {}, pi
-            assert e["trailingPE"] is None and e["priceToBook"] is None
-        # 소스가 준 값은 덮어쓰지 않는다.
-        e = {"market_cap": 1e12, "trailingPE": 15.0, "priceToBook": None}
-        _derive_peer_multiples(e, {"netIncomeToCommon": 1e11})
-        assert e["trailingPE"] == 15.0, "소스값을 자체계산으로 덮어썼다"
-
-    def test_derived_cells_are_marked_and_explained(self):
-        """자체계산분을 소스값처럼 보여주면 데이터 vs 환각 구분이 무너진다."""
-        from bot.dashboard import _render_stock_info_html
-        si = {"currency": "KRW", "peer_comps_asof": "2026-08-18 10:57",
-              "peer_comps": [{"ticker": "089030.KQ", "name": "Techwing",
-                              "currency": "KRW", "financial_currency": "KRW",
-                              "market_cap": 1.83e12, "trailingPE": 20.3,
-                              "priceToBook": 3.1, "derived": ["PER", "PBR"],
-                              "is_subject": True}]}
-        out = _render_stock_info_html({"ticker": "089030.KQ",
-                                       "stock_info": si})["other_panes"]
-        seg = out[out.index('id="si-peers"'):]
-        seg = seg[:seg.index("</div>\n</div>") + 13]
-        assert "＊" in seg and "자체계산" in seg, seg[-400:]
-        assert "PER=시총÷순이익" in seg and "PBR=시총÷자본" in seg
-        # 파생이 없으면 범례도 없어야 한다(없는 기호 설명 금지).
-        si2 = dict(si)
-        si2["peer_comps"] = [dict(si["peer_comps"][0], derived=[])]
-        out2 = _render_stock_info_html({"ticker": "089030.KQ",
-                                        "stock_info": si2})["other_panes"]
-        assert "자체계산" not in out2
-
 
 class TestBacklogSweep20260818:
     """사용자 2026-08-18 "다른 종목들도 분기별 빈칸이 있는지랑 수주잔고 제대로
@@ -25346,30 +25014,6 @@ class TestPeerCompsGuards20260816:
         assert isinstance(_PEER_SCHEMA_VER, int) and _PEER_SCHEMA_VER >= 2
 
     # ── 주체 행 파생값 재사용 (사용자 2026-08-18 이오테크닉스) ──────────
-    def test_subject_row_reuses_the_derived_values_already_on_the_page(self):
-        """yfinance 는 KR 종목의 PER·PBR 을 거의 안 준다. 종합·밸류에이션
-        탭은 DART 재무제표로 그걸 파생해 **이미 화면에 띄우고 있는데**
-        동종비교 표의 같은 회사 행만 비어 있었다 — 데이터 부재가 아니라
-        배선 누락이다. 없는 숫자를 만드는 게 아니라 있는 값을 옮긴다."""
-        from bot.dashboard import _render_stock_info_html
-        si = {"currency": "KRW", "peer_comps_asof": "2026-08-18 11:16",
-              "market_cap": 5.35e12, "shares_outstanding": 12_000_000,
-              # DART 재무제표 — `_derive_missing_multiples` 의 입력.
-              "kr": {"financials": {"당기순이익": 2.0e11, "자본총계": 1.0e12}},
-              "peer_comps": [
-                  {"ticker": "039030.KQ", "name": "이오테크닉스",
-                   "currency": "KRW", "financial_currency": "KRW",
-                   "market_cap": 5.35e12, "is_subject": True},
-              ]}
-        out = _render_stock_info_html({"ticker": "039030.KQ", "stock_info": si})
-        seg = out["other_panes"]
-        i = seg.index('id="si-peers"')
-        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
-        c = self._cells(pane, "039030.KQ")
-        assert c[3] == "26.8＊", c        # PER = 5.35조 ÷ 2000억
-        assert c[5] == "5.3＊", c         # PBR = 5.35조 ÷ 1조
-        assert "자체계산" in pane and "PER=시총÷순이익" in pane
-
     def test_financials_pane_shows_when_it_was_collected_and_how_old(self):
         """⚠️ 라벨이 없어 **몇 분기 묵은 표를 최신으로 오인**했다(사용자
         2026-08-18 삼양식품: 2026년 1·2분기가 나왔는데 화면은 2025-12 까지).
@@ -25425,29 +25069,6 @@ class TestPeerCompsGuards20260816:
             "낡음 판정이 분기에 안 걸렸다"
         # 시각이 없거나 깨진 옛 아카이브는 **낡음**으로 봐야 다시 받는다.
         assert "return True" in blk
-
-    def test_subject_row_matches_the_valuation_tab(self):
-        """⚠️ 같은 페이지의 두 탭이 다른 PER 을 보여주면 안 된다 — 사용자
-        2026-08-18 삼양식품: 동종비교 **23.1＊**, 밸류에이션 **12.30x**.
-        수집기 파생은 yfinance `.info` 한 칸에 기대지만 si 는 DART 분기
-        TTM 까지 쓴다 — 정본은 si 다."""
-        from bot.dashboard import _render_stock_info_html
-        si = {"currency": "KRW", "market_cap": 10.05e12,
-              "shares_outstanding": 7_500_000,
-              "kr": {"financials": {"당기순이익": 8.17e11, "자본총계": 1.55e12}},
-              "peer_comps": [
-                  {"ticker": "003230.KS", "name": "SamyangFood",
-                   "currency": "KRW", "financial_currency": "KRW",
-                   "market_cap": 10.05e12, "is_subject": True,
-                   # 수집기가 `.info` 로 계산한 값 — 페이지 정본과 어긋난다.
-                   "trailingPE": 23.1, "derived": ["PER"],
-                   "derived_basis": {"PER": "yfinance 순이익(TTM)"}}]}
-        out = _render_stock_info_html({"ticker": "003230.KS", "stock_info": si})
-        seg = out["other_panes"]
-        i = seg.index('id="si-peers"')
-        pane = seg[i:seg.index("</div>\n</div>", i) + 13]
-        c = self._cells(pane, "003230.KS")
-        assert c[3] == "12.3＊", f"수집기 파생값이 정본을 이겼다: {c}"
 
     def test_star_is_removed_when_a_source_value_replaces_a_derived_one(self):
         """덮어쓴 칸이 si 의 **소스값**이면 ＊(자체계산)를 떼야 한다 —
@@ -26647,3 +26268,106 @@ class TestBoardFreshnessGroupCadence:
         import bot.market_timing as mt
         assert Path.home() not in Path(mt._VOL_CACHE_DIR).parents, \
             f"테스트가 실제 캐시를 가리키고 있다: {mt._VOL_CACHE_DIR}"
+    def test_audit_reads_the_key_names_the_client_actually_uses(self):
+        """board_audit v1 이 `ECOS_API_KEY` 로 물어 **있는 키를 '없음'** 으로
+        오보했다(실제 이름은 `BOK_ECOS_API_KEY`) — 실수 #23 의 재발.
+        키 이름을 손으로 적지 말고 클라이언트 소스에서 뽑아 쓴다."""
+        import re
+        src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
+        assert '"ECOS_API_KEY"' not in src, "틀린 키 이름이 되살아났다"
+        assert "bok_ecos_client.py" in src, "키 이름을 다시 손으로 적고 있다"
+        client = open("bot/bok_ecos_client.py", encoding="utf-8").read()
+        found = set(re.findall(r'_env_key\("([A-Z0-9_]+)"\)', client))
+        assert "BOK_ECOS_API_KEY" in found, (
+            "클라이언트의 키 이름이 바뀌었다 — 프로브 추출 정규식도 확인할 것")
+
+    def test_dead_fred_series_is_out_of_the_catalog(self):
+        """`CUSR0000SETE`(자동차보험 CPI)는 FRED 가 400 을 준다 — 매 사이클
+        실패 로그를 남기고 제외되던 죽은 시리즈(2026-08-20 감사에서 발각)."""
+        from bot.fred_boards_catalog import CPI_SERIES
+        assert "CUSR0000SETE" not in {s["id"] for s in CPI_SERIES}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-20 사용자(Neosem 동종비교 캡처): "여기 동종업계비교에 억지로 없는거
+# 계산해서 넣지마. ＊표시된거. 더 이상해져."
+#
+# 화면 실물: SK하이닉스 PER 6.6＊ · 삼성전자 10.8＊ 는 우리가 시총÷순이익으로
+# 만든 값이고, TSMC 27.5 · AMD 119.0 은 소스값이었다 — **같은 PER 열의 숫자가
+# 서로 다른 정의**였다. ＊ 로 구분 표시를 해도 사람 눈은 열을 세로로 읽는다.
+# 비교표는 소스값만 싣고, 없으면 빈칸으로 둔다.
+#
+# ⚠️ 단일 회사 화면(종합·밸류에이션 탭)의 자체계산은 **유지**한다 — 거기선
+# 다른 회사와 나란히 놓이지 않아 기준이 섞이지 않는다.
+class TestPeerTableSourceValuesOnly20260820:
+    @staticmethod
+    def _pane(si):
+        """동종비교 pane 만 잘라 온다(기존 peer 테스트와 같은 방식)."""
+        from bot.dashboard import _render_stock_info_html
+        out = _render_stock_info_html({"ticker": si.get("ticker", "AAA"),
+                                       "stock_info": si})
+        seg = out["other_panes"]
+        i = seg.index('id="si-peers"')
+        return seg[i:seg.index("</div>\n</div>", i) + 13]
+
+    def test_collector_no_longer_derives_peer_multiples(self):
+        """되살리기 쉬운 자리라 **부재 자체**를 고정한다 — 헬퍼가 다시
+        생기면(또는 배선이 돌아오면) 이 테스트가 막는다."""
+        import bot.stock_snapshot as ss
+        for gone in ("_derive_peer_multiples", "_dart_peer_multiples"):
+            assert not hasattr(ss, gone), (
+                f"{gone} 가 되살아났다 — 비교표 자체계산은 사용자 지시로 제거됨")
+        src = __import__("inspect").getsource(ss.collect_stock_snapshot)
+        assert "derived_basis" not in src, "수집기가 다시 파생값을 싣는다"
+
+    def test_archived_derived_cells_render_blank(self):
+        """이미 쌓인 분석엔 `derived` 가 남아 있다 — 재수집 없이 렌더가
+        빈칸으로 내린다(실수 #18 의 반대 방향: 아카이브가 굳지 않게)."""
+        si = {"ticker": "253590.KQ", "peer_comps": [
+            {"ticker": "000660.KS", "name": "SK hynix", "currency": "KRW",
+             "market_cap": 1.06e15, "trailingPE": 6.6, "priceToBook": 4.1,
+             "priceToSalesTrailing12Months": 5.6, "enterpriseToEbitda": 6.9,
+             "derived": ["PBR", "PER"],
+             "derived_basis": {"PER": "DART 2025 TTM", "PBR": "DART 자본총계"}},
+            {"ticker": "2330.TW", "name": "TSMC", "currency": "TWD",
+             "market_cap": 6.09e13, "trailingPE": 27.5, "priceToBook": 9.5,
+             "priceToSalesTrailing12Months": 13.7, "enterpriseToEbitda": 18.5},
+        ]}
+        pane = self._pane(si)
+        assert "＊" not in pane, "자체계산 표식이 아직 찍힌다"
+        assert "6.6" not in pane, "자체계산 PER 이 그대로 표시된다"
+        assert "4.1" not in pane, "자체계산 PBR 이 그대로 표시된다"
+        # 같은 행의 **소스값**은 살아 있어야 한다(과잉 삭제 금지).
+        assert "5.6" in pane and "6.9" in pane, "소스값까지 지워졌다"
+        assert "27.5" in pane and "9.5" in pane, "다른 회사 소스값이 지워졌다"
+
+    def test_legend_explains_the_blank_instead_of_a_star(self):
+        si = {"ticker": "A", "peer_comps": [
+            {"ticker": "000660.KS", "name": "SK hynix", "currency": "KRW",
+             "market_cap": 1e14, "trailingPE": 6.6, "derived": ["PER"]}]}
+        pane = self._pane(si)
+        assert "자체계산" not in pane or "넣지" in pane or "비워" in pane
+        assert "소스가 그 회사 값을 주지" in pane, pane[-600:]
+
+    def test_subject_row_is_not_backfilled_with_page_derived_values(self):
+        """주체 행도 예외가 아니다 — 밸류에이션 탭의 자체계산을 비교표로
+        옮기면 같은 문제가 그대로 재현된다(캡처의 Neosem 29.1＊·3.5＊)."""
+        si = {"ticker": "253590.KQ", "trailingPE": 29.1, "priceToBook": 3.5,
+              "priceToSalesTrailing12Months": 7.4,
+              "_derived_multiples": ["trailingPE", "priceToBook"],
+              "_derived_basis": {"trailingPE": "DART TTM"},
+              "peer_comps": [
+                  {"ticker": "253590.KQ", "name": "Neosem", "currency": "KRW",
+                   "market_cap": 4.725e11, "is_subject": True,
+                   "priceToSalesTrailing12Months": 7.4}]}
+        pane = self._pane(si)
+        assert "29.1" not in pane, "밸류에이션 탭의 자체계산 PER 이 비교표로 샜다"
+        assert "3.5" not in pane, "자체계산 PBR 이 비교표로 샜다"
+        assert "7.4" in pane, "주체 행의 소스값(PSR)까지 사라졌다"
+
+    def test_subject_row_still_takes_source_values_from_the_page(self):
+        """반대 방향 과잉 금지 — si 의 **소스값**은 계속 채워야 한다."""
+        si = {"ticker": "AAA", "trailingPE": 12.0, "_derived_multiples": [],
+              "peer_comps": [{"ticker": "AAA", "name": "A", "currency": "USD",
+                              "market_cap": 1e10, "is_subject": True}]}
+        assert "12.0" in self._pane(si)

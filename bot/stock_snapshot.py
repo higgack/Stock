@@ -1378,6 +1378,16 @@ def norm_cur(c: str | None) -> str:
     return (c or "").strip().upper().replace("GBX", "GBP")
 
 
+# ⚠️ 2026-08-20 제거: `_derive_peer_multiples` / `_dart_peer_multiples`
+# (동종비교표용 PER·PBR·PSR 자체계산). 사용자 "억지로 없는거 계산해서 넣지마.
+# ＊표시된거. 더 이상해져." — 재료를 맞춰 같은 정의로 계산해도, 비교표는 한
+# 열에서 **세로로** 읽는 자리라 소스값과 나란히 놓이는 순간 기준이 섞인다
+# (실측: SK하이닉스 6.6＊·삼성전자 10.8＊ 자체계산 vs TSMC 27.5·AMD 119.0
+# 소스값이 같은 PER 열). ＊ 로 구분해도 눈은 세로로 비교한다 — 빈칸이 낫다.
+# 되살리지 말 것. 단일 회사 화면(종합·밸류에이션 탭)의 `_derive_missing_
+# multiples` 는 나란히 놓이지 않으므로 **그대로 유지**한다.
+
+
 def _peer_name(pi: dict, pt: str) -> str:
     """피어 표시명. 쓸 수 없는 이름이면 티커로 떨어진다.
 
@@ -1389,143 +1399,6 @@ def _peer_name(pi: dict, pt: str) -> str:
     if not nm or (("," in nm) and (code in nm or nm.count(",") >= 2)):
         return pt
     return nm[:30]
-
-
-def _derive_peer_multiples(entry: dict, pi: dict) -> dict[str, str]:
-    """소스가 안 준 PER·PBR 을 **같은 정의**로 계산해 채운다 → {라벨: 기준}.
-
-    · PER = 시가총액 ÷ 순이익(TTM)      · PBR = 시가총액 ÷ 자본총계
-    자본총계 = 주당순자산(bookValue) × 발행주식수.
-
-    ⚠️ 음수·0 은 계산하지 않는다(적자 기업의 PER 은 배수로 의미가 없고,
-    분모가 0 이면 무한대가 된다). 범위 밖 값도 안 채운다 — 화면 가드가
-    어차피 `—!` 로 지우므로 자체계산으로 이상치를 만들 이유가 없다."""
-    mc = entry.get("market_cap")
-    # ⚠️ 기준 문자열을 같이 돌려준다. 한 행 안에서도 PER 은 yfinance(TTM),
-    # PBR 은 DART(연말)로 갈릴 수 있어(실측: 한미반도체) 라벨만 넘기면
-    # 화면 툴팁이 '기준 미기록'으로 뜬다.
-    out: dict[str, str] = {}
-    if not mc or mc <= 0:
-        return out
-    # ⚠️ 재무통화 ≠ 거래통화면 **만들지 않는다.** 시총(거래통화) ÷ 순이익
-    # (재무통화)은 환율만큼 틀린 수를 새로 만드는 짓이다. 소스가 준 값은
-    # 화면이 ⚠ 로 알리기라도 하지만, 우리가 만든 값엔 그런 근거가 없다.
-    # 실측(2026-08-18): ASML 은 USD 거래·EUR 재무, HK H주는 HKD 거래·CNY
-    # 재무, TSM ADR 은 USD 거래·TWD 재무다 — 드문 예외가 아니다.
-    _fc, _tc = norm_cur(pi.get("financialCurrency")), norm_cur(entry.get("currency"))
-    if _fc and _tc and _fc != _tc:
-        return out
-
-    def _ok(v):
-        return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 500
-
-    if entry.get("trailingPE") is None:
-        ni = pi.get("netIncomeToCommon")
-        if isinstance(ni, (int, float)) and ni > 0 and _ok(mc / ni):
-            entry["trailingPE"] = mc / ni
-            out["PER"] = "yfinance 순이익(TTM)"
-    if entry.get("priceToBook") is None:
-        bvps, sh = pi.get("bookValue"), pi.get("sharesOutstanding")
-        if (isinstance(bvps, (int, float)) and isinstance(sh, (int, float))
-                and bvps > 0 and sh > 0 and _ok(mc / (bvps * sh))):
-            entry["priceToBook"] = mc / (bvps * sh)
-            out["PBR"] = "yfinance 주당순자산×주식수"
-    return out
-
-
-def _dart_peer_multiples(entry: dict, pt: str) -> dict[str, str]:
-    """KR 피어의 PER·PBR 을 **DART 재무제표**로 채운다 → {라벨: 기준}.
-
-    yfinance 는 KR 종목의 PER·PBR 을 사실상 안 준다 — 2026-08-18 VM 프로브
-    실측(이오테크닉스 피어 6종): `priceToBook` 은 **전원** None, `netIncome
-    ToCommon` 도 절반이 None 이라 시총÷순이익조차 못 만든다. 그래서 표의
-    PER·PBR 열이 통째로 비었다(사용자 '동종비교가 왜케 안나오는거야').
-
-    그런데 우리는 같은 종목의 **확정 재무제표를 DART 에서 공짜로** 받는다.
-    주체 행은 이미 그렇게 채우고 있었다(`_derive_missing_multiples`) —
-    피어만 비워둘 이유가 없다. 지어내는 숫자가 아니라 공시 원문이다.
-
-    ⚠️ 기준이 주체 행과 다를 수 있다(주체=TTM 우선, 피어=연간 확정치).
-    라벨을 돌려줘 화면이 **행마다** 표기한다 — 같은 ＊ 로 뭉뚱그리면 서로
-    다른 기준을 같은 것처럼 보여주게 된다.
-
-    ⚠️ DART 는 KR 전용이라 이 경로만 시장 특정이다(문서화된 데이터소스
-    사유). 계산식·표기·가드는 전시장 공통 경로를 그대로 탄다.
-    """
-    out: dict[str, str] = {}
-    mc = entry.get("market_cap")
-    # DART 는 KRW 다 — 거래통화가 KRW 가 아니면 같은 환산 오차가 생긴다.
-    if norm_cur(entry.get("currency")) not in ("", "KRW"):
-        return out
-    if (not mc or mc <= 0 or not pt.upper().endswith((".KS", ".KQ"))
-            or (entry.get("trailingPE") is not None
-                and entry.get("priceToBook") is not None)):
-        return out
-
-    def _ok(v):
-        return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 500
-
-    try:
-        import datetime as _dt
-
-        from bot.dart_client import get_dart
-        dart = get_dart()
-        if not dart:
-            return out
-        net = eq = None
-        b_net = b_eq = ""
-        # ① **TTM 우선** — 소스가 준 PER 은 TTM 기준인데 우리만 연간 확정치를
-        #    쓰면 같은 표 안에서 시점이 어긋난다(사용자 2026-08-18 한화오션:
-        #    자체계산 PER 13.5 옆에 선행 PER 14.2 — 후행이 선행보다 낮게 나올
-        #    만큼 오래된 이익을 쓰고 있었다). 주체 행(밸류에이션 탭)도 TTM
-        #    우선이라 이래야 한 페이지 안에서 기준이 하나가 된다.
-        qs = []
-        try:
-            from bot.dart_quarterly import get_quarterly_series
-            qs = get_quarterly_series(dart, pt, n=4) or []
-        except Exception:
-            qs = []
-        _clean = [q for q in qs
-                  if not (q.get("financials") or {}).get("_anomaly_revenue_negative")
-                  and not (q.get("financials") or {}).get("_anomaly_account_mismatch")]
-        if len(_clean) == 4:
-            _n = [(q.get("financials") or {}).get("당기순이익") for q in _clean]
-            if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in _n):
-                net = sum(_n)
-                b_net = f"DART TTM({_clean[0]['label']}~{_clean[-1]['label']})"
-        # 자본총계는 **저량**이라 합산이 아니라 최근 분기말 잔액이 정답이다.
-        for q in reversed(_clean):
-            _e = (q.get("financials") or {}).get("자본총계")
-            if isinstance(_e, (int, float)) and not isinstance(_e, bool) and _e > 0:
-                eq, b_eq = _e, f"DART {q['label']} 자본총계"
-                break
-        # ② 연간 폴백 — 분기 시계열을 못 만든 경우에만.
-        if net is None or eq is None:
-            rec = None
-            # 직전 사업연도 → 미발표면 그 전 해. 연초엔 직전연도 사업보고서가
-            # 아직 없어서(status 013) 한 해 더 물러나지 않으면 전부 빈다.
-            for _y in (None, _dt.date.today().year - 2):
-                rec = dart.get_normalized_financials(pt, year=_y)
-                if rec:
-                    break
-            fin = (rec or {}).get("financials") or {}
-            yr = (rec or {}).get("year")
-            if net is None and fin.get("당기순이익") is not None:
-                net, b_net = fin["당기순이익"], f"DART {yr} 연간 순이익"
-            if eq is None and fin.get("자본총계") is not None:
-                eq, b_eq = fin["자본총계"], f"DART {yr} 연말 자본총계"
-
-        if (entry.get("trailingPE") is None and isinstance(net, (int, float))
-                and net > 0 and _ok(mc / net)):
-            entry["trailingPE"] = mc / net
-            out["PER"] = b_net
-        if (entry.get("priceToBook") is None and isinstance(eq, (int, float))
-                and eq > 0 and _ok(mc / eq)):
-            entry["priceToBook"] = mc / eq
-            out["PBR"] = b_eq
-    except Exception:
-        return out
-    return out
 
 
 def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
@@ -1597,12 +1470,14 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             # 거짓말이 된다. 최신(DART)이 이기고 `.info` 는 남은 칸만 채운다.
             # ⚠️ 주체 행은 제외 — 렌더가 종합·밸류에이션 탭과 같은 값으로
             # 채운다(검증 7축 ①'전섹션 일치').
-            _basis = {} if pt == ticker else _dart_peer_multiples(entry, pt)
-            _basis.update(_derive_peer_multiples(entry, pi))
+            # ⚠️ 2026-08-20 사용자: "억지로 없는거 계산해서 넣지마.
+            # ＊표시된거. 더 이상해져." — **비교표에는 소스값만** 싣는다.
+            # 위 설명대로 재료를 맞춰 계산해도, 한 열에서 세로로 비교되는
+            # 자리라 소스값과 나란히 놓이는 순간 기준이 섞여 비교가 어긋난다
+            # (실측: SK하이닉스 6.6＊ vs TSMC 27.5 소스값이 같은 PER 열에).
+            # 렌더도 옛 아카이브의 `derived` 칸을 빈칸으로 내리므로 이미 쌓인
+            # 분석까지 함께 정리된다 — 재수집 불필요(실수 #18 의 반대 방향).
             entry = {k: v for k, v in entry.items() if v is not None}
-            if _basis:
-                entry["derived"] = sorted(_basis)
-                entry["derived_basis"] = _basis
             if pt == ticker:
                 entry["is_subject"] = True
             return entry
