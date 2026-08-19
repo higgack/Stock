@@ -22861,6 +22861,50 @@ class TestFlowTrendDiagnosis20260818:
         again = wf.fetch_financial_summary("005940")
         assert "OK" in again["quarter"]
 
+    def test_move_card_gets_the_same_period_columns_as_vix(self, monkeypatch):
+        """사용자 2026-08-19: "채권변동성도 VIX 처럼 기간으로 표시해줘."
+        MOVE 만 패널을 따로 만들어 현재값 한 칸뿐이었고, 수집도 days=10 이라
+        1달(21)·1년(252) 창 자체를 만들 수 없었다 — 렌더만 고치면 빈다."""
+        import re
+        import bot.market_timing as mt
+
+        # (1) 수집 — 히스토리를 실제로 싣는지(창을 못 만들던 것이 진짜 원인).
+        rows = [{"date": f"d{i}", "close": 70.0 + i} for i in range(300)]
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda t, **k: rows if t == "^MOVE" else [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda: [])
+        snap = mt.fetch_volatility_snapshot()
+        hist = (snap.get("move") or {}).get("history") or {}
+        for lb, _back in mt._VOL_LOOKBACKS:
+            assert hist.get(lb) is not None, f"{lb} 창이 비었다 — 수집 기간 부족"
+
+        # (2) 렌더 — VIX 와 같은 패널로 기간 칸이 붙는지.
+        html = mt.render_market_timing_page({"volatility": {"move": {
+            "value": 75.0, "date": "2026-08-18",
+            "history": {"전일": 74.1, "1주": 72.8, "1달": 80.3, "1년": 95.2}}}})
+        i = html.index("채권 변동성 (MOVE)")
+        blk = html[i:i + 3000]
+        cells = dict(re.findall(
+            r'class="k">([^<]+)</div><div class="v"[^>]*>([\d.]+)', blk))
+        assert cells.get("현재") == "75.0"
+        for lb in ("전일", "1주", "1달", "1년"):
+            assert lb in cells, f"{lb} 칸이 없다"
+
+        # (3) 설명 — 단위 주의·읽는 법·왜 보는지가 있어야 한다.
+        note = re.search(r'<div class="note">(.*?)</div>\s*</div>', blk, re.S)
+        assert note, "설명이 없다"
+        txt = re.sub(r"<[^>]+>", "", note.group(1))
+        assert "직접 비교할 수 없" in txt, "VIX 와 단위가 다르다는 경고 누락"
+        assert "읽는 법" in txt and "bp" in txt
+        assert "할인율" in txt, "왜 주식 화면에 있는지 설명 누락"
+
+        # 패널을 또 따로 만들면 기간 칸이 다시 사라진다 — 공용 함수 사용 강제.
+        import pathlib as _p
+        src = _p.Path("bot/market_timing.py").read_text(encoding="utf-8")
+        j = src.index('if move:')
+        assert "_vol_panel(" in src[j:j + 400], "MOVE 가 공용 패널을 안 쓴다"
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
