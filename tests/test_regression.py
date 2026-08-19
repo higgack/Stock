@@ -25943,7 +25943,17 @@ class TestUsIndustryKr20260819:
                 "Application Software", "Asset Management & Custody Banks",
                 "Investment Banking & Brokerage", "Regional Banks",
                 "Systems Software", "Air Freight & Logistics",
-                "Managed Health Care", "Construction & Engineering"]
+                "Managed Health Care", "Construction & Engineering",
+                # 3차 — 프로브 200 으로 뽑은 꼬리 전량(1종목짜리 포함).
+                # 신고저·급등락은 소형주가 자주 올라오는 화면이라 꼬리가 곧
+                # 사용자가 보는 행이다.
+                "Oil Refining/Marketing", "Plastic Products", "Textiles",
+                "Books", "Wholesale Distributors", "Tools/Hardware",
+                # ⚠️ 원천 오타를 **그대로** 키로 쓴다(고치면 영원히 미매칭).
+                "Professional and commerical equipment",
+                "Industrial Conglomerates", "Consumer Finance", "Brewers",
+                "Reinsurance", "Timber REITs", "Footwear", "Water Utilities",
+                "Interactive Home Entertainment", "Casinos & Gaming"]
         bad = [s for s in seen if industry_kr(s) == s]
         assert not bad, f"미번역: {bad}"
         # 번역 결과에 한글이 있어야 한다(영문→영문 자기복사 방지).
