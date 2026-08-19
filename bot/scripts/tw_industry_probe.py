@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 # 사용자 스크린샷(2026-08-19)의 무버 코드 — 인자를 안 주면 이걸 본다.
 _SAMPLE = ["2601", "3167", "5608", "6907", "6869", "4304", "6226", "8070",
@@ -118,10 +118,30 @@ def main() -> int:
         except Exception as exc:                               # noqa: BLE001
             _p(f"   실패 {type(exc).__name__}: {exc}")
 
+    # ④ **화면이 실제로 받는 값** — ①~③ 은 소스를 따로 두드려 본 것이고,
+    # 배선까지 맞는지는 프로덕션 경로를 그대로 태워야 안다(실수 #20:
+    # grep·부분 호출은 존재만, E2E 는 순서·우선순위까지 본다).
+    _p("")
+    _p("④ 프로덕션 경로 `_industries_for(..., 'TW')` — 화면에 나갈 값")
+    try:
+        from bot.finviz_client import _industries_for
+        final = _industries_for([f"{c}.TW" for c in codes], "TW",
+                                allow_slow=True)
+        blank = 0
+        for c in codes:
+            v = final.get(f"{c}.TW")
+            if not v:
+                blank += 1
+            _p(f"   {c:6} {v or '— (빈칸)'}")
+        _p(f"   → 채움 {len(codes) - blank}/{len(codes)} · 빈칸 {blank}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   실패 {type(exc).__name__}: {exc}")
+
     _p("")
     _p("읽는 법: ①에서 한쪽이 0이면 **소스 장애**(소형주 문제가 아니다).")
     _p("        ①은 정상인데 ②가 미스면 그 종목이 上市·上櫃 어디에도 없는 것")
     _p("        (興櫃·ETF·신규상장 등). ③까지 없으면 원천에 업종 자체가 없다.")
+    _p("        ①~③ 이 아무리 좋아도 **④가 화면**이다 — ④만 빈칸이면 배선 문제.")
     return 0
 
 
