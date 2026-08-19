@@ -26617,3 +26617,51 @@ class TestSecondSweep20260820:
         assert cold[0]["eps_estimate"] is None and cold[0]["market_cap"] is None
         # 저장가격·저장일은 **의도적 과거값**이라 남아야 한다.
         assert cold[0]["saved_price"] == 100 and cold[0]["saved_date"]
+
+    # ── ⑥ 프로브가 찾아낸 것 — 분기 시리즈 1M · 비율 시리즈 %p ──────
+    def test_quarterly_series_have_no_one_month_window(self):
+        """econ_actual_probe v3 실측: ECI·GDP 의 1M 과 3M 이 **같은 관측**을
+        가리켜 같은 숫자가 나왔다(ECI 1M +0.9% ← 2026-01-01 · 3M +0.9% ←
+        2026-01-01). 분기 시리즈에 1M 창은 계산이 안 된다 — 빈칸이 낫다.
+        3M 은 **직전 분기**라 유효하므로 지우면 과잉이다."""
+        from bot.econ_calendar import _build_trend_summary
+        quarterly = [("2025-04-01", 173.563), ("2025-07-01", 174.5),
+                     ("2025-10-01", 176.233), ("2026-01-01", 177.498),
+                     ("2026-04-01", 179.01)]
+        monthly = [(f"2026-{m:02d}-01", 330.0 + m) for m in range(1, 8)]
+        tq = _build_trend_summary(quarterly, [])
+        assert "m1_pct" not in tq, "분기 시리즈에 1M 이 남았다"
+        assert "m3_pct" in tq and "y1_pct" in tq, "유효한 창까지 지웠다"
+        tm = _build_trend_summary(monthly, [])
+        assert "m1_pct" in tm and "m3_pct" in tm, "월간 시리즈가 영향받았다"
+
+    def test_gap_rule_is_shared_with_the_liquidity_board(self):
+        """두 화면이 각자 계산하면 판정이 갈라진다 — 단일 출처여야 한다
+        (VKOSPI 복제 교훈과 같은 실패모드)."""
+        import bot.fred_boards as fb
+        from bot.macro_cadence import median_month_gap
+        assert fb._median_month_gap is median_month_gap, "유동성 보드가 복제본"
+        src = open("bot/econ_calendar.py", encoding="utf-8").read()
+        assert "from bot.macro_cadence import median_month_gap" in src, \
+            "경제캘린더가 자체 간격 계산을 갖고 있다"
+
+    def test_rate_series_use_percentage_points(self):
+        """실업률 4.2%→4.1% 이 "-2.4%" 로 떴다 — '2.4%p 하락'으로 읽힌다.
+        유동성 보드가 이미 쓰는 %p 규약과 맞춘다."""
+        from bot.econ_calendar import _RELEASES, _build_trend_summary
+        unemp = next(r for r in _RELEASES if r["key"] == "unemp")
+        assert unemp.get("is_rate"), "실업률에 is_rate 플래그가 없다"
+        obs = [("2026-05-01", 4.2), ("2026-06-01", 4.2), ("2026-07-01", 4.1)]
+        t = _build_trend_summary(obs, [], is_rate=True)
+        assert abs(t["m1_pct"] - (-0.1)) < 1e-9, t   # %p 차이
+        plain = _build_trend_summary(obs, [], is_rate=False)
+        assert abs(plain["m1_pct"] - (-2.381)) < 0.01, plain
+
+    def test_rate_series_render_the_pp_suffix(self):
+        from bot.econ_calendar import render_econ_calendar_page
+        t = {"latest_obs_date": "2026-07-01", "is_rate": True, "m1_pct": -0.1}
+        html = render_econ_calendar_page(
+            {"events": [{"key": "unemp", "label": "실업률", "next": "2026-09-04",
+                         "recent": ["2026-08-07"], "trend": t}],
+             "as_of": "2026-08-20"})
+        assert "1M -0.1%p" in html, "화면에 %p 가 안 붙는다"

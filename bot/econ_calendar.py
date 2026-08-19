@@ -87,7 +87,11 @@ _RELEASES = [
     {"key": "ppi", "label": "🏭 PPI (생산자물가지수)", "search": "Producer Price Index", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
     {"key": "jobs", "label": "💼 고용동향 (Employment Situation)", "search": "Employment Situation", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
     {"key": "ahe", "label": "💵 시간당임금 (AHE)", "search": "Employment Situation", "groups": ["정책민감도"]},
-    {"key": "unemp", "label": "📊 실업률 (Unemployment Rate)", "search": "Employment Situation", "groups": ["경기침체 조기경보"]},
+    # ⚠️ `is_rate`: 값 자체가 **퍼센트**인 시리즈. 상대변화율(%)로 쓰면
+    # 4.2%→4.1% 가 "-2.4%" 로 떠 '2.4%p 하락'으로 읽힌다(2026-08-20 프로브
+    # 실측). 유동성 보드가 이미 %p 로 쓰는 규약과 맞춘다. 새 비율 시리즈를
+    # 넣을 땐 이 플래그를 같이 달 것 — 회귀가 UNRATE 로 그걸 상기시킨다.
+    {"key": "unemp", "label": "📊 실업률 (Unemployment Rate)", "search": "Employment Situation", "is_rate": True, "groups": ["경기침체 조기경보"]},
     {"key": "claims", "label": "📉 신규 실업수당 (Initial Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4, "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
     {"key": "cont_claims", "label": "🧷 연속 실업수당 (Continuing Claims)", "search": "Unemployment Insurance Weekly Claims Report", "min_avg_gap_days": 4, "groups": ["경기침체 조기경보"]},
     {"key": "retail", "label": "🛍️ 소매판매 (Retail Sales)", "search": "Advance Monthly Sales for Retail and Food Services", "groups": ["미국 5거래일 변동성", "경기침체 조기경보"]},
@@ -213,13 +217,22 @@ def _value_on_or_before(observations: list, cutoff_date: str):
     return out
 
 
-def _build_trend_summary(observations: list, actuals: list[dict]) -> dict:
-    """실제치 카드용 방향성 요약(최근발표대비·1M·3M·6M·1Y)."""
+def _build_trend_summary(observations: list, actuals: list[dict],
+                         is_rate: bool = False) -> dict:
+    """실제치 카드용 방향성 요약(최근발표대비·1M·3M·6M·1Y).
+
+    `is_rate` = 값 자체가 퍼센트인 시리즈(실업률 등) → 변화를 **%p 차이**로
+    낸다. 상대변화율로 쓰면 4.2%→4.1% 가 "-2.4%" 가 되어 '2.4%p 하락'으로
+    읽힌다(유동성 보드의 `_rate_deltas` 와 같은 규약)."""
     if not observations:
         return {}
 
     def _pct(cur: float, base: float | None):
-        if base is None or base == 0:
+        if base is None:
+            return None
+        if is_rate:
+            return cur - base          # %p 차이
+        if base == 0:
             return None
         return (cur - base) / abs(base) * 100.0
 
@@ -230,17 +243,26 @@ def _build_trend_summary(observations: list, actuals: list[dict]) -> dict:
     m6 = _value_on_or_before(observations, (ld - timedelta(days=180)).isoformat())
     y1 = _value_on_or_before(observations, (ld - timedelta(days=365)).isoformat())
 
-    out: dict = {"latest_obs_date": latest_obs_date}
+    # ⚠️ **시리즈 주기보다 짧은 창은 계산할 수 없다.** 분기 시리즈(ECI·GDP)는
+    # 1M 창을 그려도 직전 **분기** 값과 비교하게 돼, 1M 과 3M 이 같은 관측을
+    # 가리키며 **같은 숫자**가 나온다(2026-08-20 프로브 실측:
+    # ECI 1M +0.9% ← 2026-01-01 · 3M +0.9% ← 2026-01-01). 라벨이 거짓이면
+    # 빈칸이 낫다. 판정은 `macro_cadence.median_month_gap` 단일 출처 —
+    # 유동성 보드(series_metrics)와 **같은 잣대**여야 두 화면이 안 갈라진다.
+    from bot.macro_cadence import median_month_gap
+    gap = median_month_gap(observations)
+
+    out: dict = {"latest_obs_date": latest_obs_date, "is_rate": is_rate}
     if len(actuals) >= 2:
         cur = float(actuals[-1]["value"])
         prev = float(actuals[-2]["value"])
         out["release_delta"] = cur - prev
         out["release_pct"] = _pct(cur, prev)
-    if m1:
+    if m1 and gap <= 1:
         out["m1_pct"] = _pct(float(latest_val), float(m1[1]))
-    if m3:
+    if m3 and gap <= 3:
         out["m3_pct"] = _pct(float(latest_val), float(m3[1]))
-    if m6:
+    if m6 and gap <= 6:
         out["m6_pct"] = _pct(float(latest_val), float(m6[1]))
     if y1:
         out["y1_pct"] = _pct(float(latest_val), float(y1[1]))
@@ -333,7 +355,8 @@ def _load_econ_calendar(today: Optional[str] = None) -> dict:
                                            "obs_date": hit[0], "value": hit[1]})
                     if actuals:
                         entry["actuals"] = actuals
-                    trend = _build_trend_summary(obs, actuals)
+                    trend = _build_trend_summary(obs, actuals,
+                                                 is_rate=bool(r.get("is_rate")))
                     if trend:
                         entry["trend"] = trend
                 except Exception as exc:
@@ -412,20 +435,19 @@ def render_econ_calendar_page(data: dict, now=None) -> str:
 
         trend = e.get("trend") or {}
         trend_parts = []
+        # 값 자체가 퍼센트인 시리즈(실업률)는 **%p** — 상대변화율로 쓰면
+        # 4.2%→4.1% 가 "-2.4%" 로 떠 '2.4%p 하락'으로 읽힌다(2026-08-20).
+        _u = "%p" if trend.get("is_rate") else "%"
         rd = trend.get("release_delta")
         if rd is not None:
             arrow = "▲" if rd > 0 else ("▼" if rd < 0 else "→")
             rp = trend.get("release_pct")
-            rp_s = "" if rp is None else f" ({rp:+.1f}%)"
+            rp_s = "" if rp is None else f" ({rp:+.1f}{_u})"
             trend_parts.append(f"최근 발표대비 {arrow} {rd:+,.1f}{rp_s}")
-        if trend.get("m1_pct") is not None:
-            trend_parts.append(f"1M {trend['m1_pct']:+.1f}%")
-        if trend.get("m3_pct") is not None:
-            trend_parts.append(f"3M {trend['m3_pct']:+.1f}%")
-        if trend.get("m6_pct") is not None:
-            trend_parts.append(f"6M {trend['m6_pct']:+.1f}%")
-        if trend.get("y1_pct") is not None:
-            trend_parts.append(f"1Y {trend['y1_pct']:+.1f}%")
+        for _lb, _k in (("1M", "m1_pct"), ("3M", "m3_pct"),
+                        ("6M", "m6_pct"), ("1Y", "y1_pct")):
+            if trend.get(_k) is not None:
+                trend_parts.append(f"{_lb} {trend[_k]:+.1f}{_u}")
         if trend_parts:
             trend_html = (f'<div class="note" style="font-size:15px">방향성: {" · ".join(trend_parts)}'
                           f' <span style="color:#8b8fa3;font-size:13px">(최근 관측 {_h.escape(str(trend.get("latest_obs_date", "—")))})</span></div>')
