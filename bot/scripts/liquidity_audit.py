@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 # 표기 단위 → 배수(화면 JS `UM` 과 같은 규약).
 _MULT = {"M USD": 1e6, "B USD": 1e9, "M EUR": 1e6, "100M JPY": 1e8}
@@ -112,6 +112,15 @@ def main() -> int:
         _p(f"  {sid:20} {cat:12} {unit:9} "
            f"{(_fmt(val, unit) if val is not None else '—'):>12} "
            f"{asof:10} {verdict}{umsg}")
+        # ⚠️ 문제 있는 항목은 **판단 재료를 그 자리에** 남긴다 — 다음 턴에
+        # 또 물어보지 않아도 되게(실수 #12: 확인 명령 왕복 줄이기).
+        if umsg:
+            _p(f"       ↪ 원시값 {val:,} · 배수 {_MULT.get(unit, 1):g} "
+               f"(원시가 다른 단위면 카탈로그 unit 을 고쳐야 한다)")
+        if verdict.startswith("❌ 지연"):
+            _p(f"       ↪ 최근 관측 {[d for d, _v in pts[-4:]]}"
+               f" — 간격이 규약보다 넓으면 **원천이 늦는 것**(규약을 늘린다),"
+               f" 최근만 끊겼으면 수집 문제")
 
     _p("")
     _p(f"── 요약: 단위 의심 {len(bad_unit)} · 지연 {len(late)} · "
