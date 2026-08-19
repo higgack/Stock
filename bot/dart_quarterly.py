@@ -249,4 +249,18 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
         idx = _Q_ORDER.index(rc)
         y, rc = (y - 1, "11011") if idx == 0 else (y, _Q_ORDER[idx - 1])
     out.reverse()   # 오래된 → 최신
+    # 총액 계정을 안 주는 회사(증권·은행·보험)의 매출을 FnGuide 총액으로.
+    # ⚠️ 이 경로가 빠져 있었다(2026-08-19 NH투자증권 분기 인포그래픽):
+    # `stock_snapshot` 만 보강해서 K-IFRS 요약은 총액인데 **분기 차트·타일은
+    # 이자수익**이라 "매출 5,787억 < 영업이익 6,812억" 이 그대로 남았다.
+    # 검산·혼합금지는 헬퍼 안에 있다 — 하나라도 못 채우면 전부 원래대로.
+    try:
+        from bot.kr_revenue_fallback import fill_series
+        from bot.dart_client import calc_kr_financial_ratios as _ratios
+        if fill_series(ticker, [(e["year"], e["quarter"], e["financials"])
+                                for e in out]):
+            for e in out:
+                e["ratios"] = _ratios(e["financials"])
+    except Exception as exc:                                   # noqa: BLE001
+        log.info("dart_quarterly: %s 매출 총액 보강 건너뜀: %s", ticker, exc)
     return out or None

@@ -92,3 +92,44 @@ def fill_total_revenue(stock_code: str, entry: dict, *, year=None,
         else:
             entry[k] = num / total * 100
     return True
+
+
+def fill_series(stock_code: str, items: list[tuple]) -> int:
+    """시계열 전체를 **한 번에** 채운다. `items` = [(year, quarter, fin_dict), …].
+
+    ⚠️ **전부 아니면 전무**(2026-08-19 NH투자증권 분기 차트). 한 분기만
+    총액(3.2조)으로 바뀌고 옆 분기가 구성요소(0.46조)로 남으면, 막대그래프에
+    **없던 절벽**이 생긴다 — 두 축이 다른 수치를 한 계열에 섞는 것이라 개별
+    칸이 맞아도 그림은 거짓이 된다. 그래서 사본에 채워 보고 **하나라도**
+    실패하면 아무것도 커밋하지 않는다(그 경우 옛 동작 = 구성요소 + 비율 비움
+    유지, 화면은 계정명을 그대로 부른다).
+
+    반환 = 실제로 바뀐 기간 수(0 이면 원본 무변경)."""
+    import copy
+
+    need = [(y, q, f) for y, q, f in items
+            if isinstance(f, dict) and (f.get("_component_accounts") or {}).get("매출")]
+    if not need:
+        return 0
+    try:
+        from bot.wisereport_financials import fetch_financial_summary
+        summary = fetch_financial_summary(stock_code)
+    except Exception as exc:                                   # noqa: BLE001
+        log.info("kr_revenue_fallback: %s 요약 조회 실패: %s", stock_code, exc)
+        return 0
+    if not summary:
+        return 0
+    staged = []
+    for y, q, fin in need:
+        cp = copy.deepcopy(fin)
+        if not fill_total_revenue(stock_code, cp, year=y, quarter=q,
+                                  summary=summary):
+            log.info("kr_revenue_fallback: %s %s 보강 불가 — 시계열 전체를 "
+                     "구성요소 기준으로 유지(혼합 금지)",
+                     stock_code, _period_key(y, q))
+            return 0
+        staged.append((fin, cp))
+    for fin, cp in staged:
+        fin.clear()
+        fin.update(cp)
+    return len(staged)
