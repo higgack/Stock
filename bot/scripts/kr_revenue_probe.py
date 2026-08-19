@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -40,6 +40,76 @@ def _p(*a):
     print(*a, flush=True)
 
 
+# FnGuide/네이버에서 Financial Summary(매출액 총액)를 담고 있을 **후보**
+# 엔드포인트. 어느 것이 실제로 표를 주는지는 추측하지 않고 VM 에서 재본다
+# (2026-08-19: c1010001.aspx 단독으로는 15종목 전부 '표 없음'이었다).
+_FG_CANDIDATES = [
+    ("navercomp c1010001",
+     "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={c}"),
+    ("navercomp cF1001 Q",
+     "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
+     "?cmp_cd={c}&fin_typ=0&freq_typ=Q"),
+    ("navercomp cF1001 Y",
+     "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
+     "?cmp_cd={c}&fin_typ=0&freq_typ=Y"),
+    ("comp SVD_Main",
+     "https://comp.fnguide.com/SVO2/asp/SVD_Main.asp"
+     "?pGB=1&gicode=A{c}&cID=&MenuYn=Y&ReportGB=&NewMenuID=101&stkGb=701"),
+    ("comp SVD_Finance",
+     "https://comp.fnguide.com/SVO2/asp/SVD_Finance.asp"
+     "?pGB=1&gicode=A{c}&cID=&MenuYn=Y&ReportGB=D&NewMenuID=103&stkGb=701"),
+]
+
+
+def _fnguide_debug(codes: list[str]) -> int:
+    """후보 URL 을 하나씩 받아 **무엇이 들어 있는지** 그대로 찍는다.
+
+    파서가 '표 없음'만 반복하면 원인이 (a) 요청 실패 (b) 표가 AJAX 라 HTML 에
+    없음 (c) 우리 파싱 규칙 문제 중 무엇인지 알 수 없다 — 셋을 가른다."""
+    import re as _re
+
+    import requests
+    from bot.wisereport_financials import _HEADERS, parse_financial_summary
+    for tk in (codes or ["005940.KS"]):
+        c = tk.split(".")[0]
+        _p("")
+        _p(f"── {tk}")
+        for name, tmpl in _FG_CANDIDATES:
+            url = tmpl.format(c=c)
+            try:
+                r = requests.get(url, headers=_HEADERS, timeout=15)
+                if not r.encoding or r.encoding.lower() == "iso-8859-1":
+                    r.encoding = r.apparent_encoding or "utf-8"
+                html = r.text
+                st = r.status_code
+            except Exception as exc:                    # noqa: BLE001
+                _p(f"   {name:<20} ❗ {type(exc).__name__}: {exc}")
+                continue
+            n_tbl = len(_re.findall(r"<table", html, _re.I))
+            has_rev = "매출액" in html
+            has_hl = "highlight_D_" in html
+            parsed = parse_financial_summary(html)
+            nq = len(parsed.get("quarter") or {})
+            na = len(parsed.get("annual") or {})
+            _p(f"   {name:<20} HTTP {st} · {len(html):>7,}B · table {n_tbl:>3}"
+               f" · '매출액' {'O' if has_rev else 'X'}"
+               f" · highlight_D_ {'O' if has_hl else 'X'}"
+               f" · 파싱 분기 {nq}/연간 {na}")
+            if nq or na:
+                for kind in ("quarter", "annual"):
+                    for per in sorted(parsed.get(kind) or {})[-2:]:
+                        row = parsed[kind][per]
+                        _p(f"      {kind} {per}: "
+                           + " · ".join(f"{k}={v / 1e8:,.0f}억"
+                                        for k, v in sorted(row.items())))
+            elif has_rev:
+                # 표는 있는데 못 읽었다 — 우리 파싱 규칙 문제. 주변을 보여준다.
+                i = html.index("매출액")
+                _p("      ↪ '매출액' 주변 원문 200자: "
+                   + _re.sub(r"\s+", " ", html[max(0, i - 100):i + 100]))
+    return 0
+
+
 def _try_fallback(tk: str, fin: dict) -> str:
     """FnGuide 총액 보강이 **실제로** 되는지 한 줄로. 실패면 이유를 남긴다."""
     try:
@@ -52,7 +122,8 @@ def _try_fallback(tk: str, fin: dict) -> str:
     except Exception as exc:                            # noqa: BLE001
         return f"FnGuide 조회 실패({type(exc).__name__})"
     if not summary:
-        return "FnGuide 표 없음"
+        from bot.wisereport_financials import _LAST_REASON
+        return f"FnGuide 실패: {_LAST_REASON.get(tk.split('.')[0], '원인 미상')}"
     e = {"매출": fin.get("매출"), "영업이익": fin.get("영업이익"),
          "당기순이익": fin.get("당기순이익"),
          "_component_accounts": dict(fin.get("_component_accounts") or {})}
@@ -151,6 +222,8 @@ def main(argv: list[str]) -> int:
                                  calc_kr_financial_ratios, get_dart)
     tickers = [a for a in argv[1:] if not a.startswith("-")]
     _p(f"kr_revenue_probe v{_PROBE_VER} · 매출 그룹={_ACCOUNT_GROUPS['매출']}")
+    if "--fnguide-debug" in argv:
+        return _fnguide_debug(tickers)
     dart = get_dart()
     if not dart:
         _p("❗ DART 클라이언트 없음 — DART_API_KEY 확인")

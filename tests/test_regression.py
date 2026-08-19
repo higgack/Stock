@@ -22737,6 +22737,40 @@ class TestFlowTrendDiagnosis20260818:
             "<tr><td>주가</td><td>1</td><td>2</td></tr></table>") == {
                 "annual": {}, "quarter": {}}
 
+    def test_fnguide_failure_says_which_of_three_causes(self, monkeypatch):
+        """⚠️ VM 스윕(2026-08-19)에서 15종목 전부 "FnGuide 표 없음" 만 떴다 —
+        (a) 요청 실패 (b) 표가 AJAX 라 HTML 에 없음 (c) 파싱 규칙 문제 중
+        무엇인지 알 수 없는 메시지다(실수 #12). 셋을 갈라 말하게 한다."""
+        import bot.wisereport_financials as wf
+
+        class _R:
+            status_code = 200
+            encoding = "utf-8"
+
+            def __init__(self, text):
+                self.text = text
+
+            def raise_for_status(self):
+                pass
+
+        monkeypatch.setattr(wf, "_cached", None, raising=False)
+        # (b) 표 자체가 없다
+        monkeypatch.setattr(wf.requests, "get",
+                            lambda *a, **k: _R("<html>no table here</html>"))
+        assert wf.fetch_financial_summary("005940") is None
+        assert "AJAX" in wf._LAST_REASON["005940"]
+        # (c) '매출액' 은 있는데 우리가 못 읽었다
+        monkeypatch.setattr(wf.requests, "get",
+                            lambda *a, **k: _R("<html>매출액 30,068</html>"))
+        assert wf.fetch_financial_summary("005940") is None
+        assert "파싱 실패" in wf._LAST_REASON["005940"]
+        # (a) 요청 자체가 실패
+        def _boom(*a, **k):
+            raise RuntimeError("nope")
+        monkeypatch.setattr(wf.requests, "get", _boom)
+        assert wf.fetch_financial_summary("005940") is None
+        assert "요청 실패" in wf._LAST_REASON["005940"]
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를
