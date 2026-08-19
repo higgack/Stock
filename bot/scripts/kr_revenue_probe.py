@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 5
+_PROBE_VER = 6
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -55,6 +55,16 @@ _FG_CANDIDATES = [
     ("navercomp cF1001 Y",
      "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
      "?cmp_cd={c}&fin_typ=0&freq_typ=Y"),
+    # 연간 토글 후보 — freq_typ=Y 가 Q 와 같은 응답이라 값·이름을 바꿔 본다.
+    ("navercomp cF1001 freq=0",
+     "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
+     "?cmp_cd={c}&fin_typ=0&freq_typ=0"),
+    ("navercomp cF1001 freq=1",
+     "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
+     "?cmp_cd={c}&fin_typ=0&freq_typ=1"),
+    ("navercomp cF1001 frq=0",
+     "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
+     "?cmp_cd={c}&fin_typ=0&frq=0"),
     ("comp SVD_Main",
      "https://comp.fnguide.com/SVO2/asp/SVD_Main.asp"
      "?pGB=1&gicode=A{c}&cID=&MenuYn=Y&ReportGB=&NewMenuID=101&stkGb=701"),
@@ -113,6 +123,47 @@ def _fnguide_debug(codes: list[str]) -> int:
     return 0
 
 
+def _fnguide_discover(codes: list[str]) -> int:
+    """연간 표를 어느 URL 이 주는지 **부모 페이지의 JS 에서 찾아낸다**.
+
+    freq_typ=Y 가 Q 와 같은 응답이라(2026-08-19 실측) 파라미터를 더 추측하는
+    대신, 기업현황 페이지가 실제로 무엇을 호출하는지 원문에서 읽는다."""
+    import re as _re
+
+    import requests
+    from bot.wisereport_financials import _HEADERS
+    for tk in (codes or ["005940.KS"]):
+        c = tk.split(".")[0]
+        _p("")
+        _p(f"── {tk} 기업현황 페이지에서 프래그먼트 호출부 추출")
+        try:
+            r = requests.get(
+                f"https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx"
+                f"?cmp_cd={c}", headers=_HEADERS, timeout=15)
+            if not r.encoding or r.encoding.lower() == "iso-8859-1":
+                r.encoding = r.apparent_encoding or "utf-8"
+            html = r.text
+        except Exception as exc:                        # noqa: BLE001
+            _p(f"   ❗ {type(exc).__name__}: {exc}")
+            continue
+        seen = set()
+        for m in _re.finditer(r"cF\d{4}\.aspx", html):
+            if m.group(0) in seen:
+                continue
+            seen.add(m.group(0))
+            a, b = max(0, m.start() - 220), m.end() + 260
+            _p(f"   ▶ {m.group(0)}: "
+               + _re.sub(r"\s+", " ", html[a:b]))
+        for kw in ("freq_typ", "frq", "fin_typ", "finGubun"):
+            hits = [_re.sub(r"\s+", " ", html[max(0, m.start() - 90):m.end() + 90])
+                    for m in list(_re.finditer(kw, html))[:3]]
+            for h in hits:
+                _p(f"   · {kw}: {h}")
+        if not seen:
+            _p("   (cF####.aspx 참조 없음 — 다른 이름으로 호출한다)")
+    return 0
+
+
 def _try_fallback(tk: str, fin: dict) -> str:
     """FnGuide 총액 보강이 **실제로** 되는지 한 줄로. 실패면 이유를 남긴다."""
     try:
@@ -127,15 +178,25 @@ def _try_fallback(tk: str, fin: dict) -> str:
     if not summary:
         from bot.wisereport_financials import _LAST_REASON
         return f"FnGuide 실패: {_LAST_REASON.get(tk.split('.')[0], '원인 미상')}"
-    e = {"매출": fin.get("매출"), "영업이익": fin.get("영업이익"),
-         "당기순이익": fin.get("당기순이익"),
-         "_component_accounts": dict(fin.get("_component_accounts") or {})}
-    ok = fill_total_revenue(tk, e, year=2025, quarter=None, summary=summary)
-    if not ok:
-        keys = sorted((summary.get("annual") or {}))[-3:]
-        return f"❌ 보강 불가(연간 키={keys})"
-    return (f"✅ 보강 {e['매출'] / 1e12:.2f}조"
-            f" · 영업이익률 {e.get('영업이익률', 0):.1f}%")
+    def _mk():
+        return {"매출": fin.get("매출"), "영업이익": fin.get("영업이익"),
+                "당기순이익": fin.get("당기순이익"),
+                "_component_accounts": dict(fin.get("_component_accounts") or {})}
+
+    out = []
+    # 연간(사업보고서 기준)
+    ea = _mk()
+    if fill_total_revenue(tk, ea, year=2025, quarter=None, summary=summary):
+        out.append(f"연간 ✅ {ea['매출'] / 1e12:.2f}조"
+                   f"·OPM {ea.get('영업이익률', 0):.1f}%")
+    else:
+        out.append(f"연간 ❌(키={sorted(summary.get('annual') or {})[-3:]})")
+    # 분기 — DART 연간 수치로는 검산(영업이익 ±2%)이 안 맞으니 **키 존재만**
+    # 본다. 실제 교체는 분기 entry 로 이뤄진다.
+    qk = sorted(summary.get("quarter") or {})
+    out.append(f"분기 {'✅' if qk else '❌'}(키 {len(qk)}개"
+               + (f", 최신 {qk[-1]}" if qk else "") + ")")
+    return " · ".join(out)
 
 
 def _sweep(dart, tickers: list[str]) -> int:
@@ -225,6 +286,8 @@ def main(argv: list[str]) -> int:
                                  calc_kr_financial_ratios, get_dart)
     tickers = [a for a in argv[1:] if not a.startswith("-")]
     _p(f"kr_revenue_probe v{_PROBE_VER} · 매출 그룹={_ACCOUNT_GROUPS['매출']}")
+    if "--fnguide-discover" in argv:
+        return _fnguide_discover(tickers)
     if "--fnguide-debug" in argv:
         return _fnguide_debug(tickers)
     dart = get_dart()
