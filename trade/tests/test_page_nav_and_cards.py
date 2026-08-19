@@ -208,3 +208,57 @@ class EmptyDetailCardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompanyVisibilityTests(unittest.TestCase):
+    """관련기업(티커)은 **접힌 카드에서도** 보여야 한다.
+
+    사용자 2026-08-19(미국 PPI): "텔레그램 카드에 관련기업이 있는데 우리
+    대시보드엔 반영이 안 된 것 같다 — 카드에 있는 내용은 최대한 반영돼야
+    한다." 실제로 tw·cn·jp2·th·my·ph·mx 7개는 요약에 넣고 있었고 미국
+    수입/PPI 두 페이지만 펼침 본문에 묻어 있었다(복사한 쪽이 틀린 쪽).
+    티커는 이 카드의 **행동 가능한 정보**라 20장 그리드에서 안 보이면 없는
+    것과 같다.
+    """
+
+    def test_no_module_hides_companies_in_the_detail_pane(self):
+        """디렉터리를 훑는다 — 목록형이면 다음 소스가 또 빠진다(실수 #24)."""
+        import pathlib
+        checked = 0
+        for p in sorted(pathlib.Path("trade").glob("*.py")):
+            src = p.read_text(encoding="utf-8")
+            code = "\n".join(ln for ln in src.splitlines()
+                             if not ln.lstrip().startswith("#"))
+            if "co_html" not in code or "card_html(" not in code:
+                continue                      # 카드가 아닌 페이지(레퍼런스북 등)
+            checked += 1
+            with self.subTest(module=p.name):
+                # 요약에 넣는 방식은 둘 다 허용 — `summary.append(co_html)`
+                # 또는 헤더 문자열에 인라인(jp_exports). 금지되는 건 하나,
+                # **펼침 본문(card_html 의 두 번째 리스트)에 넣는 것**이다.
+                self.assertNotRegex(
+                    code, r"card_html\([^)]*\[[^\]]*co_html",
+                    f"{p.name}: 관련기업이 펼침 본문에 들어갔다(펼쳐야 보임)")
+        self.assertGreaterEqual(checked, 10, "훑기가 모듈을 못 찾았다")
+
+    def test_us_ppi_and_us_imports_render_companies_in_summary(self):
+        """소스 스캔은 배선만 본다 — 실제 렌더로 위치까지 확인."""
+        from trade import us_imports as us, us_ppi as up
+        ppi = up.open_us_ppi_db(":memory:")
+        up.ingest(ppi, "🇺🇸 7월 미국 PPI\n▶️ 품목A\n"
+                       "26년07월: PPI 73.24  (+11.7% YoY)  (+4.6% MoM)\n"
+                       "관련기업: #DIS  #CMCSA",
+                  source_message_id=1, posted_at="", media_paths=None)
+        usi = us.open_us_db(":memory:")
+        us.ingest(usi, "🇺🇸 6월 수입 미국\n▶️ 품목B\n"
+                       "26년06월: $12.3M  (+7.0% YoY)  (+1.5% MoM)\n"
+                       "관련기업: #AAPL  #MSFT",
+                  source_message_id=1, posted_at="", media_paths=None)
+        for name, html, tickers in (("us_ppi", up.render_html(ppi), "DIS, CMCSA"),
+                                    ("us_imports", us.render_html(usi), "AAPL, MSFT")):
+            with self.subTest(module=name):
+                head = html.split("</summary>")[0]
+                self.assertIn(tickers, head,
+                              f"{name}: 관련기업이 접힌 카드에 안 보인다")
+                # 본문에 중복 출력되면 같은 정보가 두 번 나온다.
+                self.assertEqual(html.count(tickers), 1)
