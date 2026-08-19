@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 
 
 def _p(*a):
@@ -350,10 +350,34 @@ def main() -> int:
             exp, grace = mt._expected_session(mkt)
             behind = (mt._sessions_between(mkt, latest, exp)
                       if latest and exp and latest < exp else 0)
+            # 네이버 보강이 가능한 지수인지도 함께 — 뒤처졌는데 대체 소스가
+            # 없으면 그 시장은 **구조적으로** 최신이 될 수 없다(사용자
+            # 2026-08-20 "난 모두 나라다 가장 최신으로 하는걸 원해").
+            alt = ("네이버 보강 가능" if ticker.upper() in mt._NAVER_INDEX_FOR
+                   else "대체 소스 없음(ETF)")
             mark = ("❌ 0행" if not rows else
                     f"⚠️ {behind}거래일 지연" if behind and behind > grace else "✅")
             _p(f"   {mkt:5} {name[:16]:16} {ticker:10} {len(rows):>4}행 · "
-               f"기준 {latest or '—'} · 기대 {exp} · 여유 {grace} {mark}")
+               f"기준 {latest or '—'} · 기대 {exp} · 여유 {grace} {mark}"
+               f"  [{alt}]")
+        _p("")
+        _p("── Breadth 전략 보드 — 시장별 기준일")
+        try:
+            from bot import breadth_strategy as bs
+            for mkt in ("KR", "US"):
+                d = bs.build_market(mkt)
+                asof = (d or {}).get("asof")
+                exp, grace = mt._expected_session(mkt)
+                behind = (mt._sessions_between(mkt, asof, exp)
+                          if asof and exp and asof < exp else 0)
+                # ⚠️ 기준일이 **비었는데 ✅** 를 찍으면 거짓 안심이다.
+                mark = ("❌ 기준일 없음(수집 실패)" if not asof else
+                        f"⚠️ {behind}거래일 지연" if behind and behind > grace
+                        else "✅")
+                _p(f"   {mkt:5} 기준 {asof or '—'} · 기대 {exp} {mark}")
+        except Exception as exc:                               # noqa: BLE001
+            _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
         _p("")
         _p("── 시장타이밍 보드 — 변동성 카드")
         snap = mt.fetch_volatility_snapshot()
