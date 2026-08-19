@@ -321,6 +321,10 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
     if payload.get("per_self"):
         notes.append(("* TTM PER = 시가총액 ÷ TTM 순이익 자체계산"
                       "(데이터 소스가 PER 미제공)", _MUTED))
+    if payload.get("revenue_source"):
+        notes.append((f"* 매출 = 영업수익 총액({payload['revenue_source']}) "
+                      "— DART 총액 계정 미공시분 보강(영업이익 교차 확인)",
+                      _MUTED))
     comp = payload.get("component_accounts") or {}
     if comp:
         # 이상치와 달리 값은 유효하다 — 막지 않고 '총액 아님'만 알린다.
@@ -1121,6 +1125,10 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         "anomaly_labels": anomalous_labels(_window),
         # 구성요소 계정에서 온 값 — 이상치와 달리 **값은 유효**하므로 TTM 을
         # 막지 않고 표기만 한다(총매출이 아니라는 사실만 알림).
+        # 총액 미공시사 보강 출처(FnGuide) — 어느 값이 어디서 왔는지 표기.
+        "revenue_source": next(
+            (q["financials"]["_revenue_source"] for q in _window
+             if (q.get("financials") or {}).get("_revenue_source")), ""),
         "component_accounts": {
             k: v for q in _window
             for k, v in ((q.get("financials") or {}).get(
