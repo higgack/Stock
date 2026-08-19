@@ -272,7 +272,25 @@ def get_favorites_with_prices() -> list[dict]:
     _kick_fav_refresh()              # 스테일/콜드 → 백그라운드 full 갱신(비차단)
     if _FAV_CACHE is not None:
         return _FAV_CACHE           # 스테일 즉시(곧 daemon 이 갱신)
-    return _load()                  # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
+    return _cold_rows()             # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
+
+
+# 종목 추가 시점에 디스크로 굳는 **휘발성 파생값**. 콜드 로드에서 그대로
+# 내보내면 화면이 몇 달 전 숫자를 '현재' 로 보여준다(2026-08-20 감사에서
+# 발각: 관심종목 108행이 `현재가 None` 인데 PER 은 6.289547 로 남아 있었다 —
+# 종목을 담던 날의 값이다). 위 docstring 의 의도("첫 로드 — 이름만")를
+# 구현이 안 지키고 있었다. `saved_price`·`saved_date` 는 **의도적 과거값**이라
+# 남긴다.
+_VOLATILE_FIELDS = ("current_price", "per", "eps_estimate", "market_cap",
+                    "eps_is_actual", "eps_fy_label", "eps_negative",
+                    "per_is_trailing")
+
+
+def _cold_rows() -> list[dict]:
+    """디스크 원본에서 휘발성 파생값을 지운 사본 — 낡은 숫자를 '현재'로
+    내보내지 않는다. 빈칸은 다음 폴에서 daemon 이 채운다."""
+    return [{**f, **{k: None for k in _VOLATILE_FIELDS if k in f}}
+            for f in _load()]
 
 
 def _kick_fav_refresh() -> None:

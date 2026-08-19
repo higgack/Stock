@@ -396,11 +396,13 @@ class RenderTests(unittest.TestCase):
             # 테마 스크립트가 <style> 앞(head) — 로드 플래시 방지 계약.
             self.assertLess(html.index("Asia/Seoul"), html.index("<style>"))
 
-    def test_six_hour_regen_and_pairs_wired(self):
-        # 6시간 주기 재생성 태스크 배선(사용자 2026-07-02) + 마진쌍 확장 계약.
+    def test_periodic_regen_and_pairs_wired(self):
+        # 주기 재생성 태스크 배선(사용자 2026-07-02, 2026-08-20 6h→3h) +
+        # 마진쌍 확장 계약. 주기는 **상수**로 옮겼다 — 숫자를 여기 박으면
+        # 주기를 바꿀 때마다 테스트가 계약이 아니라 상수를 검사하게 된다.
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         self.assertIn("_periodic_fred_boards", src)
-        self.assertIn("asyncio.sleep(6 * 3600)", src)
+        self.assertIn("asyncio.sleep(_BOARD_REGEN_HOURS * 3600)", src)
         self.assertIn("to_thread(regenerate_fred_boards)", src)   # 이벤트루프 보호
         self.assertGreaterEqual(len(fb._MARGIN_PAIRS), 17)        # 7 + 2차 10쌍
         keys = {p["key"] for p in fb._MARGIN_PAIRS}

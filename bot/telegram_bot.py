@@ -4053,54 +4053,68 @@ async def _periodic_backlog_review(application) -> None:
             log.exception("backlog review failed")
 
 
+# 보드 재생성 주기. 사용자 2026-08-20 "6시간기준을 3시간으로 바꿔져.
+# 이거 시스템에 부하가 될까?" — 실측 근거로 답하면 **부담되지 않는다**:
+#   · FRED: 재생성 1회당 ~210콜(PPI 105 + CPI 51 + 유동성 53). 3h 주기면
+#     하루 8회 = ~1,700콜. FRED 한도는 **분당 120건**이라 하루 총량 제한이
+#     사실상 없다. 다만 히스토리 캐시 TTL 이 5h 면 3h 사이클의 절반이
+#     캐시에 걸려 **더 신선해지지 않는다** → TTL 을 주기보다 짧게 맞췄다
+#     (fred_boards._HIST_TTL_H). 이게 이번 변경의 핵심이다.
+#   · 시장타이밍·Breadth: 지수/섹터 ETF 수십 콜. yfinance 는 이미 회로차단
+#     (finviz_client.yf_paused / fast_info_ok)이 있어 폭주해도 스스로 멈춘다.
+#   · CPU: 재생성은 to_thread 로 돌고 한 사이클이 수십 초다 — 3h 간격이면
+#     듀티사이클이 1% 미만이다.
+_BOARD_REGEN_HOURS = 3
+
+
 async def _periodic_fred_boards() -> None:
-    """FRED 보드(ppi/liquidity.html) 6시간 주기 재생성(사용자 2026-07-02) —
-    유동성 일간 지표(VIX·스프레드·커브·환율 히스토리)가 당일 반영되게. 자정
-    regen(_periodic_dashboard_refresh)과 별개 태스크. 비용: FRED 무료 ~120콜
-    ×4/일(캐시 5h) — 무시 가능. 첫 사이클은 6h 후(startup 스레드가 방금 생성)."""
+    """FRED 보드(ppi/liquidity.html) 주기 재생성(사용자 2026-07-02, 2026-08-20
+    6h→3h) — 유동성 일간 지표(VIX·스프레드·커브·환율 히스토리)가 당일
+    반영되게. 자정 regen(_periodic_dashboard_refresh)과 별개 태스크.
+    첫 사이클은 한 주기 후(startup 스레드가 방금 생성)."""
     while True:
         try:
-            await asyncio.sleep(6 * 3600)
+            await asyncio.sleep(_BOARD_REGEN_HOURS * 3600)
             from bot.fred_boards import regenerate_fred_boards
             await asyncio.to_thread(regenerate_fred_boards)
-            log.info("fred boards 6h regen: ok")
+            log.info("fred boards %dh regen: ok", _BOARD_REGEN_HOURS)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("fred boards 6h regen failed")
-        # 시장타이밍 보드(2026-07-26) — 같은 6시간 주기(분산일·FTD·매크로
+            log.exception("fred boards regen failed")
+        # 시장타이밍 보드(2026-07-26) — 같은 주기(분산일·FTD·매크로
         # 레짐 갱신 빈도로 충분, 크립토 스코어도 마찬가지). 실패해도 FRED
         # 보드 갱신과 독립(try 분리).
         try:
             from bot.market_timing import regenerate_market_timing
             await asyncio.to_thread(regenerate_market_timing)
-            log.info("market timing 6h regen: ok")
+            log.info("market timing %dh regen: ok", _BOARD_REGEN_HOURS)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("market timing 6h regen failed")
-        # Breadth 4구간 전략 보드(2026-08-16 사용자 캡처 전략) — 같은 6시간
+            log.exception("market timing regen failed")
+        # Breadth 4구간 전략 보드(2026-08-16 사용자 캡처 전략) — 같은
         # 주기. 매일 값은 중간점검이고 월말 종가에만 확정 신호가 기록되므로
         # 이 빈도로 충분. 실패해도 위 보드들과 독립(try 분리).
         try:
             from bot.breadth_strategy import regenerate as _regen_breadth
             await asyncio.to_thread(_regen_breadth)
-            log.info("breadth strategy 6h regen: ok")
+            log.info("breadth strategy %dh regen: ok", _BOARD_REGEN_HOURS)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("breadth strategy 6h regen failed")
+            log.exception("breadth strategy regen failed")
         # 경제캘린더 보드(2026-07-26) — CPI/Core CPI/PPI/고용/AHE/실업률/실업수당(신규·연속)/소매/ECI/GDP/PCE/Core PCE/FOMC 발표일정.
-        # 같은 6시간 주기(발표일 자체가 자주 안 바뀜, FRED 캐시도 12h) —
+        # 같은 주기(발표일 자체가 자주 안 바뀜, vintage 질의는 24h 캐시) —
         # 실패해도 위 두 보드 갱신과 독립(try 분리).
         try:
             from bot.econ_calendar import regenerate_econ_calendar
             await asyncio.to_thread(regenerate_econ_calendar)
-            log.info("econ calendar 6h regen: ok")
+            log.info("econ calendar %dh regen: ok", _BOARD_REGEN_HOURS)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("econ calendar 6h regen failed")
+            log.exception("econ calendar regen failed")
 
 
 async def _periodic_dashboard_refresh(application=None) -> None:
@@ -4346,8 +4360,8 @@ async def _on_startup(application) -> None:
     except Exception as exc:
         log.warning("startup: market timing thread failed: %s", exc)
     # Breadth 전략 보드(2026-08-16) — 같은 이유로 startup 무조건 재생성.
-    # nav 링크는 즉시 살아나므로 여기 없으면 배포 직후 최소 6시간 404 이고,
-    # watchdog 재시작이 6시간보다 잦으면 한 번도 안 만들어진다(실수 #11).
+    # nav 링크는 즉시 살아나므로 여기 없으면 배포 직후 최소 한 주기 404 이고,
+    # watchdog 재시작이 그 주기보다 잦으면 한 번도 안 만들어진다(실수 #11).
     try:
         import threading as _bs_thr
 
@@ -4713,7 +4727,7 @@ async def _on_startup(application) -> None:
     # application so it stays referenced (otherwise the GC could collect it).
     application._auto_resolve_task = asyncio.create_task(_periodic_auto_resolve())
     application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
-    # FRED 보드 6시간 주기 재생성(사용자 2026-07-02) — 유동성 일간 지표(VIX·
+    # FRED 보드 주기 재생성(_BOARD_REGEN_HOURS, 2026-08-20 6h→3h) — 유동성 일간 지표(VIX·
     # 스프레드·커브) 당일 반영. 자정 regen 과 별개, 첫 사이클은 6h 후(startup
     # 스레드가 방금 생성). to_thread(네트워크 ~120콜, 이벤트루프 차단 금지).
     application._fred_boards_task = asyncio.create_task(_periodic_fred_boards())

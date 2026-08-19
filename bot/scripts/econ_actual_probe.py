@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 from datetime import date, timedelta
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 
 def _p(*a):
@@ -101,8 +101,33 @@ def main() -> int:
                    f"간격 {gap}일 < 하한 {lo}일")
             _p(f"   {rd}  ❌ 빈칸 — 가장 가까운 관측 {near[0]}({near[1]}) · {why}")
 
+        # v3 — **방향성 칸까지 검산**한다(사용자 2026-08-20 "이 숫자랑 방향성도
+        # 맞는거 맞어?"). 화면은 1M/3M/6M/1Y 를 %로만 보여줘서 어느 관측과
+        # 비교한 건지 알 수 없다 — 여기선 **비교 대상 관측일·값**을 함께 찍어
+        # 사용자가 직접 나눗셈할 수 있게 한다.
+        trend = ec._build_trend_summary(obs, [])
+        if trend:
+            base = obs[-1]
+            _p(f"   방향성 기준 관측 {base[0]} = {base[1]}")
+            for lbl, days_back, key in (("1M", 30, "m1_pct"), ("3M", 90, "m3_pct"),
+                                        ("6M", 180, "m6_pct"), ("1Y", 365, "y1_pct")):
+                cutoff = (date.fromisoformat(base[0])
+                          - timedelta(days=days_back)).isoformat()
+                hit = ec._value_on_or_before(obs, cutoff)
+                pct = trend.get(key)
+                calc = (None if not hit or not hit[1]
+                        else (base[1] - hit[1]) / abs(hit[1]) * 100)
+                agree = (pct is not None and calc is not None
+                         and abs(pct - calc) < 0.05)
+                _p(f"     {lbl:3} 화면 {('%+.1f%%' % pct) if pct is not None else '—':>8}"
+                   f" ← {hit[0] if hit else '—'} {hit[1] if hit else '—'}"
+                   f"  (검산 {('%+.2f%%' % calc) if calc is not None else '—'})"
+                   f" {'✅' if agree else ('—' if pct is None else '❌')}")
+
     _p("")
     _p("읽는 법: 'vintage' = 원천이 그 발표일 당시 갖고 있던 값(추정 0).")
+    _p("        '방향성' 줄의 ← 뒤가 **비교 대상 관측**이다 — 화면 %와 검산 %가")
+    _p("        같으면 ✅. 발표일과 관측기간이 다른 건 정상(7/14 발표=6월분).")
     _p("        '창 폴백' 은 vintage 를 못 받아 시차 창으로 고른 근사값 —")
     _p("        인접 발표일이 **같은 값**이면 그 근사가 틀린 것이다.")
     _p("        ❌ 가 '간격 N일 > 상한' 이면 그 이벤트의 actual_max_lag_days 를")

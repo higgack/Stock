@@ -178,7 +178,7 @@ def fetch_history(series_id: str, start: str = "2018-01-01",
                   ttl_hours: float = 5.0) -> list[tuple[str, float]]:
     """시리즈 전체 히스토리 [(date, value)] 오름차순. FRED 보드(ppi/liquidity
     대시보드)용 — _fetch_series(최신값)와 달리 시계열 전량. 실패/키부재 → [].
-    캐시 per series+today, 기본 5h — 보드 6시간 주기 재생성(사용자 2026-07-02)이
+    캐시 per series+today, 기본 5h — 보드는 더 짧은 TTL 을 명시로 넘긴다(fred_boards._HIST_TTL_H). 6시간 주기 시절 기본값이
     매 사이클 신선한 값을 받게(12h 면 두 사이클이 같은 캐시)."""
     api_key = _env_key("FRED_API_KEY")
     if not api_key:
