@@ -243,6 +243,13 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
             f'<span class="ppi-mval">{iv:,.2f}</span>'
             f'{_delta_str(r.get("ppi_yoy"), r.get("ppi_mom"))}</div>'
         )
+    # ⚠️ 관련기업은 **접힌 카드에서도 보여야 한다**(사용자 2026-08-19
+    # "카드에 있는 내용은 최대한 반영되어야돼"). 텔레그램 원문은 값 바로
+    # 아래에 티커를 노출하는데, 우리는 펼침 본문에 묻어 20장 그리드에서
+    # 안 보였다 — 다른 7개 소스(tw/cn/jp2/th/my/ph/mx)는 이미 요약에
+    # 넣고 있었고 미국 두 페이지만 어긋나 있었다(복사한 쪽이 틀린 쪽).
+    if co_html:
+        summary.append(co_html)
     chart = ""
     media = r.get("chart_media") or ""
     if media:
@@ -250,7 +257,7 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
                else media_prefix + media)
         chart = (f'<div class="ppi-chart"><img loading="lazy" '
                  f'src="{_html.escape(src)}" alt=""></div>')
-    return card_html("ppi", summary, [chart, co_html, _hist_table(hist)])
+    return card_html("ppi", summary, [chart, _hist_table(hist)])
 
 
 _TITLE = "미국 PPI 데이터"
