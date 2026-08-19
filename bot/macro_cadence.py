@@ -236,3 +236,35 @@ def judge(sid: str, raw: str, today: Optional[date] = None,
     behind = _periods_behind(actual, expected, freq)
     return {"freq": freq, "lag": lag, "why": why, "actual": actual,
             "expected": expected, "behind": behind, "stale": behind > 0}
+
+
+def median_month_gap(hist: list) -> int:
+    """[(date, value)] 시계열의 **관측 간격 중앙값**(개월). 부족하면 1.
+
+    "이 시리즈에 '1개월 전' 창을 계산할 수 있는가"를 판정한다. 분기 시리즈
+    (M2V·ECI·GDP)에 1M 창을 그리면 사실은 직전 **분기** 값과의 비교인데
+    라벨은 '1M' 이라 거짓말이 된다(2026-08-20 실측: 유동성 보드 M2V
+    "1M +0.00%", 경제캘린더 ECI/GDP 의 1M·3M 이 **같은 관측**을 가리킴).
+
+    ⚠️ 두 화면이 각자 계산하면 판정이 갈라진다 — 여기가 단일 출처다.
+    ⚠️ `zip(h[-13:], h[-12:])` 는 길이 13 미만이면 같은 리스트를 짝지어
+    간격이 전부 0 이 된다(실측한 오작성). 인접쌍은 `zip(x, x[1:])`.
+    주간 시리즈는 월 차이가 0 인 쌍이 많아 **양수 간격만** 센다.
+    """
+    if len(hist) < 3:
+        return 1
+    recent = hist[-13:]
+    gaps = []
+    for (d0, _), (d1, _) in zip(recent, recent[1:]):
+        try:
+            y0, m0 = int(str(d0)[:4]), int(str(d0)[5:7])
+            y1, m1 = int(str(d1)[:4]), int(str(d1)[5:7])
+        except (ValueError, IndexError):
+            continue
+        g = (y1 - y0) * 12 + (m1 - m0)
+        if g > 0:
+            gaps.append(g)
+    if not gaps:
+        return 1
+    gaps.sort()
+    return gaps[len(gaps) // 2]

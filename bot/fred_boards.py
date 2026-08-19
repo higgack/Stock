@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 from bot.fred_boards_catalog import CPI_SERIES, LIQ_SERIES, PPI_SERIES
 from bot.macro_cadence import (BLS_MONTHLY as _BLS_MONTHLY,
+                               median_month_gap as _median_month_gap,
                                KR_CPI_MONTHLY as _KR_CPI_CADENCE,
                                KR_PPI_MONTHLY as _KR_PPI_CADENCE)
 
@@ -102,26 +103,6 @@ def _value_at(hist: list[tuple[str, float]], months_back: int):
     cut = f"{y:04d}-{m:02d}-{day:02d}"
     prev = [v for d, v in hist if d <= cut]
     return prev[-1] if prev else None
-
-
-def _median_month_gap(hist: list[tuple[str, float]]) -> int:
-    """월 단위 정규화된 시계열의 **관측 간격 중앙값**(개월). 관측이 부족하면 1."""
-    if len(hist) < 3:
-        return 1
-    # ⚠️ `zip(hist[-13:], hist[-12:])` 는 길이가 13 미만이면 **같은 리스트**를
-    # 짝지어 간격이 전부 0 이 된다(직접 실측). 인접쌍은 zip(x, x[1:]) 이다.
-    recent = hist[-13:]
-    gaps = []
-    for (d0, _), (d1, _) in zip(recent, recent[1:]):
-        y0, m0 = int(d0[:4]), int(d0[5:7])
-        y1, m1 = int(d1[:4]), int(d1[5:7])
-        g = (y1 - y0) * 12 + (m1 - m0)
-        if g > 0:
-            gaps.append(g)
-    if not gaps:
-        return 1
-    gaps.sort()
-    return gaps[len(gaps) // 2]
 
 
 def series_metrics(hist: list[tuple[str, float]]) -> dict | None:
