@@ -18,9 +18,19 @@ fetch_*는 I/O 래퍼로 분리(전 보드 공통 패턴, fred_boards.py 참조)
 """
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# 규칙 10a — 모든 시각은 KST 명시계산(서버 로컬타임 의존 금지).
+_KST_TZ = timezone(timedelta(hours=9))
+
+
+def _kst_now() -> datetime:
+    return datetime.now(_KST_TZ)
 
 # ── 분산일(Distribution Day, IBD 방식) ─────────────────────────────────────
 _DD_MIN_DECLINE_PCT = -0.002      # -0.2%+ 하락(종가 기준)
@@ -567,6 +577,55 @@ def fetch_vkospi_rows(days: int = _VKOSPI_DAYS) -> list:
     return rows
 
 
+# ── 변동성 카드 last-good 캐시 ────────────────────────────────────────────
+# 사용자 2026-08-19: "MOVE 는 나올때가 있고 안나올때가 있는데 왜 그런거야?"
+# 원인은 **카드가 매 재생성마다 원천 fetch 1회에 전부를 걸고 있었기 때문**
+# 이다 — `^MOVE` 가 한 번 빈 결과를 주면 그 사이클 카드가 통째로 사라지고,
+# 다음 사이클에 성공하면 다시 나타난다(깜빡임). 값이 틀린 게 아니라 **없어
+# 지는** 게 문제라, 마지막 성공분을 디스크에 남겨 원천이 실패한 사이클에도
+# 카드를 유지한다. 단, 캐시로 그린 카드는 **캐시라고 표시**한다(조용한 대체
+# 금지 — 실수 #12). 오래된 값이 실시간인 척하는 것이 사라지는 것보다 나쁘다.
+_VOL_CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_timing"
+_VOL_CACHE_MAX_AGE_DAYS = 7      # 이보다 낡으면 캐시도 쓰지 않는다
+
+
+def _vol_cache_path(key: str) -> Path:
+    return _VOL_CACHE_DIR / f"vol_{key}.json"
+
+
+def _vol_cache_save(key: str, rec: dict) -> None:
+    try:
+        _VOL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _vol_cache_path(key).write_text(
+            json.dumps({"saved_at": _kst_now().isoformat(), "rec": rec},
+                       ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("market_timing: %s 캐시 저장 실패: %s", key, exc)
+
+
+def _vol_cache_load(key: str) -> dict | None:
+    """마지막 성공분. 없거나 너무 낡으면 None."""
+    p = _vol_cache_path(key)
+    try:
+        if not p.exists():
+            return None
+        blob = json.loads(p.read_text(encoding="utf-8"))
+        saved = datetime.fromisoformat(blob["saved_at"])
+        age = (_kst_now() - saved).days
+        if age > _VOL_CACHE_MAX_AGE_DAYS:
+            log.warning("market_timing: %s 캐시가 %d일 낡음(>%d) — 사용 안 함",
+                        key, age, _VOL_CACHE_MAX_AGE_DAYS)
+            return None
+        rec = dict(blob["rec"])
+        # 캐시임을 화면 라벨로 드러낸다(source 는 '현재 (…)' 로 렌더된다).
+        rec["source"] = f"{saved.strftime('%m-%d')} 기준 저장분"
+        rec["from_cache"] = True
+        return rec
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("market_timing: %s 캐시 읽기 실패: %s", key, exc)
+        return None
+
+
 def fetch_volatility_snapshot() -> dict:
     """{"vix": {...}, "vkospi": {...}|None, "move": {...}|None}.
 
@@ -605,9 +664,18 @@ def fetch_volatility_snapshot() -> dict:
         if move_hist:
             out["move"] = {"value": move_hist[-1]["close"],
                            "date": move_hist[-1]["date"],
+                           "source": "yfinance",
                            "history": vol_history(move_hist)}
+            _vol_cache_save("move", out["move"])
+        else:
+            # 조용히 사라지지 않는다 — 왜 없는지 로그에 남긴다(실수 #12).
+            log.warning("market_timing: ^MOVE 히스토리 0행 — 캐시로 대체 시도")
     except Exception as exc:
-        log.debug("market_timing: MOVE fetch failed (커버리지 불안정 — graceful): %s", exc)
+        log.warning("market_timing: MOVE fetch 실패(%s) — 캐시로 대체 시도", exc)
+    if not out.get("move"):
+        cached = _vol_cache_load("move")
+        if cached:
+            out["move"] = cached
     return out
 
 
@@ -982,7 +1050,9 @@ D25≥5·D15≥3·D5≥2 중 하나만 충족 · SEVERE D25≥6·D15≥4 중 하
 높으면 전반적 참여. <b>KR</b>=KODEX 섹터 12개(KRX 업종) · <b>US</b>=SPDR GICS 11개.
 표본이 다르므로 두 시장의 %를 직접 비교하지 말 것(같은 시장의 시계열 변화를 볼 것).<br>
 <b>4) 변동성(VIX·MOVE)</b> — VIX=주식 공포지수(메인 대시보드와 동일 네이버 소스),
-MOVE=채권 변동성(커버리지 불안정 시 생략).<br>
+MOVE=채권 변동성(ICE BofA, bp 단위). MOVE 는 원천 커버리지가 불안정해 한 사이클
+비는 일이 있는데, 그럴 땐 <b>마지막 성공분</b>으로 카드를 유지하고 '현재' 칸에
+<b>「MM-DD 기준 저장분」</b>이라고 표시합니다(7일 넘게 낡으면 그때는 생략).<br>
 <b>5) 시장 센티먼트</b> — CNN Fear &amp; Greed 지수(메인 대시보드와 동일 소스). VIX 와는 다른
 지표(VIX=변동성 하나, F&amp;G=7개 컴포넌트 종합 심리지수) — 혼동 주의.<br>
 <b>6) 매크로 레짐</b> — 크로스에셋 비율 다수결로 시장 국면(집중/확산/긴축/인플레) 판정,

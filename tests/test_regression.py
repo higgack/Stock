@@ -19632,7 +19632,63 @@ class TestMarketTimingBreadthVol20260726:
             raise RuntimeError("x")
 
         monkeypatch.setattr(mt, "fetch_index_history", boom)
+        # ⚠️ last-good 캐시도 스텁 — 안 하면 봇 호스트에 캐시 파일이 생긴
+        # 뒤부터 이 테스트가 깨진다(위 VKOSPI 스텁과 같은 함정).
+        monkeypatch.setattr(mt, "_vol_cache_load", lambda key: None)
         assert mt.fetch_volatility_snapshot() == {}
+
+    def test_move_card_survives_a_failed_cycle_via_cache(self, monkeypatch, tmp_path):
+        """사용자 2026-08-19: "MOVE 는 나올때가 있고 안나올때가 있는데 왜?"
+
+        원인은 카드가 **매 재생성마다 원천 fetch 1회에 전부를 걸고** 있었던
+        것 — `^MOVE` 가 한 번 빈 결과를 주면 그 사이클 카드가 통째로 사라지고
+        다음 사이클에 다시 나타난다(깜빡임). 마지막 성공분으로 카드를 유지하되
+        **캐시라고 표시**한다(조용한 대체 금지 — 낡은 값이 실시간인 척하는 건
+        사라지는 것보다 나쁘다)."""
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda days=400: [])
+        rows = [{"date": f"2026-08-{d:02d}", "close": 70.0 + d}
+                for d in range(1, 19)]
+
+        # ① 성공한 사이클 — 값이 나오고 캐시가 남는다.
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda t, days=120, min_rows=None:
+                            rows if t == "^MOVE" else [])
+        first = mt.fetch_volatility_snapshot()
+        assert first["move"]["value"] == rows[-1]["close"]
+        assert not first["move"].get("from_cache")
+
+        # ② 다음 사이클에 원천이 빈다 — 카드는 유지되고 라벨이 바뀐다.
+        monkeypatch.setattr(mt, "fetch_index_history",
+                            lambda t, days=120, min_rows=None: [])
+        second = mt.fetch_volatility_snapshot()
+        assert second["move"]["value"] == rows[-1]["close"], "카드가 사라졌다"
+        assert second["move"]["from_cache"] is True
+        assert "저장분" in second["move"]["source"], "캐시가 실시간인 척한다"
+
+    def test_move_cache_expires(self, monkeypatch, tmp_path):
+        """무한정 되살리면 안 된다 — 원천이 정말 죽은 것과 구분이 사라진다."""
+        import json
+        from datetime import timedelta
+        from bot import market_timing as mt
+        monkeypatch.setattr(mt, "_VOL_CACHE_DIR", tmp_path)
+        mt._vol_cache_save("move", {"value": 70.0, "history": {}})
+        p = mt._vol_cache_path("move")
+        blob = json.loads(p.read_text(encoding="utf-8"))
+        blob["saved_at"] = (mt._kst_now()
+                            - timedelta(days=mt._VOL_CACHE_MAX_AGE_DAYS + 1)
+                            ).isoformat()
+        p.write_text(json.dumps(blob), encoding="utf-8")
+        assert mt._vol_cache_load("move") is None
+
+    def test_move_guide_text_matches_behavior(self):
+        """설명이 동작과 어긋나면 그 자체가 버그(§Help/Dashboard 등록)."""
+        from bot import market_timing as mt
+        html = mt.render_market_timing_page({"markets": {}, "generated_at": ""})
+        assert "저장분" in html, "캐시 대체 동작이 사용법에 없다"
+        assert "커버리지 불안정 시 생략" not in html, "옛 설명이 남아 있다"
 
     def test_no_fetch_vix_cnn_reverted(self):
         # 회고(2026-07-26) — CNN 을 VIX 최우선 소스로 쓰려던 _fetch_vix_cnn
