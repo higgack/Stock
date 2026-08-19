@@ -25864,3 +25864,41 @@ class TestLongRangeFallback20260819:
             self._payload(227, today - timedelta(days=40)))
         assert len(out) == 400
         assert out[-1]["date"] == (today - timedelta(days=33)).isoformat()
+
+    def test_snapshot_fetches_enough_quarters_to_fill_every_ttm_cell(
+            self, monkeypatch):
+        """사용자 2026-08-19 화면: ROE(TTM) 가 **맨 오른쪽 한 칸만** 차고
+        나머지 3칸이 `—` 였다. 표는 4분기인데 수집도 4분기라, 앞 3칸은
+        TTM 창(4분기)을 못 만든다. 표시 구간 전부를 채우려면 **앞선 3분기를
+        더 받아야** 한다 — 저장은 그대로 마지막 4개."""
+        from bot import dart_client as dc
+        from bot import dart_quarterly as dq
+        from bot import stock_snapshot as ss
+        asked = {}
+
+        def fake_series(dart, ticker, n=6, fs_div="CFS"):
+            asked["n"] = n
+            out = [{"label": f"q{i}", "year": 2025, "quarter": (i % 4) + 1,
+                    "fs_div": "CFS",
+                    "financials": {"당기순이익": 2_800e8, "자본총계": 94_381e8,
+                                   "자산총계": 833_854e8, "매출": 5e11,
+                                   "영업이익": 4e11},
+                    "ratios": {}} for i in range(n)]
+            dc.apply_ttm_returns(out)
+            return out
+
+        class _Dart:
+            @staticmethod
+            def get_normalized_financials(t, **k):
+                return None
+
+        monkeypatch.setattr(dq, "get_quarterly_series", fake_series)
+        monkeypatch.setattr(dc, "get_dart", lambda: _Dart())
+        monkeypatch.setattr(ss, "_apply_revenue_fallback", lambda *a, **k: None)
+        kr = (ss.collect_kr_financials("005940.KS") or {}).get("kr") or {}
+
+        assert asked["n"] == ss._Q_TABLE + ss._TTM_LEAD == 7
+        q = kr.get("financials_q") or []
+        assert len(q) == ss._Q_TABLE, "표시 구간이 늘어나면 안 된다"
+        assert all(e.get("ROE") is not None for e in q), \
+            [e.get("ROE") for e in q]

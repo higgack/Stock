@@ -1168,7 +1168,9 @@ def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
 #   v1 (2026-08-19) 구성요소 매출 = 비율 억제 + 계정 랭킹(표준 태그·이름 정규화)
 #   v2 (2026-08-19) 총액 미공시사(증권·은행·보험) 매출을 FnGuide 총액으로 보강
 #   v3 (2026-08-19) FnGuide 컬럼 매핑 수정 — v2 는 파서가 못 읽어 보강이 0건이었다
-_KR_FIN_SCHEMA_VER = 7
+_Q_TABLE = 4          # 분기 표에 보여줄 분기 수
+_TTM_LEAD = 3         # TTM(4분기 합)을 첫 칸부터 채우려면 앞서 필요한 분기 수
+_KR_FIN_SCHEMA_VER = 8
 
 
 def collect_kr_financials(ticker: str) -> dict:
@@ -1234,10 +1236,15 @@ def collect_kr_financials(ticker: str) -> dict:
     # 항목만 저장(렌더 쪽 표 구성을 그대로 재사용하기 위함).
     try:
         from bot.dart_quarterly import get_quarterly_series
-        q_series = get_quarterly_series(dart, ticker, n=4)
+        # ⚠️ 표는 4분기만 보여주지만 **7분기를 받는다**(사용자 2026-08-19):
+        # ROE(TTM)는 앞선 3분기가 있어야 계산되므로 4개만 받으면 **맨 오른쪽
+        # 한 칸만** 값이 있고 나머지는 빈칸이 된다(실제로 그렇게 떴다).
+        # 저장은 그대로 마지막 4개만 — 다른 화면(분기 추이 차트 등)의 길이를
+        # 바꾸지 않으면서 표시 구간 전부에 TTM 을 채운다.
+        q_series = get_quarterly_series(dart, ticker, n=_Q_TABLE + _TTM_LEAD)
         if q_series:
             q_ts = []
-            for q in q_series:
+            for q in q_series[-_Q_TABLE:]:
                 qentry = {"label": q["label"], "year": q["year"],
                          "quarter": q["quarter"], "fs_div": q["fs_div"]}
                 for k in ("매출", "영업이익", "당기순이익", "자산총계",
