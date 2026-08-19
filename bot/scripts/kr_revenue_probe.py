@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 10
+_PROBE_VER = 11
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -326,13 +326,24 @@ def _sweep(dart, tickers: list[str]) -> int:
             # ⚠️ '계정 없음'으로 끝내면 다음 턴에 계정명을 **추측**하게 된다
             # (보험사는 보험수익/영업수익 등 업권마다 이름이 다르다).
             # 실제 손익계산서 상위 계정명을 그 자리에 찍어 근거로 삼는다.
-            names = []
-            for i in items[:400]:
+            # v11: 이름만 앞에서 12개 찍었더니 하위 조정항목만 나와
+            # 판단이 안 됐다(2026-08-19 001450 손보). **금액 큰 순**으로
+            # sj_div·태그·금액을 함께 찍어 최상단 수익 행을 드러낸다.
+            from bot.dart_client import _parse_dart_amount as _f
+            rows = []
+            for i in items:
                 nm = (i.get("account_nm") or "").strip()
-                if nm and nm not in names:
-                    names.append(nm)
-            buckets["데이터없음"].append(
-                f"{tk}(매출 계정 없음) · 실제 계정 상위: {names[:12]}")
+                if not nm:
+                    continue
+                amt = _f(i.get("thstrm_amount"), as_float=True)
+                rows.append((abs(amt or 0), i.get("sj_div") or "",
+                             nm, (i.get("account_id") or "")[:40], amt))
+            rows.sort(reverse=True)
+            buckets["데이터없음"].append(f"{tk}(매출 계정 없음) · 금액 상위:")
+            for _a, sj, nm, aid, amt in rows[:15]:
+                buckets["데이터없음"].append(
+                    f"      {sj:4} {nm[:28]:28} {aid:40} "
+                    f"{(amt / 1e8 if amt is not None else 0):>12,.0f}억")
         if n % 10 == 0:
             _p(f"   … {n}/{len(tickers)}")
     _p("")

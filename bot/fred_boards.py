@@ -173,11 +173,31 @@ def _mark_stale(row: dict, months: int = 6) -> None:
     FDHBFIN — 재무부 TIC 분기자료 2분기 지연)는 임계값 2배(사용자 2026-07-24
     '지연 왜 뜨는지' — 분기 시리즈는 다음 분기 공표 직전이면 정상 상태에서도
     월간 기준 6개월 age 를 넘겨 매 분기 절반가량 오탐 지연배지가 뜨던 버그.
-    월간 임계값을 분기 시리즈에 그대로 적용하지 않도록 주기별로 분리)."""
+    월간 임계값을 분기 시리즈에 그대로 적용하지 않도록 주기별로 분리).
+
+    ⚠️ 2026-08-19: 판정을 **`bot/macro_cadence` 단일 표**로 옮겼다. 월수
+    휴리스틱은 원천의 실제 공표일정을 모른다 — 분기 시리즈는 임계값을 2배로
+    미는 임시방편이 필요했고, 반대로 `FDHBFIN` 처럼 반년 늦는 계열은 정상
+    상태에서도 배지가 뜨거나 진짜 지연을 놓쳤다. 이제 화면 배지와 감사
+    프로브(`bot.scripts.liquidity_audit`)가 같은 표를 읽는다 — 두 판정이
+    갈라질 수 없다. 규약이 없는 시리즈만 옛 휴리스틱으로 남긴다.
+    """
+    try:
+        from bot.macro_cadence import judge
+        j = judge(str(row.get("id") or ""), str(row.get("latest_date") or ""))
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("_mark_stale: cadence judge failed: %s", exc)
+        j = None
+    if j is not None:
+        if j["freq"] != "E" and j["stale"]:
+            row["stale"] = True
+            row["stale_why"] = f"기대 {j['expected']} — {j['why']}"
+        return
     eff_months = months * 2 if row.get("freq") == "Q" else months
     age = _staleness(str(row.get("latest_date", "")))
     if age is not None and age >= eff_months:
         row["stale"] = True
+        row["stale_why"] = f"{age}개월 전 기준일(공표규약 미등록 — 월수 판정)"
 
 
 _DROP_AFTER_MONTHS = 12   # 이 나이부터 행 자체를 제외(= 중단 간주)
@@ -575,7 +595,7 @@ def _load_ppi() -> tuple[list[dict], list[dict], list[str]]:
         key, label, note = _signal(m)
         row = {**s, **m, "sig": key, "sig_label": label, "note": note,
                "hist": [(d[:7], v) for d, v in hist]}
-        _mark_stale(row)   # 6개월+ 지연 조기경고 배지(전 보드 공통)
+        _mark_stale(row)   # 공표규약 대비 지연 배지(전 보드 공통)
         rows.append(row)
     rows += _load_kr_ppi()
     # 12개월+ 미갱신 = 중단 간주 → 자동 제외(사용자 2026-07-04 '삭제').
@@ -786,8 +806,9 @@ function pc(v,dg){if(v==null)return"<span class='flat'>—</span>";var c=v>=0?'p
 function pcd(r,v,dg){if(v==null)return"<span class='flat'>—</span>";
  if(r.rate_delta){var c=v>=0?'pos':'neg';return "<span class='"+c+"'>"+(v>=0?'+':'')+v.toFixed(2)+"%p</span>";}
  return pc(v,dg);}
-// 기준일 셀 — 6개월+ 지연 조기경고 배지(12개월+ 는 서버가 목록에서 제외).
-function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale'>⚠️지연</span>":"");}
+// 기준일 셀 — 공표규약(macro_cadence) 대비 지연 배지. 배지에 마우스를
+// 올리면 '기대 관측기간 + 근거'가 뜬다(12개월+ 미갱신은 서버가 제외).
+function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale' title=\""+esc(r.stale_why||'')+"\">⚠️지연</span>":"");}
 var CHART_OPTS={plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8a8f98',maxTicksLimit:12},grid:{color:'rgba(128,132,140,.18)'}},y:{ticks:{color:'#8a8f98'},grid:{color:'rgba(128,132,140,.18)'}}},maintainAspectRatio:false};
 function mkChart(el,labels,data,color,fill){
  if(typeof Chart==='undefined'||!el)return null;
@@ -1101,7 +1122,7 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
 <b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
-금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 6개월+ 지연 시리즈는 <b>⚠️지연</b> 배지, 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
+금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 각 시리즈의 <b>실제 공표일정</b>(주기+통상 지연일)을 기준으로 늦은 것만 <b>⚠️지연</b> 배지 — 배지에 마우스를 올리면 기대 관측기간과 근거가 뜹니다. 분기·반년 지연 계열(예 외국인 보유 미 연방부채)은 정상 지연이라 배지가 뜨지 않습니다. 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
 <b>5) 갱신</b> — 6시간 주기(자정·06·12·18시 KST) 자동 재생성(전부 무료 API).
 </details>
 {empty}
