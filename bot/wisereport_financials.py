@@ -27,9 +27,17 @@ import requests
 
 log = logging.getLogger("bot.wisereport_fin")
 
+# ⚠️ **기업현황(c1010001) 이 아니라 그 안의 프래그먼트**를 받는다(2026-08-19
+# VM 실측). c1010001 은 81KB·표 20개인데 Financial Summary 는 AJAX 라 HTML 에
+# 없다 — '매출액' 은 산식 설명("영업이익/매출액(수익)")으로만 등장해 파싱이
+# 늘 빈손이었다. cF1001 은 22KB·표 1개로 그 표 자체를 준다.
 _URL_TMPL = (
-    "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}"
+    "https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx"
+    "?cmp_cd={code}&fin_typ=0&freq_typ={freq}"
 )
+# 분기/연간 프래그먼트. VM 실측에서 freq_typ=Y 는 Q 와 같은 응답이라, 연간은
+# 다른 값으로 한 번 더 시도하고 **내용(헤더 월)으로** 분류한다.
+_FREQS = ("Q", "A", "Y")
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
@@ -80,32 +88,43 @@ def parse_financial_summary(html: str) -> dict:
         rows = [[_text(c) for c in _CELL.findall(r)] for r in _ROW.findall(tbl)]
         rows = [r for r in rows if r]
         # 헤더 = 기간이 2개 이상 있는 줄
-        hdr_i = hdr = None
+        hdr_i = periods = None
         for i, r in enumerate(rows):
-            per = [(_PERIOD.search(c).group(0) if _PERIOD.search(c) else None)
+            # ⚠️ 추정치 컬럼((E))은 **실적이 아니다** — 받지 않는다.
+            per = [None if ("(E)" in c or "(P)" in c) else
+                   (_PERIOD.search(c).group(0) if _PERIOD.search(c) else None)
                    for c in r]
             if sum(1 for p in per if p) >= 2:
-                hdr_i, hdr = i, per
+                hdr_i, periods = i, per
                 break
-        if hdr is None:
+        if periods is None:
             continue
         labels = {(r[0] or "").replace(" ", "") for r in rows[hdr_i + 1:]}
         if "매출액" not in labels or "영업이익" not in labels:
             continue                      # Financial Summary 표가 아니다
-        months = {p.split("/")[1] for p in hdr if p}
+        months = {p.split("/")[1] for p in periods if p}
+        # 연간 표는 12월만 있고 **해가 다르다**. 분기 표도 12월 컬럼을 갖지만
+        # 같은 해 3·6·9 가 함께 있다.
         kind = "annual" if months <= {"12"} else "quarter"
         bucket = out[kind]
+        # ⚠️ **절대 인덱스로 맞추면 한 칸씩 밀린다**(2026-08-19 실측: 2026/03
+        # 자리에 2025/12 값이 들어갔다). 실제 표는 헤더가 2행이라 기간 줄에는
+        # 라벨 칸이 없는데 데이터 줄에는 있기 때문이다. 기간 목록과 '라벨을
+        # 뺀 값들'을 순서대로 맞춘다 — 헤더가 1행이든 2행이든 같은 결과.
+        cols = [p for p in periods if p]
+        col_at = [i for i, p in enumerate(periods) if p]
         for r in rows[hdr_i + 1:]:
             name = (r[0] or "").replace(" ", "")
             if name not in _WANT:
                 continue
-            for ci, per in enumerate(hdr):
-                if not per or ci >= len(r):
-                    continue
-                v = _num(r[ci])
-                if v is None:
-                    continue
-                bucket.setdefault(per, {})[name] = v * _EOK
+            vals = r[1:]
+            if len(r) == len(periods):
+                # 헤더와 데이터의 칸 수가 같다 = 헤더에도 라벨 칸이 있다.
+                vals = [r[i] for i in col_at]
+            for per, cell in zip(cols, vals):
+                v = _num(cell)
+                if v is not None:
+                    bucket.setdefault(per, {})[name] = v * _EOK
     return out
 
 
@@ -123,23 +142,34 @@ def fetch_financial_summary(stock_code: str) -> Optional[dict]:
         c = _cached(ck, ttl=_CACHE_TTL_H * 3600)
         if isinstance(c, dict) and c:
             return c
-    try:
-        resp = requests.get(_URL_TMPL.format(code=code), headers=_HEADERS,
-                            timeout=_TIMEOUT)
-        resp.raise_for_status()
-        # 이 페이지는 EUC-KR 계열을 내보낼 때가 있다 — 잘못 읽으면 라벨이
-        # 깨져 '매출액' 매칭이 조용히 실패한다.
-        if not resp.encoding or resp.encoding.lower() == "iso-8859-1":
-            resp.encoding = resp.apparent_encoding or "utf-8"
-        out = parse_financial_summary(resp.text)
-    except Exception as exc:                            # noqa: BLE001
-        _LAST_REASON[code] = f"요청 실패({type(exc).__name__})"
-        log.info("wisereport_fin: %s 실패: %s", code, exc)
-        return None
+    out: dict = {"annual": {}, "quarter": {}}
+    seen_rev = False
+    req_err = ""          # 요청 실패는 파싱 사유로 덮이면 안 된다
+    for freq in _FREQS:
+        try:
+            resp = requests.get(_URL_TMPL.format(code=code, freq=freq),
+                                headers=_HEADERS, timeout=_TIMEOUT)
+            resp.raise_for_status()
+            # 이 페이지는 EUC-KR 계열을 내보낼 때가 있다 — 잘못 읽으면 라벨이
+            # 깨져 '매출액' 매칭이 조용히 실패한다.
+            if not resp.encoding or resp.encoding.lower() == "iso-8859-1":
+                resp.encoding = resp.apparent_encoding or "utf-8"
+        except Exception as exc:                        # noqa: BLE001
+            req_err = req_err or f"요청 실패({type(exc).__name__})"
+            log.info("wisereport_fin: %s freq=%s 실패: %s", code, freq, exc)
+            continue
+        seen_rev = seen_rev or ("매출액" in resp.text)
+        part = parse_financial_summary(resp.text)
+        for kind in ("annual", "quarter"):
+            for per, row in (part.get(kind) or {}).items():
+                out[kind].setdefault(per, {}).update(row)
+        if out["annual"] and out["quarter"]:
+            break                       # 둘 다 얻었으면 더 두드리지 않는다
     if not (out.get("annual") or out.get("quarter")):
         _LAST_REASON[code] = (
-            "HTML 에 '매출액' 은 있으나 표 파싱 실패"
-            if "매출액" in resp.text else "HTML 에 Financial Summary 없음(AJAX 의심)")
+            req_err if req_err else
+            "HTML 에 '매출액' 은 있으나 표 파싱 실패" if seen_rev
+            else "HTML 에 Financial Summary 없음(AJAX 의심)")
         log.info("wisereport_fin: %s — %s", code, _LAST_REASON[code])
         return None
     _LAST_REASON.pop(code, None)

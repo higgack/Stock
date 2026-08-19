@@ -22729,6 +22729,26 @@ class TestFlowTrendDiagnosis20260818:
         out = parse_financial_summary(html)
         assert out["quarter"]["2026/03"]["매출액"] == 81720 * 1e8
         assert out["annual"]["2025/12"]["매출액"] == 200 * 1e8
+
+        # ⚠️ **실측 구조: 헤더가 2행**(라벨 rowspan + 기간 줄)이라 기간 줄엔
+        # 라벨 칸이 없다. 절대 인덱스로 맞추면 한 칸씩 밀려 2026/03 자리에
+        # 2025/12 값이 들어간다(2026-08-19 VM 실측으로 발각).
+        two_row = ("<table>"
+                   "<tr><th rowspan='2'>주요재무정보</th>"
+                   "<th colspan='3'>분기</th></tr>"
+                   "<tr><th>2025/12<br>(IFRS연결)</th>"
+                   "<th>2026/03<br>(IFRS연결)</th>"
+                   "<th>2026/06<br>(IFRS연결)<br>(E)</th></tr>"
+                   "<tr><th>매출액</th><td>48,641</td><td>81,720</td>"
+                   "<td>90,000</td></tr>"
+                   "<tr><th>영업이익</th><td>4,183</td><td>6,367</td>"
+                   "<td>7,000</td></tr></table>")
+        q = parse_financial_summary(two_row)["quarter"]
+        assert q["2025/12"]["매출액"] == 48641 * 1e8
+        assert q["2026/03"]["매출액"] == 81720 * 1e8, "컬럼이 밀렸다"
+        assert q["2026/03"]["영업이익"] == 6367 * 1e8
+        # 추정치(E) 컬럼은 실적이 아니다 — 받지 않는다.
+        assert "2026/06" not in q
         # 들여쓴 하위 항목(당기순이익(지배))은 이름이 달라 안 들어온다.
         assert "당기순이익" not in out["quarter"]["2026/03"]
         # Financial Summary 가 아닌 표는 무시한다(오탐 방지).
@@ -22754,6 +22774,13 @@ class TestFlowTrendDiagnosis20260818:
                 pass
 
         monkeypatch.setattr(wf, "_cached", None, raising=False)
+        # ⚠️ 실측: 기업현황(c1010001)은 Financial Summary 가 AJAX 라 HTML 에
+        # 없고 '매출액' 은 산식 설명으로만 나온다 — 그래서 프래그먼트
+        # (cF1001)를 받는다. URL 이 되돌아가면 15종목이 다시 빈다.
+        # ⚠️ 주석에도 'cF1001' 이 나오므로 소스 전체를 보면 안 된다 —
+        # **실제 URL 템플릿**을 확인한다(제 주석에 걸려 통과한 적 있음).
+        assert "cF1001" in wf._URL_TMPL, "AJAX 페이지로 되돌아갔다"
+        assert "freq_typ" in wf._URL_TMPL and wf._FREQS
         # (b) 표 자체가 없다
         monkeypatch.setattr(wf.requests, "get",
                             lambda *a, **k: _R("<html>no table here</html>"))
