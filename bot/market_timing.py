@@ -597,9 +597,15 @@ def fetch_volatility_snapshot() -> dict:
     except Exception as exc:
         log.debug("market_timing: VKOSPI fetch failed: %s", exc)
     try:
-        move_hist = fetch_index_history("^MOVE", days=10)
+        # ⚠️ days=10 이면 1달(21)·1년(252) 창을 만들 수 없다 — VIX 와 같은
+        # 기간 비교를 붙이려면 히스토리를 그만큼 받아야 한다(사용자 2026-08-19
+        # "채권변동성도 VIX 처럼 기간으로"). 커버리지가 불안정한 지수라
+        # min_rows 를 걸지 않는다 — 있는 창만 채우고 없으면 그 칸을 생략한다.
+        move_hist = fetch_index_history("^MOVE", days=400)
         if move_hist:
-            out["move"] = {"value": move_hist[-1]["close"], "date": move_hist[-1]["date"]}
+            out["move"] = {"value": move_hist[-1]["close"],
+                           "date": move_hist[-1]["date"],
+                           "history": vol_history(move_hist)}
     except Exception as exc:
         log.debug("market_timing: MOVE fetch failed (커버리지 불안정 — graceful): %s", exc)
     return out
@@ -911,13 +917,27 @@ def render_market_timing_page(data: dict, now=None) -> str:
                 "대시보드와 동일 네이버 소스(canonical 일치)이고, 과거 비교값은 "
                 "종가 시계열 기준입니다.")
         if move:
-            vol_card += (
-                '<div class="panel"><div class="panel-title">🌪️ 채권 변동성 (MOVE)</div>'
-                f'<div class="stat-grid"><div class="stat"><div class="k">현재</div>'
-                f'<div class="v">{move["value"]:.1f}</div></div></div>'
-                '<div class="note">MOVE = 미국 국채 옵션 변동성(ICE BofA). '
-                '금리변동성이 기술주/반도체 장세에 선행 신호가 되는 경우가 있어 '
-                '병기(커버리지 불안정 시 생략).</div></div>')
+            # VIX·VKOSPI 와 **같은 패널 함수**를 쓴다 — 따로 만들었더니 기간
+            # 비교가 이 카드에만 없었다(사용자 2026-08-19).
+            vol_card += _vol_panel(
+                "🌪️ 채권 변동성 (MOVE)", move,
+                "MOVE = 미국 국채 옵션의 내재변동성(ICE BofA MOVE Index) — "
+                "<b>채권시장의 공포지수</b>입니다. 1개월 만기 국채 옵션"
+                "(2·5·10·30년물)에서 역산한 연율 변동성을 <b>bp(베이시스포인트)"
+                "</b>로 나타내므로, %로 표시되는 VIX 와 <b>단위가 달라 숫자를 "
+                "직접 비교할 수 없습니다</b>."
+                "<br><b>읽는 법</b> — 대략 80 아래면 금리시장이 잠잠한 국면, "
+                "120 위면 불안이 커진 국면으로 봅니다(2023년 은행 사태 때 "
+                "190 부근까지 치솟은 적이 있습니다). 절대 수준보다 "
+                "<b>자기 시계열 대비 방향</b>이 더 유용합니다 — 옆 칸의 "
+                "전일·1주·1달·1년과 비교하세요."
+                "<br><b>왜 주식 화면에 있나</b> — 금리 변동성이 뛰면 할인율이 "
+                "흔들려 이익이 먼 미래에 몰린 <b>장기 성장주·기술주·반도체가 "
+                "먼저 반응</b>하는 경우가 많습니다. 주가지수만 보면 안 보이는 "
+                "위험이 채권 쪽에서 먼저 나타나는지 확인하는 용도입니다."
+                "<br><span style=\"opacity:.75\">현재값·과거 비교값 모두 종가 "
+                "시계열 기준. 커버리지가 불안정한 지수라 받지 못한 날은 카드나 "
+                "일부 칸이 생략됩니다.</span>")
 
     sent = data.get("sentiment") or {}
     sent_card = ""
