@@ -25224,3 +25224,63 @@ class TestStalenessSourceEvidence20260819:
         assert "_series_meta(sid)" in src
         assert "observation_end" in src
         assert "규약을 늘린다" in src and "수집 경로 점검" in src
+
+    def test_fdhbfin_cadence_matches_source_lag(self):
+        # 원천이 자백한 값(2026-08-19 FRED 메타: observation_end 2025-10-01 ·
+        # last_updated 2026-06-18 → 분기말 +169일)에 맞춘 규약. 75일이던
+        # 시절엔 이 계열이 **분기마다** 지연으로 떴다.
+        from datetime import date
+        from bot.macro_cadence import judge
+        t = date(2026, 8, 19)
+        assert judge("FDHBFIN", "2025-10-01", t)["stale"] is False
+        # 그렇다고 무한정 넓히지 않았다 — 두 분기 뒤처지면 여전히 잡는다.
+        assert judge("FDHBFIN", "2025-04-01", t)["stale"] is True
+
+    def test_board_badge_uses_cadence_table_not_month_heuristic(self):
+        # 화면 배지와 감사 프로브가 **같은 표**를 읽는지. 예전 월수 휴리스틱은
+        # 6개월(분기 시리즈는 12개월) 전까지 아무 말도 안 해서, 월간 지표가
+        # 넉 달 밀려도 화면은 정상처럼 보였다.
+        from datetime import date, timedelta
+        import bot.fred_boards as fb
+
+        def _months_ago(n):
+            d = date.today().replace(day=1)
+            for _ in range(n):
+                d = (d - timedelta(days=1)).replace(day=1)
+            return d.isoformat()
+
+        r = {"id": "CPIAUCSL", "latest_date": _months_ago(4)}
+        fb._mark_stale(r)
+        assert r.get("stale") is True, "월간 CPI 가 넉 달 밀렸는데 배지 없음"
+        assert "기대" in (r.get("stale_why") or "")
+
+        # 반대로 정상 지연 계열은 조용해야 한다 — 오탐 배지는 배지를 무시
+        # 하게 만든다(FDHBFIN 은 공표가 반년 늦다).
+        q = {"id": "FDHBFIN", "freq": "Q", "latest_date": _months_ago(7)}
+        fb._mark_stale(q)
+        assert not q.get("stale"), q
+
+        # 이벤트성(금통위 때만 변함)은 아무리 오래돼도 지연이 아니다.
+        e = {"id": "ECOS:BASE", "latest_date": _months_ago(14)}
+        fb._mark_stale(e)
+        assert not e.get("stale"), e
+
+    def test_board_badge_falls_back_when_no_cadence_rule(self):
+        # 규약 없는 시리즈(PPI 산업별 등)는 옛 월수 휴리스틱을 계속 쓴다 —
+        # 표에 없다고 판정을 포기하면 중단 감지가 사라진다.
+        from datetime import date, timedelta
+        import bot.fred_boards as fb
+        from bot.macro_cadence import CADENCE
+        sid = "PCU_TEST_NOT_IN_TABLE"
+        assert sid not in CADENCE
+        old = (date.today() - timedelta(days=250)).replace(day=1).isoformat()
+        r = {"id": sid, "latest_date": old}
+        fb._mark_stale(r)
+        assert r.get("stale") is True
+        assert "미등록" in (r.get("stale_why") or "")
+
+    def test_board_badge_tooltip_rendered(self):
+        # 배지에 근거가 붙어야 사용자가 '왜 지연인지' 를 화면에서 안다
+        # (규칙 10b: 데이터 위젯은 적용시각·근거를 같이).
+        import bot.fred_boards as fb
+        assert "r.stale_why" in fb._BOARD_JS_COMMON
