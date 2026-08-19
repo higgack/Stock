@@ -674,6 +674,88 @@ def _vol_age_days(date_str: str | None) -> int | None:
     return (_kst_now().date() - d).days
 
 
+# ── 관측 누적 시계열 + 시세 메타 폴백 ──────────────────────────────────
+# 2026-08-19 vol_probe v5 확정: 야후가 `^MOVE` **차트를 1봉만** 준다(메타는
+# regularMarketPrice 74.98 · 08-18 미 장마감으로 멀쩡). 우리 차트 경로는
+# "선을 그으려면 2점 필요" 라 1봉을 버리고 폴백을 타는데, 지수 카드는 차트가
+# 아니라 **값**이 필요하다 — 그래서 시세 메타로 한 점을 건져 온다.
+# 그리고 한 점만으로는 전일·1주·1달·1년 창을 만들 수 없으므로, 관측을
+# **디스크에 누적**해 창을 시간이 지나며 복원한다(원천이 무너져도 화면이
+# 조용히 반쪽이 되지 않게). 전부 실제 관측치라 지어낸 값은 없다.
+_VOL_SERIES_MAX = 420        # 1년(252거래일) 창 + 여유
+
+
+def _vol_series_path(key: str) -> Path:
+    return _VOL_CACHE_DIR / f"series_{key}.json"
+
+
+def _vol_series_merge(key: str, rows: list[dict]) -> list[dict]:
+    """새 관측을 누적 시계열에 합쳐 **오름차순 전체**를 돌려준다.
+    같은 날짜는 새 값으로 덮고, 오래된 것부터 잘라 _VOL_SERIES_MAX 유지.
+
+    ⚠️ 두 가지 정직성 규칙(배포전 셀프리뷰에서 잡음):
+    (a) 이번에 받은 게 **없으면 빈 리스트** — 누적분을 되살리면 원천이 죽은
+        날에도 '전일·1주' 칸이 옛 값으로 채워져 화면이 거짓말을 한다.
+        (그 경우는 '저장분' 라벨이 붙는 캐시 경로가 담당한다.)
+    (b) 이번 최신 관측보다 **미래인 누적분은 잘라낸다** — 안 그러면 창의
+        기준점이 화면의 '현재'와 어긋난다.
+    (c) 이번에 받은 게 **이미 최장 창을 덮으면 그대로 돌려준다** — 건강한
+        원천(VIX·VKOSPI 는 300행+)에 누적분을 섞으면 얻는 것 없이 창의
+        의미만 흔든다. 저장은 계속 해 둔다(그 원천이 훗날 무너질 때의 보험).
+    """
+    if not rows:
+        return []
+    path = _vol_series_path(key)
+    merged: dict[str, float] = {}
+    try:
+        if path.exists():
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                merged = {str(d): float(v) for d, v in stored.items()
+                          if v is not None}
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("market_timing: %s 누적 시계열 읽기 실패: %s", key, exc)
+    for r in rows or []:
+        d, c = r.get("date"), r.get("close")
+        if d and c is not None:
+            merged[str(d)[:10]] = float(c)
+    if not merged:
+        return list(rows or [])
+    newest = max(str(r["date"])[:10] for r in rows if r.get("date"))
+    out = [{"date": d, "close": merged[d]} for d in sorted(merged) if d <= newest]
+    out = out[-_VOL_SERIES_MAX:]
+    try:
+        _VOL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({r["date"]: r["close"] for r in out}),
+                        encoding="utf-8")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("market_timing: %s 누적 시계열 저장 실패: %s", key, exc)
+    return list(rows) if len(rows) > _VOL_LOOKBACKS[-1][1] else out
+
+
+def _index_quote_row(ticker: str) -> list[dict]:
+    """야후 **시세 메타**에서 현재 레벨 한 점 → [{date, close}]. 실패 시 [].
+
+    날짜는 `regularMarketTime`(장마감 시각)을 **UTC 달력일**로 읽는다 —
+    미 장마감 16:00 ET = 20:00~21:00 UTC 라 같은 날짜가 되고, 시간대
+    데이터베이스 없이도 정확하다."""
+    try:
+        import yfinance as yf
+        meta = yf.Ticker(ticker).history_metadata or {}
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 시세 메타 조회 실패: %s", ticker, exc)
+        return []
+    px, ts = meta.get("regularMarketPrice"), meta.get("regularMarketTime")
+    if px is None or ts is None:
+        return []
+    try:
+        d = datetime.fromtimestamp(int(ts), timezone.utc).date().isoformat()
+        return [{"date": d, "close": float(px)}]
+    except (TypeError, ValueError, OSError) as exc:
+        log.debug("market_timing: %s 시세 메타 해석 실패: %s", ticker, exc)
+        return []
+
+
 # ── MOVE 심볼 사다리 + 정체 확인 ────────────────────────────────────────
 # 사용자 2026-08-19: "혹시 야후파이낸스말고 다른곳에서 가져올수는 없어?"
 # ICE BofA MOVE 는 유료 독점 지수라 검증 가능한 무료 비-야후 피드가 없다.
@@ -726,6 +808,17 @@ def fetch_move_rows() -> tuple[list, str | None]:
             log.info("market_timing: MOVE 를 대체 심볼 %s 로 받았다"
                      "(최신 %s)", sym, rows[-1]["date"])
         return rows, sym
+    # 차트 시계열이 전부 비었어도 **시세 메타**엔 현재 레벨이 남아 있다
+    # (2026-08-19 실측: 차트 1봉 → 차트 경로는 0행, 메타는 74.98).
+    # 같은 대역 관문을 통과해야 쓴다 — 관문을 비켜 가는 뒷문이 되면 안 된다.
+    q = _index_quote_row(_MOVE_SYMBOLS[0])
+    if q and _MOVE_RANGE[0] <= q[-1]["close"] <= _MOVE_RANGE[1]:
+        log.info("market_timing: MOVE 차트가 비어 시세 메타로 한 점 확보"
+                 "(%s %.2f)", q[-1]["date"], q[-1]["close"])
+        return q, _MOVE_SYMBOLS[0]
+    if q:
+        log.warning("market_timing: MOVE 시세 메타 %.2f 가 지수 대역 %s 밖 — 폐기",
+                    q[-1]["close"], _MOVE_RANGE)
     return [], None
 
 
@@ -747,7 +840,7 @@ def fetch_volatility_snapshot() -> dict:
         if out.get("vix"):
             # 과거값은 항상 히스토리에서 — 현재값 소스(네이버 실시간)와
             # 달라도 '전일 대비' 의 비교 대상은 종가 시계열이 맞다.
-            out["vix"]["history"] = vol_history(vix_hist)
+            out["vix"]["history"] = vol_history(_vol_series_merge("vix", vix_hist))
     except Exception as exc:
         log.debug("market_timing: VIX fetch failed: %s", exc)
     try:
@@ -755,7 +848,8 @@ def fetch_volatility_snapshot() -> dict:
         if vk:
             out["vkospi"] = {"value": vk[-1]["close"], "date": vk[-1]["date"],
                              "source": "KIS",
-                             "history": vol_history(vk)}
+                             "history": vol_history(
+                                 _vol_series_merge("vkospi", vk))}
     except Exception as exc:
         log.debug("market_timing: VKOSPI fetch failed: %s", exc)
     try:
@@ -765,13 +859,17 @@ def fetch_volatility_snapshot() -> dict:
         # min_rows 를 걸지 않는다 — 있는 창만 채우고 없으면 그 칸을 생략한다.
         move_hist, move_sym = fetch_move_rows()
         if move_hist:
+            # ⚠️ 값·기준일은 **이번에 받은** 관측에서만 — 누적 시계열은
+            # 창(전일·1주·…) 복원에만 쓴다. 누적분을 값으로 쓰면 원천이
+            # 죽은 날 옛날 값이 '최신'으로 둔갑한다(그건 캐시 경로 담당).
+            merged = _vol_series_merge("move", move_hist)
             # 어느 심볼로 받았는지 화면에 드러낸다 — 대체 심볼로 받은 걸
             # 'yfinance' 로만 적으면 화면이 출처를 숨기는 셈이다(규칙 10b).
             out["move"] = {"value": move_hist[-1]["close"],
                            "date": move_hist[-1]["date"],
                            "source": ("yfinance" if move_sym == _MOVE_SYMBOLS[0]
                                       else f"yfinance {move_sym}"),
-                           "history": vol_history(move_hist)}
+                           "history": vol_history(merged)}
             _vol_cache_save("move", out["move"])
         else:
             # 조용히 사라지지 않는다 — 왜 없는지 로그에 남긴다(실수 #12).

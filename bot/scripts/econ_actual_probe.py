@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 from datetime import date, timedelta
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
 def _p(*a):
@@ -80,10 +80,17 @@ def main() -> int:
             continue
         _p(f"   관측 {len(obs)}개 · 최신 {obs[-1][0]} = {obs[-1][1]}")
         for rd in info["recent"]:
+            # v2 — 프로덕션과 **같은 순서**로: 원천 vintage 먼저, 창은 폴백.
+            # (v1 은 창만 봐서 "7/14·8/12 가 같은 값" 인 걸 ✅ 로 찍었다.)
+            vin = fred_client.fetch_observation_asof(sid, rd)
+            if vin:
+                gap = (date.fromisoformat(rd) - date.fromisoformat(vin[0])).days
+                _p(f"   {rd}  ✅ {vin[1]}  ({vin[0]} 관측 · 간격 {gap}일) · vintage")
+                continue
             hit = ec.find_actual_value(obs, rd, max_lag_days=hi, min_lag_days=lo)
             if hit:
                 gap = (date.fromisoformat(rd) - date.fromisoformat(hit[0])).days
-                _p(f"   {rd}  ✅ {hit[1]}  ({hit[0]} 관측 · 간격 {gap}일)")
+                _p(f"   {rd}  ✅ {hit[1]}  ({hit[0]} 관측 · 간격 {gap}일) · 창 폴백")
                 continue
             # 왜 못 맞췄나 — 가장 가까운 관측과의 간격을 그대로 찍는다.
             near = min(obs, key=lambda o: abs(
@@ -95,7 +102,10 @@ def main() -> int:
             _p(f"   {rd}  ❌ 빈칸 — 가장 가까운 관측 {near[0]}({near[1]}) · {why}")
 
     _p("")
-    _p("읽는 법: ❌ 가 '간격 N일 > 상한' 이면 그 이벤트의 actual_max_lag_days 를")
+    _p("읽는 법: 'vintage' = 원천이 그 발표일 당시 갖고 있던 값(추정 0).")
+    _p("        '창 폴백' 은 vintage 를 못 받아 시차 창으로 고른 근사값 —")
+    _p("        인접 발표일이 **같은 값**이면 그 근사가 틀린 것이다.")
+    _p("        ❌ 가 '간격 N일 > 상한' 이면 그 이벤트의 actual_max_lag_days 를")
     _p("        N 이상으로. '< 하한' 이면 actual_min_lag_days 가 과하다.")
     _p("        '관측 0개' 면 _SERIES_FOR_ACTUAL 매핑이 죽은 시리즈를 가리킨다.")
     return 0
