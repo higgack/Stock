@@ -529,94 +529,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         return out
 
     def _t_dart_financials() -> dict:
-        # 현년 + 3개년 시계열 — 같은 DART 재무 API 라 한 task 에서 순차.
-        out: dict = {}
-        from bot.dart_client import get_dart
-        from datetime import datetime as _dt
-        dart = get_dart()
-        if not dart:
-            return out
-        fin = dart.get_normalized_financials(ticker)
-        if fin and fin.get("financials"):
-            compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
-            for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                      "부채총계", "자본총계", "재고자산"):
-                v = fin["financials"].get(k)
-                if v is not None:
-                    compact[k] = v
-            ratios = fin.get("ratios", {})
-            for k in ("영업이익률", "순이익률", "ROE", "ROA", "ROIC",
-                      "부채비율", "유동비율"):
-                v = ratios.get(k)
-                if v is not None:
-                    compact[k] = v
-            # 구성요소 계정('이자수익' 등)이 매출 승자였으면 그 사실을 실어
-            # 보낸다 — 총매출이 아닌 값이 '매출'로 표기되는 것을 막는다
-            # (사용자 2026-08-16 B안, VM probe 로 메리츠금융지주 확인).
-            _comp = fin["financials"].get("_component_accounts")
-            if _comp:
-                compact["_component_accounts"] = dict(_comp)
-            out.setdefault("kr", {})["financials"] = compact
-        current_year = _dt.now().year
-        ts = []
-        for yr in range(current_year - 1, current_year - 4, -1):
-            fin = dart.get_normalized_financials(ticker, year=yr)
-            if fin and fin.get("financials"):
-                entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
-                for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                          "부채총계", "자본총계", "재고자산"):
-                    v = fin["financials"].get(k)
-                    if v is not None:
-                        entry[k] = v
-                _comp = fin["financials"].get("_component_accounts")
-                if _comp:
-                    entry["_component_accounts"] = dict(_comp)
-                ratios = fin.get("ratios", {})
-                for k in ("영업이익률", "순이익률", "ROE", "ROA",
-                          "부채비율", "유동비율"):
-                    v = ratios.get(k)
-                    if v is not None:
-                        entry[k] = v
-                ts.append(entry)
-        if ts:
-            out.setdefault("kr", {})["financials_ts"] = ts
-        # 분기별 시계열(최근 4분기) — 밸류에이션 탭 "분기별 재무추이"용
-        # (bot.dart_quarterly, 사용자 2026-08-16). 연도별 시계열과 동일
-        # 항목만 저장(렌더 쪽 표 구성을 그대로 재사용하기 위함).
-        try:
-            from bot.dart_quarterly import get_quarterly_series
-            q_series = get_quarterly_series(dart, ticker, n=4)
-            if q_series:
-                q_ts = []
-                for q in q_series:
-                    qentry = {"label": q["label"], "year": q["year"],
-                             "quarter": q["quarter"], "fs_div": q["fs_div"]}
-                    for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                              "부채총계", "자본총계", "재고자산"):
-                        v = q["financials"].get(k)
-                        if v is not None:
-                            qentry[k] = v
-                    for k in ("영업이익률", "순이익률", "ROE", "ROA",
-                              "부채비율", "유동비율"):
-                        v = q["ratios"].get(k)
-                        if v is not None:
-                            qentry[k] = v
-                    # 이상치 플래그 전량 릴레이 — 하나라도 빠뜨리면 대시보드
-                    # 배지·각주가 dead code 가 되고 '—' 의 이유가 사라진다
-                    # (2026-08-16 독립 리뷰: 계정 불일치 플래그가 누락돼 있었음).
-                    for _f in ("_anomaly_revenue_negative",
-                               "_anomaly_account_mismatch"):
-                        if q["financials"].get(_f):
-                            qentry[_f] = True
-                    _c = q["financials"].get("_component_accounts")
-                    if _c:
-                        qentry["_component_accounts"] = dict(_c)
-                    q_ts.append(qentry)
-                if q_ts:
-                    out.setdefault("kr", {})["financials_q"] = q_ts
-        except Exception as exc:
-            log.debug("stock_snapshot: DART quarterly financials skipped: %s", exc)
-        return out
+        return collect_kr_financials(ticker)
 
     def _t_fsc_minority() -> dict:
         out: dict = {}
@@ -1246,6 +1159,113 @@ def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
                 entry[item] = round(float(v), 2) if isinstance(v, float) else int(v)
         rows.append(entry)
     return rows
+
+
+# ⚠️ **KR DART 재무 스키마 버전.** 아카이브에 저장된 kr.financials* 는
+# 수집 당시 로직의 산물이다 — 계정 우선순위나 비율 규칙을 고쳐도 이미
+# 분석한 종목 화면은 영원히 옛 값이다(실수 #18, peer_comps 와 같은
+# 실패모드). 대시보드가 이 버전을 대조해 낡은 것만 다시 받는다.
+#   v1 (2026-08-19) 구성요소 매출 = 비율 억제 + 계정 랭킹(표준 태그·이름 정규화)
+_KR_FIN_SCHEMA_VER = 1
+
+
+def collect_kr_financials(ticker: str) -> dict:
+    """DART 재무(연간·시계열·분기) 수집 → {"kr": {...}}.
+
+    ⚠️ 원래 스냅샷 빌더 안의 중첩 함수였다. **아카이브에 구워진 값을
+    다시 받으려면** 밖에서도 부를 수 있어야 한다(실수 #18) — 이미
+    분석한 종목은 재분석 전까지 옛 계정·옛 비율을 그대로 보여준다.
+    """
+    # 현년 + 3개년 시계열 — 같은 DART 재무 API 라 한 task 에서 순차.
+    out: dict = {}
+    from bot.dart_client import get_dart
+    from datetime import datetime as _dt
+    dart = get_dart()
+    if not dart:
+        return out
+    fin = dart.get_normalized_financials(ticker)
+    if fin and fin.get("financials"):
+        compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
+        for k in ("매출", "영업이익", "당기순이익", "자산총계",
+                  "부채총계", "자본총계", "재고자산"):
+            v = fin["financials"].get(k)
+            if v is not None:
+                compact[k] = v
+        ratios = fin.get("ratios", {})
+        for k in ("영업이익률", "순이익률", "ROE", "ROA", "ROIC",
+                  "부채비율", "유동비율"):
+            v = ratios.get(k)
+            if v is not None:
+                compact[k] = v
+        # 구성요소 계정('이자수익' 등)이 매출 승자였으면 그 사실을 실어
+        # 보낸다 — 총매출이 아닌 값이 '매출'로 표기되는 것을 막는다
+        # (사용자 2026-08-16 B안, VM probe 로 메리츠금융지주 확인).
+        _comp = fin["financials"].get("_component_accounts")
+        if _comp:
+            compact["_component_accounts"] = dict(_comp)
+        out.setdefault("kr", {})["financials"] = compact
+    current_year = _dt.now().year
+    ts = []
+    for yr in range(current_year - 1, current_year - 4, -1):
+        fin = dart.get_normalized_financials(ticker, year=yr)
+        if fin and fin.get("financials"):
+            entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
+            for k in ("매출", "영업이익", "당기순이익", "자산총계",
+                      "부채총계", "자본총계", "재고자산"):
+                v = fin["financials"].get(k)
+                if v is not None:
+                    entry[k] = v
+            _comp = fin["financials"].get("_component_accounts")
+            if _comp:
+                entry["_component_accounts"] = dict(_comp)
+            ratios = fin.get("ratios", {})
+            for k in ("영업이익률", "순이익률", "ROE", "ROA",
+                      "부채비율", "유동비율"):
+                v = ratios.get(k)
+                if v is not None:
+                    entry[k] = v
+            ts.append(entry)
+    if ts:
+        out.setdefault("kr", {})["financials_ts"] = ts
+    # 분기별 시계열(최근 4분기) — 밸류에이션 탭 "분기별 재무추이"용
+    # (bot.dart_quarterly, 사용자 2026-08-16). 연도별 시계열과 동일
+    # 항목만 저장(렌더 쪽 표 구성을 그대로 재사용하기 위함).
+    try:
+        from bot.dart_quarterly import get_quarterly_series
+        q_series = get_quarterly_series(dart, ticker, n=4)
+        if q_series:
+            q_ts = []
+            for q in q_series:
+                qentry = {"label": q["label"], "year": q["year"],
+                         "quarter": q["quarter"], "fs_div": q["fs_div"]}
+                for k in ("매출", "영업이익", "당기순이익", "자산총계",
+                          "부채총계", "자본총계", "재고자산"):
+                    v = q["financials"].get(k)
+                    if v is not None:
+                        qentry[k] = v
+                for k in ("영업이익률", "순이익률", "ROE", "ROA",
+                          "부채비율", "유동비율"):
+                    v = q["ratios"].get(k)
+                    if v is not None:
+                        qentry[k] = v
+                # 이상치 플래그 전량 릴레이 — 하나라도 빠뜨리면 대시보드
+                # 배지·각주가 dead code 가 되고 '—' 의 이유가 사라진다
+                # (2026-08-16 독립 리뷰: 계정 불일치 플래그가 누락돼 있었음).
+                for _f in ("_anomaly_revenue_negative",
+                           "_anomaly_account_mismatch"):
+                    if q["financials"].get(_f):
+                        qentry[_f] = True
+                _c = q["financials"].get("_component_accounts")
+                if _c:
+                    qentry["_component_accounts"] = dict(_c)
+                q_ts.append(qentry)
+            if q_ts:
+                out.setdefault("kr", {})["financials_q"] = q_ts
+    except Exception as exc:
+        log.debug("stock_snapshot: DART quarterly financials skipped: %s", exc)
+    if out.get("kr"):
+        out["kr"]["financials_ver"] = _KR_FIN_SCHEMA_VER
+    return out
 
 
 def _collect_financials(t, snap: dict) -> None:
