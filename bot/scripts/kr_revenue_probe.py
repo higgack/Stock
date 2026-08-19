@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 9
+_PROBE_VER = 10
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -323,7 +323,16 @@ def _sweep(dart, tickers: list[str]) -> int:
         elif fin.get("매출"):
             buckets["총액"].append(tk)
         else:
-            buckets["데이터없음"].append(f"{tk}(매출 계정 없음)")
+            # ⚠️ '계정 없음'으로 끝내면 다음 턴에 계정명을 **추측**하게 된다
+            # (보험사는 보험수익/영업수익 등 업권마다 이름이 다르다).
+            # 실제 손익계산서 상위 계정명을 그 자리에 찍어 근거로 삼는다.
+            names = []
+            for i in items[:400]:
+                nm = (i.get("account_nm") or "").strip()
+                if nm and nm not in names:
+                    names.append(nm)
+            buckets["데이터없음"].append(
+                f"{tk}(매출 계정 없음) · 실제 계정 상위: {names[:12]}")
         if n % 10 == 0:
             _p(f"   … {n}/{len(tickers)}")
     _p("")

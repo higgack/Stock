@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 # 표기 단위 → 배수(화면 JS `UM` 과 같은 규약).
 _MULT = {"M USD": 1e6, "B USD": 1e9, "M EUR": 1e6, "100M JPY": 1e8}
@@ -51,6 +51,17 @@ def _fmt(v: float, unit: str) -> str:
         if abs(a) >= lim:
             return f"{a / lim:,.2f}{suf}"
     return f"{a:,.1f}"
+
+
+def _series_meta(sid: str):
+    """FRED 시리즈 메타(원천의 마지막 관측일). FRED 시리즈가 아니면 None."""
+    if ":" in sid:                      # ECOS:/AK: 등 비-FRED 소스
+        return None
+    try:
+        from bot.fred_client import fetch_series_meta
+        return fetch_series_meta(sid)
+    except Exception:                                          # noqa: BLE001
+        return None
 
 
 def main() -> int:
@@ -118,9 +129,19 @@ def main() -> int:
             _p(f"       ↪ 원시값 {val:,} · 배수 {_MULT.get(unit, 1):g} "
                f"(원시가 다른 단위면 카탈로그 unit 을 고쳐야 한다)")
         if verdict.startswith("❌ 지연"):
-            _p(f"       ↪ 최근 관측 {[d for d, _v in pts[-4:]]}"
-               f" — 간격이 규약보다 넓으면 **원천이 늦는 것**(규약을 늘린다),"
-               f" 최근만 끊겼으면 수집 문제")
+            _p(f"       ↪ 최근 관측 {[d for d, _v in pts[-4:]]}")
+            # ⚠️ 관측치만 보면 '우리 수집이 끊긴 것'과 '원천이 늦는 것'이
+            # 똑같이 보인다 — FRED 가 스스로 보고하는 observation_end 로
+            # 가른다(2026-08-19 FDHBFIN. 추측 대신 원천 자백).
+            meta = _series_meta(sid)
+            if meta is None:
+                _p("       ↪ 원천 메타 조회 실패(키 부재·네트워크) — 판정 보류")
+            else:
+                oe = meta.get("observation_end", "?")
+                lu = (meta.get("last_updated") or "?")[:19]
+                same = oe == asof
+                _p(f"       ↪ 원천 observation_end={oe} · last_updated={lu}"
+                   f" → {'**원천이 여기까지밖에 없다**(규약을 늘린다)' if same else '**우리 수집이 뒤처졌다**(캐시·수집 경로 점검)'}")
 
     _p("")
     _p(f"── 요약: 단위 의심 {len(bad_unit)} · 지연 {len(late)} · "
