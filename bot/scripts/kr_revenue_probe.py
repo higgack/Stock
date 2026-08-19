@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 # 손익계산서에서 '수익'으로 읽힐 만한 행을 폭넓게 훑는다(우리 매핑 밖도 본다).
 _REV_HINTS = ("수익", "매출", "영업이익", "Revenue", "revenue")
@@ -38,6 +38,30 @@ _SWEEP_DEFAULT = [
 
 def _p(*a):
     print(*a, flush=True)
+
+
+def _try_fallback(tk: str, fin: dict) -> str:
+    """FnGuide 총액 보강이 **실제로** 되는지 한 줄로. 실패면 이유를 남긴다."""
+    try:
+        from bot.kr_revenue_fallback import fill_total_revenue
+        from bot.wisereport_financials import fetch_financial_summary
+    except Exception as exc:                            # noqa: BLE001
+        return f"보강 모듈 없음({type(exc).__name__})"
+    try:
+        summary = fetch_financial_summary(tk)
+    except Exception as exc:                            # noqa: BLE001
+        return f"FnGuide 조회 실패({type(exc).__name__})"
+    if not summary:
+        return "FnGuide 표 없음"
+    e = {"매출": fin.get("매출"), "영업이익": fin.get("영업이익"),
+         "당기순이익": fin.get("당기순이익"),
+         "_component_accounts": dict(fin.get("_component_accounts") or {})}
+    ok = fill_total_revenue(tk, e, year=2025, quarter=None, summary=summary)
+    if not ok:
+        keys = sorted((summary.get("annual") or {}))[-3:]
+        return f"❌ 보강 불가(연간 키={keys})"
+    return (f"✅ 보강 {e['매출'] / 1e12:.2f}조"
+            f" · 영업이익률 {e.get('영업이익률', 0):.1f}%")
 
 
 def _sweep(dart, tickers: list[str]) -> int:
@@ -92,8 +116,10 @@ def _sweep(dart, tickers: list[str]) -> int:
                 if winner is None or r < winner[0]:
                     winner = (r, nm, aid)
         if comp:
-            buckets["구성요소"].append(
-                f"{tk} 매출={comp} · 영업이익률={rat.get('영업이익률')}")
+            # ② 그룹은 FnGuide 총액으로 채워지는지까지 본다 — "고쳐졌나?"에
+            # 사실로 답하려면 검산 통과 여부를 실제로 돌려봐야 한다.
+            fg = _try_fallback(tk, fin)
+            buckets["구성요소"].append(f"{tk} 매출={comp} · {fg}")
         elif winner and winner[0] == 1 and _norm_acct_nm(winner[1]) not in {
                 _norm_acct_nm(g) for grp in _ACCOUNT_GROUPS["매출"] for g in grp}:
             buckets["태그구제"].append(f"{tk} 승자='{winner[1]}' id={winner[2]}")

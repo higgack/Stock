@@ -22666,6 +22666,77 @@ class TestFlowTrendDiagnosis20260818:
         assert out["kr"]["financials_ver"] == _KR_FIN_SCHEMA_VER
         assert out["kr"]["financials"]["매출"] == 100.0
 
+    def test_fnguide_fills_total_revenue_only_when_it_checks_out(self):
+        """⚠️ VM 스윕(2026-08-19): 금융 27종목 중 **15개**가 DART 표준 손익에
+        총액(영업수익)이 없어 이자수익이 '매출'로 올라갔다. FnGuide 에는
+        총액이 있다(NH 26.1Q 8.17조 vs 이자수익 0.55조).
+
+        다른 출처 숫자를 우리 표에 넣는 일이라 **검산 없이는 안 쓴다** —
+        기간 일치 · 영업이익 교차 확인 · 총액>구성요소. 하나라도 어긋나면
+        entry 를 건드리지 않는다(옛 동작 유지)."""
+        from bot.kr_revenue_fallback import fill_total_revenue
+        S = {"quarter": {"2026/03": {"매출액": 8.172e12, "영업이익": 6.367e11,
+                                     "당기순이익": 4.757e11}}}
+
+        def _e(**kw):
+            d = {"매출": 5.532e11, "영업이익": 6.367e11, "당기순이익": 4.757e11,
+                 "_component_accounts": {"매출": "이자수익"}}
+            d.update(kw)
+            return d
+
+        e = _e()
+        assert fill_total_revenue("005940", e, year=2026, quarter=1, summary=S)
+        assert e["매출"] == 8.172e12
+        assert round(e["영업이익률"], 2) == 7.79      # FnGuide 화면과 정합
+        assert e["_revenue_source"] == "FnGuide"
+        assert e["_revenue_component_was"] == "이자수익"
+        assert "_component_accounts" not in e, "총액을 넣고도 구성요소로 표기"
+
+        # (1) 기간이 없으면 추측하지 않는다.
+        e2 = _e()
+        assert not fill_total_revenue("005940", e2, year=2026, quarter=2,
+                                      summary=S)
+        assert e2["매출"] == 5.532e11 and "_revenue_source" not in e2
+        # (2) 영업이익이 어긋나면 다른 표를 붙인 것이다.
+        e3 = _e(영업이익=9.9e11)
+        assert not fill_total_revenue("005940", e3, year=2026, quarter=1,
+                                      summary=S)
+        # (3) 총액이 구성요소 이하면 파싱 오류다.
+        e4 = _e()
+        assert not fill_total_revenue(
+            "005940", e4, year=2026, quarter=1,
+            summary={"quarter": {"2026/03": {"매출액": 1e11,
+                                             "영업이익": 6.367e11}}})
+        # (4) 총액이 이미 있는 회사는 손대지 않는다.
+        e5 = {"매출": 1e12, "영업이익": 1e11}
+        assert not fill_total_revenue("005940", e5, year=2026, quarter=1,
+                                      summary=S)
+        assert e5 == {"매출": 1e12, "영업이익": 1e11}
+
+    def test_fnguide_summary_parser_reads_the_real_table_shape(self):
+        """네이버 임베드 Financial Summary 표 — id 가 아니라 **내용**으로 찾고
+        분기/연간을 헤더 월로 가른다(사이트가 id 를 바꿔도 살아남게)."""
+        from bot.wisereport_financials import parse_financial_summary
+        html = ("<table><tr><th>주요재무정보</th><th>2025/03<br>(IFRS연결)</th>"
+                "<th>2026/03<br>(IFRS연결)</th></tr>"
+                "<tr><td>매출액</td><td>30,068</td><td>81,720</td></tr>"
+                "<tr><td>영업이익</td><td>2,890</td><td>6,367</td></tr>"
+                "<tr><td>당기순이익(지배)</td><td>2,082</td><td>4,757</td></tr>"
+                "</table>"
+                "<table><tr><th>x</th><th>2024/12</th><th>2025/12</th></tr>"
+                "<tr><td>매출액</td><td>100</td><td>200</td></tr>"
+                "<tr><td>영업이익</td><td>10</td><td>20</td></tr></table>")
+        out = parse_financial_summary(html)
+        assert out["quarter"]["2026/03"]["매출액"] == 81720 * 1e8
+        assert out["annual"]["2025/12"]["매출액"] == 200 * 1e8
+        # 들여쓴 하위 항목(당기순이익(지배))은 이름이 달라 안 들어온다.
+        assert "당기순이익" not in out["quarter"]["2026/03"]
+        # Financial Summary 가 아닌 표는 무시한다(오탐 방지).
+        assert parse_financial_summary(
+            "<table><tr><th>a</th><th>2025/03</th><th>2025/06</th></tr>"
+            "<tr><td>주가</td><td>1</td><td>2</td></tr></table>") == {
+                "annual": {}, "quarter": {}}
+
     def test_every_api_key_reader_uses_the_shared_env_helper(self):
         """⚠️ `.env` 폴백을 파일마다 복제하면 **새 키를 붙일 때 하나를
         빠뜨린다** — 실제로 KRX 에 넣고(#903) 바로 다음 프로브에서 FRED 를

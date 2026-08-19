@@ -4099,7 +4099,8 @@ _PER_SHARE_ITEMS = frozenset({
 #   v17 (2026-08-18) 임원·주요주주 최신순 정렬 + 수주잔고 파서 2형식(KAI·한전KPS)
 #   v18 (2026-08-18) 보조 컨센서스에 출처 표기 + 두 컨센서스 차이 설명
 #   v19 (2026-08-19) 구성요소 매출(금융사) — 행 이름 실제 계정 + 비율 비움
-_RENDER_VER = 19
+#   v20 (2026-08-19) 총액 미공시사 매출을 FnGuide 총액으로 보강 + 출처 표기
+_RENDER_VER = 20
 
 _FIN_ITEM_KR: dict[str, str] = {
     "Total Revenue": "매출액", "Operating Revenue": "영업수익",
@@ -5669,6 +5670,16 @@ def _render_stock_info_html(rec: dict) -> str:
                 v = kf.get(key)
                 ratio_rows += f'<tr><td>{esc(label)}</td><td class="num">{f"{v:.1f}%" if v is not None else "—"}</td></tr>\n'
             _kf_note = ""
+            # 총액 계정을 안 주는 회사(증권·은행·보험)는 FnGuide 총액으로
+            # 보강한다 — 어느 값이 어디서 왔는지 반드시 밝힌다(규칙 #10b).
+            if kf.get("_revenue_source"):
+                _kf_note = ('<div style="font-size:11px;color:var(--fg-soft);'
+                            'margin-top:6px">ℹ️ 매출 = 영업수익 총액('
+                            + esc(str(kf["_revenue_source"]))
+                            + ') — DART 표준 손익에 총액 계정이 없어 보강'
+                              '(대체 전: ' + esc(str(kf.get(
+                                  "_revenue_component_was") or "구성요소"))
+                            + '). 영업이익 교차 확인 통과분만 사용</div>')
             if _kf_comp:
                 _kf_note = ('<div style="font-size:11px;color:var(--fg-soft);'
                             'margin-top:6px">⚠️ '
@@ -6001,6 +6012,12 @@ def _render_stock_info_html(rec: dict) -> str:
             _notes.append('⚠️ 매출 공백 = 연간·3분기 보고서가 서로 다른 계정을 써 '
                           '차감이 불가 — 추정 대신 비워둠'
                           + (f'(어긋난 항목: {esc(" · ".join(_mm))})' if _mm else ''))
+        _rev_src = sorted({str(it.get("_revenue_source")) for it in items
+                           if it.get("_revenue_source")})
+        if _rev_src:
+            _notes.append('ℹ️ 매출 = 영업수익 총액(' + esc(" · ".join(_rev_src))
+                          + ') — DART 표준 손익에 총액 계정이 없어 보강'
+                            '(영업이익 교차 확인 통과분만)')
         _comp_seen = sorted({f"{k} = {v}" for it in items
                              for k, v in (it.get("_component_accounts") or {}).items()})
         if _comp_seen:
