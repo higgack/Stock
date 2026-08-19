@@ -288,6 +288,37 @@ _ACCOUNT_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
 _COMPONENT_GROUPS: dict[str, set[int]] = {"매출": {2}}
 
 
+# 손익 계정은 **손익계산서에서만** 뽑는다(2026-08-19 VM 프로브 확정).
+#
+# NH투자증권 005940 25.반기: `당기순이익` 이 4개 재무제표에 동명으로 나온다 —
+# 포괄손익계산서(CIS) 2,569억(당기 3개월), 현금흐름표(CF) 2,569억,
+# **자본변동표(SCE) 4,650억(연초~반기 누적)**. 승자 규칙이 '절댓값 큰 행'
+# 이라 SCE 누적이 이겨 화면에 반기 순이익이 4,650억으로 떴다(네이버 2,569억).
+# 매출·영업이익은 CIS 한 행뿐이라 멀쩡했고, 1분기는 누적=단독이라 우연히
+# 맞았으며, 4분기는 누적−누적이라 상쇄돼 맞았다 — 그래서 **2·3분기만**
+# 틀리는 형태로 오래 숨어 있었다.
+#
+# 같은 이름이어도 재무제표가 다르면 **기간 의미가 다르다**. 그러니 키마다
+# 허용 sj_div 를 두고, 허용 제표에 행이 하나도 없을 때만 다른 제표를 쓴다
+# (값을 잃지 않으면서 오염만 막는다).
+_IS_KEYS = frozenset({"매출", "매출원가", "매출총이익", "판관비", "영업이익",
+                      "금융수익", "금융비용", "세전이익", "법인세비용",
+                      "당기순이익", "EPS"})
+_BS_KEYS = frozenset({"자산총계", "부채총계", "자본총계", "유동자산",
+                      "유동부채", "비유동자산", "비유동부채", "재고자산",
+                      "이익잉여금"})
+
+
+def _stmt_tier(canonical: str, sj_div: str) -> int:
+    """0 = 이 계정이 원래 있어야 할 재무제표 · 1 = 그 외(차선)."""
+    sj = (sj_div or "").strip().upper()
+    if canonical in _IS_KEYS:
+        return 0 if sj in ("IS", "CIS") else 1
+    if canonical in _BS_KEYS:
+        return 0 if sj == "BS" else 1
+    return 0
+
+
 # 계정명 앞머리 번호("Ⅰ.", "I.", "1.", "가.")와 공백은 회사마다 붙였다 뗐다
 # 한다 — 이름 비교 전에 벗긴다. 이게 없으면 "Ⅰ. 영업수익" 이 목록에 없는
 # 이름으로 취급돼 **구성요소보다 뒤로 밀린다**(2026-08-19 실측).
@@ -383,17 +414,21 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
         if v is None:
             continue
         pr = _account_rank(canonical, acct_nm, acct_id)
+        # 제표 tier 를 순위에 **한 자리 더** 붙인다 — 이름 우선순위가 같아도
+        # 손익 계정은 손익계산서 행이 자본변동표·현금흐름표 행을 이긴다.
+        st = _stmt_tier(canonical, item.get("sj_div") or "")
+        key = (pr, st)
         prev = rank.get(canonical)
         # 우선순위가 높은(작은) 계정이 무조건 이긴다. 동순위 안에서만
         # 기존 규칙(absolute value 큰 row = consolidated 우선)을 적용.
-        if canonical not in res or pr < prev or (
-                pr == prev and abs(v) > abs(res[canonical])):
+        if canonical not in res or key < prev or (
+                key == prev and abs(v) > abs(res[canonical])):
             res[canonical] = v
             # 이름이 아니라 **동의어 그룹 인덱스**를 남긴다 — 같은 개념을
             # 연간·분기 보고서가 다른 이름으로 쓰는 게 정상이라, 이름을
             # 비교하면 멀쩡한 회사에서 차분 가드가 오발화한다.
             src[canonical] = pr
-            rank[canonical] = pr
+            rank[canonical] = key
             comp_nm[canonical] = (acct_nm or acct_id
                                   if pr in _COMPONENT_GROUPS.get(canonical, ())
                                   else None)
@@ -1366,7 +1401,7 @@ class DartClient:
         # v5(2026-08-19): 계정 우선순위가 바뀌었다(표준 태그·이름 정규화) —
         # 옛 캐시엔 이자수익이 '매출'로 굳어 있어 7일간 그대로 서빙된다.
         # **코드를 고쳐도 캐시는 안 바뀐다**(실수 #18) → 키를 올려 즉시 무효화.
-        ck = f"qfin6_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
+        ck = f"qfin7_{corp_code}_{target_year}_{reprt_code}_{fs_div}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached

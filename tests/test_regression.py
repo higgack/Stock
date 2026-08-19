@@ -25641,3 +25641,64 @@ class TestStalenessSourceEvidence20260819:
                {"account_nm": "보험영업수익", "thstrm_amount": "14726800000000"}])
         assert r["매출"] == 20000000000000
         assert "_component_accounts" not in r
+
+
+class TestQuarterlyNetIncomeFromSCE20260819:
+    """사용자 2026-08-19(NH투자증권): 당기순이익이 25.2Q 4,650억 · 25.3Q
+    7,481억인데 네이버는 2,569억 · 2,831억. VM 프로브가 원인을 확정했다 —
+    `당기순이익` 이 네 재무제표에 동명으로 오고(CIS 2,569 · CF 2,569 ·
+    **SCE 4,650**), 승자 규칙이 '절댓값 큰 행'이라 **자본변동표의 누적**이
+    이겼다. 매출·영업이익은 CIS 한 행뿐이라 멀쩡했고, 1분기는 누적=단독,
+    4분기는 누적−누적이라 상쇄돼 맞았다 — 그래서 2·3분기만 틀렸다."""
+
+    # 프로브가 찍은 25.반기 배치 그대로(값도 실측).
+    _HALF = [
+        {"sj_div": "CIS", "account_nm": "이자수익",
+         "account_id": "ifrs-full_RevenueFromInterest",
+         "thstrm_amount": "465700000000", "thstrm_add_amount": "917700000000"},
+        {"sj_div": "CIS", "account_nm": "영업이익",
+         "account_id": "ifrs-full_ProfitLossFromOperatingActivities",
+         "thstrm_amount": "321900000000", "thstrm_add_amount": "611000000000"},
+        {"sj_div": "CIS", "account_nm": "당기순이익",
+         "account_id": "ifrs-full_ProfitLoss",
+         "thstrm_amount": "256900000000", "thstrm_add_amount": "465100000000"},
+        {"sj_div": "CF", "account_nm": "당기순이익",
+         "account_id": "ifrs-full_ProfitLoss", "thstrm_amount": "256900000000"},
+        {"sj_div": "SCE", "account_nm": "당기순이익",
+         "account_id": "ifrs-full_ProfitLoss", "thstrm_amount": "465000000000"},
+        {"sj_div": "SCE", "account_nm": "당기순이익",
+         "account_id": "ifrs-full_ProfitLoss", "thstrm_amount": "465000000000"},
+        {"sj_div": "SCE", "account_nm": "당기순이익",
+         "account_id": "ifrs-full_ProfitLoss", "thstrm_amount": "256900000000"},
+    ]
+
+    def test_income_keys_come_from_the_income_statement(self):
+        from bot.dart_client import _extract_dart_financials as E
+        r = E(self._HALF)
+        assert r["당기순이익"] == 256_900_000_000, "자본변동표 누적이 이겼다"
+        assert r["매출"] == 465_700_000_000
+        assert r["영업이익"] == 321_900_000_000
+
+    def test_falls_back_when_the_income_statement_has_no_such_row(self):
+        """허용 제표에 행이 하나도 없으면 다른 제표라도 쓴다 — 오염만 막고
+        값은 잃지 않는다(막기만 하면 멀쩡한 회사가 빈칸이 된다)."""
+        from bot.dart_client import _extract_dart_financials as E
+        r = E([{"sj_div": "SCE", "account_nm": "당기순이익",
+                "account_id": "ifrs-full_ProfitLoss",
+                "thstrm_amount": "100000000000"}])
+        assert r["당기순이익"] == 100_000_000_000
+
+    def test_balance_sheet_keys_still_read_from_bs(self):
+        from bot.dart_client import _extract_dart_financials as E
+        r = E([{"sj_div": "BS", "account_nm": "자산총계",
+                "account_id": "ifrs-full_Assets", "thstrm_amount": "99000000000"},
+               {"sj_div": "SCE", "account_nm": "자산총계",
+                "account_id": "ifrs-full_Assets", "thstrm_amount": "990000000000"}])
+        assert r["자산총계"] == 99_000_000_000, "자본변동표 행이 이겼다"
+
+    def test_cumulative_field_extraction_uses_the_same_rule(self):
+        """4분기 파생(연간 − 9개월 누적)이 쓰는 누적 추출도 같은 제표에서
+        와야 한다 — 한쪽만 고치면 차분이 서로 다른 계열을 뺀다."""
+        from bot.dart_client import _extract_dart_financials as E
+        cum = E(self._HALF, amount_field="thstrm_add_amount")
+        assert cum["당기순이익"] == 465_100_000_000    # CIS 누적
