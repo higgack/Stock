@@ -898,8 +898,16 @@ def _fetch_series_fallback(ticker: str, period: str):
 
 
 def fetch_chart_payload(
-    ticker: str, interval: str = "1d", period: str = "1y"
+    ticker: str, interval: str = "1d", period: str = "1y",
+    prefer_period: bool = False,
 ) -> dict | None:
+    """`prefer_period=True` 면 야후에 **기간 키워드**(`period="1y"`)로 묻는다.
+
+    ⚠️ 기본 경로는 `start`/`end` 날짜 범위로 묻는데, 심볼에 따라 **두 질의가
+    다른 결과**를 준다(2026-08-19 `^MOVE` 실측): 같은 시각에 `period="1y"` 는
+    227행·최신 08-18 을 주는데 날짜 범위는 07-17 에서 끊긴 데이터(또는 0행)를
+    준다. 야후 쪽 사정이라 우리가 고칠 수 없고, **묻는 방식**만 바꾸면 된다.
+    낡거나 빈 응답을 받은 호출부가 이 스위치로 한 번 더 물어보게 한다."""
     if interval not in _VALID_INTERVALS:
         interval = "1d"
     if period not in _VALID_PERIODS:
@@ -949,7 +957,7 @@ def fetch_chart_payload(
         from datetime import datetime, timedelta
 
         t = yf.Ticker(ticker)
-        if period in ("max", "1d"):
+        if prefer_period or period in ("max", "1d"):
             hist = t.history(period=period, interval=interval, auto_adjust=True)
         else:
             now = datetime.now()

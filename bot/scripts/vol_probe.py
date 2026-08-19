@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 
 def _p(*a):
@@ -89,6 +89,23 @@ def main() -> int:
                 _p(f"   대체후보 {alt:8} 실패 {type(exc).__name__}")
     except Exception as exc:                                   # noqa: BLE001
         _p(f"   yfinance import 실패: {type(exc).__name__}: {exc}")
+
+    _p("")
+    _p("①-c **묻는 방식**에 따라 결과가 갈리는가(2026-08-19 실측 함정)")
+    # 같은 '1년'이라도 날짜범위 질의와 기간 키워드 질의가 다른 데이터를 준다.
+    # #944 가 기간만 줄이고 같은 방식으로 물어 낡은 값을 그대로 받았다.
+    try:
+        from bot.chart_data import fetch_chart_payload as _fp
+        for label, kw in (("날짜범위(start/end)", {}),
+                          ("기간 키워드(period)", {"prefer_period": True})):
+            rows = mt._payload_to_rows(
+                _fp("^MOVE", interval="1d", period="1y", **kw), 400)
+            last = rows[-1]["date"] if rows else "—"
+            age = mt._vol_age_days(last) if rows else None
+            _p(f"   {label:22} {len(rows):>4}행 · 최신 {last}"
+               f"{f' (❌ {age}일 지연)' if age and age > mt._VOL_STALE_DAYS else ''}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   실패 {type(exc).__name__}: {exc}")
 
     _p("")
     _p("② last-good 캐시")
