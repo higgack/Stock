@@ -199,7 +199,11 @@ FRED_INDICATORS = [
     ("근원 PCE (YoY)", "PCEPILFE", "%", 730),  # 사용자 2026-06-14 GDP 다음
     ("소매판매 (YoY)", "RSAFS", "%", 400),
     ("CPI (YoY)", "CPIAUCSL", "%", 730),
-    ("PPI (YoY)", "PPIACO", "%", 730),
+    # ⚠️ 라벨에 **어느 PPI 인지** 박는다. 매크로 스냅샷은 최종수요
+    # (PPIFIS)를 "미국 PPI" 로 부르는데 여기는 원자재 전체(PPIACO)라
+    # YoY 가 크게 갈린다(2026-08-20 실측: 8.27% vs 4.84%). 이름이 같으면
+    # 두 화면 중 하나가 틀린 것처럼 보인다 — 실제론 다른 지표다.
+    ("PPI 원자재 (YoY)", "PPIACO", "%", 730),
 ]
 
 _DOLLAR_INDEX_TICKER = "DX-Y.NYB"

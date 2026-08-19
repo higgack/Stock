@@ -115,6 +115,31 @@ def _resolve_kr_name(ticker: str, fallback: str) -> str:
     return fallback
 
 
+def _per_from_shown(price, eps) -> Optional[float]:
+    """예상 PER = **화면의 현재가 ÷ 화면의 예상 EPS**.
+
+    ⚠️ 2026-08-20 사용자 검증 요청에서 드러난 것: 이 표는 `현재가`·`예상 EPS`
+    ·`예상 PER` 을 나란히 놓는데 셋이 **서로 다른 출처**였다.
+      · 현재가  = 네이버 실시간(KR) / yfinance
+      · 예상 EPS = forwardEps, 없으면 trailingEps, 없으면 calendar 컨센서스
+      · 예상 PER = yfinance forwardPE/trailingPE (**자기 EPS·자기 가격** 기준)
+    미국 종목은 우연히 셋이 맞아떨어졌지만(SKHY 157.01÷32.14=4.9 ✓) 국내는
+    어긋났다 — 삼성전자 247,500÷14,227=17.4 인데 화면은 3.7, 쿠콘 10.7 인데
+    8.9. 사용자가 눈으로 나눗셈을 하면 안 맞는다 = 표가 거짓말이다.
+    EPS 가 없으면 PER 도 비운다(소스 PER 만 남겨 두면 검산이 불가능하고,
+    'PER 은 있는데 EPS 는 —' 라는 설명 불가능한 행이 생긴다).
+    """
+    if price is None or eps is None:
+        return None
+    try:
+        price, eps = float(price), float(eps)
+    except (TypeError, ValueError):
+        return None
+    if eps == 0 or price <= 0:
+        return None
+    return price / eps
+
+
 def add_favorite(ticker: str) -> Optional[dict]:
     """Fetch snapshot from yfinance and append to favorites. None on dupe/error."""
     import yfinance as yf
@@ -131,12 +156,7 @@ def add_favorite(ticker: str) -> Optional[dict]:
         return None
 
     eps_est = info.get("forwardEps")
-    per_val = info.get("forwardPE")
-    per_is_trailing = False
-    if per_val is None:
-        per_val = info.get("trailingPE")
-        if per_val is not None:
-            per_is_trailing = True
+    per_is_trailing = info.get("forwardEps") is None
     lfy = info.get("lastFiscalYearEnd")
     fy_label = None
     if lfy and isinstance(lfy, (int, float)):
@@ -176,7 +196,8 @@ def add_favorite(ticker: str) -> Optional[dict]:
         "eps_fy_label": fy_label if (info.get("forwardEps") is None
                                      and info.get("trailingEps") is not None) else None,
         "eps_negative": (eps_est is not None and eps_est < 0),
-        "per": per_val,
+        # PER 은 위 두 칸(현재가·예상 EPS)에서 **직접** 만든다 — 아래 helper 참조.
+        "per": _per_from_shown(price, eps_est),
         "per_is_trailing": per_is_trailing,
         # 과거 날짜(yfinance KR calendar stale)는 빈칸 — 사용자 2026-06-11.
         "next_earnings": _future_or_none(next_earn),
@@ -385,10 +406,10 @@ def _compute_favorites_with_prices() -> list[dict]:
             f["eps_estimate"] = fwd if fwd is not None else trail
             f["eps_is_actual"] = (fwd is None and trail is not None)
 
-            fwd_pe = info.get("forwardPE")
-            trail_pe = info.get("trailingPE")
-            f["per"] = fwd_pe if fwd_pe is not None else trail_pe
-            f["per_is_trailing"] = (fwd_pe is None and trail_pe is not None)
+            # ⚠️ 소스 PER(forwardPE/trailingPE)을 쓰지 않는다 — 그 값은
+            # yfinance 자신의 EPS·가격 기준이라 이 표의 현재가·예상 EPS 와
+            # 나눗셈이 안 맞는다(2026-08-20 실측: 삼성전자 3.7 vs 17.4).
+            f["per_is_trailing"] = f["eps_is_actual"]
 
             lfy = info.get("lastFiscalYearEnd")
             fy_label = None
@@ -428,8 +449,15 @@ def _compute_favorites_with_prices() -> list[dict]:
                             f["next_earnings"] = fut[0]
                 except Exception:
                     pass
+            # ⚠️ **맨 마지막**에 계산한다 — 위 calendar 블록이 eps_estimate 를
+            # 컨센서스로 갈아끼울 수 있어서, 그 전에 만들면 EPS 와 PER 이 다시
+            # 어긋난다(이 버그의 원래 형태가 정확히 그거였다).
+            f["per"] = _per_from_shown(f.get("current_price"),
+                                       f.get("eps_estimate"))
+            f["per_is_trailing"] = bool(f.get("eps_is_actual"))
         except Exception:
             f["current_price"] = None
+            f["per"] = None
 
     with ThreadPoolExecutor(max_workers=min(len(favorites), 8)) as pool:
         pool.map(_refresh, favorites)

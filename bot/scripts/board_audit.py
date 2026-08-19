@@ -1,4 +1,4 @@
-"""보드 4종 전수 신선도 감사 — PPI · CPI · 유동성 · 시장타이밍.
+"""대시보드 전수 감사 — 보드 4종 + 홈 표면 6종(신선도·검산·교차일관성).
 
 사용자 2026-08-20: "한국 PPI 는 여전히 6월인데 제대로 제때 받아오는지 꼼꼼히
 확인해주고 … CPI, PPI, 유동성, 시장타이밍 모두 제대로 작동하는지 다시 꼼꼼히."
@@ -14,6 +14,18 @@
     cd ~/stock && .venv/bin/python -m bot.scripts.board_audit
     cd ~/stock && .venv/bin/python -m bot.scripts.board_audit ppi      # 한 보드만
     cd ~/stock && .venv/bin/python -m bot.scripts.board_audit --all    # 정상행까지 전부
+    cd ~/stock && .venv/bin/python -m bot.scripts.board_audit home     # 홈 표면만
+
+v3(사용자 2026-08-20 "글로벌 스냅샷·매크로 스냅샷·시장유동성·다가오는 실적·
+최근 리서치액션·관심종목 모두 하나씩 꼼꼼히"): 신선도만으로는 못 잡는 두
+부류를 추가했다.
+  · **검산** — 화면에 나란히 놓인 숫자끼리 산수가 맞는가.
+    (실측: 관심종목 예상 PER 이 현재가÷예상 EPS 와 안 맞았다 — 삼성전자
+     247,500÷14,227=17.4 인데 화면은 3.7. 미국 종목은 맞고 국내만 틀려서
+     눈으로는 안 보였다.)
+  · **교차일관성** — 같은 이름의 지표가 두 화면에서 다른 값인가.
+    (실측: PPI 가 글로벌 8.27%(PPIACO) vs 매크로 4.84%(PPIFIS) — 서로 다른
+     시리즈를 같은 이름으로 부르고 있었다.)
 
 읽기 전용 · LLM 0 · ₩0.
 """
@@ -21,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 
 def _p(*a):
@@ -69,6 +81,200 @@ def _audit_rows(title, rows, default, show_all):
     _p(f"   (개별 규약 등록분 {sum(1 for r in rows if str(r.get('cadence_id') or r.get('id') or '') in CADENCE)}행"
        f" · 나머지는 보드 그룹 기본값 {default[0] if default else '없음'}"
        f"{'/' + str(default[1]) + '일' if default else ''})")
+
+
+def _audit_home_surfaces(show_all):
+    """홈 대시보드 6종 — 신선도 + **검산** + **교차일관성**."""
+    _p("")
+    _p("══ 홈 표면 6종 ══")
+
+    # ① 글로벌 시장 스냅샷 — FRED 지표 라벨↔시리즈, 값 유무
+    _p("")
+    _p("── 글로벌 시장 스냅샷 (핵심 지표)")
+    try:
+        import bot.market_overview as mo
+        from bot.macro_cadence import judge
+        rows = mo._fetch_all_fred()
+        empty = 0
+        for r in rows:
+            d = r.get("data") or {}
+            sid = r.get("series_id") or ""
+            asof = str(d.get("date") or d.get("asof") or "")[:10]
+            if not d:
+                empty += 1
+            j = judge(sid, asof) if asof else None
+            mark = ("❌ 값 없음" if not d else
+                    "⚠️ 지연" if j and j["stale"] else
+                    "❓ 규약없음" if asof and j is None else "✅")
+            _p(f"   {str(r.get('label',''))[:22]:22} {sid:22} "
+               f"기준 {asof or '—':10} 값 {str(d.get('value', '—'))[:10]:>10} {mark}")
+        if empty:
+            _p(f"   ❌ 값이 안 온 지표 {empty}개 — 키·원천 확인")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+    # ② 매크로 스냅샷 — 카드별 기준일 + 지연배지 + 기간 시작 라벨
+    _p("")
+    _p("── 매크로 스냅샷 (카드)")
+    try:
+        from bot.macro_snapshot import fetch_macro_snapshot
+        data = fetch_macro_snapshot()
+        rows = (data or {}).get("indicators") or []
+        late = [r for r in rows if r.get("asof_stale")]
+        noasof = [r for r in rows if not r.get("asof")]
+        _p(f"   카드 {len(rows)}개 · ⚠️ 지연 {len(late)} · 기준일 없음 {len(noasof)}")
+        for r in late:
+            _p(f"   ⚠️ {r.get('label','?')[:24]:24} 기준 {r.get('asof','—')}")
+        for r in noasof:
+            _p(f"   ❓ {r.get('label','?')[:24]:24} 기준일 미표기")
+        # 기간 시작 라벨이 **날짜**인가(어림 '12개월 전' 은 검산이 안 된다)
+        fred_rows = [r for r in rows if r.get("period_start") is not None]
+        vague = [r for r in fred_rows if not r.get("period_start_asof")
+                 and r.get("spark_span") == "12개월"]
+        _p(f"   기간 시작 라벨: 날짜 표기 {len(fred_rows) - len(vague)}"
+           f" · 어림('N개월 전') {len(vague)}")
+        # **평평한 시계열** — 값이 한 번도 안 변하면 원천이 멈춘 것이다.
+        flat = [r for r in rows
+                if (r.get("spark") or []) and len(set(
+                    v for v in r["spark"] if v is not None)) == 1]
+        if flat:
+            _p(f"   ⚠️ 값이 전혀 안 변하는 카드 {len(flat)}개 — 원천 정지 의심:")
+            for r in flat:
+                _p(f"      {r.get('label','?')[:24]:24} {r.get('value')} "
+                   f"({len(r.get('spark') or [])}점 전부 동일)")
+        if show_all:
+            for r in rows:
+                _p(f"   ✅ {r.get('label','?')[:24]:24} {r.get('value')} "
+                   f"· 기준 {r.get('asof','—')}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+    # ③ 시장유동성 — 예탁금/신용(금투협) 기준일
+    _p("")
+    _p("── 시장유동성 (투자자 예탁금·신용)")
+    try:
+        from bot import fsc_client
+        dep = fsc_client.market_deposit()
+        asof = (dep or {}).get("date") or (dep or {}).get("basDt") or ""
+        from datetime import date, datetime, timedelta
+        age = None
+        if asof:
+            try:
+                d = datetime.strptime(str(asof)[:10].replace(".", "-"),
+                                      "%Y-%m-%d").date()
+                age = (date.today() - d).days
+            except ValueError:
+                pass
+        _p(f"   예탁금 기준일 {asof or '—'}"
+           f"{f' ({age}일 전)' if age is not None else ''}"
+           f"{'  ⚠️ 금투협은 통상 T+1~2 — 5일 넘으면 확인' if age and age > 5 else ''}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+    # ④ 다가오는 실적
+    _p("")
+    _p("── 다가오는 실적")
+    try:
+        from datetime import date
+        from bot import earnings_calendar as ec
+        t = date.today()
+        for mkt in ("kr", "us"):
+            rows = ec.fetch_month(t.year, t.month) if mkt == "kr" else []
+            fut = sorted(r for r in (x.get("date", "") for x in rows) if r >= t.isoformat())
+            _p(f"   {mkt.upper():3} 이번달 {len(rows):>4}건 · 오늘 이후 {len(fut)}건"
+               f" · 가장 가까운 {fut[0] if fut else '—'}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+    # ⑤ 최근 리서치 액션
+    _p("")
+    _p("── 최근 리서치 액션")
+    try:
+        from bot import naver_research_client as nrc
+        items = nrc.fetch_recent_research_market(limit=25)
+        dates = sorted({str(i.get("date", ""))[:10] for i in items if i.get("date")})
+        _p(f"   {len(items)}건 · 최신 {dates[-1] if dates else '—'}"
+           f" · 가장 오래된 {dates[0] if dates else '—'}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+    # ⑥ 관심종목 — **검산**: 예상 PER = 현재가 ÷ 예상 EPS
+    _p("")
+    _p("── 관심종목 (검산: 예상 PER = 현재가 ÷ 예상 EPS)")
+    try:
+        from bot import market_favorites as mf
+        favs = mf.get_favorites_with_prices()
+        bad, checked, blank = [], 0, 0
+        for f in favs:
+            px, eps, per = (f.get("current_price"), f.get("eps_estimate"),
+                            f.get("per"))
+            if per is None:
+                blank += 1
+                continue
+            if px is None or not eps:
+                bad.append((f, per, None))
+                continue
+            calc = px / eps
+            checked += 1
+            if abs(calc - per) > max(0.05 * abs(per), 0.1):
+                bad.append((f, per, calc))
+        _p(f"   {len(favs)}종목 · 검산 통과 {checked - len([b for b in bad if b[2]])}"
+           f" · ❌ 불일치 {len(bad)} · PER 빈칸 {blank}")
+        for f, per, calc in bad[:12]:
+            _p(f"   ❌ {str(f.get('name_kr') or f.get('name'))[:16]:16} "
+               f"{f.get('ticker',''):12} 화면 PER {per} · "
+               f"현재가 {f.get('current_price')} ÷ EPS {f.get('eps_estimate')} = "
+               f"{f'{calc:.1f}' if calc else '계산불가'}")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+    # ⑦ 교차일관성 — 같은 이름의 지표가 두 화면에서 다른 값인가
+    _p("")
+    _p("── 교차일관성 (같은 이름 지표가 화면마다 다른가)")
+    try:
+        import re as _re
+        mo_src = open("bot/market_overview.py", encoding="utf-8").read()
+        ms_src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        # 라벨은 **한글/공백/괄호**를 포함한 표기이고 시리즈 id 는 대문자·숫자다.
+        # v3 초안은 둘을 구분 못 해 `'CPIAUCSL' = PPIACO` 라는 유령 행을 냈다.
+        mo_ids = {lbl: sid for lbl, sid in _re.findall(
+            r'\("([^"]*(?:PPI|CPI|PCE)[^"]*)",\s*"([A-Z0-9]+)"', mo_src)
+            if not _re.fullmatch(r"[A-Z0-9]+", lbl)}
+        ms_ids = dict((m[1], m[0]) for m in _re.findall(
+            r'\("[a-z_]+",\s*"([^"]+)",\s*"[^"]*",\s*"fred",\s*"([A-Z0-9]+)"', ms_src))
+        def _topic(lbl):
+            for t in ("PPI", "CPI", "PCE"):
+                if t in lbl.upper():
+                    return t
+            return ""
+
+        def _qualifier(lbl, topic):
+            """주제어·시장접두어·(YoY) 를 뺀 나머지 = 구분자."""
+            out = _re.sub(r"\(YoY\)|미국|글로벌|US\b", "", lbl)
+            return _re.sub(r"[\s()]+", "", out.replace(topic, ""))
+
+        for lbl, sid in mo_ids.items():
+            topic = _topic(lbl)
+            twin = ms_ids.get(sid)
+            rivals = [(s, l) for s, l in ms_ids.items()
+                      if s != sid and _topic(l) == topic]
+            if twin:
+                _p(f"   ✅ '{lbl}' = {sid} — 매크로도 같은 시리즈")
+                continue
+            if not rivals:
+                _p(f"   ✅ '{lbl}' = {sid} — 매크로엔 같은 주제 지표 없음")
+                continue
+            rs, rl = rivals[0]
+            # 두 화면이 **다른 시리즈**를 쓰는 건 문제가 아니다. 문제는
+            # 라벨만 보고 구분이 안 되는 것 — 그때만 경고한다.
+            if _qualifier(lbl, topic) and _qualifier(rl, topic):
+                _p(f"   ✅ '{lbl}'({sid}) vs 매크로 '{rl}'({rs}) — 라벨로 구분됨")
+            else:
+                _p(f"   ⚠️ '{lbl}'({sid}) vs 매크로 '{rl}'({rs}) — **같은 이름,"
+                   f" 다른 시리즈**라 한쪽이 틀린 것처럼 보인다. 라벨에 기준을"
+                   f" 넣을 것")
+    except Exception as exc:                                   # noqa: BLE001
+        _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
 
 def main() -> int:
@@ -149,6 +355,9 @@ def main() -> int:
                f"{f' ({age}일 전)' if age is not None else ''} · "
                f"소스 {rec.get('source') or '—'}"
                f"{' · **캐시**' if rec.get('from_cache') else ''} · 창 [{wins}]")
+
+    if not want or "home" in want:
+        _audit_home_surfaces(show_all)
 
     _p("")
     _p("읽는 법: ⚠️ 지연 = 원천 공표일정 대비 뒤처짐(우리 수집 또는 원천 지연).")

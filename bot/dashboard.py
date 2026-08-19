@@ -16034,7 +16034,12 @@ def _render_macro_card(ind: dict) -> str:
     # 밀려났지만 FRED/ECOS 의 전월 대비는 표준 해석이라 여기 남긴다.
     bits: list[str] = []
     if ind.get("period_start") is not None and span:
-        bits.append(f'{span} 전 '
+        # ⚠️ "12개월 전" 은 어림이다 — 창이 **최근 12개 관측**이라 실제로는
+        # 11개월 전이고, 사용자가 YoY 로 검산하면 안 맞는다(2026-08-20 근원
+        # PCE 실측). 실제 관측 기간을 알면 그걸 쓴다(#29 와 같은 처방).
+        _ps_asof = str(ind.get("period_start_asof") or "")
+        _ps_label = f'{_ps_asof} 대비' if _ps_asof else f'{span} 전'
+        bits.append(f'{_ps_label} '
                     f'{_macro_fmt_value(ind.get("period_start"), dec, ind.get("unit", ""))}')
     _prev = ind.get("change_pct") if _pct_style else ind.get("change")
     if _prev is not None and round(float(_prev), 2) != 0:
