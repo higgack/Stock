@@ -22714,66 +22714,64 @@ class TestFlowTrendDiagnosis20260818:
         assert e5 == {"매출": 1e12, "영업이익": 1e11}
 
     def test_fnguide_summary_parser_reads_the_real_table_shape(self):
-        """네이버 임베드 Financial Summary 표 — id 가 아니라 **내용**으로 찾고
-        분기/연간을 헤더 월로 가른다(사이트가 id 를 바꿔도 살아남게)."""
+        """⚠️ 실제 표(2026-08-19 005940 원문 덤프)는 헤더에 **탭별 대체 컬럼
+        세트가 전부** 들어 있다 — 헤더 20칸 vs 데이터 8칸, 숨김 표식 없음
+        (전부 class="sub line"). 그룹 헤더가 칸 수(연간4·분기4)를 주고,
+        실제 그려지는 세트는 **간격이 일정한 연속 구간**이라는 두 사실을
+        합쳐야 유일하게 결정된다."""
         from bot.wisereport_financials import parse_financial_summary
-        html = ("<table><tr><th>주요재무정보</th><th>2025/03<br>(IFRS연결)</th>"
-                "<th>2026/03<br>(IFRS연결)</th></tr>"
-                "<tr><td>매출액</td><td>30,068</td><td>81,720</td></tr>"
-                "<tr><td>영업이익</td><td>2,890</td><td>6,367</td></tr>"
-                "<tr><td>당기순이익(지배)</td><td>2,082</td><td>4,757</td></tr>"
-                "</table>"
-                "<table><tr><th>x</th><th>2024/12</th><th>2025/12</th></tr>"
-                "<tr><td>매출액</td><td>100</td><td>200</td></tr>"
-                "<tr><td>영업이익</td><td>10</td><td>20</td></tr></table>")
+        per = ["2022/12", "2023/12", "2024/12", "2025/12", "2026/12",
+               "2025/03", "2025/12", "2026/03", "2025/06", "2026/06",
+               "2025/06", "2025/09", "2025/12", "2026/03", "2026/06",
+               "2025/03", "2025/12", "2026/03", "2025/06", "2026/06"]
+        hdr = "".join(f"<th scope='col' class='sub line'>{p}<br>"
+                      f"<span class='multi-row'>(IFRS연결)</span></th>"
+                      for p in per)
+
+        def _row(nm, vs):
+            return ("<tr><th scope='row' class='line txt'>" + nm + "</th>"
+                    + "".join(f"<td class='num line'>{v}</td>" for v in vs)
+                    + "</tr>")
+
+        html = ('<table><tr><th class="c1 line" rowspan="2">주요재무정보</th>'
+                '<th scope="colgroup" class="line" colspan="4">연간</th>'
+                '<th scope="colgroup" colspan="4">분기</th></tr>'
+                "<tr>" + hdr + "</tr>"
+                + _row("매출액", ["112,274", "103,712", "100,342", "136,989",
+                                 "32,645", "26,840", "48,641", "81,720"])
+                + _row("영업이익", ["5,214", "7,258", "9,011", "14,206",
+                                  "3,219", "3,913", "4,183", "6,367"])
+                + "</table>")
         out = parse_financial_summary(html)
-        assert out["quarter"]["2026/03"]["매출액"] == 81720 * 1e8
-        assert out["annual"]["2025/12"]["매출액"] == 200 * 1e8
-
-        # ⚠️ **실측 구조: 헤더가 2행**(라벨 rowspan + 기간 줄)이라 기간 줄엔
-        # 라벨 칸이 없다. 절대 인덱스로 맞추면 한 칸씩 밀려 2026/03 자리에
-        # 2025/12 값이 들어간다(2026-08-19 VM 실측으로 발각).
-        two_row = ("<table>"
-                   "<tr><th rowspan='2'>주요재무정보</th>"
-                   "<th colspan='3'>분기</th></tr>"
-                   "<tr><th>2025/12<br>(IFRS연결)</th>"
-                   "<th>2026/03<br>(IFRS연결)</th>"
-                   "<th>2026/06<br>(IFRS연결)<br>(E)</th></tr>"
-                   "<tr><th>매출액</th><td>48,641</td><td>81,720</td>"
-                   "<td>90,000</td></tr>"
-                   "<tr><th>영업이익</th><td>4,183</td><td>6,367</td>"
-                   "<td>7,000</td></tr></table>")
-        q = parse_financial_summary(two_row)["quarter"]
+        a, q = out["annual"], out["quarter"]
+        # 연간 = 12개월 간격 연속 구간(2022~2025). 2026/12(추정)은 제외된다.
+        assert sorted(a) == ["2022/12", "2023/12", "2024/12", "2025/12"]
+        assert a["2025/12"]["매출액"] == 136989 * 1e8
+        # 교차확인: 이 매핑일 때 FY2025 영업이익이 DART 값(14,206억)과 일치.
+        assert a["2025/12"]["영업이익"] == 14206 * 1e8
+        # 분기 = 3개월 간격 연속 구간(2025/06~2026/03). 화면과 정합.
+        assert sorted(q) == ["2025/06", "2025/09", "2025/12", "2026/03"]
+        assert q["2025/06"]["매출액"] == 32645 * 1e8
+        assert q["2026/03"]["매출액"] == 81720 * 1e8
+        # 같은 '2025/12' 라도 연간(13.70조)과 4분기(4.86조)를 구분한다.
         assert q["2025/12"]["매출액"] == 48641 * 1e8
-        assert q["2026/03"]["매출액"] == 81720 * 1e8, "컬럼이 밀렸다"
-        assert q["2026/03"]["영업이익"] == 6367 * 1e8
-        # 추정치(E) 컬럼은 실적이 아니다 — 받지 않는다.
-        assert "2026/06" not in q
 
-        # ⚠️ **'전체' 탭은 연간·분기 컬럼이 한 표에 섞인다**(2026-08-19 실측:
-        # 분기 최신이 미래인 '2026/12' 로 잡혔다 = 연간 추정치가 분기로 들어감).
-        # 월만 보고 가르면 연간 2025/12 와 4분기 2025/12 를 구분 못 한다 —
-        # 위 줄의 그룹 헤더(연간/분기)를 colspan 만큼 펼쳐 컬럼별로 따른다.
-        mixed = ("<table>"
-                 "<tr><th rowspan='2'>주요재무정보</th>"
-                 "<th colspan='2'>연간</th><th colspan='2'>분기</th></tr>"
-                 "<tr><th>2024/12</th><th>2025/12</th>"
-                 "<th>2025/12</th><th>2026/03</th></tr>"
-                 "<tr><th>매출액</th><td>124,000</td><td>138,194</td>"
-                 "<td>48,641</td><td>81,720</td></tr>"
-                 "<tr><th>영업이익</th><td>9,011</td><td>14,206</td>"
-                 "<td>4,183</td><td>6,367</td></tr></table>")
-        m = parse_financial_summary(mixed)
-        # colspan 을 안 펼치면 이 줄이 깨진다(그룹 칸 3개 < 기간 칸 4개).
-        assert m["annual"]["2024/12"]["매출액"] == 124000 * 1e8
-        assert m["annual"]["2025/12"]["매출액"] == 138194 * 1e8
-        assert m["annual"]["2025/12"]["영업이익"] == 14206 * 1e8
-        # 같은 '2025/12' 라도 분기 쪽은 4분기 값이어야 한다.
-        assert m["quarter"]["2025/12"]["매출액"] == 48641 * 1e8
-        assert m["quarter"]["2026/03"]["매출액"] == 81720 * 1e8
-        assert "2026/03" not in m["annual"], "분기 컬럼이 연간으로 샜다"
-        # 들여쓴 하위 항목(당기순이익(지배))은 이름이 달라 안 들어온다.
-        assert "당기순이익" not in out["quarter"]["2026/03"]
+        # 그룹 헤더 없는 단순 표(한 종류)도 그대로 읽는다.
+        simple = ("<table><tr><th>주요재무정보</th><th>2024/12</th>"
+                  "<th>2025/12</th></tr>"
+                  "<tr><td>매출액</td><td>100</td><td>200</td></tr>"
+                  "<tr><td>영업이익</td><td>10</td><td>20</td></tr></table>")
+        assert parse_financial_summary(simple)["annual"]["2025/12"][
+            "매출액"] == 200 * 1e8
+
+        # ⚠️ **못 맞추면 버린다** — 틀린 매핑으로 숫자를 내보내지 않는다.
+        broken = ('<table><tr><th rowspan="2">x</th>'
+                  '<th colspan="4">연간</th></tr>'
+                  "<tr><th>2024/12</th><th>2026/12</th></tr>"
+                  "<tr><td>매출액</td><td>1</td><td>2</td></tr>"
+                  "<tr><td>영업이익</td><td>1</td><td>2</td></tr></table>")
+        assert parse_financial_summary(broken) == {"annual": {}, "quarter": {}}
+
         # Financial Summary 가 아닌 표는 무시한다(오탐 방지).
         assert parse_financial_summary(
             "<table><tr><th>a</th><th>2025/03</th><th>2025/06</th></tr>"

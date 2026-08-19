@@ -55,7 +55,8 @@ _CACHE_TTL_H = 12
 # 캐시된 옛 파싱 결과가 그대로 서빙됐기 때문이다(실수 #18 의 세 번째 재발).
 # 파서를 고치면 이 숫자를 올린다 — 옛 캐시는 즉시 무효.
 #   v1 = 표 전체를 한 종류로 분류 · v2 = 그룹 헤더(연간/분기)로 컬럼별 분리
-_PARSE_VER = 2
+#   v3 = 헤더의 **탭별 대체 컬럼 세트**에서 연속 구간을 골라 컬럼 매핑
+_PARSE_VER = 3
 
 # ⚠️ 실패 이유를 남긴다 — "표 없음" 한 마디로는 (a) 요청 실패 (b) 표가 AJAX
 # 라 HTML 에 없음 (c) 파싱 규칙 문제를 못 가른다(실수 #12 silent-fail).
@@ -74,6 +75,29 @@ _PERIOD = re.compile(r"\b(\d{4})/(\d{2})\b")
 # 이름이 달라 자동으로 걸러진다.
 _WANT = ("매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계")
 _EOK = 1e8          # 억원 → 원
+
+
+def _pm(per: str) -> int:
+    """'2026/03' → 절대 개월수(정렬·간격 계산용)."""
+    y, m = per.split("/")
+    return int(y) * 12 + int(m)
+
+
+def _pick_run(periods: list[str], n: int, step: int) -> list[str] | None:
+    """기간 목록에서 **간격이 정확히 `step`개월인 연속 n칸**을 찾는다.
+
+    ⚠️ 실측(2026-08-19 005940 원문): 헤더 줄에는 **탭별 대체 컬럼 세트가 전부**
+    들어 있다(헤더 20칸 vs 데이터 8칸). 숨김 속성 같은 표식은 없다 —
+    전부 `class="sub line"`. 실제로 그려지는 세트는 **연속 구간**이다:
+      연간 2022/12·2023/12·2024/12·2025/12 (12개월 간격)
+      분기 2025/06·2025/09·2025/12·2026/03 (3개월 간격)
+    나머지 세트는 2025/03→2025/12 처럼 간격이 깨져 자동으로 걸러진다.
+    (교차확인: 그 매핑일 때 FY2025 영업이익 14,206억이 DART 값과 일치.)"""
+    for i in range(len(periods) - n + 1):
+        w = [_pm(x) for x in periods[i:i + n]]
+        if all(w[j + 1] - w[j] == step for j in range(n - 1)):
+            return periods[i:i + n]
+    return None
 
 
 def _expand_group(row_html: str) -> list[str]:
@@ -103,11 +127,28 @@ def _num(s: str) -> Optional[float]:
     return float(s) if m else None
 
 
+def _group_spans(row_html: str) -> list[tuple[str, int]]:
+    """그룹 헤더 줄 → [('연간', 4), ('분기', 4)]. 라벨 칸(colspan 없음)은 제외."""
+    out: list[tuple[str, int]] = []
+    for attrs, body in _CELL_SPAN.findall(row_html):
+        m = _COLSPAN.search(attrs or "")
+        if not m:
+            continue                     # rowspan 라벨 칸
+        out.append((_text(body), int(m.group(1))))
+    return out
+
+
 def parse_financial_summary(html: str) -> dict:
     """{'annual': {'2025/12': {...}}, 'quarter': {'2026/03': {...}}} (원 단위).
 
     표 id 에 기대지 않는다 — **내용으로** 찾는다(사이트가 id 를 바꿔도 산다).
-    분기/연간 구분도 헤더 월로 판정한다(12월만 있으면 연간)."""
+
+    ⚠️ 컬럼 매핑(2026-08-19 원문 실측): 헤더 줄에는 탭별 **대체 컬럼 세트가
+    전부** 들어 있어 헤더 20칸 vs 데이터 8칸이다. 숨김 표식은 없다. 대신
+    그룹 헤더가 `연간 colspan=4 · 분기 colspan=4` 로 **몇 칸씩인지**를 주고,
+    실제 그려지는 세트는 간격이 일정한 **연속 구간**이다. 둘을 합치면
+    유일하게 결정된다(`_pick_run`). 결정 못 하면 그 표는 버린다 —
+    잘못 맞춘 숫자를 내보내느니 아무것도 안 내보낸다."""
     out: dict = {"annual": {}, "quarter": {}}
     for tbl in _TABLE.findall(html or ""):
         raw_rows = _ROW.findall(tbl)
@@ -127,44 +168,42 @@ def parse_financial_summary(html: str) -> dict:
                 break
         if periods is None:
             continue
+        data_rows = [r for r in rows[hdr_i + 1:]
+                     if (r[0] or "").replace(" ", "") in _WANT]
         labels = {(r[0] or "").replace(" ", "") for r in rows[hdr_i + 1:]}
         if "매출액" not in labels or "영업이익" not in labels:
             continue                      # Financial Summary 표가 아니다
-        # 컬럼별 종류 — 그룹 헤더(연간/분기)가 있으면 **그걸 따른다**.
-        cols_kind: list[str] = []
-        if hdr_i > 0:
-            grp = _expand_group(raw_rows[hdr_i - 1])
-            if any("연간" in g or "분기" in g for g in grp):
-                # 기간 줄에 라벨 칸이 없을 수 있으니 오른쪽 정렬로 맞춘다.
-                # ⚠️ 그룹 줄이 컬럼 수를 못 채우면(colspan 해석 실패 등)
-                # **부분 적용하지 않는다** — 일부만 맞으면 조용히 어긋난다.
-                if len(grp) >= len(periods):
-                    tail = grp[-len(periods):]
-                    cols_kind = ["annual" if "연간" in g else
-                                 "quarter" if "분기" in g else "" for g in tail]
-        months = {p.split("/")[1] for p in periods if p}
-        # 그룹 헤더가 없으면 월로 추정 — 연간 표는 12월만 있다.
-        default_kind = "annual" if months <= {"12"} else "quarter"
-        # ⚠️ **절대 인덱스로 맞추면 한 칸씩 밀린다**(2026-08-19 실측: 2026/03
-        # 자리에 2025/12 값이 들어갔다). 실제 표는 헤더가 2행이라 기간 줄에는
-        # 라벨 칸이 없는데 데이터 줄에는 있기 때문이다. 기간 목록과 '라벨을
-        # 뺀 값들'을 순서대로 맞춘다 — 헤더가 1행이든 2행이든 같은 결과.
-        cols = [p for p in periods if p]
-        col_at = [i for i, p in enumerate(periods) if p]
-        kinds = [(cols_kind[i] if i < len(cols_kind) and cols_kind[i]
-                  else default_kind) for i in col_at]
-        for r in rows[hdr_i + 1:]:
+        all_per = [p for p in periods if p]
+        ncols = max((len(r) - 1) for r in data_rows) if data_rows else 0
+
+        # ── (A) 그룹 헤더가 칸 수를 알려주는 경우 = 실제 사이트 구조 ──
+        col_map: list[tuple[str, str]] = []      # [(period, kind)] 데이터 순서대로
+        spans = _group_spans(raw_rows[hdr_i - 1]) if hdr_i > 0 else []
+        spans = [(g, n) for g, n in spans if "연간" in g or "분기" in g]
+        if spans and sum(n for _g, n in spans) == ncols:
+            for g, n in spans:
+                kind = "annual" if "연간" in g else "quarter"
+                run = _pick_run(all_per, n, 12 if kind == "annual" else 3)
+                if run is None:
+                    col_map = []
+                    break
+                col_map.extend((per, kind) for per in run)
+        # ── (B) 그룹 헤더가 **아예 없는** 단순 표(한 종류) ──
+        # ⚠️ 그룹 헤더가 있는데 (A) 가 실패한 경우엔 여기로 내려오면 안 된다 —
+        # 칸 수가 우연히 맞으면 틀린 매핑을 조용히 내보낸다.
+        if not spans and not col_map and len(all_per) == ncols:
+            months = {p.split("/")[1] for p in all_per}
+            kind = "annual" if months <= {"12"} else "quarter"
+            col_map = [(per, kind) for per in all_per]
+        if not col_map:
+            continue                     # 못 맞추면 버린다(틀린 매핑 금지)
+
+        for r in data_rows:
             name = (r[0] or "").replace(" ", "")
-            if name not in _WANT:
-                continue
-            vals = r[1:]
-            if len(r) == len(periods):
-                # 헤더와 데이터의 칸 수가 같다 = 헤더에도 라벨 칸이 있다.
-                vals = [r[i] for i in col_at]
-            for per, cell, kd in zip(cols, vals, kinds):
+            for (per, kind), cell in zip(col_map, r[1:]):
                 v = _num(cell)
                 if v is not None:
-                    out[kd].setdefault(per, {})[name] = v * _EOK
+                    out[kind].setdefault(per, {})[name] = v * _EOK
     return out
 
 
