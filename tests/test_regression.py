@@ -27919,3 +27919,24 @@ class TestValuechainAudit20260820:
                             date(2026, 8, 20)) == "active"
         assert vc.freshness({"kind": "kg", "status": "", "date": old},
                             date(2026, 8, 20)) == "archived"
+
+
+class TestMarketSectionOrder20260820:
+    """홈(market.html) 섹션 순서 — 사용자 2026-08-20 "최근 리서치 액션이랑
+    다가오는 실적의 위치만 바꿔줘. 다른건 그대로": 리서치 → 실적 → 관심종목.
+
+    렌더 결과로 고정한다(소스 문자열이 아니라 — #19). 빈 data 로도 두 섹션
+    헤더와 각자의 필터·링크가 자기 블록에 붙어 렌더된다."""
+
+    def test_research_before_earnings_before_favorites(self):
+        from bot.dashboard import _render_market_page
+        html = _render_market_page({})
+        i_res = html.find("최근 리서치 액션")
+        i_earn = html.find("다가오는 실적")
+        i_fav = html.find("관심종목")
+        assert 0 < i_res < i_earn < i_fav, (i_res, i_earn, i_fav)
+        # '위치만' — 각 블록의 배선이 블록과 함께 이동했는지(잘려나가지 않았는지)
+        earn_seg = html[i_earn:i_earn + 2500]
+        assert "실적 캘린더" in earn_seg and "earn-filter" in earn_seg
+        res_seg = html[i_res:i_res + 2500]
+        assert "research-filter" in res_seg and "한국 기업" in res_seg

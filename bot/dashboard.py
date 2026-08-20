@@ -16977,22 +16977,6 @@ def _render_market_page(data: dict) -> str:
                                 if r.get("date")}, reverse=True))
 
     parts.append(f"""
-  <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
-    <h2>다가오는 실적</h2>
-    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(한국 IR·미국·일·홍·대 실적)</a>
-    <span class="ts" style="margin-left:auto">{_html.escape(_earn_ts)}</span>
-  </div>
-  <div class="tbl-filter">
-    <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
-    <select id="earn-from" class="dfilt" title="시작일(이 날짜부터)">{_eopts}</select>
-    <span class="dsep">~</span>
-    <select id="earn-to" class="dfilt" title="종료일(이 날짜까지)">{_eopts}</select>
-    <span class="cnt" id="earn-cnt"></span>
-    <span class="cnt" style="margin-left:auto">날짜 드롭다운·종목 필터 · ↕ 헤더 클릭 정렬</span>
-  </div>
-  <div class="tabs">{_etab_btns}</div>
-  {_etab_panes}
-
   <div class="section-hd" style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
     <h2>최근 리서치 액션</h2>
     <span class="ts" style="margin-left:auto">{_html.escape(_res_ts)}</span>
@@ -17025,6 +17009,22 @@ def _render_market_page(data: dict) -> str:
     {_render_research_us_table(research_us)}
   </div>
   {_res_intl_panes}
+
+  <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
+    <h2>다가오는 실적</h2>
+    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(한국 IR·미국·일·홍·대 실적)</a>
+    <span class="ts" style="margin-left:auto">{_html.escape(_earn_ts)}</span>
+  </div>
+  <div class="tbl-filter">
+    <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
+    <select id="earn-from" class="dfilt" title="시작일(이 날짜부터)">{_eopts}</select>
+    <span class="dsep">~</span>
+    <select id="earn-to" class="dfilt" title="종료일(이 날짜까지)">{_eopts}</select>
+    <span class="cnt" id="earn-cnt"></span>
+    <span class="cnt" style="margin-left:auto">날짜 드롭다운·종목 필터 · ↕ 헤더 클릭 정렬</span>
+  </div>
+  <div class="tabs">{_etab_btns}</div>
+  {_etab_panes}
 
   <div id="fav-section">
     <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span></div>
