@@ -14858,23 +14858,32 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         except Exception:
             it["_unparsed"] = it["_noparse"] = False
 
+    # ⚠️ **표시 대상 단일 소스**(_vis) — 노이즈컷(_equity_noise) 통과분만.
+    # 전에는 전체 필만 필터 후 카운트였고 월/일 헤더는 by_date 원본 길이를
+    # 그대로 찍어서, 숨겨진 카드까지 센 숫자가 헤더에 남았다(2026-08-20 감사:
+    # 하루 6 이라 적혀 있는데 카드는 4장). 카드 순서(rcept_no 내림차순)도
+    # 여기서 한 번만 정하고 렌더는 이 리스트만 읽는다 — 카운트와 카드가
+    # 갈라질 수 있는 경로를 없앤다.
+    _vis: dict[str, list[dict]] = {}
+    for _ds, _its in by_date.items():
+        _v = [it for it in sorted(_its, key=lambda x: str(x.get("rcept_no") or ""),
+                                  reverse=True)
+              if not _equity_noise(it)]
+        if _v:                      # 전부 숨겨진 날은 빈 그룹조차 만들지 않는다
+            _vis[_ds] = _v
+
     cat_counts: dict[str, int] = {}
     _sig_total = _unp_total = _noparse_total = 0
     _filtered_total = 0
-    for items in by_date.values():
+    for items in _vis.values():
         for it in items:
-            if not _equity_noise(it):
-                _annotate(it)
-                if it.get("_sig"):
-                    _sig_total += 1
-                if it.get("_unparsed"):
-                    _unp_total += 1
-                if it.get("_noparse"):
-                    _noparse_total += 1
-    for items in by_date.values():
-        for it in items:
-            if _equity_noise(it):
-                continue
+            _annotate(it)
+            if it.get("_sig"):
+                _sig_total += 1
+            if it.get("_unparsed"):
+                _unp_total += 1
+            if it.get("_noparse"):
+                _noparse_total += 1
             _filtered_total += 1
             c = it.get("category", "기타")
             cat_counts[c] = cat_counts.get(c, 0) + 1
@@ -14892,6 +14901,14 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         n = cat_counts.get(cat, 0)
         if n > 0:
             pills.append(f'<button class="df-pill" data-cat="{cat}">{cat} {n}</button>')
+    # 카탈로그(_DART_CATEGORIES) 밖 카테고리 — 고정 순서 뒤에 붙인다. 열거만
+    # 하면 새 카테고리(수집 정책 변경·구 아카이브의 '기타')가 카드로는 보이면서
+    # 어떤 필로도 도달 못 하고 Σ(필) < 전체 갭만 남긴다(실수 #24 의 DART 판).
+    for cat in sorted(k for k in cat_counts if k not in _DART_CATEGORIES):
+        n = cat_counts[cat]
+        if n > 0:
+            _c = _html.escape(str(cat))
+            pills.append(f'<button class="df-pill" data-cat="{_c}">{_c} {n}</button>')
 
     # 테마(다크/라이트) + df-* CSS 를 컨텐츠 전에 emit → FOUC('처음에 깨졌다
     # 복귀') 방지. CSS 가 카드 1000+개 뒤에 있으면 무스타일·전체펼침 첫
@@ -14899,6 +14916,25 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     fragments: dict[str, str] = {}   # 과거 월 lazy(dart_m_*.html, 2026-07-03)
     parts: list[str] = [_SCREENER_CSS, "<script>" + _THEME_JS + "</script>",
                         _DART_FEED_CSS]
+    # 기준시각 = **데이터의 as-of**(최신 접수일), 렌더시각이 아니다(규칙 10b).
+    # 렌더는 1분마다 도는데 수집이 죽으면 시각만 새것이고 데이터는 옛것이라
+    # 화면이 "이거 최신이야?"에 답을 못 한다(실수 #43) — 최신 접수일과 그 날
+    # 건수를 싣고, 마지막 KR 거래일보다 뒤처지면 ⚠️ 지연을 붙인다. 오늘치가
+    # 계속 들어오는 중인 건 정상이므로 '오늘 = 미완결'은 경고가 아니다.
+    _dart_now = datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=9)))
+    _dart_rendered = _dart_now.strftime("%Y-%m-%d %H:%M")
+    _dart_asof = max(_vis) if _vis else "—"
+    _dart_asof_n = len(_vis.get(_dart_asof) or [])
+    _dart_lag = ""
+    try:
+        from bot.market_calendar import last_session_on_or_before
+        _kr_last = last_session_on_or_before("KR", _dart_now.strftime("%Y-%m-%d"))
+        if _vis and _kr_last and _dart_asof < _kr_last:
+            _dart_lag = (f' <span style="color:#f5a623" title="마지막 거래일 '
+                         f'{_kr_last} 공시가 아직 없습니다">⚠️ 지연</span>')
+    except Exception:
+        pass
     # 관계후보 발굴 비용(kg_dart) — 공시 수집·파싱은 무료(공공 API)지만 계약공시
     # 본문 관계추출은 Gemini라 ₩0 아님(사용자 2026-06-24). 블로그 발굴분(kg_blog)은
     # blog.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는 둘 합산.
@@ -14910,7 +14946,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     · <a href="index.html">🦉 종목분석</a>
   </div>
   <h1>DART 공시</h1>
-  <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
+  <p class="sub">출처 DART(OpenDART) · 1분 수집 · 최신 공시 <b>{_dart_asof}</b>({_dart_asof_n}건){_dart_lag} · 페이지 생성 {_dart_rendered}</p>
   <p class="sub" style="margin:-6px 0 14px">🔗 관계후보 발굴 비용(계약공시 본문, Gemini): 오늘 {_krw(_df_kg_t)} · 이번 달 {_krw(_df_kg_m)} · 누적 {_krw(_df_kg_x)} <span style="opacity:.7">— 공시 수집·파싱은 무료, 본문 관계추출만 과금. 메인 '관계후보'에 합산</span></p>
 
   <div class="df-controls">
@@ -14950,7 +14986,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
 
     from collections import OrderedDict as _OD
     _months: "_OD[str, list]" = _OD()
-    for date_str in sorted(by_date.keys(), reverse=True):
+    for date_str in sorted(_vis.keys(), reverse=True):   # 표시 대상만(_vis)
         _months.setdefault(date_str[:7], []).append(date_str)
 
     _date_idx = 0  # 전체 날짜 순번 — 최신 1개만 기본 펼침
@@ -14960,7 +14996,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
             month_label = f"{_my}년 {int(_mm)}월"
         except Exception:
             month_label = ym
-        month_total = sum(len(by_date[d]) for d in dates)
+        month_total = sum(len(_vis[d]) for d in dates)   # 헤더 = 실제 카드 수
         # 최신 월만 인라인 — 과거 월은 프래그먼트 lazy(성능 2026-07-03, index
         # 패턴. DART 는 월 수천 건이라 최대 수혜). mb 버퍼로 목적지 분기.
         _inline_df = (mi == 0)
@@ -14976,13 +15012,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
     <div class="df-month-body">
 """)
         for date_str in dates:
-            # 접수번호(rcept_no = DART 접수시각 순서 내포) 내림차순 — 카드
-            # 순서 = 실제 공시가 뜬 순서(최신 위). 아카이브 파일 순서는
-            # 백필/재fetch 가 섞을 수 있어 렌더타임 정렬로 고정 (사용자
-            # 2026-06-13 '업데이트 순서가 맞아야', 과거 기록 소급).
-            items = sorted(by_date[date_str],
-                           key=lambda x: str(x.get("rcept_no") or ""),
-                           reverse=True)
+            # _vis = 접수번호(rcept_no = DART 접수시각 순서 내포) 내림차순으로
+            # 이미 정렬된 **표시 대상**. 카드 순서 = 실제 공시가 뜬 순서(최신
+            # 위) — 아카이브 파일 순서는 백필/재fetch 가 섞을 수 있어 렌더타임
+            # 정렬로 고정(사용자 2026-06-13 '업데이트 순서가 맞아야').
+            items = _vis[date_str]
             try:
                 d = _dt.strptime(date_str, "%Y-%m-%d")
                 wd = _WEEKDAY_KR.get(d.weekday(), "")
@@ -15000,12 +15034,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         </div>
         <div class="df-date-body"><div class="df-grid">
 """)
-            for it in items:
+            for it in items:            # 이미 노이즈컷 통과분(_vis)
                 cn = _html.escape(it.get("corp_name", ""))
                 rn = _html.escape(it.get("report_nm", ""))
                 cat = it.get("category", "기타")
-                if _equity_noise(it):
-                    continue
                 cat_color = _DART_CAT_COLORS.get(cat, "#78909c")
                 url = _html.escape(it.get("url", "#"))
                 dt_short = date_str[5:]  # MM-DD

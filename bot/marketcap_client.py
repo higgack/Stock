@@ -9,7 +9,8 @@ P/E ratio/MC gain/MC loss 도 Market Cap 처럼 박아서".
 축의 최후 폴백만. 로고·스파크라인은 원본 이미지 URL 을 그대로 hot-link
 (사설 대시보드 — 브라우저가 직접 원본에서 받아옴).
 
-축당 3h 디스크 캐시(마지막 성공분 보존 — 일시 차단에도 최근 데이터 유지),
+축당 2.5h 디스크 캐시(재생성 주기 3h 보다 짧게 — 실수 #36; 마지막 성공분
+보존이라 일시 차단에도 최근 데이터 유지),
 수집 실패는 WARNING 로그 + stale 플래그(silent-fail 금지). 축 간 1.5초
 간격(예의상 rate-limit). 샌드박스 프록시는 403 이라 실검증은 VM 런타임.
 """
@@ -32,10 +33,13 @@ _BASE = "https://companiesmarketcap.com/"
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 _CACHE_DIR = Path.home() / ".tradingagents"
-_TTL = 3 * 3600
+# ⚠️ 재생성 주기(_periodic_marketcap, 3h)보다 **짧아야** 한다. 같으면 사이클의
+# 절반이 캐시에 걸려 "3시간 갱신" 표기가 거짓이 된다(실수 #36 — FRED 보드에서
+# 같은 병으로 TTL 5h/주기 3h 를 고쳤다). 회귀가 TTL < 주기를 고정한다.
+_TTL = 2.5 * 3600
 # 파서 버전 — 파싱 로직 변경 시 +1 (구버전 파싱 결과 캐시 1회 무효화.
 # 2026-07-08 엔티티/로고 fix 가 3h 캐시에 막혀 안 보이던 것 재발 방지).
-_PARSER_V = 5   # 5 = 순위변화 moves 속성 수집(2026-07-08 실측)
+_PARSER_V = 6   # 6 = rank-td 셀을 클래스로 식별(정수 메트릭 유실 fix, 2026-08-20)
 _AXIS_GAP_SEC = 1.5     # 축 간 수집 간격(안티봇 예의)
 
 # 임베드 축 (사용자 2026-07-08 지정 6축) — key, 필 라벨, slug, 메트릭 컬럼 라벨.
@@ -116,6 +120,7 @@ def _parse_rank_rows(html: str) -> list[dict]:
     메트릭/주가는 **원문 그대로**(단위 재해석 없음 — 원본 양식 유지 + 파싱
     버그 원천 차단). 구조 변경 시 빈 리스트 + 경고."""
     rows: list[dict] = []
+    _saw_rank_td = False
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
         # 속성값 안의 '<br/>'(ttm 정보아이콘 tooltip-title — earnings/PE 실측)
         # 가 태그제거를 중간에 끊어 셀 텍스트를 오염 → 텍스트성 속성만 제거
@@ -159,7 +164,15 @@ def _parse_rank_rows(html: str) -> list[dict]:
             spark_d = re.sub(r"\s+", " ", sp_m.group(1)).strip()
             td_m = _SPARK_TD_RE.search(tr)
             spark_neg = bool(td_m and "red" in td_m.group(0))
-        tds = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
+        _tdm = list(re.finditer(r"<td([^>]*)>(.*?)</td>", tr, re.S))
+        tds = [m.group(2) for m in _tdm]
+        # 순위 셀은 **클래스로** 식별한다(원본: <td class="rank-td ..." >13</td>).
+        # 예전엔 '순수 1~4자리 정수는 순위' 휴리스틱으로 걸렀는데, 그러면 P/E
+        # 처럼 메트릭 자체가 정수인 행("27")이 통째로 버려져 그 칸이 '—' 로
+        # 뜬다(2026-08-20 감사). 클래스로 아는 행에선 휴리스틱을 끈다.
+        _rank_i = next((i for i, m in enumerate(_tdm)
+                        if "rank-td" in (m.group(1) or "")), None)
+        _saw_rank_td = _saw_rank_td or _rank_i is not None
         import html as _h
         txt = [re.sub(r"<[^>]+>", " ", t) for t in tds]
         # HTML 엔티티/NBSP 정규화 — 원본 시총 셀 '$4.792&nbsp;T' 가 매칭 안
@@ -171,9 +184,13 @@ def _parse_rank_rows(html: str) -> list[dict]:
         chg_dir = 0
         country_cands: list[str] = []
         for i, t in enumerate(txt):
-            if _MONEY_RE.match(t) or (_NUM_RE.match(t) and len(t) <= 12
-                                      and t not in (str(len(rows) + 1),)
-                                      and not re.fullmatch(r"\d{1,4}", t)):
+            if i == _rank_i:                       # 순위 셀 — 값이 아니다
+                continue
+            _numeric = _NUM_RE.match(t) and len(t) <= 12 and (
+                _rank_i is not None                # 순위 셀을 아는 행 = 정수도 값
+                or (t not in (str(len(rows) + 1),)
+                    and not re.fullmatch(r"\d{1,4}", t)))
+            if _MONEY_RE.match(t) or _numeric:
                 vals.append(t)
             elif chg_pct is None and _PCT_RE.match(t):
                 try:
@@ -198,8 +215,13 @@ def _parse_rank_rows(html: str) -> list[dict]:
         # 행 — 시총 컬럼에 주가를 넣지 말고 주가 슬롯으로(재발 방지 가드).
         if not price and re.match(r"^-?\$[\d.,]+$", metric):
             metric, price = "", metric
+        # 순위 = 원본 셀 값 우선. 파싱 순서로 매기면 한 행이 스킵될 때마다
+        # 이후 순위가 **조용히** 한 칸씩 밀린다(화면상 오류로 안 보인다).
+        _site_rank = None
+        if _rank_i is not None and re.fullmatch(r"\d{1,5}", txt[_rank_i]):
+            _site_rank = int(txt[_rank_i])
         rows.append({
-            "rank": len(rows) + 1,
+            "rank": _site_rank if _site_rank is not None else len(rows) + 1,
             "name": _nm, "ticker": _cd, "logo": logo,
             "metric": metric,
             "price": price,
@@ -210,6 +232,10 @@ def _parse_rank_rows(html: str) -> list[dict]:
         })
     if not rows:
         log.warning("marketcap html: 파싱 0행 — 사이트 구조 변경 의심")
+    elif not _saw_rank_td:
+        # 폴백이 조용히 돌면 순위 밀림을 못 본다(실수 #42a) — 반드시 알린다.
+        log.warning("marketcap html: rank-td 셀 0행 — 순위를 파싱 순서로 매김"
+                    "(사이트 구조 변경 의심)")
     return rows
 
 

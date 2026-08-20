@@ -1,5 +1,5 @@
 [Unit]
-Description=DART Disclosure Feed — 전체 시장 공시 수집 + 대시보드 갱신 (30분 간격)
+Description=DART Disclosure Feed — 전체 시장 공시 수집 + 대시보드 갱신 (1분 간격)
 After=network-online.target
 Wants=network-online.target
 
