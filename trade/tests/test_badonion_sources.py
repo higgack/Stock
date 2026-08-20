@@ -17,6 +17,12 @@ _CAPS = {
     "us": "🇺🇸 6월 수입 미국\n\n▶️ 테스트 품목\n\n"
           "26년06월: $12.3M  (+7.0% YoY)  (+1.5% MoM)",
     "krs": "HPSP (403870)\n한국 수출\n26년 7월 Update\n\n수출액 YoY: +260.2%",
+    # 말레이시아 종목별 — 헤더가 **세 줄**이고 이 소스에만 있는 수준값
+    # 2종(동시상관·방향 일치율) + 관련 매출 줄이 온다(사용자 2026-08-20 캡처).
+    "mys": "Texas Instruments Incorporated (TXN)\n말레이시아 수출\n"
+           "26년 7월 Update\n\n수출액 YoY: +170.4%\n3M 수출액 YoY: +127.1%\n\n"
+           "동시상관: 0.93\n방향 일치율: 67%\n\n"
+           "- CY26Q2 매출 $5.46B(+22.8% YoY)",
     # 일본 종목별 — 헤더가 **한 줄**이고 볼드(`**`)가 붙어 온다(실측 원문).
     "jps": "**Kioxia (285A) 일본 수출 Update**\n**26년 6월**\n\n"
            "**Yokkaichi NAND 웨이퍼**\n\n수출액: YoY +95.1%\n"
@@ -34,11 +40,11 @@ class RegistryTests(unittest.TestCase):
             keys,
             ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us",
              # 2026-08-19 미국 PPI — 품목 기준이라 종목 기준 앞.
-             "uppi", "krs", "jps"])
+             "uppi", "krs", "jps", "mys"])
         # 계약은 리터럴 목록이 아니라 **품목(HS) 기준이 먼저, 종목(회사)
         # 기준이 뒤**다 — 종목 파서가 더 좁은 마커라 앞서면 품목 캡션을
         # 가로챌 위험이 없고, 반대로 앞서면 순서 의존이 생긴다.
-        stock_keys = {"krs", "jps"}
+        stock_keys = {"krs", "jps", "mys"}
         self.assertEqual(set(keys[-len(stock_keys):]), stock_keys,
                          "종목(회사) 기준 소스는 뒤쪽에 몰려 있어야")
 
@@ -102,7 +108,7 @@ class ConsumersUseRegistryTests(unittest.TestCase):
     _PARSERS = ("parse_tw_export", "parse_cn_export", "parse_jp2_export",
                 "parse_th_export", "parse_my_export", "parse_ph_export",
                 "parse_mx_export", "parse_us_import", "parse_kr_stock_export",
-                "parse_jp_stock_export")
+                "parse_jp_stock_export", "parse_my_stock_export")
     # ⚠️ 호출 **형태**를 잡는다 — 그냥 "badonion_sources" substring 은 주석·
     # docstring 만으로도 통과해서, 실제 가드를 지워도 초록이 된다(순 커버리지
     # 후퇴). 각 소비처가 레지스트리를 실제로 **쓰는** 지점을 고정한다.
@@ -140,6 +146,20 @@ class ConsumersUseRegistryTests(unittest.TestCase):
                 self.assertLess(
                     len(hits), 3,
                     f"{f}:{i} 국가 나열 하드코딩({hits}) — labels()/nav_html() 사용")
+
+    def test_systemd_units_do_not_list_countries_either(self):
+        # 파이썬 소비처만 검사하던 가드의 사각 — 나쁜양파 유닛 Description 이
+        # '대만·중국·일본' 3개로 굳어 소스 12개 중 9개가 빠져 있었다
+        # (2026-08-20 말레이시아 종목별 추가 중 발견). 유닛도 같은 계약.
+        names = {"대만", "중국", "일본", "태국", "말레이시아", "필리핀",
+                 "멕시코", "미국", "한국"}
+        for f in ("deploy/trade-bot-badonion-listener.service",
+                  "deploy/trade-bot-badonion-sync.service"):
+            for i, ln in enumerate(
+                    Path(f).read_text(encoding="utf-8").splitlines(), 1):
+                hits = sorted(n for n in names if n in ln)
+                self.assertLess(len(hits), 3,
+                                f"{f}:{i} 국가 나열({hits}) — 새 소스마다 낡는다")
 
     def test_nav_covers_every_page_bearing_source(self):
         # nav 를 빠뜨리면 페이지는 생성되는데 **도달 불가**가 되고,
@@ -229,6 +249,18 @@ class RoutingRegressionTests(unittest.TestCase):
             [{"ticker": "285A", "month": "2026-06", "export_yoy": 95.1,
               "note": "SanDisk와 동일한 공동생산 흐름이므로 두 지표를 "
                       "합산하지 않습니다."}])
+
+    def test_my_stock_row_actually_persisted(self):
+        # 이 소스에만 있는 수준값 2종 + 관련 매출 원문이 실제로 저장되는지.
+        _, conns = self._run(_CAPS["mys"])
+        rows = conns["mys"].execute(
+            "SELECT ticker, month, export_yoy, export_yoy_3m, corr, dir_hit,"
+            " revenue FROM my_stock_exports").fetchall()
+        self.assertEqual(
+            [dict(r) for r in rows],
+            [{"ticker": "TXN", "month": "2026-07", "export_yoy": 170.4,
+              "export_yoy_3m": 127.1, "corr": 0.93, "dir_hit": 67.0,
+              "revenue": "CY26Q2 매출 $5.46B(+22.8% YoY)"}])
 
     def test_kr_row_actually_persisted(self):
         _, conns = self._run(_CAPS["krs"])

@@ -32,6 +32,7 @@ from trade import jp_stock_exports as _jps
 from trade import kr_stock_exports as _krs
 from trade import mx_exports as _mx
 from trade import my_exports as _my
+from trade import my_stock_exports as _mys
 from trade import ph_exports as _ph
 from trade import th_exports as _th
 from trade import tw_exports as _tw
@@ -100,6 +101,14 @@ SOURCES: tuple[Source, ...] = (
            _jps.open_jp_stock_db, _jps.ingest, _jps.regenerate,
            "jp_stock.db", "jp_stock.html",
            "🗼 일본 수출 데이터(종목별·나쁜양파)"),
+    # 말레이시아도 품목(my)과 **종목** 두 갈래다. 26년 7월 종목판이 채널에
+    # 떴는데 품목 파서의 마커가 `N월 수출 말레이시아`(어순 반대)라 관련성
+    # 필터를 통과 못 하고 통째로 드랍됐다(사용자 2026-08-20 — 일본이
+    # 2026-08-16 에 겪은 것과 같은 사고).
+    Source("mys", "말레이시아 수출(종목별)", _mys.parse_my_stock_export,
+           _mys.open_my_stock_db, _mys.ingest, _mys.regenerate,
+           "my_stock.db", "my_stock.html",
+           "🐆 말레이시아 수출 데이터(종목별·나쁜양파)"),
 )
 
 # nav 표시 순서 — **ingest 순서와 다르다.** 일본(나쁜양파)은 사용자 요청으로
@@ -108,8 +117,8 @@ SOURCES: tuple[Source, ...] = (
 # 표시 순서만 여기서 따로 잡는다. 키 누락은 테스트가 잡는다(누락 시 새 소스가
 # 생성은 되는데 nav 에 없어 **도달 불가** — is_relevant 가 미매칭 알림까지
 # 눌러버려 조용한 유실이 된다).
-NAV_ORDER: tuple[str, ...] = ("jp2", "jps", "tw", "cn", "th", "my", "ph",
-                              "mx", "us", "krs", "uppi")
+NAV_ORDER: tuple[str, ...] = ("jp2", "jps", "tw", "cn", "th", "my", "mys",
+                              "ph", "mx", "us", "krs", "uppi")
 
 
 def is_relevant(text: str) -> bool:
