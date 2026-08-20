@@ -141,6 +141,42 @@ def _uniq(seq) -> list:
     return out
 
 
+# 같은 관계가 여러 행에서 나올 수 있다 — 레퍼런스북이 **같은 품목명을 서로
+# 다른 HS 로** 여러 번 싣기 때문(실측 2026-08-20: `현대제철|수출품목|철및비합금강
+# H형강` 이 HS 7301202000·7216103000 두 행으로 중복). 그대로 두면
+#   · 화면 '관계(엣지)' 수가 부풀고
+#   · '주요 회사 연결수' 칩이 실제보다 크게 나오고
+#   · 회사 상세의 수출품목 목록에 같은 품목이 두 번 뜬다.
+# 근거(HS)는 **합쳐서** 남긴다 — 중복을 지우되 정보는 잃지 않는다.
+_GENERIC_INDUSTRY = ("기타", "", None)
+
+
+def _dedupe(edges: list[dict]) -> list[dict]:
+    """(회사,관계,대상) 중복 병합 — 근거는 합치고, 업종은 구체적인 쪽을 남긴다."""
+    out: dict[str, dict] = {}
+    for e in edges:
+        key = _edge_id(e.get("company", ""), e.get("relation", ""),
+                       e.get("target", ""))
+        prev = out.get(key)
+        if prev is None:
+            out[key] = dict(e)
+            continue
+        # 근거 병합(중복 제거·길이 상한) — 어느 HS 에서 왔는지 다 남긴다.
+        ev = [x for x in (prev.get("evidence"), e.get("evidence")) if x]
+        merged = " · ".join(_uniq(ev))
+        prev["evidence"] = merged[:160]
+        # 업종은 '기타' 같은 뭉뚱그린 값보다 구체적인 쪽을 쓴다(업종 검색 품질).
+        if prev.get("industry") in _GENERIC_INDUSTRY and e.get("industry"):
+            prev["industry"] = e["industry"]
+        # 운영자 승인분(vouch)이 하나라도 있으면 그 상태를 유지 — 노후화 면제.
+        if (e.get("status") or "").strip() in _VOUCHED_STATUS:
+            prev["status"] = e["status"]
+        # 학습일은 **최신**을 남긴다(신선도 판정이 보수적으로 유리하게).
+        if (e.get("date") or "") > (prev.get("date") or ""):
+            prev["date"] = e.get("date")
+    return list(out.values())
+
+
 def load_edges(include_archived: bool = False) -> list[dict]:
     """다소스 엣지 집합. 각 {company,relation,target,evidence,source,status,kind,
     freshness}. kind='kg'(블로그·DART) / 'trade'(관세청). graceful(한 소스 실패해도
@@ -181,6 +217,7 @@ def load_edges(include_archived: bool = False) -> list[dict]:
                                   "industry": industry})
     except Exception as exc:
         log.warning("valuechain: trade refbook edges load failed: %s", exc)
+    edges = _dedupe(edges)
     # 운영자 숨김(🗑️ 잘못된 매칭) 일괄 제외 — 페이지·텔레그램·NOAH 컨텍스트 공통.
     sup = load_suppressed()
     if sup:

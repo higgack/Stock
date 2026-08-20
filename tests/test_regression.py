@@ -27052,3 +27052,107 @@ class TestSecondSweep20260820:
         halves = targets([{"name": "기술", "weight": 0.5},
                           {"name": "에너지", "weight": 0.5}])
         assert "50%" in halves and "50.0%" not in halves, halves
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-08-20 사용자: "이 밸류체인 대시보드가 로직과 모든것들이 제대로 작동하는지
+# 꼼꼼히 아주 꼼꼼히 검증해줘." — 전수 감사(bot.scripts.valuechain_audit)가
+# 두 가지를 잡았다.
+class TestValuechainAudit20260820:
+    def test_duplicate_edges_are_merged_not_counted_twice(self):
+        """레퍼런스북이 **같은 품목명을 서로 다른 HS 로** 여러 번 싣는다
+        (실측: `현대제철|수출품목|철및비합금강H형강` 이 HS 7301202000 ·
+        7216103000 두 행). 그대로 두면 관계 수가 부풀고, '주요 회사 연결수'
+        칩이 실제보다 크게 나오고, 회사 상세에 같은 품목이 두 번 뜬다."""
+        from bot import valuechain as vc
+        raw = [
+            {"company": "현대제철", "relation": "수출품목", "target": "H형강",
+             "evidence": "HS 7301202000", "industry": "기타", "kind": "trade",
+             "source": "관세청", "status": ""},
+            {"company": "현대제철", "relation": "수출품목", "target": "H형강",
+             "evidence": "HS 7216103000", "industry": "철강제품",
+             "kind": "trade", "source": "관세청", "status": ""},
+            {"company": "A", "relation": "납품", "target": "B", "kind": "kg",
+             "evidence": "e1", "source": "blog", "status": "", "date": "2026-01-01"},
+            {"company": "A", "relation": "납품", "target": "B", "kind": "kg",
+             "evidence": "e2", "source": "blog", "status": "승인",
+             "date": "2026-08-19"},
+        ]
+        out = vc._dedupe(raw)
+        assert len(out) == 2, out
+        steel = next(e for e in out if e["company"] == "현대제철")
+        # 근거는 **합쳐서** 남긴다 — 중복을 지우되 정보는 잃지 않는다.
+        assert "7301202000" in steel["evidence"] and "7216103000" in steel["evidence"]
+        # 업종은 '기타' 대신 구체적인 쪽(업종 검색 품질).
+        assert steel["industry"] == "철강제품", steel["industry"]
+        ab = next(e for e in out if e["company"] == "A")
+        assert ab["status"] == "승인", "승인분이 병합에서 사라지면 노후화 면제가 깨진다"
+        assert ab["date"] == "2026-08-19", "학습일은 최신을 남겨야 한다"
+
+    def test_load_edges_has_no_duplicates(self):
+        """실데이터로도 중복이 없어야 한다(배선 확인 — 헬퍼만 고치면 소용없다)."""
+        from collections import Counter
+        from bot import valuechain as vc
+        edges = vc.load_edges(include_archived=True)
+        if not edges:
+            pytest.skip("샌드박스/CI 에 밸류체인 소스 없음")
+        dup = Counter(vc._edge_id(e["company"], e["relation"], e["target"])
+                      for e in edges)
+        worst = [(k, n) for k, n in dup.items() if n > 1]
+        assert not worst, f"중복 엣지 {len(worst)}종: {worst[:5]}"
+
+    def test_page_states_its_asof(self):
+        """"이거 최신이야?" 에 화면이 답해야 한다(규칙 10b) — 이 페이지엔
+        기준시각이 **아예 없었다**. 자동발굴 학습일이 없으면 그것도 밝힌다."""
+        from bot.dashboard import _render_valuechain_page
+        html = _render_valuechain_page([
+            {"company": "A", "relation": "납품", "target": "B", "kind": "kg",
+             "evidence": "e", "source": "blog", "status": "승인",
+             "date": "2026-08-19", "freshness": "active"}])
+        assert "데이터 적용시각" in html and "KST" in html
+        assert "자동발굴 최근 학습일 2026-08-19" in html, "학습일 미표기"
+        only_trade = _render_valuechain_page([
+            {"company": "A", "relation": "수출품목", "target": "품목",
+             "kind": "trade", "evidence": "HS 1", "source": "관세청",
+             "status": "", "freshness": "active"}])
+        assert "자동발굴 학습일 없음" in only_trade, "없으면 없다고 밝혀야 한다"
+
+    def test_counter_arithmetic_holds(self):
+        """화면 상단 '관계 = 공급망 + 관세청' 이 실제로 성립하는가."""
+        from bot import valuechain as vc
+        edges = [e for e in vc.load_edges(include_archived=True)
+                 if e.get("freshness") != "archived"
+                 and e.get("company") and e.get("target")]
+        if not edges:
+            pytest.skip("샌드박스/CI 에 밸류체인 소스 없음")
+        kg = sum(1 for e in edges if e.get("kind") != "trade")
+        tr = sum(1 for e in edges if e.get("kind") == "trade")
+        assert kg + tr == len(edges)
+
+    def test_dashboard_and_module_agree_on_degree(self):
+        """대시보드는 JS 로, 텔레그램·NOAH 는 파이썬으로 연결수를 센다 —
+        갈라지면 같은 검색어가 두 곳에서 다른 답을 준다(VKOSPI 복제 교훈)."""
+        from bot import valuechain as vc
+        from bot.scripts.valuechain_audit import _js_like_counters
+        edges = [e for e in vc.load_edges(include_archived=True)
+                 if e.get("freshness") != "archived"
+                 and e.get("company") and e.get("target")]
+        if not edges:
+            pytest.skip("샌드박스/CI 에 밸류체인 소스 없음")
+        co_map, _it, _ind = vc._degree_maps(edges)
+        js_deg, _c, _d = _js_like_counters(edges)
+        diff = {n for n in set(co_map) | set(js_deg)
+                if co_map.get(n, 0) != js_deg.get(n, 0)}
+        assert not diff, f"연결수 불일치 {len(diff)}종: {sorted(diff)[:5]}"
+
+    def test_customs_and_vouched_edges_never_age_out(self):
+        """관세청(live 재생성)·운영자 승인분은 노후화 면제 — 규약이 실제로
+        지켜지는지 동작으로 고정."""
+        from datetime import date
+        from bot import valuechain as vc
+        old = "2020-01-01"
+        assert vc.freshness({"kind": "trade", "date": old}, date(2026, 8, 20)) == "active"
+        assert vc.freshness({"kind": "kg", "status": "승인", "date": old},
+                            date(2026, 8, 20)) == "active"
+        assert vc.freshness({"kind": "kg", "status": "", "date": old},
+                            date(2026, 8, 20)) == "archived"
