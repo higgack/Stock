@@ -183,6 +183,24 @@ def detect_ftd(history_asc: list[dict]) -> dict:
 _MACRO_MIN_VOTES = 3      # 6개 입력 중 절반 미만이면 판단보류
 
 
+# 국면 이름 → 한 줄 뜻. 화면이 'Transitional' 한 단어만 던지면 사용자는
+# 그게 **국면 이름인지 판정 실패인지** 알 수 없다(실수 #43 의 라벨판).
+# ⚠️ classify_macro_regime 이 돌려줄 수 있는 값은 **전부** 여기 있어야 한다 —
+# 회귀가 그 완전성을 고정한다(#31: 이름 열거는 새 값을 못 잡는다).
+_MACRO_REGIME_KR = {
+    "Concentration": "집중 — 소수 대형주로 쏠림(동일가중·소형주 열위)",
+    "Broadening": "확산 — 참여 종목 확대·위험선호(신용 양호·커브 정상)",
+    "Contraction": "수축 — 위험회피·긴축(커브 역전·하이일드 열위)",
+    "Inflationary": "인플레 — 주식이 장기채를 크게 상회(금리 상승 압력)",
+    "Transitional": "판단보류 — 과반 국면이 없거나 반영 지표가 3개 미만",
+}
+
+
+def macro_regime_kr(regime: str) -> str:
+    """국면 한 줄 뜻(모르는 값이면 빈 문자열 — 없는 설명을 지어내지 않는다)."""
+    return _MACRO_REGIME_KR.get(str(regime or ""), "")
+
+
 def classify_macro_regime(rsp_spy_yoy: float | None, curve_10y2y: float | None,
                           hyg_lqd_yoy: float | None, iwm_spy_yoy: float | None,
                           spy_tlt_yoy: float | None, xly_xlp_yoy: float | None) -> str:
@@ -1495,9 +1513,14 @@ def render_market_timing_page(data: dict, now=None) -> str:
     macro_card = f"""
 <div class="panel"><div class="panel-title">🌐 매크로 크로스에셋 레짐</div>
 <div class="stat-grid"><div class="stat"><div class="k">국면</div>
-<div class="v" style="font-size:16px">{_h.escape(macro.get("regime","Transitional"))}</div></div></div>
-<div class="note">RSP-SPY(집중도) · IWM-SPY(대소형) · HYG-LQD(신용) · SPY-TLT(주식·채권) ·
-10Y-2Y(커브) 다수결 — 세부 가중치 없는 단순 휴리스틱(참고용).
+<div class="v" style="font-size:16px">{_h.escape(macro.get("regime","Transitional"))}</div>
+<div class="sub" style="margin-top:2px">{_h.escape(macro_regime_kr(macro.get("regime","Transitional")))}</div></div></div>
+<div class="note">6개 크로스에셋 지표가 <b>1표씩</b> 투표 —
+RSP-SPY(동일가중÷시총가중=집중도) · IWM-SPY(소형÷대형) · HYG-LQD(하이일드÷투자등급=신용) ·
+SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10Y-2Y(커브).
+비율은 <b>1년(252거래일) 수익률 차이(%p)</b>, 커브만 FRED 스프레드(%p).
+<b>과반</b>을 넘는 국면이 있을 때만 확정하고, 반영 지표가 3개 미만이거나 과반이 없으면
+<b>Transitional(판단보류)</b> — 세부 가중치 없는 단순 휴리스틱(참고용).
 {_macro_inputs_note(macro)} {_asof_note(macro.get("as_of"))}</div></div>"""
 
     crypto = data.get("crypto", {})
@@ -1510,9 +1533,14 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="stat-grid">
 <div class="stat"><div class="k">BTC 가격</div><div class="v">${crypto.get("price","—"):,}</div></div>
 <div class="stat"><div class="k">ATH 대비</div><div class="v">{_num1(crypto.get("ath_change_pct"))}%</div></div>
-<div class="stat"><div class="k">레짐 스코어(0-100)</div><div class="v">{score_s}</div></div>
+<div class="stat"><div class="k">레짐 스코어(0-100)</div><div class="v">{score_s}</div>
+<div class="sub" style="margin-top:2px">= 100 + (ATH 대비 {_num1(crypto.get("ath_change_pct"))})</div></div>
 </div>
-<div class="note">CoinGecko 무료 공개 API — 가격·ATH낙폭 컴포넌트만(SMA·도미넌스는 추후 확장). {_asof_note(crypto.get("as_of"))}</div></div>"""
+<div class="note">CoinGecko 무료 공개 API. 100=risk-on · 0=risk-off.
+⚠️ 지금 점수에 실제로 반영되는 건 <b>ATH 대비 낙폭 한 가지</b>입니다 — 설계상 6개
+컴포넌트(SMA추세·도미넌스·30일모멘텀 등)가 있지만 데이터소스가 아직 안 붙어 생략되고,
+확보된 것만 평균 내므로 결과가 낙폭 그 자체가 됩니다. <b>BTC 가격은 점수에 안 들어갑니다</b>
+(추세 컴포넌트가 SMA50·SMA200 을 함께 요구). {_asof_note(crypto.get("as_of"))}</div></div>"""
 
     cot = data.get("cot", {})
     cot_card = ""
@@ -1735,10 +1763,35 @@ MOVE=채권 변동성(ICE BofA, bp 단위). 종가 기반 카드는 '현재' 칸
 적습니다(7일 넘게 낡으면 그때는 생략).<br>
 <b>5) 시장 센티먼트</b> — CNN Fear &amp; Greed 지수(메인 대시보드와 동일 소스). VIX 와는 다른
 지표(VIX=변동성 하나, F&amp;G=7개 컴포넌트 종합 심리지수) — 혼동 주의.<br>
-<b>6) 매크로 레짐</b> — 크로스에셋 비율 다수결로 시장 국면(집중/확산/긴축/인플레) 판정,
-투표 부족·동률이면 Transitional(판단보류)로 표시 — 참고용.<br>
-<b>7) 크립토 레짐</b> — BTC 중심 0-100 점수. 현재는 ATH대비낙폭 컴포넌트만 실제 반영
-(SMA추세·도미넌스·모멘텀은 설계됐으나 데이터소스 미연결 — 추후 확장, 참고용).<br>
+<b>6) 매크로 크로스에셋 레짐</b> — 서로 다른 자산군의 <b>상대 강도</b>로 지금 시장이
+어떤 국면인지 읽습니다. 6개 지표가 <b>1표씩</b> 던지고, 과반을 넘는 국면이 있을 때만
+확정합니다.<br>
+&nbsp;&nbsp;· <b>RSP-SPY</b> 동일가중 S&amp;P ÷ 시총가중 S&amp;P — 플러스면 평균적인 종목이
+대형주를 이기는 중(확산), 마이너스면 소수 대형주 쏠림(집중).<br>
+&nbsp;&nbsp;· <b>IWM-SPY</b> 소형주 ÷ 대형주 — 위험선호의 대표 신호. 플러스=확산.<br>
+&nbsp;&nbsp;· <b>HYG-LQD</b> 하이일드 ÷ 투자등급 회사채 — 신용 스프레드. 마이너스면
+투자자가 신용위험을 피하는 중(수축).<br>
+&nbsp;&nbsp;· <b>SPY-TLT</b> 주식 ÷ 장기국채 — 플러스면 금리가 오르는데도 주식이 이기는
+구도(인플레), 마이너스면 채권으로 도피(수축).<br>
+&nbsp;&nbsp;· <b>XLY-XLP</b> 경기소비재 ÷ 필수소비재 — 경기 체감. 플러스=확산.<br>
+&nbsp;&nbsp;· <b>10Y-2Y</b> 국채 커브(FRED T10Y2Y) — 역전(마이너스)이면 수축.<br>
+&nbsp;&nbsp;비율은 <b>1년(252거래일) 수익률 차이(%p)</b>이고 커브만 스프레드(%p) 원값입니다.
+카드에 <b>반영 지표 N/6</b> 을 함께 적으니, 몇 표로 나온 결론인지 보고 신뢰도를 판단하세요.<br>
+&nbsp;&nbsp;국면 뜻 — <b>Concentration(집중)</b> 소수 대형주 쏠림 ·
+<b>Broadening(확산)</b> 참여 종목 확대·위험선호 ·
+<b>Contraction(수축)</b> 위험회피·긴축 ·
+<b>Inflationary(인플레)</b> 주식이 장기채를 크게 상회 ·
+<b>Transitional</b> 은 국면 이름이 아니라 <b>판단보류</b>입니다 — 반영 지표가 3개 미만이거나
+과반을 넘는 국면이 없을 때(6표가 2:2:2 로 갈리는 경우 등). 세부 가중치 없는 단순
+휴리스틱이라 확정 판단 금지.<br>
+<b>7) 크립토 레짐</b> — BTC 기준 0-100 점수(100=risk-on, 0=risk-off).
+<b>⚠️ 지금은 ATH 대비 낙폭 한 컴포넌트만 실제로 반영됩니다</b> —
+점수 = 100 + (ATH 대비 낙폭%) 이라, ATH 대비 -45% 면 점수는 55 입니다(카드에 산식을
+같이 적어 눈으로 검산할 수 있게 했습니다). 설계상 SMA추세(50·200)·BTC 도미넌스·
+30일 모멘텀 컴포넌트가 더 있지만 데이터소스가 아직 안 붙어 생략되고, <b>확보된 것만
+평균</b> 내므로 결과가 낙폭 그 자체가 됩니다. <b>BTC 가격 자체는 점수에 안 들어갑니다</b>
+(추세 컴포넌트가 SMA50·SMA200 을 함께 요구해서). CoinGecko 는 라이브 시세라 관측기간이
+없어 <b>수집 시각(KST)</b>을 기준으로 적습니다.<br>
 <b>8) COT 역발상 게이트</b> — S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
 선물전용) 트레일링 3년(156주) 백분위. 극단 쏠림(≥80/≤20)은 과거 반전 빈도가 높았던
 구간이라는 참고 신호일 뿐(선물전용).<br>
