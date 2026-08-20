@@ -32,6 +32,11 @@
 ⚠️ 이 소스에만 있는 두 지표는 **변화율이 아니라 수준값**이다:
   · 동시상관 0.93  — 상관계수(-1~1). % 아니다.
   · 방향 일치율 67% — 비율 자체. `+67.0% ▲` 로 그리면 '67% 상승'으로 읽힌다.
+
+⚠️ 원문은 **두 계열**을 쓴다(2026-08-20 VM 실측 6건이 3:3으로 갈렸다):
+    동시상관: 0.67      / 방향 일치율: 75%       (AMD·TXN·6723)
+    1Q 선행상관: 0.71   / 선행 방향 일치율: 83%   (ADI·KEYS·PENG)
+정의가 다르므로 **다른 컬럼**에 담고 라벨에 계열을 적는다(실수 #34).
 둘 다 부호·화살표 없이 그대로 표기한다(실수 #39 의 같은 함정).
 
 관련 매출 줄(`- CY26Q2 매출 $5.46B(+22.8% YoY)`)은 **원문 그대로** 싣는다 —
@@ -55,6 +60,11 @@ from trade.archive_template import back_nav_html, card_html
 # ⚠️ 세 마커를 따로 찾으면 안 된다 — 이 파서는 리스너의 관련성 필터이자
 # unstored_check·dashboard 의 억제 필터라, 오탐이 곧 "저장도 안 되고 미매칭
 # 알림에도 안 잡히는" 조용한 유실이 된다(kr/jp_stock_exports 와 같은 규약).
+# 파서 스키마 버전. 올리면 저장된 옛 행의 파생 필드를 upsert 가 **버리고**
+# 다시 채운다 — 파서를 고쳐도 이미 구운 값이 안 바뀌는 함정 차단(실수 #18).
+#   1 → 2: 동시/선행 두 계열 분리(선행값이 동시 칸·품목 칸에 섞여 있었다)
+_PARSE_VER = 2
+
 _NL = r"\n(?:[^\S\n]*\n)*"      # 줄바꿈(사이 빈 줄 허용)
 # ⚠️ 헤더 **한 줄** 안에서는 `\s` 를 쓰지 않는다 — `\s` 가 개행을 먹어
 # `어떤회사\n(ABCD) 말레이시아 수출` 같은 무관 조합이 통과한다(jp_stock 이
@@ -77,9 +87,21 @@ _RE_EXP_YOY_ANY = re.compile(
     re.I)
 _RE_PRICE_YOY = re.compile(
     r"단가\s*:?\s*YoY\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%", re.I)
-# 이 소스 고유 — 수준값 2종(부호·화살표 금지, 모듈 docstring 참조).
-_RE_CORR = re.compile(r"동시\s*상관\s*:?\s*([+\-]?\d+(?:\.\d+)?)")
-_RE_DIRHIT = re.compile(r"방향\s*일치율\s*:?\s*(\d+(?:\.\d+)?)\s*%")
+# 이 소스 고유 — 수준값(부호·화살표 금지, 모듈 docstring 참조).
+# ⚠️ 원문은 **두 계열**을 쓴다(2026-08-20 실측 6건이 3:3으로 갈렸다):
+#     동시상관: 0.67      / 방향 일치율: 75%      (AMD·TXN·6723)
+#     1Q 선행상관: 0.71   / 선행 방향 일치율: 83%  (ADI·KEYS·PENG)
+# 처음엔 `동시상관` 만 잡고 `방향\s*일치율` 은 부분매칭이라, 선행 계열 캡션에서
+# 상관은 통째로 유실되고 **선행** 방향일치율이 **동시** 칸에 조용히 담겼다
+# (정의가 다른 두 지표의 혼재 — 실수 #34 '같은 이름, 다른 시리즈'). 게다가
+# 그 줄이 _SKIP_LINE 에 없어 **품목 설명**으로도 새어나갔다.
+# 접두 유무로 가르는 `_RE_EXP_YOY_ANY` 와 같은 관용구를 쓴다. 접두 없는 맨
+# `상관` 은 어느 계열인지 알 수 없으므로 **받지 않는다**(추측 저장 금지).
+_RE_CORR_ANY = re.compile(
+    r"(?:(?P<lead>(?:\d+Q\s*)?선행)|(?P<coin>동시))\s*상관"
+    r"\s*:?\s*(?P<v>[+\-]?\d+(?:\.\d+)?)")
+_RE_DIRHIT_ANY = re.compile(
+    r"(?P<lead>선행\s*)?방향\s*일치율\s*:?\s*(?P<v>\d+(?:\.\d+)?)\s*%")
 # 관련 매출 — 원문 줄 그대로 보존('- CY26Q2 매출 $5.46B(+22.8% YoY)').
 _RE_REVENUE = re.compile(r"^[^\S\n]*[-•*][^\S\n]*(?P<r>[^\n]*매출[^\n]*)$", re.M)
 # 본문 각주("* …") — 해석에 필수인 경고라 버리지 않고 싣는다.
@@ -88,7 +110,7 @@ _RE_REVENUE = re.compile(r"^[^\S\n]*[-•*][^\S\n]*(?P<r>[^\n]*매출[^\n]*)$", 
 _RE_NOTE = re.compile(r"^[^\S\n]*\*[^\S\n]+(?P<n>[^\n]+)$", re.M)
 # 지표·URL·홍보문·매출줄이 아닌 첫 줄 = 품목 설명(있을 때만).
 _SKIP_LINE = re.compile(
-    r"(수출액|단가|YoY|동시\s*상관|방향\s*일치율|매출|https?://|맵핑|Update"
+    r"(수출액|단가|YoY|상관|방향\s*일치율|매출|https?://|맵핑|Update"
     r"|말레이시아\s*수출|^\s*[-•*]|^\s*\d{2}\s*년)", re.I)
 
 
@@ -145,6 +167,29 @@ def parse_my_stock_export(caption: str) -> dict | None:
                 exp_yoy_3m = v
         elif exp_yoy is None:
             exp_yoy = v
+    # 상관·방향일치율 — 접두(선행) 유무로 계열을 가른다. 접두 없는 것이 동시.
+    corr = lead_corr = None
+    for mo in _RE_CORR_ANY.finditer(seg):
+        try:
+            v = float(mo.group("v"))
+        except ValueError:
+            continue
+        if mo.group("lead"):
+            if lead_corr is None:
+                lead_corr = v
+        elif corr is None:
+            corr = v
+    dir_hit = lead_dir_hit = None
+    for mo in _RE_DIRHIT_ANY.finditer(seg):
+        try:
+            v = float(mo.group("v"))
+        except ValueError:
+            continue
+        if mo.group("lead"):
+            if lead_dir_hit is None:
+                lead_dir_hit = v
+        elif dir_hit is None:
+            dir_hit = v
     rev = _RE_REVENUE.search(seg)
     notes = [n.strip() for n in _RE_NOTE.findall(seg) if n.strip()]
     return {
@@ -155,8 +200,11 @@ def parse_my_stock_export(caption: str) -> dict | None:
         "export_yoy": exp_yoy,
         "export_yoy_3m": exp_yoy_3m,
         "price_yoy": _f(_RE_PRICE_YOY, seg),
-        "corr": _f(_RE_CORR, seg),
-        "dir_hit": _f(_RE_DIRHIT, seg),
+        "corr": corr,
+        "dir_hit": dir_hit,
+        "lead_corr": lead_corr,
+        "lead_dir_hit": lead_dir_hit,
+        "parse_ver": _PARSE_VER,
         "revenue": (rev.group("r").strip()[:200] if rev else None),
         "note": " / ".join(notes)[:300] or None,
     }
@@ -170,6 +218,8 @@ CREATE TABLE IF NOT EXISTS my_stock_exports (
   item TEXT,
   export_yoy REAL, export_yoy_3m REAL, price_yoy REAL,
   corr REAL, dir_hit REAL,
+  lead_corr REAL, lead_dir_hit REAL,
+  parse_ver INTEGER,
   revenue TEXT,
   note TEXT,
   chart_media TEXT,
@@ -182,9 +232,16 @@ CREATE TABLE IF NOT EXISTS my_stock_exports (
 """
 
 _COLS = ("ticker", "month", "stock_name", "item", "export_yoy",
-         "export_yoy_3m", "price_yoy", "corr", "dir_hit", "revenue", "note",
-         "chart_media", "source_message_id", "posted_at", "raw_text",
-         "updated_at")
+         "export_yoy_3m", "price_yoy", "corr", "dir_hit", "lead_corr",
+         "lead_dir_hit", "revenue", "note", "chart_media",
+         "source_message_id", "posted_at", "raw_text", "updated_at",
+         "parse_ver")
+
+# 파서가 만들어내는(= 캡션에서 다시 뽑을 수 있는) 필드. 아래 upsert 가
+# 옛 버전으로 구운 값을 버릴 때 이 목록만 비운다 — chart_media·raw_text 처럼
+# 파싱 산물이 아닌 것은 보존해야 한다.
+_DERIVED = ("stock_name", "item", "export_yoy", "export_yoy_3m", "price_yoy",
+            "corr", "dir_hit", "lead_corr", "lead_dir_hit", "revenue", "note")
 
 
 def open_my_stock_db(path: str | Path) -> sqlite3.Connection:
@@ -193,6 +250,15 @@ def open_my_stock_db(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    # 이미 만들어진 DB 에 컬럼을 더한다 — CREATE TABLE IF NOT EXISTS 는
+    # 기존 테이블을 손대지 않으므로, 이게 없으면 배포 후 첫 쓰기가 터진다.
+    have = {r["name"] for r in
+            conn.execute("PRAGMA table_info(my_stock_exports)")}
+    for col, decl in (("lead_corr", "REAL"), ("lead_dir_hit", "REAL"),
+                      ("parse_ver", "INTEGER")):
+        if col not in have:
+            conn.execute(
+                f"ALTER TABLE my_stock_exports ADD COLUMN {col} {decl}")
     return conn
 
 
@@ -210,10 +276,20 @@ def upsert_my_stock(conn: sqlite3.Connection, row: dict, *, chart_media,
     incoming = {**row, "chart_media": chart_media,
                 "source_message_id": source_message_id,
                 "posted_at": posted_at, "raw_text": raw_text}
+    # ⚠️ 필드 보존 병합은 **파서를 고쳐도 옛 값이 살아남게** 만든다(실수 #18·
+    # #21b). 실제로 선행 계열 3종은 dir_hit 에 선행값이, item 에 지표 줄이
+    # 구워져 있어서, 새 파서가 None 을 주면 병합이 옛 값을 도로 살린다.
+    # 저장된 parse_ver 가 낮으면 파생 필드는 **새 파싱만** 쓴다.
+    stale = exd is not None and (exd.get("parse_ver") or 0) < _PARSE_VER
     merged = {}
     for k in _COLS:
         nv = incoming.get(k)
-        merged[k] = nv if nv not in (None, "") else (exd.get(k) if exd else None)
+        if nv not in (None, ""):
+            merged[k] = nv
+        elif stale and k in _DERIVED:
+            merged[k] = None
+        else:
+            merged[k] = exd.get(k) if exd else None
     merged["ticker"] = tk
     merged["month"] = month
     merged["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -324,20 +400,35 @@ def _hist_table(hist: list[dict]) -> str:
                               reverse=True) if h.get("month")]
     if len(rows) < 2:
         return ""
+    # 종목마다 동시/선행 중 한 계열만 오므로, **값이 있는 계열의 열만** 낸다.
+    # 두 계열을 한 열에 합치면 세로로 읽는 자리에서 정의가 갈린다(실수 #32).
+    cols = [("월", None, None)]
+    cols.append(("수출액 YoY", "export_yoy", "pct"))
+    cols.append(("3M 수출액 YoY", "export_yoy_3m", "pct"))
+    if any(h.get("corr") is not None or h.get("dir_hit") is not None
+           for h in rows):
+        cols.append(("동시상관", "corr", "lv2"))
+        cols.append(("방향 일치율", "dir_hit", "lv0"))
+    if any(h.get("lead_corr") is not None or h.get("lead_dir_hit") is not None
+           for h in rows):
+        cols.append(("선행상관", "lead_corr", "lv2"))
+        cols.append(("선행 방향 일치율", "lead_dir_hit", "lv0"))
+
+    def _fmt(h, key, kind):
+        v = h.get(key)
+        if v is None:
+            return "—"
+        if kind == "pct":
+            return f"{v:+.1f}%"
+        return f"{v:.2f}" if kind == "lv2" else f"{v:.0f}%"
+
     trs = []
     for h in rows:
-        def c(k):
-            v = h.get(k)
-            return f"{v:+.1f}%" if v is not None else "—"
-
-        def lv(k, d=2, suf=""):
-            v = h.get(k)
-            return f"{v:.{d}f}{suf}" if v is not None else "—"
-        trs.append(f"<tr><td>{_html.escape(h['month'])}</td>"
-                   f"<td>{c('export_yoy')}</td><td>{c('export_yoy_3m')}</td>"
-                   f"<td>{lv('corr')}</td><td>{lv('dir_hit', 0, '%')}</td></tr>")
-    return ('<table class="kr-htbl"><tr><th>월</th><th>수출액 YoY</th>'
-            '<th>3M 수출액 YoY</th><th>동시상관</th><th>방향 일치율</th></tr>'
+        tds = [f"<td>{_html.escape(h['month'])}</td>"]
+        tds += [f"<td>{_fmt(h, k, kind)}</td>" for _lab, k, kind in cols[1:]]
+        trs.append("<tr>" + "".join(tds) + "</tr>")
+    head = "".join(f"<th>{lab}</th>" for lab, _k, _kind in cols)
+    return ('<table class="kr-htbl"><tr>' + head + "</tr>"
             + "".join(trs) + "</table>")
 
 
@@ -354,8 +445,11 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     summary.append(_metric("💰 수출액 YoY", r.get("export_yoy")))
     summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
+    # 계열을 라벨에 박는다 — 둘을 같은 이름으로 내면 정의가 섞인다(#34).
     summary.append(_level("🔗 동시상관", r.get("corr")))
     summary.append(_level("🎯 방향 일치율", r.get("dir_hit"), "%", 0))
+    summary.append(_level("🔗 선행상관", r.get("lead_corr")))
+    summary.append(_level("🎯 선행 방향 일치율", r.get("lead_dir_hit"), "%", 0))
     if r.get("revenue"):
         # 원문 그대로 — 통화·단위를 재해석하지 않는다.
         summary.append(f'<div class="kr-rev">🏦 {_html.escape(r["revenue"])}</div>')
@@ -381,7 +475,11 @@ _SUB = ("Badonions 말레이시아 수출 캡션을 <b>종목별</b>로 정리�
         "(TXN 등 미국 상장 포함) · 품목(HS) 기준은 "
         "<a href='my.html'>말레이시아 수출 데이터(품목)</a><br>"
         "<b>동시상관</b>(-1~1)·<b>방향 일치율</b>(%)은 변화율이 아니라 "
-        "<b>수준값</b>이라 부호·화살표 없이 그대로 적습니다.")
+        "<b>수준값</b>이라 부호·화살표 없이 그대로 적습니다.<br>"
+        "원문이 종목마다 <b>두 계열 중 하나</b>를 씁니다 — "
+        "<b>동시</b>(같은 시점 수출↔실적)와 <b>선행</b>(수출이 실적에 앞서는 "
+        "관계, 원문 표기 '1Q 선행상관'). <b>정의가 달라 서로 비교할 수 "
+        "없으므로</b> 칸을 나누고 라벨에 계열을 적습니다.")
 
 
 def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> str:
