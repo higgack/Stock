@@ -3711,7 +3711,19 @@ def fetch_market_disclosures(target_date: date | None = None,
             corp_name = (r.get("corp_name") or "").strip()
             corp_code = (r.get("corp_code") or "").strip()
             stock_code = (r.get("stock_code") or "").strip()
-            rcept_dt = r.get("rcept_dt") or end_ds
+            # 접수일자 — DART 의 rcept_dt 가 1차. 비어 있을 때 예전엔 조회
+            # 창의 **끝 날짜**(end_ds, 사실상 오늘)로 때웠는데, 그러면 어제
+            # 접수분이 오늘 파일에 들어가 카드 날짜 라벨이 하루 밀린다.
+            # 접수번호 앞 8자리가 곧 접수일자라 그걸 먼저 쓴다(실수 #46:
+            # 원본이 주는 식별자를 자체 추정으로 대체하지 말 것).
+            _rno_ymd = (rcept_no[:8] if len(str(rcept_no)) >= 8
+                        and str(rcept_no)[:8].isdigit() else "")
+            rcept_dt = (r.get("rcept_dt") or "").strip()
+            if rcept_dt and _rno_ymd and rcept_dt != _rno_ymd:
+                # 원천이 서로 다른 날을 말한다 — 조용히 넘기지 않는다(#42a).
+                log.warning("dart_feed: rcept_dt %s ≠ 접수번호 날짜 %s (%s)",
+                            rcept_dt, _rno_ymd, rcept_no)
+            rcept_dt = rcept_dt or _rno_ymd or end_ds
 
             category = _classify_report(report_nm)
             # 기타경영사항(자율공시)·투자판단 주요경영사항은 catch-all

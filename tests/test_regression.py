@@ -10619,6 +10619,25 @@ class TestDartFeedTabCollapse:
         assert "최신 공시 <b>2026-08-20</b>(3건)" in html
         assert "페이지 생성" in html
 
+    def test_same_rcept_no_in_two_day_files_is_counted_once(self):
+        # 같은 공시가 두 날짜 파일에 있으면 총계가 부풀려진다(2026-08-20 VM
+        # 감사 실측 1건). 접수번호가 스스로 말하는 날짜(앞 8자리)를 채택.
+        import re
+        import bot.dashboard as d
+        def it(rno, ds, nm):
+            return {"rcept_no": rno, "date": ds.replace("-", ""), "corp_name": nm,
+                    "stock_code": "005930", "url": "#", "category": "계약",
+                    "report_nm": "단일판매ㆍ공급계약체결", "detail": ["계약금액: 1억"]}
+        html = d._render_dart_feed_page({
+            "2026-08-20": [it("20260819000386", "2026-08-20", "중복회사")],
+            "2026-08-19": [it("20260819000386", "2026-08-19", "중복회사"),
+                           it("20260819000387", "2026-08-19", "정상회사")]})[0]
+        assert len(re.findall(r'<div class="df-card[" ]', html)) == 2
+        assert re.search(r'data-cat="전체">전체 (\d+)</button>', html).group(1) == "2"
+        # 남은 쪽은 접수번호가 말하는 날짜(08-19)
+        assert 'data-date="2026-08-20"' not in html
+        assert 'data-date="2026-08-19"' in html
+
     def test_header_marks_lag_when_behind_last_kr_session(self, monkeypatch):
         import bot.dashboard as d
         import bot.market_calendar as mcal
@@ -12253,6 +12272,89 @@ class TestSameBasisGlitchSecondGuard:
         ):
             src = open(path, encoding="utf-8").read()
             assert marker in src, f"2차 가드 미배선: {path}"
+
+
+class TestFeedBoardsShared20260820:
+    """피드형 대시보드 5종(Daily Byte·레딧·블로그·부동산·청약) 공통 계약.
+
+    다섯 화면이 같은 뼈대(_DAILY_BYTE_JS + 월>일>카드)를 쓰므로 회귀도 한 번에
+    돈다 — 한 화면만 고치고 나머지가 갈라지는 걸 막는다(실수 #38)."""
+
+    @staticmethod
+    def _mk(n, ds, hhmm, **kw):
+        return dict(_date=ds, _filename=f"{hhmm.replace(':', '')}{n}.json",
+                    ts=f"{ds}T{hhmm}:00", **kw)
+
+    def _pages(self):
+        import bot.dashboard as d
+        m = self._mk
+        db = [m(1, "2026-08-20", "19:00", body="A", cost_krw=37.0,
+                elapsed_sec=9, kind="daily")]
+        ri = [m(1, "2026-08-20", "05:07", title="미국 레딧 게시물 분석", body="SPCE")]
+        bl = [m(1, "2026-08-20", "09:40", title="글1", desc="본문", link="http://x")]
+        re_ = [m(1, "2026-08-20", "09:00", body="실거래", cost_krw=0,
+                 _kind="realestate", ymd="202608")]
+        cy = [m(1, "2026-08-20", "10:00", body="청약", cost_krw=0, count=3)]
+        return {
+            "daily_byte": (d._render_daily_byte_page(db), "총 1건의 Daily Byte 브리프"),
+            "reddit": (d._render_reddit_insider_page(ri)[0], "총 1건의 포워드"),
+            "blog": (d._render_blog_page(bl)[0], "총 1건의 글"),
+            "realestate": (d._render_realestate_page(re_), "총 1건의 부동산/청약 기록"),
+            "cheongyak": (d._render_cheongyak_page(cy), "총 1건의 청약 피드"),
+        }
+
+    def test_search_clear_restores_the_servers_own_status_label(self):
+        # 검색을 지우면 JS 가 상태줄을 되돌리는데, 그 문구를 JS 안에 하드코딩하고
+        # 페이지마다 _DAILY_BYTE_JS 를 .replace 로 갈아끼웠다 — 레딧·블로그는
+        # replace 가 아예 없어 '총 129건의 Daily Byte 브리프'가 됐고, 부동산·
+        # 청약은 문구 일부만 갈려 '기록'/'피드'가 사라졌다(실수 #24 의 JS 판).
+        import re
+        for name, (html, want) in self._pages().items():
+            srv = re.search(r'id="scr-status"[^>]*>([^<]*)<', html)
+            assert srv and srv.group(1).strip() == want, f"{name}: {srv and srv.group(1)}"
+            assert "const baseStatus = (sts.textContent || '').trim();" in html, name
+            assert "sts.textContent = baseStatus;" in html, name
+            # 하드코딩된 복원 문구가 남아 있으면 다시 갈릴 수 있다
+            assert not re.search(r"sts\.textContent = '총 ' \+ \w+ \+ '건의", html), name
+
+    def test_every_feed_page_says_when_its_data_is_from(self):
+        # "이거 최신이야?"에 화면이 답해야 한다(규칙 10b·실수 #43).
+        import re
+        want = {"daily_byte": "마지막 브리프 (KST)", "reddit": "마지막 포워드 (KST)",
+                "blog": "마지막 새 글 (KST)", "realestate": "마지막 기록 (KST)",
+                "cheongyak": "마지막 피드 (KST)"}
+        for name, (html, _lbl) in self._pages().items():
+            stats = dict((l, v) for v, l in re.findall(
+                r'<div class="stat-v">([^<]*)</div>\s*<div class="stat-l">([^<]*)</div>',
+                html))
+            assert want[name] in stats, f"{name}: 기준시각 stat 없음 — {list(stats)}"
+            assert stats[want[name]].startswith("2026-08-20"), (name, stats[want[name]])
+
+    def test_asof_is_max_ts_not_first_element(self):
+        # 부동산 페이지는 실거래+청약 아카이브를 **이어붙여** 받는다 —
+        # runs[0] 을 쓰면 첫 리스트의 최신이 전체 최신인 척한다.
+        import bot.dashboard as d
+        m = self._mk
+        runs = [m(1, "2026-08-19", "09:00", body="실거래", cost_krw=0,
+                  _kind="realestate", ymd="202608"),
+                m(2, "2026-08-20", "14:00", body="청약", cost_krw=0,
+                  _kind="cheongyak", count=3)]
+        assert d._feed_latest_ts(runs) == "2026-08-20 14:00"
+        assert "마지막 기록 (KST)</div>" in d._render_realestate_page(runs)
+        assert "2026-08-20 14:00" in d._render_realestate_page(runs)
+
+    def test_realestate_cards_within_a_day_are_time_ordered(self):
+        # 이어붙인 순서 그대로 그리면 하루 안에서 실거래가 항상 위로 간다.
+        import re
+        import bot.dashboard as d
+        m = self._mk
+        runs = [m(1, "2026-08-20", "09:00", body="실거래아침", cost_krw=0,
+                  _kind="realestate", ymd="202608"),
+                m(2, "2026-08-20", "14:00", body="청약오후", cost_krw=0,
+                  _kind="cheongyak", count=3)]
+        html = d._render_realestate_page(runs)
+        order = re.findall(r'<span class="domain">([^<(]+)', html)
+        assert order and order[0].startswith("🎟️"), order[:3]
 
 
 class TestRedditPageCollapsed:
