@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 7
+_PROBE_VER = 8   # 8 = 스냅샷 2개 섹션이 엉뚱한 키를 읽어 늘 통과하던 것 fix
 
 
 def _p(*a):
@@ -83,6 +83,26 @@ def _audit_rows(title, rows, default, show_all):
        f"{'/' + str(default[1]) + '일' if default else ''})")
 
 
+def fred_row_asof(data: dict | None) -> str:
+    """글로벌 스냅샷 FRED 행의 기준일.
+
+    ⚠️ 원천(`market_overview._fred_fetch_series` · `_fetch_fred_yoy`)은 이 값을
+    **`time`** 키로 준다. 감사가 `date`/`asof` 만 보던 탓에 10행 전부 '기준 —'
+    으로 찍혔고, 더 나쁘게는 '기준일이 있어야만' ❓ 를 띄우는 분기라 **판정
+    불가가 그냥 ✅ 로 통과**했다(2026-08-20 — 실수 #47 이 내 도구에서 재발).
+    """
+    d = data or {}
+    return str(d.get("time") or d.get("date") or d.get("asof") or "")[:10]
+
+
+def macro_rows(data: dict | None) -> list[dict]:
+    """매크로 스냅샷의 카드 행 — `fetch_macro_snapshot()` 은 `domestic` 과
+    `global` 두 리스트로 준다(`indicators` 키는 존재한 적이 없다). 감사가 그걸
+    읽는 바람에 이 섹션은 **한 번도 아무것도 검사하지 않았다**."""
+    d = data or {}
+    return list(d.get("domestic") or []) + list(d.get("global") or [])
+
+
 def freshness_mark(n_rows: int, latest: str | None, expected: str | None,
                    behind: int | None, grace: int, closed: bool | None) -> str:
     """기준일 판정 한 줄 — **순수 함수**(동작 테스트용).
@@ -126,17 +146,22 @@ def _audit_home_surfaces(show_all):
         for r in rows:
             d = r.get("data") or {}
             sid = r.get("series_id") or ""
-            asof = str(d.get("date") or d.get("asof") or "")[:10]
+            asof = fred_row_asof(d)
             if not d:
                 empty += 1
             j = judge(sid, asof) if asof else None
             mark = ("❌ 값 없음" if not d else
+                    # 기준일이 없으면 신선도를 **판정할 수 없다** — 조용히 ✅ 로
+                    # 넘기면 낡은 값이 영원히 안 보인다(실수 #41).
+                    "❓ 기준일 없음(판정 불가)" if not asof else
                     "⚠️ 지연" if j and j["stale"] else
-                    "❓ 규약없음" if asof and j is None else "✅")
+                    "❓ 규약없음" if j is None else "✅")
             _p(f"   {str(r.get('label',''))[:22]:22} {sid:22} "
                f"기준 {asof or '—':10} 값 {str(d.get('value', '—'))[:10]:>10} {mark}")
         if empty:
             _p(f"   ❌ 값이 안 온 지표 {empty}개 — 키·원천 확인")
+        if not rows:
+            _p("   ❌ 지표 0행 — 감사가 원천을 못 읽었다(대조 실패, 이상 없음 아님)")
     except Exception as exc:                                   # noqa: BLE001
         _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
@@ -146,10 +171,12 @@ def _audit_home_surfaces(show_all):
     try:
         from bot.macro_snapshot import fetch_macro_snapshot
         data = fetch_macro_snapshot()
-        rows = (data or {}).get("indicators") or []
+        rows = macro_rows(data)
         late = [r for r in rows if r.get("asof_stale")]
         noasof = [r for r in rows if not r.get("asof")]
         _p(f"   카드 {len(rows)}개 · ⚠️ 지연 {len(late)} · 기준일 없음 {len(noasof)}")
+        if not rows:
+            _p("   ❌ 카드 0개 — 감사가 스냅샷을 못 읽었다(대조 실패, 이상 없음 아님)")
         for r in late:
             _p(f"   ⚠️ {r.get('label','?')[:24]:24} 기준 {r.get('asof','—')}")
         for r in noasof:
