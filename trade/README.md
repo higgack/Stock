@@ -277,6 +277,10 @@ mild-obscurity gate before Basic Auth.
     1. `ingest_inbox` → upserts any new captured rows into `store.db`
     2. `dashboard` → re-renders `~/.trade/dashboard/index.html`
 - `trade-bot-dashboard.service` serves the file (and `~/.trade/media/`)
+- `trade-bot-dashboard-audit.timer` fires daily 08:10 KST: renders-vs-store
+  count checks, freshness, sibling-page/lazy-panel integrity, archive
+  counts, eval backlog visibility — Telegram alert **only when ❌**
+  (`python -m trade.scripts.dashboard_audit` to run manually)
 
 Worst-case latency from "BeOn publishes" → "card shows up in
 dashboard" is **5 minutes** (the refresh tick). The HTML page itself

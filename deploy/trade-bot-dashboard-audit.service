@@ -1,0 +1,15 @@
+[Unit]
+Description=Trade dashboard audit — 화면 vs store 대조·생성물 무결성 (매일)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=/home/higgack/stock-trade/.env
+# --notify: ❌ 있을 때만 텔레그램(health_check 와 같은 경로 · 무음 규율).
+# 읽기 전용(store/생성물만 읽음) · LLM 0 · ₩0 — 렌더 사이클과 충돌 없음.
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.dashboard_audit --notify
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

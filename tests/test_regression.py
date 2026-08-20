@@ -12299,6 +12299,61 @@ class TestSameBasisGlitchSecondGuard:
             assert marker in src, f"2차 가드 미배선: {path}"
 
 
+class TestTradeDashboardAudit20260820:
+    """수출입(trade) 대시보드 감사 — 사용자 2026-08-20 "Trade 도 감사만들어줘".
+
+    trade 는 별도 체크아웃(~/stock-trade)·별도 데이터(~/.trade)라 NOAH 의
+    audit_sweep 에 넣지 않고 전용 타이머(trade-bot-dashboard-audit, 08:10
+    KST)로 돈다. 여기선 순수 파서·계약을 고정한다(데이터 실측은 VM 몫)."""
+
+    def test_header_parser_reads_the_real_render_format(self):
+        # 실제 렌더는 **UTC 표기·콤마 없음**(dashboard.py:690). 처음 정규식은
+        # 숫자·기호만 받아 'UTC' 글자에서 통째로 미매칭 — 픽스처를 실제 형식
+        # 으로 만들지 않았으면 영원히 '파싱 0건 ❌'만 찍었다(#54).
+        from trade.scripts.dashboard_audit import parse_header
+        real = ("갱신 2026-08-20 06:40 UTC · 총 3036건 (최신 1054개) · "
+                "수출 2000 / 수입 1036 · 잠정 1500 / 확정 1536 · 품목 88")
+        h = parse_header(real)
+        assert h == {"updated": "2026-08-20 06:40 UTC", "total": 3036,
+                     "latest": 1054, "export": 2000, "import": 1036,
+                     "prelim": 1500, "final": 1536, "items": 88}
+        assert parse_header("아무 관계 없는 텍스트") is None
+
+    def test_producer_really_writes_that_format(self):
+        # 생산자 쪽도 같은 테스트에서 고정 — 한쪽만 바뀌면 감사가 눈이 먼다(#54b).
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        assert 'strftime("%Y-%m-%d %H:%M UTC")' in src
+        assert "총 {s.get('total', 0)}건 (최신 {len(latest_ids)}개)" in src
+
+    def test_lazy_refs_matched_by_real_markers_only(self):
+        # index 의 lazy 참조 3형태(data-src / HISTORY_SRC / INDUSTRY_CSV_SRC)만
+        # 잡고, 빈문자(인라인 폴백)는 요구하지 않는다 — 빈 customs.db E2E 에서
+        # 파일 없음을 ❌ 로 오보하던 것을 고친 계약(#50).
+        from trade.scripts.dashboard_audit import _REF_RE
+        t = ('<main id="industry-view" class="view" data-src="industry_panel.html">'
+             'const HISTORY_SRC="alerts_history.json";'
+             'const INDUSTRY_CSV_SRC="";')
+        got = sorted({a or b for a, b in _REF_RE.findall(t) if (a or b)})
+        assert got == ["alerts_history.json", "industry_panel.html"], got
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        assert 'const HISTORY_SRC=' in src and 'const INDUSTRY_CSV_SRC=' in src
+
+    def test_latest_count_is_distinct_dedup_keys(self):
+        from trade.scripts.dashboard_audit import latest_count
+        assert latest_count([{"dedup_key": "a"}, {"dedup_key": "a"},
+                             {"dedup_key": "b"}, {"dedup_key": None}]) == 3
+
+    def test_timer_units_exist_and_notify_only_on_findings(self):
+        svc = open("deploy/trade-bot-dashboard-audit.service", encoding="utf-8").read()
+        tmr = open("deploy/trade-bot-dashboard-audit.timer", encoding="utf-8").read()
+        assert "trade.scripts.dashboard_audit --notify" in svc
+        assert "OnCalendar=*-*-* 08:10:00 Asia/Seoul" in tmr
+        aud = open("trade/scripts/dashboard_audit.py", encoding="utf-8").read()
+        # 무음 규율: ❌ 0건이면 notify 경로 자체에 안 들어간다
+        assert '"--notify" in argv' in aud
+        assert aud.index("if not bad:") < aud.index('"--notify" in argv')
+
+
 class TestAssetPagesContracts20260820:
     """자산·ASIA·Screener·trade 아카이브 렌더 계약 — A안 잔여 표면 감사에서
     나온 결함 3건(사용자 2026-08-20 "이어서 A 로 남은것들도 다 봐줘")."""

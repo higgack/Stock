@@ -1,0 +1,12 @@
+[Unit]
+Description=Trade dashboard audit trigger — 매일 08:10 KST
+
+[Timer]
+# NOAH 쪽 감사(bot.audit_sweep, 08:00 KST)와 나란히 — 한국 개장 전.
+# 5분 재렌더가 자정 이후 수십 번 돈 뒤라 신선도 판정이 안정적이다.
+OnCalendar=*-*-* 08:10:00 Asia/Seoul
+Persistent=true
+Unit=trade-bot-dashboard-audit.service
+
+[Install]
+WantedBy=timers.target
