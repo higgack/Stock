@@ -8594,6 +8594,25 @@ def _month_kr(ym: str) -> str:
         return ym
 
 
+def _feed_latest_ts(runs: list[dict]) -> str:
+    """피드형 대시보드의 as-of = **가장 최근 항목의 ts**('YYYY-MM-DD HH:MM').
+
+    `runs[0]` 을 쓰면 안 된다 — 부동산 페이지는 실거래 아카이브와 청약 아카이브를
+    이어붙여(re_runs + ch_runs) 넘기므로 첫 원소가 전체 최신이 아니다. max 로
+    뽑으면 로더 정렬 방식이 바뀌어도 안 깨진다(실수 #46: 순서 가정 금지).
+
+    ⚠️ 이 값은 '마지막으로 **도착한 항목**의 시각'이지 '수집기가 마지막으로
+    돈 시각'이 아니다 — 라벨을 '마지막 수집'이 아니라 '마지막 새 글/브리프'로
+    쓰는 이유(실수 #43: 화면이 애매하게 말하면 사용자가 잘못 읽는다).
+    """
+    best = ""
+    for r in runs:
+        t = str(r.get("ts") or "")
+        if t > best:
+            best = t
+    return best[:16].replace("T", " ")
+
+
 def _month_transition(
     parts: list[str], prev_month: str | None, date: str,
     this_month: str, month_counts: dict[str, int],
@@ -10677,7 +10696,13 @@ _DAILY_BYTE_JS = """
   // 과거 월 lazy(details.month[data-lazy], 성능 2026-07-03 — index 패턴 미러,
   // 이 JS 를 공유하는 레딧·블로그·Daily Byte 페이지 공통 적용) — 로드 시 재수집.
   let cards = [], dayGroups = [], monthGroups = [], cardData = [];
-  const total = parseInt(sts.dataset.total || '0', 10) || document.querySelectorAll('.card').length;
+  // 검색을 지웠을 때 되돌릴 문구 = **서버가 찍은 그 문구** 그대로.
+  // 예전엔 '총 N건의 Daily Byte 브리프'를 JS 안에 하드코딩하고, 페이지마다
+  // _DAILY_BYTE_JS 를 .replace 로 갈아끼웠다 — 레딧·블로그는 그 replace 가
+  // 없어서 검색 한 번 지우면 '총 129건의 Daily Byte 브리프'로 바뀌었고,
+  // 부동산·청약은 replace 가 문구 일부만 갈아 '기록'/'피드'가 사라졌다
+  // (실수 #24 열거형 방어의 JS 판). 서버 문구를 읽으면 갈릴 수가 없다.
+  const baseStatus = (sts.textContent || '').trim();
   const MAX_SNIPPETS = 80;
   function rescan() {
     cards = Array.from(document.querySelectorAll('.card'));
@@ -10745,7 +10770,7 @@ _DAILY_BYTE_JS = """
     for (const c of cards) { c.style.display = ''; c.open = (c.dataset.defaultOpen === 'true'); c.classList.remove('hit-flash'); }
     for (const d of dayGroups) d.style.display = '';
     for (const m of monthGroups) m.style.display = '';
-    sts.textContent = '총 ' + total + '건의 Daily Byte 브리프';
+    sts.textContent = baseStatus;
   }
 
   function showSnippetsMode(q) {
@@ -10999,6 +11024,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         if (r.get("_date") or "").startswith(_month_kst_db)
     )
     weekly_n = sum(1 for r in runs if r.get("kind") in ("weekly", "us_weekly"))
+    _db_asof = _feed_latest_ts(runs)
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -11012,6 +11038,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(_db_asof) if _db_asof else '—'}</div><div class="stat-l">마지막 브리프 (KST)</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost_krw:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost_krw:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
@@ -11169,8 +11196,9 @@ def regenerate_daily_byte_index() -> None:
 
 # ── 부동산 Byte archive view ──────────────────────────────────────────────
 _REALESTATE_ARCHIVE_DIR = Path.home() / ".tradingagents" / "realestate_archive"
+# ⚠️ 상태줄 문구는 더 이상 여기서 갈아끼우지 않는다 — JS 가 서버 문구를 읽는다.
+# 남은 replace 는 삭제 확인창 문구/엔드포인트뿐.
 _REALESTATE_JS = (_DAILY_BYTE_JS
-    .replace("Daily Byte 브리프", "부동산/청약")
     .replace("Daily Byte 기록", "부동산/청약 기록")
     .replace("fetch('api/daily_byte_delete',", "fetch(card.dataset.delApi || 'api/realestate_delete',"))
 
@@ -11219,17 +11247,20 @@ def _render_realestate_page(runs: list[dict]) -> str:
     today_cost = sum(r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today)
     month_cost = sum(r.get("cost_krw", 0) or 0 for r in runs
                      if (r.get("_date") or "").startswith(_month))
+    _re_asof = _feed_latest_ts(runs)
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
+    · <a href="cheongyak.html">🎟️ 청약</a>
   </div>
   <h1>🏠 부동산 — Archive</h1>
-  <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 + 청약홈 분양 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
+  <p class="sub">아파트 실거래가(MOLIT) 주간 브리프(금 09:00 · 월간 1일 09:00) + 청약홈 분양 피드(평일 10·14시) · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
   <div class="stats">
     <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 기록</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(_re_asof) if _re_asof else '—'}</div><div class="stat-l">마지막 기록 (KST)</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
@@ -11266,7 +11297,10 @@ def _render_realestate_page(runs: list[dict]) -> str:
             f'<span>📅 {_html.escape(date)}</span>'
             f'<span class="count">{len(by_date[date])} 건</span></summary>'
             f'<div class="day-body">')
-        for r in by_date[date]:
+        # 실거래(re_runs) + 청약(ch_runs) 을 **이어붙여** 받으므로 하루 안에서
+        # 실거래가 항상 먼저 온다 — 실제 시각순으로 다시 세운다.
+        for r in sorted(by_date[date], key=lambda x: str(x.get("ts") or ""),
+                        reverse=True):
             body = (r.get("body") or "").strip()
             body = _re_r.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
             kind = r.get("_kind", "realestate")
@@ -11333,8 +11367,9 @@ def regenerate_realestate_index() -> None:
 
 # ── 청약 Byte archive view (신규 분양 모집공고 daily 피드) ────────────────
 _CHEONGYAK_ARCHIVE_DIR = Path.home() / ".tradingagents" / "cheongyak_archive"
-_CHEONGYAK_JS = _DAILY_BYTE_JS.replace("api/daily_byte_delete", "api/cheongyak_delete").replace(
-    "Daily Byte 브리프", "청약 Byte").replace("Daily Byte 기록", "청약 Byte 기록")
+_CHEONGYAK_JS = _DAILY_BYTE_JS.replace(
+    "api/daily_byte_delete", "api/cheongyak_delete").replace(
+    "Daily Byte 기록", "청약 Byte 기록")
 
 
 def _load_cheongyak_runs() -> list[dict]:
@@ -11380,6 +11415,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
     today_cost = sum(r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today)
     month_cost = sum(r.get("cost_krw", 0) or 0 for r in runs
                      if (r.get("_date") or "").startswith(_month))
+    _cy_asof = _feed_latest_ts(runs)
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -11389,9 +11425,10 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
     · <a href="realestate.html">🏠 부동산</a>
   </div>
   <h1>🎟️ 청약 Byte — Archive</h1>
-  <p class="sub">신규 아파트 분양 모집공고(청약홈) daily 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(청약 권유 아님)</p>
+  <p class="sub">신규 아파트 분양 모집공고(청약홈) 피드(평일 10·14시) · ticker·5거래일과 별개 · 공공데이터 관찰(청약 권유 아님)</p>
   <div class="stats">
     <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 피드</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(_cy_asof) if _cy_asof else '—'}</div><div class="stat-l">마지막 피드 (KST)</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
@@ -11423,7 +11460,8 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
             f'<span>📅 {_html.escape(date)}</span>'
             f'<span class="count">{len(by_date[date])} 건</span></summary>'
             f'<div class="day-body">')
-        for r in by_date[date]:
+        for r in sorted(by_date[date], key=lambda x: str(x.get("ts") or ""),
+                        reverse=True):     # 하루 안에서도 시각 내림차순
             body = (r.get("body") or "").strip()
             body = _re_r.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
             cnt = r.get("count", 0) or 0
@@ -11520,10 +11558,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
         by_date[r.get("_date", "")].append(r)
 
     total_runs = len(runs)
-    last_ts = ""
-    if runs:
-        # runs 는 newest-first 정렬돼 들어옴
-        last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
+    last_ts = _feed_latest_ts(runs)
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -11533,11 +11568,11 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
     · <a href="index.html">🦉 종목분석</a>
   </div>
   <h1>📨 미국 레딧 게시물 분석 — Archive</h1>
-  <p class="sub">t.me/insidertracking 자동 포워드 · 제목 '미국 레딧 게시물 분석' 필터 · ₩0 (LLM 없음, 원본 그대로) · 정보 관찰(투자 권유 아님)</p>
+  <p class="sub">t.me/insidertracking 자동 포워드(1분 폴링) · 제목 '미국 레딧 게시물 분석' 필터 · ₩0 (LLM 없음, 원본 그대로) · 정보 관찰(투자 권유 아님)</p>
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 포워드</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수신 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 포워드 (KST)</div></div>
     <div class="stat"><div class="stat-v">₩0 / ₩0 / ₩0</div><div class="stat-l">비용 (오늘/이번 달/누적)</div></div>
   </div>
 
@@ -11554,7 +11589,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
     if not runs:
         parts.append("""
   <div class="empty">
-    아직 포워드 기록이 없습니다. t.me/insidertracking 채널의 '미국 레딧 게시물 분석' 게시물이 올라오면 5분 내 자동 수집됩니다.
+    아직 포워드 기록이 없습니다. t.me/insidertracking 채널의 '미국 레딧 게시물 분석' 게시물이 올라오면 1분 내 자동 수집됩니다.
   </div>
 </div></body></html>""")
         return "".join(parts), fragments
@@ -12126,9 +12161,7 @@ def _render_blog_page(runs: list[dict]) -> str:
         by_date[r.get("_date", "")].append(r)
 
     total_runs = len(runs)
-    last_ts = ""
-    if runs:
-        last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
+    last_ts = _feed_latest_ts(runs)
     # 블로그 관계후보 발굴 비용(kg_blog + 레거시 kg_candidate) — 단순 포워드가
     # 아니라 Gemini 추출이라 ₩0 아님(사용자 2026-06-24). DART 발굴분(kg_dart)은
     # dart_feed.html 카드로 분리 — 각 대시보드가 자기 비용만. 메인 '관계후보'는
@@ -12150,7 +12183,7 @@ def _render_blog_page(runs: list[dict]) -> str:
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 새 글 (KST)</div></div>
     <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달/누적)</div></div>
   </div>
 {_render_daju_section(_load_daju_runs(200))}
@@ -14858,17 +14891,35 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         except Exception:
             it["_unparsed"] = it["_noparse"] = False
 
-    # ⚠️ **표시 대상 단일 소스**(_vis) — 노이즈컷(_equity_noise) 통과분만.
-    # 전에는 전체 필만 필터 후 카운트였고 월/일 헤더는 by_date 원본 길이를
-    # 그대로 찍어서, 숨겨진 카드까지 센 숫자가 헤더에 남았다(2026-08-20 감사:
-    # 하루 6 이라 적혀 있는데 카드는 4장). 카드 순서(rcept_no 내림차순)도
-    # 여기서 한 번만 정하고 렌더는 이 리스트만 읽는다 — 카운트와 카드가
-    # 갈라질 수 있는 경로를 없앤다.
+    # 같은 접수번호가 두 날짜 파일에 걸쳐 있으면 총계가 그만큼 부풀려진다
+    # (2026-08-20 감사에서 실측 1건 — 옛 '창 끝 날짜' 폴백의 잔재). 접수번호가
+    # **스스로 말하는 날짜**를 최우선 채택하고, 그것도 아니면 최신 날짜 하나만
+    # 남긴다. 아카이브는 건드리지 않는다(렌더에서 정리 — 실수 #32 의 방향).
+    _pick: dict[str, str] = {}
+    for _ds, _its in by_date.items():
+        for it in _its:
+            rno = str(it.get("rcept_no") or "")
+            if not rno:
+                continue
+            own = (f"{rno[:4]}-{rno[4:6]}-{rno[6:8]}"
+                   if rno[:8].isdigit() else "")
+            cur = _pick.get(rno)
+            if cur is None or (cur != own and (_ds == own or _ds > cur)):
+                _pick[rno] = _ds
+
+    # ⚠️ **표시 대상 단일 소스**(_vis) — 노이즈컷(_equity_noise) 통과 + 위
+    # _pick 이 고른 날짜의 것만. 전에는 '전체' 필만 필터 후 카운트였고 월/일
+    # 헤더는 by_date 원본 길이를 그대로 찍어서, 숨겨진 카드까지 센 숫자가
+    # 헤더에 남았다(2026-08-20 감사: 하루 6 이라 적혀 있는데 카드는 4장).
+    # 카드 순서(rcept_no 내림차순)도 여기서 한 번만 정하고 렌더는 이 리스트만
+    # 읽는다 — 카운트와 카드가 갈라질 수 있는 경로를 없앤다.
     _vis: dict[str, list[dict]] = {}
     for _ds, _its in by_date.items():
         _v = [it for it in sorted(_its, key=lambda x: str(x.get("rcept_no") or ""),
                                   reverse=True)
-              if not _equity_noise(it)]
+              if not _equity_noise(it)
+              and (not it.get("rcept_no")
+                   or _pick.get(str(it["rcept_no"])) == _ds)]
         if _v:                      # 전부 숨겨진 날은 빈 그룹조차 만들지 않는다
             _vis[_ds] = _v
 

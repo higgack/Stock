@@ -19,7 +19,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-AUDIT_VER = 1
+AUDIT_VER = 2   # 2 = 거래일 기준 결측판정·축별 정렬방향·Today% 축간 대조
 _KST = timezone(timedelta(hours=9))
 
 _OK, _NG, _WARN = "✅", "❌", "⚠️"
@@ -57,15 +57,28 @@ def audit_dart() -> None:
 
     # 창(30일) 안에 파일이 없는 날 — 수집 구멍
     today = datetime.now(_KST).date()
-    missing = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
-    missing = [x for x in missing if x not in by_date]
-    _p(f"{_mark(not missing, warn=bool(missing))} 창 결측일 {len(missing)}일"
-       + (f" — {missing}" if missing else " (주말·휴일이면 정상)"))
+    win = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
+    missing = [x for x in win if x not in by_date]
+    # 주말·휴일은 공시가 없는 게 정상이다 — 거래일만 지적해야 경보가 의미를
+    # 갖는다(휴일까지 세면 매번 ⚠️ 라 아무도 안 본다).
+    try:
+        from bot.market_calendar import last_session_on_or_before
+        miss_sess = [x for x in missing if last_session_on_or_before("KR", x) == x]
+        _known = last_session_on_or_before("KR", today.isoformat()) is not None
+    except Exception:
+        miss_sess, _known = [], False
+    if _known:
+        _p(f"{_mark(not miss_sess)} 창 결측 **거래일** {len(miss_sess)}일 "
+           f"{miss_sess} (비거래일 결측 {len(missing) - len(miss_sess)}일은 정상)")
+    else:
+        _p(f"{_WARN} 창 결측일 {len(missing)}일 {missing} "
+           "— 거래일 캘린더 미설치라 주말·휴일 구분 불가(pip install exchange_calendars)")
 
     # ① rcept_no 무결성: 빈값 · 파일날짜 불일치 · 중복(파일내·교차)
     seen: dict[str, str] = {}
     dup_same = dup_cross = blank = datemis = 0
     mis_ex: list[str] = []
+    dup_ex: list[str] = []
     for ds, items in by_date.items():
         inday: set[str] = set()
         for it in items:
@@ -79,14 +92,19 @@ def audit_dart() -> None:
             prev = seen.get(rno)
             if prev is not None and prev != ds:
                 dup_cross += 1
+                if len(dup_ex) < 5:
+                    dup_ex.append(f"{rno}: {prev} · {ds}")
             seen[rno] = ds
             if len(rno) >= 8 and rno[:8] != ds.replace("-", ""):
                 datemis += 1
-                if len(mis_ex) < 5:
-                    mis_ex.append(f"{rno}→{ds}")
+                if len(mis_ex) < 6:
+                    # date 필드까지 찍어야 '원천이 그렇게 줬다' vs '폴백이
+                    # 창 끝 날짜로 때웠다'를 구분할 수 있다.
+                    mis_ex.append(f"{rno} date={it.get('date')!r} → 파일 {ds}")
     _p(f"{_mark(not blank)} rcept_no 결측 {blank}건")
     _p(f"{_mark(not dup_same)} 같은 날 파일 내 rcept_no 중복 {dup_same}건")
-    _p(f"{_mark(not dup_cross)} 날짜 간 rcept_no 중복(같은 공시 2회 계수) {dup_cross}건")
+    _p(f"{_mark(not dup_cross)} 날짜 간 rcept_no 중복(같은 공시 2회 계수) "
+       f"{dup_cross}건 {dup_ex}")
     _p(f"{_mark(not datemis)} 접수번호 앞 8자리 ≠ 파일 날짜 {datemis}건"
        + (f" 예: {mis_ex}" if mis_ex else " (카드 날짜라벨 정합)"))
 
@@ -320,10 +338,16 @@ def audit_marketcap() -> None:
            + ("" if not nmiss else " 예: " + str([
                (r.get("name"), r.get("metric"), r.get("price"))
                for r, v in zip(rows, vals) if v is None][:4])))
-        seq = [v for v in vals if v is not None]
+        # ⚠️ 축마다 정렬 방향이 다르다 — P/E 는 낮은 순, MC loss 는 손실이 큰
+        # 순(부호로는 오름차순)이다. '내림차순'을 일괄로 기대하면 정상 화면을
+        # ❌ 로 찍는다(v1 이 그랬다 — 감사가 거짓 경보를 내는 실수 #47 의 짝).
+        seq = [abs(v) if key == "mc_loss" else v for v in vals if v is not None]
         desc = all(a >= b for a, b in zip(seq, seq[1:]))
-        _p(f"  {_mark(desc, warn=not desc)} 메트릭 내림차순 정렬 "
-           + ("" if desc else "— 역전 " + str([
+        asc = all(a <= b for a, b in zip(seq, seq[1:]))
+        _dir = "내림차순" if desc else "오름차순" if asc else "정렬 깨짐"
+        _base = "절대값 " if key == "mc_loss" else ""
+        _p(f"  {_mark(desc or asc)} 메트릭 {_base}단조 정렬 ({_dir}) "
+           + ("" if (desc or asc) else "— 역전 " + str([
                (rows[i].get("name"), vals[i], rows[i + 1].get("name"), vals[i + 1])
                for i in range(len(vals) - 1)
                if vals[i] is not None and vals[i + 1] is not None
@@ -351,11 +375,15 @@ def audit_marketcap() -> None:
            f"빈 국가 {sum(1 for r in rows if not r.get('country'))}행 · "
            f"로고없음 {sum(1 for r in rows if not r.get('logo'))}행")
         nmv = sum(1 for r in rows if r.get("rank_move"))
-        _p(f"  {_mark(nmv > 0, warn=nmv == 0)} 순위변화(moves) 비영 {nmv}행 "
-           + ("" if nmv else "— 전 행 0 이면 moves 속성 파서 회귀 의심"))
+        if key == "marketcap":     # 원본이 moves 속성을 주는 축(실측)
+            _p(f"  {_mark(nmv > 0)} 순위변화(moves) 비영 {nmv}행 "
+               + ("" if nmv else "— 전 행 0 = moves 속성 파서 회귀 의심"))
+        else:
+            _p(f"  (참고) 순위변화 비영 {nmv}행 — 이 축은 원본이 moves 를 안 준다")
         pcs = [r.get("chg_pct") for r in rows]
         nnone = sum(1 for x in pcs if x is None)
-        wild = [(r.get("name"), r.get("chg_pct")) for r in rows
+        wild = [(r.get("name"), r.get("chg_pct"), r.get("metric"), r.get("price"))
+                for r in rows
                 if r.get("chg_pct") is not None and abs(r["chg_pct"]) > 50]
         _p(f"  {_mark(not wild, warn=bool(wild))} Today% 결측 {nnone}행 · "
            f"|변동|>50% {len(wild)}행 {wild[:3]}")
@@ -364,6 +392,25 @@ def audit_marketcap() -> None:
         _p(f"  1위: {rows[0].get('name')} ({rows[0].get('ticker')}) "
            f"{rows[0].get('metric')} / {rows[0].get('price')} / "
            f"{rows[0].get('chg_pct')}% / {rows[0].get('country')}")
+
+    # Today% 는 어느 축에서 보든 **같은 회사면 같은 값**이어야 한다. 축마다
+    # 그 열의 의미가 다르면(기간 등락 등) 여기서 갈린다 — 외부 자료 없이
+    # 화면 자체로 판정할 수 있는 유일한 검산이다.
+    base = {str(r.get("ticker")): r.get("chg_pct")
+            for r in ((data.get("marketcap") or {}).get("rows") or [])
+            if r.get("ticker") and r.get("chg_pct") is not None}
+    _p("")
+    _p("  ── Today% 축간 대조 (기준: Market Cap 축)")
+    for key, lbl, *_ in mc.EMBED_AXES:
+        if key == "marketcap":
+            continue
+        rows = (data.get(key) or {}).get("rows") or []
+        pairs = [(r.get("name"), base[str(r.get("ticker"))], r.get("chg_pct"))
+                 for r in rows
+                 if str(r.get("ticker")) in base and r.get("chg_pct") is not None]
+        bad = [x for x in pairs if abs(x[1] - x[2]) > 0.02]
+        _p(f"  {_mark(not bad)} {lbl}: 공통 {len(pairs)}종목 중 불일치 {len(bad)} "
+           f"{bad[:3]}")
 
     # 렌더 경로
     page = d._render_marketcap_page(data)

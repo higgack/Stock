@@ -509,9 +509,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "realestate_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
                 "regenerate_realestate_index")
         if self.path == "/api/cheongyak_delete":
+            # 청약 기록은 두 화면(cheongyak.html · realestate.html)에 실린다.
             return self._handle_simple_delete(
                 "cheongyak_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
-                "regenerate_cheongyak_index")
+                ("regenerate_cheongyak_index", "regenerate_realestate_index"))
         if self.path == "/api/screen_delete":
             return self._handle_simple_delete(
                 "screen_archive", r"^\d{6}_[a-f0-9]{1,20}\.json$",
@@ -573,11 +574,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(500, {"ok": False, "error": str(exc)})
 
     def _handle_simple_delete(self, subdir: str, filename_re: str,
-                              regen_fn: str) -> None:
+                              regen_fn: str | tuple[str, ...]) -> None:
         """Generic per-run JSON archive delete under ~/.tradingagents/<subdir>/
         YYYY-MM-DD/<filename>. Validates date + filename (path-traversal
         guard) then unlinks + calls bot.dashboard.<regen_fn>(). Used by
-        /api/realestate_delete (and future archive surfaces)."""
+        /api/realestate_delete (and future archive surfaces).
+
+        regen_fn 은 **여러 개**일 수 있다 — 청약 기록은 cheongyak.html 과
+        realestate.html 두 화면에 같이 실려서, 하나만 다시 그리면 다른 쪽에
+        지운 카드가 그대로 남는다(실수 #27: 형제 표면 한쪽만 갱신)."""
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length <= 0 or length > 1024:
@@ -604,7 +609,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             try:
                 import importlib
                 _dash = importlib.import_module("bot.dashboard")
-                getattr(_dash, regen_fn)()
+                for _fn in ((regen_fn,) if isinstance(regen_fn, str) else regen_fn):
+                    getattr(_dash, _fn)()
             except Exception as exc:
                 log.warning("%s: regen failed (file removed): %s", regen_fn, exc)
             log.info("simple_delete[%s]: %s/%s removed", subdir, date, filename)
