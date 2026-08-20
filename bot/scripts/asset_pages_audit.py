@@ -21,7 +21,7 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 
-_PROBE_VER = 1
+_PROBE_VER = 2   # 2 = 아카이브 카드 계수 패턴 fix(<div class=card — details 아님)
 _KST = timezone(timedelta(hours=9))
 _OK, _NG, _WARN = "✅", "❌", "⚠️"
 
@@ -150,14 +150,17 @@ def audit_index() -> None:
         _p(f"{_NG} 상태줄 파싱 0건 — 패턴 어긋남(검증 불가)")
         return
     _p(f"{_mark(m.group(1) == m.group(2))} data-total {m.group(1)} = 표기 {m.group(2)}")
-    # 카드 수와 대조 — 최신 월 인라인 + 과거 월 프래그먼트(idx_m_*.html)
-    cards = len(re.findall(r'<details class="card"', html))
+    # 카드 수와 대조 — 최신 월 인라인 + 과거 월 프래그먼트(idx_m_*.html).
+    # ⚠️ 이 페이지의 카드는 **<div class="card">** 다(피드 대시보드들의
+    # <details class="card"> 와 다름). v1 이 details 로 세서 VM 실데이터
+    # 77건을 '카드 0'으로 오보했다(#47 — 계수 패턴은 실제 렌더로 검증할 것).
+    _IDX_CARD = re.compile(r'<div class="card"')
+    cards = len(_IDX_CARD.findall(html))
     frag_names = re.findall(r'data-lazy="(idx_m_[^"]+)"', html)
     for fn in frag_names:
         fpp = d.ARCHIVE_ROOT / fn
         if fpp.exists():
-            cards += len(re.findall(r'<details class="card"',
-                                    fpp.read_text(encoding="utf-8")))
+            cards += len(_IDX_CARD.findall(fpp.read_text(encoding="utf-8")))
         else:
             _p(f"{_NG} 프래그먼트 {fn} 미존재 — 펼치면 로드 실패")
     _p(f"{_mark(cards == int(m.group(1)))} 실제 카드 {cards} = data-total {m.group(1)} "
