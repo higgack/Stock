@@ -4,7 +4,7 @@ Description=나쁜양파 동기화 트리거 — 6시간 간격 (리스너가 �
 [Timer]
 # 실시간은 trade-bot-badonion-listener 가 즉시 forward. 이 타이머는 리스너 재시작
 # 창·일시적 접속 끊김을 메우는 안전망이라 빈도가 급하지 않음(스크립트 기본
-# --lookback-days 2 가 6시간 간격보다 훨씬 넓어 gap 없음). BeOn 백필과 동일 패턴
+# --lookback-days 3 이 6시간 간격보다 훨씬 넓어 gap 없음). BeOn 백필과 동일 패턴
 # (일본 옆 대만 대시보드, 사용자 2026-07-10).
 OnBootSec=5min
 OnUnitActiveSec=6h
