@@ -9204,6 +9204,9 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
   const dayGroups = Array.from(document.querySelectorAll('details.day'));
   const monthGroups = Array.from(document.querySelectorAll('details.month'));
   if (!inp) return;
+  // 검색 해제 복원 문구 = 서버가 찍은 그 문구(#48 — 하드코딩하면 서버
+  // 문구('Bottleneck Screener 실행')와 갈린다. 실제로 갈려 있었다).
+  const baseStatus = (sts.textContent || '').trim();
   const total = cards.length;
 
   const SECTION_LABELS = {
@@ -9268,7 +9271,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
       d.style.display = '';
     }
     for (const m of monthGroups) m.style.display = '';
-    sts.textContent = '총 ' + total + '건의 screener 실행';
+    sts.textContent = baseStatus;
   }
 
   function showSnippetsMode(q) {
@@ -9525,6 +9528,9 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
   var csCards = Array.from(document.querySelectorAll('.cs-card'));
   var csDays = Array.from(document.querySelectorAll('.cs-day'));
   var csMonths = Array.from(document.querySelectorAll('.cs-month'));
+  // 복원 문구 = 서버가 찍은 그 문구(#48 — 지금은 일치하지만
+  // 하드코딩은 언젠가 갈린다. Bottleneck 쪽과 같은 패턴).
+  var csBase = (csSts.textContent || '').trim();
   var csTotal = csCards.length;
 
   function csFilter() {
@@ -9543,7 +9549,7 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
       csDays.forEach(function(d) { d.style.display = ''; });
       csMonths.forEach(function(m) { m.style.display = ''; });
       csEmp.style.display = 'none';
-      csSts.textContent = '총 ' + csTotal + '건의 조건부 스크리너 실행';
+      csSts.textContent = csBase;
       return;
     }
     var hits = 0;
@@ -17615,6 +17621,15 @@ def _render_asia_page(data: dict) -> str:
                 f'<a href="twhighlow" style="{_lk}">🚀 급등·급락</a>')
     parts.append(_render_etf_sector_movers(
         data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
+    # 4개 시장이 전부 비면(수집 전면 실패) 위젯이 모두 생략돼 **백지**가 된다 —
+    # 침묵이 최악이다(실수 #43). 무엇이 없는지 밝힌다.
+    if not any((data.get(k) or {}).get("up") or (data.get(k) or {}).get("down")
+               for k in ("jp_sector_movers", "cn_sector_movers",
+                         "hk_sector_movers", "tw_sector_movers")):
+        parts.append(
+            '<p class="sub" style="padding:24px 0">⚠️ 업종 등락 데이터가 아직 '
+            '없습니다 — 수집 실패 또는 첫 수집 전. 다음 30분 사이클에 자동 '
+            '재시도합니다(그래도 비면 journal 의 market_overview 경고 확인).</p>')
     parts.append("</div>\n</div>\n" + _ASIA_LIVE_JS + "\n</body></html>")
     return "".join(parts)
 

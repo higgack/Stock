@@ -1,4 +1,4 @@
-"""대시보드 감사 4종 일괄 실행 → **이상이 있을 때만** 보고.
+"""대시보드 감사 일괄 실행 → **이상이 있을 때만** 보고.
 
 사용자 2026-08-20: "매번 할때마다 왜 새로운것이 나오지?" — 대부분은 새로
 깨진 게 아니라 **그 표면을 처음 기계적으로 검사**해서 보인 것이었다. 그렇다면
@@ -44,6 +44,7 @@ AUDITS: tuple[tuple[str, str, str], ...] = (
     ("💧 유동성 배치·단위", "bot.scripts.liquidity_audit", "daily"),
     ("🕰 발표지표 신선도", "bot.scripts.macro_staleness_audit", "daily"),
     ("💱 피어 통화 불일치", "bot.scripts.peer_currency_audit", "weekly"),
+    ("💼 자산·가계부·ASIA·아카이브·Screener", "bot.scripts.asset_pages_audit", "daily"),
 )
 
 # 섹션 제목으로 볼 줄 — ❌ 가 **어느 화면**에서 났는지 붙여 주기 위해.
