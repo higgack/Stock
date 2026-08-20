@@ -200,8 +200,48 @@ def audit_siblings(dash_dir: Path) -> list[str]:
             bad.append(f"{n} 0바이트")
             _p(f"{_NG} {n} 0바이트")
         else:
-            _p(f"{_OK} {n} ({fp.stat().st_size / 1024:.0f} KB)")
+            # 존재+비어있지 않음만으론 **살아있는지** 모른다(2026-08-20 전수
+            # 감사 — cheongyak.html 화석이 그 상태로 두 달을 살았다, 실수 #53).
+            # 나쁜양파 형제 페이지는 asof_footer 가 '페이지 생성 …KST' 를
+            # 찍으므로, 그 줄이 없거나(구버전/렌더 경로 이탈) 생성시각이
+            # 24h 를 넘으면(재생성 5분 주기가 멈춤) ❌.
+            note = sibling_staleness(fp.read_text(encoding="utf-8"),
+                                     n, datetime.now(_KST))
+            if note:
+                bad.append(note)
+                _p(f"{_NG} {note}")
+            else:
+                _p(f"{_OK} {n} ({fp.stat().st_size / 1024:.0f} KB)")
     return bad
+
+
+# asof_footer 가 찍는 줄: "… · 페이지 생성 2026-08-20 18:14 KST"
+_ASOF_RE = re.compile(r"페이지 생성 (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) KST")
+# footer 의무 대상 — 나쁜양파 형제 + jp.html(비온). 정적 아카이브 3종은
+# 항목별 날짜·총계가 이미 있고 생성 주기가 달라 제외(report/industry 는
+# ④가 '총 N건 vs 로더'로 따로 검산).
+_ASOF_EXEMPT = ("reference.html", "industry_archive.html",
+                "report_archive.html")
+
+
+def sibling_staleness(html: str, name: str, now_kst: datetime) -> str | None:
+    """None = 정상. 문자열 = ❌ 사유. 순수 함수 — 판정을 스크립트에 인라인으로
+    두면 회귀가 소스 문자열만 보게 된다(실수 #41/#19 — 동작으로 고정)."""
+    if name in _ASOF_EXEMPT:
+        return None
+    m = _ASOF_RE.search(html)
+    if not m:
+        return f"{name} as-of 줄 없음(구버전 렌더 또는 footer 배선 이탈)"
+    try:
+        gen = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(
+            tzinfo=_KST)
+    except ValueError:
+        return f"{name} as-of 시각 파싱 실패: {m.group(1)!r}"
+    age_h = (now_kst - gen).total_seconds() / 3600
+    if age_h > 24:
+        return (f"{name} 페이지 생성 {age_h:.0f}h 전 — 5분 주기 재생성이 "
+                f"멈춘 것(화석)")
+    return None
 
 
 def audit_archives(dash_dir: Path) -> list[str]:

@@ -54,7 +54,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trade.archive_template import back_nav_html, card_html
+from trade.archive_template import (asof_footer, back_nav_html,
+                                    card_html, max_ingest_iso)
 
 # 헤더 = "종목명 (티커)" / "말레이시아 수출" / "NN년 N월 Update".
 # ⚠️ 세 마커를 따로 찾으면 안 된다 — 이 파서는 리스너의 관련성 필터이자
@@ -488,15 +489,22 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
     if not rows:
         # 빈 상태에서도 페이지를 만들어 nav 404 를 막는다(기존 모듈 규약).
         return (_HEAD + "<div class='wrap'>" + nav +
-                "<h1>🐯 말레이시아 수출 데이터(종목별)</h1>"
+                "<h1>🐆 말레이시아 수출 데이터(종목별)</h1>"
                 "<div class='empty'>아직 수집된 말레이시아 수출 데이터"
-                "(종목별, 나쁜양파)가 없습니다.</div></div></body></html>")
+                "(종목별, 나쁜양파)가 없습니다.</div>"
+                + asof_footer(0, "종목", None,
+                              max_ingest_iso(conn, "my_stock_exports"))
+                + "</div></body></html>")
     cards = [_card_html(r, history(conn, r["ticker"]), media_url_prefix)
              for r in rows]
     return (_HEAD + "<div class='wrap'>" + nav +
-            "<h1>🐯 말레이시아 수출 데이터(종목별)</h1>"
+            "<h1>🐆 말레이시아 수출 데이터(종목별)</h1>"
             f"<div class='sub'>{_SUB}</div>"
-            "<div class='grid'>" + "".join(cards) + "</div></div></body></html>")
+            "<div class='grid'>" + "".join(cards) + "</div>"
+            + asof_footer(len(rows), "종목",
+                          max((r.get("month") or "") for r in rows) or None,
+                          max_ingest_iso(conn, "my_stock_exports"))
+            + "</div></body></html>")
 
 
 def regenerate(db_path: Path | str, out_path: Path | str, *,

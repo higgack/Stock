@@ -12353,6 +12353,27 @@ class TestTradeDashboardAudit20260820:
         assert '"--notify" in argv' in aud
         assert aud.index("if not bad:") < aud.index('"--notify" in argv')
 
+    def test_sibling_staleness_pure_function(self):
+        """③ 형제 페이지 검증이 '존재+비어있지 않음'뿐이라 화석을 못 잡았다
+        (2026-08-20 전수 감사 — cheongyak.html 이 그 상태로 두 달 산 실수 #53
+        의 trade 판 방지). asof_footer 의 '페이지 생성 …KST' 줄을 파싱해
+        누락/24h 초과를 ❌ 로 판정한다. 인라인 판정은 회귀가 소스 문자열만
+        보게 되므로 순수 함수로 고정(#41/#19)."""
+        from datetime import datetime
+        from trade.scripts.dashboard_audit import _KST, sibling_staleness
+        now = datetime(2026, 8, 20, 19, 0, tzinfo=_KST)
+        fresh = "… · 페이지 생성 2026-08-20 18:14 KST"
+        assert sibling_staleness(fresh, "tw.html", now) is None
+        # footer 누락 = ❌ (구버전 렌더 또는 배선 이탈)
+        assert "as-of 줄 없음" in sibling_staleness("<html>x</html>",
+                                                    "tw.html", now)
+        # 24h 초과 = ❌ (5분 재생성 주기가 멈춘 화석)
+        stale = "… · 페이지 생성 2026-08-18 18:14 KST"
+        assert "멈춘" in sibling_staleness(stale, "tw.html", now)
+        # 정적 아카이브 3종은 생성 주기가 달라 면제
+        assert sibling_staleness("<html>x</html>", "reference.html",
+                                 now) is None
+
 
 class TestAssetPagesContracts20260820:
     """자산·ASIA·Screener·trade 아카이브 렌더 계약 — A안 잔여 표면 감사에서

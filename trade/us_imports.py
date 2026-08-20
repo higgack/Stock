@@ -11,7 +11,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from trade.archive_template import back_nav_html
+from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
 
 _MARKER_RE = re.compile(r"\d+\s*월\s*수입\s*미국")
@@ -262,7 +262,8 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
             f"<div class='wrap'>{back_nav_html()}"
             "<h1>🗽 미국 수입 데이터</h1>"
             "<div class='empty'>아직 수집된 미국 수입 데이터(나쁜양파)가 없습니다.</div>"
-            "</div></body></html>"
+            + asof_footer(0, "품목", None, max_ingest_iso(conn, "us_imports"))
+            + "</div></body></html>"
         )
     cards = []
     for r in rows:
@@ -274,7 +275,11 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
         + _THEME_JS +
         f"<div class='wrap'>{back_nav_html()}"
         "<h1>🗽 미국 수입 데이터</h1><div class='sub'>Badonions 미국 수입 캡션을 월별로 정리한 별도 페이지</div>"
-        "<div class='grid'>" + "".join(cards) + "</div></div></body></html>"
+        "<div class='grid'>" + "".join(cards) + "</div>"
+        + asof_footer(len(rows), "품목",
+                      max((r.get("month") or "") for r in rows) or None,
+                      max_ingest_iso(conn, "us_imports"))
+        + "</div></body></html>"
     )
 
 
