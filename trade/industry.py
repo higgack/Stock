@@ -1402,8 +1402,12 @@ def render_subitem_html(by_mti: dict[str, dict],
         cls = {"초고성장/강세": "hot", "턴어라운드 후보": "turn",
                "부진/재하락": "down"}.get(classify(pts), "na")
         label = classify(pts)
-        title = (f"{r['name']}{_code_chip(r['mti6'])} "
-                 f"<small class='ind-sub-ind'>({r['industry']})</small>")
+        # 품목명(관세청 원천)·산업명은 외부/설정 문자열 — `<` 가 오면 DOM 이
+        # 조용히 깨진다(실수 #7 의 대시보드판, 2026-08-20 주입 프로브로 발각.
+        # 같은 값이 표(1362행)에선 이미 escape 되고 있었다 — 카드 헤더만 누락).
+        title = (f"{_html.escape(str(r['name']))}{_code_chip(r['mti6'])} "
+                 f"<small class='ind-sub-ind'>({_html.escape(str(r['industry']))})"
+                 "</small>")
         cards.append(
             "<section class='ind-card'>"
             f"<div class='ind-head'><h3>{title}</h3>"
