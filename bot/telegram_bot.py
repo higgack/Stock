@@ -1119,7 +1119,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【채널 알림】</b>
-🚀 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · ⏰ 카드 알람(지정 시각·KST·✅확인 시 종료) · 📰 Daily Byte(한 평일19:00·미 08:00·주간 한·미 일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📣 DAJU 실적예정(실시간) · 📨 레딧(1분)
+🚀 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · ⏰ 카드 알람(지정 시각·KST·✅확인 시 종료) · 📰 Daily Byte(한 평일19:00·미 08:00·주간 한·미 일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📣 DAJU 실적예정(실시간) · 📨 레딧(1분) · 🔍 대시보드 감사(매일08:00·이상 있을 때만)
 
 ━━━━━━━━━
 <b>【분석 &amp; 비용】</b> ~3분 · ₩100~150/회 (/compare ₩200~300)
@@ -4058,6 +4058,54 @@ async def _periodic_backlog_review(application) -> None:
             log.exception("backlog review failed")
 
 
+async def _periodic_audit_sweep(application) -> None:
+    """대시보드 감사 4종 — **매일 08:00 KST**, ❌ 가 있을 때만 알림.
+
+    사용자 2026-08-20 "매번 할때마다 왜 새로운것이 나오지?" — 결함 대부분은
+    새로 깨진 게 아니라 그 표면을 **처음 기계적으로 검사**해서 보인 것이었다.
+    사람이 물어봐야 도는 감사는 같은 일을 반복하게 만든다(자동화 원칙 위반).
+
+    ⚠️ **깨끗한 날은 무음.** 매일 오는 '이상 없음'은 곧 무시되고, 그러면 진짜
+    신호가 왔을 때도 안 읽힌다(`_periodic_backlog_review` 와 같은 규율).
+
+    08:00 KST = 한국 개장 전 · 미국 마감 후 — 전날 사이클이 다 돈 뒤라 판정이
+    안정적이다. 상태 없는 스케줄(시각만 보고 1시간마다 깨어 확인)이라 봇이
+    재시작해도 기준점이 안 밀린다. 감사는 렌더까지 하므로 수 분 걸린다 →
+    to_thread(이벤트루프 차단 시 getUpdates 침묵 → watchdog 오탐, 실수 #2)."""
+    sent_key = None
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            now = datetime.now(_KST)
+            if now.hour != 8:
+                continue
+            key = now.strftime("%Y-%m-%d")
+            if key == sent_key:            # 같은 창에서 중복 발송 방지
+                continue
+            sent_key = key
+            from bot.audit_sweep import report_text
+            # 무거운 감사(피어 통화 — 671종목 yfinance)는 월요일만.
+            body = await asyncio.to_thread(report_text, None,
+                                           now.weekday() == 0)
+            if not body:
+                log.info("audit sweep: ❌ 0건 — 발송 생략(무음)")
+                continue
+            # 수신자는 DART 공시알림에 등록된 chat_id 재사용 — 별도 등록 절차를
+            # 만들면 그것부터 기억해야 해서 취지에 어긋난다(backlog review 와 동일).
+            from bot.dart_fav_alerts import status as _dfa_status
+            chat_id = (_dfa_status() or {}).get("chat_id")
+            if not chat_id:
+                log.info("audit sweep: 수신 chat_id 없음 — 발송 생략")
+                continue
+            await application.bot.send_message(
+                chat_id=chat_id, text=body, parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("audit sweep failed")
+
+
 # 보드 재생성 주기. 사용자 2026-08-20 "6시간기준을 3시간으로 바꿔져.
 # 이거 시스템에 부하가 될까?" — 실측 근거로 답하면 **부담되지 않는다**:
 #   · FRED: 재생성 1회당 ~210콜(PPI 105 + CPI 51 + 유동성 53). 3h 주기면
@@ -4731,6 +4779,8 @@ async def _on_startup(application) -> None:
     application._backlog_review_task = asyncio.create_task(
         _periodic_backlog_review(application))
     application._marketcap_task = asyncio.create_task(_periodic_marketcap())
+    application._audit_sweep_task = asyncio.create_task(
+        _periodic_audit_sweep(application))
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
     application._highlow_prewarm_task = asyncio.create_task(_periodic_highlow_prewarm())
