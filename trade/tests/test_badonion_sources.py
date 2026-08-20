@@ -316,5 +316,86 @@ class DiagnoseScriptTests(unittest.TestCase):
         self.assertIn("raw_text", src, "서버 원문도 찍어야")
 
 
+class TestNavOrderRule20260820(unittest.TestCase):
+    """nav 표시 순서 규약(사용자 2026-08-20).
+
+    ① 나라별로 묶고 나라는 대시보드 개수 내림차순 ② 나라 안에서 품목별 →
+    회사별 ③ 그 다음 수출 → 수입 → 지수.
+
+    ⚠️ 현행 12개 순서를 그대로 적는 테스트는 쓰지 않는다 — 그건 "지금 값"을
+    축복할 뿐 규약을 되돌리는 변경을 못 잡는다(실수 #19). 대신 (a) 규약을
+    불변식으로 검사하고 (b) **합성 소스**로 계산 자체를 태운다.
+    """
+
+    def _mk(self, key, country, basis, flow):
+        return srcs.Source(
+            key, key, lambda t: None, lambda p: None, lambda *a, **k: False,
+            lambda *a, **k: None, f"{key}.db", f"{key}.html", f"{key} nav",
+            country=country, basis=basis, flow=flow)
+
+    def test_countries_are_contiguous_and_by_page_count_desc(self):
+        nav = srcs.nav_sources()
+        seen: list[str] = []
+        for s in nav:
+            if not seen or seen[-1] != s.country:
+                self.assertNotIn(s.country, seen,
+                                 f"{s.country} 가 nav 에서 쪼개짐 — 나라별 묶기 위반")
+                seen.append(s.country)
+        counts = [
+            sum(1 for s in nav if s.country == c)
+            + srcs._EXTRA_COUNTRY_PAGES.get(c, 0) for c in seen
+        ]
+        self.assertEqual(counts, sorted(counts, reverse=True),
+                         f"나라 순서가 대시보드 개수 내림차순이 아님: {list(zip(seen, counts))}")
+
+    def test_within_country_item_then_company_then_export_then_import(self):
+        """⚠️ `_source_rank` 로 정렬성만 보면 **동어반복**이다 — 랭크표를
+        뒤집는 뮤테이션이 통과한다(실측). 의미를 리터럴로 못박는다."""
+        nav = srcs.nav_sources()
+        for c in {s.country for s in nav}:
+            grp = [s for s in nav if s.country == c]
+            bases = [s.basis for s in grp]
+            self.assertEqual(bases, sorted(bases, key="item company".split().index),
+                             f"{c}: 품목별이 회사별보다 앞이어야: {bases}")
+            for basis in ("item", "company"):
+                flows = [s.flow for s in grp if s.basis == basis]
+                self.assertEqual(
+                    flows, sorted(flows, key="export import index".split().index),
+                    f"{c}/{basis}: 수출→수입→지수 순이어야: {flows}")
+
+    def test_rule_is_computed_not_transcribed(self):
+        """합성 레지스트리로 규약 자체를 태운다 — 하드코딩 튜플로 되돌리면
+        여기서 죽는다(현행 12개만 보는 테스트는 통과해 버린다)."""
+        syn = (
+            self._mk("solo", "혼자", "item", "export"),
+            self._mk("bi_co", "둘", "company", "export"),
+            self._mk("bi_it", "둘", "item", "export"),
+            self._mk("imp", "수입국", "item", "import"),
+            self._mk("exp", "수출국", "item", "export"),
+        )
+        got = srcs._nav_order(syn)
+        # '둘'(2개) 이 1개짜리들보다 앞. 그 안에서는 품목 → 회사.
+        self.assertEqual(got[:2], ("bi_it", "bi_co"), got)
+        # 1개짜리 동률 — 수출이 수입보다 앞(③의 나라 단위 적용).
+        self.assertLess(got.index("exp"), got.index("imp"), got)
+        self.assertLess(got.index("solo"), got.index("imp"), got)
+
+    def test_extra_country_pages_matches_dashboard_hardcoded_link(self):
+        """일본은 레지스트리 밖 jp.html(비온)까지 3개다. dashboard.py 에서
+        그 링크가 사라지면 계수가 조용히 어긋나므로 함께 고정한다."""
+        dash = Path("trade/dashboard.py").read_text(encoding="utf-8")
+        self.assertIn('href="jp.html"', dash,
+                      "비온 일본 링크가 사라짐 — _EXTRA_COUNTRY_PAGES 갱신 필요")
+        self.assertEqual(srcs._EXTRA_COUNTRY_PAGES, {"일본": 1})
+        # 그 결과 일본이 1순위여야 한다.
+        self.assertEqual(srcs.NAV_ORDER[0], "jp2")
+
+    def test_every_source_declares_ordering_axes(self):
+        for s in srcs.SOURCES:
+            self.assertIn(s.basis, srcs._BASIS_RANK, s.key)
+            self.assertIn(s.flow, srcs._FLOW_RANK, s.key)
+            self.assertTrue(s.country.strip(), s.key)
+
+
 if __name__ == "__main__":
     unittest.main()
