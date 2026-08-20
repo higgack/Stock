@@ -20,7 +20,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trade.archive_template import back_nav_html, card_html
+from trade.archive_template import (asof_footer, back_nav_html, card_html,
+                                    max_ingest_iso)
 
 # ⚠️ 마커는 '미국 PPI' — us_imports 의 `N월 수입 미국` 과 겹치지 않는다
 # (레지스트리 폴백은 순차 시도라 겹치면 조용한 오저장이 된다).
@@ -279,14 +280,20 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
         return (_head() + f"<div class='wrap'>{back_nav_html()}"
                 f"<h1>{_H1}</h1>"
                 "<div class='empty'>아직 수집된 미국 PPI 데이터(나쁜양파)가 "
-                "없습니다.</div></div></body></html>")
+                "없습니다.</div>"
+                + asof_footer(0, "품목", None, max_ingest_iso(conn, "us_ppi"))
+                + "</div></body></html>")
     cards = [_card_html(r, history(conn, r["item"]), media_url_prefix)
              for r in rows]
     return (_head() + f"<div class='wrap'>{back_nav_html()}"
             f"<h1>{_H1}</h1>"
             "<div class='sub'>Badonions 미국 PPI(생산자물가) 캡션을 품목·월별로 "
             "정리한 별도 페이지 · 지수는 원문 그대로(기준연도 환산 없음)</div>"
-            "<div class='grid'>" + "".join(cards) + "</div></div></body></html>")
+            "<div class='grid'>" + "".join(cards) + "</div>"
+            + asof_footer(len(rows), "품목",
+                          max((r.get("month") or "") for r in rows) or None,
+                          max_ingest_iso(conn, "us_ppi"))
+            + "</div></body></html>")
 
 
 def regenerate(db_path: Path | str, out_path: Path | str, *,

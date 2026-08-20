@@ -29,7 +29,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from trade.archive_template import back_nav_html
+from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
 
 _MARKER = "일본 수출 데이터 업데이트"
@@ -376,7 +376,10 @@ def render_html(conn: sqlite3.Connection, media_url_prefix: str = "../") -> str:
         f'<p class="sub">출처 BeOn · 품목별 월 수출액(십억 엔)·단가(천엔/KG) · '
         f'{len(items)}개 품목'
         f'{" · 최신 " + _html.escape(latest) if latest else ""} · 카드 클릭 = 차트·월별 펼침</p>'
-        f"{body}</div>{_THEME_JS}</body></html>"
+        f"{body}"
+        + asof_footer(len(items), "품목", latest or None,
+                      max_ingest_iso(conn, "jp_exports"))
+        + f"</div>{_THEME_JS}</body></html>"
     )
 
 

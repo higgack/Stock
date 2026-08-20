@@ -32,7 +32,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from trade.archive_template import back_nav_html
+from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
 
 # 헤더 블록 = "종목명 (6자리코드)" 줄 → 곧바로 "한국 수출" → "NN년 N월 Update".
@@ -341,7 +341,10 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
                 f"{back_nav_html()}"
                 "<h1>🏢 한국 수출 데이터(종목별)</h1>"
                 "<div class='empty'>아직 수집된 한국 수출 데이터(나쁜양파)가 "
-                "없습니다.</div></div></body></html>")
+                "없습니다.</div>"
+                + asof_footer(0, "종목", None,
+                              max_ingest_iso(conn, "kr_stock_exports"))
+                + "</div></body></html>")
     cards = [_card_html(r, history(conn, r["stock_code"]), media_url_prefix)
              for r in rows]
     return (_HEAD + "<div class='wrap'>"
@@ -350,7 +353,11 @@ def render_html(conn: sqlite3.Connection, *, media_url_prefix: str = "../") -> s
             "<div class='sub'>Badonions 한국 수출 캡션을 <b>종목별</b>로 정리한 "
             "별도 페이지 · 새 월이 오면 카드가 자동 교체되고 과거 월은 "
             "히스토리 표에 남습니다</div>"
-            "<div class='grid'>" + "".join(cards) + "</div></div></body></html>")
+            "<div class='grid'>" + "".join(cards) + "</div>"
+            + asof_footer(len(rows), "종목",
+                          max((r.get("month") or "") for r in rows) or None,
+                          max_ingest_iso(conn, "kr_stock_exports"))
+            + "</div></body></html>")
 
 
 def regenerate(db_path: Path | str, out_path: Path | str, *,

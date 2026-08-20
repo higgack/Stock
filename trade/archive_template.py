@@ -174,6 +174,46 @@ def back_nav_html(depth: int = 0) -> str:
     return f'<div class="nav">{back_link_html(depth)}</div>'
 
 
+_KST = timezone(timedelta(hours=9))     # KST 는 DST 없음 — 고정 오프셋으로 충분
+
+
+def max_ingest_iso(conn, table: str) -> str | None:
+    """형제 대시보드 as-of 용 — 마지막 적재(updated_at) ISO. 실패는 None
+    (없는 컬럼/빈 테이블도 페이지 렌더를 막으면 안 된다)."""
+    try:
+        return conn.execute(f"SELECT MAX(updated_at) FROM {table}").fetchone()[0]
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
+def asof_footer(n: int, unit: str, latest_month: str | None,
+                latest_ingest_iso: str | None) -> str:
+    """나쁜양파 형제 대시보드 공통 하단 as-of 줄.
+
+    2026-08-20 전수 감사: 13개 형제 페이지 전부 적재·생성 시각이 없어
+    "이거 최신이야?" 에 화면이 답하지 못했고(실수 #43·#52), 종목형 5종은
+    개수·최신월조차 없었다. 항목 수는 **렌더에 쓴 그 리스트의 len** 을
+    받아야 한다(별도 쿼리로 다시 세면 총계/소계가 갈라진다, 실수 #45).
+    모든 시각은 KST 명시계산(규칙 10a — 서버 로컬타임 의존 금지).
+    dashboard_audit 가 이 줄의 존재·생성시각 신선도를 대조한다."""
+    parts = [f"{n}개 {unit}"]
+    if latest_month:
+        parts.append(f"최신 {_html.escape(str(latest_month))}")
+    if latest_ingest_iso:
+        try:
+            dt = datetime.fromisoformat(str(latest_ingest_iso))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            parts.append("마지막 적재 "
+                         + dt.astimezone(_KST).strftime("%m-%d %H:%M KST"))
+        except ValueError:
+            pass
+    parts.append("페이지 생성 "
+                 + datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST"))
+    return ('<div class="asof-ftr" style="margin:14px 0 4px;font-size:11px;'
+            'color:#888;text-align:center">' + " · ".join(parts) + "</div>")
+
+
 def back_link_html(depth: int = 0, label: str = "← 수출입 대시보드",
                    style: str = "") -> str:
     """back-link 앵커만(`<a>`). nav 컨테이너를 직접 조립하는 호출부용 —

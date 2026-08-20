@@ -397,5 +397,88 @@ class TestNavOrderRule20260820(unittest.TestCase):
             self.assertTrue(s.country.strip(), s.key)
 
 
+class TestSiblingAsofAndFace20260820(unittest.TestCase):
+    """2026-08-20 새끼 대시보드 13종 전수 감사에서 나온 두 결함의 회귀.
+
+    ① 13개 형제 페이지 전부 적재·생성 시각이 없어 "이거 최신이야?" 에 화면이
+       답하지 못했다(실수 #43·#52). 이제 asof_footer 가 전 페이지 공통이다.
+       레지스트리 **전체를 순회**하며 빈 DB 렌더에서 footer 를 단언하므로
+       새 소스가 배선을 빠뜨리면 여기서 죽는다(#24 — 열거 고정 금지).
+    ② mys 페이지 h1 이 🐯(품목판 my 의 얼굴)로 붙어 nav 의 🐆 와 어긋났고,
+       두 페이지가 같은 얼굴을 갖게 됐다 — nav↔h1 첫 이모지 일치를 전 소스에
+       기계적으로 강제한다.
+    """
+
+    @staticmethod
+    def _first_emoji(s):
+        for ch in s:
+            if ord(ch) > 0x2600:
+                return ch
+        return None
+
+    def test_every_sibling_page_carries_asof_footer(self):
+        import re
+        pat = re.compile(r"페이지 생성 \d{4}-\d{2}-\d{2} \d{2}:\d{2} KST")
+        with tempfile.TemporaryDirectory() as td:
+            for s in srcs.SOURCES:
+                if not s.html_file:
+                    continue
+                db = Path(td) / s.db_file
+                s.open_db(db)                       # 빈 스키마
+                out = Path(td) / s.html_file
+                s.regenerate(db, out, media_url_prefix="../m/")
+                html = out.read_text(encoding="utf-8")
+                self.assertRegex(html, pat,
+                                 f"{s.key}: asof_footer 미배선(빈 DB 렌더)")
+                self.assertIn("0개 ", html, f"{s.key}: 0건 카운트 미표시")
+
+    def test_jp_beon_page_carries_asof_footer_too(self):
+        """jp.html 은 레지스트리 밖(BeOn)이라 순회에 안 잡힌다 — 별도 고정."""
+        import re
+        from trade import jp_exports as jp
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "jp.db"
+            jp.open_jp_db(db)
+            out = Path(td) / "jp.html"
+            jp.regenerate(db, out, media_url_prefix="../m/")
+            self.assertRegex(out.read_text(encoding="utf-8"),
+                             re.compile(r"페이지 생성 \d{4}-\d{2}-\d{2} "
+                                        r"\d{2}:\d{2} KST"))
+
+    def test_footer_count_derives_from_rendered_rows(self):
+        """footer 의 'N개' 는 렌더에 쓴 리스트의 len — 별도 쿼리로 다시 세면
+        총계/소계가 갈라진다(실수 #45). mys 픽스처 1건 → '1개 종목'."""
+        from trade import my_stock_exports as mys
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "my_stock.db"
+            conn = mys.open_my_stock_db(db)
+            mys.ingest(conn, _CAPS["mys"], source_message_id=1,
+                       posted_at="2026-08-20T00:00:00Z", media_paths=[])
+            out = Path(td) / "my_stock.html"
+            mys.regenerate(db, out, media_url_prefix="../m/")
+            html = out.read_text(encoding="utf-8")
+            self.assertIn("1개 종목", html)
+            self.assertIn("최신 2026-07", html)
+            self.assertIn("마지막 적재 ", html)
+
+    def test_nav_and_h1_share_the_same_face(self):
+        with tempfile.TemporaryDirectory() as td:
+            import re
+            for s in srcs.SOURCES:
+                if not s.html_file:
+                    continue
+                db = Path(td) / s.db_file
+                s.open_db(db)
+                out = Path(td) / s.html_file
+                s.regenerate(db, out, media_url_prefix="../m/")
+                m = re.search(r"<h1[^>]*>(.*?)</h1>",
+                              out.read_text(encoding="utf-8"), re.S)
+                self.assertIsNotNone(m, s.key)
+                self.assertEqual(self._first_emoji(s.nav_label),
+                                 self._first_emoji(m.group(1)),
+                                 f"{s.key}: nav 라벨과 페이지 h1 의 첫 이모지가 "
+                                 "다르다 — 사용자가 다른 페이지로 착각한다")
+
+
 if __name__ == "__main__":
     unittest.main()
