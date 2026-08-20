@@ -26728,3 +26728,61 @@ class TestSecondSweep20260820:
         """기준일이 **비었는데 ✅** 를 찍으면 거짓 안심이다(직접 실측)."""
         src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
         assert "기준일 없음(수집 실패)" in src
+
+    # ── ⑧ 완결 세션 vs 장중 미확정 봉 ────────────────────────────────
+    def test_expected_session_uses_market_local_today(self, monkeypatch):
+        """⚠️ '오늘'을 KST 로 잡으면 미국이 하루 앞선다 — 한국 08-20 05:00 은
+        뉴욕 08-19 16:00 이다. 직접 실측에서 US 기대세션이 **08-20** 으로
+        나와 아직 열리지도 않은 날을 기대했다."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        import bot.market_timing as mt
+        us_today = datetime.now(ZoneInfo("America/New_York")).date()
+        kr_today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+        assert mt._market_today("US") == us_today
+        assert mt._market_today("KR") == kr_today
+        exp_us, _ = mt._expected_session("US")
+        assert exp_us <= us_today.isoformat(), \
+            f"미국 기대세션 {exp_us} 이 현지 오늘 {us_today} 보다 미래"
+
+    def test_closed_market_counts_today_as_the_last_session(self, monkeypatch):
+        """마감 뒤엔 **오늘이 마지막 완결 세션**이다 — 아니면 정상 종가가
+        '기대보다 미래'로 보여 판정이 뒤집힌다."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+        monkeypatch.setattr(mt, "_market_today",
+                            lambda m: __import__("datetime").date(2026, 8, 20))
+        exp, _ = mt._expected_session("KR")
+        assert exp == "2026-08-20", exp
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
+        exp2, _ = mt._expected_session("KR")
+        assert exp2 == "2026-08-19", exp2
+
+    def test_intraday_bar_is_labelled_not_silently_passed(self, monkeypatch):
+        """오늘 장이 안 끝났는데 오늘 봉이 들어오면 **확정 전**이다 —
+        분산일·FTD·MA 가 부분봉으로 계산되므로 화면이 그걸 말해야 한다.
+        (v5 감사는 이걸 그냥 ✅ 로 찍었다.)"""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
+        assert "장중" in mt._idx_stale("KR", "2026-08-20")
+        assert mt._idx_stale("KR", "2026-08-19") == ""
+        # 마감 뒤 오늘 봉은 정상 — 배지를 붙이면 오탐이다.
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+        assert mt._idx_stale("KR", "2026-08-20") == ""
+
+    def test_audit_distinguishes_complete_from_intraday(self):
+        src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
+        assert "장중 미확정 봉" in src and "✅ 완결 세션" in src, \
+            "감사가 완결/장중을 구분하지 않는다"
+
+    def test_market_close_times_come_from_the_single_source(self):
+        """마감 시각을 프로브·보드가 각자 적으면 갈라진다 —
+        `market.MARKET_CONFIG['trading_hours']` 가 단일 출처."""
+        import bot.market_timing as mt
+        from bot.market import MARKET_CONFIG
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert 'MARKET_CONFIG[str(market).upper()]["trading_hours"]' in src
+        for m in mt._MARKET_TZ:
+            assert "-" in str(MARKET_CONFIG[m]["trading_hours"]), m
+            assert mt._market_closed_today(m) in (True, False), m

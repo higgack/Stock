@@ -990,7 +990,16 @@ def _idx_stale(market: str, latest: str | None) -> str:
         import html as _hh
         expected, grace = _expected_session(market)
         got = str(latest)[:10]
-        if not expected or got >= expected:
+        if not expected:
+            return ""
+        if got > expected:
+            # 오늘 장이 안 끝났는데 오늘 봉이 들어온 것 — 값이 틀린 게 아니라
+            # **확정 전**이다. 분산일·FTD·MA 가 부분봉으로 계산되므로 화면이
+            # 그걸 말해야 한다(사용자 2026-08-20 감사에서 전 시장이 이 상태).
+            if _market_closed_today(market) is False:
+                return (' <span style="color:#8ab4f8">🕒 장중(미확정)</span>')
+            return ""
+        if got == expected:
             return ""
         behind = _sessions_between(market, got, expected)
         if behind is None or behind <= grace:
@@ -1000,6 +1009,54 @@ def _idx_stale(market: str, latest: str | None) -> str:
     except Exception as exc:                                   # noqa: BLE001
         log.debug("market_timing: %s 지수 신선도 판정 실패: %s", market, exc)
         return ""
+
+
+# 시장별 IANA 타임존 — 마감 시각 판정용. 거래시간 문자열은
+# `bot.market.MARKET_CONFIG[*]["trading_hours"]` 가 단일 출처이고, 여기선
+# 그 문자열의 타임존 약어를 IANA 로 옮기기만 한다(DST 는 zoneinfo 가 처리).
+_MARKET_TZ = {"US": "America/New_York", "KR": "Asia/Seoul", "JP": "Asia/Tokyo",
+              "CN_A": "Asia/Shanghai", "HK": "Asia/Hong_Kong",
+              "TW": "Asia/Taipei"}
+_SESSION_CLOSE_GRACE_MIN = 20   # 마감 직후 원천 수록 여유
+
+
+def _market_today(market: str):
+    """그 시장 **현지 달력일**. ⚠️ KST 로 잡으면 미국이 하루 앞선다 —
+    한국 08-20 05:00 은 뉴욕 08-19 16:00 이라 '오늘'이 다르다(직접 실측:
+    US 기대세션이 08-20 으로 나와 아직 열리지도 않은 날을 기대했다)."""
+    tzname = _MARKET_TZ.get(str(market).upper())
+    if tzname:
+        try:
+            from zoneinfo import ZoneInfo
+            return datetime.now(ZoneInfo(tzname)).date()
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("market_timing: %s 현지일 계산 실패: %s", market, exc)
+    return _kst_now().date()
+
+
+def _market_closed_today(market: str) -> bool | None:
+    """그 시장의 **오늘 정규장이 이미 끝났는가**. 판정 불가면 None.
+
+    ⚠️ 이게 없으면 `_expected_session` 이 오늘을 절대 기대치로 삼지 못해,
+    장 마감 뒤에 들어온 **정상 종가**를 '미확정 봉'으로 오판한다
+    (2026-08-20 감사가 KR/JP/TW/CN/HK 를 08-20 로 보고했을 때의 쟁점).
+    """
+    tzname = _MARKET_TZ.get(str(market).upper())
+    if not tzname:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        from bot.market import MARKET_CONFIG
+        hours = str(MARKET_CONFIG[str(market).upper()]["trading_hours"])
+        close_hm = hours.split("-", 1)[1].strip().split()[0]
+        hh, mm = (int(x) for x in close_hm.split(":"))
+        now = datetime.now(ZoneInfo(tzname))
+        close_min = hh * 60 + mm + _SESSION_CLOSE_GRACE_MIN
+        return (now.hour * 60 + now.minute) >= close_min
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 마감 판정 실패: %s", market, exc)
+        return None
 
 
 def _prev_weekday(d):
@@ -1012,18 +1069,25 @@ def _expected_session(market: str) -> tuple[str | None, int]:
     """(기대 최신 거래일, 허용 세션수). 휴장일 캘린더가 있으면 정확히,
     없으면 **주중 기준**으로 판정하되 연휴 오탐을 피하려 여유를 넓힌다 —
     캘린더가 없다고 판정을 통째로 포기하면 화면이 조용해진다(실수 #12)."""
-    today = _kst_now().date()
+    today = _market_today(market)      # ⚠️ KST 아님 — 시장 현지일
+    # ⚠️ 오늘 장이 **이미 끝났으면 오늘이 마지막 완결 세션**이다. 이걸 빼면
+    # 마감 뒤 정상 종가가 '기대보다 미래'로 보여 판정이 뒤집힌다.
+    closed = _market_closed_today(market)
     try:
         from bot.market_calendar import add_trading_days, is_trading_day
         t = today.isoformat()
         trading = is_trading_day(market, t)
         if trading is not None:
+            if trading and closed:
+                return t, _IDX_GRACE_SESSIONS
             exp = (add_trading_days(market, t, -1) if trading
                    else add_trading_days(market, t, 0))
             if exp:
                 return exp, _IDX_GRACE_SESSIONS
     except Exception as exc:                                   # noqa: BLE001
         log.debug("market_timing: %s 캘린더 조회 실패: %s", market, exc)
+    if closed and today.weekday() < 5:
+        return today.isoformat(), _IDX_GRACE_SESSIONS + 1
     return _prev_weekday(today - timedelta(days=1)).isoformat(), _IDX_GRACE_SESSIONS + 1
 
 
