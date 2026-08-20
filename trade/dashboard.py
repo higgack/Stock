@@ -2139,7 +2139,11 @@ function renderHeaderMeta(){
   const sp=[];
   if(st.prelim)sp.push('잠정 <strong>'+esc(latestPeriodStr(st.prelim))+'</strong>');
   if(st.final)sp.push('확정 <strong>'+esc(latestPeriodStr(st.final))+'</strong>');
-  ms.innerHTML=sp.length?'📊 현재 '+sp.join(' · '):'';
+  // '(채널 발표 기준)' — 히트맵·산업트렌드의 '관세청 확정'과 시차가 있다
+  // (채널 확정=6월인데 관세청 스윕 확정=7월인 날이 실재 — 같은 '확정'이란
+  // 말이 딴 값을 가리키면 한쪽이 틀려 보인다, 실수 #34 PPI 재발 방지).
+  ms.innerHTML=sp.length?'📊 현재 '+sp.join(' · ')
+    +' <span style="opacity:.6;font-size:.88em">(채널 발표 기준)</span>':'';
   const next=nextAnnouncement();
   const mn=document.getElementById('meta-next');
   if(next){

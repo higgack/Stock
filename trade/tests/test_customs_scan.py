@@ -681,5 +681,47 @@ class YoYWindowInvariantTests(unittest.TestCase):
                     f"{name} month {mo}: 윈도시작 {start} 가 now-14 {need} 미포함")
 
 
+class ArchiveDisplayCapTests20260820(unittest.TestCase):
+    """급변 아카이브 표시가 fetch 캡(600행)에 걸리면 **라벨이 사실을 말해야**
+    한다 — '무제한 보관'은 DB 얘기고, 옛 달이 화면에서 조용히 사라지는 걸
+    아무도 모르면 silent cap 이다(2026-08-20 전수 감사)."""
+
+    def _db_with_archive(self, tmp, n_rows):
+        import time
+        db = f"{tmp}/customs.db"
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        cs.init_db(conn)
+        # 월당 60행씩 오래된 달부터 채운다(fetch 는 최신월 우선이라 캡에
+        # 걸리면 **옛 달**이 잘린다).
+        rows = []
+        for i in range(n_rows):
+            ym = f"20{20 + i // 60 // 12:02d}-{(i // 60) % 12 + 1:02d}"
+            rows.append({"hs_code": f"{i:010d}", "year_month": ym,
+                         "name": f"품목{i}", "prev": 1, "curr": 2,
+                         "pct": 100.0, "delta": 1})
+        cs.upsert_archive(conn, {cs.SECTION_RATE: rows}, now=time.time())
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_label_reports_truncation_when_over_cap(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db_with_archive(tmp, 650)
+            html = cs.render_surge_html(db_path=db)
+            self.assertIn("전체 650건", html, "잘림 사실 미표기")
+            self.assertIn("표시", html)
+            self.assertNotIn("650건 · 무제한 보관", html)
+
+    def test_label_plain_when_under_cap(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db_with_archive(tmp, 40)
+            html = cs.render_surge_html(db_path=db)
+            self.assertIn("(40건 · 무제한 보관)", html)
+            self.assertNotIn("전체 40건", html)
+
+
 if __name__ == "__main__":
     unittest.main()

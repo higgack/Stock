@@ -759,3 +759,26 @@ class BalanceCardTests(unittest.TestCase):
                                "imp_item": sig(661e8, 30.1, 8.7)})
         self.assertIn("무역수지", box)
         self.assertLess(box.index("전체 수입"), box.index("무역수지"))
+
+
+class MomentumSeriesCountTests20260820(unittest.TestCase):
+    def test_summary_count_derives_from_labels(self):
+        """'40개 시계열' 을 하드코딩하면 LABELS 가 바뀔 때 조용히 낡는다(#24).
+        LABELS 를 줄인 상태에서 렌더하면 숫자가 따라와야 한다."""
+        import unittest.mock as mock
+        rows = [
+            {"ym": "2025-07", "priod_dt": "01~10", "decile": "D1",
+             "amt": [1000] + [100] * 10},
+            {"ym": "2026-07", "priod_dt": "01~10", "decile": "D1",
+             "amt": [1200] + [120] * 10},
+        ]
+        small = {k: v[:3] for k, v in prov.LABELS.items()}   # 4×3 = 12
+        with mock.patch.object(prov, "LABELS", small):
+            html = prov.render_momentum(
+                {k: rows for k in ("exp_item", "imp_item",
+                                   "exp_cnty", "imp_cnty")})
+        if html:                       # 픽스처가 모멘텀을 못 만들면 '' — 그때도
+            self.assertIn("12개 시계열", html)     # 하드코딩 40 은 절대 금지
+            self.assertNotIn("40개 시계열", html)
+        src = open("trade/customs_provisional.py", encoding="utf-8").read()
+        self.assertNotIn("40개 시계열", src, "하드코딩 재발")

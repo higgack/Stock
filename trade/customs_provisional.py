@@ -674,7 +674,8 @@ def momentum_archive_html(rows_by_kind: dict[str, list]) -> str:
 
 
 def render_momentum(rows_by_kind: dict[str, list]) -> str:
-    """🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열을 절대액 큰 순으로 펼치는 패널.
+    """🔟 10일 모멘텀 속보 — 품목·국가 전 시계열(개수 = LABELS 파생)을 절대액 큰
+    순으로 펼치는 패널.
 
     각 그룹 테이블: 항목 | 최신창 절대액(수출 ⚠️) | 창 YoY | 모멘텀(▲가속/▼둔화).
     전체(합계)는 맨 위 고정, 나머지는 최신창 절대액 내림차순. 데이터 없으면
@@ -710,7 +711,10 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
     )
     return (
         "<details class='ind-prov-more'>"
-        "<summary>🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열</summary>"
+        # 시계열 수는 LABELS 에서 파생 — OpenAPI 계약(4종 × 주요 10)이라 지금은
+        # 40이지만, 하드코딩하면 라벨 추가 시 조용히 낡는다(#24).
+        f"<summary>🔟 10일 모멘텀 속보 — 품목·국가 "
+        f"{sum(len(v) for v in LABELS.values())}개 시계열</summary>"
         f"<div class='ind-prov-mom'>{sort_ui}{note}{tables}</div>"
         "</details>"
     )

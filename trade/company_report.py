@@ -1057,14 +1057,47 @@ def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) 
     return {"ok": sent > 0, "sent": sent}
 
 
+def customs_asof() -> str:
+    """관세청 저장 시리즈의 최신월 + 잠정/확정 라벨 — 보고서 as-of 용.
+    실패/데이터 없음이면 ""(줄 생략). 순수 조회(신규 fetch 0)."""
+    try:
+        from trade import customs, industry
+        with customs.session() as conn:
+            by_mti = industry.load_mti_stored(conn)
+        months: set[str] = set()
+        for node in by_mti.values():
+            months |= set((node.get("months") or {}).keys())
+        if not months:
+            return ""
+        ym = max(months)
+        return f"{ym} {industry._month_status_label(ym)}"
+    except Exception:
+        return ""
+
+
+def asof_line(customs_label: str, now=None) -> str:
+    """보고서 하단 as-of 한 줄 — 생성시각(KST 명시계산) + 관세청 데이터 기준.
+
+    2026-08-20 전수 감사: 보고서가 채널로 전송되면 언제·어느 데이터 기준인지
+    화면이 답하지 못했다(#43 — 새끼 대시보드 13종과 같은 결함). 순수 함수
+    (now 주입 가능)로 두어 동작 테스트가 가능하게 한다(#19)."""
+    from datetime import datetime, timedelta, timezone
+    kst = timezone(timedelta(hours=9))
+    ts = (now or datetime.now(kst)).strftime("%Y-%m-%d %H:%M KST")
+    parts = [f"보고서 생성 {ts}"]
+    if customs_label:
+        parts.append(f"관세청 데이터 {_html.escape(customs_label)}")
+    return ('<div style="margin-top:12px;font-size:11px;color:#9aa0aa">'
+            + " · ".join(parts) + "</div>")
+
+
 def build(query: str, mode: str = "free", api_key: str | None = None,
           leaf: str | None = None, direction: str | None = None) -> str:
     """query + mode('free'|'llm') → 보고서 HTML. leaf=히트맵 클릭 품목명(breadcrumb),
     direction='exp'/'imp'=히트맵 방향(해설·판가물량을 그 방향으로)."""
     data = gather(query, api_key, leaf=leaf, direction=direction)
-    if mode == "llm":
-        return render_llm(data)[0]
-    return render_free(data)
+    body = render_llm(data)[0] if mode == "llm" else render_free(data)
+    return body + asof_line(customs_asof())
 
 
 def main(argv: list[str] | None = None) -> int:
