@@ -11264,7 +11264,6 @@ def _render_realestate_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="cheongyak.html">🎟️ 청약</a>
   </div>
   <h1>🏠 부동산 — Archive</h1>
   <p class="sub">아파트 실거래가(MOLIT) 주간 브리프(금 09:00 · 월간 1일 09:00) + 청약홈 분양 피드(평일 10·14시) · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
@@ -11370,18 +11369,24 @@ def regenerate_realestate_index() -> None:
         html = _inject_update_banner(_render_realestate_page(runs))
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "realestate.html").write_text(html, encoding="utf-8")
+        # 옛 단독 페이지(cheongyak.html) 잔재 제거 — 갱신이 멈춘 채로 남아
+        # 있으면 링크가 없어도 URL 로 열려 6월치 숫자를 보여준다(멱등·SSH 0).
+        try:
+            (ARCHIVE_ROOT / "cheongyak.html").unlink(missing_ok=True)
+        except OSError as _exc:
+            log.warning("dashboard: 옛 cheongyak.html 제거 실패: %s", _exc)
         log.info("dashboard: realestate.html regenerated (%d runs)", len(runs))
     except Exception as exc:
         log.warning("dashboard: realestate regen failed: %s", exc)
 
 
-# ── 청약 Byte archive view (신규 분양 모집공고 daily 피드) ────────────────
+# ── 청약 아카이브 로더 ────────────────────────────────────────────────────
+# 청약 기록은 **부동산 대시보드(realestate.html)에 합쳐서** 보여준다. 예전엔
+# cheongyak.html 단독 페이지도 있었지만 같은 레코드를 두 번 그리는 것뿐이라
+# 제거했다(사용자 2026-08-20 "청약대시보드는 삭제해줘"). 그 페이지는 이미
+# regenerate 가 realestate 로 리다이렉트만 하고 있어서 6월 이후 갱신이 멈춘
+# 화석 파일이었다 — 이름만 살아 있고 아무도 안 쓰는 코드였다.
 _CHEONGYAK_ARCHIVE_DIR = Path.home() / ".tradingagents" / "cheongyak_archive"
-_CHEONGYAK_JS = _DAILY_BYTE_JS.replace(
-    "api/daily_byte_delete", "api/cheongyak_delete").replace(
-    "Daily Byte 기록", "청약 Byte 기록")
-
-
 def _load_cheongyak_runs() -> list[dict]:
     import json as _json
     runs: list[dict] = []
@@ -11405,108 +11410,6 @@ def _load_cheongyak_runs() -> list[dict]:
     except Exception as exc:
         log.warning("dashboard: cheongyak scan failed: %s", exc)
     return runs
-
-
-def _render_cheongyak_page(runs: list[dict]) -> str:
-    """Render cheongyak.html — 청약 Byte 아카이브 (신규 분양 피드 카드)."""
-    import html as _html
-    import json as _json_r
-    import re as _re_r
-    from collections import defaultdict
-    from datetime import datetime as _dt_r, timezone as _tz_r, timedelta as _td_r
-
-    by_date: dict[str, list[dict]] = defaultdict(list)
-    for r in runs:
-        by_date[r.get("_date", "")].append(r)
-    total = len(runs)
-    total_cost = sum(r.get("cost_krw", 0) or 0 for r in runs)
-    _today = _dt_r.now(_tz_r(_td_r(hours=9))).date().isoformat()
-    _month = _today[:7]
-    today_cost = sum(r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today)
-    month_cost = sum(r.get("cost_krw", 0) or 0 for r in runs
-                     if (r.get("_date") or "").startswith(_month))
-    _cy_asof = _feed_latest_ts(runs)
-
-    parts: list[str] = [_SCREENER_CSS]
-    parts.append(f"""
-<div class="wrap">
-  <div class="nav">
-    <a href="market.html">🌍 홈</a>
-    · <a href="realestate.html">🏠 부동산</a>
-  </div>
-  <h1>🎟️ 청약 Byte — Archive</h1>
-  <p class="sub">신규 아파트 분양 모집공고(청약홈) 피드(평일 10·14시) · ticker·5거래일과 별개 · 공공데이터 관찰(청약 권유 아님)</p>
-  <div class="stats">
-    <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 피드</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(_cy_asof) if _cy_asof else '—'}</div><div class="stat-l">마지막 피드 (KST) · {_feed_note("cheongyak")}</div></div>
-    <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
-    <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
-    <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
-  </div>
-  <div class="search-bar">
-    <input id="scr-search" type="text" placeholder="지역 / 단지명 검색 (예: 강남, 동탄, 신혼희망)" autocomplete="off" spellcheck="false">
-    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
-  </div>
-  <p id="scr-status" class="status-line">총 {total}건의 청약 피드</p>
-  <div id="scr-snippets" class="snippets" style="display:none"></div>
-  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
-""")
-    if not runs:
-        parts.append("""
-  <div class="empty">아직 기록이 없습니다. 평일 10:00 KST 자동 생성 (DATA_GO_KR_API_KEY 필요).</div>
-</div></body></html>""")
-        return "".join(parts)
-
-    _this_month = _today[:7]
-    _month_counts: dict[str, int] = defaultdict(int)
-    for d in by_date:
-        _month_counts[(d or "")[:7]] += len(by_date[d])
-    _prev_month: str | None = None
-    for date in sorted(by_date.keys(), reverse=True):
-        _prev_month = _month_transition(
-            parts, _prev_month, date, _this_month, _month_counts)
-        parts.append(
-            f'<details class="day"><summary class="day-head">'
-            f'<span>📅 {_html.escape(date)}</span>'
-            f'<span class="count">{len(by_date[date])} 건</span></summary>'
-            f'<div class="day-body">')
-        for r in sorted(by_date[date], key=lambda x: str(x.get("ts") or ""),
-                        reverse=True):     # 하루 안에서도 시각 내림차순
-            body = (r.get("body") or "").strip()
-            body = _re_r.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
-            cnt = r.get("count", 0) or 0
-            title = f"🎟️ 신규 분양 {cnt}건 · {_html.escape(date)}"
-            cost = r.get("cost_krw", 0) or 0
-            ts_clock = (r.get("ts") or "").split("T", 1)[-1][:5] if "T" in (r.get("ts") or "") else ""
-            filename = _html.escape(r.get("_filename", ""))
-            plain = _re_r.sub(r"<[^>]+>", "", body)
-            lines = [{"sec": "feed", "txt": s.strip()} for s in plain.splitlines() if len(s.strip()) >= 3][:300]
-            search_attr = _html.escape(plain.lower()[:6000])
-            lines_attr = _html.escape(_json_r.dumps(lines, ensure_ascii=False))
-            card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
-            parts.append(f"""
-  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
-    <summary class="card-h">
-      <span class="card-toggle">▸</span>
-      <span class="domain">{title} ({_html.escape(ts_clock)} · ₩{cost:,.1f})</span>
-      <button class="del-btn" type="button" title="이 피드 삭제">🗑️</button>
-    </summary>
-    <div class="card-body">
-      <div class="analysis-sec"><div class="analysis-b" data-section="feed">{body}</div></div>
-    </div>
-  </details>
-""")
-        parts.append('</div></details>')
-    _month_close(parts, _prev_month)
-    parts.append("</div>")
-    parts.append(_imp_cfg("cheongyak"))
-    parts.append(_CHEONGYAK_JS)
-    return "".join(parts)
-
-
-def regenerate_cheongyak_index() -> None:
-    """Cheongyak merged into realestate page — redirect."""
-    regenerate_realestate_index()
 
 
 # ── 미국 레딧 게시물 분석 — t.me/insidertracking forward archive ─────────

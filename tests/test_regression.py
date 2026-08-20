@@ -125,21 +125,6 @@ class TestDashboardDetailsBalance:
             f"realestate.html 불균형 open={n_open} close={n_close}"
         )
 
-    def test_cheongyak_page_balanced(self):
-        import bot.dashboard as d
-
-        runs = [
-            {"_date": "2026-06-02", "ts": "2026-06-02T10:00:00",
-             "cost_krw": 4.5, "body": "신규", "count": 3},
-            {"_date": "2026-05-31", "ts": "2026-05-31T10:00:00",
-             "cost_krw": 4.0, "body": "공고", "count": 2},
-        ]
-        html = d._render_cheongyak_page(runs)
-        n_open, n_close = self._balance(html)
-        assert n_open == n_close, (
-            f"cheongyak.html 불균형 open={n_open} close={n_close}"
-        )
-
     def test_daily_byte_page_balanced(self):
         import bot.dashboard as d
 
@@ -12334,13 +12319,11 @@ class TestFeedBoardsShared20260820:
         bl = [m(1, "2026-08-20", "09:40", title="글1", desc="본문", link="http://x")]
         re_ = [m(1, "2026-08-20", "09:00", body="실거래", cost_krw=0,
                  _kind="realestate", ymd="202608")]
-        cy = [m(1, "2026-08-20", "10:00", body="청약", cost_krw=0, count=3)]
         return {
             "daily_byte": (d._render_daily_byte_page(db), "총 1건의 Daily Byte 브리프"),
             "reddit": (d._render_reddit_insider_page(ri)[0], "총 1건의 포워드"),
             "blog": (d._render_blog_page(bl)[0], "총 1건의 글"),
             "realestate": (d._render_realestate_page(re_), "총 1건의 부동산/청약 기록"),
-            "cheongyak": (d._render_cheongyak_page(cy), "총 1건의 청약 피드"),
         }
 
     def test_search_clear_restores_the_servers_own_status_label(self):
@@ -12361,8 +12344,7 @@ class TestFeedBoardsShared20260820:
         # "이거 최신이야?"에 화면이 답해야 한다(규칙 10b·실수 #43).
         import re
         want = {"daily_byte": "마지막 브리프 (KST)", "reddit": "마지막 포워드 (KST)",
-                "blog": "마지막 새 글 (KST)", "realestate": "마지막 기록 (KST)",
-                "cheongyak": "마지막 피드 (KST)"}
+                "blog": "마지막 새 글 (KST)", "realestate": "마지막 기록 (KST)"}
         for name, (html, _lbl) in self._pages().items():
             # 라벨엔 수집기 점검 문구가 뒤에 붙을 수 있어 prefix 로 찾는다
             stats = [(l, v) for v, l in re.findall(
@@ -12426,6 +12408,40 @@ class TestFeedBoardsShared20260820:
         assert used, "대시보드가 _feed_note 를 안 쓰고 있다"
         missing = used - set(fh._MAX_GAP_H)
         assert not missing, f"지연 기준 미등록 피드: {missing}"
+
+    def test_cheongyak_standalone_page_is_gone(self, tmp_path, monkeypatch):
+        # 사용자 2026-08-20 "청약대시보드는 삭제해줘". 같은 레코드를 두 번
+        # 그리던 페이지고, regenerate 가 이미 realestate 로 리다이렉트만 해서
+        # **6월 이후 갱신이 멈춘 화석 파일**이었다(화면엔 '총 피드 2'로 표시).
+        import bot.dashboard as d
+        import bot.dashboard_server as ds
+        for gone in ("_render_cheongyak_page", "regenerate_cheongyak_index",
+                     "_CHEONGYAK_JS"):
+            assert not hasattr(d, gone), f"{gone} 가 남아 있다"
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'href="cheongyak.html"' not in db, "죽은 페이지로 가는 링크가 남아 있다"
+        assert "cheongyak.html" not in ds._OUR_ROOT_PAGES
+        # 재생성 시 옛 파일을 지운다 — 링크가 없어도 URL 로 열리면 옛 숫자를 준다
+        stale = tmp_path / "cheongyak.html"
+        stale.write_text("옛 화면")
+        monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path)
+        monkeypatch.setattr(d, "_load_realestate_runs", lambda: [])
+        monkeypatch.setattr(d, "_load_cheongyak_runs", lambda: [])
+        d.regenerate_realestate_index()
+        assert not stale.exists(), "옛 cheongyak.html 이 안 지워졌다"
+
+    def test_cheongyak_records_render_inside_the_realestate_page(self):
+        # 단독 페이지를 지운 대신 **부동산 화면이 청약을 실어야** 한다.
+        import bot.dashboard as d
+        m = self._mk
+        runs = [m(1, "2026-08-20", "09:00", body="실거래", cost_krw=0,
+                  _kind="realestate", ymd="202608"),
+                m(2, "2026-08-20", "14:00", body="청약본문", cost_krw=0,
+                  _kind="cheongyak", count=3)]
+        html = d._render_realestate_page(runs)
+        assert "🎟️ 신규 분양 3건" in html and "청약본문" in html
+        assert 'data-del-api="api/cheongyak_delete"' in html
+        assert "총 2건의 부동산/청약 기록" in html
 
     def test_realestate_cards_within_a_day_are_time_ordered(self):
         # 이어붙인 순서 그대로 그리면 하루 안에서 실거래가 항상 위로 간다.
@@ -20868,7 +20884,7 @@ class TestOnStartupStaticPagesBackgrounded20260803:
         assert def_idx < start_idx
         body = src[def_idx:start_idx]
         for fn in ("regenerate_screener_index", "regenerate_daily_byte_index",
-                   "regenerate_realestate_index", "regenerate_cheongyak_index",
+                   "regenerate_realestate_index",
                    "regenerate_gics_candidates_index", "regenerate_watchlist_index",
                    "regenerate_reddit_insider_index", "regenerate_blog_index",
                    "regenerate_valuechain_index", "regenerate_market_index",

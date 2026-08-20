@@ -61,7 +61,7 @@ def test_surfaces_cover_all_dashboards():
 
 
 def test_group_pages_inject_important_block():
-    # 공용 JS 공유 5개 표면(daily_byte·reddit·blog·realestate·cheongyak)에
+    # 공용 JS 공유 4개 표면(daily_byte·reddit·blog·realestate)에
     # 중요-마크 블록 + 표면별 IMP_CFG 가 주입되는지(회귀 — 향후 편집 시 silent drop 방지).
     import bot.dashboard as d
     sample = [{"_date": "2026-06-26", "_filename": "x.json", "title": "T",
@@ -72,7 +72,6 @@ def test_group_pages_inject_important_block():
         "_render_reddit_insider_page": "reddit",
         "_render_blog_page": "blog",
         "_render_realestate_page": "realestate",
-        "_render_cheongyak_page": "cheongyak",
     }
     for fn, surf in cases.items():
         html = getattr(d, fn)(sample)

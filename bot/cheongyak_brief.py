@@ -172,13 +172,9 @@ def _save_archive(body: str, cost_krw: float, count: int, elapsed: float) -> Non
         log.warning("cheongyak: archive write failed: %s", exc)
         return
     try:
-        # 청약 기록은 cheongyak.html 과 **부동산 대시보드(realestate.html)**
-        # 두 곳에 실린다. 예전엔 청약만 다시 그려서, 평일 10·14시에 새 공고가
-        # 들어와도 정작 nav 에 걸린 부동산 화면엔 다음날 00:01 정기 재생성
-        # 전까지 안 보였다(실수 #27: 형제 표면 한쪽만 갱신).
-        from bot.dashboard import (regenerate_cheongyak_index,
-                                   regenerate_realestate_index)
-        regenerate_cheongyak_index()
+        # 청약 기록이 뜨는 화면은 **부동산 대시보드 하나**다(단독 페이지는
+        # 2026-08-20 제거 — 같은 레코드를 두 번 그릴 뿐이었다).
+        from bot.dashboard import regenerate_realestate_index
         regenerate_realestate_index()
     except Exception as exc:
         log.warning("cheongyak: dashboard regen failed: %s", exc)

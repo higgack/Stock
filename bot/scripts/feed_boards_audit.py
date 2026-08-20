@@ -1,4 +1,4 @@
-"""피드형 대시보드 4종 전수 감사 — Daily Byte · 레딧 · 블로그 · 부동산(+청약).
+"""피드형 대시보드 4종 전수 감사 — Daily Byte · 레딧 · 블로그 · 부동산(청약 포함).
 
 사용자 2026-08-20: "Daily bite, 레딧, 블로그, 부동산 대시보드도 똑같이 꼼꼼히
 모든 걸, 코드부터 로직, 대시보드 디스플레이 등등 점검해줘."
@@ -26,7 +26,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-_PROBE_VER = 2   # 2 = 수집기 점검(feed_health) 표기 확인
+_PROBE_VER = 3   # 3 = 청약 단독 페이지 제거 반영(부동산에 합쳐서 검증)
 _KST = timezone(timedelta(hours=9))
 _OK, _NG, _WARN = "✅", "❌", "⚠️"
 
@@ -188,11 +188,10 @@ def main() -> int:
         r.setdefault("_kind", "realestate")
     for r in _ch_runs:
         r["_kind"] = "cheongyak"
+    # 청약은 **부동산 화면 안에서만** 산다(단독 페이지 2026-08-20 제거).
     _audit_surface("4) 부동산(실거래 + 청약)", _re_runs + _ch_runs,
                    d._render_realestate_page, del_api="api/realestate_delete")
-
-    _audit_surface("5) 청약(단독 페이지)", d._load_cheongyak_runs(),
-                   d._render_cheongyak_page, del_api="api/cheongyak_delete")
+    _p(f"      구성: 실거래 {len(_re_runs)}건 + 청약 {len(_ch_runs)}건")
 
     _p("")
     _p("읽는 법: ❌ = 화면이 사실과 다른 것(고쳐야 함) · ⚠️ = 사람 확인 대상.")
