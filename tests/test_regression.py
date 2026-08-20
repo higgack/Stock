@@ -10638,6 +10638,46 @@ class TestDartFeedTabCollapse:
         assert 'data-date="2026-08-20"' not in html
         assert 'data-date="2026-08-19"' in html
 
+    def test_dedupe_pick_is_order_independent(self):
+        # dict 순회 순서(아카이브 로드 순서)에 결과가 달리면 어느 날 갑자기
+        # 카드가 다른 날짜로 옮겨간다. 계약: date 와 맞는 쪽 → 같으면 이른 날.
+        import re
+        import bot.dashboard as d
+        def it(rno, ds):
+            return {"rcept_no": rno, "date": ds.replace("-", ""),
+                    "corp_name": "중복", "stock_code": "005930", "url": "#",
+                    "category": "계약", "report_nm": "단일판매ㆍ공급계약체결",
+                    "detail": ["계약금액: 1억"]}
+        a = {"2026-08-07": [it("20260806000555", "2026-08-07")],
+             "2026-08-06": [it("20260806000555", "2026-08-06")]}
+        b = {"2026-08-06": [it("20260806000555", "2026-08-06")],
+             "2026-08-07": [it("20260806000555", "2026-08-07")]}
+        for by in (a, b):
+            html = d._render_dart_feed_page(by)[0]
+            assert len(re.findall(r'<div class="df-card[" ]', html)) == 1
+            assert re.findall(r'data-date="([^"]+)"', html) == ["2026-08-06"]
+
+    def test_publication_date_wins_over_receipt_number_date(self):
+        # DART 는 접수번호 날짜와 공시일자를 다르게 주는 건이 있다(21일치
+        # 12,930건 중 70건 실측). 파일을 가르는 기준은 **공시일자**여야 한다 —
+        # 접수번호 앞자리를 쓰면 그 70건의 카드 날짜가 하루씩 어긋난다.
+        import re
+        import bot.dashboard as d
+        by = {"2026-08-20": [{"rcept_no": "20260819000386", "date": "20260820",
+                              "corp_name": "야간접수", "stock_code": "005930",
+                              "url": "#", "category": "계약",
+                              "report_nm": "단일판매ㆍ공급계약체결",
+                              "detail": ["계약금액: 1억"]}]}
+        html = d._render_dart_feed_page(by)[0]
+        assert re.findall(r'data-date="([^"]+)"', html) == ["2026-08-20"]
+        assert len(re.findall(r'<div class="df-card[" ]', html)) == 1
+
+    def test_rcept_dt_falls_back_to_receipt_number_not_window_end(self):
+        # rcept_dt 가 비었을 때 조회창 끝 날짜(=오늘)로 때우면 어제 접수분이
+        # 오늘 그룹에 섞인다. 접수번호 앞 8자리가 있으면 그걸 쓴다.
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert 'rcept_dt = (r.get("rcept_dt") or "").strip() or _rno_ymd or end_ds' in src
+
     def test_header_marks_lag_when_behind_last_kr_session(self, monkeypatch):
         import bot.dashboard as d
         import bot.market_calendar as mcal
@@ -12324,11 +12364,12 @@ class TestFeedBoardsShared20260820:
                 "blog": "마지막 새 글 (KST)", "realestate": "마지막 기록 (KST)",
                 "cheongyak": "마지막 피드 (KST)"}
         for name, (html, _lbl) in self._pages().items():
-            stats = dict((l, v) for v, l in re.findall(
+            # 라벨엔 수집기 점검 문구가 뒤에 붙을 수 있어 prefix 로 찾는다
+            stats = [(l, v) for v, l in re.findall(
                 r'<div class="stat-v">([^<]*)</div>\s*<div class="stat-l">([^<]*)</div>',
-                html))
-            assert want[name] in stats, f"{name}: 기준시각 stat 없음 — {list(stats)}"
-            assert stats[want[name]].startswith("2026-08-20"), (name, stats[want[name]])
+                html) if l.startswith(want[name])]
+            assert stats, f"{name}: 기준시각 stat 없음"
+            assert stats[0][1].startswith("2026-08-20"), (name, stats[0])
 
     def test_asof_is_max_ts_not_first_element(self):
         # 부동산 페이지는 실거래+청약 아카이브를 **이어붙여** 받는다 —
@@ -12340,8 +12381,51 @@ class TestFeedBoardsShared20260820:
                 m(2, "2026-08-20", "14:00", body="청약", cost_krw=0,
                   _kind="cheongyak", count=3)]
         assert d._feed_latest_ts(runs) == "2026-08-20 14:00"
-        assert "마지막 기록 (KST)</div>" in d._render_realestate_page(runs)
+        assert "마지막 기록 (KST)" in d._render_realestate_page(runs)
         assert "2026-08-20 14:00" in d._render_realestate_page(runs)
+
+    def test_every_feed_page_says_when_the_collector_last_ran(self, tmp_path,
+                                                             monkeypatch):
+        # '마지막 새 글 08-17' 이 정상(새 글 없음)인지 장애인지 화면이 구별
+        # 못 했다(2026-08-20 부동산: 3일 전 기록 + 판단 근거 없음, 실수 #43).
+        import bot.feed_health as fh
+        monkeypatch.setattr(fh, "_DIR", tmp_path / "fh")
+        for name, (html, _l) in self._pages().items():
+            if name == "daily_byte":
+                continue          # Daily Byte 는 고정 스케줄(19:00/08:00)이라 제외
+            assert "점검" in html, f"{name}: 수집기 점검 표기 없음"
+        fh.mark("blog")
+        html = __import__("bot.dashboard", fromlist=["d"])._render_blog_page(
+            [dict(_date="2026-08-20", _filename="a.json",
+                  ts="2026-08-20T09:40:00", title="글", desc="본문",
+                  link="http://x")])[0]
+        assert "점검 기록 없음" not in html and "점검 " in html
+
+    def test_feed_health_note_states(self, tmp_path, monkeypatch):
+        import datetime as _dt
+        import bot.feed_health as fh
+        monkeypatch.setattr(fh, "_DIR", tmp_path / "fh")
+        assert fh.note("blog") == "점검 기록 없음"
+        fh.mark("blog")
+        assert fh.note("blog").startswith("점검 ") and "⚠️" not in fh.note("blog")
+        # 상한을 넘기면 ⚠️ — 오래된 도장을 직접 써서 강제로 태운다
+        old = (_dt.datetime.now(fh._KST) - _dt.timedelta(hours=9))
+        fh._path("blog").write_text(old.isoformat(timespec="seconds"))
+        assert "⚠️" in fh.note("blog")
+        # 기준 미등록 피드는 '판정 못 함'을 밝혀야 한다(조용한 ✅ 금지, #41)
+        fh.mark("nosuch")
+        assert "지연 기준 미등록" in fh.note("nosuch")
+
+    def test_every_feed_the_dashboards_show_has_a_staleness_bound(self):
+        # 화면이 참조하는 피드 이름을 소스에서 뽑아 _MAX_GAP_H 와 대조 —
+        # 이름 열거만 하면 새 피드가 조용히 판정 불가로 샌다(실수 #31).
+        import re
+        import bot.feed_health as fh
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        used = set(re.findall(r'_feed_note\("([a-z_]+)"\)', src))
+        assert used, "대시보드가 _feed_note 를 안 쓰고 있다"
+        missing = used - set(fh._MAX_GAP_H)
+        assert not missing, f"지연 기준 미등록 피드: {missing}"
 
     def test_realestate_cards_within_a_day_are_time_ordered(self):
         # 이어붙인 순서 그대로 그리면 하루 안에서 실거래가 항상 위로 간다.
@@ -18432,6 +18516,16 @@ class TestCreditSplitAndMarketcap20260706:
         assert "await asyncio.sleep(5 if first else 3 * 3600)" in tb, \
             "_periodic_marketcap 주기가 바뀌었으면 TTL 도 같이 보라"
         assert mc._TTL < 3 * 3600, f"TTL {mc._TTL}s ≥ 주기 10800s"
+
+    def test_fetched_at_carries_seconds(self):
+        # 6축을 1.5초 간격으로 따로 긁는다 — 분 단위로만 찍으면 여섯 탭이 같은
+        # 순간의 스냅샷처럼 보이고, 장중 시장 종목의 Today% 가 탭마다 다른
+        # 이유를 화면이 설명 못 한다(2026-08-20 SK Hynix 11.19 vs 11.46).
+        import re
+        src = open("bot/marketcap_client.py", encoding="utf-8").read()
+        assert 'strftime("%Y-%m-%d %H:%M:%S")' in src
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "축마다 따로 수집(수 초 차)" in db
 
     def test_rank_cell_identified_by_class_not_integer_heuristic(self):
         # 예전 파서는 '순수 1~4자리 정수 = 순위'로 걸렀다 — P/E 처럼 메트릭이

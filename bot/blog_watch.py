@@ -399,6 +399,12 @@ def run() -> int:
     _save_state(state)
     if not fetched_any:
         return 1            # 전 블로그 RSS 실패 — 타이머에 실패 신호
+    # RSS 를 읽는 데 성공 = 수집기 생존(새 글 0건인 날에도 화면이 말하게).
+    try:
+        from bot import feed_health as _fh
+        _fh.mark("blog")
+    except Exception:
+        pass
 
     # 레퍼런스북 관계후보 자동발굴(kg-gen 패턴) — 새 글 본문에서 (회사)-(관계)-
     # (대상) 후보 추출 → 승인 큐 CSV 적재 + 채널 알림. 킬스위치·Gemini 키부재·

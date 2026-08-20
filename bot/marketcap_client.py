@@ -313,7 +313,12 @@ def fetch_axis(axis: str, slug: str, limit: int = 100) -> dict:
         except Exception as exc:
             log.warning("marketcap csv fallback failed: %s", exc)
     if rows:
-        fetched_at = datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
+        # ⚠️ **초까지** 찍는다. 6축을 1.5초 간격으로 따로 긁으므로, 장이 열려
+        # 있는 시장(KR·CN)의 종목은 축마다 Today% 가 소수점 아래에서 갈린다
+        # (2026-08-20 실측: SK Hynix 11.19 vs 11.46, 축간 대조로 발각).
+        # 분 단위로만 찍으면 여섯 탭이 같은 순간의 스냅샷처럼 보인다 —
+        # 나란히 놓인 값이 어긋나면 화면이 그 이유를 말해야 한다(실수 #33).
+        fetched_at = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S")
         _cache_write(axis, {"rows": rows, "ts": now, "_pv": _PARSER_V,
                             "fetched_at": fetched_at, "source": source})
         return {"rows": rows[:limit], "fetched_at": fetched_at,

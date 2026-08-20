@@ -252,6 +252,13 @@ async def _run_async() -> int:
             log.error("iter_messages 실패 (채널 %s): %s", channel, exc)
             return 1
 
+        # 채널을 읽는 데 성공 = 수집기 생존(새 포워드 0건인 날에도).
+        try:
+            from bot import feed_health as _fh
+            _fh.mark("reddit")
+        except Exception:
+            pass
+
         # 시간순(오래된→최근) 정렬해 순서대로 push (사용자가 시간 순으로
         # 보게 — newest_first 로 push 하면 채널에서 뒤집힘).
         msgs.sort(key=lambda m: m.id)

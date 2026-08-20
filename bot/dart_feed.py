@@ -3711,19 +3711,17 @@ def fetch_market_disclosures(target_date: date | None = None,
             corp_name = (r.get("corp_name") or "").strip()
             corp_code = (r.get("corp_code") or "").strip()
             stock_code = (r.get("stock_code") or "").strip()
-            # 접수일자 — DART 의 rcept_dt 가 1차. 비어 있을 때 예전엔 조회
-            # 창의 **끝 날짜**(end_ds, 사실상 오늘)로 때웠는데, 그러면 어제
-            # 접수분이 오늘 파일에 들어가 카드 날짜 라벨이 하루 밀린다.
-            # 접수번호 앞 8자리가 곧 접수일자라 그걸 먼저 쓴다(실수 #46:
-            # 원본이 주는 식별자를 자체 추정으로 대체하지 말 것).
+            # 공시일자 = DART 의 rcept_dt. 이게 아카이브 파일을 가르는 키고,
+            # 카드에 찍히는 날짜다.
+            # ⚠️ rcept_dt 가 접수번호 앞 8자리와 **다를 수 있다**(2026-08-20
+            # VM 실측 21일치 12,930건 중 70건: 접수번호 20260819… 인데
+            # rcept_dt=20260820). 원천이 그렇게 주는 것이므로 정상 — 경고하지
+            # 않는다. 우리가 고른 기준은 "DART 가 공시일자라고 말하는 날".
+            # rcept_dt 가 비었을 때만 접수번호 앞 8자리로 대신한다(예전엔 조회
+            # 창의 끝 날짜=오늘로 때워서 어제 건이 오늘 그룹에 섞였다).
             _rno_ymd = (rcept_no[:8] if len(str(rcept_no)) >= 8
                         and str(rcept_no)[:8].isdigit() else "")
-            rcept_dt = (r.get("rcept_dt") or "").strip()
-            if rcept_dt and _rno_ymd and rcept_dt != _rno_ymd:
-                # 원천이 서로 다른 날을 말한다 — 조용히 넘기지 않는다(#42a).
-                log.warning("dart_feed: rcept_dt %s ≠ 접수번호 날짜 %s (%s)",
-                            rcept_dt, _rno_ymd, rcept_no)
-            rcept_dt = rcept_dt or _rno_ymd or end_ds
+            rcept_dt = (r.get("rcept_dt") or "").strip() or _rno_ymd or end_ds
 
             category = _classify_report(report_nm)
             # 기타경영사항(자율공시)·투자판단 주요경영사항은 catch-all
