@@ -92,7 +92,7 @@ _OUR_ROOT_PAGES = frozenset((
     "market.html", "asia.html", "index.html", "screener.html", "screener_domains.html",
     "dart_feed.html", "watchlist.html", "daily_byte.html", "portfolio.html",
     "budget.html", "paper.html", "reddit_insider.html", "realestate.html",
-    "cheongyak.html", "gics_candidates.html", "errors.html",
+    "gics_candidates.html", "errors.html",
 ))
 
 _TOKEN = (os.getenv("DASHBOARD_TOKEN") or "").strip()
@@ -509,10 +509,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "realestate_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
                 "regenerate_realestate_index")
         if self.path == "/api/cheongyak_delete":
-            # 청약 기록은 두 화면(cheongyak.html · realestate.html)에 실린다.
+            # 청약 기록은 부동산 대시보드에 실린다(단독 페이지 제거, 2026-08-20).
             return self._handle_simple_delete(
                 "cheongyak_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
-                ("regenerate_cheongyak_index", "regenerate_realestate_index"))
+                "regenerate_realestate_index")
         if self.path == "/api/screen_delete":
             return self._handle_simple_delete(
                 "screen_archive", r"^\d{6}_[a-f0-9]{1,20}\.json$",
@@ -580,9 +580,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         guard) then unlinks + calls bot.dashboard.<regen_fn>(). Used by
         /api/realestate_delete (and future archive surfaces).
 
-        regen_fn 은 **여러 개**일 수 있다 — 청약 기록은 cheongyak.html 과
-        realestate.html 두 화면에 같이 실려서, 하나만 다시 그리면 다른 쪽에
-        지운 카드가 그대로 남는다(실수 #27: 형제 표면 한쪽만 갱신)."""
+        regen_fn 은 **여러 개**일 수 있다 — 같은 레코드를 두 화면이 읽으면
+        하나만 다시 그렸을 때 다른 쪽에 지운 카드가 남는다(실수 #27)."""
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length <= 0 or length > 1024:

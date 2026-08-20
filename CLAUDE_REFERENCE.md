@@ -913,8 +913,11 @@ TradingView Pine 원문 · 楽天/マネックス証券 · 키움증권 기술�
   신규 없으면 graceful skip(비용 0). `cheongyak-byte.timer` 평일 10:00 +
   14:00 KST 2회(사용자 2026-06-01 — 청약홈 오전·오후 갱신 대응, 같은 공고
   는 seen-set 으로 2회 push 안 됨).
-  채널 push + `cheongyak.html` 대시보드 (Daily Byte 패턴 mirror, 오늘/누적
-  비용·검색·🗑️ `/api/cheongyak_delete`) + `/cheongyak_cost` 명령(DM+채널)
+  채널 push + **부동산 대시보드(realestate.html)에 합쳐서 표시**(🎟️ 카드 ·
+  🗑️ `/api/cheongyak_delete`) + `/cheongyak_cost` 명령(DM+채널)
+  ⚠️ 옛 `cheongyak.html` 단독 페이지는 제거(2026-08-20) — regenerate 가 이미
+  realestate 로 리다이렉트만 해서 6월 이후 갱신이 멈춘 화석이었고, 같은 레코드를
+  두 번 그릴 뿐이었다. 부동산 재생성 때 옛 파일을 unlink 한다.
   + /usage·메인 대시보드 cost subsystem '청약'. 인포그래픽 없음(피드 성격).
   nav 위치: Daily Byte 뒤(daily 그룹). **경쟁률(수요 측) LIVE (2026-05-31)** —
   별도 활용신청 (`한국부동산원_청약홈 청약접수 경쟁률 및 특별공급 신청현황`)
