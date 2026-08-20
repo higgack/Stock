@@ -12299,6 +12299,51 @@ class TestSameBasisGlitchSecondGuard:
             assert marker in src, f"2차 가드 미배선: {path}"
 
 
+class TestAssetPagesContracts20260820:
+    """자산·ASIA·Screener·trade 아카이브 렌더 계약 — A안 잔여 표면 감사에서
+    나온 결함 3건(사용자 2026-08-20 "이어서 A 로 남은것들도 다 봐줘")."""
+
+    def test_screener_status_restore_is_the_servers_text(self):
+        # 서버 '총 N건의 Bottleneck Screener 실행' vs JS 복원 '총 N건의
+        # screener 실행' — #48 이 Screener 에도 살아 있었다. 조건부 섹션도
+        # 같은 하드코딩이라 함께 통일.
+        import re
+        import bot.dashboard as d
+        html = d._render_screener_page(
+            [{"_date": "2026-08-20", "_filename": "a.json", "ts": "t",
+              "domain": "x", "cost_krw": 1.0, "top_3_picks": []}], {}, [])
+        srv = re.search(r'id="scr-status"[^>]*>([^<]*)<', html)
+        assert srv and srv.group(1) == "총 1건의 Bottleneck Screener 실행"
+        assert html.count("baseStatus") >= 2        # 선언 + 사용
+        assert "csBase" in html                     # 조건부 섹션도
+        assert not re.search(r"textContent = '총 ' \+ \w+ \+ '건의", html)
+
+    def test_asia_page_speaks_when_everything_is_empty(self):
+        # 4개 시장 수집이 전부 실패하면 위젯이 모두 생략돼 **백지**였다(#43).
+        import bot.dashboard as d
+        html = d._render_asia_page({})
+        assert "업종 등락 데이터가 아직" in html
+        # 하나라도 있으면 안내문 없이 위젯
+        html2 = d._render_asia_page({"jp_sector_movers": {
+            "up": [{"name": "은행", "pct": 1.2}], "down": [],
+            "ts": "08-20 15:00", "source": "ETF"}})
+        assert "업종 등락 데이터가 아직" not in html2
+        assert "일본 업종 등락" in html2
+
+    def test_trade_archive_restore_is_not_daily_byte(self):
+        # NOAH 에서 verbatim 복사한 JS 가 'Daily Byte 브리프'를 하드코딩 —
+        # trade 페이지에서 검색을 지우면 남의 화면 문구가 떴다(#48 trade 판).
+        import re
+        from trade.archive_template import render_archive_page
+        html = render_archive_page(
+            [{"date": "2026-08-20", "title": "t", "body": "b"}],
+            title="산업 아카이브", subtitle="s")
+        srv = re.search(r'id="scr-status"[^>]*>([^<]*)<', html)
+        assert srv and srv.group(1) == "총 1건"
+        assert "baseStatus" in html
+        assert "건의 Daily Byte 브리프" not in html
+
+
 class TestAuditSweep20260820:
     """감사 4종 자동 실행 — 사용자 2026-08-20 "매번 할때마다 왜 새로운것이
     나오지?" 에 대한 구조적 답(B안). 사람이 물어봐야 도는 감사는 같은 일을

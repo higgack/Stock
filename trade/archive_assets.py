@@ -248,6 +248,11 @@ ARCHIVE_JS = """
   const dayGroups = Array.from(document.querySelectorAll('details.day'));
   const monthGroups = Array.from(document.querySelectorAll('details.month'));
   if (!inp) return;
+  // 검색 해제 복원 문구 = 서버가 찍은 그 문구. NOAH 에서 verbatim 복사해 온
+  // JS 라 'Daily Byte 브리프' 가 하드코딩돼 있었다 — trade 페이지(산업
+  // 아카이브 등)에서 검색을 지우면 **남의 화면 문구**가 떴다(실수 #48 의
+  // trade 판). 서버 문구를 읽으면 갈릴 경로가 없다.
+  const baseStatus = (sts.textContent || '').trim();
   const total = cards.length;
   const MAX_SNIPPETS = 80;
 
@@ -284,7 +289,7 @@ ARCHIVE_JS = """
     for (const c of cards) { c.style.display = ''; c.open = (c.dataset.defaultOpen === 'true'); c.classList.remove('hit-flash'); }
     for (const d of dayGroups) d.style.display = '';
     for (const m of monthGroups) m.style.display = '';
-    sts.textContent = '총 ' + total + '건의 Daily Byte 브리프';
+    sts.textContent = baseStatus;
   }
 
   function showSnippetsMode(q) {
