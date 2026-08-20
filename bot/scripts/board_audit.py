@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 5
+_PROBE_VER = 6
 
 
 def _p(*a):
@@ -355,11 +355,25 @@ def main() -> int:
             # 2026-08-20 "난 모두 나라다 가장 최신으로 하는걸 원해").
             alt = ("네이버 보강 가능" if ticker.upper() in mt._NAVER_INDEX_FOR
                    else "대체 소스 없음(ETF)")
-            mark = ("❌ 0행" if not rows else
-                    f"⚠️ {behind}거래일 지연" if behind and behind > grace else "✅")
+            # ⚠️ v5 는 '기대보다 **미래**인 기준일'도 그냥 ✅ 로 찍었다 —
+            # 그건 장중 미확정 봉이라 분산일·FTD·MA 가 부분봉으로 계산된다.
+            # 완결/장중을 구분해서 말한다(사용자 2026-08-20: 전 시장이
+            # 08-20 인데 기대는 08-19 였다).
+            _closed = mt._market_closed_today(mkt)
+            if not rows:
+                mark = "❌ 0행"
+            elif latest and exp and latest > exp:
+                mark = (f"🕒 장중 미확정 봉({latest}) — 마지막 완결 세션은 {exp}"
+                        if _closed is False else
+                        f"⚠️ 기준일이 기대보다 미래({latest} > {exp}) — 확인 필요")
+            elif behind and behind > grace:
+                mark = f"⚠️ {behind}거래일 지연"
+            else:
+                mark = "✅ 완결 세션"
             _p(f"   {mkt:5} {name[:16]:16} {ticker:10} {len(rows):>4}행 · "
-               f"기준 {latest or '—'} · 기대 {exp} · 여유 {grace} {mark}"
-               f"  [{alt}]")
+               f"기준 {latest or '—'} · 마지막 완결 {exp}"
+               f" · 현지 {'마감' if _closed else '장중/개장전' if _closed is False else '?'}"
+               f" {mark}  [{alt}]")
         _p("")
         _p("── Breadth 전략 보드 — 시장별 기준일")
         try:
@@ -371,10 +385,15 @@ def main() -> int:
                 behind = (mt._sessions_between(mkt, asof, exp)
                           if asof and exp and asof < exp else 0)
                 # ⚠️ 기준일이 **비었는데 ✅** 를 찍으면 거짓 안심이다.
-                mark = ("❌ 기준일 없음(수집 실패)" if not asof else
-                        f"⚠️ {behind}거래일 지연" if behind and behind > grace
-                        else "✅")
-                _p(f"   {mkt:5} 기준 {asof or '—'} · 기대 {exp} {mark}")
+                if not asof:
+                    mark = "❌ 기준일 없음(수집 실패)"
+                elif exp and asof > exp:
+                    mark = f"🕒 장중 미확정 봉 — 마지막 완결 세션은 {exp}"
+                elif behind and behind > grace:
+                    mark = f"⚠️ {behind}거래일 지연"
+                else:
+                    mark = "✅ 완결 세션"
+                _p(f"   {mkt:5} 기준 {asof or '—'} · 마지막 완결 {exp} {mark}")
         except Exception as exc:                               # noqa: BLE001
             _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
@@ -402,6 +421,9 @@ def main() -> int:
     _p("        ❓ 규약없음 = **판정 자체를 못 한다** — 가장 위험하다(조용히 낡는다).")
     _p("           macro_cadence.CADENCE 에 등록하거나 보드 그룹 기본값을 줄 것.")
     _p("        변동성 '창' 이 비면 시계열이 성겨 날짜 되짚기가 실패한 것(값은 유효).")
+    _p("        🕒 장중 미확정 봉 = 오늘 장이 아직 안 끝났는데 오늘 날짜 봉이")
+    _p("           들어온 것. 값이 틀린 게 아니라 **확정 전**이라 분산일·FTD·")
+    _p("           MA·Breadth 가 부분봉으로 계산된다 — 마감 뒤 사이클에 확정된다.")
     return 0
 
 
