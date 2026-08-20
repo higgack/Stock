@@ -866,3 +866,24 @@ class MtiExportRowsTests(unittest.TestCase):
         self.assertIn("'수입'+c", src)
         for h in industry.MTI_MONTHLY_HEADER:               # 월별은 리터럴 array
             self.assertIn(h, src)
+
+
+class SubitemCardEscapeTests20260820(unittest.TestCase):
+    def test_mti_name_and_industry_escaped_in_card_header(self):
+        """하위품목 카드 h3 가 품목명(관세청 원천)·산업명을 이스케이프 없이
+        인라인했다 — `<` 가 오면 DOM 이 조용히 깨진다(실수 #7 의 대시보드판,
+        2026-08-20 주입 프로브 발각). 같은 값이 표에선 이미 escape 였다."""
+        months = {}
+        for i in range(24):
+            y = 2024 + (i // 12); m = (i % 12) + 1
+            months[f"{y}-{m:02d}"] = 1_000_000_000
+        months["2026-07"] = 3_000_000_000
+        by = {"산업INJ<X>": dict(months)}
+        mti = {"831000": {"name": "품목INJ<Y>", "industry": "산업INJ<X>",
+                          "months": dict(months)}}
+        html = industry.render_industry_html(by, None, mti, None)
+        self.assertNotIn("품목INJ<Y>", html, "카드 헤더 품목명 미이스케이프")
+        self.assertNotIn("산업INJ<X>", html, "카드 서브라벨 산업명 미이스케이프")
+        # 지워진 게 아니라 escape 돼 실려야 한다(#25 — 반대 증거도 확인).
+        self.assertIn("품목INJ&lt;Y&gt;", html)
+        self.assertIn("산업INJ&lt;X&gt;", html)
