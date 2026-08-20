@@ -12299,6 +12299,100 @@ class TestSameBasisGlitchSecondGuard:
             assert marker in src, f"2차 가드 미배선: {path}"
 
 
+class TestAuditSweep20260820:
+    """감사 4종 자동 실행 — 사용자 2026-08-20 "매번 할때마다 왜 새로운것이
+    나오지?" 에 대한 구조적 답(B안). 사람이 물어봐야 도는 감사는 같은 일을
+    반복하게 만든다 → 매일 08:00 KST 자동 실행, **❌ 가 있을 때만** 알림."""
+
+    def test_silent_when_clean(self):
+        # 매일 오는 '이상 없음'은 곧 무시되고, 그러면 진짜 신호도 안 읽힌다.
+        import bot.audit_sweep as a
+        assert a.report_text({"findings": [], "warn": 9, "errors": []}) == ""
+
+    def test_reports_when_a_finding_exists(self):
+        import bot.audit_sweep as a
+        txt = a.report_text({"findings": ["📋 DART [1) DART] ❌ 날짜 2건"],
+                             "warn": 5, "errors": []})
+        assert "❌ 1건" in txt and "⚠️ 5건" in txt and "날짜 2건" in txt
+
+    def test_a_crashed_audit_is_itself_a_finding(self):
+        # 감사가 죽었는데 조용히 통과하면 도구가 눈이 먼 걸 아무도 모른다(#54).
+        import bot.audit_sweep as a
+        txt = a.report_text({"findings": [], "warn": 0,
+                             "errors": ["📊 차트보드: 감사 실행 실패 — KeyError: x"]})
+        assert txt and "감사 실행 실패" in txt
+
+    def test_findings_carry_the_section_they_came_from(self):
+        import bot.audit_sweep as a
+        # ⚠️ 구분선을 **두 종류 다** 넣는다 — '=' 줄은 모양 규칙에서 걸러지지만
+        # '─' 줄은 startswith("──") 에 걸려 제목으로 오인된다. 처음 픽스처엔
+        # '=' 만 있어서 구분선 가드를 지워도 테스트가 통과했다(뮤테이션 U4).
+        sep = "─" * 30
+        out = ("=" * 20 + "\n1) DART 공시 대시보드\n" + "=" * 20 +
+               "\n✅ 정상\n❌ 날짜 2건\n\n" + sep +
+               "\n── 매크로 스냅샷 (카드)\n   ❌ 카드 0개\n" + sep +
+               "\n④ 데이터 품질\n   ❌ 자기참조 3\n")
+        got = a._findings(out)
+        assert got == ["[1) DART 공시 대시보드] ❌ 날짜 2건",
+                       "[매크로 스냅샷 (카드)] ❌ 카드 0개",
+                       "[④ 데이터 품질] ❌ 자기참조 3"], got
+
+    def test_a_failing_axis_header_still_names_its_own_section(self):
+        # Market cap 축이 실패하면 헤더가 '── … ⚠️ stale' 로 마크를 달고
+        # 나온다. '마크 있는 줄은 제목 아님' 가드를 뒀더니 그 줄을 건너뛰어
+        # ❌ 가 **직전 섹션**(다른 축)에 붙었다 — 하필 결함이 난 그때.
+        import bot.audit_sweep as a
+        out = ("  ── Earnings (earnings) · 100행\n  ✅ 순위 1..100 연속\n"
+               "  ── Market Cap (marketcap) · 0행 ⚠️ stale(최신 수집 실패)\n"
+               "  ❌ 0행 — 수집 실패\n")
+        got = a._findings(out)
+        assert len(got) == 1 and "Market Cap" in got[0] and "Earnings" not in got[0], got
+        # '──────' 단독 줄은 제목이 아니다 — 오인되면 '[] ❌ …' 이 된다.
+        assert a._section_of("─" * 30) is None
+        assert a._section_of("── 매크로 스냅샷 (카드)") == "매크로 스냅샷 (카드)"
+
+    def test_legend_lines_are_not_findings(self):
+        # 도구 끝의 '읽는 법: ❌ = …' 범례가 결함으로 집계됐다(스모크 실측).
+        # 범례는 '❌ =' 꼴 — 실제 판정 줄('❌ 날짜 2건')과 모양으로 갈린다.
+        import bot.audit_sweep as a
+        out = ("1) DART\n❌ 날짜 2건\n"
+               "읽는 법: ❌ = 화면이 사실과 다른 것 · ⚠️ = 확인\n")
+        got = a._findings(out)
+        assert got == ["[1) DART] ❌ 날짜 2건"], got
+
+    def test_every_audit_script_is_registered_in_the_sweep(self):
+        # 감사를 새로 만들고 등록을 잊으면 그 표면만 조용히 빠진다(#24).
+        import glob
+        import os
+        import bot.audit_sweep as a
+        found = {f"bot.scripts.{os.path.basename(p)[:-3]}"
+                 for p in glob.glob("bot/scripts/*_audit.py")}
+        assert found, "감사 스크립트를 못 찾음"
+        registered = {m for _n, m, _c in a.AUDITS}
+        assert found <= registered, f"sweep 미등록 감사: {found - registered}"
+        # 시그니처가 갈린다(main() vs main(argv)) — 실행기가 둘 다 다뤄야 한다.
+        # 실제로 peer_currency_audit 가 TypeError 로 죽어 '감사 실행 실패'가
+        # 첫 스모크에 찍혔다.
+        import importlib
+        import inspect
+        for m in registered:
+            fn = importlib.import_module(m).main
+            n = len(inspect.signature(fn).parameters)
+            assert n <= 1, f"{m}.main 인자 {n}개 — 실행기가 못 부른다"
+        assert {c for _n, _m, c in a.AUDITS} <= {"daily", "weekly"}
+        # 무거운 것(671종목 yfinance)은 매일 돌리지 않는다
+        assert dict((m, c) for _n, m, c in a.AUDITS)[
+            "bot.scripts.peer_currency_audit"] == "weekly"
+
+    def test_wired_as_a_daily_task_and_documented(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "_periodic_audit_sweep" in tb and "_audit_sweep_task" in tb
+        assert "if now.hour != 8:" in tb          # 08:00 KST
+        assert "await asyncio.to_thread(report_text, None," in tb  # 루프 차단 금지
+        assert "now.weekday() == 0" in tb                    # 주간 감사는 월요일
+        assert "🔍 대시보드 감사" in tb           # _HELP_TEXT 등록(같은 commit)
+
+
 class TestRegimeCardExplanations20260820:
     """매크로/크립토 레짐 카드의 설명이 **실제 계산과 일치**하는가.
 
