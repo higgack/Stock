@@ -26831,3 +26831,85 @@ class TestSecondSweep20260820:
         assert f(0, None, "2026-08-19", 0, 1, True) == "❌ 0행"
         src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
         assert "휴장일 캘린더" in src, "캘린더 가용 여부를 안 알린다"
+
+    # ── ⑨ 캘린더 설치가 드러낸 함정 ─────────────────────────────────
+    def test_add_trading_days_goes_backward_for_negative_n(self):
+        """⚠️ 2026-08-20 실측: `add_trading_days("KR","2026-08-20",-1)` 이
+        **2026-09-07**(18일 뒤)을 돌려줬다. 앞방향 범위를 `sessions[n]` 으로
+        인덱싱해 n=-1 이 창의 **마지막**(미래) 세션을 집었기 때문.
+        캘린더 미설치 환경에선 폴백이라 안 보이다가, 사용자가 설치한 순간
+        신선도 판정이 통째로 미래를 기대하게 되는 함정이었다."""
+        import bot.market_calendar as mc
+        if mc._calendar("KR") is None:
+            pytest.skip("exchange_calendars 미설치 — VM/CI 에서 검증")
+        assert mc.add_trading_days("KR", "2026-08-20", -1) == "2026-08-19"
+        assert mc.add_trading_days("KR", "2026-08-20", 1) == "2026-08-21"
+        assert mc.add_trading_days("KR", "2026-08-20", 0) == "2026-08-20"
+        assert mc.add_trading_days("US", "2026-08-19", -1) == "2026-08-18"
+
+    def test_last_session_on_or_before_never_returns_the_future(self):
+        """휴일에 `add_trading_days(..,0)` 을 과거 의미로 쓰면 **다음** 세션
+        (미래)이 나온다 — 과거 방향 전용 벽돌이 필요하다."""
+        import bot.market_calendar as mc
+        if mc._calendar("KR") is None:
+            pytest.skip("exchange_calendars 미설치")
+        sun = "2026-08-23"                       # 일요일
+        got = mc.last_session_on_or_before("KR", sun)
+        assert got and got <= sun, got
+        assert mc.last_session_on_or_before("KR", "2026-08-20") == "2026-08-20"
+
+    def test_expected_session_is_never_in_the_future(self):
+        """어느 시장도 '마지막 완결 세션'이 그 시장 **현지 오늘**보다 미래일
+        수 없다. 캘린더 유무와 무관하게 성립해야 한다."""
+        import bot.market_timing as mt
+        for m in mt._MARKET_TZ:
+            exp, grace = mt._expected_session(m)
+            assert exp, m
+            assert exp <= mt._market_today(m).isoformat(), (m, exp)
+            assert grace >= 0
+
+    def test_non_trading_day_looks_backward_not_forward(self, monkeypatch):
+        """휴일·주말 분기는 **오늘이 거래일이면 한 번도 안 탄다** — 실제로
+        되돌리는 뮤테이션이 통과했다. 일요일을 강제해 과거 방향을 고정한다.
+        (`add_trading_days(..,0)` 은 앞방향이라 여기서 **월요일**을 준다.)"""
+        from datetime import date
+        import bot.market_calendar as mc
+        import bot.market_timing as mt
+        if mc._calendar("KR") is None:
+            pytest.skip("exchange_calendars 미설치")
+        sunday = date(2026, 8, 23)
+        monkeypatch.setattr(mt, "_market_today", lambda m: sunday)
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+        exp, _ = mt._expected_session("KR")
+        assert exp and exp < sunday.isoformat(), \
+            f"휴장일에 미래 세션을 기대치로 삼았다: {exp}"
+        assert exp == mc.last_session_on_or_before("KR", sunday.isoformat())
+
+    def test_breadth_page_labels_an_intraday_bar(self, monkeypatch):
+        """사용자 2026-08-20: "Breadth 4구간 전략도 가장 최근에 종가를
+        가져오는거 맞지?" — 화면이 스스로 답해야 한다. 감사는 장중을 찍는데
+        Breadth 페이지만 조용했다. 판정은 시장타이밍과 **같은 함수** 재사용."""
+        import re
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
+        d = {"market": "KR", "regime": "COUNTER", "state": "COUNTER_INDEX",
+             "targets": [], "index_w": 1.0, "total_w": 1.0, "cash_w": 0.0,
+             "breadth_pct": 23.1, "dd_pct": -25.71, "bench_name": "KOSPI",
+             "breadth": {"pct": 23.1, "above": 3, "counted": 13,
+                         "skipped": [], "period": 120},
+             "source_label": "KODEX", "sectors_missing": [], "rs_ranked": [],
+             "fng": {}, "asof": "2026-08-20", "is_confirmed": False,
+             "resolution_note": ""}
+
+        def badge(html):
+            m = re.search(r"기준일 2026-08-20(.{0,80})", html)
+            return re.sub(r"<[^>]*>", "", m.group(1)).strip() if m else ""
+
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
+        assert "장중" in badge(bs.render_page({"KR": d})), "장중 표시 없음"
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+        assert badge(bs.render_page({"KR": d})) == "", "마감 후엔 배지가 없어야"
+        src = open("bot/breadth_strategy.py", encoding="utf-8").read()
+        assert "from bot.market_timing import _idx_stale" in src, \
+            "판정을 복제했다 — 두 화면이 갈라진다"

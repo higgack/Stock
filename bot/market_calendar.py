@@ -53,15 +53,55 @@ def _calendar(market: str):
         return None
 
 
+def _back_trading_days(cal, date_str: str, k: int) -> Optional[str]:
+    """`date_str` 이하 마지막 세션에서 **k 거래일 앞(과거)**. k=0 이면 그 세션."""
+    try:
+        import pandas as pd
+        end = pd.Timestamp(date_str)
+        start = end - pd.Timedelta(days=k * 2 + 20)
+        sessions = cal.sessions_in_range(start.strftime("%Y-%m-%d"),
+                                         end.strftime("%Y-%m-%d"))
+        if sessions is None or len(sessions) == 0:
+            return None
+        idx = len(sessions) - 1 - k
+        if idx < 0:
+            return None       # 윈도가 짧음 → 폴백
+        return sessions[idx].strftime("%Y-%m-%d")
+    except Exception as exc:
+        log.debug("market_calendar._back_trading_days(%s,%d) failed: %s",
+                  date_str, k, exc)
+        return None
+
+
+def last_session_on_or_before(market: str, date_str: str) -> Optional[str]:
+    """`date_str` **이하** 마지막 거래일. 휴장일/주말이면 그 직전 세션.
+
+    '마지막 완결 세션' 계산의 기본 벽돌이다. `add_trading_days(.., 0)` 은
+    **앞방향** 의미(그 날 또는 그 이후 첫 세션)라 휴일에 부르면 **미래**를
+    돌려준다 — 그걸 과거 의미로 쓰다 신선도 판정이 뒤집혔다(2026-08-20)."""
+    cal = _calendar(market)
+    if cal is None:
+        return None
+    return _back_trading_days(cal, date_str, 0)
+
+
 def add_trading_days(market: str, date_str: str, n: int) -> Optional[str]:
     """`date_str`(YYYY-MM-DD, 거래일 가정)의 세션 기준 **거래일 n일 뒤** 날짜.
 
     예: 금요일 + 5거래일 = 다음 주 금요일(공휴일 없으면), 윈도에 공휴일이
     끼면 그만큼 뒤로. n=0 이면 date_str 자신(또는 그 이후 첫 세션). graceful
-    None — 라이브러리/시장 미지원·예외 시."""
+    None — 라이브러리/시장 미지원·예외 시.
+
+    ⚠️ **음수 n**(과거 방향)도 지원한다. 예전엔 앞방향 범위를 `sessions[n]`
+    으로 인덱싱해 n=-1 이 창의 **마지막**(=미래) 세션을 집었다 — 2026-08-20
+    실측에서 `add_trading_days("KR","2026-08-20",-1)` 이 **2026-09-07**(18일
+    뒤)을 돌려줬다. 캘린더 미설치 환경에선 폴백이라 드러나지 않다가, 설치
+    직후 신선도 판정이 통째로 미래를 기대하게 되는 함정이었다."""
     cal = _calendar(market)
     if cal is None:
         return None
+    if n < 0:
+        return _back_trading_days(cal, date_str, -n)
     try:
         import pandas as pd
         start = pd.Timestamp(date_str)
