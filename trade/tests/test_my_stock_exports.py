@@ -164,5 +164,143 @@ class StoreTests(unittest.TestCase):
         self.assertIn("CY26Q2 매출 $5.46B(+22.8% YoY)", html)
 
 
+# 2026-08-20 VM 실측 원문 6건 — 소스가 **두 계열**을 쓴다는 게 여기서 드러났다.
+# 배포 직후 프로브로 원문을 뽑아 보고서야 알았다(스크린샷 1장만 보고 만든
+# 첫 파서는 동시 계열만 알고 있었다).
+_LEAD_CAP = (
+    "Analog Devices (ADI)\n말레이시아 수출\n26년 7월 Update\n\n"
+    "수출액 YoY: +67.8%\n3M 수출액 YoY: +74.1%\n\n"
+    "1Q 선행상관: 0.71\n선행 방향 일치율: 83%\n\n"
+    "- CY26Q2 매출 $3.62B(+37.2% YoY)\n\nhttps://badonion.co.kr/trade/mapping"
+)
+_COIN_CAP = (
+    "Advanced Micro Devices, Inc. (AMD)\n말레이시아 수출\n26년 7월 Update\n\n"
+    "수출액 YoY: +170.4%\n3M 수출액 YoY: +127.1%\n\n"
+    "동시상관: 0.67\n방향 일치율: 75%\n\n"
+    "- CY26Q2 매출 $11.54B(+50.1% YoY)\n\nhttps://badonion.co.kr/trade/mapping"
+)
+
+
+class LeadVsCoincidentTests20260820(unittest.TestCase):
+    """동시상관/방향일치율 과 1Q 선행상관/선행 방향일치율 은 **다른 지표**다.
+
+    첫 배포판은 `동시상관` 만 잡고 `방향\\s*일치율` 은 부분매칭이라, 선행 계열
+    캡션에서 상관은 통째로 유실되고 선행 방향일치율이 동시 칸에 조용히 담겼다
+    (실수 #34). 그 줄이 _SKIP_LINE 에도 없어 품목 설명으로까지 샜다.
+    """
+
+    def test_lead_series_lands_in_lead_columns(self):
+        r = mys.parse_my_stock_export(_LEAD_CAP)
+        self.assertEqual(r["lead_corr"], 0.71)
+        self.assertEqual(r["lead_dir_hit"], 83.0)
+        # 동시 칸은 **비어 있어야** 한다 — 빈칸이 틀린 값보다 낫다.
+        self.assertIsNone(r["corr"], "선행상관이 동시 칸에 들어감")
+        self.assertIsNone(r["dir_hit"], "선행 방향일치율이 동시 칸에 들어감")
+
+    def test_coincident_series_lands_in_coincident_columns(self):
+        r = mys.parse_my_stock_export(_COIN_CAP)
+        self.assertEqual(r["corr"], 0.67)
+        self.assertEqual(r["dir_hit"], 75.0)
+        self.assertIsNone(r["lead_corr"])
+        self.assertIsNone(r["lead_dir_hit"])
+
+    def test_metric_line_does_not_leak_into_item(self):
+        """`1Q 선행상관: 0.71` 이 품목 설명으로 렌더되던 버그(카드 3/6)."""
+        for cap in (_LEAD_CAP, _COIN_CAP):
+            self.assertIsNone(mys.parse_my_stock_export(cap)["item"], cap[:20])
+
+    def test_bare_correlation_is_not_guessed(self):
+        """접두 없는 맨 `상관` 은 어느 계열인지 모르므로 받지 않는다."""
+        cap = _COIN_CAP.replace("동시상관: 0.67", "상관: 0.67")
+        r = mys.parse_my_stock_export(cap)
+        self.assertIsNone(r["corr"])
+        self.assertIsNone(r["lead_corr"])
+
+    def test_page_guide_explains_both_series(self):
+        """카드에 두 계열이 나오는데 안내문이 한쪽만 설명하면 사용자는 왜
+        칸이 다른지 모른다(설명 out-of-sync = 버그)."""
+        self.assertIn("선행", mys._SUB)
+        self.assertIn("동시", mys._SUB)
+        self.assertIn("비교할 수", mys._SUB)
+
+    def test_card_labels_distinguish_the_two_series(self):
+        row = dict(ticker="ADI", stock_name="Analog Devices", month="2026-07",
+                   lead_corr=0.71, lead_dir_hit=83.0)
+        html = mys._card_html(row, [], "../media/")
+        self.assertIn("선행상관", html)
+        self.assertIn("선행 방향 일치율", html)
+        # 선행 전용 행에 '동시상관' 라벨이 붙으면 안 된다.
+        self.assertNotIn("동시상관", html)
+
+
+class ParseVersionMigrationTests20260820(unittest.TestCase):
+    """옛 파서로 **구운** 값은 코드를 고쳐도 안 바뀐다(실수 #18·#21b).
+
+    이 모듈의 upsert 는 필드 보존 병합이라 새 파싱이 None 을 주면 옛 값을
+    도로 살린다 — 정확히 선행 3종이 그 상태였다(dir_hit=83, item='1Q
+    선행상관: 0.71'). parse_ver 가 낮으면 파생 필드는 새 파싱만 쓴다.
+    """
+
+    _V1_SCHEMA = """CREATE TABLE my_stock_exports (
+      ticker TEXT NOT NULL, month TEXT NOT NULL DEFAULT '', stock_name TEXT,
+      item TEXT, export_yoy REAL, export_yoy_3m REAL, price_yoy REAL,
+      corr REAL, dir_hit REAL, revenue TEXT, note TEXT, chart_media TEXT,
+      source_message_id INTEGER, posted_at TEXT, raw_text TEXT,
+      updated_at TEXT, PRIMARY KEY (ticker, month));"""
+
+    def _v1_db(self, path):
+        import sqlite3
+        c = sqlite3.connect(path)
+        c.executescript(self._V1_SCHEMA)
+        c.execute(
+            "INSERT INTO my_stock_exports (ticker,month,stock_name,item,"
+            "export_yoy,export_yoy_3m,corr,dir_hit,chart_media) VALUES "
+            "('ADI','2026-07','Analog Devices','1Q 선행상관: 0.71',67.8,74.1,"
+            "NULL,83.0,'2026-08-20/adi.jpg')")
+        c.commit()
+        c.close()
+
+    def test_stale_row_is_recorrected_and_media_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "my_stock.db"
+            self._v1_db(db)
+            conn = mys.open_my_stock_db(db)      # ALTER TABLE 마이그레이션
+            mys.ingest(conn, _LEAD_CAP, source_message_id=1,
+                       posted_at="2026-08-20T00:00:00Z", media_paths=[])
+            r = dict(conn.execute("SELECT * FROM my_stock_exports").fetchone())
+            self.assertIsNone(r["item"], "품목 칸에 지표가 남음")
+            self.assertIsNone(r["dir_hit"], "동시 칸에 선행값이 남음")
+            self.assertEqual(r["lead_corr"], 0.71)
+            self.assertEqual(r["lead_dir_hit"], 83.0)
+            self.assertEqual(r["parse_ver"], mys._PARSE_VER)
+            # 파싱 산물이 **아닌** 필드는 지우면 안 된다.
+            self.assertEqual(r["chart_media"], "2026-08-20/adi.jpg")
+
+    def test_migration_adds_columns_to_existing_db(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "my_stock.db"
+            self._v1_db(db)
+            conn = mys.open_my_stock_db(db)
+            cols = {r["name"] for r in
+                    conn.execute("PRAGMA table_info(my_stock_exports)")}
+            for c in ("lead_corr", "lead_dir_hit", "parse_ver"):
+                self.assertIn(c, cols, "기존 DB 에 컬럼이 안 붙음 — 첫 쓰기가 터진다")
+
+    def test_history_table_columns_follow_the_series_present(self):
+        """두 계열을 한 열에 합치면 세로로 읽는 자리에서 정의가 갈린다(#32)."""
+        lead = [dict(month="2026-06", export_yoy=1.0, lead_corr=0.7,
+                     lead_dir_hit=80.0),
+                dict(month="2026-07", export_yoy=2.0, lead_corr=0.71,
+                     lead_dir_hit=83.0)]
+        html = mys._hist_table(lead)
+        self.assertIn("<th>선행상관</th>", html)
+        self.assertNotIn("<th>동시상관</th>", html)
+        coin = [dict(month="2026-06", export_yoy=1.0, corr=0.6, dir_hit=70.0),
+                dict(month="2026-07", export_yoy=2.0, corr=0.67, dir_hit=75.0)]
+        html2 = mys._hist_table(coin)
+        self.assertIn("<th>동시상관</th>", html2)
+        self.assertNotIn("<th>선행상관</th>", html2)
+
+
 if __name__ == "__main__":
     unittest.main()
