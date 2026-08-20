@@ -180,6 +180,9 @@ def detect_ftd(history_asc: list[dict]) -> dict:
 
 
 # ── 매크로 크로스에셋 레짐(ETF 비율 기반) ───────────────────────────────────
+_MACRO_MIN_VOTES = 3      # 6개 입력 중 절반 미만이면 판단보류
+
+
 def classify_macro_regime(rsp_spy_yoy: float | None, curve_10y2y: float | None,
                           hyg_lqd_yoy: float | None, iwm_spy_yoy: float | None,
                           spy_tlt_yoy: float | None, xly_xlp_yoy: float | None) -> str:
@@ -199,7 +202,11 @@ def classify_macro_regime(rsp_spy_yoy: float | None, curve_10y2y: float | None,
         votes.append("Inflationary" if spy_tlt_yoy > 0 else "Contraction")
     if xly_xlp_yoy is not None:
         votes.append("Broadening" if xly_xlp_yoy > 0 else "Contraction")
-    if not votes:
+    # ⚠️ 독스트링은 "입력 부족(None 다수)이면 Transitional(판단보류)" 라고
+    # 적어 놓고 구현은 **1표만 있어도** 그 하나로 레짐을 확정했다(1 > 1/2).
+    # 2026-08-20 실측에서 실제로 커브 1표만 남아 'Broadening' 이 떠 있었다.
+    # 절반(6개 중 3개) 미만이면 판단을 보류한다 — 약속대로.
+    if len(votes) < _MACRO_MIN_VOTES:
         return "Transitional"
     from collections import Counter
     top, n = Counter(votes).most_common(1)[0]
@@ -1288,8 +1295,14 @@ def _load_market_timing() -> dict:
         _macro_bar = [""]      # 이 레짐이 어느 봉 기준인지(규칙 10b)
 
         def _yoy(ticker: str):
-            h = fetch_index_history(ticker, days=280)
+            # ⚠️ days=280 은 period='1y'(≈250 거래일)로 매핑돼 아래 252 룩백을
+            # **거의 항상** 못 채웠다 — 6개 비율이 전부 None 이 되고 FRED 커브
+            # 1표만 남아 'Broadening' 이 확정되고 있었다(2026-08-20 발각:
+            # 기준시각이 비어 있던 게 그 증상이었다). 3년치를 받아 확실히 채운다.
+            h = fetch_index_history(ticker, days=400)
             if len(h) < 252:
+                log.warning("market_timing: 매크로 %s 히스토리 %d행(<252) — "
+                            "이 비율은 레짐 투표에서 빠진다", ticker, len(h))
                 return None
             _d = str(h[-1].get("date") or "")[:10]
             if _d and _d > _macro_bar[0]:
@@ -1318,6 +1331,11 @@ def _load_market_timing() -> dict:
             "rsp_spy": rsp_spy, "iwm_spy": iwm_spy, "hyg_lqd": hyg_lqd,
             "spy_tlt": spy_tlt, "xly_xlp": xly_xlp, "curve_10y2y": curve,
             "as_of": _macro_bar[0] or None,
+            # 몇 개 지표가 실제로 반영됐는지 — 1표짜리 레짐이 6표처럼 보이면
+            # 안 된다(사용자가 화면만 보고 신뢰도를 판단할 수 없다).
+            "inputs": sum(1 for v in (rsp_spy, iwm_spy, curve, hyg_lqd,
+                                      spy_tlt, xly_xlp) if v is not None),
+            "inputs_total": 6,
         }
     except Exception as exc:
         log.debug("market_timing: macro regime failed: %s", exc)
@@ -1394,6 +1412,19 @@ _RISK_COLOR = {"NORMAL": "#16a34a", "CAUTION": "#f59e0b", "HIGH": "#ef4444",
               "SEVERE": "#991b1b"}
 
 
+def _macro_inputs_note(macro: dict) -> str:
+    """반영된 지표 수 — 1표짜리 레짐이 6표처럼 보이지 않게."""
+    n, total = macro.get("inputs"), macro.get("inputs_total")
+    if n is None or not total:
+        return ""
+    warn = n < 3
+    body = f"반영 지표 {n}/{total}"
+    if warn:
+        return (f'<span style="color:#f0a020">· {body} — 입력 부족으로 '
+                f'판단보류(Transitional)</span>')
+    return f"· {body}"
+
+
 def _num1(v) -> str:
     """소수 1자리 — 원시 float 을 그대로 찍으면 `-44.97084%` 처럼 폭주한다
     (사용자 2026-08-20 크립토 카드 캡처)."""
@@ -1466,7 +1497,8 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="stat-grid"><div class="stat"><div class="k">국면</div>
 <div class="v" style="font-size:16px">{_h.escape(macro.get("regime","Transitional"))}</div></div></div>
 <div class="note">RSP-SPY(집중도) · IWM-SPY(대소형) · HYG-LQD(신용) · SPY-TLT(주식·채권) ·
-10Y-2Y(커브) 다수결 — 세부 가중치 없는 단순 휴리스틱(참고용). {_asof_note(macro.get("as_of"))}</div></div>"""
+10Y-2Y(커브) 다수결 — 세부 가중치 없는 단순 휴리스틱(참고용).
+{_macro_inputs_note(macro)} {_asof_note(macro.get("as_of"))}</div></div>"""
 
     crypto = data.get("crypto", {})
     crypto_card = ""

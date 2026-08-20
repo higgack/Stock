@@ -26972,3 +26972,52 @@ class TestSecondSweep20260820:
         html2 = mt.render_market_timing_page(
             {"markets": {}, "as_of": "2026-08-20", "volatility": {"vkospi": rec}})
         assert "08-20 종가" in html2, "마감 후에도 '장중' 이라 적는다"
+
+    # ── ⑪ '기준시각 미기록'이 드러낸 진짜 버그 ─────────────────────────
+    def test_macro_yoy_requests_enough_history_for_its_lookback(self):
+        """⚠️ 2026-08-20: 매크로 레짐 카드가 '기준시각 미기록'으로 떴는데,
+        그건 증상이고 원인은 따로였다 — `_yoy` 가 `days=280`(→ period '1y'
+        ≈ 250 거래일)을 받아 놓고 `h[-252]` 를 보느라 **거의 항상 None** 을
+        돌려줬다. 6개 비율이 전부 빠지고 FRED 커브 1표만 남아 'Broadening'
+        이 확정되고 있었다. 룩백보다 넉넉히 받아야 한다."""
+        import re
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        blk = src[src.index("def _yoy(ticker: str):"):][:600]
+        m = re.search(r"fetch_index_history\(ticker, days=(\d+)\)", blk)
+        assert m, blk[:200]
+        days = int(m.group(1))
+        assert days > 300, (
+            f"days={days} 는 period='1y'(≈250 거래일)로 매핑돼 252 룩백을 "
+            f"못 채운다 — 300 초과여야 3년치를 받는다")
+
+    def test_a_single_input_cannot_decide_the_macro_regime(self):
+        """독스트링은 "입력 부족(None 다수)이면 Transitional(판단보류)" 라고
+        약속해 놓고, 구현은 **1표만 있어도** 그 하나로 레짐을 확정했다
+        (1 > 1/2). 실제로 커브 1표짜리 'Broadening' 이 화면에 떠 있었다."""
+        from bot.market_timing import classify_macro_regime as f
+        assert f(None, 0.5, None, None, None, None) == "Transitional"
+        assert f(2.0, None, None, None, None, None) == "Transitional"
+        assert f(2.0, 0.5, 1.0, None, None, None) == "Broadening"   # 3표
+        assert f(2.0, -0.3, 1.0, 1.5, 3.0, 2.0) == "Broadening"     # 6표
+        assert f(None, None, None, None, None, None) == "Transitional"
+
+    def test_macro_card_shows_how_many_inputs_backed_it(self, monkeypatch):
+        """1표짜리 레짐이 6표처럼 보이면 안 된다 — 화면이 신뢰도를 밝힌다."""
+        import re
+        import bot.market_timing as mt
+
+        def note(macro):
+            h = mt.render_market_timing_page(
+                {"markets": {}, "as_of": "2026-08-20", "macro": macro})
+            g = re.search(r"휴리스틱\(참고용\)\.(.{0,140})", h, re.S)
+            return re.sub(r"<[^>]*>", "", g.group(1)).strip() if g else ""
+
+        full = note({"regime": "Broadening", "as_of": "2026-08-19",
+                     "inputs": 6, "inputs_total": 6})
+        assert "반영 지표 6/6" in full and "기준 2026-08-19" in full, full
+        thin = note({"regime": "Transitional", "as_of": None,
+                     "inputs": 1, "inputs_total": 6})
+        assert "반영 지표 1/6" in thin and "판단보류" in thin, thin
+        # 수집기가 실제로 개수를 싣는가(배선) — 렌더만 고치면 늘 빈칸.
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert '"inputs": sum(1 for v in' in src, "inputs 미배선"
