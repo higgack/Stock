@@ -8,7 +8,7 @@
   ② 신선도 분류(active/stale/archived)와 화면 표기의 일치
   ③ **검색 해석 이중구현 대조** — 파이썬(텔레그램·NOAH) vs JS(대시보드).
      두 곳이 갈라지면 같은 검색어가 화면과 텔레그램에서 다른 답을 준다.
-  ④ 데이터 품질 냄새 — 자기참조·중복·방향 의심·품목에 회사명
+  ④ 데이터 품질 냄새 — 자기참조·중복·방향 의심·품목↔회사 혼입(2종 분리)
 
     cd ~/stock && .venv/bin/python -m bot.scripts.valuechain_audit
     cd ~/stock && .venv/bin/python -m bot.scripts.valuechain_audit --all
@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from collections import Counter
 
-_PROBE_VER = 1
+_PROBE_VER = 2   # 2 = 품목↔회사 혼입 판정을 co_slot·supply_tgt 로 분리(라벨 오보 fix)
 
 # 공급관계인데 상대가 금융·용역이면 '공급망'이 아닐 가능성이 높다 —
 # 자동발굴(LLM)이 문장에서 잘못 뽑는 전형적 패턴이라 **확인 대상**으로 띄운다
@@ -130,13 +130,24 @@ def main() -> int:
     for e in susp[:8]:
         _p(f"      {e['company']} {e['relation']} → {e['target']}"
            f"   [{e.get('source','')}·{e.get('status','')}] {(e.get('evidence') or '')[:40]}")
-    # 품목 자리에 회사명이 들어간 경우(취급품목/수출품목 대상이 회사 목록에 존재)
-    companies = set(vc._norm(c) for c in co_map)
+    # 품목/회사 혼입 — 두 신호를 **분리**한다. 예전엔 co_map(회사 슬롯 + 납품·
+    # 고객 대상이 섞인 맵) 하나로 판정해 '반도체 제조장비' 같은 순수 품목이
+    # "품목 자리에 회사명"으로 찍혔다(2026-08-20, 라벨이 방향을 거꾸로 말함).
+    co_slot = set(vc._norm(e.get("company") or "") for e in ok)
+    supply_tgt = set(vc._norm(e.get("target") or "") for e in ok
+                     if e.get("relation") in ("납품", "고객", "계열"))
     item_is_co = [e for e in ok if e.get("relation") in vc._ITEM_REL
-                  and vc._norm(e.get("target") or "") in companies]
-    _p(f"   품목 자리에 회사명 {len(item_is_co)}건 "
+                  and vc._norm(e.get("target") or "") in co_slot]
+    _p(f"   품목 자리에 회사명(다른 엣지의 회사 슬롯과 동명) {len(item_is_co)}건 "
        f"{'✅' if not item_is_co else '⚠️ 품목/회사 혼입 확인'}")
     for e in item_is_co[:5]:
+        _p(f"      {e['company']} {e['relation']} → {e['target']}")
+    item_as_tgt = [e for e in ok if e.get("relation") in vc._ITEM_REL
+                   and vc._norm(e.get("target") or "") in supply_tgt
+                   and vc._norm(e.get("target") or "") not in co_slot]
+    _p(f"   같은 이름이 품목이자 공급관계 대상 {len(item_as_tgt)}건 "
+       f"{'✅' if not item_as_tgt else '⚠️ 오류 단정 아님 — 품목명을 납품 대상으로 적은 엣지 후보'}")
+    for e in item_as_tgt[:5]:
         _p(f"      {e['company']} {e['relation']} → {e['target']}")
 
     if show_all:

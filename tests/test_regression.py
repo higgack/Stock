@@ -10537,6 +10537,103 @@ class TestDartFeedTabCollapse:
         assert "querySelector('.df-month-cnt')" in html
         assert "mc.textContent=n+'건'" in html
 
+    # ── 2026-08-20 감사: 헤더 카운트가 '숨긴 카드'까지 세고 있었다 ──────────
+    @staticmethod
+    def _dart_fixture():
+        """지분공시 미파싱 2건은 _equity_noise 로 숨는다 — 헤더가 그걸 세면
+        '6건'이라 적힌 날에 카드가 4장만 뜬다(사용자가 눈으로 세면 안 맞음)."""
+        def it(n, ds, cat, rn, detail=None):
+            return {"rcept_no": f"{ds.replace('-', '')}{n:06d}", "date": ds.replace("-", ""),
+                    "corp_name": f"회사{n}", "stock_code": "005930", "url": "#",
+                    "report_nm": rn, "category": cat,
+                    **({"detail": detail} if detail else {})}
+        return {
+            "2026-08-20": [
+                it(1, "2026-08-20", "실적", "매출액또는손익구조30%(대규모법인은15%)이상변동", ["매출: 1조"]),
+                it(2, "2026-08-20", "계약", "단일판매ㆍ공급계약체결", ["계약금액: 500억"]),
+                it(3, "2026-08-20", "지분공시", "임원ㆍ주요주주특정증권등소유상황보고서"),
+                it(4, "2026-08-20", "지분공시", "주식등의대량보유상황보고서(약식)"),
+            ],
+            # 이 날은 전부 숨김 대상 — 빈 날짜 그룹(헤더만 있고 카드 0장) 금지
+            "2026-08-19": [
+                it(5, "2026-08-19", "지분공시", "임원ㆍ주요주주특정증권등소유상황보고서"),
+            ],
+        }
+
+    @staticmethod
+    def _counts(html):
+        import re
+        card = re.compile(r'<div class="df-card[" ]')
+        groups = list(re.finditer(
+            r'<div class="df-date-group(?: collapsed)?" data-date="([^"]+)">', html))
+        out = {}
+        for i, m in enumerate(groups):
+            end = groups[i + 1].start() if i + 1 < len(groups) else len(html)
+            seg = html[m.end():end]
+            lbl = re.search(r'<span class="df-date-cnt">(\d+)</span>', seg)
+            out[m.group(1)] = (int(lbl.group(1)) if lbl else None,
+                               len(card.findall(seg)))
+        return out
+
+    def test_date_and_month_headers_count_visible_cards_only(self):
+        import re
+        import bot.dashboard as d
+        html = d._render_dart_feed_page(self._dart_fixture())[0]
+        per = self._counts(html)
+        assert per, "날짜 그룹을 못 찾음 — 패턴이 렌더와 어긋남"
+        for ds, (label, cards) in per.items():
+            assert label == cards, f"{ds}: 헤더 {label} ≠ 카드 {cards}"
+            assert cards > 0, f"{ds}: 카드 0장 그룹이 렌더됨"
+        # 전부 숨김인 날(08-19)은 그룹 자체가 없어야
+        assert "2026-08-19" not in per
+        # 월 헤더도 실제 카드 합
+        mon = re.search(r'<span class="df-month-cnt">(\d+)건</span>', html)
+        assert mon and int(mon.group(1)) == sum(c for _l, c in per.values())
+        # 전체 필 = 카드 합
+        allp = re.search(r'data-cat="전체">전체 (\d+)</button>', html)
+        assert allp and int(allp.group(1)) == sum(c for _l, c in per.values())
+
+    def test_category_outside_catalog_still_gets_a_pill(self):
+        # 카탈로그(_DART_CATEGORIES)를 이름으로 열거만 하면 그 밖의 카테고리는
+        # 카드로는 보이는데 어떤 필로도 도달 못 한다(실수 #24 의 DART 판).
+        import re
+        import bot.dashboard as d
+        fx = self._dart_fixture()
+        fx["2026-08-20"].append(
+            {"rcept_no": "20260820000009", "date": "20260820", "corp_name": "회사9",
+             "stock_code": "005930", "url": "#", "report_nm": "새유형공시",
+             "category": "신설카테고리", "detail": ["x"]})
+        html = d._render_dart_feed_page(fx)[0]
+        assert 'data-cat="신설카테고리">신설카테고리 1</button>' in html
+        # Σ(카테고리 필) == 전체 필 — 도달 못 하는 카드가 없다는 뜻
+        allp = int(re.search(r'data-cat="전체">전체 (\d+)</button>', html).group(1))
+        cats = sum(int(m) for m in re.findall(
+            r'<button class="df-pill" data-cat="[^"]+">[^<]*? (\d+)</button>', html))
+        assert cats == allp, f"카테고리 필 합 {cats} ≠ 전체 {allp}"
+
+    def test_header_carries_data_asof_not_only_render_time(self):
+        # 렌더는 1분마다 도니까 렌더시각만 찍으면 수집이 죽어도 화면은 늘
+        # '방금'이다 — 최신 접수일을 실어야 "이거 최신이야?"에 답이 된다(#43).
+        import bot.dashboard as d
+        html = d._render_dart_feed_page(self._dart_fixture())[0]
+        assert "최신 공시 <b>2026-08-20</b>(3건)" in html
+        assert "페이지 생성" in html
+
+    def test_header_marks_lag_when_behind_last_kr_session(self, monkeypatch):
+        import bot.dashboard as d
+        import bot.market_calendar as mcal
+        monkeypatch.setattr(mcal, "last_session_on_or_before",
+                            lambda mkt, ds: "2026-08-20")
+        fx = {"2026-08-10": [
+            {"rcept_no": "20260810000001", "date": "20260810", "corp_name": "회사1",
+             "stock_code": "005930", "url": "#", "report_nm": "단일판매ㆍ공급계약체결",
+             "category": "계약", "detail": ["계약금액: 1억"]}]}
+        assert "⚠️ 지연" in d._render_dart_feed_page(fx)[0]
+        # 최신 접수일이 마지막 세션이면 배지 없음
+        monkeypatch.setattr(mcal, "last_session_on_or_before",
+                            lambda mkt, ds: "2026-08-10")
+        assert "⚠️ 지연" not in d._render_dart_feed_page(fx)[0]
+
 
 class TestPruneNonStock:
     """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
@@ -12284,12 +12381,25 @@ class TestDartCardOrderIsReceiptOrder:
     백필/재fetch 가 섞을 수 있어 렌더타임 고정."""
 
     def test_sorted_by_rcept_no_desc(self):
+        # ⚠️ 예전엔 정렬 **소스 문자열**(들여쓰기 포함)을 단언했다 — 정렬을
+        # 딴 데로 옮기기만 해도 깨지고, 정작 순서가 뒤집혀도 문자열이 남아
+        # 있으면 통과한다(실수 #19). 실제 렌더 결과의 카드 순서로 고정한다.
+        import re
+        import bot.dashboard as d
+        def it(rno, nm):
+            return {"rcept_no": rno, "date": "20260820", "corp_name": nm,
+                    "stock_code": "005930", "url": "#", "category": "계약",
+                    "report_nm": "단일판매ㆍ공급계약체결", "detail": ["계약금액: 1억"]}
+        html = d._render_dart_feed_page({"2026-08-20": [
+            it("20260820000100", "먼저접수"),
+            it("20260820000900", "나중접수"),
+            it("20260820000500", "중간접수")]})[0]
+        names = re.findall(r'<div class="df-card[^"]*" data-cat="[^"]*"'
+                           r' data-flag="[^"]*" data-name="([^"]+)"', html)
+        assert names == ["나중접수", "중간접수", "먼저접수"], names
+        # 배선(정렬 키 자체)도 남겨 둔다 — 값은 위 동작 테스트가 지킨다.
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'key=lambda x: str(x.get("rcept_no") or "")' in src
-        # 정렬 호출 자체에 reverse=True 인접 확인 (카운트 프리패스의
-        # 'for it in items' 와 혼동 없는 exact 매칭)
-        assert ('key=lambda x: str(x.get("rcept_no") or ""),\n'
-                '                           reverse=True)') in src
 
 
 class TestLegendOrderMatchesChips:
@@ -18210,6 +18320,46 @@ class TestCreditSplitAndMarketcap20260706:
         import bot.dashboard as d2
         assert len(mc.EMBED_AXES) == 6 and len(d2._MARKETCAP_EXTERNAL) == 9
         assert "fetch_all_axes" in db    # regen 이 6축 일괄 수집
+
+    # ── 2026-08-20 감사 ────────────────────────────────────────────────────
+    def test_cache_ttl_shorter_than_regen_period(self):
+        # TTL 이 재생성 주기와 같으면 사이클의 절반이 캐시에 걸려 "3시간 갱신"
+        # 이 거짓이 된다(실수 #36 — FRED 보드에서 겪은 그 병).
+        import bot.marketcap_client as mc
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "await asyncio.sleep(5 if first else 3 * 3600)" in tb, \
+            "_periodic_marketcap 주기가 바뀌었으면 TTL 도 같이 보라"
+        assert mc._TTL < 3 * 3600, f"TTL {mc._TTL}s ≥ 주기 10800s"
+
+    def test_rank_cell_identified_by_class_not_integer_heuristic(self):
+        # 예전 파서는 '순수 1~4자리 정수 = 순위'로 걸렀다 — P/E 처럼 메트릭이
+        # 정수인 행("27")이 통째로 버려져 그 칸이 '—' 로 떴다.
+        import bot.marketcap_client as mc
+        row = ('<tr><td class="rank-td td-right" data-sort="7">7</td>'
+               '<td><div class="company-name">IntPE Co</div>'
+               '<div class="company-code">IPE</div></td>'
+               '<td class="td-right">27</td><td class="td-right">$55.10</td></tr>')
+        r = mc._parse_rank_rows(row)
+        assert r and r[0]["metric"] == "27" and r[0]["price"] == "$55.10"
+        assert r[0]["rank"] == 7            # 원본 순위 셀 값
+
+    def test_rank_comes_from_site_so_a_skipped_row_does_not_shift_others(self):
+        # 파싱 순서로 순위를 매기면 한 행이 스킵될 때 이후 순위가 조용히
+        # 한 칸씩 밀린다 — 화면상 아무 이상 없어 보이는 게 더 나쁘다.
+        import bot.marketcap_client as mc
+        def tr(rank, nm, tk, metric):
+            return (f'<tr><td class="rank-td" data-sort="{rank}">{rank}</td>'
+                    f'<td><div class="company-name">{nm}</div>'
+                    f'<div class="company-code">{tk}</div></td>'
+                    f'<td>{metric}</td><td>$10.00</td></tr>')
+        # 2위 행은 메트릭 셀이 없어 파서가 건너뛴다(vals 비어 continue)
+        skipped = ('<tr><td class="rank-td" data-sort="2">2</td>'
+                   '<td><div class="company-name">NoMetric</div>'
+                   '<div class="company-code">NM</div></td><td>—</td></tr>')
+        rows = mc._parse_rank_rows(tr(1, "A", "AA", "$3.000 T") + skipped
+                                   + tr(3, "C", "CC", "$1.000 T"))
+        assert [r["rank"] for r in rows] == [1, 3]
+        assert [r["ticker"] for r in rows] == ["AA", "CC"]
 
 
 class TestFearGreedGauge20260708:

@@ -3991,8 +3991,11 @@ async def _periodic_dart_fav_alerts(application) -> None:
 async def _periodic_marketcap() -> None:
     """marketcap.html 3시간 주기 재생성(사용자 2026-07-06 — companiesmarketcap
     글로벌 시총 순위 이식). 첫 생성은 부팅 5초 후(파일 부재 404 창 최소화 +
-    watchdog 재시작 루프에서도 생성 보장 — 리뷰 2026-07-06), 이후 3h
-    (클라이언트 디스크 캐시 TTL 과 동일 — 캐시 fresh 면 재렌더만, 외부 호출 0)."""
+    watchdog 재시작 루프에서도 생성 보장 — 리뷰 2026-07-06), 이후 3h.
+
+    ⚠️ marketcap_client._TTL 은 이 주기보다 **짧아야** 한다(2.5h). 같게 두면
+    사이클의 절반이 캐시에 걸려 "3시간 갱신" 표기가 거짓이 된다 — 실수 #36
+    (FRED 보드에서 TTL 5h/주기 3h 로 같은 병을 겪었다). 회귀가 고정한다."""
     first = True
     while True:
         try:
@@ -4389,7 +4392,7 @@ async def _on_startup(application) -> None:
         _ec_thr.Thread(target=_econ_calendar_initial, daemon=True).start()
     except Exception as exc:
         log.warning("startup: econ calendar thread failed: %s", exc)
-    # DART 공시 즉시 채움 — 타이머(30분)를 기다리지 않고 startup 직후 백그라운드
+    # DART 공시 즉시 채움 — 타이머(dart-feed.timer, 1분)를 기다리지 않고 startup 직후 백그라운드
     # 1회 fetch → 재배포 시 수 초 내 공시 표시(빈 '전체 0' 방지). 무료·LLM 0.
     try:
         import threading as _dt_thr
