@@ -606,7 +606,7 @@ def _market_section(d: dict) -> str:
 <div class="stat"><div class="k">현금</div><div class="v">{(d.get('cash_w') or 0) * 100:.0f}%</div></div>
 </div>
 <div class="sub" style="margin-top:6px">투자 대상 <b>{tgt_html}</b> · RS 순위(상위 5, 지수 대비 6개월) {rs_html}
-· F&amp;G {fng_s} · 기준일 {_h.escape(str(d.get('asof', '')))}</div>
+· F&amp;G {fng_s} · 기준일 {_h.escape(str(d.get('asof', '')))}{_session_badge(d.get('market'), d.get('asof'))}</div>
 {miss_html}
 <div class="sub">표본 {_h.escape(str(d.get('source_label', '')))} {b.get('counted', 0)}개
 (MA120 상회 {b.get('above', 0)}개) · {_h.escape(str(d.get('resolution_note', '')))}</div>
@@ -626,6 +626,24 @@ _BS_CSS = """
 .bs-tbl tr.on{background:rgba(77,163,255,.14);font-weight:600}
 </style>
 """
+
+
+def _session_badge(market, asof) -> str:
+    """기준일 옆 세션 상태 배지 — 시장타이밍 보드와 **같은 판정**을 재사용.
+
+    사용자 2026-08-20: "Breadth 4구간 전략도 가장 최근에 종가를 가져오는거
+    맞지?" — 화면이 스스로 답해야 하는 질문이다. KR 은 장중(09:00~15:30)에
+    재계산되면 기준일이 오늘이지만 그 봉은 **종가가 아니라 부분봉**이라
+    Breadth·DD·RS 가 확정 전 값이다(감사는 그걸 찍는데 이 화면은 조용했다).
+    복제하면 두 화면 판정이 갈라지므로 market_timing 것을 그대로 쓴다."""
+    if not (market and asof):
+        return ""
+    try:
+        from bot.market_timing import _idx_stale
+        return _idx_stale(str(market), str(asof))
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("breadth_strategy: 세션 배지 실패: %s", exc)
+        return ""
 
 
 def render_page(data: dict, now=None) -> str:

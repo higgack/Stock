@@ -1120,6 +1120,16 @@ def _prev_weekday(d):
     return d
 
 
+def _prev_session(market: str, date_str: str) -> str | None:
+    """`date_str`(세션) **직전** 거래일."""
+    try:
+        from bot.market_calendar import add_trading_days
+        return add_trading_days(market, date_str, -1)
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 직전 세션 계산 실패: %s", market, exc)
+        return None
+
+
 def _expected_session(market: str) -> tuple[str | None, int]:
     """(기대 최신 거래일, 허용 세션수). 휴장일 캘린더가 있으면 정확히,
     없으면 **주중 기준**으로 판정하되 연휴 오탐을 피하려 여유를 넓힌다 —
@@ -1129,14 +1139,21 @@ def _expected_session(market: str) -> tuple[str | None, int]:
     # 마감 뒤 정상 종가가 '기대보다 미래'로 보여 판정이 뒤집힌다.
     closed = _market_closed_today(market)
     try:
-        from bot.market_calendar import add_trading_days, is_trading_day
+        from bot.market_calendar import (is_trading_day,
+                                          last_session_on_or_before)
         t = today.isoformat()
         trading = is_trading_day(market, t)
         if trading is not None:
             if trading and closed:
                 return t, _IDX_GRACE_SESSIONS
-            exp = (add_trading_days(market, t, -1) if trading
-                   else add_trading_days(market, t, 0))
+            # ⚠️ 과거 방향은 `last_session_on_or_before` 로. 예전엔
+            # `add_trading_days(.., -1/0)` 을 썼는데 그 함수는 **앞방향**
+            # 의미라 휴일·음수에서 미래 날짜를 돌려줬다(2026-08-20 실측:
+            # KR -1 → 2026-09-07). 오늘 장이 안 끝났으면 오늘 **이전** 세션.
+            base = (t if not trading else
+                    (last_session_on_or_before(market, t) or t))
+            exp = (last_session_on_or_before(market, t) if not trading
+                   else _prev_session(market, base))
             if exp:
                 return exp, _IDX_GRACE_SESSIONS
     except Exception as exc:                                   # noqa: BLE001
