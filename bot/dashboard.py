@@ -8594,6 +8594,16 @@ def _month_kr(ym: str) -> str:
         return ym
 
 
+def _feed_note(feed: str) -> str:
+    """'마지막 X' stat 옆에 붙는 수집기 점검 문구. import 실패해도 화면을
+    막지 않는다(대시보드 렌더는 어떤 부가정보보다 우선)."""
+    try:
+        from bot import feed_health
+        return _html.escape(feed_health.note(feed))
+    except Exception:
+        return "점검 기록 없음"
+
+
 def _feed_latest_ts(runs: list[dict]) -> str:
     """피드형 대시보드의 as-of = **가장 최근 항목의 ts**('YYYY-MM-DD HH:MM').
 
@@ -11260,7 +11270,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
   <p class="sub">아파트 실거래가(MOLIT) 주간 브리프(금 09:00 · 월간 1일 09:00) + 청약홈 분양 피드(평일 10·14시) · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
   <div class="stats">
     <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 기록</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(_re_asof) if _re_asof else '—'}</div><div class="stat-l">마지막 기록 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(_re_asof) if _re_asof else '—'}</div><div class="stat-l">마지막 기록 (KST) · 실거래 {_feed_note("realestate")} · 청약 {_feed_note("cheongyak")}</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
@@ -11428,7 +11438,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
   <p class="sub">신규 아파트 분양 모집공고(청약홈) 피드(평일 10·14시) · ticker·5거래일과 별개 · 공공데이터 관찰(청약 권유 아님)</p>
   <div class="stats">
     <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 피드</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(_cy_asof) if _cy_asof else '—'}</div><div class="stat-l">마지막 피드 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(_cy_asof) if _cy_asof else '—'}</div><div class="stat-l">마지막 피드 (KST) · {_feed_note("cheongyak")}</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
@@ -11572,7 +11582,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 포워드</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 포워드 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 포워드 (KST) · {_feed_note("reddit")}</div></div>
     <div class="stat"><div class="stat-v">₩0 / ₩0 / ₩0</div><div class="stat-l">비용 (오늘/이번 달/누적)</div></div>
   </div>
 
@@ -12183,7 +12193,7 @@ def _render_blog_page(runs: list[dict]) -> str:
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 새 글 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 새 글 (KST) · {_feed_note("blog")}</div></div>
     <div class="stat"><div class="stat-v">{_kg_cost_val}</div><div class="stat-l">🔗 관계후보 발굴 비용 (오늘/이번 달/누적)</div></div>
   </div>
 {_render_daju_section(_load_daju_runs(200))}
@@ -14350,7 +14360,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
                        '마지막 성공분</span>' if (d.get("stale") and rows) else "")
         tabs.append(f"""
   <div class="mc-tab" data-axis="{key}" style="display:{'block' if key == 'marketcap' else 'none'}">
-    <p class="sub" style="margin:2px 0 8px;font-size:12px">기준 {_fetched} KST{_stale_note}</p>
+    <p class="sub" style="margin:2px 0 8px;font-size:12px">기준 {_fetched} KST{_stale_note} <span style="opacity:.65">· 축마다 따로 수집(수 초 차) — 장중 시장은 탭 간 Today% 가 소수점에서 다를 수 있습니다</span></p>
     <div style="overflow-x:auto"><table class="mc-table">
       <thead><tr><th>#</th><th>기업</th><th class="mc-r">{_html.escape(mcol)}</th>
         <th class="mc-r">Price</th>{chg_th}{spark_th}<th>국가</th></tr></thead>
@@ -14892,20 +14902,27 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
             it["_unparsed"] = it["_noparse"] = False
 
     # 같은 접수번호가 두 날짜 파일에 걸쳐 있으면 총계가 그만큼 부풀려진다
-    # (2026-08-20 감사에서 실측 1건 — 옛 '창 끝 날짜' 폴백의 잔재). 접수번호가
-    # **스스로 말하는 날짜**를 최우선 채택하고, 그것도 아니면 최신 날짜 하나만
-    # 남긴다. 아카이브는 건드리지 않는다(렌더에서 정리 — 실수 #32 의 방향).
-    _pick: dict[str, str] = {}
+    # (2026-08-20 VM 감사 실측 1건 — 옛 '창 끝 날짜' 폴백의 잔재). 어느 쪽을
+    # 남기나? **항목 자신의 date(= DART 가 준 공시일자)** 와 파일 날짜가 맞는
+    # 쪽이다 — 그게 수집기가 파일을 가르는 기준이니까. (접수번호 앞 8자리를
+    # 쓰면 안 된다: 원천이 접수번호 날짜와 공시일자를 다르게 주는 건이 21일에
+    # 70건 있다.) 우선순위 = ① date 와 맞는 쪽 ② 같으면 **이른 날짜**
+    # — 순회 순서에 기대면 아카이브 로드 순서가 바뀔 때 결과가 달라진다.
+    # 아카이브는 건드리지 않고 렌더에서만 정리한다(실수 #32 의 방향).
+    _pick: dict[str, tuple[int, str]] = {}
     for _ds, _its in by_date.items():
         for it in _its:
             rno = str(it.get("rcept_no") or "")
             if not rno:
                 continue
-            own = (f"{rno[:4]}-{rno[4:6]}-{rno[6:8]}"
-                   if rno[:8].isdigit() else "")
+            raw = str(it.get("date") or "")
+            own = (f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+                   if len(raw) >= 8 and raw[:8].isdigit() else "")
+            cand = (1 if _ds == own else 0, _ds)
             cur = _pick.get(rno)
-            if cur is None or (cur != own and (_ds == own or _ds > cur)):
-                _pick[rno] = _ds
+            if (cur is None or cand[0] > cur[0]
+                    or (cand[0] == cur[0] and cand[1] < cur[1])):
+                _pick[rno] = cand
 
     # ⚠️ **표시 대상 단일 소스**(_vis) — 노이즈컷(_equity_noise) 통과 + 위
     # _pick 이 고른 날짜의 것만. 전에는 '전체' 필만 필터 후 카운트였고 월/일
@@ -14919,7 +14936,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
                                   reverse=True)
               if not _equity_noise(it)
               and (not it.get("rcept_no")
-                   or _pick.get(str(it["rcept_no"])) == _ds)]
+                   or _pick[str(it["rcept_no"])][1] == _ds)]
         if _v:                      # 전부 숨겨진 날은 빈 그룹조차 만들지 않는다
             _vis[_ds] = _v
 

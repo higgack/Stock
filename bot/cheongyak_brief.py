@@ -200,6 +200,10 @@ def generate() -> tuple[str, float, int] | None:
     if not anns:
         log.warning("cheongyak: 분양 공고 0건 — skip")
         return None
+    # 원천을 읽는 데 성공 = 수집기 생존. 신규 공고가 0건이라 아카이브를 안
+    # 남기는 날에도 화면이 '점검은 돌았다'를 말할 수 있게(실수 #43).
+    from bot import feed_health as _fh
+    _fh.mark("cheongyak")
     # 경쟁률 (별도 활용신청 — 미등록이면 빈 리스트 graceful skip)
     try:
         comps = recent_competition_enriched(per_page_compet=200, per_page_anns=300)

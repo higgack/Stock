@@ -19,7 +19,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-AUDIT_VER = 2   # 2 = 거래일 기준 결측판정·축별 정렬방향·Today% 축간 대조
+AUDIT_VER = 3   # 3 = 파일 날짜 계약을 date 필드로 정정·축간 시차 허용
 _KST = timezone(timedelta(hours=9))
 
 _OK, _NG, _WARN = "✅", "❌", "⚠️"
@@ -79,6 +79,8 @@ def audit_dart() -> None:
     dup_same = dup_cross = blank = datemis = 0
     mis_ex: list[str] = []
     dup_ex: list[str] = []
+    rno_ex: list[str] = []
+    rno_dt_diff = 0
     for ds, items in by_date.items():
         inday: set[str] = set()
         for it in items:
@@ -95,18 +97,27 @@ def audit_dart() -> None:
                 if len(dup_ex) < 5:
                     dup_ex.append(f"{rno}: {prev} · {ds}")
             seen[rno] = ds
-            if len(rno) >= 8 and rno[:8] != ds.replace("-", ""):
+            _raw = str(it.get("date") or "")
+            if _raw[:8] != ds.replace("-", ""):
                 datemis += 1
                 if len(mis_ex) < 6:
-                    # date 필드까지 찍어야 '원천이 그렇게 줬다' vs '폴백이
-                    # 창 끝 날짜로 때웠다'를 구분할 수 있다.
-                    mis_ex.append(f"{rno} date={it.get('date')!r} → 파일 {ds}")
+                    mis_ex.append(f"{rno} date={_raw!r} → 파일 {ds}")
+            if len(rno) >= 8 and rno[:8] != _raw[:8]:
+                rno_dt_diff += 1
+                if len(rno_ex) < 4:
+                    rno_ex.append(f"{rno} → 공시일자 {_raw} · {it.get('report_nm','')[:24]}")
     _p(f"{_mark(not blank)} rcept_no 결측 {blank}건")
     _p(f"{_mark(not dup_same)} 같은 날 파일 내 rcept_no 중복 {dup_same}건")
-    _p(f"{_mark(not dup_cross)} 날짜 간 rcept_no 중복(같은 공시 2회 계수) "
-       f"{dup_cross}건 {dup_ex}")
-    _p(f"{_mark(not datemis)} 접수번호 앞 8자리 ≠ 파일 날짜 {datemis}건"
+    _p(f"{_mark(not dup_cross, warn=bool(dup_cross))} 날짜 간 rcept_no 중복 "
+       f"{dup_cross}건 {dup_ex} — 아카이브 잔재. 렌더가 1건만 그리므로 화면 "
+       "총계엔 영향 없음(아래 '전체 필 = 실제 카드'로 확인)")
+    _p(f"{_mark(not datemis)} 항목의 공시일자(date) ≠ 파일 날짜 {datemis}건"
        + (f" 예: {mis_ex}" if mis_ex else " (카드 날짜라벨 정합)"))
+    # 접수번호 앞 8자리와 공시일자가 다른 건 **원천이 그렇게 주는 것**이라
+    # 정상이다(2026-08-20 21일치 12,930건 중 70건). 참고로만 센다 — 예전 v1·v2
+    # 는 이걸 ❌ 로 찍어 정상 데이터를 결함처럼 보이게 했다.
+    _p(f"[참고] 접수번호 날짜 ≠ 공시일자 {rno_dt_diff}건 (원천 특성, 정상) "
+       f"{rno_ex[:2]}")
 
     # ② 미래 날짜
     fut = [x for x in dates if x > today.strftime("%Y-%m-%d")]
@@ -385,8 +396,10 @@ def audit_marketcap() -> None:
         wild = [(r.get("name"), r.get("chg_pct"), r.get("metric"), r.get("price"))
                 for r in rows
                 if r.get("chg_pct") is not None and abs(r["chg_pct"]) > 50]
+        _big_ok = key in ("mc_gain", "mc_loss")   # 큰 변동이 이 축의 존재이유
         _p(f"  {_mark(not wild, warn=bool(wild))} Today% 결측 {nnone}행 · "
-           f"|변동|>50% {len(wild)}행 {wild[:3]}")
+           f"|변동|>50% {len(wild)}행 {wild[:3]}"
+           + ("  (이 축은 큰 변동이 정상 — 눈으로 확인용)" if _big_ok else ""))
         cty = Counter(r.get("country") or "—" for r in rows)
         _p(f"  국가 상위: " + ", ".join(f"{k} {v}" for k, v in cty.most_common(5)))
         _p(f"  1위: {rows[0].get('name')} ({rows[0].get('ticker')}) "
@@ -408,9 +421,14 @@ def audit_marketcap() -> None:
         pairs = [(r.get("name"), base[str(r.get("ticker"))], r.get("chg_pct"))
                  for r in rows
                  if str(r.get("ticker")) in base and r.get("chg_pct") is not None]
-        bad = [x for x in pairs if abs(x[1] - x[2]) > 0.02]
-        _p(f"  {_mark(not bad)} {lbl}: 공통 {len(pairs)}종목 중 불일치 {len(bad)} "
-           f"{bad[:3]}")
+        # 6축을 1.5초 간격으로 따로 긁으므로 **장중 시장**(KR·CN 등) 종목은
+        # 소수점 아래가 흔들린다 — 그건 시차지 의미 차이가 아니다. 1.0%p 를
+        # 넘으면 그 열이 다른 걸 보고 있다는 뜻이라 ❌.
+        skew = [x for x in pairs if 0.02 < abs(x[1] - x[2]) <= 1.0]
+        bad = [x for x in pairs if abs(x[1] - x[2]) > 1.0]
+        _p(f"  {_mark(not bad, warn=bool(skew))} {lbl}: 공통 {len(pairs)}종목 · "
+           f"의미 불일치(>1.0%p) {len(bad)} {bad[:3]} · 수집시차(≤1.0%p) "
+           f"{len(skew)} {skew[:3]}")
 
     # 렌더 경로
     page = d._render_marketcap_page(data)

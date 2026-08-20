@@ -26,7 +26,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-_PROBE_VER = 1
+_PROBE_VER = 2   # 2 = 수집기 점검(feed_health) 표기 확인
 _KST = timezone(timedelta(hours=9))
 _OK, _NG, _WARN = "✅", "❌", "⚠️"
 
@@ -160,6 +160,11 @@ def _audit_surface(name: str, runs: list[dict], render, *,
            + (", ".join(f"{l}={v}" for v, l in stats if "마지막" in l or "최신" in l)
               or "(없음 — 화면이 '이거 최신이야?'에 답을 못 한다)"))
         _p("      전체 stat: " + " · ".join(f"{l}={v}" for v, l in stats))
+        # '마지막 항목' 만으론 조용한 것과 죽은 것이 구별 안 된다 —
+        # 수집기 점검 시각이 같이 있어야 화면이 답을 한다(실수 #43).
+        chk = [l for _v, l in stats if "점검" in l]
+        _p(f"{_mark(bool(chk), warn=not chk)} 수집기 점검 표기 "
+           + (chk[0] if chk else "(없음 — 고정 스케줄 화면이면 정상)"))
 
 
 def main() -> int:

@@ -232,6 +232,9 @@ def generate() -> tuple[str, float, str | None] | None:
     if not data.get("regions"):
         log.warning("realestate: 실거래 데이터 0건 — skip")
         return None
+    # 원천(MOLIT 실거래)을 읽는 데 성공 = 수집기 생존(실수 #43).
+    from bot import feed_health as _fh
+    _fh.mark("realestate")
 
     # R-ONE 월간 지수 추세 (선행지표, 키 없으면 graceful skip)
     trend = {}
