@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 6
+_PROBE_VER = 7
 
 
 def _p(*a):
@@ -81,6 +81,33 @@ def _audit_rows(title, rows, default, show_all):
     _p(f"   (개별 규약 등록분 {sum(1 for r in rows if str(r.get('cadence_id') or r.get('id') or '') in CADENCE)}행"
        f" · 나머지는 보드 그룹 기본값 {default[0] if default else '없음'}"
        f"{'/' + str(default[1]) + '일' if default else ''})")
+
+
+def freshness_mark(n_rows: int, latest: str | None, expected: str | None,
+                   behind: int | None, grace: int, closed: bool | None) -> str:
+    """기준일 판정 한 줄 — **순수 함수**(동작 테스트용).
+
+    ⚠️ 이 판정을 스크립트 안에 인라인으로 두었더니 회귀가 소스 문자열만
+    보게 되어, '여유 내 지연을 다시 ✅ 로' 되돌리는 뮤테이션이 **통과**했다
+    (실수 #19: 소스 단언은 틀린 값을 축복한다). 값이 걸린 곳은 동작으로
+    고정한다.
+
+    세 상태 + 여유 구분:
+      ❌ 0행 · 🕒 장중 미확정 봉 · ⚠️ 지연(여유 내/밖) · ✅ 완결 세션
+    여유 안이라도 **뒤처진 사실은 말한다** — v6 이 TW 08-18(마지막 완결
+    08-19)을 여유 1 에 걸려 ✅ 로 통과시켰다(사용자가 처음 지적한 증상).
+    """
+    if not n_rows:
+        return "❌ 0행"
+    if latest and expected and latest > expected:
+        if closed is False:
+            return f"🕒 장중 미확정 봉({latest}) — 마지막 완결 세션은 {expected}"
+        return f"⚠️ 기준일이 기대보다 미래({latest} > {expected}) — 확인 필요"
+    if behind:
+        if behind > grace:
+            return f"⚠️ {behind}거래일 지연"
+        return f"⚠️ {behind}거래일 지연(여유 내 — 배지는 안 뜸)"
+    return "✅ 완결 세션"
 
 
 def _audit_home_surfaces(show_all):
@@ -342,6 +369,14 @@ def main() -> int:
     if not want or "timing" in want:
         _p("")
         _p("── 시장타이밍 보드 — 지수 기준일 vs 기대 거래일")
+        try:
+            import bot.market_calendar as _mc
+            _cal_ok = _mc._calendar("KR") is not None
+        except Exception:                                      # noqa: BLE001
+            _cal_ok = False
+        _p(f"   휴장일 캘린더(exchange_calendars): "
+           f"{'사용 가능 — 정확 판정' if _cal_ok else '❌ 미설치 — 주중 근사(여유 +1)'}"
+           f"{'' if _cal_ok else '  → pip install exchange_calendars 로 정밀해진다'}")
         from bot import market_timing as mt
         for mkt, indices in mt.MARKET_INDICES.items():
             ticker, name = indices[0]
@@ -353,23 +388,17 @@ def main() -> int:
             # 네이버 보강이 가능한 지수인지도 함께 — 뒤처졌는데 대체 소스가
             # 없으면 그 시장은 **구조적으로** 최신이 될 수 없다(사용자
             # 2026-08-20 "난 모두 나라다 가장 최신으로 하는걸 원해").
-            alt = ("네이버 보강 가능" if ticker.upper() in mt._NAVER_INDEX_FOR
-                   else "대체 소스 없음(ETF)")
+            # 2026-08-20: ETF 도 시세 클라이언트(tw_quote/world_quote)로
+            # 보강된다 — '대체 소스 없음' 은 더 이상 사실이 아니다.
+            alt = ("네이버 지수 보강" if ticker.upper() in mt._NAVER_INDEX_FOR
+                   else "시세 보강" if mt._quote_tail_supported(ticker)
+                   else "보강 불가")
             # ⚠️ v5 는 '기대보다 **미래**인 기준일'도 그냥 ✅ 로 찍었다 —
             # 그건 장중 미확정 봉이라 분산일·FTD·MA 가 부분봉으로 계산된다.
             # 완결/장중을 구분해서 말한다(사용자 2026-08-20: 전 시장이
             # 08-20 인데 기대는 08-19 였다).
             _closed = mt._market_closed_today(mkt)
-            if not rows:
-                mark = "❌ 0행"
-            elif latest and exp and latest > exp:
-                mark = (f"🕒 장중 미확정 봉({latest}) — 마지막 완결 세션은 {exp}"
-                        if _closed is False else
-                        f"⚠️ 기준일이 기대보다 미래({latest} > {exp}) — 확인 필요")
-            elif behind and behind > grace:
-                mark = f"⚠️ {behind}거래일 지연"
-            else:
-                mark = "✅ 완결 세션"
+            mark = freshness_mark(len(rows), latest, exp, behind, grace, _closed)
             _p(f"   {mkt:5} {name[:16]:16} {ticker:10} {len(rows):>4}행 · "
                f"기준 {latest or '—'} · 마지막 완결 {exp}"
                f" · 현지 {'마감' if _closed else '장중/개장전' if _closed is False else '?'}"

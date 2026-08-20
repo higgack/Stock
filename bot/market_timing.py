@@ -290,6 +290,53 @@ _NAVER_TAIL_TOL = 0.001      # 전일종가 일치 허용오차 0.1%
 _NAVER_TAIL_MAX_MOVE = 0.20  # 하루 ±20% 초과면 정렬이 틀린 것으로 보고 폐기
 
 
+def _quote_tail_supported(ticker: str) -> bool:
+    """이 티커에 신선도 보강 경로가 있는가(감사 표기용 — 화면과 같은 판정)."""
+    if str(ticker).upper() in _NAVER_INDEX_FOR:
+        return True
+    try:
+        from bot.market import detect_market
+        return detect_market(ticker) in ("TW", "US", "JP", "HK", "CN_A")
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def _market_quote(ticker: str) -> dict | None:
+    """{close, prev} 또는 None — **시장 무관** 최신 시세.
+
+    2026-08-20 감사: TW/CN/HK 는 지수가 아니라 ETF 라 네이버 지수 매핑이
+    없어서 야후가 늦으면 손쓸 방법이 없었다(TW 가 실제로 08-18 에 멈춰 있었다).
+    그런데 `_merge_today_bar` 가 이미 쓰는 시세 클라이언트가 전 시장을 덮는다
+    — TW=tw_quote · US/JP/HK/CN=world_quote. 이들은 `{price, pct}` 를 주므로
+    **전일종가를 역산**(price ÷ (1+pct/100))해 같은 자기검증에 쓸 수 있다."""
+    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
+    if spec:
+        return _naver_index_quote(ticker)
+    try:
+        from bot.market import detect_market
+        mkt = detect_market(ticker)
+        if mkt == "TW":
+            from bot.tw_quote import fetch_tw_quote
+            q = fetch_tw_quote(ticker)
+        elif mkt in ("US", "JP", "HK", "CN_A"):
+            from bot.world_quote import fetch_world_quote
+            q = fetch_world_quote(ticker)
+        else:
+            return None
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 시세 조회 실패: %s", ticker, exc)
+        return None
+    px = (q or {}).get("close") or (q or {}).get("price")
+    pct = (q or {}).get("pct")
+    if px is None or pct is None:
+        return None
+    try:
+        prev = float(px) / (1.0 + float(pct) / 100.0)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return {"close": float(px), "prev": prev} if prev else None
+
+
 def _naver_index_quote(ticker: str) -> dict | None:
     """{close, prev} 또는 None. 네이버 지수 시세(글로벌 스냅샷과 같은 소스)."""
     spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
@@ -310,34 +357,42 @@ def _naver_index_quote(ticker: str) -> dict | None:
     return {"close": c, "prev": pv} if c and pv else None
 
 
-def _naver_index_tail(ticker: str, rows: list[dict]) -> list[dict]:
+def _quote_tail(ticker: str, rows: list[dict]) -> list[dict]:
     """야후 시계열이 기대 거래일보다 뒤처졌으면 네이버 종가 한 봉을 덧붙인다.
 
     **정렬이 확인될 때만** 붙인다 — 네이버 `prev` 가 야후 마지막 봉과 같아야
     네이버 `close` 가 그 다음 세션임이 보장된다. 추측으로 날짜를 붙이지
     않는다(장중이면 여기서 자동으로 걸러진다)."""
-    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
-    if not rows or not spec:
+    if not rows:
         return rows
-    expected, _grace = _expected_session(spec[0])
+    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
+    if spec:
+        market = spec[0]
+    else:
+        try:
+            from bot.market import detect_market
+            market = detect_market(ticker)
+        except Exception:                                      # noqa: BLE001
+            return rows
+    expected, _grace = _expected_session(market)
     last = str(rows[-1].get("date") or "")[:10]
     if not expected or last >= expected:
         return rows                     # 이미 최신 — 건드리지 않는다
-    q = _naver_index_quote(ticker)
+    q = _market_quote(ticker)
     if not q:
         return rows
     prev_y = float(rows[-1]["close"])
     if not prev_y or abs(q["prev"] - prev_y) / prev_y > _NAVER_TAIL_TOL:
-        log.info("market_timing: %s 네이버 전일종가 %.2f ≠ 야후 마지막 봉 "
+        log.info("market_timing: %s 시세 전일종가 %.2f ≠ 야후 마지막 봉 "
                  "%.2f — 정렬 불가로 보강 생략(장중 추정)",
                  ticker, q["prev"], prev_y)
         return rows
     move = abs(q["close"] - prev_y) / prev_y
     if move > _NAVER_TAIL_MAX_MOVE:
-        log.warning("market_timing: %s 네이버 종가 %.2f 가 전일 대비 %.1f%% — "
+        log.warning("market_timing: %s 시세 종가 %.2f 가 전일 대비 %.1f%% — "
                     "정렬 오류 의심으로 폐기", ticker, q["close"], move * 100)
         return rows
-    log.info("market_timing: %s 야후 %s → 네이버 %s 종가 %.2f 보강",
+    log.info("market_timing: %s 야후 %s → 시세 %s 종가 %.2f 보강",
              ticker, last, expected, q["close"])
     return rows + [{"date": expected, "close": q["close"],
                     "high": q["close"], "low": q["close"], "volume": None}]
@@ -419,7 +474,7 @@ def fetch_index_history(ticker: str, days: int = 120,
                         ticker, len(out), min_rows, len(alt))
         # ⚠️ **여기서** 붙인다 — 시장타이밍과 Breadth 가 둘 다 이 함수를 쓰므로
         # 호출부마다 배선하면 한쪽을 빠뜨린다(실수 #12 배선 누락).
-        return _naver_index_tail(ticker, out)
+        return _quote_tail(ticker, out)
     except Exception as exc:
         log.debug("market_timing: fetch_index_history(%s) failed: %s", ticker, exc)
         return []

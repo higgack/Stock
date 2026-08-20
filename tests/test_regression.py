@@ -26675,17 +26675,17 @@ class TestSecondSweep20260820:
         rows = [{"date": "2026-08-17", "close": 6900.0},
                 {"date": "2026-08-18", "close": 6869.83}]
         monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
-        monkeypatch.setattr(mt, "_naver_index_quote",
+        monkeypatch.setattr(mt, "_market_quote",
                             lambda t: {"close": 6471.17, "prev": 6869.83})
-        out = mt._naver_index_tail("^KS11", rows)
+        out = mt._quote_tail("^KS11", rows)
         assert out[-1] == {"date": "2026-08-19", "close": 6471.17,
                            "high": 6471.17, "low": 6471.17, "volume": None}
-        monkeypatch.setattr(mt, "_naver_index_quote",
+        monkeypatch.setattr(mt, "_market_quote",
                             lambda t: {"close": 6500.0, "prev": 6471.17})
-        assert mt._naver_index_tail("^KS11", rows) == rows
-        monkeypatch.setattr(mt, "_naver_index_quote",
+        assert mt._quote_tail("^KS11", rows) == rows
+        monkeypatch.setattr(mt, "_market_quote",
                             lambda t: {"close": 100.0, "prev": 6869.83})
-        assert mt._naver_index_tail("^KS11", rows) == rows
+        assert mt._quote_tail("^KS11", rows) == rows
 
     def test_naver_tail_leaves_fresh_and_unmapped_alone(self, monkeypatch):
         """이미 최신이면 손대지 않고, ETF(TW/CN/HK)는 지수로 대체하면 **다른
@@ -26693,12 +26693,14 @@ class TestSecondSweep20260820:
         import bot.market_timing as mt
         rows = [{"date": "2026-08-19", "close": 6471.17}]
         monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
-        monkeypatch.setattr(mt, "_naver_index_quote",
+        monkeypatch.setattr(mt, "_market_quote",
                             lambda t: {"close": 9999.0, "prev": 6471.17})
-        assert mt._naver_index_tail("^KS11", rows) == rows
+        assert mt._quote_tail("^KS11", rows) == rows
+        # ETF 를 **지수로** 대체하는 건 여전히 금지(다른 상품) — 다만
+        # 2026-08-20 부터 같은 종목의 시세 클라이언트로는 보강한다.
         for etf in ("0050.TW", "510300.SS", "2800.HK"):
             assert etf.upper() not in mt._NAVER_INDEX_FOR, f"{etf} 지수 대체 금지"
-            assert mt._naver_index_tail(etf, rows) == rows
+            assert mt._quote_tail(etf, rows) == rows   # 이미 최신이라 무변경
 
     def test_naver_tail_is_wired_inside_fetch_index_history(self):
         """시장타이밍과 Breadth 가 **둘 다** 이 함수를 쓰므로 호출부마다
@@ -26706,7 +26708,7 @@ class TestSecondSweep20260820:
         src = open("bot/market_timing.py", encoding="utf-8").read()
         i = src.index("def fetch_index_history(")
         blk = src[i:src.index("\ndef ", i + 10)]
-        assert "return _naver_index_tail(ticker, out)" in blk, "배선 없음"
+        assert "return _quote_tail(ticker, out)" in blk, "배선 없음"
         bs = open("bot/breadth_strategy.py", encoding="utf-8").read()
         assert "from bot.market_timing import fetch_index_history" in bs, \
             "Breadth 가 같은 경로를 안 쓴다 — 보강이 한쪽에만 걸린다"
@@ -26786,3 +26788,46 @@ class TestSecondSweep20260820:
         for m in mt._MARKET_TZ:
             assert "-" in str(MARKET_CONFIG[m]["trading_hours"]), m
             assert mt._market_closed_today(m) in (True, False), m
+
+    def test_every_market_has_a_freshness_fallback(self, monkeypatch):
+        """사용자 2026-08-20: TW 가 08-18 에 멈춰 있었는데 '대체 소스 없음
+        (ETF)' 이었다. `_merge_today_bar` 가 이미 쓰는 시세 클라이언트가 전
+        시장을 덮으므로, `{price, pct}` 에서 **전일종가를 역산**해 같은
+        자기검증에 쓴다 — 이제 어느 시장도 손쓸 방법이 없지 않다."""
+        import bot.market_timing as mt
+        import bot.tw_quote as twq
+        import bot.world_quote as wq
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
+        rows = [{"date": "2026-08-18", "close": 100.0}]
+        # TW ETF — tw_quote 경로(전일 100.0, 오늘 +2% → 102.0)
+        monkeypatch.setattr(twq, "fetch_tw_quote",
+                            lambda t: {"close": 102.0, "pct": 2.0})
+        out = mt._quote_tail("0050.TW", rows)
+        assert out[-1]["date"] == "2026-08-19" and abs(out[-1]["close"] - 102.0) < 1e-6
+        # HK ETF — world_quote 경로
+        monkeypatch.setattr(wq, "fetch_world_quote",
+                            lambda t: {"price": 102.0, "pct": 2.0})
+        out2 = mt._quote_tail("2800.HK", rows)
+        assert out2[-1]["date"] == "2026-08-19"
+        # 정렬 실패(역산 전일종가가 야후 마지막 봉과 다름) → 붙이지 않는다
+        monkeypatch.setattr(wq, "fetch_world_quote",
+                            lambda t: {"price": 102.0, "pct": 10.0})
+        assert mt._quote_tail("2800.HK", rows) == rows
+
+    def test_audit_never_hides_a_lag_behind_grace(self):
+        """⚠️ 실수 #37 재발을 직접 봤다: TW 가 08-18(마지막 완결 08-19)인데
+        여유 1 에 걸려 **✅ 완결 세션**으로 통과했다. 감사는 진단 도구다 —
+        여유 안이라도 뒤처졌으면 그렇게 말해야 한다."""
+        from bot.scripts.board_audit import freshness_mark as f
+        # 여유(1) **안**의 1거래일 지연 — ✅ 가 나오면 안 된다.
+        m = f(120, "2026-08-18", "2026-08-19", 1, 1, False)
+        assert "지연" in m and "✅" not in m, m
+        assert "여유 내" in m, m
+        # 여유 밖은 그냥 지연
+        assert f(120, "2026-08-14", "2026-08-19", 3, 1, False).startswith("⚠️")
+        # 정상·장중·0행
+        assert f(120, "2026-08-19", "2026-08-19", 0, 1, True) == "✅ 완결 세션"
+        assert "장중" in f(120, "2026-08-20", "2026-08-19", 0, 1, False)
+        assert f(0, None, "2026-08-19", 0, 1, True) == "❌ 0행"
+        src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
+        assert "휴장일 캘린더" in src, "캘린더 가용 여부를 안 알린다"
