@@ -216,5 +216,18 @@ class RenderTests(unittest.TestCase):
         self.assertIn("데이터 미확보", P.render_telegram({"period": None}))
 
 
+
+class AsofLineTests20260820(unittest.TestCase):
+    def test_build_appends_generation_time(self):
+        """월·잠정/확정은 본문 헤더가 싣고, 생성시각은 build 가 as-of 줄로
+        덧붙인다(#43). company_report.asof_line 단일 출처(#38)."""
+        import unittest.mock as mock
+        with mock.patch.object(P, "gather_period", return_value={
+                "period": None}):
+            h = P.build()
+        self.assertIn("보고서 생성", h)
+        self.assertIn("KST", h)
+
+
 if __name__ == "__main__":
     unittest.main()

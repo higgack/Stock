@@ -253,3 +253,18 @@ class ProvLabelVocabularyTests(unittest.TestCase):
         # 속보 라벨·태그에 '익월1일' 부재 (산업트렌드 divider 의 '익월 1일'
         # 은 dashboard.py 에 별도 존재 — 공백 있는 형태라 충돌 없음)
         assert "익월1일" not in dash and "익월1일" not in prov
+
+
+class HeaderBasisLabelTests20260820(unittest.TestCase):
+    def test_current_status_line_names_its_basis(self):
+        """'현재 잠정/확정' 줄은 **채널 발표 기준**이라, 관세청 스윕 기준인
+        히트맵('기준 2026-07 확정')과 같은 날 딴 값을 보인다(채널 확정=6월 vs
+        관세청 확정=7월 실측). 기준 미표기면 한쪽이 틀려 보인다(실수 #34)."""
+        import re
+        from trade import dashboard as d
+        html = d._build_html([], [], {}, "")
+        self.assertIn("채널 발표 기준", html)
+        # 라벨은 상태줄 조립 JS 안에 있어야 한다(안내문 어딘가가 아니라 —
+        # 페이지 전체 grep 은 가이드 문구로도 통과한다, 실수 #55).
+        m = re.search(r"ms\.innerHTML=.{0,400}채널 발표 기준", html, re.S)
+        self.assertIsNotNone(m, "상태줄 JS 가 기준 라벨을 조립하지 않음")

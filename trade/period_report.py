@@ -582,9 +582,12 @@ def send_to_channel(ym: str | None = None, mode: str = "free") -> dict:
 def build(ym: str | None = None, mode: str = "free") -> str:
     """ym + mode('free'|'llm') → 보고서 HTML."""
     data = gather_period(ym)
-    if mode == "llm":
-        return render_llm(data)[0]
-    return render_free(data)
+    body = render_llm(data)[0] if mode == "llm" else render_free(data)
+    # 생성시각 as-of — company_report 와 단일 출처(복제하면 두 보고서 표기가
+    # 갈라진다, 실수 #38). 월·잠정/확정은 본문 헤더가 이미 싣고 있어 여기선
+    # 생성시각만(관세청 라벨 중복 방지 — 헤더 badge 와 딴 값이 나올 수 있다).
+    from trade.company_report import asof_line
+    return body + asof_line("")
 
 
 def main(argv: list[str] | None = None) -> int:

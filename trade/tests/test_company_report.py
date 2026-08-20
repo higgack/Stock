@@ -607,5 +607,34 @@ class TypoAndAliasBatchTests(unittest.TestCase):
         self.assertTrue(C._hs6_to_mti6("2402.20"))     # 담배
 
 
+
+class AsofLineTests20260820(unittest.TestCase):
+    """보고서가 채널·모달로 나가면 언제·어느 데이터 기준인지 화면이 답해야
+    한다(#43 — 새끼 대시보드 13종과 같은 결함의 보고서판)."""
+
+    def test_asof_line_pure(self):
+        from datetime import datetime, timedelta, timezone
+        kst = timezone(timedelta(hours=9))
+        h = C.asof_line("2026-07 확정(익월 ~15일)",
+                        now=datetime(2026, 8, 20, 21, 0, tzinfo=kst))
+        self.assertIn("보고서 생성 2026-08-20 21:00 KST", h)
+        self.assertIn("관세청 데이터 2026-07 확정(익월 ~15일)", h)
+        # 라벨 없으면 생성시각만(빈 라벨로 '관세청 데이터 ' 고아 금지)
+        h2 = C.asof_line("", now=datetime(2026, 8, 20, 21, 0, tzinfo=kst))
+        self.assertIn("보고서 생성", h2)
+        self.assertNotIn("관세청 데이터", h2)
+
+    def test_build_appends_asof(self):
+        import unittest.mock as mock
+        with mock.patch.object(C, "gather", return_value={
+                "mode": "company", "query": "x", "name": "x", "code": None,
+                "products": [], "exposure": []}), \
+             mock.patch.object(C, "customs_asof",
+                               return_value="2026-07 확정(익월 ~15일)"):
+            h = C.build("x")
+        self.assertIn("보고서 생성", h)
+        self.assertIn("관세청 데이터 2026-07", h)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -632,6 +632,17 @@ def render_surge_html(db_path=None) -> str:
             rate_imp = get_live(conn, SECTION_RATE_IMP)
             amount_imp = get_live(conn, SECTION_AMOUNT_IMP)
             archive = get_archive(conn, limit=600)   # 수출+수입 합쳐 분리 렌더
+            # 방향별 전체 병합건수(월×품목 distinct) — 표시가 600행 캡에
+            # 걸려 잘렸는지 대조용. 라벨이 '무제한 보관'인데 표시는 조용히
+            # 잘리면 옛 달이 사라진 걸 아무도 모른다(silent cap 금지 —
+            # 2026-08-20 전수 감사. DB 보관 자체는 실제로 무제한).
+            arch_totals = {}
+            for _d, _secs in (("수출", (SECTION_RATE, SECTION_AMOUNT)),
+                              ("수입", (SECTION_RATE_IMP, SECTION_AMOUNT_IMP))):
+                arch_totals[_d] = conn.execute(
+                    "SELECT COUNT(DISTINCT year_month || '|' || hs_code) "
+                    "FROM customs_surge_archive WHERE section IN (?,?)",
+                    _secs).fetchone()[0]
     except Exception:
         return ""
     if not (rate or amount or rate_imp or amount_imp or archive):
@@ -668,7 +679,7 @@ def render_surge_html(db_path=None) -> str:
         )
 
     def _archive_card(rows: list[dict], rate_sec: str, amt_sec: str,
-                      dir_label: str = "수출") -> str:
+                      dir_label: str = "수출", total_items: int = 0) -> str:
         rows = [r for r in rows if r.get("section") in (rate_sec, amt_sec)]
         if not rows:
             return ""
@@ -727,10 +738,20 @@ def render_surge_html(db_path=None) -> str:
                 f"<summary>{_esc(ym)} ({len(items)})</summary>"
                 "<ul>" + "".join(lis) + "</ul></details>"
             )
+        # 표시가 fetch 캡(600행)에 걸려 잘렸으면 라벨이 사실을 말해야 한다 —
+        # '무제한 보관'은 DB 얘기고 화면은 최근 우선 일부일 수 있다.
+        if total_items > item_count:
+            log.warning(
+                "급변 아카이브(%s) 표시 잘림: %d/%d건 — get_archive limit 상향 고려",
+                dir_label, item_count, total_items)
+            cnt_label = (f"최근 {item_count}건 표시 / 전체 {total_items}건 · "
+                         "DB 무제한 보관")
+        else:
+            cnt_label = f"{item_count}건 · 무제한 보관"
         return (
             "<details class='customs-panel'>"
             f"<summary>🗄 급변 아카이브 ({dir_label}) "
-            f"({item_count}건 · 무제한 보관)</summary>"
+            f"({cnt_label})</summary>"
             + "".join(blocks) + "</details>"
         )
 
@@ -743,8 +764,10 @@ def render_surge_html(db_path=None) -> str:
                      rate_imp, "pct", "수입")
         + _live_card("💵 급증액 TOP <small>(수출)</small>", amount, "amount", "수출")
         + _live_card("💵 급증액 TOP <small>(수입)</small>", amount_imp, "amount", "수입")
-        + _archive_card(archive, SECTION_RATE, SECTION_AMOUNT, "수출")
-        + _archive_card(archive, SECTION_RATE_IMP, SECTION_AMOUNT_IMP, "수입")
+        + _archive_card(archive, SECTION_RATE, SECTION_AMOUNT, "수출",
+                        total_items=arch_totals.get("수출", 0))
+        + _archive_card(archive, SECTION_RATE_IMP, SECTION_AMOUNT_IMP, "수입",
+                        total_items=arch_totals.get("수입", 0))
     )
 
 
