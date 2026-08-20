@@ -27021,3 +27021,34 @@ class TestSecondSweep20260820:
         # 수집기가 실제로 개수를 싣는가(배선) — 렌더만 고치면 늘 빈칸.
         src = open("bot/market_timing.py", encoding="utf-8").read()
         assert '"inputs": sum(1 for v in' in src, "inputs 미배선"
+
+    def test_target_weights_visibly_sum_to_the_total(self):
+        """사용자 2026-08-20 캡처: RS Top3 가 `기술 33% · 에너지 33% ·
+        헬스케어 33%` = **99%** 인데 옆 칸은 '최종 투자비중 100%' 였다.
+        눈으로 더해서 안 맞으면 표가 거짓말이다(실수 #33). 정수로 안 떨어지면
+        소수 1자리로 보여 준다 — 딱 떨어지면 그대로 정수."""
+        import re
+        import bot.breadth_strategy as bs
+        base = {"regime": "TREND", "state": "TREND_RS_TOP3", "index_w": 0.0,
+                "cash_w": 0.0, "breadth_pct": 81.8, "dd_pct": -1.17,
+                "bench_name": "S&P 500", "market": "US",
+                "breadth": {"pct": 81.8, "above": 9, "counted": 11,
+                            "skipped": [], "period": 120},
+                "source_label": "SPDR", "sectors_missing": [], "rs_ranked": [],
+                "fng": {}, "asof": "2026-08-19", "is_confirmed": False,
+                "resolution_note": "", "total_w": 1.0}
+
+        def targets(tgts):
+            html = bs.render_page({"US": {**base, "targets": tgts}})
+            m = re.search(r"투자 대상 <b>(.*?)</b>", html, re.S)
+            return re.sub(r"<[^>]*>", "", m.group(1))
+
+        thirds = targets([{"name": "기술", "weight": 1 / 3},
+                          {"name": "에너지", "weight": 1 / 3},
+                          {"name": "헬스케어", "weight": 1 / 3}])
+        nums = [float(x) for x in re.findall(r"([\d.]+)%", thirds)]
+        assert abs(sum(nums) - 100.0) < 0.5, (thirds, sum(nums))
+        # 딱 떨어지면 소수점을 붙이지 않는다(과잉 표기 금지).
+        halves = targets([{"name": "기술", "weight": 0.5},
+                          {"name": "에너지", "weight": 0.5}])
+        assert "50%" in halves and "50.0%" not in halves, halves
