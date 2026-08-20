@@ -984,7 +984,12 @@ class LiveOverlayTests20260820(unittest.TestCase):
 
     def test_live_source_map_and_currency_guard(self):
         from bot import dashboard_server as ds
-        self.assertEqual(set(ds._LIVE_SOURCE), {"vix", "btcusd", "ethusd"})
+        self.assertEqual(set(ds._LIVE_SOURCE),
+                         {"vix", "btcusd", "ethusd", "dgs10", "dgs30"})
+        # 금리 확장(사용자 2026-08-20 '금리, 코인, 환율 등등 실시간으로') —
+        # 야후 국채수익률 지수. 스케일(수익률 vs ×10)은 클라 게이트가 판정.
+        self.assertEqual(ds._LIVE_SOURCE["dgs10"], ("yf", "^TNX"))
+        self.assertEqual(ds._LIVE_SOURCE["dgs30"], ("yf", "^TYX"))
         # ⚠️ 코인은 yfinance(USD)여야 한다 — 네이버 코인은 업비트 **원화**라
         # FRED CBBTCUSD(USD) 옆에 두면 통화 충돌(#34).
         self.assertEqual(ds._LIVE_SOURCE["btcusd"][0], "yf")
@@ -1029,8 +1034,11 @@ class LiveOverlayTests20260820(unittest.TestCase):
         html = fb.render_liquidity_page([], {}, None)
         m = re.search(r"var FXPAIRS=\[(.*?)\];", html, re.S)
         self.assertIsNotNone(m, "FXPAIRS 미발견")
-        pairs = re.findall(r"\['(\w+)','(\w+)'\]", m.group(1))
-        self.assertGreaterEqual(len(pairs), 9)
+        # (?:,1)? — 수익률 행은 3원소(['dgs10','DGS10',1]). 2원소 패턴만 쓰면
+        # dgs 페어가 계약 검사에서 조용히 빠진다(첫 판에서 실측 — 테스트는
+        # green 인데 검사 대상에 없었다, #47 0건 매칭 함정의 부분판).
+        pairs = re.findall(r"\['(\w+)','(\w+)'(?:,1)?\]", m.group(1))
+        self.assertGreaterEqual(len(pairs), 11)
         handler_keys = set(ds.DashboardHandler._FX_SOURCE) | set(ds._LIVE_SOURCE)
         for key, sid in pairs:
             self.assertIn(key, handler_keys, f"{key}: 서버 endpoint 없음")
@@ -1038,5 +1046,8 @@ class LiveOverlayTests20260820(unittest.TestCase):
         self.assertIn(("vix", "VIXCLS"), pairs)
         self.assertIn(("btcusd", "CBBTCUSD"), pairs)
         self.assertIn(("ethusd", "CBETHUSD"), pairs)
+        # 수익률 행은 y 플래그(3번째 원소)까지 페이지에 실려야 게이트가 돈다
+        self.assertIn("['dgs10','DGS10',1]", html)
+        self.assertIn("['dgs30','DGS30',1]", html)
         # 안내문도 같은 커밋 규약 — 카드가 아니라 가이드라 페이지 grep 허용
         self.assertIn("5분마다 실시간", html)

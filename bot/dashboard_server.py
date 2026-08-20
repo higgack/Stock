@@ -265,9 +265,17 @@ def _rewrite_trade_html(body: bytes, token: str) -> bytes:
 #   btcusd/ethusd → yfinance BTC-USD/ETH-USD. ⚠️ 네이버 코인은 **업비트
 #            원화**라 FRED CBBTCUSD(USD) 옆에 두면 통화가 충돌(#34) —
 #            USD 를 주는 yfinance 를 쓴다(크립토는 24/7 실시간 호가).
+#   dgs10/dgs30 → yfinance ^TNX/^TYX(CBOE 국채수익률 지수). ⚠️ 야후가
+#            수익률(4.23) 또는 ×10 지수(42.3) 어느 스케일로 주는지 원천마다
+#            달라 **클라 JS 가 FRED 값과 대조해 스케일을 판정**하고, 정규화
+#            후에도 FRED 와 ±25% 넘게 어긋나면 버린다(빈칸>틀린값). 2Y 는
+#            야후 무지수·선물뿐이라 제외, 스프레드는 파생이라 제외(#32),
+#            DXY 는 FRED 광범위지수와 **다른 시리즈**라 제외(#34).
 _LIVE_SOURCE = {"vix": ("nvidx", ".VIX"),
                 "btcusd": ("yf", "BTC-USD"),
-                "ethusd": ("yf", "ETH-USD")}
+                "ethusd": ("yf", "ETH-USD"),
+                "dgs10": ("yf", "^TNX"),
+                "dgs30": ("yf", "^TYX")}
 _live_cache: dict = {}          # {key: (ts, payload)} — 30초 in-process
 _LIVE_TTL_S = 30
 

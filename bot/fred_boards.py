@@ -1174,7 +1174,7 @@ TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
 <b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
 금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 각 시리즈의 <b>실제 공표일정</b>(주기+통상 지연일)을 기준으로 늦은 것만 <b>⚠️지연</b> 배지 — 배지에 마우스를 올리면 기대 관측기간과 근거가 뜹니다. 분기·반년 지연 계열(예 외국인 보유 미 연방부채)은 정상 지연이라 배지가 뜨지 않습니다. 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
-<b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API). 단 <b>환율 6종·VIX·비트코인·이더리움</b>은
+<b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API). 단 <b>환율 6종·VIX·비트코인·이더리움·미 국채 10Y/30Y</b>는
 페이지가 열려 있는 동안 <b>5분마다 실시간 값</b>으로 최신값·기준일을 덮습니다(환율·VIX=네이버,
 코인=yfinance USD — 기준일 자리에 소스가 표시되면 실시간 값). 1M/3M/YoY·차트는 FRED 확정
 히스토리 기준 그대로라 실시간 최신값과 정의가 다릅니다(섞지 않음).
@@ -1269,15 +1269,29 @@ if(D.net_liq&&D.net_liq.length){{mkChart(document.getElementById('nl-chart'),
 // + VIX·비트코인·이더리움(사용자 2026-08-20 'VIX 나 코인도 환율처럼') —
 // 서버 /api/vix·btcusd·ethusd (VIX=네이버 canonical, 코인=yfinance USD.
 // 네이버 코인은 업비트 원화라 FRED USD 옆에 못 놓는다).
+// 3번째 원소 y=1 → 수익률 행: 야후 ^TNX/^TYX 가 수익률(4.23)인지 ×10
+// 지수(42.3)인지 원천 문서로 단정할 수 없어(#25 실측주의), FRED 값과의
+// 비율로 스케일을 판정(≈10 → /10)하고 정규화 후에도 ±25% 넘게 어긋나면
+// 그 틱은 버린다 — 빈칸(기존 FRED 값 유지)이 틀린 숫자보다 낫다.
 var FXPAIRS=[['usdkrw','DEXKOUS'],['usdjpy','DEXJPUS'],['usdcny','DEXCHUS'],
  ['usdeur','DEXUSEU'],['usdgbp','DEXUSUK'],['usdchf','DEXSZUS'],
- ['vix','VIXCLS'],['btcusd','CBBTCUSD'],['ethusd','CBETHUSD']];
+ ['vix','VIXCLS'],['btcusd','CBBTCUSD'],['ethusd','CBETHUSD'],
+ ['dgs10','DGS10',1],['dgs30','DGS30',1]];
 function liveFx(){{
  FXPAIRS.forEach(function(p){{
   fetch('api/'+p[0]).then(function(r){{return r.json();}}).then(function(j){{
    if(!j||j.rate==null)return;
    var r=R.find(function(x){{return x.id===p[1];}});if(!r)return;
-   r.latest=j.rate;r.latest_date=j.src||'실시간';
+   var v=j.rate;
+   if(p[2]){{
+    var f=r.latest;
+    if(!(f>0))return;
+    var q=v/f;
+    if(q>8&&q<12.5)v=v/10;
+    else if(!(q>0.75&&q<1.25))return;
+    if(!(v/f>0.75&&v/f<1.25))return;
+   }}
+   r.latest=v;r.latest_date=j.src||'실시간';
    table();if(sel===p[1])detail(p[1]);
   }}).catch(function(){{}});
  }});
