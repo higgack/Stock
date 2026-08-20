@@ -12385,6 +12385,26 @@ class TestAssetPagesContracts20260820:
         assert "업종 등락 데이터가 아직" not in html2
         assert "일본 업종 등락" in html2
 
+    def test_index_audit_counts_the_real_card_markup(self):
+        # 분석 아카이브의 카드는 <div class="card"> — 피드 대시보드들의
+        # <details class="card"> 가 아니다. v1 감사가 details 로 세서 VM
+        # 실데이터 77건을 '카드 0'으로 오보했다(#47: 계수 패턴은 실제 렌더로
+        # 검증하고 나서 믿을 것). 실제 _render_index 렌더로 고정한다.
+        import re
+        import bot.dashboard as d
+        rec = {"ticker": "NVDA", "trade_date": "2026-08-20",
+               "date": "2026-08-20", "decision": "매수", "summary": "s",
+               "market": "US", "name": "NVIDIA",
+               "analyzed_at": "2026-08-20T10:00:00"}
+        html, frags = d._render_index([rec])
+        n = len(re.findall(r'<div class="card"', html)) + sum(
+            len(re.findall(r'<div class="card"', f)) for f in frags.values())
+        assert n == 1                       # v2 패턴 = 정확
+        assert len(re.findall(r'<details class="card"', html)) == 0  # v1 = 0 오보
+        # 감사 소스도 div 패턴을 쓰는지(계약)
+        aud = open("bot/scripts/asset_pages_audit.py", encoding="utf-8").read()
+        assert '_IDX_CARD = re.compile(r\'<div class="card"\')' in aud
+
     def test_trade_archive_restore_is_not_daily_byte(self):
         # NOAH 에서 verbatim 복사한 JS 가 'Daily Byte 브리프'를 하드코딩 —
         # trade 페이지에서 검색을 지우면 남의 화면 문구가 떴다(#48 trade 판).
