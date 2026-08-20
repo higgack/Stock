@@ -560,9 +560,16 @@ def _market_section(d: dict) -> str:
         f"<td>{_h.escape(strat)}</td><td>{_h.escape(tgt)}</td>"
         f"<td>{_h.escape(w)}</td></tr>"
         for key, label, rng, st, strat, tgt, w in _REGIME_TABLE)
+    # ⚠️ 정수로 자르면 **눈으로 더했을 때 안 맞는다**: RS Top3 = 1/3 씩인데
+    # 33+33+33 = 99% 인데 옆 칸은 '최종 투자비중 100%' 였다(사용자 2026-08-20
+    # 캡처). 실수 #33("나란히 놓인 칸은 산수가 맞아야 한다")과 같은 종류 —
+    # 합이 정수로 안 떨어지면 소수 1자리로 보여 준다.
+    _tg = d.get("targets") or []
+    _int_ok = all(abs(t["weight"] * 100 - round(t["weight"] * 100)) < 1e-9
+                  for t in _tg)
     tgt_html = " · ".join(
-        f"{_h.escape(t['name'])} {t['weight'] * 100:.0f}%"
-        for t in (d.get("targets") or [])) or "없음(현금)"
+        f"{_h.escape(t['name'])} {t['weight'] * 100:{'.0f' if _int_ok else '.1f'}}%"
+        for t in _tg) or "없음(현금)"
     rs_html = " · ".join(
         f"{_h.escape(m['name'])} {m['rs']:+.1f}%" if m.get("rs") is not None
         else _h.escape(m["name"]) for m in (d.get("rs_ranked") or [])) or "—"
