@@ -10049,6 +10049,10 @@ class TestBlogWatchMultiBlog:
         assert "jkhan012" in ids and ids["jkhan012"]["title"] == "천상천하"  # 사용자 2026-06-18
         assert "ranto28" in ids and ids["ranto28"]["title"] == "메르"        # 사용자 2026-06-18
         assert "richyun0108" in ids and ids["richyun0108"]["title"] == "작은 투자자"  # 사용자 2026-06-22
+        # 사용자 2026-08-20 roe_20 추가(표시명 사용자 확정 '게으른 투자자').
+        assert "roe_20" in ids, "사용자 요청 블로그 미등록"
+        assert ids["roe_20"]["categories"] is None            # 전체 글
+        assert ids["roe_20"]["title"] == "게으른 투자자"
         assert ids["richyun0108"]["categories"] is None        # 전체 글
         assert "bboyanaga" in ids and ids["bboyanaga"]["title"] == "애널리스트 김경민"  # 사용자 2026-06-23
         assert ids["bboyanaga"]["categories"] is None          # 전체 글
