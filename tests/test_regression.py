@@ -12299,6 +12299,45 @@ class TestSameBasisGlitchSecondGuard:
             assert marker in src, f"2차 가드 미배선: {path}"
 
 
+class TestBoardAuditReadsRealKeys20260820:
+    """board_audit 의 스냅샷 2개 섹션이 **엉뚱한 키**를 읽어 늘 통과하던 것.
+
+    - 글로벌 스냅샷: 원천은 기준일을 `time` 으로 주는데 감사는 `date`/`asof`
+      만 봐서 10행 전부 '기준 —', 게다가 ❓ 분기가 '기준일이 있을 때만' 이라
+      **판정 불가가 ✅ 로 통과**했다.
+    - 매크로 스냅샷: `fetch_macro_snapshot()` 은 `domestic`/`global` 로 주는데
+      감사는 `indicators` 를 읽어 **한 번도 아무것도 검사하지 않았다**.
+    둘 다 실수 #47(감사 계수 패턴 오류)·#41(0건 매칭을 ✅ 로)의 재발이다."""
+
+    def test_fred_row_asof_reads_the_time_key(self):
+        import bot.scripts.board_audit as B
+        assert B.fred_row_asof({"value": 4.19, "time": "2026-08-18"}) == "2026-08-18"
+        assert B.fred_row_asof({"value": 4.19}) == ""      # 없으면 빈 문자열
+        assert B.fred_row_asof(None) == ""
+
+    def test_the_producer_really_uses_that_key(self):
+        # 원천이 키 이름을 바꾸면 감사가 다시 눈이 먼다 — 양쪽을 같이 고정.
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert '"time": latest_date' in src
+
+    def test_macro_rows_reads_domestic_and_global(self):
+        import bot.scripts.board_audit as B
+        assert len(B.macro_rows({"domestic": [{"a": 1}],
+                                 "global": [{"b": 2}, {"c": 3}]})) == 3
+        assert B.macro_rows({"indicators": [{"a": 1}]}) == []   # 없는 키
+        assert B.macro_rows(None) == []
+
+    def test_macro_snapshot_really_returns_those_lists(self):
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert '"domestic": domestic,' in src and '"global": glob,' in src
+
+    def test_zero_rows_is_reported_as_audit_failure(self):
+        # 대조 대상이 0건이면 '이상 없음'이 아니라 감사 실패다(실수 #47b).
+        src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
+        assert src.count("대조 실패, 이상 없음 아님") == 2
+        assert "❓ 기준일 없음(판정 불가)" in src
+
+
 class TestSitesList20260820:
     """/sites (_SITES_TEXT) — 외부 third-party 링크 목록의 형식 계약.
 
