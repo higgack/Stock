@@ -255,6 +255,57 @@ def _rewrite_trade_html(body: bytes, token: str) -> bytes:
     return body.replace(b"../media/", mpfx)
 
 
+# ── 유동성 보드 실시간 오버레이 소스 ──────────────────────────────────
+# 환율(_FX_SOURCE)과 같은 패턴의 확장(사용자 2026-08-20 "VIX 나 코인도
+# 환율처럼") — FRED 는 1영업일 지연 종가라, 실시간 소스가 있는 시리즈만
+# 클라 JS 가 5분마다 최신값·기준일을 덮는다(기간지표 1M/3M/YoY·차트는
+# FRED 히스토리 유지 — 두 정의를 섞지 않는 기존 규약).
+#   vix    → 네이버 world index .VIX (메인 대시보드·시장타이밍과 canonical
+#            동일 소스 — 2026-07-26 'VIX 가 화면마다 다름' 재발 방지)
+#   btcusd/ethusd → yfinance BTC-USD/ETH-USD. ⚠️ 네이버 코인은 **업비트
+#            원화**라 FRED CBBTCUSD(USD) 옆에 두면 통화가 충돌(#34) —
+#            USD 를 주는 yfinance 를 쓴다(크립토는 24/7 실시간 호가).
+_LIVE_SOURCE = {"vix": ("nvidx", ".VIX"),
+                "btcusd": ("yf", "BTC-USD"),
+                "ethusd": ("yf", "ETH-USD")}
+_live_cache: dict = {}          # {key: (ts, payload)} — 30초 in-process
+_LIVE_TTL_S = 30
+
+
+def live_quote(key: str) -> dict:
+    """{rate, change, pct, src} 또는 {} — 실패 시 클라가 FRED 값 유지(graceful).
+    naver 30초 캐시는 클라이언트 내장, yfinance 는 여기 30초 캐시."""
+    import time as _t
+    kind, code = _LIVE_SOURCE[key]
+    c = _live_cache.get(key)
+    if c and _t.time() - c[0] < _LIVE_TTL_S:
+        return c[1]
+    out: dict = {}
+    try:
+        if kind == "nvidx":
+            from bot.naver_marketindex import fetch_world_indices
+            rec = (fetch_world_indices((code,)) or {}).get(code) or {}
+            if rec.get("close") is not None:
+                out = {"rate": rec["close"], "change": rec.get("change"),
+                       "pct": rec.get("pct"), "src": "네이버 실시간"}
+        elif kind == "yf":
+            import yfinance as yf
+            fi = yf.Ticker(code).fast_info
+            last = getattr(fi, "last_price", None)
+            prev = getattr(fi, "previous_close", None)
+            if last:
+                chg = (last - prev) if prev else None
+                pct = (chg / prev * 100.0) if (chg is not None and prev) else None
+                out = {"rate": float(last),
+                       "change": (round(chg, 2) if chg is not None else None),
+                       "pct": (round(pct, 2) if pct is not None else None),
+                       "src": "yfinance 실시간"}
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("live_quote(%s): %s", key, exc)
+    _live_cache[key] = (_t.time(), out)
+    return out
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves the archive directory; adds POST /api/delete + optional
     URL-token and Basic-Auth gating."""
@@ -385,6 +436,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         _fx_route = self.path.split("?", 1)[0]
         if _fx_route.startswith("/api/") and _fx_route[5:] in self._FX_SOURCE:
             return self._handle_fx_api(_fx_route[5:])
+        # /api/vix · btcusd · ethusd — 유동성 보드 실시간 오버레이 확장
+        # (환율과 같은 패턴, live_quote 참조).
+        if _fx_route.startswith("/api/") and _fx_route[5:] in _LIVE_SOURCE:
+            self._json_ok(live_quote(_fx_route[5:]))
+            return
         # /api/quote?ticker=..[&full=1]  — live numbers for the detail page.
         # LIGHT (default): price-derived multiples + consensus + 52주 + 이평
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.

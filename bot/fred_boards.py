@@ -143,6 +143,28 @@ def series_metrics(hist: list[tuple[str, float]]) -> dict | None:
     }
 
 
+def effective_latest_date(sid: str, raw_hist: list, monthly_label: str,
+                          cadence_id: str = "") -> str:
+    """기준일 표기·지연판정용 날짜 — **일별/주간 시리즈는 raw 관측일**.
+
+    2026-08-20 발각: series_metrics 가 월간 다운샘플(_monthly, 날짜를 01일로
+    정규화) 위에서 돌아 latest_date 가 'YYYY-MM' 으로만 남았고, macro_cadence
+    judge 는 그 문자열을 "그 기간의 끝"(=월말, 사실상 미래)으로 해석해 일별
+    27종은 그 달 안에서 아무리 멈춰도 ⚠️지연 배지가 **절대 뜨지 않았다**
+    (BTC 가 8/3 에 얼어도 8/31 로 판정 → behind=0). 월간 물가 보드용 표기
+    정밀도가 일별 시리즈에 그대로 새어 온 것 — 판정 입력이 규약 주기보다
+    거칠면 판정 자체가 무력화된다(#31 의 입력 정밀도판).
+    """
+    try:
+        from bot.macro_cadence import CADENCE
+        spec = CADENCE.get(cadence_id or sid)
+        if spec and spec[0] in ("D", "W") and raw_hist:
+            return str(raw_hist[-1][0])
+    except Exception:                                          # noqa: BLE001
+        pass
+    return monthly_label
+
+
 def _monthly(hist: list[tuple[str, float]]) -> list[tuple[str, float]]:
     """일간/주간 시계열 → 월별 마지막 관측 1개, 날짜는 그 달 01일로 정규화.
 
@@ -701,6 +723,8 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
         m = series_metrics(mh)
         if not m:
             continue
+        m["latest_date"] = effective_latest_date(
+            s["id"], hist, m["latest_date"], str(s.get("cadence_id") or ""))
         age = _staleness(m["latest_date"])
         if age is not None and age >= _drop_after_months(s):
             dropped.append(f"{s['name']} ({s['id']})")
@@ -1150,7 +1174,10 @@ TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
 <b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
 금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 각 시리즈의 <b>실제 공표일정</b>(주기+통상 지연일)을 기준으로 늦은 것만 <b>⚠️지연</b> 배지 — 배지에 마우스를 올리면 기대 관측기간과 근거가 뜹니다. 분기·반년 지연 계열(예 외국인 보유 미 연방부채)은 정상 지연이라 배지가 뜨지 않습니다. 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
-<b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API).
+<b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API). 단 <b>환율 6종·VIX·비트코인·이더리움</b>은
+페이지가 열려 있는 동안 <b>5분마다 실시간 값</b>으로 최신값·기준일을 덮습니다(환율·VIX=네이버,
+코인=yfinance USD — 기준일 자리에 소스가 표시되면 실시간 값). 1M/3M/YoY·차트는 FRED 확정
+히스토리 기준 그대로라 실시간 최신값과 정의가 다릅니다(섞지 않음).
 </details>
 {empty}
 <div class="panel"><div class="panel-title">종합 유동성 점수</div>
@@ -1233,14 +1260,18 @@ document.addEventListener('click',function(ev){{
 pills();table();if(R.length)detail(R[0].id);
 if(D.net_liq&&D.net_liq.length){{mkChart(document.getElementById('nl-chart'),
  D.net_liq.map(function(h){{return h[0];}}),D.net_liq.map(function(h){{return h[1];}}),'#22c55e',true);}}
-// 환율 실시간 오버레이(사용자 2026-07-02 '네이버같은곳에서 실시간으로', 2026-07-14
+// 실시간 오버레이 — 환율(사용자 2026-07-02 '네이버같은곳에서 실시간으로', 2026-07-14
 // 엔/위안 1차 확장 + 유로/파운드/스위스프랑 2차 확장 '나머지 환율도 네이버실시간
 // 으로' — 대만달러는 FRED H.10 비수록이라 히스토리 없이 추가했으나 사용자
 // 2026-07-14 '대만달러없으면 이건 그냥 없애줘' 로 제외) — 최신값·기준일만
 // 네이버로 덮고 기간지표(1M/3M/YoY)·차트는 FRED 히스토리 유지. 로드 시 + 5분마다.
 // 실패 시 조용히 FRED 값 유지(graceful, pair 단위 독립).
+// + VIX·비트코인·이더리움(사용자 2026-08-20 'VIX 나 코인도 환율처럼') —
+// 서버 /api/vix·btcusd·ethusd (VIX=네이버 canonical, 코인=yfinance USD.
+// 네이버 코인은 업비트 원화라 FRED USD 옆에 못 놓는다).
 var FXPAIRS=[['usdkrw','DEXKOUS'],['usdjpy','DEXJPUS'],['usdcny','DEXCHUS'],
- ['usdeur','DEXUSEU'],['usdgbp','DEXUSUK'],['usdchf','DEXSZUS']];
+ ['usdeur','DEXUSEU'],['usdgbp','DEXUSUK'],['usdchf','DEXSZUS'],
+ ['vix','VIXCLS'],['btcusd','CBBTCUSD'],['ethusd','CBETHUSD']];
 function liveFx(){{
  FXPAIRS.forEach(function(p){{
   fetch('api/'+p[0]).then(function(r){{return r.json();}}).then(function(j){{
