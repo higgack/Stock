@@ -916,3 +916,138 @@ class CpiBoardTests(unittest.TestCase):
         src = open("bot/fred_boards.py", encoding="utf-8").read()
         assert '(ARCHIVE_ROOT / "cpi.html").write_text' in src
         assert "_load_cpi()" in src and "render_cpi_page(" in src
+
+
+class DailyStalenessPrecisionTests20260820(unittest.TestCase):
+    """일별 시리즈 지연 배지 무력화 버그(2026-08-20 사용자 질문 중 발각).
+
+    series_metrics 가 월간 다운샘플(_monthly, 01일 정규화) 위에서 돌아
+    latest_date 가 'YYYY-MM' 뿐이었고, judge 는 그걸 월말(미래)로 해석 —
+    일별 27종은 그 달 안에서 아무리 멈춰도 stale=False 였다."""
+
+    def test_effective_latest_date_by_cadence(self):
+        # D/W = raw 관측일, M = 월 표기 유지, 규약 미등록 = 월 표기 유지
+        self.assertEqual(
+            fb.effective_latest_date("CBBTCUSD", [("2026-08-19", 1.0)], "2026-08"),
+            "2026-08-19")
+        self.assertEqual(
+            fb.effective_latest_date("STLFSI4", [("2026-08-15", 1.0)], "2026-08"),
+            "2026-08-15")
+        self.assertEqual(
+            fb.effective_latest_date("M2SL", [("2026-07-01", 1.0)], "2026-07"),
+            "2026-07")
+        self.assertEqual(
+            fb.effective_latest_date("NOPE", [("2026-08-19", 1.0)], "2026-08"),
+            "2026-08")
+
+    def test_load_liq_wires_full_date_for_daily_rows(self):
+        """헬퍼 단위테스트는 **배선 제거를 못 잡는다**(#20 — 이 클래스의 첫
+        판에서 실측: effective_latest_date 호출을 지워도 전부 green 이었다).
+        _load_liq 를 통째로 태워 D 시리즈 행의 latest_date 가 full date 인지
+        본다."""
+        import re
+        import unittest.mock as mock
+        from datetime import date, timedelta
+        from bot import fred_client
+
+        def fake(series_id, start, ttl_hours=None):
+            d0 = date(2024, 6, 1)
+            return [((d0 + timedelta(days=i)).isoformat(), 100.0 + i)
+                    for i in range(800)]
+
+        with mock.patch.object(fred_client, "fetch_history", side_effect=fake), \
+             mock.patch.object(fb, "_alt_history", return_value=[]):
+            rows, _, _ = fb._load_liq()
+        by_id = {r["id"]: r for r in rows}
+        self.assertRegex(by_id["CBBTCUSD"]["latest_date"],
+                         r"^\d{4}-\d{2}-\d{2}$",
+                         "일별 시리즈 기준일이 월 절삭 — 지연판정 무력화 재발")
+        self.assertRegex(by_id["VIXCLS"]["latest_date"], r"^\d{4}-\d{2}-\d{2}$")
+        # 월간은 월 표기 유지(물가 보드 표기 규약 보존)
+        self.assertRegex(by_id["M2SL"]["latest_date"], r"^\d{4}-\d{2}$")
+
+    def test_daily_freeze_now_flags_stale(self):
+        """버그의 재현 시나리오 — BTC 가 그 달 초에 얼면 배지가 떠야 한다."""
+        from datetime import date
+        from bot.macro_cadence import judge
+        today = date(2026, 8, 20)
+        fixed = judge("CBBTCUSD", "2026-08-03", today)      # 절삭 전(수정 후)
+        self.assertTrue(fixed["stale"], fixed)
+        # 문서화: 절삭된 입력('2026-08')이 왜 판정을 무력화했는가 — 월말 해석
+        broken = judge("CBBTCUSD", "2026-08", today)
+        self.assertFalse(broken["stale"],
+                         "월 절삭 입력은 월말로 해석돼 통과한다(버그의 기전)")
+
+
+class LiveOverlayTests20260820(unittest.TestCase):
+    """실시간 오버레이 확장(사용자 2026-08-20 'VIX 나 코인도 환율처럼')."""
+
+    def test_live_source_map_and_currency_guard(self):
+        from bot import dashboard_server as ds
+        self.assertEqual(set(ds._LIVE_SOURCE),
+                         {"vix", "btcusd", "ethusd", "dgs10", "dgs30"})
+        # 금리 확장(사용자 2026-08-20 '금리, 코인, 환율 등등 실시간으로') —
+        # 야후 국채수익률 지수. 스케일(수익률 vs ×10)은 클라 게이트가 판정.
+        self.assertEqual(ds._LIVE_SOURCE["dgs10"], ("yf", "^TNX"))
+        self.assertEqual(ds._LIVE_SOURCE["dgs30"], ("yf", "^TYX"))
+        # ⚠️ 코인은 yfinance(USD)여야 한다 — 네이버 코인은 업비트 **원화**라
+        # FRED CBBTCUSD(USD) 옆에 두면 통화 충돌(#34).
+        self.assertEqual(ds._LIVE_SOURCE["btcusd"][0], "yf")
+        self.assertEqual(ds._LIVE_SOURCE["ethusd"][0], "yf")
+        self.assertEqual(ds._LIVE_SOURCE["vix"], ("nvidx", ".VIX"))
+
+    def test_live_quote_behavior(self):
+        import sys as _sys
+        import types
+        import unittest.mock as mock
+        from bot import dashboard_server as ds
+        with mock.patch("bot.naver_marketindex.fetch_world_indices",
+                        return_value={".VIX": {"close": 16.2, "change": 0.4,
+                                               "pct": 2.53}}):
+            ds._live_cache.clear()
+            q = ds.live_quote("vix")
+        self.assertEqual(q["rate"], 16.2)
+        self.assertEqual(q["src"], "네이버 실시간")
+
+        class _FI:
+            last_price = 69712.5
+            previous_close = 69487.6
+        fake_yf = types.SimpleNamespace(
+            Ticker=lambda code: types.SimpleNamespace(fast_info=_FI()))
+        with mock.patch.dict(_sys.modules, {"yfinance": fake_yf}):
+            ds._live_cache.clear()
+            q = ds.live_quote("btcusd")
+        self.assertEqual(q["rate"], 69712.5)
+        self.assertEqual(q["src"], "yfinance 실시간")
+        # 실패 = {} (클라가 FRED 값 유지)
+        with mock.patch("bot.naver_marketindex.fetch_world_indices",
+                        side_effect=RuntimeError("down")):
+            ds._live_cache.clear()
+            self.assertEqual(ds.live_quote("vix"), {})
+
+    def test_every_js_pair_has_a_server_endpoint(self):
+        """JS 페어에 endpoint 없는 키가 들어가면 fetch 가 조용히 404 —
+        칩이 영원히 안 뜬다(silent 404 는 아무도 못 본다). 렌더된 페이지의
+        FXPAIRS 를 파싱해 서버 소스맵과 대조한다(크로스파일 계약)."""
+        import re
+        from bot import dashboard_server as ds
+        html = fb.render_liquidity_page([], {}, None)
+        m = re.search(r"var FXPAIRS=\[(.*?)\];", html, re.S)
+        self.assertIsNotNone(m, "FXPAIRS 미발견")
+        # (?:,1)? — 수익률 행은 3원소(['dgs10','DGS10',1]). 2원소 패턴만 쓰면
+        # dgs 페어가 계약 검사에서 조용히 빠진다(첫 판에서 실측 — 테스트는
+        # green 인데 검사 대상에 없었다, #47 0건 매칭 함정의 부분판).
+        pairs = re.findall(r"\['(\w+)','(\w+)'(?:,1)?\]", m.group(1))
+        self.assertGreaterEqual(len(pairs), 11)
+        handler_keys = set(ds.DashboardHandler._FX_SOURCE) | set(ds._LIVE_SOURCE)
+        for key, sid in pairs:
+            self.assertIn(key, handler_keys, f"{key}: 서버 endpoint 없음")
+        # 확장 3종이 실제로 들어 있는가
+        self.assertIn(("vix", "VIXCLS"), pairs)
+        self.assertIn(("btcusd", "CBBTCUSD"), pairs)
+        self.assertIn(("ethusd", "CBETHUSD"), pairs)
+        # 수익률 행은 y 플래그(3번째 원소)까지 페이지에 실려야 게이트가 돈다
+        self.assertIn("['dgs10','DGS10',1]", html)
+        self.assertIn("['dgs30','DGS30',1]", html)
+        # 안내문도 같은 커밋 규약 — 카드가 아니라 가이드라 페이지 grep 허용
+        self.assertIn("5분마다 실시간", html)
