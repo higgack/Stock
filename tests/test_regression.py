@@ -12299,6 +12299,53 @@ class TestSameBasisGlitchSecondGuard:
             assert marker in src, f"2차 가드 미배선: {path}"
 
 
+class TestSitesList20260820:
+    """/sites (_SITES_TEXT) — 외부 third-party 링크 목록의 형식 계약.
+
+    항목이 하나씩 손으로 추가되는 목록이라 불릿이 조용히 어긋난다 —
+    2026-08-20 실제로 마지막 두 줄이 '?' 와 '-' 로 들어가 화면에서 홀로 튀었다
+    (사용자 캡쳐로 발각). 형식을 회귀로 고정한다."""
+
+    @staticmethod
+    def _body():
+        import re
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        t = re.search(r'_SITES_TEXT = """(.*?)"""', src, re.S).group(1)
+        return t, [l for l in t.splitlines() if l.strip()][1:]   # [0] = 헤더
+
+    def test_every_entry_uses_the_same_bullet(self):
+        _t, body = self._body()
+        assert body, "목록이 비었다"
+        bad = [l for l in body if not l.startswith(" • ")]
+        assert not bad, f"불릿이 다른 줄: {bad}"
+
+    def test_every_entry_is_a_single_anchor(self):
+        import re
+        _t, body = self._body()
+        for l in body:
+            assert re.fullmatch(
+                r' • <a href="https?://[^"]+">[^<]+</a>', l), f"형식 이탈: {l}"
+
+    def test_no_duplicate_urls(self):
+        import re
+        t, _body = self._body()
+        urls = re.findall(r'href="([^"]+)"', t)
+        dups = sorted({u for u in urls if urls.count(u) > 1})
+        assert not dups, f"중복 링크: {dups}"
+
+    def test_fits_one_telegram_message(self):
+        # 단일 메시지로 나가므로 4096 UTF-16 단위 상한(§Help 규칙과 같은 계약)
+        t, _body = self._body()
+        n = len(t.encode("utf-16-le")) // 2
+        assert n < 4096, f"{n} UTF-16 units — 분할 필요"
+
+    def test_raoni_sites_registered(self):
+        # 사용자 2026-08-20 추가분
+        t, _body = self._body()
+        assert '<a href="https://raoni.xyz/">raoni 삼하닉</a>' in t
+        assert '<a href="https://uplist.raoni.xyz/">Upbit Listing Radar</a>' in t
+
+
 class TestFeedBoardsShared20260820:
     """피드형 대시보드 5종(Daily Byte·레딧·블로그·부동산·청약) 공통 계약.
 
