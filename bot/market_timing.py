@@ -640,6 +640,7 @@ def fetch_market_breadth(market: str = "US") -> dict:
         return {}
     sector_closes: dict = {}
     missing: list[str] = []
+    _last_bar = ""
     for ticker, label in sectors.items():
         try:
             # min_rows=200 — 200일 SMA 가 이 지표의 절반이라 짧은 시계열이
@@ -651,11 +652,17 @@ def fetch_market_breadth(market: str = "US") -> dict:
             hist = None
         if hist:
             sector_closes[ticker] = [h["close"] for h in hist]
+            _d = str(hist[-1].get("date") or "")[:10]
+            if _d and _d > _last_bar:
+                _last_bar = _d
         else:
             missing.append(label)
     if not sector_closes:
         return {}
     return {**breadth_from_closes(sector_closes),
+            # ⚠️ 기준일이 없으면 "이거 최신이야?" 에 화면이 답할 수 없다
+            # (사용자 2026-08-20). 섹터 시계열의 **마지막 봉 날짜**가 답이다.
+            "as_of": _last_bar or None,
             "market": market.upper(),
             "source_label": _BREADTH_SOURCE_LABEL.get(market.upper(), "섹터 ETF"),
             "sectors_ok": sorted(sector_closes),
@@ -1202,9 +1209,11 @@ def fetch_volatility_snapshot() -> dict:
         vix_hist = fetch_index_history("^VIX", days=400, min_rows=200)
         nv = _fetch_vix_naver()
         if nv is not None:
-            out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)"}
+            out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)",
+                          "market": "US"}
         elif vix_hist:
             out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
+                          "market": "US",
                           "source": "yfinance(폴백)"}
         if out.get("vix"):
             # 과거값은 항상 히스토리에서 — 현재값 소스(네이버 실시간)와
@@ -1216,7 +1225,7 @@ def fetch_volatility_snapshot() -> dict:
         vk = fetch_vkospi_rows()
         if vk:
             out["vkospi"] = {"value": vk[-1]["close"], "date": vk[-1]["date"],
-                             "source": "KIS",
+                             "source": "KIS", "market": "KR",
                              "history": vol_history(
                                  _vol_series_merge("vkospi", vk))}
     except Exception as exc:
@@ -1235,7 +1244,7 @@ def fetch_volatility_snapshot() -> dict:
             # 어느 심볼로 받았는지 화면에 드러낸다 — 대체 심볼로 받은 걸
             # 'yfinance' 로만 적으면 화면이 출처를 숨기는 셈이다(규칙 10b).
             out["move"] = {"value": move_hist[-1]["close"],
-                           "date": move_hist[-1]["date"],
+                           "date": move_hist[-1]["date"], "market": "US",
                            "source": ("yfinance" if move_sym == _MOVE_SYMBOLS[0]
                                       else f"yfinance {move_sym}"),
                            "history": vol_history(merged)}
@@ -1276,10 +1285,15 @@ def _load_market_timing() -> dict:
     # FRED(fred_client, 기존 유동성 보드 T10Y2Y 재사용 — 신규 소스 없음).
     macro: dict = {"regime": "Transitional"}
     try:
+        _macro_bar = [""]      # 이 레짐이 어느 봉 기준인지(규칙 10b)
+
         def _yoy(ticker: str):
             h = fetch_index_history(ticker, days=280)
             if len(h) < 252:
                 return None
+            _d = str(h[-1].get("date") or "")[:10]
+            if _d and _d > _macro_bar[0]:
+                _macro_bar[0] = _d
             return (h[-1]["close"] / h[-252]["close"] - 1) * 100
 
         rsp, spy, iwm = _yoy("RSP"), _yoy("SPY"), _yoy("IWM")
@@ -1303,6 +1317,7 @@ def _load_market_timing() -> dict:
                                             spy_tlt, xly_xlp),
             "rsp_spy": rsp_spy, "iwm_spy": iwm_spy, "hyg_lqd": hyg_lqd,
             "spy_tlt": spy_tlt, "xly_xlp": xly_xlp, "curve_10y2y": curve,
+            "as_of": _macro_bar[0] or None,
         }
     except Exception as exc:
         log.debug("market_timing: macro regime failed: %s", exc)
@@ -1317,7 +1332,10 @@ def _load_market_timing() -> dict:
                 snap.get("price"), None, None, None,
                 snap.get("ath_change_pct"), None)
             crypto = {**snap, "score": score.get("score"),
-                     "components": score.get("components")}
+                      "components": score.get("components"),
+                      # CoinGecko 는 라이브 시세라 '관측기간'이 없다 — 수집
+                      # 시각을 KST 로 찍는다(없으면 최신인지 알 수 없다).
+                      "as_of": _kst_now().strftime("%Y-%m-%d %H:%M KST")}
     except Exception as exc:
         log.debug("market_timing: crypto panel failed: %s", exc)
 
@@ -1376,6 +1394,31 @@ _RISK_COLOR = {"NORMAL": "#16a34a", "CAUTION": "#f59e0b", "HIGH": "#ef4444",
               "SEVERE": "#991b1b"}
 
 
+def _num1(v) -> str:
+    """소수 1자리 — 원시 float 을 그대로 찍으면 `-44.97084%` 처럼 폭주한다
+    (사용자 2026-08-20 크립토 카드 캡처)."""
+    try:
+        return f"{float(v):.1f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _asof_note(as_of) -> str:
+    """카드 각주용 기준시각 — 없으면 **없다고 밝힌다**(규칙 10b).
+
+    사용자 2026-08-20 "이것들도 모두 최신의 값이지?" — 시장 폭·매크로 레짐·
+    크립토 카드엔 기준일이 아예 없어 **화면만 보고는 답할 수 없었다**.
+    표기가 없으면 최신인지 아무도 모른다."""
+    if not as_of:
+        return '<span style="color:#f0a020">· 기준시각 미기록</span>'
+    return f'· 기준 {_h_escape(str(as_of))}'
+
+
+def _h_escape(t: str) -> str:
+    import html as _hh
+    return _hh.escape(t)
+
+
 def render_market_timing_page(data: dict, now=None) -> str:
     """market_timing.html — 시장별 분산일·FTD 카드 + 매크로 레짐 + 크립토.
     fred_boards 의 공용 테마/nav/CSS 재사용(신규 보드 CSS 중복 방지)."""
@@ -1423,7 +1466,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="stat-grid"><div class="stat"><div class="k">국면</div>
 <div class="v" style="font-size:16px">{_h.escape(macro.get("regime","Transitional"))}</div></div></div>
 <div class="note">RSP-SPY(집중도) · IWM-SPY(대소형) · HYG-LQD(신용) · SPY-TLT(주식·채권) ·
-10Y-2Y(커브) 다수결 — 세부 가중치 없는 단순 휴리스틱(참고용).</div></div>"""
+10Y-2Y(커브) 다수결 — 세부 가중치 없는 단순 휴리스틱(참고용). {_asof_note(macro.get("as_of"))}</div></div>"""
 
     crypto = data.get("crypto", {})
     crypto_card = ""
@@ -1434,10 +1477,10 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="panel"><div class="panel-title">🪙 크립토 레짐</div>
 <div class="stat-grid">
 <div class="stat"><div class="k">BTC 가격</div><div class="v">${crypto.get("price","—"):,}</div></div>
-<div class="stat"><div class="k">ATH 대비</div><div class="v">{crypto.get("ath_change_pct","—")}%</div></div>
+<div class="stat"><div class="k">ATH 대비</div><div class="v">{_num1(crypto.get("ath_change_pct"))}%</div></div>
 <div class="stat"><div class="k">레짐 스코어(0-100)</div><div class="v">{score_s}</div></div>
 </div>
-<div class="note">CoinGecko 무료 공개 API — 가격·ATH낙폭 컴포넌트만(SMA·도미넌스는 추후 확장).</div></div>"""
+<div class="note">CoinGecko 무료 공개 API — 가격·ATH낙폭 컴포넌트만(SMA·도미넌스는 추후 확장). {_asof_note(crypto.get("as_of"))}</div></div>"""
 
     cot = data.get("cot", {})
     cot_card = ""
@@ -1508,6 +1551,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="stat"><div class="k">50일선 상회 섹터</div><div class="v">{_pct("50dma")}</div></div>
 <div class="stat"><div class="k">200일선 상회 섹터</div><div class="v">{_pct("200dma")}</div></div>
 <div class="stat"><div class="k">표본</div><div class="v" style="font-size:14px">{_h.escape(str(b.get("source_label","섹터 ETF")))} {b.get("n_sectors",0)}개</div></div>
+<div class="stat"><div class="k">기준일</div><div class="v" style="font-size:14px">{_h.escape(str(b.get("as_of") or "—"))}{_idx_stale(mkt, b.get("as_of"))}</div></div>
 </div>{_miss_html}
 <div class="note">{_h.escape(str(b.get("source_label","섹터 ETF")))} {len(sectors)}개({_h.escape(_names)})
 중 자신의 20/50/200일 이평선 위에 있는 비율 — {_BREADTH_WHY.get(mkt, "")}
@@ -1534,8 +1578,16 @@ def render_market_timing_page(data: dict, now=None) -> str:
             # 종가 기반 값은 **며칠 종가인지**를 같이 낸다(규칙 10b).
             age = _vol_age_days(rec.get("date"))
             if rec.get("date"):
-                src = f'{src} · {str(rec["date"])[5:]} 종가' if src \
-                    else f'{str(rec["date"])[5:]} 종가'
+                # ⚠️ 장중엔 '종가' 가 아니다. VKOSPI 가 한국 현지 10:26 에
+                # "KIS · 08-20 종가" 로 떠 있었다(사용자 2026-08-20 캡처) —
+                # 그 시각은 장 중이라 종가가 아니라 **현재값**이다.
+                _mkt = rec.get("market")
+                _live = (_market_closed_today(_mkt) is False
+                         and str(rec["date"])[:10] == (
+                             _market_today(_mkt).isoformat() if _mkt else ""))
+                _kind = "장중" if _live else "종가"
+                src = f'{src} · {str(rec["date"])[5:]} {_kind}' if src \
+                    else f'{str(rec["date"])[5:]} {_kind}'
             stale_note = ""
             if age is not None and age > _VOL_STALE_DAYS:
                 src += " ⚠"
