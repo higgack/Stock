@@ -1169,8 +1169,10 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://badonion.co.kr/home">나쁜양파</a>
  • <a href="https://www.autoanalyst.ai.kr/">호돌이오토애널리스트</a>
  • <a href="http://www.serenityrsh.com/#link">Serenity</a>
- ? <a href="https://humanindicator.kr/ranking">human indicator</a>
- - <a href="https://newsbot-3uj.pages.dev/coverage/coverage">Daol Park Jonghyun Dashboard</a>"""
+ • <a href="https://humanindicator.kr/ranking">human indicator</a>
+ • <a href="https://newsbot-3uj.pages.dev/coverage/coverage">Daol Park Jonghyun Dashboard</a>
+ • <a href="https://raoni.xyz/">raoni 삼하닉</a>
+ • <a href="https://uplist.raoni.xyz/">Upbit Listing Radar</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
