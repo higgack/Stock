@@ -12570,6 +12570,15 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
     } for e in _ok if e.get("freshness") != "archived"]}
     # </script> 차단 + JSON 안전 임베드
     data_json = _j.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
+    # ⚠️ 기준시각이 없으면 "이거 최신이야?" 에 화면이 답할 수 없다(규칙 10b).
+    # 이 그래프는 재생성 때 소스를 다시 읽는 live 집합이라 **적용시각**이 기준이고,
+    # 자동발굴(kg) 관계는 학습일이 따로 있으므로 **가장 최근 학습일**도 같이 낸다.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    _vc_asof = _dt.now(_tz(_td(hours=9))).strftime("%Y-%m-%d %H:%M KST")
+    _dates = sorted(d for d in ((e.get("date") or "")[:10] for e in _ok) if d)
+    _vc_learned = (f" · 자동발굴 최근 학습일 {_h.escape(_dates[-1])}"
+                   if _dates else
+                   ' · <span style="color:#f0a020">자동발굴 학습일 없음</span>')
     parts = [_SCREENER_CSS, _VALUECHAIN_CSS]
     parts.append(f"""
 <div class="wrap">
@@ -12578,7 +12587,8 @@ def _render_valuechain_page(edges: list[dict], cost_today: float = 0.0,
     · <a href="dart_feed.html">📋 DART</a> · <a href="blog.html">📝 블로그</a>
   </div>
   <h1>🔗 밸류체인</h1>
-  <p class="sub">블로그·DART 계약공시(kg) + 관세청 수출입 레퍼런스북을 집합한 통합 그래프 · 회사 검색 시 공급사·고객·수출품목·동종 회사 연결(고객사 호재 → 공급사 수혜 발굴) · 모든 소스 갱신 자동 반영</p>
+  <p class="sub">블로그·DART 계약공시(kg) + 관세청 수출입 레퍼런스북을 집합한 통합 그래프 · 회사 검색 시 공급사·고객·수출품목·동종 회사 연결(고객사 호재 → 공급사 수혜 발굴) · 모든 소스 갱신 자동 반영<br>
+  데이터 적용시각 {_h.escape(_vc_asof)}{_vc_learned}</p>
   <details class="month" style="margin:4px 0 12px">
     <summary class="month-head" style="cursor:pointer"><span>ℹ️ 사용법 — 처음이면 펼쳐 보세요</span><span class="count">가이드</span></summary>
     <div class="month-body" style="padding:10px 14px;font-size:13px;line-height:1.75;color:var(--fg)">
