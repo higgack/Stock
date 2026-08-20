@@ -26913,3 +26913,62 @@ class TestSecondSweep20260820:
         src = open("bot/breadth_strategy.py", encoding="utf-8").read()
         assert "from bot.market_timing import _idx_stale" in src, \
             "판정을 복제했다 — 두 화면이 갈라진다"
+
+    # ── ⑩ "이것들도 모두 최신이지?" 에 화면이 답하게 ──────────────────
+    def test_every_data_card_carries_an_asof(self, monkeypatch):
+        """사용자 2026-08-20 캡처: 시장 폭·매크로 레짐·크립토 카드엔 기준일이
+        **아예 없어** 화면만 보고는 최신인지 답할 수 없었다(규칙 10b).
+        없으면 '미기록'이라고 밝히기라도 해야 한다."""
+        import re
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-08-19", 0))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
+        b = {"market": "KR", "as_of": "2026-08-20", "n_sectors": 13,
+             "source_label": "KODEX", "pct_above_20dma": 77.0,
+             "pct_above_50dma": 46.0, "pct_above_200dma": 38.0,
+             "above_20dma": 10, "counted_20dma": 13, "above_50dma": 6,
+             "counted_50dma": 13, "above_200dma": 5, "counted_200dma": 13,
+             "sectors_missing": []}
+        html = mt.render_market_timing_page(
+            {"markets": {}, "as_of": "2026-08-20", "breadth": {"KR": b},
+             "macro": {"regime": "Broadening"},
+             "crypto": {"price": 69381, "ath_change_pct": -44.97084,
+                        "score": 55, "as_of": "2026-08-20 10:26 KST"}})
+        assert "기준일" in html and "2026-08-20" in html, "시장 폭 기준일 없음"
+        assert "기준시각 미기록" in html, "as_of 없는 카드가 조용히 넘어간다"
+        assert "기준 2026-08-20 10:26 KST" in html, "크립토 기준시각 없음"
+        # 수집기가 실제로 as_of 를 싣는가(배선) — 렌더만 고치면 늘 '미기록'.
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        assert '"as_of": _last_bar or None' in src, "시장 폭 as_of 미배선"
+        assert '"as_of": _macro_bar[0] or None' in src, "매크로 as_of 미배선"
+
+    def test_crypto_ath_pct_is_not_a_raw_float(self, monkeypatch):
+        """`-44.97084%` 처럼 소수점이 폭주하면 안 된다(캡처 실측)."""
+        import bot.market_timing as mt
+        assert mt._num1(-44.97084) == "-45.0"
+        assert mt._num1(None) == "—" and mt._num1("x") == "—"
+        html = mt.render_market_timing_page(
+            {"markets": {}, "as_of": "2026-08-20",
+             "crypto": {"price": 69381, "ath_change_pct": -44.97084, "score": 55}})
+        # ⚠️ 원시 값은 임베드 JSON 에도 있다 — **표시 셀**만 본다.
+        import re
+        cell = re.search(r"ATH 대비</div><div class=\"v\">([^<]*)", html)
+        assert cell and cell.group(1) == "-45.0%", cell and cell.group(1)
+
+    def test_intraday_value_is_not_called_a_close(self, monkeypatch):
+        """VKOSPI 가 한국 현지 10:26 에 "KIS · 08-20 **종가**" 로 떠 있었다 —
+        장중엔 종가가 아니다(사용자 2026-08-20 캡처)."""
+        import bot.market_timing as mt
+        rec = {"value": 58.3, "date": "2026-08-20", "source": "KIS",
+               "market": "KR", "history": {"전일": 60.6}}
+        monkeypatch.setattr(mt, "_market_today",
+                            lambda m: __import__("datetime").date(2026, 8, 20))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
+        html = mt.render_market_timing_page(
+            {"markets": {}, "as_of": "2026-08-20", "volatility": {"vkospi": rec}})
+        assert "08-20 장중" in html and "08-20 종가" not in html, html[:0] or "장중 미표기"
+        # 마감 뒤엔 종가가 맞다 — 과잉 라벨 금지.
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+        html2 = mt.render_market_timing_page(
+            {"markets": {}, "as_of": "2026-08-20", "volatility": {"vkospi": rec}})
+        assert "08-20 종가" in html2, "마감 후에도 '장중' 이라 적는다"
