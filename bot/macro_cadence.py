@@ -84,6 +84,7 @@ CADENCE: dict[str, tuple[str, int, str]] = {
     "DTWEXBGS": ("D", 3, "달러지수(광범위) 일별"),
     "VIXCLS": ("D", 1, "VIX 종가 일별"),
     "CBBTCUSD": ("D", 1, "비트코인 일별"),
+    "CBETHUSD": ("D", 1, "이더리움 일별"),
     "M2V": ("Q", 75, "통화유통속도 분기, GDP 확정 후"),
     "M1V": ("Q", 75, "통화유통속도 분기, GDP 확정 후"),
     "TOTBKCR": ("W", 10, "상업은행 총자산 주간(H.8)"),

@@ -458,7 +458,8 @@ class DiscontinuedSweepTests(unittest.TestCase):
         # 리스크로 제외)
         # 2026-08-20: FDHBFIN 제거(원천 공표 ~170일 지연 → 화면에 늘
         # 반년+ 옛값). 54 → 53.
-        self.assertEqual(len(LIQ_SERIES), 53)
+        # 2026-08-20 +CBETHUSD(이더리움 — 사용자 'BTC 밑에 같은 형식으로')
+        self.assertEqual(len(LIQ_SERIES), 54)
 
     def test_catalog_alt_sources_wired(self):
         srcs = {s["id"]: s.get("src") for s in LIQ_SERIES if s.get("src")}
