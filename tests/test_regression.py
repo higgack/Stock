@@ -12299,6 +12299,86 @@ class TestSameBasisGlitchSecondGuard:
             assert marker in src, f"2차 가드 미배선: {path}"
 
 
+class TestRegimeCardExplanations20260820:
+    """매크로/크립토 레짐 카드의 설명이 **실제 계산과 일치**하는가.
+
+    사용자 2026-08-20 "이 두개에 대해서 특히, 매크로 크로스에셋 레짐에 대해서
+    설명을 추가해줘". 설명을 붙이며 두 군데가 코드와 어긋나 있는 걸 발견했다:
+    ① 카드 note 가 지표쌍을 5개만 적었는데 실제 투표는 6개(XLY-XLP 누락)
+    ② 크립토 note 가 '가격·ATH낙폭 컴포넌트'라고 했는데 가격은 점수에 안 들어간다
+       (추세 컴포넌트가 SMA50·SMA200 을 함께 요구하는데 둘 다 None).
+    설명 out-of-sync = 버그(§Help/Dashboard)."""
+
+    @staticmethod
+    def _page():
+        import bot.market_timing as mt
+        return mt.render_market_timing_page({
+            "macro": {"regime": "Transitional", "inputs": 6, "inputs_total": 6,
+                      "as_of": "2026-08-19"},
+            "crypto": {"price": 69296, "ath_change_pct": -45.0, "score": 55.0,
+                       "as_of": "2026-08-20 13:28 KST"},
+            "markets": {}, "cot": {}})
+
+    @classmethod
+    def _panel(cls, emoji):
+        """그 카드 하나만 잘라낸다. 페이지 전체를 grep 하면 ℹ️ 가이드에 같은
+        단어가 있어 **카드에서 설명을 지워도 테스트가 통과한다**(2026-08-20
+        뮤테이션에서 실제로 통과했다 — 실수 #19 의 범위판)."""
+        html = cls._page()
+        i = html.index(f'<div class="panel-title">{emoji}')
+        j = html.find('<div class="panel">', i)
+        return html[i:j if j > 0 else len(html)]
+
+    def test_every_regime_the_classifier_can_return_has_a_korean_meaning(self):
+        # 이름 열거는 새 국면을 못 잡는다 — 분류기가 돌려줄 수 있는 값 전부를
+        # 소스에서 뽑아 라벨 존재를 확인한다(#31).
+        import re
+        import bot.market_timing as mt
+        src = open("bot/market_timing.py", encoding="utf-8").read()
+        body = src[src.index("def classify_macro_regime"):
+                   src.index("def crypto_regime_score")]
+        returned = set(re.findall(r'votes\.append\("(\w+)"', body))
+        returned |= set(re.findall(r'return "(\w+)"', body))
+        assert returned, "분류기가 돌려주는 국면을 못 찾음"
+        for r in returned:
+            assert mt.macro_regime_kr(r), f"{r} 의 한글 뜻이 없다"
+        assert mt.macro_regime_kr("없는국면") == ""      # 지어내지 않는다
+
+    def test_card_lists_as_many_pairs_as_the_classifier_votes_on(self):
+        # note 가 5쌍만 적고 화면은 '반영 지표 6/6' 이라고 하면 세어보는
+        # 사용자가 바로 어긋남을 본다(실수 #45 의 라벨판).
+        import inspect
+        import bot.market_timing as mt
+        n_inputs = len(inspect.signature(mt.classify_macro_regime).parameters)
+        card = self._panel("🌐")
+        for pair in ("RSP-SPY", "IWM-SPY", "HYG-LQD", "SPY-TLT",
+                     "XLY-XLP", "10Y-2Y"):
+            assert pair in card, f"카드에 {pair} 설명이 없다"
+        assert n_inputs == 6
+        assert "반영 지표 6/6" in card
+
+    def test_card_explains_that_transitional_is_not_a_regime(self):
+        card = self._panel("🌐")
+        assert "판단보류" in card          # 국면 값 아래 한 줄 뜻
+        assert "과반" in card and "3개 미만" in card
+
+    def test_crypto_card_shows_where_the_score_comes_from(self):
+        # 55 가 어디서 나온 숫자인지 나란히 보여야 눈으로 검산된다(실수 #33).
+        import bot.market_timing as mt
+        assert mt.crypto_regime_score(69296, None, None, None, -45.0,
+                                      None)["score"] == 55.0
+        card = self._panel("🪙")
+        assert "= 100 + (ATH 대비 -45.0)" in card
+        assert "BTC 가격은 점수에 안 들어갑니다" in card
+
+    def test_guide_covers_both_cards(self):
+        html = self._page()
+        for k in ("동일가중", "신용 스프레드", "국채 커브",
+                  "Concentration(집중)", "Inflationary(인플레)",
+                  "risk-on", "SMA50·SMA200"):
+            assert k in html, f"ℹ️ 가이드에 '{k}' 설명이 없다"
+
+
 class TestBoardAuditReadsRealKeys20260820:
     """board_audit 의 스냅샷 2개 섹션이 **엉뚱한 키**를 읽어 늘 통과하던 것.
 
