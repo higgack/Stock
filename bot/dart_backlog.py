@@ -108,6 +108,30 @@ _TABLE_END = re.compile(
     r"|\(\d+\)\s*[가-힣]|\d+\s*\.\s*[가-힣]{2,}|[가-하]\s*\.\s+[가-힣]")
 
 
+# ⚠️ `기말` 은 원문 **어디에나** 있는 낱말이다 — 현금흐름표(`기말 현금및
+# 현금성자산`)·유형자산 증감(`기말장부가액`)·자기주식(`기말수량`)·채무보증
+# (`기초 증감 기말`). 2026-08-21 스윕에서 미수집 7건이 전부 그런 표였고,
+# 진단이 "잔고 라벨이 있다"고 오판해 **개선 여지 8건**이라는 거짓 숫자를
+# 냈다(실제로는 원천에 수주잔고 공시가 없는 종목들). 범용 낱말로 잡힌
+# 자리는 주변에 **수주 문맥**이 있어야 인정한다.
+_GENERIC_BAL = {"기말"}
+_ORDER_CTX = re.compile(r"수주|도급|계약잔액")
+
+
+def _balance_matches(text: str) -> list:
+    """잔고 라벨 매치 전량 — **파서와 진단이 같은 것을 본다**(#105).
+
+    한쪽만 문맥을 요구하면 통계와 화면이 갈라진다."""
+    out = []
+    for m in re.finditer("|".join(_BAL_LABELS), text or ""):
+        if m.group(0) in _GENERIC_BAL:
+            near = text[max(0, m.start() - 260):m.start() + 120]
+            if not _ORDER_CTX.search(near):
+                continue
+        out.append(m)
+    return out
+
+
 def _cut_table(seg: str) -> str:
     """표 본문만 남긴다 — 각주(※·주1)·다음 표 캡션·다음 절 번호에서 자른다."""
     m = _TABLE_END.search(seg)
@@ -270,7 +294,7 @@ def _parse_table(text: str) -> tuple[float, str] | None:
        ⚠️ 합계행이 **있는데 검산에 실패한 경우엔 행 합산으로 넘어가지 않는다.**
        합계가 있는데 못 맞췄다는 건 내 컬럼 모델이 틀렸다는 신호라, 거기서
        행을 더 파면 틀린 값을 그럴듯하게 만들어낸다."""
-    for m in re.finditer("|".join(_BAL_LABELS), text):
+    for m in _balance_matches(text):
         head = text[max(0, m.start() - 260):m.start()]
         if not any(k in head for k in _OPEN_LABELS):
             continue
@@ -584,7 +608,7 @@ _NO_DATA_RE = re.compile(
 
 def _balance_spots(text: str) -> list[int]:
     """잔고 라벨이 나온 **모든** 위치. 파서들이 훑는 범위와 같아야 한다."""
-    return [m.start() for m in re.finditer("|".join(_BAL_LABELS), text or "")]
+    return [m.start() for m in _balance_matches(text)]
 
 
 def diagnose(text: str) -> str:
@@ -601,7 +625,7 @@ def diagnose(text: str) -> str:
         # 여러 종목에서 몰리면 키 권한·일일한도 같은 계정 문제일 수 있으므로
         # 격주 리포트에 **보여야 한다**.
         return "원문미제공"
-    hits = len(re.findall("|".join(_BAL_LABELS), text))
+    hits = len(_balance_matches(text))
     if not hits:
         return "미공시"
     if _NO_DATA_RE.search(text):
