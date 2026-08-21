@@ -7081,6 +7081,34 @@ class TestFcfAccuracyAudit20260821:
         # 뮤테이션이 통과한다(실측). 두 검사가 **각각** 세어져야 한다(#75).
         assert r["bad"] == 2, txt
 
+    def test_unknown_verdict_names_the_missing_quarter(self):
+        """'검산 생략'만 말하면 원인을 사람이 짐작하게 된다(#82) — 어느
+        분기가 비었는지 이름으로 말한다. AAPL 실측: FY말 2025-09-30 창의
+        2024-12-31 을 yfinance 가 안 준다(분기 현금흐름을 5개만 준다)."""
+        from bot.scripts.fcf_audit import missing_for_window, prev_quarter_end
+        assert prev_quarter_end("2025-03-31") == "2024-12-31"
+        assert prev_quarter_end("2025-12-31") == "2025-09-30"
+        assert prev_quarter_end("2025-07-15") is None      # 모르면 추정 금지
+        have = {"2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31"}
+        assert missing_for_window("2025-09-30", have) == ["2025-03-31",
+                                                         "2024-12-31"]
+        assert missing_for_window("2026-03-31", have) == []
+
+    def test_mismatch_line_shows_the_materials(self, monkeypatch):
+        """"2.75% 차이"만 찍으면 다음에 뭘 볼지 알 수 없다(#93) — 무형자산
+        취득인지 원천 직접값인지 정정인지가 재료 줄에서 갈린다."""
+        qs = [{"label": "25.4Q", "year": 2025, "quarter": 4,
+               "financials": {"영업활동현금흐름": 1000.0,
+                              "유형자산취득": 200.0, "무형자산취득": 90.0,
+                              "FCF": 710.0}}]
+        q = [{"period": "2025-12-31", "Operating Cash Flow": 1000.0,
+              "Capital Expenditure": -200.0}]        # yfinance 800
+        r = self._run(monkeypatch, "004370.KS", self._snap(q, []), qs)
+        txt = "\n".join(r["lines"])
+        assert "↳ DART OCF" in txt and "무형" in txt, txt
+        assert "yfinance OCF" in txt and "CAPEX" in txt, txt
+        assert r["bad"] >= 1
+
     def test_exit_code_separates_bad_from_unknown(self, monkeypatch):
         """판정불가를 통과로 찍지 않는다(#41) — 종료코드로도 갈라야
         자동화가 '초록'을 잘못 읽지 않는다. (소스 문자열이 아니라 **값**

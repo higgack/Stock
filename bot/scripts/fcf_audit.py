@@ -33,7 +33,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 1
+_AUDIT_VER = 2
 _GAP_OK = 1.0        # 교차출처 허용 차이(%) — 정의가 같으면 소수점까지 맞는다
 _SUM_OK = 5.0        # 분기합 vs 연간 허용 차이(%)
 
@@ -58,6 +58,60 @@ def q_end(year: int, quarter: int) -> str:
     없으면 비교를 건너뛴다**(억지로 맞추면 #99 의 오보가 된다)."""
     return {1: f"{year}-03-31", 2: f"{year}-06-30",
             3: f"{year}-09-30", 4: f"{year}-12-31"}.get(quarter, "")
+
+
+_Q_BACK = {"03-31": ("12-31", -1), "06-30": ("03-31", 0),
+           "09-30": ("06-30", 0), "12-31": ("09-30", 0)}
+
+
+def prev_quarter_end(period: str) -> str | None:
+    """분기말 → **직전 분기말**. 형식을 모르면 None(추정하지 않는다)."""
+    if len(period) != 10 or period[4] != "-":
+        return None
+    md = _Q_BACK.get(period[5:])
+    if not md:
+        return None
+    try:
+        y = int(period[:4])
+    except ValueError:
+        return None
+    return f"{y + md[1]}-{md[0]}"
+
+
+def missing_for_window(annual_period: str, have: set) -> list[str]:
+    """그 회계연도 4분기 중 **원천이 안 준 분기**. 못 세면 빈 리스트.
+
+    ⚠️ '검산 생략'만 말하면 원인을 사람이 짐작하게 된다(#82 '없음'만 말하는
+    진단은 추측을 부른다) — 어느 분기가 비었는지 이름으로 말한다."""
+    out, p = [], annual_period
+    for _ in range(4):
+        if p is None:
+            return []
+        if p not in have:
+            out.append(p)
+        p = prev_quarter_end(p)
+    return out
+
+
+def _materials(dart_fin: dict, yf_row: dict) -> str:
+    """불일치 기간의 **재료를 나란히** — 어느 구성요소가 다른지 한 줄로.
+
+    ⚠️ "2.75% 차이"만 찍으면 다음에 뭘 볼지 사람이 짐작하게 된다(#93 숫자는
+    행동으로 이어질 때만 쓸모가 있다). 무형자산취득이 원인인지, 원천이 FCF
+    를 직접 준 것인지, 연도별 정정(restatement)인지가 여기서 갈린다.
+    """
+    from bot.fcf import _CAPEX_NAMES, _FCF_NAMES, _OCF_NAMES, _first
+
+    def _e(v):
+        return "—" if v is None else f"{float(v) / 1e8:,.1f}억"
+    d = (f"DART OCF {_e(dart_fin.get('영업활동현금흐름'))} · "
+         f"유형 {_e(dart_fin.get('유형자산취득'))} · "
+         f"무형 {_e(dart_fin.get('무형자산취득'))}")
+    direct = _first(yf_row, _FCF_NAMES)
+    y = (f"yfinance OCF {_e(_first(yf_row, _OCF_NAMES))} · "
+         f"CAPEX {_e(_first(yf_row, _CAPEX_NAMES))}"
+         + (f" · FCF직접 {_e(direct)}" if direct is not None else ""))
+    return "↳ " + d + "  ||  " + y
 
 
 def recompute_dart(fin: dict) -> float | None:
@@ -133,7 +187,15 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             + _mark(g, _SUM_OK))
         flag(None if g is None else g <= _SUM_OK)
     else:
-        say("     ④ ❓ 회계연도에 맞는 분기 4개가 없어 검산 생략")
+        _last_a = next((p for p, v in reversed(list(ya_fcf.items()))
+                        if v is not None), "")
+        _miss = missing_for_window(_last_a, {p for p, v in yq_fcf.items()
+                                             if v is not None})
+        say("     ④ ❓ 검산 생략 — "
+            + (f"FY말 {_last_a} 창에서 원천이 안 준 분기: "
+               f"{', '.join(_miss)}" if _miss
+               else "연간 기준일과 맞는 분기 시계열이 없다")
+            + " (yfinance 는 분기 현금흐름을 5개 안팎만 준다)")
         flag(None)
     # ⑤ 누적냄새
     sm = cumulative_smell([v for _p, v in list(yq_fcf.items())[-4:]],
@@ -185,6 +247,9 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         g = _pct(v, y)
         say(f"        {q.get('label')} ({p})  DART {v / 1e8:,.1f}억 vs "
             f"yfinance {y / 1e8:,.1f}억  " + _mark(g, _GAP_OK))
+        if g is not None and g > _GAP_OK:
+            say("           " + _materials(q.get("financials") or {},
+                                           dict(yq).get(p) or {}))
         flag(None if g is None else g <= _GAP_OK)
     if not seen:
         # ⚠️ 대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54).
@@ -207,6 +272,8 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         g = _pct(v, a)
         say(f"        FY{y0} ({p})  DART {v / 1e8:,.1f}억 vs "
             f"yfinance {a / 1e8:,.1f}억  " + _mark(g, _GAP_OK))
+        if g is not None and g > _GAP_OK:
+            say("           " + _materials(fin, dict(ya).get(p) or {}))
         flag(None if g is None else g <= _GAP_OK)
     return {"lines": out, "bad": bad, "unknown": unknown}
 
