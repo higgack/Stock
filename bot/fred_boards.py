@@ -795,7 +795,7 @@ body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-
 .wrap{max-width:1440px;margin:0 auto;padding:20px}
 .nav{margin-bottom:14px;font-size:13px}.nav a{color:var(--muted);text-decoration:none}.nav a:hover{color:var(--fg)}
 h1{font-size:24px;margin:6px 0}h1 em{color:var(--accent);font-style:normal}
-.sub{color:var(--muted);font-size:13px;margin:4px 0 14px}
+.sub{color:var(--fg);opacity:.78;font-size:13px;line-height:1.6;margin:4px 0 14px}
 .pills{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 .pill{padding:6px 14px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;border:2px solid transparent;background:var(--card);color:var(--muted);box-shadow:0 0 0 1px var(--border)}
 .pill.active{border-color:var(--pillbd);color:var(--fg)}
@@ -812,12 +812,16 @@ tr.row{cursor:pointer}tr.row:hover{background:var(--surface2)}tr.selected{backgr
 .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin:14px 0}
 .panel-title{font-size:15px;font-weight:600;margin-bottom:10px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:8px 0}
-.stat{background:var(--surface2);border-radius:8px;padding:10px}
-.stat .k{font-size:11px;color:var(--muted)}.stat .v{font-size:18px;font-weight:700;margin-top:2px}
+.stat{background:var(--surface2);border-radius:8px;padding:11px 12px}
+/* 사용자 2026-08-21 '가독성을 좀 더 높여주고' — 타일 라벨이 11px·muted 라
+   값(18px)에 비해 너무 흐렸다. 라벨 12.5px + 본문색 계열로 올린다.
+   값은 tabular-nums 로 자리를 고정해 숫자가 흔들리지 않게. */
+.stat .k{font-size:12.5px;color:var(--fg);opacity:.72;line-height:1.45}
+.stat .v{font-size:19px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums}
 .note{background:var(--surface2);border-left:3px solid var(--accent);border-radius:8px;padding:12px;font-size:13px;color:var(--fg);opacity:.9;margin-top:10px}
 .chartbox{position:relative;height:320px}
 .tbl-wrap{max-height:560px;overflow-y:auto}
-.stocks{color:var(--muted);font-size:11px;max-width:340px}
+.stocks{color:var(--fg);opacity:.72;font-size:12px;max-width:340px}
 .guide{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:4px 14px;margin:10px 0;font-size:13px;line-height:1.7;color:var(--fg)}
 .guide summary{cursor:pointer;padding:8px 0;font-weight:600}
 .footer{color:var(--muted);font-size:11px;text-align:center;padding:18px 0;border-top:1px solid var(--border);margin-top:24px}

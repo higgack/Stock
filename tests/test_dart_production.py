@@ -1847,3 +1847,137 @@ class TestAnchorForms20260821:
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
         assert 'got["anchor"]' in src, "프로브가 서식을 집계 안 한다"
+
+
+class TestHeaderPrice20260821:
+    """사용자 2026-08-21 "시가총액 앞에 현재가도 추가해주고 … 전 나라 공통".
+    상세 페이지 상단(현재가 · 시가총액)과 같은 형태로 인포그래픽 헤더에도."""
+
+    @staticmethod
+    def _pay(price, mcap, cur="KRW", name="SK하이닉스"):
+        import bot.quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+              for i in (1, 2, 3, 4, 5)]
+        return {"ticker": "000660.KS", "company": name, "market": "KOSPI",
+                "market_cap": mcap, "price": price, "quarters": qs,
+                "ttm": qi._ttm(qs), "per": 12.0, "per_forward": None,
+                "per_self": True, "psr": 2.7, "currency": cur,
+                "trade_currency": cur, "currency_mismatch": False,
+                "fiscal_note": "", "anomaly_keys": [], "anomaly_labels": [],
+                "component_accounts": {}, "source_label": "DART",
+                "asof": "2026-08-21_15", "growth_risk": {"ok": False}}
+
+    @staticmethod
+    def _header(pay):
+        """헤더만 그려 (텍스트, x0, x1) 목록 + 겹침."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        import bot.quarterly_infographic as qi
+        boxes, hits = [], []
+        orig = Figure.savefig
+
+        def spy(self, *a, **k):
+            self.canvas.draw()
+            r = self.canvas.get_renderer()
+            for ax in self.axes:
+                pos = ax.get_position()
+                if not (pos.x0 == 0 and pos.width == 1):
+                    continue
+                bbs = [(t.get_window_extent(r), t.get_text())
+                       for t in ax.texts if t.get_text().strip()]
+                for i in range(len(bbs)):
+                    for j in range(i + 1, len(bbs)):
+                        if bbs[i][0].overlaps(bbs[j][0]):
+                            hits.append((bbs[i][1], bbs[j][1]))
+                for t in ax.texts:
+                    if not t.get_text().strip():
+                        continue
+                    d = t.get_window_extent(r).transformed(
+                        ax.transData.inverted())
+                    boxes.append((t.get_text(), d.x0, d.x1))
+            return orig(self, *a, **k)
+        Figure.savefig = spy
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                qi._render_locked(pay, f"{d}/x.png", ("head",))
+        finally:
+            Figure.savefig, qi._font_ok = orig, _o
+        return boxes, hits
+
+    def test_price_and_mcap_both_shown_without_overlap(self):
+        """처음엔 간격을 글자수로 추정했다가 `₩1,730,000` 과 `₩1,263.75조`
+        가 79.5 에서 **딱 붙었다**(실측) — 겹침은 픽셀로 잡는다."""
+        boxes, hits = self._header(self._pay(1730000, 1.26375e15))
+        txts = [b[0] for b in boxes]
+        assert "현재가" in txts and "시가총액" in txts
+        assert "₩1,730,000" in txts and "₩1,263.75조" in txts
+        assert not hits, f"헤더 글자 겹침: {hits[:3]}"
+        px = {b[0]: (b[1], b[2]) for b in boxes}
+        gap = px["₩1,263.75조"][0] - px["₩1,730,000"][1]
+        assert gap >= 2.0, f"현재가·시총이 너무 붙었다(간격 {gap:.1f})"
+
+    def test_long_company_name_does_not_collide(self):
+        """회사명이 길면 오른쪽 숫자와 부딪힌다."""
+        _b, hits = self._header(
+            self._pay(1730000, 1.26375e15, name="(주)마이크로컨텍솔루션홀딩스"))
+        assert not hits, f"긴 회사명과 겹침: {hits[:3]}"
+
+    def test_missing_price_leaves_no_hole(self):
+        """현재가가 없는 종목(스냅샷 미수신)도 시총만 정상 표기."""
+        boxes, hits = self._header(self._pay(None, 1.26e15))
+        txts = [b[0] for b in boxes]
+        assert "시가총액" in txts and "현재가" not in txts
+        assert not hits
+
+    def test_price_uses_trade_currency_not_financial(self):
+        """HK 처럼 거래·재무 통화가 다른 종목에서 기호가 틀리면 안 된다."""
+        p = self._pay(45.6, 1.2e11, cur="HKD")
+        p["currency"] = "CNY"          # 재무통화만 다르게
+        p["currency_mismatch"] = True
+        txts = [b[0] for b in self._header(p)[0]]
+        # ⚠️ "HK$ 로 시작하는 게 하나라도 있나" 로 재면 **시가총액**이
+        # 만족시켜 뮤테이션이 통과한다(실측). 현재가 값 자체를 집는다.
+        price = [t for t in txts if t.endswith("45.60")]
+        assert price and price[0] == "HK$45.60", txts
+
+    def test_payload_carries_the_price(self):
+        """⚠️ 헤더 테스트는 payload 를 손으로 만들어 넘기므로 **배선을 못
+        잡는다**(#20) — `build_payload` 가 price 를 안 실어도 통과했다.
+        반환 dict 에 그 키가 있는지 AST 로 못박는다."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        fn = next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "build_payload")
+        keys = set()
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Dict):
+                keys |= {k.value for k in node.keys
+                         if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        assert "price" in keys, "payload 에 현재가가 안 실린다"
+        assert "market_cap" in keys
+
+    def test_price_format_is_universal(self):
+        """전 나라 공통 — 통화별 기호·자리수(#UNIVERSAL CHANGES ONLY)."""
+        from bot.quarterly_series import fmt_price
+        assert fmt_price(1730000, "KRW") == "₩1,730,000"
+        assert fmt_price(123.45, "USD") == "$123.45"
+        assert fmt_price(8500, "JPY") == "¥8,500"
+        assert fmt_price(45.6, "HKD") == "HK$45.60"
+        assert fmt_price(None, "KRW") == "—"
+
+    def test_stat_tile_labels_are_legible(self):
+        """시장타이밍 타일 라벨이 11px·muted 라 값(18px)에 비해 흐렸다."""
+        import re
+        css = open("bot/fred_boards.py", encoding="utf-8").read()
+        m = re.search(r"\.stat \.k\{([^}]*)\}", css)
+        assert m, "타일 라벨 CSS 가 없다"
+        size = float(re.search(r"font-size:([\d.]+)px", m.group(1)).group(1))
+        assert size >= 12.0, f"라벨이 {size}px — 너무 작다"
+        assert "var(--muted)" not in m.group(1), "가장 흐린 색 그대로"
