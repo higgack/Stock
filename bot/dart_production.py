@@ -36,6 +36,17 @@ import logging
 import re
 
 log = logging.getLogger("bot.dart_production")
+# ⚠️ 스캔창 상수는 앵커 목록(`_PROD_SPECS`)의 **기본 인자**로 쓰이므로
+# 정의부보다 위에 있어야 한다 — 아래 두면 import 자체가 NameError 다.
+_MAX_TABLE_CHARS = 120_000
+_SCAN_WINDOW = 40_000       # 정확 앵커(생산능력 및 생산실적) 이후 훑을 범위
+# 절 제목(`생산 및 설비에 관한 사항`)은 **하위 항목이 여럿**이라 생산능력 표가
+# 한참 뒤에 온다 — 40k 로는 설비 현황·소재지 표만 훑고 끝난다(2026-08-21 VM
+# 스윕: '무관표만' 7건이 전부 13~21개 표를 보고도 최고점 0 이었다).
+# 창을 넓혀도 **점수 게이트가 그대로**라 어구 없는 표는 여전히 0 점이다 —
+# 넓힌다고 엉뚱한 표를 집지 않는다.
+_SCAN_WINDOW_ALT = 200_000
+
 
 # 어구 사이에 낄 수 있는 것 — 태그·공백·nbsp.
 # ⚠️ 앵커는 **raw markup** 을 훑는다(표를 원본 구조 그대로 떠야 하므로).
@@ -57,14 +68,29 @@ def _anchor(text: str) -> "re.Pattern":
 # 섹션 앵커. 회사마다 `(1) 제품 생산능력 및 생산실적` / `가. 생산능력 및 생산실적`
 # 처럼 번호·접두가 달라 **핵심 어구만** 잡는다.
 _ANCHOR = _anchor("생산능력및생산실적")
-# 앵커가 없는 회사 대비 폴백 — 「생산 및 설비」 절 자체.
+# 앵커가 없는 회사 대비 폴백 — 절 제목.
+# ⚠️ **서식이 두 벌이다.** DART 기업공시서식 「II. 사업의 내용」의 현행
+# 표준 목차는 `3. 원재료 및 생산설비` 이고, 옛 보고서는 `생산 및 설비에
+# 관한 사항` 을 쓴다. 구 서식만 알고 있어서 삼성전자·SK하이닉스·삼성바이오가
+# '섹션없음'으로 찍혔다 — 같은 문서에서 `주요 제품 및 서비스` 앵커는 멀쩡히
+# 매칭됐으므로(스윕에 `제품` 표시) 태그 문제가 아니라 **제목이 달랐던** 것이다.
 _ANCHOR_ALT = _anchor("생산및설비에관한사항")
+_ANCHOR_ALT2 = _anchor("원재료및생산설비")
+
+# (이름, 정규식, 스캔창) — **순서대로** 시도한다. 정확한 소항목 제목이 먼저고,
+# 절 제목은 하위 항목이 여럿이라 창이 넓다. 목록을 여기 하나만 두어야
+# `parse_production`·`diagnose`·스윕 프로브가 같은 판정을 낸다(#35/#54).
+_PROD_SPECS = (("생산능력및생산실적", _ANCHOR, _SCAN_WINDOW),
+               ("원재료및생산설비", _ANCHOR_ALT2, _SCAN_WINDOW_ALT),
+               ("생산및설비에관한사항", _ANCHOR_ALT, _SCAN_WINDOW_ALT))
 
 # 「2. 주요 제품 및 서비스」 — 사용자 2026-08-21 "가동률 표 위에 이렇게 표
 # 그대로". 회사마다 `가. 사업부문별 주요 제품 등의 현황` 처럼 접두가 달라
 # 핵심 어구만 잡는다.
 _ANCHOR_ITEM = _anchor("주요제품및서비스")
 _ANCHOR_ITEM_ALT = _anchor("사업부문별주요제품")
+_ITEM_SPECS = (("주요제품및서비스", _ANCHOR_ITEM, _SCAN_WINDOW),
+               ("사업부문별주요제품", _ANCHOR_ITEM_ALT, _SCAN_WINDOW_ALT))
 
 _TABLE_RE = re.compile(r"(?is)<TABLE[^>]*>.*?</TABLE>")
 # ⚠️ 글자 사이 공백 필수 — 원문이 `가 동 률` 로 온다(실측).
@@ -89,14 +115,6 @@ _ALIGN_RIGHT_RE = re.compile(r'(?i)\bALIGN\s*=\s*"?RIGHT"?')
 _TAG_RE = re.compile(r"(?is)<\s*(/?)\s*([A-Za-z][A-Za-z0-9]*)([^>]*)>")
 
 # 표 하나가 비정상적으로 크면(원문 파싱이 어긋나 문서 전체를 먹은 경우) 버린다.
-_MAX_TABLE_CHARS = 120_000
-_SCAN_WINDOW = 40_000       # 정확 앵커(생산능력 및 생산실적) 이후 훑을 범위
-# 절 제목(`생산 및 설비에 관한 사항`)은 **하위 항목이 여럿**이라 생산능력 표가
-# 한참 뒤에 온다 — 40k 로는 설비 현황·소재지 표만 훑고 끝난다(2026-08-21 VM
-# 스윕: '무관표만' 7건이 전부 13~21개 표를 보고도 최고점 0 이었다).
-# 창을 넓혀도 **점수 게이트가 그대로**라 어구 없는 표는 여전히 0 점이다 —
-# 넓힌다고 엉뚱한 표를 집지 않는다.
-_SCAN_WINDOW_ALT = 200_000
 
 # 채택 임계값 — `parse_production` 과 `diagnose` 가 **같은 수**를 봐야 스윕
 # 통계가 화면과 일치한다(따로 박으면 감사가 거짓 안심을 준다, 실수 #54).
@@ -246,6 +264,19 @@ def _pick(markup: str, anchors: tuple, score_fn, min_score: int,
     return best if best and best[0] >= min_score else None
 
 
+def _pick_any(markup: str, specs: tuple, score_fn, min_score: int,
+              stop_at: int) -> tuple[int, str, str, str, str] | None:
+    """앵커 후보를 **순서대로** 시도 → (점수, 표, 앞, 뒤, 앵커이름).
+
+    후보 목록을 호출부마다 늘어놓으면 한 곳만 갱신돼 판정이 갈라진다 —
+    `_PROD_SPECS`/`_ITEM_SPECS` 하나에서만 읽는다(#38)."""
+    for name, rx, window in specs:
+        got = _pick(markup, (rx,), score_fn, min_score, stop_at, window)
+        if got:
+            return got + (name,)
+    return None
+
+
 def _unit_of(before: str) -> str:
     """표 **앞** 캡션에서 단위 — 데이터 표 앞의 미끼 표에 들어 있다(실측)."""
     um = _UNIT_RE.search(_cells(before)[-400:] or "")
@@ -277,14 +308,12 @@ def parse_products(markup: str | None) -> dict | None:
     틀린 숫자" 실패모드가 없다 — 위험은 엉뚱한 표를 집는 것 하나뿐."""
     if not markup:
         return None
-    got = (_pick(markup, (_ANCHOR_ITEM,), _score_products, _MIN_SCORE_ITEM, 14)
-           or _pick(markup, (_ANCHOR_ITEM_ALT,), _score_products,
-                    _MIN_SCORE_ITEM, 14, _SCAN_WINDOW_ALT))
+    got = _pick_any(markup, _ITEM_SPECS, _score_products, _MIN_SCORE_ITEM, 14)
     if not got:
         return None
-    _sc, raw, before, after = got
+    _sc, raw, before, after, anchor = got
     return {"table_html": sanitize_table(raw), "unit": _unit_of(before),
-            "notes": _notes_of(after)}
+            "notes": _notes_of(after), "anchor": anchor}
 
 
 def parse_production(markup: str | None) -> dict | None:
@@ -294,12 +323,10 @@ def parse_production(markup: str | None) -> dict | None:
     화면을 만들지 않도록 호출부가 사유를 표시한다."""
     if not markup:
         return None
-    got = (_pick(markup, (_ANCHOR,), _score, _MIN_SCORE, 10)
-           or _pick(markup, (_ANCHOR_ALT,), _score, _MIN_SCORE, 10,
-                    _SCAN_WINDOW_ALT))
+    got = _pick_any(markup, _PROD_SPECS, _score, _MIN_SCORE, 10)
     if not got:
         return None
-    sc, raw, before, after = got
+    sc, raw, before, after, anchor = got
     return {
         "table_html": sanitize_table(raw),
         "unit": _unit_of(before),
@@ -308,6 +335,8 @@ def parse_production(markup: str | None) -> dict | None:
         # 제목을 이 목록에서 만든다 — 표에 없는 지표를 제목이 약속하면
         # 사용자는 그게 있는 줄 알고 찾는다(실수 #55 라벨↔내용 불일치).
         "kinds": _kinds_in(raw),
+        # 어느 서식으로 잡혔는지 — 스윕이 서식별 커버리지를 셀 수 있다.
+        "anchor": anchor,
     }
 
 
@@ -326,14 +355,12 @@ def diagnose(markup: str | None, *, truncated: bool = False) -> str:
     이었다. 판정 불가를 '없음'으로 말하지 않는다(실수 #41)."""
     if not markup:
         return "원문미제공"
-    m = _ANCHOR.search(markup) or _ANCHOR_ALT.search(markup)
-    if not m:
+    if not any(rx.search(markup) for _n, rx, _w in _PROD_SPECS):
         return "원문잘림" if truncated else "섹션없음"
     # ⚠️ **화면이 쓰는 그 선택기**로 최고점을 구한다(#35). 창 크기·앵커
     # 순회 규칙을 여기 따로 적으면 스윕 통계가 화면과 갈라진다 — 실제로
     # `_SCAN_WINDOW_ALT` 를 넓히고 여기만 40k 로 두었더니 판정이 어긋났다.
-    got = (_pick(markup, (_ANCHOR,), _score, 0, 10)
-           or _pick(markup, (_ANCHOR_ALT,), _score, 0, 10, _SCAN_WINDOW_ALT))
+    got = _pick_any(markup, _PROD_SPECS, _score, 0, 10)
     if got is None:
         return "표없음"            # 절은 있는데 산문만(생산 관련 서술)
     best = got[0]

@@ -1386,7 +1386,9 @@ class TestBacklogRolling20260821:
         탭에 실리는 **전 항목**을 같은 표로 센다."""
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
-        assert "_PROBE_VER = 5" in src
+        import bot.scripts.production_format_probe as _pf
+        # 리터럴 대신 하한 — bump 마다 무관한 빨간불이 뜬다(#67)
+        assert _pf._PROBE_VER >= 5, "전 항목 커버리지가 들어간 버전 이후여야"
         for k in ("재고자산", "수주잔고", "제품표", "생산표"):
             assert f'"{k}"' in src, f"{k} 커버리지를 안 센다"
         # 수주잔고도 화면과 같은 규율(최신부터 거슬러)로 봐야 통계가 맞다
@@ -1760,3 +1762,61 @@ class TestFscBreaker20260821:
             assert n[0] == before + 1, "다른 op 까지 차단됐다"
         finally:
             f._FAIL.clear()
+
+
+class TestAnchorForms20260821:
+    """DART 「II. 사업의 내용」 서식이 **두 벌**이다 — 현행 표준은
+    `3. 원재료 및 생산설비`, 옛 보고서는 `생산 및 설비에 관한 사항`.
+    구 서식만 알고 있어서 삼성전자·SK하이닉스·삼성바이오가 '섹션없음'이었다.
+
+    ⚠️ 태그 문제가 아니었다는 증거: 같은 문서에서 `주요 제품 및 서비스`
+    앵커는 멀쩡히 매칭됐다(스윕 v5 에 `제품` 표시). 제목이 달랐던 것이다."""
+
+    TBL = ("<TABLE><TR><TD>(단위 : 천개)</TD></TR></TABLE>"
+           "<TABLE><TR><TH>구 분</TH><TH>제27기</TH></TR>"
+           "<TR><TD>생산능력</TD><TD>1</TD></TR>"
+           "<TR><TD>생산실적</TD><TD>2</TD></TR>"
+           "<TR><TD>가 동 률</TD><TD>97</TD></TR></TABLE>")
+
+    def test_every_known_heading_form_is_found(self):
+        import bot.dart_production as dp
+        for head, want in (("3. 원재료 및 생산설비", "원재료및생산설비"),
+                           ("3. 원재료 및 <B>생산설비</B>", "원재료및생산설비"),
+                           ("가. 생산 및 설비에 관한 사항", "생산및설비에관한사항"),
+                           ("(1) 제품 생산능력 및 생산실적", "생산능력및생산실적")):
+            mk = f"<P>{head}</P>" + self.TBL
+            got = dp.parse_production(mk)
+            assert got, f"못 찾음: {head}"
+            assert got["anchor"] == want, (head, got["anchor"])
+            assert dp.diagnose(mk) == "정상", head
+
+    def test_unrelated_heading_still_rejected(self):
+        """서식을 늘렸다고 아무 절이나 걸리면 엉뚱한 표를 집는다."""
+        import bot.dart_production as dp
+        mk = "<P>1. 사업의 개요</P>" + self.TBL
+        assert dp.parse_production(mk) is None
+        assert dp.diagnose(mk) == "섹션없음"
+
+    def test_anchor_list_is_the_single_source(self):
+        """후보를 호출부마다 늘어놓으면 한 곳만 갱신돼 판정이 갈라진다 —
+        `parse_production`·`diagnose`·프로브가 같은 목록을 읽어야 한다."""
+        import ast
+        import bot.dart_production as dp
+        assert len(dp._PROD_SPECS) >= 3, "서식 후보가 줄었다"
+        src = open("bot/dart_production.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        for fn in ("parse_production", "diagnose"):
+            node = next(n for n in tree.body
+                        if isinstance(n, ast.FunctionDef) and n.name == fn)
+            body = ast.dump(node)
+            assert "_PROD_SPECS" in body, f"{fn} 이 앵커 목록을 안 쓴다"
+            assert "_ANCHOR_ALT2" not in body, f"{fn} 이 앵커를 직접 나열한다"
+
+    def test_parse_reports_which_form_matched(self):
+        """어느 서식이 남는지 세려면 결과가 그걸 말해야 한다."""
+        import bot.dart_production as dp
+        got = dp.parse_production("<P>3. 원재료 및 생산설비</P>" + self.TBL)
+        assert got["anchor"] == "원재료및생산설비"
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        assert 'got["anchor"]' in src, "프로브가 서식을 집계 안 한다"
