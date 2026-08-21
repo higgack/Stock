@@ -155,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
             continue
         bl_excerpt = ""
         verdict, markup, basis, dlen, cutmark = "원문미제공", None, "", 0, False
+        # ⚠️ 제품표는 **따로** 잡는다. 생산 판정이 끝내 실패하면 루프가 전
+        # 분기를 걷고 `markup` 은 **가장 오래된** 보고서로 끝난다 — 그러면
+        # 제품표 덤프가 화면(최신 분기)과 다른 보고서를 보여 준다(2026-08-21
+        # 300120 실측: 화면 26.2Q, 덤프 25.4Q — #35 의 재발).
+        prod, prod_basis, prod_rn = None, "", ""
         for q in reversed(qs):
             rn = (dart.find_periodic_reports(tk, q["year"], q["reprt_code"])
                   or [{}])[0].get("rcept_no") or ""
@@ -177,6 +182,11 @@ def main(argv: list[str] | None = None) -> int:
                 if mk:
                     verdict, markup, basis, dlen = v, mk, q.get("label", ""), len(mk)
                     cutmark = cut
+                    if prod is None:      # **최신** 성공분만 — 덮지 않는다
+                        _pp = dp.parse_products(mk)
+                        if _pp:
+                            prod, prod_basis, prod_rn = (
+                                _pp, q.get("label", ""), rn)
                 if v in _OK:
                     break
                 if not cut:
@@ -185,15 +195,18 @@ def main(argv: list[str] | None = None) -> int:
                 break
         tally[verdict] = tally.get(verdict, 0) + 1
         got = dp.parse_production(markup) if markup else None
-        # 제품 표는 **같은 원문**에서 뽑는다 — 추가 호출 0.
-        prod = dp.parse_products(markup) if markup else None
+        if prod is None and markup:       # 루프에서 못 잡았으면 마지막 원문
+            prod = dp.parse_products(markup)
+            prod_basis, prod_rn = basis, ""
         # ⚠️ 티커를 **명시**했을 때는 채택된 제품표 원문도 찍는다. 화면이
         # 이상해 보일 때(셀 두 줄이 붙는 등) 원문 없이 고치면 또 몇 라운드를
         # 날린다(#109 — 사유 히스토그램은 '무엇이 많은가'까지만 말한다).
         if args.tickers and prod and prod.get("table_html"):
             _pv = re.sub(r"\s+", " ",
                          re.sub(r"(?is)<[^>]+>", "|", prod["table_html"]))
-            print(f"   [제품표 채택 원문] {_pv[:args.show * 3]}")
+            print(f"   [제품표 채택 원문 · {prod_basis or '?'} 보고서"
+                  + (f" 접수 {prod_rn}" if prod_rn else "")
+                  + f"] {_pv[:args.show * 3]}")
         if prod:
             tally["제품표"] = tally.get("제품표", 0) + 1
         # ── 나머지 항목도 같이 센다 — "있는데 누락"을 찾는 게 목적이다.

@@ -7252,6 +7252,30 @@ class TestBacklogDiagnoseScope20260821:
                         "합 계 999 111 222") == "형식미지원"
 
 
+class TestProductDumpReport20260821:
+    """⚠️ 감사가 **화면과 다른 보고서**를 보여 줬다(2026-08-21 300120 실측):
+    화면은 26.2Q 인데 덤프는 25.4Q 였다. 생산 판정이 끝내 실패하면 루프가
+    전 분기를 걷고 `markup` 이 **가장 오래된** 보고서로 끝나기 때문이다 —
+    #35 의 재발(감사는 화면이 쓰는 그 경로를)."""
+
+    def test_dump_prefers_the_newest_report_and_names_it(self):
+        import ast
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "main")
+        stmts = [n for n in fn.body
+                 if not (isinstance(n, ast.Expr)
+                         and isinstance(n.value, ast.Constant)
+                         and isinstance(n.value.value, str))]
+        body = "\n".join(ast.get_source_segment(src, n) or "" for n in stmts)
+        # 최신분을 잡고 **덮지 않는다**
+        assert "if prod is None:" in body, "최신 성공분을 덮어쓴다"
+        # 어느 보고서인지 밝힌다 — 안 밝히면 같은 오해가 또 난다(#82)
+        assert "prod_basis" in body and "prod_rn" in body
+        assert "보고서" in body
+
+
 class TestSingleFlight20260821:
     """⚠️ `api-timing` 실측(2026-08-21)이 **같은 밀리초에 들어온 중복 요청**을
     보여줬다 — 화면이 스스로 부하를 두 배로 만들고 있었다:
