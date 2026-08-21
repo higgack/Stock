@@ -7332,6 +7332,63 @@ class TestSharedFetchPool20260821:
         assert "finally:" in body and "_do_GET_routed" in body
 
 
+class TestTrendChartScale20260821:
+    """사용자 2026-08-21(USDE): "이렇게 길게 나오는건... 차이가 많이 나도
+    적당히 보여지게 해줘. 이건 좀 아니지 않아?" — 막대가 화면 아래로
+    **수천 px** 뻗어 차트가 세로로 폭주했다.
+
+    원인: 막대 높이를 `abs(val)/max_val*120` 으로 내는데 `max_val` 을
+    **매출 하나로만** 잡았다. 매출이 작고 손실·현금유출이 큰 종목에서는
+    비율이 수백 배가 되고, 아래로 뻗은 만큼 도화지도 같이 커진다(#100 의
+    파생값이 증폭기가 됐다)."""
+
+    def _render(self, rev, op, ni, fcf):
+        import ast
+        import html as _h
+        import re
+        import textwrap
+        from bot.dashboard import trend_chart_geometry
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_profit_trend")
+        ns = {"esc": _h.escape,
+              "trend_chart_geometry": trend_chart_geometry}
+        exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
+        IS = [{"period": f"2026-0{m}-30", "Total Revenue": rev,
+               "Operating Income": op, "Net Income": ni} for m in (3, 6, 9)]
+        CF = [{"period": f"2026-0{m}-30", "Operating Cash Flow": fcf,
+               "Capital Expenditure": 0.0} for m in (3, 6, 9)]
+        h = ns["_profit_trend"](IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        svg_h = float(re.search(r'<svg width="\d+" height="([\d.]+)"',
+                                h).group(1))
+        bars = [float(x) for x in re.findall(r'<rect[^>]*height="([\d.]+)"', h)]
+        return svg_h, bars
+
+    def test_axis_uses_every_series_not_just_revenue(self):
+        """USDE 형: 매출 1 · 영업이익 -500 · 순이익 -400 · FCF -900.
+        옛 코드는 FCF 막대를 `900/1*120 = 108,000px` 로 그렸다."""
+        svg_h, bars = self._render(1.0, -500.0, -400.0, -900.0)
+        assert max(bars) <= 120.0 + 0.01, f"막대가 축을 넘었다: {max(bars)}"
+        assert svg_h <= 320, f"도화지가 폭주했다: {svg_h}"
+        # 그래도 **비율은 보여야** 한다 — 전부 같은 높이로 뭉개면 안 된다
+        assert min(bars) < max(bars) / 10, bars
+
+    def test_normal_shape_is_unchanged(self):
+        """매출이 가장 큰 보통 종목은 옛 배치 그대로 — 고치려던 것 밖은
+        건드리지 않는다."""
+        svg_h, bars = self._render(1000.0, 200.0, 100.0, 150.0)
+        assert svg_h == 185.0, svg_h          # 음수가 없으면 옛 높이
+        assert max(bars) <= 120.0 + 0.01
+
+    def test_geometry_clamps_even_if_scaling_breaks(self):
+        """⚠️ 파생값에는 상한을 둔다 — 스케일이 또 틀리면 이 함수가
+        **증폭기**가 되어 도화지가 수천 px 로 뻗는다."""
+        from bot.dashboard import trend_chart_geometry as g
+        lab, h = g([{"a": -900.0}], ["a"], 1.0)   # 일부러 축을 틀리게
+        assert h <= 320, f"상한이 없다: {h}"
+
+
 class TestChartFirstPaint20260821:
     """사용자 2026-08-21: "차트가 왜 잘 안뜨지? … 3년을 클릭하고 다시
     돌아가야 제대로 떠. 이 부분은 디폴트값으로 처음에 제대로 보여져야돼."
