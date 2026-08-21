@@ -145,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     anchors: dict[str, int] = {}          # 서식별 히트 수
     unsupported: list[tuple[str, str, str]] = []
     backlog_why: dict[str, int] = {}
+    backlog_ex: list[tuple[str, str, str]] = []
     _OK = ("정상", "가동률없음", "능력만")     # 화면에 실리는 판정
     for i, tk in enumerate(tickers, 1):
         qs = _latest_quarters(dart, tk)
@@ -152,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             tally["분기데이터없음"] = tally.get("분기데이터없음", 0) + 1
             print(f"[{i:3}/{len(tickers)}] {tk}  분기데이터없음")
             continue
+        bl_excerpt = ""
         verdict, markup, basis, dlen, cutmark = "원문미제공", None, "", 0, False
         for q in reversed(qs):
             rn = (dart.find_periodic_reports(tk, q["year"], q["reprt_code"])
@@ -200,10 +202,13 @@ def main(argv: list[str] | None = None) -> int:
                 from bot.dart_backlog import backlog_probe
                 from bot.quarterly_infographic import _BACKLOG_PROBE_N
                 for q in list(reversed(qs))[:_BACKLOG_PROBE_N]:
+                    _bo: dict = {}
                     bl, bl_why = backlog_probe(dart, tk, q["year"],
-                                               q["reprt_code"])
+                                               q["reprt_code"], out=_bo)
                     if bl is not None:
                         break
+                    if _bo.get("excerpt"):
+                        bl_excerpt = _bo["excerpt"]
             except Exception as exc:                           # noqa: BLE001
                 print(f"   (수주잔고 검사 실패: {exc})")
         cover["분기"] += 1 if qs else 0
@@ -213,6 +218,12 @@ def main(argv: list[str] | None = None) -> int:
         # 분포로 답한다 — 숫자만 보고 개선 여지를 추측하면 안 된다.
         if bl is None:
             backlog_why[bl_why] = backlog_why.get(bl_why, 0) + 1
+            # ⚠️ 사유만으론 어떤 열 구성인지 모른다 — 열 뜻을 추측해 배정하면
+            # 의미가 틀리고 검산도 못 잡는다(#106). 원문 발췌가 다음 라운드의
+            # 유일한 근거다.
+            if bl_excerpt and bl_why.split(" · ")[0] not in (
+                    "미공시", "명시적미공시", "미검사"):
+                backlog_ex.append((tk, bl_why, bl_excerpt[:args.show]))
         cover["제품표"] += 1 if prod else 0
         cover["생산표"] += 1 if got else 0
         if got and got.get("anchor"):
@@ -268,6 +279,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {_mark} {k:<12} {v:>3}건")
         print(f"  → 파서 개선 여지: {sum(_fixable.values())}건"
               f" / 미수집 {sum(backlog_why.values())}건")
+    if backlog_ex:
+        print(f"\n--- 수주잔고 미지원 {len(backlog_ex)}종목 원문 발췌"
+              f"(형식 추가 근거) ---")
+        for tk, why, ex in backlog_ex:
+            print(f"\n[{tk}] {why}\n  {ex}")
     if anchors:
         print("\n생산 표를 잡은 서식(앵커):")
         for k, v in sorted(anchors.items(), key=lambda x: -x[1]):
