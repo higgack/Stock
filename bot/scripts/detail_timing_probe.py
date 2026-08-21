@@ -93,12 +93,18 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"=== 종목 상세 단계별 소요시간 v{_PROBE_VER} ===")
     print("병렬 6종은 벽시계에서 **최대값 하나만** 비용이다(풀 6).")
+    from bot.scripts.probe_progress import fmt_eta, stream_stdout
+    stream_stdout()
     _print_key_sources()
     tickers = args.tickers or _universe(args.limit)
     if not tickers:
         print("❌ 대상 없음 — 티커를 인자로 넘겨라")
         return 1
-    print(f"대상 {len(tickers)}종목 (캐시 우회 — 실제 콜드 비용)\n")
+    print(f"대상 {len(tickers)}종목 (캐시 우회 — 실제 콜드 비용) · "
+          f"예상 {len(tickers) * 0.3:.0f}~{len(tickers) * 1.5:.0f}분")
+    print("⚠️ `| tail` 로 받으면 끝날 때까지 한 줄도 안 보인다 — "
+          "`| tee /tmp/timing.log`\n")
+    _t0 = time.time()
 
     per_stage: dict[str, list[float]] = {}
     for i, tk in enumerate(tickers, 1):
@@ -118,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
               f" · info {tm.get('yf.info', 0):5.1f}s"
               f" · 병렬최대 {slow[0]} {slow[1]:.1f}s"
               f" · enrich {enr}"
-              f" · {'ok' if snap else '수집실패'}")
+              f" · {'ok' if snap else '수집실패'}"
+              f"  {fmt_eta(i, len(tickers), _t0)}")
 
     if not per_stage:
         print("\n❌ 계측이 하나도 안 잡혔다 — 프로브가 눈이 멀었다")

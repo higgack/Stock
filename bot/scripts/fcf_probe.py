@@ -148,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--years", type=int, default=3)
     args = ap.parse_args(argv)
 
+    from bot.scripts.probe_progress import stream_stdout
+    stream_stdout()
     from bot.dart_client import _FIN_CACHE_VER
     from bot.env_keys import env_source
     from bot.fcf import fcf_from_parts
