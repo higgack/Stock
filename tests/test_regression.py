@@ -6167,9 +6167,12 @@ class TestQuarterlyChartLayout20260816:
         # 정확한 리터럴을 박으면 값을 더 키울 때마다 테스트가 깨진다(실제로
         # 62 → 88 확대에서 깨졌다). 계약은 '차트가 타일보다 충분히 크고
         # 세로 2단' 이지 특정 숫자가 아니다.
-        m = re.search(r"H_TILE, H_CHART = ([\d.]+), ([\d.]+)", src)
-        assert m, "레이아웃 상수 이름이 바뀜"
-        tile, chart = float(m.group(1)), float(m.group(2))
+        # 2026-08-21 조각 분할로 두 상수가 각각 섹션 게이트를 타게 되어
+        # 한 줄 대입이 아니다 — 값만 따로 읽는다(계약은 그대로).
+        mt = re.search(r"H_TILE = ([\d.]+) if ", src)
+        mc = re.search(r"H_CHART = ([\d.]+) if ", src)
+        assert mt and mc, "레이아웃 상수 이름이 바뀜"
+        tile, chart = float(mt.group(1)), float(mc.group(1))
         assert chart >= 3 * tile, f"차트 섹션이 작다(H_CHART={chart})"
         # 두 콤보 모두 전체폭(95). 옛 마커는 `cw = 46.5` 부재였는데 그건
         # **LLM 카드 2단** 폭과 이름이 겹쳐 오탐이 됐다 — 차트 폭을 직접 본다.
@@ -22076,13 +22079,19 @@ class TestQuarterlyExtraChartsAndLive20260816:
 class TestQuarterlyReviewFixes20260816:
     """2026-08-16 독립 리뷰 12건 — 각 항목의 fail-before 가드."""
 
-    def test_cached_llm_does_not_bust_the_png_cache(self, monkeypatch):
+    def test_cached_llm_does_not_bust_the_png_cache(self, monkeypatch,
+                                                    tmp_path):
         """run=1 이 상시가 된 뒤 옛 `ok and run_llm` 조건은 **영구 캐시 미스**
-        였다 — 매 조회마다 인포그래픽 전체를 다시 그리고 저장했다."""
+        였다 — 매 조회마다 인포그래픽 전체를 다시 그리고 저장했다.
+
+        ⚠️ `_IMG_DIR` 를 격리한다 — 이 테스트는 운영 캐시 디렉터리에 직접
+        파일을 만들고 있었다(실수 #30 의 재발: 2026-08-21 조각 분할로 없는
+        조각을 복구하는 경로가 생기자 **운영 캐시에 진짜 PNG 를 썼다**)."""
         from bot import quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_IMG_DIR", tmp_path)
         calls = []
         monkeypatch.setattr(qi, "render_infographic",
-                            lambda pl, out: calls.append(out) or out)
+                            lambda pl, out, *a: calls.append(out) or out)
 
         def _payload(gr):
             return {"period_key": "k", "asof": qi._now_hour_kst(),
@@ -22095,7 +22104,11 @@ class TestQuarterlyReviewFixes20260816:
             monkeypatch.setattr(qi, "build_payload",
                                 lambda *a, **k: _payload({"ok": True, "cached": True}))
             r = qi.get_or_render("X.KQ", {}, run_llm=True)
-            assert r["cached"] is True and not calls, "캐시된 요약인데 재렌더"
+            # 계약은 "**본 이미지**를 다시 그리지 않는다". 2026-08-21 이후
+            # 없는 조각(_b/_cards)은 캐시 히트에서도 복구하므로, 그 호출까지
+            # 금지하면 조각이 영구 결손이 된다 — 본 이미지만 센다.
+            assert r["cached"] is True, "캐시된 요약인데 미스"
+            assert str(p) not in calls, "캐시된 요약인데 본 이미지를 재렌더"
             # 반대로 **새로** 생성된 요약이면 옛 PNG(카드 없음)를 버려야 한다.
             monkeypatch.setattr(qi, "build_payload",
                                 lambda *a, **k: _payload({"ok": True}))
@@ -22235,7 +22248,7 @@ class TestQuarterlyReviewFixes20260816:
         monkeypatch.setattr(qi, "cache_path",
                             lambda *a, **k: tmp_path / "Z.KQ_k_now_v4.png")
         monkeypatch.setattr(qi, "render_infographic",
-                            lambda pl, out: (open(out, "w").write("new"), out)[1])
+                            lambda pl, out, *a: (open(out, "w").write("new"), out)[1])
         qi.get_or_render("Z.KQ", {}, run_llm=False)
         assert not stale.exists(), "렌더 경로에 정리가 배선되지 않음"
 

@@ -61,7 +61,19 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #       **누적** 당기순이익이 이겨 2·3분기 순이익이 부풀어 있었다
 #   v7 (2026-08-19) ROE·ROA 를 TTM(최근 4분기 합) 기준으로 — 분기 하나로
 #       계산해 네이버(10.08%)와 3배 어긋나 보였다
-_RENDER_VER = "v8"   # v8: 카드 분리(별도 PNG)
+_RENDER_VER = "v9"   # v9: 상단/하단 분할 + 도화지 폭 고정
+
+# 세로 섹션 이름 — 조각을 나누는 단위. 그리는 코드는 `_render_locked` 한
+# 곳뿐이고, 어느 섹션을 담을지만 골라 두 번 부른다. `combo()` 가 fig/ax 를
+# 잡는 155줄짜리 클로저라 조각마다 함수를 복제하면 반드시 갈라진다(#38).
+_SECTIONS = ("head", "call", "tiles", "charts", "extra", "foot")
+# 사용자 2026-08-21 배치: [지표·차트] → 제품 표 → 가동률 표 →
+# [수주잔고·재고자산] → 성장동력 카드 → 출처·면책(HTML).
+_PART_TOP = ("head", "call", "tiles", "charts")
+_PART_BOTTOM = ("extra", "foot")
+# 본 이미지 파일명에 붙는 조각 접미사 — purge 가 이 목록에서 보존 대상을
+# 만든다(#24: 이름 열거 금지).
+_PIECE_SUFFIXES = ("_b", "_cards")
 
 
 def _eok(v, currency: str = "KRW") -> str:
@@ -129,7 +141,8 @@ def _font_ok() -> bool:
     return bool(_font_ready() and _setup_font())
 
 
-def render_infographic(payload: dict, out_path: str) -> str | None:
+def render_infographic(payload: dict, out_path: str,
+                       sections: tuple = _SECTIONS) -> str | None:
     """payload → PNG. 성공 시 out_path, 실패(폰트 부재·오류) 시 None.
 
     ⚠️ 전 구간을 try 로 감싼다 — 그리기 단계 예외가 새면 호출부(API 핸들러)가
@@ -142,7 +155,7 @@ def render_infographic(payload: dict, out_path: str) -> str | None:
     quarters = 오래된→최신 순 [{label, financials{}, ratios{}}...]"""
     with _RENDER_LOCK:
         try:
-            return _render_locked(payload, out_path)
+            return _render_locked(payload, out_path, sections)
         except Exception as exc:
             log.warning("quarterly_infographic: render failed: %s", exc)
             try:
@@ -363,6 +376,57 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
     return notes
 
 
+_FIG_W = 11.6          # inch — 모든 조각이 같은 폭이라야 세로로 이어 붙는다
+# 144 = 11.6in × 144 → 1670px. tight 크롭이 없어져 같은 dpi 면 픽셀이 1.5배가
+# 되고 렌더가 1.3초→2.0초로 느려진다(실측) — 옛 출력 폭(1672px)에 맞춘다.
+_FIG_DPI = 144
+# 데이터 단위 여백. 옛 `pad_inches=0.15` (11.6in 폭에 W=100) 와 같은 비율:
+# 0.15 / 11.6 * 100 ≈ 1.29.
+_FIG_PAD = 1.29
+
+
+def provenance_line(payload: dict) -> tuple[str, str]:
+    """(수치 출처·기준시각, 면책) — 화면 **맨 아래** 한 줄.
+
+    기준시각 표기 의무(CLAUDE.md 실수기록 10-b): 시총/PER/PSR 은 시세 기반이라
+    '언제 기준'인지 없으면 오래된 값을 현재값으로 오인한다.
+
+    ⚠️ 2026-08-21 이 줄을 PNG 에서 HTML 로 옮겼다 — 성장동력 카드가 본
+    이미지 **뒤**에 오는 배치에서, PNG 안에 있으면 면책이 카드보다 위로
+    올라간다. 문구를 두 벌 두면 한쪽만 고쳐지므로 여기 하나만 둔다(#38)."""
+    src = payload.get("source_label") or "DART 정기보고서(K-IFRS 연결)"
+    # asof 는 캐시 버킷(YYYY-MM-DD_HH) 이라 그대로 찍으면 '2026-08-16_14'
+    # 라는 날것이 화면에 나간다 — 사람이 읽는 형태로 바꾼다(독립 리뷰).
+    asof = payload.get("asof") or _now_hour_kst()
+    _asof_s = asof.replace("_", " ") + "시" if "_" in asof else asof
+    return (f"수치: {src} · 시총·PER {_asof_s} 기준(KST) · 환각 0",
+            "투자 참고용이며 매수·매도를 권유하지 않습니다")
+
+
+def _new_canvas(plt, W: float, H: float):
+    """모든 조각이 **같은 픽셀 폭**으로 나오는 도화지 → (fig, ax).
+
+    ⚠️ `bbox_inches="tight"` 를 쓰지 않는다. tight 는 그려진 내용에 맞춰
+    잘라내므로 조각마다 폭이 달라진다 — 실측에서 본 이미지 1672px, 카드
+    이미지 1661px 이었다. 둘을 `width:100%` 로 세로로 놓으면 같은 x 좌표가
+    이미지 폭 대비 0.27% 어긋나 패널 왼쪽 선이 안 맞는다(1200px 화면에서
+    3.3px). 조각이 셋 이상 되고 그 사이에 표가 끼면 바로 보인다.
+    여백을 **데이터 좌표**로 주고 축이 도화지를 꽉 채우게 하면, W=100 좌표가
+    항상 같은 픽셀에 떨어져 조각 수와 무관하게 정렬이 보장된다.
+    pad_inches 도 조각마다 0.12/0.15 로 갈려 있었다 — 여기 하나로 모은다."""
+    pad = _FIG_PAD
+    fig, ax = plt.subplots(
+        figsize=(_FIG_W, _FIG_W * (H + 2 * pad) / (W + 2 * pad)),
+        dpi=_FIG_DPI)
+    ax.set_position([0, 0, 1, 1])
+    fig.patch.set_facecolor(_BG)
+    ax.set_facecolor(_BG)
+    ax.set_xlim(-pad, W + pad)
+    ax.set_ylim(H + pad, -pad)          # 위→아래 좌표계
+    ax.axis("off")
+    return fig, ax
+
+
 def render_cards(payload: dict, out_path: str) -> str | None:
     """성장동력·리스크 카드**만** 담은 별도 PNG. 없으면 None.
 
@@ -445,13 +509,7 @@ def _render_cards_locked(payload: dict, out_path: str) -> str | None:
     W = 100.0
     h = _card_height(drivers, risks)
     H = h + 5.0
-    fig_w = 11.6
-    fig, ax = plt.subplots(figsize=(fig_w, fig_w * (H / W)), dpi=180)
-    fig.patch.set_facecolor(_BG)
-    ax.set_facecolor(_BG)
-    ax.set_xlim(0, W)
-    ax.set_ylim(H, 0)
-    ax.axis("off")
+    fig, ax = _new_canvas(plt, W, H)
 
     def panel(x, y, w, hh, fc=_PANEL, ec=_LINE, rad=1.8):
         ax.add_patch(FancyBboxPatch(
@@ -466,12 +524,13 @@ def _render_cards_locked(payload: dict, out_path: str) -> str | None:
 
     _draw_cards(ax, txt, panel, Rectangle, FancyBboxPatch,
                 2.5, h, drivers, risks)
-    fig.savefig(out_path, facecolor=_BG, bbox_inches="tight", pad_inches=0.12)
+    fig.savefig(out_path, facecolor=_BG)
     plt.close(fig)
     return out_path
 
 
-def _render_locked(payload: dict, out_path: str) -> str | None:
+def _render_locked(payload: dict, out_path: str,
+                   sections: tuple = _SECTIONS) -> str | None:
     if not _font_ok():
         log.warning("quarterly_infographic: Nanum 폰트 없음 — skip")
         return None
@@ -493,7 +552,9 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
 
     # 세로 레이아웃(W=100 좌표계). LLM 섹션이 없으면 그 높이만큼 줄인다.
     W = 100.0
-    H_HEAD, H_CALL = 16.0, (9.0 if headline else 0.0)
+    _on = lambda k: k in sections          # noqa: E731 — 섹션 게이트
+    H_HEAD = 16.0 if _on("head") else 0.0
+    H_CALL = (9.0 if headline else 0.0) if _on("call") else 0.0
     # H_CHART 26 → 62: 차트를 좌우 2분할에서 **세로 2단**(각 전체폭)으로
     # 바꿨다. 옛 배치는 inset 폭이 37.5 단위(≈652px)뿐이라 항목이 뭉갰다
     # (사용자 2026-08-16). 이제 86 단위(≈1500px) = 2.3배. 이 상수 하나로
@@ -504,14 +565,15 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 매출 2.15→2.31B(+7%)는 짧은 축에선 눈으로 구분이 안 된다 — 축을 늘려
     # 같은 델타가 더 많은 픽셀을 차지하게 하고, 눈금을 촘촘히 하고, 막대에
     # 값 라벨을 붙여 '변화가 안 보인다'를 세 겹으로 해결한다.
-    H_TILE, H_CHART = 22.0, 88.0
+    H_TILE = 22.0 if _on("tiles") else 0.0
+    H_CHART = 88.0 if _on("charts") else 0.0
     # 추가 막대차트(수주잔고·재고자산) — 사용자 2026-08-16 "미래의 수익을
     # 가늠해보고 싶어서". **데이터가 있는 것만** 그리고, 없으면 높이 0 이라
     # 레이아웃이 통째로 줄어든다(빈 패널 = 없는 사실을 그린 것).
     # 이익률 선이 없는 순수 막대라 한 단은 위 2단보다 낮게 잡는다.
     _extra = _extra_series(qs)
     _EXTRA_H = 34.0
-    H_EXTRA = _EXTRA_H * len(_extra)
+    H_EXTRA = _EXTRA_H * len(_extra) if _on("extra") else 0.0
     # 카드 상자 높이는 **항목 수에서 도출**한다(H_FOOT 을 각주 줄 수로 잡은
     # 것과 같은 패턴). 옛 코드는 20.0 고정이라 패널이 17.0 뿐이었는데 4번
     # 항목의 칩 하단이 17.95 라 **상자 밖으로 0.95 단위(≈20px) 튀어나갔다**
@@ -525,14 +587,17 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 3줄을 넘으면 맨 아래 출처·면책 줄을 덮어쓴다(기준기간 각주를 추가하며
     # 실제로 그 한계에 닿았다). 줄 수에 따라 커지게 해 구조적으로 막는다.
     notes = _footnotes(payload, qs)
-    H_FOOT = 8.4 + len(notes) * 2.4 + 4.2
+    # 끝의 +1.5 = 마지막 각주 글자 높이 + 아래 여백. 옛 값은 +4.2 였는데 그건
+    # 맨 아래 출처·면책 줄 자리였다 — 그 줄을 HTML 로 뺐으므로(2026-08-21)
+    # 같이 줄인다. 안 줄이면 이미지 끝에 빈 띠가 남는다.
+    H_FOOT = (8.4 + len(notes) * 2.4 + 1.5) if _on("foot") else 0.0
+    # 끝의 +2 = 이미지 하단 여백. 옛 +6 은 출처·면책 줄이 `H - 2.6` 에 있던
+    # 시절의 자리다 — 그 줄을 HTML 로 뺐으므로 같이 줄인다(안 줄이면 140px
+    # 짜리 빈 띠가 남는다, 실측).
     H = (H_HEAD + H_CALL + H_TILE + H_CHART + H_EXTRA + H_CARDS
-         + H_FOOT + 6)
+         + H_FOOT + 2)
 
-    fig_w = 11.6
-    fig, ax = plt.subplots(figsize=(fig_w, fig_w * (H / W)), dpi=180)
-    fig.patch.set_facecolor(_BG)
-    ax.set_xlim(0, W); ax.set_ylim(0, H); ax.invert_yaxis(); ax.axis("off")
+    fig, ax = _new_canvas(plt, W, H)
 
     def panel(x, y, w, h, fc=_PANEL, ec=_LINE, rad=1.8):
         ax.add_patch(FancyBboxPatch(
@@ -554,124 +619,131 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     prev_q = qs[-2] if len(qs) > 1 else None
     yoy_q = qs[-5] if len(qs) >= 5 else None   # 4분기 전 = 전년 동기
 
-    # ── 헤더 ────────────────────────────────────────────────────────
+    # y = 세로 커서. 섹션 게이트 **밖**에 둔다 — 헤더 없는 조각(하단 파트)도
+    # 여기서부터 쌓아야 한다(안에 두면 UnboundLocalError, 실측).
     y = 3.0
-    panel(2.5, y, 95, H_HEAD - 4, fc="#1d4ed8", ec="#1d4ed8", rad=2.6)
-    company = payload.get("company") or payload.get("ticker") or ""
-    txt(6, y + 3.0, f"{last.get('label','')} 실적 분석", size=9.5,
-        color="#cfe3ff", weight="bold")
-    txt(6, y + 7.4, company, size=17, color="white", weight="bold")
-    mk = payload.get("market") or ""
-    # 연결/별도는 실제 fs_div 를 따라야 한다 — get_quarterly_series 는 CFS 가
-    # 없으면 OFS 로 폴백하는데 헤더에 '연결'을 박아두면 푸터 출처 라벨과
-    # 모순되고 숫자 성격을 오인하게 된다(2026-08-19 code-review).
-    # 연결/별도는 KR(DART) 전용 개념 — fs_div 가 없는 시장엔 표기하지 않는다
-    # (없는 구분을 그리면 숫자 성격을 오인시킨다). 대신 통화가 다르면
-    # '재무 CNY · 시총 HKD' 처럼 명시한다(HK 본토 자회사에서 흔함).
-    _bits = [mk, payload.get("ticker", "")]
-    if last.get("fs_div"):
-        _bits.append("연결" if last.get("fs_div") == "CFS" else "별도")
-    if payload.get("currency_mismatch"):
-        _bits.append(f"재무 {cur} · 시총 {payload.get('trade_currency', '')}")
-    elif cur and cur != "KRW":
-        _bits.append(cur)
-    txt(6, y + 11.0, " · ".join(b for b in _bits if b), size=9,
-        color="#dbe9ff")
-    mcap = payload.get("market_cap")
-    if mcap:
-        txt(94, y + 4.5, "시가총액", size=8.5, color="#cfe3ff", ha="right")
-        # ⚠️ 시가총액은 **거래통화** — 재무통화(amt)로 찍으면 HK 처럼 둘이
-        # 다른 종목에서 통화기호가 틀린다(렌더 스모크에서 실측: HKD 시총이
-        # ¥로 표기됨). 재무제표 금액만 amt(재무통화)를 쓴다.
-        txt(94, y + 8.6, _eok(mcap, payload.get("trade_currency") or cur),
-            size=14, color="white", weight="bold",
-            ha="right")
-    y += H_HEAD
+    if _on("head"):
+        # ── 헤더 ────────────────────────────────────────────────────────
+        panel(2.5, y, 95, H_HEAD - 4, fc="#1d4ed8", ec="#1d4ed8", rad=2.6)
+        company = payload.get("company") or payload.get("ticker") or ""
+        txt(6, y + 3.0, f"{last.get('label','')} 실적 분석", size=9.5,
+            color="#cfe3ff", weight="bold")
+        txt(6, y + 7.4, company, size=17, color="white", weight="bold")
+        mk = payload.get("market") or ""
+        # 연결/별도는 실제 fs_div 를 따라야 한다 — get_quarterly_series 는 CFS 가
+        # 없으면 OFS 로 폴백하는데 헤더에 '연결'을 박아두면 푸터 출처 라벨과
+        # 모순되고 숫자 성격을 오인하게 된다(2026-08-19 code-review).
+        # 연결/별도는 KR(DART) 전용 개념 — fs_div 가 없는 시장엔 표기하지 않는다
+        # (없는 구분을 그리면 숫자 성격을 오인시킨다). 대신 통화가 다르면
+        # '재무 CNY · 시총 HKD' 처럼 명시한다(HK 본토 자회사에서 흔함).
+        _bits = [mk, payload.get("ticker", "")]
+        if last.get("fs_div"):
+            _bits.append("연결" if last.get("fs_div") == "CFS" else "별도")
+        if payload.get("currency_mismatch"):
+            _bits.append(f"재무 {cur} · 시총 {payload.get('trade_currency', '')}")
+        elif cur and cur != "KRW":
+            _bits.append(cur)
+        txt(6, y + 11.0, " · ".join(b for b in _bits if b), size=9,
+            color="#dbe9ff")
+        mcap = payload.get("market_cap")
+        if mcap:
+            txt(94, y + 4.5, "시가총액", size=8.5, color="#cfe3ff", ha="right")
+            # ⚠️ 시가총액은 **거래통화** — 재무통화(amt)로 찍으면 HK 처럼 둘이
+            # 다른 종목에서 통화기호가 틀린다(렌더 스모크에서 실측: HKD 시총이
+            # ¥로 표기됨). 재무제표 금액만 amt(재무통화)를 쓴다.
+            txt(94, y + 8.6, _eok(mcap, payload.get("trade_currency") or cur),
+                size=14, color="white", weight="bold",
+                ha="right")
+        y += H_HEAD
 
     # ── 헤드라인 콜아웃(LLM) ────────────────────────────────────────
-    if headline:
+    if headline and _on("call"):
         panel(2.5, y, 95, H_CALL - 2.5, fc=_PANEL2, rad=1.8)
         txt(6, y + 2.6, headline, size=11.5, weight="bold")
         if risk_sub:
             txt(6, y + 5.6, f"확인할 리스크  {risk_sub}", size=9, color=_MUTED)
         y += H_CALL
 
-    # ── 지표 타일 5종 ───────────────────────────────────────────────
-    def _fin(q, k):
-        return ((q or {}).get("financials") or {}).get(k)
+    if _on("tiles"):
+        # ── 지표 타일 5종 ───────────────────────────────────────────────
+        def _fin(q, k):
+            return ((q or {}).get("financials") or {}).get(k)
 
-    def _rat(q, k):
-        return ((q or {}).get("ratios") or {}).get(k)
+        def _rat(q, k):
+            return ((q or {}).get("ratios") or {}).get(k)
 
-    def _subs(now, yoy_v, qoq_v, *, pp: bool = False):
-        """YoY·QoQ 를 **두 줄**로. 옛 코드는 한 줄 size 7.5 _MUTED 라
-        사용자가 '숫자가 잘 안 보인다'고 지적했다(2026-08-16). 줄을 나눠
-        폰트를 키우고 부호색(증가 초록·감소 빨강)을 입힌다.
+        def _subs(now, yoy_v, qoq_v, *, pp: bool = False):
+            """YoY·QoQ 를 **두 줄**로. 옛 코드는 한 줄 size 7.5 _MUTED 라
+            사용자가 '숫자가 잘 안 보인다'고 지적했다(2026-08-16). 줄을 나눠
+            폰트를 키우고 부호색(증가 초록·감소 빨강)을 입힌다.
 
-        pp=True 는 **비율 지표**용 — 이익률의 변화는 '변화율(%)'이 아니라
-        **%p 차이**다. 20.8% → 21.0% 를 '+1.0%' 로 쓰면 0.2%p 상승을
-        1% 상승으로 오독시킨다."""
-        out = []
-        for tag, prev in (("YoY", yoy_v), ("QoQ", qoq_v)):
-            if now is None or prev is None:
-                continue
-            if pp:
-                d = now - prev
-                s = f"{tag} {d:+.1f}%p"
-            else:
-                d = _chg(now, prev)
-                if d is None:
+            pp=True 는 **비율 지표**용 — 이익률의 변화는 '변화율(%)'이 아니라
+            **%p 차이**다. 20.8% → 21.0% 를 '+1.0%' 로 쓰면 0.2%p 상승을
+            1% 상승으로 오독시킨다."""
+            out = []
+            for tag, prev in (("YoY", yoy_v), ("QoQ", qoq_v)):
+                if now is None or prev is None:
                     continue
-                s = f"{tag} {d:+.1f}%"
-            out.append((s, _POS if d >= 0 else _NEG))
-        return out
+                if pp:
+                    d = now - prev
+                    s = f"{tag} {d:+.1f}%p"
+                else:
+                    d = _chg(now, prev)
+                    if d is None:
+                        continue
+                    s = f"{tag} {d:+.1f}%"
+                out.append((s, _POS if d >= 0 else _NEG))
+            return out
 
-    _fwd = payload.get("per_forward")
-    # '매출' 자리에 구성요소(이자수익)가 들어간 회사는 이름을 바꿔 부른다 —
-    # 안 그러면 "매출 5,787억 · 영업이익 6,812억" 처럼 모순돼 보인다
-    # (사용자 2026-08-19 NH투자증권 "매출보다 영익이 더 나오는데").
-    _rev_nm = (payload.get("component_accounts") or {}).get("매출") or "매출"
-    tiles = [
-        (_rev_nm, amt(lf.get("매출")), _ACCENT,
-         _subs(lf.get("매출"), _fin(yoy_q, "매출"), _fin(prev_q, "매출"))),
-        ("영업이익", amt(lf.get("영업이익")), _POS,
-         _subs(lf.get("영업이익"), _fin(yoy_q, "영업이익"),
-               _fin(prev_q, "영업이익"))),
-        # ⚠️ **최근 단일분기** 이익률이다(연간 아님 — 헤더의 분기 라벨 기준).
-        # 사용자가 "이게 연간이야 분기야?"라고 물은 지점 — 값만 있고 비교가
-        # 없어 판별 불가였다. YoY/QoQ %p 를 붙이면 분기 기준이 자명해진다.
-        ("영업이익률" if _rev_nm == "매출" else "영업이익률(산출불가)",
-         _pct(lr.get("영업이익률")), _GOLD,
-         _subs(lr.get("영업이익률"), _rat(yoy_q, "영업이익률"),
-               _rat(prev_q, "영업이익률"), pp=True)),
-        ("당기순이익", amt(lf.get("당기순이익")), _PUR,
-         _subs(lf.get("당기순이익"), _fin(yoy_q, "당기순이익"),
-               _fin(prev_q, "당기순이익"))),
-        # '*' = 자체계산(시총÷TTM순이익). ASCII 라 폰트 결손 위험이 없다
-        # (이모지·특수기호는 NanumGothic 에서 두부로 나올 수 있음).
-        # 서브라인 = Forward PER(예상실적 기준). 미제공이면 'N/A' 를 **명시**
-        # — 빈칸이면 '계산 중'인지 '없는지' 구분이 안 된다(사용자 2026-08-16).
-        ("TTM PER" + ("*" if payload.get("per_self") else ""),
-         ("—" if payload.get("per") is None
-          else f"{payload['per']:,.2f}배"), _ACCENTW,
-         [(f"Fwd {_fwd:,.2f}배" if _fwd is not None else "Fwd N/A",
-           _ACCENTW if _fwd is not None else _MUTED)]),
-    ]
-    tw, gap = 18.0, 1.5
-    tx = 2.5
-    for name, val, col, subs in tiles:
-        panel(tx, y, tw, H_TILE - 3, fc=_PANEL, rad=1.6)
-        ax.add_patch(Rectangle((tx, y), tw, 0.7, facecolor=col,
-                               edgecolor="none"))
-        txt(tx + 1.6, y + 3.4, name, size=8.5, color=_MUTED, weight="bold")
-        txt(tx + 1.6, y + 7.8, val, size=12.5, color=col, weight="bold")
-        sy = y + 12.4
-        for s, scol in subs[:2]:
-            txt(tx + 1.6, sy, s, size=9.0, color=scol, weight="bold")
-            sy += 3.6
-        tx += tw + gap
-    y += H_TILE
+        _fwd = payload.get("per_forward")
+        # '매출' 자리에 구성요소(이자수익)가 들어간 회사는 이름을 바꿔 부른다 —
+        # 안 그러면 "매출 5,787억 · 영업이익 6,812억" 처럼 모순돼 보인다
+        # (사용자 2026-08-19 NH투자증권 "매출보다 영익이 더 나오는데").
+        _rev_nm = (payload.get("component_accounts") or {}).get("매출") or "매출"
+        tiles = [
+            (_rev_nm, amt(lf.get("매출")), _ACCENT,
+             _subs(lf.get("매출"), _fin(yoy_q, "매출"), _fin(prev_q, "매출"))),
+            ("영업이익", amt(lf.get("영업이익")), _POS,
+             _subs(lf.get("영업이익"), _fin(yoy_q, "영업이익"),
+                   _fin(prev_q, "영업이익"))),
+            # ⚠️ **최근 단일분기** 이익률이다(연간 아님 — 헤더의 분기 라벨 기준).
+            # 사용자가 "이게 연간이야 분기야?"라고 물은 지점 — 값만 있고 비교가
+            # 없어 판별 불가였다. YoY/QoQ %p 를 붙이면 분기 기준이 자명해진다.
+            ("영업이익률" if _rev_nm == "매출" else "영업이익률(산출불가)",
+             _pct(lr.get("영업이익률")), _GOLD,
+             _subs(lr.get("영업이익률"), _rat(yoy_q, "영업이익률"),
+                   _rat(prev_q, "영업이익률"), pp=True)),
+            ("당기순이익", amt(lf.get("당기순이익")), _PUR,
+             _subs(lf.get("당기순이익"), _fin(yoy_q, "당기순이익"),
+                   _fin(prev_q, "당기순이익"))),
+            # '*' = 자체계산(시총÷TTM순이익). ASCII 라 폰트 결손 위험이 없다
+            # (이모지·특수기호는 NanumGothic 에서 두부로 나올 수 있음).
+            # 서브라인 = Forward PER(예상실적 기준). 미제공이면 'N/A' 를 **명시**
+            # — 빈칸이면 '계산 중'인지 '없는지' 구분이 안 된다(사용자 2026-08-16).
+            ("TTM PER" + ("*" if payload.get("per_self") else ""),
+             ("—" if payload.get("per") is None
+              else f"{payload['per']:,.2f}배"), _ACCENTW,
+             [(f"Fwd {_fwd:,.2f}배" if _fwd is not None else "Fwd N/A",
+               _ACCENTW if _fwd is not None else _MUTED)]),
+        ]
+        tw, gap = 18.0, 1.5
+        tx = 2.5
+        for name, val, col, subs in tiles:
+            panel(tx, y, tw, H_TILE - 3, fc=_PANEL, rad=1.6)
+            ax.add_patch(Rectangle((tx, y), tw, 0.7, facecolor=col,
+                                   edgecolor="none"))
+            txt(tx + 1.6, y + 3.4, name, size=8.5, color=_MUTED, weight="bold")
+            txt(tx + 1.6, y + 7.8, val, size=12.5, color=col, weight="bold")
+            sy = y + 12.4
+            for s, scol in subs[:2]:
+                txt(tx + 1.6, sy, s, size=9.0, color=scol, weight="bold")
+                sy += 3.6
+            tx += tw + gap
+        y += H_TILE
 
+    # 차트 두 단은 charts 섹션에서만 그린다. `combo` 정의는 위에 두어
+    # extra(수주잔고·재고자산) 섹션도 같은 렌더러를 쓴다 — 복제하면
+    # 두 조각의 축·눈금·색 규약이 갈라진다(#38).
     # ── 콤보차트 2개(막대 + 선, 실제 matplotlib 축) ─────────────────
     labels = [q.get("label", "") for q in qs]
     rev = [(q.get("financials") or {}).get("매출") for q in qs]
@@ -836,28 +908,30 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
             if lg:
                 lg.set_zorder(4)
 
-    _ch = (H_CHART - 4) / 2.0        # 두 단 각각의 패널 높이
-    # ⚠️ 범례·제목도 **실제 계정명**으로 부른다(2026-08-19 NH투자증권).
-    # 타일은 '이자수익'이라 고쳤는데 차트만 '매출'이라, 이자수익 막대가
-    # 영업이익보다 낮은 그림이 "매출 < 영업이익" 으로 읽혔다. 같은 값에
-    # 두 이름을 쓰면 화면이 스스로 모순된다.
-    _rev_lbl = (payload.get("component_accounts") or {}).get("매출") or "매출"
-    combo((2.5, y, 95, _ch), [rev, op], [_rev_lbl, "영업이익"],
-          [_ACCENT, _POS], opm, _GOLD, "영업이익률",
-          f"{_rev_lbl} · 영업이익")
-    combo((2.5, y + _ch + 2.0, 95, _ch), [ni], ["당기순이익"], [_PUR],
-          nim, _NEG, "순이익률", "당기순이익")
-    y += H_CHART
+    if _on("charts"):
+        _ch = (H_CHART - 4) / 2.0        # 두 단 각각의 패널 높이
+        # ⚠️ 범례·제목도 **실제 계정명**으로 부른다(2026-08-19 NH투자증권).
+        # 타일은 '이자수익'이라 고쳤는데 차트만 '매출'이라, 이자수익 막대가
+        # 영업이익보다 낮은 그림이 "매출 < 영업이익" 으로 읽혔다. 같은 값에
+        # 두 이름을 쓰면 화면이 스스로 모순된다.
+        _rev_lbl = (payload.get("component_accounts") or {}).get("매출") or "매출"
+        combo((2.5, y, 95, _ch), [rev, op], [_rev_lbl, "영업이익"],
+              [_ACCENT, _POS], opm, _GOLD, "영업이익률",
+              f"{_rev_lbl} · 영업이익")
+        combo((2.5, y + _ch + 2.0, 95, _ch), [ni], ["당기순이익"], [_PUR],
+              nim, _NEG, "순이익률", "당기순이익")
+        y += H_CHART
 
-    # ── 수주잔고 · 재고자산 (막대만, 있는 항목만) ───────────────────
-    # line 을 전부 None 으로 넘기면 combo 의 has_pct 가 False → % 패널을
-    # 만들지 않고 막대가 패널 전체를 쓴다(사용자가 요청한 형태).
-    _EX_COLOR = {"수주잔고": _ACCENTW, "재고자산": _GOLD}
-    for _i, (_k, _title, _vals) in enumerate(_extra):
-        combo((2.5, y + _i * _EXTRA_H, 95, _EXTRA_H - 2.0), [_vals], [_title],
-              [_EX_COLOR.get(_k, _ACCENT)], [None] * len(labels), _MUTED,
-              "", _title)
-    y += H_EXTRA
+    if _on("extra"):
+        # ── 수주잔고 · 재고자산 (막대만, 있는 항목만) ───────────────────
+        # line 을 전부 None 으로 넘기면 combo 의 has_pct 가 False → % 패널을
+        # 만들지 않고 막대가 패널 전체를 쓴다(사용자가 요청한 형태).
+        _EX_COLOR = {"수주잔고": _ACCENTW, "재고자산": _GOLD}
+        for _i, (_k, _title, _vals) in enumerate(_extra):
+            combo((2.5, y + _i * _EXTRA_H, 95, _EXTRA_H - 2.0), [_vals], [_title],
+                  [_EX_COLOR.get(_k, _ACCENT)], [None] * len(labels), _MUTED,
+                  "", _title)
+        y += H_EXTRA
 
     # ── 성장동력 / 리스크 카드 ─────────────────────────────────────
     # ⚠️ **여기서 그리지 않는다.** 사용자 2026-08-20 요청으로 카드는 별도
@@ -867,51 +941,44 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 높이 계산(H_CARDS)은 0 이 되어 이 이미지가 그만큼 짧아진다.
     # 그리기 코드는 `_draw_cards` 하나뿐이라 두 이미지가 갈라질 수 없다.
 
-    # ── 푸터(TTM + 출처 + 면책) ─────────────────────────────────────
-    ttm = payload.get("ttm") or {}
-    panel(2.5, y, 95, 6.4, fc=_PANEL2, rad=1.6)
-    foot_items = [
-        ("TTM 매출", amt(ttm.get("매출"))),
-        ("TTM 영업이익", amt(ttm.get("영업이익"))),
-        ("TTM 순이익", amt(ttm.get("당기순이익"))),
-        ("TTM PER" + ("*" if payload.get("per_self") else ""),
-         "—" if payload.get("per") is None
-         else f"{payload['per']:,.2f}배"),
-        # 타일 서브라인과 같은 값 — 두 표면이 어긋나면 그게 곧 버그다.
-        ("Forward PER", "N/A" if payload.get("per_forward") is None
-         else f"{payload['per_forward']:,.2f}배"),
-        ("PSR", "—" if payload.get("psr") is None
-         else f"{payload['psr']:,.2f}배"),
-    ]
-    fx = 6.0
-    _fgap = 88.0 / max(len(foot_items), 1)   # 항목이 늘어도 패널 안에 들어오게
-    for name, val in foot_items:
-        txt(fx, y + 2.2, name, size=8, color=_MUTED)
-        txt(fx, y + 4.6, val, size=10.5, weight="bold")
-        fx += _fgap
-    # 이상치·자체계산 각주 — 값이 '—' 로 비었을 때 "왜 비었나"를 화면에서
-    # 알 수 있어야 한다(빈칸만 두면 데이터 없음과 구분 불가). 이모지 대신
-    # ASCII 마커 + 색으로 표기(NanumGothic 글리프 결손 회피).
-    _ny = y + 7.6
-    for _note, _ncol in notes:
-        txt(6.0, _ny, _note, size=7.5, color=_ncol)
-        _ny += 2.4
-    # 기준시각 표기 의무(CLAUDE.md 실수기록 10-b) — 시총/PER/PSR 은 시세
-    # 기반이라 '언제 기준'인지 없으면 오래된 값을 현재값으로 오인한다.
-    src = payload.get("source_label") or "DART 정기보고서(K-IFRS 연결)"
-    # asof 는 캐시 버킷(YYYY-MM-DD_HH) 이라 그대로 찍으면 '2026-08-16_14'
-    # 라는 날것이 화면에 나간다 — 사람이 읽는 형태로 바꾼다(독립 리뷰).
-    asof = payload.get("asof") or _now_hour_kst()
-    _asof_s = asof.replace("_", " ") + "시" if "_" in asof else asof
-    txt(2.5, H - 2.6, f"수치: {src} · 시총·PER {_asof_s} 기준(KST) · 환각 0",
-        size=8, color=_MUTED)
-    txt(97.5, H - 2.6, "투자 참고용이며 매수·매도를 권유하지 않습니다",
-        size=8, color=_MUTED, ha="right")
+    if _on("foot"):
+        # ── 푸터(TTM + 출처 + 면책) ─────────────────────────────────────
+        ttm = payload.get("ttm") or {}
+        panel(2.5, y, 95, 6.4, fc=_PANEL2, rad=1.6)
+        foot_items = [
+            ("TTM 매출", amt(ttm.get("매출"))),
+            ("TTM 영업이익", amt(ttm.get("영업이익"))),
+            ("TTM 순이익", amt(ttm.get("당기순이익"))),
+            ("TTM PER" + ("*" if payload.get("per_self") else ""),
+             "—" if payload.get("per") is None
+             else f"{payload['per']:,.2f}배"),
+            # 타일 서브라인과 같은 값 — 두 표면이 어긋나면 그게 곧 버그다.
+            ("Forward PER", "N/A" if payload.get("per_forward") is None
+             else f"{payload['per_forward']:,.2f}배"),
+            ("PSR", "—" if payload.get("psr") is None
+             else f"{payload['psr']:,.2f}배"),
+        ]
+        fx = 6.0
+        _fgap = 88.0 / max(len(foot_items), 1)   # 항목이 늘어도 패널 안에 들어오게
+        for name, val in foot_items:
+            txt(fx, y + 2.2, name, size=8, color=_MUTED)
+            txt(fx, y + 4.6, val, size=10.5, weight="bold")
+            fx += _fgap
+        # 이상치·자체계산 각주 — 값이 '—' 로 비었을 때 "왜 비었나"를 화면에서
+        # 알 수 있어야 한다(빈칸만 두면 데이터 없음과 구분 불가). 이모지 대신
+        # ASCII 마커 + 색으로 표기(NanumGothic 글리프 결손 회피).
+        _ny = y + 7.6
+        for _note, _ncol in notes:
+            txt(6.0, _ny, _note, size=7.5, color=_ncol)
+            _ny += 2.4
+        # ⚠️ 출처·면책 줄은 **여기서 그리지 않는다**(2026-08-21). 사용자가 요청한
+        # 배치에서 성장동력 카드가 이 이미지 뒤에 오는데, 면책 문구는 화면 맨
+        # 아래여야 한다 — PNG 안에 있으면 카드보다 위로 올라간다. HTML 로 빼서
+        # 조각 순서와 무관하게 최하단을 지킨다(`provenance_line`).
 
     try:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        fig.savefig(out_path, facecolor=_BG, bbox_inches="tight",
-                    pad_inches=0.15)
+        fig.savefig(out_path, facecolor=_BG)
         plt.close(fig)
         return out_path
     except Exception as exc:
@@ -1336,21 +1403,27 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     # 카드 전용 PNG(사용자 2026-08-20 — 생산능력 표가 카드 위로 와야 해서
     # 분리). 본 이미지와 **같은 캐시 키**에 접미사만 붙여 함께 갱신된다.
     pc = p.with_name(p.stem + "_cards" + p.suffix)
+    # 하단 조각(수주잔고·재고자산·TTM) — 사용자 2026-08-21 배치에서 표가
+    # 이 조각 **위**로 와야 해서 본 이미지를 둘로 나눴다.
+    pb = p.with_name(p.stem + "_b" + p.suffix)
     if p.exists() and not fresh_llm:
         # 짝이 없으면 **여기서 만든다** — 본 이미지만 캐시에 남아 있으면
-        # 카드가 화면에서 통째로 사라진 채 캐시 키가 도는 날까지 방치된다
+        # 그 조각이 화면에서 통째로 사라진 채 캐시 키가 도는 날까지 방치된다
         # (한 번의 렌더 실패가 영구 결손이 되는 구멍, 실수 #11).
-        # 카드가 없는 종목이면 render_cards 가 matplotlib 전에 None 을 낸다.
+        # 내용이 없는 종목이면 렌더러가 matplotlib 전에 None 을 낸다.
         return {"ok": True, "image": str(p),
+                "image_bottom": str(pb) if pb.exists()
+                else render_infographic(payload, str(pb), _PART_BOTTOM),
                 "cards_image": str(pc) if pc.exists()
                 else render_cards(payload, str(pc)),
                 "payload": payload, "cached": True}
-    img = render_infographic(payload, str(p))
+    img = render_infographic(payload, str(p), _PART_TOP)
+    bottom = render_infographic(payload, str(pb), _PART_BOTTOM)
     cards = render_cards(payload, str(pc))
     if img:
         _purge_stale(ticker, p)
-    return {"ok": True, "image": img, "cards_image": cards,
-            "payload": payload, "cached": False}
+    return {"ok": True, "image": img, "image_bottom": bottom,
+            "cards_image": cards, "payload": payload, "cached": False}
 
 
 def _purge_stale(ticker: str, keep: Path) -> None:
@@ -1362,10 +1435,14 @@ def _purge_stale(ticker: str, keep: Path) -> None:
     # 여기서 지우면 방금 만든 카드 이미지가 사라져 화면에서 카드가 통째로
     # 빠진다(2026-08-20 분리 작업 중 실측한 함정: 본 이미지 렌더 직후
     # _purge_stale 이 짝을 삭제).
-    keep_cards = keep.with_name(keep.stem + "_cards" + keep.suffix)
+    # ⚠️ 조각이 늘 때마다 여기를 손대야 한다 — 이름을 열거하지 말고 접미사
+    # 목록에서 만든다(조각을 추가하고 purge 를 잊으면 방금 만든 그림이
+    # 바로 지워진다, 2026-08-20 카드 분리 때 실측한 함정).
+    keep_all = {keep} | {keep.with_name(keep.stem + sfx + keep.suffix)
+                         for sfx in _PIECE_SUFFIXES}
     try:
         for old in _IMG_DIR.glob(f"{_safe_name(ticker)}_*.png"):
-            if old not in (keep, keep_cards):
+            if old not in keep_all:
                 old.unlink(missing_ok=True)
     except OSError as exc:
         log.debug("quarterly_infographic: 옛 PNG 정리 실패: %s", exc)
