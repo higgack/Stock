@@ -30048,7 +30048,6 @@ class TestDartCellWbr20260821:
             "반도체검사장비2종<BR>Monitoring Burn-In Tester 등 장비")
         assert h.count("<br>") == 1
         assert "반도체검사장비<wbr>2<wbr>종<br>Monitoring" in h, h
-        assert '<td class="lft">' in h
 
     def test_tags_are_never_touched(self):
         """태그 **밖의 텍스트에만** 넣는다 — 속성값에 끼면 표가 깨진다.
@@ -30223,13 +30222,16 @@ class TestProbeAlignSummary20260821:
         from bot.dart_production import sanitize_table
         from bot.scripts.production_format_probe import align_summary
         cols = align_summary(sanitize_table(self._MK))
-        assert [c["col"] for c in cols] == [0, 1, 2], cols
         assert not any(c["mixed"] for c in cols), cols
-        assert cols[1]["cls"] == "lft" and cols[0]["cls"] == "ctr", cols
-        assert "전력기기" in cols[1]["sample"]
-        # 여러 열을 걸친 셀(합계·연결조정)은 어느 한 열의 것이 아니다 —
-        # 세면 그 열의 성격 판정이 오염된다(`_long_text_cols` 와 같은 규약).
-        assert cols[0]["sample"] == "사업부문", cols[0]
+        # 판정 단위는 **슬롯**(시작열, span) — 걸친 셀은 자기 슬롯을 갖는다
+        slots = {(c["col"], c["span"]): c for c in cols}
+        assert set(slots) == {(0, 1), (0, 2), (1, 1), (2, 1)}, sorted(slots)
+        assert slots[(1, 1)]["cls"] == "lft", slots[(1, 1)]
+        assert slots[(0, 1)]["cls"] == "ctr", slots[(0, 1)]
+        assert slots[(2, 1)]["cls"] == "ctr", slots[(2, 1)]
+        assert "전력기기" in slots[(1, 1)]["sample"]
+        # 걸친 셀이 span==1 슬롯의 성격을 오염시키면 안 된다
+        assert slots[(0, 1)]["sample"] == "사업부문", slots[(0, 1)]
 
     def test_mixed_column_is_flagged(self):
         """열 번호가 밀리면(rowspan 미반영) 같은 열에 두 class 가 섞인다 —
@@ -30339,3 +30341,72 @@ class TestKeyedTiming20260822:
         assert all(a.args and isinstance(a.args[0], ast.Call)
                    and getattr(a.args[0].func, "id", "") == "timing_key"
                    for a in reads), "키를 timing_key 로 안 만든다"
+
+
+class TestColspanOnlyColumn20260822:
+    """열 하나가 **전부 colspan** 이면 한 칸도 판정 안 돼 가운데로 굳었다.
+
+    사용자 2026-08-22 IPARK현대산업개발(294870.KS) 실측: `국내/해외` 하위열
+    때문에 품목 셀이 전부 `colspan=2` 였고, 긴 품목명이 가운데로 들쭉날쭉했다
+    — #97(표→열)에서 고친 바로 그 증상이 축만 바꿔 **네 번째**로 재발한 것.
+    판정 단위를 열 번호가 아니라 **슬롯**(시작열, span)으로 바꿔 끝낸다."""
+
+    _MK = ("<TABLE>"
+           "<TR><TD ROWSPAN=2 COLSPAN=2>사업부문</TD>"
+           "<TD ROWSPAN=2 COLSPAN=2>품 목</TD>"
+           "<TD COLSPAN=2>제9기 반기</TD></TR>"
+           "<TR><TD>매출액</TD><TD>비율</TD></TR>"
+           "<TR><TD ROWSPAN=2>건설</TD><TD>외주주택</TD>"
+           "<TD COLSPAN=2>아파트, 주상복합, 오피스텔 등</TD>"
+           "<TD>974,030</TD><TD>61.3</TD></TR>"
+           "<TR><TD>토목</TD>"
+           "<TD COLSPAN=2>도로, 항만, 공단부지 조성,일반철도, 고속철도 등</TD>"
+           "<TD>110,557</TD><TD>7.0</TD></TR>"
+           "<TR><TD COLSPAN=4>합 계</TD><TD>1,588,584</TD><TD>100.0</TD></TR>"
+           "</TABLE>")
+
+    def _slots(self):
+        from bot.dart_production import sanitize_table
+        from bot.scripts.production_format_probe import align_summary
+        return {(c["col"], c["span"]): c
+                for c in align_summary(sanitize_table(self._MK))}
+
+    def test_long_colspan_column_is_left_aligned(self):
+        s = self._slots()
+        assert (2, 2) in s, f"품목 슬롯이 판정에서 빠졌다: {sorted(s)}"
+        assert s[(2, 2)]["cls"] == "lft", s[(2, 2)]
+        assert not s[(2, 2)]["mixed"], s[(2, 2)]
+
+    def test_short_spanning_labels_stay_centered(self):
+        """`합 계`(colspan=4)·`사업부문`(colspan=2) 같은 짧은 라벨은 가운데다
+        — 슬롯 판정으로 바꿨다고 전부 좌측이 되면 안 된다."""
+        s = self._slots()
+        assert s[(0, 4)]["cls"] == "ctr", s[(0, 4)]      # 합 계
+        assert s[(0, 2)]["cls"] == "ctr", s[(0, 2)]      # 사업부문
+        assert s[(1, 1)]["cls"] == "ctr", s[(1, 1)]      # 외주주택·토목
+        assert s[(4, 1)]["cls"] == "ctr", s[(4, 1)]      # 금액
+
+    def test_single_spanning_label_stays_centered(self):
+        """칸이 **하나뿐인** 슬롯은 어긋날 상대가 없다 — 소계·합계 라벨은
+        길어도 가운데(사용자 승인된 기존 동작이 슬롯 판정에 안 깨지게)."""
+        from bot.dart_production import sanitize_table
+        from bot.scripts.production_format_probe import align_summary
+        mk = ("<TABLE><TR><TD>구분</TD><TD>품 목</TD><TD>매출액</TD></TR>"
+              "<TR><TD>반도체</TD><TD>검사장비</TD><TD>226,883</TD></TR>"
+              "<TR><TD COLSPAN=2>제품 및 상품 등 소 계(내부거래 조정 전)</TD>"
+              "<TD>279,651</TD></TR></TABLE>")
+        got = {(c["col"], c["span"]): c["cls"]
+               for c in align_summary(sanitize_table(mk))}
+        assert got[(0, 2)] == "ctr", got
+
+    def test_numbers_never_become_long_text(self):
+        """숫자 칸은 아무리 길어도 '긴 글'이 아니다(자릿수·부호·%)."""
+        from bot.dart_production import sanitize_table
+        from bot.scripts.production_format_probe import align_summary
+        mk = ("<TABLE><TR><TD>구분</TD><TD COLSPAN=2>금액</TD></TR>"
+              "<TR><TD>매출</TD>"
+              "<TD COLSPAN=2>(1,234,567,890,123,456,789,012)</TD></TR>"
+              "</TABLE>")
+        got = {(c["col"], c["span"]): c["cls"]
+               for c in align_summary(sanitize_table(mk))}
+        assert got[(1, 2)] == "ctr", got

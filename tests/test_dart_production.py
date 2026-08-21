@@ -257,7 +257,7 @@ class TestSanitize:
         # ⚠️ 결정적 단언: 밀리면 셋째 행의 긴 품목이 **0번 열**로 잡혀
         # 부문·회사 열이 '긴 글'이 된다. 그 둘이 ctr 인지를 봐야 잡힌다.
         assert c2["건자재"] == "ctr" and c2["케이씨씨"] == "ctr", c2
-        assert dp._long_text_cols(mk2) == {2}, dp._long_text_cols(mk2)
+        assert dp._long_text_cols(mk2) == {(2, 1)}, dp._long_text_cols(mk2)
 
     def test_header_does_not_decide_a_numeric_column(self):
         """케이씨씨 `평균 가동률 (생산실적 ÷ 생산능력)` 처럼 **헤더만 긴

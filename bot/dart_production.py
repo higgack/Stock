@@ -253,19 +253,26 @@ def _iter_rows(html: str):
         yield rm, cells
 
 
-def _long_text_cols(html: str) -> set[int]:
-    """긴 글이 들어 있는 **열 번호** 집합. colspan·rowspan 을 세어 열을 맞춘다.
+def _long_text_cols(html: str) -> set[tuple[int, int]]:
+    """긴 글이 들어 있는 **열 슬롯**(시작열, 걸친 열 수) 집합.
 
     ⚠️ 셀 단위가 아니라 **열 단위**로 정한다 — 셀 내용으로 정하면 한 열
     안에 긴 글과 짧은 글이 섞이는 순간 갈라진다(실수 #78 이 바로 그것).
-    소계·합계처럼 여러 열을 걸치는 셀(colspan>1)은 어느 한 열의 것이
-    아니므로 판정에서 뺀다.
+
+    ⚠️ 그런데 `colspan>1` 을 **통째로 빼면** 그 열이 전부 colspan 인 표에서
+    한 칸도 판정되지 않아 기본값(가운데)으로 굳는다(2026-08-22 IPARK
+    현대산업개발 294870.KS 실측: `국내/해외` 하위열 때문에 품목 셀이 전부
+    `colspan=2` 였고, 긴 품목명이 가운데로 들쭉날쭉했다 — #97 에서 고친
+    바로 그 증상이 축만 바꿔 네 번째로 재발). 그래서 판정 단위는 열 번호가
+    아니라 **슬롯**(시작열, span)이다 — 같은 슬롯의 셀은 화면에서 같은
+    자리를 차지하므로 정렬도 같아야 하고, `합 계`(colspan=4)처럼 다른
+    슬롯은 자기 규약을 따로 가진다.
     """
-    width: dict[int, float] = {}
+    width: dict[tuple[int, int], float] = {}
+    seen: dict[tuple[int, int], int] = {}
     for _ri, (_rm, cells) in enumerate(_iter_rows(html)):
         for m, ci, span in cells:
-            if span != 1:
-                continue
+            slot = (ci, span)
             # ⚠️ **머리행은 판정하지 않는다**(2026-08-21 케이씨씨). 케이씨씨
             # 가동률 표의 `평균 가동률 (생산실적 ÷ 생산능력)` 처럼 헤더만
             # 긴 **숫자 열**이 있다 — 헤더를 세면 숫자가 좌측으로 밀린다.
@@ -275,8 +282,14 @@ def _long_text_cols(html: str) -> set[int]:
             t = _cell_text(m.group(3))
             # 숫자 칸은 아무리 길어도 '긴 글'이 아니다(자릿수·부호·%).
             if not re.fullmatch(r"[\d,.\-+()%\s]*", t):
-                width[ci] = max(width.get(ci, 0.0), _vlen(t))
-    return {c for c, w in width.items() if w >= _LONG_COL_W}
+                width[slot] = max(width.get(slot, 0.0), _vlen(t))
+                seen[slot] = seen.get(slot, 0) + 1
+    # ⚠️ **칸이 둘 이상일 때만** 좌측이다. 좌측정렬의 이유는 같은 열에서
+    # 행마다 시작 위치가 들쭉날쭉한 것인데, 칸이 하나뿐인 슬롯
+    # (`제품 및 상품 등 소 계(내부거래 조정 전)` colspan=3 같은 요약 라벨)은
+    # 어긋날 상대가 없다 — 가운데가 맞다(사용자 승인된 기존 동작).
+    return {c for c, w in width.items()
+            if w >= _LONG_COL_W and seen.get(c, 0) >= 2}
 
 
 def _align_cells(html: str) -> str:
@@ -307,9 +320,9 @@ def _align_cells(html: str) -> str:
             tag, attrs, inner = m.group(1), m.group(2) or "", m.group(3)
             parts.append(row[rlast:m.start()])
             if "class=" not in attrs:
-                # 여러 열을 걸친 셀은 어느 한 열의 규약을 따를 수 없다 —
-                # 가운데(소계·합계 라벨이 실제로 그 자리에 온다).
-                cls = "lft" if (span == 1 and ci in long_cols) else "ctr"
+                # 같은 슬롯(시작열·span)끼리 규약을 맞춘다 — 열 하나가
+                # 전부 colspan 이어도 판정된다(위 주석).
+                cls = "lft" if (ci, span) in long_cols else "ctr"
                 attrs += f' class="{cls}"'
             parts.append(f"<{tag}{attrs}>{inner}</{tag}>")
             rlast = m.end()

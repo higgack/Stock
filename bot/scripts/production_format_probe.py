@@ -37,7 +37,7 @@ import sys
 import time as _time
 import time
 
-_PROBE_VER = 10         # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 11         # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
@@ -87,21 +87,25 @@ def align_summary(table_html: str) -> list[dict]:
     (#78 셀→표 → #97 표→열 → #115 rowspan 열번호)이므로 `mixed` 로 찍는다.
     """
     import bot.dart_production as _dp
-    cols: dict[int, dict] = {}
+    cols: dict[tuple[int, int], dict] = {}
     for _rm, cells in _dp._iter_rows(table_html or ""):
         for m, ci, span in cells:
-            if span != 1:                 # 여러 열을 걸친 셀은 어느 열도 아니다
-                continue
+            # 판정 단위는 **슬롯**(시작열, span) — 열 하나가 전부 colspan 인
+            # 표에서 span==1 만 보면 한 칸도 안 세어 눈이 먼다(2026-08-22
+            # IPARK 실측). 화면이 쓰는 그 단위를 그대로 본다(#35).
+            slot = (ci, span)
             cls = "lft" if 'class="lft"' in (m.group(2) or "") else "ctr"
             t = _dp._cell_text(m.group(3))
-            d = cols.setdefault(ci, {"col": ci, "cls": set(), "sample": ""})
+            d = cols.setdefault(slot, {"col": ci, "span": span,
+                                       "cls": set(), "sample": ""})
             d["cls"].add(cls)
             if len(t) > len(d["sample"]):
                 d["sample"] = t
     out = []
-    for ci in sorted(cols):
-        d = cols[ci]
-        out.append({"col": ci, "cls": "/".join(sorted(d["cls"])),
+    for slot in sorted(cols):
+        d = cols[slot]
+        out.append({"col": d["col"], "span": d["span"],
+                    "cls": "/".join(sorted(d["cls"])),
                     "mixed": len(d["cls"]) > 1, "sample": d["sample"]})
     return out
 
@@ -128,7 +132,9 @@ def _dump_table(label: str, tbl: dict | None, basis: str, rn: str,
     print(f"   [{label} 정렬] {head}")
     for c in cols:
         mark = " ⚠️" if c["mixed"] else ""
-        print(f"      열{c['col']} {c['cls']:7} {c['sample'][:40]!r}{mark}")
+        _sp = "" if c.get("span", 1) == 1 else f"×{c['span']}"
+        print(f"      열{c['col']}{_sp:3} {c['cls']:7} "
+              f"{c['sample'][:40]!r}{mark}")
 
 
 def _latest_quarters(dart, ticker: str) -> list[dict]:
