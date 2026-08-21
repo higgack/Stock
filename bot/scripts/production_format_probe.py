@@ -87,6 +87,23 @@ def _latest_quarters(dart, ticker: str) -> list[dict]:
         return []
 
 
+_NOT_FIXABLE = ("미공시", "명시적미공시", "미검사")
+
+
+def fixable_reasons(by_reason: dict) -> dict:
+    """미수집 사유 중 **파서를 고치면 나아지는 것**만.
+
+    ⚠️ 사유에 상세가 붙는다("단위없음 · 캡션없음", 2026-08-21) — 완전일치로
+    거르면 상세가 붙는 순간 미공시류까지 개선 여지로 세어 통계가 갈라진다
+    (#45 총계와 소계가 다른 모집단). **접두**로 본다.
+
+    ⚠️ 순수 함수로 둔 이유: 판정을 스크립트에 인라인으로 두면 회귀가 소스
+    문자열만 보게 되어 되돌리는 뮤테이션이 통과한다(#41·#19).
+    """
+    return {k: v for k, v in (by_reason or {}).items()
+            if str(k).split(" · ")[0] not in _NOT_FIXABLE}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="생산능력·가동률 표 형식 스윕")
     ap.add_argument("tickers", nargs="*", help="비우면 관심종목+아카이브")
@@ -234,8 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     if backlog_why:
         # 개선 여지 = 미공시류를 **뺀** 것. 원천에 값이 없는 건 파서를
         # 고쳐도 안 나온다(dart_backlog.diagnose 규약).
-        _fixable = {k: v for k, v in backlog_why.items()
-                    if k not in ("미공시", "명시적미공시", "미검사")}
+        _fixable = fixable_reasons(backlog_why)
         print("\n수주잔고 미수집 사유:")
         for k, v in sorted(backlog_why.items(), key=lambda x: -x[1]):
             _mark = "🔧" if k in _fixable else "  "

@@ -2517,6 +2517,9 @@ mark.snippet-target {
 /* 원본 표(DART)는 한 열 안에서도 정렬이 들쭉날쭉해 숫자를 눈으로
    따라가기 어렵다 — 머리행·숫자 셀을 가운데로 통일(2026-08-21). */
 .si-table .ctr { text-align: center; font-variant-numeric: tabular-nums; }
+/* 긴 글이 들어가는 열만 좌측 — 가운데로 두면 행마다 시작 위치가
+   들쭉날쭉해 읽기 어렵다(사용자 2026-08-21 디아이 품목 열). */
+.si-table .lft { text-align: left; }
 .si-table .pos { color: #26a69a; font-weight: 600; }
 .si-table .neg { color: #e2574c; font-weight: 600; }
 /* ── News cards ──────────────────────────────────────────── */
@@ -5464,6 +5467,27 @@ def _derive_missing_multiples(si: dict) -> dict:
     return out
 
 
+def trend_chart_geometry(chart_items: list, keys: list,
+                         max_val: float) -> tuple[float, float]:
+    """수익성 추이 막대차트의 (기간라벨 y, 도화지 높이). 기준선은 y=150.
+
+    ⚠️ 왜 순수 함수인가: 라벨 y 를 렌더 코드에 리터럴로 두면 회귀가
+    소스 문자열만 보게 되어 되돌리는 뮤테이션이 통과한다(#41).
+
+    ⚠️ 왜 필요한가(사용자 2026-08-21 LG디스플레이): 라벨이 기준선 바로
+    밑(y=170)에 고정돼 있어 **아래로 뻗은 막대와 겹쳐** `25.1Q`·`2024`
+    가 안 보였다. FCF·순이익이 음수인 분기에서 늘 난다.
+    """
+    down = 0.0
+    for c in chart_items or []:
+        for k in keys or []:
+            v = (c or {}).get(k) or 0
+            if v < 0:
+                down = max(down, max(abs(v) / (max_val or 1) * 120, 2))
+    label_y = 150 + down + 20
+    return label_y, label_y + 15
+
+
 def _render_stock_info_html(rec: dict) -> str:
     """Render header cards + tabbed company info sections from stock_info."""
     si = rec.get("stock_info")
@@ -7670,6 +7694,13 @@ def _render_stock_info_html(rec: dict) -> str:
             legend = ('<text x="10" y="14" font-size="11" fill="#999">'
                       + ' '.join(f'● <tspan fill="{col}">{esc(nm)}</tspan>'
                                  for _k, nm, col in _series) + '</text>')
+            # ⚠️ 라벨을 기준선 바로 밑(y=170)에 고정하면 **아래로 뻗은 막대와
+            # 겹쳐** 연도·분기가 안 보인다(사용자 2026-08-21 LG디스플레이:
+            # FCF·순이익이 음수인 분기에서 `25.1Q`·`2024` 가 막대에 가림).
+            # 가장 깊은 음수 막대 아래로 내려보내고 도화지도 같이 키운다 —
+            # 상수 하나만 고치면 다른 하나가 안 따라오므로 **여기서 파생**.
+            _lab_y, _svg_h = trend_chart_geometry(
+                chart_items, [k for k, _n, _c in _series], max_val)
             for i, c in enumerate(chart_items):
                 x_base = 40 + i * (bar_w * _nb + 16)
                 for j, (_k, _nm, color) in enumerate(_series):
@@ -7677,10 +7708,10 @@ def _render_stock_info_html(rec: dict) -> str:
                     h = max(abs(val) / max_val * 120, 2)
                     y = 150 - h if val >= 0 else 150
                     bars += f'<rect x="{x_base + j * bar_w}" y="{y}" width="{bar_w - 2}" height="{h}" fill="{color}" rx="2"/>\n'
-                labels += f'<text x="{x_base + bar_w * _nb / 2}" y="170" font-size="11" fill="#999" text-anchor="middle">{esc(c["period"])}</text>\n'
+                labels += f'<text x="{x_base + bar_w * _nb / 2}" y="{_lab_y:.0f}" font-size="11" fill="#999" text-anchor="middle">{esc(c["period"])}</text>\n'
             out = f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">{esc(title)}</div>
-        <svg width="{svg_w}" height="185" style="display:block;margin:auto">
+        <svg width="{svg_w}" height="{_svg_h:.0f}" style="display:block;margin:auto">
           {legend}
           <line x1="38" y1="150" x2="{svg_w - 10}" y2="150" stroke="#555" stroke-width="1"/>
           {bars}

@@ -68,8 +68,20 @@ log = logging.getLogger("bot.dart_backlog")
 # "수주잔고는 1,097백만USD" 실측). 별도 가드 함수를 두면 죽은 코드가 되므로
 # **이 표 자체가 가드**다.
 _UNIT_MULT = {"원": 1.0, "천원": 1e3, "백만원": 1e6, "억원": 1e8,
-              "십억원": 1e9, "조원": 1e12}
-_UNIT_RE = re.compile(r"단위\s*[:：]?[^)\]]{0,20}?(조원|십억원|백만원|억원|천원|원)")
+              "십억원": 1e9, "조원": 1e12,
+              # ⚠️ `원` 을 생략한 캡션이 실재한다 — `(단위 : 백만)`·
+              # `(단위 : 억)`. 옛 정규식은 `원` 을 **필수**로 봐서 이런 표는
+              # 단위를 못 정하고 통째로 버려졌다(2026-08-21 미수집 사유 중
+              # `단위없음` 이 최대 버킷이었다).
+              "조": 1e12, "십억": 1e9, "백만": 1e6, "억": 1e8, "천": 1e3}
+# ⚠️ 뒤 lookahead 가 핵심이다. `(단위 : 천주)`(주식 수)·`(단위 : 백만달러)`
+# 를 금액 단위로 읽으면 **스케일이 통째로 틀린다** — 검산은 열 사이 항등식만
+# 보므로 스케일 오류는 그대로 통과한다(조용한 오답). 단위 뒤에 한글·영문·
+# 통화기호가 붙으면 우리가 아는 단위가 아니다.
+_UNIT_RE = re.compile(
+    r"단위\s*[:：]?[^)\]]{0,20}?"
+    r"(조원|십억원|백만원|억원|천원|원|조|십억|백만|억|천)"
+    r"(?![가-힣A-Za-z$])")
 # 값 토큰. 콤마 묶음 또는 **콤마 없는 1~4자리**.
 # ⚠️ 처음엔 콤마를 필수로 했는데(절번호·연도 차단용) 억원 단위 표에서 값이
 # 네 자리 미만이면 통째로 잃는다 — 엠플러스 `합 계 - 1,461 - 830 - 631` 에서
@@ -562,15 +574,57 @@ def diagnose(text: str) -> str:
     return "형식미지원"
 
 
-def _log_miss(ticker: str, year, reprt_code, reason: str) -> None:
+def diagnose_detail(text: str) -> str:
+    """`diagnose` 가 낸 사유의 **행동 가능한 상세**. 없으면 빈 문자열.
+
+    ⚠️ 왜 필요한가(2026-08-21): 미수집 사유가 `단위없음 15 · 형식미지원 7`
+    로 나왔는데, 그 15건이 캡션이 아예 없는 건지 우리가 모르는 단위(달러·
+    천주)인지 알 수 없어 **다음에 뭘 고쳐야 할지 알 수 없었다**. 숫자는
+    행동으로 이어질 때만 쓸모가 있다(#93).
+
+    ⚠️ `diagnose` 의 반환값은 건드리지 않는다 — 그 코드로 집계·필터하는
+    곳이 여럿이라(미공시류 스킵 등) 문자열을 바꾸면 조용히 갈라진다.
+    """
+    if not text:
+        return ""
+    hits = [k for k in _BAL_LABELS if k in text]
+    if not hits:
+        return ""
+    at = min(text.find(k) for k in hits)
+    if _unit_mult(text, at) is None:
+        # 캡션이 **있는데** 우리가 모르는 단위인지, 아예 없는지를 가른다.
+        cap = None
+        for m in re.finditer(r"\(\s*단위[^)]{0,40}\)", text, 0):
+            if m.start() < at:
+                cap = m.group(0)
+        if cap:
+            return "미지원단위 " + re.sub(r"\s+", " ", cap)[:24]
+        fwd = re.search(r"\(\s*단위[^)]{0,40}\)", text[at:at + 1500])
+        if fwd:
+            return f"캡션이 라벨 뒤 {fwd.group(0)[:24]}"
+        return "캡션없음"
+    if not re.search(r"합\s*계", text[at:at + 2500]):
+        return "합계행 없음"
+    m = re.search(r"합\s*계", text[at:at + 2500])
+    vals = _row_values(text, at + m.end()) if m else []
+    # ⚠️ 값 자체는 넣지 않는다 — 종목마다 달라 히스토그램이 전부 1건씩으로
+    # 쪼개져 "무엇이 많은가"를 못 본다. **모양**만 센다.
+    return f"합계행 {len(vals)}값"
+
+
+def _log_miss(ticker: str, year, reprt_code, reason: str,
+              detail: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
     if reason in ("미공시", "명시적미공시"):
         return                      # 원천에 값이 없다 — 개선 대상 아님
     try:
         _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
-        line = _json.dumps({"ticker": ticker, "year": year,
-                            "reprt": reprt_code, "reason": reason},
-                           ensure_ascii=False)
+        rec = {"ticker": ticker, "year": year,
+               "reprt": reprt_code, "reason": reason}
+        if detail:
+            # 사유만으론 뭘 고쳐야 할지 모른다(#93) — 상세를 같이 남긴다.
+            rec["detail"] = detail
+        line = _json.dumps(rec, ensure_ascii=False)
         old = []
         if _MISS_LOG.exists():
             old = _MISS_LOG.read_text(encoding="utf-8").splitlines()[-_MISS_CAP:]
@@ -657,6 +711,11 @@ def review_text() -> str:
            f"막힌 조회 {len(rows)}건 · 종목 {len(tick)}개",
            ""]
     out += [f"· {r}: {n}건" for r, n in by.most_common()]
+    det = Counter(r.get("detail") for r in rows if r.get("detail"))
+    if det:
+        # 사유만 세면 "단위없음 15" 로 끝나 다음 수를 못 정한다(#93).
+        out += ["", "<b>상세</b> (무엇을 고쳐야 하나)"]
+        out += [f"· {d}: {n}건" for d, n in det.most_common(8)]
     out += ["", "<b>종목</b> (상위 10)"]
     out += [f"· {t} ×{n}" for t, n in tick.most_common(10)]
     out += ["", "이 목록을 Claude 에게 그대로 붙여넣으면 파서를 확장합니다.",
@@ -678,7 +737,9 @@ def backlog_probe(dart, ticker: str, year: int,
     뒤라 기본 3MB 상한 밖으로 밀리고, 그러면 **공시하는 회사도 '없음'으로
     오판된다**(2026-08-17 프로브로 확인)."""
     if not dart:
-        return None
+        # ⚠️ 계약은 (값, 사유) 튜플이다 — None 하나를 내면 호출부의
+        # `v, why = backlog_probe(...)` 가 TypeError 로 터진다.
+        return None, "DART없음"
     try:
         from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
         # ⚠️ 후보를 **순서대로** 시도한다. 가장 최근 접수건에 문서가 없는
@@ -701,8 +762,11 @@ def backlog_probe(dart, ticker: str, year: int,
             return got["value"], "정상"
         # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
         why = diagnose(text or "")
-        _log_miss(ticker, year, reprt_code, why)
-        return None, why
+        det = diagnose_detail(text or "")
+        _log_miss(ticker, year, reprt_code, why, det)
+        # 사유만 돌려주면 "단위없음 15건"에서 멈춰 다음 수를 못 정한다 —
+        # 상세를 붙여 감사 히스토그램이 곧 작업 목록이 되게 한다(#93).
+        return None, (f"{why} · {det}" if det else why)
     except Exception as exc:
         log.debug("dart_backlog: %s %s/%s: %s", ticker, year, reprt_code, exc)
         return None, f"오류:{type(exc).__name__}"
