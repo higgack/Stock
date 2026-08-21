@@ -2514,6 +2514,9 @@ mark.snippet-target {
 }
 .si-table tbody tr:last-child td { border-bottom: none; }
 .si-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+/* 원본 표(DART)는 한 열 안에서도 정렬이 들쭉날쭉해 숫자를 눈으로
+   따라가기 어렵다 — 머리행·숫자 셀을 가운데로 통일(2026-08-21). */
+.si-table .ctr { text-align: center; font-variant-numeric: tabular-nums; }
 .si-table .pos { color: #26a69a; font-weight: 600; }
 .si-table .neg { color: #e2574c; font-weight: 600; }
 /* ── News cards ──────────────────────────────────────────── */

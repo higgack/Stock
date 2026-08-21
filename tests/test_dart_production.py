@@ -109,11 +109,36 @@ class TestSanitize:
                      "adeletecol", "amovecol"):
             assert junk not in t.lower(), f"{junk} 가 남았다"
 
-    def test_right_align_becomes_num_class(self):
-        """숫자 우측정렬만 원본에서 보존 — 기존 .si-table .num 재사용."""
+    def test_numeric_cells_and_headers_are_centered(self):
+        """원본 `ALIGN` 을 따라가면 **한 열 안에서 정렬이 갈린다** —
+        한솔아이원스 실측: 같은 열의 `44,727`(ALIGN=RIGHT)은 우측,
+        `55.7%`(속성 없음)는 좌측이라 숫자를 눈으로 따라갈 수 없었다.
+        원본이 스스로 일관되지 않으므로 우리가 내용으로 정한다."""
         t = parse_production(REAL)["table_html"]
-        assert 'class="num"' in t
         assert 'class="si-table"' in t
+        assert 'class="ctr"' in t
+        assert 'class="num"' not in t, "원본 정렬을 아직 따라간다"
+
+    def test_same_column_mixed_alignment_is_unified(self):
+        """숫자와 비율이 같은 열에 있으면 **같은 정렬**이어야 한다."""
+        import re
+        from bot.dart_production import parse_production as _pp
+        mk = ("생산능력 및 생산실적"
+              "<TABLE><THEAD><TR><TH>구분</TH><TH>수량</TH></TR></THEAD>"
+              "<TBODY><TR><TD>생산능력</TD><TD ALIGN=\"RIGHT\">44,727</TD></TR>"
+              "<TR><TD>생산실적</TD><TD ALIGN=\"RIGHT\">24,937</TD></TR>"
+              "<TR><TD>가동률</TD><TD>55.7%</TD></TR></TBODY></TABLE>")
+        h = _pp(mk)["table_html"]
+        got = {x.strip(): ("ctr" in a)
+               for _t, a, x in re.findall(r"<(t[dh])([^>]*)>([^<]*)</\1>", h)}
+        assert got["44,727"] and got["55.7%"], f"열 안에서 정렬이 갈림: {got}"
+        assert got["수량"], "머리행이 아래 숫자와 안 맞음"
+        assert not got["생산능력"] and not got["가동률"], "글자 셀까지 가운데"
+
+    def test_center_class_exists_in_the_page_css(self):
+        """클래스만 붙이고 CSS 가 없으면 아무 일도 안 일어난다(배선)."""
+        css = open("bot/dashboard.py", encoding="utf-8").read()
+        assert ".si-table .ctr" in css and "text-align: center" in css
 
     def test_strips_dangerous_markup(self):
         """원문은 외부 입력 — 스크립트·이벤트 핸들러가 DOM 에 들어가면 안 된다."""
@@ -676,7 +701,9 @@ class TestProducts20260821:
     def test_markup_is_sanitized_like_the_production_table(self):
         from bot.dart_production import parse_products
         t = parse_products(self.MK)["table_html"]
-        assert 'rowspan="5"' in t and 'class="num"' in t
+        # 정렬은 원본이 아니라 **내용**으로 정한다(2026-08-21) — 매출액 숫자는
+        # 가운데, 회사명·용도 같은 글자 셀은 좌측.
+        assert 'rowspan="5"' in t and 'class="ctr"' in t
         assert "WIDTH" not in t and "width" not in t, "속성이 그대로 샌다"
         assert "<script" not in t.lower()
 
