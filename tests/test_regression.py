@@ -7002,6 +7002,50 @@ class TestFcfDerivedNotCarried20260821:
         assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
 
 
+class TestBacklogExtraColumns20260821:
+    """VM 스윕(2026-08-21)이 남긴 마지막 개선 여지: `형식미지원 · 합계행
+    5값 / 4값`. 표에 **수량·건수·비중 열이 섞이면** 개수가 어긋나 통째로
+    버려졌다. 그렇다고 열 뜻을 추측해 배정하면 스케일이 아니라 **의미**가
+    틀리고 그건 검산도 못 잡는다 — 추측 대신 **연속 부분열**로 같은 항등식이
+    성립하는지 보고, 성립하는 값이 **유일할 때만** 쓴다."""
+
+    def test_extra_columns_are_tolerated_when_the_identity_holds(self):
+        from bot.dart_backlog import _verify
+        # 건수 + 3열 + 비중 (5값)
+        assert _verify([12.0, 1000.0, 400.0, 600.0, 55.0]) == 600.0
+        # 3열 + 비중 (4값 — 4열 항등식은 안 맞는다)
+        assert _verify([1000.0, 400.0, 600.0, 55.0]) == 600.0
+
+    def test_ambiguous_windows_are_refused(self):
+        """두 부분열이 서로 **다른** 잔고를 내면 어느 열인지 모르는 것이다 —
+        빈칸이 틀린 숫자보다 낫다."""
+        from bot.dart_backlog import _verify
+        assert _verify([1000.0, 400.0, 600.0, 500.0, 100.0]) is None
+
+    def test_old_shapes_and_refusals_are_unchanged(self):
+        from bot.dart_backlog import _verify
+        assert _verify([1000.0, 400.0, 600.0]) == 600.0
+        assert _verify([100.0, 900.0, 400.0, 600.0]) == 600.0
+        assert _verify([5.0, 1000.0, 2.0, 400.0, 3.0, 600.0]) == 600.0
+        assert _verify([600.0, 1000.0, 400.0]) is None    # 열 순서가 다르면
+        assert _verify([10.0, 20.0]) is None              # 2값 = 항등식 없음
+        # 열이 아주 많으면 우연히 맞는 조합이 생긴다 — 애초에 수주표가
+        # 아닐 가능성이 높으므로 거부한다.
+        # ⚠️ 픽스처는 **상한을 없애면 실제로 값이 나오는** 것이어야 한다.
+        # 처음엔 1..9 를 썼는데 어느 창도 항등식을 만족하지 않아 상한을
+        # 지우는 뮤테이션이 그대로 통과했다(#91c 깨지는 값까지 밀 것).
+        assert _verify([11.0, 13.0, 17.0, 19.0,
+                        1000.0, 400.0, 600.0, 23.0, 29.0]) is None
+
+    def test_wired_into_the_real_parser(self):
+        """헬퍼만 고치고 배선이 빠지면 화면은 그대로다(#20)."""
+        from bot.dart_backlog import parse_backlog
+        t = ("(단위 : 백만원) 구분 건수 수주총액 기납품액 수주잔고 비중 "
+             "합 계 12 1,000 400 600 100")
+        got = parse_backlog(t)
+        assert got and got["value"] == 600e6, got
+
+
 class TestBacklogDiagnoseScope20260821:
     """⚠️ 감사가 **파서와 다른 자리**를 진단하고 있었다(2026-08-21 VM 실측):
     미수집 사유가 `단위없음 · 미지원단위 (단위 : 사)` 4건으로 나왔는데,
