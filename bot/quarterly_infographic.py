@@ -69,8 +69,12 @@ _RENDER_VER = "v9"   # v9: 상단/하단 분할 + 도화지 폭 고정
 _SECTIONS = ("head", "call", "tiles", "charts", "extra", "foot")
 # 사용자 2026-08-21 배치: [지표·차트] → 제품 표 → 가동률 표 →
 # [수주잔고·재고자산] → 성장동력 카드 → 출처·면책(HTML).
-_PART_TOP = ("head", "call", "tiles", "charts")
-_PART_BOTTOM = ("extra", "foot")
+# ⚠️ TTM 타일·각주(`foot`)는 **상단** 조각이다(사용자 2026-08-21 "이 첫번째
+# TTM 매출부분은 당기순이익 밑으로 가야돼"). `_render_locked` 는 섹션을
+# 코드 순서(head→call→tiles→charts→extra→foot)로 그리므로, 상단에서 extra 만
+# 빠지면 TTM 이 당기순이익 차트 바로 아래에 온다.
+_PART_TOP = ("head", "call", "tiles", "charts", "foot")
+_PART_BOTTOM = ("extra",)
 # 본 이미지 파일명에 붙는 조각 접미사 — purge 가 이 목록에서 보존 대상을
 # 만든다(#24: 이름 열거 금지).
 _PIECE_SUFFIXES = ("_b", "_cards")
@@ -607,8 +611,14 @@ def _render_locked(payload: dict, out_path: str,
     # 끝의 +2 = 이미지 하단 여백. 옛 +6 은 출처·면책 줄이 `H - 2.6` 에 있던
     # 시절의 자리다 — 그 줄을 HTML 로 뺐으므로 같이 줄인다(안 줄이면 140px
     # 짜리 빈 띠가 남는다, 실측).
-    H = (H_HEAD + H_CALL + H_TILE + H_CHART + H_EXTRA + H_CARDS
-         + H_FOOT + 2)
+    _content = (H_HEAD + H_CALL + H_TILE + H_CHART + H_EXTRA + H_CARDS
+                + H_FOOT)
+    # ⚠️ 담을 게 하나도 없으면 **이미지를 만들지 않는다.** foot 이 상단으로
+    # 옮겨간 뒤(2026-08-21) 수주잔고·재고자산이 없는 종목은 하단 조각이
+    # 통째로 비는데, 그대로 그리면 화면에 정체불명의 얇은 검은 띠가 남는다.
+    if _content <= 0:
+        return None
+    H = _content + 2
 
     fig, ax = _new_canvas(plt, W, H)
 

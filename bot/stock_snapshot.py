@@ -99,12 +99,29 @@ def collect_stock_snapshot(ticker: str, *, use_cache: bool = True) -> dict | Non
     return snap
 
 
+# 마지막 수집의 단계별 소요시간(초). 어느 블록을 클릭 로딩으로 뗄지 정하려면
+# **추측이 아니라 실측**이 있어야 한다(사용자 2026-08-21 '로딩이 오래 걸려서').
+# 스레드가 각자 자기 키만 쓰므로 dict 갱신은 원자적이고 락이 필요 없다.
+_TIMING: dict[str, float] = {}
+
+
+def last_timing() -> dict[str, float]:
+    """직전 `collect_stock_snapshot` 의 단계별 초. 캐시 히트면 비어 있다."""
+    return dict(_TIMING)
+
+
 def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
     """Return a dict of company/market facts, or *None* on failure."""
+    _TIMING.clear()
+    _t_all = time.time()
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
+        _t0 = time.time()
         info = t.info or {}
+        # ⚠️ `.info` 는 **직렬**이다 — 보조 6종 병렬 수집보다 앞이라 이게
+        # 느리면 나머지를 아무리 떼어내도 첫 화면이 안 빨라진다.
+        _TIMING["yf.info"] = round(time.time() - _t0, 3)
         if not info or info.get("quoteType") is None:
             # 야후 .info 차단/실패 → None. 호출부(render_lookup_detail)가 직전 분석
             # 스냅샷으로 폴백(_load_stored_stock_info) — 야후 차단 중 상세 표시 유지.
@@ -380,12 +397,25 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
             _collect_peer_multiples(ticker, info, out)
             return out
 
-        _aux_tasks = (_aux_earnings, _aux_upgrades, _aux_holders,
-                      _aux_news, _aux_financials, _aux_peers)
+        # 이름을 붙여 둔다 — 어느 수집이 느린지 재려면 이름이 필요하고,
+        # 프로브가 이 목록을 **복제하면** 제품과 다른 걸 재게 된다(#35).
+        _aux_tasks = (("실적이력", _aux_earnings), ("투자의견", _aux_upgrades),
+                      ("기관보유", _aux_holders), ("뉴스", _aux_news),
+                      ("재무제표", _aux_financials), ("동종비교", _aux_peers))
+
+        def _timed(name, fn):
+            """수집 1건 + 소요시간 기록. 계측이 실패를 삼키면 안 되므로
+            예외는 그대로 올려보내고 시간만 남긴다."""
+            _t0 = time.time()
+            try:
+                return fn() or {}
+            finally:
+                _TIMING[name] = round(time.time() - _t0, 3)
+
         try:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=6) as pool:
-                futs = [pool.submit(fn) for fn in _aux_tasks]
+                futs = [pool.submit(_timed, nm, fn) for nm, fn in _aux_tasks]
                 for fut in futs:
                     try:
                         snap.update(fut.result(timeout=60) or {})
@@ -393,9 +423,9 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
                         pass
         except Exception:
             # 풀 생성 실패 등 — 직렬 폴백 (동작 동일, 속도만 원래대로)
-            for fn in _aux_tasks:
+            for nm, fn in _aux_tasks:
                 try:
-                    snap.update(fn() or {})
+                    snap.update(_timed(nm, fn) or {})
                 except Exception:
                     pass
 
@@ -403,35 +433,31 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         snap = {k: v for k, v in snap.items() if v is not None}
 
         # Market-specific enrichment — additive overlay per market
-        if ticker.endswith((".KS", ".KQ")):
-            try:
-                _enrich_kr(ticker, snap)
-            except Exception as exc:
-                log.warning("stock_snapshot: KR enrich skipped for %s: %s", ticker, exc)
-        elif ticker.endswith(".T"):
-            try:
-                _enrich_jp(ticker, snap)
-            except Exception as exc:
-                log.warning("stock_snapshot: JP enrich skipped for %s: %s", ticker, exc)
-        elif ticker.endswith((".TW", ".TWO")):
-            try:
-                _enrich_tw(ticker, snap)
-            except Exception as exc:
-                log.warning("stock_snapshot: TW enrich skipped for %s: %s", ticker, exc)
-        elif ticker.endswith((".SS", ".SZ", ".BJ", ".HK")):
-            try:
-                _enrich_cn(ticker, snap)
-            except Exception as exc:
-                log.warning("stock_snapshot: CN enrich skipped for %s: %s", ticker, exc)
-        else:
-            try:
-                _enrich_us(ticker, snap)
-            except Exception as exc:
-                log.warning("stock_snapshot: US enrich skipped for %s: %s", ticker, exc)
+        # ⚠️ 보조 6종 병렬 **뒤에 직렬로** 돈다 — 여기가 느리면 그 앞을
+        # 아무리 병렬화해도 첫 화면이 안 빨라진다. 그래서 같이 계측한다.
+        # 시장별 분기를 이름으로 열거하지 않고 접미사 표에서 고른다(#24).
+        _ENRICH = ((".KS", ".KQ"), _enrich_kr, "KR"), \
+                  ((".T",), _enrich_jp, "JP"), \
+                  ((".TW", ".TWO"), _enrich_tw, "TW"), \
+                  ((".SS", ".SZ", ".BJ", ".HK"), _enrich_cn, "CN")
+        _fn, _mkt = _enrich_us, "US"
+        for _sfx, _f, _m in _ENRICH:
+            if ticker.endswith(_sfx):
+                _fn, _mkt = _f, _m
+                break
+        _t0 = time.time()
+        try:
+            _fn(ticker, snap)
+        except Exception as exc:
+            log.warning("stock_snapshot: %s enrich skipped for %s: %s",
+                        _mkt, ticker, exc)
+        _TIMING[f"enrich:{_mkt}"] = round(time.time() - _t0, 3)
 
+        _TIMING["total"] = round(time.time() - _t_all, 3)
         return snap
 
     except Exception as exc:
+        _TIMING["total"] = round(time.time() - _t_all, 3)
         log.warning("stock_snapshot: failed for %s: %s", ticker, exc)
         return None
 
