@@ -58,6 +58,12 @@
 | `trade-bot-catalog-guard.timer` | 매월 18일 09:00 KST | `trade.scripts.catalog_guard` | HS↔회사 매칭 카탈로그 정합성 가드 |
 | `trade-bot-curation.timer` | 매월 1/11/15/21일 18:00 KST | `trade.scripts.curation_candidates` | 큐레이션 후보 생성(운영자 확인 대기) |
 | `trade-bot-badonion-sync.timer` | 6시간 | `trade/scripts/backfill_badonion.py` | 배도니언 소스 백필 동기화 |
+| `trade-bot-dashboard-refresh.timer` | 5분 | `ingest_inbox`→`purge_ignored`→`fetch_provisional --if-stale`→`build_krx_codes --if-stale`→`fetch_quotes`→`trade.dashboard`→`resolve_check --if-due` | **inbox.jsonl → DB → 화면**. 나쁜양파/BeOn 데이터가 대시보드에 오르는 유일한 경로 |
+| `trade-bot-unstored-check.timer` | 매일 00:00 KST | `trade.scripts.unstored_check` | 캡션이 store 에 안 들어간 건 감지 → 텔레그램(성공 시 무음) |
+| `trade-bot-health.timer` | 1시간 | `trade.scripts.health_check` | 휴면·사이클 갭 감지 |
+| `trade-bot-customs-fetch.timer` | 4×/일(UTC 00:30·04:30·08:30·16:30) | `fetch_customs`→`customs_alert`→`scan_customs`→`industry_report --store`→`refresh_signals`→`fetch_provisional`→`trade.dashboard` | 관세청 확정치 수집·급변 스캔·산업 집계 |
+| `trade-bot-backup.timer` | 매일 03:00 KST | `trade/scripts/backup_store.sh` | store.db 일일 스냅샷 |
+| `trade-bot-dashboard-audit.timer` | 매일 08:10 KST | `trade.scripts.dashboard_audit --notify` | 대시보드 표면 감사 + 유닛 드리프트 점검 → 텔레그램 |
 
 ## 상시구동 리스너 (Telethon userbot, timer 아님 — Restart=on-failure 데몬)
 
@@ -68,6 +74,17 @@
 > **`deploy/` 에 파일 자체가 없었다**(VM 에 수동 설치만 되고 repo 미반영 추정).
 > 형제 유닛(badonion) 패턴으로 재구성했으나, VM 실제 유닛과 대조 확인 필요
 > (`systemctl cat trade-bot-beon-listener`).
+>
+> **2026-08-21 같은 사고 재발** — VM 에서 도는데 `deploy/` 에 없던 유닛이
+> **5쌍** 더 있었다: `dashboard-refresh`·`unstored-check`·`health`·
+> `customs-fetch`·`backup`. 그중 `dashboard-refresh` 는 inbox→DB→화면의
+> **유일한 경로**이고 `unstored-check` 는 그게 멈춘 걸 알려줄 안전망이라,
+> `install-trade-units.sh` 로 VM 을 재구축하면 데이터가 조용히 안 오르고
+> 그 사실도 안 알려지는 상태가 된다. VM 실물(`systemctl cat`)을 그대로
+> 복제해 위 표에 등재했다.
+> 재발 방지는 규율이 아니라 **자동 점검**이다 —
+> `trade.scripts.unit_drift_check` 가 `dashboard-audit` 틱마다 VM 유닛과
+> `deploy/` 를 대조해 한쪽에만 있는 걸 보고한다.
 
 | 서비스 | 소스 | 하는 일 | Kill-switch |
 |---|---|---|---|

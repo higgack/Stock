@@ -10,6 +10,14 @@ EnvironmentFile=/home/higgack/stock-trade/.env
 # --notify: ❌ 있을 때만 텔레그램(health_check 와 같은 경로 · 무음 규율).
 # 읽기 전용(store/생성물만 읽음) · LLM 0 · ₩0 — 렌더 사이클과 충돌 없음.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.dashboard_audit --notify
+# ⚠️ 유닛 드리프트 점검(2026-08-21 추가). VM 에서 도는데 `deploy/` 에 없는
+# 유닛이 두 번 나왔다(08-02 beon 2쌍 · 08-21 dashboard-refresh 등 5쌍).
+# 그중 dashboard-refresh 는 inbox→DB→화면의 유일한 경로라, 레포에서
+# VM 을 재구축하면 데이터가 조용히 안 오르고 그 사실조차 안 알려진다.
+# 규율로는 두 번 다 실패했으므로 매일 기계가 대조한다.
+# `-` prefix: 드리프트가 있어도(exit 1) 유닛 전체를 실패로 만들지 않는다 —
+# 위 감사가 이미 끝난 뒤라 결과를 버릴 이유가 없다. journal 에 남는다.
+ExecStart=-/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.unit_drift_check
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=120
