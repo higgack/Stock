@@ -946,7 +946,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._reply_json(200, {"ok": False, "error": "non-KR"})
                 return
             from bot.fnguide_bandchart import fetch_band_chart
-            data = fetch_band_chart(ticker)
+            from bot.singleflight import once as _once
+            # 같은 티커의 밴드 요청이 동시에 두 번 들어온다(2026-08-21 실측:
+            # 376300.KQ 2116ms / 1982ms 동시). 하나만 돌린다.
+            data = _once(f"band:{ticker}", lambda: fetch_band_chart(ticker))
             if not data:
                 self._reply_json(200, {"ok": False, "error": "no data"})
                 return
@@ -999,8 +1002,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 log.debug("quarterly_api: snapshot skipped — %s", exc)
             from bot import quarterly_infographic as _qi
+            from bot.singleflight import once as _once
             _t0 = time.time()
-            res = _qi.get_or_render(ticker, snap, run_llm=run)
+            # ⚠️ 같은 티커의 분기실적 요청이 **같은 밀리초에 두 번** 들어온다
+            # (2026-08-21 실측: USDE 10325ms / 10327ms). DART 조회·렌더가
+            # 통째로 두 번 돈다 — 하나만 돌리고 결과를 나눠 준다.
+            # LLM 실행 여부(run)가 다르면 다른 작업이므로 키에 포함한다.
+            res = _once(f"quarterly:{ticker}:{int(bool(run))}",
+                        lambda: _qi.get_or_render(ticker, snap, run_llm=run))
             # 이번 실행 비용 — 종목분석(archive 의 cost_krw 스탬프)과 동일
             # 방식·동일 sink(usage.jsonl). 무료 경로(run=0)는 LLM 콜이 없어
             # 0 이 정상. 사용자 2026-08-16 '할때마다 얼마인지'.
@@ -1142,8 +1151,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass  # corrupt cache → refetch
 
-            from bot.chart_data import fetch_chart_payload
-            payload = fetch_chart_payload(ticker, interval=interval, period=rng)
+            from bot.chart_data import fetch_chart_payload, last_chart_timing
+            from bot.singleflight import once as _once
+            # ⚠️ 같은 요청이 **같은 밀리초에 두 번** 들어온다(2026-08-21 실측).
+            # 디스크 캐시는 끝난 뒤에만 도와주므로 진행 중인 중복은 못 막는다
+            # — 하나만 돌리고 결과를 나눠 준다.
+            payload = _once(
+                f"chart:{cache_f.name}",
+                lambda: fetch_chart_payload(ticker, interval=interval,
+                                            period=rng))
+            try:                      # 어디서 시간이 나는지 같이 남긴다(#69)
+                _st = last_chart_timing()
+                if _st:
+                    log.info("chart-timing %s %s/%s %s", ticker, interval, rng,
+                             " ".join(f"{k}={v}s" for k, v in _st.items()))
+            except Exception:                                  # noqa: BLE001
+                pass
             if not payload:
                 # 200 (not 404) so the client can distinguish "endpoint exists
                 # but no data" from "endpoint missing (old server) → static 404".

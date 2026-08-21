@@ -897,6 +897,17 @@ def _fetch_series_fallback(ticker: str, period: str):
     return _fetch_naver_daily(ticker, period) or _fetch_kis_daily(ticker, period)
 
 
+# 단계별 소요시간(마지막 호출) — `/api/chart` 가 13~39초로 관측됐는데
+# (2026-08-21 `api-timing` 실측) **어디서** 그 시간이 나는지 알 방법이
+# 없었다. 추측하지 말고 잰다(#69).
+_TIMING: dict = {}
+
+
+def last_chart_timing() -> dict:
+    """직전 `fetch_chart_payload` 의 단계별 소요(초). 읽기 전용."""
+    return dict(_TIMING)
+
+
 def fetch_chart_payload(
     ticker: str, interval: str = "1d", period: str = "1y",
     prefer_period: bool = False,
@@ -952,10 +963,14 @@ def fetch_chart_payload(
             fb["interval_fallback"] = _iv_fallback
         return fb
 
+    import time as _time
+    _TIMING.clear()
+    _t_all = _time.time()
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
 
+        _t0 = _time.time()
         t = yf.Ticker(ticker)
         if prefer_period or period in ("max", "1d"):
             hist = t.history(period=period, interval=interval, auto_adjust=True)
@@ -991,8 +1006,13 @@ def fetch_chart_payload(
                     interval="1d",
                     auto_adjust=True,
                 )
+        _TIMING["yf.history"] = round(_time.time() - _t0, 3)
         if hist is None or len(hist) < 2:
-            return _fallback_with_notice()      # 야후 빈 → 네이버/KIS 일봉
+            _t0 = _time.time()
+            _fb = _fallback_with_notice()      # 야후 빈 → 네이버/KIS 일봉
+            _TIMING["fallback"] = round(_time.time() - _t0, 3)
+            _TIMING["total"] = round(_time.time() - _t_all, 3)
+            return _fb
         close = hist["Close"].dropna()
         if len(close) < 2:
             return _fallback_with_notice()
@@ -1005,9 +1025,14 @@ def fetch_chart_payload(
         # 국내·US/JP/HK/CN=네이버 해외·TW=대만거래소)로 당일 봉 교체/추가 후 지표
         # 계산(당일 종가가 이평선·RSI 에 반영, 사용자 2026-06-15 비-KR 확장). 주/월봉
         # 제외(당일 일봉을 주/월 series 에 끼우면 안 됨). graceful(실패 시 yahoo 유지).
+        _t0 = _time.time()
         if interval == "1d":
             close, vol, op, hi, lo = _merge_today_bar(ticker, close, vol, op, hi, lo)
+        _TIMING["merge_today"] = round(_time.time() - _t0, 3)
+        _t0 = _time.time()
         payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker, interval=interval)
+        _TIMING["indicators"] = round(_time.time() - _t0, 3)
+        _TIMING["total"] = round(_time.time() - _t_all, 3)
         payload["interval"] = interval
         payload["period"] = period
         if _iv_fallback:

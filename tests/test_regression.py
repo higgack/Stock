@@ -7252,6 +7252,110 @@ class TestBacklogDiagnoseScope20260821:
                         "합 계 999 111 222") == "형식미지원"
 
 
+class TestSingleFlight20260821:
+    """⚠️ `api-timing` 실측(2026-08-21)이 **같은 밀리초에 들어온 중복 요청**을
+    보여줬다 — 화면이 스스로 부하를 두 배로 만들고 있었다:
+
+        /api/quarterly ticker=USDE 10325ms
+        /api/quarterly ticker=USDE 10327ms
+        /api/band ticker=376300.KQ 2116ms / 1982ms
+
+    디스크 캐시는 **끝난 뒤에만** 도와주므로 진행 중인 중복은 못 막는다."""
+
+    def test_concurrent_callers_share_one_run(self):
+        import threading
+        import time
+        from bot.singleflight import inflight, once
+        n = {"calls": 0}
+
+        def slow():
+            n["calls"] += 1
+            time.sleep(0.3)
+            return "R"
+        out = []
+        ths = [threading.Thread(target=lambda: out.append(once("k1", slow)))
+               for _ in range(6)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join()
+        assert out == ["R"] * 6, out
+        assert n["calls"] == 1, f"원천을 {n['calls']}번 두드렸다"
+        assert inflight() == 0, "진행 목록이 안 비었다"
+
+    def test_failure_reaches_every_caller(self):
+        """한쪽만 성공한 척하면 화면이 갈라진다."""
+        import threading
+        import time
+        from bot.singleflight import once
+        errs = []
+        n = {"calls": 0}
+
+        def boom():
+            n["calls"] += 1
+            # ⚠️ 즉시 던지면 **겹치지 않아** 세 스레드가 전부 리더가 된다 —
+            # 팔로워 경로가 한 번도 안 타서 그 경로를 망가뜨리는 뮤테이션이
+            # 통과했다(실측, #91c). 겹치게 만들어야 계약을 본다.
+            time.sleep(0.3)
+            raise ValueError("bad")
+
+        def run():
+            try:
+                once("k2", boom)
+            except Exception as exc:                           # noqa: BLE001
+                errs.append(type(exc).__name__)
+        ths = [threading.Thread(target=run) for _ in range(3)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join()
+        assert n["calls"] == 1, f"겹치지 않았다(리더 {n['calls']}명)"
+        assert errs == ["ValueError"] * 3, errs
+
+    def test_it_is_not_a_cache(self):
+        """**순차** 호출은 공유하지 않는다 — 캐시가 아니라 동시 중복 제거다."""
+        from bot.singleflight import once
+        n = {"calls": 0}
+
+        def f():
+            n["calls"] += 1
+            return n["calls"]
+        assert once("k3", f) == 1 and once("k3", f) == 2
+
+    def test_follower_does_not_wait_forever(self):
+        """리더가 걸리면 팔로워도 같이 멈춘다 — 상한을 두고 스스로 한다."""
+        import threading
+        import time
+        from bot.singleflight import once
+        started = threading.Event()
+
+        def hang():
+            started.set()
+            time.sleep(1.0)
+            return "leader"
+        th = threading.Thread(target=lambda: once("k4", hang))
+        th.start()
+        started.wait(1.0)
+        got = once("k4", lambda: "self", wait_max=0.05)
+        assert got == "self", got
+        th.join()
+
+    def test_expensive_endpoints_are_wired(self):
+        """헬퍼만 만들고 배선이 빠지면 로그의 중복은 그대로다(#20)."""
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        for key in ('f"chart:{cache_f.name}"', 'f"band:{ticker}"',
+                    'f"quarterly:{ticker}:{int(bool(run))}"'):
+            assert key in src, key
+
+    def test_chart_stages_are_measured(self):
+        """`/api/chart` 13~39초가 **어디서** 나는지 알 방법이 없었다(#69)."""
+        from bot.chart_data import last_chart_timing
+        assert isinstance(last_chart_timing(), dict)
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        for stage in ("yf.history", "merge_today", "indicators", "total"):
+            assert f'_TIMING["{stage}"]' in src, stage
+
+
 class TestSharedFetchPool20260821:
     """사용자 2026-08-21: "전보다 더 걸리는것 같아. 내가 동시에 돌리는게
     많아서 그런가?" — 대시보드는 `ThreadingHTTPServer` 라 요청마다 스레드가
