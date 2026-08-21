@@ -1043,8 +1043,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # ⚠️ 실패해도 **어디서 시간이 갔는지**는 남겨야 한다 —
                 # 조용히 끝나면 실패한 요청만 영원히 미계측이다(#54).
                 try:
-                    _qi._RENDER_TIMING.set(ticker, "h.snapshot", _t_snap)
-                    _s2 = _qi.last_render_timing(ticker)
+                    _qk = _qi.timing_key(ticker, run)
+                    _qi._RENDER_TIMING.set(_qk, "h.snapshot", _t_snap)
+                    _s2 = _qi.last_render_timing(ticker, run)
                     if _s2:
                         log.info("quarterly-timing %s %s (실패)", ticker,
                                  " ".join(f"{k}={v}s" for k, v in _s2.items()))
@@ -1065,9 +1066,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             _t_ph = time.time() - _t_ph
             try:      # ⚠️ `_RENDER_TIMING.start` 가 렌더 시작에 지우므로
                       # 핸들러 단계는 **끝난 뒤에** 심는다(#69)
-                _qi._RENDER_TIMING.set(ticker, "h.snapshot", _t_snap)
-                _qi._RENDER_TIMING.set(ticker, "h.production_html", _t_ph)
-                _st = _qi.last_render_timing(ticker)
+                _qk = _qi.timing_key(ticker, run)
+                _qi._RENDER_TIMING.set(_qk, "h.snapshot", _t_snap)
+                _qi._RENDER_TIMING.set(_qk, "h.production_html", _t_ph)
+                _st = _qi.last_render_timing(ticker, run)
                 if _st:
                     log.info("quarterly-timing %s %s", ticker,
                              " ".join(f"{k}={v}s" for k, v in _st.items()))

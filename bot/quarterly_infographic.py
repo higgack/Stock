@@ -1306,7 +1306,7 @@ def build_payload(ticker: str, snap: dict | None = None, *,
             dart = get_dart()
             _bt0 = _bp_time.time()
             qs = get_quarterly_series(dart, t, n=5)
-            _RENDER_TIMING.set(t, "bp.series", _bp_time.time() - _bt0)
+            _RENDER_TIMING.set(timing_key(t, run_llm), "bp.series", _bp_time.time() - _bt0)
         except Exception as exc:
             log.warning("quarterly_infographic: series %s: %s", t, exc)
             return None
@@ -1314,7 +1314,7 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         # 재지 않으면 `build_payload` 51.5초가 어디서 나는지 알 수 없다(#69).
         _bt0 = _bp_time.time()
         _fill_backlog(dart, t, qs)
-        _RENDER_TIMING.set(t, "bp.backlog", _bp_time.time() - _bt0)
+        _RENDER_TIMING.set(timing_key(t, run_llm), "bp.backlog", _bp_time.time() - _bt0)
     else:
         # KR 은 야후로 폴백하지 않는다 — DART 가 단일분기를 직접 주므로
         # 소스를 섞으면 같은 화면에서 숫자 성격이 달라진다.
@@ -1569,9 +1569,22 @@ from bot.timing import Stages as _Stages
 _RENDER_TIMING = _Stages()
 
 
-def last_render_timing(ticker: str = "") -> dict:
-    """그 티커 `get_or_render` 의 단계별 소요(초). 읽기 전용."""
-    return _RENDER_TIMING.snapshot(ticker)
+def timing_key(ticker: str, run_llm: bool = False) -> str:
+    """계측 키 — **티커만으로는 부족하다**(2026-08-22 실측).
+
+    single-flight 키가 `quarterly:{ticker}:{run}` 이라 `run` 이 다른 두
+    요청은 **같은 티커로 동시에** 돈다. 티커만 키로 쓰면 서로의 단계를
+    덮어써서 로그가 한 줄에 **두 실행의 값을 섞어** 찍는다 — 실측:
+    `051910.KS render_png=106.249s total=17.528s build_payload=17.514s
+    cached=1.0s`(캐시 히트인데 렌더 106초가 붙어 있다). #117 을 고치며
+    단위를 티커로 잡은 것이 여기서 부족했다 — 키는 **요청**이어야 한다.
+    """
+    return f"{ticker}:{int(bool(run_llm))}"
+
+
+def last_render_timing(ticker: str = "", run_llm: bool = False) -> dict:
+    """그 요청 `get_or_render` 의 단계별 소요(초). 읽기 전용."""
+    return _RENDER_TIMING.snapshot(timing_key(ticker, run_llm))
 
 
 def get_or_render(ticker: str, snap: dict | None = None, *,
@@ -1579,10 +1592,11 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     """온디맨드 진입점. 캐시(파일명=분기 키) 우선, 없으면 렌더.
     반환 {ok, image, payload} — image 는 PNG 경로(폰트 부재 시 None)."""
     import time as _time
-    _RENDER_TIMING.start(ticker)
+    _tk = timing_key(ticker, run_llm)
+    _RENDER_TIMING.start(_tk)
     _t_all = _t0 = _time.time()
     payload = build_payload(ticker, snap, run_llm=run_llm)
-    _RENDER_TIMING.set(ticker, "build_payload", _time.time() - _t0)
+    _RENDER_TIMING.set(_tk, "build_payload", _time.time() - _t0)
     if not payload:
         return {"ok": False,
                 "error": "분기 재무 데이터 없음(소스 미제공 또는 미지원 시장)"}
@@ -1602,8 +1616,8 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     # 이 조각 **위**로 와야 해서 본 이미지를 둘로 나눴다.
     pb = p.with_name(p.stem + "_b" + p.suffix)
     if p.exists() and not fresh_llm:
-        _RENDER_TIMING.set(ticker, "cached", 1.0)
-        _RENDER_TIMING.set(ticker, "total", _time.time() - _t_all)
+        _RENDER_TIMING.set(_tk, "cached", 1.0)
+        _RENDER_TIMING.set(_tk, "total", _time.time() - _t_all)
         # 짝이 없으면 **여기서 만든다** — 본 이미지만 캐시에 남아 있으면
         # 그 조각이 화면에서 통째로 사라진 채 캐시 키가 도는 날까지 방치된다
         # (한 번의 렌더 실패가 영구 결손이 되는 구멍, 실수 #11).
@@ -1618,8 +1632,8 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     img = render_infographic(payload, str(p), _PART_TOP)
     bottom = render_infographic(payload, str(pb), _PART_BOTTOM)
     cards = render_cards(payload, str(pc))
-    _RENDER_TIMING.set(ticker, "render_png", _time.time() - _t0)
-    _RENDER_TIMING.set(ticker, "total", _time.time() - _t_all)
+    _RENDER_TIMING.set(_tk, "render_png", _time.time() - _t0)
+    _RENDER_TIMING.set(_tk, "total", _time.time() - _t_all)
     if img:
         _purge_stale(ticker, p)
     return {"ok": True, "image": img, "image_bottom": bottom,
