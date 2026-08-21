@@ -392,8 +392,11 @@ class TestDiagnose:
         # 절은 있는데 산문만 → 확장 여지 있음
         assert diagnose("<P>생산 및 설비에 관한 사항</P><P>산문</P>") == "표없음"
         # 가동률만 없는 표 → 표는 실린다(회사가 가동률 미기재)
-        m = ('<P>생산능력 및 생산실적</P><TABLE><TBODY><TR>'
-             '<TD>생산능력</TD><TD>생산실적</TD></TR></TBODY></TABLE>')
+        # ⚠️ 머리행 + 데이터행 — 한 줄짜리는 2026-08-21 이후 **캡션**으로
+        # 보고 0점이다(POSCO 실측: 한 줄 제목 표가 진짜 표를 가로챘다).
+        m = ('<P>생산능력 및 생산실적</P><TABLE><TBODY>'
+             '<TR><TD>생산능력</TD><TD>생산실적</TD></TR>'
+             '<TR><TD>1,000</TD><TD>900</TD></TR></TBODY></TABLE>')
         assert diagnose(m) == "가동률없음"
         assert diagnose(REAL) == "정상"
 
@@ -543,8 +546,9 @@ class TestSweep20260821:
         assert diagnose(body) == "섹션없음"
         assert diagnose(body, truncated=True) == "원문잘림"
         # 앵커가 보이면 잘림 여부와 무관하게 내용으로 판정한다
-        ok = ("생산능력 및 생산실적 <TABLE><TR><TD>생산능력</TD>"
-              "<TD>생산실적</TD><TD>가 동 률</TD></TR></TABLE>")
+        ok = ("생산능력 및 생산실적 <TABLE>"
+              "<TR><TD>생산능력</TD><TD>생산실적</TD><TD>가 동 률</TD></TR>"
+              "<TR><TD>5,172</TD><TD>5,000</TD><TD>96.7%</TD></TR></TABLE>")
         assert diagnose(ok, truncated=True) == "정상"
 
     def test_probe_escalates_the_cap_like_the_product_path(self):
@@ -626,9 +630,12 @@ class TestSweep20260821:
         """모양 게이트가 6점 이상까지 막으면 진짜 표를 놓친다 — 가동률이
         있는 표는 어구 조합만으로 충분히 특이하다."""
         from bot.dart_production import _score
-        one_row_rate = ("<TABLE><TR><TD>가 동 률</TD><TD>생산능력</TD>"
-                        "</TR></TABLE>")
-        assert _score(one_row_rate) >= 10, "가동률 표를 모양으로 막으면 안 됨"
+        # 어구가 강해도 **행이 2개는 있어야** 데이터 표다(캡션 배제).
+        rate_tbl = ("<TABLE><TR><TD>가 동 률</TD><TD>생산능력</TD></TR>"
+                    "<TR><TD>97%</TD><TD>5,172</TD></TR></TABLE>")
+        assert _score(rate_tbl) >= 10, "가동률 표를 모양으로 막으면 안 됨"
+        one_row = "<TABLE><TR><TD>가 동 률</TD><TD>(단위:천톤)</TD></TR></TABLE>"
+        assert _score(one_row) == 0, "한 줄 캡션이 통과"
         grid = ("<TABLE><TR><TH>품 목</TH><TH>일일 처리량</TH>"
                 "<TH>월 생산능력</TH></TR>"
                 "<TR><TD>a</TD><TD>1</TD><TD>2</TD></TR></TABLE>")
@@ -1981,3 +1988,112 @@ class TestHeaderPrice20260821:
         size = float(re.search(r"font-size:([\d.]+)px", m.group(1)).group(1))
         assert size >= 12.0, f"라벨이 {size}px — 너무 작다"
         assert "var(--muted)" not in m.group(1), "가장 흐린 색 그대로"
+
+
+class TestTableIdentity20260821:
+    """사용자 2026-08-21 화면 실측 3건:
+    ① 삼성전자 — 제목은 '주요 제품 및 서비스'인데 내용은 **매입처** 표였다.
+    ② POSCO홀딩스 — 판매 표가 제대로 잡히는 정상 사례(회귀로 고정).
+    ③ POSCO홀딩스 가동률 — 제목 글씨만 있고 **내용이 없었다**."""
+
+    BUY = ('<TABLE><TR><TH>부 문</TH><TH>품 목</TH><TH>구체적 용도</TH>'
+           '<TH>매입액</TH><TH>비중</TH><TH>주요 매입처</TH></TR>'
+           '<TR><TD>DX 부문</TD><TD>모바일AP</TD><TD>CPU</TD>'
+           '<TD>74,383</TD><TD>17.9%</TD><TD>Qualcomm 등</TD></TR></TABLE>')
+    SELL = ('<TABLE><TR><TH>사업부문</TH><TH>품목</TH><TH>구체적용도</TH>'
+            '<TH>매출액</TH><TH>비율</TH></TR>'
+            '<TR><TD>철강부문</TD><TD>열연</TD><TD>강관,조선</TD>'
+            '<TD>63,861</TD><TD>21.0%</TD></TR></TABLE>')
+    CAPTION = ('<TABLE><TR><TD>(2) 당해 사업연도의 가동률</TD>'
+               '<TD>(단위 : 천톤)</TD></TR></TABLE>')
+    RATE = ('<TABLE><TR><TH>사업소</TH><TH>가동가능시간</TH>'
+            '<TH>실제가동시간</TH><TH>평균가동률</TH></TR>'
+            '<TR><TD>포항제철소</TD><TD>4,368</TD><TD>4,102</TD>'
+            '<TD>93.9%</TD></TR>'
+            '<TR><TD>광양제철소</TD><TD>4,368</TD><TD>4,205</TD>'
+            '<TD>96.3%</TD></TR></TABLE>')
+
+    # ── ③ 한 줄 캡션 표 ──────────────────────────────────────────
+    def test_single_row_caption_table_scores_zero(self):
+        """POSCO 실측: `(2) 당해 사업연도의 가동률 | (단위 : 천톤)` 이
+        '가동률' 단어만으로 10점을 받아 **즉시 채택**됐고(stop_at=10),
+        화면엔 그 캡션만 남고 진짜 표는 영영 안 보였다."""
+        import bot.dart_production as dp
+        assert dp._score(self.CAPTION) == 0, "한 줄 캡션이 점수를 받는다"
+        assert dp._score_products(self.CAPTION) == 0
+
+    def test_caption_is_skipped_and_real_table_wins(self):
+        """점수만 고치고 끝이 아니라 **진짜 표가 실려야** 한다(#20)."""
+        import bot.dart_production as dp
+        mk = "<P>3. 원재료 및 생산설비</P>" + self.CAPTION + self.RATE
+        got = dp.parse_production(mk)
+        assert got, "표를 통째로 못 찾음"
+        assert "포항제철소" in got["table_html"], "캡션만 실렸다"
+        assert "93.9%" in got["table_html"]
+        assert got["has_rate"] and dp.diagnose(mk) == "정상"
+
+    def test_rendered_block_is_not_just_a_title(self):
+        """화면에 제목만 뜨는 상태를 직접 막는다 — 표에 데이터 행이 있어야."""
+        import re
+        import bot.dart_production as dp
+        mk = "<P>3. 원재료 및 생산설비</P>" + self.CAPTION + self.RATE
+        h = dp.render_html(dict(dp.parse_production(mk), basis_label="26.2Q"))
+        rows = len(re.findall(r"<tr[ >]", h))
+        assert rows >= 3, f"표에 행이 {rows}개뿐 — 제목만 뜬다"
+
+    # ── ① 매입 표를 제품 표로 착각 ────────────────────────────────
+    def test_purchase_table_is_not_scored_as_a_sales_table(self):
+        """매입 표는 `품목|구체적용도|매입액|비중|주요 매입처` 라 판매 표
+        어구를 거의 다 갖고 있어 12점으로 채택됐다(실측)."""
+        import bot.dart_production as dp
+        assert dp._score_products(self.BUY) < dp._MIN_SCORE_ITEM
+        assert dp._score_products_buy(self.BUY) >= dp._MIN_SCORE_ITEM
+
+    def test_sales_table_wins_when_both_exist(self):
+        """둘 다 있으면 **판매 표**가 이겨야 한다."""
+        import bot.dart_production as dp
+        got = dp.parse_products("주요 제품 및 서비스" + self.BUY + self.SELL)
+        assert got["kind"] == "제품"
+        assert "열연" in got["table_html"] and "Qualcomm" not in got["table_html"]
+
+    def test_purchase_fallback_says_what_it_is(self):
+        """사용자: "이것도 좋아. 다만 항목이 다르다고 얘기해주는거야."
+        제목이 '주요 제품 및 서비스'면 그 회사가 그걸 파는 걸로 읽힌다(#55)."""
+        import bot.dart_production as dp
+        got = dp.parse_products("주요 제품 및 서비스" + self.BUY)
+        assert got and got["kind"] == "매입"
+        assert "Qualcomm" in got["table_html"], "폴백인데 표가 안 실렸다"
+        h = dp.render_products_html(dict(got, basis_label="26.2Q"))
+        assert "매입처" in h, "제목이 매입 표라고 안 밝힌다"
+        assert "주요 제품 및 서비스" not in h, "판매 표라고 거짓 표기"
+        assert "판매 표 미기재" in h, "대체 사유를 안 밝힌다"
+
+    def test_kind_survives_the_rolling_walk(self, monkeypatch):
+        """⚠️ 헬퍼만 보면 `kind` 를 떨어뜨리는 배선 변형을 못 잡는다(#20).
+        수집기를 통째로 태워 화면 HTML 까지 본다."""
+        import bot.dart_feed as df
+        import bot.dart_production as dp
+        doc = "주요 제품 및 서비스" + self.BUY
+
+        def fake(rn, k, max_bytes=0, raw_markup=False):
+            return doc
+        monkeypatch.setattr(df, "_fetch_doc_text", fake)
+
+        class _D:
+            api_key = "K"
+
+            def find_periodic_reports(self, t, y, rc):
+                return [{"rcept_no": "R1"}]
+        got = dp.tables_rolling(_D(), "X", [{"year": 2026, "reprt_code": "11012",
+                                             "label": "26.2Q"}])
+        assert got.get("products"), "단일 워크에서 표를 못 뽑았다"
+        h = dp.render_products_html(got["products"])
+        assert "매입처" in h and "판매 표 미기재" in h, h[:200]
+
+    def test_posco_sales_table_still_parses(self):
+        """정상 사례가 폴백 도입으로 깨지지 않아야 한다."""
+        import bot.dart_production as dp
+        got = dp.parse_products("주요 제품 및 서비스" + self.SELL)
+        assert got and got["kind"] == "제품"
+        h = dp.render_products_html(dict(got, basis_label="26.2Q"))
+        assert "주요 제품 및 서비스" in h and "매입" not in h
