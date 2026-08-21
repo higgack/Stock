@@ -376,9 +376,13 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
     if bad_keys:
         lbls = payload.get("anomaly_labels") or []
         where = f"({', '.join(lbls)}) " if lbls else ""
+        _mm = payload.get("mismatched_accounts") or []
+        # 어느 계정끼리 어긋났는지까지 말한다 — '불일치 가능'만으로는
+        # 고칠 수 있는 건지 원천 한계인지 아무도 못 가른다(#43·#55).
+        _det = (" [" + " · ".join(_mm) + "]") if _mm else ""
         notes.append((
-            f"! {'·'.join(bad_keys)} 이상치 감지 {where}— DART 계정 불일치 "
-            f"가능. 해당 TTM·PSR 산출 제외(추정 보정 없음)", _NEG))
+            f"! {'·'.join(bad_keys)} 이상치 감지 {where}— DART 계정 불일치"
+            f"{_det}. 해당 TTM·PSR 산출 제외(추정 보정 없음)", _NEG))
     if payload.get("per_self"):
         notes.append(("* TTM PER = 시가총액 ÷ TTM 순이익 자체계산"
                       "(데이터 소스가 PER 미제공)", _MUTED))
@@ -1174,6 +1178,23 @@ def anomalous_keys(qs: list) -> set:
     return out
 
 
+def mismatched_accounts(qs: list) -> list:
+    """어긋난 **계정쌍**(`매출: 매출액 ↔ 영업수익` 꼴). 중복 제거·정렬.
+
+    ⚠️ `_diff_quarter` 는 어느 계정끼리 어긋났는지 이미 기록해 두는데
+    (`_mismatched_accounts`) 화면은 "DART 계정 불일치 가능" 이라고만 말해,
+    이게 고칠 수 있는 건지(총액끼리 라벨만 다름) 원천 한계인지(구성요소가
+    끼어듦) 사용자도 나도 못 갈랐다(사용자 2026-08-22 LG화학 25.4Q
+    "계정이 불일치한거 좀 봐줄수 있어?"). 아는 걸 화면이 말하게 한다(#43).
+    """
+    seen: list[str] = []
+    for q in qs or []:
+        for m in (q.get("financials") or {}).get("_mismatched_accounts") or []:
+            if m not in seen:
+                seen.append(m)
+    return seen
+
+
 def anomalous_labels(qs: list) -> list:
     """이상치가 붙은 분기 라벨(화면에 '어느 분기가 문제인지' 표시용)."""
     return [q.get("label", "") for q in qs or []
@@ -1457,6 +1478,7 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         # 빨간 x라벨로만 뜨고 각주가 안 붙는다(2026-08-16 독립 리뷰).
         "anomaly_keys": sorted(anomalous_keys(_window)),
         "anomaly_labels": anomalous_labels(_window),
+        "mismatched_accounts": mismatched_accounts(_window),
         # 구성요소 계정에서 온 값 — 이상치와 달리 **값은 유효**하므로 TTM 을
         # 막지 않고 표기만 한다(총매출이 아니라는 사실만 알림).
         # 총액 미공시사 보강 출처(FnGuide) — 어느 값이 어디서 왔는지 표기.
@@ -1615,19 +1637,26 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     # 하단 조각(수주잔고·재고자산·TTM) — 사용자 2026-08-21 배치에서 표가
     # 이 조각 **위**로 와야 해서 본 이미지를 둘로 나눴다.
     pb = p.with_name(p.stem + "_b" + p.suffix)
+    # ⚠️ 여기까지가 `build_payload` 뒤·렌더 앞이다. 2026-08-22 실측
+    # `build_payload=15.7s render_png=35.5s total=229.469s` — 합이 51초인데
+    # 총합이 229초였다. **측정되지 않은 구간이 있으면 그게 범인이다**(#69)
+    # → 남는 구간을 전부 이름 붙여 다음 줄이 스스로 답하게 한다.
+    _RENDER_TIMING.set(_tk, "pre_render", _time.time() - _t0)
     if p.exists() and not fresh_llm:
+        _t0 = _time.time()
+        # 짝 PNG 가 없으면 **여기서** 그린다 — 캐시 경로인데도 렌더가 돈다.
+        _bot = str(pb) if pb.exists() else render_infographic(
+            payload, str(pb), _PART_BOTTOM)
+        _crd = str(pc) if pc.exists() else render_cards(payload, str(pc))
+        _RENDER_TIMING.set(_tk, "render_parts", _time.time() - _t0)
         _RENDER_TIMING.set(_tk, "cached", 1.0)
         _RENDER_TIMING.set(_tk, "total", _time.time() - _t_all)
         # 짝이 없으면 **여기서 만든다** — 본 이미지만 캐시에 남아 있으면
         # 그 조각이 화면에서 통째로 사라진 채 캐시 키가 도는 날까지 방치된다
         # (한 번의 렌더 실패가 영구 결손이 되는 구멍, 실수 #11).
         # 내용이 없는 종목이면 렌더러가 matplotlib 전에 None 을 낸다.
-        return {"ok": True, "image": str(p),
-                "image_bottom": str(pb) if pb.exists()
-                else render_infographic(payload, str(pb), _PART_BOTTOM),
-                "cards_image": str(pc) if pc.exists()
-                else render_cards(payload, str(pc)),
-                "payload": payload, "cached": True}
+        return {"ok": True, "image": str(p), "image_bottom": _bot,
+                "cards_image": _crd, "payload": payload, "cached": True}
     _t0 = _time.time()
     img = render_infographic(payload, str(p), _PART_TOP)
     bottom = render_infographic(payload, str(pb), _PART_BOTTOM)

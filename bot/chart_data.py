@@ -955,6 +955,21 @@ def last_chart_timing(key: str) -> dict:
     return _TIMING.snapshot(key)
 
 
+def _span_days(hist) -> int | None:
+    """`hist` 가 실제로 덮는 **날짜 폭**(일). 비었으면 None.
+
+    ⚠️ 봉 **개수**가 아니라 날짜로 잰다 — 휴장·상장 초기·거래정지로 개수는
+    얼마든 적을 수 있지만, 1년을 요청했는데 한 달치만 온 것은 응답이
+    잘린 것이다(#29 '위치로 되짚은 기간 라벨은 시계열이 성기면 거짓말한다').
+    """
+    try:
+        if hist is None or len(hist) < 2:
+            return 0 if hist is not None else None
+        return int((hist.index[-1] - hist.index[0]).days)
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
 def fetch_chart_payload(
     ticker: str, interval: str = "1d", period: str = "1y",
     prefer_period: bool = False, lite: bool = False,
@@ -1035,6 +1050,34 @@ def fetch_chart_payload(
                 interval=interval,
                 auto_adjust=True,
             )
+        # ⚠️ **짧게 온 응답은 한 번 더 묻는다**(사용자 2026-08-22 두산테스나
+        # 131970.KS: 1년을 요청했는데 `25개 봉 · 2026-07-16 → 2026-08-21`).
+        # 야후는 심볼·시각에 따라 `start`/`end` 질의에 앞부분이 잘린 데이터를
+        # 주는 일이 있고(`^MOVE` 실측이 같은 증상, 위 독스트링), 그때
+        # **기간 키워드**로 물으면 온전히 온다. 조용히 넘기면 "가끔 차트가
+        # 이상하다"로만 보인다 — 폴백은 로그로 알린다(#42a).
+        if (not prefer_period and period not in ("max", "1d")
+                and interval == "1d"):
+            _want = _RANGE_DAYS.get(period)
+            if period == "ytd":
+                _want = max((datetime.now() - datetime(datetime.now().year,
+                                                       1, 1)).days, 1)
+            _got_span = _span_days(hist)
+            if _want and _got_span is not None and _got_span < _want * 0.5:
+                try:
+                    alt = t.history(period=period, interval=interval,
+                                    auto_adjust=True)
+                except Exception as exc:                       # noqa: BLE001
+                    alt = None
+                    log.debug("chart_data: period 재질의 실패 %s: %s",
+                              ticker, exc)
+                _alt_span = _span_days(alt)
+                if _alt_span is not None and _alt_span > _got_span:
+                    log.info("chart-refetch %s %s: 날짜범위 %d일 → 기간질의 "
+                             "%d일(요청 %d일)", ticker, period, _got_span,
+                             _alt_span, _want)
+                    hist = alt
+
         # Intraday fallback: some markets don't have intraday via yfinance.
         # (KR 종목은 yfinance 가 분봉 자체를 안 줘서 사실상 항상 여기로 온다.)
         # 폴백이 일어나면 payload 에 사실을 실어 보낸다 — 예전엔 응답 interval 만

@@ -114,6 +114,20 @@ def last_timing(ticker: str = "") -> dict[str, float]:
     return _TIMING.snapshot(ticker)
 
 
+def relay_anomaly_fields(src: dict, dst: dict) -> dict:
+    """이상치 사이드채널(`_anomaly*` · `_mismatched*`)을 **전량** 릴레이.
+
+    ⚠️ 하나라도 안 넘기면 대시보드 배지·각주가 dead code 가 되고 '—' 의
+    이유가 사라진다(2026-08-16 독립 리뷰). 그래서 이름을 **열거하지 않고**
+    접두어로 훑는다 — 새 플래그를 더할 때마다 목록을 고쳐야 하면 언젠가
+    빠진다(#24 '목록형 가드는 새 파일을 못 잡는다' 의 필드판).
+    """
+    for k, v in (src or {}).items():
+        if v and (k.startswith("_anomaly") or k.startswith("_mismatched")):
+            dst[k] = v
+    return dst
+
+
 def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
     """Return a dict of company/market facts, or *None* on failure."""
     _TIMING.start(ticker)
@@ -1326,10 +1340,7 @@ def collect_kr_financials(ticker: str) -> dict:
                 # 이상치 플래그 전량 릴레이 — 하나라도 빠뜨리면 대시보드
                 # 배지·각주가 dead code 가 되고 '—' 의 이유가 사라진다
                 # (2026-08-16 독립 리뷰: 계정 불일치 플래그가 누락돼 있었음).
-                for _f in ("_anomaly_revenue_negative",
-                           "_anomaly_account_mismatch"):
-                    if q["financials"].get(_f):
-                        qentry[_f] = True
+                relay_anomaly_fields(q["financials"], qentry)
                 _c = q["financials"].get("_component_accounts")
                 if _c:
                     qentry["_component_accounts"] = dict(_c)
