@@ -7003,6 +7003,44 @@ class TestFcfDerivedNotCarried20260821:
         assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
 
 
+class TestBacklogExplicitNoData20260821:
+    """원문 발췌가 남은 미수집의 정체를 밝혔다(2026-08-21): '파서 개선 여지'
+    로 남아 있던 건들이 사실은 **원문이 스스로 "안 씁니다"라고 밝힌 것**
+    이었다. 이 정규식은 `diagnose` **분류 전용**이라(파서는 안 본다) 넓혀도
+    값이 죽지 않는다 — 그래도 '수주' 문맥 안으로 한정한다."""
+
+    REAL = {
+        "277810 라온피플": ("라. 수주 현황에 관한 사항 당사의 수주는 P/O에 의한 "
+                        "단납기로 진행되는 형태로 수주잔고는 의미가 없다고 "
+                        "판단되어 기재하지 않습니다."),
+        "093320 KINX": ("라. 수주계약 현황 2026년 당분기말 현재 당사 재무제표에 "
+                        "중요한 영향을 미치는 장기공급계약 수주거래는 없습니다."),
+        "011070 LG이노텍": ("4-2. 수주에 관한 사항 연결실체는 차량용 부품을 생산 "
+                         "및 납품하고 있으나, 물량이 확정되어 있지 않거나 "
+                         "수요가 급격하게 변동할 수 있기 때문에 수주물량, "
+                         "수주잔고 등 별도 수주상황을 신뢰성 있게 예측하고 "
+                         "관리하는 것은 어려운 상황입니다."),
+    }
+
+    def test_declared_absence_is_not_counted_as_fixable(self):
+        from bot.dart_backlog import diagnose
+        for name, t in self.REAL.items():
+            assert diagnose(t) == "명시적미공시", (name, diagnose(t))
+
+    def test_real_tables_are_not_swallowed(self):
+        """⚠️ 오탐이면 **멀쩡한 값이 죽는다** — 넓힐 땐 '무엇이 여전히 잡히는가'
+        를 같이 못박는다(#57)."""
+        from bot.dart_backlog import _NO_DATA_RE, diagnose, parse_backlog
+        for t in ("(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 999 111 222",
+                  "수주 현황 (단위 : 백만원) 수주총액 기납품액 수주잔고 "
+                  "합 계 1,000 400 600"):
+            assert not _NO_DATA_RE.search(t), t
+            assert diagnose(t) != "명시적미공시", t
+        got = parse_backlog("수주 현황 (단위 : 백만원) 수주총액 기납품액 수주잔고 "
+                            "합 계 1,000 400 600")
+        assert got and got["value"] == 600e6, got
+
+
 class TestBacklogGenericLabel20260821:
     """⚠️ '파서 개선 여지 8건' 이라는 숫자가 **거짓이었다**(2026-08-21 원문
     발췌로 드러남). `기말` 은 원문 어디에나 있는 낱말이라 현금흐름표·유형자산
