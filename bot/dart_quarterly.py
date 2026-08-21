@@ -291,11 +291,19 @@ def _attach_fcf(entries: list[dict] | None) -> int:
         fin = (e or {}).get("financials") or {}
         capex_parts = [fin.get(k) for k in ("유형자산취득", "무형자산취득")
                        if fin.get(k) is not None]
-        if not capex_parts:
+        v = None
+        if capex_parts:
+            v = fcf_from_parts(fin.get("영업활동현금흐름"),
+                               sum(abs(float(x)) for x in capex_parts))
+        if v is None:
+            # ⚠️ **지운다.** 누적 dict 에 이미 FCF 가 있으면 4분기 차분이
+            # 그걸 그대로 차분해 남긴다 — 그런데 같은 차분에서 구성요소가
+            # `_src` 불일치로 None 이 될 수 있다(계정 라벨이 보고서마다
+            # 다를 때). 그러면 화면엔 재료가 빈칸인데 FCF 만 숫자가 남아
+            # **눈으로 검산하면 안 맞는다**(실수 #33). 재료와 결과는 항상
+            # 같이 있거나 같이 없어야 한다.
+            fin.pop("FCF", None)
             continue
-        v = fcf_from_parts(fin.get("영업활동현금흐름"),
-                           sum(abs(float(x)) for x in capex_parts))
-        if v is not None:
-            fin["FCF"] = v
-            n += 1
+        fin["FCF"] = v
+        n += 1
     return n
