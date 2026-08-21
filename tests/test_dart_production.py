@@ -1037,9 +1037,18 @@ class TestPieceOrder20260821:
 
     def test_sections_partition_without_overlap_or_gap(self):
         """조각이 섹션을 **정확히 한 번씩** 나눠 가져야 한다 — 겹치면 같은
-        차트가 두 번, 빠지면 통째로 사라진다."""
+        차트가 두 번, 빠지면 통째로 사라진다.
+
+        ⚠️ 순서로 비교하면 안 된다 — `_render_locked` 는 섹션을 **코드
+        순서**로 그리므로 조각이 어떤 섹션을 담는지만 의미가 있다.
+        2026-08-21 `foot`(TTM)을 상단으로 옮기며 튜플 순서가 갈렸다."""
         import bot.quarterly_infographic as qi
-        assert tuple(qi._PART_TOP) + tuple(qi._PART_BOTTOM) == qi._SECTIONS
+        top, bot_ = list(qi._PART_TOP), list(qi._PART_BOTTOM)
+        assert not (set(top) & set(bot_)), "두 조각이 같은 섹션을 그린다"
+        assert set(top) | set(bot_) == set(qi._SECTIONS), "빠진 섹션이 있다"
+        assert len(top) + len(bot_) == len(qi._SECTIONS), "중복 표기"
+        # TTM 은 당기순이익 차트 **바로 아래** — 같은 조각의 charts 뒤여야 한다
+        assert "charts" in top and "foot" in top, "TTM 이 차트에서 떨어졌다"
 
     def test_client_assembles_in_the_requested_order(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()
@@ -1108,7 +1117,7 @@ class TestPieceOrder20260821:
                 hb = Image.open(bot_).height
         finally:
             qi._font_ok = _o
-        # 수주잔고+재고자산 2단(각 34 단위) + TTM 푸터가 들어가므로 얇지 않다
+        # 수주잔고+재고자산 2단(각 34 단위) — TTM 은 2026-08-21 상단으로 갔다
         assert hb > 600, f"하단 조각이 비었다({hb}px)"
         assert ht > hb, "상단(지표+차트 2단)이 하단보다 작을 수 없다"
 
@@ -1117,6 +1126,29 @@ class TestPieceOrder20260821:
         그 종목은 같은 차트가 두 번 뜬다(실수 #11)."""
         from bot.quarterly_infographic import _RENDER_VER
         assert _RENDER_VER not in ("v7", "v8"), "조각 분할인데 버전이 그대로"
+
+    def test_bottom_piece_is_skipped_when_empty(self):
+        """TTM 이 상단으로 간 뒤 수주잔고·재고자산이 없는 종목은 하단이
+        통째로 빈다 — 그대로 그리면 정체불명의 얇은 검은 띠가 남는다."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        import bot.quarterly_infographic as qi
+        p = self._payload()
+        for q in p["quarters"]:                     # 수주잔고·재고자산 제거
+            q["financials"].pop("수주잔고", None)
+            q["financials"].pop("재고자산", None)
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                assert qi._render_locked(p, f"{d}/b.png",
+                                         qi._PART_BOTTOM) is None
+                # 상단은 여전히 나와야 한다(내용이 있으므로)
+                assert qi._render_locked(p, f"{d}/a.png", qi._PART_TOP)
+        finally:
+            qi._font_ok = _o
 
 
 class TestTruncationFlag20260821:
@@ -1359,3 +1391,96 @@ class TestBacklogRolling20260821:
             assert f'"{k}"' in src, f"{k} 커버리지를 안 센다"
         # 수주잔고도 화면과 같은 규율(최신부터 거슬러)로 봐야 통계가 맞다
         assert "_BACKLOG_PROBE_N" in src, "1회만 보면 화면과 갈라진다"
+
+
+class TestDetailTiming20260821:
+    """사용자 2026-08-21 "지금은 너무 로딩에 오래걸려서 그래" — 어느 블록을
+    클릭 로딩으로 뗄지는 **실측**으로 정한다. 프로브가 수집을 재구현하면
+    제품과 다른 걸 재므로(#35) 제품에 계측을 심고 프로브는 읽기만 한다."""
+
+    @staticmethod
+    def _stub_yf(monkeypatch, delays):
+        import sys
+        import time
+        import types
+
+        class _T:
+            def __init__(self, tk):
+                pass
+
+            @property
+            def info(self):
+                time.sleep(delays.get("info", 0))
+                return {"quoteType": "EQUITY", "longName": "X",
+                        "currency": "USD"}
+
+            @property
+            def earnings_dates(self):
+                time.sleep(delays.get("earnings", 0))
+                return None
+
+            @property
+            def upgrades_downgrades(self):
+                time.sleep(delays.get("upgrades", 0))
+                return None
+
+            @property
+            def institutional_holders(self):
+                time.sleep(delays.get("holders", 0))
+                return None
+
+            @property
+            def news(self):
+                time.sleep(delays.get("news", 0))
+                return []
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+
+    def test_every_stage_is_measured(self, monkeypatch):
+        """한 단계라도 빠지면 그 블록은 영원히 후보에서 빠진다(#54)."""
+        import bot.stock_snapshot as ss
+        self._stub_yf(monkeypatch, {"info": 0.02, "news": 0.05})
+        ss.collect_stock_snapshot("AAPL", use_cache=False)
+        tm = ss.last_timing()
+        assert {"yf.info", "total"} <= set(tm), f"기본 계측 누락: {tm}"
+        for name in ("실적이력", "투자의견", "기관보유", "뉴스",
+                     "재무제표", "동종비교"):
+            assert name in tm, f"병렬 수집 '{name}' 계측 누락"
+        assert any(k.startswith("enrich:") for k in tm), "시장 enrich 미계측"
+        assert tm["total"] >= tm["yf.info"], "총합이 부분보다 작다"
+
+    def test_timing_reflects_real_delay(self, monkeypatch):
+        """상수를 찍기만 하면 통과하는 계측은 쓸모없다 — 실제 지연을 잰다."""
+        import bot.stock_snapshot as ss
+        self._stub_yf(monkeypatch, {"info": 0.12})
+        ss.collect_stock_snapshot("AAPL", use_cache=False)
+        assert ss.last_timing()["yf.info"] >= 0.10
+
+    def test_instrumentation_does_not_swallow_failures(self, monkeypatch):
+        """계측이 예외를 삼키면 수집 실패가 조용히 성공으로 보인다."""
+        import inspect
+        import bot.stock_snapshot as ss
+        src = inspect.getsource(ss._collect_stock_snapshot_uncached)
+        blk = src[src.index("def _timed("):]
+        blk = blk[:blk.index("try:", blk.index("finally:"))]
+        assert "finally:" in blk, "계측이 try/finally 가 아니다"
+        assert "except" not in blk, "계측이 예외를 삼킨다"
+
+    def test_last_timing_returns_a_copy(self):
+        """호출부가 들고 있는 dict 를 다음 수집이 비우면 값이 사라진다."""
+        import bot.stock_snapshot as ss
+        ss._TIMING.clear()
+        ss._TIMING["x"] = 1.0
+        got = ss.last_timing()
+        ss._TIMING.clear()
+        assert got == {"x": 1.0}, "내부 dict 를 그대로 넘겼다"
+
+    def test_probe_reads_the_product_measurements(self):
+        src = open("bot/scripts/detail_timing_probe.py",
+                   encoding="utf-8").read()
+        assert "ss.last_timing()" in src, "제품 계측을 안 읽는다"
+        assert "use_cache=False" in src, "캐시 히트를 재면 0 초가 나온다"
+        # 수집을 재구현하면 제품과 다른 걸 잰다(#35)
+        assert "yfinance" not in src and "yf.Ticker" not in src
+        # 계측이 하나도 없으면 '이상 없음'이 아니라 실패다(#54)
+        assert "눈이 멀었다" in src
