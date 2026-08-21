@@ -37,6 +37,10 @@ _BLOGS = (
     {"id": "richyun0108", "title": "작은 투자자", "categories": None},  # 전체 글 (사용자 2026-06-22)
     {"id": "bboyanaga", "title": "애널리스트 김경민", "categories": None},  # 전체 글 (사용자 2026-06-23)
     {"id": "usforall", "title": "모두의 미국주식", "categories": None},  # 전체 글 (사용자 2026-07-05)
+    # 사용자 2026-08-20 (m.blog.naver.com/roe_20, 표시명 사용자 확정).
+    # "앞으로 포스팅하는것부터" = per-blog init 기본동작(첫 run 은 기존 글
+    # seen 처리만·push 생략) 그대로라 별도 설정 불요 — 백필 없음.
+    {"id": "roe_20", "title": "게으른 투자자", "categories": None},  # 전체 글
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
