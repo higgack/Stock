@@ -103,6 +103,29 @@ def _group_name(canonical: str, idx) -> str:
         return f"그룹{idx}"
 
 
+def _compatible(canonical: str, a, b) -> bool:
+    """두 계정 그룹을 **빼도 되는가**.
+
+    ⚠️ 그룹 인덱스가 다르다고 무조건 막으면 멀쩡한 회사가 빈칸이 된다
+    (사용자 2026-08-22 LG화학 25.4Q: `매출: 영업수익 ↔ 매출액` — 연간
+    보고서와 9개월 보고서가 **같은 총액**을 다른 라벨로 적었을 뿐이다).
+    가드가 진짜로 막아야 하는 건 **총액 ↔ 구성요소**다(2026-08-16
+    메리츠금융지주: 영업수익 ↔ 이자수익을 빼서 TTM 매출이 -10.30조).
+
+    그래서 판정 단위는 '그룹이 같은가'가 아니라 '**같은 급인가**' —
+    `_COMPONENT_GROUPS` 에 든 그룹이 한쪽에만 끼면 비호환, 총액끼리면
+    라벨이 달라도 호환이다. 화면 각주가 이미 그 두 경우를 나눠 말한다(#123).
+    """
+    if a == b:
+        return True
+    try:
+        from bot.dart_client import _COMPONENT_GROUPS
+        comp = _COMPONENT_GROUPS.get(canonical) or set()
+    except Exception:                                          # noqa: BLE001
+        return False                   # 판정 불가면 종전대로 막는다(보수적)
+    return not (a in comp or b in comp)
+
+
 def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     """4분기 단독 = 연간(now) − 9개월누적(prev). 저량(STOCK) 항목은
     차분하지 않고 연간 시점값 그대로 유지.
@@ -142,7 +165,7 @@ def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
             # 양쪽 다 그룹을 알 때만 비교(옛 캐시엔 _src 가 없다 →
             # 비교 불가면 종전대로 차분, graceful).
             a, b = now_src.get(k), prev_src.get(k)
-            if a is not None and b is not None and a != b:
+            if a is not None and b is not None and not _compatible(k, a, b):
                 out[k] = None
                 # ⚠️ **어느 계정끼리 어긋났는지**를 남긴다. 정규화 키("매출")만
                 # 남기면 화면 각주가 "서로 다른 계정" 이라고만 말해, 이게

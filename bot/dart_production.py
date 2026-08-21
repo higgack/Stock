@@ -378,7 +378,18 @@ def _looks_like_a_data_table(markup: str) -> bool:
     **구조**로 가른다 — 목록형 판정은 목록 밖을 못 보기 때문(#24)."""
     rows = len(_ROW_RE.findall(markup))
     cells = len(_CELL_RE.findall(markup))
-    return rows >= 2 and cells >= rows * 3
+    if not (rows >= 2 and cells >= rows * 3):
+        return False
+    # ⚠️ **빈 셀로 격자만 채운 표**는 데이터가 아니다(사용자 2026-08-22
+    # 네패스: `(2) 당해 사업년도의 가동률` + `(단위 : 장/Ton/천개)` 두 줄이
+    # 각각 빈 칸 두 개를 달고 있어 `cells >= rows*3` 을 통과했고, 화면엔
+    # **제목만** 떴다). #76(POSCO 캡션 표)에서 넣은 구조 게이트를 빈 칸이
+    # 우회한 것 — 세는 대상을 '칸'에서 **'내용이 있는 칸'** 으로 바꾼다.
+    filled = 0
+    for _rm, _cells in _iter_rows(markup):
+        if sum(1 for m, _ci, _sp in _cells if _cell_text(m.group(3))) >= 2:
+            filled += 1
+    return filled >= 2
 
 
 def _kinds_in(markup: str) -> list[str]:
