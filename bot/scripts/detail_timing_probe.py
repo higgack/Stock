@@ -31,7 +31,7 @@ import statistics
 import sys
 import time
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 
 def _universe(limit: int) -> list[str]:
@@ -56,10 +56,13 @@ def _print_key_sources() -> None:
     2026-08-21 실측: `enrich KR 0.4s` 가 나왔는데 같은 실행 로그에
     `fsc: DATA_GO_KR_API_KEY 미설정` 이 있었다 — 차단기 효과가 아니라
     아예 안 부른 것이라, 출처를 안 찍으면 개선을 **오보**한다."""
-    from bot.env_keys import env_source
-    print("자격증명(값 아님, 출처만): " + " · ".join(
-        f"{n}={env_source(n) or '없음'}"
-        for n in ("DATA_GO_KR_API_KEY", "DART_API_KEY", "FRED_API_KEY")))
+    from bot.env_keys import env_source, env_why
+    for n in ("DATA_GO_KR_API_KEY", "DART_API_KEY", "FRED_API_KEY"):
+        src = env_source(n) or "없음"
+        # 없으면 **이유**까지 — '없음'만 찍으면 그다음을 사람이 추측한다.
+        # 2026-08-21 실측: .env 에 키가 있는데 미설정으로 보고됐다.
+        why = "" if src != "없음" else f"  ← {env_why(n)}"
+        print(f"자격증명 {n}={src}{why}")
 
 
 def main(argv: list[str] | None = None) -> int:

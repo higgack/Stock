@@ -40,13 +40,20 @@ class RegistryTests(unittest.TestCase):
             keys,
             ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us",
              # 2026-08-19 미국 PPI — 품목 기준이라 종목 기준 앞.
-             "uppi", "krs", "jps", "mys"])
-        # 계약은 리터럴 목록이 아니라 **품목(HS) 기준이 먼저, 종목(회사)
-        # 기준이 뒤**다 — 종목 파서가 더 좁은 마커라 앞서면 품목 캡션을
-        # 가로챌 위험이 없고, 반대로 앞서면 순서 의존이 생긴다.
-        stock_keys = {"krs", "jps", "mys"}
-        self.assertEqual(set(keys[-len(stock_keys):]), stock_keys,
-                         "종목(회사) 기준 소스는 뒤쪽에 몰려 있어야")
+             "uppi", "krs", "jps", "mys",
+             # 2026-08-21 중국 수출(종목별).
+             "cns"])
+        # ⚠️ 위 목록은 **손으로 갱신하는 핀**이라, 규약 자체도 같이 못박는다
+        # (핀만 있으면 "지금 순서를 그대로 적은" 테스트가 된다, 실수 #19).
+        # 계약: 품목(HS) 기준 파서가 **전부** 종목(회사) 기준보다 앞.
+        basis = [s.basis for s in srcs.SOURCES]
+        first_company = basis.index("company")
+        self.assertNotIn("item", basis[first_company:],
+                         "종목 기준 뒤에 품목 기준이 섞였다 — 라우팅이 갈린다")
+        # ⚠️ 옛 판은 `stock_keys = {"krs","jps","mys"}` 라고 **열거**했다 —
+        # 새 종목 소스를 더할 때마다 손으로 고쳐야 하고, 안 고치면 규약을
+        # 어긴 게 아니라 목록이 낡은 것뿐인데 빨간불이 뜬다(실수 #24).
+        # 위 `basis` 검사가 같은 계약을 목록 없이 지킨다.
 
     def test_every_source_has_a_complete_contract(self):
         seen_keys, seen_dbs = set(), set()

@@ -19,7 +19,10 @@ readiness 체크가 전부 False 를 돌려준다.
 """
 from __future__ import annotations
 
+import logging
 import os
+
+_log = logging.getLogger("bot.env_keys")
 
 _TRIED: set[str] = set()
 
@@ -43,8 +46,13 @@ def env_key(name: str) -> str:
             if got:
                 os.environ[name] = str(got).strip()
                 return str(got).strip()
-    except Exception:
-        pass
+    except Exception as exc:                                   # noqa: BLE001
+        # ⚠️ 여기서 삼키면 "키가 .env 에 **있는데** 미설정으로 보고" 가
+        # 원인 불명이 된다(2026-08-21 실측: VM 의 `grep -c` 는 1 인데
+        # 프로브는 미설정이라 했다 — python-dotenv 미설치 같은 원인이
+        # 조용히 묻힌다). silent-except 금지(실수 #12).
+        _log.warning("env_key(%s): .env 폴백 실패 — %s: %s",
+                     name, type(exc).__name__, exc)
     return ""
 
 
@@ -59,3 +67,42 @@ def env_source(name: str) -> str:
     if pre and name not in _TRIED:
         return "환경변수"
     return ".env 파일" if env_key(name) else "없음"
+
+
+def env_why(name: str) -> str:
+    """'없음' 의 **이유**(값은 절대 돌려주지 않는다).
+
+    ⚠️ 왜 필요한가 — 2026-08-21 실측: VM 에서 `.env` 를 grep 하면 키
+    줄이 **1건** 잡히는데 프로브는 '미설정'이라
+    보고했다. `env_source` 는 '없음'까지만 말해 주므로 그다음을 사람이
+    추측하게 된다(추측 금지 규율의 반대). 파일을 찾았는지 · 그 파일에
+    키가 있는지 · 값이 비어 있는지를 갈라서 말한다.
+
+    반환은 진단 문자열이고 값의 **길이**까지만 노출한다(길이는 오타·빈값
+    판별에 필요하고 값 자체는 절대 아니다)."""
+    v = (os.environ.get(name) or "").strip()
+    if v:
+        return f"환경변수(길이 {len(v)})"
+    try:
+        from pathlib import Path as _P
+
+        from dotenv import dotenv_values, find_dotenv
+    except Exception as exc:                                   # noqa: BLE001
+        return f"python-dotenv 없음({type(exc).__name__})"
+    seen = []
+    for p in (find_dotenv(usecwd=True), str(_P.home() / "stock" / ".env")):
+        if not p or not _P(p).exists():
+            continue
+        seen.append(p)
+        try:
+            vals = dotenv_values(p) or {}
+        except Exception as exc:                               # noqa: BLE001
+            return f"{p}: 읽기 실패({type(exc).__name__})"
+        if name not in vals:
+            continue
+        got = (vals.get(name) or "").strip()
+        return (f"{p}: 값 있음(길이 {len(got)})" if got
+                else f"{p}: 키는 있으나 **값이 비었다**")
+    if not seen:
+        return ".env 파일을 못 찾음"
+    return f"{' · '.join(seen)}: 파일엔 있으나 키 없음"

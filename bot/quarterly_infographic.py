@@ -414,6 +414,14 @@ _FIG_DPI = 144
 # 데이터 단위 여백. 옛 `pad_inches=0.15` (11.6in 폭에 W=100) 와 같은 비율:
 # 0.15 / 11.6 * 100 ≈ 1.29.
 _FIG_PAD = 1.29
+# ── 패널 기하(단일 출처) ────────────────────────────────────────────────
+# ⚠️ 차트 패널과 푸터 패널은 같은 x·폭을 쓰지만, 차트는 **안쪽 여백(LM)**
+# 뒤에서 플롯 프레임이 시작한다. 푸터 글자를 패널 기준(6.0)으로 두면 위
+# 차트의 플롯 프레임(2.5+8.0=10.5)보다 왼쪽에 떠서 좌우가 안 맞는다
+# (사용자 2026-08-21 "좀 더 오른쪽으로 이동해서 위의 차트랑 균형을").
+# 값을 두 군데 적으면 한쪽만 바뀌어 다시 어긋나므로 여기 한 곳에서 읽는다.
+_PANEL_X, _PANEL_W = 2.5, 95.0
+_CHART_LM, _CHART_RM = 8.0, 3.0
 
 
 def provenance_line(payload: dict) -> tuple[str, str]:
@@ -837,7 +845,7 @@ def _render_locked(payload: dict, out_path: str,
 
         # 여백: 좌 8(y 눈금 라벨 — 폰트를 키웠으므로 옛 6 에서 확대)·우 3·
         # 위 7(제목+범례)·아래 4(x 라벨). y 축이 invert 돼 '아래'가 큰 y 값.
-        LM, RM, TP, BP, GAP = 8.0, 3.0, 7.0, 4.0, 1.6
+        LM, RM, TP, BP, GAP = _CHART_LM, _CHART_RM, 7.0, 4.0, 1.6
         # 이익률이 전량 결측이면(매출 미제공·0 등) % 패널을 만들지 않는다.
         # 빈 축을 그리면 '0% / 0% / -0%' 눈금이 붙어 **마진 0%** 로 읽힌다
         # (없는 사실을 그린 셈 — 2026-08-16 독립 리뷰, "환각 0" 원칙).
@@ -966,10 +974,10 @@ def _render_locked(payload: dict, out_path: str,
         # 영업이익보다 낮은 그림이 "매출 < 영업이익" 으로 읽혔다. 같은 값에
         # 두 이름을 쓰면 화면이 스스로 모순된다.
         _rev_lbl = (payload.get("component_accounts") or {}).get("매출") or "매출"
-        combo((2.5, y, 95, _ch), [rev, op], [_rev_lbl, "영업이익"],
+        combo((_PANEL_X, y, _PANEL_W, _ch), [rev, op], [_rev_lbl, "영업이익"],
               [_ACCENT, _POS], opm, _GOLD, "영업이익률",
               f"{_rev_lbl} · 영업이익")
-        combo((2.5, y + _ch + 2.0, 95, _ch), [ni], ["당기순이익"], [_PUR],
+        combo((_PANEL_X, y + _ch + 2.0, _PANEL_W, _ch), [ni], ["당기순이익"], [_PUR],
               nim, _NEG, "순이익률", "당기순이익")
         y += H_CHART
 
@@ -979,7 +987,7 @@ def _render_locked(payload: dict, out_path: str,
         # 만들지 않고 막대가 패널 전체를 쓴다(사용자가 요청한 형태).
         _EX_COLOR = {"수주잔고": _ACCENTW, "재고자산": _GOLD}
         for _i, (_k, _title, _vals) in enumerate(_extra):
-            combo((2.5, y + _i * _EXTRA_H, 95, _EXTRA_H - 2.0), [_vals], [_title],
+            combo((_PANEL_X, y + _i * _EXTRA_H, _PANEL_W, _EXTRA_H - 2.0), [_vals], [_title],
                   [_EX_COLOR.get(_k, _ACCENT)], [None] * len(labels), _MUTED,
                   "", _title)
         y += H_EXTRA
@@ -995,7 +1003,7 @@ def _render_locked(payload: dict, out_path: str,
     if _on("foot"):
         # ── 푸터(TTM + 출처 + 면책) ─────────────────────────────────────
         ttm = payload.get("ttm") or {}
-        panel(2.5, y, 95, 6.4, fc=_PANEL2, rad=1.6)
+        panel(_PANEL_X, y, _PANEL_W, 6.4, fc=_PANEL2, rad=1.6)
         foot_items = [
             ("TTM 매출", amt(ttm.get("매출"))),
             ("TTM 영업이익", amt(ttm.get("영업이익"))),
@@ -1009,8 +1017,11 @@ def _render_locked(payload: dict, out_path: str,
             ("PSR", "—" if payload.get("psr") is None
              else f"{payload['psr']:,.2f}배"),
         ]
-        fx = 6.0
-        _fgap = 88.0 / max(len(foot_items), 1)   # 항목이 늘어도 패널 안에 들어오게
+        # 위 차트의 플롯 프레임과 같은 x 에서 시작한다(위 상수 주석 참조).
+        _fx0 = _PANEL_X + _CHART_LM
+        fx = _fx0
+        # 항목이 늘어도 패널 안에 들어오게 — 폭도 기하에서 도출한다.
+        _fgap = (_PANEL_W - _CHART_LM - _CHART_RM) / max(len(foot_items), 1)
         for name, val in foot_items:
             txt(fx, y + 2.2, name, size=8.5, color=_MUTED)
             txt(fx, y + 4.6, val, size=10.5, weight="bold")
@@ -1020,7 +1031,8 @@ def _render_locked(payload: dict, out_path: str,
         # ASCII 마커 + 색으로 표기(NanumGothic 글리프 결손 회피).
         _ny = y + 7.6
         for _note, _ncol in notes:
-            txt(6.0, _ny, _note, size=8.5, color=_ncol)
+            # 각주도 같이 옮긴다 — 사용자 "밑에 주석까지 포함해서".
+            txt(_fx0, _ny, _note, size=8.5, color=_ncol)
             _ny += 2.4
         # ⚠️ 출처·면책 줄은 **여기서 그리지 않는다**(2026-08-21). 사용자가 요청한
         # 배치에서 성장동력 카드가 이 이미지 뒤에 오는데, 면책 문구는 화면 맨
