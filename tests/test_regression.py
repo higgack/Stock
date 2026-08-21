@@ -6346,12 +6346,19 @@ class TestQuarterlyMultiMarket20260816:
     def test_dart_cashflow_accounts_are_tiered_to_the_cf_statement(self):
         """같은 이름이 자본변동표·주석에도 나온다 — 제표로 안 묶으면 기간
         의미가 다른 행이 이긴다(NH투자증권 순이익 사고와 같은 함정)."""
-        from bot.dart_client import _DART_NAME_MAP, _stmt_tier
+        from bot.dart_client import _stmt_tier
         for k in ("영업활동현금흐름", "유형자산취득", "무형자산취득"):
             assert _stmt_tier(k, "CF") == 0, k
             assert _stmt_tier(k, "SCE") == 1, k
-        assert _DART_NAME_MAP.get("영업활동으로인한현금흐름") == "영업활동현금흐름"
-        assert _DART_NAME_MAP.get("유형자산의 취득") == "유형자산취득"
+        # ⚠️ dict 키를 직접 보면 안 된다 — `_norm_acct_nm` 이 공백을 지우므로
+        # 공백 있는 표기는 **키로 존재하지 않는다**(변형을 정리하며 실제로
+        # 깨졌다). 계약은 "이 이름이 그 계정으로 해석된다"이지 특정 키가
+        # 있다가 아니다(#19). 원천이 주는 형태 그대로 조회한다.
+        from bot.dart_client import _NAME_MAP_NORM, _norm_acct_nm
+        assert _NAME_MAP_NORM.get(_norm_acct_nm("영업활동으로 인한 현금흐름")) \
+            == "영업활동현금흐름"
+        assert _NAME_MAP_NORM.get(_norm_acct_nm("유형자산의 취득")) \
+            == "유형자산취득"
 
     def test_fcf_survives_the_snapshot_whitelist(self):
         """⚠️ 화이트리스트가 FCF 를 떨어뜨리면 파서를 고쳐도 표가 영원히
@@ -6563,6 +6570,46 @@ class TestQuarterlyMultiMarket20260816:
         # 프로브 버전 배너(실수 #21) — 숫자가 아니라 **찍는 행위**를(#67)
         import bot.scripts.production_format_probe as pf
         assert pf._PROBE_VER >= 8
+
+    def test_dart_table_keeps_the_original_line_structure(self):
+        """사용자 2026-08-21 농심: 사업부문 셀이 `식 품 제 조및판 매 등` 로
+        떴다. DART 원문은 좁은 셀에서 한 낱말을 **여러 줄**로 쪼개 놓는데
+        (`<P>식 품 제</P><P>조및판 매</P><P>등</P>`), 줄 구조를 버리면 그
+        줄바꿈이 브라우저에서 **공백**이 돼 낱말이 엉뚱한 자리에서 갈린다.
+        원본 재현이 목적일 때 값뿐 아니라 **줄 구조**도 원본이다(#74 의 짝)."""
+        import re
+        from bot.dart_production import sanitize_table
+        raw = ("<TABLE><TR><TD>\n<P>식 품 제</P>\n<P>조및판 매</P>\n"
+               "<P>등</P>\n</TD><TD>제품</TD></TR>"
+               "<TR><TD>라 면</TD><TD>1,622,749</TD></TR></TABLE>")
+        h = sanitize_table(raw)
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", h, re.S)
+        assert cells[0] == "식 품 제<br>조및판 매<br>등", cells[0]
+        # 브라우저가 보는 텍스트에 줄이 뭉개진 형태가 남으면 안 된다
+        assert "식 품 제 조및판" not in h, "줄바꿈이 공백으로 뭉개졌다"
+        # 셀 경계·연속 `<br>` 는 빈 줄만 만든다 — 정리돼야 한다
+        assert "<td><br>" not in h and "<br></td>" not in h
+        assert "<br><br>" not in h
+        assert cells[1] == "제품" and cells[3] == "1,622,749"
+
+    def test_capex_accepts_variants_but_not_components(self):
+        """회사마다 표기가 갈려 하나만 두면 조용히 빈칸이 된다.
+        ⚠️ 다만 `토지의 취득` 같은 **구성요소**를 넣으면 총액이 없는 회사
+        에서 부분값이 CAPEX 가 되어 FCF 가 과대표시된다(재고자산과 같은 함정)."""
+        from bot.dart_client import _NAME_MAP_NORM, _norm_acct_nm
+
+        def canon(nm):
+            return _NAME_MAP_NORM.get(_norm_acct_nm(nm))
+        for nm in ("Ⅰ. 영업활동으로 인한 현금흐름", "영업에서 창출된 현금흐름",
+                   "영업활동순현금흐름"):
+            assert canon(nm) == "영업활동현금흐름", nm
+        for nm in ("유형자산의 취득", "유형자산의 증가", "유형자산 취득"):
+            assert canon(nm) == "유형자산취득", nm
+        for nm in ("무형자산의 취득", "무형자산의 증가"):
+            assert canon(nm) == "무형자산취득", nm
+        # 구성요소는 **매핑하지 않는다**
+        for nm in ("토지의 취득", "건물의 취득", "기계장치의 취득"):
+            assert canon(nm) is None, f"구성요소를 CAPEX 로 잡았다: {nm}"
 
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note

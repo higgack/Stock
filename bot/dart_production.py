@@ -114,7 +114,15 @@ _USE_RE = re.compile(r"구체\s*적?\s*용도|용\s*도")
 _SEG_RE = re.compile(r"사업\s*부문|매출\s*유형")
 
 # 살균 화이트리스트 — 표 구조에 필요한 것만.
-_KEEP_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "td", "th"}
+# ⚠️ `br` 를 살린다. DART 는 좁은 셀에서 한 낱말을 **여러 줄**로 쪼개
+# 놓는데(`<P>식 품 제</P><P>조및판 매</P><P>등</P>`), 줄 구조를 버리면
+# 그 줄바꿈이 브라우저에서 **공백**이 돼 `식 품 제 조및판 매 등` 처럼
+# 엉뚱한 자리에서 낱말이 갈린다(사용자 2026-08-21 농심 실측 — 원문은
+# `식품제조및판매 등`). 원본 재현이 목적일 때 값뿐 아니라 **줄 구조**도
+# 원본이다(#74 의 짝: 값·구조는 원본, 표시 규약만 우리 것).
+_KEEP_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "td", "th", "br"}
+# 제거하되 **줄바꿈으로 바꿔야** 하는 블록 태그.
+_BLOCK_TAGS = {"p", "div", "li", "br"}
 _KEEP_ATTRS = ("rowspan", "colspan")
 _ATTR_RE = re.compile(r'(?i)\b(ROWSPAN|COLSPAN)\s*=\s*"?(\d{1,3})"?')
 # 숫자 열의 **우측정렬만** 원본에서 살린다 — 기존 `.si-table .num` 재사용
@@ -150,6 +158,9 @@ def sanitize_table(markup: str) -> str:
         out.append(markup[pos:m.start()])
         pos = m.end()
         closing, name, attrs = m.group(1), m.group(2).lower(), m.group(3) or ""
+        if name in _BLOCK_TAGS:
+            out.append("<br>")             # 줄 구조 보존(위 주석 참조)
+            continue
         if name not in _KEEP_TAGS:
             continue                       # 태그만 제거, 내부 텍스트는 보존
         if closing:
@@ -171,7 +182,12 @@ def sanitize_table(markup: str) -> str:
     html = "".join(out)
     # 셀 사이 잉여 공백 정리(원문은 태그 사이 공백이 많다).
     html = re.sub(r">\s+<", "><", html)
-    return _align_cells(re.sub(r"\s{2,}", " ", html).strip())
+    html = re.sub(r"\s{2,}", " ", html).strip()
+    # 줄바꿈 정리 — 연속·셀 경계의 `<br>` 는 빈 줄만 만든다.
+    html = re.sub(r"(?:<br>\s*)+", "<br>", html)
+    html = re.sub(r"(?i)(<t[dh][^>]*>)\s*<br>", r"\1", html)
+    html = re.sub(r"(?i)<br>\s*(</t[dh]>)", r"\1", html)
+    return _align_cells(html)
 
 
 # ⚠️ 이름이 아래 `_CELL_RE`(모양 판정용)와 겹치면 **뒤엣것이 이겨**
