@@ -5146,6 +5146,9 @@ _QUARTERLY_JS = r"""
        + esc(j.render_note||'이미지 렌더 불가 — 표로 표시합니다.')+'</div>';
     }
     if(j.table_html) h+=j.table_html;
+    // 🏭 생산능력·생산실적·가동률 — 재고자산 차트(인포그래픽) 바로 아래.
+    // 서버가 살균한 표 HTML 이라 그대로 삽입(사용자 2026-08-20 "원본을 표로").
+    if(j.production_html) h+=j.production_html;
     var gr=j.growth_risk||{};
     if(gr.ok){
       // 이미지가 없을 때도(폰트 부재) 유료로 생성한 요약은 반드시 보여준다.

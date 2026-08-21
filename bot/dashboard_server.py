@@ -314,6 +314,26 @@ def live_quote(key: str) -> dict:
     return out
 
 
+def _production_html(ticker: str, payload: dict) -> str:
+    """분기실적 탭의 생산능력·가동률 표 HTML. 실패·부재는 ""(섹션 생략).
+
+    분기 시계열의 최신 보고서부터 거슬러 표가 있는 첫 보고서를 쓴다 —
+    새 보고서가 나오면 자동 롤링(dart_production.production_rolling)."""
+    try:
+        from bot.market import detect_market
+        if detect_market(ticker) != "KR":
+            return ""                      # 원천이 DART 라 KR 전용
+        qs = payload.get("quarters") or []
+        if not qs:
+            return ""
+        from bot.dart_client import get_dart
+        from bot.dart_production import production_rolling, render_html
+        return render_html(production_rolling(get_dart(), ticker, qs))
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("production_html(%s): %s", ticker, exc)
+        return ""
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves the archive directory; adds POST /api/delete + optional
     URL-token and Basic-Auth gating."""
@@ -966,6 +986,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # 무조건 "서버 한글 폰트 미설치" 라 폰트가 멀쩡한데 다른 이유로
                 # 실패한 경우까지 오진했다(사용자 2026-08-18 LPK.DE).
                 "render_note": ("" if img else _render_note()),
+                # 🏭 생산능력·생산실적·**가동률** 표(사용자 2026-08-20
+                # "가동률이 중요한거야. 키는 그거야") — DART 정기보고서 본문
+                # 표를 원본 구조 그대로. 위치는 재고자산 차트 아래(=인포그래픽
+                # 이미지 다음). KR 전용(원천이 DART), 없으면 빈 문자열이라
+                # 프런트가 섹션을 통째로 생략한다.
+                "production_html": _production_html(ticker, payload),
                 "growth_risk": payload.get("growth_risk") or {"ok": False},
                 "latest": (payload.get("quarters") or [{}])[-1].get("label"),
                 "cached": res.get("cached"),

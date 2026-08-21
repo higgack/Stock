@@ -49,4 +49,15 @@ def _isolate_disk_caches(tmp_path_factory, monkeypatch):
         monkeypatch.setattr(_mt, "_VOL_CACHE_DIR", root / "market_timing")
     except Exception:
         pass
+    # DART 원문 negative-cache — 실패한 rcept_no 를 **디스크**에 기록한다.
+    # 2026-08-20 실측: 새 테스트가 가짜 rcept_no("R1")로 fetch 를 태우자
+    # 그 실패가 운영 파일(~/.tradingagents/dart_doc_fail.json)에 남았고,
+    # 같은 id 를 쓰는 다음 실행이 통째로 막혔다(테스트끼리도 오염). 위
+    # 변동성 캐시와 **같은 사고**라 여기서 함께 막는다.
+    try:
+        import bot.dart_feed as _df
+        monkeypatch.setattr(_df, "_DOC_FAIL", root / "dart_doc_fail.json")
+        _df._DOC_TEXT_MEM.clear()
+    except Exception:
+        pass
     yield

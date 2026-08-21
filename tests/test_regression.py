@@ -25626,7 +25626,12 @@ class TestDartBacklogParser20260817:
         assert dart_feed._DOC_TEXT_MAX_FULL > dart_feed._DOC_TEXT_MAX
         src = inspect.getsource(dart_feed._fetch_doc_text)
         assert "max_bytes" in src and "_DOC_TEXT_MEM[ck]" in src
-        assert 'ck = f"{rcept_no}:{int(max_bytes)}"' in src
+        # ⚠️ 리터럴이 아니라 **계약**을 본다 — 캐시 키에 상한이 들어가는지가
+        # 요점이고, 키에 항목이 더 붙는 것(2026-08-20 raw_markup 모드)은
+        # 계약을 강화하지 약화하지 않는다. 옛 판은 키 문자열을 통째로
+        # 고정해서, 모드를 하나 추가하자 **정상 변경인데 빨간불**이 났다
+        # (소스 문자열 단언의 취약점 — #19 의 반대 방향 사례).
+        assert "int(max_bytes)" in src and "ck = f\"{rcept_no}" in src
         assert "backlog_for" in inspect.getsource(
             __import__("bot.dart_backlog", fromlist=["x"]))
 
