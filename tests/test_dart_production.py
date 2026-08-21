@@ -318,3 +318,66 @@ class TestWiring:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])
+
+
+class TestDiagnose:
+    """스윕의 판정 분류 — **개선 여지가 있는 것과 없는 것**을 가른다.
+    이 구분이 없으면 스윕 로그가 노이즈가 되어 다음 형식을 못 정한다
+    (dart_backlog.diagnose 와 같은 규약)."""
+
+    def test_verdicts(self):
+        from bot.dart_production import diagnose
+        assert diagnose(None) == "원문미제공"
+        assert diagnose("") == "원문미제공"
+        # 생산·설비 절 자체가 없다 → 파서를 고쳐도 소용없다
+        assert diagnose("<P>재무제표</P>") == "섹션없음"
+        # 절은 있는데 산문만 → 확장 여지 있음
+        assert diagnose("<P>생산 및 설비에 관한 사항</P><P>산문</P>") == "표없음"
+        # 가동률만 없는 표 → 표는 실린다(회사가 가동률 미기재)
+        m = ('<P>생산능력 및 생산실적</P><TABLE><TBODY><TR>'
+             '<TD>생산능력</TD><TD>생산실적</TD></TR></TBODY></TABLE>')
+        assert diagnose(m) == "가동률없음"
+        assert diagnose(REAL) == "정상"
+
+    def test_normal_verdict_matches_parser(self):
+        """판정과 파서가 갈라지면 스윕 통계가 거짓말이 된다 —
+        '정상'인데 파싱 실패, 또는 그 반대가 없어야 한다."""
+        from bot.dart_production import diagnose, parse_production
+        for mk in (REAL, "<P>재무제표</P>", "", None):
+            v = diagnose(mk)
+            got = parse_production(mk) if mk else None
+            assert (v == "정상") == bool(got and got.get("has_rate")), \
+                f"판정({v})과 파서 결과가 어긋남"
+
+
+class TestProbe:
+    def test_probe_uses_real_apis(self):
+        """⚠️ 첫 판은 `favorites.load_favorites`·`archive.list_runs` 를
+        가정해 썼는데 **둘 다 없는 이름**이었다(#53). 실재하는 API 만."""
+        import importlib
+        from bot.scripts import production_format_probe as pr
+        assert callable(pr._universe) and callable(pr.main)
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        assert "from bot.market_favorites import get_favorites" in src
+        assert "load_favorites" not in src.replace("load_favorites`", "")
+        # 존재 확인 — import 가 되는 이름인가
+        assert hasattr(importlib.import_module("bot.market_favorites"),
+                       "get_favorites")
+
+    def test_probe_is_read_only(self):
+        """스윕은 진단이다 — 쓰기·전송 경로가 있으면 안 된다."""
+        import ast
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        tree = ast.parse(src)
+        called = {n.func.attr for n in ast.walk(tree)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        for banned in ("write_text", "send_message", "_notify", "save"):
+            assert banned not in called, f"{banned} — 진단 도구가 쓰기를 한다"
+
+    def test_probe_has_version_banner(self):
+        """배포 전 코드로 돈 출력을 새 결과로 착각하지 않게(#21)."""
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        assert "_PROBE_VER" in src and "형식 스윕 v" in src
