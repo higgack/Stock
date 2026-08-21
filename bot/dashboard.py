@@ -2850,6 +2850,8 @@ _CHART_JS = """
   var asOfClose = (initial && initial.as_of_close != null) ? initial.as_of_close : null;
   var analysisMarkers = (initial && initial.analysis_markers) || null;
   var chart = null, rsiChart = null, macdChart = null, dispChart = null;
+  // 컨테이너 폭이 아직 0 일 때 몇 프레임 기다렸는지(아래 render 참조).
+  var widthWait = 0;
   var curInterval = '1d', curRange = '1y';
   var lastData = null;   // 마지막 렌더 데이터 — 지표 토글 시 refetch 없이 재렌더
   var lastIchiOn = false; // 직전 렌더의 일목 on/off — 토글 시 보이는 범위 보정용
@@ -2924,6 +2926,21 @@ _CHART_JS = """
       return;
     }
     if (!d || !d.times || !d.close) return;
+    // ⚠️ **폭이 0 인 컨테이너에 그리면 캔들이 한 픽셀도 안 보인다.** 헤더·
+    // 푸터(가격·봉 수·범례)는 별도 DOM 이라 멀쩡히 뜨고 플롯만 빈칸이라
+    // '데이터 문제' 로 보인다(사용자 2026-08-21 "가끔 차트가 안 뜬다 —
+    // 3년 눌렀다 돌아오면 제대로 뜬다"). 기간 버튼을 누르면 그때는 레이아웃이
+    // 끝나 있어서 되는 것이다. 레이아웃이 잡힐 때까지 프레임을 넘긴다.
+    if (el.clientWidth < 1) {
+      if (widthWait < 120) {
+        widthWait++;
+        requestAnimationFrame(function(){ render(d, preserve); });
+        return;
+      }
+      // 120프레임(≈2초)을 기다려도 0 이면 숨겨진 컨테이너다 — 그리기라도
+      // 해 두면 ResizeObserver 가 보이는 순간 폭을 맞춘다(빈 화면보다 낫다).
+    }
+    widthWait = 0;
     lastData = d;
     curSym = d.currency || '';
     // 지표 토글 재렌더(preserve)면 현재 줌/팬을 복원하려고 먼저 캡처.
@@ -3162,8 +3179,10 @@ _CHART_JS = """
                   '조정목표 ' + (ct[ci].ratio * 100).toFixed(1) + '%', 3, false);
       }
     }
-    if (!(preserve && prevRange)) chart.timeScale().fitContent();
+    // ⚠️ **폭을 먼저** 맞추고 나서 fitContent. 순서가 반대면 잘못된 폭
+    // 기준으로 보이는 구간이 계산돼, 폭이 뒤늦게 바뀌면 봉이 화면을 안 채운다.
     chart.applyOptions({ width: el.clientWidth });
+    if (!(preserve && prevRange)) chart.timeScale().fitContent();
 
     // 일목균형표·이격도 설명 패널 — 차트엔 선과 구름만 보여 '지금 무슨 상태인지'를
     // 읽을 수 없다. 피보나치·엘리엇에서 똑같은 지적을 받았으므로(2026-07-31)
@@ -3976,12 +3995,23 @@ _CHART_JS = """
     render(initial);   // 즉시 placeholder (분석일까지) — 깜빡임 방지
     setActive();
     load();            // 곧바로 '오늘까지(현재가)' 를 받아 교체
-    window.addEventListener('resize', function(){
-      if (chart) chart.applyOptions({ width: el.clientWidth });
-      var re = document.getElementById('rsi-chart'); if (rsiChart && re) rsiChart.applyOptions({ width: re.clientWidth });
-      var me = document.getElementById('macd-chart'); if (macdChart && me) macdChart.applyOptions({ width: me.clientWidth });
-      var de = document.getElementById('disp-chart'); if (dispChart && de) dispChart.applyOptions({ width: de.clientWidth });
-    });
+    function syncWidths(){
+      if (chart && el.clientWidth) chart.applyOptions({ width: el.clientWidth });
+      var re = document.getElementById('rsi-chart'); if (rsiChart && re && re.clientWidth) rsiChart.applyOptions({ width: re.clientWidth });
+      var me = document.getElementById('macd-chart'); if (macdChart && me && me.clientWidth) macdChart.applyOptions({ width: me.clientWidth });
+      var de = document.getElementById('disp-chart'); if (dispChart && de && de.clientWidth) dispChart.applyOptions({ width: de.clientWidth });
+    }
+    window.addEventListener('resize', syncWidths);
+    // ⚠️ `resize` 는 **창**이 바뀔 때만 뜬다. 폰트 로딩·스크롤바 등장·옆
+    // 블록이 늦게 채워지는 것처럼 **컨테이너만** 바뀌는 경우엔 안 뜬다 —
+    // 그게 첫 화면에서 차트가 빈칸으로 남던 경로다. 컨테이너를 직접 본다.
+    if (window.ResizeObserver) {
+      try {
+        new ResizeObserver(function(){
+          requestAnimationFrame(syncWidths);
+        }).observe(el);
+      } catch(e){}
+    }
     var last = document.documentElement.dataset.theme;
     setInterval(function(){
       var th = document.documentElement.dataset.theme;

@@ -7150,6 +7150,72 @@ class TestBacklogDiagnoseScope20260821:
                         "합 계 999 111 222") == "형식미지원"
 
 
+class TestChartFirstPaint20260821:
+    """사용자 2026-08-21: "차트가 왜 잘 안뜨지? … 3년을 클릭하고 다시
+    돌아가야 제대로 떠. 이 부분은 디폴트값으로 처음에 제대로 보여져야돼."
+
+    헤더·푸터(가격·`242개 봉`·범례)는 별도 DOM 이라 멀쩡히 뜨고 **플롯만
+    빈칸**이라 데이터 문제로 보인다. 실제로는 **컨테이너 폭이 아직 0** 일 때
+    그린 것이다 — 기간 버튼을 누르면 그땐 레이아웃이 끝나 있어 제대로 뜬다."""
+
+    def _render_body(self):
+        from bot.dashboard import _CHART_JS
+        i = _CHART_JS.index("function render(d, preserve){")
+        j = _CHART_JS.index("\n  function ", i + 10)
+        return _CHART_JS[i:j]
+
+    def test_width_is_applied_before_fitting_content(self):
+        """폭을 맞추기 **전에** fitContent 하면 잘못된 폭 기준으로 보이는
+        구간이 계산돼, 폭이 뒤늦게 바뀌면 봉이 화면을 안 채운다.
+        (문자열이 아니라 **순서**를 본다 — 표현이 바뀌어도 계약은 순서다.)"""
+        body = self._render_body()
+        w = body.index("applyOptions({ width: el.clientWidth })")
+        f = body.index("timeScale().fitContent()")
+        assert w < f, "폭보다 fitContent 가 먼저다"
+
+    def test_zero_width_render_is_deferred(self):
+        """폭 0 인 컨테이너에 그리면 캔들이 한 픽셀도 안 보인다."""
+        body = self._render_body()
+        assert "el.clientWidth < 1" in body, "폭 0 가드가 없다"
+        assert "requestAnimationFrame" in body, "다음 프레임으로 미루지 않는다"
+        # 무한 재시도는 숨은 탭에서 프레임을 계속 먹는다 — 상한이 있어야 한다
+        assert "widthWait < " in body, "재시도 상한이 없다"
+
+    def test_container_resize_is_observed_not_just_window(self):
+        """`resize` 는 **창**이 바뀔 때만 뜬다 — 폰트 로딩·스크롤바 등장처럼
+        **컨테이너만** 바뀌는 경우엔 안 뜬다. 그게 첫 화면이 빈칸으로 남던
+        경로다."""
+        from bot.dashboard import _CHART_JS
+        # ⚠️ 주석에도 그 낱말이 있다 — **호출**을 찾아야 한다(#55 페이지
+        # 전체 grep 이 ℹ️ 가이드에 걸려 통과하던 것과 같은 함정).
+        assert "new ResizeObserver(" in _CHART_JS, "컨테이너를 직접 보지 않는다"
+        i = _CHART_JS.index("new ResizeObserver(")
+        assert ".observe(el)" in _CHART_JS[i:i + 400], "차트 컨테이너를 안 본다"
+        # 창 리사이즈 경로도 같은 함수를 써야 한다(두 벌이면 갈라진다, #38)
+        assert "window.addEventListener('resize', syncWidths)" in _CHART_JS
+
+    def test_chart_js_still_parses(self):
+        """생성물이 JS 면 **파서에 태울 것**(#26 — 길이 검사는 green 이었다)."""
+        import shutil
+        import subprocess
+        import tempfile
+        import os as _os
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            pytest.skip("node 미설치")
+        from bot.dashboard import _CHART_JS
+        with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8",
+                                         delete=False) as f:
+            f.write(_CHART_JS)
+            path = f.name
+        try:
+            r = subprocess.run([node, "--check", path],
+                               capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr[:800]
+        finally:
+            _os.unlink(path)
+
+
 class TestDartFinancialsLatency20260821:
     """2026-08-21 VM 계측: `kr:dart.financials` **중앙값 26.2초·최대 44.7초**
     로 `enrich:KR` 전체를 지배했다(그 다음이 fsc.dilution 5.4초). 원인은
