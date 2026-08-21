@@ -175,6 +175,31 @@ def parse_production(markup: str | None) -> dict | None:
     }
 
 
+def diagnose(markup: str | None) -> str:
+    """표를 못 낸 이유를 짧은 코드로 — **개선 여지 판정**이 목적이다.
+
+    `원문미제공`·`섹션없음` 은 원천에 없어 파서를 고칠 여지가 없고,
+    `표없음`·`형식미지원` 만 새 형식이 필요하다는 신호다. 이 구분이 없으면
+    스윕 로그가 노이즈가 된다(dart_backlog.diagnose 와 같은 규약)."""
+    if not markup:
+        return "원문미제공"
+    if not (_ANCHOR.search(markup) or _ANCHOR_ALT.search(markup)):
+        return "섹션없음"          # 생산·설비 절 자체가 없다(비제조업 등)
+    m = _ANCHOR.search(markup) or _ANCHOR_ALT.search(markup)
+    tail = markup[m.end(): m.end() + _SCAN_WINDOW]
+    tabs = list(_TABLE_RE.finditer(tail))
+    if not tabs:
+        return "표없음"            # 절은 있는데 산문만(생산 관련 서술)
+    best = max((_score(t.group(0)) for t in tabs), default=0)
+    if best >= 10:
+        return "정상"
+    if best >= 6:
+        return "가동률없음"        # 생산능력·실적만 있고 가동률 미기재
+    if best > 0:
+        return "형식미지원"        # 단어는 스치는데 표 구조가 다르다
+    return "표없음"
+
+
 def production_for(dart, ticker: str, year: int, reprt_code: str) -> dict | None:
     """해당 보고서의 생산능력·가동률 표. 없으면 None.
 
