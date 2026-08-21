@@ -174,27 +174,27 @@ def sanitize_table(markup: str) -> str:
     return _align_cells(re.sub(r"\s{2,}", " ", html).strip())
 
 
-# 숫자·비율·자리표(-) 만으로 이뤄진 셀. 쉼표·%·괄호·부호·단위기호까지 허용.
-_NUMISH = re.compile(r"^[\s\d,.\-−+%()]*\d[\s\d,.\-−+%()]*$")
 # ⚠️ 이름이 아래 `_CELL_RE`(모양 판정용)와 겹치면 **뒤엣것이 이겨**
 # 이 정규식이 통째로 무시된다(실측: group(1) IndexError). #59 의 짝.
 _CELL_PAIR_RE = re.compile(r"(?is)<(t[dh])((?:\s[^>]*)?)>(.*?)</\1>")
 
 
 def _align_cells(html: str) -> str:
-    """머리행과 **숫자 셀**을 가운데정렬로 통일한다(사용자 2026-08-21).
+    """모든 셀을 가운데정렬로 통일한다(사용자 2026-08-21, 2회 지시).
 
     ⚠️ 원본의 `ALIGN=RIGHT` 를 그대로 따라가면 **한 열 안에서 정렬이 갈린다**
     — 한솔아이원스 실측: 같은 열의 `44,727`(ALIGN=RIGHT)은 우측, `55.7%`
     (속성 없음)는 좌측으로 붙어 눈이 숫자를 따라가지 못했다. 원본이 스스로
-    일관되지 않으므로 **우리가 내용으로 정한다**: 숫자면 가운데, 글자면 좌측.
-    머리행도 가운데로 맞춰 그 아래 숫자와 축이 어긋나지 않게 한다."""
+    일관되지 않으므로 **우리가 정한다**.
+
+    ⚠️ 1차 시도는 '숫자·머리행만 가운데, 글자는 좌측'이었는데 그것도
+    갈렸다 — 뉴파워프라즈마 실측: 머리행 `구분` 은 가운데인데 그 아래
+    `생산능력`·`생산실적`·`기말재고` 는 글자라 좌측으로 붙어 **같은 열의
+    머리와 몸통이 어긋났다**. DART 표는 열마다 짧은 라벨이라 전부 가운데로
+    맞추는 게 열 축을 유일하게 일치시킨다."""
     def _fix(m):
         tag, attrs, inner = m.group(1), m.group(2) or "", m.group(3)
-        text = re.sub(r"<[^>]+>", "", inner)
-        text = text.replace("&nbsp;", " ").strip()
-        ctr = tag.lower() == "th" or bool(text and _NUMISH.match(text))
-        if ctr and "class=" not in attrs:
+        if "class=" not in attrs:
             attrs += ' class="ctr"'
         return f"<{tag}{attrs}>{inner}</{tag}>"
     return _CELL_PAIR_RE.sub(_fix, html)

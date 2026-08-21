@@ -131,9 +131,10 @@ class TestSanitize:
         h = _pp(mk)["table_html"]
         got = {x.strip(): ("ctr" in a)
                for _t, a, x in re.findall(r"<(t[dh])([^>]*)>([^<]*)</\1>", h)}
-        assert got["44,727"] and got["55.7%"], f"열 안에서 정렬이 갈림: {got}"
-        assert got["수량"], "머리행이 아래 숫자와 안 맞음"
-        assert not got["생산능력"] and not got["가동률"], "글자 셀까지 가운데"
+        # 사용자 2026-08-21(2회): 전 셀 가운데. 1차(숫자만 가운데)는 뉴파워
+        # 프라즈마에서 머리행 `구분`(가운데)과 그 아래 `생산능력`(좌측)이
+        # 어긋났다 — 열 축이 머리와 몸통에서 갈리면 같은 결함이다.
+        assert all(got.values()), f"열 안에서 정렬이 갈림: {got}"
 
     def test_center_class_exists_in_the_page_css(self):
         """클래스만 붙이고 CSS 가 없으면 아무 일도 안 일어난다(배선)."""
@@ -2067,6 +2068,24 @@ class TestTableIdentity20260821:
         assert "매입처" in h, "제목이 매입 표라고 안 밝힌다"
         assert "주요 제품 및 서비스" not in h, "판매 표라고 거짓 표기"
         assert "판매 표 미기재" in h, "대체 사유를 안 밝힌다"
+
+    def test_header_and_body_share_one_axis(self):
+        """뉴파워프라즈마 실측(2026-08-21): 머리행 `구분` 은 가운데인데 그
+        아래 `생산능력`·`생산실적`·`기말재고` 는 **글자라 좌측**으로 붙어
+        같은 열의 머리와 몸통이 어긋났다. 열 축은 하나여야 한다."""
+        import re
+        import bot.dart_production as dp
+        mk = ("<P>3. 원재료 및 생산설비</P><TABLE>"
+              "<TR><TH>제 품</TH><TH>사업소</TH><TH>구분</TH><TH>2025년</TH></TR>"
+              "<TR><TD>고주파 전원장치</TD><TD>수원 외</TD><TD>생산능력</TD>"
+              '<TD ALIGN=RIGHT>26,000</TD></TR>'
+              "<TR><TD></TD><TD></TD><TD>가 동 률</TD><TD>37.5%</TD></TR>"
+              "</TABLE>")
+        h = dp.parse_production(mk)["table_html"]
+        cells = re.findall(r"<(t[dh])([^>]*)>", h, re.I)
+        off = [a for _t, a in cells if 'class="ctr"' not in a]
+        assert not off, f"가운데정렬이 안 걸린 셀: {off}"
+        assert "align" not in h.lower(), "원본 ALIGN 속성이 남아 정렬이 갈린다"
 
     def test_kind_survives_the_rolling_walk(self, monkeypatch):
         """⚠️ 헬퍼만 보면 `kind` 를 떨어뜨리는 배선 변형을 못 잡는다(#20).
