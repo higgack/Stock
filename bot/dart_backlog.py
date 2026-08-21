@@ -546,6 +546,11 @@ _NO_DATA_RE = re.compile(
     r"|기재[는를]?\s*생략[^.]{0,40}?수주잔고")
 
 
+def _balance_spots(text: str) -> list[int]:
+    """잔고 라벨이 나온 **모든** 위치. 파서들이 훑는 범위와 같아야 한다."""
+    return [m.start() for m in re.finditer("|".join(_BAL_LABELS), text or "")]
+
+
 def diagnose(text: str) -> str:
     """값을 못 낸 이유를 짧은 코드로 분류한다.
 
@@ -565,11 +570,16 @@ def diagnose(text: str) -> str:
         return "미공시"
     if _NO_DATA_RE.search(text):
         return "명시적미공시"
-    # 잔고 라벨은 있는데 그 앞에 단위 캡션이 없으면 스케일을 못 정한다.
-    first = min(text.find(k) for k in _BAL_LABELS if k in text)
-    if _unit_mult(text, first) is None:
+    # ⚠️ **첫 출현만 보면 파서와 다른 자리를 진단한다**(2026-08-21). 파서들은
+    # `finditer` 로 잔고 라벨 **전 출현**을 훑고 금액 단위가 없는 자리는
+    # 건너뛴다 — 그런데 진단은 첫 자리만 봐서, 앞쪽 다른 표의 캡션
+    # (`(단위 : 사)`·`(단위 : 주)`)을 근거로 '단위없음' 이라고 보고했다.
+    # 감사의 판정은 **제품이 실제로 훑는 범위**와 같아야 한다(#80·#35).
+    spots = _balance_spots(text)
+    with_unit = [p for p in spots if _unit_mult(text, p) is not None]
+    if not with_unit:
         return "단위없음"
-    if not re.search(r"합\s*계", text[first:first + 2500]):
+    if not any(re.search(r"합\s*계", text[p:p + 2500]) for p in with_unit):
         return "합계없음"
     return "형식미지원"
 
@@ -587,22 +597,30 @@ def diagnose_detail(text: str) -> str:
     """
     if not text:
         return ""
-    hits = [k for k in _BAL_LABELS if k in text]
-    if not hits:
+    spots = _balance_spots(text)
+    if not spots:
         return ""
-    at = min(text.find(k) for k in hits)
-    if _unit_mult(text, at) is None:
+    with_unit = [p for p in spots if _unit_mult(text, p) is not None]
+    if not with_unit:
         # 캡션이 **있는데** 우리가 모르는 단위인지, 아예 없는지를 가른다.
-        cap = None
-        for m in re.finditer(r"\(\s*단위[^)]{0,40}\)", text, 0):
-            if m.start() < at:
-                cap = m.group(0)
-        if cap:
-            return "미지원단위 " + re.sub(r"\s+", " ", cap)[:24]
-        fwd = re.search(r"\(\s*단위[^)]{0,40}\)", text[at:at + 1500])
+        # 출현이 여럿이면 서로 다른 표를 보고 있는 것이므로 **모아서** 말한다.
+        caps: list[str] = []
+        for at in spots:
+            cap = None
+            for m in re.finditer(r"\(\s*단위[^)]{0,40}\)", text):
+                if m.start() < at:
+                    cap = re.sub(r"\s+", " ", m.group(0))[:24]
+            if cap and cap not in caps:
+                caps.append(cap)
+        if caps:
+            return ("미지원단위 " + " / ".join(caps[:2])
+                    + (f" 외 {len(caps) - 2}" if len(caps) > 2 else "")
+                    + (f" (라벨 {len(spots)}곳)" if len(spots) > 1 else ""))
+        fwd = re.search(r"\(\s*단위[^)]{0,40}\)", text[spots[0]:spots[0] + 1500])
         if fwd:
             return f"캡션이 라벨 뒤 {fwd.group(0)[:24]}"
         return "캡션없음"
+    at = with_unit[0]
     if not re.search(r"합\s*계", text[at:at + 2500]):
         return "합계행 없음"
     m = re.search(r"합\s*계", text[at:at + 2500])

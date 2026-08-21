@@ -7002,6 +7002,119 @@ class TestFcfDerivedNotCarried20260821:
         assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
 
 
+class TestBacklogDiagnoseScope20260821:
+    """⚠️ 감사가 **파서와 다른 자리**를 진단하고 있었다(2026-08-21 VM 실측):
+    미수집 사유가 `단위없음 · 미지원단위 (단위 : 사)` 4건으로 나왔는데,
+    `(단위 : 사)` 는 앞쪽 **다른 표**(협력사 수)의 캡션이다. 파서들은
+    `finditer` 로 잔고 라벨 전 출현을 훑는데 진단만 첫 출현을 봤다(#80·#35)."""
+
+    def test_diagnose_scans_every_balance_label(self):
+        from bot.dart_backlog import diagnose, diagnose_detail
+        # 앞 표는 비금액 단위, **뒤 표가 진짜** — 파서는 뒤를 본다
+        t = ("(단위 : 사) 협력사 수주잔고 3 "
+             "(단위 : 백만원) 수주총액 기납품액 수주잔고 합 계 999 111 222")
+        assert diagnose(t) == "형식미지원", diagnose(t)
+        assert diagnose_detail(t) == "합계행 3값", diagnose_detail(t)
+
+    def test_unsupported_units_are_reported_together(self):
+        """출현이 여럿이면 서로 다른 표를 보고 있는 것이다 — 하나만 말하면
+        '단위를 하나 더 지원하면 되겠네' 로 잘못 읽힌다."""
+        from bot.dart_backlog import diagnose, diagnose_detail
+        t = "(단위 : 사) 협력사 수주잔고 3 (단위 : 주) 수주잔고 100"
+        assert diagnose(t) == "단위없음"
+        d = diagnose_detail(t)
+        assert "(단위 : 사)" in d and "(단위 : 주)" in d, d
+        assert "라벨 2곳" in d, d
+
+    def test_existing_classifications_are_unchanged(self):
+        """옛 판정 셋은 그대로여야 한다 — 범위를 넓히다 규약을 바꾸면 안 된다."""
+        from bot.dart_backlog import diagnose
+        assert diagnose("수주총액 기납품액 수주잔고 합 계 5 2 3") == "단위없음"
+        assert diagnose("(단위 : 억원) 수주총액 기납품액 수주잔고 "
+                        "조선 1,000 400 600") == "합계없음"
+        assert diagnose("(단위 : 억원) 수주총액 기납품액 수주잔고 "
+                        "합 계 999 111 222") == "형식미지원"
+
+
+class TestDartFinancialsLatency20260821:
+    """2026-08-21 VM 계측: `kr:dart.financials` **중앙값 26.2초·최대 44.7초**
+    로 `enrich:KR` 전체를 지배했다(그 다음이 fsc.dilution 5.4초). 원인은
+    파싱이 아니라 DART 원자조회 ~20회를 **직렬**로 도는 것이다."""
+
+    class _Rec:
+        """호출을 세고 **동시 실행 수**를 기록하는 스텁."""
+
+        def __init__(self, have=None, delay=0.05):
+            import threading
+            self.calls, self.cur, self.peak = [], 0, 0
+            self.have, self.delay = have, delay
+            self._lk = threading.Lock()
+            self.cache = {}
+
+        def get_normalized_financials(self, ticker, year=None, fs_div="CFS",
+                                      reprt_code="11011"):
+            import time
+            key = (year, fs_div, reprt_code)
+            with self._lk:
+                self.calls.append(key)
+                if key in self.cache:          # 디스크 캐시를 흉내낸다
+                    return self.cache[key]
+                self.cur += 1
+                self.peak = max(self.peak, self.cur)
+            time.sleep(self.delay)
+            with self._lk:
+                self.cur -= 1
+            if self.have is not None and key[:1] + key[2:] not in self.have:
+                pass
+            fin = {"매출": 100.0, "영업활동현금흐름": 100.0,
+                   "유형자산취득": 10.0}
+            r = {"financials": fin, "financials_cumulative": dict(fin)}
+            with self._lk:
+                self.cache[key] = r
+            return r
+
+    def test_plan_matches_what_the_loop_actually_walks(self):
+        """미리받기가 **다른 키**를 받으면 요청만 늘고 빨라지진 않는다 —
+        그것도 조용히(#61: 상한이 무엇을 줄이는지 먼저 답할 것)."""
+        import bot.dart_quarterly as dq
+        plan = dq._plan_pairs(2026, "11012", 6)
+        # 루프가 걷는 순서를 여기서 다시 만들어 대조한다
+        walked, y, rc = [], 2026, "11012"
+        for _ in range(6):
+            walked.append((y, rc))
+            i = dq._Q_ORDER.index(rc)
+            y, rc = (y - 1, "11011") if i == 0 else (y, dq._Q_ORDER[i - 1])
+        assert plan == walked, (plan, walked)
+
+    def test_series_fetches_reports_concurrently(self, monkeypatch):
+        """⚠️ 시간이 아니라 **동시 실행 수**로 잰다 — 시간 단언은 느린
+        CI 에서 흔들리고, 무엇보다 '직렬인데 빨랐다'를 구분 못 한다."""
+        import bot.dart_quarterly as dq
+        import bot.kr_revenue_fallback as krf
+        monkeypatch.setattr(krf, "fill_series", lambda *a, **k: False)
+        rec = self._Rec()
+        qs = dq.get_quarterly_series(rec, "005930", n=5)
+        assert qs, "시계열이 비었다 — 대조 0건은 통과가 아니다(#54)"
+        # ⚠️ `>= 2` 로 두면 CFS/OFS 프로브 2개가 대신 만족시켜 미리받기를
+        # 통째로 지우는 뮤테이션이 통과한다(실측 — #75 옆 칸이 대신
+        # 만족시키는 단언). 창(n+1=6)만큼 동시에 도는지 본다.
+        assert rec.peak >= 4, f"보고서 조회가 직렬이다(최대 동시 {rec.peak})"
+
+    def test_annual_series_is_prefetched_in_parallel(self, monkeypatch):
+        """연간 3개년도 서로 독립인데 직렬이었다."""
+        import bot.stock_snapshot as ss
+        import bot.dart_client as dc
+        import bot.dart_quarterly as dq
+        rec = self._Rec()
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: rec)
+        monkeypatch.setattr(dq, "get_quarterly_series", lambda *a, **k: None)
+        monkeypatch.setattr(ss, "_apply_revenue_fallback",
+                            lambda *a, **k: None)
+        out = ss.collect_kr_financials("005930.KS")
+        assert out.get("kr", {}).get("financials_ts"), out
+        assert rec.peak >= 2, f"연간 조회가 직렬이다(최대 동시 {rec.peak})"
+
+
 class TestProbeProgress20260821:
     """사용자 2026-08-21 "여기서 너무 오래 진행이 안되는데...": 40종목 스윕은
     원래 수십 분인데 **한 줄도 안 나왔다**. 파이썬 stdout 이 파이프에선
