@@ -36,11 +36,12 @@ import re
 import sys
 import time
 
-_PROBE_VER = 3          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 4          # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
 #   (같은 원문을 재사용 — DART 호출 0 추가).
+#   v4(2026-08-21): 잘림 판정을 원천 플래그로(문자 길이 추정 금지).
 
 
 def _universe(limit: int) -> list[str]:
@@ -91,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     from bot.dart_client import get_dart
     from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
                                _fetch_doc_text)
+    from bot.dart_feed import doc_was_truncated as dp_trunc
     from bot import dart_production as dp
 
     print(f"=== 생산능력·가동률 형식 스윕 v{_PROBE_VER} "
@@ -112,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             tally["분기데이터없음"] = tally.get("분기데이터없음", 0) + 1
             print(f"[{i:3}/{len(tickers)}] {tk}  분기데이터없음")
             continue
-        verdict, markup, basis, dlen = "원문미제공", None, "", 0
+        verdict, markup, basis, dlen, cutmark = "원문미제공", None, "", 0, False
         for q in reversed(qs):
             rn = (dart.find_periodic_reports(tk, q["year"], q["reprt_code"])
                   or [{}])[0].get("rcept_no") or ""
@@ -126,12 +128,15 @@ def main(argv: list[str] | None = None) -> int:
             for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
                 mk = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
                                      raw_markup=True)
-                # 받은 길이가 상한에 닿았으면 **잘렸다** — 앵커 부재를
-                # '섹션없음'이라 말할 수 없다(판정불가를 없음으로 말하지 않기).
-                cut = bool(mk) and len(mk) >= cap * 0.98
+                # ⚠️ 길이로 추정하지 않는다 — 상한은 **바이트**, 반환은
+                # 정규화된 **문자열**이라 항상 더 짧아 판정이 늘 '안 잘림'
+                # 으로 기운다. v3 에서 삼성전자가 2,826k자/3,000k바이트로
+                # 0.94배라 재시도를 안 해 '섹션없음'으로 찍혔다.
+                cut = dp_trunc(rn, cap, True)
                 v = dp.diagnose(mk, truncated=cut)
                 if mk:
                     verdict, markup, basis, dlen = v, mk, q.get("label", ""), len(mk)
+                    cutmark = cut
                 if v in _OK:
                     break
                 if not cut:
@@ -147,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
         mark = "✅" if got else "❌"
         kinds = ",".join(got.get("kinds") or []) if got else ""
         print(f"[{i:3}/{len(tickers)}] {tk} {mark} {verdict:<8} {basis:<6}"
-              f" {dlen//1000:>5}k {'📦' if prod else '  '} {kinds}")
+              f" {dlen//1000:>5}k{'✂' if cutmark else ' '}"
+              f" {'📦' if prod else '  '} {kinds}")
         # ⚠️ 미채택만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
         if not got:
             head = ""
