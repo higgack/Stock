@@ -126,6 +126,31 @@ def _now_hour_kst() -> str:
     return datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d_%H")
 
 
+_RENDER_SIG: str | None = None
+
+
+def _render_sig() -> str:
+    """이 모듈 소스의 지문 — 그림·문구를 고치면 캐시가 **자동으로** 무효.
+
+    ⚠️ `_RENDER_VER` 는 손으로 올리는 리터럴이라 **또 잊었다**(2026-08-22
+    LG화학: 각주에 계정쌍을 싣도록 고쳤는데 화면은 옛 PNG 그대로였다).
+    같은 실패가 이 레포에서 네 번째다 — #18 아카이브 · #21b 파싱 캐시 ·
+    #95 재무 캐시(v4·v5 를 주석에 적어 두고도 v6 을 잊었다) · 여기.
+    규율로 기억할 일을 **구조로** 옮긴다(#1039 파서 지문과 같은 처방).
+    재렌더 비용은 matplotlib 1회(₩0)이고 LLM 은 rcept_no 캐시라 재과금 없다.
+    """
+    global _RENDER_SIG
+    if _RENDER_SIG is None:
+        try:
+            import hashlib
+            import pathlib
+            _RENDER_SIG = "-" + hashlib.sha1(
+                pathlib.Path(__file__).read_bytes()).hexdigest()[:8]
+        except Exception:                                      # noqa: BLE001
+            _RENDER_SIG = ""       # 지문을 못 구하면 옛 규약대로(버전만)
+    return _RENDER_SIG
+
+
 def cache_path(ticker: str, period_key, reprt_code=None,
                asof: str | None = None) -> Path:
     """캐시 파일 경로 = 캐시 키. 새 분기면 파일명이 달라져 자동 재렌더.
@@ -143,7 +168,7 @@ def cache_path(ticker: str, period_key, reprt_code=None,
     key = f"{period_key}{reprt_code}" if reprt_code is not None else str(period_key)
     return (_IMG_DIR /
             f"{_safe_name(ticker)}_{key}_{asof or _now_hour_kst()}"
-            f"_{_RENDER_VER}.png")
+            f"_{_RENDER_VER}{_render_sig()}.png")
 
 
 def _font_ok() -> bool:
