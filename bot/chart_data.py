@@ -163,11 +163,15 @@ def _future_times(times: list, interval: str, ticker: str | None, n: int) -> lis
     return out
 
 
+class _LiteSkip(Exception):
+    """lite 모드의 의도된 생략 — 오류 로그를 남기지 않으려는 내부 신호."""
+
+
 def _series_payload(
     close, currency: str, decimals: int,
     volume=None, opens=None, highs=None, lows=None,
     ticker: str | None = None, interval: str = "1d",
-    for_storage: bool = False, tkey: str = "",
+    for_storage: bool = False, tkey: str = "", lite: bool = False,
 ) -> dict:
     """Build the parallel-array chart payload from a pandas close Series.
 
@@ -178,7 +182,15 @@ def _series_payload(
     omitted gracefully when the series is too short or inputs are absent.
 
     `tkey`: 계측 키(`timing_key`). 빈 문자열이면 기록하지 않는다 — 저장용
-    호출은 요청이 아니라 계측 대상이 아니다."""
+    호출은 요청이 아니라 계측 대상이 아니다.
+
+    `lite`: **기본 OFF 오버레이**(일목균형표·이격도·엘리엇/피보나치·공시)를
+    건너뛴다. 첫 화면은 캔들·이평선·거래량만 켜져 있는데 그 셋을 보려고
+    아무도 안 켠 계산까지 기다리고 있었다 — 2026-08-22 VM 실측 CCJ:
+    `indicators=73.093s` 중 `ind.ichimoku+disparity=59.73s` +
+    `ind.events=3.276s`. 클라이언트가 lite 로 먼저 그린 뒤 나머지를
+    백그라운드로 받아 합친다(사용자 "종합탭은 다른것보다 빨리 나와야").
+    """
     import math
 
     def _mark(stage: str, sec: float) -> None:
@@ -299,7 +311,7 @@ def _series_payload(
     # 실제로 그려지는 API 응답(1h 디스크 캐시)에는 그대로 들어간다.
     _mark("ind.basic", _ind_t.time() - _ind_t0)
     _ind_t0 = _ind_t.time()
-    if not for_storage:
+    if not for_storage and not lite:
         try:
             from bot.ichimoku import ichimoku, ichimoku_signal
             _cl = payload.get("close") or []
@@ -344,7 +356,7 @@ def _series_payload(
     # 공시 이벤트 마커 (전 시장, ₩0). 차트가 보여줄 기간(span)을 넘겨 KR/US 는
     # 풀히스토리, JP/TW/CN 은 시장별 안전 캡으로 fetch. 보이는 날짜 구간으로 필터.
     # 실패/키부재 시 graceful(빈 리스트). 호재/악재 판단 X.
-    if ticker and not _intraday:
+    if ticker and not _intraday and not lite:
         try:
             from bot.chart_events import fetch_disclosure_events
             times = payload.get("times") or []
@@ -370,6 +382,8 @@ def _series_payload(
     # month")이라 일봉/분봉/주봉 어느 interval 이든 그 단위로 계산한다.
     # 순수 가격 연산이라 전 시장 동일(universal). 실패해도 차트 본체엔 영향 없음.
     try:
+        if lite:
+            raise _LiteSkip
         from bot.elliott_fib import analyze_waves
         _c = payload.get("close") or []
         _hh = payload.get("high") or _c
@@ -382,6 +396,8 @@ def _series_payload(
                                [_c[i] for i in keep])
             if ef:
                 payload["elliott"] = ef
+    except _LiteSkip:
+        pass                          # lite = 의도된 생략(오류 아님)
     except Exception as exc:      # silent-fail 금지 — 원인 로그는 남긴다
         log.debug("chart_data: elliott/fib overlay skipped: %s", exc)
     _mark("ind.elliott", _ind_t.time() - _ind_t0)
@@ -919,14 +935,19 @@ def _fetch_series_fallback(ticker: str, period: str):
 # 없었다. 추측하지 말고 잰다(#69).
 from bot.timing import Stages as _Stages
 
+
+class _LiteSkip(Exception):
+    """lite 모드의 의도된 생략 — 오류 로그를 남기지 않으려는 내부 신호."""
+
 # ⚠️ **요청 키별**로 가른다 — 전역 dict 하나면 탭 세 개를 열었을 때 한
 # 줄이 누구 것인지 알 수 없다(2026-08-22 실측, bot/timing.py 주석 참조).
 _TIMING = _Stages()
 
 
-def timing_key(ticker: str, interval: str, period: str) -> str:
+def timing_key(ticker: str, interval: str, period: str,
+               lite: bool = False) -> str:
     """계측 키 — 로그를 찍는 쪽과 재는 쪽이 **같은 문자열**을 써야 한다."""
-    return f"{ticker}|{interval}|{period}"
+    return f"{ticker}|{interval}|{period}{'|lite' if lite else ''}"
 
 
 def last_chart_timing(key: str) -> dict:
@@ -936,7 +957,7 @@ def last_chart_timing(key: str) -> dict:
 
 def fetch_chart_payload(
     ticker: str, interval: str = "1d", period: str = "1y",
-    prefer_period: bool = False,
+    prefer_period: bool = False, lite: bool = False,
 ) -> dict | None:
     """`prefer_period=True` 면 야후에 **기간 키워드**(`period="1y"`)로 묻는다.
 
@@ -990,7 +1011,7 @@ def fetch_chart_payload(
         return fb
 
     import time as _time
-    _tkey = timing_key(ticker, interval, period)
+    _tkey = timing_key(ticker, interval, period, lite)
     _TIMING.start(_tkey)
     _t_all = _time.time()
     try:
@@ -1059,11 +1080,13 @@ def fetch_chart_payload(
         _t0 = _time.time()
         payload = _series_payload(close, currency, decimals, vol, op, hi, lo,
                                   ticker=ticker, interval=interval,
-                                  tkey=_tkey)
+                                  tkey=_tkey, lite=lite)
         _TIMING.set(_tkey, "indicators", _time.time() - _t0)
         _TIMING.set(_tkey, "total", _time.time() - _t_all)
         payload["interval"] = interval
         payload["period"] = period
+        if lite:
+            payload["lite"] = True     # 클라이언트가 나머지를 마저 받는다
         if _iv_fallback:
             payload["interval_fallback"] = _iv_fallback
         # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).

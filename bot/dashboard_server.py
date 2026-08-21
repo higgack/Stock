@@ -325,6 +325,23 @@ def _wrap_style() -> str:
         return ""
 
 
+# 차트 payload 디스크 캐시 파일명. **순수 함수로 빼 둔다** — 회귀가 소스
+# 문자열을 슬라이스하면 같은 계약을 지키는 리팩터에 깨진다(#19).
+_CHART_CACHE_VER = 6
+
+
+def chart_cache_name(safe: str, interval: str, rng: str,
+                     lite: bool = False) -> str:
+    """payload 모양이 바뀌면 `_CHART_CACHE_VER` 를 올려 옛 캐시를 무시한다.
+
+    ⚠️ `lite`(기본 OFF 오버레이 생략)는 **다른 payload** 라 파일도 따로다 —
+    같은 파일에 섞으면 첫 화면이 lite 를 굽고 그 뒤 TTL 내내 오버레이를
+    켜도 데이터가 없다.
+    """
+    return (f"{safe}_{interval}_{rng}_v{_CHART_CACHE_VER}"
+            + ("_lite" if lite else "") + ".json")
+
+
 def _production_html(ticker: str, payload: dict) -> str:
     """분기실적 탭의 주요 제품 + 생산능력·가동률 표 HTML. 부재는 ""(섹션 생략).
 
@@ -1148,7 +1165,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             #     보이거나 폴백 안내가 빠지는 것 방지.
             # v6: ichimoku(일목균형표 5선 + 자체 확장 시간축 + 신호) · disparity
             #     (이격도 20/60 + 밴드) 필드 추가 (2026-07-31).
-            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v6.json"
+            # ⚠️ lite(기본 OFF 오버레이 생략)는 **다른 payload** 라 캐시 파일도
+            # 따로. 같은 파일에 섞으면 첫 화면이 lite 를 굽고 그 뒤 5분간
+            # 오버레이를 켜도 데이터가 없다.
+            lite = (params.get("lite", ["0"])[0] == "1")
+            cache_f = cache_dir / chart_cache_name(safe, interval, rng, lite)
             # TTL 5 min — last_price 가 장중 갱신되도록. yfinance 호출은
             # 종목당 5분당 1회 → 단일 채널 audience 면 무료한도 안전 (~2000/h).
             if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:
@@ -1167,11 +1188,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             payload = _once(
                 f"chart:{cache_f.name}",
                 lambda: fetch_chart_payload(ticker, interval=interval,
-                                            period=rng))
+                                            period=rng, lite=lite))
             try:                      # 어디서 시간이 나는지 같이 남긴다(#69)
-                _st = last_chart_timing(timing_key(ticker, interval, rng))
+                _st = last_chart_timing(timing_key(ticker, interval, rng,
+                                                   lite))
                 if _st:
-                    log.info("chart-timing %s %s/%s %s", ticker, interval, rng,
+                    log.info("chart-timing %s %s/%s%s %s", ticker, interval,
+                             rng, " lite" if lite else "",
                              " ".join(f"{k}={v}s" for k, v in _st.items()))
             except Exception:                                  # noqa: BLE001
                 pass

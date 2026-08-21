@@ -2807,7 +2807,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
         <ul>
           <li>핵심 공시만 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약/소송</span> · <span style="color:#4c9aff">시설투자</span> · <span style="color:#b07cff">주주환원</span>(배당·자기주식) · <span style="color:#f5a623">자본변동</span>(증자·CB·감자) · <span style="color:#2dd4bf">M&A·지분</span>(합병·양수도) · <span style="color:#e2574c">리스크</span>(상장폐지·거래정지·횡령) · <span style="color:#f78fb3">최대주주변경</span>. (실적·임원·Reg FD 등 그 외는 제외.) 마커에 hover하면 <b>차트 아래 패널</b>에 그 날 공시의 종류·전체 제목·간단 설명·<b>원문 보기 링크</b> 표시.</li>
           <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). US 8-K 는 항목 종류가 넓어(실적·Reg FD·임원 위주) 매칭되는 마커가 KR DART(세밀한 공시명)보다 적게 표시될 수 있음. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(<b>기본 OFF</b> — 선택해서 보기).</li>
-          <li>공시 조회는 <b>차트를 붙잡지 않습니다</b> — 8초 안에 안 오면 그 차트는 마커 없이 먼저 그려지고, 백그라운드가 받아 둔 뒤 <b>다음 조회부터</b> 표시됩니다(종목당 12시간 보관). 방금 담은 종목의 첫 조회에서 마커가 비어 보이면 새로고침해 보세요.</li>
+          <li>공시 조회는 <b>차트를 붙잡지 않습니다</b> — 차트는 기본 표시 항목(캔들·이평선·거래량)만으로 <b>먼저</b> 그려지고, 공시·일목균형표·이격도·피보나치·엘리엇은 그 뒤 백그라운드로 받아 채웁니다. 켰는데 잠깐 비어 있으면 <b>⏳ 보조지표 준비 중</b> 이 뜹니다(공시는 종목당 12시간 보관).</li>
         </ul>
       </div>
       <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량)으로 돌아갑니다.
@@ -3926,11 +3926,43 @@ _CHART_JS = """
 
   function status(msg){ var st = document.getElementById('chart-status'); if (st) st.textContent = msg || ''; }
 
+  /* 기본 OFF 오버레이는 첫 응답에서 뺀다 — 캔들·이평선·거래량만 보려고
+     아무도 안 켠 계산을 기다리고 있었다(VM 실측 CCJ: indicators 73.1초 중
+     일목+이격도 59.7초 · 공시 3.3초). lite 로 먼저 그리고 나머지는 백그라운드로
+     받아 합친다(사용자 2026-08-22 "종합탭은 다른것보다 빨리 나와야"). */
+  var REST_IND = { ichi:1, disp:1, fib:1, wave:1, events:1 };
+  var REST_KEYS = ['ichimoku','disparity','elliott','events'];
+  var restReady = false, restWant = null;
+  function needsRest(){ for (var k in REST_IND) if (ind[k]) return true; return false; }
+  function loadRest(iv, rg){
+    restWant = iv + '|' + rg;
+    fetch('../api/chart?ticker=' + encodeURIComponent(ticker) + '&interval=' + iv + '&range=' + rg,
+          { headers: { 'Accept': 'application/json' } })
+      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(j){
+        /* 그새 사용자가 기간/봉을 바꿨으면 이 응답은 남의 것이다 */
+        if (restWant !== iv + '|' + rg || curInterval !== iv || curRange !== rg) return;
+        if (!j || !j.ok || !j.chart || !lastData) return;
+        for (var n = 0; n < REST_KEYS.length; n++) {
+          var k = REST_KEYS[n];
+          if (j.chart[k] !== undefined) lastData[k] = j.chart[k];
+        }
+        restReady = true;
+        if (needsRest()) { render(lastData, true); status(''); }
+      })
+      .catch(function(err){
+        /* 조용히 넘기지 않는다 — 오버레이가 왜 안 켜지는지 화면이 말해야 한다 */
+        if (needsRest()) status('⚠️ 보조지표를 불러오지 못했습니다 (' + ((err && err.message) || 'error') + ')');
+      });
+  }
+
   function load(){
     setActive();
     status('⏳ 불러오는 중…');
     el.style.opacity = '0.5';
-    fetch('../api/chart?ticker=' + encodeURIComponent(ticker) + '&interval=' + curInterval + '&range=' + curRange,
+    restReady = false;
+    var _iv = curInterval, _rg = curRange;
+    fetch('../api/chart?ticker=' + encodeURIComponent(ticker) + '&interval=' + curInterval + '&range=' + curRange + '&lite=1',
           { headers: { 'Accept': 'application/json' } })
       .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function(j){
@@ -3954,6 +3986,11 @@ _CHART_JS = """
           if (j.chart.interval) curInterval = j.chart.interval;
           render(j.chart);
           setActive();
+          /* 첫 그림이 끝났으니 이제 나머지(기본 OFF 오버레이)를 받는다 */
+          if (j.chart.lite) {
+            if (needsRest()) status('⏳ 보조지표 준비 중…');
+            loadRest(_iv, _rg);
+          } else { restReady = true; }
         }
         else { status('⚠️ 데이터 없음 (' + ((j && j.error) || 'no data') + ')'); }
       })
@@ -3970,7 +4007,13 @@ _CHART_JS = """
     if (!t || t === document || !t.classList) return;
     if (t.classList.contains('chart-ind-btn')) {
       var k = t.getAttribute('data-ind');
-      if (k in ind) { ind[k] = !ind[k]; saveInd(); setActiveInd(); if (lastData) render(lastData, true); }
+      if (k in ind) {
+        ind[k] = !ind[k]; saveInd(); setActiveInd();
+        /* 아직 안 받은 오버레이면 **왜 비어 있는지** 말한다(빈 화면 금지) */
+        if (ind[k] && REST_IND[k] && !restReady) status('⏳ 보조지표 준비 중…');
+        else if (!needsRest()) status('');
+        if (lastData) render(lastData, true);
+      }
       return;
     }
     if (t.classList.contains('chart-tf-btn')) {
