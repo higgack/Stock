@@ -40,6 +40,8 @@ SITES: tuple[Site, ...] = (
     Site("국민연금", "국민연금 현황", "https://whale-insight.com/"),
     Site("Funeasy", "funesay board", "https://easyconomics.com/"),
     Site("밸류업", "activeholders", "https://activeholders.com/"),
+    # 사용자 2026-08-21: "이것도 대시보드에 넣어주고, Nav 제목은 Stockeasy".
+    Site("Stockeasy", "Stockeasy", "https://stockeasy.intellio.kr/"),
 )
 
 
