@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from trade import cn_exports as _cn
+from trade import cn_stock_exports as _cns
 from trade import jp2_exports as _jp2
 from trade import jp_stock_exports as _jps
 from trade import kr_stock_exports as _krs
@@ -128,6 +129,16 @@ SOURCES: tuple[Source, ...] = (
            "my_stock.db", "my_stock.html",
            "🐆 말레이시아 수출 데이터(종목별·나쁜양파)",
            country="말레이시아", basis="company", flow="export"),
+    # 중국도 품목(cn)과 **종목** 두 갈래다. 26년 7월 종목판이 채널에 떴는데
+    # 품목 파서의 마커가 `N월 수출 중국`(어순 반대)이라 관련성 필터를
+    # 통과 못 하고 통째로 드랍됐다(사용자 2026-08-21 — 일본 2026-08-16,
+    # 말레이시아 2026-08-20 과 **같은 사고**. 어순 반대 형제 포맷은 네
+    # 번째다: 새 나라의 종목판이 뜨면 또 난다고 보는 게 맞다).
+    Source("cns", "중국 수출(종목별)", _cns.parse_cn_stock_export,
+           _cns.open_cn_stock_db, _cns.ingest, _cns.regenerate,
+           "cn_stock.db", "cn_stock.html",
+           "🏮 중국 수출 데이터(종목별·나쁜양파)",
+           country="중국", basis="company", flow="export"),
 )
 
 # nav 표시 순서 — **ingest 순서와 다르다.** SOURCES 를 재정렬하면 라우팅이

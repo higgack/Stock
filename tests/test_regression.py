@@ -6154,6 +6154,63 @@ class TestQuarterlyMultiMarket20260816:
         mcap = [t for t in seen if "億" in t or "B" in t or "조" in t]
         assert mcap and mcap[0].startswith("HK$"), f"시총 통화가 틀림: {mcap}"
 
+    def test_footer_text_lines_up_with_the_chart_plot_frame(self):
+        """사용자 2026-08-21: TTM 타일·각주가 위 차트보다 왼쪽에 떠 있었다.
+
+        푸터 글자는 패널 기준 6.0 이었는데 차트의 **플롯 프레임**은 패널
+        안쪽 여백 뒤(2.5+8.0=10.5)에서 시작한다 — 패널끼리는 맞는데 눈에
+        보이는 내용이 어긋난다. 소스 문자열이 아니라 **렌더된 좌표**로
+        본다(#19·#70a: 재는 건 그려 놓고 재야 한다)."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        from bot import quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11,
+                              "당기순이익": 1e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+              for i in (1, 2, 3)]
+        p = {"ticker": "005930.KS", "company": "T", "market": "KRX",
+             "market_cap": 1.2e11, "price": 45600, "quarters": qs,
+             "ttm": qi._ttm(qs), "per": 12.0, "per_forward": 9.0,
+             "per_self": True, "psr": 2.7, "currency": "KRW",
+             "currency_mismatch": False, "fiscal_note": "",
+             "anomaly_keys": [], "anomaly_labels": [],
+             "component_accounts": {}, "source_label": "DART",
+             "asof": "2026-08-21_15", "growth_risk": {"ok": False}}
+        cap = {}
+        orig = Figure.savefig
+
+        def spy(self, *a, **k):
+            # ⚠️ `axison` 으로 가른다 — 도화지 축도 get_position 을 준다(#70b).
+            cap["ax"] = [ax.get_position().x0 for ax in self.axes if ax.axison]
+            main = [ax for ax in self.axes if not ax.axison]
+            cap["tx"] = [(t.get_position()[0], t.get_text())
+                         for ax in main for t in ax.texts]
+            cap["xlim"] = main[0].get_xlim() if main else None
+            return orig(self, *a, **k)
+        Figure.savefig = spy
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                qi._render_locked(p, f"{d}/x.png", ("charts", "foot"))
+        finally:
+            Figure.savefig, qi._font_ok = orig, _o
+        assert cap.get("ax"), "차트 축을 못 찾음 — 대조 0건은 통과가 아니다(#54)"
+        lo, hi = cap["xlim"]
+        first = [x for x, t in cap["tx"] if t == "TTM 매출"]
+        notes = [x for x, t in cap["tx"] if t.startswith("*")]
+        assert first, f"푸터 첫 항목을 못 찾음: {[t for _x, t in cap['tx']][:8]}"
+        assert notes, "각주를 못 찾음"
+        want = (first[0] - lo) / (hi - lo)
+        assert abs(min(cap["ax"]) - want) < 0.002, (
+            f"푸터 글자가 차트 플롯 프레임과 어긋남: "
+            f"축 {min(cap['ax']):.4f} vs 글자 {want:.4f}")
+        assert abs(notes[0] - first[0]) < 1e-6, "각주만 딴 x 에 있다"
+
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note
         assert fiscal_note("12-31") == "" and fiscal_note(None) == ""
@@ -6211,9 +6268,52 @@ class TestQuarterlyChartLayout20260816:
         assert mt and mc, "레이아웃 상수 이름이 바뀜"
         tile, chart = float(mt.group(1)), float(mc.group(1))
         assert chart >= 3 * tile, f"차트 섹션이 작다(H_CHART={chart})"
-        # 두 콤보 모두 전체폭(95). 옛 마커는 `cw = 46.5` 부재였는데 그건
-        # **LLM 카드 2단** 폭과 이름이 겹쳐 오탐이 됐다 — 차트 폭을 직접 본다.
-        assert src.count("combo((2.5, y") >= 1 and "95, _ch" in src
+        # ⚠️ 옛 판은 `src.count("combo((2.5, y") >= 1 and "95, _ch" in src`
+        # 라는 **소스 문자열**이었다. 좌표를 `_PANEL_X`/`_PANEL_W` 상수로
+        # 묶는 리팩터(2026-08-21, 같은 계약을 더 강하게 지킨다)에 그대로
+        # 깨졌다 — 계약은 "전체폭·세로 2단"이지 특정 표현이 아니다(#19).
+        # **렌더해서** 축 자리로 본다.
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        from bot import quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11,
+                              "당기순이익": 1e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+              for i in (1, 2, 3)]
+        p = {"ticker": "005930.KS", "company": "T", "market": "KRX",
+             "market_cap": 1.2e11, "price": 45600, "quarters": qs,
+             "ttm": qi._ttm(qs), "per": 12.0, "per_forward": 9.0,
+             "per_self": True, "psr": 2.7, "currency": "KRW",
+             "currency_mismatch": False, "fiscal_note": "",
+             "anomaly_keys": [], "anomaly_labels": [],
+             "component_accounts": {}, "source_label": "DART",
+             "asof": "2026-08-21_15", "growth_risk": {"ok": False}}
+        boxes = []
+        orig = Figure.savefig
+
+        def spy(self, *a, **k):
+            boxes.extend((round(ax.get_position().x0, 4),
+                          round(ax.get_position().width, 4),
+                          round(ax.get_position().y0, 4))
+                         for ax in self.axes if ax.axison)
+            return orig(self, *a, **k)
+        Figure.savefig = spy
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                qi._render_locked(p, f"{d}/x.png", ("charts",))
+        finally:
+            Figure.savefig, qi._font_ok = orig, _o
+        assert boxes, "차트 축이 하나도 없다 — 대조 0건은 통과가 아니다(#54)"
+        assert len({b[0] for b in boxes}) == 1, f"좌측 정렬이 갈림: {boxes}"
+        assert len({b[1] for b in boxes}) == 1, f"폭이 갈림: {boxes}"
+        assert boxes[0][1] >= 0.80, f"차트가 전체폭이 아니다: {boxes[0][1]}"
+        assert len({b[2] for b in boxes}) >= 2, f"세로 2단이 아니다: {boxes}"
         assert "combo((2.5, y, 46" not in src, "좌우 2분할 잔존"
 
     def test_axis_tick_locator_wired_on_both_axes(self):
