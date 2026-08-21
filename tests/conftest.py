@@ -62,4 +62,13 @@ def _isolate_disk_caches(tmp_path_factory, monkeypatch):
         _df._DOC_TRUNC.clear()         # 잘림 플래그도 함께
     except Exception:
         pass
+    # 공용 JSON 디스크 캐시(finviz_client 의 `_cached`/`_cache_write`)를 쓰는
+    # 모듈이 여럿이다(차트 공시 마커·DART 상세요약 등) — 위 둘과 같은 사고라
+    # 여기서 함께 막는다. 테스트마다 monkeypatch 하는 건 목록형 방어라 새
+    # 테스트를 못 잡는다(#24).
+    try:
+        import bot.finviz_client as _fv
+        monkeypatch.setattr(_fv, "_CACHE_DIR", root / "finviz")
+    except Exception:
+        pass
     yield

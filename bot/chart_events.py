@@ -13,7 +13,12 @@ try/except graceful(키 부재·실패 시 빈 리스트). 분류기는 순수 �
 """
 from __future__ import annotations
 
+import logging
 import re
+import threading
+import time
+
+log = logging.getLogger("bot.chart_events")
 
 # US 8-K 항목 라벨(edgar_client 영문, 고정 ~21종) → 한국어. ₩0 완역(MT 불필요).
 _US_8K_KR = {
@@ -171,8 +176,10 @@ def _norm(items: list[dict], date_key: str, title_key: str,
     return out
 
 
-def fetch_disclosure_events(ticker: str, limit: int = 250, days: int = 400) -> list[dict]:
+def _fetch_events(ticker: str, limit: int = 250, days: int = 400) -> list[dict]:
     """티커 → 공시 이벤트 마커 리스트. 시장별 무료 클라이언트로 라우팅, 실패 시 [].
+
+    **무캐시·무예산** — 캐시와 예산은 감싼 `fetch_disclosure_events` 가 준다.
 
     `days` = 차트가 보여줄 기간(일). 시장별 호출 비용·데이터 한계로 캡을 다르게:
     - KR DART / US EDGAR: 차트 범위 풀히스토리(캡 ~11년). DART 는 페이지네이션,
@@ -256,3 +263,97 @@ def fetch_disclosure_events(ticker: str, limit: int = 250, days: int = 400) -> l
         except Exception:
             pass
     return events
+
+
+# ── 캐시 + 예산 ───────────────────────────────────────────────────────────────
+# ⚠️ 공시 마커는 **장식**이다 — 차트를 붙잡으면 안 된다. 2026-08-21 실측:
+# `/api/chart` 385초 중 380초가 지표 단계였고 순수 계산은 0.02초 — 전부 이
+# 함수의 바깥 원천 I/O 였다(DART list.json 페이지네이션 + 주요사항보고서 5종
+# + CN/JP/TW 제목 번역). 차트 payload 캐시는 5분이라 5분마다 그 값을 다시 문다.
+# 대응 둘: (a) 12시간 디스크 캐시 (b) **예산**(기본 8초) — 넘으면 이번 응답은
+# 마커 없이 내보내고 백그라운드가 캐시를 예열해 다음 요청이 곧바로 받는다.
+_EV_CACHE_VER = 1            # 스키마 버전(#21b — 파서를 고치면 올릴 것)
+_EV_TTL = 12 * 3600
+_EV_SOFT_TTL = 3600          # 빈 결과(원천 실패일 수 있다)는 짧게만 믿는다
+_EV_BUDGET = 8.0             # 초
+_EV_LOCK = threading.Lock()
+_EV_INFLIGHT: dict[str, threading.Event] = {}
+
+
+def _days_for(market: str) -> int:
+    """시장별 **고정** 조회창 — 캐시 키를 안정시킨다.
+
+    ⚠️ 차트 기간마다 창이 달라지면 캐시 키가 쪼개져 캐시가 거의 안 맞는다
+    (#61 — 키를 잘게 나눌수록 비용이 주는 게 아니라 늘 수도 있다). 비용은
+    창 길이가 아니라 **페이지 수**(limit)가 정하므로 창은 고정해도 같다.
+    호출부가 보이는 날짜 구간으로 다시 거르므로 초과분은 화면에 안 나온다.
+    아래 값은 `_fetch_events` 의 시장별 캡과 **같은 값**이어야 한다(멱등).
+    """
+    if market == "JP":
+        return 180
+    if market in ("CN_A", "HK", "TW"):
+        return 400
+    return 4000                       # KR·US 풀히스토리
+
+
+def fetch_disclosure_events(ticker: str, limit: int = 250,
+                            days: int = 400) -> list[dict]:
+    """`_fetch_events` + 12시간 디스크 캐시 + 예산. 실패·초과 시 빈 리스트.
+
+    ⚠️ `days` 는 **참고만** 한다 — 실제 조회창은 시장별 고정값(`_days_for`)
+    이다. 차트 기간마다 창이 달라지면 캐시 키가 쪼개진다(아래 주석 참조).
+    """
+    from bot.finviz_client import _cache_write, _cached
+    try:
+        from bot.market import detect_market
+        market = detect_market(ticker)
+    except Exception:                                          # noqa: BLE001
+        market = "US"
+    days = _days_for(market)
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", ticker or "")
+    key = f"chart_ev_v{_EV_CACHE_VER}_{safe}_{limit}_{days}.json"
+
+    def _read():
+        hit = _cached(key, ttl=_EV_TTL)
+        if not isinstance(hit, dict) or "data" not in hit:
+            return None
+        if hit["data"]:
+            return hit["data"]
+        # 빈 결과는 '원천에 없음'일 수도 원천 실패일 수도 있다 — 짧게만 믿는다
+        return [] if _cached(key, ttl=_EV_SOFT_TTL) is not None else None
+
+    got = _read()
+    if got is not None:
+        return got
+
+    with _EV_LOCK:
+        ev = _EV_INFLIGHT.get(key)
+        leader = ev is None
+        if leader:
+            ev = threading.Event()
+            _EV_INFLIGHT[key] = ev
+
+    if leader:
+        def _run(_ev=ev, _key=key):
+            t0 = time.time()
+            try:
+                r = _fetch_events(ticker, limit=limit, days=days)
+                _cache_write(_key, {"data": r})
+                log.info("chart-events %s %d건 %.1fs", ticker, len(r),
+                         time.time() - t0)
+            except Exception as exc:                           # noqa: BLE001
+                log.warning("chart-events %s 실패(%.1fs): %s", ticker,
+                            time.time() - t0, exc)
+            finally:
+                with _EV_LOCK:
+                    _EV_INFLIGHT.pop(_key, None)
+                _ev.set()
+        threading.Thread(target=_run, daemon=True,
+                         name=f"chart-ev-{safe}").start()
+
+    if not ev.wait(_EV_BUDGET):
+        # 조용히 넘기지 않는다 — 마커가 왜 없는지 로그가 답해야 한다(#12)
+        log.info("chart-events %s 예산 %.0fs 초과 — 이번 응답은 마커 없이"
+                 "(백그라운드가 캐시 예열)", ticker, _EV_BUDGET)
+        return []
+    return _read() or []
