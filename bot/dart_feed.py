@@ -613,7 +613,8 @@ _DOC_TEXT_MAX_FULL = 40_000_000   # 정기보고서 전문(수주상황·매출�
 
 
 def _fetch_doc_text(rcept_no: str, api_key: str,
-                    max_bytes: int = _DOC_TEXT_MAX) -> str | None:
+                    max_bytes: int = _DOC_TEXT_MAX,
+                    raw_markup: bool = False) -> str | None:
     """공시 원문(document.xml zip) → 태그 제거 평문. 실패 시 None +
     negative-cache (₩0·LLM 0·stdlib).
 
@@ -621,7 +622,10 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
     항목을 공유해, 먼저 받은 쪽 길이가 상대에게 서빙된다(계약공시 파서가
     먼저 돌면 정기보고서 파서가 조용히 잘린 본문을 보게 된다). 2026-08-16
     KIS `idxdaily` 캐시에서 똑같이 났던 버그다."""
-    ck = f"{rcept_no}:{int(max_bytes)}"
+    # ⚠️ raw 도 캐시 키에 넣는다 — 안 넣으면 평문 요청과 마크업 요청이 같은
+    # 항목을 공유해 먼저 받은 쪽이 상대에게 서빙된다(max_bytes 를 키에 넣게
+    # 만든 2026-08-16 버그와 같은 형태).
+    ck = f"{rcept_no}:{int(max_bytes)}:{'raw' if raw_markup else 'txt'}"
     if ck in _DOC_TEXT_MEM:   # fail-mark 게이트보다 먼저 (이미 받음)
         return _DOC_TEXT_MEM[ck]
     if not rcept_no or _doc_fail_recent(rcept_no):
@@ -668,8 +672,17 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
             except UnicodeDecodeError:
                 chunks.append(raw.decode("cp949", errors="ignore"))
         text = " ".join(chunks)
-        txt = re.sub(r"<[^>]+>", " ", text)
-        out = re.sub(r"\s+", " ", txt)
+        # raw_markup=True → **태그 보존**. 표를 원본 구조 그대로 재현해야
+        # 하는 호출부(dart_production 의 생산능력·가동률 표)를 위한 경로 —
+        # 기본값은 종전 그대로 평문이라 기존 호출부(성장동력·계약공시
+        # 파서)는 영향이 없다.
+        # ⚠️ 파라미터명이 `raw` 가 **아니다.** 위 루프가 zip 청크를 담는
+        # 지역변수로 이미 `raw` 를 쓰고 있어서, 그 이름을 쓰면 파라미터가
+        # 덮여 `if raw` 가 **바이트(항상 truthy)** 를 보게 된다 → 평문을
+        # 기대하는 기존 호출부 전부가 마크업을 받는다(2026-08-20 배포전
+        # 셀프리뷰에서 실제로 잡은 결함).
+        out = re.sub(r"\s+", " ", text) if raw_markup else re.sub(
+            r"\s+", " ", re.sub(r"<[^>]+>", " ", text))
         # ⚠️ 개수가 아니라 **총량**으로 제한한다. 옛 코드는 64개까지
         # 보관했는데, 정기보고서 전문(최대 40MB)이 섞이면서 이론상 2.5GB 까지
         # 부풀 수 있게 됐다(2026-08-17 상한 인상의 부작용). 짧은 계약공시는
