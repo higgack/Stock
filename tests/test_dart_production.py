@@ -499,10 +499,51 @@ class TestCardSplit20260820:
 
     def test_card_height_is_single_source(self):
         """높이 식이 복제되면 도화지와 상자 높이가 갈라져 카드가 잘린다(#38)."""
-        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
-        assert src.count("3.4 * n + 6.55") == 1, "높이 식 복제"
-        body = src[src.index("def _render_cards_locked("):]
-        assert "_card_height(drivers, risks)" in body[:body.index("def ", 10)]
+        # ⚠️ 옛 판은 `src.count("3.4 * n + 6.55") == 1` 이라는 **소스 문자열**
+        # 이었다. 줄바꿈 도입으로 높이가 줄 수에서 도출되자 깨졌다 — 계약은
+        # "도화지와 상자가 같은 식을 본다"이지 특정 수식이 아니다(실수 #19).
+        # 그려 놓고 **잘리는지**로 본다.
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        from bot import quarterly_infographic as qi
+        # ⚠️ 픽스처가 약하면 가드가 안 터진다(#70c). 항목 3개로는 접힘
+        # 누락분(2.6)이 상자 아래여백(6.55)에 흡수돼 뮤테이션이 통과했다
+        # — **정본 상한만큼** 넣고 전부 접히게 해야 실제로 넘친다.
+        from bot.dart_growth_risk import MAX_ITEMS as _M
+        payload = {"growth_risk": {"ok": True,
+                   "growth_drivers": ["CEMS 구축을 통한 디지털 서비스 사업 확대"] * _M,
+                   "sustain_risks": ["매출 5% 초과 주요 매출처 편중"]}}
+        cap = {}
+        orig = Figure.savefig
+
+        def spy(self, *a, **k):
+            ax = self.axes[0]
+            cap["ylim"] = ax.get_ylim()
+            cap["ty"] = [t.get_position()[1] for t in ax.texts]
+            cap["boxes"] = [pp.get_extents() for pp in ax.patches]
+            return orig(self, *a, **k)
+        Figure.savefig = spy
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                qi._render_cards_locked(payload, f"{d}/c.png")
+        finally:
+            Figure.savefig, qi._font_ok = orig, _o
+        assert cap.get("ty"), "카드가 안 그려졌다 — 대조 0건은 통과가 아니다"
+        h = qi._card_height(payload["growth_risk"]["growth_drivers"],
+                            payload["growth_risk"]["sustain_risks"])
+        # ⚠️ **상자** 아래끝으로 재야 한다. 도화지(`ylim`)는 +5.0 여유가 있어
+        # 높이 계산이 줄 수를 무시해도 통과한다 — 실제로 그 뮤테이션이
+        # 통과했다(2026-08-21). 가드는 재는 대상을 틀리면 그냥 눈이 먼다(#47).
+        box_bottom = 2.5 + h             # `_draw_cards(..., y=2.5, h=h)`
+        assert max(cap["ty"]) < box_bottom, (
+            f"마지막 줄이 카드 상자 밖({max(cap['ty'])} vs {box_bottom})")
+        # 도화지도 같은 h 에서 나온다 — 둘이 갈라지면 잘린다.
+        assert abs(cap["ylim"][0] - (h + 5.0 + qi._FIG_PAD)) < 1e-6
 
     def test_render_version_bumped_for_the_split(self):
         """옛 캐시 PNG 는 카드를 **품고 있다** — 버전을 안 올리면 그 종목은
