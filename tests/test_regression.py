@@ -25678,8 +25678,13 @@ class TestDartBacklogParser20260817:
 
     def test_latest_quarter_gates_the_expensive_backfill(self):
         """수주잔고는 분기마다 원문(최대 40MB)을 받아야 한다. 안 쓰는 회사가
-        다수라, 최신 분기가 비면 **즉시 중단**해야 5회 대용량 다운로드가
-        통째로 버려지지 않는다."""
+        다수라, 미공시로 판정되면 **즉시 중단**해야 5회 대용량 다운로드가
+        통째로 버려지지 않는다.
+
+        ⚠️ 2026-08-21 상한을 1 → 2 로 올렸다. 1회만 보면 DART 가 **최신
+        접수건 문서를 안 주는** 경우(한화에어로 `status=014` 실측)에 나머지
+        분기가 다 있어도 회사 전체가 '미공시'로 처리된다 — 사용자 "있는데
+        누락시키고 싶지 않아". 비용 계약(유계)은 그대로 유지한다."""
         from bot import quarterly_infographic as qi
         calls = []
 
@@ -25693,7 +25698,8 @@ class TestDartBacklogParser20260817:
         bl.backlog_for = fake
         try:
             qi._fill_backlog(object(), "042660.KS", qs)
-            assert len(calls) == 1, f"미공시인데 {len(calls)}회 조회"
+            assert len(calls) <= 2, f"미공시인데 {len(calls)}회 조회"
+            assert len(calls) < len(qs), "전 분기를 다 받으면 게이트가 없는 것"
             calls.clear()
             bl.backlog_for = lambda d, t, y, r: 1.0e12
             qi._fill_backlog(object(), "042660.KS", qs)

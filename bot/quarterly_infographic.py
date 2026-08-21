@@ -233,6 +233,9 @@ _EXTRA_CHARTS = (("수주잔고", "수주잔고"), ("재고자산", "재고자�
 
 # 분기 간 최대/최소 배수가 이 값 이상이면 **파싱 의심**(위 주석의 실측 근거).
 _BACKLOG_SPREAD_MAX = 20.0
+# 미공시 판정 전에 최신부터 몇 분기까지 시도하나. 2 = 최신 보고서 문서가
+# 누락돼도 직전 분기로 회복. 미공시 회사의 대용량 다운로드는 최대 2회.
+_BACKLOG_PROBE_N = 2
 
 
 def _fill_backlog(dart, ticker: str, qs: list) -> None:
@@ -255,14 +258,24 @@ def _fill_backlog(dart, ticker: str, qs: list) -> None:
     except Exception as exc:
         log.debug("quarterly_infographic: dart_backlog import: %s", exc)
         return
-    latest = qs[-1]
-    got = backlog_for(dart, ticker, latest["year"], latest["reprt_code"])
-    if got is None:
+    # ⚠️ **최신 하나만 보고 포기하면 안 된다**(2026-08-21 사용자 "있는데
+    # 누락시키고 싶지 않아"). DART 가 그 접수건 문서를 안 주는 경우가 실재하고
+    # (한화에어로 `status=014` 실측), 그러면 나머지 4분기가 다 있어도 이 회사가
+    # 통째로 '수주잔고 미공시'로 처리됐다. 생산능력·제품 표는 롤링(최신부터
+    # 거슬러 첫 성공)인데 여기만 1회였다 — 같은 규율로 맞춘다.
+    # 비용은 여전히 유계다: 미공시 회사는 최대 _BACKLOG_PROBE_N 번만 받는다.
+    probed: dict[int, float] = {}
+    for i in range(len(qs) - 1, max(-1, len(qs) - 1 - _BACKLOG_PROBE_N), -1):
+        v = backlog_for(dart, ticker, qs[i]["year"], qs[i]["reprt_code"])
+        probed[i] = v
+        if v is not None:
+            break
+    if all(v is None for v in probed.values()):
         return          # 이 회사는 수주잔고를 안 쓴다 — 과거분 조회 불필요
-    latest["financials"]["수주잔고"] = got
     missing = []
-    for q in qs[:-1]:
-        v = backlog_for(dart, ticker, q["year"], q["reprt_code"])
+    for i, q in enumerate(qs):
+        v = probed[i] if i in probed else backlog_for(
+            dart, ticker, q["year"], q["reprt_code"])
         if v is not None:
             q["financials"]["수주잔고"] = v
         else:

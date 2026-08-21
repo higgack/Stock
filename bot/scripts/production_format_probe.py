@@ -36,12 +36,14 @@ import re
 import sys
 import time
 
-_PROBE_VER = 4          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 5          # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
 #   (같은 원문을 재사용 — DART 호출 0 추가).
 #   v4(2026-08-21): 잘림 판정을 원천 플래그로(문자 길이 추정 금지).
+#   v5(2026-08-21): 분기실적 탭 **전 항목** 커버리지 감사로 확장
+#   (지표·차트 / 제품표 / 생산능력표 / 수주잔고 / 재고자산).
 
 
 def _universe(limit: int) -> list[str]:
@@ -87,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("tickers", nargs="*", help="비우면 관심종목+아카이브")
     ap.add_argument("--limit", type=int, default=40)
     ap.add_argument("--show", type=int, default=260)
+    ap.add_argument("--skip-backlog", action="store_true",
+                    help="수주잔고 검사 생략(40MB 재파싱이 느릴 때)")
     args = ap.parse_args(argv)
 
     from bot.dart_client import get_dart
@@ -95,8 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     from bot.dart_feed import doc_was_truncated as dp_trunc
     from bot import dart_production as dp
 
-    print(f"=== 생산능력·가동률 형식 스윕 v{_PROBE_VER} "
-          f"(파서 앵커 v{dp._SCAN_WINDOW//1000}k) ===")
+    print(f"=== 분기실적 탭 항목 커버리지 감사 v{_PROBE_VER} "
+          f"(앵커창 {dp._SCAN_WINDOW//1000}k/{dp._SCAN_WINDOW_ALT//1000}k) ===")
+    print("열: 분기수 · 재고 · 수주 · 제품 · 생산(판정)  "
+          "— 원문에 있는데 못 가져오는 걸 찾는 게 목적")
     dart = get_dart()
     if not dart:
         print("❌ DART 키 미설정 — .env 확인")
@@ -106,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"대상 {len(tickers)}종목\n")
 
     tally: dict[str, int] = {}
+    cover = {"분기": 0, "재고자산": 0, "수주잔고": 0, "제품표": 0, "생산표": 0}
     unsupported: list[tuple[str, str, str]] = []
     _OK = ("정상", "가동률없음", "능력만")     # 화면에 실리는 판정
     for i, tk in enumerate(tickers, 1):
@@ -149,11 +156,37 @@ def main(argv: list[str] | None = None) -> int:
         prod = dp.parse_products(markup) if markup else None
         if prod:
             tally["제품표"] = tally.get("제품표", 0) + 1
+        # ── 나머지 항목도 같이 센다 — "있는데 누락"을 찾는 게 목적이다.
+        # 재고자산은 재무제표 계정이라 원문 없이 분기 데이터에서 바로 보인다.
+        inv = sum(1 for q in qs
+                  if (q.get("financials") or {}).get("재고자산") is not None)
+        # 수주잔고는 본문 표 — 같은 접수번호라 zip 캐시에 걸려 재다운로드 0.
+        # ⚠️ 화면과 **같은 규율**로 최신부터 거슬러 본다(1회만 보면 최신
+        # 보고서 문서가 없는 회사가 통째로 '미공시'로 찍힌다).
+        bl = None
+        if not args.skip_backlog:
+            try:
+                from bot.dart_backlog import backlog_for
+                from bot.quarterly_infographic import _BACKLOG_PROBE_N
+                for q in list(reversed(qs))[:_BACKLOG_PROBE_N]:
+                    bl = backlog_for(dart, tk, q["year"], q["reprt_code"])
+                    if bl is not None:
+                        break
+            except Exception as exc:                           # noqa: BLE001
+                print(f"   (수주잔고 검사 실패: {exc})")
+        cover["분기"] += 1 if qs else 0
+        cover["재고자산"] += 1 if inv else 0
+        cover["수주잔고"] += 1 if bl is not None else 0
+        cover["제품표"] += 1 if prod else 0
+        cover["생산표"] += 1 if got else 0
         mark = "✅" if got else "❌"
         kinds = ",".join(got.get("kinds") or []) if got else ""
-        print(f"[{i:3}/{len(tickers)}] {tk} {mark} {verdict:<8} {basis:<6}"
-              f" {dlen//1000:>5}k{'✂' if cutmark else ' '}"
-              f" {'📦' if prod else '  '} {kinds}")
+        print(f"[{i:3}/{len(tickers)}] {tk} {len(qs)}Q "
+              f"{'재고' if inv else '  ·  '} "
+              f"{'수주' if bl is not None else '  ·  '} "
+              f"{'제품' if prod else '  ·  '} "
+              f"{mark} {verdict:<8} {basis:<6}"
+              f" {dlen//1000:>5}k{'✂' if cutmark else ' '} {kinds}")
         # ⚠️ 미채택만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
         if not got:
             head = ""
@@ -180,9 +213,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"화면에 실림: {ok}/{len(tickers)} "
           f"({100.0 * ok / max(1, len(tickers)):.0f}%) "
           f"— 그중 가동률 포함 {rate}건")
-    pn = tally.get("제품표", 0)
-    print(f"주요 제품 및 서비스 표: {pn}/{len(tickers)} "
-          f"({100.0 * pn / max(1, len(tickers)):.0f}%)")
+    print("\n항목별 커버리지 (분기실적 탭에 실제로 실리는 것):")
+    for k in ("분기", "재고자산", "수주잔고", "제품표", "생산표"):
+        n = cover[k]
+        print(f"  {k:<6} {n:>3}/{len(tickers)} "
+              f"({100.0 * n / max(1, len(tickers)):.0f}%)")
     if unsupported:
         print(f"\n--- 미지원 {len(unsupported)}종목 표 헤더(형식 추가 근거) ---")
         for tk, v, head in unsupported:
