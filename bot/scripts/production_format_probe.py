@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import time as _time
 import time
 
 _PROBE_VER = 8          # 진단 스크립트 버전 배너(실수 #21)
@@ -119,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     from bot.dart_feed import doc_was_truncated as dp_trunc
     from bot import dart_production as dp
 
+    from bot.scripts.probe_progress import fmt_eta, stream_stdout
+    stream_stdout()
+    _t0 = _time.time()
     print(f"=== 분기실적 탭 항목 커버리지 감사 v{_PROBE_VER} "
           f"(앵커창 {dp._SCAN_WINDOW//1000}k/{dp._SCAN_WINDOW_ALT//1000}k) ===")
     print("열: 분기수 · 재고 · 수주 · 제품 · 생산(판정)  "
@@ -129,7 +133,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     tickers = [t.split(".")[0] for t in args.tickers] or _universe(args.limit)
-    print(f"대상 {len(tickers)}종목\n")
+    # ⚠️ 종목당 40MB 원문을 받는다 — 수십 분이 정상이다. 얼마나 걸리는지
+    # 미리 말하고 매 줄에 ETA 를 붙인다(사용자 2026-08-21 "진행이 안되는데").
+    print(f"대상 {len(tickers)}종목 · 종목당 원문 최대 40MB — "
+          f"예상 {len(tickers) * 0.7:.0f}~{len(tickers) * 1.5:.0f}분")
+    print("⚠️ `| tail` 로 받으면 **끝날 때까지 한 줄도 안 보인다** — "
+          "`| tee /tmp/probe.log` 를 쓸 것\n")
 
     tally: dict[str, int] = {}
     cover = {"분기": 0, "재고자산": 0, "수주잔고": 0, "제품표": 0, "생산표": 0}
@@ -216,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{'제품' if prod else '  ·  '} "
               f"{mark} {verdict:<8} {basis:<6}"
               f" {dlen//1000:>5}k{'✂' if cutmark else ' '}"
-              f" {(got or {}).get('anchor', ''):<12} {kinds}")
+              f" {(got or {}).get('anchor', ''):<12} {kinds}"
+              f"  {fmt_eta(i, len(tickers), _t0)}")
         # ⚠️ 미채택만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
         if not got:
             head = ""

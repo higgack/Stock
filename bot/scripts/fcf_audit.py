@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time as _time
 
 _AUDIT_VER = 2
 _GAP_OK = 1.0        # 교차출처 허용 차이(%) — 정의가 같으면 소수점까지 맞는다
@@ -289,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     from bot.env_keys import env_source
     from bot.market import detect_market
     from bot.scripts.fcf_probe import _universe
+    from bot.scripts.probe_progress import fmt_eta, stream_stdout
+    stream_stdout()
+    _t0 = _time.time()
     print(f"=== FCF 정확도 감사 v{_AUDIT_VER} (재무캐시 v{_FIN_CACHE_VER}) ===")
     print("① 재계산  ② 교차출처(DART↔yfinance)  ③ 표면일치  "
           "④ 분기합↔연간  ⑤ 누적냄새")
@@ -301,8 +305,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     dart = get_dart() if any(detect_market(t.upper()) == "KR"
                              for t in tickers) else None
+    print(f"대상 {len(tickers)}종목 · 종목당 스냅샷을 새로 받는다 — "
+          f"예상 {len(tickers) * 0.3:.0f}~{len(tickers) * 1.0:.0f}분")
+    print("⚠️ `| tail` 로 받으면 끝날 때까지 한 줄도 안 보인다 — "
+          "`| tee /tmp/fcf.log`\n")
     tot_bad = tot_unknown = 0
-    for tk in tickers:
+    for _i, tk in enumerate(tickers, 1):
         try:
             r = audit_one(tk, dart, years=args.years)
         except Exception as exc:                               # noqa: BLE001
@@ -315,7 +323,8 @@ def main(argv: list[str] | None = None) -> int:
                    else f"❓ 판정불가 {r['unknown']}건"))
         print(f"  판정: {v}"
               + (f" (판정불가 {r['unknown']}건)"
-                 if r["bad"] and r["unknown"] else "") + "\n")
+                 if r["bad"] and r["unknown"] else "")
+              + f"  {fmt_eta(_i, len(tickers), _t0)}\n")
         tot_bad += r["bad"]
         tot_unknown += r["unknown"]
     print("=" * 60)

@@ -7002,6 +7002,71 @@ class TestFcfDerivedNotCarried20260821:
         assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
 
 
+class TestProbeProgress20260821:
+    """사용자 2026-08-21 "여기서 너무 오래 진행이 안되는데...": 40종목 스윕은
+    원래 수십 분인데 **한 줄도 안 나왔다**. 파이썬 stdout 이 파이프에선
+    블록 버퍼링이라서다(거기에 `| tail` 은 EOF 를 기다린다). 오래 걸리는 건
+    사실이므로 **얼마나 남았는지**를 말해 주는 게 옳은 대응이다."""
+
+    def test_eta_does_not_invent_an_estimate(self):
+        """표본이 없으면 남은 시간을 지어내지 않는다(빈칸 > 틀린 숫자)."""
+        import time
+        from bot.scripts.probe_progress import fmt_eta
+        t0 = time.time() - 600
+        assert "남은" not in fmt_eta(0, 40, t0)
+        assert "0/40" in fmt_eta(0, 40, t0)
+        got = fmt_eta(10, 40, t0)
+        assert "남은 30.0분" in got, got          # 10분에 10개 → 30개 남음
+        assert "25%" in got
+        # total 을 모르면 진행만 말한다(0 나눗셈으로 죽지 않는다)
+        assert fmt_eta(1, 0, t0)
+
+    def test_streaming_actually_reaches_a_pipe(self):
+        """⚠️ 이 검사가 없으면 `reconfigure` 를 지우는 변형을 못 잡는다 —
+        같은 프로세스에서 재면 버퍼링이 안 보인다. **파이프로 띄워** 본다."""
+        import subprocess
+        import sys
+        import time
+        code = ("import time\n"
+                "from bot.scripts.probe_progress import stream_stdout\n"
+                "stream_stdout()\n"
+                "print('first')\n"
+                "time.sleep(3)\n")
+        # ⚠️ 이 환경엔 `PYTHONUNBUFFERED=1` 이 걸려 있어 그대로 띄우면
+        # **버퍼링이 아예 안 일어나** 검사가 눈이 먼다(reconfigure 를 지우는
+        # 뮤테이션이 실제로 통과했다). 자식 환경에서 지우고 잰다(#68: 통과
+        # 하면 '그 테스트가 돌긴 했나' 다음에 '재는 대상이 맞나').
+        import os
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PYTHONUNBUFFERED",)}
+        p = subprocess.Popen([sys.executable, "-c", code],
+                             stdout=subprocess.PIPE, text=True, env=env)
+        try:
+            t0 = time.time()
+            line = p.stdout.readline()
+            dt = time.time() - t0
+        finally:
+            p.kill()
+            p.wait()
+        assert line.strip() == "first", line
+        assert dt < 2.0, f"첫 줄이 {dt:.1f}s 만에 왔다 — 버퍼링 중"
+
+    def test_every_sweep_script_streams_and_shows_eta(self):
+        """스윕(= `--limit` 를 받는 스크립트)은 전부 진행을 흘려보내야 한다.
+        ⚠️ 이름을 열거하면 새 스윕이 샌다(#24) — 디렉터리를 훑고 예외만
+        allowlist. 이 가드는 켜자마자 `fcf_probe` 를 잡았다(#87a)."""
+        import pathlib
+        allow: set[str] = set()          # 예외를 둘 땐 여기에 사유와 함께
+        miss = []
+        for f in sorted(pathlib.Path("bot/scripts").glob("*.py")):
+            src = f.read_text(encoding="utf-8")
+            if '"--limit"' not in src or f.name in allow:
+                continue
+            if "stream_stdout()" not in src:
+                miss.append(f.name)
+        assert not miss, f"진행이 안 보이는 스윕: {miss}"
+
+
 class TestFcfAccuracyAudit20260821:
     """사용자 2026-08-21: "FCF 를 제대로 계산 or 가져오고 있는지 … 이건
     숫자를 내가 판단하기 어려운 영역이라서". 사람이 눈으로 못 재는 값은
