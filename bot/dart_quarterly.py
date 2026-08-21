@@ -44,6 +44,14 @@ _FLOW_KEYS = {"매출", "매출원가", "매출총이익", "판관비", "영업�
 _STOCK_KEYS = {"유동자산", "비유동자산", "자산총계", "유동부채",
                "비유동부채", "부채총계", "이익잉여금", "자본총계",
                "재고자산"}
+# 현금흐름표 계정 — DART 는 **누적**으로 준다(연초~해당분기말).
+# ⚠️ 손익(sj_div=IS)은 `thstrm_amount` 자체가 '당기 3개월'(단일분기)인데
+# CF 는 3개월 개념이 없어 그 필드가 곧 누적이다. 둘을 같이 다루면 분기
+# 값이 누적으로 뜬다 — 실측(2026-08-21 농심): 25.2Q 1,145 → 25.3Q 1,634
+# → 25.4Q 2,008 로 **단조 증가**하고 25.4Q 가 FY2025 와 **완전히 같았다**.
+# 그래서 (a) 4분기 차분에서 제외해 원본 누적을 보존하고
+#        (b) 시계열이 다 모인 뒤 `_undo_cumulative_cf` 가 한 번에 되돌린다.
+_CUM_KEYS = {"영업활동현금흐름", "유형자산취득", "무형자산취득"}
 
 
 def quarter_label(year: int, reprt_code: str) -> str:
@@ -113,7 +121,9 @@ def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     for k, v in (cum_now or {}).items():
         if k.startswith("_"):
             continue        # 사이드채널(_src 등)은 산술 대상이 아니다
-        if k in _STOCK_KEYS:
+        if k in _STOCK_KEYS or k in _CUM_KEYS:
+            # 저량은 차분 금지, 누적(CF)은 **원본 누적을 그대로** 넘긴다
+            # — 단일분기 환산은 `_undo_cumulative_cf` 가 전 분기 일괄로.
             out[k] = v
             continue
         prev_v = (cum_prev or {}).get(k)
@@ -215,7 +225,12 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
     from bot.dart_client import calc_kr_financial_ratios
     out: list[dict] = []
     y, rc = latest_year, latest_rc
-    for _ in range(n):
+    # ⚠️ **한 분기 더** 받는다. 현금흐름은 누적이라 단일분기로 되돌리려면
+    # 직전 분기의 누적이 필요하다 — 정확히 n 개만 받으면 창의 **가장
+    # 오래된 분기가 늘 빈칸**이 된다(경계값 요청은 원천이 하루만 덜 줘도
+    # 조용히 실패한다, 실수 #44a). 여분은 환산 뒤 잘라낸다.
+    _fetch_n = n + 1
+    for _ in range(_fetch_n):
         entry = dart.get_normalized_financials(ticker, year=y,
                                                fs_div=effective_fs_div,
                                                reprt_code=rc)
@@ -271,10 +286,49 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
         apply_ttm_returns(out)
     except Exception as exc:                                   # noqa: BLE001
         log.info("dart_quarterly: %s TTM 수익성 계산 건너뜀: %s", ticker, exc)
+    # 현금흐름 누적 → 단일분기. **FCF 계산 전에** 되돌려야 한다.
+    _undo_cumulative_cf(out)
+    # 기준으로만 쓴 여분 분기를 잘라낸다(호출부 계약은 n 개 그대로).
+    if len(out) > n:
+        out = out[-n:]
     # FCF — 산식은 `bot.fcf` 한 곳(#38). 분기실적 차트와 밸류에이션 표가
     # 같은 값을 보게 **여기서** 붙인다(화면마다 계산하면 갈라진다).
     _attach_fcf(out)
     return out or None
+
+
+def _undo_cumulative_cf(entries: list[dict] | None) -> int:
+    """현금흐름 계정의 **누적 → 단일분기** 환산. 바꾼 항목 수를 돌려준다.
+
+    입력은 **오래된 → 최신** 순의 분기 시계열. 회계연도가 바뀌면 누적이
+    0 에서 다시 시작하므로 연도별로 끊는다.
+
+    ⚠️ **직전 분기가 바로 앞 분기일 때만** 차분한다. 25.2Q 다음이 25.4Q
+    라면(3분기 보고서 누락) 두 분기치를 한 분기로 표기하게 된다 — 그럴
+    땐 값을 **비운다**(틀린 숫자보다 빈칸, 실수 #29 의 같은 규율).
+    """
+    n = 0
+    prev_q: dict[int, int] = {}        # 연도 → 직전 분기 번호
+    prev_v: dict[int, dict] = {}       # 연도 → 그 분기의 누적값
+    for e in entries or []:
+        fin = (e or {}).get("financials") or {}
+        y, q = e.get("year"), e.get("quarter")
+        if not y or not q:
+            continue
+        cum = {k: fin.get(k) for k in _CUM_KEYS}
+        if q > 1:
+            base = prev_v.get(y) if prev_q.get(y) == q - 1 else None
+            for k in _CUM_KEYS:
+                if cum[k] is None:
+                    continue
+                if base is not None and base.get(k) is not None:
+                    fin[k] = cum[k] - base[k]
+                    n += 1
+                else:
+                    # 직전 누적을 모르면 단일분기를 만들 수 없다.
+                    fin[k] = None
+        prev_q[y], prev_v[y] = q, cum
+    return n
 
 
 def _attach_fcf(entries: list[dict] | None) -> int:

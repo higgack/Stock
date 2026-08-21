@@ -6665,6 +6665,110 @@ class TestQuarterlyMultiMarket20260816:
         import re
         assert not re.search(r'"qfin\d', body), "리터럴 버전이 남아 있다"
 
+    def test_dart_cashflow_is_converted_from_cumulative(self):
+        """⚠️ **화면이 조용히 거짓말하고 있었다**(2026-08-21 실측).
+        DART 는 현금흐름을 **누적**으로 준다(연초~해당분기말) — 손익
+        (`thstrm_amount` = 당기 3개월)과 달라서, 같이 다루면 분기 FCF 가
+        누적으로 뜬다. 농심 25.2Q 1,145 → 25.3Q 1,634 → 25.4Q 2,008 이고
+        25.4Q 가 FY2025 와 **완전히 같았다**. "실적이 좋아지는 중"으로
+        읽혀 틀린 줄도 모른다."""
+        from bot.dart_quarterly import _attach_fcf, _undo_cumulative_cf
+
+        def q(y, n, ocf):
+            return {"year": y, "quarter": n, "label": f"{y % 100}.{n}Q",
+                    "financials": {"영업활동현금흐름": ocf,
+                                   "유형자산취득": 0.0, "무형자산취득": 0.0}}
+        e = [q(2025, 2, 1145e8), q(2025, 3, 1634e8), q(2025, 4, 2008e8),
+             q(2026, 1, 725e8), q(2026, 2, 1105e8)]
+        _undo_cumulative_cf(e)
+        _attach_fcf(e)
+        got = [(x["label"], x["financials"].get("FCF")) for x in e]
+        assert got[1] == ("25.3Q", 489e8), got      # 1634 − 1145
+        assert got[2] == ("25.4Q", 374e8), got      # 2008 − 1634
+        assert got[3] == ("26.1Q", 725e8), got      # Q1 은 누적 = 단일분기
+        assert got[4] == ("26.2Q", 380e8), got      # 1105 − 725
+        # 회계연도가 바뀌면 누적이 0 에서 다시 시작한다 — 26.1Q 를 25.4Q
+        # 에서 빼면 음수 쓰레기가 된다
+        assert got[3][1] > 0, "연도 경계에서 차분했다"
+        # 창 밖이라 직전 누적을 모르는 첫 분기는 **비운다**(틀린 숫자보다 빈칸)
+        assert got[0][1] is None, got
+
+    def test_cumulative_cf_needs_the_immediately_previous_quarter(self):
+        """분기가 건너뛰면 두 분기치를 한 분기로 표기하게 된다 — 비운다."""
+        from bot.dart_quarterly import _undo_cumulative_cf
+        e = [{"year": 2025, "quarter": 1, "label": "25.1Q",
+              "financials": {"영업활동현금흐름": 100.0}},
+             {"year": 2025, "quarter": 3, "label": "25.3Q",   # 2Q 누락
+              "financials": {"영업활동현금흐름": 500.0}}]
+        _undo_cumulative_cf(e)
+        assert e[0]["financials"]["영업활동현금흐름"] == 100.0
+        assert e[1]["financials"]["영업활동현금흐름"] is None, e
+
+    def test_series_fetches_a_base_quarter_beyond_the_window(self, monkeypatch):
+        """정확히 n 개만 받으면 창의 **가장 오래된 분기가 늘 빈칸**이다 —
+        누적을 되돌릴 기준이 창 밖이기 때문(#44a 경계값 요청 금지).
+
+        ⚠️ 소스 문자열(`"_fetch_n = n + 1" in src`)로 재면 같은 계약을
+        지키는 리팩터에 깨지고, 정작 되돌리는 변형은 못 잡는다(#19).
+        **수집기를 통째로 태워** 창의 첫 분기가 채워지는지 본다(#20)."""
+        import bot.dart_quarterly as dq
+        import bot.kr_revenue_fallback as krf
+        monkeypatch.setattr(krf, "fill_series", lambda *a, **k: False)
+
+        class _Fake:
+            """분기마다 단일 100 씩 버는 회사 — DART 는 그걸 **누적**으로 준다."""
+            def __init__(self):
+                self.calls = []
+
+            def get_normalized_financials(self, ticker, year, fs_div,
+                                          reprt_code):
+                self.calls.append((year, reprt_code))
+                if fs_div != "CFS":
+                    return None          # OFS 폴백 경로는 이 테스트 밖
+                cum = 100.0 * dq._Q_NUM[reprt_code]
+                fin = {"매출": cum, "당기순이익": cum,
+                       "영업활동현금흐름": cum, "유형자산취득": 0.0}
+                return {"financials": fin, "financials_cumulative": dict(fin)}
+
+        f = _Fake()
+        out = dq.get_quarterly_series(f, "005930", n=3)
+        assert out and len(out) == 3, out        # 계약: 정확히 n 개
+        fcf = [e["financials"].get("FCF") for e in out]
+        assert fcf == [100.0, 100.0, 100.0], fcf  # 창의 **첫 분기도** 채워짐
+        # (기준 분기를 안 받으면 fcf[0] 이 None 이 된다 — 위 단언이 잡는다)
+
+    def test_fcf_probe_checks_both_paths_for_kr(self, monkeypatch, capsys):
+        """KR 은 FCF 경로가 **둘**이다 — 밸류에이션 분기표·인포그래픽은
+        DART, 재무재표 차트는 yfinance(같은 그림의 매출·영익·순이익이
+        yfinance 라 기준을 맞춘 것). 한쪽만 보면 다른 쪽 오류를 영영 못
+        본다(#35 감사는 화면이 쓰는 그 경로를)."""
+        import bot.dart_client as dc
+        import bot.scripts.fcf_probe as fp
+        monkeypatch.setattr(fp, "_yf_periods",
+                            lambda t: ([("2026-06-30", 10.0)],
+                                       [("2025-12-31", 40.0)]))
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: _NoDart())
+        assert fp.main(["005930.KS"]) == 0
+        out = capsys.readouterr().out
+        assert "yfinance 경로" in out and "DART 경로" in out, out
+        # 비-KR 은 DART 없이도 돌아야 한다(키가 없다고 통째로 멈추면 안 됨)
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: None)
+        assert fp.main(["AAPL"]) == 0
+        out = capsys.readouterr().out
+        assert "yfinance 경로" in out and "DART 경로" not in out, out
+
+    def test_cumulative_smell_catches_the_measured_case(self):
+        """시장마다 원천이 다르다 — "KR 에서 고쳤으니 다른 나라도" 는 가정
+        이다. 같은 함정을 **재는** 검사(사용자 2026-08-21 지적)."""
+        from bot.fcf import cumulative_smell
+        assert cumulative_smell([1145, 1634, 2008], 2008), "실측 누적을 놓침"
+        assert cumulative_smell([-23073, -25167, -39821], -39821)
+        # 정상 단일분기는 통과해야 한다
+        assert cumulative_smell([489, 374, 725, 380], 2008) is None
+        # 4분기만 유난히 큰 회사를 누적으로 몰면 안 된다(#44b 판단보류)
+        assert cumulative_smell([100, 200, 300, 900], 1500) is None
+        assert cumulative_smell([100, 200], 300) is None     # 표본 부족
+
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note
         assert fiscal_note("12-31") == "" and fiscal_note(None) == ""
@@ -28694,3 +28798,10 @@ class TestMarketSectionOrder20260820:
         assert "실적 캘린더" in earn_seg and "earn-filter" in earn_seg
         res_seg = html[i_res:i_res + 2500]
         assert "research-filter" in res_seg and "한국 기업" in res_seg
+
+
+class _NoDart:
+    """DART 가 아무것도 안 주는 스텁 — 프로브가 그래도 끝까지 돈다."""
+
+    def get_normalized_financials(self, *a, **k):
+        return None
