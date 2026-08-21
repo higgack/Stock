@@ -1356,6 +1356,14 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         except Exception as exc:
             log.warning("quarterly_infographic: series %s: %s", t, exc)
             return None
+        # ⚠️ 제품·가동률 표는 핸들러가 **나중에** 부르는데(실측 최대 76초)
+        # 여기서 이미 같은 정기보고서를 걷는다 — 미리 데워 두면 아래 수주잔고
+        # (실측 최대 83초)와 **동시에** 돌아 직렬 합이 최대값 하나로 줄어든다.
+        try:
+            from bot.dart_production import prefetch_tables
+            prefetch_tables(dart, t, qs)
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("quarterly_infographic: 표 미리받기 건너뜀: %s", exc)
         # ⚠️ 수주잔고는 분기마다 40MB 상한으로 원문을 받아 훑는다 — 따로
         # 재지 않으면 `build_payload` 51.5초가 어디서 나는지 알 수 없다(#69).
         _bt0 = _bp_time.time()
@@ -1644,6 +1652,8 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     _t_all = _t0 = _time.time()
     payload = build_payload(ticker, snap, run_llm=run_llm)
     _RENDER_TIMING.set(_tk, "build_payload", _time.time() - _t0)
+    _t_pre = _time.time()      # ⚠️ 리셋 — 안 하면 pre_render 가 build_payload
+                               # 와 **같은 값**이 나와 빈 구간을 못 본다(실측)
     if not payload:
         return {"ok": False,
                 "error": "분기 재무 데이터 없음(소스 미제공 또는 미지원 시장)"}
@@ -1666,7 +1676,7 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     # `build_payload=15.7s render_png=35.5s total=229.469s` — 합이 51초인데
     # 총합이 229초였다. **측정되지 않은 구간이 있으면 그게 범인이다**(#69)
     # → 남는 구간을 전부 이름 붙여 다음 줄이 스스로 답하게 한다.
-    _RENDER_TIMING.set(_tk, "pre_render", _time.time() - _t0)
+    _RENDER_TIMING.set(_tk, "pre_render", _time.time() - _t_pre)
     if p.exists() and not fresh_llm:
         _t0 = _time.time()
         # 짝 PNG 가 없으면 **여기서** 그린다 — 캐시 경로인데도 렌더가 돈다.

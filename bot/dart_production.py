@@ -34,6 +34,7 @@ from __future__ import annotations
 import html as _html
 import logging
 import re
+import threading
 
 from bot.textwidth import vlen as _vlen
 
@@ -726,6 +727,47 @@ def _tables_cache_write(key: str, out: dict) -> None:
         _cache_write(key, {"data": out})
     except Exception as exc:                                   # noqa: BLE001
         log.debug("tables cache write(%s): %s", key, exc)
+
+
+_PREFETCH: set[str] = set()
+_PREFETCH_LOCK = threading.Lock()
+
+
+def prefetch_tables(dart, ticker: str, quarters: list,
+                    want: tuple | None = None) -> None:
+    """제품·가동률 표를 **미리** 받아 캐시를 데운다(fire-and-forget).
+
+    ⚠️ 왜(2026-08-22 실측): `quarterly-timing 145020.KQ … bp.backlog=0.027s
+    build_payload=3.181s render_png=39.15s total=42.331s
+    **h.production_html=76.1s**` — 표를 걷는 76초가 `build_payload` **뒤에
+    직렬로** 붙는다. 그런데 둘은 같은 정기보고서를 보므로 서로 기다릴 이유가
+    없다. 시계열을 받은 직후 여기서 데워 두면 수주잔고(최대 83초 실측)와
+    **동시에** 돈다.
+
+    ⚠️ 인자를 호출부와 **똑같이** 준다 — 다르면 캐시 키가 갈려 요청만 늘고
+    빨라지지 않는데 그것도 조용하다(#104 미리받기 계획이 루프와 같아야 한다).
+    """
+    keys = tuple(want or _PARSERS)
+    if not dart or not quarters:
+        return
+    ck = _tables_cache_key(ticker, quarters, keys)
+    if _tables_cached(ck) is not None:
+        return                             # 이미 따뜻하다
+    with _PREFETCH_LOCK:
+        if ck in _PREFETCH:
+            return                         # 같은 키가 이미 돌고 있다
+        _PREFETCH.add(ck)
+
+    def _run() -> None:
+        try:
+            tables_rolling(dart, ticker, quarters, want=want)
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("prefetch_tables(%s): %s", ticker, exc)
+        finally:
+            with _PREFETCH_LOCK:
+                _PREFETCH.discard(ck)
+    threading.Thread(target=_run, daemon=True,
+                     name=f"tbl-prefetch-{ticker}").start()
 
 
 def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
