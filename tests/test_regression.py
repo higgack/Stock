@@ -7347,6 +7347,28 @@ class TestSingleFlight20260821:
                     'f"quarterly:{ticker}:{int(bool(run))}"'):
             assert key in src, key
 
+    def test_quarterly_stages_are_measured(self):
+        """`/api/quarterly` 가 **108초**로 관측됐다(2026-08-21 300120.KQ,
+        게다가 동시에 두 번). 그중 무엇이 payload 수집이고 무엇이 PNG
+        렌더인지 알 방법이 없었다 — 추측하지 말고 잰다(#69)."""
+        from bot.quarterly_infographic import last_render_timing
+        assert isinstance(last_render_timing(), dict)
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        for stage in ("build_payload", "render_png", "total"):
+            assert f'_RENDER_TIMING["{stage}"]' in src, stage
+        # 핸들러가 실제로 찍는가(#20 배선)
+        import ast
+        dsrc = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(dsrc))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_handle_quarterly_api")
+        stmts = [n for n in fn.body
+                 if not (isinstance(n, ast.Expr)
+                         and isinstance(n.value, ast.Constant)
+                         and isinstance(n.value.value, str))]
+        body = "\n".join(ast.get_source_segment(dsrc, n) or "" for n in stmts)
+        assert "quarterly-timing" in body, "핸들러가 안 찍는다"
+
     def test_chart_stages_are_measured(self):
         """`/api/chart` 13~39초가 **어디서** 나는지 알 방법이 없었다(#69)."""
         from bot.chart_data import last_chart_timing

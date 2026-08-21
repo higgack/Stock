@@ -1010,6 +1010,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # LLM 실행 여부(run)가 다르면 다른 작업이므로 키에 포함한다.
             res = _once(f"quarterly:{ticker}:{int(bool(run))}",
                         lambda: _qi.get_or_render(ticker, snap, run_llm=run))
+            try:                      # 어디서 시간이 나는지 같이 남긴다(#69)
+                _st = _qi.last_render_timing()
+                if _st:
+                    log.info("quarterly-timing %s %s", ticker,
+                             " ".join(f"{k}={v}s" for k, v in _st.items()))
+            except Exception:                                  # noqa: BLE001
+                pass
             # 이번 실행 비용 — 종목분석(archive 의 cost_krw 스탬프)과 동일
             # 방식·동일 sink(usage.jsonl). 무료 경로(run=0)는 LLM 콜이 없어
             # 0 이 정상. 사용자 2026-08-16 '할때마다 얼마인지'.
