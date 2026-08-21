@@ -43,12 +43,24 @@ _ANCHOR = re.compile(r"생산\s*능력\s*(?:및|and)?\s*생산\s*실적", re.I)
 # 앵커가 없는 회사 대비 폴백 — 「생산 및 설비」 절 자체.
 _ANCHOR_ALT = re.compile(r"생산\s*및\s*설비에?\s*관한\s*사항")
 
+# 「2. 주요 제품 및 서비스」 — 사용자 2026-08-21 "가동률 표 위에 이렇게 표
+# 그대로". 회사마다 `가. 사업부문별 주요 제품 등의 현황` 처럼 접두가 달라
+# 핵심 어구만 잡는다.
+_ANCHOR_ITEM = re.compile(r"주요\s*제품\s*(?:및|·|,|과)?\s*서비스")
+_ANCHOR_ITEM_ALT = re.compile(r"사업\s*부문별\s*주요\s*제품")
+
 _TABLE_RE = re.compile(r"(?is)<TABLE[^>]*>.*?</TABLE>")
 # ⚠️ 글자 사이 공백 필수 — 원문이 `가 동 률` 로 온다(실측).
 _RATE_RE = re.compile(r"가\s*동\s*률|가동율")
 _CAP_RE = re.compile(r"생산\s*능력")
 _ACT_RE = re.compile(r"생산\s*실적")
 _UNIT_RE = re.compile(r"\(\s*단위\s*[:：][^)]*\)")
+# 주요 제품 표의 열 이름들. **매출 열이 있는지**가 판별의 핵심 —
+# 같은 절의 `나. 주요 제품 등의 가격변동추이` 는 품목+가격만 있어 걸러진다.
+_ITEM_RE = re.compile(r"품\s*목|제품\s*명|주요\s*제품")
+_SALES_RE = re.compile(r"매출\s*액|매출\s*비중|비\s*율|비\s*중")
+_USE_RE = re.compile(r"구체\s*적?\s*용도|용\s*도")
+_SEG_RE = re.compile(r"사업\s*부문|매출\s*유형")
 
 # 살균 화이트리스트 — 표 구조에 필요한 것만.
 _KEEP_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "td", "th"}
@@ -139,8 +151,10 @@ def _kinds_in(markup: str) -> list[str]:
     "없으면 셋 다 적는다" 는 폴백은 곧 **없는 지표를 약속하는** 것이라
     고치려던 결함(실수 #55)을 폴백 경로에 그대로 남긴다."""
     body = _cells(markup)
-    return [k for k, rx in (("가동률", _RATE_RE), ("생산능력", _CAP_RE),
-                            ("생산실적", _ACT_RE)) if rx.search(body)]
+    # 보고서 표의 `구 분` 열 순서대로 — 화면 제목이 원문 읽는 순서와 같아야
+    # 사용자가 표와 제목을 대조하기 쉽다(캡처의 '생산능력·생산실적·가동률').
+    return [k for k, rx in (("생산능력", _CAP_RE), ("생산실적", _ACT_RE),
+                            ("가동률", _RATE_RE)) if rx.search(body)]
 
 
 def _score(markup: str) -> int:
@@ -163,57 +177,109 @@ def _score(markup: str) -> int:
     return s
 
 
-def parse_production(markup: str | None) -> dict | None:
-    """원문 마크업 → {table_html, unit, notes, has_rate} 또는 None.
+_MIN_SCORE_ITEM = 10        # 품목 열 + 매출 열 **둘 다** (5+5)
 
-    None = 이 보고서에 해당 표가 없다(미기재 회사·형식 미지원). 조용히 빈
-    화면을 만들지 않도록 호출부가 사유를 표시한다."""
-    if not markup:
-        return None
-    m = _ANCHOR.search(markup) or _ANCHOR_ALT.search(markup)
-    if not m:
-        return None
-    tail = markup[m.end(): m.end() + _SCAN_WINDOW]
-    best, best_score = None, 0
-    for t in _TABLE_RE.finditer(tail):
-        raw = t.group(0)
-        if len(raw) > _MAX_TABLE_CHARS:
-            continue
-        sc = _score(raw)
-        # 가동률 표를 만나면 즉시 채택(앞에 있는 미끼·소재지 표를 건너뛴다).
-        if sc > best_score:
-            best, best_score = t, sc
-            if sc >= 10:
-                break
-    if best is None or best_score < _MIN_SCORE:
-        return None
-    raw = best.group(0)
-    # 단위 캡션 — 데이터 표 **앞**의 미끼 표에 들어 있다(실측).
-    unit = ""
-    um = _UNIT_RE.search(_cells(tail[:best.start()])[-400:] or "")
-    if um:
-        unit = um.group(0).strip()
-    # 각주 — 표 직후 텍스트에서 `*` 로 시작하는 줄들.
-    # ⚠️ **다음 표까지 먹지 않게 끊는다.** 원문은 각주 뒤에 곧바로 다른 표
-    # (설비 소재지 등)가 붙어서, 태그를 지운 평문만 보면 각주 한 줄이 그
-    # 표의 셀들을 통째로 삼킨다(2026-08-20 실측 — `일 8시간 기준입니다.
-    # 사업부문 품목 소재지 자가…`). 문장 종결·다음 절 번호에서 자른다.
-    after = _cells(tail[best.end(): best.end() + 600])
+
+def _score_products(markup: str) -> int:
+    """주요 제품 표 적합도. 매출 열이 없으면 가격변동추이 표다."""
+    body = _cells(markup)
+    s = 0
+    if _ITEM_RE.search(body):
+        s += 5
+    if _SALES_RE.search(body):
+        s += 5
+    if _USE_RE.search(body):
+        s += 2
+    if _SEG_RE.search(body):
+        s += 2
+    if 0 < s < _MIN_SCORE_ITEM and not _looks_like_a_data_table(markup):
+        return 0
+    return s
+
+
+def _pick(markup: str, anchors: tuple, score_fn, min_score: int,
+          stop_at: int) -> tuple[int, str, str, str] | None:
+    """앵커 뒤 창에서 가장 점수 높은 표 → (점수, 표, 앞 텍스트, 뒤 텍스트).
+
+    ⚠️ 앵커의 **모든 출현**을 훑는다. 정기보고서는 목차에도 같은 제목이
+    있어 첫 출현만 보면 표가 하나도 없는 창을 훑고 '표없음'을 낸다.
+    동점이면 **앞선 표**가 이긴다(`>` 비교) — 절 바로 밑의 표가 정답이고
+    창 끝에 걸린 다음 절의 표는 우연히 같은 점수가 날 수 있다."""
+    best = None
+    for rx in anchors:
+        for m in rx.finditer(markup):
+            tail = markup[m.end(): m.end() + _SCAN_WINDOW]
+            for t in _TABLE_RE.finditer(tail):
+                raw = t.group(0)
+                if len(raw) > _MAX_TABLE_CHARS:
+                    continue
+                sc = score_fn(raw)
+                if best is None or sc > best[0]:
+                    best = (sc, raw, tail[:t.start()],
+                            tail[t.end(): t.end() + 600])
+                    if sc >= stop_at:
+                        return best
+    return best if best and best[0] >= min_score else None
+
+
+def _unit_of(before: str) -> str:
+    """표 **앞** 캡션에서 단위 — 데이터 표 앞의 미끼 표에 들어 있다(실측)."""
+    um = _UNIT_RE.search(_cells(before)[-400:] or "")
+    return um.group(0).strip() if um else ""
+
+
+def _notes_of(after: str) -> list[str]:
+    """표 직후 `*` 각주. **다음 표까지 먹지 않게 끊는다** — 원문은 각주 뒤에
+    곧바로 다른 표가 붙어서, 태그를 지운 평문만 보면 각주 한 줄이 그 표의
+    셀들을 통째로 삼킨다(2026-08-20 실측)."""
+    body = _cells(after)
     notes = []
-    for n in re.findall(r"\*\s*([^*(]{4,160})", after)[:4]:
+    for n in re.findall(r"\*\s*([^*(]{4,160})", body)[:4]:
         n = n.strip()
-        # 첫 문장까지만(각주는 한 문장이 관례) — 종결부호가 없으면 절 번호에서.
         cut = re.search(r"(?<=니다\.)|(?<=함\.)|\s\(\d+\)\s|\s[가-힣]\.\s", n)
         if cut:
             n = n[:cut.end() if cut.group(0).endswith(".") else cut.start()]
         n = n.strip()
         if n:
             notes.append(n[:120])
+    return notes
+
+
+def parse_products(markup: str | None) -> dict | None:
+    """원문 마크업 → 「주요 제품 및 서비스」 표. 없으면 None.
+
+    사용자 2026-08-21: 가동률 표 **위**에 같은 방식으로 원본 표를 싣는다.
+    생산 표와 마찬가지로 숫자를 해석하지 않고 그대로 재현하므로 "조용히
+    틀린 숫자" 실패모드가 없다 — 위험은 엉뚱한 표를 집는 것 하나뿐."""
+    if not markup:
+        return None
+    got = (_pick(markup, (_ANCHOR_ITEM,), _score_products, _MIN_SCORE_ITEM, 14)
+           or _pick(markup, (_ANCHOR_ITEM_ALT,), _score_products,
+                    _MIN_SCORE_ITEM, 14))
+    if not got:
+        return None
+    _sc, raw, before, after = got
+    return {"table_html": sanitize_table(raw), "unit": _unit_of(before),
+            "notes": _notes_of(after)}
+
+
+def parse_production(markup: str | None) -> dict | None:
+    """원문 마크업 → {table_html, unit, notes, has_rate, kinds} 또는 None.
+
+    None = 이 보고서에 해당 표가 없다(미기재 회사·형식 미지원). 조용히 빈
+    화면을 만들지 않도록 호출부가 사유를 표시한다."""
+    if not markup:
+        return None
+    got = (_pick(markup, (_ANCHOR,), _score, _MIN_SCORE, 10)
+           or _pick(markup, (_ANCHOR_ALT,), _score, _MIN_SCORE, 10))
+    if not got:
+        return None
+    sc, raw, before, after = got
     return {
         "table_html": sanitize_table(raw),
-        "unit": unit,
-        "notes": [n for n in notes if n],
-        "has_rate": best_score >= 10,
+        "unit": _unit_of(before),
+        "notes": _notes_of(after),
+        "has_rate": sc >= 10,
         # 제목을 이 목록에서 만든다 — 표에 없는 지표를 제목이 약속하면
         # 사용자는 그게 있는 줄 알고 찾는다(실수 #55 라벨↔내용 불일치).
         "kinds": _kinds_in(raw),
@@ -252,7 +318,8 @@ def diagnose(markup: str | None, *, truncated: bool = False) -> str:
     return "무관표만"              # 표는 있는데 세 어구가 하나도 없다
 
 
-def production_for(dart, ticker: str, year: int, reprt_code: str) -> dict | None:
+def production_for(dart, ticker: str, year: int, reprt_code: str,
+                   parse=None) -> dict | None:
     """해당 보고서의 생산능력·가동률 표. 없으면 None.
 
     ⚠️ **기본 상한(3MB)을 먼저 쓴다.** 「생산 및 설비에 관한 사항」은 실측
@@ -279,7 +346,7 @@ def production_for(dart, ticker: str, year: int, reprt_code: str) -> dict | None
             for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
                 markup = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
                                          raw_markup=True)
-                got = parse_production(markup)
+                got = (parse or parse_production)(markup)
                 if got:
                     break
             if got:
@@ -290,8 +357,8 @@ def production_for(dart, ticker: str, year: int, reprt_code: str) -> dict | None
     return None
 
 
-def production_rolling(dart, ticker: str, quarters: list, max_back: int = 4
-                       ) -> dict | None:
+def production_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
+                       parse=None) -> dict | None:
     """최신 분기부터 거슬러 **표가 있는 첫 보고서**를 채택(롤링).
 
     새 보고서가 나오면 그 기준으로 자동 갱신된다. 특정 분기 보고서가 표를
@@ -300,35 +367,81 @@ def production_rolling(dart, ticker: str, quarters: list, max_back: int = 4
     if not dart or not quarters:
         return None
     for q in reversed(quarters[-max_back:]):
-        got = production_for(dart, ticker, q.get("year"), q.get("reprt_code"))
+        got = production_for(dart, ticker, q.get("year"), q.get("reprt_code"),
+                             parse=parse)
         if got:
             got["basis_label"] = q.get("label") or ""
             return got
     return None
 
 
-def render_html(prod: dict | None) -> str:
-    """표 블록 HTML. prod 가 None 이면 빈 문자열(호출부가 섹션을 생략)."""
+def products_rolling(dart, ticker: str, quarters: list, max_back: int = 4
+                     ) -> dict | None:
+    """「주요 제품 및 서비스」 롤링. 수집 사다리(보고서 탐색·상한 escalation·
+    캐시)는 생산 표와 **똑같으므로 그대로 재사용**한다 — 복제하면 한쪽만
+    고쳐져 두 표의 기준 보고서가 갈라진다(#38). 같은 접수번호의 원문은
+    `_fetch_doc_text` 메모리 캐시에 걸려 DART 호출이 늘지 않는다."""
+    return production_rolling(dart, ticker, quarters, max_back,
+                              parse=parse_products)
+
+
+def _palette() -> tuple[str, str, str, str, str]:
+    """(카드 배경, 표 헤더 배경, 본문색, 흐린색, 선색).
+
+    인포그래픽 PNG 와 **같은 상수**를 쓴다 — 사용자 2026-08-21 "위에 차트와
+    똑같이 검정색 안에 들어가게". 색을 여기 또 적으면 팔레트를 바꿀 때 표만
+    옛 색으로 남아 한 카드 안에서 두 톤이 갈린다(#38)."""
+    from bot.quarterly_infographic import _BG, _LINE, _MUTED, _PANEL, _TEXT
+    return _BG, _PANEL, _TEXT, _MUTED, _LINE
+
+
+def dark_panel(title: str, meta: list[str], table_html: str,
+               notes: list[str]) -> str:
+    """차트 카드와 같은 톤의 어두운 카드로 표를 감싼다.
+
+    ⚠️ 표 자체 CSS 는 **한 줄도 새로 만들지 않는다.** `.si-table` 은 이미
+    `--bg/--fg/--fg-soft/--border` 를 읽으므로, 감싸는 div 에서 그 변수만
+    다시 정의하면 안쪽 표가 통째로 어두운 톤으로 바뀐다(미니멀 코드 사다리
+    ②③ — 있는 걸 재사용)."""
+    bg, panel, fg, soft, line = _palette()
+    e = _html.escape
+    note_html = "".join(
+        f'<div style="font-size:11px;color:{soft};margin-top:2px">'
+        f'* {e(n)}</div>' for n in (notes or []))
+    return (
+        f'<div class="si-prod" style="--bg:{panel};--fg:{fg};'
+        f'--fg-soft:{soft};--border:{line};background:{bg};color:{fg};'
+        f'border:1px solid {line};border-radius:14px;'
+        f'padding:14px 16px;margin-top:14px">'
+        f'<div class="si-section-title" style="font-size:13px;color:{fg}">'
+        f'{e(title)}</div>'
+        f'<div style="font-size:11px;color:{soft};margin:2px 0 8px">'
+        f'{e(" · ".join(meta))}</div>'
+        f'<div style="overflow-x:auto">{table_html}</div>{note_html}</div>')
+
+
+def render_products_html(prod: dict | None) -> str:
+    """「주요 제품 및 서비스」 표 블록. 없으면 빈 문자열(섹션 생략)."""
     if not prod or not prod.get("table_html"):
         return ""
-    e = _html.escape
+    meta = [f"{prod['basis_label']} 보고서 기준"] if prod.get("basis_label") else []
+    if prod.get("unit"):
+        meta.append(prod["unit"])
+    meta.append("출처: DART 정기보고서 원문")
+    return dark_panel("📦 주요 제품 및 서비스", meta, prod["table_html"],
+                      prod.get("notes"))
+
+
+def render_html(prod: dict | None) -> str:
+    """생산능력·가동률 표 블록. prod 가 None 이면 빈 문자열."""
+    if not prod or not prod.get("table_html"):
+        return ""
     # ⚠️ 고정 문구로 두면 가동률이 없는 표에도 "가동률"이 적혀 사용자가
     # 없는 걸 찾게 된다. 실제 담긴 지표만 제목에 올린다(실수 #55).
     kinds = prod.get("kinds") or _kinds_in(prod["table_html"])
-    head = "🏭 " + (" · ".join(kinds) if kinds else "생산 현황")
-    meta = []
-    if prod.get("basis_label"):
-        meta.append(f"{e(prod['basis_label'])} 보고서 기준")
+    meta = [f"{prod['basis_label']} 보고서 기준"] if prod.get("basis_label") else []
     if prod.get("unit"):
-        meta.append(e(prod["unit"]))
+        meta.append(prod["unit"])
     meta.append("출처: DART 정기보고서 원문")
-    notes = "".join(
-        f'<div style="font-size:11px;color:var(--fg-soft);margin-top:2px">'
-        f'* {e(n)}</div>' for n in (prod.get("notes") or []))
-    return (
-        '<div class="si-prod" style="margin-top:14px">'
-        f'<div class="si-section-title" style="font-size:13px">{head}</div>'
-        f'<div style="font-size:11px;color:var(--fg-soft);margin:2px 0 6px">'
-        f'{" · ".join(meta)}</div>'
-        '<div style="overflow-x:auto">' + prod["table_html"] + '</div>'
-        + notes + '</div>')
+    return dark_panel("🏭 " + (" · ".join(kinds) if kinds else "생산 현황"),
+                      meta, prod["table_html"], prod.get("notes"))

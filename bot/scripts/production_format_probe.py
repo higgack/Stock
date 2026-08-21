@@ -36,9 +36,11 @@ import re
 import sys
 import time
 
-_PROBE_VER = 2          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 3          # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
+#   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
+#   (같은 원문을 재사용 — DART 호출 0 추가).
 
 
 def _universe(limit: int) -> list[str]:
@@ -138,10 +140,14 @@ def main(argv: list[str] | None = None) -> int:
                 break
         tally[verdict] = tally.get(verdict, 0) + 1
         got = dp.parse_production(markup) if markup else None
+        # 제품 표는 **같은 원문**에서 뽑는다 — 추가 호출 0.
+        prod = dp.parse_products(markup) if markup else None
+        if prod:
+            tally["제품표"] = tally.get("제품표", 0) + 1
         mark = "✅" if got else "❌"
         kinds = ",".join(got.get("kinds") or []) if got else ""
         print(f"[{i:3}/{len(tickers)}] {tk} {mark} {verdict:<8} {basis:<6}"
-              f" {dlen//1000:>5}k {kinds}")
+              f" {dlen//1000:>5}k {'📦' if prod else '  '} {kinds}")
         # ⚠️ 미채택만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
         if not got:
             head = ""
@@ -168,6 +174,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"화면에 실림: {ok}/{len(tickers)} "
           f"({100.0 * ok / max(1, len(tickers)):.0f}%) "
           f"— 그중 가동률 포함 {rate}건")
+    pn = tally.get("제품표", 0)
+    print(f"주요 제품 및 서비스 표: {pn}/{len(tickers)} "
+          f"({100.0 * pn / max(1, len(tickers)):.0f}%)")
     if unsupported:
         print(f"\n--- 미지원 {len(unsupported)}종목 표 헤더(형식 추가 근거) ---")
         for tk, v, head in unsupported:
