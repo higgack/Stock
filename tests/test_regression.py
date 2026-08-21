@@ -7392,9 +7392,10 @@ class TestSingleFlight20260821:
         렌더인지 알 방법이 없었다 — 추측하지 말고 잰다(#69)."""
         import ast as _ast
         import bot.quarterly_infographic as qi
-        qi._RENDER_TIMING.start("ZZZ")
+        _k = qi.timing_key("ZZZ")
+        qi._RENDER_TIMING.start(_k)
         for stage in ("build_payload", "render_png", "total"):
-            qi._RENDER_TIMING.set("ZZZ", stage, 0.5)
+            qi._RENDER_TIMING.set(_k, stage, 0.5)
         assert set(qi.last_render_timing("ZZZ")) == {
             "build_payload", "render_png", "total"}
         assert qi.last_render_timing("AAPL") == {}, "남의 값이 샌다"
@@ -30604,9 +30605,10 @@ class TestQuarterlyStagesAndBacklogCache20260822:
     def test_build_payload_stages_are_measured(self):
         """`build_payload=51.5s` 안에서 시계열인지 수주잔고인지 갈라야 한다."""
         import bot.quarterly_infographic as qi
-        qi._RENDER_TIMING.start("ZZZ")
+        _k = qi.timing_key("ZZZ")
+        qi._RENDER_TIMING.start(_k)
         for k in ("bp.series", "bp.backlog"):
-            qi._RENDER_TIMING.set("ZZZ", k, 1.0)
+            qi._RENDER_TIMING.set(_k, k, 1.0)
         assert set(qi.last_render_timing("ZZZ")) == {"bp.series", "bp.backlog"}
         import ast
         src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
@@ -30668,3 +30670,50 @@ class TestQuarterlyStagesAndBacklogCache20260822:
         bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012")
         bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012")
         assert len(calls) == 2, "원문미제공을 캐시했다"
+
+
+class TestQuarterlyTimingKeyIsPerRequest20260822:
+    """티커만으로는 부족했다 — 같은 티커의 **두 실행**이 섞였다.
+
+    2026-08-22 VM 실측 한 줄: `051910.KS render_png=106.249s total=17.528s
+    build_payload=17.514s cached=1.0s` — 캐시 히트(total 17.5초)인데 렌더
+    106초가 붙어 있다. single-flight 키가 `quarterly:{ticker}:{run}` 이라
+    `run` 이 다른 두 요청은 같은 티커로 **동시에** 돈다. #117 에서 단위를
+    티커로 잡은 것이 여기서 부족했다 — 키는 **요청**이어야 한다."""
+
+    def test_same_ticker_different_run_do_not_mix(self):
+        import bot.quarterly_infographic as qi
+        k0, k1 = qi.timing_key("A", False), qi.timing_key("A", True)
+        assert k0 != k1, (k0, k1)
+        qi._RENDER_TIMING.start(k0)
+        qi._RENDER_TIMING.set(k0, "render_png", 106.2)
+        qi._RENDER_TIMING.start(k1)
+        qi._RENDER_TIMING.set(k1, "cached", 1.0)
+        assert qi.last_render_timing("A", False) == {"render_png": 106.2}
+        assert qi.last_render_timing("A", True) == {"cached": 1.0}
+
+    def test_handler_reads_the_key_it_wrote(self):
+        """찍는 쪽과 재는 쪽이 같은 키 생성 함수를 써야 한다 — 리터럴을
+        손으로 적으면 갈려서 로그가 조용히 사라진다(#117)."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        reads = [n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "attr", "") == "last_render_timing"]
+        assert reads, "핸들러가 분기실적 계측을 안 읽는다"
+        assert all(len(r.args) >= 2 for r in reads), \
+            "run 을 안 넘겨 다른 실행의 값을 읽는다"
+
+    def test_build_payload_writes_under_the_same_key(self):
+        """`build_payload` 안의 단계도 같은 요청 키로 들어가야 한다."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        for n in ast.walk(ast.parse(src)):
+            if (isinstance(n, ast.Call)
+                    and getattr(n.func, "attr", "") == "set"
+                    and len(n.args) >= 2
+                    and isinstance(n.args[1], ast.Constant)
+                    and str(n.args[1].value).startswith("bp.")):
+                assert isinstance(n.args[0], ast.Call) and \
+                    getattr(n.args[0].func, "id", "") == "timing_key", \
+                    f"{n.args[1].value} 가 요청 키를 안 쓴다"
