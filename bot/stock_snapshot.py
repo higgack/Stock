@@ -1261,8 +1261,20 @@ def collect_kr_financials(ticker: str) -> dict:
             compact["_component_accounts"] = dict(_comp)
         out.setdefault("kr", {})["financials"] = compact
     current_year = _dt.now().year
+    _years = list(range(current_year - 1, current_year - 4, -1))
+    # 3개년 연간 조회는 서로 독립인데 **직렬**이었다 — 병렬로 미리 받아
+    # 디스크 캐시에 넣어 둔다(아래 루프는 그대로, 두 번째 호출은 0초).
+    # 2026-08-21 계측: `kr:dart.financials` 가 enrich:KR 을 지배했다.
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(_years)) as _pool:
+            list(_pool.map(
+                lambda y: dart.get_normalized_financials(ticker, year=y),
+                _years))
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("stock_snapshot: 연간 재무 미리받기 건너뜀: %s", exc)
     ts = []
-    for yr in range(current_year - 1, current_year - 4, -1):
+    for yr in _years:
         fin = dart.get_normalized_financials(ticker, year=yr)
         if fin and fin.get("financials"):
             entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}

@@ -203,6 +203,61 @@ def probe_latest_reprt_code(dart, ticker: str, fs_div: str = "CFS"
     return None
 
 
+def _plan_pairs(latest_year: int, latest_rc: str, n: int
+                ) -> list[tuple[int, str]]:
+    """최신 분기에서 **역행**하며 조회할 (연도, 보고서코드) n개.
+
+    역행 규칙이 결정적이라 미리 다 셀 수 있다 — 그래서 병렬로 미리 받아
+    둘 수 있다(아래 `_prefetch`)."""
+    out, y, rc = [], latest_year, latest_rc
+    for _ in range(max(int(n), 0)):
+        out.append((y, rc))
+        idx = _Q_ORDER.index(rc)
+        y, rc = (y - 1, "11011") if idx == 0 else (y, _Q_ORDER[idx - 1])
+    return out
+
+
+def _prefetch(dart, ticker: str, fs_div: str,
+              pairs: list[tuple[int, str]]) -> None:
+    """조회를 **병렬로 미리** 태워 디스크 캐시에 채운다. 결과는 안 쓴다.
+
+    ⚠️ 왜 이렇게 하나(2026-08-21 VM 계측): `kr:dart.financials` 가
+    **중앙값 26.2초·최대 44.7초**로 `enrich:KR` 전체를 지배했다. 원인은
+    파싱이 아니라 DART 정기보고서 원자조회 ~20회를 **직렬**로 도는 것이다
+    (분기 n+1개 + 4분기마다 9개월누적 보조 + CFS/OFS 프로브).
+    본 루프는 손대지 않고(=break·4분기 파생 규칙이 그대로다) 같은 키를
+    미리 받아 두기만 한다 — 두 번째 호출은 디스크 캐시라 사실상 0초다.
+
+    ⚠️ 요청 **수**는 조금 늘 수 있다. 본 루프는 데이터가 없으면 거기서
+    멈추는데 미리받기는 계획된 만큼 다 던진다 — 상한이 n+1(+4분기 보조)
+    이라 유계이고, 7일 캐시가 있어 다음 조회부턴 0회다(#61: 상한이
+    무엇을 줄이는지 먼저 답할 것).
+    """
+    if not pairs:
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(pr):
+        y, rc = pr
+        try:
+            r = dart.get_normalized_financials(ticker, year=y, fs_div=fs_div,
+                                               reprt_code=rc)
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("dart_quarterly: 미리받기 실패 %s %s/%s: %s",
+                      ticker, y, rc, exc)
+            return
+        # 4분기는 9개월누적(11014)이 있어야 파생된다 — 같이 데워 둔다.
+        if rc == "11011" and r and r.get("financials"):
+            try:
+                dart.get_normalized_financials(ticker, year=y, fs_div=fs_div,
+                                               reprt_code="11014")
+            except Exception as exc:                           # noqa: BLE001
+                log.debug("dart_quarterly: 보조 미리받기 실패 %s: %s",
+                          ticker, exc)
+    with ThreadPoolExecutor(max_workers=min(8, len(pairs))) as ex:
+        list(ex.map(_one, pairs))
+
+
 def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
                          ) -> list[dict] | None:
     """최근 n개 분기 트레일링 시계열. 각 항목
@@ -214,7 +269,19 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
     회사 등) OFS 로 1회 폴백해 시리즈 전체를 그 기준으로 조회. 프로브
     실패 또는 과거로 갈수록 DART 미제공(상장 이력 짧음 등)이면 있는
     만큼만 반환, 전무하면 None(DATA OFFLINE)."""
-    latest = probe_latest_reprt_code(dart, ticker, fs_div=fs_div)
+    # CFS·OFS 프로브는 서로 독립인데 **직렬**로 돌고 있었다 — 각각 최대
+    # 4회 조회라 합이 벽시계에 실린다(#92 '병렬이면 합이 아니라 최대값').
+    _alt_fut = None
+    if fs_div == "CFS":
+        from concurrent.futures import ThreadPoolExecutor
+        _pool = ThreadPoolExecutor(max_workers=2)
+        _alt_fut = _pool.submit(probe_latest_reprt_code, dart, ticker,
+                                fs_div="OFS")
+    try:
+        latest = probe_latest_reprt_code(dart, ticker, fs_div=fs_div)
+    finally:
+        if _alt_fut is not None:
+            _pool.shutdown(wait=False)
     effective_fs_div = fs_div
     if fs_div == "CFS":
         # ⚠️ CFS 가 **아예 없을 때만** OFS 로 넘어가면, 연결 작성을 중단한
@@ -222,7 +289,11 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
         # 26.2Q 가 OFS 에만 있는데 CFS 에서 25.4Q 가 잡혀 화면이 **두 분기
         # 뒤처졌다**(2026-08-18 프로브: `26.2Q CFS=없음 · OFS=있음`).
         # 어느 쪽이 더 **최신 분기**를 갖는지로 정한다.
-        alt = probe_latest_reprt_code(dart, ticker, fs_div="OFS")
+        try:
+            alt = _alt_fut.result(timeout=60) if _alt_fut else None
+        except Exception as exc:                               # noqa: BLE001
+            log.info("dart_quarterly: %s OFS 프로브 실패: %s", ticker, exc)
+            alt = None
         if alt and (not latest or _Q_SORT_KEY(alt) > _Q_SORT_KEY(latest)):
             latest, effective_fs_div = alt, "OFS"
     if not latest:
@@ -237,6 +308,11 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
     # 오래된 분기가 늘 빈칸**이 된다(경계값 요청은 원천이 하루만 덜 줘도
     # 조용히 실패한다, 실수 #44a). 여분은 환산 뒤 잘라낸다.
     _fetch_n = n + 1
+    # ⚠️ 아래 루프는 **그대로** 둔다(break·4분기 파생 규칙이 계약이다).
+    # 같은 키를 병렬로 미리 받아 캐시에 넣어 두기만 한다(#69: 느린 곳을
+    # 고치려면 재는 것부터 — 계측이 `dart.financials` 를 지목했다).
+    _prefetch(dart, ticker, effective_fs_div,
+              _plan_pairs(latest_year, latest_rc, _fetch_n))
     for _ in range(_fetch_n):
         entry = dart.get_normalized_financials(ticker, year=y,
                                                fs_div=effective_fs_div,
