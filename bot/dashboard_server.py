@@ -992,6 +992,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # 이미지 다음). KR 전용(원천이 DART), 없으면 빈 문자열이라
                 # 프런트가 섹션을 통째로 생략한다.
                 "production_html": _production_html(ticker, payload),
+                # 성장동력·리스크 카드 = **별도 PNG**(사용자 2026-08-20).
+                # 생산능력 표가 카드 바로 위에 와야 해서 분리했다 — 프런트가
+                # [본 이미지] → [생산능력 표] → [카드 이미지] 순으로 붙인다.
+                "cards_image_url": (
+                    f"quarterly_infographic_img/{Path(_ci).name}"
+                    f"?v={int(Path(_ci).stat().st_mtime)}"
+                    if (_ci := res.get("cards_image")) else None),
                 "growth_risk": payload.get("growth_risk") or {"ok": False},
                 "latest": (payload.get("quarters") or [{}])[-1].get("label"),
                 "cached": res.get("cached"),

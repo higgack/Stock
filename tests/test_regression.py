@@ -6735,7 +6735,10 @@ class TestQuarterlyChartLayout20260816:
         try:
             with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                assert qi._render_locked(p, f"{d}/x.png")
+                # 2026-08-20 카드 분리 이후 카드를 그리는 곳은 카드 PNG
+                # 하나뿐 — 검사 대상만 옮기고 계약(상자가 항목 수에 맞게
+                # 커지고 항목이 안 벗어남)은 그대로 유지한다.
+                assert qi._render_cards_locked(p, f"{d}/x.png")
         finally:
             qi._font_ok, maxes.Axes.add_patch = _orig_font, _ap
         # 카드 패널 = 폭 46.5, 번호 칩 = 폭 2.4 (렌더러 상수)
@@ -6805,6 +6808,12 @@ class TestQuarterlyChartLayout20260816:
                 assert qi._render_locked(p, out) == out, "LLM 카드 경로 렌더 실패"
                 import os
                 assert os.path.getsize(out) > 10_000
+                # 2026-08-20 분리 이후 카드는 **별도 장** — 본 이미지만 보면
+                # 카드 PNG 가 0장이어도 통과해 원래 잡던 결함(과금 경로인데
+                # 그림이 없음)이 다시 새어나간다.
+                cout = f"{d}/card_cards.png"
+                assert qi._render_cards_locked(p, cout) == cout, "카드 PNG 렌더 실패"
+                assert os.path.getsize(cout) > 5_000
         finally:
             qi._font_ok = _orig
 

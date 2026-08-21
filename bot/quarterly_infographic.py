@@ -61,7 +61,7 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #       **누적** 당기순이익이 이겨 2·3분기 순이익이 부풀어 있었다
 #   v7 (2026-08-19) ROE·ROA 를 TTM(최근 4분기 합) 기준으로 — 분기 하나로
 #       계산해 네이버(10.08%)와 3배 어긋나 보였다
-_RENDER_VER = "v7"
+_RENDER_VER = "v8"   # v8: 카드 분리(별도 PNG)
 
 
 def _eok(v, currency: str = "KRW") -> str:
@@ -363,6 +363,114 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
     return notes
 
 
+def render_cards(payload: dict, out_path: str) -> str | None:
+    """성장동력·리스크 카드**만** 담은 별도 PNG. 없으면 None.
+
+    사용자 2026-08-20: 생산능력·가동률 표가 "확인된 성장동력 바로 위"에
+    와야 하는데, 카드가 본 인포그래픽 PNG 안에 있어 HTML 표는 이미지 전체
+    **뒤**로 밀렸다. 카드를 별도 장으로 떼어 내면 화면 순서가
+    [지표·차트·재고자산] → 생산능력 표 → [카드] 가 된다.
+
+    분리 이후 카드를 그리는 곳은 **여기 하나뿐**이다(`_render_locked` 는
+    더 이상 그리지 않는다) — 그리기 코드를 두 벌 두면 한쪽만 고쳐져 모양이
+    갈라지므로 `_draw_cards()` 로 떼어 두고 여기서만 부른다."""
+    with _RENDER_LOCK:
+        try:
+            return _render_cards_locked(payload, out_path)
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("quarterly_infographic: card render failed: %s", exc)
+            try:
+                import matplotlib.pyplot as plt
+                plt.close("all")
+            except Exception:
+                pass
+            return None
+
+
+def _cards_of(payload: dict) -> tuple[list, list]:
+    gr = payload.get("growth_risk") or {}
+    if not gr.get("ok"):
+        return [], []
+    return (gr.get("growth_drivers") or []), (gr.get("sustain_risks") or [])
+
+
+def _card_height(drivers: list, risks: list) -> float:
+    """카드 상자 높이 — 항목 수에서 도출. 카드 PNG 의 도화지 높이와 상자
+    높이가 같은 식을 봐야 한다(복제하면 잘림이 생긴다, #38)."""
+    from bot.dart_growth_risk import MAX_ITEMS as _M
+    n = min(_M, max(len(drivers), len(risks)))
+    return 3.4 * n + 6.55
+
+
+def _draw_cards(ax, txt, panel, Rectangle, FancyBboxPatch,
+                y: float, h: float, drivers: list, risks: list) -> None:
+    """카드 2단 그리기. 호출부는 `_render_cards_locked` 하나 — 본 이미지에
+    되돌릴 때도 이 함수를 부르면 되고, 코드를 복제해선 안 된다(#38)."""
+    from bot.dart_growth_risk import MAX_ITEMS as _MAX_CARD_ITEMS
+
+    def card_col(x0, w, title, items, color):
+        panel(x0, y, w, h, fc=_PANEL, rad=1.6)
+        ax.add_patch(Rectangle((x0, y), w, 0.7, facecolor=color,
+                               edgecolor="none"))
+        txt(x0 + 2, y + 3.2, title, size=9.5, weight="bold")
+        iy = y + 6.6
+        for i, s in enumerate(items[:_MAX_CARD_ITEMS], 1):
+            ax.add_patch(FancyBboxPatch(
+                (x0 + 2, iy - 1.15), 2.4, 2.3,
+                boxstyle="round,pad=0,rounding_size=1.15",
+                facecolor=color, edgecolor="none", mutation_aspect=1))
+            txt(x0 + 3.2, iy, str(i), size=7.5, color="#0b1020",
+                weight="bold", ha="center")
+            body = s if len(s) <= _CARD_CHARS else s[:_CARD_CHARS - 1] + "…"
+            txt(x0 + 5.6, iy, body, size=8)
+            iy += 3.4
+
+    card_w = 46.5
+    card_col(2.5, card_w, "확인된 성장동력", drivers, _POS)
+    card_col(51.0, card_w, "지속조건 · 무효화 리스크", risks, _NEG)
+
+
+def _render_cards_locked(payload: dict, out_path: str) -> str | None:
+    if not _font_ok():
+        return None
+    drivers, risks = _cards_of(payload)
+    if not (drivers or risks):
+        return None
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import FancyBboxPatch, Rectangle
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("quarterly_infographic: matplotlib import: %s", exc)
+        return None
+    W = 100.0
+    h = _card_height(drivers, risks)
+    H = h + 5.0
+    fig_w = 11.6
+    fig, ax = plt.subplots(figsize=(fig_w, fig_w * (H / W)), dpi=180)
+    fig.patch.set_facecolor(_BG)
+    ax.set_facecolor(_BG)
+    ax.set_xlim(0, W)
+    ax.set_ylim(H, 0)
+    ax.axis("off")
+
+    def panel(x, y, w, hh, fc=_PANEL, ec=_LINE, rad=1.8):
+        ax.add_patch(FancyBboxPatch(
+            (x, y), w, hh,
+            boxstyle=f"round,pad=0,rounding_size={rad}",
+            facecolor=fc, edgecolor=ec, linewidth=0.8, mutation_aspect=1))
+
+    def txt(x, y, s, size=10, color=_TEXT, weight="normal", ha="left",
+            va="center", **kw):
+        ax.text(x, y, s, fontsize=size, color=color, fontweight=weight,
+                ha=ha, va=va, **kw)
+
+    _draw_cards(ax, txt, panel, Rectangle, FancyBboxPatch,
+                2.5, h, drivers, risks)
+    fig.savefig(out_path, facecolor=_BG, bbox_inches="tight", pad_inches=0.12)
+    plt.close(fig)
+    return out_path
+
+
 def _render_locked(payload: dict, out_path: str) -> str | None:
     if not _font_ok():
         log.warning("quarterly_infographic: Nanum 폰트 없음 — skip")
@@ -379,9 +487,7 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
 
     gr = payload.get("growth_risk") or {}
     has_llm = bool(gr.get("ok"))
-    drivers = gr.get("growth_drivers") or []
-    risks = gr.get("sustain_risks") or []
-    has_cards = has_llm and (drivers or risks)
+    # ⚠️ drivers/risks 는 여기서 안 읽는다 — 카드는 별도 PNG(`render_cards`).
     headline = (gr.get("headline") or "").strip() if has_llm else ""
     risk_sub = (gr.get("risk_subline") or "").strip() if has_llm else ""
 
@@ -411,10 +517,9 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
     # 항목의 칩 하단이 17.95 라 **상자 밖으로 0.95 단위(≈20px) 튀어나갔다**
     # (사용자 2026-08-16 스크린샷). 3개 이하에선 안 보이던 잠복 버그다.
     # 1번 중심 6.6 + 간격 3.4×(n-1) + 칩 반높이 1.15 + 하단 여백 2.2.
-    from bot.dart_growth_risk import MAX_ITEMS as _MAX_CARD_ITEMS
-    _n_card = min(_MAX_CARD_ITEMS, max(len(drivers), len(risks)))
-    _card_h = 3.4 * _n_card + 6.55
-    H_CARDS = (_card_h + 3.0) if has_cards else 0.0
+    # 카드를 별도 PNG 로 분리(2026-08-20)했으므로 이 이미지에서는 **항상 0**.
+    # 높이 식(`_card_height`)은 `_render_cards_locked` 한 곳만 쓴다(#38).
+    H_CARDS = 0.0
     # 각주를 **레이아웃 전에** 만들어 높이를 실제 줄 수로 잡는다. 옛 코드는
     # H_FOOT 을 15.0 으로 고정해 두고 아래에서 각주를 만들었다 — 각주가
     # 3줄을 넘으면 맨 아래 출처·면책 줄을 덮어쓴다(기준기간 각주를 추가하며
@@ -754,39 +859,13 @@ def _render_locked(payload: dict, out_path: str) -> str | None:
               "", _title)
     y += H_EXTRA
 
-    # ── 성장동력 / 리스크 카드(LLM, 없으면 섹션 자체 생략) ──────────
-    if has_cards:
-        def card_col(x0, w, title, items, color):
-            panel(x0, y, w, H_CARDS - 3, fc=_PANEL, rad=1.6)
-            ax.add_patch(Rectangle((x0, y), w, 0.7, facecolor=color,
-                                   edgecolor="none"))
-            txt(x0 + 2, y + 3.2, title, size=9.5, weight="bold")
-            iy = y + 6.6
-            # 상한은 dart_growth_risk.MAX_ITEMS 하나가 정본 — 여기 숫자를
-            # 따로 박으면 생산 단계 cap 과 어긋난다(옛 코드가 그랬다).
-            for i, s in enumerate(items[:_MAX_CARD_ITEMS], 1):
-                ax.add_patch(FancyBboxPatch(
-                    (x0 + 2, iy - 1.15), 2.4, 2.3,
-                    boxstyle="round,pad=0,rounding_size=1.15",
-                    facecolor=color, edgecolor="none", mutation_aspect=1))
-                txt(x0 + 3.2, iy, str(i), size=7.5, color="#0b1020",
-                    weight="bold", ha="center")
-                # 34 = 카드 폭 실측 한계(812px 가용, 8pt 34자 782px · 38자
-                # 874px 넘침). 프롬프트는 ITEM_CHARS(32)로 더 짧게 요구해
-                # 말줄임을 예외로 만든다 — 두 숫자가 어긋나면 문장이 매번
-                # 중간에 끊긴다(2026-08-16 독립 리뷰).
-                body = s if len(s) <= _CARD_CHARS else s[:_CARD_CHARS - 1] + "…"
-                txt(x0 + 5.6, iy, body, size=8)
-                iy += 3.4
-        # ⚠️ `cw` 는 **정의된 적이 없다** — 최초 구현(c4397c4)부터 여기서
-        # NameError 가 났고, render_infographic 의 포괄 except 가 그걸 삼켜
-        # LLM 카드가 붙는 KR 경로는 **PNG 가 아예 안 나오고** 표로 폴백해
-        # 왔다(과금까지 하는 경로인데 그림이 없었다, 2026-08-16 독립 리뷰).
-        # 좌 2.5 + 우 51.0 배치에 맞춰 폭을 정의한다(2.5+46.5=49, 51+46.5=97.5).
-        card_w = 46.5
-        card_col(2.5, card_w, "확인된 성장동력", drivers, _POS)
-        card_col(51.0, card_w, "지속조건 · 무효화 리스크", risks, _NEG)
-        y += H_CARDS
+    # ── 성장동력 / 리스크 카드 ─────────────────────────────────────
+    # ⚠️ **여기서 그리지 않는다.** 사용자 2026-08-20 요청으로 카드는 별도
+    # PNG(`render_cards`)로 분리했다 — 생산능력·가동률 표가 "확인된 성장동력
+    # 바로 위"에 와야 하는데, 카드가 이 이미지 안에 있으면 HTML 표는 이미지
+    # 전체 뒤로 밀려 카드 **아래**가 되기 때문이다.
+    # 높이 계산(H_CARDS)은 0 이 되어 이 이미지가 그만큼 짧아진다.
+    # 그리기 코드는 `_draw_cards` 하나뿐이라 두 이미지가 갈라질 수 없다.
 
     # ── 푸터(TTM + 출처 + 면책) ─────────────────────────────────────
     ttm = payload.get("ttm") or {}
@@ -1254,12 +1333,24 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     # `cached` 는 dart_growth_risk 가 캐시에서 꺼냈을 때만 True 다.
     _gr = payload.get("growth_risk") or {}
     fresh_llm = bool(_gr.get("ok")) and not _gr.get("cached")
+    # 카드 전용 PNG(사용자 2026-08-20 — 생산능력 표가 카드 위로 와야 해서
+    # 분리). 본 이미지와 **같은 캐시 키**에 접미사만 붙여 함께 갱신된다.
+    pc = p.with_name(p.stem + "_cards" + p.suffix)
     if p.exists() and not fresh_llm:
-        return {"ok": True, "image": str(p), "payload": payload, "cached": True}
+        # 짝이 없으면 **여기서 만든다** — 본 이미지만 캐시에 남아 있으면
+        # 카드가 화면에서 통째로 사라진 채 캐시 키가 도는 날까지 방치된다
+        # (한 번의 렌더 실패가 영구 결손이 되는 구멍, 실수 #11).
+        # 카드가 없는 종목이면 render_cards 가 matplotlib 전에 None 을 낸다.
+        return {"ok": True, "image": str(p),
+                "cards_image": str(pc) if pc.exists()
+                else render_cards(payload, str(pc)),
+                "payload": payload, "cached": True}
     img = render_infographic(payload, str(p))
+    cards = render_cards(payload, str(pc))
     if img:
         _purge_stale(ticker, p)
-    return {"ok": True, "image": img, "payload": payload, "cached": False}
+    return {"ok": True, "image": img, "cards_image": cards,
+            "payload": payload, "cached": False}
 
 
 def _purge_stale(ticker: str, keep: Path) -> None:
@@ -1267,9 +1358,14 @@ def _purge_stale(ticker: str, keep: Path) -> None:
     쌓이는데(분기·렌더버전까지 곱해지면 더) 지우는 곳이 아무 데도 없었다
     (2026-08-16 독립 리뷰). 방금 만든 것만 남긴다 — 옛 파일은 캐시 키가
     달라 어차피 다시 안 읽힌다."""
+    # ⚠️ 카드 전용 PNG(`*_cards.png`)도 **살려 둔다** — 같은 캐시 키의 짝이라
+    # 여기서 지우면 방금 만든 카드 이미지가 사라져 화면에서 카드가 통째로
+    # 빠진다(2026-08-20 분리 작업 중 실측한 함정: 본 이미지 렌더 직후
+    # _purge_stale 이 짝을 삭제).
+    keep_cards = keep.with_name(keep.stem + "_cards" + keep.suffix)
     try:
         for old in _IMG_DIR.glob(f"{_safe_name(ticker)}_*.png"):
-            if old != keep:
+            if old not in (keep, keep_cards):
                 old.unlink(missing_ok=True)
     except OSError as exc:
         log.debug("quarterly_infographic: 옛 PNG 정리 실패: %s", exc)

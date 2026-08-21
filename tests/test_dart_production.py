@@ -381,3 +381,89 @@ class TestProbe:
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
         assert "_PROBE_VER" in src and "형식 스윕 v" in src
+
+
+class TestCardSplit20260820:
+    """성장동력·리스크 카드를 **별도 PNG** 로 분리(사용자 2026-08-20).
+
+    "이 생산실적 내용을 확인된 성장동력 바로 위로" — 카드가 본 인포그래픽
+    안에 있으면 HTML 표는 이미지 전체 뒤, 즉 카드 **아래**로 밀린다.
+    분리해서 [본 이미지] → [생산능력 표] → [카드] 순서를 만든다."""
+
+    def test_main_image_no_longer_draws_cards(self):
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        body = src[src.index("def _render_locked("):]
+        assert "card_col(2.5" not in body, "본 이미지가 아직 카드를 그린다"
+        assert "H_CARDS = 0.0" in body
+
+    def test_card_height_is_single_source(self):
+        """높이 식이 복제되면 도화지와 상자 높이가 갈라져 카드가 잘린다(#38)."""
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert src.count("3.4 * n + 6.55") == 1, "높이 식 복제"
+        body = src[src.index("def _render_cards_locked("):]
+        assert "_card_height(drivers, risks)" in body[:body.index("def ", 10)]
+
+    def test_render_version_bumped_for_the_split(self):
+        """옛 캐시 PNG 는 카드를 **품고 있다** — 버전을 안 올리면 그 종목은
+        카드가 두 번(이미지 안 + 별도 장) 뜬다(실수 #11 '배포 ≠ 화면')."""
+        from bot.quarterly_infographic import _RENDER_VER
+        assert _RENDER_VER != "v7", "카드 분리인데 렌더 버전이 그대로"
+
+    def test_cached_hit_repairs_a_missing_cards_png(self, tmp_path,
+                                                    monkeypatch):
+        """본 이미지만 캐시에 남고 짝이 없으면 카드가 영구 결손이 된다 —
+        캐시 키가 도는 날까지 화면에서 카드가 통째로 빠진다(실수 #11).
+        ⚠️ 표현식을 테스트에 복제하면 뮤테이션이 통과한다(#19) — 진입점을
+        실제로 태운다."""
+        import bot.quarterly_infographic as qi
+        p = tmp_path / "TK_q_v9.png"
+        p.write_bytes(b"x")
+        pc = p.with_name(p.stem + "_cards" + p.suffix)
+        pay = {"period_key": "q", "asof": "2026-08-20",
+               "growth_risk": {"ok": True, "cached": True}}
+        seen = []
+        monkeypatch.setattr(qi, "build_payload",
+                            lambda *a, **k: pay)
+        monkeypatch.setattr(qi, "cache_path", lambda *a, **k: p)
+        monkeypatch.setattr(qi, "render_cards",
+                            lambda payload, out: seen.append(out) or out)
+        r = qi.get_or_render("TK")
+        assert r["cached"] is True and r["image"] == str(p)
+        assert r["cards_image"] == str(pc), "짝이 없는데 복구를 안 한다"
+        assert seen == [str(pc)]
+        # 짝이 이미 있으면 다시 그리지 않는다(캐시 히트가 매번 렌더 금지)
+        pc.write_bytes(b"y")
+        seen.clear()
+        assert qi.get_or_render("TK")["cards_image"] == str(pc)
+        assert seen == [], "짝이 있는데도 재렌더"
+
+    def test_render_cards_none_without_cards(self):
+        from bot.quarterly_infographic import render_cards
+        assert render_cards({}, "/tmp/_x.png") is None
+        assert render_cards({"growth_risk": {"ok": False}}, "/tmp/_x.png") is None
+
+    def test_purge_keeps_the_cards_pair(self, tmp_path, monkeypatch):
+        """⚠️ 실측한 함정 — _purge_stale 이 방금 만든 짝(_cards.png)까지
+        지워 화면에서 카드가 통째로 사라진다."""
+        import bot.quarterly_infographic as qi
+        monkeypatch.setattr(qi, "_IMG_DIR", tmp_path)
+        for n in ("TK_a_1.png", "TK_a_1_cards.png",
+                  "TK_old_1.png", "TK_old_1_cards.png"):
+            (tmp_path / n).write_bytes(b"x")
+        qi._purge_stale("TK", tmp_path / "TK_a_1.png")
+        left = sorted(f.name for f in tmp_path.iterdir())
+        assert left == ["TK_a_1.png", "TK_a_1_cards.png"], left
+
+    def test_server_exposes_cards_image_url(self):
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"cards_image_url"' in src
+        assert 'res.get("cards_image")' in src
+
+    def test_client_order_table_between_image_and_cards(self):
+        """위치 계약 — 본 이미지 → 생산능력 표 → 카드 이미지."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i_img = src.index("if(j.image_url){")
+        i_prod = src.index("if(j.production_html)")
+        i_cards = src.index("if(j.cards_image_url)")
+        i_gr = src.index("var gr=j.growth_risk||{};")
+        assert i_img < i_prod < i_cards < i_gr, "표가 카드 위가 아니다"
