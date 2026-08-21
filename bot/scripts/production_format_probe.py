@@ -36,7 +36,7 @@ import re
 import sys
 import time
 
-_PROBE_VER = 5          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 6          # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
@@ -44,6 +44,9 @@ _PROBE_VER = 5          # 진단 스크립트 버전 배너(실수 #21)
 #   v4(2026-08-21): 잘림 판정을 원천 플래그로(문자 길이 추정 금지).
 #   v5(2026-08-21): 분기실적 탭 **전 항목** 커버리지 감사로 확장
 #   (지표·차트 / 제품표 / 생산능력표 / 수주잔고 / 재고자산).
+#   v6(2026-08-21): 어느 **서식(앵커)**로 잡혔는지 표기·집계.
+#   DART 서식이 두 벌이라(`원재료 및 생산설비` 현행 /
+#   `생산 및 설비에 관한 사항` 구) 어느 쪽이 남는지 봐야 한다.
 
 
 def _universe(limit: int) -> list[str]:
@@ -113,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tally: dict[str, int] = {}
     cover = {"분기": 0, "재고자산": 0, "수주잔고": 0, "제품표": 0, "생산표": 0}
+    anchors: dict[str, int] = {}          # 서식별 히트 수
     unsupported: list[tuple[str, str, str]] = []
     _OK = ("정상", "가동률없음", "능력만")     # 화면에 실리는 판정
     for i, tk in enumerate(tickers, 1):
@@ -179,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         cover["수주잔고"] += 1 if bl is not None else 0
         cover["제품표"] += 1 if prod else 0
         cover["생산표"] += 1 if got else 0
+        if got and got.get("anchor"):
+            anchors[got["anchor"]] = anchors.get(got["anchor"], 0) + 1
         mark = "✅" if got else "❌"
         kinds = ",".join(got.get("kinds") or []) if got else ""
         print(f"[{i:3}/{len(tickers)}] {tk} {len(qs)}Q "
@@ -186,7 +192,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{'수주' if bl is not None else '  ·  '} "
               f"{'제품' if prod else '  ·  '} "
               f"{mark} {verdict:<8} {basis:<6}"
-              f" {dlen//1000:>5}k{'✂' if cutmark else ' '} {kinds}")
+              f" {dlen//1000:>5}k{'✂' if cutmark else ' '}"
+              f" {(got or {}).get('anchor', ''):<12} {kinds}")
         # ⚠️ 미채택만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
         if not got:
             head = ""
@@ -218,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
         n = cover[k]
         print(f"  {k:<6} {n:>3}/{len(tickers)} "
               f"({100.0 * n / max(1, len(tickers)):.0f}%)")
+    if anchors:
+        print("\n생산 표를 잡은 서식(앵커):")
+        for k, v in sorted(anchors.items(), key=lambda x: -x[1]):
+            print(f"  {k:<20} {v:>3}건")
     if unsupported:
         print(f"\n--- 미지원 {len(unsupported)}종목 표 헤더(형식 추가 근거) ---")
         for tk, v, head in unsupported:
