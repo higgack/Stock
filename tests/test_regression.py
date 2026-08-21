@@ -25071,20 +25071,48 @@ class TestDocFetchDiagnostics20260817:
     def test_every_failure_path_logs_why(self):
         """silent-fail 금지(실수 #12). 각 return None 앞에 사유 로그가 있어야
         운영자가 '왜 0자인지'를 로그만 보고 알 수 있다."""
+        import ast
         import inspect
+        import textwrap
         from bot import dart_feed
         src = inspect.getsource(dart_feed._fetch_doc_text)
-        lines = src.splitlines()
-        marks = [i for i, ln in enumerate(lines)
-                 if "_doc_fail_mark(rcept_no)" in ln]
-        assert marks, "실패 마킹 자체가 없다"
-        for i in marks:
-            # 실패 마킹 **직전 2줄 안에** 사유 로그가 있어야 한다. 창을 넓히면 옆
-            # 분기의 로그가 잡혀 공허해지고(4줄로 했다가 실측), 개수 비교로는
-            # 안 된다 — 경고 중 하나는 실패가 아니라 폴백 알림이다.
-            near = "\n".join(lines[max(0, i - 2):i])
-            assert 'log.warning("_fetch_doc_text' in near, \
-                f"{i}행 실패가 조용하다:\n{near}"
+        # ⚠️ **줄 창(window)으로 재지 않는다.** 옛 검사는 마킹 직전 2줄만
+        # 봤는데, 로그 호출이 3줄로 줄바꿈되자(들여쓰기가 한 단 깊어진 것뿐)
+        # 멀쩡한 로그를 '조용한 실패'로 오보했다(2026-08-21). 창을 넓히면
+        # 옆 분기 로그가 잡혀 공허해진다 — 창이 아니라 **구조**로 본다:
+        # 마킹 바로 앞 **형제 문장**이 사유 로그여야 한다.
+        tree = ast.parse(textwrap.dedent(src))
+
+        def _is_mark(n):
+            return (isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+                    and getattr(n.value.func, "id", "") == "_doc_fail_mark")
+
+        def _is_reason_log(n):
+            if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)):
+                return False
+            f = n.value.func
+            if getattr(f, "attr", "") != "warning":
+                return False
+            a = n.value.args[0] if n.value.args else None
+            return (isinstance(a, ast.Constant) and isinstance(a.value, str)
+                    and a.value.startswith("_fetch_doc_text"))
+
+        found = 0
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if not isinstance(body, list):
+                continue
+            for prev, cur in zip(body, body[1:]):
+                if _is_mark(cur):
+                    found += 1
+                    assert _is_reason_log(prev), \
+                        f"{cur.lineno}행 실패가 조용하다"
+            # 블록의 **첫 문장**이 마킹이면 앞에 사유가 없다는 뜻
+            if body and _is_mark(body[0]):
+                found += 1
+                assert False, f"{body[0].lineno}행 실패가 조용하다(사유 없음)"
+        # 대조 대상이 0건이면 '이상 없음'이 아니라 검사 실패다(#54).
+        assert found >= 2, f"실패 마킹을 {found}개만 찾았다 — 검사가 눈이 멀었다"
         assert "type(exc).__name__" in src, "예외 종류를 안 남긴다"
 
     def test_all_zip_entries_are_read_not_just_the_largest(self):

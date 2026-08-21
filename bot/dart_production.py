@@ -318,71 +318,80 @@ def diagnose(markup: str | None, *, truncated: bool = False) -> str:
     return "무관표만"              # 표는 있는데 세 어구가 하나도 없다
 
 
-def production_for(dart, ticker: str, year: int, reprt_code: str,
-                   parse=None) -> dict | None:
-    """해당 보고서의 생산능력·가동률 표. 없으면 None.
+def _rcept_nos(dart, ticker: str, year: int, reprt_code: str) -> list[str]:
+    """해당 분기 보고서의 접수번호들(정정공시 포함)."""
+    reps = dart.find_periodic_reports(ticker, year, reprt_code)
+    if not reps:
+        rep = dart.find_periodic_report(ticker, year, reprt_code)
+        reps = [rep] if rep and rep.get("rcept_no") else []
+    return [r.get("rcept_no") for r in reps if r and r.get("rcept_no")]
 
-    ⚠️ **기본 상한(3MB)을 먼저 쓴다.** 「생산 및 설비에 관한 사항」은 실측
-    4건에서 전부 문서 앞부분(7만~9.7만자)에 있었다 — dart_backlog 가 FULL
-    (40MB)을 쓰는 건 「매출 및 수주상황」이 목차상 훨씬 뒤이기 때문이고, 그
-    상한을 여기서 그대로 따라 하면 같은 문서를 **40MB 로 한 번 더** 받고
-    메모리 캐시까지 부풀린다(raw 는 평문과 캐시 키가 달라 재사용이 안 된다).
-    앵커를 못 찾은 경우에만 FULL 로 한 번 더 시도한다 — 목차가 긴 대형사
-    대비 폴백이다."""
-    if not dart:
-        return None
+
+# 표 종류 → 파서. 새 표를 붙일 때 여기만 늘리면 수집 사다리는 그대로다.
+_PARSERS = {"products": parse_products, "production": parse_production}
+
+
+def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
+                   want: tuple | None = None) -> dict:
+    """보고서를 **한 번만** 걷고 원하는 표를 전부 뽑는다 → {종류: 표}.
+
+    최신 분기부터 거슬러 각 표가 실린 **첫 보고서**를 채택한다(롤링). 표마다
+    따로 걸으면 같은 문서를 표 수만큼 다시 받는다 — 표가 없는 종목(스윕
+    실측상 다수)에서 그게 곱셈으로 커진다. 어느 보고서 기준인지는 표마다
+    따로 실어 준다(#43 — 기준 미표기 금지). 표별 채택 결과는 따로 걸을 때와
+    **동일**하다: 같은 순서로 같은 문서를 보고 처음 걸린 것을 쓴다.
+
+    ⚠️ 상한 escalation 은 **문서가 실제로 잘렸을 때만** 한다. `max_bytes` 는
+    HTTP 다운로드를 줄이지 않고 압축 해제량만 줄이므로, 상한을 올린 재시도는
+    **같은 zip 을 한 번 더 내려받는 것**이다. 받은 길이가 상한에 안 닿았으면
+    전문을 이미 다 본 것이라 올려도 결과가 같다 — 그 경우 재시도는 순손실."""
+    out: dict = {}
+    keys = tuple(want or _PARSERS)
+    if not dart or not quarters:
+        return out
     try:
         from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
                                    _fetch_doc_text)
-        reps = dart.find_periodic_reports(ticker, year, reprt_code)
-        if not reps:
-            rep = dart.find_periodic_report(ticker, year, reprt_code)
-            reps = [rep] if rep and rep.get("rcept_no") else []
-        for rep in reps:
-            rn = rep.get("rcept_no")
-            if not rn:
-                continue
-            got = None
-            for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
-                markup = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
-                                         raw_markup=True)
-                got = (parse or parse_production)(markup)
-                if got:
+        for q in reversed(quarters[-max_back:]):
+            missing = [k for k in keys if k not in out]
+            if not missing:
+                break
+            for rn in _rcept_nos(dart, ticker, q.get("year"),
+                                 q.get("reprt_code")):
+                for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
+                    markup = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
+                                             raw_markup=True)
+                    for k in list(missing):
+                        got = _PARSERS[k](markup)
+                        if got:
+                            got["basis_label"] = q.get("label") or ""
+                            got["rcept_no"] = rn
+                            out[k] = got
+                            missing.remove(k)
+                    if not missing:
+                        break
+                    if not (markup and len(markup) >= cap * 0.98):
+                        break          # 안 잘렸다 = 상한을 올려도 같은 내용
+                if not missing:
                     break
-            if got:
-                got["rcept_no"] = rn
-                return got
     except Exception as exc:                                   # noqa: BLE001
-        log.warning("production_for(%s %s %s): %s", ticker, year, reprt_code, exc)
-    return None
+        log.warning("tables_rolling(%s): %s", ticker, exc)
+    return out
 
 
-def production_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
-                       parse=None) -> dict | None:
-    """최신 분기부터 거슬러 **표가 있는 첫 보고서**를 채택(롤링).
-
-    새 보고서가 나오면 그 기준으로 자동 갱신된다. 특정 분기 보고서가 표를
-    빠뜨려도(회사 재량) 직전 보고서로 폴백하되, **어느 보고서 기준인지**를
-    함께 돌려줘 화면이 밝힐 수 있게 한다(#43 — 기준 미표기 금지)."""
-    if not dart or not quarters:
-        return None
-    for q in reversed(quarters[-max_back:]):
-        got = production_for(dart, ticker, q.get("year"), q.get("reprt_code"),
-                             parse=parse)
-        if got:
-            got["basis_label"] = q.get("label") or ""
-            return got
-    return None
+def production_rolling(dart, ticker: str, quarters: list, max_back: int = 4
+                       ) -> dict | None:
+    """생산능력·생산실적·가동률 표 롤링. 단일 워크의 얇은 래퍼."""
+    return tables_rolling(dart, ticker, quarters, max_back,
+                          want=("production",)).get("production")
 
 
 def products_rolling(dart, ticker: str, quarters: list, max_back: int = 4
                      ) -> dict | None:
-    """「주요 제품 및 서비스」 롤링. 수집 사다리(보고서 탐색·상한 escalation·
-    캐시)는 생산 표와 **똑같으므로 그대로 재사용**한다 — 복제하면 한쪽만
-    고쳐져 두 표의 기준 보고서가 갈라진다(#38). 같은 접수번호의 원문은
-    `_fetch_doc_text` 메모리 캐시에 걸려 DART 호출이 늘지 않는다."""
-    return production_rolling(dart, ticker, quarters, max_back,
-                              parse=parse_products)
+    """「주요 제품 및 서비스」 롤링. 단일 워크의 얇은 래퍼 — 수집 사다리를
+    복제하면 두 표의 기준 보고서가 갈라진다(#38)."""
+    return tables_rolling(dart, ticker, quarters, max_back,
+                          want=("products",)).get("products")
 
 
 def _palette() -> tuple[str, str, str, str, str]:
