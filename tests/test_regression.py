@@ -7003,6 +7003,55 @@ class TestFcfDerivedNotCarried20260821:
         assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
 
 
+class TestBacklogGenericLabel20260821:
+    """⚠️ '파서 개선 여지 8건' 이라는 숫자가 **거짓이었다**(2026-08-21 원문
+    발췌로 드러남). `기말` 은 원문 어디에나 있는 낱말이라 현금흐름표·유형자산
+    증감·자기주식·채무보증 표가 전부 '잔고 라벨이 있다'로 잡혔다. 실제로는
+    **원천에 수주잔고 공시가 없는** 종목들이다 — 고칠 게 없는 걸 고칠 것으로
+    셌으니 다음 작업 목록 자체가 틀렸다."""
+
+    # VM 실측 발췌(전부 수주와 무관한 표)
+    SAMPLES = {
+        "자기주식": ("나. 자기주식 취득 및 처분 현황 (단위 : 주) 취득방법 "
+                 "주식의 종류 기초수량 변동 수량 기말수량 비고 보통주 "
+                 "3,226,841 - - 3,226,841"),
+        "현금흐름": ("현금및현금성자산의 순증감 6,243,138 기초 현금및현금성자산 "
+                 "14,923,766 분기말 현금및현금성자산 21,166,904"),
+        "유형자산": ("(2) 유형자산 증감현황 (단위 : 천원) 구분 기초장부가액 "
+                 "당기증감 당기상각 기말장부가액 토지 172,942,690 "
+                 "152,708,522 - 325,651,212"),
+        "채무보증": ("채무보증한도 사용액 채무보증기간 기초 증감 기말 "
+                 "최초시작일 1,015,908 38,932 1,054,840"),
+    }
+
+    def test_generic_label_needs_order_context(self):
+        from bot.dart_backlog import _balance_matches, diagnose
+        for name, t in self.SAMPLES.items():
+            assert _balance_matches(t) == [], name
+            # 원천에 값이 없는 것이므로 **개선 여지에서 빠져야** 한다
+            assert diagnose(t) == "미공시", (name, diagnose(t))
+
+    def test_real_order_tables_still_match(self):
+        """문맥을 요구하되 진짜 수주표는 그대로 잡아야 한다 — 가드를 좁힐 땐
+        '무엇이 여전히 잡히는가'를 같이 못박는다(#57)."""
+        from bot.dart_backlog import _balance_matches, diagnose, parse_backlog
+        ok = "(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 999 111 222"
+        assert _balance_matches(ok) and diagnose(ok) == "형식미지원"
+        # 효성중공업 축약형(`전기말 수주잔`) — `기말` 이지만 수주 문맥이 있다
+        assert _balance_matches("수주 현황 전기말 수주잔(2025.12.31) 1,000")
+        # 정상 수집 경로가 안 깨졌는가(#20 배선)
+        got = parse_backlog("(단위 : 백만원) 수주총액 기납품액 수주잔고 "
+                            "합 계 1,000 400 600")
+        assert got and got["value"] == 600e6, got
+
+    def test_parser_and_diagnosis_share_the_matcher(self):
+        """한쪽만 문맥을 요구하면 통계와 화면이 갈라진다(#105 의 재발 방지)."""
+        src = open("bot/dart_backlog.py", encoding="utf-8").read()
+        # 라벨 목록을 직접 훑는 곳은 **공용 매처 하나뿐**이어야 한다
+        assert src.count('"|".join(_BAL_LABELS)') == 1, \
+            "라벨을 직접 훑는 곳이 둘 이상 — 파서와 진단이 갈라진다"
+
+
 class TestBacklogGateDiagnosis20260821:
     """⚠️ 5값·4값 합계행을 구제했는데 **커버리지가 그대로였다**(2026-08-21
     재측정). 이유는 검산이 아니라 그 **앞의 헤더 게이트**였다 — `_parse_table`
