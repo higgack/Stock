@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily 'every alert was stored' integrity check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+Group=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.unstored_check
+StandardOutput=journal
+StandardError=journal

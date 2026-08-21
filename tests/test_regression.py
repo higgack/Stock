@@ -21373,14 +21373,30 @@ class TestDeployUnitInventoryAudit20260802:
         import re
         import glob
         import os as _os
-        ref_re = re.compile(r'\["systemctl",\s*(?:"[^"]+",\s*)*"([a-zA-Z0-9_.-]+)"\s*\]')
+        # ⚠️ 옛 판은 마지막 문자열을 **무조건 유닛명**으로 봤다. 조회형
+        # 호출(`["systemctl","list-units","--all","--plain"]`)은 플래그로
+        # 끝나서 `--plain` 을 유닛으로 읽고 멀쩡한 코드를 틀렸다고 했다
+        # (2026-08-21 실측 — 감사의 계수 패턴 자체가 틀린 경우, 실수 #47).
+        # 인자를 전부 뜯어 **플래그와 서브커맨드를 걷어낸 뒤** 남는 마지막
+        # 것을 유닛으로 본다. 서브커맨드는 닫힌 어휘라 열거해도 안전하고,
+        # 새 동사가 오면 조용히 통과하는 게 아니라 여기서 걸린다.
+        _VERBS = {"list-units", "list-timers", "cat", "show", "status",
+                  "restart", "start", "stop", "reload", "enable", "disable",
+                  "is-active", "is-enabled", "is-failed", "daemon-reload",
+                  "reset-failed", "kill"}
+        args_re = re.compile(r'\["systemctl"((?:\s*,\s*"[^"]*")*)\s*\]')
+        str_re = re.compile(r'"([^"]*)"')
         deploy_names = {_os.path.basename(p) for p in glob.glob("deploy/*")}
         checked = 0
         for py in (glob.glob("bot/*.py") + glob.glob("trade/*.py")
                    + glob.glob("trade/scripts/*.py")):
             src = open(py, encoding="utf-8").read()
-            for m in ref_re.finditer(src):
-                unit = m.group(1)
+            for m in args_re.finditer(src):
+                rest = [a for a in str_re.findall(m.group(1))
+                        if a and not a.startswith("-") and a not in _VERBS]
+                if not rest:
+                    continue            # 조회형 호출 — 유닛 인자가 없다
+                unit = rest[-1]
                 candidates = {unit, unit + ".service", unit + ".timer"}
                 assert candidates & deploy_names, \
                     f"{py}: systemctl 로 '{unit}' 참조하지만 deploy/ 에 파일 없음"

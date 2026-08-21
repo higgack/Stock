@@ -1,0 +1,11 @@
+[Unit]
+Description=Run trade-bot health check hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Unit=trade-bot-health.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
