@@ -7199,6 +7199,86 @@ class TestBacklogDiagnoseScope20260821:
                         "합 계 999 111 222") == "형식미지원"
 
 
+class TestSharedFetchPool20260821:
+    """사용자 2026-08-21: "전보다 더 걸리는것 같아. 내가 동시에 돌리는게
+    많아서 그런가?" — 대시보드는 `ThreadingHTTPServer` 라 요청마다 스레드가
+    뜨는데, 거기에 **요청마다 새 풀**을 만들면 동시에 두 종목을 열 때 바깥
+    원천으로 나가는 동시 요청이 그대로 곱해진다. 한 요청을 빠르게 하려던
+    병렬화가 여러 요청에선 서로를 느리게 만든다."""
+
+    def test_pool_is_capped_process_wide(self):
+        import threading
+        import time
+        from bot.pool import map_bounded, shared_pool
+        cap = shared_pool()._max_workers
+        st = {"cur": 0, "peak": 0}
+        lk = threading.Lock()
+
+        def work(_i):
+            with lk:
+                st["cur"] += 1
+                st["peak"] = max(st["peak"], st["cur"])
+            time.sleep(0.02)
+            with lk:
+                st["cur"] -= 1
+            return _i
+        got = map_bounded(work, list(range(cap * 3)))
+        assert got == list(range(cap * 3)), "입력 순서가 안 지켜졌다"
+        assert st["peak"] <= cap, f"상한 초과: {st['peak']} > {cap}"
+        assert st["peak"] > 1, "직렬로 돌았다 — 대조 0건은 통과가 아니다(#54)"
+
+    def test_one_failure_does_not_block_the_rest(self):
+        from bot.pool import map_bounded
+
+        def boom(x):
+            if x == 2:
+                raise ValueError("x")
+            return x
+        assert map_bounded(boom, [1, 2, 3]) == [1, None, 3]
+
+    def test_enrich_keeps_its_own_pool_no_nesting(self):
+        """⚠️ **교착 방지 규약.** 공용 풀에서 도는 작업이 다시 공용 풀에
+        제출하고 결과를 기다리면 슬롯이 서로를 기다린다. 공용 풀은 **말단
+        팬아웃 전용**이고, `enrich:KR` 같은 상위 병렬은 자기 풀을 쓴다."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_enrich_kr")
+        body = ast.get_source_segment(src, fn) or ""
+        assert "ThreadPoolExecutor(max_workers=len(tasks))" in body, \
+            "enrich 가 자기 풀을 안 쓴다"
+        assert "map_bounded" not in body, \
+            "enrich 팬아웃이 공용 풀을 쓴다 — 말단이 같은 풀을 쓰면 교착한다"
+
+    def test_leaf_fanouts_use_the_shared_pool(self):
+        """말단 팬아웃 셋은 공용 풀을 써야 동시 요청에서 곱해지지 않는다."""
+        for path in ("bot/dart_quarterly.py", "bot/fsc_client.py",
+                     "bot/stock_snapshot.py"):
+            src = open(path, encoding="utf-8").read()
+            assert "map_bounded" in src, path
+
+    def test_request_latency_is_logged(self):
+        """재지 않은 것을 두고 빨라졌다/느려졌다 말할 수 없다(#79·#92) —
+        사용자가 기다리는 건 수집기가 아니라 **요청**이다."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "do_GET")
+        # ⚠️ **독스트링을 지우고 본다.** 독스트링이 `grep api-timing` 을
+        # 설명하고 있어서, 로그 호출을 지우는 뮤테이션이 그대로 통과했다
+        # (실측 — #59b 소스 검사는 독스트링을 지우고 볼 것).
+        stmts = [n for n in fn.body
+                 if not (isinstance(n, ast.Expr)
+                         and isinstance(n.value, ast.Constant)
+                         and isinstance(n.value.value, str))]
+        body = "\n".join(ast.get_source_segment(src, n) or "" for n in stmts)
+        assert "api-timing" in body, "요청 소요시간을 안 남긴다"
+        # 계측이 예외를 삼켜 응답을 막으면 안 된다
+        assert "finally:" in body and "_do_GET_routed" in body
+
+
 class TestChartFirstPaint20260821:
     """사용자 2026-08-21: "차트가 왜 잘 안뜨지? … 3년을 클릭하고 다시
     돌아가야 제대로 떠. 이 부분은 디폴트값으로 처음에 제대로 보여져야돼."

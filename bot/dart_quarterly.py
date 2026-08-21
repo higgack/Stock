@@ -235,7 +235,7 @@ def _prefetch(dart, ticker: str, fs_div: str,
     """
     if not pairs:
         return
-    from concurrent.futures import ThreadPoolExecutor
+    from bot.pool import map_bounded
 
     def _one(pr):
         y, rc = pr
@@ -254,8 +254,9 @@ def _prefetch(dart, ticker: str, fs_div: str,
             except Exception as exc:                           # noqa: BLE001
                 log.debug("dart_quarterly: 보조 미리받기 실패 %s: %s",
                           ticker, exc)
-    with ThreadPoolExecutor(max_workers=min(8, len(pairs))) as ex:
-        list(ex.map(_one, pairs))
+    # ⚠️ 요청마다 새 풀을 만들면 동시에 두 종목을 열 때 바깥으로 나가는
+    # 동시 요청이 그대로 곱해진다 — 공용 풀(프로세스 상한)을 쓴다.
+    map_bounded(_one, pairs)
 
 
 def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
