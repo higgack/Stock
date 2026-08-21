@@ -31,7 +31,7 @@ import statistics
 import sys
 import time
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
 def _universe(limit: int) -> list[str]:
@@ -49,6 +49,19 @@ def _universe(limit: int) -> list[str]:
     return out[:limit]
 
 
+def _print_key_sources() -> None:
+    """자격증명 **출처**를 먼저 찍는다 — 값은 절대 안 찍는다(실수 #23).
+
+    ⚠️ 키가 안 잡히면 그 경로가 통째로 skip 돼 **0.4초로 빨라 보인다**.
+    2026-08-21 실측: `enrich KR 0.4s` 가 나왔는데 같은 실행 로그에
+    `fsc: DATA_GO_KR_API_KEY 미설정` 이 있었다 — 차단기 효과가 아니라
+    아예 안 부른 것이라, 출처를 안 찍으면 개선을 **오보**한다."""
+    from bot.env_keys import env_source
+    print("자격증명(값 아님, 출처만): " + " · ".join(
+        f"{n}={env_source(n) or '없음'}"
+        for n in ("DATA_GO_KR_API_KEY", "DART_API_KEY", "FRED_API_KEY")))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="상세 로딩 단계별 소요시간")
     ap.add_argument("tickers", nargs="*")
@@ -59,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"=== 종목 상세 단계별 소요시간 v{_PROBE_VER} ===")
     print("병렬 6종은 벽시계에서 **최대값 하나만** 비용이다(풀 6).")
+    _print_key_sources()
     tickers = args.tickers or _universe(args.limit)
     if not tickers:
         print("❌ 대상 없음 — 티커를 인자로 넘겨라")
