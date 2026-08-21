@@ -5921,9 +5921,15 @@ class TestDartAccountWinnerDeterminism20260816:
         단조 증가하고 옛 키가 코드에 남아 있지 않다"는 것이다."""
         import re as _re
         src = open("bot/dart_client.py", encoding="utf-8").read()
-        vers = sorted(int(m) for m in _re.findall(r'f"qfin(\d+)_', src))
-        assert len(vers) == 1, f"캐시 키가 여러 버전으로 갈렸다: {vers}"
-        assert vers[0] >= 4, "스키마 변경 시 캐시 키를 올려야 한다"
+        # ⚠️ 이 테스트의 독스트링이 경고한 함정에 **또 걸렸다**(2026-08-21):
+        # 리터럴 `f"qfin4_"` 를 정규식으로 읽었는데, 키를 상수 하나에서
+        # 만들도록(같은 계약을 더 강하게) 바꾸자 0개로 파싱돼 깨졌다.
+        # 이제 상수를 직접 읽는다 — 리터럴이 남아 있으면 그게 갈린 것이다.
+        from bot.dart_client import _FIN_CACHE_VER
+        assert not _re.search(r'"qfin\d', src), (
+            "캐시 키에 리터럴 버전이 남아 있다 — 상수 하나에서 만들 것")
+        assert _re.search(r'f"qfin\{_FIN_CACHE_VER\}_', src), "키 미배선"
+        assert _FIN_CACHE_VER >= 4, "스키마 변경 시 캐시 키를 올려야 한다"
 
     def test_component_account_flagged_not_removed(self):
         # VM probe(2026-08-16): 메리츠금융지주 2025 사업보고서엔 총수익
@@ -6342,6 +6348,15 @@ class TestQuarterlyMultiMarket20260816:
         assert e[0]["financials"]["FCF"] == 1011e8
         assert "FCF" not in e[1]["financials"], "CAPEX 없이 FCF 를 만들었다"
         assert "FCF" not in e[2]["financials"]
+        # ⚠️ 재료가 불완전하면 **남아 있던 FCF 도 지운다**. 누적 dict 에
+        # 이미 FCF 가 있으면 4분기 차분이 그걸 차분해 남기는데, 같은 차분
+        # 에서 구성요소가 `_src` 불일치로 None 이 될 수 있다 — 그러면 화면엔
+        # 재료가 빈칸인데 FCF 만 숫자가 남아 눈으로 검산하면 안 맞는다(#33).
+        stale = [{"financials": {"FCF": 999e8, "영업활동현금흐름": 500e8}},
+                 {"financials": {"FCF": 777e8}}]
+        assert _attach_fcf(stale) == 0
+        for x in stale:
+            assert x["financials"].get("FCF") is None, x
 
     def test_dart_cashflow_accounts_are_tiered_to_the_cf_statement(self):
         """같은 이름이 자본변동표·주석에도 나온다 — 제표로 안 묶으면 기간
@@ -6610,6 +6625,45 @@ class TestQuarterlyMultiMarket20260816:
         # 구성요소는 **매핑하지 않는다**
         for nm in ("토지의 취득", "건물의 취득", "기계장치의 취득"):
             assert canon(nm) is None, f"구성요소를 CAPEX 로 잡았다: {nm}"
+
+    def test_financials_cache_version_tracks_the_parser(self):
+        """⚠️ **이 함수에서만 세 번 겪은 실패**(v4·v5·v8): 파서를 고쳐도
+        디스크 캐시가 옛 결과를 최대 7일간 서빙한다(실수 #18).
+
+        2026-08-21 실측: CF 계정을 추가했는데 캐시 키를 안 올려, 최근
+        조회분(FY2025·25.3Q~26.2Q)만 FCF 가 비고 캐시가 없던 옛 기간
+        (FY2023·FY2024·25.2Q)만 값이 나왔다 — 두 종목에서 **패턴이 동일**
+        해서 캐시가 범인임이 드러났다.
+
+        규율로는 세 번 다 실패했으므로 **키 집합을 고정**한다. 새 계정을
+        추가하면 이 테스트가 깨지고, 고치려면 버전을 올려야 한다."""
+        from bot.dart_client import _CANONICAL_KEYS, _FIN_CACHE_VER
+        expected = {
+            "매출", "매출원가", "매출총이익", "판관비", "영업이익",
+            "금융수익", "금융비용", "세전이익", "법인세비용", "당기순이익",
+            "EPS", "재고자산", "유동자산", "비유동자산", "자산총계",
+            "유동부채", "비유동부채", "부채총계", "이익잉여금", "자본총계",
+            # v8 에서 추가된 현금흐름 계정 — FCF 재료
+            "영업활동현금흐름", "유형자산취득", "무형자산취득",
+        }
+        assert _CANONICAL_KEYS == expected, (
+            "파서가 내는 계정이 바뀌었다 — `_FIN_CACHE_VER` 를 올리고 이 "
+            f"목록도 갱신할 것. 차이: {_CANONICAL_KEYS ^ expected}")
+        assert _FIN_CACHE_VER >= 8, "CF 추가분을 무효화하려면 8 이상"
+
+    def test_financials_cache_key_is_derived_not_literal(self):
+        """키를 리터럴로 적으면 다음 번에도 올리는 걸 잊는다 — 실제로
+        세 번 잊었다. 상수 하나에서 만들어야 한 곳만 고치면 된다."""
+        import ast
+        src = open("bot/dart_client.py", encoding="utf-8").read()
+        fn = next((n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "get_normalized_financials"), None)
+        assert fn, "함수 이름이 바뀜"
+        body = ast.get_source_segment(src, fn)
+        assert 'f"qfin{_FIN_CACHE_VER}_' in body, "캐시 키가 상수 기반이 아니다"
+        import re
+        assert not re.search(r'"qfin\d', body), "리터럴 버전이 남아 있다"
 
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note

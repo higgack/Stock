@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 _PARTS = ("영업활동현금흐름", "유형자산취득", "무형자산취득")
 
 
@@ -55,11 +55,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--years", type=int, default=3)
     args = ap.parse_args(argv)
 
+    from bot.dart_client import _FIN_CACHE_VER
     from bot.env_keys import env_source
     from bot.fcf import fcf_from_parts
-    print(f"=== FCF 재료 진단 v{_PROBE_VER} ===")
+    print(f"=== FCF 재료 진단 v{_PROBE_VER} (재무캐시 v{_FIN_CACHE_VER}) ===")
     print(f"판정 대상: {' / '.join(_PARTS)}  → FCF = 영업CF − |유형+무형|")
-    print(f"자격증명 DART_API_KEY={env_source('DART_API_KEY') or '없음'}\n")
+    print(f"자격증명 DART_API_KEY={env_source('DART_API_KEY') or '없음'}")
+    # ⚠️ 실측 2026-08-21: 최근 기간만 재료가 없고 옛 기간은 멀쩡했다 —
+    # 원인은 파서가 아니라 **7일 TTL 디스크 캐시**였다(키를 안 올려 CF 없는
+    # 옛 결과를 서빙). 같은 모양이 또 보이면 캐시부터 의심하도록 배너에
+    # 버전을 찍고, 아래에서 그 패턴을 직접 지목한다(실수 #21b).
+    print("⚠️ '최근만 ❌, 옛 기간 ✅' 이면 파서가 아니라 캐시를 의심할 것"
+          f" — 재무캐시 키는 qfin{_FIN_CACHE_VER}, TTL 7일\n")
 
     from bot.dart_client import get_dart
     from bot.dart_quarterly import get_quarterly_series
@@ -74,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for tk in tickers:
         print(f"── {tk}")
+        _seen: list[tuple[str, bool]] = []
         # 연간 — `financials_ts` 가 쓰는 그 경로 그대로(#35).
         import datetime as _dt
         yr = _dt.date.today().year
@@ -88,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"   FY{y}  ❌ 재무 없음")
                 continue
             v = f.get("FCF")
+            _seen.append((f"FY{y}", v is not None))
             print(f"   FY{y}  {_mark(f)}"
                   + (f"  → FCF {v / 1e8:,.0f}억" if v is not None else ""))
         # 분기 — 화면(분기표·차트)이 쓰는 그 경로 그대로.
@@ -101,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         for q in qs:
             f = q.get("financials") or {}
             v = f.get("FCF")
+            _seen.append((str(q.get("label", "?")), v is not None))
             print(f"   {q.get('label', '?'):<7} {_mark(f)}"
                   + (f"  → FCF {v / 1e8:,.0f}억" if v is not None else ""))
         # 재료가 있는데 FCF 가 없으면 그건 산식 배선 문제다.
@@ -111,8 +121,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"   ⚠️ {q.get('label')}: 재료는 있는데 FCF 가 없다 "
                       f"— 배선 확인 필요 "
                       f"(계산해 보면 {fcf_from_parts(f['영업활동현금흐름'], sum(abs(f[k]) for k in _PARTS[1:] if f.get(k) is not None))})")
+        # 캐시 특유의 패턴을 **기계가 지목**한다 — 사람이 매번 알아보길
+        # 기대하면 안 된다(이번에 실제로 못 알아볼 뻔했다).
+        _ok = [lb for lb, has in _seen if has]
+        _no = [lb for lb, has in _seen if not has]
+        if _ok and _no and all(lb in _no for lb in _seen_recent(_seen)):
+            print(f"   🔎 최근 기간만 비었다({', '.join(_no)}) — 파서가 아니라"
+                  f" **캐시**일 가능성이 높다. `_FIN_CACHE_VER` 를 올렸는지"
+                  f" 확인하고, 급하면 ~/.tradingagents/cache 의 qfin* 삭제.")
         print()
     return 0
+
+
+def _seen_recent(seen: list) -> list:
+    """관측 목록에서 **최근 절반**의 라벨 — 캐시 패턴 판정용."""
+    return [lb for lb, _h in seen[len(seen) // 2:]]
 
 
 if __name__ == "__main__":
