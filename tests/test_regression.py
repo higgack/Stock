@@ -8751,7 +8751,9 @@ class TestQuarterlyChartLayout20260816:
         # 옛 그림이 그대로 뜬다("배포완료 ≠ 화면에 보임", 실수 #11).
         from bot.quarterly_infographic import _RENDER_VER, cache_path
         p = cache_path("AAPL", "20260630", asof="2026-08-16")
-        assert p.name.endswith(f"_{_RENDER_VER}.png"), p.name
+        # 버전 **뒤에 소스 지문**이 붙는다(2026-08-22) — 버전만 endswith 로
+        # 재면 손으로 bump 하는 옛 규약으로 되돌아가도 통과한다(#19).
+        assert f"_{_RENDER_VER}" in p.name and p.name.endswith(".png"), p.name
         # 버전이 다르면 파일명이 달라져야(= 재렌더)
         import bot.quarterly_infographic as qi
         _o = qi._RENDER_VER
@@ -30840,3 +30842,44 @@ class TestMismatchDetailOnScreen20260822:
         # 미래에 생길 플래그도 자동으로 실려야 한다 — 이름 열거면 못 잡는다
         got = relay_anomaly_fields({"_anomaly_brand_new_2027": True}, {})
         assert got == {"_anomaly_brand_new_2027": True}, got
+
+
+class TestRenderCacheSignature20260822:
+    """PNG 캐시 키가 **렌더 코드**를 따라야 한다 — 아니면 고쳐도 안 바뀐다.
+
+    사용자 2026-08-22 LG화학: 각주에 계정쌍을 싣도록 고쳤는데 화면은 옛
+    문구 그대로였다. `_RENDER_VER` 가 **손으로 올리는 리터럴**이라 또 잊은
+    것 — 같은 실패가 이 레포에서 네 번째다(#18 아카이브 · #21b 파싱 캐시 ·
+    #95 재무 캐시 v4·v5 를 적어 두고도 v6 을 잊음 · 여기)."""
+
+    def test_key_changes_when_render_code_changes(self, monkeypatch):
+        import bot.quarterly_infographic as qi
+        a = qi.cache_path("051910.KS", "202611012", asof="2026-08-22_07").name
+        monkeypatch.setattr(qi, "_RENDER_SIG", "-deadbeef")
+        b = qi.cache_path("051910.KS", "202611012", asof="2026-08-22_07").name
+        assert a != b, (a, b)
+
+    def test_signature_is_derived_not_hand_bumped(self):
+        """규율로 기억할 일을 **구조로** 옮겼는지 — 지문이 실제 소스에서 온다."""
+        import hashlib
+        import pathlib
+        import bot.quarterly_infographic as qi
+        qi._RENDER_SIG = None                 # 다시 계산하게
+        want = "-" + hashlib.sha1(
+            pathlib.Path(qi.__file__).read_bytes()).hexdigest()[:8]
+        assert qi._render_sig() == want, (qi._render_sig(), want)
+
+    def test_same_code_same_key(self):
+        """코드가 그대로면 키도 그대로여야 한다 — 매번 바뀌면 캐시가 죽는다."""
+        import bot.quarterly_infographic as qi
+        a = qi.cache_path("A", "k", asof="h").name
+        b = qi.cache_path("A", "k", asof="h").name
+        assert a == b, (a, b)
+
+    def test_piece_suffixes_survive_purge(self):
+        """조각(카드·하단)은 같은 캐시 키의 짝이다 — 지우면 화면에서 빠진다."""
+        import bot.quarterly_infographic as qi
+        p = qi.cache_path("A", "k", asof="h")
+        for sfx in qi._PIECE_SUFFIXES:
+            assert p.with_name(p.stem + sfx + p.suffix).suffix == ".png"
+        assert set(qi._PIECE_SUFFIXES) >= {"_cards", "_b"}, qi._PIECE_SUFFIXES
