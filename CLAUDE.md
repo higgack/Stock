@@ -739,11 +739,11 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
 - 비용합산: 메인 cost = nav 비용surface 합산(분석/Screener/DailyByte/청약/부동산/블로그/trade수출입).
   새 비용surface = `_compute_stats` + `cmd_usage` 동시갱신. 비용카드 표기 = 오늘/이번달/누적
   3창(KST) 전 대시보드 통일(사용자 2026-07-05).
-- 외부 third-party 사이트 = `/sites`(`_SITES_TEXT`, 이모지 없는 plain text) **+ 메인 nav**.
-  nav 는 `bot/external_sites.SITES` 단일 레지스트리에서 생성(부동산 뒤 `|` 구분), 회귀가
-  /sites 양쪽 실림을 강제. 새 외부 사이트는 **기본으로 둘 다 등재**한다(사용자 2026-08-21
-  "외부사이트도 앞으로는 메인 nav 에 등재할거야" — 옛 '메인 nav 추가 금지' 규칙 폐기).
-  기존 /sites 전량(~30)을 소급 이전하지는 않음 — nav 가 감당 못 함(요청 시 개별 이전).
+- 외부 third-party 사이트는 **기본 `/sites`(`_SITES_TEXT`)만** — 이모지 없는 plain text.
+  "Sites 에 추가" 요청 = 텔레그램만. 메인 nav 등재는 **사용자가 그 건을 명시했을 때만**
+  (사용자 2026-08-21 정정). 등재분은 `bot/external_sites.SITES` 단일 레지스트리에서 nav
+  생성(부동산 뒤 `|` 구분) — 그 레지스트리는 금지 장치가 아니라 두 표면 드리프트 차단용
+  이고, 회귀가 등재분의 /sites 실림을 강제한다. 임의 nav 추가 금지.
 
 ## 미니멀 코드 · 토큰 절약 (ponytail/codex-first 요지 이식, 2026-07-10)
 - 코드 작성 전 사다리: ①불필요하면 스킵 ②코드베이스에 이미 있으면 재사용 ③표준lib/기존
