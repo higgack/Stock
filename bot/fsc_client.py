@@ -110,14 +110,22 @@ def _breaker_mark(op: str, ok: bool) -> None:
 
 
 def _fetch(base: str, op: str, params: dict) -> list[dict]:
-    """FSC GET → items 리스트. serviceKey 인코딩 자동, 실패 시 [].
+    """FSC GET → items 리스트. serviceKey 인코딩 자동, 실패 시 []."""
+    return _fetch2(base, op, params)[0]
 
-    ⚠️ 서비스가 연속 실패하면 냉각 동안 **네트워크를 아예 안 친다**.
-    빈 리스트는 '결과 없음'과 같아 호출부 동작은 바뀌지 않는다."""
+
+def _fetch2(base: str, op: str, params: dict) -> tuple[list[dict], bool]:
+    """`(items, 요청 성공 여부)`.
+
+    ⚠️ `[]` 는 '결과 없음'과 '서비스 장애'를 구별하지 못한다 — 둘을 같이
+    다루면 죽은 서비스에 남은 날짜를 계속 쏘게 된다(#72). 호출부가
+    가를 수 있게 성공 여부를 같이 돌려준다.
+
+    ⚠️ 서비스가 연속 실패하면 냉각 동안 **네트워크를 아예 안 친다**."""
     if not fsc_key_ready():
-        return []
+        return [], False
     if _breaker_open(op):
-        return []
+        return [], False
     import httpx
     key = _env_key("DATA_GO_KR_API_KEY")
     q = {"resultType": "json", "numOfRows": params.pop("numOfRows", 100),
@@ -137,17 +145,17 @@ def _fetch(base: str, op: str, params: dict) -> list[dict]:
             # 4xx 는 파라미터·키 문제라 재시도해도 같으므로 세지 않는다.
             _breaker_mark(op, r.status_code < 500)
             log.warning("fsc: %s HTTP %d — %s", op, r.status_code, r.text[:160])
-            return []
+            return [], False
         _breaker_mark(op, True)
         body = (r.json() or {}).get("response", {}).get("body", {}) or {}
         items = (body.get("items") or {}).get("item")
         if items is None:
-            return []
-        return items if isinstance(items, list) else [items]
+            return [], True
+        return (items if isinstance(items, list) else [items]), True
     except Exception as exc:
         _breaker_mark(op, False)          # 타임아웃·연결실패도 서비스 장애
         log.warning("fsc: %s 호출 실패: %s", op, exc)
-        return []
+        return [], False
 
 
 def _f(v):
@@ -305,6 +313,53 @@ def minority_holders(ticker: str) -> dict | None:
     return out
 
 
+# 하루씩 **순차로** 물으면 해당 공시가 없는 종목(대다수)이 매번 영업일
+# 수만큼 직렬 요청을 낸다 — 2026-08-21 VM 계측에서 `kr:fsc.risk` 가
+# **중앙값 21.26초**로 `enrich:KR`(22.24초) 전체를 지배했다(2 엔드포인트
+# × 8영업일 = 16회 직렬). 요청 수는 그대로 두고 벽시계만 줄인다.
+_DAY_POOL = 8
+
+
+def _business_days(today, lookback_days: int) -> list[str]:
+    """오늘부터 거슬러 `lookback_days` 일 중 **평일**만 (최신 → 과거)."""
+    out = []
+    for i in range(lookback_days + 1):
+        d = today - timedelta(days=i)
+        if d.weekday() < 5:
+            out.append(d.strftime("%Y%m%d"))
+    return out
+
+
+def _newest_nonempty(days: list[str], fetch_one) -> list[dict]:
+    """`days`(최신→과거) 중 **가장 최신의 non-empty** 응답.
+
+    `fetch_one(bas)` 는 `(items, 요청 성공 여부)` 를 돌려줘야 한다.
+
+    ⚠️ 최신 하루는 **순차로 먼저** 친다. 서비스가 죽어 있을 때 8발을
+    동시에 쏘면 차단기가 뜨기 전에 다 나가 #72 에서 얻은 '죽은 API 는
+    네트워크 2회로 끝난다'가 무의미해진다. 첫 요청이 **실패**하면 그 op
+    은 그대로 포기한다 — 나머지 날을 쳐도 같은 서비스다(결과 없음과
+    장애를 `_fetch2` 가 갈라 주기 때문에 이 구별이 가능하다).
+    """
+    if not days:
+        return []
+    items, ok = fetch_one(days[0])
+    if items:
+        return items
+    if not ok:
+        return []              # 서비스 장애 — 남은 날은 순손실
+    rest = days[1:]
+    if not rest:
+        return []
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(_DAY_POOL, len(rest))) as ex:
+        # map 은 **입력 순서**로 돌려주므로 첫 non-empty 가 곧 최신이다.
+        for it, _ok in ex.map(fetch_one, rest):
+            if it:
+                return it
+    return []
+
+
 # dilution 공시 — (op, 주식수 field, 가격 field, kind label).
 # ⚠️ 유상증자는 제외: corp-action HARD GUARD 키워드(_KR_CORP_ACTION_KEYWORDS)
 # 에 '유상증자' 가 이미 있어 DART/권리일정 가드가 잡음 → 중복 배너 방지.
@@ -324,31 +379,28 @@ def dilution_events(ticker: str, lookback_days: int = 10) -> list[dict]:
     crno = (info or {}).get("crno")
     if not crno:
         return []
-    today = _now().date()
+    days = _business_days(_now().date(), lookback_days)
     out = []
     for op, sh_f, pr_f, kind in _DILUTION_OPS:
-        for i in range(lookback_days + 1):
-            d = today - timedelta(days=i)
-            if d.weekday() >= 5:
-                continue
-            bas = d.strftime("%Y%m%d")
-            ck = f"dilu_{op}_{crno}_{bas}"
+
+        def _one(bas, _op=op):
+            ck = f"dilu_{_op}_{crno}_{bas}"
             c = _cache_get(ck)
-            if not c:
-                c = _fetch(_DISC_BASE, op, {"basDt": bas, "crno": crno, "numOfRows": 20})
-                if c:  # truthy-only (transient 빈 응답 미캐시)
-                    _cache_put(ck, c)
-            if not c:
-                continue
-            for it in c:
-                rd = str(it.get("bodRsolDt") or it.get("basDt") or "").strip()
-                iso = (f"{rd[:4]}-{rd[4:6]}-{rd[6:]}"
-                       if len(rd) == 8 and rd.isdigit() else rd)
-                out.append({
-                    "kind": kind, "date": iso,
-                    "new_shares": _f(it.get(sh_f)), "price": _f(it.get(pr_f)),
-                })
-            break  # 이 op 의 첫 non-empty basDt 만
+            if c:
+                return c, True
+            c, ok = _fetch2(_DISC_BASE, _op,
+                            {"basDt": bas, "crno": crno, "numOfRows": 20})
+            if c:  # truthy-only (transient 빈 응답 미캐시)
+                _cache_put(ck, c)
+            return c, ok
+        for it in _newest_nonempty(days, _one):   # op 당 첫 non-empty basDt 만
+            rd = str(it.get("bodRsolDt") or it.get("basDt") or "").strip()
+            iso = (f"{rd[:4]}-{rd[4:6]}-{rd[6:]}"
+                   if len(rd) == 8 and rd.isdigit() else rd)
+            out.append({
+                "kind": kind, "date": iso,
+                "new_shares": _f(it.get(sh_f)), "price": _f(it.get(pr_f)),
+            })
     return out
 
 
@@ -366,36 +418,33 @@ def lockup_releases(ticker: str, lookback_days: int = 7) -> list[dict]:
     crno = (info or {}).get("crno")
     if not crno:
         return []
-    today = _now().date()
-    for i in range(lookback_days + 1):
-        d = today - timedelta(days=i)
-        if d.weekday() >= 5:
-            continue
-        bas = d.strftime("%Y%m%d")
+
+    def _one(bas):
         ck = f"lockup_{crno}_{bas}"
         c = _cache_get(ck)
-        if not c:
-            c = _fetch(_LOCKUP[0], _LOCKUP[1],
-                       {"basDt": bas, "crno": crno, "numOfRows": 100})
-            if c:  # truthy-only (transient 빈 응답 미캐시)
-                _cache_put(ck, c)
-        if not c:
+        if c:
+            return c, True
+        c, ok = _fetch2(_LOCKUP[0], _LOCKUP[1],
+                        {"basDt": bas, "crno": crno, "numOfRows": 100})
+        if c:  # truthy-only (transient 빈 응답 미캐시)
+            _cache_put(ck, c)
+        return c, ok
+
+    out = {}
+    for it in _newest_nonempty(_business_days(_now().date(), lookback_days),
+                               _one):
+        rd = str(it.get("rsrnDt") or "").strip()
+        if len(rd) != 8 or not rd.isdigit():
             continue
-        out = {}
-        for it in c:
-            rd = str(it.get("rsrnDt") or "").strip()
-            if len(rd) != 8 or not rd.isdigit():
-                continue
-            iso = f"{rd[:4]}-{rd[4:6]}-{rd[6:]}"
-            out[(iso, str(it.get("rsrnStckCnt") or ""))] = {
-                "release_date": iso,
-                "shares": _f(it.get("rsrnStckCnt")),
-                "remaining": _f(it.get("afrsRsqtCnt")),
-                "reason": (it.get("stckLblHoldRcdNm") or "").strip(),
-                "total_shares": _f(it.get("lblProtTsumIssuStckCnt")),
-            }
-        return sorted(out.values(), key=lambda r: r["release_date"])
-    return []
+        iso = f"{rd[:4]}-{rd[4:6]}-{rd[6:]}"
+        out[(iso, str(it.get("rsrnStckCnt") or ""))] = {
+            "release_date": iso,
+            "shares": _f(it.get("rsrnStckCnt")),
+            "remaining": _f(it.get("afrsRsqtCnt")),
+            "reason": (it.get("stckLblHoldRcdNm") or "").strip(),
+            "total_shares": _f(it.get("lblProtTsumIssuStckCnt")),
+        }
+    return sorted(out.values(), key=lambda r: r["release_date"])
 
 
 # ── 3.6) 주식발행 공시정보 (유통주식수=free float) — crno 키 ──────────────

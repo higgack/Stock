@@ -172,6 +172,58 @@ class TestSanitize:
         # 어긋났다 — 열 축이 머리와 몸통에서 갈리면 같은 결함이다.
         assert all(got.values()), f"열 안에서 정렬이 갈림: {got}"
 
+    def test_long_text_column_is_left_aligned_whole(self):
+        """사용자 2026-08-21(디아이 `주요 제품 및 서비스`): "품목에 글씨들이
+        이상해. 가운데 정렬때문에 그런것 같은데..이런식으로 정렬은 아니지
+        않아?" — 품목 열은 셀마다 길이가 달라(`반도체검사장비(Monitoring
+        Burn-In Tester 등)` 38 vs `기타 수리수입 등` 8) 가운데로 두면 행마다
+        시작 위치가 들쭉날쭉하다.
+
+        판정 단위는 셀도 표도 아닌 **열**이다 — 셀 내용으로 정하면 한 열
+        안에서 다시 갈린다(실수 #78 이 정확히 그 재발이었다)."""
+        import re
+        import bot.dart_production as dp
+        mk = ("<TABLE>"
+              "<TR><TH>사업부문</TH><TH>매출유형</TH><TH>품 목</TH>"
+              "<TH>매출액</TH><TH>구성비</TH></TR>"
+              "<TR><TD>반도체 장비</TD><TD>제품</TD>"
+              "<TD>반도체검사장비(Monitoring Burn-In Tester 등)</TD>"
+              "<TD ALIGN=RIGHT>226,883</TD><TD>82.7%</TD></TR>"
+              "<TR><TD>반도체 장비</TD><TD>상품</TD><TD>기타 수리수입 등</TD>"
+              "<TD ALIGN=RIGHT>7,202</TD><TD>2.6%</TD></TR>"
+              "<TR><TD COLSPAN=3>제품 및 상품 등 소 계(내부거래 조정 전)</TD>"
+              "<TD>279,651</TD><TD>101.9%</TD></TR>"
+              "</TABLE>")
+        h = dp.sanitize_table(mk)
+        cells = re.findall(r"<(t[dh])([^>]*)>(.*?)</\1>", h, re.I | re.S)
+        cls = {}
+        for _t, a, x in cells:
+            key = re.sub(r"<[^>]*>", "", x).strip()
+            cls[key] = "lft" if 'class="lft"' in a else (
+                "ctr" if 'class="ctr"' in a else "?")
+        # 긴 글 열은 **머리행까지** 좌측
+        assert cls.get("품 목") == "lft", cls
+        assert cls.get("반도체검사장비(Monitoring Burn-In Tester 등)") == "lft", cls
+        assert cls.get("기타 수리수입 등") == "lft", cls
+        # 나머지 열은 그대로 가운데(가동률 표 규약을 깨지 않는다)
+        for k in ("사업부문", "매출유형", "매출액", "구성비",
+                  "반도체 장비", "제품", "226,883", "82.7%"):
+            assert cls.get(k) == "ctr", (k, cls)
+        # 여러 열을 걸친 셀은 어느 한 열의 규약을 따를 수 없다
+        assert cls.get("제품 및 상품 등 소 계(내부거래 조정 전)") == "ctr", cls
+
+    def test_short_text_columns_stay_centered(self):
+        """긴 글 판정이 헐거우면 가동률 표까지 좌측으로 끌려간다 —
+        사용자가 두 번 지시해 얻은 '전 셀 가운데'가 도로 깨진다(#78)."""
+        import bot.dart_production as dp
+        assert dp._long_text_cols(
+            "<TR><TD>고주파 전원장치</TD><TD>생산능력</TD></TR>") == set()
+
+    def test_left_class_exists_in_the_page_css(self):
+        """클래스만 붙이고 CSS 가 없으면 아무 일도 안 일어난다(배선)."""
+        css = open("bot/dashboard.py", encoding="utf-8").read()
+        assert ".si-table .lft" in css and "text-align: left" in css
+
     def test_center_class_exists_in_the_page_css(self):
         """클래스만 붙이고 CSS 가 없으면 아무 일도 안 일어난다(배선)."""
         css = open("bot/dashboard.py", encoding="utf-8").read()

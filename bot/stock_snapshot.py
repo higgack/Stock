@@ -606,27 +606,34 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
             out.setdefault("kr", {})["flow"] = flow_data
         return out
 
-    def _t_fsc_risk() -> dict:
-        # lockup + dilution — 같은 FSC 키 게이트, 한 task 순차.
-        out: dict = {}
+    # ⚠️ lockup·dilution 을 한 task 에 **순차로** 묶어 뒀더니 2026-08-21 VM
+    # 계측에서 `kr:fsc.risk` 가 중앙값 21.26초로 `enrich:KR`(22.24초) 전체를
+    # 지배했다 — 둘은 서로 독립인데 합이 벽시계에 실렸다(#92 '병렬이면 합이
+    # 아니라 최대값'). 나누면 max() 가 되고, 어느 쪽이 느린지도 계측에
+    # 따로 찍힌다(한 이름 아래 묶으면 다음 라운드에 또 못 짚는다, #69).
+    def _t_fsc_lockup() -> dict:
         from bot.fsc_client import fsc_key_ready
         if not fsc_key_ready():
-            return out
+            return {}
         try:
             from bot.fsc_client import lockup_releases as fsc_lockup
             lr = fsc_lockup(ticker, lookback_days=7)
-            if lr:
-                out.setdefault("kr", {})["lockup_releases"] = lr
+            return {"kr": {"lockup_releases": lr}} if lr else {}
         except Exception as exc:
             log.debug("stock_snapshot: FSC lockup skipped: %s", exc)
+            return {}
+
+    def _t_fsc_dilution() -> dict:
+        from bot.fsc_client import fsc_key_ready
+        if not fsc_key_ready():
+            return {}
         try:
             from bot.fsc_client import dilution_events as fsc_dilution
             de = fsc_dilution(ticker, lookback_days=10)
-            if de:
-                out.setdefault("kr", {})["dilution_events"] = de
+            return {"kr": {"dilution_events": de}} if de else {}
         except Exception as exc:
             log.debug("stock_snapshot: FSC dilution skipped: %s", exc)
-        return out
+            return {}
 
     def _t_krx_alert() -> dict:
         out: dict = {}
@@ -732,7 +739,8 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
              ("dart.disclosures", _t_dart_disclosures),
              ("dart.financials", _t_dart_financials),
              ("fsc.minority", _t_fsc_minority), ("flow(KIS+pykrx)", _t_flow),
-             ("fsc.risk", _t_fsc_risk), ("krx.alert", _t_krx_alert),
+             ("fsc.lockup", _t_fsc_lockup),
+             ("fsc.dilution", _t_fsc_dilution), ("krx.alert", _t_krx_alert),
              ("fnguide", _t_fnguide), ("research", _t_research),
              ("dividends", _t_dividends)]
 

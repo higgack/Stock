@@ -5517,14 +5517,15 @@ class TestQuarterlyInfographic20260819:
         """사용자 2026-08-21 "여전히 가독성이 별로. 글씨가 좀 작은것 같기도".
 
         옛 구현은 30자에서 **무조건 잘라** LLM 이 쓴 근거를 화면에서
-        없앴다(`…`). 8.5pt 로 키우면 30자가 카드 밖으로 나가므로(VM 실측
-        100.2 vs 카드끝 97.5) 자르는 대신 **둘째 줄**로 넘긴다."""
-        from bot.quarterly_infographic import (_CARD_LINE_CHARS,
-                                               _CARD_MAX_LINES, _card_lines)
+        없앴다(`…`). 8.5pt 로 키우면 한글 30자가 카드 밖으로 나가므로
+        (VM 실측 100.2 vs 카드끝 97.5) 자르는 대신 **둘째 줄**로 넘긴다."""
+        from bot.quarterly_infographic import (_CARD_LINE_W, _CARD_MAX_LINES,
+                                               _card_lines, _vlen)
         # LLM 지시 상한(28자)은 두 줄 안에 **자르지 않고** 들어가야 한다
         from bot.dart_growth_risk import ITEM_CHARS
-        assert ITEM_CHARS <= _CARD_LINE_CHARS * _CARD_MAX_LINES
-        long = "CEMS 구축을 통한 디지털 서비스 사업 확대"
+        assert ITEM_CHARS <= _CARD_LINE_W * _CARD_MAX_LINES
+        long = "차세대 전력반도체 전용 라인 증설로 국내외 고객사 물량 대응"
+        assert _vlen(long) > _CARD_LINE_W, "픽스처가 한 줄에 들어간다"
         lines = _card_lines(long)
         assert len(lines) == 2, lines
         assert "…" not in "".join(lines), "들어가는데 잘랐다"
@@ -5533,10 +5534,30 @@ class TestQuarterlyInfographic20260819:
         # 어절 경계에서 끊는다 — 낱글자로 끊으면 단어가 갈라진다
         assert not lines[0].endswith(" ") and lines[1].strip() == lines[1]
         for ln in lines:
-            assert len(ln) <= _CARD_LINE_CHARS, ln
+            assert _vlen(ln) <= _CARD_LINE_W, ln
         # 두 줄로도 안 되는 비정상 입력만 말줄임
         assert _card_lines("가" * 200)[-1].endswith("…")
         assert _card_lines("")[0] == "" and len(_card_lines("")) == 1
+
+    def test_card_lines_measure_width_not_character_count(self):
+        """사용자 2026-08-21 "세번째는 공간이 있는데 왜 줄 바꿈을 해서
+        작성한거야?" — LG디스플레이 카드가 라틴 섞인 항목마다 접혔다.
+
+        라틴·숫자는 전각의 절반쯤 폭인데 **글자수**로 재니 자리가 남는데도
+        둘째 줄로 넘어갔다. 한도를 올리는 것만으론 못 고친다 — 재는 **단위**
+        가 틀린 것이다(#64 바이트 예산을 문자 길이로 잰 것의 사촌)."""
+        from bot.quarterly_infographic import _CARD_LINE_W, _card_lines, _vlen
+        # 화면 실측(스크린샷)에서 접혔던 그 문구들
+        for s in ("OLED·TFT-LCD 등 디스플레이 패널 제조·판매",
+                  "주요 판매 제품군, IT·Mobile·Auto 분야 집중",
+                  "차별화된 OLED·LCD 제품 기술력 확보 주력",
+                  "현금 지출 기준 연간 2조원대 설비 투자 집행"):
+            assert len(_card_lines(s)) == 1, (s, _card_lines(s))
+            # 글자수로 재면 접혔을 문구여야 이 검사가 의미가 있다
+            assert len(s) > 24, s
+        # 그렇다고 아무거나 한 줄이 되면 안 된다 — 전각 30자는 여전히 넘침
+        assert _vlen("가" * 30) > _CARD_LINE_W
+        assert len(_card_lines("가" * 30)) == 2
 
     def test_card_height_follows_actual_line_count(self):
         """도화지 높이와 상자 높이가 **같은 함수**를 봐야 한다 — 두 줄짜리가
@@ -6397,7 +6418,10 @@ class TestQuarterlyMultiMarket20260816:
                    if isinstance(n, ast.FunctionDef)
                    and n.name == "_kr_fin_trend_table"), None)
         assert fn, "표 렌더러 이름이 바뀜"
-        ns = {"esc": _h.escape}
+        # 중첩 함수는 바깥 모듈의 헬퍼를 쓴다 — 네임스페이스에 넣어 준다
+        from bot.dashboard import trend_chart_geometry
+        ns = {"esc": _h.escape,
+              "trend_chart_geometry": trend_chart_geometry}
         exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
         table = ns["_kr_fin_trend_table"]
         items = [{"label": "26.1Q", "매출": 1e12, "영업이익": 2e11,
@@ -6490,7 +6514,10 @@ class TestQuarterlyMultiMarket20260816:
                    if isinstance(n, ast.FunctionDef)
                    and n.name == "_profit_trend"), None)
         assert fn, "차트 함수 이름이 바뀜"
-        ns = {"esc": _h.escape}
+        # 중첩 함수는 바깥 모듈의 헬퍼를 쓴다 — 네임스페이스에 넣어 준다
+        from bot.dashboard import trend_chart_geometry
+        ns = {"esc": _h.escape,
+              "trend_chart_geometry": trend_chart_geometry}
         exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
         trend = ns["_profit_trend"]
         IS = [{"period": f"2026-0{m}-30", "Total Revenue": 1000 + m,
@@ -6576,11 +6603,15 @@ class TestQuarterlyMultiMarket20260816:
     def test_probe_separates_fixable_backlog_misses(self):
         """미공시류는 파서를 고쳐도 안 나온다 — 개선 여지에서 빼야 숫자가
         행동으로 이어진다(dart_backlog.diagnose 규약)."""
+        # ⚠️ 옛 판은 `if backlog_why:` 뒤 600자에 그 낱말이 있나 보는 **소스
+        # 문자열**이었다. 판정을 순수 함수로 빼는 리팩터(2026-08-21, 같은
+        # 계약을 더 강하게 지킨다)에 그대로 깨졌다 — 동작으로 본다(#19).
+        from bot.scripts.production_format_probe import fixable_reasons
+        got = fixable_reasons({"미공시": 9, "명시적미공시": 3,
+                               "미검사": 2, "형식미지원": 7})
+        assert got == {"형식미지원": 7}, got
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
-        blk = src[src.index("if backlog_why:"):]
-        for k in ("미공시", "명시적미공시"):
-            assert k in blk[:600], f"{k} 를 개선 여지에서 안 뺐다"
         assert "backlog_probe" in src, "프로브가 판정을 안 읽는다"
         # 프로브 버전 배너(실수 #21) — 숫자가 아니라 **찍는 행위**를(#67)
         import bot.scripts.production_format_probe as pf
@@ -6757,6 +6788,27 @@ class TestQuarterlyMultiMarket20260816:
         out = capsys.readouterr().out
         assert "yfinance 경로" in out and "DART 경로" not in out, out
 
+    def test_fiscal_window_aligns_quarters_to_the_annual_period(self):
+        """⚠️ 내 프로브가 **정상 데이터를 어긋남으로 오보**했다(2026-08-21):
+        "최근 4분기 합 vs 최신 연간"으로 재서 AAPL 38% · 7203.T 781%.
+        둘 다 결산월이 12월이 아니라(9월·3월) 최근 4분기가 최신 연간과
+        **다른 기간**이었을 뿐이다. 창을 맞추면 7203.T 는 오차 0 이다."""
+        from bot.scripts.fcf_probe import fiscal_window
+        q = [("2025-06-30", 633559e6), ("2025-09-30", -204078e6),
+             ("2025-12-31", -488899e6), ("2026-03-31", 238990e6),
+             ("2026-06-30", -768981e6)]          # 7203.T VM 실측
+        a = [("2025-03-31", -1560993e6), ("2026-03-31", 179572e6)]
+        fy, vals, an = fiscal_window(q, a)
+        assert fy == "2026-03-31" and an == 179572e6
+        assert abs(sum(vals) - an) < 1.0, (sum(vals), an)   # 한 자리도 안 틀림
+        # 창을 못 채우면 **대충 맞추지 않고 None**(AAPL: FY2025 의 첫 분기를
+        # 원천이 안 준다). 빈칸이 틀린 판정보다 낫다(#41).
+        q2 = [("2025-03-31", None), ("2025-06-30", 24405e6),
+              ("2025-09-30", 26486e6), ("2025-12-31", 51552e6)]
+        assert fiscal_window(q2, [("2025-09-30", 98767e6)]) is None
+        # 분기 시계열이 연간 결산월에서 끝나지 않으면 그 연간은 건너뛴다
+        assert fiscal_window(q, [("2025-12-31", 1.0)]) is None
+
     def test_cumulative_smell_catches_the_measured_case(self):
         """시장마다 원천이 다르다 — "KR 에서 고쳤으니 다른 나라도" 는 가정
         이다. 같은 함정을 **재는** 검사(사용자 2026-08-21 지적)."""
@@ -6807,6 +6859,177 @@ class TestQuarterlyMultiMarket20260816:
         assert line, "_HELP_TEXT 에 분기실적 항목 없음"
         assert "한국종목)" not in line[0], "옛 KR 전용 문구 잔존"
         assert "yfinance" in line[0] and "한국 종목만" in line[0]
+
+
+class TestBacklogUnitCaptions20260821:
+    """미수집 사유 최대 버킷이 `단위없음` 15건이었다(2026-08-21 VM 스윕).
+    사유만 세면 거기서 멈춘다 — 무엇을 고쳐야 하는지까지 재게 했다(#93)."""
+
+    def test_bare_unit_captions_are_supported(self):
+        """`(단위 : 백만)` 처럼 **원 이 빠진** 캡션이 실재한다. 옛 정규식은
+        `원` 을 필수로 봐서 그런 표를 통째로 버렸다."""
+        from bot.dart_backlog import _unit_mult
+        for cap, want in (("(단위 : 백만)", 1e6), ("(단위 : 억)", 1e8),
+                          ("(단위 : 천)", 1e3), ("(단위 : 십억)", 1e9),
+                          ("(단위 : 백만원)", 1e6), ("(단위 : 억원, %)", 1e8)):
+            t = f"{cap} 수주잔고"
+            assert _unit_mult(t, t.index("수주잔고")) == want, cap
+
+    def test_non_money_units_stay_unresolved(self):
+        """⚠️ 스케일 오류는 **검산을 그대로 통과한다**(검산은 열 사이 항등식만
+        본다). `천주`(주식 수)·`백만달러` 를 금액으로 읽으면 조용한 오답이다 —
+        모르면 값을 내지 않는 쪽이 옳다."""
+        from bot.dart_backlog import _unit_mult
+        for cap in ("(단위 : 천주)", "(단위 : 백만달러)", "(단위 : USD)",
+                    "(단위 : 천미불)", "(단위 : 백만주)"):
+            t = f"{cap} 수주잔고"
+            assert _unit_mult(t, t.index("수주잔고")) is None, cap
+
+    def test_detail_says_what_to_fix(self):
+        from bot.dart_backlog import diagnose, diagnose_detail as d
+        no_cap = "수주총액 기납품액 수주잔고 합 계 571,122 221,121 350,001"
+        assert diagnose(no_cap) == "단위없음" and d(no_cap) == "캡션없음"
+        bad = "(단위 : 백만달러) 수주총액 기납품액 수주잔고 합 계 1 2 3"
+        assert d(bad).startswith("미지원단위"), d(bad)
+        late = "수주잔고 현황 (단위 : 백만원) 수주총액 기납품액 합 계 1 2 3"
+        assert d(late).startswith("캡션이 라벨 뒤"), d(late)
+        odd = "(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 9 1 2 3 4"
+        assert diagnose(odd) == "형식미지원" and d(odd) == "합계행 5값", d(odd)
+        # 히스토그램이 1건씩으로 쪼개지면 "무엇이 많은가"를 못 본다 —
+        # 값 자체는 상세에 넣지 않는다.
+        assert "9" not in d(odd).replace("5값", "")
+
+    def test_probe_reason_carries_the_detail(self):
+        """감사 히스토그램이 곧 작업 목록이 되게 — 사유에 상세를 붙인다."""
+        import bot.dart_backlog as bl
+        import bot.dart_feed as df
+        import pytest as _pt
+        mp = _pt.MonkeyPatch()
+        try:
+            mp.setattr(bl, "_log_miss", lambda *a, **k: None)
+            mp.setattr(df, "_fetch_doc_text", lambda *a, **k:
+                       "수주총액 기납품액 수주잔고 합 계 571,122 221,121 350,001")
+
+            class _D:
+                api_key = "K"
+
+                def find_periodic_reports(self, *a):
+                    return [{"rcept_no": "R1"}]
+            v, why = bl.backlog_probe(_D(), "005930.KS", 2026, "11012")
+            assert v is None and why == "단위없음 · 캡션없음", why
+        finally:
+            mp.undo()
+
+    def test_probe_returns_a_tuple_even_without_dart(self):
+        """계약은 (값, 사유)다 — None 하나를 내면 호출부가 TypeError 로 터진다."""
+        from bot.dart_backlog import backlog_probe
+        v, why = backlog_probe(None, "005930.KS", 2026, "11012")
+        assert v is None and why
+
+    def test_fixable_filter_survives_enriched_reasons(self):
+        """상세가 붙어도 미공시류는 개선 여지에서 빠져야 한다 — 완전일치로
+        두면 통계가 갈라진다(#45 총계와 소계가 다른 모집단)."""
+        from bot.scripts.production_format_probe import fixable_reasons
+        got = fixable_reasons({"미공시": 20, "명시적미공시 · 캡션없음": 4,
+                               "단위없음 · 캡션없음": 9,
+                               "형식미지원 · 합계행 5값": 7})
+        assert set(got) == {"단위없음 · 캡션없음", "형식미지원 · 합계행 5값"}
+        assert sum(got.values()) == 16, got
+
+
+class TestFscRiskLatency20260821:
+    """2026-08-21 VM 계측: `kr:fsc.risk` **중앙값 21.26초**로 `enrich:KR`
+    (22.24초) 전체를 지배했다. 원인은 파싱이 아니라 (2 엔드포인트 × 8영업일)
+    = 16회를 **직렬**로 두드리는 것이었다 — 해당 공시가 없는 종목(대다수)은
+    매번 전부를 걷는다."""
+
+    def test_dead_service_costs_one_request_per_endpoint(self):
+        """#72 에서 얻은 '죽은 API 는 네트워크 몇 회로 끝난다'를 병렬화가
+        깨면 안 된다 — 8발을 동시에 쏘면 차단기가 뜨기 전에 다 나간다."""
+        from bot.fsc_client import _newest_nonempty
+        calls = []
+
+        def _one(bas):
+            calls.append(bas)
+            return [], False              # 서비스 장애
+        assert _newest_nonempty(["3", "2", "1"], _one) == []
+        assert calls == ["3"], calls      # 실패면 남은 날은 안 친다
+
+    def test_empty_but_healthy_service_fans_out(self):
+        """'결과 없음'은 장애가 아니다 — 남은 날을 봐야 한다(#66 '없다'의
+        근거가 한 번의 관측인지 물을 것)."""
+        from bot.fsc_client import _newest_nonempty
+        seen = []
+
+        def _one(bas):
+            seen.append(bas)
+            return ([{"d": bas}], True) if bas == "1" else ([], True)
+        assert _newest_nonempty(["3", "2", "1"], _one) == [{"d": "1"}]
+        assert set(seen) == {"3", "2", "1"}
+
+    def test_newest_nonempty_wins_not_whichever_finishes_first(self):
+        """병렬로 돌려도 **최신 날짜**가 이겨야 한다 — 먼저 끝난 응답을
+        쓰면 같은 종목이 실행마다 다른 값을 갖는다."""
+        from bot.fsc_client import _newest_nonempty
+
+        def _one(bas):
+            return ([{"d": bas}], True) if bas in ("2", "1") else ([], True)
+        assert _newest_nonempty(["3", "2", "1"], _one) == [{"d": "2"}]
+
+    def test_lockup_and_dilution_are_separate_parallel_tasks(self):
+        """한 task 에 순차로 묶으면 **합**이 벽시계에 실린다(#92). 이름도
+        나뉘어야 다음 라운드에 어느 쪽이 느린지 짚을 수 있다(#69)."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        names = set()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", "") == "tasks" for t in node.targets):
+                for el in getattr(node.value, "elts", []):
+                    k = getattr(el, "elts", [None])[0]
+                    if isinstance(k, ast.Constant):
+                        names.add(k.value)
+        assert {"fsc.lockup", "fsc.dilution"} <= names, sorted(names)
+        assert "fsc.risk" not in names, "옛 합본 task 가 남아 있다"
+
+    def test_fetch_tells_empty_apart_from_failure(self):
+        """`[]` 하나로는 '결과 없음'과 '장애'를 못 가른다 — 그 구별이 없으면
+        죽은 서비스에 남은 날짜를 계속 쏜다(#82 '없음'만 말하는 진단)."""
+        import bot.fsc_client as fc
+        assert callable(getattr(fc, "_fetch2", None))
+        import inspect
+        assert "tuple" in str(inspect.signature(fc._fetch2))
+
+
+class TestTrendChartNegativeBars20260821:
+    """사용자 2026-08-21 LG디스플레이: "마이너스로 가서 차트의 막대기가
+    밑으로 내려오는경우에 연도나 분기가 겹쳐서 보이지 않잖아"."""
+
+    def test_period_labels_clear_the_deepest_negative_bar(self):
+        from bot.dashboard import trend_chart_geometry as g
+        items = [{"revenue": 100.0, "fcf": -80.0},
+                 {"revenue": 100.0, "fcf": 20.0}]
+        lab_y, svg_h = g(items, ["revenue", "fcf"], 100.0)
+        # 가장 깊은 막대 아래끝 = 150 + 80/100*120 = 246
+        assert lab_y > 246, f"라벨이 막대와 겹친다(y={lab_y})"
+        assert svg_h > lab_y, "라벨이 도화지 밖이다"
+
+    def test_positive_only_chart_is_unchanged(self):
+        """음수가 없으면 옛 배치 그대로 — 고치려던 것 밖을 건드리지 않는다."""
+        from bot.dashboard import trend_chart_geometry as g
+        assert g([{"a": 5.0}], ["a"], 5.0) == (170.0, 185.0)
+
+    def test_geometry_is_wired_into_the_rendered_svg(self):
+        """순수 함수만 고치고 렌더가 리터럴을 쓰면 화면은 그대로다(#20)."""
+        import ast
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_profit_trend")
+        body = ast.get_source_segment(src, fn)
+        assert "trend_chart_geometry(" in body, "렌더가 헬퍼를 안 쓴다"
+        assert 'y="170"' not in body and 'height="185"' not in body, \
+            "리터럴 좌표가 남아 있다"
 
 
 class TestQuarterlyChartLayout20260816:
@@ -25954,7 +26177,7 @@ class TestBacklogObservability20260817:
                 return [{"rcept_no": "R1"}]
         val, why = bl.backlog_probe(_D(), "005930.KS", 2026, "11012")
         assert val is None and why == "미공시", (val, why)
-        assert seen and seen[0][-1] == "미공시", seen
+        assert seen and seen[0][3] == "미공시", seen
 
     def test_render_version_busts_the_full_quote_cache(self):
         """`/api/quote?full=1` 디스크 캐시는 TTL 4h 인데다 stale-while-

@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 _PARTS = ("영업활동현금흐름", "유형자산취득", "무형자산취득")
 
 
@@ -79,6 +79,34 @@ def _yf_periods(ticker: str) -> tuple[list[tuple[str, float | None]],
     return _rows("quarterly"), _rows("annual")
 
 
+def fiscal_window(quarters: list, annuals: list) -> tuple | None:
+    """연간 하나와 **그 회계연도에 정확히 들어맞는 분기 4개**를 고른다.
+    `(회계연도말, [분기값 4개], 연간값)` 또는 None.
+
+    ⚠️ 왜 필요한가(2026-08-21 실측): "최근 4분기 합 vs 최신 연간"으로
+    쟀더니 AAPL 38% · 7203.T 781% 로 **정상 데이터가 어긋남으로 찍혔다**.
+    두 회사 다 결산월이 12월이 아니라(9월·3월) 최근 4분기가 최신 연간과
+    **다른 기간**이었을 뿐이다 — 창을 안 맞추고 낸 판정은 그 자체가 오보다
+    (#40 '최신'은 '완결'과 다르다 · #41 여유로 사실을 덮지 말 것).
+    실제로 창을 맞추자 7203.T 는 633,559−204,078−488,899+238,990 =
+    179,572 로 연간과 **한 자리도 안 틀리게** 같았다.
+
+    창을 못 채우면 **None** — 대충 맞춰 통과시키지 않는다(빈칸 > 틀린 판정).
+    """
+    qs = [(str(l), v) for l, v in (quarters or [])]
+    for lb, a in reversed(annuals or []):
+        if a is None:
+            continue
+        upto = [(l, v) for l, v in qs if l <= str(lb)]
+        if len(upto) < 4 or upto[-1][0] != str(lb):
+            continue
+        w = upto[-4:]
+        if any(v is None for _l, v in w):
+            continue
+        return (str(lb), [v for _l, v in w], a)
+    return None
+
+
 def _yf_report(tk: str, cumulative_smell, seen: list) -> None:
     """yfinance 현금흐름표 경로 한 종목 — 재무재표 차트가 쓰는 그 원천(#35)."""
     print("   ── yfinance 경로(재무재표 차트)")
@@ -93,22 +121,24 @@ def _yf_report(tk: str, cumulative_smell, seen: list) -> None:
     for lb, v in qs_v:
         print(f"      분 {lb}  " + ("✅" if v is not None else "❌ 재료 없음")
               + (f"  → FCF {v:,.0f}" if v is not None else ""))
-    _q = [v for _l, v in qs_v][-4:]
-    _a = next((v for _l, v in reversed(an_v) if v is not None), None)
-    _smell = cumulative_smell(_q, _a)
+    _smell = cumulative_smell([v for _l, v in qs_v][-4:],
+                              next((v for _l, v in reversed(an_v)
+                                    if v is not None), None))
     if _smell:
         print(f"      ⚠️ 누적 오염 의심: {_smell}")
-    elif _q and _a and all(v is not None for v in _q) and len(_q) == 4:
-        # 최근 4분기 합 ≈ 최신 연간. 분기·연간 경계가 어긋나면 오차가 크게
-        # 나올 수 있어 **판정이 아니라 관측**으로 찍는다(#41).
-        _sum = sum(_q)
-        _gap = abs(_sum - _a) / abs(_a) * 100
-        print(f"      🔎 최근4분기합 {_sum:,.0f} vs 최신연간 {_a:,.0f}"
-              f"  (차이 {_gap:.0f}%)"
-              + ("  ✅ 단일분기로 보임" if _gap <= 25
-                 else "  ⚠️ 어긋남 — 기간 정의 확인 필요"))
-    else:
-        print("      🔎 분기 4개가 다 차지 않아 합계 검산 생략")
+        return
+    win = fiscal_window(qs_v, an_v)
+    if not win:
+        print("      🔎 회계연도에 맞는 분기 4개가 없어 합계 검산 생략"
+              " (원천이 그 분기를 안 줌)")
+        return
+    fy, vals, a = win
+    _sum = sum(vals)
+    _gap = abs(_sum - a) / abs(a) * 100 if a else 0.0
+    print(f"      🔎 {fy} 분기합 {_sum:,.0f} vs 연간 {a:,.0f}"
+          f"  (차이 {_gap:.0f}%)"
+          + ("  ✅ 단일분기로 보임" if _gap <= 5
+             else "  ⚠️ 어긋남 — 기간 정의 확인 필요"))
 
 
 def main(argv: list[str] | None = None) -> int:

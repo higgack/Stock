@@ -35,6 +35,8 @@ import html as _html
 import logging
 import re
 
+from bot.textwidth import vlen as _vlen
+
 log = logging.getLogger("bot.dart_production")
 # ⚠️ 스캔창 상수는 앵커 목록(`_PROD_SPECS`)의 **기본 인자**로 쓰이므로
 # 정의부보다 위에 있어야 한다 — 아래 두면 import 자체가 NameError 다.
@@ -195,25 +197,88 @@ def sanitize_table(markup: str) -> str:
 _CELL_PAIR_RE = re.compile(r"(?is)<(t[dh])((?:\s[^>]*)?)>(.*?)</\1>")
 
 
-def _align_cells(html: str) -> str:
-    """모든 셀을 가운데정렬로 통일한다(사용자 2026-08-21, 2회 지시).
+# 한 열이 '긴 글' 열인지 가르는 폭(전각 환산). 디아이 실측: 사업부문
+# `음향 · 영상기기`=9 · 매출유형 `제품`=2 · 매출액 `226,883`=7 인데 품목은
+# `반도체검사장비(Monitoring Burn-In Tester 등)`=38 이다.
+_LONG_COL_W = 14.0
+_ROW_PAIR_RE = re.compile(r"(?is)<tr(?:\s[^>]*)?>.*?</tr>")
+_COLSPAN_RE = re.compile(r'(?i)colspan\s*=\s*["\']?(\d+)')
+_TAGS_RE = re.compile(r"(?s)<[^>]*>")
 
-    ⚠️ 원본의 `ALIGN=RIGHT` 를 그대로 따라가면 **한 열 안에서 정렬이 갈린다**
+
+def _cell_text(inner: str) -> str:
+    """셀의 **가장 긴 줄** — `<br>`(#94 로 살린 원본 줄바꿈)로 끊어 잰다."""
+    best = ""
+    for part in re.split(r"(?i)<br\s*/?>", inner or ""):
+        t = _TAGS_RE.sub("", part).replace("&nbsp;", " ").strip()
+        if len(t) > len(best):
+            best = t
+    return best
+
+
+def _long_text_cols(html: str) -> set[int]:
+    """긴 글이 들어 있는 **열 번호** 집합. colspan 을 세어 열을 맞춘다.
+
+    ⚠️ 셀 단위가 아니라 **열 단위**로 정한다 — 셀 내용으로 정하면 한 열
+    안에 긴 글과 짧은 글이 섞이는 순간 갈라진다(실수 #78 이 바로 그것).
+    소계·합계처럼 여러 열을 걸치는 셀(colspan>1)은 어느 한 열의 것이
+    아니므로 판정에서 뺀다.
+    """
+    width: dict[int, float] = {}
+    for row in _ROW_PAIR_RE.findall(html):
+        ci = 0
+        for m in _CELL_PAIR_RE.finditer(row):
+            attrs, inner = m.group(2) or "", m.group(3)
+            cs = _COLSPAN_RE.search(attrs)
+            span = max(int(cs.group(1)), 1) if cs else 1
+            if span == 1:
+                t = _cell_text(inner)
+                # 숫자 칸은 아무리 길어도 '긴 글'이 아니다(자릿수·부호·%).
+                if not re.fullmatch(r"[\d,.\-+()%\s]*", t):
+                    width[ci] = max(width.get(ci, 0.0), _vlen(t))
+            ci += span
+    return {c for c, w in width.items() if w >= _LONG_COL_W}
+
+
+def _align_cells(html: str) -> str:
+    """열 축을 하나로 맞춘다 — **짧은 열은 가운데, 긴 글 열은 좌측**.
+
+    ⚠️ 원본의 `ALIGN=RIGHT` 를 그대로 따라가면 한 열 안에서 정렬이 갈린다
     — 한솔아이원스 실측: 같은 열의 `44,727`(ALIGN=RIGHT)은 우측, `55.7%`
     (속성 없음)는 좌측으로 붙어 눈이 숫자를 따라가지 못했다. 원본이 스스로
     일관되지 않으므로 **우리가 정한다**.
 
     ⚠️ 1차 시도는 '숫자·머리행만 가운데, 글자는 좌측'이었는데 그것도
-    갈렸다 — 뉴파워프라즈마 실측: 머리행 `구분` 은 가운데인데 그 아래
-    `생산능력`·`생산실적`·`기말재고` 는 글자라 좌측으로 붙어 **같은 열의
-    머리와 몸통이 어긋났다**. DART 표는 열마다 짧은 라벨이라 전부 가운데로
-    맞추는 게 열 축을 유일하게 일치시킨다."""
-    def _fix(m):
-        tag, attrs, inner = m.group(1), m.group(2) or "", m.group(3)
-        if "class=" not in attrs:
-            attrs += ' class="ctr"'
-        return f"<{tag}{attrs}>{inner}</{tag}>"
-    return _CELL_PAIR_RE.sub(_fix, html)
+    갈렸다(뉴파워프라즈마: 머리행 `구분` 은 가운데인데 그 아래 `생산능력`
+    은 좌측). 그래서 전부 가운데로 갔는데, 이번엔 긴 글이 문제였다 —
+    디아이 `주요 제품 및 서비스` 의 품목 열은 셀마다 길이가 달라 가운데로
+    두면 **행마다 시작 위치가 들쭉날쭉**하다(사용자 2026-08-21 "품목에
+    글씨들이 이상해 … 이런식으로 정렬은 아니지 않아?").
+
+    결론: 판정 단위는 **셀도 표도 아닌 열**이다. 한 열이 긴 글을 담으면
+    그 열 전체(머리행 포함)를 좌측으로, 나머지는 전부 가운데로.
+    """
+    long_cols = _long_text_cols(html)
+
+    def _fix_row(rm):
+        row = rm.group(0)
+        state = {"ci": 0}
+
+        def _fix(m):
+            tag, attrs, inner = m.group(1), m.group(2) or "", m.group(3)
+            cs = _COLSPAN_RE.search(attrs)
+            span = max(int(cs.group(1)), 1) if cs else 1
+            ci = state["ci"]
+            state["ci"] = ci + span
+            if "class=" not in attrs:
+                # 여러 열을 걸친 셀은 어느 한 열의 규약을 따를 수 없다 —
+                # 가운데(소계·합계 라벨이 실제로 그 자리에 온다).
+                cls = "lft" if (span == 1 and ci in long_cols) else "ctr"
+                attrs += f' class="{cls}"'
+            return f"<{tag}{attrs}>{inner}</{tag}>"
+        return _CELL_PAIR_RE.sub(_fix, row)
+
+    return _ROW_PAIR_RE.sub(_fix_row, html)
 
 
 _ROW_RE = re.compile(r"(?is)<TR[^>]*>")

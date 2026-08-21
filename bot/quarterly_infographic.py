@@ -190,14 +190,19 @@ def render_infographic(payload: dict, out_path: str,
 # 카드 한 줄에 넣을 글자수. ⚠️ 이제 **절단폭이 아니라 줄바꿈 폭**이다 —
 # 넘치면 자르지 않고 둘째 줄로 넘긴다(2026-08-21). 옛 절단은 LLM 이 쓴
 # 근거를 화면에서 잘라 없앴다("…"), 그게 정보 손실이었다.
-# ⚠️ 값의 근거: VM 실측(소스 주석에 남아 있던 것) 8.5pt 30자 = 43.6 데이터
-# 단위. 카드 안쪽 가용폭은 46.5 − 5.0(번호) − 1.6(우여백) = 39.9 이므로
-# 8.5pt 에서 안전한 한 줄은 39.9/1.453 ≈ 27자 — 여유를 두고 24.
-# 두 줄이면 48자라 LLM 지시(ITEM_CHARS=28)를 넉넉히 담는다.
-_CARD_LINE_CHARS = 24
+# ⚠️ 값의 근거: VM 실측(소스 주석에 남아 있던 것) 8.5pt **한글** 30자 =
+# 43.6 데이터 단위 → 전각 1자 = 1.453. 카드 안쪽 가용폭은
+# 46.5 − 5.0(번호) − 1.6(우여백) = 39.9 이므로 한 줄은 39.9/1.453 ≈ 27.5 폭.
+# ⚠️ **글자수가 아니라 폭**으로 잰다(사용자 2026-08-21 "공간이 있는데 왜
+# 줄 바꿈을 해서 작성한거야?"). 라틴은 전각의 절반쯤이라 글자수로 재면
+# `주요 판매 제품군, IT·Mobile·Auto 분야 집중`(폭 21.9)이 24자 한도에
+# 걸려 **자리가 남는데도** 둘째 줄로 넘어갔다. 한도를 24→27.5 로 올리는
+# 것만으론 라틴 섞인 항목이 여전히 일찍 접힌다 — 단위를 바꿔야 한다.
+_CARD_LINE_W = 27.5
 _CARD_MAX_LINES = 2
 # 절단은 **최후 수단**(두 줄로도 안 들어가는 비정상 입력)만.
-_CARD_CHARS = _CARD_LINE_CHARS * _CARD_MAX_LINES
+# 단위가 폭이므로 이것도 '전각 환산 글자수'다(LLM 지시 ITEM_CHARS 비교용).
+_CARD_CHARS = int(_CARD_LINE_W * _CARD_MAX_LINES)
 
 _TICK_STEPS = [1, 2, 5, 10]
 # 상한 — 실제 nbins 는 **축의 픽셀 높이**에서 계산한다(_nbins_for).
@@ -518,6 +523,11 @@ def _cards_of(payload: dict) -> tuple[list, list]:
     return (gr.get("growth_drivers") or []), (gr.get("sustain_risks") or [])
 
 
+# 폭 계산은 `bot.textwidth` 한 곳 — DART 제품 표의 열 정렬 판정도 같은
+# 계산을 쓴다. 두 곳이 각자 세면 판정이 갈라진다(#38).
+from bot.textwidth import vlen as _vlen, vtrim as _vtrim   # noqa: E402
+
+
 def _card_lines(s: str) -> list[str]:
     """카드 항목 한 줄 → 표시할 줄들(최대 `_CARD_MAX_LINES`).
 
@@ -530,7 +540,7 @@ def _card_lines(s: str) -> list[str]:
     words, lines, cur = (s or "").split(), [], ""
     for w in words:
         cand = f"{cur} {w}".strip()
-        if len(cand) <= _CARD_LINE_CHARS:
+        if _vlen(cand) <= _CARD_LINE_W:
             cur = cand
             continue
         if cur:
@@ -538,9 +548,10 @@ def _card_lines(s: str) -> list[str]:
             cur = ""
             if len(lines) == _CARD_MAX_LINES:
                 break
-        while len(w) > _CARD_LINE_CHARS and len(lines) < _CARD_MAX_LINES:
-            lines.append(w[:_CARD_LINE_CHARS])
-            w = w[_CARD_LINE_CHARS:]
+        while _vlen(w) > _CARD_LINE_W and len(lines) < _CARD_MAX_LINES:
+            head = _vtrim(w, _CARD_LINE_W)
+            lines.append(head)
+            w = w[len(head):]
         if len(lines) == _CARD_MAX_LINES:
             cur = ""
             break
@@ -551,7 +562,7 @@ def _card_lines(s: str) -> list[str]:
         return [""]
     # 담지 못하고 남은 게 있으면 마지막 줄에만 말줄임을 붙인다.
     if len(" ".join(lines)) < len(" ".join(words)):
-        lines[-1] = lines[-1][:_CARD_LINE_CHARS - 1] + "…"
+        lines[-1] = _vtrim(lines[-1], _CARD_LINE_W - 1.0) + "…"
     return lines
 
 
