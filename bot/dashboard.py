@@ -5155,7 +5155,8 @@ _QUARTERLY_JS = r"""
     }
     if(j.table_html) h+=j.table_html;
     // ── 조립 순서(사용자 2026-08-21) ────────────────────────────────
-    //   [지표·차트] → 📦 주요 제품 및 서비스 → 🏭 생산능력·가동률
+    //   [지표·차트(매출·영업이익 / 당기순이익 / FCF)] → 📦 주요 제품 및
+    //   서비스 → 🏭 생산능력·가동률
     //   → [수주잔고·재고자산·TTM] → [성장동력 카드] → 출처·면책
     // 공급사슬 순서(무엇을 파나 → 얼마나 만드나 → 주문 → 재고 → 전망).
     // 표를 차트 사이에 끼우려고 본 이미지를 상단/하단 두 조각으로 나눴다.
@@ -6031,6 +6032,17 @@ def _render_stock_info_html(rec: dict) -> str:
                 v = it.get(key)
                 cells += f"<td class='num'>{v:.1f}%</td>" if v is not None else "<td class='num'>—</td>"
             rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
+        # FCF — 부채비율 **밑**(사용자 2026-08-21 지정 위치). 비율이 아니라
+        # 금액이라 위 루프에 못 넣는다(`%` 포맷이 붙는다).
+        # ⚠️ 재료가 없으면 행을 통째로 생략한다 — 전 칸이 '—' 인 행은
+        # "값이 0" 인지 "안 가져왔는지"를 구분 못 하게 하고 표만 길어진다.
+        if any(it.get("FCF") is not None for it in items):
+            cells = ""
+            for it in items:
+                v = it.get("FCF")
+                cells += (f"<td class='num'>{v / 1e8:,.0f}억</td>"
+                          if v is not None else "<td class='num'>—</td>")
+            rows += f"<tr><td>FCF</td>{cells}</tr>\n"
         foot = ""
         _notes = []
         if any(it.get("_anomaly_revenue_negative") for it in items):
@@ -6046,6 +6058,10 @@ def _render_stock_info_html(rec: dict) -> str:
             _notes.append('⚠️ 매출 공백 = 연간·3분기 보고서가 서로 다른 계정을 써 '
                           '차감이 불가 — 추정 대신 비워둠'
                           + (f'(어긋난 항목: {esc(" · ".join(_mm))})' if _mm else ''))
+        if any(it.get("FCF") is not None for it in items):
+            _notes.append('ℹ️ FCF = <b>영업활동현금흐름 − CAPEX</b>'
+                          '(유형·무형자산 취득 합) — 원천이 FCF 를 직접 '
+                          '주면 그 값을 그대로 씁니다')
         if _is_q:
             _notes.append('ℹ️ ROE = <b>최근 4분기 순이익 합 ÷ 기말 자본</b>'
                           '(TTM) — 시장 표기(네이버·FnGuide)와 같은 연율 '

@@ -6247,6 +6247,164 @@ class TestQuarterlyMultiMarket20260816:
         assert j > i, "외부 링크가 부동산보다 앞에 있다"
         assert "부동산</a></span>" in dash[i:j], f"사이에 다른 게 끼었다"
 
+    # ── FCF (사용자 2026-08-21 "모든 나라에 적용") ──────────────────
+    def test_fcf_formula_is_source_confirmed(self):
+        """FnGuide 실측이 산식을 확정했다(FY2025): 영업활동현금흐름 1,241
+        − CAPEX 230 = FCF 1,011. 부호 규약은 원천마다 갈리므로(yfinance
+        음수 · FnGuide 양수) **크기만** 쓴다 — 그대로 더하면 한쪽 시장에서
+        FCF 가 영업현금흐름의 두 배가 된다."""
+        from bot.fcf import fcf_from_parts, fcf_from_row
+        assert fcf_from_parts(1241, 230) == 1011
+        assert fcf_from_parts(1241, -230) == 1011, "부호 규약에 흔들린다"
+        # 원천이 직접 주면 그 값이 정본(우리 재계산이 정의를 갈라 놓는다)
+        assert fcf_from_row({"Free Cash Flow": 999, "Operating Cash Flow": 1241,
+                             "Capital Expenditure": -230}) == 999
+        # 재료 부족은 **None** — OCF 를 그대로 FCF 로 쓰면 크게 부풀려진다
+        assert fcf_from_row({"Operating Cash Flow": 1241}) is None
+        assert fcf_from_row({}) is None and fcf_from_row(None) is None
+        assert fcf_from_parts(1241, None) is None
+
+    def test_fcf_joins_by_period_not_position(self):
+        """손익표와 현금흐름표가 다른 순서·다른 길이로 온다. 위치로 매기면
+        전 분기가 한 칸씩 밀린다(실수 #46) — 화면은 멀쩡해 보이고 값만 틀린다."""
+        from bot.quarterly_series import series_from_yfinance
+        snap = {"financials": {
+            "income_statement": {"quarterly": [
+                {"period": "2026-03-31", "Total Revenue": 1000,
+                 "Operating Income": 200, "Net Income": 150},
+                {"period": "2026-06-30", "Total Revenue": 1100,
+                 "Operating Income": 220, "Net Income": 170}]},
+            # ⚠️ 일부러 **역순**으로 준다.
+            "cash_flow": {"quarterly": [
+                {"period": "2026-06-30", "Operating Cash Flow": 300,
+                 "Capital Expenditure": -80},
+                {"period": "2026-03-31", "Free Cash Flow": 190}]}}}
+        got = {q["period"]: q["financials"].get("FCF")
+               for q in series_from_yfinance(snap)}
+        assert got["2026-03-31"] == 190, got
+        assert got["2026-06-30"] == 220, got
+
+    def test_fcf_needs_capex_in_the_dart_path(self):
+        """DART 는 CAPEX 를 단일 계정으로 안 준다 — 유형·무형 취득을 더한다.
+        둘 다 없으면 FCF 를 만들지 않는다(영업현금흐름 ≠ FCF)."""
+        from bot.dart_quarterly import _attach_fcf
+        e = [{"financials": {"영업활동현금흐름": 1241e8,
+                             "유형자산취득": 200e8, "무형자산취득": 30e8}},
+             {"financials": {"영업활동현금흐름": 500e8}},
+             {"financials": {"유형자산취득": 100e8}}]
+        assert _attach_fcf(e) == 1
+        assert e[0]["financials"]["FCF"] == 1011e8
+        assert "FCF" not in e[1]["financials"], "CAPEX 없이 FCF 를 만들었다"
+        assert "FCF" not in e[2]["financials"]
+
+    def test_dart_cashflow_accounts_are_tiered_to_the_cf_statement(self):
+        """같은 이름이 자본변동표·주석에도 나온다 — 제표로 안 묶으면 기간
+        의미가 다른 행이 이긴다(NH투자증권 순이익 사고와 같은 함정)."""
+        from bot.dart_client import _DART_NAME_MAP, _stmt_tier
+        for k in ("영업활동현금흐름", "유형자산취득", "무형자산취득"):
+            assert _stmt_tier(k, "CF") == 0, k
+            assert _stmt_tier(k, "SCE") == 1, k
+        assert _DART_NAME_MAP.get("영업활동으로인한현금흐름") == "영업활동현금흐름"
+        assert _DART_NAME_MAP.get("유형자산의 취득") == "유형자산취득"
+
+    def test_fcf_survives_the_snapshot_whitelist(self):
+        """⚠️ 화이트리스트가 FCF 를 떨어뜨리면 파서를 고쳐도 표가 영원히
+        빈칸이다 — 배선을 소스로 못박는다(실수 #20)."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert src.count('"재고자산", "FCF"') == 3, "수집 화이트리스트 누락"
+        # 스키마 버전을 안 올리면 이미 분석한 종목엔 영원히 안 붙는다(#18)
+        from bot.stock_snapshot import _KR_FIN_SCHEMA_VER
+        assert _KR_FIN_SCHEMA_VER >= 9
+
+    def test_valuation_table_shows_fcf_under_debt_ratio(self):
+        """사용자 지정 위치 = 부채비율 **밑**. `_kr_fin_trend_table` 은
+        중첩 함수라 import 가 안 된다 — AST 로 떼어 **실제 코드 그대로**
+        실행한다(소스 문자열 단언은 틀린 값을 축복한다, 실수 #19)."""
+        import ast
+        import html as _h
+        import re
+        import textwrap
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        fn = next((n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "_kr_fin_trend_table"), None)
+        assert fn, "표 렌더러 이름이 바뀜"
+        ns = {"esc": _h.escape}
+        exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
+        table = ns["_kr_fin_trend_table"]
+        items = [{"label": "26.1Q", "매출": 1e12, "영업이익": 2e11,
+                  "당기순이익": 1e11, "영업이익률": 20.0, "ROE": 30.0,
+                  "부채비율": 140.0, "FCF": 1011e8, "quarter": 1},
+                 {"label": "26.2Q", "매출": 1.1e12, "영업이익": 2.2e11,
+                  "당기순이익": 1.2e11, "영업이익률": 20.0, "ROE": 31.0,
+                  "부채비율": 143.0, "quarter": 2}]
+        h = table("분기별 재무추이", items, lambda q: q["label"])
+        row = re.search(r"<tr><td>FCF</td>.*?</tr>", h)
+        assert row, "FCF 행이 없다"
+        # FnGuide 실측값과 같은 표기(1,011억)
+        assert "1,011억" in row.group(0), row.group(0)
+        assert h.index("부채비율") < h.index("<tr><td>FCF"), "부채비율 위에 있다"
+        assert "FCF = <b>영업활동현금흐름" in h, "산식 각주가 없다"
+        # 재료가 없으면 전 칸 '—' 인 행을 만들지 않는다
+        bare = [{k: v for k, v in it.items() if k != "FCF"} for it in items]
+        assert "<tr><td>FCF</td>" not in table("x", bare, lambda q: q["label"])
+
+    def test_fcf_chart_sits_under_net_income_and_is_optional(self):
+        """사용자 지정 위치. 재료가 없으면 **빈 패널을 그리지 않는다**."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        from bot import quarterly_infographic as qi
+
+        def _run(with_fcf):
+            qs = []
+            for i, f in ((1, 7e10), (2, 9e10), (3, -2e10)):
+                fin = {"매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11}
+                if with_fcf:
+                    fin["FCF"] = f
+                qs.append({"label": f"26.{i}Q", "financials": fin,
+                           "ratios": {"영업이익률": 20.0, "순이익률": 10.0}})
+            p = {"ticker": "005930.KS", "company": "T", "market": "KRX",
+                 "market_cap": 1.2e11, "price": 45600, "quarters": qs,
+                 "ttm": qi._ttm(qs), "per": 12.0, "per_forward": 9.0,
+                 "per_self": True, "psr": 2.7, "currency": "KRW",
+                 "currency_mismatch": False, "fiscal_note": "",
+                 "anomaly_keys": [], "anomaly_labels": [],
+                 "component_accounts": {}, "source_label": "DART",
+                 "asof": "2026-08-21_15", "growth_risk": {"ok": False}}
+            cap = {}
+            orig = Figure.savefig
+
+            def spy(self, *a, **k):
+                cap["axes"] = [(round(ax.get_position().y0, 4), ax)
+                               for ax in self.axes if ax.axison]
+                cap["txt"] = [t.get_text() for ax in self.axes
+                              for t in ax.texts]
+                return orig(self, *a, **k)
+            Figure.savefig = spy
+            _o, qi._font_ok = qi._font_ok, lambda: True
+            try:
+                with tempfile.TemporaryDirectory() as d, \
+                        warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    qi._render_locked(p, f"{d}/x.png", ("charts",))
+            finally:
+                Figure.savefig, qi._font_ok = orig, _o
+            return cap
+
+        with_ = _run(True)
+        without = _run(False)
+        assert any("FCF" in t for t in with_["txt"]), "FCF 차트가 없다"
+        assert not any("FCF" in t for t in without["txt"]), \
+            "재료가 없는데 빈 FCF 패널을 그렸다"
+        assert len(with_["axes"]) == len(without["axes"]) + 1, \
+            f"패널 수가 안 늘었다: {len(with_['axes'])}"
+        # 당기순이익 **밑** = 그림에서 더 아래 = figure y0 가 더 작다.
+        assert min(y for y, _ in with_["axes"]) < min(
+            y for y, _ in without["axes"]), "FCF 가 맨 아래가 아니다"
+
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note
         assert fiscal_note("12-31") == "" and fiscal_note(None) == ""
@@ -6300,9 +6458,13 @@ class TestQuarterlyChartLayout20260816:
         # 2026-08-21 조각 분할로 두 상수가 각각 섹션 게이트를 타게 되어
         # 한 줄 대입이 아니다 — 값만 따로 읽는다(계약은 그대로).
         mt = re.search(r"H_TILE = ([\d.]+) if ", src)
-        mc = re.search(r"H_CHART = ([\d.]+) if ", src)
-        assert mt and mc, "레이아웃 상수 이름이 바뀜"
-        tile, chart = float(mt.group(1)), float(mc.group(1))
+        assert mt, "타일 높이 상수 이름이 바뀜"
+        # ⚠️ 옛 판은 `H_CHART = ([\d.]+) if` 도 정규식으로 읽었다. FCF 단이
+        # 붙으며 H_CHART 가 **계산식**이 되자 깨졌다(2026-08-21) — 계약은
+        # "차트가 타일보다 충분히 크다"이지 리터럴 대입이 아니다(#19).
+        # 고정 2단 높이는 모듈 상수로 노출돼 있으니 **값을 직접** 읽는다.
+        from bot import quarterly_infographic as _qi
+        tile, chart = float(mt.group(1)), float(_qi._CHART_BASE)
         assert chart >= 3 * tile, f"차트 섹션이 작다(H_CHART={chart})"
         # ⚠️ 옛 판은 `src.count("combo((2.5, y") >= 1 and "95, _ch" in src`
         # 라는 **소스 문자열**이었다. 좌표를 `_PANEL_X`/`_PANEL_W` 상수로
