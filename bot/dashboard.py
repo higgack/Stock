@@ -5514,6 +5514,11 @@ def trend_chart_geometry(chart_items: list, keys: list,
             v = (c or {}).get(k) or 0
             if v < 0:
                 down = max(down, max(abs(v) / (max_val or 1) * 120, 2))
+    # ⚠️ 상한. 축을 전 계열에서 잡으면 여기가 120 을 넘을 수 없지만, 스케일이
+    # 또 틀리면 이 함수가 **증폭기**가 되어 도화지가 수천 px 로 뻗는다
+    # (USDE 실측 2026-08-21). 파생값에는 상한을 둔다 — 화면이 망가지느니
+    # 막대가 잘리는 쪽이 낫다.
+    down = min(down, 120.0)
     label_y = 150 + down + 20
     return label_y, label_y + 15
 
@@ -7720,7 +7725,14 @@ def _render_stock_info_html(rec: dict) -> str:
             if _has_fcf:
                 _series.append(("fcf", "FCF", "#22d3ee"))
             _nb = len(_series)
-            max_val = max(abs(c["revenue"]) for c in chart_items) or 1
+            # ⚠️ 옛 판은 `max(abs(c["revenue"]))` — **매출 하나로만** 스케일링
+            # 했다. 매출이 작고 손실·현금유출이 큰 종목(USDE 실측)에서는
+            # `abs(val)/max_val*120` 이 수백 배가 되어 막대가 **수천 px** 로
+            # 뻗고, 아래로 뻗은 만큼 도화지도 같이 커진다(#100 의 파생값이
+            # 증폭기가 됐다). 축은 **그 그림에 그려지는 전 계열**에서 정한다.
+            max_val = max(
+                (abs(c[k]) for c in chart_items for k, _n, _c in _series
+                 if c.get(k) is not None), default=0.0) or 1
             bar_w = 180 // len(chart_items)
             svg_w = bar_w * len(chart_items) * _nb + 120
             bars = ""
