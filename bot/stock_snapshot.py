@@ -1194,9 +1194,10 @@ def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
 #   v1 (2026-08-19) 구성요소 매출 = 비율 억제 + 계정 랭킹(표준 태그·이름 정규화)
 #   v2 (2026-08-19) 총액 미공시사(증권·은행·보험) 매출을 FnGuide 총액으로 보강
 #   v3 (2026-08-19) FnGuide 컬럼 매핑 수정 — v2 는 파서가 못 읽어 보강이 0건이었다
+#   v9 (2026-08-21) FCF(= 영업활동현금흐름 − |CAPEX|) 추가 — 밸류에이션 표·분기 차트
 _Q_TABLE = 4          # 분기 표에 보여줄 분기 수
 _TTM_LEAD = 3         # TTM(4분기 합)을 첫 칸부터 채우려면 앞서 필요한 분기 수
-_KR_FIN_SCHEMA_VER = 8
+_KR_FIN_SCHEMA_VER = 9
 
 
 def collect_kr_financials(ticker: str) -> dict:
@@ -1217,7 +1218,7 @@ def collect_kr_financials(ticker: str) -> dict:
     if fin and fin.get("financials"):
         compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
         for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                  "부채총계", "자본총계", "재고자산"):
+                  "부채총계", "자본총계", "재고자산", "FCF"):
             v = fin["financials"].get(k)
             if v is not None:
                 compact[k] = v
@@ -1241,7 +1242,7 @@ def collect_kr_financials(ticker: str) -> dict:
         if fin and fin.get("financials"):
             entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
             for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                      "부채총계", "자본총계", "재고자산"):
+                      "부채총계", "자본총계", "재고자산", "FCF"):
                 v = fin["financials"].get(k)
                 if v is not None:
                     entry[k] = v
@@ -1274,7 +1275,7 @@ def collect_kr_financials(ticker: str) -> dict:
                 qentry = {"label": q["label"], "year": q["year"],
                          "quarter": q["quarter"], "fs_div": q["fs_div"]}
                 for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                          "부채총계", "자본총계", "재고자산"):
+                          "부채총계", "자본총계", "재고자산", "FCF"):
                     v = q["financials"].get(k)
                     if v is not None:
                         qentry[k] = v

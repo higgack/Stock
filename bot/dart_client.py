@@ -155,6 +155,20 @@ _DART_CODE_MAP: dict[str, str] = {
     "ifrs-full_Inventories": "재고자산",
     "dart_Inventories": "재고자산",
     "us-gaap_InventoryNet": "재고자산",
+    # 현금흐름표 — FCF(= 영업활동현금흐름 − |CAPEX|) 재료. 사용자
+    # 2026-08-21 "이건 모든 나라에 적용". 유량 항목이라 4분기는 차분으로
+    # 파생된다(_STOCK_KEYS 에 넣지 않는다).
+    "ifrs-full_CashFlowsFromUsedInOperatingActivities": "영업활동현금흐름",
+    "dart_CashFlowsFromUsedInOperatingActivities": "영업활동현금흐름",
+    "us-gaap_NetCashProvidedByUsedInOperatingActivities": "영업활동현금흐름",
+    # ⚠️ CAPEX 는 DART 에 **단일 표준 계정이 없다** — 회사마다 유형자산·
+    # 무형자산 취득을 따로 적는다. 둘을 합산해야 FnGuide CAPEX 와 맞는다.
+    "ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities":
+        "유형자산취득",
+    "dart_PurchaseOfPropertyPlantAndEquipment": "유형자산취득",
+    "ifrs-full_PurchaseOfIntangibleAssetsClassifiedAsInvestingActivities":
+        "무형자산취득",
+    "dart_PurchaseOfIntangibleAssets": "무형자산취득",
     "ifrs-full_CurrentAssets": "유동자산",
     "ifrs-full_NoncurrentAssets": "비유동자산",
     "ifrs-full_Assets": "자산총계",
@@ -211,6 +225,15 @@ _DART_NAME_MAP: dict[str, str] = {
     "이익잉여금": "이익잉여금", "이익잉여금(결손금)": "이익잉여금",
     "미처분이익잉여금": "이익잉여금",
     "자본총계": "자본총계", "자본 합계": "자본총계",
+    # 현금흐름표(FCF 재료). 앞머리 번호는 `_norm_acct_nm` 이 이미 벗긴다.
+    "영업활동현금흐름": "영업활동현금흐름",
+    "영업활동으로인한현금흐름": "영업활동현금흐름",
+    "영업활동으로 인한 현금흐름": "영업활동현금흐름",
+    "영업활동순현금흐름": "영업활동현금흐름",
+    "유형자산의취득": "유형자산취득", "유형자산의 취득": "유형자산취득",
+    "유형자산취득": "유형자산취득",
+    "무형자산의취득": "무형자산취득", "무형자산의 취득": "무형자산취득",
+    "무형자산취득": "무형자산취득",
 }
 
 # EPS 만 float (원 단위 소수점 가능), 나머지 absolute KRW int.
@@ -307,6 +330,10 @@ _IS_KEYS = frozenset({"매출", "매출원가", "매출총이익", "판관비", 
 _BS_KEYS = frozenset({"자산총계", "부채총계", "자본총계", "유동자산",
                       "유동부채", "비유동자산", "비유동부채", "재고자산",
                       "이익잉여금"})
+# ⚠️ 현금흐름 계정을 제표로 안 묶으면 같은 이름이 주석·자본변동표에서
+# 잡혀 기간 의미가 갈린다(NH투자증권 당기순이익이 자본변동표 누적으로
+# 잡혔던 것과 같은 함정, 이 파일 위 주석 참조).
+_CF_KEYS = frozenset({"영업활동현금흐름", "유형자산취득", "무형자산취득"})
 
 
 def _stmt_tier(canonical: str, sj_div: str) -> int:
@@ -316,6 +343,8 @@ def _stmt_tier(canonical: str, sj_div: str) -> int:
         return 0 if sj in ("IS", "CIS") else 1
     if canonical in _BS_KEYS:
         return 0 if sj == "BS" else 1
+    if canonical in _CF_KEYS:
+        return 0 if sj == "CF" else 1
     return 0
 
 
@@ -1476,6 +1505,13 @@ class DartClient:
         financials = _extract_dart_financials(items)
         if not financials:
             return None
+        # FCF — 산식은 `bot.fcf` 한 곳(#38). 연간 표(재무 추이)와 분기
+        # 표·차트가 같은 값을 보게 여기서 붙인다.
+        try:
+            from bot.dart_quarterly import _attach_fcf as _fcf
+            _fcf([{"financials": financials}])
+        except Exception as exc:                               # noqa: BLE001
+            log.info("dart_client: FCF 계산 건너뜀(%s): %s", ticker, exc)
         ratios = calc_kr_financial_ratios(financials)
         result = {
             "year": target_year,

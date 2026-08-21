@@ -97,6 +97,12 @@ def series_from_yfinance(snap: dict | None, n: int = 5) -> list[dict] | None:
             "fs_div": None,
             "reprt_code": None,
         })
+    # FCF — 현금흐름표는 **이미 스냅샷에 있다**(`_collect_financials` 가
+    # IS/BS/CF 를 함께 수집). 추가 호출 0. 산식은 `bot.fcf` 한 곳이다(#38).
+    from bot.fcf import attach_to_series
+    attach_to_series(
+        out, (((snap or {}).get("financials") or {})
+              .get("cash_flow") or {}).get("quarterly"))
     # 전부 빈 분기면 데이터가 없는 것과 같다.
     if not any(any(v is not None for v in q["financials"].values())
                for q in out):

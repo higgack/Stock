@@ -271,4 +271,31 @@ def get_quarterly_series(dart, ticker: str, n: int = 6, fs_div: str = "CFS"
         apply_ttm_returns(out)
     except Exception as exc:                                   # noqa: BLE001
         log.info("dart_quarterly: %s TTM 수익성 계산 건너뜀: %s", ticker, exc)
+    # FCF — 산식은 `bot.fcf` 한 곳(#38). 분기실적 차트와 밸류에이션 표가
+    # 같은 값을 보게 **여기서** 붙인다(화면마다 계산하면 갈라진다).
+    _attach_fcf(out)
     return out or None
+
+
+def _attach_fcf(entries: list[dict] | None) -> int:
+    """DART 현금흐름 계정 → `financials["FCF"]`. 채운 개수를 돌려준다.
+
+    ⚠️ DART 는 CAPEX 를 **단일 계정으로 주지 않는다** — 유형자산·무형자산
+    취득이 따로 온다. 둘을 더해야 FnGuide CAPEX 와 맞는다. 한쪽만 있는
+    회사도 있어 있는 것만 합산하되, **둘 다 없으면 FCF 를 만들지 않는다**
+    (영업현금흐름을 그대로 FCF 로 쓰면 설비투자가 큰 회사가 크게 부풀려진다).
+    """
+    from bot.fcf import fcf_from_parts
+    n = 0
+    for e in entries or []:
+        fin = (e or {}).get("financials") or {}
+        capex_parts = [fin.get(k) for k in ("유형자산취득", "무형자산취득")
+                       if fin.get(k) is not None]
+        if not capex_parts:
+            continue
+        v = fcf_from_parts(fin.get("영업활동현금흐름"),
+                           sum(abs(float(x)) for x in capex_parts))
+        if v is not None:
+            fin["FCF"] = v
+            n += 1
+    return n

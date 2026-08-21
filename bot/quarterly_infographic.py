@@ -421,6 +421,12 @@ _FIG_PAD = 1.29
 # (사용자 2026-08-21 "좀 더 오른쪽으로 이동해서 위의 차트랑 균형을").
 # 값을 두 군데 적으면 한쪽만 바뀌어 다시 어긋나므로 여기 한 곳에서 읽는다.
 _PANEL_X, _PANEL_W = 2.5, 95.0
+# 차트 섹션 높이. `_CHART_BASE` = 매출·영업이익 + 당기순이익 **2단** 고정.
+# FCF 는 그 아래 한 단을 더한다(사용자 2026-08-21 "당기순이익 밑에 별도의
+# 차트를 같은 형식으로"). ⚠️ 두 단의 높이는 `_CHART_BASE` 에서 도출한다 —
+# `H_CHART` 에서 도출하면 FCF 가 붙는 순간 위 두 단이 같이 쪼그라든다.
+_CHART_BASE = 88.0
+_FCF_H = 34.0
 _CHART_LM, _CHART_RM = 8.0, 3.0
 
 
@@ -608,7 +614,11 @@ def _render_locked(payload: dict, out_path: str,
     # 같은 델타가 더 많은 픽셀을 차지하게 하고, 눈금을 촘촘히 하고, 막대에
     # 값 라벨을 붙여 '변화가 안 보인다'를 세 겹으로 해결한다.
     H_TILE = 22.0 if _on("tiles") else 0.0
-    H_CHART = 88.0 if _on("charts") else 0.0
+    # FCF 는 원천에 있는 종목만 그린다 — 빈 패널은 없는 사실을 그린 것.
+    _fcf_vals = [(q.get("financials") or {}).get("FCF") for q in qs]
+    _has_fcf = _on("charts") and any(v is not None for v in _fcf_vals)
+    H_CHART = ((_CHART_BASE + (_FCF_H if _has_fcf else 0.0))
+               if _on("charts") else 0.0)
     # 추가 막대차트(수주잔고·재고자산) — 사용자 2026-08-16 "미래의 수익을
     # 가늠해보고 싶어서". **데이터가 있는 것만** 그리고, 없으면 높이 0 이라
     # 레이아웃이 통째로 줄어든다(빈 패널 = 없는 사실을 그린 것).
@@ -968,7 +978,7 @@ def _render_locked(payload: dict, out_path: str,
                 lg.set_zorder(4)
 
     if _on("charts"):
-        _ch = (H_CHART - 4) / 2.0        # 두 단 각각의 패널 높이
+        _ch = (_CHART_BASE - 4) / 2.0    # 두 단 각각의 패널 높이(FCF 무관)
         # ⚠️ 범례·제목도 **실제 계정명**으로 부른다(2026-08-19 NH투자증권).
         # 타일은 '이자수익'이라 고쳤는데 차트만 '매출'이라, 이자수익 막대가
         # 영업이익보다 낮은 그림이 "매출 < 영업이익" 으로 읽혔다. 같은 값에
@@ -979,6 +989,13 @@ def _render_locked(payload: dict, out_path: str,
               f"{_rev_lbl} · 영업이익")
         combo((_PANEL_X, y + _ch + 2.0, _PANEL_W, _ch), [ni], ["당기순이익"], [_PUR],
               nim, _NEG, "순이익률", "당기순이익")
+        if _has_fcf:
+            # 당기순이익 **밑**. line 을 전부 None 으로 넘기면 combo 의
+            # has_pct 가 False → % 패널 없이 막대가 패널 전체를 쓴다
+            # (수주잔고·재고자산과 같은 형태).
+            combo((_PANEL_X, y + 2 * (_ch + 2.0), _PANEL_W, _FCF_H - 2.0),
+                  [_fcf_vals], ["FCF"], [_ACCENTW],
+                  [None] * len(labels), _MUTED, "", "FCF (잉여현금흐름)")
         y += H_CHART
 
     if _on("extra"):
