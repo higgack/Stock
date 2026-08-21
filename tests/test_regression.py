@@ -6113,9 +6113,46 @@ class TestQuarterlyMultiMarket20260816:
         assert "통화가 달라" in src
 
     def test_market_cap_uses_trade_currency_not_financial(self):
-        # 렌더 스모크 실측: HKD 시총이 재무통화(¥)로 표기됐다.
-        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
-        assert '_eok(mcap, payload.get("trade_currency") or cur)' in src
+        """렌더 스모크 실측: HKD 시총이 재무통화(¥)로 표기됐다.
+
+        ⚠️ 옛 판은 소스 문자열을 통째로 박아, 같은 계약을 지키는 리팩터에
+        깨졌다(2026-08-21 `_tc` 로 묶으며) — **동작**으로 본다(#19)."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        from bot import quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}} for i in (1, 2)]
+        p = {"ticker": "1234.HK", "company": "T", "market": "HKEX",
+             "market_cap": 1.2e11, "price": 45.6, "quarters": qs,
+             "ttm": qi._ttm(qs), "per": 12.0, "per_forward": None,
+             "per_self": True, "psr": 2.7,
+             "currency": "CNY",           # 재무통화
+             "trade_currency": "HKD",     # 거래통화 ← 시총·주가는 이쪽
+             "currency_mismatch": True, "fiscal_note": "",
+             "anomaly_keys": [], "anomaly_labels": [],
+             "component_accounts": {}, "source_label": "DART",
+             "asof": "2026-08-21_15", "growth_risk": {"ok": False}}
+        seen = []
+        orig = Figure.savefig
+
+        def spy(self, *a, **k):
+            for ax in self.axes:
+                seen.extend(t.get_text() for t in ax.texts)
+            return orig(self, *a, **k)
+        Figure.savefig = spy
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                qi._render_locked(p, f"{d}/x.png", ("head",))
+        finally:
+            Figure.savefig, qi._font_ok = orig, _o
+        mcap = [t for t in seen if "億" in t or "B" in t or "조" in t]
+        assert mcap and mcap[0].startswith("HK$"), f"시총 통화가 틀림: {mcap}"
 
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note

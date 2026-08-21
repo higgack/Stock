@@ -129,6 +129,26 @@ def missing_quarters(qs: list | None) -> list[str]:
     return out
 
 
+def fmt_price(v, currency: str = "KRW") -> str:
+    """주가 표기 — 통화기호 + 자리수. None → '—'.
+
+    소수 자리는 **통화의 최소 거래단위**를 따른다: 원·엔은 소수 자체가 없고,
+    그 밖은 1000 이상이면 헤드라인에서 소수가 노이즈라 정수로 낸다
+    (`$1,234` vs `$12.34`). 통화를 전부 열거하지 않으려는 절충이다(#24).
+    ⚠️ 원시 float 을 그대로 화면에 흘리지 않기 위한 공용 포맷터다(실수 #43b).
+    """
+    if v is None:
+        return "—"
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    from bot.dashboard import _currency_sym
+    cur = (currency or "KRW").upper()
+    dec = 0 if cur in ("KRW", "JPY") or abs(n) >= 1000 else 2
+    return f"{_currency_sym(cur)}{n:,.{dec}f}"
+
+
 def fmt_money(v, currency: str = "KRW") -> str:
     """통화 인지 금액 표기(조/억 · 兆/億 · T/B/M). None → '—'.
 

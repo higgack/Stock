@@ -61,7 +61,7 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #       **누적** 당기순이익이 이겨 2·3분기 순이익이 부풀어 있었다
 #   v7 (2026-08-19) ROE·ROA 를 TTM(최근 4분기 합) 기준으로 — 분기 하나로
 #       계산해 네이버(10.08%)와 3배 어긋나 보였다
-_RENDER_VER = "v10"  # v10: 글씨 확대(도화지 11.6→9.8in)
+_RENDER_VER = "v11"  # v11: 헤더에 현재가 추가
 
 # 세로 섹션 이름 — 조각을 나누는 단위. 그리는 코드는 `_render_locked` 한
 # 곳뿐이고, 어느 섹션을 담을지만 골라 두 번 부른다. `combo()` 가 fig/ax 를
@@ -89,6 +89,12 @@ def _eok(v, currency: str = "KRW") -> str:
     위임한다. 기본값 KRW 라 기존 호출부는 동작 불변."""
     from bot.quarterly_series import fmt_money
     return fmt_money(v, currency)
+
+
+def _fmt_price(v, currency: str = "KRW") -> str:
+    """주가 표기 — 포맷 규약은 `quarterly_series.fmt_price` 하나가 정본이다."""
+    from bot.quarterly_series import fmt_price
+    return fmt_price(v, currency)
 
 
 def _pct(v, digits: int = 1) -> str:
@@ -679,14 +685,25 @@ def _render_locked(payload: dict, out_path: str,
             _bits.append(cur)
         txt(6, y + 11.0, " · ".join(b for b in _bits if b), size=9,
             color="#dbe9ff")
-        mcap = payload.get("market_cap")
-        if mcap:
-            txt(94, y + 4.5, "시가총액", size=8.5, color="#cfe3ff", ha="right")
-            # ⚠️ 시가총액은 **거래통화** — 재무통화(amt)로 찍으면 HK 처럼 둘이
-            # 다른 종목에서 통화기호가 틀린다(렌더 스모크에서 실측: HKD 시총이
-            # ¥로 표기됨). 재무제표 금액만 amt(재무통화)를 쓴다.
-            txt(94, y + 8.6, _eok(mcap, payload.get("trade_currency") or cur),
-                size=14, color="white", weight="bold",
+        # ⚠️ 시총·현재가는 **거래통화** — 재무통화(amt)로 찍으면 HK 처럼 둘이
+        # 다른 종목에서 통화기호가 틀린다(렌더 스모크에서 실측: HKD 시총이
+        # ¥로 표기됨). 재무제표 금액만 amt(재무통화)를 쓴다.
+        _tc = payload.get("trade_currency") or cur
+        # 현재가 + 시가총액을 오른쪽에 나란히(사용자 2026-08-21, 전 시장 공통).
+        # 있는 것만 그리고 오른쪽 끝에서부터 왼쪽으로 쌓는다 — 한쪽이 없어도
+        # 빈자리가 안 남는다.
+        # ⚠️ 칸 간격을 글자수로 **추정하지 않는다** — 처음엔 그렇게 했다가
+        # `₩1,730,000` 과 `₩1,263.75조` 가 79.5 에서 딱 붙었다(실측).
+        # 오른쪽 끝 두 자리를 고정하고, 겹침은 회귀가 픽셀로 잡는다.
+        for _ax, _lab, _val in (
+                (94.0, "시가총액", _eok(payload.get("market_cap"), _tc)
+                 if payload.get("market_cap") else None),
+                (76.0, "현재가", _fmt_price(payload.get("price"), _tc)
+                 if payload.get("price") else None)):
+            if not _val:
+                continue
+            txt(_ax, y + 4.5, _lab, size=8.5, color="#cfe3ff", ha="right")
+            txt(_ax, y + 8.6, _val, size=14, color="white", weight="bold",
                 ha="right")
         y += H_HEAD
 
@@ -1286,6 +1303,10 @@ def build_payload(ticker: str, snap: dict | None = None, *,
                     or snap.get("long_name") or _dart_name(dart, t) or t),
         "market": mkt_label,
         "market_cap": mcap,
+        # 현재가 — 헤더가 시총 옆에 같이 보인다(사용자 2026-08-21 "시가총액
+        # 앞에 현재가도 추가해주고 … 전 나라 공통"). 라이브가 우선이고
+        # 없으면 스냅샷. 거래통화 기준(시총과 같은 통화).
+        "price": live.get("price") or snap.get("current_price"),
         "quarters": qs,
         "ttm": ttm,
         "per": per,
