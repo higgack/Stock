@@ -84,9 +84,39 @@ def _cache_put(key: str, val) -> None:
         log.debug("fsc: cache put failed: %s", exc)
 
 
+# ── 서비스 장애 차단기 ────────────────────────────────────────────────
+# ⚠️ 2026-08-21 VM 계측: KR 상세 수집(`enrich:KR`)이 **중앙값 44.6초·최대
+# 86.4초**로 전체 로딩을 지배했다. 원인은 파싱이 아니라 금융위 API 의
+# `SERVICETIMEOUT_ERROR`(HTTP 504) — `dilution_events` 가 11영업일 × 2
+# 엔드포인트를 각각 20초 상한으로 두드리는데, 서비스가 죽어 있으면 그
+# 전부가 순손실이다. 실패는 종목별이 아니라 **서비스 전체** 상태이므로
+# 연속 실패하면 그 op 을 잠시 쉰다 — 살아 있을 땐 동작이 그대로다.
+_FAIL: dict[str, tuple[float, int]] = {}   # op → (마지막 실패시각, 연속 횟수)
+_FAIL_MAX = 2            # 연속 2회면 죽은 것으로 본다(단발 오류는 통과)
+_FAIL_COOL = 300.0       # 5분 냉각 — 그 사이 요청은 즉시 [] 로 끝난다
+
+
+def _breaker_open(op: str) -> bool:
+    ts, n = _FAIL.get(op, (0.0, 0))
+    return n >= _FAIL_MAX and (time.time() - ts) < _FAIL_COOL
+
+
+def _breaker_mark(op: str, ok: bool) -> None:
+    if ok:
+        _FAIL.pop(op, None)
+        return
+    _ts, n = _FAIL.get(op, (0.0, 0))
+    _FAIL[op] = (time.time(), n + 1)
+
+
 def _fetch(base: str, op: str, params: dict) -> list[dict]:
-    """FSC GET → items 리스트. serviceKey 인코딩 자동, 실패 시 []."""
+    """FSC GET → items 리스트. serviceKey 인코딩 자동, 실패 시 [].
+
+    ⚠️ 서비스가 연속 실패하면 냉각 동안 **네트워크를 아예 안 친다**.
+    빈 리스트는 '결과 없음'과 같아 호출부 동작은 바뀌지 않는다."""
     if not fsc_key_ready():
+        return []
+    if _breaker_open(op):
         return []
     import httpx
     key = _env_key("DATA_GO_KR_API_KEY")
@@ -103,14 +133,19 @@ def _fetch(base: str, op: str, params: dict) -> list[dict]:
             r = httpx.get(url, params={"serviceKey": key, **q},
                           headers=h, timeout=_TIMEOUT, follow_redirects=True)
         if r.status_code != 200:
+            # 5xx = 서비스 장애(우리 요청 문제 아님) → 차단기 대상.
+            # 4xx 는 파라미터·키 문제라 재시도해도 같으므로 세지 않는다.
+            _breaker_mark(op, r.status_code < 500)
             log.warning("fsc: %s HTTP %d — %s", op, r.status_code, r.text[:160])
             return []
+        _breaker_mark(op, True)
         body = (r.json() or {}).get("response", {}).get("body", {}) or {}
         items = (body.get("items") or {}).get("item")
         if items is None:
             return []
         return items if isinstance(items, list) else [items]
     except Exception as exc:
+        _breaker_mark(op, False)          # 타임아웃·연결실패도 서비스 장애
         log.warning("fsc: %s 호출 실패: %s", op, exc)
         return []
 

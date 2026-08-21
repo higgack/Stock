@@ -1618,3 +1618,145 @@ class TestLegibility20260821:
         """옛 캐시 PNG 는 작은 글씨 그대로다 — 버전을 안 올리면 안 바뀐다."""
         from bot.quarterly_infographic import _RENDER_VER
         assert _RENDER_VER not in ("v7", "v8", "v9"), "글씨를 키웠는데 버전 그대로"
+
+
+class TestAnchorTagTolerance20260821:
+    """VM 스윕 v4 실측: 삼성전자(893만자)·SK하이닉스(925만자)·삼성바이오
+    (834만자)가 **잘리지도 않았는데** '섹션없음'이었다. 앵커는 표를 원본
+    구조 그대로 뜨려고 **raw markup** 을 훑는데 평문 정규식이라, 제목이
+    `생산 및 <SPAN>설비</SPAN>에 관한 사항` 처럼 태그로 쪼개지면 못 잡는다
+    — 대형사 보고서일수록 제목에 서식 태그가 많다."""
+
+    def test_anchors_survive_inline_tags(self):
+        import bot.dart_production as dp
+        for rx, plain in ((dp._ANCHOR_ALT, "생산 및 설비에 관한 사항"),
+                          (dp._ANCHOR, "생산능력 및 생산실적"),
+                          (dp._ANCHOR_ITEM, "주요 제품 및 서비스"),
+                          (dp._ANCHOR_ITEM_ALT, "사업부문별 주요 제품")):
+            assert rx.search(plain), f"평문도 못 잡음: {plain}"
+            tagged = "".join(f"<B>{c}</B>" for c in plain if not c.isspace())
+            assert rx.search(tagged), f"글자마다 태그: {plain}"
+            mid = plain.replace(" ", '<SPAN CLASS="a">&nbsp;</SPAN>')
+            assert rx.search(mid), f"공백 자리에 태그: {plain}"
+
+    def test_anchor_still_requires_the_right_characters(self):
+        """느슨해졌다고 엉뚱한 곳에 걸리면 안 된다 — 글자 순서는 강제된다."""
+        import bot.dart_production as dp
+        for bad in ("설비 및 생산에 관한 사항", "생산 및 설비", "판매 및 설비에 관한 사항"):
+            assert not dp._ANCHOR_ALT.search(bad), bad
+
+    def test_anchor_gap_is_bounded(self):
+        """중첩 수량자는 역추적이 폭주한다 — 대형사 원문이 9MB 다.
+
+        ⚠️ 시간 단언으로는 못 잡는다. 상한을 없앤 뮤테이션은 **정규식이
+        영영 안 끝나** 테스트가 실패하는 대신 프로세스를 멈춰 세웠다(실측).
+        멈추는 검사는 검사가 아니므로 상한을 **소스로** 못박는다."""
+        import re
+        import bot.dart_production as dp
+        assert re.search(r"\{0,\d+\}$", dp._GAP), f"GAP 이 무제한: {dp._GAP}"
+        assert ".*" not in dp._GAP and ".*?" not in dp._GAP
+
+    def test_anchor_scan_is_fast_on_a_9mb_miss(self):
+        """상한이 있어도 실제로 빠른지는 태워 봐야 안다(9MB = 삼성전자 규모)."""
+        import time
+        import bot.dart_production as dp
+        big = ("<P>" + "가" * 200 + "</P>") * 45000        # ≈9MB, 앵커 없음
+        t0 = time.time()
+        assert dp._ANCHOR_ALT.search(big) is None
+        assert time.time() - t0 < 3.0, "9MB 미스 스캔이 3초를 넘음"
+
+    def test_tagged_document_yields_the_table(self):
+        """앵커만 고치고 끝이 아니라 **표까지 나와야** 한다(#20 배선)."""
+        import bot.dart_production as dp
+        mk = ("<P><B>4.</B> 생산 및 <SPAN>설비</SPAN>에 관한 사항</P>"
+              "<TABLE><TR><TD>(단위 : 천개)</TD></TR></TABLE>"
+              "<TABLE><TR><TH>구 분</TH><TH>제27기</TH></TR>"
+              "<TR><TD>생산능력</TD><TD>1</TD></TR>"
+              "<TR><TD>생산실적</TD><TD>2</TD></TR>"
+              "<TR><TD>가 동 률</TD><TD>97</TD></TR></TABLE>")
+        got = dp.parse_production(mk)
+        assert got and got["has_rate"], "태그 낀 제목에서 표를 못 냈다"
+
+
+class TestFscBreaker20260821:
+    """VM 계측: `enrich:KR` 중앙값 44.6초·최대 86.4초로 상세 로딩을 지배했다.
+    원인은 금융위 API 의 `SERVICETIMEOUT_ERROR`(504) — `dilution_events` 가
+    11영업일 × 2엔드포인트를 각각 20초 상한으로 두드린다. 서비스가 죽어
+    있으면 그 전부가 순손실이다."""
+
+    @staticmethod
+    def _stub(status, body=None):
+        import sys
+        import types
+        import bot.fsc_client as f
+        f._FAIL.clear()
+        n = [0]
+
+        class _R:
+            status_code = status
+            text = "err"
+
+            def json(self):
+                return body or {}
+
+        def _get(*a, **k):
+            n[0] += 1
+            return _R()
+        sys.modules["httpx"] = types.SimpleNamespace(get=_get)
+        f.fsc_key_ready = lambda: True
+        f._env_key = lambda k: "KEY"
+        return f, n
+
+    def test_repeated_service_failure_stops_hammering(self):
+        f, n = self._stub(504)
+        try:
+            for i in range(11):
+                f._fetch("http://x", "opA", {"basDt": f"2026080{i % 9}"})
+        finally:
+            f._FAIL.clear()
+        assert n[0] <= f._FAIL_MAX, f"죽은 서비스를 {n[0]}회 두드렸다"
+
+    def test_client_errors_are_not_tripped(self):
+        """4xx 는 파라미터·키 문제라 서비스 장애가 아니다 — 차단하면
+        멀쩡한 다른 종목 조회까지 조용히 빈 결과가 된다."""
+        f, n = self._stub(400)
+        try:
+            for _ in range(5):
+                f._fetch("http://x", "opB", {})
+        finally:
+            f._FAIL.clear()
+        assert n[0] == 5, f"4xx 로 차단됨({n[0]}회만 시도)"
+
+    def test_success_clears_the_breaker(self):
+        """냉각 뒤 살아나면 즉시 정상 동작해야 한다 — 안 그러면 API 가
+        복구돼도 화면이 계속 비어 있다."""
+        import time
+        f, _n = self._stub(504)
+        f._fetch("http://x", "opC", {})
+        f._fetch("http://x", "opC", {})
+        assert f._breaker_open("opC"), "연속 실패인데 차단이 안 됨"
+        f2, _ = self._stub(200, {"response": {"body":
+                                              {"items": {"item": [{"a": 1}]}}}})
+        f2._FAIL["opC"] = (time.time() - f2._FAIL_COOL - 1, 9)   # 냉각 경과
+        try:
+            assert f2._fetch("http://x", "opC", {}) == [{"a": 1}]
+            # ⚠️ `_breaker_open` 으로만 보면 **냉각이 이미 지나** 어차피
+            # False 라 해제 여부와 무관하게 통과한다(뮤테이션이 실제로
+            # 통과했다). 카운터가 실제로 지워졌는지를 본다 — 안 지우면
+            # 다음 실패 1회에 곧장 차단으로 되돌아간다.
+            assert "opC" not in f2._FAIL, "성공했는데 실패 카운터가 남음"
+            assert not f2._breaker_open("opC")
+        finally:
+            f2._FAIL.clear()
+
+    def test_breaker_is_per_operation(self):
+        """한 엔드포인트가 죽었다고 다른 엔드포인트까지 막으면 안 된다."""
+        f, n = self._stub(504)
+        try:
+            f._fetch("http://x", "dead", {})
+            f._fetch("http://x", "dead", {})
+            before = n[0]
+            f._fetch("http://x", "alive", {})
+            assert n[0] == before + 1, "다른 op 까지 차단됐다"
+        finally:
+            f._FAIL.clear()
