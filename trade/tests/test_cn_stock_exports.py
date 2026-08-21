@@ -44,8 +44,8 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(d["ticker"], "TTMI")
         self.assertEqual(d["stock_name"], "TTM Technologies")
         self.assertEqual(d["month"], "2026-07")
-        self.assertEqual(d["export_yoy"], 55.8)
-        self.assertEqual(d["export_yoy_3m"], 84.7)
+        self.assertEqual(d["amount_yoy"], 55.8)
+        self.assertEqual(d["amount_yoy_3m"], 84.7)
         self.assertEqual(d["price_yoy"], 45.2)
         self.assertEqual(d["corr"], 0.74)
         self.assertEqual(d["dir_hit"], 87.0)
@@ -75,7 +75,7 @@ class ParseTests(unittest.TestCase):
 
     def test_3m_prefix_is_not_confused_with_monthly(self):
         d = cns.parse_cn_stock_export(_TTM)
-        self.assertNotEqual(d["export_yoy"], d["export_yoy_3m"])
+        self.assertNotEqual(d["amount_yoy"], d["amount_yoy_3m"])
 
     def test_bold_markdown_does_not_break_header(self):
         d = cns.parse_cn_stock_export("**TTM Technologies (TTMI)**\n" +
@@ -97,7 +97,7 @@ class ParseTests(unittest.TestCase):
         TTM 은 있으므로 DELL 을 앞에 둔다."""
         d = cns.parse_cn_stock_export(_DELL + "\n\n" + _TTM)
         self.assertEqual(d["ticker"], "DELL")
-        self.assertEqual(d["export_yoy"], 299.5)
+        self.assertEqual(d["amount_yoy"], 299.5)
         self.assertIsNone(d["price_yoy"], "뒷 회사의 단가가 앞 카드로 샜다")
         self.assertIn("백로그", d["comment"], "뒷 회사의 코멘트가 샜다")
 

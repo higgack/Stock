@@ -1136,6 +1136,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 
 _SITES_TEXT = """🔗 <b>참고 사이트</b>
 
+ • <a href="https://upperlimitprice.github.io/dashboards/">쩜상리서치 대시보드</a>
  • <a href="https://stockeasy.intellio.kr/">Stockeasy</a>
  • <a href="https://stockhub.kr/">Stockhub</a>
  • <a href="https://jusikbot.com/">Jusikbot — Real-time Stock Dashboard</a>

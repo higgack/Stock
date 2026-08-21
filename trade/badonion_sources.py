@@ -28,6 +28,7 @@ from typing import Callable
 
 from trade import cn_exports as _cn
 from trade import cn_stock_exports as _cns
+from trade import cn_stock_imports as _cni
 from trade import jp2_exports as _jp2
 from trade import jp_stock_exports as _jps
 from trade import kr_stock_exports as _krs
@@ -139,6 +140,14 @@ SOURCES: tuple[Source, ...] = (
            "cn_stock.db", "cn_stock.html",
            "🏮 중국 수출 데이터(종목별·나쁜양파)",
            country="중국", basis="company", flow="export"),
+    # 중국은 **수입** 종목판도 온다(사용자 2026-08-21 "중국수입 7월 기업도
+    # 있어"). 수출과 마커 한 단어만 다르므로 문법 엔진(`cn_stock_flow`)을
+    # 공유하고 여기선 독립 소스로 등록한다 — DB·페이지·라우팅은 별개다.
+    Source("cni", "중국 수입(종목별)", _cni.parse_cn_stock_import,
+           _cni.open_cn_stock_import_db, _cni.ingest, _cni.regenerate,
+           "cn_stock_import.db", "cn_stock_import.html",
+           "🧧 중국 수입 데이터(종목별·나쁜양파)",
+           country="중국", basis="company", flow="import"),
 )
 
 # nav 표시 순서 — **ingest 순서와 다르다.** SOURCES 를 재정렬하면 라우팅이

@@ -16855,6 +16855,11 @@ def _render_market_page(data: dict) -> str:
     _res_ts = (_src_ts("한국", "res_kr", "Naver")
                + " | " + _src_ts("미국", "res_us", "yfinance"))
 
+    # 외부 사이트 nav — 사용자 2026-08-21 "자주 봐야겠어". 목록은
+    # `bot/external_sites` 단일 레지스트리(= /sites 와 같은 출처)에서 온다.
+    from bot.external_sites import nav_html as _ext_nav_html
+    _ext_nav = _ext_nav_html()
+
     parts: list[str] = [_MARKET_CSS]
     parts.append(f"""
 <div class="wrap">
@@ -16879,6 +16884,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="reddit_insider.html">📨 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
     <span style="white-space:nowrap">&nbsp;|&nbsp;<a href="realestate.html">🏠 부동산</a></span>
+    {_ext_nav}
   </div>
   <h1>🌍 Market Overview</h1>
   <p class="sub">글로벌 시장 현황 · 종목 검색 · 실적 일정 · 리서치 액션 · 업종 등락</p>
