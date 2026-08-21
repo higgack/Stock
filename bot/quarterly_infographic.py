@@ -1288,6 +1288,8 @@ def build_payload(ticker: str, snap: dict | None = None, *,
     (스냅샷에 이미 8분기치가 전 시장 공통으로 수집돼 있어 추가 호출 0 —
     사용자 2026-08-16 '다른 나라도'). 분기 데이터가 없으면 None.
     """
+    import time as _bp_time
+
     from bot.market import detect_market
     from bot.quarterly_series import fiscal_note, series_from_yfinance
     t = (ticker or "").upper()
@@ -1302,11 +1304,17 @@ def build_payload(ticker: str, snap: dict | None = None, *,
             from bot.dart_client import get_dart
             from bot.dart_quarterly import get_quarterly_series
             dart = get_dart()
+            _bt0 = _bp_time.time()
             qs = get_quarterly_series(dart, t, n=5)
+            _RENDER_TIMING.set(t, "bp.series", _bp_time.time() - _bt0)
         except Exception as exc:
             log.warning("quarterly_infographic: series %s: %s", t, exc)
             return None
+        # ⚠️ 수주잔고는 분기마다 40MB 상한으로 원문을 받아 훑는다 — 따로
+        # 재지 않으면 `build_payload` 51.5초가 어디서 나는지 알 수 없다(#69).
+        _bt0 = _bp_time.time()
         _fill_backlog(dart, t, qs)
+        _RENDER_TIMING.set(t, "bp.backlog", _bp_time.time() - _bt0)
     else:
         # KR 은 야후로 폴백하지 않는다 — DART 가 단일분기를 직접 주므로
         # 소스를 섞으면 같은 화면에서 숫자 성격이 달라진다.

@@ -457,9 +457,31 @@ class TestRender:
 
 class TestWiring:
     def test_server_sends_production_html(self):
+        # ⚠️ 소스 문자열이 아니라 **구조**로 본다 — 계약은 "응답의
+        # production_html 이 `_production_html` 의 결과냐" 이지 한 줄에
+        # 붙여 쓰느냐가 아니다(#19: 계측을 넣으려 변수로 뺐더니 깨졌다).
+        import ast
         src = open("bot/dashboard_server.py", encoding="utf-8").read()
-        assert '"production_html": _production_html(' in src
-        assert "def _production_html(" in src
+        tree = ast.parse(src)
+        assert any(isinstance(n, ast.FunctionDef)
+                   and n.name == "_production_html" for n in ast.walk(tree))
+
+        def _is_call(nd):
+            return (isinstance(nd, ast.Call)
+                    and getattr(nd.func, "id", "") == "_production_html")
+        bound = {t.id for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign) and _is_call(n.value)
+                 for t in n.targets if isinstance(t, ast.Name)}
+        wired = False
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Dict):
+                continue
+            for k, v in zip(n.keys, n.values):
+                if (isinstance(k, ast.Constant)
+                        and k.value == "production_html"):
+                    wired = wired or _is_call(v) or (
+                        isinstance(v, ast.Name) and v.id in bound)
+        assert wired, "응답의 production_html 이 _production_html 결과가 아니다"
         # KR 전용 게이트 — 원천이 DART 라 비-KR 은 조회 자체가 낭비다.
         assert 'detect_market(ticker) != "KR"' in src
 

@@ -870,6 +870,57 @@ def review_text() -> str:
     return "\n".join(out)
 
 
+# 파싱 결과 디스크 캐시 — `tables_rolling`(dart_production) 과 같은 규약.
+# 2026-08-22 실측: `/api/quarterly` 115초 중 `build_payload` 51.5초였고, 그
+# 대부분이 여기다 — 분기마다 40MB 상한으로 원문을 받아 정규식으로 훑는다.
+# 순수 CPU 라 GIL 을 붙잡아 옆 요청(차트의 pandas)까지 굶긴다(#119).
+_BL_TTL = 24 * 3600
+_BL_SIG: str | None = None
+
+
+def _parse_sig() -> str:
+    """이 모듈 소스의 지문 — 파서를 고치면 캐시가 **자동으로** 무효가 된다.
+    버전 상수를 손으로 올리는 방식은 이 레포에서 세 번 실패했다(#18·#21b·#95)."""
+    global _BL_SIG
+    if _BL_SIG is None:
+        try:
+            import hashlib
+            import pathlib
+            _BL_SIG = hashlib.sha1(
+                pathlib.Path(__file__).read_bytes()).hexdigest()[:10]
+        except Exception:                                      # noqa: BLE001
+            _BL_SIG = "nosig"          # 지문을 못 구하면 캐시를 안 쓴다
+    return _BL_SIG
+
+
+def _bl_key(ticker: str, year: int, reprt_code: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.]", "_", f"{ticker}_{year}_{reprt_code}")
+    return f"dart_backlog_{_parse_sig()}_{safe}.json"
+
+
+def _bl_cached(key: str):
+    if _parse_sig() == "nosig":
+        return None
+    try:
+        from bot.finviz_client import _cached
+        hit = _cached(key, ttl=_BL_TTL)
+        if isinstance(hit, dict) and "why" in hit:
+            return hit.get("v"), hit["why"]
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("backlog cache read(%s): %s", key, exc)
+    return None
+
+
+def _bl_cache_write(key: str, value, why: str) -> None:
+    if _parse_sig() == "nosig":
+        return
+    try:
+        from bot.finviz_client import _cache_write
+        _cache_write(key, {"v": value, "why": why})
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("backlog cache write(%s): %s", key, exc)
+
+
 def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
                   out: dict | None = None) -> tuple[float | None, str]:
     """해당 분기 정기보고서의 (수주잔고 원, 판정). 값이 없으면 (None, 사유).
@@ -887,6 +938,13 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         # ⚠️ 계약은 (값, 사유) 튜플이다 — None 하나를 내면 호출부의
         # `v, why = backlog_probe(...)` 가 TypeError 로 터진다.
         return None, "DART없음"
+    # ⚠️ `out` 을 요구하는 호출(감사·프로브)은 캐시를 안 탄다 — 원문 발췌·
+    # 상세는 매번 원문에서 다시 뽑아야 진단이 신선하다(#35).
+    ck = _bl_key(ticker, year, reprt_code) if out is None else ""
+    if ck:
+        hit = _bl_cached(ck)
+        if hit is not None:
+            return hit
     try:
         from bot.dart_feed import _DOC_TEXT_MAX_FULL, _fetch_doc_text
         # ⚠️ 후보를 **순서대로** 시도한다. 가장 최근 접수건에 문서가 없는
@@ -906,6 +964,8 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
                 break
         got = parse_backlog(text)
         if got:
+            if ck and text:
+                _bl_cache_write(ck, got["value"], "정상")
             return got["value"], "정상"
         # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
         why = diagnose(text or "")
@@ -916,7 +976,12 @@ def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
         _log_miss(ticker, year, reprt_code, why, det)
         # 사유만 돌려주면 "단위없음 15건"에서 멈춰 다음 수를 못 정한다 —
         # 상세를 붙여 감사 히스토그램이 곧 작업 목록이 되게 한다(#93).
-        return None, (f"{why} · {det}" if det else why)
+        _why = f"{why} · {det}" if det else why
+        # ⚠️ **원문을 받아 본 경우에만** 캐시한다. 원문미제공은 원천 장애일
+        # 수 있는데 그걸 24시간 믿으면 공시하는 회사가 하루 종일 빈칸이 된다.
+        if ck and text:
+            _bl_cache_write(ck, None, _why)
+        return None, _why
     except Exception as exc:
         log.debug("dart_backlog: %s %s/%s: %s", ticker, year, reprt_code, exc)
         return None, f"오류:{type(exc).__name__}"
