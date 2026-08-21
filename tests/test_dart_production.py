@@ -212,6 +212,64 @@ class TestSanitize:
         # 여러 열을 걸친 셀은 어느 한 열의 규약을 따를 수 없다
         assert cls.get("제품 및 상품 등 소 계(내부거래 조정 전)") == "ctr", cls
 
+    def test_rowspan_does_not_shift_column_numbers(self):
+        """⚠️ 사용자 2026-08-21 케이씨씨: 같은 `평균 가동률` 열인데 `59.0` 은
+        왼쪽, `88.0` 은 오른쪽이었다. 앞 두 열이 `ROWSPAN=2` 라 다음 행은
+        셀이 적게 오는데 **colspan 만 세어** 열 번호가 통째로 밀린 것이다.
+        판정 단위를 열로 바꿔도(#97) **열 번호가 틀리면** 소용없다."""
+        import re
+        import bot.dart_production as dp
+        mk = ("<TABLE>"
+              "<TR><TH>사업 부문</TH><TH>대상 회사</TH><TH>품 목</TH>"
+              "<TH>가동 가능 시간</TH><TH>실제 가동 시간</TH>"
+              "<TH>평균 가동률 (생산실적 ÷ 생산능력)</TH></TR>"
+              "<TR><TD ROWSPAN=2>건자재</TD><TD ROWSPAN=2>케이씨씨</TD>"
+              "<TD>건재</TD><TD>2,331</TD><TD>1,376</TD><TD>59.0</TD></TR>"
+              "<TR><TD>PVC창호재</TD><TD>3,141</TD><TD>2,763</TD>"
+              "<TD>88.0</TD></TR></TABLE>")
+        h = dp.sanitize_table(mk)
+        cls = {}
+        for m in re.finditer(r"<(t[dh])([^>]*)>(.*?)</\1>", h, re.I | re.S):
+            key = re.sub(r"<[^>]*>", "", m.group(3)).strip()
+            cls[key] = "lft" if 'class="lft"' in m.group(2) else "ctr"
+        # 같은 열의 두 값이 **같은 정렬**이어야 한다
+        assert cls["59.0"] == cls["88.0"], cls
+        # rowspan 을 못 세면 열 번호가 밀린다 — 열 판정 자체를 확인
+        assert dp._long_text_cols(mk) == set(), dp._long_text_cols(mk)
+        # ⚠️ 위 픽스처만으로는 rowspan 을 무시하는 변형이 **통과한다** —
+        # 어느 열도 '긴 글'이 아니라 전부 ctr 이기 때문(#91c). **긴 글 열이
+        # 있는** 표로 한 번 더 본다: 밀리면 같은 열의 두 셀이 갈라진다.
+        mk2 = ("<TABLE>"
+               "<TR><TH>부문</TH><TH>회사</TH><TH>품목</TH><TH>가동률</TH></TR>"
+               "<TR><TD ROWSPAN=2>건자재</TD><TD ROWSPAN=2>케이씨씨</TD>"
+               "<TD>반도체검사장비(Monitoring Burn-In Tester 등)</TD>"
+               "<TD>59.0</TD></TR>"
+               "<TR><TD>카메라모듈검사솔루션 및 부대장비 일체</TD>"
+               "<TD>88.0</TD></TR></TABLE>")
+        h2 = dp.sanitize_table(mk2)
+        c2 = {}
+        for m in re.finditer(r"<(t[dh])([^>]*)>(.*?)</\1>", h2, re.I | re.S):
+            key = re.sub(r"<[^>]*>", "", m.group(3)).strip()
+            c2[key] = "lft" if 'class="lft"' in m.group(2) else "ctr"
+        assert c2["반도체검사장비(Monitoring Burn-In Tester 등)"] == "lft", c2
+        assert c2["카메라모듈검사솔루션 및 부대장비 일체"] == "lft", c2
+        assert c2["59.0"] == "ctr" and c2["88.0"] == "ctr", c2
+        # ⚠️ 결정적 단언: 밀리면 셋째 행의 긴 품목이 **0번 열**로 잡혀
+        # 부문·회사 열이 '긴 글'이 된다. 그 둘이 ctr 인지를 봐야 잡힌다.
+        assert c2["건자재"] == "ctr" and c2["케이씨씨"] == "ctr", c2
+        assert dp._long_text_cols(mk2) == {2}, dp._long_text_cols(mk2)
+
+    def test_header_does_not_decide_a_numeric_column(self):
+        """케이씨씨 `평균 가동률 (생산실적 ÷ 생산능력)` 처럼 **헤더만 긴
+        숫자 열**이 있다 — 헤더를 세면 숫자가 좌측으로 밀린다. 열의 성격은
+        **몸통**이 정하고 머리행은 그 열을 따른다(#78)."""
+        import bot.dart_production as dp
+        mk = ("<TABLE><TR><TH>구분</TH>"
+              "<TH>평균 가동률 (생산실적 ÷ 생산능력)</TH></TR>"
+              "<TR><TD>건재</TD><TD>59.0</TD></TR>"
+              "<TR><TD>PVC창호재</TD><TD>88.0</TD></TR></TABLE>")
+        assert dp._long_text_cols(mk) == set(), "헤더가 열을 정했다"
+
     def test_short_text_columns_stay_centered(self):
         """긴 글 판정이 헐거우면 가동률 표까지 좌측으로 끌려간다 —
         사용자가 두 번 지시해 얻은 '전 셀 가운데'가 도로 깨진다(#78)."""

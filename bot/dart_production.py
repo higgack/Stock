@@ -216,8 +216,45 @@ def _cell_text(inner: str) -> str:
     return best
 
 
+_ROWSPAN_RE = re.compile(r'(?i)rowspan\s*=\s*["\']?(\d+)')
+
+
+def _iter_rows(html: str):
+    """행마다 `(행 match, [(셀 match, 열번호, colspan)])`.
+
+    ⚠️ **rowspan 을 반영해야 한다**(2026-08-21 케이씨씨 실측). 앞 열이
+    `ROWSPAN=2` 면 다음 행은 셀이 그만큼 적게 오는데, colspan 만 세면 열
+    번호가 통째로 **밀린다** — 케이씨씨 가동률 표에서 `59.0`(6열짜리 행의
+    5번)은 `lft`, `88.0`(4열짜리 행의 3번)은 `ctr` 이 되어 **같은 열 안에서
+    정렬이 갈렸다**. 고치려던 바로 그 증상이 축만 바꿔 세 번째로 재발한 것
+    (#78 → #97 → 여기). 판정 단위를 열로 바꿔도 **열 번호가 틀리면** 소용없다.
+    """
+    pending: dict[int, int] = {}
+    for rm in _ROW_PAIR_RE.finditer(html or ""):
+        row = rm.group(0)
+        ci, cells = 0, []
+        for m in _CELL_PAIR_RE.finditer(row):
+            attrs = m.group(2) or ""
+            while pending.get(ci, 0) > 0:      # 위 행이 차지한 자리
+                ci += 1
+            cs = _COLSPAN_RE.search(attrs)
+            span = max(int(cs.group(1)), 1) if cs else 1
+            rs = _ROWSPAN_RE.search(attrs)
+            rows = max(int(rs.group(1)), 1) if rs else 1
+            if rows > 1:
+                for c in range(ci, ci + span):
+                    pending[c] = rows
+            cells.append((m, ci, span))
+            ci += span
+        for c in list(pending):                # 이 행이 한 줄 소비
+            pending[c] -= 1
+            if pending[c] <= 0:
+                del pending[c]
+        yield rm, cells
+
+
 def _long_text_cols(html: str) -> set[int]:
-    """긴 글이 들어 있는 **열 번호** 집합. colspan 을 세어 열을 맞춘다.
+    """긴 글이 들어 있는 **열 번호** 집합. colspan·rowspan 을 세어 열을 맞춘다.
 
     ⚠️ 셀 단위가 아니라 **열 단위**로 정한다 — 셀 내용으로 정하면 한 열
     안에 긴 글과 짧은 글이 섞이는 순간 갈라진다(실수 #78 이 바로 그것).
@@ -225,18 +262,20 @@ def _long_text_cols(html: str) -> set[int]:
     아니므로 판정에서 뺀다.
     """
     width: dict[int, float] = {}
-    for row in _ROW_PAIR_RE.findall(html):
-        ci = 0
-        for m in _CELL_PAIR_RE.finditer(row):
-            attrs, inner = m.group(2) or "", m.group(3)
-            cs = _COLSPAN_RE.search(attrs)
-            span = max(int(cs.group(1)), 1) if cs else 1
-            if span == 1:
-                t = _cell_text(inner)
-                # 숫자 칸은 아무리 길어도 '긴 글'이 아니다(자릿수·부호·%).
-                if not re.fullmatch(r"[\d,.\-+()%\s]*", t):
-                    width[ci] = max(width.get(ci, 0.0), _vlen(t))
-            ci += span
+    for _ri, (_rm, cells) in enumerate(_iter_rows(html)):
+        for m, ci, span in cells:
+            if span != 1:
+                continue
+            # ⚠️ **머리행은 판정하지 않는다**(2026-08-21 케이씨씨). 케이씨씨
+            # 가동률 표의 `평균 가동률 (생산실적 ÷ 생산능력)` 처럼 헤더만
+            # 긴 **숫자 열**이 있다 — 헤더를 세면 숫자가 좌측으로 밀린다.
+            # 열의 성격을 정하는 건 **몸통**이고, 머리행은 그 열을 따른다(#78).
+            if _ri == 0 or m.group(1).lower() == "th":
+                continue
+            t = _cell_text(m.group(3))
+            # 숫자 칸은 아무리 길어도 '긴 글'이 아니다(자릿수·부호·%).
+            if not re.fullmatch(r"[\d,.\-+()%\s]*", t):
+                width[ci] = max(width.get(ci, 0.0), _vlen(t))
     return {c for c, w in width.items() if w >= _LONG_COL_W}
 
 
@@ -259,26 +298,26 @@ def _align_cells(html: str) -> str:
     그 열 전체(머리행 포함)를 좌측으로, 나머지는 전부 가운데로.
     """
     long_cols = _long_text_cols(html)
-
-    def _fix_row(rm):
-        row = rm.group(0)
-        state = {"ci": 0}
-
-        def _fix(m):
+    out, last = [], 0
+    for rm, cells in _iter_rows(html):
+        out.append(html[last:rm.start()])
+        row, rlast = rm.group(0), 0
+        parts = []
+        for m, ci, span in cells:
             tag, attrs, inner = m.group(1), m.group(2) or "", m.group(3)
-            cs = _COLSPAN_RE.search(attrs)
-            span = max(int(cs.group(1)), 1) if cs else 1
-            ci = state["ci"]
-            state["ci"] = ci + span
+            parts.append(row[rlast:m.start()])
             if "class=" not in attrs:
                 # 여러 열을 걸친 셀은 어느 한 열의 규약을 따를 수 없다 —
                 # 가운데(소계·합계 라벨이 실제로 그 자리에 온다).
                 cls = "lft" if (span == 1 and ci in long_cols) else "ctr"
                 attrs += f' class="{cls}"'
-            return f"<{tag}{attrs}>{inner}</{tag}>"
-        return _CELL_PAIR_RE.sub(_fix, row)
-
-    return _ROW_PAIR_RE.sub(_fix_row, html)
+            parts.append(f"<{tag}{attrs}>{inner}</{tag}>")
+            rlast = m.end()
+        parts.append(row[rlast:])
+        out.append("".join(parts))
+        last = rm.end()
+    out.append(html[last:])
+    return "".join(out)
 
 
 _ROW_RE = re.compile(r"(?is)<TR[^>]*>")
