@@ -1,4 +1,5 @@
-"""FCF 재료 진단 — 어느 기간에서 무엇이 빠졌나. 읽기 전용·LLM 0·₩0.
+"""FCF 재료 진단 — 어느 기간에서 무엇이 빠졌나 + **누적 오염** 검사.
+읽기 전용·LLM 0·₩0. **전 시장**(KR=DART · 그 외=yfinance).
 
 ⚠️ 왜 필요한가(사용자 2026-08-21 SK·농심 실측): 연간 표엔 FCF 가 뜨는데
 **분기 표엔 행 자체가 없고**, 연간도 최신연도(FY2025)만 `—` 였다. 분기실적
@@ -8,9 +9,14 @@
 
 추측 금지의 도구다. 계정을 더하기 **전에** 이걸 돌려 근거를 만든다.
 
+⚠️ 시장마다 원천이 다르다(KR=DART 현금흐름표 · 그 외=yfinance
+cash_flow). "KR 에서 고쳤으니 다른 나라도 되겠지" 는 가정이다 —
+`bot.fcf.cumulative_smell` 로 **잰다**(2026-08-21 사용자 "다른나라는
+정보가 달라서 다시 꼼꼼히 봐줘봐").
+
 사용:
-    cd ~/stock && .venv/bin/python -m bot.scripts.fcf_probe 004370.KS 034730.KS
-    # 인자 없으면 관심종목에서 KR 종목 몇 개
+    cd ~/stock && .venv/bin/python -m bot.scripts.fcf_probe 004370.KS AAPL 7203.T
+    # 인자 없으면 관심종목에서 몇 개(시장 섞어서)
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 4
 _PARTS = ("영업활동현금흐름", "유형자산취득", "무형자산취득")
 
 
@@ -35,17 +41,74 @@ def _mark(fin: dict) -> str:
     return f"✅ {'·'.join(got)}" + (f"  (없음: {'·'.join(miss)})" if miss else "")
 
 
-def _kr_universe(limit: int) -> list[str]:
-    out: list[str] = []
+def _universe(limit: int) -> list[str]:
+    """관심종목에서 **시장을 섞어** 고른다 — KR 만 보면 다른 나라 함정을
+    영영 못 본다(사용자 2026-08-21 지적)."""
+    from bot.market import detect_market
+    by_mkt: dict[str, list[str]] = {}
     try:
         from bot.market_favorites import get_favorites
         for f in get_favorites() or []:
             t = (f or {}).get("ticker") if isinstance(f, dict) else f
-            if t and str(t).upper().endswith((".KS", ".KQ")) and t not in out:
-                out.append(t)
+            if not t:
+                continue
+            by_mkt.setdefault(detect_market(str(t).upper()) or "?",
+                              []).append(str(t))
     except Exception as exc:                                   # noqa: BLE001
         print(f"   (관심종목 로드 실패: {exc})")
-    return out[:limit]
+    out: list[str] = []
+    while len(out) < limit and any(by_mkt.values()):
+        for k in list(by_mkt):
+            if by_mkt[k] and len(out) < limit:
+                out.append(by_mkt[k].pop(0))
+    return out
+
+
+def _yf_periods(ticker: str) -> tuple[list[tuple[str, float | None]],
+                                      list[tuple[str, float | None]]]:
+    """비-KR: 스냅샷의 현금흐름표 → (분기, 연간) [(라벨, FCF)]."""
+    from bot.fcf import fcf_from_row
+    from bot.stock_snapshot import collect_stock_snapshot
+    snap = collect_stock_snapshot(ticker, use_cache=False) or {}
+    cf = ((snap.get("financials") or {}).get("cash_flow") or {})
+
+    def _rows(kind):
+        rs = sorted((r for r in (cf.get(kind) or []) if isinstance(r, dict)),
+                    key=lambda r: str(r.get("period", "")))
+        return [(str(r.get("period", "?"))[:10], fcf_from_row(r)) for r in rs]
+    return _rows("quarterly"), _rows("annual")
+
+
+def _yf_report(tk: str, cumulative_smell, seen: list) -> None:
+    """yfinance 현금흐름표 경로 한 종목 — 재무재표 차트가 쓰는 그 원천(#35)."""
+    print("   ── yfinance 경로(재무재표 차트)")
+    qs_v, an_v = _yf_periods(tk)
+    if not qs_v and not an_v:
+        print("      ❌ 현금흐름표 없음")
+        return
+    for lb, v in an_v:
+        seen.append((lb, v is not None))
+        print(f"      연 {lb}  " + ("✅" if v is not None else "❌ 재료 없음")
+              + (f"  → FCF {v:,.0f}" if v is not None else ""))
+    for lb, v in qs_v:
+        print(f"      분 {lb}  " + ("✅" if v is not None else "❌ 재료 없음")
+              + (f"  → FCF {v:,.0f}" if v is not None else ""))
+    _q = [v for _l, v in qs_v][-4:]
+    _a = next((v for _l, v in reversed(an_v) if v is not None), None)
+    _smell = cumulative_smell(_q, _a)
+    if _smell:
+        print(f"      ⚠️ 누적 오염 의심: {_smell}")
+    elif _q and _a and all(v is not None for v in _q) and len(_q) == 4:
+        # 최근 4분기 합 ≈ 최신 연간. 분기·연간 경계가 어긋나면 오차가 크게
+        # 나올 수 있어 **판정이 아니라 관측**으로 찍는다(#41).
+        _sum = sum(_q)
+        _gap = abs(_sum - _a) / abs(_a) * 100
+        print(f"      🔎 최근4분기합 {_sum:,.0f} vs 최신연간 {_a:,.0f}"
+              f"  (차이 {_gap:.0f}%)"
+              + ("  ✅ 단일분기로 보임" if _gap <= 25
+                 else "  ⚠️ 어긋남 — 기간 정의 확인 필요"))
+    else:
+        print("      🔎 분기 4개가 다 차지 않아 합계 검산 생략")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,20 +133,37 @@ def main(argv: list[str] | None = None) -> int:
 
     from bot.dart_client import get_dart
     from bot.dart_quarterly import get_quarterly_series
-    dart = get_dart()
-    if not dart:
-        print("❌ DART 클라이언트 없음 — 판정 불가")
-        return 2
-    tickers = args.tickers or _kr_universe(args.limit)
+    from bot.fcf import cumulative_smell
+    from bot.market import detect_market
+    tickers = args.tickers or _universe(args.limit)
     if not tickers:
         print("❌ 대상 없음")
         return 1
+    # DART 는 **KR 이 섞여 있을 때만** 필요하다 — AAPL 하나 보려는데
+    # 키가 없다고 통째로 멈추면 다른 나라를 영영 못 본다(이번 질문 그 자체).
+    dart = get_dart() if any(detect_market(t.upper()) == "KR"
+                             for t in tickers) else None
+    if dart is None and any(detect_market(t.upper()) == "KR"
+                            for t in tickers):
+        print("❌ DART 클라이언트 없음 — KR 종목은 판정 불가")
+        return 2
 
     for tk in tickers:
-        print(f"── {tk}")
+        _mkt = detect_market(tk.upper()) or "?"
+        print(f"── {tk}  [{_mkt}]")
         _seen: list[tuple[str, bool]] = []
+        # ── yfinance 경로 — **전 시장 공통**. KR 도 예외가 아니다:
+        # 재무재표 차트(`_profit_trend`)는 KR 종목도 yfinance 현금흐름을
+        # 쓴다(같은 그림의 매출·영익·순이익이 yfinance 라 기준을 맞춘 것).
+        # 그래서 KR 은 **두 경로**가 각각 옳아야 한다(DART 는 아래에서).
+        _yf_report(tk, cumulative_smell, _seen)
+        if _mkt != "KR":
+            print()
+            continue
+        print("   ── DART 경로(밸류에이션 분기표·분기실적 인포그래픽)")
         # 연간 — `financials_ts` 가 쓰는 그 경로 그대로(#35).
         import datetime as _dt
+        _ann: dict[int, float | None] = {}
         yr = _dt.date.today().year
         for y in range(yr - 1, yr - 1 - args.years, -1):
             try:
@@ -96,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"   FY{y}  ❌ 재무 없음")
                 continue
             v = f.get("FCF")
+            _ann[y] = v
             _seen.append((f"FY{y}", v is not None))
             print(f"   FY{y}  {_mark(f)}"
                   + (f"  → FCF {v / 1e8:,.0f}억" if v is not None else ""))
@@ -123,6 +204,26 @@ def main(argv: list[str] | None = None) -> int:
                       f"(계산해 보면 {fcf_from_parts(f['영업활동현금흐름'], sum(abs(f[k]) for k in _PARTS[1:] if f.get(k) is not None))})")
         # 캐시 특유의 패턴을 **기계가 지목**한다 — 사람이 매번 알아보길
         # 기대하면 안 된다(이번에 실제로 못 알아볼 뻔했다).
+        # KR — 분기합 vs 연간 검산(#33 눈으로 나눗셈). 누적 오염이면 안 맞는다.
+        # ⚠️ 연간을 안 넘기면 `cumulative_smell` 의 두 신호 중 하나가 늘
+        # 거짓이라 **검사가 통째로 죽는다**(#54 대조 대상 0건).
+        _by_y: dict[int, list] = {}
+        for q in qs:
+            _by_y.setdefault(q.get("year"), []).append(
+                (q.get("quarter"), (q.get("financials") or {}).get("FCF")))
+        for _y, _qs4 in sorted((y, v) for y, v in _by_y.items() if y):
+            _vals = [v for _n, v in sorted(_qs4)]
+            _smell = cumulative_smell(_vals, _ann.get(_y))
+            if _smell:
+                print(f"   ⚠️ FY{_y} 누적 오염 의심: {_smell}")
+            elif len(_qs4) == 4 and all(v is not None for _n, v in _qs4) \
+                    and _ann.get(_y):
+                _sum, _a = sum(_vals), _ann[_y]
+                _gap = abs(_sum - _a) / abs(_a) * 100
+                print(f"   🔎 FY{_y} 분기합 {_sum / 1e8:,.0f}억 vs 연간 "
+                      f"{_a / 1e8:,.0f}억 (차이 {_gap:.0f}%)"
+                      + ("  ✅ 단일분기로 보임" if _gap <= 15
+                         else "  ⚠️ 어긋남 — 기간 정의 확인 필요"))
         _ok = [lb for lb, has in _seen if has]
         _no = [lb for lb, has in _seen if not has]
         if _ok and _no and all(lb in _no for lb in _seen_recent(_seen)):

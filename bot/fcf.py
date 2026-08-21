@@ -107,3 +107,31 @@ def attach_to_series(qs: list | None, cf_rows: list | None) -> int:
             q.setdefault("financials", {})["FCF"] = v
             n += 1
     return n
+
+
+def cumulative_smell(quarters: list, annual) -> str | None:
+    """분기 시계열이 **누적처럼 보이면** 그 사유를 돌려준다. 아니면 None.
+
+    ⚠️ 왜 필요한가(2026-08-21 KR 실측). DART 는 현금흐름을 **누적**으로
+    주는데 손익과 같이 다뤄 분기 FCF 가 누적으로 떴다 — 농심 25.2Q 1,145
+    → 25.3Q 1,634 → 25.4Q 2,008 이고 25.4Q 가 FY 와 **완전히 같았다**.
+    화면만 보면 "실적이 좋아지는 중"으로 읽혀 **틀린 줄도 모른다**.
+
+    시장마다 원천이 다르므로(KR=DART · 그 외=yfinance) 같은 함정이 어디서
+    또 나올지 가정하지 않고 **잰다**. 두 신호를 본다:
+      · 부호가 한쪽인 구간이 단조 증가(|값|이 계속 커짐)
+      · 마지막 분기 ≈ 연간(누적의 마지막은 곧 연간이다)
+    둘 다면 거의 확실하다. 하나만이면 판단보류(None) — 실제로 4분기가
+    유난히 큰 회사가 있다(#44b: 판단보류를 결론으로 내지 말 것).
+    """
+    vals = [v for v in (quarters or []) if v is not None]
+    if len(vals) < 3:
+        return None
+    mono = (all(abs(vals[i]) > abs(vals[i - 1]) for i in range(1, len(vals)))
+            and len({v >= 0 for v in vals}) == 1)
+    a = _num(annual)
+    near = a is not None and a != 0 and abs(vals[-1] - a) <= abs(a) * 0.01
+    if mono and near:
+        return ("|값|이 단조 증가하고 마지막 분기가 연간과 같다 "
+                "— 누적을 단일분기로 표기했을 가능성")
+    return None
