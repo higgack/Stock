@@ -37,17 +37,34 @@ import re
 
 log = logging.getLogger("bot.dart_production")
 
+# 어구 사이에 낄 수 있는 것 — 태그·공백·nbsp.
+# ⚠️ 앵커는 **raw markup** 을 훑는다(표를 원본 구조 그대로 떠야 하므로).
+# 그래서 평문 정규식으로 쓰면 제목이 `생산 및 <SPAN>설비</SPAN>에 관한 사항`
+# 처럼 태그로 쪼개진 순간 못 잡는다 — 2026-08-21 VM 스윕에서 삼성전자
+# (893만자·**잘리지도 않음**)·SK하이닉스·삼성바이오가 전부 '섹션없음'으로
+# 찍힌 원인이다. 대형사 보고서일수록 제목에 서식 태그가 많이 붙는다.
+# 상한을 둬 역추적 폭주를 막는다(글자 사이에 태그가 40개 넘게 낄 일은 없다).
+_GAP = r"(?:<[^>]*>|\s|&nbsp;){0,40}"
+
+
+def _anchor(text: str) -> "re.Pattern":
+    """평문 어구 → **태그가 끼어도 잡는** 앵커. 글자 순서는 그대로 강제되므로
+    느슨해져도 엉뚱한 곳에 걸리지 않는다."""
+    return re.compile(_GAP.join(re.escape(c) for c in text if not c.isspace()),
+                      re.I)
+
+
 # 섹션 앵커. 회사마다 `(1) 제품 생산능력 및 생산실적` / `가. 생산능력 및 생산실적`
 # 처럼 번호·접두가 달라 **핵심 어구만** 잡는다.
-_ANCHOR = re.compile(r"생산\s*능력\s*(?:및|and)?\s*생산\s*실적", re.I)
+_ANCHOR = _anchor("생산능력및생산실적")
 # 앵커가 없는 회사 대비 폴백 — 「생산 및 설비」 절 자체.
-_ANCHOR_ALT = re.compile(r"생산\s*및\s*설비에?\s*관한\s*사항")
+_ANCHOR_ALT = _anchor("생산및설비에관한사항")
 
 # 「2. 주요 제품 및 서비스」 — 사용자 2026-08-21 "가동률 표 위에 이렇게 표
 # 그대로". 회사마다 `가. 사업부문별 주요 제품 등의 현황` 처럼 접두가 달라
 # 핵심 어구만 잡는다.
-_ANCHOR_ITEM = re.compile(r"주요\s*제품\s*(?:및|·|,|과)?\s*서비스")
-_ANCHOR_ITEM_ALT = re.compile(r"사업\s*부문별\s*주요\s*제품")
+_ANCHOR_ITEM = _anchor("주요제품및서비스")
+_ANCHOR_ITEM_ALT = _anchor("사업부문별주요제품")
 
 _TABLE_RE = re.compile(r"(?is)<TABLE[^>]*>.*?</TABLE>")
 # ⚠️ 글자 사이 공백 필수 — 원문이 `가 동 률` 로 온다(실측).
