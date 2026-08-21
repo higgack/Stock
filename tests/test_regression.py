@@ -29985,3 +29985,70 @@ class _NoDart:
 
     def get_normalized_financials(self, *a, **k):
         return None
+
+
+class TestDartCellWbr20260821:
+    """긴 셀의 줄바꿈 힌트 — 사용자 2026-08-21 라온피플 "화면에서만 줄 바꿈".
+
+    DART 26.2Q 원문(접수번호 20260814002571)이 `AI비전솔루션생성형AI,
+    Platform` 으로 **공백 없이** 붙어 있어 브라우저가 접을 자리를 못 찾는다.
+    글자를 넣으면 원문 왜곡이므로 `<wbr>`(zero-width) 만 끼운다."""
+
+    def _sanitize(self, inner):
+        from bot.dart_production import sanitize_table
+        return sanitize_table(
+            "<TABLE><TR><TD>품목</TD><TD>매출액</TD></TR>"
+            f"<TR><TD>{inner}</TD><TD ALIGN=RIGHT>2,663</TD></TR></TABLE>")
+
+    def test_hangul_latin_boundary_gets_a_break_hint(self):
+        h = self._sanitize("AI비전솔루션생성형AI, Platform")
+        assert "AI<wbr>비전솔루션생성형<wbr>AI, Platform" in h, h
+
+    def test_text_is_unchanged_when_tags_are_stripped(self):
+        """`<wbr>` 는 표시용이다 — 텍스트가 한 글자라도 바뀌면 안 된다."""
+        import re
+        h = self._sanitize("AI비전솔루션생성형AI, Platform")
+        plain = re.sub(r"<[^>]*>", "", h)
+        assert "AI비전솔루션생성형AI, Platform" in plain, plain
+        assert "wbr" not in plain
+
+    def test_short_cells_are_left_alone(self):
+        """짧은 셀은 접힐 일이 없다 — 마크업만 지저분해진다."""
+        h = self._sanitize("라면A")
+        assert "<wbr>" not in h, h
+
+    def test_break_hint_survives_the_original_line_structure(self):
+        """#94 로 살린 원본 `<br>` 를 그대로 두고 텍스트에만 넣는다."""
+        h = self._sanitize(
+            "반도체검사장비2종<BR>Monitoring Burn-In Tester 등 장비")
+        assert h.count("<br>") == 1
+        assert "반도체검사장비<wbr>2<wbr>종<br>Monitoring" in h, h
+        assert '<td class="lft">' in h
+
+    def test_tags_are_never_touched(self):
+        """태그 **밖의 텍스트에만** 넣는다 — 속성값에 끼면 표가 깨진다.
+        (셀 속성은 지금 `class` 뿐이지만, 경계 판정을 마크업 전체에
+        걸면 언제든 속성값을 물어뜯는다.)"""
+        from bot.dart_production import _add_wbr
+        src = ('<table><tr><td class="lft"><span data-x="검사2종">'
+               '반도체검사장비2종 및 관련 부품 일체</span></td></tr></table>')
+        out = _add_wbr(src)
+        assert 'data-x="검사2종"' in out, out
+        assert "반도체검사장비<wbr>2<wbr>종 및" in out, out
+
+    def test_probe_dump_strips_the_break_hints(self):
+        """프로브 덤프는 셀 경계를 `|` 로 찍는다 — `<wbr>` 를 남기면 원문에
+        없는 칸이 있는 것처럼 보인다(#35 프로브는 화면이 쓰는 그 값을 본다)."""
+        import ast
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):     # 독스트링은 검사에서 뺀다(#59b)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef, ast.Module)):
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    node.body[0].value.value = ""
+        code = ast.unparse(tree)
+        assert "wbr" in code, "덤프가 줄바꿈 힌트를 안 걷어낸다"

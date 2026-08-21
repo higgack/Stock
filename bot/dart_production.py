@@ -189,7 +189,7 @@ def sanitize_table(markup: str) -> str:
     html = re.sub(r"(?:<br>\s*)+", "<br>", html)
     html = re.sub(r"(?i)(<t[dh][^>]*>)\s*<br>", r"\1", html)
     html = re.sub(r"(?i)<br>\s*(</t[dh]>)", r"\1", html)
-    return _align_cells(html)
+    return _add_wbr(_align_cells(html))
 
 
 # ⚠️ 이름이 아래 `_CELL_RE`(모양 판정용)와 겹치면 **뒤엣것이 이겨**
@@ -318,6 +318,37 @@ def _align_cells(html: str) -> str:
         last = rm.end()
     out.append(html[last:])
     return "".join(out)
+
+
+# 줄바꿈 힌트를 넣을 최소 폭(전각 환산). 짧은 셀은 접힐 일이 없으므로 건드리지 않는다.
+_WBR_MIN_W = 12.0
+# 한글↔영문/숫자 경계. DART 원문은 좁은 셀에서 낱말을 붙여 쓰는 일이 잦아
+# (라온피플 26.2Q 실측 `AI비전솔루션생성형AI, Platform` — 원문에 공백이 없다)
+# 브라우저가 접을 자리를 못 찾는다. 글자는 **한 자도 바꾸지 않고** `<wbr>`
+# (zero-width break opportunity)만 끼워 화면에서만 접히게 한다 — 사용자
+# 2026-08-21 "화면에서만 줄 바꿈". 값은 원본, 표시 규약은 우리 것(#74).
+_WBR_BOUNDARY = re.compile(r"(?<=[가-힣])(?=[A-Za-z0-9])|(?<=[A-Za-z0-9])(?=[가-힣])")
+
+
+def _add_wbr(html: str) -> str:
+    """긴 셀의 한글↔영문 경계에 `<wbr>` 를 끼운다(텍스트는 불변).
+
+    ⚠️ 태그 **밖의 텍스트에만** 넣는다 — 속성값이나 태그 이름에 끼면 마크업이
+    깨진다. `<wbr>` 는 렌더링 텍스트를 바꾸지 않으므로 복사해도 원문 그대로다.
+    """
+    def _cell(m: re.Match) -> str:
+        tag, attrs, inner = m.group(1), m.group(2) or "", m.group(3)
+        if _vlen(_cell_text(inner)) < _WBR_MIN_W:
+            return m.group(0)
+        out, last = [], 0
+        for t in _TAGS_RE.finditer(inner):
+            out.append(_WBR_BOUNDARY.sub("<wbr>", inner[last:t.start()]))
+            out.append(t.group(0))
+            last = t.end()
+        out.append(_WBR_BOUNDARY.sub("<wbr>", inner[last:]))
+        return f"<{tag}{attrs}>{''.join(out)}</{tag}>"
+
+    return _CELL_PAIR_RE.sub(_cell, html or "")
 
 
 _ROW_RE = re.compile(r"(?is)<TR[^>]*>")
