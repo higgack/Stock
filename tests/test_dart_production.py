@@ -413,7 +413,10 @@ class TestProbe:
         """배포 전 코드로 돈 출력을 새 결과로 착각하지 않게(#21)."""
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
-        assert "_PROBE_VER" in src and "형식 스윕 v" in src
+        # ⚠️ 고정 문구를 박으면 도구 이름이 바뀔 때마다 깨진다 —
+        # 계약은 "시작 줄에 **버전을 찍는다**"이지 특정 제목이 아니다.
+        assert "_PROBE_VER" in src
+        assert "v{_PROBE_VER}" in src, "배너가 버전을 안 찍는다"
 
 
 class TestCardSplit20260820:
@@ -524,7 +527,9 @@ class TestSweep20260821:
         없는 대형사를 40MB 로 **한 번도** 다시 받지 않았다."""
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
-        assert "_PROBE_VER = 4" in src
+        import bot.scripts.production_format_probe as _pf
+        # 버전을 리터럴로 박으면 bump 마다 무관한 테스트가 깨진다.
+        assert _pf._PROBE_VER >= 4, "상한 escalation 이 들어간 버전 이후여야"
         loop = src[src.index("for cap in (_DOC_TEXT_MAX"):]
         loop = loop[:loop.index("if verdict in _OK:")]
         # 잘렸으면 다음 상한으로 넘어가야 하므로, break 는 '채택' 또는
@@ -1293,3 +1298,64 @@ class TestOneDarkContainer20260821:
         got = dp.parse_production(far)
         assert got and got["has_rate"], "멀리 있는 가동률 표를 못 찾는다"
         assert dp.diagnose(far) == "정상", "판정이 화면과 갈린다"
+
+
+class TestBacklogRolling20260821:
+    """사용자 2026-08-21 "이것들이 있는데 누락시키고 싶지 않아".
+
+    수주잔고만 **최신 1회**로 판정하고 있었다 — DART 가 그 접수건 문서를 안
+    주는 경우가 실재해(한화에어로 `status=014` 실측) 나머지 분기가 다 있어도
+    회사 전체가 '미공시'로 처리됐다. 생산능력·제품 표는 롤링인데 여기만
+    1회였다."""
+
+    @staticmethod
+    def _qs(n=4):
+        return [{"year": 2026, "reprt_code": f"110{i}", "label": f"26.{i}Q",
+                 "financials": {}} for i in range(1, n + 1)]
+
+    def test_recovers_when_only_the_latest_report_is_missing(self,
+                                                             monkeypatch):
+        import bot.dart_backlog as bl
+        import bot.quarterly_infographic as qi
+        qs = self._qs()
+        qs[-1]["reprt_code"] = "MISSING"
+
+        monkeypatch.setattr(
+            bl, "backlog_for",
+            lambda d, t, y, rc: None if rc == "MISSING" else 1.0e11)
+        qi._fill_backlog(object(), "T", qs)
+        vals = [q["financials"].get("수주잔고") for q in qs]
+        assert vals[:-1] == [1.0e11] * 3, f"직전 분기로 회복 못 함: {vals}"
+
+    def test_non_publisher_costs_at_most_the_probe_budget(self, monkeypatch):
+        """회복을 넣었다고 미공시 회사가 5회 대용량 다운로드를 하면 안 된다."""
+        import bot.dart_backlog as bl
+        import bot.quarterly_infographic as qi
+        calls = []
+        monkeypatch.setattr(bl, "backlog_for",
+                            lambda d, t, y, rc: calls.append(rc))
+        qi._fill_backlog(object(), "T", self._qs(5))
+        # ⚠️ `_BACKLOG_PROBE_N` 으로 상한을 재면 그 상수를 99 로 올리는
+        # 뮤테이션이 그대로 통과한다(실측) — 자기 자신으로 자기를 검증하는
+        # 꼴이다. 리터럴로 못박는다: 미공시 판정에 3회 이상은 과하다.
+        assert len(calls) <= 2, f"미공시인데 {len(calls)}회 받았다"
+        assert qi._BACKLOG_PROBE_N <= 2, "탐색 예산이 과하다"
+
+    def test_publisher_fills_every_quarter(self, monkeypatch):
+        import bot.dart_backlog as bl
+        import bot.quarterly_infographic as qi
+        qs = self._qs()
+        monkeypatch.setattr(bl, "backlog_for", lambda d, t, y, rc: 5.0e11)
+        qi._fill_backlog(object(), "T", qs)
+        assert all(q["financials"].get("수주잔고") == 5.0e11 for q in qs)
+
+    def test_probe_reports_every_tab_item(self):
+        """감사가 한 항목만 세면 나머지 누락은 영원히 안 보인다 — 분기실적
+        탭에 실리는 **전 항목**을 같은 표로 센다."""
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        assert "_PROBE_VER = 5" in src
+        for k in ("재고자산", "수주잔고", "제품표", "생산표"):
+            assert f'"{k}"' in src, f"{k} 커버리지를 안 센다"
+        # 수주잔고도 화면과 같은 규율(최신부터 거슬러)로 봐야 통계가 맞다
+        assert "_BACKLOG_PROBE_N" in src, "1회만 보면 화면과 갈라진다"
