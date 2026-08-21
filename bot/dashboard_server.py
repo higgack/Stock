@@ -314,6 +314,17 @@ def live_quote(key: str) -> dict:
     return out
 
 
+def _wrap_style() -> str:
+    """분기실적 탭 전체를 감쌀 다크 컨테이너 스타일. 실패해도 화면은 살아야
+    하므로 빈 문자열로 폴백(그때는 조각별 배경만 보인다)."""
+    try:
+        from bot.dart_production import qwrap_style
+        return qwrap_style()
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("wrap_style: %s", exc)
+        return ""
+
+
 def _production_html(ticker: str, payload: dict) -> str:
     """분기실적 탭의 주요 제품 + 생산능력·가동률 표 HTML. 부재는 ""(섹션 생략).
 
@@ -1008,6 +1019,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # 출처·면책 줄 = **HTML 최하단**(2026-08-21). PNG 안에 두면
                 # 카드 조각보다 위로 올라가 면책이 마지막이 아니게 된다.
                 "provenance": list(_qi.provenance_line(payload)),
+                # 전체를 엮는 하나의 다크 컨테이너 스타일(사용자 2026-08-21
+                # "중간에 흰색부분없이 하나의 검정테두리로 전체를 엮어줘").
+                # 색은 인포그래픽 팔레트 단일 출처에서 온다(#38).
+                "wrap_style": _wrap_style(),
                 # 성장동력·리스크 카드 = **별도 PNG**(사용자 2026-08-20).
                 "cards_image_url": (
                     f"quarterly_infographic_img/{Path(_ci).name}"

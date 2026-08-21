@@ -73,7 +73,13 @@ _TAG_RE = re.compile(r"(?is)<\s*(/?)\s*([A-Za-z][A-Za-z0-9]*)([^>]*)>")
 
 # 표 하나가 비정상적으로 크면(원문 파싱이 어긋나 문서 전체를 먹은 경우) 버린다.
 _MAX_TABLE_CHARS = 120_000
-_SCAN_WINDOW = 40_000       # 앵커 이후 훑을 범위
+_SCAN_WINDOW = 40_000       # 정확 앵커(생산능력 및 생산실적) 이후 훑을 범위
+# 절 제목(`생산 및 설비에 관한 사항`)은 **하위 항목이 여럿**이라 생산능력 표가
+# 한참 뒤에 온다 — 40k 로는 설비 현황·소재지 표만 훑고 끝난다(2026-08-21 VM
+# 스윕: '무관표만' 7건이 전부 13~21개 표를 보고도 최고점 0 이었다).
+# 창을 넓혀도 **점수 게이트가 그대로**라 어구 없는 표는 여전히 0 점이다 —
+# 넓힌다고 엉뚱한 표를 집지 않는다.
+_SCAN_WINDOW_ALT = 200_000
 
 # 채택 임계값 — `parse_production` 과 `diagnose` 가 **같은 수**를 봐야 스윕
 # 통계가 화면과 일치한다(따로 박으면 감사가 거짓 안심을 준다, 실수 #54).
@@ -198,7 +204,8 @@ def _score_products(markup: str) -> int:
 
 
 def _pick(markup: str, anchors: tuple, score_fn, min_score: int,
-          stop_at: int) -> tuple[int, str, str, str] | None:
+          stop_at: int, window: int = _SCAN_WINDOW
+          ) -> tuple[int, str, str, str] | None:
     """앵커 뒤 창에서 가장 점수 높은 표 → (점수, 표, 앞 텍스트, 뒤 텍스트).
 
     ⚠️ 앵커의 **모든 출현**을 훑는다. 정기보고서는 목차에도 같은 제목이
@@ -208,7 +215,7 @@ def _pick(markup: str, anchors: tuple, score_fn, min_score: int,
     best = None
     for rx in anchors:
         for m in rx.finditer(markup):
-            tail = markup[m.end(): m.end() + _SCAN_WINDOW]
+            tail = markup[m.end(): m.end() + window]
             for t in _TABLE_RE.finditer(tail):
                 raw = t.group(0)
                 if len(raw) > _MAX_TABLE_CHARS:
@@ -255,7 +262,7 @@ def parse_products(markup: str | None) -> dict | None:
         return None
     got = (_pick(markup, (_ANCHOR_ITEM,), _score_products, _MIN_SCORE_ITEM, 14)
            or _pick(markup, (_ANCHOR_ITEM_ALT,), _score_products,
-                    _MIN_SCORE_ITEM, 14))
+                    _MIN_SCORE_ITEM, 14, _SCAN_WINDOW_ALT))
     if not got:
         return None
     _sc, raw, before, after = got
@@ -271,7 +278,8 @@ def parse_production(markup: str | None) -> dict | None:
     if not markup:
         return None
     got = (_pick(markup, (_ANCHOR,), _score, _MIN_SCORE, 10)
-           or _pick(markup, (_ANCHOR_ALT,), _score, _MIN_SCORE, 10))
+           or _pick(markup, (_ANCHOR_ALT,), _score, _MIN_SCORE, 10,
+                    _SCAN_WINDOW_ALT))
     if not got:
         return None
     sc, raw, before, after = got
@@ -304,11 +312,14 @@ def diagnose(markup: str | None, *, truncated: bool = False) -> str:
     m = _ANCHOR.search(markup) or _ANCHOR_ALT.search(markup)
     if not m:
         return "원문잘림" if truncated else "섹션없음"
-    tail = markup[m.end(): m.end() + _SCAN_WINDOW]
-    tabs = list(_TABLE_RE.finditer(tail))
-    if not tabs:
+    # ⚠️ **화면이 쓰는 그 선택기**로 최고점을 구한다(#35). 창 크기·앵커
+    # 순회 규칙을 여기 따로 적으면 스윕 통계가 화면과 갈라진다 — 실제로
+    # `_SCAN_WINDOW_ALT` 를 넓히고 여기만 40k 로 두었더니 판정이 어긋났다.
+    got = (_pick(markup, (_ANCHOR,), _score, 0, 10)
+           or _pick(markup, (_ANCHOR_ALT,), _score, 0, 10, _SCAN_WINDOW_ALT))
+    if got is None:
         return "표없음"            # 절은 있는데 산문만(생산 관련 서술)
-    best = max((_score(t.group(0)) for t in tabs), default=0)
+    best = got[0]
     if best >= 10:
         return "정상"
     if best >= 6:
@@ -343,15 +354,18 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
 
     ⚠️ 상한 escalation 은 **문서가 실제로 잘렸을 때만** 한다. `max_bytes` 는
     HTTP 다운로드를 줄이지 않고 압축 해제량만 줄이므로, 상한을 올린 재시도는
-    **같은 zip 을 한 번 더 내려받는 것**이다. 받은 길이가 상한에 안 닿았으면
-    전문을 이미 다 본 것이라 올려도 결과가 같다 — 그 경우 재시도는 순손실."""
+    **같은 zip 을 한 번 더 내려받는 것**이다. 잘리지 않았으면 전문을 이미 다
+    본 것이라 올려도 결과가 같다 — 그 경우 재시도는 순손실.
+    잘림 여부는 **원천이 알려준다**(`doc_was_truncated`). 반환 문자열 길이로
+    추정하면 안 된다 — 상한은 바이트, 반환은 정규화된 문자열이라 항상 더
+    짧아서 판정이 늘 '안 잘림'으로 기운다(2026-08-21 삼성전자 실측)."""
     out: dict = {}
     keys = tuple(want or _PARSERS)
     if not dart or not quarters:
         return out
     try:
         from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
-                                   _fetch_doc_text)
+                                   _fetch_doc_text, doc_was_truncated)
         for q in reversed(quarters[-max_back:]):
             missing = [k for k in keys if k not in out]
             if not missing:
@@ -370,7 +384,7 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
                             missing.remove(k)
                     if not missing:
                         break
-                    if not (markup and len(markup) >= cap * 0.98):
+                    if not doc_was_truncated(rn, cap, True):
                         break          # 안 잘렸다 = 상한을 올려도 같은 내용
                 if not missing:
                     break
@@ -406,27 +420,47 @@ def _palette() -> tuple[str, str, str, str, str]:
 
 def dark_panel(title: str, meta: list[str], table_html: str,
                notes: list[str]) -> str:
-    """차트 카드와 같은 톤의 어두운 카드로 표를 감싼다.
+    """표 한 덩어리를 **테두리 없는 섹션**으로 낸다.
 
-    ⚠️ 표 자체 CSS 는 **한 줄도 새로 만들지 않는다.** `.si-table` 은 이미
-    `--bg/--fg/--fg-soft/--border` 를 읽으므로, 감싸는 div 에서 그 변수만
-    다시 정의하면 안쪽 표가 통째로 어두운 톤으로 바뀐다(미니멀 코드 사다리
-    ②③ — 있는 걸 재사용)."""
-    bg, panel, fg, soft, line = _palette()
+    ⚠️ 자체 배경·테두리·라운드를 두지 않는다 — 사용자 2026-08-21 "중간에
+    흰색부분없이 하나의 검정테두리로 전체를 엮어줘". 조각마다 카드를 두면
+    사이에 페이지 배경(흰색)이 비친다. 감싸는 컨테이너(`si-qwrap`)가 배경과
+    테두리를 담당하고 여기는 안쪽 여백만 준다.
+
+    표 CSS 는 **한 줄도 새로 만들지 않는다.** `.si-table` 이 이미
+    `--bg/--fg/--fg-soft/--border` 를 읽으므로 그 변수만 다시 정의하면 안쪽
+    표가 통째로 어두운 톤이 된다(미니멀 코드 사다리 ②③).
+
+    `word-break: keep-all` — 한글 기본값(break-all 유사)은 **낱글자로**
+    끊어서 `반도체검사용 소/켓 제조 외`, `매출유/형` 처럼 단어가 갈라진다.
+    keep-all 이면 공백(어절) 경계에서만 끊긴다. 그래도 한 어절이 칸보다
+    길면 넘치므로 `overflow-wrap: break-word` 를 폴백으로 같이 둔다."""
+    _bg, panel, fg, soft, line = _palette()
     e = _html.escape
     note_html = "".join(
-        f'<div style="font-size:11px;color:{soft};margin-top:2px">'
+        f'<div style="font-size:11px;color:{soft};margin-top:3px">'
         f'* {e(n)}</div>' for n in (notes or []))
     return (
         f'<div class="si-prod" style="--bg:{panel};--fg:{fg};'
-        f'--fg-soft:{soft};--border:{line};background:{bg};color:{fg};'
-        f'border:1px solid {line};border-radius:14px;'
-        f'padding:14px 16px;margin-top:14px">'
+        f'--fg-soft:{soft};--border:{line};color:{fg};'
+        f'word-break:keep-all;overflow-wrap:break-word;'
+        f'padding:14px 12px 4px">'
         f'<div class="si-section-title" style="font-size:13px;color:{fg}">'
         f'{e(title)}</div>'
         f'<div style="font-size:11px;color:{soft};margin:2px 0 8px">'
         f'{e(" · ".join(meta))}</div>'
         f'<div style="overflow-x:auto">{table_html}</div>{note_html}</div>')
+
+
+def qwrap_style() -> str:
+    """전체를 엮는 **하나의** 다크 컨테이너 인라인 스타일.
+
+    이미지 조각과 표 섹션을 한 테두리 안에 넣어 사이에 흰 배경이 안 비치게
+    한다. `overflow:hidden` 이 안쪽 이미지 모서리를 대신 깎아 주므로 이미지에
+    개별 radius 를 줄 필요가 없다(주면 모서리에 배경색이 비친다)."""
+    bg, _panel, fg, _soft, line = _palette()
+    return (f"background:{bg};color:{fg};border:1px solid {line};"
+            f"border-radius:14px;overflow:hidden")
 
 
 def render_products_html(prod: dict | None) -> str:

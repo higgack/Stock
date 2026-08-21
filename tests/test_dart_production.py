@@ -220,6 +220,10 @@ class TestRolling:
             caps.append(max_bytes)
             return "x" * max_bytes if max_bytes == 200 else REAL
         monkeypatch.setattr(df, "_fetch_doc_text", fake)
+        # 잘림은 **원천이 알려준다**(2026-08-21) — 길이 추정을 쓰면 한글
+        # 문서에서 늘 '안 잘림'이 나온다. 작은 상한에서만 잘렸다고 답한다.
+        monkeypatch.setattr(df, "doc_was_truncated",
+                            lambda rn, cap, raw=False: cap == 200)
         d = self._Dart({(2026, "11012"): REAL})
         got = production_rolling(d, "098120",
                                  [{"year": 2026, "reprt_code": "11012",
@@ -238,8 +242,10 @@ class TestRolling:
 
         def fake(rn, key, max_bytes=0, raw_markup=False):
             caps.append(max_bytes)
-            return "<P>표가 없는 짧은 보고서</P>"      # 상한에 한참 못 미침
+            return "<P>표가 없는 짧은 보고서</P>"      # 잘리지 않은 전문
         monkeypatch.setattr(df, "_fetch_doc_text", fake)
+        monkeypatch.setattr(df, "doc_was_truncated",
+                            lambda rn, cap, raw=False: False)
         d = self._Dart({(2026, "11012"): REAL})
         assert production_rolling(d, "098120",
                                   [{"year": 2026, "reprt_code": "11012",
@@ -518,13 +524,16 @@ class TestSweep20260821:
         없는 대형사를 40MB 로 **한 번도** 다시 받지 않았다."""
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
-        assert "_PROBE_VER = 3" in src
+        assert "_PROBE_VER = 4" in src
         loop = src[src.index("for cap in (_DOC_TEXT_MAX"):]
         loop = loop[:loop.index("if verdict in _OK:")]
         # 잘렸으면 다음 상한으로 넘어가야 하므로, break 는 '채택' 또는
         # '안 잘림' 조건 아래에만 있어야 한다.
         assert "if v in _OK:" in loop and "if not cut:" in loop
         assert "truncated=cut" in loop, "잘림 여부를 판정에 안 넘긴다"
+        # 길이 추정 금지 — 상한은 바이트, 반환은 문자열이다
+        assert "len(mk) >= cap" not in src, "길이 추정이 되살아남"
+        assert "dp_trunc(rn, cap, True)" in loop, "원천 플래그를 안 쓴다"
 
     def test_probe_preview_window_matches_the_parser(self):
         """미리보기 창이 파서 스캔창보다 좁으면, 파서가 실제로 보고 버린 표를
@@ -683,7 +692,10 @@ class TestProducts20260821:
         for var, val in (("--bg", _PANEL), ("--fg", _TEXT),
                          ("--fg-soft", _MUTED), ("--border", _LINE)):
             assert f"{var}:{val}" in h, f"{var} 가 인포그래픽 팔레트와 다름"
-        assert f"background:{_BG}" in h, "카드 배경이 차트와 다른 색"
+        # 2026-08-21 배경·테두리는 **컨테이너**로 옮겼다(조각마다 카드를 두면
+        # 사이에 흰 배경이 비친다) — 색이 팔레트를 벗어나지 않는지는 거기서 본다.
+        from bot.dart_production import qwrap_style
+        assert f"background:{_BG}" in qwrap_style(), "카드 배경이 차트와 다른 색"
         src = open("bot/dart_production.py", encoding="utf-8").read()
         assert ".si-table {" not in src, "표 CSS 를 새로 만들었다(재사용 위반)"
 
@@ -1100,3 +1112,184 @@ class TestPieceOrder20260821:
         그 종목은 같은 차트가 두 번 뜬다(실수 #11)."""
         from bot.quarterly_infographic import _RENDER_VER
         assert _RENDER_VER not in ("v7", "v8"), "조각 분할인데 버전이 그대로"
+
+
+class TestTruncationFlag20260821:
+    """VM 스윕 v3 실측: 삼성전자·SK하이닉스가 여전히 '섹션없음'이었다.
+    문서 2,826k**자** / 상한 3,000k**바이트** = 0.94배라 "안 잘렸다"로
+    판정돼 40MB 재시도가 한 번도 안 돌았다 — 원천엔 있는데 없다고 보고."""
+
+    @staticmethod
+    def _serve(body: str):
+        import io
+        import types
+        import zipfile
+        import bot.dart_feed as df
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("doc.xml", body)
+
+        class _R:
+            status_code = 200
+            content = buf.getvalue()
+
+        df.requests = types.SimpleNamespace(get=lambda *a, **k: _R())
+        df._doc_fail_recent = lambda rn: False
+        for c in (df._DOC_TEXT_MEM, df._DOC_BLOB_MEM, df._DOC_TRUNC):
+            c.clear()
+        return df
+
+    def test_truncation_is_measured_in_bytes_not_characters(self):
+        """한글은 UTF-8 3바이트라 문자 수는 바이트 예산보다 **항상** 훨씬
+        작다 — 길이 추정은 잘린 문서를 늘 '안 잘림'이라 부른다."""
+        import bot.dart_feed as df
+        body = "<P>앞부분</P>" + ("한글본문내용" * 200_000)
+        _orig_rq, _orig_fail = df.requests, df._doc_fail_recent
+        try:
+            self._serve(body)
+            out = df._fetch_doc_text("R1", "K", max_bytes=3_000_000,
+                                     raw_markup=True)
+            assert df.doc_was_truncated("R1", 3_000_000, True) is True
+            # 옛 방식이었다면 놓쳤을 상황임을 함께 못박는다(뮤테이션 방지)
+            assert len(out) < 3_000_000 * 0.98, "픽스처가 함정을 재현 못 함"
+        finally:
+            df.requests, df._doc_fail_recent = _orig_rq, _orig_fail
+            for c in (df._DOC_TEXT_MEM, df._DOC_BLOB_MEM, df._DOC_TRUNC):
+                c.clear()
+
+    def test_short_document_is_not_reported_truncated(self):
+        """반대 증거 — 안 잘린 문서를 잘렸다고 하면 매번 재다운로드한다."""
+        import bot.dart_feed as df
+        _orig_rq, _orig_fail = df.requests, df._doc_fail_recent
+        try:
+            self._serve("<P>짧은 보고서</P>")
+            df._fetch_doc_text("R1", "K", max_bytes=3_000_000,
+                               raw_markup=True)
+            assert df.doc_was_truncated("R1", 3_000_000, True) is False
+        finally:
+            df.requests, df._doc_fail_recent = _orig_rq, _orig_fail
+            for c in (df._DOC_TEXT_MEM, df._DOC_BLOB_MEM, df._DOC_TRUNC):
+                c.clear()
+
+    def test_flag_is_keyed_per_cap_and_mode(self):
+        """상한마다 잘림 여부가 다르다 — 키를 뭉개면 40MB 결과가 3MB 판정을
+        덮어써 재시도가 죽는다."""
+        import bot.dart_feed as df
+        body = "<P>x</P>" + ("한글본문내용" * 200_000)
+        _orig_rq, _orig_fail = df.requests, df._doc_fail_recent
+        try:
+            self._serve(body)
+            df._fetch_doc_text("R1", "K", max_bytes=3_000_000, raw_markup=True)
+            df._fetch_doc_text("R1", "K", max_bytes=40_000_000,
+                               raw_markup=True)
+            assert df.doc_was_truncated("R1", 3_000_000, True) is True
+            assert df.doc_was_truncated("R1", 40_000_000, True) is False
+        finally:
+            df.requests, df._doc_fail_recent = _orig_rq, _orig_fail
+            for c in (df._DOC_TEXT_MEM, df._DOC_BLOB_MEM, df._DOC_TRUNC):
+                c.clear()
+
+    def test_rolling_escalates_when_the_source_says_truncated(self):
+        """⚠️ 이 배선이 핵심이다 — 플래그가 맞아도 롤링이 안 읽으면 그대로다."""
+        import bot.dart_feed as df
+        import bot.dart_production as dp
+        caps = []
+
+        class _D:
+            api_key = "K"
+
+            def find_periodic_reports(self, t, y, rc):
+                return [{"rcept_no": "R1"}]
+
+        def _fake(rn, k, max_bytes=0, raw_markup=False):
+            caps.append(max_bytes)
+            return "<P>앞부분만</P>"          # 짧지만 **잘렸다**고 보고됨
+        _o1, _o2 = df._fetch_doc_text, df.doc_was_truncated
+        df._fetch_doc_text = _fake
+        df.doc_was_truncated = lambda rn, cap, raw=False: cap == df._DOC_TEXT_MAX
+        try:
+            dp.tables_rolling(_D(), "X", [{"year": 2026, "reprt_code": "11012",
+                                           "label": "26.2Q"}])
+        finally:
+            df._fetch_doc_text, df.doc_was_truncated = _o1, _o2
+        assert caps == [df._DOC_TEXT_MAX, df._DOC_TEXT_MAX_FULL], \
+            f"잘렸다는데 상한을 안 올렸다: {caps}"
+
+
+class TestOneDarkContainer20260821:
+    """사용자 2026-08-21 "중간에 흰색부분없이 하나의 검정테두리로 전체를
+    엮어줘" + "단어나 문맥단위로 잘 만들어줘, 폭은 가능한한 넓게"."""
+
+    def test_sections_have_no_card_of_their_own(self):
+        """조각마다 배경·테두리를 두면 사이에 페이지 배경(흰색)이 비친다."""
+        import re
+        from bot.dart_production import dark_panel
+        h = dark_panel("t", ["m"], "<table class='si-table'></table>", [])
+        style = re.search(r'style="([^"]*)"', h).group(1)
+        # ⚠️ 부분문자열로 재면 안 된다 — `--border:` 라는 **CSS 변수**가
+        # "border:" 를 담고 있어 멀쩡한 코드를 틀렸다고 한다(실측).
+        # 선언의 **속성명**을 정확히 본다(`--` 로 시작하면 변수).
+        props = {d.split(":", 1)[0].strip()
+                 for d in style.split(";") if ":" in d}
+        for banned in ("background", "border", "border-radius", "margin-top"):
+            assert banned not in props, f"섹션이 자체 {banned} 를 갖는다"
+        assert "--border" in props, "표 테마 변수까지 사라졌다"
+
+    def test_wrapper_carries_background_and_clips_corners(self):
+        """컨테이너가 배경·테두리를 담당하고 overflow:hidden 이 안쪽 이미지
+        모서리를 대신 깎는다(이미지에 radius 를 주면 모서리에 배경이 비친다)."""
+        from bot.dart_production import _palette, qwrap_style
+        st = qwrap_style()
+        bg, _p, _f, _s, line = _palette()
+        assert f"background:{bg}" in st and f"border:1px solid {line}" in st
+        assert "overflow:hidden" in st and "border-radius" in st
+
+    def test_korean_wraps_at_word_boundaries(self):
+        """한글 기본 줄바꿈은 **낱글자**로 끊어 `반도체검사용 소/켓 제조 외`,
+        `매출유/형` 처럼 단어를 가른다(사용자 캡처). keep-all 이면 어절
+        경계에서만 끊긴다 — 다만 한 어절이 칸보다 길 때를 위해 폴백도 둔다."""
+        from bot.dart_production import dark_panel
+        h = dark_panel("t", ["m"], "<table></table>", [])
+        assert "word-break:keep-all" in h, "낱글자 줄바꿈이 그대로다"
+        assert "overflow-wrap:break-word" in h, "긴 어절 폴백이 없다"
+        assert "word-break:break-all" not in h
+
+    def test_client_opens_and_closes_the_wrapper_exactly_once(self):
+        """열고 안 닫으면 뒤 내용이 통째로 컨테이너 안에 빨려 들어간다."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        blk = src[src.index("var h=j.wrap_style?"):src.index("if(box)box.innerHTML=h;")]
+        assert blk.count("j.wrap_style?('<div") == 1
+        assert blk.count("if(j.wrap_style) h+='</div>';") == 1
+
+    def test_images_are_block_level_without_their_own_radius(self):
+        """인라인 이미지는 baseline 여백이 생겨 조각 사이에 틈이 보인다."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        blk = src[src.index("var IMG="):src.index("if(box)box.innerHTML=h;")]
+        assert "display:block" in blk and "margin:0" in blk
+        assert "border-radius:10px" not in blk, "이미지에 개별 radius 가 남음"
+
+    def test_server_ships_the_wrapper_style(self):
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"wrap_style": _wrap_style()' in src
+        from bot.dashboard_server import _wrap_style
+        assert "background:" in _wrap_style()
+
+    def test_section_heading_fallback_scans_far_enough(self):
+        """절 제목(`생산 및 설비에 관한 사항`)은 하위 항목이 여럿이라 생산능력
+        표가 한참 뒤에 온다 — 40k 창으로는 설비 현황 표만 훑고 끝난다.
+        (VM 스윕 '무관표만' 7건이 전부 13~21개 표를 보고도 최고점 0 이었다.)
+
+        ⚠️ 상수 비교만 하면 값을 바꾸는 뮤테이션은 잡아도 **정말 멀리 있는
+        표를 찾는지**는 모른다 — 실제로 그 거리에 놓고 태운다."""
+        import bot.dart_production as dp
+        far = ("생산 및 설비에 관한 사항"
+               + "<TABLE><TR><TD>설비 소재지</TD><TD>본사</TD></TR></TABLE>"
+               + "x" * 120_000                       # 옛 40k 창 밖
+               + "<TABLE><TR><TH>구 분</TH><TH>제27기</TH></TR>"
+                 "<TR><TD>생산능력</TD><TD>1</TD></TR>"
+                 "<TR><TD>생산실적</TD><TD>2</TD></TR>"
+                 "<TR><TD>가 동 률</TD><TD>97</TD></TR></TABLE>")
+        assert dp._SCAN_WINDOW_ALT > 120_000, "폴백 창이 좁다"
+        got = dp.parse_production(far)
+        assert got and got["has_rate"], "멀리 있는 가동률 표를 못 찾는다"
+        assert dp.diagnose(far) == "정상", "판정이 화면과 갈린다"

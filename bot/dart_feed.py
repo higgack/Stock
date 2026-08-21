@@ -609,6 +609,14 @@ _DOC_MEM_MAX = 120_000_000    # 평문 총 보관량 상한(자)
 # 있으면 그 경우가 재파싱으로 끝난다. 텍스트 캐시와 키가 달라(접수번호만)
 # 상한·모드가 뭐든 공유된다.
 _DOC_BLOB_MEM: dict[str, bytes] = {}
+# 그 요청이 **상한에서 잘렸는지**. 호출부가 "상한을 올려 다시 받을 가치가
+# 있나"를 판단하는 유일한 근거다.
+# ⚠️ 길이로 추정하면 안 된다 — `max_bytes` 는 **바이트** 예산인데 반환값은
+# 태그·공백을 정규화한 **문자열**이라 항상 더 짧다. 2026-08-21 VM 스윕에서
+# 삼성전자 원문이 2,826k자/3,000k바이트(0.94배)로 나와 "안 잘렸다"로
+# 판정됐고, 그 바람에 40MB 재시도가 **한 번도 안 돌아** 대형사 15건이
+# '섹션없음'으로 찍혔다(원천엔 있는데 없다고 보고).
+_DOC_TRUNC: dict[str, bool] = {}
 # 60MB — zip 은 압축된 상태라 정기보고서 한 건이 보통 1~10MB 다. 한 종목의
 # 최근 4분기를 담기엔 넉넉하고, 평문 캐시(_DOC_MEM_MAX)와 합쳐도 봇 메모리를
 # 과하게 밀지 않는다. 캐시는 넉넉함보다 **예측 가능함**이 중요하다.
@@ -620,6 +628,22 @@ _DOC_BLOB_MAX = 60_000_000    # 바이트 총 보관량 상한
 # trade/scripts/probe_dart_revenue 가 같은 이유로 자체 상한을 따로 올려 썼다.
 _DOC_TEXT_MAX = 3_000_000
 _DOC_TEXT_MAX_FULL = 40_000_000   # 정기보고서 전문(수주상황·매출구성 파서용)
+
+
+def _doc_cache_key(rcept_no: str, max_bytes: int, raw_markup: bool) -> str:
+    """원문 캐시 키. 상한·모드가 다르면 **다른 항목**이라야 한다 — 안 그러면
+    먼저 받은 쪽 길이가 상대에게 서빙된다(2026-08-16 실측 버그)."""
+    return f"{rcept_no}:{int(max_bytes)}:{'raw' if raw_markup else 'txt'}"
+
+
+def doc_was_truncated(rcept_no: str, max_bytes: int,
+                      raw_markup: bool = False) -> bool:
+    """직전 `_fetch_doc_text` 가 상한에서 잘렸나. 모르면 False(보수적).
+
+    잘리지 않았으면 상한을 올려도 같은 내용이므로 재시도는 순손실이다 —
+    반대로 잘렸는데 안 올리면 뒷부분 절을 영영 못 본다."""
+    return _DOC_TRUNC.get(_doc_cache_key(rcept_no, max_bytes, raw_markup),
+                          False)
 
 
 def _blob_put(rcept_no: str, blob: bytes) -> None:
@@ -643,7 +667,7 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
     # ⚠️ raw 도 캐시 키에 넣는다 — 안 넣으면 평문 요청과 마크업 요청이 같은
     # 항목을 공유해 먼저 받은 쪽이 상대에게 서빙된다(max_bytes 를 키에 넣게
     # 만든 2026-08-16 버그와 같은 형태).
-    ck = f"{rcept_no}:{int(max_bytes)}:{'raw' if raw_markup else 'txt'}"
+    ck = _doc_cache_key(rcept_no, max_bytes, raw_markup)
     if ck in _DOC_TEXT_MEM:   # fail-mark 게이트보다 먼저 (이미 받음)
         return _DOC_TEXT_MEM[ck]
     if not rcept_no or _doc_fail_recent(rcept_no):
@@ -711,6 +735,9 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
         # 보관했는데, 정기보고서 전문(최대 40MB)이 섞이면서 이론상 2.5GB 까지
         # 부풀 수 있게 됐다(2026-08-17 상한 인상의 부작용). 짧은 계약공시는
         # 여전히 수십 개가 남고, 큰 본문만 먼저 밀려난다.
+        # 예산을 다 쓴 채 끝났으면 잘린 것이다. 문서가 정확히 상한과 같으면
+        # 거짓양성이지만 재시도 1회로 끝나 무해하다.
+        _DOC_TRUNC[ck] = budget <= 0
         _DOC_TEXT_MEM[ck] = out
         while (len(_DOC_TEXT_MEM) > 64
                or sum(len(v) for v in _DOC_TEXT_MEM.values()) > _DOC_MEM_MAX):

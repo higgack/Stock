@@ -25723,7 +25723,15 @@ class TestDartBacklogParser20260817:
         # 계약을 강화하지 약화하지 않는다. 옛 판은 키 문자열을 통째로
         # 고정해서, 모드를 하나 추가하자 **정상 변경인데 빨간불**이 났다
         # (소스 문자열 단언의 취약점 — #19 의 반대 방향 사례).
-        assert "int(max_bytes)" in src and "ck = f\"{rcept_no}" in src
+        # 2026-08-21 키 조립이 `_doc_cache_key` 헬퍼로 옮겨졌다 — 소스 grep
+        # 대신 **동작**으로 본다(값이 걸린 곳은 동작 테스트, #19).
+        k = dart_feed._doc_cache_key
+        keys = {k("R1", dart_feed._DOC_TEXT_MAX, False),
+                k("R1", dart_feed._DOC_TEXT_MAX_FULL, False),
+                k("R1", dart_feed._DOC_TEXT_MAX, True),
+                k("R1", dart_feed._DOC_TEXT_MAX_FULL, True)}
+        assert len(keys) == 4, f"상한·모드가 키를 안 가른다: {keys}"
+        assert k("R1", 1, False) != k("R2", 1, False), "접수번호가 키에 없다"
         assert "backlog_for" in inspect.getsource(
             __import__("bot.dart_backlog", fromlist=["x"]))
 

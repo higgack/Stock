@@ -5135,10 +5135,15 @@ _QUARTERLY_JS = r"""
       return;
     }
     if(st)st.style.display='none';
-    var h='';
+    // 조각(이미지·표)을 **하나의 다크 컨테이너**로 엮는다 — 조각마다 카드를
+    // 두면 사이에 페이지 배경(흰색)이 비친다(사용자 2026-08-21).
+    // 이미지는 display:block + margin 0 이라야 인라인 요소의 baseline 여백이
+    // 안 생기고, radius 는 컨테이너의 overflow:hidden 이 대신 깎는다.
+    var IMG='style="width:100%;display:block;margin:0"';
+    var h=j.wrap_style?('<div style="'+j.wrap_style+'">'):'';
     if(j.image_url){
       // ⚠️ base() 필수 — 상세 페이지는 하위 경로라 상대경로만 쓰면 404.
-      h+='<img src="'+base()+j.image_url+'" alt="분기 실적분석" style="width:100%;border-radius:10px">';
+      h+='<img src="'+base()+j.image_url+'" alt="분기 실적분석" '+IMG+'>';
     }else{
       // 서버가 준 **진짜 이유**를 그대로 보여준다. 옛 문구는 원인과 무관하게
       // 늘 폰트 탓으로 단정해 오진을 유발했다(사용자 2026-08-18 LPK.DE).
@@ -5154,20 +5159,19 @@ _QUARTERLY_JS = r"""
     // 서버가 살균한 표 HTML 이라 그대로 삽입.
     if(j.production_html) h+=j.production_html;
     if(j.image_bottom_url){
-      h+='<img src="'+base()+j.image_bottom_url+'" alt="수주잔고·재고자산" '
-       + 'style="width:100%;border-radius:10px;margin-top:10px">';
+      h+='<img src="'+base()+j.image_bottom_url+'" alt="수주잔고·재고자산" '+IMG+'>';
     }
     if(j.cards_image_url){
-      h+='<img src="'+base()+j.cards_image_url+'" alt="성장동력·리스크" '
-       + 'style="width:100%;border-radius:10px;margin-top:10px">';
+      h+='<img src="'+base()+j.cards_image_url+'" alt="성장동력·리스크" '+IMG+'>';
     }
     // 출처·면책은 **맨 아래**. PNG 안에 두면 카드 조각보다 위로 올라간다.
     if(j.provenance&&j.provenance.length===2){
       h+='<div style="display:flex;justify-content:space-between;gap:12px;'
-       + 'font-size:11px;color:var(--fg-soft);margin-top:8px">'
+       + 'flex-wrap:wrap;font-size:11px;opacity:.72;padding:10px 12px 12px">'
        + '<span>'+esc(j.provenance[0])+'</span>'
        + '<span>'+esc(j.provenance[1])+'</span></div>';
     }
+    if(j.wrap_style) h+='</div>';
     var gr=j.growth_risk||{};
     if(gr.ok){
       // 이미지가 없을 때도(폰트 부재) 유료로 생성한 요약은 반드시 보여준다.
