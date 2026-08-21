@@ -5146,9 +5146,16 @@ _QUARTERLY_JS = r"""
        + esc(j.render_note||'이미지 렌더 불가 — 표로 표시합니다.')+'</div>';
     }
     if(j.table_html) h+=j.table_html;
-    // 🏭 생산능력·생산실적·가동률 — 재고자산 차트(인포그래픽) 바로 아래.
-    // 서버가 살균한 표 HTML 이라 그대로 삽입(사용자 2026-08-20 "원본을 표로").
+    // 🏭 생산능력·생산실적·가동률 — 재고자산 차트(인포그래픽) 바로 아래,
+    // 성장동력 카드 **바로 위**(사용자 2026-08-20 위치 확정). 카드가 본
+    // 이미지 안에 있으면 표가 카드 아래로 밀리므로 카드를 별도 PNG 로
+    // 분리했다. 서버가 살균한 표 HTML 이라 그대로 삽입.
     if(j.production_html) h+=j.production_html;
+    // 성장동력·리스크 카드 이미지 — 표 다음. 본 이미지와 같은 캐시 키의 짝.
+    if(j.cards_image_url){
+      h+='<img src="'+base()+j.cards_image_url+'" alt="성장동력·리스크" '
+       + 'style="width:100%;border-radius:10px;margin-top:10px">';
+    }
     var gr=j.growth_risk||{};
     if(gr.ok){
       // 이미지가 없을 때도(폰트 부재) 유료로 생성한 요약은 반드시 보여준다.
