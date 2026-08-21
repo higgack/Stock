@@ -593,10 +593,10 @@ class TestPriceChartRender:
         # 페이로드 형태가 바뀌어 정당하게 v5 로 올릴 때 이 테스트가 깨졌다
         # (2026-07-29). 검증해야 할 건 '버전이 몇이냐' 가 아니라 '버전 접미사로
         # 옛 캐시를 무효화하는 규약이 살아 있느냐' 다.
-        import re as _re
         srv = open("bot/dashboard_server.py", encoding="utf-8").read()
-        assert _re.search(r"\{safe\}_\{interval\}_\{rng\}_v\d+\.json", srv), \
-            "차트 캐시 키의 버전 접미사 규약 누락(라이브 가드 후 bump 용)"
+        from bot.dashboard_server import chart_cache_name
+        nm = chart_cache_name("005930_KS", "1d", "1y")
+        assert "_v" in nm and nm.endswith(".json"), nm
         assert "< 300:" in srv, "캐시 TTL 5분 누락"
 
     def test_chart_indicators_volume_rsi_bb_macd_candle(self):
@@ -2503,10 +2503,9 @@ class TestTradeLevelParser:
         # 페이로드 형태가 바뀌었으면 차트 캐시 버전도 올려야 배포 직후 옛 캐시가
         # 새 필드 없이 5분간 서빙되는 일이 없다(실수#11 '배포완료 ≠ 화면에 보임').
         # 버전은 하한만 고정 — 정확히 v5 로 박으면 다음 정당한 bump 때 깨진다.
-        import re as _re
-        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
-        m = _re.search(r"\{safe\}_\{interval\}_\{rng\}_v(\d+)\.json", srv)
-        assert m and int(m.group(1)) >= 5, \
+        from bot.dashboard_server import chart_cache_name
+        nm = chart_cache_name("005930_KS", "1d", "1y")
+        assert int(nm.rsplit("_v", 1)[1].split(".")[0]) >= 5, \
             "elliott/interval_fallback 필드 추가분이 반영되려면 캐시 버전 ≥5 필요"
         # ℹ️가이드에도 국내 분봉 경로가 적혀 있어야(설명 out-of-sync 방지)
         assert "네이버 실시간 분봉" in db and "당일치만" in db
@@ -3141,7 +3140,18 @@ class TestIchimokuDisparity20260731:
         # /api/chart 응답으로 교체되기 전 잠깐 쓰는 placeholder 이고 두 지표
         # 모두 기본 OFF 라 표시될 일이 없다.
         assert "for_storage: bool = False" in cd, "저장용 경량 플래그 없음"
-        assert "if not for_storage:" in cd, "저장 경로에서 무거운 오버레이 미제외"
+        import numpy as _np
+        import pandas as _pd
+        import bot.chart_data as _cd
+        _n = 120
+        _c = _pd.Series(
+            _np.cumsum(_np.random.default_rng(3).normal(0, 1, _n)) + 100,
+            index=_pd.date_range("2025-01-01", periods=_n, freq="D"))
+        _st = _cd._series_payload(_c, "KRW", 0, None, _c, _c * 1.01,
+                                  _c * 0.99, ticker=None, interval="1d",
+                                  for_storage=True)
+        assert "ichimoku" not in _st and "disparity" not in _st, \
+            "저장 경로에서 무거운 오버레이 미제외"
         assert "ticker=ticker, for_storage=True)" in cd, \
             "build_price_chart(저장 경로)가 경량 플래그를 안 씀"
         # ±inf 는 json.dumps 가 'Infinity' 로 써서 JSON.parse 를 깨뜨린다.
@@ -3282,10 +3292,11 @@ class TestIchimokuDisparity20260731:
     def test_cache_version_bumped_for_new_payload_fields(self):
         """페이로드에 ichimoku/disparity 가 추가됐으니 차트 캐시 버전도 올려야
         배포 직후 옛 캐시가 새 필드 없이 서빙되지 않는다(실수#11)."""
-        import re as _re
-        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
-        m = _re.search(r"\{safe\}_\{interval\}_\{rng\}_v(\d+)\.json", srv)
-        assert m and int(m.group(1)) >= 6, "캐시 버전 ≥6 필요"
+        from bot.dashboard_server import chart_cache_name
+        nm = chart_cache_name("005930_KS", "1d", "1y")
+        assert int(nm.rsplit("_v", 1)[1].split(".")[0]) >= 6, nm
+        # lite 는 **다른 payload** 라 파일이 따로여야 한다
+        assert chart_cache_name("005930_KS", "1d", "1y", True) != nm
 
     def test_guide_text_matches_behaviour(self):
         """설명-동작 out-of-sync = 버그. 가이드가 표준 근거(고저 중간값·
@@ -30199,7 +30210,8 @@ class TestChartEventsBudget20260821:
         i = html.find("공시 마커 (날짜별")
         assert i > 0, "차트 가이드에 공시 마커 섹션이 없다"
         seg = html[i:i + 2500]                  # 그 섹션만 본다(#55)
-        assert "차트를 붙잡지 않습니다" in seg and "다음 조회부터" in seg, seg[:400]
+        assert "차트를 붙잡지 않습니다" in seg, seg[:400]
+        assert "백그라운드로 받아" in seg, seg[:400]
 
 
 class TestProbeAlignSummary20260821:
@@ -30489,3 +30501,84 @@ class TestTablesParseCache20260822:
         assert dp.tables_rolling(self._Dart(), "ZZZ.KS", self._Q) == {}
         assert dp.tables_rolling(self._Dart(), "ZZZ.KS", self._Q) == {}
         assert len(n) == 2, "실패를 캐시했다"
+
+
+class TestChartLiteFirst20260822:
+    """첫 화면(종합 탭)은 **기본 ON 인 것만** 계산하고 먼저 그린다.
+
+    사용자 2026-08-22: "차트쪽 즉 종합탭은 그래도 다른것보다 빨리 나와야할것
+    같아. 우선 첫화면이니까." VM 실측 CCJ: `indicators=73.093s` 중
+    `ind.ichimoku+disparity=59.73s` + `ind.events=3.276s` — 전부 화면
+    **기본 OFF** 오버레이다. 아무도 안 켠 계산을 기다리고 있었다(#116 의 짝)."""
+
+    def _payload(self, **kw):
+        import numpy as np
+        import pandas as pd
+        import bot.chart_data as cd
+        n = 250
+        c = pd.Series(
+            np.cumsum(np.random.default_rng(1).normal(0, 1, n)) + 100,
+            index=pd.date_range("2025-01-01", periods=n, freq="D"))
+        return cd._series_payload(c, "KRW", 0, None, c, c * 1.01, c * 0.99,
+                                  ticker=None, interval="1d", **kw)
+
+    def test_lite_skips_the_default_off_overlays(self):
+        lite = self._payload(lite=True)
+        for k in ("ichimoku", "disparity", "elliott", "events"):
+            assert k not in lite, f"lite 인데 {k} 를 계산했다"
+
+    def test_lite_keeps_everything_the_first_screen_draws(self):
+        """기본 ON 은 캔들·이평선·거래량 — 그건 lite 에도 다 있어야 한다."""
+        full, lite = self._payload(), self._payload(lite=True)
+        for k in ("times", "close", "open", "high", "low",
+                  "ema21", "sma55", "sma200"):
+            assert k in lite, f"첫 화면이 그리는 {k} 가 lite 에서 빠졌다"
+            assert lite[k] == full[k], k
+
+    def test_full_still_has_them(self):
+        """lite 를 넣었다고 본 경로가 비면 오버레이가 영영 안 켜진다."""
+        full = self._payload()
+        assert "ichimoku" in full and "disparity" in full, sorted(full)
+
+    def test_cache_and_timing_keys_separate_lite(self):
+        """lite 는 **다른 payload** 다 — 같은 키에 섞으면 오버레이를 켜도
+        TTL 내내 데이터가 없다."""
+        import bot.chart_data as cd
+        from bot.dashboard_server import chart_cache_name
+        assert (chart_cache_name("A", "1d", "1y", True)
+                != chart_cache_name("A", "1d", "1y"))
+        assert (cd.timing_key("A", "1d", "1y", True)
+                != cd.timing_key("A", "1d", "1y"))
+
+    def test_client_asks_lite_first_then_fetches_the_rest(self):
+        """배선이 빠지면 서버만 빨라지고 화면은 그대로다(#20)."""
+        from bot.dashboard import _CHART_JS
+        assert "&lite=1" in _CHART_JS, "첫 요청이 lite 가 아니다"
+        # ⚠️ 정의만 보면 **호출을 지우는 변형이 통과한다**(실측) — 정의 1 +
+        # 호출 1 이 최소다(#20 배선은 존재가 아니라 호출을 봐야 한다).
+        assert _CHART_JS.count("loadRest(") >= 2, "나머지를 받아오는 호출이 없다"
+        # 켜져 있는 오버레이가 있으면 합친 뒤 다시 그려야 한다
+        assert "if (needsRest()) { render(lastData, true)" in _CHART_JS
+        # 아직 안 온 오버레이를 켜면 **왜 비었는지** 말해야 한다(빈 화면 금지)
+        assert "보조지표 준비 중" in _CHART_JS
+
+    def test_generated_chart_js_still_parses(self):
+        """생성물이 JS 면 **파서에 태운다**(#26 — 파이썬은 JS 문법을 안 본다)."""
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            pytest.skip("node 미설치")
+        from bot.dashboard import _CHART_JS
+        with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8",
+                                         delete=False) as f:
+            f.write(_CHART_JS)
+            path = f.name
+        try:
+            r = subprocess.run([node, "--check", path],
+                               capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+        finally:
+            os.unlink(path)
