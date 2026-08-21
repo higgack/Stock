@@ -2807,6 +2807,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
         <ul>
           <li>핵심 공시만 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약/소송</span> · <span style="color:#4c9aff">시설투자</span> · <span style="color:#b07cff">주주환원</span>(배당·자기주식) · <span style="color:#f5a623">자본변동</span>(증자·CB·감자) · <span style="color:#2dd4bf">M&A·지분</span>(합병·양수도) · <span style="color:#e2574c">리스크</span>(상장폐지·거래정지·횡령) · <span style="color:#f78fb3">최대주주변경</span>. (실적·임원·Reg FD 등 그 외는 제외.) 마커에 hover하면 <b>차트 아래 패널</b>에 그 날 공시의 종류·전체 제목·간단 설명·<b>원문 보기 링크</b> 표시.</li>
           <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). US 8-K 는 항목 종류가 넓어(실적·Reg FD·임원 위주) 매칭되는 마커가 KR DART(세밀한 공시명)보다 적게 표시될 수 있음. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(<b>기본 OFF</b> — 선택해서 보기).</li>
+          <li>공시 조회는 <b>차트를 붙잡지 않습니다</b> — 8초 안에 안 오면 그 차트는 마커 없이 먼저 그려지고, 백그라운드가 받아 둔 뒤 <b>다음 조회부터</b> 표시됩니다(종목당 12시간 보관). 방금 담은 종목의 첫 조회에서 마커가 비어 보이면 새로고침해 보세요.</li>
         </ul>
       </div>
       <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량)으로 돌아갑니다.

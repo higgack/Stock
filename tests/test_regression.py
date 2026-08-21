@@ -30052,3 +30052,127 @@ class TestDartCellWbr20260821:
                     node.body[0].value.value = ""
         code = ast.unparse(tree)
         assert "wbr" in code, "덤프가 줄바꿈 힌트를 안 걷어낸다"
+
+
+class TestChartEventsBudget20260821:
+    """공시 마커는 **장식**이다 — 차트를 붙잡으면 안 된다.
+
+    2026-08-21 실측: `/api/chart` 385초 중 `indicators` 가 380.451초인데 순수
+    계산은 250봉에 0.02초였다 — 전부 `fetch_disclosure_events` 의 바깥 원천
+    I/O. 차트 payload 캐시는 5분이라 5분마다 그 값을 다시 물었다."""
+
+    def _iso(self, tmp_path, monkeypatch):
+        import pathlib
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_CACHE_DIR", pathlib.Path(tmp_path))
+
+    def test_budget_returns_without_markers_and_warms_the_cache(
+            self, tmp_path, monkeypatch):
+        """⚠️ 시간이 아니라 **신호**로 잰다 — sleep 으로 쓰면 부하가 걸린
+        전체 실행에서 흔들린다(실측: 단독 green, 전체 실행 red)."""
+        import threading
+        import bot.chart_events as ce
+        self._iso(tmp_path, monkeypatch)
+        entered, release, wrote = (threading.Event(), threading.Event(),
+                                   threading.Event())
+
+        def slow(ticker, limit=250, days=400):
+            entered.set()
+            release.wait(10)
+            return [{"time": "2026-08-01", "title": "수주", "type": "order"}]
+        monkeypatch.setattr(ce, "_fetch_events", slow)
+        monkeypatch.setattr(ce, "_EV_BUDGET", 0.15)
+        # ⚠️ 캐시 헬퍼는 호출 **시작 시점**에 묶인다 — 먼저 감싸 둔다
+        import bot.finviz_client as fv
+        orig = fv._cache_write
+
+        def spy(name, obj):
+            orig(name, obj)
+            wrote.set()
+        monkeypatch.setattr(fv, "_cache_write", spy)
+        assert ce.fetch_disclosure_events("005930.KS", days=90) == [], \
+            "원천이 안 끝났는데 기다렸다(예산 미준수)"
+        assert entered.wait(5), "백그라운드가 시작조차 안 했다"
+        release.set()
+        assert wrote.wait(5), "백그라운드가 캐시를 안 썼다"
+        got = ce.fetch_disclosure_events("005930.KS", days=90)
+        assert len(got) == 1, got
+
+    def test_one_cache_key_per_ticker_regardless_of_chart_range(
+            self, tmp_path, monkeypatch):
+        """차트 기간마다 창이 달라지면 캐시 키가 쪼개져 거의 안 맞는다(#61).
+        비용은 창 길이가 아니라 페이지 수가 정하므로 창은 고정해도 같다."""
+        import bot.chart_events as ce
+        self._iso(tmp_path, monkeypatch)
+        calls = []
+        monkeypatch.setattr(ce, "_fetch_events",
+                            lambda t, limit=250, days=400: (
+                                calls.append(days),
+                                [{"time": "2026-08-01", "title": "수주"}])[1])
+        for rng in (30, 90, 365, 1095, 4000):
+            assert len(ce.fetch_disclosure_events("005930.KS", days=rng)) == 1
+        assert calls == [4000], calls
+
+    def test_empty_result_is_only_trusted_briefly(self, tmp_path, monkeypatch):
+        """빈 결과는 '원천에 없음'일 수도 **원천 실패**일 수도 있다 —
+        길게 믿으면 전산장애 한 번에 12시간 마커가 사라진다."""
+        import bot.chart_events as ce
+        self._iso(tmp_path, monkeypatch)
+        n = []
+        monkeypatch.setattr(ce, "_fetch_events",
+                            lambda t, limit=250, days=400: (n.append(1), [])[1])
+        assert ce.fetch_disclosure_events("005930.KS") == []
+        assert ce.fetch_disclosure_events("005930.KS") == []
+        assert len(n) == 1, "짧은 창 안에서는 캐시가 막아야 한다"
+        monkeypatch.setattr(ce, "_EV_SOFT_TTL", 0)      # 짧은 창이 지난 뒤
+        assert ce.fetch_disclosure_events("005930.KS") == []
+        assert len(n) == 2, "빈 결과를 영원히 믿고 있다"
+
+    def test_fixed_window_matches_what_each_client_is_asked_for(
+            self, monkeypatch):
+        """`_days_for` 는 `_fetch_events` 의 시장별 캡과 **같은 값**이어야
+        한다(멱등) — 아니면 캐시 키의 창과 실제 조회창이 갈린다."""
+        import types
+        import bot.chart_events as ce
+        seen = {}
+
+        class _C:
+            def get_recent_disclosures(self, t, days_back=0, limit=0):
+                seen["d"] = days_back
+                return []
+
+        def _mod(**kw):
+            return types.SimpleNamespace(**kw)
+        monkeypatch.setitem(__import__("sys").modules, "bot.dart_client",
+                            _mod(get_dart=lambda: _C()))
+        monkeypatch.setitem(__import__("sys").modules, "bot.dart_detail",
+                            _mod(get_disclosure_summaries=lambda *a, **k: {}))
+        monkeypatch.setitem(__import__("sys").modules, "bot.edinet_client",
+                            _mod(get_edinet=lambda: _C()))
+        monkeypatch.setitem(__import__("sys").modules, "bot.mops_client",
+                            _mod(get_mops=lambda: _C()))
+        monkeypatch.setitem(__import__("sys").modules, "bot.akshare_client",
+                            _mod(get_akshare=lambda: _C()))
+        monkeypatch.setitem(
+            __import__("sys").modules, "bot.edgar_client",
+            _mod(get_recent_8k=lambda t, days=0, top_n=0: (
+                seen.__setitem__("d", days), [])[1]))
+        from bot.market import detect_market
+        for tkr in ("005930.KS", "AAPL", "7203.T", "2330.TW", "600519.SS"):
+            seen.clear()
+            mkt = detect_market(tkr)
+            want = ce._days_for(mkt)
+            ce._fetch_events(tkr, limit=250, days=want)
+            assert seen.get("d") == want, (tkr, mkt, want, seen)
+
+    def test_chart_guide_explains_the_budget(self):
+        """동작이 바뀌면 설명도 정확히(out-of-sync = 버그) — 첫 조회에서
+        마커가 비어 보일 수 있다는 걸 화면이 말해야 한다."""
+        from bot.dashboard import _render_chart_section
+        html = _render_chart_section({
+            "ticker": "005930.KS",
+            "price_chart": {"times": ["2026-08-20"], "close": [70000.0]}})
+        i = html.find("공시 마커 (날짜별")
+        assert i > 0, "차트 가이드에 공시 마커 섹션이 없다"
+        seg = html[i:i + 2500]                  # 그 섹션만 본다(#55)
+        assert "차트를 붙잡지 않습니다" in seg and "다음 조회부터" in seg, seg[:400]
