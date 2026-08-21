@@ -31,7 +31,7 @@ import statistics
 import sys
 import time
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 
 def _universe(limit: int) -> list[str]:
@@ -47,6 +47,24 @@ def _universe(limit: int) -> list[str]:
     except Exception as exc:                                   # noqa: BLE001
         print(f"   (관심종목 로드 실패: {exc})")
     return out[:limit]
+
+
+# 병렬 풀에 **들어가는 것만** 남긴다. 계측 키는 세 부류다:
+#   yf.info/total  — 단계가 아니라 합계·직렬 선행
+#   enrich:*       — 풀 **뒤**에 도는 시장별 보강
+#   kr:*           — enrich:KR **안**의 개별 task(그 자체가 병렬)
+# 이걸 안 걸러내면 `병렬최대` 가 enrich 내부 값에 밀려 **엉뚱한 항목**을
+# 병목으로 보고한다. 순수 함수로 빼 둔 건 의도다 — 인라인이면 회귀가
+# 소스 문자열만 보게 된다(실수 #41).
+_NOT_PARALLEL = ("enrich:", "kr:")
+
+
+def slowest_parallel(timing: dict) -> tuple[str, float]:
+    """보조 **병렬 6종** 중 가장 느린 (이름, 초). 없으면 ('—', 0.0)."""
+    par = {k: v for k, v in (timing or {}).items()
+           if k not in ("yf.info", "total")
+           and not k.startswith(_NOT_PARALLEL)}
+    return max(par.items(), key=lambda kv: kv[1], default=("—", 0.0))
 
 
 def _print_key_sources() -> None:
@@ -93,9 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         for k, v in tm.items():
             per_stage.setdefault(k, []).append(v)
-        par = {k: v for k, v in tm.items()
-               if k not in ("yf.info", "total") and not k.startswith("enrich:")}
-        slow = max(par.items(), key=lambda kv: kv[1], default=("—", 0.0))
+        slow = slowest_parallel(tm)
         enr = next((f"{k.split(':')[1]} {v:.1f}s"
                     for k, v in tm.items() if k.startswith("enrich:")), "—")
         print(f"[{i:2}/{len(tickers)}] {tk:<12} 총 {tm.get('total', wall):6.1f}s"
@@ -114,6 +130,16 @@ def main(argv: list[str] | None = None) -> int:
     for k, vs in rows:
         print(f"  {k:<14} {statistics.median(vs):6.2f}s / {max(vs):6.2f}s"
               f"   (n={len(vs)})")
+    # ⚠️ enrich:KR 은 **이미 병렬**이다(2026-06-10) — 합이 아니라 **최대값
+    # 하나**가 지배한다. 그래서 그 안을 따로 낸다. 이름이 없으면 "느리다"
+    # 까지만 알고 무엇을 고칠지는 모른다(실수 #69).
+    _kr = {k[3:]: v for k, v in per_stage.items() if k.startswith("kr:")}
+    if _kr:
+        print("\nenrich:KR 내부 (중앙값 / 최대) — 이 중 **최대값**이 벽시계다:")
+        for k in sorted(_kr, key=lambda k: -statistics.median(_kr[k])):
+            v = _kr[k]
+            print(f"  {k:<18} {statistics.median(v):6.2f}s / {max(v):6.2f}s"
+                  f"   (n={len(v)})")
     print("\n해석: `total` 에서 `yf.info` + `병렬최대` + `enrich:*` 를 빼면")
     print("      나머지는 순수 파싱이다. 클릭 로딩으로 떼서 이득이 큰 건")
     print("      **enrich 와 병렬최대를 차지하는 항목**이다.")
