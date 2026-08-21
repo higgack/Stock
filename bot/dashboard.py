@@ -5146,15 +5146,27 @@ _QUARTERLY_JS = r"""
        + esc(j.render_note||'이미지 렌더 불가 — 표로 표시합니다.')+'</div>';
     }
     if(j.table_html) h+=j.table_html;
-    // 🏭 생산능력·생산실적·가동률 — 재고자산 차트(인포그래픽) 바로 아래,
-    // 성장동력 카드 **바로 위**(사용자 2026-08-20 위치 확정). 카드가 본
-    // 이미지 안에 있으면 표가 카드 아래로 밀리므로 카드를 별도 PNG 로
-    // 분리했다. 서버가 살균한 표 HTML 이라 그대로 삽입.
+    // ── 조립 순서(사용자 2026-08-21) ────────────────────────────────
+    //   [지표·차트] → 📦 주요 제품 및 서비스 → 🏭 생산능력·가동률
+    //   → [수주잔고·재고자산·TTM] → [성장동력 카드] → 출처·면책
+    // 공급사슬 순서(무엇을 파나 → 얼마나 만드나 → 주문 → 재고 → 전망).
+    // 표를 차트 사이에 끼우려고 본 이미지를 상단/하단 두 조각으로 나눴다.
+    // 서버가 살균한 표 HTML 이라 그대로 삽입.
     if(j.production_html) h+=j.production_html;
-    // 성장동력·리스크 카드 이미지 — 표 다음. 본 이미지와 같은 캐시 키의 짝.
+    if(j.image_bottom_url){
+      h+='<img src="'+base()+j.image_bottom_url+'" alt="수주잔고·재고자산" '
+       + 'style="width:100%;border-radius:10px;margin-top:10px">';
+    }
     if(j.cards_image_url){
       h+='<img src="'+base()+j.cards_image_url+'" alt="성장동력·리스크" '
        + 'style="width:100%;border-radius:10px;margin-top:10px">';
+    }
+    // 출처·면책은 **맨 아래**. PNG 안에 두면 카드 조각보다 위로 올라간다.
+    if(j.provenance&&j.provenance.length===2){
+      h+='<div style="display:flex;justify-content:space-between;gap:12px;'
+       + 'font-size:11px;color:var(--fg-soft);margin-top:8px">'
+       + '<span>'+esc(j.provenance[0])+'</span>'
+       + '<span>'+esc(j.provenance[1])+'</span></div>';
     }
     var gr=j.growth_risk||{};
     if(gr.ok){

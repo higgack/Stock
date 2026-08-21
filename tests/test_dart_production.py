@@ -885,3 +885,218 @@ class TestFetchCost20260821:
         ds._production_html("005930.KS", {"quarters": [{"year": 2026}]})
         assert len(calls) == 1, f"보고서를 {len(calls)}번 걷는다"
         assert calls[0] in (None, ()), "한 표만 요청해 나머지가 또 걷게 된다"
+
+
+class TestCanvasGeometry20260821:
+    """조각을 세로로 이어 붙이려면 **폭이 같아야** 한다(사용자 2026-08-21
+    순서 재배치 검토 중 실측). `bbox_inches="tight"` 는 그려진 내용에 맞춰
+    잘라내므로 조각마다 폭이 달라진다 — 본 1672px / 카드 1661px 이었고
+    `width:100%` 로 놓으면 패널 왼쪽 선이 1200px 화면에서 3.3px 어긋났다."""
+
+    @staticmethod
+    def _payload():
+        import bot.quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11,
+                              "수주잔고": 5e11, "재고자산": 1.79e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+              for i in (1, 2, 3, 4, 5)]
+        return {"ticker": "T", "company": "T", "market": "KOSDAQ",
+                "market_cap": 3.4e11, "quarters": qs, "ttm": qi._ttm(qs),
+                "per": 12.0, "per_forward": 10.5, "per_self": True, "psr": 2.7,
+                "currency": "KRW", "trade_currency": "KRW",
+                "currency_mismatch": False, "fiscal_note": "",
+                "anomaly_keys": [], "anomaly_labels": [],
+                "component_accounts": {}, "source_label": "DART",
+                "asof": "2026-08-21",
+                "growth_risk": {"ok": True, "headline": "h",
+                                "risk_subline": "r",
+                                "growth_drivers": ["a", "b"],
+                                "sustain_risks": ["c"]}}
+
+    def test_all_pieces_share_one_pixel_width(self):
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from PIL import Image
+        import bot.quarterly_infographic as qi
+        _orig, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            p = self._payload()
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                a = qi.render_infographic(p, f"{d}/m.png")
+                b = qi.render_cards(p, f"{d}/c.png")
+                wa = Image.open(a).width
+                wb = Image.open(b).width
+        finally:
+            qi._font_ok = _orig
+        assert wa == wb, f"조각 폭이 다르다: 본 {wa}px · 카드 {wb}px"
+
+    def test_tight_bbox_is_not_used(self):
+        """tight 를 쓰면 내용에 따라 폭이 흔들려 정렬 보장이 깨진다."""
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        import re
+        code = re.sub(r'(?s)""".*?"""', "", src)
+        code = "\n".join(ln for ln in code.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        assert "bbox_inches" not in code, "savefig 가 아직 tight 로 자른다"
+
+    def test_canvas_geometry_has_a_single_source(self):
+        """도화지 설정이 조각마다 흩어지면 여백이 갈라진다 — 실제로 본 0.15in
+        / 카드 0.12in 로 달랐다(#38)."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+        assert "_new_canvas" in names
+        # ⚠️ 문자열 세기는 **정의 줄까지 센다**(`def _new_canvas(plt,` 가 걸려
+        # 2를 기대한 검사가 3을 봤다). 조각이 늘면 기대값도 바뀌어 매번
+        # 손봐야 한다 — "plt.subplots 는 _new_canvas 안에서만"이라는 계약을
+        # AST 로 못박는다(조각 수와 무관).
+        owners = []
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            for n in ast.walk(fn):
+                if (isinstance(n, ast.Call)
+                        and getattr(n.func, "attr", "") == "subplots"):
+                    owners.append(fn.name)
+        assert owners == ["_new_canvas"], \
+            f"도화지를 따로 만드는 함수가 있다: {owners}"
+
+    def test_footer_line_is_not_clipped(self):
+        """tight 를 버리면 축 밖으로 나간 글자가 잘린다 — 푸터 출처·면책 줄이
+        이미지 맨 아래에 있어 제일 위험하다."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from PIL import Image
+        import bot.quarterly_infographic as qi
+        _orig, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                a = qi.render_infographic(self._payload(), f"{d}/m.png")
+                im = Image.open(a).convert("L")
+                px = im.load()
+                rows = [y for y in range(im.height - 130, im.height)
+                        if sum(1 for x in range(0, im.width, 3)
+                               if px[x, y] > 60) > 3]
+        finally:
+            qi._font_ok = _orig
+        assert rows, "이미지 하단 130px 에 글자가 없다 — 푸터가 잘렸다"
+
+
+class TestPieceOrder20260821:
+    """사용자 2026-08-21 배치: [지표·차트] → 📦 주요 제품 → 🏭 가동률 →
+    [수주잔고·재고자산] → [성장동력 카드] → 출처·면책.
+
+    공급사슬 순서(무엇을 파나 → 얼마나 만드나 → 주문 → 재고 → 전망). 표를
+    차트 사이에 끼우려면 본 이미지를 두 조각으로 나눠야 한다."""
+
+    @staticmethod
+    def _payload():
+        import bot.quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11,
+                              "수주잔고": 5e11, "재고자산": 1.79e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+              for i in (1, 2, 3, 4, 5)]
+        return {"ticker": "T", "company": "T", "market": "KOSDAQ",
+                "market_cap": 3.4e11, "quarters": qs, "ttm": qi._ttm(qs),
+                "per": 12.0, "per_forward": 10.5, "per_self": True,
+                "psr": 2.7, "currency": "KRW", "trade_currency": "KRW",
+                "currency_mismatch": False, "fiscal_note": "",
+                "anomaly_keys": [], "anomaly_labels": [],
+                "component_accounts": {}, "source_label": "DART",
+                "asof": "2026-08-21_14", "period_key": "20260630",
+                "growth_risk": {"ok": True, "cached": True, "headline": "h",
+                                "risk_subline": "r",
+                                "growth_drivers": ["a", "b"],
+                                "sustain_risks": ["c"]}}
+
+    def test_sections_partition_without_overlap_or_gap(self):
+        """조각이 섹션을 **정확히 한 번씩** 나눠 가져야 한다 — 겹치면 같은
+        차트가 두 번, 빠지면 통째로 사라진다."""
+        import bot.quarterly_infographic as qi
+        assert tuple(qi._PART_TOP) + tuple(qi._PART_BOTTOM) == qi._SECTIONS
+
+    def test_client_assembles_in_the_requested_order(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        blk = src[src.index("if(j.image_url){"):src.index("var gr=j.growth_risk")]
+        order = [blk.index(k) for k in (
+            "j.image_url", "j.production_html", "j.image_bottom_url",
+            "j.cards_image_url", "j.provenance")]
+        assert order == sorted(order), f"조립 순서가 어긋남: {order}"
+
+    def test_provenance_is_html_not_baked_into_the_png(self):
+        """면책이 PNG 안에 있으면 카드 조각보다 위로 올라가 마지막이 아니게
+        된다 — 그래서 HTML 로 뺐다."""
+        import ast
+        import bot.quarterly_infographic as qi
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        drawer = next(n for n in tree.body
+                      if isinstance(n, ast.FunctionDef)
+                      and n.name == "_render_locked")
+        drawn = ast.dump(drawer)
+        assert "투자 참고용" not in drawn, "면책이 아직 PNG 에 그려진다"
+        line, disc = qi.provenance_line({"source_label": "DART",
+                                         "asof": "2026-08-21_14"})
+        assert "2026-08-21 14시 기준(KST)" in line and "투자 참고용" in disc
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert "_qi.provenance_line(payload)" in srv, "API 가 안 실어 보낸다"
+
+    def test_three_pieces_are_produced_and_survive_purge(self, tmp_path,
+                                                         monkeypatch):
+        """⚠️ 조각을 추가하고 `_purge_stale` 을 잊으면 방금 만든 그림이 바로
+        지워진다(2026-08-20 카드 분리 때 실측한 함정)."""
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        import bot.quarterly_infographic as qi
+        pay = self._payload()
+        monkeypatch.setattr(qi, "_IMG_DIR", tmp_path)
+        monkeypatch.setattr(qi, "_font_ok", lambda: True)
+        monkeypatch.setattr(qi, "build_payload", lambda *a, **k: pay)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = qi.get_or_render("T")
+        assert r["image"] and r["image_bottom"] and r["cards_image"]
+        assert len(list(tmp_path.glob("*.png"))) == 3, "조각이 지워졌다"
+        with warnings.catch_warnings():          # 캐시 히트에서도 살아있어야
+            warnings.simplefilter("ignore")
+            r2 = qi.get_or_render("T")
+        assert r2["cached"] and r2["image_bottom"] and r2["cards_image"]
+
+    def test_bottom_piece_carries_the_extra_charts(self):
+        """하단 조각이 비면 수주잔고·재고자산이 화면에서 통째로 사라진다."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from PIL import Image
+        import bot.quarterly_infographic as qi
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            p = self._payload()
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                top = qi._render_locked(p, f"{d}/a.png", qi._PART_TOP)
+                bot_ = qi._render_locked(p, f"{d}/b.png", qi._PART_BOTTOM)
+                ht = Image.open(top).height
+                hb = Image.open(bot_).height
+        finally:
+            qi._font_ok = _o
+        # 수주잔고+재고자산 2단(각 34 단위) + TTM 푸터가 들어가므로 얇지 않다
+        assert hb > 600, f"하단 조각이 비었다({hb}px)"
+        assert ht > hb, "상단(지표+차트 2단)이 하단보다 작을 수 없다"
+
+    def test_render_version_bumped_for_the_split(self):
+        """옛 캐시 PNG 는 수주잔고·재고자산을 **품고 있다** — 버전을 안 올리면
+        그 종목은 같은 차트가 두 번 뜬다(실수 #11)."""
+        from bot.quarterly_infographic import _RENDER_VER
+        assert _RENDER_VER not in ("v7", "v8"), "조각 분할인데 버전이 그대로"

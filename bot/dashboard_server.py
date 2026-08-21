@@ -993,15 +993,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # 무조건 "서버 한글 폰트 미설치" 라 폰트가 멀쩡한데 다른 이유로
                 # 실패한 경우까지 오진했다(사용자 2026-08-18 LPK.DE).
                 "render_note": ("" if img else _render_note()),
-                # 🏭 생산능력·생산실적·**가동률** 표(사용자 2026-08-20
-                # "가동률이 중요한거야. 키는 그거야") — DART 정기보고서 본문
-                # 표를 원본 구조 그대로. 위치는 재고자산 차트 아래(=인포그래픽
-                # 이미지 다음). KR 전용(원천이 DART), 없으면 빈 문자열이라
-                # 프런트가 섹션을 통째로 생략한다.
+                # 📦 주요 제품 및 서비스 + 🏭 생산능력·생산실적·가동률 표.
+                # DART 정기보고서 본문 표를 원본 구조 그대로. KR 전용(원천이
+                # DART), 없으면 빈 문자열이라 프런트가 섹션을 통째로 생략한다.
                 "production_html": _production_html(ticker, payload),
+                # 하단 조각(수주잔고·재고자산·TTM) = **별도 PNG**(2026-08-21).
+                # 사용자 배치: [지표·차트] → 제품 표 → 가동률 표 →
+                # [수주잔고·재고자산] → [성장동력 카드] → 출처·면책(HTML).
+                # 표가 이 조각 위로 와야 해서 본 이미지를 둘로 나눴다.
+                "image_bottom_url": (
+                    f"quarterly_infographic_img/{Path(_ib).name}"
+                    f"?v={int(Path(_ib).stat().st_mtime)}"
+                    if (_ib := res.get("image_bottom")) else None),
+                # 출처·면책 줄 = **HTML 최하단**(2026-08-21). PNG 안에 두면
+                # 카드 조각보다 위로 올라가 면책이 마지막이 아니게 된다.
+                "provenance": list(_qi.provenance_line(payload)),
                 # 성장동력·리스크 카드 = **별도 PNG**(사용자 2026-08-20).
-                # 생산능력 표가 카드 바로 위에 와야 해서 분리했다 — 프런트가
-                # [본 이미지] → [생산능력 표] → [카드 이미지] 순으로 붙인다.
                 "cards_image_url": (
                     f"quarterly_infographic_img/{Path(_ci).name}"
                     f"?v={int(Path(_ci).stat().st_mtime)}"
