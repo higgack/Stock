@@ -30939,3 +30939,121 @@ class TestCaptionOnlyTableAndAccountClass20260822:
         assert _compatible("매출", 0, 1)
         assert not _compatible("매출", 0, 2)
         assert _compatible("영업이익", 3, 3)
+
+
+class TestTablePrefetch20260822:
+    """제품·가동률 표를 수주잔고와 **동시에** 받는다.
+
+    2026-08-22 실측 `quarterly-timing 145020.KQ … build_payload=3.181s
+    render_png=39.15s total=42.331s h.production_html=76.1s` — 표를 걷는
+    76초가 `build_payload` **뒤에 직렬로** 붙었다. 둘은 같은 정기보고서를
+    보므로 서로 기다릴 이유가 없다(300120.KQ 는 `bp.backlog=83.065s`)."""
+
+    class _Dart:
+        api_key = "k"
+
+    _Q = [{"label": "26.2Q", "reprt_code": "11012", "year": 2026}]
+
+    @staticmethod
+    def _drain(dp, deadline: float = 20.0) -> bool:
+        """워커가 캐시를 쓸 때까지. ⚠️ 시간에 기대는 대기는 전체 실행에서
+        흔들린다 — 여유를 넉넉히 두고 **상태**(`_PREFETCH`)를 본다."""
+        import time
+        end = time.time() + deadline
+        while time.time() < end:
+            if not dp._PREFETCH:
+                return True
+            time.sleep(0.02)
+        return False
+
+    def _stub(self, monkeypatch, calls, delay=0.0):
+        import sys
+        import time
+        import types
+        import bot.dart_production as dp
+        # ⚠️ `_PREFETCH` 는 **모듈 전역**이다 — 앞 테스트의 워커가 남긴 키가
+        # 남아 있으면 이 테스트의 미리받기가 "이미 돌고 있다"로 조기 반환해
+        # 조용히 통과/실패한다(전체 실행에서만 나는 흔들림, 실측).
+        dp._PREFETCH.clear()
+        monkeypatch.setattr(dp, "_rcept_nos", lambda *a, **k: ["R1"])
+
+        def _fetch(rn, key, max_bytes=0, raw_markup=False):
+            calls.append(rn)
+            if delay:
+                time.sleep(delay)
+            return "<TABLE><TR><TD>x</TD></TR></TABLE>"
+        monkeypatch.setitem(
+            sys.modules, "bot.dart_feed",
+            types.SimpleNamespace(_DOC_TEXT_MAX=1, _DOC_TEXT_MAX_FULL=2,
+                                  _fetch_doc_text=_fetch,
+                                  doc_was_truncated=lambda *a, **k: False))
+        monkeypatch.setattr(dp, "_PARSERS", {
+            "products": lambda mk: {"table_html": "<table></table>"}})
+
+    def test_prefetch_returns_immediately_and_warms_the_same_key(
+            self, monkeypatch):
+        """⚠️ 인자가 호출부와 다르면 캐시 키가 갈려 요청만 늘고 빨라지지
+        않는데 그것도 조용하다(#104)."""
+        import threading
+        import time
+        import bot.dart_production as dp
+        calls = []
+        self._stub(monkeypatch, calls, delay=0.3)
+        t0 = time.time()
+        dp.prefetch_tables(self._Dart(), "005930.KS", self._Q)
+        assert time.time() - t0 < 0.15, "미리받기가 블로킹했다"
+        assert self._drain(dp), "워커가 안 끝났다"
+        got = dp.tables_rolling(self._Dart(), "005930.KS", self._Q)
+        assert got.get("products"), got
+        assert len(calls) == 1, f"본 호출이 다시 받았다(키 불일치): {calls}"
+        del threading
+
+    def test_no_duplicate_prefetch_threads(self, monkeypatch):
+        import time
+        import bot.dart_production as dp
+        calls = []
+        self._stub(monkeypatch, calls, delay=0.3)
+        for _ in range(5):
+            dp.prefetch_tables(self._Dart(), "005930.KS", self._Q)
+        assert self._drain(dp), "워커가 안 끝났다"
+        assert len(calls) == 1, f"같은 키로 여러 번 받았다: {calls}"
+
+    def test_warm_cache_starts_no_thread(self, monkeypatch):
+        """이미 따뜻하면 **스레드조차 띄우지 않는다** — 호출 수만 세면
+        워커가 캐시에 걸려 조용히 통과해 가드가 눈이 먼다(#91b)."""
+        import threading
+        import bot.dart_production as dp
+        calls, started = [], []
+        self._stub(monkeypatch, calls)
+        dp.tables_rolling(self._Dart(), "005930.KS", self._Q)   # 데운다
+        real = threading.Thread
+
+        class _Spy(real):
+            def start(self):
+                started.append(1)
+                return super().start()
+        monkeypatch.setattr(dp.threading, "Thread", _Spy)
+        dp.prefetch_tables(self._Dart(), "005930.KS", self._Q)
+        assert started == [], "이미 따뜻한데 워커를 띄웠다"
+
+    def test_build_payload_wires_the_prefetch(self):
+        """헬퍼만 만들고 배선이 빠지면 직렬 그대로다(#20)."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        n = sum(1 for x in ast.walk(ast.parse(src))
+                if isinstance(x, ast.Call)
+                and getattr(x.func, "id", "") == "prefetch_tables")
+        assert n >= 1, "build_payload 가 미리받기를 안 부른다"
+
+    def test_pre_render_is_not_a_copy_of_build_payload(self):
+        """⚠️ `_t0` 리셋을 빠뜨려 `pre_render` 가 `build_payload` 와 **같은
+        값**으로 찍혔다(2026-08-22 실측 3.181s/3.181s · 84.837s/84.837s) —
+        같은 값을 두 이름으로 찍는 계측은 빈 구간을 못 본다."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "get_or_render")
+        body = ast.get_source_segment(src, fn) or ""
+        i_bp = body.index('"build_payload"')
+        i_pr = body.index('"pre_render"')
+        assert "_t_pre = " in body[i_bp:i_pr], "pre_render 앞에 리셋이 없다"
