@@ -12375,17 +12375,59 @@ class TestTradeDashboardAudit20260820:
         from datetime import datetime
         from trade.scripts.dashboard_audit import _KST, sibling_staleness
         now = datetime(2026, 8, 20, 19, 0, tzinfo=_KST)
-        fresh = "… · 페이지 생성 2026-08-20 18:14 KST"
+        _pg = "<!doctype html><html><body>%s</body></html>"
+        fresh = _pg % "… · 페이지 생성 2026-08-20 18:14 KST"
         assert sibling_staleness(fresh, "tw.html", now) is None
         # footer 누락 = ❌ (구버전 렌더 또는 배선 이탈)
-        assert "as-of 줄 없음" in sibling_staleness("<html>x</html>",
-                                                    "tw.html", now)
+        assert "as-of 줄 없음" in sibling_staleness(_pg % "x", "tw.html", now)
         # 24h 초과 = ❌ (5분 재생성 주기가 멈춘 화석)
-        stale = "… · 페이지 생성 2026-08-18 18:14 KST"
+        stale = _pg % "… · 페이지 생성 2026-08-18 18:14 KST"
         assert "멈춘" in sibling_staleness(stale, "tw.html", now)
         # 정적 아카이브 3종은 생성 주기가 달라 면제
-        assert sibling_staleness("<html>x</html>", "reference.html",
-                                 now) is None
+        assert sibling_staleness(_pg % "x", "reference.html", now) is None
+
+    def test_lazy_fragments_are_judged_by_mtime_not_by_a_footer(self):
+        """2026-08-21 이 감사가 **정상 산출물 4건을 ❌ 로 오보**했다
+        (alerts_history.json · heatmap_panel.html · industry_csv.html ·
+        industry_panel.html). 넷 다 index.html 에서 떼어낸 lazy 조각이라
+        생성부가 footer 를 찍은 적이 없다 — 원천이 보장하는 규칙이 아니라
+        내가 그럴듯하다고 생각한 규칙을 단언한 것(실수 #50).
+
+        그렇다고 면제만 하면 화석을 놓친다(#41) — mtime 으로 같은 실패모드를
+        본다. 판정 근거가 없으면 ✅ 가 아니라 ❌ 다(#54)."""
+        from datetime import datetime, timedelta
+        from trade.scripts.dashboard_audit import _KST, sibling_staleness
+        now = datetime(2026, 8, 21, 8, 10, tzinfo=_KST)
+        frag = '<div class="hm-wrap">…</div>'
+        js = '{"a": 1}'
+        for body in (frag, js):
+            # footer 가 없어도 파일이 방금 써졌으면 정상
+            assert sibling_staleness(body, "heatmap_panel.html", now,
+                                     now - timedelta(hours=1)) is None
+            # 오래 안 바뀌었으면 화석 ❌
+            note = sibling_staleness(body, "heatmap_panel.html", now,
+                                     now - timedelta(hours=40))
+            assert note and "화석" in note
+            # mtime 을 안 주면 '판정 불가' ❌ — 조용한 통과 금지
+            assert "판정 불가" in sibling_staleness(body, "x.json", now)
+        # 독립 페이지는 여전히 footer 규칙을 탄다(조각 규칙이 새면 안 됨)
+        pg = "<!doctype html><html><body>no footer</body></html>"
+        assert "as-of 줄 없음" in sibling_staleness(pg, "tw.html", now,
+                                                    now - timedelta(hours=1))
+
+    def test_backlog_audit_counts_the_population_the_header_renders(self):
+        """감사는 eval_misses **원본 줄 수**를, 헤더는 IGNORED·JP·/ignore 를
+        뺀 수를 셌다 — 두 모집단이 갈라져 정상 화면을 "53건인데 표기 없음"
+        으로 오보했다(실수 #45). 화면이 쓰는 함수를 그대로 태워야 한다(#35)."""
+        src = open("trade/scripts/dashboard_audit.py", encoding="utf-8").read()
+        blk = src[src.index("⑤ 미파싱 백로그(eval_misses)"):]
+        blk = blk[:blk.index("return bad")]
+        assert "_load_eval_miss_summary" in blk, "렌더러 집계를 안 쓴다"
+        # 원본 줄 수로 ❌ 를 내면 안 된다 — 판정은 표기대상 수로만
+        assert "shown_n and not has_line" in blk
+        assert "bad.append(f\"미파싱 백로그 {raw}" not in blk
+        # 집계를 못 만들면 조용히 통과시키지 않는다(#54)
+        assert "판정 불가" in blk
 
 
 class TestAssetPagesContracts20260820:

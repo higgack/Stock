@@ -205,8 +205,10 @@ def audit_siblings(dash_dir: Path) -> list[str]:
             # 나쁜양파 형제 페이지는 asof_footer 가 '페이지 생성 …KST' 를
             # 찍으므로, 그 줄이 없거나(구버전/렌더 경로 이탈) 생성시각이
             # 24h 를 넘으면(재생성 5분 주기가 멈춤) ❌.
-            note = sibling_staleness(fp.read_text(encoding="utf-8"),
-                                     n, datetime.now(_KST))
+            note = sibling_staleness(
+                fp.read_text(encoding="utf-8", errors="replace"), n,
+                datetime.now(_KST),
+                datetime.fromtimestamp(fp.stat().st_mtime, _KST))
             if note:
                 bad.append(note)
                 _p(f"{_NG} {note}")
@@ -219,15 +221,42 @@ def audit_siblings(dash_dir: Path) -> list[str]:
 _ASOF_RE = re.compile(r"페이지 생성 (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) KST")
 # footer 의무 대상 — 나쁜양파 형제 + jp.html(비온). 정적 아카이브 3종은
 # 항목별 날짜·총계가 이미 있고 생성 주기가 달라 제외(report/industry 는
-# ④가 '총 N건 vs 로더'로 따로 검산).
+# ④가 '총 N건 vs 로더'로 따로 검산). lazy 조각(패널·CSV·JSON)은 이름이
+# 아니라 `_is_standalone_page` 로 갈려 mtime 규칙을 탄다.
 _ASOF_EXEMPT = ("reference.html", "industry_archive.html",
                 "report_archive.html")
 
 
-def sibling_staleness(html: str, name: str, now_kst: datetime) -> str | None:
+def _is_standalone_page(text: str) -> bool:
+    """독립 페이지인가(= footer 를 찍는 대상인가). 이름 열거가 아니라 **구조**로
+    판정한다 — 새 lazy 조각이 생겨도 목록을 갱신할 사람이 없다(#24)."""
+    return bool(re.search(r"(?i)<!doctype\s+html|<html[\s>]", text[:2000]))
+
+
+def sibling_staleness(html: str, name: str, now_kst: datetime,
+                      mtime: datetime | None = None) -> str | None:
     """None = 정상. 문자열 = ❌ 사유. 순수 함수 — 판정을 스크립트에 인라인으로
-    두면 회귀가 소스 문자열만 보게 된다(실수 #41/#19 — 동작으로 고정)."""
+    두면 회귀가 소스 문자열만 보게 된다(실수 #41/#19 — 동작으로 고정).
+
+    ⚠️ 2026-08-21 이 감사가 **정상 산출물 4건을 ❌ 로 오보**했다
+    (`alerts_history.json`·`heatmap_panel.html`·`industry_csv.html`·
+    `industry_panel.html`). 넷 다 index.html 에서 떼어낸 **lazy 조각**이라
+    독립 페이지가 아니고, 생성부는 footer 를 찍은 적이 없다 — 내가 그럴듯
+    하다고 생각한 규칙을 원천이 보장하는 규칙으로 착각한 것(실수 #50).
+    조각을 그냥 면제하면 화석을 놓치므로(#41 '여유로 사실을 덮지 말 것'),
+    같은 실패모드를 **파일 mtime** 으로 본다 — 조각은 index.html 과 한
+    사이클에 다시 써지므로 24h 넘게 안 바뀌었으면 재생성이 멈춘 것이다."""
     if name in _ASOF_EXEMPT:
+        return None
+    if not _is_standalone_page(html):
+        if mtime is None:
+            # 대조 대상이 없으면 ✅ 가 아니라 ❌ 다(#54 — 판정불가를 통과로
+            # 찍으면 그 섹션은 영원히 눈이 먼다).
+            return f"{name} 조각 신선도 판정 불가(mtime 미전달)"
+        age_h = (now_kst - mtime).total_seconds() / 3600
+        if age_h > 24:
+            return (f"{name} 파일이 {age_h:.0f}h 전에 마지막 기록 — lazy 조각 "
+                    f"재생성이 멈춘 것(화석)")
         return None
     m = _ASOF_RE.search(html)
     if not m:
@@ -276,18 +305,38 @@ def audit_backlog(dash_dir: Path) -> list[str]:
     _p("⑤ 미파싱 백로그(eval_misses) ↔ 헤더 표기")
     _p("=" * 72)
     misses = _data_dir() / "eval_misses.jsonl"
-    n = 0
+    raw = 0
     if misses.exists():
-        n = sum(1 for ln in misses.read_text(encoding="utf-8").splitlines()
-                if ln.strip())
+        raw = sum(1 for ln in misses.read_text(encoding="utf-8").splitlines()
+                  if ln.strip())
+    # ⚠️ 2026-08-21 이 섹션이 정상 화면을 ❌ 로 오보했다("53건인데 헤더에
+    # 표기 없음"). 감사는 **원본 줄 수**를 세는데 렌더러는 IGNORED 캡션·JP
+    # 수출 캡션·운영자 /ignore 한 msg_id 를 빼고 센다 — 총계와 소계가 다른
+    # 모집단을 세면 언젠가 갈라진다(실수 #45). 화면이 쓰는 그 함수를 그대로
+    # 태운다(#35: 프로브는 화면의 경로를 걷는다).
+    shown_n, err = 0, ""
+    try:
+        from trade.dashboard import _load_eval_miss_summary
+        shown_n = (_load_eval_miss_summary(misses) or {}).get("count") or 0
+    except Exception as exc:                                  # noqa: BLE001
+        err = f"{type(exc).__name__}: {exc}"
     fp = dash_dir / "index.html"
     html = fp.read_text(encoding="utf-8") if fp.exists() else ""
     has_line = "미파싱 백로그" in html
-    if n and not has_line:
-        bad.append(f"미파싱 백로그 {n}건인데 헤더에 표기 없음")
-        _p(f"{_NG} 백로그 {n}건인데 헤더 표기 없음(#43 — 화면이 침묵)")
+    if err:
+        # 대조 대상을 못 만들면 ✅ 가 아니라 ❌ 다(#54).
+        bad.append(f"백로그 집계 함수 호출 실패 — 검증 불가: {err}")
+        _p(f"{_NG} 백로그 집계 함수 호출 실패({err}) — 판정 불가")
+    elif shown_n and not has_line:
+        bad.append(f"미파싱 백로그 {shown_n}건인데 헤더에 표기 없음")
+        _p(f"{_NG} 백로그 {shown_n}건인데 헤더 표기 없음(#43 — 화면이 침묵)")
+    elif has_line and not shown_n:
+        bad.append("헤더에 백로그 줄이 있는데 집계는 0건")
+        _p(f"{_NG} 헤더엔 백로그 줄이 있는데 집계 0건(화면이 낡음)")
     else:
-        _p(f"{_mark(True)} 백로그 {n}건 · 헤더 표기 {'있음' if has_line else '없음(0건이라 정상)'}")
+        _p(f"{_mark(True)} 백로그 표기대상 {shown_n}건"
+           f"(원본 {raw}줄 중 제외 {raw - shown_n}) · "
+           f"헤더 {'있음' if has_line else '없음(0건이라 정상)'}")
     return bad
 
 

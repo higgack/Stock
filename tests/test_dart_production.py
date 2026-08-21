@@ -87,8 +87,10 @@ class TestParse:
         assert parse_production("") is None
         assert parse_production(None) is None
 
-    def test_capacity_only_table_is_rejected(self):
-        """생산능력 단어만 스쳐도 채택하면 이웃 표를 집는다."""
+    def test_one_line_footnote_table_is_rejected(self):
+        """어구 하나만 스친 **한 줄짜리** 표는 각주다 — 2026-08-21 임계값을
+        3 으로 낮추며 모양 게이트(`_looks_like_a_data_table`)가 이 계약을
+        이어받았다. 어구가 하나여도 격자면 채택된다(478560 참조)."""
         m = ('<P>생산능력 및 생산실적</P><TABLE><TBODY><TR>'
              '<TD>생산능력 산출근거</TD><TD>월 25일</TD></TR></TBODY></TABLE>')
         assert parse_production(m) is None
@@ -467,3 +469,112 @@ class TestCardSplit20260820:
         i_cards = src.index("if(j.cards_image_url)")
         i_gr = src.index("var gr=j.growth_risk||{};")
         assert i_img < i_prod < i_cards < i_gr, "표가 카드 위가 아니다"
+
+
+class TestSweep20260821:
+    """VM 스윕 실측(40종목, 2026-08-21) 후속 — 프로브가 **제품과 다른 경로**를
+    봐서 통계가 거짓이었다(실수 #35). 커버리지 9/40 중 삼성전자·SK하이닉스가
+    '섹션없음'으로 찍힌 게 발단."""
+
+    def test_diagnose_never_calls_a_truncated_doc_section_missing(self):
+        """판정 불가를 '없음'으로 말하지 않는다(실수 #41). 앵커가 안 보여도
+        문서가 잘렸으면 절이 없다고 단정할 수 없다."""
+        from bot.dart_production import diagnose
+        body = "<TABLE><TR><TD>매출</TD></TR></TABLE>"
+        assert diagnose(body) == "섹션없음"
+        assert diagnose(body, truncated=True) == "원문잘림"
+        # 앵커가 보이면 잘림 여부와 무관하게 내용으로 판정한다
+        ok = ("생산능력 및 생산실적 <TABLE><TR><TD>생산능력</TD>"
+              "<TD>생산실적</TD><TD>가 동 률</TD></TR></TABLE>")
+        assert diagnose(ok, truncated=True) == "정상"
+
+    def test_probe_escalates_the_cap_like_the_product_path(self):
+        """v1 은 판정이 원문미제공만 아니면 곧장 break 해서 3MB 안에 앵커가
+        없는 대형사를 40MB 로 **한 번도** 다시 받지 않았다."""
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        assert "_PROBE_VER = 2" in src
+        loop = src[src.index("for cap in (_DOC_TEXT_MAX"):]
+        loop = loop[:loop.index("if verdict in _OK:")]
+        # 잘렸으면 다음 상한으로 넘어가야 하므로, break 는 '채택' 또는
+        # '안 잘림' 조건 아래에만 있어야 한다.
+        assert "if v in _OK:" in loop and "if not cut:" in loop
+        assert "truncated=cut" in loop, "잘림 여부를 판정에 안 넘긴다"
+
+    def test_probe_preview_window_matches_the_parser(self):
+        """미리보기 창이 파서 스캔창보다 좁으면, 파서가 실제로 보고 버린 표를
+        못 보여준다 — v1 의 미리보기가 전부 `(단위 : …)` 캡션이던 이유."""
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        assert "m.end() + dp._SCAN_WINDOW" in src
+        assert "m.end() + 6000" not in src, "좁은 고정창 잔존"
+
+    def test_capacity_only_table_is_accepted(self):
+        """사용자 2026-08-20 "최대한 다 가져오게". 478560(`품목|일일 처리량|
+        월 생산능력|비고`)이 6점 미달로 통째 버려졌다."""
+        from bot.dart_production import diagnose, parse_production
+        mk = ("(1) 제품 생산능력 및 생산실적 "
+              "<TABLE><TR><TD>(단위 : ton)</TD></TR></TABLE>"
+              "<TABLE><TR><TH>품 목</TH><TH>일일 처리량</TH>"
+              "<TH>월 생산능력</TH><TH>비 고</TH></TR>"
+              "<TR><TD>Halon-1301</TD><TD>7.2 ton/day</TD>"
+              "<TD>2,660 BTL</TD><TD>생산용 펌프기준</TD></TR></TABLE>")
+        got = parse_production(mk)
+        assert got and "Halon-1301" in got["table_html"]
+        assert got["has_rate"] is False
+        assert got["kinds"] == ["생산능력"]
+        assert diagnose(mk) == "능력만"
+
+    def test_neighbour_facility_table_still_rejected(self):
+        """임계값을 3 으로 낮춰도 게이트의 목적은 유지돼야 한다 — 설비·소재지
+        표는 세 어구가 하나도 없어 0 점이다."""
+        from bot.dart_production import diagnose, parse_production
+        mk = ("생산 및 설비에 관한 사항 "
+              "<TABLE><TR><TH>센터별</TH><TH>보유 형태</TH><TH>소재지</TH>"
+              "<TH>전용면적</TH></TR><TR><TD>도곡 1센터</TD><TD>자가 건물</TD>"
+              "<TD>서울시 강남구</TD><TD>1,099㎡</TD></TR></TABLE>")
+        assert parse_production(mk) is None
+        assert diagnose(mk) == "무관표만"
+
+    def test_title_never_promises_a_metric_the_table_lacks(self):
+        """제목이 고정 문구면 가동률 없는 표에도 '가동률'이 적혀 사용자가
+        없는 걸 찾는다(실수 #55 라벨↔내용 불일치)."""
+        from bot.dart_production import render_html
+        h = render_html({"table_html": "<table></table>",
+                         "kinds": ["생산능력"]})
+        assert "생산능력" in h and "가동률" not in h
+        h2 = render_html({"table_html": "<table></table>",
+                          "kinds": ["가동률", "생산능력", "생산실적"]})
+        assert "가동률" in h2 and "생산실적" in h2
+
+    def test_threshold_is_a_single_source(self):
+        """파서와 감사가 다른 수를 보면 스윕 통계가 화면과 갈라진다(#54)."""
+        src = open("bot/dart_production.py", encoding="utf-8").read()
+        assert src.count("_MIN_SCORE = 3") == 1
+        assert "best_score < _MIN_SCORE" in src
+        assert "best >= _MIN_SCORE" in src
+        assert "< 6:" not in src and "best >= 3" not in src, "임계값 하드코딩"
+
+    def test_shape_gate_only_applies_to_single_keyword_tables(self):
+        """모양 게이트가 6점 이상까지 막으면 진짜 표를 놓친다 — 가동률이
+        있는 표는 어구 조합만으로 충분히 특이하다."""
+        from bot.dart_production import _score
+        one_row_rate = ("<TABLE><TR><TD>가 동 률</TD><TD>생산능력</TD>"
+                        "</TR></TABLE>")
+        assert _score(one_row_rate) >= 10, "가동률 표를 모양으로 막으면 안 됨"
+        grid = ("<TABLE><TR><TH>품 목</TH><TH>일일 처리량</TH>"
+                "<TH>월 생산능력</TH></TR>"
+                "<TR><TD>a</TD><TD>1</TD><TD>2</TD></TR></TABLE>")
+        assert _score(grid) == 3, "격자인 능력표는 살아야 함"
+        one_line = "<TABLE><TR><TD>생산능력 산출근거</TD><TD>월 25일</TD></TR></TABLE>"
+        assert _score(one_line) == 0, "한 줄 각주 표가 통과"
+
+    def test_title_derives_kinds_when_the_caller_omits_them(self):
+        """"없으면 셋 다 적는다" 폴백은 고치려던 거짓말을 폴백에 남긴다."""
+        from bot.dart_production import render_html
+        h = render_html({"table_html":
+                         "<table><tr><td>생산능력</td></tr></table>"})
+        assert "생산능력" in h and "가동률" not in h and "생산실적" not in h
+        # 아무것도 못 찾으면 중립 제목 — 없는 걸 약속하지 않는다
+        h2 = render_html({"table_html": "<table><tr><td>x</td></tr></table>"})
+        assert "생산 현황" in h2 and "가동률" not in h2
