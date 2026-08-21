@@ -37,7 +37,7 @@ import sys
 import time as _time
 import time
 
-_PROBE_VER = 8          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 9          # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
@@ -202,8 +202,11 @@ def main(argv: list[str] | None = None) -> int:
         # 이상해 보일 때(셀 두 줄이 붙는 등) 원문 없이 고치면 또 몇 라운드를
         # 날린다(#109 — 사유 히스토그램은 '무엇이 많은가'까지만 말한다).
         if args.tickers and prod and prod.get("table_html"):
-            _pv = re.sub(r"\s+", " ",
-                         re.sub(r"(?is)<[^>]+>", "|", prod["table_html"]))
+            # ⚠️ `<wbr>` 는 **표시용 줄바꿈 힌트**라 셀 경계가 아니다 —
+            # 남겨 두면 덤프에 `AI|비전솔루션생성형|AI` 로 찍혀 원문에 없는
+            # 칸이 있는 것처럼 보인다(#35 프로브는 화면이 쓰는 그 값을 보여줄 것).
+            _tbl = re.sub(r"(?i)<wbr\s*/?>", "", prod["table_html"])
+            _pv = re.sub(r"\s+", " ", re.sub(r"(?is)<[^>]+>", "|", _tbl))
             print(f"   [제품표 채택 원문 · {prod_basis or '?'} 보고서"
                   + (f" 접수 {prod_rn}" if prod_rn else "")
                   + f"] {_pv[:args.show * 3]}")
