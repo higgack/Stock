@@ -1484,3 +1484,137 @@ class TestDetailTiming20260821:
         assert "yfinance" not in src and "yf.Ticker" not in src
         # 계측이 하나도 없으면 '이상 없음'이 아니라 실패다(#54)
         assert "눈이 멀었다" in src
+
+
+class TestLegibility20260821:
+    """사용자 2026-08-21 "차트의 글씨나 항목들의 글씨가 가독성이 떨어져".
+
+    원인은 색이 아니라 **크기**였다(대비는 전부 6.2:1 이상). PNG 는 1670px 로
+    그려져 1200px 화면에서 0.72배로 축소되므로 8pt 가 11.5px 밖에 안 됐다 —
+    바로 옆 HTML 표는 13px. 레이아웃은 데이터 좌표라 그대로 두고 **도화지만
+    좁혀** 글씨를 한 번에 키웠다(11.6 → 9.8in, ×1.18)."""
+
+    @staticmethod
+    def _payload(n=6):
+        import bot.quarterly_infographic as qi
+        qs = [{"label": f"26.{i}Q",
+               "financials": {"매출": 1e12, "영업이익": 2e11, "당기순이익": 1e11,
+                              "수주잔고": 5e11, "재고자산": 1.79e11},
+               "ratios": {"영업이익률": 20.0, "순이익률": 10.0}}
+              for i in (1, 2, 3, 4, 5)]
+        return {"ticker": "T", "company": "(주)마이크로컨텍솔루션",
+                "market": "KOSDAQ", "market_cap": 3.3e11, "quarters": qs,
+                "ttm": qi._ttm(qs), "per": 12.12, "per_forward": None,
+                "per_self": True, "psr": 2.71, "currency": "KRW",
+                "trade_currency": "KRW", "currency_mismatch": True,
+                "fiscal_note": "3월 결산", "anomaly_keys": ["매출"],
+                "anomaly_labels": ["매출"], "component_accounts": {},
+                "source_label": "DART", "asof": "2026-08-21_15",
+                "growth_risk": {"ok": True, "headline": "반도체 부품 제조사",
+                                "risk_subline": "동 가격 상승 우려",
+                                # **절단폭 최대치**로 태운다 — 짧은 문구로만
+                                # 재면 글씨를 키웠을 때 넘치는 걸 못 잡는다.
+                                "growth_drivers": ["가" * qi._CARD_CHARS] * n,
+                                "sustain_risks": ["나" * qi._CARD_CHARS] * n}}
+
+    @staticmethod
+    def _render_and_measure(sections):
+        """저장 직전에 살아있는 figure 에서 잰다.
+
+        ⚠️ figure 가 닫힌 뒤에 재려 했더니 extent 계산이 전부 예외였고 그걸
+        삼켜 '오버플로 0'으로 보고했다 — 대조 대상 0건은 통과가 아니다(#54)."""
+        import tempfile
+        import warnings
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+        import bot.quarterly_infographic as qi
+        boxes, hits = [], []
+
+        def _grab(fig):
+            fig.canvas.draw()
+            r = fig.canvas.get_renderer()
+            for ax in fig.axes:
+                # ⚠️ `axis("off")` 인 축도 `get_xticklabels()` 는 **자동 눈금**
+                # (`−20`,`0`,`100`…)을 그대로 돌려준다 — 화면엔 안 보이는데
+                # 그걸 세면 멀쩡한 렌더가 '패널 밖'으로 오보된다(실측).
+                # `axison` 이 눈금이 실제로 그려지는지를 알려준다.
+                arts = list(ax.texts)
+                if ax.axison:
+                    arts += [t for t in ax.get_xticklabels()
+                             + ax.get_yticklabels() if t.get_text().strip()]
+                arts = [t for t in arts if t.get_text().strip()]
+                # 본 축(도화지를 꽉 채우게 set_position 한 그것)만 데이터좌표
+                # 비교 대상 — inset 은 자기 좌표계라 100 을 넘는 게 정상이다.
+                _p = ax.get_position()
+                main = (_p.x0 == 0 and _p.y0 == 0
+                        and _p.width == 1 and _p.height == 1)
+                bbs = []
+                for t in arts:
+                    bb = t.get_window_extent(r)
+                    bbs.append((bb, t.get_text()))
+                    if main:
+                        d = bb.transformed(ax.transData.inverted())
+                        boxes.append((d.x0, d.x1, t.get_text()))
+                for i in range(len(bbs)):
+                    for j in range(i + 1, len(bbs)):
+                        if bbs[i][0].overlaps(bbs[j][0]):
+                            hits.append((bbs[i][1], bbs[j][1]))
+
+        orig = Figure.savefig
+
+        def spy(self, *a, **k):
+            _grab(self)
+            return orig(self, *a, **k)
+        Figure.savefig = spy
+        _o, qi._font_ok = qi._font_ok, lambda: True
+        try:
+            with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                p = TestLegibility20260821._payload()
+                if sections is None:
+                    qi._render_cards_locked(p, f"{d}/x.png")
+                else:
+                    qi._render_locked(p, f"{d}/x.png", sections)
+        finally:
+            Figure.savefig, qi._font_ok = orig, _o
+        return boxes, hits
+
+    def test_no_text_escapes_its_panel(self):
+        """글씨를 키우면 긴 항목이 카드 밖으로 나간다 — 눈으로 못 보니 잰다."""
+        import bot.quarterly_infographic as qi
+        for name, sec in (("상단", qi._PART_TOP), ("하단", qi._PART_BOTTOM),
+                          ("카드", None)):
+            boxes, _ = self._render_and_measure(sec)
+            assert boxes, f"{name}: 잰 게 0건 — 측정이 눈이 멀었다"
+            over = [b for b in boxes if b[1] > 97.6 or b[0] < 2.4]
+            assert not over, f"{name} 패널 밖: {over[:3]}"
+
+    def test_no_label_collisions(self):
+        """도화지를 좁히면 글씨만 커져 막대 값 라벨·축 눈금이 서로 먹는다."""
+        import bot.quarterly_infographic as qi
+        for sec in (qi._PART_TOP, None):
+            _boxes, hits = self._render_and_measure(sec)
+            assert not hits, f"라벨 겹침: {hits[:3]}"
+
+    def test_card_cap_and_prompt_move_together(self):
+        """절단폭을 내리면 프롬프트 글자수도 내려야 매 항목이 안 끊긴다."""
+        from bot.dart_growth_risk import ITEM_CHARS
+        from bot.quarterly_infographic import _CARD_CHARS
+        assert ITEM_CHARS < _CARD_CHARS, (ITEM_CHARS, _CARD_CHARS)
+
+    def test_text_is_at_least_as_large_as_the_adjacent_tables(self):
+        """바로 옆 HTML 표가 13px 인데 PNG 글씨가 더 작으면 눈에 띈다.
+        가장 작은 글씨(8pt)가 1200px 화면에서 13px 이상이어야 한다."""
+        import bot.quarterly_infographic as qi
+        px = qi._FIG_W * qi._FIG_DPI
+        scale = 1200.0 / px
+        assert px >= 1200, f"출력이 1200px 미만이면 확대돼 흐려진다({px:.0f})"
+        smallest_pt = 8.0
+        css = smallest_pt / 72 * qi._FIG_DPI * scale
+        assert css >= 13.0, f"최소 글씨가 {css:.1f}px — 표(13px)보다 작다"
+
+    def test_render_version_bumped_for_the_rescale(self):
+        """옛 캐시 PNG 는 작은 글씨 그대로다 — 버전을 안 올리면 안 바뀐다."""
+        from bot.quarterly_infographic import _RENDER_VER
+        assert _RENDER_VER not in ("v7", "v8", "v9"), "글씨를 키웠는데 버전 그대로"

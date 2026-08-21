@@ -61,7 +61,7 @@ _IMG_DIR = Path.home() / ".tradingagents" / "archive" / "quarterly_infographic_i
 #       **누적** 당기순이익이 이겨 2·3분기 순이익이 부풀어 있었다
 #   v7 (2026-08-19) ROE·ROA 를 TTM(최근 4분기 합) 기준으로 — 분기 하나로
 #       계산해 네이버(10.08%)와 3배 어긋나 보였다
-_RENDER_VER = "v9"   # v9: 상단/하단 분할 + 도화지 폭 고정
+_RENDER_VER = "v10"  # v10: 글씨 확대(도화지 11.6→9.8in)
 
 # 세로 섹션 이름 — 조각을 나누는 단위. 그리는 코드는 `_render_locked` 한
 # 곳뿐이고, 어느 섹션을 담을지만 골라 두 번 부른다. `combo()` 가 fig/ax 를
@@ -178,7 +178,10 @@ def render_infographic(payload: dict, out_path: str,
 # 카드 항목 한 줄에 들어가는 글자 수 — 카드 폭 실측치(가용 812px, 8pt 기준
 # 34자 782px · 38자 874px 넘침). LLM 프롬프트는 dart_growth_risk.ITEM_CHARS
 # 로 이보다 짧게 요구해 말줄임이 예외가 되게 한다.
-_CARD_CHARS = 34
+# 34 → 31: 도화지 9.8in 에서 카드 한 줄의 실측 한계(칸 폭 40.9 단위).
+# ⚠️ 도화지를 좁히면 같은 글자수가 더 넓어진다 — 이 둘은 **한 쌍**이라
+# 한쪽만 바꾸면 항목이 카드 밖으로 나간다(회귀가 픽셀로 잡는다).
+_CARD_CHARS = 30
 
 _TICK_STEPS = [1, 2, 5, 10]
 # 상한 — 실제 nbins 는 **축의 픽셀 높이**에서 계산한다(_nbins_for).
@@ -393,7 +396,12 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
     return notes
 
 
-_FIG_W = 11.6          # inch — 모든 조각이 같은 폭이라야 세로로 이어 붙는다
+# 11.6 → 9.8 (2026-08-21 사용자 "차트의 글씨나 항목들의 글씨가 가독성이
+# 떨어져"). 레이아웃은 데이터 좌표(W=100)라 그대로이고, 글씨만 **점 단위**라
+# 도화지를 좁히면 이미지 대비 1.18배 커진다 — 크기를 하나하나 올리는 것보다
+# 비율이 안 깨진다. 실측: 화면 1200px 기준 8pt 가 11.5px → 13.6px(HTML 표 13px
+# 와 같은 급). 출력 1411px 라 1200px 표시에서도 축소만 되고 흐려지지 않는다.
+_FIG_W = 9.8           # inch — 모든 조각이 같은 폭이라야 세로로 이어 붙는다
 # 144 = 11.6in × 144 → 1670px. tight 크롭이 없어져 같은 dpi 면 픽셀이 1.5배가
 # 되고 렌더가 1.3초→2.0초로 느려진다(실측) — 옛 출력 폭(1672px)에 맞춘다.
 _FIG_DPI = 144
@@ -503,6 +511,9 @@ def _draw_cards(ax, txt, panel, Rectangle, FancyBboxPatch,
             txt(x0 + 3.2, iy, str(i), size=7.5, color="#0b1020",
                 weight="bold", ha="center")
             body = s if len(s) <= _CARD_CHARS else s[:_CARD_CHARS - 1] + "…"
+            # ⚠️ 8.5 로 올리면 30자가 카드 밖으로 나간다(실측 100.2/97.5).
+            # 도화지 축소로 이 8pt 는 이미 화면 13.6px = HTML 표(13px)와 같은
+            # 급이라, 글자수를 더 깎느니 여기서 멈춘다.
             txt(x0 + 5.6, iy, body, size=8)
             iy += 3.4
 
@@ -858,7 +869,7 @@ def _render_locked(payload: dict, out_path: str,
             # 무관하게 읽힌다. NaN(결측)은 빈 라벨 — 없는 값을 0 으로 쓰지 않는다.
             bax.bar_label(
                 _c, labels=[("" if v != v else f"{v:,.{ldec}f}") for v in series],
-                fontsize=7.5, color=bar_colors[k], padding=1.5, fontweight="bold")
+                fontsize=8.5, color=bar_colors[k], padding=1.5, fontweight="bold")
         # 값 라벨이 축 경계에 붙으면 잘린다 — 헤드룸 8% 확보. **아래쪽도**
         # 넓힌다: 적자 분기의 라벨은 막대 아래에 그려져 축 밖으로 나가
         # x 라벨·아래 % 패널과 겹친다(2026-08-16 독립 리뷰 실측).
@@ -984,7 +995,7 @@ def _render_locked(payload: dict, out_path: str,
         fx = 6.0
         _fgap = 88.0 / max(len(foot_items), 1)   # 항목이 늘어도 패널 안에 들어오게
         for name, val in foot_items:
-            txt(fx, y + 2.2, name, size=8, color=_MUTED)
+            txt(fx, y + 2.2, name, size=8.5, color=_MUTED)
             txt(fx, y + 4.6, val, size=10.5, weight="bold")
             fx += _fgap
         # 이상치·자체계산 각주 — 값이 '—' 로 비었을 때 "왜 비었나"를 화면에서
@@ -992,7 +1003,7 @@ def _render_locked(payload: dict, out_path: str,
         # ASCII 마커 + 색으로 표기(NanumGothic 글리프 결손 회피).
         _ny = y + 7.6
         for _note, _ncol in notes:
-            txt(6.0, _ny, _note, size=7.5, color=_ncol)
+            txt(6.0, _ny, _note, size=8.5, color=_ncol)
             _ny += 2.4
         # ⚠️ 출처·면책 줄은 **여기서 그리지 않는다**(2026-08-21). 사용자가 요청한
         # 배치에서 성장동력 카드가 이 이미지 뒤에 오는데, 면책 문구는 화면 맨
