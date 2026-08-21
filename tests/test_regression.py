@@ -30582,3 +30582,89 @@ class TestChartLiteFirst20260822:
             assert r.returncode == 0, r.stderr
         finally:
             os.unlink(path)
+
+
+class TestQuarterlyStagesAndBacklogCache20260822:
+    """`/api/quarterly` 115초 중 57초가 `get_or_render` **밖**이었다.
+
+    2026-08-22 실측: `quarterly-timing 200710.KS build_payload=51.542s
+    render_png=6.896s total=58.441s` 인데 `api-timing /api/quarterly 115381ms`.
+    로그가 그 57초를 이름조차 못 붙였다(#44 '기준 미기록'의 계측판)."""
+
+    def test_handler_stages_are_logged(self):
+        """핸들러가 **직접 하는 일**(스냅샷·제품/가동률 표)도 실려야 한다."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        names = {n.args[1].value for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "attr", "") == "set"
+                 and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant)}
+        assert {"h.snapshot", "h.production_html"} <= names, sorted(names)
+
+    def test_build_payload_stages_are_measured(self):
+        """`build_payload=51.5s` 안에서 시계열인지 수주잔고인지 갈라야 한다."""
+        import bot.quarterly_infographic as qi
+        qi._RENDER_TIMING.start("ZZZ")
+        for k in ("bp.series", "bp.backlog"):
+            qi._RENDER_TIMING.set("ZZZ", k, 1.0)
+        assert set(qi.last_render_timing("ZZZ")) == {"bp.series", "bp.backlog"}
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        named = {n.args[1].value for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "attr", "") == "set"
+                 and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant)}
+        assert {"bp.series", "bp.backlog"} <= named, sorted(named)
+
+    # ── 수주잔고 파싱 캐시 (#119 와 같은 규약) ──────────────────────────
+    class _Dart:
+        api_key = "k"
+
+        def find_periodic_reports(self, *a, **k):
+            return [{"rcept_no": "R1"}]
+
+    def _stub(self, monkeypatch, calls, text="수주잔고 없음"):
+        import sys
+        import types
+        monkeypatch.setitem(
+            sys.modules, "bot.dart_feed",
+            types.SimpleNamespace(
+                _DOC_TEXT_MAX_FULL=2,
+                _fetch_doc_text=lambda rn, key, max_bytes=0: (
+                    calls.append(rn), text)[1]))
+
+    def test_second_call_does_not_refetch(self, monkeypatch):
+        import bot.dart_backlog as bl
+        calls = []
+        self._stub(monkeypatch, calls)
+        a = bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012")
+        b = bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012")
+        assert a == b, (a, b)
+        assert len(calls) == 1, f"원문을 다시 받아 다시 훑었다: {calls}"
+
+    def test_audit_path_bypasses_the_cache(self, monkeypatch):
+        """`out` 을 요구하는 호출(감사·프로브)은 원문 발췌가 필요하다 —
+        캐시를 태우면 진단이 낡는다(#35)."""
+        import bot.dart_backlog as bl
+        calls = []
+        self._stub(monkeypatch, calls)
+        bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012")
+        out: dict = {}
+        bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012", out=out)
+        assert len(calls) == 2, "감사 경로가 캐시를 탔다"
+
+    def test_parser_change_invalidates(self, monkeypatch):
+        import bot.dart_backlog as bl
+        k1 = bl._bl_key("A", 2026, "11012")
+        monkeypatch.setattr(bl, "_BL_SIG", "deadbeef")
+        assert bl._bl_key("A", 2026, "11012") != k1
+
+    def test_missing_document_is_not_cached(self, monkeypatch):
+        """원문미제공은 원천 장애일 수 있다 — 24시간 믿으면 공시하는 회사가
+        하루 종일 빈칸이다(#116 의 짝)."""
+        import bot.dart_backlog as bl
+        calls = []
+        self._stub(monkeypatch, calls, text="")
+        bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012")
+        bl.backlog_probe(self._Dart(), "005930.KS", 2026, "11012")
+        assert len(calls) == 2, "원문미제공을 캐시했다"

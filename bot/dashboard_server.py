@@ -1007,6 +1007,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # 1 이라, 그대로 두면 모든 탭-오픈이 cold 수집 10~30초를 탄다.
             # 시총·주가는 이제 quarterly_infographic 이 라이브로 직접 받는다.
             snap = None
+            _t_snap0 = time.time()
             try:
                 import bot.stock_snapshot as _ss
                 with _ss._SNAP_CACHE_LOCK:
@@ -1018,6 +1019,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     snap = _ss.collect_stock_snapshot(ticker)
             except Exception as exc:
                 log.debug("quarterly_api: snapshot skipped — %s", exc)
+            _t_snap = time.time() - _t_snap0
             from bot import quarterly_infographic as _qi
             from bot.singleflight import once as _once
             _t0 = time.time()
@@ -1027,13 +1029,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # LLM 실행 여부(run)가 다르면 다른 작업이므로 키에 포함한다.
             res = _once(f"quarterly:{ticker}:{int(bool(run))}",
                         lambda: _qi.get_or_render(ticker, snap, run_llm=run))
-            try:                      # 어디서 시간이 나는지 같이 남긴다(#69)
-                _st = _qi.last_render_timing(ticker)
-                if _st:
-                    log.info("quarterly-timing %s %s", ticker,
-                             " ".join(f"{k}={v}s" for k, v in _st.items()))
-            except Exception:                                  # noqa: BLE001
-                pass
             # 이번 실행 비용 — 종목분석(archive 의 cost_krw 스탬프)과 동일
             # 방식·동일 sink(usage.jsonl). 무료 경로(run=0)는 LLM 콜이 없어
             # 0 이 정상. 사용자 2026-08-16 '할때마다 얼마인지'.
@@ -1045,12 +1040,39 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 log.debug("quarterly_api: cost stamp skipped — %s", exc)
             if not res.get("ok"):
+                # ⚠️ 실패해도 **어디서 시간이 갔는지**는 남겨야 한다 —
+                # 조용히 끝나면 실패한 요청만 영원히 미계측이다(#54).
+                try:
+                    _qi._RENDER_TIMING.set(ticker, "h.snapshot", _t_snap)
+                    _s2 = _qi.last_render_timing(ticker)
+                    if _s2:
+                        log.info("quarterly-timing %s %s (실패)", ticker,
+                                 " ".join(f"{k}={v}s" for k, v in _s2.items()))
+                except Exception:                              # noqa: BLE001
+                    pass
                 res = dict(res)
                 res["cost_krw"] = run_cost_krw
                 self._reply_json(200, res)
                 return
             payload = res.get("payload") or {}
             img = res.get("image")
+            # 📦 제품 표 + 🏭 가동률 표 — **핸들러가 직접 하는 일**이라
+            # `get_or_render` 밖이다. 2026-08-22 실측: quarterly-timing 이
+            # total=58.4s 인데 요청은 115초였고, 그 57초가 무엇인지 로그가
+            # 답하지 못했다(#44 '기준 미기록'의 계측판).
+            _t_ph = time.time()
+            _prod_html = _production_html(ticker, payload)
+            _t_ph = time.time() - _t_ph
+            try:      # ⚠️ `_RENDER_TIMING.start` 가 렌더 시작에 지우므로
+                      # 핸들러 단계는 **끝난 뒤에** 심는다(#69)
+                _qi._RENDER_TIMING.set(ticker, "h.snapshot", _t_snap)
+                _qi._RENDER_TIMING.set(ticker, "h.production_html", _t_ph)
+                _st = _qi.last_render_timing(ticker)
+                if _st:
+                    log.info("quarterly-timing %s %s", ticker,
+                             " ".join(f"{k}={v}s" for k, v in _st.items()))
+            except Exception:                                  # noqa: BLE001
+                pass
             out = {
                 "ok": True,
                 # 아카이브 루트가 정적 서빙되므로 상대경로만 넘기면 된다
@@ -1069,7 +1091,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # 📦 주요 제품 및 서비스 + 🏭 생산능력·생산실적·가동률 표.
                 # DART 정기보고서 본문 표를 원본 구조 그대로. KR 전용(원천이
                 # DART), 없으면 빈 문자열이라 프런트가 섹션을 통째로 생략한다.
-                "production_html": _production_html(ticker, payload),
+                "production_html": _prod_html,
                 # 하단 조각(수주잔고·재고자산·TTM) = **별도 PNG**(2026-08-21).
                 # 사용자 배치: [지표·차트] → 제품 표 → 가동률 표 →
                 # [수주잔고·재고자산] → [성장동력 카드] → 출처·면책(HTML).
