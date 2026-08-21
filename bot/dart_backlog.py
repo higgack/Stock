@@ -667,6 +667,13 @@ def diagnose_detail(text: str) -> str:
     """
     if not text:
         return ""
+    # ⚠️ 원천에 값이 없는 건은 **상세가 없어야 한다**. 2026-08-21 실측에서
+    # 라온피플류가 `명시적미공시 · 미지원단위 (단위:천원)` 로 찍혔다 —
+    # 분류는 "원문이 안 쓴다고 밝힘" 인데 상세는 단위 얘기를 하니 읽는
+    # 사람이 '단위를 더 지원하면 되나' 로 오해한다(#93 의 반대 방향:
+    # 행동으로 이어지지 **않는** 상세는 노이즈다).
+    if diagnose(text) in ("미공시", "명시적미공시", "원문미제공"):
+        return ""
     spots = _balance_spots(text)
     if not spots:
         return ""
