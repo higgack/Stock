@@ -315,7 +315,7 @@ def live_quote(key: str) -> dict:
 
 
 def _production_html(ticker: str, payload: dict) -> str:
-    """분기실적 탭의 생산능력·가동률 표 HTML. 실패·부재는 ""(섹션 생략).
+    """분기실적 탭의 주요 제품 + 생산능력·가동률 표 HTML. 부재는 ""(섹션 생략).
 
     분기 시계열의 최신 보고서부터 거슬러 표가 있는 첫 보고서를 쓴다 —
     새 보고서가 나오면 자동 롤링(dart_production.production_rolling)."""
@@ -327,8 +327,14 @@ def _production_html(ticker: str, payload: dict) -> str:
         if not qs:
             return ""
         from bot.dart_client import get_dart
-        from bot.dart_production import production_rolling, render_html
-        return render_html(production_rolling(get_dart(), ticker, qs))
+        from bot.dart_production import (production_rolling, products_rolling,
+                                         render_html, render_products_html)
+        dart = get_dart()
+        # 사용자 2026-08-21 "가동률 표 위에" — 주요 제품 표가 먼저.
+        # 같은 접수번호 원문이라 `_fetch_doc_text` 캐시에 걸려 DART 호출은
+        # 늘지 않는다(둘 다 raw_markup 경로·같은 상한).
+        return (render_products_html(products_rolling(dart, ticker, qs))
+                + render_html(production_rolling(dart, ticker, qs)))
     except Exception as exc:                                   # noqa: BLE001
         log.debug("production_html(%s): %s", ticker, exc)
         return ""

@@ -493,7 +493,7 @@ class TestSweep20260821:
         없는 대형사를 40MB 로 **한 번도** 다시 받지 않았다."""
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
-        assert "_PROBE_VER = 2" in src
+        assert "_PROBE_VER = 3" in src
         loop = src[src.index("for cap in (_DOC_TEXT_MAX"):]
         loop = loop[:loop.index("if verdict in _OK:")]
         # 잘렸으면 다음 상한으로 넘어가야 하므로, break 는 '채택' 또는
@@ -551,9 +551,12 @@ class TestSweep20260821:
         """파서와 감사가 다른 수를 보면 스윕 통계가 화면과 갈라진다(#54)."""
         src = open("bot/dart_production.py", encoding="utf-8").read()
         assert src.count("_MIN_SCORE = 3") == 1
-        assert "best_score < _MIN_SCORE" in src
+        assert src.count("_MIN_SCORE_ITEM = 10") == 1
+        # 선택도 판정도 상수를 **넘겨받아** 쓴다(리터럴 재등장 금지)
+        assert "_score, _MIN_SCORE, 10)" in src
+        assert "_score_products, _MIN_SCORE_ITEM, 14)" in src
         assert "best >= _MIN_SCORE" in src
-        assert "< 6:" not in src and "best >= 3" not in src, "임계값 하드코딩"
+        assert "best >= 3" not in src and "best >= 10 " not in src
 
     def test_shape_gate_only_applies_to_single_keyword_tables(self):
         """모양 게이트가 6점 이상까지 막으면 진짜 표를 놓친다 — 가동률이
@@ -578,3 +581,155 @@ class TestSweep20260821:
         # 아무것도 못 찾으면 중립 제목 — 없는 걸 약속하지 않는다
         h2 = render_html({"table_html": "<table><tr><td>x</td></tr></table>"})
         assert "생산 현황" in h2 and "가동률" not in h2
+
+
+class TestProducts20260821:
+    """「2. 주요 제품 및 서비스」 표 — 사용자 2026-08-21 "가동률 표 위에
+    이렇게 표 그대로". 캡처(마이크로컨텍솔 26.2Q) 구조를 그대로 재현한
+    픽스처로 고정한다."""
+
+    MK = ("<P>2. 주요 제품 및 서비스</P>"        # ← 목차(표 없음), 첫 출현
+          "<P>III. 재무에 관한 사항</P>" + "x" * 2000 +
+          "<P>2. 주요 제품 및 서비스</P><P>가. 사업부문별 주요 제품 등의 현황</P>"
+          "<TABLE><TR><TD>(단위 : 백만원, %)</TD></TR></TABLE>"
+          "<TABLE><THEAD><TR><TH>회사명</TH><TH>사업부문</TH><TH>매출유형</TH>"
+          "<TH>품 목</TH><TH>구체적용도</TH><TH>매출액</TH><TH>비율</TH></TR>"
+          "</THEAD><TBODY><TR><TD ROWSPAN=\"5\" WIDTH=\"90\">㈜마이크로컨텍솔루션"
+          "</TD><TD ROWSPAN=\"3\">세미콘</TD><TD>제품</TD><TD>Burn-in Socket</TD>"
+          "<TD>단품 메모리 반도체 B/I Test</TD><TD ALIGN=\"RIGHT\">45,502</TD>"
+          "<TD ALIGN=\"RIGHT\">65.5</TD></TR><TR><TD>상품</TD><TD>ULTEM</TD>"
+          "<TD>원재료</TD><TD ALIGN=\"RIGHT\">2,551</TD>"
+          "<TD ALIGN=\"RIGHT\">3.7</TD></TR></TBODY></TABLE>"
+          "<P>나. 주요 제품 등의 가격변동추이</P>"
+          "<TABLE><TR><TH>품 목</TH><TH>제27기</TH></TR>"
+          "<TR><TD>Burn-in Socket</TD><TD>1,200</TD></TR></TABLE>")
+
+    def test_picks_the_products_table_not_the_price_trend_table(self):
+        """같은 절의 `나. 가격변동추이` 는 품목+가격만 있어 매출 열이 없다 —
+        그게 판별의 핵심이다. 둘 다 '품 목' 을 갖고 있어 어구 하나로는 못 가른다."""
+        from bot.dart_production import parse_products
+        got = parse_products(self.MK)
+        assert got and "45,502" in got["table_html"]
+        assert "1,200" not in got["table_html"], "가격변동추이 표를 집었다"
+        assert got["unit"] == "(단위 : 백만원, %)"
+
+    def test_table_of_contents_occurrence_does_not_win(self):
+        """정기보고서는 목차에도 같은 제목이 있다. 첫 출현만 보면 표가 없는
+        창을 훑고 '없음'을 낸다 — 앵커의 모든 출현을 봐야 한다.
+
+        ⚠️ 패딩이 `_SCAN_WINDOW` 보다 **짧으면 이 테스트는 아무것도 안 한다**
+        — 목차 앵커의 창이 본문 표까지 덮어 첫-출현-only 뮤테이션이 그대로
+        통과한다(실측). 창보다 확실히 길게 띄운다."""
+        import bot.dart_production as dp
+        far = ("<P>2. 주요 제품 및 서비스</P>"          # 목차 — 창 안에 표 없음
+               + "x" * (dp._SCAN_WINDOW + 5000) + self.MK)
+        got = dp.parse_products(far)
+        assert got and "45,502" in got["table_html"], "목차 출현에서 멈췄다"
+        # ⚠️ 위 단언만으론 부족하다 — 1차 앵커가 목차에서 멈춰도 2차 앵커
+        # (`사업부문별 주요 제품`)가 구해줘서 뮤테이션이 통과했다(실측).
+        # 1차 앵커 **하나만** 주고 모든 출현을 훑는지 직접 못박는다.
+        one = dp._pick(far, (dp._ANCHOR_ITEM,), dp._score_products,
+                       dp._MIN_SCORE_ITEM, 14)
+        assert one and "45,502" in one[1], "1차 앵커가 첫 출현에서 멈춘다"
+        # 목차만 있고 본문이 없으면 정직하게 None
+        assert dp.parse_products("<P>2. 주요 제품 및 서비스</P>") is None
+
+    def test_markup_is_sanitized_like_the_production_table(self):
+        from bot.dart_production import parse_products
+        t = parse_products(self.MK)["table_html"]
+        assert 'rowspan="5"' in t and 'class="num"' in t
+        assert "WIDTH" not in t and "width" not in t, "속성이 그대로 샌다"
+        assert "<script" not in t.lower()
+
+    def test_price_trend_table_alone_is_rejected(self):
+        """매출 열이 없으면 주요 제품 표가 아니다 — 빈칸이 틀린 표보다 낫다."""
+        from bot.dart_production import parse_products
+        mk = ("주요 제품 및 서비스 <TABLE><TR><TH>품 목</TH><TH>제27기</TH>"
+              "</TR><TR><TD>Socket</TD><TD>1,200</TD></TR></TABLE>")
+        assert parse_products(mk) is None
+
+    def test_dark_panel_rethemes_si_table_without_new_css(self):
+        """사용자 2026-08-21 "위에 차트와 똑같이 검정색 안에". `.si-table` 이
+        읽는 CSS 변수를 감싸는 div 에서 다시 정의하면 표 CSS 를 한 줄도 안
+        만들고 톤이 바뀐다 — 색을 여기 또 적으면 팔레트 변경 시 갈라진다(#38)."""
+        from bot.dart_production import dark_panel
+        from bot.quarterly_infographic import _BG, _LINE, _MUTED, _PANEL, _TEXT
+        h = dark_panel("t", ["m"], "<table class='si-table'></table>", ["n"])
+        for var, val in (("--bg", _PANEL), ("--fg", _TEXT),
+                         ("--fg-soft", _MUTED), ("--border", _LINE)):
+            assert f"{var}:{val}" in h, f"{var} 가 인포그래픽 팔레트와 다름"
+        assert f"background:{_BG}" in h, "카드 배경이 차트와 다른 색"
+        src = open("bot/dart_production.py", encoding="utf-8").read()
+        assert ".si-table {" not in src, "표 CSS 를 새로 만들었다(재사용 위반)"
+
+    def test_both_tables_use_the_same_dark_panel(self):
+        """한쪽만 어두우면 한 화면에서 두 톤이 갈린다."""
+        from bot.dart_production import render_html, render_products_html
+        a = render_products_html({"table_html": "<table></table>"})
+        b = render_html({"table_html": "<table></table>", "kinds": ["가동률"]})
+        for h in (a, b):
+            assert 'class="si-prod"' in h and "--fg-soft:" in h
+
+    def test_products_renders_above_production(self):
+        """사용자 2026-08-21 "가동률 표 위에"."""
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        blk = src[src.index("def _production_html("):]
+        blk = blk[:blk.index("except Exception")]
+        i_p = blk.index("render_products_html(")
+        i_r = blk.index("render_html(production_rolling")
+        assert i_p < i_r, "생산 표가 제품 표보다 먼저 붙는다"
+
+    def test_products_reuses_the_production_fetch_ladder(self):
+        """수집 사다리를 복제하면 두 표의 기준 보고서가 갈라진다(#38).
+        같은 접수번호 원문이라 캐시에 걸려 DART 호출도 안 늘어야 한다."""
+        src = open("bot/dart_production.py", encoding="utf-8").read()
+        body = src[src.index("def products_rolling("):]
+        body = body[:body.index("def _palette(")]
+        # ⚠️ 독스트링을 지우고 본다 — 이 함수의 설명이 금지 대상 이름을
+        # 그대로 담고 있어, 그냥 grep 하면 주석을 재게 된다(실제로 걸렸다).
+        code = re.sub(r'(?s)""".*?"""', "", body)
+        assert "production_rolling(" in code and "parse=parse_products" in code
+        assert "_fetch_doc_text" not in code, "수집 경로를 복제했다"
+
+    def test_products_rolling_actually_runs_through_the_ladder(self):
+        """⚠️ grep 단언은 이걸 못 잡는다(#20). 리팩터 중 옛 `production_for`
+        정의가 파일 뒤에 남아 **새 정의를 가렸고**, `parse=` 를 모르는 옛
+        시그니처라 products_rolling 이 TypeError 로 죽었다 — 소스 검사 8개는
+        전부 통과했다. 스텁으로 통째 태워야 보인다."""
+        import bot.dart_feed as df
+        import bot.dart_production as dp
+
+        class _Dart:
+            api_key = "K"
+
+            def find_periodic_reports(self, t, y, rc):
+                return [{"rcept_no": "R1"}]
+
+        seen = []
+
+        def _fake(rn, key, max_bytes=0, raw_markup=False):
+            seen.append((rn, max_bytes))
+            return TestProducts20260821.MK
+
+        _orig = df._fetch_doc_text
+        df._fetch_doc_text = _fake
+        try:
+            qs = [{"year": 2026, "reprt_code": "11012", "label": "26.2Q"}]
+            got = dp.products_rolling(_Dart(), "098120.KQ", qs)
+        finally:
+            df._fetch_doc_text = _orig
+        assert got and "45,502" in got["table_html"]
+        assert got["basis_label"] == "26.2Q", "기준 보고서 라벨이 안 붙었다"
+        assert seen, "원문을 한 번도 안 받았다"
+
+    def test_module_has_no_shadowed_top_level_definitions(self):
+        """같은 이름을 두 번 정의하면 **뒤엣것이 이긴다** — 리팩터 중 옛
+        블록이 남아도 문법·import·헬퍼 테스트가 전부 통과한다. 이름 목록을
+        손으로 유지하지 않고 AST 로 전수 확인한다(#24)."""
+        import ast
+        import collections
+        tree = ast.parse(open("bot/dart_production.py", encoding="utf-8").read())
+        names = [n.name for n in tree.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        dup = [k for k, v in collections.Counter(names).items() if v > 1]
+        assert not dup, f"중복 정의(뒤엣것이 앞을 가림): {dup}"
