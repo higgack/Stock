@@ -52,6 +52,11 @@ _STOCK_KEYS = {"유동자산", "비유동자산", "자산총계", "유동부채"
 # 그래서 (a) 4분기 차분에서 제외해 원본 누적을 보존하고
 #        (b) 시계열이 다 모인 뒤 `_undo_cumulative_cf` 가 한 번에 되돌린다.
 _CUM_KEYS = {"영업활동현금흐름", "유형자산취득", "무형자산취득"}
+# **파생값** — 재료에서 만들어지는 값이라 보고서 간 산술의 대상이 아니다.
+# ⚠️ 4분기 차분에 이게 섞이면 '연간 FCF − 9개월 FCF' 라는 그럴듯한 숫자가
+# 남는데, 재료(_CUM_KEYS)는 아직 누적이라 **재료와 결과가 서로 다른 기준**이
+# 된다(#33 눈으로 검산하면 안 맞는 상태). 파생은 언제나 마지막에 한 번.
+_DERIVED_KEYS = {"FCF"}
 
 
 def quarter_label(year: int, reprt_code: str) -> str:
@@ -121,6 +126,8 @@ def _diff_quarter(cum_now: dict, cum_prev: dict | None) -> dict:
     for k, v in (cum_now or {}).items():
         if k.startswith("_"):
             continue        # 사이드채널(_src 등)은 산술 대상이 아니다
+        if k in _DERIVED_KEYS:
+            continue        # 파생값은 여기서 만들지 않는다(_attach_fcf 가)
         if k in _STOCK_KEYS or k in _CUM_KEYS:
             # 저량은 차분 금지, 누적(CF)은 **원본 누적을 그대로** 넘긴다
             # — 단일분기 환산은 `_undo_cumulative_cf` 가 전 분기 일괄로.

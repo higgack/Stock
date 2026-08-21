@@ -327,7 +327,7 @@ _COMPONENT_GROUPS: dict[str, set[int]] = {"매출": {2}}
 #   v8 (2026-08-21) 현금흐름 계정 + FCF 추가
 # 규율로는 세 번 다 실패했으므로 아래 `_CANONICAL_KEYS` 를 회귀가 고정한다
 # — 키가 늘면 테스트가 깨지고, 고치려면 이 숫자를 올려야 한다.
-_FIN_CACHE_VER = 8
+_FIN_CACHE_VER = 9
 
 # 파서가 낼 수 있는 canonical 키 전량. **여기가 바뀌면 캐시 버전을 올려라.**
 # 목록을 손으로 적는 게 아니라 두 매핑에서 도출하므로 새 계정을 추가하면
@@ -1537,13 +1537,18 @@ class DartClient:
         financials = _extract_dart_financials(items)
         if not financials:
             return None
-        # FCF — 산식은 `bot.fcf` 한 곳(#38). 연간 표(재무 추이)와 분기
-        # 표·차트가 같은 값을 보게 여기서 붙인다.
-        try:
-            from bot.dart_quarterly import _attach_fcf as _fcf
-            _fcf([{"financials": financials}])
-        except Exception as exc:                               # noqa: BLE001
-            log.info("dart_client: FCF 계산 건너뜀(%s): %s", ticker, exc)
+        # FCF — 산식은 `bot.fcf` 한 곳(#38).
+        # ⚠️ **사업보고서(11011)에만** 붙인다. 분기/반기보고서의 현금흐름은
+        # DART 가 **누적**(연초~해당분기말)으로 주기 때문에 여기서 계산하면
+        # 그 값은 '이 분기의 FCF' 가 아니라 '연초부터의 FCF' 다 — 이름은
+        # 같은데 뜻이 다른 값이 dict 에 남는다(#34 의 씨앗). 단일분기 FCF 는
+        # `dart_quarterly` 가 누적을 되돌린 **뒤에** 만든다.
+        if reprt_code == "11011":
+            try:
+                from bot.dart_quarterly import _attach_fcf as _fcf
+                _fcf([{"financials": financials}])
+            except Exception as exc:                           # noqa: BLE001
+                log.info("dart_client: FCF 계산 건너뜀(%s): %s", ticker, exc)
         ratios = calc_kr_financial_ratios(financials)
         result = {
             "year": target_year,

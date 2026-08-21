@@ -6083,9 +6083,13 @@ def _render_stock_info_html(rec: dict) -> str:
                           '차감이 불가 — 추정 대신 비워둠'
                           + (f'(어긋난 항목: {esc(" · ".join(_mm))})' if _mm else ''))
         if any(it.get("FCF") is not None for it in items):
+            # ⚠️ 이 표는 **DART 현금흐름표**만 쓴다 — 옛 문구는 "원천이 FCF
+            # 를 직접 주면 그 값을 씁니다" 라고 적었는데 그건 yfinance 경로
+            # (재무재표 탭) 얘기다. 설명이 코드와 어긋나면 그게 버그다(#55).
             _notes.append('ℹ️ FCF = <b>영업활동현금흐름 − CAPEX</b>'
-                          '(유형·무형자산 취득 합) — 원천이 FCF 를 직접 '
-                          '주면 그 값을 그대로 씁니다')
+                          '(유형자산취득 + 무형자산취득) · 출처 <b>DART '
+                          '현금흐름표</b> — 재무제표 탭의 FCF 는 yfinance '
+                          '기준이라 정의 차이로 값이 다를 수 있습니다')
         if _is_q:
             _notes.append('ℹ️ ROE = <b>최근 4분기 순이익 합 ÷ 기말 자본</b>'
                           '(TTM) — 시장 표기(네이버·FnGuide)와 같은 연율 '
@@ -7701,6 +7705,14 @@ def _render_stock_info_html(rec: dict) -> str:
             # 상수 하나만 고치면 다른 하나가 안 따라오므로 **여기서 파생**.
             _lab_y, _svg_h = trend_chart_geometry(
                 chart_items, [k for k, _n, _c in _series], max_val)
+            # ⚠️ 앞 셋은 손익계산서, FCF 만 **현금흐름표**다 — 제목이
+            # '수익성 추이'라 같은 표에서 온 값처럼 읽힌다. 한 그림 안에
+            # 기준이 둘이면 밝혀야 한다(#34 라벨에 기준을 박을 것).
+            _fcf_note = ('\n<div style="font-size:11px;color:var(--fg-soft);'
+                         'margin-top:4px">ℹ️ FCF = <b>영업활동현금흐름 − '
+                         'CAPEX</b> (yfinance 현금흐름표 — 앞 세 항목은 '
+                         '손익계산서). 원천이 FCF 를 직접 주면 그 값을 '
+                         '그대로 씁니다</div>') if _has_fcf else ""
             for i, c in enumerate(chart_items):
                 x_base = 40 + i * (bar_w * _nb + 16)
                 for j, (_k, _nm, color) in enumerate(_series):
@@ -7716,7 +7728,7 @@ def _render_stock_info_html(rec: dict) -> str:
           <line x1="38" y1="150" x2="{svg_w - 10}" y2="150" stroke="#555" stroke-width="1"/>
           {bars}
           {labels}
-        </svg>
+        </svg>{_fcf_note}
       </div>"""
 
             _grows = []

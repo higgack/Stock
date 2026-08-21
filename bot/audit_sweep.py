@@ -45,6 +45,10 @@ AUDITS: tuple[tuple[str, str, str], ...] = (
     ("🕰 발표지표 신선도", "bot.scripts.macro_staleness_audit", "daily"),
     ("💱 피어 통화 불일치", "bot.scripts.peer_currency_audit", "weekly"),
     ("💼 자산·가계부·ASIA·아카이브·Screener", "bot.scripts.asset_pages_audit", "daily"),
+    # FCF 는 한 종목이 **세 화면**에 실리고 원천이 둘(DART·yfinance)이라
+    # 정의 차이로 갈릴 수 있다 — 사람이 눈으로 못 재는 값이라 기계가 잰다
+    # (사용자 2026-08-21). 종목마다 스냅샷을 새로 받아 무거우므로 weekly.
+    ("💵 FCF 정확도(3화면 교차)", "bot.scripts.fcf_audit", "weekly"),
 )
 
 # 섹션 제목으로 볼 줄 — ❌ 가 **어느 화면**에서 났는지 붙여 주기 위해.

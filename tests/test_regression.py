@@ -6937,6 +6937,164 @@ class TestBacklogUnitCaptions20260821:
         assert sum(got.values()) == 16, got
 
 
+class TestFcfDerivedNotCarried20260821:
+    """파생값(FCF)은 재료에서 **마지막에 한 번** 만들어야 한다. 중간 단계에
+    남아 있던 FCF 가 살아남으면 재료는 단일분기인데 결과만 누적인 값이
+    화면에 뜬다 — 눈으로 검산하면 안 맞는다(#33)."""
+
+    def test_diff_quarter_drops_a_leaked_fcf(self):
+        from bot.dart_quarterly import _diff_quarter
+        out = _diff_quarter({"매출": 400.0, "FCF": 999.0,
+                             "영업활동현금흐름": 2008.0},
+                            {"매출": 300.0})
+        assert "FCF" not in out, out
+        assert out["매출"] == 100.0                     # 유량은 그대로 차분
+        assert out["영업활동현금흐름"] == 2008.0        # 누적은 원본 보존
+
+    def test_series_fcf_always_matches_its_own_materials(self, monkeypatch):
+        """⚠️ 이 불변식이 화면의 유일한 보증이다 — 원천이 무엇을 실어 보내든
+        표에 찍히는 FCF 는 **그 칸의 재료**로 재계산한 값과 같아야 한다."""
+        import bot.dart_quarterly as dq
+        import bot.kr_revenue_fallback as krf
+        monkeypatch.setattr(krf, "fill_series", lambda *a, **k: False)
+
+        class _Fake:
+            """누적 CF + **엉터리로 미리 붙은 FCF** 를 실어 보낸다."""
+            def get_normalized_financials(self, ticker, year, fs_div,
+                                          reprt_code):
+                if fs_div != "CFS":
+                    return None
+                cum = 100.0 * dq._Q_NUM[reprt_code]
+                fin = {"매출": cum, "영업활동현금흐름": cum,
+                       "유형자산취득": 10.0, "FCF": 12345.0}
+                return {"financials": fin, "financials_cumulative": dict(fin)}
+
+        qs = dq.get_quarterly_series(_Fake(), "005930", n=3) or []
+        assert qs, "시계열이 비었다 — 대조 0건은 통과가 아니다(#54)"
+        for q in qs:
+            fin = q["financials"]
+            got = fin.get("FCF")
+            want = fin["영업활동현금흐름"] - abs(fin["유형자산취득"])
+            assert got == want, (q["label"], got, want)
+            assert got != 12345.0, "원천이 실어 보낸 값이 그대로 살아남았다"
+
+    def test_dart_annual_only_attaches_fcf(self):
+        """분기/반기보고서의 현금흐름은 **누적**이라 그 자리에서 만든 FCF 는
+        '이 분기의 FCF' 가 아니다 — 이름은 같은데 뜻이 다른 값을 dict 에
+        남기지 않는다(#34 의 씨앗을 구조적으로 제거)."""
+        import ast
+        src = open("bot/dart_client.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "get_normalized_financials")
+        # `_attach_fcf` 호출이 reprt_code 를 보는 If 안에 있는가 — 문자열이
+        # 아니라 **구조**로 본다(#60·#65).
+        guarded = False
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.If):
+                continue
+            test = ast.dump(node.test)
+            if "reprt_code" not in test or "11011" not in test:
+                continue
+            if any(isinstance(c, ast.Name) and c.id == "_fcf"
+                   for c in ast.walk(node)):
+                guarded = True
+        assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
+
+
+class TestFcfAccuracyAudit20260821:
+    """사용자 2026-08-21: "FCF 를 제대로 계산 or 가져오고 있는지 … 이건
+    숫자를 내가 판단하기 어려운 영역이라서". 사람이 눈으로 못 재는 값은
+    **기계가 재야 한다** — 감사 도구 자체를 픽스처로 고정한다(#47: 틀린
+    상태를 실제로 재현해 ❌ 가 뜨는 걸 본 뒤 믿는다)."""
+
+    def _snap(self, q, a):
+        return {"financials": {"cash_flow": {"quarterly": q, "annual": a}}}
+
+    def _q(self, period, ocf, capex):
+        return {"period": period, "Operating Cash Flow": ocf,
+                "Capital Expenditure": capex}
+
+    def _run(self, monkeypatch, tk, snap, qs=None):
+        import bot.scripts.fcf_audit as fa
+        import bot.stock_snapshot as ss
+        import bot.dart_quarterly as dq
+        monkeypatch.setattr(ss, "collect_stock_snapshot",
+                            lambda *a, **k: snap)
+        monkeypatch.setattr(dq, "get_quarterly_series",
+                            lambda *a, **k: qs or [])
+
+        class _D:
+            def get_normalized_financials(self, *a, **k):
+                return None
+        return fa.audit_one(tk, _D() if qs is not None else None)
+
+    def test_clean_us_ticker_passes(self, monkeypatch):
+        q = [self._q(f"2025-{m}-30", 100.0, -20.0)
+             for m in ("03", "06", "09")] + [self._q("2025-12-31", 100.0, -20.0)]
+        a = [{"period": "2025-12-31", "Operating Cash Flow": 400.0,
+              "Capital Expenditure": -80.0}]
+        r = self._run(monkeypatch, "AAPL", self._snap(q, a))
+        assert r["bad"] == 0, "\n".join(r["lines"])
+
+    def test_cross_source_gap_is_caught(self, monkeypatch):
+        """KR 은 밸류에이션 표(DART)와 재무제표 차트(yfinance)가 **다른
+        원천**이다 — 정의가 갈리면 같은 회사가 탭마다 다른 FCF 를 갖는다
+        (#34). 그걸 가정하지 않고 잰다."""
+        q = [self._q("2025-12-31", 100.0, -20.0)]        # yfinance FCF 80
+        qs = [{"label": "25.4Q", "year": 2025, "quarter": 4,
+               "financials": {"영업활동현금흐름": 100.0, "유형자산취득": 50.0,
+                              "무형자산취득": 0.0, "FCF": 50.0}}]  # DART 50
+        r = self._run(monkeypatch, "004370.KS", self._snap(q, []), qs)
+        txt = "\n".join(r["lines"])
+        assert r["bad"] >= 1, txt
+        assert "DART" in txt and "yfinance" in txt
+
+    def test_recompute_mismatch_is_caught(self, monkeypatch):
+        """화면 값이 그 화면의 재료와 안 맞으면 눈으로 검산하면 틀린다(#33)."""
+        qs = [{"label": "25.4Q", "year": 2025, "quarter": 4,
+               "financials": {"영업활동현금흐름": 100.0, "유형자산취득": 20.0,
+                              "FCF": 999.0}}]            # 재료로는 80 이어야
+        r = self._run(monkeypatch, "004370.KS", self._snap([], []), qs)
+        txt = "\n".join(r["lines"])
+        assert "① 재계산 ❌" in txt, txt
+        assert r["bad"] >= 1
+
+    def test_zero_comparisons_is_a_failure_not_a_pass(self, monkeypatch):
+        """대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54)."""
+        qs = [{"label": "25.4Q", "year": 2025, "quarter": 4,
+               "financials": {"영업활동현금흐름": 100.0, "유형자산취득": 20.0,
+                              "FCF": 80.0}}]
+        r = self._run(monkeypatch, "004370.KS", self._snap([], []), qs)
+        txt = "\n".join(r["lines"])
+        assert "대조된 기간이 0건" in txt, txt
+        assert r["bad"] >= 1, txt
+
+    def test_cumulative_contamination_is_caught(self, monkeypatch):
+        q = [self._q("2025-03-31", 1145.0, 0.0), self._q("2025-06-30", 1634.0, 0.0),
+             self._q("2025-09-30", 2008.0, 0.0), self._q("2025-12-31", 2600.0, 0.0)]
+        a = [{"period": "2025-12-31", "Free Cash Flow": 2600.0}]
+        r = self._run(monkeypatch, "AAPL", self._snap(q, a))
+        txt = "\n".join(r["lines"])
+        assert "누적 오염 의심" in txt, txt
+        # ⚠️ `>= 1` 로 두면 ④(분기합≠연간)가 대신 만족시켜 ⑤ 를 지우는
+        # 뮤테이션이 통과한다(실측). 두 검사가 **각각** 세어져야 한다(#75).
+        assert r["bad"] == 2, txt
+
+    def test_exit_code_separates_bad_from_unknown(self, monkeypatch):
+        """판정불가를 통과로 찍지 않는다(#41) — 종료코드로도 갈라야
+        자동화가 '초록'을 잘못 읽지 않는다. (소스 문자열이 아니라 **값**
+        으로 본다 — 같은 계약을 지키는 리팩터에 깨지면 안 된다, #19.)"""
+        import bot.scripts.fcf_audit as fa
+        import bot.dart_client as dc
+        monkeypatch.setattr(dc, "get_dart", lambda *a, **k: None)
+        for res, want in (({"lines": [], "bad": 0, "unknown": 0}, 0),
+                          ({"lines": [], "bad": 0, "unknown": 2}, 3),
+                          ({"lines": [], "bad": 1, "unknown": 0}, 2)):
+            monkeypatch.setattr(fa, "audit_one", lambda *a, **k: dict(res))
+            assert fa.main(["AAPL"]) == want, res
+
+
 class TestFscRiskLatency20260821:
     """2026-08-21 VM 계측: `kr:fsc.risk` **중앙값 21.26초**로 `enrich:KR`
     (22.24초) 전체를 지배했다. 원인은 파싱이 아니라 (2 엔드포인트 × 8영업일)
