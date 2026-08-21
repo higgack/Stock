@@ -37,7 +37,7 @@ import sys
 import time as _time
 import time
 
-_PROBE_VER = 9          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 10         # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
@@ -76,6 +76,59 @@ def _universe(limit: int) -> list[str]:
     if not out:
         print("   ⚠️ 관심종목이 비어 있다 — 티커를 인자로 직접 넘겨라")
     return out[:limit]
+
+
+def align_summary(table_html: str) -> list[dict]:
+    """렌더된 표에서 **열별 정렬**을 되읽는다 — `[{col, cls, mixed, sample}]`.
+
+    ⚠️ 감사는 화면이 쓰는 그 판정을 그대로 봐야 한다(#35). 여기서는 파서를
+    다시 돌리지 않고 `sanitize_table` 이 실제로 붙인 class 를 읽는다.
+    한 열에 `lft`/`ctr` 이 **섞이면** 그게 바로 사용자가 세 번 지적한 증상
+    (#78 셀→표 → #97 표→열 → #115 rowspan 열번호)이므로 `mixed` 로 찍는다.
+    """
+    import bot.dart_production as _dp
+    cols: dict[int, dict] = {}
+    for _rm, cells in _dp._iter_rows(table_html or ""):
+        for m, ci, span in cells:
+            if span != 1:                 # 여러 열을 걸친 셀은 어느 열도 아니다
+                continue
+            cls = "lft" if 'class="lft"' in (m.group(2) or "") else "ctr"
+            t = _dp._cell_text(m.group(3))
+            d = cols.setdefault(ci, {"col": ci, "cls": set(), "sample": ""})
+            d["cls"].add(cls)
+            if len(t) > len(d["sample"]):
+                d["sample"] = t
+    out = []
+    for ci in sorted(cols):
+        d = cols[ci]
+        out.append({"col": ci, "cls": "/".join(sorted(d["cls"])),
+                    "mixed": len(d["cls"]) > 1, "sample": d["sample"]})
+    return out
+
+
+def _dump_table(label: str, tbl: dict | None, basis: str, rn: str,
+                show: int) -> None:
+    """채택된 표의 원문 + **열 정렬 요약**을 찍는다. 대조 0건이면 ❌(#54)."""
+    if not tbl or not tbl.get("table_html"):
+        return
+    # `<wbr>` 는 표시용 줄바꿈 힌트라 셀 경계가 아니다 — 남기면 덤프에
+    # `AI|비전솔루션생성형|AI` 로 찍혀 원문에 없는 칸이 있는 것처럼 보인다.
+    html = tbl["table_html"]
+    flat = re.sub(r"\s+", " ",
+                  re.sub(r"(?is)<[^>]+>", "|",
+                         re.sub(r"(?i)<wbr\s*/?>", "", html)))
+    print(f"   [{label} 채택 원문 · {basis or '?'} 보고서"
+          + (f" 접수 {rn}" if rn else "") + f"] {flat[:show * 3]}")
+    cols = align_summary(html)
+    if not cols:
+        print(f"   [{label} 정렬] ❌ 열을 하나도 못 읽었다 — 감사 실패")
+        return
+    bad = [c for c in cols if c["mixed"]]
+    head = "⚠️ 한 열 안에서 정렬이 갈린다" if bad else "✅ 열마다 정렬 일관"
+    print(f"   [{label} 정렬] {head}")
+    for c in cols:
+        mark = " ⚠️" if c["mixed"] else ""
+        print(f"      열{c['col']} {c['cls']:7} {c['sample'][:40]!r}{mark}")
 
 
 def _latest_quarters(dart, ticker: str) -> list[dict]:
@@ -201,15 +254,12 @@ def main(argv: list[str] | None = None) -> int:
         # ⚠️ 티커를 **명시**했을 때는 채택된 제품표 원문도 찍는다. 화면이
         # 이상해 보일 때(셀 두 줄이 붙는 등) 원문 없이 고치면 또 몇 라운드를
         # 날린다(#109 — 사유 히스토그램은 '무엇이 많은가'까지만 말한다).
-        if args.tickers and prod and prod.get("table_html"):
-            # ⚠️ `<wbr>` 는 **표시용 줄바꿈 힌트**라 셀 경계가 아니다 —
-            # 남겨 두면 덤프에 `AI|비전솔루션생성형|AI` 로 찍혀 원문에 없는
-            # 칸이 있는 것처럼 보인다(#35 프로브는 화면이 쓰는 그 값을 보여줄 것).
-            _tbl = re.sub(r"(?i)<wbr\s*/?>", "", prod["table_html"])
-            _pv = re.sub(r"\s+", " ", re.sub(r"(?is)<[^>]+>", "|", _tbl))
-            print(f"   [제품표 채택 원문 · {prod_basis or '?'} 보고서"
-                  + (f" 접수 {prod_rn}" if prod_rn else "")
-                  + f"] {_pv[:args.show * 3]}")
+        if args.tickers:
+            _dump_table("제품표", prod, prod_basis, prod_rn, args.show)
+            # ⚠️ 생산표도 같이 찍는다 — 사용자가 지적하는 정렬 증상은 대개
+            # 가동률 표에서 나는데, 제품표만 찍으면 **다른 표를 보고** 판정
+            # 하게 된다(#114 감사가 무엇을 보고 말하는지 출처를 밝힐 것).
+            _dump_table("생산표", got, basis, "", args.show)
         if prod:
             tally["제품표"] = tally.get("제품표", 0) + 1
         # ── 나머지 항목도 같이 센다 — "있는데 누락"을 찾는 게 목적이다.
