@@ -656,14 +656,66 @@ def diagnose_detail(text: str) -> str:
         if fwd:
             return f"캡션이 라벨 뒤 {fwd.group(0)[:24]}"
         return "캡션없음"
-    at = with_unit[0]
-    if not re.search(r"합\s*계", text[at:at + 2500]):
-        return "합계행 없음"
-    m = re.search(r"합\s*계", text[at:at + 2500])
-    vals = _row_values(text, at + m.end()) if m else []
-    # ⚠️ 값 자체는 넣지 않는다 — 종목마다 달라 히스토그램이 전부 1건씩으로
-    # 쪼개져 "무엇이 많은가"를 못 본다. **모양**만 센다.
-    return f"합계행 {len(vals)}값"
+    # ⚠️ 여기까지는 "잔고 라벨 + 금액 단위" 만 본 것이다. 표 파서(`_parse_table`)
+    # 는 그 앞에 **헤더 게이트**가 하나 더 있다 — 앞 260자에 시작잔고 라벨과
+    # 납품 라벨이 둘 다 있어야 표로 들어간다. 그 게이트에서 막히면 검산
+    # 코드는 **한 번도 안 돈다**. 그걸 안 갈라 놓으면 "합계행 5값" 을 보고
+    # 검산을 고쳤는데 커버리지가 그대로인 일이 생긴다(2026-08-21 실측 —
+    # 실제로 그랬다, #20 배선은 태워야 보인다).
+    return _gate_stage(text, with_unit)
+
+
+# 파서가 표를 받아들이기까지 통과해야 하는 관문 — **진단은 이걸 그대로
+# 따라 걷는다**(#80 감사의 모든 경로가 제품의 선택기 하나를 볼 것).
+def _gate_stage(text: str, spots: list[int]) -> str:
+    """잔고 라벨 위치들 중 **가장 멀리 간 단계**를 말한다.
+
+    파서는 전 출현을 훑으므로 진단도 그래야 한다 — 첫 자리에서 막혔다고
+    보고하면 뒤 자리에서 검산까지 갔다가 실패한 사실이 가려진다."""
+    best, rank = "헤더에 기초·수주총액 열 없음", 0
+    for at in spots:
+        head = text[max(0, at - 260):at]
+        if not any(k in head for k in _OPEN_LABELS):
+            continue
+        if not any(k in head for k in _DELIV_LABELS):
+            if rank < 1:
+                best, rank = "헤더에 기납품·매출 열 없음", 1
+            continue
+        seg = _cut_table(text[at:at + 2500])
+        m = re.search(r"합\s*계", seg)
+        if not m:
+            if rank < 2:
+                best, rank = "헤더는 통과 · 합계행 없음", 2
+            continue
+        vals = _row_values(seg, m.end())
+        # ⚠️ 값 자체는 넣지 않는다 — 종목마다 달라 히스토그램이 전부 1건씩
+        # 으로 쪼개져 "무엇이 많은가"를 못 본다. **모양**만 센다.
+        if rank < 3:
+            best, rank = f"헤더 통과 · 합계행 {len(vals)}값(검산실패)", 3
+    return best
+
+
+def backlog_excerpt(text: str, width: int = 240) -> str:
+    """미수집 종목의 **잔고 표 주변 원문** 한 조각.
+
+    ⚠️ 사유 히스토그램은 '무엇이 많은가'까지만 말한다 — 실제로 어떤 열
+    구성인지는 원문을 봐야 정해지고, 추측으로 열을 배정하면 스케일이 아니라
+    **의미**가 틀린다(#106). 다음 라운드의 유일한 근거다.
+    """
+    spots = _balance_spots(text or "")
+    if not spots:
+        return ""
+    # 헤더 게이트를 가장 멀리 통과한 자리를 고른다(파서가 본 그 자리).
+    best, at = -1, spots[0]
+    for p in spots:
+        head = (text[max(0, p - 260):p])
+        sc = (any(k in head for k in _OPEN_LABELS)
+              + any(k in head for k in _DELIV_LABELS)
+              + (1 if _unit_mult(text, p) is not None else 0))
+        if sc > best:
+            best, at = sc, p
+    seg = text[max(0, at - 120):at + width]
+    return re.sub(r"\s+", " ", seg).strip()
 
 
 def _log_miss(ticker: str, year, reprt_code, reason: str,
@@ -777,8 +829,8 @@ def review_text() -> str:
     return "\n".join(out)
 
 
-def backlog_probe(dart, ticker: str, year: int,
-                  reprt_code: str) -> tuple[float | None, str]:
+def backlog_probe(dart, ticker: str, year: int, reprt_code: str,
+                  out: dict | None = None) -> tuple[float | None, str]:
     """해당 분기 정기보고서의 (수주잔고 원, 판정). 값이 없으면 (None, 사유).
 
     ⚠️ 왜 사유를 **반환**하는가(2026-08-21). 커버리지가 9/40(22%)인데
@@ -817,6 +869,9 @@ def backlog_probe(dart, ticker: str, year: int,
         # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
         why = diagnose(text or "")
         det = diagnose_detail(text or "")
+        if out is not None:
+            out["detail"] = det
+            out["excerpt"] = backlog_excerpt(text or "")
         _log_miss(ticker, year, reprt_code, why, det)
         # 사유만 돌려주면 "단위없음 15건"에서 멈춰 다음 수를 못 정한다 —
         # 상세를 붙여 감사 히스토그램이 곧 작업 목록이 되게 한다(#93).

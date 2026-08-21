@@ -6894,7 +6894,8 @@ class TestBacklogUnitCaptions20260821:
         late = "수주잔고 현황 (단위 : 백만원) 수주총액 기납품액 합 계 1 2 3"
         assert d(late).startswith("캡션이 라벨 뒤"), d(late)
         odd = "(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 9 1 2 3 4"
-        assert diagnose(odd) == "형식미지원" and d(odd) == "합계행 5값", d(odd)
+        assert diagnose(odd) == "형식미지원", diagnose(odd)
+        assert d(odd) == "헤더 통과 · 합계행 5값(검산실패)", d(odd)
         # 히스토그램이 1건씩으로 쪼개지면 "무엇이 많은가"를 못 본다 —
         # 값 자체는 상세에 넣지 않는다.
         assert "9" not in d(odd).replace("5값", "")
@@ -7002,6 +7003,74 @@ class TestFcfDerivedNotCarried20260821:
         assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
 
 
+class TestBacklogGateDiagnosis20260821:
+    """⚠️ 5값·4값 합계행을 구제했는데 **커버리지가 그대로였다**(2026-08-21
+    재측정). 이유는 검산이 아니라 그 **앞의 헤더 게이트**였다 — `_parse_table`
+    은 잔고 라벨 앞 260자에 시작잔고 라벨과 납품 라벨이 둘 다 있어야 표로
+    들어간다. 거기서 막히면 검산 코드는 **한 번도 안 돈다**(#20).
+    진단이 게이트를 갈라 말하지 않으면 다음에도 엉뚱한 데를 고친다."""
+
+    def test_detail_names_the_gate_that_blocked(self):
+        from bot.dart_backlog import diagnose_detail as d
+        assert d("(단위 : 억원) 구분 수주잔고 합 계 999") \
+            == "헤더에 기초·수주총액 열 없음"
+        assert d("(단위 : 억원) 수주총액 수주잔고 합 계 999 222") \
+            == "헤더에 기납품·매출 열 없음"
+        assert d("(단위 : 억원) 수주총액 기납품액 수주잔고 조선 1,000 400 600") \
+            == "헤더는 통과 · 합계행 없음"
+        assert d("(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 999 111 222") \
+            == "헤더 통과 · 합계행 3값(검산실패)"
+
+    def test_detail_reports_the_furthest_spot_not_the_first(self):
+        """파서는 전 출현을 훑는다 — 첫 자리에서 막혔다고 보고하면 뒤
+        자리에서 검산까지 갔다 실패한 사실이 가려진다(#80)."""
+        from bot.dart_backlog import diagnose_detail as d
+        t = ("(단위 : 억원) 구분 수주잔고 3 "
+             "수주총액 기납품액 수주잔고 합 계 999 111 222")
+        assert d(t) == "헤더 통과 · 합계행 3값(검산실패)", d(t)
+
+    def test_excerpt_points_at_the_table_the_parser_saw(self):
+        """사유 히스토그램은 '무엇이 많은가'까지만 말한다 — 열 구성은 원문을
+        봐야 정해지고, 추측으로 배정하면 의미가 틀린다(#106)."""
+        from bot.dart_backlog import backlog_excerpt
+        # ⚠️ 두 표를 **창 밖으로** 벌려 놓는다 — 붙여 두면 첫 자리에서 잘라도
+        # 우연히 진짜 표가 들어와 '가장 멀리 간 자리' 규칙을 지우는 뮤테이션이
+        # 통과한다(실측, #91c 깨지는 값까지 밀 것).
+        t = ("앞표 (단위 : 사) 협력사 수주잔고 3 " + "가 " * 300
+             + "뒤표 (단위 : 백만원) 수주총액 기납품액 수주잔고 합 계 999 111 222")
+        ex = backlog_excerpt(t)
+        assert "수주총액 기납품액 수주잔고" in ex, ex
+        assert backlog_excerpt("") == "" and backlog_excerpt("무관") == ""
+
+    def test_probe_out_channel_is_optional_and_filled(self):
+        """`out=` 를 안 넘기는 옛 호출부가 깨지면 안 되고, 넘기면 채워져야
+        한다(#20 배선)."""
+        import bot.dart_backlog as bl
+        import bot.dart_feed as df
+        import pytest as _pt
+        mp = _pt.MonkeyPatch()
+        try:
+            mp.setattr(bl, "_log_miss", lambda *a, **k: None)
+            # ⚠️ 파서 10종이 **전부** 거부하는 원문이어야 미스가 된다 —
+            # `구분 수주잔고 합 계 999` 는 단일값 파서가 잡아 미스가 아니다
+            # (픽스처를 잘못 잡으면 검사가 눈이 먼다, #59a).
+            mp.setattr(df, "_fetch_doc_text", lambda *a, **k:
+                       "(단위 : 억원) 수주총액 수주잔고 합 계 999 222")
+
+            class _D:
+                api_key = "K"
+
+                def find_periodic_reports(self, *a):
+                    return [{"rcept_no": "R1"}]
+            assert bl.backlog_probe(_D(), "005930.KS", 2026, "11012")[0] is None
+            box: dict = {}
+            bl.backlog_probe(_D(), "005930.KS", 2026, "11012", out=box)
+            assert box.get("detail") == "헤더에 기납품·매출 열 없음", box
+            assert "수주잔고" in box.get("excerpt", ""), box
+        finally:
+            mp.undo()
+
+
 class TestBacklogExtraColumns20260821:
     """VM 스윕(2026-08-21)이 남긴 마지막 개선 여지: `형식미지원 · 합계행
     5값 / 4값`. 표에 **수량·건수·비중 열이 섞이면** 개수가 어긋나 통째로
@@ -7058,7 +7127,8 @@ class TestBacklogDiagnoseScope20260821:
         t = ("(단위 : 사) 협력사 수주잔고 3 "
              "(단위 : 백만원) 수주총액 기납품액 수주잔고 합 계 999 111 222")
         assert diagnose(t) == "형식미지원", diagnose(t)
-        assert diagnose_detail(t) == "합계행 3값", diagnose_detail(t)
+        assert diagnose_detail(t) == "헤더 통과 · 합계행 3값(검산실패)", \
+            diagnose_detail(t)
 
     def test_unsupported_units_are_reported_together(self):
         """출현이 여럿이면 서로 다른 표를 보고 있는 것이다 — 하나만 말하면
