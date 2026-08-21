@@ -6558,12 +6558,16 @@ class TestQuarterlyMultiMarket20260816:
     def test_enrich_kr_tasks_are_named_for_timing(self):
         """이름이 없으면 '느리다'까지만 알고 무엇을 고칠지는 모른다(#69).
         프로브는 제품이 심은 계측을 **읽기만** 해야 한다(#35)."""
-        import ast
-        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef) and n.name == "_enrich_kr")
-        body = ast.get_source_segment(src, fn)
-        assert '_TIMING[f"kr:{name}"]' in body, "task 별 계측이 없다"
+        # ⚠️ **동작**으로 본다 — 소스 문자열 단언은 계약을 지키는 리팩터에
+        # 깨진다(#19·#89: 이번 세션에만 아홉 번째다).
+        import bot.stock_snapshot as ss
+        snap: dict = {}
+        ss._enrich_kr("005930.KS", snap)     # 자격증명 없으면 전부 빨리 실패
+        tm = ss.last_timing("005930.KS")
+        kr = {k for k in tm if k.startswith("kr:")}
+        assert len(kr) >= 10, f"task 별 계측이 없다: {sorted(tm)}"
+        for name in ("kr:dart.financials", "kr:fnguide", "kr:fsc.dilution"):
+            assert name in kr, (name, sorted(kr))
         # ⚠️ 옛 판은 프로브 소스에서 `startswith("kr:")` **개수**를 셌다 —
         # 표현이 바뀌면 깨지고, 세는 것만으론 실제 동작을 모른다(#19).
         # 판정을 순수 함수로 빼 뒀으니 **값으로** 본다.
@@ -7375,11 +7379,19 @@ class TestSingleFlight20260821:
         """`/api/quarterly` 가 **108초**로 관측됐다(2026-08-21 300120.KQ,
         게다가 동시에 두 번). 그중 무엇이 payload 수집이고 무엇이 PNG
         렌더인지 알 방법이 없었다 — 추측하지 말고 잰다(#69)."""
-        from bot.quarterly_infographic import last_render_timing
-        assert isinstance(last_render_timing(), dict)
-        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        import ast as _ast
+        import bot.quarterly_infographic as qi
+        qi._RENDER_TIMING.start("ZZZ")
         for stage in ("build_payload", "render_png", "total"):
-            assert f'_RENDER_TIMING["{stage}"]' in src, stage
+            qi._RENDER_TIMING.set("ZZZ", stage, 0.5)
+        assert set(qi.last_render_timing("ZZZ")) == {
+            "build_payload", "render_png", "total"}
+        assert qi.last_render_timing("AAPL") == {}, "남의 값이 샌다"
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        named = {n.value for n in _ast.walk(_ast.parse(src))
+                 if isinstance(n, _ast.Constant) and isinstance(n.value, str)}
+        for stage in ("build_payload", "render_png", "total"):
+            assert stage in named, stage
         # 핸들러가 실제로 찍는가(#20 배선)
         import ast
         dsrc = open("bot/dashboard_server.py", encoding="utf-8").read()
@@ -7408,9 +7420,10 @@ class TestSingleFlight20260821:
         close = pd.Series(
             np.cumsum(np.random.default_rng(1).normal(0, 1, n)) + 100,
             index=idx)
+        key = cd.timing_key("AAPL", "1d", "1y")
         cd._series_payload(close, "KRW", 0, None, close, close * 1.01,
-                           close * 0.99, ticker=None, interval="1d")
-        t = cd.last_chart_timing()
+                           close * 0.99, ticker=None, interval="1d", tkey=key)
+        t = cd.last_chart_timing(key)
         for stage in ("ind.basic", "ind.ichimoku+disparity", "ind.events",
                       "ind.elliott"):
             assert stage in t, (stage, t)
@@ -7418,12 +7431,24 @@ class TestSingleFlight20260821:
         assert t["ind.basic"] < 5.0, t
 
     def test_chart_stages_are_measured(self):
-        """`/api/chart` 13~39초가 **어디서** 나는지 알 방법이 없었다(#69)."""
-        from bot.chart_data import last_chart_timing
-        assert isinstance(last_chart_timing(), dict)
-        src = open("bot/chart_data.py", encoding="utf-8").read()
+        """`/api/chart` 13~39초가 **어디서** 나는지 알 방법이 없었다(#69).
+
+        ⚠️ 소스 문자열이 아니라 **기록 행위**로 고정한다 — 표현이 바뀌면
+        깨지는 단언은 계약을 지키는 리팩터를 막는다(#19·#89)."""
+        import bot.chart_data as cd
+        key = cd.timing_key("ZZZ", "1d", "1y")
+        cd._TIMING.start(key)
         for stage in ("yf.history", "merge_today", "indicators", "total"):
-            assert f'_TIMING["{stage}"]' in src, stage
+            cd._TIMING.set(key, stage, 0.5)
+        assert set(cd.last_chart_timing(key)) == {
+            "yf.history", "merge_today", "indicators", "total"}
+        # 기록 지점이 실제로 이 단계들을 쓰는가 — 이름만 AST 로 확인
+        import ast
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        named = {n.value for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        for stage in ("yf.history", "merge_today", "indicators", "total"):
+            assert stage in named, stage
 
 
 class TestSharedFetchPool20260821:
@@ -30224,3 +30249,93 @@ class TestProbeAlignSummary20260821:
         from bot.scripts.production_format_probe import align_summary
         assert align_summary("") == []
         assert align_summary("<table></table>") == []
+
+
+class TestKeyedTiming20260822:
+    """계측이 **요청별**이어야 한다 — 사용자가 탭 셋을 열면 세 종목 수집이
+    겹치고, 전역 dict 하나면 로그 한 줄이 누구 것인지 알 수 없다.
+
+    2026-08-22 실측 로그에서 302430.KQ · 005880.KS · 294870.KS 세 종목이
+    같은 구간에 겹쳐 돌았다. 그 상태로 잰 값으로 병목을 짚으면 **엉뚱한
+    곳을 고친다**(#35 감사가 화면과 다른 경로를 보면 거짓 안심/거짓 경보).
+    """
+
+    def test_stages_do_not_leak_between_keys(self):
+        from bot.timing import Stages
+        st = Stages()
+        st.start("A")
+        st.start("B")
+        st.set("A", "yf.history", 1.0)
+        st.set("B", "yf.history", 99.0)
+        assert st.snapshot("A") == {"yf.history": 1.0}
+        assert st.snapshot("B") == {"yf.history": 99.0}
+        assert st.snapshot("C") == {}, "안 잰 키가 남의 값을 받는다"
+
+    def test_start_clears_only_its_own_key(self):
+        from bot.timing import Stages
+        st = Stages()
+        st.start("A")
+        st.set("A", "x", 1.0)
+        st.start("B")
+        assert st.snapshot("A") == {"x": 1.0}, "다른 키를 지웠다"
+        st.start("A")
+        assert st.snapshot("A") == {}, "재시작이 옛 값을 안 지웠다"
+
+    def test_snapshot_is_a_copy(self):
+        from bot.timing import Stages
+        st = Stages()
+        st.start("A")
+        st.set("A", "x", 1.0)
+        got = st.snapshot("A")
+        st.start("A")
+        assert got == {"x": 1.0}, "내부 dict 를 그대로 넘겼다"
+
+    def test_old_keys_are_evicted(self):
+        """프로세스가 오래 살아도 안 자란다."""
+        from bot.timing import Stages
+        st = Stages(keep=3)
+        for k in "abcde":
+            st.start(k)
+            st.set(k, "x", 1.0)
+        assert st.snapshot("a") == {} and st.snapshot("b") == {}
+        assert st.snapshot("e") == {"x": 1.0}
+
+    def test_concurrent_collections_keep_their_own_stages(self):
+        """실제 경로로 태운다 — 헬퍼 단위테스트는 배선 변형을 못 잡는다(#20)."""
+        import threading
+        import bot.stock_snapshot as ss
+        ready, go = threading.Event(), threading.Event()
+
+        def work(tk, val):
+            ss._TIMING.start(tk)
+            ready.set()
+            go.wait(5)
+            ss._TIMING.set(tk, "yf.info", val)
+        t1 = threading.Thread(target=work, args=("AAA", 1.0))
+        t2 = threading.Thread(target=work, args=("BBB", 9.0))
+        t1.start(); t2.start()
+        assert ready.wait(5)
+        go.set()
+        t1.join(5); t2.join(5)
+        assert ss.last_timing("AAA") == {"yf.info": 1.0}
+        assert ss.last_timing("BBB") == {"yf.info": 9.0}
+
+    def test_chart_key_is_shared_by_writer_and_reader(self):
+        """로그를 찍는 쪽과 재는 쪽이 **같은 문자열**을 써야 한다 — 다르면
+        `chart-timing` 이 영원히 안 찍힌다(조용한 실패)."""
+        import ast
+        import bot.chart_data as cd
+        key = cd.timing_key("005930.KS", "1d", "1y")
+        cd._TIMING.start(key)
+        cd._TIMING.set(key, "total", 1.0)
+        assert cd.last_chart_timing(key) == {"total": 1.0}
+        # 핸들러가 **읽는 키를 timing_key 로 만드는지** 구조로 본다 —
+        # 리터럴을 손으로 적으면 수집기와 갈려 로그가 조용히 사라진다.
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        reads = [n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "last_chart_timing"]
+        assert reads, "핸들러가 계측을 안 읽는다"
+        assert all(a.args and isinstance(a.args[0], ast.Call)
+                   and getattr(a.args[0].func, "id", "") == "timing_key"
+                   for a in reads), "키를 timing_key 로 안 만든다"

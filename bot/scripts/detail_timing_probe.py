@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.time()
         snap = ss.collect_stock_snapshot(tk, use_cache=False)
         wall = time.time() - t0
-        tm = ss.last_timing()
+        tm = ss.last_timing(tk)
         if not tm:
             print(f"[{i:2}/{len(tickers)}] {tk:<12} 계측 없음(수집 실패?)")
             continue

@@ -167,7 +167,7 @@ def _series_payload(
     close, currency: str, decimals: int,
     volume=None, opens=None, highs=None, lows=None,
     ticker: str | None = None, interval: str = "1d",
-    for_storage: bool = False,
+    for_storage: bool = False, tkey: str = "",
 ) -> dict:
     """Build the parallel-array chart payload from a pandas close Series.
 
@@ -175,8 +175,15 @@ def _series_payload(
     Bollinger(20,2σ) + MACD(12,26,9) + OHLC (for candlestick toggle).
     Bollinger / MACD use the SAME formulas as _compute_technical_snapshot
     (SSoT) so the chart overlays match the text analysis. Each block is
-    omitted gracefully when the series is too short or inputs are absent."""
+    omitted gracefully when the series is too short or inputs are absent.
+
+    `tkey`: 계측 키(`timing_key`). 빈 문자열이면 기록하지 않는다 — 저장용
+    호출은 요청이 아니라 계측 대상이 아니다."""
     import math
+
+    def _mark(stage: str, sec: float) -> None:
+        if tkey:
+            _TIMING.set(tkey, stage, sec)
 
     # ⚠️ min_periods 필수 — ewm 은 기본적으로 0봉째부터 값을 낸다(시드=첫 종가).
     # sma55/sma200 은 rolling 이라 자동으로 warm-up 이 NaN 인데 ema21 만 가드가
@@ -290,7 +297,7 @@ def _series_payload(
     # 저장본은 상세 페이지가 /api/chart 로 '오늘까지' 를 받아오기 전 잠깐 쓰는
     # placeholder 이고 두 지표 모두 기본 OFF 라 사실상 표시될 일이 없다.
     # 실제로 그려지는 API 응답(1h 디스크 캐시)에는 그대로 들어간다.
-    _TIMING["ind.basic"] = round(_ind_t.time() - _ind_t0, 3)
+    _mark("ind.basic", _ind_t.time() - _ind_t0)
     _ind_t0 = _ind_t.time()
     if not for_storage:
         try:
@@ -331,7 +338,7 @@ def _series_payload(
                 }
         except Exception as exc:
             log.debug("chart_data: disparity overlay skipped: %s", exc)
-    _TIMING["ind.ichimoku+disparity"] = round(_ind_t.time() - _ind_t0, 3)
+    _mark("ind.ichimoku+disparity", _ind_t.time() - _ind_t0)
     _ind_t0 = _ind_t.time()
 
     # 공시 이벤트 마커 (전 시장, ₩0). 차트가 보여줄 기간(span)을 넘겨 KR/US 는
@@ -354,7 +361,7 @@ def _series_payload(
                 ]
         except Exception:
             pass
-    _TIMING["ind.events"] = round(_ind_t.time() - _ind_t0, 3)
+    _mark("ind.events", _ind_t.time() - _ind_t0)
     _ind_t0 = _ind_t.time()
 
     # 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29, Credit Suisse
@@ -377,7 +384,7 @@ def _series_payload(
                 payload["elliott"] = ef
     except Exception as exc:      # silent-fail 금지 — 원인 로그는 남긴다
         log.debug("chart_data: elliott/fib overlay skipped: %s", exc)
-    _TIMING["ind.elliott"] = round(_ind_t.time() - _ind_t0, 3)
+    _mark("ind.elliott", _ind_t.time() - _ind_t0)
     return payload
 
 
@@ -910,12 +917,21 @@ def _fetch_series_fallback(ticker: str, period: str):
 # 단계별 소요시간(마지막 호출) — `/api/chart` 가 13~39초로 관측됐는데
 # (2026-08-21 `api-timing` 실측) **어디서** 그 시간이 나는지 알 방법이
 # 없었다. 추측하지 말고 잰다(#69).
-_TIMING: dict = {}
+from bot.timing import Stages as _Stages
+
+# ⚠️ **요청 키별**로 가른다 — 전역 dict 하나면 탭 세 개를 열었을 때 한
+# 줄이 누구 것인지 알 수 없다(2026-08-22 실측, bot/timing.py 주석 참조).
+_TIMING = _Stages()
 
 
-def last_chart_timing() -> dict:
-    """직전 `fetch_chart_payload` 의 단계별 소요(초). 읽기 전용."""
-    return dict(_TIMING)
+def timing_key(ticker: str, interval: str, period: str) -> str:
+    """계측 키 — 로그를 찍는 쪽과 재는 쪽이 **같은 문자열**을 써야 한다."""
+    return f"{ticker}|{interval}|{period}"
+
+
+def last_chart_timing(key: str) -> dict:
+    """그 요청의 단계별 소요(초). 캐시 히트·다른 요청이면 빈 dict."""
+    return _TIMING.snapshot(key)
 
 
 def fetch_chart_payload(
@@ -974,7 +990,8 @@ def fetch_chart_payload(
         return fb
 
     import time as _time
-    _TIMING.clear()
+    _tkey = timing_key(ticker, interval, period)
+    _TIMING.start(_tkey)
     _t_all = _time.time()
     try:
         import yfinance as yf
@@ -1016,12 +1033,12 @@ def fetch_chart_payload(
                     interval="1d",
                     auto_adjust=True,
                 )
-        _TIMING["yf.history"] = round(_time.time() - _t0, 3)
+        _TIMING.set(_tkey, "yf.history", _time.time() - _t0)
         if hist is None or len(hist) < 2:
             _t0 = _time.time()
             _fb = _fallback_with_notice()      # 야후 빈 → 네이버/KIS 일봉
-            _TIMING["fallback"] = round(_time.time() - _t0, 3)
-            _TIMING["total"] = round(_time.time() - _t_all, 3)
+            _TIMING.set(_tkey, "fallback", _time.time() - _t0)
+            _TIMING.set(_tkey, "total", _time.time() - _t_all)
             return _fb
         close = hist["Close"].dropna()
         if len(close) < 2:
@@ -1038,11 +1055,13 @@ def fetch_chart_payload(
         _t0 = _time.time()
         if interval == "1d":
             close, vol, op, hi, lo = _merge_today_bar(ticker, close, vol, op, hi, lo)
-        _TIMING["merge_today"] = round(_time.time() - _t0, 3)
+        _TIMING.set(_tkey, "merge_today", _time.time() - _t0)
         _t0 = _time.time()
-        payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker, interval=interval)
-        _TIMING["indicators"] = round(_time.time() - _t0, 3)
-        _TIMING["total"] = round(_time.time() - _t_all, 3)
+        payload = _series_payload(close, currency, decimals, vol, op, hi, lo,
+                                  ticker=ticker, interval=interval,
+                                  tkey=_tkey)
+        _TIMING.set(_tkey, "indicators", _time.time() - _t0)
+        _TIMING.set(_tkey, "total", _time.time() - _t_all)
         payload["interval"] = interval
         payload["period"] = period
         if _iv_fallback:

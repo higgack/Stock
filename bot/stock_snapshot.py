@@ -99,20 +99,24 @@ def collect_stock_snapshot(ticker: str, *, use_cache: bool = True) -> dict | Non
     return snap
 
 
-# 마지막 수집의 단계별 소요시간(초). 어느 블록을 클릭 로딩으로 뗄지 정하려면
+# 수집의 단계별 소요시간(초). 어느 블록을 클릭 로딩으로 뗄지 정하려면
 # **추측이 아니라 실측**이 있어야 한다(사용자 2026-08-21 '로딩이 오래 걸려서').
-# 스레드가 각자 자기 키만 쓰므로 dict 갱신은 원자적이고 락이 필요 없다.
-_TIMING: dict[str, float] = {}
+# ⚠️ **티커별**로 가른다 — 전역 dict 하나면 탭 세 개를 열었을 때 세 종목의
+# 단계가 섞여 어느 것인지 알 수 없다(2026-08-22 실측, bot/timing.py 참조).
+# 스레드로컬은 못 쓴다: `kr:*`·보조 6종은 **풀 워커 스레드**가 기록한다.
+from bot.timing import Stages as _Stages
+
+_TIMING = _Stages()
 
 
-def last_timing() -> dict[str, float]:
-    """직전 `collect_stock_snapshot` 의 단계별 초. 캐시 히트면 비어 있다."""
-    return dict(_TIMING)
+def last_timing(ticker: str = "") -> dict[str, float]:
+    """그 티커 수집의 단계별 초. 캐시 히트·미측정이면 빈 dict."""
+    return _TIMING.snapshot(ticker)
 
 
 def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
     """Return a dict of company/market facts, or *None* on failure."""
-    _TIMING.clear()
+    _TIMING.start(ticker)
     _t_all = time.time()
     try:
         import yfinance as yf
@@ -121,7 +125,7 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         info = t.info or {}
         # ⚠️ `.info` 는 **직렬**이다 — 보조 6종 병렬 수집보다 앞이라 이게
         # 느리면 나머지를 아무리 떼어내도 첫 화면이 안 빨라진다.
-        _TIMING["yf.info"] = round(time.time() - _t0, 3)
+        _TIMING.set(ticker, "yf.info", time.time() - _t0)
         if not info or info.get("quoteType") is None:
             # 야후 .info 차단/실패 → None. 호출부(render_lookup_detail)가 직전 분석
             # 스냅샷으로 폴백(_load_stored_stock_info) — 야후 차단 중 상세 표시 유지.
@@ -410,7 +414,7 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
             try:
                 return fn() or {}
             finally:
-                _TIMING[name] = round(time.time() - _t0, 3)
+                _TIMING.set(ticker, name, time.time() - _t0)
 
         try:
             from concurrent.futures import ThreadPoolExecutor
@@ -451,13 +455,13 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         except Exception as exc:
             log.warning("stock_snapshot: %s enrich skipped for %s: %s",
                         _mkt, ticker, exc)
-        _TIMING[f"enrich:{_mkt}"] = round(time.time() - _t0, 3)
+        _TIMING.set(ticker, f"enrich:{_mkt}", time.time() - _t0)
 
-        _TIMING["total"] = round(time.time() - _t_all, 3)
+        _TIMING.set(ticker, "total", time.time() - _t_all)
         return snap
 
     except Exception as exc:
-        _TIMING["total"] = round(time.time() - _t_all, 3)
+        _TIMING.set(ticker, "total", time.time() - _t_all)
         log.warning("stock_snapshot: failed for %s: %s", ticker, exc)
         return None
 
@@ -749,7 +753,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         try:
             return fn()
         finally:
-            _TIMING[f"kr:{name}"] = round(time.time() - _t0, 3)
+            _TIMING.set(ticker, f"kr:{name}", time.time() - _t0)
 
     results: list[dict | None] = []
     try:
