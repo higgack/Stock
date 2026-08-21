@@ -41,6 +41,42 @@ REAL = '''
 '''
 
 
+
+def _strip_comments(src: str) -> str:
+    """실행 코드만 남긴다(주석·독스트링 제거).
+
+    소스 검사가 주석을 재면, 실패 사유를 설명하는 문장이 금지 대상 이름을
+    담고 있을 때 **멀쩡한 코드가 틀렸다고 나온다**(실수 #59b — 실제로
+    걸렸다). 정규식으로 따옴표를 흉내내면 문자열 안의 `#` 에 걸리므로
+    tokenize 로 판별한다."""
+    import io
+    import tokenize
+    out, prev_end = [], (1, 0)
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        return src
+    doc_ok = {tokenize.INDENT, tokenize.DEDENT, tokenize.NEWLINE,
+              tokenize.NL, tokenize.ENCODING}
+    last_real = None
+    for t in toks:
+        drop = t.type == tokenize.COMMENT or (
+            t.type == tokenize.STRING
+            and (last_real is None or last_real in (tokenize.NEWLINE,
+                                                    tokenize.INDENT,
+                                                    tokenize.DEDENT)))
+        if not drop:
+            if t.start > prev_end:
+                out.append(" ")
+            out.append(t.string)
+            prev_end = t.end
+        if t.type not in doc_ok or t.type in (tokenize.NEWLINE,
+                                              tokenize.INDENT,
+                                              tokenize.DEDENT):
+            last_real = t.type
+    return "".join(out)
+
+
 class TestParse:
     def test_picks_the_data_table_not_the_unit_decoy(self):
         """앵커 직후 첫 표는 `(단위 : 천개)` 한 칸짜리 **미끼**다(실측).
@@ -572,10 +608,20 @@ class TestSweep20260821:
 
     def test_probe_preview_window_matches_the_parser(self):
         """미리보기 창이 파서 스캔창보다 좁으면, 파서가 실제로 보고 버린 표를
-        못 보여준다 — v1 의 미리보기가 전부 `(단위 : …)` 캡션이던 이유."""
+        못 보여준다 — v1 의 미리보기가 전부 `(단위 : …)` 캡션이던 이유.
+
+        ⚠️ 옛 판은 `"m.end() + dp._SCAN_WINDOW" in src` 라는 **소스 문자열**
+        을 박아 뒀다. 같은 계약을 더 잘 지키는 리팩터(공용 `_scan_any` 로
+        묶기)에 그대로 깨졌다 — 계약은 "창을 파서와 같게"이지 특정 표현이
+        아니다(실수 #19·#75). 창을 스스로 정하지 않는 것으로 고정한다."""
         src = open("bot/scripts/production_format_probe.py",
                    encoding="utf-8").read()
-        assert "m.end() + dp._SCAN_WINDOW" in src
+        assert "_scan_any(" in src, "미리보기가 공용 선택기를 안 쓴다"
+        # 배너는 창 크기를 **찍기만** 하므로 제외 — 미리보기 블록만 본다.
+        blk = _strip_comments(src)
+        blk = blk[blk.index("if not got:"):]
+        assert "_SCAN_WINDOW" not in blk, "미리보기가 창을 따로 정한다"
+        assert "_TABLE_RE" not in blk, "미리보기가 표 수집을 복제한다"
         assert "m.end() + 6000" not in src, "좁은 고정창 잔존"
 
     def test_capacity_only_table_is_accepted(self):
@@ -624,7 +670,19 @@ class TestSweep20260821:
         # 선택도 판정도 상수를 **넘겨받아** 쓴다(리터럴 재등장 금지)
         assert "_score, _MIN_SCORE, 10)" in src
         assert "_score_products, _MIN_SCORE_ITEM, 14)" in src
-        assert "best >= _MIN_SCORE" in src
+        # ⚠️ 옛 판은 `"best >= _MIN_SCORE" in src` 였다 — 판정 꼬리를
+        # `_pick_any` 문턱으로 옮기자(같은 계약을 **더 강하게** 지킨다)
+        # 깨졌다(#19). 리터럴이 아니라 **동작**으로 못박는다: 문턱 바로
+        # 아래는 채택도 안 되고 화면 판정도 아니어야 한다.
+        import bot.dart_production as dp
+        # 어구 하나(생산능력=3점)뿐이라 격자 모양 게이트(#57)도 넘겨야
+        # 한다 — 행 2 · 셀 6.
+        one = ("<P>3. 원재료 및 생산설비</P><TABLE>"
+               "<TR><TH>구분</TH><TH>2025년</TH><TH>2024년</TH></TR>"
+               "<TR><TD>생산능력</TD><TD>1,000</TD><TD>900</TD></TR></TABLE>")
+        assert dp._score(one) >= dp._MIN_SCORE
+        assert dp.parse_production(one) is not None
+        assert dp.diagnose(one) == "능력만"
         assert "best >= 3" not in src and "best >= 10 " not in src
 
     def test_shape_gate_only_applies_to_single_keyword_tables(self):
@@ -2086,6 +2144,67 @@ class TestTableIdentity20260821:
         off = [a for _t, a in cells if 'class="ctr"' not in a]
         assert not off, f"가운데정렬이 안 걸린 셀: {off}"
         assert "align" not in h.lower(), "원본 ALIGN 속성이 남아 정렬이 갈린다"
+
+    # ── 감사와 화면이 갈라지던 것 ────────────────────────────────
+    DECOY = ('<P>생산능력 및 생산실적</P>'
+             '<TABLE><TR><TD>센터별</TD><TD>소재지</TD></TR>'
+             '<TR><TD>도곡1센터</TD><TD>서울시 강남구</TD></TR></TABLE>')
+    REAL = ('<P>3. 원재료 및 생산설비</P><TABLE>'
+            '<TR><TH>사업소</TH><TH>생산능력</TH><TH>생산실적</TH>'
+            '<TH>가 동 률</TH></TR>'
+            '<TR><TD>포항</TD><TD>4,368</TD><TD>4,102</TD>'
+            '<TD>93.9%</TD></TR></TABLE>')
+
+    def _split_doc(self) -> str:
+        """앞 앵커엔 0점 미끼, 뒤 앵커(창 200k)에 진짜 표 — SK(034730) 형태."""
+        return self.DECOY + "x" * 60_000 + self.REAL
+
+    def test_diagnose_sees_the_table_the_screen_shows(self):
+        """감사가 화면과 **다른 표**를 보면 통계가 통째로 거짓말한다(#35).
+
+        `diagnose` 가 `min_score=0` 으로 물으면 `_pick_any` 는 첫 앵커의
+        0점 미끼를 집고 **거기서 멈춘다** — 뒤 앵커의 진짜 표를 영영 안
+        본다. 2026-08-21 VM 스윕 실측: SK(034730) 가 `무관표만` 으로
+        찍혔는데 같은 원문에서 파서는 가동률까지 뽑고 있었다."""
+        import bot.dart_production as dp
+        mk = self._split_doc()
+        got = dp.parse_production(mk)
+        assert got and "가동률" in (got.get("kinds") or []), "파서가 진짜 표를 놓침"
+        assert dp.diagnose(mk) == "정상", (
+            f"감사가 화면과 갈라짐: diagnose={dp.diagnose(mk)} 인데 화면엔 실림")
+
+    def test_verdict_and_pick_never_disagree(self):
+        """불변식: 화면에 실리는 판정 ⇔ 파서가 표를 채택한다."""
+        import bot.dart_production as dp
+        _OK = ("정상", "가동률없음", "능력만")
+        for name, mk in (("미끼+진짜", self._split_doc()),
+                         ("진짜만", self.REAL),
+                         ("미끼만", self.DECOY),
+                         ("캡션만", "<P>3. 원재료 및 생산설비</P>" + self.CAPTION),
+                         ("절 없음", "<P>매출 현황</P>" + self.RATE)):
+            picked = dp.parse_production(mk) is not None
+            v = dp.diagnose(mk)
+            assert picked == (v in _OK), f"{name}: 판정 {v} 인데 채택={picked}"
+
+    def test_probe_preview_uses_the_product_selector(self):
+        """미리보기가 앵커를 따로 적으면 판정과 모순된 출력이 나온다 —
+        v6 은 `_ANCHOR`/`_ANCHOR_ALT` 둘만 보고 창도 40k 로 고정해서,
+        `원재료및생산설비`(창 200k)에서 나온 종목이 **'무관표만인데
+        (표 없음)'** 으로 찍혔다(#54 — 대조 0건은 통과가 아니다)."""
+        import bot.dart_production as dp
+        from bot.scripts import production_format_probe as pf
+        # ⚠️ 소스 검사는 **주석·독스트링을 지우고** 본다 — 그러지 않으면
+        # 실패 사유를 설명하는 내 주석의 `_ANCHOR` 를 재고 만다(실수 #59b).
+        src = open(pf.__file__, encoding="utf-8").read()
+        code = _strip_comments(src)
+        blk = code[code.index("if not got:"):]
+        assert "_scan_any(" in blk, "미리보기가 공용 선택기를 안 쓴다"
+        assert "_ANCHOR" not in blk, "미리보기가 앵커를 따로 적는다"
+        # 동작으로도 확인 — 소스 문자열만 보면 틀린 값을 축복한다(#19)
+        best, seen, pick, aname = dp._scan_any(
+            self.DECOY + "x" * 60_000 + self.REAL, dp._PROD_SPECS, dp._score)
+        assert seen == 2 and best >= 10 and aname == "원재료및생산설비"
+        assert "포항" in pick, "최고점 표가 미끼로 잡혔다"
 
     def test_kind_survives_the_rolling_walk(self, monkeypatch):
         """⚠️ 헬퍼만 보면 `kind` 를 떨어뜨리는 배선 변형을 못 잡는다(#20).

@@ -418,6 +418,33 @@ def parse_production(markup: str | None) -> dict | None:
     }
 
 
+def _scan_any(markup: str, specs: tuple, score_fn
+              ) -> tuple[int, int, str, str]:
+    """앵커 후보를 **전부** 훑어 (최고점, 본 표 수, 최고점 표, 앵커이름).
+
+    ⚠️ `_pick_any` 로는 대신할 수 없다 — 그건 첫 앵커에서 하나라도 잡히면
+    멈추므로 `min_score=0` 으로 부르면 **0점 표를 집고 멈춰** 뒤 앵커의
+    진짜 표를 영영 안 본다. 2026-08-21 실측: SK(034730) 가 그렇게
+    `무관표만` 으로 찍혔는데 같은 원문에서 `parse_production` 은 가동률
+    표를 뽑았다 — 감사와 화면이 갈라진 것(실수 #35).
+
+    창 크기는 스펙이 정한 값을 그대로 쓴다(정확 앵커 40k · 절 제목 200k).
+    감사·진단 전용이라 여기서 표를 **채택하지 않는다**."""
+    best_sc, seen, best_raw, best_name = -1, 0, "", ""
+    for name, rx, window in specs:
+        for m in rx.finditer(markup):
+            tail = markup[m.end(): m.end() + window]
+            for t in _TABLE_RE.finditer(tail):
+                raw = t.group(0)
+                if len(raw) > _MAX_TABLE_CHARS:
+                    continue
+                seen += 1
+                sc = score_fn(raw)
+                if sc > best_sc:
+                    best_sc, best_raw, best_name = sc, raw, name
+    return max(best_sc, 0), seen, best_raw, best_name
+
+
 def diagnose(markup: str | None, *, truncated: bool = False) -> str:
     """표를 못 낸 이유를 짧은 코드로 — **개선 여지 판정**이 목적이다.
 
@@ -435,20 +462,25 @@ def diagnose(markup: str | None, *, truncated: bool = False) -> str:
         return "원문미제공"
     if not any(rx.search(markup) for _n, rx, _w in _PROD_SPECS):
         return "원문잘림" if truncated else "섹션없음"
-    # ⚠️ **화면이 쓰는 그 선택기**로 최고점을 구한다(#35). 창 크기·앵커
-    # 순회 규칙을 여기 따로 적으면 스윕 통계가 화면과 갈라진다 — 실제로
-    # `_SCAN_WINDOW_ALT` 를 넓히고 여기만 40k 로 두었더니 판정이 어긋났다.
-    got = _pick_any(markup, _PROD_SPECS, _score, 0, 10)
+    # ⚠️ **화면이 쓰는 그 선택기**를 그대로 부른다(#35). 창 크기·앵커
+    # 순회·문턱을 여기 따로 적으면 스윕 통계가 화면과 갈라진다 — 실제로
+    # `_SCAN_WINDOW_ALT` 를 넓히고 여기만 40k 로 두었더니 판정이 어긋났고,
+    # 문턱을 먼저 물어야 한다. `min_score=0` 으로
+    # 부르면 `_pick_any` 가 첫 앵커의 0점 표를 집고 멈춰, 뒤 앵커에서
+    # 파서가 실제로 뽑는 표를 못 본다 — SK(034730) 가 `무관표만` 인데
+    # 화면엔 가동률이 실리던 원인이다(실수 #35).
+    got = _pick_any(markup, _PROD_SPECS, _score, _MIN_SCORE, 10)
     if got is None:
-        return "표없음"            # 절은 있는데 산문만(생산 관련 서술)
+        _best, seen, _raw, _n = _scan_any(markup, _PROD_SPECS, _score)
+        if not seen:
+            return "표없음"        # 절은 있는데 산문만(생산 관련 서술)
+        return "무관표만"          # 표는 있는데 세 어구가 하나도 없다
     best = got[0]
     if best >= 10:
         return "정상"
     if best >= 6:
         return "가동률없음"        # 생산능력·실적만 있고 가동률 미기재
-    if best >= _MIN_SCORE:
-        return "능력만"            # 생산능력 **또는** 실적 하나만 — 채택됨
-    return "무관표만"              # 표는 있는데 세 어구가 하나도 없다
+    return "능력만"                # 생산능력 **또는** 실적 하나만 — 채택됨
 
 
 def _rcept_nos(dart, ticker: str, year: int, reprt_code: str) -> list[str]:

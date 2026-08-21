@@ -36,7 +36,7 @@ import re
 import sys
 import time
 
-_PROBE_VER = 6          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 7          # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
@@ -198,15 +198,15 @@ def main(argv: list[str] | None = None) -> int:
         if not got:
             head = ""
             if markup:
-                m = dp._ANCHOR.search(markup) or dp._ANCHOR_ALT.search(markup)
-                if m:
-                    # 창을 파서와 **똑같이** 잡는다. v1 은 6000자만 봐서
-                    # 파서가 실제로 보고 버린 표를 못 보여줬다(미리보기가
-                    # 전부 `(단위 : …)` 캡션 표였던 이유).
-                    seg = markup[m.end(): m.end() + dp._SCAN_WINDOW]
-                    tabs = dp._TABLE_RE.findall(seg)
-                    pick = max(tabs, key=dp._score, default="")
-                    head = (f"[{len(tabs)}표 최고점 {dp._score(pick)}] " +
+                # ⚠️ 앵커·창을 여기 따로 적지 않는다 — v6 은 `_ANCHOR`/
+                # `_ANCHOR_ALT` 둘만 보고 창도 40k 로 고정해서, 판정이
+                # `원재료및생산설비`(창 200k)에서 나온 종목은 미리보기가
+                # **'(표 없음)'** 으로 찍혔다(무관표만인데 표가 없다는
+                # 모순 — 실수 #35·#54). 화면이 쓰는 선택기를 그대로 부른다.
+                best, seen, pick, aname = dp._scan_any(
+                    markup, dp._PROD_SPECS, dp._score)
+                if seen:
+                    head = (f"[{seen}표 최고점 {best} · {aname}] " +
                             re.sub(r"\s+", " ",
                                    re.sub(r"(?is)<[^>]+>", "|", pick))
                             [:args.show])
