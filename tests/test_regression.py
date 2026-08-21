@@ -30410,3 +30410,82 @@ class TestColspanOnlyColumn20260822:
         got = {(c["col"], c["span"]): c["cls"]
                for c in align_summary(sanitize_table(mk))}
         assert got[(1, 2)] == "ctr", got
+
+
+class TestTablesParseCache20260822:
+    """DART 원문 파싱 결과를 캐시한다 — 2.8M자를 매 요청 다시 훑고 있었다.
+
+    2026-08-22 실측: `/api/quarterly` 213~288초. 이 파싱은 순수 CPU(정규식)라
+    GIL 을 붙잡아, 같은 시각 차트의 pandas 계산까지 굶겼다(`ind.basic` 이
+    로컬 0.02초 → VM 9.8초, `ind.ichimoku+disparity` 59.7초)."""
+
+    _Q = [{"label": "26.2Q", "reprt_code": "11012", "year": 2026}]
+
+    class _Dart:
+        api_key = "k"
+
+    def _stub(self, monkeypatch, calls):
+        import sys
+        import types
+        import bot.dart_production as dp
+        monkeypatch.setattr(dp, "_rcept_nos", lambda *a, **k: ["R1"])
+
+        def _fetch(rn, key, max_bytes=0, raw_markup=False):
+            calls.append(rn)
+            return "<TABLE><TR><TD>x</TD></TR></TABLE>"
+        monkeypatch.setitem(
+            sys.modules, "bot.dart_feed",
+            types.SimpleNamespace(_DOC_TEXT_MAX=1, _DOC_TEXT_MAX_FULL=2,
+                                  _fetch_doc_text=_fetch,
+                                  doc_was_truncated=lambda *a, **k: False))
+        monkeypatch.setattr(dp, "_PARSERS", {
+            "products": lambda mk: {"table_html": "<table></table>"}})
+
+    def test_second_call_does_not_reparse(self, monkeypatch):
+        import bot.dart_production as dp
+        calls = []
+        self._stub(monkeypatch, calls)
+        a = dp.tables_rolling(self._Dart(), "294870.KS", self._Q)
+        b = dp.tables_rolling(self._Dart(), "294870.KS", self._Q)
+        assert a == b and a.get("products"), (a, b)
+        assert len(calls) == 1, f"원문을 다시 받고 다시 파싱했다: {calls}"
+
+    def test_parser_change_invalidates_the_cache(self, monkeypatch):
+        """⚠️ 버전 상수를 손으로 올리는 방식은 이 레포에서 **세 번** 실패했다
+        (#18 · #21b · #95). 파서 소스 지문이 키에 들어가야 한다."""
+        import bot.dart_production as dp
+        k1 = dp._tables_cache_key("A", self._Q, ("products",))
+        monkeypatch.setattr(dp, "_PARSE_SIG", "deadbeef")
+        k2 = dp._tables_cache_key("A", self._Q, ("products",))
+        assert k1 != k2, (k1, k2)
+
+    def test_new_report_gets_a_new_key(self):
+        """새 분기가 나오면 옛 결과를 계속 보여주면 안 된다(#18)."""
+        import bot.dart_production as dp
+        k1 = dp._tables_cache_key("A", [{"label": "26.2Q",
+                                         "reprt_code": "11012"}],
+                                  ("products",))
+        k2 = dp._tables_cache_key("A", [{"label": "26.3Q",
+                                         "reprt_code": "11014"}],
+                                  ("products",))
+        assert k1 != k2, (k1, k2)
+
+    def test_failure_is_not_cached(self, monkeypatch):
+        """예외로 끝난 실행을 캐시하면 24시간 동안 빈 표가 굳는다."""
+        import sys
+        import types
+        import bot.dart_production as dp
+        monkeypatch.setattr(dp, "_rcept_nos", lambda *a, **k: ["R1"])
+        n = []
+
+        def _boom(*a, **k):
+            n.append(1)
+            raise RuntimeError("원천 장애")
+        monkeypatch.setitem(
+            sys.modules, "bot.dart_feed",
+            types.SimpleNamespace(_DOC_TEXT_MAX=1, _DOC_TEXT_MAX_FULL=2,
+                                  _fetch_doc_text=_boom,
+                                  doc_was_truncated=lambda *a, **k: False))
+        assert dp.tables_rolling(self._Dart(), "ZZZ.KS", self._Q) == {}
+        assert dp.tables_rolling(self._Dart(), "ZZZ.KS", self._Q) == {}
+        assert len(n) == 2, "실패를 캐시했다"

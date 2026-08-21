@@ -660,6 +660,63 @@ def _rcept_nos(dart, ticker: str, year: int, reprt_code: str) -> list[str]:
 _PARSERS = {"products": parse_products, "production": parse_production}
 
 
+# 파싱 결과 디스크 캐시(#21b — 결과에 파서 지문을 찍고 읽을 때 대조).
+_TABLES_TTL = 24 * 3600
+
+
+def _parse_sig() -> str:
+    """이 모듈 소스의 지문. 파서를 고치면 캐시가 **자동으로** 무효가 된다.
+
+    ⚠️ 버전 상수를 손으로 올리는 방식은 이 레포에서 세 번 실패했다
+    (#18 아카이브 · #21b 파싱 캐시 · #95 재무 캐시 v4·v5 를 적어 두고도
+    v6 을 잊었다). 규율로 기억하지 말고 **구조로** 막는다.
+    """
+    global _PARSE_SIG
+    if _PARSE_SIG is None:
+        try:
+            import hashlib
+            import pathlib
+            src = pathlib.Path(__file__).read_bytes()
+            _PARSE_SIG = hashlib.sha1(src).hexdigest()[:10]
+        except Exception:                                      # noqa: BLE001
+            _PARSE_SIG = "nosig"       # 지문을 못 구하면 캐시를 안 쓴다
+    return _PARSE_SIG
+
+
+_PARSE_SIG: str | None = None
+
+
+def _tables_cache_key(ticker: str, quarters: list, keys: tuple) -> str:
+    """티커 · **최신 분기** · 원하는 표 · 파서 지문. 새 보고서가 나오면 키가
+    바뀌고(분기 라벨), 파서를 고쳐도 키가 바뀐다."""
+    q = (quarters[-1] or {}) if quarters else {}
+    label = str(q.get("label") or "") + str(q.get("reprt_code") or "")
+    safe = re.sub(r"[^A-Za-z0-9_.]", "_", f"{ticker}_{label}")
+    return f"dart_tables_{_parse_sig()}_{safe}_{'-'.join(sorted(keys))}.json"
+
+
+def _tables_cached(key: str):
+    if _parse_sig() == "nosig":
+        return None
+    try:
+        from bot.finviz_client import _cached
+        hit = _cached(key, ttl=_TABLES_TTL)
+        return hit.get("data") if isinstance(hit, dict) and "data" in hit else None
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("tables cache read(%s): %s", key, exc)
+        return None
+
+
+def _tables_cache_write(key: str, out: dict) -> None:
+    if _parse_sig() == "nosig":
+        return
+    try:
+        from bot.finviz_client import _cache_write
+        _cache_write(key, {"data": out})
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("tables cache write(%s): %s", key, exc)
+
+
 def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
                    want: tuple | None = None) -> dict:
     """보고서를 **한 번만** 걷고 원하는 표를 전부 뽑는다 → {종류: 표}.
@@ -681,6 +738,16 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
     keys = tuple(want or _PARSERS)
     if not dart or not quarters:
         return out
+    # ⚠️ 파싱 결과를 캐시한다. 2026-08-22 실측: `/api/quarterly` 가 213~288초
+    # 였고, 이 함수는 **2.8M자 원문을 매 요청마다 다시 정규식으로 훑는다**
+    # (제품·생산·수주 파서가 각각). 순수 CPU 라 GIL 을 붙잡아 같은 시각
+    # 차트의 pandas 계산까지 굶겼다(`ind.basic` 0.02초가 9.8초로).
+    # 키에 **파서 소스 지문**을 넣어 파서를 고치면 자동으로 무효가 된다 —
+    # 버전을 손으로 올리는 규율은 세 번 실패했다(#18·#21b·#95).
+    ck = _tables_cache_key(ticker, quarters, keys)
+    hit = _tables_cached(ck)
+    if hit is not None:
+        return hit
     try:
         from bot.dart_feed import (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL,
                                    _fetch_doc_text, doc_was_truncated)
@@ -708,6 +775,8 @@ def tables_rolling(dart, ticker: str, quarters: list, max_back: int = 4,
                     break
     except Exception as exc:                                   # noqa: BLE001
         log.warning("tables_rolling(%s): %s", ticker, exc)
+        return out                     # 실패는 캐시하지 않는다 — 다음에 재시도
+    _tables_cache_write(ck, out)
     return out
 
 
