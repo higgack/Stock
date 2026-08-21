@@ -7027,6 +7027,21 @@ class TestBacklogExplicitNoData20260821:
         for name, t in self.REAL.items():
             assert diagnose(t) == "명시적미공시", (name, diagnose(t))
 
+    def test_no_detail_when_the_source_simply_has_none(self):
+        """⚠️ 실측(2026-08-21 라온피플류)에서 `명시적미공시 · 미지원단위
+        (단위:천원)` 로 찍혔다 — 분류는 "원문이 안 쓴다고 밝힘" 인데 상세는
+        단위 얘기를 하니 '단위를 더 지원하면 되나' 로 오해한다. 행동으로
+        이어지지 **않는** 상세는 노이즈다(#93 의 반대 방향)."""
+        from bot.dart_backlog import diagnose, diagnose_detail as d
+        t = ("라. 수주 현황에 관한 사항 당사의 수주는 단납기로 진행되는 "
+             "형태로 (단위:천원) 수주잔고는 의미가 없다고 판단되어 "
+             "기재하지 않습니다.")
+        assert diagnose(t) == "명시적미공시"
+        assert d(t) == "", d(t)
+        assert d("관련 없는 본문") == ""
+        # 고칠 여지가 있는 건은 여전히 상세를 말해야 한다
+        assert d("(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 999 111 222")
+
     def test_real_tables_are_not_swallowed(self):
         """⚠️ 오탐이면 **멀쩡한 값이 죽는다** — 넓힐 땐 '무엇이 여전히 잡히는가'
         를 같이 못박는다(#57)."""
