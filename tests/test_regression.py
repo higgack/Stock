@@ -6451,6 +6451,119 @@ class TestQuarterlyMultiMarket20260816:
         assert min(y for y, _ in with_["axes"]) < min(
             y for y, _ in without["axes"]), "FCF 가 맨 아래가 아니다"
 
+    def test_profit_trend_chart_includes_fcf(self):
+        """사용자 2026-08-21 "매출, 영익, 순이익에 FCF 로 포함해줘. 연간과
+        분기 모두. 전 나라 모두."
+
+        ⚠️ **같은 원천**(yfinance 현금흐름)을 쓴다 — KR 은 DART FCF 가 따로
+        있지만 이 차트의 나머지 셋이 yfinance 라, 한 그림 안에서 기준이
+        갈리면 세로로 읽는 자리에서 거짓말이 된다(실수 #33).
+        `_profit_trend` 는 중첩 함수라 AST 로 떼어 **실제 코드 그대로** 돌린다."""
+        import ast
+        import html as _h
+        import re
+        import textwrap
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        fn = next((n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "_profit_trend"), None)
+        assert fn, "차트 함수 이름이 바뀜"
+        ns = {"esc": _h.escape}
+        exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
+        trend = ns["_profit_trend"]
+        IS = [{"period": f"2026-0{m}-30", "Total Revenue": 1000 + m,
+               "Operating Income": 200 + m, "Net Income": 100 + m}
+              for m in (3, 6, 9)]
+        # ⚠️ 일부러 **역순**으로 준다 — 위치로 조인하면 값이 밀린다(#46).
+        CF = [{"period": "2026-09-30", "Operating Cash Flow": 300,
+               "Capital Expenditure": -80},
+              {"period": "2026-03-31", "Free Cash Flow": 190},
+              {"period": "2026-06-30", "Operating Cash Flow": 250,
+               "Capital Expenditure": -50}]
+        h = trend(IS, 5, lambda p: p[:7], "분기추이", "QoQ", "분기", CF)
+        assert "FCF" in h, "FCF 계열이 없다"
+        assert h.count("<rect") == 3 * 4, f"막대 수가 3기간×4 가 아님: {h}"
+        head = re.search(r"<thead>.*?</thead>", h, re.S).group(0)
+        assert head.index("순이익") < head.index("FCF"), "FCF 가 순이익 앞"
+        body = re.search(r"<tbody>.*?</tbody>", h, re.S).group(0)
+        # 2개 성장률 행 × (라벨 1 + 계열 4) = 10 셀
+        assert len(re.findall(r"<td", body)) == 10, body
+        # 재료가 없으면 **막대·열을 만들지 않는다**(빈 막대 = 없는 사실)
+        h3 = trend(IS, 5, lambda p: p[:7], "x", "y", "분기", None)
+        assert "FCF" not in h3 and h3.count("<rect") == 3 * 3
+
+    def test_enrich_kr_pool_covers_every_task(self):
+        """⚠️ 풀이 task 보다 작으면 **두 물결**로 돌아 벽시계가
+        `max(1차) + max(2차)` 가 된다 — 병렬인데도 느린 이유가 여기 숨는다.
+        실측(2026-08-21) `enrich:KR` 19.1초일 때 풀 8 · task 12 였다."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        fn = next((n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.FunctionDef) and n.name == "_enrich_kr"),
+                  None)
+        assert fn, "_enrich_kr 이름이 바뀜"
+        body = ast.get_source_segment(src, fn)
+        assert "max_workers=len(tasks)" in body, (
+            "풀 크기를 리터럴로 두면 task 를 더할 때 조용히 물결이 생긴다")
+
+    def test_enrich_kr_tasks_are_named_for_timing(self):
+        """이름이 없으면 '느리다'까지만 알고 무엇을 고칠지는 모른다(#69).
+        프로브는 제품이 심은 계측을 **읽기만** 해야 한다(#35)."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_enrich_kr")
+        body = ast.get_source_segment(src, fn)
+        assert '_TIMING[f"kr:{name}"]' in body, "task 별 계측이 없다"
+        # ⚠️ 옛 판은 프로브 소스에서 `startswith("kr:")` **개수**를 셌다 —
+        # 표현이 바뀌면 깨지고, 세는 것만으론 실제 동작을 모른다(#19).
+        # 판정을 순수 함수로 빼 뒀으니 **값으로** 본다.
+        from bot.scripts.detail_timing_probe import slowest_parallel
+        t = {"yf.info": 0.4, "재무제표": 2.1, "실적이력": 1.6,
+             "total": 22.5, "enrich:KR": 19.1, "kr:fnguide": 18.9}
+        # enrich 내부 값(18.9)에 밀리면 병목을 **엉뚱하게** 보고한다
+        assert slowest_parallel(t) == ("재무제표", 2.1), slowest_parallel(t)
+        assert slowest_parallel({}) == ("—", 0.0)
+
+    def test_backlog_verdict_is_returned_not_only_logged(self):
+        """커버리지 9/40(22%)이 "원천에 없다"인지 "파서가 못 읽는다"인지
+        알 방법이 없었다 — 사유가 `_MISS_LOG` 에만 갔고 그마저 미공시류는
+        건너뛴다. 감사가 개선 여지를 세려면 **미공시까지 포함한** 분포가
+        필요하다(#54)."""
+        from bot.dart_backlog import backlog_for, backlog_probe
+
+        class _D:
+            api_key = "K"
+
+            def find_periodic_reports(self, *a):
+                return []
+
+            def find_periodic_report(self, *a):
+                return None
+        val, why = backlog_probe(_D(), "X", 2026, "11012")
+        assert val is None and why == "원문미제공", (val, why)
+        # 얇은 래퍼 — 수집 사다리를 복제하면 화면과 감사가 갈라진다(#35)
+        assert backlog_for(_D(), "X", 2026, "11012") is None
+        import ast
+        src = open("bot/dart_backlog.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "backlog_for")
+        body = ast.get_source_segment(src, fn)
+        assert "_fetch_doc_text" not in body, "래퍼가 수집을 복제했다"
+
+    def test_probe_separates_fixable_backlog_misses(self):
+        """미공시류는 파서를 고쳐도 안 나온다 — 개선 여지에서 빼야 숫자가
+        행동으로 이어진다(dart_backlog.diagnose 규약)."""
+        src = open("bot/scripts/production_format_probe.py",
+                   encoding="utf-8").read()
+        blk = src[src.index("if backlog_why:"):]
+        for k in ("미공시", "명시적미공시"):
+            assert k in blk[:600], f"{k} 를 개선 여지에서 안 뺐다"
+        assert "backlog_probe" in src, "프로브가 판정을 안 읽는다"
+        # 프로브 버전 배너(실수 #21) — 숫자가 아니라 **찍는 행위**를(#67)
+        import bot.scripts.production_format_probe as pf
+        assert pf._PROBE_VER >= 8
+
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note
         assert fiscal_note("12-31") == "" and fiscal_note(None) == ""
@@ -25396,11 +25509,23 @@ class TestPeriodicReportCandidates20260817:
         assert got == 600_000 * 1e6, got
 
     def test_wiring_is_present(self):
+        """⚠️ 옛 판은 `backlog_for` **본문 소스**를 슬라이스해 문자열을 봤다.
+        로직이 `backlog_probe` 로 옮겨가자 깨졌다 — 계약은 "후보를 순회한다"
+        이지 특정 표현이 아니다(실수 #19). 바로 위 테스트가 순회를 **동작**
+        으로 이미 증명하므로, 여기서는 그 위에 얹힌 계약을 본다:
+        수집 사다리가 **한 곳**에 있고 래퍼는 위임만 한다(#38)."""
+        import ast
         import inspect
         from bot import dart_backlog as bl
-        src = inspect.getsource(bl.backlog_for)
-        assert "find_periodic_reports(" in src, "복수 후보 조회 미배선"
-        assert "for rep in reps:" in src and "if text:" in src
+        wrapper = inspect.getsource(bl.backlog_for)
+        assert "_fetch_doc_text" not in wrapper, "래퍼가 수집을 복제했다"
+        assert "backlog_probe(" in wrapper, "래퍼가 위임하지 않는다"
+        src = open("bot/dart_backlog.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "backlog_probe")
+        body = ast.get_source_segment(src, fn)
+        assert "find_periodic_reports(" in body, "복수 후보 조회 미배선"
 
 
 class TestBiweeklyBacklogReview20260817:
@@ -25603,12 +25728,28 @@ class TestBacklogObservability20260817:
         assert len(lines) == 1, f"중복 기록: {lines}"
         assert "012450.KS" in lines[0] and "형식미지원" in lines[0]
 
-    def test_backlog_for_records_its_misses(self):
-        """헬퍼만 만들고 호출부에 안 걸면 로그는 영원히 빈다(실수 #12)."""
-        import inspect
-        from bot import dart_backlog as bl
-        src = inspect.getsource(bl.backlog_for)
-        assert "_log_miss(ticker, year, reprt_code, diagnose(" in src
+    def test_backlog_for_records_its_misses(self, monkeypatch):
+        """헬퍼만 만들고 호출부에 안 걸면 로그는 영원히 빈다(실수 #12).
+
+        ⚠️ 옛 판은 소스 문자열을 봤다 — 로직이 `backlog_probe` 로 옮겨가자
+        깨졌다(#19). **실제로 기록되는지** 스텁으로 태운다."""
+        import bot.dart_backlog as bl
+        import bot.dart_feed as df
+        seen = []
+        monkeypatch.setattr(bl, "_log_miss",
+                            lambda *a: seen.append(a))
+        # 잔고 라벨이 없는 원문 = '미공시'(파서 개선 여지 없음)
+        monkeypatch.setattr(df, "_fetch_doc_text",
+                            lambda *a, **k: "관련 없는 본문")
+
+        class _D:
+            api_key = "K"
+
+            def find_periodic_reports(self, *a):
+                return [{"rcept_no": "R1"}]
+        val, why = bl.backlog_probe(_D(), "005930.KS", 2026, "11012")
+        assert val is None and why == "미공시", (val, why)
+        assert seen and seen[0][-1] == "미공시", seen
 
     def test_render_version_busts_the_full_quote_cache(self):
         """`/api/quote?full=1` 디스크 캐시는 TTL 4h 인데다 stale-while-

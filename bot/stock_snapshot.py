@@ -721,16 +721,33 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
 
     # 병합 순서 = 원래 직렬 블록 순서 (corp_reg_no DART 우선, consensus
     # FnGuide 우선 등 기존 우선순위가 setdefault 병합으로 그대로 재현).
-    tasks = [_t_dart_company, _t_fsc_item, _t_dart_insider,
-             _t_dart_disclosures, _t_dart_financials, _t_fsc_minority,
-             _t_flow, _t_fsc_risk, _t_krx_alert, _t_fnguide, _t_research,
-             _t_dividends]
+    # ⚠️ 이름을 붙인다. `enrich:KR` 이 19.1초인데(2026-08-21 실측) **어느
+    # task 가 그 시간을 먹는지** 알 방법이 없었다 — 이미 병렬이라 합이
+    # 아니라 **최대값 하나**가 지배하는데, 이름이 없으면 그걸 못 짚는다
+    # (실수 #69: 느린 곳을 고치려면 재는 것부터).
+    # ⚠️ 풀 크기(8) < task 수(12) 라 **두 물결**로 돈다 — 벽시계는
+    # `max(1차 물결) + max(2차 물결)` 이다. 이것도 계측이 있어야 보인다.
+    tasks = [("dart.company", _t_dart_company), ("fsc.item", _t_fsc_item),
+             ("dart.insider", _t_dart_insider),
+             ("dart.disclosures", _t_dart_disclosures),
+             ("dart.financials", _t_dart_financials),
+             ("fsc.minority", _t_fsc_minority), ("flow(KIS+pykrx)", _t_flow),
+             ("fsc.risk", _t_fsc_risk), ("krx.alert", _t_krx_alert),
+             ("fnguide", _t_fnguide), ("research", _t_research),
+             ("dividends", _t_dividends)]
+
+    def _run(name, fn):
+        _t0 = time.time()
+        try:
+            return fn()
+        finally:
+            _TIMING[f"kr:{name}"] = round(time.time() - _t0, 3)
 
     results: list[dict | None] = []
     try:
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futs = [pool.submit(fn) for fn in tasks]
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futs = [pool.submit(_run, nm, fn) for nm, fn in tasks]
             for fut in futs:
                 try:
                     results.append(fut.result(timeout=60))
@@ -739,9 +756,9 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                     results.append(None)
     except Exception:
         results = []
-        for fn in tasks:   # 풀 실패 — 직렬 폴백 (동작 동일)
+        for nm, fn in tasks:   # 풀 실패 — 직렬 폴백 (동작 동일)
             try:
-                results.append(fn())
+                results.append(_run(nm, fn))
             except Exception as exc:
                 log.debug("stock_snapshot: KR task skipped: %s", exc)
                 results.append(None)

@@ -664,8 +664,15 @@ def review_text() -> str:
     return "\n".join(out)
 
 
-def backlog_for(dart, ticker: str, year: int, reprt_code: str) -> float | None:
-    """해당 분기 정기보고서의 수주잔고(원). 없으면 None.
+def backlog_probe(dart, ticker: str, year: int,
+                  reprt_code: str) -> tuple[float | None, str]:
+    """해당 분기 정기보고서의 (수주잔고 원, 판정). 값이 없으면 (None, 사유).
+
+    ⚠️ 왜 사유를 **반환**하는가(2026-08-21). 커버리지가 9/40(22%)인데
+    그게 "원천에 없다"인지 "파서가 못 읽는다"인지 알 방법이 없었다 —
+    사유는 `_MISS_LOG` 에만 갔고 그마저 미공시류는 건너뛴다. 감사가 개선
+    여지를 세려면 **미공시까지 포함한** 전체 분포가 필요하다(#54: 대조
+    대상이 0건이면 통과가 아니다).
 
     ⚠️ 원문을 40MB 로 받는다 — 「매출 및 수주상황」은 목차상 II.사업의 내용
     뒤라 기본 3MB 상한 밖으로 밀리고, 그러면 **공시하는 회사도 '없음'으로
@@ -691,10 +698,19 @@ def backlog_for(dart, ticker: str, year: int, reprt_code: str) -> float | None:
                 break
         got = parse_backlog(text)
         if got:
-            return got["value"]
+            return got["value"], "정상"
         # 실사용이 곧 프로브 — 못 낸 이유를 남긴다(미공시류는 _log_miss 가 스킵).
-        _log_miss(ticker, year, reprt_code, diagnose(text or ""))
-        return None
+        why = diagnose(text or "")
+        _log_miss(ticker, year, reprt_code, why)
+        return None, why
     except Exception as exc:
         log.debug("dart_backlog: %s %s/%s: %s", ticker, year, reprt_code, exc)
-        return None
+        return None, f"오류:{type(exc).__name__}"
+
+
+def backlog_for(dart, ticker: str, year: int, reprt_code: str) -> float | None:
+    """수주잔고(원)만. 판정이 필요하면 `backlog_probe` 를 쓴다.
+
+    ⚠️ 수집 사다리를 복제하지 않는다 — 두 경로가 다른 접수건을 보면
+    화면과 감사 통계가 갈라진다(#35·#38)."""
+    return backlog_probe(dart, ticker, year, reprt_code)[0]

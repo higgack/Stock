@@ -36,7 +36,7 @@ import re
 import sys
 import time
 
-_PROBE_VER = 7          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 8          # 진단 스크립트 버전 배너(실수 #21)
 #   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
 #   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 #   v3(2026-08-21): 「주요 제품 및 서비스」 표 커버리지 동시 집계
@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     cover = {"분기": 0, "재고자산": 0, "수주잔고": 0, "제품표": 0, "생산표": 0}
     anchors: dict[str, int] = {}          # 서식별 히트 수
     unsupported: list[tuple[str, str, str]] = []
+    backlog_why: dict[str, int] = {}
     _OK = ("정상", "가동률없음", "능력만")     # 화면에 실리는 판정
     for i, tk in enumerate(tickers, 1):
         qs = _latest_quarters(dart, tk)
@@ -167,13 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         # 수주잔고는 본문 표 — 같은 접수번호라 zip 캐시에 걸려 재다운로드 0.
         # ⚠️ 화면과 **같은 규율**로 최신부터 거슬러 본다(1회만 보면 최신
         # 보고서 문서가 없는 회사가 통째로 '미공시'로 찍힌다).
-        bl = None
+        bl, bl_why = None, "미검사"
         if not args.skip_backlog:
             try:
-                from bot.dart_backlog import backlog_for
+                from bot.dart_backlog import backlog_probe
                 from bot.quarterly_infographic import _BACKLOG_PROBE_N
                 for q in list(reversed(qs))[:_BACKLOG_PROBE_N]:
-                    bl = backlog_for(dart, tk, q["year"], q["reprt_code"])
+                    bl, bl_why = backlog_probe(dart, tk, q["year"],
+                                               q["reprt_code"])
                     if bl is not None:
                         break
             except Exception as exc:                           # noqa: BLE001
@@ -181,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
         cover["분기"] += 1 if qs else 0
         cover["재고자산"] += 1 if inv else 0
         cover["수주잔고"] += 1 if bl is not None else 0
+        # ⚠️ 커버리지 22% 가 "원천에 없다"인지 "파서가 못 읽는다"인지
+        # 분포로 답한다 — 숫자만 보고 개선 여지를 추측하면 안 된다.
+        if bl is None:
+            backlog_why[bl_why] = backlog_why.get(bl_why, 0) + 1
         cover["제품표"] += 1 if prod else 0
         cover["생산표"] += 1 if got else 0
         if got and got.get("anchor"):
@@ -225,6 +231,17 @@ def main(argv: list[str] | None = None) -> int:
         n = cover[k]
         print(f"  {k:<6} {n:>3}/{len(tickers)} "
               f"({100.0 * n / max(1, len(tickers)):.0f}%)")
+    if backlog_why:
+        # 개선 여지 = 미공시류를 **뺀** 것. 원천에 값이 없는 건 파서를
+        # 고쳐도 안 나온다(dart_backlog.diagnose 규약).
+        _fixable = {k: v for k, v in backlog_why.items()
+                    if k not in ("미공시", "명시적미공시", "미검사")}
+        print("\n수주잔고 미수집 사유:")
+        for k, v in sorted(backlog_why.items(), key=lambda x: -x[1]):
+            _mark = "🔧" if k in _fixable else "  "
+            print(f"  {_mark} {k:<12} {v:>3}건")
+        print(f"  → 파서 개선 여지: {sum(_fixable.values())}건"
+              f" / 미수집 {sum(backlog_why.values())}건")
     if anchors:
         print("\n생산 표를 잡은 서식(앵커):")
         for k, v in sorted(anchors.items(), key=lambda x: -x[1]):

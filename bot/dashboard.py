@@ -7619,7 +7619,8 @@ def _render_stock_info_html(rec: dict) -> str:
         # 연간·분기 공용 렌더러 — 데이터 소스가 yfinance income_statement 로
         # 동일하므로 전 시장(US/KR/JP/TW/CN_A/HK) 동일 적용(시장 게이트 없음).
         def _profit_trend(rows: list, n: int, label_fn, title: str,
-                          growth_title: str, growth_col: str) -> str:
+                          growth_title: str, growth_col: str,
+                          cf_rows: list | None = None) -> str:
             if not rows or len(rows) < 2:
                 return ""
             # 야후 정렬이 종목마다 달라(최신우선/과거우선 혼재) → period 로 명시
@@ -7628,6 +7629,15 @@ def _render_stock_info_html(rec: dict) -> str:
             # (사용자 2026-06-17 AMAT YoY 최신 아래로). 정렬 전 슬라이스가 과거
             # 구간을 자르던 위험도 해소(이제 정렬 후 최근 n 개).
             _sorted = sorted(rows, key=lambda r: str(r.get("period", "")))
+            # FCF — 사용자 2026-08-21 "매출, 영익, 순이익에 FCF 로 포함해줘.
+            # 연간과 분기 모두. 전 나라 모두."
+            # ⚠️ **같은 원천**(yfinance 현금흐름)을 쓴다. KR 은 DART FCF 가
+            # 따로 있지만 이 차트의 나머지 셋이 yfinance 라, 한 그림 안에서
+            # 기준이 갈리면 세로로 읽는 자리에서 거짓말이 된다(실수 #33).
+            # 산식은 `bot.fcf` 한 곳(#38).
+            from bot.fcf import fcf_from_row as _fcf_row
+            _cf = {str(r.get("period", "")): r for r in (cf_rows or [])
+                   if isinstance(r, dict)}
             chart_items = []
             for r in _sorted[-n:]:
                 _raw = str(r.get("period", "?"))
@@ -7637,28 +7647,37 @@ def _render_stock_info_html(rec: dict) -> str:
                     "revenue": r.get("Total Revenue", 0) or 0,
                     "op_income": r.get("Operating Income", 0) or 0,
                     "net_income": r.get("Net Income", 0) or 0,
+                    # 기간으로 조인 — 위치로 매기면 한쪽이 한 분기 덜 줄 때
+                    # 전 구간이 밀린다(실수 #46).
+                    "fcf": _fcf_row(_cf.get(_raw)),
                 })
             if not any(c["revenue"] for c in chart_items):
                 return ""
+            # 재료가 없으면 **막대·열을 만들지 않는다** — 전 칸 0 인 막대는
+            # '현금흐름 0' 이라는 없는 사실을 그린 것이다.
+            _has_fcf = any(c["fcf"] is not None for c in chart_items)
+            _series = [("revenue", "매출", "#42a5f5"),
+                       ("op_income", "영업이익", "#66bb6a"),
+                       ("net_income", "순이익", "#ffa726")]
+            if _has_fcf:
+                _series.append(("fcf", "FCF", "#22d3ee"))
+            _nb = len(_series)
             max_val = max(abs(c["revenue"]) for c in chart_items) or 1
             bar_w = 180 // len(chart_items)
-            svg_w = bar_w * len(chart_items) * 3 + 120
+            svg_w = bar_w * len(chart_items) * _nb + 120
             bars = ""
             labels = ""
-            legend = ('<text x="10" y="14" font-size="11" fill="#999">● <tspan fill="#42a5f5">매출</tspan>'
-                      ' ● <tspan fill="#66bb6a">영업이익</tspan>'
-                      ' ● <tspan fill="#ffa726">순이익</tspan></text>')
+            legend = ('<text x="10" y="14" font-size="11" fill="#999">'
+                      + ' '.join(f'● <tspan fill="{col}">{esc(nm)}</tspan>'
+                                 for _k, nm, col in _series) + '</text>')
             for i, c in enumerate(chart_items):
-                x_base = 40 + i * (bar_w * 3 + 16)
-                for j, (val, color) in enumerate([
-                    (c["revenue"], "#42a5f5"),
-                    (c["op_income"], "#66bb6a"),
-                    (c["net_income"], "#ffa726"),
-                ]):
+                x_base = 40 + i * (bar_w * _nb + 16)
+                for j, (_k, _nm, color) in enumerate(_series):
+                    val = c[_k] or 0
                     h = max(abs(val) / max_val * 120, 2)
                     y = 150 - h if val >= 0 else 150
                     bars += f'<rect x="{x_base + j * bar_w}" y="{y}" width="{bar_w - 2}" height="{h}" fill="{color}" rx="2"/>\n'
-                labels += f'<text x="{x_base + bar_w}" y="170" font-size="11" fill="#999" text-anchor="middle">{esc(c["period"])}</text>\n'
+                labels += f'<text x="{x_base + bar_w * _nb / 2}" y="170" font-size="11" fill="#999" text-anchor="middle">{esc(c["period"])}</text>\n'
             out = f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">{esc(title)}</div>
         <svg width="{svg_w}" height="185" style="display:block;margin:auto">
@@ -7674,10 +7693,12 @@ def _render_stock_info_html(rec: dict) -> str:
                 prev = chart_items[i - 1]
                 cur = chart_items[i]
                 cells = ""
-                for key in ("revenue", "op_income", "net_income"):
+                # 열 목록도 `_series` 하나에서 — 헤더와 셀이 따로 놀면 값이
+                # 한 칸씩 밀린다(#45: 총계와 소계가 다른 모집단).
+                for key in [k for k, _n, _c in _series]:
                     p = prev[key]
                     c = cur[key]
-                    if p and p != 0:
+                    if p and p != 0 and c is not None:
                         g = (c - p) / abs(p) * 100
                         color = "#26a69a" if g >= 0 else "#e2574c"
                         sign = "+" if g >= 0 else ""
@@ -7690,10 +7711,14 @@ def _render_stock_info_html(rec: dict) -> str:
             # 순서 무관 → 종목마다 야후 정렬 달라도 항상 최신 top).
             _grows.sort(key=lambda x: x[0], reverse=True)
             growth_rows = "\n".join(row for _, row in _grows)
+            # 헤더도 같은 `_series` 에서 만든다 — 손으로 적으면 FCF 열이
+            # 늘어날 때 헤더만 3개로 남아 값이 한 칸씩 밀린다(#45).
+            _gth = "".join(f'<th class="num">{esc(nm)}</th>'
+                           for _k, nm, _c in _series)
             if growth_rows:
                 out += f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">{esc(growth_title)}</div>
-        <table class="si-table"><thead><tr><th>{esc(growth_col)}</th><th class="num">매출</th><th class="num">영업이익</th><th class="num">순이익</th></tr></thead><tbody>{growth_rows}</tbody></table>
+        <table class="si-table"><thead><tr><th>{esc(growth_col)}</th>{_gth}</tr></thead><tbody>{growth_rows}</tbody></table>
       </div>"""
             return out
 
@@ -7703,12 +7728,15 @@ def _render_stock_info_html(rec: dict) -> str:
 
         _is_stmt = fins.get("income_statement", {})
         # 분기(최근 5분기)를 연간 위에 — 사용자 2026-08-16.
+        _cf_stmt = fins.get("cash_flow", {})
         chart_svg = _profit_trend(_is_stmt.get("quarterly", []), 5, _q_label,
                                   "수익성 추이 — 분기 (최근 5분기)",
-                                  "QoQ 성장률", "분기")
+                                  "QoQ 성장률", "분기",
+                                  _cf_stmt.get("quarterly", []))
         chart_svg += _profit_trend(_is_stmt.get("annual", []), 4,
                                    lambda p: p[:4], "수익성 추이 — 연간",
-                                   "YoY 성장률", "연도")
+                                   "YoY 성장률", "연도",
+                                   _cf_stmt.get("annual", []))
 
         financials_pane = f"""<div class="si-pane" id="si-financials">
   {chart_svg}
