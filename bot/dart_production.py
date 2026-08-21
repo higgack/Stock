@@ -101,7 +101,15 @@ _UNIT_RE = re.compile(r"\(\s*단위\s*[:：][^)]*\)")
 # 주요 제품 표의 열 이름들. **매출 열이 있는지**가 판별의 핵심 —
 # 같은 절의 `나. 주요 제품 등의 가격변동추이` 는 품목+가격만 있어 걸러진다.
 _ITEM_RE = re.compile(r"품\s*목|제품\s*명|주요\s*제품")
-_SALES_RE = re.compile(r"매출\s*액|매출\s*비중|비\s*율|비\s*중")
+_SALES_STRONG = re.compile(r"매출\s*액|매출\s*비중")
+_RATIO_RE = re.compile(r"비\s*율|비\s*중")
+# ⚠️ 매입 표 감지 — 삼성전자 실측(2026-08-21): 원재료 **매입** 표가
+# `품목|구체적용도|매입액|비중|주요 매입처` 라 제품 표 어구를 거의 다
+# 갖고 있어 12점으로 채택됐고, 화면 제목은 '주요 제품 및 서비스'인데
+# 내용은 매입처였다. 매출 표가 있으면 그쪽이 이겨야 하고, 없으면 매입
+# 표를 싣되 **제목이 사실을 말해야** 한다(사용자: "항목이 다르다고
+# 얘기해주는거야").
+_BUY_RE = re.compile(r"매입\s*액|매입\s*처|매입\s*비중")
 _USE_RE = re.compile(r"구체\s*적?\s*용도|용\s*도")
 _SEG_RE = re.compile(r"사업\s*부문|매출\s*유형")
 
@@ -226,7 +234,15 @@ def _score(markup: str) -> int:
     """표 적합도 — 가동률이 최우선(사용자가 원하는 핵심 지표).
 
     ⚠️ 점수 산정은 여기 **한 곳**이다 — parse_production·diagnose·스윕
-    프로브가 모두 이걸 부른다. 복제하면 화면과 스윕 통계가 갈라진다(#38)."""
+    프로브가 모두 이걸 부른다. 복제하면 화면과 스윕 통계가 갈라진다(#38).
+
+    ⚠️ 행이 2개 미만이면 **무조건 0** — POSCO홀딩스 실측(2026-08-21):
+    `(2) 당해 사업연도의 가동률 | (단위 : 천톤)` 한 줄짜리 **제목 캡션 표**가
+    '가동률' 단어만으로 10점을 받아 즉시 채택됐고, 화면엔 그 캡션 텍스트만
+    남고 바로 뒤의 진짜 데이터 표는 영영 안 보였다. 어구 점수가 아무리 높아도
+    한 줄짜리는 데이터가 아니다."""
+    if len(_ROW_RE.findall(markup)) < 2:
+        return 0
     body = _cells(markup)
     s = 0
     if _RATE_RE.search(body):
@@ -242,17 +258,45 @@ def _score(markup: str) -> int:
     return s
 
 
-_MIN_SCORE_ITEM = 10        # 품목 열 + 매출 열 **둘 다** (5+5)
+_MIN_SCORE_ITEM = 10        # 품목(5) + 매출/매입 열(7) 또는 비율(5) — 둘 다 필요
 
 
 def _score_products(markup: str) -> int:
-    """주요 제품 표 적합도. 매출 열이 없으면 가격변동추이 표다."""
+    """주요 제품(판매) 표 적합도. 매출 열이 없으면 가격변동추이 표다.
+
+    매입 어구가 있고 매출 어구가 없는 표는 **판매 표가 아니다** — 여기서
+    점수를 못 받아야 매출 표가 뒤에 있을 때 그쪽이 이기고, 둘 다 없을 때만
+    `_score_products_buy` 폴백이 매입 표를 집는다."""
+    if len(_ROW_RE.findall(markup)) < 2:
+        return 0
+    body = _cells(markup)
+    buy = bool(_BUY_RE.search(body))
+    s = 0
+    if _ITEM_RE.search(body):
+        s += 5
+    if _SALES_STRONG.search(body):
+        s += 7
+    elif not buy and _RATIO_RE.search(body):
+        s += 5                      # 비율만 있는 판매 표(매입 어구 없을 때만)
+    if _USE_RE.search(body):
+        s += 2
+    if _SEG_RE.search(body):
+        s += 2
+    if 0 < s < _MIN_SCORE_ITEM and not _looks_like_a_data_table(markup):
+        return 0
+    return s
+
+
+def _score_products_buy(markup: str) -> int:
+    """매입(원재료·매입처) 표 적합도 — 판매 표가 없을 때의 폴백 전용."""
+    if len(_ROW_RE.findall(markup)) < 2:
+        return 0
     body = _cells(markup)
     s = 0
     if _ITEM_RE.search(body):
         s += 5
-    if _SALES_RE.search(body):
-        s += 5
+    if _BUY_RE.search(body):
+        s += 7
     if _USE_RE.search(body):
         s += 2
     if _SEG_RE.search(body):
@@ -332,12 +376,22 @@ def parse_products(markup: str | None) -> dict | None:
     틀린 숫자" 실패모드가 없다 — 위험은 엉뚱한 표를 집는 것 하나뿐."""
     if not markup:
         return None
+    # 판매 표를 **먼저** 찾는다. 없을 때만 매입 표로 폴백한다 —
+    # 사용자 2026-08-21: "주요 제품 및 서비스가 없다면 이렇게 나오는것도
+    # 좋아. 다만 항목이 다르다고 얘기해주는거야."
+    kind = "제품"
     got = _pick_any(markup, _ITEM_SPECS, _score_products, _MIN_SCORE_ITEM, 14)
+    if not got:
+        got = _pick_any(markup, _ITEM_SPECS, _score_products_buy,
+                        _MIN_SCORE_ITEM, 14)
+        kind = "매입"
     if not got:
         return None
     _sc, raw, before, after, anchor = got
     return {"table_html": sanitize_table(raw), "unit": _unit_of(before),
-            "notes": _notes_of(after), "anchor": anchor}
+            "notes": _notes_of(after), "anchor": anchor,
+            # 제목이 내용과 어긋나면 사용자는 없는 걸 찾는다(실수 #55).
+            "kind": kind}
 
 
 def parse_production(markup: str | None) -> dict | None:
@@ -532,15 +586,22 @@ def qwrap_style() -> str:
 
 
 def render_products_html(prod: dict | None) -> str:
-    """「주요 제품 및 서비스」 표 블록. 없으면 빈 문자열(섹션 생략)."""
+    """「주요 제품 및 서비스」 표 블록. 없으면 빈 문자열(섹션 생략).
+
+    ⚠️ 제목은 **실제로 실린 표**를 말한다. 삼성전자는 판매 표 대신 원재료
+    매입 표가 실리는데 제목이 '주요 제품 및 서비스'면 그 회사가 그걸 파는
+    걸로 읽힌다(사용자 2026-08-21 지적). 매입 표면 그렇다고 밝힌다(#55)."""
     if not prod or not prod.get("table_html"):
         return ""
     meta = [f"{prod['basis_label']} 보고서 기준"] if prod.get("basis_label") else []
     if prod.get("unit"):
         meta.append(prod["unit"])
     meta.append("출처: DART 정기보고서 원문")
-    return dark_panel("📦 주요 제품 및 서비스", meta, prod["table_html"],
-                      prod.get("notes"))
+    title = ("📦 주요 원재료 및 매입처" if prod.get("kind") == "매입"
+             else "📦 주요 제품 및 서비스")
+    if prod.get("kind") == "매입":
+        meta.insert(0, "판매 표 미기재 — 매입 표로 대체")
+    return dark_panel(title, meta, prod["table_html"], prod.get("notes"))
 
 
 def render_html(prod: dict | None) -> str:
