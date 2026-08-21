@@ -6211,6 +6211,42 @@ class TestQuarterlyMultiMarket20260816:
             f"축 {min(cap['ax']):.4f} vs 글자 {want:.4f}")
         assert abs(notes[0] - first[0]) < 1e-6, "각주만 딴 x 에 있다"
 
+    def test_external_nav_sites_are_a_single_registry(self):
+        """사용자 2026-08-21: 자주 보는 외부 사이트 5개를 대시보드 nav 에.
+
+        같은 사이트가 `/sites`(텔레그램)와 nav 두 표면에 실린다 — 두 곳에
+        따로 적으면 한쪽만 갱신돼 갈라진다(CLAUDE.md 규칙 10c 의 사이트판).
+        nav 는 레지스트리에서 **생성**하고, `/sites` 는 레지스트리를 전부
+        담고 있어야 한다. 목록을 여기 열거하지 않는다 — 열거하면 새 사이트를
+        추가할 때 이 테스트도 손봐야 하고, 안 고치면 규약이 아니라 목록이
+        낡은 것뿐인데 빨간불이 뜬다(실수 #24)."""
+        from bot.external_sites import SITES, nav_html
+        assert SITES, "레지스트리가 비었다 — 대조 0건은 통과가 아니다(#54)"
+        nav = nav_html()
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        i = src.index("_SITES_TEXT = ")
+        blk = src[i:src.index('"""', src.index('"""', i) + 3)]
+        for s in SITES:
+            assert s.url in nav, f"nav 에 없다: {s.nav_label}"
+            assert s.nav_label in nav, f"nav 라벨이 없다: {s.nav_label}"
+            assert s.url in blk, f"/sites 에 없다: {s.nav_label}"
+        # 외부 링크는 새 탭 + opener 차단(우리 페이지를 건드리지 못하게).
+        assert nav.count('target="_blank"') == len(SITES)
+        assert nav.count('rel="noopener') == len(SITES)
+        # 대시보드가 레지스트리에서 받아 쓰는가(문자열을 직접 박으면 갈린다).
+        dash = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_ext_nav_html()" in dash, "대시보드가 nav 를 직접 적고 있다"
+        for s in SITES:
+            assert s.url not in dash, f"대시보드에 URL 을 직접 박았다: {s.url}"
+
+    def test_external_nav_sits_after_realestate(self):
+        """사용자 지정 위치 — 부동산 다음, `|` 로 나눈 뒤."""
+        dash = open("bot/dashboard.py", encoding="utf-8").read()
+        i = dash.index('href="realestate.html"')
+        j = dash.index("{_ext_nav}", i)
+        assert j > i, "외부 링크가 부동산보다 앞에 있다"
+        assert "부동산</a></span>" in dash[i:j], f"사이에 다른 게 끼었다"
+
     def test_fiscal_note_only_when_not_december_year_end(self):
         from bot.quarterly_series import fiscal_note
         assert fiscal_note("12-31") == "" and fiscal_note(None) == ""

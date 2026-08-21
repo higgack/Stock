@@ -41,8 +41,8 @@ class RegistryTests(unittest.TestCase):
             ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us",
              # 2026-08-19 미국 PPI — 품목 기준이라 종목 기준 앞.
              "uppi", "krs", "jps", "mys",
-             # 2026-08-21 중국 수출(종목별).
-             "cns"])
+             # 2026-08-21 중국 수출·수입(종목별).
+             "cns", "cni"])
         # ⚠️ 위 목록은 **손으로 갱신하는 핀**이라, 규약 자체도 같이 못박는다
         # (핀만 있으면 "지금 순서를 그대로 적은" 테스트가 된다, 실수 #19).
         # 계약: 품목(HS) 기준 파서가 **전부** 종목(회사) 기준보다 앞.
@@ -180,7 +180,17 @@ class ConsumersUseRegistryTests(unittest.TestCase):
             self.assertIn(f'href="{s.html_file}"', nav, s.key)
             self.assertIn(s.nav_label, nav, s.key)
         # 일본(나쁜양파)은 일본(비온) 옆이어야 한다(사용자 2026-07-11).
-        self.assertEqual(srcs.NAV_ORDER[0], "jp2")
+        # ⚠️ 옛 판은 `NAV_ORDER[0] == "jp2"` 였는데 그건 **규약이 아니라
+        # 결과**다 — 일본이 유일하게 3페이지였을 때만 참이었고, 중국이
+        # 2026-08-21 수출·수입 종목판으로 3페이지가 되며 동률이 나자 깨졌다
+        # (실수 #19). 계약은 "같은 나라가 붙어 있다" 이다.
+        order = list(srcs.NAV_ORDER)
+        by_key = {x.key: x for x in srcs.SOURCES}
+        for country in {x.country for x in srcs.SOURCES if x.html_file}:
+            pos = [i for i, k in enumerate(order)
+                   if by_key[k].country == country]
+            self.assertEqual(pos, list(range(min(pos), max(pos) + 1)),
+                             f"{country} 소스가 nav 에서 흩어졌다: {order}")
         self.assertIn("_srcs_nav_html()", Path("trade/dashboard.py").read_text(
             encoding="utf-8"), "대시보드가 nav 를 레지스트리에서 안 받음")
 
@@ -394,8 +404,32 @@ class TestNavOrderRule20260820(unittest.TestCase):
         self.assertIn('href="jp.html"', dash,
                       "비온 일본 링크가 사라짐 — _EXTRA_COUNTRY_PAGES 갱신 필요")
         self.assertEqual(srcs._EXTRA_COUNTRY_PAGES, {"일본": 1})
-        # 그 결과 일본이 1순위여야 한다.
-        self.assertEqual(srcs.NAV_ORDER[0], "jp2")
+        # ⚠️ 옛 판은 "그 결과 일본이 1순위" 였는데, 중국이 3페이지가 되며
+        # 동률이 나자 깨졌다 — 1순위는 규약의 **결과**일 뿐이다(#19).
+        # 계약은 "레지스트리 밖 페이지가 나라 계수에 반영된다" 이다.
+        #
+        # ⚠️ 현행 데이터로는 이 보정이 순서를 **안 바꾼다**(일본은 2페이지
+        # 로 세어도 동률에서 이긴다). 실물로 재면 보정을 지우는 뮤테이션이
+        # 그대로 통과한다 — 레지스트리가 그러라고 열어 둔 `sources=` 로
+        # **합성 소스**를 태워 규약 자체를 본다.
+        S = srcs.Source
+        def _mk(key, country):
+            return S(key, key, lambda _t: None, lambda _p: None,
+                     lambda *_a, **_k: False, lambda *_a, **_k: None,
+                     f"{key}.db", f"{key}.html", key,
+                     country=country, basis="item", flow="export")
+        # 가상: '갑' 1개 · '을' 1개 + 레지스트리 밖 1개 → 을이 앞서야 한다.
+        synth = (_mk("a1", "갑"), _mk("b1", "을"))
+        _orig = srcs._EXTRA_COUNTRY_PAGES
+        try:
+            srcs._EXTRA_COUNTRY_PAGES = {}
+            self.assertEqual(srcs._nav_order(synth)[0], "a1",
+                             "동률이면 SOURCES 순서가 갈라야 한다")
+            srcs._EXTRA_COUNTRY_PAGES = {"을": 1}
+            self.assertEqual(srcs._nav_order(synth)[0], "b1",
+                             "레지스트리 밖 페이지가 계수에 안 실린다")
+        finally:
+            srcs._EXTRA_COUNTRY_PAGES = _orig
 
     def test_every_source_declares_ordering_axes(self):
         for s in srcs.SOURCES:
