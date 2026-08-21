@@ -187,7 +187,17 @@ def render_infographic(payload: dict, out_path: str,
 # 34 → 31: 도화지 9.8in 에서 카드 한 줄의 실측 한계(칸 폭 40.9 단위).
 # ⚠️ 도화지를 좁히면 같은 글자수가 더 넓어진다 — 이 둘은 **한 쌍**이라
 # 한쪽만 바꾸면 항목이 카드 밖으로 나간다(회귀가 픽셀로 잡는다).
-_CARD_CHARS = 30
+# 카드 한 줄에 넣을 글자수. ⚠️ 이제 **절단폭이 아니라 줄바꿈 폭**이다 —
+# 넘치면 자르지 않고 둘째 줄로 넘긴다(2026-08-21). 옛 절단은 LLM 이 쓴
+# 근거를 화면에서 잘라 없앴다("…"), 그게 정보 손실이었다.
+# ⚠️ 값의 근거: VM 실측(소스 주석에 남아 있던 것) 8.5pt 30자 = 43.6 데이터
+# 단위. 카드 안쪽 가용폭은 46.5 − 5.0(번호) − 1.6(우여백) = 39.9 이므로
+# 8.5pt 에서 안전한 한 줄은 39.9/1.453 ≈ 27자 — 여유를 두고 24.
+# 두 줄이면 48자라 LLM 지시(ITEM_CHARS=28)를 넉넉히 담는다.
+_CARD_LINE_CHARS = 24
+_CARD_MAX_LINES = 2
+# 절단은 **최후 수단**(두 줄로도 안 들어가는 비정상 입력)만.
+_CARD_CHARS = _CARD_LINE_CHARS * _CARD_MAX_LINES
 
 _TICK_STEPS = [1, 2, 5, 10]
 # 상한 — 실제 nbins 는 **축의 픽셀 높이**에서 계산한다(_nbins_for).
@@ -408,9 +418,14 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
 # 비율이 안 깨진다. 실측: 화면 1200px 기준 8pt 가 11.5px → 13.6px(HTML 표 13px
 # 와 같은 급). 출력 1411px 라 1200px 표시에서도 축소만 되고 흐려지지 않는다.
 _FIG_W = 9.8           # inch — 모든 조각이 같은 폭이라야 세로로 이어 붙는다
-# 144 = 11.6in × 144 → 1670px. tight 크롭이 없어져 같은 dpi 면 픽셀이 1.5배가
-# 되고 렌더가 1.3초→2.0초로 느려진다(실측) — 옛 출력 폭(1672px)에 맞춘다.
-_FIG_DPI = 144
+# ⚠️ dpi 는 **선명도만** 바꾼다 — 화면 CSS px 는 `pt/72 × 컨테이너폭 ÷
+# _FIG_W` 라 dpi 가 약분돼 사라진다. 그래서 크기 조절은 `_FIG_W`, 선명도는
+# 여기다(둘을 헷갈리면 글자 크기를 못 고치면서 파일만 무거워진다).
+# 144 → 216 (2026-08-21 사용자 "여전히 가독성이 별로"): 컨테이너가 CSS
+# 1100px 인데 출력이 1411px 이라, 배율 2 화면(물리 2200px)에서는 브라우저가
+# **확대**해 그려 글자 가장자리가 뭉갠다(사용자 캡처가 1801px 였다 = 고DPI).
+# 216 → 9.8×216 = 2117px 로 배율 2 에서도 축소만 된다.
+_FIG_DPI = 216
 # 데이터 단위 여백. 옛 `pad_inches=0.15` (11.6in 폭에 W=100) 와 같은 비율:
 # 0.15 / 11.6 * 100 ≈ 1.29.
 _FIG_PAD = 1.29
@@ -503,12 +518,66 @@ def _cards_of(payload: dict) -> tuple[list, list]:
     return (gr.get("growth_drivers") or []), (gr.get("sustain_risks") or [])
 
 
+def _card_lines(s: str) -> list[str]:
+    """카드 항목 한 줄 → 표시할 줄들(최대 `_CARD_MAX_LINES`).
+
+    ⚠️ 어절(공백) 경계에서 끊는다. 낱글자로 끊으면 `반도체검사용 소/켓`
+    처럼 단어가 갈라진다(HTML 카드에서 `word-break: keep-all` 로 막은 것과
+    같은 이유). 한 어절이 줄보다 길면 그 어절만 강제로 자른다.
+
+    ⚠️ 마지막 줄이 넘치면 그때만 `…` — 옛 구현은 **무조건** 30자에서 잘라
+    LLM 이 쓴 근거를 화면에서 없앴다."""
+    words, lines, cur = (s or "").split(), [], ""
+    for w in words:
+        cand = f"{cur} {w}".strip()
+        if len(cand) <= _CARD_LINE_CHARS:
+            cur = cand
+            continue
+        if cur:
+            lines.append(cur)
+            cur = ""
+            if len(lines) == _CARD_MAX_LINES:
+                break
+        while len(w) > _CARD_LINE_CHARS and len(lines) < _CARD_MAX_LINES:
+            lines.append(w[:_CARD_LINE_CHARS])
+            w = w[_CARD_LINE_CHARS:]
+        if len(lines) == _CARD_MAX_LINES:
+            cur = ""
+            break
+        cur = w
+    if cur and len(lines) < _CARD_MAX_LINES:
+        lines.append(cur)
+    if not lines:
+        return [""]
+    # 담지 못하고 남은 게 있으면 마지막 줄에만 말줄임을 붙인다.
+    if len(" ".join(lines)) < len(" ".join(words)):
+        lines[-1] = lines[-1][:_CARD_LINE_CHARS - 1] + "…"
+    return lines
+
+
+_CARD_ROW = 3.4           # 한 줄짜리 항목의 세로 간격
+_CARD_LINE_GAP = 2.6      # 둘째 줄이 더 먹는 높이
+
+
+def _card_rows(items: list) -> float:
+    """항목들이 차지하는 세로 크기 — 줄 수에서 도출.
+
+    ⚠️ `_card_height`(도화지)와 `_draw_cards`(그리기)가 **같은 함수**를
+    봐야 한다. 복제하면 두 줄짜리가 생기는 순간 카드가 잘린다(#38)."""
+    from bot.dart_growth_risk import MAX_ITEMS as _M
+    tot = 0.0
+    for it in (items or [])[:_M]:
+        n = len(_card_lines(it))
+        tot += _CARD_ROW + _CARD_LINE_GAP * (n - 1)
+    return tot
+
+
 def _card_height(drivers: list, risks: list) -> float:
     """카드 상자 높이 — 항목 수에서 도출. 카드 PNG 의 도화지 높이와 상자
     높이가 같은 식을 봐야 한다(복제하면 잘림이 생긴다, #38)."""
-    from bot.dart_growth_risk import MAX_ITEMS as _M
-    n = min(_M, max(len(drivers), len(risks)))
-    return 3.4 * n + 6.55
+    # ⚠️ 줄바꿈(2026-08-21) 이후 항목마다 높이가 다르다 — 개수로 세면
+    # 두 줄짜리가 섞이는 순간 카드가 잘린다. 두 열 중 **큰 쪽**을 쓴다.
+    return max(_card_rows(drivers), _card_rows(risks)) + 6.55
 
 
 def _draw_cards(ax, txt, panel, Rectangle, FancyBboxPatch,
@@ -530,12 +599,16 @@ def _draw_cards(ax, txt, panel, Rectangle, FancyBboxPatch,
                 facecolor=color, edgecolor="none", mutation_aspect=1))
             txt(x0 + 3.2, iy, str(i), size=7.5, color="#0b1020",
                 weight="bold", ha="center")
-            body = s if len(s) <= _CARD_CHARS else s[:_CARD_CHARS - 1] + "…"
-            # ⚠️ 8.5 로 올리면 30자가 카드 밖으로 나간다(실측 100.2/97.5).
-            # 도화지 축소로 이 8pt 는 이미 화면 13.6px = HTML 표(13px)와 같은
-            # 급이라, 글자수를 더 깎느니 여기서 멈춘다.
-            txt(x0 + 5.6, iy, body, size=8)
-            iy += 3.4
+            # ⚠️ 8.5pt 로 30자를 한 줄에 넣으면 카드 밖으로 나간다(VM 실측
+            # 100.2 vs 카드끝 97.5). 그래서 **줄바꿈**으로 간다 — 자르지
+            # 않으면서 글자를 키운다(사용자 2026-08-21 "여전히 가독성이
+            # 별로. 글씨가 좀 작은것 같기도").
+            lines = _card_lines(s)
+            ly = iy
+            for ln in lines:
+                txt(x0 + 5.0, ly, ln, size=8.5)
+                ly += _CARD_LINE_GAP
+            iy += _CARD_ROW + _CARD_LINE_GAP * (len(lines) - 1)
 
     card_w = 46.5
     card_col(2.5, card_w, "확인된 성장동력", drivers, _POS)

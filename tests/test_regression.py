@@ -5513,6 +5513,52 @@ class TestQuarterlyInfographic20260819:
         assert height2 < height5, (
             f"상자 높이가 정본 상한을 안 따름(2→{height2}, 5→{height5})")
 
+    def test_card_text_wraps_instead_of_being_cut(self):
+        """사용자 2026-08-21 "여전히 가독성이 별로. 글씨가 좀 작은것 같기도".
+
+        옛 구현은 30자에서 **무조건 잘라** LLM 이 쓴 근거를 화면에서
+        없앴다(`…`). 8.5pt 로 키우면 30자가 카드 밖으로 나가므로(VM 실측
+        100.2 vs 카드끝 97.5) 자르는 대신 **둘째 줄**로 넘긴다."""
+        from bot.quarterly_infographic import (_CARD_LINE_CHARS,
+                                               _CARD_MAX_LINES, _card_lines)
+        # LLM 지시 상한(28자)은 두 줄 안에 **자르지 않고** 들어가야 한다
+        from bot.dart_growth_risk import ITEM_CHARS
+        assert ITEM_CHARS <= _CARD_LINE_CHARS * _CARD_MAX_LINES
+        long = "CEMS 구축을 통한 디지털 서비스 사업 확대"
+        lines = _card_lines(long)
+        assert len(lines) == 2, lines
+        assert "…" not in "".join(lines), "들어가는데 잘랐다"
+        assert "".join(l.replace(" ", "") for l in lines) == \
+            long.replace(" ", ""), "글자가 사라졌다"
+        # 어절 경계에서 끊는다 — 낱글자로 끊으면 단어가 갈라진다
+        assert not lines[0].endswith(" ") and lines[1].strip() == lines[1]
+        for ln in lines:
+            assert len(ln) <= _CARD_LINE_CHARS, ln
+        # 두 줄로도 안 되는 비정상 입력만 말줄임
+        assert _card_lines("가" * 200)[-1].endswith("…")
+        assert _card_lines("")[0] == "" and len(_card_lines("")) == 1
+
+    def test_card_height_follows_actual_line_count(self):
+        """도화지 높이와 상자 높이가 **같은 함수**를 봐야 한다 — 두 줄짜리가
+        섞이는 순간 카드가 잘린다(#38)."""
+        from bot.quarterly_infographic import _card_height
+        one = _card_height(["짧게"], ["짧게"])
+        two = _card_height(["긴 " * 20], ["짧게"])
+        assert two > one, (one, two)
+
+    def test_card_png_is_not_upscaled_on_hidpi(self):
+        """CSS 1100px 컨테이너 × 배율 2 = 물리 2200px. 출력이 그보다 작으면
+        브라우저가 **확대**해 글자 가장자리가 뭉갠다(사용자 캡처 1801px).
+
+        ⚠️ 화면 CSS px 는 `pt/72 × 컨테이너 ÷ _FIG_W` 라 **dpi 가 약분된다**
+        — dpi 는 선명도만, 크기는 `_FIG_W` 가 정한다. 둘을 헷갈리면 글자
+        크기를 못 고치면서 파일만 무거워진다."""
+        from bot.quarterly_infographic import _FIG_DPI, _FIG_W
+        native = _FIG_W * _FIG_DPI
+        assert native >= 2200 * 0.95, f"고DPI 에서 확대된다: {native:.0f}px"
+        # 본문이 HTML 표(13px)보다 작으면 안 된다
+        assert 8.5 / 72 * 1100 / _FIG_W >= 13.0
+
     def test_prompt_states_the_item_cap_but_forbids_padding(self):
         # 프롬프트에 개수 지시가 없어 상한이 사실상 도달 불가였다. 단
         # '억지로 채우지 마라'(규칙 4)가 우선이라는 점도 함께 유지돼야 한다.
