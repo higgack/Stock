@@ -351,12 +351,12 @@ def _newest_nonempty(days: list[str], fetch_one) -> list[dict]:
     rest = days[1:]
     if not rest:
         return []
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(_DAY_POOL, len(rest))) as ex:
-        # map 은 **입력 순서**로 돌려주므로 첫 non-empty 가 곧 최신이다.
-        for it, _ok in ex.map(fetch_one, rest):
-            if it:
-                return it
+    from bot.pool import map_bounded
+    # ⚠️ 공용 풀(프로세스 상한) — 요청마다 새 풀이면 동시 조회 때 팬아웃이
+    # 곱해진다. 결과는 **입력 순서**라 첫 non-empty 가 곧 최신이다.
+    for r in map_bounded(fetch_one, rest):
+        if r and r[0]:
+            return r[0]
     return []
 
 

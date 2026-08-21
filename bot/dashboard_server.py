@@ -454,6 +454,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     # ── Request handlers ─────────────────────────────────────────────
     def do_GET(self):
+        """모든 GET 의 **실제 소요시간**을 남긴다.
+
+        ⚠️ 왜(사용자 2026-08-21 "여전히 꽤 오래걸리는데... 전보다 더 걸리는것
+        같아"): 우리가 계측해 온 것은 `collect_stock_snapshot`(수집기)이지
+        **사용자가 기다리는 요청**이 아니다. 화면이 기다리는 건 `/api/chart`
+        와 `/api/quote?full=1` 인데 그 둘은 한 번도 안 재 봤다 — 재지 않은
+        것을 두고 빨라졌다/느려졌다 말할 수 없다(#79·#92).
+        `journalctl -u <unit> | grep api-timing` 으로 본다.
+        """
+        import time as _t
+        _t0 = _t.time()
+        try:
+            return self._do_GET_routed()
+        finally:
+            _ms = (_t.time() - _t0) * 1000.0
+            try:
+                _r = self.path.split("?", 1)[0]
+                if _r.startswith("/api/") or _ms >= 1000:
+                    import urllib.parse as _up
+                    _q = _up.parse_qs(_up.urlparse(self.path).query)
+                    _tag = " ".join(
+                        f"{k}={(_q.get(k) or [''])[0]}"
+                        for k in ("ticker", "interval", "range", "full")
+                        if _q.get(k))
+                    log.info("api-timing %s %s %.0fms", _r, _tag, _ms)
+            except Exception:                                  # noqa: BLE001
+                pass          # 계측이 응답을 막으면 안 된다
+
+    def _do_GET_routed(self):
         if not self._authorize():
             return
         # /api/chart?ticker=..&interval=1d|1wk|1mo&range=1mo|3mo|6mo|ytd|1y|3y|5y|max

@@ -1266,11 +1266,9 @@ def collect_kr_financials(ticker: str) -> dict:
     # 디스크 캐시에 넣어 둔다(아래 루프는 그대로, 두 번째 호출은 0초).
     # 2026-08-21 계측: `kr:dart.financials` 가 enrich:KR 을 지배했다.
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=len(_years)) as _pool:
-            list(_pool.map(
-                lambda y: dart.get_normalized_financials(ticker, year=y),
-                _years))
+        from bot.pool import map_bounded
+        map_bounded(lambda y: dart.get_normalized_financials(ticker, year=y),
+                    _years)
     except Exception as exc:                                   # noqa: BLE001
         log.debug("stock_snapshot: 연간 재무 미리받기 건너뜀: %s", exc)
     ts = []

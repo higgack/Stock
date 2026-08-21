@@ -187,6 +187,13 @@ def main(argv: list[str] | None = None) -> int:
         got = dp.parse_production(markup) if markup else None
         # 제품 표는 **같은 원문**에서 뽑는다 — 추가 호출 0.
         prod = dp.parse_products(markup) if markup else None
+        # ⚠️ 티커를 **명시**했을 때는 채택된 제품표 원문도 찍는다. 화면이
+        # 이상해 보일 때(셀 두 줄이 붙는 등) 원문 없이 고치면 또 몇 라운드를
+        # 날린다(#109 — 사유 히스토그램은 '무엇이 많은가'까지만 말한다).
+        if args.tickers and prod and prod.get("table_html"):
+            _pv = re.sub(r"\s+", " ",
+                         re.sub(r"(?is)<[^>]+>", "|", prod["table_html"]))
+            print(f"   [제품표 채택 원문] {_pv[:args.show * 3]}")
         if prod:
             tally["제품표"] = tally.get("제품표", 0) + 1
         # ── 나머지 항목도 같이 센다 — "있는데 누락"을 찾는 게 목적이다.

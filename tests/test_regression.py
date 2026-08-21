@@ -7003,6 +7003,44 @@ class TestFcfDerivedNotCarried20260821:
         assert guarded, "분기보고서에도 FCF 를 붙이고 있다"
 
 
+class TestBacklogExplicitNoData20260821:
+    """원문 발췌가 남은 미수집의 정체를 밝혔다(2026-08-21): '파서 개선 여지'
+    로 남아 있던 건들이 사실은 **원문이 스스로 "안 씁니다"라고 밝힌 것**
+    이었다. 이 정규식은 `diagnose` **분류 전용**이라(파서는 안 본다) 넓혀도
+    값이 죽지 않는다 — 그래도 '수주' 문맥 안으로 한정한다."""
+
+    REAL = {
+        "277810 라온피플": ("라. 수주 현황에 관한 사항 당사의 수주는 P/O에 의한 "
+                        "단납기로 진행되는 형태로 수주잔고는 의미가 없다고 "
+                        "판단되어 기재하지 않습니다."),
+        "093320 KINX": ("라. 수주계약 현황 2026년 당분기말 현재 당사 재무제표에 "
+                        "중요한 영향을 미치는 장기공급계약 수주거래는 없습니다."),
+        "011070 LG이노텍": ("4-2. 수주에 관한 사항 연결실체는 차량용 부품을 생산 "
+                         "및 납품하고 있으나, 물량이 확정되어 있지 않거나 "
+                         "수요가 급격하게 변동할 수 있기 때문에 수주물량, "
+                         "수주잔고 등 별도 수주상황을 신뢰성 있게 예측하고 "
+                         "관리하는 것은 어려운 상황입니다."),
+    }
+
+    def test_declared_absence_is_not_counted_as_fixable(self):
+        from bot.dart_backlog import diagnose
+        for name, t in self.REAL.items():
+            assert diagnose(t) == "명시적미공시", (name, diagnose(t))
+
+    def test_real_tables_are_not_swallowed(self):
+        """⚠️ 오탐이면 **멀쩡한 값이 죽는다** — 넓힐 땐 '무엇이 여전히 잡히는가'
+        를 같이 못박는다(#57)."""
+        from bot.dart_backlog import _NO_DATA_RE, diagnose, parse_backlog
+        for t in ("(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 999 111 222",
+                  "수주 현황 (단위 : 백만원) 수주총액 기납품액 수주잔고 "
+                  "합 계 1,000 400 600"):
+            assert not _NO_DATA_RE.search(t), t
+            assert diagnose(t) != "명시적미공시", t
+        got = parse_backlog("수주 현황 (단위 : 백만원) 수주총액 기납품액 수주잔고 "
+                            "합 계 1,000 400 600")
+        assert got and got["value"] == 600e6, got
+
+
 class TestBacklogGenericLabel20260821:
     """⚠️ '파서 개선 여지 8건' 이라는 숫자가 **거짓이었다**(2026-08-21 원문
     발췌로 드러남). `기말` 은 원문 어디에나 있는 낱말이라 현금흐름표·유형자산
@@ -7197,6 +7235,86 @@ class TestBacklogDiagnoseScope20260821:
                         "조선 1,000 400 600") == "합계없음"
         assert diagnose("(단위 : 억원) 수주총액 기납품액 수주잔고 "
                         "합 계 999 111 222") == "형식미지원"
+
+
+class TestSharedFetchPool20260821:
+    """사용자 2026-08-21: "전보다 더 걸리는것 같아. 내가 동시에 돌리는게
+    많아서 그런가?" — 대시보드는 `ThreadingHTTPServer` 라 요청마다 스레드가
+    뜨는데, 거기에 **요청마다 새 풀**을 만들면 동시에 두 종목을 열 때 바깥
+    원천으로 나가는 동시 요청이 그대로 곱해진다. 한 요청을 빠르게 하려던
+    병렬화가 여러 요청에선 서로를 느리게 만든다."""
+
+    def test_pool_is_capped_process_wide(self):
+        import threading
+        import time
+        from bot.pool import map_bounded, shared_pool
+        cap = shared_pool()._max_workers
+        st = {"cur": 0, "peak": 0}
+        lk = threading.Lock()
+
+        def work(_i):
+            with lk:
+                st["cur"] += 1
+                st["peak"] = max(st["peak"], st["cur"])
+            time.sleep(0.02)
+            with lk:
+                st["cur"] -= 1
+            return _i
+        got = map_bounded(work, list(range(cap * 3)))
+        assert got == list(range(cap * 3)), "입력 순서가 안 지켜졌다"
+        assert st["peak"] <= cap, f"상한 초과: {st['peak']} > {cap}"
+        assert st["peak"] > 1, "직렬로 돌았다 — 대조 0건은 통과가 아니다(#54)"
+
+    def test_one_failure_does_not_block_the_rest(self):
+        from bot.pool import map_bounded
+
+        def boom(x):
+            if x == 2:
+                raise ValueError("x")
+            return x
+        assert map_bounded(boom, [1, 2, 3]) == [1, None, 3]
+
+    def test_enrich_keeps_its_own_pool_no_nesting(self):
+        """⚠️ **교착 방지 규약.** 공용 풀에서 도는 작업이 다시 공용 풀에
+        제출하고 결과를 기다리면 슬롯이 서로를 기다린다. 공용 풀은 **말단
+        팬아웃 전용**이고, `enrich:KR` 같은 상위 병렬은 자기 풀을 쓴다."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_enrich_kr")
+        body = ast.get_source_segment(src, fn) or ""
+        assert "ThreadPoolExecutor(max_workers=len(tasks))" in body, \
+            "enrich 가 자기 풀을 안 쓴다"
+        assert "map_bounded" not in body, \
+            "enrich 팬아웃이 공용 풀을 쓴다 — 말단이 같은 풀을 쓰면 교착한다"
+
+    def test_leaf_fanouts_use_the_shared_pool(self):
+        """말단 팬아웃 셋은 공용 풀을 써야 동시 요청에서 곱해지지 않는다."""
+        for path in ("bot/dart_quarterly.py", "bot/fsc_client.py",
+                     "bot/stock_snapshot.py"):
+            src = open(path, encoding="utf-8").read()
+            assert "map_bounded" in src, path
+
+    def test_request_latency_is_logged(self):
+        """재지 않은 것을 두고 빨라졌다/느려졌다 말할 수 없다(#79·#92) —
+        사용자가 기다리는 건 수집기가 아니라 **요청**이다."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "do_GET")
+        # ⚠️ **독스트링을 지우고 본다.** 독스트링이 `grep api-timing` 을
+        # 설명하고 있어서, 로그 호출을 지우는 뮤테이션이 그대로 통과했다
+        # (실측 — #59b 소스 검사는 독스트링을 지우고 볼 것).
+        stmts = [n for n in fn.body
+                 if not (isinstance(n, ast.Expr)
+                         and isinstance(n.value, ast.Constant)
+                         and isinstance(n.value.value, str))]
+        body = "\n".join(ast.get_source_segment(src, n) or "" for n in stmts)
+        assert "api-timing" in body, "요청 소요시간을 안 남긴다"
+        # 계측이 예외를 삼켜 응답을 막으면 안 된다
+        assert "finally:" in body and "_do_GET_routed" in body
 
 
 class TestChartFirstPaint20260821:
