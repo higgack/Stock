@@ -187,6 +187,9 @@ def _series_payload(
     sma55 = close.rolling(55).mean() if len(close) >= 55 else None
     sma200 = close.rolling(200).mean() if len(close) >= 200 else None
 
+    import time as _ind_t
+    _ind_t0 = _ind_t.time()
+
     def _round(v, nd=decimals) -> float | None:
         try:
             f = float(v)
@@ -287,6 +290,8 @@ def _series_payload(
     # 저장본은 상세 페이지가 /api/chart 로 '오늘까지' 를 받아오기 전 잠깐 쓰는
     # placeholder 이고 두 지표 모두 기본 OFF 라 사실상 표시될 일이 없다.
     # 실제로 그려지는 API 응답(1h 디스크 캐시)에는 그대로 들어간다.
+    _TIMING["ind.basic"] = round(_ind_t.time() - _ind_t0, 3)
+    _ind_t0 = _ind_t.time()
     if not for_storage:
         try:
             from bot.ichimoku import ichimoku, ichimoku_signal
@@ -326,6 +331,8 @@ def _series_payload(
                 }
         except Exception as exc:
             log.debug("chart_data: disparity overlay skipped: %s", exc)
+    _TIMING["ind.ichimoku+disparity"] = round(_ind_t.time() - _ind_t0, 3)
+    _ind_t0 = _ind_t.time()
 
     # 공시 이벤트 마커 (전 시장, ₩0). 차트가 보여줄 기간(span)을 넘겨 KR/US 는
     # 풀히스토리, JP/TW/CN 은 시장별 안전 캡으로 fetch. 보이는 날짜 구간으로 필터.
@@ -347,6 +354,8 @@ def _series_payload(
                 ]
         except Exception:
             pass
+    _TIMING["ind.events"] = round(_ind_t.time() - _ind_t0, 3)
+    _ind_t0 = _ind_t.time()
 
     # 엘리엇 파동 · 피보나치 되돌림 오버레이 (2026-07-29, Credit Suisse
     # technical_tutorial p23~31 — bot/elliott_fib.py 에 규칙 출처 명시).
@@ -368,6 +377,7 @@ def _series_payload(
                 payload["elliott"] = ef
     except Exception as exc:      # silent-fail 금지 — 원인 로그는 남긴다
         log.debug("chart_data: elliott/fib overlay skipped: %s", exc)
+    _TIMING["ind.elliott"] = round(_ind_t.time() - _ind_t0, 3)
     return payload
 
 

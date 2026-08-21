@@ -7393,6 +7393,30 @@ class TestSingleFlight20260821:
         body = "\n".join(ast.get_source_segment(dsrc, n) or "" for n in stmts)
         assert "quarterly-timing" in body, "핸들러가 안 찍는다"
 
+    def test_indicator_substages_are_measured(self):
+        """⚠️ VM 실측(2026-08-21 002380.KS): `indicators=380.451s` —
+        차트 385초 중 **380초가 지표 단계**였다(yf.history 3.2초).
+        그 안에서 무엇이 범인인지 갈라야 고칠 곳을 안다(#69).
+
+        같은 입력을 로컬에서 돌리면 250봉 전 지표가 **0.02초**다 —
+        순수 계산이 380초일 수 없으므로 I/O 를 하는 단계를 지목해야 한다."""
+        import numpy as np
+        import pandas as pd
+        import bot.chart_data as cd
+        n = 250
+        idx = pd.date_range("2025-01-01", periods=n, freq="D")
+        close = pd.Series(
+            np.cumsum(np.random.default_rng(1).normal(0, 1, n)) + 100,
+            index=idx)
+        cd._series_payload(close, "KRW", 0, None, close, close * 1.01,
+                           close * 0.99, ticker=None, interval="1d")
+        t = cd.last_chart_timing()
+        for stage in ("ind.basic", "ind.ichimoku+disparity", "ind.events",
+                      "ind.elliott"):
+            assert stage in t, (stage, t)
+        # 순수 계산은 빨라야 한다 — 여기서 느려지면 그건 다른 문제다
+        assert t["ind.basic"] < 5.0, t
+
     def test_chart_stages_are_measured(self):
         """`/api/chart` 13~39초가 **어디서** 나는지 알 방법이 없었다(#69)."""
         from bot.chart_data import last_chart_timing
