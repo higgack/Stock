@@ -5912,9 +5912,19 @@ class TestDartAccountWinnerDeterminism20260816:
     def test_snapshot_relays_all_anomaly_flags(self):
         # 플래그를 하나라도 안 넘기면 대시보드 배지·각주가 dead code 가 되고
         # '—' 의 이유가 사라진다(2026-08-16 독립 리뷰).
-        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
-        assert "_anomaly_account_mismatch" in src, "계정 불일치 플래그 미릴레이"
-        assert '"_anomaly_revenue_negative",' in src
+        # ⚠️ 소스 문자열이 아니라 **동작**으로 — 이름 열거를 접두어 훑기로
+        # 바꾸자 옛 단언이 깨졌다(#19, 이번 세션 15번째). 계약은 "전량
+        # 릴레이" 이지 특정 이름이 소스에 있느냐가 아니다.
+        from bot.stock_snapshot import relay_anomaly_fields
+        got = relay_anomaly_fields(
+            {"매출": 1.0, "_anomaly_account_mismatch": True,
+             "_anomaly_revenue_negative": True,
+             "_mismatched_accounts": ["매출: A ↔ B"],
+             "_anomaly_future_flag": True, "_anomaly_off": False}, {})
+        assert got == {"_anomaly_account_mismatch": True,
+                       "_anomaly_revenue_negative": True,
+                       "_mismatched_accounts": ["매출: A ↔ B"],
+                       "_anomaly_future_flag": True}, got
 
     def test_diff_quarter_blocks_cross_account_subtraction(self):
         from bot.dart_quarterly import _diff_quarter
@@ -30717,3 +30727,116 @@ class TestQuarterlyTimingKeyIsPerRequest20260822:
                 assert isinstance(n.args[0], ast.Call) and \
                     getattr(n.args[0].func, "id", "") == "timing_key", \
                     f"{n.args[1].value} 가 요청 키를 안 쓴다"
+
+
+class TestShortHistoryRefetch20260822:
+    """1년을 요청했는데 한 달치만 오면 **한 번 더 묻는다**.
+
+    사용자 2026-08-22 두산테스나(131970.KS): 푸터가 `1년 · 일봉 · 25개 봉 ·
+    2026-07-16 → 2026-08-21`. 같은 화면의 LG화학은 242개 봉이었다. 야후는
+    심볼·시각에 따라 `start`/`end` 질의에 **앞부분이 잘린** 데이터를 주고,
+    그때 **기간 키워드**로 물으면 온전히 온다(`^MOVE` 2026-08-19 실측이
+    같은 증상). 조용히 넘기면 "가끔 차트가 이상하다"로만 보인다."""
+
+    def _hist(self, start, n):
+        import numpy as np
+        import pandas as pd
+        idx = pd.date_range(start, periods=n, freq="D")
+        return pd.DataFrame({"Open": np.arange(n) + 100.0,
+                             "High": np.arange(n) + 101.0,
+                             "Low": np.arange(n) + 99.0,
+                             "Close": np.arange(n) + 100.0,
+                             "Volume": np.arange(n) + 1000.0}, index=idx)
+
+    def _run(self, monkeypatch, short_n=25, full_n=250):
+        import sys
+        import types
+        import bot.chart_data as cd
+        calls = []
+
+        class _T:
+            def __init__(self, tkr):
+                pass
+
+            def history(self, **kw):
+                calls.append(kw)
+                if "period" in kw:
+                    return self_outer._hist("2025-08-22", full_n)
+                return self_outer._hist("2026-07-16", short_n)
+        self_outer = self
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        monkeypatch.setattr(cd, "_merge_today_bar",
+                            lambda t, c, v, o, h, l: (c, v, o, h, l))
+        return cd.fetch_chart_payload("131970.KS", "1d", "1y"), calls
+
+    def test_short_range_is_refetched_by_period(self, monkeypatch):
+        payload, calls = self._run(monkeypatch)
+        assert len(calls) == 2, f"짧게 왔는데 다시 묻지 않았다: {calls}"
+        assert "period" in calls[1], calls[1]
+        assert len(payload["times"]) == 250, len(payload["times"])
+
+    def test_full_range_is_not_refetched(self, monkeypatch):
+        """온전히 왔으면 다시 묻지 않는다 — 야후 호출이 배로 늘면 안 된다."""
+        payload, calls = self._run(monkeypatch, short_n=250)
+        assert len(calls) == 1, f"불필요한 재질의: {calls}"
+
+    def test_refetch_keeps_the_longer_one(self, monkeypatch):
+        """재질의가 더 짧게 오면 원래 것을 지킨다 — 나빠지면 안 된다."""
+        payload, calls = self._run(monkeypatch, short_n=25, full_n=5)
+        assert len(calls) == 2
+        assert len(payload["times"]) == 25, len(payload["times"])
+
+    def test_span_is_measured_by_date_not_bar_count(self):
+        """휴장·거래정지로 개수는 얼마든 적을 수 있다 — 날짜 폭으로 잰다(#29)."""
+        import bot.chart_data as cd
+        h = self._hist("2025-08-22", 250)
+        assert cd._span_days(h) >= 240
+        sparse = h.iloc[[0, -1]]           # 두 점뿐이지만 1년을 덮는다
+        assert cd._span_days(sparse) >= 240
+
+
+class TestMismatchDetailOnScreen20260822:
+    """"DART 계정 불일치 가능" 만으로는 아무도 못 가른다.
+
+    사용자 2026-08-22 LG화학(051910.KS) 25.4Q: "계정이 불일치한거 좀 봐줄수
+    있어?" — `_diff_quarter` 는 **어느 계정끼리** 어긋났는지 이미 기록해
+    두는데(`_mismatched_accounts`) 화면 각주가 그걸 안 실었다. 아는 걸
+    화면이 말하게 한다(#43·#55)."""
+
+    def test_pairs_are_collected(self):
+        import bot.quarterly_infographic as qi
+        qs = [{"label": "25.4Q",
+               "financials": {"_mismatched_accounts": ["매출: 매출액 ↔ 영업수익"]}},
+              {"label": "26.1Q", "financials": {}},
+              {"label": "26.2Q",
+               "financials": {"_mismatched_accounts": ["매출: 매출액 ↔ 영업수익"]}}]
+        assert qi.mismatched_accounts(qs) == ["매출: 매출액 ↔ 영업수익"]
+        assert qi.mismatched_accounts([]) == []
+
+    def test_footnote_names_the_accounts(self):
+        """각주 문구에 계정쌍이 실려야 한다 — 그 카드 하나를 잘라 본다(#55)."""
+        import bot.quarterly_infographic as qi
+        notes = qi._footnotes(
+            {"anomaly_keys": ["매출"], "anomaly_labels": ["25.4Q"],
+             "mismatched_accounts": ["매출: 매출액 ↔ 영업수익"]},
+            [{"label": "26.2Q", "financials": {}}])
+        line = next((t for t, _c in notes if "이상치 감지" in t), "")
+        assert "매출액 ↔ 영업수익" in line, line
+
+    def test_payload_carries_the_pairs(self):
+        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20)."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        keys = {k.value for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Dict)
+                for k in n.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        assert "mismatched_accounts" in keys, "payload 에 안 실린다"
+
+    def test_snapshot_relay_is_not_an_enumeration(self):
+        """플래그 이름을 열거하면 새 플래그가 조용히 빠진다(#24)."""
+        from bot.stock_snapshot import relay_anomaly_fields
+        # 미래에 생길 플래그도 자동으로 실려야 한다 — 이름 열거면 못 잡는다
+        got = relay_anomaly_fields({"_anomaly_brand_new_2027": True}, {})
+        assert got == {"_anomaly_brand_new_2027": True}, got
