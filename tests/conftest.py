@@ -58,6 +58,7 @@ def _isolate_disk_caches(tmp_path_factory, monkeypatch):
         import bot.dart_feed as _df
         monkeypatch.setattr(_df, "_DOC_FAIL", root / "dart_doc_fail.json")
         _df._DOC_TEXT_MEM.clear()
+        _df._DOC_BLOB_MEM.clear()      # 원문 zip 바이트 캐시도 격리
     except Exception:
         pass
     yield

@@ -603,6 +603,16 @@ def _doc_fail_mark(rcept_no: str, hours: float = 0.5) -> None:
 # 으로 본문을 받게 (2026-06-12 '조금 다른 양식은 알아서').
 _DOC_TEXT_MEM: dict[str, str] = {}
 _DOC_MEM_MAX = 120_000_000    # 평문 총 보관량 상한(자)
+# 원문 zip **바이트** 캐시. `max_bytes` 는 HTTP 다운로드를 줄이지 않고 압축
+# 해제량만 줄이므로, 상한을 올린 재시도나 평문↔마크업 전환은 지금까지
+# **같은 zip 을 통째로 다시 받고 있었다**(2026-08-21 실측). 바이트를 들고
+# 있으면 그 경우가 재파싱으로 끝난다. 텍스트 캐시와 키가 달라(접수번호만)
+# 상한·모드가 뭐든 공유된다.
+_DOC_BLOB_MEM: dict[str, bytes] = {}
+# 60MB — zip 은 압축된 상태라 정기보고서 한 건이 보통 1~10MB 다. 한 종목의
+# 최근 4분기를 담기엔 넉넉하고, 평문 캐시(_DOC_MEM_MAX)와 합쳐도 봇 메모리를
+# 과하게 밀지 않는다. 캐시는 넉넉함보다 **예측 가능함**이 중요하다.
+_DOC_BLOB_MAX = 60_000_000    # 바이트 총 보관량 상한
 
 # 기본 절단 — 짧은 계약공시용. 사업/반기보고서는 이걸론 모자란다:
 # 「매출 및 수주상황」은 목차상 II.사업의 내용 뒤라 3MB 밖으로 밀리는 게
@@ -610,6 +620,14 @@ _DOC_MEM_MAX = 120_000_000    # 평문 총 보관량 상한(자)
 # trade/scripts/probe_dart_revenue 가 같은 이유로 자체 상한을 따로 올려 썼다.
 _DOC_TEXT_MAX = 3_000_000
 _DOC_TEXT_MAX_FULL = 40_000_000   # 정기보고서 전문(수주상황·매출구성 파서용)
+
+
+def _blob_put(rcept_no: str, blob: bytes) -> None:
+    """원문 zip 바이트를 총량 상한 안에서 보관(오래된 것부터 밀어냄)."""
+    _DOC_BLOB_MEM[rcept_no] = blob
+    while (sum(len(v) for v in _DOC_BLOB_MEM.values()) > _DOC_BLOB_MAX
+           and len(_DOC_BLOB_MEM) > 1):
+        _DOC_BLOB_MEM.pop(next(iter(_DOC_BLOB_MEM)))
 
 
 def _fetch_doc_text(rcept_no: str, api_key: str,
@@ -633,18 +651,24 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
     import io
     import zipfile
     try:
-        r = requests.get(f"{_DART_BASE}/document.xml",
-                         params={"crtfc_key": api_key, "rcept_no": rcept_no},
-                         timeout=20)
-        blob = r.content or b""
-        # ⚠️ 실패 사유를 **반드시 남긴다.** 옛 코드는 전부 조용히 None 을
-        # 돌려서, 한화에어로 사업보고서·1분기보고서가 '본문없음 0자'로만
-        # 보였다(사용자 2026-08-17). silent-fail 금지 — CLAUDE.md 실수 #12.
-        if len(blob) < 200 or blob[:1] in (b"{", b"<") and b"status" in blob[:200]:
-            log.warning("_fetch_doc_text %s: 본문 아님 (HTTP %s · %d bytes · %r)",
-                        rcept_no, r.status_code, len(blob), blob[:120])
-            _doc_fail_mark(rcept_no)
-            return None
+        blob = _DOC_BLOB_MEM.get(rcept_no)
+        if blob is None:
+            r = requests.get(f"{_DART_BASE}/document.xml",
+                             params={"crtfc_key": api_key,
+                                     "rcept_no": rcept_no},
+                             timeout=20)
+            blob = r.content or b""
+            # ⚠️ 실패 사유를 **반드시 남긴다.** 옛 코드는 전부 조용히 None 을
+            # 돌려서, 한화에어로 사업보고서·1분기보고서가 '본문없음 0자'로만
+            # 보였다(사용자 2026-08-17). silent-fail 금지 — CLAUDE.md 실수 #12.
+            if (len(blob) < 200
+                    or blob[:1] in (b"{", b"<") and b"status" in blob[:200]):
+                log.warning(
+                    "_fetch_doc_text %s: 본문 아님 (HTTP %s · %d bytes · %r)",
+                    rcept_no, r.status_code, len(blob), blob[:120])
+                _doc_fail_mark(rcept_no)
+                return None
+            _blob_put(rcept_no, blob)
         zf = zipfile.ZipFile(io.BytesIO(blob))
         # 본문 = 가장 큰 엔트리 우선, **나머지도 이어붙인다.** 정기보고서는
         # 본문이 여러 XML 로 쪼개져 오는 경우가 있어 하나만 읽으면 뒷부분

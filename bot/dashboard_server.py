@@ -327,14 +327,15 @@ def _production_html(ticker: str, payload: dict) -> str:
         if not qs:
             return ""
         from bot.dart_client import get_dart
-        from bot.dart_production import (production_rolling, products_rolling,
-                                         render_html, render_products_html)
-        dart = get_dart()
+        from bot.dart_production import (render_html, render_products_html,
+                                         tables_rolling)
+        # ⚠️ 보고서를 **한 번만** 걷는다. 표마다 따로 걸으면 같은 문서를 표
+        # 수만큼 다시 받고, 표가 없는 종목(스윕 실측상 다수)에서는 그게
+        # 분기수×상한수×표수로 곱해진다(2026-08-21 실측 8건 → 2건).
+        got = tables_rolling(get_dart(), ticker, qs)
         # 사용자 2026-08-21 "가동률 표 위에" — 주요 제품 표가 먼저.
-        # 같은 접수번호 원문이라 `_fetch_doc_text` 캐시에 걸려 DART 호출은
-        # 늘지 않는다(둘 다 raw_markup 경로·같은 상한).
-        return (render_products_html(products_rolling(dart, ticker, qs))
-                + render_html(production_rolling(dart, ticker, qs)))
+        return (render_products_html(got.get("products"))
+                + render_html(got.get("production")))
     except Exception as exc:                                   # noqa: BLE001
         log.debug("production_html(%s): %s", ticker, exc)
         return ""

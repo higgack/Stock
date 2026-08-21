@@ -205,21 +205,46 @@ class TestRolling:
         assert got is not None
         assert caps == [df._DOC_TEXT_MAX], "3MB 로 찾았는데 FULL 까지 받았다"
 
-    def test_falls_back_to_full_when_anchor_is_beyond_small_cap(self, monkeypatch):
-        """목차가 긴 대형사 대비 — 3MB 안에 앵커가 없으면 FULL 로 재시도."""
+    def test_falls_back_to_full_when_the_doc_was_truncated(self, monkeypatch):
+        """목차가 긴 대형사 대비 — 3MB 에서 **잘렸으면** FULL 로 재시도.
+
+        ⚠️ 옛 픽스처는 작은 상한에서 `<P>앞부분만</P>` 을 돌려줬다 — 실제로
+        잘린 문서는 상한 길이만큼 온다. 짧은 응답으로 폴백을 검증하면 '안
+        잘렸는데도 올린다'는 낭비를 테스트가 축복한다."""
         import bot.dart_feed as df
+        monkeypatch.setattr(df, "_DOC_TEXT_MAX", 200)
+        monkeypatch.setattr(df, "_DOC_TEXT_MAX_FULL", 20_000)
         caps = []
 
         def fake(rn, key, max_bytes=0, raw_markup=False):
             caps.append(max_bytes)
-            return "<P>앞부분만</P>" if max_bytes == df._DOC_TEXT_MAX else REAL
+            return "x" * max_bytes if max_bytes == 200 else REAL
         monkeypatch.setattr(df, "_fetch_doc_text", fake)
         d = self._Dart({(2026, "11012"): REAL})
         got = production_rolling(d, "098120",
                                  [{"year": 2026, "reprt_code": "11012",
                                    "label": "26.2Q"}])
         assert got is not None, "FULL 폴백이 동작하지 않았다"
-        assert caps == [df._DOC_TEXT_MAX, df._DOC_TEXT_MAX_FULL]
+        assert caps == [200, 20_000]
+
+    def test_no_escalation_when_the_doc_fits_under_the_cap(self, monkeypatch):
+        """`max_bytes` 는 HTTP 다운로드를 안 줄인다 — 상한을 올린 재시도는
+        **같은 zip 을 한 번 더 받는 것**이다. 안 잘렸으면 올려도 내용이 같아
+        순손실이다(2026-08-21 사용자 '가장 빠르고 비용 적게')."""
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_DOC_TEXT_MAX", 200)
+        monkeypatch.setattr(df, "_DOC_TEXT_MAX_FULL", 20_000)
+        caps = []
+
+        def fake(rn, key, max_bytes=0, raw_markup=False):
+            caps.append(max_bytes)
+            return "<P>표가 없는 짧은 보고서</P>"      # 상한에 한참 못 미침
+        monkeypatch.setattr(df, "_fetch_doc_text", fake)
+        d = self._Dart({(2026, "11012"): REAL})
+        assert production_rolling(d, "098120",
+                                  [{"year": 2026, "reprt_code": "11012",
+                                    "label": "26.2Q"}]) is None
+        assert caps == [200], f"안 잘렸는데 상한을 올렸다: {caps}"
 
     def test_none_when_no_report_has_it(self, monkeypatch):
         qs = [{"year": 2026, "reprt_code": "11012", "label": "26.2Q"}]
@@ -676,8 +701,11 @@ class TestProducts20260821:
         blk = src[src.index("def _production_html("):]
         blk = blk[:blk.index("except Exception")]
         i_p = blk.index("render_products_html(")
-        i_r = blk.index("render_html(production_rolling")
+        i_r = blk.index('render_html(got.get("production")')
         assert i_p < i_r, "생산 표가 제품 표보다 먼저 붙는다"
+        # 표시 순서는 속도·비용과 무관하다(한 응답에 다 담아 보낸다) —
+        # 순서 계약은 순전히 화면 요구(사용자 "가동률 표 위에")다.
+        assert "tables_rolling(" in blk, "보고서를 표마다 따로 걷는다"
 
     def test_products_reuses_the_production_fetch_ladder(self):
         """수집 사다리를 복제하면 두 표의 기준 보고서가 갈라진다(#38).
@@ -688,7 +716,7 @@ class TestProducts20260821:
         # ⚠️ 독스트링을 지우고 본다 — 이 함수의 설명이 금지 대상 이름을
         # 그대로 담고 있어, 그냥 grep 하면 주석을 재게 된다(실제로 걸렸다).
         code = re.sub(r'(?s)""".*?"""', "", body)
-        assert "production_rolling(" in code and "parse=parse_products" in code
+        assert "tables_rolling(" in code, "단일 워크를 안 쓴다"
         assert "_fetch_doc_text" not in code, "수집 경로를 복제했다"
 
     def test_products_rolling_actually_runs_through_the_ladder(self):
@@ -733,3 +761,127 @@ class TestProducts20260821:
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         dup = [k for k, v in collections.Counter(names).items() if v > 1]
         assert not dup, f"중복 정의(뒤엣것이 앞을 가림): {dup}"
+
+
+class TestFetchCost20260821:
+    """사용자 2026-08-21 "어떤 순서로 배치해야 가장 빠르고 비용이 적게 들까".
+
+    답: **표시 순서는 무관하다**(서버가 한 응답에 다 담아 보낸다). 비용은
+    DART 원문 다운로드에 있었고, 실측 결과 표가 없는 종목에서 8건이었다."""
+
+    QS = [{"year": 2026, "reprt_code": f"110{i}", "label": f"26.{i}Q"}
+          for i in (1, 2, 3, 4)]
+
+    class _Dart:
+        api_key = "K"
+
+        def find_periodic_reports(self, t, y, rc):
+            return [{"rcept_no": f"R{rc}"}]
+
+    PROD = ("생산능력 및 생산실적 <TABLE><TR><TD>(단위:천개)</TD></TR></TABLE>"
+            "<TABLE><TR><TH>구 분</TH><TH>제27기</TH></TR>"
+            "<TR><TD>생산능력</TD><TD>1</TD></TR>"
+            "<TR><TD>생산실적</TD><TD>2</TD></TR>"
+            "<TR><TD>가 동 률</TD><TD>97</TD></TR></TABLE>")
+
+    def _walk(self, monkeypatch, docs):
+        import bot.dart_feed as df
+        import bot.dart_production as dp
+        net = set()
+
+        def fake(rn, k, max_bytes=0, raw_markup=False):
+            net.add((rn, max_bytes))
+            return docs.get(rn)
+        monkeypatch.setattr(df, "_fetch_doc_text", fake)
+        return dp.tables_rolling(self._Dart(), "X", self.QS), net
+
+    def test_one_walk_not_one_per_table(self, monkeypatch):
+        """표마다 따로 걸으면 같은 문서를 표 수만큼 다시 받는다 — 표가 없는
+        종목(스윕 실측상 40 중 31)에서 분기수×표수로 곱해진다."""
+        _got, net = self._walk(monkeypatch, {})
+        assert len(net) == 4, f"분기당 1건을 넘었다: {sorted(net)}"
+
+    def test_both_tables_from_one_document(self, monkeypatch):
+        from tests.test_dart_production import TestProducts20260821 as T
+        got, net = self._walk(monkeypatch, {"R1104": T.MK + self.PROD})
+        assert got.get("products") and got.get("production")
+        assert len(net) == 1, f"두 표가 문서를 따로 받았다: {sorted(net)}"
+
+    def test_single_walk_matches_independent_walks(self, monkeypatch):
+        """표별 채택 결과가 따로 걸을 때와 **같아야** 한다 — 제품은 최신
+        분기, 가동률은 그보다 옛 분기에 실린 회사가 실재한다."""
+        from tests.test_dart_production import TestProducts20260821 as T
+        got, _net = self._walk(monkeypatch,
+                               {"R1104": T.MK, "R1102": self.PROD})
+        assert got["products"]["basis_label"] == "26.4Q"
+        assert got["production"]["basis_label"] == "26.2Q"
+        assert got["products"]["rcept_no"] == "R1104"
+        assert got["production"]["rcept_no"] == "R1102"
+
+    def test_zip_bytes_are_reused_across_caps_and_modes(self):
+        """`max_bytes` 는 HTTP 다운로드를 안 줄이고 압축 해제량만 줄인다 —
+        상한을 올린 재시도와 평문↔마크업 전환이 **같은 zip 을 다시 받고**
+        있었다(2026-08-21 실측 4건). 바이트를 들고 있으면 재파싱으로 끝난다."""
+        import io
+        import types
+        import zipfile
+        import bot.dart_feed as df
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("doc.xml", "<P>본문</P>" * 500)
+        blob = buf.getvalue()
+        hits = [0]
+
+        class _R:
+            status_code = 200
+            content = blob
+
+        def _get(url, params=None, timeout=None):
+            hits[0] += 1
+            return _R()
+
+        _orig_rq, _orig_fail = df.requests, df._doc_fail_recent
+        df.requests = types.SimpleNamespace(get=_get)
+        df._doc_fail_recent = lambda rn: False
+        df._DOC_TEXT_MEM.clear()
+        df._DOC_BLOB_MEM.clear()
+        try:
+            for cap, raw in ((3_000_000, True), (40_000_000, True),
+                             (3_000_000, False), (40_000_000, False)):
+                assert df._fetch_doc_text("R1", "K", max_bytes=cap,
+                                          raw_markup=raw)
+        finally:
+            df.requests, df._doc_fail_recent = _orig_rq, _orig_fail
+            df._DOC_TEXT_MEM.clear()
+            df._DOC_BLOB_MEM.clear()
+        assert hits[0] == 1, f"같은 zip 을 {hits[0]}번 받았다"
+
+    def test_blob_cache_is_bounded(self):
+        """상한이 없으면 정기보고서 전문이 쌓여 봇 메모리를 민다."""
+        import bot.dart_feed as df
+        df._DOC_BLOB_MEM.clear()
+        try:
+            for i in range(6):
+                df._blob_put(f"R{i}", b"x" * 20_000_000)
+            total = sum(len(v) for v in df._DOC_BLOB_MEM.values())
+            assert total <= df._DOC_BLOB_MAX, f"{total} > {df._DOC_BLOB_MAX}"
+            assert "R5" in df._DOC_BLOB_MEM, "가장 최근 것이 밀려났다"
+        finally:
+            df._DOC_BLOB_MEM.clear()
+
+    def test_server_walks_the_reports_exactly_once(self, monkeypatch):
+        """⚠️ 모듈 단위 테스트는 이걸 못 잡는다 — `tables_rolling` 을 직접
+        부르면 서버가 그걸 **두 번** 불러도 통과한다(뮤테이션이 실제로
+        통과했다). 진입점을 태워 호출 횟수를 센다(#20)."""
+        import bot.dart_production as dp
+        import bot.dashboard_server as ds
+        calls = []
+
+        def _fake(dart, ticker, qs, max_back=4, want=None):
+            calls.append(want)
+            return {}
+        monkeypatch.setattr(dp, "tables_rolling", _fake)
+        monkeypatch.setattr(ds, "_render_note", lambda: "", raising=False)
+        ds._production_html("005930.KS", {"quarters": [{"year": 2026}]})
+        assert len(calls) == 1, f"보고서를 {len(calls)}번 걷는다"
+        assert calls[0] in (None, ()), "한 표만 요청해 나머지가 또 걷게 된다"
