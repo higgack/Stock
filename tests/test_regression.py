@@ -30883,3 +30883,59 @@ class TestRenderCacheSignature20260822:
         for sfx in qi._PIECE_SUFFIXES:
             assert p.with_name(p.stem + sfx + p.suffix).suffix == ".png"
         assert set(qi._PIECE_SUFFIXES) >= {"_cards", "_b"}, qi._PIECE_SUFFIXES
+
+
+class TestCaptionOnlyTableAndAccountClass20260822:
+    """① 빈 칸으로 격자만 채운 캡션 표 ② 총액끼리 라벨만 다른 계정."""
+
+    def test_empty_grid_caption_is_not_a_data_table(self):
+        """사용자 2026-08-22 네패스: 가동률 패널에 **제목만** 떴다.
+        `(2) 당해 사업년도의 가동률` + `(단위 : 장/Ton/천개)` 두 줄이 각각
+        빈 칸 두 개를 달고 있어 `cells >= rows*3` 을 통과했다 — #76(POSCO
+        캡션 표)에서 넣은 구조 게이트를 **빈 칸이 우회**했다."""
+        from bot.dart_production import _looks_like_a_data_table as ok
+        bad = ("<TABLE>"
+               "<TR><TD></TD><TD>(2) 당해 사업년도의 가동률</TD><TD></TD></TR>"
+               "<TR><TD></TD><TD></TD><TD>(단위 : 장/Ton/천개)</TD></TR>"
+               "</TABLE>")
+        assert not ok(bad), "빈 격자 캡션 표가 통과했다"
+
+    def test_real_production_table_still_passes(self):
+        """가드를 조이면 **무엇이 여전히 통과하는지**를 같이 못박는다(#57)."""
+        from bot.dart_production import _looks_like_a_data_table as ok
+        good = ("<TABLE><TR><TD>사업부문</TD><TD>사업장</TD>"
+                "<TD>평균가동률</TD></TR>"
+                "<TR><TD>전력</TD><TD>청주 1</TD><TD>96.4</TD></TR>"
+                "<TR><TD>자동화</TD><TD>천안</TD><TD>76.9</TD></TR></TABLE>")
+        assert ok(good)
+        # 한 줄짜리 각주 표는 예전대로 거부(#57)
+        assert not ok("<TABLE><TR><TD>생산능력 산출근거</TD>"
+                      "<TD>월 25일</TD><TD>x</TD></TR></TABLE>")
+
+    # ── ② 계정 급(총액 ↔ 구성요소) ────────────────────────────────────
+    def test_total_accounts_with_different_labels_subtract(self):
+        """사용자 2026-08-22 LG화학 25.4Q `매출: 영업수익 ↔ 매출액` — 연간과
+        9개월 보고서가 **같은 총액**을 다른 라벨로 적었을 뿐이다. 그룹 인덱스가
+        다르다고 막으면 멀쩡한 회사가 빈칸이 된다."""
+        from bot.dart_quarterly import _diff_quarter
+        out = _diff_quarter({"매출": 30e12, "_src": {"매출": 0}},
+                            {"매출": 22e12, "_src": {"매출": 1}})
+        assert out["매출"] == 8e12, out
+        assert not out.get("_anomaly_account_mismatch"), out
+
+    def test_component_account_is_still_blocked(self):
+        """가드가 진짜로 막아야 하는 건 **총액 ↔ 구성요소**다(메리츠금융지주:
+        영업수익 ↔ 이자수익을 빼서 TTM 매출이 -10.30조였다)."""
+        from bot.dart_quarterly import _diff_quarter
+        out = _diff_quarter({"매출": 8e12, "_src": {"매출": 0}},
+                            {"매출": 21e12, "_src": {"매출": 2}})
+        assert out["매출"] is None, out
+        assert out.get("_anomaly_account_mismatch")
+        assert out["_mismatched_accounts"] == ["매출: 영업수익 ↔ 이자수익"]
+
+    def test_unknown_canonical_stays_conservative(self):
+        """그룹 표가 없는 항목은 판정 불가 — 종전대로 막는다."""
+        from bot.dart_quarterly import _compatible
+        assert _compatible("매출", 0, 1)
+        assert not _compatible("매출", 0, 2)
+        assert _compatible("영업이익", 3, 3)
