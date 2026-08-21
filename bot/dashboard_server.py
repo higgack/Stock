@@ -1011,7 +1011,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             res = _once(f"quarterly:{ticker}:{int(bool(run))}",
                         lambda: _qi.get_or_render(ticker, snap, run_llm=run))
             try:                      # 어디서 시간이 나는지 같이 남긴다(#69)
-                _st = _qi.last_render_timing()
+                _st = _qi.last_render_timing(ticker)
                 if _st:
                     log.info("quarterly-timing %s %s", ticker,
                              " ".join(f"{k}={v}s" for k, v in _st.items()))
@@ -1158,7 +1158,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass  # corrupt cache → refetch
 
-            from bot.chart_data import fetch_chart_payload, last_chart_timing
+            from bot.chart_data import (fetch_chart_payload,
+                                        last_chart_timing, timing_key)
             from bot.singleflight import once as _once
             # ⚠️ 같은 요청이 **같은 밀리초에 두 번** 들어온다(2026-08-21 실측).
             # 디스크 캐시는 끝난 뒤에만 도와주므로 진행 중인 중복은 못 막는다
@@ -1168,7 +1169,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 lambda: fetch_chart_payload(ticker, interval=interval,
                                             period=rng))
             try:                      # 어디서 시간이 나는지 같이 남긴다(#69)
-                _st = last_chart_timing()
+                _st = last_chart_timing(timing_key(ticker, interval, rng))
                 if _st:
                     log.info("chart-timing %s %s/%s %s", ticker, interval, rng,
                              " ".join(f"{k}={v}s" for k, v in _st.items()))

@@ -1554,12 +1554,16 @@ def table_html(payload: dict) -> str:
 # 단계별 소요시간(마지막 호출) — `/api/quarterly` 가 **108초**로 관측됐는데
 # (2026-08-21 `api-timing` 실측, 300120.KQ) 그중 무엇이 payload 수집이고
 # 무엇이 PNG 렌더인지 알 방법이 없었다. 추측하지 말고 잰다(#69).
-_RENDER_TIMING: dict = {}
+# ⚠️ **티커별**로 가른다 — 전역 dict 하나면 동시 요청이 서로를 덮어 로그가
+# 다른 종목의 값을 말한다(2026-08-22 실측, bot/timing.py 참조).
+from bot.timing import Stages as _Stages
+
+_RENDER_TIMING = _Stages()
 
 
-def last_render_timing() -> dict:
-    """직전 `get_or_render` 의 단계별 소요(초). 읽기 전용."""
-    return dict(_RENDER_TIMING)
+def last_render_timing(ticker: str = "") -> dict:
+    """그 티커 `get_or_render` 의 단계별 소요(초). 읽기 전용."""
+    return _RENDER_TIMING.snapshot(ticker)
 
 
 def get_or_render(ticker: str, snap: dict | None = None, *,
@@ -1567,10 +1571,10 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     """온디맨드 진입점. 캐시(파일명=분기 키) 우선, 없으면 렌더.
     반환 {ok, image, payload} — image 는 PNG 경로(폰트 부재 시 None)."""
     import time as _time
-    _RENDER_TIMING.clear()
+    _RENDER_TIMING.start(ticker)
     _t_all = _t0 = _time.time()
     payload = build_payload(ticker, snap, run_llm=run_llm)
-    _RENDER_TIMING["build_payload"] = round(_time.time() - _t0, 3)
+    _RENDER_TIMING.set(ticker, "build_payload", _time.time() - _t0)
     if not payload:
         return {"ok": False,
                 "error": "분기 재무 데이터 없음(소스 미제공 또는 미지원 시장)"}
@@ -1590,8 +1594,8 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     # 이 조각 **위**로 와야 해서 본 이미지를 둘로 나눴다.
     pb = p.with_name(p.stem + "_b" + p.suffix)
     if p.exists() and not fresh_llm:
-        _RENDER_TIMING["cached"] = 1.0
-        _RENDER_TIMING["total"] = round(_time.time() - _t_all, 3)
+        _RENDER_TIMING.set(ticker, "cached", 1.0)
+        _RENDER_TIMING.set(ticker, "total", _time.time() - _t_all)
         # 짝이 없으면 **여기서 만든다** — 본 이미지만 캐시에 남아 있으면
         # 그 조각이 화면에서 통째로 사라진 채 캐시 키가 도는 날까지 방치된다
         # (한 번의 렌더 실패가 영구 결손이 되는 구멍, 실수 #11).
@@ -1606,8 +1610,8 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
     img = render_infographic(payload, str(p), _PART_TOP)
     bottom = render_infographic(payload, str(pb), _PART_BOTTOM)
     cards = render_cards(payload, str(pc))
-    _RENDER_TIMING["render_png"] = round(_time.time() - _t0, 3)
-    _RENDER_TIMING["total"] = round(_time.time() - _t_all, 3)
+    _RENDER_TIMING.set(ticker, "render_png", _time.time() - _t0)
+    _RENDER_TIMING.set(ticker, "total", _time.time() - _t_all)
     if img:
         _purge_stale(ticker, p)
     return {"ok": True, "image": img, "image_bottom": bottom,

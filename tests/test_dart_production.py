@@ -1687,7 +1687,7 @@ class TestDetailTiming20260821:
         import bot.stock_snapshot as ss
         self._stub_yf(monkeypatch, {"info": 0.02, "news": 0.05})
         ss.collect_stock_snapshot("AAPL", use_cache=False)
-        tm = ss.last_timing()
+        tm = ss.last_timing("AAPL")
         assert {"yf.info", "total"} <= set(tm), f"기본 계측 누락: {tm}"
         for name in ("실적이력", "투자의견", "기관보유", "뉴스",
                      "재무제표", "동종비교"):
@@ -1700,7 +1700,7 @@ class TestDetailTiming20260821:
         import bot.stock_snapshot as ss
         self._stub_yf(monkeypatch, {"info": 0.12})
         ss.collect_stock_snapshot("AAPL", use_cache=False)
-        assert ss.last_timing()["yf.info"] >= 0.10
+        assert ss.last_timing("AAPL")["yf.info"] >= 0.10
 
     def test_instrumentation_does_not_swallow_failures(self, monkeypatch):
         """계측이 예외를 삼키면 수집 실패가 조용히 성공으로 보인다."""
@@ -1715,16 +1715,28 @@ class TestDetailTiming20260821:
     def test_last_timing_returns_a_copy(self):
         """호출부가 들고 있는 dict 를 다음 수집이 비우면 값이 사라진다."""
         import bot.stock_snapshot as ss
-        ss._TIMING.clear()
-        ss._TIMING["x"] = 1.0
-        got = ss.last_timing()
-        ss._TIMING.clear()
+        ss._TIMING.start("AAPL")
+        ss._TIMING.set("AAPL", "x", 1.0)
+        got = ss.last_timing("AAPL")
+        ss._TIMING.start("AAPL")
         assert got == {"x": 1.0}, "내부 dict 를 그대로 넘겼다"
+
+    def test_timing_is_per_ticker(self):
+        """⚠️ 탭을 셋 열면 세 종목 수집이 겹친다 — 전역 dict 하나면 로그가
+        **다른 종목의 값**을 말한다(2026-08-22 실측). 티커로 갈라야 한다."""
+        import bot.stock_snapshot as ss
+        ss._TIMING.start("AAPL")
+        ss._TIMING.start("005930.KS")
+        ss._TIMING.set("AAPL", "yf.info", 1.0)
+        ss._TIMING.set("005930.KS", "yf.info", 9.0)
+        assert ss.last_timing("AAPL") == {"yf.info": 1.0}
+        assert ss.last_timing("005930.KS") == {"yf.info": 9.0}
+        assert ss.last_timing("NOPE") == {}, "안 잰 종목이 남의 값을 받는다"
 
     def test_probe_reads_the_product_measurements(self):
         src = open("bot/scripts/detail_timing_probe.py",
                    encoding="utf-8").read()
-        assert "ss.last_timing()" in src, "제품 계측을 안 읽는다"
+        assert "ss.last_timing(" in src, "제품 계측을 안 읽는다"
         assert "use_cache=False" in src, "캐시 히트를 재면 0 초가 나온다"
         # 수집을 재구현하면 제품과 다른 걸 잰다(#35)
         assert "yfinance" not in src and "yf.Ticker" not in src
