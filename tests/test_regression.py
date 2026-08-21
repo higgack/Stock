@@ -30176,3 +30176,51 @@ class TestChartEventsBudget20260821:
         assert i > 0, "차트 가이드에 공시 마커 섹션이 없다"
         seg = html[i:i + 2500]                  # 그 섹션만 본다(#55)
         assert "차트를 붙잡지 않습니다" in seg and "다음 조회부터" in seg, seg[:400]
+
+
+class TestProbeAlignSummary20260821:
+    """프로브가 **화면의 정렬 판정을 되읽어** 말해 준다 — 스크린샷 왕복 대신.
+
+    사용자가 세 번 지적한 증상(#78 셀→표 · #97 표→열 · #115 rowspan 열번호)은
+    전부 '한 열 안에서 정렬이 갈림'이다. 감사가 그걸 직접 세면 다음 라운드가
+    없다(#114 감사는 무엇을 보고 말하는지 밝힐 것)."""
+
+    _MK = ("<TABLE>"
+           "<TR><TD ROWSPAN=2>사업부문</TD><TD>품 목</TD><TD>매출액</TD></TR>"
+           "<TR><TD>전력기기, 전력시스템, 배전반, 변압기, 신재생에너지 등</TD>"
+           "<TD ALIGN=RIGHT>3,273,963</TD></TR>"
+           "<TR><TD>자동화</TD><TD>PLC, 인버터, 자동화시스템, 빌딩자동화 등</TD>"
+           "<TD>283,183</TD></TR>"
+           "<TR><TD COLSPAN=2>연 결 조 정 및 내부거래 제거</TD>"
+           "<TD>(1,047,792)</TD></TR></TABLE>")
+
+    def test_reports_one_class_per_column(self):
+        from bot.dart_production import sanitize_table
+        from bot.scripts.production_format_probe import align_summary
+        cols = align_summary(sanitize_table(self._MK))
+        assert [c["col"] for c in cols] == [0, 1, 2], cols
+        assert not any(c["mixed"] for c in cols), cols
+        assert cols[1]["cls"] == "lft" and cols[0]["cls"] == "ctr", cols
+        assert "전력기기" in cols[1]["sample"]
+        # 여러 열을 걸친 셀(합계·연결조정)은 어느 한 열의 것이 아니다 —
+        # 세면 그 열의 성격 판정이 오염된다(`_long_text_cols` 와 같은 규약).
+        assert cols[0]["sample"] == "사업부문", cols[0]
+
+    def test_mixed_column_is_flagged(self):
+        """열 번호가 밀리면(rowspan 미반영) 같은 열에 두 class 가 섞인다 —
+        그때 프로브가 **⚠️ 를 찍어야** 한다. 안 찍으면 감사가 눈이 먼 것."""
+        from bot.scripts.production_format_probe import align_summary
+        broken = ('<table class="si-table">'
+                  '<tr><td rowspan="2" class="ctr">사업부문</td>'
+                  '<td class="lft">품 목</td></tr>'
+                  '<tr><td class="ctr">전력기기, 전력시스템 등</td></tr>'
+                  '</table>')
+        cols = align_summary(broken)
+        assert any(c["mixed"] for c in cols), cols
+
+    def test_empty_input_reports_nothing_rather_than_passing(self):
+        """대조 대상이 0건이면 '이상 없음'이 아니다(#54) — 호출부가 ❌ 를
+        찍을 수 있게 **빈 리스트**로 답한다."""
+        from bot.scripts.production_format_probe import align_summary
+        assert align_summary("") == []
+        assert align_summary("<table></table>") == []
