@@ -12,11 +12,13 @@
 출력 = 종목별 판정 코드 + 미지원 종목의 **표 헤더 미리보기**. 헤더를 봐야
 "어떤 형식을 추가할지"가 정해진다. 판정 코드는 dart_production.diagnose:
 
-  정상        — 가동률까지 있는 표를 찾았다(현행 파서로 충분)
-  가동률없음   — 생산능력·실적만 있는 표(회사가 가동률을 안 씀 → 표는 실림)
-  형식미지원   — 단어는 스치는데 표 구조가 다르다  ← **파서 확장 대상**
+  정상        — 가동률까지 있는 표(현행 파서로 충분)          ← 화면에 실림
+  가동률없음   — 생산능력+실적만(회사가 가동률을 안 씀)          ← 화면에 실림
+  능력만      — 생산능력 **또는** 실적 하나만                   ← 화면에 실림
+  무관표만     — 표는 있는데 세 어구가 하나도 없다  ← **파서 확장 대상**
   표없음      — 절은 있는데 산문만(생산 서술)      ← 확장 여지 있음
   섹션없음     — 생산·설비 절 자체가 없다(비제조업·지주사 등 — 여지 없음)
+  원문잘림     — 상한까지 받아도 앵커가 안 보인다(원천/상한 문제 — '없음' 아님)
   원문미제공   — DART 가 그 접수건 문서를 안 준다(계정·원천 문제)
 
 사용:
@@ -34,7 +36,9 @@ import re
 import sys
 import time
 
-_PROBE_VER = 1          # 진단 스크립트 버전 배너(실수 #21)
+_PROBE_VER = 2          # 진단 스크립트 버전 배너(실수 #21)
+#   v2(2026-08-21): 상한 escalation 을 제품 경로와 일치시킴 +
+#   미리보기 창을 파서 스캔창과 동일하게 + 최고점수·문서길이 표기.
 
 
 def _universe(limit: int) -> list[str]:
@@ -99,50 +103,71 @@ def main(argv: list[str] | None = None) -> int:
 
     tally: dict[str, int] = {}
     unsupported: list[tuple[str, str, str]] = []
+    _OK = ("정상", "가동률없음", "능력만")     # 화면에 실리는 판정
     for i, tk in enumerate(tickers, 1):
         qs = _latest_quarters(dart, tk)
         if not qs:
             tally["분기데이터없음"] = tally.get("분기데이터없음", 0) + 1
             print(f"[{i:3}/{len(tickers)}] {tk}  분기데이터없음")
             continue
-        verdict, markup, basis = "원문미제공", None, ""
+        verdict, markup, basis, dlen = "원문미제공", None, "", 0
         for q in reversed(qs):
+            rn = (dart.find_periodic_reports(tk, q["year"], q["reprt_code"])
+                  or [{}])[0].get("rcept_no") or ""
+            if not rn:
+                continue
+            # ⚠️ **제품 경로와 같은 순서로 상한을 올린다**(실수 #35).
+            # v1 은 "판정이 원문미제공만 아니면" 곧장 break 해서, 3MB 안에
+            # 앵커가 안 잡히는 대형사를 40MB 로 한 번도 다시 받지 않았다 —
+            # 삼성전자·SK하이닉스가 '섹션없음'으로 찍힌 원인이다.
+            # production_for 는 parse_production 이 실패하면 FULL 로 올린다.
             for cap in (_DOC_TEXT_MAX, _DOC_TEXT_MAX_FULL):
-                mk = _fetch_doc_text(
-                    (dart.find_periodic_reports(tk, q["year"], q["reprt_code"])
-                     or [{}])[0].get("rcept_no") or "",
-                    dart.api_key, max_bytes=cap, raw_markup=True)
-                v = dp.diagnose(mk)
-                if v != "원문미제공":
-                    verdict, markup, basis = v, mk, q.get("label", "")
+                mk = _fetch_doc_text(rn, dart.api_key, max_bytes=cap,
+                                     raw_markup=True)
+                # 받은 길이가 상한에 닿았으면 **잘렸다** — 앵커 부재를
+                # '섹션없음'이라 말할 수 없다(판정불가를 없음으로 말하지 않기).
+                cut = bool(mk) and len(mk) >= cap * 0.98
+                v = dp.diagnose(mk, truncated=cut)
+                if mk:
+                    verdict, markup, basis, dlen = v, mk, q.get("label", ""), len(mk)
+                if v in _OK:
                     break
-            if verdict in ("정상", "가동률없음"):
-                break
-            if verdict != "원문미제공":
+                if not cut:
+                    break          # 잘리지 않았는데 못 찾으면 올려도 같다
+            if verdict in _OK:
                 break
         tally[verdict] = tally.get(verdict, 0) + 1
         got = dp.parse_production(markup) if markup else None
-        mark = "✅" if got else ("△" if verdict == "가동률없음" else "❌")
-        print(f"[{i:3}/{len(tickers)}] {tk} {mark} {verdict:<8} {basis}")
-        # ⚠️ 미지원만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
-        if not got and verdict in ("형식미지원", "표없음", "가동률없음"):
+        mark = "✅" if got else "❌"
+        kinds = ",".join(got.get("kinds") or []) if got else ""
+        print(f"[{i:3}/{len(tickers)}] {tk} {mark} {verdict:<8} {basis:<6}"
+              f" {dlen//1000:>5}k {kinds}")
+        # ⚠️ 미채택만 헤더를 찍는다 — 이게 다음 형식을 정하는 유일한 근거다.
+        if not got:
             head = ""
             if markup:
                 m = dp._ANCHOR.search(markup) or dp._ANCHOR_ALT.search(markup)
                 if m:
-                    seg = markup[m.end(): m.end() + 6000]
+                    # 창을 파서와 **똑같이** 잡는다. v1 은 6000자만 봐서
+                    # 파서가 실제로 보고 버린 표를 못 보여줬다(미리보기가
+                    # 전부 `(단위 : …)` 캡션 표였던 이유).
+                    seg = markup[m.end(): m.end() + dp._SCAN_WINDOW]
                     tabs = dp._TABLE_RE.findall(seg)
                     pick = max(tabs, key=dp._score, default="")
-                    head = re.sub(r"\s+", " ",
-                                  re.sub(r"(?is)<[^>]+>", "|", pick))[:args.show]
+                    head = (f"[{len(tabs)}표 최고점 {dp._score(pick)}] " +
+                            re.sub(r"\s+", " ",
+                                   re.sub(r"(?is)<[^>]+>", "|", pick))
+                            [:args.show])
             unsupported.append((tk, verdict, head))
         time.sleep(0.4)          # 원천 배려(간격 — 실수 #21b)
 
     print("\n" + "=" * 68)
     print("판정 분포:", dict(sorted(tally.items(), key=lambda x: -x[1])))
-    ok = tally.get("정상", 0)
-    print(f"현행 파서 커버리지: {ok}/{len(tickers)} "
-          f"({100.0 * ok / max(1, len(tickers)):.0f}%)")
+    ok = sum(tally.get(k, 0) for k in ("정상", "가동률없음", "능력만"))
+    rate = tally.get("정상", 0)
+    print(f"화면에 실림: {ok}/{len(tickers)} "
+          f"({100.0 * ok / max(1, len(tickers)):.0f}%) "
+          f"— 그중 가동률 포함 {rate}건")
     if unsupported:
         print(f"\n--- 미지원 {len(unsupported)}종목 표 헤더(형식 추가 근거) ---")
         for tk, v, head in unsupported:

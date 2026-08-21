@@ -63,6 +63,14 @@ _TAG_RE = re.compile(r"(?is)<\s*(/?)\s*([A-Za-z][A-Za-z0-9]*)([^>]*)>")
 _MAX_TABLE_CHARS = 120_000
 _SCAN_WINDOW = 40_000       # 앵커 이후 훑을 범위
 
+# 채택 임계값 — `parse_production` 과 `diagnose` 가 **같은 수**를 봐야 스윕
+# 통계가 화면과 일치한다(따로 박으면 감사가 거짓 안심을 준다, 실수 #54).
+# 3 = 생산능력·생산실적 중 **하나만** 있는 표. 사용자 2026-08-20 "최대한 다
+# 가져오게" + VM 스윕 실측(478560 `품목|일일 처리량|월 생산능력|비고` 이
+# 6 미달로 통째 버려졌다). 이웃 설비·소재지 표는 세 어구가 하나도 없어 0 점
+# 이므로 3 으로 낮춰도 걸리지 않는다 — 게이트의 목적은 유지된다.
+_MIN_SCORE = 3
+
 
 def _cells(table_markup: str) -> str:
     """표의 **셀 텍스트만** — 선택 판정용(속성값에 걸리지 않게)."""
@@ -107,8 +115,39 @@ def sanitize_table(markup: str) -> str:
     return re.sub(r"\s{2,}", " ", html).strip()
 
 
+_ROW_RE = re.compile(r"(?is)<TR[^>]*>")
+_CELL_RE = re.compile(r"(?is)<T[DH][^>]*>")
+
+
+def _looks_like_a_data_table(markup: str) -> bool:
+    """머리행 + 데이터행이 있는 **격자**인가.
+
+    어구 하나만 걸린 표(3점)를 그대로 받으면 `생산능력 산출근거 | 월 25일`
+    같은 **한 줄짜리 각주 표**가 통과한다(2026-08-20 회귀가 잡아낸 실패).
+    반대로 진짜 능력표는 열이 여럿이고 데이터행이 따라온다(478560:
+    `품목|일일 처리량|월 생산능력|비고` + 5행). 어구 목록을 늘리는 대신
+    **구조**로 가른다 — 목록형 판정은 목록 밖을 못 보기 때문(#24)."""
+    rows = len(_ROW_RE.findall(markup))
+    cells = len(_CELL_RE.findall(markup))
+    return rows >= 2 and cells >= rows * 3
+
+
+def _kinds_in(markup: str) -> list[str]:
+    """표에 실제로 담긴 지표 — 제목은 여기서만 만든다.
+
+    호출부가 `kinds` 를 안 실어 보내도 표 자체에서 되뽑을 수 있어야 한다.
+    "없으면 셋 다 적는다" 는 폴백은 곧 **없는 지표를 약속하는** 것이라
+    고치려던 결함(실수 #55)을 폴백 경로에 그대로 남긴다."""
+    body = _cells(markup)
+    return [k for k, rx in (("가동률", _RATE_RE), ("생산능력", _CAP_RE),
+                            ("생산실적", _ACT_RE)) if rx.search(body)]
+
+
 def _score(markup: str) -> int:
-    """표 적합도 — 가동률이 최우선(사용자가 원하는 핵심 지표)."""
+    """표 적합도 — 가동률이 최우선(사용자가 원하는 핵심 지표).
+
+    ⚠️ 점수 산정은 여기 **한 곳**이다 — parse_production·diagnose·스윕
+    프로브가 모두 이걸 부른다. 복제하면 화면과 스윕 통계가 갈라진다(#38)."""
     body = _cells(markup)
     s = 0
     if _RATE_RE.search(body):
@@ -117,6 +156,10 @@ def _score(markup: str) -> int:
         s += 3
     if _ACT_RE.search(body):
         s += 3
+    # 근거가 어구 하나뿐이면 격자 모양까지 맞아야 인정한다. 둘 이상(6점+)은
+    # 어구 조합만으로 충분히 특이해 모양을 따지지 않는다.
+    if 0 < s < 6 and not _looks_like_a_data_table(markup):
+        return 0
     return s
 
 
@@ -142,8 +185,7 @@ def parse_production(markup: str | None) -> dict | None:
             best, best_score = t, sc
             if sc >= 10:
                 break
-    if best is None or best_score < 6:
-        # 6 = 생산능력+생산실적 둘 다. 하나만 걸린 표는 이웃 표일 수 있어 버린다.
+    if best is None or best_score < _MIN_SCORE:
         return None
     raw = best.group(0)
     # 단위 캡션 — 데이터 표 **앞**의 미끼 표에 들어 있다(실측).
@@ -172,20 +214,30 @@ def parse_production(markup: str | None) -> dict | None:
         "unit": unit,
         "notes": [n for n in notes if n],
         "has_rate": best_score >= 10,
+        # 제목을 이 목록에서 만든다 — 표에 없는 지표를 제목이 약속하면
+        # 사용자는 그게 있는 줄 알고 찾는다(실수 #55 라벨↔내용 불일치).
+        "kinds": _kinds_in(raw),
     }
 
 
-def diagnose(markup: str | None) -> str:
+def diagnose(markup: str | None, *, truncated: bool = False) -> str:
     """표를 못 낸 이유를 짧은 코드로 — **개선 여지 판정**이 목적이다.
 
     `원문미제공`·`섹션없음` 은 원천에 없어 파서를 고칠 여지가 없고,
-    `표없음`·`형식미지원` 만 새 형식이 필요하다는 신호다. 이 구분이 없으면
-    스윕 로그가 노이즈가 된다(dart_backlog.diagnose 와 같은 규약)."""
+    `표없음`·`무관표만` 만 새 형식이 필요하다는 신호다. 이 구분이 없으면
+    스윕 로그가 노이즈가 된다(dart_backlog.diagnose 와 같은 규약).
+
+    ⚠️ `truncated` 를 **반드시** 넘겨라. 앵커가 안 보이는 이유는 두 가지다:
+    절이 정말 없거나, 우리가 문서 앞부분만 받아서 절이 잘려 나갔거나.
+    구분하지 않으면 대형사(목차·재무제표가 길다)가 전부 '섹션없음'으로
+    찍혀 **원천에 있는데 없다고 보고**한다 — 2026-08-21 VM 스윕에서
+    삼성전자·SK하이닉스가 그렇게 나왔고, 프로브가 상한을 안 올린 게 원인
+    이었다. 판정 불가를 '없음'으로 말하지 않는다(실수 #41)."""
     if not markup:
         return "원문미제공"
-    if not (_ANCHOR.search(markup) or _ANCHOR_ALT.search(markup)):
-        return "섹션없음"          # 생산·설비 절 자체가 없다(비제조업 등)
     m = _ANCHOR.search(markup) or _ANCHOR_ALT.search(markup)
+    if not m:
+        return "원문잘림" if truncated else "섹션없음"
     tail = markup[m.end(): m.end() + _SCAN_WINDOW]
     tabs = list(_TABLE_RE.finditer(tail))
     if not tabs:
@@ -195,9 +247,9 @@ def diagnose(markup: str | None) -> str:
         return "정상"
     if best >= 6:
         return "가동률없음"        # 생산능력·실적만 있고 가동률 미기재
-    if best > 0:
-        return "형식미지원"        # 단어는 스치는데 표 구조가 다르다
-    return "표없음"
+    if best >= _MIN_SCORE:
+        return "능력만"            # 생산능력 **또는** 실적 하나만 — 채택됨
+    return "무관표만"              # 표는 있는데 세 어구가 하나도 없다
 
 
 def production_for(dart, ticker: str, year: int, reprt_code: str) -> dict | None:
@@ -260,7 +312,10 @@ def render_html(prod: dict | None) -> str:
     if not prod or not prod.get("table_html"):
         return ""
     e = _html.escape
-    head = "🏭 생산능력 · 생산실적 · 가동률"
+    # ⚠️ 고정 문구로 두면 가동률이 없는 표에도 "가동률"이 적혀 사용자가
+    # 없는 걸 찾게 된다. 실제 담긴 지표만 제목에 올린다(실수 #55).
+    kinds = prod.get("kinds") or _kinds_in(prod["table_html"])
+    head = "🏭 " + (" · ".join(kinds) if kinds else "생산 현황")
     meta = []
     if prod.get("basis_label"):
         meta.append(f"{e(prod['basis_label'])} 보고서 기준")
