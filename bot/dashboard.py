@@ -5145,11 +5145,29 @@ _BAND_JS = r"""
   var BANDC=['#ef8a33','#7e57c2','#9aa056','#e2574c'];   // VAL1 최고 … VAL4 최저
   var NAMES=['최고','중상','중하','최저'];
   // obj = {mult:[v1..v4], price:[[ms,y|null]], bands:[[[ms,y]]×4]}
+  /* ⚠️ **폭이 0 일 때 그리면 글씨·선이 가로로 늘어난다**(사용자 2026-08-23
+     COP "왜 갑자기 차트그래픽이 이상하게 변했지? 나왔다가 안나왔다가").
+     이 SVG 는 높이가 고정이라 `preserveAspectRatio="none"` 인데, viewBox 폭
+     (`W`)이 실제 렌더 폭과 다르면 그 비율만큼 **가로로만** 늘어난다.
+     탭이 아직 숨겨져 있으면 `clientWidth` 가 0 이라 폴백 340 으로 그려지고,
+     그게 전폭(≈1900px)으로 펴지면 5.6배 늘어난 글씨가 된다 — 폭이 잡힌 뒤
+     다시 그리면 멀쩡해지므로 "나왔다가 안나왔다가" 로 보인다.
+     밴드 pane 이 2열에서 1열이 되며(2026-08-23) 늘어나는 비율이 커져 눈에
+     띄기 시작했다. 가격 차트가 같은 병을 앓았다(#108) — 같은 처방을 쓴다. */
+  var _bandRetry={};
   function drawBand(holderId, lgId, obj, csym){
     var holder=document.getElementById(holderId), lg=document.getElementById(lgId);
     if(!holder) return;
     if(!obj||!obj.price||!obj.price.length){
       holder.innerHTML='<div style="font-size:12px;color:var(--fg-soft)">데이터 없음</div>'; if(lg)lg.innerHTML=''; return; }
+    if(holder.clientWidth<1){
+      /* 상한이 있어야 한다 — 숨은 탭에서 프레임을 계속 먹으면 안 된다(#108). */
+      var n=(_bandRetry[holderId]||0);
+      if(n<60){ _bandRetry[holderId]=n+1;
+        requestAnimationFrame(function(){ drawBand(holderId,lgId,obj,csym); });
+        return; } }
+    _bandRetry[holderId]=0;
+    _bandLast[holderId]={lg:lgId, obj:obj, csym:csym};
     var price=obj.price, bands=obj.bands||[], mult=obj.mult||[];
     var W=holder.clientWidth||340, H=240, PADL=58, PADR=8, PADT=8, PADB=22;
     var minX=Infinity,maxX=-Infinity, ymin=Infinity,ymax=-Infinity;
@@ -5206,8 +5224,20 @@ _BAND_JS = r"""
        가 데이터를 보고 정한다. */
     if(!on){ var pb=document.getElementById('si-band-pbr-box');
       if(pb) pb.style.display='none'; } }
+  /* 컨테이너 폭이 바뀌면(창 크기·탭 전환·폰트 로딩·스크롤바 등장) 다시
+     그린다 — `window.resize` 만으로는 컨테이너만 바뀌는 경우를 못 잡는다(#108). */
+  var _bandLast={}, _bandRO=null;
+  function watchBandWidth(){
+    if(_bandRO||typeof ResizeObserver==='undefined') return;
+    _bandRO=new ResizeObserver(function(es){
+      for(var i=0;i<es.length;i++){ var id=es[i].target.id, m=_bandLast[id];
+        if(m && es[i].contentRect.width>0) drawBand(id,m.lg,m.obj,m.csym); } });
+    ['si-band-per','si-band-pbr'].forEach(function(id){
+      var el=document.getElementById(id); if(el) _bandRO.observe(el); });
+  }
   function draw(){ if(!CD){ showGrid(false); return; }
     showGrid(true);
+    watchBandWidth();
     var csym=CD.csym||'₩';
     drawBand('si-band-per','si-band-per-lg',CD.per,csym);
     /* PBR 은 FnGuide(KR)만 준다 — 없으면 **빈 패널을 남기지 않는다**.

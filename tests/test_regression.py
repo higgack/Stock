@@ -36142,3 +36142,62 @@ class TestBandLivePriceFallback20260823:
                     and c.func.id == "live_price")
         assert any(k.arg == "hint" for k in call.keywords), \
             "현재가 폴백을 안 넘긴다"
+
+
+class TestBandChartZeroWidth20260823:
+    """사용자 2026-08-23 COP: "왜 갑자기 차트그래픽이 이상하게 변했지?
+    이런게 나왔다가 안나왔다가 하는데."
+
+    밴드 SVG 는 높이가 고정이라 `preserveAspectRatio="none"` 인데, viewBox
+    폭이 실제 렌더 폭과 다르면 그 비율만큼 **가로로만** 늘어난다. 탭이 아직
+    숨겨져 있으면 `clientWidth` 가 0 이라 폴백 340 으로 그려지고, 그게
+    전폭(≈1900px)으로 펴지면 5.6배 늘어난 글씨가 된다 — 폭이 잡힌 뒤 다시
+    그리면 멀쩡하므로 "나왔다가 안나왔다가" 로 보인다. 밴드 pane 이 2열에서
+    1열이 되며(2026-08-23) 늘어나는 비율이 커져 눈에 띄기 시작했다.
+    가격 차트가 같은 병을 앓았다(#108) — 같은 처방을 쓴다."""
+
+    @staticmethod
+    def _body(head: str) -> str:
+        """중괄호를 세어 **그 함수 본문만** — 고정 길이 창은 옆 함수가 대신
+        만족시킨다(#174 에서 실제로 그렇게 눈이 멀었다)."""
+        from bot.dashboard import _BAND_JS as js
+        i = js.index(head)
+        j = js.index("{", i)
+        depth = 0
+        for k in range(j, len(js)):
+            if js[k] == "{":
+                depth += 1
+            elif js[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    return js[j:k + 1]
+        raise AssertionError(f"{head} 본문을 못 찾았다")
+
+    def test_zero_width_render_is_deferred(self):
+        body = self._body("function drawBand(")
+        assert "clientWidth<1" in body, "폭 0 가드가 없다"
+        assert "requestAnimationFrame" in body, "다음 프레임으로 미루지 않는다"
+
+    def test_the_retry_is_bounded(self):
+        """⚠️ 무한 재시도는 숨은 탭에서 프레임을 계속 먹는다(#108)."""
+        import re
+        body = self._body("function drawBand(")
+        # ⚠️ `n<60` 을 `n\s*<\s*\d+` 로 찾으면 **`ymin<0` 이 대신 만족**시킨다
+        # (#75 옆 칸이 대신 만족시키면 가드를 지워도 통과한다) — 단어 경계로.
+        assert "_bandRetry" in body, body[:300]
+        assert re.search(r"\bn\s*<\s*\d+", body), f"재시도 상한이 없다: {body[:400]}"
+
+    def test_the_container_is_watched_not_just_the_window(self):
+        """폰트 로딩·탭 전환처럼 **컨테이너만** 바뀌면 window.resize 는 안 온다."""
+        from bot.dashboard import _BAND_JS
+        body = self._body("function watchBandWidth(")
+        assert "ResizeObserver" in body, body[:200]
+        for holder in ("si-band-per", "si-band-pbr"):
+            assert holder in body, f"{holder} 를 안 본다"
+        # 그리고 그 감시가 **실제로 켜져야** 한다 — 정의만 있으면 안 된다(#120)
+        assert _BAND_JS.count("watchBandWidth(") >= 2, "감시를 켜지 않는다"
+
+    def test_the_redraw_uses_the_same_payload(self):
+        """다시 그릴 때 재료를 기억하지 못하면 빈 차트가 된다."""
+        body = self._body("function drawBand(")
+        assert "_bandLast[holderId]" in body, "재료를 기억하지 않는다"
