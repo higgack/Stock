@@ -5195,9 +5195,15 @@ _BAND_JS = r"""
     undefined,{minimumFractionDigits:d,maximumFractionDigits:d}); }
   /* 지표(PER/PBR)마다 같은 구성으로 그린다 — 복제하면 한쪽만 고쳐져
      갈라진다(#38). PBR 은 FnGuide 가 KR 만 준다. */
-  function perTable(t,slot){
+  function perTable(t,slot,kindHint,why){
     var el=document.getElementById(slot||'si-band-table'); if(!el) return;
-    if(!t){ el.innerHTML=''; return; }
+    /* ⚠️ 표가 없으면 **왜** 없는지 말한다 — 조용히 비우면 "왜 안 나와?"가
+       된다(사용자 2026-08-22 SKC, #43). 적자 기업은 원천이 PER 밴드선을
+       0(정의 불가)으로 보내 행이 안 만들어진다. */
+    if(!t){ el.innerHTML = why
+      ? ('<div class="si-section-title" style="margin-top:14px">'+esc2(kindHint||'PER')
+         +' 이력 · 밴드</div><div class="si-note">'+esc2(why)+'</div>')
+      : ''; return; }
     var kind=t.kind||'PER', denom=(kind==='PBR')?'BPS':'TTM EPS';
     var rows=(t.rows||[]).slice(-24).reverse();
     var h='<div class="si-section-title" style="margin-top:14px">'+kind+' 이력 · 밴드</div>';
@@ -5272,9 +5278,12 @@ _BAND_JS = r"""
         /* ⚠️ 비-KR 은 FnGuide 가 밴드를 못 준다 — 대신 자체 PER 표가 온다
            (사용자 2026-08-22 "차트 아니라 표도 괜찮아"). 표만 와도 화면은
            살아야 하고, **왜** 차트가 없는지도 말해야 한다(#43). */
-        if(j&&j.ok){ perTable(j.per_table);
+        if(j&&j.ok){
+          var noPer='PER 밴드를 만들 수 없습니다 — 적자 등으로 PER 이 정의되지 '
+                   +'않는 구간이 많아 원천이 밴드선을 주지 않았습니다.';
+          perTable(j.per_table,null,'PER',j.per_table?null:(j.per_why||noPer));
           /* 사용자 2026-08-22 "한국은 PER 처럼 … PER 밑에" */
-          perTable(j.pbr_table,'si-band-table-pbr'); }
+          perTable(j.pbr_table,'si-band-table-pbr','PBR',null); }
         if(!j||!j.ok||!j.band){
           if(st){ st.textContent=(j&&j.per_table)
               ? '밴드 차트를 그릴 재료가 부족해 아래 표로 대신합니다.'
@@ -7681,11 +7690,14 @@ def _render_stock_info_html(rec: dict) -> str:
       각 요약의 <b>현재 PER/PBR</b> 은 <b>실시간 시세</b>로 매번 다시 계산하며(배수는 주가에 비례), 평균·최저·최고는
       최근 5년 관측 분포입니다 — 시계열이 5년보다 짧으면 실제 걸린 기간을 라벨에 적습니다.
       <b>PBR</b>(차트·표)은 <b>국내 종목만</b> 제공됩니다 — FnGuide 가 PBR 밴드선을 KR 만 주고, BPS 이력은 받지 않습니다.
-      <b>해외 종목</b>은 FnGuide 커버리지가 없어 PER 차트·표를 <b>직접 계산</b>합니다(미국은 SEC EDGAR 희석 EPS 최대 10년,
-      그 외는 yfinance 손익 TTM). 이때 밴드선은 <b>배수 × 그 시점 TTM EPS</b>이고 적자(EPS≤0) 구간은 선을 잇지 않습니다.
+      <b>해외 종목</b>은 FnGuide 커버리지가 없어 PER 차트·표를 <b>직접 계산</b>합니다 — 미국은 SEC EDGAR 희석 EPS(최대 10년),
+      <b>대만</b>은 FinMind 가 주는 <b>일별 PER</b>(월말 표본), 그 외는 yfinance 손익입니다.
+      ⚠️ yfinance 는 분기 손익을 4~5개, 연간을 4개년만 주므로 <b>그 외 시장은 연 4점</b> 수준이 한계입니다. 이때 밴드선은 <b>배수 × 그 시점 TTM EPS</b>이고 적자(EPS≤0) 구간은 선을 잇지 않습니다.
       y축 통화는 해당 시장 표시통화입니다. <b>밴드(최고·중상·중하·최저)는 최근 5년 관측 분포</b>이며 이력 표·차트는 최대 10년입니다 —
       요약과 밴드가 같은 창을 봅니다. ADR 처럼 <b>재무제표 통화와 거래 통화가 다르면</b> 그 시점 환율로 EPS 를 환산하며,
       환율을 못 받으면 통화가 섞인 배수 대신 <b>만들지 않고 사유를 표시</b>합니다.
+      <b>적자 기업</b>은 PER 이 정의되지 않아 원천이 밴드선을 주지 않습니다 — 이때 PER 표는 사유와 함께 비고,
+      <b>PBR 표는 그대로 나옵니다</b>(한쪽이 없다고 다른 쪽을 죽이지 않습니다).
     </div>
     <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">

@@ -31907,6 +31907,161 @@ class TestTruncatedChartFallback20260822:
         assert "d.fallback" in seg, "캡션이 실제 원천을 안 본다"
 
 
+class TestBandCoverageAndPartialSource20260822:
+    """사용자 2026-08-22: (1) TSMC "이렇게 밖에 안되는거야? … 분기로는 안되는
+    거야? 연단위밖에 안돼?" (2) SKC "PER Band 는 왜 이렇고 그 다음에 밑에
+    History 는 왜 안나와?" """
+
+    # ── (1) 대만: 원천이 PER 을 직접 준다 ────────────────────────────
+    def test_tw_uses_source_per_history_not_four_annual_points(self, monkeypatch):
+        """yfinance 는 분기 손익을 4~5개만 줘 TTM 이 1~2점뿐이고 연간도 4개년
+        뿐이다 — TSMC 가 연 4점짜리 밴드였던 이유. 대만은 FinMind 가 **일별
+        PER** 을 주므로 우리가 EPS 로 만들 필요가 없다."""
+        import datetime as _dt
+        import bot.finmind_client as fm
+        import bot.per_band as pb
+        raw, d, i = [], _dt.date(2020, 1, 6), 0
+        while d <= _dt.date(2026, 8, 21):
+            if d.weekday() < 5:
+                raw.append({"date": d.isoformat(), "PER": 12.0 + 8 * ((i // 60) % 4)})
+                i += 1
+            d += _dt.timedelta(days=1)
+        monkeypatch.setattr(fm, "fetch_per_pbr", lambda t, days=90: raw)
+        px = [((_dt.date(2020, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
+               200.0 + 8 * k) for k in range(85)]
+        rows = pb.tw_per_rows("2330.TW", px, 10)
+        assert len(rows) > 40, len(rows)          # 연 4점이 아니라 월 단위
+        t = pb.assemble(rows)
+        assert t and t["n"] == len(rows)
+
+    def test_tw_eps_cell_is_derived_from_the_displayed_price_and_per(self):
+        """파생 칸은 **화면의 다른 칸**에서 만든다 — 눈으로 나눠 봐도 맞아야
+        한다(#33)."""
+        import bot.finmind_client as fm
+        import bot.per_band as pb
+        orig = fm.fetch_per_pbr
+        fm.fetch_per_pbr = lambda t, days=90: [
+            {"date": "2025-01-31", "PER": 20.0}, {"date": "2025-02-28", "PER": 25.0}]
+        try:
+            rows = pb.tw_per_rows("2330.TW", [("2025-01-31", 1000.0),
+                                              ("2025-02-28", 1250.0)], 10)
+        finally:
+            fm.fetch_per_pbr = orig
+        for _p, price, eps, per in rows:
+            assert abs(price / eps - per) < 0.01, (price, eps, per)
+
+    def test_tw_drops_periods_with_no_price(self):
+        """주가를 모르는 시점은 버린다 — 억지로 채우면 그 행이 거짓이 된다."""
+        import bot.finmind_client as fm
+        import bot.per_band as pb
+        orig = fm.fetch_per_pbr
+        fm.fetch_per_pbr = lambda t, days=90: [
+            {"date": "2015-01-30", "PER": 10.0}, {"date": "2025-01-31", "PER": 20.0}]
+        try:
+            rows = pb.tw_per_rows("2330.TW", [("2025-01-31", 1000.0)], 10)
+        finally:
+            fm.fetch_per_pbr = orig
+        assert [r[0] for r in rows] == ["2025-01-31"], rows
+
+    def test_month_end_sampling_keeps_the_last_observation(self):
+        """일별을 월로 추릴 때 **마지막** 관측을 써야 그 달 종가 기준이 된다."""
+        from bot.per_band import _month_end_samples
+        got = _month_end_samples([("2025-01-02", 1.0), ("2025-01-31", 9.0),
+                                  ("2025-02-14", 5.0)])
+        assert got == [("2025-01-31", 9.0), ("2025-02-14", 5.0)], got
+
+    def test_finmind_per_cache_key_includes_the_window(self):
+        """90일 조회가 캐시를 먼저 채우면 3650일 조회가 그 90일치를 받아 간다."""
+        import ast
+        src = open("bot/finmind_client.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "fetch_per_pbr")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("ck = ")
+        assert "days" in seg[i:i + 120], seg[i:i + 120]
+
+    def test_for_ticker_actually_takes_the_tw_branch(self, monkeypatch):
+        """⚠️ AST 로 `tw_per_rows(` 존재만 보면 **게이트를 못 잡는다**(호출은
+        남아 있고 조건만 꺼진다) — 수집기를 통째로 태워 basis 를 본다(#20)."""
+        import datetime as _dt
+        import bot.finmind_client as fm
+        import bot.per_band as pb
+        raw = [{"date": (_dt.date(2021, 1, 31)
+                         + _dt.timedelta(days=30 * k)).isoformat(),
+                "PER": 15.0 + (k % 7)} for k in range(60)]
+        monkeypatch.setattr(fm, "fetch_per_pbr", lambda t, days=90: raw)
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: [
+            ((_dt.date(2021, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
+             500.0 + 5 * k) for k in range(60)])
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        tbl, why = pb.for_ticker("2330.TW", {})
+        assert tbl is not None, why
+        assert tbl["basis"] == "finmind", tbl["basis"]
+        assert tbl["n"] > 40, tbl["n"]
+
+    def test_assemble_is_the_single_band_source(self):
+        """원천마다 rows 만드는 법은 달라도 밴드 규칙은 하나여야 한다(#38)."""
+        import ast
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "build")
+        assert "assemble(" in (ast.get_source_segment(src, fn) or "")
+        ft = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
+        seg = ast.get_source_segment(src, ft) or ""
+        assert "tw_per_rows(" in seg and "assemble(" in seg
+
+    # ── (2) 적자 기업: PER 이 없다고 PBR 을 죽이지 말 것 ──────────────
+    @staticmethod
+    def _skc_band():
+        import datetime as _dt
+        ts = [int(_dt.datetime(2022 + i // 12, 1 + i % 12, 1,
+                               tzinfo=_dt.timezone.utc).timestamp() * 1000)
+              for i in range(48)]
+        return {
+            # 적자라 FnGuide 가 PER 밴드선을 0(정의 불가)으로 보낸다
+            "per": {"mult": [50.6, 33.7, 16.9, 0.0],
+                    "price": [[t, 90000.0 + i * 500] for i, t in enumerate(ts)],
+                    "bands": [[[t, (41577.0 if i < 2 else 0.0)]
+                               for i, t in enumerate(ts)], [], [], []]},
+            "pbr": {"mult": [4.0, 3.2, 2.4, 1.6],
+                    "price": [[t, 90000.0 + i * 500] for i, t in enumerate(ts)],
+                    "bands": [[[t, 218601.0 - i * 2000]
+                               for i, t in enumerate(ts)], [], [], []]}}
+
+    def test_missing_per_does_not_kill_pbr(self):
+        """화면의 PBR 차트는 멀쩡한데 표만 사라져 "왜 안 나와?"가 됐다."""
+        from bot.dashboard_server import _kr_band_tables
+        per, pbr = _kr_band_tables(self._skc_band())
+        assert per is None, "이 픽스처는 PER 이 없는 상황이어야 한다"
+        assert pbr is not None and len(pbr["rows"]) == 48, pbr
+
+    def test_live_price_still_fetched_when_only_pbr_has_rows(self):
+        """PER 이 비었다고 PBR 요약이 현재가를 잃으면 안 된다."""
+        import bot.per_band as pb
+        from bot.dashboard_server import _kr_band_tables
+        calls = []
+        orig = pb.live_price
+        pb.live_price = lambda t, ref=None: (calls.append(t), 83400.0)[1]
+        try:
+            _per, pbr = _kr_band_tables(self._skc_band(), "011790.KS")
+        finally:
+            pb.live_price = orig
+        assert len(calls) == 1, calls
+        assert pbr["summary"]["per_now_basis"] == "live", pbr["summary"]
+
+    def test_screen_says_why_the_per_table_is_missing(self):
+        """조용히 비우면 "왜 안 나와?"가 된다(#43)."""
+        from bot.dashboard import _BAND_JS
+        assert "PER 밴드를 만들 수 없습니다" in _BAND_JS
+        # 사유는 표가 **없을 때만** — 있는데 띄우면 잡음이다
+        i = _BAND_JS.index("function perTable")
+        seg = _BAND_JS[i:i + 700]
+        assert "if(!t){ el.innerHTML = why" in seg, seg[:400]
+
+
 class TestCurrencyMismatchBand20260822:
     """사용자 2026-08-22 TSM: "PER 도 너무 낮고...제발 꼼꼼히 좀 봐줘" —
     PER 0.92x.

@@ -137,7 +137,19 @@ def build(prices: list | None, eps_rows: list | None, *,
         ttm = sorted([(p, v) for p, v in ttm if p and v is not None])
     else:
         ttm = ttm_eps_series(eps_rows)
-    rows = per_series(prices, ttm)
+    return assemble(per_series(prices, ttm), min_points=min_points,
+                    band_years=band_years)
+
+
+def assemble(rows: list | None, *, min_points: int = 4,
+             band_years: int = 5) -> dict | None:
+    """[(기간, 주가, EPS, 배수)] → 표 payload. **밴드·요약 조립의 단일 출처**.
+
+    ⚠️ 원천마다 rows 를 만드는 법은 다르지만(EPS 합산 · 원천이 준 PER 그대로)
+    거기서 밴드를 뽑는 규칙은 하나여야 한다 — 두 벌로 적으면 시장마다 밴드
+    정의가 갈린다(#38).
+    """
+    rows = [r for r in (rows or []) if r and r[3] is not None]
     if len(rows) < min_points:
         return None
     cut = _ymd_minus_years(rows[-1][0][:10], band_years)
@@ -170,6 +182,7 @@ def build(prices: list | None, eps_rows: list | None, *,
 # 어느 재료를 썼는지는 **결과에 실어** 화면이 밝히게 한다(#43 기준 미표기 금지).
 _SRC_LABEL = {
     "edgar": "SEC EDGAR(희석 EPS) · 가격 yfinance",
+    "finmind": "FinMind TaiwanStockPER(일별 PER, 월말 표본) · 가격 yfinance",
     "yf-q": "yfinance 분기 손익(TTM) · 가격 yfinance",
     "yf-a": "yfinance 연간 손익 · 가격 yfinance",
 }
@@ -282,6 +295,11 @@ def for_ticker(ticker: str, snap: dict | None = None,
             log.debug("per_band: EDGAR 실패 %s: %s", tk, exc)
             h = {}
         got = _pack(build(px, _conv(h.get("quarterly"))), "edgar")
+        if got:
+            return got, None
+    if mkt == "TW":
+        # 원천이 PER 을 **직접** 준다 — 우리가 EPS 로 만들 필요가 없다(§대만).
+        got = _pack(assemble(tw_per_rows(tk, px, years)), "finmind")
         if got:
             return got, None
     # 폴백 — 분기(TTM) 먼저, 그것도 모자라면 연간.
@@ -577,3 +595,55 @@ def implausible_reason(rows: list | None) -> str | None:
         return (f"계산된 PER 중앙값이 {med:,.0f} 배로 비정상입니다 — 주가와 "
                 f"주당순이익의 단위·통화가 어긋난 것으로 보여 표시하지 않습니다.")
     return None
+
+
+# ── 대만: 원천이 PER 을 **직접** 준다 (사용자 2026-08-22 TSMC) ───────────────
+# ⚠️ 사용자 "기간이 짧은건 야후때문에 어쩔수 없는거야? 그리고 분기로는 안되는
+# 거야? 연단위밖에 안돼?" — yfinance 는 분기 손익을 4~5개만 줘서 TTM 이 1~2점
+# 뿐이라 밴드 최소치(4점)를 못 넘고, 연간도 4개년뿐이다. 그래서 TSMC 가 연 4점
+# 짜리 밴드였다.
+# 대만은 FinMind `TaiwanStockPER` 가 **일별 PER/PBR** 을 준다(무료·무키) —
+# 우리가 EPS 로 만들 필요 없이 원천이 완제품을 준다. 월말로 추려 쓴다.
+# ⚠️ EPS 칸은 `주가 ÷ PER` 로 되짚는다 — 화면의 다른 칸에서 파생시켜야
+# 사용자가 눈으로 나눠 봐도 맞는다(#33).
+
+
+def _month_end_samples(rows: list) -> list[tuple[str, float]]:
+    """[(YYYY-MM-DD, 값)] → 달마다 **마지막 관측** 하나. 일별을 월로 추린다."""
+    by_month: dict[str, tuple[str, float]] = {}
+    for d, v in sorted(rows):
+        by_month[str(d)[:7]] = (str(d)[:10], float(v))
+    return [by_month[m] for m in sorted(by_month)]
+
+
+def tw_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
+    """FinMind 일별 PER → [(기간, 주가, EPS, PER)]. 실패는 빈 리스트.
+
+    주가는 **우리 월봉**에서 그 시점 이하 마지막 관측을 쓴다(#28) — 두 원천을
+    섞되 EPS 를 `주가 ÷ PER` 로 되짚어 화면 세 칸이 서로 맞게 한다(#33).
+    """
+    try:
+        from bot.finmind_client import fetch_per_pbr
+        raw = fetch_per_pbr(ticker, days=365 * years + 40) or []
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: FinMind PER 실패 %s: %s", ticker, exc)
+        return []
+    pts = []
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        d, v = str(r.get("date") or "")[:10], _f(r.get("PER"))
+        if len(d) == 10 and v is not None and v > 0:
+            pts.append((d, v))
+    if not pts:
+        return []
+    px = sorted((str(d)[:10], _f(v)) for d, v in (prices or [])
+                if _f(v) and _f(v) > 0)
+    out = []
+    for d, per in _month_end_samples(pts):
+        prior = [v for dd, v in px if dd <= d]
+        if not prior:
+            continue
+        price = prior[-1]
+        out.append((d, price, round(price / per, 4), round(per, 2)))
+    return out
