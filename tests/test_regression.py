@@ -19952,11 +19952,15 @@ class TestBandChartPane:
         assert "id=\"si-band-data\"" not in op            # 임베드 payload 제거(lazy)
         assert "api/band?ticker=" in op and "drawBand" in op
 
-    def test_non_kr_no_band_tab(self):
+    def test_non_kr_gets_the_band_tab_with_a_table(self):
+        """2026-08-22 계약 변경: 비-KR 도 탭이 있다. FnGuide 커버리지가
+        없을 뿐이고, 표(자체 PER 밴드)는 제공한다 — 탭을 숨기면 볼 수가
+        없다(사용자 "외국종목도 적어도 PER Band 라도")."""
         import bot.dashboard as d
         parts = d._render_stock_info_html({"ticker": "AAPL", "stock_info": {
             "currency": "USD", "current_price": 200}})
-        assert "밴드차트" not in parts["tabs"]
+        assert "밴드차트" in parts["tabs"]
+        assert 'id="si-band-table"' in parts["other_panes"], "표 자리가 없다"
 
     def test_dividend_history_newest_first(self):
         # 배당 이력 최신이 위로(사용자 2026-06-20) — 배당락일 내림차순 회귀 가드.
@@ -31525,3 +31529,212 @@ class TestFcfAuditNoFalsePass20260822:
         lits = {n.value for n in ast.walk(ast.parse(src))
                 if isinstance(n, ast.Constant) and isinstance(n.value, str)}
         assert any("필수 모듈 없음" in s for s in lits), "의존성 가드 없음"
+
+
+class TestPerBand20260822:
+    """외국 종목 PER 밴드 — 완제품 원천이 없어 **직접 만든다**.
+
+    사용자 2026-08-22: "외국종목은 PER, PBR Band 를 제공해주는곳이 없나?
+    … 차트 아니라 표도 괜찮아." 조사 결과 Yahoo·Finviz 는 현재값만, FnGuide
+    는 `cmp_cd` 가 6자리 국내코드라 KR 전용이다. 재료(가격·EPS)는 이미
+    받고 있으므로 여기서 계산한다(#32 의 경계: 단독 화면이라 허용)."""
+
+    _EPS = [("2024-01-31", 2.0), ("2024-04-30", 2.1), ("2024-07-31", 2.2),
+            ("2024-10-31", 2.3), ("2025-01-31", 2.4), ("2025-04-30", 2.5),
+            ("2025-07-31", 2.6), ("2025-10-31", 2.7)]
+    _PX = [("2024-10-31", 180.0), ("2025-01-31", 178.0),
+           ("2025-04-30", 149.0), ("2025-07-31", 178.5),
+           ("2025-10-31", 231.8)]
+
+    def test_ttm_is_four_quarters_and_sorted(self):
+        from bot.per_band import ttm_eps_series
+        got = ttm_eps_series(self._EPS)
+        assert got[0] == ("2024-10-31", 8.6), got[0]
+        assert len(got) == 5, got
+        # ⚠️ 원천이 **최신부터** 줘도 결과가 같아야 한다 — 그대로 굴리면
+        # TTM 이 미래를 포함해 조용히 틀린다.
+        assert ttm_eps_series(list(reversed(self._EPS))) == got
+
+    def test_price_is_point_in_time(self):
+        """미래 주가를 끌어오면 그때 존재하지 않았던 PER 이 된다(#28)."""
+        from bot.per_band import per_series, ttm_eps_series
+        rows = per_series(self._PX, ttm_eps_series(self._EPS))
+        assert rows[0][0] == "2024-10-31" and rows[0][1] == 180.0
+        # 그 기간 **이하**의 마지막 관측 — 뒤 가격이 앞 행에 새면 안 된다
+        assert all(r[1] != 231.8 for r in rows[:-1]), rows
+
+    def test_loss_quarters_make_no_per(self):
+        """적자 구간 PER 은 음수/무한대로 튀어 밴드를 통째로 망친다."""
+        from bot.per_band import per_series
+        rows = per_series(self._PX, [("2025-01-31", -1.0),
+                                     ("2025-04-30", 0.0),
+                                     ("2025-07-31", 9.8)])
+        assert [r[0] for r in rows] == ["2025-07-31"], rows
+
+    def test_bands_come_from_the_observed_distribution(self):
+        from bot.per_band import build
+        b = build(self._PX, self._EPS)
+        labels = [x["label"] for x in b["bands"]]
+        assert labels == ["최고", "중상", "중하", "최저"], labels
+        mults = [x["mult"] for x in b["bands"]]
+        assert mults == sorted(mults, reverse=True), mults
+        # '그 배수에서의 주가' = 배수 × 현재 TTM EPS
+        top = b["bands"][0]
+        assert abs(top["fair"] - top["mult"] * b["eps_now"]) < 0.02
+
+    def test_too_few_points_makes_nothing(self):
+        """점 두세 개로 그린 '최고/최저'는 이름값을 못 한다(#29)."""
+        from bot.per_band import build
+        assert build(self._PX[:2], self._EPS[:5]) is None
+
+    def test_annual_mode_skips_ttm(self):
+        from bot.per_band import build
+        eps_a = [("2022-12-31", 6.0), ("2023-12-31", 7.0),
+                 ("2024-12-31", 8.0), ("2025-12-31", 9.0)]
+        px = [("2022-12-31", 60.0), ("2023-12-31", 84.0),
+              ("2024-12-31", 96.0), ("2025-12-31", 135.0)]
+        b = build(px, eps_a, annual=True)
+        assert b and b["n"] == 4 and b["rows"][0]["per"] == 10.0, b
+
+
+class TestEdgarEpsHistory20260822:
+    """미국은 EDGAR 로 10년 — yfinance 8분기(≈2년)로는 밴드가 안 된다."""
+
+    def _rows(self):
+        return [
+            # 분기(≈91일) — 같은 end 가 두 번, 나중 접수가 정본
+            {"start": "2025-08-01", "end": "2025-10-31", "val": 2.5,
+             "filed": "2025-11-10"},
+            {"start": "2025-08-01", "end": "2025-10-31", "val": 2.7,
+             "filed": "2025-12-20"},
+            # 연간(≈364일)
+            {"start": "2025-01-01", "end": "2025-12-31", "val": 9.9,
+             "filed": "2026-02-10"},
+            # 반기(≈181일) — 어느 쪽도 아니다. 섞으면 TTM 이 통째로 틀린다.
+            {"start": "2025-01-01", "end": "2025-06-30", "val": 5.0,
+             "filed": "2025-07-20"},
+        ]
+
+    def test_split_is_by_span_not_by_name(self, monkeypatch):
+        """`fp` 는 10-K 에도 FY 로 붙고 20-F 는 규약이 또 다르다 — 이름이
+        아니라 기간 길이로 가른다(#25)."""
+        import bot.edgar_eps as ee
+        monkeypatch.setattr(ee, "_rows", lambda cik, tag: self._rows())
+        monkeypatch.setattr("bot.edgar_client._ticker_to_cik",
+                            lambda t: "0000123456")
+        monkeypatch.setattr("bot.edgar_client._load_cache",
+                            lambda *a, **k: None)
+        monkeypatch.setattr("bot.edgar_client._save_cache",
+                            lambda *a, **k: None)
+        h = ee.eps_history("AMAT")
+        assert h["quarterly"] == [("2025-10-31", 2.7)], h
+        assert h["annual"] == [("2025-12-31", 9.9)], h
+
+    def test_half_year_is_rejected(self):
+        import bot.edgar_eps as ee
+        assert ee._span_days("2025-01-01", "2025-06-30") == 180
+        assert not (ee._Q_DAYS[0] <= 180 <= ee._Q_DAYS[1])
+        assert not (ee._A_DAYS[0] <= 180 <= ee._A_DAYS[1])
+
+
+class TestBandTableWiring20260822:
+    """KR 은 차트 **옆에 표**를, 비-KR 은 표만 — 같은 탭에서(사용자 2026-08-22)."""
+
+    _BAND = {"per": {"mult": [36.8, 26.5, 16.3, 6.0],
+                     "price": [[1700000000000, 100.0], [1710000000000, 120.0],
+                               [1720000000000, 90.0], [1730000000000, 110.0],
+                               [1740000000000, None]],
+                     "bands": [[[1700000000000, 200.0], [1710000000000, 210.0],
+                                [1720000000000, 205.0], [1730000000000, 215.0],
+                                [1740000000000, 220.0]], [], [], []]}}
+
+    def test_kr_table_reuses_fnguide_values(self):
+        """⚠️ 우리가 다시 계산하면 같은 탭의 차트와 표가 갈라진다(#38).
+        FnGuide 가 준 밴드선·주가에서 **되뽑는다**."""
+        from bot.dashboard_server import _kr_per_table
+        t = _kr_per_table(self._BAND)
+        assert t["basis"] == "fnguide", t
+        assert [r["per"] for r in t["rows"]] == [18.4, 21.03, 16.16, 18.83], t
+        assert [b["mult"] for b in t["bands"]] == [36.8, 26.5, 16.3, 6.0]
+
+    def test_future_forecast_rows_are_excluded(self):
+        """세로 점선 오른쪽(전망 구간)은 주가가 없다 — 표에 넣으면 빈 행이다."""
+        from bot.dashboard_server import _kr_per_table
+        t = _kr_per_table(self._BAND)
+        assert len(t["rows"]) == 4, t["rows"]
+
+    def test_no_band_no_table(self):
+        from bot.dashboard_server import _kr_per_table
+        assert _kr_per_table(None) is None
+        assert _kr_per_table({"per": {"mult": [1, 2, 3, 4]}}) is None
+
+    def test_band_tab_is_no_longer_kr_only(self):
+        """비-KR 도 탭이 있어야 표를 볼 수 있다."""
+        import ast
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        for n in ast.walk(ast.parse(src)):
+            if (isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", "") == "band_tab"
+                            for t in n.targets)):
+                seg = ast.get_source_segment(src, n) or ""
+                assert "is_kr" not in seg, f"밴드 탭이 아직 KR 전용: {seg}"
+
+    def test_client_renders_the_table(self):
+        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20) — 정의 1 + 호출 1."""
+        from bot.dashboard import _BAND_JS
+        assert _BAND_JS.count("perTable(") >= 2, "표 렌더 호출이 없다"
+        assert "si-band-table" in _BAND_JS
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'id="si-band-table"' in src, "표를 담을 자리가 없다"
+
+    def test_api_returns_table_for_both(self):
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_handle_band_api")
+        body = ast.get_source_segment(src, fn) or ""
+        assert body.count("per_table") >= 2, "KR·비-KR 둘 다 표를 안 준다"
+        assert "for_ticker" in body, "비-KR 자체 밴드 배선 누락"
+
+    def test_guide_text_matches_behaviour(self):
+        """동작이 바뀌면 설명도 정확히(out-of-sync = 버그)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("밴드차트 (PER/PBR 멀티플)")
+        seg = src[i:i + 1200]
+        assert "SEC EDGAR" in seg and "표" in seg, seg[:300]
+
+
+class TestModuleFunctionsNotInsideClasses20260822:
+    """모듈 함수를 **클래스 본문 안**에 끼우면 클래스가 거기서 끊긴다.
+
+    2026-08-22 실측: `_kr_per_table` 을 `_handle_band_api` 바로 앞(=클래스
+    안)에 넣었더니 뒤따르던 메서드·클래스 속성이 전부 모듈 레벨로 떨어져
+    `DashboardHandler._FX_SOURCE` 가 사라졌다. **파이썬 문법은 통과하고
+    import 도 된다** — 다른 테스트가 우연히 잡아 줬을 뿐이다(#59 의 짝).
+    """
+
+    def test_handler_keeps_its_methods_and_attrs(self):
+        import bot.dashboard_server as ds
+        cls = ds.DashboardHandler
+        for name in ("_handle_band_api", "_handle_quarterly_api",
+                     "_handle_lookup_detail", "do_GET"):
+            assert callable(getattr(cls, name, None)), f"{name} 이 클래스 밖"
+        assert hasattr(cls, "_FX_SOURCE"), "_FX_SOURCE 가 클래스 밖"
+        # `_LIVE_SOURCE` 는 원래 모듈 레벨 상수다 — 클래스에서 찾으면 안 된다
+        assert isinstance(getattr(ds, "_LIVE_SOURCE", None), dict)
+
+    def test_no_module_level_def_between_methods(self):
+        """AST 로 구조를 본다 — 이름 열거가 아니라 '클래스 뒤에 남은
+        메서드가 있는가'로(#24)."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "DashboardHandler")
+        end = max(getattr(n, "end_lineno", 0) for n in cls.body)
+        strays = [n.name for n in tree.body
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name.startswith("_handle_")]
+        assert not strays, f"핸들러가 모듈 레벨로 떨어졌다: {strays}"
+        assert end >= cls.lineno

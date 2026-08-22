@@ -5171,12 +5171,45 @@ _BAND_JS = r"""
   function draw(){ if(!CD) return;
     drawBand('si-band-per','si-band-per-lg',CD.per,'₩');
     drawBand('si-band-pbr','si-band-pbr-lg',CD.pbr,'₩'); }
+  /* PER 표 — 차트와 **같은 탭**에. 국내는 FnGuide 값을 되뽑은 것이고
+     비-KR 은 자체계산이라, 어느 쪽인지 표가 스스로 밝힌다(#55). */
+  function esc2(x){ return String(x==null?'':x).replace(/[&<>"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function num(v,d){ return (v==null||isNaN(v))?'—':Number(v).toLocaleString(
+    undefined,{minimumFractionDigits:d,maximumFractionDigits:d}); }
+  function perTable(t){
+    var el=document.getElementById('si-band-table'); if(!el||!t) return;
+    var rows=(t.rows||[]).slice(-24).reverse();
+    var h='<div class="si-section-title" style="margin-top:14px">PER 이력 · 밴드</div>';
+    h+='<div class="si-note" style="margin-bottom:6px">출처: '+esc2(t.source)
+      +' · PER = 주가 ÷ TTM EPS · 관측 '+(t.n||0)+'개</div>';
+    h+='<table class="si-table"><tr><th class="ctr">배수</th><th class="ctr">PER</th>'
+      +'<th class="ctr">그 배수에서의 주가</th></tr>';
+    for(var i=0;i<(t.bands||[]).length;i++){ var b=t.bands[i];
+      h+='<tr><td class="ctr">'+esc2(b.label)+'</td><td class="ctr">'+num(b.mult,2)
+        +'x</td><td class="ctr">'+num(b.fair,2)+'</td></tr>'; }
+    h+='</table>';
+    h+='<table class="si-table" style="margin-top:10px"><tr><th class="ctr">기간</th>'
+      +'<th class="ctr">주가</th><th class="ctr">TTM EPS</th><th class="ctr">PER</th></tr>';
+    for(var k=0;k<rows.length;k++){ var r=rows[k];
+      h+='<tr><td class="ctr">'+esc2(r.period)+'</td><td class="ctr">'+num(r.price,2)
+        +'</td><td class="ctr">'+num(r.eps,2)+'</td><td class="ctr">'+num(r.per,2)+'</td></tr>'; }
+    el.innerHTML=h+'</table>';
+  }
   function load(){ if(CD||fetching) return; fetching=true;
     var st=document.getElementById('si-band-status');
     fetch(base()+'api/band?ticker='+encodeURIComponent(tkr()),{cache:'no-store'})
       .then(function(r){return r.json();})
       .then(function(j){ fetching=false;
-        if(!j||!j.ok||!j.band){ if(st)st.textContent='밴드차트 데이터가 없습니다(커버리지 없음).'; return; }
+        /* ⚠️ 비-KR 은 FnGuide 가 밴드를 못 준다 — 대신 자체 PER 표가 온다
+           (사용자 2026-08-22 "차트 아니라 표도 괜찮아"). 표만 와도 화면은
+           살아야 하고, **왜** 차트가 없는지도 말해야 한다(#43). */
+        if(j&&j.ok&&j.per_table) perTable(j.per_table);
+        if(!j||!j.ok||!j.band){
+          if(st){ st.textContent=(j&&j.per_table)
+              ? 'PER 밴드 차트는 국내 종목만 제공됩니다 — 아래 표로 대신합니다.'
+              : ((j&&j.error)||'밴드차트 데이터가 없습니다(커버리지 없음).'); }
+          return; }
         CD=j.band; if(st)st.style.display='none'; draw(); })
       .catch(function(){ fetching=false; if(st)st.textContent='차트 로딩 실패.'; }); }
   document.addEventListener('click',function(e){
@@ -5645,12 +5678,16 @@ def _render_stock_info_html(rec: dict) -> str:
         mkt = si.get("us", {})
     kr = si.get("kr", {})
 
-    # ── 밴드차트 탭 (PER/PBR — FnGuide 밴드차트 충실 재현, KR 전용) ──
-    # 데이터는 탭 활성화 시 /api/band 로 lazy fetch(FnGuide BandChart3.aspx, 12h 캐시).
-    # 자체 EPS/BPS 보간 근사 대신 FnGuide 가 산출한 밴드선·멀티플·전망(미래)을 그대로.
-    # 데이터소스가 KR 전용이라 탭도 KR 한정 — 커버리지 없으면 패널이 '데이터 없음'.
-    band_tab = ('  <button type="button" class="si-tab" data-pane="si-bandchart">밴드차트</button>\n'
-                if is_kr else "")
+    # ── 밴드차트 탭 (PER/PBR) ──────────────────────────────────────
+    # KR: FnGuide 밴드차트를 그대로(자체 보간 근사 대신 원천의 밴드선·멀티플·
+    #     전망) + 같은 탭에 **표**(사용자 2026-08-22).
+    # 비-KR: FnGuide 커버리지가 없다(`cmp_cd` 가 6자리 국내코드) — 조사 결과
+    #     외국 종목 PER 밴드를 완제품으로 주는 무료 원천이 없어 **직접 만든다**
+    #     (미국=SEC EDGAR 희석 EPS 최대 10년 · 그 외=yfinance TTM). 차트 대신
+    #     표로 준다(사용자 "차트 아니라 표도 괜찮아"). 재료가 모자라면 패널이
+    #     **왜** 없는지 말한다(#43).
+    band_tab = ('  <button type="button" class="si-tab" '
+                'data-pane="si-bandchart">밴드차트</button>\n')
 
     # ── 분기실적 탭 (분기 스코어카드 인포그래픽) ────────────────────
     # 탭 활성화 시 /api/quarterly 로 lazy fetch. 숫자·차트는 무료(KR=DART ·
@@ -7570,7 +7607,9 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">밴드차트 (PER/PBR 멀티플)</div>
     <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
       파란선=주가 · 밴드선=PER/PBR 멀티플(최고·중상·중하·최저)별 적정주가 · 세로 점선 오른쪽=현재 이후(컨센서스 전망 구간).
-      FnGuide 밴드차트 데이터(밴드·멀티플·전망 동일).
+      FnGuide 밴드차트 데이터(밴드·멀티플·전망 동일). 아래 <b>PER 이력·밴드 표</b>는 같은 값을 표로 되뽑은 것입니다.
+      <b>해외 종목</b>은 FnGuide 커버리지가 없어 차트 대신 <b>표</b>만 제공합니다 — 미국은 SEC EDGAR 희석 EPS(최대 10년),
+      그 외는 yfinance 손익(TTM)으로 <b>직접 계산</b>합니다(PER = 주가 ÷ TTM EPS).
     </div>
     <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">
@@ -7581,7 +7620,8 @@ def _render_stock_info_html(rec: dict) -> str:
         <div id="si-band-pbr"></div>
         <div id="si-band-pbr-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
     </div>
-    {_src_foot}출처: FnGuide(네이버 임베드) · BandChart</div>
+    <div id="si-band-table"></div>
+    {_src_foot}출처: FnGuide(네이버 임베드) · BandChart · 비-KR 은 자체 PER 밴드(표)</div>
   </div>
   <script>{_BAND_JS}</script>
 </div>"""

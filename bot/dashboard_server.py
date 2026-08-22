@@ -382,6 +382,48 @@ def _production_html(ticker: str, payload: dict) -> str:
         return ""
 
 
+def _kr_per_table(band: dict | None) -> dict | None:
+    """FnGuide 밴드 payload → **표**(추가 호출 0 · 자체계산 0).
+
+    ⚠️ 값은 FnGuide 가 준 것을 그대로 되뽑는다 — 우리가 다시 계산하면 같은
+    탭의 차트와 표가 갈라진다(#38 산식은 한 곳). 주가 시계열의 각 시점에서
+    그 시점 밴드선(최고 배수)의 비율로 그때의 PER 을 되짚는다:
+        PER(t) = 최고배수 × 주가(t) / 최고밴드선(t)
+    (밴드선은 '그 배수에서의 적정주가'이므로 비율이 곧 배수다.)
+    """
+    per = (band or {}).get("per") or {}
+    mult = per.get("mult") or []
+    price = per.get("price") or []
+    bands = per.get("bands") or []
+    if len(mult) < 4 or not price or not bands:
+        return None
+    import datetime as _dt
+    top = {int(x[0]): x[1] for x in (bands[0] or []) if x and x[1] is not None}
+    rows = []
+    for x in price:
+        if not x or x[1] is None:
+            continue                       # 미래 구간(전망)은 주가가 없다
+        b = top.get(int(x[0]))
+        if not b:
+            continue
+        d = _dt.datetime.utcfromtimestamp(int(x[0]) / 1000).strftime("%Y-%m-%d")
+        rows.append({"period": d, "price": round(float(x[1]), 2),
+                     "eps": None, "per": round(mult[0] * float(x[1]) / b, 2)})
+    if len(rows) < 4:
+        return None
+    labels = ("최고", "중상", "중하", "최저")
+    now = rows[-1]["price"]
+    return {"rows": rows,
+            "bands": [{"label": labels[i], "mult": round(float(mult[i]), 2),
+                       "fair": (round(top.get(int(price[-1][0]), 0)
+                                      * float(mult[i]) / float(mult[0]), 2)
+                                if mult[0] else None)}
+                      for i in range(4)],
+            "eps_now": None, "n": len(rows), "price_now": now,
+            "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
+            "basis": "fnguide", "market": "KR"}
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves the archive directory; adds POST /api/delete + optional
     URL-token and Basic-Auth gating."""
@@ -972,18 +1014,41 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not _TICKER_RE.match(ticker):
                 self._reply_json(400, {"ok": False, "error": "bad ticker"})
                 return
+            from bot.singleflight import once as _once
+            # ⚠️ 비-KR 은 FnGuide 가 못 준다(`cmp_cd` 가 6자리 국내코드) —
+            # 예전엔 여기서 그냥 돌아섰다. 이제 **자체 PER 밴드**(가격 이력 ×
+            # EPS 이력)를 만들어 표로 준다(사용자 2026-08-22 "차트 아니라
+            # 표도 괜찮아"). 미국은 EDGAR 10년, 그 외는 yfinance.
             if not ticker.endswith((".KS", ".KQ")):
-                self._reply_json(200, {"ok": False, "error": "non-KR"})
+                snap = None
+                try:
+                    import bot.stock_snapshot as _ss
+                    snap = _ss.collect_stock_snapshot(ticker)
+                except Exception as exc:                       # noqa: BLE001
+                    log.debug("band_api: 스냅샷 생략 %s: %s", ticker, exc)
+                from bot.per_band import for_ticker as _pb
+                tbl = _once(f"perband:{ticker}", lambda: _pb(ticker, snap))
+                if not tbl:
+                    # **왜** 없는지 말한다 — 침묵이 최악이다(#43).
+                    self._reply_json(200, {
+                        "ok": False,
+                        "error": "PER 밴드를 만들 재료가 부족합니다"
+                                 "(EPS 이력 또는 가격 이력 없음)"})
+                    return
+                self._reply_json(200, {"ok": True, "per_table": tbl})
                 return
             from bot.fnguide_bandchart import fetch_band_chart
-            from bot.singleflight import once as _once
             # 같은 티커의 밴드 요청이 동시에 두 번 들어온다(2026-08-21 실측:
             # 376300.KQ 2116ms / 1982ms 동시). 하나만 돌린다.
             data = _once(f"band:{ticker}", lambda: fetch_band_chart(ticker))
             if not data:
                 self._reply_json(200, {"ok": False, "error": "no data"})
                 return
-            self._reply_json(200, {"ok": True, "band": data})
+            # ⚠️ KR 도 밴드 **차트만** 주고 표는 없었다 — 사용자 2026-08-22
+            # "한국꺼도 Band 만 만들지말고 같은 탭에 표도". FnGuide 가 준
+            # 밴드선·주가를 그대로 표로 되뽑는다(추가 호출 0, 자체계산 아님).
+            self._reply_json(200, {"ok": True, "band": data,
+                                   "per_table": _kr_per_table(data)})
         except Exception as exc:
             log.warning("band_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
