@@ -8023,15 +8023,28 @@ def _render_stock_info_html(rec: dict) -> str:
             # `abs(val)/max_val*120` 이 수백 배가 되어 막대가 **수천 px** 로
             # 뻗고, 아래로 뻗은 만큼 도화지도 같이 커진다(#100 의 파생값이
             # 증폭기가 됐다). 축은 **그 그림에 그려지는 전 계열**에서 정한다.
+            # ⚠️ 네 차트의 **도화지 높이를 맞춘다**. 지표마다 음수 깊이가 달라
+            # 따로 계산하면 기간 라벨이 차트마다 다른 높이에 찍혀 들쭉날쭉하고,
+            # 가장 깊은 차트만 아래 설명과 붙는다(사용자 2026-08-23 "너무
+            # 붙어있는 것 같아"). 조각을 나란히 놓을 땐 좌표계를 공유해야
+            # 한다(#62 조각마다 폭이 다르면 같은 x 가 어긋난다 — 그 세로판).
+            def _mx(key: str) -> float:
+                return max((abs(c.get(key)) for c in chart_items
+                            if c.get(key) is not None), default=0.0)
+
+            _rows_h = [trend_chart_geometry(chart_items, [k], _mx(k))
+                       for k, _n, _c in _series if _mx(k)]
+            _lab_y = max((a for a, _b in _rows_h), default=170.0)
+            _svg_h = max((b for _a, b in _rows_h), default=185.0)
+
             def _mini(key: str, name: str, color: str) -> str:
                 """지표 하나짜리 작은 차트 — **자기 축**으로 그린다."""
-                vals = [c.get(key) for c in chart_items]
-                mx = max((abs(v) for v in vals if v is not None), default=0.0)
+                mx = _mx(key)
                 if not mx:
                     # 전 칸이 0/없음이면 막대를 만들지 않는다 — 0 짜리 막대는
                     # '값이 0' 이라는 없는 사실을 그린 것이다.
                     return ""
-                lab_y, svg_h = trend_chart_geometry(chart_items, [key], mx)
+                lab_y, svg_h = _lab_y, _svg_h
                 nb = len(chart_items) or 1
                 slot = (260.0 - 16.0) / nb
                 bw = min(slot * 0.62, 34.0)
@@ -8055,9 +8068,8 @@ def _render_stock_info_html(rec: dict) -> str:
                                f'font-size="11" fill="#999" '
                                f'text-anchor="middle">{esc(c["period"])}</text>\n')
                 return f"""<div>
-          <div style="font-size:12px;font-weight:600;margin-bottom:2px">
+          <div style="font-size:12px;font-weight:600;margin-bottom:4px">
             <span style="color:{color}">●</span> {esc(name)}</div>
-          <div style="font-size:10px;color:var(--fg-soft);margin-bottom:2px">축 최대 {esc(compact_amount(mx, currency))}</div>
           <svg viewBox="0 0 260 {svg_h:.0f}" width="100%" height="auto" style="display:block">
             <line x1="6" y1="150" x2="254" y2="150" stroke="#555" stroke-width="1"/>
             {bars}
@@ -8067,6 +8079,13 @@ def _render_stock_info_html(rec: dict) -> str:
             # ⚠️ 앞 셋은 손익계산서, FCF 만 **현금흐름표**다 — 제목이
             # '수익성 추이'라 같은 표에서 온 값처럼 읽힌다. 한 그림 안에
             # 기준이 둘이면 밝혀야 한다(#34 라벨에 기준을 박을 것).
+            # 축을 지표마다 따로 잡으므로 **높이는 지표 안에서만** 비교된다 —
+            # 차트마다 축 최대를 적는 건 사용자 요청으로 뺐고(2026-08-23
+            # "축에 대한 설명은 안해도 돼"), 대신 그룹 아래 한 줄로 남긴다.
+            # 아무 말도 안 하면 "영업이익이 매출만큼 크다"로 읽힌다(#34).
+            _axis_note = ('\n<div style="font-size:11px;color:var(--fg-soft);'
+                          'margin-top:10px">ℹ️ 지표마다 <b>축이 다릅니다</b> — '
+                          '막대 높이는 같은 지표 안에서만 비교하세요.</div>')
             _fcf_note = ('\n<div style="font-size:11px;color:var(--fg-soft);'
                          'margin-top:4px">ℹ️ FCF = <b>영업활동현금흐름 − '
                          'CAPEX</b> (yfinance 현금흐름표 — 앞 세 항목은 '
@@ -8077,7 +8096,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 return ""
             out = f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">{esc(title)}</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px">{_cells}</div>{_fcf_note}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:14px">{_cells}</div>{_axis_note}{_fcf_note}
       </div>"""
 
             _grows = []

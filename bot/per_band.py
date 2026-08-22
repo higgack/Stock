@@ -820,7 +820,9 @@ def for_ticker(ticker: str, snap: dict | None = None,
         res["years"] = years
         # 현재 PER 은 **라이브 시세**로(사용자 2026-08-22 "PER 은 주가에 따라
         # 매일 바뀌잖아"). 마지막 행의 주가는 월봉이라 최대 한 달 낡았다.
-        res["price_now"] = live_price(tk, (res.get("rows") or [{}])[-1].get("price"))
+        res["price_now"] = live_price(
+            tk, (res.get("rows") or [{}])[-1].get("price"),
+            hint=(snap or {}).get("current_price"))
         res["summary"] = summary(res.get("rows"), years=5,
                                  price_now=res["price_now"])
         # 밴드 **차트**도 같은 rows 에서 만든다(사용자 2026-08-22 "외국종목도
@@ -1052,7 +1054,7 @@ def summary(rows: list | None, *, years: int = 5,
             "price_now": round(px, 2) if basis == "live" else None}
 
 
-def live_price(ticker: str, last_obs=None) -> float | None:
+def live_price(ticker: str, last_obs=None, hint=None) -> float | None:
     """현재가(실시간). 실패·이상치면 None → 표가 마지막 관측으로 되돌아간다.
 
     ⚠️ 검증 기준(`last_obs`)이 **월봉**이라 최대 한 달 낡았다. 그래서
@@ -1065,6 +1067,18 @@ def live_price(ticker: str, last_obs=None) -> float | None:
         mkt = detect_market(ticker)
     except Exception:                                          # noqa: BLE001
         mkt = "US"
+    def _ok(v):
+        """자릿수 사고만 거른다 — 기준(월봉)이 낡아 일일밴드는 못 쓴다."""
+        v = _f(v)
+        if v is None or v <= 0:
+            return None
+        ref = _f(last_obs)
+        if ref and ref > 0 and not (0.2 <= v / ref <= 5.0):
+            log.warning("per_band: 현재가 이상치 %s: %s (마지막 관측 %s) — 무시",
+                        ticker, v, ref)
+            return None
+        return v
+
     q = None
     try:
         if mkt == "KR":
@@ -1075,17 +1089,14 @@ def live_price(ticker: str, last_obs=None) -> float | None:
             from bot.world_quote import fetch_world_quote as _q
         q = _q(ticker)
     except Exception as exc:                                   # noqa: BLE001
-        log.debug("per_band: 현재가 실패 %s: %s", ticker, exc)
-        return None
-    px = _f((q or {}).get("price"))
-    if px is None or px <= 0:
-        return None
-    ref = _f(last_obs)
-    if ref and ref > 0 and not (0.2 <= px / ref <= 5.0):
-        log.warning("per_band: 현재가 이상치 %s: %s (마지막 관측 %s) — 무시",
-                    ticker, px, ref)
-        return None
-    return px
+        # ⚠️ **화면이 이미 아는 값으로 되돌아간다**(2026-08-23 JBL 실측:
+        # 헤더는 $313.21 을 띄우는데 밴드만 "실시간 시세를 못 받았습니다" 라며
+        # 마지막 월봉 364.56 으로 현재 PER 45.74x 를 만들었다 — 같은 화면의
+        # 밸류에이션 탭은 39.20x 였다). 한 사실에 두 경로를 두면 갈라진다(#38).
+        log.debug("per_band: 현재가 실패 %s: %s — 스냅샷으로 폴백", ticker, exc)
+        return _ok(hint)
+    # 응답이 비었거나 이상치여도 화면이 아는 값이 있으면 그걸 쓴다.
+    return _ok((q or {}).get("price")) or _ok(hint)
 
 
 # ── 밴드 **차트** (사용자 2026-08-22 "외국종목도 PER 밴드차트 만들수 있으면") ──
