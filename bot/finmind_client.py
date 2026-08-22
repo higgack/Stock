@@ -210,11 +210,16 @@ def fetch_monthly_revenue(ticker: str, months: int = 13) -> Optional[list]:
 # ------------------------------------------------------------------
 
 def fetch_per_pbr(ticker: str, days: int = 90) -> Optional[list]:
-    """Daily PER / PBR / Dividend Yield history."""
+    """Daily PER / PBR / Dividend Yield history.
+
+    ⚠️ 캐시 키에 `days` 가 있어야 한다 — 90일 조회가 먼저 캐시를 채우면
+    3650일 조회가 그 90일치를 받아 간다(같은 키, 다른 요구). 캐시 키를 나누기
+    전에 "이 파라미터가 결과를 바꾸나"를 먼저 답할 것(#61 의 반대 방향).
+    """
     code = _tw_code(ticker)
     if not code:
         return None
-    ck = f"perpbr_{code}_{date.today().isoformat()}.json"
+    ck = f"perpbr_{code}_{days}d_{date.today().isoformat()}.json"
     cached = _cache_get(ck)
     if cached is not None:
         return cached

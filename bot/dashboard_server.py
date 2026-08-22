@@ -476,16 +476,23 @@ def _kr_band_tables(band: dict | None,
     ⚠️ `ticker` 를 주면 **현재가 1콜**이 붙는다(요약의 현재 배수). 밴드 자체는
     월 해상도 + 12h 캐시라 그것 없이는 오늘 움직임이 반영되지 않는다. 두 표가
     **같은 현재가**를 써야 한다 — 따로 부르면 장중에 두 요약이 갈라진다.
+
+    ⚠️ **한쪽이 없다고 다른 쪽을 죽이지 말 것**(2026-08-22 SKC 011790.KS 실측):
+    적자 기업은 FnGuide 가 PER 밴드선을 0(정의 불가)으로 보내 PER 행이 안
+    만들어지는데, 옛 코드는 그때 **PBR 표까지 통째로** None 으로 돌려줬다 —
+    화면의 PBR 차트는 멀쩡한데 표만 사라져 "왜 안 나와?"가 됐다.
     """
     per_b = (band or {}).get("per") or {}
-    rows, _top = _fnguide_ratio_rows(per_b)
-    if not rows:
+    pbr_b = (band or {}).get("pbr") or {}
+    # 현재가 기준은 **어느 쪽이든 행이 있는 블록**에서 잡는다(주가 시계열은
+    # 어차피 하나다) — PER 이 비었다고 PBR 요약까지 현재가를 잃으면 안 된다.
+    ref = (_fnguide_ratio_rows(per_b)[0] or _fnguide_ratio_rows(pbr_b)[0])
+    if not ref:
         return None, None
     from bot.per_band import live_price as _lp
-    px_now = _lp(ticker, rows[-1]["price"]) if ticker else None
+    px_now = _lp(ticker, ref[-1]["price"]) if ticker else None
     return (_fnguide_ratio_table(per_b, kind="PER", px_now=px_now),
-            _fnguide_ratio_table((band or {}).get("pbr") or {},
-                                 kind="PBR", px_now=px_now))
+            _fnguide_ratio_table(pbr_b, kind="PBR", px_now=px_now))
 
 
 def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:
