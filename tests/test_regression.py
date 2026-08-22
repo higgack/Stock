@@ -32168,7 +32168,7 @@ class TestLazyPaneTickerAndProbeArgs20260822:
     def test_probe_passes_the_snapshot_like_the_screen_does(self):
         """경로만 같고 인자가 다르면 통계가 거짓이 된다(#35)."""
         import ast
-        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef) and n.name == "_current_path")
         call = next(n for n in ast.walk(fn)
@@ -32182,7 +32182,7 @@ class TestLazyPaneTickerAndProbeArgs20260822:
 
     def test_probe_version_was_bumped(self):
         """도구 출력이 바뀌었는데 배너가 그대로면 옛 실행과 구별이 안 된다(#21)."""
-        import bot.scripts.jp_fundamentals_probe as jp
+        import bot.scripts.fundamentals_probe as jp
         assert jp._PROBE_VER >= 2
 
 
@@ -32206,7 +32206,7 @@ class TestEmptyChartPanelsAndJpProbe20260822:
         """⚠️ yfinance 는 네트워크가 막히면 예외 대신 **빈 프레임**을 준다 —
         그걸 '원천 미제공'으로 읽으면 진단 도구가 거짓말한다(샌드박스 실측:
         AAPL 도 0열이었다, #86). 대조군이 죽었으면 **판정 불가**여야 한다."""
-        import bot.scripts.jp_fundamentals_probe as jp
+        import bot.scripts.fundamentals_probe as jp
         orig = jp._yf_cols
         try:
             jp._yf_cols = lambda t, a: (0, [])          # 전부 0열 = 차단 상황
@@ -32225,7 +32225,7 @@ class TestEmptyChartPanelsAndJpProbe20260822:
     def test_probe_never_prints_the_credential_value(self):
         """자격증명은 **출처와 길이만** — 값 금지(§Secrets·#82)."""
         import ast
-        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef) and n.name == "_edinet_key")
         seg = ast.get_source_segment(src, fn) or ""
@@ -32235,7 +32235,7 @@ class TestEmptyChartPanelsAndJpProbe20260822:
     def test_probe_banner_names_the_interpreter(self):
         """venv 밖에서 돌면 결과가 통째로 거짓이 된다(#132)."""
         import ast
-        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef) and n.name == "_banner")
         seg = ast.get_source_segment(src, fn) or ""
@@ -32248,12 +32248,82 @@ class TestEmptyChartPanelsAndJpProbe20260822:
         ⚠️ 소스에 이름이 있는지로 재면 **예외 메시지 문자열**이 대신 만족
         시킨다(실측으로 뮤테이션이 통과했다, #59b) — AST 로 **실제 호출**을 센다."""
         import ast
-        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef) and n.name == "_current_path")
         calls = [n.func.id for n in ast.walk(fn)
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
         assert "for_ticker" in calls, calls
+
+
+class TestFundamentalsProbeGeneralised20260822:
+    """사용자 2026-08-22 0700.HK·0522.HK·0002.HK: "이건 분기실적이 불가능한
+    거야?"
+
+    ⚠️ 화면엔 '원천 미제공'·'분기 재무 데이터 없음'이 **같은 말처럼** 보이지만
+    원인이 셋이다(원천이 열 자체를 안 줌 / 열은 있는데 그 항목이 없음 / 우리
+    매핑이 못 잡음). JP 전용이던 프로브를 전 시장용으로 넓히고 **항목별 채움
+    개수**를 찍게 해 셋을 가른다."""
+
+    def test_banner_name_matches_the_module(self):
+        """이름이 내용과 어긋나면 화면(여기선 출력)이 거짓말한다(#34)."""
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
+        assert "jp_fundamentals_probe" not in src, "옛 이름이 남아 있다"
+        assert 'print(f"fundamentals_probe v{_PROBE_VER}")' in src
+
+    def test_item_level_fill_counts_are_reported(self):
+        """열 수만 세면 '5열인데 표가 비었다'의 원인을 못 가른다."""
+        import bot.scripts.fundamentals_probe as fp
+        assert "Total Revenue" in fp._WATCH and "Net Income" in fp._WATCH
+        orig = fp._yf_cols
+        try:
+            fp._yf_cols = lambda t, a: ((5, {"Total Revenue": 1})
+                                        if t != "AAPL" else (4, {"x": 4}))
+            out = "\n".join(fp._yf_shape("0700.HK"))
+        finally:
+            fp._yf_cols = orig
+        assert "항목별 채움" in out and "Total Revenue" in out, out
+
+    def test_watch_list_covers_what_the_screen_maps(self):
+        """프로브가 화면과 **다른 항목**을 세면 진단이 엉뚱해진다(#35)."""
+        from bot.quarterly_series import _ITEM_CANDIDATES
+        import bot.scripts.fundamentals_probe as fp
+        for names in _ITEM_CANDIDATES.values():
+            for n in names:
+                assert n in fp._WATCH, f"{n} 이 프로브 관찰 목록에 없다"
+
+    def test_alt_sources_are_market_gated(self):
+        """JP 전용 섹션을 HK 종목에 찍으면 출력이 거짓말한다(#34)."""
+        import bot.scripts.fundamentals_probe as fp
+        jp = " ".join(fp._alt_sources("9984.T"))
+        hk = " ".join(fp._alt_sources("0700.HK"))
+        us = " ".join(fp._alt_sources("AAPL"))
+        assert "EDINET" in jp and "Kabutan" in jp
+        assert "EDINET" not in hk and "AKShare" in hk
+        assert "EDINET" not in us and "AKShare" not in us
+
+    def test_series_section_uses_the_screen_path(self):
+        """분기실적 표가 쓰는 그 함수를 그대로 태워야 한다(#35)."""
+        import ast
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_series_shape")
+        calls = [c.func.id for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+        assert "series_from_yfinance" in calls, calls
+        assert "missing_quarters" in calls, calls
+
+    def test_every_section_is_wired_into_the_run(self):
+        """섹션만 만들고 배선이 빠지면 출력에 안 나온다(#20)."""
+        import ast
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "main")
+        calls = [c.func.id for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+        for name in ("_yf_shape", "_alt_sources", "_series_shape",
+                     "_current_path"):
+            assert name in calls, (name, calls)
 
 
 class TestAnnualPeriodsNotTruncated20260822:
