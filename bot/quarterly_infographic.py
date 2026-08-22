@@ -491,6 +491,15 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
         _parts = [f"{'·'.join(v)} {k[:40]}" for k, v in _grp.items()]
         notes.append((f"* 수주잔고 미표시 — {' / '.join(_parts)}"
                       "(추정 보정 없음)", _MUTED))
+    _tw = payload.get("ttm_why") or {}
+    if _tw:
+        _tg: dict[str, list[str]] = {}
+        for _lb, _w in _tw.items():
+            _tg.setdefault(_w, []).append(_lb)
+        notes.append(("* TTM " + " / ".join(
+            f"{'·'.join(v)} 미표시 — {k[:44]}" for k, v in _tg.items())
+            + (". PSR 산출 제외" if "매출" in _tw else "")
+            + "(부분합으로 대체하지 않음)", _MUTED))
     _fw = payload.get("fcf_why") or {}
     if _fw:
         _g: dict[str, list[str]] = {}
@@ -1317,6 +1326,43 @@ def _ttm(qs: list) -> dict:
     return out
 
 
+_TTM_KEYS = ("매출", "영업이익", "당기순이익")
+
+
+def ttm_missing_why(qs: list) -> dict:
+    """`_ttm` 이 **만들지 않은** 항목 → 사람이 읽는 사유.
+
+    ⚠️ 값을 비우는 코드는 그 자리에서 **사유를 같이 남겨야** 한다 — 안 그러면
+    사용자가 "매출액이 비는건 왜 그런거야?" 라고 물어야 한다(사용자 2026-08-22
+    603259.SS: 25.3Q 매출이 원천에 없어 TTM 매출·PSR 이 통째로 빈 화면).
+    FCF·수주잔고는 이미 사유를 적고 있었는데 TTM 만 침묵했다(#43·#129 —
+    이 세션에서 다섯 번째다).
+
+    ⚠️ `_ttm` 과 **정확히 반대**여야 한다(만든 항목엔 사유가 없고, 안 만든
+    항목엔 반드시 있다) — 회귀가 그 불변식을 고정한다. 두 곳에 판정을 적으면
+    언젠가 갈라지므로, 여기서 쓰는 조건은 `_ttm` 과 같은 것만 본다(#38).
+    """
+    if len(qs) < 4:
+        return {k: f"분기 표본 {len(qs)}개(4개 필요)" for k in _TTM_KEYS}
+    window = qs[-4:]
+    bad = anomalous_keys(window)
+    why: dict = {}
+    for k in _TTM_KEYS:
+        if k in bad:
+            why[k] = "창 안에 이상치 분기가 있어 합산 제외"
+            continue
+        gaps = [_q_label(q) for q in window
+                if (q.get("financials") or {}).get(k) is None]
+        if gaps:
+            why[k] = f"{'·'.join(gaps)} 원천 미제공(4분기 합 불가)"
+    return why
+
+
+def _q_label(q: dict) -> str:
+    """각주에 쓰는 분기 라벨. 없으면 기간 문자열로 되돌아간다."""
+    return str(q.get("label") or q.get("period") or "?")
+
+
 # PER 범위 가드 — dart_feed._compute_per 와 동일 기준(음수·비현실 값 차단).
 _PER_MIN, _PER_MAX = 0.0, 500.0
 
@@ -1552,6 +1598,9 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         "price": live.get("price") or snap.get("current_price"),
         "quarters": qs,
         "ttm": ttm,
+        # 값을 비운 자리엔 사유를 같이 남긴다(#43·#129) — FCF·수주잔고는
+        # 이미 적고 있었는데 TTM 만 침묵했다(사용자 2026-08-22 603259.SS).
+        "ttm_why": ttm_missing_why(qs),
         "per": per,
         "per_forward": per_fwd,
         # 야후 제공값과 자체계산을 구분해 표기(출처 표기 의무).
