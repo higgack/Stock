@@ -17781,7 +17781,8 @@ def _render_market_page(data: dict) -> str:
         : '';
       var ctrl = '<div class="fav-ctrl">'
         + '<select id="fav-country">' + copts + '</select>' + dctrl
-        + '<span style="font-size:11px;color:var(--muted)">↕ 화살표로 순서 변경 · 헤더 클릭 정렬</span></div>';
+        + '<span style="font-size:11px;color:var(--muted)">↕ 화살표로 순서 변경 · 헤더 클릭 정렬'
+        + ' · 현재 PER = 현재가 ÷ 실적 EPS(국내는 KRX 투자지표)</span></div>';
 
       /* 정렬 헤더 (data-k/data-t) */
       var cols = [['name','s','종목'],['country','s','나라'],['saved','s','저장일'],
@@ -17808,6 +17809,18 @@ def _render_market_page(data: dict) -> str:
             pctCell = '<span style="color:' + clr + '">' + sign + pct.toFixed(1) + '%</span>';
           }}
         }}
+        /* 현재 PER 이 **어디서 나온 값인지** 셀이 말한다 — 국내는 yfinance 가
+           trailingEps 를 안 줘서 KRX 투자지표로 채운다(사용자 2026-08-23
+           "국내 종목 현재 PER 이 전부 —"). 한 열에 두 원천이 섞이므로
+           기준을 밝힌다(#34), 그리고 산식을 적어 눈으로 검산되게 한다(#33). */
+        function tperTitle(f) {{
+          if (f.per_trailing == null || !f.eps_trailing) return '';
+          var src = (f.eps_trailing_src === 'KRX') ? 'KRX 투자지표'
+                                                   : 'yfinance TTM';
+          return ' title="' + fmtPrice(f.current_price, f.currency_symbol)
+            + ' ÷ EPS ' + Number(f.eps_trailing).toLocaleString()
+            + ' (' + src + ') = ' + Number(f.per_trailing).toFixed(1) + '"';
+        }}
         /* 통화 통합 정렬키 (USD 환산) — ₩1526조 가 $1.13T 위로 가게 */
         var fx = FX[f.currency] || 1;
         function usd(v) {{ return v != null ? (v / fx) : ''; }}
@@ -17826,7 +17839,7 @@ def _render_market_page(data: dict) -> str:
           + '<td style="white-space:nowrap">' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
           + '<td style="white-space:nowrap">' + curCell + '</td>'
           + '<td style="white-space:nowrap">' + pctCell + '</td>'
-          + '<td style="white-space:nowrap">' + fmtPER(f.per_trailing, true, f.eps_fy_label, false) + '</td>'
+          + '<td style="white-space:nowrap"' + tperTitle(f) + '>' + fmtPER(f.per_trailing, true, f.eps_fy_label, false) + '</td>'
           + '<td style="white-space:nowrap">' + fmtPER(f.per, f.per_is_trailing, f.eps_fy_label, f.eps_negative) + '</td>'
           + '<td style="white-space:nowrap">' + (f.next_earnings||'—') + '</td>'
           + '<td class="fav-ord"><button class="fav-top" data-ticker="' + f.ticker + '" title="맨 위로">⤒</button>'

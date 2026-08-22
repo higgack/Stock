@@ -345,6 +345,7 @@ def get_favorites_with_prices() -> list[dict]:
 # 구현이 안 지키고 있었다. `saved_price`·`saved_date` 는 **의도적 과거값**이라
 # 남긴다.
 _VOLATILE_FIELDS = ("current_price", "per", "eps_estimate", "market_cap",
+                    "eps_trailing_src",
                     "eps_is_actual", "eps_fy_label", "eps_negative",
                     "per_is_trailing", "eps_trailing", "per_trailing")
 
@@ -377,6 +378,51 @@ def _kick_fav_refresh() -> None:
     _threading.Thread(target=_run, daemon=True, name="fav-refresh").start()
 
 
+# ── 국내 실적 EPS(현재 PER 용) ────────────────────────────────────────
+# ⚠️ 사용자 2026-08-23: 관심종목의 국내 종목 '현재 PER' 이 전부 `—` 였다
+# (한텍·뉴파워프라즈마·쿠콘·삼성전자). yfinance 가 KR 종목의 trailingEps 를
+# 안 준다 — 감사 로그에도 `No fundamentals data found for symbol: 005930.KS`
+# 로 찍힌다. 대신 **KRX 투자지표**는 전 종목 EPS 를 한 번에 준다(레포에
+# 이미 있는 `stock_screener._fetch_kr_bulk` = HTTP 2건). 140종목을 종목마다
+# 치지 않아도 되는 이유다(#미니멀: 이미 있으면 재사용).
+_KR_EPS: dict | None = None
+_KR_EPS_TS: float = 0.0
+_KR_EPS_TTL = 6 * 3600      # KRX 투자지표는 일 1회 갱신 — 6시간이면 충분
+
+
+def _kr_eps_bulk() -> dict:
+    """{6자리코드: 실적 EPS} — 실패하면 빈 dict(호출부는 그대로 비운다).
+
+    ⚠️ 실패 사유를 삼키지 않는다(#12 silent-fail 금지) — 자격증명 부재와
+    원천 오류는 다른 문제이고, '없음'만 말하면 다음 라운드를 낭비한다(#82).
+    """
+    global _KR_EPS, _KR_EPS_TS
+    import time as _time
+    now = _time.time()
+    if _KR_EPS is not None and (now - _KR_EPS_TS) < _KR_EPS_TTL:
+        return _KR_EPS
+    out: dict = {}
+    try:
+        from bot.stock_screener import _fetch_kr_bulk
+        bulk = _fetch_kr_bulk()
+        if not bulk:
+            log.warning("favorites: KRX 벌크 실적지표 없음 — 국내 현재 PER 은 "
+                        "빈칸으로 둔다(자격증명 또는 원천 확인)")
+        else:
+            for code, row in bulk.items():
+                eps = row.get("EPS")
+                # KRX 는 적자 종목의 EPS 를 0 으로 준다 — 0 은 '적자'와 '미제공'을
+                # 구별하지 못하므로 값으로 쓰지 않는다(#43 모르면 비운다).
+                if eps and eps > 0:
+                    out[str(code).zfill(6)] = float(eps)
+            log.info("favorites: KRX 실적 EPS %d종목 적재", len(out))
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("favorites: KRX 벌크 실적지표 실패 — %s: %s",
+                    type(exc).__name__, exc)
+    _KR_EPS, _KR_EPS_TS = out, now
+    return out
+
+
 def _compute_favorites_with_prices() -> list[dict]:
     """관심종목 full 갱신(yfinance per-ticker) — 백그라운드 daemon 전용. _FAV_CACHE 적재."""
     global _FAV_CACHE, _FAV_CACHE_TS
@@ -393,6 +439,10 @@ def _compute_favorites_with_prices() -> list[dict]:
         _fi_allowed = fast_info_ok() and not yf_paused()
     except Exception:
         _fi_allowed = True
+    # 국내 EPS 는 **풀 밖에서 한 번**만 받는다 — 스레드마다 부르면 같은 벌크를
+    # 140번 두드린다(#113 진행 중인 중복은 캐시가 못 막는다).
+    _kr_eps = _kr_eps_bulk() if any(
+        _detect_country(f.get("ticker") or "") == "KR" for f in favorites) else {}
 
     def _refresh(f: dict) -> None:
         # 네이버 실시간 시세 우선 (사용자 2026-06-15 '시총·현재가 네이버, 대만
@@ -490,6 +540,15 @@ def _compute_favorites_with_prices() -> list[dict]:
             # "예상 EPS 를 현재 PER 로 바꿔줘"). 둘 다 **화면의 현재가**에서
             # 만들어야 눈으로 나눠 봐도 맞는다(#33).
             f["eps_trailing"] = trail
+            f["eps_trailing_src"] = "yfinance" if trail is not None else None
+            # 국내는 yfinance 가 trailingEps 를 안 준다 — KRX 투자지표로 채운다.
+            # ⚠️ PER 은 **화면의 현재가**로 만든다(아래 `_per_from_shown`) —
+            # 원천 PER 을 그대로 실으면 눈으로 나눠 봤을 때 안 맞는다(#33).
+            if f["eps_trailing"] is None and _kr_eps:
+                _kr = _kr_eps.get(str(f["ticker"]).split(".")[0].zfill(6))
+                if _kr:
+                    f["eps_trailing"] = _kr
+                    f["eps_trailing_src"] = "KRX"
 
             # ⚠️ 소스 PER(forwardPE/trailingPE)을 쓰지 않는다 — 그 값은
             # yfinance 자신의 EPS·가격 기준이라 이 표의 현재가·예상 EPS 와

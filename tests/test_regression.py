@@ -35456,3 +35456,110 @@ class TestBandPaneOrder20260823:
         seg = _BAND_JS[i:i + 400]
         assert seg.index("pbrBox.style.display=''") < \
             seg.index("drawBand('si-band-pbr'"), seg
+
+
+class TestWatchlistKrTrailingPer20260823:
+    """사용자 2026-08-23 "진행해줘" — 관심종목의 **국내 종목 현재 PER 이 전부
+    `—`** 였다(한텍·뉴파워프라즈마·쿠콘·삼성전자). yfinance 가 KR 종목의
+    trailingEps 를 안 준다(`No fundamentals data found for symbol: 005930.KS`).
+
+    KRX 투자지표는 전 종목 EPS 를 **한 번에** 준다 — 140종목을 종목마다 치지
+    않아도 된다. PER 은 **화면의 현재가**로 만들어 눈으로 나눠 봐도 맞게(#33).
+    """
+
+    @staticmethod
+    def _reset(mf):
+        mf._FAV_CACHE, mf._FAV_CACHE_TS = None, 0.0
+        mf._KR_EPS, mf._KR_EPS_TS = None, 0.0
+
+    def test_zero_eps_is_dropped_not_treated_as_a_value(self, monkeypatch):
+        """KRX 는 적자 종목의 EPS 를 0 으로 준다 — 0 은 '적자'와 '미제공'을
+        구별하지 못하므로 값으로 쓰지 않는다(#43 모르면 비운다)."""
+        import bot.market_favorites as mf
+        import bot.stock_screener as ss
+        self._reset(mf)
+        monkeypatch.setattr(ss, "_fetch_kr_bulk", lambda: {
+            "98070": {"EPS": 1200.0},        # 앞 0 이 빠져 와도 맞춘다
+            "005930": {"EPS": 0.0},          # 적자/미제공
+            "000660": {"EPS": -50.0}})
+        got = mf._kr_eps_bulk()
+        assert got == {"098070": 1200.0}, got
+
+    def test_bulk_is_cached(self, monkeypatch):
+        import bot.market_favorites as mf
+        import bot.stock_screener as ss
+        self._reset(mf)
+        hits = []
+        monkeypatch.setattr(ss, "_fetch_kr_bulk",
+                            lambda: hits.append(1) or {"098070": {"EPS": 1.0}})
+        mf._kr_eps_bulk()
+        mf._kr_eps_bulk()
+        assert len(hits) == 1, hits
+
+    def test_a_kr_row_gets_per_from_the_shown_price(self, monkeypatch):
+        """⚠️ 헬퍼만 부르는 테스트는 **배선을 못 잡는다**(#20) — 수집기를
+        통째로 태운다."""
+        import bot.market_favorites as mf
+        self._reset(mf)
+        monkeypatch.setattr(mf, "_load", lambda: [
+            {"ticker": "098070.KQ", "name": "Hantech", "currency": "KRW"}])
+        monkeypatch.setattr(mf, "_save", lambda x: None)
+        monkeypatch.setattr(mf, "_naver_quote_for",
+                            lambda t: {"price": 23650.0, "pct": 0.0,
+                                       "mcap": None, "name": "한텍"})
+        monkeypatch.setattr(mf, "_kr_eps_bulk", lambda: {"098070": 1200.0})
+        row = mf._compute_favorites_with_prices()[0]
+        assert row["eps_trailing"] == 1200.0
+        assert row["eps_trailing_src"] == "KRX"
+        # 화면의 현재가 ÷ 화면의 EPS 가 그대로 PER 이어야 한다(#33)
+        assert abs(row["per_trailing"] - 23650.0 / 1200.0) < 0.01, row
+
+    def test_the_bulk_is_fetched_once_not_per_ticker(self, monkeypatch):
+        """⚠️ 스레드마다 부르면 같은 벌크를 종목 수만큼 두드린다 — 캐시는
+        **진행 중인 중복**을 못 막는다(#113)."""
+        import bot.market_favorites as mf
+        self._reset(mf)
+        monkeypatch.setattr(mf, "_load", lambda: [
+            {"ticker": f"09807{i}.KQ", "name": f"n{i}", "currency": "KRW"}
+            for i in range(5)])
+        monkeypatch.setattr(mf, "_save", lambda x: None)
+        monkeypatch.setattr(mf, "_naver_quote_for", lambda t: None)
+        hits = []
+        monkeypatch.setattr(mf, "_kr_eps_bulk", lambda: hits.append(1) or {})
+        mf._compute_favorites_with_prices()
+        assert len(hits) == 1, hits
+
+    def test_the_bulk_is_not_fetched_for_a_foreign_only_list(self, monkeypatch):
+        """국내 종목이 없으면 KRX 를 부를 이유가 없다."""
+        import bot.market_favorites as mf
+        self._reset(mf)
+        monkeypatch.setattr(mf, "_load", lambda: [
+            {"ticker": "AAPL", "name": "Apple", "currency": "USD"}])
+        monkeypatch.setattr(mf, "_save", lambda x: None)
+        monkeypatch.setattr(mf, "_naver_quote_for", lambda t: None)
+        hits = []
+        monkeypatch.setattr(mf, "_kr_eps_bulk", lambda: hits.append(1) or {})
+        mf._compute_favorites_with_prices()
+        assert hits == [], hits
+
+    def test_yfinance_trailing_eps_wins_when_present(self, monkeypatch):
+        """⚠️ KRX 로 **덮어쓰면** 해외 종목의 TTM 기준이 조용히 바뀐다 —
+        비어 있을 때만 채운다."""
+        import ast
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_compute_favorites_with_prices")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index('f["eps_trailing_src"] = "KRX"')
+        head = seg[:i]
+        assert 'if f["eps_trailing"] is None' in head[-500:], head[-500:]
+
+    def test_the_cell_says_where_the_per_came_from(self):
+        """한 열에 두 원천이 섞이므로 기준을 밝히고(#34) 산식을 적는다(#33).
+        ⚠️ 배선은 존재가 아니라 **호출**로 센다 — 정의 1 + 호출 1(#120)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert src.count("tperTitle(") >= 2, src.count("tperTitle(")
+        i = src.index("function tperTitle(")
+        body = src[i:i + 700]
+        assert "eps_trailing_src" in body and "KRX" in body, body
