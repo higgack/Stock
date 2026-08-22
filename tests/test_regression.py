@@ -6561,8 +6561,13 @@ class TestQuarterlyMultiMarket20260816:
         h = trend(IS, 5, lambda p: p[:7], "분기추이", "QoQ", "분기", CF)
         assert "FCF" in h, "FCF 계열이 없다"
         assert h.count("<rect") == 3 * 4, f"막대 수가 3기간×4 가 아님: {h}"
-        # 기간으로 조인됐다면 FCF 축 최대는 300-80=220 이다(위치로 매기면 다르다)
-        assert "축 최대 220" in h, h[:400]
+        # 기간으로 조인됐다면 FCF 는 190 → 200 → 220 으로 **오름차순**이다.
+        # 위치로 매기면 CF 입력 순서(220·190·200)가 그대로 실려 순서가 깨진다.
+        # (축 최대 표기는 사용자 요청으로 뺐으므로 막대 높이로 잰다.)
+        svgs = re.findall(r"<svg.*?</svg>", h, re.S)
+        fcf_bars = [float(x) for x in
+                    re.findall(r'<rect[^>]*height="([\d.]+)"', svgs[3])]
+        assert fcf_bars == sorted(fcf_bars) and len(set(fcf_bars)) == 3, fcf_bars
         head = re.search(r"<thead>.*?</thead>", h, re.S).group(0)
         assert head.index("순이익") < head.index("FCF"), "FCF 가 순이익 앞"
         body = re.search(r"<tbody>.*?</tbody>", h, re.S).group(0)
@@ -32039,7 +32044,7 @@ class TestBandCoverageAndPartialSource20260822:
         monkeypatch.setattr(pb, "_price_history", lambda t, y: ([
             ((_dt.date(2021, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
              500.0 + 5 * k) for k in range(60)], [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         tbl, why = pb.for_ticker("2330.TW", {})
         assert tbl is not None, why
@@ -32354,7 +32359,7 @@ class TestCnPerBandFromAkshare20260822:
         monkeypatch.setattr(pb, "baidu_per_rows",
                             lambda t, p, y=10: pb.rows_from_per_history(
                                 self._pts(), p))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         tbl, why = pb.for_ticker("600519.SS", {})
         assert tbl is not None, why
@@ -33860,7 +33865,7 @@ class TestEdinetXbrl20260822:
         annual = [(f"{y}-12-31", 2.0 + 0.4 * (y - 2016))
                   for y in range(2016, 2026)]
         monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         import bot.edgar_eps as ee
         monkeypatch.setattr(ee, "eps_history",
@@ -33882,7 +33887,7 @@ class TestEdinetXbrl20260822:
                1000.0 + 5 * k) for k in range(130)]
         eps = [(f"{y}-03-31", 50.0 + y - 2017) for y in range(2017, 2027)]
         monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         import bot.edinet_xbrl as ex
         monkeypatch.setattr(ex, "eps_rows",
@@ -33900,7 +33905,7 @@ class TestEdinetXbrl20260822:
         px = [((_dt.date(2020, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
                1000.0 + 5 * k) for k in range(70)]
         monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ex, "eps_rows",
                             lambda t, years=10, api_key=None: [])
@@ -34253,7 +34258,7 @@ class TestSplitConsistentPerHistory20260822:
         import bot.per_band as pb
         import bot.edgar_eps as ee
         monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors",
                             lambda t: [("2021-10-03", 10.0)])
@@ -34276,7 +34281,7 @@ class TestSplitConsistentPerHistory20260822:
         import bot.per_band as pb
         import bot.edgar_eps as ee
         monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
         monkeypatch.setattr(ee, "eps_history",
@@ -34338,7 +34343,7 @@ class TestSplitConsistentPerHistory20260822:
         monkeypatch.setattr(pb, "split_factors", _boom)
         monkeypatch.setattr(pb, "_price_history",
                             lambda t, y: (self._px(), [("2021-10-03", 10.0)], True))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ee, "eps_history",
                             lambda t, years=10: {"quarterly": [],
@@ -34365,7 +34370,7 @@ class TestSplitConsistentPerHistory20260822:
                ("2023-09-30", 6.13), ("2024-09-28", 6.08)]
         monkeypatch.setattr(pb, "_price_history",
                             lambda t, y: (self._px(), dup, True))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ee, "eps_history",
                             lambda t, years=10: {"quarterly": [],
@@ -34427,7 +34432,7 @@ class TestSplitConsistentPerHistory20260822:
             end = f"{y + 1}-09-30"
             a.append((end, 12.0 if end < "2020-08-31" else 3.0))
         q.sort()
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "_price_history",
                             lambda t, y: (self._px(), [("2020-08-31", 4.0)],
@@ -34448,7 +34453,7 @@ class TestSplitConsistentPerHistory20260822:
         import bot.edgar_eps as ee
         ann = [("2021-06-30", 1.0), ("2022-06-30", 1.2), ("2023-06-30", 1.1),
                ("2024-06-30", 0.2), ("2025-06-30", 6.0), ("2026-06-30", 7.0)]
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ee, "eps_history",
                             lambda t, years=10: {"quarterly": [],
@@ -34548,7 +34553,7 @@ class TestSplitConsistentPerHistory20260822:
         import bot.edgar_eps as ee
         monkeypatch.setattr(pb, "_price_history",
                             lambda t, y: (self._px(), [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
         ann = [(f"{y}-06-30", 30.0) for y in range(2017, 2026)]
@@ -34565,7 +34570,7 @@ class TestSplitConsistentPerHistory20260822:
         import bot.per_band as pb
         import bot.edgar_eps as ee
         monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), [], False))
-        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None, **kw: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
         # 회계연도말(6월)마다 무너지는 분기 EPS — KLAC 형
@@ -35926,25 +35931,42 @@ class TestPerMetricTrendCharts20260823:
             assert nm in h, nm
 
     def test_each_chart_has_its_own_axis(self):
-        """⚠️ 축을 공유하면 고치려던 그 문제(매출이 나머지를 누름)가 그대로다."""
-        import re
-        IS, CF = self._data()
-        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
-        mx = re.findall(r"축 최대 ([^<]+)", h)
-        assert len(mx) == 4, mx
-        assert len(set(mx)) > 1, f"축이 하나로 공유되고 있다: {mx}"
-        # 매출(1.3조)과 순이익(1,090억)의 축이 같을 수는 없다
-        assert "조" in mx[0] and "억" in mx[2], mx
+        """⚠️ 축을 공유하면 고치려던 그 문제(매출이 나머지를 누름)가 그대로다.
 
-    def test_the_axis_max_is_stated_so_heights_are_comparable(self):
-        """높이를 지표끼리 비교할 수 없게 됐으므로 **기준을 밝혀야** 한다(#34).
-        표와 **같은 축약 함수**를 쓴다 — 복제하면 같은 값이 달리 읽힌다(#38)."""
+        축이 갈렸는지는 **막대 높이**로 잰다 — 매출이 순이익의 10배인데 축을
+        공유하면 순이익 막대가 바닥에 붙고, 자기 축이면 둘 다 꽉 찬다."""
         import re
-        from bot.dashboard import compact_amount
         IS, CF = self._data()
         h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
-        mx = re.findall(r"축 최대 ([^<]+)", h)
-        assert mx[0] == compact_amount(1e12 + 9 * 1e10, "KRW"), mx
+        bars = [float(x) for x in
+                re.findall(r'<rect[^>]*height="([\d.]+)"', h)]
+        assert len(bars) == 12, bars
+        assert min(bars) >= 100.0, f"축을 공유해 눌렸다: {bars}"
+
+    def test_the_group_says_axes_differ(self):
+        """높이를 지표끼리 비교할 수 없게 됐으므로 **기준을 밝혀야** 한다(#34).
+        ⚠️ 차트마다 적던 '축 최대'는 사용자 요청으로 뺐다(2026-08-23) —
+        대신 그룹 아래 한 줄로 남긴다. 아무 말도 안 하면 "영업이익이 매출만큼
+        크다"로 읽힌다."""
+        IS, CF = self._data()
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        assert "축 최대" not in h, "차트마다 축 설명이 남아 있다"
+        assert "축이 다릅니다" in h, "축이 다르다는 사실을 아무 데서도 안 말한다"
+
+    def test_the_four_charts_share_one_canvas(self):
+        """⚠️ 지표마다 음수 깊이가 달라 도화지를 따로 잡으면 기간 라벨이
+        차트마다 다른 높이에 찍히고, 가장 깊은 차트만 아래 설명과 붙는다
+        (사용자 2026-08-23 "너무 붙어있는 것 같아"). 좌표계를 공유한다(#62)."""
+        import re
+        IS, _ = self._data(fcf=False)
+        # 순이익만 크게 음수 — 옛 판이면 이 차트만 도화지가 길어진다
+        for r in IS:
+            r["Net Income"] = -9e11
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", None)
+        hs = set(re.findall(r'viewBox="0 0 260 ([\d.]+)"', h))
+        ys = set(re.findall(r'<text x="[\d.]+" y="(\d+)" font-size="11"', h))
+        assert len(hs) == 1, f"도화지 높이가 갈렸다: {hs}"
+        assert len(ys) == 1, f"기간 라벨 높이가 갈렸다: {ys}"
 
     def test_a_missing_period_is_marked_not_drawn_as_zero(self):
         """값이 없는 기간에 0 짜리 막대를 그리면 '현금흐름 0' 이라는 **없는
@@ -36073,3 +36095,50 @@ class TestFullAuditFindings20260823:
              "price_now": None, "kind": "PER"}
         msg = [d for m, a, d in ab.audit_rows(t) if a == "현재값"][0]
         assert "실시간 시세" in msg and "또는" not in msg, msg
+
+
+class TestBandLivePriceFallback20260823:
+    """사용자 2026-08-23 JBL: "현재 PER 부분은 없어. 이거 적용하기로 하지
+    않았어?"
+
+    화면 헤더는 **$313.21** 을 띄우는데 밴드 표만 "현재 PER = 마지막 관측
+    기준 — 실시간 시세를 못 받았습니다" 라며 마지막 **월봉** 364.56 으로
+    45.74x 를 만들었다(같은 화면 밸류에이션 탭은 39.20x). 한 사실(현재가)에
+    두 경로를 두면 갈라진다(#38) — 전용 호출이 실패하면 **화면이 이미 아는
+    값**으로 되돌아간다."""
+
+    @staticmethod
+    def _stub(monkeypatch, ret):
+        import bot.world_quote as wq
+        monkeypatch.setattr(wq, "fetch_world_quote", lambda t: ret)
+
+    def test_snapshot_price_is_used_when_the_live_call_fails(self, monkeypatch):
+        from bot.per_band import live_price
+        self._stub(monkeypatch, None)
+        assert live_price("JBL", 364.56, hint=313.21) == 313.21
+
+    def test_the_live_call_still_wins(self, monkeypatch):
+        """폴백이 라이브를 밀어내면 안 된다 — 순서가 뒤집히면 더 낡은 값이 된다."""
+        from bot.per_band import live_price
+        self._stub(monkeypatch, {"price": 313.0})
+        assert live_price("JBL", 364.56, hint=999.0) == 313.0
+
+    def test_an_implausible_hint_is_refused(self, monkeypatch):
+        """⚠️ 폴백에도 같은 자릿수 가드를 건다 — 통화 뒤섞임·분할 미조정."""
+        from bot.per_band import live_price
+        self._stub(monkeypatch, None)
+        assert live_price("JBL", 364.56, hint=5.0) is None
+        assert live_price("JBL", 364.56, hint=None) is None
+
+    def test_for_ticker_passes_the_snapshot_price(self):
+        """⚠️ 헬퍼만 받고 호출부가 안 넘기면 화면은 그대로다(#20) — 인자를
+        AST 로 못박는다."""
+        import ast
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
+        call = next(c for c in ast.walk(fn)
+                    if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                    and c.func.id == "live_price")
+        assert any(k.arg == "hint" for k in call.keywords), \
+            "현재가 폴백을 안 넘긴다"
