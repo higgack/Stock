@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 5
+_PROBE_VER = 6
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -104,12 +104,17 @@ def _why_no_doc(ticker: str) -> list[str]:
     if not sec4:
         return out
     today = _dt.date.today()
-    total, empty_days, seen_types, codes = 0, 0, {}, set()
+    total, empty_days, empty_weekdays, seen_types, codes = 0, 0, 0, {}, set()
     for off in range(201):
-        docs = cl._fetch_day(today - _dt.timedelta(days=off))
+        day = today - _dt.timedelta(days=off)
+        docs = cl._fetch_day(day)
         total += len(docs)
         if not docs:
             empty_days += 1
+            # ⚠️ 주말은 정상적으로 빈다 — **평일**이 비면 원천 오류이거나
+            # 빈 목록이 캐시된 것이다. 둘을 갈라야 '없다'를 믿을 수 있다.
+            if day.weekday() < 5:
+                empty_weekdays += 1
         for d in docs:
             code = str(d.get("secCode") or "")
             if code[:4] != sec4:
@@ -117,8 +122,9 @@ def _why_no_doc(ticker: str) -> list[str]:
             codes.add(code)
             t = str(d.get("docTypeCode") or "?")
             seen_types[t] = seen_types.get(t, 0) + 1
-    out.append(f"     ↳ 최근 201일 목록: 문서 {total:,}건 · **빈 날 "
-               f"{empty_days}일**(빈 날이 많으면 목록이 빈 채로 캐시된 것)")
+    out.append(f"     ↳ 최근 201일 목록: 문서 {total:,}건 · 빈 날 {empty_days}일"
+               f"(주말 제외 **평일 {empty_weekdays}일** — 평일이 비면 원천 오류"
+               f" 또는 빈 목록 캐시)")
     out.append(f"     ↳ 이 티커 문서: {seen_types or '**0건**'} "
                f"· 실제 secCode {sorted(codes) or '없음'}")
     if seen_types and "120" not in seen_types:

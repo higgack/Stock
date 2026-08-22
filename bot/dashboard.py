@@ -5275,6 +5275,10 @@ _BAND_JS = r"""
     /* 원천이 안 준 배수는 행을 뺐다 — **왜** 없는지 말한다(침묵이 최악, #43). */
     if(t.bands_note) h+='<div class="si-note" style="margin-top:4px">'
       +esc2(t.bands_note)+'</div>';
+    /* 기준 불일치로 **앞쪽 구간을 잘라냈으면** 그렇다고 말한다 — 조용히
+       짧아지면 사용자는 원천이 안 준 것으로 읽는다(#43). */
+    if(t.trim_note) h+='<div class="si-note" style="margin-top:4px">⚠️ '
+      +esc2(t.trim_note)+'</div>';
     /* ⚠️ 분모 열은 값이 하나라도 있을 때만 — 국내(FnGuide)는 BPS/EPS 를 안
        줘서 전 행이 '—' 인 죽은 열이었다. 그리고 표는 최근 24개만 싣는데
        그 사실을 안 적으면 전부인 줄 읽는다(#45 총계·소계는 같은 모집단). */

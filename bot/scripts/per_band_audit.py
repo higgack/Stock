@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 1
+_AUDIT_VER = 2
 _DEFAULT = "LRCX,KLAC,NVMI"
 _EST_S_PER_TICKER = 25
 
@@ -135,8 +135,12 @@ def audit_one(ticker: str) -> list[str]:
         try:
             from bot.edgar_eps import eps_history
             h = eps_history(ticker, years=tbl.get("years") or 10) or {}
+            # ⚠️ 제품과 **같은 우선순위**로 분할을 받는다 — 별도 호출은 조용히
+            # 비어서 감사가 제품과 다른 값을 대조하게 된다(#35).
+            _sp = pb._price_history(ticker, tbl.get("years") or 10)[1] \
+                or pb.split_factors(ticker)
             tbl["_annual_eps"] = pb.adjust_eps_for_splits(
-                h.get("annual") or [], pb.split_factors(ticker))
+                h.get("annual") or [], _sp)
         except Exception as exc:                               # noqa: BLE001
             out.append(f"  (연간 대조본 실패: {exc})")
     for mark, axis, msg in audit_rows(tbl):
