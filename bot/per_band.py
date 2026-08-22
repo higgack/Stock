@@ -112,6 +112,60 @@ def ttm_annual_mismatch(ttm_rows: list, annual_rows: list,
     return None
 
 
+def implied_eps_series(rows: list | None) -> list[tuple[str, float]]:
+    """표의 행에서 **원천이 쓴 EPS**를 되짚는다 — `주가 ÷ 배수`.
+
+    KR 은 배수를 원천 밴드선에서 되뽑으므로, 그 역산이 곧 원천의 분모다.
+    우리가 만든 값이 아니라 **원천이 무엇을 썼는지**를 재는 자다.
+    """
+    out = []
+    for r in rows or []:
+        p = r.get("period") if isinstance(r, dict) else None
+        px = r.get("price") if isinstance(r, dict) else None
+        m = r.get("per") if isinstance(r, dict) else None
+        if p and px and m:
+            out.append((str(p), px / m))
+    out.sort()
+    return out
+
+
+def eps_cadence(rows: list | None) -> tuple[str | None, str]:
+    """되짚은 EPS 가 **계단형(분기 실적)** 인가 **연속형(전망·보간)** 인가.
+
+    ⚠️ 2026-08-22 사용자 질문("분기단위로 하는 게 맞지 않을까? 실제 FnGuide
+    밴드차트는 어떻게 하는지 보고 리뷰해줘")에 답하려고 만들었다. 화면 값으로
+    되짚으니 EPS 가 **매달 +81~82 로 완벽히 선형**이었다 — 분기 실적이면
+    3개월마다 계단처럼 뛰어야 한다. 즉 원천 밴드선의 분모는 분기 확정치가
+    아니라 **매달 갱신되는 값**(선행 컨센서스 또는 보간)이다.
+
+    나는 그 직전 라운드에 근거 없이 "분기 실적 기준" 이라고 라벨을 붙였다.
+    **원천이 무엇을 쓰는지는 재서 말해야 한다** — 그래서 이 판정을 순수
+    함수로 두고 화면·감사가 같이 쓴다(#38·#55).
+
+    반환: ("계단형"|"연속형"|None, 사람이 읽는 설명)
+    """
+    eps = implied_eps_series(rows)
+    if len(eps) < 6:
+        return None, "표본 부족 — 판정 불가"
+    flat = 0
+    steps = 0
+    for (_p0, a), (_p1, b) in zip(eps, eps[1:]):
+        if a <= 0:
+            continue
+        steps += 1
+        if abs(b - a) / a < 0.002:
+            flat += 1
+    if not steps:
+        return None, "표본 부족 — 판정 불가"
+    share = flat / steps
+    if share >= 0.5:
+        return "계단형", (f"되짚은 EPS 가 {flat}/{steps} 구간에서 그대로 "
+                       f"— 분기 확정 실적이 그대로 유지되는 형태")
+    return "연속형", (f"되짚은 EPS 가 {steps - flat}/{steps} 구간에서 매번 "
+                    f"바뀜 — 분기 확정치가 아니라 매달 갱신되는 값"
+                    f"(선행 컨센서스·보간)")
+
+
 def per_series(prices: list | None, eps_ttm: list | None
                ) -> list[tuple[str, float, float, float]]:
     """[(기간, 주가, TTM EPS, PER)] — EPS 기간마다 **그 시점 주가**로.

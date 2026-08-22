@@ -32977,10 +32977,11 @@ class TestFiscalQ4AndTtmHoles20260822:
         """사용자 2026-08-22 "이력은 전체가 37이면 전체를 다 보여주고" —
         잘라서 보여주면서 '전체 N개' 라고만 적으면 나머지를 볼 방법이 없다."""
         from bot.dashboard import _BAND_JS
-        i = _BAND_JS.index("function perTable")
-        seg = _BAND_JS[i:i + 900]
-        assert ".slice(-24)" not in seg, "이력을 아직 자른다"
-        assert "(t.rows||[]).slice().reverse()" in seg, seg[:400]
+        # ⚠️ **줄/글자 창으로 재지 않는다** — 주석이 한 줄 늘면 무너진다(#60).
+        # 계약은 "이력을 자르지 않고 전 행을 뒤집어 싣는다"이고, 그건 파일
+        # 전체에서 봐도 참이어야 한다.
+        assert ".slice(-24)" not in _BAND_JS, "이력을 아직 자른다"
+        assert "(t.rows||[]).slice().reverse()" in _BAND_JS, "전 행을 안 싣는다"
 
     def test_dead_denominator_column_is_dropped(self):
         """국내(FnGuide)는 EPS/BPS 를 안 줘 전 행이 '—' 인 죽은 열이었다."""
@@ -34504,6 +34505,15 @@ class TestPerBandAudit20260822:
         got = dict((a, m) for m, a, _d in ab.audit_rows(self._tbl(rows)))
         assert got["산수"] == "❌", got
 
+    def test_denominator_basis_is_one_of_the_axes(self):
+        """⚠️ 감사에서 축을 통째로 떼면 조용히 안 재게 된다 — 축 목록을
+        고정한다(#20 배선은 결과로 확인)."""
+        import bot.scripts.per_band_audit as ab
+        rows = [(f"2025-{m:02d}-28", 1000.0 + m, 5.0, (1000.0 + m) / 5.0)
+                for m in range(1, 10)]
+        axes = [a for _m, a, _d in ab.audit_rows(self._tbl(rows))]
+        assert "분모 기준" in axes, axes
+
     def test_no_comparison_data_is_unknown_not_pass(self):
         """⚠️ 대조 0건은 ✅ 가 아니라 ❓ 다(#54) — 내 감사 도구에서 두 번
         어긴 실수다(#132)."""
@@ -34676,3 +34686,99 @@ class TestWatchlistAndBandNote20260822:
             t["band_basis"]
         js = open("bot/dashboard.py", encoding="utf-8").read()
         assert "t.band_basis" in js, "화면이 그 라벨을 안 쓴다"
+
+
+class TestBandDenominatorBasis20260822:
+    """사용자 2026-08-22: "우리가 기준으로 삼는 이 월단위 주가에 따른 PER 나
+    PBR 의 변화가 맞는걸까? … 혹시 분기단위로 하는게 맞지 않을까? 실제 FnGuide
+    밴드차트나 네이버 밴드차트는 어떻게 하는지 보고 리뷰해줘."
+
+    화면 값으로 되짚으니 EPS 가 **매달 +81~82 로 완벽히 선형**이었다 — 분기
+    확정 실적이면 3개월마다 계단처럼 뛰어야 한다. 즉 원천 밴드선의 분모는
+    분기 확정치가 아니다. ⚠️ 나는 그 직전 라운드에 **근거 없이** "분기 실적
+    기준" 이라고 라벨을 붙였다 — 원천이 무엇을 쓰는지는 **재서** 말해야
+    한다(#55·#34).
+    """
+
+    # 사용자 화면(2026-08-22)의 실제 값 — 지어내지 않는다.
+    _SCREEN = [("2026-01-30", 33400, 15.28), ("2026-02-27", 34250, 15.10),
+               ("2026-03-31", 27000, 11.49), ("2026-04-30", 29850, 12.28),
+               ("2026-05-29", 23850, 9.49), ("2026-06-30", 19250, 7.42),
+               ("2026-07-31", 16590, 6.20), ("2026-08-22", 26850, 9.74)]
+
+    @classmethod
+    def _rows(cls):
+        return [{"period": d, "price": px, "per": pr}
+                for d, px, pr in cls._SCREEN]
+
+    def test_implied_eps_is_backed_out_of_the_source(self):
+        from bot.per_band import implied_eps_series
+        eps = implied_eps_series(self._rows())
+        assert len(eps) == 8
+        # 매달 +81~82 — 계단이 아니다
+        diffs = [round(b - a) for (_p, a), (_q, b) in zip(eps, eps[1:])]
+        assert all(80 <= d <= 83 for d in diffs), diffs
+
+    def test_real_screen_values_are_judged_continuous(self):
+        from bot.per_band import eps_cadence
+        cad, why = eps_cadence(self._rows())
+        assert cad == "연속형", (cad, why)
+        assert "매달" in why, why
+
+    def test_quarterly_stepped_source_is_judged_stepwise(self):
+        """반대 증거도 같이 둔다 — '있다'만 묻는 검사는 눈이 먼다(#25)."""
+        from bot.per_band import eps_cadence
+        rows = [{"period": f"2025-{m:02d}-28", "price": 1000 + m,
+                 "per": (1000 + m) / (100 if m < 5 else 110)}
+                for m in range(1, 10)]
+        cad, why = eps_cadence(rows)
+        assert cad == "계단형", (cad, why)
+
+    def test_too_few_points_is_unknown_not_a_guess(self):
+        """⚠️ 대조 대상이 모자라면 ✅ 가 아니라 판정 불가다(#54)."""
+        from bot.per_band import eps_cadence
+        assert eps_cadence(self._rows()[:3])[0] is None
+
+    def test_screen_label_is_measured_not_asserted(self):
+        """라벨이 측정 결과를 따라야 한다 — 계단형·연속형에 따라 달라진다."""
+        import bot.dashboard_server as ds
+        cont = ds._kr_band_basis_note(self._rows())
+        step_rows = [{"period": f"2025-{m:02d}-28", "price": 1000 + m,
+                      "per": (1000 + m) / (100 if m < 5 else 110)}
+                     for m in range(1, 10)]
+        step = ds._kr_band_basis_note(step_rows)
+        assert cont != step, (cont, step)
+        # ⚠️ 부분문자열은 사유 설명에도 걸린다("분기 확정치가 **아니라**") —
+        # **주장하는 라벨**(괄호 안)을 집어야 한다(#65 구조로 볼 것).
+        assert "(분기 확정 실적 기준)" in step, step
+        assert "(분기 확정 실적 기준)" not in cont, cont
+        assert "매달 갱신되는 EPS" in cont, cont
+        assert ds._kr_denom_label(self._rows()) != \
+            ds._kr_denom_label(step_rows)
+
+    def test_render_uses_the_source_denominator_label(self):
+        """화면이 'TTM EPS' 라고 우기면 안 된다 — 원천이 정한다.
+
+        ⚠️ 이름이 소스에 **있는지**로 재면 `if(false)` 로 죽이는 뮤테이션이
+        통과한다(실측) — 조건이 그 값을 실제로 보는지까지 확인한다."""
+        import re
+        from bot.dashboard import _BAND_JS
+        m = re.search(r"if\s*\(([^)]*)\)\s*denom\s*=\s*t\.denom_label",
+                      _BAND_JS)
+        assert m, "원천 분모 라벨을 안 쓴다"
+        assert "denom_label" in m.group(1), m.group(1)
+
+    def test_payload_carries_the_measured_labels(self):
+        """⚠️ 헬퍼만 직접 부르면 **배선을 떼는 뮤테이션을 못 잡는다**(#20) —
+        payload 에 측정 결과가 실려 나오는지 본다."""
+        import bot.dashboard_server as ds
+        ts = [1590000000000 + i * 2592000000 for i in range(50)]
+        # 되짚은 EPS 가 매달 바뀌는(연속형) 원천을 흉내낸다
+        blk = {"mult": [90.8, 63.4, 36.1, 8.7],
+               "price": [[t_, 30000.0 + i * 300] for i, t_ in enumerate(ts)],
+               "bands": [[[t_, 200000.0 + i * 7000] for i, t_ in enumerate(ts)]]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
+        assert t is not None
+        assert "매달 갱신되는 EPS" in (t.get("band_basis") or ""), \
+            t.get("band_basis")
+        assert t.get("denom_label") == "원천 EPS(매달 갱신)", t.get("denom_label")
