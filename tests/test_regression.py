@@ -32062,6 +32062,74 @@ class TestBandCoverageAndPartialSource20260822:
         assert "if(!t){ el.innerHTML = why" in seg, seg[:400]
 
 
+class TestTtmMissingReason20260822:
+    """사용자 2026-08-22 603259.SS: "매출액이 비는건 왜 그런거야?"
+
+    ⚠️ 25.3Q 매출이 원천에 없어 4분기 합이 안 되고 TTM 매출·PSR 이 통째로
+    비었는데 **화면이 아무 말도 안 했다**. FCF·수주잔고는 이미 사유를 적고
+    있었는데 TTM 만 침묵했다(#43·#129 — 이 세션에서 다섯 번째)."""
+
+    @staticmethod
+    def _qs(gap=None):
+        out = []
+        for i in range(1, 5):
+            f = {"매출": 10.0, "영업이익": 2.0, "당기순이익": 1.0}
+            if gap and i == gap[0]:
+                f[gap[1]] = None
+            out.append({"label": f"25.{i}Q", "financials": f})
+        return out
+
+    def test_reason_names_the_quarter_and_the_metric(self):
+        from bot.quarterly_infographic import ttm_missing_why
+        why = ttm_missing_why(self._qs((3, "매출")))
+        assert set(why) == {"매출"}, why
+        assert "25.3Q" in why["매출"], why["매출"]
+
+    def test_reason_and_value_are_exact_opposites(self):
+        """⚠️ 판정을 두 곳에 적으면 언젠가 갈라진다(#38) — `_ttm` 이 만든
+        항목엔 사유가 없고, 안 만든 항목엔 **반드시** 있어야 한다."""
+        from bot.quarterly_infographic import _TTM_KEYS, _ttm, ttm_missing_why
+        anom = self._qs()
+        anom[2]["financials"]["_anomaly_revenue_negative"] = True
+        cases = (self._qs(), self._qs((1, "매출")), self._qs((4, "당기순이익")),
+                 self._qs((2, "영업이익")), self._qs()[:3],
+                 anom)          # ⚠️ 이상치 분기도 태워야 그 분기가 안 눈먼다
+        assert "매출" in ttm_missing_why(anom), "이상치 픽스처가 안 걸렸다"
+        for qs in cases:
+            made, why = set(_ttm(qs)), set(ttm_missing_why(qs))
+            assert made.isdisjoint(why), (made, why)
+            assert made | why == set(_TTM_KEYS), (made, why)
+
+    def test_short_sample_says_how_many_it_has(self):
+        from bot.quarterly_infographic import ttm_missing_why
+        why = ttm_missing_why(self._qs()[:2])
+        assert len(why) == 3 and "2개" in why["매출"], why
+
+    def test_footnote_is_rendered_and_mentions_psr(self):
+        from bot.quarterly_infographic import _footnotes
+        txt = " ".join(t for t, _c in _footnotes(
+            {"ttm_why": {"매출": "25.3Q 원천 미제공(4분기 합 불가)"},
+             "currency": "CNY"}, []))
+        assert "TTM 매출 미표시" in txt, txt
+        assert "PSR 산출 제외" in txt, txt
+
+    def test_no_note_when_nothing_is_missing(self):
+        """잡음 금지 — 뺀 게 없으면 각주도 없다.
+
+        ⚠️ '미표시' 부재로만 재면 **빈 join** 이 단언을 우회한다(사유 없이
+        각주만 붙는 뮤테이션이 통과했다) — 그 각주에만 있는 꼬리말을 집는다."""
+        from bot.quarterly_infographic import _footnotes
+        txt = " ".join(t for t, _c in _footnotes({"currency": "CNY"}, []))
+        assert "부분합으로 대체하지 않음" not in txt, txt
+
+    def test_payload_carries_the_reason(self):
+        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20)."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        assert '"ttm_why": ttm_missing_why(qs)' in src, "payload 배선 누락"
+        ast.parse(src)
+
+
 class TestLazyPaneTickerAndProbeArgs20260822:
     """사용자 2026-08-22: (1) SIE.DE 밴드 탭에 **"bad ticker"** 라는 원시 API
     오류가 그대로 떴다 (2) JP 프로브 v1 이 세 종목 모두 같은 사유를 냈다.
