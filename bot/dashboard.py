@@ -5163,8 +5163,16 @@ _BAND_JS = r"""
       var d=poly(bands[k]);
       if(d) svg+='<path d="'+d+'" fill="none" stroke="'+BANDC[k]+'" stroke-width="1.2" opacity="0.85"/>'; }
     svg+='<path d="'+poly(price)+'" fill="none" stroke="#2f80ed" stroke-width="2"/>';
-    svg+='<text x="'+PADL+'" y="'+(H-6)+'" font-size="9" fill="var(--fg-soft,#999)">'+ymd(minX)+'</text>';
-    svg+='<text x="'+(W-PADR)+'" y="'+(H-6)+'" text-anchor="end" font-size="9" fill="var(--fg-soft,#999)">'+ymd(maxX)+'</text>';
+    /* x축 눈금 — 예전엔 **시작·끝 두 개뿐**이라 중간 시점을 읽을 수 없었다
+       (사용자 2026-08-22 "기간을 더 추가해줄수 있어? 적당히?"). 패널 폭에
+       맞춰 개수를 정한다 — 좁은 2열 배치에서 라벨이 겹치면 안 된다. */
+    var nT=Math.max(2,Math.min(6,Math.floor((W-PADL-PADR)/110)));
+    for(var ti=0;ti<=nT;ti++){ var tx=minX+(maxX-minX)*ti/nT, px2=X(tx);
+      var anc=(ti===0)?'start':((ti===nT)?'end':'middle');
+      if(ti>0&&ti<nT) svg+='<line x1="'+px2.toFixed(1)+'" y1="'+PADT+'" x2="'
+        +px2.toFixed(1)+'" y2="'+(H-PADB)+'" stroke="var(--border-soft,#333)" stroke-width="0.4"/>';
+      svg+='<text x="'+px2.toFixed(1)+'" y="'+(H-6)+'" text-anchor="'+anc
+        +'" font-size="9" fill="var(--fg-soft,#999)">'+ymd(tx)+'</text>'; }
     svg+='</svg>';
     holder.innerHTML=svg;
     if(lg){ var h='<span style="color:#2f80ed;font-weight:600">― 주가</span> ';
@@ -5205,7 +5213,9 @@ _BAND_JS = r"""
          +' 이력 · 밴드</div><div class="si-note">'+esc2(why)+'</div>')
       : ''; return; }
     var kind=t.kind||'PER', denom=(kind==='PBR')?'BPS':'TTM EPS';
-    var rows=(t.rows||[]).slice(-24).reverse();
+    /* 사용자 2026-08-22 "이력은 전체가 37이면 전체를 다 보여주고" — 잘라서
+       보여주면서 '전체 N개' 라고만 적으면 나머지를 볼 방법이 없다. */
+    var rows=(t.rows||[]).slice().reverse();
     var h='<div class="si-section-title" style="margin-top:14px">'+kind+' 이력 · 밴드</div>';
     h+='<div class="si-note" style="margin-bottom:6px">출처: '+esc2(t.source)
       +' · '+kind+' = 주가 ÷ '+denom+'</div>';
@@ -5245,6 +5255,12 @@ _BAND_JS = r"""
          최근 5년), 라벨을 이력 기준으로 적으면 요약과 또 갈라진다(#34). */
       bn='밴드 = '+esc2(t.band_from||r0.period)+' ~ '+esc2(t.band_to||rN.period)
         +' 관측 '+(t.band_n||t.n||0)+'개 분포'; }
+    /* PER 은 순이익이 0 에 가까우면 발산한다 — 한 점이 '최고'를 망가뜨리면
+       밴드가 쓸모없다. 뺀 값은 이력 표에 그대로 남으므로 **뺐다고 말한다**(#43). */
+    var dr=t.band_dropped||[];
+    if(dr.length){ var lst=[]; for(var q=0;q<dr.length&&q<3;q++) lst.push(num(dr[q],2)+'x');
+      bn+=(bn?' · ':'')+'이상치 '+dr.length+'개 제외('+lst.join(', ')
+        +(dr.length>3?' 외':'')+' — 순이익이 0 에 가까워 배수가 발산한 구간)'; }
     if(t.eps_now!=null) bn+=(bn?' · ':'')+'그 배수에서의 주가 = 배수 × 최신 '
       +denom+' '+num(t.eps_now,2);
     else if(rows.length) bn+=' · 그 배수에서의 주가 = 원천 밴드선(최신 시점)';
@@ -5257,10 +5273,8 @@ _BAND_JS = r"""
        그 사실을 안 적으면 전부인 줄 읽는다(#45 총계·소계는 같은 모집단). */
     var hasEps=false;
     for(var e=0;e<rows.length;e++){ if(rows[e].eps!=null){ hasEps=true; break; } }
-    var total=(t.rows||[]).length;
     h+='<div class="si-note" style="margin-top:10px">이력 '
-      +(total>rows.length?('최근 '+rows.length+'개(전체 '+total+'개)')
-                         :(rows.length+'개'))+' · 최신순</div>';
+      +rows.length+'개 · 최신순</div>';
     h+='<table class="si-table"><tr><th class="ctr">기간</th>'
       +'<th class="ctr">주가</th>'+(hasEps?('<th class="ctr">'+denom+'</th>'):'')
       +'<th class="ctr">'+kind+'</th></tr>';
@@ -7698,6 +7712,8 @@ def _render_stock_info_html(rec: dict) -> str:
       환율을 못 받으면 통화가 섞인 배수 대신 <b>만들지 않고 사유를 표시</b>합니다.
       <b>적자 기업</b>은 PER 이 정의되지 않아 원천이 밴드선을 주지 않습니다 — 이때 PER 표는 사유와 함께 비고,
       <b>PBR 표는 그대로 나옵니다</b>(한쪽이 없다고 다른 쪽을 죽이지 않습니다).
+      밴드는 <b>IQR 3배 울타리 밖 이상치를 제외</b>합니다 — 순이익이 0 에 가까우면 배수가 발산해 한 점이 '최고'를 망가뜨립니다.
+      뺀 값은 <b>이력 표에는 그대로</b> 남고, 몇 개를 왜 뺐는지 밴드 표 아래에 적습니다. 이력 표는 <b>전 기간 전 행</b>을 싣습니다.
     </div>
     <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">
