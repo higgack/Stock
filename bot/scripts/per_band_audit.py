@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 4
+_AUDIT_VER = 5
 # ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
 # 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
 # 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
@@ -64,6 +64,10 @@ def _banner() -> None:
     print(f"  per_band: {pb.__file__}")
 
 
+# 원천이 PER 을 직접 주는 경로 — 분할 기준 불일치가 성립하지 않는다.
+_DIRECT_PER_BASES = frozenset({"finmind", "baidu", "fnguide"})
+
+
 def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
     """[(마크, 축, 설명)] — 순수 함수라 픽스처로 동작을 고정할 수 있다(#41).
 
@@ -84,8 +88,16 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
                 + (f" · 첫 불일치 {bad[0]}" if bad else "")))
 
     # ② 분할 정합
-    why = pb.eps_break_reason([(r["period"], r.get("eps")) for r in rows])
-    out.append(("❌" if why else "✅", "분할", why or "인접 EPS 급변 없음"))
+    # ⚠️ 원천이 **PER 을 직접 주는** 경로(FinMind·바이두·FnGuide)에서는 EPS 가
+    # 우리가 나눠 만든 값이라 급변이 있어도 그건 **실적**이지 기준 불일치가
+    # 아니다 — 2026-08-22 실측에서 0002.HK 가 그 이유로 ❌ 였다(실적 적자기).
+    if (tbl.get("basis") or "") in _DIRECT_PER_BASES:
+        out.append(("✅", "분할",
+                    "해당 없음 — 원천이 PER 을 직접 준다(우리가 EPS 로 "
+                    "나누지 않으므로 분할 기준이 갈릴 수 없다)"))
+    else:
+        why = pb.eps_break_reason([(r["period"], r.get("eps")) for r in rows])
+        out.append(("❌" if why else "✅", "분할", why or "인접 EPS 급변 없음"))
 
     # ③ 결산검산 — 연간 EPS 가 있어야 판정할 수 있다
     ann = tbl.get("_annual_eps") or []
