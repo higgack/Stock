@@ -33,7 +33,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 6
+_AUDIT_VER = 7
 # ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
 # 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
 # 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
@@ -41,7 +41,7 @@ _AUDIT_VER = 6
 _MARKET_SAMPLES: tuple[tuple[str, str], ...] = (
     ("US", "AAPL"), ("US", "LRCX"), ("US", "KLAC"), ("US", "NVMI"),
     ("KR", "005930.KS"), ("KR", "000660.KS"),
-    ("JP", "7203.T"), ("JP", "6758.T"),
+    ("JP", "7203.T"), ("JP", "6758.T"), ("JP", "9984.T"), ("JP", "6501.T"),
     ("TW", "2330.TW"), ("TW", "2327.TW"),
     ("CN_A", "600519.SS"), ("CN_A", "002371.SZ"),
     ("HK", "0700.HK"), ("HK", "0002.HK"),
@@ -192,10 +192,15 @@ def audit_one(ticker: str, dump: bool = False) -> list[str]:
         snap = collect_stock_snapshot(ticker) or {}
     except Exception as exc:                                   # noqa: BLE001
         return out + [f"  ❓ 스냅샷 실패: {type(exc).__name__} {exc}"]
+    # ⚠️ **화면이 쓰는 그 경로**를 태운다(#35). 예전엔 `pb.for_ticker` 만 불러
+    # 국내 종목을 `yf-a 관측 4개` 로 판정했는데, 화면은 FnGuide 밴드(관측
+    # 49개)를 그린다 — 감사가 화면이 안 쓰는 경로를 재고 있었다.
     try:
-        tbl, why = pb.for_ticker(ticker, snap)
+        from bot.band_source import resolve as _resolve
+        got = _resolve(ticker, snap)
     except Exception as exc:                                   # noqa: BLE001
-        return out + [f"  ❌ for_ticker 예외: {type(exc).__name__} {exc}"]
+        return out + [f"  ❌ 밴드 해석 예외: {type(exc).__name__} {exc}"]
+    tbl, why = got.get("per"), got.get("why")
     if not tbl:
         out.append(f"  ❓ 밴드 없음 — 사유: {why}")
         return out + (dump_edgar(ticker) if dump else [])
@@ -205,6 +210,12 @@ def audit_one(ticker: str, dump: bool = False) -> list[str]:
         out.append(f"  ⚠️ 잘라냄: {tbl['trim_note']}")
     for mark, axis, msg in audit_rows(tbl):
         out.append(f"  {mark} {axis}: {msg}")
+    # 국내는 PBR 표도 같이 나온다 — 한쪽만 재면 나머지가 조용히 낡는다(#38).
+    pbr = got.get("pbr")
+    if pbr:
+        out.append(f"  [PBR] 관측 {pbr.get('n')}개")
+        for mark, axis, msg in audit_rows(pbr):
+            out.append(f"  {mark} PBR:{axis}: {msg}")
     if dump:
         out.extend(dump_edgar(ticker))
     return out

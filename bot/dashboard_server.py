@@ -1168,15 +1168,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # 아니라 표도 괜찮아" → "외국종목도 PER 밴드차트 만들수 있으면").
             # 미국은 EDGAR 10년, 그 외는 yfinance. PBR 은 BPS 이력이 없어 안
             # 만든다(사용자 "PBR 은 안해도 돼").
-            if not ticker.endswith((".KS", ".KQ")):
+            # ⚠️ 어느 원천을 쓰는지는 `band_source.resolve` **한 곳**이 정한다
+            # — 여기 인라인으로 두면 감사가 화면과 다른 경로를 재게 된다
+            # (2026-08-23 실측: 감사가 국내를 `yf-a 관측 4개` 로 판정, 화면은
+            # FnGuide 관측 49개, #35).
+            from bot.band_source import is_kr as _is_kr, resolve as _resolve
+            if not _is_kr(ticker):
                 snap = None
                 try:
                     import bot.stock_snapshot as _ss
                     snap = _ss.collect_stock_snapshot(ticker)
                 except Exception as exc:                       # noqa: BLE001
                     log.debug("band_api: 스냅샷 생략 %s: %s", ticker, exc)
-                from bot.per_band import for_ticker as _pb
-                tbl, why = _once(f"perband:{ticker}", lambda: _pb(ticker, snap))
+                _got = _once(f"perband:{ticker}",
+                             lambda: _resolve(ticker, snap))
+                tbl, why = _got.get("per"), _got.get("why")
                 if not tbl:
                     # **왜** 없는지 말한다 — 침묵이 최악이다(#43). 사유는
                     # 경우마다 다르므로 하나로 단정하지 않는다(#50·#129).
@@ -1191,12 +1197,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "band": ({"per": ch, "pbr": None,
                               "csym": tbl.get("csym") or "$"} if ch else None)})
                 return
-            from bot.fnguide_bandchart import fetch_band_chart
             # 같은 티커의 밴드 요청이 동시에 두 번 들어온다(2026-08-21 실측:
-            # 376300.KQ 2116ms / 1982ms 동시). 하나만 돌린다.
-            data = _once(f"band:{ticker}", lambda: fetch_band_chart(ticker))
+            # 376300.KQ 2116ms / 1982ms 동시). 하나만 돌린다 — 원본 밴드와
+            # 표를 **한 비행**으로 묶는다(예전엔 키가 둘이라 따로 돌았다).
+            _got = _once(f"perband:{ticker}", lambda: _resolve(ticker))
+            data = _got.get("raw")
             if not data:
-                self._reply_json(200, {"ok": False, "error": "no data"})
+                self._reply_json(200, {"ok": False,
+                                       "error": _got.get("why") or "no data"})
                 return
             # ⚠️ KR 도 밴드 **차트만** 주고 표는 없었다 — 사용자 2026-08-22
             # "한국꺼도 Band 만 만들지말고 같은 탭에 표도" → PBR 도 같은 구성
@@ -1204,8 +1212,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # 자체계산은 없고, 현재 배수용 **현재가 1콜**만 붙는다.
             # 표에도 라이브 시세가 붙으므로(현재 배수) 동시 요청을 하나로
             # 묶는다 — 밴드 payload 는 12h 캐시라 표만 두 번 도는 걸 막는다.
-            _t = _once(f"perband:{ticker}",
-                       lambda: _kr_band_tables(data, ticker))
+            _t = (_got.get("per"), _got.get("pbr"))
             # ⚠️ y축 통화는 **payload 에 실어** 보낸다 — 화면 기본값('₩')에
             # 기대면 그 기본값이 바뀌는 날 국내 축이 조용히 틀린다(#55).
             from bot.per_band import currency_symbol as _cs
