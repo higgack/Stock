@@ -35792,3 +35792,78 @@ class TestPartialRestatementAndStalePath20260823:
         names = [c.func.id for c in ast.walk(fn)
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
         assert "edgar_annual_reason" in names, names
+
+
+class TestAuditCountsWhatItChecked20260823:
+    """사용자 2026-08-23 "전체 감사를 꼼꼼히 한 번 더 돌려보고 수정할 건
+    수정해줘" — 감사 자체를 훑다가 나온 **거짓 초록** 둘.
+
+      ① 국내(FnGuide)는 분모를 안 줘서 `eps` 가 전 행 None 인데, 산수 축이
+         "49/49 행에서 주가÷EPS=PER ✅" 라고 찍었다 — **한 행도 안 재고**
+         통과시킨 것이다(#54). 감사가 국내 경로를 타게 만든 바로 그 커밋에서
+         생긴 거짓 초록이다.
+      ② PBR 표의 분모는 **BPS** 인데 화면·감사가 'EPS' 라고 적고 있었다(#34).
+    """
+
+    @staticmethod
+    def _kr(kind="PBR"):
+        return {"rows": [{"period": f"2025-{m:02d}-28", "price": 1000.0 + m,
+                          "eps": None, "per": (1000.0 + m) / 100.0}
+                         for m in range(1, 13)],
+                "kind": kind, "basis": "fnguide", "band_from": "2025-01-28",
+                "band_to": "2025-12-28", "summary": {}}
+
+    def test_zero_checkable_rows_is_unknown_not_pass(self):
+        import bot.scripts.per_band_audit as ab
+        got = dict((a, m) for m, a, _d in ab.audit_rows(self._kr()))
+        assert got["산수"] == "❓", got
+
+    def test_the_split_axis_does_not_pass_on_nothing_either(self):
+        """⚠️ 같은 함정이 옆 축에도 있다 — 원천이 배수를 직접 주지 않는
+        경로에서 EPS 가 없으면 ❓ 여야 한다."""
+        import bot.scripts.per_band_audit as ab
+        t = self._kr(kind="PER")
+        t["basis"] = "edgar"            # 직접 PER 경로가 아니다
+        got = dict((a, m) for m, a, _d in ab.audit_rows(t))
+        assert got["분할"] == "❓", got
+
+    def test_a_checkable_table_still_reports_the_count(self):
+        """⚠️ 늘 ❓ 를 찍는 축은 아무것도 안 재는 것이다 — 통과도 확인한다."""
+        import bot.scripts.per_band_audit as ab
+        t = {"rows": [{"period": "2025-06-30", "price": 100.0, "eps": 5.0,
+                       "per": 20.0}],
+             "kind": "PER", "basis": "edgar", "band_from": "2025-06-30",
+             "band_to": "2025-06-30", "summary": {}}
+        got = [(m, d) for m, a, d in ab.audit_rows(t) if a == "산수"]
+        assert got[0][0] == "✅", got
+        assert "1/1" in got[0][1] and "주가÷EPS=PER" in got[0][1], got
+
+    def test_the_pbr_denominator_is_bps_everywhere(self):
+        """PER 의 분모는 EPS, PBR 의 분모는 BPS — 지표 이름을 섞으면 화면이
+        거짓말한다(2026-08-23 캡처: "PBR = 주가 ÷ 원천 EPS(매달 갱신)")."""
+        import bot.dashboard_server as ds
+        import bot.scripts.per_band_audit as ab
+        rows = [{"period": f"2025-{m:02d}-28", "price": 1000.0 + m * 10,
+                 "per": (1000.0 + m * 10) / (100.0 + m)} for m in range(1, 13)]
+        assert "BPS" in ds._kr_denom_label(rows, "PBR")
+        assert "EPS" not in ds._kr_denom_label(rows, "PBR")
+        assert "EPS" in ds._kr_denom_label(rows, "PER")
+        assert "BPS" in ds._kr_band_basis_note(rows, "PBR")
+        assert "EPS" in ds._kr_band_basis_note(rows, "PER")
+        # 감사 ⑥ 도 표의 지표를 따라간다
+        msg = [d for m, a, d in ab.audit_rows(self._kr()) if a == "분모 기준"][0]
+        assert "BPS" in msg and "되짚은 EPS" not in msg, msg
+
+    def test_the_table_passes_its_kind_to_the_labels(self):
+        """⚠️ 헬퍼만 kind 를 받고 호출부가 안 넘기면 화면은 그대로다(#20)."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_fnguide_ratio_table")
+        for call in ("_kr_band_basis_note", "_kr_denom_label"):
+            node = next(c for c in ast.walk(fn)
+                        if isinstance(c, ast.Call)
+                        and isinstance(c.func, ast.Name)
+                        and c.func.id == call)
+            assert len(node.args) >= 2, f"{call} 에 kind 를 안 넘긴다"

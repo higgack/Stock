@@ -427,7 +427,13 @@ def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
     return (rows, top) if len(rows) >= 4 else ([], top)
 
 
-def _kr_band_basis_note(rows: list) -> str:
+# PBR 의 분모는 **BPS** 다 — 지표마다 이름이 다르다(#34 같은 주제어에 다른
+# 시리즈면 라벨로 구분). 2026-08-23 실측: PBR 표가 "PBR = 주가 ÷ 원천
+# EPS(매달 갱신)" 라고 적고 있었다.
+_DENOM_NAME = {"PER": "EPS", "PBR": "BPS"}
+
+
+def _kr_band_basis_note(rows: list, kind: str = "PER") -> str:
     """밴드 4선의 기준을 **측정해서**, 짧게 말한다(추측 금지 · 근거 숫자 유지).
 
     ⚠️ 옛 문구는 판정과 그 근거를 두 번 적어 두 줄이 넘었다(사용자 2026-08-23
@@ -435,26 +441,32 @@ def _kr_band_basis_note(rows: list) -> str:
     근거가 아니다 — 몇/몇 구간인지는 그대로 싣는다(#55 파생 판정은 산식을).
     """
     from bot.per_band import eps_cadence, eps_cadence_stats
-    cad, _why = eps_cadence(rows)
+    d = _DENOM_NAME.get(kind, "EPS")
+    cad, _why = eps_cadence(rows, d)
     flat, steps = eps_cadence_stats(rows)
     tail = " · 요약은 우리 월말 관측 분포"
     if cad == "계단형":
-        return f"FnGuide 밴드선 · 분모 = 분기 확정 EPS({flat}/{steps} 유지){tail}"
+        return f"FnGuide 밴드선 · 분모 = 분기 확정 {d}({flat}/{steps} 유지){tail}"
     if cad == "연속형":
-        return (f"FnGuide 밴드선 · 분모 = 매달 갱신 EPS"
+        return (f"FnGuide 밴드선 · 분모 = 매달 갱신 {d}"
                 f"({steps - flat}/{steps} 변동){tail}")
-    return f"FnGuide 밴드선 · 분모 = 원천 EPS(표본 부족으로 미판정){tail}"
+    return f"FnGuide 밴드선 · 분모 = 원천 {d}(표본 부족으로 미판정){tail}"
 
 
-def _kr_denom_label(rows: list) -> str:
-    """분모 이름 — 원천이 계단형이면 확정 EPS, 아니면 그렇게 안 우긴다."""
+def _kr_denom_label(rows: list, kind: str = "PER") -> str:
+    """분모 이름 — 원천이 계단형이면 확정치, 아니면 그렇게 안 우긴다.
+
+    ⚠️ PER 의 분모는 EPS, PBR 의 분모는 **BPS** 다 — 2026-08-23 실측에서
+    PBR 표가 "PBR = 주가 ÷ 원천 EPS(매달 갱신)" 라고 적고 있었다(#34).
+    """
     from bot.per_band import eps_cadence
-    cad, _why = eps_cadence(rows)
+    d = _DENOM_NAME.get(kind, "EPS")
+    cad, _why = eps_cadence(rows, d)
     if cad == "계단형":
-        return "분기 확정 EPS"
+        return f"분기 확정 {d}"
     if cad == "연속형":
-        return "원천 EPS(매달 갱신)"
-    return "원천 EPS"
+        return f"원천 {d}(매달 갱신)"
+    return f"원천 {d}"
 
 
 def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | None:
@@ -501,8 +513,8 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
             # 없이 "분기 실적 기준" 이라고 적었는데, 화면 값으로 되짚으니
             # EPS 가 매달 +81~82 로 **선형**이었다(분기 확정치면 계단이어야
             # 한다). 원천이 무엇을 쓰는지는 추측이 아니라 측정이다.
-            "band_basis": _kr_band_basis_note(rows),
-            "denom_label": _kr_denom_label(rows),
+            "band_basis": _kr_band_basis_note(rows, kind),
+            "denom_label": _kr_denom_label(rows, kind),
             "summary": _sm(rows, years=5, price_now=px_now),
             "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
             "basis": "fnguide", "market": "KR"}
