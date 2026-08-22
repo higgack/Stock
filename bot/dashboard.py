@@ -5183,6 +5183,26 @@ _BAND_JS = r"""
     var h='<div class="si-section-title" style="margin-top:14px">PER 이력 · 밴드</div>';
     h+='<div class="si-note" style="margin-bottom:6px">출처: '+esc2(t.source)
       +' · PER = 주가 ÷ TTM EPS · 관측 '+(t.n||0)+'개</div>';
+    /* 요약 — 밴드 표 **위**에(사용자 2026-08-22 "여기 위에 해주면 될 것
+       같아"). 현재 PER 은 **라이브 시세**로 만든 값이고, 못 받았으면
+       마지막 관측이라고 밝힌다(침묵이 최악, #43). */
+    var sm=t.summary;
+    if(sm){
+      var lab=(sm.span_years>=sm.want_years-0.2)?(sm.want_years+'년')
+              :('최근 '+num(sm.span_years,1)+'년');
+      var live=(sm.per_now_basis==='live');
+      h+='<table class="si-table" style="margin-bottom:6px"><tr>'
+        +'<th class="ctr">현재 PER</th><th class="ctr">'+esc2(lab)+' 평균</th>'
+        +'<th class="ctr">'+esc2(lab)+' 최저</th><th class="ctr">'+esc2(lab)+' 최고</th></tr>'
+        +'<tr><td class="ctr">'+num(sm.per_now,2)+'x</td>'
+        +'<td class="ctr">'+num(sm.avg,2)+'x</td>'
+        +'<td class="ctr">'+num(sm.min,2)+'x</td>'
+        +'<td class="ctr">'+num(sm.max,2)+'x</td></tr></table>';
+      h+='<div class="si-note" style="margin-bottom:10px">'+esc2(sm.from)+' ~ '
+        +esc2(sm.to)+' 관측 '+(sm.n||0)+'개 기준 · 현재 PER = '
+        +(live?('현재가 '+num(sm.price_now,2)+' 기준(실시간 시세)')
+              :'마지막 관측 기준 — 실시간 시세를 못 받았습니다')+'</div>';
+    }
     h+='<table class="si-table"><tr><th class="ctr">배수</th><th class="ctr">PER</th>'
       +'<th class="ctr">그 배수에서의 주가</th></tr>';
     for(var i=0;i<(t.bands||[]).length;i++){ var b=t.bands[i];
@@ -7608,6 +7628,8 @@ def _render_stock_info_html(rec: dict) -> str:
     <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
       파란선=주가 · 밴드선=PER/PBR 멀티플(최고·중상·중하·최저)별 적정주가 · 세로 점선 오른쪽=현재 이후(컨센서스 전망 구간).
       FnGuide 밴드차트 데이터(밴드·멀티플·전망 동일). 아래 <b>PER 이력·밴드 표</b>는 같은 값을 표로 되뽑은 것입니다.
+      맨 위 요약의 <b>현재 PER</b> 은 <b>실시간 시세</b>로 매번 다시 계산하며(PER 은 주가에 비례), 평균·최저·최고는
+      최근 5년 관측 분포입니다 — 시계열이 5년보다 짧으면 실제 걸린 기간을 라벨에 적습니다.
       <b>해외 종목</b>은 FnGuide 커버리지가 없어 차트 대신 <b>표</b>만 제공합니다 — 미국은 SEC EDGAR 희석 EPS(최대 10년),
       그 외는 yfinance 손익(TTM)으로 <b>직접 계산</b>합니다(PER = 주가 ÷ TTM EPS).
     </div>
