@@ -314,6 +314,123 @@ def list_cn_a_universe() -> dict:
 
 
 
+# ── 바이두 股市通 일별 밸류에이션(A주·홍콩 공통) ──────────────────────
+# ⚠️ 이 경로가 **AKShare 함수 이름에 기대지 않는** 이유: 설치본 v1.18.62 에는
+# `stock_a_indicator_lg` 가 **없다**(changelog 문자열로만 남아 있어 `dir()` 도
+# 아닌 grep 은 통과한다 — #25 '능력은 이름이 아니라 실측'). 그 이름을 부르던
+# `get_valuation`(스크리너 CN PER/PBR 폴백)은 그래서 **조용히 죽어 있었다**.
+# 그래서 원천 API 를 직접 부르고, AKShare 래퍼는 폴백으로만 둔다.
+_BAIDU_URL = "https://gushitong.baidu.com/opendata"
+_BAIDU_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+# 바이두가 받는 지표명 — {"总市值","市盈率(TTM)","市盈率(静)","市净率","市现率"}.
+BAIDU_PER = "市盈率(TTM)"
+BAIDU_PBR = "市净率"
+
+
+def _baidu_valuation(code: str, market: str, indicator: str,
+                     period: str) -> list[tuple[str, float]]:
+    """바이두 股市通 일별 밸류에이션 [(YYYY-MM-DD, 값)] — 빈 리스트면 실패.
+
+    `market` 은 `_ticker_to_cn_code` 태그(CN_A_* → ab · HK → hk).
+    """
+    mk = "hk" if market == "HK" else "ab"
+    params = {"openapi": "1", "dspName": "iphone", "tn": "tangram",
+              "client": "app", "query": indicator, "code": code, "word": "",
+              "resource_id": "51171", "market": mk, "tag": indicator,
+              "chart_select": period, "industry_select": "",
+              "skip_industry": "1", "finClientType": "pc"}
+    import requests
+    r = requests.get(_BAIDU_URL, params=params,
+                     headers={"User-Agent": _BAIDU_UA,
+                              "Referer": "https://gushitong.baidu.com/"},
+                     timeout=20)
+    r.raise_for_status()
+    body = (r.json()["Result"][0]["DisplayData"]["resultData"]["tplData"]
+            ["result"]["chartInfo"][0]["body"])
+    out = []
+    for row in body:
+        if isinstance(row, dict):
+            # ⚠️ 키 이름을 **가정하지 않는다** — 원천이 `date/value` 로 줄 때도
+            # 있고 한자 키로 줄 때도 있다. 없으면 **자리**로 받는다(AKShare 래퍼도
+            # `pd.DataFrame(body)` 뒤 컬럼을 자리로 갈아끼운다).
+            if "date" in row or "value" in row:
+                d, v = row.get("date"), row.get("value")
+            else:
+                vals = list(row.values())
+                if len(vals) < 2:
+                    continue
+                d, v = vals[0], vals[1]
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            d, v = row[0], row[1]
+        else:
+            continue
+        d = str(d)[:10]
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if len(d) == 10 and v == v:
+            out.append((d, v))
+    out.sort()
+    return out
+
+
+def _baidu_period(years: int, market: str) -> str:
+    """요청 연수 → 바이두 기간 키워드. HK 는 近五年·近十年을 안 받는다."""
+    if market == "HK":
+        return "全部" if years > 3 else ("近三年" if years > 1 else "近一年")
+    if years > 10:
+        return "全部"
+    if years > 5:
+        return "近十年"
+    if years > 3:
+        return "近五年"
+    return "近三年" if years > 1 else "近一年"
+
+
+def valuation_series(code: str, market: str, indicator: str,
+                     years: int = 10) -> list[tuple[str, float]]:
+    """일별 밸류에이션 이력 — 바이두 직접 호출 → AKShare 래퍼 폴백.
+
+    실패는 **로그로 알린다**(조용한 폴백은 "가끔 이상하다"로만 보인다, #42a).
+    """
+    period = _baidu_period(years, market)
+    try:
+        rows = _baidu_valuation(code, market, indicator, period)
+        if rows:
+            return rows
+        log.warning("baidu: %s %s %s — 0행", market, code, indicator)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("baidu: %s %s %s 실패 — %s", market, code, indicator, exc)
+    ak = _import_akshare()
+    fn = getattr(ak, "stock_hk_valuation_baidu" if market == "HK"
+                 else "stock_zh_valuation_baidu", None) if ak else None
+    if fn is None:
+        log.warning("akshare: 밸류에이션 래퍼 없음(%s) — 설치본 확인", market)
+        return []
+    try:
+        df = _fetch_with_retry(
+            lambda: fn(symbol=code, indicator=indicator, period=period),
+            f"valuation_series {code} {indicator}")
+        if df is None or len(df) == 0:
+            return []
+        out = []
+        for _i, row in df.iterrows():
+            d = str(row.get("date"))[:10]
+            try:
+                v = float(row.get("value"))
+            except (TypeError, ValueError):
+                continue
+            if len(d) == 10 and v == v:
+                out.append((d, v))
+        out.sort()
+        return out
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("akshare: valuation_series %s 실패 — %s", code, exc)
+        return []
+
+
 def _fetch_with_retry(ak_fn, label: str, max_retries: int = 2):
     """Call `ak_fn()` (a zero-arg lambda) and retry transient network
     failures with exponential backoff (2s, 4s). Permanent failures
@@ -688,140 +805,76 @@ class AkshareClient:
     # ---- 个股 估值 (per-ticker valuation: PE / PB / PS) -----------------
 
     def get_valuation(self, ticker: str) -> Optional[dict]:
-        """Latest A-share PE / PB / PS multiples via AKShare
-        ``stock_a_indicator_lg``. yfinance ``trailingPE`` / ``forwardPE``
-        / ``priceToBook`` / ``priceToSalesTrailing12Months`` 는 CN A-share
-        커버리지가 sparse — 2026-05-29 EV screener review 에서 300037.SZ
-        / 002812.SZ / 688275.SS 등 PER/PBR 모두 None 으로 출력에 "(inferred
-        data)" 잔존. 본 메서드가 yfinance 빈 슬롯의 폴백 (KR 의 pykrx
-        폴백과 동일 패턴).
+        """CN A주 / HK 최신 PER·PBR — 바이두 股市通 일별 밸류에이션의 마지막 행.
 
-        Returns:
-          ``{"per": float, "pbr": float, "psr": float, "date": "YYYY-MM-DD"}``
-          (각 키는 N/A 시 None) 또는 전체 실패 시 None.
+        yfinance ``trailingPE`` / ``priceToBook`` 는 CN A-share 커버리지가
+        sparse — 2026-05-29 EV screener review 에서 300037.SZ / 002812.SZ /
+        688275.SS 등 PER/PBR 모두 None. 본 메서드가 그 빈 슬롯의 폴백이다
+        (KR 의 pykrx 폴백과 같은 패턴).
 
-        Cache: 12h disk (per-ticker key). 일중 multiple 변동은 미세 — 매
-        screener 호출마다 fetch 할 가치 없음. HK / BJ tickers 는 미지원
-        (AKShare 의 stock_a_indicator_lg 는 SH/SZ 메인보드 + STAR +
-        ChiNext 만 커버).
+        ⚠️ 2026-08-22 까지 `stock_a_indicator_lg` 를 불렀는데 그 이름은 설치본
+        AKShare v1.18.62 에 **없다** — 즉 이 폴백은 조용히 죽어 있었다(#25).
+        지금은 `valuation_series` 단일 경로(바이두 직접 → AKShare 래퍼)를 쓴다.
+
+        Returns ``{"per":float|None,"pbr":float|None,"psr":None,
+        "date":"YYYY-MM-DD"}`` 또는 전체 실패 시 None. ``psr`` 은 원천이 주지
+        않아 항상 None 이다 — **없는 값을 만들지 않는다**(#32).
+
+        Cache: 12h disk. BJ 는 미지원(원천 커버리지 밖).
         """
         code, market = _ticker_to_cn_code(ticker)
-        if not code or market not in ("CN_A_SH", "CN_A_SZ"):
+        if not code or market not in ("CN_A_SH", "CN_A_SZ", "HK"):
             return None
-
-        cache_key = f"valuation_{code}_{market}_{date.today().isoformat()}.json"
+        cache_key = f"valuation2_{code}_{market}_{date.today().isoformat()}.json"
         cached = _cache_get(cache_key, ttl_hours=12)
         if cached is not None:
             return cached if cached else None
+        per = valuation_series(code, market, BAIDU_PER, years=1)
+        pbr = valuation_series(code, market, BAIDU_PBR, years=1)
 
-        ak = _import_akshare()
-        if ak is None:
-            return None
-
-        try:
-            df = _fetch_with_retry(
-                lambda: ak.stock_a_indicator_lg(symbol=code),
-                f"valuation {code}",
-            )
-            if df is None or len(df) == 0:
-                _cache_put(cache_key, {})
-                return None
-            # Pick the most recent row. Column casing varies between
-            # AKShare versions ('trade_date' vs 'date'; 'pe' vs 'pe_ttm').
-            cols = list(df.columns)
-            date_col = next(
-                (c for c in cols if c in ("trade_date", "date", "日期")),
-                None,
-            )
-            if date_col:
-                df = df.sort_values(date_col)
-            row = df.iloc[-1]
-            def _pick(*names):
-                for n in names:
-                    if n in row.index:
-                        v = row.get(n)
-                        try:
-                            f = float(v)
-                            if f == f and 0 < f < 1000:  # NaN-safe + sanity
-                                return f
-                        except (TypeError, ValueError):
-                            continue
-                return None
-            result = {
-                "per": _pick("pe", "pe_ttm", "PE", "市盈率(TTM)"),
-                "pbr": _pick("pb", "PB", "市净率"),
-                "psr": _pick("ps", "ps_ttm", "PS", "市销率"),
-                "date": str(row.get(date_col)) if date_col else None,
-            }
-            if all(v is None for k, v in result.items() if k != "date"):
-                _cache_put(cache_key, {})
-                return None
-            _cache_put(cache_key, result)
-            return result
-        except Exception as exc:
-            log.warning("akshare: valuation fetch failed for %s: %s", code, exc)
-            return None
+        def _last(rows):
+            for d, v in reversed(rows or []):
+                if 0 < v < 1000:                  # 자릿수 사고만 거른다
+                    return d, v
+            return None, None
+        d_per, v_per = _last(per)
+        d_pbr, v_pbr = _last(pbr)
+        if v_per is None and v_pbr is None:
+            return None                       # 빈 결과는 캐시 안 함(#119)
+        result = {"per": v_per, "pbr": v_pbr, "psr": None,
+                  "date": d_per or d_pbr}
+        _cache_put(cache_key, result)
+        return result
 
     def per_history(self, ticker: str, years: int = 10) -> list:
-        """CN A주 **일별 PER 이력** [(YYYY-MM-DD, PER)] — 밴드차트용 장기 재료.
+        """CN A주 / HK **일별 PER 이력** [(YYYY-MM-DD, PER)] — 밴드차트 재료.
 
-        ⚠️ `get_valuation` 이 이미 부르는 `stock_a_indicator_lg` 가 **이력
-        전체**를 준다 — 그런데 그쪽은 `df.iloc[-1]` 로 마지막 한 줄만 쓰고
-        나머지를 버렸다(2026-08-22 발견). 대만 FinMind `TaiwanStockPER` 와
-        같은 완제품 원천이라 우리가 EPS 로 만들 필요가 없다(#141 '재료를 모아
-        계산하기 전에 원천이 그 값을 직접 주는지 확인할 것').
+        대만 FinMind `TaiwanStockPER` 와 같은 **완제품** 원천이라 우리가 EPS 로
+        만들 필요가 없다(#141 '재료를 모아 계산하기 전에 원천이 그 값을 직접
+        주는지 확인할 것'). 홍콩이 특히 중요하다 — 야후가 HK 손익을 반기로만
+        줘서 분기 TTM EPS 가 안 만들어진다.
 
         ⚠️ 캐시 키에 `years` 를 넣는다 — 짧은 조회가 먼저 캐시를 채우면 긴
         조회가 그 짧은 결과를 받아 간다(#61 의 반대 방향).
 
-        HK / BJ 는 `stock_a_indicator_lg` 커버리지 밖이라 빈 리스트다
-        (`get_valuation` 독스트링과 같은 제약 — 한 곳에만 적으면 갈라진다).
+        BJ 는 원천 커버리지 밖이라 빈 리스트다.
         """
         code, market = _ticker_to_cn_code(ticker)
-        if not code or market not in ("CN_A_SH", "CN_A_SZ"):
+        if not code or market not in ("CN_A_SH", "CN_A_SZ", "HK"):
             return []
-        cache_key = (f"perhist_{code}_{market}_{years}y_"
+        cache_key = (f"perhist2_{code}_{market}_{years}y_"
                      f"{date.today().isoformat()}.json")
         cached = _cache_get(cache_key, ttl_hours=12)
         if cached is not None:
             return [tuple(x) for x in cached] if cached else []
-        ak = _import_akshare()
-        if ak is None:
-            return []
-        try:
-            df = _fetch_with_retry(
-                lambda: ak.stock_a_indicator_lg(symbol=code),
-                f"per_history {code}")
-            if df is None or len(df) == 0:
-                _cache_put(cache_key, [])
-                return []
-            cols = list(df.columns)
-            date_col = next((c for c in cols
-                             if c in ("trade_date", "date", "日期")), None)
-            per_col = next((c for c in cols
-                            if c in ("pe_ttm", "pe", "PE", "市盈率(TTM)")), None)
-            if not date_col or not per_col:
-                log.warning("akshare: per_history %s — 컬럼 미상 %s", code, cols)
-                _cache_put(cache_key, [])
-                return []
-            floor = (date.today() - timedelta(days=365 * years + 40)).isoformat()
-            out = []
-            for _i, row in df.iterrows():
-                d = str(row.get(date_col))[:10]
-                if len(d) != 10 or d < floor:
-                    continue
-                try:
-                    v = float(row.get(per_col))
-                except (TypeError, ValueError):
-                    continue
-                if v == v and v > 0:          # NaN 제외 · 적자(음수)는 밴드 불가
-                    out.append((d, v))
-            out.sort()
+        rows = valuation_series(code, market, BAIDU_PER, years=years)
+        floor = (date.today() - timedelta(days=365 * years + 40)).isoformat()
+        out = [(d, v) for d, v in rows if d >= floor and v > 0]
+        # ⚠️ 빈 결과는 **캐시하지 않는다** — 원천 장애 한 번이 12시간 빈 표가
+        # 된다(#119). 실패는 이미 `valuation_series` 가 로그로 알린다.
+        if out:
             _cache_put(cache_key, out)
-            return out
-        except Exception as exc:               # noqa: BLE001
-            log.warning("akshare: per_history failed for %s: %s", code, exc)
-            return []
+        return out
 
     # ---- 港股通 / 沪股通 / 深股통 flow -----------------------------------
 
