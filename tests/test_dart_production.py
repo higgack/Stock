@@ -700,7 +700,8 @@ class TestCardSplit20260820:
                             lambda *a, **k: pay)
         monkeypatch.setattr(qi, "cache_path", lambda *a, **k: p)
         monkeypatch.setattr(qi, "render_cards",
-                            lambda payload, out: seen.append(out) or out)
+                            lambda payload, out, *a, **k:
+                            seen.append(out) or out)
         r = qi.get_or_render("TK")
         assert r["cached"] is True and r["image"] == str(p)
         assert r["cards_image"] == str(pc), "짝이 없는데 복구를 안 한다"

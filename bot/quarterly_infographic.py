@@ -38,6 +38,18 @@ log = logging.getLogger("bot.quarterly_infographic")
 # 있다. 대시보드는 ThreadingHTTPServer 라 동시 요청이 실제로 가능 → 직렬화.
 _RENDER_LOCK = threading.Lock()
 
+# ⚠️ 락 **대기**와 실제 **그리기**를 나눠 재야 한다(2026-08-22 `render_png=
+# 39.15s`): pyplot 전역 상태 때문에 렌더가 프로세스 전체에서 직렬화되므로,
+# 다른 종목이 그리는 동안 여기서 **기다리기만** 할 수 있다. 둘을 합쳐 재면
+# "그리기가 느리다"로 오진하고 엉뚱한 곳을 고친다(#92 '느리다는 진단이 아니다').
+import time as _rt_time
+
+
+def _mark_png(tkey: str, stage: str, part: str, sec: float) -> None:
+    if tkey and stage:
+        _RENDER_TIMING.set(tkey, f"png.{stage}.{part}", sec)
+
+
 # 팔레트 — daily_byte/realestate 인포그래픽과 동일 톤(대시보드 일관성).
 _BG = "#070a14"; _PANEL = "#131a2e"; _PANEL2 = "#1a2238"; _LINE = "#2a3656"
 _TEXT = "#e8ecf6"; _MUTED = "#93a0bd"; _ACCENT = "#4da3ff"; _ACCENTW = "#22d3ee"
@@ -177,7 +189,8 @@ def _font_ok() -> bool:
 
 
 def render_infographic(payload: dict, out_path: str,
-                       sections: tuple = _SECTIONS) -> str | None:
+                       sections: tuple = _SECTIONS, stage: str = "",
+                       tkey: str = "") -> str | None:
     """payload → PNG. 성공 시 out_path, 실패(폰트 부재·오류) 시 None.
 
     ⚠️ 전 구간을 try 로 감싼다 — 그리기 단계 예외가 새면 호출부(API 핸들러)가
@@ -188,7 +201,10 @@ def render_infographic(payload: dict, out_path: str,
     payload = {ticker, company, market, market_cap, currency, quarters[],
                ttm{}, per, psr, growth_risk{}}
     quarters = 오래된→최신 순 [{label, financials{}, ratios{}}...]"""
+    _t_wait = _rt_time.time()
     with _RENDER_LOCK:
+        _mark_png(tkey, stage, "wait", _rt_time.time() - _t_wait)
+        _t_draw = _rt_time.time()
         try:
             return _render_locked(payload, out_path, sections)
         except Exception as exc:
@@ -199,6 +215,8 @@ def render_infographic(payload: dict, out_path: str,
             except Exception:
                 pass
             return None
+        finally:
+            _mark_png(tkey, stage, "draw", _rt_time.time() - _t_draw)
 
 
 # 차트 눈금 파라미터 — 함수 안에 박아두면 테스트가 소스 grep 밖에 못 한다.
@@ -521,7 +539,8 @@ def _new_canvas(plt, W: float, H: float):
     return fig, ax
 
 
-def render_cards(payload: dict, out_path: str) -> str | None:
+def render_cards(payload: dict, out_path: str, stage: str = "cards",
+                 tkey: str = "") -> str | None:
     """성장동력·리스크 카드**만** 담은 별도 PNG. 없으면 None.
 
     사용자 2026-08-20: 생산능력·가동률 표가 "확인된 성장동력 바로 위"에
@@ -532,7 +551,10 @@ def render_cards(payload: dict, out_path: str) -> str | None:
     분리 이후 카드를 그리는 곳은 **여기 하나뿐**이다(`_render_locked` 는
     더 이상 그리지 않는다) — 그리기 코드를 두 벌 두면 한쪽만 고쳐져 모양이
     갈라지므로 `_draw_cards()` 로 떼어 두고 여기서만 부른다."""
+    _t_wait = _rt_time.time()
     with _RENDER_LOCK:
+        _mark_png(tkey, stage, "wait", _rt_time.time() - _t_wait)
+        _t_draw = _rt_time.time()
         try:
             return _render_cards_locked(payload, out_path)
         except Exception as exc:                               # noqa: BLE001
@@ -543,6 +565,8 @@ def render_cards(payload: dict, out_path: str) -> str | None:
             except Exception:
                 pass
             return None
+        finally:
+            _mark_png(tkey, stage, "draw", _rt_time.time() - _t_draw)
 
 
 def _cards_of(payload: dict) -> tuple[list, list]:
@@ -1681,8 +1705,9 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
         _t0 = _time.time()
         # 짝 PNG 가 없으면 **여기서** 그린다 — 캐시 경로인데도 렌더가 돈다.
         _bot = str(pb) if pb.exists() else render_infographic(
-            payload, str(pb), _PART_BOTTOM)
-        _crd = str(pc) if pc.exists() else render_cards(payload, str(pc))
+            payload, str(pb), _PART_BOTTOM, "bottom", _tk)
+        _crd = str(pc) if pc.exists() else render_cards(payload, str(pc),
+                                                        "cards", _tk)
         _RENDER_TIMING.set(_tk, "render_parts", _time.time() - _t0)
         _RENDER_TIMING.set(_tk, "cached", 1.0)
         _RENDER_TIMING.set(_tk, "total", _time.time() - _t_all)
@@ -1693,9 +1718,9 @@ def get_or_render(ticker: str, snap: dict | None = None, *,
         return {"ok": True, "image": str(p), "image_bottom": _bot,
                 "cards_image": _crd, "payload": payload, "cached": True}
     _t0 = _time.time()
-    img = render_infographic(payload, str(p), _PART_TOP)
-    bottom = render_infographic(payload, str(pb), _PART_BOTTOM)
-    cards = render_cards(payload, str(pc))
+    img = render_infographic(payload, str(p), _PART_TOP, "top", _tk)
+    bottom = render_infographic(payload, str(pb), _PART_BOTTOM, "bottom", _tk)
+    cards = render_cards(payload, str(pc), "cards", _tk)
     _RENDER_TIMING.set(_tk, "render_png", _time.time() - _t0)
     _RENDER_TIMING.set(_tk, "total", _time.time() - _t_all)
     if img:

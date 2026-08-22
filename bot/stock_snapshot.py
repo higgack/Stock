@@ -430,8 +430,50 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
             finally:
                 _TIMING.set(ticker, name, time.time() - _t0)
 
+        # ⚠️ 시장 enrichment 를 **먼저 띄운다**. 보조 6종 뒤에 직렬로 돌던
+        # 것인데(아래 옛 주석이 그 사실을 적어 두고 있었다), `_enrich_*` 는
+        # AST 로 확인한 결과 **snap 에서 아무것도 읽지 않고 자기 시장 키만
+        # 쓴다** — 별도 dict 에 받아 뒤에서 합치면 서로 기다릴 이유가 없다.
+        # (2026-08-22 `/api/lookup_detail` 60~192초 대응. 직렬 합이 최대값
+        # 하나가 된다 — #127 표↔수주잔고와 같은 처방.)
+        # 시장별 분기를 이름으로 열거하지 않고 접미사 표에서 고른다(#24).
+        _ENRICH = ((".KS", ".KQ"), _enrich_kr, "KR"), \
+                  ((".T",), _enrich_jp, "JP"), \
+                  ((".TW", ".TWO"), _enrich_tw, "TW"), \
+                  ((".SS", ".SZ", ".BJ", ".HK"), _enrich_cn, "CN")
+        _fn, _mkt = _enrich_us, "US"
+        for _sfx, _f, _m in _ENRICH:
+            if ticker.endswith(_sfx):
+                _fn, _mkt = _f, _m
+                break
+        _overlay: dict = {}
+
+        def _run_enrich() -> None:
+            _t0 = time.time()
+            try:
+                _fn(ticker, _overlay)
+            except Exception as exc:                           # noqa: BLE001
+                log.warning("stock_snapshot: %s enrich skipped for %s: %s",
+                            _mkt, ticker, exc)
+            finally:
+                _TIMING.set(ticker, f"enrich:{_mkt}", time.time() - _t0)
+
+        from concurrent.futures import ThreadPoolExecutor
+        _enr_pool = _enr_fut = None
         try:
-            from concurrent.futures import ThreadPoolExecutor
+            # ⚠️ 공용 풀(`bot.pool`)을 쓰지 않는다 — 그건 **말단 팬아웃 전용**
+            # 이고, 여기서 제출한 작업이 다시 공용 풀에 제출하면 교착한다(#110).
+            _enr_pool = ThreadPoolExecutor(max_workers=1,
+                                           thread_name_prefix="enrich")
+            _enr_fut = _enr_pool.submit(_run_enrich)
+            # ⚠️ 바로 shutdown(wait=False) — 제출한 작업은 그대로 돌고
+            # 리소스는 끝나면 정리된다. 아래 어느 경로로 빠져나가도(예외 포함)
+            # 풀이 남지 않는다(정리를 뒤에 두면 예외 경로에서 샌다).
+            _enr_pool.shutdown(wait=False)
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("stock_snapshot: enrich 병렬 실패, 직렬로: %s", exc)
+
+        try:
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futs = [pool.submit(_timed, nm, fn) for nm, fn in _aux_tasks]
                 for fut in futs:
@@ -450,26 +492,22 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         # strip None values to keep JSON compact
         snap = {k: v for k, v in snap.items() if v is not None}
 
-        # Market-specific enrichment — additive overlay per market
-        # ⚠️ 보조 6종 병렬 **뒤에 직렬로** 돈다 — 여기가 느리면 그 앞을
-        # 아무리 병렬화해도 첫 화면이 안 빨라진다. 그래서 같이 계측한다.
-        # 시장별 분기를 이름으로 열거하지 않고 접미사 표에서 고른다(#24).
-        _ENRICH = ((".KS", ".KQ"), _enrich_kr, "KR"), \
-                  ((".T",), _enrich_jp, "JP"), \
-                  ((".TW", ".TWO"), _enrich_tw, "TW"), \
-                  ((".SS", ".SZ", ".BJ", ".HK"), _enrich_cn, "CN")
-        _fn, _mkt = _enrich_us, "US"
-        for _sfx, _f, _m in _ENRICH:
-            if ticker.endswith(_sfx):
-                _fn, _mkt = _f, _m
-                break
-        _t0 = time.time()
-        try:
-            _fn(ticker, snap)
-        except Exception as exc:
-            log.warning("stock_snapshot: %s enrich skipped for %s: %s",
-                        _mkt, ticker, exc)
-        _TIMING.set(ticker, f"enrich:{_mkt}", time.time() - _t0)
+        # ── 위에서 띄운 시장 enrichment 를 여기서 합친다 ──────────────
+        # ⚠️ `snap` 재바인딩(None strip) **뒤에** 합쳐야 한다 — 앞에서
+        # 합치면 strip 이 만든 새 dict 에 안 실린다.
+        _t_w = time.time()
+        if _enr_fut is not None:
+            try:
+                _enr_fut.result(timeout=180)
+            except Exception as exc:                           # noqa: BLE001
+                log.warning("stock_snapshot: %s enrich 대기 실패 %s: %s",
+                            _mkt, ticker, exc)
+        else:
+            _run_enrich()                  # 풀 생성 실패 → 직렬 폴백
+        # 대기 시간을 따로 남긴다 — 0 에 가까우면 겹치기가 실제로 먹은 것이고,
+        # 크면 enrich 가 보조 6종보다 훨씬 길다는 뜻이다(#69 재는 것부터).
+        _TIMING.set(ticker, "enrich.wait", time.time() - _t_w)
+        snap.update(_overlay)
 
         _TIMING.set(ticker, "total", time.time() - _t_all)
         return snap
