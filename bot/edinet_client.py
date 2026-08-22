@@ -59,6 +59,8 @@ _HTTP_TIMEOUT = 15  # daily document lists can be large; small headroom over DAR
 # 비어 보였다). 한 번은 넉넉한 상한으로 다시 묻는다(#143 '원천이 안 준다'와
 # '내가 못 받는다'는 대조군으로만 갈린다).
 _HTTP_RETRY_TIMEOUT = 60
+# 일별 목록 캐시 봉투 버전 — 저장 형식이나 **검증 규칙**이 바뀌면 올린다.
+_LIST_CACHE_VER = 2
 
 # Doc type codes worth surfacing. Mapping to a Korean-language label so
 # the analyst's report can render '공시' (disclosure) lines without
@@ -101,6 +103,8 @@ class EdinetClient:
         self.api_key = (api_key or _env_key("EDINET_API_KEY")).strip()
         # {YYYY-MM-DD: 사유} — 목록을 **못 받은** 날. 빈 날과 구별해야 한다.
         self.failed_days: dict[str, str] = {}
+        # {YYYY-MM-DD: (원천이 말한 건수, 실제로 온 건수)} — **짧게 온** 날.
+        self.short_days: dict[str, tuple[int, int]] = {}
 
     # ---- low-level day fetch -------------------------------------------------
 
@@ -126,8 +130,14 @@ class EdinetClient:
                     # 빈 응답까지 영구 캐시해 둬서, 그 날의 문서는 영원히
                     # 없는 것이 됐다(2026-08-22 소니: 평일 15일이 비어 있고
                     # 그 안에 유가증권보고서 제출일이 있었다). 다시 물어본다.
-                    if cached:
-                        return cached
+                    # ⚠️ 그리고 **봉투에 버전을 찍는다**. 옛 판은 리스트를
+                    # 그대로 저장해서, 잘려 온 응답인지 검사하는 코드를 새로
+                    # 넣어도 이미 캐시된 날엔 영원히 안 돈다(#21b 캐시가 fix 를
+                    # 가린다). 옛 형식(리스트)은 안 믿고 다시 묻는다.
+                    if isinstance(cached, dict) \
+                            and cached.get("v") == _LIST_CACHE_VER \
+                            and cached.get("results"):
+                        return cached["results"]
             except Exception as exc:
                 log.warning("edinet: cache read failed for %s: %s", day, exc)
 
@@ -163,6 +173,22 @@ class EdinetClient:
         self.failed_days.pop(day.isoformat(), None)
 
         results = payload.get("results") or []
+        # ⚠️ **상태는 아는 쪽이 말하게 하라**(#64). EDINET 은 그 날 문서가 몇
+        # 건인지 `metadata.resultset.count` 로 직접 말해 준다 — 그것보다 적게
+        # 왔으면 응답이 잘린 것이고, 그 사실을 모르면 '그 회사 문서가 없다'로
+        # 읽힌다(2026-08-23 소니: 201일에 48,532건 = 하루 241건인데 6월 말은
+        # 유가증권보고서가 몰리는 시기다).
+        try:
+            claim = int(((payload.get("metadata") or {})
+                         .get("resultset") or {}).get("count"))
+        except Exception:                                      # noqa: BLE001
+            claim = None
+        if claim is not None and claim > len(results):
+            self.short_days[day.isoformat()] = (claim, len(results))
+            log.warning("edinet: %s 원천은 %d건이라는데 %d건만 왔다 — 캐시하지 "
+                        "않는다", day, claim, len(results))
+            return results
+        self.short_days.pop(day.isoformat(), None)
         # ⚠️ **빈 목록을 영구 캐시하지 않는다**. 과거 날짜는 안 변한다는 전제로
         # 영원히 믿었는데, API 가 한 번 빈 응답을 주면 그 날은 영영 비어 보인다
         # — 2026-08-22 소니(6758.T)가 201일을 훑고도 유가증권보고서 0건이었고
@@ -174,7 +200,9 @@ class EdinetClient:
             return results
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+            cache_file.write_text(json.dumps(
+                {"v": _LIST_CACHE_VER, "count": claim, "results": results},
+                ensure_ascii=False))
         except Exception as exc:
             log.warning("edinet: cache write failed for %s: %s", day, exc)
         return results

@@ -3754,6 +3754,19 @@ _CHART_JS = """
   }
   // 범위/봉 한국어 라벨 — 헤드라인·기간수익률·캡션에서 공통 사용.
   function rangeLabel(r){ r = r || curRange; return ({'1d':'1일','1wk':'1주일','1mo':'1개월','3mo':'3개월','6mo':'6개월','ytd':'YTD','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[r] || r; }
+  var RANGE_DAYS_JS={'1mo':30,'3mo':91,'6mo':182,'ytd':null,'1y':365,'3y':1095,'5y':1825};
+  function dataSpanDays(d){
+    var ts=(d&&d.times)||[]; if(ts.length<2) return null;
+    if(typeof ts[0]==='number') return Math.round((ts[ts.length-1]-ts[0])/86400);
+    var a=new Date(String(ts[0]).slice(0,10)), b=new Date(String(ts[ts.length-1]).slice(0,10));
+    if(isNaN(a)||isNaN(b)) return null;
+    return Math.round((b-a)/86400000);
+  }
+  function spanLabel(d){
+    var want=RANGE_DAYS_JS[curRange], got=dataSpanDays(d);
+    if(want&&got!=null&&got<want*0.5) return '최근 '+got+'일';
+    return rangeLabel(curRange);
+  }
   function intervalLabel(i){ i = i || curInterval; return ({'5m':'5분봉','15m':'15분봉','30m':'30분봉','1h':'1시간봉','1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
   function buildValues(d){
     var vEl = document.getElementById('chart-values');
@@ -3787,7 +3800,10 @@ _CHART_JS = """
     if (_first != null && _first > 0 && _curp != null) {
       var _pchg = (_curp - _first) / _first * 100;
       var _pcol = _pchg > 0 ? '#26a69a' : (_pchg < 0 ? '#e2574c' : '#94a3b8');
-      items.push(['기간 ' + rangeLabel(curRange), (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
+      /* ⚠️ 라벨은 **실제 데이터 폭**에서 만든다. 원천이 잘라 주면 38일치에
+         '기간 1년 -39.4%' 가 붙어 화면이 거짓말한다(사용자 2026-08-23 SK,
+         #29 기간 라벨은 날짜로 되짚어라). */
+      items.push(['기간 ' + spanLabel(d), (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
     }
     // 52주 신고가/신저가 — 항상 표시. 기본 그룹의 맨 밑(진입/손절/목표가 있으면 그 아래).
     if (d.wk52_high != null) items.push(['52주 신고가', d.wk52_high, '#26a69a', dec]);
@@ -5259,7 +5275,8 @@ _BAND_JS = r"""
     for(var i=0;i<(t.bands||[]).length;i++){ var b=t.bands[i];
       h+='<tr><td class="ctr">'+esc2(b.label)+'</td><td class="ctr">'+num(b.mult,2)
         +'x</td><td class="ctr">'+num(b.fair,2)+'</td>'
-        +'<td class="ctr">'+(b.at?esc2(b.at):'—')+'</td></tr>'; }
+        +'<td class="ctr">'+(b.at?((b.at_approx?'≈ ':'')+esc2(b.at)):'—')
+        +'</td></tr>'; }
     h+='</table>';
     /* 구간 설명은 **칩**으로 — 한 줄로 이어 붙이면 읽기 어렵다(사용자
        2026-08-22 "밴드차트 밑에 적어논 구간을 좀 더 예쁘게"). 내용은 그대로:
@@ -5279,6 +5296,7 @@ _BAND_JS = r"""
     if(dr.length){ var lst=[]; for(var q=0;q<dr.length&&q<3;q++) lst.push(num(dr[q],2)+'x');
       chips.push(['이상치 제외', dr.length+'개('+lst.join(', ')+(dr.length>3?' 외':'')
         +') — 순이익이 평소의 1/5 미만이라 배수가 발산']); }
+    if(t.roe_note) chips.push(['ROE', esc2(t.roe_note)]);
     if(t.eps_now!=null) chips.push(['그 배수에서의 주가', '배수 × 최신 '+denom+' '+num(t.eps_now,2)]);
     else if(rows.length) chips.push(['그 배수에서의 주가', '원천 밴드선(최신 시점)']);
     var bn='';
@@ -5301,17 +5319,23 @@ _BAND_JS = r"""
     /* ⚠️ 분모 열은 값이 하나라도 있을 때만 — 국내(FnGuide)는 BPS/EPS 를 안
        줘서 전 행이 '—' 인 죽은 열이었다. 그리고 표는 최근 24개만 싣는데
        그 사실을 안 적으면 전부인 줄 읽는다(#45 총계·소계는 같은 모집단). */
-    var hasEps=false;
+    var hasEps=false, hasRoe=false;
     for(var e=0;e<rows.length;e++){ if(rows[e].eps!=null){ hasEps=true; break; } }
+    /* 사용자 2026-08-23 "한국기업에 한해서 여기 PBR 옆에 ROE 를 붙여줄수 있어?"
+       — 서버가 PER 과 **기간으로 조인**해 실어 준다. 없는 달은 비운다. */
+    for(var e2=0;e2<rows.length;e2++){ if(rows[e2].roe!=null){ hasRoe=true; break; } }
     h+='<div class="si-note" style="margin-top:10px">이력 '
       +rows.length+'개 · 최신순</div>';
     h+='<table class="si-table"><tr><th class="ctr">기간</th>'
       +'<th class="ctr">주가</th>'+(hasEps?('<th class="ctr">'+denom+'</th>'):'')
-      +'<th class="ctr">'+kind+'</th></tr>';
+      +'<th class="ctr">'+kind+'</th>'+(hasRoe?'<th class="ctr">ROE(%)</th>':'')
+      +'</tr>';
     for(var k=0;k<rows.length;k++){ var r=rows[k];
       h+='<tr><td class="ctr">'+esc2(r.period)+'</td><td class="ctr">'+num(r.price,2)
         +'</td>'+(hasEps?('<td class="ctr">'+num(r.eps,2)+'</td>'):'')
-        +'<td class="ctr">'+num(r.per,2)+'</td></tr>'; }
+        +'<td class="ctr">'+num(r.per,2)+'</td>'
+        +(hasRoe?('<td class="ctr">'+(r.roe!=null?num(r.roe,2):'—')+'</td>'):'')
+        +'</tr>'; }
     el.innerHTML=h+'</table>';
   }
   function load(){ if(CD||fetching) return;
@@ -7756,6 +7780,11 @@ def _render_stock_info_html(rec: dict) -> str:
           그 시점 환율로 EPS 를 환산하고, 환율을 못 받으면 통화가 섞인 배수 대신 <b>만들지 않고 사유를 표시</b>합니다.</div>
           <div style="margin-top:4px"><b>빈칸</b> — 적자 기업은 PER 이 정의되지 않아 원천이 밴드선을 주지 않습니다.
           이때 PER 표는 사유와 함께 비고 <b>PBR 표는 그대로</b> 나옵니다.</div>
+          <div style="margin-top:4px"><b>그 시점</b> — 그 배수가 실제로 있었던 관측일입니다.
+          국내는 배수를 원천(FnGuide)이 주므로 우리 월말 관측과 딱 맞지 않을 수 있어, 그럴 때는 가장 가까운 관측을
+          <b>≈ 로 표시</b>하고 2% 밖이면 비웁니다.</div>
+          <div style="margin-top:4px"><b>ROE</b> — 국내 PBR 이력 표에만 붙습니다. <b>ROE = PBR ÷ PER × 100</b>(같은 시점)이라
+          주가가 약분되어 원천 두 값의 항등식입니다 — 그 달 PER 이 없으면(적자 등) 비웁니다.</div>
           <div style="margin-top:4px"><b>제외</b> — 밴드는 <b>순이익이 평소(중앙값)의 1/5 미만으로 무너진 시점</b>을 뺍니다(그때 배수는
           valuation 이 아니라 산술 결과라 한 점이 '최고'를 망가뜨립니다). <b>배수가 크다는 이유만으로는 빼지 않습니다.</b>
           뺀 값은 이력 표에 그대로 남고, 몇 개를 왜 뺐는지 밴드 표 아래에 적습니다.</div>
