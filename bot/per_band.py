@@ -348,6 +348,51 @@ def split_factors(ticker: str) -> list[tuple[str, float]]:
     return out
 
 
+def dedupe_splits(splits: list, within_days: int = 75) -> list:
+    """같은 분할이 여러 봉에 실려 오는 걸 하나로 묶는다.
+
+    ⚠️ 2026-08-22 실측: 월봉 응답의 `Stock Splits` 가 한 분할을 **두 봉**에
+    실어 AAPL 이 4로 두 번 나뉘었다(as-reported 11.91 → 0.74, 정답 2.98).
+    LRCX 도 10:1 이 100 이 됐다. 같은 비율이 짧은 간격으로 두 번 나오면
+    같은 사건이다 — 실제로 같은 비율의 분할을 두 달 안에 두 번 하는 회사는
+    없다.
+    """
+    out: list[tuple[str, float]] = []
+    for d, r in sorted(splits or []):
+        dup = False
+        for pd_, pr in out:
+            if abs(pr - r) < 1e-9 and _days_between(pd_, d) is not None \
+                    and _days_between(pd_, d) <= within_days:
+                dup = True
+                break
+        if not dup:
+            out.append((d, r))
+    return out
+
+
+def _days_between(a: str, b: str) -> int | None:
+    import datetime as _dt
+    try:
+        da = _dt.date.fromisoformat(str(a)[:10])
+        db = _dt.date.fromisoformat(str(b)[:10])
+    except Exception:                                          # noqa: BLE001
+        return None
+    return abs((db - da).days)
+
+
+def _max_adjacent_jump(rows: list) -> float:
+    """인접 기간 EPS 의 최대 배수 — 환산이 **좋아졌는지** 재는 자다."""
+    worst, prev = 1.0, None
+    for _p, v in sorted(rows or []):
+        if v is None or v <= 0:
+            prev = None
+            continue
+        if prev:
+            worst = max(worst, max(prev, v) / min(prev, v))
+        prev = v
+    return worst
+
+
 def adjust_eps_for_splits(rows: list, splits: list) -> list:
     """as-reported EPS 를 **주가와 같은 기준**(분할반영)으로 환산.
 
@@ -359,10 +404,19 @@ def adjust_eps_for_splits(rows: list, splits: list) -> list:
     out = []
     for period, eps in rows:
         f = 1.0
-        for d, r in splits:
+        for d, r in dedupe_splits(splits):
             if d > str(period)[:10]:
                 f *= r
         out.append((period, (eps / f) if (eps is not None and f) else eps))
+    # ⚠️ **환산이 계열을 더 나쁘게 만들면 되돌린다.** 과다적용(같은 분할을 두
+    # 번)도 미적용과 똑같이 급변을 남기는데, 방향만 반대라 눈으로는 구별이
+    # 안 된다(2026-08-22 AAPL 0.74). 원인을 추측하는 대신 **결과를 재서**
+    # 고른다 — 잘 맞은 환산은 반드시 급변을 줄인다.
+    if _max_adjacent_jump(out) > _max_adjacent_jump(rows) * 1.01:
+        log.warning("per_band: 분할 환산이 계열을 악화시켜 되돌림 "
+                    "(전 %.1f배 → 후 %.1f배)",
+                    _max_adjacent_jump(rows), _max_adjacent_jump(out))
+        return rows
     return out
 
 

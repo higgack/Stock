@@ -5251,27 +5251,36 @@ _BAND_JS = r"""
       h+='<tr><td class="ctr">'+esc2(b.label)+'</td><td class="ctr">'+num(b.mult,2)
         +'x</td><td class="ctr">'+num(b.fair,2)+'</td></tr>'; }
     h+='</table>';
-    /* ⚠️ 밴드는 **전 구간** 분포인데 바로 위 요약은 5년이다. 창을 안 밝히면
-       요약의 근거 줄이 이 표를 설명하는 것처럼 읽혀 '5년 최저 22.20' 옆에
-       '최저 19.18' 이 놓인다(#34 같은 주제어 · 다른 기준이면 라벨로 구분).
-       그 배수에서의 주가도 무엇을 곱한 건지 적어야 눈으로 검산된다(#33). */
-    var bn='';
+    /* 구간 설명은 **칩**으로 — 한 줄로 이어 붙이면 읽기 어렵다(사용자
+       2026-08-22 "밴드차트 밑에 적어논 구간을 좀 더 예쁘게"). 내용은 그대로:
+       창을 안 밝히면 요약의 근거가 이 표를 설명하는 것처럼 읽히고(#34),
+       '그 배수에서의 주가'도 무엇을 곱한 건지 적어야 눈으로 검산된다(#33). */
+    var chips=[];
     if(rows.length){ var r0=(t.rows||[])[0]||{}, rN=(t.rows||[])[(t.rows||[]).length-1]||{};
-      /* 밴드가 **실제로 본 창**을 쓴다 — 이력 전체와 다를 수 있고(비-KR 은
-         최근 5년), 라벨을 이력 기준으로 적으면 요약과 또 갈라진다(#34). */
-      bn='밴드 = '+esc2(t.band_from||r0.period)+' ~ '+esc2(t.band_to||rN.period)
-        +' 관측 '+(t.band_n||t.n||0)+'개 분포'; }
+      chips.push(['기간', esc2(t.band_from||r0.period)+' ~ '+esc2(t.band_to||rN.period)]);
+      /* ⚠️ KR 은 밴드 4선이 **FnGuide 가 준 값**(분기 실적 기준)이라 우리
+         월말 관측 분포가 아니다 — '관측 N개 분포'라고 적으면 거짓말이다(#55).
+         원천이 기준을 말해 주면 그걸 쓴다. */
+      if(t.band_basis) chips.push(['기준', esc2(t.band_basis)]);
+      else chips.push(['기준', '관측 '+(t.band_n||t.n||0)+'개 분포']); }
     /* PER 은 순이익이 0 에 가까우면 발산한다 — 한 점이 '최고'를 망가뜨리면
        밴드가 쓸모없다. 뺀 값은 이력 표에 그대로 남으므로 **뺐다고 말한다**(#43). */
     var dr=t.band_dropped||[];
     if(dr.length){ var lst=[]; for(var q=0;q<dr.length&&q<3;q++) lst.push(num(dr[q],2)+'x');
-      bn+=(bn?' · ':'')+'이상치 '+dr.length+'개 제외('+lst.join(', ')
-        +(dr.length>3?' 외':'')+' — 그 시점 순이익이 평소의 1/5 미만이라 '
-        +'배수가 발산한 구간)'; }
-    if(t.eps_now!=null) bn+=(bn?' · ':'')+'그 배수에서의 주가 = 배수 × 최신 '
-      +denom+' '+num(t.eps_now,2);
-    else if(rows.length) bn+=' · 그 배수에서의 주가 = 원천 밴드선(최신 시점)';
-    if(bn) h+='<div class="si-note" style="margin-top:4px">'+bn+'</div>';
+      chips.push(['이상치 제외', dr.length+'개('+lst.join(', ')+(dr.length>3?' 외':'')
+        +') — 순이익이 평소의 1/5 미만이라 배수가 발산']); }
+    if(t.eps_now!=null) chips.push(['그 배수에서의 주가', '배수 × 최신 '+denom+' '+num(t.eps_now,2)]);
+    else if(rows.length) chips.push(['그 배수에서의 주가', '원천 밴드선(최신 시점)']);
+    var bn='';
+    if(chips.length){ bn='<div style="display:flex;flex-wrap:wrap;gap:6px;'
+      +'margin-top:6px">';
+      for(var c=0;c<chips.length;c++) bn+='<span style="display:inline-flex;'
+        +'align-items:baseline;gap:5px;padding:3px 9px;border-radius:999px;'
+        +'background:var(--chip-bg,rgba(127,140,170,.14));font-size:11px;'
+        +'line-height:1.5"><b style="color:var(--fg-soft);font-weight:600">'
+        +chips[c][0]+'</b><span>'+chips[c][1]+'</span></span>';
+      bn+='</div>'; }
+    if(bn) h+=bn;
     /* 원천이 안 준 배수는 행을 뺐다 — **왜** 없는지 말한다(침묵이 최악, #43). */
     if(t.bands_note) h+='<div class="si-note" style="margin-top:4px">'
       +esc2(t.bands_note)+'</div>';
@@ -17667,15 +17676,6 @@ def _render_market_page(data: dict) -> str:
       return ' <span style="font-size:10px;color:var(--muted);white-space:nowrap">(' + label + ')</span>';
     }}
 
-    function fmtEstLabel(v, isActual, sym, fyLabel) {{
-      if (v == null) return '—';
-      sym = sym || '';
-      var num = (typeof v === 'number')
-        ? Number(v).toLocaleString(undefined, {{maximumFractionDigits:2}})
-        : String(v);
-      return sym + num + (isActual ? fyTag(fyLabel) : '');
-    }}
-
     function fmtPER(v, isTrailing, fyLabel, epsNeg) {{
       if (epsNeg) return '<span style="color:var(--muted)">적자</span>';
       if (v == null) return '—';
@@ -17742,7 +17742,7 @@ def _render_market_page(data: dict) -> str:
       /* 정렬 헤더 (data-k/data-t) */
       var cols = [['name','s','종목'],['country','s','나라'],['saved','s','저장일'],
         ['mcap','n','시총'],['sprice','n','저장가격'],['cprice','n','현재가격'],
-        ['pct','n','저장대비'],['eps','n','예상 EPS'],['per','n','예상 PER'],['earn','s','다음예상 실적일']];
+        ['pct','n','저장대비'],['tper','n','현재 PER'],['per','n','예상 PER'],['earn','s','다음예상 실적일']];
       var thead = '<tr>';
       cols.forEach(function(c, i) {{
         var al = (i === 0) ? ' style="text-align:left"' : '';
@@ -17770,7 +17770,7 @@ def _render_market_page(data: dict) -> str:
         var da = 'data-name="' + ((f.name_kr||'') + ' ' + (f.name||'') + ' ' + f.ticker).toLowerCase() + '" data-country="' + (f.country || '') + '"'
           + ' data-saved="' + (f.saved_date || '') + '" data-mcap="' + usd(f.market_cap) + '"'
           + ' data-sprice="' + usd(f.saved_price) + '" data-cprice="' + usd(f.current_price) + '"'
-          + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-eps="' + usd(f.eps_estimate) + '"'
+          + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-tper="' + usd(f.per_trailing) + '"'
           + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"';
         return '<tr ' + da + '>'
           + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="color:inherit;text-decoration:none">'
@@ -17782,7 +17782,7 @@ def _render_market_page(data: dict) -> str:
           + '<td style="white-space:nowrap">' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
           + '<td style="white-space:nowrap">' + curCell + '</td>'
           + '<td style="white-space:nowrap">' + pctCell + '</td>'
-          + '<td style="white-space:nowrap">' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol, f.eps_fy_label) + '</td>'
+          + '<td style="white-space:nowrap">' + fmtPER(f.per_trailing, true, f.eps_fy_label, false) + '</td>'
           + '<td style="white-space:nowrap">' + fmtPER(f.per, f.per_is_trailing, f.eps_fy_label, f.eps_negative) + '</td>'
           + '<td style="white-space:nowrap">' + (f.next_earnings||'—') + '</td>'
           + '<td class="fav-ord"><button class="fav-top" data-ticker="' + f.ticker + '" title="맨 위로">⤒</button>'

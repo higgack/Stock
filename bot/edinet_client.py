@@ -110,7 +110,13 @@ class EdinetClient:
                 # Past days never change; trust the cache forever.
                 # Today's file gets a 12h freshness check.
                 if day < date.today() or age_h < _CACHE_TTL_HOURS:
-                    return json.loads(cache_file.read_text())
+                    cached = json.loads(cache_file.read_text())
+                    # ⚠️ **빈 목록으로 캐시된 파일은 안 믿는다.** 예전 판이
+                    # 빈 응답까지 영구 캐시해 둬서, 그 날의 문서는 영원히
+                    # 없는 것이 됐다(2026-08-22 소니: 평일 15일이 비어 있고
+                    # 그 안에 유가증권보고서 제출일이 있었다). 다시 물어본다.
+                    if cached:
+                        return cached
             except Exception as exc:
                 log.warning("edinet: cache read failed for %s: %s", day, exc)
 

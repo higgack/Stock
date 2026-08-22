@@ -15054,7 +15054,9 @@ class TestFavoritesCurrencyUnifiedSort:
         assert "data-mcap=\"' + usd(f.market_cap)" in src
         assert "data-sprice=\"' + usd(f.saved_price)" in src
         assert "data-cprice=\"' + usd(f.current_price)" in src
-        assert "data-eps=\"' + usd(f.eps_estimate)" in src
+        # 2026-08-22: '예상 EPS' 열이 '현재 PER' 로 바뀌었다(사용자 요청) —
+        # 정렬 키도 같이 바뀐다. 계약은 "정렬 가능한 숫자 열이 배선돼 있다"이다.
+        assert "data-tper=\"' + usd(f.per_trailing)" in src
         # 표시 셀은 원통화 포맷 유지
         assert "fmtMcap(f.market_cap, f.currency_symbol)" in src
 
@@ -32669,7 +32671,11 @@ class TestBandOutliersAndAxis20260822:
     def test_client_says_which_outliers_were_dropped(self):
         from bot.dashboard import _BAND_JS
         assert "t.band_dropped" in _BAND_JS
-        assert "이상치 " in _BAND_JS and "발산한 구간" in _BAND_JS
+        # 문구는 칩으로 바뀌었다 — 계약은 "몇 개를 왜 뺐는지 말한다"(#43).
+        _i = _BAND_JS.index("t.band_dropped")
+        _seg = _BAND_JS[_i:_i + 500]
+        assert "이상치" in _seg and "발산" in _seg, _seg[:300]
+        assert "dr.length" in _seg, _seg[:300]
 
     def test_chart_axis_has_intermediate_date_ticks(self):
         """예전엔 시작·끝 두 개뿐이라 중간 시점을 읽을 수 없었다."""
@@ -34077,6 +34083,32 @@ class TestEdinetXbrl20260822:
         assert cl._fetch_day(_dt.date(2026, 6, 19)) == [{"docID": "S1"}]
         assert list(tmp_path.glob("*.json")), "채워진 목록을 캐시 안 했다"
 
+    def test_a_previously_cached_empty_day_is_refetched(self, monkeypatch,
+                                                        tmp_path):
+        """⚠️ 옛 판이 빈 응답까지 영구 캐시해 둬서 그 날의 문서는 영원히 없는
+        것이 됐다 — 소니는 평일 15일이 그렇게 비어 있었다. 읽을 때도 빈 파일은
+        안 믿고 다시 물어본다(고친 뒤에도 **이미 남은 캐시**가 있다)."""
+        import datetime as _dt
+        import json as _j
+        import bot.edinet_client as ec
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+        day = _dt.date(2026, 6, 19)
+        (tmp_path / f"{day.isoformat()}.json").write_text(_j.dumps([]))
+        cl = ec.EdinetClient(api_key="k")
+
+        class _R:
+            @staticmethod
+            def raise_for_status():
+                pass
+
+            @staticmethod
+            def json():
+                return {"results": [{"docID": "S1", "secCode": "67580",
+                                     "docTypeCode": "120"}]}
+        monkeypatch.setattr(ec.requests, "get", lambda *a, **k: _R())
+        got = cl._fetch_day(day)
+        assert got and got[0]["docID"] == "S1", got
+
     def test_probe_separates_empty_weekdays_from_weekends(self, monkeypatch):
         """주말은 정상적으로 빈다 — **평일**이 비어야 원천 오류/캐시 오염이다.
         둘을 합쳐 세면 '빈 날 72일'이 정상인지 이상인지 알 수 없다."""
@@ -34284,6 +34316,41 @@ class TestSplitConsistentPerHistory20260822:
         for x, y in zip(eps, eps[1:]):
             assert max(x, y) / min(x, y) < 3, (x, y, eps)
 
+    def test_the_same_split_reported_twice_is_applied_once(self,
+                                                           monkeypatch):
+        """⚠️ 월봉 응답이 한 분할을 **두 봉**에 실어 AAPL 이 4로 두 번
+        나뉘었다(as-reported 11.91 → 0.74, 정답 2.98). 같은 비율이 짧은
+        간격으로 두 번 나오면 같은 사건이다."""
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+        dup = [("2020-08-01", 4.0), ("2020-09-01", 4.0)]
+        assert pb.dedupe_splits(dup) == [("2020-08-01", 4.0)]
+        ann = [("2018-09-29", 11.91), ("2019-09-28", 11.89),
+               ("2021-09-25", 5.61), ("2022-09-24", 6.11),
+               ("2023-09-30", 6.13), ("2024-09-28", 6.08)]
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: (self._px(), dup))
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": [],
+                                                 "annual": ann, "tag": "x"})
+        tbl, why = pb.for_ticker("AAPL", {})
+        assert tbl is not None, why
+        first = tbl["rows"][0]
+        assert abs(first["eps"] - 2.98) < 0.02, first    # 11.91/4, /16 아님
+        assert not tbl.get("trim_note"), tbl.get("trim_note")
+
+    def test_an_adjustment_that_makes_things_worse_is_reverted(self):
+        """과다적용도 미적용과 똑같이 급변을 남기는데 방향만 반대라 눈으로는
+        구별이 안 된다 — 원인을 추측하는 대신 **결과를 재서** 고른다."""
+        import bot.per_band as pb
+        rows = [("2018-09-29", 2.98), ("2019-09-28", 2.97),
+                ("2021-09-25", 5.61)]
+        # 실제로는 없는 분할 — 적용하면 계열이 나빠진다
+        got = pb.adjust_eps_for_splits(rows, [("2020-01-01", 10.0)])
+        assert got == rows, got
+
     def test_split_ratio_is_not_guessed_from_the_observed_jump(self):
         """분할과 실적 변동이 곱해져 관측 배수는 정수가 아니다(LRCX 실측
         9.9·14.3 — 실제 분할은 10:1). 비율 맞히기는 추측이므로 **크기**로만
@@ -34480,3 +34547,132 @@ class TestPerBandAudit20260822:
         seg = ast.get_source_segment(src, fn) or ""
         i = seg.index("_annual_eps")
         assert "_price_history" in seg[max(0, i - 400):i], seg[i - 400:i]
+
+
+class TestWatchlistAndBandNote20260822:
+    """사용자 2026-08-22 (관심종목 캡처 + 밴드 표 캡처):
+      ① "관심종목이 너무 자주 꺼져 … 5분 간격으로 하면 어떨까?"
+      ② "예상 EPS 를 현재 PER 로 바꿔줘"
+      ③ "밴드차트 밑에 적어논 구간을 좀 더 예쁘게"
+      ④ "한국은 한달단위로 계산하지만 4년 평균·최저·최고는 실제 분기발표 기준인거지?"
+    """
+
+    # ── ① 재시작해도 표가 비지 않는다 ────────────────────────────────
+    def test_snapshot_survives_a_restart_and_carries_its_as_of(
+            self, monkeypatch, tmp_path):
+        """캐시가 **메모리 전용**이라 봇이 재시작될 때마다 139종목이 통째로
+        `—` 가 됐다. 마지막 성공분을 디스크에 남기되, 낡은 값을 '현재'로
+        내보내지 않도록 **기준시각을 같이** 싣는다(#43)."""
+        import time
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_FAVORITES_FILE",
+                            tmp_path / "market_favorites.json")
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+        monkeypatch.setattr(mf, "_kick_fav_refresh", lambda: None)
+        # 목록(순서·구성)은 **디스크가 정본**이다 — 스냅샷은 휘발성 값만 채운다
+        monkeypatch.setattr(mf, "_load", lambda: [
+            {"ticker": "AAPL", "name": "Apple"},
+            {"ticker": "MSFT", "name": "Microsoft"}])
+        rows = [{"ticker": "AAPL", "current_price": 300.0, "per": 30.0},
+                {"ticker": "GONE", "current_price": 1.0}]
+        mf._snapshot_save(rows, time.time())
+        got = mf.get_favorites_with_prices()
+        assert [g["ticker"] for g in got] == ["AAPL", "MSFT"], got
+        assert got[0]["current_price"] == 300.0, got
+        assert got[0].get("as_of"), "기준시각을 안 실었다"
+        # ⚠️ 지운 종목이 스냅샷에서 되살아나면 안 된다
+        assert all(g["ticker"] != "GONE" for g in got), got
+        # 스냅샷에 없는 종목은 빈칸(옛 값을 지어내지 않는다)
+        assert got[1].get("current_price") is None, got[1]
+
+    def test_a_successful_refresh_writes_the_snapshot(self):
+        """스냅샷을 안 쓰면 재시작 때 또 빈다 — **쓰는 배선**을 못박는다."""
+        import ast
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_compute_favorites_with_prices")
+        calls = {c.func.id for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        assert "_snapshot_save" in calls, calls
+
+    def test_stale_snapshot_is_not_served_as_current(self, monkeypatch,
+                                                     tmp_path):
+        """⚠️ 너무 낡은 스냅샷은 안 쓴다 — 2026-08-20 감사에서 '현재가 None
+        인데 PER 은 몇 달 전 값'이던 그 사고의 재발 방지."""
+        import time
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_FAVORITES_FILE",
+                            tmp_path / "market_favorites.json")
+        mf._snapshot_save([{"ticker": "AAPL", "current_price": 1.0}],
+                          time.time() - mf._SNAP_MAX_AGE - 60)
+        assert mf._snapshot_load() == (None, 0.0)
+
+    def test_refresh_loop_runs_every_five_minutes(self):
+        """Automation-first — 운영자가 반복 명령을 칠 일이 없어야 한다."""
+        import ast
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.AsyncFunctionDef)
+                  and n.name == "_periodic_favorites_refresh")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "asyncio.sleep(300)" in seg, seg[:200]
+        assert "_compute_favorites_with_prices" in seg, seg[:200]
+        # 정의만 있고 **호출이 없으면** 루프는 안 돈다(#120 정의 1 + 호출 1)
+        assert src.count("_periodic_favorites_refresh") >= 2, "배선 누락"
+
+    # ── ② 현재 PER 열 ────────────────────────────────────────────────
+    def test_trailing_per_is_derived_from_the_shown_price(self):
+        """나란히 놓인 칸은 산수가 맞아야 한다(#33) — 현재 PER 도 **화면의
+        현재가**에서 만든다. 소스 PER 을 쓰면 눈으로 나눠 봐서 안 맞는다."""
+        import ast
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        assert "per_trailing" in src and "eps_trailing" in src
+        tree = ast.parse(src)
+        assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)]
+        got = [a for a in assigns
+               if isinstance(a.targets[0], ast.Subscript)
+               and isinstance(a.targets[0].slice, ast.Constant)
+               and a.targets[0].slice.value == "per_trailing"]
+        assert got, "per_trailing 을 안 만든다"
+        seg = ast.get_source_segment(src, got[0]) or ""
+        assert "_per_from_shown" in seg and "current_price" in seg, seg
+
+    def test_screen_shows_trailing_per_not_forward_eps(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "'현재 PER'" in src, "열 제목이 안 바뀌었다"
+        assert "'예상 EPS'" not in src, "예상 EPS 열이 남아 있다"
+        assert "per_trailing" in src, "값을 안 읽는다"
+        # 휘발성 필드로 등록돼야 콜드 로드에서 옛 값이 '현재'로 안 나간다
+        import bot.market_favorites as mf
+        assert "per_trailing" in mf._VOLATILE_FIELDS
+        assert "eps_trailing" in mf._VOLATILE_FIELDS
+
+    # ── ③④ 밴드 표 밑 구간 ──────────────────────────────────────────
+    def test_band_note_is_chips_not_a_run_on_line(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("var chips=[]")
+        seg = src[i:i + 1600]
+        for k in ("'기간'", "'기준'", "'그 배수에서의 주가'"):
+            assert k in seg, (k, seg[:400])
+        assert "border-radius:999px" in seg, "칩 모양이 아니다"
+
+    def test_kr_band_says_its_basis_is_the_source_not_our_observations(self):
+        """⚠️ KR 밴드 4선은 **FnGuide 가 준 값**(분기 실적 기준)이다 — 화면이
+        '관측 N개 분포'라고 적으면 거짓말이다(#55). 요약(월말 관측)과 기준이
+        다르므로 라벨로 구분한다(#34)."""
+        import bot.dashboard_server as ds
+        # ⚠️ 원천 키는 `bands`(밴드선 4계열)다 — 픽스처가 형식을 틀리면
+        # 표가 안 만들어지고 테스트가 skip 되어 **아무것도 안 재게 된다**(#54).
+        ts = [1590000000000 + i * 2592000000 for i in range(50)]
+        blk = {"mult": [52.1, 38.3, 24.5, 10.7],
+               "price": [[t_, 100000.0 + i * 1000] for i, t_ in enumerate(ts)],
+               "bands": [[[t_, 200000.0] for t_ in ts]]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=187000.0)
+        assert t is not None, "픽스처가 원천 형식과 다르다"
+        assert t.get("band_basis"), "기준 라벨이 없다"
+        assert "FnGuide" in t["band_basis"] and "분기" in t["band_basis"], \
+            t["band_basis"]
+        js = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "t.band_basis" in js, "화면이 그 라벨을 안 쓴다"

@@ -29,8 +29,21 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 2
-_DEFAULT = "LRCX,KLAC,NVMI"
+_AUDIT_VER = 3
+# ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
+# 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
+# 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
+# 다른 시장은 그대로일 수 있다 — 나란히 놓고 봐야 갈라진 걸 잡는다(#31).
+_MARKET_SAMPLES: tuple[tuple[str, str], ...] = (
+    ("US", "AAPL"), ("US", "LRCX"), ("US", "KLAC"), ("US", "NVMI"),
+    ("KR", "005930.KS"), ("KR", "000660.KS"),
+    ("JP", "7203.T"), ("JP", "6758.T"),
+    ("TW", "2330.TW"), ("TW", "2327.TW"),
+    ("CN_A", "600519.SS"), ("CN_A", "002371.SZ"),
+    ("HK", "0700.HK"), ("HK", "0002.HK"),
+    ("EU", "SIE.DE"),
+)
+_DEFAULT = ",".join(t for _m, t in _MARKET_SAMPLES)
 _EST_S_PER_TICKER = 25
 
 
@@ -113,7 +126,31 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
     return out
 
 
-def audit_one(ticker: str) -> list[str]:
+def dump_edgar(ticker: str, limit: int = 40) -> list[str]:
+    """EDGAR 가 준 분기·연간 EPS 를 **원문 그대로** 찍는다.
+
+    ⚠️ KLAC 은 연간 EPS 가 2026-06-30 에 3.66, 그 전 해가 그 12배로 오고
+    분기 TTM 이 -19.98 이었다(2026-08-22 실측). 이건 분할도 통화도 아니고
+    원천 데이터 자체의 문제로 보이는데, **원문을 안 보면 계속 추측만 하게
+    된다**(#109 '커버리지 진단은 처음부터 표본 원문을 같이 찍을 것').
+    """
+    try:
+        from bot.edgar_eps import eps_history
+        h = eps_history(ticker, years=10) or {}
+    except Exception as exc:                                   # noqa: BLE001
+        return [f"  · EDGAR 덤프 실패: {type(exc).__name__} {exc}"]
+    if not h:
+        return ["  · EDGAR 커버리지 없음"]
+    out = [f"  · EDGAR 태그 {h.get('tag')}"]
+    for k in ("quarterly", "annual"):
+        rows = h.get(k) or []
+        out.append(f"    {k}: {len(rows)}개")
+        for p, v in rows[-limit:]:
+            out.append(f"      {p}  {v}")
+    return out
+
+
+def audit_one(ticker: str, dump: bool = False) -> list[str]:
     """화면이 쓰는 그 경로를 그대로 태운다(#35) — 스냅샷도 같이 넘긴다(#145)."""
     import bot.per_band as pb
     out = [f"── {ticker} " + "─" * 40]
@@ -127,7 +164,8 @@ def audit_one(ticker: str) -> list[str]:
     except Exception as exc:                                   # noqa: BLE001
         return out + [f"  ❌ for_ticker 예외: {type(exc).__name__} {exc}"]
     if not tbl:
-        return out + [f"  ❓ 밴드 없음 — 사유: {why}"]
+        out.append(f"  ❓ 밴드 없음 — 사유: {why}")
+        return out + (dump_edgar(ticker) if dump else [])
     out.append(f"  출처: {tbl.get('source')} (basis={tbl.get('basis')}) · "
                f"관측 {tbl.get('n')}개")
     # 결산검산용 연간 EPS — 있는 시장만(미국). 없으면 ❓ 로 찍힌다.
@@ -143,8 +181,12 @@ def audit_one(ticker: str) -> list[str]:
                 h.get("annual") or [], _sp)
         except Exception as exc:                               # noqa: BLE001
             out.append(f"  (연간 대조본 실패: {exc})")
+    if tbl.get("trim_note"):
+        out.append(f"  ⚠️ 잘라냄: {tbl['trim_note']}")
     for mark, axis, msg in audit_rows(tbl):
         out.append(f"  {mark} {axis}: {msg}")
+    if dump:
+        out.extend(dump_edgar(ticker))
     return out
 
 
@@ -156,6 +198,9 @@ def main() -> None:
     ap.add_argument("--tickers", default=_DEFAULT)
     ap.add_argument("--limit", type=int, default=0,
                     help="앞에서 N종목만(0=전부)")
+    ap.add_argument("--dump-edgar", action="store_true",
+                    help="EDGAR 원본 행(기간·값·폼)을 그대로 찍는다 — 값이 "
+                         "이상할 때 원인을 원문으로 가른다(#109)")
     args = ap.parse_args()
     tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
     if args.limit:
@@ -167,7 +212,7 @@ def main() -> None:
     bad = 0
     for i, t in enumerate(tickers):
         print(fmt_eta(i, len(tickers), t0), flush=True)
-        lines = audit_one(t)
+        lines = audit_one(t, dump=args.dump_edgar)
         bad += sum(1 for ln in lines if "❌" in ln)
         for ln in lines:
             print(ln, flush=True)

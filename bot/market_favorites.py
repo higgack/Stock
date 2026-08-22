@@ -257,6 +257,48 @@ _FAV_REFRESHING = False
 _FAV_LOCK = _threading.Lock()
 
 
+# ── 디스크 스냅샷 ────────────────────────────────────────────────────
+# ⚠️ 사용자 2026-08-22: "관심종목이 너무 자주 꺼져". 캐시가 **메모리 전용**이라
+# 봇이 재시작될 때마다(배포·watchdog) 139종목이 통째로 `—` 가 됐고, 다시
+# 채우는 데 수십 초가 걸렸다. 마지막 성공분을 디스크에 남겨 두면 재시작 직후
+# 에도 화면이 비지 않는다.
+# ⚠️ 다만 **낡은 값을 '현재'로 내보내면 안 된다**(2026-08-20 감사에서 잡힌 그
+# 사고) — 그래서 스냅샷에는 `as_of` 를 같이 실어 화면이 기준시각을 밝히고,
+# 너무 낡으면(_SNAP_MAX_AGE) 아예 안 쓴다(#43 침묵이 최악).
+_SNAP_MAX_AGE = 6 * 3600
+
+
+def _snap_path() -> Path:
+    return _FAVORITES_FILE.with_name("favorites_snapshot.json")
+
+
+def _snapshot_save(rows: list, ts: float) -> None:
+    try:
+        _snap_path().write_text(
+            json.dumps({"as_of": ts, "rows": rows}, ensure_ascii=False),
+            encoding="utf-8")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("favorites snapshot save: %s", exc)
+
+
+def _snapshot_load() -> tuple[list | None, float]:
+    """(행, 기준시각) — 없거나 너무 낡으면 (None, 0)."""
+    import time as _time
+    try:
+        p = _snap_path()
+        if not p.exists():
+            return None, 0.0
+        d = json.loads(p.read_text(encoding="utf-8"))
+        ts = float(d.get("as_of") or 0)
+        rows = d.get("rows")
+        if not rows or _time.time() - ts > _SNAP_MAX_AGE:
+            return None, 0.0
+        return rows, ts
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("favorites snapshot load: %s", exc)
+        return None, 0.0
+
+
 def get_favorites_with_prices() -> list[dict]:
     """관심종목 + 현재가/추정치 — **렌더-세이프 SWR (사용자 2026-06-16 '오래걸려')**.
 
@@ -272,7 +314,28 @@ def get_favorites_with_prices() -> list[dict]:
     _kick_fav_refresh()              # 스테일/콜드 → 백그라운드 full 갱신(비차단)
     if _FAV_CACHE is not None:
         return _FAV_CACHE           # 스테일 즉시(곧 daemon 이 갱신)
-    return _cold_rows()             # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
+    # 재시작 직후엔 메모리 캐시가 없다 — 마지막 성공분을 기준시각과 함께 낸다.
+    cold = _cold_rows()
+    snap, ts = _snapshot_load()
+    if snap:
+        # ⚠️ 스냅샷을 통째로 내보내면 **지운 종목이 되살아나고** 순서도 옛것이
+        # 된다. 목록(순서·구성)은 항상 디스크가 정본이고, 스냅샷은 거기에
+        # **휘발성 값만** 채워 넣는다.
+        import datetime as _dt
+        _as_of = _dt.datetime.fromtimestamp(
+            ts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d %H:%M")
+        by_t = {r.get("ticker"): r for r in snap}
+        out = []
+        for f in cold:
+            prev = by_t.get(f.get("ticker"))
+            if not prev:
+                out.append(f)
+                continue
+            out.append({**f,
+                        **{k: prev[k] for k in _VOLATILE_FIELDS if k in prev},
+                        "as_of": _as_of})
+        return out
+    return cold                     # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
 
 
 # 종목 추가 시점에 디스크로 굳는 **휘발성 파생값**. 콜드 로드에서 그대로
@@ -283,7 +346,7 @@ def get_favorites_with_prices() -> list[dict]:
 # 남긴다.
 _VOLATILE_FIELDS = ("current_price", "per", "eps_estimate", "market_cap",
                     "eps_is_actual", "eps_fy_label", "eps_negative",
-                    "per_is_trailing")
+                    "per_is_trailing", "eps_trailing", "per_trailing")
 
 
 def _cold_rows() -> list[dict]:
@@ -423,6 +486,10 @@ def _compute_favorites_with_prices() -> list[dict]:
             trail = info.get("trailingEps")
             f["eps_estimate"] = fwd if fwd is not None else trail
             f["eps_is_actual"] = (fwd is None and trail is not None)
+            # 현재 PER 용 **실적 기준** EPS — 예상과 따로 든다(사용자 2026-08-22
+            # "예상 EPS 를 현재 PER 로 바꿔줘"). 둘 다 **화면의 현재가**에서
+            # 만들어야 눈으로 나눠 봐도 맞는다(#33).
+            f["eps_trailing"] = trail
 
             # ⚠️ 소스 PER(forwardPE/trailingPE)을 쓰지 않는다 — 그 값은
             # yfinance 자신의 EPS·가격 기준이라 이 표의 현재가·예상 EPS 와
@@ -473,6 +540,8 @@ def _compute_favorites_with_prices() -> list[dict]:
             f["per"] = _per_from_shown(f.get("current_price"),
                                        f.get("eps_estimate"))
             f["per_is_trailing"] = bool(f.get("eps_is_actual"))
+            f["per_trailing"] = _per_from_shown(f.get("current_price"),
+                                                f.get("eps_trailing"))
         except Exception:
             f["current_price"] = None
             f["per"] = None
@@ -502,4 +571,5 @@ def _compute_favorites_with_prices() -> list[dict]:
 
     _FAV_CACHE = favorites
     _FAV_CACHE_TS = _time.time()
+    _snapshot_save(favorites, _FAV_CACHE_TS)
     return favorites
