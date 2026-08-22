@@ -25362,18 +25362,25 @@ class TestFlowTrendDiagnosis20260818:
     def test_treasury_sourced_rate_is_labelled_not_silently_swapped(self):
         """⚠️ 소스를 바꿔놓고 화면에 안 적으면 조용한 대체다(규칙 #10b).
         FRED 대신 미 재무부 값을 쓴 행은 그 사실이 보여야 한다."""
+        import datetime as _dt
         from bot.dashboard import _render_fred_card
         from bot.macro_snapshot import _fmt_asof
-        assert _fmt_asof("2026-08-17", full=True)      # 포맷 전제 확인
+        # ⚠️ **날짜를 고정하면 시간이 지나며 테스트가 스스로 깨진다** —
+        # 2026-08-22 실측: 픽스처의 2026-08-17 이 5일 묵어 '⚠ 지연' 배지가
+        # 붙었고, 무관한 변경의 회귀 실행이 빨간불이 됐다. 이 테스트의 계약은
+        # '원천 표기'이지 신선도가 아니므로 **오늘 기준**으로 만든다.
+        _today = _dt.datetime.now(
+            _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+        assert _fmt_asof(_today, full=True)             # 포맷 전제 확인
         item = {"label": "US 미국채 10년 (금리)", "unit": "%",
                 "series_id": "DGS10",
-                "data": {"value": 4.72, "time": "2026-08-17",
+                "data": {"value": 4.72, "time": _today,
                          "change": 0.04, "src": "UST"}}
         html = _render_fred_card([item], None)
         # ⚠️ 원천은 **툴팁**으로 — 값 옆에 글자를 더 붙이면 300px 카드가 두
         # 줄로 접혀 옆 카드와 행 높이가 어긋난다(사용자 2026-08-18).
         assert 'title="출처: 미 재무부' in html, "재무부 값인데 원천 표기가 없다"
-        assert ">(2026-08-17)<" in html, "본문에는 날짜만 남아야 한다"
+        assert f">({_today})<" in html, "본문에는 날짜만 남아야 한다"
         item["data"] = dict(item["data"])
         item["data"].pop("src")
         h2 = _render_fred_card([item], None)
@@ -34878,3 +34885,86 @@ class TestBandDenominatorBasis20260822:
         assert "매달 갱신되는 EPS" in (t.get("band_basis") or ""), \
             t.get("band_basis")
         assert t.get("denom_label") == "원천 EPS(매달 갱신)", t.get("denom_label")
+
+
+class TestBandPeriodAndQ4Sanity20260822:
+    """사용자 2026-08-22:
+      ① "그 배수에서의 주가 옆에 그 시점도 써줘. 밑에 있는 기간에 나온거 말이야."
+      ② LRCX 처럼 EPS 때문에 못 그리는 건 왜인가
+
+    ②의 답: 전 시장 감사의 ❌ 3건이 **전부 회계연도말**이었다(LRCX 2023-06-25
+    10.8배 · KLAC 2024-06-30 9.4배 · KLAC 2017-06-30 결산검산). 결산분기는
+    10-Q 가 없어 `연간 − 3분기` 로 복원하는데, EDGAR **분기**는 후속 보고서의
+    분할 소급조정분이 오고 **연간**은 as-reported 라 스케일이 갈릴 수 있다 —
+    그걸 빼면 복원값이 쓰레기가 된다(KLAC 2.03 − 14.12 = **-12.09**).
+    """
+
+    def test_implausible_fiscal_q4_is_refused(self):
+        from bot.edgar_eps import _plausible_q4
+        # KLAC 실측 — 형제가 전부 양수인데 복원값이 큰 음수
+        assert _plausible_q4(-12.09, [5.41, 4.28, 4.43]) is False
+        # 크기가 형제의 3배를 넘어도 못 믿는다
+        assert _plausible_q4(20.0, [5.41, 4.28, 4.43]) is False
+        # 정상 복원은 통과
+        assert _plausible_q4(10.03, [5.41, 4.28, 4.43]) is True
+        # 형제에 적자가 섞였으면 음수 분기는 정당하다
+        assert _plausible_q4(-2.0, [5.0, -1.0, 4.0]) is True
+
+    def test_bad_annual_does_not_poison_the_quarterly_series(self):
+        """KLAC 형 — 연간이 스케일이 다르면 그 해의 결산분기를 **안 만든다**.
+        억지로 채우면 그 한 분기가 TTM 4개 시점을 연달아 오염시킨다."""
+        from bot.edgar_eps import fill_fiscal_q4
+        q = [("2023-09-30", 5.41, "2023-07-01"),
+             ("2023-12-31", 4.28, "2023-10-01"),
+             ("2024-03-31", 4.43, "2024-01-01")]
+        good = fill_fiscal_q4(q, [("2024-06-30", 24.15, "2023-07-01")])
+        assert dict(good)["2024-06-30"] > 0, good
+        bad = fill_fiscal_q4(q, [("2024-06-30", 2.03, "2023-07-01")])
+        assert "2024-06-30" not in dict(bad), bad
+        assert len(bad) == 3, bad          # 나머지 분기는 그대로 남는다
+
+    def test_every_band_multiple_is_a_real_observation(self):
+        """⚠️ 선형보간 분위수를 쓰면 중상·중하가 **아무 시점에도 없던 값**이
+        되어 '그 시점' 칸이 영영 빈다 — 그리고 '관측 분포'라는 라벨과도
+        어긋난다(#32 없는 걸 만들지 말 것)."""
+        from bot.per_band import assemble
+        rows = [(f"2025-{m:02d}-28", 100.0 + m, 5.0, round((100.0 + m) / 5, 2))
+                for m in range(1, 13)]
+        got = assemble(rows)
+        seen = {r["per"] for r in got["rows"]}
+        for b in got["bands"]:
+            assert b["mult"] in seen, (b, sorted(seen))
+            assert b.get("at"), f"그 시점이 비었다: {b}"
+            # 그 시점의 배수가 실제로 그 값이어야 한다
+            row = next(r for r in got["rows"] if r["period"] == b["at"])
+            assert abs(row["per"] - b["mult"]) < 0.011, (b, row)
+
+    def test_period_is_left_blank_when_no_observation_matches(self):
+        """원천이 배수를 직접 주면(KR) 우리 관측과 안 맞을 수 있다 — 그때
+        가장 가까운 시점을 붙이면 **우리가 지어낸 것**이 된다."""
+        from bot.per_band import band_period
+        obs = [("2025-01-31", 100.0, 5.0, 20.0),
+               ("2025-02-28", 110.0, 5.0, 22.0)]
+        assert band_period(obs, 20.0) == "2025-01-31"
+        assert band_period(obs, 33.3) is None
+        # 같은 배수가 여러 번이면 가장 최근
+        obs2 = obs + [("2025-03-31", 100.0, 5.0, 20.0)]
+        assert band_period(obs2, 20.0) == "2025-03-31"
+
+    def test_screen_shows_the_period_column(self):
+        from bot.dashboard import _BAND_JS
+        assert "그 시점" in _BAND_JS, "열 제목이 없다"
+        i = _BAND_JS.index("그 배수에서의 주가</th>")
+        assert "그 시점" in _BAND_JS[i:i + 200], _BAND_JS[i:i + 200]
+        assert "b.at" in _BAND_JS, "값을 안 읽는다"
+
+    def test_kr_bands_carry_the_period_too(self):
+        """전 시장 동일 — KR 도 같은 칸을 채운다(있으면)."""
+        import bot.dashboard_server as ds
+        ts = [1590000000000 + i * 2592000000 for i in range(50)]
+        blk = {"mult": [90.8, 63.4, 36.1, 8.7],
+               "price": [[t_, 30000.0 + i * 300] for i, t_ in enumerate(ts)],
+               "bands": [[[t_, 200000.0 + i * 7000] for i, t_ in enumerate(ts)]]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
+        assert t is not None
+        assert all("at" in b for b in t["bands"]), t["bands"]

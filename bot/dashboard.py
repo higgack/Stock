@@ -5250,11 +5250,16 @@ _BAND_JS = r"""
         +(live?('현재가 '+num(sm.price_now,2)+' 기준(실시간 시세)')
               :'마지막 관측 기준 — 실시간 시세를 못 받았습니다')+'</div>';
     }
+    /* 사용자 2026-08-22 "그 배수에서의 주가 옆에 그 시점도 써줘. 밑에 있는
+       기간에 나온거 말이야." — 그 배수가 **실제로 있었던 시점**을 같이 적는다.
+       원천이 배수를 직접 주는 경우(KR) 관측과 딱 맞지 않을 수 있어 그때는
+       비운다(없는 걸 지어내지 않는다, #32). */
     h+='<table class="si-table"><tr><th class="ctr">배수</th><th class="ctr">'+kind+'</th>'
-      +'<th class="ctr">그 배수에서의 주가</th></tr>';
+      +'<th class="ctr">그 배수에서의 주가</th><th class="ctr">그 시점</th></tr>';
     for(var i=0;i<(t.bands||[]).length;i++){ var b=t.bands[i];
       h+='<tr><td class="ctr">'+esc2(b.label)+'</td><td class="ctr">'+num(b.mult,2)
-        +'x</td><td class="ctr">'+num(b.fair,2)+'</td></tr>'; }
+        +'x</td><td class="ctr">'+num(b.fair,2)+'</td>'
+        +'<td class="ctr">'+(b.at?esc2(b.at):'—')+'</td></tr>'; }
     h+='</table>';
     /* 구간 설명은 **칩**으로 — 한 줄로 이어 붙이면 읽기 어렵다(사용자
        2026-08-22 "밴드차트 밑에 적어논 구간을 좀 더 예쁘게"). 내용은 그대로:

@@ -473,9 +473,14 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
     # 차트는 이미 그 선을 안 그리는데(`mult<=0` 제외) 표만 `0.00x · 0.00` 을
     # 찍고 있었다(사용자 캡처의 '최저 0.00x'). 0 은 값이 아니라 '없음'이므로
     # 행을 **뺀다**(빈칸이 틀린 숫자보다 낫다) — 대신 뺐다는 사실을 말한다(#43).
+    # 그 배수가 **실제로 있었던 시점**(사용자 2026-08-22). KR 은 배수를 원천이
+    # 주므로 우리 월말 관측과 딱 맞지 않을 수 있다 — 그때는 비운다(#32).
+    from bot.per_band import band_period as _bp
+    _obs = [(r["period"], r["price"], None, r["per"]) for r in rows]
     _bands = [{"label": labels[i], "mult": round(float(mult[i]), 2),
                "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
-                        if mult[0] and top_last else None)}
+                        if mult[0] and top_last else None),
+               "at": _bp(_obs, round(float(mult[i]), 2))}
               for i in range(4) if _f_pos(mult[i])]
     _dropped = [labels[i] for i in range(4) if not _f_pos(mult[i])]
     return {"rows": rows, "kind": kind,
