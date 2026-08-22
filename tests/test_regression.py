@@ -31458,3 +31458,70 @@ class TestFcfMissingReason20260822:
                 if isinstance(n, ast.Dict) for k in n.keys
                 if isinstance(k, ast.Constant) and isinstance(k.value, str)}
         assert "fcf_why" in keys, "payload 에 안 실린다"
+
+
+class TestFcfAuditNoFalsePass20260822:
+    """감사가 **데이터 0건에 ✅** 를 찍고 있었다.
+
+    2026-08-22 VM 실측: venv 밖 인터프리터로 돌려 `yfinance` 가 없자 스냅샷이
+    통째로 비었는데 `① 재계산 ✅ 전 기간 일치` · `⑤ ✅ 누적 냄새 없음` 이
+    찍혔다 — 대조 0건은 통과가 아니다(#54). 진단 도구가 제품과 **다른
+    환경**에서 돌면 결과가 거짓이 된다(#23 의 인터프리터판)."""
+
+    def _audit(self, monkeypatch, snap):
+        import bot.scripts.fcf_audit as fa
+        monkeypatch.setattr(fa, "collect_stock_snapshot",
+                            lambda *a, **k: snap, raising=False)
+        import bot.stock_snapshot as ss
+        monkeypatch.setattr(ss, "collect_stock_snapshot", lambda *a, **k: snap)
+        return fa.audit_one("ASML", None)
+
+    def test_empty_snapshot_is_a_failure_not_a_pass(self, monkeypatch):
+        r = self._audit(monkeypatch, {})
+        body = "\n".join(r["lines"])
+        assert "① 재계산 ❌ 대조 0건" in body, body
+        assert "✅ 전 기간 일치" not in body, body
+        assert r["bad"] >= 1, r
+
+    def test_cumulative_check_needs_enough_quarters(self, monkeypatch):
+        """`cumulative_smell` 은 3개 미만이면 판단보류를 준다 — 그걸
+        "냄새 없음"으로 찍으면 빈 종목이 통과한다(#44b)."""
+        snap = {"financials": {"cash_flow": {"quarterly": [
+            {"period": "2026-03-31", "Operating Cash Flow": 2e9,
+             "Capital Expenditure": -3e8}]}}}
+        r = self._audit(monkeypatch, snap)
+        body = "\n".join(r["lines"])
+        assert "⑤ ❓ 판정 불가" in body, body
+        assert "✅ 누적 냄새 없음" not in body, body
+
+    def test_real_data_still_passes(self, monkeypatch):
+        """가드를 조이면 **무엇이 여전히 통과하는지**도 못박는다(#57)."""
+        q = [{"period": f"2026-{m:02d}-30", "Operating Cash Flow": 2e9 + i,
+              "Capital Expenditure": -3e8} for i, m in enumerate((3, 6, 9, 12))]
+        r = self._audit(monkeypatch, {"financials": {"cash_flow": {
+            "quarterly": q}}})
+        body = "\n".join(r["lines"])
+        assert "① 재계산 ✅" in body, body
+        assert "⑤ ✅ 누적 냄새 없음" in body, body
+
+    def test_banner_reports_the_interpreter(self):
+        """어느 파이썬으로 도는지 찍어야 환경 불일치가 드러난다."""
+        # ⚠️ 문자열 검색으로 재면 **옆 문구가 대신 만족시킨다**(실측: 의존성
+        # 오류 메시지에도 '인터프리터' 가 들어 있어 배너를 지워도 통과했다,
+        # #75). 실행 경로를 **찍는 행위**를 구조로 본다.
+        import ast
+        src = open("bot/scripts/fcf_audit.py", encoding="utf-8").read()
+        printed = False
+        for n in ast.walk(ast.parse(src)):
+            if not (isinstance(n, ast.Call)
+                    and getattr(n.func, "id", "") == "print"):
+                continue
+            for a in n.args:
+                for sub in ast.walk(a):
+                    if (isinstance(sub, ast.Attribute)
+                            and sub.attr == "executable"):
+                        printed = True
+        assert printed, "어느 파이썬으로 도는지 안 찍는다"
+        lits = {n.value for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        assert any("필수 모듈 없음" in s for s in lits), "의존성 가드 없음"
