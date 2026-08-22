@@ -25095,8 +25095,9 @@ class TestBacklogSeriesSanity20260818:
         from bot import quarterly_infographic as qi
         qs = self._qs(vals)
         by_rc = {q["reprt_code"]: v for q, v in zip(qs, vals)}
-        monkeypatch.setattr("bot.dart_backlog.backlog_for",
-                            lambda d, t, y, r: by_rc.get(r))
+        monkeypatch.setattr(
+            "bot.dart_backlog.backlog_probe",
+            lambda d, t, y, r, out=None: (by_rc.get(r), "정상"))
         monkeypatch.setattr("bot.dart_backlog._log_miss", lambda *a, **k: None)
         qi._fill_backlog(object(), "047810.KS", qs)
         return (qs[-1].get("_meta") or {})
@@ -25121,8 +25122,9 @@ class TestBacklogSeriesSanity20260818:
         vals = [8e10, 2.663e13]
         qs = self._qs(vals)
         by_rc = {q["reprt_code"]: v for q, v in zip(qs, vals)}
-        monkeypatch.setattr("bot.dart_backlog.backlog_for",
-                            lambda d, t, y, r: by_rc.get(r))
+        monkeypatch.setattr(
+            "bot.dart_backlog.backlog_probe",
+            lambda d, t, y, r, out=None: (by_rc.get(r), "정상"))
         monkeypatch.setattr("bot.dart_backlog._log_miss", lambda *a, **k: None)
         qi._fill_backlog(object(), "047810.KS", qs)
         assert qs[0]["financials"]["수주잔고"] == 8e10, "값을 지웠다"
@@ -26819,7 +26821,11 @@ class TestBacklogMissingQuarters20260818:
             {"currency": "KRW", "backlog_missing": ["25.4Q", "26.1Q"]}, [])]
         hit = [n for n in notes if "수주잔고" in n]
         assert hit, notes
-        assert "25.4Q, 26.1Q" in hit[0] and "DART 가 제공하지 않음" in hit[0]
+        # ⚠️ 옛 판은 사유를 **하나로 단정**한 문구를 단언했다("DART 가
+        # 제공하지 않음") — 실제 사유는 분기마다 다르다(#50). 계약은
+        # "빈 분기를 라벨과 **사유**로 밝힌다" 이다.
+        assert "25.4Q" in hit[0] and "26.1Q" in hit[0], hit[0]
+        assert "미표시" in hit[0] and "추정 보정 없음" in hit[0], hit[0]
         assert "추정 보정 없음" in hit[0], "날조 안 함을 명시해야 한다"
         # 빈 분기가 없으면 각주도 없어야 한다(불필요한 경고는 노이즈).
         clean = [n for n, _c in _footnotes({"currency": "KRW"}, [])]
@@ -26828,15 +26834,18 @@ class TestBacklogMissingQuarters20260818:
     def test_fill_backlog_records_which_quarters_are_missing(self):
         from bot import dart_backlog as bl
         from bot.quarterly_infographic import _fill_backlog
-        orig = bl.backlog_for
-        bl.backlog_for = lambda d, t, y, r: 1e12 if r == "11012" else None
+        # ⚠️ 복원 대상이 어긋나면 스텁이 **전역으로 샌다** — 뒤 테스트가
+        # 통째로 무너진다(실측). 바꾼 그 이름을 되돌린다.
+        orig = bl.backlog_probe
+        bl.backlog_probe = lambda d, t, y, r, out=None: (
+            (1e12, "정상") if r == "11012" else (None, "원문미제공"))
         qs = [{"label": lb, "year": 2026, "reprt_code": rc, "financials": {}}
               for lb, rc in (("25.4Q", "11011"), ("26.1Q", "11013"),
                              ("26.2Q", "11012"))]
         try:
             _fill_backlog(object(), "012450.KS", qs)
         finally:
-            bl.backlog_for = orig
+            bl.backlog_probe = orig
         assert qs[-1]["financials"]["수주잔고"] == 1e12
         assert qs[-1]["_meta"]["backlog_missing"] == ["25.4Q", "26.1Q"]
 
@@ -27660,24 +27669,24 @@ class TestDartBacklogParser20260817:
         from bot import quarterly_infographic as qi
         calls = []
 
-        def fake(dart, ticker, year, rc):
+        def fake(dart, ticker, year, rc, out=None):
             calls.append((year, rc))
-            return None
+            return (None, "명시적미공시")
         qs = [{"year": 2025 + i // 4, "reprt_code": "1101%d" % (1 + i % 4),
                "financials": {}} for i in range(5)]
         import bot.dart_backlog as bl
-        orig = bl.backlog_for
-        bl.backlog_for = fake
+        orig = bl.backlog_probe
+        bl.backlog_probe = fake
         try:
             qi._fill_backlog(object(), "042660.KS", qs)
             assert len(calls) <= 2, f"미공시인데 {len(calls)}회 조회"
             assert len(calls) < len(qs), "전 분기를 다 받으면 게이트가 없는 것"
             calls.clear()
-            bl.backlog_for = lambda d, t, y, r: 1.0e12
+            bl.backlog_probe = lambda d, t, y, r, out=None: (1.0e12, "정상")
             qi._fill_backlog(object(), "042660.KS", qs)
             assert all(q["financials"]["수주잔고"] == 1.0e12 for q in qs)
         finally:
-            bl.backlog_for = orig
+            bl.backlog_probe = orig
 
     def test_chart_registry_and_help_are_in_sync(self):
         """생산자가 생겼으니 차트 레지스트리와 Help 가 같이 켜져야 한다."""
@@ -31269,3 +31278,127 @@ class TestEnrichRunsWithAux20260822:
                 f"스레드가 샌다: {base} → {threading.active_count()}"
         finally:
             mp.undo()
+
+
+class TestBacklogReasonsAndParallel20260822:
+    """① 빈 분기의 **사유**를 화면이 말한다 ② 나머지 분기를 동시에 받는다.
+
+    사용자 2026-08-22 인텔리안테크(011200.KS): 수주잔고가 26.2Q 하나만 뜨고
+    앞 4분기가 비어 "앞 시기는 없는거야?"라고 물었다 — `backlog_probe` 는
+    왜 못 냈는지 이미 알려주는데 `backlog_for` 가 **값만 꺼내 버렸다**(#123).
+    같은 실측에서 `bp.backlog=42.443s` — 분기를 직렬로 걸었기 때문이다."""
+
+    def _qs(self, n=5):
+        return [{"label": f"2{i}Q", "year": 2026, "reprt_code": f"110{i}",
+                 "financials": {}} for i in range(n)]
+
+    def test_missing_quarters_carry_their_reason(self, monkeypatch):
+        import bot.dart_backlog as bl
+        import bot.quarterly_infographic as qi
+
+        def probe(dart, ticker, year, code, out=None):
+            if code == "1104":                       # 최신만 값이 있다
+                return (304e8, "정상")
+            return (None, "형식미지원 · 단위없음")
+        monkeypatch.setattr(bl, "backlog_probe", probe)
+        qs = self._qs()
+        qi._fill_backlog(object(), "011200.KS", qs)
+        meta = qs[-1]["_meta"]
+        assert meta["backlog_missing"] == ["20Q", "21Q", "22Q", "23Q"], meta
+        assert set(meta["backlog_why"].values()) == {"형식미지원 · 단위없음"}
+
+    def test_footnote_names_the_reasons_not_one_guess(self):
+        """옛 문구는 사유를 **하나로 단정**했다("DART 가 원문 미제공") —
+        실제 사유는 분기마다 다르다(#50 내 가정 ≠ 원천의 보장)."""
+        import bot.quarterly_infographic as qi
+        notes = qi._footnotes(
+            {"backlog_missing": ["25.2Q", "25.3Q", "25.4Q"],
+             "backlog_why": {"25.2Q": "원문미제공", "25.3Q": "원문미제공",
+                             "25.4Q": "형식미지원"}},
+            [{"label": "26.2Q", "financials": {}}])
+        line = next((t for t, _c in notes if "수주잔고 미표시" in t), "")
+        assert "원문미제공" in line and "형식미지원" in line, line
+        assert "25.2Q·25.3Q" in line, "같은 사유는 묶어서 말해야 한다"
+
+    def test_payload_carries_the_reasons(self):
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        keys = {k.value for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Dict) for k in n.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        assert "backlog_why" in keys, "payload 에 사유가 안 실린다"
+
+    def test_remaining_quarters_are_fanned_out_at_once(self, monkeypatch):
+        """남은 분기를 **한 번에** 팬아웃에 넘기는가(직렬 순회 금지)."""
+        import threading
+        import time
+        import bot.dart_backlog as bl
+        import bot.quarterly_infographic as qi
+        live = peak = 0
+        lock = threading.Lock()
+
+        def probe(dart, ticker, year, code, out=None):
+            nonlocal live, peak
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.25)
+            with lock:
+                live -= 1
+            return (100.0, "정상")
+        monkeypatch.setattr(bl, "backlog_probe", probe)
+        # ⚠️ **공용 풀의 빈 슬롯에 기대지 않는다** — 전체 실행에서 앞
+        # 테스트가 슬롯을 물고 있으면 큐에 밀려 동시 실행이 1 이 되고,
+        # 멀쩡한 배선이 "직렬"로 오보된다(실측: peak=1, cap=24).
+        # 공용 풀 자체의 동시성은 `TestSharedFetchPool20260821` 이 따로
+        # 고정한다 — 여기서는 **배선**(남은 분기를 한 번에 넘기는가)과
+        # 그때의 동시성만 본다.
+        import bot.pool as _pool
+        from concurrent.futures import ThreadPoolExecutor
+        seen: list = []
+
+        def _spy(f, items):
+            items = list(items)
+            seen.append(items)
+            with ThreadPoolExecutor(max_workers=max(2, len(items))) as p:
+                return list(p.map(f, items))
+        monkeypatch.setattr(_pool, "map_bounded", _spy)
+        qi._fill_backlog(object(), "011200.KS", self._qs())
+        # 계약 = "남은 분기를 **한 번에** 팬아웃에 넘긴다". 직렬로 되돌리면
+        # `map_bounded` 가 아예 안 불려 `seen` 이 비고, 이 단언이 발화한다
+        # (뮤테이션으로 확인). ⚠️ 실행기 안에서의 동시 실행 수는 여기서
+        # 재지 않는다 — 전체 실행 중엔 1 로 관측돼(실측) 멀쩡한 배선을
+        # '직렬'로 오보한다. 그건 stdlib 의 몫이고, 공용 풀의 동시성은
+        # `TestSharedFetchPool20260821` 이 따로 고정한다.
+        assert seen == [[0, 1, 2, 3]], f"남은 분기를 한 번에 안 넘겼다: {seen}"
+        assert peak >= 1, "스텁이 한 번도 안 불렸다"
+
+    def test_non_disclosing_company_stays_cheap(self, monkeypatch):
+        """미공시 회사는 대용량 다운로드가 **최대 2회**여야 한다 —
+        병렬화가 그 비용 상한을 깨면 안 된다(#66)."""
+        import bot.dart_backlog as bl
+        import bot.quarterly_infographic as qi
+        n = []
+
+        def probe(dart, ticker, year, code, out=None):
+            n.append(code)
+            return (None, "명시적미공시")
+        monkeypatch.setattr(bl, "backlog_probe", probe)
+        qi._fill_backlog(object(), "000000.KS", self._qs())
+        assert len(n) == 2, f"미공시 회사가 {len(n)}회 받았다"
+
+    def test_parallel_failure_falls_back_not_crashes(self, monkeypatch):
+        """한 분기가 던져도 나머지는 살아야 한다(`map_bounded` 는 None)."""
+        import bot.dart_backlog as bl
+        import bot.quarterly_infographic as qi
+
+        def probe(dart, ticker, year, code, out=None):
+            if code == "1101":
+                raise RuntimeError("원천 장애")
+            return (100.0, "정상")
+        monkeypatch.setattr(bl, "backlog_probe", probe)
+        qs = self._qs()
+        qi._fill_backlog(object(), "011200.KS", qs)
+        vals = [(q["financials"].get("수주잔고")) for q in qs]
+        assert vals.count(100.0) >= 4, vals
+        assert (qs[-1].get("_meta") or {}).get("backlog_why", {}).get("21Q")

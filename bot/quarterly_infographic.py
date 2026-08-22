@@ -325,7 +325,7 @@ def _fill_backlog(dart, ticker: str, qs: list) -> None:
     if not dart or not qs:
         return
     try:
-        from bot.dart_backlog import backlog_for
+        from bot.dart_backlog import backlog_probe
     except Exception as exc:
         log.debug("quarterly_infographic: dart_backlog import: %s", exc)
         return
@@ -335,28 +335,55 @@ def _fill_backlog(dart, ticker: str, qs: list) -> None:
     # 통째로 '수주잔고 미공시'로 처리됐다. 생산능력·제품 표는 롤링(최신부터
     # 거슬러 첫 성공)인데 여기만 1회였다 — 같은 규율로 맞춘다.
     # 비용은 여전히 유계다: 미공시 회사는 최대 _BACKLOG_PROBE_N 번만 받는다.
-    probed: dict[int, float] = {}
+    probed: dict[int, tuple] = {}
     for i in range(len(qs) - 1, max(-1, len(qs) - 1 - _BACKLOG_PROBE_N), -1):
-        v = backlog_for(dart, ticker, qs[i]["year"], qs[i]["reprt_code"])
-        probed[i] = v
-        if v is not None:
+        probed[i] = backlog_probe(dart, ticker, qs[i]["year"],
+                                  qs[i]["reprt_code"])
+        if probed[i][0] is not None:
             break
-    if all(v is None for v in probed.values()):
+    if all(v is None for v, _w in probed.values()):
         return          # 이 회사는 수주잔고를 안 쓴다 — 과거분 조회 불필요
+    # ⚠️ 나머지 분기는 서로 **독립**이다 — 직렬로 걸으면 분기당 최대 40MB
+    # 다운로드+정규식이 그대로 더해진다(2026-08-22 실측 `bp.backlog=42.4s`).
+    # `bot.pool` 은 **말단 팬아웃 전용**이고 여기서 도는 작업은 공용 풀에
+    # 다시 제출하지 않으므로 규약을 지킨다(#110 교착 금지).
+    rest = [i for i in range(len(qs)) if i not in probed]
+    got: dict[int, tuple] = {}
+    if rest:
+        try:
+            from bot.pool import map_bounded
+            res = map_bounded(
+                lambda i: backlog_probe(dart, ticker, qs[i]["year"],
+                                        qs[i]["reprt_code"]), rest)
+            got = {i: (r or (None, "조회실패"))
+                   for i, r in zip(rest, res)}
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("quarterly_infographic: 수주잔고 병렬 실패, 직렬로: %s",
+                      exc)
+            got = {i: backlog_probe(dart, ticker, qs[i]["year"],
+                                    qs[i]["reprt_code"]) for i in rest}
     missing = []
+    whys: dict[str, str] = {}
     for i, q in enumerate(qs):
-        v = probed[i] if i in probed else backlog_for(
-            dart, ticker, q["year"], q["reprt_code"])
+        v, why = probed[i] if i in probed else got.get(i, (None, "미조회"))
         if v is not None:
             q["financials"]["수주잔고"] = v
         else:
-            missing.append(q.get("label") or "?")
+            _lbl = q.get("label") or "?"
+            missing.append(_lbl)
+            # ⚠️ 사유를 **버리지 않는다**. `backlog_probe` 는 왜 못 냈는지
+            # 이미 알려주는데 `backlog_for` 가 값만 꺼내 던지고 있었다 —
+            # 그래서 화면이 "앞 시기는 없는거야?"에 답을 못 했다(사용자
+            # 2026-08-22 인텔리안테크). 아는 걸 화면이 말하게 한다(#123).
+            whys[_lbl] = why or "사유미상"
     # ⚠️ 빈 막대에 **이유를 붙인다.** 값이 없으면 막대만 사라져서 화면만 봐선
     # '집계 실패'인지 '원천에 없음'인지 알 수 없다 — 사용자가 "2분기는 아예
     # 안 나오네"라고 물은 지점(2026-08-17). 실측된 사유는 DART 가 그 접수건의
     # 원문을 안 주는 것이다(`status=014`, 한화에어로 2026 1분기 — 정정도 없다).
     if missing:
-        qs[-1].setdefault("_meta", {})["backlog_missing"] = missing
+        _meta = qs[-1].setdefault("_meta", {})
+        _meta["backlog_missing"] = missing
+        _meta["backlog_why"] = whys
 
     # ⚠️ **빈칸보다 나쁜 건 틀린 숫자다.** 스윕 실측(2026-08-18, 53종목):
     #   한국항공우주 0.00조·0.08조·26.63조·0.00조 (실제 ~26조 — 26.63 만 맞다)
@@ -453,9 +480,17 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
         notes.append((f"* {payload['fiscal_note']}", _MUTED))
     miss = payload.get("backlog_missing") or []
     if miss:
-        notes.append((f"* 수주잔고 {', '.join(miss)} 미표시 — 해당 분기 "
-                      "정기보고서 원문을 DART 가 제공하지 않음(추정 보정 없음)",
-                      _MUTED))
+        # ⚠️ 옛 문구는 사유를 **하나로 단정**했다("DART 가 원문을 제공하지
+        # 않음"). 실제 사유는 분기마다 다르다(원문에 표 없음 / 형식 미지원 /
+        # 명시적 미공시 …) — 단정하면 사용자가 "앞 시기는 없는거야?"에 대한
+        # 답을 잘못 얻는다(#50 내 가정을 원천의 보장으로 착각하지 말 것).
+        _why = payload.get("backlog_why") or {}
+        _grp: dict[str, list[str]] = {}
+        for _lb in miss:
+            _grp.setdefault(_why.get(_lb) or "사유미상", []).append(_lb)
+        _parts = [f"{'·'.join(v)} {k[:40]}" for k, v in _grp.items()]
+        notes.append((f"* 수주잔고 미표시 — {' / '.join(_parts)}"
+                      "(추정 보정 없음)", _MUTED))
     spread = payload.get("backlog_spread")
     if spread:
         notes.append((f"! 수주잔고 분기 간 격차 {spread}배 — 일부 분기 파싱이 "
@@ -1519,6 +1554,11 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         "fiscal_note": fiscal_note(snap.get("fiscal_year_end")) if not is_kr else "",
         # 수주잔고 빈 분기 사유(각주). `_fill_backlog` 이 최신 분기에 심는다.
         "backlog_missing": (qs[-1].get("_meta") or {}).get("backlog_missing")
+        if qs else None,
+        # 분기마다 **왜** 비었는지(원문에 표 없음 / 형식 미지원 / 명시적
+        # 미공시 …). `backlog_probe` 가 이미 알려주는데 옛 코드는 값만
+        # 꺼내고 버렸다 — 아는 걸 화면이 말하게 한다(#123).
+        "backlog_why": (qs[-1].get("_meta") or {}).get("backlog_why")
         if qs else None,
         # 분기 간 배수가 비정상이면 어느 한 분기의 파싱이 틀렸다는 뜻 —
         # 숫자를 지우지 않고 '의심'을 화면에 밝힌다(어느 쪽이 틀렸는지는
