@@ -31742,16 +31742,23 @@ class TestPerBandSummary20260822:
         assert _run(150.0, None) == 150.0       # 기준이 없으면 값만 본다
 
     def test_both_producers_attach_a_summary(self):
-        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20)."""
+        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20). KR 은 **실주행**
+        으로, 비-KR 은 네트워크가 필요해 AST 로 본다."""
         import ast
-        for f, fn in (("bot/per_band.py", "for_ticker"),
-                      ("bot/dashboard_server.py", "_kr_per_table")):
-            src = open(f, encoding="utf-8").read()
-            node = next(n for n in ast.walk(ast.parse(src))
-                        if isinstance(n, ast.FunctionDef) and n.name == fn)
-            seg = ast.get_source_segment(src, node) or ""
-            assert '"summary"' in seg, f"{f}:{fn} 이 요약을 안 붙인다"
-            assert "live_price" in seg or "_lp(" in seg, f"{f}:{fn} 현재가 미배선"
+        from bot.dashboard_server import _kr_per_table
+        t = _kr_per_table(TestBandTableWiring20260822._BAND)
+        assert t and t.get("summary"), "KR 표에 요약이 없다"
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        node = next(n for n in ast.walk(ast.parse(src))
+                    if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
+        seg = ast.get_source_segment(src, node) or ""
+        assert '"summary"' in seg, "for_ticker 가 요약을 안 붙인다"
+        assert "live_price" in seg, "for_ticker 현재가 미배선"
+        # KR 도 현재가를 실제로 부르는가 — 티커가 오면 조회한다
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        node = next(n for n in ast.walk(ast.parse(srv))
+                    if isinstance(n, ast.FunctionDef) and n.name == "_kr_band_tables")
+        assert "_lp(" in (ast.get_source_segment(srv, node) or ""), "KR 현재가 미배선"
 
     def test_client_renders_summary_above_the_band_table(self):
         """사용자 지정 위치 — "여기 위에". 밴드 표보다 앞에 그려야 한다."""
@@ -31759,10 +31766,115 @@ class TestPerBandSummary20260822:
         i = _BAND_JS.index("t.summary")
         j = _BAND_JS.index("그 배수에서의 주가")
         assert i < j, "요약이 밴드 표 아래에 있다"
-        for lab in ("현재 PER", "평균", "최저", "최고"):
+        # 헤더는 지표명을 붙여 만든다(PER/PBR 공용) — 리터럴을 박지 않는다
+        for lab in ("현재 '+kind", "평균", "최저", "최고"):
             assert lab in _BAND_JS[i:j], f"요약에 {lab} 이 없다"
         # 실시간이 아니면 **그렇게 말해야** 한다 — 침묵이 최악(#43)
         assert "실시간 시세를 못 받았습니다" in _BAND_JS[i:j]
+
+
+class TestPbrBandTable20260822:
+    """사용자 2026-08-22: "PBR 밴드도 같은 요약을 추가해줘. 이건 한국만 하면 돼"
+    → "한국은 PER 처럼 이렇게 만들어주면 되는거야. PER 밑에".
+
+    PER 과 **같은 구성**(요약 + 밴드 4선 + 이력)을 PBR 로도 만들고, 화면에서는
+    PER 아래에 놓는다. PBR 밴드선은 FnGuide 가 KR 만 준다 — 없는 걸 자체계산
+    으로 메우지 않는다(#32)."""
+
+    _T = [1700000000000, 1710000000000, 1720000000000, 1730000000000,
+          1740000000000]
+
+    def _band(self, with_pbr=True):
+        px = [[self._T[0], 100.0], [self._T[1], 120.0], [self._T[2], 90.0],
+              [self._T[3], 110.0], [self._T[4], None]]
+        per = {"mult": [36.8, 26.5, 16.3, 6.0], "price": px,
+               "bands": [[[t, 200.0 + i * 5] for i, t in enumerate(self._T)],
+                         [], [], []]}
+        out = {"per": per}
+        if with_pbr:
+            out["pbr"] = {"mult": [3.3, 2.5, 1.7, 0.9], "price": px,
+                          "bands": [[[t, 50.0 + i] for i, t in enumerate(self._T)],
+                                    [], [], []]}
+        return out
+
+    def test_pbr_table_has_the_same_shape_as_per(self):
+        from bot.dashboard_server import _kr_band_tables
+        per, pbr = _kr_band_tables(self._band())
+        assert per and pbr, (per, pbr)
+        assert set(per) == set(pbr), "PER·PBR payload 모양이 다르다"
+        assert per["kind"] == "PER" and pbr["kind"] == "PBR"
+        assert [b["mult"] for b in pbr["bands"]] == [3.3, 2.5, 1.7, 0.9]
+        assert pbr["summary"] and len(pbr["rows"]) == 4
+
+    def test_pbr_uses_its_own_band_lines_not_pers(self):
+        """⚠️ 복제하다 PER 밴드선을 그대로 쓰면 값이 통째로 PER 이 된다."""
+        from bot.dashboard_server import _kr_band_tables
+        per, pbr = _kr_band_tables(self._band())
+        assert [r["per"] for r in per["rows"]] != [r["per"] for r in pbr["rows"]]
+        # PBR(t) = 3.3 × 100 / 50 = 6.6 (첫 시점)
+        assert pbr["rows"][0]["per"] == 6.6, pbr["rows"][0]
+
+    def test_no_pbr_block_means_no_pbr_table(self):
+        """원천이 안 주면 **빈칸** — PER 로 대신 채우지 않는다."""
+        from bot.dashboard_server import _kr_band_tables
+        per, pbr = _kr_band_tables(self._band(with_pbr=False))
+        assert per is not None and pbr is None
+
+    def test_one_live_quote_for_both_tables(self):
+        """두 표가 **같은 현재가**를 써야 한다 — 따로 부르면 장중에 두 요약이
+        갈라지고, 조회도 두 번 나간다."""
+        import bot.per_band as pb
+        from bot.dashboard_server import _kr_band_tables
+        calls = []
+        orig = pb.live_price
+        pb.live_price = lambda t, ref=None: (calls.append(t), 220.0)[1]
+        try:
+            per, pbr = _kr_band_tables(self._band(), "005930.KS")
+        finally:
+            pb.live_price = orig
+        assert len(calls) == 1, f"현재가를 {len(calls)}번 불렀다"
+        assert per["summary"]["price_now"] == 220.0
+        assert pbr["summary"]["price_now"] == 220.0
+        assert per["summary"]["per_now_basis"] == "live"
+        assert pbr["summary"]["per_now_basis"] == "live"
+        # PBR 현재값 = k × 현재가, k = 마지막 행의 PBR ÷ 주가 (#33)
+        last = pbr["rows"][-1]
+        assert pbr["summary"]["per_now"] == round(
+            last["per"] / last["price"] * 220.0, 2), pbr["summary"]
+
+    def test_non_kr_table_declares_its_metric(self):
+        """렌더 기본값에 기대지 말 것 — 기본값이 바뀌면 조용히 잘못된 지표명이
+        찍힌다(#55). 비-KR 표도 `kind` 를 스스로 밝힌다."""
+        import ast
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        node = next(n for n in ast.walk(ast.parse(src))
+                    if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
+        assert '"kind"' in (ast.get_source_segment(src, node) or "")
+
+    def test_api_returns_both_tables(self):
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_handle_band_api")
+        body = ast.get_source_segment(src, fn) or ""
+        assert "pbr_table" in body, "API 가 PBR 표를 안 준다"
+
+    def test_client_draws_pbr_below_per(self):
+        """사용자 지정 위치 — "PER 밑에". 정의 1 + 호출 2(#20 배선은 호출을 센다)."""
+        from bot.dashboard import _BAND_JS
+        assert _BAND_JS.count("perTable(") >= 3, "PBR 렌더 호출이 없다"
+        assert "si-band-table-pbr" in _BAND_JS
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index('id="si-band-table"')
+        j = src.index('id="si-band-table-pbr"')
+        assert i < j, "PBR 표 자리가 PER 위에 있다"
+
+    def test_labels_follow_the_metric(self):
+        """PBR 표가 'TTM EPS'·'PER' 이라고 적으면 화면이 거짓말한다(#55)."""
+        from bot.dashboard import _BAND_JS
+        assert "'BPS'" in _BAND_JS and "'TTM EPS'" in _BAND_JS
+        assert "+denom+" in _BAND_JS, "분모 라벨이 지표를 안 따라간다"
+        assert "+kind+" in _BAND_JS, "지표명이 하드코딩돼 있다"
 
 
 class TestBandTableWiring20260822:

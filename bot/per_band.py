@@ -190,6 +190,9 @@ def for_ticker(ticker: str, snap: dict | None = None,
             return None
         res["source"] = _SRC_LABEL[basis]
         res["basis"] = basis
+        # 화면이 라벨을 이 값에서 만든다 — 빠지면 렌더 기본값에 기대게 되고,
+        # 그 기본값이 언젠가 바뀌면 조용히 잘못된 지표명이 찍힌다(#55).
+        res["kind"] = "PER"
         res["market"] = mkt
         res["years"] = years
         # 현재 PER 은 **라이브 시세**로(사용자 2026-08-22 "PER 은 주가에 따라

@@ -382,24 +382,19 @@ def _production_html(ticker: str, payload: dict) -> str:
         return ""
 
 
-def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:
-    """FnGuide 밴드 payload → **표**(자체계산 0).
+def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
+    """FnGuide 한 지표(PER 또는 PBR) 블록 → ([행], 최고밴드선 map).
 
-    ⚠️ 값은 FnGuide 가 준 것을 그대로 되뽑는다 — 우리가 다시 계산하면 같은
-    탭의 차트와 표가 갈라진다(#38 산식은 한 곳). 주가 시계열의 각 시점에서
-    그 시점 밴드선(최고 배수)의 비율로 그때의 PER 을 되짚는다:
-        PER(t) = 최고배수 × 주가(t) / 최고밴드선(t)
-    (밴드선은 '그 배수에서의 적정주가'이므로 비율이 곧 배수다.)
-
-    ⚠️ `ticker` 를 주면 **현재가 1콜**이 붙는다(요약의 현재 PER). 밴드 자체는
-    월 해상도 + 12h 캐시라 그것 없이는 오늘 움직임이 반영되지 않는다.
+    ⚠️ PER·PBR 은 밴드선만 다르고 **주가 시계열은 하나**이며 되뽑는 식도 같다
+    — 두 벌로 적으면 한쪽만 고쳐져 갈라진다(#38). 여기 한 곳에서만 만든다.
+    행의 비율 값은 키 이름을 `per` 로 통일한다(요약·렌더가 그 키를 본다) —
+    PBR 행에서도 `per` 는 '그 지표의 배수'라는 뜻이다.
     """
-    per = (band or {}).get("per") or {}
-    mult = per.get("mult") or []
-    price = per.get("price") or []
-    bands = per.get("bands") or []
+    mult = (block or {}).get("mult") or []
+    price = (block or {}).get("price") or []
+    bands = (block or {}).get("bands") or []
     if len(mult) < 4 or not price or not bands:
-        return None
+        return [], {}
     import datetime as _dt
     top = {int(x[0]): x[1] for x in (bands[0] or []) if x and x[1] is not None}
     rows = []
@@ -412,26 +407,64 @@ def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:
         d = _dt.datetime.utcfromtimestamp(int(x[0]) / 1000).strftime("%Y-%m-%d")
         rows.append({"period": d, "price": round(float(x[1]), 2),
                      "eps": None, "per": round(mult[0] * float(x[1]) / b, 2)})
-    if len(rows) < 4:
+    return (rows, top) if len(rows) >= 4 else ([], top)
+
+
+def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | None:
+    """FnGuide 한 지표 블록 → 표 payload(요약 + 밴드 4선 + 이력). 자체계산 0.
+
+    ⚠️ 값은 FnGuide 가 준 것을 그대로 되뽑는다 — 우리가 다시 계산하면 같은
+    탭의 차트와 표가 갈라진다(#38 산식은 한 곳). 주가 시계열의 각 시점에서
+    그 시점 밴드선(최고 배수)의 비율로 그때의 배수를 되짚는다:
+        배수(t) = 최고배수 × 주가(t) / 최고밴드선(t)
+    (밴드선은 '그 배수에서의 적정주가'이므로 비율이 곧 배수다.)
+    """
+    mult = (block or {}).get("mult") or []
+    price = (block or {}).get("price") or []
+    rows, top = _fnguide_ratio_rows(block)
+    if not rows:
         return None
+    from bot.per_band import summary as _sm
     labels = ("최고", "중상", "중하", "최저")
     last_obs = rows[-1]["price"]
     top_last = top.get(int(price[-1][0])) or 0.0
-    # 현재가는 **라이브 시세**로(사용자 2026-08-22 "PER 은 주가에 따라 매일
-    # 바뀌잖아"). FnGuide 밴드는 월 해상도 + 12시간 캐시라 그대로 쓰면 오늘
-    # 움직임이 반영되지 않는다.
-    from bot.per_band import live_price as _lp, summary as _sm
-    px_now = _lp(ticker, last_obs) if ticker else None
-    out = {"rows": rows,
-           "bands": [{"label": labels[i], "mult": round(float(mult[i]), 2),
-                      "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
-                               if mult[0] and top_last else None)}
-                     for i in range(4)],
-           "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
-           "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
-           "basis": "fnguide", "market": "KR"}
-    out["summary"] = _sm(rows, years=5, price_now=px_now)
-    return out
+    return {"rows": rows, "kind": kind,
+            "bands": [{"label": labels[i], "mult": round(float(mult[i]), 2),
+                       "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
+                                if mult[0] and top_last else None)}
+                      for i in range(4)],
+            "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
+            "summary": _sm(rows, years=5, price_now=px_now),
+            "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
+            "basis": "fnguide", "market": "KR"}
+
+
+def _kr_band_tables(band: dict | None,
+                    ticker: str = "") -> tuple[dict | None, dict | None]:
+    """FnGuide 밴드 payload → (PER 표, PBR 표). 현재가는 **1콜만**.
+
+    ⚠️ PBR 은 사용자 2026-08-22 "PBR 밴드도 같은 요약을 추가해줘. 이건 한국만
+    하면 돼" — FnGuide 가 KR 만 밴드선을 주므로 해외는 원천이 없다. 없는 걸
+    자체계산으로 메우지 않는다.
+
+    ⚠️ `ticker` 를 주면 **현재가 1콜**이 붙는다(요약의 현재 배수). 밴드 자체는
+    월 해상도 + 12h 캐시라 그것 없이는 오늘 움직임이 반영되지 않는다. 두 표가
+    **같은 현재가**를 써야 한다 — 따로 부르면 장중에 두 요약이 갈라진다.
+    """
+    per_b = (band or {}).get("per") or {}
+    rows, _top = _fnguide_ratio_rows(per_b)
+    if not rows:
+        return None, None
+    from bot.per_band import live_price as _lp
+    px_now = _lp(ticker, rows[-1]["price"]) if ticker else None
+    return (_fnguide_ratio_table(per_b, kind="PER", px_now=px_now),
+            _fnguide_ratio_table((band or {}).get("pbr") or {},
+                                 kind="PBR", px_now=px_now))
+
+
+def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:
+    """PER 표만(호환용 얇은 래퍼)."""
+    return _kr_band_tables(band, ticker)[0]
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -1055,14 +1088,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._reply_json(200, {"ok": False, "error": "no data"})
                 return
             # ⚠️ KR 도 밴드 **차트만** 주고 표는 없었다 — 사용자 2026-08-22
-            # "한국꺼도 Band 만 만들지말고 같은 탭에 표도". FnGuide 가 준
-            # 밴드선·주가를 그대로 표로 되뽑는다(추가 호출 0, 자체계산 아님).
-            self._reply_json(200, {
-                "ok": True, "band": data,
-                # 표에도 라이브 시세가 붙으므로(현재 PER) 동시 요청을 하나로
-                # 묶는다 — 밴드 payload 는 12h 캐시라 표만 두 번 도는 걸 막는다.
-                "per_table": _once(f"perband:{ticker}",
-                                   lambda: _kr_per_table(data, ticker))})
+            # "한국꺼도 Band 만 만들지말고 같은 탭에 표도" → PBR 도 같은 구성
+            # 으로 PER 밑에. FnGuide 가 준 밴드선·주가를 그대로 되뽑으므로
+            # 자체계산은 없고, 현재 배수용 **현재가 1콜**만 붙는다.
+            # 표에도 라이브 시세가 붙으므로(현재 배수) 동시 요청을 하나로
+            # 묶는다 — 밴드 payload 는 12h 캐시라 표만 두 번 도는 걸 막는다.
+            _t = _once(f"perband:{ticker}",
+                       lambda: _kr_band_tables(data, ticker))
+            self._reply_json(200, {"ok": True, "band": data,
+                                   "per_table": _t[0], "pbr_table": _t[1]})
         except Exception as exc:
             log.warning("band_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
