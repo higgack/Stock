@@ -200,6 +200,10 @@ def for_ticker(ticker: str, snap: dict | None = None,
         res["price_now"] = live_price(tk, (res.get("rows") or [{}])[-1].get("price"))
         res["summary"] = summary(res.get("rows"), years=5,
                                  price_now=res["price_now"])
+        # 밴드 **차트**도 같은 rows 에서 만든다(사용자 2026-08-22 "외국종목도
+        # PER 밴드차트 만들수 있으면 만들어줘"). 표와 한 재료라 갈라질 수 없다.
+        res["chart"] = chart_block(res, px)
+        res["csym"] = currency_symbol(tk)
         return res
 
     if mkt == "US":
@@ -328,3 +332,84 @@ def live_price(ticker: str, last_obs=None) -> float | None:
                     ticker, px, ref)
         return None
     return px
+
+
+# ── 밴드 **차트** (사용자 2026-08-22 "외국종목도 PER 밴드차트 만들수 있으면") ──
+# FnGuide 는 KR 만 밴드선을 준다. 비-KR 은 재료(주가·TTM EPS)가 이미 표에 있고
+# 밴드선의 정의가 곧 `배수 × 그 시점 EPS` 이므로 **표에서 그대로 만든다** —
+# 표와 차트가 같은 rows 에서 나오므로 둘이 갈라질 수 없다(#38).
+#
+# ⚠️ 화면의 `drawBand` 가 FnGuide 모양을 그대로 먹으므로 **그 모양으로** 낸다
+# (렌더러를 두 벌로 만들면 축·색·갭 규약이 갈라진다). PBR 은 하지 않는다 —
+# BPS 이력을 안 받고 있고, 사용자가 "PBR 은 안해도 돼" 라고 했다.
+
+
+def _ms(ymd: str) -> int | None:
+    """'YYYY-MM-DD' → epoch ms(UTC). drawBand 가 ms 축을 쓴다."""
+    import datetime as _dt
+    try:
+        d = _dt.date(int(ymd[:4]), int(ymd[5:7]), int(ymd[8:10]))
+    except (ValueError, IndexError):
+        return None
+    return int(_dt.datetime(d.year, d.month, d.day,
+                            tzinfo=_dt.timezone.utc).timestamp() * 1000)
+
+
+def chart_block(tbl: dict | None, prices: list | None = None) -> dict | None:
+    """표 payload(+월봉 가격) → FnGuide 모양 밴드차트 블록. 재료가 없으면 None.
+
+    밴드선(t) = 배수 × TTM EPS(t) = '그 배수였다면 그때 주가가 얼마'.
+
+    ⚠️ `prices`(월봉)를 주면 **가격을 그 해상도로** 그린다. 표의 rows 만 쓰면
+    EPS 기간마다 한 점이라 10년이 40점뿐이고, 분기 사이 등락이 통째로 사라진다
+    (FnGuide 는 월 해상도다 — 같은 화면에서 국내만 촘촘하면 안 된다).
+    그 시점 EPS 는 **직전 확정 분기**를 계단으로 쓴다 — 미래 EPS 를 끌어오면
+    그때 존재하지 않던 밴드가 된다(#28 빈티지 오염).
+
+    ⚠️ EPS ≤ 0 인 시점은 **선을 잇지 않는다**(None) — 적자 구간의 PER 은 음수·
+    발산이라 0 으로 이으면 축이 통째로 망가진다(FnGuide 도 그 구간을 0 으로
+    보내고 화면이 갭 처리한다 — 같은 규약을 지킨다).
+    """
+    rows = (tbl or {}).get("rows") or []
+    bands = (tbl or {}).get("bands") or []
+    if len(rows) < 4 or len(bands) < 4:
+        return None
+    # 표의 rows 가 곧 TTM EPS 시계열이다(기간 → 그 기간의 TTM EPS).
+    ttm = sorted((str(r.get("period") or "")[:10], _f(r.get("eps")))
+                 for r in rows if str(r.get("period") or ""))
+    src = ([(str(d)[:10], _f(v)) for d, v in prices] if prices
+           else [(str(r.get("period") or "")[:10], _f(r.get("price")))
+                 for r in rows])
+    # 첫 EPS 기간보다 앞선 주가는 **버린다** — 밴드가 없는 구간이 길게 붙으면
+    # 정작 볼 구간이 오른쪽 끝으로 짜부라진다(가격 이력이 EPS 보다 길다).
+    first = ttm[0][0] if ttm else ""
+    pts = []
+    for d, px in sorted(src):
+        ms = _ms(d)
+        if ms is None or px is None or d < first:
+            continue
+        e = None
+        for p, v in ttm:                # 직전 확정 분기(계단)
+            if p > d:
+                break
+            e = v
+        pts.append((ms, px, e))
+    if len(pts) < 4:
+        return None
+    mult = [_f(b.get("mult")) for b in bands[:4]]
+    if not any(m for m in mult):
+        return None
+    return {"mult": [m or 0.0 for m in mult],
+            "price": [[ms, px] for ms, px, _e in pts],
+            "bands": [[[ms, (round(m * e, 4) if (m and e and e > 0) else None)]
+                       for ms, _px, e in pts] for m in mult]}
+
+
+def currency_symbol(ticker: str) -> str:
+    """밴드차트 y축 통화 기호. 시장 설정 **단일 출처**에서 읽는다(#38) —
+    화면에 '₩' 를 박아 두면 해외 종목 축이 원화로 거짓말한다."""
+    try:
+        from bot.market import MARKET_CONFIG, detect_market
+        return MARKET_CONFIG[detect_market(ticker)].get("currency_symbol") or "$"
+    except Exception:                                          # noqa: BLE001
+        return "$"

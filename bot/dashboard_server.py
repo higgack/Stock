@@ -1060,8 +1060,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             from bot.singleflight import once as _once
             # ⚠️ 비-KR 은 FnGuide 가 못 준다(`cmp_cd` 가 6자리 국내코드) —
             # 예전엔 여기서 그냥 돌아섰다. 이제 **자체 PER 밴드**(가격 이력 ×
-            # EPS 이력)를 만들어 표로 준다(사용자 2026-08-22 "차트 아니라
-            # 표도 괜찮아"). 미국은 EDGAR 10년, 그 외는 yfinance.
+            # EPS 이력)를 만들어 표 + **차트**로 준다(사용자 2026-08-22 "차트
+            # 아니라 표도 괜찮아" → "외국종목도 PER 밴드차트 만들수 있으면").
+            # 미국은 EDGAR 10년, 그 외는 yfinance. PBR 은 BPS 이력이 없어 안
+            # 만든다(사용자 "PBR 은 안해도 돼").
             if not ticker.endswith((".KS", ".KQ")):
                 snap = None
                 try:
@@ -1078,7 +1080,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "error": "PER 밴드를 만들 재료가 부족합니다"
                                  "(EPS 이력 또는 가격 이력 없음)"})
                     return
-                self._reply_json(200, {"ok": True, "per_table": tbl})
+                # 차트는 표와 **같은 rows** 에서 나온다 — 갈라질 수 없다(#38).
+                ch = tbl.get("chart")
+                self._reply_json(200, {
+                    "ok": True, "per_table": tbl,
+                    "band": ({"per": ch, "pbr": None,
+                              "csym": tbl.get("csym") or "$"} if ch else None)})
                 return
             from bot.fnguide_bandchart import fetch_band_chart
             # 같은 티커의 밴드 요청이 동시에 두 번 들어온다(2026-08-21 실측:
@@ -1095,8 +1102,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # 묶는다 — 밴드 payload 는 12h 캐시라 표만 두 번 도는 걸 막는다.
             _t = _once(f"perband:{ticker}",
                        lambda: _kr_band_tables(data, ticker))
-            self._reply_json(200, {"ok": True, "band": data,
-                                   "per_table": _t[0], "pbr_table": _t[1]})
+            # ⚠️ y축 통화는 **payload 에 실어** 보낸다 — 화면 기본값('₩')에
+            # 기대면 그 기본값이 바뀌는 날 국내 축이 조용히 틀린다(#55).
+            from bot.per_band import currency_symbol as _cs
+            self._reply_json(200, {
+                "ok": True, "band": {**data, "csym": _cs(ticker)},
+                "per_table": _t[0], "pbr_table": _t[1]})
         except Exception as exc:
             log.warning("band_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
