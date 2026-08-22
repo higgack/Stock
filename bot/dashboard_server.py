@@ -382,14 +382,17 @@ def _production_html(ticker: str, payload: dict) -> str:
         return ""
 
 
-def _kr_per_table(band: dict | None) -> dict | None:
-    """FnGuide 밴드 payload → **표**(추가 호출 0 · 자체계산 0).
+def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:
+    """FnGuide 밴드 payload → **표**(자체계산 0).
 
     ⚠️ 값은 FnGuide 가 준 것을 그대로 되뽑는다 — 우리가 다시 계산하면 같은
     탭의 차트와 표가 갈라진다(#38 산식은 한 곳). 주가 시계열의 각 시점에서
     그 시점 밴드선(최고 배수)의 비율로 그때의 PER 을 되짚는다:
         PER(t) = 최고배수 × 주가(t) / 최고밴드선(t)
     (밴드선은 '그 배수에서의 적정주가'이므로 비율이 곧 배수다.)
+
+    ⚠️ `ticker` 를 주면 **현재가 1콜**이 붙는다(요약의 현재 PER). 밴드 자체는
+    월 해상도 + 12h 캐시라 그것 없이는 오늘 움직임이 반영되지 않는다.
     """
     per = (band or {}).get("per") or {}
     mult = per.get("mult") or []
@@ -412,16 +415,23 @@ def _kr_per_table(band: dict | None) -> dict | None:
     if len(rows) < 4:
         return None
     labels = ("최고", "중상", "중하", "최저")
-    now = rows[-1]["price"]
-    return {"rows": rows,
-            "bands": [{"label": labels[i], "mult": round(float(mult[i]), 2),
-                       "fair": (round(top.get(int(price[-1][0]), 0)
-                                      * float(mult[i]) / float(mult[0]), 2)
-                                if mult[0] else None)}
-                      for i in range(4)],
-            "eps_now": None, "n": len(rows), "price_now": now,
-            "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
-            "basis": "fnguide", "market": "KR"}
+    last_obs = rows[-1]["price"]
+    top_last = top.get(int(price[-1][0])) or 0.0
+    # 현재가는 **라이브 시세**로(사용자 2026-08-22 "PER 은 주가에 따라 매일
+    # 바뀌잖아"). FnGuide 밴드는 월 해상도 + 12시간 캐시라 그대로 쓰면 오늘
+    # 움직임이 반영되지 않는다.
+    from bot.per_band import live_price as _lp, summary as _sm
+    px_now = _lp(ticker, last_obs) if ticker else None
+    out = {"rows": rows,
+           "bands": [{"label": labels[i], "mult": round(float(mult[i]), 2),
+                      "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
+                               if mult[0] and top_last else None)}
+                     for i in range(4)],
+           "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
+           "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
+           "basis": "fnguide", "market": "KR"}
+    out["summary"] = _sm(rows, years=5, price_now=px_now)
+    return out
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -1047,8 +1057,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # ⚠️ KR 도 밴드 **차트만** 주고 표는 없었다 — 사용자 2026-08-22
             # "한국꺼도 Band 만 만들지말고 같은 탭에 표도". FnGuide 가 준
             # 밴드선·주가를 그대로 표로 되뽑는다(추가 호출 0, 자체계산 아님).
-            self._reply_json(200, {"ok": True, "band": data,
-                                   "per_table": _kr_per_table(data)})
+            self._reply_json(200, {
+                "ok": True, "band": data,
+                # 표에도 라이브 시세가 붙으므로(현재 PER) 동시 요청을 하나로
+                # 묶는다 — 밴드 payload 는 12h 캐시라 표만 두 번 도는 걸 막는다.
+                "per_table": _once(f"perband:{ticker}",
+                                   lambda: _kr_per_table(data, ticker))})
         except Exception as exc:
             log.warning("band_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})

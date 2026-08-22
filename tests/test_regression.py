@@ -31637,6 +31637,134 @@ class TestEdgarEpsHistory20260822:
         assert not (ee._A_DAYS[0] <= 180 <= ee._A_DAYS[1])
 
 
+class TestPerBandSummary20260822:
+    """사용자 2026-08-22: "5년 평균과 최저점, 최고점을 추가해줘. 여기 위에 …
+    그리고 PER 은 주가에 따라 매일 바뀌잖아. 그게 고려된거 맞지?"
+
+    ⚠️ 고려되고 있지 **않았다** — 표의 마지막 행 주가는 EPS 기간에 붙은 월봉
+    이고 KR 은 FnGuide 밴드를 12시간 캐시로 받는다. 현재 PER 은 라이브 시세로
+    다시 만들고, 못 받으면 **어느 쪽인지 밝힌다**."""
+
+    @staticmethod
+    def _rows(pairs):
+        return [{"period": p, "price": px, "eps": None, "per": round(pr, 2)}
+                for p, px, pr in pairs]
+
+    def test_window_is_cut_by_date_not_position(self):
+        """관측이 성기면 위치로 자른 '5년'은 거짓말이다(#29)."""
+        from bot.per_band import summary
+        rows = self._rows([("2010-01-01", 100, 50.0), ("2011-01-01", 100, 40.0),
+                           ("2023-01-01", 100, 10.0), ("2024-01-01", 100, 12.0),
+                           ("2025-01-01", 100, 14.0), ("2026-01-01", 100, 16.0)])
+        sm = summary(rows, years=5)
+        assert sm["n"] == 4, sm            # 2010·2011 은 창 밖
+        assert sm["from"] == "2023-01-01" and sm["to"] == "2026-01-01"
+        assert sm["min"] == 10.0 and sm["max"] == 16.0
+        assert sm["avg"] == 13.0
+        # 5년을 다 못 채웠으면 그렇게 적을 수 있어야 한다(화면 라벨의 근거)
+        assert sm["span_years"] == 3.0 and sm["want_years"] == 5
+
+    def test_current_per_follows_todays_price(self):
+        """사용자 질문 그대로 — 주가가 오르면 현재 PER 도 올라야 한다."""
+        from bot.per_band import summary
+        rows = self._rows([("2023-01-01", 100, 10.0), ("2024-01-01", 110, 11.0),
+                           ("2025-01-01", 120, 12.0), ("2026-01-01", 100, 10.0)])
+        base = summary(rows, years=5)
+        assert base["per_now_basis"] == "last" and base["per_now"] == 10.0
+        up = summary(rows, years=5, price_now=150.0)
+        assert up["per_now_basis"] == "live", up
+        # k = 마지막 행의 PER ÷ 주가 = 10/100 → 150 × 0.1 = 15.0
+        assert up["per_now"] == 15.0, up
+        assert up["price_now"] == 150.0
+        dn = summary(rows, years=5, price_now=50.0)
+        assert dn["per_now"] == 5.0, dn
+
+    def test_current_per_is_consistent_with_the_history_rows(self):
+        """파생 칸은 **화면의 다른 칸**에서 만든다(#33) — 마지막 행의 주가를
+        그대로 넣으면 그 행의 PER 이 나와야 한다. 원천별로 k 를 따로 적으면
+        (비-KR 1÷EPS · KR 최고배수÷밴드선) 여기서 갈라진다."""
+        from bot.per_band import summary
+        rows = self._rows([("2023-01-01", 100, 10.0), ("2024-01-01", 110, 11.0),
+                           ("2025-01-01", 120, 12.0), ("2026-01-01", 137, 18.83)])
+        sm = summary(rows, years=5, price_now=137.0)
+        assert sm["per_now"] == 18.83, sm
+
+    def test_newest_first_input_still_finds_the_latest_row(self):
+        """원천이 최신부터 주는 일이 잦다 — 문서 순서의 마지막을 '현재'로
+        삼으면 조용히 **옛 행**의 기준으로 현재 PER 을 만든다."""
+        from bot.per_band import summary
+        rows = self._rows([("2026-01-01", 200, 20.0), ("2025-01-01", 100, 10.0),
+                           ("2024-01-01", 100, 11.0), ("2023-01-01", 100, 12.0)])
+        sm = summary(rows, years=5, price_now=400.0)
+        # k = 20/200 = 0.1 → 400 × 0.1 = 40.0 (옛 행이면 0.1 이 아니라 0.1…
+        # 이 아니라 10/100 = 0.1 로 우연히 같아지지 않게 마지막만 200 으로 뒀다)
+        assert sm["per_now"] == 40.0, sm
+        assert sm["to"] == "2026-01-01" and sm["from"] == "2023-01-01"
+
+    def test_too_few_points_makes_no_summary(self):
+        """점 두세 개짜리 '5년 평균'은 이름값을 못 한다(빈칸이 낫다)."""
+        from bot.per_band import summary
+        assert summary(None) is None and summary([]) is None
+        assert summary(self._rows([("2025-01-01", 100, 10.0),
+                                   ("2025-04-01", 100, 11.0),
+                                   ("2025-07-01", 100, 12.0)])) is None
+
+    def test_negative_and_broken_rows_are_dropped(self):
+        from bot.per_band import summary
+        rows = self._rows([("2023-01-01", 100, 10.0), ("2024-01-01", 100, 11.0),
+                           ("2025-01-01", 100, 12.0), ("2026-01-01", 100, 13.0)])
+        rows.append({"period": "bad", "price": 1, "per": 999})
+        rows.append({"period": "2026-02-01", "price": 1, "per": -5})
+        sm = summary(rows, years=5)
+        assert sm["max"] == 13.0 and sm["n"] == 4, sm
+
+    def test_live_price_rejects_order_of_magnitude_glitches(self):
+        """통화 뒤섞임·분할 미조정을 거른다. ⚠️ 기준이 **월봉**이라 일일밴드
+        (KR ±35%)를 쓰면 정당한 한 달 등락을 reject 한다 — 넓게 본다."""
+        import bot.per_band as pb
+
+        def _run(price, ref):
+            orig = pb.__dict__.get("_stub")
+            import sys
+            import types
+            mod = types.ModuleType("bot.world_quote")
+            mod.fetch_world_quote = lambda t: {"price": price}
+            sys.modules["bot.world_quote"] = mod
+            try:
+                return pb.live_price("AAPL", ref)
+            finally:
+                sys.modules.pop("bot.world_quote", None)
+                assert orig is None
+        assert _run(150.0, 100.0) == 150.0      # 한 달 +50% 는 정당하다
+        assert _run(40.0, 100.0) == 40.0        # −60% 도 통과
+        assert _run(100000.0, 100.0) is None    # 자릿수 사고
+        assert _run(0.0, 100.0) is None and _run(None, 100.0) is None
+        assert _run(150.0, None) == 150.0       # 기준이 없으면 값만 본다
+
+    def test_both_producers_attach_a_summary(self):
+        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20)."""
+        import ast
+        for f, fn in (("bot/per_band.py", "for_ticker"),
+                      ("bot/dashboard_server.py", "_kr_per_table")):
+            src = open(f, encoding="utf-8").read()
+            node = next(n for n in ast.walk(ast.parse(src))
+                        if isinstance(n, ast.FunctionDef) and n.name == fn)
+            seg = ast.get_source_segment(src, node) or ""
+            assert '"summary"' in seg, f"{f}:{fn} 이 요약을 안 붙인다"
+            assert "live_price" in seg or "_lp(" in seg, f"{f}:{fn} 현재가 미배선"
+
+    def test_client_renders_summary_above_the_band_table(self):
+        """사용자 지정 위치 — "여기 위에". 밴드 표보다 앞에 그려야 한다."""
+        from bot.dashboard import _BAND_JS
+        i = _BAND_JS.index("t.summary")
+        j = _BAND_JS.index("그 배수에서의 주가")
+        assert i < j, "요약이 밴드 표 아래에 있다"
+        for lab in ("현재 PER", "평균", "최저", "최고"):
+            assert lab in _BAND_JS[i:j], f"요약에 {lab} 이 없다"
+        # 실시간이 아니면 **그렇게 말해야** 한다 — 침묵이 최악(#43)
+        assert "실시간 시세를 못 받았습니다" in _BAND_JS[i:j]
+
+
 class TestBandTableWiring20260822:
     """KR 은 차트 **옆에 표**를, 비-KR 은 표만 — 같은 탭에서(사용자 2026-08-22)."""
 

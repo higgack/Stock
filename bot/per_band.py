@@ -192,6 +192,11 @@ def for_ticker(ticker: str, snap: dict | None = None,
         res["basis"] = basis
         res["market"] = mkt
         res["years"] = years
+        # 현재 PER 은 **라이브 시세**로(사용자 2026-08-22 "PER 은 주가에 따라
+        # 매일 바뀌잖아"). 마지막 행의 주가는 월봉이라 최대 한 달 낡았다.
+        res["price_now"] = live_price(tk, (res.get("rows") or [{}])[-1].get("price"))
+        res["summary"] = summary(res.get("rows"), years=5,
+                                 price_now=res["price_now"])
         return res
 
     if mkt == "US":
@@ -211,3 +216,112 @@ def for_ticker(ticker: str, snap: dict | None = None,
         return got
     a = _eps_rows_from_snapshot(snap, "annual")
     return _pack(build(px, a, annual=True), "yf-a")
+
+
+# ── 요약(최근 N년 평균·최저·최고 + 현재 PER) ────────────────────────────────
+# 사용자 2026-08-22: "5년 평균과 최저점, 최고점을 추가해줘. 여기 위에 …
+# 그리고 PER 은 주가에 따라 매일 바뀌잖아. 그게 고려된거 맞지?"
+#
+# ⚠️ **안 되고 있었다.** 표의 마지막 행은 EPS 기간(분기)에 붙은 **월봉** 종가라
+# 최대 한 달 낡았고, KR 은 FnGuide 밴드를 12시간 캐시로 받는다. 그래서 현재
+# PER 은 **라이브 시세**로 다시 만든다 — 못 받으면 마지막 관측으로 되돌아가되
+# 어느 쪽인지 `per_now_basis` 로 밝힌다(침묵이 최악, #43).
+#
+# ⚠️ PER 은 주가에 **선형**이다(PER = 주가 × k). 원천별로 k 를 따로 적을 수도
+# 있지만(비-KR 1÷TTM EPS · KR 최고배수÷밴드선) 그러면 두 벌이 되어 언젠가
+# 갈라진다 — **표의 마지막 행**에서 `k = PER ÷ 주가` 로 만든다(#33 파생 칸은
+# 화면의 다른 칸에서, #38 산식은 한 곳). 그러면 현재 PER 이 정의상 이력 행과
+# 같은 기준이고, 사용자가 눈으로 나눠 봐도 맞는다.
+
+
+def _ymd_minus_years(ymd: str, years: int) -> str:
+    """'YYYY-MM-DD' − N년. 2/29 는 2/28 로 내린다."""
+    y, m, d = (int(x) for x in ymd[:10].split("-"))
+    y -= years
+    if m == 2 and d == 29:
+        d = 28
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+
+def summary(rows: list | None, *, years: int = 5,
+            price_now=None) -> dict | None:
+    """PER 이력 → {"avg","min","max","n","from","to","span_years",
+    "per_now","per_now_basis"} 또는 None(관측 부족).
+
+    ⚠️ 창은 **날짜로** 자른다 — 위치(`rows[-60:]`)로 자르면 관측이 성길 때
+    '5년'이 거짓말이 된다(#29). 실제로 걸린 구간을 `from`/`to` 로 돌려주고
+    화면이 그걸 라벨로 쓴다(요청한 5년보다 짧으면 짧다고 적힌다).
+    """
+    pts, px_by_period = [], {}
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        p, v = str(r.get("period") or "")[:10], _f(r.get("per"))
+        if len(p) == 10 and v is not None and v > 0:
+            pts.append((p, v))
+            px_by_period[p] = _f(r.get("price"))
+    if not pts:
+        return None
+    # ⚠️ 원천이 최신부터 줄 수 있다 — **정렬한 뒤**의 마지막이 최신이다
+    # (문서 순서의 마지막을 쓰면 조용히 옛 행을 '현재'로 삼는다).
+    pts.sort()
+    last_per = pts[-1][1]
+    last_px = px_by_period.get(pts[-1][0])
+    cut = _ymd_minus_years(pts[-1][0], years)
+    win = [(p, v) for p, v in pts if p >= cut]
+    if len(win) < 4:                 # 점 두세 개짜리 '평균'은 이름값을 못 한다
+        return None
+    vals = [v for _p, v in win]
+    y0, y1 = win[0][0], win[-1][0]
+    span = (int(y1[:4]) - int(y0[:4])) + (int(y1[5:7]) - int(y0[5:7])) / 12.0
+    # PER = 주가 × k. k 는 **표의 마지막 행**에서 직접 만든다 — 원천별로 따로
+    # 적으면(비-KR 1÷EPS · KR 최고배수÷밴드선) 언젠가 갈라지고, 사용자가 눈으로
+    # 나눠 봤을 때 이력 행과 안 맞는다(#33·#38).
+    k = (last_per / last_px) if (last_px and last_px > 0 and last_per) else None
+    px = _f(price_now)
+    if k and k > 0 and px and px > 0:
+        per_now, basis = round(px * k, 2), "live"
+    else:
+        per_now, basis = round(win[-1][1], 2), "last"
+    return {"avg": round(sum(vals) / len(vals), 2),
+            "min": round(min(vals), 2), "max": round(max(vals), 2),
+            "n": len(win), "from": y0, "to": y1,
+            "span_years": round(span, 1), "want_years": years,
+            "per_now": per_now, "per_now_basis": basis,
+            "price_now": round(px, 2) if basis == "live" else None}
+
+
+def live_price(ticker: str, last_obs=None) -> float | None:
+    """현재가(실시간). 실패·이상치면 None → 표가 마지막 관측으로 되돌아간다.
+
+    ⚠️ 검증 기준(`last_obs`)이 **월봉**이라 최대 한 달 낡았다. 그래서
+    `chart_data._validate_live_price` 의 일일밴드(KR ±35%)를 그대로 쓰면
+    정당한 한 달 등락을 reject 한다 — 여기서 거를 대상은 일일 글리치가 아니라
+    **통화 뒤섞임·분할 미조정** 같은 자릿수 사고이므로 0.2~5배로 넓게 본다.
+    """
+    try:
+        from bot.market import detect_market
+        mkt = detect_market(ticker)
+    except Exception:                                          # noqa: BLE001
+        mkt = "US"
+    q = None
+    try:
+        if mkt == "KR":
+            from bot.naver_quote import fetch_kr_quote as _q
+        elif mkt == "TW":
+            from bot.tw_quote import fetch_tw_quote as _q
+        else:
+            from bot.world_quote import fetch_world_quote as _q
+        q = _q(ticker)
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: 현재가 실패 %s: %s", ticker, exc)
+        return None
+    px = _f((q or {}).get("price"))
+    if px is None or px <= 0:
+        return None
+    ref = _f(last_obs)
+    if ref and ref > 0 and not (0.2 <= px / ref <= 5.0):
+        log.warning("per_band: 현재가 이상치 %s: %s (마지막 관측 %s) — 무시",
+                    ticker, px, ref)
+        return None
+    return px
