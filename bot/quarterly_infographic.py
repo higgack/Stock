@@ -1311,10 +1311,19 @@ def _ttm(qs: list) -> dict:
     않는다**. 옛 코드는 플래그를 무시하고 그냥 합산해서, DART 계정 승자
     불일치로 한 분기 매출이 -21조가 된 종목의 TTM 매출을 -10.30조로 찍고
     거기서 PSR -1.87배까지 파생시켰다(사용자 2026-08-16 메리츠금융지주).
-    오염된 합계를 'TTM' 이라 부르지 않는다 — 빈칸이 틀린 숫자보다 낫다."""
+    오염된 합계를 'TTM' 이라 부르지 않는다 — 빈칸이 틀린 숫자보다 낫다.
+
+    ⚠️ **연속한 4분기가 아니면 만들지 않는다**(2026-08-22 6488.TWO·6239.TW):
+    원천에 25.3Q 가 없어 표가 25.1Q·25.2Q·**25.4Q**·26.1Q 로 이어졌는데,
+    옛 코드는 `qs[-4:]` 를 그냥 더해 **5분기에 걸친 합**을 'TTM' 이라 불렀다
+    (거기서 TTM PER·PSR 까지 파생됐다). MSFT 의 15개월 TTM EPS(#138)와
+    같은 병이 다른 모듈에 있던 것이다 — 화면은 결측 분기를 각주로 이미
+    말하고 있었는데 합산만 그걸 안 봤다."""
     if len(qs) < 4:
         return {}
     window = qs[-4:]
+    if window_gaps(window):
+        return {}
     bad = anomalous_keys(window)
     out: dict = {}
     for k in ("매출", "영업이익", "당기순이익"):
@@ -1327,6 +1336,16 @@ def _ttm(qs: list) -> dict:
 
 
 _TTM_KEYS = ("매출", "영업이익", "당기순이익")
+
+
+def window_gaps(window: list) -> list:
+    """TTM 창 안의 **빠진 달력 분기** 라벨. 판정은 `missing_quarters` 하나에서
+    온다 — 복제하면 각주와 합산이 서로 다른 답을 낸다(#38)."""
+    try:
+        from bot.quarterly_series import missing_quarters
+        return missing_quarters(window)
+    except Exception:                                          # noqa: BLE001
+        return []
 
 
 def ttm_missing_why(qs: list) -> dict:
@@ -1345,6 +1364,10 @@ def ttm_missing_why(qs: list) -> dict:
     if len(qs) < 4:
         return {k: f"분기 표본 {len(qs)}개(4개 필요)" for k in _TTM_KEYS}
     window = qs[-4:]
+    gaps = window_gaps(window)
+    if gaps:
+        return {k: f"{'·'.join(gaps)} 결측 — 연속 4분기가 아님"
+                for k in _TTM_KEYS}
     bad = anomalous_keys(window)
     why: dict = {}
     for k in _TTM_KEYS:

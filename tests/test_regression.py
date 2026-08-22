@@ -32256,6 +32256,73 @@ class TestEmptyChartPanelsAndJpProbe20260822:
         assert "for_ticker" in calls, calls
 
 
+class TestTtmContiguity20260822:
+    """사용자 2026-08-22 6488.TWO·6239.TW: "25.3Q 가 없어. 대만 일부 종목들이
+    이런데 왜 이런거야?"
+
+    ⚠️ 원천 결측 자체는 우리 잘못이 아니고 화면이 이미 각주로 말하고 있었다
+    (`! 25.3Q 는 원천에 없어 표에서 빠졌습니다`). **진짜 버그는 `_ttm` 이 그
+    각주를 안 보고 `qs[-4:]` 를 그냥 더한 것** — 25.1Q·25.2Q·25.4Q·26.1Q 를
+    합쳐 **5분기에 걸친 합**을 'TTM' 이라 부르고 거기서 TTM PER·PSR 까지
+    파생시켰다. MSFT 의 15개월 TTM EPS(#138)와 같은 병이 다른 모듈에 있었다."""
+
+    @staticmethod
+    def _q(lbl, per, rev):
+        return {"label": lbl, "period": per,
+                "financials": {"매출": rev, "영업이익": rev / 8,
+                               "당기순이익": rev / 10}}
+
+    def _gapped(self):
+        return [self._q("24.4Q", "2024-12-31", 100),
+                self._q("25.1Q", "2025-03-31", 110),
+                self._q("25.2Q", "2025-06-30", 120),
+                self._q("25.4Q", "2025-12-31", 140),
+                self._q("26.1Q", "2026-03-31", 150)]
+
+    def _clean(self):
+        return [self._q("25.1Q", "2025-03-31", 110),
+                self._q("25.2Q", "2025-06-30", 120),
+                self._q("25.3Q", "2025-09-30", 130),
+                self._q("25.4Q", "2025-12-31", 140),
+                self._q("26.1Q", "2026-03-31", 150)]
+
+    def test_gap_in_the_window_makes_no_ttm(self):
+        from bot.quarterly_infographic import _ttm
+        assert _ttm(self._gapped()) == {}, "구멍을 건너뛰고 합산했다"
+
+    def test_consecutive_window_still_works(self):
+        """⚠️ 무조건 막으면 멀쩡한 종목의 TTM 이 통째로 사라진다."""
+        from bot.quarterly_infographic import _ttm
+        assert _ttm(self._clean())["매출"] == 540
+
+    def test_reason_names_the_missing_quarter(self):
+        from bot.quarterly_infographic import ttm_missing_why
+        why = ttm_missing_why(self._gapped())
+        assert set(why) == {"매출", "영업이익", "당기순이익"}, why
+        assert "25.3Q" in why["매출"] and "연속" in why["매출"], why["매출"]
+
+    def test_gap_judgement_comes_from_one_place(self):
+        """각주와 합산이 서로 다른 답을 내면 안 된다(#38) — 같은 판정을 쓴다."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "window_gaps")
+        assert "missing_quarters" in (ast.get_source_segment(src, fn) or "")
+        for name in ("_ttm", "ttm_missing_why"):
+            f = next(n for n in ast.walk(ast.parse(src))
+                     if isinstance(n, ast.FunctionDef) and n.name == name)
+            calls = [c.func.id for c in ast.walk(f)
+                     if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+            assert "window_gaps" in calls, (name, calls)
+
+    def test_value_and_reason_stay_exact_opposites_with_gaps(self):
+        """구멍 케이스에서도 불변식이 유지돼야 한다(#38)."""
+        from bot.quarterly_infographic import _TTM_KEYS, _ttm, ttm_missing_why
+        for qs in (self._gapped(), self._clean()):
+            made, why = set(_ttm(qs)), set(ttm_missing_why(qs))
+            assert made.isdisjoint(why) and made | why == set(_TTM_KEYS)
+
+
 class TestBandOutliersAndAxis20260822:
     """사용자 2026-08-22: (1) CMCSA "이력은 전체가 37이면 전체를 다 보여주고,
     PER 밴드는 시작점이랑 끝점의 기간만 있는데 기간을 더 추가해줄수 있어?"
@@ -32266,39 +32333,52 @@ class TestBandOutliersAndAxis20260822:
     확인됐다). 문제는 PER 이 **순이익이 0 에 가까우면 발산**한다는 것 —
     한 점이 '최고'를 통째로 망가뜨리면 밴드가 valuation 도구로 쓸모없다."""
 
-    def test_outlier_is_dropped_from_the_band(self):
-        from bot.per_band import _without_outliers
-        vals = [9.98, 12, 14, 15.66, 20, 25, 30, 36.78, 40, 45, 50, 60, 70,
-                80, 90, 95, 1073.25]
-        kept, dropped = _without_outliers(vals, 4)
-        assert dropped == [1073.25], dropped
-        assert max(kept) == 95
+    @staticmethod
+    def _rows(pairs):
+        """[(PER, EPS)] → assemble 이 먹는 행. 주가는 정의상 PER×EPS."""
+        return [(f"20{20 + k // 4:02d}-{3 * (k % 4) + 3:02d}-28",
+                 p * e, e, p) for k, (p, e) in enumerate(pairs)]
 
-    def test_normal_stock_loses_nothing(self):
-        """⚠️ 임의의 절대 상한(예: 200x)을 쓰면 정상 종목의 고배수 구간이
-        잘린다 — 분포가 스스로 정하는 울타리라야 한다. CMCSA 실측."""
+    def test_collapsed_earnings_point_is_dropped(self):
+        """MKSI 실측 — 순이익이 무너진 분기의 1,073x 는 valuation 이 아니다."""
         from bot.per_band import _without_outliers
-        vals = [4.68, 6, 7, 7.89, 9, 10, 11, 12, 13, 14, 14.37, 16, 18, 20,
-                22, 23.73]
-        kept, dropped = _without_outliers(vals, 4)
-        assert dropped == [] and kept == sorted(vals)
+        kept, drop = _without_outliers(self._rows(
+            [(9.98, 5.0), (15.66, 5.2), (20, 4.8), (25, 5.1), (30, 4.9),
+             (36.78, 5.0), (1073.25, 0.12)]), 4)
+        assert drop == [1073.25], drop
+        assert max(kept) == 36.78
+
+    def test_genuine_rerating_is_kept(self):
+        """⚠️ 배수가 크다는 이유만으로 빼면 **현재 PER 이 밴드 밖으로 나간다**
+        (2026-08-22 Yageo 2327.TW: 현재 37.31 인데 최고가 29.86 이었다).
+        Yageo 의 EPS 는 오히려 최고치라 발산과 무관했다."""
+        from bot.per_band import _without_outliers
+        kept, drop = _without_outliers(self._rows(
+            [(37.31, 14.85), (39.53, 12.70), (89.76, 12.70), (58.11, 12.61),
+             (27.59, 11.41), (21.19, 11.41), (29.86, 9.91), (27.81, 9.91),
+             (23.15, 9.91), (23.55, 9.91)]), 4)
+        assert drop == [], drop
+        assert max(kept) >= 37.31, "현재 PER 이 밴드 최고보다 높다"
+
+    def test_unknown_eps_is_not_judged(self):
+        """KR(FnGuide)은 밴드선만 준다 — 모르는 걸 추정해 지우지 않는다."""
+        from bot.per_band import _without_outliers
+        rows = [("d", 100, None, v) for v in (10, 12, 14, 900)]
+        assert _without_outliers(rows, 4) == ([10, 12, 14, 900], [])
 
     def test_never_leaves_too_few_points(self):
-        """남는 점이 최소치 미만이면 밴드가 없다 — 그럴 바엔 그대로 둔다.
-
-        ⚠️ 3×IQR 울타리로는 이 분기가 **도달 불가능**하다(울타리가 넓어 그만큼
-        못 버린다) — `min_points` 를 올려 실제로 태운다. 픽스처가 분기를 못
-        태우면 그 단언은 아무것도 안 재는 것이다(#54)."""
+        """남는 점이 최소치 미만이면 밴드가 없다 — 그럴 바엔 그대로 둔다."""
         from bot.per_band import _without_outliers
-        vals = [1.0, 2.0, 3.0, 4.0, 1000.0]
-        # min_points=4 면 1000 을 버리고 4개가 남는다
-        assert _without_outliers(vals, 4) == ([1.0, 2.0, 3.0, 4.0], [1000.0])
-        # min_points=5 면 버리는 순간 최소치 미달 → 그대로 둔다
-        assert _without_outliers(vals, 5) == (vals, [])
+        rows = self._rows([(10, 5.0), (12, 5.1), (14, 4.9), (900, 0.05),
+                           (800, 0.06)])
+        assert _without_outliers(rows, 4)[1] == [], "4개 미만만 남는데 버렸다"
+        # min_points 를 낮추면 같은 입력에서 실제로 버린다(가드가 산다)
+        assert _without_outliers(rows, 3)[1] == [800, 900]
 
     def test_too_few_points_are_left_alone(self):
         from bot.per_band import _without_outliers
-        assert _without_outliers([1.0, 900.0], 4) == ([1.0, 900.0], [])
+        assert _without_outliers(self._rows([(1.0, 5.0), (900.0, 0.01)]),
+                                 4) == ([1.0, 900.0], [])
 
     def test_band_payload_reports_what_it_dropped(self):
         """뺀 값은 **이력 표에는 그대로 남는다** — 그러니 뺐다고 말해야 한다."""
