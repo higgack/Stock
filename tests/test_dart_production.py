@@ -1620,8 +1620,9 @@ class TestBacklogRolling20260821:
         qs[-1]["reprt_code"] = "MISSING"
 
         monkeypatch.setattr(
-            bl, "backlog_for",
-            lambda d, t, y, rc: None if rc == "MISSING" else 1.0e11)
+            bl, "backlog_probe",
+            lambda d, t, y, rc, out=None:
+            (None, "원문미제공") if rc == "MISSING" else (1.0e11, "정상"))
         qi._fill_backlog(object(), "T", qs)
         vals = [q["financials"].get("수주잔고") for q in qs]
         assert vals[:-1] == [1.0e11] * 3, f"직전 분기로 회복 못 함: {vals}"
@@ -1631,8 +1632,9 @@ class TestBacklogRolling20260821:
         import bot.dart_backlog as bl
         import bot.quarterly_infographic as qi
         calls = []
-        monkeypatch.setattr(bl, "backlog_for",
-                            lambda d, t, y, rc: calls.append(rc))
+        monkeypatch.setattr(bl, "backlog_probe",
+                            lambda d, t, y, rc, out=None:
+                            (calls.append(rc), (None, "명시적미공시"))[1])
         qi._fill_backlog(object(), "T", self._qs(5))
         # ⚠️ `_BACKLOG_PROBE_N` 으로 상한을 재면 그 상수를 99 로 올리는
         # 뮤테이션이 그대로 통과한다(실측) — 자기 자신으로 자기를 검증하는
@@ -1644,7 +1646,8 @@ class TestBacklogRolling20260821:
         import bot.dart_backlog as bl
         import bot.quarterly_infographic as qi
         qs = self._qs()
-        monkeypatch.setattr(bl, "backlog_for", lambda d, t, y, rc: 5.0e11)
+        monkeypatch.setattr(bl, "backlog_probe",
+                            lambda d, t, y, rc, out=None: (5.0e11, "정상"))
         qi._fill_backlog(object(), "T", qs)
         assert all(q["financials"].get("수주잔고") == 5.0e11 for q in qs)
 
