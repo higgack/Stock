@@ -3960,7 +3960,11 @@ class TestPortfolioDashboard:
         # — Main 만 단일 entry 로 URL 노출, 나머지는 Main nav 통해 접근).
         assert "06beb08f5f4ad5515007e65f8f60b471/portfolio.html" not in src, \
             "help 에 자산 단독 URL 잔존(제거돼야)"
-        assert "·자산·" in src, "help nav 목록에서 '자산' 이름 자체까지 빠짐(과다삭제)"
+        # ⚠️ 옛 판은 `"·자산·"` 처럼 **구분자 붙은 리터럴**을 봤다 — 2026-08-22
+        # Help 개편에서 구분자에 공백이 붙자(`· 자산 ·`) 멀쩡한 문구를 '과다삭제'
+        # 라고 했다(#19). 계약은 "nav 목록에 이름이 남아 있다"이다.
+        _nav = next(ln for ln in src.splitlines() if "그 밖에" in ln)
+        assert "자산" in _nav, f"help nav 목록에서 '자산' 이름까지 빠짐: {_nav}"
 
 
 class TestPortfolioWatch:
@@ -6881,6 +6885,8 @@ class TestQuarterlyMultiMarket20260816:
     def test_help_text_documents_multi_market_scope(self):
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         line = [ln for ln in src.splitlines() if "<b>분기실적</b> 탭" in ln]
+        # 계약은 "분기실적 항목이 있고 그게 전 시장임을 밝힌다" — 특정 문구가
+        # 아니다(#19). 문구가 바뀌어도 이 두 사실은 남아야 한다.
         assert line, "_HELP_TEXT 에 분기실적 항목 없음"
         assert "한국종목)" not in line[0], "옛 KR 전용 문구 잔존"
         assert "yfinance" in line[0] and "한국 종목만" in line[0]
@@ -21124,9 +21130,14 @@ class TestCpiBoardWiring20260724:
     def test_help_text_registered(self):
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "🛒CPI" in tb                 # 대시보드 목록
-        # 카드도구 제외(차트보드) 목록 — 이후 시장타이밍 보드가 추가돼도
-        # "PPI·CPI·유동성"부터는 계속 이어져야(신규 차트보드 = 이 목록에 추가).
-        assert "PPI·CPI·유동성" in tb and "제외" in tb
+        # ⚠️ 옛 판은 카드도구 **제외 목록**을 이름으로 열거해("PPI·CPI·유동성")
+        # 새 차트보드가 생길 때마다 누가 갱신하느냐가 남았다(#24·#31).
+        # 2026-08-22 개편으로 차트보드가 한 그룹이 됐다 — **그룹 규칙**으로 본다.
+        assert "차트보드 제외" in tb, "카드도구 제외 규칙이 사라졌다"
+        i = tb.index("📈 <b>차트보드</b>")
+        grp = tb[i:tb.index("\n", i)]
+        for name in ("🏭PPI", "🛒CPI", "💧유동성", "🚦시장타이밍"):
+            assert name in grp, (name, grp)
 
     def test_fred_boards_nav_and_regen(self):
         from bot import fred_boards as fb
@@ -21363,7 +21374,13 @@ class TestMarketTiming20260726:
         assert "🚦시장타이밍" in tb
         # 후속 차트보드 추가마다 이 문자열이 계속 늘어남(2026-07-26 경제캘린더
         # 추가로 재확인) — exact-substring 대신 부분포함으로 완화.
-        assert "시장타이밍" in tb and "PPI·CPI·유동성" in tb and "제외" in tb
+        # 열거 대신 **그룹 규칙**으로(#31) — 새 차트보드가 생겨도 목록을
+        # 누가 갱신하느냐가 남지 않는다.
+        assert "차트보드 제외" in tb, "카드도구 제외 규칙이 사라졌다"
+        _i = tb.index("📈 <b>차트보드</b>")
+        _grp = tb[_i:tb.index("\n", _i)]
+        for _n in ("🚦시장타이밍", "🏭PPI", "🛒CPI", "💧유동성"):
+            assert _n in _grp, (_n, _grp)
         mtsrc = open("bot/market_timing.py", encoding="utf-8").read()
         assert "def regenerate_market_timing" in mtsrc
         assert '(ARCHIVE_ROOT / "market_timing.html").write_text' in mtsrc
@@ -32015,7 +32032,7 @@ class TestBandCoverageAndPartialSource20260822:
         # 계약은 "직접 PER 원천을 태우고 밴드는 assemble 로 만든다"이지
         # 특정 표현이 아니다(#19). **이름 참조**로 본다.
         names = {n.id for n in ast.walk(ft) if isinstance(n, ast.Name)}
-        assert {"tw_per_rows", "cn_per_rows", "assemble"} <= names, names
+        assert {"tw_per_rows", "baidu_per_rows", "assemble"} <= names, names
 
     # ── (2) 적자 기업: PER 이 없다고 PBR 을 죽이지 말 것 ──────────────
     @staticmethod
@@ -32286,7 +32303,7 @@ class TestCnPerBandFromAkshare20260822:
         import ast
         src = open("bot/per_band.py", encoding="utf-8").read()
         tree = ast.parse(src)
-        for name in ("tw_per_rows", "cn_per_rows"):
+        for name in ("tw_per_rows", "baidu_per_rows"):
             fn = next(n for n in ast.walk(tree)
                       if isinstance(n, ast.FunctionDef) and n.name == name)
             calls = [c.func.id for c in ast.walk(fn)
@@ -32305,22 +32322,31 @@ class TestCnPerBandFromAkshare20260822:
         수집기를 통째로 태워 basis 를 본다."""
         import bot.per_band as pb
         monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
-        monkeypatch.setattr(pb, "cn_per_rows",
+        monkeypatch.setattr(pb, "baidu_per_rows",
                             lambda t, p, y=10: pb.rows_from_per_history(
                                 self._pts(), p))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         tbl, why = pb.for_ticker("600519.SS", {})
         assert tbl is not None, why
-        assert tbl["basis"] == "akshare", tbl["basis"]
+        assert tbl["basis"] == "baidu", tbl["basis"]
         assert tbl["n"] > 100, tbl["n"]
 
-    def test_per_history_is_gated_to_mainland_boards(self):
-        """HK·BJ 는 `stock_a_indicator_lg` 커버리지 밖이다 — 부르면 거짓 결과."""
-        from bot.akshare_client import get_akshare
-        cl = get_akshare()
-        assert cl.per_history("0700.HK") == []
+    def test_per_history_covers_hk_and_excludes_bj(self, monkeypatch):
+        """HK 는 **커버된다**(야후가 HK 손익을 반기로만 줘 밴드가 안 나온다).
+        BJ 만 원천 커버리지 밖이다."""
+        import bot.akshare_client as ac
+        seen = []
+        monkeypatch.setattr(ac, "valuation_series",
+                            lambda code, market, ind, years=10:
+                            seen.append((code, market)) or [("2026-08-21", 12.5)])
+        monkeypatch.setattr(ac, "_cache_get", lambda *a, **k: None)
+        monkeypatch.setattr(ac, "_cache_put", lambda *a, **k: None)
+        cl = ac.get_akshare()
+        assert cl.per_history("0700.HK") == [("2026-08-21", 12.5)]
+        assert seen == [("00700", "HK")], seen
         assert cl.per_history("430047.BJ") == []
+        assert len(seen) == 1, "BJ 를 원천에 물었다"
 
     def test_per_history_cache_key_carries_the_window(self):
         """짧은 조회가 먼저 캐시를 채우면 긴 조회가 그걸 받아 간다(#61)."""
@@ -32332,29 +32358,44 @@ class TestCnPerBandFromAkshare20260822:
         i = seg.index("cache_key = ")
         assert "years" in seg[i:i + 160], seg[i:i + 160]
 
-    def test_probe_reports_hk_candidates_without_guessing(self):
-        """HK 는 AKShare 버전마다 함수 이름이 다르다 — 이름을 추측해 파서를
-        짜지 말고 **설치본에 뭐가 있는지** 먼저 찍는다."""
+    def test_probe_reports_each_leg_separately(self, monkeypatch):
+        """'없음' 한 단어로는 원천 차단·래퍼 부재·제품 경로 실패가 안 갈린다
+        (#149) — 다리마다 찍는다. 그리고 **제품이 쓰는 함수**를 태운다(#35)."""
         import bot.scripts.fundamentals_probe as fp
-        assert fp._HK_VAL_FNS, "후보 목록이 비었다"
-        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
-        assert "hasattr(ak, f)" in src, "설치본 실측 대신 추측한다"
+        import bot.akshare_client as ac
+        monkeypatch.setattr(ac, "_baidu_valuation",
+                            lambda *a, **k: [("2016-01-04", 9.0),
+                                             ("2026-08-21", 21.5)])
+        monkeypatch.setattr(ac.AkshareClient, "per_history",
+                            lambda self, t, years=10: [("2026-08-21", 21.5)])
+        txt = " ".join(fp._cn_hk_valuation("0700.HK"))
+        assert "ⓐ" in txt and "ⓑ" in txt and "ⓒ" in txt, txt
+        assert "21.5" in txt, txt
+        assert "per_history: 1행" in txt, txt
+
+    def test_probe_says_which_leg_failed(self, monkeypatch):
+        """⚠️ 대조 대상이 0건이면 ✅ 가 아니라 실패로 찍어야 한다(#54)."""
+        import bot.scripts.fundamentals_probe as fp
+        import bot.akshare_client as ac
+
+        def _boom(*a, **k):
+            raise RuntimeError("blocked")
+        monkeypatch.setattr(ac, "_baidu_valuation", _boom)
+        monkeypatch.setattr(ac.AkshareClient, "per_history",
+                            lambda self, t, years=10: [])
+        txt = " ".join(fp._cn_hk_valuation("600519.SS"))
+        assert "실패" in txt and "blocked" in txt, txt
+        assert "**비었다**" in txt, txt
 
     def test_probe_does_not_print_cn_section_for_hk(self):
-        """HK 출력에 CN 전용 줄이 찍히면 그 자체가 거짓말이다(#34)."""
+        """HK 출력에 A주 전용 기간 키워드가 찍히면 그 자체가 거짓말이다(#34).
+
+        원천은 HK 에 近五年·近十年을 안 준다 — 라벨이 갈려야 한다."""
         import bot.scripts.fundamentals_probe as fp
-        import sys
-        import types
-        mod = types.ModuleType("akshare")
-        mod.__version__ = "1.0"
-        sys.modules["akshare"] = mod
-        try:
-            hk = " ".join(fp._akshare_valuation("0700.HK"))
-            cn = " ".join(fp._akshare_valuation("600519.SS"))
-        finally:
-            sys.modules.pop("akshare", None)
-        assert "CN 일별 PER 이력" not in hk, hk
-        assert "HK 밸류에이션 후보" not in cn, cn
+        import bot.akshare_client as ac
+        assert ac._baidu_period(10, "HK") != ac._baidu_period(10, "CN_A_SH")
+        assert "hk" in fp._cn_hk_valuation("0700.HK")[0].lower() or \
+            "HK" in fp._cn_hk_valuation("0700.HK")[0]
 
 
 class TestFundamentalsProbeGeneralised20260822:
@@ -33370,3 +33411,423 @@ class TestModuleFunctionsNotInsideClasses20260822:
                   and n.name.startswith("_handle_")]
         assert not strays, f"핸들러가 모듈 레벨로 떨어졌다: {strays}"
         assert end >= cls.lineno
+
+
+class TestAkshareNameDriftCN20260822:
+    """**설치본에 없는 함수 이름을 부르면 그 폴백은 조용히 죽는다**.
+
+    2026-08-22 VM 프로브 실측:
+    `module 'akshare' has no attribute 'stock_a_indicator_lg'` — 그 이름은
+    AKShare v1.18.62 의 `__init__.py` 에 **changelog 문자열로만** 남아 있어
+    소스 grep 은 통과한다(#25 '능력은 이름이 아니라 실측'). 그래서
+    ① CN A주 PER 밴드(#1068 배선)가 0행이었고
+    ② 스크리너 CN PER/PBR 폴백 `get_valuation` 도 **함께** 죽어 있었다
+       — 한 이름에 두 기능이 걸려 있었는데 아무도 알려주지 않았다(#42a).
+
+    처방: 원천 API(바이두 股市通)를 직접 부르고 AKShare 래퍼는 폴백으로만
+    둔다 — 라이브러리 버전에 기대는 코드를 지운다.
+    """
+
+    def test_no_module_calls_the_removed_name(self):
+        """부활 방지 — 이 이름은 어느 호출부에도 있으면 안 된다."""
+        import ast
+        import pathlib
+        bad = []
+        for f in pathlib.Path("bot").rglob("*.py"):
+            try:
+                tree = ast.parse(f.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            for n in ast.walk(tree):
+                if (isinstance(n, ast.Call)
+                        and isinstance(n.func, ast.Attribute)
+                        and n.func.attr == "stock_a_indicator_lg"):
+                    bad.append(f"{f}:{n.lineno}")
+                if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                        and n.func.id == "getattr" and len(n.args) >= 2
+                        and isinstance(n.args[1], ast.Constant)
+                        and n.args[1].value == "stock_a_indicator_lg"):
+                    bad.append(f"{f}:{n.lineno}")
+        assert not bad, f"설치본에 없는 이름을 부른다: {bad}"
+
+    def test_valuation_series_prefers_direct_and_falls_back(self, monkeypatch):
+        """바이두 직접 호출이 되면 그걸 쓰고, 실패하면 AKShare 래퍼로 간다."""
+        import bot.akshare_client as ac
+        monkeypatch.setattr(ac, "_baidu_valuation",
+                            lambda *a, **k: [("2026-08-21", 11.0)])
+        monkeypatch.setattr(ac, "_import_akshare",
+                            lambda: pytest.fail("직접 호출이 됐는데 래퍼를 탔다"))
+        assert ac.valuation_series("600519", "CN_A_SH", ac.BAIDU_PER) == [
+            ("2026-08-21", 11.0)]
+
+        class _DF(list):
+            def iterrows(self):
+                return enumerate(self)
+
+        def _boom(*a, **k):
+            raise RuntimeError("blocked")
+        monkeypatch.setattr(ac, "_baidu_valuation", _boom)
+        wrapper_called = []
+
+        class _AK:
+            @staticmethod
+            def stock_zh_valuation_baidu(symbol=None, indicator=None,
+                                         period=None):
+                wrapper_called.append((symbol, indicator, period))
+                return _DF([{"date": "2026-08-20", "value": 9.5}])
+        monkeypatch.setattr(ac, "_import_akshare", lambda: _AK)
+        got = ac.valuation_series("600519", "CN_A_SH", ac.BAIDU_PER)
+        assert got == [("2026-08-20", 9.5)], got
+        assert wrapper_called, "폴백이 안 돌았다"
+
+    def test_hk_uses_the_hk_wrapper_and_a_period_it_accepts(self, monkeypatch):
+        """⚠️ HK 는 近五年·近十年을 **안 받는다**(원천 문서: 近一年/近三年/全部)
+        — A주 기간 키워드를 그대로 넘기면 조용히 빈다."""
+        import bot.akshare_client as ac
+        assert ac._baidu_period(10, "HK") == "全部"
+        assert ac._baidu_period(1, "HK") == "近一年"
+        assert ac._baidu_period(10, "CN_A_SH") == "近十年"
+        seen = []
+
+        def _boom(*a, **k):
+            raise RuntimeError("blocked")
+        monkeypatch.setattr(ac, "_baidu_valuation", _boom)
+
+        class _AK:
+            @staticmethod
+            def stock_hk_valuation_baidu(symbol=None, indicator=None,
+                                         period=None):
+                seen.append(period)
+                return []
+        monkeypatch.setattr(ac, "_import_akshare", lambda: _AK)
+        ac.valuation_series("00700", "HK", ac.BAIDU_PER, years=10)
+        assert seen == ["全部"], seen
+
+    def test_get_valuation_does_not_invent_psr(self, monkeypatch):
+        """원천이 안 주는 값은 **만들지 않는다**(#32) — 그리고 HK 도 답한다."""
+        import bot.akshare_client as ac
+        monkeypatch.setattr(ac, "_cache_get", lambda *a, **k: None)
+        monkeypatch.setattr(ac, "_cache_put", lambda *a, **k: None)
+        monkeypatch.setattr(
+            ac, "valuation_series",
+            lambda code, market, ind, years=10:
+            [("2026-08-21", 18.0 if ind == ac.BAIDU_PER else 2.5)])
+        got = ac.get_akshare().get_valuation("0700.HK")
+        assert got["per"] == 18.0 and got["pbr"] == 2.5, got
+        assert got["psr"] is None, got
+
+    def test_baidu_rows_survive_key_renames(self, monkeypatch):
+        """원천 응답의 **키 이름을 가정하지 않는다** — `date/value` 로 올 때도
+        한자 키로 올 때도 리스트로 올 때도 있다. 가정하면 조용히 0행이 되고
+        그건 '원천에 없음'과 구별이 안 된다(#149)."""
+        import bot.akshare_client as ac
+
+        class _R:
+            def __init__(self, body):
+                self._b = body
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"Result": [{"DisplayData": {"resultData": {"tplData": {
+                    "result": {"chartInfo": [{"body": self._b}]}}}}}]}
+
+        import requests
+        for body in ([{"date": "2026-08-21", "value": "12.3"}],
+                     [{"日期": "2026-08-21", "值": "12.3"}],
+                     [["2026-08-21", "12.3"]]):
+            monkeypatch.setattr(requests, "get", lambda *a, **k: _R(body))
+            got = ac._baidu_valuation("600519", "CN_A_SH", ac.BAIDU_PER, "近十年")
+            assert got == [("2026-08-21", 12.3)], (body, got)
+
+    def test_empty_cn_hk_result_is_not_cached(self, monkeypatch):
+        """원천 장애 한 번이 **12시간 빈 표**가 되면 안 된다(#119).
+
+        `stock_a_indicator_lg` 가 사라진 뒤 이 경로는 몇 달간 조용히 빈
+        결과를 냈다 — 그걸 캐시까지 했으면 복구 후에도 반나절 더 비었다."""
+        import bot.akshare_client as ac
+        put = []
+        monkeypatch.setattr(ac, "_cache_get", lambda *a, **k: None)
+        monkeypatch.setattr(ac, "_cache_put", lambda k, v: put.append((k, v)))
+        monkeypatch.setattr(ac, "valuation_series",
+                            lambda *a, **k: [])
+        cl = ac.get_akshare()
+        assert cl.per_history("600519.SS") == []
+        assert cl.get_valuation("600519.SS") is None
+        assert not put, f"빈 결과를 캐시했다: {put}"
+
+
+class TestHelpLayout20260822:
+    """사용자 2026-08-22: "Help 도 설명을 좀 더 깔끔하게 정리해주고,
+    **대시보드 링크를 제일 위로** 옮겨줘."
+
+    링크 위치는 사용자가 지정한 계약이다 — 다음 개편에서 조용히 아래로
+    돌아가면 요청이 되돌려진 것이고, 아무도 알려주지 않는다.
+    """
+
+    @staticmethod
+    def _help() -> str:
+        import re
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        return re.search(r'_HELP_TEXT\s*=\s*"""(.*?)\n"""',
+                         src, re.DOTALL).group(1)
+
+    def test_dashboard_link_is_above_every_section(self):
+        t = self._help()
+        assert "market.html" in t, "대시보드 링크가 아예 없다"
+        assert t.index("market.html") < t.index("━"), \
+            "대시보드 링크가 첫 구분선보다 아래다 — '제일 위로' 요청 위반"
+
+    def test_band_tab_is_registered_with_its_sources(self):
+        """user-visible 기능은 **같은 commit** 에 Help 등록(§Help/Dashboard).
+        밴드차트는 시장마다 원천이 달라 그 목록이 화면과 갈리면 버그다."""
+        t = self._help()
+        assert "밴드차트" in t, "밴드차트 탭이 Help 에 없다"
+        line = next(ln for ln in t.splitlines() if "밴드차트" in ln)
+        for src in ("FnGuide", "EDGAR", "EDINET", "FinMind", "yfinance"):
+            assert src in line, (src, line)
+        assert "PBR" in line and "국내" in line, line
+
+    def test_still_fits_one_telegram_message(self):
+        """Telegram 은 UTF-16 코드유닛으로 센다(이모지=2)."""
+        assert len(self._help().encode("utf-16-le")) // 2 < 4096
+
+
+class TestEdinetXbrl20260822:
+    """일본 연차 재무 이력을 **원천에서** 가져온다.
+
+    사용자 2026-08-22: "일본은 EDINET XBRL 이 남은 길인데(키는 확인됨) …
+    시간이 오래 걸려도 좋으니까 정확하게! 이것도 진행해줘."
+
+    배경(프로브 v2 실측): yfinance 는 JP 연간을 4~5열밖에 안 주고 6758.T 는
+    스냅샷이 `max_periods` 로 더 잘라 양수 EPS 가 3개뿐이라 밴드 최소치(4)를
+    못 넘었다(#148). EDINET 유가증권보고서는 「主要な経営指標等の推移」에
+    **5기**를 담으므로 문서 두 건이면 10년이다.
+    """
+
+    # EDINET CSV 는 UTF-16 LE · 탭 구분 — 실제 컬럼 이름을 그대로 쓴다.
+    _HDR = ("要素ID\t項目名\tコンテキストID\t相対年度\t連結・個別"
+            "\t期間・時点\tユニットID\t単位\t値")
+
+    @classmethod
+    def _csv(cls, *lines: str) -> bytes:
+        return ("\n".join((cls._HDR,) + lines)).encode("utf-16")
+
+    @classmethod
+    def _doc(cls) -> bytes:
+        E = "jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults"
+        N = "jpcrp_cor:NetSalesSummaryOfBusinessResults"
+        rows = []
+        for back, eps in ((0, 100.0), (1, 90.0), (2, 80.0), (3, 70.0),
+                          (4, 60.0)):
+            ctx = ("CurrentYearDuration" if back == 0
+                   else f"Prior{back}YearDuration")
+            rows.append(f"{E}\t1株当たり当期純利益\t{ctx}\t当期\t連結"
+                        f"\t期間\tJPYPerShares\t円\t{eps}")
+            rows.append(f"{N}\t売上高\t{ctx}\t当期\t連結\t期間\tJPY\t円"
+                        f"\t{1000 + back}")
+        return cls._csv(*rows)
+
+    def test_utf16_csv_is_decoded(self):
+        """⚠️ UTF-8 로 가정하면 **전 행이 조용히 깨진다** — 못 읽으면 예외."""
+        from bot.edinet_xbrl import parse_csv_bytes
+        rows = parse_csv_bytes(self._doc())
+        assert len(rows) == 10, len(rows)
+        assert rows[0]["要素ID"].endswith("SummaryOfBusinessResults")
+        assert rows[0]["値"] == "100.0"
+        with pytest.raises(ValueError):
+            parse_csv_bytes(b"\x00\x01not a csv at all")
+
+    def test_periods_come_from_the_fiscal_date_not_position(self):
+        """기간 라벨은 **날짜로 되짚는다** — 위치로 매기면 거짓말한다(#29)."""
+        from bot.edinet_xbrl import parse_csv_bytes, summary_series
+        ser = summary_series(parse_csv_bytes(self._doc()), "2026-03-31")
+        assert [r["period"] for r in ser] == [
+            "2022-03-31", "2023-03-31", "2024-03-31",
+            "2025-03-31", "2026-03-31"], ser
+        assert ser[-1]["eps"] == 100.0 and ser[0]["eps"] == 60.0
+
+    def test_consolidated_wins_over_standalone(self):
+        """連結·個別이 같이 오면 **연결**을 쓴다 — 섞이면 계열이 갈라진다."""
+        from bot.edinet_xbrl import parse_csv_bytes, summary_series
+        E = "jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults"
+        raw = self._csv(
+            f"{E}\tEPS\tPrior1YearDuration_NonConsolidatedMember\t前期"
+            f"\t個別\t期間\tJPYPerShares\t円\t11.0",
+            f"{E}\tEPS\tPrior1YearDuration\t前期\t連結\t期間"
+            f"\tJPYPerShares\t円\t99.0",
+        )
+        ser = summary_series(parse_csv_bytes(raw), "2026-03-31")
+        assert len(ser) == 1 and ser[0]["eps"] == 99.0, ser
+        # 순서를 뒤집어도 같아야 한다 — '나중에 온 값이 이긴다'면 문서마다 갈린다
+        raw2 = self._csv(
+            f"{E}\tEPS\tPrior1YearDuration\t前期\t連結\t期間"
+            f"\tJPYPerShares\t円\t99.0",
+            f"{E}\tEPS\tPrior1YearDuration_NonConsolidatedMember\t前期"
+            f"\t個別\t期間\tJPYPerShares\t円\t11.0",
+        )
+        assert summary_series(parse_csv_bytes(raw2), "2026-03-31")[0]["eps"] \
+            == 99.0
+
+    def test_non_numeric_becomes_blank_not_zero(self):
+        """`－` 를 0 으로 읽으면 적자·미기재가 **0 이라는 사실**이 된다."""
+        from bot.edinet_xbrl import _to_number
+        assert _to_number("－") is None and _to_number("") is None
+        assert _to_number("1,234") == 1234.0
+        assert _to_number("△56") == -56.0        # 일본 표기 음수
+        assert _to_number("0") == 0.0            # ⚠️ 0 은 값이다
+
+    def test_cache_key_carries_the_parser_fingerprint(self):
+        """손으로 올리는 버전 상수는 이 레포에서 **네 번** 잊혔다
+        (#18·#21b·#95·#124) — 규율이 아니라 구조로 막는다."""
+        import ast
+        src = open("bot/edinet_xbrl.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        for name in ("fetch_doc_csv", "annual_history"):
+            fn = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == name)
+            calls = {c.func.id for c in ast.walk(fn)
+                     if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+            assert "_parse_sig" in calls, f"{name} 캐시 키에 파서 지문이 없다"
+
+    def test_doc_search_has_a_budget(self):
+        """본문 아닌 값이 본 응답을 멈추게 하면 안 된다(#116)."""
+        import ast
+        src = open("bot/edinet_xbrl.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "find_annual_docs")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "budget_s" in seg and "break" in seg, seg[:200]
+
+    def test_budget_actually_stops_the_scan(self, monkeypatch):
+        """⚠️ 소스에 이름이 있는지로 재면 되돌리는 뮤테이션이 통과한다(#19)
+        — 실제로 멈추는지 본다."""
+        import bot.edinet_xbrl as ex
+        import bot.edinet_client as ec
+        days = []
+
+        class _Cl:
+            def _fetch_day(self, day):
+                days.append(day)
+                return []
+        monkeypatch.setattr(ec, "get_edinet", lambda: _Cl())
+        ticks = iter([0.0] + [99.0] * 5000)
+        monkeypatch.setattr(ex.time, "time", lambda: next(ticks))
+        ex.find_annual_docs("7203.T", "k", days_back=400, budget_s=1.0)
+        assert len(days) <= 2, f"예산을 넘겨 {len(days)}일 훑었다"
+
+    def test_jp_band_actually_uses_edinet(self, monkeypatch):
+        """⚠️ AST 로 호출 존재만 보면 **게이트를 못 잡는다**(#141) —
+        수집기를 통째로 태워 basis 를 본다."""
+        import datetime as _dt
+        import bot.per_band as pb
+        px = [((_dt.date(2016, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
+               1000.0 + 5 * k) for k in range(130)]
+        eps = [(f"{y}-03-31", 50.0 + y - 2017) for y in range(2017, 2027)]
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: px)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        import bot.edinet_xbrl as ex
+        monkeypatch.setattr(ex, "eps_rows",
+                            lambda t, years=10, api_key=None: eps)
+        tbl, why = pb.for_ticker("7203.T", {})
+        assert tbl is not None, why
+        assert tbl["basis"] == "edinet", tbl["basis"]
+        assert tbl["n"] >= 8, tbl["n"]
+
+    def test_jp_falls_back_when_edinet_is_empty(self, monkeypatch):
+        """원천이 막혀도 화면이 통째로 죽으면 안 된다 — yfinance 로 흘러간다."""
+        import datetime as _dt
+        import bot.per_band as pb
+        import bot.edinet_xbrl as ex
+        px = [((_dt.date(2020, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
+               1000.0 + 5 * k) for k in range(70)]
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: px)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(ex, "eps_rows",
+                            lambda t, years=10, api_key=None: [])
+        snap = {"financials": {"annual": [
+            {"period": f"{y}-03-31", "Diluted EPS": 40.0 + y - 2021}
+            for y in range(2021, 2026)]}}
+        tbl, why = pb.for_ticker("7203.T", snap)
+        assert tbl is None or tbl["basis"] != "edinet", (tbl or {}).get("basis")
+
+    def test_screen_path_never_scans_and_warms_instead(self, monkeypatch,
+                                                        tmp_path):
+        """EDINET 엔 회사별 검색 API 가 없어 일별 목록을 최대 430일 훑어야
+        한다 — 콜드 캐시면 수백 HTTP 다. **본 응답 경로에서 하면 안 된다**
+        (#116). 빈 리스트를 즉시 주고 백그라운드가 데운다."""
+        import bot.edinet_xbrl as ex
+        monkeypatch.setattr(ex, "_CACHE_DIR", tmp_path)
+        scanned = []
+        monkeypatch.setattr(ex, "find_annual_docs",
+                            lambda *a, **k: scanned.append(1) or [])
+        warmed = []
+        monkeypatch.setattr(ex, "_warm_async",
+                            lambda t, y, k: warmed.append(t))
+        assert ex.annual_history("7203.T", api_key="k") == []
+        assert not scanned, "본 응답 경로에서 원천을 훑었다"
+        assert warmed == ["7203.T"], warmed
+        # 프로브·크론은 기다린다
+        ex.annual_history("7203.T", api_key="k", wait=True)
+        assert scanned, "wait=True 인데도 안 훑었다"
+
+    def test_concurrent_views_warm_only_once(self, monkeypatch, tmp_path):
+        """같은 티커를 두 요청이 동시에 데우면 원천을 두 배로 두드린다(#113).
+
+        ⚠️ 이 계약을 **시간**으로 재면 흔들린다(단독 green, 전체 실행 red —
+        실측). 스레드를 실제로 띄우지 말고 **띄우려는 시도**를 세서 순서에
+        기대지 않게 한다(#128 '악수로 재라'의 더 단순한 형태)."""
+        import bot.edinet_xbrl as ex
+        monkeypatch.setattr(ex, "_CACHE_DIR", tmp_path)
+        spawned = []
+
+        class _FakeThread:
+            def __init__(self, *a, **k):
+                spawned.append(k.get("name"))
+
+            def start(self):
+                pass                # 실제로 돌리지 않는다 — 예열은 계속 in-flight
+
+        monkeypatch.setattr(ex.threading, "Thread", _FakeThread)
+        ex._WARMING.clear()
+        try:
+            for _ in range(3):
+                assert ex.annual_history("7203.T", api_key="k") == []
+            assert len(spawned) == 1, f"같은 티커를 {len(spawned)}번 데웠다"
+            # 다른 티커는 막히면 안 된다 — 잠금이 전역이면 JP 전체가 멈춘다
+            ex.annual_history("6758.T", api_key="k")
+            assert len(spawned) == 2, spawned
+        finally:
+            ex._WARMING.clear()
+
+    def test_empty_result_is_not_cached(self, monkeypatch, tmp_path):
+        """원천 장애 한 번이 **한 달 빈 표**가 되면 안 된다(#119 의 짝)."""
+        import bot.edinet_xbrl as ex
+        monkeypatch.setattr(ex, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(ex, "find_annual_docs", lambda *a, **k: [])
+        ex.annual_history("7203.T", api_key="k", wait=True)
+        assert not list(tmp_path.glob("annual_*")), "빈 결과를 캐시했다"
+        monkeypatch.setattr(
+            ex, "find_annual_docs",
+            lambda *a, **k: [{"doc_id": "D1", "period_end": "2026-03-31",
+                              "submitted": "2026-06-20", "filer": "T"}])
+        monkeypatch.setattr(ex, "fetch_doc_csv",
+                            lambda d, k: ex.parse_csv_bytes(self._doc()))
+        got = ex.annual_history("7203.T", api_key="k", wait=True)
+        assert len(got) == 5, got
+        assert list(tmp_path.glob("annual_*")), "성공 결과를 캐시 안 했다"
+
+    def test_probe_prints_unmatched_element_ids(self):
+        """이름을 추측해 매핑을 늘리면 반복 실패한다(#24·#73) — 원문이
+        쓴 ID 를 **그대로** 보여 주고 거기서 복사하게 한다."""
+        import bot.scripts.edinet_probe as ep
+        rows = [{"要素ID": "jpcrp_cor:MysteryMetricSummaryOfBusinessResults",
+                 "項目名": "謎の指標"},
+                {"要素ID": "jppfs_cor:NetSales", "項目名": "売上高"}]
+        got = ep._unmatched_summary_ids(rows, {"jppfs_cor:NetSales"})
+        assert len(got) == 1 and "MysteryMetric" in got[0], got
+        assert "謎の指標" in got[0], got

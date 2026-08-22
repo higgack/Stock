@@ -27,7 +27,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 _DEFAULT = "0700.HK,0002.HK,600519.SS,000002.SZ"
 
 
@@ -144,7 +144,7 @@ def _alt_sources(ticker: str) -> list[str]:
     if t.endswith(".T"):
         return _edinet_key() + _kabutan(t)
     if t.endswith((".HK", ".SS", ".SZ")):
-        return _akshare_valuation(t)
+        return _cn_hk_valuation(t)
     if t.endswith((".TW", ".TWO")):
         try:
             from bot.finmind_client import fetch_income_statement
@@ -155,42 +155,39 @@ def _alt_sources(ticker: str) -> list[str]:
     return ["  ② 대안 원천: 이 시장은 등록된 게 없다(yfinance 단일 경로)"]
 
 
-# HK 밸류에이션 이력 후보 — AKShare 버전마다 이름이 달라 **설치본에 뭐가
-# 있는지** 실측한다. 이름을 추측해 파서를 짜면 이 레포에서 반복 실패한다.
-_HK_VAL_FNS = ("stock_hk_valuation_baidu", "stock_hk_indicator_eniu",
-               "stock_hk_index_daily_em")
+def _cn_hk_valuation(ticker: str) -> list[str]:
+    """중국 A주·홍콩 **일별 PER** 경로 — 화면이 쓰는 그 함수를 그대로 태운다(#35).
 
-
-def _akshare_valuation(ticker: str) -> list[str]:
-    """CN 은 이미 배선된 경로를, HK 는 **설치본이 뭘 제공하는지**를 찍는다."""
-    out = []
+    ⚠️ 2026-08-22 이전 판은 AKShare 함수 이름(`stock_a_indicator_lg`)에 기대
+    있었는데 설치본 v1.18.62 엔 그 이름이 **없다**. 지금은 원천(바이두 股市通)을
+    직접 부르므로, 어느 다리에서 끊겼는지 **다리마다** 찍는다 — '없음' 한 단어로는
+    원천 부재·차단·매핑 실패가 안 갈린다(#149).
+    """
+    from bot import akshare_client as ac
+    code, market = ac._ticker_to_cn_code(ticker)
+    out = [f"  ② 일별 PER(바이두 股市通) — code={code} market={market}"]
+    if not code or market not in ("CN_A_SH", "CN_A_SZ", "HK"):
+        return out + ["     원천 커버리지 밖(BJ 등)"]
+    period = ac._baidu_period(10, market)
+    try:
+        direct = ac._baidu_valuation(code, market, ac.BAIDU_PER, period)
+        out.append(f"     ⓐ 원천 직접({period}): {len(direct)}행"
+                   + (f" ({direct[0][0]} ~ {direct[-1][0]}, 최근 "
+                      f"{direct[-1][1]:.2f}x)" if direct else " — **빈 응답**"))
+    except Exception as exc:                                   # noqa: BLE001
+        out.append(f"     ⓐ 원천 직접({period}): 실패 {type(exc).__name__} {exc}")
     try:
         import akshare as ak
+        wrap = ("stock_hk_valuation_baidu" if market == "HK"
+                else "stock_zh_valuation_baidu")
+        out.append(f"     ⓑ AKShare v{getattr(ak, '__version__', '?')} 래퍼"
+                   f" `{wrap}`: {'있음' if hasattr(ak, wrap) else '**없음**'}")
     except Exception as exc:                                   # noqa: BLE001
-        return [f"  ② AKShare: 없음({exc}) — HK/CN 대안 경로 불가"]
-    out.append(f"  ② AKShare: 설치됨(v{getattr(ak, '__version__', '?')})")
-    if ticker.endswith((".SS", ".SZ")):
-        try:
-            from bot.akshare_client import get_akshare
-            rows = get_akshare().per_history(ticker, years=10)
-            out.append(f"     CN 일별 PER 이력: {len(rows)}행"
-                       + (f" ({rows[0][0]} ~ {rows[-1][0]})" if rows else
-                          " — **배선돼 있으나 비었다**"))
-        except Exception as exc:                               # noqa: BLE001
-            out.append(f"     CN 일별 PER 이력: 실패 {exc}")
-        return out
-    # HK — `stock_a_indicator_lg` 커버리지 밖이다. 설치본의 후보 함수를 훑는다.
-    have = [f for f in _HK_VAL_FNS if hasattr(ak, f)]
-    out.append(f"     HK 밸류에이션 후보 함수: {have or '**없음**'}")
-    code = ticker.split(".")[0].zfill(5)
-    for fn in have[:1]:                       # 첫 후보만 — 느린 호출 방지
-        try:
-            df = getattr(ak, fn)(symbol=code)
-            n = 0 if df is None else len(df)
-            cols = [] if df is None else list(df.columns)[:8]
-            out.append(f"     {fn}({code}) → {n}행 · 컬럼 {cols}")
-        except Exception as exc:                               # noqa: BLE001
-            out.append(f"     {fn}({code}) → 실패 {exc}")
+        out.append(f"     ⓑ AKShare: 없음({exc})")
+    rows = ac.get_akshare().per_history(ticker, years=10)
+    out.append(f"     ⓒ 제품 경로 per_history: {len(rows)}행"
+               + (f" ({rows[0][0]} ~ {rows[-1][0]})" if rows
+                  else " — **비었다**"))
     return out
 
 

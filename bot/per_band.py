@@ -225,7 +225,8 @@ def assemble(rows: list | None, *, min_points: int = 4,
 _SRC_LABEL = {
     "edgar": "SEC EDGAR(희석 EPS) · 가격 yfinance",
     "finmind": "FinMind TaiwanStockPER(일별 PER, 월말 표본) · 가격 yfinance",
-    "akshare": "AKShare stock_a_indicator_lg(일별 PER, 월말 표본) · 가격 yfinance",
+    "baidu": "바이두 股市通(일별 PER, 월말 표본) · 가격 yfinance",
+    "edinet": "EDINET 유가증권보고서(주요 경영지표 추이·연차 EPS) · 가격 yfinance",
     "yf-q": "yfinance 분기 손익(TTM) · 가격 yfinance",
     "yf-a": "yfinance 연간 손익 · 가격 yfinance",
 }
@@ -340,8 +341,23 @@ def for_ticker(ticker: str, snap: dict | None = None,
         got = _pack(build(px, _conv(h.get("quarterly"))), "edgar")
         if got:
             return got, None
+    if mkt == "JP":
+        # 야후는 JP 연간 손익을 4~5열밖에 안 준다(2026-08-22 프로브 실측) —
+        # 유가증권보고서 한 부가 **5기**를 담으므로 두 부면 10년이다.
+        # 실패하면 아래 yfinance 폴백으로 그대로 흘러간다.
+        try:
+            from bot.edinet_xbrl import eps_rows as _ed_eps
+            e = _ed_eps(tk, years=years)
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("per_band: EDINET 실패 %s: %s", tk, exc)
+            e = []
+        got = _pack(build(px, _conv(e), annual=True), "edinet")
+        if got:
+            return got, None
     # 원천이 PER 을 **직접** 주는 시장 — 우리가 EPS 로 만들 필요가 없다.
-    _direct = {"TW": (tw_per_rows, "finmind"), "CN_A": (cn_per_rows, "akshare")}
+    _direct = {"TW": (tw_per_rows, "finmind"),
+               "CN_A": (baidu_per_rows, "baidu"),
+               "HK": (baidu_per_rows, "baidu")}
     if mkt in _direct:
         _fn, _basis = _direct[mkt]
         got = _pack(assemble(_fn(tk, px, years)), _basis)
@@ -698,17 +714,21 @@ def tw_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
     return rows_from_per_history(pts, prices)
 
 
-def cn_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
-    """중국 A주 — AKShare `stock_a_indicator_lg` 일별 PER.
+def baidu_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
+    """중국 A주·홍콩 — 바이두 股市通 일별 PER 을 월말 표본으로.
 
-    ⚠️ 이 호출은 스크리너가 **이미 쓰고 있었다**(`get_valuation`) — 다만 마지막
-    한 줄만 쓰고 이력을 버렸다. 재료를 모아 계산하기 전에 **원천이 그 값을
-    직접 주는지** 확인할 것(#141).
+    ⚠️ 홍콩이 이 경로를 특히 필요로 한다: 야후가 HK 손익을 **반기**로만 줘서
+    분기 TTM EPS 가 안 만들어지고(2026-08-22 프로브: Total Revenue 5열 중 1개
+    채움), 연간 4점으로는 밴드가 이름값을 못 한다.
+
+    ⚠️ 원천을 **직접** 부른다 — 옛 판은 `akshare.stock_a_indicator_lg` 에
+    기대 있었는데 설치본 v1.18.62 엔 그 이름이 없어 조용히 0행이었다(#151).
+    재료를 모아 계산하기 전에 **원천이 그 값을 직접 주는지** 확인할 것(#141).
     """
     try:
         from bot.akshare_client import get_akshare
         raw = get_akshare().per_history(ticker, years=years) or []
     except Exception as exc:                                   # noqa: BLE001
-        log.debug("per_band: AKShare PER 실패 %s: %s", ticker, exc)
+        log.debug("per_band: 바이두 PER 실패 %s: %s", ticker, exc)
         return []
     return rows_from_per_history(raw, prices)
