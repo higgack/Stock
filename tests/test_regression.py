@@ -33718,6 +33718,32 @@ class TestEdinetXbrl20260822:
         ex.find_annual_docs("7203.T", "k", days_back=400, budget_s=1.0)
         assert len(days) <= 2, f"예산을 넘겨 {len(days)}일 훑었다"
 
+    def test_us_falls_back_to_edgar_annual_for_20f_filers(self, monkeypatch):
+        """**20-F 제출사는 분기 프레임이 아예 없다**(2026-08-22 NVMI/Nova Ltd).
+
+        분기 프레임은 10-Q 에서만 나오므로 외국 사모발행사는 분기 0개이고,
+        그러면 yfinance **연간 4점**으로 떨어져 '최고/최저'가 이름값을 못 했다
+        (화면 실측: 관측 4개 · 최근 3.0년). EDGAR 연간은 10년 넘게 있다."""
+        import datetime as _dt
+        import bot.per_band as pb
+        px = [((_dt.date(2016, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
+               100.0 + 3 * k) for k in range(130)]
+        annual = [(f"{y}-12-31", 2.0 + 0.4 * (y - 2016))
+                  for y in range(2016, 2026)]
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: px)
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        import bot.edgar_eps as ee
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": [],
+                                                 "annual": annual,
+                                                 "tag": "EarningsPerShareDiluted"})
+        tbl, why = pb.for_ticker("NVMI", {})
+        assert tbl is not None, why
+        assert tbl["basis"] == "edgar-a", tbl["basis"]
+        assert tbl["n"] >= 8, tbl["n"]
+        assert "EDGAR" in tbl["source"], tbl["source"]
+
     def test_jp_band_actually_uses_edinet(self, monkeypatch):
         """⚠️ AST 로 호출 존재만 보면 **게이트를 못 잡는다**(#141) —
         수집기를 통째로 태워 basis 를 본다."""
@@ -33820,6 +33846,40 @@ class TestEdinetXbrl20260822:
         got = ex.annual_history("7203.T", api_key="k", wait=True)
         assert len(got) == 5, got
         assert list(tmp_path.glob("annual_*")), "성공 결과를 캐시 안 했다"
+
+    def test_second_doc_is_found_by_a_yearly_window_not_a_linear_scan(
+            self, monkeypatch):
+        """2026-08-22 VM 실측: 선형 스캔이 **294일을 훑고도 1건**이라 예산을
+        통째로 태웠다. 유가증권보고서는 해마다 같은 무렵에 나오므로 첫 건의
+        제출일에서 **1년 전 ±45일** 창만 본다."""
+        import datetime as _dt
+        import bot.edinet_xbrl as ex
+        import bot.edinet_client as ec
+        seen = []
+        doc1 = _dt.date(2026, 6, 22)
+        doc2 = _dt.date(2025, 6, 20)
+
+        def _day(day):
+            seen.append(day)
+            if day == doc1:
+                return [{"secCode": "72030", "docTypeCode": "120",
+                         "docID": "D1", "submitDateTime": "2026-06-22 10:00",
+                         "periodEnd": "2026-03-31", "filerName": "T"}]
+            if day == doc2:
+                return [{"secCode": "72030", "docTypeCode": "120",
+                         "docID": "D0", "submitDateTime": "2025-06-20 10:00",
+                         "periodEnd": "2025-03-31", "filerName": "T"}]
+            return []
+
+        class _Cl:
+            _fetch_day = staticmethod(_day)
+        monkeypatch.setattr(ec, "get_edinet", lambda: _Cl())
+        got = ex.find_annual_docs("7203.T", "k", max_docs=2)
+        assert [d["doc_id"] for d in got] == ["D1", "D0"], got
+        # 선형이면 2026-06-22 → 2025-06-20 까지 **367일**을 훑는다.
+        assert len(seen) < 120, f"선형 스캔으로 돌아갔다({len(seen)}일)"
+        # 그리고 1년 전 창을 실제로 봤어야 한다
+        assert doc2 in seen
 
     def test_probe_prints_unmatched_element_ids(self):
         """이름을 추측해 매핑을 늘리면 반복 실패한다(#24·#73) — 원문이

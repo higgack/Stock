@@ -259,38 +259,22 @@ def fetch_doc_csv(doc_id: str, api_key: str) -> list[dict]:
     return rows
 
 
-def find_annual_docs(ticker: str, api_key: str, *, max_docs: int = 2,
-                     days_back: int = 430,
-                     budget_s: float = 25.0,
-                     progress=None) -> list[dict]:
-    """유가증권보고서(120) 를 최신부터 `max_docs` 건 찾는다.
-
-    EDINET 에는 회사별 검색 API 가 없어 **날짜를 하나씩** 훑어야 한다. 대신
-    일별 목록은 전 종목 공용이라 한 번 받으면 다른 JP 종목이 공짜로 쓴다.
-    문서 한 건이 5기를 담으므로 `max_docs=2` 면 10년이다 — 훑는 범위가
-    **유계**인 이유다.
-
-    ⚠️ **예산**을 둔다(#116) — 원천이 느린 날 화면이 통째로 멈추면 안 된다.
-    예산에 걸리면 지금까지 찾은 것만 돌려주고 그 사실을 로그로 알린다(#42a).
-    """
-    from bot.edinet_client import _sec_code_for, get_edinet
-    sec = _sec_code_for(ticker)
-    if not sec or not api_key:
-        return []
-    cl = get_edinet()
-    t0 = time.time()
+def _scan_days(cl, sec: str, days, *, want: int, t0: float, budget_s: float,
+               progress, label: str) -> list[dict]:
+    """주어진 날짜들을 훑어 유가증권보고서(120)를 최대 `want` 건 모은다."""
     out: list[dict] = []
-    today = date.today()
-    for off in range(days_back + 1):
-        if len(out) >= max_docs:
+    for i, day in enumerate(days):
+        if len(out) >= want:
             break
         if time.time() - t0 > budget_s:
-            log.warning("edinet_xbrl: %s 문서 탐색 예산 초과 — %d일까지 훑고 "
-                        "%d건 확보", ticker, off, len(out))
+            log.warning("edinet_xbrl: %s 탐색 예산 초과 — %d일까지 훑고 %d건",
+                        label, i, len(out))
+            if progress:
+                progress(f"    ⏱ {label} 예산 초과 — {i}일 훑고 {len(out)}건에서 중단")
             break
-        day = today - timedelta(days=off)
-        if progress and off % 30 == 0:
-            progress(f"    …{day.isoformat()} 까지 훑음 ({len(out)}건)")
+        if progress and i % 10 == 0:
+            progress(f"    …{label} {day.isoformat()} ({len(out)}건, "
+                     f"{time.time() - t0:.0f}초)")
         for d in cl._fetch_day(day):
             if d.get("secCode") != sec:
                 continue
@@ -305,8 +289,59 @@ def find_annual_docs(ticker: str, api_key: str, *, max_docs: int = 2,
                 "filer": d.get("filerName") or "",
                 "description": d.get("docDescription") or "",
             })
-            if len(out) >= max_docs:
+            if len(out) >= want:
                 break
+    return out
+
+
+def find_annual_docs(ticker: str, api_key: str, *, max_docs: int = 2,
+                     days_back: int = 200,
+                     budget_s: float = 300.0,
+                     progress=None) -> list[dict]:
+    """유가증권보고서(120) 를 최신부터 `max_docs` 건 찾는다.
+
+    EDINET 에는 회사별 검색 API 가 없어 **날짜를 하나씩** 훑어야 한다. 대신
+    일별 목록은 전 종목 공용이라 한 번 받으면 다른 JP 종목이 공짜로 쓴다.
+    문서 한 건이 5기를 담으므로 `max_docs=2` 면 10년이다.
+
+    ⚠️ **두 번째 문서를 선형 스캔으로 찾지 않는다**(2026-08-22 VM 실측: 294일을
+    훑고도 1건이라 예산을 통째로 태웠다). 유가증권보고서는 **해마다 같은 무렵**
+    에 나오므로, 첫 건을 찾으면 그 제출일에서 **1년 전 ±45일** 창만 본다 —
+    430일 선형(≈430 요청)이 ~90일로 줄고 보통 처음 몇 건에서 잡힌다.
+    """
+    from bot.edinet_client import _sec_code_for, get_edinet
+    sec = _sec_code_for(ticker)
+    if not sec or not api_key:
+        return []
+    cl = get_edinet()
+    t0 = time.time()
+    today = date.today()
+    out = _scan_days(cl, sec, [today - timedelta(days=o)
+                               for o in range(days_back + 1)],
+                     want=1, t0=t0, budget_s=budget_s, progress=progress,
+                     label="최근")
+    if not out or len(out) >= max_docs:
+        return out
+    # 해마다 같은 무렵을 좁게 본다. 앵커는 **직전에 찾은 문서**의 제출일 —
+    # 제출일이 조금씩 밀리므로 첫 건에서만 재면 3부째부터 창을 벗어난다.
+    for back in range(1, max_docs):
+        try:
+            y, m, d = (int(x) for x in out[-1]["submitted"].split("-"))
+            anchor = date(y, m, min(d, 28)) - timedelta(days=365)
+        except Exception:                                      # noqa: BLE001
+            return out
+        if progress:
+            progress(f"    ↪ {back}년 전({anchor.isoformat()} ±45일) 창으로 이동")
+        # 앵커에서 바깥쪽으로 번갈아 — 보통 며칠 안에 잡힌다.
+        days = [anchor + timedelta(days=s * k)
+                for k in range(46) for s in ((1, -1) if k else (1,))]
+        got = _scan_days(cl, sec, days, want=1, t0=t0, budget_s=budget_s,
+                         progress=progress, label=f"{back}년 전")
+        if not got:
+            if progress:
+                progress(f"    ↪ {back}년 전 창에서 못 찾음 — 여기서 멈춘다")
+            break
+        out.extend(got)
     return out
 
 

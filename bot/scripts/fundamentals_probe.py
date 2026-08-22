@@ -27,7 +27,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 5
+_PROBE_VER = 6
 _DEFAULT = "0700.HK,0002.HK,600519.SS,000002.SZ"
 
 
@@ -145,6 +145,8 @@ def _alt_sources(ticker: str) -> list[str]:
         return _edinet_key() + _kabutan(t)
     if t.endswith((".HK", ".SS", ".SZ")):
         return _cn_hk_valuation(t)
+    if "." not in t:
+        return _edgar_eps(t)
     if t.endswith((".TW", ".TWO")):
         try:
             from bot.finmind_client import fetch_income_statement
@@ -153,6 +155,31 @@ def _alt_sources(ticker: str) -> list[str]:
         except Exception as exc:                               # noqa: BLE001
             return [f"  ② FinMind: 실패 {exc}"]
     return ["  ② 대안 원천: 이 시장은 등록된 게 없다(yfinance 단일 경로)"]
+
+
+def _edgar_eps(ticker: str) -> list[str]:
+    """미국 — EDGAR 분기/연간 EPS 개수를 **따로** 센다.
+
+    ⚠️ 20-F 제출사(외국 사모발행사)는 **분기 프레임이 아예 없다** — 분기는
+    10-Q 에서만 나오기 때문이다(2026-08-22 NVMI). 분기만 세면 그 종목이
+    'EDGAR 커버리지 없음'으로 보이는데 실제로는 연간이 10년 넘게 있다.
+    """
+    try:
+        from bot.edgar_eps import eps_history
+        h = eps_history(ticker, years=10)
+    except Exception as exc:                                   # noqa: BLE001
+        return [f"  ② SEC EDGAR: 실패 {type(exc).__name__} {exc}"]
+    if not h:
+        return ["  ② SEC EDGAR: 커버리지 없음(CIK 미상 또는 us-gaap EPS 태그 "
+                "없음) — 여기서 비면 yfinance 로 떨어진다"]
+    q, a = h.get("quarterly") or [], h.get("annual") or []
+    out = [f"  ② SEC EDGAR ({h.get('tag')})"]
+    out.append(f"     분기 EPS: {len(q)}개"
+               + (f" ({q[0][0]} ~ {q[-1][0]})" if q else
+                  " — **없음**(20-F 제출사면 정상: 10-Q 를 안 낸다)"))
+    out.append(f"     연간 EPS: {len(a)}개"
+               + (f" ({a[0][0]} ~ {a[-1][0]})" if a else " — **없음**"))
+    return out
 
 
 def _cn_hk_valuation(ticker: str) -> list[str]:
