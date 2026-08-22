@@ -15,6 +15,18 @@
 
 ⚠️ 같은 `end` 가 여러 번 온다(정정·후속 보고서). **가장 늦게 접수된 것**을
 쓴다 — 오래된 값이 이기면 화면이 조용히 낡는다.
+
+⚠️⚠️ **회계연도 4분기는 분기 프레임에 없다**(2026-08-22 MSFT 실측). 분기
+프레임은 10-Q 에서만 나오는데 FY Q4 는 10-Q 를 안 낸다 — 그 분기 실적은
+10-K 의 **연간** 수치에만 들어간다. 그래서 MSFT(6월 결산)는 9·12·3월만
+있고 **6월이 통째로 빠졌고**, TTM 이 최근 4개 *가용* 분기를 더하는 바람에
+실제로는 **15개월**을 합산했다(화면 전 행이 산수는 맞는데 값이 틀렸다).
+12월 결산 회사면 12월이 빠진다 — **미국 종목 전체**에 해당한다.
+대응: 연간 프레임 안에 분기가 정확히 3개면 **연간 − 3분기 합**으로 나머지
+한 분기를 복원한다(DART 4분기를 연간−3분기누적으로 만드는 것과 같은 규율).
+⚠️ 희석주식수가 분기마다 달라 연간 EPS ≠ 분기 EPS 합이므로 복원분은 그
+차이를 흡수한다(±0.0x). 15개월 TTM 보다는 훨씬 낫고, 애초에 결산분기를
+빼고 만든 밴드는 최고·최저라는 이름값을 못 한다.
 """
 
 from __future__ import annotations
@@ -33,6 +45,21 @@ _TTL_H = 24.0
 # 아니므로 버린다 — 반기를 분기로 섞으면 TTM 이 통째로 틀린다.
 _Q_DAYS = (80, 100)
 _A_DAYS = (350, 380)
+
+
+def _parse_sig() -> str:
+    """이 모듈 소스의 지문. **캐시 키에 넣는다.**
+
+    ⚠️ 손으로 올리는 버전 상수는 이 레포에서 **네 번** 잊었다(#18 아카이브 ·
+    #21b 파싱 캐시 · #95 재무 캐시 · #124 렌더 캐시). 규율로 기억할 일을
+    구조로 옮긴다 — 파싱 규칙을 고치면 키가 자동으로 바뀐다.
+    """
+    import hashlib
+    try:
+        with open(__file__, "rb") as fh:
+            return hashlib.sha1(fh.read()).hexdigest()[:8]
+    except Exception:                                          # noqa: BLE001
+        return "nosig"
 
 
 def _span_days(a: str, b: str):
@@ -62,7 +89,8 @@ def eps_history(ticker: str, years: int = 10) -> dict | None:
     둘 다 **기간 오름차순**. 실패·무커버리지는 None(호출부가 폴백한다).
     """
     from bot.edgar_client import _load_cache, _save_cache, _ticker_to_cik
-    key = f"eps_hist_{(ticker or '').upper().split('.')[0]}_{years}"
+    key = (f"eps_hist_{(ticker or '').upper().split('.')[0]}"
+           f"_{years}_{_parse_sig()}")
     hit = _load_cache(key, max_age_h=_TTL_H)
     if isinstance(hit, dict) and "quarterly" in hit:
         return hit
@@ -75,8 +103,10 @@ def eps_history(ticker: str, years: int = 10) -> dict | None:
         rows = _rows(cik, tag)
         if not rows:
             continue
-        q: dict[str, tuple[str, float]] = {}
-        a: dict[str, tuple[str, float]] = {}
+        # end → (filed, val, start). `start` 가 있어야 연간 구간 안에 든
+        # 분기를 고를 수 있다(결산분기 복원, 위 독스트링).
+        q: dict[str, tuple[str, float, str]] = {}
+        a: dict[str, tuple[str, float, str]] = {}
         for x in rows:
             s, e = str(x.get("start") or ""), str(x.get("end") or "")
             v = x.get("val")
@@ -92,11 +122,41 @@ def eps_history(ticker: str, years: int = 10) -> dict | None:
             filed = str(x.get("filed") or "")
             prev = bucket.get(e)
             if prev is None or filed >= prev[0]:   # 가장 늦게 접수된 것이 정본
-                bucket[e] = (filed, float(v))
+                bucket[e] = (filed, float(v), s)
         if q or a:
-            out = {"quarterly": sorted((e, v) for e, (_f, v) in q.items()),
-                   "annual": sorted((e, v) for e, (_f, v) in a.items()),
+            quarters = fill_fiscal_q4(
+                [(e, v, st) for e, (_f, v, st) in q.items()],
+                [(e, v, st) for e, (_f, v, st) in a.items()])
+            out = {"quarterly": quarters,
+                   "annual": sorted((e, v) for e, (_f, v, _s) in a.items()),
                    "tag": tag}
             _save_cache(key, out)
             return out
     return None
+
+
+def fill_fiscal_q4(quarters: list, annuals: list) -> list:
+    """[(end, val, start)] ×2 → **결산분기를 복원한** [(end, val)] 오름차순.
+
+    연간 구간 안에 분기가 **정확히 3개**면 나머지 한 분기를
+    `연간 − 3분기 합` 으로 만들어 넣는다. 이미 그 `end` 의 분기가 있으면
+    건드리지 않는다(원천이 준 값이 항상 이긴다).
+
+    ⚠️ 복원한 분기의 기간이 분기 범위(80~100일)를 벗어나면 **버린다** —
+    억지로 채우면 반기·이상치가 분기로 섞여 TTM 이 통째로 틀린다.
+    """
+    have = {str(e)[:10]: float(v) for e, v, _s in quarters}
+    for a_end, a_val, a_start in annuals:
+        a_end, a_start = str(a_end)[:10], str(a_start)[:10]
+        if a_end in have:
+            continue                     # 원천이 이미 그 분기를 줬다
+        inside = sorted((str(e)[:10], float(v), str(st)[:10])
+                        for e, v, st in quarters
+                        if a_start <= str(st)[:10] and str(e)[:10] <= a_end)
+        if len(inside) != 3:
+            continue
+        gap = _span_days(inside[-1][0], a_end)
+        if gap is None or not (_Q_DAYS[0] <= gap <= _Q_DAYS[1]):
+            continue                     # 남은 구간이 분기가 아니다 — 버린다
+        have[a_end] = round(float(a_val) - sum(v for _e, v, _s in inside), 4)
+    return sorted(have.items())
