@@ -5235,8 +5235,10 @@ _BAND_JS = r"""
        그 배수에서의 주가도 무엇을 곱한 건지 적어야 눈으로 검산된다(#33). */
     var bn='';
     if(rows.length){ var r0=(t.rows||[])[0]||{}, rN=(t.rows||[])[(t.rows||[]).length-1]||{};
-      bn='밴드 = '+esc2(r0.period)+' ~ '+esc2(rN.period)+' 전 구간 관측 '
-        +(t.n||0)+'개 분포'; }
+      /* 밴드가 **실제로 본 창**을 쓴다 — 이력 전체와 다를 수 있고(비-KR 은
+         최근 5년), 라벨을 이력 기준으로 적으면 요약과 또 갈라진다(#34). */
+      bn='밴드 = '+esc2(t.band_from||r0.period)+' ~ '+esc2(t.band_to||rN.period)
+        +' 관측 '+(t.band_n||t.n||0)+'개 분포'; }
     if(t.eps_now!=null) bn+=(bn?' · ':'')+'그 배수에서의 주가 = 배수 × 최신 '
       +denom+' '+num(t.eps_now,2);
     else if(rows.length) bn+=' · 그 배수에서의 주가 = 원천 밴드선(최신 시점)';
@@ -7681,7 +7683,9 @@ def _render_stock_info_html(rec: dict) -> str:
       <b>PBR</b>(차트·표)은 <b>국내 종목만</b> 제공됩니다 — FnGuide 가 PBR 밴드선을 KR 만 주고, BPS 이력은 받지 않습니다.
       <b>해외 종목</b>은 FnGuide 커버리지가 없어 PER 차트·표를 <b>직접 계산</b>합니다(미국은 SEC EDGAR 희석 EPS 최대 10년,
       그 외는 yfinance 손익 TTM). 이때 밴드선은 <b>배수 × 그 시점 TTM EPS</b>이고 적자(EPS≤0) 구간은 선을 잇지 않습니다.
-      y축 통화는 해당 시장 표시통화입니다.
+      y축 통화는 해당 시장 표시통화입니다. <b>밴드(최고·중상·중하·최저)는 최근 5년 관측 분포</b>이며 이력 표·차트는 최대 10년입니다 —
+      요약과 밴드가 같은 창을 봅니다. ADR 처럼 <b>재무제표 통화와 거래 통화가 다르면</b> 그 시점 환율로 EPS 를 환산하며,
+      환율을 못 받으면 통화가 섞인 배수 대신 <b>만들지 않고 사유를 표시</b>합니다.
     </div>
     <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">

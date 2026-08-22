@@ -31907,6 +31907,177 @@ class TestTruncatedChartFallback20260822:
         assert "d.fallback" in seg, "캡션이 실제 원천을 안 본다"
 
 
+class TestCurrencyMismatchBand20260822:
+    """사용자 2026-08-22 TSM: "PER 도 너무 낮고...제발 꼼꼼히 좀 봐줘" —
+    PER 0.92x.
+
+    ⚠️ yfinance 가 주는 주당순이익이 **NT$327.35**(ADR 주당 = 보통주×5)인데
+    주가는 **US$302.33** 이라 그냥 나눠 0.92 가 됐다(실제 ≈29). ADR(TSM·
+    ASML·BABA…) 에서 흔하고 화면은 '너무 낮다'로만 보인다 — #34 의 통화판.
+    처방: 그 시점 환율로 EPS 를 환산하고, 환율을 못 받으면 **만들지 않는다**."""
+
+    _EPS_TWD = [("2022-12-31", 196.00), ("2023-12-31", 161.70),
+                ("2024-12-31", 226.25), ("2025-12-31", 327.35)]
+    _PX = [("2022-12-31", 70.73), ("2023-12-31", 100.66),
+           ("2024-12-31", 193.86), ("2025-12-31", 302.33)]
+    _FX = [("2022-01-01", 1 / 30.7), ("2024-01-01", 1 / 32.0),
+           ("2025-01-01", 1 / 32.8)]
+
+    def test_unconverted_series_is_flagged_as_implausible(self):
+        """통화 가드가 1차지만, 같은 증상이 다른 경로로 또 올 수 있다 — 2차 그물."""
+        from bot.per_band import build, implausible_reason
+        t = build(self._PX, self._EPS_TWD, annual=True)
+        why = implausible_reason(t["rows"])
+        assert why and "통화" in why, why
+
+    def test_conversion_uses_the_rate_of_that_period(self):
+        """현재 환율 하나로 전 기간을 환산하면 과거 PER 이 그때 존재하지 않던
+        값이 된다(#28 빈티지 오염)."""
+        from bot.per_band import convert_eps
+        got = dict(convert_eps(self._EPS_TWD, self._FX))
+        assert abs(got["2022-12-31"] - 196.00 / 30.7) < 1e-9, got
+        assert abs(got["2024-12-31"] - 226.25 / 32.0) < 1e-9, got
+        assert abs(got["2025-12-31"] - 327.35 / 32.8) < 1e-9, got
+
+    def test_periods_without_a_rate_are_dropped(self):
+        """환율을 모르는 기간을 억지로 채우면 그 시점 PER 이 거짓이 된다."""
+        from bot.per_band import convert_eps
+        got = dict(convert_eps(self._EPS_TWD, [("2024-01-01", 1 / 32.0)]))
+        assert "2022-12-31" not in got and "2023-12-31" not in got
+        assert "2024-12-31" in got and "2025-12-31" in got
+
+    def test_converted_band_is_plausible(self):
+        from bot.per_band import build, convert_eps, implausible_reason
+        t = build(self._PX, convert_eps(self._EPS_TWD, self._FX), annual=True)
+        assert implausible_reason(t["rows"]) is None
+        assert 5 < t["rows"][-1]["per"] < 60, t["rows"][-1]
+
+    def test_no_fx_means_no_band_and_a_reason(self):
+        """통화가 섞인 배수는 빈칸보다 나쁘다(#32) — 그리고 **왜** 없는지
+        말해야 한다(#43·#129)."""
+        import bot.per_band as pb
+        pb_orig = pb._fx_monthly
+        pb._fx_monthly = lambda a, b, y: []
+        mc_orig = pb._monthly_closes
+        pb._monthly_closes = lambda t, y: [("2025-01-01", 100.0)]
+        try:
+            tbl, why = pb.for_ticker(
+                "TSM", {"financial_currency": "TWD", "currency": "USD"})
+        finally:
+            pb._fx_monthly, pb._monthly_closes = pb_orig, mc_orig
+        assert tbl is None
+        assert why and "TWD" in why and "USD" in why, why
+
+    @staticmethod
+    def _fx_spy(monkeypatch):
+        """⚠️ 가격 이력을 **비우면 안 된다** — `for_ticker` 가 통화 블록보다
+        먼저 반환해 스파이가 한 번도 안 불린다(픽스처가 눈먼다, #91b)."""
+        import bot.per_band as pb
+        hit = []
+        monkeypatch.setattr(pb, "_fx_monthly",
+                            lambda a, b, y: hit.append((a, b)) or [])
+        monkeypatch.setattr(pb, "_monthly_closes",
+                            lambda t, y: [("2025-01-01", 100.0)])
+        monkeypatch.setattr(pb, "_eps_rows_from_snapshot", lambda s, k: [])
+        return hit
+
+    def test_same_currency_needs_no_fx(self, monkeypatch):
+        """⚠️ 무조건 환산하면 멀쩡한 미국 종목이 환율 조회를 기다린다."""
+        import bot.per_band as pb
+        hit = self._fx_spy(monkeypatch)
+        pb.for_ticker("MSFT", {"financial_currency": "USD", "currency": "USD"})
+        assert not hit, hit
+
+    def test_unknown_trade_currency_does_not_block(self, monkeypatch):
+        """거래통화를 모르면 비교하지 않는다 — 미등록 접미사가 멀쩡한 종목을
+        막는다(대시보드 동종비교의 같은 교훈)."""
+        import bot.per_band as pb
+        hit = self._fx_spy(monkeypatch)
+        pb.for_ticker("XYZ", {"financial_currency": "EUR", "currency": ""})
+        assert not hit, hit
+
+    def test_implausible_series_is_refused_end_to_end(self, monkeypatch):
+        """⚠️ `implausible_reason` 을 직접 부르는 테스트는 **배선을 못 잡는다**
+        (#20) — 수집기를 통째로 태워 밴드가 실제로 거부되는지 본다."""
+        import bot.per_band as pb
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._PX)
+        monkeypatch.setattr(
+            pb, "_eps_rows_from_snapshot",
+            lambda s, k: self._EPS_TWD if k == "annual" else [])
+        # 통화 정보가 없어 1차 가드는 안 걸린다 — 2차 그물만 남는다
+        tbl, why = pb.for_ticker("TSM", {})
+        assert tbl is None, tbl
+        assert why and "통화" in why, why
+
+    def test_band_window_is_five_years_while_history_stays_long(self):
+        """사용자 2026-08-22: "history 는 10년으로 그대로놔두는데 PER BAND 는
+        5년치만 해줘. 10년으로 하니까 너무 차이가 크네" """
+        from bot.per_band import build
+        import datetime as _dt
+        # 10년치 분기 — 앞 5년은 EPS 가 낮아 PER 이 훨씬 높다
+        eps, px = [], []
+        for i in range(40):
+            d = (_dt.date(2016, 3, 31) + _dt.timedelta(days=91 * i)).isoformat()
+            eps.append((d, 1.0 if i < 20 else 4.0))
+            px.append((d, 100.0))
+        t = build(px, eps, band_years=5)
+        assert t["n"] > t["band_n"], (t["n"], t["band_n"])
+        assert t["band_from"] > t["rows"][0]["period"], t["band_from"]
+        # 최근 5년만 보면 최고 배수가 옛 고배수 구간에 안 끌려간다
+        assert max(b["mult"] for b in t["bands"]) < 40, t["bands"]
+
+    def test_thin_five_years_falls_back_to_everything(self):
+        """5년에 점이 두셋뿐이면 '최고/최저'가 이름값을 못 한다 — 전 구간으로.
+
+        ⚠️ 창은 **마지막 행** 기준이라 전 행이 5년 안에 몰려 있으면 이 분기가
+        안 탄다(픽스처가 눈먼다) — 앞쪽에 오래된 행을 두고 최근 5년엔 한 점만."""
+        from bot.per_band import build
+        eps = [("2012-12-31", 1.0), ("2013-12-31", 1.1), ("2014-12-31", 1.2),
+               ("2015-12-31", 1.3), ("2016-12-31", 1.4), ("2025-12-31", 2.0)]
+        px = [(d, 20.0) for d, _v in eps]
+        t = build(px, eps, annual=True, band_years=5)
+        assert t["n"] == 6 and t["band_n"] == 6, (t["n"], t["band_n"])
+        assert t["band_from"] == "2012-12-31", t["band_from"]
+
+    def test_fx_falls_back_to_the_inverse_pair(self, monkeypatch):
+        """야후는 쌍에 따라 한 방향만 있다 — 정방향만 보고 포기하면 멀쩡한
+        종목이 통째로 밴드를 잃는다."""
+        import bot.per_band as pb
+        seen = []
+
+        def _one(sym, years):
+            seen.append(sym)
+            if sym == "USDTWD=X":
+                return [("2025-01-01", 32.0)]
+            return []
+        monkeypatch.setattr(pb, "_fx_one", _one)
+        got = pb._fx_monthly("TWD", "USD", 10)
+        assert seen == ["TWDUSD=X", "USDTWD=X"], seen
+        assert abs(got[0][1] - 1 / 32.0) < 1e-12, got
+
+    def test_forward_pair_wins_when_present(self):
+        """⚠️ 늘 역방향을 쓰면 값이 뒤집힌다."""
+        import bot.per_band as pb
+        orig = pb._fx_one
+        pb._fx_one = lambda sym, y: ([("2025-01-01", 0.031)]
+                                     if sym == "TWDUSD=X" else
+                                     [("2025-01-01", 32.0)])
+        try:
+            got = pb._fx_monthly("TWD", "USD", 10)
+        finally:
+            pb._fx_one = orig
+        assert got == [("2025-01-01", 0.031)], got
+
+    def test_api_relays_the_reason(self):
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_handle_band_api")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "tbl, why =" in seg, "사유를 버린다(#129)"
+        assert "why or" in seg, "사유를 화면에 안 전달한다"
+
+
 class TestFiscalQ4AndTtmHoles20260822:
     """사용자 2026-08-22 MSFT: "PER Band 가 좀 이상하지 않아? 밑에 기간도
     제대로 안나오고" — 이력 표 기간이 9·12·3월만 나오고 **6월이 빠졌다**.
@@ -32009,10 +32180,15 @@ class TestFiscalQ4AndTtmHoles20260822:
         """밴드는 **전 구간** 분포인데 바로 위 요약은 5년이다 — 창을 안 밝히면
         '5년 최저 22.20' 옆에 '최저 19.18' 이 놓여 한쪽이 틀린 것처럼 읽힌다(#34)."""
         from bot.dashboard import _BAND_JS
+        # ⚠️ 경계를 한글 문구로 잡으면 **주석의 같은 단어**에 걸린다(#59b) —
+        # 코드에만 있는 식별자로 자른다.
         i = _BAND_JS.index("그 배수에서의 주가")
-        j = _BAND_JS.index("이력 ", i)
+        j = _BAND_JS.index("var hasEps", i)
         seg = _BAND_JS[i:j]
-        assert "전 구간 관측" in seg, seg[-300:]
+        # 밴드가 **실제로 본 창**을 써야 한다 — 이력 전체로 적으면 요약(5년)과
+        # 또 갈라진다. 리터럴 문구가 아니라 payload 필드를 보는지로 고정.
+        assert "t.band_from" in seg and "t.band_to" in seg, seg[-300:]
+        assert "t.band_n" in seg, "밴드 관측 수를 이력 수로 적는다"
         assert "배수 × 최신" in seg, "적정가의 산식을 안 적는다(#33)"
 
     def test_history_table_says_it_is_truncated(self):

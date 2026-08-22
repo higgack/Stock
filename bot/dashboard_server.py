@@ -1098,13 +1098,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 except Exception as exc:                       # noqa: BLE001
                     log.debug("band_api: 스냅샷 생략 %s: %s", ticker, exc)
                 from bot.per_band import for_ticker as _pb
-                tbl = _once(f"perband:{ticker}", lambda: _pb(ticker, snap))
+                tbl, why = _once(f"perband:{ticker}", lambda: _pb(ticker, snap))
                 if not tbl:
-                    # **왜** 없는지 말한다 — 침묵이 최악이다(#43).
+                    # **왜** 없는지 말한다 — 침묵이 최악이다(#43). 사유는
+                    # 경우마다 다르므로 하나로 단정하지 않는다(#50·#129).
                     self._reply_json(200, {
                         "ok": False,
-                        "error": "PER 밴드를 만들 재료가 부족합니다"
-                                 "(EPS 이력 또는 가격 이력 없음)"})
+                        "error": why or "PER 밴드를 만들 재료가 부족합니다."})
                     return
                 # 차트는 표와 **같은 rows** 에서 나온다 — 갈라질 수 없다(#38).
                 ch = tbl.get("chart")
