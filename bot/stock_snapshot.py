@@ -1444,7 +1444,12 @@ def _collect_financials(t, snap: dict) -> None:
     ):
         annual_df = getattr(t, attr_a, None)
         quarterly_df = getattr(t, attr_q, None)
-        a_rows = _df_to_rows(annual_df, max_periods=4)
+        # ⚠️ 야후가 주는 **연간 5개년을 다 담는다**(예전엔 4개로 잘랐다).
+        # 2026-08-22 JP 프로브 실측: 6758.T 는 원시 연간이 5열인데 스냅샷이
+        # 4개만 담아 **양수 EPS 가 3개**뿐이라 PER 밴드 최소치(4점)를 못 넘었다
+        # — 원천이 준 걸 우리가 버려서 화면이 빈 것이다. `_df_to_rows` 의 기본값
+        # 도 5라 이게 원래 의도였던 것으로 보인다(4는 근거 주석이 없었다).
+        a_rows = _df_to_rows(annual_df, max_periods=5)
         q_rows = _df_to_rows(quarterly_df, max_periods=8)
         if a_rows or q_rows:
             fins[label] = {}

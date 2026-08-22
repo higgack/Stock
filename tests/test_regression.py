@@ -32256,6 +32256,64 @@ class TestEmptyChartPanelsAndJpProbe20260822:
         assert "for_ticker" in calls, calls
 
 
+class TestAnnualPeriodsNotTruncated20260822:
+    """사용자 2026-08-22 JP 프로브 v2 실측 — 원천이 준 연도를 우리가 버렸다.
+
+    ⚠️ 6758.T(Sony)는 yfinance 연간이 **5열**인데 스냅샷이 `max_periods=4` 로
+    잘라 **양수 EPS 가 3개**뿐이었고, PER 밴드 최소치(4점)를 못 넘어 화면이
+    비었다 — 원천 부족이 아니라 **우리가 버린 것**이었다. `_df_to_rows` 의
+    기본값도 5라 4는 근거 없는 절단이었다(주석도 없었다)."""
+
+    def test_snapshot_keeps_every_annual_period_yahoo_gives(self):
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        call = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and getattr(n.func, "id", "") == "_df_to_rows"
+            and any(getattr(a, "id", "") == "annual_df" for a in n.args))
+        kw = {k.arg: k.value for k in call.keywords}
+        assert "max_periods" in kw, "연간 절단 한도를 안 적었다"
+        assert kw["max_periods"].value >= 5, ast.dump(kw["max_periods"])
+
+    def test_quarterly_window_is_still_longer_than_annual(self):
+        """분기는 TTM 계산에 앞선 분기가 필요해 더 길게 받는다 — 둘을 같게
+        만들면 TTM 이 한 칸만 채워진다(2026-08-19 교훈)."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        got = {}
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Call)
+                    and getattr(n.func, "id", "") == "_df_to_rows"):
+                for a in n.args:
+                    if getattr(a, "id", "") in ("annual_df", "quarterly_df"):
+                        kw = {k.arg: k.value for k in n.keywords}
+                        got[a.id] = kw["max_periods"].value
+        assert got.get("quarterly_df", 0) > got.get("annual_df", 0), got
+
+    def test_five_annual_rows_survive_the_converter(self):
+        """AST 만 보면 변환기가 실제로 5개를 담는지는 모른다(#20)."""
+        import datetime as _dt
+        import pandas as pd
+        from bot.stock_snapshot import _df_to_rows
+        cols = [_dt.datetime(2026 - i, 3, 31) for i in range(5)]
+        df = pd.DataFrame({c: {"Diluted EPS": 100.0 + i}
+                           for i, c in enumerate(cols)})
+        assert len(_df_to_rows(df, max_periods=5)) == 5
+
+    def test_extra_year_can_lift_a_band_over_the_minimum(self):
+        """실측 시나리오 — 양수 EPS 3개면 밴드가 없고, 한 해가 더 오면 생긴다."""
+        from bot.per_band import build
+        px = [(f"{y}-03-31", 100.0) for y in range(2022, 2027)]
+        three = [("2024-03-31", -1.0), ("2025-03-31", 5.0),
+                 ("2026-03-31", 6.0), ("2023-03-31", 4.0)]
+        assert build(px, three, annual=True) is None, "3점으로 밴드를 만들었다"
+        four = three + [("2022-03-31", 3.0)]
+        assert build(px, four, annual=True) is not None
+
+
 class TestTtmContiguity20260822:
     """사용자 2026-08-22 6488.TWO·6239.TW: "25.3Q 가 없어. 대만 일부 종목들이
     이런데 왜 이런거야?"
