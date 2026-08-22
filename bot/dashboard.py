@@ -5733,6 +5733,37 @@ def _derive_missing_multiples(si: dict) -> dict:
     return out
 
 
+def compact_amount(v, currency: str = "USD") -> str:
+    """금액을 시장 통화 관례로 축약 — 표와 차트가 **같은 함수**를 쓴다(#38).
+
+    ⚠️ 주당 지표에는 쓰지 말 것. 만/억으로 반올림하면 EPS 10,000~19,999 가
+    전부 "1만"이 되어 비교가 불가능해진다(사용자 2026-08-17 실측).
+    """
+    if v is None:
+        return "—"
+    a = abs(v)
+    if currency == "KRW":
+        if a >= 1e12:
+            return f"{v / 1e12:.1f}조"
+        if a >= 1e8:
+            return f"{v / 1e8:,.0f}억"
+        if a >= 1e4:
+            return f"{v / 1e4:,.0f}만"
+    elif currency in ("JPY", "TWD", "HKD", "CNY"):
+        if a >= 1e12:
+            return f"{v / 1e12:.1f}兆"
+        if a >= 1e8:
+            return f"{v / 1e8:,.0f}億"
+        if a >= 1e4:
+            return f"{v / 1e4:,.0f}万"
+    else:
+        if a >= 1e9:
+            return f"{v / 1e9:.1f}B"
+        if a >= 1e6:
+            return f"{v / 1e6:.0f}M"
+    return f"{v:,.0f}"
+
+
 def trend_chart_geometry(chart_items: list, keys: list,
                          max_val: float) -> tuple[float, float]:
     """수익성 추이 막대차트의 (기간라벨 y, 도화지 높이). 기준선은 y=150.
@@ -7892,30 +7923,10 @@ def _render_stock_info_html(rec: dict) -> str:
                                 # $2.34 든 ¥250 이든 주당 값은 원 단위로 읽는다.
                                 vs = (f"{v:,.0f}" if abs(v) >= 100
                                       else f"{v:,.2f}")
-                            elif currency == "KRW":
-                                if abs(v) >= 1e12:
-                                    vs = f"{v/1e12:.1f}조"
-                                elif abs(v) >= 1e8:
-                                    vs = f"{v/1e8:,.0f}억"
-                                elif abs(v) >= 1e4:
-                                    vs = f"{v/1e4:,.0f}만"
-                                else:
-                                    vs = f"{v:,.0f}"
-                            elif currency in ("JPY", "TWD", "HKD", "CNY"):
-                                if abs(v) >= 1e12:
-                                    vs = f"{v/1e12:.1f}兆"
-                                elif abs(v) >= 1e8:
-                                    vs = f"{v/1e8:,.0f}億"
-                                elif abs(v) >= 1e4:
-                                    vs = f"{v/1e4:,.0f}万"
-                                else:
-                                    vs = f"{v:,.0f}"
-                            elif abs(v) >= 1e9:
-                                vs = f"{v/1e9:.1f}B"
-                            elif abs(v) >= 1e6:
-                                vs = f"{v/1e6:.0f}M"
                             else:
-                                vs = f"{v:,.0f}"
+                                # 축약은 **한 곳**에서 — 표와 추이 차트가
+                                # 각자 만들면 같은 값이 달리 읽힌다(#38).
+                                vs = compact_amount(v, currency)
                             color = "#e2574c" if v < 0 else ""
                             style = f' style="color:{color}"' if color else ""
                             vals += f'<td class="num"{style}>{vs}</td>'
@@ -7998,29 +8009,57 @@ def _render_stock_info_html(rec: dict) -> str:
                        ("net_income", "순이익", "#ffa726")]
             if _has_fcf:
                 _series.append(("fcf", "FCF", "#22d3ee"))
-            _nb = len(_series)
+            # ⚠️ 지표를 **한 그림에** 겹쳐 그리면 축이 하나뿐이라 매출이
+            # 나머지를 눌러 버린다(사용자 2026-08-23 "매출액은 매출액끼리 …
+            # 너무 헷갈려"). 지표마다 **자기 축**을 가진 작은 차트로 나눈다.
+            # 대신 높이를 지표끼리 비교할 수 없게 되므로 **각 차트가 자기 축
+            # 최대값을 밝힌다**(#34 라벨에 기준을 박을 것).
             # ⚠️ 옛 판은 `max(abs(c["revenue"]))` — **매출 하나로만** 스케일링
             # 했다. 매출이 작고 손실·현금유출이 큰 종목(USDE 실측)에서는
             # `abs(val)/max_val*120` 이 수백 배가 되어 막대가 **수천 px** 로
             # 뻗고, 아래로 뻗은 만큼 도화지도 같이 커진다(#100 의 파생값이
             # 증폭기가 됐다). 축은 **그 그림에 그려지는 전 계열**에서 정한다.
-            max_val = max(
-                (abs(c[k]) for c in chart_items for k, _n, _c in _series
-                 if c.get(k) is not None), default=0.0) or 1
-            bar_w = 180 // len(chart_items)
-            svg_w = bar_w * len(chart_items) * _nb + 120
-            bars = ""
-            labels = ""
-            legend = ('<text x="10" y="14" font-size="11" fill="#999">'
-                      + ' '.join(f'● <tspan fill="{col}">{esc(nm)}</tspan>'
-                                 for _k, nm, col in _series) + '</text>')
-            # ⚠️ 라벨을 기준선 바로 밑(y=170)에 고정하면 **아래로 뻗은 막대와
-            # 겹쳐** 연도·분기가 안 보인다(사용자 2026-08-21 LG디스플레이:
-            # FCF·순이익이 음수인 분기에서 `25.1Q`·`2024` 가 막대에 가림).
-            # 가장 깊은 음수 막대 아래로 내려보내고 도화지도 같이 키운다 —
-            # 상수 하나만 고치면 다른 하나가 안 따라오므로 **여기서 파생**.
-            _lab_y, _svg_h = trend_chart_geometry(
-                chart_items, [k for k, _n, _c in _series], max_val)
+            def _mini(key: str, name: str, color: str) -> str:
+                """지표 하나짜리 작은 차트 — **자기 축**으로 그린다."""
+                vals = [c.get(key) for c in chart_items]
+                mx = max((abs(v) for v in vals if v is not None), default=0.0)
+                if not mx:
+                    # 전 칸이 0/없음이면 막대를 만들지 않는다 — 0 짜리 막대는
+                    # '값이 0' 이라는 없는 사실을 그린 것이다.
+                    return ""
+                lab_y, svg_h = trend_chart_geometry(chart_items, [key], mx)
+                nb = len(chart_items) or 1
+                slot = (260.0 - 16.0) / nb
+                bw = min(slot * 0.62, 34.0)
+                bars = labels = ""
+                for i, c in enumerate(chart_items):
+                    cx = 8.0 + slot * i + slot / 2
+                    v = c.get(key)
+                    if v is not None:
+                        h = max(abs(v) / mx * 120, 2)
+                        y = 150 - h if v >= 0 else 150
+                        bars += (f'<rect x="{cx - bw / 2:.1f}" y="{y:.1f}" '
+                                 f'width="{bw:.1f}" height="{h:.1f}" '
+                                 f'fill="{color}" rx="2"/>\n')
+                    else:
+                        # 값이 없는 기간은 막대를 그리지 않는다(0 짜리 막대는
+                        # 없는 사실을 그린 것이다) — 대신 **비었다고 말한다**.
+                        # 조용한 공백은 '0' 으로 읽힌다(#43).
+                        bars += (f'<text x="{cx:.1f}" y="146" font-size="11" '
+                                 f'fill="#666" text-anchor="middle">—</text>\n')
+                    labels += (f'<text x="{cx:.1f}" y="{lab_y:.0f}" '
+                               f'font-size="11" fill="#999" '
+                               f'text-anchor="middle">{esc(c["period"])}</text>\n')
+                return f"""<div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:2px">
+            <span style="color:{color}">●</span> {esc(name)}</div>
+          <div style="font-size:10px;color:var(--fg-soft);margin-bottom:2px">축 최대 {esc(compact_amount(mx, currency))}</div>
+          <svg viewBox="0 0 260 {svg_h:.0f}" width="100%" height="auto" style="display:block">
+            <line x1="6" y1="150" x2="254" y2="150" stroke="#555" stroke-width="1"/>
+            {bars}
+            {labels}
+          </svg>
+        </div>"""
             # ⚠️ 앞 셋은 손익계산서, FCF 만 **현금흐름표**다 — 제목이
             # '수익성 추이'라 같은 표에서 온 값처럼 읽힌다. 한 그림 안에
             # 기준이 둘이면 밝혀야 한다(#34 라벨에 기준을 박을 것).
@@ -8029,22 +8068,12 @@ def _render_stock_info_html(rec: dict) -> str:
                          'CAPEX</b> (yfinance 현금흐름표 — 앞 세 항목은 '
                          '손익계산서). 원천이 FCF 를 직접 주면 그 값을 '
                          '그대로 씁니다</div>') if _has_fcf else ""
-            for i, c in enumerate(chart_items):
-                x_base = 40 + i * (bar_w * _nb + 16)
-                for j, (_k, _nm, color) in enumerate(_series):
-                    val = c[_k] or 0
-                    h = max(abs(val) / max_val * 120, 2)
-                    y = 150 - h if val >= 0 else 150
-                    bars += f'<rect x="{x_base + j * bar_w}" y="{y}" width="{bar_w - 2}" height="{h}" fill="{color}" rx="2"/>\n'
-                labels += f'<text x="{x_base + bar_w * _nb / 2}" y="{_lab_y:.0f}" font-size="11" fill="#999" text-anchor="middle">{esc(c["period"])}</text>\n'
+            _cells = "".join(_mini(k, nm, col) for k, nm, col in _series)
+            if not _cells:
+                return ""
             out = f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">{esc(title)}</div>
-        <svg width="{svg_w}" height="{_svg_h:.0f}" style="display:block;margin:auto">
-          {legend}
-          <line x1="38" y1="150" x2="{svg_w - 10}" y2="150" stroke="#555" stroke-width="1"/>
-          {bars}
-          {labels}
-        </svg>{_fcf_note}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px">{_cells}</div>{_fcf_note}
       </div>"""
 
             _grows = []
