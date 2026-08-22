@@ -32010,8 +32010,12 @@ class TestBandCoverageAndPartialSource20260822:
         assert "assemble(" in (ast.get_source_segment(src, fn) or "")
         ft = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
-        seg = ast.get_source_segment(src, ft) or ""
-        assert "tw_per_rows(" in seg and "assemble(" in seg
+        # ⚠️ 예전엔 `"tw_per_rows(" in seg` 로 쟀는데, 디스패치 테이블로
+        # 리팩터하자(`{"TW": (tw_per_rows, ...)}`) 괄호가 사라져 깨졌다 —
+        # 계약은 "직접 PER 원천을 태우고 밴드는 assemble 로 만든다"이지
+        # 특정 표현이 아니다(#19). **이름 참조**로 본다.
+        names = {n.id for n in ast.walk(ft) if isinstance(n, ast.Name)}
+        assert {"tw_per_rows", "cn_per_rows", "assemble"} <= names, names
 
     # ── (2) 적자 기업: PER 이 없다고 PBR 을 죽이지 말 것 ──────────────
     @staticmethod
@@ -32254,6 +32258,103 @@ class TestEmptyChartPanelsAndJpProbe20260822:
         calls = [n.func.id for n in ast.walk(fn)
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
         assert "for_ticker" in calls, calls
+
+
+class TestCnPerBandFromAkshare20260822:
+    """사용자 2026-08-22: "야후로만 하는곳중에서 다른 방법으로 할 수 있는 곳들이
+    있으면 꼼꼼히 찾아서 검증하고 적용해줘"
+
+    ⚠️ 찾았다 — `stock_a_indicator_lg` 는 CN A주의 **일별 PE 이력 전체**를
+    주는데 `get_valuation` 이 `df.iloc[-1]` 로 **마지막 한 줄만** 쓰고 나머지를
+    버리고 있었다. 대만 FinMind 와 같은 완제품 원천이다(#141 '재료를 모아
+    계산하기 전에 원천이 그 값을 직접 주는지 확인할 것')."""
+
+    @staticmethod
+    def _pts(n=130):
+        import datetime as _dt
+        return [((_dt.date(2016, 1, 4) + _dt.timedelta(days=i)).isoformat(),
+                 12.0 + 8 * ((i // 60) % 4)) for i in range(0, n * 29)]
+
+    @staticmethod
+    def _px(n=128):
+        import datetime as _dt
+        return [((_dt.date(2016, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
+                 20.0 + 0.5 * k) for k in range(n)]
+
+    def test_shared_assembler_is_used_by_both_markets(self):
+        """시장마다 복제하면 표본 추리기·주가 조인 규약이 갈라진다(#38)."""
+        import ast
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        for name in ("tw_per_rows", "cn_per_rows"):
+            fn = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == name)
+            calls = [c.func.id for c in ast.walk(fn)
+                     if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+            assert "rows_from_per_history" in calls, (name, calls)
+
+    def test_rows_are_month_end_and_internally_consistent(self):
+        from bot.per_band import rows_from_per_history
+        rows = rows_from_per_history(self._pts(), self._px())
+        assert len(rows) > 100, len(rows)
+        for _p, price, eps, per in rows:
+            assert abs(price / eps - per) < 0.01, (price, eps, per)
+
+    def test_cn_branch_is_actually_taken(self, monkeypatch):
+        """⚠️ AST 로 호출 존재만 보면 **게이트를 못 잡는다**(#141 실측) —
+        수집기를 통째로 태워 basis 를 본다."""
+        import bot.per_band as pb
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "cn_per_rows",
+                            lambda t, p, y=10: pb.rows_from_per_history(
+                                self._pts(), p))
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        tbl, why = pb.for_ticker("600519.SS", {})
+        assert tbl is not None, why
+        assert tbl["basis"] == "akshare", tbl["basis"]
+        assert tbl["n"] > 100, tbl["n"]
+
+    def test_per_history_is_gated_to_mainland_boards(self):
+        """HK·BJ 는 `stock_a_indicator_lg` 커버리지 밖이다 — 부르면 거짓 결과."""
+        from bot.akshare_client import get_akshare
+        cl = get_akshare()
+        assert cl.per_history("0700.HK") == []
+        assert cl.per_history("430047.BJ") == []
+
+    def test_per_history_cache_key_carries_the_window(self):
+        """짧은 조회가 먼저 캐시를 채우면 긴 조회가 그걸 받아 간다(#61)."""
+        import ast
+        src = open("bot/akshare_client.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "per_history")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("cache_key = ")
+        assert "years" in seg[i:i + 160], seg[i:i + 160]
+
+    def test_probe_reports_hk_candidates_without_guessing(self):
+        """HK 는 AKShare 버전마다 함수 이름이 다르다 — 이름을 추측해 파서를
+        짜지 말고 **설치본에 뭐가 있는지** 먼저 찍는다."""
+        import bot.scripts.fundamentals_probe as fp
+        assert fp._HK_VAL_FNS, "후보 목록이 비었다"
+        src = open("bot/scripts/fundamentals_probe.py", encoding="utf-8").read()
+        assert "hasattr(ak, f)" in src, "설치본 실측 대신 추측한다"
+
+    def test_probe_does_not_print_cn_section_for_hk(self):
+        """HK 출력에 CN 전용 줄이 찍히면 그 자체가 거짓말이다(#34)."""
+        import bot.scripts.fundamentals_probe as fp
+        import sys
+        import types
+        mod = types.ModuleType("akshare")
+        mod.__version__ = "1.0"
+        sys.modules["akshare"] = mod
+        try:
+            hk = " ".join(fp._akshare_valuation("0700.HK"))
+            cn = " ".join(fp._akshare_valuation("600519.SS"))
+        finally:
+            sys.modules.pop("akshare", None)
+        assert "CN 일별 PER 이력" not in hk, hk
+        assert "HK 밸류에이션 후보" not in cn, cn
 
 
 class TestFundamentalsProbeGeneralised20260822:

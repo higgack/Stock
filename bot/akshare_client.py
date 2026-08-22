@@ -762,6 +762,67 @@ class AkshareClient:
             log.warning("akshare: valuation fetch failed for %s: %s", code, exc)
             return None
 
+    def per_history(self, ticker: str, years: int = 10) -> list:
+        """CN A주 **일별 PER 이력** [(YYYY-MM-DD, PER)] — 밴드차트용 장기 재료.
+
+        ⚠️ `get_valuation` 이 이미 부르는 `stock_a_indicator_lg` 가 **이력
+        전체**를 준다 — 그런데 그쪽은 `df.iloc[-1]` 로 마지막 한 줄만 쓰고
+        나머지를 버렸다(2026-08-22 발견). 대만 FinMind `TaiwanStockPER` 와
+        같은 완제품 원천이라 우리가 EPS 로 만들 필요가 없다(#141 '재료를 모아
+        계산하기 전에 원천이 그 값을 직접 주는지 확인할 것').
+
+        ⚠️ 캐시 키에 `years` 를 넣는다 — 짧은 조회가 먼저 캐시를 채우면 긴
+        조회가 그 짧은 결과를 받아 간다(#61 의 반대 방향).
+
+        HK / BJ 는 `stock_a_indicator_lg` 커버리지 밖이라 빈 리스트다
+        (`get_valuation` 독스트링과 같은 제약 — 한 곳에만 적으면 갈라진다).
+        """
+        code, market = _ticker_to_cn_code(ticker)
+        if not code or market not in ("CN_A_SH", "CN_A_SZ"):
+            return []
+        cache_key = (f"perhist_{code}_{market}_{years}y_"
+                     f"{date.today().isoformat()}.json")
+        cached = _cache_get(cache_key, ttl_hours=12)
+        if cached is not None:
+            return [tuple(x) for x in cached] if cached else []
+        ak = _import_akshare()
+        if ak is None:
+            return []
+        try:
+            df = _fetch_with_retry(
+                lambda: ak.stock_a_indicator_lg(symbol=code),
+                f"per_history {code}")
+            if df is None or len(df) == 0:
+                _cache_put(cache_key, [])
+                return []
+            cols = list(df.columns)
+            date_col = next((c for c in cols
+                             if c in ("trade_date", "date", "日期")), None)
+            per_col = next((c for c in cols
+                            if c in ("pe_ttm", "pe", "PE", "市盈率(TTM)")), None)
+            if not date_col or not per_col:
+                log.warning("akshare: per_history %s — 컬럼 미상 %s", code, cols)
+                _cache_put(cache_key, [])
+                return []
+            floor = (date.today() - timedelta(days=365 * years + 40)).isoformat()
+            out = []
+            for _i, row in df.iterrows():
+                d = str(row.get(date_col))[:10]
+                if len(d) != 10 or d < floor:
+                    continue
+                try:
+                    v = float(row.get(per_col))
+                except (TypeError, ValueError):
+                    continue
+                if v == v and v > 0:          # NaN 제외 · 적자(음수)는 밴드 불가
+                    out.append((d, v))
+            out.sort()
+            _cache_put(cache_key, out)
+            return out
+        except Exception as exc:               # noqa: BLE001
+            log.warning("akshare: per_history failed for %s: %s", code, exc)
+            return []
+
     # ---- 港股通 / 沪股通 / 深股통 flow -----------------------------------
 
     def get_hsgt_flow_summary(self, days_back: int = 5) -> Optional[dict]:
