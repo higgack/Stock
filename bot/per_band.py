@@ -137,6 +137,21 @@ def staler_than(rows: list | None, other: list | None,
             f"내려갑니다 — 밴드가 '지금'을 담지 못하면 쓸모가 없습니다.")
 
 
+def edgar_annual_reason(quarterly: list | None, ttm: list | None,
+                        annual: list | None, mismatch: str | None = None) -> str:
+    """EDGAR **연차** 경로로 내려간 사유 — 화면이 사실대로 말하게 하는 단일 출처.
+
+    갈래가 셋이다: 분기 프레임 자체가 없음(20-F 제출사) / 결산검산 불일치 /
+    분기 계열이 멈춤. 하나로 단정하면 거짓 사유가 된다(#50·#129).
+    """
+    if not quarterly:
+        return "분기 프레임이 없어(20-F 등 분기 미제출) 연차 EPS 로 만들었습니다."
+    if mismatch:
+        return "결산검산이 어긋나 분기 경로를 폐기하고 연차 EPS 로 내려갔습니다."
+    return (staler_than(ttm, annual)
+            or "분기 경로로 밴드를 만들지 못해 연차 EPS 로 내려갔습니다.")
+
+
 def ttm_annual_overlap(ttm_rows: list, annual_rows: list) -> int:
     """대조 가능한 결산일이 몇 개인가 — 0 이면 **판정 불가**다.
 
@@ -415,7 +430,10 @@ def assemble(rows: list | None, *, min_points: int = 4,
 # 어느 재료를 썼는지는 **결과에 실어** 화면이 밝히게 한다(#43 기준 미표기 금지).
 _SRC_LABEL = {
     "edgar": "SEC EDGAR(희석 EPS) · 가격 yfinance",
-    "edgar-a": "SEC EDGAR(연차 희석 EPS — 20-F 등 분기 미제출) · 가격 yfinance",
+    # ⚠️ 라벨에 **원인을 단정하지 않는다** — 2026-08-23 KLAC 실측: 출처가
+    # "20-F 등 분기 미제출" 이라고 적혀 있었는데 KLAC 은 10-Q 를 낸다(분기
+    # 계열이 멈춰서 내려간 것이다). 사유는 `path_note` 가 사실대로 말한다(#55).
+    "edgar-a": "SEC EDGAR(연차 희석 EPS) · 가격 yfinance",
     "finmind": "FinMind TaiwanStockPER(일별 PER, 월말 표본) · 가격 yfinance",
     "baidu": "바이두 股市通(일별 PER, 월말 표본) · 가격 yfinance",
     "edinet": "EDINET 유가증권보고서(주요 경영지표 추이·연차 EPS) · 가격 yfinance",
@@ -876,7 +894,6 @@ def for_ticker(ticker: str, snap: dict | None = None,
         _stale = None if _bad else staler_than(_ttm, _a)
         if _stale:
             log.warning("per_band: %s %s", tk, _stale)
-            _pack.path_note = _stale
         if _bad or _stale:
             if _bad:
                 log.warning("per_band: %s 분기 경로 폐기 — %s", tk, _bad)
@@ -889,6 +906,9 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # (foreign private issuer)는 분기가 0개이고, 그러면 yfinance 연간 4점
         # 으로 떨어져 '최고/최저'가 이름값을 못 했다. EDGAR 는 **연간**을 10년
         # 넘게 주므로 그걸 먼저 쓴다 — 10-K 제출사도 이 경로가 더 길다.
+        # 연차로 내려가는 사유는 **경우마다 다르다** — 라벨이 하나로 단정하면
+        # 거짓말이 된다(2026-08-23 KLAC: 10-Q 를 내는데 '분기 미제출'이라 적혔다).
+        _pack.path_note = edgar_annual_reason(h.get("quarterly"), _ttm, _a, _bad)
         got = _pack(build(px, _a, annual=True), "edgar-a")
         if got:
             return got, None

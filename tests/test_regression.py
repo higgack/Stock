@@ -35765,3 +35765,30 @@ class TestPartialRestatementAndStalePath20260823:
                  "summary": {}, "basis": "edgar"}
         got = dict((a, m) for m, a, _d in ab.audit_rows(fresh))
         assert got["최신성"] == "✅", got
+
+    # ── 연차로 내려간 **사유**는 경우마다 다르다 ─────────────────────
+    def test_the_annual_fallback_reason_is_not_asserted_by_the_label(self):
+        """⚠️ 2026-08-23 KLAC 실측: 출처가 "연차 희석 EPS — **20-F 등 분기
+        미제출**" 인데 KLAC 은 10-Q 를 낸다 — 분기 계열이 멈춰서 내려간
+        것이지 미제출이 아니다. 라벨이 원인을 단정하면 거짓말이 된다(#55).
+        """
+        from bot.per_band import _SRC_LABEL, edgar_annual_reason
+        assert "20-F" not in _SRC_LABEL["edgar-a"], _SRC_LABEL["edgar-a"]
+        q = [("2024-03-31", 1.9)]
+        t = [("2024-03-31", 1.92)]
+        a = [("2025-06-30", 2.4), ("2026-06-30", 2.9)]
+        assert "20-F" in edgar_annual_reason(None, None, a)      # 진짜 미제출
+        assert "결산검산" in edgar_annual_reason(q, t, a, "어긋")
+        assert "멈춰" in edgar_annual_reason(q, t, a)            # 계열이 멈춤
+        # 셋 다 아니면 단정하지 않는다
+        assert edgar_annual_reason(q, a, a)
+
+    def test_the_annual_path_carries_the_reason(self):
+        """헬퍼만 있고 배선이 없으면 화면은 그대로다 — **호출**을 센다(#120)."""
+        import ast
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
+        names = [c.func.id for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+        assert "edgar_annual_reason" in names, names
