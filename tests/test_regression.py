@@ -31773,6 +31773,152 @@ class TestPerBandSummary20260822:
         assert "실시간 시세를 못 받았습니다" in _BAND_JS[i:j]
 
 
+class TestForeignPerBandChart20260822:
+    """사용자 2026-08-22: "외국종목도 PER 밴드차트 만들수 있으면 만들어줘.
+    PBR 은 안해도 돼."
+
+    FnGuide 는 KR 만 밴드선을 준다. 비-KR 은 재료(주가·TTM EPS)가 이미 표에
+    있고 밴드선의 정의가 `배수 × 그 시점 EPS` 이므로 **표에서 그대로** 만든다
+    — 표와 차트가 같은 rows 에서 나오므로 갈라질 수 없다(#38)."""
+
+    @staticmethod
+    def _table():
+        from bot.per_band import build
+        prices = ([("2023-%02d-01" % m, 100 + m) for m in range(1, 13)]
+                  + [("2024-%02d-01" % m, 120 + m) for m in range(1, 13)])
+        eps = [("2023-03-31", 2.0), ("2023-06-30", 2.0), ("2023-09-30", 2.0),
+               ("2023-12-31", 2.0), ("2024-03-31", 2.5), ("2024-06-30", 2.5),
+               ("2024-09-30", 2.5), ("2024-12-31", 2.5)]
+        return build(prices, eps)
+
+    def test_band_line_is_multiple_times_that_periods_eps(self):
+        """밴드선 = '그 배수였다면 그때 주가가 얼마'. 정의를 벗어나면 차트가
+        표와 다른 얘기를 한다."""
+        from bot.per_band import chart_block
+        t = self._table()
+        c = chart_block(t)
+        assert c and len(c["bands"]) == 4 and len(c["mult"]) == 4
+        for i, m in enumerate(c["mult"]):
+            for (ms, y), r in zip(c["bands"][i], t["rows"]):
+                assert y == round(m * r["eps"], 4), (i, ms, y, m, r)
+        # 주가선은 표의 주가 그대로
+        assert [y for _ms, y in c["price"]] == [r["price"] for r in t["rows"]]
+
+    def test_loss_periods_break_the_line_instead_of_drawing_zero(self):
+        """적자(EPS≤0) 구간의 PER 은 음수·발산이다 — 0 으로 이으면 축이 통째로
+        망가진다. FnGuide 와 같은 갭 규약을 지킨다."""
+        from bot.per_band import chart_block
+        t = self._table()
+        t["rows"][2]["eps"] = -1.0
+        c = chart_block(t)
+        assert c["bands"][0][2][1] is None, c["bands"][0][:4]
+        assert c["bands"][0][1][1] is not None
+
+    def test_price_line_uses_monthly_resolution_not_quarterly_rows(self):
+        """표의 rows 만 쓰면 EPS 기간마다 한 점이라 10년이 40점뿐이다 —
+        분기 사이 등락이 통째로 사라지고, 같은 화면에서 국내(월 해상도)만
+        촘촘해 보인다."""
+        from bot.per_band import chart_block
+        t = self._table()
+        prices = ([("2023-%02d-01" % m, 100 + m) for m in range(1, 13)]
+                  + [("2024-%02d-01" % m, 120 + m) for m in range(1, 13)])
+        coarse, fine = chart_block(t), chart_block(t, prices)
+        assert len(fine["price"]) > len(coarse["price"]) * 2, (
+            len(fine["price"]), len(coarse["price"]))
+
+    def test_eps_is_the_last_confirmed_quarter_not_a_future_one(self):
+        """계단으로 쓴다 — 미래 EPS 를 끌어오면 그때 존재하지 않던 밴드가
+        된다(#28 빈티지 오염)."""
+        import datetime as _dt
+        from bot.per_band import chart_block
+        t = self._table()
+        ttm = {r["period"]: r["eps"] for r in t["rows"]}
+        prices = [("2024-06-01", 130.0), ("2024-07-01", 131.0),
+                  ("2024-08-01", 132.0), ("2024-09-01", 133.0)]
+        c = chart_block(t, prices)
+
+        def _ms(d):
+            y, m, dd = (int(x) for x in d.split("-"))
+            return int(_dt.datetime(y, m, dd,
+                                    tzinfo=_dt.timezone.utc).timestamp() * 1000)
+        i = [k for k, (ms, _y) in enumerate(c["price"]) if ms == _ms("2024-06-01")][0]
+        # 06-01 시점의 최신 확정 분기는 03-31 — 06-30 을 쓰면 미래를 본 것이다
+        assert c["bands"][0][i][1] == round(c["mult"][0] * ttm["2024-03-31"], 4), (
+            c["bands"][0][i], ttm)
+
+    def test_prices_before_the_first_eps_period_are_dropped(self):
+        """밴드가 없는 구간이 길게 붙으면 정작 볼 구간이 오른쪽으로 짜부라진다
+        (가격 이력이 EPS 이력보다 길다 — US 는 period='max')."""
+        from bot.per_band import chart_block
+        t = self._table()
+        first = min(r["period"] for r in t["rows"])
+        prices = ([("2005-%02d-01" % m, 10.0) for m in range(1, 13)]
+                  + [("2024-%02d-01" % m, 120 + m) for m in range(1, 13)])
+        c = chart_block(t, prices)
+        import datetime as _dt
+        oldest = _dt.datetime.utcfromtimestamp(
+            c["price"][0][0] / 1000).strftime("%Y-%m-%d")
+        assert oldest >= first, (oldest, first)
+
+    def test_axis_is_sorted_by_time(self):
+        """원천이 최신부터 주면 선이 되감긴다."""
+        from bot.per_band import chart_block
+        t = self._table()
+        t["rows"] = list(reversed(t["rows"]))
+        c = chart_block(t)
+        xs = [ms for ms, _y in c["price"]]
+        assert xs == sorted(xs), xs[:5]
+
+    def test_short_series_makes_no_chart(self):
+        from bot.per_band import chart_block
+        assert chart_block(None) is None and chart_block({}) is None
+        t = self._table()
+        t["rows"] = t["rows"][:2]
+        assert chart_block(t) is None
+
+    def test_currency_symbol_comes_from_market_config(self):
+        """'₩' 를 화면에 박아 두면 해외 축이 원화로 거짓말한다(#34)."""
+        from bot.per_band import currency_symbol
+        assert currency_symbol("AAPL") == "$"
+        assert currency_symbol("005930.KS") == "₩"
+        assert currency_symbol("7203.T") == "¥"
+        assert currency_symbol("2330.TW") == "NT$"
+
+    def test_for_ticker_attaches_chart_and_symbol(self):
+        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20)."""
+        import ast
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        node = next(n for n in ast.walk(ast.parse(src))
+                    if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
+        seg = ast.get_source_segment(src, node) or ""
+        assert '"chart"' in seg and '"csym"' in seg, seg[-400:]
+
+    def test_api_hands_the_chart_to_the_client(self):
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_handle_band_api")
+        body = ast.get_source_segment(src, fn) or ""
+        assert '"chart"' in body, "비-KR 응답에 차트가 없다"
+        assert '"band"' in body and "csym" in body
+
+    def test_client_uses_payload_currency_not_a_literal(self):
+        from bot.dashboard import _BAND_JS
+        assert "CD.csym" in _BAND_JS, "통화 기호가 하드코딩돼 있다"
+        i = _BAND_JS.index("function draw()")
+        seg = _BAND_JS[i:i + 900]
+        assert seg.count("'₩'") <= 1, f"draw() 에 원화 리터럴이 남아 있다: {seg}"
+
+    def test_empty_pbr_panel_is_hidden(self):
+        """제목만 뜨고 아래가 비면 수집 실패로 읽힌다(사용자 캡처)."""
+        from bot.dashboard import _BAND_JS
+        # ⚠️ `"display='none'" in _BAND_JS` 로 재면 옆의 상태줄 숨김이 대신
+        # 만족시켜 숨김을 지우는 뮤테이션이 통과한다(#75) — **그 값 자체**를 집는다
+        assert "pbrBox.style.display='none'" in _BAND_JS, "PBR 패널을 안 숨긴다"
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'id="si-band-pbr-box"' in src, "숨길 대상에 id 가 없다"
+
+
 class TestPbrBandTable20260822:
     """사용자 2026-08-22: "PBR 밴드도 같은 요약을 추가해줘. 이건 한국만 하면 돼"
     → "한국은 PER 처럼 이렇게 만들어주면 되는거야. PER 밑에".

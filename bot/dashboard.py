@@ -5169,8 +5169,20 @@ _BAND_JS = r"""
       lg.innerHTML=h; }
   }
   function draw(){ if(!CD) return;
-    drawBand('si-band-per','si-band-per-lg',CD.per,'₩');
-    drawBand('si-band-pbr','si-band-pbr-lg',CD.pbr,'₩'); }
+    var csym=CD.csym||'₩';
+    drawBand('si-band-per','si-band-per-lg',CD.per,csym);
+    /* PBR 은 FnGuide(KR)만 준다 — 없으면 **빈 패널을 남기지 않는다**.
+       제목만 뜨고 아래가 비면 수집 실패로 읽힌다(사용자 캡처, #43). */
+    var pbrBox=document.getElementById('si-band-pbr-box');
+    var grid=document.getElementById('si-band-grid');
+    if(CD.pbr&&CD.pbr.price&&CD.pbr.price.length){
+      if(pbrBox) pbrBox.style.display='';
+      if(grid) grid.style.gridTemplateColumns='1fr 1fr';
+      drawBand('si-band-pbr','si-band-pbr-lg',CD.pbr,csym);
+    }else{
+      if(pbrBox) pbrBox.style.display='none';
+      if(grid) grid.style.gridTemplateColumns='1fr';
+    } }
   /* PER 표 — 차트와 **같은 탭**에. 국내는 FnGuide 값을 되뽑은 것이고
      비-KR 은 자체계산이라, 어느 쪽인지 표가 스스로 밝힌다(#55). */
   function esc2(x){ return String(x==null?'':x).replace(/[&<>"]/g,function(c){
@@ -5233,7 +5245,7 @@ _BAND_JS = r"""
           perTable(j.pbr_table,'si-band-table-pbr'); }
         if(!j||!j.ok||!j.band){
           if(st){ st.textContent=(j&&j.per_table)
-              ? 'PER 밴드 차트는 국내 종목만 제공됩니다 — 아래 표로 대신합니다.'
+              ? '밴드 차트를 그릴 재료가 부족해 아래 표로 대신합니다.'
               : ((j&&j.error)||'밴드차트 데이터가 없습니다(커버리지 없음).'); }
           return; }
         CD=j.band; if(st)st.style.display='none'; draw(); })
@@ -7636,16 +7648,17 @@ def _render_stock_info_html(rec: dict) -> str:
       FnGuide 밴드차트 데이터(밴드·멀티플·전망 동일). 아래 <b>PER 이력·밴드 표</b>는 같은 값을 표로 되뽑은 것입니다.
       각 요약의 <b>현재 PER/PBR</b> 은 <b>실시간 시세</b>로 매번 다시 계산하며(배수는 주가에 비례), 평균·최저·최고는
       최근 5년 관측 분포입니다 — 시계열이 5년보다 짧으면 실제 걸린 기간을 라벨에 적습니다.
-      <b>PBR 표</b>는 PER 표 아래에 같은 구성으로 붙으며 <b>국내 종목만</b> 제공됩니다(FnGuide 가 PBR 밴드선을 KR 만 줍니다).
-      <b>해외 종목</b>은 FnGuide 커버리지가 없어 차트 대신 <b>표</b>만 제공합니다 — 미국은 SEC EDGAR 희석 EPS(최대 10년),
-      그 외는 yfinance 손익(TTM)으로 <b>직접 계산</b>합니다(PER = 주가 ÷ TTM EPS).
+      <b>PBR</b>(차트·표)은 <b>국내 종목만</b> 제공됩니다 — FnGuide 가 PBR 밴드선을 KR 만 주고, BPS 이력은 받지 않습니다.
+      <b>해외 종목</b>은 FnGuide 커버리지가 없어 PER 차트·표를 <b>직접 계산</b>합니다(미국은 SEC EDGAR 희석 EPS 최대 10년,
+      그 외는 yfinance 손익 TTM). 이때 밴드선은 <b>배수 × 그 시점 TTM EPS</b>이고 적자(EPS≤0) 구간은 선을 잇지 않습니다.
+      y축 통화는 해당 시장 표시통화입니다.
     </div>
     <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">
       <div><div class="si-section-title" style="font-size:13px">PER 밴드</div>
         <div id="si-band-per"></div>
         <div id="si-band-per-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
-      <div><div class="si-section-title" style="font-size:13px">PBR 밴드</div>
+      <div id="si-band-pbr-box"><div class="si-section-title" style="font-size:13px">PBR 밴드</div>
         <div id="si-band-pbr"></div>
         <div id="si-band-pbr-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
     </div>
