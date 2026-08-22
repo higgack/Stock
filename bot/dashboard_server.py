@@ -427,6 +427,30 @@ def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
     return (rows, top) if len(rows) >= 4 else ([], top)
 
 
+def _kr_band_basis_note(rows: list) -> str:
+    """밴드 4선의 기준을 **측정해서** 말한다(추측 금지)."""
+    from bot.per_band import eps_cadence
+    cad, why = eps_cadence(rows)
+    base = "FnGuide 밴드선"
+    if cad == "계단형":
+        base += "(분기 확정 실적 기준)"
+    elif cad == "연속형":
+        base += "(매달 갱신되는 EPS — 선행 컨센서스·보간)"
+    return (f"{base} — 아래 요약은 우리 월말 관측 분포라 값이 다를 수 "
+            f"있습니다 · 되짚어 본 결과: {why}")
+
+
+def _kr_denom_label(rows: list) -> str:
+    """분모 이름 — 원천이 계단형이면 확정 EPS, 아니면 그렇게 안 우긴다."""
+    from bot.per_band import eps_cadence
+    cad, _why = eps_cadence(rows)
+    if cad == "계단형":
+        return "분기 확정 EPS"
+    if cad == "연속형":
+        return "원천 EPS(매달 갱신)"
+    return "원천 EPS"
+
+
 def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | None:
     """FnGuide 한 지표 블록 → 표 payload(요약 + 밴드 4선 + 이력). 자체계산 0.
 
@@ -460,13 +484,14 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
                            " 제외했습니다(적자 등으로 정의 불가)."
                            if _dropped else None),
             "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
-            # ⚠️ 밴드 4선은 **FnGuide 가 준 값**이다 — 우리 월말 관측 분포가
-            # 아니다(사용자 2026-08-22 "4년 평균·최저·최고는 실제 분기발표
-            # 기준인거지?"). 화면이 '관측 N개 분포'라고 적으면 거짓말이 된다
-            # (#55) — 요약(월말 관측)과 밴드(분기 실적)는 기준이 다르므로
-            # 라벨로 구분한다(#34).
-            "band_basis": "FnGuide 밴드선(분기 실적 기준) — 아래 요약은 "
-                          "우리 월말 관측 분포라 값이 다를 수 있습니다",
+            # ⚠️ 밴드 4선은 **FnGuide 가 준 값**이지 우리 월말 관측 분포가
+            # 아니다 — 화면이 '관측 N개 분포'라고 적으면 거짓말이다(#55).
+            # ⚠️⚠️ 그리고 그 기준을 **재서** 말한다. 2026-08-22 에 나는 근거
+            # 없이 "분기 실적 기준" 이라고 적었는데, 화면 값으로 되짚으니
+            # EPS 가 매달 +81~82 로 **선형**이었다(분기 확정치면 계단이어야
+            # 한다). 원천이 무엇을 쓰는지는 추측이 아니라 측정이다.
+            "band_basis": _kr_band_basis_note(rows),
+            "denom_label": _kr_denom_label(rows),
             "summary": _sm(rows, years=5, price_now=px_now),
             "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
             "basis": "fnguide", "market": "KR"}

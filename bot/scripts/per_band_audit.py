@@ -13,7 +13,9 @@
   ③ 결산검산 — 결산 시점 TTM 이 연간 EPS 와 같은가(#138 · KLAC 톱니)
   ④ 현재값   — 현재 PER 이 현재가에 비례하는가(이력 마지막 행 기준, #135)
   ⑤ 창       — 밴드가 본 창이 이력 창 안에 있고 요약과 같은가(#34)
-  ⑥ 상식성   — 배수 중앙값이 자릿수·통화 사고 범위를 벗어나지 않는가(#139)
+  ⑥ 분모 기준 — 원천이 쓴 EPS 가 계단형(분기 확정)인가 연속형(전망·보간)인가
+               — 라벨을 추측으로 붙이면 화면이 거짓말한다(2026-08-22 실측)
+  ⑦ 상식성   — 배수 중앙값이 자릿수·통화 사고 범위를 벗어나지 않는가(#139)
 
 ⚠️ 대조 대상이 0건이면 ✅ 가 아니라 **❓(판정 불가)** 다(#54). ❌ 만 세어
 '이상 없음'이라고 말하지 않는다.
@@ -29,7 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 3
+_AUDIT_VER = 4
 # ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
 # 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
 # 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
@@ -118,7 +120,12 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
                     f"밴드 {bf}~{bt} · 이력 {rows[0]['period']}~"
                     f"{rows[-1]['period']}"))
 
-    # ⑥ 상식성
+    # ⑥ 분모 기준 — 원천이 무엇을 쓰는지 **재서** 말한다(추측 금지)
+    cad, why = pb.eps_cadence(rows)
+    out.append(("❓" if cad is None else "✅", "분모 기준",
+                (f"{cad} — {why}" if cad else why)))
+
+    # ⑦ 상식성
     bad2 = pb.implausible_reason([(r["period"], r["price"], r.get("eps"),
                                    r.get("per")) for r in rows])
     out.append(("❌" if bad2 else "✅", "상식성",

@@ -5219,6 +5219,11 @@ _BAND_JS = r"""
          +' 이력 · 밴드</div><div class="si-note">'+esc2(why)+'</div>')
       : ''; return; }
     var kind=t.kind||'PER', denom=(kind==='PBR')?'BPS':'TTM EPS';
+    /* ⚠️ **분모 이름을 우리가 단정하지 않는다.** KR 은 배수를 원천 밴드선에서
+       되뽑으므로 분모가 무엇인지는 원천이 정한다 — 화면 값으로 되짚어 보니
+       EPS 가 매달 선형으로 변했다(분기 확정치라면 계단이어야 한다). 원천이
+       기준을 알려주면 그걸 쓰고, 아니면 'TTM EPS' 라고 우기지 않는다(#55). */
+    if(t.denom_label) denom=t.denom_label;
     /* 사용자 2026-08-22 "이력은 전체가 37이면 전체를 다 보여주고" — 잘라서
        보여주면서 '전체 N개' 라고만 적으면 나머지를 볼 방법이 없다. */
     var rows=(t.rows||[]).slice().reverse();
