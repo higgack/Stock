@@ -5202,7 +5202,7 @@ _BAND_JS = r"""
     var rows=(t.rows||[]).slice(-24).reverse();
     var h='<div class="si-section-title" style="margin-top:14px">'+kind+' 이력 · 밴드</div>';
     h+='<div class="si-note" style="margin-bottom:6px">출처: '+esc2(t.source)
-      +' · '+kind+' = 주가 ÷ '+denom+' · 관측 '+(t.n||0)+'개</div>';
+      +' · '+kind+' = 주가 ÷ '+denom+'</div>';
     /* 요약 — 밴드 표 **위**에(사용자 2026-08-22 "여기 위에 해주면 될 것
        같아"). 현재 PER 은 **라이브 시세**로 만든 값이고, 못 받았으면
        마지막 관측이라고 밝힌다(침묵이 최악, #43). */
@@ -5229,14 +5229,37 @@ _BAND_JS = r"""
       h+='<tr><td class="ctr">'+esc2(b.label)+'</td><td class="ctr">'+num(b.mult,2)
         +'x</td><td class="ctr">'+num(b.fair,2)+'</td></tr>'; }
     h+='</table>';
+    /* ⚠️ 밴드는 **전 구간** 분포인데 바로 위 요약은 5년이다. 창을 안 밝히면
+       요약의 근거 줄이 이 표를 설명하는 것처럼 읽혀 '5년 최저 22.20' 옆에
+       '최저 19.18' 이 놓인다(#34 같은 주제어 · 다른 기준이면 라벨로 구분).
+       그 배수에서의 주가도 무엇을 곱한 건지 적어야 눈으로 검산된다(#33). */
+    var bn='';
+    if(rows.length){ var r0=(t.rows||[])[0]||{}, rN=(t.rows||[])[(t.rows||[]).length-1]||{};
+      bn='밴드 = '+esc2(r0.period)+' ~ '+esc2(rN.period)+' 전 구간 관측 '
+        +(t.n||0)+'개 분포'; }
+    if(t.eps_now!=null) bn+=(bn?' · ':'')+'그 배수에서의 주가 = 배수 × 최신 '
+      +denom+' '+num(t.eps_now,2);
+    else if(rows.length) bn+=' · 그 배수에서의 주가 = 원천 밴드선(최신 시점)';
+    if(bn) h+='<div class="si-note" style="margin-top:4px">'+bn+'</div>';
     /* 원천이 안 준 배수는 행을 뺐다 — **왜** 없는지 말한다(침묵이 최악, #43). */
     if(t.bands_note) h+='<div class="si-note" style="margin-top:4px">'
       +esc2(t.bands_note)+'</div>';
-    h+='<table class="si-table" style="margin-top:10px"><tr><th class="ctr">기간</th>'
-      +'<th class="ctr">주가</th><th class="ctr">'+denom+'</th><th class="ctr">'+kind+'</th></tr>';
+    /* ⚠️ 분모 열은 값이 하나라도 있을 때만 — 국내(FnGuide)는 BPS/EPS 를 안
+       줘서 전 행이 '—' 인 죽은 열이었다. 그리고 표는 최근 24개만 싣는데
+       그 사실을 안 적으면 전부인 줄 읽는다(#45 총계·소계는 같은 모집단). */
+    var hasEps=false;
+    for(var e=0;e<rows.length;e++){ if(rows[e].eps!=null){ hasEps=true; break; } }
+    var total=(t.rows||[]).length;
+    h+='<div class="si-note" style="margin-top:10px">이력 '
+      +(total>rows.length?('최근 '+rows.length+'개(전체 '+total+'개)')
+                         :(rows.length+'개'))+' · 최신순</div>';
+    h+='<table class="si-table"><tr><th class="ctr">기간</th>'
+      +'<th class="ctr">주가</th>'+(hasEps?('<th class="ctr">'+denom+'</th>'):'')
+      +'<th class="ctr">'+kind+'</th></tr>';
     for(var k=0;k<rows.length;k++){ var r=rows[k];
       h+='<tr><td class="ctr">'+esc2(r.period)+'</td><td class="ctr">'+num(r.price,2)
-        +'</td><td class="ctr">'+num(r.eps,2)+'</td><td class="ctr">'+num(r.per,2)+'</td></tr>'; }
+        +'</td>'+(hasEps?('<td class="ctr">'+num(r.eps,2)+'</td>'):'')
+        +'<td class="ctr">'+num(r.per,2)+'</td></tr>'; }
     el.innerHTML=h+'</table>';
   }
   function load(){ if(CD||fetching) return; fetching=true;

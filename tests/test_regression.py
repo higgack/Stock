@@ -31907,6 +31907,125 @@ class TestTruncatedChartFallback20260822:
         assert "d.fallback" in seg, "캡션이 실제 원천을 안 본다"
 
 
+class TestFiscalQ4AndTtmHoles20260822:
+    """사용자 2026-08-22 MSFT: "PER Band 가 좀 이상하지 않아? 밑에 기간도
+    제대로 안나오고" — 이력 표 기간이 9·12·3월만 나오고 **6월이 빠졌다**.
+
+    ⚠️ 화면의 산수는 **전 행이 맞았다**(주가÷TTM EPS = PER, 배수×EPS = 적정가,
+    현재가×k = 현재 PER). 틀린 건 **입력**이다: EDGAR `companyconcept` 의 분기
+    프레임은 10-Q 에서만 나오는데 회계연도 4분기는 10-Q 를 안 낸다 — 그 분기는
+    10-K 의 연간 수치에만 있다. MSFT(6월 결산)는 6월이 빠져 TTM 이 최근 4개
+    *가용* 분기를 더하는 바람에 실제로는 **15개월**을 합산했다. 12월 결산이면
+    12월이 빠지므로 **미국 종목 전체**에 해당한다."""
+
+    # MSFT FY2025 = 2024-07-01 ~ 2025-06-30, 희석 EPS 13.64
+    _Q = [("2024-09-30", 3.30, "2024-07-01"), ("2024-12-31", 3.23, "2024-10-01"),
+          ("2025-03-31", 3.46, "2025-01-01"), ("2025-09-30", 3.72, "2025-07-01"),
+          ("2025-12-31", 3.80, "2025-10-01"), ("2026-03-31", 4.00, "2026-01-01")]
+    _A = [("2025-06-30", 13.64, "2024-07-01")]
+
+    def test_fiscal_q4_is_reconstructed_from_the_annual(self):
+        from bot.edgar_eps import fill_fiscal_q4
+        got = dict(fill_fiscal_q4(self._Q, self._A))
+        assert "2025-06-30" in got, sorted(got)
+        # 13.64 − (3.30+3.23+3.46) = 3.65
+        assert abs(got["2025-06-30"] - 3.65) < 1e-6, got["2025-06-30"]
+        # 원천이 준 분기는 그대로
+        assert got["2025-03-31"] == 3.46
+
+    def test_source_quarter_always_wins(self):
+        """복원은 **없을 때만**. 원천이 준 값을 덮으면 정정 공시가 무시된다.
+
+        ⚠️ 픽스처가 중요하다 — Q4 의 `start` 가 연간 구간 안이면 `inside` 가
+        4개가 되어 **개수 가드가 대신** 막는다(그러면 이 단언이 눈먼다). 정정
+        보고처럼 `start` 가 연도 경계를 살짝 벗어난 경우로 그 가드만 남긴다."""
+        from bot.edgar_eps import fill_fiscal_q4
+        q = self._Q + [("2025-06-30", 3.99, "2024-06-25")]   # start 가 밖
+        got = dict(fill_fiscal_q4(q, self._A))
+        assert got["2025-06-30"] == 3.99, got["2025-06-30"]
+
+    def test_no_reconstruction_when_quarters_are_not_exactly_three(self):
+        """가운데 분기가 빠진 해를 3개인 척 채우면 **완전히 틀린 값**이 된다.
+
+        ⚠️ 픽스처가 중요하다 — 그냥 2개만 두면 남은 구간이 반년이라 **길이
+        가드가 대신** 막는다. 마지막 분기가 FY말 90일 전에 끝나게 두어
+        길이는 통과하고 **개수만** 어긋나게 한다(#91b 재는 대상이 맞나)."""
+        from bot.edgar_eps import fill_fiscal_q4
+        q = [("2024-09-30", 3.30, "2024-07-01"),      # Dec 분기가 없다
+             ("2025-03-31", 3.46, "2025-01-01")]
+        assert "2025-06-30" not in dict(fill_fiscal_q4(q, self._A))
+
+    def test_eps_history_actually_calls_the_filler(self):
+        """헬퍼만 만들고 배선이 빠지면 화면은 그대로다(#20) — 이 배선은
+        네트워크가 필요해 단위테스트가 못 태운다."""
+        import ast
+        src = open("bot/edgar_eps.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "eps_history")
+        assert "fill_fiscal_q4(" in (ast.get_source_segment(src, fn) or "")
+
+    def test_reconstructed_span_must_look_like_a_quarter(self):
+        """남은 구간이 분기 길이가 아니면 버린다 — 억지로 채우지 않는다."""
+        from bot.edgar_eps import fill_fiscal_q4
+        # 마지막 분기가 12월에 끝나면 연말까지 남은 구간이 반년이다
+        q = [("2024-09-30", 3.3, "2024-07-01"), ("2024-12-31", 3.2, "2024-10-01"),
+             ("2025-03-31", 3.4, "2025-01-01")]
+        a = [("2025-12-31", 14.0, "2024-07-01")]
+        assert "2025-12-31" not in dict(fill_fiscal_q4(q, a))
+
+    def test_ttm_refuses_to_sum_across_a_hole(self):
+        """⚠️ 구조적 방어 — 복원에 실패해도 **틀린 TTM 은 만들지 않는다**.
+        구멍이 있으면 '최근 4개 가용 분기'는 12개월이 아니다(#29)."""
+        from bot.per_band import ttm_eps_series
+        holed = [(e, v) for e, v, _s in self._Q]      # 6월 없음
+        assert ttm_eps_series(holed) == [], ttm_eps_series(holed)
+
+    def test_ttm_is_right_once_the_hole_is_filled(self):
+        from bot.edgar_eps import fill_fiscal_q4
+        from bot.per_band import ttm_eps_series
+        ttm = dict(ttm_eps_series(fill_fiscal_q4(self._Q, self._A)))
+        # 결산 시점 TTM 은 정의상 연간 EPS 와 같아야 한다 — 강한 검산
+        assert abs(ttm["2025-06-30"] - 13.64) < 1e-6, ttm
+        # 그 뒤로도 12개월씩
+        assert abs(ttm["2026-03-31"] - (3.65 + 3.72 + 3.80 + 4.00)) < 1e-6, ttm
+        # 화면에 떴던 15개월 합(16.61 류)은 더 이상 안 나온다
+        assert ttm["2026-03-31"] < 16.0
+
+    def test_cache_key_carries_a_source_fingerprint(self):
+        """파싱 규칙을 고쳤는데 캐시가 옛 결과를 서빙하면 화면이 안 바뀐다 —
+        이 레포에서 **네 번** 반복된 실패다(#18·#21b·#95·#124). 손으로 올리는
+        버전 상수 대신 **모듈 소스 지문**을 키에 넣어 구조로 막는다."""
+        import ast
+        import bot.edgar_eps as ee
+        assert len(ee._parse_sig()) >= 6 and ee._parse_sig() != "nosig"
+        src = open("bot/edgar_eps.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "eps_history")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("key = ")
+        assert "_parse_sig()" in seg[i:i + 200], seg[i:i + 200]
+
+    def test_band_table_declares_its_own_window(self):
+        """밴드는 **전 구간** 분포인데 바로 위 요약은 5년이다 — 창을 안 밝히면
+        '5년 최저 22.20' 옆에 '최저 19.18' 이 놓여 한쪽이 틀린 것처럼 읽힌다(#34)."""
+        from bot.dashboard import _BAND_JS
+        i = _BAND_JS.index("그 배수에서의 주가")
+        j = _BAND_JS.index("이력 ", i)
+        seg = _BAND_JS[i:j]
+        assert "전 구간 관측" in seg, seg[-300:]
+        assert "배수 × 최신" in seg, "적정가의 산식을 안 적는다(#33)"
+
+    def test_history_table_says_it_is_truncated(self):
+        """31개 중 24개만 실으면서 말을 안 하면 전부인 줄 읽는다(#45)."""
+        from bot.dashboard import _BAND_JS
+        assert "전체 '+total+'개" in _BAND_JS, "잘렸다는 사실을 안 적는다"
+
+    def test_dead_denominator_column_is_dropped(self):
+        """국내(FnGuide)는 EPS/BPS 를 안 줘 전 행이 '—' 인 죽은 열이었다."""
+        from bot.dashboard import _BAND_JS
+        assert "hasEps" in _BAND_JS, "분모 열을 조건부로 그리지 않는다"
+
+
 class TestBandRowHonesty20260822:
     """사용자 2026-08-22: "아직 2026.08.31 이 안됐는데 해당 월 마지막날로 그냥
     넣은거야?" — 진행 중인 달의 관측이 **미래 날짜**로 라벨링돼 있었다.

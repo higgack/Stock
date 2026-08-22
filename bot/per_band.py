@@ -46,18 +46,38 @@ def _f(v):
     return None if x != x else x
 
 
+def _months_between(a: str, b: str) -> int | None:
+    """'YYYY-MM' 기준 개월 차. 파싱 실패는 None."""
+    try:
+        return ((int(b[:4]) - int(a[:4])) * 12
+                + (int(b[5:7]) - int(a[5:7])))
+    except (ValueError, IndexError):
+        return None
+
+
 def ttm_eps_series(eps_rows: list | None) -> list[tuple[str, float]]:
     """[(기간, 분기EPS)] → [(기간, TTM EPS)]. 4분기가 모이는 시점부터.
 
     ⚠️ **기간 오름차순**을 강제한다 — 원천이 최신부터 주는 일이 잦은데
     그대로 굴리면 TTM 이 미래를 포함한다(조용히 틀린다).
+
+    ⚠️ **연속한 4분기일 때만** 더한다(2026-08-22 MSFT 실측). 시계열에 구멍이
+    있으면 '최근 4개 가용 분기'는 12개월이 아니다 — MSFT 는 결산분기(6월)가
+    빠져 15개월을 더하고 있었고, 화면의 산수는 전부 맞는데 값만 틀렸다.
+    구멍이 있으면 그 시점은 **만들지 않는다**(빈칸이 틀린 값보다 낫다, #29).
     """
     rows = [(str(p), _f(v)) for p, v in (eps_rows or [])]
     rows = [(p, v) for p, v in rows if p and v is not None]
     rows.sort(key=lambda x: x[0])
     out: list[tuple[str, float]] = []
     for i in range(3, len(rows)):
-        out.append((rows[i][0], sum(v for _p, v in rows[i - 3:i + 1])))
+        win = rows[i - 3:i + 1]
+        span = _months_between(win[0][0], win[-1][0])
+        if span is None or not (8 <= span <= 10):   # 4분기 = 끝점 간 9개월
+            log.debug("per_band: TTM 건너뜀(%s~%s = %s개월)",
+                      win[0][0], win[-1][0], span)
+            continue
+        out.append((win[-1][0], sum(v for _p, v in win)))
     return out
 
 
