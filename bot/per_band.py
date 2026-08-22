@@ -224,6 +224,7 @@ def assemble(rows: list | None, *, min_points: int = 4,
 # 어느 재료를 썼는지는 **결과에 실어** 화면이 밝히게 한다(#43 기준 미표기 금지).
 _SRC_LABEL = {
     "edgar": "SEC EDGAR(희석 EPS) · 가격 yfinance",
+    "edgar-a": "SEC EDGAR(연차 희석 EPS — 20-F 등 분기 미제출) · 가격 yfinance",
     "finmind": "FinMind TaiwanStockPER(일별 PER, 월말 표본) · 가격 yfinance",
     "baidu": "바이두 股市通(일별 PER, 월말 표본) · 가격 yfinance",
     "edinet": "EDINET 유가증권보고서(주요 경영지표 추이·연차 EPS) · 가격 yfinance",
@@ -339,6 +340,14 @@ def for_ticker(ticker: str, snap: dict | None = None,
             log.debug("per_band: EDGAR 실패 %s: %s", tk, exc)
             h = {}
         got = _pack(build(px, _conv(h.get("quarterly"))), "edgar")
+        if got:
+            return got, None
+        # ⚠️ **20-F 제출사는 분기 프레임이 아예 없다**(2026-08-22 NVMI/Nova Ltd
+        # — 이스라엘 법인). 분기 프레임은 10-Q 에서만 나오므로 외국 사모발행사
+        # (foreign private issuer)는 분기가 0개이고, 그러면 yfinance 연간 4점
+        # 으로 떨어져 '최고/최저'가 이름값을 못 했다. EDGAR 는 **연간**을 10년
+        # 넘게 주므로 그걸 먼저 쓴다 — 10-K 제출사도 이 경로가 더 길다.
+        got = _pack(build(px, _conv(h.get("annual")), annual=True), "edgar-a")
         if got:
             return got, None
     if mkt == "JP":

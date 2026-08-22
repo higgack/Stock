@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -97,10 +97,15 @@ def probe_one(ticker: str, api_key: str) -> list[str]:
                       "탐색 예산에 걸렸을 수 있다(로그의 '예산 초과' 확인)."]
 
     doc = docs[0]
+    # ⚠️ 여기서부터 진행 출력이 없으면 "멈췄다"로 보인다(#103) — 단계마다 찍는다.
+    print(f"  … ③ CSV 내려받는 중 docID={doc['doc_id']} (수 MB, 30초+ 걸릴 수 "
+          f"있음)", flush=True)
+    _t = time.time()
     try:
         rows = ex.fetch_doc_csv(doc["doc_id"], api_key)
     except Exception as exc:                                   # noqa: BLE001
         return out + [f"  ③ CSV 실패: {type(exc).__name__} {exc}"]
+    print(f"  … ③ CSV 완료 ({time.time() - _t:.1f}초)", flush=True)
     out.append(f"  ③ CSV 행: {len(rows)}행")
     if rows:
         out.append(f"     컬럼: {list(rows[0].keys())}")
@@ -131,11 +136,13 @@ def probe_one(ticker: str, api_key: str) -> list[str]:
             f"{k}={rec[k]:,.2f}" for k in
             ("revenue", "net_income", "eps", "bps", "equity")
             if isinstance(rec.get(k), (int, float))))
+    print("  … ⑤ 두 번째 문서(1년 전 창) 탐색 중", flush=True)
     eps = ex.eps_rows(ticker, years=10, api_key=api_key, wait=True)
     out.append(f"     EPS 행: {len(eps)}개"
                + (f" ({eps[0][0]} ~ {eps[-1][0]})" if eps else " — **없음**"))
 
     # 화면이 쓰는 그 경로를 그대로 태운다(#35) — 스냅샷도 같이 넘긴다(#145).
+    print("  … ⑥ 스냅샷 수집 + per_band (1분 이상 걸릴 수 있음)", flush=True)
     try:
         from bot.per_band import for_ticker
         from bot.stock_snapshot import collect_stock_snapshot
