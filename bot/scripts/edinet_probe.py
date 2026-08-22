@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -122,6 +122,14 @@ def probe_one(ticker: str, api_key: str) -> list[str]:
     out.append(f"  ④ 아는 요소 매칭: {len(hit)}종")
     for eid, n in sorted(hit.items()):
         out.append(f"     ✅ {eid} × {n}")
+    if not hit:
+        # ⚠️ 매칭 0종이면 **파서가 눈이 먼 것**일 수 있다(2026-08-22 실측:
+        # 필드가 큰따옴표로 감싸져 와서 컬럼 키가 통째로 어긋났다). '원천에
+        # 없음'과 구별되게 **원문을 그대로** 찍는다 — 대조 0건은 통과가
+        # 아니라 실패다(#54·#109).
+        out.append("     ❌ **아는 요소가 하나도 안 잡혔다** — 원문 표본:")
+        for r in rows[:3]:
+            out.append(f"        {dict(list(r.items())[:4])}")
     miss = _unmatched_summary_ids(rows, known)
     out.append(f"     못 잡은 「主要な経営指標」요소: {len(miss)}종")
     for m in miss[:25]:
