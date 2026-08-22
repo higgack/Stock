@@ -112,6 +112,18 @@ def ttm_annual_mismatch(ttm_rows: list, annual_rows: list,
     return None
 
 
+def ttm_annual_overlap(ttm_rows: list, annual_rows: list) -> int:
+    """대조 가능한 결산일이 몇 개인가 — 0 이면 **판정 불가**다.
+
+    ⚠️ `ttm_annual_mismatch` 는 대조할 게 없어도 None 을 준다(=어긋남 없음).
+    그걸 그대로 '✅ 일치'로 옮기면 **대조 0건이 통과로 찍힌다**(#54) —
+    20-F 제출사처럼 분기 프레임이 아예 없는 종목이 정확히 그 경우다.
+    """
+    ann = {str(p)[:10] for p, v in (annual_rows or []) if v is not None and v > 0}
+    return sum(1 for p, v in (ttm_rows or [])
+               if v is not None and str(p)[:10] in ann)
+
+
 def implied_eps_series(rows: list | None) -> list[tuple[str, float]]:
     """표의 행에서 **원천이 쓴 EPS**를 되짚는다 — `주가 ÷ 배수`.
 
@@ -423,6 +435,17 @@ def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
 # **as-reported** 라서 분할 시점을 경계로 두 계열의 기준이 갈린 것이다.
 # 나란히 놓이는 두 값은 같은 기준이어야 한다(#33 의 분할판).
 _EPS_BREAK = 5.0          # 인접 기간 EPS 가 이 배수 이상 튀면 기준 불일치 의심
+_GAP_BREAK = 1.6          # 인접 기간 간격이 계열 표준의 이 배수를 넘으면 '인접' 아님
+
+
+def typical_gap_days(periods) -> int | None:
+    """계열의 표준 간격(일, 중앙값). 점이 2개 미만이면 None."""
+    ps = sorted(str(p)[:10] for p in periods if p)
+    gaps = [g for g in (_days_between(a, b) for a, b in zip(ps, ps[1:])) if g]
+    if not gaps:
+        return None
+    gaps.sort()
+    return gaps[len(gaps) // 2]
 
 
 def split_factors(ticker: str) -> list[tuple[str, float]]:
@@ -545,11 +568,22 @@ def trim_at_eps_break(rows: list) -> tuple[list, str | None]:
     # 분할 기준 불일치로 읽는다 — 2026-08-22 000660.KS 가 그래서 통째로
     # 비었다(2023 적자를 사이에 두고 8.8배).
     clean = sorted((str(p), v) for p, v in (rows or []) if p)
+    med = typical_gap_days([p for p, _ in clean])
     cut, why, prev = None, None, None
     for period, eps in clean:
         if eps is None or eps <= 0:
             prev = None
             continue
+        # ⚠️ **간격이 벌어진 자리에서도 인접을 끊는다.** 걸러낸 값만 끊으면
+        # 계열 자체에 뚫린 구멍을 못 본다 — 2026-08-22 LRCX 실측에서
+        # `2023-03-26 → 2024-06-30` 이 '인접'으로 비교돼 표가 잘렸는데, 그 둘은
+        # **15개월** 떨어져 있었다(결산분기 복원을 폐기하니 연속 4분기 규칙이
+        # 그 해 TTM 을 통째로 뺐다). 15개월 사이의 EPS 변동은 실적이다.
+        if prev is not None and med:
+            _g = _days_between(prev[0], period)
+            if _g and _g > med * _GAP_BREAK:
+                prev = (period, eps)
+                continue
         if prev is not None:
             hi, lo = max(prev[1], eps), min(prev[1], eps)
             if lo > 0 and hi / lo >= _EPS_BREAK:
@@ -643,6 +677,10 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # 원천이 안 준 것으로 읽는다.
         if _conv.note:
             res["trim_note"] = _conv.note
+        # 결산검산은 **제품이 판정한다** — 감사가 따로 재계산하면 다른 기준선을
+        # 대조하게 되고(#35), 2026-08-22 KLAC 이 그래서 감사에서만 ❌ 였다.
+        if _pack.fiscal:
+            res["fiscal_check"] = _pack.fiscal
         return res
 
     _pack.reason = None
@@ -681,6 +719,7 @@ def for_ticker(ticker: str, snap: dict | None = None,
 
     _conv.note = None
     _conv.applied = []
+    _pack.fiscal = None
 
     if mkt == "US":
         try:
@@ -702,8 +741,20 @@ def for_ticker(ticker: str, snap: dict | None = None,
         if len(set(_conv.applied)) > 1:
             log.info("per_band: %s 분기·연간 계열의 분할 기준이 달라 "
                      "결산검산을 건너뜀", tk)
+            _pack.fiscal = ("skipped", "분기·연간 계열의 분할 기준이 달라 "
+                                       "대조하지 않음")
         else:
-            _bad = ttm_annual_mismatch(ttm_eps_series(_q), _a)
+            _ttm = ttm_eps_series(_q)
+            _bad = ttm_annual_mismatch(_ttm, _a)
+            _ov = ttm_annual_overlap(_ttm, _a)
+            if _bad:
+                _pack.fiscal = ("mismatch", _bad)
+            elif not _ov:
+                # 대조 0건은 통과가 아니다(#54) — 20-F 제출사는 분기 프레임이
+                # 아예 없어 겹치는 결산일이 하나도 없다.
+                _pack.fiscal = ("none", "겹치는 결산일이 0개 — 대조 불가")
+            else:
+                _pack.fiscal = ("ok", f"결산 시점 {_ov}개와 일치")
         if _bad:
             log.warning("per_band: %s 분기 경로 폐기 — %s", tk, _bad)
         else:

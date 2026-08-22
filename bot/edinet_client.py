@@ -54,6 +54,11 @@ _BASE = "https://api.edinet-fsa.go.jp/api/v2"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "edinet"
 _CACHE_TTL_HOURS = 12
 _HTTP_TIMEOUT = 15  # daily document lists can be large; small headroom over DART
+# ⚠️ 6월 말·3월 말은 유가증권보고서가 몰려 일별 목록이 수 MB 다 — 15초로 끊기면
+# 그 날은 **빈 날과 구별되지 않는다**(2026-08-22 소니: 有報 제출 시기가 통째로
+# 비어 보였다). 한 번은 넉넉한 상한으로 다시 묻는다(#143 '원천이 안 준다'와
+# '내가 못 받는다'는 대조군으로만 갈린다).
+_HTTP_RETRY_TIMEOUT = 60
 
 # Doc type codes worth surfacing. Mapping to a Korean-language label so
 # the analyst's report can render '공시' (disclosure) lines without
@@ -94,12 +99,18 @@ class EdinetClient:
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = (api_key or _env_key("EDINET_API_KEY")).strip()
+        # {YYYY-MM-DD: 사유} — 목록을 **못 받은** 날. 빈 날과 구별해야 한다.
+        self.failed_days: dict[str, str] = {}
 
     # ---- low-level day fetch -------------------------------------------------
 
     def _fetch_day(self, day: date) -> list[dict]:
         """Return the raw document list for one calendar day. Returns [] on
-        any failure (missing key, HTTP error, empty response)."""
+        any failure (missing key, HTTP error, empty response).
+
+        실패한 날은 `self.failed_days` 에 남는다 — 호출부는 빈 리스트만 보고
+        '그 날은 문서가 없다'고 결론 내면 안 된다(#143).
+        """
         if not self.api_key:
             return []
 
@@ -126,13 +137,30 @@ class EdinetClient:
             f"&type=2"
             f"&Subscription-Key={self.api_key}"
         )
-        try:
-            resp = requests.get(url, timeout=_HTTP_TIMEOUT)
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as exc:
-            log.warning("edinet: fetch failed for %s: %s", day, exc)
+        payload, err = None, None
+        for _t in (_HTTP_TIMEOUT, _HTTP_RETRY_TIMEOUT):
+            try:
+                resp = requests.get(url, timeout=_t)
+                resp.raise_for_status()
+                payload = resp.json()
+                err = None
+                break
+            except Exception as exc:
+                err = exc
+                log.warning("edinet: fetch failed for %s (timeout=%ss): %s",
+                            day, _t, exc)
+                # ⚠️ 4xx(키·파라미터)는 상한을 늘려도 안 고쳐진다 — 재시도는
+                # 시간이 모자란 경우에만(#72 5xx 만 세고 4xx 는 세지 말 것).
+                st = getattr(getattr(exc, "response", None), "status_code", 0)
+                if 400 <= (st or 0) < 500:
+                    break
+        if payload is None:
+            # 실패한 날을 기록해 둔다 — 호출부가 '비었다'와 '못 받았다'를
+            # 가를 수 있어야 '없다'를 믿을 수 있다(#41 판정 불가를 통과로
+            # 찍지 말 것).
+            self.failed_days[day.isoformat()] = f"{type(err).__name__}: {err}"
             return []
+        self.failed_days.pop(day.isoformat(), None)
 
         results = payload.get("results") or []
         # ⚠️ **빈 목록을 영구 캐시하지 않는다**. 과거 날짜는 안 변한다는 전제로

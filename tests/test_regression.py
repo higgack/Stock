@@ -34578,7 +34578,7 @@ class TestPerBandAudit20260822:
         rows = [(f"20{y:02d}-06-30", 100.0 + y, 5.0, (100.0 + y) / 5.0)
                 for y in range(18, 27)]
         marks = dict((a, m) for m, a, _d in ab.audit_rows(
-            self._tbl(rows, _annual_eps=[(p, 5.0) for p, *_ in rows])))
+            self._tbl(rows, fiscal_check=("ok", "결산 시점 9개와 일치"))))
         assert marks["산수"] == "✅" and marks["분할"] == "✅", marks
         assert marks["결산검산"] == "✅", marks
 
@@ -34591,14 +34591,43 @@ class TestPerBandAudit20260822:
         got = dict((a, m) for m, a, _d in ab.audit_rows(self._tbl(rows)))
         assert got["분할"] == "❌", got
 
-    def test_fiscal_year_end_break_is_caught(self):
-        """KLAC 형 — 결산 시점 TTM 이 연간 EPS 와 어긋난다."""
+    def test_fiscal_check_reports_the_products_own_verdict(self):
+        """KLAC 형 — 제품이 어긋남을 **감지하고 분기 경로를 폐기**했으면 화면은
+        정상이다(✅). 어긋났다고 판정해 놓고 그 분기 경로를 그대로 실었다면
+        그건 배선 결함이라 ❌ 다.
+
+        ⚠️ 감사가 연간 대조본을 따로 만들어 재계산하던 옛 판은 제품이 분할
+        환산을 되돌린 종목에서 **감사에서만** ❌ 를 냈다(2026-08-22 KLAC 실측,
+        #35). 판정은 제품이 하고 감사는 읽는다.
+        """
         import bot.scripts.per_band_audit as ab
         rows = [("2024-03-31", 68.55, 19.15, 68.55 / 19.15),
                 ("2024-06-30", 81.08, 15.0, 81.08 / 15.0)]
-        t = self._tbl(rows, _annual_eps=[("2024-06-30", 25.0)])
-        got = dict((a, m) for m, a, _d in ab.audit_rows(t))
-        assert got["결산검산"] == "❌", got
+        bad = ("mismatch", "2024-06-30 TTM 15.00 vs 연간 25.00")
+        dropped = self._tbl(rows, fiscal_check=bad, basis="edgar-a")
+        kept = self._tbl(rows, fiscal_check=bad, basis="edgar")
+        assert dict((a, m) for m, a, _d in ab.audit_rows(dropped))["결산검산"] == "✅"
+        assert dict((a, m) for m, a, _d in ab.audit_rows(kept))["결산검산"] == "❌"
+        skip = self._tbl(rows, fiscal_check=("skipped", "기준이 달라"))
+        assert dict((a, m) for m, a, _d in ab.audit_rows(skip))["결산검산"] == "❓"
+
+    def test_audit_does_not_recompute_the_fiscal_check(self):
+        """⚠️ 감사가 스스로 대조하면 제품과 다른 기준선을 비교한다(#35) —
+        `ttm_annual_mismatch` 를 부르지 않는 것이 계약이다(존재가 아니라
+        **호출**로 확인, #120)."""
+        import bot.per_band as pb
+        import bot.scripts.per_band_audit as ab
+        calls = []
+        orig = pb.ttm_annual_mismatch
+        pb.ttm_annual_mismatch = lambda *a, **k: calls.append(a) or None
+        try:
+            rows = [("2024-03-31", 68.55, 19.15, 68.55 / 19.15),
+                    ("2024-06-30", 81.08, 15.0, 81.08 / 15.0)]
+            ab.audit_rows(self._tbl(rows, fiscal_check=("ok", "일치"),
+                                    _annual_eps=[("2024-06-30", 25.0)]))
+        finally:
+            pb.ttm_annual_mismatch = orig
+        assert calls == [], calls
 
     def test_arithmetic_mismatch_is_caught(self):
         """나란히 놓인 칸이 서로 안 맞으면 표가 거짓말이다(#33)."""
@@ -34650,16 +34679,17 @@ class TestPerBandAudit20260822:
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
         assert "collect_stock_snapshot" in names, names
 
-    def test_audit_gets_splits_the_same_way_the_product_does(self):
-        """감사가 별도 호출로 분할을 받으면 **제품과 다른 값을 대조**하게 된다
-        — 그 호출은 조용히 빈다(2026-08-22 실측, #35)."""
+    def test_product_publishes_its_fiscal_verdict(self):
+        """제품이 판정을 payload 에 싣지 않으면 감사는 영원히 ❓ 다 — 배선을
+        AST 로 못박는다(`res["fiscal_check"]` 대입이 실재하는가)."""
         import ast
-        src = open("bot/scripts/per_band_audit.py", encoding="utf-8").read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef) and n.name == "audit_one")
-        seg = ast.get_source_segment(src, fn) or ""
-        i = seg.index("_annual_eps")
-        assert "_price_history" in seg[max(0, i - 400):i], seg[i - 400:i]
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        keys = [t.slice.value for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Assign)
+                for t in n.targets
+                if isinstance(t, ast.Subscript)
+                and isinstance(t.slice, ast.Constant)]
+        assert "fiscal_check" in keys, "제품이 결산검산 판정을 안 싣는다"
 
 
 class TestWatchlistAndBandNote20260822:
@@ -34968,3 +34998,172 @@ class TestBandPeriodAndQ4Sanity20260822:
         t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
         assert t is not None
         assert all("at" in b for b in t["bands"]), t["bands"]
+
+
+class TestBandGapAndEdinetIdentity20260822:
+    """2026-08-22 전 시장 감사 3라운드에서 남은 셋.
+
+      ① LRCX ❌ 분할 — `2023-03-26 → 2024-06-30` 이 '인접'으로 비교됐다.
+         **15개월** 떨어진 두 점인데(결산분기 복원을 폐기하니 연속 4분기
+         규칙이 그 해 TTM 을 통째로 뺐다) 그 사이 EPS 변동은 실적이다.
+      ② 소니 6758.T — 문서 12건이 전부 220/180/350 이고 有報(120)가 없다.
+         `secCode` 만 열쇠로 쓰면 그 칸이 빈 문서를 통째로 놓치고, 목록을
+         **못 받은 날**은 빈 날과 구별되지 않는다(#143).
+    """
+
+    # ── ① 간격이 벌어진 자리에서 인접을 끊는다 ──────────────────────────
+    def test_typical_gap_is_the_series_median(self):
+        from bot.per_band import typical_gap_days
+        q = ["2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31"]
+        assert 85 <= typical_gap_days(q) <= 95
+        assert typical_gap_days(["2024-12-31"]) is None
+
+    def test_a_hole_in_the_series_is_not_an_adjacency(self):
+        """LRCX 실측 형태 — 분기 계열에 15개월 구멍이 뚫려 있다."""
+        from bot.per_band import trim_at_eps_break
+        rows = [("2022-09-25", 30.0), ("2022-12-25", 32.0),
+                ("2023-03-26", 35.91),
+                # ← 여기 15개월 구멍(결산분기 복원 폐기로 TTM 이 안 만들어졌다)
+                ("2024-06-30", 3.32), ("2024-09-29", 3.4),
+                ("2024-12-29", 3.5)]
+        kept, why = trim_at_eps_break(rows)
+        assert why is None, why
+        assert len(kept) == len(rows)
+
+    def test_a_real_adjacent_break_is_still_cut(self):
+        """⚠️ 가드를 느슨하게 할 땐 **무엇이 여전히 잡히는가**를 같이 못박는다
+        (#57) — 정상 간격에서 튀면 그대로 잘라야 한다."""
+        from bot.per_band import trim_at_eps_break
+        rows = [("2022-09-25", 30.0), ("2022-12-25", 32.0),
+                ("2023-03-26", 35.91), ("2023-06-25", 3.32),
+                ("2023-09-24", 3.4), ("2023-12-24", 3.5)]
+        kept, why = trim_at_eps_break(rows)
+        assert why and "35.9" not in str(kept), (kept, why)
+        assert [p for p, _ in kept] == ["2023-06-25", "2023-09-24",
+                                        "2023-12-24"]
+
+    # ── ② EDINET: 회사는 EDINET 코드로도 식별된다 ──────────────────────
+    def test_docs_without_a_seccode_are_matched_by_edinet_code(self, monkeypatch):
+        import bot.edinet_xbrl as ex
+
+        class _Cl:
+            def _fetch_day(self, day):
+                if day.isoformat() == "2026-07-10":
+                    return [{"secCode": "67580", "edinetCode": "E01777",
+                             "docTypeCode": "220", "docID": "S1",
+                             "submitDateTime": "2026-07-10 09:00"}]
+                if day.isoformat() == "2026-06-20":
+                    # 원천이 증권코드 칸을 안 채운 유가증권보고서
+                    return [{"secCode": None, "edinetCode": "E01777",
+                             "docTypeCode": "120", "docID": "S2",
+                             "submitDateTime": "2026-06-20 09:00",
+                             "periodEnd": "2026-03-31", "filerName": "ソニー"}]
+                return []
+
+        import datetime as _dt
+        days = [_dt.date(2026, 7, 10), _dt.date(2026, 6, 20)]
+        import time as _t
+        got = ex._scan_days(_Cl(), "6758", days, want=2, t0=_t.time(),
+                            budget_s=999.0, progress=None, label="t")
+        assert [d["doc_id"] for d in got] == ["S2"], got
+
+    def test_a_foreign_company_is_not_swept_in_by_edinet_code(self, monkeypatch):
+        """⚠️ 열쇠를 넓히면 남의 문서를 잡을 수 있다 — 증권코드로 **한 번도**
+        맞은 적 없는 EDINET 코드는 인정하지 않는다."""
+        import bot.edinet_xbrl as ex
+        import datetime as _dt
+
+        class _Cl:
+            def _fetch_day(self, day):
+                return [{"secCode": None, "edinetCode": "E99999",
+                         "docTypeCode": "120", "docID": "X1",
+                         "submitDateTime": "2026-06-20 09:00"}]
+
+        import time as _t
+        got = ex._scan_days(_Cl(), "6758", [_dt.date(2026, 6, 20)], want=2,
+                            t0=_t.time(), budget_s=999.0, progress=None,
+                            label="t")
+        assert got == [], got
+
+    # ── ② 목록을 '못 받은 날'은 '빈 날'이 아니다 ───────────────────────
+    def test_a_failed_day_is_recorded_not_silently_empty(self, monkeypatch, tmp_path):
+        import bot.edinet_client as ec
+        import datetime as _dt
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+        tries = []
+
+        def _get(url, timeout=None):
+            tries.append(timeout)
+            raise RuntimeError("timed out")
+
+        monkeypatch.setattr(ec.requests, "get", _get)
+        cl = ec.EdinetClient(api_key="k")
+        assert cl._fetch_day(_dt.date(2026, 6, 26)) == []
+        # 짧은 상한으로 한 번, 넉넉한 상한으로 한 번 — 6월 말 목록은 수 MB 다.
+        assert len(tries) == 2 and tries[1] > tries[0], tries
+        assert "2026-06-26" in cl.failed_days, cl.failed_days
+
+    def test_a_retry_that_succeeds_clears_the_failure(self, monkeypatch, tmp_path):
+        import bot.edinet_client as ec
+        import datetime as _dt
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+        seen = []
+
+        class _R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"results": [{"docID": "A"}]}
+
+        def _get(url, timeout=None):
+            seen.append(timeout)
+            if len(seen) == 1:
+                raise RuntimeError("timed out")
+            return _R()
+
+        monkeypatch.setattr(ec.requests, "get", _get)
+        cl = ec.EdinetClient(api_key="k")
+        assert cl._fetch_day(_dt.date(2026, 6, 26)) == [{"docID": "A"}]
+        assert cl.failed_days == {}, cl.failed_days
+
+    def test_zero_overlap_fiscal_check_is_unknown_not_pass(self):
+        """⚠️ `ttm_annual_mismatch` 는 대조할 게 없어도 None 이다 — 그걸 '✅
+        일치'로 옮기면 **대조 0건이 통과로 찍힌다**(#54). 20-F 제출사가 정확히
+        그 경우다(분기 프레임이 아예 없다)."""
+        import bot.per_band as pb
+        import bot.scripts.per_band_audit as ab
+        ann = [("2025-06-30", 5.0)]
+        assert pb.ttm_annual_mismatch([], ann) is None      # 사유는 안 준다
+        assert pb.ttm_annual_overlap([], ann) == 0          # 그런데 0건이다
+        assert pb.ttm_annual_overlap([("2025-06-30", 5.0)], ann) == 1
+        rows = [{"period": "2025-06-30", "price": 100.0, "eps": 5.0,
+                 "per": 20.0}]
+        t = {"rows": rows, "band_from": "2025-06-30", "band_to": "2025-06-30",
+             "summary": {}, "basis": "edgar-a",
+             "fiscal_check": ("none", "겹치는 결산일이 0개 — 대조 불가")}
+        assert dict((a, m) for m, a, _d in ab.audit_rows(t))["결산검산"] == "❓"
+
+    def test_a_4xx_is_not_retried(self, monkeypatch, tmp_path):
+        """상한을 늘려도 안 고쳐지는 실패는 다시 묻지 않는다(#72)."""
+        import bot.edinet_client as ec
+        import datetime as _dt
+        import requests
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+        tries = []
+
+        class _R:
+            status_code = 403
+
+            def raise_for_status(self):
+                raise requests.exceptions.HTTPError(response=self)
+
+        def _get(url, timeout=None):
+            tries.append(timeout)
+            return _R()
+
+        monkeypatch.setattr(ec.requests, "get", _get)
+        cl = ec.EdinetClient(api_key="k")
+        assert cl._fetch_day(_dt.date(2026, 6, 26)) == []
+        assert len(tries) == 1, tries
+        assert "2026-06-26" in cl.failed_days, cl.failed_days

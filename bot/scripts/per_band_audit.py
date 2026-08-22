@@ -10,7 +10,9 @@
   ① 산수     — 나란히 놓인 칸끼리 맞는가(주가 ÷ TTM EPS = PER, #33)
   ② 분할     — 인접 기간 EPS 가 설명 안 되는 배수로 튀지 않는가(주가는 분할
                반영인데 EPS 가 as-reported 면 분할 시점에서 갈린다)
-  ③ 결산검산 — 결산 시점 TTM 이 연간 EPS 와 같은가(#138 · KLAC 톱니)
+  ③ 결산검산 — **제품이 낸** 판정(어긋났으면 분기 경로를 폐기했는가,
+               #138 · KLAC 톱니). 감사가 따로 대조본을 만들면 제품과
+               다른 기준선을 비교한다(#35).
   ④ 현재값   — 현재 PER 이 현재가에 비례하는가(이력 마지막 행 기준, #135)
   ⑤ 창       — 밴드가 본 창이 이력 창 안에 있고 요약과 같은가(#34)
   ⑥ 분모 기준 — 원천이 쓴 EPS 가 계단형(분기 확정)인가 연속형(전망·보간)인가
@@ -31,7 +33,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 5
+_AUDIT_VER = 6
 # ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
 # 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
 # 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
@@ -99,15 +101,27 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
         why = pb.eps_break_reason([(r["period"], r.get("eps")) for r in rows])
         out.append(("❌" if why else "✅", "분할", why or "인접 EPS 급변 없음"))
 
-    # ③ 결산검산 — 연간 EPS 가 있어야 판정할 수 있다
-    ann = tbl.get("_annual_eps") or []
-    if not ann:
-        out.append(("❓", "결산검산", "연간 EPS 대조본 없음 — 판정 불가"))
+    # ③ 결산검산 — **제품의 판정을 그대로 읽는다**.
+    # ⚠️ 감사가 연간 대조본을 따로 만들어 대조했더니 2026-08-22 KLAC 이
+    # 감사에서만 ❌ 였다 — 제품은 분할 환산을 되돌렸는데(효과가 나빠져서)
+    # 감사본은 환산된 채라 **다른 기준선**을 비교한 것이다(#35 감사는 화면이
+    # 쓰는 그 경로를 태울 것). 이제 제품이 `fiscal_check` 로 판정을 싣는다.
+    fc = tbl.get("fiscal_check")
+    if not fc:
+        out.append(("❓", "결산검산", "제품이 판정하지 않는 경로 — 판정 불가"))
     else:
-        m = pb.ttm_annual_mismatch([(r["period"], r.get("eps")) for r in rows],
-                                   ann)
-        out.append(("❌" if m else "✅", "결산검산",
-                    m or f"결산 시점 {len(ann)}개와 일치"))
+        verdict, why = fc[0], fc[1]
+        if verdict == "ok":
+            out.append(("✅", "결산검산", why))
+        elif verdict in ("skipped", "none"):
+            out.append(("❓", "결산검산", why + " — 판정 불가"))
+        elif (tbl.get("basis") or "") == "edgar":
+            # 어긋났다고 판정해 놓고 그 분기 경로를 화면에 실었다면 배선 결함이다.
+            out.append(("❌", "결산검산", f"{why} — 그런데 분기 경로를 채택했다"))
+        else:
+            out.append(("✅", "결산검산",
+                        f"어긋나 분기 경로를 폐기하고 {tbl.get('basis')} 로 "
+                        f"내려갔습니다 — {why}"))
 
     # ④ 현재값 — 현재 PER 은 현재가에 비례한다(마지막 행이 기준, #135)
     sm, px_now = tbl.get("summary") or {}, tbl.get("price_now")
@@ -187,19 +201,6 @@ def audit_one(ticker: str, dump: bool = False) -> list[str]:
         return out + (dump_edgar(ticker) if dump else [])
     out.append(f"  출처: {tbl.get('source')} (basis={tbl.get('basis')}) · "
                f"관측 {tbl.get('n')}개")
-    # 결산검산용 연간 EPS — 있는 시장만(미국). 없으면 ❓ 로 찍힌다.
-    if (tbl.get("basis") or "").startswith("edgar"):
-        try:
-            from bot.edgar_eps import eps_history
-            h = eps_history(ticker, years=tbl.get("years") or 10) or {}
-            # ⚠️ 제품과 **같은 우선순위**로 분할을 받는다 — 별도 호출은 조용히
-            # 비어서 감사가 제품과 다른 값을 대조하게 된다(#35).
-            _sp = pb._price_history(ticker, tbl.get("years") or 10)[1] \
-                or pb.split_factors(ticker)
-            tbl["_annual_eps"] = pb.adjust_eps_for_splits(
-                h.get("annual") or [], _sp)
-        except Exception as exc:                               # noqa: BLE001
-            out.append(f"  (연간 대조본 실패: {exc})")
     if tbl.get("trim_note"):
         out.append(f"  ⚠️ 잘라냄: {tbl['trim_note']}")
     for mark, axis, msg in audit_rows(tbl):
