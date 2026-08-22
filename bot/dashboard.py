@@ -5229,6 +5229,9 @@ _BAND_JS = r"""
       h+='<tr><td class="ctr">'+esc2(b.label)+'</td><td class="ctr">'+num(b.mult,2)
         +'x</td><td class="ctr">'+num(b.fair,2)+'</td></tr>'; }
     h+='</table>';
+    /* 원천이 안 준 배수는 행을 뺐다 — **왜** 없는지 말한다(침묵이 최악, #43). */
+    if(t.bands_note) h+='<div class="si-note" style="margin-top:4px">'
+      +esc2(t.bands_note)+'</div>';
     h+='<table class="si-table" style="margin-top:10px"><tr><th class="ctr">기간</th>'
       +'<th class="ctr">주가</th><th class="ctr">'+denom+'</th><th class="ctr">'+kind+'</th></tr>';
     for(var k=0;k<rows.length;k++){ var r=rows[k];

@@ -382,6 +382,14 @@ def _production_html(ticker: str, payload: dict) -> str:
         return ""
 
 
+def _f_pos(v) -> bool:
+    """양수인 숫자인가. FnGuide 는 '정의 불가'를 0 으로 보낸다 — 0 은 값이 아니다."""
+    try:
+        return float(v) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
     """FnGuide 한 지표(PER 또는 PBR) 블록 → ([행], 최고밴드선 map).
 
@@ -389,6 +397,11 @@ def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
     — 두 벌로 적으면 한쪽만 고쳐져 갈라진다(#38). 여기 한 곳에서만 만든다.
     행의 비율 값은 키 이름을 `per` 로 통일한다(요약·렌더가 그 키를 본다) —
     PBR 행에서도 `per` 는 '그 지표의 배수'라는 뜻이다.
+
+    ⚠️ FnGuide 의 x축은 **월말 버킷**이라 진행 중인 달도 그 달 마지막 날로
+    찍혀 온다(사용자 2026-08-22: "아직 2026.08.31 이 안됐는데 해당 월
+    마지막날로 그냥 넣은거야?"). 오지 않은 날짜를 관측일로 적으면 표가
+    거짓말한다 — **오늘(KST)로 잘라** 적는다. 값 자체는 원천 것 그대로다.
     """
     mult = (block or {}).get("mult") or []
     price = (block or {}).get("price") or []
@@ -396,6 +409,9 @@ def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
     if len(mult) < 4 or not price or not bands:
         return [], {}
     import datetime as _dt
+    # 서버 로컬타임 의존 금지 — KST 로 명시 계산(CLAUDE.md 규칙 10a).
+    _today = _dt.datetime.now(
+        _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d")
     top = {int(x[0]): x[1] for x in (bands[0] or []) if x and x[1] is not None}
     rows = []
     for x in price:
@@ -405,6 +421,7 @@ def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
         if not b:
             continue
         d = _dt.datetime.utcfromtimestamp(int(x[0]) / 1000).strftime("%Y-%m-%d")
+        d = min(d, _today)                 # 월말 버킷 → 오지 않은 날짜 금지
         rows.append({"period": d, "price": round(float(x[1]), 2),
                      "eps": None, "per": round(mult[0] * float(x[1]) / b, 2)})
     return (rows, top) if len(rows) >= 4 else ([], top)
@@ -428,11 +445,20 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
     labels = ("최고", "중상", "중하", "최저")
     last_obs = rows[-1]["price"]
     top_last = top.get(int(price[-1][0])) or 0.0
+    # ⚠️ FnGuide 는 **정의 불가**(적자 등)인 배수를 0 으로 채워 보낸다 —
+    # 차트는 이미 그 선을 안 그리는데(`mult<=0` 제외) 표만 `0.00x · 0.00` 을
+    # 찍고 있었다(사용자 캡처의 '최저 0.00x'). 0 은 값이 아니라 '없음'이므로
+    # 행을 **뺀다**(빈칸이 틀린 숫자보다 낫다) — 대신 뺐다는 사실을 말한다(#43).
+    _bands = [{"label": labels[i], "mult": round(float(mult[i]), 2),
+               "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
+                        if mult[0] and top_last else None)}
+              for i in range(4) if _f_pos(mult[i])]
+    _dropped = [labels[i] for i in range(4) if not _f_pos(mult[i])]
     return {"rows": rows, "kind": kind,
-            "bands": [{"label": labels[i], "mult": round(float(mult[i]), 2),
-                       "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
-                                if mult[0] and top_last else None)}
-                      for i in range(4)],
+            "bands": _bands,
+            "bands_note": ("원천이 " + "·".join(_dropped) + " 배수를 주지 않아"
+                           " 제외했습니다(적자 등으로 정의 불가)."
+                           if _dropped else None),
             "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
             "summary": _sm(rows, years=5, price_now=px_now),
             "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",

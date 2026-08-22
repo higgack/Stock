@@ -31907,6 +31907,84 @@ class TestTruncatedChartFallback20260822:
         assert "d.fallback" in seg, "캡션이 실제 원천을 안 본다"
 
 
+class TestBandRowHonesty20260822:
+    """사용자 2026-08-22: "아직 2026.08.31 이 안됐는데 해당 월 마지막날로 그냥
+    넣은거야?" — 진행 중인 달의 관측이 **미래 날짜**로 라벨링돼 있었다.
+
+    FnGuide 의 x축은 월말 버킷이라 이번 달도 그 달 마지막 날로 찍혀 온다.
+    값은 원천 것이 맞지만 **날짜는 오지 않은 날**이라 표가 거짓말한다.
+    같은 캡처의 `최저 0.00x · 0.00` 도 원천이 '정의 불가'로 보낸 0 을 표만
+    그리고 있던 것이다(차트는 이미 `mult<=0` 선을 안 그린다)."""
+
+    @staticmethod
+    def _ms(d):
+        import datetime as _dt
+        y, m, dd = (int(x) for x in d.split("-"))
+        return int(_dt.datetime(y, m, dd,
+                                tzinfo=_dt.timezone.utc).timestamp() * 1000)
+
+    def _band(self, mult=(24.5, 16.3, 8.2, 6.0), last="2026-12-31"):
+        ts = [self._ms(d) for d in
+              ("2026-05-31", "2026-06-30", "2026-07-31", last)]
+        return {"per": {"mult": list(mult),
+                        "price": [[t, 1000.0 + i] for i, t in enumerate(ts)],
+                        "bands": [[[t, 3000.0] for t in ts], [], [], []]}}
+
+    @staticmethod
+    def _today_kst():
+        import datetime as _dt
+        return _dt.datetime.now(
+            _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+
+    def test_future_bucket_label_is_clamped_to_today(self):
+        from bot.dashboard_server import _kr_per_table
+        t = _kr_per_table(self._band())
+        assert t["rows"][-1]["period"] == self._today_kst(), t["rows"][-1]
+        # 값은 원천 것 그대로 — 날짜만 정직해진다
+        assert t["rows"][-1]["price"] == 1003.0
+
+    def test_past_labels_are_left_alone(self):
+        """⚠️ 전부 오늘로 밀면 이력이 통째로 무너진다."""
+        from bot.dashboard_server import _kr_per_table
+        t = _kr_per_table(self._band())
+        assert [r["period"] for r in t["rows"]][:3] == [
+            "2026-05-31", "2026-06-30", "2026-07-31"]
+
+    def test_dates_stay_sorted_after_clamping(self):
+        from bot.dashboard_server import _kr_per_table
+        ds = [r["period"] for r in _kr_per_table(self._band())["rows"]]
+        assert ds == sorted(ds), ds
+
+    def test_zero_multiple_bands_are_dropped_with_a_reason(self):
+        """0 은 값이 아니라 '없음' — 빈칸이 틀린 숫자보다 낫고, **왜** 없는지도
+        말해야 한다(#43)."""
+        from bot.dashboard_server import _kr_per_table
+        t = _kr_per_table(self._band(mult=(24.5, 16.3, 8.2, 0.0)))
+        assert [b["label"] for b in t["bands"]] == ["최고", "중상", "중하"]
+        assert all(b["mult"] > 0 for b in t["bands"])
+        assert t["bands_note"] and "최저" in t["bands_note"], t["bands_note"]
+
+    def test_all_positive_bands_get_no_note(self):
+        """잡음 금지 — 뺀 게 없으면 안내도 없다."""
+        from bot.dashboard_server import _kr_per_table
+        t = _kr_per_table(self._band())
+        assert len(t["bands"]) == 4 and not t["bands_note"]
+
+    def test_client_shows_the_reason(self):
+        from bot.dashboard import _BAND_JS
+        assert "t.bands_note" in _BAND_JS, "사유를 화면에 안 싣는다"
+
+    def test_clamp_uses_kst_not_server_local(self):
+        """서버 로컬타임 의존 금지(CLAUDE.md 규칙 10a)."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_fnguide_ratio_rows")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "hours=9" in seg, "KST 명시 계산이 아니다"
+
+
 class TestForeignPerBandChart20260822:
     """사용자 2026-08-22: "외국종목도 PER 밴드차트 만들수 있으면 만들어줘.
     PBR 은 안해도 돼."
