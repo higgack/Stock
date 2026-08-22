@@ -3902,7 +3902,11 @@ _CHART_JS = """
     var first = n ? d.times[0] : '', last = n ? d.times[n - 1] : '';
     function fmtT(t){ if(typeof t!=='number') return t; var dt=new Date(t*1000); return dt.getUTCFullYear()+'-'+String(dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(dt.getUTCDate()).padStart(2,'0')+' '+String(dt.getUTCHours()).padStart(2,'0')+':'+String(dt.getUTCMinutes()).padStart(2,'0'); }
     var isIntrd = (n > 0 && typeof d.times[0] === 'number');
-    var src = isIntrd ? '네이버 · Yahoo Finance' : 'Yahoo Finance';
+    /* ⚠️ 출처를 'Yahoo Finance' 로 박아 두면, 야후가 잘려 네이버·KIS 로
+       되돌아간 날에도 화면이 야후라고 말한다(#55). payload 가 밝힌 원천을
+       따른다 — 폴백을 로그로만 알리면 사용자는 영영 모른다(#42a). */
+    var src = d.fallback ? (d.fallback + ' (Yahoo 응답 부족)')
+            : (isIntrd ? '네이버 · Yahoo Finance' : 'Yahoo Finance');
     cEl.textContent = rangeLabel(curRange) + ' · ' + intervalLabel(curInterval) + ' · '
                     + n + '개 봉 · ' + fmtT(first) + ' → ' + fmtT(last) + ' · ' + src;
   }
