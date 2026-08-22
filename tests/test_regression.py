@@ -32062,6 +32062,62 @@ class TestBandCoverageAndPartialSource20260822:
         assert "if(!t){ el.innerHTML = why" in seg, seg[:400]
 
 
+class TestLazyPaneTickerAndProbeArgs20260822:
+    """사용자 2026-08-22: (1) SIE.DE 밴드 탭에 **"bad ticker"** 라는 원시 API
+    오류가 그대로 떴다 (2) JP 프로브 v1 이 세 종목 모두 같은 사유를 냈다.
+
+    ⚠️ (1) `NOAH_TICKER` 는 라이브 quote 뿐 아니라 **모든 지연 pane** 이 쓰는
+    주소인데 full 단계에서만 방출됐다 — enrichment 가 실패해 core 만 남으면
+    `tkr()` 이 빈 문자열이 되고 `/api/band?ticker=` 가 400 을 돌려줬다.
+    ⚠️ (2) 프로브가 `for_ticker` 를 **스냅샷 없이** 불렀다. 비-KR EPS 는
+    스냅샷에서 꺼내므로 결과가 원천이 아니라 프로브가 만든 것이었다(#35)."""
+
+    def test_ticker_is_emitted_even_without_enrichment(self):
+        """core 단계에서도 티커는 아는 값이다 — 지연 pane 이 주소를 잃으면 안 된다."""
+        import ast
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "render_lookup_detail")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("quote_script = ")
+        blk = seg[i:i + 400]
+        assert "NOAH_TICKER" in blk
+        assert "and enrich" not in blk, "티커가 아직 full 단계에 묶여 있다"
+        # 무거운 오버레이만 full 로 남아야 한다
+        assert "_QUOTE_JS if enrich" in blk, blk
+
+    def test_band_pane_does_not_call_with_an_empty_ticker(self):
+        """빈 티커로 부르면 서버가 'bad ticker' 를 돌려주고 그 원시 문자열이
+        화면에 그대로 뜬다(#43 사유는 사람 말로)."""
+        from bot.dashboard import _BAND_JS
+        i = _BAND_JS.index("function load()")
+        seg = _BAND_JS[i:i + 700]
+        assert "if(!tkr())" in seg, seg[:300]
+        # 가드가 fetch **앞**에 있어야 의미가 있다
+        assert seg.index("if(!tkr())") < seg.index("fetch("), seg[:400]
+
+    def test_probe_passes_the_snapshot_like_the_screen_does(self):
+        """경로만 같고 인자가 다르면 통계가 거짓이 된다(#35)."""
+        import ast
+        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_current_path")
+        call = next(n for n in ast.walk(fn)
+                    if isinstance(n, ast.Call)
+                    and getattr(n.func, "id", "") == "for_ticker")
+        assert len(call.args) >= 2, "스냅샷을 안 넘긴다"
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "collect_stock_snapshot" in seg
+        # 어느 단계에서 끊기는지 보이게 — 스냅샷 EPS 개수를 찍는가
+        assert "_eps_rows_from_snapshot" in seg
+
+    def test_probe_version_was_bumped(self):
+        """도구 출력이 바뀌었는데 배너가 그대로면 옛 실행과 구별이 안 된다(#21)."""
+        import bot.scripts.jp_fundamentals_probe as jp
+        assert jp._PROBE_VER >= 2
+
+
 class TestEmptyChartPanelsAndJpProbe20260822:
     """사용자 2026-08-22 9984.T: "일본기업은 EPS 이력이 없기에 밴드차트나,
     분기실적 서포트가 불가능한거야?"

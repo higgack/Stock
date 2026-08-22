@@ -12,7 +12,9 @@
   ① yfinance 분기/연간 손익 — 열 수, EPS 행 유무(현재 유일한 비-KR 경로)
   ② EDINET 자격증명 **출처**(값 금지, #23·#82) — XBRL 파싱을 붙일 수 있나
   ③ Kabutan 業績 페이지 — 접근 가능한가, 1株益(EPS) 표가 있나
-  ④ 현재 밴드 경로가 실제로 무엇을 돌려주나(`per_band.for_ticker` 사유)
+  ④ 스냅샷이 실제로 EPS 를 들고 있나 + `per_band.for_ticker` 를 **스냅샷과
+     함께** 불러 현재 경로의 사유(#35 — v1 은 스냅샷을 안 넘겨 세 종목이
+     모두 같은 사유를 냈고, 그건 프로브가 만든 결과였다)
 
 사용법(VM):
     cd ~/stock && .venv/bin/python -m bot.scripts.jp_fundamentals_probe \
@@ -25,7 +27,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 _DEFAULT = "9984.T,7203.T,6758.T,8035.T"
 
 
@@ -115,17 +117,41 @@ def _kabutan(ticker: str) -> list[str]:
 
 
 def _current_path(ticker: str) -> list[str]:
-    """지금 화면이 타는 그 경로를 그대로 부른다 — 프로브가 다른 경로를 보면
-    통계가 거짓이 된다(#35)."""
+    """지금 화면이 타는 그 경로를 **같은 인자로** 부른다.
+
+    ⚠️ v1 은 `for_ticker(ticker)` 를 스냅샷 **없이** 불렀다 — 비-KR EPS 는
+    스냅샷에서 꺼내므로 세 종목 모두 똑같이 'EPS 이력이 부족' 이 나왔고,
+    그건 원천이 아니라 **프로브가 만든 결과**였다(#35: 경로만 같고 인자가
+    다르면 통계가 거짓이 된다). 화면은 `collect_stock_snapshot` 을 넘긴다.
+    """
+    out, snap = [], None
+    try:
+        from bot.stock_snapshot import collect_stock_snapshot
+        snap = collect_stock_snapshot(ticker)
+    except Exception as exc:                                   # noqa: BLE001
+        out.append(f"  ④ 스냅샷 실패: {exc}")
+    # 스냅샷이 실제로 EPS 를 들고 있나 — 여기서 끊기면 원천 문제가 아니다
+    try:
+        from bot.per_band import _eps_rows_from_snapshot as _eps
+        for kind in ("quarterly", "annual"):
+            rows = _eps(snap, kind)
+            pos = [v for _p, v in rows if isinstance(v, (int, float)) and v > 0]
+            out.append(f"  ④ 스냅샷 {kind} EPS: {len(rows)}개"
+                       f"(양수 {len(pos)}개) {[p for p, _v in rows][:6]}")
+    except Exception as exc:                                   # noqa: BLE001
+        out.append(f"  ④ 스냅샷 EPS 확인 실패: {exc}")
     try:
         from bot.per_band import for_ticker
-        tbl, why = for_ticker(ticker)
+        tbl, why = for_ticker(ticker, snap)
     except Exception as exc:                                   # noqa: BLE001
-        return [f"  ④ per_band.for_ticker: 예외 {exc}"]
+        out.append(f"  ④ per_band 호출 예외: {exc}")
+        return out
     if tbl:
-        return [f"  ④ per_band: basis={tbl.get('basis')} 관측 {tbl.get('n')}개"
-                f" · 밴드 {tbl.get('band_n')}개"]
-    return [f"  ④ per_band: 없음 — 사유: {why}"]
+        out.append(f"  ④ per_band: basis={tbl.get('basis')}"
+                   f" 관측 {tbl.get('n')}개 · 밴드 {tbl.get('band_n')}개")
+    else:
+        out.append(f"  ④ per_band: 없음 — 사유: {why}")
+    return out
 
 
 def main() -> int:

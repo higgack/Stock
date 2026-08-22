@@ -5290,8 +5290,15 @@ _BAND_JS = r"""
         +'<td class="ctr">'+num(r.per,2)+'</td></tr>'; }
     el.innerHTML=h+'</table>';
   }
-  function load(){ if(CD||fetching) return; fetching=true;
+  function load(){ if(CD||fetching) return;
     var st=document.getElementById('si-band-status');
+    /* ⚠️ 티커를 모르면 **부르지 않는다** — 빈 티커로 부르면 서버가 'bad
+       ticker' 를 돌려주고 그 원시 문자열이 화면에 그대로 떴다(#43 사유는
+       사람 말로). 이 상태는 상세가 아직 다 안 뜬 것이다. */
+    if(!tkr()){ showGrid(false);
+      if(st) st.textContent='종목 정보를 아직 불러오는 중입니다 — 잠시 후 다시 열어 주세요.';
+      return; }
+    fetching=true;
     fetch(base()+'api/band?ticker='+encodeURIComponent(tkr()),{cache:'no-store'})
       .then(function(r){return r.json();})
       .then(function(j){ fetching=false;
@@ -18177,10 +18184,16 @@ def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
     si_other = si_parts.get("other_panes", "") if si_parts else ""
     has_tabs = bool(si_parts)
 
+    # ⚠️ `NOAH_TICKER` 는 라이브 quote 뿐 아니라 **모든 지연 pane**(밴드차트·
+    # 분기실적·기술지표)이 쓰는 주소다. 예전엔 full 단계에서만 방출해서,
+    # enrichment 가 실패해 core 만 남으면 `tkr()` 이 빈 문자열이 되고
+    # `/api/band?ticker=` 가 **"bad ticker"** 를 돌려줬다(사용자 2026-08-22
+    # SIE.DE — 헤더 시총도 '—' 인 그 화면). 티커 자체는 core 에서도 아는
+    # 값이므로 **항상** 싣고, 무거운 `_QUOTE_JS` 만 full 로 남긴다.
     quote_script = (
-        f'<script>var NOAH_TICKER={json.dumps(ticker)};'
-        f'var NOAH_BASE="../";{_QUOTE_JS}</script>'
-        if (has_tabs and enrich) else ""
+        (f'<script>var NOAH_TICKER={json.dumps(ticker)};var NOAH_BASE="../";'
+         + (_QUOTE_JS if enrich else "") + '</script>')
+        if has_tabs else ""
     )
 
     _tkr_esc = _html.escape(ticker)
