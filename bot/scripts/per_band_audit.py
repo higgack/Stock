@@ -18,6 +18,8 @@
   ⑥ 분모 기준 — 원천이 쓴 EPS 가 계단형(분기 확정)인가 연속형(전망·보간)인가
                — 라벨을 추측으로 붙이면 화면이 거짓말한다(2026-08-22 실측)
   ⑦ 상식성   — 배수 중앙값이 자릿수·통화 사고 범위를 벗어나지 않는가(#139)
+  ⑧ 최신성   — 마지막 관측이 낡지 않았는가(낡으면 현재 PER 이 옛 EPS 로
+               만들어져 밴드가 '지금'을 못 담는다, #146)
 
 ⚠️ 대조 대상이 0건이면 ✅ 가 아니라 **❓(판정 불가)** 다(#54). ❌ 만 세어
 '이상 없음'이라고 말하지 않는다.
@@ -33,7 +35,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 7
+_AUDIT_VER = 8
 # ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
 # 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
 # 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
@@ -68,6 +70,9 @@ def _banner() -> None:
 
 # 원천이 PER 을 직접 주는 경로 — 분할 기준 불일치가 성립하지 않는다.
 _DIRECT_PER_BASES = frozenset({"finmind", "baidu", "fnguide"})
+# 이력이 이보다 낡으면 현재 PER 이 옛 EPS 로 만들어진다 — 연간 계열도 결산
+# 직후엔 1년 가까이 낡으므로 그보다 넉넉히 잡는다.
+_STALE_DAYS = 500
 
 
 def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
@@ -122,6 +127,25 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
             out.append(("✅", "결산검산",
                         f"어긋나 분기 경로를 폐기하고 {tbl.get('basis')} 로 "
                         f"내려갔습니다 — {why}"))
+
+    # ⑧ 최신성 — 마지막 관측이 낡으면 **현재 PER 이 옛 EPS 로** 만들어진다.
+    # ⚠️ 2026-08-23 KLAC: 이력이 2024-03-31 에서 끊긴 채 현재 PER 96.08x 가
+    # 밴드 최고 36.48x 를 훌쩍 넘었다 — 산수·창·상식성이 전부 ✅ 라 감사가
+    # 그냥 통과시켰다(#146 밴드가 '지금'을 못 담으면 존재 이유가 없다).
+    import datetime as _dt
+    _today = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date()
+    try:
+        _last = _dt.date.fromisoformat(str(rows[-1]["period"])[:10])
+        _age = (_today - _last).days
+    except Exception:                                          # noqa: BLE001
+        _age = None
+    if _age is None:
+        out.append(("❓", "최신성", "마지막 관측일을 못 읽음 — 판정 불가"))
+    else:
+        out.append(("❌" if _age > _STALE_DAYS else "✅", "최신성",
+                    f"마지막 관측 {rows[-1]['period']} · {_age}일 전"
+                    + (" — 현재 PER 이 옛 EPS 로 만들어진다"
+                       if _age > _STALE_DAYS else "")))
 
     # ④ 현재값 — 현재 PER 은 현재가에 비례한다(마지막 행이 기준, #135)
     sm, px_now = tbl.get("summary") or {}, tbl.get("price_now")

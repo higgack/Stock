@@ -35651,3 +35651,117 @@ class TestBandSourceSinglePath20260823:
         seg = ast.get_source_segment(src, fn) or ""
         assert seg.count("audit_rows(") >= 2, seg.count("audit_rows(")
         assert 'got.get("pbr")' in seg, seg[-600:]
+
+
+class TestPartialRestatementAndStalePath20260823:
+    """사용자 2026-08-23 "KLAC, LRCX 여전히 이상한것 같아".
+
+    두 종목이 **다른 병**이었다.
+      · LRCX — EDGAR 분기가 2024-06-30 부터는 이미 분할반영(후속 10-Q 에
+        소급조정분이 실린다)인데 그보다 앞은 as-reported 였다. 날짜로 자르는
+        환산은 이미 조정된 칸까지 10 으로 나눠 **더 나빠져** 되돌려졌고,
+        결과적으로 아무것도 안 됐다(옛 PER 1.05~2.5).
+      · KLAC — 결산분기 복원을 폐기하면 그 해 TTM 4점이 빠지는데 결산분기는
+        매년 오므로 계열이 **영구히 멈춘다**. 이력이 2024-03-31 에서 끊긴 채
+        현재 PER 96.08x 가 밴드 최고 36.48x 를 넘었다.
+    """
+
+    # ── LRCX: 기준이 갈리는 자리를 찾는다 ─────────────────────────────
+    def test_partially_restated_series_is_rescaled_at_the_break(self):
+        from bot.per_band import adjust_eps_for_splits
+        rows = [("2022-09-25", 34.87), ("2022-12-25", 37.20),
+                ("2023-03-26", 35.91),
+                ("2024-06-30", 2.90), ("2024-09-29", 3.09),
+                ("2024-12-29", 3.29), ("2026-06-28", 5.76)]
+        out = dict(adjust_eps_for_splits(rows, [("2024-10-03", 10.0)]))
+        assert abs(out["2023-03-26"] - 3.591) < 1e-6, out
+        assert abs(out["2024-06-30"] - 2.90) < 1e-9, out   # 이미 조정된 칸은 그대로
+        assert abs(out["2026-06-28"] - 5.76) < 1e-9, out
+
+    def test_a_moderate_earnings_drop_is_not_rescaled(self):
+        """⚠️ 실적 변동을 분할로 오인해 깎으면 안 된다 — 급변이 문턱 아래면
+        경계 탐색을 **아예 시작하지 않는다**(#146 증상이 아니라 원인으로).
+
+        (2.5배 감익은 실적이다. 문턱을 낮추면 ÷2 경계가 그걸 '고쳐' 버린다.)
+        """
+        from bot.per_band import adjust_eps_for_splits
+        rows = [("2023-03-31", 2.8), ("2023-06-30", 2.8),
+                ("2023-09-30", 1.0), ("2023-12-31", 1.0)]
+        out = adjust_eps_for_splits(rows, [("2020-01-01", 2.0)])
+        assert out == rows, out
+
+    def test_a_split_inside_the_window_is_applied_even_without_a_big_jump(self):
+        """⚠️ 경계 탐색은 급변이 클 때만 돈다 — 그 아래에서도 **날짜 기준**은
+        적용돼야 한다(분할은 원천이 알려준 사실이지 우리 추정이 아니다)."""
+        from bot.per_band import adjust_eps_for_splits
+        rows = [("2023-03-31", 2.5), ("2023-06-30", 2.5),
+                ("2023-09-30", 1.0), ("2023-12-31", 1.0)]
+        out = dict(adjust_eps_for_splits(rows, [("2023-08-01", 2.0)]))
+        assert abs(out["2023-03-31"] - 1.25) < 1e-9, out   # 분할 전 → ÷2
+        assert abs(out["2023-12-31"] - 1.0) < 1e-9, out    # 분할 후 → 그대로
+
+    def test_cum_split_factors_multiplies_backwards(self):
+        from bot.per_band import cum_split_factors
+        # 최신 분할부터 거슬러 곱한다 — 2024 이전 행은 ÷10, 2020 이전은 ÷20
+        assert cum_split_factors([("2020-01-01", 2.0),
+                                  ("2024-01-01", 10.0)]) == [10.0, 20.0]
+        assert cum_split_factors([]) == []
+
+    def test_a_marginal_gain_is_refused(self):
+        """어중간한 개선은 실적 변동을 깎은 것이다 — 극적일 때만 인정한다.
+
+        (환산하면 최대 급변이 4.0 → 2.7 로 **줄기는 한다**. 기준이 실제로
+        갈렸으면 개선이 극적이므로 이 정도는 인정하지 않는다.)
+        """
+        from bot.per_band import adjust_eps_for_splits
+        rows = [("2023-03-31", 8.0), ("2023-06-30", 2.0), ("2023-09-30", 5.4)]
+        out = adjust_eps_for_splits(rows, [("2023-08-01", 2.0)])
+        assert out == rows, out
+
+    # ── KLAC: 멈춘 계열은 쓰지 않는다 ─────────────────────────────────
+    def test_a_stalled_quarterly_series_falls_back_to_annual(self):
+        from bot.per_band import staler_than
+        q = [("2023-06-30", 1.9), ("2024-03-31", 1.92)]
+        a = [("2024-06-30", 2.0), ("2025-06-30", 2.4), ("2026-06-30", 2.9)]
+        assert staler_than(q, a), "멈춘 분기 계열을 그대로 쓴다"
+        assert staler_than(a, a) is None          # 같은 끝이면 바꿀 이유 없다
+        # 한 분기 늦은 정도로는 경로를 바꾸지 않는다
+        assert staler_than([("2026-03-31", 1.0)], [("2026-06-30", 1.0)]) is None
+
+    def test_for_ticker_consults_the_staleness_gate(self):
+        """⚠️ 헬퍼만 있고 배선이 없으면 화면은 그대로다 — **호출**을 센다(#120)."""
+        import ast
+        src = open("bot/per_band.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "for_ticker")
+        names = [c.func.id for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+        assert "staler_than" in names, names
+
+    def test_the_screen_says_the_path_changed(self):
+        """조용히 다른 계열로 내려가면 왜 점이 적은지 알 수 없다(#43)."""
+        from bot.dashboard import _BAND_JS
+        assert "path_note" in _BAND_JS, "경로 변경 사유를 안 그린다"
+
+    # ── 감사가 그 증상을 잡는가 ───────────────────────────────────────
+    def test_the_audit_flags_a_stale_history(self):
+        """⚠️ KLAC 은 산수·창·상식성이 전부 ✅ 라 감사가 그냥 통과시켰다."""
+        import bot.scripts.per_band_audit as ab
+        stale = {"rows": [{"period": "2024-03-31", "price": 69.86,
+                           "eps": 1.92, "per": 36.39}],
+                 "band_from": "2024-03-31", "band_to": "2024-03-31",
+                 "summary": {}, "basis": "edgar"}
+        got = dict((a, m) for m, a, _d in ab.audit_rows(stale))
+        assert got["최신성"] == "❌", got
+
+    def test_the_audit_passes_a_fresh_history(self):
+        """⚠️ 늘 ❌ 를 찍는 축은 아무것도 안 재는 것이다 — 통과도 확인한다."""
+        import datetime as _dt
+        import bot.scripts.per_band_audit as ab
+        today = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date()
+        fresh = {"rows": [{"period": today.isoformat(), "price": 100.0,
+                           "eps": 5.0, "per": 20.0}],
+                 "band_from": today.isoformat(), "band_to": today.isoformat(),
+                 "summary": {}, "basis": "edgar"}
+        got = dict((a, m) for m, a, _d in ab.audit_rows(fresh))
+        assert got["최신성"] == "✅", got
