@@ -5180,7 +5180,13 @@ _BAND_JS = r"""
         h+='<span style="color:'+BANDC[k2]+'">― '+mult[k2].toFixed(1)+'x('+NAMES[k2]+')</span> '; }
       lg.innerHTML=h; }
   }
-  function draw(){ if(!CD) return;
+  /* 차트 자리를 통째로 보이거나 감춘다 — 밴드가 아예 없을 때 'PER 밴드 /
+     PBR 밴드' **제목만** 남아 수집 실패로 읽힌다(사용자 2026-08-22 9984.T).
+     예전 숨김 로직은 `draw()` 안에만 있어 `CD` 가 없으면 아예 안 돌았다. */
+  function showGrid(on){ var g=document.getElementById('si-band-grid');
+    if(g) g.style.display = on ? '' : 'none'; }
+  function draw(){ if(!CD){ showGrid(false); return; }
+    showGrid(true);
     var csym=CD.csym||'₩';
     drawBand('si-band-per','si-band-per-lg',CD.per,csym);
     /* PBR 은 FnGuide(KR)만 준다 — 없으면 **빈 패널을 남기지 않는다**.
@@ -5299,6 +5305,7 @@ _BAND_JS = r"""
           /* 사용자 2026-08-22 "한국은 PER 처럼 … PER 밑에" */
           perTable(j.pbr_table,'si-band-table-pbr','PBR',null); }
         if(!j||!j.ok||!j.band){
+          showGrid(false);           /* 빈 제목만 남기지 않는다 */
           if(st){ st.textContent=(j&&j.per_table)
               ? '밴드 차트를 그릴 재료가 부족해 아래 표로 대신합니다.'
               : ((j&&j.error)||'밴드차트 데이터가 없습니다(커버리지 없음).'); }

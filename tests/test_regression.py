@@ -32062,6 +32062,76 @@ class TestBandCoverageAndPartialSource20260822:
         assert "if(!t){ el.innerHTML = why" in seg, seg[:400]
 
 
+class TestEmptyChartPanelsAndJpProbe20260822:
+    """사용자 2026-08-22 9984.T: "일본기업은 EPS 이력이 없기에 밴드차트나,
+    분기실적 서포트가 불가능한거야?"
+
+    ⚠️ 화면 결함 하나 + 진단 도구 하나. 화면은 밴드가 **아예 없을 때** 'PER
+    밴드 / PBR 밴드' 제목만 남아 수집 실패로 읽혔다 — 예전 숨김 로직이
+    `draw()` 안에만 있어 `CD` 가 없으면 돌지 않았다."""
+
+    def test_grid_is_hidden_when_there_is_no_band_at_all(self):
+        from bot.dashboard import _BAND_JS
+        assert "function showGrid(" in _BAND_JS, "차트 자리 숨김 배선이 없다"
+        # 밴드가 없는 응답 경로에서 **호출**돼야 한다 — 정의만으론 안 돈다(#120)
+        assert _BAND_JS.count("showGrid(") >= 3, _BAND_JS.count("showGrid(")
+        i = _BAND_JS.index("if(!j||!j.ok||!j.band)")
+        assert "showGrid(false)" in _BAND_JS[i:i + 200], _BAND_JS[i:i + 200]
+
+    def test_probe_distinguishes_blocked_from_missing(self):
+        """⚠️ yfinance 는 네트워크가 막히면 예외 대신 **빈 프레임**을 준다 —
+        그걸 '원천 미제공'으로 읽으면 진단 도구가 거짓말한다(샌드박스 실측:
+        AAPL 도 0열이었다, #86). 대조군이 죽었으면 **판정 불가**여야 한다."""
+        import bot.scripts.jp_fundamentals_probe as jp
+        orig = jp._yf_cols
+        try:
+            jp._yf_cols = lambda t, a: (0, [])          # 전부 0열 = 차단 상황
+            out = "\n".join(jp._yf_shape("9984.T"))
+            assert "판정 불가" in out, out
+            assert "원천 미제공" not in out, out
+
+            jp._yf_cols = lambda t, a: ((5, ["Diluted EPS"]) if t == "AAPL"
+                                        else (0, []))  # 대조군만 정상
+            out = "\n".join(jp._yf_shape("9984.T"))
+            assert "원천 미제공" in out, out
+            assert "판정 불가" not in out, out
+        finally:
+            jp._yf_cols = orig
+
+    def test_probe_never_prints_the_credential_value(self):
+        """자격증명은 **출처와 길이만** — 값 금지(§Secrets·#82)."""
+        import ast
+        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_edinet_key")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "len(v)" in seg, "길이 대신 값을 찍을 위험"
+        assert "{v}" not in seg and "+ v" not in seg, seg
+
+    def test_probe_banner_names_the_interpreter(self):
+        """venv 밖에서 돌면 결과가 통째로 거짓이 된다(#132)."""
+        import ast
+        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_banner")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "sys.executable" in seg
+        assert f"v{{_PROBE_VER}}" in seg, "버전 배너가 없다(#21·#67)"
+
+    def test_probe_uses_the_product_path_not_a_reimplementation(self):
+        """프로브가 화면과 다른 경로를 보면 통계가 거짓이 된다(#35).
+
+        ⚠️ 소스에 이름이 있는지로 재면 **예외 메시지 문자열**이 대신 만족
+        시킨다(실측으로 뮤테이션이 통과했다, #59b) — AST 로 **실제 호출**을 센다."""
+        import ast
+        src = open("bot/scripts/jp_fundamentals_probe.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_current_path")
+        calls = [n.func.id for n in ast.walk(fn)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+        assert "for_ticker" in calls, calls
+
+
 class TestBandOutliersAndAxis20260822:
     """사용자 2026-08-22: (1) CMCSA "이력은 전체가 37이면 전체를 다 보여주고,
     PER 밴드는 시작점이랑 끝점의 기간만 있는데 기간을 더 추가해줄수 있어?"
