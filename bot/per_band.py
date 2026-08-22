@@ -116,12 +116,21 @@ def _quantile(sorted_vals: list[float], q: float) -> float:
 
 
 def build(prices: list | None, eps_rows: list | None, *,
-          annual: bool = False, min_points: int = 4) -> dict | None:
+          annual: bool = False, min_points: int = 4,
+          band_years: int = 5) -> dict | None:
     """가격·EPS 이력 → {"rows", "bands", "eps_now", "n"} 또는 None.
 
     `annual=True` 면 `eps_rows` 가 이미 **연간 EPS**라 TTM 합산을 건너뛴다.
     `min_points` 미만이면 **만들지 않는다** — 점 두세 개로 그린 밴드는
     '최고/최저'라는 이름값을 못 한다(빈칸이 틀린 라벨보다 낫다, #29).
+
+    ⚠️ **밴드는 최근 `band_years` 년만** 본다(사용자 2026-08-22: "history 는
+    10년으로 그대로놔두는데 PER BAND 는 5년치만 해줘. 10년으로 하니까 너무
+    차이가 크네"). 이력(`rows`)은 전 구간 그대로 — 표와 차트는 길게 보고
+    밴드만 좁힌다. 요약도 5년이라 이제 **두 창이 같아진다**(예전엔 요약
+    '5년 최저 22.20' 옆에 밴드 '최저 19.18' 이 놓여 한쪽이 틀린 것처럼
+    읽혔다, #34). 창은 **날짜로** 자른다 — 위치로 자르면 관측이 성길 때
+    'N년'이 거짓말이 된다(#29).
     """
     if annual:
         ttm = [(str(p), _f(v)) for p, v in (eps_rows or [])]
@@ -131,7 +140,11 @@ def build(prices: list | None, eps_rows: list | None, *,
     rows = per_series(prices, ttm)
     if len(rows) < min_points:
         return None
-    vals = sorted(r[3] for r in rows)
+    cut = _ymd_minus_years(rows[-1][0][:10], band_years)
+    win = [r for r in rows if r[0][:10] >= cut]
+    if len(win) < min_points:            # 5년이 얇으면 전 구간으로 되돌린다
+        win = rows
+    vals = sorted(r[3] for r in win)
     eps_now = rows[-1][2]
     # ⚠️ '그 배수에서의 주가'는 **화면에 찍히는 배수**로 만든다. 원(raw)
     # 분위수로 만들면 사용자가 눈으로 곱했을 때 안 맞는다(22.73 × 10.2 =
@@ -143,7 +156,11 @@ def build(prices: list | None, eps_rows: list | None, *,
     return {"rows": [{"period": p, "price": round(pr, 4),
                       "eps": round(e, 4), "per": round(v, 2)}
                      for p, pr, e, v in rows],
-            "bands": bands, "eps_now": round(eps_now, 4), "n": len(rows)}
+            "bands": bands, "eps_now": round(eps_now, 4), "n": len(rows),
+            # 밴드가 실제로 본 창 — 화면이 라벨에 쓴다(#34 같은 주제어라도
+            # 기준이 다르면 라벨로 구분). 이력 전체와 다를 수 있다.
+            "band_n": len(win), "band_from": win[0][0][:10],
+            "band_to": win[-1][0][:10]}
 
 
 # ── 원천 조립 ────────────────────────────────────────────────────────────────
@@ -190,10 +207,13 @@ def _eps_rows_from_snapshot(snap: dict | None, kind: str) -> list:
 
 
 def for_ticker(ticker: str, snap: dict | None = None,
-               years: int = 10) -> dict | None:
-    """티커 → PER 밴드 payload. 재료가 모자라면 None(화면이 섹션을 생략).
+               years: int = 10) -> tuple[dict | None, str | None]:
+    """티커 → (PER 밴드 payload, 사유). 재료가 모자라면 (None, 사유).
 
     반환에 `source`(사람이 읽는 출처 문구)와 `basis`(edgar|yf-q|yf-a)를 싣는다.
+
+    ⚠️ **사유를 같이 돌려준다** — 값만 꺼내고 사유를 버리면 화면이 "없는 거야?"
+    에 답을 못 한다(#129 에서 같은 실수를 수주잔고에서 했다).
     """
     tk = (ticker or "").upper()
     try:
@@ -203,12 +223,34 @@ def for_ticker(ticker: str, snap: dict | None = None,
         mkt = "US"
     px = _monthly_closes(tk, years)
     if not px:
-        return None
+        return None, "가격 이력을 받지 못했습니다."
+    # 재무제표 통화 ≠ 거래 통화면 그 시점 환율로 EPS 를 환산한다(위 §통화 정합).
+    fx_note, fx = None, None
+    try:
+        from bot.stock_snapshot import norm_cur as _nc
+    except Exception:                                          # noqa: BLE001
+        _nc = lambda c: (c or "").strip().upper()              # noqa: E731
+    _fin = _nc((snap or {}).get("financial_currency"))
+    _trd = _nc((snap or {}).get("currency"))
+    if _fin and _trd and _fin != _trd:
+        fx = _fx_monthly(_fin, _trd, years)
+        if not fx:
+            return None, (f"재무제표는 {_fin}, 주가는 {_trd} 로 통화가 달라"
+                          f" 환율이 필요한데 받지 못했습니다 — 통화가 섞인"
+                          f" 배수는 만들지 않습니다.")
+        fx_note = f"EPS {_fin}→{_trd} 환산(그 시점 환율)"
 
     def _pack(res, basis):
         if not res:
             return None
-        res["source"] = _SRC_LABEL[basis]
+        # ⚠️ 우리가 못 본 단위·통화 사고를 잡는 2차 그물 — TSM 은 통화 가드가
+        # 1차지만, 같은 증상이 다른 경로로 또 올 수 있다(#54 대조 0건 금지).
+        bad = implausible_reason(res.get("rows"))
+        if bad:
+            log.warning("per_band: %s 배수 비정상 — %s", tk, bad)
+            _pack.reason = bad
+            return None
+        res["source"] = _SRC_LABEL[basis] + (f" · {fx_note}" if fx_note else "")
         res["basis"] = basis
         # 화면이 라벨을 이 값에서 만든다 — 빠지면 렌더 기본값에 기대게 되고,
         # 그 기본값이 언젠가 바뀌면 조용히 잘못된 지표명이 찍힌다(#55).
@@ -226,6 +268,12 @@ def for_ticker(ticker: str, snap: dict | None = None,
         res["csym"] = currency_symbol(tk)
         return res
 
+    _pack.reason = None
+
+    def _conv(rows):
+        """통화가 다르면 환산해서 준다(같으면 그대로)."""
+        return convert_eps(rows, fx) if fx else rows
+
     if mkt == "US":
         try:
             from bot.edgar_eps import eps_history
@@ -233,16 +281,20 @@ def for_ticker(ticker: str, snap: dict | None = None,
         except Exception as exc:                               # noqa: BLE001
             log.debug("per_band: EDGAR 실패 %s: %s", tk, exc)
             h = {}
-        got = _pack(build(px, h.get("quarterly")), "edgar")
+        got = _pack(build(px, _conv(h.get("quarterly"))), "edgar")
         if got:
-            return got
+            return got, None
     # 폴백 — 분기(TTM) 먼저, 그것도 모자라면 연간.
     q = _eps_rows_from_snapshot(snap, "quarterly")
-    got = _pack(build(px, q), "yf-q")
+    got = _pack(build(px, _conv(q)), "yf-q")
     if got:
-        return got
+        return got, None
     a = _eps_rows_from_snapshot(snap, "annual")
-    return _pack(build(px, a, annual=True), "yf-a")
+    got = _pack(build(px, _conv(a), annual=True), "yf-a")
+    if got:
+        return got, None
+    return None, (_pack.reason
+                  or "EPS 이력이 부족해 PER 밴드를 만들지 못했습니다.")
 
 
 # ── 요약(최근 N년 평균·최저·최고 + 현재 PER) ────────────────────────────────
@@ -433,3 +485,95 @@ def currency_symbol(ticker: str) -> str:
         return MARKET_CONFIG[detect_market(ticker)].get("currency_symbol") or "$"
     except Exception:                                          # noqa: BLE001
         return "$"
+
+
+# ── 통화 정합 (사용자 2026-08-22 TSM "PER 도 너무 낮고") ─────────────────────
+# ⚠️ **재무제표 통화 ≠ 거래 통화**인 종목이 있다. TSM 실측: yfinance 가 주는
+# 주당순이익이 NT$327.35(ADR 주당, 보통주×5)인데 주가는 US$302.33 이라 그냥
+# 나누면 PER 0.92 가 나왔다 — 실제로는 ≈28 이다. ADR(TSM·ASML·BABA…) 에서
+# 흔하고, 화면은 "너무 낮다"로만 보인다(#34 의 통화판, #88 부호 규약의 사촌).
+#
+# 처방: 두 통화가 다르면 **그 시점 환율로 EPS 를 환산**한다(과거 PER 은 실제로
+# 환율에 의존했으므로 이게 근사가 아니라 정의다). 환율을 못 받으면 밴드를
+# **만들지 않는다** — 통화가 섞인 배수는 빈칸보다 나쁘다(#32).
+#
+# ⚠️ 거래통화를 접미사로 **추정**한 경우엔 비교하지 않는다 — 미등록 접미사가
+# USD 로 떨어져 멀쩡한 종목을 막는다(대시보드 동종비교의 같은 교훈).
+
+
+def _fx_one(sym: str, years: int) -> list[tuple[str, float]]:
+    """한 환율 심볼의 월 종가. 실패는 빈 리스트."""
+    try:
+        from bot.chart_data import fetch_chart_payload
+        pay = fetch_chart_payload(sym, interval="1mo",
+                                  period="max" if years >= 10 else "5y",
+                                  lite=True) or {}
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: 환율 실패 %s: %s", sym, exc)
+        return []
+    ts, cl = pay.get("times") or [], pay.get("close") or []
+    return sorted((str(t)[:10], float(c)) for t, c in zip(ts, cl)
+                  if c is not None and float(c) > 0)
+
+
+def _fx_monthly(from_cur: str, to_cur: str, years: int) -> list[tuple[str, float]]:
+    """[(YYYY-MM-DD, from→to 환율)] 월 해상도. 실패는 빈 리스트.
+
+    ⚠️ 야후는 쌍에 따라 **한 방향만** 있다(`USDTWD=X` 는 있는데 `TWDUSD=X`
+    는 비는 식). 정방향이 비면 **역방향을 받아 뒤집는다** — 한 방향만 보고
+    포기하면 멀쩡한 종목이 통째로 밴드를 잃는다. 폴백은 로그로 알린다(#42a).
+    """
+    if not from_cur or not to_cur or from_cur == to_cur:
+        return []
+    fwd = _fx_one(f"{from_cur}{to_cur}=X", years)
+    if fwd:
+        return fwd
+    inv = _fx_one(f"{to_cur}{from_cur}=X", years)
+    if inv:
+        log.info("per_band: 환율 역방향 사용 %s%s=X → 역수", to_cur, from_cur)
+        return [(d, 1.0 / r) for d, r in inv if r]
+    return []
+
+
+def convert_eps(eps_rows: list | None, fx: list | None) -> list:
+    """EPS 행을 **그 기간의 환율**로 환산. 환율이 없는 기간은 **버린다**.
+
+    ⚠️ 현재 환율 하나로 전 기간을 환산하면 과거 PER 이 그때 존재하지 않던
+    값이 된다(#28 빈티지 오염). 기간 **이하의 마지막** 환율을 쓴다.
+    """
+    rates = sorted((str(d)[:10], _f(v)) for d, v in (fx or [])
+                   if _f(v) and _f(v) > 0)
+    if not rates:
+        return []
+    out = []
+    for p, v in (eps_rows or []):
+        d, val = str(p)[:10], _f(v)
+        if not d or val is None:
+            continue
+        prior = [r for dd, r in rates if dd <= d]
+        if not prior:
+            continue                     # 그 시점 환율을 모른다 — 버린다
+        out.append((d, val * prior[-1]))
+    return out
+
+
+# PER 이 이 범위를 벗어나면 **단위·통화 사고**로 본다. 정상 기업의 PER 이
+# 1배 미만이거나 500배를 넘는 일은 드물고, 그런 값이 밴드에 섞이면 최고·최저가
+# 통째로 망가진다. 통화 가드가 1차, 이건 우리가 못 본 실패모드를 잡는 2차다.
+_PER_SANE = (1.0, 500.0)
+
+
+def implausible_reason(rows: list | None) -> str | None:
+    """PER 시리즈가 단위·통화 사고로 보이면 사유, 아니면 None."""
+    vals = sorted(v for v in ((_f(r.get("per")) if isinstance(r, dict) else None)
+                              for r in (rows or [])) if v is not None)
+    if not vals:
+        return None
+    med = vals[len(vals) // 2]
+    if med < _PER_SANE[0]:
+        return (f"계산된 PER 중앙값이 {med:.2f} 배로 비정상입니다 — 주가와 "
+                f"주당순이익의 단위·통화가 어긋난 것으로 보여 표시하지 않습니다.")
+    if med > _PER_SANE[1]:
+        return (f"계산된 PER 중앙값이 {med:,.0f} 배로 비정상입니다 — 주가와 "
+                f"주당순이익의 단위·통화가 어긋난 것으로 보여 표시하지 않습니다.")
+    return None
