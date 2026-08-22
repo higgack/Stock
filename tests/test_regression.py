@@ -6445,7 +6445,9 @@ class TestQuarterlyMultiMarket20260816:
         assert fn, "표 렌더러 이름이 바뀜"
         # 중첩 함수는 바깥 모듈의 헬퍼를 쓴다 — 네임스페이스에 넣어 준다
         from bot.dashboard import trend_chart_geometry
-        ns = {"esc": _h.escape,
+        from bot.dashboard import compact_amount
+        ns = {"esc": _h.escape, "compact_amount": compact_amount,
+              "currency": "USD",
               "trend_chart_geometry": trend_chart_geometry}
         exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
         table = ns["_kr_fin_trend_table"]
@@ -6541,7 +6543,9 @@ class TestQuarterlyMultiMarket20260816:
         assert fn, "차트 함수 이름이 바뀜"
         # 중첩 함수는 바깥 모듈의 헬퍼를 쓴다 — 네임스페이스에 넣어 준다
         from bot.dashboard import trend_chart_geometry
-        ns = {"esc": _h.escape,
+        from bot.dashboard import compact_amount
+        ns = {"esc": _h.escape, "compact_amount": compact_amount,
+              "currency": "USD",
               "trend_chart_geometry": trend_chart_geometry}
         exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
         trend = ns["_profit_trend"]
@@ -6551,12 +6555,14 @@ class TestQuarterlyMultiMarket20260816:
         # ⚠️ 일부러 **역순**으로 준다 — 위치로 조인하면 값이 밀린다(#46).
         CF = [{"period": "2026-09-30", "Operating Cash Flow": 300,
                "Capital Expenditure": -80},
-              {"period": "2026-03-31", "Free Cash Flow": 190},
+              {"period": "2026-03-30", "Free Cash Flow": 190},
               {"period": "2026-06-30", "Operating Cash Flow": 250,
                "Capital Expenditure": -50}]
         h = trend(IS, 5, lambda p: p[:7], "분기추이", "QoQ", "분기", CF)
         assert "FCF" in h, "FCF 계열이 없다"
         assert h.count("<rect") == 3 * 4, f"막대 수가 3기간×4 가 아님: {h}"
+        # 기간으로 조인됐다면 FCF 축 최대는 300-80=220 이다(위치로 매기면 다르다)
+        assert "축 최대 220" in h, h[:400]
         head = re.search(r"<thead>.*?</thead>", h, re.S).group(0)
         assert head.index("순이익") < head.index("FCF"), "FCF 가 순이익 앞"
         body = re.search(r"<tbody>.*?</tbody>", h, re.S).group(0)
@@ -7582,7 +7588,9 @@ class TestTrendChartScale20260821:
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef)
                   and n.name == "_profit_trend")
-        ns = {"esc": _h.escape,
+        from bot.dashboard import compact_amount
+        ns = {"esc": _h.escape, "compact_amount": compact_amount,
+              "currency": "USD",
               "trend_chart_geometry": trend_chart_geometry}
         exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
         IS = [{"period": f"2026-0{m}-30", "Total Revenue": rev,
@@ -7590,19 +7598,24 @@ class TestTrendChartScale20260821:
         CF = [{"period": f"2026-0{m}-30", "Operating Cash Flow": fcf,
                "Capital Expenditure": 0.0} for m in (3, 6, 9)]
         h = ns["_profit_trend"](IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
-        svg_h = float(re.search(r'<svg width="\d+" height="([\d.]+)"',
-                                h).group(1))
+        # ⚠️ 2026-08-23 부터 지표마다 **자기 도화지**다 — 가장 큰 것을 본다
+        # (폭주는 어느 하나라도 터지면 폭주다).
+        svg_h = max(float(x) for x in
+                    re.findall(r'<svg viewBox="0 0 260 ([\d.]+)"', h))
         bars = [float(x) for x in re.findall(r'<rect[^>]*height="([\d.]+)"', h)]
         return svg_h, bars
 
-    def test_axis_uses_every_series_not_just_revenue(self):
+    def test_axis_never_lets_a_bar_run_away(self):
         """USDE 형: 매출 1 · 영업이익 -500 · 순이익 -400 · FCF -900.
-        옛 코드는 FCF 막대를 `900/1*120 = 108,000px` 로 그렸다."""
+        옛 코드는 FCF 막대를 `900/1*120 = 108,000px` 로 그렸다.
+
+        ⚠️ 2026-08-23 부터 지표마다 **자기 축**이라 이 형태는 구조적으로
+        불가능하다 — 그래도 상한은 남겨 둔다(스케일이 또 틀릴 때의 안전망)."""
         svg_h, bars = self._render(1.0, -500.0, -400.0, -900.0)
         assert max(bars) <= 120.0 + 0.01, f"막대가 축을 넘었다: {max(bars)}"
         assert svg_h <= 320, f"도화지가 폭주했다: {svg_h}"
-        # 그래도 **비율은 보여야** 한다 — 전부 같은 높이로 뭉개면 안 된다
-        assert min(bars) < max(bars) / 10, bars
+        # 그리고 **작은 지표도 보여야** 한다 — 매출 1 이 자기 축에서는 꽉 찬다
+        assert min(bars) >= 100.0, f"자기 축인데 뭉갰다: {bars}"
 
     def test_normal_shape_is_unchanged(self):
         """매출이 가장 큰 보통 종목은 옛 배치 그대로 — 고치려던 것 밖은
@@ -35867,3 +35880,116 @@ class TestAuditCountsWhatItChecked20260823:
                         and isinstance(c.func, ast.Name)
                         and c.func.id == call)
             assert len(node.args) >= 2, f"{call} 에 kind 를 안 넘긴다"
+
+
+class TestPerMetricTrendCharts20260823:
+    """사용자 2026-08-23: "매출액은 매출액끼리, 영익은 영익끼리, 순이익은
+    순익끼리, FCF 는 FCF 끼리 차트로 보여주는게 더 보기 편할 것 같은데…
+    너무 헷갈려."
+
+    한 그림에 겹쳐 그리면 축이 하나뿐이라 **매출이 나머지를 눌러 버린다**.
+    지표마다 자기 축을 가진 작은 차트로 나눈다 — 대신 높이를 지표끼리
+    비교할 수 없게 되므로 **각 차트가 자기 축 최대값을 밝힌다**(#34)."""
+
+    @staticmethod
+    def _trend(**kw):
+        import ast
+        import html as _h
+        import textwrap
+        from bot.dashboard import compact_amount, trend_chart_geometry
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_profit_trend")
+        ns = {"esc": _h.escape, "compact_amount": compact_amount,
+              "currency": kw.get("currency", "KRW"),
+              "trend_chart_geometry": trend_chart_geometry}
+        exec(textwrap.dedent(ast.get_source_segment(src, fn)), ns)
+        return ns["_profit_trend"]
+
+    @staticmethod
+    def _data(fcf=True):
+        IS = [{"period": f"2026-0{m}-30", "Total Revenue": 1e12 + m * 1e10,
+               "Operating Income": 2e11 + m * 1e9,
+               "Net Income": 1e11 + m * 1e9} for m in (3, 6, 9)]
+        CF = ([{"period": f"2026-0{m}-30", "Operating Cash Flow": 3e11,
+                "Capital Expenditure": -8e10} for m in (3, 6, 9)]
+              if fcf else None)
+        return IS, CF
+
+    def test_one_chart_per_metric(self):
+        IS, CF = self._data()
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        assert h.count("<svg") == 4, f"지표별 차트가 아니다: {h.count('<svg')}"
+        # 지표 이름이 각 차트의 제목이다(공용 범례 하나가 아니라)
+        for nm in ("매출", "영업이익", "순이익", "FCF"):
+            assert nm in h, nm
+
+    def test_each_chart_has_its_own_axis(self):
+        """⚠️ 축을 공유하면 고치려던 그 문제(매출이 나머지를 누름)가 그대로다."""
+        import re
+        IS, CF = self._data()
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        mx = re.findall(r"축 최대 ([^<]+)", h)
+        assert len(mx) == 4, mx
+        assert len(set(mx)) > 1, f"축이 하나로 공유되고 있다: {mx}"
+        # 매출(1.3조)과 순이익(1,090억)의 축이 같을 수는 없다
+        assert "조" in mx[0] and "억" in mx[2], mx
+
+    def test_the_axis_max_is_stated_so_heights_are_comparable(self):
+        """높이를 지표끼리 비교할 수 없게 됐으므로 **기준을 밝혀야** 한다(#34).
+        표와 **같은 축약 함수**를 쓴다 — 복제하면 같은 값이 달리 읽힌다(#38)."""
+        import re
+        from bot.dashboard import compact_amount
+        IS, CF = self._data()
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        mx = re.findall(r"축 최대 ([^<]+)", h)
+        assert mx[0] == compact_amount(1e12 + 9 * 1e10, "KRW"), mx
+
+    def test_a_missing_period_is_marked_not_drawn_as_zero(self):
+        """값이 없는 기간에 0 짜리 막대를 그리면 '현금흐름 0' 이라는 **없는
+        사실**을 그린 것이다 — 그렇다고 조용히 비우면 0 으로 읽힌다(#43)."""
+        IS, CF = self._data()
+        CF = [r for r in CF if not r["period"].startswith("2026-06")]
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        assert h.count("<rect") == 3 * 3 + 2, h.count("<rect")
+        # ⚠️ 표에도 '—' 가 있다 — **차트 안**을 봐야 한다(#75 옆 칸이 대신
+        # 만족시키면 가드를 지워도 통과한다).
+        import re
+        svgs = "".join(re.findall(r"<svg.*?</svg>", h, re.S))
+        assert ">—<" in svgs, "차트가 빈 기간을 표시하지 않는다"
+
+    def test_a_metric_with_no_data_gets_no_chart(self):
+        """FCF 재료가 없으면 FCF 차트를 아예 만들지 않는다(빈 축은 거짓말)."""
+        IS, _ = self._data(fcf=False)
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", None)
+        assert h.count("<svg") == 3 and "FCF" not in h, h.count("<svg")
+
+    def test_an_all_zero_metric_gets_no_chart_either(self):
+        """⚠️ 값이 **있는데 전부 0** 이면 `_has_fcf` 가 True 라 계열에는
+        들어온다 — 축이 0 인 차트를 그리면 안 된다(그리면 나눗셈부터 터진다).
+        """
+        IS, _ = self._data(fcf=False)
+        CF = [{"period": f"2026-0{m}-30", "Operating Cash Flow": 0.0,
+               "Capital Expenditure": 0.0} for m in (3, 6, 9)]
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        assert h.count("<svg") == 3, h.count("<svg")
+
+    def test_charts_reflow_on_narrow_screens(self):
+        """네 차트를 가로로 못 넣는 폭에서도 읽혀야 한다 — 고정 폭 금지."""
+        IS, CF = self._data()
+        h = self._trend()(IS, 5, lambda p: p[:7], "t", "g", "분기", CF)
+        assert "auto-fit" in h and "minmax(" in h, h[:300]
+        assert 'width="100%"' in h, "차트가 고정 폭이다"
+
+    def test_table_and_chart_share_one_formatter(self):
+        """⚠️ 축약을 두 벌 두면 같은 값이 표와 차트에서 달리 읽힌다(#38).
+        `_fin_table` 이 자기 축약을 다시 만들면 안 된다."""
+        import ast
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_fin_table")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "compact_amount(" in seg, "표가 공용 축약 함수를 안 쓴다"
+        for lit in ("조\"", "억\"", "兆\"", "億\""):
+            assert lit not in seg, f"표에 축약 리터럴이 남아 있다: {lit}"
