@@ -112,6 +112,31 @@ def ttm_annual_mismatch(ttm_rows: list, annual_rows: list,
     return None
 
 
+# 밴드가 '지금'을 못 담으면 존재 이유가 없다(#146) — 분기 경로가 오래전에
+# 멈췄으면 더 최신인 연간 경로로 내려간다. 400일이면 결산 주기 한 바퀴를
+# 넉넉히 넘긴 것이다(연간 계열도 결산 직후엔 1년 가까이 낡는다).
+_STALE_DAYS = 400
+
+
+def last_period(rows: list | None) -> str | None:
+    """값이 있는 마지막 기간(YYYY-MM-DD) — 없으면 None."""
+    ps = [str(p)[:10] for p, v in (rows or []) if p and v]
+    return max(ps) if ps else None
+
+
+def staler_than(rows: list | None, other: list | None,
+                days: int = _STALE_DAYS) -> str | None:
+    """`rows` 가 `other` 보다 `days` 넘게 낡았으면 사유, 아니면 None."""
+    a, b = last_period(rows), last_period(other)
+    if not a or not b or b <= a:
+        return None
+    gap = _days_between(a, b)
+    if gap is None or gap <= days:
+        return None
+    return (f"분기 TTM 이 {a} 에서 멈춰({b} 까지 있는) 연간 계열로 "
+            f"내려갑니다 — 밴드가 '지금'을 담지 못하면 쓸모가 없습니다.")
+
+
 def ttm_annual_overlap(ttm_rows: list, annual_rows: list) -> int:
     """대조 가능한 결산일이 몇 개인가 — 0 이면 **판정 불가**다.
 
@@ -544,31 +569,85 @@ def _max_adjacent_jump(rows: list) -> float:
     return worst
 
 
+# 경계 탐색을 시작할 최소 급변(이 아래면 기준이 갈린 흔적이 없다)과,
+# 그 결과를 인정할 개선 폭. 기준이 실제로 갈렸으면 개선이 극적이다
+# (LRCX 실측 12.4배 → 1.2배) — 어중간한 개선은 실적 변동을 깎은 것이다.
+_BREAK_MIN = 3.0
+_BREAK_GAIN = 0.5
+
+
+def cum_split_factors(splits: list) -> list:
+    """뒤에서부터 곱한 **누적 분할비율** 후보 — 분할이 여러 번이면 여러 개."""
+    out, f = [], 1.0
+    for _d, r in reversed(dedupe_splits(splits)):
+        f *= r
+        if abs(f - 1.0) > 1e-9:
+            out.append(round(f, 6))
+    return sorted(set(out))
+
+
+def _scaled_prefix(rows: list, i: int, f: float) -> list:
+    return [(p, (v / f) if v is not None else v) for p, v in rows[:i]] \
+        + list(rows[i:])
+
+
 def adjust_eps_for_splits(rows: list, splits: list) -> list:
     """as-reported EPS 를 **주가와 같은 기준**(분할반영)으로 환산.
 
-    기간 종료일 `d` 이후에 일어난 분할의 곱으로 나눈다 — 10:1 분할 전의
-    EPS 35.91 은 3.591 이 된다.
+    ① 날짜 기준 — 기간 종료일 이후에 일어난 분할의 곱으로 나눈다(10:1 분할
+       전의 EPS 35.91 → 3.591). 계열 전체가 as-reported 인 정상 케이스다.
+    ② **경계 탐색** — 원천이 *일부 기간만* 소급조정해 주면 ① 이 오히려
+       계열을 망가뜨린다. 2026-08-23 LRCX 실측: EDGAR 분기가 2024-06-30
+       부터는 이미 분할반영(후속 10-Q 에 소급조정분이 실린다)인데 그보다
+       앞은 as-reported 라, 날짜로 자르면 이미 조정된 칸까지 10 으로 나눠
+       더 나빠졌다 → 되돌려짐 → **아무것도 안 됨**(옛 PER 1.05~2.5).
+       기준이 갈리는 **자리를 모르므로 찾는다** — 각 경계에서 앞쪽만 누적
+       분할비율로 나눠 보고 인접 급변이 가장 작아지는 것을 고른다.
+
+    ⚠️ 어느 쪽이든 **결과를 재서** 고른다(#162). 잘 맞은 환산은 반드시 급변을
+    줄인다 — 과다적용(같은 분할 두 번, AAPL 0.74)도 미적용과 똑같이 급변을
+    남기고 방향만 반대라 눈으로는 구별이 안 된다.
     """
     if not rows or not splits:
         return rows
-    out = []
-    for period, eps in rows:
+    srt = sorted((str(p)[:10], v) for p, v in rows if p)
+    base = _max_adjacent_jump(srt)
+    ded = dedupe_splits(splits)
+    dated, facs = [], []
+    for period, eps in srt:
         f = 1.0
-        for d, r in dedupe_splits(splits):
-            if d > str(period)[:10]:
+        for d, r in ded:
+            if d > period:
                 f *= r
-        out.append((period, (eps / f) if (eps is not None and f) else eps))
-    # ⚠️ **환산이 계열을 더 나쁘게 만들면 되돌린다.** 과다적용(같은 분할을 두
-    # 번)도 미적용과 똑같이 급변을 남기는데, 방향만 반대라 눈으로는 구별이
-    # 안 된다(2026-08-22 AAPL 0.74). 원인을 추측하는 대신 **결과를 재서**
-    # 고른다 — 잘 맞은 환산은 반드시 급변을 줄인다.
-    if _max_adjacent_jump(out) > _max_adjacent_jump(rows) * 1.01:
+        facs.append(f)
+        dated.append((period, (eps / f) if (eps is not None and f) else eps))
+    # ① **균일 스케일**(모든 행이 같은 배수)은 인접 비율을 하나도 안 바꾼다 —
+    # 급변 지표로는 잴 수 없고, 분할이 관측 구간 **밖**에 있다는 뜻이라 늘
+    # 옳다. 관측이 1개뿐이어도 여기로 온다(그때 지표는 아무것도 못 말한다).
+    if len(set(facs)) == 1 and abs(facs[0] - 1.0) > 1e-9:
+        return dated
+    # ② 분할이 구간 **안**에 있으면 지표가 말을 한다 — 급변이 줄면 맞은 것이다.
+    if _max_adjacent_jump(dated) < base:
+        return dated
+    # ③ 날짜 기준이 못 고쳤다 = 원천이 **일부 기간만** 소급조정한 것이다.
+    # 기준이 갈리는 자리를 모르므로 **찾는다**. 여기서만 개선 폭을 요구한다 —
+    # 이건 원천이 알려준 사실이 아니라 우리의 추정이기 때문이다.
+    best, best_j, how = None, base, None
+    if base >= _BREAK_MIN:
+        for f in cum_split_factors(splits):
+            for i in range(1, len(srt)):
+                cand = _scaled_prefix(srt, i, f)
+                j = _max_adjacent_jump(cand)
+                if j < best_j:
+                    best, best_j, how = cand, j, f"경계 {srt[i][0]}·÷{f:g}"
+    if best is None or best_j > base * _BREAK_GAIN:
         log.warning("per_band: 분할 환산이 계열을 악화시켜 되돌림 "
-                    "(전 %.1f배 → 후 %.1f배)",
-                    _max_adjacent_jump(rows), _max_adjacent_jump(out))
+                    "(전 %.1f배 → 날짜기준 %.1f배 · 경계탐색 %.1f배)",
+                    base, _max_adjacent_jump(dated), best_j)
         return rows
-    return out
+    log.info("per_band: 분할 기준 환산(%s) — 인접 급변 %.1f배 → %.1f배",
+             how, base, best_j)
+    return best
 
 
 def eps_break_reason(rows: list) -> str | None:
@@ -711,6 +790,10 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # 대조하게 되고(#35), 2026-08-22 KLAC 이 그래서 감사에서만 ❌ 였다.
         if _pack.fiscal:
             res["fiscal_check"] = _pack.fiscal
+        # 경로를 바꿨으면 **화면이 말한다** — 조용히 다른 계열로 내려가면
+        # 사용자는 왜 점이 적은지 알 수 없다(#43).
+        if _pack.path_note:
+            res["path_note"] = _pack.path_note
         return res
 
     _pack.reason = None
@@ -750,6 +833,7 @@ def for_ticker(ticker: str, snap: dict | None = None,
     _conv.note = None
     _conv.applied = []
     _pack.fiscal = None
+    _pack.path_note = None
 
     if mkt == "US":
         try:
@@ -768,13 +852,13 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # 깨졌다'고 말하면 거짓이다 — 판정을 **하지 않는다**(#54 판정 불가는
         # 통과가 아니지만, 틀린 사유를 말하는 것보다는 낫다).
         _bad = None
+        _ttm = ttm_eps_series(_q)
         if len(set(_conv.applied)) > 1:
             log.info("per_band: %s 분기·연간 계열의 분할 기준이 달라 "
                      "결산검산을 건너뜀", tk)
             _pack.fiscal = ("skipped", "분기·연간 계열의 분할 기준이 달라 "
                                        "대조하지 않음")
         else:
-            _ttm = ttm_eps_series(_q)
             _bad = ttm_annual_mismatch(_ttm, _a)
             _ov = ttm_annual_overlap(_ttm, _a)
             if _bad:
@@ -785,8 +869,17 @@ def for_ticker(ticker: str, snap: dict | None = None,
                 _pack.fiscal = ("none", "겹치는 결산일이 0개 — 대조 불가")
             else:
                 _pack.fiscal = ("ok", f"결산 시점 {_ov}개와 일치")
-        if _bad:
-            log.warning("per_band: %s 분기 경로 폐기 — %s", tk, _bad)
+        # ⚠️ 어긋나지 않았어도 **너무 낡았으면** 쓰지 않는다(2026-08-23 KLAC:
+        # 결산분기 복원을 폐기하면 그 해 TTM 4점이 통째로 빠지는데, 결산분기는
+        # 매년 오므로 계열이 **영구히 멈춘다** — 이력이 2024-03-31 에서 끊긴
+        # 채 현재 PER 96.08x 가 밴드 최고 36.48x 를 훌쩍 넘었다).
+        _stale = None if _bad else staler_than(_ttm, _a)
+        if _stale:
+            log.warning("per_band: %s %s", tk, _stale)
+            _pack.path_note = _stale
+        if _bad or _stale:
+            if _bad:
+                log.warning("per_band: %s 분기 경로 폐기 — %s", tk, _bad)
         else:
             got = _pack(build(px, _q), "edgar")
             if got:
