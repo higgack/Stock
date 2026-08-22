@@ -1,4 +1,4 @@
-"""일본 종목 **재무 원천 실측** — 밴드차트·분기실적이 왜 비는지 가른다.
+"""**재무 원천 실측**(전 시장) — 밴드차트·분기실적이 왜 비는지 가른다.
 
 사용자 2026-08-22 (9984.T SoftBank Group): "일본기업은 EPS 이력이 없기에
 밴드차트나, 분기실적 서포트가 불가능한거야?"
@@ -17,8 +17,8 @@
      모두 같은 사유를 냈고, 그건 프로브가 만든 결과였다)
 
 사용법(VM):
-    cd ~/stock && .venv/bin/python -m bot.scripts.jp_fundamentals_probe \
-        --tickers 9984.T,7203.T,6758.T | tee /tmp/jp_probe.txt
+    cd ~/stock && .venv/bin/python -m bot.scripts.fundamentals_probe \
+        --tickers 0700.HK,0522.HK,0002.HK | tee /tmp/fund_probe.txt
 ⚠️ `| tail` 은 프로세스가 끝나야 출력한다 — `tee` 를 쓸 것(#103).
 """
 
@@ -27,14 +27,14 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 2
-_DEFAULT = "9984.T,7203.T,6758.T,8035.T"
+_PROBE_VER = 3
+_DEFAULT = "9984.T,6758.T,0700.HK,0522.HK,0002.HK"
 
 
 def _banner() -> None:
     """인터프리터·의존성을 먼저 찍는다 — venv 밖에서 돌면 결과가 통째로
     거짓이 된다(#132: 대조 0건인데 ✅ 를 찍은 사고)."""
-    print(f"jp_fundamentals_probe v{_PROBE_VER}")
+    print(f"fundamentals_probe v{_PROBE_VER}")
     print(f"  인터프리터: {sys.executable}")
     for mod in ("yfinance", "requests"):
         try:
@@ -44,16 +44,69 @@ def _banner() -> None:
             print(f"  {mod}: 없음 ({exc}) — 이 실행의 판정은 무효")
 
 
+# 분기실적 표가 실제로 쓰는 항목 — `quarterly_series._ITEM_CANDIDATES` 와
+# 같은 이름이라야 "원천이 없다"와 "우리 매핑이 못 잡는다"를 가를 수 있다.
+_WATCH = ("Total Revenue", "Operating Revenue", "Operating Income", "EBIT",
+          "Net Income", "Diluted EPS", "Basic EPS")
+
+
 def _yf_cols(ticker: str, attr: str):
-    """(열 수, EPS 행) 또는 (None, None) = 조회 자체가 실패."""
+    """(열 수, {항목: 값이 있는 열 수}) 또는 (None, None) = 조회 자체가 실패.
+
+    ⚠️ 열 수만 세면 "5열인데 표가 비었다"의 원인을 못 가른다 — 열은 있는데
+    **우리가 찾는 항목 이름이 없는** 경우가 실재한다(2026-08-22 HK). 항목별로
+    센다.
+    """
     try:
         import yfinance as yf
         df = getattr(yf.Ticker(ticker), attr)
     except Exception:                                          # noqa: BLE001
         return None, None
     if df is None or getattr(df, "empty", True):
-        return 0, []
-    return len(df.columns), [str(i) for i in df.index if "EPS" in str(i)]
+        return 0, {}
+    filled = {}
+    idx = {str(i) for i in df.index}
+    for item in _WATCH:
+        if item not in idx:
+            continue
+        n = 0
+        for c in df.columns:
+            try:
+                v = df.at[item, c]
+            except Exception:                                  # noqa: BLE001
+                continue
+            if v is not None and str(v) != "nan":
+                n += 1
+        filled[item] = n
+    return len(df.columns), filled
+
+
+def _series_shape(ticker: str) -> list[str]:
+    """분기실적 표가 **실제로 쓰는 경로**를 그대로 태운다(#35).
+
+    화면은 스냅샷 → `series_from_yfinance` → 표 순으로 간다. 여기서 끊기면
+    원천이 아니라 우리 쪽이다.
+    """
+    try:
+        from bot.quarterly_series import missing_quarters, series_from_yfinance
+        from bot.stock_snapshot import collect_stock_snapshot
+        snap = collect_stock_snapshot(ticker)
+    except Exception as exc:                                   # noqa: BLE001
+        return [f"  ③ 분기 시리즈: 준비 실패 {exc}"]
+    raw = (((snap or {}).get("financials") or {})
+           .get("income_statement") or {}).get("quarterly") or []
+    qs = series_from_yfinance(snap, n=5)
+    if not qs:
+        return [f"  ③ 분기 시리즈: **없음**(스냅샷 분기 행 {len(raw)}개)"
+                " — 행이 있는데 없으면 우리 항목 매핑 문제다"]
+    out = [f"  ③ 분기 시리즈: {len(qs)}개 {[q.get('label') for q in qs]}"]
+    for k in ("매출", "영업이익", "당기순이익"):
+        got = [q.get("label") for q in qs
+               if (q.get("financials") or {}).get(k) is not None]
+        out.append(f"     {k}: {len(got)}/{len(qs)} {got}")
+    gaps = missing_quarters(qs)
+    out.append(f"     달력 결측: {gaps or '없음'}")
+    return out
 
 
 def control_ok(control: str = "AAPL") -> bool:
@@ -70,7 +123,7 @@ def _yf_shape(ticker: str) -> list[str]:
     ok = control_ok()
     for label, attr in (("분기", "quarterly_income_stmt"),
                         ("연간", "income_stmt")):
-        n, eps = _yf_cols(ticker, attr)
+        n, filled = _yf_cols(ticker, attr)
         if n is None:
             out.append(f"  ① yfinance {label}: 조회 예외 — 판정 불가")
         elif n == 0:
@@ -79,9 +132,31 @@ def _yf_shape(ticker: str) -> list[str]:
                           else "⚠️ **판정 불가**(대조군 AAPL 도 0열 "
                                "= 네트워크 차단, #86)"))
         else:
-            out.append(f"  ① yfinance {label}: {n}열 · EPS 행 "
-                       f"{eps or '**없음**'}")
+            out.append(f"  ① yfinance {label}: {n}열")
+            out.append(f"     항목별 채움: {filled or '**해당 항목 전무**'}")
     return out
+
+
+def _alt_sources(ticker: str) -> list[str]:
+    """시장별 **대안 원천**. 이름이 내용과 맞아야 한다 — JP 전용 섹션을 HK
+    종목에 찍으면 화면이 거짓말한다(#34)."""
+    t = (ticker or "").upper()
+    if t.endswith(".T"):
+        return _edinet_key() + _kabutan(t)
+    if t.endswith((".HK", ".SS", ".SZ")):
+        try:
+            import akshare  # noqa: F401
+            return ["  ② AKShare: 설치됨 → HK/CN 재무 대안 경로 가능"]
+        except Exception as exc:                               # noqa: BLE001
+            return [f"  ② AKShare: 없음({exc}) — HK/CN 대안 경로 불가"]
+    if t.endswith((".TW", ".TWO")):
+        try:
+            from bot.finmind_client import fetch_income_statement
+            rows = fetch_income_statement(t, quarters=8) or []
+            return [f"  ② FinMind 분기 손익: {len(rows)}행"]
+        except Exception as exc:                               # noqa: BLE001
+            return [f"  ② FinMind: 실패 {exc}"]
+    return ["  ② 대안 원천: 이 시장은 등록된 게 없다(yfinance 단일 경로)"]
 
 
 def _edinet_key() -> list[str]:
@@ -168,14 +243,18 @@ def main() -> int:
     print(f"  대상 {len(tickers)}종목 · 종목당 ~10초 예상\n")
     for i, tk in enumerate(tickers, 1):
         print(f"[{i}/{len(tickers)}] {tk}")
-        for line in (_yf_shape(tk) + _edinet_key() + _kabutan(tk)
-                     + _current_path(tk)):
+        for line in (_yf_shape(tk) + _alt_sources(tk)
+                     + _series_shape(tk) + _current_path(tk)):
             print(line)
         print()
-    print("판정 기준: ① 0열 **이면서 대조군(AAPL)이 정상**일 때만 '원천 미제공'"
-          " 이다 — 대조군도 0열이면 네트워크 차단이라 아무 결론도 못 낸다(#86).")
-    print("           ②③ 중 하나라도 살아 있으면 **대안 경로가 있다**"
-          "(EDINET XBRL 또는 Kabutan 業績).")
+    print("판정 기준:")
+    print(" ① 0열 **이면서 대조군(AAPL)이 정상**일 때만 '원천 미제공' 이다 —"
+          " 대조군도 0열이면 네트워크 차단이라 아무 결론도 못 낸다(#86).")
+    print(" ① 열은 있는데 '항목별 채움' 이 비면 **원천이 그 항목을 안 주는 것**"
+          "이고, 있는데 ③ 이 비면 **우리 매핑 문제**다 — 화면엔 둘 다 '없음'"
+          "으로 보인다.")
+    print(" ② 대안 원천이 살아 있으면 yfinance 한계를 넘을 길이 있다는 뜻이다.")
+    print(" ③ 달력 결측이 있으면 TTM 은 정상적으로 안 만들어진다(연속 4분기 규칙).")
     return 0
 
 
