@@ -103,6 +103,36 @@ def per_series(prices: list | None, eps_ttm: list | None
     return out
 
 
+def _without_outliers(vals: list, min_points: int) -> tuple[list, list]:
+    """(밴드에 쓸 값, 뺀 값). **IQR 3배 울타리** 밖은 밴드에서 뺀다.
+
+    ⚠️ PER 은 순이익이 0 에 가까워지면 **발산**한다(2026-08-22 MKSI 실측:
+    최고 1,073.25x · 그 배수에서의 주가 6,729 — 중상 36.78x 의 29배).
+    한 점이 '최고'를 통째로 망가뜨리면 밴드가 valuation 도구로 쓸모없다.
+    임의의 절대 상한(예: 200x) 대신 **분포가 스스로 정하는** 울타리를 쓴다 —
+    정상 종목은 아무것도 안 버린다(CMCSA 실측: 울타리 33.81 > 최고 23.73).
+    ⚠️ 뺀 값은 **이력 표에는 그대로 남는다** — 실제로 있었던 관측이다.
+    """
+    xs = sorted(v for v in (vals or []) if v is not None)
+    if len(xs) < max(min_points, 4):
+        return xs, []
+
+    def _q(p):
+        pos = p * (len(xs) - 1)
+        lo = int(pos)
+        hi = min(lo + 1, len(xs) - 1)
+        return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
+    q1, q3 = _q(0.25), _q(0.75)
+    iqr = q3 - q1
+    if iqr <= 0:
+        return xs, []
+    lo_f, hi_f = q1 - 3 * iqr, q3 + 3 * iqr
+    kept = [v for v in xs if lo_f <= v <= hi_f]
+    if len(kept) < min_points:           # 다 버리면 밴드가 없다 — 그대로 둔다
+        return xs, []
+    return kept, [v for v in xs if v not in kept]
+
+
 def _quantile(sorted_vals: list[float], q: float) -> float:
     """선형보간 분위수. 표준편차가 아니라 **관측 분포**로 밴드를 잡는다."""
     if not sorted_vals:
@@ -156,7 +186,8 @@ def assemble(rows: list | None, *, min_points: int = 4,
     win = [r for r in rows if r[0][:10] >= cut]
     if len(win) < min_points:            # 5년이 얇으면 전 구간으로 되돌린다
         win = rows
-    vals = sorted(r[3] for r in win)
+    kept, dropped = _without_outliers([r[3] for r in win], min_points)
+    vals = sorted(kept)
     eps_now = rows[-1][2]
     # ⚠️ '그 배수에서의 주가'는 **화면에 찍히는 배수**로 만든다. 원(raw)
     # 분위수로 만들면 사용자가 눈으로 곱했을 때 안 맞는다(22.73 × 10.2 =
@@ -171,8 +202,10 @@ def assemble(rows: list | None, *, min_points: int = 4,
             "bands": bands, "eps_now": round(eps_now, 4), "n": len(rows),
             # 밴드가 실제로 본 창 — 화면이 라벨에 쓴다(#34 같은 주제어라도
             # 기준이 다르면 라벨로 구분). 이력 전체와 다를 수 있다.
-            "band_n": len(win), "band_from": win[0][0][:10],
-            "band_to": win[-1][0][:10]}
+            "band_n": len(vals), "band_from": win[0][0][:10],
+            "band_to": win[-1][0][:10],
+            # 밴드에서 뺀 이상치 — **왜** 뺐는지 화면이 말한다(#43).
+            "band_dropped": dropped}
 
 
 # ── 원천 조립 ────────────────────────────────────────────────────────────────

@@ -32062,6 +32062,83 @@ class TestBandCoverageAndPartialSource20260822:
         assert "if(!t){ el.innerHTML = why" in seg, seg[:400]
 
 
+class TestBandOutliersAndAxis20260822:
+    """사용자 2026-08-22: (1) CMCSA "이력은 전체가 37이면 전체를 다 보여주고,
+    PER 밴드는 시작점이랑 끝점의 기간만 있는데 기간을 더 추가해줄수 있어?"
+    (2) MKSI 밴드 최고 **1,073.25x** — 중상 36.78x 의 29배.
+
+    ⚠️ MKSI 의 1,073x 는 **버그가 아니라 실제 관측**이다(밴드는 이미 5년 창 —
+    CMCSA 에서 요약 '5년 최고 23.73' 과 밴드 '최고 23.73' 이 정확히 일치해
+    확인됐다). 문제는 PER 이 **순이익이 0 에 가까우면 발산**한다는 것 —
+    한 점이 '최고'를 통째로 망가뜨리면 밴드가 valuation 도구로 쓸모없다."""
+
+    def test_outlier_is_dropped_from_the_band(self):
+        from bot.per_band import _without_outliers
+        vals = [9.98, 12, 14, 15.66, 20, 25, 30, 36.78, 40, 45, 50, 60, 70,
+                80, 90, 95, 1073.25]
+        kept, dropped = _without_outliers(vals, 4)
+        assert dropped == [1073.25], dropped
+        assert max(kept) == 95
+
+    def test_normal_stock_loses_nothing(self):
+        """⚠️ 임의의 절대 상한(예: 200x)을 쓰면 정상 종목의 고배수 구간이
+        잘린다 — 분포가 스스로 정하는 울타리라야 한다. CMCSA 실측."""
+        from bot.per_band import _without_outliers
+        vals = [4.68, 6, 7, 7.89, 9, 10, 11, 12, 13, 14, 14.37, 16, 18, 20,
+                22, 23.73]
+        kept, dropped = _without_outliers(vals, 4)
+        assert dropped == [] and kept == sorted(vals)
+
+    def test_never_leaves_too_few_points(self):
+        """남는 점이 최소치 미만이면 밴드가 없다 — 그럴 바엔 그대로 둔다.
+
+        ⚠️ 3×IQR 울타리로는 이 분기가 **도달 불가능**하다(울타리가 넓어 그만큼
+        못 버린다) — `min_points` 를 올려 실제로 태운다. 픽스처가 분기를 못
+        태우면 그 단언은 아무것도 안 재는 것이다(#54)."""
+        from bot.per_band import _without_outliers
+        vals = [1.0, 2.0, 3.0, 4.0, 1000.0]
+        # min_points=4 면 1000 을 버리고 4개가 남는다
+        assert _without_outliers(vals, 4) == ([1.0, 2.0, 3.0, 4.0], [1000.0])
+        # min_points=5 면 버리는 순간 최소치 미달 → 그대로 둔다
+        assert _without_outliers(vals, 5) == (vals, [])
+
+    def test_too_few_points_are_left_alone(self):
+        from bot.per_band import _without_outliers
+        assert _without_outliers([1.0, 900.0], 4) == ([1.0, 900.0], [])
+
+    def test_band_payload_reports_what_it_dropped(self):
+        """뺀 값은 **이력 표에는 그대로 남는다** — 그러니 뺐다고 말해야 한다."""
+        from bot.per_band import build
+        # ⚠️ 픽스처는 **실제 시리즈처럼** 흩어져 있어야 한다 — 값이 전부
+        # 같으면 IQR 이 0 이라 울타리를 못 만들고, 가드가 그냥 통과한다.
+        eps, px = [], []
+        for i in range(24):
+            d = f"20{20 + i // 4:02d}-{3 * (i % 4) + 3:02d}-28"
+            eps.append((d, 0.02 if i == 12 else 1.0))    # 한 분기만 거의 0
+            px.append((d, 80.0 + i * 2))                 # PER 이 흩어지게
+        t = build(px, eps, annual=True, band_years=10)
+        assert t["band_dropped"], t["band_dropped"]
+        assert max(b["mult"] for b in t["bands"]) < 500, t["bands"]
+        # 이력에는 그 관측이 남아 있어야 한다
+        assert max(r["per"] for r in t["rows"]) > 500, "이력에서까지 지웠다"
+
+    def test_client_says_which_outliers_were_dropped(self):
+        from bot.dashboard import _BAND_JS
+        assert "t.band_dropped" in _BAND_JS
+        assert "이상치 " in _BAND_JS and "발산한 구간" in _BAND_JS
+
+    def test_chart_axis_has_intermediate_date_ticks(self):
+        """예전엔 시작·끝 두 개뿐이라 중간 시점을 읽을 수 없었다."""
+        from bot.dashboard import _BAND_JS
+        i = _BAND_JS.index("function drawBand")
+        j = _BAND_JS.index("function draw()", i)
+        seg = _BAND_JS[i:j]
+        assert "var nT=" in seg, "x축 눈금 개수를 안 정한다"
+        assert "for(var ti=0;ti<=nT;ti++)" in seg, "눈금이 아직 두 개뿐"
+        # 좁은 패널에서 라벨이 겹치면 안 된다 — 폭으로 개수를 정하는가
+        assert "(W-PADL-PADR)/110" in seg, seg[-400:]
+
+
 class TestCurrencyMismatchBand20260822:
     """사용자 2026-08-22 TSM: "PER 도 너무 낮고...제발 꼼꼼히 좀 봐줘" —
     PER 0.92x.
@@ -32346,10 +32423,14 @@ class TestFiscalQ4AndTtmHoles20260822:
         assert "t.band_n" in seg, "밴드 관측 수를 이력 수로 적는다"
         assert "배수 × 최신" in seg, "적정가의 산식을 안 적는다(#33)"
 
-    def test_history_table_says_it_is_truncated(self):
-        """31개 중 24개만 실으면서 말을 안 하면 전부인 줄 읽는다(#45)."""
+    def test_history_table_shows_every_row(self):
+        """사용자 2026-08-22 "이력은 전체가 37이면 전체를 다 보여주고" —
+        잘라서 보여주면서 '전체 N개' 라고만 적으면 나머지를 볼 방법이 없다."""
         from bot.dashboard import _BAND_JS
-        assert "전체 '+total+'개" in _BAND_JS, "잘렸다는 사실을 안 적는다"
+        i = _BAND_JS.index("function perTable")
+        seg = _BAND_JS[i:i + 900]
+        assert ".slice(-24)" not in seg, "이력을 아직 자른다"
+        assert "(t.rows||[]).slice().reverse()" in seg, seg[:400]
 
     def test_dead_denominator_column_is_dropped(self):
         """국내(FnGuide)는 EPS/BPS 를 안 줘 전 행이 '—' 인 죽은 열이었다."""
