@@ -207,8 +207,21 @@ def _kick_lookup_detail_refresh(ticker: str, cache_f, enrich: bool = True) -> No
 
     def _work():
         try:
+            import time as _t
             from bot.dashboard import render_lookup_detail
+            _t0 = _t.time()
             html = render_lookup_detail(ticker, enrich=enrich)
+            # 백그라운드 재렌더도 같은 줄을 남긴다 — 여기만 조용하면 재방문
+            # 경로의 비용이 영원히 안 보인다(#54 대조 0건은 통과가 아니다).
+            try:
+                import bot.stock_snapshot as _ss
+                _st = _ss.last_timing(ticker)
+                log.info("detail-timing %s phase=%s(bg) render=%.3fs %s",
+                         ticker, "full" if enrich else "core", _t.time() - _t0,
+                         " ".join(f"{k}={v}s" for k, v in _st.items())
+                         or "(스냅샷 캐시 히트 — 단계 없음)")
+            except Exception:                                  # noqa: BLE001
+                pass
             if html:
                 _atomic_write_bytes(cache_f, html.encode("utf-8"))
         except Exception as exc:
@@ -2028,7 +2041,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             # 콜드(캐시 없음/너무 오래됨/읽기 실패) → 동기 렌더.
             from bot.dashboard import render_lookup_detail
+            _t_r = time.time()
             html = render_lookup_detail(ticker, enrich=enrich)
+            _t_r = time.time() - _t_r
+            # ⚠️ `/api/lookup_detail` 이 60~192초로 관측됐는데(2026-08-22
+            # 실측) **어디서** 나는지 로그가 답하지 못했다 — 스냅샷 단계는
+            # 이미 재고 있었는데 아무도 읽지 않았다(#43 아는 걸 화면·로그가
+            # 말해야 한다). 캐시 히트로 단계가 비면 그 사실도 밝힌다(#54).
+            try:
+                import bot.stock_snapshot as _ss
+                _st = _ss.last_timing(ticker)
+                log.info("detail-timing %s phase=%s render=%.3fs %s", ticker,
+                         phase, _t_r,
+                         " ".join(f"{k}={v}s" for k, v in _st.items())
+                         or "(스냅샷 캐시 히트 — 단계 없음)")
+            except Exception:                                  # noqa: BLE001
+                pass
             encoded = html.encode("utf-8")
             _atomic_write_bytes(cache_f, encoded)
             self.send_response(200)

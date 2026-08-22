@@ -31057,3 +31057,215 @@ class TestTablePrefetch20260822:
         i_bp = body.index('"build_payload"')
         i_pr = body.index('"pre_render"')
         assert "_t_pre = " in body[i_bp:i_pr], "pre_render 앞에 리셋이 없다"
+
+
+class TestEnrichRunsWithAux20260822:
+    """시장 enrichment 가 보조 6종 **뒤에 직렬로** 돌고 있었다.
+
+    2026-08-22 `/api/lookup_detail` 60~192초. `_enrich_*` 는 AST 로 확인한
+    결과 **snap 에서 아무것도 읽지 않고 자기 시장 키만 쓴다** — 서로 기다릴
+    이유가 없다(#127 표↔수주잔고와 같은 처방)."""
+
+    def _stub(self, monkeypatch, order, lock, delay=0.4):
+        import sys
+        import time
+        import types
+        import bot.stock_snapshot as ss
+
+        class _T:
+            def __init__(self, t):
+                pass
+
+            @property
+            def info(self):
+                return {"quoteType": "EQUITY", "longName": "X"}
+
+            def get_earnings_dates(self, *a, **k):
+                return None
+
+            def get_upgrades_downgrades(self, *a, **k):
+                return None
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+
+        def slow(name):
+            def _f(*a, **k):
+                with lock:
+                    order.append(f"{name}:start")
+                time.sleep(delay)
+                with lock:
+                    order.append(f"{name}:end")
+                return {}
+            return _f
+        for n in ("_collect_earnings_history", "_collect_upgrades",
+                  "_collect_holders", "_collect_news_fallback",
+                  "_collect_financials", "_collect_peer_multiples"):
+            if hasattr(ss, n):
+                monkeypatch.setattr(ss, n, slow(n))
+
+        def enrich(ticker, snap):
+            with lock:
+                order.append("enrich:start")
+            time.sleep(delay)
+            snap["kr"] = {"ok": True}
+            with lock:
+                order.append("enrich:end")
+        monkeypatch.setattr(ss, "_enrich_kr", enrich)
+        return ss
+
+    def test_enrich_overlaps_the_aux_block(self, monkeypatch):
+        """⚠️ 순서·시간으로 재면 흔들린다(실측: 단독 green, 전체 실행 red).
+        **악수**로 잰다 — 양쪽이 서로가 도는 중임을 확인해야 통과한다."""
+        import sys
+        import threading
+        import types
+        import bot.stock_snapshot as ss
+
+        class _T:
+            def __init__(self, t):
+                pass
+
+            @property
+            def info(self):
+                return {"quoteType": "EQUITY", "longName": "X"}
+
+            def get_earnings_dates(self, *a, **k):
+                return None
+
+            def get_upgrades_downgrades(self, *a, **k):
+                return None
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_T))
+        enr_up, aux_up = threading.Event(), threading.Event()
+        met: list = []
+
+        def _aux(*a, **k):
+            aux_up.set()
+            met.append(enr_up.wait(5.0))
+            return {}
+        for n in ("_collect_earnings_history", "_collect_upgrades",
+                  "_collect_holders", "_collect_news_fallback",
+                  "_collect_financials", "_collect_peer_multiples"):
+            if hasattr(ss, n):
+                monkeypatch.setattr(ss, n, _aux)
+
+        def _enrich(ticker, snap):
+            enr_up.set()
+            met.append(aux_up.wait(5.0))
+            snap["kr"] = {"ok": True}
+        monkeypatch.setattr(ss, "_enrich_kr", _enrich)
+        snap = ss.collect_stock_snapshot("005930.KS", use_cache=False)
+        assert met and all(met), \
+            f"한쪽이 상대를 못 만났다 = 직렬로 돌았다: {met}"
+        assert (snap or {}).get("kr") == {"ok": True}
+
+    def test_market_overlay_survives_the_none_strip(self, monkeypatch):
+        """⚠️ `snap` 은 None strip 에서 **재바인딩**된다 — 앞에서 합치면
+        새 dict 에 안 실려 시장 데이터가 통째로 사라진다."""
+        import threading
+        import time
+        import bot.stock_snapshot as ss_mod
+        order, lock = [], threading.Lock()
+        ss = self._stub(monkeypatch, order, lock, delay=0.0)
+
+        # ⚠️ enrich 를 **늦게** 끝내야 의미가 있다 — 보조가 끝나기 전에
+        # 오버레이가 이미 차 있으면 "strip 앞에서 합치기" 변형도 통과한다
+        # (실측: delay=0 픽스처에서 뮤테이션이 그대로 green).
+        def slow_enrich(ticker, snap):
+            time.sleep(0.5)
+            snap["kr"] = {"ok": True}
+        monkeypatch.setattr(ss_mod, "_enrich_kr", slow_enrich)
+        snap = ss.collect_stock_snapshot("005930.KS", use_cache=False)
+        assert (snap or {}).get("kr") == {"ok": True}, snap
+
+    def test_enrich_failure_does_not_kill_the_snapshot(self, monkeypatch):
+        """enrich 예외가 스냅샷 전체를 죽이면 상세가 통째로 빈다."""
+        import threading
+        import bot.stock_snapshot as ss
+        order, lock = [], threading.Lock()
+        self._stub(monkeypatch, order, lock, delay=0.0)
+
+        def boom(ticker, snap):
+            raise RuntimeError("원천 장애")
+        monkeypatch.setattr(ss, "_enrich_kr", boom)
+        snap = ss.collect_stock_snapshot("005930.KS", use_cache=False)
+        assert snap and snap.get("long_name") == "X", snap
+        tm = ss.last_timing("005930.KS")
+        assert "enrich:KR" in tm, "실패해도 계측은 남아야 한다"
+
+    def test_enrich_functions_read_nothing_from_snap(self):
+        """겹치기의 **전제**를 못박는다 — 누가 snap 을 읽기 시작하면 경쟁이
+        생기므로 그때는 이 테스트가 깨져야 한다."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        for fn in ast.walk(ast.parse(src)):
+            if not (isinstance(fn, ast.FunctionDef)
+                    and fn.name.startswith("_enrich_")):
+                continue
+            arg = fn.args.args[1].arg if len(fn.args.args) > 1 else None
+            if not arg:
+                continue
+            for n in ast.walk(fn):
+                if (isinstance(n, ast.Call)
+                        and getattr(n.func, "attr", "") == "get"
+                        and isinstance(getattr(n.func, "value", None), ast.Name)
+                        and n.func.value.id == arg):
+                    raise AssertionError(f"{fn.name} 이 {arg} 를 읽는다 — "
+                                         "겹치기 전제가 깨졌다")
+                if (isinstance(n, ast.Subscript)
+                        and isinstance(n.value, ast.Name)
+                        and n.value.id == arg
+                        and isinstance(n.ctx, ast.Load)):
+                    raise AssertionError(f"{fn.name} 이 {arg} 를 읽는다")
+
+    def test_shared_pool_is_not_used_for_enrich(self):
+        """공용 풀은 **말단 팬아웃 전용**이다 — 상위 병렬을 거기 제출하면
+        슬롯끼리 기다려 교착한다(#110)."""
+        import ast
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_collect_stock_snapshot_uncached")
+        body = ast.get_source_segment(src, fn) or ""
+        i = body.index("_run_enrich")
+        assert "map_bounded" not in body[max(0, i - 1500):i + 500], \
+            "enrich 를 공용 풀에 제출했다"
+
+    def test_enrich_pool_does_not_leak_threads(self):
+        """예외 경로를 포함해 어느 길로 빠져나가도 풀이 남으면 안 된다."""
+        import sys
+        import threading
+        import time
+        import types
+        import bot.stock_snapshot as ss
+        import pytest as _pt
+        mp = _pt.MonkeyPatch()
+        try:
+            class _T:
+                def __init__(self, t):
+                    pass
+
+                @property
+                def info(self):
+                    return {"quoteType": "EQUITY", "longName": "X"}
+
+                def get_earnings_dates(self, *a, **k):
+                    return None
+
+                def get_upgrades_downgrades(self, *a, **k):
+                    return None
+            mp.setitem(sys.modules, "yfinance",
+                       types.SimpleNamespace(Ticker=_T))
+            mp.setattr(ss, "_enrich_kr",
+                       lambda t, s: s.__setitem__("kr", {"ok": True}))
+            base = threading.active_count()
+            for i in range(15):
+                ss.collect_stock_snapshot(f"00593{i % 10}.KS", use_cache=False)
+            for _ in range(50):
+                if threading.active_count() - base <= 2:
+                    break
+                time.sleep(0.05)
+            assert threading.active_count() - base <= 2, \
+                f"스레드가 샌다: {base} → {threading.active_count()}"
+        finally:
+            mp.undo()
