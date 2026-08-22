@@ -35390,3 +35390,69 @@ class TestBandNoteRoeAndShortDays20260823:
         assert cd._span_days(cd._tail_days(h, 365)) <= 366
         # 자를 게 없으면 원본 그대로 — 조용히 비우면 판정이 뒤집힌다
         assert len(cd._tail_days(h, 0)) == 2000
+
+
+class TestBandPaneOrder20260823:
+    """사용자 2026-08-23: "PBR 밴드는 여기 PBR 있는 곳 위로 옮겨줘."
+
+    차트 둘을 나란히 놓고 표 둘을 그 아래 몰아 두면, PBR 표를 볼 때 그 차트가
+    두 화면 위에 있다 — 지표마다 **차트 바로 밑에 그 지표의 표**를 둔다."""
+
+    @staticmethod
+    def _pane() -> str:
+        import inspect
+        import bot.dashboard as db
+        src = inspect.getsource(db)
+        i = src.index('id="si-band-grid"')
+        return src[i - 2000:i + 3000]
+
+    def test_each_chart_sits_directly_above_its_own_table(self):
+        seg = self._pane()
+        i_per_chart = seg.index('id="si-band-grid"')
+        i_per_table = seg.index('id="si-band-table"')
+        i_pbr_chart = seg.index('id="si-band-pbr-box"')
+        i_pbr_table = seg.index('id="si-band-table-pbr"')
+        assert i_per_chart < i_per_table < i_pbr_chart < i_pbr_table, \
+            (i_per_chart, i_per_table, i_pbr_chart, i_pbr_table)
+
+    def test_the_pbr_block_starts_hidden(self):
+        """⚠️ 표 사이에 따로 서 있으므로, 기본이 보이면 데이터가 오기 전에
+        'PBR 밴드' **제목만** 뜬다 — 수집 실패로 읽힌다(#43)."""
+        seg = self._pane()
+        i = seg.index('id="si-band-pbr-box"')
+        assert "display:none" in seg[i:i + 120], seg[i:i + 120]
+
+    @staticmethod
+    def _js_body(src: str, head: str) -> str:
+        """`head` 로 시작하는 함수의 **본문만** — 중괄호를 세어 자른다.
+
+        ⚠️ 고정 길이 창으로 재면 옆 함수가 대신 만족시킨다 — 실제로 이 검사가
+        `showGrid` 에서 hide 를 통째로 지운 뮤테이션을 **통과시켰다**(뒤따르는
+        `draw()` 가 같은 id 를 쓴다, #60 창이 아니라 구조로 볼 것)."""
+        i = src.index(head)
+        j = src.index("{", i)
+        depth = 0
+        for k in range(j, len(src)):
+            if src[k] == "{":
+                depth += 1
+            elif src[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[j:k + 1]
+        raise AssertionError(f"{head} 본문을 못 찾았다")
+
+    def test_show_grid_hides_both_blocks(self):
+        """밴드가 아예 없을 때 PER 만 감추면 PBR 제목이 남는다."""
+        from bot.dashboard import _BAND_JS
+        body = self._js_body(_BAND_JS, "function showGrid(")
+        assert "si-band-grid" in body, body
+        assert "si-band-pbr-box" in body, body
+
+    def test_pbr_block_is_shown_before_it_is_drawn(self):
+        """⚠️ 폭이 0 인 컨테이너에 그리면 플롯만 빈칸이 된다(#108) — 보이게
+        한 **뒤에** 그린다."""
+        from bot.dashboard import _BAND_JS
+        i = _BAND_JS.index("if(CD.pbr&&CD.pbr.price")
+        seg = _BAND_JS[i:i + 400]
+        assert seg.index("pbrBox.style.display=''") < \
+            seg.index("drawBand('si-band-pbr'"), seg
