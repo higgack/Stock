@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -87,6 +87,49 @@ def _render_unmatched(miss: list[str]) -> list[str]:
     return [f"     ❓ {m}" for m in miss]
 
 
+def _why_no_doc(ticker: str) -> list[str]:
+    """0건일 때 **탐색 실패인지 원천 부재인지** 가른다(#143 대조군 규율).
+
+    2026-08-22 6758.T(소니)가 200일을 훑고도 0건이었다 — '없다'고만 말하면
+    다음 라운드를 통째로 낭비한다. 캐시된 일별 목록을 훑어 ① 그 날들에 문서가
+    몇 건이나 들어 있나(0 이면 목록이 비어 캐시된 것) ② 이 티커의 문서가
+    **어떤 docTypeCode 로** 있나 ③ 앞 4자리가 같은 secCode 가 실제로 뭔가를
+    있는 그대로 찍는다.
+    """
+    import datetime as _dt
+    from bot.edinet_client import _sec_code_for, get_edinet
+    sec4 = (_sec_code_for(ticker) or "")[:4]
+    cl = get_edinet()
+    out = [f"     ↳ 진단: secCode 앞 4자리 = {sec4 or '**미상**'}"]
+    if not sec4:
+        return out
+    today = _dt.date.today()
+    total, empty_days, seen_types, codes = 0, 0, {}, set()
+    for off in range(201):
+        docs = cl._fetch_day(today - _dt.timedelta(days=off))
+        total += len(docs)
+        if not docs:
+            empty_days += 1
+        for d in docs:
+            code = str(d.get("secCode") or "")
+            if code[:4] != sec4:
+                continue
+            codes.add(code)
+            t = str(d.get("docTypeCode") or "?")
+            seen_types[t] = seen_types.get(t, 0) + 1
+    out.append(f"     ↳ 최근 201일 목록: 문서 {total:,}건 · **빈 날 "
+               f"{empty_days}일**(빈 날이 많으면 목록이 빈 채로 캐시된 것)")
+    out.append(f"     ↳ 이 티커 문서: {seen_types or '**0건**'} "
+               f"· 실제 secCode {sorted(codes) or '없음'}")
+    if seen_types and "120" not in seen_types:
+        out.append("     ↳ → 문서는 있는데 **유가증권보고서(120)가 없다** — "
+                   "결산월/제출시기 문제이지 탐색 실패가 아니다")
+    elif not seen_types and total:
+        out.append("     ↳ → 목록은 채워져 있는데 이 회사 문서가 하나도 없다 "
+                   "— secCode 매칭 또는 제출시기를 의심")
+    return out
+
+
 def probe_one(ticker: str, api_key: str) -> list[str]:
     """한 종목 — 단계별로 찍는다. 예외는 삼키지 않고 **사유째로** 찍는다."""
     from bot import edinet_xbrl as ex
@@ -103,8 +146,7 @@ def probe_one(ticker: str, api_key: str) -> list[str]:
         out.append(f"     {d['submitted']} docID={d['doc_id']} "
                    f"결산일={d['period_end'] or '**미상**'} {d['filer']}")
     if not docs:
-        return out + ["     → 탐색 범위(430일) 안에 없다. 결산월이 특이하거나 "
-                      "탐색 예산에 걸렸을 수 있다(로그의 '예산 초과' 확인)."]
+        return out + _why_no_doc(ticker)
 
     doc = docs[0]
     # ⚠️ 여기서부터 진행 출력이 없으면 "멈췄다"로 보인다(#103) — 단계마다 찍는다.

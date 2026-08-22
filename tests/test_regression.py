@@ -34011,6 +34011,39 @@ class TestEdinetXbrl20260822:
         assert "Metric39" in out, "목록이 잘렸다"
         assert "외 " not in out, out[-200:]
 
+    def test_zero_docs_reports_why_not_just_none(self, monkeypatch):
+        """'없다'고만 말하면 다음 라운드를 통째로 낭비한다(#143 대조군 규율).
+        2026-08-22 6758.T 소니가 200일을 훑고도 0건이었다 — 탐색 실패인지
+        원천 부재인지 **목록 자체를 세어** 가른다."""
+        import bot.scripts.edinet_probe as ep
+        import bot.edinet_client as ec
+
+        class _Cl:
+            @staticmethod
+            def _fetch_day(day):
+                # 이 회사 문서는 있는데 **120 이 아니다**
+                return [{"secCode": "67585", "docTypeCode": "160",
+                         "docID": "H1"}]
+        monkeypatch.setattr(ec, "get_edinet", lambda: _Cl())
+        txt = " ".join(ep._why_no_doc("6758.T"))
+        assert "6758" in txt, txt
+        assert "'160'" in txt or "160" in txt, txt
+        assert "67585" in txt, "실제 secCode 를 안 찍었다"
+        assert "유가증권보고서(120)가 없다" in txt, txt
+
+    def test_zero_docs_flags_an_empty_cached_listing(self, monkeypatch):
+        """⚠️ 빈 목록이 영구 캐시되면 영원히 0건이다 — 그 상태를 구별한다."""
+        import bot.scripts.edinet_probe as ep
+        import bot.edinet_client as ec
+
+        class _Cl:
+            @staticmethod
+            def _fetch_day(day):
+                return []
+        monkeypatch.setattr(ec, "get_edinet", lambda: _Cl())
+        txt = " ".join(ep._why_no_doc("6758.T"))
+        assert "빈 날 201일" in txt, txt
+
     def test_probe_shouts_when_nothing_matched(self, monkeypatch, tmp_path):
         """매칭 0종이면 **파서가 눈이 먼 것**일 수 있다 — '원천에 없음'과
         구별되게 원문 표본을 찍는다. 대조 0건은 통과가 아니라 실패다(#54)."""
@@ -34040,3 +34073,253 @@ class TestEdinetXbrl20260822:
         got = ep._unmatched_summary_ids(rows, {"jppfs_cor:NetSales"})
         assert len(got) == 1 and "MysteryMetric" in got[0], got
         assert "謎の指標" in got[0], got
+
+
+class TestSplitConsistentPerHistory20260822:
+    """**나란히 놓이는 두 값은 같은 기준이어야 한다** — 주가는 분할반영,
+    EPS 는 as-reported 였다.
+
+    사용자 2026-08-22 (LRCX·KLAC): "이 PER History 가 맞는걸까? 제발 꼼꼼히".
+    LRCX 표 실측 — 주가는 51.46 → 62.58 로 **연속**인데 TTM EPS 만
+    35.91 → 3.32 로 10.8배 급락해 옛 PER 이 **1.43** 으로 찍혔다(정상 14.3).
+    Yahoo 종가는 항상 분할반영인데 EDGAR/EDINET/야후 손익의 EPS 는 as-reported
+    라 2024-10 의 10:1 분할을 경계로 두 계열의 기준이 갈렸다(#33 의 분할판).
+    """
+
+    def test_eps_is_rebased_onto_the_price_basis(self):
+        from bot.per_band import adjust_eps_for_splits
+        rows = [("2023-03-31", 35.91), ("2024-12-31", 3.4)]
+        got = adjust_eps_for_splits(rows, [("2024-10-03", 10.0)])
+        assert abs(got[0][1] - 3.591) < 1e-6, got
+        # 분할 **이후** 기간은 건드리지 않는다
+        assert got[1][1] == 3.4, got
+
+    def test_multiple_splits_compound(self):
+        from bot.per_band import adjust_eps_for_splits
+        got = adjust_eps_for_splits([("2015-01-31", 40.0)],
+                                    [("2016-06-01", 2.0), ("2024-10-03", 10.0)])
+        assert abs(got[0][1] - 2.0) < 1e-9, got
+
+    def test_break_is_refused_when_splits_are_unavailable(self):
+        """분할 이력을 못 받는 날 조용히 넘기면 **10배 틀린 표**가 나간다."""
+        from bot.per_band import eps_break_reason
+        raw = [("2023-03-31", 35.91), ("2023-06-30", 3.32)]
+        why = eps_break_reason(raw)
+        assert why and "분할" in why, why
+        from bot.per_band import adjust_eps_for_splits
+        fixed = adjust_eps_for_splits([raw[0]], [("2024-10-03", 10.0)]) + [raw[1]]
+        assert eps_break_reason(fixed) is None, fixed
+
+    def test_ordinary_earnings_swings_are_not_flagged(self):
+        """실적 변동으로 설명되는 크기는 막으면 안 된다 — 정당한 케이스까지
+        죽이는 가드는 증상만 보는 가드다(#146)."""
+        from bot.per_band import eps_break_reason
+        assert eps_break_reason([("2023-03-31", 4.0), ("2023-06-30", 10.0)]) \
+            is None
+
+    @staticmethod
+    def _px():
+        import datetime as _dt
+        return [((_dt.date(2016, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
+                 40.0 + 4 * k) for k in range(130)]
+
+    @staticmethod
+    def _eps_asreported():
+        """2024-10 10:1 분할 전은 10배 크게 보고된다(원천 그대로)."""
+        out = []
+        for y in range(2017, 2027):
+            v = 3.0 + 0.3 * (y - 2017)
+            out.append((f"{y}-06-30", v * 10 if y < 2025 else v))
+        return out
+
+    def test_end_to_end_per_is_continuous_after_the_fix(self, monkeypatch):
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(pb, "split_factors",
+                            lambda t: [("2024-10-03", 10.0)])
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": [],
+                                                 "annual": self._eps_asreported(),
+                                                 "tag": "x"})
+        tbl, why = pb.for_ticker("LRCX", {})
+        assert tbl is not None, why
+        pers = [r["per"] for r in tbl["rows"] if r.get("per")]
+        assert len(pers) >= 8, tbl["n"]
+        # 분할 경계에서 배수가 튀지 않는다
+        for a, b in zip(pers, pers[1:]):
+            assert max(a, b) / min(a, b) < 3, (a, b, pers)
+
+    def test_end_to_end_refuses_when_split_history_is_missing(self, monkeypatch):
+        """⚠️ 분할 이력을 못 받으면 **만들지 않는다** — 사유를 돌려준다(#43)."""
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(pb, "split_factors", lambda t: [])
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": [],
+                                                 "annual": self._eps_asreported(),
+                                                 "tag": "x"})
+        tbl, why = pb.for_ticker("LRCX", {})
+        assert tbl is None, tbl
+        assert why and "분할" in why, why
+
+    def test_band_prices_are_not_dividend_adjusted(self):
+        """PER 은 '그때 실제로 거래된 가격 ÷ 그때 보고된 EPS' 다.
+        `auto_adjust=True` 는 배당까지 소급 조정해 옛 PER 을 체계적으로
+        낮춘다 — 밴드 경로는 Yahoo `Close`(분할만 반영)를 쓴다."""
+        import bot.per_band as pb
+        seen = {}
+
+        class _T:
+            def __init__(self, t):
+                pass
+
+            def history(self, **kw):
+                seen.update(kw)
+                import pandas as pd
+                return pd.DataFrame(
+                    {"Close": [10.0, 11.0]},
+                    index=pd.to_datetime(["2026-07-31", "2026-08-31"]))
+
+        import yfinance as yf
+        orig = yf.Ticker
+        yf.Ticker = _T
+        try:
+            got = pb._monthly_closes("LRCX", 10)
+        finally:
+            yf.Ticker = orig
+        assert got == [("2026-07-31", 10.0), ("2026-08-31", 11.0)], got
+        assert seen.get("auto_adjust") is False, seen
+
+    def test_ttm_must_match_annual_at_the_fiscal_year_end(self):
+        """#138 에 **검산법으로만** 적어 둔 걸 제품 가드로 옮겼다 — 규율로
+        기억하면 매번 진다.
+
+        2026-08-22 KLAC 실측: TTM EPS 가 2.03 → 3.63 → 5.51 → 9.24 → **3.04**
+        로 매 6월(회계연도말)마다 붕괴했다. 주가÷EPS=PER 은 전 행이 맞아
+        눈으로는 안 잡힌다."""
+        from bot.per_band import ttm_annual_mismatch
+        why = ttm_annual_mismatch(
+            [("2024-03-31", 19.15), ("2024-06-30", 2.03)],
+            [("2024-06-30", 25.0)])
+        assert why and "연간 EPS" in why, why
+        # 희석주식수 변동분(수 %)은 정상이다 — 정당한 케이스를 죽이지 않는다
+        assert ttm_annual_mismatch([("2024-06-30", 24.0)],
+                                   [("2024-06-30", 25.0)]) is None
+        # ⚠️ 대조할 게 없으면 **판정하지 않는다**(대조 0건에 ✅ 를 찍는 게
+        # 아니라, 아예 이 가드가 발동하지 않는다는 뜻 — 호출부가 분기를 쓴다)
+        assert ttm_annual_mismatch([("2024-06-30", 2.03)], []) is None
+        assert ttm_annual_mismatch([("2024-03-31", 2.03)],
+                                   [("2024-06-30", 25.0)]) is None
+
+    def test_broken_quarterly_falls_back_to_annual(self, monkeypatch):
+        """어긋나면 분기 경로를 **쓰지 않고** 연간으로 내려간다."""
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(pb, "split_factors", lambda t: [])
+        # 회계연도말(6월)마다 무너지는 분기 EPS — KLAC 형
+        q = []
+        for y in range(2018, 2027):
+            for i, m in enumerate(("09-30", "12-31", "03-31", "06-30")):
+                yy = y if i < 2 else y + 1
+                q.append((f"{yy}-{m}", 6.0 if i < 3 else -12.0))
+        q.sort()
+        ann = [(f"{y}-06-30", 24.0) for y in range(2018, 2027)]
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": q, "annual": ann,
+                                                 "tag": "x"})
+        tbl, why = pb.for_ticker("KLAC", {})
+        assert tbl is not None, why
+        assert tbl["basis"] == "edgar-a", tbl["basis"]
+
+
+class TestPerBandAudit20260822:
+    """사용자가 다른 사이트를 뒤져 눈으로 대조해야 한다면 그건 화면의 결함이다
+    (2026-08-22 "다른 사이트를 찾아본던 어떻게 해서든...너무 힘들다").
+    판정을 **감사 도구가 대신**한다(#102c). 판정 로직은 순수 함수라 픽스처로
+    동작을 고정한다(#41 — 스크립트에 인라인이면 소스 문자열만 재게 된다)."""
+
+    @staticmethod
+    def _tbl(rows, **kw):
+        t = {"rows": [{"period": p, "price": px, "eps": e, "per": r}
+                      for p, px, e, r in rows],
+             "band_from": rows[0][0], "band_to": rows[-1][0],
+             "price_now": None, "summary": {}}
+        t.update(kw)
+        return t
+
+    def test_clean_table_passes_every_axis(self):
+        import bot.scripts.per_band_audit as ab
+        rows = [(f"20{y:02d}-06-30", 100.0 + y, 5.0, (100.0 + y) / 5.0)
+                for y in range(18, 27)]
+        marks = dict((a, m) for m, a, _d in ab.audit_rows(
+            self._tbl(rows, _annual_eps=[(p, 5.0) for p, *_ in rows])))
+        assert marks["산수"] == "✅" and marks["분할"] == "✅", marks
+        assert marks["결산검산"] == "✅", marks
+
+    def test_split_break_is_caught(self):
+        """LRCX 형 — 주가는 연속인데 EPS 만 10배 튄다."""
+        import bot.scripts.per_band_audit as ab
+        rows = [("2023-03-31", 51.46, 35.91, 51.46 / 35.91),
+                ("2023-06-30", 62.58, 3.32, 62.58 / 3.32),
+                ("2023-09-30", 65.0, 3.4, 65.0 / 3.4)]
+        got = dict((a, m) for m, a, _d in ab.audit_rows(self._tbl(rows)))
+        assert got["분할"] == "❌", got
+
+    def test_fiscal_year_end_break_is_caught(self):
+        """KLAC 형 — 결산 시점 TTM 이 연간 EPS 와 어긋난다."""
+        import bot.scripts.per_band_audit as ab
+        rows = [("2024-03-31", 68.55, 19.15, 68.55 / 19.15),
+                ("2024-06-30", 81.08, 15.0, 81.08 / 15.0)]
+        t = self._tbl(rows, _annual_eps=[("2024-06-30", 25.0)])
+        got = dict((a, m) for m, a, _d in ab.audit_rows(t))
+        assert got["결산검산"] == "❌", got
+
+    def test_arithmetic_mismatch_is_caught(self):
+        """나란히 놓인 칸이 서로 안 맞으면 표가 거짓말이다(#33)."""
+        import bot.scripts.per_band_audit as ab
+        rows = [("2025-06-30", 100.0, 5.0, 20.0),
+                ("2025-09-30", 120.0, 5.0, 99.0)]     # 24.0 이어야 한다
+        got = dict((a, m) for m, a, _d in ab.audit_rows(self._tbl(rows)))
+        assert got["산수"] == "❌", got
+
+    def test_no_comparison_data_is_unknown_not_pass(self):
+        """⚠️ 대조 0건은 ✅ 가 아니라 ❓ 다(#54) — 내 감사 도구에서 두 번
+        어긴 실수다(#132)."""
+        import bot.scripts.per_band_audit as ab
+        rows = [("2025-06-30", 100.0, 5.0, 20.0)]
+        got = dict((a, m) for m, a, _d in ab.audit_rows(self._tbl(rows)))
+        assert got["결산검산"] == "❓", got     # 연간 대조본 없음
+        assert got["현재값"] == "❓", got       # 실시간 시세 없음
+        assert [m for m, a, _d in ab.audit_rows({"rows": []})] == ["❓"]
+
+    def test_live_per_must_be_proportional_to_the_live_price(self):
+        """현재 PER 은 이력 마지막 행 기준으로 현재가에 비례한다(#135)."""
+        import bot.scripts.per_band_audit as ab
+        rows = [("2025-06-30", 100.0, 5.0, 20.0)]
+        ok = self._tbl(rows, price_now=110.0, summary={"per_now": 22.0})
+        bad = self._tbl(rows, price_now=110.0, summary={"per_now": 20.0})
+        assert dict((a, m) for m, a, _d in ab.audit_rows(ok))["현재값"] == "✅"
+        assert dict((a, m) for m, a, _d in ab.audit_rows(bad))["현재값"] == "❌"
+
+    def test_audit_uses_the_product_path(self):
+        """프로브가 수집을 재구현하면 화면과 다른 걸 잰다(#35) — AST 로 실제
+        호출을 센다(이름이 소스에 있는지로 재면 뮤테이션이 통과한다, #143)."""
+        import ast
+        src = open("bot/scripts/per_band_audit.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "audit_one")
+        calls = [c.func.attr for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)]
+        assert "for_ticker" in calls, calls
+        names = [c.func.id for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+        assert "collect_stock_snapshot" in names, names
