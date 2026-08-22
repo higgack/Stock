@@ -65,29 +65,38 @@ def _parse_sig() -> str:
 # ⚠️ 이름을 **추측해서 늘리지 말 것** — 못 잡은 요소는 프로브가 원문 그대로
 # 찍는다(#109 '표본 원문부터'). 늘릴 땐 그 출력에서 복사해 온다.
 SUMMARY_ELEMENTS: dict[str, tuple[str, ...]] = {
+    # ⚠️ 순서가 **우선순위**다(앞이 정본). 희석이 먼저, 없으면 기본주당이익 —
+    # EDGAR 경로와 같은 규율이다.
+    "eps": (
+        "jpcrp_cor:DilutedEarningsLossPerShareIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:DilutedEarningsPerShareSummaryOfBusinessResults",
+        "jpcrp_cor:BasicEarningsLossPerShareIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults",
+        "jpcrp_cor:BasicEarningsPerShareIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults",
+    ),
     "revenue": (
-        "jpcrp_cor:NetSalesSummaryOfBusinessResults",
+        "jpcrp_cor:RevenueIFRSSummaryOfBusinessResults",
         "jpcrp_cor:RevenuesIFRSSummaryOfBusinessResults",
-        "jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults",
+        "jpcrp_cor:NetSalesSummaryOfBusinessResults",
     ),
     "net_income": (
-        "jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
         "jpcrp_cor:ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+        "jpcrp_cor:ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
         "jpcrp_cor:NetIncomeLossSummaryOfBusinessResults",
     ),
-    "eps": (
-        "jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults",
-        "jpcrp_cor:BasicEarningsPerShareIFRSSummaryOfBusinessResults",
-    ),
     "bps": (
+        "jpcrp_cor:EquityToAssetRatioIFRSSummaryOfBusinessResults",
         "jpcrp_cor:NetAssetsPerShareSummaryOfBusinessResults",
-        "jpcrp_cor:EquityToOwnersOfParentPerShareIFRSSummaryOfBusinessResults",
     ),
     "equity": (
+        "jpcrp_cor:EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
         "jpcrp_cor:NetAssetsSummaryOfBusinessResults",
-        "jpcrp_cor:TotalEquityIFRSSummaryOfBusinessResults",
     ),
 }
+# ⚠️ `jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults`(経常利益)를 매출
+# 후보에 넣었다가 **도요타 매출이 4.2조엔**으로 찍혔다(실제 ~48조). 経常利益은
+# **이익 항목**이다 — 후보 목록에 넣을 때 그 항목이 정말 그 뜻인지 먼저 답할 것.
 
 # 상대 연도 컨텍스트 → 당기로부터 몇 해 전인가.
 _CTX_BACK = {
@@ -167,22 +176,43 @@ def _to_number(v: str) -> Optional[float]:
         return None
 
 
+def _basis_of(row: dict) -> str:
+    """`連結` / `個別` — 원천이 **컬럼으로 알려준다**. 컨텍스트 ID 접미로
+    추측하지 말 것(제출회사 블록은 접미가 다를 수 있다)."""
+    v = (row.get("連結・個別") or "").strip()
+    if v in ("連結", "個別"):
+        return v
+    return "個別" if _NONCONSOLIDATED in (row.get("コンテキストID") or "") \
+        else "連結"
+
+
 def summary_series(rows: list[dict], fiscal_end: str) -> list[dict]:
     """한 유가증권보고서의 「主要な経営指標等の推移」→ 최대 5기 연차 시계열.
 
     `fiscal_end` = 이 문서의 **당기 결산일**(YYYY-MM-DD). 과거 기는 거기서
     한 해씩 뺀다 — 상대 연도를 위치가 아니라 **날짜로 되짚는다**(#29).
 
+    ⚠️ **連結과 個別을 한 행에 섞지 않는다**(2026-08-22 도요타 실측: 連結은
+    IFRS, 提出会社 블록은 JP GAAP 라 매출·이익 정의가 통째로 다르다). 문서에
+    連結이 하나라도 있으면 **連結만** 쓰고, 그 항목에 連結이 없으면 비운다 —
+    빈칸이 정의가 갈린 숫자보다 낫다(#32 '옆에 다른 출처가 놓이는가').
+    連結이 아예 없는 문서(비연결 제출사)면 個別이 곧 그 회사다.
+
     반환: `[{"period": "YYYY-MM-DD", "revenue":…, "net_income":…,
-    "eps":…, "bps":…, "equity":…}]` (오래된 것부터). 값이 하나도 없는 기는
-    싣지 않는다.
+    "eps":…, "bps":…, "equity":…, "basis": "連結"|"個別"}]` (오래된 것부터).
     """
-    want = {eid: key for key, ids in SUMMARY_ELEMENTS.items() for eid in ids}
-    # {years_back: {key: (value, is_consolidated)}}
-    acc: dict[int, dict[str, tuple[float, bool]]] = {}
-    for r in rows:
-        key = want.get((r.get("要素ID") or "").strip())
-        if not key:
+    # 요소 ID → (키, 우선순위) — 목록에서 앞에 있을수록 정본이다.
+    want: dict[str, tuple[str, int]] = {}
+    for key, ids in SUMMARY_ELEMENTS.items():
+        for i, eid in enumerate(ids):
+            want[eid] = (key, i)
+    picked = [r for r in rows if (r.get("要素ID") or "").strip() in want]
+    basis = "連結" if any(_basis_of(r) == "連結" for r in picked) else "個別"
+    # {years_back: {key: (priority, value)}}
+    acc: dict[int, dict[str, tuple[int, float]]] = {}
+    for r in picked:
+        key, prio = want[(r.get("要素ID") or "").strip()]
+        if _basis_of(r) != basis:
             continue
         back = _ctx_years_back((r.get("コンテキストID") or "").strip())
         if back is None:
@@ -190,19 +220,17 @@ def summary_series(rows: list[dict], fiscal_end: str) -> list[dict]:
         val = _to_number(r.get("値", ""))
         if val is None:
             continue
-        cons = _NONCONSOLIDATED not in (r.get("コンテキストID") or "")
         cur = acc.setdefault(back, {}).get(key)
-        # 連結 우선 — 이미 연결값이 있으면 개별로 덮지 않는다.
-        if cur is not None and cur[1] and not cons:
+        if cur is not None and cur[0] <= prio:   # 앞선 후보가 이미 이겼다
             continue
-        acc[back][key] = (val, cons)
+        acc[back][key] = (prio, val)
     try:
         y, m, d = (int(x) for x in fiscal_end.split("-"))
     except Exception:                                          # noqa: BLE001
         return []
     out = []
     for back in sorted(acc, reverse=True):
-        vals = {k: v for k, (v, _c) in acc[back].items()}
+        vals = {k: v for k, (_p, v) in acc[back].items()}
         if not vals:
             continue
         # 결산일을 그대로 한 해씩 되짚는다(2/29 는 28일로).
@@ -211,6 +239,7 @@ def summary_series(rows: list[dict], fiscal_end: str) -> list[dict]:
         if m == 2 and d == 29:
             dd = 28 if (yy % 4 or (yy % 100 == 0 and yy % 400)) else 29
         vals["period"] = f"{yy:04d}-{m:02d}-{dd:02d}"
+        vals["basis"] = basis
         out.append(vals)
     return out
 
@@ -269,9 +298,13 @@ def fetch_doc_csv(doc_id: str, api_key: str) -> list[dict]:
     return rows
 
 
-def _scan_days(cl, sec: str, days, *, want: int, t0: float, budget_s: float,
+def _scan_days(cl, sec4: str, days, *, want: int, t0: float,
+               budget_s: float,
                progress, label: str) -> list[dict]:
-    """주어진 날짜들을 훑어 유가증권보고서(120)를 최대 `want` 건 모은다."""
+    """주어진 날짜들을 훑어 유가증권보고서(120)를 최대 `want` 건 모은다.
+
+    `sec4` 는 EDINET 증권코드 **앞 4자리**(= 티커) — 체크디지트는 안 본다.
+    """
     out: list[dict] = []
     for i, day in enumerate(days):
         if len(out) >= want:
@@ -286,7 +319,7 @@ def _scan_days(cl, sec: str, days, *, want: int, t0: float, budget_s: float,
             progress(f"    …{label} {day.isoformat()} ({len(out)}건, "
                      f"{time.time() - t0:.0f}초)")
         for d in cl._fetch_day(day):
-            if d.get("secCode") != sec:
+            if str(d.get("secCode") or "")[:4] != sec4:
                 continue
             if (d.get("docTypeCode") or "") != _DOC_TYPE_ANNUAL:
                 continue
@@ -323,10 +356,16 @@ def find_annual_docs(ticker: str, api_key: str, *, max_docs: int = 2,
     sec = _sec_code_for(ticker)
     if not sec or not api_key:
         return []
+    # ⚠️ **앞 4자리로 맞춘다**. `_sec_code_for` 는 체크디지트를 '0' 으로
+    # 가정하는데(그 독스트링이 스스로 "다른 9개도 시도해야 한다"고 적어 뒀다)
+    # 2026-08-22 실측에서 6758.T(소니)가 200일을 훑고도 **0건**이었다 —
+    # 원천에 있는 문서를 '없다'고 보고한 것이다. 티커 4자리는 고유하므로
+    # 앞자리 비교는 다른 회사를 잘못 잡지 않는다.
+    sec4 = sec[:4]
     cl = get_edinet()
     t0 = time.time()
     today = date.today()
-    out = _scan_days(cl, sec, [today - timedelta(days=o)
+    out = _scan_days(cl, sec4, [today - timedelta(days=o)
                                for o in range(days_back + 1)],
                      want=1, t0=t0, budget_s=budget_s, progress=progress,
                      label="최근")
@@ -345,7 +384,7 @@ def find_annual_docs(ticker: str, api_key: str, *, max_docs: int = 2,
         # 앵커에서 바깥쪽으로 번갈아 — 보통 며칠 안에 잡힌다.
         days = [anchor + timedelta(days=s * k)
                 for k in range(46) for s in ((1, -1) if k else (1,))]
-        got = _scan_days(cl, sec, days, want=1, t0=t0, budget_s=budget_s,
+        got = _scan_days(cl, sec4, days, want=1, t0=t0, budget_s=budget_s,
                          progress=progress, label=f"{back}년 전")
         if not got:
             if progress:

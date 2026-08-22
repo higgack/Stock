@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -75,6 +75,16 @@ def _unmatched_summary_ids(rows: list[dict], known: set[str]) -> list[str]:
             continue
         seen.setdefault(eid, (r.get("項目名") or "").strip())
     return [f"{k}  ({v})" for k, v in sorted(seen.items())]
+
+
+def _render_unmatched(miss: list[str]) -> list[str]:
+    """못 잡은 요소 ID 를 **전부** 찍는다.
+
+    ⚠️ 자르지 않는다 — 2026-08-22 실측에서 25종에서 잘려 IFRS 매출 요소 ID 가
+    '외 2종' 안에 숨었고, 그래서 매핑을 못 넓혔다. 이 목록이 매핑을 넓히는
+    **유일한 근거**다(이름을 추측하지 않기 위해, #24·#73).
+    """
+    return [f"     ❓ {m}" for m in miss]
 
 
 def probe_one(ticker: str, api_key: str) -> list[str]:
@@ -132,13 +142,17 @@ def probe_one(ticker: str, api_key: str) -> list[str]:
             out.append(f"        {dict(list(r.items())[:4])}")
     miss = _unmatched_summary_ids(rows, known)
     out.append(f"     못 잡은 「主要な経営指標」요소: {len(miss)}종")
-    for m in miss[:25]:
-        out.append(f"     ❓ {m}")
-    if len(miss) > 25:
-        out.append(f"     … 외 {len(miss) - 25}종")
+    out.extend(_render_unmatched(miss))
 
+    bas: dict[str, int] = {}
+    for r in rows:
+        if (r.get("要素ID") or "").strip() in known:
+            k = ex._basis_of(r)
+            bas[k] = bas.get(k, 0) + 1
+    out.append(f"     連結/個別 분포: {bas or '**판정 불가**'}")
     ser = ex.summary_series(rows, (doc.get("period_end") or "")[:10])
-    out.append(f"  ⑤ summary_series: {len(ser)}기")
+    out.append(f"  ⑤ summary_series: {len(ser)}기"
+               + (f" · 기준={ser[0].get('basis')}" if ser else ""))
     for rec in ser:
         out.append("     " + rec["period"] + " " + " · ".join(
             f"{k}={rec[k]:,.2f}" for k in
