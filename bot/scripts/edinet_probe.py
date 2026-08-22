@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 7
+_PROBE_VER = 8
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -106,6 +106,7 @@ def _why_no_doc(ticker: str) -> list[str]:
     today = _dt.date.today()
     total, empty_days, empty_weekdays, seen_types, codes = 0, 0, 0, {}, set()
     found: list[str] = []
+    ecodes: set[str] = set()
     for off in range(201):
         day = today - _dt.timedelta(days=off)
         docs = cl._fetch_day(day)
@@ -121,6 +122,8 @@ def _why_no_doc(ticker: str) -> list[str]:
             if code[:4] != sec4:
                 continue
             codes.add(code)
+            if d.get("edinetCode"):
+                ecodes.add(str(d["edinetCode"]))
             t = str(d.get("docTypeCode") or "?")
             seen_types[t] = seen_types.get(t, 0) + 1
             # ⚠️ 개수만 세면 "왜 120 이 없나"를 또 추측하게 된다 — **원문을
@@ -133,10 +136,19 @@ def _why_no_doc(ticker: str) -> list[str]:
                f"(주말 제외 **평일 {empty_weekdays}일** — 평일이 비면 원천 오류"
                f" 또는 빈 목록 캐시)")
     out.append(f"     ↳ 이 티커 문서: {seen_types or '**0건**'} "
-               f"· 실제 secCode {sorted(codes) or '없음'}")
+               f"· 실제 secCode {sorted(codes) or '없음'} "
+               f"· EDINET 코드 {sorted(ecodes) or '없음'}")
+    # ⚠️ **못 받은 날은 빈 날이 아니다.** 6월 말은 유가증권보고서가 몰려 목록이
+    # 수 MB 라 타임아웃이 나기 쉬운데, 그러면 그 날은 조용히 '문서 없음'이 된다.
+    fd = getattr(cl, "failed_days", {}) or {}
+    out.append(f"     ↳ 목록 요청 실패: {len(fd)}일"
+               + (f" — {sorted(fd.items())[:5]}" if fd else " (없음)"))
     for ln in sorted(found):
         out.append(f"        {ln}")
-    if seen_types and "120" not in seen_types:
+    if fd:
+        out.append("     ↳ → **목록을 못 받은 날이 있다** — '없다'를 아직 믿을 수 "
+                   "없다(#143 원천 부재와 수신 실패는 대조군으로만 갈린다)")
+    elif seen_types and "120" not in seen_types:
         out.append("     ↳ → 문서는 있는데 **유가증권보고서(120)가 없다** — "
                    "결산월/제출시기 문제이지 탐색 실패가 아니다")
     elif not seen_types and total:

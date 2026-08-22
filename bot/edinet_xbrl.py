@@ -300,11 +300,18 @@ def fetch_doc_csv(doc_id: str, api_key: str) -> list[dict]:
 
 def _scan_days(cl, sec4: str, days, *, want: int, t0: float,
                budget_s: float,
-               progress, label: str) -> list[dict]:
+               progress, label: str, ident: dict | None = None) -> list[dict]:
     """주어진 날짜들을 훑어 유가증권보고서(120)를 최대 `want` 건 모은다.
 
     `sec4` 는 EDINET 증권코드 **앞 4자리**(= 티커) — 체크디지트는 안 본다.
+
+    `ident` 는 호출 사이에 공유하는 셀이다. 증권코드로 맞은 문서에서 그 회사의
+    **EDINET 코드(E#####)** 를 배워 두고, 이후로는 `secCode` 가 안 붙은 문서도
+    같은 회사로 인정한다 — 원천이 모든 문서에 증권코드를 붙여 준다는 보장이
+    없는데 그걸 유일한 열쇠로 쓰면 있는 문서를 '없다'고 보고한다(#157 의 짝:
+    그건 우리가 조립한 식별자가 틀린 경우, 이건 원천이 그 칸을 비운 경우다).
     """
+    ident = {} if ident is None else ident
     out: list[dict] = []
     for i, day in enumerate(days):
         if len(out) >= want:
@@ -319,7 +326,12 @@ def _scan_days(cl, sec4: str, days, *, want: int, t0: float,
             progress(f"    …{label} {day.isoformat()} ({len(out)}건, "
                      f"{time.time() - t0:.0f}초)")
         for d in cl._fetch_day(day):
-            if str(d.get("secCode") or "")[:4] != sec4:
+            by_sec = str(d.get("secCode") or "")[:4] == sec4
+            if by_sec and d.get("edinetCode"):
+                ident.setdefault("edinet", str(d["edinetCode"]))
+            if not by_sec and not (
+                    ident.get("edinet")
+                    and str(d.get("edinetCode") or "") == ident["edinet"]):
                 continue
             if (d.get("docTypeCode") or "") != _DOC_TYPE_ANNUAL:
                 continue
@@ -365,10 +377,11 @@ def find_annual_docs(ticker: str, api_key: str, *, max_docs: int = 2,
     cl = get_edinet()
     t0 = time.time()
     today = date.today()
+    ident: dict = {}
     out = _scan_days(cl, sec4, [today - timedelta(days=o)
                                for o in range(days_back + 1)],
                      want=1, t0=t0, budget_s=budget_s, progress=progress,
-                     label="최근")
+                     label="최근", ident=ident)
     if not out or len(out) >= max_docs:
         return out
     # 해마다 같은 무렵을 좁게 본다. 앵커는 **직전에 찾은 문서**의 제출일 —
@@ -385,7 +398,7 @@ def find_annual_docs(ticker: str, api_key: str, *, max_docs: int = 2,
         days = [anchor + timedelta(days=s * k)
                 for k in range(46) for s in ((1, -1) if k else (1,))]
         got = _scan_days(cl, sec4, days, want=1, t0=t0, budget_s=budget_s,
-                         progress=progress, label=f"{back}년 전")
+                         progress=progress, label=f"{back}년 전", ident=ident)
         if not got:
             if progress:
                 progress(f"    ↪ {back}년 전 창에서 못 찾음 — 여기서 멈춘다")
