@@ -83,6 +83,31 @@ def fcf_from_parts(ocf, capex) -> float | None:
     return o - abs(c)
 
 
+def missing_reason(row: dict | None) -> str:
+    """FCF 를 못 낸 **사유**. 낼 수 있으면 빈 문자열.
+
+    ⚠️ 왜(사용자 2026-08-22 ASML "이거 맞는거야?" — 26.2Q 가 빈칸): 재료가
+    없으면 None 을 두는 건 옳지만(빈칸 > 틀린 숫자), 화면이 **왜 비었는지**
+    말하지 않으면 사용자가 물어야 한다. 같은 실수를 각주 없는 화면에서 세
+    번 반복했다(#123 계정 불일치 · #129 수주잔고 · 여기).
+    """
+    if not row:
+        return "현금흐름표 없음"
+    if _first(row, _FCF_NAMES) is not None:
+        return ""
+    o = _first(row, _OCF_NAMES)
+    c = _first(row, _CAPEX_NAMES)
+    if o is None and c is None:
+        return "영업활동현금흐름·CAPEX 모두 미제공"
+    if o is None:
+        return "영업활동현금흐름 미제공"
+    if c is None:
+        # ⚠️ OCF 를 그대로 FCF 로 쓰면 설비투자가 큰 회사가 크게 부풀려진다
+        # — 그래서 비우고, 비운 이유를 밝힌다.
+        return "CAPEX 미제공(영업현금흐름만으로는 FCF 가 아님)"
+    return ""
+
+
 def attach_to_series(qs: list | None, cf_rows: list | None) -> int:
     """분기 시계열에 `financials["FCF"]` 를 채운다 → 채운 개수.
 
@@ -100,12 +125,14 @@ def attach_to_series(qs: list | None, cf_rows: list | None) -> int:
         if not isinstance(q, dict):
             continue
         row = by_period.get(str(q.get("period", "")))
-        if row is None:
-            continue
-        v = fcf_from_row(row)
+        v = fcf_from_row(row) if row is not None else None
         if v is not None:
             q.setdefault("financials", {})["FCF"] = v
             n += 1
+        else:
+            # 사유를 **버리지 않는다** — 화면 각주가 빈 분기를 설명한다.
+            q.setdefault("_meta", {})["fcf_why"] = (
+                missing_reason(row) or "사유미상")
     return n
 
 

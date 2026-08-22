@@ -491,6 +491,15 @@ def _footnotes(payload: dict, qs: list) -> list[tuple[str, str]]:
         _parts = [f"{'·'.join(v)} {k[:40]}" for k, v in _grp.items()]
         notes.append((f"* 수주잔고 미표시 — {' / '.join(_parts)}"
                       "(추정 보정 없음)", _MUTED))
+    _fw = payload.get("fcf_why") or {}
+    if _fw:
+        _g: dict[str, list[str]] = {}
+        for _lb, _w in _fw.items():
+            _g.setdefault(_w, []).append(_lb)
+        notes.append(("* FCF 미표시 — "
+                      + " / ".join(f"{'·'.join(v)} {k[:44]}"
+                                   for k, v in _g.items())
+                      + "(OCF 만으로 대체하지 않음)", _MUTED))
     spread = payload.get("backlog_spread")
     if spread:
         notes.append((f"! 수주잔고 분기 간 격차 {spread}배 — 일부 분기 파싱이 "
@@ -1560,6 +1569,11 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         # 꺼내고 버렸다 — 아는 걸 화면이 말하게 한다(#123).
         "backlog_why": (qs[-1].get("_meta") or {}).get("backlog_why")
         if qs else None,
+        # FCF 빈 분기 사유 — `attach_to_series` 가 분기마다 심는다(#129 의
+        # 짝: 재료가 없어 비우는 건 옳지만 **왜** 비었는지는 말해야 한다).
+        "fcf_why": {q.get("label") or "?": (q.get("_meta") or {})["fcf_why"]
+                    for q in (qs or [])
+                    if (q.get("_meta") or {}).get("fcf_why")} or None,
         # 분기 간 배수가 비정상이면 어느 한 분기의 파싱이 틀렸다는 뜻 —
         # 숫자를 지우지 않고 '의심'을 화면에 밝힌다(어느 쪽이 틀렸는지는
         # 원문 없이 못 가른다).

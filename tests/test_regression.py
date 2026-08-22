@@ -31402,3 +31402,59 @@ class TestBacklogReasonsAndParallel20260822:
         vals = [(q["financials"].get("수주잔고")) for q in qs]
         assert vals.count(100.0) >= 4, vals
         assert (qs[-1].get("_meta") or {}).get("backlog_why", {}).get("21Q")
+
+
+class TestFcfMissingReason20260822:
+    """FCF 빈 분기도 **왜** 비었는지 말해야 한다.
+
+    사용자 2026-08-22 ASML "이거 맞는거야?" — 26.2Q 가 빈칸이었다. 재료가
+    없으면 비우는 건 옳지만(빈칸 > 틀린 숫자), 사유를 안 말하면 사용자가
+    물어야 한다. 같은 실수를 세 번째 반복했다(#123 계정 불일치 · #129
+    수주잔고 · 여기)."""
+
+    def test_reason_names_the_missing_input(self):
+        from bot.fcf import missing_reason
+        assert missing_reason(None) == "현금흐름표 없음"
+        assert "CAPEX" in missing_reason({"Operating Cash Flow": 1e9})
+        assert "영업활동현금흐름" in missing_reason(
+            {"Capital Expenditure": -1e8})
+        assert missing_reason(
+            {"Operating Cash Flow": 1e9, "Capital Expenditure": -1e8}) == ""
+        # 원천이 FCF 를 직접 주면 사유 자체가 없다
+        assert missing_reason({"Free Cash Flow": 5e8}) == ""
+
+    def test_attach_records_the_reason_per_quarter(self):
+        from bot.fcf import attach_to_series
+        qs = [{"period": "2026-03-31", "financials": {}},
+              {"period": "2026-06-30", "financials": {}}]
+        rows = [{"period": "2026-03-31", "Operating Cash Flow": 2e9,
+                 "Capital Expenditure": -3e8},
+                {"period": "2026-06-30", "Operating Cash Flow": 1e9}]
+        assert attach_to_series(qs, rows) == 1
+        assert qs[0]["financials"]["FCF"] == 1.7e9
+        assert "CAPEX" in qs[1]["_meta"]["fcf_why"]
+        assert "fcf_why" not in (qs[0].get("_meta") or {}), "채운 분기엔 사유 없음"
+
+    def test_ocf_is_never_used_alone(self):
+        """⚠️ CAPEX 가 없다고 OCF 를 FCF 로 쓰면 설비투자가 큰 회사가 크게
+        부풀려진다 — 비우고 **이유를 밝힌다**."""
+        from bot.fcf import fcf_from_parts, fcf_from_row
+        assert fcf_from_parts(1e9, None) is None
+        assert fcf_from_row({"Operating Cash Flow": 1e9}) is None
+
+    def test_footnote_groups_the_reasons(self):
+        import bot.quarterly_infographic as qi
+        notes = qi._footnotes(
+            {"fcf_why": {"25.2Q": "CAPEX 미제공", "25.3Q": "CAPEX 미제공",
+                         "26.2Q": "현금흐름표 없음"}},
+            [{"label": "26.2Q", "financials": {}}])
+        line = next((t for t, _c in notes if "FCF 미표시" in t), "")
+        assert "25.2Q·25.3Q" in line and "현금흐름표 없음" in line, line
+
+    def test_payload_carries_it(self):
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        keys = {k.value for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Dict) for k in n.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        assert "fcf_why" in keys, "payload 에 안 실린다"
