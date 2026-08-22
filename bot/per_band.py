@@ -264,14 +264,15 @@ _SRC_LABEL = {
 }
 
 
-def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
-    """월봉 종가 [(YYYY-MM-DD, close)] — **분할반영·배당미반영**(Yahoo `Close`).
+def _price_history(ticker: str, years: int
+                   ) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """(월봉 종가, 분할 이력) — **한 번의 호출**에서 같이 받는다.
 
-    ⚠️ 차트 경로(`fetch_chart_payload`)는 `auto_adjust=True` 라 **배당까지**
-    소급 조정한다. PER 은 "그때 실제로 거래된 가격 ÷ 그때 보고된 EPS" 이므로
-    배당 조정된 옛 주가를 쓰면 **옛 PER 이 체계적으로 낮게** 나온다. Yahoo 의
-    `Close` 는 분할만 반영하므로 그게 맞다. 못 받으면 차트 경로로 폴백한다
-    (KR 네이버 폴백 등 — 그때는 배당 조정분만큼의 오차를 감수한다).
+    ⚠️ 분할을 별도 호출(`Ticker.splits`)로 받았더니 VM 실측에서 **빈 리스트**가
+    와서 환산이 통째로 안 돌았다(2026-08-22 LRCX 연간 EPS 가 여전히 14.3배
+    튀었다) — 조용히 실패하는 두 번째 호출에 기대면 안 된다. `auto_adjust=False`
+    응답은 `Close`(분할반영·배당미반영)와 `Stock Splits` 를 **같이** 주므로
+    둘의 기준이 정의상 어긋날 수 없다.
     """
     try:
         import yfinance as yf
@@ -279,10 +280,20 @@ def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
             period="max" if years >= 10 else "5y",
             interval="1mo", auto_adjust=False)
         if h is not None and len(h) and "Close" in h.columns:
-            out = [(str(i)[:10], float(v)) for i, v in h["Close"].items()
-                   if v == v and v is not None and float(v) > 0]
-            if out:
-                return out
+            px = [(str(i)[:10], float(v)) for i, v in h["Close"].items()
+                  if v == v and v is not None and float(v) > 0]
+            sp = []
+            if "Stock Splits" in h.columns:
+                for i, v in h["Stock Splits"].items():
+                    try:
+                        r = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if r > 0 and abs(r - 1.0) > 1e-9:
+                        sp.append((str(i)[:10], r))
+                sp.sort()
+            if px:
+                return px, sp
     except Exception as exc:                                   # noqa: BLE001
         log.debug("per_band: yfinance 월봉(미조정) 실패 %s: %s", ticker, exc)
     try:
@@ -292,10 +303,19 @@ def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
                                   lite=True) or {}
     except Exception as exc:                                   # noqa: BLE001
         log.debug("per_band: 가격 이력 실패 %s: %s", ticker, exc)
-        return []
+        return [], []
     ts, cl = pay.get("times") or [], pay.get("close") or []
-    return [(str(t), float(c)) for t, c in zip(ts, cl)
-            if c is not None]
+    return [(str(t), float(c)) for t, c in zip(ts, cl) if c is not None], []
+
+
+def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
+    """월봉 종가 [(YYYY-MM-DD, close)] — **분할반영·배당미반영**(Yahoo `Close`).
+
+    ⚠️ 차트 경로(`fetch_chart_payload`)는 `auto_adjust=True` 라 **배당까지**
+    소급 조정한다. PER 은 "그때 실제로 거래된 가격 ÷ 그때 보고된 EPS" 이므로
+    배당 조정된 옛 주가를 쓰면 **옛 PER 이 체계적으로 낮게** 나온다.
+    """
+    return _price_history(ticker, years)[0]
 
 
 # ── 주식분할 정합 ────────────────────────────────────────────────────
@@ -304,7 +324,7 @@ def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
 # Yahoo 종가는 **항상 분할반영**인데 EDGAR·EDINET·야후 손익의 EPS 는
 # **as-reported** 라서 분할 시점을 경계로 두 계열의 기준이 갈린 것이다.
 # 나란히 놓이는 두 값은 같은 기준이어야 한다(#33 의 분할판).
-_EPS_BREAK = 4.0          # 인접 기간 EPS 가 이 배수 이상 튀면 분할 잔재 의심
+_EPS_BREAK = 5.0          # 인접 기간 EPS 가 이 배수 이상 튀면 기준 불일치 의심
 
 
 def split_factors(ticker: str) -> list[tuple[str, float]]:
@@ -347,25 +367,37 @@ def adjust_eps_for_splits(rows: list, splits: list) -> list:
 
 
 def eps_break_reason(rows: list) -> str | None:
-    """분할 잔재가 남았으면 사유, 없으면 None.
+    """설명되지 않는 EPS 급변이 있으면 사유, 없으면 None(감사·표시용)."""
+    return trim_at_eps_break(rows)[1]
 
-    ⚠️ 분할 이력을 못 받는 날이 있다 — 그때 조용히 넘기면 **PER 이 10배
-    틀린 표**가 그대로 나간다. 인접 기간 EPS 가 `_EPS_BREAK` 배 이상 튀면
-    (실적 변동으로 설명 안 되는 크기다) 만들지 않는다(#29 빈칸이 낫다).
+
+def trim_at_eps_break(rows: list) -> tuple[list, str | None]:
+    """설명되지 않는 EPS 급변이 보이면 **그 앞쪽만 잘라내고** 남은 구간을 준다.
+
+    ⚠️ 표를 통째로 비우면 사용자에게는 '수집 실패'로 보인다 — 실제로 그렇게
+    했다가 LRCX·KLAC 이 빈 화면이 됐다(2026-08-22 감사 실측). 어긋난 건
+    **경계 이전 구간**이므로 거기까지만 버린다.
+
+    ⚠️ **관측 배수로 분할비율을 맞히려 하지 않는다.** 분할과 실적 변동이 곱해져
+    관측값은 정수가 아니다(LRCX 실측 9.9·14.3 — 실제 분할은 10:1). 비율 맞히기는
+    추측이므로, 원인을 단정하지 않고 **크기**로만 자른다. 문턱은 5배 —
+    NVMI 는 2016→2017 에 연간 EPS 가 4.7배 늘었고 그건 실적이다(#146 정당한
+    변형까지 막지 말 것).
     """
-    prev = None
-    for period, eps in rows or []:
-        if eps is None or eps <= 0:
-            prev = None
-            continue
+    clean = [(p, v) for p, v in (rows or []) if v is not None and v > 0]
+    cut, why, prev = None, None, None
+    for period, eps in clean:
         if prev is not None:
             hi, lo = max(prev[1], eps), min(prev[1], eps)
             if lo > 0 and hi / lo >= _EPS_BREAK:
-                return (f"{prev[0]} → {period} 사이 EPS 가 {hi / lo:.1f}배 "
-                        f"튑니다 — 주식분할 조정이 안 된 것으로 보여 "
-                        f"PER 이력을 만들지 않았습니다.")
+                cut, why = period, (
+                    f"{prev[0]} → {period} 사이 EPS 가 {hi / lo:.1f}배 튀어 "
+                    f"그 이전 구간은 뺐습니다 — 주가는 분할반영인데 원천 EPS 는 "
+                    f"보고 당시 값이라 기준이 갈릴 수 있습니다.")
         prev = (period, eps)
-    return None
+    if cut is None:
+        return rows or [], None
+    return [(p, v) for p, v in (rows or []) if str(p) >= str(cut)], why
 
 
 def _eps_rows_from_snapshot(snap: dict | None, kind: str) -> list:
@@ -399,7 +431,7 @@ def for_ticker(ticker: str, snap: dict | None = None,
         mkt = detect_market(tk)
     except Exception:                                          # noqa: BLE001
         mkt = "US"
-    px = _monthly_closes(tk, years)
+    px, _sp = _price_history(tk, years)
     if not px:
         return None, "가격 이력을 받지 못했습니다."
     # 재무제표 통화 ≠ 거래 통화면 그 시점 환율로 EPS 를 환산한다(위 §통화 정합).
@@ -424,12 +456,6 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # ⚠️ 우리가 못 본 단위·통화 사고를 잡는 2차 그물 — TSM 은 통화 가드가
         # 1차지만, 같은 증상이 다른 경로로 또 올 수 있다(#54 대조 0건 금지).
         bad = implausible_reason(res.get("rows"))
-        if not bad:
-            # 분할 이력을 못 받은 날은 위 환산이 아무것도 못 한다 — 그대로
-            # 내보내면 PER 이 배수만큼 틀린 표가 나간다(#29 빈칸이 낫다).
-            bad = eps_break_reason(
-                [(r.get("period"), r.get("eps"))
-                 for r in (res.get("rows") or []) if isinstance(r, dict)])
         if bad:
             log.warning("per_band: %s 배수 비정상 — %s", tk, bad)
             _pack.reason = bad
@@ -450,18 +476,33 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # PER 밴드차트 만들수 있으면 만들어줘"). 표와 한 재료라 갈라질 수 없다.
         res["chart"] = chart_block(res, px)
         res["csym"] = currency_symbol(tk)
+        # 잘라낸 이유는 **화면이 말해야** 한다(#43) — 조용히 짧아지면 사용자는
+        # 원천이 안 준 것으로 읽는다.
+        if _conv.note:
+            res["trim_note"] = _conv.note
         return res
 
     _pack.reason = None
 
     # 주가(분할반영)와 EPS(as-reported)의 기준을 맞춘다 — 이걸 안 하면 분할
     # 시점을 경계로 PER 이 분할비율만큼 틀린다(2026-08-22 LRCX 실측).
-    _splits = split_factors(tk)
+    # 가격과 **같은 응답**에서 온 분할을 쓴다(별도 호출은 조용히 빈다).
+    _splits = _sp or split_factors(tk)
 
     def _conv(rows):
-        """통화가 다르면 환산하고, **주식분할 기준을 주가에 맞춘다**."""
+        """통화가 다르면 환산하고, **주식분할 기준을 주가에 맞춘다**.
+
+        환산 뒤에도 잔재가 보이면 그 **이전 구간만** 잘라낸다 — 통째로 비우면
+        사용자에겐 수집 실패로 보인다(2026-08-22 LRCX·KLAC 빈 화면).
+        """
         rows = adjust_eps_for_splits(rows, _splits)
+        rows, note = trim_at_eps_break(rows)
+        if note:
+            log.warning("per_band: %s %s", tk, note)
+            _conv.note = note
         return convert_eps(rows, fx) if fx else rows
+
+    _conv.note = None
 
     if mkt == "US":
         try:
@@ -519,6 +560,11 @@ def for_ticker(ticker: str, snap: dict | None = None,
     got = _pack(build(px, _conv(a), annual=True), "yf-a")
     if got:
         return got, None
+    # 잘라낸 뒤 점이 모자라 못 만든 경우엔 **잘라낸 사유**를 말해야 한다 —
+    # "EPS 이력이 부족" 이라고만 하면 원천이 안 준 것으로 읽힌다(#129·#131).
+    if _conv.note:
+        return None, (_conv.note + " 남은 구간이 밴드 최소치(4점)에 못 미쳐 "
+                                   "표를 만들지 못했습니다.")
     return None, (_pack.reason
                   or "EPS 이력이 부족해 PER 밴드를 만들지 못했습니다.")
 

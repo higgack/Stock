@@ -129,6 +129,15 @@ class EdinetClient:
             return []
 
         results = payload.get("results") or []
+        # ⚠️ **빈 목록을 영구 캐시하지 않는다**. 과거 날짜는 안 변한다는 전제로
+        # 영원히 믿었는데, API 가 한 번 빈 응답을 주면 그 날은 영영 비어 보인다
+        # — 2026-08-22 소니(6758.T)가 201일을 훑고도 유가증권보고서 0건이었고
+        # 그 갈래를 가르는 데 라운드를 썼다(#119 의 EDINET 판). 휴일은 정상적으로
+        # 비므로 빈 결과는 짧게만 믿는다.
+        if not results:
+            log.debug("edinet: %s 빈 목록 — 캐시하지 않음(휴일 또는 원천 오류)",
+                      day)
+            return results
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(json.dumps(results, ensure_ascii=False))

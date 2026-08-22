@@ -32007,9 +32007,9 @@ class TestBandCoverageAndPartialSource20260822:
                          + _dt.timedelta(days=30 * k)).isoformat(),
                 "PER": 15.0 + (k % 7)} for k in range(60)]
         monkeypatch.setattr(fm, "fetch_per_pbr", lambda t, days=90: raw)
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: [
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: ([
             ((_dt.date(2021, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
-             500.0 + 5 * k) for k in range(60)])
+             500.0 + 5 * k) for k in range(60)], []))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         tbl, why = pb.for_ticker("2330.TW", {})
@@ -32321,7 +32321,7 @@ class TestCnPerBandFromAkshare20260822:
         """⚠️ AST 로 호출 존재만 보면 **게이트를 못 잡는다**(#141 실측) —
         수집기를 통째로 태워 basis 를 본다."""
         import bot.per_band as pb
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
         monkeypatch.setattr(pb, "baidu_per_rows",
                             lambda t, p, y=10: pb.rows_from_per_history(
                                 self._pts(), p))
@@ -32734,13 +32734,13 @@ class TestCurrencyMismatchBand20260822:
         import bot.per_band as pb
         pb_orig = pb._fx_monthly
         pb._fx_monthly = lambda a, b, y: []
-        mc_orig = pb._monthly_closes
-        pb._monthly_closes = lambda t, y: [("2025-01-01", 100.0)]
+        mc_orig = pb._price_history
+        pb._price_history = lambda t, y: ([("2025-01-01", 100.0)], [])
         try:
             tbl, why = pb.for_ticker(
                 "TSM", {"financial_currency": "TWD", "currency": "USD"})
         finally:
-            pb._fx_monthly, pb._monthly_closes = pb_orig, mc_orig
+            pb._fx_monthly, pb._price_history = pb_orig, mc_orig
         assert tbl is None
         assert why and "TWD" in why and "USD" in why, why
 
@@ -32752,8 +32752,8 @@ class TestCurrencyMismatchBand20260822:
         hit = []
         monkeypatch.setattr(pb, "_fx_monthly",
                             lambda a, b, y: hit.append((a, b)) or [])
-        monkeypatch.setattr(pb, "_monthly_closes",
-                            lambda t, y: [("2025-01-01", 100.0)])
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: ([("2025-01-01", 100.0)], []))
         monkeypatch.setattr(pb, "_eps_rows_from_snapshot", lambda s, k: [])
         return hit
 
@@ -32776,7 +32776,7 @@ class TestCurrencyMismatchBand20260822:
         """⚠️ `implausible_reason` 을 직접 부르는 테스트는 **배선을 못 잡는다**
         (#20) — 수집기를 통째로 태워 밴드가 실제로 거부되는지 본다."""
         import bot.per_band as pb
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._PX)
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._PX, []))
         monkeypatch.setattr(
             pb, "_eps_rows_from_snapshot",
             lambda s, k: self._EPS_TWD if k == "annual" else [])
@@ -33819,7 +33819,7 @@ class TestEdinetXbrl20260822:
                100.0 + 3 * k) for k in range(130)]
         annual = [(f"{y}-12-31", 2.0 + 0.4 * (y - 2016))
                   for y in range(2016, 2026)]
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: px)
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, []))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         import bot.edgar_eps as ee
@@ -33841,7 +33841,7 @@ class TestEdinetXbrl20260822:
         px = [((_dt.date(2016, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
                1000.0 + 5 * k) for k in range(130)]
         eps = [(f"{y}-03-31", 50.0 + y - 2017) for y in range(2017, 2027)]
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: px)
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, []))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         import bot.edinet_xbrl as ex
@@ -33859,7 +33859,7 @@ class TestEdinetXbrl20260822:
         import bot.edinet_xbrl as ex
         px = [((_dt.date(2020, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
                1000.0 + 5 * k) for k in range(70)]
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: px)
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, []))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ex, "eps_rows",
@@ -34044,6 +34044,54 @@ class TestEdinetXbrl20260822:
         txt = " ".join(ep._why_no_doc("6758.T"))
         assert "빈 날 201일" in txt, txt
 
+    def test_empty_daily_listing_is_not_cached_forever(self, monkeypatch,
+                                                       tmp_path):
+        """⚠️ API 가 한 번 빈 응답을 주면 그 날은 **영영 비어 보인다** —
+        2026-08-22 소니(6758.T)가 201일을 훑고도 유가증권보고서 0건이었고
+        그 갈래를 가르는 데 라운드를 썼다(#119 의 EDINET 판). 휴일은 정상적으로
+        비므로 빈 결과는 짧게만 믿는다."""
+        import datetime as _dt
+        import bot.edinet_client as ec
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+        cl = ec.EdinetClient(api_key="k")
+
+        class _R:
+            status_code = 200
+
+            @staticmethod
+            def raise_for_status():
+                pass
+
+            @staticmethod
+            def json():
+                return {"results": []}
+        monkeypatch.setattr(ec.requests, "get", lambda *a, **k: _R())
+        assert cl._fetch_day(_dt.date(2026, 6, 19)) == []
+        assert not list(tmp_path.glob("*.json")), "빈 목록을 캐시했다"
+
+        class _R2(_R):
+            @staticmethod
+            def json():
+                return {"results": [{"docID": "S1"}]}
+        monkeypatch.setattr(ec.requests, "get", lambda *a, **k: _R2())
+        assert cl._fetch_day(_dt.date(2026, 6, 19)) == [{"docID": "S1"}]
+        assert list(tmp_path.glob("*.json")), "채워진 목록을 캐시 안 했다"
+
+    def test_probe_separates_empty_weekdays_from_weekends(self, monkeypatch):
+        """주말은 정상적으로 빈다 — **평일**이 비어야 원천 오류/캐시 오염이다.
+        둘을 합쳐 세면 '빈 날 72일'이 정상인지 이상인지 알 수 없다."""
+        import bot.scripts.edinet_probe as ep
+        import bot.edinet_client as ec
+
+        class _Cl:
+            @staticmethod
+            def _fetch_day(day):
+                return [] if day.weekday() >= 5 else [
+                    {"secCode": "67580", "docTypeCode": "220"}]
+        monkeypatch.setattr(ec, "get_edinet", lambda: _Cl())
+        txt = " ".join(ep._why_no_doc("6758.T"))
+        assert "평일 0일" in txt, txt
+
     def test_probe_shouts_when_nothing_matched(self, monkeypatch, tmp_path):
         """매칭 0종이면 **파서가 눈이 먼 것**일 수 있다 — '원천에 없음'과
         구별되게 원문 표본을 찍는다. 대조 0건은 통과가 아니라 실패다(#54)."""
@@ -34125,21 +34173,24 @@ class TestSplitConsistentPerHistory20260822:
 
     @staticmethod
     def _eps_asreported():
-        """2024-10 10:1 분할 전은 10배 크게 보고된다(원천 그대로)."""
+        """2021-10 10:1 분할 전은 10배 크게 보고된다(원천 그대로).
+
+        ⚠️ 분할 **이후** 기간을 넉넉히 둔다 — 잘라낸 뒤 남는 점이 밴드
+        최소치(4점)를 넘어야 '잘라도 표는 나온다'를 실제로 잴 수 있다(#91c)."""
         out = []
         for y in range(2017, 2027):
             v = 3.0 + 0.3 * (y - 2017)
-            out.append((f"{y}-06-30", v * 10 if y < 2025 else v))
+            out.append((f"{y}-06-30", v * 10 if y < 2022 else v))
         return out
 
     def test_end_to_end_per_is_continuous_after_the_fix(self, monkeypatch):
         import bot.per_band as pb
         import bot.edgar_eps as ee
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors",
-                            lambda t: [("2024-10-03", 10.0)])
+                            lambda t: [("2021-10-03", 10.0)])
         monkeypatch.setattr(ee, "eps_history",
                             lambda t, years=10: {"quarterly": [],
                                                  "annual": self._eps_asreported(),
@@ -34152,11 +34203,13 @@ class TestSplitConsistentPerHistory20260822:
         for a, b in zip(pers, pers[1:]):
             assert max(a, b) / min(a, b) < 3, (a, b, pers)
 
-    def test_end_to_end_refuses_when_split_history_is_missing(self, monkeypatch):
-        """⚠️ 분할 이력을 못 받으면 **만들지 않는다** — 사유를 돌려준다(#43)."""
+    def test_end_to_end_trims_when_split_history_is_missing(self, monkeypatch):
+        """⚠️ 분할 이력을 못 받으면 어긋난 **앞쪽 구간만** 잘라내고 사유를
+        표시한다(#43). 통째로 비우면 사용자에겐 '수집 실패'로 보인다 —
+        2026-08-22 감사에서 LRCX·KLAC 이 실제로 빈 화면이 됐다."""
         import bot.per_band as pb
         import bot.edgar_eps as ee
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
@@ -34165,8 +34218,82 @@ class TestSplitConsistentPerHistory20260822:
                                                  "annual": self._eps_asreported(),
                                                  "tag": "x"})
         tbl, why = pb.for_ticker("LRCX", {})
-        assert tbl is None, tbl
-        assert why and "분할" in why, why
+        assert tbl is not None, why
+        assert tbl.get("trim_note"), "잘라내고도 사유를 안 실었다"
+        # 잘린 뒤 남은 구간은 기준이 일관돼야 한다
+        eps = [r["eps"] for r in tbl["rows"] if r.get("eps")]
+        for x, y in zip(eps, eps[1:]):
+            assert max(x, y) / min(x, y) < 5, (x, y, eps)
+
+    def test_splits_come_from_the_same_response_as_the_prices(self):
+        """⚠️ 분할을 **별도 호출**(`Ticker.splits`)로 받았더니 VM 실측에서 빈
+        리스트가 와 환산이 통째로 안 돌았다(2026-08-22 LRCX 가 여전히 14.3배
+        튀었다). `auto_adjust=False` 응답은 `Close` 와 `Stock Splits` 를 같이
+        주므로 둘의 기준이 정의상 어긋날 수 없다."""
+        import bot.per_band as pb
+        calls = []
+
+        class _T:
+            def __init__(self, t):
+                pass
+
+            def history(self, **kw):
+                calls.append(kw)
+                import pandas as pd
+                idx = pd.to_datetime(["2024-06-30", "2024-10-31"])
+                return pd.DataFrame({"Close": [100.0, 11.0],
+                                     "Stock Splits": [0.0, 10.0]}, index=idx)
+
+            @property
+            def splits(self):
+                raise AssertionError("별도 호출에 기대면 안 된다")
+
+        import yfinance as yf
+        orig = yf.Ticker
+        yf.Ticker = _T
+        try:
+            px, sp = pb._price_history("LRCX", 10)
+        finally:
+            yf.Ticker = orig
+        assert sp == [("2024-10-31", 10.0)], sp
+        assert len(px) == 2 and calls[0]["auto_adjust"] is False, (px, calls)
+
+    def test_for_ticker_uses_the_splits_that_came_with_the_prices(
+            self, monkeypatch):
+        """⚠️ 픽스처가 `split_factors` 를 따로 스텁하면 **별도 호출로 되돌리는
+        뮤테이션이 통과한다**(실측, #91c). 별도 호출을 죽여 놓고, 가격과 같이
+        온 분할만으로 환산이 되는지 본다."""
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+
+        def _boom(_t):
+            raise AssertionError("별도 분할 호출에 기댔다")
+        monkeypatch.setattr(pb, "split_factors", _boom)
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: (self._px(), [("2021-10-03", 10.0)]))
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": [],
+                                                 "annual": self._eps_asreported(),
+                                                 "tag": "x"})
+        tbl, why = pb.for_ticker("LRCX", {})
+        assert tbl is not None, why
+        assert not tbl.get("trim_note"), tbl.get("trim_note")
+        eps = [r["eps"] for r in tbl["rows"] if r.get("eps")]
+        for x, y in zip(eps, eps[1:]):
+            assert max(x, y) / min(x, y) < 3, (x, y, eps)
+
+    def test_split_ratio_is_not_guessed_from_the_observed_jump(self):
+        """분할과 실적 변동이 곱해져 관측 배수는 정수가 아니다(LRCX 실측
+        9.9·14.3 — 실제 분할은 10:1). 비율 맞히기는 추측이므로 **크기**로만
+        자르고 원인을 단정하지 않는다."""
+        import bot.per_band as pb
+        assert not hasattr(pb, "looks_like_a_split"), \
+            "관측 배수로 분할비율을 맞히려 하고 있다"
+        _kept, why = pb.trim_at_eps_break([("2024-06-30", 30.7),
+                                           ("2025-06-30", 3.9)])
+        assert why and "분할" in why and "갈릴 수 있습니다" in why, why
 
     def test_band_prices_are_not_dividend_adjusted(self):
         """PER 은 '그때 실제로 거래된 가격 ÷ 그때 보고된 EPS' 다.
@@ -34217,11 +34344,30 @@ class TestSplitConsistentPerHistory20260822:
         assert ttm_annual_mismatch([("2024-03-31", 2.03)],
                                    [("2024-06-30", 25.0)]) is None
 
+    def test_trim_leaving_too_few_points_says_why(self, monkeypatch):
+        """⚠️ 잘라낸 뒤 점이 모자라면 **잘라낸 사유**를 말한다 — "EPS 이력이
+        부족" 이라고만 하면 원천이 안 준 것으로 읽힌다(#129·#131)."""
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: (self._px(), []))
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(pb, "split_factors", lambda t: [])
+        ann = [(f"{y}-06-30", 30.0) for y in range(2017, 2026)]
+        ann.append(("2026-06-30", 3.4))          # 잘리면 1점만 남는다
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": [], "annual": ann,
+                                                 "tag": "x"})
+        tbl, why = pb.for_ticker("LRCX", {})
+        assert tbl is None, tbl
+        assert why and "튀어" in why and "최소치" in why, why
+
     def test_broken_quarterly_falls_back_to_annual(self, monkeypatch):
         """어긋나면 분기 경로를 **쓰지 않고** 연간으로 내려간다."""
         import bot.per_band as pb
         import bot.edgar_eps as ee
-        monkeypatch.setattr(pb, "_monthly_closes", lambda t, y: self._px())
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
@@ -34323,3 +34469,14 @@ class TestPerBandAudit20260822:
         names = [c.func.id for c in ast.walk(fn)
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
         assert "collect_stock_snapshot" in names, names
+
+    def test_audit_gets_splits_the_same_way_the_product_does(self):
+        """감사가 별도 호출로 분할을 받으면 **제품과 다른 값을 대조**하게 된다
+        — 그 호출은 조용히 빈다(2026-08-22 실측, #35)."""
+        import ast
+        src = open("bot/scripts/per_band_audit.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "audit_one")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("_annual_eps")
+        assert "_price_history" in seg[max(0, i - 400):i], seg[i - 400:i]
