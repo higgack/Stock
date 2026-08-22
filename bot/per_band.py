@@ -197,7 +197,7 @@ def eps_cadence_stats(rows: list | None) -> tuple[int, int]:
     return flat, steps
 
 
-def eps_cadence(rows: list | None) -> tuple[str | None, str]:
+def eps_cadence(rows: list | None, denom: str = "EPS") -> tuple[str | None, str]:
     """되짚은 EPS 가 **계단형(분기 실적)** 인가 **연속형(전망·보간)** 인가.
 
     ⚠️ 2026-08-22 사용자 질문("분기단위로 하는 게 맞지 않을까? 실제 FnGuide
@@ -217,9 +217,9 @@ def eps_cadence(rows: list | None) -> tuple[str | None, str]:
         return None, "표본 부족 — 판정 불가"
     share = flat / steps
     if share >= 0.5:
-        return "계단형", (f"되짚은 EPS 가 {flat}/{steps} 구간에서 그대로 "
+        return "계단형", (f"되짚은 {denom} 가 {flat}/{steps} 구간에서 그대로 "
                        f"— 분기 확정 실적이 그대로 유지되는 형태")
-    return "연속형", (f"되짚은 EPS 가 {steps - flat}/{steps} 구간에서 매번 "
+    return "연속형", (f"되짚은 {denom} 가 {steps - flat}/{steps} 구간에서 매번 "
                     f"바뀜 — 분기 확정치가 아니라 매달 갱신되는 값"
                     f"(선행 컨센서스·보간)")
 

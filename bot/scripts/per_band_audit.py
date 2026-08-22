@@ -35,7 +35,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 8
+_AUDIT_VER = 9
 # ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
 # 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
 # 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
@@ -87,12 +87,24 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
         return [("❓", "전체", "이력 행이 0개 — 판정 불가")]
 
     # ① 산수 — 화면에 나란히 놓인 세 칸이 서로 맞아야 한다(#33)
-    bad = [r for r in rows
-           if r.get("eps") and r.get("per")
-           and abs(r["price"] / r["eps"] - r["per"]) > max(0.02, r["per"] * 0.01)]
-    out.append(("❌" if bad else "✅", "산수",
-                f"{len(rows) - len(bad)}/{len(rows)} 행에서 주가÷EPS=PER"
-                + (f" · 첫 불일치 {bad[0]}" if bad else "")))
+    # ⚠️ **검산한 행 수를 세어야 한다.** 국내(FnGuide)는 분모를 안 줘서 `eps`
+    # 가 전 행 None 인데, 옛 판은 "49/49 행에서 주가÷EPS=PER ✅" 라고 찍었다
+    # — **한 행도 안 재고 통과**시킨 것이다(#54 대조 0건은 ✅ 가 아니다).
+    # 감사가 국내 경로를 타게 만든 바로 그 커밋에서 이 거짓 초록이 생겼다.
+    kind = tbl.get("kind") or "PER"
+    denom = "BPS" if kind == "PBR" else "EPS"
+    checkable = [r for r in rows if r.get("eps") and r.get("per") and r.get("price")]
+    bad = [r for r in checkable
+           if abs(r["price"] / r["eps"] - r["per"]) > max(0.02, r["per"] * 0.01)]
+    if not checkable:
+        out.append(("❓", "산수",
+                    f"검산 가능한 행이 0개 — 원천이 분모({denom})를 주지 않는다"
+                    f"(배수는 원천이 직접 준 값)"))
+    else:
+        out.append(("❌" if bad else "✅", "산수",
+                    f"{len(checkable) - len(bad)}/{len(checkable)} 행에서 "
+                    f"주가÷{denom}={kind}"
+                    + (f" · 첫 불일치 {bad[0]}" if bad else "")))
 
     # ② 분할 정합
     # ⚠️ 원천이 **PER 을 직접 주는** 경로(FinMind·바이두·FnGuide)에서는 EPS 가
@@ -102,9 +114,13 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
         out.append(("✅", "분할",
                     "해당 없음 — 원천이 PER 을 직접 준다(우리가 EPS 로 "
                     "나누지 않으므로 분할 기준이 갈릴 수 없다)"))
+    elif not checkable:
+        # 잴 게 없으면 ✅ 가 아니다 — ① 과 같은 함정(#54).
+        out.append(("❓", "분할", f"{denom} 가 한 행도 없어 판정 불가"))
     else:
         why = pb.eps_break_reason([(r["period"], r.get("eps")) for r in rows])
-        out.append(("❌" if why else "✅", "분할", why or "인접 EPS 급변 없음"))
+        out.append(("❌" if why else "✅", "분할",
+                    why or f"인접 {denom} 급변 없음"))
 
     # ③ 결산검산 — **제품의 판정을 그대로 읽는다**.
     # ⚠️ 감사가 연간 대조본을 따로 만들어 대조했더니 2026-08-22 KLAC 이
@@ -170,8 +186,9 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
                     f"밴드 {bf}~{bt} · 이력 {rows[0]['period']}~"
                     f"{rows[-1]['period']}"))
 
-    # ⑥ 분모 기준 — 원천이 무엇을 쓰는지 **재서** 말한다(추측 금지)
-    cad, why = pb.eps_cadence(rows)
+    # ⑥ 분모 기준 — 원천이 무엇을 쓰는지 **재서** 말한다(추측 금지).
+    # PBR 표의 분모는 BPS 다 — 지표 이름을 섞으면 화면이 거짓말한다(#34).
+    cad, why = pb.eps_cadence(rows, denom)
     out.append(("❓" if cad is None else "✅", "분모 기준",
                 (f"{cad} — {why}" if cad else why)))
 
