@@ -169,16 +169,25 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     # ① 재계산 — 원천이 직접 준 FCF 가 아니면 OCF−|CAPEX| 와 같아야 한다
     from bot.fcf import _CAPEX_NAMES, _FCF_NAMES, _OCF_NAMES, _first
     from bot.fcf import fcf_from_parts as _parts
-    _re_bad = []
+    _re_bad, _re_n = [], 0
     for p, r in yq + ya:
         v = fcf_from_row(r)
         if v is None or _first(r, _FCF_NAMES) is not None:
             continue                       # 직접 제공분은 재계산 대상 아님
+        _re_n += 1
         if v != _parts(_first(r, _OCF_NAMES), _first(r, _CAPEX_NAMES)):
             _re_bad.append(p)
-    say(f"     ① 재계산 " + ("✅ 전 기간 일치" if not _re_bad
-                            else f"❌ 불일치 {_re_bad}"))
-    flag(not _re_bad)
+    # ⚠️ **대조 0건은 통과가 아니다**(#54). 2026-08-22 실측: VM 에서 venv
+    # 밖 인터프리터로 돌려 yfinance 가 없자 스냅샷이 통째로 비었는데
+    # `① 재계산 ✅ 전 기간 일치` 가 찍혔다 — 감사가 거짓 안심을 준 것.
+    if not yq and not ya:
+        say("     ① 재계산 ❌ 대조 0건 — 현금흐름표를 못 받았다"
+            "(스냅샷 실패·원천 차단·의존성 누락 중 하나)")
+        flag(False)
+    else:
+        say(f"     ① 재계산 " + (f"✅ 전 기간 일치({_re_n}건)" if not _re_bad
+                                else f"❌ 불일치 {_re_bad}"))
+        flag(not _re_bad)
     # ④ 검산(회계연도 정렬)
     win = fiscal_window(list(yq_fcf.items()), list(ya_fcf.items()))
     if win:
@@ -198,12 +207,22 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
                else "연간 기준일과 맞는 분기 시계열이 없다")
             + " (yfinance 는 분기 현금흐름을 5개 안팎만 준다)")
         flag(None)
-    # ⑤ 누적냄새
-    sm = cumulative_smell([v for _p, v in list(yq_fcf.items())[-4:]],
-                          next((v for _p, v in reversed(list(ya_fcf.items()))
-                                if v is not None), None))
-    say("     ⑤ " + (f"❌ 누적 오염 의심: {sm}" if sm else "✅ 누적 냄새 없음"))
-    flag(not sm)
+    # ⑤ 누적냄새 — ⚠️ 판정에 쓸 값이 없으면 **✅ 가 아니다**(#54).
+    # `cumulative_smell` 은 값 3개 미만이면 None(판단보류)을 주는데, 그걸
+    # "냄새 없음"으로 찍으면 데이터가 통째로 빈 종목이 통과한다.
+    _sm_vals = [v for _p, v in list(yq_fcf.items())[-4:] if v is not None]
+    if len(_sm_vals) < 3:
+        say(f"     ⑤ ❓ 판정 불가 — 분기 FCF 가 {len(_sm_vals)}개뿐"
+            "(3개 이상 있어야 누적 여부를 가른다)")
+        flag(None)
+    else:
+        sm = cumulative_smell(
+            [v for _p, v in list(yq_fcf.items())[-4:]],
+            next((v for _p, v in reversed(list(ya_fcf.items()))
+                  if v is not None), None))
+        say("     ⑤ " + (f"❌ 누적 오염 의심: {sm}"
+                         if sm else f"✅ 누적 냄새 없음({len(_sm_vals)}분기)"))
+        flag(not sm)
 
     if mkt != "KR" or not dart:
         # 비-KR 은 인포그래픽도 같은 yfinance 현금흐름을 쓴다 — 원천이
@@ -297,7 +316,22 @@ def main(argv: list[str] | None = None) -> int:
     print("① 재계산  ② 교차출처(DART↔yfinance)  ③ 표면일치  "
           "④ 분기합↔연간  ⑤ 누적냄새")
     print(f"허용 차이: 교차출처 {_GAP_OK}% · 검산 {_SUM_OK}%")
-    print(f"자격증명 DART_API_KEY={env_source('DART_API_KEY') or '없음'}\n")
+    print(f"자격증명 DART_API_KEY={env_source('DART_API_KEY') or '없음'}")
+    # ⚠️ **어느 파이썬으로 도는지 찍는다.** 2026-08-22 실측: venv 밖에서
+    # 돌려 `yfinance` 가 없자 스냅샷이 통째로 비었는데 감사는 ✅ 를 찍었다
+    # — 진단 도구가 제품과 **다른 환경**에서 돌면 결과가 거짓이 된다
+    # (#23 '.env 를 안 읽는다' 의 인터프리터판).
+    import sys as _sys
+    print(f"인터프리터 {_sys.executable}")
+    _missing = [m for m in ("yfinance",)
+                if __import__("importlib.util", fromlist=["util"])
+                .find_spec(m) is None]
+    if _missing:
+        print(f"❌ 필수 모듈 없음: {', '.join(_missing)} — 봇과 **같은**"
+              " 인터프리터로 돌릴 것:")
+        print("   ~/stock/.venv/bin/python -m bot.scripts.fcf_audit ASML")
+        return 2
+    print()
 
     tickers = args.tickers or _universe(args.limit)
     if not tickers:
