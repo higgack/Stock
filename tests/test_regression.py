@@ -33622,19 +33622,26 @@ class TestEdinetXbrl20260822:
         rows = (cls._HDR,) + lines
         return ("\n".join(cls._q(r) for r in rows)).encode("utf-16")
 
+    # ⚠️ **실측 요소 ID**(2026-08-22 도요타 유가증권보고서 프로브 출력에서
+    # 그대로 복사). 내가 지어낸 이름(`BasicEarningsPerShare…`)으로 픽스처를
+    # 만들었더니 매핑이 틀렸는데도 8개가 green 이었다 — 픽스처가 원문을
+    # 흉내내지 않으면 그 버그를 영영 못 잡는다(#155 의 요소 ID 판).
+    EPS_IFRS_D = "jpcrp_cor:DilutedEarningsLossPerShareIFRSSummaryOfBusinessResults"
+    EPS_JP_B = "jpcrp_cor:BasicEarningsLossPerShareSummaryOfBusinessResults"
+    REV_JP = "jpcrp_cor:NetSalesSummaryOfBusinessResults"
+    ORD = "jpcrp_cor:OrdinaryIncomeLossSummaryOfBusinessResults"
+
     @classmethod
     def _doc(cls) -> bytes:
-        E = "jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults"
-        N = "jpcrp_cor:NetSalesSummaryOfBusinessResults"
         rows = []
         for back, eps in ((0, 100.0), (1, 90.0), (2, 80.0), (3, 70.0),
                           (4, 60.0)):
             ctx = ("CurrentYearDuration" if back == 0
                    else f"Prior{back}YearDuration")
-            rows.append(f"{E}\t1株当たり当期純利益\t{ctx}\t当期\t連結"
-                        f"\t期間\tJPYPerShares\t円\t{eps}")
-            rows.append(f"{N}\t売上高\t{ctx}\t当期\t連結\t期間\tJPY\t円"
-                        f"\t{1000 + back}")
+            rows.append(f"{cls.EPS_IFRS_D}\t希薄化後1株当たり利益\t{ctx}"
+                        f"\t当期\t連結\t期間\tJPYPerShares\t円\t{eps}")
+            rows.append(f"{cls.REV_JP}\t売上高\t{ctx}\t当期\t連結\t期間"
+                        f"\tJPY\t円\t{1000 + back}")
         return cls._csv(*rows)
 
     def test_utf16_quoted_csv_is_decoded(self):
@@ -33672,26 +33679,85 @@ class TestEdinetXbrl20260822:
         assert ser[-1]["eps"] == 100.0 and ser[0]["eps"] == 60.0
 
     def test_consolidated_wins_over_standalone(self):
-        """連結·個別이 같이 오면 **연결**을 쓴다 — 섞이면 계열이 갈라진다."""
+        """連結·個別이 같이 오면 **연결**을 쓴다 — 섞이면 계열이 갈라진다.
+
+        판정은 원천이 주는 `連結・個別` **컬럼**으로 한다(2026-08-22 도요타:
+        連結은 IFRS, 提出会社 블록은 JP GAAP 라 매출·이익 정의가 다르다)."""
         from bot.edinet_xbrl import parse_csv_bytes, summary_series
-        E = "jpcrp_cor:BasicEarningsPerShareSummaryOfBusinessResults"
+        E = self.EPS_JP_B
         raw = self._csv(
-            f"{E}\tEPS\tPrior1YearDuration_NonConsolidatedMember\t前期"
+            f"{E}\tEPS\tPrior1YearDuration\t前期"
             f"\t個別\t期間\tJPYPerShares\t円\t11.0",
             f"{E}\tEPS\tPrior1YearDuration\t前期\t連結\t期間"
             f"\tJPYPerShares\t円\t99.0",
         )
         ser = summary_series(parse_csv_bytes(raw), "2026-03-31")
         assert len(ser) == 1 and ser[0]["eps"] == 99.0, ser
+        assert ser[0]["basis"] == "連結", ser
         # 순서를 뒤집어도 같아야 한다 — '나중에 온 값이 이긴다'면 문서마다 갈린다
         raw2 = self._csv(
             f"{E}\tEPS\tPrior1YearDuration\t前期\t連結\t期間"
             f"\tJPYPerShares\t円\t99.0",
-            f"{E}\tEPS\tPrior1YearDuration_NonConsolidatedMember\t前期"
+            f"{E}\tEPS\tPrior1YearDuration\t前期"
             f"\t個別\t期間\tJPYPerShares\t円\t11.0",
         )
         assert summary_series(parse_csv_bytes(raw2), "2026-03-31")[0]["eps"] \
             == 99.0
+
+    def test_a_metric_with_no_consolidated_value_is_left_blank(self):
+        """連結이 있는 문서에서 **그 항목만 個別**이면 비운다 — 한 행에 定義가
+        갈린 숫자를 나란히 놓지 않는다(#32). 連結이 아예 없는 문서면 個別이
+        곧 그 회사다."""
+        from bot.edinet_xbrl import parse_csv_bytes, summary_series
+        raw = self._csv(
+            f"{self.EPS_IFRS_D}\tEPS\tCurrentYearDuration\t当期\t連結"
+            f"\t期間\tJPYPerShares\t円\t100.0",
+            f"{self.REV_JP}\t売上高\tCurrentYearDuration\t当期\t個別"
+            f"\t期間\tJPY\t円\t4197319",
+        )
+        ser = summary_series(parse_csv_bytes(raw), "2026-03-31")
+        assert ser[0]["eps"] == 100.0, ser
+        assert "revenue" not in ser[0], f"個別 매출이 連結 행에 섞였다: {ser}"
+        # 連結이 전혀 없는 문서(비연결 제출사)면 個別을 쓴다
+        raw2 = self._csv(
+            f"{self.REV_JP}\t売上高\tCurrentYearDuration\t当期\t個別"
+            f"\t期間\tJPY\t円\t500")
+        ser2 = summary_series(parse_csv_bytes(raw2), "2026-03-31")
+        assert ser2[0]["revenue"] == 500.0 and ser2[0]["basis"] == "個別", ser2
+
+    def test_ordinary_income_is_not_revenue(self):
+        """`OrdinaryIncomeLoss…`(経常利益)를 매출 후보에 넣었다가 **도요타
+        매출이 4.2조엔**으로 찍혔다(실제 ~48조). 이익 항목이다."""
+        from bot.edinet_xbrl import SUMMARY_ELEMENTS, parse_csv_bytes, \
+            summary_series
+        assert not any("OrdinaryIncome" in e
+                       for e in SUMMARY_ELEMENTS["revenue"]), \
+            SUMMARY_ELEMENTS["revenue"]
+        raw = self._csv(
+            f"{self.ORD}\t経常利益\tCurrentYearDuration\t当期\t連結"
+            f"\t期間\tJPY\t円\t4197319")
+        assert summary_series(parse_csv_bytes(raw), "2026-03-31") == []
+
+    def test_real_element_ids_are_recognised_and_diluted_wins(self):
+        """실측 ID 는 `…EarningsLossPerShare…`(중간에 **Loss**) 다 — 내
+        매핑엔 그게 빠져 EPS 가 0개였다. 그리고 희석이 정본이다."""
+        from bot.edinet_xbrl import parse_csv_bytes, summary_series
+        # ⚠️ **희석을 먼저** 둔다 — 기본을 먼저 두면 '나중에 온 값이 이긴다'
+        # 로 되돌려도 우연히 희석이 뽑혀 뮤테이션이 통과한다(실측, #91c).
+        raw = self._csv(
+            f"{self.EPS_IFRS_D}\t希薄化EPS\tCurrentYearDuration\t当期"
+            f"\t連結\t期間\tJPYPerShares\t円\t48.0",
+            f"{self.EPS_JP_B}\t基本EPS\tCurrentYearDuration\t当期\t連結"
+            f"\t期間\tJPYPerShares\t円\t50.0",
+        )
+        ser = summary_series(parse_csv_bytes(raw), "2026-03-31")
+        assert ser[0]["eps"] == 48.0, f"희석이 아니라 기본을 골랐다: {ser}"
+        # 희석이 없으면 기본으로 내려간다
+        raw2 = self._csv(
+            f"{self.EPS_JP_B}\t基本EPS\tCurrentYearDuration\t当期\t連結"
+            f"\t期間\tJPYPerShares\t円\t50.0")
+        assert summary_series(parse_csv_bytes(raw2), "2026-03-31")[0]["eps"] \
+            == 50.0
 
     def test_non_numeric_becomes_blank_not_zero(self):
         """`－` 를 0 으로 읽으면 적자·미기재가 **0 이라는 사실**이 된다."""
@@ -33903,6 +33969,47 @@ class TestEdinetXbrl20260822:
         assert len(seen) < 120, f"선형 스캔으로 돌아갔다({len(seen)}일)"
         # 그리고 1년 전 창을 실제로 봤어야 한다
         assert doc2 in seen
+
+    def test_sec_code_is_matched_by_its_first_four_digits(self, monkeypatch):
+        """체크디지트를 '0' 으로 가정하면 **원천에 있는 문서를 없다고 한다**
+        (2026-08-22 실측: 6758.T 소니가 200일을 훑고도 0건). 티커 4자리는
+        고유하므로 앞자리 비교는 다른 회사를 잘못 잡지 않는다."""
+        import datetime as _dt
+        import bot.edinet_xbrl as ex
+        import bot.edinet_client as ec
+        hit = _dt.date.today() - _dt.timedelta(days=5)
+
+        class _Cl:
+            @staticmethod
+            def _fetch_day(day):
+                if day != hit:
+                    return []
+                return [
+                    # 체크디지트가 '0' 이 **아닌** 실제 케이스
+                    {"secCode": "67585", "docTypeCode": "120", "docID": "S1",
+                     "submitDateTime": "2026-08-17 10:00",
+                     "periodEnd": "2026-03-31", "filerName": "ソニー"},
+                    # 앞 4자리가 다른 회사는 잡히면 안 된다
+                    {"secCode": "67590", "docTypeCode": "120", "docID": "X",
+                     "submitDateTime": "2026-08-17 10:00",
+                     "periodEnd": "2026-03-31", "filerName": "다른회사"},
+                ]
+        monkeypatch.setattr(ec, "get_edinet", lambda: _Cl())
+        got = ex.find_annual_docs("6758.T", "k", max_docs=1)
+        assert [d["doc_id"] for d in got] == ["S1"], got
+
+    def test_probe_lists_every_unmatched_id(self):
+        """⚠️ 25종에서 잘려 **IFRS 매출 요소 ID 가 '외 2종' 안에 숨었고**
+        그래서 매핑을 못 넓혔다(2026-08-22). 이 목록이 매핑을 넓히는 유일한
+        근거다 — 자르면 안 된다(#24·#73)."""
+        import bot.scripts.edinet_probe as ep
+        rows = [{"要素ID": f"jpcrp_cor:Metric{i}SummaryOfBusinessResults",
+                 "項目名": f"항목{i}"} for i in range(40)]
+        got = ep._unmatched_summary_ids(rows, set())
+        assert len(got) == 40, len(got)
+        out = " ".join(ep._render_unmatched(got))
+        assert "Metric39" in out, "목록이 잘렸다"
+        assert "외 " not in out, out[-200:]
 
     def test_probe_shouts_when_nothing_matched(self, monkeypatch, tmp_path):
         """매칭 0종이면 **파서가 눈이 먼 것**일 수 있다 — '원천에 없음'과
