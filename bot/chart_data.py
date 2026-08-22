@@ -955,6 +955,39 @@ def last_chart_timing(key: str) -> dict:
     return _TIMING.snapshot(key)
 
 
+def _payload_span_days(payload) -> int | None:
+    """payload 가 실제로 덮는 **날짜 폭**(일). `_span_days` 의 payload 판.
+
+    ⚠️ 폴백 payload 는 DataFrame 이 아니라 dict 라 `_span_days` 를 못 쓴다 —
+    두 원천의 폭을 **같은 단위**로 재야 어느 쪽이 나은지 판정할 수 있다.
+    """
+    try:
+        ts = (payload or {}).get("times") or []
+        if len(ts) < 2:
+            return 0 if payload is not None else None
+        import datetime as _dt
+        if isinstance(ts[0], (int, float)):      # intraday(epoch sec)
+            return int((ts[-1] - ts[0]) / 86400)
+        a = _dt.date(*(int(x) for x in str(ts[0])[:10].split("-")))
+        b = _dt.date(*(int(x) for x in str(ts[-1])[:10].split("-")))
+        return (b - a).days
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+_RANGE_LABEL_KO = {"1d": "1일", "1wk": "1주일", "1mo": "1개월", "3mo": "3개월",
+                   "6mo": "6개월", "ytd": "연초 이후", "1y": "1년", "3y": "3년",
+                   "5y": "5년", "max": "전체"}
+
+
+def _short_span_notice(period: str, got_days, source=None) -> str:
+    """요청 폭보다 크게 짧게 온 사실을 사람 말로. 침묵이 최악이다(#43)."""
+    lab = _RANGE_LABEL_KO.get(period, period)
+    src = f"{source} " if source else ""
+    return (f"{src}원천이 {lab} 구간을 다 주지 않아 최근 {got_days}일치만"
+            f" 표시합니다 — 잠시 후 다시 시도하면 채워질 수 있습니다.")
+
+
 def _span_days(hist) -> int | None:
     """`hist` 가 실제로 덮는 **날짜 폭**(일). 비었으면 None.
 
@@ -1015,6 +1048,8 @@ def fetch_chart_payload(
     # 분봉→일봉 폴백 사실. try 밖에서 초기화해야 예외 경로(아래 except)에서도
     # 안전하게 참조된다.
     _iv_fallback = None
+    # 원천이 요청 폭보다 크게 짧게 준 사실(있으면 payload 에 실어 화면이 말한다).
+    _short_notice = None
 
     def _fallback_with_notice():
         """야후 실패/빈결과 → 네이버·KIS 일봉. 분봉 요청이었다면 폴백 사실을
@@ -1035,6 +1070,31 @@ def fetch_chart_payload(
 
         _t0 = _time.time()
         t = yf.Ticker(ticker)
+
+        def _attach_live(pl, iv):
+            """라이브 현재가 + 52주 고저가. **폴백 payload 에도** 붙인다.
+
+            ⚠️ 폴백은 예전엔 야후가 통째로 빈 종목에서만 탔지만, 이제 잘린
+            응답에서도 탄다 — 여기서 안 붙이면 오른쪽 패널의 현재가·52주가
+            조용히 사라진다(같은 화면인데 원천이 바뀌었다고 칸이 비면 안 된다).
+
+            ⚠️ `decimals` 는 본 경로 **한참 뒤**에서 바인딩된다 — 폴백 조기반환
+            시점엔 아직 없어서 클로저가 UnboundLocalError 를 낸다(회귀가 잡았다).
+            자릿수는 티커만 있으면 정해지므로 여기서 직접 구한다.
+            """
+            if pl is None:
+                return pl
+            _dec = _currency_for(ticker)[1]
+            if iv == "1d":
+                _lp = _live_last_price(t, pl, _dec, ticker)
+                if _lp is not None:
+                    pl["last_price"] = _lp
+            _hi, _lo = _year_high_low(t, _dec)
+            if _hi is not None:
+                pl["wk52_high"] = _hi
+            if _lo is not None:
+                pl["wk52_low"] = _lo
+            return pl
         if prefer_period or period in ("max", "1d"):
             hist = t.history(period=period, interval=interval, auto_adjust=True)
         else:
@@ -1077,6 +1137,35 @@ def fetch_chart_payload(
                              "%d일(요청 %d일)", ticker, period, _got_span,
                              _alt_span, _want)
                     hist = alt
+                    _got_span = _alt_span
+                # ⚠️ **두 질의가 다 짧으면 원천을 바꾼다**(사용자 2026-08-22
+                # 인텍플러스 064290.KS "아직도 차트가 이렇게 나올때가 있는데
+                # … 근본적으로 해결이 안돼?"): 재질의만으로는 야후가 그 심볼을
+                # 계속 잘라 줄 때 손쓸 방법이 없다. 우리에겐 네이버(키 불필요·
+                # 차단 없음) 일봉이 이미 있는데, 야후가 **빈 응답**일 때만
+                # 쓰고 있었다 — 잘렸지만 비지는 않은 응답이 그 폴백을 통째로
+                # 건너뛰게 하고 있었다.
+                if _got_span < _want * 0.5:
+                    _fb = _fetch_series_fallback(ticker, period)
+                    _fb_span = _payload_span_days(_fb)
+                    if _fb_span is not None and _fb_span > _got_span:
+                        log.info("chart-refetch %s %s: 야후 %d일 → %s %d일"
+                                 "(요청 %d일)", ticker, period, _got_span,
+                                 _fb.get("fallback") or "폴백", _fb_span, _want)
+                        if _iv_fallback:
+                            _fb["interval_fallback"] = _iv_fallback
+                        # 그래도 요청 폭에 크게 못 미치면 **화면이 말해야**
+                        # 한다 — '1년' 라벨에 한 달치가 실리면 거짓말이다(#29).
+                        if _fb_span < _want * 0.5:
+                            _fb["notice"] = _short_span_notice(
+                                period, _fb_span, _fb.get("fallback"))
+                        _TIMING.set(_tkey, "fetch", _time.time() - _t0)
+                        return _attach_live(_fb, "1d")
+                    log.warning("chart-short %s %s: 요청 %d일인데 %d일만 왔고 "
+                                "폴백도 %s — 화면에 알린다", ticker, period,
+                                _want, _got_span, _fb_span)
+                    _short_notice = _short_span_notice(period, _got_span,
+                                                       "Yahoo")
 
         # Intraday fallback: some markets don't have intraday via yfinance.
         # (KR 종목은 yfinance 가 분봉 자체를 안 줘서 사실상 항상 여기로 온다.)
@@ -1132,23 +1221,19 @@ def fetch_chart_payload(
             payload["lite"] = True     # 클라이언트가 나머지를 마저 받는다
         if _iv_fallback:
             payload["interval_fallback"] = _iv_fallback
+        # ⚠️ 원천이 요청 폭을 다 안 준 사실은 **화면이 말해야** 한다 —
+        # '1년' 라벨에 한 달치를 실으면 그건 거짓말이다(#29·#43).
+        # interval_fallback 이 있으면 그 안내가 우선(화면이 하나만 띄운다).
+        if _short_notice and not _iv_fallback:
+            payload["notice"] = _short_notice
         # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).
         # 일봉 series 의 마지막 종가는 D-1/EOD 라 장중엔 stale → 프론트가
         # '현재가' 로 우선 사용. 단 fast_info 는 일부 종목(특히 KR/JP/CN)에서
         # 잘못된 분할·조정 기준/stale/junk 값을 반환해 가짜 절벽을 그릴 수
         # 있으므로 _live_last_price 가 직전 종가 대비 검증 — 비현실 값이면
         # None 반환 → 프론트는 안정적인 '직전 종가' 로 폴백(가짜 절벽 차단).
-        if interval == "1d":
-            lp = _live_last_price(t, payload, decimals, ticker)
-            if lp is not None:
-                payload["last_price"] = lp
-        # 52주 신고가/신저가 — interval 무관(항상 표시). fast_info 캐시라 ₩0.
-        hi52, lo52 = _year_high_low(t, decimals)
-        if hi52 is not None:
-            payload["wk52_high"] = hi52
-        if lo52 is not None:
-            payload["wk52_low"] = lo52
-        return payload
+        # 52주 신고가/신저가는 interval 무관(항상 표시). fast_info 캐시라 ₩0.
+        return _attach_live(payload, interval)
     except Exception as exc:
         log.warning(
             "chart_data: fetch_chart_payload failed %s %s %s: %s",

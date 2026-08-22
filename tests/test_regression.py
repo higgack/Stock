@@ -31773,6 +31773,140 @@ class TestPerBandSummary20260822:
         assert "실시간 시세를 못 받았습니다" in _BAND_JS[i:j]
 
 
+class TestTruncatedChartFallback20260822:
+    """사용자 2026-08-22 인텍플러스 064290.KS: "아직도 차트가 이렇게 나올때가
+    있는데 대체 왜 그런거야? 근본적으로 해결이 안돼?" — 1년을 요청했는데
+    `25개 봉 · 2026-07-16 → 2026-08-21`.
+
+    ⚠️ 08-22 에 넣은 **기간 키워드 재질의**(#122)는 실제로 돌았지만, 야후가
+    그 심볼을 **두 질의 모두** 잘라 주면 손쓸 방법이 없었다. 우리에겐 네이버
+    일봉(키 불필요·차단 없음)이 이미 있는데 야후가 **빈 응답**일 때만 쓰고
+    있었다 — 잘렸지만 비지 않은 응답이 그 폴백을 통째로 건너뛰게 했다."""
+
+    @staticmethod
+    def _stub_yf(monkeypatch, bdays):
+        """야후가 `bdays` 영업일치만 주는 상황. 두 질의 다 같은 결과."""
+        import datetime as _dt
+        import sys
+        import types
+        import pandas as pd
+        calls = []
+
+        class _T:
+            def __init__(self, tk):
+                pass
+
+            def history(self, **kw):
+                calls.append(kw)
+                idx = pd.date_range(end=_dt.datetime(2026, 8, 21),
+                                    periods=bdays, freq="B")
+                n = len(idx)
+                return pd.DataFrame({"Open": [1.0] * n, "High": [1.0] * n,
+                                     "Low": [1.0] * n, "Close": [1.0] * n,
+                                     "Volume": [1] * n}, index=idx)
+        mod = types.ModuleType("yfinance")
+        mod.Ticker = _T
+        monkeypatch.setitem(sys.modules, "yfinance", mod)
+        return calls
+
+    @staticmethod
+    def _payload(days, step=3, label="네이버"):
+        import datetime as _dt
+        ts = [(_dt.date(2026, 8, 21) - _dt.timedelta(days=d)).isoformat()
+              for d in range(days, -1, -step)]
+        n = len(ts)
+        return {"fallback": label, "times": ts, "close": [1.0] * n,
+                "open": [1.0] * n, "high": [1.0] * n, "low": [1.0] * n,
+                "volume": [1] * n}
+
+    def test_truncated_yahoo_falls_back_to_naver(self, monkeypatch):
+        import bot.chart_data as cd
+        self._stub_yf(monkeypatch, 25)
+        monkeypatch.setattr(cd, "_fetch_series_fallback",
+                            lambda t, p: self._payload(360))
+        out = cd.fetch_chart_payload("064290.KS", period="1y")
+        assert out.get("fallback") == "네이버", out.get("fallback")
+        assert cd._payload_span_days(out) > 300, len(out["times"])
+        # 온전히 채웠으면 안내는 없다(잡음 금지)
+        assert not out.get("notice"), out.get("notice")
+
+    def test_fallback_is_ignored_when_it_covers_less(self, monkeypatch):
+        """⚠️ 무조건 폴백하면 야후가 멀쩡한 날 **더 짧은** 데이터로 내려간다."""
+        import bot.chart_data as cd
+        self._stub_yf(monkeypatch, 25)
+        monkeypatch.setattr(cd, "_fetch_series_fallback",
+                            lambda t, p: self._payload(10))
+        out = cd.fetch_chart_payload("064290.KS", period="1y")
+        assert out.get("fallback") != "네이버", out
+        assert len(out["close"]) == 25
+
+    def test_screen_says_so_when_nothing_covers_the_range(self, monkeypatch):
+        """'1년' 라벨에 한 달치를 실으면 그건 거짓말이다(#29·#43)."""
+        import bot.chart_data as cd
+        self._stub_yf(monkeypatch, 25)
+        monkeypatch.setattr(cd, "_fetch_series_fallback", lambda t, p: None)
+        out = cd.fetch_chart_payload("064290.KS", period="1y")
+        assert out.get("notice"), "짧게 온 사실을 화면에 안 알린다"
+        assert "1년" in out["notice"] and "32일" in out["notice"], out["notice"]
+
+    def test_full_response_gets_no_fallback_and_no_notice(self, monkeypatch):
+        """정상일 때 폴백을 부르면 요청만 늘고 조용히 느려진다."""
+        import bot.chart_data as cd
+        self._stub_yf(monkeypatch, 250)
+        hit = []
+        monkeypatch.setattr(cd, "_fetch_series_fallback",
+                            lambda t, p: hit.append(t))
+        out = cd.fetch_chart_payload("064290.KS", period="1y")
+        assert not hit, "온전한 응답에도 폴백을 불렀다"
+        assert not out.get("notice") and not out.get("fallback")
+
+    def test_fallback_payload_keeps_live_price_and_52w(self, monkeypatch):
+        """폴백은 예전엔 야후가 통째로 빈 종목에서만 탔지만 이제 잘린 응답에서도
+        탄다 — 여기서 안 붙이면 오른쪽 패널의 현재가·52주가 조용히 사라진다."""
+        import bot.chart_data as cd
+        self._stub_yf(monkeypatch, 25)
+        monkeypatch.setattr(cd, "_fetch_series_fallback",
+                            lambda t, p: self._payload(360))
+        monkeypatch.setattr(cd, "_live_last_price",
+                            lambda t, pl, dec, tk: 32100.0)
+        monkeypatch.setattr(cd, "_year_high_low", lambda t, dec: (41400.0, 21450.0))
+        out = cd.fetch_chart_payload("064290.KS", period="1y")
+        assert out["fallback"] == "네이버"
+        assert out.get("last_price") == 32100.0, out.keys()
+        assert out.get("wk52_high") == 41400.0 and out.get("wk52_low") == 21450.0
+
+    def test_span_is_measured_in_days_not_bars(self):
+        """봉 **개수**로 재면 휴장·거래정지가 잘림으로 오판된다(#29)."""
+        import bot.chart_data as cd
+        assert cd._payload_span_days(None) is None
+        assert cd._payload_span_days({}) == 0
+        # 4봉뿐이어도 1년을 덮으면 잘린 게 아니다
+        wide = {"times": ["2025-08-21", "2025-12-01", "2026-04-01", "2026-08-21"]}
+        assert cd._payload_span_days(wide) > 350, cd._payload_span_days(wide)
+        # 봉이 많아도 한 달이면 잘린 것이다
+        narrow = self._payload(30, step=1)
+        assert cd._payload_span_days(narrow) <= 31
+
+    def test_interval_fallback_message_wins(self, monkeypatch):
+        """화면은 안내를 하나만 띄운다 — 둘 다 실으면 분봉 폴백 사실이 묻힌다."""
+        import ast
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "fetch_chart_payload")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "if _short_notice and not _iv_fallback:" in seg
+
+    def test_caption_names_the_real_source(self):
+        """출처를 'Yahoo Finance' 로 박아 두면 네이버로 되돌아간 날에도 화면이
+        야후라고 말한다(#55) — 폴백을 로그로만 알리면 사용자는 영영 모른다."""
+        import ast
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("function buildCaption")
+        seg = src[i:i + 1200]
+        assert "d.fallback" in seg, "캡션이 실제 원천을 안 본다"
+
+
 class TestForeignPerBandChart20260822:
     """사용자 2026-08-22: "외국종목도 PER 밴드차트 만들수 있으면 만들어줘.
     PBR 은 안해도 돼."
