@@ -35,7 +35,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-_AUDIT_VER = 9
+_AUDIT_VER = 10
 # ⚠️ **전 시장을 기본으로 돈다**(사용자 2026-08-22 "내가 일일히 점검 안 해도
 # 좀 모든 나라 밴드 제대로 되고 있는지를 잘 좀 검토해줘. 제발"). 시장마다
 # 원천이 달라(EDGAR·EDINET·FinMind·바이두·FnGuide·yfinance) 한 시장이 고쳐져도
@@ -155,19 +155,33 @@ def audit_rows(tbl: dict) -> list[tuple[str, str, str]]:
         _age = (_today - _last).days
     except Exception:                                          # noqa: BLE001
         _age = None
+    # ⚠️ **낡음 자체가 죄가 아니라 말 안 하는 것이 죄다**(#43). 소니는
+    # FY2026 이 순손실이라 PER 이 정의되지 않아 이력이 2025-03-31 에서 멈추는데
+    # (원천 사실), 옛 판은 그걸 화면 결함과 구별하지 못했다.
+    _said = (tbl.get("gap_note") or tbl.get("path_note") or "").strip()
     if _age is None:
         out.append(("❓", "최신성", "마지막 관측일을 못 읽음 — 판정 불가"))
+    elif _age <= _STALE_DAYS:
+        out.append(("✅", "최신성",
+                    f"마지막 관측 {rows[-1]['period']} · {_age}일 전"))
+    elif _said:
+        out.append(("✅", "최신성",
+                    f"마지막 관측 {rows[-1]['period']} · {_age}일 전 — "
+                    f"화면이 사유를 밝힘: {_said}"))
     else:
-        out.append(("❌" if _age > _STALE_DAYS else "✅", "최신성",
-                    f"마지막 관측 {rows[-1]['period']} · {_age}일 전"
-                    + (" — 현재 PER 이 옛 EPS 로 만들어진다"
-                       if _age > _STALE_DAYS else "")))
+        out.append(("❌", "최신성",
+                    f"마지막 관측 {rows[-1]['period']} · {_age}일 전 — 현재 "
+                    f"PER 이 옛 EPS 로 만들어지는데 화면이 아무 말도 안 한다"))
 
     # ④ 현재값 — 현재 PER 은 현재가에 비례한다(마지막 행이 기준, #135)
     sm, px_now = tbl.get("summary") or {}, tbl.get("price_now")
     last = rows[-1]
     if not sm.get("per_now") or not px_now or not last.get("per"):
-        out.append(("❓", "현재값", "현재 PER 또는 실시간 시세 없음 — 판정 불가"))
+        # ⚠️ '또는' 은 다음 라운드를 낭비한다 — **어느 것이 없는지** 말한다(#82).
+        _miss = [n for n, v in (("요약의 현재 PER", sm.get("per_now")),
+                                ("실시간 시세", px_now),
+                                ("마지막 행의 배수", last.get("per"))) if not v]
+        out.append(("❓", "현재값", f"{' · '.join(_miss)} 없음 — 판정 불가"))
     else:
         k = last["per"] / last["price"]
         exp = px_now * k

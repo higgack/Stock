@@ -35993,3 +35993,83 @@ class TestPerMetricTrendCharts20260823:
         assert "compact_amount(" in seg, "표가 공용 축약 함수를 안 쓴다"
         for lit in ("조\"", "억\"", "兆\"", "億\""):
             assert lit not in seg, f"표에 축약 리터럴이 남아 있다: {lit}"
+
+
+class TestFullAuditFindings20260823:
+    """사용자 2026-08-23 전 시장 감사(v9) 실측에서 나온 셋.
+
+      ① 소니 6758.T ❌ 최신성 — FY2026 이 **순손실**이라 PER 이 정의되지 않아
+         이력이 2025-03-31 에서 멈추는데, 화면이 그 사실을 **한 마디도** 안
+         했다. 낡음 자체가 죄가 아니라 말 안 하는 것이 죄다(#43·#131).
+      ② 국내 2종목 ❓ 창 — `assemble` 이 싣는 `band_from/to` 를 FnGuide 경로만
+         빠뜨려 감사가 창을 못 쟀다.
+      ③ SIE.DE ❓ 현재값 — "현재 PER **또는** 실시간 시세 없음" 은 다음
+         라운드를 낭비한다. 어느 것이 없는지 말해야 한다(#82).
+    """
+
+    # ── ① 적자로 끊긴 계열은 그렇다고 말한다 ──────────────────────────
+    def test_a_loss_year_that_ends_the_series_is_explained(self):
+        from bot.per_band import loss_tail_reason
+        eps = [("2025-03-31", 187.92), ("2026-03-31", -54.36)]
+        why = loss_tail_reason(eps, [{"period": "2025-03-31"}])
+        assert why and "적자" in why and "2026-03-31" in why, why
+        # 최신 기간이 흑자면 할 말이 없다
+        assert loss_tail_reason([("2026-03-31", 10.0)],
+                                [{"period": "2026-03-31"}]) is None
+        # 밴드가 최신까지 왔으면(빠진 게 없으면) 역시 없다
+        assert loss_tail_reason(eps, [{"period": "2026-03-31"}]) is None
+
+    def test_build_attaches_the_reason(self):
+        """⚠️ 헬퍼만 있고 배선이 없으면 화면은 그대로다(#20) — `build` 를
+        실제로 태운다."""
+        from bot.per_band import build
+        px = [(f"20{y}-03-31", 100.0) for y in range(20, 27)]
+        eps = [(f"20{y}-03-31", 10.0 + y) for y in range(20, 26)]
+        eps.append(("2026-03-31", -5.0))
+        got = build(px, eps, annual=True)
+        assert got and got.get("gap_note"), got
+
+    def test_the_screen_renders_the_reason(self):
+        """⚠️ 존재가 아니라 **몇 번** 그리는지 센다 — 편집 중에 같은 블록을
+        두 번 넣어 화면에 사유가 두 줄로 뜰 뻔했고, '있는지'만 보는 검사는
+        하나를 지워도 통과했다(#59 중복 정의 · #120 배선은 호출로)."""
+        from bot.dashboard import _BAND_JS
+        for name in ("t.gap_note", "t.path_note", "t.trim_note"):
+            assert _BAND_JS.count(f"if({name})") == 1, \
+                f"{name} 렌더가 {_BAND_JS.count(f'if({name})')}번"
+
+    def test_the_audit_separates_explained_staleness_from_silence(self):
+        """설명된 낡음은 ✅, **조용한** 낡음은 ❌ — 감사는 침묵을 잡는다."""
+        import bot.scripts.per_band_audit as ab
+        base = {"rows": [{"period": "2025-03-31", "price": 100.0,
+                          "eps": 5.0, "per": 20.0}],
+                "basis": "edinet", "band_from": "2025-03-31",
+                "band_to": "2025-03-31", "summary": {}, "kind": "PER"}
+        silent = dict(base)
+        assert dict((a, m) for m, a, _d in ab.audit_rows(silent))["최신성"] == "❌"
+        told = dict(base, gap_note="최근 회계연도(2026-03-31)는 적자라 …")
+        assert dict((a, m) for m, a, _d in ab.audit_rows(told))["최신성"] == "✅"
+
+    # ── ② 국내 표에도 밴드 창 ─────────────────────────────────────────
+    def test_the_kr_table_carries_its_band_window(self):
+        import bot.dashboard_server as ds
+        import bot.scripts.per_band_audit as ab
+        ts = [1590000000000 + i * 2592000000 for i in range(50)]
+        blk = {"mult": [90.8, 63.4, 36.1, 8.7],
+               "price": [[t, 30000.0 + i * 300] for i, t in enumerate(ts)],
+               "bands": [[[t, 200000.0 + i * 7000] for i, t in enumerate(ts)]]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
+        assert t and t.get("band_from") and t.get("band_to"), t
+        got = dict((a, m) for m, a, _d in ab.audit_rows(t))
+        assert got["창"] == "✅", got
+
+    # ── ③ 어느 입력이 없는지 말한다 ───────────────────────────────────
+    def test_the_missing_input_is_named(self):
+        import bot.scripts.per_band_audit as ab
+        t = {"rows": [{"period": "2026-06-30", "price": 100.0, "eps": 5.0,
+                       "per": 20.0}],
+             "basis": "yf-a", "band_from": "2026-06-30",
+             "band_to": "2026-06-30", "summary": {"per_now": 21.0},
+             "price_now": None, "kind": "PER"}
+        msg = [d for m, a, d in ab.audit_rows(t) if a == "현재값"][0]
+        assert "실시간 시세" in msg and "또는" not in msg, msg

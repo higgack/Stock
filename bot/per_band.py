@@ -381,8 +381,35 @@ def build(prices: list | None, eps_rows: list | None, *,
         ttm = sorted([(p, v) for p, v in ttm if p and v is not None])
     else:
         ttm = ttm_eps_series(eps_rows)
-    return assemble(per_series(prices, ttm), min_points=min_points,
-                    band_years=band_years)
+    res = assemble(per_series(prices, ttm), min_points=min_points,
+                   band_years=band_years)
+    if res is not None:
+        _why = loss_tail_reason(ttm, res.get("rows"))
+        if _why:
+            res["gap_note"] = _why
+    return res
+
+
+def loss_tail_reason(eps_rows: list | None, band_rows: list | None) -> str | None:
+    """최신 EPS 기간이 **적자**라 밴드에서 빠졌으면 사유 — 아니면 None.
+
+    ⚠️ 적자 구간은 PER 이 정의되지 않아 `per_series` 가 **조용히** 버린다.
+    그러면 밴드가 옛 기간에서 끝나고 현재 PER 이 그때 EPS 로 만들어지는데,
+    화면이 아무 말도 안 하면 사용자는 수집 실패로 읽는다(2026-08-23 소니
+    실측: FY2026 순손실이라 이력이 2025-03-31 에서 멈췄고 화면은 그 사실을
+    한 마디도 안 했다 — #43·#131 빈칸이면 **왜** 비었는지도 말할 것).
+    """
+    eps = sorted((str(p)[:10], v) for p, v in (eps_rows or []) if p)
+    if not eps or not band_rows:
+        return None
+    last_p, last_v = eps[-1]
+    last_row = str((band_rows[-1] or {}).get("period") or "")[:10]
+    if not last_row or last_p <= last_row:
+        return None
+    if last_v is None or last_v > 0:
+        return None
+    return (f"최근 회계연도({last_p})는 적자라 PER 이 정의되지 않습니다 — "
+            f"아래 배수·현재 PER 은 {last_row} 기준입니다.")
 
 
 def assemble(rows: list | None, *, min_points: int = 4,
