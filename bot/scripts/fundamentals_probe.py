@@ -27,8 +27,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-_PROBE_VER = 3
-_DEFAULT = "9984.T,6758.T,0700.HK,0522.HK,0002.HK"
+_PROBE_VER = 4
+_DEFAULT = "0700.HK,0002.HK,600519.SS,000002.SZ"
 
 
 def _banner() -> None:
@@ -144,11 +144,7 @@ def _alt_sources(ticker: str) -> list[str]:
     if t.endswith(".T"):
         return _edinet_key() + _kabutan(t)
     if t.endswith((".HK", ".SS", ".SZ")):
-        try:
-            import akshare  # noqa: F401
-            return ["  ② AKShare: 설치됨 → HK/CN 재무 대안 경로 가능"]
-        except Exception as exc:                               # noqa: BLE001
-            return [f"  ② AKShare: 없음({exc}) — HK/CN 대안 경로 불가"]
+        return _akshare_valuation(t)
     if t.endswith((".TW", ".TWO")):
         try:
             from bot.finmind_client import fetch_income_statement
@@ -157,6 +153,45 @@ def _alt_sources(ticker: str) -> list[str]:
         except Exception as exc:                               # noqa: BLE001
             return [f"  ② FinMind: 실패 {exc}"]
     return ["  ② 대안 원천: 이 시장은 등록된 게 없다(yfinance 단일 경로)"]
+
+
+# HK 밸류에이션 이력 후보 — AKShare 버전마다 이름이 달라 **설치본에 뭐가
+# 있는지** 실측한다. 이름을 추측해 파서를 짜면 이 레포에서 반복 실패한다.
+_HK_VAL_FNS = ("stock_hk_valuation_baidu", "stock_hk_indicator_eniu",
+               "stock_hk_index_daily_em")
+
+
+def _akshare_valuation(ticker: str) -> list[str]:
+    """CN 은 이미 배선된 경로를, HK 는 **설치본이 뭘 제공하는지**를 찍는다."""
+    out = []
+    try:
+        import akshare as ak
+    except Exception as exc:                                   # noqa: BLE001
+        return [f"  ② AKShare: 없음({exc}) — HK/CN 대안 경로 불가"]
+    out.append(f"  ② AKShare: 설치됨(v{getattr(ak, '__version__', '?')})")
+    if ticker.endswith((".SS", ".SZ")):
+        try:
+            from bot.akshare_client import get_akshare
+            rows = get_akshare().per_history(ticker, years=10)
+            out.append(f"     CN 일별 PER 이력: {len(rows)}행"
+                       + (f" ({rows[0][0]} ~ {rows[-1][0]})" if rows else
+                          " — **배선돼 있으나 비었다**"))
+        except Exception as exc:                               # noqa: BLE001
+            out.append(f"     CN 일별 PER 이력: 실패 {exc}")
+        return out
+    # HK — `stock_a_indicator_lg` 커버리지 밖이다. 설치본의 후보 함수를 훑는다.
+    have = [f for f in _HK_VAL_FNS if hasattr(ak, f)]
+    out.append(f"     HK 밸류에이션 후보 함수: {have or '**없음**'}")
+    code = ticker.split(".")[0].zfill(5)
+    for fn in have[:1]:                       # 첫 후보만 — 느린 호출 방지
+        try:
+            df = getattr(ak, fn)(symbol=code)
+            n = 0 if df is None else len(df)
+            cols = [] if df is None else list(df.columns)[:8]
+            out.append(f"     {fn}({code}) → {n}행 · 컬럼 {cols}")
+        except Exception as exc:                               # noqa: BLE001
+            out.append(f"     {fn}({code}) → 실패 {exc}")
+    return out
 
 
 def _edinet_key() -> list[str]:

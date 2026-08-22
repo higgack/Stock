@@ -225,6 +225,7 @@ def assemble(rows: list | None, *, min_points: int = 4,
 _SRC_LABEL = {
     "edgar": "SEC EDGAR(희석 EPS) · 가격 yfinance",
     "finmind": "FinMind TaiwanStockPER(일별 PER, 월말 표본) · 가격 yfinance",
+    "akshare": "AKShare stock_a_indicator_lg(일별 PER, 월말 표본) · 가격 yfinance",
     "yf-q": "yfinance 분기 손익(TTM) · 가격 yfinance",
     "yf-a": "yfinance 연간 손익 · 가격 yfinance",
 }
@@ -339,9 +340,11 @@ def for_ticker(ticker: str, snap: dict | None = None,
         got = _pack(build(px, _conv(h.get("quarterly"))), "edgar")
         if got:
             return got, None
-    if mkt == "TW":
-        # 원천이 PER 을 **직접** 준다 — 우리가 EPS 로 만들 필요가 없다(§대만).
-        got = _pack(assemble(tw_per_rows(tk, px, years)), "finmind")
+    # 원천이 PER 을 **직접** 주는 시장 — 우리가 EPS 로 만들 필요가 없다.
+    _direct = {"TW": (tw_per_rows, "finmind"), "CN_A": (cn_per_rows, "akshare")}
+    if mkt in _direct:
+        _fn, _basis = _direct[mkt]
+        got = _pack(assemble(_fn(tk, px, years)), _basis)
         if got:
             return got, None
     # 폴백 — 분기(TTM) 먼저, 그것도 모자라면 연간.
@@ -658,25 +661,17 @@ def _month_end_samples(rows: list) -> list[tuple[str, float]]:
     return [by_month[m] for m in sorted(by_month)]
 
 
-def tw_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
-    """FinMind 일별 PER → [(기간, 주가, EPS, PER)]. 실패는 빈 리스트.
+def rows_from_per_history(pts: list | None, prices: list | None) -> list:
+    """[(YYYY-MM-DD, PER)] + 월봉 주가 → [(기간, 주가, EPS, PER)].
+
+    **원천이 PER 을 직접 주는 시장의 공용 조립기**(대만 FinMind · 중국
+    AKShare). 시장마다 복제하면 표본 추리기·주가 조인 규약이 갈라진다(#38).
 
     주가는 **우리 월봉**에서 그 시점 이하 마지막 관측을 쓴다(#28) — 두 원천을
     섞되 EPS 를 `주가 ÷ PER` 로 되짚어 화면 세 칸이 서로 맞게 한다(#33).
     """
-    try:
-        from bot.finmind_client import fetch_per_pbr
-        raw = fetch_per_pbr(ticker, days=365 * years + 40) or []
-    except Exception as exc:                                   # noqa: BLE001
-        log.debug("per_band: FinMind PER 실패 %s: %s", ticker, exc)
-        return []
-    pts = []
-    for r in raw:
-        if not isinstance(r, dict):
-            continue
-        d, v = str(r.get("date") or "")[:10], _f(r.get("PER"))
-        if len(d) == 10 and v is not None and v > 0:
-            pts.append((d, v))
+    pts = [(str(d)[:10], _f(v)) for d, v in (pts or [])]
+    pts = [(d, v) for d, v in pts if len(d) == 10 and v is not None and v > 0]
     if not pts:
         return []
     px = sorted((str(d)[:10], _f(v)) for d, v in (prices or [])
@@ -689,3 +684,31 @@ def tw_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
         price = prior[-1]
         out.append((d, price, round(price / per, 4), round(per, 2)))
     return out
+
+
+def tw_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
+    """대만 — FinMind `TaiwanStockPER` 일별 PER."""
+    try:
+        from bot.finmind_client import fetch_per_pbr
+        raw = fetch_per_pbr(ticker, days=365 * years + 40) or []
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: FinMind PER 실패 %s: %s", ticker, exc)
+        return []
+    pts = [(r.get("date"), r.get("PER")) for r in raw if isinstance(r, dict)]
+    return rows_from_per_history(pts, prices)
+
+
+def cn_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
+    """중국 A주 — AKShare `stock_a_indicator_lg` 일별 PER.
+
+    ⚠️ 이 호출은 스크리너가 **이미 쓰고 있었다**(`get_valuation`) — 다만 마지막
+    한 줄만 쓰고 이력을 버렸다. 재료를 모아 계산하기 전에 **원천이 그 값을
+    직접 주는지** 확인할 것(#141).
+    """
+    try:
+        from bot.akshare_client import get_akshare
+        raw = get_akshare().per_history(ticker, years=years) or []
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: AKShare PER 실패 %s: %s", ticker, exc)
+        return []
+    return rows_from_per_history(raw, prices)
