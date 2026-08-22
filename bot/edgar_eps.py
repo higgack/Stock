@@ -158,5 +158,41 @@ def fill_fiscal_q4(quarters: list, annuals: list) -> list:
         gap = _span_days(inside[-1][0], a_end)
         if gap is None or not (_Q_DAYS[0] <= gap <= _Q_DAYS[1]):
             continue                     # 남은 구간이 분기가 아니다 — 버린다
-        have[a_end] = round(float(a_val) - sum(v for _e, v, _s in inside), 4)
+        q4 = round(float(a_val) - sum(v for _e, v, _s in inside), 4)
+        if not _plausible_q4(q4, [v for _e, v, _s in inside]):
+            log.warning("edgar_eps: %s 결산분기 복원 폐기 — 연간 %.2f − 3분기 "
+                        "%.2f = %.2f (형제 분기와 크기가 안 맞는다)",
+                        a_end, float(a_val), sum(v for _e, v, _s in inside), q4)
+            continue
+        have[a_end] = q4
     return sorted(have.items())
+
+
+# 복원값이 형제 분기의 몇 배까지 벌어지면 못 믿는가.
+_Q4_SANE = 3.0
+
+
+def _plausible_q4(q4: float, siblings: list) -> bool:
+    """복원한 결산분기가 **형제 분기와 같은 급인가**.
+
+    ⚠️ 2026-08-22 전 시장 감사 실측: ❌ 3건이 전부 **회계연도말**에 있었다
+    (LRCX 2023-06-25 10.8배 · KLAC 2024-06-30 9.4배 · KLAC 2017-06-30 결산검산).
+    결산분기는 10-Q 가 없어 `연간 − 3분기` 로 복원하는데, EDGAR **분기**는
+    후속 보고서의 분할 소급조정분이 오고(최신 접수분 채택) **연간**은
+    as-reported 라 두 계열의 스케일이 다를 수 있다 — 그걸 빼면 복원값이
+    쓰레기가 된다(KLAC: 2.03 − 14.12 = **-12.09**).
+
+    스케일이 갈렸는지 직접 알아낼 방법은 없다. 대신 **결과를 잰다**: 복원값이
+    형제 분기 평균의 3배를 넘거나 형제가 전부 양수인데 음수면 못 믿는다.
+    억지로 채우느니 그 시점을 비운다(#29 빈칸이 틀린 값보다 낫다) — 호출부는
+    TTM 을 안 만들고 연간 경로로 내려간다.
+    """
+    sib = [v for v in (siblings or []) if v is not None]
+    if not sib:
+        return False
+    if q4 < 0 and all(v > 0 for v in sib):
+        return False
+    avg = sum(abs(v) for v in sib) / len(sib)
+    if avg <= 0:
+        return True
+    return abs(q4) <= avg * _Q4_SANE

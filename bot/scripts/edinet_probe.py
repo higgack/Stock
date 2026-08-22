@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 6
+_PROBE_VER = 7
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -105,6 +105,7 @@ def _why_no_doc(ticker: str) -> list[str]:
         return out
     today = _dt.date.today()
     total, empty_days, empty_weekdays, seen_types, codes = 0, 0, 0, {}, set()
+    found: list[str] = []
     for off in range(201):
         day = today - _dt.timedelta(days=off)
         docs = cl._fetch_day(day)
@@ -122,11 +123,19 @@ def _why_no_doc(ticker: str) -> list[str]:
             codes.add(code)
             t = str(d.get("docTypeCode") or "?")
             seen_types[t] = seen_types.get(t, 0) + 1
+            # ⚠️ 개수만 세면 "왜 120 이 없나"를 또 추측하게 된다 — **원문을
+            # 그대로** 찍는다(#109 표본 원문부터).
+            found.append(f"{(d.get('submitDateTime') or '')[:10]} type={t} "
+                         f"기간={d.get('periodStart') or '?'}~"
+                         f"{d.get('periodEnd') or '?'} "
+                         f"{(d.get('docDescription') or '')[:60]}")
     out.append(f"     ↳ 최근 201일 목록: 문서 {total:,}건 · 빈 날 {empty_days}일"
                f"(주말 제외 **평일 {empty_weekdays}일** — 평일이 비면 원천 오류"
                f" 또는 빈 목록 캐시)")
     out.append(f"     ↳ 이 티커 문서: {seen_types or '**0건**'} "
                f"· 실제 secCode {sorted(codes) or '없음'}")
+    for ln in sorted(found):
+        out.append(f"        {ln}")
     if seen_types and "120" not in seen_types:
         out.append("     ↳ → 문서는 있는데 **유가증권보고서(120)가 없다** — "
                    "결산월/제출시기 문제이지 탐색 실패가 아니다")

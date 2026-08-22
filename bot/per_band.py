@@ -188,6 +188,35 @@ def per_series(prices: list | None, eps_ttm: list | None
     return out
 
 
+# 배수와 관측이 '같다'고 볼 오차 — 표시가 소수 2자리라 반올림 여유를 준다.
+_AT_TOL = 0.01
+
+
+def band_period(rows: list | None, mult: float | None) -> str | None:
+    """그 배수가 **어느 시점 관측에서 나왔는지**(YYYY-MM-DD) — 없으면 None.
+
+    사용자 2026-08-22: "그 배수에서의 주가 옆에 그 시점도 써줘. 밑에 있는
+    기간에 나온거 말이야."
+
+    ⚠️ **가장 가까운 관측을 아무거나 붙이지 않는다.** 분위수가 실제 관측과
+    떨어져 있으면(원천이 배수를 직접 주는 KR 처럼) 그 시점은 우리가 지어낸
+    것이 된다 — 오차 밖이면 **비운다**(#32 없는 걸 만들지 말 것).
+    같은 배수가 여러 번 나오면 **가장 최근** 시점을 쓴다(사용자가 표에서
+    찾을 때 최근 것이 눈에 먼저 들어온다).
+    """
+    if mult is None:
+        return None
+    best = None
+    for r in rows or []:
+        if not r or len(r) < 4 or r[3] is None:
+            continue
+        if abs(round(float(r[3]), 2) - float(mult)) <= _AT_TOL:
+            p = str(r[0])[:10]
+            if best is None or p > best:
+                best = p
+    return best
+
+
 def _without_outliers(rows: list, min_points: int) -> tuple[list, list]:
     """(밴드에 쓸 배수, 뺀 배수). 뺄 근거는 **분모가 무너진 구간**이다.
 
@@ -228,15 +257,24 @@ _EPS_COLLAPSE = 0.2
 
 
 def _quantile(sorted_vals: list[float], q: float) -> float:
-    """선형보간 분위수. 표준편차가 아니라 **관측 분포**로 밴드를 잡는다."""
+    """분위수 — **실제 관측 하나**를 고른다(nearest-rank).
+
+    표준편차가 아니라 관측 분포로 밴드를 잡는다.
+
+    ⚠️ 선형보간을 쓰면 중상·중하가 **아무 시점에도 없던 값**이 된다. 사용자가
+    "그 배수에서의 주가 옆에 그 시점도 써줘"(2026-08-22) 라고 했을 때 두 칸은
+    영영 빈다 — 그리고 그건 '관측 분포'라는 라벨과도 어긋난다. 보간값을 붙여
+    놓고 가장 가까운 시점을 적으면 그 시점은 우리가 지어낸 것이다(#32).
+    그래서 **관측된 값 중 하나**를 고른다: 최고=최댓값 · 최저=최솟값 ·
+    중상/중하=해당 순위의 관측.
+    """
     if not sorted_vals:
         raise ValueError("empty")
-    if len(sorted_vals) == 1:
+    n = len(sorted_vals)
+    if n == 1:
         return sorted_vals[0]
-    pos = q * (len(sorted_vals) - 1)
-    lo = int(pos)
-    hi = min(lo + 1, len(sorted_vals) - 1)
-    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+    idx = int(round(q * (n - 1)))
+    return sorted_vals[max(0, min(n - 1, idx))]
 
 
 def build(prices: list | None, eps_rows: list | None, *,
@@ -289,7 +327,8 @@ def assemble(rows: list | None, *, min_points: int = 4,
     bands = []
     for q, lab in _BAND_Q:
         m = round(_quantile(vals, q), 2)
-        bands.append({"label": lab, "mult": m, "fair": round(m * eps_now, 2)})
+        bands.append({"label": lab, "mult": m, "fair": round(m * eps_now, 2),
+                      "at": band_period(win, m)})
     return {"rows": [{"period": p, "price": round(pr, 4),
                       "eps": round(e, 4), "per": round(v, 2)}
                      for p, pr, e, v in rows],
