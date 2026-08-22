@@ -1105,7 +1105,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 
 <b>【종목 상세 탭】</b>
  📊 <b>분기실적</b> 탭(전 시장) — 최근 5분기 매출·영업이익·순이익·FCF 추이 + 단일분기 YoY/QoQ(이익률은 %p) + TTM·Forward PER·PSR(시총 기준 라이브) + 수주잔고·재고자산 · 주요 제품/생산능력·가동률 원본 표(KR 공시 종목만, 최신 보고서 자동 롤링). 소스 KR=DART 정기보고서 · 그 외=yfinance. FCF=영업활동현금흐름−CAPEX(밸류에이션 탭에도 표기). 성장동력·리스크 카드(각 최대 6개)는 DART 원문 근거라 <b>한국 종목만</b>(탭 열면 생성 · 분기당 1회 과금 후 캐시)
- 📉 <b>밴드차트</b> — PER/PBR 멀티플별 적정주가 + 이력 표. KR=FnGuide · 미국=SEC EDGAR 희석 EPS · 일본=EDINET 유가증권보고서(연차 5기/부) · 대만=FinMind · 중국·홍콩=바이두 일별 PER · 그 외=yfinance 손익. 밴드=최근 5년 분포 · 이력=최대 10년 · PBR 은 국내만
+ 📉 <b>밴드차트</b> — PER/PBR 멀티플별 적정주가 + 이력 표. KR=FnGuide · 미국=SEC EDGAR 희석 EPS · 일본=EDINET 유가증권보고서(연차 5기/부) · 대만=FinMind · 중국·홍콩=바이두 일별 PER · 그 외=yfinance 손익. 밴드=최근 5년 분포 · 이력=최대 10년 · PBR 은 국내만. 주가는 <b>분할반영·배당미반영</b>이고 EPS 도 같은 분할 기준으로 환산 — 기준이 갈리면 표를 만들지 않고 사유를 표시
  📋 <b>실적</b> — KR=WISEreport(FnGuide) 어닝서프라이즈 · 그 외=yfinance EPS 예상/실제. 소스가 18개월 넘게 묵으면 경고
  • 데이터: <code>~/.tradingagents/</code> · 외부 참고: /sites
 

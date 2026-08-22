@@ -81,6 +81,37 @@ def ttm_eps_series(eps_rows: list | None) -> list[tuple[str, float]]:
     return out
 
 
+_TTM_ANNUAL_TOL = 0.15      # 희석주식수 변동분 — 연간 EPS ≠ 분기합(정확히는)
+
+
+def ttm_annual_mismatch(ttm_rows: list, annual_rows: list,
+                        tol: float = _TTM_ANNUAL_TOL) -> str | None:
+    """**결산 시점 TTM 은 연간 EPS 와 같아야 한다** — 아니면 사유, 맞으면 None.
+
+    ⚠️ 2026-08-22 KLAC 실측: TTM EPS 가 2.03 → 3.63 → 5.51 → 9.24 → **3.04**
+    로 **매 6월(회계연도말)마다 붕괴**했다. 회계연도 누적처럼 움직인 것인데,
+    산수는 전부 맞아 보여(주가÷EPS=PER) 눈으로는 안 잡힌다. 원인은 결산분기
+    복원(`연간 − 3분기`)이 어긋난 것이고, 그 결과가 4개 시점을 연달아 오염시켜
+    톱니가 된다.
+
+    #138 에 **검산법으로만** 적어 둔 걸 제품 가드로 옮긴다 — 규율로 기억하면
+    매번 진다. 어긋나면 호출부가 분기 대신 **연간 EPS 경로**로 내려간다.
+    """
+    ann = {str(p)[:10]: v for p, v in (annual_rows or [])
+           if v is not None and v > 0}
+    if not ann:
+        return None                     # 대조할 게 없으면 판정하지 않는다
+    for period, ttm in (ttm_rows or []):
+        a = ann.get(str(period)[:10])
+        if a is None or ttm is None:
+            continue                    # 겹치는 결산일이 없으면 판정하지 않는다
+        if abs(ttm - a) / a > tol:
+            return (f"{period} 결산 시점 TTM EPS {ttm:,.2f} 가 연간 EPS "
+                    f"{a:,.2f} 와 어긋납니다 — 분기 복원이 깨진 것으로 보여 "
+                    f"연간 기준으로 대체했습니다.")
+    return None
+
+
 def per_series(prices: list | None, eps_ttm: list | None
                ) -> list[tuple[str, float, float, float]]:
     """[(기간, 주가, TTM EPS, PER)] — EPS 기간마다 **그 시점 주가**로.
@@ -234,7 +265,26 @@ _SRC_LABEL = {
 
 
 def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
-    """월봉 종가 [(YYYY-MM-DD, close)]. 밴드는 월 해상도면 충분하다."""
+    """월봉 종가 [(YYYY-MM-DD, close)] — **분할반영·배당미반영**(Yahoo `Close`).
+
+    ⚠️ 차트 경로(`fetch_chart_payload`)는 `auto_adjust=True` 라 **배당까지**
+    소급 조정한다. PER 은 "그때 실제로 거래된 가격 ÷ 그때 보고된 EPS" 이므로
+    배당 조정된 옛 주가를 쓰면 **옛 PER 이 체계적으로 낮게** 나온다. Yahoo 의
+    `Close` 는 분할만 반영하므로 그게 맞다. 못 받으면 차트 경로로 폴백한다
+    (KR 네이버 폴백 등 — 그때는 배당 조정분만큼의 오차를 감수한다).
+    """
+    try:
+        import yfinance as yf
+        h = yf.Ticker(ticker).history(
+            period="max" if years >= 10 else "5y",
+            interval="1mo", auto_adjust=False)
+        if h is not None and len(h) and "Close" in h.columns:
+            out = [(str(i)[:10], float(v)) for i, v in h["Close"].items()
+                   if v == v and v is not None and float(v) > 0]
+            if out:
+                return out
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: yfinance 월봉(미조정) 실패 %s: %s", ticker, exc)
     try:
         from bot.chart_data import fetch_chart_payload
         pay = fetch_chart_payload(ticker, interval="1mo",
@@ -246,6 +296,76 @@ def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
     ts, cl = pay.get("times") or [], pay.get("close") or []
     return [(str(t), float(c)) for t, c in zip(ts, cl)
             if c is not None]
+
+
+# ── 주식분할 정합 ────────────────────────────────────────────────────
+# ⚠️ 2026-08-22 LRCX 실측: 주가는 51.46 → 62.58 로 연속인데 TTM EPS 만
+# 35.91 → 3.32 로 **10.8배** 급락해 옛 PER 이 1.43 로 찍혔다(정상은 14.3).
+# Yahoo 종가는 **항상 분할반영**인데 EDGAR·EDINET·야후 손익의 EPS 는
+# **as-reported** 라서 분할 시점을 경계로 두 계열의 기준이 갈린 것이다.
+# 나란히 놓이는 두 값은 같은 기준이어야 한다(#33 의 분할판).
+_EPS_BREAK = 4.0          # 인접 기간 EPS 가 이 배수 이상 튀면 분할 잔재 의심
+
+
+def split_factors(ticker: str) -> list[tuple[str, float]]:
+    """[(YYYY-MM-DD, 분할비율)] — 실패하면 빈 리스트(호출부가 판단한다)."""
+    try:
+        import yfinance as yf
+        sp = yf.Ticker(ticker).splits
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: 분할 이력 실패 %s: %s", ticker, exc)
+        return []
+    out = []
+    try:
+        for idx, val in sp.items():
+            r = float(val)
+            if r > 0 and abs(r - 1.0) > 1e-9:
+                out.append((str(idx)[:10], r))
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("per_band: 분할 파싱 실패 %s: %s", ticker, exc)
+        return []
+    out.sort()
+    return out
+
+
+def adjust_eps_for_splits(rows: list, splits: list) -> list:
+    """as-reported EPS 를 **주가와 같은 기준**(분할반영)으로 환산.
+
+    기간 종료일 `d` 이후에 일어난 분할의 곱으로 나눈다 — 10:1 분할 전의
+    EPS 35.91 은 3.591 이 된다.
+    """
+    if not rows or not splits:
+        return rows
+    out = []
+    for period, eps in rows:
+        f = 1.0
+        for d, r in splits:
+            if d > str(period)[:10]:
+                f *= r
+        out.append((period, (eps / f) if (eps is not None and f) else eps))
+    return out
+
+
+def eps_break_reason(rows: list) -> str | None:
+    """분할 잔재가 남았으면 사유, 없으면 None.
+
+    ⚠️ 분할 이력을 못 받는 날이 있다 — 그때 조용히 넘기면 **PER 이 10배
+    틀린 표**가 그대로 나간다. 인접 기간 EPS 가 `_EPS_BREAK` 배 이상 튀면
+    (실적 변동으로 설명 안 되는 크기다) 만들지 않는다(#29 빈칸이 낫다).
+    """
+    prev = None
+    for period, eps in rows or []:
+        if eps is None or eps <= 0:
+            prev = None
+            continue
+        if prev is not None:
+            hi, lo = max(prev[1], eps), min(prev[1], eps)
+            if lo > 0 and hi / lo >= _EPS_BREAK:
+                return (f"{prev[0]} → {period} 사이 EPS 가 {hi / lo:.1f}배 "
+                        f"튑니다 — 주식분할 조정이 안 된 것으로 보여 "
+                        f"PER 이력을 만들지 않았습니다.")
+        prev = (period, eps)
+    return None
 
 
 def _eps_rows_from_snapshot(snap: dict | None, kind: str) -> list:
@@ -304,6 +424,12 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # ⚠️ 우리가 못 본 단위·통화 사고를 잡는 2차 그물 — TSM 은 통화 가드가
         # 1차지만, 같은 증상이 다른 경로로 또 올 수 있다(#54 대조 0건 금지).
         bad = implausible_reason(res.get("rows"))
+        if not bad:
+            # 분할 이력을 못 받은 날은 위 환산이 아무것도 못 한다 — 그대로
+            # 내보내면 PER 이 배수만큼 틀린 표가 나간다(#29 빈칸이 낫다).
+            bad = eps_break_reason(
+                [(r.get("period"), r.get("eps"))
+                 for r in (res.get("rows") or []) if isinstance(r, dict)])
         if bad:
             log.warning("per_band: %s 배수 비정상 — %s", tk, bad)
             _pack.reason = bad
@@ -328,8 +454,13 @@ def for_ticker(ticker: str, snap: dict | None = None,
 
     _pack.reason = None
 
+    # 주가(분할반영)와 EPS(as-reported)의 기준을 맞춘다 — 이걸 안 하면 분할
+    # 시점을 경계로 PER 이 분할비율만큼 틀린다(2026-08-22 LRCX 실측).
+    _splits = split_factors(tk)
+
     def _conv(rows):
-        """통화가 다르면 환산해서 준다(같으면 그대로)."""
+        """통화가 다르면 환산하고, **주식분할 기준을 주가에 맞춘다**."""
+        rows = adjust_eps_for_splits(rows, _splits)
         return convert_eps(rows, fx) if fx else rows
 
     if mkt == "US":
@@ -339,15 +470,22 @@ def for_ticker(ticker: str, snap: dict | None = None,
         except Exception as exc:                               # noqa: BLE001
             log.debug("per_band: EDGAR 실패 %s: %s", tk, exc)
             h = {}
-        got = _pack(build(px, _conv(h.get("quarterly"))), "edgar")
-        if got:
-            return got, None
+        _q = _conv(h.get("quarterly"))
+        _a = _conv(h.get("annual"))
+        # 결산 시점 TTM 이 연간 EPS 와 어긋나면 분기 경로를 **쓰지 않는다**.
+        _bad = ttm_annual_mismatch(ttm_eps_series(_q), _a)
+        if _bad:
+            log.warning("per_band: %s 분기 경로 폐기 — %s", tk, _bad)
+        else:
+            got = _pack(build(px, _q), "edgar")
+            if got:
+                return got, None
         # ⚠️ **20-F 제출사는 분기 프레임이 아예 없다**(2026-08-22 NVMI/Nova Ltd
         # — 이스라엘 법인). 분기 프레임은 10-Q 에서만 나오므로 외국 사모발행사
         # (foreign private issuer)는 분기가 0개이고, 그러면 yfinance 연간 4점
         # 으로 떨어져 '최고/최저'가 이름값을 못 했다. EDGAR 는 **연간**을 10년
         # 넘게 주므로 그걸 먼저 쓴다 — 10-K 제출사도 이 경로가 더 길다.
-        got = _pack(build(px, _conv(h.get("annual")), annual=True), "edgar-a")
+        got = _pack(build(px, _a, annual=True), "edgar-a")
         if got:
             return got, None
     if mkt == "JP":

@@ -7724,6 +7724,9 @@ def _render_stock_info_html(rec: dict) -> str:
           미국 SEC EDGAR 희석 EPS(최대 10년) · 일본 EDINET 유가증권보고서(한 부에 5기 — 두 부면 10년) · 대만 FinMind ·
           중국 A주·홍콩 바이두 일별 PER · 그 외는 yfinance 손익.
           밴드선 = <b>배수 × 그 시점 TTM EPS</b>이고 적자(EPS≤0) 구간은 잇지 않습니다.
+          <div style="margin-top:4px"><b>기준</b> — 주가는 <b>분할반영·배당미반영</b>(그때 실제로 거래된 가격),
+          EPS 는 원천이 준 보고치를 <b>같은 분할 기준으로 환산</b>합니다. 둘의 기준이 갈리면 분할 시점을 경계로
+          PER 이 분할비율만큼 틀립니다 — 분할 이력을 못 받으면 표를 <b>만들지 않고 사유를 표시</b>합니다.</div>
           yfinance 만 되는 시장은 분기 4~5개·연간 4개년이 한계라 <b>연 4점</b> 수준입니다.
           일본은 EDINET 목록을 처음 훑는 동안 yfinance 로 먼저 그리고, 준비되면 다음 조회부터 EDINET 기준으로 바뀝니다.
           <div style="margin-top:4px"><b>통화</b> — y축은 해당 시장 표시통화입니다. ADR 처럼 재무제표 통화와 거래 통화가 다르면
