@@ -5200,7 +5200,12 @@ _BAND_JS = r"""
      PBR 밴드' **제목만** 남아 수집 실패로 읽힌다(사용자 2026-08-22 9984.T).
      예전 숨김 로직은 `draw()` 안에만 있어 `CD` 가 없으면 아예 안 돌았다. */
   function showGrid(on){ var g=document.getElementById('si-band-grid');
-    if(g) g.style.display = on ? '' : 'none'; }
+    if(g) g.style.display = on ? '' : 'none';
+    /* PBR 블록은 이제 표 사이에 따로 서 있다 — 같이 감추지 않으면 밴드가
+       아예 없을 때 'PBR 밴드' **제목만** 남는다(#43). 보이는 쪽은 `draw()`
+       가 데이터를 보고 정한다. */
+    if(!on){ var pb=document.getElementById('si-band-pbr-box');
+      if(pb) pb.style.display='none'; } }
   function draw(){ if(!CD){ showGrid(false); return; }
     showGrid(true);
     var csym=CD.csym||'₩';
@@ -5208,15 +5213,10 @@ _BAND_JS = r"""
     /* PBR 은 FnGuide(KR)만 준다 — 없으면 **빈 패널을 남기지 않는다**.
        제목만 뜨고 아래가 비면 수집 실패로 읽힌다(사용자 캡처, #43). */
     var pbrBox=document.getElementById('si-band-pbr-box');
-    var grid=document.getElementById('si-band-grid');
     if(CD.pbr&&CD.pbr.price&&CD.pbr.price.length){
       if(pbrBox) pbrBox.style.display='';
-      if(grid) grid.style.gridTemplateColumns='1fr 1fr';
       drawBand('si-band-pbr','si-band-pbr-lg',CD.pbr,csym);
-    }else{
-      if(pbrBox) pbrBox.style.display='none';
-      if(grid) grid.style.gridTemplateColumns='1fr';
-    } }
+    }else if(pbrBox){ pbrBox.style.display='none'; } }
   /* PER 표 — 차트와 **같은 탭**에. 국내는 FnGuide 값을 되뽑은 것이고
      비-KR 은 자체계산이라, 어느 쪽인지 표가 스스로 밝힌다(#55). */
   function esc2(x){ return String(x==null?'':x).replace(/[&<>"]/g,function(c){
@@ -7792,15 +7792,20 @@ def _render_stock_info_html(rec: dict) -> str:
       </details>
     </div>
     <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">
-      <div><div class="si-section-title" style="font-size:13px">PER 밴드</div>
-        <div id="si-band-per"></div>
-        <div id="si-band-per-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
-      <div id="si-band-pbr-box"><div class="si-section-title" style="font-size:13px">PBR 밴드</div>
-        <div id="si-band-pbr"></div>
-        <div id="si-band-pbr-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
+    <!-- 사용자 2026-08-23 "PBR 밴드는 여기 PBR 있는 곳 위로 옮겨줘" — 차트 둘을
+         나란히 놓고 표 둘을 그 아래 몰아 두면, PBR 표를 볼 때 그 차트가 두 화면
+         위에 있다. 지표마다 **차트 바로 밑에 그 지표의 표**를 둔다. -->
+    <div id="si-band-grid">
+      <div class="si-section-title" style="font-size:13px">PER 밴드</div>
+      <div id="si-band-per"></div>
+      <div id="si-band-per-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div>
     </div>
     <div id="si-band-table"></div>
+    <div id="si-band-pbr-box" style="display:none;margin-top:18px">
+      <div class="si-section-title" style="font-size:13px">PBR 밴드</div>
+      <div id="si-band-pbr"></div>
+      <div id="si-band-pbr-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div>
+    </div>
     <div id="si-band-table-pbr"></div>
     {_src_foot}출처: FnGuide(네이버 임베드) · BandChart · 비-KR 은 자체 PER 밴드(표)</div>
   </div>
