@@ -319,7 +319,8 @@ _SRC_LABEL = {
 
 
 def _price_history(ticker: str, years: int
-                   ) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+                   ) -> tuple[list[tuple[str, float]], list[tuple[str, float]],
+                              bool]:
     """(월봉 종가, 분할 이력) — **한 번의 호출**에서 같이 받는다.
 
     ⚠️ 분할을 별도 호출(`Ticker.splits`)로 받았더니 VM 실측에서 **빈 리스트**가
@@ -347,7 +348,10 @@ def _price_history(ticker: str, years: int
                         sp.append((str(i)[:10], r))
                 sp.sort()
             if px:
-                return px, sp
+                # 세 번째 값 = **분할 정보를 아는가**. 이 응답에는 `Stock
+                # Splits` 열이 같이 오므로, 빈 리스트는 "못 받았다"가 아니라
+                # "분할이 없었다" 는 뜻이다. 폴백 경로는 알 수 없다.
+                return px, sp, ("Stock Splits" in h.columns)
     except Exception as exc:                                   # noqa: BLE001
         log.debug("per_band: yfinance 월봉(미조정) 실패 %s: %s", ticker, exc)
     try:
@@ -357,9 +361,10 @@ def _price_history(ticker: str, years: int
                                   lite=True) or {}
     except Exception as exc:                                   # noqa: BLE001
         log.debug("per_band: 가격 이력 실패 %s: %s", ticker, exc)
-        return [], []
+        return [], [], False
     ts, cl = pay.get("times") or [], pay.get("close") or []
-    return [(str(t), float(c)) for t, c in zip(ts, cl) if c is not None], []
+    return ([(str(t), float(c)) for t, c in zip(ts, cl) if c is not None],
+            [], False)
 
 
 def _monthly_closes(ticker: str, years: int) -> list[tuple[str, float]]:
@@ -492,9 +497,20 @@ def trim_at_eps_break(rows: list) -> tuple[list, str | None]:
     NVMI 는 2016→2017 에 연간 EPS 가 4.7배 늘었고 그건 실적이다(#146 정당한
     변형까지 막지 말 것).
     """
-    clean = [(p, v) for p, v in (rows or []) if v is not None and v > 0]
+    # ⚠️ **정렬이 먼저다.** 원천이 최신부터 주는 일이 잦은데 그대로 훑으면
+    # '인접'이 인접이 아니다 — 2026-08-22 실측에서 000660.KS 가
+    # `2024-12-31 → 2022-12-31` 로 **2년을 건너뛴 비교**에 걸려 표가 통째로
+    # 비었다(그 사이 2023 은 적자라 걸러졌다).
+    # ⚠️ 걸러낸 자리에서 **인접을 끊는다**. 적자기(EPS≤0)를 빼고 나면 2년
+    # 떨어진 두 기가 '인접'이 되는데, 그 사이 실적이 무너졌다 회복한 것을
+    # 분할 기준 불일치로 읽는다 — 2026-08-22 000660.KS 가 그래서 통째로
+    # 비었다(2023 적자를 사이에 두고 8.8배).
+    clean = sorted((str(p), v) for p, v in (rows or []) if p)
     cut, why, prev = None, None, None
     for period, eps in clean:
+        if eps is None or eps <= 0:
+            prev = None
+            continue
         if prev is not None:
             hi, lo = max(prev[1], eps), min(prev[1], eps)
             if lo > 0 and hi / lo >= _EPS_BREAK:
@@ -539,7 +555,7 @@ def for_ticker(ticker: str, snap: dict | None = None,
         mkt = detect_market(tk)
     except Exception:                                          # noqa: BLE001
         mkt = "US"
-    px, _sp = _price_history(tk, years)
+    px, _sp, _splits_known = _price_history(tk, years)
     if not px:
         return None, "가격 이력을 받지 못했습니다."
     # 재무제표 통화 ≠ 거래 통화면 그 시점 환율로 EPS 를 환산한다(위 §통화 정합).
@@ -595,22 +611,37 @@ def for_ticker(ticker: str, snap: dict | None = None,
     # 주가(분할반영)와 EPS(as-reported)의 기준을 맞춘다 — 이걸 안 하면 분할
     # 시점을 경계로 PER 이 분할비율만큼 틀린다(2026-08-22 LRCX 실측).
     # 가격과 **같은 응답**에서 온 분할을 쓴다(별도 호출은 조용히 빈다).
-    _splits = _sp or split_factors(tk)
+    _splits = _sp if _splits_known else (_sp or split_factors(tk))
 
-    def _conv(rows):
+    def _conv(rows, *, reported_eps: bool = True):
         """통화가 다르면 환산하고, **주식분할 기준을 주가에 맞춘다**.
 
-        환산 뒤에도 잔재가 보이면 그 **이전 구간만** 잘라낸다 — 통째로 비우면
-        사용자에겐 수집 실패로 보인다(2026-08-22 LRCX·KLAC 빈 화면).
+        ⚠️ `reported_eps=False` 는 원천이 **PER 을 직접 주는** 경로다
+        (FinMind·바이두). 거기서 되짚은 EPS 는 우리가 나눠 만든 값이라
+        급변이 있어도 그건 **실적**이지 기준 불일치가 아니다 — 2026-08-22
+        실측에서 0002.HK 가 그 이유로 ❌ 였다. 분할·잘라내기를 적용하지 않는다.
+
+        ⚠️ 분할 정보를 **아는 날**(가격 응답에 `Stock Splits` 가 같이 온 경우)
+        에는 잘라내지 않는다. 그때 남은 급변은 실적이다 — 000660.KS 는 2023
+        적자기를 사이에 두고 8.8배가 났는데 그건 분할이 아니다. 잘라내기는
+        **모를 때의 안전망**이다.
         """
+        if not reported_eps:
+            return convert_eps(rows, fx) if fx else rows
+        before = rows
         rows = adjust_eps_for_splits(rows, _splits)
-        rows, note = trim_at_eps_break(rows)
-        if note:
-            log.warning("per_band: %s %s", tk, note)
-            _conv.note = note
+        # 이 계열에 분할 환산이 **실제로 걸렸는지** 기록한다 — 두 계열이 서로
+        # 다른 기준으로 끝나면 둘을 대조할 수 없다(아래 결산검산).
+        _conv.applied.append(rows is not before and rows != before)
+        if not _splits_known:
+            rows, note = trim_at_eps_break(rows)
+            if note:
+                log.warning("per_band: %s %s", tk, note)
+                _conv.note = note
         return convert_eps(rows, fx) if fx else rows
 
     _conv.note = None
+    _conv.applied = []
 
     if mkt == "US":
         try:
@@ -619,10 +650,21 @@ def for_ticker(ticker: str, snap: dict | None = None,
         except Exception as exc:                               # noqa: BLE001
             log.debug("per_band: EDGAR 실패 %s: %s", tk, exc)
             h = {}
+        _conv.applied = []
         _q = _conv(h.get("quarterly"))
         _a = _conv(h.get("annual"))
-        # 결산 시점 TTM 이 연간 EPS 와 어긋나면 분기 경로를 **쓰지 않는다**.
-        _bad = ttm_annual_mismatch(ttm_eps_series(_q), _a)
+        # ⚠️ 두 계열이 **다른 기준**으로 끝나면 대조 자체가 성립하지 않는다.
+        # 2026-08-22 AAPL 실측: EDGAR 분기는 후속 보고서에서 분할 소급조정된
+        # 값이 오는데(최신 접수분을 쓰므로) 연간은 as-reported 라, 한쪽만
+        # 환산이 걸려 TTM 11.87 vs 연간 2.98 이 됐다. 그걸 '분기 복원이
+        # 깨졌다'고 말하면 거짓이다 — 판정을 **하지 않는다**(#54 판정 불가는
+        # 통과가 아니지만, 틀린 사유를 말하는 것보다는 낫다).
+        _bad = None
+        if len(set(_conv.applied)) > 1:
+            log.info("per_band: %s 분기·연간 계열의 분할 기준이 달라 "
+                     "결산검산을 건너뜀", tk)
+        else:
+            _bad = ttm_annual_mismatch(ttm_eps_series(_q), _a)
         if _bad:
             log.warning("per_band: %s 분기 경로 폐기 — %s", tk, _bad)
         else:

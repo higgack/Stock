@@ -32011,7 +32011,7 @@ class TestBandCoverageAndPartialSource20260822:
         monkeypatch.setattr(fm, "fetch_per_pbr", lambda t, days=90: raw)
         monkeypatch.setattr(pb, "_price_history", lambda t, y: ([
             ((_dt.date(2021, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
-             500.0 + 5 * k) for k in range(60)], []))
+             500.0 + 5 * k) for k in range(60)], [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         tbl, why = pb.for_ticker("2330.TW", {})
@@ -32323,7 +32323,7 @@ class TestCnPerBandFromAkshare20260822:
         """⚠️ AST 로 호출 존재만 보면 **게이트를 못 잡는다**(#141 실측) —
         수집기를 통째로 태워 basis 를 본다."""
         import bot.per_band as pb
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), [], False))
         monkeypatch.setattr(pb, "baidu_per_rows",
                             lambda t, p, y=10: pb.rows_from_per_history(
                                 self._pts(), p))
@@ -32741,7 +32741,7 @@ class TestCurrencyMismatchBand20260822:
         pb_orig = pb._fx_monthly
         pb._fx_monthly = lambda a, b, y: []
         mc_orig = pb._price_history
-        pb._price_history = lambda t, y: ([("2025-01-01", 100.0)], [])
+        pb._price_history = lambda t, y: ([("2025-01-01", 100.0)], [], False)
         try:
             tbl, why = pb.for_ticker(
                 "TSM", {"financial_currency": "TWD", "currency": "USD"})
@@ -32759,7 +32759,7 @@ class TestCurrencyMismatchBand20260822:
         monkeypatch.setattr(pb, "_fx_monthly",
                             lambda a, b, y: hit.append((a, b)) or [])
         monkeypatch.setattr(pb, "_price_history",
-                            lambda t, y: ([("2025-01-01", 100.0)], []))
+                            lambda t, y: ([("2025-01-01", 100.0)], [], False))
         monkeypatch.setattr(pb, "_eps_rows_from_snapshot", lambda s, k: [])
         return hit
 
@@ -32782,7 +32782,7 @@ class TestCurrencyMismatchBand20260822:
         """⚠️ `implausible_reason` 을 직접 부르는 테스트는 **배선을 못 잡는다**
         (#20) — 수집기를 통째로 태워 밴드가 실제로 거부되는지 본다."""
         import bot.per_band as pb
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._PX, []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._PX, [], False))
         monkeypatch.setattr(
             pb, "_eps_rows_from_snapshot",
             lambda s, k: self._EPS_TWD if k == "annual" else [])
@@ -33826,7 +33826,7 @@ class TestEdinetXbrl20260822:
                100.0 + 3 * k) for k in range(130)]
         annual = [(f"{y}-12-31", 2.0 + 0.4 * (y - 2016))
                   for y in range(2016, 2026)]
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         import bot.edgar_eps as ee
@@ -33848,7 +33848,7 @@ class TestEdinetXbrl20260822:
         px = [((_dt.date(2016, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
                1000.0 + 5 * k) for k in range(130)]
         eps = [(f"{y}-03-31", 50.0 + y - 2017) for y in range(2017, 2027)]
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         import bot.edinet_xbrl as ex
@@ -33866,7 +33866,7 @@ class TestEdinetXbrl20260822:
         import bot.edinet_xbrl as ex
         px = [((_dt.date(2020, 1, 31) + _dt.timedelta(days=30 * k)).isoformat(),
                1000.0 + 5 * k) for k in range(70)]
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (px, [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ex, "eps_rows",
@@ -34219,7 +34219,7 @@ class TestSplitConsistentPerHistory20260822:
     def test_end_to_end_per_is_continuous_after_the_fix(self, monkeypatch):
         import bot.per_band as pb
         import bot.edgar_eps as ee
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors",
@@ -34242,7 +34242,7 @@ class TestSplitConsistentPerHistory20260822:
         2026-08-22 감사에서 LRCX·KLAC 이 실제로 빈 화면이 됐다."""
         import bot.per_band as pb
         import bot.edgar_eps as ee
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
@@ -34285,10 +34285,11 @@ class TestSplitConsistentPerHistory20260822:
         orig = yf.Ticker
         yf.Ticker = _T
         try:
-            px, sp = pb._price_history("LRCX", 10)
+            px, sp, known = pb._price_history("LRCX", 10)
         finally:
             yf.Ticker = orig
         assert sp == [("2024-10-31", 10.0)], sp
+        assert known is True, "분할 정보를 안다는 걸 안 알려준다"
         assert len(px) == 2 and calls[0]["auto_adjust"] is False, (px, calls)
 
     def test_for_ticker_uses_the_splits_that_came_with_the_prices(
@@ -34303,7 +34304,7 @@ class TestSplitConsistentPerHistory20260822:
             raise AssertionError("별도 분할 호출에 기댔다")
         monkeypatch.setattr(pb, "split_factors", _boom)
         monkeypatch.setattr(pb, "_price_history",
-                            lambda t, y: (self._px(), [("2021-10-03", 10.0)]))
+                            lambda t, y: (self._px(), [("2021-10-03", 10.0)], True))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ee, "eps_history",
@@ -34330,7 +34331,7 @@ class TestSplitConsistentPerHistory20260822:
                ("2021-09-25", 5.61), ("2022-09-24", 6.11),
                ("2023-09-30", 6.13), ("2024-09-28", 6.08)]
         monkeypatch.setattr(pb, "_price_history",
-                            lambda t, y: (self._px(), dup))
+                            lambda t, y: (self._px(), dup, True))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(ee, "eps_history",
@@ -34351,6 +34352,101 @@ class TestSplitConsistentPerHistory20260822:
         # 실제로는 없는 분할 — 적용하면 계열이 나빠진다
         got = pb.adjust_eps_for_splits(rows, [("2020-01-01", 10.0)])
         assert got == rows, got
+
+    def test_adjacency_is_judged_in_period_order(self, monkeypatch):
+        """⚠️ 원천이 최신부터 주면 '인접'이 인접이 아니다 — 2026-08-22 실측:
+        000660.KS 가 `2024-12-31 → 2022-12-31` 로 **2년을 건너뛴 비교**에
+        걸려 표가 통째로 비었다(그 사이 2023 은 적자라 걸러졌다)."""
+        import bot.per_band as pb
+        rows = [("2024-12-31", 8.8), ("2023-12-31", 0.0), ("2022-12-31", 1.0)]
+        kept, why = pb.trim_at_eps_break(rows)
+        assert why is None, why       # 8.8 과 1.0 은 인접이 아니다
+        assert len(kept) == 3, kept
+
+    def test_reported_break_reads_earlier_period_first(self):
+        """⚠️ 정렬 없이 훑으면 사유가 `2024-12-31 → 2022-12-31` 처럼 **거꾸로**
+        찍힌다(2026-08-22 실측) — 사람이 읽는 문장이 시간을 거스르면 그
+        판정도 못 믿는다."""
+        import re
+        import bot.per_band as pb
+        rows = [("2023-06-30", 3.32), ("2023-03-31", 35.91)]   # 최신 우선
+        _kept, why = pb.trim_at_eps_break(rows)
+        assert why, "급변을 못 잡았다"
+        a, b = re.search(r"(\d{4}-\d{2}-\d{2}) → (\d{4}-\d{2}-\d{2})",
+                         why).groups()
+        assert a < b, why
+
+    def test_fiscal_check_is_skipped_when_the_two_series_differ_in_basis(
+            self, monkeypatch):
+        """⚠️ EDGAR 분기는 후속 보고서에서 **분할 소급조정**된 값이 오는데
+        연간은 as-reported 라, 한쪽만 환산이 걸려 2026-08-22 AAPL 이
+        `TTM 11.87 vs 연간 2.98` 로 어긋났다. 그걸 '분기 복원이 깨졌다'고
+        말하면 거짓이다 — 판정을 **하지 않는다**."""
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+        # 분기는 **이미 분할반영**(계단 없음 → 환산하면 오히려 나빠져 되돌림),
+        # 연간은 **as-reported**(분할 시점에 4배 계단 → 환산이 도움).
+        q, a = [], []
+        for y in range(2015, 2026):
+            for i, md in enumerate(("12-31", "03-31", "06-30", "09-30")):
+                yy = y if i == 0 else y + 1
+                q.append((f"{yy}-{md}", 0.75))
+            end = f"{y + 1}-09-30"
+            a.append((end, 12.0 if end < "2020-08-31" else 3.0))
+        q.sort()
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: (self._px(), [("2020-08-31", 4.0)],
+                                          True))
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": q, "annual": a,
+                                                 "tag": "x"})
+        caught = []
+        monkeypatch.setattr(pb, "ttm_annual_mismatch",
+                            lambda *a_, **k: caught.append(1) or None)
+        pb.for_ticker("AAPL", {})
+        assert not caught, "기준이 다른 두 계열을 대조했다"
+
+    def test_known_splits_mean_no_trimming(self, monkeypatch):
+        """잘라내기는 **모를 때의 안전망**이다 — 분할 정보를 알면 남은 급변은
+        실적이므로 이력을 자르지 않는다(적자기를 낀 회복이 잘리면 안 된다)."""
+        import bot.per_band as pb
+        import bot.edgar_eps as ee
+        ann = [("2021-06-30", 1.0), ("2022-06-30", 1.2), ("2023-06-30", 1.1),
+               ("2024-06-30", 0.2), ("2025-06-30", 6.0), ("2026-06-30", 7.0)]
+        monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
+        monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
+        monkeypatch.setattr(ee, "eps_history",
+                            lambda t, years=10: {"quarterly": [],
+                                                 "annual": ann, "tag": "x"})
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: (self._px(), [], True))   # 분할 없음(앎)
+        tbl, why = pb.for_ticker("SKH", {})
+        assert tbl is not None, why
+        assert not tbl.get("trim_note"), tbl.get("trim_note")
+        assert tbl["n"] == 6, tbl["n"]
+        # 모르는 날에는 안전망이 돈다
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: (self._px(), [], False))
+        monkeypatch.setattr(pb, "split_factors", lambda t: [])
+        tbl2, why2 = pb.for_ticker("SKH", {})
+        assert (tbl2 is None) or tbl2.get("trim_note"), tbl2
+
+    def test_direct_per_sources_skip_the_split_axis(self):
+        """원천이 PER 을 직접 주면 우리가 EPS 로 나누지 않으므로 분할 기준이
+        갈릴 수 없다 — 2026-08-22 0002.HK 가 적자기 때문에 ❌ 였다."""
+        import bot.scripts.per_band_audit as ab
+        rows = [{"period": "2023-07-24", "price": 80.0, "eps": 8.0,
+                 "per": 10.0},
+                {"period": "2023-08-23", "price": 80.0, "eps": 0.67,
+                 "per": 119.4}]
+        t = {"rows": rows, "basis": "baidu", "summary": {}, "price_now": None,
+             "band_from": "2023-07-24", "band_to": "2023-08-23"}
+        got = dict((a, m) for m, a, _d in ab.audit_rows(t))
+        assert got["분할"] == "✅", got
+        t2 = {**t, "basis": "edgar"}
+        assert dict((a, m) for m, a, _d in ab.audit_rows(t2))["분할"] == "❌"
 
     def test_split_ratio_is_not_guessed_from_the_observed_jump(self):
         """분할과 실적 변동이 곱해져 관측 배수는 정수가 아니다(LRCX 실측
@@ -34418,7 +34514,7 @@ class TestSplitConsistentPerHistory20260822:
         import bot.per_band as pb
         import bot.edgar_eps as ee
         monkeypatch.setattr(pb, "_price_history",
-                            lambda t, y: (self._px(), []))
+                            lambda t, y: (self._px(), [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
@@ -34435,7 +34531,7 @@ class TestSplitConsistentPerHistory20260822:
         """어긋나면 분기 경로를 **쓰지 않고** 연간으로 내려간다."""
         import bot.per_band as pb
         import bot.edgar_eps as ee
-        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), []))
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: (self._px(), [], False))
         monkeypatch.setattr(pb, "live_price", lambda t, ref=None: None)
         monkeypatch.setattr(pb, "chart_block", lambda t, p=None: None)
         monkeypatch.setattr(pb, "split_factors", lambda t: [])
