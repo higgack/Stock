@@ -7398,7 +7398,10 @@ class TestSingleFlight20260821:
     def test_expensive_endpoints_are_wired(self):
         """헬퍼만 만들고 배선이 빠지면 로그의 중복은 그대로다(#20)."""
         src = open("bot/dashboard_server.py", encoding="utf-8").read()
-        for key in ('f"chart:{cache_f.name}"', 'f"band:{ticker}"',
+        # ⚠️ 2026-08-23: 밴드는 원본(FnGuide)과 표를 **한 비행**으로 묶어
+        # 키가 `perband:` 하나가 됐다 — 계약은 "그 엔드포인트가 single-flight
+        # 로 감싸진다"이지 특정 키 문자열이 아니다(#19).
+        for key in ('f"chart:{cache_f.name}"', 'f"perband:{ticker}"',
                     'f"quarterly:{ticker}:{int(bool(run))}"'):
             assert key in src, key
 
@@ -33389,7 +33392,10 @@ class TestBandTableWiring20260822:
                   and n.name == "_handle_band_api")
         body = ast.get_source_segment(src, fn) or ""
         assert body.count("per_table") >= 2, "KR·비-KR 둘 다 표를 안 준다"
-        assert "for_ticker" in body, "비-KR 자체 밴드 배선 누락"
+        # ⚠️ 2026-08-23: 경로 분기를 `band_source.resolve` 로 뺐다 — 핸들러
+        # 안에만 있으면 감사가 그 경로를 못 탄다(#35·#176). 계약은 "비-KR
+        # 도 표를 만든다"이고, 그걸 만드는 주체가 공용 해석기다.
+        assert "_resolve(" in body, "공용 밴드 해석기 배선 누락"
 
     def test_guide_text_matches_behaviour(self):
         """동작이 바뀌면 설명도 정확히(out-of-sync = 버그)."""
@@ -34681,9 +34687,12 @@ class TestPerBandAudit20260822:
                   if isinstance(n, ast.FunctionDef) and n.name == "audit_one")
         calls = [c.func.attr for c in ast.walk(fn)
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)]
-        assert "for_ticker" in calls, calls
         names = [c.func.id for c in ast.walk(fn)
                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+        # ⚠️ 2026-08-23: 화면이 국내를 FnGuide 로 그리므로 감사도 **공용
+        # 해석기**를 타야 같은 걸 잰다(#176). `for_ticker` 직접 호출은 금지.
+        assert "_resolve" in names, (names, calls)
+        assert "for_ticker" not in calls, calls
         assert "collect_stock_snapshot" in names, names
 
     def test_product_publishes_its_fiscal_verdict(self):
@@ -35563,3 +35572,82 @@ class TestWatchlistKrTrailingPer20260823:
         i = src.index("function tperTitle(")
         body = src[i:i + 700]
         assert "eps_trailing_src" in body and "KRX" in body, body
+
+
+class TestBandSourceSinglePath20260823:
+    """사용자 2026-08-23 "남은거 모두 끝났는지도 확인해줘" — 확인하다 드러난 것.
+
+    감사는 `per_band.for_ticker` 만 불러 국내 종목을 `yf-a · 관측 4개` 로
+    판정했는데, 화면은 FnGuide 밴드를 그린다(같은 종목이 **관측 49개**).
+    감사가 **화면이 쓰지 않는 경로**를 재고 있었다(#35) — 국내 분기가
+    `_handle_band_api` 안에 인라인으로만 있었던 것이 원인이다."""
+
+    def test_kr_goes_to_fnguide_and_others_to_per_band(self, monkeypatch):
+        import bot.band_source as bs
+        import bot.dashboard_server as ds
+        import bot.fnguide_bandchart as fg
+        import bot.per_band as pb
+        monkeypatch.setattr(fg, "fetch_band_chart", lambda t: {"raw": t})
+        monkeypatch.setattr(ds, "_kr_band_tables",
+                            lambda d, t: ({"n": 49, "kind": "PER"},
+                                          {"n": 49, "kind": "PBR"}))
+        monkeypatch.setattr(pb, "for_ticker",
+                            lambda t, s=None: ({"n": 10, "basis": "edinet"}, None))
+        kr = bs.resolve("005930.KS")
+        assert kr["basis"] == "fnguide" and kr["per"]["n"] == 49, kr
+        assert kr["pbr"] and kr["raw"], kr
+        jp = bs.resolve("6758.T")
+        assert jp["basis"] == "edinet" and jp["pbr"] is None, jp
+
+    def test_no_fnguide_data_says_why(self):
+        """조용히 비우면 '수집 실패'로 읽힌다(#43)."""
+        import bot.band_source as bs
+        import bot.fnguide_bandchart as fg
+        orig = fg.fetch_band_chart
+        fg.fetch_band_chart = lambda t: None
+        try:
+            got = bs.resolve("005930.KS")
+        finally:
+            fg.fetch_band_chart = orig
+        assert got["per"] is None and got["why"], got
+
+    def test_both_the_screen_and_the_audit_call_the_resolver(self):
+        """⚠️ 한쪽만 부르면 다시 갈라진다 — **호출**을 AST 로 센다(#120)."""
+        import ast
+        for path, fn_name in (("bot/dashboard_server.py", "_handle_band_api"),
+                              ("bot/scripts/per_band_audit.py", "audit_one")):
+            src = open(path, encoding="utf-8").read()
+            fn = next(n for n in ast.walk(ast.parse(src))
+                      if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+            names = [c.func.id for c in ast.walk(fn)
+                     if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+            attrs = [c.func.attr for c in ast.walk(fn)
+                     if isinstance(c, ast.Call)
+                     and isinstance(c.func, ast.Attribute)]
+            assert "_resolve" in names or "resolve" in (names + attrs), \
+                f"{path}:{fn_name} 이 공용 해석기를 안 부른다 — {names + attrs}"
+        # 그리고 감사는 `for_ticker` 를 **직접** 부르면 안 된다(경로가 갈린다)
+        src = open("bot/scripts/per_band_audit.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "audit_one")
+        attrs = [c.func.attr for c in ast.walk(fn)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)]
+        assert "for_ticker" not in attrs, attrs
+
+    def test_the_audit_covers_japan(self):
+        """일본이 표본에 없으면 '일본도 되나'를 영영 못 답한다."""
+        import bot.scripts.per_band_audit as ab
+        jp = [t for m, t in ab._MARKET_SAMPLES if m == "JP"]
+        assert len(jp) >= 3, jp
+        markets = {m for m, _t in ab._MARKET_SAMPLES}
+        assert {"US", "KR", "JP", "TW", "CN_A", "HK", "EU"} <= markets, markets
+
+    def test_the_audit_also_checks_the_pbr_table(self):
+        """국내는 PER·PBR 표가 같이 나온다 — 한쪽만 재면 나머지가 낡는다(#38)."""
+        import ast
+        src = open("bot/scripts/per_band_audit.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "audit_one")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert seg.count("audit_rows(") >= 2, seg.count("audit_rows(")
+        assert 'got.get("pbr")' in seg, seg[-600:]
