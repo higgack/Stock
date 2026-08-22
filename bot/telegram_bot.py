@@ -1098,7 +1098,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
  http://136.115.27.77:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
 ━━━━━━━━━
 <b>【대시보드】</b> 위 <b>Main</b> 이 단일 entry — 나머지는 전부 Main nav 에서 이동
- 🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·장전/시간외·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
+ 🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·장전/시간외·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
  📈 <b>차트보드</b> — 🚦시장타이밍(분산일·FTD·섹터 breadth·VKOSPI/VIX/MOVE) · 🧭Breadth 전략(역추세/회복/비추세/추세 4구간 · 섹터 MA120 상회비율 · 월말 확정) · 📅경제캘린더(CPI·PPI·고용·AHE·실업률·실업수당·소매·ECI·GDP·PCE·FOMC·JOLTS·소비자심리·산업생산 — 5일변동성/정책민감/침체조기경보 분류, 최근발표 대비·1M·3M·6M·1Y) · 🏭PPI · 🛒CPI · 💧유동성
  🗂 <b>그 밖에</b> — 분석 아카이브 · 자산 · Screener(워치·도메인 목록도 여기) · 레딧 · Daily Byte · 블로그 · 밸류체인 · 🏆Market cap · 부동산(청약 포함) · 수출입
  ★📝⏰ <b>카드 도구</b>(카드형 보드 공통 · 차트보드 제외) — 카드마다 ★중요·📝메모·⏰알람(서버 저장 → 모바일↔PC 동기화). 검색창 옆 필터로 표시한 것만 보기. ⏰=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 발송, ✅확인 시 종료·미확인 시 다음날 재발송
@@ -3186,6 +3186,26 @@ async def _periodic_market_refresh() -> None:
             log.exception("periodic market.html refresh failed")
 
 
+async def _periodic_favorites_refresh() -> None:
+    """관심종목 시세를 **5분 주기**로 미리 채운다 (사용자 2026-08-22 "관심종목이
+    너무 자주 꺼져. … 5분 간격으로 하면 어떨까?").
+
+    왜 꺼졌나: 캐시가 **메모리 전용**이라 봇이 재시작될 때마다(배포·watchdog)
+    139종목이 통째로 `—` 가 됐고, 첫 방문자가 채워질 때까지 빈 표를 봤다.
+    이제 (a) 성공분을 디스크 스냅샷으로 남기고 (b) 이 루프가 캐시를 계속
+    데운다 — 브라우저가 언제 오든 신선한 값이 이미 있다.
+
+    루프는 sequential(await)이라 겹치지 않고 `to_thread` 라 폴링 비차단이다
+    (Automation-first: 운영자가 반복 명령을 칠 일이 없어야 한다)."""
+    while True:
+        await asyncio.sleep(300)   # 5분 (사용자 2026-08-22)
+        try:
+            from bot.market_favorites import _compute_favorites_with_prices
+            await asyncio.to_thread(_compute_favorites_with_prices)
+        except Exception:
+            log.exception("periodic favorites refresh failed")
+
+
 def _prewarm_highlow() -> None:
     """전종목 신고저/급등락/상한가 캐시를 순차 재산출 — 첫 방문자가 수 분 기다리지
     않게 미리 데워둠(사용자 2026-06-13 '아침엔 항상 신선'). 순차 실행으로 yfinance
@@ -4789,6 +4809,8 @@ async def _on_startup(application) -> None:
         _periodic_audit_sweep(application))
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
+    application._fav_refresh_task = asyncio.create_task(
+        _periodic_favorites_refresh())
     application._highlow_prewarm_task = asyncio.create_task(_periodic_highlow_prewarm())
     # 컴퓨티드 보드(US/JP/HK/TW 52주 + TW 무버) 시간대별 슬롯 스캐너 (:00/:20/:40) —
     # 장중 1h force 재산출(페이지 방문 없이도 최신) + 장 밖 EOD 1회 후 freeze, 무거운

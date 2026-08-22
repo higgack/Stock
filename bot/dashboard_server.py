@@ -460,6 +460,13 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
                            " 제외했습니다(적자 등으로 정의 불가)."
                            if _dropped else None),
             "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
+            # ⚠️ 밴드 4선은 **FnGuide 가 준 값**이다 — 우리 월말 관측 분포가
+            # 아니다(사용자 2026-08-22 "4년 평균·최저·최고는 실제 분기발표
+            # 기준인거지?"). 화면이 '관측 N개 분포'라고 적으면 거짓말이 된다
+            # (#55) — 요약(월말 관측)과 밴드(분기 실적)는 기준이 다르므로
+            # 라벨로 구분한다(#34).
+            "band_basis": "FnGuide 밴드선(분기 실적 기준) — 아래 요약은 "
+                          "우리 월말 관측 분포라 값이 다를 수 있습니다",
             "summary": _sm(rows, years=5, price_now=px_now),
             "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
             "basis": "fnguide", "market": "KR"}
