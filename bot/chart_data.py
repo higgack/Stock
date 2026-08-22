@@ -988,6 +988,24 @@ def _short_span_notice(period: str, got_days, source=None) -> str:
             f" 표시합니다 — 잠시 후 다시 시도하면 채워질 수 있습니다.")
 
 
+def _tail_days(hist, days: int):
+    """`hist` 의 **마지막 N일치**만 남긴다 — 넉넉한 창으로 받아 잘라 쓸 때.
+
+    ⚠️ 봉 개수가 아니라 날짜로 자른다(#29). 자르지 못하면 원본을 그대로
+    돌려준다 — 조용히 None 을 주면 폴백 판정이 뒤집힌다.
+    """
+    try:
+        if hist is None or len(hist) < 2 or not days:
+            return hist
+        import pandas as _pd
+        cut = hist.index[-1] - _pd.Timedelta(days=int(days))
+        out = hist[hist.index >= cut]
+        return out if len(out) >= 2 else hist
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("chart_data: 창 자르기 실패: %s", exc)
+        return hist
+
+
 def _span_days(hist) -> int | None:
     """`hist` 가 실제로 덮는 **날짜 폭**(일). 비었으면 None.
 
@@ -1145,6 +1163,27 @@ def fetch_chart_payload(
                 # 차단 없음) 일봉이 이미 있는데, 야후가 **빈 응답**일 때만
                 # 쓰고 있었다 — 잘렸지만 비지는 않은 응답이 그 폴백을 통째로
                 # 건너뛰게 하고 있었다.
+                # ⚠️ **세 번째로 넉넉한 창을 묻는다**(사용자 2026-08-23 SK
+                # "이 SK 차트는 또 왜 그러는거야?" — 1년 요청에 38일). 야후는
+                # 구간별 질의만 잘라 주는 일이 있어 `period="max"` 로 받아
+                # 잘라 쓰면 온전히 오는 경우가 있다. 네이버 폴백은 국내
+                # 전용이라 그 밖의 시장엔 이게 마지막 수단이다.
+                if _got_span < _want * 0.5:
+                    try:
+                        _wide = _tail_days(
+                            t.history(period="max", interval=interval,
+                                      auto_adjust=True), _want)
+                    except Exception as exc:                   # noqa: BLE001
+                        _wide = None
+                        log.debug("chart_data: max 재질의 실패 %s: %s",
+                                  ticker, exc)
+                    _wide_span = _span_days(_wide)
+                    if _wide_span is not None and _wide_span > _got_span:
+                        log.info("chart-refetch %s %s: 기간질의 %d일 → max "
+                                 "질의 %d일(요청 %d일)", ticker, period,
+                                 _got_span, _wide_span, _want)
+                        hist = _wide
+                        _got_span = _wide_span
                 if _got_span < _want * 0.5:
                     _fb = _fetch_series_fallback(ticker, period)
                     _fb_span = _payload_span_days(_fb)

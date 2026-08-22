@@ -26,7 +26,7 @@ import argparse
 import sys
 import time
 
-_PROBE_VER = 8
+_PROBE_VER = 9
 _DEFAULT = "7203.T,6758.T,9984.T"
 # 한 종목에 문서 탐색(최대 430일) + ZIP 2건 — 넉넉히 잡는다.
 _EST_S_PER_TICKER = 90
@@ -107,10 +107,15 @@ def _why_no_doc(ticker: str) -> list[str]:
     total, empty_days, empty_weekdays, seen_types, codes = 0, 0, 0, {}, set()
     found: list[str] = []
     ecodes: set[str] = set()
+    by_month: dict[str, int] = {}
     for off in range(201):
         day = today - _dt.timedelta(days=off)
         docs = cl._fetch_day(day)
         total += len(docs)
+        # 월별 총량을 같이 본다 — 일본은 6·3월 말에 유가증권보고서가 몰리므로
+        # 그 달이 평범하면 목록 자체가 잘려 온 것이다(#54 대조 없이 믿지 말 것).
+        _m = day.isoformat()[:7]
+        by_month[_m] = by_month.get(_m, 0) + len(docs)
         if not docs:
             empty_days += 1
             # ⚠️ 주말은 정상적으로 빈다 — **평일**이 비면 원천 오류이거나
@@ -140,14 +145,23 @@ def _why_no_doc(ticker: str) -> list[str]:
                f"· EDINET 코드 {sorted(ecodes) or '없음'}")
     # ⚠️ **못 받은 날은 빈 날이 아니다.** 6월 말은 유가증권보고서가 몰려 목록이
     # 수 MB 라 타임아웃이 나기 쉬운데, 그러면 그 날은 조용히 '문서 없음'이 된다.
+    sd = getattr(cl, "short_days", {}) or {}
+    out.append("     ↳ 월별 문서 수: "
+               + " · ".join(f"{m} {n:,}" for m, n in sorted(by_month.items())))
+    out.append(f"     ↳ 원천이 말한 건수보다 **짧게 온 날**: {len(sd)}일"
+               + (f" — {sorted(sd.items())[:5]}" if sd else " (없음)"))
     fd = getattr(cl, "failed_days", {}) or {}
     out.append(f"     ↳ 목록 요청 실패: {len(fd)}일"
                + (f" — {sorted(fd.items())[:5]}" if fd else " (없음)"))
     for ln in sorted(found):
         out.append(f"        {ln}")
-    if fd:
-        out.append("     ↳ → **목록을 못 받은 날이 있다** — '없다'를 아직 믿을 수 "
-                   "없다(#143 원천 부재와 수신 실패는 대조군으로만 갈린다)")
+    if sd or fd:
+        # ⚠️ 목록이 온전하지 않으면 '이 회사 문서가 없다'는 결론을 낼 수 없다
+        # — 원천 부재와 수신 실패는 대조군으로만 갈린다(#143).
+        out.append("     ↳ → **목록이 온전하지 않다**"
+                   + (f"(잘린 날 {len(sd)}일" if sd else "(")
+                   + (f" · 못 받은 날 {len(fd)}일)" if fd else ")")
+                   + " — '없다'를 아직 믿을 수 없다")
     elif seen_types and "120" not in seen_types:
         out.append("     ↳ → 문서는 있는데 **유가증권보고서(120)가 없다** — "
                    "결산월/제출시기 문제이지 탐색 실패가 아니다")

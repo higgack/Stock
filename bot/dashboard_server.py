@@ -428,16 +428,22 @@ def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
 
 
 def _kr_band_basis_note(rows: list) -> str:
-    """밴드 4선의 기준을 **측정해서** 말한다(추측 금지)."""
-    from bot.per_band import eps_cadence
-    cad, why = eps_cadence(rows)
-    base = "FnGuide 밴드선"
+    """밴드 4선의 기준을 **측정해서**, 짧게 말한다(추측 금지 · 근거 숫자 유지).
+
+    ⚠️ 옛 문구는 판정과 그 근거를 두 번 적어 두 줄이 넘었다(사용자 2026-08-23
+    "첫번째 Remark 를 좀 더 다듬어줘. 간결하고 깔끔하게"). 줄인 건 **말**이지
+    근거가 아니다 — 몇/몇 구간인지는 그대로 싣는다(#55 파생 판정은 산식을).
+    """
+    from bot.per_band import eps_cadence, eps_cadence_stats
+    cad, _why = eps_cadence(rows)
+    flat, steps = eps_cadence_stats(rows)
+    tail = " · 요약은 우리 월말 관측 분포"
     if cad == "계단형":
-        base += "(분기 확정 실적 기준)"
-    elif cad == "연속형":
-        base += "(매달 갱신되는 EPS — 선행 컨센서스·보간)"
-    return (f"{base} — 아래 요약은 우리 월말 관측 분포라 값이 다를 수 "
-            f"있습니다 · 되짚어 본 결과: {why}")
+        return f"FnGuide 밴드선 · 분모 = 분기 확정 EPS({flat}/{steps} 유지){tail}"
+    if cad == "연속형":
+        return (f"FnGuide 밴드선 · 분모 = 매달 갱신 EPS"
+                f"({steps - flat}/{steps} 변동){tail}")
+    return f"FnGuide 밴드선 · 분모 = 원천 EPS(표본 부족으로 미판정){tail}"
 
 
 def _kr_denom_label(rows: list) -> str:
@@ -475,12 +481,12 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
     # 행을 **뺀다**(빈칸이 틀린 숫자보다 낫다) — 대신 뺐다는 사실을 말한다(#43).
     # 그 배수가 **실제로 있었던 시점**(사용자 2026-08-22). KR 은 배수를 원천이
     # 주므로 우리 월말 관측과 딱 맞지 않을 수 있다 — 그때는 비운다(#32).
-    from bot.per_band import band_period as _bp
+    from bot.per_band import band_period as _bp, _at_fields as _atf
     _obs = [(r["period"], r["price"], None, r["per"]) for r in rows]
     _bands = [{"label": labels[i], "mult": round(float(mult[i]), 2),
                "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
                         if mult[0] and top_last else None),
-               "at": _bp(_obs, round(float(mult[i]), 2))}
+               **_atf(_bp(_obs, round(float(mult[i]), 2)))}
               for i in range(4) if _f_pos(mult[i])]
     _dropped = [labels[i] for i in range(4) if not _f_pos(mult[i])]
     return {"rows": rows, "kind": kind,
@@ -528,8 +534,36 @@ def _kr_band_tables(band: dict | None,
         return None, None
     from bot.per_band import live_price as _lp
     px_now = _lp(ticker, ref[-1]["price"]) if ticker else None
-    return (_fnguide_ratio_table(per_b, kind="PER", px_now=px_now),
-            _fnguide_ratio_table(pbr_b, kind="PBR", px_now=px_now))
+    per_t = _fnguide_ratio_table(per_b, kind="PER", px_now=px_now)
+    pbr_t = _fnguide_ratio_table(pbr_b, kind="PBR", px_now=px_now)
+    _attach_roe(per_t, pbr_t)
+    return per_t, pbr_t
+
+
+def _attach_roe(per_t: dict | None, pbr_t: dict | None) -> None:
+    """PBR 표에 ROE 열을 붙인다 — 사용자 2026-08-23 "한국기업에 한해서 여기
+    PBR 옆에 ROE 를 붙여줄수 있어?".
+
+    ROE = PBR ÷ PER 이다(둘 다 같은 주가로 나눈 값이라 주가가 약분된다:
+    (P/B) ÷ (P/E) = E/B). 즉 **자체 추정이 아니라 원천 두 값의 항등식**이고,
+    분모(EPS)가 원천의 것이므로 ROE 도 원천 기준을 그대로 따른다.
+
+    ⚠️ 기간으로 **조인**한다 — 위치로 매기면 한쪽이 한 달 덜 올 때 전 행이
+    밀린다(#88). 그리고 PER 이 없는 달(적자 등)은 **비운다**(#32).
+    """
+    if not per_t or not pbr_t:
+        return
+    per_by = {str(r.get("period"))[:10]: r.get("per")
+              for r in (per_t.get("rows") or [])}
+    n = 0
+    for r in pbr_t.get("rows") or []:
+        e = per_by.get(str(r.get("period"))[:10])
+        b = r.get("per")
+        if e and b and e > 0:
+            r["roe"] = round(b / e * 100.0, 2)
+            n += 1
+    if n:
+        pbr_t["roe_note"] = "ROE = PBR ÷ PER × 100 (같은 시점 · 원천 두 값)"
 
 
 def _kr_per_table(band: dict | None, ticker: str = "") -> dict | None:

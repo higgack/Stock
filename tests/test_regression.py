@@ -30823,9 +30823,13 @@ class TestShortHistoryRefetch20260822:
         assert len(calls) == 1, f"불필요한 재질의: {calls}"
 
     def test_refetch_keeps_the_longer_one(self, monkeypatch):
-        """재질의가 더 짧게 오면 원래 것을 지킨다 — 나빠지면 안 된다."""
+        """재질의가 더 짧게 오면 원래 것을 지킨다 — 나빠지면 안 된다.
+
+        ⚠️ 2026-08-23 부터 **세 번째로 넉넉한 창**(`period="max"`)도 묻는다 —
+        그것도 짧으면 역시 원래 것을 지킨다."""
         payload, calls = self._run(monkeypatch, short_n=25, full_n=5)
-        assert len(calls) == 2
+        assert len(calls) >= 2
+        assert any(c.get("period") == "max" for c in calls), calls
         assert len(payload["times"]) == 25, len(payload["times"])
 
     def test_span_is_measured_by_date_not_bar_count(self):
@@ -33248,7 +33252,10 @@ class TestPbrBandTable20260822:
         from bot.dashboard_server import _kr_band_tables
         per, pbr = _kr_band_tables(self._band())
         assert per and pbr, (per, pbr)
-        assert set(per) == set(pbr), "PER·PBR payload 모양이 다르다"
+        # PBR 표는 2026-08-23 부터 ROE 를 **더** 싣는다(사용자 요청) — 계약은
+        # '똑같다'가 아니라 **'PER 의 키가 하나도 안 빠진다'** 이다.
+        assert set(per) <= set(pbr), \
+            f"PBR 에 없는 PER 키: {sorted(set(per) - set(pbr))}"
         assert per["kind"] == "PER" and pbr["kind"] == "PBR"
         assert [b["mult"] for b in pbr["bands"]] == [3.3, 2.5, 1.7, 0.9]
         assert pbr["summary"] and len(pbr["rows"]) == 4
@@ -34883,9 +34890,15 @@ class TestBandDenominatorBasis20260822:
         assert cont != step, (cont, step)
         # ⚠️ 부분문자열은 사유 설명에도 걸린다("분기 확정치가 **아니라**") —
         # **주장하는 라벨**(괄호 안)을 집어야 한다(#65 구조로 볼 것).
-        assert "(분기 확정 실적 기준)" in step, step
-        assert "(분기 확정 실적 기준)" not in cont, cont
-        assert "매달 갱신되는 EPS" in cont, cont
+        # ⚠️ 부분문자열은 사유 설명에도 걸린다("분기 확정치가 **아니라**") —
+        # 분모를 **주장하는 자리**(`분모 = …`)를 잘라서 본다(#65 구조로 볼 것).
+        # 그리고 문구 리터럴을 박으면 다듬을 때마다 깨진다(#19) — 2026-08-23
+        # 에 실제로 깨졌다. 계약은 "두 판정이 다른 분모를 말한다"이다.
+        def _denom(note):
+            return note.split("분모 = ", 1)[1].split(" · ")[0]
+        assert "분기 확정" in _denom(step), step
+        assert "분기 확정" not in _denom(cont), cont
+        assert "매달 갱신" in _denom(cont), cont
         assert ds._kr_denom_label(self._rows()) != \
             ds._kr_denom_label(step_rows)
 
@@ -34912,8 +34925,7 @@ class TestBandDenominatorBasis20260822:
                "bands": [[[t_, 200000.0 + i * 7000] for i, t_ in enumerate(ts)]]}
         t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
         assert t is not None
-        assert "매달 갱신되는 EPS" in (t.get("band_basis") or ""), \
-            t.get("band_basis")
+        assert "매달 갱신" in (t.get("band_basis") or ""), t.get("band_basis")
         assert t.get("denom_label") == "원천 EPS(매달 갱신)", t.get("denom_label")
 
 
@@ -34970,16 +34982,19 @@ class TestBandPeriodAndQ4Sanity20260822:
             assert abs(row["per"] - b["mult"]) < 0.011, (b, row)
 
     def test_period_is_left_blank_when_no_observation_matches(self):
-        """원천이 배수를 직접 주면(KR) 우리 관측과 안 맞을 수 있다 — 그때
-        가장 가까운 시점을 붙이면 **우리가 지어낸 것**이 된다."""
+        """원천이 배수를 직접 주면(KR) 우리 관측과 안 맞을 수 있다 — 멀면
+        **비운다**(가까운 걸 조용히 붙이면 우리가 지어낸 시점이 된다).
+
+        ⚠️ 2026-08-23 부터 오차 2% 안쪽은 `approx=True` 로 **밝히고** 준다 —
+        비우기만 하면 KR 은 최고·중상·중하가 전부 '—' 였다(사용자 지적)."""
         from bot.per_band import band_period
         obs = [("2025-01-31", 100.0, 5.0, 20.0),
                ("2025-02-28", 110.0, 5.0, 22.0)]
-        assert band_period(obs, 20.0) == "2025-01-31"
+        assert band_period(obs, 20.0) == {"at": "2025-01-31", "approx": False}
         assert band_period(obs, 33.3) is None
         # 같은 배수가 여러 번이면 가장 최근
         obs2 = obs + [("2025-03-31", 100.0, 5.0, 20.0)]
-        assert band_period(obs2, 20.0) == "2025-03-31"
+        assert band_period(obs2, 20.0)["at"] == "2025-03-31"
 
     def test_screen_shows_the_period_column(self):
         from bot.dashboard import _BAND_JS
@@ -35167,3 +35182,211 @@ class TestBandGapAndEdinetIdentity20260822:
         assert cl._fetch_day(_dt.date(2026, 6, 26)) == []
         assert len(tries) == 1, tries
         assert "2026-06-26" in cl.failed_days, cl.failed_days
+
+
+class TestBandNoteRoeAndShortDays20260823:
+    """사용자 2026-08-23 (SK 캡처 4장):
+      ① "첫번째 Remark 를 좀 더 다듬어줘. 간결하고 깔끔하게."
+      ② "이 SK 차트는 또 왜 그러는거야?" — 1년 요청에 38일치
+      ③ "한국기업에 한해서 여기 PBR 옆에 ROE 를 붙여줄수 있어?"
+      ④ "그 시점을 가져오는건 어려운거야?" — 최고·중상·중하가 전부 '—'
+    """
+
+    # ── ① 기준 칩은 짧게, 근거 숫자는 그대로 ──────────────────────────
+    def test_basis_note_is_short_and_keeps_the_measured_ratio(self):
+        import bot.dashboard_server as ds
+        # 되짚은 EPS 가 매달 바뀌는 형태(연속형) — FnGuide 실측 모양
+        rows = [{"period": f"2025-{m:02d}-28", "price": 1000.0 + m * 10,
+                 "per": (1000.0 + m * 10) / (100.0 + m)} for m in range(1, 13)]
+        note = ds._kr_band_basis_note(rows)
+        assert "매달 갱신" in note, note
+        assert "/" in note, note              # 몇/몇 구간인지 남아 있다
+        # ⚠️ 옛 문구는 판정과 근거를 두 번 적어 두 줄이 넘었다 — 줄인 건 말이다.
+        assert len(note) <= 60, (len(note), note)
+
+    def test_basis_note_says_so_when_it_cannot_judge(self):
+        """표본이 모자라면 '분기 확정'이라고 우기지 않는다(#165)."""
+        import bot.dashboard_server as ds
+        note = ds._kr_band_basis_note([{"period": "2025-01-31", "price": 1.0,
+                                        "per": 1.0}])
+        assert "미판정" in note, note
+
+    # ── ④ 그 시점 — 근사면 근사라고 밝힌다 ────────────────────────────
+    def test_exact_match_is_not_marked_approximate(self):
+        from bot.per_band import band_period
+        obs = [("2024-01-31", 100.0, None, 5.00),
+               ("2024-02-29", 120.0, None, 6.20)]
+        assert band_period(obs, 5.00) == {"at": "2024-01-31", "approx": False}
+
+    def test_nearest_observation_is_offered_but_flagged(self):
+        """원천이 배수를 직접 주는 KR 은 관측과 딱 안 맞는다 — 가장 가까운
+        관측을 주되 **근사임을 밝힌다**(조용히 붙이면 지어낸 시점이다, #32)."""
+        from bot.per_band import band_period
+        obs = [("2024-01-31", 100.0, None, 4.96),
+               ("2024-02-29", 120.0, None, 9.00)]
+        got = band_period(obs, 5.00)
+        assert got == {"at": "2024-01-31", "approx": True}, got
+
+    def test_far_observations_stay_empty(self):
+        """⚠️ 아무거나 붙이면 안 된다 — 오차 밖이면 비운다."""
+        from bot.per_band import band_period
+        obs = [("2024-01-31", 100.0, None, 3.00),
+               ("2024-02-29", 120.0, None, 9.00)]
+        assert band_period(obs, 5.00) is None
+
+    # ── ③ ROE = PBR ÷ PER (같은 시점) ─────────────────────────────────
+    def test_roe_is_joined_by_period_not_by_position(self):
+        """⚠️ 위치로 매기면 한쪽이 한 달 덜 올 때 전 행이 밀린다(#88)."""
+        import bot.dashboard_server as ds
+        per_t = {"rows": [{"period": "2026-06-30", "per": 10.0},
+                          {"period": "2026-07-31", "per": 20.0}]}
+        pbr_t = {"rows": [{"period": "2026-07-31", "per": 2.0}]}   # PER 한 달 더 많음
+        ds._attach_roe(per_t, pbr_t)
+        assert pbr_t["rows"][0]["roe"] == 10.0, pbr_t["rows"]      # 2.0/20.0
+        assert pbr_t.get("roe_note")
+
+    def test_roe_is_blank_when_per_is_missing(self):
+        """적자로 PER 이 없는 달은 비운다 — 없는 걸 만들지 않는다(#32)."""
+        import bot.dashboard_server as ds
+        per_t = {"rows": [{"period": "2026-07-31", "per": None}]}
+        pbr_t = {"rows": [{"period": "2026-07-31", "per": 2.0}]}
+        ds._attach_roe(per_t, pbr_t)
+        assert "roe" not in pbr_t["rows"][0], pbr_t["rows"]
+        assert not pbr_t.get("roe_note")
+
+    # ── ⑤ EDINET: 원천이 말한 건수보다 적게 오면 그 날은 못 믿는다 ────
+    def test_a_truncated_day_is_recorded_and_not_cached(self, monkeypatch,
+                                                        tmp_path):
+        import bot.edinet_client as ec
+        import datetime as _dt
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+
+        class _R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"metadata": {"resultset": {"count": 4000}},
+                        "results": [{"docID": "A"}]}
+
+        monkeypatch.setattr(ec.requests, "get", lambda url, timeout=None: _R())
+        cl = ec.EdinetClient(api_key="k")
+        day = _dt.date(2026, 6, 26)
+        assert cl._fetch_day(day) == [{"docID": "A"}]
+        assert cl.short_days[day.isoformat()] == (4000, 1), cl.short_days
+        # 잘린 목록을 캐시하면 그 날은 영원히 잘린 채로 남는다(#21b)
+        assert not (tmp_path / f"{day.isoformat()}.json").exists()
+
+    def test_an_old_bare_list_cache_is_refetched(self, monkeypatch, tmp_path):
+        """⚠️ 검증 규칙을 새로 넣어도 **이미 캐시된 날엔 안 돈다** — 봉투에
+        버전을 찍고 옛 형식은 안 믿는다(#21b 캐시가 fix 를 가린다)."""
+        import bot.edinet_client as ec
+        import datetime as _dt
+        import json as _json
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+        day = _dt.date(2026, 6, 26)
+        (tmp_path / f"{day.isoformat()}.json").write_text(
+            _json.dumps([{"docID": "OLD"}]))
+        hit = []
+
+        class _R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"metadata": {"resultset": {"count": 1}},
+                        "results": [{"docID": "NEW"}]}
+
+        def _get(url, timeout=None):
+            hit.append(url)
+            return _R()
+
+        monkeypatch.setattr(ec.requests, "get", _get)
+        cl = ec.EdinetClient(api_key="k")
+        assert cl._fetch_day(day) == [{"docID": "NEW"}], "옛 캐시를 그대로 믿었다"
+        assert len(hit) == 1, hit
+        # 새 봉투는 다시 읽힌다(재요청 0회)
+        assert cl._fetch_day(day) == [{"docID": "NEW"}]
+        assert len(hit) == 1, hit
+
+    # ── ② 두 질의가 다 짧으면 **넉넉한 창**으로 받아 잘라 쓴다 ─────────
+    def test_a_wide_query_is_sliced_when_both_range_queries_are_short(
+            self, monkeypatch):
+        """사용자 2026-08-23 SK: 1년 요청에 38일치. 네이버 폴백은 국내 전용
+        이라 그 밖의 시장엔 이게 마지막 수단이다."""
+        import datetime as _dt
+        import sys
+        import types
+        import pandas as pd
+        import bot.chart_data as cd
+        calls = []
+
+        def _df(days, step=1):
+            idx = pd.date_range(end=_dt.datetime(2026, 8, 21),
+                                periods=days // step, freq=f"{step}D")
+            n = len(idx)
+            return pd.DataFrame({"Open": [1.0] * n, "High": [1.0] * n,
+                                 "Low": [1.0] * n, "Close": [1.0] * n,
+                                 "Volume": [1] * n}, index=idx)
+
+        class _T:
+            def __init__(self, tk):
+                pass
+
+            def history(self, **kw):
+                calls.append(kw)
+                if kw.get("period") == "max":
+                    return _df(3650, step=5)      # 10년치를 준다
+                return _df(38)                    # 구간 질의는 계속 짧다
+
+        mod = types.ModuleType("yfinance")
+        mod.Ticker = _T
+        monkeypatch.setitem(sys.modules, "yfinance", mod)
+        monkeypatch.setattr(cd, "_fetch_series_fallback", lambda t, p: None)
+        monkeypatch.setattr(cd, "_merge_today_bar",
+                            lambda t, c, v, o, h, l: (c, v, o, h, l))
+        out = cd.fetch_chart_payload("SK", period="1y")
+        assert any(c.get("period") == "max" for c in calls), calls
+        span = cd._payload_span_days(out)
+        assert 330 <= span <= 380, span      # 요청 창으로 **잘라서** 쓴다
+        assert not out.get("notice"), out.get("notice")
+
+    def test_wide_query_is_not_asked_when_the_range_query_is_fine(
+            self, monkeypatch):
+        """⚠️ 멀쩡한 날 야후 호출이 배로 늘면 안 된다."""
+        import datetime as _dt
+        import sys
+        import types
+        import pandas as pd
+        import bot.chart_data as cd
+        calls = []
+
+        class _T:
+            def __init__(self, tk):
+                pass
+
+            def history(self, **kw):
+                calls.append(kw)
+                idx = pd.date_range(end=_dt.datetime(2026, 8, 21),
+                                    periods=250, freq="B")
+                n = len(idx)
+                return pd.DataFrame({"Open": [1.0] * n, "High": [1.0] * n,
+                                     "Low": [1.0] * n, "Close": [1.0] * n,
+                                     "Volume": [1] * n}, index=idx)
+
+        mod = types.ModuleType("yfinance")
+        mod.Ticker = _T
+        monkeypatch.setitem(sys.modules, "yfinance", mod)
+        monkeypatch.setattr(cd, "_merge_today_bar",
+                            lambda t, c, v, o, h, l: (c, v, o, h, l))
+        cd.fetch_chart_payload("SK", period="1y")
+        assert not any(c.get("period") == "max" for c in calls), calls
+
+    def test_tail_days_cuts_by_date(self):
+        import pandas as pd
+        import bot.chart_data as cd
+        idx = pd.date_range("2020-01-01", periods=2000, freq="D")
+        h = pd.DataFrame({"Close": [1.0] * 2000}, index=idx)
+        assert cd._span_days(cd._tail_days(h, 365)) <= 366
+        # 자를 게 없으면 원본 그대로 — 조용히 비우면 판정이 뒤집힌다
+        assert len(cd._tail_days(h, 0)) == 2000

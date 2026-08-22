@@ -141,6 +141,22 @@ def implied_eps_series(rows: list | None) -> list[tuple[str, float]]:
     return out
 
 
+def eps_cadence_stats(rows: list | None) -> tuple[int, int]:
+    """(그대로인 구간 수, 전체 구간 수) — 판정과 **화면 문구가 같은 숫자**를
+    쓰게 하는 단일 출처(#38). 표본이 모자라면 (0, 0)."""
+    eps = implied_eps_series(rows)
+    if len(eps) < 6:
+        return 0, 0
+    flat = steps = 0
+    for (_p0, a), (_p1, b) in zip(eps, eps[1:]):
+        if a <= 0:
+            continue
+        steps += 1
+        if abs(b - a) / a < 0.002:
+            flat += 1
+    return flat, steps
+
+
 def eps_cadence(rows: list | None) -> tuple[str | None, str]:
     """되짚은 EPS 가 **계단형(분기 실적)** 인가 **연속형(전망·보간)** 인가.
 
@@ -156,17 +172,7 @@ def eps_cadence(rows: list | None) -> tuple[str | None, str]:
 
     반환: ("계단형"|"연속형"|None, 사람이 읽는 설명)
     """
-    eps = implied_eps_series(rows)
-    if len(eps) < 6:
-        return None, "표본 부족 — 판정 불가"
-    flat = 0
-    steps = 0
-    for (_p0, a), (_p1, b) in zip(eps, eps[1:]):
-        if a <= 0:
-            continue
-        steps += 1
-        if abs(b - a) / a < 0.002:
-            flat += 1
+    flat, steps = eps_cadence_stats(rows)
     if not steps:
         return None, "표본 부족 — 판정 불가"
     share = flat / steps
@@ -202,10 +208,19 @@ def per_series(prices: list | None, eps_ttm: list | None
 
 # 배수와 관측이 '같다'고 볼 오차 — 표시가 소수 2자리라 반올림 여유를 준다.
 _AT_TOL = 0.01
+# 원천이 배수를 **직접** 주는 경우(KR FnGuide 밴드선)엔 그 배수가 우리 월말
+# 관측과 정확히 겹칠 이유가 없다 — 그래서 최고·중상·중하가 전부 '—' 였다
+# (사용자 2026-08-22 "그 시점을 가져오는건 어려운거야?"). 가장 가까운 관측을
+# **가깝다고 밝히고** 준다. 조용히 갖다 붙이면 지어낸 시점이 되지만(#32),
+# 근사임을 화면이 말하면 사용자가 표에서 그 줄을 찾을 수 있다.
+_AT_REL = 0.02
 
 
-def band_period(rows: list | None, mult: float | None) -> str | None:
-    """그 배수가 **어느 시점 관측에서 나왔는지**(YYYY-MM-DD) — 없으면 None.
+def band_period(rows: list | None, mult: float | None) -> dict | None:
+    """그 배수가 **어느 시점 관측에서 나왔는지** — 없으면 None.
+
+    반환: `{"at": "YYYY-MM-DD", "approx": bool}`. `approx=True` 면 정확히
+    같은 관측이 아니라 **가장 가까운** 관측이다(화면이 그렇게 밝혀야 한다).
 
     사용자 2026-08-22: "그 배수에서의 주가 옆에 그 시점도 써줘. 밑에 있는
     기간에 나온거 말이야."
@@ -218,15 +233,30 @@ def band_period(rows: list | None, mult: float | None) -> str | None:
     """
     if mult is None:
         return None
-    best = None
+    best = None                       # 정확히 맞은 관측 중 가장 최근
+    near = None                       # (오차, 기간) — 근사 후보
     for r in rows or []:
         if not r or len(r) < 4 or r[3] is None:
             continue
-        if abs(round(float(r[3]), 2) - float(mult)) <= _AT_TOL:
-            p = str(r[0])[:10]
+        p, obs = str(r[0])[:10], float(r[3])
+        d = abs(round(obs, 2) - float(mult))
+        if d <= _AT_TOL:
             if best is None or p > best:
                 best = p
-    return best
+        elif float(mult) and d / abs(float(mult)) <= _AT_REL:
+            if near is None or (d, p) < (near[0], near[1]):
+                near = (d, p)
+    if best:
+        return {"at": best, "approx": False}
+    if near:
+        return {"at": near[1], "approx": True}
+    return None
+
+
+def _at_fields(found: dict | None) -> dict:
+    """`band_period` 결과 → payload 키. 없으면 빈 값으로 **명시**한다."""
+    return {"at": (found or {}).get("at"),
+            "at_approx": bool((found or {}).get("approx"))}
 
 
 def _without_outliers(rows: list, min_points: int) -> tuple[list, list]:
@@ -340,7 +370,7 @@ def assemble(rows: list | None, *, min_points: int = 4,
     for q, lab in _BAND_Q:
         m = round(_quantile(vals, q), 2)
         bands.append({"label": lab, "mult": m, "fair": round(m * eps_now, 2),
-                      "at": band_period(win, m)})
+                      **_at_fields(band_period(win, m))})
     return {"rows": [{"period": p, "price": round(pr, 4),
                       "eps": round(e, 4), "per": round(v, 2)}
                      for p, pr, e, v in rows],
