@@ -103,34 +103,43 @@ def per_series(prices: list | None, eps_ttm: list | None
     return out
 
 
-def _without_outliers(vals: list, min_points: int) -> tuple[list, list]:
-    """(밴드에 쓸 값, 뺀 값). **IQR 3배 울타리** 밖은 밴드에서 뺀다.
+def _without_outliers(rows: list, min_points: int) -> tuple[list, list]:
+    """(밴드에 쓸 배수, 뺀 배수). 뺄 근거는 **분모가 무너진 구간**이다.
 
-    ⚠️ PER 은 순이익이 0 에 가까워지면 **발산**한다(2026-08-22 MKSI 실측:
-    최고 1,073.25x · 그 배수에서의 주가 6,729 — 중상 36.78x 의 29배).
-    한 점이 '최고'를 통째로 망가뜨리면 밴드가 valuation 도구로 쓸모없다.
-    임의의 절대 상한(예: 200x) 대신 **분포가 스스로 정하는** 울타리를 쓴다 —
-    정상 종목은 아무것도 안 버린다(CMCSA 실측: 울타리 33.81 > 최고 23.73).
-    ⚠️ 뺀 값은 **이력 표에는 그대로 남는다** — 실제로 있었던 관측이다.
+    ⚠️ PER 은 순이익이 0 에 가까워지면 **발산**한다(2026-08-22 MKSI: 최고
+    1,073.25x — 중상 36.78x 의 29배). 한 점이 '최고'를 통째로 망가뜨리면
+    밴드가 valuation 도구로 쓸모없다.
+
+    ⚠️ **처음엔 IQR 3배 울타리로 걸렀는데 그건 원인이 아니라 증상이었다**
+    (2026-08-22 Yageo 2327.TW): 배수가 크다는 이유로 걸러 정당한 재평가
+    구간까지 잘랐고, 그 바람에 **현재 PER(37.31)이 밴드 최고(29.86)보다
+    높아졌다** — 밴드가 '지금'을 못 담으면 존재 이유가 없다. Yageo 의 EPS 는
+    오히려 최고치(중앙값의 1.3배)라 발산과는 무관했다.
+    그래서 판정을 **EPS 가 제 중앙값 대비 얼마나 무너졌는가**로 바꾼다 —
+    발산의 진짜 원인이다. 배수가 높아도 이익이 멀쩡하면 그건 관측이다.
+
+    ⚠️ EPS 를 모르는 원천(KR FnGuide 는 밴드선만 준다)은 **판정하지 않는다**
+    — 알 수 없는 걸 추정해 지우지 않는다. FnGuide 는 정의 불가 구간을 이미
+    0 으로 보내고 우리가 그 행을 뺀다(#43 별도 경로).
     """
-    xs = sorted(v for v in (vals or []) if v is not None)
-    if len(xs) < max(min_points, 4):
-        return xs, []
-
-    def _q(p):
-        pos = p * (len(xs) - 1)
-        lo = int(pos)
-        hi = min(lo + 1, len(xs) - 1)
-        return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
-    q1, q3 = _q(0.25), _q(0.75)
-    iqr = q3 - q1
-    if iqr <= 0:
-        return xs, []
-    lo_f, hi_f = q1 - 3 * iqr, q3 + 3 * iqr
-    kept = [v for v in xs if lo_f <= v <= hi_f]
+    vals = [r[3] for r in (rows or []) if r and r[3] is not None]
+    epss = [r[2] for r in (rows or []) if r and r[3] is not None]
+    if len(vals) < max(min_points, 4) or any(e is None or e <= 0 for e in epss):
+        return sorted(vals), []
+    med = sorted(epss)[len(epss) // 2]
+    if med <= 0:
+        return sorted(vals), []
+    kept = [v for v, e in zip(vals, epss) if e >= med * _EPS_COLLAPSE]
     if len(kept) < min_points:           # 다 버리면 밴드가 없다 — 그대로 둔다
-        return xs, []
-    return kept, [v for v in xs if v not in kept]
+        return sorted(vals), []
+    drop = [v for v, e in zip(vals, epss) if e < med * _EPS_COLLAPSE]
+    return sorted(kept), sorted(drop)
+
+
+# EPS 가 제 중앙값의 이 비율 밑으로 떨어지면 '분모 붕괴'로 본다. 1/5 은
+# 분기 하나가 거의 이익을 못 낸 수준이라 그 시점 배수는 valuation 이 아니라
+# 산술 결과다. 정상 재평가(2~3배)는 여기 안 걸린다.
+_EPS_COLLAPSE = 0.2
 
 
 def _quantile(sorted_vals: list[float], q: float) -> float:
@@ -186,7 +195,7 @@ def assemble(rows: list | None, *, min_points: int = 4,
     win = [r for r in rows if r[0][:10] >= cut]
     if len(win) < min_points:            # 5년이 얇으면 전 구간으로 되돌린다
         win = rows
-    kept, dropped = _without_outliers([r[3] for r in win], min_points)
+    kept, dropped = _without_outliers(win, min_points)
     vals = sorted(kept)
     eps_now = rows[-1][2]
     # ⚠️ '그 배수에서의 주가'는 **화면에 찍히는 배수**로 만든다. 원(raw)
