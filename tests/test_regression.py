@@ -33610,9 +33610,17 @@ class TestEdinetXbrl20260822:
     _HDR = ("要素ID\t項目名\tコンテキストID\t相対年度\t連結・個別"
             "\t期間・時点\tユニットID\t単位\t値")
 
+    @staticmethod
+    def _q(line: str) -> str:
+        """⚠️ EDINET CSV 는 **모든 필드를 큰따옴표로 감싼다**(2026-08-22 VM
+        실측: 헤더가 `['"要素ID"', …]` 로 찍혀 매칭이 0종이었다). 픽스처가
+        따옴표를 안 쓰면 그 버그를 영영 못 잡는다."""
+        return "\t".join(f'"{c}"' for c in line.split("\t"))
+
     @classmethod
     def _csv(cls, *lines: str) -> bytes:
-        return ("\n".join((cls._HDR,) + lines)).encode("utf-16")
+        rows = (cls._HDR,) + lines
+        return ("\n".join(cls._q(r) for r in rows)).encode("utf-16")
 
     @classmethod
     def _doc(cls) -> bytes:
@@ -33629,15 +33637,30 @@ class TestEdinetXbrl20260822:
                         f"\t{1000 + back}")
         return cls._csv(*rows)
 
-    def test_utf16_csv_is_decoded(self):
-        """⚠️ UTF-8 로 가정하면 **전 행이 조용히 깨진다** — 못 읽으면 예외."""
+    def test_utf16_quoted_csv_is_decoded(self):
+        """⚠️ UTF-8 로 가정하면 **전 행이 조용히 깨진다** — 못 읽으면 예외.
+        그리고 필드가 큰따옴표로 감싸져 오므로 **컬럼 키에 따옴표가 남으면
+        안 된다** — 2026-08-22 실측에서 2,182행을 받아 놓고 매칭 0종이었다."""
         from bot.edinet_xbrl import parse_csv_bytes
         rows = parse_csv_bytes(self._doc())
         assert len(rows) == 10, len(rows)
+        assert list(rows[0])[0] == "要素ID", list(rows[0])[:3]
         assert rows[0]["要素ID"].endswith("SummaryOfBusinessResults")
         assert rows[0]["値"] == "100.0"
         with pytest.raises(ValueError):
             parse_csv_bytes(b"\x00\x01not a csv at all")
+
+    def test_quoted_field_may_contain_a_tab(self):
+        """따옴표 안의 탭까지 처리해야 한다 — 직접 split 하면 열이 밀린다."""
+        from bot.edinet_xbrl import parse_csv_bytes
+        E = "jpcrp_cor:NetSalesSummaryOfBusinessResults"
+        raw = self._csv(f"{E}\t売上高\tCurrentYearDuration\t当期\t連結"
+                        f"\t期間\tJPY\t円\t1000")
+        # 항목명 안에 탭을 심는다(따옴표로 감싸져 있으므로 한 필드여야 한다)
+        txt = raw.decode("utf-16").replace('"売上高"', '"売上\t高"')
+        rows = parse_csv_bytes(txt.encode("utf-16"))
+        assert len(rows) == 1, rows
+        assert rows[0]["値"] == "1000", rows[0]
 
     def test_periods_come_from_the_fiscal_date_not_position(self):
         """기간 라벨은 **날짜로 되짚는다** — 위치로 매기면 거짓말한다(#29)."""
@@ -33880,6 +33903,25 @@ class TestEdinetXbrl20260822:
         assert len(seen) < 120, f"선형 스캔으로 돌아갔다({len(seen)}일)"
         # 그리고 1년 전 창을 실제로 봤어야 한다
         assert doc2 in seen
+
+    def test_probe_shouts_when_nothing_matched(self, monkeypatch, tmp_path):
+        """매칭 0종이면 **파서가 눈이 먼 것**일 수 있다 — '원천에 없음'과
+        구별되게 원문 표본을 찍는다. 대조 0건은 통과가 아니라 실패다(#54)."""
+        import bot.scripts.edinet_probe as ep
+        import bot.edinet_xbrl as ex
+        monkeypatch.setattr(ex, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(
+            ex, "find_annual_docs",
+            lambda *a, **k: [{"doc_id": "D1", "period_end": "2026-03-31",
+                              "submitted": "2026-06-10", "filer": "T"}])
+        # 컬럼 키가 어긋난 상태를 **실제로 재현**한다(#47 — 틀린 상태에서 ❌ 가
+        # 뜨는 걸 본 뒤에 믿는다).
+        monkeypatch.setattr(ex, "fetch_doc_csv", lambda d, k: [
+            {'"要素ID"': '"jpcrp_cor:XSummaryOfBusinessResults"',
+             '"値"': '"100"'}])
+        txt = " ".join(ep.probe_one("7203.T", "k"))
+        assert "아는 요소가 하나도 안 잡혔다" in txt, txt
+        assert "SummaryOfBusinessResults" in txt, "원문 표본을 안 찍었다"
 
     def test_probe_prints_unmatched_element_ids(self):
         """이름을 추측해 매핑을 늘리면 반복 실패한다(#24·#73) — 원문이

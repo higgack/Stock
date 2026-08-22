@@ -123,7 +123,14 @@ def parse_csv_bytes(raw: bytes) -> list[dict]:
 
     ⚠️ 인코딩을 UTF-8 로 가정하면 **전 행이 조용히 깨진다** — BOM 을 보고
     고르되, 못 읽으면 빈 리스트가 아니라 예외를 올린다(조용한 실패 금지).
+
+    ⚠️⚠️ **필드가 큰따옴표로 감싸져 온다**(2026-08-22 VM 실측: 헤더가
+    `['"要素ID"', '"項目名"', …]` 으로 찍혔다). 탭으로만 쪼개면 키가
+    `"要素ID"` 가 되어 `row.get("要素ID")` 가 전부 None 이고, 2,182행을
+    받아 놓고 **매칭 0종**이 된다 — '원천에 없음'과 구별이 안 된다(#149).
+    직접 쪼개지 말고 `csv` 에 맡긴다(따옴표 안의 탭·줄바꿈까지 처리한다).
     """
+    import csv
     for enc in ("utf-16", "utf-16-le", "utf-8-sig"):
         try:
             text = raw.decode(enc)
@@ -133,15 +140,18 @@ def parse_csv_bytes(raw: bytes) -> list[dict]:
             break
     else:
         raise ValueError("EDINET CSV 헤더를 못 찾았다 — 인코딩/포맷 변경 의심")
+    rd = csv.reader(io.StringIO(text.replace("\r\n", "\n")),
+                    delimiter="\t", quotechar='"')
+    try:
+        header = [h.lstrip("\ufeff").strip() for h in next(rd)]
+    except StopIteration:
+        return []
     out: list[dict] = []
-    lines = text.replace("\r\n", "\n").split("\n")
-    header = lines[0].lstrip("﻿").split("\t")
-    for ln in lines[1:]:
-        if not ln.strip():
+    for cells in rd:
+        if not any(c.strip() for c in cells):
             continue
-        cells = ln.split("\t")
         if len(cells) < len(header):
-            cells += [""] * (len(header) - len(cells))
+            cells = list(cells) + [""] * (len(header) - len(cells))
         out.append(dict(zip(header, cells)))
     return out
 
