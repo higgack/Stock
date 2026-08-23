@@ -125,6 +125,23 @@ def get_naver_valuation(ticker: str) -> Optional[dict]:
     if bps is not None:
         result["bps"] = bps
 
+    # 추정PER · 추정EPS — 사용자 2026-08-23 "여기 PER 선행은 Naver Finance
+    # 기준으로 해줘. 한국은. 나머지 나라들은 yfinance 로 하면되고."
+    # ⚠️ id 를 하나만 믿지 않는다 — 원천이 마크업을 바꾸면 조용히 사라진다.
+    # 라벨 기반 폴백을 같이 둔다(상장주식수와 같은 규율).
+    cns_per = _extract_em("_cns_per")
+    cns_eps = _extract_em("_cns_eps")
+    if cns_per is None:
+        m = re.search(r"추정\s*PER[\s\S]{0,300}?>\s*([\d,]+\.?\d*)\s*<", html)
+        cns_per = _parse_float(m.group(1)) if m else None
+    if cns_eps is None:
+        m = re.search(r"추정\s*EPS[\s\S]{0,300}?>\s*([\d,]+\.?\d*)\s*<", html)
+        cns_eps = _parse_float(m.group(1)) if m else None
+    if cns_per is not None and cns_per > 0:
+        result["cns_per"] = cns_per
+    if cns_eps is not None and cns_eps != 0:
+        result["cns_eps"] = cns_eps
+
     # 상장주식수 — Naver Finance side panel renders this as
     # "상장주식수<...>...</...><...>97,475,107</...>". The label-value
     # distance varies (table cell or definition-list), so match the
@@ -147,8 +164,9 @@ def get_naver_valuation(ticker: str) -> Optional[dict]:
 
     _save_cache(code, today, result)
     _log.info(
-        "Naver Finance %s → per=%s eps=%s pbr=%s bps=%s shares=%s",
-        code, per, eps, pbr, bps, shares,
+        "Naver Finance %s → per=%s eps=%s pbr=%s bps=%s shares=%s "
+        "cns_per=%s cns_eps=%s",
+        code, per, eps, pbr, bps, shares, cns_per, cns_eps,
     )
     return result if result else None
 

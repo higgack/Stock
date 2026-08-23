@@ -36765,3 +36765,104 @@ class TestShareCountIdentity:
                  and isinstance(n.func, ast.Name)
                  and n.func.id == "_ttm_concentration"]
         assert len(calls) == 1, f"판정 호출 {len(calls)}건"
+
+    def test_roe_uses_the_average_denominator_like_fnguide(self):
+        """사용자 2026-08-23 기아 000270.KS: 우리 ROE 12.3% · ROA 7.6% vs
+        네이버 12.92 · 7.88 — **두 지표가 같은 방향으로** 어긋난 것이 분모
+        문제의 신호였다(#51). FnGuide 산식은 평균 분모다:
+          ROE = (지배주주지분)당기순이익 / ((지배주주지분)자본총계[당기]+[전기])/2
+        우리는 기말로 나눠 자본이 늘어나는 회사에서 체계적으로 낮았다."""
+        from bot.dart_client import apply_ttm_returns, apply_annual_returns
+        # ⚠️ 분자 두 개를 **다르게** 둔다 — 같은 값이면 '지배주주 대신 총액'
+        # 뮤테이션이 그대로 통과한다(실측, #91c 픽스처가 충분히 센가).
+        qs = [{"financials": {"당기순이익": 300.0, "지배주주순이익": 250.0,
+                              "자본총계": 9000.0 + 200 * i,
+                              "자산총계": 20000.0 + 300 * i}}
+              for i in range(8)]
+        assert apply_ttm_returns(qs) > 0
+        last = qs[-1]
+        eq_end = last["financials"]["자본총계"]
+        avg_eq = (eq_end + qs[-5]["financials"]["자본총계"]) / 2
+        assert last["ratios"]["ROE"] > 1000.0 / eq_end * 100
+        # 분자 = 지배주주 4분기 합(1,000), 총액이면 1,200 이라 값이 갈린다
+        assert abs(last["ratios"]["ROE"] - 1000.0 / avg_eq * 100) < 1e-9, \
+            last["ratios"]["ROE"]
+        assert last["ratios"]["_returns_basis"]["averaged"] is True
+        assert last["ratios"]["_returns_basis"]["numerator"] == "지배주주순이익"
+        # 연간 표도 같은 규약이어야 한다 — 한쪽만 고치면 두 화면이 갈린다(#38)
+        ts = [{"당기순이익": 1200.0, "지배주주순이익": 1000.0,
+               "자본총계": 9000.0 + 1000 * i, "자산총계": 20000.0 + 1500 * i}
+              for i in range(3)]
+        assert apply_annual_returns(ts) > 0
+        assert ts[-1]["ROE"] > 1000.0 / ts[-1]["자본총계"] * 100
+        assert ts[-1]["_returns_basis"]["averaged"] is True
+        # 분자가 지배주주분이어야 한다 — 총액으로 나누면 값이 더 크다
+        avg_eq = (ts[-1]["자본총계"] + ts[-2]["자본총계"]) / 2
+        assert abs(ts[-1]["ROE"] - 1000.0 / avg_eq * 100) < 1e-9, ts[-1]["ROE"]
+
+    def test_the_first_period_says_it_could_not_average(self):
+        """전기를 못 구하면 기말로 나누되 **그렇다고 말한다**(#43) —
+        조용히 다른 기준을 섞으면 표 안에서 열끼리 갈린다."""
+        from bot.dart_client import apply_annual_returns
+        ts = [{"당기순이익": 1000.0, "자본총계": 10000.0, "자산총계": 20000.0}]
+        apply_annual_returns(ts)
+        assert ts[0]["ROE"] == 10.0
+        assert ts[0]["_returns_basis"]["averaged"] is False
+        assert ts[0]["_returns_basis"]["numerator"] == "당기순이익(연결 총액)"
+
+    def test_kr_forward_per_comes_from_naver_and_is_checkable(self):
+        """사용자 2026-08-23 "여기 PER 선행은 Naver Finance 기준으로 해줘.
+        한국은. 나머지 나라들은 yfinance 로 하면되고." 기아 화면은
+        `PER (선행) 5.50x` 옆에 `EPS (선행) —` 이라 눈으로 나눠 볼 수
+        없었다(#33). 배수는 **화면의 현재가**로 다시 만든다(#135)."""
+        from bot.dashboard import _derive_missing_multiples
+        qs = [{"year": 2026, "quarter": q, "당기순이익": 1e12,
+               "자본총계": 3e13} for q in range(1, 5)]
+        out = _derive_missing_multiples(
+            {"market_cap": 4e11, "shares_outstanding": 2e8,
+             "current_price": 130800.0,
+             "kr": {"financials_q": qs,
+                    "naver_val": {"cns_eps": 23000.0, "cns_per": 5.50}}})
+        assert out["forwardEps"] == 23000.0
+        assert abs(out["forwardPE"] - 130800.0 / 23000.0) < 1e-9
+        assert "네이버" in out["_forward_src"]
+        # 다른 시장은 건드리지 않는다 — 컨센서스 EPS 를 우리가 만들 수 없다
+        out2 = _derive_missing_multiples(
+            {"market_cap": 4e11, "shares_outstanding": 2e8,
+             "current_price": 100.0, "forwardPE": 12.0})
+        assert out2.get("forwardEps") is None
+        assert out2["forwardPE"] == 12.0
+
+    def test_the_naver_parser_reads_the_consensus_fields(self, monkeypatch):
+        """id 하나만 믿지 않는다 — 원천이 마크업을 바꾸면 조용히 사라진다.
+
+        ⚠️ 처음엔 **소스에 정규식이 있는지**로 재서 라벨 폴백을 지우는
+        뮤테이션이 통과했다(#91b 재는 대상이 맞나) — 파서를 실제로 태운다."""
+        import bot.naver_finance_client as nf
+
+        class _R:
+            def __init__(self, t):
+                self.text = t
+
+            def raise_for_status(self):
+                pass
+
+        def _run(html):
+            monkeypatch.setattr(nf, "_load_cached", lambda c, d: None)
+            monkeypatch.setattr(nf, "_save_cache", lambda c, d, r: None)
+            import requests
+            monkeypatch.setattr(requests, "get", lambda *a, **k: _R(html))
+            return nf.get_naver_valuation("000270.KS") or {}
+
+        by_id = _run('<em id="_per">7.21</em><em id="_cns_per">5.50</em>'
+                     '<em id="_cns_eps">23,000</em>')
+        assert by_id.get("cns_eps") == 23000.0, by_id
+        assert by_id.get("cns_per") == 5.50, by_id
+        # id 가 사라져도 라벨로 잡힌다
+        by_label = _run('<em id="_per">7.21</em>'
+                        '<th>추정PER</th><td><em id="x">5.50</em></td>'
+                        '<th>추정EPS</th><td><em id="y">23,000</em></td>')
+        assert by_label.get("cns_eps") == 23000.0, by_label
+        assert by_label.get("cns_per") == 5.50, by_label
+        # 없으면 만들지 않는다
+        assert "cns_eps" not in _run('<em id="_per">7.21</em>')
