@@ -36339,3 +36339,132 @@ class TestAuditLogFindings20260823:
             assert kc._fetch_krx_json("dbms/X", {"mktId": "STK"}) is None
         msg = " ".join(r.getMessage() for r in caplog.records)
         assert "로그인" in msg, msg
+
+
+class TestShareCountIdentity:
+    """#188 — 발행주식수는 EPS·BPS 의 분모다. 화면이 자기 산수를 못 맞추면
+    (시가총액 ÷ 현재가 ≠ 발행주식수) 주당지표가 통째로 그만큼 밀린다.
+
+    실측(서희건설 035890.KQ 2026-08-23): 현재가 2,140 · 시총 4,442억 인데
+    발행주식수가 185.4M 로 떠 4,442억 ÷ 185.4M = 2,396 ≠ 2,140 이었다.
+    네이버(FnGuide) 상장주식수 207,588,536 은 정확히 맞는다."""
+
+    PX, MC = 2140.0, 4442e8
+    YF, KRX = 185.4e6, 207588536
+
+    def test_the_identity_is_three_state(self):
+        from bot.share_count import reconcile
+        assert reconcile(self.PX, self.MC, self.YF)["ok"] is False
+        assert reconcile(self.PX, self.MC, self.KRX)["ok"] is True
+        # 재료가 없으면 **통과가 아니라 판정 불가**(#54)
+        assert reconcile(self.PX, None, self.YF)["ok"] is None
+        assert reconcile(None, self.MC, self.YF)["ok"] is None
+        assert reconcile(self.PX, self.MC, 0)["ok"] is None
+
+    def test_the_better_candidate_wins_by_the_identity_not_by_rank(self):
+        from bot.share_count import pick
+        v, lab, why = pick(self.PX, self.MC,
+                           [(self.YF, "yfinance"), (self.KRX, "KRX")])
+        assert v == self.KRX and lab == "KRX", (v, lab)
+        assert "어긋나" in why, why
+
+    def test_a_source_value_that_already_reconciles_is_never_replaced(self):
+        """소스값을 함부로 덮지 않는다 — 오차 안이면 그대로 둔다.
+
+        ⚠️ 픽스처는 **현행이 최선이 아닌데도 오차 안**이어야 한다. 현행을
+        1등으로 두면 오차 게이트를 지워도 어차피 현행이 뽑혀 뮤테이션이
+        그대로 통과한다(실측, #91c)."""
+        from bot.share_count import pick, implied_shares
+        imp = implied_shares(self.PX, self.MC)
+        near = round(imp)                      # 거의 정확 — 그래도 안 바꾼다
+        v, lab, why = pick(self.PX, self.MC,
+                           [(self.KRX, "yfinance"), (near, "KRX")])
+        assert abs(self.KRX - near) > 1, (self.KRX, near)
+        assert v == self.KRX and lab == "yfinance" and why == "", (v, lab, why)
+
+    def test_without_price_or_mcap_nothing_is_replaced(self):
+        """검산할 재료가 없으면 추측으로 고르지 않는다."""
+        from bot.share_count import pick
+        v, lab, why = pick(None, None,
+                           [(self.YF, "yfinance"), (self.KRX, "KRX")])
+        assert v == self.YF and lab == "yfinance", (v, lab)
+        assert "검산 불가" in why, why
+
+    def test_the_note_says_the_discrepancy_not_just_the_source(self):
+        """조용히 두면 사용자가 눈으로 나눠 보고 물어야 한다(#43)."""
+        from bot.share_count import note
+        bad = note(self.PX, self.MC, self.YF, "yfinance")
+        assert "⚠️" in bad and "207,570,093주" in bad, bad
+        ok = note(self.PX, self.MC, self.KRX, "KRX 상장주식수")
+        assert ok == "KRX 상장주식수", ok
+
+    def test_the_kr_collector_registers_the_registry_count(self):
+        """배선은 존재가 아니라 **호출**을 센다(#120·#141)."""
+        import ast
+        src = open("bot/stock_snapshot.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_enrich_kr")
+        names = {n.name for n in ast.walk(fn)
+                 if isinstance(n, ast.FunctionDef)}
+        assert "_t_krx_shares" in names, names
+        seg = ast.get_source_segment(src, fn) or ""
+        assert '("krx.shares", _t_krx_shares)' in seg, "task 목록에 없다"
+        assert "get_kr_market_cap" in seg, "등록 주식수 원천이 없다"
+
+    def test_the_identity_step_lives_outside_enrich_and_runs_once(self):
+        """`_enrich_*` 는 snap 을 **안 읽는다**는 전제로 보조 6종과 겹쳐
+        돈다(#128) — 시총·현재가를 읽는 이 판정을 enrich 안에 두면 그
+        전제가 깨진다(실제로 그 회귀가 잡았다). 그리고 모듈 레벨이어야
+        한다 — 함수 안에 끼우면 스코프가 잘린다(#133)."""
+        import ast
+        import bot.stock_snapshot as ss
+        tree = ast.parse(open("bot/stock_snapshot.py").read())
+        top = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+        assert "_apply_share_count" in top, top
+        apply_fn = next(n for n in ast.walk(tree)
+                        if isinstance(n, ast.FunctionDef)
+                        and n.name == "_apply_share_count")
+        picks = [n for n in ast.walk(apply_fn) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "_pick_shares"]
+        assert len(picks) == 1, f"주식수 판정 호출 {len(picks)}건"
+        collect = next(n for n in ast.walk(tree)
+                       if isinstance(n, ast.FunctionDef)
+                       and n.name == "_collect_stock_snapshot_uncached")
+        used = [n for n in ast.walk(collect) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "_apply_share_count"]
+        assert len(used) == 1, f"수집기에서 {len(used)}번 불린다"
+        assert callable(getattr(ss, "_apply_share_count", None))
+
+    def test_the_identity_step_replaces_a_stale_count_end_to_end(self):
+        """헬퍼 단위테스트는 배선 변형을 못 잡는다(#20) — 스냅샷 dict 를
+        통째로 태워 실제로 교체되는지 본다."""
+        import bot.stock_snapshot as ss
+        snap = {"current_price": self.PX, "market_cap": self.MC,
+                "shares_outstanding": self.YF,
+                "kr": {"krx_quote": {"shares": self.KRX, "date": "2026-08-22"}}}
+        ss._apply_share_count("035890.KQ", snap)
+        assert snap["shares_outstanding"] == self.KRX, snap["shares_outstanding"]
+        assert "KRX" in snap["shares_source"], snap["shares_source"]
+        assert "어긋나" in snap.get("shares_note", ""), snap.get("shares_note")
+
+    def test_the_identity_step_leaves_other_markets_alone(self):
+        """등록 주식수 원천이 없는 시장은 값을 그대로 두고 **화면이**
+        어긋남을 밝힌다 — 조용히 지어내지 않는다."""
+        import bot.stock_snapshot as ss
+        from bot.share_count import note
+        snap = {"current_price": self.PX, "market_cap": self.MC,
+                "shares_outstanding": self.YF}
+        ss._apply_share_count("AAPL", snap)
+        assert snap["shares_outstanding"] == self.YF
+        assert "⚠️" in note(self.PX, self.MC, snap["shares_outstanding"],
+                            snap.get("shares_source") or "")
+
+    def test_the_header_carries_the_share_note_exactly_once(self):
+        """렌더 블록은 '있는지'가 아니라 **몇 번**인지로 고정한다(#182)."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        assert src.count("{esc(shares_sub)}") == 1, src.count("{esc(shares_sub)}")
+        calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "_share_note"]
+        assert len(calls) == 1, f"헤더 검산 호출 {len(calls)}건"
