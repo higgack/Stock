@@ -453,6 +453,19 @@ def _kr_band_basis_note(rows: list, kind: str = "PER") -> str:
     return f"FnGuide 밴드선 · 분모 = 원천 {d}(표본 부족으로 미판정){tail}"
 
 
+def _kr_band_basis_why(rows: list, kind: str = "PER") -> str:
+    """그 판정을 **왜** 그렇게 내렸는지 — 이미 계산해 둔 사유를 버리지 않는다.
+
+    ⚠️ `eps_cadence` 는 사람이 읽는 설명을 같이 돌려주는데 화면은 짧은 라벨만
+    싣고 그걸 버리고 있었다(#123 계정 불일치 · #129 수주잔고 에 이은 세 번째).
+    사용자 2026-08-23 "이것도 이해가 잘 안가.. 특히 밴드차트 설명" — 라벨만
+    보면 '매달 갱신 EPS' 가 무슨 뜻인지 알 방법이 없다.
+    """
+    from bot.per_band import eps_cadence
+    _cad, why = eps_cadence(rows, _DENOM_NAME.get(kind, "EPS"))
+    return why
+
+
 def _kr_denom_label(rows: list, kind: str = "PER") -> str:
     """분모 이름 — 원천이 계단형이면 확정치, 아니면 그렇게 안 우긴다.
 
@@ -524,6 +537,7 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
             # EPS 가 매달 +81~82 로 **선형**이었다(분기 확정치면 계단이어야
             # 한다). 원천이 무엇을 쓰는지는 추측이 아니라 측정이다.
             "band_basis": _kr_band_basis_note(rows, kind),
+            "band_basis_why": _kr_band_basis_why(rows, kind),
             "denom_label": _kr_denom_label(rows, kind),
             "summary": _sm(rows, years=5, price_now=px_now),
             # ⚠️ 밸류에이션 탭의 PER 과 **분모가 다르다** — 이름이 같으면

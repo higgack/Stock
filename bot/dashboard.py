@@ -5315,10 +5315,13 @@ _BAND_JS = r"""
     var chips=[];
     if(rows.length){ var r0=(t.rows||[])[0]||{}, rN=(t.rows||[])[(t.rows||[]).length-1]||{};
       chips.push(['기간', esc2(t.band_from||r0.period)+' ~ '+esc2(t.band_to||rN.period)]);
-      /* ⚠️ KR 은 밴드 4선이 **FnGuide 가 준 값**(분기 실적 기준)이라 우리
-         월말 관측 분포가 아니다 — '관측 N개 분포'라고 적으면 거짓말이다(#55).
-         원천이 기준을 말해 주면 그걸 쓴다. */
-      if(t.band_basis) chips.push(['기준', esc2(t.band_basis)]);
+      /* ⚠️ KR 은 밴드 4선이 **FnGuide 가 준 값**이라 우리 월말 관측 분포가
+         아니다 — '관측 N개 분포'라고 적으면 거짓말이다(#55). 분모가 무엇인지는
+         추측하지 않고 **되짚어 재서** 말한다(#165 — 옛 주석은 여기에 '분기 실적
+         기준'이라고 적어 뒀는데 실측은 매달 갱신이었다). 라벨만으론 뜻이 안
+         통하므로 판정 사유를 툴팁으로 같이 싣는다(사용자 2026-08-23). */
+      if(t.band_basis) chips.push(['기준', esc2(t.band_basis),
+                                   esc2(t.band_basis_why||'')]);
       else chips.push(['기준', '관측 '+(t.band_n||t.n||0)+'개 분포']); }
     /* PER 은 순이익이 0 에 가까우면 발산한다 — 한 점이 '최고'를 망가뜨리면
        밴드가 쓸모없다. 뺀 값은 이력 표에 그대로 남으므로 **뺐다고 말한다**(#43). */
@@ -5332,11 +5335,13 @@ _BAND_JS = r"""
     var bn='';
     if(chips.length){ bn='<div style="display:flex;flex-wrap:wrap;gap:6px;'
       +'margin-top:6px">';
-      for(var c=0;c<chips.length;c++) bn+='<span style="display:inline-flex;'
+      for(var c=0;c<chips.length;c++) bn+='<span'
+        +(chips[c][2]?' title="'+chips[c][2]+'"':'')
+        +' style="display:inline-flex;'
         +'align-items:baseline;gap:5px;padding:3px 9px;border-radius:999px;'
         +'background:var(--chip-bg,rgba(127,140,170,.14));font-size:11px;'
         +'line-height:1.5"><b style="color:var(--fg-soft);font-weight:600">'
-        +chips[c][0]+'</b><span>'+chips[c][1]+'</span></span>';
+        +chips[c][0]+'</b><span>'+chips[c][1]+(chips[c][2]?' ⓘ':'')+'</span></span>';
       bn+='</div>'; }
     if(bn) h+=bn;
     /* 원천이 안 준 배수는 행을 뺐다 — **왜** 없는지 말한다(침묵이 최악, #43). */

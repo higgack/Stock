@@ -220,8 +220,9 @@ def eps_cadence(rows: list | None, denom: str = "EPS") -> tuple[str | None, str]
         return "계단형", (f"되짚은 {denom} 가 {flat}/{steps} 구간에서 그대로 "
                        f"— 분기 확정 실적이 그대로 유지되는 형태")
     return "연속형", (f"되짚은 {denom} 가 {steps - flat}/{steps} 구간에서 매번 "
-                    f"바뀜 — 분기 확정치가 아니라 매달 갱신되는 값"
-                    f"(선행 컨센서스·보간)")
+                    f"바뀝니다. 분기 실적이면 3개월마다 계단처럼 뛰어야 하는데 "
+                    f"매달 바뀌므로 분기 확정치가 아닙니다 — 원천이 무엇으로 "
+                    f"갱신하는지는 FnGuide 가 밝히지 않아 우리도 모릅니다.")
 
 
 def per_series(prices: list | None, eps_ttm: list | None
