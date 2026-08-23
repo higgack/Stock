@@ -1461,6 +1461,39 @@ _KR_FIN_RELAY_KEYS = ("매출", "영업이익", "당기순이익", "자산총계
                       "비지배순이익")
 
 
+def _yr(e) -> int | None:
+    """항목의 회계연도(정수) — 못 읽으면 None."""
+    v = (e or {}).get("year")
+    if isinstance(v, int):
+        return v
+    try:
+        return int(str(v)[:4])
+    except (TypeError, ValueError):
+        return None
+
+
+def consecutive_tail(ts: list, n: int) -> list:
+    """오래된→최신 목록에서 **최신부터 연속한** 최대 n 개.
+
+    ⚠️ 왜(2026-08-24 현대이지웰 090850.KQ, 사용자 "왜 2021 이 아니라 2020 가
+    나온거지?"): 원천이 FY2021 을 안 줘 `ts[-5:]` 가 `FY2020 · FY2022 …` 를
+    실었고, 그 FY2022 의 '전기'가 2년 전인 FY2020 이 됐다(#29·#168 인접
+    판정은 간격을 재야 한다). 빠진 해를 메우지 않고 **창을 짧게** 잡는다 —
+    화면은 개수를 제목에서 파생하므로 '최근 4년'이라고 정직하게 적는다.
+    """
+    if not ts:
+        return []
+    run = [ts[-1]]
+    for e in reversed(ts[:-1]):
+        if len(run) >= n:
+            break
+        y, y0 = _yr(e), _yr(run[0])
+        if y is None or y0 is None or y != y0 - 1:
+            break
+        run.insert(0, e)
+    return run
+
+
 def collect_kr_financials(ticker: str) -> dict:
     """DART 재무(연간·시계열·분기) 수집 → {"kr": {...}}.
 
@@ -1546,7 +1579,13 @@ def collect_kr_financials(ticker: str) -> dict:
             log.warning("collect_kr_financials %s: 평균분모 ROE 실패: %s",
                         ticker, exc)
         # 기준으로만 받은 여분 연도는 잘라낸다(표는 _Y_TABLE 개).
-        out.setdefault("kr", {})["financials_ts"] = ts[-_Y_TABLE:]
+        # ⚠️ **연속한 해만** 싣는다. 원천이 한 해를 안 주면 `ts[-N:]` 이
+        # 두 해 건너뛴 연도를 끌어와, 표가 `FY2020 · FY2022 · …` 로 뜨고
+        # 그 FY2022 의 '전기'가 FY2020 이 된다(2026-08-24 현대이지웰
+        # 090850.KQ 실측 — 사용자 "왜 2021 이 아니라 2020 가 나온거지?").
+        # 빠진 해를 조용히 메우지 않고 **창을 짧게** 잡는다(#29 빈칸이 낫다).
+        out.setdefault("kr", {})["financials_ts"] = consecutive_tail(
+            ts, _Y_TABLE)
     # 분기별 시계열(_Q_TABLE 개) — 밸류에이션 탭 "분기별 재무추이"용
     # (bot.dart_quarterly, 사용자 2026-08-16). 연도별 시계열과 동일
     # 항목만 저장(렌더 쪽 표 구성을 그대로 재사용하기 위함).
