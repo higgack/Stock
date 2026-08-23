@@ -5684,8 +5684,11 @@ def _derived_desc(si: dict) -> str:
         lb = _DERIVED_LABEL.get(k, k)
         b = basis.get(k) if isinstance(basis, dict) else None
         parts.append(f"{lb}({b})" if b else lb)
+    # ⚠️ 문구를 고정하지 않는다 — 지배주주 계정이 있으면 그걸 쓰고, 없으면
+    # 연결 총액으로 떨어진다(#55 설명이 코드와 어긋나면 버그).
+    scope = si.get("_derived_scope") or "연결 총액(비지배지분 포함)"
     return (", ".join(parts)
-            + " — 시총·상장주식수와 DART 연결 재무(비지배지분 포함)로 산출")
+            + f" — 시총·상장주식수와 DART {scope} 기준으로 산출")
 
 
 def _derive_missing_multiples(si: dict) -> dict:
@@ -5731,16 +5734,47 @@ def _derive_missing_multiples(si: dict) -> dict:
 
     # 유량(순이익·매출)은 TTM 우선, 없으면 직전 연간. 저량(자본총계)은
     # **최근 분기 잔액**이 정답이고 연간은 폴백이다.
-    net = _ttm("당기순이익")
-    net_basis = "TTM" if net is not None else "연간"
-    if net is None:
-        net = _num(fin.get("당기순이익"))
+    #
+    # ⚠️ 분자는 **지배주주 귀속분**이 먼저다. 사용자가 신뢰 기준으로 제시한
+    # FnGuide 산식(2026-08-23)이 그렇게 정의한다 —
+    #   EPS = (지배주주지분)당기순이익 / 수정평균발행주식수
+    #   BPS = (지배주주지분)자본총계 / 수정기말발행주식수
+    # 연결 총액으로 나누면 비지배 몫까지 주주 것처럼 실린다. 원천이 그
+    # 계정을 안 주면 총액으로 떨어지고, **어느 기준인지 화면이 밝힌다**(#43).
+    _scope = "지배주주 귀속분"
+
+    def _flow(main_key: str, alt_key: str):
+        """(값, 기준, 지배주주였나) — 지배주주분 우선, 없으면 총액."""
+        v = _ttm(main_key)
+        if v is not None:
+            return v, "TTM", True
+        v = _num(fin.get(main_key))
+        if v is not None:
+            return v, "연간", True
+        v = _ttm(alt_key)
+        if v is not None:
+            return v, "TTM", False
+        return _num(fin.get(alt_key)), "연간", False
+
+    net, net_basis, net_owner = _flow("지배주주순이익", "당기순이익")
+    if not net_owner:
+        _scope = "연결 총액(비지배지분 포함)"
     rev = _ttm("매출")
     rev_basis = "TTM" if rev is not None else "연간"
     if rev is None:
         rev = _num(fin.get("매출"))
-    equity = next((_num(q.get("자본총계")) for q in reversed(qs)
-                   if _num(q.get("자본총계"))), None) or _num(fin.get("자본총계"))
+
+    def _stock(main_key: str, alt_key: str):
+        for key, owner in ((main_key, True), (alt_key, False)):
+            v = next((_num(q.get(key)) for q in reversed(qs)
+                      if _num(q.get(key))), None) or _num(fin.get(key))
+            if v is not None:
+                return v, owner
+        return None, False
+
+    equity, eq_owner = _stock("지배주주자본", "자본총계")
+    if not eq_owner and equity is not None:
+        _scope = "연결 총액(비지배지분 포함)"
 
     if out.get("bookValue") is None and equity and shares and shares > 0:
         out["bookValue"] = equity / shares
@@ -5769,6 +5803,7 @@ def _derive_missing_multiples(si: dict) -> dict:
                   "priceToSalesTrailing12Months": rev_basis,
                   "priceToBook": "최근분기말", "bookValue": "최근분기말"}
         out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
+        out["_derived_scope"] = _scope
     return out
 
 

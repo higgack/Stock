@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 
 
 def _n(v):
@@ -66,10 +66,12 @@ def _reexec_target(missing: bool, flagged: bool, venv: str,
     import os
     if not missing or flagged or not venv:
         return ""
-    try:
-        same = os.path.realpath(venv) == os.path.realpath(current or "")
-    except Exception:                                           # noqa: BLE001
-        same = venv == current
+    # ⚠️ **realpath 로 비교하면 안 된다**(2026-08-23 VM 실측: 재실행이 한
+    # 번도 안 걸렸다). venv 의 `bin/python3` 는 base 파이썬으로 가는 심볼릭
+    # 링크라 realpath 가 `/usr/bin/python3` 로 **같아진다** — venv 를 venv 로
+    # 만드는 건 그 바이너리가 아니라 `pyvenv.cfg`·`sys.prefix` 다. 가드가
+    # 재는 대상을 틀리면 그냥 눈이 먼다(#91b).
+    same = os.path.abspath(venv) == os.path.abspath(current or "")
     return "" if same else venv
 
 
@@ -344,11 +346,24 @@ def _dart_raw(ticker: str, snap: dict) -> None:
         if not ser:
             print("    분기 시리즈 없음")
             return
+        # ⚠️ FnGuide 산식(사용자 제공 2026-08-23)은 **지배주주지분** 기준이다
+        # — EPS = (지배주주지분)당기순이익 / 수정평균발행주식수. 총액과 얼마나
+        # 갈리는지가 EPS 차이의 답이므로 나란히 찍는다.
         for e in ser:
             fin = e.get("financials") or {}
+            own = fin.get("지배주주순이익")
+            tot = fin.get("당기순이익")
+            share = (f" ({own / tot * 100:.0f}%)"
+                     if _n(own) and _n(tot) else "")
             print(f"      {e.get('label')} rc={e.get('reprt_code')} "
-                  f"{e.get('fs_div')} 당기순이익 {_f(fin.get('당기순이익'), 0)}"
-                  f" · 매출 {_f(fin.get('매출'), 0)}")
+                  f"{e.get('fs_div')} 당기순이익(총액) {_f(tot, 0)}"
+                  f" · 지배주주 {_f(own, 0)}{share}"
+                  f" · 자본총계 {_f(fin.get('자본총계'), 0)}"
+                  f" · 지배주주자본 {_f(fin.get('지배주주자본'), 0)}")
+        if not any((e.get("financials") or {}).get("지배주주순이익")
+                   for e in ser):
+            print("      ⚠️ 지배주주순이익 계정이 한 분기도 없다 — 원천 미제공"
+                  "이거나 계정 매핑이 못 잡은 것이다(아래 채택 계정 확인).")
         last = ser[-1]
         y, rc = last.get("year"), last.get("reprt_code")
         raw = dart.get_normalized_financials(ticker, year=y,
