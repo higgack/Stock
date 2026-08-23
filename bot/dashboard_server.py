@@ -542,11 +542,6 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
             # FnGuide 는 관측 전 구간에 밴드선을 주므로 창 = 이력 전체다.
             "band_n": len(rows), "band_from": str(rows[0]["period"])[:10],
             "band_to": str(rows[-1]["period"])[:10],
-            # 밴드 창 — 비-KR 은 `assemble` 이 싣는데 여기만 빠져 있어 감사가
-            # "밴드 창 라벨 없음 — 판정 불가"로 찍었다(2026-08-23 실측).
-            # FnGuide 는 관측 전 구간에 밴드선을 주므로 창 = 이력 전체다.
-            "band_n": len(rows), "band_from": str(rows[0]["period"])[:10],
-            "band_to": str(rows[-1]["period"])[:10],
             # ⚠️ 밴드 4선은 **FnGuide 가 준 값**이지 우리 월말 관측 분포가
             # 아니다 — 화면이 '관측 N개 분포'라고 적으면 거짓말이다(#55).
             # ⚠️⚠️ 그리고 그 기준을 **재서** 말한다. 2026-08-22 에 나는 근거

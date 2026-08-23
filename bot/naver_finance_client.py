@@ -24,8 +24,16 @@ _CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
 os.makedirs(_CACHE_DIR, exist_ok=True)
 
 
+# ⚠️ 파서 스키마 버전. **필드를 늘리면 반드시 올린다** — 안 올리면 오늘치
+# 캐시가 옛 결과를 그대로 서빙해 고친 필드가 하루 종일 빈칸이다. 2026-08-23
+# 배당수익률 추가 때 실제로 그랬다(VM 프로브: 추정PER·추정EPS 는 있는데
+# `배당수익률 —` — 캐시가 fix 를 가린 이 레포에서 여섯 번째, #21b).
+_PARSE_VER = 2
+
+
 def _cache_path(code: str, today: str) -> str:
-    return os.path.join(_CACHE_DIR, f"naver_fin_{code}_{today}.json")
+    return os.path.join(_CACHE_DIR,
+                        f"naver_fin_{code}_v{_PARSE_VER}_{today}.json")
 
 
 def _load_cached(code: str, today: str) -> Optional[dict]:

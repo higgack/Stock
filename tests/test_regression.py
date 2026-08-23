@@ -6383,15 +6383,22 @@ class TestQuarterlyMultiMarket20260816:
         assert got["2026-06-30"] == 220, got
 
     def test_fcf_needs_capex_in_the_dart_path(self):
-        """DART 는 CAPEX 를 단일 계정으로 안 준다 — 유형·무형 취득을 더한다.
-        둘 다 없으면 FCF 를 만들지 않는다(영업현금흐름 ≠ FCF)."""
+        """CAPEX = **유형자산취득만**(FnGuide `CAPEX = 유형자산의증가`).
+
+        ⚠️ 2026-08-23 정정: 옛 판은 무형자산취득까지 더했다. LG이노텍
+        011070.KS 실측으로 FnGuide 와 어긋난 폭이 무형자산취득 크기와
+        맞았다(FY2025 우리 5,769 vs FnGuide 7,204, 차 1,435).
+        이 정의는 yfinance `Capital Expenditure` 와도 같아 시장 간 정의가
+        하나로 맞는다. 유형자산취득이 없으면 FCF 를 만들지 않는다.
+        """
         from bot.dart_quarterly import _attach_fcf
         e = [{"financials": {"영업활동현금흐름": 1241e8,
                              "유형자산취득": 200e8, "무형자산취득": 30e8}},
              {"financials": {"영업활동현금흐름": 500e8}},
              {"financials": {"유형자산취득": 100e8}}]
         assert _attach_fcf(e) == 1
-        assert e[0]["financials"]["FCF"] == 1011e8
+        # 무형 30 은 **빼지 않는다** — 빼면 1011 이 된다
+        assert e[0]["financials"]["FCF"] == 1041e8, e[0]["financials"]["FCF"]
         assert "FCF" not in e[1]["financials"], "CAPEX 없이 FCF 를 만들었다"
         assert "FCF" not in e[2]["financials"]
         # ⚠️ 재료가 불완전하면 **남아 있던 FCF 도 지운다**. 누적 dict 에
@@ -6424,8 +6431,14 @@ class TestQuarterlyMultiMarket20260816:
     def test_fcf_survives_the_snapshot_whitelist(self):
         """⚠️ 화이트리스트가 FCF 를 떨어뜨리면 파서를 고쳐도 표가 영원히
         빈칸이다 — 배선을 소스로 못박는다(실수 #20)."""
+        # 2026-08-23: 같은 목록을 세 곳이 따로 적고 있어 상수 하나로
+        # 묶었다(#24) — 계약은 "세 곳이 같은 목록을 쓴다" 이지 특정
+        # 문자열이 아니다(#19).
         src = open("bot/stock_snapshot.py", encoding="utf-8").read()
-        assert src.count('"재고자산", "FCF"') == 3, "수집 화이트리스트 누락"
+        from bot.stock_snapshot import _KR_FIN_RELAY_KEYS
+        assert "FCF" in _KR_FIN_RELAY_KEYS and "재고자산" in _KR_FIN_RELAY_KEYS
+        assert src.count("for k in _KR_FIN_RELAY_KEYS:") == 3, \
+            "연간·시계열·분기 세 곳이 같은 목록을 쓰지 않는다"
         # 스키마 버전을 안 올리면 이미 분석한 종목엔 영원히 안 붙는다(#18)
         from bot.stock_snapshot import _KR_FIN_SCHEMA_VER
         assert _KR_FIN_SCHEMA_VER >= 9
@@ -6718,6 +6731,8 @@ class TestQuarterlyMultiMarket20260816:
             "영업활동현금흐름", "유형자산취득", "무형자산취득",
             # v10 지배주주 귀속분 — 주당지표의 분자(FnGuide 산식, #193)
             "지배주주순이익", "지배주주자본",
+            # v11 비지배지분 — 지배주주자본을 원천이 안 줄 때 빼서 만든다
+            "비지배지분",
         }
         assert _CANONICAL_KEYS == expected, (
             "파서가 내는 계정이 바뀌었다 — `_FIN_CACHE_VER` 를 올리고 이 "
@@ -23914,7 +23929,9 @@ class TestQuarterlyExtraChartsAndLive20260816:
     def test_inventory_survives_the_snapshot_whitelist(self):
         # 화이트리스트에 빠지면 계정은 잡히는데 화면까지 못 온다.
         src = open("bot/stock_snapshot.py", encoding="utf-8").read()
-        assert src.count('"자본총계", "재고자산"') >= 3, "연간·시계열·분기 3곳"
+        from bot.stock_snapshot import _KR_FIN_RELAY_KEYS
+        assert "재고자산" in _KR_FIN_RELAY_KEYS and "자본총계" in _KR_FIN_RELAY_KEYS
+        assert src.count("for k in _KR_FIN_RELAY_KEYS:") == 3, "연간·시계열·분기 3곳"
 
     # ── ② 시총·PER·PSR 라이브 ──────────────────────────────────────
     def test_cache_bucket_is_hourly_not_daily(self):
@@ -37437,17 +37454,27 @@ class TestShareCountIdentity:
         from bot.dart_client import _pick_share_totals
         from bot.dashboard import _derive_missing_multiples as d
         # ① 행 선택 — 합계 행이 있으면 그것, 없으면 종류주를 **더한다**
+        # ⚠️ 픽스처는 **원천이 실제로 주는 필드명**이어야 한다(#155).
+        # `isu_stock_totqy` 는 발행할 주식의 총수(수권)이고 실제 발행분은
+        # `istc_totqy` 다 — POSCO홀딩스 실측: 전자 200,000,000 · 후자
+        # 79,241,527. 이름이 그럴듯해 그걸 쓰면 자사주 차감이 통째로 틀린다.
         assert _pick_share_totals(
-            [{"se": "보통주", "isu_stock_totqy": "79,241,527",
-              "tesstk_co": "4,600,000", "distb_stock_co": "74,641,527"}]
-        ) == {"issued": 79241527, "treasury": 4600000,
-              "distributed": 74641527}
+            [{"se": "보통주", "isu_stock_totqy": "200,000,000",
+              "istc_totqy": "79,241,527", "tesstk_co": "3,620,748",
+              "distb_stock_co": "75,620,779"}]
+        ) == {"issued": 79241527, "treasury": 3620748,
+              "distributed": 75620779}
+        # 유통주식수를 안 주면 발행 − 자기주식 — 수권주식수를 쓰면 안 된다
         assert _pick_share_totals(
-            [{"se": "보통주", "isu_stock_totqy": "80", "tesstk_co": "5",
+            [{"se": "보통주", "isu_stock_totqy": "200,000,000",
+              "istc_totqy": "79,241,527", "tesstk_co": "3,620,748",
+              "distb_stock_co": "-"}])["distributed"] == 75620779
+        assert _pick_share_totals(
+            [{"se": "보통주", "istc_totqy": "80", "tesstk_co": "5",
               "distb_stock_co": "-"},
-             {"se": "우선주", "isu_stock_totqy": "20", "tesstk_co": "0",
+             {"se": "우선주", "istc_totqy": "20", "tesstk_co": "0",
               "distb_stock_co": "-"}])["distributed"] == 95
-        assert _pick_share_totals([{"se": "합계", "isu_stock_totqy": "-"}]) == {}
+        assert _pick_share_totals([{"se": "합계", "istc_totqy": "-"}]) == {}
 
         qs = [{"year": y, "quarter": q, "당기순이익": 1e11,
                "지배주주순이익": 9.8e10, "지배주주자본": 5.672e13, "매출": 5e11}
@@ -37556,6 +37583,107 @@ class TestShareCountIdentity:
         # 국내는 야후 폴백을 타지 않는다 — 세 폴백 전부 `not is_kr` 게이트
         assert tail.count("if per_fwd is None and not is_kr:") == 2, tail
         assert "if per_fwd is None:" not in tail, "야후 폴백이 국내에도 열려 있다"
+
+    def test_no_dict_literal_has_duplicate_keys(self):
+        """중복 키는 파이썬이 조용히 **마지막 것만** 남긴다 — 앞의 매핑이
+        통째로 죽는다. 2026-08-23 실측: `_DART_CODE_MAP` 에
+        `ifrs-full_EquityAttributableToOwnersOfParent` 가 두 번 있어
+        (지배주주자본 → 자본총계) **`지배주주자본` 이 전 종목에서 한 번도
+        안 채워졌다**. 그 결과 BPS·ROE 분모가 연결 총액(비지배 포함)으로
+        떨어져 FnGuide 보다 체계적으로 어긋났다(POSCO홀딩스 프로브 확인).
+
+        옛 가드는 `bot/translate.py` **한 파일만** 봤다 — 목록형은 새 파일을
+        못 잡는다(#24). 디렉터리 전체를 AST 로 훑는다."""
+        import ast, pathlib
+        from collections import Counter
+        bad, scanned = [], 0
+        for root in ("bot", "trade"):
+            for p in sorted(pathlib.Path(root).rglob("*.py")):
+                tree = ast.parse(p.read_text(encoding="utf-8"))
+                scanned += 1
+                for n in ast.walk(tree):
+                    if not isinstance(n, ast.Dict):
+                        continue
+                    ks = [k.value for k in n.keys
+                          if isinstance(k, ast.Constant)
+                          and isinstance(k.value, (str, int))]
+                    for k, c in Counter(ks).items():
+                        if c > 1:
+                            bad.append(f"{p}:{n.lineno} {k!r}×{c}")
+        assert scanned > 300, f"훑은 모듈 {scanned}개 — 스캔이 안 돌았다"
+        assert not bad, "중복 키: " + ", ".join(bad)
+
+    def test_owner_equity_is_filled_from_the_identity_when_missing(self):
+        """`지배주주자본` 은 BPS·ROE 의 분모다. 원천이 그 계정을 안 주면
+        분모가 연결 총액으로 떨어져 두 지표가 **같은 방향으로** 낮아진다.
+        계정 이름 열거로는 새 표기를 못 잡으므로(#24) `자본총계 − 비지배지분`
+        이라는 항등식을 최종 그물로 둔다. 그리고 만든 값은 그렇게 밝힌다(#43)."""
+        import ast
+        from bot.dart_client import _fill_equity_fallbacks as f
+        d = {"자본총계": 64.16e12, "비지배지분": 6.7e12}
+        f(d)
+        assert round(d["지배주주자본"]) == round(57.46e12), d
+        assert "자본총계" in d["_derived_from"]["지배주주자본"]
+        # 반대 방향 — 자본을 지배주주분으로만 주는 회사
+        d2 = {"지배주주자본": 5.76e12}
+        f(d2)
+        assert d2["자본총계"] == 5.76e12 and d2["_derived_from"]["자본총계"]
+        # 원천이 준 값은 **덮지 않는다**
+        d3 = {"자본총계": 100.0, "지배주주자본": 90.0, "비지배지분": 5.0}
+        f(d3)
+        assert d3["지배주주자본"] == 90.0 and "_derived_from" not in d3
+        f({})                                   # 재료 없음 → 아무 일 없음
+        # 배선 — 정규화 재무가 이 함수를 부른다(#20 배선은 태워야 보인다)
+        src = open("bot/dart_client.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "get_normalized_financials")
+        seg = ast.get_source_segment(src, fn) or ""
+        i, j = seg.index("_fill_equity_fallbacks("), seg.index("calc_kr_financial_ratios(")
+        assert i < j, "비율 계산 **전에** 채워야 ROE 분모가 지배주주자본이 된다"
+        # 릴레이 목록에도 실려야 화면까지 온다
+        from bot.stock_snapshot import _KR_FIN_RELAY_KEYS
+        assert "비지배지분" in _KR_FIN_RELAY_KEYS
+        assert "지배주주자본" in _KR_FIN_RELAY_KEYS
+        # 분모를 빼서 만들었으면 **화면이 그렇게 말한다**(#43·#123) —
+        # 계산해 놓고 안 실으면 사용자가 매번 물어야 한다.
+        from bot.dart_client import apply_ttm_returns, apply_annual_returns
+        for fn_ in (apply_ttm_returns, apply_annual_returns):
+            e = [{"financials": {"당기순이익": 10.0, "지배주주순이익": 9.0,
+                                 "자본총계": 100.0, "비지배지분": 10.0,
+                                 "지배주주자본": 90.0, "자산총계": 200.0,
+                                 "_derived_from": {"지배주주자본": "자본총계 − 비지배지분"}},
+                  "ratios": {}} for _ in range(5)]
+            fn_(e)
+            rb = e[-1]["ratios"]["_returns_basis"]
+            assert rb["denominator"] == "지배주주자본", rb
+            assert rb["denominator_derived"] == "자본총계 − 비지배지분", rb
+        src2 = open("bot/dashboard.py").read()
+        assert src2.count('_rb["denominator_derived"]') == 1, "화면이 안 싣는다"
+
+    def test_the_overview_card_note_is_a_block_not_a_glued_line(self):
+        """사용자 2026-08-23 "첫번째 캡쳐에 밑에 코멘트도 깔끔하게 정리" —
+        밸류에이션 탭에서 고친 것과 같다(#211). 한 줄에 이어 붙이면 브라우저가
+        아무 데서나 접는다."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("_derived_note = (")
+        blk = seg[i:i + 400]
+        assert 'class="si-note"' in blk, blk
+        assert '" · ⚙️ 자체계산' not in seg, "아직 한 줄에 이어 붙인다"
+        assert seg.count("{_derived_note}") == 1
+
+    def test_naver_cache_key_carries_the_parser_version(self):
+        """파서를 고쳐도 오늘치 캐시가 옛 결과를 서빙한다 — 2026-08-23
+        배당수익률 추가 때 실제로 그랬다(VM 프로브: 추정PER 은 있는데
+        배당수익률만 `—`). 이 레포에서 여섯 번째다(#21b)."""
+        from bot.naver_finance_client import _cache_path, _PARSE_VER
+        assert _PARSE_VER >= 2
+        assert f"_v{_PARSE_VER}_" in _cache_path("005490", "2026-08-24")
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다

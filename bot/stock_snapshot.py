@@ -1406,6 +1406,14 @@ def kr_fin_signature() -> str:
     return h.hexdigest()[:12]
 
 
+# DART 재무에서 스냅샷으로 **릴레이할 계정** — 세 곳(연간 compact·연간
+# 시계열·분기)이 같은 목록을 따로 적고 있었다. 한 곳만 고치면 나머지가
+# 조용히 빠진다(#24 열거형) — 상수 하나에서 도출한다.
+_KR_FIN_RELAY_KEYS = ("매출", "영업이익", "당기순이익", "자산총계",
+                      "부채총계", "자본총계", "재고자산", "FCF",
+                      "지배주주순이익", "지배주주자본", "비지배지분")
+
+
 def collect_kr_financials(ticker: str) -> dict:
     """DART 재무(연간·시계열·분기) 수집 → {"kr": {...}}.
 
@@ -1423,9 +1431,7 @@ def collect_kr_financials(ticker: str) -> dict:
     fin = dart.get_normalized_financials(ticker)
     if fin and fin.get("financials"):
         compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
-        for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                  "부채총계", "자본총계", "재고자산", "FCF",
-                  "지배주주순이익", "지배주주자본"):
+        for k in _KR_FIN_RELAY_KEYS:
             v = fin["financials"].get(k)
             if v is not None:
                 compact[k] = v
@@ -1458,9 +1464,7 @@ def collect_kr_financials(ticker: str) -> dict:
         fin = dart.get_normalized_financials(ticker, year=yr)
         if fin and fin.get("financials"):
             entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
-            for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                      "부채총계", "자본총계", "재고자산", "FCF",
-                      "지배주주순이익", "지배주주자본"):
+            for k in _KR_FIN_RELAY_KEYS:
                 v = fin["financials"].get(k)
                 if v is not None:
                     entry[k] = v
@@ -1510,9 +1514,7 @@ def collect_kr_financials(ticker: str) -> dict:
             for q in q_series[-_Q_TABLE:]:
                 qentry = {"label": q["label"], "year": q["year"],
                          "quarter": q["quarter"], "fs_div": q["fs_div"]}
-                for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                          "부채총계", "자본총계", "재고자산", "FCF",
-                          "지배주주순이익", "지배주주자본"):
+                for k in _KR_FIN_RELAY_KEYS:
                     v = q["financials"].get(k)
                     if v is not None:
                         qentry[k] = v
