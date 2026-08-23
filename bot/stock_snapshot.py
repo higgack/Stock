@@ -508,6 +508,7 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         # 크면 enrich 가 보조 6종보다 훨씬 길다는 뜻이다(#69 재는 것부터).
         _TIMING.set(ticker, "enrich.wait", time.time() - _t_w)
         snap.update(_overlay)
+        _apply_share_count(ticker, snap)
 
         _TIMING.set(ticker, "total", time.time() - _t_all)
         return snap
@@ -516,6 +517,37 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         _TIMING.set(ticker, "total", time.time() - _t_all)
         log.warning("stock_snapshot: failed for %s: %s", ticker, exc)
         return None
+
+
+def _apply_share_count(ticker: str, snap: dict) -> None:
+    """발행주식수를 **화면의 항등식**으로 검산해 고른다 — 전 시장 공통.
+
+    `시가총액 ÷ 현재가 = 발행주식수` 가 맞아야 한다(#33). 어느 원천이
+    옳은지 추측하지 않고 **항등식을 얼마나 만족하는가**로 고른다(#162).
+    주식수는 EPS·BPS 의 분모라 한 번 틀리면 주당지표가 통째로 밀린다.
+
+    ⚠️ 여기 있어야 하는 이유: `_enrich_*` 는 **snap 에서 아무것도 읽지
+    않는다**는 전제로 보조 6종과 겹쳐 돈다(#128). 이 판정은 시총·현재가를
+    읽어야 하므로 enrich 안에 두면 그 전제가 깨진다 — 실제로 회귀가 잡았다.
+    등록 주식수 **원천**은 시장별이지만(KR = KRX/FSC) 판정은 공통이고,
+    원천이 없는 시장은 값을 그대로 두고 화면이 어긋남을 밝힌다(#43).
+    """
+    try:
+        from bot.share_count import pick as _pick_shares
+        q = (snap.get("kr") or {}).get("krx_quote") or {}
+        reg_label = "KRX 상장주식수" + (f"({q.get('date')})" if q.get("date") else "")
+        v, lab, why = _pick_shares(
+            snap.get("current_price"), snap.get("market_cap"),
+            [(snap.get("shares_outstanding"), "yfinance"),
+             (q.get("shares"), reg_label)])
+        if v:
+            snap["shares_outstanding"] = v
+            snap["shares_source"] = lab
+            if why:
+                snap["shares_note"] = why
+                log.info("stock_snapshot %s 주식수 교체: %s", ticker, why)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("stock_snapshot %s: 주식수 검산 실패: %s", ticker, exc)
 
 
 def _enrich_kr(ticker: str, snap: dict) -> None:
@@ -691,6 +723,19 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
             log.debug("stock_snapshot: FSC dilution skipped: %s", exc)
             return {}
 
+    def _t_krx_shares() -> dict:
+        """KRX 공식 **상장주식수** — 주당지표의 분모다.
+
+        ⚠️ 2026-08-23 서희건설 실측: yfinance `sharesOutstanding` 이
+        185.4M 인데 KRX/네이버는 207,588,536 이라 헤더가 자기 산수를
+        못 맞췄다(시가총액 ÷ 발행주식수 ≠ 현재가, #33). `get_kr_market_cap`
+        은 KRX(pykrx) → 금융위 FSC `lstgStCnt` 폴백으로 등록 주식수를
+        주는데 **레포에 있으면서 아무도 안 부르고 있었다**(#150).
+        """
+        from bot.pykrx_client import get_kr_market_cap
+        q = get_kr_market_cap(ticker)
+        return {"kr": {"krx_quote": q}} if q and q.get("shares") else {}
+
     def _t_krx_alert() -> dict:
         out: dict = {}
         from bot.krx_alert_client import get_krx_alert
@@ -797,6 +842,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
              ("fsc.minority", _t_fsc_minority), ("flow(KIS+pykrx)", _t_flow),
              ("fsc.lockup", _t_fsc_lockup),
              ("fsc.dilution", _t_fsc_dilution), ("krx.alert", _t_krx_alert),
+             ("krx.shares", _t_krx_shares),
              ("fnguide", _t_fnguide), ("research", _t_research),
              ("dividends", _t_dividends)]
 

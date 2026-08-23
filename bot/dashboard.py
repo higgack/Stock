@@ -5846,6 +5846,13 @@ def _render_stock_info_html(rec: dict) -> str:
                          prefix=csym)
     mcap_str = _fmt_mcap(si.get("market_cap"), csym, currency)
     shares_str = _fmt_shares(si.get("shares_outstanding"))
+    # 발행주식수는 EPS·BPS 의 분모다 — 화면이 자기 산수를 못 맞추면
+    # (시가총액 ÷ 현재가 ≠ 발행주식수) 주당지표가 통째로 밀린다(#33).
+    # 맞으면 출처만, 어긋나면 어긋난 사실을 말한다(#43 침묵이 최악).
+    from bot.share_count import note as _share_note
+    shares_sub = _share_note(price, si.get("market_cap"),
+                             si.get("shares_outstanding"),
+                             si.get("shares_source") or "")
     ne = si.get("next_earnings", "")
     ne_label = ne if ne else "—"
     ne_sub = "(추정)" if ne else ""
@@ -5862,7 +5869,8 @@ def _render_stock_info_html(rec: dict) -> str:
     <span class="si-value" data-q="mcap">{esc(mcap_str)}</span></div>
   {_glitch_html}
   <div class="si-card"><span class="si-label">발행주식수</span>
-    <span class="si-value">{esc(shares_str)}</span></div>
+    <span class="si-value">{esc(shares_str)}</span>
+    <span class="si-sub">{esc(shares_sub)}</span></div>
   <div class="si-card"><span class="si-label">다음 실적</span>
     <span class="si-value">{esc(ne_label)}</span>
     <span class="si-sub">{esc(ne_sub)}</span></div>
