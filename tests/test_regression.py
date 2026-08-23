@@ -6798,6 +6798,42 @@ class TestQuarterlyMultiMarket20260816:
         assert e[0]["financials"]["영업활동현금흐름"] == 100.0
         assert e[1]["financials"]["영업활동현금흐름"] is None, e
 
+    def test_outflow_cumulative_is_differenced_by_magnitude(self):
+        """부호가 보고서마다 갈리면 **뺄셈이 덧셈이 된다**(2026-08-24 S-Oil).
+
+        DART 는 같은 취득 계정을 음수(현금유출)로도 양수(취득액)로도 준다 —
+        `_attach_fcf` 의 `abs()` 는 **차분이 끝난 뒤**라 그 사이를 못 막는다.
+        연간 +4.4조 − 9개월 −2.1조 = **6.5조**(합)가 되어 CAPEX 가 두 배 넘게
+        부풀고, '큰 설비투자'처럼 보여 눈으로는 안 잡힌다(#88 의 차분 단계판).
+
+        ⚠️ 영업활동현금흐름은 **크기로 보면 안 된다** — 음수가 정당한 값이다
+        (FnGuide 실측 S-Oil 2026/03 -5,239억). 같이 검증한다."""
+        from bot.dart_quarterly import _undo_cumulative_cf
+
+        def run(q3_capex, q4_capex, q3_ocf=8.907e11, q4_ocf=2.7483e12):
+            e = [{"year": 2025, "quarter": 3, "label": "25.3Q",
+                  "financials": {"영업활동현금흐름": q3_ocf,
+                                 "유형자산취득": q3_capex}},
+                 {"year": 2025, "quarter": 4, "label": "25.4Q",
+                  "financials": {"영업활동현금흐름": q4_ocf,
+                                 "유형자산취득": q4_capex}}]
+            _undo_cumulative_cf(e)
+            return e[1]["financials"]
+
+        # ① 부호가 갈린 경우 — 크기 차분이어야 한다(합이 되면 안 된다)
+        got = run(-2.1e12, 4.4e12)
+        assert got["유형자산취득"] == 2.3e12, got["유형자산취득"]
+        # ② 둘 다 음수여도 같은 답
+        assert run(-2.1e12, -4.4e12)["유형자산취득"] == 2.3e12
+        # ③ 둘 다 양수인 기존 경로는 **그대로**(no-op)
+        assert run(2.1e12, 4.4e12)["유형자산취득"] == 2.3e12
+        # ④ OCF 는 크기로 보지 않는다 — **누적 자체가 음수**일 수 있다.
+        # ⚠️ 첫 픽스처는 양수 두 개라 `abs()` 가 no-op 이었고, OCF 를 유출
+        # 목록에 넣는 뮤테이션이 **그대로 통과**했다(실측, #91b 재는 대상이
+        # 맞나). 9개월 누적을 음수로 둬야 두 규약이 갈린다.
+        neg = run(2.1e12, 4.4e12, q3_ocf=-5.0e11, q4_ocf=2.0e11)
+        assert neg["영업활동현금흐름"] == 7.0e11, neg["영업활동현금흐름"]
+
     def test_series_fetches_a_base_quarter_beyond_the_window(self, monkeypatch):
         """정확히 n 개만 받으면 창의 **가장 오래된 분기가 늘 빈칸**이다 —
         누적을 되돌릴 기준이 창 밖이기 때문(#44a 경계값 요청 금지).
@@ -35007,6 +35043,37 @@ class TestBandDenominatorBasis20260822:
         m = re.search(r"chips\.push\(\['기준',[^\]]*\]\)", _BAND_JS, re.S)
         assert m and "band_basis_why" in m.group(0), (m.group(0) if m else None)
         assert 'title="' in _BAND_JS, "툴팁을 안 그린다"
+
+
+    def test_the_reason_is_visible_not_only_a_tooltip(self):
+        """사용자 2026-08-23(삼양식품) "원천 EPS 라는게 정확히 이해가 안가"
+        — 사유를 **툴팁에만** 실어 두면 캡션을 읽은 사용자는 못 본다(같은
+        계열 질문 네 번째: #123 계정불일치 · #129 수주잔고 · #131 FCF 빈칸
+        · #189 이 칩). 캡션 블록이 사유를 **보이는 줄**로 그리는지 본다.
+
+        ⚠️ 소스에 이름이 **있는지**로 재면 칩의 툴팁이 대신 만족시킨다(#75)
+        — `h+=` 로 화면에 나가는지, 그리고 그 값을 조건으로 보는지까지.
+        ⚠️ 고정 길이 창으로 재면 옆 함수가 대신 만족시킨다(#60·#174) —
+        `perTable` 본문만 중괄호로 잘라서 본다."""
+        import re
+        from bot.dashboard import _BAND_JS
+        i = _BAND_JS.index("function perTable(")
+        j = _BAND_JS.index("{", i)
+        depth, body = 0, None
+        for k in range(j, len(_BAND_JS)):
+            if _BAND_JS[k] == "{":
+                depth += 1
+            elif _BAND_JS[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    body = _BAND_JS[j:k + 1]
+                    break
+        assert body, "perTable 본문을 못 찾았다"
+        vis = re.search(r"h\s*\+=[^;]*band_basis_why[^;]*;", body)
+        assert vis, "사유가 보이는 줄로 안 나간다(툴팁만이면 사용자는 못 읽는다)"
+        assert "chips.push" not in vis.group(0), vis.group(0)
+        # 값이 없을 때만 건너뛴다 — `if(false)` 로 죽이는 뮤테이션 차단
+        assert re.search(r"if\s*\(\s*t\.band_basis_why\s*\)", body), body[:200]
 
 
 class TestBandPeriodAndQ4Sanity20260822:
