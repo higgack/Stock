@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 2
+_PROBE_VER = 3
 
 
 def _n(v):
@@ -49,7 +49,7 @@ def _banner() -> bool:
             missing.append(m)
     try:
         from bot.env_keys import env_source, env_why
-        for k in ("DART_API_KEY", "DATA_GO_KR_API_KEY"):
+        for k in ("DART_API_KEY", "DATA_GO_KR_API_KEY", "KRX_ID", "KRX_PW"):
             src = env_source(k)
             print(f"  {k}: {src}"
                   + (f" ({env_why(k)})" if src == "없음" else ""))
@@ -155,6 +155,9 @@ def probe(ticker: str) -> None:
         from bot.stock_screener import _fetch_kr_bulk
         bulk = _fetch_kr_bulk() or {}
         row = bulk.get(ticker.split(".")[0].zfill(6)) or {}
+        print(f"    유니버스 {len(bulk)}종목"
+              + ("  ⚠️ 코스닥이 빠진 것 같다(KOSPI 만 ≈900)"
+                 if bulk and len(bulk) < 1500 else ""))
         if row:
             print(f"    EPS {_f(row.get('EPS'), 0)} · BPS {_f(row.get('BPS'), 0)} "
                   f"· PER {_f(row.get('PER'))} · PBR {_f(row.get('PBR'))} "
@@ -163,11 +166,7 @@ def probe(ticker: str) -> None:
                              "KRX 투자지표"))
         else:
             print(f"    이 종목이 벌크에 없습니다(벌크 {len(bulk)}종목).")
-        # pykrx 기본 market 은 KOSPI 다 — 코스닥이 통째로 빠지면 스크리너
-        # 유니버스가 반쪽이 된다(2026-08-23 실측 914종목).
-        if bulk and len(bulk) < 1500:
-            print(f"    ⚠️ 벌크가 {len(bulk)}종목뿐 — 코스닥이 빠졌을 수 있다"
-                  f"(KOSPI 만 ≈900).")
+
     except Exception as exc:                                    # noqa: BLE001
         print(f"    실패: {type(exc).__name__}: {exc}")
 
@@ -259,8 +258,64 @@ def probe(ticker: str) -> None:
     else:
         print(f"    분기 재무 없음(연간 보유: {sorted(fin) if fin else '없음'})")
 
+    _dart_raw(ticker, snap)
+
     print("\n[읽는 법] ①과 ⑤/⑥이 갈리면 원천이 다른 것이고, ①의 검산이 ❌ 면 "
           "우리 화면이 자기 산수를 못 맞춘 것이다(그건 우리 버그다).")
+
+
+def _dart_raw(ticker: str, snap: dict) -> None:
+    """⑧ 한 분기가 TTM 을 지배하면 **그 분기의 원본**을 봐야 한다.
+
+    ⚠️ 서희건설 2026.2Q 가 TTM 의 62% 였다(나머지 3분기 합의 1.6배).
+    합만 찍는 진단은 '어딘가 다르다'까지만 말한다 — DART 가 그 보고서에서
+    준 **당기 3개월(thstrm)** 과 **당기 누적(thstrm_add)** 을 나란히 놓으면
+    누적이 분기 자리에 앉은 것인지 진짜 일회성 이익인지 갈린다(#96).
+    ⚠️ 그리고 창을 맞춰야 한다 — 6분기를 받아 전년 동기까지 보여준다(#99).
+    """
+    print("⑧ DART 원본 대조(창 6분기 + 당기/누적)")
+    try:
+        from bot.dart_client import get_dart
+        from bot.dart_quarterly import get_quarterly_series
+        dart = get_dart()
+        if not dart:
+            print("    DART 클라이언트 없음(키 확인)")
+            return
+        ser = get_quarterly_series(dart, ticker, n=6) or []
+        if not ser:
+            print("    분기 시리즈 없음")
+            return
+        for e in ser:
+            fin = e.get("financials") or {}
+            print(f"      {e.get('label')} rc={e.get('reprt_code')} "
+                  f"{e.get('fs_div')} 당기순이익 {_f(fin.get('당기순이익'), 0)}"
+                  f" · 매출 {_f(fin.get('매출'), 0)}")
+        last = ser[-1]
+        y, rc = last.get("year"), last.get("reprt_code")
+        raw = dart.get_normalized_financials(ticker, year=y,
+                                             fs_div=last.get("fs_div"),
+                                             reprt_code=rc) or {}
+        cur = (raw.get("financials") or {})
+        cum = (raw.get("financials_cumulative") or {})
+        print(f"    최신 보고서 {y}/{rc} ({last.get('fs_div')})")
+        for k in ("매출", "영업이익", "당기순이익"):
+            print(f"      {k}: 당기(thstrm) {_f(cur.get(k), 0)}"
+                  f" · 누적(thstrm_add) {_f(cum.get(k), 0)}")
+        src = cur.get("_src") or {}
+        if src:
+            print(f"      채택 계정: {src}")
+        # 연간도 같이 — KRX 투자지표 EPS(최근 결산 기준)와 대조된다
+        ann = dart.get_normalized_financials(ticker, year=(y - 1),
+                                             fs_div=last.get("fs_div"),
+                                             reprt_code="11011") or {}
+        af = ann.get("financials") or {}
+        if af:
+            sh = _n(snap.get("shares_outstanding"))
+            print(f"    {y - 1} 연간 당기순이익 {_f(af.get('당기순이익'), 0)}"
+                  + (f" ÷ 주식수 = EPS {af['당기순이익'] / sh:,.2f}"
+                     if af.get("당기순이익") and sh else ""))
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"    실패: {type(exc).__name__}: {exc}")
 
 
 def main(argv: list[str]) -> int:
