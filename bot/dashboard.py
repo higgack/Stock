@@ -4681,14 +4681,20 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             return
         try:
             from bot.stock_snapshot import (_KR_FIN_SCHEMA_VER,
-                                            collect_kr_financials)
+                                            collect_kr_financials,
+                                            kr_fin_signature)
         except Exception as exc:
             log.debug("_ensure_detail_enrichment: kr fin import %s: %s", ticker, exc)
             return
         _kr = si.get("kr") or {}
         if not _kr.get("financials"):
             return                       # 애초에 없던 것 — 새로 받지 않는다
-        if (_kr.get("financials_ver") or 0) >= _KR_FIN_SCHEMA_VER:
+        # ⚠️ 버전 **숫자**만 보면 손으로 안 올린 날 화면이 조용히 옛 값을
+        # 그대로 보여준다(2026-08-23 기아 ROE 12.3% 가 fix 후에도 그대로).
+        # 소스 지문까지 대조한다 — 규율 대신 구조(#119).
+        _sig = kr_fin_signature()
+        if ((_kr.get("financials_ver") or 0) >= _KR_FIN_SCHEMA_VER
+                and (not _sig or _kr.get("financials_sig") == _sig)):
             return
         try:
             fresh = (collect_kr_financials(ticker) or {}).get("kr") or {}
@@ -4697,6 +4703,17 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             return
         if fresh.get("financials"):
             si.setdefault("kr", {}).update(fresh)
+        # 선행 PER 재료(네이버 추정 EPS)도 아카이브엔 없다 — 같은 자리에서
+        # 채운다. 없으면 화면은 예전대로 yfinance 값을 쓴다(무해).
+        if not (si.get("kr") or {}).get("naver_val"):
+            try:
+                from bot.naver_finance_client import get_naver_valuation
+                _nv = get_naver_valuation(ticker)
+                if _nv:
+                    si.setdefault("kr", {})["naver_val"] = _nv
+            except Exception as exc:                           # noqa: BLE001
+                log.debug("_ensure_detail_enrichment: naver_val %s: %s",
+                          ticker, exc)
 
     def _e_peers():
         try:
@@ -6255,7 +6272,8 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>
   {kr_financial_html}
-  {_src_foot}출처: {"개요 네이버 · 그 외 yfinance" if _nv_desc else "yfinance"}</div>
+  {_src_foot}출처: {("개요 네이버 · 그 외 yfinance" if _nv_desc else "yfinance")
+                  + (" · K-IFRS 재무 요약 DART" if kr_financial_html else "")}</div>
 </div>"""
 
     # ── 컨센서스 pane ───────────────────────────────────────────

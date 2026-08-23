@@ -1368,7 +1368,30 @@ def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
 #   v9 (2026-08-21) FCF(= 영업활동현금흐름 − |CAPEX|) 추가 — 밸류에이션 표·분기 차트
 _Q_TABLE = 4          # 분기 표에 보여줄 분기 수
 _TTM_LEAD = 3         # TTM(4분기 합)을 첫 칸부터 채우려면 앞서 필요한 분기 수
-_KR_FIN_SCHEMA_VER = 9
+_KR_FIN_SCHEMA_VER = 10
+
+
+def kr_fin_signature() -> str:
+    """이 payload 를 만드는 **모듈의 소스 지문** — 손으로 올리는 버전 상수를
+    대신한다.
+
+    ⚠️ 이 레포에서 같은 실패가 **다섯 번째**다(#18 아카이브 · #21b 파싱 캐시 ·
+    #95 재무 캐시 v4·v5 · #124 렌더 캐시 · 그리고 2026-08-23 여기: ROE 산식을
+    평균 분모로 고치고 `_KR_FIN_SCHEMA_VER` 를 안 올려 기아 화면이 12.3% 그대로
+    였다). 규율로 기억할 일을 **구조로** 옮긴다(#119 와 같은 처방).
+
+    지문이 바뀌면 아카이브에 구워진 값이 다음 조회에서 다시 수집된다. 비용은
+    유계다 — DART 조회는 7일 디스크 캐시(`_FIN_CACHE_VER`)라 대부분 캐시 히트다.
+    """
+    import hashlib
+    from pathlib import Path
+    h = hashlib.sha1()
+    for mod in ("stock_snapshot.py", "dart_client.py"):
+        try:
+            h.update(Path(__file__).with_name(mod).read_bytes())
+        except Exception:                                      # noqa: BLE001
+            return ""              # 못 읽으면 지문을 주장하지 않는다(#54)
+    return h.hexdigest()[:12]
 
 
 def collect_kr_financials(ticker: str) -> dict:
@@ -1501,6 +1524,9 @@ def collect_kr_financials(ticker: str) -> dict:
     _apply_revenue_fallback(ticker, out.get("kr") or {})
     if out.get("kr"):
         out["kr"]["financials_ver"] = _KR_FIN_SCHEMA_VER
+        _sig = kr_fin_signature()
+        if _sig:
+            out["kr"]["financials_sig"] = _sig
     return out
 
 

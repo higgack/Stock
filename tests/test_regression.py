@@ -36866,3 +36866,40 @@ class TestShareCountIdentity:
         assert by_label.get("cns_per") == 5.50, by_label
         # 없으면 만들지 않는다
         assert "cns_eps" not in _run('<em id="_per">7.21</em>')
+
+    def test_the_kr_financial_gate_uses_a_source_fingerprint(self):
+        """#196 후속 — 2026-08-23 기아: ROE 산식을 평균 분모로 고쳐 배포했는데
+        화면은 **12.3% 그대로**였다. `_KR_FIN_SCHEMA_VER` 를 손으로 안 올려
+        아카이브에 구워진 값이 그대로 서빙된 것이다. 이 레포에서 같은 실패가
+        **다섯 번째**다(#18·#21b·#95·#124). 규율 대신 구조로 옮긴다(#119)."""
+        import ast
+        import bot.stock_snapshot as ss
+        sig = ss.kr_fin_signature()
+        assert sig and len(sig) >= 8, sig
+        assert ss._KR_FIN_SCHEMA_VER >= 10
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_e_kr_financials")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "kr_fin_signature" in seg, "지문 대조가 없다"
+        assert "financials_sig" in seg, "저장된 지문을 안 읽는다"
+        # 수집기가 지문을 실제로 싣는지 — 안 실으면 대조가 영원히 불일치다
+        ssrc = open("bot/stock_snapshot.py").read()
+        assert 'out["kr"]["financials_sig"]' in ssrc
+
+    def test_the_fingerprint_moves_when_the_ratio_code_changes(self):
+        """지문이 **소스에 반응해야** 한다 — 상수를 문자열로 박아 두면
+        고쳐도 안 바뀌어 가드가 눈이 먼다(#91b 재는 대상이 맞나)."""
+        import hashlib
+        from pathlib import Path
+        import bot.stock_snapshot as ss
+        base = Path(ss.__file__).parent
+        h = hashlib.sha1()
+        for mod in ("stock_snapshot.py", "dart_client.py"):
+            h.update((base / mod).read_bytes())
+        assert ss.kr_fin_signature() == h.hexdigest()[:12]
+        # dart_client 가 지문에 실제로 들어간다(ROE 산식이 그 안에 있다)
+        h2 = hashlib.sha1()
+        h2.update((base / "stock_snapshot.py").read_bytes())
+        assert ss.kr_fin_signature() != h2.hexdigest()[:12]
