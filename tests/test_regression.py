@@ -4833,8 +4833,14 @@ class TestLiveQuoteOverlay:
         exp = {
             "price": d._fmt_num(100.0, decimals=pdec, prefix=csym),
             "mcap": d._fmt_mcap(2_500_000_000, csym, "USD"),
-            "trailingPE": "%.2fx" % 30.43, "forwardPE": "%.2fx" % 25.1,
-            "priceToBook": "%.2fx" % 5.2,
+            # ⚠️ 2026-08-24: 배수는 **화면의 분모에서 다시 만든다**(#234) —
+            # 소스 30.43x 는 100.0 ÷ 3.29 = 30.40x 와 0.1% 어긋나 있었다.
+            # 라이브 오버레이도 `현재가 ÷ 화면의 EPS` 로 만들므로(#203),
+            # 서버가 소스 값을 그대로 그리면 **로드 직후 숫자가 튄다** —
+            # 이 테스트가 막으려던 바로 그 drift 다. 기대값을 재계산으로.
+            "trailingPE": "%.2fx" % (100.0 / 3.29),
+            "forwardPE": "%.2fx" % 25.1,
+            "priceToBook": "%.2fx" % (100.0 / 19.2),
             "priceToSalesTrailing12Months": "%.2fx" % 8.4,
             "enterpriseToEbitda": "%.2fx" % 18.9, "beta": "%.2f" % 1.07,
             "dividendYield": "%.2f%%" % (0.0123 * 100),
@@ -38579,3 +38585,139 @@ class TestRenderCacheDeployInvalidation20260824:
             bad = [s for s in lits if s not in docs and "밴드차트 탭" in s
                    and "분모가 달라" in s]
             assert not bad, (path, bad)
+
+
+class TestRestatedMultiplesAndEmptyPeriods20260824:
+    """사용자 2026-08-24:
+      ① "재무재표탭에 연간도 분기처럼 하나 더 가져와야지 제대로 그려질것 같지
+         않아?" — LS ELECTRIC 010120.KS 연간 차트의 가장 오래된 해가 매출·
+         영업이익·순이익 **전부 0** 으로 그려졌다(야후가 그 열을 안 채운다).
+      ② "슈프리마 PER 후행 이상한데" — 현재가 56,100 · EPS 7,292.96 인데
+         PER 3.59x(= 26,182 기준) · PBR 0.61x(= 26,275 기준)로 **화면이 자기
+         산수를 못 맞췄다**. 배수만 옛 스냅샷 값이 살아남은 것이다.
+    """
+
+    # ── ② 배수는 화면의 분모에서 다시 만든다 ──────────────────────
+    @staticmethod
+    def _stale():
+        return {"currency": "KRW", "current_price": 56100.0,
+                "market_cap": 3.913e11, "shares_outstanding": 6974311,
+                "trailingEps": 7292.96, "bookValue": 43073.43,
+                "trailingPE": 3.59, "priceToBook": 0.61}
+
+    def test_stale_multiples_are_restated_from_the_screen_denominator(self):
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d(self._stale())
+        assert abs(out["trailingPE"] - 56100.0 / 7292.96) < 1e-9, out["trailingPE"]
+        assert abs(out["priceToBook"] - 56100.0 / 43073.43) < 1e-9
+        # 갈아끼웠으면 **옛 값을 남긴다** — 계산해 놓고 버리면 왜 바뀌었는지
+        # 알 수 없다(#43·#123·#129·#131·#189 에 이은 여섯 번째)
+        assert out["_restated"] == {"trailingPE": 3.59, "priceToBook": 0.61}
+
+    def test_a_consistent_multiple_is_left_alone(self):
+        """⚠️ 늘 갈아끼우는 코드는 아무것도 안 재는 것과 같다 — 이미 맞는
+        종목은 **건드리지 않는지**도 확인한다(#25 '있다'만 묻지 말 것)."""
+        from bot.dashboard import _derive_missing_multiples as d
+        ok = {"currency": "USD", "current_price": 100.0, "trailingEps": 4.0,
+              "trailingPE": 25.0, "bookValue": 20.0, "priceToBook": 5.0,
+              "market_cap": 1e9, "shares_outstanding": 1e7}
+        out = d(ok)
+        assert out["trailingPE"] == 25.0 and out["priceToBook"] == 5.0
+        assert not out.get("_restated"), out.get("_restated")
+        assert "trailingPE" not in (out.get("_derived_multiples") or [])
+
+    def test_market_cap_fallback_still_runs_without_a_denominator(self):
+        """분모가 화면에 없으면 시총 기준 폴백이 살아 있어야 한다 — 재계산
+        분기가 그 경로를 삼키면 배수가 통째로 빈다(#140 한쪽 실패가 다른
+        쪽을 죽이면 안 된다)."""
+        from bot.dashboard import _derive_missing_multiples as d
+        si = {"currency": "USD", "current_price": 100.0, "market_cap": 1e9,
+              "shares_outstanding": 1e7,
+              "kr": {"financials": {"당기순이익": 5e7, "자본총계": 2e8}}}
+        out = d(si)
+        assert out.get("trailingPE") or out.get("priceToBook"), out
+
+    def test_the_screen_can_divide_its_own_cells(self):
+        """#33 — 사용자가 눈으로 나눠 봤을 때 맞아야 한다. 배선까지 태운다."""
+        import re
+        import bot.dashboard as d
+        p = d._render_stock_info_html({"ticker": "236200.KS",
+                                       "stock_info": self._stale()})
+        html = "".join(str(v) for v in p.values())
+        i = html.index("밸류에이션 멀티플")
+        seg = html[i:html.index("</table>", i)]
+        per = re.search(r"PER \(후행\)</td><td[^>]*>([\d.]+)x", seg)
+        pbr = re.search(r"PBR[^<]*</td><td[^>]*>([\d.]+)x", seg)
+        assert per and abs(float(per.group(1)) - 7.69) < 0.01, seg[:400]
+        assert pbr and abs(float(pbr.group(1)) - 1.30) < 0.01, seg[:400]
+        # 갈아끼운 사실을 화면이 말한다(#43)
+        assert "♻️" in html and "3.59" in html, "재계산 사유가 화면에 없다"
+
+    # ── ① 빈 기간은 0 짜리 막대가 아니다 ──────────────────────────
+    @staticmethod
+    def _fins_with_empty_oldest(n_years: int = 6):
+        ys = [f"{2020 + i}-12-31" for i in range(n_years)]
+        rows = []
+        for i, p in enumerate(ys):
+            if i == 0:                       # 야후가 안 채운 가장 오래된 열
+                rows.append({"period": p, "Tax Provision": 1.0})
+            else:
+                rows.append({"period": p, "Total Revenue": 1e12 * i,
+                             "Operating Income": 1e11 * i,
+                             "Net Income": 5e10 * i})
+        qs = [f"202{4 + i // 4}-{3 * (i % 4) + 3:02d}-30" for i in range(8)]
+        return {"income_statement": {"annual": rows,
+                                     "quarterly": [
+                                         {"period": p, "Total Revenue": 1e11,
+                                          "Operating Income": 1e10,
+                                          "Net Income": 5e9} for p in qs]},
+                "balance_sheet": {"annual": [], "quarterly": []},
+                "cash_flow": {"annual": [], "quarterly": []}}
+
+    def test_an_empty_period_is_dropped_not_drawn_as_zero(self):
+        """0 짜리 막대는 '값이 0' 이라는 **없는 사실**을 그린 것이다(#43·#181).
+        원천이 아무것도 안 준 열은 빼고, 한 해 더 받아 5개를 채운다."""
+        import re
+        import bot.dashboard as d
+        si = {"currency": "USD", "current_price": 100.0,
+              "financials": self._fins_with_empty_oldest()}
+        p = d._render_stock_info_html({"ticker": "TEST", "stock_info": si})
+        html = "".join(str(v) for v in p.values())
+        i = html.index("수익성 추이 — 연간")
+        seg = html[i:html.index("YoY 성장률", i)]
+        years = sorted(set(re.findall(r">(20\d\d)</text>", seg)))
+        assert years == ["2021", "2022", "2023", "2024", "2025"], years
+        assert "2020" not in years, "빈 열이 0 짜리 막대로 그려졌다"
+
+    def test_the_filter_fires_even_when_slicing_would_not(self):
+        """⚠️ 첫 픽스처는 눈이 멀었다 — 6개를 받으면 빈 **가장 오래된** 열은
+        `[-5:]` 슬라이스만으로도 잘려, 필터를 지우는 뮤테이션이 그대로
+        통과했다(실측, #91c). 원천이 **5개만** 주는 종목이 실제 증상이었다
+        (LS ELECTRIC 010120.KS 캡처) — 그때 필터가 없으면 0 짜리 막대가
+        그려진다. 그 경우로 강제한다."""
+        import re
+        import bot.dashboard as d
+        si = {"currency": "USD", "current_price": 100.0,
+              "financials": self._fins_with_empty_oldest(n_years=5)}
+        p = d._render_stock_info_html({"ticker": "TEST", "stock_info": si})
+        html = "".join(str(v) for v in p.values())
+        i = html.index("수익성 추이 — 연간")
+        seg = html[i:html.index("YoY 성장률", i)]
+        years = sorted(set(re.findall(r">(20\d\d)</text>", seg)))
+        assert "2020" not in years, ("빈 열이 그려졌다", years)
+        assert years == ["2021", "2022", "2023", "2024"], years
+
+    def test_snapshot_fetches_one_more_annual_than_it_draws(self):
+        """빈 열을 걷어내고도 5개가 남으려면 **6개를 받아야** 한다(#44a
+        경계값 요청 금지). 리터럴이 아니라 '차트보다 많다'로 고정(#67)."""
+        import ast
+        import bot.stock_snapshot as ss
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        n_annual = next(
+            kw.value.value for c in ast.walk(ast.parse(src))
+            if isinstance(c, ast.Call)
+            and getattr(c.func, "id", "") == "_df_to_rows"
+            for kw in c.keywords
+            if kw.arg == "max_periods" and isinstance(kw.value, ast.Constant)
+            and "annual" in ast.dump(c))
+        assert n_annual > ss._Y_TABLE, (n_annual, ss._Y_TABLE)

@@ -6020,16 +6020,43 @@ def _derive_missing_multiples(si: dict) -> dict:
     시총·주식수·DART 순이익·자본총계를 이미 들고 있다 — 나눗셈 하나로
     나오는 값을 빈칸으로 두는 건 데이터 부재가 아니라 배선 누락이다.
 
-    ⚠️ 원칙: (a) 소스값이 있으면 **절대 덮어쓰지 않는다** (b) 분모가
-    0·음수·None 이면 만들지 않는다(적자 기업의 PER 은 없는 게 맞다)
-    (c) 파생한 항목은 `_derived` 집합에 담아 화면이 출처를 밝힌다.
-    부작용 없이 새 dict 를 돌려준다."""
+    ⚠️ 원칙: (a) **배수는 화면의 분자·분모에서 다시 만든다** — 소스값이
+    있어도 그렇다(아래 `_restate`) (b) 분모가 0·음수·None 이면 만들지
+    않는다(적자 기업의 PER 은 없는 게 맞다) (c) 파생·재계산한 항목은
+    `_derived` 집합에 담아 화면이 출처를 밝힌다.
+    부작용 없이 새 dict 를 돌려준다.
+
+    ⚠️ (a) 는 2026-08-24 에 뒤집혔다. 옛 원칙은 "소스값이 있으면 절대
+    덮어쓰지 않는다" 였는데, 그 탓에 슈프리마 236200.KS 가 현재가 56,100 ·
+    EPS 7,292.96 · BPS 43,073.43 을 새로 만들어 놓고 **배수만 옛 값**
+    (PER 3.59 · PBR 0.61 = 주가 26,200 시절)을 실었다 — 화면이 자기 산수를
+    못 맞춘 것이다(#33 · #35 콜드 로드가 옛 파생값을 '현재'로 내보낸다).
+    화면에 분모가 있는 배수는 정의상 `분자 ÷ 분모` 여야 한다."""
     out = dict(si or {})
     derived: set = set()
 
     def _num(v):
         return (float(v) if isinstance(v, (int, float))
                 and not isinstance(v, bool) else None)
+
+    def _restate(o: dict, key: str, price, denom, marks: set) -> bool:
+        """`o[key]` 를 **화면의 분자 ÷ 분모**로 다시 만든다 → 재료가 있었으면
+        True(호출부는 그때만 시총 기준 폴백을 건너뛴다).
+
+        갈아끼웠으면 `_restated` 에 옛 값을 남긴다 — 계산해 놓고 버리면
+        사용자는 왜 바뀌었는지 알 수 없다(#43·#123)."""
+        p, d = _num(price), _num(denom)
+        if not p or not d or d <= 0:
+            return False
+        want = p / d
+        cur = _num(o.get(key))
+        o[key] = want
+        if cur is None:
+            marks.add(key)                       # 소스가 안 준 값
+        elif abs(cur - want) > abs(want) * 0.01:
+            marks.add(key)                       # 소스 값을 갈아끼웠다
+            o.setdefault("_restated", {})[key] = cur
+        return True
 
     mcap = _num(out.get("market_cap"))
     shares = _num(out.get("shares_outstanding"))
@@ -6157,25 +6184,27 @@ def _derive_missing_multiples(si: dict) -> dict:
     # PBR 은 **화면의 BPS 에서** 만든다 — `시총 ÷ 자본` 으로 만들면 BPS
     # 분모가 유통주식수일 때 `현재가 ÷ BPS` 와 어긋나 눈으로 나눠 봤을 때
     # 안 맞는다(#33). BPS 를 못 만들었을 때만 시총 기준으로 떨어진다.
-    if out.get("priceToBook") is None:
-        _px_pb, _bv_pb = _num(out.get("current_price")), _num(out.get("bookValue"))
-        if _px_pb and _bv_pb and _bv_pb > 0:
-            out["priceToBook"] = _px_pb / _bv_pb
-            derived.add("priceToBook")
-        elif mcap and equity and equity > 0:
-            out["priceToBook"] = mcap / equity
-            derived.add("priceToBook")
+    # ⚠️ **있으면 건너뛰지 않는다.** 옛 게이트는 `is None` 이라, 스냅샷에
+    # 옛 배수가 실려 있으면 BPS·현재가를 새로 만들어 놓고 배수만 옛 값이
+    # 남았다 — 슈프리마 236200.KS 실측(2026-08-24): 현재가 56,100 · BPS
+    # 43,073.43 인데 PBR 0.61(= 26,275 기준) · PER 3.59(= 26,182 기준)로
+    # **화면이 자기 산수를 못 맞췄다**(#33 · #35 콜드 로드가 옛 파생값을
+    # '현재'로 내보낸다). 화면에 분모가 있으면 **그 분모로 다시 만든다**.
+    if _restate(out, "priceToBook", out.get("current_price"),
+                out.get("bookValue"), derived):
+        pass
+    elif out.get("priceToBook") is None and mcap and equity and equity > 0:
+        out["priceToBook"] = mcap / equity
+        derived.add("priceToBook")
     # PER 은 **화면의 EPS 에서** 만든다 — `시총 ÷ 순이익` 으로 만들면 EPS
     # 분모가 수정평균일 때 `현재가 ÷ EPS` 와 어긋나 눈으로 나눠 봤을 때
     # 안 맞는다(#33, PBR 과 같은 이유). EPS 를 못 만들었을 때만 시총 기준.
-    if out.get("trailingPE") is None:
-        _px_pe, _eps_pe = _num(out.get("current_price")), _num(out.get("trailingEps"))
-        if _px_pe and _eps_pe and _eps_pe > 0:
-            out["trailingPE"] = _px_pe / _eps_pe
-            derived.add("trailingPE")
-        elif mcap and net and net > 0:
-            out["trailingPE"] = mcap / net
-            derived.add("trailingPE")
+    if _restate(out, "trailingPE", out.get("current_price"),
+                out.get("trailingEps"), derived):
+        pass
+    elif out.get("trailingPE") is None and mcap and net and net > 0:
+        out["trailingPE"] = mcap / net
+        derived.add("trailingPE")
     if (out.get("priceToSalesTrailing12Months") is None and mcap
             and rev and rev > 0):
         out["priceToSalesTrailing12Months"] = mcap / rev
@@ -8493,6 +8522,21 @@ def _render_stock_info_html(rec: dict) -> str:
         '<div class="si-note" style="margin-top:8px">⚙️ <b>자체계산</b>'
         '(소스 미제공)<br>' + _derived_desc(si) + '</div>'
         if si.get("_derived_multiples") else "")
+    # ⚠️ **갈아끼운 값은 갈아끼웠다고 말한다.** 계산해 놓고 버리면 사용자는
+    # 왜 숫자가 바뀌었는지 알 수 없다(#43·#123·#129·#131·#189 — 같은 실수를
+    # 여섯 번 했다). '자체계산(소스 미제공)' 만 적으면 소스가 준 값을 덮은
+    # 경우엔 그 문구가 거짓말이다(#55).
+    _restated = si.get("_restated") or {}
+    if _restated:
+        _rs_names = {"trailingPE": "PER (후행)", "priceToBook": "PBR",
+                     "priceToSalesTrailing12Months": "PSR"}
+        _derived_block += (
+            '<div class="si-note" style="margin-top:6px">♻️ <b>재계산</b> — '
+            + esc(" · ".join(
+                f"{_rs_names.get(k, k)}: 소스 {v:,.2f}x"
+                for k, v in sorted(_restated.items())))
+            + ' 은 화면의 분모와 맞지 않아 <b>현재가 ÷ 화면의 분모</b>로 '
+              '다시 만들었습니다</div>')
     # 값이 맞아도 구성이 특이하면 말한다 — 안 하면 사용자가 매번 물어야 한다.
     _ttm_note_html = (f'<div class="si-note" style="margin-top:6px">'
                       f'{esc(si["_ttm_note"])}</div>'
@@ -8720,20 +8764,44 @@ def _render_stock_info_html(rec: dict) -> str:
             from bot.fcf import fcf_from_row as _fcf_row
             _cf = {str(r.get("period", "")): r for r in (cf_rows or [])
                    if isinstance(r, dict)}
+            def _v(row: dict, key: str):
+                """없으면 **None**. `or 0` 로 뭉개면 안 된다 — 렌더러가
+                0 짜리 막대를 그려 '값이 0'이라는 없는 사실이 된다(#43·#181).
+                None 이면 '—' 로 그리는 경로가 이미 있다(FCF 가 그렇게 동작)."""
+                v = row.get(key)
+                if isinstance(v, bool):
+                    return None
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    return None
+                return None if f != f else f          # NaN 배제
+
+            # ⚠️ 원천이 **아무것도 안 준 기간**은 열에서 뺀다. yfinance 연간
+            # 가장 오래된 열이 그런 경우가 흔하고(사용자 2026-08-24 LS
+            # ELECTRIC 010120.KS: 다섯 번째 해가 매출·영익·순익 전부 0 으로
+            # 그려졌다), 그러면 실제로 보이는 해는 4개뿐이 된다. 호출부가
+            # 한 해 더 받으므로(`max_periods`) 빈 열을 걷어내면 요청한 5개가
+            # 채워진다 — 없는 열을 만들어 내는 게 아니라 **버릴 열을 버린다**.
+            _keys3 = ("Total Revenue", "Operating Income", "Net Income")
+            _usable = [r for r in _sorted
+                       if any(_v(r, k) is not None for k in _keys3)]
             chart_items = []
-            for r in _sorted[-n:]:
+            for r in _usable[-n:]:
                 _raw = str(r.get("period", "?"))
                 chart_items.append({
                     "period": label_fn(_raw),
                     "sort": _raw,
-                    "revenue": r.get("Total Revenue", 0) or 0,
-                    "op_income": r.get("Operating Income", 0) or 0,
-                    "net_income": r.get("Net Income", 0) or 0,
+                    "revenue": _v(r, "Total Revenue"),
+                    "op_income": _v(r, "Operating Income"),
+                    "net_income": _v(r, "Net Income"),
                     # 기간으로 조인 — 위치로 매기면 한쪽이 한 분기 덜 줄 때
                     # 전 구간이 밀린다(실수 #46).
                     "fcf": _fcf_row(_cf.get(_raw)),
                 })
-            if not any(c["revenue"] for c in chart_items):
+            if not chart_items or not any(
+                    c[k] is not None for c in chart_items
+                    for k in ("revenue", "op_income", "net_income")):
                 return ""
             # 재료가 없으면 **막대·열을 만들지 않는다** — 전 칸 0 인 막대는
             # '현금흐름 0' 이라는 없는 사실을 그린 것이다.
