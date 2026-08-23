@@ -5761,9 +5761,10 @@ def _derived_desc(si: dict) -> str:
     # 나눈다. 값이 틀린 게 아니라 **분모 규약이 다른 것**이다(#34).
     return (", ".join(parts)
             + f" — 시총·상장주식수와 DART {scope} 기준으로 산출"
-            + " · 분모는 <b>기말 상장주식수</b>입니다(FnGuide 는 EPS 에"
-              " 수정평균, BPS 에 자사주 차감 주식수를 써 소수점이 다를 수"
-              " 있습니다)")
+            + " · 분모는 <b>기말 상장주식수</b>입니다 — DART 보고 EPS 는"
+              " 가중평균 <b>유통</b>주식수(자사주 제외, K-IFRS 1033),"
+              " FnGuide 는 EPS 분모에 자사주를 <b>포함</b>(수정평균 발행주식수)"
+              "하고 BPS 분모에서만 차감해 소수점이 다릅니다")
 
 
 def kr_forward_from_naver(price, naver_val: dict | None) -> tuple:

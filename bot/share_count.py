@@ -71,16 +71,22 @@ def resolve(price, mcap, src_shares, src_label: str = "소스",
     out = {"shares": src, "source": src_label if src else "",
            "market_cap": _num(mcap), "note": ""}
     if reg and reg > 0:
-        if not src or abs(src / reg - 1.0) > tol:
-            out["shares"], out["source"] = reg, reg_label
-            if src and px:
-                out["note"] = (f"{src_label} {src:,.0f}주는 등록 주식수와 "
-                               f"{(src / reg - 1) * 100:+.1f}% 달라 교체")
-            elif not src:
-                out["note"] = f"{src_label} 가 주식수를 안 줘 등록 주식수 사용"
-            if px:
-                out["market_cap"] = px * reg
-                out["source"] += " · 시총 재계산"
+        # ⚠️ 등록 주식수가 있으면 **오차와 무관하게** 그게 기준이다.
+        # 옛 판은 `> tol` 일 때만 교체해서, 차이가 작으면(슈프리마 0.11% —
+        # yfinance 6,966,583 vs KRX 6,974,311) yfinance 값이 남고 시총도
+        # 3,908억으로 네이버 3,913억과 어긋났다. 더 나쁜 건 **조회할 때마다
+        # 기준이 바뀌는 것** — 오차가 문턱을 넘나들면 화면 값이 흔들린다.
+        # 거래소 등록 주식수는 정의상 사실이라 문턱을 둘 이유가 없다.
+        out["shares"], out["source"] = reg, reg_label
+        if px:
+            out["market_cap"] = px * reg
+            out["source"] += " · 시총 재계산"
+        if not src:
+            out["note"] = f"{src_label} 가 주식수를 안 줘 등록 주식수 사용"
+        elif abs(src / reg - 1.0) > tol:
+            # 사소한 차이까지 떠들면 잡음이다 — 큰 차이만 말한다.
+            out["note"] = (f"{src_label} {src:,.0f}주는 등록 주식수와 "
+                           f"{(src / reg - 1) * 100:+.1f}% 달라 교체")
         return out
     if not src:
         return out
