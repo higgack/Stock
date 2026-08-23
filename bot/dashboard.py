@@ -6249,7 +6249,8 @@ def _render_stock_info_html(rec: dict) -> str:
     from bot.share_count import note as _share_note
     _sh_note = _share_note(price, si.get("market_cap"),
                            si.get("shares_outstanding"),
-                           si.get("shares_source") or "")
+                           si.get("shares_source") or "",
+                           mcap_label=mcap_str)
     # ⚠️ `7.0M` 만 보이면 시가총액 ÷ 현재가 검산을 눈으로 할 수 없다 —
     # 정확한 주식수를 같이 적는다(2026-08-23 슈프리마 6,974,311).
     # 사용자 2026-08-23 "주식수만 보이게 해줘. 다른 설명은 빼고" — 출처
@@ -8280,7 +8281,10 @@ def _render_stock_info_html(rec: dict) -> str:
             if a >= 1e8:
                 return f"NT${v / 1e8:,.0f}億"
             return f"{v:,.0f}"
-        _cols = tw_fin[:4]
+        # ⚠️ 재무 표는 **최신이 오른쪽**이다(전 시장 규약 — KR 분기추이·
+        # 미국 표와 같다). 원천(FinMind)이 최신 우선으로 주므로 뒤집는다
+        # (사용자 2026-08-24 "최신꺼가 뒤로 가게 해줘").
+        _cols = list(reversed(tw_fin[:4]))
         _hdr = "<th>항목</th>" + "".join(
             f"<th class='num'>{esc(str(c.get('date', '')))}</th>" for c in _cols)
         _rowdef = [("매출", "revenue"), ("매출총이익", "gross_profit"),
