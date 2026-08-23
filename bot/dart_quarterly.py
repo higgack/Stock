@@ -53,11 +53,32 @@ _STOCK_KEYS = {"유동자산", "비유동자산", "자산총계", "유동부채"
 # 그래서 (a) 4분기 차분에서 제외해 원본 누적을 보존하고
 #        (b) 시계열이 다 모인 뒤 `_undo_cumulative_cf` 가 한 번에 되돌린다.
 _CUM_KEYS = {"영업활동현금흐름", "유형자산취득", "무형자산취득"}
+# 그중 **정의상 유출**인 항목 — 값은 '크기'이지 부호가 아니다.
+# ⚠️ 왜 따로 두는가(2026-08-24 S-Oil 010950.KS 25.4Q FCF -47,120억 조사):
+# DART 는 같은 계정을 보고서마다 음수(현금유출)로도 양수(취득액)로도 준다
+# — 우리 코드도 그걸 알고 `_attach_fcf` 에서 `abs()` 를 쓴다(#88 "부호 규약은
+# 원천마다 갈린다 — 크기만 써라"). 그런데 그 `abs()` 는 **차분이 끝난 뒤**에
+# 걸려서, 연간(+X)과 9개월 누적(−Y)의 부호가 갈리면 `X − (−Y) = X + Y` 로
+# **뺄셈이 덧셈이 된다**. 두 배 가까이 부푼 CAPEX 는 '큰 설비투자'처럼 보여
+# 눈으로는 안 잡힌다(#34 의 부호판). 크기를 **차분 전에** 맞춘다.
+# ⚠️ 영업활동현금흐름은 여기 넣지 않는다 — 음수가 정당한 값이다(FnGuide
+# 실측 S-Oil 2026/03 -5,239억 · 2026/06 -431억). 유출 항목만 크기로 본다.
+_OUTFLOW_CUM_KEYS = {"유형자산취득", "무형자산취득"}
 # **파생값** — 재료에서 만들어지는 값이라 보고서 간 산술의 대상이 아니다.
 # ⚠️ 4분기 차분에 이게 섞이면 '연간 FCF − 9개월 FCF' 라는 그럴듯한 숫자가
 # 남는데, 재료(_CUM_KEYS)는 아직 누적이라 **재료와 결과가 서로 다른 기준**이
 # 된다(#33 눈으로 검산하면 안 맞는 상태). 파생은 언제나 마지막에 한 번.
 _DERIVED_KEYS = {"FCF"}
+
+
+def _cum_magnitude(key: str, v):
+    """누적 CF 값 — 유출 항목은 **크기**로. 부호 규약 차이를 여기서 흡수한다."""
+    if v is None or key not in _OUTFLOW_CUM_KEYS:
+        return v
+    try:
+        return abs(float(v))
+    except (TypeError, ValueError):
+        return None
 
 
 def quarter_label(year: int, reprt_code: str) -> str:
@@ -423,7 +444,12 @@ def _undo_cumulative_cf(entries: list[dict] | None) -> int:
         y, q = e.get("year"), e.get("quarter")
         if not y or not q:
             continue
-        cum = {k: fin.get(k) for k in _CUM_KEYS}
+        cum = {k: _cum_magnitude(k, fin.get(k)) for k in _CUM_KEYS}
+        # 크기로 맞춘 값을 되쓴다 — 1분기도 포함(화면·프로브가 같은 규약을
+        # 보게, #38). 부호가 이미 양수면 no-op 이다.
+        for k in _OUTFLOW_CUM_KEYS:
+            if cum.get(k) is not None:
+                fin[k] = cum[k]
         if q > 1:
             base = prev_v.get(y) if prev_q.get(y) == q - 1 else None
             for k in _CUM_KEYS:
