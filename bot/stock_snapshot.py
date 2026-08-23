@@ -520,11 +520,17 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
 
 
 def _apply_share_count(ticker: str, snap: dict) -> None:
-    """발행주식수를 **화면의 항등식**으로 검산해 고른다 — 전 시장 공통.
+    """발행주식수를 **등록 주식수**와 대조해 고른다 — 전 시장 공통 단계.
 
-    `시가총액 ÷ 현재가 = 발행주식수` 가 맞아야 한다(#33). 어느 원천이
-    옳은지 추측하지 않고 **항등식을 얼마나 만족하는가**로 고른다(#162).
-    주식수는 EPS·BPS 의 분모라 한 번 틀리면 주당지표가 통째로 밀린다.
+    ⚠️ 2026-08-23 VM 실측이 첫 판을 뒤집었다: yfinance 가 서희건설 시총
+    3,967억 · 주식수 185,368,615 로 **자기들끼리는 정확히 맞았다**(항등식
+    통과). 둘 다 같은 낡은 주식수 위에 있었을 뿐이고 진짜 시총은 4,442억
+    이다 — `시가총액 ÷ 현재가` 만 보는 가드는 이 상태를 그냥 통과시킨다.
+    그래서 거래소가 아는 사실(상장주식수)을 **대조군**으로 둔다(#143).
+
+    주식수는 EPS·BPS 의 분모라 한 번 틀리면 주당지표가 통째로 밀린다 —
+    실측: BPS 6,680.92(낡은 수) → 5,965.80(등록 수), FnGuide 5,856 과
+    1.9% 차이(남는 건 비지배지분).
 
     ⚠️ 여기 있어야 하는 이유: `_enrich_*` 는 **snap 에서 아무것도 읽지
     않는다**는 전제로 보조 6종과 겹쳐 돈다(#128). 이 판정은 시총·현재가를
@@ -533,19 +539,20 @@ def _apply_share_count(ticker: str, snap: dict) -> None:
     원천이 없는 시장은 값을 그대로 두고 화면이 어긋남을 밝힌다(#43).
     """
     try:
-        from bot.share_count import pick as _pick_shares
+        from bot.share_count import resolve as _resolve_shares
         q = (snap.get("kr") or {}).get("krx_quote") or {}
         reg_label = "KRX 상장주식수" + (f"({q.get('date')})" if q.get("date") else "")
-        v, lab, why = _pick_shares(
-            snap.get("current_price"), snap.get("market_cap"),
-            [(snap.get("shares_outstanding"), "yfinance"),
-             (q.get("shares"), reg_label)])
-        if v:
-            snap["shares_outstanding"] = v
-            snap["shares_source"] = lab
-            if why:
-                snap["shares_note"] = why
-                log.info("stock_snapshot %s 주식수 교체: %s", ticker, why)
+        r = _resolve_shares(snap.get("current_price"), snap.get("market_cap"),
+                            snap.get("shares_outstanding"), "yfinance",
+                            q.get("shares"), reg_label)
+        if r["shares"]:
+            snap["shares_outstanding"] = r["shares"]
+            snap["shares_source"] = r["source"]
+        if r["market_cap"]:
+            snap["market_cap"] = r["market_cap"]
+        if r["note"]:
+            snap["shares_note"] = r["note"]
+            log.info("stock_snapshot %s 주식수: %s", ticker, r["note"])
     except Exception as exc:                                   # noqa: BLE001
         log.warning("stock_snapshot %s: 주식수 검산 실패: %s", ticker, exc)
 

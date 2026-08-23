@@ -365,9 +365,21 @@ def _fetch_kr_bulk() -> Optional[dict]:
     for days_back in range(0, 10):
         target = today - timedelta(days=days_back)
         date_str = target.strftime("%Y%m%d")
+        # ⚠️ pykrx 기본 market 은 **KOSPI** 다 — 인자를 안 주면 코스닥이
+        # 통째로 빠진다(2026-08-23 실측: 벌크 914종목, 서희건설 035890.KQ 가
+        # '벌크에 없음'). 스크리너 유니버스가 조용히 반쪽이었다(#66 비용
+        # 최적화가 아니라 기본값이 커버리지를 깎은 경우). 옛 pykrx 는 인자
+        # 이름이 다를 수 있으므로 실패하면 옛 호출로 되돌아간다.
         try:
-            df_fund = stock.get_market_fundamental_by_ticker(date_str)
-            df_cap = stock.get_market_cap_by_ticker(date_str)
+            try:
+                df_fund = stock.get_market_fundamental_by_ticker(date_str,
+                                                                 market="ALL")
+                df_cap = stock.get_market_cap_by_ticker(date_str, market="ALL")
+            except TypeError as exc:
+                log.warning("stock_screener: market=ALL 미지원(%s) — KOSPI 만 "
+                            "조회한다(코스닥 누락)", exc)
+                df_fund = stock.get_market_fundamental_by_ticker(date_str)
+                df_cap = stock.get_market_cap_by_ticker(date_str)
         except Exception as exc:
             log.debug("stock_screener bulk fetch %s failed: %s", date_str, exc)
             continue

@@ -46,29 +46,50 @@ def reconcile(price, mcap, shares, tol: float = TOL) -> dict:
     return {"ok": abs(ratio - 1.0) <= tol, "implied": imp, "ratio": ratio}
 
 
-def pick(price, mcap, candidates, tol: float = TOL):
-    """후보 주식수 중 **항등식을 가장 잘 만족하는** 것을 고른다.
+def resolve(price, mcap, src_shares, src_label: str = "소스",
+            reg_shares=None, reg_label: str = "등록 주식수",
+            tol: float = TOL) -> dict:
+    """등록 주식수가 있으면 **그게 기준**이다 — 항등식만 보면 눈이 먼다.
 
-    `candidates` = [(값, 출처라벨), …] — 앞이 현행 값이다. 돌려주는 값은
-    `(값, 출처라벨, 사유)`. 판정할 재료가 없거나 현행이 이미 맞으면
-    **현행을 그대로** 둔다(소스값을 함부로 덮지 않는다).
+    ⚠️ 2026-08-23 VM 실측(서희건설 035890.KQ): yfinance 가 시총 3,967억 ·
+    주식수 185,368,615 로 **자기들끼리는 정확히 맞았다**(시총÷현재가 =
+    185,368,607, 오차 0.00%). 둘 다 **같은 낡은 주식수 위**에 있었을 뿐이고
+    진짜 시총은 2,140 × 207,588,536 = 4,442억 이다. 항등식만 보는 가드는 이
+    상태를 그냥 통과시킨다(#37 임계값이 증상을 덮는다 · #143 대조군이 없으면
+    '없음'과 '못 받음'을 못 가른다).
+
+    그래서 축을 둘로 둔다 — ① 등록 주식수(거래소가 아는 사실)와 대조하고,
+    ② 등록 주식수가 없는 시장에서만 항등식으로 어긋남을 말한다.
+
+    반환 `{"shares", "source", "market_cap", "note"}`.
+
+    ⚠️ 시총 재계산은 **등록 주식수가 있을 때만** 한다. 복수 클래스 상장은
+    한 클래스 주식수 × 주가 ≠ 전체 시총이라(`market.py` Class A 사례) 일반
+    규칙으로 쓰면 안 된다.
     """
-    cands = [(v, lab) for v, lab in candidates if _num(v) and _num(v) > 0]
-    if not cands:
-        return None, None, "주식수 후보 없음"
-    cur_v, cur_lab = cands[0]
-    imp = implied_shares(price, mcap)
-    if imp is None:
-        return cur_v, cur_lab, "현재가·시가총액이 없어 검산 불가"
-    scored = sorted(cands, key=lambda c: abs(_num(c[0]) / imp - 1.0))
-    best_v, best_lab = scored[0]
-    cur_err = abs(_num(cur_v) / imp - 1.0)
-    best_err = abs(_num(best_v) / imp - 1.0)
-    if cur_err <= tol or best_lab == cur_lab:
-        return cur_v, cur_lab, ""
-    return best_v, best_lab, (
-        f"{cur_lab} {_num(cur_v):,.0f}주는 시가총액÷현재가({imp:,.0f}주)와 "
-        f"{cur_err * 100:.1f}% 어긋나 {best_lab} 값으로 교체")
+    src, reg, px = _num(src_shares), _num(reg_shares), _num(price)
+    out = {"shares": src, "source": src_label if src else "",
+           "market_cap": _num(mcap), "note": ""}
+    if reg and reg > 0:
+        if not src or abs(src / reg - 1.0) > tol:
+            out["shares"], out["source"] = reg, reg_label
+            if src and px:
+                out["note"] = (f"{src_label} {src:,.0f}주는 등록 주식수와 "
+                               f"{(src / reg - 1) * 100:+.1f}% 달라 교체")
+            elif not src:
+                out["note"] = f"{src_label} 가 주식수를 안 줘 등록 주식수 사용"
+            if px:
+                out["market_cap"] = px * reg
+                out["source"] += " · 시총 재계산"
+        return out
+    if not src:
+        return out
+    r = reconcile(px, mcap, src, tol)
+    if r["ok"] is False:
+        out["note"] = (f"{src_label} {src:,.0f}주가 시가총액÷현재가"
+                       f"({r['implied']:,.0f}주)와 {(r['ratio'] - 1) * 100:+.1f}% "
+                       f"어긋납니다 — 등록 주식수 원천이 없는 시장입니다")
+    return out
 
 
 def note(price, mcap, shares, source: str = "", tol: float = TOL) -> str:

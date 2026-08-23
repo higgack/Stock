@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
 def _n(v):
@@ -99,12 +99,23 @@ def probe(ticker: str) -> None:
           f"· 발행주식수 {_f(snap.get('shares_outstanding'), 0)}")
     print(f"    주식수 출처: {snap.get('shares_source') or '(미기록)'}"
           + (f" · {snap['shares_note']}" if snap.get("shares_note") else ""))
-    print(f"    EPS(후행) {_f(snap.get('trailingEps'))} · "
-          f"BPS {_f(snap.get('bookValue'))} · "
-          f"PER {_f(snap.get('trailingPE'))} · PBR {_f(snap.get('priceToBook'))}")
     print(_identity(px, mc, snap.get("shares_outstanding"), "우리 화면"))
-    print(_per_check(px, snap.get("trailingEps"), snap.get("trailingPE"), "우리 화면"))
-    print(f"    파생 항목: {snap.get('_derived_multiples') or '(없음 — 소스값 그대로)'}")
+    # ⚠️ v1 은 수집기만 태워서 EPS·BPS 가 전부 '—' 로 나왔다 — yfinance 가
+    # 국내 종목 fundamentals 를 404 로 주고, 우리 화면 값은 **렌더 단계**의
+    # `_derive_missing_multiples` 가 DART 재무로 만든다. 프로브가 화면과
+    # 다른 경로를 타면 통계가 통째로 거짓말한다(#35) — 그 함수를 태운다.
+    try:
+        from bot.dashboard import _derive_missing_multiples
+        si = _derive_missing_multiples(snap)
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"    ⚠️ 화면 파생 실패: {type(exc).__name__}: {exc}")
+        si = snap
+    print(f"    [화면이 그리는 값] EPS(후행) {_f(si.get('trailingEps'))} · "
+          f"BPS {_f(si.get('bookValue'))} · "
+          f"PER {_f(si.get('trailingPE'))} · PBR {_f(si.get('priceToBook'))}")
+    print(_per_check(px, si.get("trailingEps"), si.get("trailingPE"), "우리 화면"))
+    print(f"    파생 항목: {si.get('_derived_multiples') or '(없음 — 소스값 그대로)'}"
+          f" · 기준 {si.get('_derived_basis') or '—'}")
 
     # ② yfinance 원본 — 우리가 손대기 전 값
     print("② yfinance .info 원본")
@@ -152,6 +163,11 @@ def probe(ticker: str) -> None:
                              "KRX 투자지표"))
         else:
             print(f"    이 종목이 벌크에 없습니다(벌크 {len(bulk)}종목).")
+        # pykrx 기본 market 은 KOSPI 다 — 코스닥이 통째로 빠지면 스크리너
+        # 유니버스가 반쪽이 된다(2026-08-23 실측 914종목).
+        if bulk and len(bulk) < 1500:
+            print(f"    ⚠️ 벌크가 {len(bulk)}종목뿐 — 코스닥이 빠졌을 수 있다"
+                  f"(KOSPI 만 ≈900).")
     except Exception as exc:                                    # noqa: BLE001
         print(f"    실패: {type(exc).__name__}: {exc}")
 
@@ -194,20 +210,52 @@ def probe(ticker: str) -> None:
     fin = kr.get("financials") or {}
     if qs:
         tail = qs[-4:]
-        lab = " → ".join(f"{q.get('year')}.{q.get('quarter')}Q" for q in tail)
+        sh = _n(snap.get("shares_outstanding"))
         net = [_n(q.get("당기순이익")) for q in tail]
-        print(f"    최근 4분기 {lab}")
-        print("    당기순이익 " + " / ".join(_f(v, 0) for v in net))
-        if all(v is not None for v in net):
-            s = sum(net)
-            sh = _n(snap.get("shares_outstanding"))
-            print(f"    TTM 순이익 {s:,.0f}"
-                  + (f" ÷ 주식수 = EPS {s / sh:,.2f}" if sh else ""))
+        vals = [v for v in net if v is not None]
+        # ⚠️ 한 분기가 나머지를 압도하면 TTM 이 그 한 칸에 좌우된다 —
+        # 합만 찍으면 안 보인다(2026-08-23 서희건설 2026.2Q = 나머지 3분기
+        # 합의 1.6배). 분기별로 찍고 비중을 같이 적는다(#45·#55).
+        for q, v in zip(tail, net):
+            share = (f" · TTM 의 {v / sum(vals) * 100:.0f}%"
+                     if v is not None and vals and sum(vals) else "")
+            flag = ""
+            if v is not None and len(vals) > 1:
+                others = [x for x in vals if x is not v]
+                if others and v > 3 * (sum(others) / len(others)):
+                    flag = "  ⚠️ 형제 분기 평균의 3배 초과"
+            print(f"      {q.get('year')}.{q.get('quarter')}Q 당기순이익 "
+                  f"{_f(v, 0)}{share}{flag}")
+            for k in ("_anomaly_revenue_negative", "_anomaly_account_mismatch",
+                      "_mismatched_accounts", "missing_quarters"):
+                if q.get(k):
+                    print(f"          플래그 {k}: {q.get(k)}")
+        if len(vals) == 4:
+            tot = sum(vals)
+            print(f"    TTM 순이익 {tot:,.0f}"
+                  + (f" ÷ 주식수 = EPS {tot / sh:,.2f}" if sh else ""))
+        else:
+            print(f"    ⚠️ 4분기가 안 채워졌다({len(vals)}/4) — TTM 을 만들지 않는다")
         eq = next((_n(q.get("자본총계")) for q in reversed(qs)
                    if _n(q.get("자본총계"))), None)
-        sh = _n(snap.get("shares_outstanding"))
         print(f"    자본총계(최근분기) {_f(eq, 0)}"
               + (f" ÷ 주식수 = BPS {eq / sh:,.2f}" if eq and sh else ""))
+        # 네이버 EPS 가 있으면 **원천이 본 분기 이익**을 되짚어 어느 분기가
+        # 갈리는지 지목한다 — 합끼리 비교하면 '어딘가 다르다'까지만 말한다.
+        try:
+            from bot.naver_finance_client import get_naver_valuation
+            nv2 = get_naver_valuation(ticker) or {}
+            n_eps, n_sh = _n(nv2.get("eps")), _n(nv2.get("shares"))
+            if n_eps and n_sh and len(vals) == 4:
+                fg = n_eps * n_sh
+                print(f"    FnGuide TTM 순이익 ≈ {fg:,.0f} (EPS {n_eps:,.0f} × "
+                      f"{n_sh:,.0f}주) · 우리와 차 {sum(vals) - fg:,.0f}")
+                if len(vals) == 4:
+                    print(f"    → 앞 3분기 합 {sum(vals[:3]):,.0f} 를 그대로 두면 "
+                          f"FnGuide 가 본 최신 분기 ≈ {fg - sum(vals[:3]):,.0f} "
+                          f"(우리 {vals[3]:,.0f})")
+        except Exception as exc:                                # noqa: BLE001
+            print(f"    (FnGuide 대조 실패: {type(exc).__name__}: {exc})")
     else:
         print(f"    분기 재무 없음(연간 보유: {sorted(fin) if fin else '없음'})")
 

@@ -36365,59 +36365,79 @@ class TestAuditLogFindings20260823:
 
 class TestShareCountIdentity:
     """#188 — 발행주식수는 EPS·BPS 의 분모다. 화면이 자기 산수를 못 맞추면
-    (시가총액 ÷ 현재가 ≠ 발행주식수) 주당지표가 통째로 그만큼 밀린다.
+    주당지표가 통째로 그만큼 밀린다.
 
-    실측(서희건설 035890.KQ 2026-08-23): 현재가 2,140 · 시총 4,442억 인데
-    발행주식수가 185.4M 로 떠 4,442억 ÷ 185.4M = 2,396 ≠ 2,140 이었다.
-    네이버(FnGuide) 상장주식수 207,588,536 은 정확히 맞는다."""
+    VM 실측(서희건설 035890.KQ 2026-08-23):
+      · yfinance  주식수 185,368,615 · 시총 3,967억  → **자기들끼리는 맞는다**
+      · KRX/네이버 상장주식수 207,588,536 · 진짜 시총 4,442억
+      · BPS 6,680.92(낡은 수) → 5,965.80(등록 수) · FnGuide 5,856 (1.9% 차)
+    """
 
-    PX, MC = 2140.0, 4442e8
-    YF, KRX = 185.4e6, 207588536
+    PX = 2140.0
+    YF, KRX = 185368615.0, 207588536.0
+    YF_MC, TRUE_MC = 396688818176.0, 444239467040.0
+    EQUITY = 1238432454403.0
 
     def test_the_identity_is_three_state(self):
         from bot.share_count import reconcile
-        assert reconcile(self.PX, self.MC, self.YF)["ok"] is False
-        assert reconcile(self.PX, self.MC, self.KRX)["ok"] is True
+        assert reconcile(self.PX, self.TRUE_MC, self.YF)["ok"] is False
+        assert reconcile(self.PX, self.TRUE_MC, self.KRX)["ok"] is True
         # 재료가 없으면 **통과가 아니라 판정 불가**(#54)
         assert reconcile(self.PX, None, self.YF)["ok"] is None
-        assert reconcile(None, self.MC, self.YF)["ok"] is None
-        assert reconcile(self.PX, self.MC, 0)["ok"] is None
+        assert reconcile(None, self.TRUE_MC, self.YF)["ok"] is None
+        assert reconcile(self.PX, self.TRUE_MC, 0)["ok"] is None
 
-    def test_the_better_candidate_wins_by_the_identity_not_by_rank(self):
-        from bot.share_count import pick
-        v, lab, why = pick(self.PX, self.MC,
-                           [(self.YF, "yfinance"), (self.KRX, "KRX")])
-        assert v == self.KRX and lab == "KRX", (v, lab)
-        assert "어긋나" in why, why
+    def test_a_self_consistent_source_on_a_stale_count_is_still_caught(self):
+        """⚠️ 이 케이스가 첫 판을 뒤집었다: yfinance 시총 3,967억 ÷ 현재가
+        2,140 = 185,368,607 로 **주식수와 정확히 맞는다**(항등식 ✅). 둘 다
+        같은 낡은 주식수 위에 있었을 뿐이다 — 항등식만 보는 가드는 통과시킨다
+        (#37 임계값이 증상을 덮는다). 거래소 등록 주식수를 **대조군**으로
+        둬야 잡힌다(#143)."""
+        from bot.share_count import reconcile, resolve
+        assert reconcile(self.PX, self.YF_MC, self.YF)["ok"] is True   # 눈이 먼다
+        r = resolve(self.PX, self.YF_MC, self.YF, "yfinance",
+                    self.KRX, "KRX 상장주식수")
+        assert r["shares"] == self.KRX, r
+        assert "KRX" in r["source"] and "시총 재계산" in r["source"], r["source"]
+        assert abs(r["market_cap"] - self.TRUE_MC) < 1e6, r["market_cap"]
+        assert "달라 교체" in r["note"], r["note"]
 
-    def test_a_source_value_that_already_reconciles_is_never_replaced(self):
-        """소스값을 함부로 덮지 않는다 — 오차 안이면 그대로 둔다.
+    def test_the_market_cap_is_recomputed_only_with_a_registry_count(self):
+        """복수 클래스 상장은 한 클래스 주식수 × 주가 ≠ 전체 시총이다 —
+        등록 주식수가 없는 시장에서 시총을 다시 만들면 안 된다."""
+        from bot.share_count import resolve
+        r = resolve(self.PX, self.YF_MC, self.YF, "yfinance")
+        assert r["market_cap"] == self.YF_MC, r["market_cap"]
+        assert r["shares"] == self.YF, r["shares"]
 
-        ⚠️ 픽스처는 **현행이 최선이 아닌데도 오차 안**이어야 한다. 현행을
-        1등으로 두면 오차 게이트를 지워도 어차피 현행이 뽑혀 뮤테이션이
-        그대로 통과한다(실측, #91c)."""
-        from bot.share_count import pick, implied_shares
-        imp = implied_shares(self.PX, self.MC)
-        near = round(imp)                      # 거의 정확 — 그래도 안 바꾼다
-        v, lab, why = pick(self.PX, self.MC,
-                           [(self.KRX, "yfinance"), (near, "KRX")])
-        assert abs(self.KRX - near) > 1, (self.KRX, near)
-        assert v == self.KRX and lab == "yfinance" and why == "", (v, lab, why)
+    def test_a_matching_source_count_is_never_replaced(self):
+        """등록 주식수와 오차 안이면 소스값을 덮지 않는다(시총도 그대로)."""
+        from bot.share_count import resolve
+        r = resolve(self.PX, self.TRUE_MC, self.KRX, "yfinance",
+                    self.KRX + 1000, "KRX 상장주식수")
+        assert r["shares"] == self.KRX and r["source"] == "yfinance", r
+        assert r["market_cap"] == self.TRUE_MC and r["note"] == "", r
 
-    def test_without_price_or_mcap_nothing_is_replaced(self):
-        """검산할 재료가 없으면 추측으로 고르지 않는다."""
-        from bot.share_count import pick
-        v, lab, why = pick(None, None,
-                           [(self.YF, "yfinance"), (self.KRX, "KRX")])
-        assert v == self.YF and lab == "yfinance", (v, lab)
-        assert "검산 불가" in why, why
+    def test_a_missing_source_count_is_filled_from_the_registry(self):
+        from bot.share_count import resolve
+        r = resolve(self.PX, None, None, "yfinance", self.KRX, "KRX")
+        assert r["shares"] == self.KRX, r
+        assert "안 줘" in r["note"], r["note"]
+
+    def test_without_a_price_the_market_cap_is_left_alone(self):
+        """현재가가 없으면 시총을 다시 만들 수 없다 — 주식수만 고친다."""
+        from bot.share_count import resolve
+        r = resolve(None, self.YF_MC, self.YF, "yfinance", self.KRX, "KRX")
+        assert r["shares"] == self.KRX, r
+        assert r["market_cap"] == self.YF_MC, r["market_cap"]
+        assert "시총 재계산" not in r["source"], r["source"]
 
     def test_the_note_says_the_discrepancy_not_just_the_source(self):
-        """조용히 두면 사용자가 눈으로 나눠 보고 물어야 한다(#43)."""
+        """등록 주식수 원천이 없는 시장에서 어긋나면 **말한다**(#43)."""
         from bot.share_count import note
-        bad = note(self.PX, self.MC, self.YF, "yfinance")
-        assert "⚠️" in bad and "207,570,093주" in bad, bad
-        ok = note(self.PX, self.MC, self.KRX, "KRX 상장주식수")
+        bad = note(self.PX, self.TRUE_MC, self.YF, "yfinance")
+        assert "⚠️" in bad and "207,588,536주" in bad, bad
+        ok = note(self.PX, self.TRUE_MC, self.KRX, "KRX 상장주식수")
         assert ok == "KRX 상장주식수", ok
 
     def test_the_kr_collector_registers_the_registry_count(self):
@@ -36447,7 +36467,8 @@ class TestShareCountIdentity:
                         if isinstance(n, ast.FunctionDef)
                         and n.name == "_apply_share_count")
         picks = [n for n in ast.walk(apply_fn) if isinstance(n, ast.Call)
-                 and isinstance(n.func, ast.Name) and n.func.id == "_pick_shares"]
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == "_resolve_shares"]
         assert len(picks) == 1, f"주식수 판정 호출 {len(picks)}건"
         collect = next(n for n in ast.walk(tree)
                        if isinstance(n, ast.FunctionDef)
@@ -36460,26 +36481,31 @@ class TestShareCountIdentity:
 
     def test_the_identity_step_replaces_a_stale_count_end_to_end(self):
         """헬퍼 단위테스트는 배선 변형을 못 잡는다(#20) — 스냅샷 dict 를
-        통째로 태워 실제로 교체되는지 본다."""
+        통째로 태워 실제로 교체되는지 본다. 픽스처는 **VM 실측값**이다."""
         import bot.stock_snapshot as ss
-        snap = {"current_price": self.PX, "market_cap": self.MC,
+        snap = {"current_price": self.PX, "market_cap": self.YF_MC,
                 "shares_outstanding": self.YF,
-                "kr": {"krx_quote": {"shares": self.KRX, "date": "2026-08-22"}}}
+                "kr": {"krx_quote": {"shares": self.KRX, "date": "2026-08-23"}}}
         ss._apply_share_count("035890.KQ", snap)
         assert snap["shares_outstanding"] == self.KRX, snap["shares_outstanding"]
         assert "KRX" in snap["shares_source"], snap["shares_source"]
-        assert "어긋나" in snap.get("shares_note", ""), snap.get("shares_note")
+        assert "달라 교체" in snap.get("shares_note", ""), snap.get("shares_note")
+        # 시총도 같은 주식수 위로 — 안 그러면 헤더가 다시 안 맞는다
+        assert abs(snap["market_cap"] - self.TRUE_MC) < 1e6, snap["market_cap"]
+        # 그리고 주당지표가 실제로 옮겨간다(실측 BPS 6,680.92 → 5,965.80)
+        assert abs(self.EQUITY / snap["shares_outstanding"] - 5965.80) < 1
 
     def test_the_identity_step_leaves_other_markets_alone(self):
         """등록 주식수 원천이 없는 시장은 값을 그대로 두고 **화면이**
         어긋남을 밝힌다 — 조용히 지어내지 않는다."""
         import bot.stock_snapshot as ss
         from bot.share_count import note
-        snap = {"current_price": self.PX, "market_cap": self.MC,
+        snap = {"current_price": self.PX, "market_cap": self.TRUE_MC,
                 "shares_outstanding": self.YF}
         ss._apply_share_count("AAPL", snap)
         assert snap["shares_outstanding"] == self.YF
-        assert "⚠️" in note(self.PX, self.MC, snap["shares_outstanding"],
+        assert snap["market_cap"] == self.TRUE_MC
+        assert "⚠️" in note(self.PX, self.TRUE_MC, snap["shares_outstanding"],
                             snap.get("shares_source") or "")
 
     def test_the_header_carries_the_share_note_exactly_once(self):
@@ -36490,3 +36516,37 @@ class TestShareCountIdentity:
         calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
                  and isinstance(n.func, ast.Name) and n.func.id == "_share_note"]
         assert len(calls) == 1, f"헤더 검산 호출 {len(calls)}건"
+
+    def test_the_probe_takes_the_screen_path_for_the_multiples(self):
+        """#35 를 내 도구에서 또 어겼다 — v1 은 수집기만 태워 EPS·BPS 가 전부
+        '—' 로 나왔다(yfinance 는 국내 fundamentals 를 404 로 준다). 화면 값은
+        렌더 단계의 `_derive_missing_multiples` 가 만든다."""
+        import ast
+        src = open("bot/scripts/kr_metrics_probe.py").read()
+        calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == "_derive_missing_multiples"]
+        assert len(calls) == 1, f"화면 파생 호출 {len(calls)}건"
+
+    def test_the_kr_bulk_covers_kosdaq(self):
+        """pykrx 기본 market 은 **KOSPI** 다 — 인자를 안 주면 코스닥이 통째로
+        빠진다(2026-08-23 실측: 벌크 914종목, 035890.KQ 가 '벌크에 없음').
+        스크리너 유니버스가 조용히 반쪽이었다."""
+        import ast
+        src = open("bot/stock_screener.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_fetch_kr_bulk")
+        wanted = {"get_market_fundamental_by_ticker", "get_market_cap_by_ticker"}
+        with_all = set()
+        for n in ast.walk(fn):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr in wanted):
+                for kw in n.keywords:
+                    if (kw.arg == "market"
+                            and getattr(kw.value, "value", None) == "ALL"):
+                        with_all.add(n.func.attr)
+        assert with_all == wanted, f"market=ALL 없는 호출: {wanted - with_all}"
+        # 옛 pykrx 대비 폴백이 있어야 한다 — 없으면 TypeError 로 전멸한다
+        assert any(isinstance(h.type, ast.Name) and h.type.id == "TypeError"
+                   for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)), \
+            "market 인자 미지원 폴백이 없다"
