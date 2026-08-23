@@ -1526,6 +1526,7 @@ def _build_usage_report() -> str:
     try:
         import json as _j_tr
         import os as _os_tr
+        from pathlib import Path
         _tdir = _os_tr.environ.get("TRADE_DATA_DIR", "").strip()
         tr_path = (Path(_tdir) / "usage.jsonl" if _tdir
                    else Path.home() / ".trade" / "usage.jsonl")
