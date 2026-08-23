@@ -76,7 +76,13 @@ def _pick_share_totals(rows: list) -> dict:
     summed = False
     for r in rows or []:
         se = str(r.get("se") or "")
-        iss = _share_int(r.get("isu_stock_totqy"))
+        # ⚠️ `isu_stock_totqy` 는 **발행할 주식의 총수(수권주식수)** 다 —
+        # 실제 발행분은 `istc_totqy`. POSCO홀딩스 실측(2026-08-23): 전자가
+        # 200,000,000 인데 실제 발행은 79,241,527 이었다. 이름이 그럴듯해
+        # 발행주식수로 읽으면 자사주 차감이 통째로 틀린다(#50 내 가정을
+        # 원천의 보장으로 착각하지 말 것).
+        iss = (_share_int(r.get("istc_totqy"))
+               or _share_int(r.get("now_to_isu_stock_totqy")))
         tes = _share_int(r.get("tesstk_co"))
         dis = _share_int(r.get("distb_stock_co"))
         if iss is None and dis is None:
@@ -233,7 +239,16 @@ _DART_CODE_MAP: dict[str, str] = {
     "ifrs-full_RetainedEarnings": "이익잉여금",
     "ifrs-full_Equity": "자본총계",
     "us-gaap_StockholdersEquity": "자본총계",
-    "ifrs-full_EquityAttributableToOwnersOfParent": "자본총계",
+    # ⚠️ 여기 있던 `EquityAttributableToOwnersOfParent → 자본총계` 를
+    # 지웠다. **같은 키가 위(지배주주자본)에도 있어 파이썬이 조용히 마지막
+    # 것만 남겼고**, 그래서 `지배주주자본` 이 전 종목에서 한 번도 안 채워졌다
+    # (POSCO홀딩스 005490.KS 프로브 실측 2026-08-23: 6분기 전부 `—`).
+    # 결과로 BPS·ROE 분모가 연결 총액(비지배 포함)으로 떨어져 FnGuide 보다
+    # 체계적으로 어긋났다. 자본총계가 이 계정으로만 오는 회사는 아래
+    # `_fill_equity_fallbacks` 가 채운다 — 중복 키로 해결하지 않는다.
+    # 비지배지분 — 지배주주자본을 원천이 안 줄 때 빼서 만든다.
+    "ifrs-full_NoncontrollingInterests": "비지배지분",
+    "ifrs-full_MinorityInterest": "비지배지분",
 }
 
 # account_id 가 비표준이거나 nullable 시 account_nm (한글 텍스트) 매칭
@@ -275,6 +290,15 @@ _DART_NAME_MAP: dict[str, str] = {
     "지배기업의 소유주에게 귀속되는 자본": "지배주주자본",
     "지배기업 소유주지분 자본총계": "지배주주자본",
     "지배주주지분 자본총계": "지배주주자본",
+    # 원천이 실제로 쓰는 다른 표기들 — 이름 열거는 새 표기를 못 잡으므로
+    # (#24) 아래 `_fill_equity_fallbacks` 의 뺄셈이 최종 그물이다.
+    "지배기업의 소유주에게 귀속되는 지분": "지배주주자본",
+    "지배기업 소유주에게 귀속되는 자본": "지배주주자본",
+    "지배기업소유주지분": "지배주주자본",
+    "지배기업의 소유주지분": "지배주주자본",
+    "지배기업 소유주지분": "지배주주자본",
+    "비지배지분": "비지배지분",
+    "비지배주주지분": "비지배지분",
     "기본주당순이익": "EPS", "기본주당이익": "EPS",
     "기본주당순이익(손실)": "EPS", "보통주기본주당이익(손실)": "EPS",
     # ⚠️ 총액 계정만. '상품및제품' 같은 **구성요소**를 별칭으로 넣으면
@@ -391,9 +415,10 @@ _COMPONENT_GROUPS: dict[str, set[int]] = {"매출": {2}}
 #   v5 (2026-08-19) 계정 우선순위 변경(표준 태그·이름 정규화)
 #   v8 (2026-08-21) 현금흐름 계정 + FCF 추가
 #   v10 (2026-08-23) 지배주주순이익·지배주주자본 추가(FnGuide 산식 정렬)
+#   v11 (2026-08-23) 중복 키로 죽어 있던 `지배주주자본` 부활 + 비지배지분
 # 규율로는 세 번 다 실패했으므로 아래 `_CANONICAL_KEYS` 를 회귀가 고정한다
 # — 키가 늘면 테스트가 깨지고, 고치려면 이 숫자를 올려야 한다.
-_FIN_CACHE_VER = 10
+_FIN_CACHE_VER = 11
 
 # 파서가 낼 수 있는 canonical 키 전량. **여기가 바뀌면 캐시 버전을 올려라.**
 # 목록을 손으로 적는 게 아니라 두 매핑에서 도출하므로 새 계정을 추가하면
@@ -420,7 +445,7 @@ _IS_KEYS = frozenset({"매출", "매출원가", "매출총이익", "판관비", 
                       "당기순이익", "지배주주순이익", "EPS"})
 _BS_KEYS = frozenset({"자산총계", "부채총계", "자본총계", "유동자산",
                       "유동부채", "비유동자산", "비유동부채", "재고자산",
-                      "이익잉여금", "지배주주자본"})
+                      "이익잉여금", "지배주주자본", "비지배지분"})
 # ⚠️ 현금흐름 계정을 제표로 안 묶으면 같은 이름이 주석·자본변동표에서
 # 잡혀 기간 의미가 갈린다(NH투자증권 당기순이익이 자본변동표 누적으로
 # 잡혔던 것과 같은 함정, 이 파일 위 주석 참조).
@@ -626,6 +651,9 @@ def apply_ttm_returns(entries: list) -> int:
             "numerator": "지배주주순이익" if owner else "당기순이익(연결 총액)",
             "denominator": eq_key,
             "averaged": bool(eq_avg and as_avg),
+            # 분모를 우리가 빼서 만들었으면 그렇게 밝힌다(#43·#123) —
+            # 원천이 준 값과 파생값은 다른 신뢰도다.
+            "denominator_derived": (fin.get("_derived_from") or {}).get(eq_key),
         }
         n += 1
     return n
@@ -661,9 +689,40 @@ def apply_annual_returns(entries: list) -> int:
                          else "당기순이익(연결 총액)",
             "denominator": eq_key,
             "averaged": bool(eq_avg and as_avg),
+            "denominator_derived": (fin.get("_derived_from") or {}).get(eq_key),
         }
         n += 1
     return n
+
+
+def _fill_equity_fallbacks(fin: dict) -> None:
+    """`지배주주자본` 을 원천이 안 주면 **빼서** 만든다 — 그리고 그 반대도.
+
+    BPS·ROE 의 분모다(FnGuide 산식). 원천이 이 계정을 안 주면 분모가 연결
+    총액(비지배 포함)으로 떨어져 두 지표가 **같은 방향으로** 낮게 나온다
+    (POSCO홀딩스 005490.KS 실측 2026-08-23). 계정 이름 열거로는 새 표기를
+    못 잡으므로(#24) `자본총계 − 비지배지분` 이라는 **항등식**을 최종
+    그물로 둔다.
+
+    ⚠️ 반대 방향도 필요하다 — 자본을 지배주주분으로만 주는 회사가 있어
+    옛 코드는 그 계정을 `자본총계` 로도 매핑해 뒀었다(같은 키 중복이라
+    파이썬이 마지막 것만 남겨 `지배주주자본` 이 전 종목에서 죽어 있었다).
+    중복 키 대신 여기서 채운다. 만든 값에는 `_derived_from` 을 남긴다(#43).
+    """
+    def _n(v):
+        return (float(v) if isinstance(v, (int, float))
+                and not isinstance(v, bool) else None)
+
+    tot, own, mi = (_n(fin.get("자본총계")), _n(fin.get("지배주주자본")),
+                    _n(fin.get("비지배지분")))
+    if own is None and tot is not None and mi is not None:
+        fin["지배주주자본"] = tot - mi
+        fin.setdefault("_derived_from", {})["지배주주자본"] = "자본총계 − 비지배지분"
+    elif tot is None and own is not None:
+        # 비지배지분이 없으면 지배주주분이 곧 총계다(단일기업·완전자회사)
+        fin["자본총계"] = own + (mi or 0.0)
+        fin.setdefault("_derived_from", {})["자본총계"] = (
+            "지배주주자본 + 비지배지분" if mi else "지배주주자본(비지배 없음)")
 
 
 def calc_kr_financial_ratios(financials: dict) -> dict:
@@ -1739,6 +1798,7 @@ class DartClient:
                 _fcf([{"financials": financials}])
             except Exception as exc:                           # noqa: BLE001
                 log.info("dart_client: FCF 계산 건너뜀(%s): %s", ticker, exc)
+        _fill_equity_fallbacks(financials)
         ratios = calc_kr_financial_ratios(financials)
         result = {
             "year": target_year,

@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 8
+_PROBE_VER = 9
 
 
 def _n(v):
@@ -187,7 +187,7 @@ def probe(ticker: str) -> None:
     # (b) 분모에서 **자사주를 안 뺐나**. 둘 다 찍어야 갈린다(#149 단계별로).
     _kr = snap.get("kr") or {}
     _st = _kr.get("share_totals") or {}
-    print(f"    주식의 총수(DART): 발행 {_f(_st.get('issued'), 0)} · "
+    print(f"    주식의 총수(DART): 발행주식수 {_f(_st.get('issued'), 0)} · "
           f"자기주식 {_f(_st.get('treasury'), 0)} · "
           f"유통 {_f(_st.get('distributed'), 0)} · 기준 {_st.get('basis') or '—'}")
     _q = (_kr.get("financials_q") or [])
@@ -399,7 +399,11 @@ def _dart_raw(ticker: str, snap: dict) -> None:
                   f"{e.get('fs_div')} 당기순이익(총액) {_f(tot, 0)}"
                   f" · 지배주주 {_f(own, 0)}{share}"
                   f" · 자본총계 {_f(fin.get('자본총계'), 0)}"
-                  f" · 지배주주자본 {_f(fin.get('지배주주자본'), 0)}")
+                  f" · 지배주주자본 {_f(fin.get('지배주주자본'), 0)}"
+                  f" · 비지배지분 {_f(fin.get('비지배지분'), 0)}"
+                  + (f" [{(fin.get('_derived_from') or {}).get('지배주주자본')}]"
+                     if (fin.get("_derived_from") or {}).get("지배주주자본")
+                     else ""))
         if not any((e.get("financials") or {}).get("지배주주순이익")
                    for e in ser):
             print("      ⚠️ 지배주주순이익 계정이 한 분기도 없다 — 원천 미제공"
@@ -426,6 +430,25 @@ def _dart_raw(ticker: str, snap: dict) -> None:
         cur = (raw.get("financials") or {})
         cum = (raw.get("financials_cumulative") or {})
         print(f"    최신 보고서 {y}/{rc} ({last.get('fs_div')})")
+        # ⚠️ FCF 재료를 나란히 — 사용자 2026-08-23 "우리 FCF 계산하는 방법이
+        # 잘못된것 같은데". FnGuide 산식은 `CAPEX = 유형자산의증가` 이고
+        # 무형은 안 들어간다. LG이노텍 실측으로 그렇게 맞춰 놨는데, **그
+        # 예측이 맞는지는 유형자산취득 단독 값이 FnGuide CAPEX 와 같은가**로
+        # 판정된다 — 그래서 구성요소를 전부 찍는다(#109 표본을 같이 찍을 것).
+        _ann = dart.get_normalized_financials(ticker) or {}
+        _af = _ann.get("financials") or {}
+        print(f"    [FCF 재료 · 최신 사업보고서 {_ann.get('year') or '—'}] "
+              f"영업활동현금흐름 {_f(_af.get('영업활동현금흐름'), 0)} · "
+              f"유형자산취득 {_f(_af.get('유형자산취득'), 0)} · "
+              f"무형자산취득 {_f(_af.get('무형자산취득'), 0)} → "
+              f"FCF {_f(_af.get('FCF'), 0)}")
+        _o, _t = _n(_af.get("영업활동현금흐름")), _n(_af.get("유형자산취득"))
+        _i = _n(_af.get("무형자산취득"))
+        if _o is not None and _t is not None:
+            print(f"      유형만: {(_o - abs(_t)) / 1e8:,.0f}억"
+                  + (f" · 유형+무형: {(_o - abs(_t) - abs(_i)) / 1e8:,.0f}억"
+                     if _i is not None else "")
+                  + "  ← FnGuide FCF 와 같은 쪽이 정답이다")
         for k in ("매출", "영업이익", "당기순이익", "EPS"):
             print(f"      {k}: 당기(thstrm) {_f(cur.get(k), 0)}"
                   f" · 누적(thstrm_add) {_f(cum.get(k), 0)}")

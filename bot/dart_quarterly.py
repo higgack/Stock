@@ -43,7 +43,7 @@ _FLOW_KEYS = {"매출", "매출원가", "매출총이익", "판관비", "영업�
 # (연말 재고 − 3분기말 재고 = 재고의 '증감'이지 4분기의 재고가 아니다).
 _STOCK_KEYS = {"유동자산", "비유동자산", "자산총계", "유동부채",
                "비유동부채", "부채총계", "이익잉여금", "자본총계",
-               "지배주주자본",          # 저량(잔액) — 4분기 차분 금지
+               "지배주주자본", "비지배지분",   # 저량(잔액) — 4분기 차분 금지
                "재고자산"}
 # 현금흐름표 계정 — DART 는 **누적**으로 준다(연초~해당분기말).
 # ⚠️ 손익(sj_div=IS)은 `thstrm_amount` 자체가 '당기 3개월'(단일분기)인데
@@ -451,12 +451,21 @@ def _attach_fcf(entries: list[dict] | None) -> int:
     n = 0
     for e in entries or []:
         fin = (e or {}).get("financials") or {}
-        capex_parts = [fin.get(k) for k in ("유형자산취득", "무형자산취득")
-                       if fin.get(k) is not None]
+        # ⚠️ CAPEX = **유형자산취득만**. 사용자가 신뢰 기준으로 제시한
+        # FnGuide 산식은 `CAPEX = 유형자산의증가` 이고, 무형자산취득은
+        # 들어가지 않는다. LG이노텍 011070.KS 실측(2026-08-23):
+        #   FnGuide FY2025 OCF 13,314 − CAPEX 6,110 = FCF 7,204
+        #   우리(무형 포함) FCF 5,769 → 우리 CAPEX 7,545 = 6,110 + 1,435
+        # 세 해 모두 차이가 무형자산취득 크기와 맞았다. 옛 주석은 "둘을
+        # 더해야 FnGuide 와 맞는다"고 적고 있었는데 한 종목만 보고 단정한
+        # 것이다(#50). 이 정의는 yfinance `Capital Expenditure`(PP&E 취득)
+        # 와도 같아 **시장 간 정의가 하나로 맞는다**.
+        # ⚠️ 처분액은 빼지 않는다 — 표준 FCF 의 CAPEX 는 총 취득액이고,
+        # 순취득(취득−처분)을 쓰면 자산을 판 해에 FCF 가 부풀려진다.
+        _capex = fin.get("유형자산취득")
         v = None
-        if capex_parts:
-            v = fcf_from_parts(fin.get("영업활동현금흐름"),
-                               sum(abs(float(x)) for x in capex_parts))
+        if _capex is not None:
+            v = fcf_from_parts(fin.get("영업활동현금흐름"), abs(float(_capex)))
         if v is None:
             # ⚠️ **지운다.** 누적 dict 에 이미 FCF 가 있으면 4분기 차분이
             # 그걸 그대로 차분해 남긴다 — 그런데 같은 차분에서 구성요소가

@@ -6855,9 +6855,9 @@ def _render_stock_info_html(rec: dict) -> str:
             # 를 직접 주면 그 값을 씁니다" 라고 적었는데 그건 yfinance 경로
             # (재무재표 탭) 얘기다. 설명이 코드와 어긋나면 그게 버그다(#55).
             _notes.append('ℹ️ FCF = <b>영업활동현금흐름 − CAPEX</b>'
-                          '(유형자산취득 + 무형자산취득) · 출처 <b>DART '
-                          '현금흐름표</b> — 재무제표 탭의 FCF 는 yfinance '
-                          '기준이라 정의 차이로 값이 다를 수 있습니다')
+                          '(유형자산 취득) · 출처 <b>DART 현금흐름표</b> · '
+                          'FnGuide 산식과 같은 기준 — 무형자산 취득과 처분액은 '
+                          '넣지 않습니다')
         # ⚠️ 표의 **마지막(최신) 열** 기준으로 적는다 — `next(...)` 로 첫 행을
         # 집으면 전기가 없는 가장 오래된 열의 기준("기말")이 표 전체를
         # 설명하는 것처럼 읽힌다(2026-08-23 슈프리마: FY2024·FY2025 는 평균인데
@@ -6884,7 +6884,12 @@ def _render_stock_info_html(rec: dict) -> str:
                                   '나눴습니다. FnGuide 는 지배주주 자본으로 '
                                   '나누므로 그만큼 낮게 나옵니다')
                           + ('' if (_rb or {}).get("averaged")
-                             else '. 전기 잔액을 못 구해 기말로 나눴습니다'))
+                             else '. 전기 잔액을 못 구해 기말로 나눴습니다')
+                          # 분모를 우리가 빼서 만들었으면 밝힌다(#43) —
+                          # 원천이 준 값과 파생값은 신뢰도가 다르다.
+                          + (f'. 분모는 {esc(str(_rb["denominator_derived"]))}'
+                             ' 로 산출' if (_rb or {}).get("denominator_derived")
+                             else ''))
         _rev_src = sorted({str(it.get("_revenue_source")) for it in items
                            if it.get("_revenue_source")})
         if _rev_src:
@@ -9013,7 +9018,12 @@ def _render_stock_info_html(rec: dict) -> str:
                    and isinstance(target_high, (int, float)) else "—")
     _ic_analysts_s = f"{n_analysts}명" if n_analysts else "—"
     _dv = si.get("_derived_multiples") or []
-    _derived_note = (" · ⚙️ 자체계산(소스 미제공): " + _derived_desc(si)) if _dv else ""
+    # ⚠️ 파생 설명을 이 한 줄에 이어 붙이지 않는다 — 밸류에이션 탭에서
+    # 고친 것과 같은 이유다(사용자 2026-08-23 "왜 줄 바꿈했는지도 모르겠네").
+    # 좌측정렬 블록으로 빼고 기준별로 묶어 적는다(#211).
+    _derived_note = (
+        '<div class="si-note" style="margin-top:8px">⚙️ <b>자체계산</b>'
+        '(소스 미제공)<br>' + _derived_desc(si) + '</div>') if _dv else ""
     _ic_left = (
         f'<tr><td>PER (후행)</td><td class="num" data-q="trailingPE">{_ic_mult("trailingPE")}</td></tr>'
         f'<tr><td>PER (선행)</td><td class="num" data-q="forwardPE">{_ic_mult("forwardPE")}</td></tr>'
@@ -9036,7 +9046,8 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>멀티플·주당</th><th class="num">값</th></tr></thead><tbody>{_ic_left}</tbody></table>
     <table class="si-table"><thead><tr><th>컨센서스</th><th class="num">값</th></tr></thead><tbody>{_ic_right}</tbody></table>
   </div>
-  <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">멀티플=밸류에이션 탭 · 컨센서스=컨센서스 탭 상세 · 상승여력·목표가범위=현재가 대비{_derived_note}</div>
+  <div class="si-note" style="margin-top:6px">멀티플=밸류에이션 탭 · 컨센서스=컨센서스 탭 상세 · 상승여력·목표가범위=현재가 대비</div>
+  {_derived_note}
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap
