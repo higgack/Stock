@@ -33166,6 +33166,46 @@ class TestBandRowHonesty20260822:
         assert "hours=9" in seg, "KST 명시 계산이 아니다"
 
 
+    def test_fair_price_uses_the_last_observed_denominator(self):
+        """'그 배수에서의 주가' 는 **화면의 다른 칸에서** 만들어야 한다(#33).
+
+        옛 판은 `top.get(price[-1][0])` 로 **원본 price 배열의 마지막 원소**를
+        봤는데, 전망 구간은 주가가 None 이어도 **밴드선은 값이 있다** — 그래서
+        적정주가가 전망 끝 분모로 만들어져 캡션이 적는 분모(`denom_now`)와
+        갈렸다. 실측(와이지-원 019210.KQ, 2026-08-24): 캡션 분모 2,253 인데
+        적정주가는 3,038 기준이라 **최저 4.80x → 14,582** 가 현재가 14,600 과
+        거의 같았다. 같은 표의 현재 PER 은 6.48x 라 표가 자기 산수를 못 맞췄다.
+
+        불변식 둘로 고정한다:
+          ① 적정주가 = 배수 × `denom_now` (눈으로 곱해 검산된다)
+          ② 현재가는 현재 배수를 **감싸는 두 배수**의 적정주가 사이에 있다
+        """
+        import bot.dashboard_server as ds
+        ms, mult = 2592000000, [11.3, 9.1, 7.0, 4.8]
+        ts = [1590000000000 + i * ms for i in range(40)]
+        fut = [ts[-1] + ms * (i + 1) for i in range(6)]   # 전망 — 주가 없음
+        eps = [2000.0] * 39 + [2253.1]
+        px = [e * 6.48 for e in eps]                      # PER 6.48 고정
+        # ⚠️ 전망 구간의 밴드선을 **훨씬 높게** 둬야 두 규약이 갈린다 —
+        # 같은 높이면 뮤테이션이 그대로 통과한다(#91c).
+        blk = {"mult": mult,
+               "price": [[t, p] for t, p in zip(ts, px)] + [[t, None] for t in fut],
+               "bands": [[[t, m * e] for t, e in zip(ts, eps)]
+                         + [[t, m * 3038.0] for t in fut] for m in mult]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=px[-1])
+        dn = t["denom_now"]
+        assert dn and abs(dn - 2253.1) < 0.5, dn
+        by = {b["label"]: b for b in t["bands"]}
+        # ① 눈으로 곱해 검산된다
+        for b in t["bands"]:
+            assert abs(b["fair"] - b["mult"] * dn) < 0.02, b
+        # ② 현재 PER 6.48 은 4.8~7.0 사이 → 현재가도 그 두 적정주가 사이
+        assert by["최저"]["fair"] < t["price_now"] < by["중하"]["fair"], (
+            by["최저"]["fair"], t["price_now"], by["중하"]["fair"])
+        # 칩이 그 산식을 적을 수 있게 분모를 싣는다(#134)
+        assert t["eps_now"] == dn, (t["eps_now"], dn)
+
+
 class TestForeignPerBandChart20260822:
     """사용자 2026-08-22: "외국종목도 PER 밴드차트 만들수 있으면 만들어줘.
     PBR 은 안해도 돼."
@@ -36364,13 +36404,19 @@ class TestPerBasisAcrossTabs20260823:
         assert "17.40x" in f("trailingPE", "trailingEps")
 
     def test_both_surfaces_state_their_denominator(self):
-        """한쪽만 밝히면 사용자는 여전히 어느 쪽이 틀렸는지 모른다."""
+        """한쪽만 밝히면 사용자는 여전히 어느 쪽이 틀렸는지 모른다.
+
+        ⚠️ 2026-08-24 계약 변경(사용자 "이거 다 빼줘. 알아들었으니"): 밸류에이션
+        탭의 'ℹ️ 밴드차트 탭은 분모가 달라 값이 다릅니다' 줄은 **뺐다**. 밴드 탭
+        캡션이 이미 두 분모를 **숫자로** 나란히 놓기 때문이다(#202) — 상호참조를
+        양쪽에 두면 읽을 것만 는다. 그래도 밸류에이션 탭은 **자기 분모**를
+        밝혀야 하고, 밴드 탭은 반대 방향을 계속 가리킨다."""
         import bot.dashboard as db
         import bot.dashboard_server as ds
-        src = open("bot/dashboard.py", encoding="utf-8").read()
-        i = src.index("_per_basis_note = (")
-        note = src[i:i + 700]
-        assert "TTM 실적 EPS" in note and "밴드차트" in note, note[:300]
+        from bot.dashboard import per_basis_lines
+        note = " ".join(per_basis_lines(True, "네이버(FnGuide) 추정 EPS"))
+        assert "TTM 실적 EPS" in note, note      # 자기 분모는 계속 밝힌다
+        assert "밴드차트" not in note, note      # 상호참조는 뺐다
         # 밴드 표의 출처 줄도 반대 방향을 밝힌다
         ts = [1590000000000 + k * 2592000000 for k in range(50)]
         blk = {"mult": [90.8, 63.4, 36.1, 8.7],
@@ -36848,6 +36894,12 @@ class TestShareCountIdentity:
         assert _ttm_concentration(even) == ""
         # 한 분기라도 비면 판정하지 않는다
         assert _ttm_concentration(qs[:3]) == ""
+        # ⚠️ 2026-08-24 사용자 "한줄로 만들자" — 꼬리에 붙던 '다른 사이트의
+        # TTM 과 크게 다를 수 있습니다' 를 뺐다. 각 표면이 이미 자기 분모를
+        # 밝히므로 중복이고, 길어서 두 줄로 접혔다(#211).
+        assert "다른 사이트" not in note, note
+        assert note.endswith("일회성 이익이 섞여 있을 수 있습니다."), note
+        assert note.count("—") == 1, note      # 한 문장 — 절이 늘지 않는다
 
     def test_the_concentration_note_reaches_the_valuation_tab(self):
         """헬퍼만 부르면 배선을 떼는 변형을 못 잡는다(#20) — payload 에
@@ -37043,23 +37095,31 @@ class TestShareCountIdentity:
     def test_the_per_note_names_the_actual_forward_source(self):
         """사용자 2026-08-23 "코멘트가 맞는지도 확인해줘" — 옛 문구는
         `PER (선행) = 주가 ÷ 컨센서스 EPS (yfinance 제공값)` 였는데 국내는
-        네이버가 원천이다. 문구를 고정하면 거짓말이 된다(#55)."""
+        네이버가 원천이다. 문구를 고정하면 거짓말이 된다(#55).
+
+        ⚠️ 2026-08-24 개정: 옛 판은 `_per_basis_note = (` 뒤 **900자 창**을
+        읽었는데, 사용자 요청으로 한 줄을 빼자 창이 깨졌다 — 표현이 바뀌어도
+        계약은 유지되어야 한다(#19·#89·#117). 순수 함수 `per_basis_lines` 의
+        **값**으로 재고, 원천이 측정 결과에서 온다는 배선만 AST 로 본다."""
         import ast
+        from bot.dashboard import per_basis_lines
+        got = " ".join(per_basis_lines(True, "네이버(FnGuide) 추정 EPS"))
+        assert "네이버(FnGuide) 추정 EPS" in got, got
+        assert "yfinance 제공값" not in got, "옛 고정 문구가 남아 있다"
+        assert got.count("현재가") == 2, got   # 후행·선행 둘 다 분자를 밝힌다
+        alt = " ".join(per_basis_lines(True, "yfinance 컨센서스 EPS"))
+        assert "yfinance 컨센서스 EPS" in alt and alt != got, alt
+        # 원천 문구는 **측정 결과**에서 나온다 — 리터럴로 박으면 국내에서
+        # 거짓말이 된다. 그 배선은 호출부에 있다.
         src = open("bot/dashboard.py").read()
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef)
                   and n.name == "_render_stock_info_html")
         seg = ast.get_source_segment(src, fn) or ""
-        i = seg.index("_per_basis_note = (")
-        note = seg[i:i + 900]
-        assert "_fwd_src" in note, "원천을 측정해서 넣지 않는다"
-        assert "yfinance 제공값" not in note, "옛 고정 문구가 남아 있다"
-        assert "현재가" in note, "분자가 현재가라는 사실을 안 적는다"
-        # 원천 문구는 **측정 결과**에서 나온다 — 리터럴로 박으면 국내에서
-        # 거짓말이 된다(#19 소스 문자열 대신 계약으로).
         i2 = seg.index("_fwd_src = (")
         decl = seg[i2:i2 + 260]
         assert "_forward_src" in decl and "_forward_why" in decl, decl
+        assert "per_basis_lines(" in seg, "렌더가 그 함수를 안 쓴다"
 
     def test_the_ttm_window_is_named_on_screen(self):
         """사용자 2026-08-23 "후행은 우리는 이미 2Q 인데 네이버는 1Q 야" —
@@ -37235,17 +37295,24 @@ class TestShareCountIdentity:
         assert abs(out3["forwardPE"] - 404500.0 / 13000.0) < 1e-9
 
     def test_the_note_says_why_the_forward_per_is_blank(self):
-        """빈칸이면 **왜** 비었는지 화면이 말한다 — 침묵이 최악(#43)."""
+        """빈칸이면 **왜** 비었는지 화면이 말한다 — 침묵이 최악(#43).
+
+        ⚠️ 2026-08-24 개정: 소스 창 검사 → 값 검사(#19). 그리고 사유가
+        **없을 때는 줄이 늘지 않는지**까지 본다(잡음 금지)."""
         import ast
+        from bot.dashboard import per_basis_lines
+        why = "네이버·yfinance 모두 추정 EPS 미제공"
+        with_why = per_basis_lines(True, "(없음)", why)
+        assert any(why in ln for ln in with_why), with_why
+        assert len(with_why) == len(per_basis_lines(True, "(없음)")) + 1
+        # 호출부가 그 사유를 실제로 넘기는지(배선)
         src = open("bot/dashboard.py").read()
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef)
                   and n.name == "_render_stock_info_html")
         seg = ast.get_source_segment(src, fn) or ""
-        i = seg.index("_per_basis_note = (")
-        note = seg[i:i + 900]
-        assert '_forward_why' in note, "사유를 각주에 안 싣는다"
-        assert '_forward_src' in seg[:i] or '_fwd_src' in note
+        i = seg.index("per_basis_lines(")
+        assert "_forward_why" in seg[i:i + 400], seg[i:i + 400]
 
     def test_the_kifrs_note_lives_outside_the_ratio_table(self):
         """사용자 2026-08-23 "밑으로 옮겨서 양쪽 표의 숫자 맞춰져 일부러
@@ -37354,46 +37421,32 @@ class TestShareCountIdentity:
         assert seg.count("{_derived_block}") == 1
 
     def test_the_per_note_is_parallel_short_lines(self):
-        """사용자 2026-08-23 "왜 줄 바꿈했는지도 모르겠네" — 옛 각주는 한 줄에
-        후행·선행·공통설명을 다 넣어 브라우저가 아무 데서나 접었다. 계약은
-        **짧은 평행 줄 셋**(후행·선행·밴드) + 선행을 비운 **사유가 있을 때만**
-        한 줄 더. `<br>` 을 세면 조건부 줄과 무조건 줄이 섞여 4번째 줄을
-        상수로 추가하는 변형이 통과한다 — 조건부(IfExp) 안팎을 **구조로**
-        갈라서 셀 것(#60·#65)."""
-        import ast
-        src = open("bot/dashboard.py").read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef)
-                  and n.name == "_render_stock_info_html")
-        assign = next(n for n in ast.walk(fn)
-                      if isinstance(n, ast.Assign)
-                      and getattr(n.targets[0], "id", "") == "_per_basis_note")
+        """각주는 **짧은 평행 줄**이어야 한다 — 한 줄이 길면 브라우저가 아무
+        데서나 접는다(#211).
 
-        def _txt(node, skip_ifexp: bool):
-            """문자열 상수를 모은다. `skip_ifexp` 면 조건부(IfExp) 가지는
-            통째로 건너뛴다 — 무조건 줄만 남는다."""
-            if skip_ifexp and isinstance(node, ast.IfExp):
-                return ""
-            out = node.value if (isinstance(node, ast.Constant)
-                                 and isinstance(node.value, str)) else ""
-            for ch in ast.iter_child_nodes(node):
-                out += _txt(ch, skip_ifexp)
-            return out
+        ⚠️ 2026-08-24 개정: 옛 판은 `_per_basis_note` 대입식의 **AST 문자열
+        상수**를 조건부(IfExp) 안팎으로 갈라 셌다. 사용자가 한 줄('밴드차트
+        탭은 분모가 달라…')을 빼 달라고 해서 줄을 리스트로 모으자 그 검사가
+        통째로 눈이 멀었다(무조건 ℹ️ 0개) — 표현이 바뀌어도 계약은 유지되어야
+        한다(#19·#89·#117). 이제 순수 함수의 **값**으로 잰다.
 
-        cond = [n for n in ast.walk(assign) if isinstance(n, ast.IfExp)]
-        cond_txt = "".join(_txt(c, False) for c in cond)
-        plain = _txt(assign, True)
-        assert plain.count("ℹ️") == 3, f"무조건 ℹ️ {plain.count('ℹ️')}개(후행·선행·밴드)"
-        assert plain.count("<br>") == 2, f"무조건 <br> {plain.count('<br>')}개"
-        assert "후행 PER" in plain and "선행 PER" in plain and "밴드차트 탭" in plain
-        assert "분자는 둘 다" not in plain, "옛 장문이 남아 있다"
-        # 뒤에 붙는 줄은 **조건이 있을 때만** — 각 조건이 무엇인지까지 본다
-        # (2026-08-24 네이버 창 표기가 하나 더 붙었다: 사유 · 네이버 창).
-        assert cond_txt.count("ℹ️") == 2, cond_txt
-        _tests = " ".join(ast.dump(c.test) for c in cond)
-        assert "_forward_why" in _tests, "사유 줄이 조건부가 아니다"
-        assert "_naver_window" in _tests, "네이버 창 줄이 조건부가 아니다"
-        assert 'class="si-note"' in plain
+        계약: 무조건 2줄(후행·선행) · 조건부 2줄(사유 · 네이버 창) ·
+        각 줄은 `ℹ️` 하나로 시작하고 `<br>` 를 품지 않는다(잇는 건 렌더다)."""
+        from bot.dashboard import per_basis_lines
+        base = per_basis_lines(True, "yfinance 컨센서스 EPS")
+        assert len(base) == 2, base
+        assert "후행 PER" in base[0] and "선행 PER" in base[1], base
+        full = per_basis_lines(True, "(없음)", "사유줄", "창줄")
+        assert len(full) == 4, full
+        for ln in full:
+            assert ln.count("ℹ️") == 1, ln
+            assert "<br>" not in ln, ln            # 구분자는 렌더가 붙인다
+            assert len(ln) < 90, ln                # 짧은 평행 줄
+        # 조건부 줄은 **조건이 있을 때만** — 상수로 한 줄 더 넣는 변형 차단
+        assert per_basis_lines(True, "x", None, "창줄")[-1].endswith("창줄")
+        assert len(per_basis_lines(True, "x", None, None)) == 2
+        # 렌더는 `<br>` 로 잇기만 한다 — 마지막 줄이 없어도 구분자가 안 남는다
+        assert not "<br>".join(base).endswith("<br>")
 
     def test_derived_scope_is_per_item_not_one_label_for_two_accounts(self):
         """2026-08-23 스모크에서 드러남: 지배주주 **순이익**은 주는데 지배주주
