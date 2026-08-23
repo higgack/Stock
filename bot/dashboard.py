@@ -6302,32 +6302,39 @@ def _render_stock_info_html(rec: dict) -> str:
                                ("부채비율", "부채비율"), ("유동비율", "유동비율")):
                 v = kf.get(key)
                 ratio_rows += f'<tr><td>{esc(label)}</td><td class="num">{f"{v:.1f}%" if v is not None else "—"}</td></tr>\n'
+            # ⚠️ 각주는 **표 밖**에 둔다. 좌(금액)/우(비율) 두 표는 행 수를
+            # 일부러 맞춰 놨는데(배당수익률을 왼쪽에 더한 게 그 때문이다,
+            # 사용자 2026-08-19) 오른쪽 표 안에 `<tr colspan=2>` 로 각주를
+            # 넣으면 그 정렬이 깨진다(사용자 2026-08-23 "밑으로 옮겨서 양쪽
+            # 표의 숫자 맞춰져 일부러 그렇게 만들어 논거야").
+            # ⚠️ 그리고 `_kf_note` 를 `=` 로 두 번 대입하고 있었다 — 매출
+            # 보강과 구성요소 경고가 **둘 다 있으면 앞엣것이 사라진다**.
+            # 목록으로 모아 이어 붙인다.
+            _kf_notes: list = []
             # 같은 지표를 두 화면이 다른 산식으로 내면 사용자가 한쪽이
             # 틀렸다고 읽는다(#34) — 어느 산식인지 여기서도 밝힌다.
             _kf_rb = kf.get("_returns_basis") or {}
             if _kf_rb:
-                ratio_rows += (
-                    '<tr><td colspan="2" style="font-size:11px;'
-                    'color:var(--fg-soft);padding-top:6px">ℹ️ ROE = '
+                _kf_notes.append(
+                    '<div class="si-note" style="margin-top:6px">ℹ️ ROE = '
                     + esc(str(_kf_rb.get("numerator") or "당기순이익")) + ' ÷ '
                     + ('평균 ' if _kf_rb.get("averaged") else '기말 ')
                     + esc(str(_kf_rb.get("denominator") or "자본총계"))
                     + ' (FnGuide 산식) · ROIC 는 투하자본 근사치라 원천에 '
-                      '따라 다를 수 있습니다</td></tr>\n')
-            _kf_note = ""
+                      '따라 다를 수 있습니다</div>')
             # 총액 계정을 안 주는 회사(증권·은행·보험)는 FnGuide 총액으로
             # 보강한다 — 어느 값이 어디서 왔는지 반드시 밝힌다(규칙 #10b).
             if kf.get("_revenue_source"):
-                _kf_note = ('<div style="font-size:11px;color:var(--fg-soft);'
-                            'margin-top:6px">ℹ️ 매출 = 영업수익 총액('
+                _kf_notes.append('<div class="si-note" style='
+                            '"margin-top:6px">ℹ️ 매출 = 영업수익 총액('
                             + esc(str(kf["_revenue_source"]))
                             + ') — DART 표준 손익에 총액 계정이 없어 보강'
                               '(대체 전: ' + esc(str(kf.get(
                                   "_revenue_component_was") or "구성요소"))
                             + '). 영업이익 교차 확인 통과분만 사용</div>')
             if _kf_comp:
-                _kf_note = ('<div style="font-size:11px;color:var(--fg-soft);'
-                            'margin-top:6px">⚠️ '
+                _kf_notes.append('<div class="si-note" style='
+                            '"margin-top:6px">⚠️ '
                             + esc(" · ".join(
                                 f"{k} = {v}(구성요소 계정)"
                                 for k, v in sorted(_kf_comp.items())))
@@ -6336,6 +6343,7 @@ def _render_stock_info_html(rec: dict) -> str:
                               " — <b>총수익의 일부</b>입니다(다른 구성요소는 "
                               "별도 계정, 합산·추정 없음). 총액이 아니므로 "
                               "영업이익률·순이익률은 비웁니다</div>")
+            _kf_note = "".join(_kf_notes)
             kr_financial_html = f"""<div class="si-section">
     <div class="si-section-title">K-IFRS 재무 요약 {esc(fy_label)} {esc(fs_label)}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
