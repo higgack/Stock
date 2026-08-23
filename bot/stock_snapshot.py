@@ -1649,7 +1649,12 @@ def _collect_financials(t, snap: dict) -> None:
         # 4개만 담아 **양수 EPS 가 3개**뿐이라 PER 밴드 최소치(4점)를 못 넘었다
         # — 원천이 준 걸 우리가 버려서 화면이 빈 것이다. `_df_to_rows` 의 기본값
         # 도 5라 이게 원래 의도였던 것으로 보인다(4는 근거 주석이 없었다).
-        a_rows = _df_to_rows(annual_df, max_periods=5)
+        # ⚠️ 연간은 **한 해 더** 받는다(사용자 2026-08-24 "연간도 분기처럼
+        # 하나 더 가져와야지 제대로 그려질것 같지 않아?"). 야후가 주는 가장
+        # 오래된 열은 라인아이템이 통째로 비는 경우가 흔해, 정확히 5개만
+        # 받으면 차트에 실제로 그려지는 해가 4개뿐이 된다(#44a 경계값 요청
+        # 금지). 렌더가 빈 열을 걷어내고 5개를 그린다.
+        a_rows = _df_to_rows(annual_df, max_periods=6)
         q_rows = _df_to_rows(quarterly_df, max_periods=8)
         if a_rows or q_rows:
             fins[label] = {}
