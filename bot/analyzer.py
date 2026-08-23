@@ -4,6 +4,7 @@ Keeps the heavy initialization out of the bot file and exposes a single
 synchronous `analyze(ticker, date)` call that returns (summary, full_report).
 """
 
+import json
 import logging
 import re
 import sys

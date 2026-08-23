@@ -5757,29 +5757,38 @@ _DERIVED_LABEL = {"trailingPE": "PER(후행)", "priceToBook": "PBR",
 
 
 def _derived_desc(si: dict) -> str:
-    """파생 항목을 **기준과 함께** 나열. 항목마다 기준이 달라 한 덩어리로
-    묶으면 틀린 출처를 표기하게 된다(예: PBR 에 'TTM' 을 붙이는 것)."""
+    """파생 항목을 **기준별로 묶어** 나열 — 항목마다 기준을 반복하면 한 줄이
+    길어져 아무도 안 읽는다(사용자 2026-08-23 "이것도 깔끔하게 잘 정리해줘").
+
+    옛 판: `BPS(최근분기말), EPS(선행)(네이버 추정), PER(선행)(네이버 추정),
+    PBR(최근분기말), EPS(후행)(TTM 25.3Q~26.2Q), PER(후행)(TTM 25.3Q~26.2Q)`
+    — 같은 괄호가 여섯 번 나온다. 기준을 키로 묶으면 세 줄이면 끝난다.
+    """
     basis = si.get("_derived_basis") or {}
     items = si.get("_derived_multiples") or []
-    parts = []
+    groups: dict = {}
     for k in items:
-        lb = _DERIVED_LABEL.get(k, k)
-        b = basis.get(k) if isinstance(basis, dict) else None
-        parts.append(f"{lb}({b})" if b else lb)
-    # ⚠️ 문구를 고정하지 않는다 — 지배주주 계정이 있으면 그걸 쓰고, 없으면
-    # 연결 총액으로 떨어진다(#55 설명이 코드와 어긋나면 버그).
-    scope = si.get("_derived_scope") or "연결 총액(비지배지분 포함)"
-    # ⚠️ 남는 소수점 차이의 이유를 밝힌다(2026-08-23 슈프리마 실측):
-    # EPS 우리 7,513 vs FnGuide 7,336 — 역산 주식수 7,142,857 로 **수정평균**
-    # (기말 6,974,311 ↔ 직전 7,257,273 사이)이고, BPS 42,389 vs 43,096 —
-    # 역산 6,859,105 로 **자사주 차감**이다. 우리는 둘 다 기말 상장주식수로
-    # 나눈다. 값이 틀린 게 아니라 **분모 규약이 다른 것**이다(#34).
-    return (", ".join(parts)
-            + f" — 시총·상장주식수와 DART {scope} 기준으로 산출"
-            + " · 분모는 <b>기말 상장주식수</b>입니다 — DART 보고 EPS 는"
-              " 가중평균 <b>유통</b>주식수(자사주 제외, K-IFRS 1033),"
-              " FnGuide 는 EPS 분모에 자사주를 <b>포함</b>(수정평균 발행주식수)"
-              "하고 BPS 분모에서만 차감해 소수점이 다릅니다")
+        b = (basis.get(k) if isinstance(basis, dict) else None) or ""
+        groups.setdefault(b, []).append(_DERIVED_LABEL.get(k, k))
+    if not groups:
+        return ""
+    esc = _html.escape
+    lines = []
+    for b, labs in groups.items():
+        names = " · ".join(dict.fromkeys(labs))       # 중복 제거, 순서 보존
+        lines.append((f"<b>{esc(b)}</b> — {esc(names)}" if b else esc(names)))
+    # ⚠️ 남는 소수점 차이의 이유(2026-08-23 슈프리마 실측): 우리는 기말
+    # 상장주식수로 나누고, DART 보고 EPS 는 가중평균 **유통**주식수(자사주
+    # 제외, K-IFRS 1033), FnGuide 는 EPS 분모에 자사주를 **포함**한다.
+    # ⚠️ 주식수·계정 기준 설명은 **그 계정을 쓰는 항목이 있을 때만** 적는다 —
+    # PSR 만 파생된 화면에 '분자 = DART 지배주주 귀속분' 이라고 쓰면 매출에
+    # 없는 개념을 주장하는 것이다(#55 설명이 코드와 어긋나면 버그).
+    if set(items) & {"trailingEps", "trailingPE", "bookValue", "priceToBook"}:
+        scope = si.get("_derived_scope") or "연결 총액(비지배지분 포함)"
+        lines.append(f"분모 = 기말 상장주식수 · 분자 = DART {esc(scope)}")
+        lines.append("FnGuide 는 EPS 분모에 자사주를 포함(수정평균 발행주식수)하고 "
+                     "BPS 분모에서만 차감해 소수점이 다릅니다")
+    return "<br>".join(lines)
 
 
 def kr_forward_from_naver(price, naver_val: dict | None) -> tuple:
@@ -5918,10 +5927,17 @@ def _derive_missing_multiples(si: dict) -> dict:
             return f"{(q.get('year') or 0) % 100:02d}.{q.get('quarter') or '?'}Q"
         if _w[0].get("year") and _w[-1].get("year"):
             net_basis = f"TTM {_ql(_w[0])}~{_ql(_w[-1])}"
-    if not net_owner:
-        _scope = "연결 총액(비지배지분 포함)"
+    # ⚠️ `_scope` 를 여기서 덮지 않는다 — 순이익과 자본이 서로 다른 기준일
+    # 수 있어(지배주주 순이익은 주는데 지배주주 자본은 안 주는 회사가 실재)
+    # 한 라벨로 뭉치면 한쪽이 거짓말이 된다(#34·#55). 아래에서 **파생된
+    # 항목만** 골라 문장을 만든다.
     rev = _ttm("매출")
-    rev_basis = "TTM" if rev is not None else "연간"
+    # ⚠️ 창 라벨은 순이익과 **같은 문자열**이어야 한다 — 같은 4분기인데
+    # 'TTM' 과 'TTM 25.3Q~26.2Q' 로 갈리면 기준별로 묶는 화면(#211)이 두
+    # 그룹으로 그려 창이 둘인 것처럼 보인다(#34).
+    rev_basis = (net_basis if (rev is not None
+                               and str(net_basis).startswith("TTM"))
+                 else "TTM" if rev is not None else "연간")
     if rev is None:
         rev = _num(fin.get("매출"))
 
@@ -5934,8 +5950,6 @@ def _derive_missing_multiples(si: dict) -> dict:
         return None, False
 
     equity, eq_owner = _stock("지배주주자본", "자본총계")
-    if not eq_owner and equity is not None:
-        _scope = "연결 총액(비지배지분 포함)"
     # ⚠️ `net_basis` 에 창을 붙이자 `== "TTM"` 비교가 조용히 거짓이 되어
     # 집중도 표기가 통째로 꺼졌다(회귀가 잡았다). 문자열 동등 비교는 라벨이
     # 풍부해지는 순간 깨진다 — 접두어로 본다.
@@ -6001,7 +6015,20 @@ def _derive_missing_multiples(si: dict) -> dict:
                   "priceToBook": "최근분기말", "bookValue": "최근분기말",
                   "forwardPE": "네이버 추정", "forwardEps": "네이버 추정"}
         out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
-        out["_derived_scope"] = _scope
+        _TOT = "연결 총액(비지배지분 포함)"
+        _own = "지배주주 귀속분"
+        _sc = []
+        if derived & {"trailingEps", "trailingPE"}:
+            _sc.append(("순이익", _own if net_owner else _TOT))
+        if derived & {"bookValue", "priceToBook"}:
+            _sc.append(("자본", _own if eq_owner else _TOT))
+        if not _sc:                 # 순이익·자본을 아무것도 안 썼으면 침묵
+            pass
+        elif len({v for _, v in _sc}) == 1:
+            out["_derived_scope"] = _sc[0][1]
+        else:                       # 기준이 갈리면 **어느 쪽이 어느 것인지** 적는다
+            # 구분자는 `·` 를 피한다 — 각주가 이미 `·` 로 칸을 나눈다
+            out["_derived_scope"] = ", ".join(f"{n} {v}" for n, v in _sc)
     if _ttm_note:
         out["_ttm_note"] = _ttm_note
     return out
@@ -6617,14 +6644,13 @@ def _render_stock_info_html(rec: dict) -> str:
                 or ("(없음)" if si.get("_forward_why") else "yfinance 컨센서스 EPS"))
     _per_basis_note = (
         '<div class="si-note" style="margin-top:6px">'
-        'ℹ️ <b>후행</b> = 현재가 ÷ TTM 실적 EPS'
-        + ('(DART 최근 4분기 합)' if is_kr else '')
-        + ' · <b>선행</b> = 현재가 ÷ ' + esc(_fwd_src)
-        + ' — 분자는 둘 다 <b>현재가</b>(실적 발표 시점 주가가 아님)<br>'
+        'ℹ️ <b>후행 PER</b> = 현재가 ÷ TTM 실적 EPS'
+        + ('(DART 4분기 합)' if is_kr else '') + '<br>'
+        'ℹ️ <b>선행 PER</b> = 현재가 ÷ ' + esc(_fwd_src) + '<br>'
         + ('ℹ️ ' + esc(str(si["_forward_why"])) + '<br>'
            if si.get("_forward_why") else '')
-        + 'ℹ️ <b>밴드차트 탭</b>의 현재 PER 은 분모가 달라(원천 FnGuide 기준) '
-          '값이 다를 수 있습니다</div>')
+        + 'ℹ️ <b>밴드차트 탭</b>은 분모가 달라(FnGuide 기준) 값이 다릅니다'
+          '</div>')
 
     def _per_mark(per_key: str, eps_key: str) -> str:
         """화면의 EPS 로 **눈으로 나눠 봤을 때 맞는가**(#33) — 아니면 라벨이
@@ -8130,8 +8156,13 @@ def _render_stock_info_html(rec: dict) -> str:
                              else " · AKShare" if is_cn else " · FinMind" if is_tw else "")
     # 파생값이 섞였으면 이 표에서도 밝힌다 — 종합 탭만 표기하면 같은 숫자가
     # 탭에 따라 출처가 달라 보인다(사용자 2026-08-16 두 표면 모두 지적).
-    _val_src += ((" · ⚙️ 자체계산(소스 미제공): " + _derived_desc(si))
-                 if si.get("_derived_multiples") else "")
+    # ⚠️ 파생 설명을 **출처 줄에 이어 붙이지 않는다**. 그 줄은 우측정렬
+    # 한 줄짜리라 긴 문단이 붙으면 줄바꿈이 제멋대로 생겨 읽기 어렵다
+    # (사용자 2026-08-23 "왜 줄 바꿈했는지도 모르겠네"). 좌측정렬 블록으로.
+    _derived_block = (
+        '<div class="si-note" style="margin-top:8px">⚙️ <b>자체계산</b>'
+        '(소스 미제공)<br>' + _derived_desc(si) + '</div>'
+        if si.get("_derived_multiples") else "")
     # 값이 맞아도 구성이 특이하면 말한다 — 안 하면 사용자가 매번 물어야 한다.
     _ttm_note_html = (f'<div class="si-note" style="margin-top:6px">'
                       f'{esc(si["_ttm_note"])}</div>'
@@ -8155,6 +8186,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {us_xbrl_html}
   {tw_fin_html}
   {div_html}
+  {_derived_block}
   {_src_foot}출처: {_val_src}</div>
 </div>"""
 

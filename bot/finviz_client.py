@@ -1399,6 +1399,7 @@ def _compute_movers_from(universe: list, names: dict, cache_name: str,
     사용자 2026-06-13 '홍콩도 미국처럼'). _compute_highlow_from 의 일봉/백필 패턴
     재사용. {up, down, ts, source, scanned}. 분할 아티팩트(|등락|>75%) 드롭.
     mcap/업종/한글명 백필(상·하위 hit 만). 백그라운드 산출 — 종목 적은 hit 만 enrich."""
+    import yfinance as yf
     out: dict = {"up": [], "down": [], "ts": _now_label(), "source": source,
                  "scanned": 0}
     if yf_paused():
@@ -1466,6 +1467,7 @@ def _compute_jp_stop(universe: list, names: dict, cache_name: str,
     (price_sanity.jp_price_limit, 가격대별 tiered)에 도달한 종목 (사용자 2026-06-13
     'JP 상하한가'). 결정적(공개 표·스크래핑 불요). {upper, lower, ts, source,
     scanned}. mcap/업종/한글명 백필(hit 만)."""
+    import yfinance as yf
     from bot.price_sanity import jp_price_limit
     out: dict = {"upper": [], "lower": [], "ts": _now_label(),
                  "source": source, "scanned": 0}
@@ -1769,6 +1771,7 @@ def _fetch_display_names(tickers: list, allow_slow: bool = True) -> dict:
     if yf_paused() or not allow_slow:   # YF_PAUSE 또는 렌더-세이프 → .info skip, 캐시만
         missing = []
     if missing:
+        import yfinance as yf
         from concurrent.futures import ThreadPoolExecutor  # _fetch_mcaps 패턴
 
         def _one(tk):

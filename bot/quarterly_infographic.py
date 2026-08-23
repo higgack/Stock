@@ -1210,11 +1210,15 @@ def _render_locked(payload: dict, out_path: str,
     if _on("foot"):
         # ── 푸터(TTM + 출처 + 면책) ─────────────────────────────────────
         ttm = payload.get("ttm") or {}
+        _net_v, _net_k = ttm_net(ttm)
         panel(_PANEL_X, y, _PANEL_W, 6.4, fc=_PANEL2, rad=1.6)
         foot_items = [
             ("TTM 매출", amt(ttm.get("매출"))),
             ("TTM 영업이익", amt(ttm.get("영업이익"))),
-            ("TTM 순이익", amt(ttm.get("당기순이익"))),
+            # 옆 칸 'TTM PER' 의 분모와 **같은 계정**이어야 한다(#33) —
+            # 값을 고르는 규칙은 `ttm_net` 하나뿐이다.
+            ("TTM 순이익" + ("(지배주주)" if _net_k == "지배주주순이익" else ""),
+             amt(_net_v)),
             ("TTM PER" + ("*" if payload.get("per_self") else ""),
              "—" if payload.get("per") is None
              else f"{payload['per']:,.2f}배"),
@@ -1303,6 +1307,21 @@ def anomalous_labels(qs: list) -> list:
             if any((q.get("financials") or {}).get(f) for f in _ANOMALY_AFFECTS)]
 
 
+def ttm_net(ttm: dict) -> tuple:
+    """TTM 순이익 — `(값, 어느 계정인가)`. **지배주주 귀속분 우선**(FnGuide
+    산식, #193).
+
+    ⚠️ 이 함수를 두 곳이 함께 쓰는 이유: 푸터의 'TTM 순이익' 칸과 그 옆
+    'TTM PER' 의 분모가 **다른 계정이면** 사용자가 눈으로 나눠 봤을 때 안
+    맞는다(#33). 값을 고르는 규칙을 복제하면 언젠가 한쪽만 바뀐다(#38).
+    """
+    t = ttm or {}
+    v = t.get("지배주주순이익")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return v, "지배주주순이익"
+    return t.get("당기순이익"), "당기순이익"
+
+
 def _ttm(qs: list) -> dict:
     """최근 4분기 합 = TTM. 4개 미만이면 빈 dict(부분합으로 TTM 이라 부르면
     틀린 값 — 억지로 만들지 않는다).
@@ -1326,7 +1345,12 @@ def _ttm(qs: list) -> dict:
         return {}
     bad = anomalous_keys(window)
     out: dict = {}
-    for k in ("매출", "영업이익", "당기순이익"):
+    # ⚠️ **지배주주순이익도 합한다** — 밸류에이션 탭의 TTM PER 은 지배주주
+    # 귀속분을 분자로 쓴다(FnGuide 산식, #193). 여기만 연결 총액으로 나누면
+    # 같은 종목의 TTM PER 이 탭마다 갈린다(사용자 2026-08-23 "분기실적탭에
+    # TTM PER 는 다른곳과도 일치되는게 맞는거겠지?"). 같은 계산을 하는 두
+    # 화면은 같은 분자를 써야 한다(#38·#147).
+    for k in ("매출", "영업이익", "당기순이익", "지배주주순이익"):
         if k in bad:
             continue
         vals = [(q.get("financials") or {}).get(k) for q in window]
@@ -1569,7 +1593,7 @@ def build_payload(ticker: str, snap: dict | None = None, *,
     if per is None and not cur_mismatch:
         # 야후가 trailingPE·EPS 를 안 주는 종목(보험·금융지주에서 흔함) 폴백 —
         # 옛 코드는 단일 소스라 그냥 '—' 였다(사용자 2026-08-16).
-        per = self_per(mcap, ttm.get("당기순이익"))
+        per = self_per(mcap, ttm_net(ttm)[0])
         per_self = per is not None
     # Forward PER — 라이브 주가 ÷ 야후 forwardEps(컨센서스라 장중 불변).
     per_fwd = _live_per("forwardEps")

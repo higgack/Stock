@@ -24276,7 +24276,13 @@ class TestQuarterlyReviewFixes20260816:
               "_derived_basis": {"trailingPE": "TTM",
                                  "priceToBook": "최근분기말"}}
         txt = _derived_desc(si)
-        assert "PER(후행)(TTM)" in txt and "PBR(최근분기말)" in txt
+        # 2026-08-23 표기 변경: 항목마다 괄호를 반복하지 않고 **기준으로 묶어**
+        # 한 번씩만 적는다(#211). 계약은 "항목마다 기준이 화면에 나온다" 이지
+        # `PER(후행)(TTM)` 이라는 특정 표기가 아니다(#19).
+        assert "TTM" in txt and "PER(후행)" in txt
+        assert "최근분기말" in txt and "PBR" in txt
+        assert txt.index("TTM") < txt.index("PER(후행)"), txt      # 기준 → 항목
+        assert txt.count("TTM") == 1 and txt.count("최근분기말") == 1, txt
         assert "비지배지분 포함" in txt
 
 
@@ -37000,22 +37006,6 @@ class TestShareCountIdentity:
         # 쓰는 곳이 여럿이라는 사실도 고정 — 하나로 줄면 이 가드가 무의미해진다
         assert src.count('class="si-note"') >= 8, src.count('class="si-note"')
 
-    def test_the_per_note_is_two_lines_not_four(self):
-        """표 밑 각주와 같은 결로 — 줄바꿈은 하나만."""
-        import ast
-        src = open("bot/dashboard.py").read()
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef)
-                  and n.name == "_render_stock_info_html")
-        seg = ast.get_source_segment(src, fn) or ""
-        i = seg.index("_per_basis_note = (")
-        note = seg[i:i + 800]
-        note = note[:note.index("</div>")]
-        # 기본 두 줄 — 선행 PER 을 비운 사유가 있을 때만 한 줄 더 붙는다
-        assert note.count("<br>") == 2, f"<br> {note.count('<br>')}개"
-        assert "_forward_why" in note, "추가 줄이 사유일 때만 붙는지 확인"
-        assert "si-note" in note
-
     def test_the_band_note_names_its_denominator_as_a_number(self):
         """사용자 2026-08-23 "밸류에이션 탭과 밴드차트간에 차이가 이해가 안가.
         둘다 현재 주가를 기반으로 TTM 으로 하는데 왜 차이가 나지?" —
@@ -37232,3 +37222,225 @@ class TestShareCountIdentity:
         assert "forwardEps" in _BAND_JS[i:i + 400], "PBR 에도 붙는다"
         # 셀 읽기는 한 헬퍼로 — 복제하면 한쪽만 고쳐진다(#38)
         assert _BAND_JS.count("function cell(q)") == 1
+
+    def test_the_derived_note_groups_by_basis(self):
+        """사용자 2026-08-23 "이것도 깔끔하게 잘 정리해주고" — 항목마다 기준을
+        반복하면 한 줄이 길어져 아무도 안 읽는다. 옛 판은 같은 괄호가 여섯 번
+        나왔다(`BPS(최근분기말), EPS(선행)(네이버 추정), …`)."""
+        from bot.dashboard import _derived_desc
+        si = {"_derived_multiples": ["bookValue", "forwardEps", "forwardPE",
+                                     "priceToBook", "trailingEps", "trailingPE"],
+              "_derived_basis": {"bookValue": "최근분기말",
+                                 "forwardEps": "네이버 추정",
+                                 "forwardPE": "네이버 추정",
+                                 "priceToBook": "최근분기말",
+                                 "trailingEps": "TTM 25.3Q~26.2Q",
+                                 "trailingPE": "TTM 25.3Q~26.2Q"},
+              "_derived_scope": "연결 총액(비지배지분 포함)"}
+        out = _derived_desc(si)
+        # 기준이 **한 번씩만** 나온다
+        for b in ("최근분기말", "네이버 추정", "TTM 25.3Q~26.2Q"):
+            assert out.count(b) == 1, (b, out.count(b))
+        assert "BPS · PBR" in out and "EPS(선행) · PER(선행)" in out, out
+        assert out.count("<br>") == 4, out.count("<br>")   # 3그룹 + 분모 + 주석
+
+    def test_the_derived_block_is_not_glued_to_the_source_line(self):
+        """우측정렬 한 줄에 긴 문단을 이어 붙이면 줄바꿈이 제멋대로 생긴다
+        (사용자 "왜 줄 바꿈했는지도 모르겠네") — 좌측정렬 블록으로 뺀다."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert '_val_src += ((" · ⚙️' not in seg, "아직 출처 줄에 붙인다"
+        assert "_derived_block = (" in seg and "{_derived_block}" in seg
+        assert seg.count("{_derived_block}") == 1
+
+    def test_the_per_note_is_parallel_short_lines(self):
+        """사용자 2026-08-23 "왜 줄 바꿈했는지도 모르겠네" — 옛 각주는 한 줄에
+        후행·선행·공통설명을 다 넣어 브라우저가 아무 데서나 접었다. 계약은
+        **짧은 평행 줄 셋**(후행·선행·밴드) + 선행을 비운 **사유가 있을 때만**
+        한 줄 더. `<br>` 을 세면 조건부 줄과 무조건 줄이 섞여 4번째 줄을
+        상수로 추가하는 변형이 통과한다 — 조건부(IfExp) 안팎을 **구조로**
+        갈라서 셀 것(#60·#65)."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        assign = next(n for n in ast.walk(fn)
+                      if isinstance(n, ast.Assign)
+                      and getattr(n.targets[0], "id", "") == "_per_basis_note")
+
+        def _txt(node, skip_ifexp: bool):
+            """문자열 상수를 모은다. `skip_ifexp` 면 조건부(IfExp) 가지는
+            통째로 건너뛴다 — 무조건 줄만 남는다."""
+            if skip_ifexp and isinstance(node, ast.IfExp):
+                return ""
+            out = node.value if (isinstance(node, ast.Constant)
+                                 and isinstance(node.value, str)) else ""
+            for ch in ast.iter_child_nodes(node):
+                out += _txt(ch, skip_ifexp)
+            return out
+
+        cond = [n for n in ast.walk(assign) if isinstance(n, ast.IfExp)]
+        cond_txt = "".join(_txt(c, False) for c in cond)
+        plain = _txt(assign, True)
+        assert plain.count("ℹ️") == 3, f"무조건 ℹ️ {plain.count('ℹ️')}개(후행·선행·밴드)"
+        assert plain.count("<br>") == 2, f"무조건 <br> {plain.count('<br>')}개"
+        assert "후행 PER" in plain and "선행 PER" in plain and "밴드차트 탭" in plain
+        assert "분자는 둘 다" not in plain, "옛 장문이 남아 있다"
+        # 네 번째 줄은 **사유가 있을 때만** — 조건이 `_forward_why` 인지까지
+        assert cond_txt.count("ℹ️") == 1, cond_txt
+        assert any("_forward_why" in ast.dump(c.test) for c in cond), \
+            "추가 줄이 사유에 걸려 있지 않다"
+        assert 'class="si-note"' in plain
+
+    def test_derived_scope_is_per_item_not_one_label_for_two_accounts(self):
+        """2026-08-23 스모크에서 드러남: 지배주주 **순이익**은 주는데 지배주주
+        **자본**은 안 주는 회사가 있다(DART 실제). 옛 코드는 둘 중 하나만
+        총액이면 `_derived_scope` 를 통째로 '연결 총액'으로 덮어, EPS 는
+        지배주주 귀속분으로 만들어 놓고 화면은 총액이라고 말했다 — 한 라벨이
+        두 계정을 대표하면 한쪽은 반드시 거짓말이다(#34·#55).
+        그리고 **파생되지 않은 항목**의 기준은 아예 말하지 않는다."""
+        from bot.dashboard import _derive_missing_multiples as d
+
+        def _si(**over):
+            q = {"year": 2026, "quarter": 2, "매출": 5e11}
+            q.update(over)
+            qs = [dict(q, year=y, quarter=n)
+                  for y, n in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+            return d({"market_cap": 4.4e11, "shares_outstanding": 2.07e8,
+                      "current_price": 2140.0, "kr": {"financials_q": qs}})
+
+        mixed = _si(당기순이익=1e11, 지배주주순이익=9.8e10, 자본총계=3e13)
+        sc = mixed["_derived_scope"]
+        assert "순이익 지배주주 귀속분" in sc and "자본 연결 총액" in sc, sc
+
+        both_own = _si(지배주주순이익=9.8e10, 지배주주자본=2.9e13)
+        assert both_own["_derived_scope"] == "지배주주 귀속분", both_own["_derived_scope"]
+
+        both_tot = _si(당기순이익=1e11, 자본총계=3e13)
+        assert both_tot["_derived_scope"] == "연결 총액(비지배지분 포함)"
+
+        # 순이익이 없어 EPS·PER 이 안 만들어지면 그 기준은 말하지 않는다
+        only_bps = _si(자본총계=3e13)
+        assert "trailingEps" not in (only_bps.get("_derived_multiples") or [])
+        assert "순이익" not in only_bps["_derived_scope"], only_bps["_derived_scope"]
+
+        # 순이익도 자본도 안 썼으면(PSR 만) 계정 기준을 **아예 말하지 않는다** —
+        # 매출에는 지배주주/비지배 개념이 없다(#55).
+        from bot.dashboard import _derived_desc
+        psr_only = _si()
+        assert psr_only.get("_derived_multiples") == \
+            ["priceToSalesTrailing12Months"], psr_only.get("_derived_multiples")
+        assert "_derived_scope" not in psr_only, psr_only.get("_derived_scope")
+        txt = _derived_desc(psr_only)
+        assert "분자 = DART" not in txt and "자사주" not in txt, txt
+        assert "PSR" in txt
+
+    def test_the_ttm_window_label_is_shared_by_revenue_and_profit(self):
+        """같은 4분기인데 PSR 만 'TTM', EPS·PER 은 'TTM 25.3Q~26.2Q' 이면
+        기준별로 묶는 각주(#211)가 **두 그룹**으로 그려 창이 둘인 것처럼
+        보인다 — 같은 창은 같은 문자열이어야 한다(#34)."""
+        from bot.dashboard import _derive_missing_multiples as d, _derived_desc
+        qs = [{"year": y, "quarter": n, "매출": 5e11, "당기순이익": 1e11,
+               "자본총계": 3e13}
+              for y, n in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+        out = d({"market_cap": 4.4e11, "shares_outstanding": 2.07e8,
+                 "current_price": 2140.0, "kr": {"financials_q": qs}})
+        b = out["_derived_basis"]
+        assert b["priceToSalesTrailing12Months"] == b["trailingPE"] \
+            == "TTM 25.3Q~26.2Q", b
+        txt = _derived_desc(out)
+        assert txt.count("TTM 25.3Q~26.2Q") == 1, txt
+        assert "PSR · EPS(후행) · PER(후행)" in txt, txt
+
+    def test_no_module_references_a_name_that_does_not_exist(self):
+        """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다
+        뒤따르던 `kr_forward_from_naver`·`_ttm_concentration`·
+        `_derive_missing_multiples` **252줄을 통째로 지웠다**. `ast.parse` 도
+        `import bot.dashboard` 도 통과했다 — 호출이 함수 본문 안이라 NameError
+        는 **그 화면을 열었을 때만** 난다. 회귀 2,785개 중 그 함수를 직접
+        import 하는 테스트 하나만 잡았고, 그것마저 없었으면 배포됐을 것이다.
+
+        규율("지웠는지 확인")로는 못 막는다 — 구조로 옮긴다(#119). 표준
+        라이브러리 `symtable` 로 각 모듈의 **전역 참조**가 실제로 정의돼
+        있는지 전수 검사한다(외부 린터 의존 없음). 이름 열거가 아니라
+        디렉터리 전체를 훑고 예외만 allowlist(#24).
+
+        켜자마자 5건을 잡았다(#87a '새 가드는 켜자마자 뭔가 잡는 게 정상'):
+        `analyzer._log_pm_override_conflict` 의 `json`(PM override 감사 기록이
+        통째로 실패), `telegram_bot._build_usage_report` 의 `Path`(trade 누적
+        비용 집계), `finviz_client` 의 `yf` 3곳(급등락·JP 상하한가·표시이름 —
+        전부 `except Exception` 안이라 **조용히** 빈 결과였다)."""
+        import ast, builtins, symtable, pathlib
+        DUNDER = {"__file__", "__name__", "__doc__", "__package__",
+                  "__spec__", "__loader__", "__builtins__", "__path__"}
+
+        def _top(tree):
+            out = set()
+            for n in tree.body:
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                    out.add(n.name)
+                elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                    for a in n.names:
+                        out.add((a.asname or a.name).split(".")[0])
+            for n in ast.walk(tree):        # `global x; x = ...` 도 모듈 이름
+                if isinstance(n, ast.Global):
+                    out.update(n.names)
+            return out
+
+        bad, scanned = [], 0
+        for root in ("bot", "trade"):
+            for p in sorted(pathlib.Path(root).rglob("*.py")):
+                src = p.read_text(encoding="utf-8")
+                tree = ast.parse(src)
+                # `from x import *` 는 무엇이 들어오는지 알 수 없다 — 제외
+                if any(isinstance(n, ast.ImportFrom)
+                       and any(a.name == "*" for a in n.names)
+                       for n in ast.walk(tree)):
+                    continue
+                st = symtable.symtable(src, str(p), "exec")
+                known = (set(st.get_identifiers()) | set(dir(builtins))
+                         | DUNDER | _top(tree))
+                scanned += 1
+                stack = list(st.get_children())
+                while stack:
+                    sc = stack.pop()
+                    stack += sc.get_children()
+                    for sym in sc.get_symbols():
+                        if (sym.is_global() and sym.is_referenced()
+                                and sym.get_name() not in known):
+                            bad.append(f"{p}:{sc.get_name()}:{sym.get_name()}")
+        # 대조 대상이 0건이면 통과가 아니라 실패다(#54)
+        assert scanned > 300, f"훑은 모듈 {scanned}개 — 스캔이 안 돌았다"
+        assert not bad, "정의되지 않은 전역 참조: " + ", ".join(sorted(bad))
+
+    def test_quarterly_tab_ttm_per_uses_the_same_numerator(self):
+        """사용자 2026-08-23 "분기실적탭에 TTM PER 는 다른곳과도 일치되는게
+        맞는거겠지?" — 밸류에이션 탭은 지배주주 귀속분을 분자로 쓴다(#193).
+        여기만 연결 총액으로 나누면 같은 종목의 TTM PER 이 탭마다 갈린다."""
+        import ast
+        from bot.quarterly_infographic import _ttm
+        qs = [{"year": y, "quarter": q,
+               "financials": {"매출": 1e11, "영업이익": 1e10,
+                              "당기순이익": 1.2e10, "지배주주순이익": 1e10}}
+              for y, q in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+        t = _ttm(qs)
+        assert t.get("지배주주순이익") == 4e10, t
+        assert t.get("당기순이익") == 4.8e10, t
+        # 분모를 고르는 규칙은 **한 곳**(#38) — 그리고 푸터의 'TTM 순이익'
+        # 칸이 그 분모와 같은 계정이어야 눈으로 나눠 봤을 때 맞는다(#33).
+        from bot.quarterly_infographic import ttm_net
+        assert ttm_net(t) == (4e10, "지배주주순이익"), ttm_net(t)
+        assert ttm_net({"당기순이익": 7.0}) == (7.0, "당기순이익")
+        src = open("bot/quarterly_infographic.py").read()
+        assert src.count("ttm_net(") >= 3, "PER·푸터가 같은 헬퍼를 안 쓴다"
+        i = src.index("per = self_per(mcap,")
+        assert "ttm_net(ttm)" in src[i:i + 80], src[i:i + 80]
+        j = src.index('("TTM 순이익"')
+        assert "_net_v" in src[j:j + 200] and "지배주주" in src[j:j + 200], \
+            "푸터가 PER 분모와 다른 계정을 찍는다"
