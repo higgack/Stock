@@ -6112,18 +6112,16 @@ def _derive_missing_multiples(si: dict) -> dict:
             derived.add("forwardPE")
         out["_forward_src"] = "네이버(FnGuide) 추정 EPS"
     elif kr:
-        # ⚠️ 국내인데 네이버 추정치가 없으면 **비운다**(사용자 2026-08-23
-        # "이 방법은 별로 좋지 않은것 같아. 한국종목의 경우는 네이버의
-        # 컨센서스를 사용하는게 좋을것 같아"). yfinance forwardPE 는
-        # 글로벌·외국계 커버리지 집계라 화면의 다른 칸과 기준이 다르고,
-        # 국내는 forwardEps 를 안 줘서 **눈으로 검산도 못 한다** — 검산
-        # 불가한 배수를 남기느니 빈칸이 낫다(#29·#32).
-        out["forwardPE"] = None
-        out["forwardEps"] = None
-        out["_forward_src"] = ""
-        out["_forward_why"] = ("네이버(FnGuide)가 이 종목의 추정 EPS 를 "
-                               "제공하지 않아 비웠습니다 — yfinance 컨센서스는 "
-                               "커버리지가 달라 쓰지 않습니다")
+        # 사용자 2026-08-24: 국내는 **네이버 우선 · yfinance 폴백**.
+        # (2026-08-23 에는 "검산 불가한 배수는 비운다"였는데, 빈칸보다
+        # 커버리지가 낫다는 판단으로 바뀌었다 — 대신 **출처를 밝힌다**.)
+        # yfinance 값이 있으면 그대로 둔다 — 덮지 않는다.
+        if out.get("forwardPE") is not None or out.get("forwardEps") is not None:
+            out["_forward_src"] = "yfinance 컨센서스 EPS"
+            out["_forward_why"] = "네이버(FnGuide) 추정 EPS 미제공 — yfinance 로 대체"
+        else:
+            out["_forward_src"] = ""
+            out["_forward_why"] = "네이버·yfinance 모두 추정 EPS 미제공"
     # 그 밖의 시장은 yfinance 가 준 forwardPE 를 그대로 쓴다 — 컨센서스
     # EPS 가 필요해 우리가 만들 수 없다.
     if derived:

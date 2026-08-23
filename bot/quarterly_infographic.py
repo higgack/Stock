@@ -1620,9 +1620,11 @@ def build_payload(ticker: str, snap: dict | None = None, *,
                 log.debug("quarterly: naver_val %s: %s", ticker, exc)
         _kr_fe, _kr_fp = kr_forward_from_naver(_kr_px, _nv)
         per_fwd = _clean_per(_kr_fp) if (_kr_fp and not cur_mismatch) else None
-    else:
+    if per_fwd is None:
+        # 사용자 2026-08-24: 국내도 **네이버 우선 · yfinance 폴백**이다
+        # (밸류에이션 탭과 같은 규칙 — 여기만 다르면 탭마다 갈린다).
         per_fwd = _live_per("forwardEps")
-    if per_fwd is None and not is_kr:
+    if per_fwd is None:
         # 야후가 forwardPE 는 주면서 forwardEps 는 안 주는 경우가 흔하다
         # (039030.KQ 실측 2026-08-16: forwardPE 30.72 · forwardEps None).
         # forwardPE = 수집시점주가 ÷ forwardEps 이므로 EPS 를 역산해 라이브
@@ -1632,7 +1634,7 @@ def build_payload(ticker: str, snap: dict | None = None, *,
         if (live.get("price") and _fpe and not cur_mismatch
                 and isinstance(_sp, (int, float)) and _sp > 0):
             per_fwd = _clean_per(live["price"] / (_sp / _fpe))
-    if per_fwd is None and not is_kr:
+    if per_fwd is None:
         per_fwd = _clean_per(snap.get("forwardPE"))
     psr = None
     _ttm_rev = ttm.get("매출")

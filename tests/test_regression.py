@@ -6699,9 +6699,12 @@ class TestQuarterlyMultiMarket20260816:
 
         def canon(nm):
             return _NAME_MAP_NORM.get(_norm_acct_nm(nm))
-        for nm in ("Ⅰ. 영업활동으로 인한 현금흐름", "영업에서 창출된 현금흐름",
-                   "영업활동순현금흐름"):
+        for nm in ("Ⅰ. 영업활동으로 인한 현금흐름", "영업활동순현금흐름"):
             assert canon(nm) == "영업활동현금흐름", nm
+        # ⚠️ 2026-08-24 정정: `영업에서 창출된 현금흐름` 은 **이자·법인세
+        # 납부 전 소계**라 영업활동현금흐름보다 크다 — 승자 규칙이 '절댓값
+        # 큰 행'이라 그 줄이 이겨 FCF 가 부풀려졌다(NHN KCP 실측 +70.7억).
+        assert canon("영업에서 창출된 현금흐름") is None
         for nm in ("유형자산의 취득", "유형자산의 증가", "유형자산 취득"):
             assert canon(nm) == "유형자산취득", nm
         for nm in ("무형자산의 취득", "무형자산의 증가"):
@@ -37137,32 +37140,24 @@ class TestShareCountIdentity:
         assert "합을 만들지 않는다" in seg
 
     def test_kr_forward_is_blank_when_naver_has_no_estimate(self):
-        """사용자 2026-08-23 "이 방법은 별로 좋지 않은것 같아. 한국종목의
-        경우는 네이버의 컨센서스를 사용하는게 좋을것 같아."
-
-        슈프리마는 네이버 추정PER·EPS 가 **N/A** 라 yfinance forwardPE
-        11.25x 가 남았고, 국내는 forwardEps 를 안 줘서 `EPS (선행) —` 이라
-        **눈으로 검산도 못 했다**. 검산 불가한 배수를 남기느니 빈칸이
-        낫다(#29·#32) — 대신 **왜 비었는지** 말한다(#43)."""
-        from bot.dashboard import _derive_missing_multiples
-        qs = [{"year": 2026, "quarter": q, "당기순이익": 1e10,
-               "자본총계": 3e11} for q in range(1, 5)]
-        base = {"market_cap": 3.913e11, "shares_outstanding": 6974311.0,
-                "current_price": 56100.0, "forwardPE": 11.25}
-        blank = _derive_missing_multiples({**base, "kr": {"financials_q": qs}})
-        assert blank.get("forwardPE") is None, blank.get("forwardPE")
-        assert blank.get("forwardEps") is None
-        assert "네이버" in (blank.get("_forward_why") or ""), blank
-        # 네이버가 주면 그걸 쓴다
-        has = _derive_missing_multiples(
-            {**base, "kr": {"financials_q": qs,
-                            "naver_val": {"cns_eps": 21895.0}}})
-        assert abs(has["forwardPE"] - 56100.0 / 21895.0) < 1e-9
-        assert "네이버" in has["_forward_src"]
-        # ⚠️ 그 밖의 시장은 건드리지 않는다 — yfinance 가 유일한 원천이다
-        other = _derive_missing_multiples(dict(base))
-        assert other["forwardPE"] == 11.25, other["forwardPE"]
-        assert not other.get("_forward_why")
+        """⚠️ 2026-08-24 계약 변경: 사용자 "한국에 경우에 우선을 네이버,
+        풀백은 야후로 해줘" — 2026-08-23 의 '없으면 비운다'(#206)를 뒤집었다.
+        빈칸보다 커버리지가 낫다는 판단이고, 대신 **출처를 밝힌다**.
+        둘 다 없을 때만 빈칸이다."""
+        from bot.dashboard import _derive_missing_multiples as d
+        qs = [{"year": y, "quarter": q, "당기순이익": 1e10,
+               "지배주주순이익": 1e10, "지배주주자본": 3e11, "매출": 3e11}
+              for y, q in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+        base = {"market_cap": 5e12, "shares_outstanding": 12319550,
+                "current_price": 404500.0}
+        # yfinance 도 없으면 그때만 빈칸 — 그리고 사유를 남긴다(#43)
+        out = d({**base, "kr": {"financials_q": qs}})
+        assert out.get("forwardPE") is None and out.get("forwardEps") is None
+        assert out.get("_forward_why"), "왜 비었는지 안 말한다"
+        # yfinance 가 주면 **덮지 않는다**
+        out2 = d({**base, "forwardPE": 30.72, "kr": {"financials_q": qs}})
+        assert out2["forwardPE"] == 30.72
+        assert out2["_forward_src"] == "yfinance 컨센서스 EPS"
 
     def test_the_note_says_why_the_forward_per_is_blank(self):
         """빈칸이면 **왜** 비었는지 화면이 말한다 — 침묵이 최악(#43)."""
@@ -37581,10 +37576,12 @@ class TestShareCountIdentity:
         seg = ast.get_source_segment(src, fn) or ""
         # ⚠️ 고정 길이 창으로 재면 주석 한 줄에 무너진다(#60) — 함수 전체로.
         assert "kr_forward_from_naver" in seg, "규칙을 복제했다"
-        # 국내는 야후 폴백을 타지 않는다 — 폴백 전부 `not is_kr` 게이트
-        assert seg.count("if per_fwd is None and not is_kr:") == 2, \
-            seg.count("if per_fwd is None and not is_kr:")
-        assert "if per_fwd is None:" not in seg, "야후 폴백이 국내에도 열려 있다"
+        # ⚠️ 2026-08-24: 국내도 yfinance 폴백을 탄다(사용자 결정) — 게이트가
+        # 남아 있으면 밸류에이션 탭과 갈린다(#38).
+        assert "if per_fwd is None and not is_kr:" not in seg, \
+            "국내만 yfinance 폴백을 막고 있다"
+        assert seg.count("if per_fwd is None:") == 3, \
+            seg.count("if per_fwd is None:")
 
     def test_no_dict_literal_has_duplicate_keys(self):
         """중복 키는 파이썬이 조용히 **마지막 것만** 남긴다 — 앞의 매핑이
@@ -37856,10 +37853,10 @@ class TestShareCountIdentity:
         # 계약은 함수 **전체**에서 본다.
         assert "get_naver_valuation" in seg, "없을 때 받아오지 않는다"
         assert "kr_forward_from_naver(_kr_px, _nv)" in seg, "규칙을 복제했다"
-        # 국내는 야후 폴백을 타지 않는다(#206) — 그 계약은 그대로다
-        assert seg.count("if per_fwd is None and not is_kr:") == 2, \
-            seg.count("if per_fwd is None and not is_kr:")
-        assert "if per_fwd is None:" not in seg, "야후 폴백이 국내에도 열려 있다"
+        # ⚠️ 2026-08-24: 국내도 yfinance 폴백을 탄다(사용자 결정)
+        assert "if per_fwd is None and not is_kr:" not in seg
+        assert seg.count("if per_fwd is None:") == 3, \
+            seg.count("if per_fwd is None:")
 
     def test_the_two_financial_surfaces_name_each_other(self):
         """사용자 2026-08-24 "우리 밸류에이션탭, 재무재표, 네이버간에 차이는
@@ -37875,6 +37872,63 @@ class TestShareCountIdentity:
         assert "재무제표 탭" in seg2 and "yfinance" in seg2, seg2[:500]
         # 순이익 기준도 밝힌다 — 한 탭은 총액, 다른 탭은 지배다
         assert "연결 총액" in seg2 and "지배주주 " in seg2, seg2[:900]
+
+    def test_ocf_does_not_take_the_pre_tax_subtotal(self):
+        """사용자 2026-08-24 NHN KCP 060250.KQ FCF 리뷰 — 우리 FY2025 FCF
+        2,026억 vs 네이버 1,956억. 프로브가 재료를 찍자 원인이 드러났다:
+        **CAPEX 는 47.4억으로 네이버 47 과 정확히 같았고**, OCF 만 2,073.7억
+        vs 2,003억(+70.7억) 이었다.
+
+        범인은 `영업에서 창출된 현금흐름` 별칭이다 — 그건 이자·법인세 납부
+        **전** 소계라 영업활동현금흐름보다 크고, 승자 규칙이 '절댓값 큰 행'
+        이라 그 줄이 이겼다. 같은 이름처럼 보여도 **다른 개념**이면 매핑하지
+        말 것(#34)."""
+        from bot.dart_client import _DART_NAME_MAP, _FIN_CACHE_VER
+        assert "영업에서창출된현금흐름" not in _DART_NAME_MAP, \
+            "이자·법인세 전 소계가 영업활동현금흐름으로 매핑돼 있다"
+        # 진짜 영업활동현금흐름 별칭은 남아 있어야 한다(전부 지우면 FCF 사망)
+        ocf = [k for k, v in _DART_NAME_MAP.items() if v == "영업활동현금흐름"]
+        assert len(ocf) >= 4 and "영업활동으로인한현금흐름" in ocf, ocf
+        # 계정 해석이 바뀌면 디스크 캐시가 옛 값을 최대 7일 서빙한다(#95)
+        assert _FIN_CACHE_VER >= 12, _FIN_CACHE_VER
+
+    def test_kr_forward_per_falls_back_to_yfinance(self):
+        """사용자 2026-08-24 "한국에 경우에 우선을 네이버, 풀백은 야후로
+        해줘" — 2026-08-23 의 '없으면 비운다'(#206)를 뒤집는 결정이다.
+        빈칸보다 커버리지가 낫다는 판단이고, 대신 **출처를 밝힌다**.
+        그리고 분기실적 카드도 같은 사다리를 타야 탭마다 안 갈린다(#38)."""
+        import ast
+        from bot.dashboard import _derive_missing_multiples as d
+        qs = [{"year": y, "quarter": q, "당기순이익": 1e10,
+               "지배주주순이익": 1e10, "지배주주자본": 3e11, "매출": 3e11}
+              for y, q in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+        base = {"market_cap": 5e12, "shares_outstanding": 12319550,
+                "current_price": 404500.0}
+        # ① 네이버가 있으면 네이버
+        o1 = d({**base, "kr": {"financials_q": qs,
+                               "naver_val": {"cns_eps": 1387.0}}})
+        assert o1["_forward_src"].startswith("네이버"), o1["_forward_src"]
+        assert not o1.get("_forward_why")
+        # ② 없으면 yfinance 값을 **덮지 않고** 그대로 두고 출처를 밝힌다
+        o2 = d({**base, "forwardPE": 30.72, "kr": {"financials_q": qs}})
+        assert o2["forwardPE"] == 30.72, o2["forwardPE"]
+        assert o2["_forward_src"] == "yfinance 컨센서스 EPS"
+        # ③ 사유는 **한 줄**로 짧게(사용자 "이거 한줄로 나오게 해줘")
+        assert len(o2["_forward_why"]) <= 40, o2["_forward_why"]
+        assert "비웠습니다" not in o2["_forward_why"]
+        # ④ 둘 다 없으면 그때만 빈칸
+        o3 = d({**base, "kr": {"financials_q": qs}})
+        assert o3.get("forwardPE") is None and o3["_forward_why"]
+        # ⑤ 분기실적 카드도 같은 사다리 — 국내 게이트가 남아 있으면 안 된다
+        src = open("bot/quarterly_infographic.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "build_payload")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "kr_forward_from_naver" in seg, "네이버 우선이 아니다"
+        assert "if per_fwd is None and not is_kr:" not in seg, \
+            "국내만 yfinance 폴백을 막고 있다"
+        assert seg.count("if per_fwd is None:") == 3, \
+            seg.count("if per_fwd is None:")
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다
