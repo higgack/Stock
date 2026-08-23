@@ -36264,3 +36264,78 @@ class TestPerBasisAcrossTabs20260823:
         """⚠️ '있는지'만 보는 검사는 중복을 못 잡는다(#59) — 몇 번인지 센다."""
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert src.count("{_per_basis_note}") == 1, src.count("{_per_basis_note}")
+
+
+class TestAuditLogFindings20260823:
+    """2026-08-23 전 시장 감사 로그(❌ 0건)에 섞여 있던 **조용한 결함** 셋.
+
+      ① `akshare: HK disclosures … (after 2 retries): module 'akshare' has
+         no attribute 'stock_zh_h_disclosure_em'` — 영원히 없을 이름에
+         재시도 예산을 쓰고, 종목마다 WARNING 을 찍었다(#151·#25).
+      ② 그 메시지의 '2 retries' 는 **상수**였다 — 실제로는 첫 시도에서 끊긴
+         영구 실패다. 안 한 일을 했다고 말하는 로그(#12 의 로그판).
+      ③ `krx_alert: … 400 Bad Request … body=LOGOUT` ×6 — 파라미터 문제가
+         아니라 **로그인 세션 문제**다. 사유를 잘못 적으면 payload 를
+         고치려 들게 된다(#82).
+    """
+
+    def test_a_missing_akshare_function_is_not_called(self, monkeypatch):
+        """`hasattr` 로 **먼저 재고** 없으면 부르지 않는다 — 재시도 예산까지
+        쓰면 안 된다(#151 이름이 아니라 실측)."""
+        import types
+        import bot.akshare_client as ac
+        calls = []
+        monkeypatch.setattr(ac, "_fetch_with_retry",
+                            lambda fn, label: calls.append(label))
+        monkeypatch.setattr(ac, "_import_akshare",
+                            lambda: types.SimpleNamespace())   # 그 함수 없음
+        monkeypatch.setattr(ac, "_cache_get", lambda k: None)
+        monkeypatch.setattr(ac, "_cache_put", lambda k, v: None)
+        out = ac.AkshareClient().get_recent_disclosures("0700.HK")
+        assert out == [], out
+        assert calls == [], f"없는 함수를 불렀다: {calls}"
+
+    def test_the_function_is_called_when_present(self, monkeypatch):
+        """⚠️ 늘 건너뛰면 기능이 죽는다 — 있으면 부르는지도 확인한다."""
+        import types
+        import bot.akshare_client as ac
+        calls = []
+        monkeypatch.setattr(ac, "_fetch_with_retry",
+                            lambda fn, label: calls.append(label))
+        monkeypatch.setattr(ac, "_import_akshare", lambda: types.SimpleNamespace(
+            **{ac._HK_DISCLOSURE_FN: lambda symbol=None: None}))
+        monkeypatch.setattr(ac, "_cache_get", lambda k: None)
+        monkeypatch.setattr(ac, "_cache_put", lambda k, v: None)
+        ac.AkshareClient().get_recent_disclosures("0700.HK")
+        assert calls and "HK disclosures" in calls[0], calls
+
+    def test_the_retry_log_counts_actual_attempts(self, caplog):
+        """상수를 찍으면 **안 한 일을 했다고** 말한다."""
+        import logging
+        import bot.akshare_client as ac
+
+        def _boom():
+            raise AttributeError("module 'akshare' has no attribute 'x'")
+
+        with caplog.at_level(logging.WARNING, logger="bot.akshare"):
+            assert ac._fetch_with_retry(_boom, label="t") is None
+        msg = " ".join(r.getMessage() for r in caplog.records)
+        assert "1회 시도" in msg, msg
+        assert "2 retries" not in msg, msg
+
+    def test_a_krx_logout_body_is_named_as_a_session_problem(self, monkeypatch,
+                                                             caplog):
+        """'400 Bad Request' 라고만 적으면 payload 를 고치려 든다(#82)."""
+        import logging
+        import bot.krx_alert_client as kc
+
+        class _R:
+            status_code = 400
+            text = "LOGOUT"
+
+        monkeypatch.setattr(kc.requests, "post",
+                            lambda *a, **k: _R())
+        with caplog.at_level(logging.WARNING, logger="bot.krx_alert"):
+            assert kc._fetch_krx_json("dbms/X", {"mktId": "STK"}) is None
+        msg = " ".join(r.getMessage() for r in caplog.records)
+        assert "로그인" in msg, msg
