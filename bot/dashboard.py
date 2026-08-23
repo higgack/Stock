@@ -5691,6 +5691,44 @@ def _derived_desc(si: dict) -> str:
             + f" — 시총·상장주식수와 DART {scope} 기준으로 산출")
 
 
+def _ttm_concentration(qs: list | None, key: str = "당기순이익") -> str:
+    """TTM 이 **한 분기에 좌우되면** 그렇다고 말한다 — 값은 맞는데 화면이
+    거짓말처럼 보이는 경우다(#43·#131 빈칸이 아니어도 사유는 필요하다).
+
+    ⚠️ 서희건설 035890.KQ 실측(2026-08-23, DART 반기보고서로 확인):
+    26.2Q 순이익 1,502억이 TTM 의 **62%** 이고 그 분기 **영업이익(364억)의
+    4.1배**다. 누적이 분기 칸에 앉은 버그가 아니라(Q1 193억 + Q2 1,502억 =
+    반기 누적 1,695억으로 정확히 맞는다) 진짜 일회성 영업외이익이다.
+    그래서 우리 EPS 1,175 는 산수가 맞고, FnGuide 539 와 다른 이유도 이것
+    하나다 — 화면이 말하지 않으면 사용자가 매번 물어야 한다.
+    """
+    def _num(v):
+        return (float(v) if isinstance(v, (int, float))
+                and not isinstance(v, bool) else None)
+
+    tail = (qs or [])[-4:]
+    if len(tail) < 4:
+        return ""
+    vals = [_num(q.get(key)) for q in tail]
+    if any(v is None for v in vals):
+        return ""
+    tot = sum(vals)
+    if tot <= 0:
+        return ""
+    idx = max(range(4), key=lambda i: vals[i])
+    share = vals[idx] / tot
+    if share < 0.4:
+        return ""
+    q = tail[idx]
+    lab = f"{(q.get('year') or 0) % 100:02d}.{q.get('quarter') or '?'}Q"
+    op = _num(q.get("영업이익"))
+    extra = (f", 그 분기 영업이익의 {vals[idx] / op:.1f}배"
+             if op and op > 0 and vals[idx] > op * 2 else "")
+    return (f"TTM 순이익의 {share * 100:.0f}%가 {lab} 한 분기에서 "
+            f"나왔습니다{extra} — 일회성 이익이 섞여 있을 수 있어 다른 사이트의 "
+            f"TTM 과 크게 다를 수 있습니다")
+
+
 def _derive_missing_multiples(si: dict) -> dict:
     """소스가 안 준 멀티플·주당지표를 **이미 가진 값에서** 파생해 채운다.
 
@@ -5775,6 +5813,8 @@ def _derive_missing_multiples(si: dict) -> dict:
     equity, eq_owner = _stock("지배주주자본", "자본총계")
     if not eq_owner and equity is not None:
         _scope = "연결 총액(비지배지분 포함)"
+    _ttm_note = _ttm_concentration(qs, "지배주주순이익" if net_owner
+                                   else "당기순이익") if net_basis == "TTM" else ""
 
     if out.get("bookValue") is None and equity and shares and shares > 0:
         out["bookValue"] = equity / shares
@@ -5804,6 +5844,8 @@ def _derive_missing_multiples(si: dict) -> dict:
                   "priceToBook": "최근분기말", "bookValue": "최근분기말"}
         out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
         out["_derived_scope"] = _scope
+    if _ttm_note:
+        out["_ttm_note"] = _ttm_note
     return out
 
 
@@ -7881,6 +7923,10 @@ def _render_stock_info_html(rec: dict) -> str:
     # 탭에 따라 출처가 달라 보인다(사용자 2026-08-16 두 표면 모두 지적).
     _val_src += ((" · ⚙️ 자체계산(소스 미제공): " + _derived_desc(si))
                  if si.get("_derived_multiples") else "")
+    # 값이 맞아도 구성이 특이하면 말한다 — 안 하면 사용자가 매번 물어야 한다.
+    _ttm_note_html = (f'<div class="si-note" style="margin-top:6px">'
+                      f'{esc(si["_ttm_note"])}</div>'
+                      if si.get("_ttm_note") else "")
     valuation_pane = f"""<div class="si-pane" id="si-valuation">
   {w52_bar_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -7892,6 +7938,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section">
       <div class="si-section-title">주당 지표</div>
       <table class="si-table"><thead><tr><th>지표</th><th class="num">값</th></tr></thead><tbody>{val_per_share}</tbody></table>
+      {_ttm_note_html}
     </div>
   </div>
   {kr_fin_q_html}

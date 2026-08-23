@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 5
+_PROBE_VER = 6
 
 
 def _n(v):
@@ -177,6 +177,11 @@ def probe(ticker: str) -> None:
     print(_per_check(px, si.get("trailingEps"), si.get("trailingPE"), "우리 화면"))
     print(f"    파생 항목: {si.get('_derived_multiples') or '(없음 — 소스값 그대로)'}"
           f" · 기준 {si.get('_derived_basis') or '—'}")
+    # ⚠️ 계산해 놓고 안 찍으면 '왜 그 값인가'를 사람이 짐작하게 된다
+    # (#123·#129·#131·#189 에 이은 같은 실수 — 프로브에서도 반복하지 말 것).
+    print(f"    분자 기준: {si.get('_derived_scope') or '(미기록)'}")
+    if si.get("_ttm_note"):
+        print(f"    ⚠️ {si['_ttm_note']}")
 
     # ② yfinance 원본 — 우리가 손대기 전 값
     print("② yfinance .info 원본")

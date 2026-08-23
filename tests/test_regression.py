@@ -36720,3 +36720,48 @@ class TestShareCountIdentity:
         why2 = eps_cadence(irr)[1]
         assert "들쭉날쭉" in why2, why2
         assert why != why2
+
+    def test_a_one_off_quarter_that_dominates_ttm_is_named(self):
+        """#194 후속 — 서희건설 035890.KQ VM 실측(2026-08-23): 26.2Q 순이익
+        1,502억이 TTM 의 62% 이고 그 분기 영업이익(364억)의 4.1배다. 누적이
+        분기 칸에 앉은 버그가 **아니다** — Q1 193억 + Q2 1,502억 = 반기 누적
+        1,695억으로 정확히 맞는다(DART 원본). 즉 우리 EPS 는 산수가 맞고,
+        FnGuide 539 와 다른 이유가 이것 하나다. 화면이 말해야 한다(#43)."""
+        from bot.dashboard import _ttm_concentration
+        qs = [{"year": 2025, "quarter": 3, "당기순이익": 32762007904,
+               "영업이익": 3.0e10},
+              {"year": 2025, "quarter": 4, "당기순이익": 41554710100,
+               "영업이익": 3.0e10},
+              {"year": 2026, "quarter": 1, "당기순이익": 19352139087,
+               "영업이익": 1.05e10},
+              {"year": 2026, "quarter": 2, "당기순이익": 150188955092,
+               "영업이익": 36427105909}]
+        note = _ttm_concentration(qs)
+        assert "62%" in note and "26.2Q" in note, note
+        assert "4.1배" in note, note
+        # ⚠️ 반대 증거 — 고르게 벌면 아무 말도 하지 않는다(잡음 금지, #25)
+        even = [{"year": 2025, "quarter": i, "당기순이익": 100.0,
+                 "영업이익": 90.0} for i in range(1, 5)]
+        assert _ttm_concentration(even) == ""
+        # 한 분기라도 비면 판정하지 않는다
+        assert _ttm_concentration(qs[:3]) == ""
+
+    def test_the_concentration_note_reaches_the_valuation_tab(self):
+        """헬퍼만 부르면 배선을 떼는 변형을 못 잡는다(#20) — payload 에
+        실리고 렌더가 **정확히 한 번** 쓴다(#182)."""
+        import ast
+        from bot.dashboard import _derive_missing_multiples
+        qs = [{"year": 2026, "quarter": q, "당기순이익": v, "영업이익": 1e9,
+               "자본총계": 1.2e12}
+              for q, v in ((1, 1e9), (2, 1e9), (3, 1e9), (4, 2e10))]
+        out = _derive_missing_multiples(
+            {"market_cap": 4e11, "shares_outstanding": 2e8,
+             "current_price": 2000.0, "kr": {"financials_q": qs}})
+        assert out.get("_ttm_note"), out.keys()
+        src = open("bot/dashboard.py").read()
+        assert src.count('si["_ttm_note"]') == 1, src.count('si["_ttm_note"]')
+        assert src.count("{_ttm_note_html}") == 1
+        calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == "_ttm_concentration"]
+        assert len(calls) == 1, f"판정 호출 {len(calls)}건"
