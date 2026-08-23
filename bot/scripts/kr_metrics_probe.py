@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 
 def _n(v):
@@ -32,6 +32,63 @@ def _n(v):
 def _f(v, d=2):
     x = _n(v)
     return "—" if x is None else f"{x:,.{d}f}"
+
+
+# 재실행 루프 방지 — 자식은 이 표시를 들고 뜨므로 다시 갈아타지 않는다.
+_REEXEC_FLAG = "KR_PROBE_REEXEC"
+
+
+def _venv_python() -> str:
+    """레포 옆 venv 의 파이썬 경로(없으면 빈 문자열).
+
+    ⚠️ 사용자가 같은 벽에 두 번 부딪혔다(2026-08-23): `venv/bin/activate`
+    가 없어서 한 번(디렉터리 이름이 `.venv`), 시스템 파이썬으로 돌아서 한 번.
+    안내 문구를 다듬는 대신 **자동으로 갈아탄다**(Automation-first).
+    """
+    import os
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    for name in (".venv", "venv"):
+        cand = root / name / "bin" / "python3"
+        if cand.exists() and os.access(cand, os.X_OK):
+            return str(cand)
+    return ""
+
+
+def _reexec_target(missing: bool, flagged: bool, venv: str,
+                   current: str) -> str:
+    """갈아탈 파이썬 경로(안 갈아타면 빈 문자열) — **판정만** 하는 순수 함수.
+
+    `os.execv` 를 직접 테스트할 수 없으니 결정을 떼어 값으로 고정한다(#41).
+    루프 방지 조건이 둘이다 — 이미 갈아탄 프로세스(`flagged`)이거나 이미
+    그 파이썬(`current`)이면 안 간다. 하나만 두면 다른 하나로 루프가 난다.
+    """
+    import os
+    if not missing or flagged or not venv:
+        return ""
+    try:
+        same = os.path.realpath(venv) == os.path.realpath(current or "")
+    except Exception:                                           # noqa: BLE001
+        same = venv == current
+    return "" if same else venv
+
+
+def _reexec_in_venv() -> None:
+    """필수 모듈이 없고 venv 가 옆에 있으면 **그 파이썬으로 다시 뜬다**."""
+    import os
+    import sys as _s
+    try:
+        __import__("yfinance")
+        missing = False
+    except Exception:                                           # noqa: BLE001
+        missing = True
+    vp = _reexec_target(missing, bool(os.environ.get(_REEXEC_FLAG)),
+                        _venv_python(), _s.executable)
+    if not vp:
+        return
+    print(f"↪ yfinance 가 없어 venv 로 다시 실행합니다: {vp}", flush=True)
+    os.environ[_REEXEC_FLAG] = "1"
+    os.execv(vp, [vp, "-m", "bot.scripts.kr_metrics_probe", *_s.argv[1:]])
 
 
 def _banner() -> bool:
@@ -57,7 +114,9 @@ def _banner() -> bool:
         print(f"  자격증명 확인 실패: {exc}")
     if "yfinance" in missing:
         print("⛔ yfinance 가 없으면 스냅샷이 통째로 비어 '원천 미제공'으로 "
-              "오보한다 — venv 로 다시 실행할 것.")
+              "오보한다(#132).")
+        print(f"   다시 실행: {_venv_python() or 'python3'} -m "
+              f"bot.scripts.kr_metrics_probe <티커> | tee /tmp/kr.txt")
         return False
     return True
 
@@ -321,6 +380,7 @@ def _dart_raw(ticker: str, snap: dict) -> None:
 def main(argv: list[str]) -> int:
     from bot.scripts.probe_progress import stream_stdout
     stream_stdout()
+    _reexec_in_venv()
     if not _banner():
         return 2
     tickers = [a for a in argv[1:] if not a.startswith("-")] or ["035890.KQ"]
