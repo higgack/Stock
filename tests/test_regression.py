@@ -37029,3 +37029,52 @@ class TestShareCountIdentity:
             "밸류에이션 탭 분모를 DOM 에서 안 읽는다"
         assert "trailingEps" in _BAND_JS
         assert "bookValue" in _BAND_JS, "PBR 은 분모가 BPS 다(#34)"
+
+    def test_the_overlay_only_sends_multiples_it_recomputed(self):
+        """#199 의 본체 — 2026-08-23 슈프리마 실측: 화면이 `PER (후행) 3.48x`
+        옆에 `EPS (후행) 7,514.88` 을 띄웠다. 56,100 ÷ 7,514.88 = **7.47**
+        이라 화면이 자기 산수를 못 맞췄다(#33).
+
+        yfinance 는 국내 trailingEps·bookValue 를 안 주므로 오버레이가
+        재계산을 못 하는데, 그러면서 **자기 스냅샷 배수**를 서버가 그린
+        파생값 위에 덮고 있었다. 분모를 못 주면 배수도 보내지 않는다."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "build_live_quote")
+        seg = ast.get_source_segment(src, fn) or ""
+        # 재계산한 것만 표시 목록에 오른다
+        assert 'k in _recomputed' in seg, "재계산 여부를 안 본다"
+        for k in ("trailingPE", "priceToBook", "forwardPE"):
+            assert f'_recomputed.add("{k}")' in seg, k
+        # 분모 칸이 없는 배수는 애초에 안 보낸다
+        i = seg.index('for k, suf in ((\"trailingPE\"')
+        loop = seg[i:i + 260]
+        assert "priceToSalesTrailing12Months" not in loop, \
+            "분모 칸이 없는 PSR 을 여전히 덮어쓴다"
+        assert "enterpriseToEbitda" not in loop, loop
+        # 베타는 배수가 아니라 그대로 간다
+        assert '"beta"' in loop
+
+    def test_the_annual_roe_note_describes_the_latest_column(self):
+        """2026-08-23 슈프리마: FY2024·FY2025 는 평균 분모인데 각주가
+        "전기 잔액을 못 구해 기말로 나눴습니다" 였다 — `next(...)` 가 전기가
+        없는 **가장 오래된 열**을 집었기 때문이다. 표의 최신 열로 적는다."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        i = src.index("_rb = next((it.get(\"_returns_basis\")")
+        seg = src[i:i + 200]
+        assert "reversed(items)" in seg, seg
+
+    def test_the_header_shows_the_exact_share_count(self):
+        """`7.0M` 만 보이면 시가총액 ÷ 현재가 검산을 눈으로 할 수 없다."""
+        from bot.share_count import note
+        import ast
+        src = open("bot/dashboard.py").read()
+        i = src.index("_sh_exact = si.get(\"shares_outstanding\")")
+        seg = src[i:i + 320]
+        assert "int(_sh_exact):,}주" in seg, seg
+        # 출처 문구가 있으면 뒤에 붙고, 없으면 주식수만 남는다
+        assert '{shares_sub}" if shares_sub else ""' in seg, seg
+        assert note(2140.0, 4442e8, 207588536, "KRX") == "KRX"
