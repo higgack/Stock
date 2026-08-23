@@ -522,20 +522,35 @@ def _extract_dart_financials(items: list, amount_field: str = "thstrm_amount") -
 _TTM_QUARTERS = 4
 
 
+def _avg_denom(cur, prev):
+    """FnGuide 산식의 **평균 분모** — (당기 + 전기)/2. 전기가 없으면 당기.
+
+    ⚠️ 전기를 못 구할 때 그냥 당기(기말)를 쓰면 ROE 가 체계적으로 **낮게**
+    나온다(자본이 늘어나는 회사에서 평균 < 기말). 그래서 어느 쪽을 썼는지
+    호출부가 화면에 밝힌다(#43).
+    """
+    if cur is None:
+        return None, False
+    if prev is None:
+        return cur, False
+    return (cur + prev) / 2.0, True
+
+
 def apply_ttm_returns(entries: list) -> int:
-    """분기 시리즈의 ROE·ROA 를 **TTM(최근 4분기 합)** 기준으로 다시 계산.
+    """분기 시리즈의 ROE·ROA 를 **TTM 분자 + 평균 분모**로 다시 계산.
 
-    ⚠️ 왜(사용자 2026-08-19 NH투자증권): `calc_kr_financial_ratios` 는 한
-    기간만 보므로 분기 항목의 ROE 가 `분기 순이익 ÷ 자본`(NH 25.3Q 3.1%)이
-    된다. 네이버·FnGuide 를 비롯한 시장 표기는 **연율(TTM)** 이라(같은 분기
-    10.08%) 사용자가 두 화면을 나란히 놓으면 3배 차이로 보인다. 값이 틀린 게
-    아니라 **관례가 다른 것**이라, 시장 관례에 맞춘다.
+    ⚠️ 사용자가 신뢰 기준으로 제시한 FnGuide 산식(2026-08-23):
+        ROE = (지배주주지분)당기순이익[당기]
+              / ((지배주주지분)자본총계[당기] + [전기]) / 2
+        ROA = 당기순이익[당기] / (자산총계[당기] + [전기]) / 2
+    우리는 **기말** 잔액으로 나눠 왔다 — 자본이 늘어나는 회사에서 평균보다
+    커서 ROE 가 체계적으로 낮게 나온다. 기아 000270.KS 실측: 우리 ROE
+    12.3% · ROA 7.6% vs 네이버 12.92 · 7.88 — 두 지표가 **같은 방향으로**
+    어긋난 것이 분모 문제의 신호였다(#51 여러 축을 대조하면 판정된다).
 
-    `entries` = 오래된→최신 [{financials, ratios}]. 4분기가 안 모이는 앞쪽
-    항목은 **비운다** — 분기 하나로 연율을 흉내 내면 틀린 숫자가 된다.
-
-    분모는 **기말 자본·자산**이다(평균이 아니라). 평균을 쓰는 벤더도 있어
-    네이버와 소수점이 다를 수 있으나, 우리 표 안에서는 일관된다.
+    `entries` = 오래된→최신 [{financials, ratios}]. 분자는 최근 4분기 합
+    (연율), 분모의 '전기' 는 **4분기 전**(1년 전) 잔액이다. 4분기가 안
+    모이는 앞쪽 항목은 비운다 — 분기 하나로 연율을 흉내 내면 틀린 숫자다.
 
     반환 = 값을 채운 항목 수."""
     n = 0
@@ -549,10 +564,59 @@ def apply_ttm_returns(entries: list) -> int:
             rat["ROE"] = None
             rat["ROA"] = None
             continue
-        ttm = sum(nets)
-        eq, asset = fin.get("자본총계"), fin.get("자산총계")
-        rat["ROE"] = (ttm / eq * 100) if eq else None
-        rat["ROA"] = (ttm / asset * 100) if asset else None
+        owns = [(w.get("financials") or {}).get("지배주주순이익")
+                for w in window]
+        owner = all(v is not None for v in owns)
+        prev_fin = ((entries[i - _TTM_QUARTERS].get("financials") or {})
+                    if i - _TTM_QUARTERS >= 0 else {})
+        eq_key = ("지배주주자본"
+                  if fin.get("지배주주자본") is not None else "자본총계")
+        eq, eq_avg = _avg_denom(fin.get(eq_key), prev_fin.get(eq_key))
+        asset, as_avg = _avg_denom(fin.get("자산총계"),
+                                   prev_fin.get("자산총계"))
+        rat["ROE"] = (sum(owns if owner else nets) / eq * 100) if eq else None
+        rat["ROA"] = (sum(nets) / asset * 100) if asset else None
+        # 어느 기준으로 만들었는지 화면이 말할 수 있게 남긴다(#43·#189).
+        rat["_returns_basis"] = {
+            "numerator": "지배주주순이익" if owner else "당기순이익(연결 총액)",
+            "denominator": eq_key,
+            "averaged": bool(eq_avg and as_avg),
+        }
+        n += 1
+    return n
+
+
+def apply_annual_returns(entries: list) -> int:
+    """연간 시리즈의 ROE·ROA 를 같은 규약(평균 분모·지배주주 분자)으로.
+
+    ⚠️ 분기 표만 고치면 **기업 탭 연간 ROE 는 그대로 어긋난다** — 같은
+    계산을 하는 화면을 같이 고칠 것(#38·#147). `entries` = 오래된→최신.
+    """
+    n = 0
+    for i, e in enumerate(entries):
+        fin = e.get("financials") or e            # ts 는 평평한 dict 다
+        rat = e.setdefault("ratios", e) if "financials" in e else e
+        prev = (entries[i - 1] if i >= 1 else {})
+        prev_fin = prev.get("financials") or prev
+        net = fin.get("당기순이익")
+        if net is None:
+            continue
+        own = fin.get("지배주주순이익")
+        eq_key = ("지배주주자본"
+                  if fin.get("지배주주자본") is not None else "자본총계")
+        eq, eq_avg = _avg_denom(fin.get(eq_key), prev_fin.get(eq_key))
+        asset, as_avg = _avg_denom(fin.get("자산총계"),
+                                   prev_fin.get("자산총계"))
+        if eq:
+            rat["ROE"] = (own if own is not None else net) / eq * 100
+        if asset:
+            rat["ROA"] = net / asset * 100
+        rat["_returns_basis"] = {
+            "numerator": "지배주주순이익" if own is not None
+                         else "당기순이익(연결 총액)",
+            "denominator": eq_key,
+            "averaged": bool(eq_avg and as_avg),
+        }
         n += 1
     return n
 

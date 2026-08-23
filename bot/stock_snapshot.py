@@ -769,6 +769,17 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         q = kr_registry_shares(ticker)
         return {"kr": {"krx_quote": q}} if q.get("shares") else {}
 
+    def _t_naver_val() -> dict:
+        """네이버(FnGuide) 투자지표 — **선행 PER 의 원천**(사용자 2026-08-23).
+
+        yfinance 는 국내 종목의 `forwardEps` 를 안 줘서 화면이 `PER (선행)
+        5.50x` 옆에 `EPS (선행) —` 을 띄웠다 — 눈으로 나눠 볼 수 없는 행이다
+        (#33). 네이버는 추정PER·추정EPS 를 **둘 다** 준다.
+        """
+        from bot.naver_finance_client import get_naver_valuation
+        nv = get_naver_valuation(ticker)
+        return {"kr": {"naver_val": nv}} if nv else {}
+
     def _t_krx_alert() -> dict:
         out: dict = {}
         from bot.krx_alert_client import get_krx_alert
@@ -875,7 +886,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
              ("fsc.minority", _t_fsc_minority), ("flow(KIS+pykrx)", _t_flow),
              ("fsc.lockup", _t_fsc_lockup),
              ("fsc.dilution", _t_fsc_dilution), ("krx.alert", _t_krx_alert),
-             ("krx.shares", _t_krx_shares),
+             ("krx.shares", _t_krx_shares), ("naver.val", _t_naver_val),
              ("fnguide", _t_fnguide), ("research", _t_research),
              ("dividends", _t_dividends)]
 
@@ -1378,7 +1389,8 @@ def collect_kr_financials(ticker: str) -> dict:
     if fin and fin.get("financials"):
         compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
         for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                  "부채총계", "자본총계", "재고자산", "FCF"):
+                  "부채총계", "자본총계", "재고자산", "FCF",
+                  "지배주주순이익", "지배주주자본"):
             v = fin["financials"].get(k)
             if v is not None:
                 compact[k] = v
@@ -1412,7 +1424,8 @@ def collect_kr_financials(ticker: str) -> dict:
         if fin and fin.get("financials"):
             entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
             for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                      "부채총계", "자본총계", "재고자산", "FCF"):
+                      "부채총계", "자본총계", "재고자산", "FCF",
+                      "지배주주순이익", "지배주주자본"):
                 v = fin["financials"].get(k)
                 if v is not None:
                     entry[k] = v
@@ -1427,6 +1440,24 @@ def collect_kr_financials(ticker: str) -> dict:
                     entry[k] = v
             ts.append(entry)
     if ts:
+        # ⚠️ ROE·ROA 를 **평균 분모**로 다시 만든다(FnGuide 산식, 사용자
+        # 2026-08-23). 연도별 표만 고치고 기업 탭을 두면 같은 지표가 두
+        # 화면에서 갈린다(#38·#147) — 그래서 최신 연도 값을 `financials`
+        # 로도 옮긴다. 오래된→최신으로 정렬해야 '전기' 가 맞는다.
+        ts.sort(key=lambda it: it.get("year") or 0)
+        try:
+            from bot.dart_client import apply_annual_returns
+            apply_annual_returns(ts)
+            _cur = out.get("kr", {}).get("financials") or {}
+            for it in ts:
+                if _cur and it.get("year") == _cur.get("year"):
+                    for k in ("ROE", "ROA", "_returns_basis"):
+                        if it.get(k) is not None:
+                            _cur[k] = it[k]
+                    break
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("collect_kr_financials %s: 평균분모 ROE 실패: %s",
+                        ticker, exc)
         out.setdefault("kr", {})["financials_ts"] = ts
     # 분기별 시계열(최근 4분기) — 밸류에이션 탭 "분기별 재무추이"용
     # (bot.dart_quarterly, 사용자 2026-08-16). 연도별 시계열과 동일
@@ -1445,12 +1476,13 @@ def collect_kr_financials(ticker: str) -> dict:
                 qentry = {"label": q["label"], "year": q["year"],
                          "quarter": q["quarter"], "fs_div": q["fs_div"]}
                 for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                          "부채총계", "자본총계", "재고자산", "FCF"):
+                          "부채총계", "자본총계", "재고자산", "FCF",
+                          "지배주주순이익", "지배주주자본"):
                     v = q["financials"].get(k)
                     if v is not None:
                         qentry[k] = v
                 for k in ("영업이익률", "순이익률", "ROE", "ROA",
-                          "부채비율", "유동비율"):
+                          "부채비율", "유동비율", "_returns_basis"):
                     v = q["ratios"].get(k)
                     if v is not None:
                         qentry[k] = v

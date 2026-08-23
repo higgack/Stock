@@ -5671,7 +5671,8 @@ _PEER_MULT_ABS_MAX = 500.0
 
 _DERIVED_LABEL = {"trailingPE": "PER(후행)", "priceToBook": "PBR",
                   "trailingEps": "EPS(후행)", "bookValue": "BPS",
-                  "priceToSalesTrailing12Months": "PSR"}
+                  "priceToSalesTrailing12Months": "PSR",
+                  "forwardPE": "PER(선행)", "forwardEps": "EPS(선행)"}
 
 
 def _derived_desc(si: dict) -> str:
@@ -5832,7 +5833,25 @@ def _derive_missing_multiples(si: dict) -> dict:
             and rev and rev > 0):
         out["priceToSalesTrailing12Months"] = mcap / rev
         derived.add("priceToSalesTrailing12Months")
-    # forwardPE 는 컨센서스 EPS 가 필요해 파생 불가 — 없으면 없는 게 맞다.
+    # 선행 PER — 국내는 **네이버(FnGuide) 추정치**가 원천이다(사용자
+    # 2026-08-23 "여기 PER 선행은 Naver Finance 기준으로 해줘. 한국은.
+    # 나머지 나라들은 yfinance 로 하면되고"). yfinance 는 국내 `forwardEps`
+    # 를 안 줘서 화면이 `PER (선행) 5.50x` 옆에 `EPS (선행) —` 을 띄웠다.
+    # ⚠️ 배수는 **화면의 현재가**로 다시 만든다 — 원천 추정PER 은 전일 종가
+    # 기준이라 그대로 실으면 화면의 다른 칸으로 나눠 봤을 때 안 맞는다
+    # (#33·#135 매일 바뀌는 파생값은 라이브 원천으로 다시 만든다).
+    _nv = (kr.get("naver_val") or {})
+    _f_eps = _num(_nv.get("cns_eps"))
+    if _f_eps:
+        out["forwardEps"] = _f_eps
+        derived.add("forwardEps")
+        px = _num(out.get("current_price"))
+        if px and _f_eps > 0:
+            out["forwardPE"] = px / _f_eps
+            derived.add("forwardPE")
+        out["_forward_src"] = "네이버(FnGuide) 추정 EPS"
+    # 그 밖의 시장은 yfinance 가 준 forwardPE 를 그대로 쓴다 — 컨센서스
+    # EPS 가 필요해 우리가 만들 수 없다.
     if derived:
         out["_derived_multiples"] = sorted(derived)
         # ⚠️ 기준이 항목마다 다르다 — 이익 기반(PER·EPS)과 매출 기반(PSR)은
@@ -5841,7 +5860,8 @@ def _derive_missing_multiples(si: dict) -> dict:
         # 출처를 표기하게 된다(2026-08-16 독립 리뷰).
         _basis = {"trailingPE": net_basis, "trailingEps": net_basis,
                   "priceToSalesTrailing12Months": rev_basis,
-                  "priceToBook": "최근분기말", "bookValue": "최근분기말"}
+                  "priceToBook": "최근분기말", "bookValue": "최근분기말",
+                  "forwardPE": "네이버 추정", "forwardEps": "네이버 추정"}
         out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
         out["_derived_scope"] = _scope
     if _ttm_note:
@@ -6153,6 +6173,18 @@ def _render_stock_info_html(rec: dict) -> str:
                                ("부채비율", "부채비율"), ("유동비율", "유동비율")):
                 v = kf.get(key)
                 ratio_rows += f'<tr><td>{esc(label)}</td><td class="num">{f"{v:.1f}%" if v is not None else "—"}</td></tr>\n'
+            # 같은 지표를 두 화면이 다른 산식으로 내면 사용자가 한쪽이
+            # 틀렸다고 읽는다(#34) — 어느 산식인지 여기서도 밝힌다.
+            _kf_rb = kf.get("_returns_basis") or {}
+            if _kf_rb:
+                ratio_rows += (
+                    '<tr><td colspan="2" style="font-size:11px;'
+                    'color:var(--fg-soft);padding-top:6px">ℹ️ ROE = '
+                    + esc(str(_kf_rb.get("numerator") or "당기순이익")) + ' ÷ '
+                    + ('평균 ' if _kf_rb.get("averaged") else '기말 ')
+                    + esc(str(_kf_rb.get("denominator") or "자본총계"))
+                    + ' (FnGuide 산식) · ROIC 는 투하자본 근사치라 원천에 '
+                      '따라 다를 수 있습니다</td></tr>\n')
             _kf_note = ""
             # 총액 계정을 안 주는 회사(증권·은행·보험)는 FnGuide 총액으로
             # 보강한다 — 어느 값이 어디서 왔는지 반드시 밝힌다(규칙 #10b).
@@ -6428,7 +6460,8 @@ def _render_stock_info_html(rec: dict) -> str:
         '<div class="si-note" style="margin-top:6px">ℹ️ <b>PER (후행)</b> = 주가 ÷ '
         'TTM 실적 EPS · <b>PER (선행)</b> = 주가 ÷ 컨센서스 EPS (yfinance 제공값). '
         '<b>밴드차트 탭</b>의 현재 PER 은 원천(FnGuide)이 쓰는 EPS 기준이라 '
-        '값이 다를 수 있습니다.</div>')
+        '값이 다를 수 있습니다. 두 PER 모두 분자는 <b>현재가</b>입니다 — '
+        '실적 발표 시점의 주가가 아닙니다.</div>')
 
     def _per_mark(per_key: str, eps_key: str) -> str:
         """화면의 EPS 로 **눈으로 나눠 봤을 때 맞는가**(#33) — 아니면 라벨이
@@ -6550,10 +6583,19 @@ def _render_stock_info_html(rec: dict) -> str:
                           '(유형자산취득 + 무형자산취득) · 출처 <b>DART '
                           '현금흐름표</b> — 재무제표 탭의 FCF 는 yfinance '
                           '기준이라 정의 차이로 값이 다를 수 있습니다')
-        if _is_q:
-            _notes.append('ℹ️ ROE = <b>최근 4분기 순이익 합 ÷ 기말 자본</b>'
-                          '(TTM) — 시장 표기(네이버·FnGuide)와 같은 연율 '
-                          '기준입니다. 4분기가 안 모인 구간은 비웁니다')
+        _rb = next((it.get("_returns_basis") for it in items
+                    if it.get("_returns_basis")), None)
+        if _rb or _is_q:
+            _notes.append('ℹ️ ROE = <b>' + esc(str((_rb or {}).get("numerator")
+                                                   or "당기순이익"))
+                          + ' ÷ '
+                          + ('평균 ' if (_rb or {}).get("averaged") else '기말 ')
+                          + esc(str((_rb or {}).get("denominator") or "자본총계"))
+                          + '</b>'
+                          + ('(최근 4분기 합, 연율)' if _is_q else '')
+                          + ' — FnGuide 산식과 같은 기준입니다'
+                          + ('' if (_rb or {}).get("averaged")
+                             else '. 전기 잔액을 못 구해 기말로 나눴습니다'))
         _rev_src = sorted({str(it.get("_revenue_source")) for it in items
                            if it.get("_revenue_source")})
         if _rev_src:
