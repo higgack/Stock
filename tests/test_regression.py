@@ -5442,13 +5442,19 @@ class TestDartRoicAndQuarterlyPane:
         # 순서를 손대지 않는다(정렬 책임 일원화 — 소스 순서가 달라져도
         # 화면은 같다). 실제 컬럼 순서는 TestChronologicalTablesAndVol 이
         # 렌더 결과로 검증한다. 여기서는 **호출부가 다시 뒤집지 않는지**만.
+        # ⚠️ 2026-08-24 개정: 옛 판은 제목 **리터럴**로 호출부를 찾아, 제목에
+        # 열 수를 넣자(`최근 {n}분기`) 곧바로 깨졌다 — 표현이 바뀌어도 계약은
+        # 유지되어야 한다(#19). 호출을 AST 로 찾는다.
+        import ast
         src = open("bot/dashboard.py", encoding="utf-8").read()
-        # 각 호출부의 인자 부분만 잘라서 검사(제목 문자열 자체에 괄호가
-        # 있어 ')' 로는 못 자름 → 다음 줄까지 고정 윈도).
-        q_call = src[src.index('"분기별 재무추이'):][:300]
-        assert "reversed" not in q_call, "호출부가 다시 뒤집어 최신이 왼쪽이 됨"
-        ts_call = src[src.index('"재무 추이 (K-IFRS 연결)"'):][:300]
-        assert "reversed" not in ts_call, "호출부가 다시 뒤집음"
+        calls = [n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "_kr_fin_trend_table"]
+        assert len(calls) >= 2, len(calls)
+        for c in calls:
+            seg = ast.get_source_segment(src, c) or ""
+            assert "reversed" not in seg, ("호출부가 다시 뒤집어 최신이 "
+                                           f"왼쪽이 됨: {seg[:120]}")
         # 데이터 적재 쪽은 정렬을 건드리지 않아야 한다(시계열 자연순 보존).
         snap = open("bot/stock_snapshot.py", encoding="utf-8").read()
         q_block = snap[snap.index("get_quarterly_series"):]
@@ -28542,7 +28548,10 @@ class TestLongRangeFallback20260819:
         monkeypatch.setattr(ss, "_apply_revenue_fallback", lambda *a, **k: None)
         kr = (ss.collect_kr_financials("005940.KS") or {}).get("kr") or {}
 
-        assert asked["n"] == ss._Q_TABLE + ss._TTM_LEAD == 7
+        # ⚠️ 리터럴(== 7)로 박으면 열 수를 늘릴 때 무관한 빨간불이 뜬다(#67).
+        # 계약은 "표시 구간 + TTM 을 채울 만큼의 앞선 분기".
+        assert asked["n"] == ss._Q_TABLE + ss._TTM_LEAD
+        assert ss._TTM_LEAD >= 3, "TTM(4분기 합)을 첫 칸부터 못 채운다"
         q = kr.get("financials_q") or []
         assert len(q) == ss._Q_TABLE, "표시 구간이 늘어나면 안 된다"
         assert all(e.get("ROE") is not None for e in q), \
@@ -37677,22 +37686,81 @@ class TestShareCountIdentity:
         계산식의 차이 같은데" — 원천이 지배주주 자본총계를 안 주면 분모가
         **연결 자본총계**(비지배지분 포함)로 떨어져 ROE 가 체계적으로 낮게
         나온다. 그런데 각주는 그때도 'FnGuide 산식과 같은 기준'이라고 적고
-        있었다(#55). 분모 계정에 따라 문구가 갈려야 한다."""
-        import ast
-        src = open("bot/dashboard.py").read()
-        i = src.index("ℹ️ ROE = <b>")
-        seg = src[i:i + 1400]
-        assert '"지배주주자본"' in seg, "분모 계정을 보고 문구를 가르지 않는다"
-        assert "FnGuide 산식과 같은 기준입니다" in seg and "연결 자본총계" in seg, \
-            "두 갈래가 다 있어야 한다"
-        # 조건부(IfExp)로 갈려 있는지 — 무조건 문구면 다시 거짓말이 된다
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.FunctionDef)
-                  and n.name == "_render_stock_info_html")
-        ifexps = [n for n in ast.walk(fn) if isinstance(n, ast.IfExp)
-                  and "FnGuide 산식과 같은 기준입니다" in ast.dump(n)]
-        assert len(ifexps) == 1, "문구가 조건부가 아니다"
-        assert "지배주주자본" in ast.dump(ifexps[0].test)
+        있었다(#55). 분모 계정에 따라 문구가 갈려야 한다.
+
+        ⚠️ 2026-08-24 개정: 옛 판은 `IfExp` 를 **정확히 1개**로 세어, 원천이
+        늘면서(비-KR 은 yfinance) 조건이 하나 더 붙자 깨졌다 — 표현이 아니라
+        **화면에 찍힌 문구**로 잰다(#19). 세 갈래를 전부 렌더해 확인한다."""
+        import bot.dashboard as d
+
+        def _html(basis, market="019210.KQ", cur="KRW"):
+            qs = [{"label": f"2{i}.1Q", "year": 2020 + i, "quarter": 1,
+                   "매출": 1e11, "영업이익": 2e10, "당기순이익": 1e10,
+                   "영업이익률": 20.0, "ROE": 12.0, "부채비율": 50.0,
+                   "FCF": 5e9, "_returns_basis": basis} for i in range(5)]
+            si = {"currency": cur, "current_price": 100.0,
+                  "kr": {"financials_q": qs}}
+            p = d._render_stock_info_html({"ticker": market, "stock_info": si})
+            return "".join(str(v) for v in p.values())
+
+        owner = {"numerator": "지배주주순이익", "denominator": "지배주주자본",
+                 "averaged": True}
+        total = {"numerator": "당기순이익(연결 총액)", "denominator": "자본총계",
+                 "averaged": True}
+        kr_owner = _html(owner)
+        assert "FnGuide 산식과 같은 기준입니다" in kr_owner
+        kr_total = _html(total)
+        assert "FnGuide 산식과 같은 기준입니다" not in kr_total, \
+            "연결 자본총계로 나눠 놓고 FnGuide 와 같다고 주장한다"
+        assert "연결 자본총계" in kr_total, kr_total[:200]
+
+    def test_non_kr_roe_note_does_not_invoke_fnguide(self):
+        """FnGuide 는 **국내** 기준이다 — 비-KR 표(yfinance 원천)가 그 이름을
+        대면 화면이 거짓말한다(#55·#34). 사용자 2026-08-24 로 같은 렌더러를
+        전 시장이 쓰게 되면서 생긴 갈래."""
+        import bot.dashboard as d
+
+        def _fin(n_q=8, n_y=5):
+            qs = [f"202{4 + i // 4}-{3 * (i % 4) + 3:02d}-30" for i in range(n_q)]
+            ys = [f"{2021 + i}-12-31" for i in range(n_y)]
+
+            def isr(p):
+                return {"period": p, "Total Revenue": 1e9,
+                        "Operating Income": 2e8, "Net Income": 1.5e8,
+                        "Net Income Common Stockholders": 1.5e8}
+
+            def bsr(p):
+                return {"period": p, "Total Assets": 9e9,
+                        "Total Liabilities Net Minority Interest": 4e9,
+                        "Stockholders Equity": 5e9,
+                        "Total Equity Gross Minority Interest": 5e9}
+
+            def cfr(p):
+                return {"period": p, "Operating Cash Flow": 3e8,
+                        "Capital Expenditure": -1e8}
+            return {"income_statement": {"quarterly": [isr(p) for p in qs],
+                                         "annual": [isr(p) for p in ys]},
+                    "balance_sheet": {"quarterly": [bsr(p) for p in qs],
+                                      "annual": [bsr(p) for p in ys]},
+                    "cash_flow": {"quarterly": [cfr(p) for p in qs],
+                                  "annual": [cfr(p) for p in ys]}}
+
+        si = {"currency": "USD", "current_price": 100.0, "financials": _fin()}
+        p = d._render_stock_info_html({"ticker": "TEST", "stock_info": si})
+        html = "".join(str(v) for v in p.values())
+        assert "분기별 재무추이 (최근 5분기)" in html, "비-KR 분기 표가 없다"
+        assert "재무 추이 (연간, 최근 5년)" in html, "비-KR 연간 표가 없다"
+        # ⚠️ **페이지 전체 grep 은 눈이 먼다** — 밴드 탭 ℹ️ 가이드에도
+        # 'FnGuide' 가 있어, 표에서 지워도 통과한다(#55 실측). 그 **표
+        # 하나를 잘라내서** 본다.
+        i = html.index("분기별 재무추이 (최근 5분기)")
+        seg = html[i:html.index("</div>", html.index("</table>", i))]
+        assert "ℹ️ ROE = <b>" in seg, "ROE 각주가 없다"
+        assert "FnGuide" not in seg, "비-KR 표가 FnGuide 를 근거로 댄다"
+        assert "DART" not in seg, "비-KR 표가 DART 를 원천이라고 적는다"
+        assert "yfinance" in seg, "원천을 안 밝힌다"
+        # 금액은 **거래 통화 관례**로 — 원화 '억' 이 미국 종목에 붙으면 안 된다
+        assert "억</td>" not in seg, "비-KR 표가 원화 단위로 찍힌다"
 
     def test_quarterly_forward_per_uses_naver_for_kr(self):
         """사용자 2026-08-23 "분기실적탭에 Forward per 는 밸류에이션탭에
@@ -38298,3 +38366,137 @@ class TestShareCountIdentity:
         j = src.index('("TTM 순이익"')
         assert "_net_v" in src[j:j + 200] and "지배주주" in src[j:j + 200], \
             "푸터가 PER 분모와 다른 계정을 찍는다"
+
+
+class TestFinTrendAllMarkets20260824:
+    """사용자 2026-08-24:
+      ① "밸류에이션탭에 분기별 재무추이를 최근 5분기, 재무 추이(연도별) 을
+         똑같이 5년으로 … 우선은 한국만"
+      ② "재무재표 탭에 지금 분기는 5분기인데 연도는 4년이잖아. 연도도
+         똑같이 5년으로 맞춰져. 이건 모든 나라 적용"
+      ③ "미국종목도 한국종목처럼 밸류에이션 탭 똑같이 … 최대한 할 수 있는
+         나라 모두 적용해줘. 한국처럼."
+    """
+
+    # ── 열 수 계약 ────────────────────────────────────────────────
+    def test_quarterly_and_annual_charts_show_the_same_count(self):
+        """분기 5개 · 연간 4개면 두 차트의 열 수가 어긋난다(사용자 ②).
+
+        ⚠️ 리터럴 `5` 를 박지 않는다 — 계약은 '같은 개수'다(#67·#89)."""
+        import ast
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        ns = [c.args[1].value for c in ast.walk(ast.parse(src))
+              if isinstance(c, ast.Call)
+              and getattr(c.func, "id", "") == "_profit_trend"
+              and len(c.args) > 1 and isinstance(c.args[1], ast.Constant)]
+        assert len(ns) == 2, ns
+        assert ns[0] == ns[1], f"분기·연간 차트 열 수가 다르다: {ns}"
+
+    def test_kr_table_widths_match_the_charts(self):
+        """밸류에이션 탭 표와 재무제표 탭 차트가 다른 개수면 사용자가 두
+        화면을 오가며 비교할 수 없다(사용자 ①②는 한 요청이다)."""
+        import ast
+        import bot.stock_snapshot as ss
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        ns = [c.args[1].value for c in ast.walk(ast.parse(src))
+              if isinstance(c, ast.Call)
+              and getattr(c.func, "id", "") == "_profit_trend"
+              and len(c.args) > 1 and isinstance(c.args[1], ast.Constant)]
+        assert ss._Q_TABLE == ss._Y_TABLE == ns[0], (ss._Q_TABLE,
+                                                     ss._Y_TABLE, ns)
+        # 연간 평균분모의 '전기' 는 창 밖에서 온다 — 경계값 요청 금지(#44a)
+        assert ss._Y_LEAD >= 1, "가장 오래된 해가 늘 기말 분모로 떨어진다"
+
+    # ── fin_trend (비-KR 재무추이) ────────────────────────────────
+    @staticmethod
+    def _fins(*, bs_periods=None, n_q=8):
+        qs = [f"202{4 + i // 4}-{3 * (i % 4) + 3:02d}-30" for i in range(n_q)]
+        ys = [f"{2021 + i}-12-31" for i in range(5)]
+
+        def isr(p, i=0):
+            return {"period": p, "Total Revenue": 1000.0 + i,
+                    "Operating Income": 200.0, "Net Income": 150.0,
+                    "Net Income Including Noncontrolling Interests": 170.0,
+                    "Net Income Common Stockholders": 150.0}
+
+        def bsr(p, i=0):
+            return {"period": p, "Total Assets": 9000.0,
+                    "Total Liabilities Net Minority Interest": 4000.0,
+                    "Stockholders Equity": 5000.0 + i,
+                    "Total Equity Gross Minority Interest": 5400.0 + i}
+
+        def cfr(p):
+            return {"period": p, "Operating Cash Flow": 300.0,
+                    "Capital Expenditure": -100.0}
+        bp = bs_periods if bs_periods is not None else qs
+        return {"income_statement": {"quarterly": [isr(p, i) for i, p in enumerate(qs)],
+                                     "annual": [isr(p) for p in ys]},
+                "balance_sheet": {"quarterly": [bsr(p, i) for i, p in enumerate(bp)],
+                                  "annual": [bsr(p) for p in ys]},
+                "cash_flow": {"quarterly": [cfr(p) for p in qs],
+                              "annual": [cfr(p) for p in ys]}}
+
+    def test_displayed_net_income_matches_the_other_tabs(self):
+        """화면에 찍는 `당기순이익` 은 다른 탭과 **같은 라인아이템**이어야
+        한다 — 여기서만 'Net Income Including Noncontrolling Interests' 를
+        고르면 같은 분기가 탭마다 다른 숫자가 된다(#34)."""
+        from bot.fin_trend import build
+        items = build(self._fins(), quarterly=True, n=5)
+        assert len(items) == 5, len(items)
+        assert all(it["당기순이익"] == 150.0 for it in items), items[0]
+
+    def test_roe_numerator_and_denominator_are_the_same_class(self):
+        """분자만 총액으로 떨어지고 분모는 지배주주로 남으면 ROE 가 부푼다
+        (#225 뉴파워프라즈마)."""
+        from bot.fin_trend import build
+        it = build(self._fins(), quarterly=True, n=5)[-1]
+        rb = it.get("_returns_basis") or {}
+        assert rb.get("numerator") == "지배주주순이익", rb
+        assert rb.get("denominator") == "지배주주자본", rb
+        # 부채비율의 분모는 **총자본**이다(자산 = 부채(NMI 제외) + 총자본)
+        assert abs(it["부채비율"] - 4000.0 / (5400.0 + 7) * 100) < 0.01, it
+
+    def test_statements_are_joined_by_period_not_position(self):
+        """세 표를 위치로 매기면 원천이 한쪽만 한 분기 덜 줄 때 전 구간이
+        밀린다(#46·#88). 기간이 안 맞으면 그 칸을 **비운다**."""
+        from bot.fin_trend import build
+        # 재무상태표만 한 분기씩 어긋난 기간을 준다
+        bad = [f"202{4 + i // 4}-{3 * (i % 4) + 2:02d}-28" for i in range(8)]
+        items = build(self._fins(bs_periods=bad), quarterly=True, n=5)
+        assert all(it.get("부채비율") is None for it in items), items[-1]
+        assert all(it.get("ROE") is None for it in items), items[-1]
+        # 손익 항목은 그대로 살아 있어야 한다(조인 실패가 표를 죽이면 안 된다)
+        assert all(it["매출"] for it in items), items[-1]
+
+    def test_ttm_roe_needs_the_lead_quarters(self):
+        """창을 정확히 n 개만 태우면 **맨 오른쪽 한 칸만** 값이 있다 —
+        KR 표에서 겪은 그 증상(#44a)."""
+        from bot.fin_trend import build
+        items = build(self._fins(), quarterly=True, n=5)
+        assert all(it.get("ROE") is not None for it in items), \
+            [it.get("ROE") for it in items]
+
+    def test_fcf_comes_from_the_single_formula_module(self):
+        """산식은 `bot.fcf` 한 곳 — 복제하면 같은 회사가 화면마다 다른 FCF
+        를 갖는다(#38·#88 부호 규약)."""
+        from bot.fin_trend import build
+        it = build(self._fins(), quarterly=True, n=5)[-1]
+        assert it["FCF"] == 200.0, it["FCF"]      # 300 − |−100|
+        import ast
+        src = open("bot/fin_trend.py", encoding="utf-8").read()
+        names = {n.module for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.ImportFrom)}
+        assert "bot.fcf" in names, names
+
+    def test_annual_labels_are_fiscal_years(self):
+        from bot.fin_trend import build
+        items = build(self._fins(), quarterly=False, n=5)
+        assert [it["label"] for it in items] == [f"FY{y}" for y in
+                                                 range(2021, 2026)], items
+        assert all(it.get("quarter") is None for it in items), items[0]
+
+    def test_no_data_yields_no_table_not_an_empty_one(self):
+        """전 칸이 '—' 인 표는 '값이 0' 인지 '안 가져왔는지'를 못 가른다."""
+        from bot.fin_trend import build
+        assert build({}, quarterly=True) == []
+        assert build(None, quarterly=False) == []

@@ -1415,9 +1415,18 @@ def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
 #   v2 (2026-08-19) 총액 미공시사(증권·은행·보험) 매출을 FnGuide 총액으로 보강
 #   v3 (2026-08-19) FnGuide 컬럼 매핑 수정 — v2 는 파서가 못 읽어 보강이 0건이었다
 #   v9 (2026-08-21) FCF(= 영업활동현금흐름 − |CAPEX|) 추가 — 밸류에이션 표·분기 차트
-_Q_TABLE = 4          # 분기 표에 보여줄 분기 수
+#   v11 (2026-08-24) 분기 표 4→5칸 · 연간 표 3→5칸(사용자 요청) — 아카이브에
+#       구워진 payload 는 옛 길이라 다시 받아야 화면이 5칸이 된다(#18)
+# 사용자 2026-08-24: "분기별 재무추이를 최근 5분기, 재무 추이(연도별) 을
+# 똑같이 5년으로" — 재무제표 탭이 이미 분기 5개를 그리므로 두 탭의 열 수가
+# 맞는다.
+_Q_TABLE = 5          # 분기 표에 보여줄 분기 수
 _TTM_LEAD = 3         # TTM(4분기 합)을 첫 칸부터 채우려면 앞서 필요한 분기 수
-_KR_FIN_SCHEMA_VER = 10
+_Y_TABLE = 5          # 연간 표에 보여줄 연도 수
+_Y_LEAD = 1           # ROE 평균분모의 '전기' 를 위해 한 해 더 받는다(#44a
+                      # 경계값 요청 금지 — 정확히 5년만 받으면 가장 오래된
+                      # 해가 늘 기말 분모로 떨어진다)
+_KR_FIN_SCHEMA_VER = 11
 
 
 def kr_fin_signature() -> str:
@@ -1487,8 +1496,9 @@ def collect_kr_financials(ticker: str) -> dict:
             compact["_component_accounts"] = dict(_comp)
         out.setdefault("kr", {})["financials"] = compact
     current_year = _dt.now().year
-    _years = list(range(current_year - 1, current_year - 4, -1))
-    # 3개년 연간 조회는 서로 독립인데 **직렬**이었다 — 병렬로 미리 받아
+    _years = list(range(current_year - 1,
+                        current_year - 1 - (_Y_TABLE + _Y_LEAD), -1))
+    # 연간 조회는 해마다 서로 독립인데 **직렬**이었다 — 병렬로 미리 받아
     # 디스크 캐시에 넣어 둔다(아래 루프는 그대로, 두 번째 호출은 0초).
     # 2026-08-21 계측: `kr:dart.financials` 가 enrich:KR 을 지배했다.
     try:
@@ -1535,16 +1545,17 @@ def collect_kr_financials(ticker: str) -> dict:
         except Exception as exc:                               # noqa: BLE001
             log.warning("collect_kr_financials %s: 평균분모 ROE 실패: %s",
                         ticker, exc)
-        out.setdefault("kr", {})["financials_ts"] = ts
-    # 분기별 시계열(최근 4분기) — 밸류에이션 탭 "분기별 재무추이"용
+        # 기준으로만 받은 여분 연도는 잘라낸다(표는 _Y_TABLE 개).
+        out.setdefault("kr", {})["financials_ts"] = ts[-_Y_TABLE:]
+    # 분기별 시계열(_Q_TABLE 개) — 밸류에이션 탭 "분기별 재무추이"용
     # (bot.dart_quarterly, 사용자 2026-08-16). 연도별 시계열과 동일
     # 항목만 저장(렌더 쪽 표 구성을 그대로 재사용하기 위함).
     try:
         from bot.dart_quarterly import get_quarterly_series
-        # ⚠️ 표는 4분기만 보여주지만 **7분기를 받는다**(사용자 2026-08-19):
-        # ROE(TTM)는 앞선 3분기가 있어야 계산되므로 4개만 받으면 **맨 오른쪽
-        # 한 칸만** 값이 있고 나머지는 빈칸이 된다(실제로 그렇게 떴다).
-        # 저장은 그대로 마지막 4개만 — 다른 화면(분기 추이 차트 등)의 길이를
+        # ⚠️ 표에 보여줄 분기보다 **더 받는다**(사용자 2026-08-19):
+        # ROE(TTM)는 앞선 3분기가 있어야 계산되므로 표시분만 받으면
+        # **맨 오른쪽 한 칸만** 값이 있고 나머지는 빈칸이 된다(실제로 그랬다).
+        # 저장은 마지막 _Q_TABLE 개만 — 다른 화면(분기 추이 차트 등)의 길이를
         # 바꾸지 않으면서 표시 구간 전부에 TTM 을 채운다.
         q_series = get_quarterly_series(dart, ticker, n=_Q_TABLE + _TTM_LEAD)
         if q_series:
