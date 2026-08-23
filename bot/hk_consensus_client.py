@@ -126,6 +126,8 @@ _RATING_KEYWORDS = (
     "Buy", "Hold", "Sell", "Neutral",
 )
 _PLAIN_INT_RE = re.compile(r"(?<![0-9])(\d{4,7})(?![0-9./-])")
+# 파서 스키마 버전 — 셀 판정 규칙이 바뀌면 올린다(캐시 키에 실린다).
+_PARSE_VER = 2
 
 
 def _cell_texts(row_html: str) -> list[str]:
@@ -156,7 +158,7 @@ def _cell_texts(row_html: str) -> list[str]:
     return out
 
 
-def _parse_report_rows(html: str, cutoff) -> list[dict]:
+def _parse_report_rows(html: str, cutoff, code: str = "") -> list[dict]:
     """Tolerant per-row parser: pull every <tr>, then identify the date /
     target / rating / broker / title cells by PATTERN rather than fixed
     column order — robust to the column reshuffles the 한경 redesign
@@ -188,6 +190,12 @@ def _parse_report_rows(html: str, cutoff) -> list[dict]:
         date_digits = date_str.replace("-", "")
         for c in cells:
             if date_digits in c.replace(",", "").replace(".", ""):
+                continue
+            # ⚠️ 종목코드 셀을 목표가로 읽지 않는다 — 쿠콘 294570.KQ 실측
+            # (2026-08-23): 목표가가 없는 행에서 6자리 종목코드가 그대로
+            # 잡혀 화면에 `목표가 ₩294,570 (+997.1%)` 이 떴다. 값이 티커와
+            # **정확히 같으면** 그건 값이 아니다.
+            if code and c.replace(",", "").strip() == code:
                 continue
             m = re.search(r"(?<![0-9])([0-9]{1,3}(?:,[0-9]{3})+)(?![0-9])", c)
             if m:
@@ -245,7 +253,10 @@ def fetch_consensus(ticker: str, days_back: int = 90) -> Optional[dict]:
     if not code:
         return None
 
-    cache_key = f"hk_consensus_{code}_{date.today().isoformat()}.json"
+    # ⚠️ 파서를 고쳐도 오늘치 캐시가 옛 결과를 그대로 서빙한다(#21b) —
+    # 키에 파서 버전을 넣어 고친 날 바로 다시 긁게 한다.
+    cache_key = (f"hk_consensus_{code}_v{_PARSE_VER}_"
+                 f"{date.today().isoformat()}.json")
     cache_file = _CACHE_DIR / cache_key
     if cache_file.exists():
         try:
@@ -262,7 +273,7 @@ def fetch_consensus(ticker: str, days_back: int = 90) -> Optional[dict]:
 
     today = date.today()
     cutoff = today - timedelta(days=days_back)
-    rows = _parse_report_rows(html, cutoff)
+    rows = _parse_report_rows(html, cutoff, code)
 
     if not rows:
         # No coverage found — cache empty result to avoid re-fetch storms
