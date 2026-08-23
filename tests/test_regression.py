@@ -36959,8 +36959,11 @@ class TestShareCountIdentity:
         assert "_fwd_src" in note, "원천을 측정해서 넣지 않는다"
         assert "yfinance 제공값" not in note, "옛 고정 문구가 남아 있다"
         assert "현재가" in note, "분자가 현재가라는 사실을 안 적는다"
-        # 원천 문구가 두 갈래로 갈린다
-        assert seg.count('"네이버(FnGuide) 추정 EPS" if si.get("_forward_src")') == 1
+        # 원천 문구는 **측정 결과**에서 나온다 — 리터럴로 박으면 국내에서
+        # 거짓말이 된다(#19 소스 문자열 대신 계약으로).
+        i2 = seg.index("_fwd_src = (")
+        decl = seg[i2:i2 + 260]
+        assert "_forward_src" in decl and "_forward_why" in decl, decl
 
     def test_the_ttm_window_is_named_on_screen(self):
         """사용자 2026-08-23 "후행은 우리는 이미 2Q 인데 네이버는 1Q 야" —
@@ -37008,7 +37011,9 @@ class TestShareCountIdentity:
         i = seg.index("_per_basis_note = (")
         note = seg[i:i + 800]
         note = note[:note.index("</div>")]
-        assert note.count("<br>") == 1, f"<br> {note.count('<br>')}개"
+        # 기본 두 줄 — 선행 PER 을 비운 사유가 있을 때만 한 줄 더 붙는다
+        assert note.count("<br>") == 2, f"<br> {note.count('<br>')}개"
+        assert "_forward_why" in note, "추가 줄이 사유일 때만 붙는지 확인"
         assert "si-note" in note
 
     def test_the_band_note_names_its_denominator_as_a_number(self):
@@ -37117,3 +37122,44 @@ class TestShareCountIdentity:
         assert '"EPS"' in seg[i:i + 120], seg[i:i + 120]
         # 4분기가 안 차면 합을 만들지 않는다
         assert "합을 만들지 않는다" in seg
+
+    def test_kr_forward_is_blank_when_naver_has_no_estimate(self):
+        """사용자 2026-08-23 "이 방법은 별로 좋지 않은것 같아. 한국종목의
+        경우는 네이버의 컨센서스를 사용하는게 좋을것 같아."
+
+        슈프리마는 네이버 추정PER·EPS 가 **N/A** 라 yfinance forwardPE
+        11.25x 가 남았고, 국내는 forwardEps 를 안 줘서 `EPS (선행) —` 이라
+        **눈으로 검산도 못 했다**. 검산 불가한 배수를 남기느니 빈칸이
+        낫다(#29·#32) — 대신 **왜 비었는지** 말한다(#43)."""
+        from bot.dashboard import _derive_missing_multiples
+        qs = [{"year": 2026, "quarter": q, "당기순이익": 1e10,
+               "자본총계": 3e11} for q in range(1, 5)]
+        base = {"market_cap": 3.913e11, "shares_outstanding": 6974311.0,
+                "current_price": 56100.0, "forwardPE": 11.25}
+        blank = _derive_missing_multiples({**base, "kr": {"financials_q": qs}})
+        assert blank.get("forwardPE") is None, blank.get("forwardPE")
+        assert blank.get("forwardEps") is None
+        assert "네이버" in (blank.get("_forward_why") or ""), blank
+        # 네이버가 주면 그걸 쓴다
+        has = _derive_missing_multiples(
+            {**base, "kr": {"financials_q": qs,
+                            "naver_val": {"cns_eps": 21895.0}}})
+        assert abs(has["forwardPE"] - 56100.0 / 21895.0) < 1e-9
+        assert "네이버" in has["_forward_src"]
+        # ⚠️ 그 밖의 시장은 건드리지 않는다 — yfinance 가 유일한 원천이다
+        other = _derive_missing_multiples(dict(base))
+        assert other["forwardPE"] == 11.25, other["forwardPE"]
+        assert not other.get("_forward_why")
+
+    def test_the_note_says_why_the_forward_per_is_blank(self):
+        """빈칸이면 **왜** 비었는지 화면이 말한다 — 침묵이 최악(#43)."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("_per_basis_note = (")
+        note = seg[i:i + 900]
+        assert '_forward_why' in note, "사유를 각주에 안 싣는다"
+        assert '_forward_src' in seg[:i] or '_fwd_src' in note

@@ -5960,6 +5960,19 @@ def _derive_missing_multiples(si: dict) -> dict:
             out["forwardPE"] = _f_per
             derived.add("forwardPE")
         out["_forward_src"] = "네이버(FnGuide) 추정 EPS"
+    elif kr:
+        # ⚠️ 국내인데 네이버 추정치가 없으면 **비운다**(사용자 2026-08-23
+        # "이 방법은 별로 좋지 않은것 같아. 한국종목의 경우는 네이버의
+        # 컨센서스를 사용하는게 좋을것 같아"). yfinance forwardPE 는
+        # 글로벌·외국계 커버리지 집계라 화면의 다른 칸과 기준이 다르고,
+        # 국내는 forwardEps 를 안 줘서 **눈으로 검산도 못 한다** — 검산
+        # 불가한 배수를 남기느니 빈칸이 낫다(#29·#32).
+        out["forwardPE"] = None
+        out["forwardEps"] = None
+        out["_forward_src"] = ""
+        out["_forward_why"] = ("네이버(FnGuide)가 이 종목의 추정 EPS 를 "
+                               "제공하지 않아 비웠습니다 — yfinance 컨센서스는 "
+                               "커버리지가 달라 쓰지 않습니다")
     # 그 밖의 시장은 yfinance 가 준 forwardPE 를 그대로 쓴다 — 컨센서스
     # EPS 가 필요해 우리가 만들 수 없다.
     if derived:
@@ -6577,15 +6590,17 @@ def _render_stock_info_html(rec: dict) -> str:
     # 이고 그 밖은 yfinance 다. "yfinance 제공값" 이라고 박아 두면 국내에서
     # 거짓말이 된다(#55 설명이 코드와 어긋나면 버그). 사용자 2026-08-23
     # "세번째 깔끔하게 좀 해주고, 그리고 코멘트가 맞는지도 확인해줘".
-    _fwd_src = ("네이버(FnGuide) 추정 EPS" if si.get("_forward_src")
-                else "yfinance 컨센서스 EPS")
+    _fwd_src = (si.get("_forward_src")
+                or ("(없음)" if si.get("_forward_why") else "yfinance 컨센서스 EPS"))
     _per_basis_note = (
         '<div class="si-note" style="margin-top:6px">'
         'ℹ️ <b>후행</b> = 현재가 ÷ TTM 실적 EPS'
         + ('(DART 최근 4분기 합)' if is_kr else '')
         + ' · <b>선행</b> = 현재가 ÷ ' + esc(_fwd_src)
         + ' — 분자는 둘 다 <b>현재가</b>(실적 발표 시점 주가가 아님)<br>'
-          'ℹ️ <b>밴드차트 탭</b>의 현재 PER 은 분모가 달라(원천 FnGuide 기준) '
+        + ('ℹ️ ' + esc(str(si["_forward_why"])) + '<br>'
+           if si.get("_forward_why") else '')
+        + 'ℹ️ <b>밴드차트 탭</b>의 현재 PER 은 분모가 달라(원천 FnGuide 기준) '
           '값이 다를 수 있습니다</div>')
 
     def _per_mark(per_key: str, eps_key: str) -> str:
