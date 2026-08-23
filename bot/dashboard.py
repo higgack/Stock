@@ -4522,6 +4522,27 @@ def _safe_dy_pct(dy_raw, div_rate=None, price=None):
     return None
 
 
+def dividend_yield_pct(si: dict) -> tuple:
+    """(배당수익률 %, 출처) — **국내는 네이버(FnGuide) 값이 원천**이다.
+
+    FnGuide 산식(사용자 2026-08-23): 현금배당수익률 = 수정DPS /
+    보통주수정주가(기말). yfinance `dividendRate` 는 국내에서 결산배당을
+    빠뜨리는 일이 있다 — POSCO홀딩스 005490.KS 실측: 우리 2.58%(DPS 약
+    8,000) vs 네이버 3.23%(DPS 10,000).
+
+    ⚠️ 규칙을 한 곳에 둔다 — 밸류에이션 표·K-IFRS 표·라이브 오버레이가
+    각자 계산하면 같은 종목의 배당수익률이 화면마다 갈린다(#38·#199).
+    """
+    nv = ((si.get("kr") or {}).get("naver_val") or {})
+    v = nv.get("dvr")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 20:
+        asof = nv.get("dvr_asof")
+        return float(v), ("네이버(FnGuide)"
+                          + (f" {asof} 기준" if asof else ""))
+    return (_safe_dy_pct(si.get("dividendYield"), si.get("dividendRate"),
+                         si.get("current_price")), "yfinance")
+
+
 def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
     """Fill the news / research / consensus tabs in-place when they're
     missing from ``si``. These come from our own market clients (Naver /
@@ -4549,6 +4570,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         kr = si.get("kr", {})
         if not kr.get("research_reports"):
             _kr_research = None
+            _hk_used = None          # 한경으로 교체됐는지 — 출처 라벨의 근거
             try:
                 from bot.naver_research_client import fetch_research
                 _kr_research = fetch_research(ticker)
@@ -4582,12 +4604,19 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                         if not any(r.get("target") or r.get("rating")
                                    for r in _kr_research["reports"]):
                             _kr_research = _hk
+                            _hk_used = _hk
                     else:
                         _kr_research = _hk
+                        _hk_used = _hk
             if _kr_research and _kr_research.get("reports"):
                 si.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
                 if not si.get("target_mean") and not kr.get("consensus") and _kr_research.get("target_price"):
-                    src = "Naver Finance"
+                    # ⚠️ 출처를 리터럴로 박지 않는다 — 한경 폴백으로 내려온
+                    # 결과에도 'Naver Finance' 라고 적고 있었다(#55). 쿠콘
+                    # 294570.KQ 실측: 컨센서스 탭은 'Naver Finance', 같은 값을
+                    # 싣는 리서치 탭은 '한경 컨센서스' 라 화면끼리 어긋났다.
+                    src = ("한경 컨센서스" if _kr_research is _hk_used
+                           else "Naver Finance")
                     si.setdefault("kr", {})["consensus"] = {
                         "source": src,
                         "target_mean": _kr_research["target_price"],
@@ -4721,6 +4750,18 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                     si.setdefault("kr", {})["naver_val"] = _nv
             except Exception as exc:                           # noqa: BLE001
                 log.debug("_ensure_detail_enrichment: naver_val %s: %s",
+                          ticker, exc)
+        # BPS 분모(자사주 차감 유통주식수)도 **아카이브엔 없다** — 새 필드를
+        # 더할 때마다 물어야 하는 그 질문이다(#198). 없으면 옛 화면대로
+        # 상장주식수로 나누고 라벨도 그렇게 나간다(무해).
+        if not (si.get("kr") or {}).get("share_totals"):
+            try:
+                from bot.dart_client import DartClient
+                _st = DartClient().get_share_totals(ticker.split(".")[0])
+                if _st:
+                    si.setdefault("kr", {})["share_totals"] = _st
+            except Exception as exc:                           # noqa: BLE001
+                log.debug("_ensure_detail_enrichment: share_totals %s: %s",
                           ticker, exc)
 
     def _e_peers():
@@ -4996,11 +5037,18 @@ def build_live_quote(ticker: str, full: bool = False,
     # 는 국내 forwardEps 를 안 준다. 서버 렌더만 고치면 이 오버레이가 다시
     # yfinance 값으로 되돌린다(2026-08-23 실측: 화면 5.50 vs 서버 5.98).
     _kr_f_eps = _kr_f_per = None
+    _kr_dvr = None
     if is_kr:
         try:
             from bot.naver_finance_client import get_naver_valuation
-            _kr_f_eps, _kr_f_per = kr_forward_from_naver(
-                price, get_naver_valuation(ticker))
+            _nv_live = get_naver_valuation(ticker) or {}
+            _kr_f_eps, _kr_f_per = kr_forward_from_naver(price, _nv_live)
+            # 배당수익률도 국내는 네이버가 원천이다 — 서버 렌더만 고치면
+            # 이 오버레이가 yfinance 값으로 되돌린다(#199 그대로).
+            _d = _nv_live.get("dvr")
+            if isinstance(_d, (int, float)) and not isinstance(_d, bool) \
+                    and 0 < _d <= 20:
+                _kr_dvr = float(_d)
         except Exception as exc:                               # noqa: BLE001
             log.debug("build_live_quote: naver forward %s: %s", ticker, exc)
     vals = {
@@ -5134,7 +5182,8 @@ def build_live_quote(ticker: str, full: bool = False,
         v = vals.get(k)
         if isinstance(v, (int, float)) and (k == "beta" or k in _recomputed):
             fmt[k] = f"{float(v):.2f}{suf}"
-    _lq_dy = _safe_dy_pct(vals.get("dividendYield"), info.get("dividendRate"), price)
+    _lq_dy = _kr_dvr if _kr_dvr is not None else _safe_dy_pct(
+        vals.get("dividendYield"), info.get("dividendRate"), price)
     if _lq_dy is not None:
         fmt["dividendYield"] = f"{_lq_dy:.2f}%"
     for k in ("trailingEps", "forwardEps", "bookValue",
@@ -5785,9 +5834,16 @@ def _derived_desc(si: dict) -> str:
     # 없는 개념을 주장하는 것이다(#55 설명이 코드와 어긋나면 버그).
     if set(items) & {"trailingEps", "trailingPE", "bookValue", "priceToBook"}:
         scope = si.get("_derived_scope") or "연결 총액(비지배지분 포함)"
-        lines.append(f"분모 = 기말 상장주식수 · 분자 = DART {esc(scope)}")
-        lines.append("FnGuide 는 EPS 분모에 자사주를 포함(수정평균 발행주식수)하고 "
-                     "BPS 분모에서만 차감해 소수점이 다릅니다")
+        # ⚠️ EPS 와 BPS 는 **분모 규약이 다르다**(FnGuide 산식): EPS 는
+        # 발행주식수, BPS 는 자사주를 차감한 유통주식수. 한 문장으로 뭉치면
+        # 한쪽이 거짓말이 된다(#34).
+        _tsub = any("자사주" in str(v) for k, v in basis.items()
+                    if k in ("bookValue", "priceToBook"))
+        lines.append("분모 = 기말 상장주식수"
+                     + ("(BPS 는 자사주 차감 유통주식수)" if _tsub else "")
+                     + f" · 분자 = DART {esc(scope)}")
+        lines.append("FnGuide 는 EPS 분모에 자사주를 포함(수정평균 발행주식수)해 "
+                     "소수점이 다를 수 있습니다")
     return "<br>".join(lines)
 
 
@@ -5957,15 +6013,34 @@ def _derive_missing_multiples(si: dict) -> dict:
                                     else "당기순이익")
                  if str(net_basis).startswith("TTM") else "")
 
-    if out.get("bookValue") is None and equity and shares and shares > 0:
-        out["bookValue"] = equity / shares
+    # ⚠️ BPS 분모는 **유통주식수**(자사주 차감)다 — FnGuide 산식이 그렇고
+    # (사용자 2026-08-23 제공), 자사주는 유통주식이 아니며 자본은 이미
+    # 취득원가만큼 차감돼 있어 분모에 넣으면 과대계상된다. POSCO홀딩스
+    # 005490.KS 실측: 우리 809,716 vs 네이버 759,917(+6.6%).
+    # EPS 는 **상장주식수 그대로** — FnGuide 는 EPS 분모에만 자사주를
+    # 포함한다(#204 역산으로 확인). 두 지표의 분모 규약이 다르다.
+    _tot = (kr.get("share_totals") or {}) if isinstance(kr, dict) else {}
+    _distb = _num(_tot.get("distributed"))
+    _bps_shares = _distb if (_distb and _distb > 0) else shares
+    _bps_basis = ("최근분기말 · 자사주 차감"
+                  if (_distb and shares and _distb < shares) else "최근분기말")
+    if out.get("bookValue") is None and equity and _bps_shares and _bps_shares > 0:
+        out["bookValue"] = equity / _bps_shares
         derived.add("bookValue")
     if out.get("trailingEps") is None and net and net > 0 and shares and shares > 0:
         out["trailingEps"] = net / shares
         derived.add("trailingEps")
-    if out.get("priceToBook") is None and mcap and equity and equity > 0:
-        out["priceToBook"] = mcap / equity
-        derived.add("priceToBook")
+    # PBR 은 **화면의 BPS 에서** 만든다 — `시총 ÷ 자본` 으로 만들면 BPS
+    # 분모가 유통주식수일 때 `현재가 ÷ BPS` 와 어긋나 눈으로 나눠 봤을 때
+    # 안 맞는다(#33). BPS 를 못 만들었을 때만 시총 기준으로 떨어진다.
+    if out.get("priceToBook") is None:
+        _px_pb, _bv_pb = _num(out.get("current_price")), _num(out.get("bookValue"))
+        if _px_pb and _bv_pb and _bv_pb > 0:
+            out["priceToBook"] = _px_pb / _bv_pb
+            derived.add("priceToBook")
+        elif mcap and equity and equity > 0:
+            out["priceToBook"] = mcap / equity
+            derived.add("priceToBook")
     if out.get("trailingPE") is None and mcap and net and net > 0:
         out["trailingPE"] = mcap / net
         derived.add("trailingPE")
@@ -6006,13 +6081,17 @@ def _derive_missing_multiples(si: dict) -> dict:
     # EPS 가 필요해 우리가 만들 수 없다.
     if derived:
         out["_derived_multiples"] = sorted(derived)
+        # 분자를 그대로 남긴다 — 감사·프로브가 **네이버 분모를 역산**해
+        # '값이 틀린 것'과 '분모 규약이 다른 것'을 가를 수 있어야 한다(#204).
+        out["_kr_net_ttm"] = net
+        out["_kr_equity"] = equity
         # ⚠️ 기준이 항목마다 다르다 — 이익 기반(PER·EPS)과 매출 기반(PSR)은
         # 각자 TTM/연간 폴백을 따로 타고, 자산 기반(PBR·BPS)은 **시점 잔액**
         # 이라 TTM 이라는 개념 자체가 없다. 하나로 뭉뚱그려 라벨하면 틀린
         # 출처를 표기하게 된다(2026-08-16 독립 리뷰).
         _basis = {"trailingPE": net_basis, "trailingEps": net_basis,
                   "priceToSalesTrailing12Months": rev_basis,
-                  "priceToBook": "최근분기말", "bookValue": "최근분기말",
+                  "priceToBook": _bps_basis, "bookValue": _bps_basis,
                   "forwardPE": "네이버 추정", "forwardEps": "네이버 추정"}
         out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
         _TOT = "연결 총액(비지배지분 포함)"
@@ -6117,15 +6196,22 @@ def _render_stock_info_html(rec: dict) -> str:
     # (시가총액 ÷ 현재가 ≠ 발행주식수) 주당지표가 통째로 밀린다(#33).
     # 맞으면 출처만, 어긋나면 어긋난 사실을 말한다(#43 침묵이 최악).
     from bot.share_count import note as _share_note
-    shares_sub = _share_note(price, si.get("market_cap"),
-                             si.get("shares_outstanding"),
-                             si.get("shares_source") or "")
+    _sh_note = _share_note(price, si.get("market_cap"),
+                           si.get("shares_outstanding"),
+                           si.get("shares_source") or "")
     # ⚠️ `7.0M` 만 보이면 시가총액 ÷ 현재가 검산을 눈으로 할 수 없다 —
     # 정확한 주식수를 같이 적는다(2026-08-23 슈프리마 6,974,311).
+    # 사용자 2026-08-23 "주식수만 보이게 해줘. 다른 설명은 빼고" — 출처
+    # 라벨은 **툴팁**으로 옮긴다(#10b 소스 표기 의무는 유지하되 화면은
+    # 숫자만). 단 **어긋난 사실은 숨기지 않는다**(#43 침묵이 최악) —
+    # `⚠️` 로 시작하는 경고는 그대로 화면에 남는다.
     _sh_exact = si.get("shares_outstanding")
+    _sh_warn = _sh_note.startswith("⚠️")
+    shares_sub = _sh_note
     if isinstance(_sh_exact, (int, float)) and _sh_exact > 0:
         shares_sub = (f"{int(_sh_exact):,}주"
-                      + (f" · {shares_sub}" if shares_sub else ""))
+                      + (f" · {_sh_note}" if _sh_warn else ""))
+    shares_tip = "" if _sh_warn else _sh_note
     ne = si.get("next_earnings", "")
     ne_label = ne if ne else "—"
     ne_sub = "(추정)" if ne else ""
@@ -6135,6 +6221,7 @@ def _render_stock_info_html(rec: dict) -> str:
     _glitch = si.get("price_glitch_note") or ""
     _glitch_html = (f'<div style="grid-column:1/-1;font-size:11px;'
                     f'color:#f5a623">⚠️ {esc(_glitch)}</div>' if _glitch else "")
+    _sh_tip_attr = (f' title="{esc(shares_tip)}"' if shares_tip else "")
     header = f"""<div class="si-header">
   <div class="si-card"><span class="si-label">현재가</span>
     <span class="si-value" data-q="price">{esc(price_str)}</span></div>
@@ -6143,7 +6230,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {_glitch_html}
   <div class="si-card"><span class="si-label">발행주식수</span>
     <span class="si-value">{esc(shares_str)}</span>
-    <span class="si-sub">{esc(shares_sub)}</span></div>
+    <span class="si-sub"{_sh_tip_attr}>{esc(shares_sub)}</span></div>
   <div class="si-card"><span class="si-label">다음 실적</span>
     <span class="si-value">{esc(ne_label)}</span>
     <span class="si-sub">{esc(ne_sub)}</span></div>
@@ -6333,8 +6420,7 @@ def _render_stock_info_html(rec: dict) -> str:
             # (사용자 2026-08-19, ROIC 추가로 우측이 7행이 되며 어긋남).
             # 밸류에이션 탭(5569-5570행)과 동일한 표준 헬퍼 재사용 — 신규
             # 데이터소스 불요, si 는 이미 이 함수 스코프에 있음(5128행).
-            _kf_dy_pct = _safe_dy_pct(si.get("dividendYield"),
-                                      si.get("dividendRate"), si.get("current_price"))
+            _kf_dy_pct = dividend_yield_pct(si)[0]
             fin_rows += (f'<tr><td>배당수익률</td><td class="num">'
                         f'{f"{_kf_dy_pct:.2f}%" if _kf_dy_pct is not None else "—"}'
                         f'</td></tr>\n')
@@ -6677,7 +6763,7 @@ def _render_stock_info_html(rec: dict) -> str:
     val_multiples += _mrow("PBR (주가순자산)", "priceToBook", "pbr")
     val_multiples += _mrow("PSR (주가매출)", "priceToSalesTrailing12Months", "psr")
     val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x", "enterpriseToEbitda")
-    _dy_pct = _safe_dy_pct(si.get("dividendYield"), si.get("dividendRate"), si.get("current_price"))
+    _dy_pct, _dy_src = dividend_yield_pct(si)
     val_multiples += _val_row("배당수익률", _dy_pct, "%", "dividendYield")
     val_multiples += _val_row("베타", si.get("beta"), "", "beta")
 
@@ -6786,7 +6872,17 @@ def _render_stock_info_html(rec: dict) -> str:
                           + esc(str((_rb or {}).get("denominator") or "자본총계"))
                           + '</b>'
                           + ('(최근 4분기 합, 연율)' if _is_q else '')
-                          + ' — FnGuide 산식과 같은 기준입니다'
+                          # ⚠️ '같은 기준' 은 **분모가 지배주주자본일 때만**
+                          # 참이다. 원천이 그 계정을 안 주면 연결 자본총계로
+                          # 떨어지는데(비지배지분 포함) 그러면 FnGuide 보다
+                          # ROE 가 체계적으로 낮게 나온다 — 그걸 '같은
+                          # 기준'이라고 적으면 화면이 거짓말한다(#55).
+                          + (' — FnGuide 산식과 같은 기준입니다'
+                             if (_rb or {}).get("denominator") == "지배주주자본"
+                             else ' — 원천이 지배주주 자본총계를 주지 않아 '
+                                  '<b>연결 자본총계</b>(비지배지분 포함)로 '
+                                  '나눴습니다. FnGuide 는 지배주주 자본으로 '
+                                  '나누므로 그만큼 낮게 나옵니다')
                           + ('' if (_rb or {}).get("averaged")
                              else '. 전기 잔액을 못 구해 기말로 나눴습니다'))
         _rev_src = sorted({str(it.get("_revenue_source")) for it in items
@@ -8154,6 +8250,10 @@ def _render_stock_info_html(rec: dict) -> str:
 
     _val_src = "yfinance" + (" · SEC XBRL" if is_us else " · DART" if is_kr
                              else " · AKShare" if is_cn else " · FinMind" if is_tw else "")
+    # 국내는 선행 EPS·배당수익률이 네이버(FnGuide) 원천이다 — 출처 줄이
+    # 그걸 말하지 않으면 화면이 yfinance 값인 것처럼 보인다(#55).
+    if is_kr and (si.get("_forward_src") or str(_dy_src).startswith("네이버")):
+        _val_src += " · 네이버(FnGuide)"
     # 파생값이 섞였으면 이 표에서도 밝힌다 — 종합 탭만 표기하면 같은 숫자가
     # 탭에 따라 출처가 달라 보인다(사용자 2026-08-16 두 표면 모두 지적).
     # ⚠️ 파생 설명을 **출처 줄에 이어 붙이지 않는다**. 그 줄은 우측정렬

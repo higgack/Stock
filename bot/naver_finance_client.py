@@ -61,6 +61,13 @@ def _parse_float(text: str | None) -> Optional[float]:
         return None
 
 
+# 배당수익률 라벨 폴백 — ⚠️ 라벨 뒤 **첫 숫자**를 집으면 기준시점
+# (`2026.02`)이 잡힌다(실측). 값은 `%` 가 따라붙는 숫자다 — 그걸 앵커로.
+_DVR_FALLBACK_RE = re.compile(
+    r"배당수익률[\s\S]{0,400}?(?<![\d.])([\d,]+\.\d+|[\d,]+)"
+    r"\s*(?:</[^>]+>\s*)*%")
+
+
 def get_naver_valuation(ticker: str) -> Optional[dict]:
     """Return {per, eps, pbr, bps, shares} from Naver Finance for a KR ticker.
 
@@ -141,6 +148,23 @@ def get_naver_valuation(ticker: str) -> Optional[dict]:
         result["cns_per"] = cns_per
     if cns_eps is not None and cns_eps != 0:
         result["cns_eps"] = cns_eps
+
+    # 배당수익률 — FnGuide 산식(사용자 2026-08-23 제공):
+    #   현금배당수익률 = 수정DPS / 보통주수정주가(기말)
+    # yfinance `dividendRate` 는 국내 종목에서 결산배당을 빠뜨리는 일이
+    # 있다. POSCO홀딩스 005490.KS 실측(2026-08-23): 우리 2.58%(→ DPS 약
+    # 8,000) vs 네이버 3.23%(→ DPS 10,000). 원천을 그대로 쓰는 게 맞다.
+    # ⚠️ id 하나만 믿지 않는다 — 라벨 폴백을 같이 둔다(추정PER 과 같은 규율).
+    dvr = _extract_em("_dvr")
+    if dvr is None:
+        m = _DVR_FALLBACK_RE.search(html)
+        dvr = _parse_float(m.group(1)) if m else None
+    if dvr is not None and 0 < dvr <= 20:      # 20% 초과는 단위 사고로 본다
+        result["dvr"] = dvr
+        # 기준 시점(예: `2026.02`) — 언제 기준인지 화면이 말해야 한다(#43)
+        m = re.search(r"배당수익률[\s\S]{0,200}?(20\d{2})\.(\d{2})", html)
+        if m:
+            result["dvr_asof"] = f"{m.group(1)}.{m.group(2)}"
 
     # 상장주식수 — Naver Finance side panel renders this as
     # "상장주식수<...>...</...><...>97,475,107</...>". The label-value

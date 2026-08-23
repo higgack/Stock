@@ -37070,15 +37070,21 @@ class TestShareCountIdentity:
         assert "reversed(items)" in seg, seg
 
     def test_the_header_shows_the_exact_share_count(self):
-        """`7.0M` 만 보이면 시가총액 ÷ 현재가 검산을 눈으로 할 수 없다."""
+        """`7.0M` 만 보이면 시가총액 ÷ 현재가 검산을 눈으로 할 수 없다.
+
+        ⚠️ 옛 판은 소스 문자열을 박아 두어 표기를 다듬자 깨졌다(#19) —
+        **렌더된 화면**으로 본다.
+        """
+        import re
         from bot.share_count import note
-        import ast
-        src = open("bot/dashboard.py").read()
-        i = src.index("_sh_exact = si.get(\"shares_outstanding\")")
-        seg = src[i:i + 320]
-        assert "int(_sh_exact):,}주" in seg, seg
-        # 출처 문구가 있으면 뒤에 붙고, 없으면 주식수만 남는다
-        assert '{shares_sub}" if shares_sub else ""' in seg, seg
+        from bot.dashboard import _render_stock_info_html
+        out = _render_stock_info_html({"ticker": "035890.KQ", "stock_info": {
+            "currency": "KRW", "current_price": 2140.0,
+            "market_cap": 4442e8, "shares_outstanding": 207588536,
+            "shares_source": "KRX"}})
+        h = out["header"] if isinstance(out, dict) and "header" in out else str(out)
+        i = h.index("발행주식수")
+        assert "207,588,536주" in h[i:i + 800], h[i:i + 800]
         assert note(2140.0, 4442e8, 207588536, "KRX") == "KRX"
 
     def test_the_probe_dumps_reported_eps_for_the_basis_question(self):
@@ -37356,6 +37362,200 @@ class TestShareCountIdentity:
         txt = _derived_desc(out)
         assert txt.count("TTM 25.3Q~26.2Q") == 1, txt
         assert "PSR · EPS(후행) · PER(후행)" in txt, txt
+
+    def test_hankyung_target_never_reads_the_ticker_code(self):
+        """사용자 2026-08-23 쿠콘 294570.KQ: 화면이 `목표가 ₩294,570
+        (+997.1%)` 을 띄웠다 — **목표가가 티커와 정확히 같았다**. 한경 행
+        파서가 '≥1000 인 첫 정수'를 목표가로 집는데 목표가 없는 행에서
+        6자리 종목코드가 잡힌 것이다. 값이 티커와 같으면 그건 값이 아니다."""
+        from datetime import date
+        from bot.hk_consensus_client import _parse_report_rows
+        row = ('<tr><td>2026-08-20</td><td>294570</td><td>쿠콘</td>'
+               '<td>유진투자증권</td><td>실적 개선</td></tr>')
+        got = _parse_report_rows(row, date(2026, 1, 1), "294570")
+        assert got and got[0]["target"] is None, got
+        # 픽스처가 진짜 버그를 재현하는지 — code 를 안 주면 옛 증상이 난다
+        assert _parse_report_rows(row, date(2026, 1, 1))[0]["target"] == 294570.0
+        # 진짜 목표가는 그대로 읽는다
+        row2 = ('<tr><td>2026-08-20</td><td>294570</td>'
+                '<td>유진투자증권</td><td>35,000</td></tr>')
+        assert _parse_report_rows(row2, date(2026, 1, 1), "294570")[0]["target"] \
+            == 35000.0
+        # 파서를 고쳐도 오늘치 캐시가 옛 값을 서빙한다(#21b) — 키에 버전
+        import ast
+        src = open("bot/hk_consensus_client.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "fetch_consensus")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "_PARSE_VER" in seg, "캐시 키에 파서 버전이 없다"
+
+    def test_kr_consensus_source_label_names_the_real_source(self):
+        """쿠콘 실측: 컨센서스 탭은 '출처 Naver Finance', 같은 값을 싣는
+        리서치 탭은 '출처 한경 컨센서스' 였다 — `src` 가 리터럴이라 한경
+        폴백으로 내려온 결과에도 네이버라고 적었다(#55)."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        i = src.index('src = ("한경 컨센서스"')
+        seg = src[i:i + 200]
+        assert "_hk_used" in seg, seg
+        assert src.count('_hk_used = _hk') == 2, "폴백 경로 둘 다 기록해야 한다"
+        assert 'src = "Naver Finance"' not in src, "옛 리터럴이 남아 있다"
+
+    def test_share_card_shows_only_the_count_but_keeps_warnings(self):
+        """사용자 2026-08-23 "주식수만 보이게 해줘. 다른 설명은 빼고" —
+        출처 라벨은 툴팁으로. 단 **어긋난 사실은 숨기지 않는다**(#43)."""
+        from bot.dashboard import _render_stock_info_html
+        ok = _render_stock_info_html({"ticker": "005490.KS", "stock_info": {
+            "currency": "KRW", "current_price": 310000.0,
+            "market_cap": 2.456e13, "shares_outstanding": 79241527,
+            "shares_source": "KRX 상장주식수(2026-08-24) · 시총 재계산"}})
+        import re
+
+        def _sub(html):
+            """발행주식수 카드의 **보이는** 서브텍스트만 — 속성(title)은
+            눈에 안 보이므로 세면 안 된다(#91b 재는 대상이 맞나)."""
+            i = html.index("발행주식수")
+            m = re.search(r'<span class="si-sub"[^>]*>(.*?)</span>',
+                          html[i:i + 800], re.S)
+            return m.group(1) if m else ""
+
+        h = ok["header"] if isinstance(ok, dict) and "header" in ok else str(ok)
+        assert _sub(h) == "79,241,527주", _sub(h)
+        assert 'title="KRX 상장주식수(2026-08-24) · 시총 재계산"' in h
+        # 어긋나면 경고는 화면에 남는다
+        bad = _render_stock_info_html({"ticker": "005490.KS", "stock_info": {
+            "currency": "KRW", "current_price": 310000.0,
+            "market_cap": 3.9e13, "shares_outstanding": 79241527}})
+        hb = bad["header"] if isinstance(bad, dict) and "header" in bad else str(bad)
+        assert "⚠️" in _sub(hb), _sub(hb)
+
+    def test_bps_denominator_deducts_treasury_and_pbr_follows_bps(self):
+        """사용자 2026-08-23 POSCO홀딩스 005490.KS: 우리 BPS 809,716 vs
+        네이버 759,917(+6.6%). FnGuide 산식은 BPS 분모가 **자사주 차감
+        유통주식수**다(사용자 제공). 그리고 PBR 은 화면의 BPS 에서 만들어야
+        `현재가 ÷ BPS` 와 맞는다(#33) — 시총÷자본으로 만들면 어긋난다."""
+        from bot.dart_client import _pick_share_totals
+        from bot.dashboard import _derive_missing_multiples as d
+        # ① 행 선택 — 합계 행이 있으면 그것, 없으면 종류주를 **더한다**
+        assert _pick_share_totals(
+            [{"se": "보통주", "isu_stock_totqy": "79,241,527",
+              "tesstk_co": "4,600,000", "distb_stock_co": "74,641,527"}]
+        ) == {"issued": 79241527, "treasury": 4600000,
+              "distributed": 74641527}
+        assert _pick_share_totals(
+            [{"se": "보통주", "isu_stock_totqy": "80", "tesstk_co": "5",
+              "distb_stock_co": "-"},
+             {"se": "우선주", "isu_stock_totqy": "20", "tesstk_co": "0",
+              "distb_stock_co": "-"}])["distributed"] == 95
+        assert _pick_share_totals([{"se": "합계", "isu_stock_totqy": "-"}]) == {}
+
+        qs = [{"year": y, "quarter": q, "당기순이익": 1e11,
+               "지배주주순이익": 9.8e10, "지배주주자본": 5.672e13, "매출": 5e11}
+              for y, q in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+        base = {"market_cap": 2.456e13, "shares_outstanding": 79241527,
+                "current_price": 310000.0}
+        out = d({**base, "kr": {
+            "financials_q": qs,
+            "share_totals": {"issued": 79241527, "treasury": 4600000,
+                             "distributed": 74641527}}})
+        # ② 유통주식수로 나눈다
+        assert abs(out["bookValue"] - 5.672e13 / 74641527) < 1.0, out["bookValue"]
+        # ③ PBR 은 화면의 BPS 에서 — 눈으로 나눠 봤을 때 맞는다
+        assert abs(out["priceToBook"] - 310000.0 / out["bookValue"]) < 1e-9
+        assert "자사주" in out["_derived_basis"]["bookValue"]
+        # ④ 자사주 자료가 없으면 상장주식수로 떨어지고 라벨도 그렇게
+        out2 = d({**base, "kr": {"financials_q": qs}})
+        assert abs(out2["bookValue"] - 5.672e13 / 79241527) < 1.0
+        assert "자사주" not in out2["_derived_basis"]["bookValue"]
+        # ⑤ 새 필드는 **아카이브엔 없다** — 상세 보강이 같이 채워야 한다(#198)
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_ensure_detail_enrichment")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "get_share_totals" in seg, "아카이브 보강에 배선이 없다"
+
+    def test_kr_dividend_yield_comes_from_naver_and_survives_the_overlay(self):
+        """POSCO홀딩스 실측: 우리 2.58%(yfinance dividendRate 약 8,000) vs
+        네이버 3.23%(DPS 10,000). FnGuide 산식은 수정DPS/기말주가이고
+        국내는 그 값이 원천이다. 규칙은 한 곳(#38)이고 라이브 오버레이도
+        그걸 써야 서버가 그린 값을 되돌리지 않는다(#199)."""
+        import ast
+        from bot.dashboard import dividend_yield_pct
+        v, src = dividend_yield_pct(
+            {"kr": {"naver_val": {"dvr": 3.23, "dvr_asof": "2026.02"}},
+             "dividendYield": 2.58, "dividendRate": 8000,
+             "current_price": 310000.0})
+        assert (round(v, 2), "네이버" in src) == (3.23, True), (v, src)
+        assert "2026.02" in src, src
+        # 네이버가 없으면 계산 폴백
+        v2, src2 = dividend_yield_pct({"dividendRate": 8000,
+                                       "current_price": 310000.0})
+        assert round(v2, 2) == 2.58 and src2 == "yfinance"
+        # 오버레이가 서버 값을 덮지 않는다 — 배선을 AST 로
+        src_txt = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src_txt))
+                  if isinstance(n, ast.FunctionDef) and n.name == "build_live_quote")
+        seg = ast.get_source_segment(src_txt, fn) or ""
+        assert "_kr_dvr" in seg and "_kr_dvr if _kr_dvr is not None" in seg, \
+            "라이브 오버레이가 국내 배당수익률을 다시 yfinance 로 덮는다"
+
+    def test_naver_dividend_parser_does_not_grab_the_as_of_date(self):
+        """라벨 뒤 **첫 숫자**를 집으면 기준시점(`2026.02`)이 잡힌다(실측) —
+        값은 `%` 가 따라붙는 숫자다. 픽스처는 원천이 실제로 보내는 모양을
+        흉내내야 이 버그를 잡는다(#155)."""
+        from bot.naver_finance_client import _DVR_FALLBACK_RE as R
+        for html, want in (
+            ('<th>배당수익률</th><td class="v">2026.02</td>'
+             '<td><span>3.23</span>%</td>', "3.23"),
+            ('<th>배당수익률<em>2026.02</em></th>'
+             '<td><em id="_dvr">3.23</em>%</td>', "3.23"),
+            ('<td>배당수익률</td><td>3.23%</td>', "3.23"),
+            ('<td>배당수익률</td><td>N/A</td>', None),
+        ):
+            got = R.search(html)
+            assert (got.group(1) if got else None) == want, (html, got)
+
+    def test_roe_note_does_not_claim_fnguide_basis_on_the_total_equity(self):
+        """사용자 2026-08-23 "네이버랑 비교하면 ROE 가 우리가 좀 적게 나오는게
+        계산식의 차이 같은데" — 원천이 지배주주 자본총계를 안 주면 분모가
+        **연결 자본총계**(비지배지분 포함)로 떨어져 ROE 가 체계적으로 낮게
+        나온다. 그런데 각주는 그때도 'FnGuide 산식과 같은 기준'이라고 적고
+        있었다(#55). 분모 계정에 따라 문구가 갈려야 한다."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        i = src.index("ℹ️ ROE = <b>")
+        seg = src[i:i + 1400]
+        assert '"지배주주자본"' in seg, "분모 계정을 보고 문구를 가르지 않는다"
+        assert "FnGuide 산식과 같은 기준입니다" in seg and "연결 자본총계" in seg, \
+            "두 갈래가 다 있어야 한다"
+        # 조건부(IfExp)로 갈려 있는지 — 무조건 문구면 다시 거짓말이 된다
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        ifexps = [n for n in ast.walk(fn) if isinstance(n, ast.IfExp)
+                  and "FnGuide 산식과 같은 기준입니다" in ast.dump(n)]
+        assert len(ifexps) == 1, "문구가 조건부가 아니다"
+        assert "지배주주자본" in ast.dump(ifexps[0].test)
+
+    def test_quarterly_forward_per_uses_naver_for_kr(self):
+        """사용자 2026-08-23 "분기실적탭에 Forward per 는 밸류에이션탭에
+        PER (선행) 과 맞춰져. 한국꺼는" — 야후는 국내 forwardEps 를 안 줘서
+        밸류에이션 탭은 네이버 추정 EPS 로 만든다(#206). 여기만 야후
+        forwardPE 를 쓰면 같은 종목의 선행 PER 이 탭마다 갈린다(#38·#147)."""
+        import ast
+        src = open("bot/quarterly_infographic.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "build_payload")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("per_fwd = None")
+        tail = seg[i:i + 1400]
+        # 규칙은 한 곳에서 — 여기서도 그 함수를 부른다
+        assert "kr_forward_from_naver" in tail, tail[:400]
+        # 국내는 야후 폴백을 타지 않는다 — 세 폴백 전부 `not is_kr` 게이트
+        assert tail.count("if per_fwd is None and not is_kr:") == 2, tail
+        assert "if per_fwd is None:" not in tail, "야후 폴백이 국내에도 열려 있다"
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다

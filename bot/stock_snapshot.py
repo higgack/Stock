@@ -769,6 +769,17 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         q = kr_registry_shares(ticker)
         return {"kr": {"krx_quote": q}} if q.get("shares") else {}
 
+    def _t_share_totals() -> dict:
+        """주식의 총수 현황(DART) — **BPS 분모**용 유통주식수(자사주 차감).
+
+        FnGuide 산식(사용자 2026-08-23): BPS = (지배주주지분)자본총계 /
+        수정기말발행주식수(보통주+우선주, **자사주차감**). 상장주식수로
+        나누면 자사주가 많은 회사에서 BPS 가 과대계상된다.
+        """
+        from bot.dart_client import DartClient
+        st = DartClient().get_share_totals(ticker.split(".")[0])
+        return {"kr": {"share_totals": st}} if st else {}
+
     def _t_naver_val() -> dict:
         """네이버(FnGuide) 투자지표 — **선행 PER 의 원천**(사용자 2026-08-23).
 
@@ -887,6 +898,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
              ("fsc.lockup", _t_fsc_lockup),
              ("fsc.dilution", _t_fsc_dilution), ("krx.alert", _t_krx_alert),
              ("krx.shares", _t_krx_shares), ("naver.val", _t_naver_val),
+             ("dart.share_totals", _t_share_totals),
              ("fnguide", _t_fnguide), ("research", _t_research),
              ("dividends", _t_dividends)]
 

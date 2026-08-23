@@ -48,6 +48,51 @@ import requests
 log = logging.getLogger("bot.dart")
 
 _DART_BASE = "https://opendart.fss.or.kr/api"
+# 주식의 총수 탐색 예산 — 리터럴로 못박는다(자기 상수로 자기를 검증하면
+# 상한을 올리는 뮤테이션이 그대로 통과한다, #66).
+_SHARE_TOT_PROBE_N = 4
+
+
+def _share_int(v) -> Optional[int]:
+    """DART 는 값이 없으면 '-' 를 준다. 숫자만 통과."""
+    try:
+        t = str(v).replace(",", "").strip()
+    except Exception:
+        return None
+    if not t or not t.lstrip("-").isdigit():
+        return None
+    n = int(t)
+    return n if n >= 0 else None
+
+
+def _pick_share_totals(rows: list) -> dict:
+    """주식의 총수 행에서 {issued, treasury, distributed} 를 고른다.
+
+    ⚠️ `se`(구분) 는 회사마다 '합계' · '보통주' · '우선주' 로 나뉜다.
+    FnGuide 분모는 **보통주+우선주 합계**라 합계 행이 있으면 그걸 쓰고,
+    없으면 종류주 행을 **더한다**(하나만 쓰면 우선주가 통째로 빠진다).
+    """
+    tot = {"issued": 0, "treasury": 0, "distributed": 0}
+    summed = False
+    for r in rows or []:
+        se = str(r.get("se") or "")
+        iss = _share_int(r.get("isu_stock_totqy"))
+        tes = _share_int(r.get("tesstk_co"))
+        dis = _share_int(r.get("distb_stock_co"))
+        if iss is None and dis is None:
+            continue
+        if "합계" in se:            # 합계 행이 있으면 그게 정답이다
+            out = {"issued": iss or 0, "treasury": tes or 0,
+                   "distributed": dis if dis is not None
+                   else max((iss or 0) - (tes or 0), 0)}
+            return out if out["distributed"] else {}
+        if "주" in se:              # 보통주 · 우선주 등 종류주 행 → 합산
+            tot["issued"] += iss or 0
+            tot["treasury"] += tes or 0
+            tot["distributed"] += (dis if dis is not None
+                                   else max((iss or 0) - (tes or 0), 0))
+            summed = True
+    return tot if (summed and tot["distributed"]) else {}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache"
 # v2 cache includes both stock_code→corp_code and normalized_name→entries.
 # Old v1 file (stock_code → corp_code only) is ignored and superseded;
@@ -1222,6 +1267,66 @@ class DartClient:
         return out
 
     # ── 최대주주 현황 (hyslrSttus.json) ──────────────────────────────
+
+    # ── /api/stockTotqySttus.json — 주식의 총수 현황 ───────────────────
+    # FnGuide BPS 산식(사용자 2026-08-23 제공):
+    #   BPS = (지배주주지분)자본총계 / 수정기말발행주식수
+    #         (보통주+우선주, **자사주차감**)
+    # 우리는 상장주식수(자사주 포함)로 나눠 왔다 — 자사주가 많은 회사에서
+    # BPS 가 체계적으로 높게 나온다. POSCO홀딩스 005490.KS 실측(2026-08-23):
+    # 우리 809,716 vs 네이버 759,917 (+6.6%). 자사주는 유통주식이 아니고
+    # 자본은 이미 취득원가만큼 차감돼 있어 분모에 넣으면 과대계상이다.
+    # ⚠️ EPS 는 **그대로 상장주식수**로 나눈다 — FnGuide 는 EPS 분모에만
+    # 자사주를 포함한다(자기 산식에 그렇게 적혀 있다, #204 실측).
+    @_disk_cache_daily
+    def get_share_totals(self, stock_code: str) -> dict:
+        """{issued, treasury, distributed, basis} — 없으면 빈 dict.
+
+        `basis` = 어느 보고서에서 왔는지(`2026 11012` 등) — 화면이 기준을
+        말할 수 있어야 한다(#43). 최신 정기보고서부터 거슬러 첫 성공을
+        쓴다(자사주 수는 분기마다 바뀐다).
+        """
+        if not self.api_key:
+            return {}
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return {}
+        today = date.today()
+        # 최신 → 과거. 분기보고서까지 훑어야 자사주 취득이 반영된다.
+        plan: list = []
+        for yr in (today.year, today.year - 1):
+            for rc in ("11014", "11012", "11013", "11011"):
+                plan.append((str(yr), rc))
+        for bsns_year, reprt_code in plan[:_SHARE_TOT_PROBE_N]:
+            rows = self._fetch_share_totals(corp_code, bsns_year, reprt_code)
+            if not rows:
+                continue
+            got = _pick_share_totals(rows)
+            if got:
+                got["basis"] = f"{bsns_year} {reprt_code}"
+                return got
+        return {}
+
+    def _fetch_share_totals(self, corp_code: str, bsns_year: str,
+                            reprt_code: str) -> Optional[list]:
+        try:
+            resp = requests.get(
+                f"{_DART_BASE}/stockTotqySttus.json",
+                params={"crtfc_key": self.api_key, "corp_code": corp_code,
+                        "bsns_year": bsns_year, "reprt_code": reprt_code},
+                timeout=_HTTP_TIMEOUT,
+            )
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("dart: stockTotqySttus %s/%s/%s failed: %s",
+                        corp_code, bsns_year, reprt_code, exc)
+            return None
+        if payload.get("status") != "000":
+            log.debug("dart: stockTotqySttus %s %s/%s status=%s msg=%s",
+                      corp_code, bsns_year, reprt_code, payload.get("status"),
+                      payload.get("message", ""))
+            return None
+        return payload.get("list") or None
 
     def _fetch_hyslr(self, corp_code: str, bsns_year: str) -> Optional[list]:
         """Raw fetch for hyslrSttus. Returns row list or None."""

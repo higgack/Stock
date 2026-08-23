@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 7
+_PROBE_VER = 8
 
 
 def _n(v):
@@ -182,6 +182,33 @@ def probe(ticker: str) -> None:
     print(f"    분자 기준: {si.get('_derived_scope') or '(미기록)'}")
     if si.get("_ttm_note"):
         print(f"    ⚠️ {si['_ttm_note']}")
+    # ⚠️ POSCO홀딩스 005490.KS(2026-08-23): BPS 809,716 vs 네이버 759,917.
+    # 후보가 둘이다 — (a) 지배주주자본이 없어 **연결 총액**으로 나눴나
+    # (b) 분모에서 **자사주를 안 뺐나**. 둘 다 찍어야 갈린다(#149 단계별로).
+    _kr = snap.get("kr") or {}
+    _st = _kr.get("share_totals") or {}
+    print(f"    주식의 총수(DART): 발행 {_f(_st.get('issued'), 0)} · "
+          f"자기주식 {_f(_st.get('treasury'), 0)} · "
+          f"유통 {_f(_st.get('distributed'), 0)} · 기준 {_st.get('basis') or '—'}")
+    _q = (_kr.get("financials_q") or [])
+    if _q:
+        _lq = _q[-1]
+        print(f"    최신 분기 자본 계정: 지배주주자본 "
+              f"{_f(_lq.get('지배주주자본'), 0)} · 자본총계 "
+              f"{_f(_lq.get('자본총계'), 0)} → BPS 분자는 "
+              f"{'지배주주' if _lq.get('지배주주자본') is not None else '연결 총액'}")
+        _rb = _lq.get("_returns_basis") or (_lq.get("ratios") or {}).get("_returns_basis")
+        print(f"    ROE 기준: {_rb or '(미기록)'} · "
+              f"ROE {_f((_lq.get('ratios') or {}).get('ROE'))}%")
+    # 배당수익률 — 우리 계산 vs 네이버 원천(FnGuide)
+    try:
+        from bot.dashboard import dividend_yield_pct
+        _dv, _dsrc = dividend_yield_pct(si)
+        print(f"    배당수익률 {_f(_dv)}% ({_dsrc}) · yfinance dividendRate "
+              f"{_f(snap.get('dividendRate'), 0)} · dividendYield "
+              f"{_f(snap.get('dividendYield'), 4)}")
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"    배당수익률 판정 실패: {type(exc).__name__}: {exc}")
 
     # ② yfinance 원본 — 우리가 손대기 전 값
     print("② yfinance .info 원본")
@@ -245,6 +272,14 @@ def probe(ticker: str) -> None:
             print(f"    EPS {_f(nv.get('eps'), 0)} · BPS {_f(nv.get('bps'), 0)} "
                   f"· PER {_f(nv.get('per'))} · PBR {_f(nv.get('pbr'))} "
                   f"· 상장주식수 {_f(nv.get('shares'), 0)}")
+            print(f"    추정PER {_f(nv.get('cns_per'))} · 추정EPS "
+                  f"{_f(nv.get('cns_eps'), 0)} · 배당수익률 "
+                  f"{_f(nv.get('dvr'))}% ({nv.get('dvr_asof') or '기준 미기록'})")
+            # 분모 역산 — 값이 아니라 **분모 규약**이 다른 것인지 갈린다(#204)
+            for lab, num, val in (("EPS", si.get("_kr_net_ttm"), nv.get("eps")),
+                                  ("BPS", si.get("_kr_equity"), nv.get("bps"))):
+                if num and val:
+                    print(f"    └ 네이버 {lab} 역산 분모 = {num / val:,.0f}주")
             print(_identity(px, mc, nv.get("shares"), "우리 시총·현재가 ÷ 네이버 주식수"))
             print(_per_check(px, nv.get("eps"), nv.get("per"), "네이버"))
         else:
