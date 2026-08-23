@@ -5888,6 +5888,50 @@ def kr_forward_from_naver(price, naver_val: dict | None) -> tuple:
     return eps, ((px / eps) if px and eps > 0 else None)
 
 
+def naver_ttm_window(qs: list | None, shares, naver_eps) -> str:
+    """네이버(FnGuide) EPS 가 **어느 4분기 창**을 보고 있는지 되짚는다.
+
+    사용자가 세 번 같은 질문을 했다(NHN KCP · POSCO · 이오테크닉스):
+    "네이버랑 왜 다르지?" — 답이 대개 **네이버가 최신 분기를 아직 안 실었다**
+    는 것이다. 이오테크닉스 039030.KQ 실측(2026-08-24):
+      우리 TTM(25.3Q~26.2Q) EPS 8,808 vs 네이버 6,008
+      지배주주 25.2Q~26.1Q 합 74,018,885,672 ÷ 12,319,550 = **6,008.25**
+    즉 네이버는 한 분기 전 창이다. 화면이 그걸 말하면 질문이 끝난다(#202).
+
+    ⚠️ **단정하지 않는다.** 되짚은 창이 오차 1% 안으로 맞을 때만 말하고,
+    최신 창이 맞으면(=같은 기준) 아무 말도 하지 않는다(#165 재지 않은
+    귀속을 주장하지 말 것).
+    """
+    def _num(v):
+        return (float(v) if isinstance(v, (int, float))
+                and not isinstance(v, bool) else None)
+
+    sh, ne = _num(shares), _num(naver_eps)
+    qq = list(qs or [])
+    if not sh or sh <= 0 or not ne or ne <= 0 or len(qq) < 4:
+        return ""
+
+    def _lab(q):
+        return f"{(q.get('year') or 0) % 100:02d}.{q.get('quarter') or '?'}Q"
+
+    # 최신 창부터 한 분기씩 뒤로 — 첫 번째로 맞는 창을 답으로 본다.
+    for back in range(0, len(qq) - 3):
+        win = qq[len(qq) - 4 - back:len(qq) - back]
+        vals = [_num(w.get("지배주주순이익")) if w.get("지배주주순이익") is not None
+                else _num(w.get("당기순이익")) for w in win]
+        if any(v is None for v in vals):
+            continue
+        eps = sum(vals) / sh
+        if eps <= 0 or abs(eps / ne - 1.0) > 0.01:
+            continue
+        if back == 0:
+            return ""                    # 같은 창 — 말할 게 없다
+        skipped = " · ".join(_lab(q) for q in qq[len(qq) - back:])
+        return (f"네이버(FnGuide) EPS {ne:,.0f} 은 {_lab(win[0])}~{_lab(win[-1])} "
+                f"기준입니다 — {skipped} 가 아직 반영되지 않았습니다")
+    return ""
+
+
 def _ttm_concentration(qs: list | None, key: str = "당기순이익") -> str:
     """TTM 이 **한 분기에 좌우되면** 그렇다고 말한다 — 값은 맞는데 화면이
     거짓말처럼 보이는 경우다(#43·#131 빈칸이 아니어도 사유는 필요하다).
@@ -6159,6 +6203,12 @@ def _derive_missing_multiples(si: dict) -> dict:
             out["_derived_scope"] = ", ".join(f"{n} {v}" for n, v in _sc)
     if _ttm_note:
         out["_ttm_note"] = _ttm_note
+    # 네이버가 **한 분기 뒤처져 있으면** 그 사실을 말한다 — 사용자가 세 번
+    # 같은 질문을 했다(#202 '다르다'만 말하면 안 통한다). 되짚어 맞을 때만.
+    _nw = naver_ttm_window(qs, _eps_shares, (kr.get("naver_val") or {}).get("eps")
+                           if isinstance(kr, dict) else None)
+    if _nw:
+        out["_naver_window"] = _nw
     return out
 
 
@@ -6261,7 +6311,11 @@ def _render_stock_info_html(rec: dict) -> str:
     if isinstance(_sh_exact, (int, float)) and _sh_exact > 0:
         shares_sub = (f"{int(_sh_exact):,}주"
                       + (f" · {_sh_note}" if _sh_warn else ""))
+    # 시총을 거래 클래스 기준으로 재계산했으면 그 사실도 툴팁에(#43).
     shares_tip = "" if _sh_warn else _sh_note
+    if si.get("market_cap_note"):
+        shares_tip = ((shares_tip + " · ") if shares_tip else "") \
+            + str(si["market_cap_note"])
     ne = si.get("next_earnings", "")
     ne_label = ne if ne else "—"
     ne_sub = "(추정)" if ne else ""
@@ -6786,7 +6840,9 @@ def _render_stock_info_html(rec: dict) -> str:
         + ('ℹ️ ' + esc(str(si["_forward_why"])) + '<br>'
            if si.get("_forward_why") else '')
         + 'ℹ️ <b>밴드차트 탭</b>은 분모가 달라(FnGuide 기준) 값이 다릅니다'
-          '</div>')
+        + ('<br>ℹ️ ' + esc(str(si["_naver_window"]))
+           if si.get("_naver_window") else '')
+        + '</div>')
 
     def _per_mark(per_key: str, eps_key: str) -> str:
         """화면의 EPS 로 **눈으로 나눠 봤을 때 맞는가**(#33) — 아니면 라벨이

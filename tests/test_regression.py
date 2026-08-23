@@ -37312,10 +37312,12 @@ class TestShareCountIdentity:
         assert plain.count("<br>") == 2, f"무조건 <br> {plain.count('<br>')}개"
         assert "후행 PER" in plain and "선행 PER" in plain and "밴드차트 탭" in plain
         assert "분자는 둘 다" not in plain, "옛 장문이 남아 있다"
-        # 네 번째 줄은 **사유가 있을 때만** — 조건이 `_forward_why` 인지까지
-        assert cond_txt.count("ℹ️") == 1, cond_txt
-        assert any("_forward_why" in ast.dump(c.test) for c in cond), \
-            "추가 줄이 사유에 걸려 있지 않다"
+        # 뒤에 붙는 줄은 **조건이 있을 때만** — 각 조건이 무엇인지까지 본다
+        # (2026-08-24 네이버 창 표기가 하나 더 붙었다: 사유 · 네이버 창).
+        assert cond_txt.count("ℹ️") == 2, cond_txt
+        _tests = " ".join(ast.dump(c.test) for c in cond)
+        assert "_forward_why" in _tests, "사유 줄이 조건부가 아니다"
+        assert "_naver_window" in _tests, "네이버 창 줄이 조건부가 아니다"
         assert 'class="si-note"' in plain
 
     def test_derived_scope_is_per_item_not_one_label_for_two_accounts(self):
@@ -37929,6 +37931,89 @@ class TestShareCountIdentity:
             "국내만 yfinance 폴백을 막고 있다"
         assert seg.count("if per_fwd is None:") == 3, \
             seg.count("if per_fwd is None:")
+
+    def test_market_cap_follows_the_traded_class(self):
+        """사용자 2026-08-24 (BYD 1211.HK) "H주로." — yfinance 는 A주+H주
+        **전체 시총**(HK$8,479억)과 H주만의 **발행주식수**(3,683,400,000)를
+        같이 준다. 그래서 헤더(네이버 H주 3,431억)와 동종비교표(전 클래스
+        8,493억)가 같은 회사를 2.5배 다르게 적었다(#34).
+        거래되는 클래스로 통일한다 — **단일 클래스에서는 no-op** 이다."""
+        from bot.share_count import listed_market_cap as L
+        mc, why = L(93.0, 847.9e9, 3683400000)
+        assert round(mc) == round(93.0 * 3683400000), mc
+        assert "거래 클래스" in why and "2.5배" in why, why
+        # 단일 클래스 = 아무것도 안 바뀐다(다른 시장에 영향 없음)
+        assert L(100.0, 1.0e10, 1.0e8) == (1.0e10, "")
+        assert L(100.0, 1.03e10, 1.0e8) == (1.03e10, "")     # 소폭 오차는 무시
+        # 재료가 없으면 원래 값 — 지어내지 않는다
+        assert L(None, 1.0e10, None) == (1.0e10, "")
+        # 헤더·동종비교 둘 다 같은 헬퍼를 쓴다(#38) — 한쪽만 고치면 또 갈린다
+        from bot.stock_snapshot import _apply_share_count, _PEER_SCHEMA_VER
+        snap = {"current_price": 93.0, "market_cap": 847.9e9,
+                "shares_outstanding": 3683400000}
+        _apply_share_count("1211.HK", snap)
+        assert round(snap["market_cap"]) == round(93.0 * 3683400000)
+        assert snap.get("market_cap_note"), "재계산했으면 말해야 한다(#43)"
+        # 동종비교 한 행도 **같은 헬퍼로 값이 바뀌는지** 값으로 확인한다
+        from bot.stock_snapshot import apply_class_market_cap as A
+        row = {"currentPrice": 93.0, "market_cap": 847.9e9,
+               "shares": 3683400000}
+        A(row)
+        assert round(row["market_cap"]) == round(93.0 * 3683400000), row
+        assert row.get("market_cap_note")
+        flat = {"currentPrice": 100.0, "market_cap": 1e10, "shares": 1e8}
+        A(flat)
+        assert flat["market_cap"] == 1e10 and "market_cap_note" not in flat
+        # 그리고 수집부가 그 헬퍼를 **부르는지**(정의만 있으면 안 돈다, #120)
+        import ast as _ast
+        ssrc = open("bot/stock_snapshot.py").read()
+        calls = [n for n in _ast.walk(_ast.parse(ssrc))
+                 if isinstance(n, _ast.Call)
+                 and getattr(n.func, "id", "") == "apply_class_market_cap"]
+        assert len(calls) >= 1, "동종비교 수집이 안 부른다"
+        assert _PEER_SCHEMA_VER >= 8, "피어 스키마가 바뀌면 버전을 올린다(#18)"
+        # 국내는 등록 주식수가 먼저다 — 재계산이 그걸 덮거나 **사유를
+        # 지어내면** 안 된다(#190 자체검산은 어느 쪽이 낡았는지 모른다).
+        kr = {"current_price": 2140.0, "market_cap": 8000e8,
+              "shares_outstanding": 185368615,
+              "kr": {"krx_quote": {"shares": 207588536, "date": "2026-08-24"}}}
+        _apply_share_count("035890.KQ", kr)
+        assert round(kr["market_cap"]) == round(2140.0 * 207588536), kr["market_cap"]
+        assert not kr.get("market_cap_note"), kr.get("market_cap_note")
+
+    def test_naver_ttm_window_is_measured_not_guessed(self):
+        """사용자가 세 번 같은 질문을 했다(NHN KCP·POSCO·이오테크닉스)
+        "네이버랑 왜 다르지?" — 답은 대개 **네이버가 최신 분기를 아직 안
+        실었다**는 것이다. 이오테크닉스 039030.KQ 실측(2026-08-24):
+        우리 TTM(25.3Q~26.2Q) EPS 8,808 vs 네이버 6,008 이고, 지배주주
+        25.2Q~26.1Q 합 74,018,885,672 ÷ 12,319,550 = **6,008.25** 다.
+        되짚어 맞을 때만 말하고, 같은 창이면 침묵한다(#165)."""
+        from bot.dashboard import naver_ttm_window as W
+        qs = [{"year": y, "quarter": q, "지배주주순이익": v}
+              for (y, q), v in zip(
+                  ((2025, 1), (2025, 2), (2025, 3), (2025, 4),
+                   (2026, 1), (2026, 2)),
+                  (14407421606, 2496456500, 23171489889, 17138045727,
+                   31212893556, 36993330507))]
+        note = W(qs, 12319550, 6008)
+        assert "25.2Q~26.1Q" in note and "26.2Q" in note, note
+        # 같은 창이면 아무 말도 하지 않는다
+        assert W(qs, 12319550, 8808) == ""
+        # 어느 창과도 안 맞으면 **추측하지 않는다**
+        assert W(qs, 12319550, 1234) == ""
+        # 재료가 없으면 침묵
+        assert W(qs[:2], 12319550, 6008) == "" and W(qs, 0, 6008) == ""
+        # 화면까지 배선 — 계산해 놓고 안 실으면 사용자가 또 묻는다(#123·#189)
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d({"market_cap": 4.983e12, "shares_outstanding": 12319550,
+                 "current_price": 404500.0,
+                 "kr": {"financials_q": [dict(q, 당기순이익=q["지배주주순이익"],
+                                              지배주주자본=7.48e11, 매출=3e11)
+                                         for q in qs],
+                        "naver_val": {"eps": 6008.0}}})
+        assert "25.2Q~26.1Q" in (out.get("_naver_window") or ""), out.get("_naver_window")
+        src = open("bot/dashboard.py").read()
+        assert src.count('si["_naver_window"]') == 1, "화면이 안 싣는다"
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다
