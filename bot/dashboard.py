@@ -4984,14 +4984,25 @@ def build_live_quote(ticker: str, full: bool = False,
 
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     mcap = info.get("marketCap")
+    # ⚠️ 국내 선행 지표는 **네이버(FnGuide) 추정 EPS** 가 원천이다 — yfinance
+    # 는 국내 forwardEps 를 안 준다. 서버 렌더만 고치면 이 오버레이가 다시
+    # yfinance 값으로 되돌린다(2026-08-23 실측: 화면 5.50 vs 서버 5.98).
+    _kr_f_eps = _kr_f_per = None
+    if is_kr:
+        try:
+            from bot.naver_finance_client import get_naver_valuation
+            _kr_f_eps, _kr_f_per = kr_forward_from_naver(
+                price, get_naver_valuation(ticker))
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("build_live_quote: naver forward %s: %s", ticker, exc)
     vals = {
         "trailingPE": info.get("trailingPE"),
-        "forwardPE": info.get("forwardPE"),
+        "forwardPE": _kr_f_per or info.get("forwardPE"),
         "priceToBook": info.get("priceToBook"),
         "priceToSalesTrailing12Months": info.get("priceToSalesTrailing12Months"),
         "enterpriseToEbitda": info.get("enterpriseToEbitda"),
         "trailingEps": info.get("trailingEps"),
-        "forwardEps": info.get("forwardEps"),
+        "forwardEps": _kr_f_eps or info.get("forwardEps"),
         "bookValue": info.get("bookValue"),
         "dividendYield": info.get("dividendYield"),
         "beta": info.get("beta"),
@@ -5077,6 +5088,11 @@ def build_live_quote(ticker: str, full: bool = False,
         _bps = vals.get("bookValue")
         if isinstance(_bps, (int, float)) and _bps > 0:
             vals["priceToBook"] = price / _bps
+        # 선행도 같은 규약 — 화면의 EPS 로 나눠 봤을 때 맞아야 한다(#33).
+        # 여기가 가격이 확정된 뒤라 국내 네이버 추정 EPS 에도 그대로 맞는다.
+        _feps = vals.get("forwardEps")
+        if isinstance(_feps, (int, float)) and _feps > 0:
+            vals["forwardPE"] = price / _feps
         _h52, _l52 = vals.get("fiftyTwoWeekHigh"), vals.get("fiftyTwoWeekLow")
         if isinstance(_h52, (int, float)) and price > _h52:
             vals["fiftyTwoWeekHigh"] = price
@@ -5709,6 +5725,29 @@ def _derived_desc(si: dict) -> str:
             + f" — 시총·상장주식수와 DART {scope} 기준으로 산출")
 
 
+def kr_forward_from_naver(price, naver_val: dict | None) -> tuple:
+    """국내 선행 지표 — `(추정 EPS, 그 EPS 로 만든 선행 PER)`.
+
+    ⚠️ 2026-08-23 실측: 서버 렌더는 5.98 로 그렸는데 화면엔 **5.50**(yfinance)
+    이 떴다 — `/api/quote` 라이브 오버레이가 `data-q="forwardPE"` 칸을 yfinance
+    값으로 되돌리고 있었다. 같은 규칙을 두 곳에 따로 적으면 한쪽만 고쳐진다
+    (#38) — 그래서 규칙을 **여기 하나**에 두고 양쪽이 부른다.
+
+    배수는 **화면의 현재가**로 만든다(원천 추정PER 은 전일 종가 기준이라
+    그대로 실으면 화면의 다른 칸으로 나눠 봤을 때 안 맞는다, #33·#135).
+    현재가가 없으면 배수는 만들지 않는다 — 지어내지 않는다.
+    """
+    def _n(v):
+        return (float(v) if isinstance(v, (int, float))
+                and not isinstance(v, bool) else None)
+
+    eps = _n((naver_val or {}).get("cns_eps"))
+    if not eps:
+        return None, None
+    px = _n(price)
+    return eps, ((px / eps) if px and eps > 0 else None)
+
+
 def _ttm_concentration(qs: list | None, key: str = "당기순이익") -> str:
     """TTM 이 **한 분기에 좌우되면** 그렇다고 말한다 — 값은 맞는데 화면이
     거짓말처럼 보이는 경우다(#43·#131 빈칸이 아니어도 사유는 필요하다).
@@ -5813,6 +5852,15 @@ def _derive_missing_multiples(si: dict) -> dict:
         return _num(fin.get(alt_key)), "연간", False
 
     net, net_basis, net_owner = _flow("지배주주순이익", "당기순이익")
+    # ⚠️ TTM 이 **어느 분기까지**인지 적는다 — 사용자 2026-08-23 "후행은
+    # 우리는 이미 2Q 인데 네이버는 1Q 야". 창을 안 밝히면 같은 'TTM' 이라는
+    # 이름으로 다른 기간을 비교하게 된다(#99·#34).
+    if net_basis == "TTM" and len(qs) >= 4:
+        _w = qs[-4:]
+        def _ql(q):
+            return f"{(q.get('year') or 0) % 100:02d}.{q.get('quarter') or '?'}Q"
+        if _w[0].get("year") and _w[-1].get("year"):
+            net_basis = f"TTM {_ql(_w[0])}~{_ql(_w[-1])}"
     if not net_owner:
         _scope = "연결 총액(비지배지분 포함)"
     rev = _ttm("매출")
@@ -5831,8 +5879,12 @@ def _derive_missing_multiples(si: dict) -> dict:
     equity, eq_owner = _stock("지배주주자본", "자본총계")
     if not eq_owner and equity is not None:
         _scope = "연결 총액(비지배지분 포함)"
-    _ttm_note = _ttm_concentration(qs, "지배주주순이익" if net_owner
-                                   else "당기순이익") if net_basis == "TTM" else ""
+    # ⚠️ `net_basis` 에 창을 붙이자 `== "TTM"` 비교가 조용히 거짓이 되어
+    # 집중도 표기가 통째로 꺼졌다(회귀가 잡았다). 문자열 동등 비교는 라벨이
+    # 풍부해지는 순간 깨진다 — 접두어로 본다.
+    _ttm_note = (_ttm_concentration(qs, "지배주주순이익" if net_owner
+                                    else "당기순이익")
+                 if str(net_basis).startswith("TTM") else "")
 
     if out.get("bookValue") is None and equity and shares and shares > 0:
         out["bookValue"] = equity / shares
@@ -5857,14 +5909,13 @@ def _derive_missing_multiples(si: dict) -> dict:
     # ⚠️ 배수는 **화면의 현재가**로 다시 만든다 — 원천 추정PER 은 전일 종가
     # 기준이라 그대로 실으면 화면의 다른 칸으로 나눠 봤을 때 안 맞는다
     # (#33·#135 매일 바뀌는 파생값은 라이브 원천으로 다시 만든다).
-    _nv = (kr.get("naver_val") or {})
-    _f_eps = _num(_nv.get("cns_eps"))
+    _f_eps, _f_per = kr_forward_from_naver(out.get("current_price"),
+                                           kr.get("naver_val"))
     if _f_eps:
         out["forwardEps"] = _f_eps
         derived.add("forwardEps")
-        px = _num(out.get("current_price"))
-        if px and _f_eps > 0:
-            out["forwardPE"] = px / _f_eps
+        if _f_per:
+            out["forwardPE"] = _f_per
             derived.add("forwardPE")
         out["_forward_src"] = "네이버(FnGuide) 추정 EPS"
     # 그 밖의 시장은 yfinance 가 준 forwardPE 를 그대로 쓴다 — 컨센서스
@@ -6474,12 +6525,20 @@ def _render_stock_info_html(rec: dict) -> str:
     # (여기 = yfinance TTM 실적 EPS 3,344.90 · 밴드 = FnGuide 가 쓰는 매달
     # 갱신 EPS ≈ 4,798). 이름이 같으면 사용자는 "한쪽이 틀렸다"고 읽는다.
     # 그래서 **두 표면 모두** 자기 분모를 밝힌다.
+    # ⚠️ 문구를 고정하지 않는다 — 국내 선행 PER 의 원천은 네이버(FnGuide)
+    # 이고 그 밖은 yfinance 다. "yfinance 제공값" 이라고 박아 두면 국내에서
+    # 거짓말이 된다(#55 설명이 코드와 어긋나면 버그). 사용자 2026-08-23
+    # "세번째 깔끔하게 좀 해주고, 그리고 코멘트가 맞는지도 확인해줘".
+    _fwd_src = ("네이버(FnGuide) 추정 EPS" if si.get("_forward_src")
+                else "yfinance 컨센서스 EPS")
     _per_basis_note = (
-        '<div class="si-note" style="margin-top:6px">ℹ️ <b>PER (후행)</b> = 주가 ÷ '
-        'TTM 실적 EPS · <b>PER (선행)</b> = 주가 ÷ 컨센서스 EPS (yfinance 제공값). '
-        '<b>밴드차트 탭</b>의 현재 PER 은 원천(FnGuide)이 쓰는 EPS 기준이라 '
-        '값이 다를 수 있습니다. 두 PER 모두 분자는 <b>현재가</b>입니다 — '
-        '실적 발표 시점의 주가가 아닙니다.</div>')
+        '<div class="si-note" style="margin-top:6px">ℹ️ 두 PER 모두 분자는 '
+        '<b>현재가</b>입니다(실적 발표 시점 주가가 아님).<br>'
+        '· <b>후행</b> = 현재가 ÷ TTM 실적 EPS'
+        + ('(DART 최근 4분기 합)' if is_kr else '') + '<br>'
+        '· <b>선행</b> = 현재가 ÷ ' + esc(_fwd_src) + '<br>'
+        '· <b>밴드차트 탭</b>의 현재 PER 은 분모가 달라(원천 FnGuide 기준) '
+        '값이 다를 수 있습니다.</div>')
 
     def _per_mark(per_key: str, eps_key: str) -> str:
         """화면의 EPS 로 **눈으로 나눠 봤을 때 맞는가**(#33) — 아니면 라벨이

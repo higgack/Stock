@@ -36903,3 +36903,74 @@ class TestShareCountIdentity:
         h2 = hashlib.sha1()
         h2.update((base / "stock_snapshot.py").read_bytes())
         assert ss.kr_fin_signature() != h2.hexdigest()[:12]
+
+    def test_kr_forward_rule_lives_in_one_place(self):
+        """#197 후속 — 2026-08-23 실측: 서버는 5.98 로 그렸는데 화면엔 **5.50**
+        (yfinance)이 떴다. `/api/quote` 라이브 오버레이가 `data-q="forwardPE"`
+        칸을 yfinance 값으로 되돌리고 있었다. 같은 규칙을 두 곳에 따로 적으면
+        한쪽만 고쳐진다(#38) — 규칙은 한 함수에 두고 양쪽이 부른다."""
+        import ast
+        from bot.dashboard import kr_forward_from_naver
+        assert kr_forward_from_naver(130937.0, {"cns_eps": 21895.0}) == (
+            21895.0, 130937.0 / 21895.0)
+        # 현재가가 없으면 배수를 **지어내지 않는다**
+        assert kr_forward_from_naver(None, {"cns_eps": 21895.0}) == (21895.0, None)
+        assert kr_forward_from_naver(130937.0, {}) == (None, None)
+        src = open("bot/dashboard.py").read()
+        calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == "kr_forward_from_naver"]
+        assert len(calls) == 2, f"부르는 곳 {len(calls)}곳(파생·라이브 둘)"
+
+    def test_the_live_overlay_recomputes_forward_pe_from_the_shown_eps(self):
+        """화면의 EPS 로 나눠 봤을 때 맞아야 한다(#33) — 후행·PBR 과 같은
+        규약이고, 가격이 확정된 뒤에 계산해야 라이브 가격과 맞는다."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "build_live_quote")
+        seg = ast.get_source_segment(src, fn) or ""
+        i_tr = seg.index('vals["trailingPE"] = price / _eps')
+        i_fw = seg.index('vals["forwardPE"] = price / _feps')
+        assert i_fw > i_tr, "선행 재계산이 가격 확정 블록 밖이다"
+        assert "_kr_f_eps or info.get(\"forwardEps\")" in seg, \
+            "라이브가 네이버 추정 EPS 를 안 쓴다"
+
+    def test_the_per_note_names_the_actual_forward_source(self):
+        """사용자 2026-08-23 "코멘트가 맞는지도 확인해줘" — 옛 문구는
+        `PER (선행) = 주가 ÷ 컨센서스 EPS (yfinance 제공값)` 였는데 국내는
+        네이버가 원천이다. 문구를 고정하면 거짓말이 된다(#55)."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("_per_basis_note = (")
+        note = seg[i:i + 900]
+        assert "_fwd_src" in note, "원천을 측정해서 넣지 않는다"
+        assert "yfinance 제공값" not in note, "옛 고정 문구가 남아 있다"
+        assert "현재가" in note, "분자가 현재가라는 사실을 안 적는다"
+        # 원천 문구가 두 갈래로 갈린다
+        assert seg.count('"네이버(FnGuide) 추정 EPS" if si.get("_forward_src")') == 1
+
+    def test_the_ttm_window_is_named_on_screen(self):
+        """사용자 2026-08-23 "후행은 우리는 이미 2Q 인데 네이버는 1Q 야" —
+        같은 'TTM' 이라는 이름으로 다른 기간을 비교하게 된다(#99·#34).
+        어느 분기까지인지 화면이 적는다."""
+        from bot.dashboard import _derive_missing_multiples, _derived_desc
+        qs = [{"year": y, "quarter": q, "당기순이익": 1e12, "자본총계": 3e13}
+              for y, q in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+        out = _derive_missing_multiples(
+            {"market_cap": 4e11, "shares_outstanding": 2e8,
+             "current_price": 130937.0, "kr": {"financials_q": qs}})
+        assert out["_derived_basis"]["trailingEps"] == "TTM 25.3Q~26.2Q", \
+            out["_derived_basis"]
+        assert "25.3Q~26.2Q" in _derived_desc(out)
+        # 연간 폴백이면 창을 주장하지 않는다
+        out2 = _derive_missing_multiples(
+            {"market_cap": 4e11, "shares_outstanding": 2e8,
+             "current_price": 130937.0,
+             "kr": {"financials": {"당기순이익": 4e12, "자본총계": 3e13}}})
+        assert out2["_derived_basis"]["trailingEps"] == "연간"
