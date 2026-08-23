@@ -6329,9 +6329,39 @@ def _render_stock_info_html(rec: dict) -> str:
             return _val_row(label, av, suffix, "")   # 정적(현지 소스 폴백)
         return _val_row(label, None, suffix, yf_key)
 
+    # ⚠️ **같은 이름, 다른 분모**(#34). 사용자 2026-08-23 SK텔레콤: 이 탭은
+    # 30.55x, 밴드차트 탭은 21.30x 였다 — 둘 다 맞는 값인데 분모가 다르다
+    # (여기 = yfinance TTM 실적 EPS 3,344.90 · 밴드 = FnGuide 가 쓰는 매달
+    # 갱신 EPS ≈ 4,798). 이름이 같으면 사용자는 "한쪽이 틀렸다"고 읽는다.
+    # 그래서 **두 표면 모두** 자기 분모를 밝힌다.
+    _per_basis_note = (
+        '<div class="si-note" style="margin-top:6px">ℹ️ <b>PER (후행)</b> = 주가 ÷ '
+        'TTM 실적 EPS · <b>PER (선행)</b> = 주가 ÷ 컨센서스 EPS (yfinance 제공값). '
+        '<b>밴드차트 탭</b>의 현재 PER 은 원천(FnGuide)이 쓰는 EPS 기준이라 '
+        '값이 다를 수 있습니다.</div>')
+
+    def _per_mark(per_key: str, eps_key: str) -> str:
+        """화면의 EPS 로 **눈으로 나눠 봤을 때 맞는가**(#33) — 아니면 라벨이
+        그렇게 밝힌다. SK텔레콤 실측: `PER (선행) 16.04x` 인데 `EPS (선행)`
+        은 '—' 였다 — 검산할 수 없는 행은 설명이 있어야 한다."""
+        per, eps = si.get(per_key), si.get(eps_key)
+        if per is None:
+            return ""
+        if not eps:
+            return " · 화면에 분모 EPS 가 없어 검산 불가"
+        px = si.get("current_price")
+        if not px:
+            return ""
+        calc = px / eps
+        if abs(calc - per) <= max(0.05, abs(per) * 0.02):
+            return ""
+        return f" · 현재가÷EPS = {calc:,.2f}x (원천 기준과 다름)"
+
     val_multiples = ""
-    val_multiples += _mrow("PER (후행)", "trailingPE", "per")
-    val_multiples += _val_row("PER (선행)", si.get("forwardPE"), "x", "forwardPE")
+    val_multiples += _mrow("PER (후행)" + _per_mark("trailingPE", "trailingEps"),
+                           "trailingPE", "per")
+    val_multiples += _val_row("PER (선행)" + _per_mark("forwardPE", "forwardEps"),
+                              si.get("forwardPE"), "x", "forwardPE")
     val_multiples += _mrow("PBR (주가순자산)", "priceToBook", "pbr")
     val_multiples += _mrow("PSR (주가매출)", "priceToSalesTrailing12Months", "psr")
     val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x", "enterpriseToEbitda")
@@ -7809,6 +7839,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section">
       <div class="si-section-title">밸류에이션 멀티플</div>
       <table class="si-table"><thead><tr><th>지표</th><th class="num">값</th></tr></thead><tbody>{val_multiples}</tbody></table>
+      {_per_basis_note}
     </div>
     <div class="si-section">
       <div class="si-section-title">주당 지표</div>
