@@ -5089,18 +5089,22 @@ def build_live_quote(ticker: str, full: bool = False,
     # EPS/BPS(장중 불변)가 있으면 PER=현재가/EPS · PBR=현재가/BPS 로 재산출해 장중
     # 가격 반영(사용자 2026-06-15 'PER/PBR 더 실시간'). 적자(eps≤0)·무BPS 는 yfinance
     # 값 유지. 52주 신고/신저도 장중 라이브가 극값 돌파 시 갱신. 전 시장 universal.
+    _recomputed: set = set()
     if price and not delayed:
         _eps = vals.get("trailingEps")
         if isinstance(_eps, (int, float)) and _eps > 0:
             vals["trailingPE"] = price / _eps
+            _recomputed.add("trailingPE")
         _bps = vals.get("bookValue")
         if isinstance(_bps, (int, float)) and _bps > 0:
             vals["priceToBook"] = price / _bps
+            _recomputed.add("priceToBook")
         # 선행도 같은 규약 — 화면의 EPS 로 나눠 봤을 때 맞아야 한다(#33).
         # 여기가 가격이 확정된 뒤라 국내 네이버 추정 EPS 에도 그대로 맞는다.
         _feps = vals.get("forwardEps")
         if isinstance(_feps, (int, float)) and _feps > 0:
             vals["forwardPE"] = price / _feps
+            _recomputed.add("forwardPE")
         _h52, _l52 = vals.get("fiftyTwoWeekHigh"), vals.get("fiftyTwoWeekLow")
         if isinstance(_h52, (int, float)) and price > _h52:
             vals["fiftyTwoWeekHigh"] = price
@@ -5117,11 +5121,18 @@ def build_live_quote(ticker: str, full: bool = False,
     fmt["over_line"] = over_line   # 미국 시간외 라인(없으면 "" → :empty 로 숨김)
     if mcap:
         fmt["mcap"] = _fmt_mcap(mcap, csym, currency)
-    for k, suf in (("trailingPE", "x"), ("forwardPE", "x"), ("priceToBook", "x"),
-                   ("priceToSalesTrailing12Months", "x"),
-                   ("enterpriseToEbitda", "x"), ("beta", "")):
+    # ⚠️ **라이브 오버레이는 자기가 다시 계산한 배수만 보낸다.**
+    # 2026-08-23 슈프리마 실측: 화면이 `PER (후행) 3.48x` 옆에 `EPS (후행)
+    # 7,514.88` 을 띄웠다 — 56,100 ÷ 7,514.88 = **7.47** 이라 화면이 자기
+    # 산수를 못 맞췄다(#33). yfinance 는 국내 trailingEps·bookValue 를 안
+    # 주므로 여기서 다시 계산하지 못하는데, 그러면서 **자기 스냅샷 배수**
+    # (3.48 · PBR 0.62 · PSR 1.24)를 서버가 그린 파생값 위에 덮고 있었다.
+    # 분모를 못 주면 배수도 보내지 않는다 — 서버가 그린 값이 그대로 산다.
+    # PSR·EV/EBITDA 는 화면에 분모 칸이 없어 애초에 재계산이 불가능하다.
+    for k, suf in (("trailingPE", "x"), ("forwardPE", "x"),
+                   ("priceToBook", "x"), ("beta", "")):
         v = vals.get(k)
-        if isinstance(v, (int, float)):
+        if isinstance(v, (int, float)) and (k == "beta" or k in _recomputed):
             fmt[k] = f"{float(v):.2f}{suf}"
     _lq_dy = _safe_dy_pct(vals.get("dividendYield"), info.get("dividendRate"), price)
     if _lq_dy is not None:
@@ -5743,8 +5754,16 @@ def _derived_desc(si: dict) -> str:
     # ⚠️ 문구를 고정하지 않는다 — 지배주주 계정이 있으면 그걸 쓰고, 없으면
     # 연결 총액으로 떨어진다(#55 설명이 코드와 어긋나면 버그).
     scope = si.get("_derived_scope") or "연결 총액(비지배지분 포함)"
+    # ⚠️ 남는 소수점 차이의 이유를 밝힌다(2026-08-23 슈프리마 실측):
+    # EPS 우리 7,513 vs FnGuide 7,336 — 역산 주식수 7,142,857 로 **수정평균**
+    # (기말 6,974,311 ↔ 직전 7,257,273 사이)이고, BPS 42,389 vs 43,096 —
+    # 역산 6,859,105 로 **자사주 차감**이다. 우리는 둘 다 기말 상장주식수로
+    # 나눈다. 값이 틀린 게 아니라 **분모 규약이 다른 것**이다(#34).
     return (", ".join(parts)
-            + f" — 시총·상장주식수와 DART {scope} 기준으로 산출")
+            + f" — 시총·상장주식수와 DART {scope} 기준으로 산출"
+            + " · 분모는 <b>기말 상장주식수</b>입니다(FnGuide 는 EPS 에"
+              " 수정평균, BPS 에 자사주 차감 주식수를 써 소수점이 다를 수"
+              " 있습니다)")
 
 
 def kr_forward_from_naver(price, naver_val: dict | None) -> tuple:
@@ -6045,6 +6064,12 @@ def _render_stock_info_html(rec: dict) -> str:
     shares_sub = _share_note(price, si.get("market_cap"),
                              si.get("shares_outstanding"),
                              si.get("shares_source") or "")
+    # ⚠️ `7.0M` 만 보이면 시가총액 ÷ 현재가 검산을 눈으로 할 수 없다 —
+    # 정확한 주식수를 같이 적는다(2026-08-23 슈프리마 6,974,311).
+    _sh_exact = si.get("shares_outstanding")
+    if isinstance(_sh_exact, (int, float)) and _sh_exact > 0:
+        shares_sub = (f"{int(_sh_exact):,}주"
+                      + (f" · {shares_sub}" if shares_sub else ""))
     ne = si.get("next_earnings", "")
     ne_label = ne if ne else "—"
     ne_sub = "(추정)" if ne else ""
@@ -6682,7 +6707,11 @@ def _render_stock_info_html(rec: dict) -> str:
                           '(유형자산취득 + 무형자산취득) · 출처 <b>DART '
                           '현금흐름표</b> — 재무제표 탭의 FCF 는 yfinance '
                           '기준이라 정의 차이로 값이 다를 수 있습니다')
-        _rb = next((it.get("_returns_basis") for it in items
+        # ⚠️ 표의 **마지막(최신) 열** 기준으로 적는다 — `next(...)` 로 첫 행을
+        # 집으면 전기가 없는 가장 오래된 열의 기준("기말")이 표 전체를
+        # 설명하는 것처럼 읽힌다(2026-08-23 슈프리마: FY2024·FY2025 는 평균인데
+        # 각주는 "전기 잔액을 못 구해 기말로 나눴습니다" 였다).
+        _rb = next((it.get("_returns_basis") for it in reversed(items)
                     if it.get("_returns_basis")), None)
         if _rb or _is_q:
             _notes.append('ℹ️ ROE = <b>' + esc(str((_rb or {}).get("numerator")
