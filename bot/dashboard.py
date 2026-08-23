@@ -5331,14 +5331,29 @@ _BAND_JS = r"""
        적고, 밸류에이션 탭이 쓰는 분모를 **서버가 찍은 DOM 에서 읽어** 나란히
        놓는다(#48 JS 가 문구를 만들지 말고 화면 값을 읽게 · #33). */
     var dn=(t.denom_now!=null)?t.denom_now:t.eps_now, dtail='';
+    function cell(q){ var e=document.querySelector('[data-q="'+q+'"]');
+      var x=e?parseFloat((e.textContent||'').replace(/[^0-9.\-]/g,'')):NaN;
+      return isFinite(x)&&x>0?x:null; }
     if(dn!=null){
       dtail=' '+num(dn,0);
-      var oq=(kind==='PBR')?'bookValue':'trailingEps';
-      var oel=document.querySelector('[data-q="'+oq+'"]');
-      var ov=oel?parseFloat((oel.textContent||'').replace(/[^0-9.\-]/g,'')):NaN;
-      if(isFinite(ov)&&ov>0&&Math.abs(ov-dn)/dn>0.01)
+      var ov=cell((kind==='PBR')?'bookValue':'trailingEps');
+      if(ov!=null&&Math.abs(ov-dn)/dn>0.01)
         dtail+=' — 밸류에이션 탭은 '+((kind==='PBR')?'BPS ':'TTM 실적 EPS ')
               +num(ov,0)+' 이라 배수가 다릅니다';
+      /* 사용자 2026-08-23 "원천 EPS 가 대체 뭐야?" — 삼성전자 실측에서 원천
+         34,287 이 우리 TTM 실적 25,601 보다 34% 높았다. '다르다'까지만 말하면
+         그다음을 사람이 짐작한다(#82). **선행(컨센서스) EPS 도 나란히 놓아**
+         어느 쪽에 가까운지 사용자가 직접 보게 한다 — 원천의 방법을 단정하지는
+         않는다(#165 재지 않은 귀속 금지). */
+      if(kind!=='PBR'){
+        var fv=cell('forwardEps');
+        if(fv!=null){
+          dtail+=' · 선행(컨센서스) EPS '+num(fv,0);
+          var dt=Math.abs(ov!=null?ov-dn:Infinity), df=Math.abs(fv-dn);
+          if(df<dt) dtail+=' — 원천 분모는 <b>선행 쪽</b>에 가깝습니다';
+          else if(ov!=null&&dt<df) dtail+=' — 원천 분모는 <b>후행 쪽</b>에 가깝습니다';
+        }
+      }
     }
     h+='<div class="si-note" style="margin-bottom:6px">출처: '+esc2(t.source)
       +' · '+kind+' = 주가 ÷ '+denom+dtail+'</div>';
@@ -8408,6 +8423,19 @@ def _render_stock_info_html(rec: dict) -> str:
                         bars += (f'<rect x="{cx - bw / 2:.1f}" y="{y:.1f}" '
                                  f'width="{bw:.1f}" height="{h:.1f}" '
                                  f'fill="{color}" rx="2"/>\n')
+                        # 금액을 막대에 붙인다(사용자 2026-08-23 "재무재표
+                        # 차트에 금액을 표시해줘"). 양수는 막대 **위**, 음수는
+                        # 막대 **아래** — 기준선을 넘어 겹치지 않게.
+                        # ⚠️ 축약은 표와 **같은 함수**(`compact_amount`)를 쓴다.
+                        # 차트만 다른 단위를 쓰면 같은 값이 두 곳에서 다르게
+                        # 보인다(#38·#181 축약은 한 곳에서).
+                        # ⚠️ 슬롯이 좁으므로(5분기 = 48.8) 원문 숫자를 그대로
+                        # 쓰면 옆 칸을 침범한다 — 억/조 축약이라 최대 6~7자다.
+                        _vy = (y - 3.5) if v >= 0 else (150 + h + 9.0)
+                        bars += (f'<text x="{cx:.1f}" y="{_vy:.1f}" '
+                                 f'font-size="9" fill="{color}" '
+                                 f'text-anchor="middle">'
+                                 f'{esc(compact_amount(v, currency))}</text>\n')
                     else:
                         # 값이 없는 기간은 막대를 그리지 않는다(0 짜리 막대는
                         # 없는 사실을 그린 것이다) — 대신 **비었다고 말한다**.

@@ -37198,3 +37198,37 @@ class TestShareCountIdentity:
         assert '_kf_note = "".join(_kf_notes)' in seg
         # 옛 덮어쓰기 패턴이 남아 있으면 안 된다
         assert "_kf_note = ('<div" not in seg, "아직 = 로 대입한다"
+
+    def test_the_trend_charts_label_each_bar_with_its_amount(self):
+        """사용자 2026-08-23 "재무재표 차트에 금액을 표시해줘" — 축약은 표와
+        **같은 함수**(`compact_amount`)를 써야 한다. 차트만 다른 단위를 쓰면
+        같은 값이 두 곳에서 다르게 보인다(#38·#181).
+        양수는 막대 위, 음수는 막대 아래 — 기준선을 넘어 겹치지 않게."""
+        import ast
+        from bot.dashboard import compact_amount
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_mini")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "compact_amount(v, currency)" in seg, "표와 다른 축약을 쓴다"
+        assert "(y - 3.5) if v >= 0 else (150 + h + 9.0)" in seg, \
+            "양수/음수 배치가 갈리지 않는다"
+        # 라벨이 슬롯을 안 넘도록 축약이 충분히 짧아야 한다(5분기 슬롯 48.8)
+        for v, ccy in ((3.30371e13, "KRW"), (9.99e11, "KRW"),
+                       (-5.2e9, "KRW"), (8.09e10, "USD")):
+            assert len(compact_amount(v, ccy)) <= 7, (v, compact_amount(v, ccy))
+
+    def test_the_band_note_also_shows_the_forward_eps(self):
+        """사용자 2026-08-23 "원천 EPS 가 대체 뭐야?" — 삼성전자 실측에서
+        원천 34,287 이 우리 TTM 실적 25,601 보다 34% 높았다. '다르다'까지만
+        말하면 그다음을 사람이 짐작한다(#82) — 선행(컨센서스) EPS 도 나란히
+        놓아 어느 쪽에 가까운지 보게 한다. ⚠️ 원천의 방법은 단정하지 않는다."""
+        from bot.dashboard import _BAND_JS
+        assert "forwardEps" in _BAND_JS, "선행 EPS 를 안 읽는다"
+        assert "선행 쪽" in _BAND_JS and "후행 쪽" in _BAND_JS, \
+            "어느 쪽에 가까운지 안 말한다"
+        # PBR 은 선행 개념이 없다 — 그 분기에서만 붙는다
+        i = _BAND_JS.index("if(kind!=='PBR'){")
+        assert "forwardEps" in _BAND_JS[i:i + 400], "PBR 에도 붙는다"
+        # 셀 읽기는 한 헬퍼로 — 복제하면 한쪽만 고쳐진다(#38)
+        assert _BAND_JS.count("function cell(q)") == 1
