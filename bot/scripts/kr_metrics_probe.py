@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 9
+_PROBE_VER = 10
 
 
 def _n(v):
@@ -197,9 +197,14 @@ def probe(ticker: str) -> None:
               f"{_f(_lq.get('지배주주자본'), 0)} · 자본총계 "
               f"{_f(_lq.get('자본총계'), 0)} → BPS 분자는 "
               f"{'지배주주' if _lq.get('지배주주자본') is not None else '연결 총액'}")
-        _rb = _lq.get("_returns_basis") or (_lq.get("ratios") or {}).get("_returns_basis")
-        print(f"    ROE 기준: {_rb or '(미기록)'} · "
-              f"ROE {_f((_lq.get('ratios') or {}).get('ROE'))}%")
+        # ⚠️ 스냅샷의 분기 항목은 비율을 **평평하게** 싣는다(`ratios` 중첩이
+        # 아니다) — v9 는 중첩만 읽어 멀쩡한 ROE 를 `—` 로 오보했다(#35 의
+        # 프로브판: 화면이 읽는 그 자리를 읽어야 한다).
+        _rb = (_lq.get("_returns_basis")
+               or (_lq.get("ratios") or {}).get("_returns_basis"))
+        _roe = (_lq.get("ROE") if _lq.get("ROE") is not None
+                else (_lq.get("ratios") or {}).get("ROE"))
+        print(f"    ROE 기준: {_rb or '(미기록)'} · ROE {_f(_roe)}%")
     # 배당수익률 — 우리 계산 vs 네이버 원천(FnGuide)
     try:
         from bot.dashboard import dividend_yield_pct
@@ -332,14 +337,31 @@ def probe(ticker: str) -> None:
                     print(f"          플래그 {k}: {q.get(k)}")
         if len(vals) == 4:
             tot = sum(vals)
-            print(f"    TTM 순이익 {tot:,.0f}"
+            # ⚠️ 화면은 **지배주주 귀속분**을 분자로 쓴다(FnGuide 산식) —
+            # 여기서 총액으로만 찍으면 프로브가 화면과 다른 EPS 를 말한다
+            # (POSCO 실측: 총액 17,428 vs 화면 17,004, #35).
+            owns = [_n(q.get("지배주주순이익")) for q in tail]
+            tot_own = sum(owns) if all(v is not None for v in owns) else None
+            print(f"    TTM 순이익(총액) {tot:,.0f}"
                   + (f" ÷ 주식수 = EPS {tot / sh:,.2f}" if sh else ""))
+            if tot_own is not None:
+                print(f"    TTM 순이익(지배주주 — 화면 분자) {tot_own:,.0f}"
+                      + (f" ÷ 주식수 = EPS {tot_own / sh:,.2f}" if sh else ""))
         else:
             print(f"    ⚠️ 4분기가 안 채워졌다({len(vals)}/4) — TTM 을 만들지 않는다")
+        # BPS 도 화면과 같은 분자·분모로 — 지배주주자본 ÷ 유통주식수
         eq = next((_n(q.get("자본총계")) for q in reversed(qs)
                    if _n(q.get("자본총계"))), None)
+        eq_own = next((_n(q.get("지배주주자본")) for q in reversed(qs)
+                       if _n(q.get("지배주주자본"))), None)
+        _dist = _n(((snap.get("kr") or {}).get("share_totals") or {})
+                   .get("distributed"))
         print(f"    자본총계(최근분기) {_f(eq, 0)}"
-              + (f" ÷ 주식수 = BPS {eq / sh:,.2f}" if eq and sh else ""))
+              + (f" ÷ 상장주식수 = BPS {eq / sh:,.2f}" if eq and sh else ""))
+        if eq_own is not None and (_dist or sh):
+            _d = _dist or sh
+            print(f"    지배주주자본(화면 분자) {eq_own:,.0f} ÷ "
+                  f"{'유통' if _dist else '상장'}주식수 = BPS {eq_own / _d:,.2f}")
         # 네이버 EPS 가 있으면 **원천이 본 분기 이익**을 되짚어 어느 분기가
         # 갈리는지 지목한다 — 합끼리 비교하면 '어딘가 다르다'까지만 말한다.
         try:

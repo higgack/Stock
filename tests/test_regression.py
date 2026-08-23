@@ -37685,6 +37685,39 @@ class TestShareCountIdentity:
         assert _PARSE_VER >= 2
         assert f"_v{_PARSE_VER}_" in _cache_path("005490", "2026-08-24")
 
+    def test_dart_daily_cache_key_carries_the_parser_version(self):
+        """2026-08-23 실측: `get_share_totals` 의 발행주식수를 수권주식수에서
+        실제 발행분으로 고쳤는데 **같은 날 프로브가 여전히 200,000,000** 을
+        찍었다 — 파싱 결과를 디스크에 캐시하면 코드를 고쳐도 안 바뀐다(#21b,
+        이 레포에서 일곱 번째). 파서가 바뀐 함수는 버전을 키에 실는다."""
+        import os, glob
+        from unittest import mock
+        import bot.dart_client as dc
+        assert dc.DartClient.get_share_totals._cache_ver >= 2
+
+        c = dc.DartClient.__new__(dc.DartClient)
+        c.api_key = "x"
+        rows = [{"se": "보통주", "isu_stock_totqy": "200,000,000",
+                 "istc_totqy": "79,241,527", "tesstk_co": "3,620,748",
+                 "distb_stock_co": "75,620,779"}]
+        pat = os.path.expanduser(
+            "~/.tradingagents/cache/dart_get_share_totals_TESTCODE_*")
+        for f in glob.glob(pat):
+            os.remove(f)
+        try:
+            with mock.patch.object(dc.DartClient, "stock_code_to_corp_code",
+                                   lambda s, t: "00000001"), \
+                 mock.patch.object(dc.DartClient, "_fetch_share_totals",
+                                   lambda s, a, b, cc: rows):
+                out = c.get_share_totals("TESTCODE")
+            assert out["issued"] == 79241527, out      # 수권주식수가 아니다
+            assert out["distributed"] == 75620779, out
+            names = [os.path.basename(f) for f in glob.glob(pat)]
+            assert names and any("_v2_" in n for n in names), names
+        finally:
+            for f in glob.glob(pat):
+                os.remove(f)
+
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다
         뒤따르던 `kr_forward_from_naver`·`_ttm_concentration`·

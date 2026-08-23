@@ -109,6 +109,19 @@ _HTTP_TIMEOUT = 10  # seconds — keep tight so a slow DART doesn't stall analys
 _HOT_CACHE_TTL_HOURS = 12  # disclosures / insider holdings change at most daily
 
 
+def _cache_ver(ver: int):
+    """`@_disk_cache_daily` 위에 얹어 **파서 버전**을 캐시 키에 싣는다.
+
+    파싱 결과를 디스크에 캐시하는 함수는 파서를 고쳐도 그날의 캐시가
+    옛 값을 그대로 준다(#21b — 이 레포에서 일곱 번째). 버전을 올리면
+    고친 날 바로 다시 받는다.
+    """
+    def deco(fn):
+        fn._cache_ver = ver
+        return _disk_cache_daily(fn)
+    return deco
+
+
 def _disk_cache_daily(fn):
     """F3 (2026-05-29 audit): per-(stock_code, today) 12h disk cache for the
     DART network methods that previously hit the network on EVERY call.
@@ -131,8 +144,16 @@ def _disk_cache_daily(fn):
         arg_sig = "_".join(str(a) for a in args)
         if kwargs:
             arg_sig += "_" + "_".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+        # ⚠️ 파서를 고쳐도 **오늘치 캐시가 옛 결과를 서빙한다** — 2026-08-23
+        # 실측: `get_share_totals` 의 발행주식수를 수권주식수에서 실제 발행분
+        # 으로 고쳤는데 같은 날 프로브가 여전히 200,000,000 을 찍었다. 파싱
+        # 결과를 디스크에 캐시하면 코드를 고쳐도 안 바뀐다(#21b). 파서가 바뀐
+        # 함수는 `@_cache_ver(n)` 로 버전을 달아 키에 실는다.
+        _ver = getattr(fn, "_cache_ver", 0)
         cache_path = _CACHE_DIR / (
-            f"dart_{fn.__name__}_{stock_code}_{arg_sig}_{date.today().isoformat()}.json"
+            f"dart_{fn.__name__}_{stock_code}_{arg_sig}"
+            + (f"_v{_ver}" if _ver else "")
+            + f"_{date.today().isoformat()}.json"
         )
         if cache_path.exists():
             age_h = (time.time() - cache_path.stat().st_mtime) / 3600
@@ -1337,7 +1358,7 @@ class DartClient:
     # 자본은 이미 취득원가만큼 차감돼 있어 분모에 넣으면 과대계상이다.
     # ⚠️ EPS 는 **그대로 상장주식수**로 나눈다 — FnGuide 는 EPS 분모에만
     # 자사주를 포함한다(자기 산식에 그렇게 적혀 있다, #204 실측).
-    @_disk_cache_daily
+    @_cache_ver(2)          # v2: 수권주식수(isu_stock_totqy) → 실제 발행분
     def get_share_totals(self, stock_code: str) -> dict:
         """{issued, treasury, distributed, basis} — 없으면 빈 dict.
 
