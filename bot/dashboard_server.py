@@ -501,16 +501,28 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
     그 시점 밴드선(최고 배수)의 비율로 그때의 배수를 되짚는다:
         배수(t) = 최고배수 × 주가(t) / 최고밴드선(t)
     (밴드선은 '그 배수에서의 적정주가'이므로 비율이 곧 배수다.)
+
+    '그 배수에서의 주가' 도 같은 정의를 **마지막 관측 시점**에 적용한 것이다:
+        적정주가(배수) = 배수 × 분모(마지막 관측)      [분모 = 주가 ÷ 배수]
+    전망 구간의 밴드선을 쓰면 캡션이 적는 분모와 갈린다(아래 ⚠️).
     """
     mult = (block or {}).get("mult") or []
-    price = (block or {}).get("price") or []
-    rows, top = _fnguide_ratio_rows(block)
+    rows, _top = _fnguide_ratio_rows(block)
     if not rows:
         return None
     from bot.per_band import summary as _sm
     labels = ("최고", "중상", "중하", "최저")
     last_obs = rows[-1]["price"]
-    top_last = top.get(int(price[-1][0])) or 0.0
+    # ⚠️ '그 배수에서의 주가' 는 **화면의 다른 칸에서** 만든다(#33) —
+    # 옛 판은 `top.get(price[-1][0])` 로 **원본 price 배열의 마지막 원소**를
+    # 봤는데, 전망 구간은 주가가 None 이어도 **밴드선은 값이 있다**. 그래서
+    # 적정주가가 전망 끝 EPS 로 만들어져 캡션이 적는 분모와 갈렸다.
+    # 실측(와이지-원 019210.KQ, 2026-08-24): 캡션 분모 2,253 인데 적정주가는
+    # 3,038 기준이라 **최저 4.80x → 14,582** 가 현재가 14,600 과 거의 같았다
+    # — 같은 표의 현재 PER 은 6.48x 이므로 표가 자기 산수를 못 맞춘 것이다.
+    # 밴드선(t) = 배수 × 분모(t) 이므로 마지막 **관측** 분모를 쓰면 값은
+    # 정의상 원천 밴드선 그대로이고, 사용자가 눈으로 곱해 검산할 수 있다.
+    _dn = _denom_now(rows)
     # ⚠️ FnGuide 는 **정의 불가**(적자 등)인 배수를 0 으로 채워 보낸다 —
     # 차트는 이미 그 선을 안 그리는데(`mult<=0` 제외) 표만 `0.00x · 0.00` 을
     # 찍고 있었다(사용자 캡처의 '최저 0.00x'). 0 은 값이 아니라 '없음'이므로
@@ -520,8 +532,7 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
     from bot.per_band import band_period as _bp, _at_fields as _atf
     _obs = [(r["period"], r["price"], None, r["per"]) for r in rows]
     _bands = [{"label": labels[i], "mult": round(float(mult[i]), 2),
-               "fair": (round(top_last * float(mult[i]) / float(mult[0]), 2)
-                        if mult[0] and top_last else None),
+               "fair": (round(float(mult[i]) * _dn, 2) if _dn else None),
                **_atf(_bp(_obs, round(float(mult[i]), 2)))}
               for i in range(4) if _f_pos(mult[i])]
     _dropped = [labels[i] for i in range(4) if not _f_pos(mult[i])]
@@ -530,7 +541,9 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
             "bands_note": ("원천이 " + "·".join(_dropped) + " 배수를 주지 않아"
                            " 제외했습니다(적자 등으로 정의 불가)."
                            if _dropped else None),
-            "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
+            # ⚠️ 이제 적정주가 = 배수 × 이 분모다 — 칩이 그 산식을 적고
+            # 사용자가 눈으로 곱해 볼 수 있어야 한다(#33·#134).
+            "eps_now": _dn, "n": len(rows), "price_now": px_now or last_obs,
             # ⚠️ 사용자 2026-08-23 "밸류에이션 탭과 밴드차트간에 차이가 이해가
             # 안가. 둘다 현재 주가를 기반으로 TTM 으로 하는데 왜 차이가 나지?"
             # — '분모가 다르다'고 말만 해선 안 통한다. 되짚은 분모를 **숫자로**

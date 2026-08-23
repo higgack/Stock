@@ -5977,9 +5977,38 @@ def _ttm_concentration(qs: list | None, key: str = "당기순이익") -> str:
     op = _num(q.get("영업이익"))
     extra = (f", 그 분기 영업이익의 {vals[idx] / op:.1f}배"
              if op and op > 0 and vals[idx] > op * 2 else "")
+    # ⚠️ 사용자 2026-08-24 "한줄로 만들자" — '다른 사이트의 TTM 과 크게 다를
+    # 수 있습니다' 는 이미 각 표면이 자기 분모를 밝히므로 중복이고, 길어서
+    # 두 줄로 접혔다(#211 긴 각주는 접히는 자리가 매번 다르다).
     return (f"TTM 순이익의 {share * 100:.0f}%가 {lab} 한 분기에서 "
-            f"나왔습니다{extra} — 일회성 이익이 섞여 있을 수 있어 다른 사이트의 "
-            f"TTM 과 크게 다를 수 있습니다")
+            f"나왔습니다{extra} — 일회성 이익이 섞여 있을 수 있습니다.")
+
+
+def per_basis_lines(is_kr: bool, fwd_src: str, forward_why=None,
+                    naver_window=None) -> list[str]:
+    """밸류에이션 탭 PER 각주 — **줄 목록**(렌더가 `<br>` 로 잇는다).
+
+    무조건 2줄(후행·선행) + 조건부 2줄(선행이 빈 사유 · 네이버 TTM 창).
+
+    ⚠️ 왜 순수 함수인가(2026-08-24): 이 각주의 계약을 **소스 AST** 로 재던
+    회귀 4개가, 사용자 요청으로 한 줄('밴드차트 탭은 분모가 달라…')을 빼자
+    통째로 깨졌다 — 표현이 바뀌어도 계약은 유지되어야 한다(#19·#89·#117 —
+    이 레포에서 가장 자주 되풀이된 실수다). 값으로 검증하게 옮긴다.
+
+    ⚠️ 줄은 **모아서** 잇는다. 줄마다 `<br>` 를 손으로 붙이면 마지막 줄이
+    빠졌을 때 구분자만 남아 빈 줄이 생긴다(#207 의 짝).
+
+    ⚠️ '밴드차트 탭은 분모가 달라 값이 다릅니다' 는 뺐다(사용자 2026-08-24
+    "이거 다 빼줘. 알아들었으니") — 밴드 탭 캡션이 이미 두 분모를 **숫자로**
+    나란히 놓는다(#202).
+    """
+    lines = ["ℹ️ <b>후행 PER</b> = 현재가 ÷ TTM 실적 EPS"
+             + ("(DART 4분기 합)" if is_kr else ""),
+             "ℹ️ <b>선행 PER</b> = 현재가 ÷ " + fwd_src]
+    for extra in (forward_why, naver_window):
+        if extra:
+            lines.append("ℹ️ " + str(extra))
+    return lines
 
 
 def _derive_missing_multiples(si: dict) -> dict:
@@ -6855,16 +6884,14 @@ def _render_stock_info_html(rec: dict) -> str:
     # "세번째 깔끔하게 좀 해주고, 그리고 코멘트가 맞는지도 확인해줘".
     _fwd_src = (si.get("_forward_src")
                 or ("(없음)" if si.get("_forward_why") else "yfinance 컨센서스 EPS"))
+    # 각주 줄은 **순수 함수 한 곳**에서 만든다(위 `per_basis_lines`) —
+    # 소스 문자열로 계약을 재던 회귀가 문구 한 줄에 깨졌던 자리다(#19).
     _per_basis_note = (
         '<div class="si-note" style="margin-top:6px">'
-        'ℹ️ <b>후행 PER</b> = 현재가 ÷ TTM 실적 EPS'
-        + ('(DART 4분기 합)' if is_kr else '') + '<br>'
-        'ℹ️ <b>선행 PER</b> = 현재가 ÷ ' + esc(_fwd_src) + '<br>'
-        + ('ℹ️ ' + esc(str(si["_forward_why"])) + '<br>'
-           if si.get("_forward_why") else '')
-        + 'ℹ️ <b>밴드차트 탭</b>은 분모가 달라(FnGuide 기준) 값이 다릅니다'
-        + ('<br>ℹ️ ' + esc(str(si["_naver_window"]))
-           if si.get("_naver_window") else '')
+        + '<br>'.join(per_basis_lines(
+            is_kr, esc(_fwd_src),
+            esc(str(si["_forward_why"])) if si.get("_forward_why") else None,
+            esc(str(si["_naver_window"])) if si.get("_naver_window") else None))
         + '</div>')
 
     def _per_mark(per_key: str, eps_key: str) -> str:
