@@ -433,6 +433,17 @@ def _fnguide_ratio_rows(block: dict | None) -> tuple[list, dict]:
 _DENOM_NAME = {"PER": "EPS", "PBR": "BPS"}
 
 
+def _denom_now(rows: list | None):
+    """현재 배수를 만든 **분모** — 원천 밴드선에서 되짚는다.
+
+    현재 PER 은 `라이브 주가 × k`(k = 마지막 관측의 PER ÷ 주가)로 만든다.
+    그러면 분모는 정의상 `마지막 관측 주가 ÷ 마지막 관측 PER` 이다.
+    """
+    from bot.per_band import implied_eps_series
+    ser = implied_eps_series(rows)
+    return round(ser[-1][1], 2) if ser else None
+
+
 def _kr_band_basis_note(rows: list, kind: str = "PER") -> str:
     """밴드 4선의 기준을 **측정해서**, 짧게 말한다(추측 금지 · 근거 숫자 유지).
 
@@ -520,6 +531,12 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
                            " 제외했습니다(적자 등으로 정의 불가)."
                            if _dropped else None),
             "eps_now": None, "n": len(rows), "price_now": px_now or last_obs,
+            # ⚠️ 사용자 2026-08-23 "밸류에이션 탭과 밴드차트간에 차이가 이해가
+            # 안가. 둘다 현재 주가를 기반으로 TTM 으로 하는데 왜 차이가 나지?"
+            # — '분모가 다르다'고 말만 해선 안 통한다. 되짚은 분모를 **숫자로**
+            # 실어 화면에서 직접 비교하게 한다(#33 눈으로 나눠 봤을 때 맞아야).
+            # 기아 실측: 밴드 6.24x → 분모 20,984 · 밸류에이션 7.21x → 18,161.
+            "denom_now": _denom_now(rows),
             # 밴드 창 — 비-KR 은 `assemble` 이 싣는데 여기만 빠져 있어 감사가
             # "밴드 창 라벨 없음 — 판정 불가"로 찍었다(2026-08-23 실측).
             # FnGuide 는 관측 전 구간에 밴드선을 주므로 창 = 이력 전체다.

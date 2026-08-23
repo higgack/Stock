@@ -37003,3 +37003,29 @@ class TestShareCountIdentity:
         note = note[:note.index("</div>")]
         assert note.count("<br>") == 1, f"<br> {note.count('<br>')}개"
         assert "si-note" in note
+
+    def test_the_band_note_names_its_denominator_as_a_number(self):
+        """사용자 2026-08-23 "밸류에이션 탭과 밴드차트간에 차이가 이해가 안가.
+        둘다 현재 주가를 기반으로 TTM 으로 하는데 왜 차이가 나지?" —
+        '분모가 다르다'고 말만 해선 안 통한다. 되짚은 분모를 **숫자로** 싣고
+        밸류에이션 탭 값과 나란히 놓는다(#33·#43).
+
+        기아 실측: 밴드 6.24x → 분모 20,984 · 밸류에이션 7.21x → 18,161."""
+        import bot.dashboard_server as ds
+        from bot.dashboard import _BAND_JS
+        rows = [{"period": "2026-08-31", "price": 130937.0, "per": 6.24}]
+        assert abs(ds._denom_now(rows) - 130937.0 / 6.24) < 0.01
+        assert ds._denom_now([]) is None
+        # payload 에 실려 나가는가 — 헬퍼만 있으면 화면은 그대로다(#20)
+        ts = [1590000000000 + i * 2592000000 for i in range(50)]
+        blk = {"mult": [90.8, 63.4, 36.1, 8.7],
+               "price": [[t_, 30000.0 + i * 300] for i, t_ in enumerate(ts)],
+               "bands": [[[t_, 200000.0 + i * 7000] for i, t_ in enumerate(ts)]]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
+        assert t.get("denom_now"), t.keys()
+        # 그리고 화면이 그걸 쓰는가 + 밸류에이션 탭 값을 DOM 에서 읽는가
+        assert "t.denom_now" in _BAND_JS, "화면이 분모를 안 쓴다"
+        assert 'querySelector(\'[data-q="\'' in _BAND_JS, \
+            "밸류에이션 탭 분모를 DOM 에서 안 읽는다"
+        assert "trailingEps" in _BAND_JS
+        assert "bookValue" in _BAND_JS, "PBR 은 분모가 BPS 다(#34)"

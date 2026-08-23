@@ -5315,8 +5315,22 @@ _BAND_JS = r"""
        보여주면서 '전체 N개' 라고만 적으면 나머지를 볼 방법이 없다. */
     var rows=(t.rows||[]).slice().reverse();
     var h='<div class="si-section-title" style="margin-top:14px">'+kind+' 이력 · 밴드</div>';
+    /* ⚠️ '분모가 다르다'고 말만 해선 안 통한다(사용자 2026-08-23 "둘다 현재
+       주가를 기반으로 TTM 으로 하는데 왜 차이가 나지?"). 되짚은 분모를 숫자로
+       적고, 밸류에이션 탭이 쓰는 분모를 **서버가 찍은 DOM 에서 읽어** 나란히
+       놓는다(#48 JS 가 문구를 만들지 말고 화면 값을 읽게 · #33). */
+    var dn=(t.denom_now!=null)?t.denom_now:t.eps_now, dtail='';
+    if(dn!=null){
+      dtail=' '+num(dn,0);
+      var oq=(kind==='PBR')?'bookValue':'trailingEps';
+      var oel=document.querySelector('[data-q="'+oq+'"]');
+      var ov=oel?parseFloat((oel.textContent||'').replace(/[^0-9.\-]/g,'')):NaN;
+      if(isFinite(ov)&&ov>0&&Math.abs(ov-dn)/dn>0.01)
+        dtail+=' — 밸류에이션 탭은 '+((kind==='PBR')?'BPS ':'TTM 실적 EPS ')
+              +num(ov,0)+' 이라 배수가 다릅니다';
+    }
     h+='<div class="si-note" style="margin-bottom:6px">출처: '+esc2(t.source)
-      +' · '+kind+' = 주가 ÷ '+denom+'</div>';
+      +' · '+kind+' = 주가 ÷ '+denom+dtail+'</div>';
     /* 요약 — 밴드 표 **위**에(사용자 2026-08-22 "여기 위에 해주면 될 것
        같아"). 현재 PER 은 **라이브 시세**로 만든 값이고, 못 받았으면
        마지막 관측이라고 밝힌다(침묵이 최악, #43). */
