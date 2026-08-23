@@ -37078,3 +37078,35 @@ class TestShareCountIdentity:
         # 출처 문구가 있으면 뒤에 붙고, 없으면 주식수만 남는다
         assert '{shares_sub}" if shares_sub else ""' in seg, seg
         assert note(2140.0, 4442e8, 207588536, "KRX") == "KRX"
+
+    def test_the_probe_dumps_reported_eps_for_the_basis_question(self):
+        """사용자 2026-08-23 "이거 우리방식이 맞는거야 네이버가 맞는거야?"
+        — DART 는 **보고된 기본주당이익**(K-IFRS 1033)을 직접 주고, 그건
+        정의상 가중평균유통주식수 기준이라 FnGuide 와 같은 자다. 우리가
+        기말 주식수로 나눠 만든 값과 대조하려면 그 값을 찍어야 한다.
+        ⚠️ 분기 EPS 가 당기(3개월)인지 누적인지 먼저 갈라야 합한다(#96)."""
+        import ast
+        src = open("bot/scripts/kr_metrics_probe.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_dart_raw")
+        seg = ast.get_source_segment(src, fn) or ""
+        # ⚠️ **문자열이 소스에 있는지로 재면 눈이 먼다** — 출력을 지우는
+        # 뮤테이션이 그대로 통과했다(실측, #91b 재는 대상이 맞나).
+        # `eps_q` 가 재무에서 EPS 를 읽고, 그 변수가 print 로 나가는지 본다.
+        assign = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == "eps_q"
+                          for t in n.targets)]
+        assert assign, "eps_q 를 안 만든다"
+        assert '"EPS"' in (ast.get_source_segment(src, assign[0]) or ""), \
+            "보고 EPS 를 재무에서 안 읽는다"
+        printed = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                   and isinstance(n.func, ast.Name) and n.func.id == "print"
+                   and any(isinstance(x, ast.Name) and x.id == "eps_q"
+                           for x in ast.walk(n))]
+        assert printed, "보고 EPS 를 안 찍는다"
+        assert "가중평균" in seg, "기준을 안 밝힌다"
+        # 당기/누적 병기 목록에 EPS 가 들어가야 기간 의미를 가를 수 있다
+        i = seg.index('for k in ("매출", "영업이익", "당기순이익"')
+        assert '"EPS"' in seg[i:i + 120], seg[i:i + 120]
+        # 4분기가 안 차면 합을 만들지 않는다
+        assert "합을 만들지 않는다" in seg

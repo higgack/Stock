@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 6
+_PROBE_VER = 7
 
 
 def _n(v):
@@ -369,6 +369,20 @@ def _dart_raw(ticker: str, snap: dict) -> None:
                    for e in ser):
             print("      ⚠️ 지배주주순이익 계정이 한 분기도 없다 — 원천 미제공"
                   "이거나 계정 매핑이 못 잡은 것이다(아래 채택 계정 확인).")
+        # ⚠️ DART 는 **보고된 기본주당이익**(K-IFRS 1033)을 직접 준다 —
+        # 그건 정의상 **가중평균유통보통주식수** 기준이라 FnGuide 와 같은
+        # 자다. 우리가 기말 주식수로 나눠 만든 값과 얼마나 다른지, 그리고
+        # 분기 EPS 가 당기(3개월)인지 누적인지(#96)를 여기서 가른다.
+        eps_q = [(e.get("label"), (e.get("financials") or {}).get("EPS"))
+                 for e in ser]
+        print("    보고 EPS(K-IFRS 기본주당이익, 가중평균 기준): "
+              + " / ".join(f"{lb} {_f(v, 0)}" for lb, v in eps_q[-4:]))
+        vals4 = [v for _lb, v in eps_q[-4:] if _n(v) is not None]
+        if len(vals4) == 4:
+            print(f"    → 최근 4분기 합 {sum(vals4):,.0f}"
+                  " (우리 화면 EPS 와 비교: 위 ① 참조)")
+        else:
+            print(f"    → 4분기가 안 채워졌다({len(vals4)}/4) — 합을 만들지 않는다")
         last = ser[-1]
         y, rc = last.get("year"), last.get("reprt_code")
         raw = dart.get_normalized_financials(ticker, year=y,
@@ -377,7 +391,7 @@ def _dart_raw(ticker: str, snap: dict) -> None:
         cur = (raw.get("financials") or {})
         cum = (raw.get("financials_cumulative") or {})
         print(f"    최신 보고서 {y}/{rc} ({last.get('fs_div')})")
-        for k in ("매출", "영업이익", "당기순이익"):
+        for k in ("매출", "영업이익", "당기순이익", "EPS"):
             print(f"      {k}: 당기(thstrm) {_f(cur.get(k), 0)}"
                   f" · 누적(thstrm_add) {_f(cum.get(k), 0)}")
         src = cur.get("_src") or {}
