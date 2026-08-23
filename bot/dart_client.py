@@ -273,6 +273,9 @@ _DART_CODE_MAP: dict[str, str] = {
     # 비지배지분 — 지배주주자본을 원천이 안 줄 때 빼서 만든다.
     "ifrs-full_NoncontrollingInterests": "비지배지분",
     "ifrs-full_MinorityInterest": "비지배지분",
+    # 비지배 **순이익** — 지배주주순이익을 원천이 안 줄 때 빼서 만든다.
+    # 분자와 분모의 급이 갈리면 ROE 가 통째로 틀린다(#34).
+    "ifrs-full_ProfitLossAttributableToNoncontrollingInterests": "비지배순이익",
 }
 
 # account_id 가 비표준이거나 nullable 시 account_nm (한글 텍스트) 매칭
@@ -323,6 +326,10 @@ _DART_NAME_MAP: dict[str, str] = {
     "지배기업 소유주지분": "지배주주자본",
     "비지배지분": "비지배지분",
     "비지배주주지분": "비지배지분",
+    "비지배지분순이익": "비지배순이익",
+    "비지배주주순이익": "비지배순이익",
+    "비지배지분에귀속되는당기순이익": "비지배순이익",
+    "비지배주주지분순이익": "비지배순이익",
     "기본주당순이익": "EPS", "기본주당이익": "EPS",
     "기본주당순이익(손실)": "EPS", "보통주기본주당이익(손실)": "EPS",
     # ⚠️ 총액 계정만. '상품및제품' 같은 **구성요소**를 별칭으로 넣으면
@@ -446,9 +453,10 @@ _COMPONENT_GROUPS: dict[str, set[int]] = {"매출": {2}}
 #   v10 (2026-08-23) 지배주주순이익·지배주주자본 추가(FnGuide 산식 정렬)
 #   v11 (2026-08-23) 중복 키로 죽어 있던 `지배주주자본` 부활 + 비지배지분
 #   v12 (2026-08-24) `영업에서창출된현금흐름`(이자·법인세 전 소계) 제거
+#   v13 (2026-08-24) 비지배순이익 추가(지배주주순이익 항등식 폴백)
 # 규율로는 세 번 다 실패했으므로 아래 `_CANONICAL_KEYS` 를 회귀가 고정한다
 # — 키가 늘면 테스트가 깨지고, 고치려면 이 숫자를 올려야 한다.
-_FIN_CACHE_VER = 12
+_FIN_CACHE_VER = 13
 
 # 파서가 낼 수 있는 canonical 키 전량. **여기가 바뀌면 캐시 버전을 올려라.**
 # 목록을 손으로 적는 게 아니라 두 매핑에서 도출하므로 새 계정을 추가하면
@@ -472,7 +480,8 @@ _CANONICAL_KEYS = frozenset(_DART_CODE_MAP.values()) | frozenset(
 # (값을 잃지 않으면서 오염만 막는다).
 _IS_KEYS = frozenset({"매출", "매출원가", "매출총이익", "판관비", "영업이익",
                       "금융수익", "금융비용", "세전이익", "법인세비용",
-                      "당기순이익", "지배주주순이익", "EPS"})
+                      "당기순이익", "지배주주순이익", "비지배순이익",
+                      "EPS"})
 _BS_KEYS = frozenset({"자산총계", "부채총계", "자본총계", "유동자산",
                       "유동부채", "비유동자산", "비유동부채", "재고자산",
                       "이익잉여금", "지배주주자본", "비지배지분"})
@@ -669,8 +678,15 @@ def apply_ttm_returns(entries: list) -> int:
         owner = all(v is not None for v in owns)
         prev_fin = ((entries[i - _TTM_QUARTERS].get("financials") or {})
                     if i - _TTM_QUARTERS >= 0 else {})
+        # ⚠️ **분자와 분모는 같은 급이어야 한다.** 옛 코드는 둘을 따로 골라,
+        # 지배주주순이익이 한 분기라도 없으면 분자만 연결 총액으로 떨어지고
+        # 분모는 지배주주자본으로 남았다 — 비지배지분이 큰 회사에서 ROE 가
+        # 크게 부풀려진다(뉴파워프라즈마 144960.KQ 실측 2026-08-24: 우리
+        # 26.1Q 8.0% vs 네이버 5.96%, 비지배지분이 자본의 33%다).
+        # 총액/총액 · 지배/지배 둘 중 하나로만 간다(#34).
         eq_key = ("지배주주자본"
-                  if fin.get("지배주주자본") is not None else "자본총계")
+                  if (owner and fin.get("지배주주자본") is not None)
+                  else "자본총계")
         eq, eq_avg = _avg_denom(fin.get(eq_key), prev_fin.get(eq_key))
         asset, as_avg = _avg_denom(fin.get("자산총계"),
                                    prev_fin.get("자산총계"))
@@ -705,8 +721,10 @@ def apply_annual_returns(entries: list) -> int:
         if net is None:
             continue
         own = fin.get("지배주주순이익")
+        # 분자·분모는 같은 급으로(위 `apply_ttm_returns` 주석 참조)
         eq_key = ("지배주주자본"
-                  if fin.get("지배주주자본") is not None else "자본총계")
+                  if (own is not None and fin.get("지배주주자본") is not None)
+                  else "자본총계")
         eq, eq_avg = _avg_denom(fin.get(eq_key), prev_fin.get(eq_key))
         asset, as_avg = _avg_denom(fin.get("자산총계"),
                                    prev_fin.get("자산총계"))
@@ -742,6 +760,19 @@ def _fill_equity_fallbacks(fin: dict) -> None:
     def _n(v):
         return (float(v) if isinstance(v, (int, float))
                 and not isinstance(v, bool) else None)
+
+    # 손익도 같은 항등식 — 지배주주순이익 = 당기순이익 − 비지배순이익.
+    # ROE 분자가 없어 총액으로 떨어지면 분모까지 총액으로 내려가 FnGuide 와
+    # 갈린다(뉴파워프라즈마 144960.KQ 실측). 이름 열거는 새 표기를 못
+    # 잡으므로(#24) 뺄셈을 최종 그물로 둔다.
+    net, nown, nmi = (_n(fin.get("당기순이익")), _n(fin.get("지배주주순이익")),
+                      _n(fin.get("비지배순이익")))
+    if nown is None and net is not None and nmi is not None:
+        fin["지배주주순이익"] = net - nmi
+        fin.setdefault("_derived_from", {})["지배주주순이익"] = "당기순이익 − 비지배순이익"
+    elif net is None and nown is not None and nmi is not None:
+        fin["당기순이익"] = nown + nmi
+        fin.setdefault("_derived_from", {})["당기순이익"] = "지배주주순이익 + 비지배순이익"
 
     tot, own, mi = (_n(fin.get("자본총계")), _n(fin.get("지배주주자본")),
                     _n(fin.get("비지배지분")))
