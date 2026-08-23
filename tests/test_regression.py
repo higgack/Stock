@@ -17191,10 +17191,15 @@ class TestNaverCommodityCharts:
         # (스크린샷 탭바에 분기실적 탭 자체가 없음 = 배포 이전 HTML). startup-clear
         # 만으로는 dashboard 재시작이 누락/실패한 경우를 못 막음 → /lookup 에 이미
         # 있던 code-mtime 가드를 /api/lookup_detail SWR 경로에도 동일 적용(실수 #11).
+        # ⚠️ 2026-08-24 개정: 옛 판은 `"getmtime" in body` 로 **한 파일 mtime**
+        # 을 요구했는데, 그 방식 자체가 결함이었다(#233 — dashboard.py 하나만
+        # 봐서 dashboard_server.py·fin_trend.py 를 고친 배포가 안 걸린다).
+        # 계약은 "배포 무효화 기준을 **캐시 hit 판정 전에** 계산한다"이지
+        # 특정 호출 이름이 아니다(#19).
         src = open("bot/dashboard_server.py", encoding="utf-8").read()
         body = src.split("detail_{safe}{_sfx}_v2.html", 1)[1].split("def _serve_search_error", 1)[0]
         assert "_code_mtime" in body, "lookup_detail SWR 경로에 code-mtime 가드 없음"
-        assert "getmtime" in body, "dashboard.py mtime 비교 누락"
+        assert "_render_code_mtime()" in body, "패키지 전체 기준을 안 쓴다"
         # 가드가 캐시 hit 분기보다 먼저 계산돼야(hit 판정에 반영)
         assert body.index("_code_mtime") < body.index("_LOOKUP_DETAIL_STALE_SEC"), \
             "code-mtime 가드가 캐시 hit 판정 이후 — 무효화가 적용되지 않음"
@@ -38500,3 +38505,77 @@ class TestFinTrendAllMarkets20260824:
         from bot.fin_trend import build
         assert build({}, quarterly=True) == []
         assert build(None, quarterly=False) == []
+
+
+class TestRenderCacheDeployInvalidation20260824:
+    """사용자 2026-08-24 "이 코멘트는 뺴달라니까." — 지운 각주가 화면에 그대로
+    남아 있었다. 코드에는 없다(grep 0건). `/lookup`·`/api/lookup_detail` 은
+    렌더 HTML 을 디스크에 SWR 캐시하고, 배포 무효화 기준을 `bot/dashboard.py`
+    **한 파일의 mtime** 으로 잡고 있었다 — 밴드 표가 사는 `dashboard_server.py`,
+    새 재무추이 모듈 `fin_trend.py`, 산식이 사는 `dart_client.py` 를 고친
+    배포는 그 가드에 안 걸려 최대 24시간 옛 HTML 을 서빙한다(#24 열거형
+    가드는 목록 밖을 못 잡는다 · #21b 캐시가 fix 를 가린다).
+    """
+
+    def test_scan_is_directory_wide_not_one_file(self, tmp_path):
+        """⚠️ 실물 레포로 재면 마침 `dashboard.py` 가 가장 최신일 때 통과해
+        버린다(#91c) — **다른 파일만 최신인** 픽스처로 강제한다."""
+        import os
+        import bot.dashboard_server as ds
+        (tmp_path / "dashboard.py").write_text("x", encoding="utf-8")
+        os.utime(tmp_path / "dashboard.py", (1_000_000, 1_000_000))
+        (tmp_path / "fin_trend.py").write_text("y", encoding="utf-8")
+        os.utime(tmp_path / "fin_trend.py", (2_000_000, 2_000_000))
+        assert ds._max_py_mtime(tmp_path) == 2_000_000
+        # .py 가 아닌 파일은 세지 않는다(캐시 HTML 이 자기 자신을 무효화하면
+        # 영원히 콜드다)
+        (tmp_path / "note.html").write_text("z", encoding="utf-8")
+        os.utime(tmp_path / "note.html", (3_000_000, 3_000_000))
+        assert ds._max_py_mtime(tmp_path) == 2_000_000
+        assert ds._max_py_mtime(tmp_path / "nope") == 0.0
+
+    def test_guard_covers_every_render_module(self):
+        """새 렌더 모듈을 더해도 자동으로 포함되는가 — 이름 열거 금지."""
+        import os
+        import bot.dashboard_server as ds
+        got = ds._render_code_mtime()
+        assert got > 0
+        for mod in ("dashboard.py", "dashboard_server.py", "fin_trend.py",
+                    "dart_client.py", "per_band.py"):
+            assert got >= os.path.getmtime(f"bot/{mod}"), mod
+
+    def test_both_cache_paths_use_the_shared_guard(self):
+        """두 캐시(`/lookup` · `/api/lookup_detail`)가 **같은 기준**을 써야
+        한다 — 한쪽만 고치면 다른 화면이 계속 옛 HTML 을 서빙한다(#38).
+
+        ⚠️ 존재가 아니라 **호출 수**로 센다(#120 정의 1 + 호출 N)."""
+        import ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        calls = [n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "_render_code_mtime"]
+        assert len(calls) == 2, len(calls)
+        # 옛 방식(한 파일 mtime)이 남아 있으면 안 된다
+        assert "getmtime(_dmod.__file__)" not in src, \
+            "한 파일만 보는 옛 가드가 남아 있다"
+
+    def test_the_removed_note_is_gone_from_every_render_path(self):
+        """사용자가 두 번 요청한 그 문구 — 코드 어디에도 남으면 안 된다.
+
+        ⚠️ 주석·독스트릭은 화면에 안 나가므로 **문자열 상수만** 본다(#59b
+        소스 검사는 독스트링을 지우고 볼 것)."""
+        import ast
+        for path in ("bot/dashboard.py", "bot/dashboard_server.py"):
+            tree = ast.parse(open(path, encoding="utf-8").read())
+            lits = [n.value for n in ast.walk(tree)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+            docs = set()
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.Module, ast.FunctionDef,
+                                  ast.AsyncFunctionDef, ast.ClassDef)):
+                    d = ast.get_docstring(n, clean=False)
+                    if d:
+                        docs.add(d)
+            bad = [s for s in lits if s not in docs and "밴드차트 탭" in s
+                   and "분모가 달라" in s]
+            assert not bad, (path, bad)
