@@ -705,6 +705,19 @@ def apply_ttm_returns(entries: list) -> int:
     return n
 
 
+def _yr_of(e) -> int | None:
+    """항목의 회계연도 — 평평한 dict 와 `{"financials": …}` 둘 다 지원."""
+    for src in (e or {}, (e or {}).get("financials") or {}):
+        v = src.get("year")
+        if isinstance(v, int):
+            return v
+        try:
+            return int(str(v)[:4])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def apply_annual_returns(entries: list) -> int:
     """연간 시리즈의 ROE·ROA 를 같은 규약(평균 분모·지배주주 분자)으로.
 
@@ -716,6 +729,14 @@ def apply_annual_returns(entries: list) -> int:
         fin = e.get("financials") or e            # ts 는 평평한 dict 다
         rat = e.setdefault("ratios", e) if "financials" in e else e
         prev = (entries[i - 1] if i >= 1 else {})
+        # ⚠️ **'전기' 는 바로 앞 해여야 한다.** 원천이 한 해를 안 주면 목록의
+        # 앞 항목이 2년 전이 되는데, 그걸 전기로 평균을 내면 분모가 통째로
+        # 다른 시점 값이다(#29·#168 인접 판정은 간격을 재야 한다). 실측
+        # 2026-08-24 현대이지웰 090850.KQ: FY2021 이 없어 FY2022 의 '전기'가
+        # FY2020 이 됐다. 인접이 아니면 **기말로 떨어진다**(각주가 그렇게 말한다).
+        _y, _py = _yr_of(e), _yr_of(prev)
+        if _y is not None and _py is not None and _py != _y - 1:
+            prev = {}
         prev_fin = prev.get("financials") or prev
         net = fin.get("당기순이익")
         if net is None:

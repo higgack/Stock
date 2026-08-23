@@ -7117,6 +7117,17 @@ def _render_stock_info_html(rec: dict) -> str:
                             '않아 <b>총수익의 일부</b>만 표시됩니다(다른 구성요소는 '
                             '별도 계정, 합산·추정 없음). 총액이 아니므로 '
                             '<b>영업이익률 등 매출로 나누는 비율은 비웁니다</b>')
+        # ⚠️ **빠진 기간은 말한다.** 표가 `FY2020 · FY2022 …` 로 이어지면
+        # 원천 결측인지 우리가 흘린 건지 볼 방법이 없다(#43 · `missing_quarters`
+        # 와 같은 규율). 2026-08-24 현대이지웰 090850.KQ 에서 사용자가 먼저
+        # 발견했다 — "왜 2021 이 아니라 2020 가 나온거지?"
+        _idx = [(it.get("year") or 0) * 4 + (it.get("quarter") or 1) - 1
+                for it in items if it.get("year")]
+        _step = 1 if _is_q else 4
+        _gaps = [b - a for a, b in zip(_idx, _idx[1:]) if b - a != _step]
+        if _gaps:
+            _notes.append('⚠️ 중간에 <b>원천이 주지 않은 기간</b>이 있어 '
+                          '이어지지 않습니다 — 빈 구간을 메우지 않았습니다')
         if sibling_note:
             _notes.append(sibling_note)
         if _notes:
@@ -8229,11 +8240,19 @@ def _render_stock_info_html(rec: dict) -> str:
             ann_str = _xbrl_fmt(ann.get("val"), unit)
             lat_str = _xbrl_fmt(lat.get("val"), unit)
             fy_str = f"FY{ann.get('fy', '')}" if ann.get("fy") else "—"
-            lat_form = lat.get("form", "")
+            # ⚠️ **무슨 기간인지 화면이 말한다.** 열 이름이 '최근 분기'인데
+            # SEC 는 같은 `end` 에 3·6·9·12개월 팩트를 함께 담아, 분기가 아닌
+            # 값이 실려도 사용자가 알 방법이 없었다(2026-08-24 마이크론 MU:
+            # 최근 분기 매출이 연간보다 컸다). 선택기는 분기 길이를 우선하고
+            # (`edgar_client._pick_facts`), 여기서는 **실제 기간**을 적는다.
+            _p0, _p1 = str(lat.get("start") or ""), str(lat.get("end") or "")
+            _per = (f"{_p0[2:]}~{_p1[2:]}" if _p0 and _p1
+                    else (_p1 if _p1 else ""))
+            lat_form = " · ".join(x for x in (str(lat.get("form", "")), _per) if x)
             xb_rows += f"<tr><td>{esc(label)}</td><td class='num'>{ann_str}</td><td>{fy_str}</td><td class='num'>{lat_str}</td><td>{esc(lat_form)}</td></tr>\n"
         us_xbrl_html = f"""<div class="si-section">
     <div class="si-section-title">SEC XBRL 재무</div>
-    <table class="si-table"><thead><tr><th>항목</th><th class="num">연간</th><th>회계연도</th><th class="num">최근 분기</th><th>Form</th></tr></thead><tbody>{xb_rows}</tbody></table>
+    <table class="si-table"><thead><tr><th>항목</th><th class="num">연간</th><th>회계연도</th><th class="num">최근 분기</th><th>Form · 기간</th></tr></thead><tbody>{xb_rows}</tbody></table>
   </div>"""
 
     # US insider trades (주주 pane 하단에 추가)

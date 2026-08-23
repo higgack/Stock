@@ -38721,3 +38721,165 @@ class TestRestatedMultiplesAndEmptyPeriods20260824:
             if kw.arg == "max_periods" and isinstance(kw.value, ast.Constant)
             and "annual" in ast.dump(c))
         assert n_annual > ss._Y_TABLE, (n_annual, ss._Y_TABLE)
+
+
+class TestSplitAdjustAndYearGaps20260824:
+    """사용자 2026-08-24 세 건:
+      ① LS ELECTRIC 010120.KS "PER (후행) 숫자가 너무 안맞는것 같은데"
+         — 2026.06 5:1 액면분할이 낀 창에서 수정평균 분모가 60,000,000 이 돼
+         EPS 6,479.35(네이버 2,592 의 2.5배)가 화면에 올랐다.
+      ② 현대이지웰 090850.KQ "왜 2021 이 아니라 2020 가 나온거지?"
+         — 원천이 FY2021 을 안 줘 `ts[-5:]` 가 FY2020 을 끌어왔고, FY2022 의
+         '전기'가 2년 전이 됐다.
+      ③ 마이크론 MU "SEC XBRL 재무의 최근 분기 숫자는 어디서 나온거야?"
+         — 최근 분기 매출 $78.96B 가 연간 $37.38B 보다 컸다(누적 팩트).
+    """
+
+    # ── ① 주식분할 소급조정 ────────────────────────────────────────
+    @staticmethod
+    def _ls_series():
+        return [{"period": "2026.06", "issued": 150_000_000},
+                {"period": "2026.03", "issued": 30_000_000},
+                {"period": "2025.12", "issued": 30_000_000},
+                {"period": "2025.09", "issued": 30_000_000},
+                {"period": "2025.06", "issued": 30_000_000}]
+
+    def test_split_is_applied_retroactively(self):
+        """주식분할은 자원 유입 없이 주식 수만 늘어난다 — K-IFRS 1033·FnGuide
+        모두 표시 **전 기간을 분할 후 기준으로 소급조정**한다."""
+        from bot.share_count import weighted_issued
+        avg, lab, n = weighted_issued(
+            self._ls_series(), ["2025.09", "2025.12", "2026.03", "2026.06"])
+        assert avg == 150_000_000, avg          # 계단평균이면 60,000,000
+        # 실측 대조: 388,760,977,637 ÷ 150,000,000 = 2,591.74 (네이버 2,592)
+        assert abs(388_760_977_637 / avg - 2591.74) < 0.02
+        assert "소급" in lab, lab               # 조정했으면 말한다(#43)
+
+    def test_a_rights_issue_is_not_retroactive(self):
+        """⚠️ 유상증자는 **자원이 들어온다** — 소급하면 EPS 가 과소된다.
+        정수비가 아니라는 **원인**으로 가른다(#146 증상으로 막지 말 것)."""
+        from bot.share_count import clean_ratio, weighted_issued
+        ser = [{"period": "2026.06", "issued": 13_500_000},
+               {"period": "2026.03", "issued": 10_000_000},
+               {"period": "2025.12", "issued": 10_000_000},
+               {"period": "2025.09", "issued": 10_000_000}]
+        avg, _lab, _n = weighted_issued(
+            ser, ["2025.09", "2025.12", "2026.03", "2026.06"])
+        assert avg == 10_875_000, avg           # 계단평균 그대로
+        assert clean_ratio(1.35) is None
+        # ⚠️ 1.35 는 `round()` 가 1 이라 **정수 근접 검사를 지워도** None 이
+        # 된다 — 뮤테이션이 그대로 통과했다(실측, #91b 재는 대상이 맞나).
+        # 반올림이 2 인데 가깝지는 않은 값(2.4x 유상증자)으로 강제한다.
+        assert clean_ratio(2.4) is None, "2.4배 유상증자를 분할로 오인한다"
+        assert clean_ratio(1.9) is None
+        assert clean_ratio(5.0) == 5.0
+        assert clean_ratio(2.005) == 2.0        # 단수주 조정 허용오차
+        assert clean_ratio(0.1) == 0.1          # 1:10 병합
+
+    def test_no_change_is_a_no_op(self):
+        """⚠️ 늘 조정하는 코드는 아무것도 안 재는 것과 같다."""
+        from bot.share_count import weighted_issued
+        ser = [{"period": f"2026.{m:02d}", "issued": 1_000_000}
+               for m in (3, 6)]
+        avg, lab, _ = weighted_issued(ser, ["2026.03", "2026.06"])
+        assert avg == 1_000_000 and "소급" not in lab, (avg, lab)
+
+    # ── ② 연도 갭 ──────────────────────────────────────────────────
+    def test_only_a_consecutive_run_is_displayed(self):
+        from bot.stock_snapshot import consecutive_tail
+        ts = [{"year": y} for y in (2020, 2022, 2023, 2024, 2025)]
+        assert [e["year"] for e in consecutive_tail(ts, 5)] == [
+            2022, 2023, 2024, 2025]
+        full = [{"year": y} for y in range(2020, 2026)]
+        assert [e["year"] for e in consecutive_tail(full, 5)] == [
+            2021, 2022, 2023, 2024, 2025]
+
+    def test_annual_prev_must_be_the_immediately_previous_year(self):
+        """'전기' 가 2년 전이면 평균 분모가 통째로 다른 시점 값이다
+        (#29·#168 인접 판정은 간격을 재야 한다)."""
+        from bot.dart_client import apply_annual_returns
+        gap = [{"year": 2020, "당기순이익": 79e8, "자본총계": 500e8},
+               {"year": 2022, "당기순이익": 152e8, "자본총계": 700e8}]
+        apply_annual_returns(gap)
+        assert gap[1]["ROE"] == 152e8 / 700e8 * 100          # 기말
+        assert (gap[1]["_returns_basis"] or {}).get("averaged") is False
+        # ⚠️ `averaged` 는 자본·자산 **둘 다** 평균일 때만 True 다 —
+        # 자산총계를 빼면 인접해도 False 라 이 단언이 눈이 먼다(#91b).
+        adj = [{"year": 2021, "당기순이익": 79e8, "자본총계": 500e8,
+                "자산총계": 900e8},
+               {"year": 2022, "당기순이익": 152e8, "자본총계": 700e8,
+                "자산총계": 1100e8}]
+        apply_annual_returns(adj)
+        assert abs(adj[1]["ROE"] - 152e8 / ((700e8 + 500e8) / 2) * 100) < 1e-9
+        assert (adj[1]["_returns_basis"] or {}).get("averaged") is True
+
+    def test_the_table_says_when_periods_are_missing(self):
+        """빠진 기간을 조용히 두면 원천 결측인지 우리가 흘린 건지 모른다(#43)."""
+        import bot.dashboard as d
+
+        def _html(years):
+            ts = [{"year": y, "매출": 1e11, "영업이익": 2e10,
+                   "당기순이익": 1e10, "영업이익률": 20.0, "ROE": 12.0,
+                   "부채비율": 50.0} for y in years]
+            si = {"currency": "KRW", "current_price": 4995.0,
+                  "kr": {"financials_ts": ts}}
+            p = d._render_stock_info_html({"ticker": "090850.KQ",
+                                           "stock_info": si})
+            return "".join(str(v) for v in p.values())
+        assert "원천이 주지 않은 기간" in _html([2020, 2022, 2023, 2024, 2025])
+        assert "원천이 주지 않은 기간" not in _html([2022, 2023, 2024, 2025])
+
+    # ── ③ SEC XBRL '최근 분기' ────────────────────────────────────
+    @staticmethod
+    def _mu_facts():
+        return [{"start": "2025-12-01", "end": "2026-05-28", "val": 78.96e9,
+                 "filed": "2026-07-01", "form": "10-Q", "fp": "Q3"},
+                {"start": "2026-02-27", "end": "2026-05-28", "val": 11.3e9,
+                 "filed": "2026-07-01", "form": "10-Q", "fp": "Q3"},
+                {"start": "2025-08-29", "end": "2026-05-28", "val": 120e9,
+                 "filed": "2026-07-01", "form": "10-Q", "fp": "Q3"},
+                {"start": "2024-08-30", "end": "2025-08-28", "val": 37.38e9,
+                 "filed": "2025-10-01", "form": "10-K", "fp": "FY"}]
+
+    def test_latest_fact_is_a_quarter_not_a_cumulative(self):
+        """SEC companyconcept 는 같은 `end` 에 3·6·9·12개월 팩트를 함께 담는다
+        — `max(end, filed)` 로만 고르면 누적을 '분기'라고 찍는다(#96)."""
+        from bot.edgar_client import _pick_facts
+        lat = _pick_facts({"USD": self._mu_facts()}, "money")["latest"]
+        assert lat["val"] == 11.3e9, lat["val"]
+        assert lat["start"] == "2026-02-27", lat
+        # ⚠️ 위 픽스처만으로는 눈이 먼다 — 최신 `end` 에 3개월 팩트가 함께
+        # 있으면 '가장 짧은 것' 폴백만으로도 분기가 뽑혀, 분기 길이 게이트를
+        # 지우는 뮤테이션이 통과했다(실측, #91c). 최신 `end` 에 **누적만**
+        # 있고 분기는 한 칸 앞에 있는 경우로 강제한다.
+        only_cum = [
+            {"start": "2025-12-01", "end": "2026-05-28", "val": 78.96e9,
+             "filed": "2026-07-01", "form": "10-Q", "fp": "Q3"},
+            {"start": "2025-11-28", "end": "2026-02-27", "val": 10.1e9,
+             "filed": "2026-04-01", "form": "10-Q", "fp": "Q2"},
+        ]
+        lat2 = _pick_facts({"USD": only_cum}, "money")["latest"]
+        assert lat2["val"] == 10.1e9, ("누적을 분기라고 찍었다", lat2)
+
+    def test_instant_facts_keep_the_latest_end(self):
+        """재무상태표 항목은 기간이 없다 — 옛 동작(최신 `end`)을 지킨다."""
+        from bot.edgar_client import _pick_facts
+        inst = [{"end": "2026-05-28", "val": 9e10, "filed": "2026-07-01",
+                 "form": "10-Q"},
+                {"end": "2025-08-28", "val": 8e10, "filed": "2025-10-01",
+                 "form": "10-K", "fp": "FY"}]
+        assert _pick_facts({"USD": inst}, "money")["latest"]["val"] == 9e10
+
+    def test_the_xbrl_table_states_the_actual_period(self):
+        """열 이름이 '최근 분기'인데 무슨 기간인지 안 적으면 사용자가 확인할
+        방법이 없다(#43) — 실제 기간을 찍는다."""
+        import bot.dashboard as d
+        xb = {"revenue": {"unit": "USD",
+                          "annual": {"val": 37.38e9, "fy": 2025, "form": "10-K"},
+                          "latest": {"val": 11.3e9, "start": "2026-02-27",
+                                     "end": "2026-05-28", "form": "10-Q"}}}
+        si = {"currency": "USD", "current_price": 100.0, "us": {"xbrl": xb}}
+        p = d._render_stock_info_html({"ticker": "MU", "stock_info": si})
+        html = "".join(str(v) for v in p.values())
+        assert "26-02-27~26-05-28" in html, "기간을 안 적는다"
+        assert "Form · 기간" in html, "열 이름이 기간을 약속하지 않는다"

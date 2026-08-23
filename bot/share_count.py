@@ -139,6 +139,61 @@ def note(price, mcap, shares, source: str = "", tol: float = TOL,
     return source or ""
 
 
+def clean_ratio(x: float):
+    """`x` 가 **정수배(≥2)** 또는 그 역수면 그 값을, 아니면 None.
+
+    주식분할·무상증자·병합은 정확한 정수비로 일어난다(5:1 · 2:1 · 1:10…).
+    유상증자는 그렇지 않다 — 그래서 이 판정이 둘을 가른다.
+    """
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    if x <= 0:
+        return None
+    for cand in (x, 1.0 / x):
+        n = round(cand)
+        if n >= 2 and abs(cand - n) <= 0.005 * n:
+            return float(n) if cand is x else 1.0 / n
+    return None
+
+
+def split_adjust(got: dict) -> tuple:
+    """분기말 발행주식수 map → (**소급조정된** map, 사람이 읽는 사유).
+
+    ⚠️ 왜(2026-08-24 LS ELECTRIC 010120.KS, 사용자 "PER (후행) 숫자가 너무
+    안맞는것 같은데"): 2026.06 에 5:1 액면분할이 있어 창이
+    `30,000,000 · 30,000,000 · 30,000,000 · 150,000,000` 이었고 단순 계단
+    평균이 **60,000,000** 이 됐다 — TTM 지배주주순이익 388,760,977,637 을
+    그걸로 나눠 EPS 6,479.35(네이버 2,592 의 2.5배)가 화면에 올랐다.
+
+    주식분할·무상증자는 **자원 유입 없이 주식 수만 늘어난다** — K-IFRS 1033
+    도 FnGuide 산식도 표시되는 **전 기간을 분할 후 기준으로 소급조정**한다.
+    (유상증자는 자원이 들어오므로 소급하지 않는다 — `clean_ratio` 가 정수비
+    여부로 둘을 가른다. 증상이 아니라 **원인으로 판정**한다, #146.)
+
+    최신에서 과거로 훑으며 배수 점프를 만나면 그 **앞의 전 분기**에 비율을
+    곱한다. 곱한 뒤에는 그 구간의 비율이 1 이 되므로 중복 적용되지 않는다.
+    """
+    keys = sorted(got or {})
+    out = {k: float(v) for k, v in (got or {}).items()}
+    notes = []
+    for i in range(len(keys) - 1, 0, -1):
+        cur, prev = out[keys[i]], out[keys[i - 1]]
+        if not prev or not cur:
+            continue
+        r = clean_ratio(cur / prev)
+        if r is None or r == 1.0:
+            continue
+        for j in range(i):
+            out[keys[j]] *= r
+        notes.append(
+            f"{keys[i - 1]}→{keys[i]} "
+            + (f"{r:g}:1 분할·무상증자" if r > 1 else f"1:{1 / r:g} 병합")
+            + " 소급 반영")
+    return out, " · ".join(reversed(notes))
+
+
 def weighted_issued(series, periods) -> tuple:
     """수정평균 발행주식수 — `(값, 사람이 읽는 근거, 쓴 분기 수)`.
 
@@ -183,12 +238,20 @@ def weighted_issued(series, periods) -> tuple:
         op, ov = prev[-1]
         got[p] = ov
         used[p] = op
+    # 분할·무상증자는 **소급조정**한다(위 `split_adjust`) — 안 하면 분할이
+    # 낀 창에서 분모가 분할비만큼 작아져 EPS 가 그만큼 부푼다.
+    got, _split_note = split_adjust(got)
     avg = sum(got.values()) / len(got)
     same = len(set(got.values())) == 1
     lab = ("발행주식수 변동 없음" if same
            else " · ".join(f"{p} {int(got[p]):,}"
                            + ("" if used[p] == p else f"({used[p]} 기준)")
                            for p in want))
+    if _split_note:
+        # 조정했으면 **조정했다고 말한다** — 숫자만 바뀌면 왜 바뀌었는지
+        # 알 수 없다(#43·#123).
+        lab = (f"{_split_note} → 전 기간 {int(avg):,}주 기준"
+               if same else f"{lab} · {_split_note}")
     return avg, lab, len(got)
 
 

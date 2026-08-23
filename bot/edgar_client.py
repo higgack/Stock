@@ -548,9 +548,36 @@ def _choose_unit(units: dict, unit_kind: str) -> Optional[str]:
     return keys[0]
 
 
+def _ord(x: str) -> int:
+    """문자열을 정렬 가능한 정수로 — `min` 안에서 '최신 filed 우선'을 쓰려고."""
+    return sum((ord(c) << (8 * max(0, 12 - i))) for i, c in enumerate(str(x)[:12]))
+
+
+def _fact_days(f: dict) -> Optional[int]:
+    """기간 팩트의 길이(일). 시점(instant) 팩트면 None."""
+    import datetime as _dt
+    s, e = (f or {}).get("start"), (f or {}).get("end")
+    if not s or not e:
+        return None
+    try:
+        return (_dt.date.fromisoformat(str(e))
+                - _dt.date.fromisoformat(str(s))).days
+    except (TypeError, ValueError):
+        return None
+
+
 def _pick_facts(units: dict, unit_kind: str) -> Optional[dict]:
     """Pick latest annual (FY / 10-K·20-F·40-F) + latest-reported fact +
-    the chosen currency unit. Restatements resolved by max `filed`."""
+    the chosen currency unit. Restatements resolved by max `filed`.
+
+    ⚠️ **'최근 분기' 는 분기 길이여야 한다**(사용자 2026-08-24 마이크론
+    MU: 최근 분기 매출 $78.96B · EPS 41.40 — 연간 $37.38B·7.59 보다 크다).
+    SEC companyconcept 는 같은 `end` 에 3·6·9·12개월 팩트를 함께 담는데,
+    옛 코드는 `max(end, filed)` 로만 골라 **누적 팩트**를 분기라고 찍었다
+    (#96 한 응답의 같은 필드가 표마다 의미가 다르다). 기간 팩트는 80~100일
+    짜리만 '분기'로 인정하고, 없으면 **가장 짧은 것**을 쓰되 호출부가
+    실제 기간을 화면에 적어 사용자가 볼 수 있게 한다(#43).
+    """
     chosen = _choose_unit(units, unit_kind)
     if not chosen:
         return None
@@ -562,7 +589,18 @@ def _pick_facts(units: dict, unit_kind: str) -> Optional[dict]:
     if not fy:
         fy = [f for f in arr if f.get("fp") == "FY"]
     annual = max(fy, key=lambda f: (f.get("end", ""), f.get("filed", ""))) if fy else None
-    latest = max(arr, key=lambda f: (f.get("end", ""), f.get("filed", "")))
+    _dur = [f for f in arr if _fact_days(f) is not None]
+    if _dur:
+        _q = [f for f in _dur if 80 <= (_fact_days(f) or 0) <= 100]
+        pool = _q or _dur
+        _end = max(f.get("end", "") for f in pool)
+        pool = [f for f in pool if f.get("end", "") == _end]
+        # 분기 길이가 없으면 **가장 짧은** 기간을 쓴다 — 누적을 분기라고
+        # 부르는 것보다 낫고, 호출부가 기간을 적으므로 거짓말이 아니다.
+        latest = min(pool, key=lambda f: (_fact_days(f) or 10**6,
+                                          -_ord(f.get("filed", ""))))
+    else:
+        latest = max(arr, key=lambda f: (f.get("end", ""), f.get("filed", "")))
     return {"unit": chosen, "annual": annual, "latest": latest}
 
 
