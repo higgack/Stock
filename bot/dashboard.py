@@ -6938,7 +6938,18 @@ def _render_stock_info_html(rec: dict) -> str:
     # (dart_quarterly._diff_quarter 가 세팅)를 아무도 안 읽어 매출 음수가
     # 설명 없이 그냥 찍히던 문제도 같이 해결(플래그를 만든 목적 자체가
     # "렌더러가 판단"이었는데 판단하는 렌더러가 없었음).
-    def _kr_fin_trend_table(title: str, items: list, col_label) -> str:
+    def _kr_fin_trend_table(title: str, items: list, col_label, *,
+                            fmt=None, source: str = "DART",
+                            sibling_note: str = "") -> str:
+        """재무추이 표 — KR(DART)·그 외(yfinance)가 **같은 렌더러**를 쓴다.
+
+        ⚠️ 사용자 2026-08-24 "미국종목도 한국종목처럼 … 최대한 할 수 있는 나라
+        모두 적용해줘". 표를 복제하면 행 구성·정렬·각주가 곧 갈라진다(#38) —
+        원천에 따라 달라지는 것만 인자로 받는다.
+          `fmt`    금액 표기(None = 원화 '억'). 통화가 다르면 넘긴다.
+          `source` 각주가 원천을 사실대로 적게 한다(#55).
+          `sibling_note` 같은 탭에 **다른 원천** 표가 있을 때만(#34).
+        """
         # 컬럼은 항상 **오래된→최신**(최신이 오른쪽) — 사용자 2026-08-16
         # "최신이 뒤쪽으로". 소스 순서(연간은 최신 우선, 분기는 오래된 우선)가
         # 제각각이라 호출부마다 뒤집는 대신 여기서 한 번에 정렬한다.
@@ -6957,7 +6968,7 @@ def _render_stock_info_html(rec: dict) -> str:
             cells = ""
             for it in items:
                 v = it.get(key)
-                cell = f"{v / 1e8:,.0f}억" if v else "—"
+                cell = (fmt(v) if fmt else f"{v / 1e8:,.0f}억") if v else "—"
                 # 두 이상치 플래그 모두 매출 계정 판정에서 나온다 —
                 # 계정 불일치(4분기 = 연간 − 9개월누적을 서로 다른 계정으로
                 # 뺀 경우)도 같은 배지로 표기해야 '—' 의 이유가 보인다.
@@ -6988,7 +6999,7 @@ def _render_stock_info_html(rec: dict) -> str:
             cells = ""
             for it in items:
                 v = it.get("FCF")
-                cells += (f"<td class='num'>{v / 1e8:,.0f}억</td>"
+                cells += (f"<td class='num'>{fmt(v) if fmt else f'{v / 1e8:,.0f}억'}</td>"
                           if v is not None else "<td class='num'>—</td>")
             rows += f"<tr><td>FCF</td>{cells}</tr>\n"
         foot = ""
@@ -7007,20 +7018,28 @@ def _render_stock_info_html(rec: dict) -> str:
                           '차감이 불가 — 추정 대신 비워둠'
                           + (f'(어긋난 항목: {esc(" · ".join(_mm))})' if _mm else ''))
         if any(it.get("FCF") is not None for it in items):
-            # ⚠️ 이 표는 **DART 현금흐름표**만 쓴다 — 옛 문구는 "원천이 FCF
-            # 를 직접 주면 그 값을 씁니다" 라고 적었는데 그건 yfinance 경로
-            # (재무재표 탭) 얘기다. 설명이 코드와 어긋나면 그게 버그다(#55).
-            _notes.append('ℹ️ FCF = <b>영업활동현금흐름 − CAPEX</b>'
-                          '(유형자산 취득) · 출처 <b>DART 현금흐름표</b> · '
-                          'FnGuide 산식과 같은 기준 — 무형자산 취득과 처분액은 '
-                          '넣지 않습니다')
-            # ⚠️ 재무제표 탭은 yfinance 원천이다 — 같은 분기라도 값이 다를 수
-            # 있고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34·#186).
-            _notes.append('ℹ️ 이 표는 <b>DART</b> 원천 · <b>재무제표 탭</b>의 '
-                          '수익성 추이는 yfinance 원천이라 같은 분기라도 값이 '
-                          '다를 수 있습니다. 당기순이익은 <b>연결 총액</b>'
-                          '(비지배 포함)이고 주당지표(EPS·PER)는 <b>지배주주 '
-                          '귀속분</b> 기준입니다')
+            # ⚠️ 산식 설명은 **원천마다 다르다**(#55). KR(DART)은 유형자산
+            # 취득만 빼고 원천이 FCF 를 직접 주지 않는다 — 옛 문구가 그걸
+            # yfinance 경로(재무제표 탭) 설명과 뒤섞어 적고 있었다.
+            if source == "DART":
+                _notes.append('ℹ️ FCF = <b>영업활동현금흐름 − CAPEX</b>'
+                              '(유형자산 취득) · 출처 <b>DART 현금흐름표</b> · '
+                              'FnGuide 산식과 같은 기준 — 무형자산 취득과 '
+                              '처분액은 넣지 않습니다')
+                # ⚠️ 재무제표 탭은 yfinance 원천이다 — 같은 분기라도 값이 다를
+                # 수 있고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34·#186).
+                _notes.append('ℹ️ 이 표는 <b>DART</b> 원천 · <b>재무제표 탭</b>의 '
+                              '수익성 추이는 yfinance 원천이라 같은 분기라도 값이 '
+                              '다를 수 있습니다. 당기순이익은 <b>연결 총액</b>'
+                              '(비지배 포함)이고 주당지표(EPS·PER)는 <b>지배주주 '
+                              '귀속분</b> 기준입니다')
+            else:
+                # ⚠️ 원천이 다르면 산식 설명도 달라야 한다(#55) — yfinance 는
+                # `Free Cash Flow` 행을 직접 줄 때가 있고 그러면 그 값을 쓴다.
+                _notes.append('ℹ️ FCF = <b>영업활동현금흐름 − CAPEX</b>'
+                              f'(<b>{esc(source)}</b> 현금흐름표) · 원천이 FCF 를 '
+                              '직접 주면 그 값을 그대로 씁니다 — <b>재무제표 탭</b>의 '
+                              '수익성 추이와 같은 원천이라 값이 일치합니다')
         # ⚠️ 표의 **마지막(최신) 열** 기준으로 적는다 — `next(...)` 로 첫 행을
         # 집으면 전기가 없는 가장 오래된 열의 기준("기말")이 표 전체를
         # 설명하는 것처럼 읽힌다(2026-08-23 슈프리마: FY2024·FY2025 는 평균인데
@@ -7040,7 +7059,9 @@ def _render_stock_info_html(rec: dict) -> str:
                           # 떨어지는데(비지배지분 포함) 그러면 FnGuide 보다
                           # ROE 가 체계적으로 낮게 나온다 — 그걸 '같은
                           # 기준'이라고 적으면 화면이 거짓말한다(#55).
-                          + (' — FnGuide 산식과 같은 기준입니다'
+                          + ((' — FnGuide 산식과 같은 기준입니다'
+                              if source == "DART" else
+                              ' — 지배주주 귀속분끼리 나눈 값입니다')
                              if (_rb or {}).get("denominator") == "지배주주자본"
                              else ' — 원천이 지배주주 자본총계를 주지 않아 '
                                   '<b>연결 자본총계</b>(비지배지분 포함)로 '
@@ -7067,6 +7088,8 @@ def _render_stock_info_html(rec: dict) -> str:
                             '않아 <b>총수익의 일부</b>만 표시됩니다(다른 구성요소는 '
                             '별도 계정, 합산·추정 없음). 총액이 아니므로 '
                             '<b>영업이익률 등 매출로 나누는 비율은 비웁니다</b>')
+        if sibling_note:
+            _notes.append(sibling_note)
         if _notes:
             foot = ('<div style="font-size:11px;color:var(--fg-soft);margin-top:4px">'
                     + '<br>'.join(_notes) + '</div>')
@@ -7088,8 +7111,10 @@ def _render_stock_info_html(rec: dict) -> str:
         # (year, quarter) 로 직접 하므로 **여기서 뒤집지 말 것** — 저장된
         # financials_q 는 시계열 자연순 그대로 둔다(분기 추이 차트가
         # 그 순서를 쓴다).
+        # ⚠️ 제목의 개수는 **표에서 파생**한다 — 리터럴로 적으면 열 수를
+        # 바꿀 때 설명이 out-of-sync 가 된다(그게 버그다, §Help/Dashboard).
         kr_fin_q_html = _kr_fin_trend_table(
-            "분기별 재무추이 (K-IFRS, 최근 4분기)", kr_fin_q,
+            f"분기별 재무추이 (K-IFRS, 최근 {len(kr_fin_q)}분기)", kr_fin_q,
             lambda q: q.get("label", ""))
 
     # KR financials multi-year (if available)
@@ -7097,8 +7122,42 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_fin_ts = kr.get("financials_ts")
     if kr_fin_ts and len(kr_fin_ts) > 1:
         kr_fin_ts_html = _kr_fin_trend_table(
-            "재무 추이 (K-IFRS 연결)", kr_fin_ts,
+            f"재무 추이 (K-IFRS 연결, 최근 {len(kr_fin_ts)}년)", kr_fin_ts,
             lambda yr: f"FY{yr.get('year', '')}")
+
+    # ── 그 외 시장: 같은 표를 yfinance 재무제표에서 만든다 ─────────────
+    # 사용자 2026-08-24: "미국종목도 한국종목처럼 밸류에이션 탭 똑같이 할수
+    # 있어? … 아니 대만도 가능할것 같은데. 최대한 할 수 있는 나라 모두
+    # 적용해줘. 한국처럼."
+    # ⚠️ 추가 네트워크 0 — `_collect_financials` 가 이미 IS/BS/CF 를 분기 8개·
+    # 연간 5개씩 **시장 게이트 없이** 담는다. 비율·ROE 는 DART 경로와 같은
+    # 함수를 태운다(`bot.fin_trend`, #38).
+    if not is_kr:
+        _ft_fmt = (lambda v: compact_amount(v, currency))
+        # ⚠️ 대만은 같은 탭에 FinMind 표가 따로 있다 — 원천이 다르면 같은
+        # 분기라도 값이 갈리고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34).
+        _sib = ('ℹ️ 아래 <b>분기 재무 (FinMind)</b> 표는 <b>다른 원천</b>이라 '
+                '같은 분기라도 값이 다를 수 있습니다' if is_tw else "")
+        try:
+            from bot.fin_trend import build as _ft_build
+            # 열 수는 KR 표·재무제표 탭 차트와 **같은 상수**에서(#38) —
+            # 여기 리터럴을 두면 한쪽만 바뀌어 탭마다 열 수가 갈린다.
+            from bot.stock_snapshot import _Q_TABLE as _NQ, _Y_TABLE as _NY
+            _ft_q = _ft_build(si.get("financials"), quarterly=True, n=_NQ)
+            _ft_a = _ft_build(si.get("financials"), quarterly=False, n=_NY)
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("재무추이(비KR) 생성 실패 %s: %s", ticker, exc)
+            _ft_q = _ft_a = []
+        if len(_ft_q) > 1:
+            kr_fin_q_html = _kr_fin_trend_table(
+                f"분기별 재무추이 (최근 {len(_ft_q)}분기)", _ft_q,
+                lambda q: q.get("label", ""),
+                fmt=_ft_fmt, source="yfinance", sibling_note=_sib)
+        if len(_ft_a) > 1:
+            kr_fin_ts_html = _kr_fin_trend_table(
+                f"재무 추이 (연간, 최근 {len(_ft_a)}년)", _ft_a,
+                lambda yr: yr.get("label", ""),
+                fmt=_ft_fmt, source="yfinance")
 
     # valuation_pane assembled later (after div_html / us_xbrl_html defined)
 
@@ -8837,7 +8896,11 @@ def _render_stock_info_html(rec: dict) -> str:
                                   "수익성 추이 — 분기 (최근 5분기)",
                                   "QoQ 성장률", "분기",
                                   _cf_stmt.get("quarterly", []), is_kr)
-        chart_svg += _profit_trend(_is_stmt.get("annual", []), 4,
+        # ⚠️ 분기가 5개인데 연간만 4개면 두 차트의 열 수가 어긋난다
+        # (사용자 2026-08-24 "연도도 똑같이 5년으로 맞춰져. 모든 나라 적용").
+        # 수집은 이미 `_df_to_rows(annual_df, max_periods=5)` 로 5개다 —
+        # 원천이 준 걸 렌더에서 버리고 있었다.
+        chart_svg += _profit_trend(_is_stmt.get("annual", []), 5,
                                    lambda p: p[:4], "수익성 추이 — 연간",
                                    "YoY 성장률", "연도",
                                    _cf_stmt.get("annual", []), is_kr)
