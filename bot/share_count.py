@@ -190,3 +190,33 @@ def weighted_issued(series, periods) -> tuple:
                            + ("" if used[p] == p else f"({used[p]} 기준)")
                            for p in want))
     return avg, lab, len(got)
+
+
+# 시총과 발행주식수의 **모집단이 다를 때** 무엇을 시총으로 삼을지.
+# 사용자 2026-08-24 (BYD 1211.HK) 결정: **거래되는 클래스(H주) 기준**.
+#   yfinance `marketCap` = A주+H주 전체(HK$8,479억)
+#   yfinance `sharesOutstanding` = H주만(3,683,400,000)
+# 그래서 `시총 ÷ 현재가` 가 발행주식수와 2.5배 어긋났고, 헤더(네이버 H주
+# 시총 3,431억)와 동종비교표(전 클래스 8,493억)가 같은 회사를 다르게 적었다.
+MULTI_CLASS_TOL = 0.2
+
+
+def listed_market_cap(price, mcap, shares, tol: float = MULTI_CLASS_TOL) -> tuple:
+    """(시가총액, 사유) — 어긋나면 **현재가 × 발행주식수**로 재계산.
+
+    단일 클래스 종목에서는 둘이 같으므로 **아무것도 바뀌지 않는다**(no-op).
+    복수 클래스·복수 상장에서만 발동해 화면 전체를 한 모집단으로 맞춘다.
+
+    ⚠️ 재료가 없으면 원래 값을 그대로 둔다 — 지어내지 않는다.
+    ⚠️ 이 판정은 '어느 쪽이 최신인가'를 모른다(#190) — 발행주식수가 낡은
+    시장에서는 거래소 등록 주식수가 먼저다(`resolve` 가 그걸 맡는다).
+    """
+    px, mc, sh = _num(price), _num(mcap), _num(shares)
+    if not (px and px > 0 and sh and sh > 0):
+        return mc, ""
+    if not mc or mc <= 0:
+        return px * sh, "현재가 × 발행주식수"
+    if abs((mc / px) / sh - 1.0) <= tol:
+        return mc, ""
+    return px * sh, (f"거래 클래스 기준 재계산(원천 시총 {mc:,.0f} 은 "
+                     f"{(mc / px) / sh:.1f}배 모집단)")

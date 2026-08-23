@@ -551,6 +551,24 @@ def kr_registry_shares(ticker: str) -> dict:
     return q
 
 
+def apply_class_market_cap(entry: dict) -> dict:
+    """동종비교 한 행의 시총을 **거래되는 클래스 기준**으로 맞춘다(in-place).
+
+    사용자 2026-08-24 (BYD 1211.HK) "H주로." — yfinance 는 A주+H주 전체
+    시총과 H주만의 발행주식수를 같이 줘서, 헤더(네이버 H주 3,431억)와 이
+    표(전 클래스 8,493억)가 같은 회사를 2.5배 다르게 적었다(#34).
+    단일 클래스에서는 둘이 같아 **아무것도 안 바뀐다**(no-op).
+    """
+    from bot.share_count import listed_market_cap
+    mc, why = listed_market_cap((entry or {}).get("currentPrice"),
+                                (entry or {}).get("market_cap"),
+                                (entry or {}).get("shares"))
+    if why:
+        entry["market_cap"] = mc
+        entry["market_cap_note"] = why
+    return entry
+
+
 def _apply_share_count(ticker: str, snap: dict) -> None:
     """발행주식수를 **등록 주식수**와 대조해 고른다 — 전 시장 공통 단계.
 
@@ -576,6 +594,15 @@ def _apply_share_count(ticker: str, snap: dict) -> None:
         _src = q.get("_source") or "pykrx"
         _name = "네이버 상장주식수" if _src == "naver" else "KRX 상장주식수"
         reg_label = _name + (f"({q.get('date')})" if q.get("date") else "")
+        # ⚠️ 등록 주식수가 없는 시장(HK/CN 이중상장 등)에서도 시총과
+        # 발행주식수의 **모집단을 맞춘다** — 사용자 2026-08-24 "H주로".
+        # 단일 클래스에서는 no-op 이라 다른 시장은 영향이 없다.
+        from bot.share_count import listed_market_cap as _lmc
+        _mc, _why = _lmc(snap.get("current_price"), snap.get("market_cap"),
+                         snap.get("shares_outstanding"))
+        if _why and not q.get("shares"):
+            snap["market_cap"] = _mc
+            snap["market_cap_note"] = _why
         r = _resolve_shares(snap.get("current_price"), snap.get("market_cap"),
                             snap.get("shares_outstanding"), "yfinance",
                             q.get("shares"), reg_label)
@@ -1636,7 +1663,7 @@ def _collect_financials(t, snap: dict) -> None:
 # 그대로였다(사용자 스크린샷 — 머지 뒤에도 `240810.KS` 행이 통째로 비어
 # 있었다). 필드 유무를 하나씩 냄새맡는 옛 방식은 새 필드를 넣을 때마다
 # 조건을 같이 고쳐야 해서 매번 잊는다 → 버전 하나로 강제한다.
-_PEER_SCHEMA_VER = 7
+_PEER_SCHEMA_VER = 8
 
 
 # 같은 시장의 **자매 보드**. 목록이 한쪽으로 쏠려 있어(실측: `.KS` 114 :
@@ -1738,7 +1765,14 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
                 "dividendYield": pi.get("dividendYield"),
                 "dividendRate": pi.get("dividendRate"),
                 "currentPrice": pi.get("currentPrice") or pi.get("regularMarketPrice"),
+                "shares": pi.get("sharesOutstanding"),
             }
+            # ⚠️ **시총과 발행주식수의 모집단을 맞춘다**(사용자 2026-08-24
+            # BYD 1211.HK "H주로"). yfinance 는 A주+H주 전체 시총과 H주만의
+            # 발행주식수를 같이 줘서, 헤더(네이버 H주 3,431억)와 이 표
+            # (전 클래스 8,493억)가 같은 회사를 2.5배 다르게 적었다(#34).
+            # 단일 클래스에서는 둘이 같아 **아무것도 안 바뀐다**(no-op).
+            apply_class_market_cap(entry)
             # yfinance 는 KR 종목의 `trailingPE`·`priceToBook` 을 자주 안 준다
             # (2026-08-16 프로브로 확정 — 5개 키 전부 None). 그러면 동종비교
             # 표의 PER·PBR 열이 통째로 비어 비교가 불가능하다. 소스가 주는
