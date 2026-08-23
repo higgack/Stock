@@ -37579,13 +37579,12 @@ class TestShareCountIdentity:
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.FunctionDef) and n.name == "build_payload")
         seg = ast.get_source_segment(src, fn) or ""
-        i = seg.index("per_fwd = None")
-        tail = seg[i:i + 1400]
-        # 규칙은 한 곳에서 — 여기서도 그 함수를 부른다
-        assert "kr_forward_from_naver" in tail, tail[:400]
-        # 국내는 야후 폴백을 타지 않는다 — 세 폴백 전부 `not is_kr` 게이트
-        assert tail.count("if per_fwd is None and not is_kr:") == 2, tail
-        assert "if per_fwd is None:" not in tail, "야후 폴백이 국내에도 열려 있다"
+        # ⚠️ 고정 길이 창으로 재면 주석 한 줄에 무너진다(#60) — 함수 전체로.
+        assert "kr_forward_from_naver" in seg, "규칙을 복제했다"
+        # 국내는 야후 폴백을 타지 않는다 — 폴백 전부 `not is_kr` 게이트
+        assert seg.count("if per_fwd is None and not is_kr:") == 2, \
+            seg.count("if per_fwd is None and not is_kr:")
+        assert "if per_fwd is None:" not in seg, "야후 폴백이 국내에도 열려 있다"
 
     def test_no_dict_literal_has_duplicate_keys(self):
         """중복 키는 파이썬이 조용히 **마지막 것만** 남긴다 — 앞의 매핑이
@@ -37842,6 +37841,40 @@ class TestShareCountIdentity:
         src = open("bot/dashboard.py").read()
         i = src.index("_sh_note = _share_note(")
         assert "mcap_label=mcap_str" in src[i:i + 300], src[i:i + 300]
+
+    def test_quarterly_card_fetches_naver_forward_when_archive_lacks_it(self):
+        """사용자 2026-08-24 NHN KCP: 밸류에이션 탭엔 `PER (선행)` 이 있는데
+        분기실적 카드는 `Fwd N/A` 였다 — **아카이브 스냅샷엔 `naver_val` 이
+        없다**(밸류에이션 탭은 상세 보강이 채워 준다). 새 필드를 더할 때마다
+        '아카이브엔 없다'를 먼저 물을 것(#198)."""
+        import ast
+        src = open("bot/quarterly_infographic.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "build_payload")
+        seg = ast.get_source_segment(src, fn) or ""
+        # ⚠️ 고정 길이 창으로 재면 주석 한 줄에 무너진다(#60·#174) —
+        # 계약은 함수 **전체**에서 본다.
+        assert "get_naver_valuation" in seg, "없을 때 받아오지 않는다"
+        assert "kr_forward_from_naver(_kr_px, _nv)" in seg, "규칙을 복제했다"
+        # 국내는 야후 폴백을 타지 않는다(#206) — 그 계약은 그대로다
+        assert seg.count("if per_fwd is None and not is_kr:") == 2, \
+            seg.count("if per_fwd is None and not is_kr:")
+        assert "if per_fwd is None:" not in seg, "야후 폴백이 국내에도 열려 있다"
+
+    def test_the_two_financial_surfaces_name_each_other(self):
+        """사용자 2026-08-24 "우리 밸류에이션탭, 재무재표, 네이버간에 차이는
+        뭘까?" — 재무제표 탭은 **yfinance**, 밸류에이션 탭 분기표는 **DART**
+        원천이다. 같은 분기인데 값이 조금 다르면 사용자는 한쪽이 틀렸다고
+        읽는다(#34) — 두 표면이 **서로를 가리키며** 원천을 밝힌다(#186)."""
+        src = open("bot/dashboard.py").read()
+        i = src.index("_fcf_note = (")
+        seg = src[i:i + 1600]
+        assert "밸류에이션 탭" in seg and "yfinance" in seg, seg[:500]
+        j = src.index("출처 <b>DART 현금흐름표</b>")
+        seg2 = src[j:j + 900]
+        assert "재무제표 탭" in seg2 and "yfinance" in seg2, seg2[:500]
+        # 순이익 기준도 밝힌다 — 한 탭은 총액, 다른 탭은 지배다
+        assert "연결 총액" in seg2 and "지배주주 " in seg2, seg2[:900]
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다

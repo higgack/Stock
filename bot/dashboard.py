@@ -6910,6 +6910,13 @@ def _render_stock_info_html(rec: dict) -> str:
                           '(유형자산 취득) · 출처 <b>DART 현금흐름표</b> · '
                           'FnGuide 산식과 같은 기준 — 무형자산 취득과 처분액은 '
                           '넣지 않습니다')
+            # ⚠️ 재무제표 탭은 yfinance 원천이다 — 같은 분기라도 값이 다를 수
+            # 있고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34·#186).
+            _notes.append('ℹ️ 이 표는 <b>DART</b> 원천 · <b>재무제표 탭</b>의 '
+                          '수익성 추이는 yfinance 원천이라 같은 분기라도 값이 '
+                          '다를 수 있습니다. 당기순이익은 <b>연결 총액</b>'
+                          '(비지배 포함)이고 주당지표(EPS·PER)는 <b>지배주주 '
+                          '귀속분</b> 기준입니다')
         # ⚠️ 표의 **마지막(최신) 열** 기준으로 적는다 — `next(...)` 로 첫 행을
         # 집으면 전기가 없는 가장 오래된 열의 기준("기말")이 표 전체를
         # 설명하는 것처럼 읽힌다(2026-08-23 슈프리마: FY2024·FY2025 는 평균인데
@@ -8527,9 +8534,12 @@ def _render_stock_info_html(rec: dict) -> str:
         # Revenue / Operating / Net Income bar chart (inline SVG)
         # 연간·분기 공용 렌더러 — 데이터 소스가 yfinance income_statement 로
         # 동일하므로 전 시장(US/KR/JP/TW/CN_A/HK) 동일 적용(시장 게이트 없음).
+        # ⚠️ 바깥 스코프 변수(`is_kr`)를 본문에서 그냥 쓰면 이 함수를 떼어
+        # 태우는 회귀 12개가 NameError 로 무너진다(실측) — **인자로 받는다**.
         def _profit_trend(rows: list, n: int, label_fn, title: str,
                           growth_title: str, growth_col: str,
-                          cf_rows: list | None = None) -> str:
+                          cf_rows: list | None = None,
+                          kr_source: bool = False) -> str:
             if not rows or len(rows) < 2:
                 return ""
             # 야후 정렬이 종목마다 달라(최신우선/과거우선 혼재) → period 로 명시
@@ -8656,11 +8666,20 @@ def _render_stock_info_html(rec: dict) -> str:
             _axis_note = ('\n<div style="font-size:11px;color:var(--fg-soft);'
                           'margin-top:10px">ℹ️ 지표마다 <b>축이 다릅니다</b> — '
                           '막대 높이는 같은 지표 안에서만 비교하세요.</div>')
+            # ⚠️ 이 탭은 **yfinance** 원천이고 밸류에이션 탭의 분기별
+            # 재무추이는 **DART** 다 — 같은 회사 같은 분기인데 값이 조금
+            # 다를 수 있고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34·#186).
+            # 두 표면이 **서로를 가리키며** 원천을 밝힌다.
             _fcf_note = ('\n<div style="font-size:11px;color:var(--fg-soft);'
                          'margin-top:4px">ℹ️ FCF = <b>영업활동현금흐름 − '
                          'CAPEX</b> (yfinance 현금흐름표 — 앞 세 항목은 '
                          '손익계산서). 원천이 FCF 를 직접 주면 그 값을 '
                          '그대로 씁니다</div>') if _has_fcf else ""
+            _fcf_note += ('\n<div style="font-size:11px;color:var(--fg-soft);'
+                          'margin-top:4px">ℹ️ 이 탭은 <b>yfinance</b> 원천 —'
+                          ' <b>밸류에이션 탭</b>의 분기별 재무추이는 DART'
+                          ' 원천이라 같은 분기라도 값이 다를 수 있습니다'
+                          '</div>') if kr_source else ""
             _cells = "".join(_mini(k, nm, col) for k, nm, col in _series)
             if not _cells:
                 return ""
@@ -8713,11 +8732,11 @@ def _render_stock_info_html(rec: dict) -> str:
         chart_svg = _profit_trend(_is_stmt.get("quarterly", []), 5, _q_label,
                                   "수익성 추이 — 분기 (최근 5분기)",
                                   "QoQ 성장률", "분기",
-                                  _cf_stmt.get("quarterly", []))
+                                  _cf_stmt.get("quarterly", []), is_kr)
         chart_svg += _profit_trend(_is_stmt.get("annual", []), 4,
                                    lambda p: p[:4], "수익성 추이 — 연간",
                                    "YoY 성장률", "연도",
-                                   _cf_stmt.get("annual", []))
+                                   _cf_stmt.get("annual", []), is_kr)
 
         financials_pane = f"""<div class="si-pane" id="si-financials">
   {chart_svg}
