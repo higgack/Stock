@@ -37265,7 +37265,10 @@ class TestShareCountIdentity:
         for b in ("최근분기말", "네이버 추정", "TTM 25.3Q~26.2Q"):
             assert out.count(b) == 1, (b, out.count(b))
         assert "BPS · PBR" in out and "EPS(선행) · PER(선행)" in out, out
-        assert out.count("<br>") == 4, out.count("<br>")   # 3그룹 + 분모 + 주석
+        # 3그룹 + 분모 한 줄. 수정평균으로 나눈 경우에만 근거 줄이 하나 더
+        # 붙는다(2026-08-23) — 그건 아래 EPS 분모 회귀가 따로 고정한다.
+        assert out.count("<br>") == 3, out.count("<br>")
+        assert "분모 = " in out and "분자 = DART" in out, out
 
     def test_the_derived_block_is_not_glued_to_the_source_line(self):
         """우측정렬 한 줄에 긴 문단을 이어 붙이면 줄바꿈이 제멋대로 생긴다
@@ -37717,6 +37720,62 @@ class TestShareCountIdentity:
         finally:
             for f in glob.glob(pat):
                 os.remove(f)
+
+    def test_eps_denominator_is_the_weighted_average_issued_count(self):
+        """사용자 2026-08-23 "이렇게 가는게 맞는거 아냐?" — FnGuide 산식은
+        EPS 분모가 **수정평균 발행주식수**(보통주+우선주)다. 우리는 기말
+        상장주식수로 나눠 왔다 — 주식수가 기중에 변한 회사에서만 갈린다.
+
+        ⚠️ 창의 분기가 하나라도 비면 **만들지 않는다** — 3개로 평균을 내면
+        그건 다른 창의 값이고 그걸 TTM 이라 부르면 거짓말이다(#99).
+        ⚠️ 그리고 PER 은 **화면의 EPS 에서** 만들어야 `현재가 ÷ EPS` 와 맞는다
+        (#33, PBR 과 같은 이유)."""
+        from bot.share_count import weighted_issued as w
+        ser = [{"period": "2026.06", "issued": 79241527},
+               {"period": "2026.03", "issued": 79241527},
+               {"period": "2025.12", "issued": 79241527},
+               {"period": "2025.09", "issued": 81741527}]
+        win = ["2026.06", "2026.03", "2025.12", "2025.09"]
+        avg, why, n = w(ser, win)
+        assert round(avg) == 79866527 and n == 4, (avg, n)
+        assert "2025.09" in why
+        # 변동이 없으면 평균 = 기말이고 라벨이 그렇게 말한다
+        flat = [dict(e, issued=79241527) for e in ser]
+        assert w(flat, win) == (79241527.0, "발행주식수 변동 없음", 4)
+        # 창의 분기가 비면 만들지 않는다
+        assert w(ser, win + ["2025.06"])[0] is None
+        assert w([], win)[0] is None
+
+        from bot.dashboard import _derive_missing_multiples as d
+        qs = [{"year": y, "quarter": q, "당기순이익": 1e11,
+               "지배주주순이익": 1e11, "지배주주자본": 5.7e13, "매출": 5e11}
+              for y, q in ((2025, 3), (2025, 4), (2026, 1), (2026, 2))]
+        base = {"market_cap": 2.456e13, "shares_outstanding": 79241527,
+                "current_price": 310000.0}
+        out = d({**base, "kr": {"financials_q": qs,
+                                "share_totals_series": ser}})
+        assert abs(out["trailingEps"] - 4e11 / 79866527.0) < 1e-6, out["trailingEps"]
+        assert out["_eps_denom"]["label"] == "수정평균 발행주식수"
+        # PER 은 화면의 EPS 에서 — 눈으로 나눠 봤을 때 맞는다
+        assert abs(out["trailingPE"] - 310000.0 / out["trailingEps"]) < 1e-9
+        # 이력이 없으면 기말 상장주식수로 떨어지고 라벨도 그렇게
+        out2 = d({**base, "kr": {"financials_q": qs}})
+        assert abs(out2["trailingEps"] - 4e11 / 79241527) < 1e-6
+        assert out2["_eps_denom"]["label"] == "기말 상장주식수"
+        # 화면이 어느 분모인지 말한다(#43) — 계산해 놓고 안 실으면 안 된다
+        from bot.dashboard import _derived_desc
+        txt = _derived_desc(out)
+        assert "EPS 수정평균 발행주식수" in txt, txt
+        assert "BPS" in txt and "분자 = DART" in txt
+        assert "2025.09" in txt, "무엇으로 평균했는지 안 밝힌다"
+        # 수집·백필 배선 — 새 필드는 아카이브엔 없다(#198)
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_ensure_detail_enrichment")
+        assert "get_share_totals_series" in (ast.get_source_segment(src, fn) or "")
+        assert "get_share_totals_series" in open("bot/stock_snapshot.py").read()
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다

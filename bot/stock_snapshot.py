@@ -777,8 +777,18 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         나누면 자사주가 많은 회사에서 BPS 가 과대계상된다.
         """
         from bot.dart_client import DartClient
-        st = DartClient().get_share_totals(ticker.split(".")[0])
-        return {"kr": {"share_totals": st}} if st else {}
+        d = DartClient()
+        code = ticker.split(".")[0]
+        st = d.get_share_totals(code)
+        # 분기별 이력 — **EPS 분모(수정평균 발행주식수)** 의 재료다.
+        # 주식수가 기중에 변한 회사에서만 기말과 갈린다.
+        ser = d.get_share_totals_series(code)
+        out: dict = {}
+        if st:
+            out["share_totals"] = st
+        if ser:
+            out["share_totals_series"] = ser
+        return {"kr": out} if out else {}
 
     def _t_naver_val() -> dict:
         """네이버(FnGuide) 투자지표 — **선행 PER 의 원천**(사용자 2026-08-23).
