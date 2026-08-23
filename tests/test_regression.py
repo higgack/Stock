@@ -36451,7 +36451,11 @@ class TestShareCountIdentity:
         assert "_t_krx_shares" in names, names
         seg = ast.get_source_segment(src, fn) or ""
         assert '("krx.shares", _t_krx_shares)' in seg, "task 목록에 없다"
-        assert "get_kr_market_cap" in seg, "등록 주식수 원천이 없다"
+        # 사다리는 모듈 함수다(테스트가 태울 수 있게) — task 는 그걸 부른다
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == "kr_registry_shares"]
+        assert len(calls) == 1, f"등록 주식수 사다리 호출 {len(calls)}건"
 
     def test_the_identity_step_lives_outside_enrich_and_runs_once(self):
         """`_enrich_*` 는 snap 을 **안 읽는다**는 전제로 보조 6종과 겹쳐
@@ -36550,3 +36554,67 @@ class TestShareCountIdentity:
         assert any(isinstance(h.type, ast.Name) and h.type.id == "TypeError"
                    for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)), \
             "market 인자 미지원 폴백이 없다"
+
+    def test_the_registry_ladder_falls_through_to_naver(self, monkeypatch):
+        """#190 후속 — VM 실측에서 KRX 는 로그인 전이라 막히고 FSC 는 **일일
+        한도 429** 로 죽었는데, 같은 실행에서 네이버는 상장주식수를 멀쩡히
+        줬다. 폴백 조건은 '실패'가 아니라 **'요구를 충족했나'**다(#136)."""
+        import bot.pykrx_client as pk
+        import bot.naver_finance_client as nf
+        import bot.stock_snapshot as ss
+        # 앞 단계가 dict 를 돌려줘도 shares 가 없으면 다음으로 간다
+        monkeypatch.setattr(pk, "get_kr_market_cap",
+                            lambda t: {"market_cap": 0, "close": 0})
+        monkeypatch.setattr(nf, "get_naver_valuation",
+                            lambda t: {"shares": int(self.KRX), "eps": 539})
+        q = ss.kr_registry_shares("035890.KQ")
+        assert q["shares"] == int(self.KRX), q
+        assert q["_source"] == "naver", q
+
+    def test_the_registry_ladder_stops_at_the_first_real_answer(self):
+        """⚠️ 반대 증거 — 앞 단계가 주면 네이버를 **부르지 않는다**(#25)."""
+        import bot.pykrx_client as pk
+        import bot.naver_finance_client as nf
+        import bot.stock_snapshot as ss
+        import pytest
+        mp = pytest.MonkeyPatch()
+        called = []
+        mp.setattr(pk, "get_kr_market_cap",
+                   lambda t: {"shares": int(self.KRX), "date": "2026-08-23"})
+        mp.setattr(nf, "get_naver_valuation",
+                   lambda t: called.append(t) or {"shares": 1})
+        try:
+            q = ss.kr_registry_shares("035890.KQ")
+        finally:
+            mp.undo()
+        assert q["shares"] == int(self.KRX) and not called, (q, called)
+
+    def test_the_naver_source_is_named_on_the_screen(self):
+        """어느 원천으로 고쳤는지 화면이 말해야 한다(#43·#136 폴백은 로그로만
+        알리면 사용자는 영영 모른다)."""
+        import bot.stock_snapshot as ss
+        snap = {"current_price": self.PX, "market_cap": self.YF_MC,
+                "shares_outstanding": self.YF,
+                "kr": {"krx_quote": {"shares": self.KRX, "date": "",
+                                     "_source": "naver"}}}
+        ss._apply_share_count("035890.KQ", snap)
+        assert "네이버" in snap["shares_source"], snap["shares_source"]
+
+    def test_the_probe_dumps_the_dart_original_for_the_dominant_quarter(self):
+        """한 분기가 TTM 을 지배하면(서희건설 26.2Q = 62%) 합만 찍는 진단은
+        '어딘가 다르다'까지만 말한다 — 당기/누적을 나란히 놓아야 갈린다(#96),
+        그리고 창을 맞춰야 한다(#99 6분기)."""
+        import ast
+        src = open("bot/scripts/kr_metrics_probe.py").read()
+        tree = ast.parse(src)
+        fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                   and n.name == "_dart_raw"), None)
+        assert fn is not None, "원본 대조 섹션이 없다"
+        seg = ast.get_source_segment(src, fn) or ""
+        assert "financials_cumulative" in seg, "누적을 안 본다"
+        ns = [kw.value.value for c in ast.walk(fn) if isinstance(c, ast.Call)
+              for kw in c.keywords if kw.arg == "n"]
+        assert ns and max(ns) >= 6, f"창이 좁다: {ns}"
+        used = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == "_dart_raw"]
+        assert len(used) == 1, f"호출 {len(used)}건"

@@ -519,6 +519,38 @@ def _collect_stock_snapshot_uncached(ticker: str) -> dict | None:
         return None
 
 
+def kr_registry_shares(ticker: str) -> dict:
+    """KR 상장주식수 사다리 — KRX(pykrx) → 금융위 FSC → **네이버**.
+
+    ⚠️ 2026-08-23 VM 실측: KRX 는 로그인 전(=`.env` 로드 순서)이라 막히고
+    FSC 는 **일일 요청 한도 429** 로 죽어 둘 다 못 받았다 — 그런데 같은
+    실행에서 네이버는 상장주식수 207,588,536 을 멀쩡히 줬다. 폴백이 둘뿐
+    이면 둘 다 죽는 날 주당지표가 통째로 낡은 주식수 위에 남는다.
+
+    폴백 조건은 '실패'가 아니라 **'요구를 충족했나'**다(#136) — 앞 단계가
+    dict 를 돌려줘도 `shares` 가 없으면 다음으로 간다. 실패는 로그로
+    알린다(#42a 조용한 폴백은 영영 안 보인다).
+    """
+    q: dict = {}
+    try:
+        from bot.pykrx_client import get_kr_market_cap
+        q = get_kr_market_cap(ticker) or {}
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("stock_snapshot %s: KRX/FSC 상장주식수 실패: %s", ticker, exc)
+    if q.get("shares"):
+        return q
+    try:
+        from bot.naver_finance_client import get_naver_valuation
+        nv = get_naver_valuation(ticker) or {}
+        if nv.get("shares"):
+            log.info("stock_snapshot %s: 상장주식수 네이버 폴백", ticker)
+            return {"shares": int(nv["shares"]), "date": "", "_source": "naver"}
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("stock_snapshot %s: 네이버 상장주식수 폴백 실패: %s",
+                    ticker, exc)
+    return q
+
+
 def _apply_share_count(ticker: str, snap: dict) -> None:
     """발행주식수를 **등록 주식수**와 대조해 고른다 — 전 시장 공통 단계.
 
@@ -541,7 +573,9 @@ def _apply_share_count(ticker: str, snap: dict) -> None:
     try:
         from bot.share_count import resolve as _resolve_shares
         q = (snap.get("kr") or {}).get("krx_quote") or {}
-        reg_label = "KRX 상장주식수" + (f"({q.get('date')})" if q.get("date") else "")
+        _src = q.get("_source") or "pykrx"
+        _name = "네이버 상장주식수" if _src == "naver" else "KRX 상장주식수"
+        reg_label = _name + (f"({q.get('date')})" if q.get("date") else "")
         r = _resolve_shares(snap.get("current_price"), snap.get("market_cap"),
                             snap.get("shares_outstanding"), "yfinance",
                             q.get("shares"), reg_label)
@@ -731,17 +765,9 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
             return {}
 
     def _t_krx_shares() -> dict:
-        """KRX 공식 **상장주식수** — 주당지표의 분모다.
-
-        ⚠️ 2026-08-23 서희건설 실측: yfinance `sharesOutstanding` 이
-        185.4M 인데 KRX/네이버는 207,588,536 이라 헤더가 자기 산수를
-        못 맞췄다(시가총액 ÷ 발행주식수 ≠ 현재가, #33). `get_kr_market_cap`
-        은 KRX(pykrx) → 금융위 FSC `lstgStCnt` 폴백으로 등록 주식수를
-        주는데 **레포에 있으면서 아무도 안 부르고 있었다**(#150).
-        """
-        from bot.pykrx_client import get_kr_market_cap
-        q = get_kr_market_cap(ticker)
-        return {"kr": {"krx_quote": q}} if q and q.get("shares") else {}
+        """거래소 **등록 주식수** — 주당지표의 분모다(사다리는 모듈 함수)."""
+        q = kr_registry_shares(ticker)
+        return {"kr": {"krx_quote": q}} if q.get("shares") else {}
 
     def _t_krx_alert() -> dict:
         out: dict = {}
