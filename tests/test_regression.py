@@ -37742,9 +37742,25 @@ class TestShareCountIdentity:
         # 변동이 없으면 평균 = 기말이고 라벨이 그렇게 말한다
         flat = [dict(e, issued=79241527) for e in ser]
         assert w(flat, win) == (79241527.0, "발행주식수 변동 없음", 4)
-        # 창의 분기가 비면 만들지 않는다
+        # 창의 분기가 비면 만들지 않는다 — **가장 오래된 분기 앞에 관측이
+        # 없을 때**다(그 앞을 모르면 추정이 된다)
         assert w(ser, win + ["2025.06"])[0] is None
         assert w([], win)[0] is None
+
+        # ⚠️ 원천이 분기마다 주지 않는다 — DART `stockTotqySttus` 는 실측상
+        # 사업보고서·반기보고서에만 실린다(POSCO 005490.KS 2026-08-23 VM:
+        # 2026.06 · 2025.12 · 2025.06 만 옴). 정확 일치를 요구하면 평균이
+        # 영영 안 만들어진다(#171) — 주식수는 계단 함수이므로 각 분기말에
+        # **그 시점 이전의 가장 최근 관측**을 쓴다.
+        posco = [{"period": "2026.06", "issued": 79241527},
+                 {"period": "2025.12", "issued": 80932952},
+                 {"period": "2025.06", "issued": 80932952}]
+        avg2, why2, _ = w(posco, win)
+        assert round(avg2) == 80510096, avg2
+        # FnGuide 역산 분모 80,507,495 와 0.01% 안쪽 — 산식이 같다는 증거
+        assert abs(avg2 / 80507495 - 1) < 0.0001, avg2
+        # 되짚은 분기는 **어느 관측을 썼는지** 밝힌다(#43)
+        assert "2025.06 기준" in why2, why2
 
         from bot.dashboard import _derive_missing_multiples as d
         qs = [{"year": y, "quarter": q, "당기순이익": 1e11,
@@ -37776,6 +37792,56 @@ class TestShareCountIdentity:
                   and n.name == "_ensure_detail_enrichment")
         assert "get_share_totals_series" in (ast.get_source_segment(src, fn) or "")
         assert "get_share_totals_series" in open("bot/stock_snapshot.py").read()
+
+    def test_tw_quarterly_table_is_oldest_to_newest(self):
+        """사용자 2026-08-24 "대만종목 밸류에이션탭에서 분기재무 나오는 순서를
+        최신꺼가 뒤로 가게 해줘" — 재무 표는 **최신이 오른쪽**이 전 시장
+        규약이다(KR 분기추이·미국 표와 같다). FinMind 는 최신 우선으로 준다."""
+        import re
+        from bot.dashboard import _render_stock_info_html
+        fin = [{"date": d} for d in ("2026-06-30", "2026-03-31",
+                                     "2025-12-31", "2025-09-30")]
+        for f in fin:
+            f.update(revenue=1e12, net_income=7e11, eps=27.25,
+                     gross_profit=8e11, operating_income=7.6e11,
+                     total_assets=9e12, total_liab=2.9e12, equity=6.4e12,
+                     op_cf=1.4e12)
+        out = _render_stock_info_html({"ticker": "2330.TW", "stock_info": {
+            "currency": "TWD", "market": "TW", "tw": {"financials": fin}}})
+        h = str(out)
+        i = h.index("분기 재무 (FinMind)")
+        cols = re.findall(r">(20\d\d-\d\d-\d\d)<", h[i:i + 1200])
+        assert cols == ["2025-09-30", "2025-12-31", "2026-03-31",
+                        "2026-06-30"], cols
+
+    def test_share_mismatch_note_names_what_it_compared(self):
+        """사용자 2026-08-24 (BYD 1211.HK) "왜 이런 오차가 나오지? 그냥
+        야후에서 받아오는거잖아." — 옛 문구는 `시가총액÷현재가 =
+        9,117,197,357주 와 -59.6% 차이` 라고만 적어 **어느 시가총액**으로
+        나눈 건지 화면에서 알 수 없었다(헤더 카드는 라이브 원천의 값을 따로
+        보여준다). 비교 대상을 숫자로 적고, A주+H주처럼 모집단이 다를 수
+        있음을 밝힌다 — 단 **단정하지 않는다**(우리는 다른 클래스의 존재를
+        재지 않았다, #165)."""
+        from bot.share_count import note, mismatch_note, reconcile
+        t = note(93.0, 847.9e9, 3683400000, "yfinance",
+                 mcap_label="HK$8,479億")
+        assert t.startswith("⚠️")
+        assert "HK$8,479億" in t, t              # 화면 카드와 같은 문자열
+        assert "9,117,204,301주" in t and "-59.6%" in t, t
+        assert "복수 클래스" in t and "수 있습니다" in t, t   # 단정하지 않는다
+        # 발행주식수는 바로 앞 칸에 이미 있다 — 되풀이하지 않는다
+        assert "3,683,400,000주" not in t, t
+        # 작은 차이엔 복수상장 힌트를 붙이지 않는다(잡음)
+        small = note(100.0, 1.03e10, 1.0e8, "yfinance")
+        assert small.startswith("⚠️") and "복수 클래스" not in small, small
+        # 맞으면 출처만 — 경고를 지어내지 않는다
+        assert note(310000.0, 2.4565e13, 79241527, "KRX") == "KRX"
+        assert mismatch_note(1, 1, 1, {"ok": True}) == ""
+        # 화면이 카드와 **같은 문자열**을 넘기는지 배선까지(#20)
+        import ast
+        src = open("bot/dashboard.py").read()
+        i = src.index("_sh_note = _share_note(")
+        assert "mcap_label=mcap_str" in src[i:i + 300], src[i:i + 300]
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다

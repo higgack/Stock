@@ -92,21 +92,50 @@ def resolve(price, mcap, src_shares, src_label: str = "소스",
         return out
     r = reconcile(px, mcap, src, tol)
     if r["ok"] is False:
-        out["note"] = (f"{src_label} {src:,.0f}주가 시가총액÷현재가"
-                       f"({r['implied']:,.0f}주)와 {(r['ratio'] - 1) * 100:+.1f}% "
-                       f"어긋납니다 — 등록 주식수 원천이 없는 시장입니다")
+        out["note"] = mismatch_note(px, _num(mcap), src, r, src_label)
     return out
 
 
-def note(price, mcap, shares, source: str = "", tol: float = TOL) -> str:
+def mismatch_note(price, mcap, shares, rec: dict, src_label: str = "소스",
+                  mcap_label: str = "") -> str:
+    """항등식이 깨졌을 때 **무엇과 비교했는지**까지 말한다.
+
+    ⚠️ 사용자 2026-08-24 (BYD 1211.HK) "왜 이런 오차가 나오지? 그냥 야후에서
+    받아오는거잖아." — 옛 문구는 `시가총액÷현재가 = 9,117,197,357주 와
+    -59.6% 차이` 라고만 적어, 어느 시가총액으로 나눈 건지 화면에서 알 수
+    없었다(헤더는 라이브 원천의 값을 따로 보여준다). 비교 대상을 **숫자로**
+    적는다(#33·#202 '다르다'만 말하면 안 통한다).
+
+    그리고 A주+H주처럼 **복수 클래스·복수 상장**이면 시총은 전 클래스,
+    발행주식수는 한 클래스라 항등식이 원래 안 맞는다 — 우리 수집 오류가
+    아닐 수 있음을 밝힌다(#146 원인이 아니라 증상을 막지 말 것). 단
+    **단정하지 않는다** — 우리는 다른 클래스의 존재를 재지 않았다(#165).
+    """
+    if not rec or rec.get("ok") is not False:
+        return ""
+    gap = (rec["ratio"] - 1) * 100
+    # 화면의 시가총액 카드와 **같은 문자열**을 쓴다 — 원시 숫자를 적으면
+    # 사용자가 카드와 대조할 수 없다(#43·#181 표시용 포맷 헬퍼를 쓸 것).
+    m = mcap_label or (f"{mcap:,.0f}" if isinstance(mcap, (int, float)) else "—")
+    # 헤더는 바로 앞에 발행주식수를 이미 적는다 — 되풀이하지 않는다.
+    out = (f"⚠️ 시가총액({m}) ÷ 현재가 = {rec['implied']:,.0f}주 로 "
+           f"{gap:+.1f}% 차이")
+    if abs(gap) >= 20:
+        out += (" · 복수 클래스·복수 상장(A주+H주 등)이면 시총은 전 클래스, "
+                "발행주식수는 한 클래스라 원래 안 맞을 수 있습니다")
+    return out
+
+
+def note(price, mcap, shares, source: str = "", tol: float = TOL,
+         mcap_label: str = "") -> str:
     """헤더에 실을 한 줄. 맞으면 출처만, 어긋나면 **어긋난 사실**을 말한다.
 
     조용히 두면 사용자가 눈으로 나눠 보고 물어야 한다(#33·#43).
     """
     r = reconcile(price, mcap, shares, tol)
     if r["ok"] is False:
-        return (f"⚠️ 시가총액÷현재가 = {r['implied']:,.0f}주 와 "
-                f"{(r['ratio'] - 1) * 100:+.1f}% 차이")
+        return mismatch_note(price, _num(mcap), _num(shares), r,
+                             source or "소스", mcap_label)
     return source or ""
 
 
@@ -128,20 +157,36 @@ def weighted_issued(series, periods) -> tuple:
     바뀌지 않는다** — 그게 정상이고, 그때 남는 차이는 분모가 아니라
     분자에서 온다.
     """
-    want = {str(p) for p in (periods or []) if p}
+    want = sorted({str(p) for p in (periods or []) if p})
     if not want:
         return None, "", 0
-    got = {}
-    for e in series or []:
-        p = str((e or {}).get("period") or "")
-        v = (e or {}).get("issued")
-        if p in want and isinstance(v, (int, float)) and not isinstance(v, bool) \
-                and v > 0:
-            got.setdefault(p, float(v))
-    if len(got) < len(want):
-        return None, "", len(got)
+    obs = sorted(
+        ((str((e or {}).get("period") or ""), float((e or {}).get("issued")))
+         for e in (series or [])
+         if isinstance((e or {}).get("issued"), (int, float))
+         and not isinstance((e or {}).get("issued"), bool)
+         and float((e or {}).get("issued")) > 0
+         and (e or {}).get("period")))
+    if not obs:
+        return None, "", 0
+    # ⚠️ **원천이 분기마다 주지 않는다.** DART `stockTotqySttus` 는 실측상
+    # 사업보고서·반기보고서에만 실린다(POSCO 2026-08-23: 2026.06 · 2025.12 ·
+    # 2025.06 만 옴). 창의 네 분기를 **정확히** 요구하면 평균이 영영 안
+    # 만들어진다(#171 가드가 '못 만든다'로 끝나면 그 자리가 영원히 빈다).
+    # 주식수는 **사건이 있을 때만 바뀌는 계단 함수**이므로 각 분기말에는
+    # '그 시점 이전의 가장 최근 관측'을 쓴다 — 추정이 아니라 마지막 사실이다.
+    got, used = {}, {}
+    for p in want:
+        prev = [(op, ov) for op, ov in obs if op <= p]
+        if not prev:
+            return None, "", 0      # 가장 오래된 분기 앞에 관측이 없다 = 모른다
+        op, ov = prev[-1]
+        got[p] = ov
+        used[p] = op
     avg = sum(got.values()) / len(got)
     same = len(set(got.values())) == 1
     lab = ("발행주식수 변동 없음" if same
-           else " · ".join(f"{p} {int(v):,}" for p, v in sorted(got.items())))
+           else " · ".join(f"{p} {int(got[p]):,}"
+                           + ("" if used[p] == p else f"({used[p]} 기준)")
+                           for p in want))
     return avg, lab, len(got)
