@@ -127,6 +127,19 @@ def _fetch_krx_json(bld: str, params: dict) -> Optional[dict]:
             # 400 보통 mktId 또는 trdDd format 문제 — 응답 본문 일부
             # 로그해 다음 디버그 가능. text 짧게 truncate.
             body_snippet = (resp.text or "")[:200].replace("\n", " ")
+            # ⚠️ **본문이 'LOGOUT' 이면 파라미터 문제가 아니라 세션 문제다.**
+            # KRX 는 2025-12-27 부터 로그인 필수인데 이 클라이언트는 로그인
+            # 없이 POST 한다 — 2026-08-23 실측에서 6개 호출이 전부 LOGOUT 이라
+            # 관리종목·거래정지·시장조치 가드가 **데이터를 한 건도 못 받고
+            # 있었다**. 사유를 'Bad Request' 로 적으면 payload 를 고치려 들게
+            # 된다(#82 갈래를 뭉뚱그린 사유는 다음 라운드를 낭비한다).
+            if "LOGOUT" in body_snippet.upper():
+                log.warning(
+                    "krx_alert: KRX %s — **로그인 세션 없음**(body=LOGOUT). "
+                    "KRX 는 2025-12-27 부터 로그인 필수 — 이 클라이언트는 "
+                    "로그인을 하지 않아 시장조치·거래정지 데이터가 비어 있다",
+                    bld)
+                return None
             log.warning(
                 "krx_alert: KRX %s 400 Bad Request — payload=%s — body=%s",
                 bld, payload, body_snippet,

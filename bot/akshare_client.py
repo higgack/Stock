@@ -431,6 +431,11 @@ def valuation_series(code: str, market: str, indicator: str,
         return []
 
 
+# 설치본마다 있는 이름이 다르다 — 부르기 전에 `hasattr` 로 잰다(#151).
+_HK_DISCLOSURE_FN = "stock_zh_h_disclosure_em"
+_HK_DISCLOSURE_WARNED: set = set()      # 종목마다 반복해서 알리지 않는다
+
+
 def _fetch_with_retry(ak_fn, label: str, max_retries: int = 2):
     """Call `ak_fn()` (a zero-arg lambda) and retry transient network
     failures with exponential backoff (2s, 4s). Permanent failures
@@ -445,8 +450,9 @@ def _fetch_with_retry(ak_fn, label: str, max_retries: int = 2):
     1-2 retries. Without retry the ST/*ST + 停牌 HARD GUARDs effectively
     never fired in production.
     """
-    last_exc = None
+    last_exc, tried = None, 0
     for attempt in range(max_retries + 1):
+        tried = attempt + 1
         try:
             return ak_fn()
         except Exception as exc:
@@ -456,8 +462,11 @@ def _fetch_with_retry(ak_fn, label: str, max_retries: int = 2):
             if attempt < max_retries:
                 time.sleep(2 ** (attempt + 1))  # 2s, 4s
                 continue
-    log.warning("akshare: %s fetch failed (after %d retries): %s",
-                label, max_retries, last_exc)
+    # ⚠️ 상수(`max_retries`)를 찍으면 **안 한 일을 했다고** 말한다 — 2026-08-23
+    # 로그에 `AttributeError … (after 2 retries)` 가 찍혔는데 그건 첫 시도에서
+    # 끊긴 영구 실패였다(#12 추측 금지의 로그판). 실제 시도 횟수를 찍는다.
+    log.warning("akshare: %s fetch failed (%d회 시도): %s",
+                label, tried, last_exc)
     return None
 
 
@@ -533,21 +542,24 @@ class AkshareClient:
                     label=f"disclosures for {code}",
                 )
             elif market == "HK":
-                # HK disclosure endpoint — AKShare 1.18.62 doesn't expose
-                # a clean HK-only disclosure wrapper. Best-effort try;
-                # falls through to news block when unavailable.
-                try:
+                # HK disclosure endpoint — 설치된 AKShare 에 그 함수가 **있는지
+                # 먼저 잰다**(#151·#25 능력은 이름이 아니라 실측). 옛 판은
+                # 그냥 부르고 `except AttributeError` 로 받으려 했는데,
+                # `_fetch_with_retry` 가 예외를 삼켜 그 분기가 한 번도 안 돌고
+                # 대신 종목마다 WARNING 이 찍혔다 — 영원히 없을 이름에 재시도
+                # 예산까지 썼다. 없으면 **부르지 않고** 한 번만 알린다.
+                df = None
+                if hasattr(ak, _HK_DISCLOSURE_FN):
                     df = _fetch_with_retry(
-                        lambda: ak.stock_zh_h_disclosure_em(symbol=code),
+                        lambda: getattr(ak, _HK_DISCLOSURE_FN)(symbol=code),
                         label=f"HK disclosures for {code}",
                     )
-                except AttributeError:
+                elif not _HK_DISCLOSURE_WARNED:
+                    _HK_DISCLOSURE_WARNED.add(1)
                     log.info(
-                        "akshare: HK disclosure endpoint unavailable in"
-                        " this version — Rule A guard will surface 'HK"
-                        " 공시 데이터 미수집'"
-                    )
-                    df = None
+                        "akshare: 설치본에 `%s` 가 없어 HK 공시를 건너뜁니다"
+                        " — Rule A 가드가 'HK 공시 데이터 미수집' 으로 표시",
+                        _HK_DISCLOSURE_FN)
             else:
                 df = None
 
