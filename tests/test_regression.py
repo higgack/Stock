@@ -34955,6 +34955,28 @@ class TestBandDenominatorBasis20260822:
         assert "매달 갱신" in (t.get("band_basis") or ""), t.get("band_basis")
         assert t.get("denom_label") == "원천 EPS(매달 갱신)", t.get("denom_label")
 
+    def test_the_reason_travels_to_the_screen_not_just_the_label(self):
+        """#188b — 사용자 2026-08-23 "이것도 이해가 잘 안가.. 특히 밴드차트
+        설명": 판정 사유를 이미 계산해 두고 라벨만 싣고 있었다(#123·#129 에
+        이은 세 번째). 라벨보다 길고, 화면이 툴팁으로 실어야 한다."""
+        import re
+        import bot.dashboard_server as ds
+        from bot.dashboard import _BAND_JS
+        why = ds._kr_band_basis_why(self._rows())
+        assert len(why) > len(ds._kr_band_basis_note(self._rows())), why
+        # 측정한 것만 말한다 — 무엇으로 갱신하는지는 재지 않았다(#165)
+        assert "컨센서스" not in why, why
+        ts = [1590000000000 + i * 2592000000 for i in range(50)]
+        blk = {"mult": [90.8, 63.4, 36.1, 8.7],
+               "price": [[t_, 30000.0 + i * 300] for i, t_ in enumerate(ts)],
+               "bands": [[[t_, 200000.0 + i * 7000] for i, t_ in enumerate(ts)]]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
+        assert t.get("band_basis_why"), "payload 가 사유를 안 싣는다"
+        # 배선은 존재가 아니라 **쓰이는지**로(#141) — 칩에 실리고 title 로 나간다
+        m = re.search(r"chips\.push\(\['기준',[^\]]*\]\)", _BAND_JS, re.S)
+        assert m and "band_basis_why" in m.group(0), (m.group(0) if m else None)
+        assert 'title="' in _BAND_JS, "툴팁을 안 그린다"
+
 
 class TestBandPeriodAndQ4Sanity20260822:
     """사용자 2026-08-22:
