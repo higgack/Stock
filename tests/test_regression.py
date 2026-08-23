@@ -36201,3 +36201,66 @@ class TestBandChartZeroWidth20260823:
         """다시 그릴 때 재료를 기억하지 못하면 빈 차트가 된다."""
         body = self._body("function drawBand(")
         assert "_bandLast[holderId]" in body, "재료를 기억하지 않는다"
+
+
+class TestPerBasisAcrossTabs20260823:
+    """사용자 2026-08-23 SK텔레콤 017670.KS: "왜 현재 PER 가 안맞는거야?
+    두개의 탭에서?"
+
+    밸류에이션 탭 **30.55x**(= 102,200 ÷ TTM 실적 EPS 3,344.90) vs 밴드차트 탭
+    **21.30x**(= 102,200 ÷ FnGuide 가 쓰는 매달 갱신 EPS ≈ 4,798). 둘 다 맞는
+    값인데 **분모가 다르다** — 이름이 같으면 사용자는 "한쪽이 틀렸다"고
+    읽는다(#34 같은 주제어에 다른 시리즈면 라벨에 기준을 박을 것).
+
+    ⚠️ 같은 캡처의 짝: `PER (선행) 16.04x` 인데 `EPS (선행)` 은 '—' 였다 —
+    화면의 분모로 **눈으로 나눠 볼 수 없는 행**이다(#33)."""
+
+    @staticmethod
+    def _per_mark_fn(si: dict):
+        import ast
+        import textwrap
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("    def _per_mark(per_key: str, eps_key: str) -> str:")
+        j = src.index('    val_multiples = ""', i)
+        ns = {"si": si}
+        exec(textwrap.dedent(src[i:j]), ns)
+        return ns["_per_mark"]
+
+    def test_a_verifiable_row_gets_no_marker(self):
+        """⚠️ 늘 표시를 다는 축은 아무것도 안 재는 것이다 — 통과도 확인한다."""
+        f = self._per_mark_fn({"trailingPE": 30.55, "trailingEps": 3344.90,
+                               "current_price": 102200})
+        assert f("trailingPE", "trailingEps") == ""
+
+    def test_a_row_without_its_denominator_says_so(self):
+        f = self._per_mark_fn({"forwardPE": 16.04, "forwardEps": None,
+                               "current_price": 102200})
+        assert "검산 불가" in f("forwardPE", "forwardEps")
+
+    def test_a_row_that_does_not_divide_shows_the_recomputed_value(self):
+        """2026-08-20 삼성전자 형: 화면은 3.7x 인데 247,500÷14,227 = 17.4x."""
+        f = self._per_mark_fn({"trailingPE": 3.7, "trailingEps": 14227.0,
+                               "current_price": 247500})
+        assert "17.40x" in f("trailingPE", "trailingEps")
+
+    def test_both_surfaces_state_their_denominator(self):
+        """한쪽만 밝히면 사용자는 여전히 어느 쪽이 틀렸는지 모른다."""
+        import bot.dashboard as db
+        import bot.dashboard_server as ds
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("_per_basis_note = (")
+        note = src[i:i + 700]
+        assert "TTM 실적 EPS" in note and "밴드차트" in note, note[:300]
+        # 밴드 표의 출처 줄도 반대 방향을 밝힌다
+        ts = [1590000000000 + k * 2592000000 for k in range(50)]
+        blk = {"mult": [90.8, 63.4, 36.1, 8.7],
+               "price": [[t, 30000.0 + k * 300] for k, t in enumerate(ts)],
+               "bands": [[[t, 200000.0 + k * 7000] for k, t in enumerate(ts)]]}
+        t = ds._fnguide_ratio_table(blk, kind="PER", px_now=26850.0)
+        assert "밸류에이션 탭" in (t or {}).get("source", ""), (t or {}).get("source")
+        assert db  # 렌더 모듈이 임포트되는지(문법 회귀)
+
+    def test_the_note_is_rendered_once(self):
+        """⚠️ '있는지'만 보는 검사는 중복을 못 잡는다(#59) — 몇 번인지 센다."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert src.count("{_per_basis_note}") == 1, src.count("{_per_basis_note}")

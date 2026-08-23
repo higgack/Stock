@@ -526,7 +526,11 @@ def _fnguide_ratio_table(block: dict | None, *, kind: str, px_now) -> dict | Non
             "band_basis": _kr_band_basis_note(rows, kind),
             "denom_label": _kr_denom_label(rows, kind),
             "summary": _sm(rows, years=5, price_now=px_now),
-            "source": "FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값",
+            # ⚠️ 밸류에이션 탭의 PER 과 **분모가 다르다** — 이름이 같으면
+            # 사용자는 "한쪽이 틀렸다"고 읽는다(#34, 2026-08-23 SK텔레콤
+            # 30.55x vs 21.30x). 두 표면 모두 자기 기준을 밝힌다.
+            "source": ("FnGuide 밴드차트(네이버 임베드) — 차트와 같은 값 · "
+                       "밸류에이션 탭은 TTM 실적 EPS 기준이라 값이 다릅니다"),
             "basis": "fnguide", "market": "KR"}
 
 
