@@ -2449,6 +2449,14 @@ mark.snippet-target {
 .si-pane.active { display: block; }
 /* ── Company info grid ───────────────────────────────────── */
 .si-section { margin: 16px 0; }
+/* ⚠️ `.si-note` 는 **CSS 가 아예 없었다**(2026-08-23 사용자 "너무 크잖아").
+   10곳(밴드 출처·이상치 사유·TTM 집중도·PER 기준…)이 전부 본문 크기로
+   떠서 표보다 노트가 커 보였다. 표 밑 각주들이 인라인으로 쓰던 그 스타일
+   (11px · fg-soft)을 클래스 하나로 통일한다 — 한 곳에서 고치면 열 곳이
+   같이 따라온다(#38). 줄간격은 여러 줄 노트가 뭉치지 않게 1.6. */
+.si-note {
+  font-size: 11px; color: var(--fg-soft); line-height: 1.6;
+}
 .si-section-title {
   font-size: 15px; font-weight: 700; color: var(--fg);
   border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 10px;
@@ -6532,13 +6540,13 @@ def _render_stock_info_html(rec: dict) -> str:
     _fwd_src = ("네이버(FnGuide) 추정 EPS" if si.get("_forward_src")
                 else "yfinance 컨센서스 EPS")
     _per_basis_note = (
-        '<div class="si-note" style="margin-top:6px">ℹ️ 두 PER 모두 분자는 '
-        '<b>현재가</b>입니다(실적 발표 시점 주가가 아님).<br>'
-        '· <b>후행</b> = 현재가 ÷ TTM 실적 EPS'
-        + ('(DART 최근 4분기 합)' if is_kr else '') + '<br>'
-        '· <b>선행</b> = 현재가 ÷ ' + esc(_fwd_src) + '<br>'
-        '· <b>밴드차트 탭</b>의 현재 PER 은 분모가 달라(원천 FnGuide 기준) '
-        '값이 다를 수 있습니다.</div>')
+        '<div class="si-note" style="margin-top:6px">'
+        'ℹ️ <b>후행</b> = 현재가 ÷ TTM 실적 EPS'
+        + ('(DART 최근 4분기 합)' if is_kr else '')
+        + ' · <b>선행</b> = 현재가 ÷ ' + esc(_fwd_src)
+        + ' — 분자는 둘 다 <b>현재가</b>(실적 발표 시점 주가가 아님)<br>'
+          'ℹ️ <b>밴드차트 탭</b>의 현재 PER 은 분모가 달라(원천 FnGuide 기준) '
+          '값이 다를 수 있습니다</div>')
 
     def _per_mark(per_key: str, eps_key: str) -> str:
         """화면의 EPS 로 **눈으로 나눠 봤을 때 맞는가**(#33) — 아니면 라벨이
