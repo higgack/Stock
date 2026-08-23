@@ -6736,6 +6736,9 @@ class TestQuarterlyMultiMarket20260816:
             "지배주주순이익", "지배주주자본",
             # v11 비지배지분 — 지배주주자본을 원천이 안 줄 때 빼서 만든다
             "비지배지분",
+            # v13 비지배순이익 — 지배주주순이익 항등식 폴백(ROE 분자·분모를
+            # 같은 급으로 유지하기 위해 필요하다, #34)
+            "비지배순이익",
         }
         assert _CANONICAL_KEYS == expected, (
             "파서가 내는 계정이 바뀌었다 — `_FIN_CACHE_VER` 를 올리고 이 "
@@ -37154,10 +37157,15 @@ class TestShareCountIdentity:
         out = d({**base, "kr": {"financials_q": qs}})
         assert out.get("forwardPE") is None and out.get("forwardEps") is None
         assert out.get("_forward_why"), "왜 비었는지 안 말한다"
-        # yfinance 가 주면 **덮지 않는다**
+        # ⚠️ 2026-08-24: yfinance 도 **forwardEps 가 있을 때만** 쓴다 —
+        # `forwardPE` 만 있으면 화면에 분모가 없어 눈으로 검산할 수 없다(#33).
         out2 = d({**base, "forwardPE": 30.72, "kr": {"financials_q": qs}})
-        assert out2["forwardPE"] == 30.72
-        assert out2["_forward_src"] == "yfinance 컨센서스 EPS"
+        assert out2.get("forwardPE") is None, out2.get("forwardPE")
+        out3 = d({**base, "forwardPE": 30.72, "forwardEps": 13000.0,
+                  "kr": {"financials_q": qs}})
+        assert out3["_forward_src"] == "yfinance 컨센서스 EPS"
+        # 배수는 **화면의 EPS 로** 다시 만든다
+        assert abs(out3["forwardPE"] - 404500.0 / 13000.0) < 1e-9
 
     def test_the_note_says_why_the_forward_per_is_blank(self):
         """빈칸이면 **왜** 비었는지 화면이 말한다 — 침묵이 최악(#43)."""
@@ -37578,11 +37586,12 @@ class TestShareCountIdentity:
         seg = ast.get_source_segment(src, fn) or ""
         # ⚠️ 고정 길이 창으로 재면 주석 한 줄에 무너진다(#60) — 함수 전체로.
         assert "kr_forward_from_naver" in seg, "규칙을 복제했다"
-        # ⚠️ 2026-08-24: 국내도 yfinance 폴백을 탄다(사용자 결정) — 게이트가
-        # 남아 있으면 밸류에이션 탭과 갈린다(#38).
-        assert "if per_fwd is None and not is_kr:" not in seg, \
-            "국내만 yfinance 폴백을 막고 있다"
-        assert seg.count("if per_fwd is None:") == 3, \
+        # ⚠️ 2026-08-24: 국내는 `forwardEps` 가 **있을 때만** yfinance 를 쓴다
+        # (`_live_per` 경로). 분모 없이 배수만 만드는 뒤 두 폴백은 국내에서
+        # 막혀 있어야 한다 — 밸류에이션 탭과 같은 규칙(#38).
+        assert seg.count("if per_fwd is None and not is_kr:") == 2, \
+            seg.count("if per_fwd is None and not is_kr:")
+        assert seg.count("if per_fwd is None:") == 1, \
             seg.count("if per_fwd is None:")
 
     def test_no_dict_literal_has_duplicate_keys(self):
@@ -37855,10 +37864,9 @@ class TestShareCountIdentity:
         # 계약은 함수 **전체**에서 본다.
         assert "get_naver_valuation" in seg, "없을 때 받아오지 않는다"
         assert "kr_forward_from_naver(_kr_px, _nv)" in seg, "규칙을 복제했다"
-        # ⚠️ 2026-08-24: 국내도 yfinance 폴백을 탄다(사용자 결정)
-        assert "if per_fwd is None and not is_kr:" not in seg
-        assert seg.count("if per_fwd is None:") == 3, \
-            seg.count("if per_fwd is None:")
+        # ⚠️ 2026-08-24: 국내는 `forwardEps` 가 있을 때만(뒤 두 폴백은 차단)
+        assert seg.count("if per_fwd is None and not is_kr:") == 2
+        assert seg.count("if per_fwd is None:") == 1
 
     def test_the_two_financial_surfaces_name_each_other(self):
         """사용자 2026-08-24 "우리 밸류에이션탭, 재무재표, 네이버간에 차이는
@@ -37911,14 +37919,18 @@ class TestShareCountIdentity:
                                "naver_val": {"cns_eps": 1387.0}}})
         assert o1["_forward_src"].startswith("네이버"), o1["_forward_src"]
         assert not o1.get("_forward_why")
-        # ② 없으면 yfinance 값을 **덮지 않고** 그대로 두고 출처를 밝힌다
-        o2 = d({**base, "forwardPE": 30.72, "kr": {"financials_q": qs}})
-        assert o2["forwardPE"] == 30.72, o2["forwardPE"]
+        # ② 없으면 yfinance — 단 **forwardEps 가 있을 때만**(2026-08-24)
+        o2 = d({**base, "forwardPE": 30.72, "forwardEps": 13000.0,
+                "kr": {"financials_q": qs}})
         assert o2["_forward_src"] == "yfinance 컨센서스 EPS"
+        assert abs(o2["forwardPE"] - 404500.0 / 13000.0) < 1e-9
         # ③ 사유는 **한 줄**로 짧게(사용자 "이거 한줄로 나오게 해줘")
         assert len(o2["_forward_why"]) <= 40, o2["_forward_why"]
         assert "비웠습니다" not in o2["_forward_why"]
-        # ④ 둘 다 없으면 그때만 빈칸
+        # ④ forwardEps 가 없으면 **빈칸**(사용자 2026-08-24 "그냥 빈칸으로 놔")
+        o2b = d({**base, "forwardPE": 30.72, "kr": {"financials_q": qs}})
+        assert o2b.get("forwardPE") is None and o2b.get("forwardEps") is None
+        # ⑤ 둘 다 없으면 그때도 빈칸
         o3 = d({**base, "kr": {"financials_q": qs}})
         assert o3.get("forwardPE") is None and o3["_forward_why"]
         # ⑤ 분기실적 카드도 같은 사다리 — 국내 게이트가 남아 있으면 안 된다
@@ -37927,9 +37939,11 @@ class TestShareCountIdentity:
                   if isinstance(n, ast.FunctionDef) and n.name == "build_payload")
         seg = ast.get_source_segment(src, fn) or ""
         assert "kr_forward_from_naver" in seg, "네이버 우선이 아니다"
-        assert "if per_fwd is None and not is_kr:" not in seg, \
-            "국내만 yfinance 폴백을 막고 있다"
-        assert seg.count("if per_fwd is None:") == 3, \
+        # ⚠️ 2026-08-24: 국내는 `forwardEps` 가 있을 때만(`_live_per` 경로).
+        # 분모 없이 배수만 만드는 뒤 두 폴백은 국내에서 막혀 있어야 한다.
+        assert seg.count("if per_fwd is None and not is_kr:") == 2, \
+            seg.count("if per_fwd is None and not is_kr:")
+        assert seg.count("if per_fwd is None:") == 1, \
             seg.count("if per_fwd is None:")
 
     def test_market_cap_follows_the_traded_class(self):
@@ -38014,6 +38028,68 @@ class TestShareCountIdentity:
         assert "25.2Q~26.1Q" in (out.get("_naver_window") or ""), out.get("_naver_window")
         src = open("bot/dashboard.py").read()
         assert src.count('si["_naver_window"]') == 1, "화면이 안 싣는다"
+
+    def test_roe_numerator_and_denominator_share_one_basis(self):
+        """사용자 2026-08-24 뉴파워프라즈마 144960.KQ ROE 리뷰 — 우리 26.1Q
+        8.0% vs 네이버 5.96%. 옛 코드는 분자·분모를 **따로** 골라서,
+        지배주주순이익이 한 분기라도 없으면 분자만 연결 총액으로 떨어지고
+        분모는 지배주주자본으로 남았다. 비지배지분이 자본의 33%인 회사라
+        ROE 가 크게 부풀려졌다 — 총액/총액 · 지배/지배 둘 중 하나로만(#34).
+
+        그리고 이름 열거는 새 표기를 못 잡으므로(#24) `지배주주순이익 =
+        당기순이익 − 비지배순이익` 항등식을 최종 그물로 둔다."""
+        from bot.dart_client import (apply_ttm_returns, apply_annual_returns,
+                                     _fill_equity_fallbacks)
+        # ① 항등식 — 네이버 2026/03 실측(당기순이익 155 · 비지배 36 → 지배 119,
+        #    자본총계 4,489 · 비지배지분 1,499 → 지배자본 2,990)
+        d0 = {"당기순이익": 155.0, "비지배순이익": 36.0,
+              "자본총계": 4489.0, "비지배지분": 1499.0}
+        _fill_equity_fallbacks(d0)
+        assert d0["지배주주순이익"] == 119.0 and d0["지배주주자본"] == 2990.0
+        assert d0["_derived_from"]["지배주주순이익"] == "당기순이익 − 비지배순이익"
+
+        # ② 분자가 총액으로 떨어지면 **분모도** 총액이어야 한다
+        def _mk(missing_own):
+            return [{"financials": {
+                "당기순이익": 100.0,
+                "지배주주순이익": (None if (missing_own and i == 2) else 80.0),
+                "자본총계": 1000.0, "지배주주자본": 700.0,
+                "자산총계": 2000.0}, "ratios": {}} for i in range(5)]
+
+        e = _mk(True)
+        apply_ttm_returns(e)
+        rb = e[-1]["ratios"]["_returns_basis"]
+        assert rb["denominator"] == "자본총계", rb
+        assert "연결 총액" in rb["numerator"], rb
+        assert abs(e[-1]["ratios"]["ROE"] - 400.0 / 1000.0 * 100) < 1e-9
+
+        e2 = _mk(False)
+        apply_ttm_returns(e2)
+        rb2 = e2[-1]["ratios"]["_returns_basis"]
+        assert (rb2["numerator"], rb2["denominator"]) == ("지배주주순이익",
+                                                          "지배주주자본"), rb2
+        assert abs(e2[-1]["ratios"]["ROE"] - 320.0 / 700.0 * 100) < 1e-9
+
+        # ③ 연간도 같은 규율 — 한쪽만 고치면 기업 탭이 어긋난다(#38·#147)
+        a = [{"financials": {"당기순이익": 100.0, "자본총계": 1000.0,
+                             "지배주주자본": 700.0, "자산총계": 2000.0},
+              "ratios": {}} for _ in range(2)]
+        apply_annual_returns(a)
+        assert a[-1]["ratios"]["_returns_basis"]["denominator"] == "자본총계"
+
+    def test_chart_legend_label_does_not_wrap(self):
+        """사용자 2026-08-24 "52주 신고가, 52주 신저가 — 1줄로 안되는거야?"
+        `word-break: keep-all` 은 **낱말 안에서만** 안 자른다 — 띄어쓰기에서
+        접혀 두 줄이 됐다. 같은 패널의 `200 SMA ₩35,113` 이 한 줄에 들어가니
+        폭은 충분하다."""
+        import re
+        src = open("bot/dashboard.py").read()
+        m = re.search(r"\.cv-name\s*\{([^}]*)\}", src)
+        assert m, ".cv-name CSS 정의가 없다"
+        body = m.group(1)
+        assert "nowrap" in body, body
+        # 라벨 자체는 그대로 — 뜻을 줄여 해결하지 않았다
+        assert "'52주 신고가'" in src and "'52주 신저가'" in src
 
     def test_no_module_references_a_name_that_does_not_exist(self):
         """2026-08-23 아차 사고: `_derived_desc` 를 문자열 replace 로 갈아끼우다

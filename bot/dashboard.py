@@ -2355,7 +2355,12 @@ _DETAIL_CSS = _BASE_CSS + """
 .cv-sep { border-top: 1px solid var(--border); margin: 2px 0; }
 .cv-item { display: flex; align-items: baseline; gap: 5px; }
 .cv-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 2px; align-self: center; }
-.cv-name { color: var(--fg-soft); flex: 1 1 auto; word-break: keep-all; }
+/* ⚠️ `word-break: keep-all` 은 낱말 안에서만 안 자른다 — `52주 신고가` 는
+   **띄어쓰기에서** 접혀 두 줄이 됐다(사용자 2026-08-24 "1줄로 안되는거야?").
+   같은 패널의 `200 SMA ₩35,113` 이 한 줄에 들어가므로 폭은 충분하다 —
+   접히는 걸 막기만 하면 된다. */
+.cv-name { color: var(--fg-soft); flex: 1 1 auto; word-break: keep-all;
+           white-space: nowrap; }
 .cv-val { font-weight: 600; font-variant-numeric: tabular-nums; }
 @media (max-width: 560px) {
   .chart-row { flex-direction: column; }
@@ -6146,6 +6151,7 @@ def _derive_missing_multiples(si: dict) -> dict:
     # ⚠️ 배수는 **화면의 현재가**로 다시 만든다 — 원천 추정PER 은 전일 종가
     # 기준이라 그대로 실으면 화면의 다른 칸으로 나눠 봤을 때 안 맞는다
     # (#33·#135 매일 바뀌는 파생값은 라이브 원천으로 다시 만든다).
+    _fwd_basis = "네이버 추정"
     _f_eps, _f_per = kr_forward_from_naver(out.get("current_price"),
                                            kr.get("naver_val"))
     if _f_eps:
@@ -6155,15 +6161,25 @@ def _derive_missing_multiples(si: dict) -> dict:
             out["forwardPE"] = _f_per
             derived.add("forwardPE")
         out["_forward_src"] = "네이버(FnGuide) 추정 EPS"
+        _fwd_basis = "네이버 추정"
     elif kr:
-        # 사용자 2026-08-24: 국내는 **네이버 우선 · yfinance 폴백**.
-        # (2026-08-23 에는 "검산 불가한 배수는 비운다"였는데, 빈칸보다
-        # 커버리지가 낫다는 판단으로 바뀌었다 — 대신 **출처를 밝힌다**.)
-        # yfinance 값이 있으면 그대로 둔다 — 덮지 않는다.
-        if out.get("forwardPE") is not None or out.get("forwardEps") is not None:
+        # 사용자 2026-08-24: 국내는 **네이버 우선 · yfinance 폴백**. 단
+        # "야후에 EPS(선행)이 없다면 그냥 빈칸으로 놔" — yfinance 가
+        # `forwardPE` 는 주면서 `forwardEps` 를 안 주는 일이 흔한데, 그러면
+        # 화면에 분모가 없어 **눈으로 나눠 볼 수 없는 배수**가 남는다(#33).
+        # 분모가 있을 때만 쓰고, 배수는 그 EPS 로 다시 만든다.
+        _yf_eps = _num(out.get("forwardEps"))
+        _px_fwd = _num(out.get("current_price"))
+        if _yf_eps and _yf_eps > 0:
             out["_forward_src"] = "yfinance 컨센서스 EPS"
             out["_forward_why"] = "네이버(FnGuide) 추정 EPS 미제공 — yfinance 로 대체"
+            _fwd_basis = "yfinance 컨센서스"
+            if _px_fwd:
+                out["forwardPE"] = _px_fwd / _yf_eps
+                derived.add("forwardPE")
         else:
+            out["forwardPE"] = None
+            out["forwardEps"] = None
             out["_forward_src"] = ""
             out["_forward_why"] = "네이버·yfinance 모두 추정 EPS 미제공"
     # 그 밖의 시장은 yfinance 가 준 forwardPE 를 그대로 쓴다 — 컨센서스
@@ -6185,7 +6201,7 @@ def _derive_missing_multiples(si: dict) -> dict:
         _basis = {"trailingPE": net_basis, "trailingEps": net_basis,
                   "priceToSalesTrailing12Months": rev_basis,
                   "priceToBook": _bps_basis, "bookValue": _bps_basis,
-                  "forwardPE": "네이버 추정", "forwardEps": "네이버 추정"}
+                  "forwardPE": _fwd_basis, "forwardEps": _fwd_basis}
         out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
         _TOT = "연결 총액(비지배지분 포함)"
         _own = "지배주주 귀속분"
