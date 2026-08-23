@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 11
+_PROBE_VER = 12
 
 
 def _n(v):
@@ -480,6 +480,17 @@ def _dart_raw(ticker: str, snap: dict) -> None:
               f"유형자산취득 {_f(_af.get('유형자산취득'), 0)} · "
               f"무형자산취득 {_f(_af.get('무형자산취득'), 0)} → "
               f"FCF {_f(_af.get('FCF'), 0)}")
+        # ⚠️ 분기 FCF 도 같이 찍는다 — 사용자 2026-08-24(NHN KCP 060250.KQ):
+        # 25.3Q 우리 370 vs 네이버 331, FY2025 우리 2,026 vs 네이버 1,956.
+        # 합만 보면 '어딘가 다르다'까지고, **재료(OCF·유형자산취득)를 분기별로
+        # 나란히** 놔야 어느 칸이 갈리는지 보인다(#109 표본을 같이 찍을 것).
+        print("    [FCF 재료 · 분기(누적을 되돌린 당기값)]")
+        for e in ser[-5:]:
+            _f2 = e.get("financials") or {}
+            print(f"      {e.get('label')} OCF {_f(_f2.get('영업활동현금흐름'), 0)}"
+                  f" · 유형 {_f(_f2.get('유형자산취득'), 0)}"
+                  f" · 무형 {_f(_f2.get('무형자산취득'), 0)}"
+                  f" → FCF {_f(_f2.get('FCF'), 0)}")
         _o, _t = _n(_af.get("영업활동현금흐름")), _n(_af.get("유형자산취득"))
         _i = _n(_af.get("무형자산취득"))
         if _o is not None and _t is not None:

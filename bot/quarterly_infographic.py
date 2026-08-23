@@ -1606,8 +1606,19 @@ def build_payload(ticker: str, snap: dict | None = None, *,
     if is_kr:
         from bot.dashboard import kr_forward_from_naver
         _kr_px = live.get("price") or snap.get("current_price")
-        _kr_fe, _kr_fp = kr_forward_from_naver(
-            _kr_px, (snap.get("kr") or {}).get("naver_val"))
+        # ⚠️ **아카이브 스냅샷엔 `naver_val` 이 없다** — 밸류에이션 탭은
+        # 상세 보강이 채워 주지만 이 인포그래픽은 저장된 스냅샷을 그대로
+        # 받는다. 그래서 화면엔 `PER (선행) 13.16x` 가 있는데 카드는
+        # `Fwd N/A` 였다(사용자 2026-08-24 NHN KCP). 없으면 여기서 받는다
+        # (#198 새 필드를 더할 때마다 '아카이브엔 없다'를 먼저 물을 것).
+        _nv = (snap.get("kr") or {}).get("naver_val")
+        if not _nv:
+            try:
+                from bot.naver_finance_client import get_naver_valuation
+                _nv = get_naver_valuation(ticker)
+            except Exception as exc:                           # noqa: BLE001
+                log.debug("quarterly: naver_val %s: %s", ticker, exc)
+        _kr_fe, _kr_fp = kr_forward_from_naver(_kr_px, _nv)
         per_fwd = _clean_per(_kr_fp) if (_kr_fp and not cur_mismatch) else None
     else:
         per_fwd = _live_per("forwardEps")
