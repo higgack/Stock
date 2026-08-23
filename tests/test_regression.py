@@ -37163,3 +37163,38 @@ class TestShareCountIdentity:
         note = seg[i:i + 900]
         assert '_forward_why' in note, "사유를 각주에 안 싣는다"
         assert '_forward_src' in seg[:i] or '_fwd_src' in note
+
+    def test_the_kifrs_note_lives_outside_the_ratio_table(self):
+        """사용자 2026-08-23 "밑으로 옮겨서 양쪽 표의 숫자 맞춰져 일부러
+        그렇게 만들어 논거야" — 좌(금액)/우(비율) 두 표는 행 수를 **일부러**
+        맞춰 놨다(배당수익률을 왼쪽에 더한 게 그 때문, 2026-08-19). 오른쪽
+        표 안에 `<tr colspan=2>` 로 각주를 넣으면 그 정렬이 깨진다."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index('_kf_rb = kf.get("_returns_basis")')
+        blk = seg[i:i + 700]
+        assert "ratio_rows" not in blk, "각주가 아직 비율 표 안에 있다"
+        assert "colspan" not in blk, blk[:200]
+        assert "_kf_notes.append" in blk, "표 밖 각주 목록에 안 실린다"
+        # 좌우 표의 행 수 계약 — 왼쪽 7행(배당수익률 포함) / 오른쪽 7행
+        rr = seg[seg.index('for label, key in (("영업이익률"'):][:400]
+        assert rr.count('("') >= 7, rr[:200]
+
+    def test_the_kifrs_notes_do_not_overwrite_each_other(self):
+        """⚠️ `_kf_note` 를 `=` 로 두 번 대입하고 있었다 — 매출 보강과
+        구성요소 경고가 **둘 다 있으면 앞엣것이 사라진다**."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        seg = ast.get_source_segment(src, fn) or ""
+        assert seg.count("_kf_notes.append") == 3, \
+            f"각주 3종(ROE·매출보강·구성요소)이 아니다: {seg.count('_kf_notes.append')}"
+        assert '_kf_note = "".join(_kf_notes)' in seg
+        # 옛 덮어쓰기 패턴이 남아 있으면 안 된다
+        assert "_kf_note = ('<div" not in seg, "아직 = 로 대입한다"
