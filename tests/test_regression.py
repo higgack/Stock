@@ -36618,3 +36618,26 @@ class TestShareCountIdentity:
         used = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                 and isinstance(n.func, ast.Name) and n.func.id == "_dart_raw"]
         assert len(used) == 1, f"호출 {len(used)}건"
+
+    def test_the_probe_switches_to_the_venv_interpreter(self):
+        """#191 후속 — 사용자가 같은 벽에 두 번 부딪혔다(2026-08-23):
+        `venv/bin/activate` 가 없어서 한 번(디렉터리가 `.venv`), 시스템
+        파이썬으로 돌아서 한 번. 안내 문구를 다듬는 대신 자동으로 갈아탄다.
+        ⚠️ 루프 방지 조건이 **둘** 이어야 한다 — 하나만 두면 다른 하나로
+        무한 재실행이 나고 진단이 통째로 안 돈다."""
+        import bot.scripts.kr_metrics_probe as m
+        # 모듈이 없고 venv 가 있으면 간다
+        assert m._reexec_target(True, False, "/x/.venv/bin/python3",
+                                "/usr/bin/python3") == "/x/.venv/bin/python3"
+        # 모듈이 있으면 안 간다
+        assert m._reexec_target(False, False, "/x/.venv/bin/python3",
+                                "/usr/bin/python3") == ""
+        # 이미 갈아탄 프로세스면 안 간다(센티널)
+        assert m._reexec_target(True, True, "/x/.venv/bin/python3",
+                                "/usr/bin/python3") == ""
+        # 이미 그 파이썬이면 안 간다(경로)
+        assert m._reexec_target(True, False, "/x/.venv/bin/python3",
+                                "/x/.venv/bin/python3") == ""
+        # venv 가 없으면 안 간다
+        assert m._reexec_target(True, False, "", "/usr/bin/python3") == ""
+        assert m._PROBE_VER >= 4
