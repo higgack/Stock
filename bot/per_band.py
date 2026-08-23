@@ -222,8 +222,37 @@ def eps_cadence(rows: list | None, denom: str = "EPS") -> tuple[str | None, str]
                        f"— 분기 확정 실적이 그대로 유지되는 형태")
     return "연속형", (f"되짚은 {denom} 가 {steps - flat}/{steps} 구간에서 매번 "
                     f"바뀝니다. 분기 실적이면 3개월마다 계단처럼 뛰어야 하는데 "
-                    f"매달 바뀌므로 분기 확정치가 아닙니다 — 원천이 무엇으로 "
-                    f"갱신하는지는 FnGuide 가 밝히지 않아 우리도 모릅니다.")
+                    f"매달 바뀌므로 분기 확정치가 아닙니다. "
+                    + _delta_shape(rows))
+
+
+def _delta_shape(rows: list | None) -> str:
+    """**어떻게** 매달 바뀌는지 — 변화폭의 모양을 재서 말한다.
+
+    사용자 2026-08-23 "원천 EPS 가 어떻게 매달 갱신되는거야? 이해가 안감".
+    '매달 바뀐다'까지만 말하면 그다음을 사람이 짐작하게 된다(#82).
+
+    변화폭이 **거의 일정**하면 분기 점 사이를 직선으로 이은(보간) 모양이고,
+    들쭉날쭉하면 값 자체가 수시로 갱신되는 모양이다. ⚠️ 어느 쪽이든 우리가
+    잰 것은 **모양**이지 원천의 방법이 아니다 — 단정하지 않는다(#165).
+    """
+    eps = implied_eps_series(rows)
+    deltas = [b - a for (_p0, a), (_p1, b) in zip(eps, eps[1:])
+              if a and b and abs(b - a) / abs(a) >= 0.002]
+    if len(deltas) < 4:
+        return "변화폭이 어떤 모양인지는 표본이 모자라 판정하지 않습니다."
+    mean = sum(deltas) / len(deltas)
+    if not mean:
+        return "변화폭이 어떤 모양인지는 판정하지 않습니다."
+    var = sum((d - mean) ** 2 for d in deltas) / len(deltas)
+    cv = (var ** 0.5) / abs(mean)
+    if cv <= 0.15:
+        return (f"변화폭이 거의 일정합니다(평균 {mean:,.0f}, 편차 {cv * 100:.0f}%)"
+                " — 분기 확정치 사이를 직선으로 이은 모양입니다. 원천이 방법을"
+                " 밝히지 않아 단정하지는 않습니다.")
+    return (f"변화폭이 들쭉날쭉합니다(평균 {mean:,.0f}, 편차 {cv * 100:.0f}%)"
+            " — 값 자체가 수시로 갱신되는 모양입니다. 원천이 방법을 밝히지"
+            " 않아 단정하지는 않습니다.")
 
 
 def per_series(prices: list | None, eps_ttm: list | None

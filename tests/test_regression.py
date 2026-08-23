@@ -6716,11 +6716,13 @@ class TestQuarterlyMultiMarket20260816:
             "유동부채", "비유동부채", "부채총계", "이익잉여금", "자본총계",
             # v8 에서 추가된 현금흐름 계정 — FCF 재료
             "영업활동현금흐름", "유형자산취득", "무형자산취득",
+            # v10 지배주주 귀속분 — 주당지표의 분자(FnGuide 산식, #193)
+            "지배주주순이익", "지배주주자본",
         }
         assert _CANONICAL_KEYS == expected, (
             "파서가 내는 계정이 바뀌었다 — `_FIN_CACHE_VER` 를 올리고 이 "
             f"목록도 갱신할 것. 차이: {_CANONICAL_KEYS ^ expected}")
-        assert _FIN_CACHE_VER >= 8, "CF 추가분을 무효화하려면 8 이상"
+        assert _FIN_CACHE_VER >= 10, "지배주주 계정 추가분을 무효화하려면 10 이상"
 
     def test_financials_cache_key_is_derived_not_literal(self):
         """키를 리터럴로 적으면 다음 번에도 올리는 걸 잊는다 — 실제로
@@ -36638,6 +36640,83 @@ class TestShareCountIdentity:
         # 이미 그 파이썬이면 안 간다(경로)
         assert m._reexec_target(True, False, "/x/.venv/bin/python3",
                                 "/x/.venv/bin/python3") == ""
+        # ⚠️ **심볼릭 링크를 따라가면 안 된다.** venv 의 bin/python3 는 base
+        # 파이썬 링크라 realpath 가 같아진다 — VM 실측에서 재실행이 한 번도
+        # 안 걸린 진짜 원인이다(#91b 가드가 재는 대상을 틀리면 눈이 먼다).
+        # 픽스처가 가짜 경로 두 개면 realpath 가 안 겹쳐 이 버그를 못 잡는다.
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            base = os.path.join(d, "sys_python3")
+            open(base, "w").close()
+            link = os.path.join(d, "venv_python3")
+            os.symlink(base, link)
+            assert os.path.realpath(link) == os.path.realpath(base)
+            assert m._reexec_target(True, False, link, base) == link
         # venv 가 없으면 안 간다
         assert m._reexec_target(True, False, "", "/usr/bin/python3") == ""
         assert m._PROBE_VER >= 4
+
+    def test_kr_per_share_metrics_follow_the_fnguide_formula(self):
+        """사용자가 신뢰 기준으로 제시한 FnGuide 산식(2026-08-23):
+        EPS = **(지배주주지분)**당기순이익 / 수정평균발행주식수 ·
+        BPS = **(지배주주지분)**자본총계 / 수정기말발행주식수.
+        우리는 연결 총액(비지배 포함)으로 나눠 왔다 — 총액과 지배주주분이
+        갈리는 회사에서 EPS 가 통째로 부푼다."""
+        from bot.dashboard import _derive_missing_multiples, _derived_desc
+        qs = [{"지배주주순이익": 100.0, "당기순이익": 300.0,
+               "지배주주자본": 1000.0, "자본총계": 1200.0} for _ in range(4)]
+        si = {"market_cap": 4000.0, "shares_outstanding": 100.0,
+              "current_price": 40.0, "kr": {"financials_q": qs}}
+        out = _derive_missing_multiples(si)
+        assert out["trailingEps"] == 4.0, out["trailingEps"]   # 400/100
+        assert out["bookValue"] == 10.0, out["bookValue"]      # 1000/100
+        assert "지배주주" in out["_derived_scope"], out["_derived_scope"]
+        assert "지배주주" in _derived_desc(out)
+        # 눈으로 나눠도 맞아야 한다(#33)
+        assert abs(si["current_price"] / out["trailingEps"]
+                   - out["trailingPE"]) < 1e-9
+
+    def test_it_falls_back_to_the_consolidated_total_and_says_so(self):
+        """원천이 그 계정을 안 주면 총액으로 떨어지되 **화면이 밝힌다**(#43)."""
+        from bot.dashboard import _derive_missing_multiples, _derived_desc
+        qs = [{"당기순이익": 300.0, "자본총계": 1200.0} for _ in range(4)]
+        si = {"market_cap": 4000.0, "shares_outstanding": 100.0,
+              "current_price": 40.0, "kr": {"financials_q": qs}}
+        out = _derive_missing_multiples(si)
+        assert out["trailingEps"] == 12.0, out["trailingEps"]
+        assert "연결 총액" in out["_derived_scope"], out["_derived_scope"]
+        assert "연결 총액" in _derived_desc(out)
+
+    def test_the_owner_accounts_are_mapped_and_the_cache_key_moved(self):
+        """계정을 늘리면 디스크 캐시 키를 **반드시** 올려야 한다 — 안 올리면
+        최근 조회분이 옛 결과를 7일간 서빙한다(#95 에서 세 번 실패했다).
+        그리고 지배주주자본은 **저량**이라 4분기 차분 대상이 아니다."""
+        import bot.dart_client as dc
+        import bot.dart_quarterly as dq
+        assert "지배주주순이익" in dc._CANONICAL_KEYS
+        assert "지배주주자본" in dc._CANONICAL_KEYS
+        assert dc._FIN_CACHE_VER >= 10, dc._FIN_CACHE_VER
+        assert "지배주주자본" in dq._STOCK_KEYS
+        # 제표 구분이 2차 방어다 — 같은 한글이 손익·재무상태표에 다 나온다
+        assert dc._stmt_tier("지배주주순이익", "IS") == 0
+        assert dc._stmt_tier("지배주주순이익", "BS") == 1
+        assert dc._stmt_tier("지배주주자본", "BS") == 0
+        assert dc._stmt_tier("지배주주자본", "IS") == 1
+
+    def test_the_band_denominator_reason_says_how_it_changes(self):
+        """사용자 2026-08-23 "원천 EPS 가 어떻게 매달 갱신되는거야? 이해가
+        안감" — '매달 바뀐다'까지만 말하면 그다음을 사람이 짐작하게 된다(#82).
+        변화폭의 **모양**을 재서 말하되, 원천의 방법을 단정하지 않는다(#165)."""
+        from bot.per_band import eps_cadence
+        lin = [{"period": f"2025-{m:02d}-28", "price": 100000.0,
+                "per": 100000.0 / (4000 + 81 * m)} for m in range(1, 13)]
+        why = eps_cadence(lin)[1]
+        assert "거의 일정" in why, why
+        assert "단정하지는 않습니다" in why, why
+        irr = [{"period": f"2025-{m:02d}-28", "price": 100000.0,
+                "per": 100000.0 / (4000 + 81 * m * (1 + 0.6 * ((m % 3) - 1)))}
+               for m in range(1, 13)]
+        why2 = eps_cadence(irr)[1]
+        assert "들쭉날쭉" in why2, why2
+        assert why != why2
