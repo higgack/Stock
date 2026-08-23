@@ -36412,13 +36412,20 @@ class TestShareCountIdentity:
         assert r["market_cap"] == self.YF_MC, r["market_cap"]
         assert r["shares"] == self.YF, r["shares"]
 
-    def test_a_matching_source_count_is_never_replaced(self):
-        """등록 주식수와 오차 안이면 소스값을 덮지 않는다(시총도 그대로)."""
+    def test_the_registry_wins_even_when_the_gap_is_small(self):
+        """⚠️ 옛 판은 `> tol` 일 때만 교체했다 — 슈프리마 실측(2026-08-23):
+        yfinance 6,966,583 vs KRX 6,974,311 은 **0.11%** 라 교체가 안 됐고
+        시총이 3,908억으로 남아 네이버 3,913억과 어긋났다. 더 나쁜 건 오차가
+        문턱을 넘나들면 **조회할 때마다 기준이 바뀌는 것**이다. 거래소 등록
+        주식수는 정의상 사실이라 문턱을 둘 이유가 없다."""
         from bot.share_count import resolve
-        r = resolve(self.PX, self.TRUE_MC, self.KRX, "yfinance",
-                    self.KRX + 1000, "KRX 상장주식수")
-        assert r["shares"] == self.KRX and r["source"] == "yfinance", r
-        assert r["market_cap"] == self.TRUE_MC and r["note"] == "", r
+        r = resolve(56100.0, 390825312256.0, 6966583.0, "yfinance",
+                    6974311.0, "KRX 상장주식수")
+        assert r["shares"] == 6974311.0, r
+        assert "KRX" in r["source"] and "시총 재계산" in r["source"], r
+        assert abs(r["market_cap"] - 56100.0 * 6974311.0) < 1, r["market_cap"]
+        # 사소한 차이는 잡음이라 말하지 않는다
+        assert r["note"] == "", r["note"]
 
     def test_a_missing_source_count_is_filled_from_the_registry(self):
         from bot.share_count import resolve
