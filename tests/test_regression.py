@@ -36974,3 +36974,32 @@ class TestShareCountIdentity:
              "current_price": 130937.0,
              "kr": {"financials": {"당기순이익": 4e12, "자본총계": 3e13}}})
         assert out2["_derived_basis"]["trailingEps"] == "연간"
+
+    def test_the_si_note_class_is_actually_styled(self):
+        """사용자 2026-08-23 "너무 크잖아" — `.si-note` 는 **CSS 가 아예
+        없어서** 10곳(밴드 출처·이상치 사유·TTM 집중도·PER 기준…)이 전부
+        본문 크기로 떴다. 클래스를 쓰면서 정의를 안 하면 조용히 스타일이
+        빠진다 — 한 곳에서 고치면 열 곳이 따라온다(#38)."""
+        import re
+        src = open("bot/dashboard.py").read()
+        m = re.search(r"\.si-note\s*\{([^}]*)\}", src)
+        assert m, ".si-note CSS 정의가 없다"
+        body = m.group(1)
+        assert "font-size" in body and "11px" in body, body
+        assert "--fg-soft" in body, body
+        # 쓰는 곳이 여럿이라는 사실도 고정 — 하나로 줄면 이 가드가 무의미해진다
+        assert src.count('class="si-note"') >= 8, src.count('class="si-note"')
+
+    def test_the_per_note_is_two_lines_not_four(self):
+        """표 밑 각주와 같은 결로 — 줄바꿈은 하나만."""
+        import ast
+        src = open("bot/dashboard.py").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_render_stock_info_html")
+        seg = ast.get_source_segment(src, fn) or ""
+        i = seg.index("_per_basis_note = (")
+        note = seg[i:i + 800]
+        note = note[:note.index("</div>")]
+        assert note.count("<br>") == 1, f"<br> {note.count('<br>')}개"
+        assert "si-note" in note
