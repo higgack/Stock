@@ -196,6 +196,52 @@ def _atomic_write_bytes(path, data: bytes) -> None:
             pass
 
 
+def _max_py_mtime(dirpath) -> float:
+    """디렉터리 안 `*.py` 의 **가장 최근 수정시각**. 못 읽으면 0.0.
+
+    ⚠️ 이름을 열거하지 않는다 — 목록형 가드는 목록 밖 파일을 못 잡는다(#24).
+    """
+    import os as _os
+    newest = 0.0
+    try:
+        with _os.scandir(dirpath) as it:
+            for e in it:
+                if e.is_file() and e.name.endswith(".py"):
+                    try:
+                        newest = max(newest, e.stat().st_mtime)
+                    except OSError:
+                        pass
+    except OSError:
+        return 0.0
+    return newest
+
+
+_RENDER_CODE_MTIME: float | None = None
+
+
+def _render_code_mtime() -> float:
+    """렌더 캐시의 **배포 무효화 기준시각** — bot 패키지 전체에서 잰다.
+
+    ⚠️ 옛 판은 `bot/dashboard.py` **한 파일**의 mtime 만 봤다(사용자
+    2026-08-24 "이 코멘트는 뺴달라니까" — 지운 각주가 화면에 남아 있었다).
+    밴드 표가 사는 `dashboard_server.py`, 새 재무추이 모듈 `fin_trend.py`,
+    산식이 사는 `dart_client.py` 를 고쳐도 캐시가 살아남아 최대 24시간 옛
+    HTML 을 서빙한다 — #24(열거형 가드는 목록 밖을 못 잡는다) 그대로다.
+
+    ⚠️ 프로세스당 **한 번만** 잰다. 배포는 서버 재시작을 동반하므로 그때
+    다시 재고, 요청마다 180개 파일을 stat 하면 그 자체가 비용이다.
+    """
+    global _RENDER_CODE_MTIME
+    if _RENDER_CODE_MTIME is None:
+        from pathlib import Path as _P
+        try:
+            import bot.dashboard as _dmod
+            _RENDER_CODE_MTIME = _max_py_mtime(_P(_dmod.__file__).parent)
+        except Exception:                                      # noqa: BLE001
+            _RENDER_CODE_MTIME = 0.0
+    return _RENDER_CODE_MTIME
+
+
 def _kick_lookup_detail_refresh(ticker: str, cache_f, enrich: bool = True) -> None:
     """stale 캐시를 백그라운드에서 1회 재렌더(동시 중복 방지). 실패해도 기존
     stale 캐시는 그대로 → 다음 방문이 다시 시도. 요청 경로를 막지 않음."""
@@ -2144,13 +2190,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
             cache_f = cache_dir / f"{safe}.html"
-            # 코드 배포 시 자동 무효화 — 캐시가 dashboard.py 보다 오래되면
+            # 코드 배포 시 자동 무효화 — 캐시가 렌더 코드보다 오래되면
             # 옛 마크업 서빙 금지(사용자 2026-06-11 stale lookup).
-            try:
-                import bot.dashboard as _dmod
-                _code_mtime = os.path.getmtime(_dmod.__file__)
-            except Exception:
-                _code_mtime = 0.0
+            # ⚠️ 기준은 **패키지 전체**다(#24) — 아래 헬퍼 참조.
+            _code_mtime = _render_code_mtime()
             if (cache_f.exists()
                     and (time.time() - cache_f.stat().st_mtime) < 300
                     and cache_f.stat().st_mtime > _code_mtime):
@@ -2300,15 +2343,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             _sfx = "_core" if not enrich else ""
             cache_f = cache_dir / f"detail_{safe}{_sfx}_v2.html"
 
-            # 코드 배포 시 자동 무효화 — 캐시가 dashboard.py 보다 오래되면 옛
-            # 마크업(사라진 탭·옛 정렬)을 최대 24h 서빙하게 됨. /lookup 핸들러엔
-            # 이미 있던 가드를 SWR 경로에도 동일 적용(사용자 2026-08-16 분기실적
-            # 정렬 미반영 — 코드는 맞는데 캐시가 옛 HTML 서빙).
-            try:
-                import bot.dashboard as _dmod
-                _code_mtime = os.path.getmtime(_dmod.__file__)
-            except Exception:
-                _code_mtime = 0.0
+            # 코드 배포 시 자동 무효화 — 캐시가 렌더 코드보다 오래되면 옛
+            # 마크업(사라진 탭·옛 정렬·지운 각주)을 최대 24h 서빙하게 됨.
+            # ⚠️ 기준은 **패키지 전체**다(#24) — dashboard.py 하나만 보면
+            # dashboard_server.py·fin_trend.py 를 고친 배포가 안 걸린다.
+            _code_mtime = _render_code_mtime()
 
             age = None
             if cache_f.exists():
