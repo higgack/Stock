@@ -108,3 +108,40 @@ def note(price, mcap, shares, source: str = "", tol: float = TOL) -> str:
         return (f"⚠️ 시가총액÷현재가 = {r['implied']:,.0f}주 와 "
                 f"{(r['ratio'] - 1) * 100:+.1f}% 차이")
     return source or ""
+
+
+def weighted_issued(series, periods) -> tuple:
+    """수정평균 발행주식수 — `(값, 사람이 읽는 근거, 쓴 분기 수)`.
+
+    FnGuide 산식(사용자 2026-08-23 제공)은 EPS 분모를 **수정평균
+    발행주식수(보통주+우선주)** 로 쓴다. 우리는 **기말** 상장주식수로 나눠
+    왔다 — 주식수가 기중에 변한 회사(자사주 소각·증자)에서만 갈린다.
+
+    `series` = `dart_client.get_share_totals_series` 산출(최신 → 과거),
+    `periods` = 창에 쓸 기간 라벨 집합(`{"2026.06", "2026.03", …}`).
+    창에 해당하는 분기말 발행주식수의 **산술평균**을 쓴다 — 분기 안에서
+    바뀐 시점까지는 원천이 안 주므로 그 이상은 추정이 된다(#32).
+
+    ⚠️ 창의 분기가 하나라도 비면 **만들지 않는다**(None). 3개로 평균을
+    내면 그건 다른 창의 값이고, 그걸 'TTM' 이라 부르면 거짓말이다(#99).
+    ⚠️ 값이 전부 같으면(주식수 변동 없음) 평균 = 기말이라 **아무것도
+    바뀌지 않는다** — 그게 정상이고, 그때 남는 차이는 분모가 아니라
+    분자에서 온다.
+    """
+    want = {str(p) for p in (periods or []) if p}
+    if not want:
+        return None, "", 0
+    got = {}
+    for e in series or []:
+        p = str((e or {}).get("period") or "")
+        v = (e or {}).get("issued")
+        if p in want and isinstance(v, (int, float)) and not isinstance(v, bool) \
+                and v > 0:
+            got.setdefault(p, float(v))
+    if len(got) < len(want):
+        return None, "", len(got)
+    avg = sum(got.values()) / len(got)
+    same = len(set(got.values())) == 1
+    lab = ("발행주식수 변동 없음" if same
+           else " · ".join(f"{p} {int(v):,}" for p, v in sorted(got.items())))
+    return avg, lab, len(got)

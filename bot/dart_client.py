@@ -51,6 +51,9 @@ _DART_BASE = "https://opendart.fss.or.kr/api"
 # 주식의 총수 탐색 예산 — 리터럴로 못박는다(자기 상수로 자기를 검증하면
 # 상한을 올리는 뮤테이션이 그대로 통과한다, #66).
 _SHARE_TOT_PROBE_N = 4
+# 이력 조회 예산 — 리터럴로 못박는다(자기 상수로 자기를 검증하면 상한을
+# 올리는 뮤테이션이 통과한다, #66).
+_SHARE_TOT_SERIES_N = 8
 
 
 def _share_int(v) -> Optional[int]:
@@ -1386,6 +1389,41 @@ class DartClient:
                 got["basis"] = f"{bsns_year} {reprt_code}"
                 return got
         return {}
+
+    # 분기별 **발행주식수 이력** — EPS 분모(수정평균 발행주식수)의 재료다.
+    # FnGuide 산식(사용자 2026-08-23 제공):
+    #   EPS = (지배주주지분)당기순이익 × 1000 / 수정평균발행주식수
+    # 우리는 **기말** 상장주식수로 나눠 왔다 — 주식수가 기중에 변한 회사
+    # (자사주 소각·증자)에서 EPS 가 갈린다.
+    @_cache_ver(1)
+    def get_share_totals_series(self, stock_code: str, n: int = 5) -> list:
+        """최신 → 과거 순으로 최대 `n` 개 보고서의 주식의 총수 현황.
+
+        각 항목 = {year, reprt_code, period(YYYY.MM), issued, treasury,
+        distributed}. 없으면 빈 리스트.
+        """
+        if not self.api_key:
+            return []
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return []
+        out: list = []
+        tried = 0
+        for yr in (date.today().year, date.today().year - 1,
+                   date.today().year - 2):
+            # 한 해 안에서 **최신 → 과거**(사업보고서 → 3Q → 반기 → 1Q)
+            for rc, mm in (("11011", "12"), ("11014", "09"),
+                           ("11012", "06"), ("11013", "03")):
+                if len(out) >= n or tried >= _SHARE_TOT_SERIES_N:
+                    return out
+                tried += 1
+                got = _pick_share_totals(
+                    self._fetch_share_totals(corp_code, str(yr), rc))
+                if got:
+                    got.update({"year": yr, "reprt_code": rc,
+                                "period": f"{yr}.{mm}"})
+                    out.append(got)
+        return out
 
     def _fetch_share_totals(self, corp_code: str, bsns_year: str,
                             reprt_code: str) -> Optional[list]:

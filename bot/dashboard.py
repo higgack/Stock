@@ -4754,12 +4754,20 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         # BPS 분모(자사주 차감 유통주식수)도 **아카이브엔 없다** — 새 필드를
         # 더할 때마다 물어야 하는 그 질문이다(#198). 없으면 옛 화면대로
         # 상장주식수로 나누고 라벨도 그렇게 나간다(무해).
-        if not (si.get("kr") or {}).get("share_totals"):
+        _krd = si.get("kr") or {}
+        if not (_krd.get("share_totals") and _krd.get("share_totals_series")):
             try:
                 from bot.dart_client import DartClient
-                _st = DartClient().get_share_totals(ticker.split(".")[0])
-                if _st:
-                    si.setdefault("kr", {})["share_totals"] = _st
+                _d = DartClient()
+                _code = ticker.split(".")[0]
+                if not _krd.get("share_totals"):
+                    _st = _d.get_share_totals(_code)
+                    if _st:
+                        si.setdefault("kr", {})["share_totals"] = _st
+                if not _krd.get("share_totals_series"):
+                    _ss = _d.get_share_totals_series(_code)
+                    if _ss:
+                        si.setdefault("kr", {})["share_totals_series"] = _ss
             except Exception as exc:                           # noqa: BLE001
                 log.debug("_ensure_detail_enrichment: share_totals %s: %s",
                           ticker, exc)
@@ -5839,11 +5847,21 @@ def _derived_desc(si: dict) -> str:
         # 한쪽이 거짓말이 된다(#34).
         _tsub = any("자사주" in str(v) for k, v in basis.items()
                     if k in ("bookValue", "priceToBook"))
-        lines.append("분모 = 기말 상장주식수"
-                     + ("(BPS 는 자사주 차감 유통주식수)" if _tsub else "")
+        _ed = si.get("_eps_denom") or {}
+        _eps_lab = str(_ed.get("label") or "기말 상장주식수")
+        # ⚠️ EPS 와 BPS 는 분모 규약이 다르다(FnGuide 산식) — 한 문장으로
+        # 뭉치면 한쪽이 거짓말이 된다(#34).
+        _dparts = []
+        if set(items) & {"trailingEps", "trailingPE"}:
+            _dparts.append(f"EPS {_eps_lab}")
+        if set(items) & {"bookValue", "priceToBook"}:
+            _dparts.append("BPS " + ("자사주 차감 유통주식수" if _tsub
+                                     else "기말 상장주식수"))
+        lines.append("분모 = " + esc(" · ".join(_dparts) or _eps_lab)
                      + f" · 분자 = DART {esc(scope)}")
-        lines.append("FnGuide 는 EPS 분모에 자사주를 포함(수정평균 발행주식수)해 "
-                     "소수점이 다를 수 있습니다")
+        if _ed.get("why"):
+            lines.append("수정평균 = 창의 분기말 발행주식수 평균("
+                         + esc(str(_ed["why"])) + ")")
     return "<br>".join(lines)
 
 
@@ -6027,8 +6045,29 @@ def _derive_missing_multiples(si: dict) -> dict:
     if out.get("bookValue") is None and equity and _bps_shares and _bps_shares > 0:
         out["bookValue"] = equity / _bps_shares
         derived.add("bookValue")
-    if out.get("trailingEps") is None and net and net > 0 and shares and shares > 0:
-        out["trailingEps"] = net / shares
+    # ⚠️ EPS 분모는 **수정평균 발행주식수**다(FnGuide 산식, 사용자 제공).
+    # 우리는 기말 상장주식수로 나눠 왔다 — 주식수가 기중에 변한 회사
+    # (자사주 소각·증자)에서만 갈린다. 창의 분기가 하나라도 비면 만들지
+    # 않고 기말로 떨어진다(#99 다른 창의 값을 그 창이라 부르지 말 것).
+    # ⚠️ BPS 와 분모 규약이 다르다 — BPS 는 자사주를 빼고(유통), EPS 는
+    # 자사주를 **포함한** 발행주식수의 평균이다(#204 역산으로 확인).
+    _eps_shares, _eps_why = shares, ""
+    if str(net_basis).startswith("TTM") and len(qs) >= 4:
+        from bot.share_count import weighted_issued as _wi
+        _wa, _why, _ = _wi(
+            (kr.get("share_totals_series") if isinstance(kr, dict) else None),
+            [f"{q.get('year')}.{int(q.get('quarter') or 0) * 3:02d}"
+             for q in qs[-4:]])
+        if _wa and _wa > 0:
+            _eps_shares, _eps_why = _wa, _why
+    _eps_denom = {
+        "shares": _eps_shares,
+        "label": ("수정평균 발행주식수" if _eps_why else "기말 상장주식수"),
+        "why": _eps_why,
+    }
+    if out.get("trailingEps") is None and net and net > 0 and _eps_shares \
+            and _eps_shares > 0:
+        out["trailingEps"] = net / _eps_shares
         derived.add("trailingEps")
     # PBR 은 **화면의 BPS 에서** 만든다 — `시총 ÷ 자본` 으로 만들면 BPS
     # 분모가 유통주식수일 때 `현재가 ÷ BPS` 와 어긋나 눈으로 나눠 봤을 때
@@ -6041,9 +6080,17 @@ def _derive_missing_multiples(si: dict) -> dict:
         elif mcap and equity and equity > 0:
             out["priceToBook"] = mcap / equity
             derived.add("priceToBook")
-    if out.get("trailingPE") is None and mcap and net and net > 0:
-        out["trailingPE"] = mcap / net
-        derived.add("trailingPE")
+    # PER 은 **화면의 EPS 에서** 만든다 — `시총 ÷ 순이익` 으로 만들면 EPS
+    # 분모가 수정평균일 때 `현재가 ÷ EPS` 와 어긋나 눈으로 나눠 봤을 때
+    # 안 맞는다(#33, PBR 과 같은 이유). EPS 를 못 만들었을 때만 시총 기준.
+    if out.get("trailingPE") is None:
+        _px_pe, _eps_pe = _num(out.get("current_price")), _num(out.get("trailingEps"))
+        if _px_pe and _eps_pe and _eps_pe > 0:
+            out["trailingPE"] = _px_pe / _eps_pe
+            derived.add("trailingPE")
+        elif mcap and net and net > 0:
+            out["trailingPE"] = mcap / net
+            derived.add("trailingPE")
     if (out.get("priceToSalesTrailing12Months") is None and mcap
             and rev and rev > 0):
         out["priceToSalesTrailing12Months"] = mcap / rev
@@ -6081,6 +6128,10 @@ def _derive_missing_multiples(si: dict) -> dict:
     # EPS 가 필요해 우리가 만들 수 없다.
     if derived:
         out["_derived_multiples"] = sorted(derived)
+        # 분모는 **그걸 쓴 항목이 있을 때만** 싣는다 — 아무것도 파생하지
+        # 않은 스냅샷에까지 붙이면 '빈 입력 → 빈 출력' 계약이 깨진다.
+        if derived & {"trailingEps", "trailingPE"}:
+            out["_eps_denom"] = _eps_denom
         # 분자를 그대로 남긴다 — 감사·프로브가 **네이버 분모를 역산**해
         # '값이 틀린 것'과 '분모 규약이 다른 것'을 가를 수 있어야 한다(#204).
         out["_kr_net_ttm"] = net

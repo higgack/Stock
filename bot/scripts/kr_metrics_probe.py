@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 import time
 
-_PROBE_VER = 10
+_PROBE_VER = 11
 
 
 def _n(v):
@@ -187,6 +187,22 @@ def probe(ticker: str) -> None:
     # (b) 분모에서 **자사주를 안 뺐나**. 둘 다 찍어야 갈린다(#149 단계별로).
     _kr = snap.get("kr") or {}
     _st = _kr.get("share_totals") or {}
+    # ⚠️ EPS 분모(수정평균 발행주식수)의 재료 — **주식수가 기중에 변했는지**
+    # 를 여기서 봐야 한다. 값이 전부 같으면 평균 = 기말이라 EPS 가 안 바뀌고,
+    # 그때 남는 차이는 분모가 아니라 **분자**에서 온 것이다(#12 단정 금지).
+    _ser = (_kr.get("share_totals_series") or [])
+    if _ser:
+        print("    발행주식수 이력(DART): "
+              + " · ".join(f"{e.get('period')} {_f(e.get('issued'), 0)}"
+                           for e in _ser))
+        _iss = [e.get("issued") for e in _ser if e.get("issued")]
+        print("      → " + ("기중 변동 없음(평균 = 기말)" if len(set(_iss)) <= 1
+                            else f"기중 변동 있음 — 최대 {max(_iss):,} / 최소 "
+                                 f"{min(_iss):,}"))
+    _ed = si.get("_eps_denom") or {}
+    print(f"    EPS 분모: {_ed.get('label') or '(미기록)'} "
+          f"{_f(_ed.get('shares'), 0)}"
+          + (f" ({_ed.get('why')})" if _ed.get("why") else ""))
     print(f"    주식의 총수(DART): 발행주식수 {_f(_st.get('issued'), 0)} · "
           f"자기주식 {_f(_st.get('treasury'), 0)} · "
           f"유통 {_f(_st.get('distributed'), 0)} · 기준 {_st.get('basis') or '—'}")
