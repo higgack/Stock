@@ -8913,6 +8913,16 @@ def _render_stock_info_html(rec: dict) -> str:
             # 차트마다 축 최대를 적는 건 사용자 요청으로 뺐고(2026-08-23
             # "축에 대한 설명은 안해도 돼"), 대신 그룹 아래 한 줄로 남긴다.
             # 아무 말도 안 하면 "영업이익이 매출만큼 크다"로 읽힌다(#34).
+            # ⚠️ **왜 칸이 적은지 말한다.** 요청보다 적게 그리면 사용자는
+            # 우리가 흘린 건지 원천이 없는 건지 알 수 없다(#43 · 사용자
+            # 2026-08-24 "연간도 분기처럼 하나 더"). 원천이 준 만큼만
+            # 그렸다는 사실을 화면이 밝힌다.
+            _short_note = ('\n<div style="font-size:11px;color:var(--fg-soft);'
+                           'margin-top:4px">ℹ️ 원천이 <b>'
+                           + str(len(chart_items)) + '개 기간</b>만 제공해 '
+                           + str(n) + '개를 다 그리지 못했습니다 — 값이 없는 '
+                           '기간은 만들지 않습니다</div>'
+                           ) if len(chart_items) < n else ""
             _axis_note = ('\n<div style="font-size:11px;color:var(--fg-soft);'
                           'margin-top:10px">ℹ️ 지표마다 <b>축이 다릅니다</b> — '
                           '막대 높이는 같은 지표 안에서만 비교하세요.</div>')
@@ -8935,7 +8945,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 return ""
             out = f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">{esc(title)}</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:14px">{_cells}</div>{_axis_note}{_fcf_note}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:14px">{_cells}</div>{_axis_note}{_short_note}{_fcf_note}
       </div>"""
 
             _grows = []

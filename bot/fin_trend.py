@@ -105,6 +105,14 @@ def build(fins: dict | None, *, quarterly: bool, n: int = 5,
     bs = _by_period(((fins or {}).get("balance_sheet") or {}).get(key))
     cf = _by_period(((fins or {}).get("cash_flow") or {}).get(key))
     is_rows = sorted(is_rows, key=lambda r: str(r.get("period") or ""))
+    # ⚠️ 원천이 **아무것도 안 준 기간**은 뺀다 — 야후 연간 가장 오래된 열이
+    # 그런 경우가 흔하고(2026-08-24 LS ELECTRIC 010120.KS 실측), 남겨 두면
+    # 전 칸이 '—' 인 열이 표에 생겨 '값이 0' 인지 '안 가져왔는지' 구분이
+    # 안 된다(#43·#181). 재무제표 탭 차트와 **같은 규칙**이다(#38).
+    _k3 = ("Total Revenue", "Operating Revenue", "Operating Income",
+           "Net Income")
+    is_rows = [r for r in is_rows if any(_pick(r, (k,)) is not None
+                                         for k in _k3)]
     want = n + (lead if quarterly else 1)
     is_rows = is_rows[-want:] if want else is_rows
 

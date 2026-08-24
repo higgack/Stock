@@ -38971,3 +38971,61 @@ class TestInfographicPerMatchesValuationTab20260824:
                 and getattr(n.func, "id", "") == "_live_per"]
         assert _per, "_live_per 호출이 없다"
         assert min(_imp) < min(_per), "PER 을 읽은 뒤에 파생한다"
+
+
+class TestShortAnnualSeriesIsExplained20260824:
+    """사용자 2026-08-24 "연도도 재무재표에서 하나 더 가져와서 분기처럼 차트를
+    하나 더 그리게 해줘" — 요청대로 연간을 한 해 더 받게 바꿨는데(#235,
+    `max_periods=6`), yfinance 가 그 종목에 대해 **실제로 주는** 연간 열이
+    모자라 차트가 4칸에 머문다(LS ELECTRIC 010120.KS: 5열 중 1열이 전부 빈
+    열). 값이 없는 기간을 만들어 낼 수는 없으므로 **왜 적은지 화면이
+    말한다**(#43 침묵이 최악).
+    """
+
+    @staticmethod
+    def _fins(n_years=5, empty_oldest=True):
+        ys = [f"{2021 + i}-12-31" for i in range(n_years)]
+        qs = [f"202{4 + i // 4}-{3 * (i % 4) + 3:02d}-30" for i in range(8)]
+
+        def row(p, empty=False):
+            return ({"period": p} if empty else
+                    {"period": p, "Total Revenue": 1e12,
+                     "Operating Income": 2e11, "Net Income": 1e11})
+        ann = [row(ys[0], empty_oldest)] + [row(p) for p in ys[1:]]
+        return {"income_statement": {"annual": ann,
+                                     "quarterly": [row(p) for p in qs]},
+                "balance_sheet": {"annual": [], "quarterly": []},
+                "cash_flow": {"annual": [], "quarterly": []}}
+
+    def _annual_seg(self, fins):
+        import bot.dashboard as d
+        si = {"currency": "USD", "current_price": 100.0, "financials": fins}
+        p = d._render_stock_info_html({"ticker": "TEST", "stock_info": si})
+        html = "".join(str(v) for v in p.values())
+        i = html.index("수익성 추이 — 연간")
+        return html[i:html.index("YoY 성장률", i)]
+
+    def test_a_short_series_says_why(self):
+        import re
+        seg = self._annual_seg(self._fins())
+        assert sorted(set(re.findall(r">(20\d\d)</text>", seg))) == [
+            "2022", "2023", "2024", "2025"]
+        assert re.search(r"원천이 <b>4개 기간</b>만 제공해 5개", seg), seg[-600:]
+
+    def test_a_full_series_gets_no_noise(self):
+        """⚠️ 늘 붙는 안내는 아무것도 안 재는 것과 같다 — 반대 증거(#25)."""
+        import re
+        seg = self._annual_seg(self._fins(empty_oldest=False))
+        assert sorted(set(re.findall(r">(20\d\d)</text>", seg))) == [
+            "2021", "2022", "2023", "2024", "2025"]
+        assert "개 기간</b>만 제공해" not in seg, seg[-400:]
+
+    def test_valuation_trend_drops_empty_periods_too(self):
+        """밸류에이션 탭 비-KR 표도 **같은 규칙**을 써야 한다 — 한쪽만 고치면
+        같은 종목의 두 화면이 다른 개수를 그린다(#38)."""
+        from bot.fin_trend import build
+        items = build(self._fins(), quarterly=False, n=5)
+        assert [it["label"] for it in items] == [
+            f"FY{y}" for y in range(2022, 2026)], items
+        full = build(self._fins(empty_oldest=False), quarterly=False, n=5)
+        assert len(full) == 5, full
