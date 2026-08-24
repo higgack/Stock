@@ -6205,10 +6205,13 @@ def _derive_missing_multiples(si: dict) -> dict:
     elif out.get("trailingPE") is None and mcap and net and net > 0:
         out["trailingPE"] = mcap / net
         derived.add("trailingPE")
-    if (out.get("priceToSalesTrailing12Months") is None and mcap
-            and rev and rev > 0):
-        out["priceToSalesTrailing12Months"] = mcap / rev
-        derived.add("priceToSalesTrailing12Months")
+    # PSR 도 **화면의 분모에서** 만든다 — 분기별 재무추이 표에 매출이 분기별로
+    # 실려 있어 사용자가 4개를 더해 검산할 수 있다(#33·#234). 소스값을 그대로
+    # 두면 그 합과 안 맞는다: NC소프트 036570 실측(2026-08-24) 시총 4조 8,479억
+    # ÷ TTM 매출 20,921억 = **2.32x** 인데 화면은 2.09x(야후 제공값)였다.
+    # ⚠️ 비-KR 은 `rev` 가 None 이라(DART 분기 시계열이 없다) 이 분기를 타지
+    # 않고 소스값이 그대로 산다 — 시장 게이트 없이 그렇게 된다.
+    _restate(out, "priceToSalesTrailing12Months", mcap, rev, derived)
     # 선행 PER — 국내는 **네이버(FnGuide) 추정치**가 원천이다(사용자
     # 2026-08-23 "여기 PER 선행은 Naver Finance 기준으로 해줘. 한국은.
     # 나머지 나라들은 yfinance 로 하면되고"). yfinance 는 국내 `forwardEps`

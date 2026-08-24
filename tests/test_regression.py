@@ -24053,20 +24053,34 @@ class TestQuarterlyExtraChartsAndLive20260816:
         return si
 
     def test_derives_only_what_the_source_omitted(self):
-        """소스값은 **한 항목도** 덮어쓰지 않는다 — 파생은 빈칸 채우기다."""
+        """파생은 빈칸 채우기다 — 소스값을 함부로 덮지 않는다.
+
+        ⚠️ **2026-08-24 계약 변경**(#234·#241): '한 항목도 덮어쓰지 않는다'는
+        옛 원칙이 화면을 거짓말하게 했다(슈프리마 236200.KS: 현재가·EPS·BPS 는
+        새로 만들어 놓고 배수만 옛 값). **화면에 분모가 있는 배수**는 정의상
+        `분자 ÷ 분모` 여야 하므로 다시 만든다(#33). 주당지표(EPS·BPS)와
+        분모를 못 만드는 배수는 여전히 그대로 둔다.
+
+        이 픽스처엔 `current_price` 가 없어 PER·PBR 은 분모를 못 만들고,
+        PSR 만 `시총 ÷ TTM 매출` 로 검산된다."""
         from bot.dashboard import _derive_missing_multiples as d
         given = {"trailingPE": 99.0, "priceToBook": 88.0,
                  "trailingEps": 77.0, "bookValue": 66.0,
                  "priceToSalesTrailing12Months": 55.0}
         out = d(self._si(**given))
-        for k, v in given.items():
-            assert out[k] == v, f"{k} 소스값을 덮어썼다"
-        assert not out.get("_derived_multiples"), out.get("_derived_multiples")
-        # 하나만 비면 그 하나만 파생된다.
+        # 주당지표와 **분모를 못 만드는** 배수는 그대로
+        for k in ("trailingEps", "bookValue", "trailingPE", "priceToBook"):
+            assert out[k] == given[k], f"{k} 소스값을 덮어썼다"
+        # PSR 은 화면의 매출로 검산된다 → 다시 만든다(옛 값은 남긴다)
+        assert abs(out["priceToSalesTrailing12Months"]
+                   - 4.98e12 / (4.0e11 * 4)) < 1e-6
+        assert out["_restated"]["priceToSalesTrailing12Months"] == 55.0
+        # 하나만 비면 그 하나만 **새로** 파생된다.
         partial = dict(given)
         partial.pop("bookValue")
         out2 = d(self._si(**partial))
-        assert out2["_derived_multiples"] == ["bookValue"]
+        assert "bookValue" in (out2["_derived_multiples"] or []), \
+            out2["_derived_multiples"]
 
     def test_ttm_preferred_over_annual_and_labelled(self):
         from bot.dashboard import _derive_missing_multiples as d
@@ -39029,3 +39043,69 @@ class TestShortAnnualSeriesIsExplained20260824:
             f"FY{y}" for y in range(2022, 2026)], items
         full = build(self._fins(empty_oldest=False), quarterly=False, n=5)
         assert len(full) == 5, full
+
+
+class TestPsrRestatedFromScreenRevenue20260824:
+    """사용자 2026-08-24 NC소프트 036570 "우리쪽 숫자가 잘 맞는지 꼼꼼히".
+
+    분기표 7행 × 4분기가 FnGuide 와 **전부 일치**했는데(FCF 포함) PSR 하나만
+    어긋났다: 시총 4조 8,479억 ÷ TTM 매출 20,921억(화면 표의 25.3Q~26.2Q 합)
+    = **2.32x** 인데 화면은 **2.09x**(야후 제공값)였다. #234 에서 PER·PBR 만
+    다시 만들고 PSR 은 '분모가 화면에 없다'고 봤는데, 분기별 재무추이 표에
+    매출이 분기별로 실려 있어 **더하면 검산된다**(#33).
+    """
+
+    @staticmethod
+    def _si(**over):
+        qs = [{"year": 2025, "quarter": 2, "매출": 3824e8,
+               "지배주주순이익": -354e8},
+              {"year": 2025, "quarter": 3, "매출": 3600e8,
+               "지배주주순이익": 3467e8},
+              {"year": 2025, "quarter": 4, "매출": 4042e8,
+               "지배주주순이익": -24e8},
+              {"year": 2026, "quarter": 1, "매출": 5574e8,
+               "지배주주순이익": 1488e8},
+              {"year": 2026, "quarter": 2, "매출": 7705e8,
+               "지배주주순이익": 1290e8}]
+        si = {"currency": "KRW", "current_price": 224500.0,
+              "market_cap": 4.8479e12, "shares_outstanding": 21594022,
+              "kr": {"financials_q": qs}}
+        si.update(over)
+        return si
+
+    def test_a_stale_psr_is_restated(self):
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d(self._si(priceToSalesTrailing12Months=2.09))
+        want = 4.8479e12 / (3600e8 + 4042e8 + 5574e8 + 7705e8)
+        assert abs(out["priceToSalesTrailing12Months"] - want) < 1e-9
+        assert round(out["priceToSalesTrailing12Months"], 2) == 2.32
+        assert (out.get("_restated") or {}).get(
+            "priceToSalesTrailing12Months") == 2.09
+
+    def test_a_matching_psr_is_left_alone(self):
+        """⚠️ 늘 갈아끼우면 아무것도 안 재는 것과 같다 — 반대 증거(#25)."""
+        from bot.dashboard import _derive_missing_multiples as d
+        want = 4.8479e12 / (3600e8 + 4042e8 + 5574e8 + 7705e8)
+        out = d(self._si(priceToSalesTrailing12Months=want))
+        assert "priceToSalesTrailing12Months" not in (
+            out.get("_restated") or {}), out.get("_restated")
+
+    def test_non_kr_keeps_the_source_value(self):
+        """비-KR 은 DART 분기 시계열이 없어 분모를 못 만든다 — 그때는 소스값을
+        그대로 둔다(시장 게이트 없이 `rev is None` 으로 그렇게 된다)."""
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d({"currency": "USD", "current_price": 100.0,
+                 "market_cap": 1e9, "shares_outstanding": 1e7,
+                 "priceToSalesTrailing12Months": 8.4})
+        assert out["priceToSalesTrailing12Months"] == 8.4
+        assert not (out.get("_restated") or {}).get(
+            "priceToSalesTrailing12Months")
+
+    def test_the_screen_says_it_was_restated(self):
+        """갈아끼웠으면 **왜 바뀌었는지** 화면이 말한다(#43)."""
+        import bot.dashboard as d
+        p = d._render_stock_info_html({
+            "ticker": "036570.KQ",
+            "stock_info": self._si(priceToSalesTrailing12Months=2.09)})
+        html = "".join(str(v) for v in p.values())
+        assert "♻️" in html and "PSR" in html and "2.09" in html, "재계산 사유 없음"
