@@ -39241,3 +39241,93 @@ class TestNvdaXbrlAndRatioZero20260824:
         html = "".join(str(v) for v in d._render_stock_info_html(
             {"ticker": "NVDA", "stock_info": si}).values())
         assert "26-01-26~26-04-26" in html, "기간이 화면에 안 나온다"
+
+
+class TestRestatedNoteNamesTheRealNumerator20260824:
+    """사용자 2026-08-24 풀무원 017810.KS: "♻️ 재계산 — PSR: 소스 0.10x 은
+    화면의 분모와 맞지 않아 **현재가 ÷ 화면의 분모**로 다시 만들었습니다
+    --> 이게 무슨말이야?"
+
+    두 가지가 틀렸다.
+      ① **거짓말**: PSR 의 분자는 현재가가 아니라 **시가총액**이다(PER·PBR
+         만 현재가). 세 지표를 한 문구로 뭉뚱그린 탓에 화면이 사실과 다른
+         산식을 적었다(#55 설명이 코드와 어긋나면 버그).
+      ② **불친절**: '화면의 분모' 라고만 해서 어느 칸인지 알 수 없다.
+         '다르다'만 말하면 안 통한다 — 어느 칸을 어느 칸으로 나눴는지
+         짚어 줘야 사용자가 눈으로 검산한다(#202·#33).
+
+    계약: 지표마다 분자·분모를 **이름으로** 적고, TTM 매출처럼 화면에 한
+    칸으로 없는 분모는 **값도 같이** 적는다.
+    """
+
+    @staticmethod
+    def _si(**over):
+        qs = [{"year": 2025, "quarter": 2, "매출": 8391e8, "지배주주순이익": -82e8},
+              {"year": 2025, "quarter": 3, "매출": 8884e8, "지배주주순이익": 217e8},
+              {"year": 2025, "quarter": 4, "매출": 8592e8, "지배주주순이익": 47e8},
+              {"year": 2026, "quarter": 1, "매출": 8504e8, "지배주주순이익": 59e8},
+              {"year": 2026, "quarter": 2, "매출": 8936e8, "지배주주순이익": 103e8}]
+        si = {"currency": "KRW", "current_price": 9640.0,
+              "market_cap": 3675e8, "shares_outstanding": 38120542,
+              "bookValue": 9155.07, "trailingEps": 1147.86,
+              "kr": {"financials_q": qs}}
+        si.update(over)
+        return si
+
+    def test_psr_line_says_market_cap_not_price(self):
+        """PSR 분자는 시가총액이다 — '현재가'라고 적으면 거짓말."""
+        from bot.dashboard import (_derive_missing_multiples as d,
+                                   restated_note_lines, compact_amount)
+        out = d(self._si(priceToSalesTrailing12Months=0.10))
+        lines = restated_note_lines(out, lambda v: compact_amount(v, "KRW"))
+        psr = [x for x in lines if x.startswith("PSR:")]
+        assert len(psr) == 1, lines
+        assert "시가총액" in psr[0], psr[0]
+        assert "현재가" not in psr[0], psr[0]
+
+    def test_psr_line_names_the_denominator_with_its_value(self):
+        """TTM 매출은 화면에 **한 칸으로 없다**(분기 4개를 더해야 한다) —
+        이름만 적으면 사용자가 또 물어야 하므로 값도 같이 적는다."""
+        from bot.dashboard import (_derive_missing_multiples as d,
+                                   restated_note_lines, compact_amount)
+        out = d(self._si(priceToSalesTrailing12Months=0.10))
+        psr = [x for x in restated_note_lines(
+            out, lambda v: compact_amount(v, "KRW")) if x.startswith("PSR:")][0]
+        assert "TTM 매출" in psr, psr
+        ttm = 8884e8 + 8592e8 + 8504e8 + 8936e8
+        assert compact_amount(ttm, "KRW") in psr, (psr, compact_amount(ttm, "KRW"))
+        assert f"{3675e8 / ttm:,.2f}x" in psr, psr
+
+    def test_per_line_says_price_over_eps(self):
+        """PER·PBR 은 **현재가** ÷ 화면의 주당 지표다 — 이쪽은 그대로."""
+        from bot.dashboard import (_derive_missing_multiples as d,
+                                   restated_note_lines)
+        out = d(self._si(trailingPE=3.59, priceToBook=0.61))
+        lines = restated_note_lines(out)
+        per = [x for x in lines if x.startswith("PER (후행):")][0]
+        pbr = [x for x in lines if x.startswith("PBR:")][0]
+        assert "현재가 ÷ EPS (후행)" in per, per
+        assert "현재가 ÷ BPS" in pbr, pbr
+        assert "시가총액" not in per + pbr, (per, pbr)
+
+    def test_matching_multiples_produce_no_lines(self):
+        """⚠️ 늘 줄이 나오면 아무것도 안 재는 것과 같다 — 반대 증거(#25)."""
+        from bot.dashboard import (_derive_missing_multiples as d,
+                                   restated_note_lines)
+        ttm = 8884e8 + 8592e8 + 8504e8 + 8936e8
+        out = d(self._si(priceToSalesTrailing12Months=3675e8 / ttm,
+                         trailingPE=9640.0 / 1147.86,
+                         priceToBook=9640.0 / 9155.07))
+        assert restated_note_lines(out) == [], restated_note_lines(out)
+
+    def test_the_rendered_screen_carries_the_real_formula(self):
+        """⚠️ 헬퍼만 부르는 테스트는 **배선을 떼는 변형을 못 잡는다**(#20) —
+        렌더된 HTML 에 그 줄이 실리는지 본다."""
+        import bot.dashboard as d
+        p = d._render_stock_info_html({
+            "ticker": "017810.KS",
+            "stock_info": self._si(priceToSalesTrailing12Months=0.10)})
+        html = "".join(str(v) for v in p.values())
+        assert "♻️" in html and "PSR: 소스 0.10x" in html, "재계산 줄 없음"
+        assert "시가총액 ÷ TTM 매출" in html, "PSR 산식이 화면에 없음"
+        assert "현재가 ÷ 화면의 분모" not in html, "옛 뭉뚱그린 문구가 남아 있음"
