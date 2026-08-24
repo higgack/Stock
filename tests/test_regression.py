@@ -39462,3 +39462,97 @@ class TestYtdOnlyCashFlowQuarterIsRestored20260824:
         p = d._render_stock_info_html({"ticker": "LRCX", "stock_info": si})
         html = "".join(str(v) for v in p.values())
         assert "누적(YTD)" not in html, "복원이 없는데 각주가 떴다"
+
+
+class TestSourceLagIsAnnounced20260824:
+    """사용자 2026-08-24 AMAT: "AMAT 는 가장 최근실적이 3Q 아닐까? 이건 아직
+    야후는 안올라온것 같은데... 이렇게 다 회사마다 다른거 참 힘들다."
+
+    AMAT 는 10월 결산이라 2026-07-26 종료 분기가 이미 공시됐는데 yfinance
+    분기 손익은 **2026-04-26 에서 멈춰** 있었다. 화면은 그걸 그냥 '최근 분기'
+    라고 적어, 사용자가 **회사 결산월을 외우고 있어야** 낡은 줄 알 수 있었다
+    — '조용한 것'과 '죽은 것'을 화면이 구별하지 못한 것이다(#52·#43).
+
+    대조군은 **이미 받아 둔 SEC XBRL** 이다(#143 대조군 없이는 '없음'과
+    '못 받음'을 못 가른다 · #150 우리가 그걸 다 쓰고 있나). 계약: 원천의
+    최신 분기가 대조군보다 한 분기 넘게 뒤처지면 화면이 그렇게 말한다.
+    """
+
+    @staticmethod
+    def _si(latest_q="2026-04-26", sec_end="2026-07-26"):
+        xb = {}
+        if sec_end:
+            xb = {"revenue": {
+                "unit": "USD",
+                "annual": {"val": 28.0e9, "fy": 2025, "end": "2025-10-26"},
+                "latest": {"val": 7.6e9, "fy": 2026, "form": "10-Q",
+                           "start": "2026-04-27", "end": sec_end}}}
+        return {"currency": "USD", "current_price": 492.32,
+                "financials": {"income_statement": {"quarterly": [
+                    {"period": "2026-01-25", "Total Revenue": 7.0e9},
+                    {"period": latest_q, "Total Revenue": 7.91e9}]}},
+                "us": {"xbrl": xb}}
+
+    def test_latest_quarter_end_ignores_row_order(self):
+        """야후는 종목마다 최신우선/과거우선을 섞어 준다 — 순서를 가정하지 않는다."""
+        from bot.quarterly_series import latest_quarter_end as f
+        rows = [{"period": "2026-04-26"}, {"period": "2025-10-26"},
+                {"period": "2026-01-25"}]
+        assert f(rows) == "2026-04-26"
+        assert f(list(reversed(rows))) == "2026-04-26"
+        assert f([]) == "" and f(None) == ""
+
+    def test_a_whole_missing_quarter_is_announced(self):
+        from bot.quarterly_series import source_lag_note as f
+        out = f("2026-04-26", "2026-07-26", source="yfinance",
+                reference="SEC 공시(EDGAR)", today="2026-08-24")
+        assert "2026-07-26" in out and "2026-04-26" in out, out
+
+    def test_a_period_end_convention_gap_stays_quiet(self):
+        """⚠️ 며칠 차이는 **기간 끝 관례**일 뿐이다 — 그걸로 경고하면 늘 뜨고,
+        늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25)."""
+        from bot.quarterly_series import source_lag_note as f
+        assert f("2026-04-26", "2026-04-30", source="a", reference="b",
+                 today="2026-08-24") == ""
+
+    def test_a_future_reference_is_not_judged(self):
+        """참조가 미래면 판정하지 않는다 — 없는 근거로 단정하지 않는다(#12)."""
+        from bot.quarterly_series import source_lag_note as f
+        assert f("2026-04-26", "2026-11-01", source="a", reference="b",
+                 today="2026-08-24") == ""
+
+    def test_missing_material_stays_quiet(self):
+        from bot.quarterly_series import source_lag_note as f
+        assert f("", "2026-07-26", source="a", reference="b") == ""
+        assert f("2026-04-26", "", source="a", reference="b") == ""
+
+    def test_both_stale_surfaces_say_it(self):
+        """⚠️ 헬퍼만 부르는 테스트는 배선을 떼는 변형을 못 잡는다(#20).
+        분기실적 카드와 재무제표 표는 **같은 낡은 원천**을 그리므로 둘 다
+        말해야 한다 — 한 곳만 고치면 다른 탭이 조용하다(#38·#147)."""
+        import re
+        import bot.dashboard as d
+        p = d._render_stock_info_html({"ticker": "AMAT", "stock_info": self._si()})
+        html = str(p.get("other_panes") or "")
+        assert "2026-07-26 종료 분기" in html, "지연 안내 없음"
+        for pane in ("si-quarterly", "si-financials"):
+            seg = re.search(
+                r'class="si-pane" id="%s".*?(?=class="si-pane" id="|$)' % pane,
+                html, re.S)
+            assert seg and "2026-07-26 종료 분기" in seg.group(0), pane
+
+    def test_a_fresh_source_says_nothing(self):
+        """⚠️ 반대 증거 — 원천이 최신이면 아무 말도 안 한다(#25)."""
+        import bot.dashboard as d
+        p = d._render_stock_info_html({
+            "ticker": "AMAT",
+            "stock_info": self._si(latest_q="2026-07-26", sec_end="2026-07-26")})
+        assert "종료 분기" not in str(p.get("other_panes") or ""), "안 낡았는데 경고"
+
+    def test_no_control_group_means_no_claim(self):
+        """대조군(SEC)이 없는 시장은 판정하지 않는다 — 없는 근거로 '낡았다'고
+        말하면 그게 추측이다(#12·#143)."""
+        import bot.dashboard as d
+        p = d._render_stock_info_html({
+            "ticker": "AMAT", "stock_info": self._si(sec_end="")})
+        assert "종료 분기" not in str(p.get("other_panes") or ""), "대조군 없이 단정"

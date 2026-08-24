@@ -8712,6 +8712,30 @@ def _render_stock_info_html(rec: dict) -> str:
   <script>{_BAND_JS}</script>
 </div>"""
 
+    # ── 원천 지연 판정 ─────────────────────────────────────────────
+    # ⚠️ **'조용한 것'과 '죽은 것'을 화면이 구별하게 한다**(#52). 사용자
+    # 2026-08-24 AMAT: 회사는 2026-07-26 종료 분기를 이미 공시했는데 yfinance
+    # 분기 손익이 2026-04-26 에서 멈춰 있었다("가장 최근실적이 3Q 아닐까?
+    # ... 회사마다 다른거 참 힘들다"). 대조군은 **이미 받아 둔 SEC XBRL**
+    # 이다(#143 대조군 없이는 '없음'과 '못 받음'을 못 가른다 · #150 우리가
+    # 그걸 다 쓰고 있나). 한 곳에서 만들어 분기실적·재무제표 두 표면이 같이
+    # 쓴다(복제하면 한쪽만 고쳐진다, #38).
+    _lag_note = ""
+    try:
+        from bot.quarterly_series import latest_quarter_end, source_lag_note
+        _yq = latest_quarter_end(
+            ((si.get("financials") or {}).get("income_statement") or {})
+            .get("quarterly") or [])
+        # 참조 = SEC 가 아는 가장 늦은 기간 끝(US/ADR). 다른 시장은 대조군이
+        # 없어 판정하지 않는다 — 없는 근거로 단정하지 않는다(#12).
+        _ref = max((str((m or {}).get("latest", {}).get("end") or "")
+                    for m in (si.get("us", {}).get("xbrl") or {}).values()),
+                   default="")
+        _lag_note = source_lag_note(_yq, _ref, source="yfinance",
+                                    reference="SEC 공시(EDGAR)")
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("원천 지연 판정 건너뜀: %s", exc)
+
     # ── 분기실적 pane (분기 스코어카드) ─────────────────────────────
     # 설명문은 실제 소스와 동기(out-of-sync = 버그, CLAUDE.md).
     if is_kr:
@@ -8729,12 +8753,15 @@ def _render_stock_info_html(rec: dict) -> str:
                    "리스크 요약은 DART 공시 원문 기반이라 <b>한국 종목에서만</b> "
                    "제공됩니다.")
         _q_src = "출처: yfinance 분기 손익계산서 · 시총/PER yfinance"
+    _lag_html = (f'<div class="si-note" style="margin-bottom:8px">{_lag_note}</div>'
+                 if _lag_note else "")
     quarterly_pane = f"""<div class="si-pane" id="si-quarterly">
   <div class="si-section">
     <div class="si-section-title">{_q_title}</div>
     <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
       {_q_desc}
     </div>
+    {_lag_html}
     <div id="si-q-status" style="font-size:12px;color:var(--fg-soft)">탭을 열면 불러옵니다…</div>
     <div id="si-q-body"></div>
     {_src_foot}{_q_src}</div>
@@ -9074,6 +9101,7 @@ def _render_stock_info_html(rec: dict) -> str:
                                    _cf_stmt.get("annual", []), is_kr)
 
         financials_pane = f"""<div class="si-pane" id="si-financials">
+  {_lag_html}
   {chart_svg}
   {is_html}
   {bs_html}
