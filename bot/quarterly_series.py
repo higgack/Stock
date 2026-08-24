@@ -54,6 +54,47 @@ def fiscal_note(fiscal_year_end: str | None) -> str:
     return f"분기 라벨은 달력 기준(회계연도 종료 {fye})"
 
 
+def latest_quarter_end(rows) -> str:
+    """분기 행 목록에서 **가장 늦은 기간 끝**(YYYY-MM-DD). 없으면 "".
+
+    행 순서를 가정하지 않는다 — 야후는 종목마다 최신우선/과거우선을 섞어 준다.
+    """
+    ends = [str((r or {}).get("period") or "")[:10] for r in (rows or [])]
+    ends = [e for e in ends if len(e) == 10]
+    return max(ends) if ends else ""
+
+
+def source_lag_note(series_end, reference_end, *, source: str,
+                    reference: str, today=None, min_days: int = 45) -> str:
+    """원천의 최신 분기가 **다른 원천이 아는 분기보다 뒤처졌으면** 그렇게 말한다.
+
+    ⚠️ '조용한 것'과 '죽은 것'을 화면이 구별하게 한다(#52). AMAT 실측
+    (2026-08-24): 회사는 2026-07-26 종료 분기를 이미 공시했는데 yfinance 분기
+    손익은 **2026-04-26 에서 멈춰** 있었고, 화면은 그걸 그냥 '최근 분기'라고
+    적었다 — 사용자가 **회사 결산월을 외우고 있어야** 낡은 줄 알 수 있었다
+    ("AMAT 는 가장 최근실적이 3Q 아닐까? ... 회사마다 다른거 참 힘들다").
+
+    `min_days` 는 **기간 끝 관례 차이**(며칠)를 걸러 내기 위한 것이다 —
+    분기 하나가 통째로 빠졌을 때만 말한다. 참조가 미래면 판정하지 않는다.
+    """
+    import datetime as _dt
+
+    def _d(x):
+        try:
+            return _dt.date.fromisoformat(str(x)[:10])
+        except (TypeError, ValueError):
+            return None
+    a, b = _d(series_end), _d(reference_end)
+    if not a or not b:
+        return ""
+    now = _d(today) or _dt.date.today()
+    if b > now or (b - a).days < min_days:
+        return ""
+    return (f"⚠️ {source} 은 아직 <b>{b.isoformat()} 종료 분기</b>를 올리지 "
+            f"않았습니다 — {reference}에는 이미 있습니다(여기 표·차트는 "
+            f"<b>{a.isoformat()}</b> 까지)")
+
+
 def _pick(row: dict, names: tuple[str, ...]):
     for nm in names:
         v = row.get(nm)
