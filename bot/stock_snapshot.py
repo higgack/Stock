@@ -989,7 +989,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
 # 2026-08-24: `10-Q · 2026-04-26` — 시작일 없음). 계산은 원본 배열로 하지만
 # **표시는 릴레이된 값만** 본다(#20 배선은 태워야 보인다 · #43 화면이 말해야).
 _XBRL_ANNUAL_KEYS = ("val", "fy", "start", "end", "form")
-_XBRL_LATEST_KEYS = ("val", "fy", "start", "end", "fp", "form")
+_XBRL_LATEST_KEYS = ("val", "fy", "start", "end", "fp", "form", "restored")
 
 
 def slim_xbrl(metrics: dict | None) -> dict:

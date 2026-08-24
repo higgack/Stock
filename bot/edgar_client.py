@@ -566,6 +566,64 @@ def _fact_days(f: dict) -> Optional[int]:
         return None
 
 
+def restore_quarter(dur: list, end: str) -> Optional[dict]:
+    """`end` 에서 끝나는 **단일 분기**를 누적 팩트 차분으로 복원 → 팩트 dict
+    또는 None.
+
+    ⚠️ 대부분의 미국 제출사는 **현금흐름표를 누적(YTD)으로만** 낸다 —
+    분기 길이 팩트가 회계연도 1분기에만 있어서, `_pick_facts` 의 '분기 길이
+    우선' 이 그 한 분기에 붙박이가 된다. LRCX 실측(2026-08-24): 매출·순이익·
+    EPS 는 `25-12-29~26-03-29`(FY2026 3분기)인데 **영업현금흐름만
+    `25-06-30~25-09-28`**(1분기) — 열 헤더가 '최근 분기'인데 한 행만 두 분기
+    뒤처져 있었다. 열은 **세로로** 읽히므로 행마다 '최근'이 다르면 그 열의
+    정의가 갈린다(#32·#45).
+
+    같은 `start`(회계연도 시작)를 공유하는 두 누적을 빼면 그 사이 분기가
+    정확히 나온다 — DART 4분기 차분(`_undo_cumulative_cf`)·EDGAR 결산분기
+    복원과 **같은 규율**이다(#96). 구조 가드 셋:
+      · 두 팩트의 `start` 가 같아야 한다(같은 누적 계열)
+      · 회계연도(`fy`)가 같아야 한다(해를 넘어 빼면 무의미)
+      · 결과 길이가 80~100일이어야 한다(분기가 아니면 만들지 않는다)
+    재작성(restatement) 위험은 각 후보에서 **최신 `filed`** 를 골라 줄인다.
+    """
+    import datetime as _dt
+    cum = [f for f in dur
+           if f.get("end") == end and (_fact_days(f) or 0) > 100
+           and f.get("start")]
+    if not cum:
+        return None
+    # 가장 짧은 누적 = 목표 분기에 가장 가까운 것(9개월 < 12개월)
+    c = min(cum, key=lambda f: (_fact_days(f) or 10**6, -_ord(f.get("filed", ""))))
+    prev = [f for f in dur
+            if f.get("start") == c.get("start") and str(f.get("end", "")) < str(end)
+            and f.get("fy") == c.get("fy")]
+    if not prev:
+        return None
+    p = max(prev, key=lambda f: (str(f.get("end", "")), _ord(f.get("filed", ""))))
+    try:
+        s0 = _dt.date.fromisoformat(str(p["end"])) + _dt.timedelta(days=1)
+        days = (_dt.date.fromisoformat(str(end)) - s0).days
+    except (TypeError, ValueError, KeyError):
+        return None
+    if not (80 <= days <= 100):
+        return None
+    cv, pv = c.get("val"), p.get("val")
+    if not isinstance(cv, (int, float)) or not isinstance(pv, (int, float)):
+        return None
+    # ⚠️ **빼서 만든 값은 형제와 크기를 대조한다**(#167) — 두 누적이 서로 다른
+    # 제출본(재작성)에서 오면 결과가 쓰레기가 되고, 그 한 칸이 그대로 화면에
+    # 실린다. 원천이 분기로 준 팩트가 하나라도 있으면 그것을 형제로 쓴다
+    # (누적만 내는 제출사는 형제가 없어 구조 가드에만 의지한다).
+    sib = [abs(float(f["val"])) for f in dur
+           if 80 <= (_fact_days(f) or 0) <= 100
+           and isinstance(f.get("val"), (int, float))]
+    if sib and abs(cv - pv) > max(sib) * 5:
+        return None
+    return {"val": cv - pv, "fy": c.get("fy"), "fp": c.get("fp"),
+            "form": c.get("form"), "filed": c.get("filed"),
+            "start": s0.isoformat(), "end": end, "restored": True}
+
+
 def _pick_facts(units: dict, unit_kind: str) -> Optional[dict]:
     """Pick latest annual (FY / 10-K·20-F·40-F) + latest-reported fact +
     the chosen currency unit. Restatements resolved by max `filed`.
@@ -588,7 +646,12 @@ def _pick_facts(units: dict, unit_kind: str) -> Optional[dict]:
           if f.get("fp") == "FY" and str(f.get("form", "")).startswith(_ANNUAL_FORMS)]
     if not fy:
         fy = [f for f in arr if f.get("fp") == "FY"]
-    annual = max(fy, key=lambda f: (f.get("end", ""), f.get("filed", ""))) if fy else None
+    # ⚠️ '연간' 도 **한 해 길이**여야 한다 — `fp == "FY"` 만 보면 누적 팩트가
+    # 섞여 들어올 수 있다(#238 은 '최근 분기' 만 고쳤고 연간 쪽은 안 봤다).
+    # 한 해 길이가 하나도 없으면 그대로 둔다(빈칸을 만들지 않는다, #171).
+    _fy_yr = [f for f in fy if 350 <= (_fact_days(f) or 0) <= 380]
+    annual = (max(_fy_yr or fy, key=lambda f: (f.get("end", ""), f.get("filed", "")))
+              if fy else None)
     _dur = [f for f in arr if _fact_days(f) is not None]
     if _dur:
         _q = [f for f in _dur if 80 <= (_fact_days(f) or 0) <= 100]
@@ -599,6 +662,15 @@ def _pick_facts(units: dict, unit_kind: str) -> Optional[dict]:
         # 부르는 것보다 낫고, 호출부가 기간을 적으므로 거짓말이 아니다.
         latest = min(pool, key=lambda f: (_fact_days(f) or 10**6,
                                           -_ord(f.get("filed", ""))))
+        # ⚠️ 분기 길이 팩트가 **옛 분기에만** 있으면 위 선택이 거기 붙박이가
+        # 된다(현금흐름표를 누적으로만 내는 제출사 — LRCX 실측 두 분기 뒤처짐).
+        # 전체 최신 `end` 가 아니거나 분기 길이가 아니면 누적 차분으로 복원.
+        _all_end = max(f.get("end", "") for f in _dur)
+        if (latest.get("end") != _all_end
+                or not 80 <= (_fact_days(latest) or 0) <= 100):
+            _r = restore_quarter(_dur, _all_end)
+            if _r:
+                latest = _r
     else:
         latest = max(arr, key=lambda f: (f.get("end", ""), f.get("filed", "")))
     return {"unit": chosen, "annual": annual, "latest": latest}

@@ -8265,6 +8265,7 @@ def _render_stock_info_html(rec: dict) -> str:
     us_xbrl = us.get("xbrl", {})
     if us_xbrl:
         xb_rows = ""
+        _xb_restored = []
         label_map = {"revenue": "매출", "net_income": "순이익", "eps_diluted": "EPS (희석)",
                      "op_cash_flow": "영업현금흐름", "assets": "자산총계", "liabilities": "부채총계",
                      "equity": "자본총계", "shares": "발행주식수"}
@@ -8309,11 +8310,24 @@ def _render_stock_info_html(rec: dict) -> str:
             _p0, _p1 = str(lat.get("start") or ""), str(lat.get("end") or "")
             _per = (f"{_p0[2:]}~{_p1[2:]}" if _p0 and _p1
                     else (_p1 if _p1 else ""))
-            lat_form = " · ".join(x for x in (str(lat.get("form", "")), _per) if x)
+            # 누적 차분으로 되살린 분기는 **그렇다고 밝힌다** — 원천이 그
+            # 형태로 준 값이 아니므로 말하지 않으면 거짓말이다(#43·#131).
+            lat_form = " · ".join(x for x in (
+                str(lat.get("form", "")), _per,
+                "복원" if lat.get("restored") else "") if x)
+            if lat.get("restored"):
+                _xb_restored.append(label)
             xb_rows += f"<tr><td>{esc(label)}</td><td class='num'>{ann_str}</td><td>{fy_str}</td><td class='num'>{lat_str}</td><td>{esc(lat_form)}</td></tr>\n"
+        # ⚠️ 복원한 행이 있으면 **왜 그랬는지** 표가 말한다(#43).
+        _xb_note = (
+            f'<div class="si-note">ℹ️ <b>{esc(" · ".join(_xb_restored))}</b>'
+            ' 은 원천이 <b>누적(YTD)으로만</b> 공시해 앞 누적을 빼서 그 분기를'
+            ' <b>복원</b>했습니다 — 원천이 분기로 준 값이 아닙니다</div>'
+            if _xb_restored else "")
         us_xbrl_html = f"""<div class="si-section">
     <div class="si-section-title">SEC XBRL 재무</div>
     <table class="si-table"><thead><tr><th>항목</th><th class="num">연간</th><th>회계연도</th><th class="num">최근 분기</th><th>Form · 기간</th></tr></thead><tbody>{xb_rows}</tbody></table>
+    {_xb_note}
   </div>"""
 
     # US insider trades (주주 pane 하단에 추가)

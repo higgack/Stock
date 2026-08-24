@@ -39331,3 +39331,134 @@ class TestRestatedNoteNamesTheRealNumerator20260824:
         assert "♻️" in html and "PSR: 소스 0.10x" in html, "재계산 줄 없음"
         assert "시가총액 ÷ TTM 매출" in html, "PSR 산식이 화면에 없음"
         assert "현재가 ÷ 화면의 분모" not in html, "옛 뭉뚱그린 문구가 남아 있음"
+
+
+class TestYtdOnlyCashFlowQuarterIsRestored20260824:
+    """사용자 2026-08-24 LRCX "이거 이렇게 나오는거 맞는거야?":
+    SEC XBRL 표에서 매출·순이익·EPS 는 `10-Q · 25-12-29~26-03-29`(FY2026
+    3분기)인데 **영업현금흐름만 `10-Q · 25-06-30~25-09-28`**(1분기)로 두 분기
+    뒤처져 있었다. 대부분의 미국 제출사는 **현금흐름표를 누적(YTD)으로만**
+    내므로 분기 길이 팩트가 회계연도 1분기에만 있고, #238 의 '분기 길이 우선'
+    이 그 한 분기에 붙박이가 된다. 열은 **세로로** 읽히므로 행마다 '최근'이
+    다르면 그 열의 정의가 갈린다(#32·#45).
+
+    계약: 같은 `start` 를 공유하는 두 누적을 빼서 그 분기를 복원하고
+    (DART 4분기 차분·EDGAR 결산분기 복원과 **같은 규율**, #96), 원천이 분기로
+    준 값이 아니므로 화면이 **복원했다고 밝힌다**(#43·#131).
+    """
+
+    @staticmethod
+    def _ytd(vals):
+        """(end, 누적값) → FY2026 누적 계열(회계연도 시작 2025-06-30)."""
+        forms = {"2025-09-28": ("Q1", "2025-10-22"),
+                 "2025-12-28": ("Q2", "2026-01-28"),
+                 "2026-03-29": ("Q3", "2026-04-23")}
+        return [{"start": "2025-06-30", "end": e, "val": v, "fy": 2026,
+                 "fp": forms[e][0], "form": "10-Q", "filed": forms[e][1]}
+                for e, v in vals]
+
+    def test_the_latest_quarter_is_restored_from_cumulatives(self):
+        from bot.edgar_client import _pick_facts, _fact_days
+        arr = self._ytd([("2025-09-28", 1.78e9), ("2025-12-28", 4.08e9),
+                         ("2026-03-29", 5.86e9)])
+        lat = _pick_facts({"USD": arr}, "money")["latest"]
+        assert lat["end"] == "2026-03-29", lat        # 옛 코드는 2025-09-28
+        assert lat["start"] == "2025-12-29", lat      # 앞 누적 끝 + 1일
+        assert 80 <= (_fact_days(lat) or 0) <= 100, _fact_days(lat)
+        assert abs(lat["val"] - (5.86e9 - 4.08e9)) < 1.0, lat["val"]
+        assert lat.get("restored") is True, lat
+
+    def test_a_genuine_quarter_fact_at_the_newest_end_wins(self):
+        """⚠️ 원천이 분기로 준 팩트가 최신이면 **복원하지 않는다** — 반대
+        증거가 없으면 '늘 복원'이 통과한다(#25)."""
+        from bot.edgar_client import _pick_facts
+        arr = [{"start": "2025-12-29", "end": "2026-03-29", "val": 5.84e9,
+                "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-04-23"},
+               {"start": "2025-06-30", "end": "2026-03-29", "val": 16.6e9,
+                "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-04-23"}]
+        lat = _pick_facts({"USD": arr}, "money")["latest"]
+        assert lat["val"] == 5.84e9, lat
+        assert not lat.get("restored"), lat
+
+    def test_a_wild_difference_is_refused(self):
+        """빼서 만든 값은 **형제와 크기를 대조**한다(#167) — 두 누적이 서로
+        다른 제출본에서 오면 결과가 쓰레기가 되고 그 칸이 화면에 실린다."""
+        from bot.edgar_client import restore_quarter
+        arr = self._ytd([("2025-09-28", 1.78e9), ("2025-12-28", 4.08e9),
+                         ("2026-03-29", 99e9)])
+        assert restore_quarter(arr, "2026-03-29") is None
+
+    def test_crossing_a_fiscal_year_is_refused(self):
+        """해를 넘어 빼면 무의미하다 — `fy` 가 같아야 한다."""
+        from bot.edgar_client import restore_quarter
+        arr = [{"start": "2025-06-30", "end": "2025-12-28", "val": 4.08e9,
+                "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2026-01-28"},
+               {"start": "2025-06-30", "end": "2026-03-29", "val": 5.86e9,
+                "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-04-23"}]
+        assert restore_quarter(arr, "2026-03-29") is None
+
+    def test_a_non_quarter_gap_is_refused(self):
+        """결과 길이가 분기가 아니면 만들지 않는다(반기 차분 금지)."""
+        from bot.edgar_client import restore_quarter
+        arr = [{"start": "2025-06-30", "end": "2025-09-28", "val": 1.78e9,
+                "fy": 2026, "fp": "Q1", "form": "10-Q", "filed": "2025-10-22"},
+               {"start": "2025-06-30", "end": "2026-03-29", "val": 5.86e9,
+                "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-04-23"}]
+        assert restore_quarter(arr, "2026-03-29") is None
+
+    def test_the_annual_row_must_be_a_year_long(self):
+        """#238 은 '최근 분기' 만 고쳤고 **연간 쪽은 안 봤다** — `fp == "FY"`
+        만 보면 누적 팩트가 연간 칸에 앉을 수 있다."""
+        from bot.edgar_client import _pick_facts
+        # ⚠️ 첫 픽스처는 눈이 멀었다 — 한 해 길이 팩트가 마침 `end` 도 가장
+        # 늦어서 `max(end)` 만으로도 그게 뽑혔다. **누적이 더 늦게 끝나는**
+        # 경우(회계연도 변경 스텁 등)로 강제해야 가드가 발화한다(#91c).
+        arr = [{"start": "2025-06-30", "end": "2026-06-28", "val": 23.23e9,
+                "fy": 2026, "fp": "FY", "form": "10-K", "filed": "2026-08-04"},
+               {"start": "2026-06-29", "end": "2026-09-27", "val": 6.1e9,
+                "fy": 2026, "fp": "FY", "form": "10-K", "filed": "2026-11-04"}]
+        ann = _pick_facts({"USD": arr}, "money")["annual"]
+        assert ann["val"] == 23.23e9, ann
+
+    def test_restored_survives_the_snapshot_relay(self):
+        """⚠️ 계산은 원본으로 해도 화면은 **릴레이된 값만 본다**(#244) —
+        `restored` 가 빠지면 표시가 영영 못 뜬다."""
+        from bot.stock_snapshot import slim_xbrl
+        out = slim_xbrl({"op_cash_flow": {
+            "unit": "USD", "annual": {"val": 1.0, "fy": 2026, "end": "2026-06-28"},
+            "latest": {"val": 2.0, "fy": 2026, "start": "2025-12-29",
+                       "end": "2026-03-29", "form": "10-Q", "restored": True}}})
+        assert out["op_cash_flow"]["latest"].get("restored") is True, out
+
+    def test_the_screen_says_the_quarter_was_restored(self):
+        """헬퍼만 부르는 테스트는 배선을 떼는 변형을 못 잡는다(#20)."""
+        import bot.dashboard as d
+        si = {"currency": "USD", "current_price": 100.0,
+              "us": {"xbrl": {"op_cash_flow": {
+                  "unit": "USD",
+                  "annual": {"val": 5.86e9, "fy": 2026, "end": "2026-06-28",
+                             "form": "10-K"},
+                  "latest": {"val": 1.78e9, "fy": 2026, "start": "2025-12-29",
+                             "end": "2026-03-29", "form": "10-Q",
+                             "restored": True}}}}}
+        p = d._render_stock_info_html({"ticker": "LRCX", "stock_info": si})
+        html = "".join(str(v) for v in p.values())
+        assert "25-12-29~26-03-29" in html, "기간이 화면에 없음"
+        # ⚠️ '복원' 을 페이지 전체에서 찾으면 **각주가 대신 만족**시켜 Form 열
+        # 라벨을 지우는 변형이 통과한다(#75) — 그 셀이 만드는 문자열을 집는다.
+        assert "25-12-29~26-03-29 · 복원" in html, "Form 열 복원 표기 없음"
+        assert "누적(YTD)" in html, "복원 사유 각주 없음"
+
+    def test_no_footnote_when_nothing_was_restored(self):
+        """⚠️ 각주가 늘 뜨면 아무것도 안 재는 것과 같다(#25·#54)."""
+        import bot.dashboard as d
+        si = {"currency": "USD", "current_price": 100.0,
+              "us": {"xbrl": {"op_cash_flow": {
+                  "unit": "USD",
+                  "annual": {"val": 5.86e9, "fy": 2026, "end": "2026-06-28",
+                             "form": "10-K"},
+                  "latest": {"val": 1.78e9, "fy": 2026, "start": "2025-12-29",
+                             "end": "2026-03-29", "form": "10-Q"}}}}}
+        p = d._render_stock_info_html({"ticker": "LRCX", "stock_info": si})
+        html = "".join(str(v) for v in p.values())
+        assert "누적(YTD)" not in html, "복원이 없는데 각주가 떴다"
