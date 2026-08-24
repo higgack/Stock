@@ -1504,6 +1504,21 @@ def build_payload(ticker: str, snap: dict | None = None, *,
     if mkt not in SUPPORTED_MARKETS:
         return None
     snap = snap or {}
+    # ⚠️ **밸류에이션 탭과 같은 분모를 쓰려면 같은 파생을 태워야 한다**
+    # (사용자 2026-08-24 "분기실적 카드도 밸류에이션 탭과 같은 값을 쓰게
+    # 통일"). 야후는 국내 `trailingEps`·`bookValue` 를 안 주므로 밸류에이션
+    # 탭은 `_derive_missing_multiples` 가 DART 로 만든 EPS 를 쓰는데, 여기는
+    # 저장된 스냅샷을 그대로 받아 그 키가 비어 있었다 — 그래서 3순위 폴백
+    # (시총 ÷ TTM 순이익)으로 떨어져 분모가 상장주식수 기준이 되고, 같은
+    # 종목의 PER 이 탭마다 갈렸다(현대이지웰 090850.KQ 실측 7.04x vs 6.75x,
+    # #38·#147 같은 계산은 한 곳에서).
+    # 순수 함수라 네트워크 0 — 스냅샷 안의 값만으로 파생한다.
+    try:
+        from bot.dashboard import _derive_missing_multiples as _dmm
+        snap = _dmm(snap)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("quarterly_infographic: 파생 지표 건너뜀 %s: %s",
+                    ticker, exc)
     is_kr = mkt == "KR"
     dart = None
     if is_kr:

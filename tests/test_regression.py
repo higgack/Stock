@@ -38883,3 +38883,91 @@ class TestSplitAdjustAndYearGaps20260824:
         html = "".join(str(v) for v in p.values())
         assert "26-02-27~26-05-28" in html, "기간을 안 적는다"
         assert "Form · 기간" in html, "열 이름이 기간을 약속하지 않는다"
+
+
+class TestInfographicPerMatchesValuationTab20260824:
+    """사용자 2026-08-24 "분기실적 카드도 밸류에이션 탭과 같은 값을 쓰게 통일".
+
+    현대이지웰 090850.KQ 실측: 밸류에이션 7.04x(현재가 ÷ 화면 EPS) vs 분기실적
+    `TTM PER*` 6.75x(시총 ÷ TTM 순이익). 야후가 국내 `trailingEps` 를 안 줘서
+    인포그래픽이 3순위 폴백으로 떨어졌고, 그 분모는 **상장주식수** 기준이라
+    수정평균(#218·#236)을 쓰는 밸류에이션 탭과 갈렸다(#38·#147).
+    """
+
+    @staticmethod
+    def _qs():
+        return [{"year": 2025, "quarter": q, "label": f"25.{q}Q",
+                 "financials": {"당기순이익": 40e8, "지배주주순이익": 40e8,
+                                "매출": 300e8, "영업이익": 35e8},
+                 "ratios": {}} for q in (2, 3, 4)] + [
+                {"year": 2026, "quarter": q, "label": f"26.{q}Q",
+                 "financials": {"당기순이익": 40e8, "지배주주순이익": 40e8,
+                                "매출": 300e8, "영업이익": 35e8},
+                 "ratios": {}} for q in (1, 2)]
+
+    @staticmethod
+    def _snap():
+        # 수정평균(20M)과 상장주식수(25M)가 **다른** 종목 — 두 규약이 갈린다
+        return {"currency": "KRW", "financial_currency": "KRW",
+                "current_price": 5000.0, "market_cap": 1.25e11,
+                "shares_outstanding": 25_000_000,
+                "kr": {"financials_q": [
+                           {"year": q["year"], "quarter": q["quarter"],
+                            "label": q["label"], **q["financials"]}
+                           for q in TestInfographicPerMatchesValuationTab20260824._qs()],
+                       "financials": {"자본총계": 1.0e11},
+                       "share_totals_series": [
+                           {"period": "2026.06", "issued": 25_000_000},
+                           {"period": "2026.03", "issued": 15_000_000},
+                           {"period": "2025.12", "issued": 15_000_000},
+                           {"period": "2025.09", "issued": 25_000_000}]}}
+
+    def test_card_per_uses_the_same_denominator_as_the_valuation_tab(
+            self, monkeypatch):
+        """⚠️ 헬퍼만 부르면 배선을 못 잡는다(#20) — `build_payload` 를 통째로
+        태운다. DART·라이브 시세는 스텁."""
+        import bot.dart_client as dc
+        import bot.dart_production as dp
+        import bot.dart_quarterly as dq
+        import bot.quarterly_infographic as qi
+        from bot.dashboard import _derive_missing_multiples as dmm
+
+        snap = self._snap()
+        monkeypatch.setattr(dc, "get_dart", lambda: object())
+        monkeypatch.setattr(dq, "get_quarterly_series",
+                            lambda *a, **k: self._qs())
+        monkeypatch.setattr(dp, "prefetch_tables", lambda *a, **k: None)
+        monkeypatch.setattr(qi, "_fill_backlog", lambda *a, **k: None)
+        monkeypatch.setattr(qi, "_live_quote",
+                            lambda *a, **k: {"price": 5000.0, "mcap": 1.25e11})
+
+        out = qi.build_payload("090850.KQ", snap)
+        assert out is not None
+        eps = dmm(snap).get("trailingEps")
+        assert eps, "밸류에이션 탭이 쓰는 EPS 가 안 만들어진다"
+        want = 5000.0 / eps
+        assert abs(out["per"] - want) < 1e-6, (out["per"], want)
+        # 별표(자체계산 폴백)가 붙으면 안 된다 — 분모가 갈렸다는 뜻이다
+        assert not out.get("per_self"), "여전히 시총÷TTM순이익 폴백이다"
+        # 두 규약이 실제로 다른 픽스처인지 확인(#91c — 같으면 아무것도 못 잰다)
+        assert abs(qi.self_per(1.25e11, 160e8) - want) > 0.2, "픽스처가 약하다"
+
+    def test_the_derivation_is_wired_before_the_per_is_read(self):
+        """배선은 **호출**로 센다 — 정의만 있고 안 부르면 소용없다(#120)."""
+        import ast
+        src = open("bot/quarterly_infographic.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "build_payload")
+        # ⚠️ **주석을 재면 안 된다.** 처음엔 `seg.index("_derive_missing_
+        # multiples")` 로 순서를 봤는데, 바로 위 주석에도 같은 이름이 있어
+        # 코드를 PER 계산 뒤로 옮기는 뮤테이션이 통과했다(실측, #59b 소스
+        # 검사는 주석을 지우고 볼 것). AST 노드의 줄 번호로 잰다.
+        _imp = [n.lineno for n in ast.walk(fn)
+                if isinstance(n, ast.ImportFrom)
+                and any(a.name == "_derive_missing_multiples" for a in n.names)]
+        assert _imp, "파생을 안 태운다"
+        _per = [n.lineno for n in ast.walk(fn)
+                if isinstance(n, ast.Call)
+                and getattr(n.func, "id", "") == "_live_per"]
+        assert _per, "_live_per 호출이 없다"
+        assert min(_imp) < min(_per), "PER 을 읽은 뒤에 파생한다"
