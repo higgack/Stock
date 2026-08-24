@@ -614,16 +614,34 @@ def get_key_financials(ticker: str) -> Optional[dict]:
         cik = None
     if not cik:
         return None
+    def _recency(c: dict) -> str:
+        """그 후보가 가진 **가장 최근 종료일** — 후보 선택 기준."""
+        return max(str((c.get(k) or {}).get("end") or "")
+                   for k in ("annual", "latest"))
+
     metrics: dict = {}
     for metric, pairs, kind, _label in _XBRL_METRICS:
+        # ⚠️ **데이터가 있는 첫 후보에서 멈추면 안 된다.** 발행사는 태그를
+        # 바꾼다 — NVDA 실측(2026-08-24): 매출 첫 후보가 FY2022 까지만 있는
+        # 옛 태그라 '연간 $26.91B FY2022 · 최근 분기 $3.10B(2020-01-26)' 이
+        # 화면에 올랐다(다른 행은 전부 FY2026). 나머지 후보도 다 보고 **가장
+        # 최근 데이터를 가진 것**을 고른다(#150 '우리가 그걸 다 쓰고 있나').
+        # 동률이면 목록 순서(선호도)가 이긴다 — `>` 라 먼저 온 게 남는다.
+        # 비용: 후보를 전부 조회하지만 `_fetch_concept` 는 12시간 디스크
+        # 캐시이고 404 도 빈 값으로 캐시한다(#61 비용의 어느 단계인지).
+        best: dict | None = None
         for tax, concept in pairs:
             data = _fetch_concept(cik, tax, concept)
             if not data:
                 continue
             picked = _pick_facts(data.get("units") or {}, kind)
-            if picked and (picked.get("annual") or picked.get("latest")):
-                metrics[metric] = {"concept": concept, "taxonomy": tax, **picked}
-                break
+            if not (picked and (picked.get("annual") or picked.get("latest"))):
+                continue
+            cand = {"concept": concept, "taxonomy": tax, **picked}
+            if best is None or _recency(cand) > _recency(best):
+                best = cand
+        if best:
+            metrics[metric] = best
     if not metrics:
         return None
     return {"cik": cik, "metrics": metrics}

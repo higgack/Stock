@@ -984,6 +984,33 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
     _collect_news_fallback(ticker, snap)
 
 
+# ⚠️ 릴레이할 XBRL 팩트 필드 — **화면이 쓰는 건 여기 실린 것뿐**이다.
+# `start` 를 빠뜨려 '최근 분기' 열이 기간을 못 찍고 있었다(NVDA 실측
+# 2026-08-24: `10-Q · 2026-04-26` — 시작일 없음). 계산은 원본 배열로 하지만
+# **표시는 릴레이된 값만** 본다(#20 배선은 태워야 보인다 · #43 화면이 말해야).
+_XBRL_ANNUAL_KEYS = ("val", "fy", "start", "end", "form")
+_XBRL_LATEST_KEYS = ("val", "fy", "start", "end", "fp", "form")
+
+
+def slim_xbrl(metrics: dict | None) -> dict:
+    """EDGAR `get_key_financials` 결과 → 스냅샷에 실을 **얇은** dict.
+
+    순수 함수 — 어떤 필드가 화면까지 가는지 값으로 검증할 수 있게 뺐다(#41).
+    """
+    out: dict = {}
+    for key, m in (metrics or {}).items():
+        entry: dict = {}
+        for slot, keys in (("annual", _XBRL_ANNUAL_KEYS),
+                           ("latest", _XBRL_LATEST_KEYS)):
+            src = (m or {}).get(slot)
+            if src:
+                entry[slot] = {k: src.get(k) for k in keys}
+        entry["unit"] = (m or {}).get("unit", "USD")
+        if entry.get("annual") or entry.get("latest"):
+            out[key] = entry
+    return out
+
+
 def _enrich_us(ticker: str, snap: dict) -> None:
     """Add US-specific data from SEC EDGAR to an existing snapshot dict."""
     # ── SEC XBRL multi-year financials ────────────────────────────
@@ -991,29 +1018,9 @@ def _enrich_us(ticker: str, snap: dict) -> None:
         from bot.edgar_client import get_key_financials
         kf = get_key_financials(ticker)
         if kf and kf.get("metrics"):
-            metrics = kf["metrics"]
-            us: dict = snap.setdefault("us", {})
-            financials: dict = {}
-            for key, m in metrics.items():
-                entry: dict = {}
-                if m.get("annual"):
-                    entry["annual"] = {
-                        "val": m["annual"].get("val"),
-                        "fy": m["annual"].get("fy"),
-                        "end": m["annual"].get("end"),
-                    }
-                if m.get("latest"):
-                    entry["latest"] = {
-                        "val": m["latest"].get("val"),
-                        "fy": m["latest"].get("fy"),
-                        "end": m["latest"].get("end"),
-                        "form": m["latest"].get("form"),
-                    }
-                entry["unit"] = m.get("unit", "USD")
-                if entry.get("annual") or entry.get("latest"):
-                    financials[key] = entry
+            financials = slim_xbrl(kf["metrics"])
             if financials:
-                us["xbrl"] = financials
+                snap.setdefault("us", {})["xbrl"] = financials
     except Exception as exc:
         log.debug("stock_snapshot: EDGAR financials skipped: %s", exc)
 

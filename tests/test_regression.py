@@ -39109,3 +39109,135 @@ class TestPsrRestatedFromScreenRevenue20260824:
             "stock_info": self._si(priceToSalesTrailing12Months=2.09)})
         html = "".join(str(v) for v in p.values())
         assert "♻️" in html and "PSR" in html and "2.09" in html, "재계산 사유 없음"
+
+
+class TestNvdaXbrlAndRatioZero20260824:
+    """사용자 2026-08-24 NVDA "이거 맞는거야?" 세 건:
+      ① 연간 **부채비율이 네 해 모두 0.0%** — 실제는 31.5%(부채 $49.51B ÷
+         자본 $157.29B). `dbt = ... or 0` 이 '없음'을 0 으로 바꿨다(#235 의
+         비율판).
+      ② SEC XBRL **매출만 FY2022 · 최근 분기 $3.10B(2020-01-26)** — 다른 행은
+         전부 FY2026. 발행사가 태그를 바꿨는데 우리는 '데이터가 있는 첫
+         후보'에서 멈췄다.
+      ③ `Form · 기간` 열에 **종료일만** 찍혔다 — 스냅샷 릴레이가 `start` 를
+         떨어뜨려 화면이 기간을 영영 못 보여줬다(#20 배선).
+      그리고 "연간은 아직 2026년도가 끝나지 않았는데" — NVIDIA 회계연도는
+      1월 말 종료라 FY2026 은 이미 완결이다. 라벨만으론 알 수 없어 밝힌다.
+    """
+
+    # ── ① 없음을 0 으로 바꾸지 않는다 ─────────────────────────────
+    def test_missing_liabilities_is_blank_not_zero(self):
+        from bot.dart_client import calc_kr_financial_ratios as c
+        assert c({"자본총계": 1.5729e11, "당기순이익": 1.2e11})["부채비율"] is None
+        got = c({"자본총계": 1.5729e11, "부채총계": 4.951e10})["부채비율"]
+        assert abs(got - 31.478) < 0.01, got
+        assert c({"유동부채": 1e10})["유동비율"] is None
+        # ⚠️ **진짜 0 은 살아야 한다** — 무차입 회사의 부채비율 0% 는 사실이다
+        assert c({"자본총계": 1e11, "부채총계": 0})["부채비율"] == 0.0
+
+    def test_the_annual_table_shows_a_dash_not_zero(self):
+        """배선까지 태운다(#20) — 헬퍼만 고치고 표가 0 을 그리면 소용없다."""
+        import re
+        import bot.dashboard as d
+
+        def isr(p):
+            return {"period": p, "Total Revenue": 2.159e11,
+                    "Operating Income": 1.304e11, "Net Income": 1.201e11}
+
+        def bsr(p):                      # 부채 항목이 **없는** 재무상태표
+            return {"period": p, "Total Assets": 2.068e11,
+                    "Stockholders Equity": 1.5729e11,
+                    "Total Equity Gross Minority Interest": 1.5729e11}
+        ys = [f"{2023 + i}-01-25" for i in range(4)]
+        fins = {"income_statement": {"annual": [isr(p) for p in ys],
+                                     "quarterly": []},
+                "balance_sheet": {"annual": [bsr(p) for p in ys],
+                                  "quarterly": []},
+                "cash_flow": {"annual": [], "quarterly": []}}
+        si = {"currency": "USD", "current_price": 214.0,
+              "fiscal_year_end": "01-25", "financials": fins}
+        html = "".join(str(v) for v in d._render_stock_info_html(
+            {"ticker": "NVDA", "stock_info": si}).values())
+        i = html.index("재무 추이 (연간")
+        seg = html[i:html.index("</div>", html.index("</table>", i))]
+        row = re.search(r"<tr><td>부채비율</td>(.*?)</tr>", seg, re.S).group(1)
+        assert "0.0%" not in row, ("없음이 0.0% 로 찍혔다", row)
+        assert row.count("—") >= 4, row
+
+    def test_a_non_december_fiscal_year_is_stated(self):
+        """FY2026 이 왜 이미 끝났는지 라벨만으론 알 수 없다(#43·#34)."""
+        import bot.dashboard as d
+
+        def isr(p):
+            return {"period": p, "Total Revenue": 2.159e11,
+                    "Operating Income": 1.304e11, "Net Income": 1.201e11}
+        ys = [f"{2023 + i}-01-25" for i in range(4)]
+        fins = {"income_statement": {"annual": [isr(p) for p in ys],
+                                     "quarterly": []},
+                "balance_sheet": {"annual": [], "quarterly": []},
+                "cash_flow": {"annual": [], "quarterly": []}}
+
+        def _html(fye):
+            si = {"currency": "USD", "current_price": 214.0,
+                  "financials": fins}
+            if fye:
+                si["fiscal_year_end"] = fye
+            p = d._render_stock_info_html({"ticker": "NVDA",
+                                           "stock_info": si})
+            return "".join(str(v) for v in p.values())
+        assert "01-25 결산" in _html("01-25")
+        # ⚠️ 12월 결산이면 잡음을 붙이지 않는다(반대 증거, #25)
+        assert "결산</b>입니다" not in _html("12-31")
+        assert "결산</b>입니다" not in _html(None)
+
+    # ── ② 태그를 바꾼 발행사 ──────────────────────────────────────
+    def test_the_most_recent_concept_wins_not_the_first(self):
+        """발행사는 태그를 바꾼다 — '데이터가 있는 첫 후보'에서 멈추면 옛
+        태그에 굳는다(#150 '우리가 그걸 다 쓰고 있나')."""
+        import bot.edgar_client as ec
+        old_tag = {"USD": [
+            {"start": "2019-10-28", "end": "2020-01-26", "val": 3.105e9,
+             "filed": "2020-02-20", "form": "10-K", "fp": "Q4"},
+            {"start": "2021-02-01", "end": "2022-01-30", "val": 26.914e9,
+             "filed": "2022-03-01", "form": "10-K", "fp": "FY"}]}
+        new_tag = {"USD": [
+            {"start": "2026-01-26", "end": "2026-04-26", "val": 46.7e9,
+             "filed": "2026-05-28", "form": "10-Q", "fp": "Q1"},
+            {"start": "2025-01-27", "end": "2026-01-25", "val": 215.9e9,
+             "filed": "2026-02-26", "form": "10-K", "fp": "FY"}]}
+        orig_fetch, orig_cik = ec._fetch_concept, ec._ticker_to_cik
+        try:
+            ec._fetch_concept = lambda cik, tax, c: (
+                {"units": old_tag} if "ExcludingAssessedTax" in c
+                else {"units": new_tag})
+            ec._ticker_to_cik = lambda t: "0001045810"
+            m = ec.get_key_financials("NVDA")["metrics"]["revenue"]
+        finally:
+            ec._fetch_concept, ec._ticker_to_cik = orig_fetch, orig_cik
+        assert m["annual"]["val"] == 215.9e9, m["annual"]
+        assert m["latest"]["end"] == "2026-04-26", m["latest"]
+
+    # ── ③ start 를 화면까지 나른다 ────────────────────────────────
+    def test_the_period_reaches_the_screen(self):
+        """스냅샷 릴레이가 `start` 를 떨어뜨리면 '최근 분기' 열이 기간을
+        영영 못 찍는다 — 계산은 원본으로 해도 **표시는 릴레이된 값**만
+        본다(#20)."""
+        from bot.stock_snapshot import slim_xbrl
+        m = {"revenue": {"unit": "USD",
+                         "annual": {"val": 2.159e11, "fy": 2026,
+                                    "start": "2025-01-27", "end": "2026-01-25",
+                                    "form": "10-K", "extra": "버릴 것"},
+                         "latest": {"val": 4.67e10, "fy": 2027,
+                                    "start": "2026-01-26", "end": "2026-04-26",
+                                    "fp": "Q1", "form": "10-Q"}}}
+        out = slim_xbrl(m)["revenue"]
+        assert out["latest"]["start"] == "2026-01-26", out["latest"]
+        assert out["annual"]["start"] == "2025-01-27", out["annual"]
+        assert "extra" not in out["annual"], out["annual"]
+        # 그리고 화면이 그 기간을 찍는다
+        import bot.dashboard as d
+        si = {"currency": "USD", "current_price": 214.0,
+              "us": {"xbrl": slim_xbrl(m)}}
+        html = "".join(str(v) for v in d._render_stock_info_html(
+            {"ticker": "NVDA", "stock_info": si}).values())
+        assert "26-01-26~26-04-26" in html, "기간이 화면에 안 나온다"

@@ -7179,8 +7179,24 @@ def _render_stock_info_html(rec: dict) -> str:
         _ft_fmt = (lambda v: compact_amount(v, currency))
         # ⚠️ 대만은 같은 탭에 FinMind 표가 따로 있다 — 원천이 다르면 같은
         # 분기라도 값이 갈리고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34).
-        _sib = ('ℹ️ 아래 <b>분기 재무 (FinMind)</b> 표는 <b>다른 원천</b>이라 '
-                '같은 분기라도 값이 다를 수 있습니다' if is_tw else "")
+        _sib_parts = []
+        # ⚠️ **12월 결산이 아니면 그렇게 말한다.** 사용자 2026-08-24 NVDA:
+        # "연간은 아직 2026년도가 끝나지 않았는데 어떻게 나오는거고" — NVIDIA
+        # 회계연도는 1월 말에 끝나 FY2026 은 **이미 완결**이다. 라벨만 보고는
+        # 알 수 없으니 화면이 밝힌다(#43·#34 라벨에 기준을 박을 것).
+        _fy_end = str(si.get("fiscal_year_end") or "").strip()
+        if _fy_end and not _fy_end.startswith("12"):
+            _sib_parts.append(
+                'ℹ️ 이 회사는 <b>' + esc(_fy_end) + ' 결산</b>입니다(12월 결산 '
+                '아님) — <b>FY</b>N 은 <b>N년 ' + esc(_fy_end[:2].lstrip("0"))
+                + '월에 끝난</b> 회계연도이고, 분기 라벨은 <b>달력 기준</b>입니다')
+        # ⚠️ 대만은 같은 탭에 FinMind 표가 따로 있다 — 원천이 다르면 같은
+        # 분기라도 값이 갈리고, 그러면 사용자는 한쪽이 틀렸다고 읽는다(#34).
+        if is_tw:
+            _sib_parts.append('ℹ️ 아래 <b>분기 재무 (FinMind)</b> 표는 '
+                              '<b>다른 원천</b>이라 같은 분기라도 값이 '
+                              '다를 수 있습니다')
+        _sib = "<br>".join(_sib_parts)
         try:
             from bot.fin_trend import build as _ft_build
             # 열 수는 KR 표·재무제표 탭 차트와 **같은 상수**에서(#38) —
@@ -7200,7 +7216,7 @@ def _render_stock_info_html(rec: dict) -> str:
             kr_fin_ts_html = _kr_fin_trend_table(
                 f"재무 추이 (연간, 최근 {len(_ft_a)}년)", _ft_a,
                 lambda yr: yr.get("label", ""),
-                fmt=_ft_fmt, source="yfinance")
+                fmt=_ft_fmt, source="yfinance", sibling_note=_sib)
 
     # valuation_pane assembled later (after div_html / us_xbrl_html defined)
 

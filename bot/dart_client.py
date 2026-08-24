@@ -820,8 +820,14 @@ def calc_kr_financial_ratios(financials: dict) -> dict:
     net = financials.get("당기순이익")
     asset = financials.get("자산총계") or 0
     eq = financials.get("자본총계") or 0
-    dbt = financials.get("부채총계") or 0
-    ca = financials.get("유동자산") or 0
+    # ⚠️ **분자에 `or 0` 을 쓰면 '없음'이 '0'이 된다.** 부채총계가 없는데
+    # 자본총계만 있으면 `0/eq*100` = **0.0%** 가 화면에 오른다 — NVDA 실측
+    # (2026-08-24): 연간 부채비율이 네 해 모두 `0.0%` 였는데 실제로는 31.5%
+    # (부채 $49.51B ÷ 자본 $157.29B)다. 빈칸이면 '—' 로 보여야 한다
+    # (#43·#181·#235 `or 0` 은 '없음'을 '0'으로 바꾼다 — 그 비율판).
+    # 분모(자산·자본)는 0 이면 어차피 비율을 안 만드므로 `or 0` 이 안전하다.
+    dbt = financials.get("부채총계")
+    ca = financials.get("유동자산")
     cl = financials.get("유동부채") or 0
     fc = financials.get("금융비용") or 0
     gp = financials.get("매출총이익") or 0
@@ -853,8 +859,8 @@ def calc_kr_financial_ratios(financials: dict) -> dict:
         "순이익률": (net / _rev_ok * 100) if (net is not None and _rev_ok) else None,
         "ROE": (net / eq * 100) if (net is not None and eq) else None,
         "ROA": (net / asset * 100) if (net is not None and asset) else None,
-        "부채비율": (dbt / eq * 100) if eq else None,
-        "유동비율": (ca / cl * 100) if cl else None,
+        "부채비율": (dbt / eq * 100) if (dbt is not None and eq) else None,
+        "유동비율": (ca / cl * 100) if (ca is not None and cl) else None,
         "이자보상배율": (op / fc) if (op is not None and fc) else None,
         "매출총이익률": (gp / _rev_ok * 100) if (gp and _rev_ok) else None,
         "이익잉여금비율": (er / asset * 100) if (er and asset) else None,
