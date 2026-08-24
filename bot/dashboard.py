@@ -6039,12 +6039,16 @@ def _derive_missing_multiples(si: dict) -> dict:
         return (float(v) if isinstance(v, (int, float))
                 and not isinstance(v, bool) else None)
 
-    def _restate(o: dict, key: str, price, denom, marks: set) -> bool:
+    def _restate(o: dict, key: str, price, denom, marks: set,
+                 *, num_label: str = "", den_label: str = "",
+                 amount: bool = False) -> bool:
         """`o[key]` 를 **화면의 분자 ÷ 분모**로 다시 만든다 → 재료가 있었으면
         True(호출부는 그때만 시총 기준 폴백을 건너뛴다).
 
-        갈아끼웠으면 `_restated` 에 옛 값을 남긴다 — 계산해 놓고 버리면
-        사용자는 왜 바뀌었는지 알 수 없다(#43·#123)."""
+        갈아끼웠으면 `_restated` 에 옛 값을, `_restate_basis` 에 **무엇을
+        무엇으로 나눴는지**를 남긴다 — 계산해 놓고 버리면 사용자는 왜
+        바뀌었는지 알 수 없다(#43·#123). 지표마다 분자가 다르므로(PER·PBR 은
+        현재가, PSR 은 시가총액) 화면 문구를 뭉뚱그리면 거짓말이 된다(#55)."""
         p, d = _num(price), _num(denom)
         if not p or not d or d <= 0:
             return False
@@ -6056,6 +6060,9 @@ def _derive_missing_multiples(si: dict) -> dict:
         elif abs(cur - want) > abs(want) * 0.01:
             marks.add(key)                       # 소스 값을 갈아끼웠다
             o.setdefault("_restated", {})[key] = cur
+            o.setdefault("_restate_basis", {})[key] = {
+                "num": num_label, "den": den_label,
+                "den_v": d, "amount": amount}
         return True
 
     mcap = _num(out.get("market_cap"))
@@ -6191,7 +6198,8 @@ def _derive_missing_multiples(si: dict) -> dict:
     # **화면이 자기 산수를 못 맞췄다**(#33 · #35 콜드 로드가 옛 파생값을
     # '현재'로 내보낸다). 화면에 분모가 있으면 **그 분모로 다시 만든다**.
     if _restate(out, "priceToBook", out.get("current_price"),
-                out.get("bookValue"), derived):
+                out.get("bookValue"), derived,
+                num_label="현재가", den_label="BPS (주당순자산)"):
         pass
     elif out.get("priceToBook") is None and mcap and equity and equity > 0:
         out["priceToBook"] = mcap / equity
@@ -6200,7 +6208,8 @@ def _derive_missing_multiples(si: dict) -> dict:
     # 분모가 수정평균일 때 `현재가 ÷ EPS` 와 어긋나 눈으로 나눠 봤을 때
     # 안 맞는다(#33, PBR 과 같은 이유). EPS 를 못 만들었을 때만 시총 기준.
     if _restate(out, "trailingPE", out.get("current_price"),
-                out.get("trailingEps"), derived):
+                out.get("trailingEps"), derived,
+                num_label="현재가", den_label="EPS (후행)"):
         pass
     elif out.get("trailingPE") is None and mcap and net and net > 0:
         out["trailingPE"] = mcap / net
@@ -6211,7 +6220,8 @@ def _derive_missing_multiples(si: dict) -> dict:
     # ÷ TTM 매출 20,921억 = **2.32x** 인데 화면은 2.09x(야후 제공값)였다.
     # ⚠️ 비-KR 은 `rev` 가 None 이라(DART 분기 시계열이 없다) 이 분기를 타지
     # 않고 소스값이 그대로 산다 — 시장 게이트 없이 그렇게 된다.
-    _restate(out, "priceToSalesTrailing12Months", mcap, rev, derived)
+    _restate(out, "priceToSalesTrailing12Months", mcap, rev, derived,
+             num_label="시가총액", den_label="TTM 매출", amount=True)
     # 선행 PER — 국내는 **네이버(FnGuide) 추정치**가 원천이다(사용자
     # 2026-08-23 "여기 PER 선행은 Naver Finance 기준으로 해줘. 한국은.
     # 나머지 나라들은 yfinance 로 하면되고"). yfinance 는 국내 `forwardEps`
@@ -6294,6 +6304,38 @@ def _derive_missing_multiples(si: dict) -> dict:
     if _nw:
         out["_naver_window"] = _nw
     return out
+
+
+_RESTATE_LABEL = {"trailingPE": "PER (후행)", "priceToBook": "PBR",
+                  "priceToSalesTrailing12Months": "PSR"}
+
+
+def restated_note_lines(si: dict, fmt_amount=None) -> list:
+    """♻️ 재계산 줄 — **지표마다** 무엇을 무엇으로 나눴는지 사실대로 적는다.
+
+    옛 문구는 세 지표를 뭉뚱그려 "현재가 ÷ 화면의 분모" 라고 적었는데 PSR 은
+    **시가총액 ÷ TTM 매출** 이라 화면이 거짓말을 했다(#55). 게다가 분모를
+    이름으로도 안 밝혀 사용자가 "이게 무슨 말이야?" 를 물어야 했다 — '다르다'
+    만 말하면 안 통하고 **어느 칸을 어느 칸으로 나눴는지** 짚어 줘야 한다
+    (#202). TTM 매출처럼 화면에 한 칸으로 없는 분모는 **값도 같이** 적는다.
+    """
+    old = si.get("_restated") or {}
+    basis = si.get("_restate_basis") or {}
+    lines = []
+    for k, prev in sorted(old.items()):
+        b = basis.get(k) or {}
+        num = b.get("num") or "화면의 분자"
+        den = b.get("den") or "화면의 분모"
+        dv = b.get("den_v")
+        if b.get("amount") and dv and fmt_amount:
+            den = f"{den}({fmt_amount(dv)})"
+        now = si.get(k)
+        tail = (f" = {now:,.2f}x"
+                if isinstance(now, (int, float)) and not isinstance(now, bool)
+                else "")
+        lines.append(f"{_RESTATE_LABEL.get(k, k)}: 소스 {prev:,.2f}x → "
+                     f"{num} ÷ {den}{tail}")
+    return lines
 
 
 def compact_amount(v, currency: str = "USD") -> str:
@@ -8564,17 +8606,13 @@ def _render_stock_info_html(rec: dict) -> str:
     # 왜 숫자가 바뀌었는지 알 수 없다(#43·#123·#129·#131·#189 — 같은 실수를
     # 여섯 번 했다). '자체계산(소스 미제공)' 만 적으면 소스가 준 값을 덮은
     # 경우엔 그 문구가 거짓말이다(#55).
-    _restated = si.get("_restated") or {}
-    if _restated:
-        _rs_names = {"trailingPE": "PER (후행)", "priceToBook": "PBR",
-                     "priceToSalesTrailing12Months": "PSR"}
+    _rs_lines = restated_note_lines(si, lambda v: compact_amount(v, currency))
+    if _rs_lines:
         _derived_block += (
             '<div class="si-note" style="margin-top:6px">♻️ <b>재계산</b> — '
-            + esc(" · ".join(
-                f"{_rs_names.get(k, k)}: 소스 {v:,.2f}x"
-                for k, v in sorted(_restated.items())))
-            + ' 은 화면의 분모와 맞지 않아 <b>현재가 ÷ 화면의 분모</b>로 '
-              '다시 만들었습니다</div>')
+            '소스가 준 배수가 화면의 분자·분모로 나눈 값과 달라 <b>화면의 '
+            '값으로 다시 만들었습니다</b><br>'
+            + "<br>".join(esc(x) for x in _rs_lines) + '</div>')
     # 값이 맞아도 구성이 특이하면 말한다 — 안 하면 사용자가 매번 물어야 한다.
     _ttm_note_html = (f'<div class="si-note" style="margin-top:6px">'
                       f'{esc(si["_ttm_note"])}</div>'
