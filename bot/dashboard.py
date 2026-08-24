@@ -4946,6 +4946,44 @@ def _fmt_over_line(q: dict, csym: str, pdec: int, src: str = "시간외") -> str
     return " · ".join(parts)
 
 
+_LIVE_MULT_KEYS = ("trailingPE", "priceToBook",
+                   "priceToSalesTrailing12Months", "forwardPE")
+
+
+def live_multiples(stored: dict, price, mcap=None) -> dict:
+    """저장 스냅샷의 **화면 분모** ÷ 라이브 분자로 배수를 다시 만든다.
+
+    ⚠️ **오버레이가 분자를 갈아끼우면 파생값도 같이 갈아끼워야 한다.**
+    컴투스 078340.KS 실측(2026-08-24): 화면이 현재가 ₩31,750 · EPS 981.33 ·
+    BPS 84,138.18 을 띄우면서 PER 39.64x · PBR 0.46x · PSR 0.73x 를 실었다 —
+    세 배수를 되짚으면 전부 **₩38,900**(스냅샷 수집 시점 주가)이다. 서버 렌더는
+    그 시점 기준으로 일관됐는데, 라이브 오버레이가 가격·시총·52주 위치만 갈고
+    배수는 안 갈아 **오버레이가 불일치를 만들었다**(#33 화면이 자기 산수를 못
+    맞춘다). 원인은 #203 의 규칙("분모를 못 주면 배수도 보내지 않는다")이
+    yfinance `vals` 만 분모로 봤기 때문이다 — 국내는 yfinance 가 EPS·BPS 를 안
+    주지만 **화면은 이미 DART 로 만든 분모를 그리고 있다**(#183 전용 호출이
+    실패하면 화면이 이미 아는 값으로 되돌아갈 것).
+
+    규칙을 복제하지 않는다 — 스냅샷의 분자만 라이브로 바꿔 `_derive_missing_
+    multiples` 를 **그대로** 태운다. 그러면 서버 렌더와 오버레이가 정의상 같은
+    규약을 쓴다(#38·#199).
+    """
+    if not stored or not isinstance(price, (int, float)) or price <= 0:
+        return {}
+    si = dict(stored)
+    si["current_price"] = float(price)
+    if isinstance(mcap, (int, float)) and mcap > 0:
+        si["market_cap"] = float(mcap)
+    try:
+        out = _derive_missing_multiples(si)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("live_multiples: 파생 실패 %s", exc)
+        return {}
+    return {k: out[k] for k in _LIVE_MULT_KEYS
+            if isinstance(out.get(k), (int, float))
+            and not isinstance(out.get(k), bool)}
+
+
 def build_live_quote(ticker: str, full: bool = False,
                      force_fresh: bool = False) -> dict | None:
     """Fresh live-quote payload for the detail-page overlay (numbers only).
@@ -5166,6 +5204,16 @@ def build_live_quote(ticker: str, full: bool = False,
         if isinstance(_feps, (int, float)) and _feps > 0:
             vals["forwardPE"] = price / _feps
             _recomputed.add("forwardPE")
+        # yfinance 가 분모를 안 주는 시장(국내 EPS·BPS·PSR)은 **화면이 그린
+        # 분모**로 채운다 — 못 만든다고 두면 오버레이가 가격만 갈아 화면이
+        # 자기 산수를 못 맞춘다(컴투스 078340.KS 실측, 위 `live_multiples`).
+        _missing = [k for k in _LIVE_MULT_KEYS if k not in _recomputed]
+        if _missing:
+            _lm = live_multiples(_load_stored_stock_info(ticker), price, mcap)
+            for k in _missing:
+                if k in _lm:
+                    vals[k] = _lm[k]
+                    _recomputed.add(k)
         _h52, _l52 = vals.get("fiftyTwoWeekHigh"), vals.get("fiftyTwoWeekLow")
         if isinstance(_h52, (int, float)) and price > _h52:
             vals["fiftyTwoWeekHigh"] = price
@@ -5191,7 +5239,8 @@ def build_live_quote(ticker: str, full: bool = False,
     # 분모를 못 주면 배수도 보내지 않는다 — 서버가 그린 값이 그대로 산다.
     # PSR·EV/EBITDA 는 화면에 분모 칸이 없어 애초에 재계산이 불가능하다.
     for k, suf in (("trailingPE", "x"), ("forwardPE", "x"),
-                   ("priceToBook", "x"), ("beta", "")):
+                   ("priceToBook", "x"),
+                   ("priceToSalesTrailing12Months", "x"), ("beta", "")):
         v = vals.get(k)
         if isinstance(v, (int, float)) and (k == "beta" or k in _recomputed):
             fmt[k] = f"{float(v):.2f}{suf}"

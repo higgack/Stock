@@ -37234,11 +37234,21 @@ class TestShareCountIdentity:
         assert 'k in _recomputed' in seg, "재계산 여부를 안 본다"
         for k in ("trailingPE", "priceToBook", "forwardPE"):
             assert f'_recomputed.add("{k}")' in seg, k
-        # 분모 칸이 없는 배수는 애초에 안 보낸다
-        i = seg.index('for k, suf in ((\"trailingPE\"')
-        loop = seg[i:i + 260]
-        assert "priceToSalesTrailing12Months" not in loop, \
-            "분모 칸이 없는 PSR 을 여전히 덮어쓴다"
+        # ⚠️ 2026-08-24 계약 변경(#222 옛 회귀는 지우지 말고 다시 쓴다):
+        # 옛 단언은 "PSR 은 화면에 분모 칸이 없으니 목록에서 빼라" 였다.
+        # 그 사이 분기별 재무추이 표에 매출이 실려(#241) PSR 도 화면의
+        # 분모로 검산되고, 컴투스 078340.KS 실측에서 **낡은 주가 기준 PSR
+        # 0.73** 이 그대로 살아 있는 게 드러났다(#248). 이제 PSR 도 다시
+        # 만들어 보낸다 — 다만 **재계산했을 때만**이라는 이 테스트의 핵심
+        # 계약은 그대로다. 그래서 목록 포함 여부가 아니라 **게이트**를 잰다.
+        i = seg.index('for k, suf in (("trailingPE"')
+        loop = seg[i:i + 400]
+        assert "priceToSalesTrailing12Months" in loop, \
+            "PSR 은 이제 재계산 가능하다 — 목록에 있어야 한다"
+        assert "k in _recomputed" in loop, \
+            "재계산 안 한 배수를 그대로 덮어쓴다(옛 슈프리마 증상)"
+        assert '"beta"' in loop and 'k == "beta"' in loop, \
+            "베타만 재계산 예외여야 한다(가격 파생이 아니다)"
         assert "enterpriseToEbitda" not in loop, loop
         # 베타는 배수가 아니라 그대로 간다
         assert '"beta"' in loop
@@ -39556,3 +39566,102 @@ class TestSourceLagIsAnnounced20260824:
         p = d._render_stock_info_html({
             "ticker": "AMAT", "stock_info": self._si(sec_end="")})
         assert "종료 분기" not in str(p.get("other_panes") or ""), "대조군 없이 단정"
+
+
+class TestOverlayRebuildsMultiplesFromScreenDenominator20260824:
+    """사용자 2026-08-24 컴투스 078340.KS "왜 TTM PER 가 다른거야? … 왜 같은
+    이슈가 계속 나오는지 도무지 이해가 안 간다":
+
+    화면이 현재가 ₩31,750 · EPS 981.33 · BPS 84,138.18 을 띄우면서
+    PER 39.64x · PBR 0.46x · PSR 0.73x 를 실었다. 세 배수를 되짚으면 전부
+    **₩38,900**(스냅샷 수집 시점 주가)이다 — 서버 렌더는 그 시점 기준으로
+    일관됐는데 **라이브 오버레이가 가격·시총·52주 위치만 갈고 배수는 안 갈아**
+    불일치를 만들었다(#33).
+
+    원인은 #203 의 규칙("분모를 못 주면 배수도 보내지 않는다 — 서버 값이
+    그대로 산다")이 yfinance `vals` 만 분모로 봤기 때문이다. 국내는 yfinance 가
+    EPS·BPS 를 안 주지만 **화면은 이미 DART 로 만든 분모를 그리고 있다**
+    (#183 전용 호출이 실패하면 화면이 이미 아는 값으로 되돌아갈 것).
+
+    계약: **오버레이가 분자(가격·시총)를 갈아끼우면 그 분자로 만든 파생값도
+    같이 갈아끼운다.** 규칙은 복제하지 않고 `_derive_missing_multiples` 를
+    그대로 태운다 — 그래야 서버 렌더와 오버레이가 정의상 같은 규약이다(#38·#199).
+    """
+
+    SH = 12091313
+
+    @classmethod
+    def _stored(cls, **over):
+        qs = [{"year": 2025, "quarter": 3, "매출": 1520e8, "지배주주순이익": 30e8},
+              {"year": 2025, "quarter": 4, "매출": 1730e8, "지배주주순이익": 120e8},
+              {"year": 2026, "quarter": 1, "매출": 1447e8, "지배주주순이익": 8e8},
+              {"year": 2026, "quarter": 2, "매출": 1570e8, "지배주주순이익": -35e8}]
+        si = {"currency": "KRW", "current_price": 38900.0,
+              "market_cap": 38900.0 * cls.SH, "shares_outstanding": cls.SH,
+              "trailingEps": 981.33, "bookValue": 84138.18,
+              "trailingPE": 39.64, "priceToBook": 0.46,
+              "priceToSalesTrailing12Months": 0.73,
+              "kr": {"financials_q": qs}}
+        si.update(over)
+        return si
+
+    def test_multiples_follow_the_live_price(self):
+        from bot.dashboard import live_multiples
+        out = live_multiples(self._stored(), 31750.0, 31750.0 * self.SH)
+        assert abs(out["trailingPE"] - 31750.0 / 981.33) < 1e-6, out
+        assert abs(out["priceToBook"] - 31750.0 / 84138.18) < 1e-9, out
+        ttm = (1520 + 1730 + 1447 + 1570) * 1e8
+        assert abs(out["priceToSalesTrailing12Months"]
+                   - 31750.0 * self.SH / ttm) < 1e-9, out
+        # 옛 동작(스냅샷 주가 기준)이 남아 있으면 이 값들이다
+        assert round(out["trailingPE"], 2) != 39.64, out
+        assert round(out["priceToBook"], 2) != 0.46, out
+
+    def test_the_screen_can_divide_its_own_cells(self):
+        """불변식: 화면의 분자 ÷ 화면의 분모 = 화면의 배수(#33)."""
+        from bot.dashboard import live_multiples
+        for price in (31750.0, 40000.0, 12345.0):
+            out = live_multiples(self._stored(), price, price * self.SH)
+            assert abs(out["trailingPE"] * 981.33 - price) < 1e-6, price
+            assert abs(out["priceToBook"] * 84138.18 - price) < 1e-6, price
+
+    def test_no_price_no_multiples(self):
+        """⚠️ 늘 값을 만들면 아무것도 안 재는 것과 같다 — 반대 증거(#25)."""
+        from bot.dashboard import live_multiples
+        assert live_multiples(self._stored(), None) == {}
+        assert live_multiples(self._stored(), 0) == {}
+        assert live_multiples(None, 31750.0) == {}
+
+    def test_missing_denominator_makes_no_multiple(self):
+        """분모가 없으면 **만들지 않는다** — 틀린 숫자보다 빈칸이 낫다(#29)."""
+        from bot.dashboard import live_multiples
+        out = live_multiples(
+            {"currency": "KRW", "current_price": 38900.0,
+             "shares_outstanding": self.SH}, 31750.0)
+        assert "trailingPE" not in out and "priceToBook" not in out, out
+
+    def test_the_overlay_actually_calls_it(self):
+        """⚠️ 헬퍼만 부르는 테스트는 **배선을 떼는 변형을 못 잡는다**(#20) —
+        `build_live_quote` 안에서 호출되고, 그 결과가 오버레이에 실리는지
+        AST 로 못박는다(#120 정의 1 + 호출 1)."""
+        import ast
+        import inspect
+        import bot.dashboard as d
+        tree = ast.parse(inspect.getsource(d.build_live_quote))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "live_multiples"]
+        assert len(calls) == 1, f"build_live_quote 가 live_multiples 를 안 부른다"
+        # 그리고 그 결과가 `vals` 로 들어가야 화면에 실린다
+        src = inspect.getsource(d.build_live_quote)
+        assert "_recomputed.add(k)" in src, "재계산 표시 없이는 오버레이가 안 보낸다"
+
+    def test_psr_is_emitted_now_that_it_can_be_rebuilt(self):
+        """PSR 은 '화면에 분모 칸이 없어 재계산 불가'라 안 보냈는데(#203),
+        분기별 재무추이 표에 매출이 실리면서 재계산이 가능해졌다(#241)."""
+        import inspect
+        import bot.dashboard as d
+        src = inspect.getsource(d.build_live_quote)
+        i = src.index('for k, suf in (("trailingPE"')
+        seg = src[i:i + 400]
+        assert "priceToSalesTrailing12Months" in seg, seg[:200]
