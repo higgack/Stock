@@ -12074,6 +12074,21 @@ class TestBlogWatchMultiBlog:
             f"<category>{c}</category></item>" for t, l, g, c in items)
         return f"<rss><channel><title>{channel}</title>{body}</channel></rss>"
 
+    def test_every_blog_entry_is_well_formed(self):
+        """⚠️ 이름 열거는 **새 항목을 못 잡는다**(#24) — 위 테스트는 특정
+        블로그의 등록/제거를 못박고, 이 테스트는 목록 **전체**를 훑는다.
+        id 가 겹치면 seen-set 이 섞여 한쪽 글이 조용히 사라진다."""
+        import bot.blog_watch as bw
+        assert bw._BLOGS, "감시 블로그 목록이 비었다"
+        seen = set()
+        for b in bw._BLOGS:
+            assert set(b) == {"id", "title", "categories"}, b
+            assert isinstance(b["id"], str) and b["id"].strip(), b
+            assert isinstance(b["title"], str) and b["title"].strip(), b
+            assert b["categories"] is None or isinstance(b["categories"], (list, tuple)), b
+            assert b["id"] not in seen, f"blogId 중복: {b['id']}"
+            seen.add(b["id"])
+
     def test_blogs_config_has_teasky_pilseung(self):
         import bot.blog_watch as bw
         ids = {b["id"]: b for b in bw._BLOGS}
@@ -12091,6 +12106,10 @@ class TestBlogWatchMultiBlog:
         assert "roe_20" in ids, "사용자 요청 블로그 미등록"
         assert ids["roe_20"]["categories"] is None            # 전체 글
         assert ids["roe_20"]["title"] == "게으른 투자자"
+        # 사용자 2026-08-24 arirangya 추가(표시명 사용자 확정 '사색하는 투자자').
+        assert "arirangya" in ids, "사용자 요청 블로그 미등록"
+        assert ids["arirangya"]["categories"] is None         # 전체 글
+        assert ids["arirangya"]["title"] == "사색하는 투자자"
         assert ids["richyun0108"]["categories"] is None        # 전체 글
         assert "bboyanaga" in ids and ids["bboyanaga"]["title"] == "애널리스트 김경민"  # 사용자 2026-06-23
         assert ids["bboyanaga"]["categories"] is None          # 전체 글
@@ -39665,3 +39684,64 @@ class TestOverlayRebuildsMultiplesFromScreenDenominator20260824:
         i = src.index('for k, suf in (("trailingPE"')
         seg = src[i:i + 400]
         assert "priceToSalesTrailing12Months" in seg, seg[:200]
+
+
+class TestVolCardHasOneToday20260824:
+    """2026-08-24 회귀가 잡아낸 결함 — 한 카드가 **두 개의 '오늘'** 을 썼다.
+
+    변동성 카드는 장중/종가 라벨을 `_market_today(market)`(시장 현지일)로
+    판정하는데, 지연 배지(`age`)는 `_vol_age_days` 가 **KST** 로 재고 있었다.
+    같은 판정을 두 곳이 다른 출처로 하면 갈라진다(#38) — 그리고 '오늘'을 KST
+    로 잡으면 미국이 하루 앞선다(한국 08-20 05:00 = 뉴욕 08-19 16:00, #40).
+    그 결과 카드가 `08-20 장중` 이라고 써 놓고 바로 아래 지연 각주는
+    `2026-08-20 종가를 기준으로` 라고 적어 **자기 라벨을 뒤집었다**(#43a·#55).
+    """
+
+    def test_age_uses_the_market_local_date(self):
+        import datetime as _dt
+        import bot.market_timing as mt
+        # 뉴욕이 아직 08-19 인 시각 — KST 로 재면 하루 더 늙어 보인다.
+        _orig = mt._market_today
+        try:
+            mt._market_today = lambda m: _dt.date(2026, 8, 19)
+            assert mt._vol_age_days("2026-08-19", "US") == 0
+        finally:
+            mt._market_today = _orig
+        # market 을 안 주면 종전대로 KST(호출부 호환)
+        assert mt._vol_age_days("1900-01-01") > 0
+
+    def test_the_stale_note_uses_the_same_label_as_the_card(self, monkeypatch):
+        """각주가 '종가' 를 하드코딩하면 장중인 값을 종가라고 부른다."""
+        import datetime as _dt
+        import bot.market_timing as mt
+        rec = {"value": 58.3, "date": "2026-08-20", "source": "KIS",
+               "market": "KR", "history": {"전일": 60.6}}
+        # 장중인데 지연 배지가 뜨는 상황을 강제(두 시계가 갈렸을 때의 증상)
+        monkeypatch.setattr(mt, "_market_today", lambda m: _dt.date(2026, 8, 20))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
+        monkeypatch.setattr(mt, "_vol_age_days", lambda d, m=None: 6)
+        html = mt.render_market_timing_page(
+            {"markets": {}, "as_of": "2026-08-20", "volatility": {"vkospi": rec}})
+        assert "갱신되지 않았습니다" in html, "지연 각주가 안 떴다(픽스처 무효)"
+        assert "2026-08-20 장중</b>를 기준으로" in html, "각주가 카드 라벨과 다르다"
+        assert "2026-08-20 종가</b>를 기준으로" not in html, "각주가 '종가' 를 하드코딩"
+
+    def test_the_card_passes_the_market_to_the_age_helper(self, monkeypatch):
+        """⚠️ 헬퍼만 부르는 테스트는 **배선을 떼는 변형을 못 잡는다**(#20) —
+        `_vol_age_days(date)` 로 되돌리는 뮤테이션이 실제로 통과했다.
+        호출부가 시장을 넘기는지 **스파이로** 확인한다."""
+        import datetime as _dt
+        import bot.market_timing as mt
+        seen = []
+        _orig = mt._vol_age_days
+        monkeypatch.setattr(mt, "_vol_age_days",
+                            lambda d, m=None: (seen.append((d, m)), _orig(d, m))[1])
+        monkeypatch.setattr(mt, "_market_today", lambda m: _dt.date(2026, 8, 20))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
+        mt.render_market_timing_page({"markets": {}, "as_of": "2026-08-20",
+                                      "volatility": {"vkospi": {
+                                          "value": 58.3, "date": "2026-08-20",
+                                          "source": "KIS", "market": "KR",
+                                          "history": {"전일": 60.6}}}})
+        assert seen, "지연 판정이 아예 안 불렸다(픽스처 무효)"
+        assert all(m == "KR" for _d, m in seen), f"시장을 안 넘긴다: {seen}"

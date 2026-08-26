@@ -880,15 +880,23 @@ def _vol_cache_load(key: str) -> dict | None:
 _VOL_STALE_DAYS = 5          # 이보다 오래되면 카드에 지연 표시
 
 
-def _vol_age_days(date_str: str | None) -> int | None:
-    """'YYYY-MM-DD' → KST 오늘 기준 경과일. 못 읽으면 None."""
+def _vol_age_days(date_str: str | None, market: str | None = None) -> int | None:
+    """'YYYY-MM-DD' → 경과일. 못 읽으면 None.
+
+    ⚠️ **'오늘'은 시장 현지일이다**(#40) — KST 로 잡으면 미국이 하루 앞선다
+    (한국 08-20 05:00 = 뉴욕 08-19 16:00). 같은 카드에서 장중/종가 판정은
+    `_market_today()` 를, 지연 판정은 KST 를 쓰고 있어 **한 카드가 두 개의
+    '오늘'** 을 갖고 있었다(#38 같은 판정을 두 곳이 다른 출처로 하면 갈라진다).
+    `market` 을 주면 그 시장의 현지일로, 없으면 종전대로 KST.
+    """
     if not date_str:
         return None
     try:
         d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
-    return (_kst_now().date() - d).days
+    today = _market_today(market) if market else _kst_now().date()
+    return (today - d).days
 
 
 # ── 관측 누적 시계열 + 시세 메타 폴백 ──────────────────────────────────
@@ -1636,7 +1644,7 @@ SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10
             (사용자 2026-08-16). 없는 창은 칸 자체를 만들지 않는다."""
             src = rec.get("source", "")
             # 종가 기반 값은 **며칠 종가인지**를 같이 낸다(규칙 10b).
-            age = _vol_age_days(rec.get("date"))
+            age = _vol_age_days(rec.get("date"), rec.get("market"))
             if rec.get("date"):
                 # ⚠️ 장중엔 '종가' 가 아니다. VKOSPI 가 한국 현지 10:26 에
                 # "KIS · 08-20 종가" 로 떠 있었다(사용자 2026-08-20 캡처) —
@@ -1654,7 +1662,7 @@ SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10
                 stale_note = (f'<div class="note">⚠️ 이 지수는 원천 시계열이 '
                               f'<b>{age}일째</b> 갱신되지 않았습니다 — 아래 '
                               f'현재·전일·1주·1달·1년은 모두 '
-                              f'<b>{rec["date"]} 종가</b>를 기준으로 뒤로 센 '
+                              f'<b>{rec["date"]} {_kind}</b>를 기준으로 뒤로 센 '
                               f'값입니다(오늘 기준이 아닙니다).</div>')
             cells = (f'<div class="stat"><div class="k">현재'
                      f'{f" ({_h.escape(src)})" if src else ""}</div>'
