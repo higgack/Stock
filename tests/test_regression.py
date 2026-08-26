@@ -12110,6 +12110,10 @@ class TestBlogWatchMultiBlog:
         assert "arirangya" in ids, "사용자 요청 블로그 미등록"
         assert ids["arirangya"]["categories"] is None         # 전체 글
         assert ids["arirangya"]["title"] == "사색하는 투자자"
+        # 사용자 2026-08-26 intelligent_tiger 추가(표시명 사용자 확정).
+        assert "intelligent_tiger" in ids, "사용자 요청 블로그 미등록"
+        assert ids["intelligent_tiger"]["categories"] is None      # 전체 글
+        assert ids["intelligent_tiger"]["title"] == "영리한 타이거"
         assert ids["richyun0108"]["categories"] is None        # 전체 글
         assert "bboyanaga" in ids and ids["bboyanaga"]["title"] == "애널리스트 김경민"  # 사용자 2026-06-23
         assert ids["bboyanaga"]["categories"] is None          # 전체 글
