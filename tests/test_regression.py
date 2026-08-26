@@ -40137,3 +40137,111 @@ class TestIntelligentTigerMarketOnly20260826:
         with _pt.raises(TypeError):
             "abc".startswith(["a"])
         assert "abc".startswith("a") and "abc".startswith(("a", "z"))
+
+
+class TestValuechainListMatchesResolvedEntity20260826:
+    """사용자 2026-08-26 "GS 에 GST 가 들어가있어" — 밸류체인 페이지가 헤더는
+    🏢 GS 로 **정확히** 풀어 놓고, 하단 목록만 원시 질의 **부분문자열**로 걸러
+    `norm('gst').indexOf('gs')===0` 인 GST(무관 회사)가 GS 페이지에 실렸다.
+    헤더와 목록이 다른 모집단을 세면 갈라진다(#45).
+
+    계약: 엔티티가 해석되면 목록도 **그 엔티티로 정확히** 거른다(회사=양끝 ·
+    품목=target · 업종=e.g). 해석 실패 시에만 자유검색으로 떨어지고 라벨이
+    '포함' 이라고 밝힌다.
+
+    ⚠️ 기존 밸류체인 JS 회귀는 전부 소스 문자열이었다("클라 JS라 렌더 직접
+    실행 불가" — 그런데 node 가 있다). 이 클래스는 DOM 스텁으로 **실제 렌더를
+    태워** 값으로 검증한다(#19·#20).
+    """
+
+    EDGES = [
+        {"c": "GS", "r": "취급품목", "t": "AI데이터센터", "e": "", "s": "blog:메르",
+         "st": "등재", "k": "kg", "g": "", "d": "2026-06-30", "f": "active"},
+        {"c": "GS", "r": "수출품목", "t": "원유", "e": "HS 2709001010", "s": "관세청",
+         "st": "", "k": "trade", "g": "정유", "d": "", "f": "active"},
+        {"c": "GST", "r": "수출품목", "t": "반도체제조용장비", "e": "HS 8421219020",
+         "s": "관세청", "st": "", "k": "trade", "g": "반도체", "d": "", "f": "active"},
+        {"c": "자이엘", "r": "납품", "t": "GS", "e": "", "s": "dart:x",
+         "st": "승인", "k": "kg", "g": "", "d": "2026-07-01", "f": "active"},
+    ]
+
+    _PRE = r"""
+var __h={}; var __els={};
+function __mk(id){
+  var o={id:id,_t:'',value:'',className:'',
+    appendChild:function(){},setAttribute:function(){},
+    getAttribute:function(){return '';},
+    addEventListener:function(t,fn){(__h[id]=__h[id]||{})[t]=fn;},
+    remove:function(){},closest:function(){return null;}};
+  Object.defineProperty(o,'textContent',{get:function(){return o._t;},
+    set:function(v){o._t=(v==null?'':String(v));}});
+  Object.defineProperty(o,'innerHTML',{get:function(){return o._t;},
+    set:function(v){o._t=(v==null?'':String(v));}});
+  return o;
+}
+function __el(id){ if(!__els[id]) __els[id]=__mk(id); return __els[id]; }
+var document={getElementById:__el,
+  createElement:function(){return __mk('tmp'+(++__mkN));},
+  addEventListener:function(){}};
+var __mkN=0;
+var window={};
+__el('vc-data').textContent=process.argv[2];
+"""
+    _POST = r"""
+__el('vc-search').value=process.argv[3];
+__h['vc-search']['input']();
+console.log(JSON.stringify({list:__el('vc-list').innerHTML,
+                            focus:__el('vc-focus').innerHTML}));
+"""
+
+    @classmethod
+    def _render(cls, query):
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+        import pytest as _pt
+        import bot.dashboard as d
+        node = shutil.which("node")
+        if not node:
+            _pt.skip("node 없음 — JS 렌더 실행 불가")
+        inner = d._VALUECHAIN_JS.split("<script>")[1].split("</script>")[0]
+        payload = json.dumps({"arch": 0, "edges": cls.EDGES}, ensure_ascii=False)
+        with tempfile.TemporaryDirectory() as td:
+            path = f"{td}/vc_harness.js"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(cls._PRE + inner + cls._POST)
+            r = subprocess.run([node, path, payload, query],
+                               capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr[-1500:]
+        return json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_gs_page_has_no_gst_rows(self):
+        out = self._render("GS")
+        lst = out["list"]
+        assert "<b>GST</b>" not in lst, "GST 가 GS 목록에 실렸다(옛 부분문자열 필터)"
+        assert "원유" in lst and "AI데이터센터" in lst, lst[:300]
+        assert "관계 3건 — GS" in lst, lst[:200]
+
+    def test_company_list_includes_edges_where_it_is_the_target(self):
+        """공급사(회사가 target 인 납품 엣지)도 목록에 있어야 한다 — 양끝 매칭."""
+        out = self._render("GS")
+        assert "자이엘" in out["list"], out["list"][:300]
+
+    def test_gst_page_shows_only_gst(self):
+        """⚠️ 반대 방향 — GST 페이지에 GS 행이 새어 들지 않는다."""
+        out = self._render("GST")
+        lst = out["list"]
+        assert "반도체제조용장비" in lst, lst[:300]
+        assert "<b>GS</b>" not in lst, lst[:300]
+
+    def test_item_query_filters_by_target(self):
+        out = self._render("원유")
+        lst = out["list"]
+        assert "품목 원유" in lst and "<b>GS</b>" in lst, lst[:300]
+        assert "GST" not in lst, lst[:300]
+
+    def test_unresolved_query_falls_back_to_substring_search(self):
+        """⚠️ 자유검색을 없애면 오타 탐색이 죽는다 — 라벨이 '포함' 으로 밝힌다."""
+        out = self._render("지멘스독일")
+        assert "포함" in out["list"] and "관계 0건" in out["list"], out["list"][:200]
