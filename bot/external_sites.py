@@ -45,6 +45,10 @@ SITES: tuple[Site, ...] = (
     # 사용자 2026-08-22: nav 제목 지정 — "Stockhub" · "싹다분석".
     Site("Stockhub", "Stockhub", "https://stockhub.kr/"),
     Site("싹다분석", "싹다분석", "https://stocks.allreview.kr/"),
+    # 사용자 2026-08-26: "Sites 에 추가해주고 대시보드 Nav 도 추가, 둘다
+    # 제목은 'Nvidia screener'".
+    Site("Nvidia screener", "Nvidia screener",
+         "https://nvidiascreener.streamlit.app/"),
 )
 
 
