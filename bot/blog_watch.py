@@ -54,7 +54,12 @@ _BLOGS = (
     # 첫 run 은 per-blog init 으로 기존 글 seen 처리만 — 백필 없이 새 글부터.
     {"id": "arirangya", "title": "사색하는 투자자", "categories": None},  # 전체 글
     # 사용자 2026-08-26 (blog.naver.com/intelligent_tiger, 표시명 사용자 확정).
-    {"id": "intelligent_tiger", "title": "영리한 타이거", "categories": None},  # 전체 글
+    # "시황만 받아보고 싶어" → 카테고리 필터. VM `--check` 실측 분포(50건 중):
+    # 알바트로스님의 초대장 24(푸쉬업 일지) · 국내증시 시황정리 19 · 내돈내산
+    # 주식 명서 4 · 끄적끄적 주식낙서 2 · 월별 결산일지 1. 접두어는 **원천이
+    # 싣는 이름 그대로** — 추측하면 startswith 가 안 맞아 조용히 0건이 된다.
+    {"id": "intelligent_tiger", "title": "영리한 타이거",
+     "categories": "국내증시 시황정리"},
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
