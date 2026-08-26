@@ -3182,12 +3182,16 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
   가정 금지"(실수#12) 대응용 grounded 레퍼런스 생성에 유용하나 AI 보강 단계가 API 키 과금 또는
   로컬 Claude Code 구독 소모를 유발 — 사용자가 본인 머신에서 직접 실행 판단(에이전트가 임의
   과금 유발 금지). 생성물은 다른 티커분석과 동일하게 "데이터 vs 환각" 검증 후 커밋.
-- **book-to-skill** (virgiliojr94/book-to-skill, 2026-08-26 검토 — 조건부 채택) — PDF/EPUB
-  문서를 Claude Code 스킬(SKILL.md + 장별 온디맨드)로 로컬 변환. Skill_Seekers 와 같은 슬롯
-  이나 과금 구조 단순(추출·분석 로컬, 파일 업로드 없음 — 단 스킬 생성은 Claude Code 세션
-  구독 토큰 소모)·유지 활발로 우선. **한국어 PDF 실측 후** 사용, 머신별 설치(`npx skills
-  add virgiliojr94/book-to-skill`, repo 커밋 불요). 1차 용도 = DART·ECOS·KRX API 매뉴얼 →
-  grounded 레퍼런스(실수 #12 대응 — 이 세션에서만 #96·#214·#238 이 "원천 문서 확인" 반복).
+- **book-to-skill** (virgiliojr94/book-to-skill, 2026-08-26 검토 — 조건부 채택 →
+  **같은 날 샌드박스 실측으로 파이프라인 검증 통과**) — PDF/EPUB 문서를 Claude Code 스킬
+  (SKILL.md + 장별 온디맨드)로 로컬 변환. Skill_Seekers 와 같은 슬롯이나 과금 구조 단순
+  (추출·분석 로컬 — 단 스킬 생성은 Claude Code 세션 구독 토큰 소모)·유지 활발로 우선.
+  실측: 한글 PDF 2종(TTF 임베드·**CID 비임베드** = hwp→PDF 류)을 pypdf 체인으로 **무손실
+  추출**, boilerplate 클리닝 동작, 추출→장 분리→스킬 생성→장 근거 검색 E2E 통과 + 반대
+  증거(문서에 없는 주제 부재) 확인. ⚠️ 남은 관문 하나: 실제 관공서 PDF 가 **스캔 이미지**
+  (텍스트 레이어 없음)면 여전히 실패 — 진짜 가이드 PDF 로 추출 텍스트 한 번 눈검사.
+  머신별 설치(`npx skills add virgiliojr94/book-to-skill`, repo 커밋 불요). 1차 용도 =
+  DART·ECOS·KRX API 매뉴얼 → grounded 레퍼런스(실수 #12 — #96·#214·#238 "원천 문서 확인" 반복).
 - 자동화 인벤토리·CLAUDE.md 룰↔테스트 커버리지 매핑 = `docs/automation.md` / `docs/tests.md`.
 
 ## 멀티마켓 · 기능 상세 → CLAUDE_REFERENCE.md
