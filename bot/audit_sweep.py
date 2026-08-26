@@ -123,6 +123,11 @@ def _findings(out: str) -> list[str]:
         txt = ln.strip()
         if re.search(r"❌\s*=", txt):
             continue
+        # ⚠️ **`❌ … 0` 을 '계수 라벨' 이라 보고 거르지 말 것.** 2026-08-26 에
+        # `❌ 불일치 0`(정상)을 걸러내려다 `❌ 카드 0개`(대조 0건 = 진짜 결함,
+        # #54)까지 삼켰다 — 0 은 문맥에 따라 정상이기도 결함이기도 하므로
+        # **문자열로는 못 가른다**(#65·#60 문자열이 아니라 구조로). 해법은
+        # 생산부다: 판정 글자를 계수 라벨로 쓰지 않는다(board_audit 관심종목).
         hits.append(f"[{section}] {txt}" if section else txt)
     return hits
 

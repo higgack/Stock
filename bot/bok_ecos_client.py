@@ -39,6 +39,9 @@ log = logging.getLogger("bot.bok_ecos")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "bok_ecos"
 _CACHE_TTL_HOURS = 12
+# ECOS 한 요청의 행 상한. 시계열 경로가 이미 1000 을 쓰고 있어 맞춘다 —
+# 같은 원천을 두 값으로 부르면 한쪽만 잘린다(#38).
+_ROW_CAP = 1000
 _BASE_URL = "https://ecos.bok.or.kr/api"
 _TIMEOUT = 10
 
@@ -187,17 +190,26 @@ def _fetch_indicator(key: str) -> Optional[dict]:
 
     # URL: /StatisticSearch/{KEY}/json/kr/{REQ_START}/{REQ_END}/{STAT_CODE}/
     #      {CYCLE}/{START}/{END}/{ITEM}
-    url = (
-        f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/100/"
-        f"{cfg['table']}/{cfg['freq']}/{start_str}/{end_str}/{cfg['item']}"
-    )
+    def _req(lo: int, hi: int):
+        url = (
+            f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/{lo}/{hi}/"
+            f"{cfg['table']}/{cfg['freq']}/{start_str}/{end_str}/{cfg['item']}"
+        )
+        try:
+            resp = requests.get(url, timeout=_TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            log.warning("ecos: HTTP fetch failed for %s [%d-%d]: %s", key, lo, hi, exc)
+            return None
 
-    try:
-        resp = requests.get(url, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as exc:
-        log.warning("ecos: HTTP fetch failed for %s: %s", key, exc)
+    # ⚠️ **행 상한이 최신을 자를 수 있다.** 옛 코드는 `/1/100/` 로 받아
+    # 정렬 후 `rows[-1]` 을 최신이라 불렀는데, 같은 원천의 다른 경로는 1000행
+    # 이었다(#38 두 곳이 다르면 갈라진다). 한 표가 부가 차원(품목·국가 등)을
+    # 함께 주면 100행은 쉽게 넘고, 그때 잘리는 쪽이 **최신 월**이라 카드가
+    # 조용히 한 달 뒤처진다.
+    payload = _req(1, _ROW_CAP)
+    if payload is None:
         return None
 
     # ECOS error shape: {"RESULT": {"CODE": "INFO-200", "MESSAGE": "..."}}
@@ -205,7 +217,23 @@ def _fetch_indicator(key: str) -> Optional[dict]:
     if "RESULT" in payload and "StatisticSearch" not in payload:
         log.warning("ecos: API error for %s: %s", key, payload.get("RESULT"))
         return None
-    rows = payload.get("StatisticSearch", {}).get("row") or []
+    _ss = payload.get("StatisticSearch", {}) or {}
+    rows = _ss.get("row") or []
+    # ⚠️ **원천이 총 건수를 알려주는데 세어 보지 않았다**(#173). 잘렸는지를
+    # 추측하지 말고 `list_total_count` 로 판정하고, 잘렸으면 **꼬리 페이지**를
+    # 다시 받는다 — 지연인지 절단인지 로그가 말하게 한다(#82).
+    total = _ss.get("list_total_count")
+    try:
+        total = int(total) if total is not None else None
+    except (TypeError, ValueError):
+        total = None
+    if total is not None and total > len(rows):
+        log.warning("ecos: %s 응답 절단 — 총 %d행 중 %d행만 받음, 꼬리 재요청",
+                    key, total, len(rows))
+        tail = _req(max(1, total - _ROW_CAP + 1), total)
+        _trows = ((tail or {}).get("StatisticSearch", {}) or {}).get("row") or []
+        if _trows:
+            rows = _trows
     if not rows:
         log.info("ecos: empty rows for %s (range %s-%s)", key, start_str, end_str)
         return None
