@@ -442,7 +442,58 @@ def run() -> int:
     return 0
 
 
-def main() -> int:
+def check(blog_id: str) -> int:
+    """`python -m bot.blog_watch --check <blogId>` — 한 블로그의 수집 가능
+    여부를 **갈래로** 말한다(0=정상, 1=문제).
+
+    ⚠️ 왜 제품에 있나(사용자 2026-08-26): 블로그를 추가할 때마다 "이거
+    수집되나?"를 손으로 명령을 조립해 물어봤고, 실제로 **틀린 명령**을
+    건넸다 — `_fetch_rss` 는 파싱 결과가 아니라 **원문 XML 문자열**을
+    돌려주는데 `r[0]`/`len(r[1])` 로 읽어 `채널: <  · 항목: 1` 이라는
+    무의미한 출력이 나왔다(문자열의 첫 글자와 두 번째 글자 길이다).
+    반복 진단은 손으로 만들지 말고 제품에 심는다(Automation-first).
+
+    그리고 '안 된다'를 한 단어로 말하지 않는다(#82) — 도달 실패 / 항목 없음
+    (이웃공개 등) / 파싱 실패를 **갈라서** 말한다.
+    """
+    known = {b["id"]: b for b in _BLOGS}
+    reg = known.get(blog_id)
+    print(f"■ {blog_id} — 레지스트리: "
+          + (f"등록됨(표시명 '{reg['title']}', "
+             + ("전체 글" if reg["categories"] is None
+                else f"카테고리 {reg['categories']}") + ")"
+             if reg else "미등록 ⚠️ (_BLOGS 에 없어 자동수집 안 함)"))
+    xml = _fetch_rss(blog_id)
+    if not xml:
+        print("  ❌ RSS 도달 실패 — 404/차단이거나 <item> 이 없다"
+              " (이웃공개 블로그면 RSS 자체가 안 나온다)")
+        return 1
+    print(f"  ✅ RSS 응답 {len(xml):,}자")
+    title = _parse_channel_title(xml)
+    items = _parse_items(xml)
+    print(f"  채널 제목: {title or '(파싱 실패)'}")
+    print(f"  항목: {len(items)}개")
+    if not items:
+        # 대조 0건은 통과가 아니라 실패다(#54) — 원문 표본을 같이 찍는다(#109).
+        print("  ❌ 항목 0개 — 원문 앞부분:")
+        print("     " + xml[:400].replace("\n", " "))
+        return 1
+    for it in items[:5]:
+        print(f"   · {it['pubDate'][:16]:16} {it['title'][:44]}")
+    seen = _load_state()
+    inited = bool((seen.get("init") or {}).get(blog_id))
+    print(f"  초기화: {'완료 — 새 글부터 push' if inited else '미완료 — 다음 run 이 기존 글을 seen 처리(백필 없음)'}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    import sys as _sys
+    argv = list(_sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--check":
+        if len(argv) < 2:
+            print("사용법: python -m bot.blog_watch --check <blogId>")
+            return 2
+        return check(argv[1])
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
