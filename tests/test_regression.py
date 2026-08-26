@@ -12085,7 +12085,14 @@ class TestBlogWatchMultiBlog:
             assert set(b) == {"id", "title", "categories"}, b
             assert isinstance(b["id"], str) and b["id"].strip(), b
             assert isinstance(b["title"], str) and b["title"].strip(), b
-            assert b["categories"] is None or isinstance(b["categories"], (list, tuple)), b
+            # ⚠️ 이 단언은 처음에 **틀린 계약**을 적고 있었다(#50) —
+            # `list` 를 허용했는데 `str.startswith` 는 list 를 받으면
+            # TypeError 이고, 정작 정상 사용인 `str` 은 거부했다. 실제 계약은
+            # None(전체) | str(접두어) | tuple[str,...](여러 접두어)다.
+            assert (b["categories"] is None
+                    or isinstance(b["categories"], str)
+                    or (isinstance(b["categories"], tuple)
+                        and all(isinstance(c, str) for c in b["categories"]))), b
             assert b["id"] not in seen, f"blogId 중복: {b['id']}"
             seen.add(b["id"])
 
@@ -12112,8 +12119,11 @@ class TestBlogWatchMultiBlog:
         assert ids["arirangya"]["title"] == "사색하는 투자자"
         # 사용자 2026-08-26 intelligent_tiger 추가(표시명 사용자 확정).
         assert "intelligent_tiger" in ids, "사용자 요청 블로그 미등록"
-        assert ids["intelligent_tiger"]["categories"] is None      # 전체 글
         assert ids["intelligent_tiger"]["title"] == "영리한 타이거"
+        # ⚠️ 2026-08-26 같은 날 계약 변경(#222 옛 회귀는 지우지 말고 다시 쓴다):
+        # 등록 시엔 전체 글(None)이었는데 사용자가 "시황만 받아보고 싶어"로
+        # 바꿨다. 이 블로그는 운동일지를 매일 올려 전체 수집이 시황을 덮는다.
+        assert ids["intelligent_tiger"]["categories"] == "국내증시 시황정리"
         assert ids["richyun0108"]["categories"] is None        # 전체 글
         assert "bboyanaga" in ids and ids["bboyanaga"]["title"] == "애널리스트 김경민"  # 사용자 2026-06-23
         assert ids["bboyanaga"]["categories"] is None          # 전체 글
@@ -40069,3 +40079,61 @@ class TestCheckShowsCategories20260826:
                         {"id": "b", "title": "T", "categories": None},
                         self._xml(["주식시황"] * 3))
         assert "건 통과" not in out, out
+
+
+class TestIntelligentTigerMarketOnly20260826:
+    """사용자 2026-08-26 "시황만 받아보고 싶어" — intelligent_tiger 는 하루에
+    운동일지(`알바트로스님의 초대장`)와 시황(`국내증시 시황정리`)을 함께
+    올린다. VM `--check` 실측 분포(50건): 초대장 24 · 시황정리 19 · 내돈내산
+    주식 명서 4 · 끄적끄적 주식낙서 2 · 월별 결산일지 1.
+
+    접두어는 **원천이 싣는 이름 그대로**여야 한다 — `"시황"` 처럼 추측하면
+    `startswith` 가 안 맞아 **조용히 0건**이 된다(#12·#25).
+    """
+
+    _CATS = ["알바트로스님의 초대장", "국내증시 시황정리", "내돈내산 주식 명서",
+             "끄적끄적 주식낙서", "월별 결산일지"]
+
+    def test_the_filter_is_the_real_category_name(self):
+        import bot.blog_watch as bw
+        b = next(x for x in bw._BLOGS if x["id"] == "intelligent_tiger")
+        assert b["categories"] == "국내증시 시황정리", b
+        # 실측 카테고리 중 시황만 통과한다
+        passed = [c for c in self._CATS if c.startswith(b["categories"])]
+        assert passed == ["국내증시 시황정리"], passed
+
+    def test_only_market_posts_are_pushed(self, monkeypatch):
+        """배선까지 태운다 — 필터가 `_process_blog` 에서 실제로 걸리는가(#20)."""
+        import bot.blog_watch as bw
+        xml = ("<rss><channel><title>ch</title>"
+               + "".join(f"<item><title>글{i}</title>"
+                         f"<link>https://blog.naver.com/intelligent_tiger/{i}</link>"
+                         f"<guid>g{i}</guid><category>{c}</category>"
+                         f"<pubDate>Tue, 25 Aug 2026 09:00:00 +0900</pubDate>"
+                         f"<description>본문</description></item>"
+                         for i, c in enumerate(self._CATS))
+               + "</channel></rss>")
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: xml)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        pushed: list = []
+        monkeypatch.setattr(bw, "_push", lambda it: pushed.append(it) or True)
+        blog = next(dict(x) for x in bw._BLOGS if x["id"] == "intelligent_tiger")
+        state = {"seen": [], "init": {"intelligent_tiger": True}}
+        seen: set = set()
+        bw._process_blog(blog, state, seen)
+        assert [p["category"] for p in pushed] == ["국내증시 시황정리"], pushed
+        # 비대상도 seen 처리 — 매 run 재검사 방지
+        assert len(seen) == len(self._CATS), seen
+
+    def test_a_guessed_prefix_would_pass_nothing(self):
+        """⚠️ 왜 실측이 필요했는지 못박는다 — `'시황'` 은 한 건도 못 잡는다."""
+        assert not [c for c in self._CATS if c.startswith("시황")]
+
+    def test_categories_type_contract_matches_startswith(self):
+        """⚠️ 옛 단언이 **틀린 계약**을 적고 있었다(#50) — `list` 를 허용했는데
+        `str.startswith(list)` 는 TypeError 이고, 정상 사용인 `str` 은 거부했다."""
+        import pytest as _pt
+        with _pt.raises(TypeError):
+            "abc".startswith(["a"])
+        assert "abc".startswith("a") and "abc".startswith(("a", "z"))
