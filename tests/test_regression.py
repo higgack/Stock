@@ -39745,3 +39745,123 @@ class TestVolCardHasOneToday20260824:
                                           "history": {"전일": 60.6}}}})
         assert seen, "지연 판정이 아예 안 불렸다(픽스처 무효)"
         assert all(m == "KR" for _d, m in seen), f"시장을 안 넘긴다: {seen}"
+
+
+class TestAuditCountsRealDefectsOnly20260826:
+    """2026-08-26 일일 감사가 `❌ 5건` 으로 보고했는데 **실제 결함은 1건**
+    (ECOS 한국 수출·수입 지연, 같은 표 901Y118)이었다. 셋이 겹쳤다:
+
+      ① 관심종목 요약이 `❌ 불일치 0` 이라는 **계수 라벨**을 찍어, ❌ 줄을
+         결함으로 세는 sweep 이 **불일치 0건을 결함으로** 보고했다(#47
+         계수 패턴 자체가 틀릴 수 있다 — 이번엔 생산부가 판정 글자를
+         라벨로 썼다).
+      ② 신선도 요약이 지연 항목을 **다시 나열**해 같은 결함이 두 번
+         세어졌다(#45 같은 모집단을 두 번 세면 갈라진다).
+      ③ 진짜 결함: ECOS 스냅샷 경로만 행 상한이 `/1/100/` 이고
+         `list_total_count` 를 안 봤다(#173·#38 — 아래 별도 클래스).
+    """
+
+    def test_zero_is_a_defect_in_some_sections(self):
+        """⚠️ **소비부에서 `❌ … 0` 을 거르려던 시도가 틀렸다.** `❌ 불일치 0`
+        (정상)을 걸러내는 정규식이 `❌ 카드 0개`(대조 0건 = 진짜 결함, #54)
+        까지 삼켰다 — 기존 회귀가 잡았다. 0 은 문맥에 따라 정상이기도
+        결함이기도 하므로 **문자열로는 못 가른다**(#65·#60). 해법은 생산부다.
+        """
+        from bot.audit_sweep import _findings
+        out = "── 매크로 스냅샷 (카드)\n   ❌ 카드 0개"
+        assert len(_findings(out)) == 1, "대조 0건 결함을 삼켰다"
+
+    def test_a_real_nonzero_count_still_reports(self):
+        """⚠️ 반대 증거 — 전부 걸러내면 감사가 눈이 먼다(#54)."""
+        from bot.audit_sweep import _findings
+        out = ("── 관심종목\n"
+               "   108종목 · ❌ 불일치 108 · 가격 미수신 0")
+        assert len(_findings(out)) == 1, _findings(out)
+
+    def test_a_verdict_line_still_reports(self):
+        from bot.audit_sweep import _findings
+        out = ("── 발표지표 신선도\n"
+               "  한국 수출  ecos:export_amt  관측 202606  ❌ 지연 의심 — "
+               "2026-07-31 까지 나왔어야 함")
+        hits = _findings(out)
+        assert len(hits) == 1 and "지연 의심" in hits[0], hits
+
+    def test_favorites_line_uses_the_glyph_as_a_verdict(self):
+        """생산부 — 불일치가 없으면 그 줄에 ❌ 가 없어야 한다."""
+        import inspect
+        import bot.scripts.board_audit as ba
+        # ⚠️ **주석을 지우고 본다** — 이 fix 를 설명하는 주석에 금지 문자열이
+        # 들어 있어 검사가 그 주석을 재고 있었다(#59b, 실측으로 발각).
+        src = "\n".join(l for l in inspect.getsource(
+            ba._audit_home_surfaces).splitlines()
+            if not l.lstrip().startswith("#"))
+        i = src.index("검산통과")
+        seg = src[max(0, i - 300):i + 300]
+        assert "'❌' if bad else '✅'" in seg, "판정이 실제 불일치 수에서 안 나온다"
+        assert "❌ 불일치" not in seg, "판정 글자를 계수 라벨로 다시 쓴다"
+
+    def test_freshness_summary_does_not_relist_late_items(self):
+        """요약은 **세기만** 한다 — 위 표가 이미 항목마다 ❌ 를 찍는다."""
+        import inspect
+        import bot.scripts.macro_staleness_audit as ms
+        src = inspect.getsource(ms)
+        i = src.index("── 요약: 대상")
+        seg = src[i:i + 700]
+        assert 'for s in late:' not in seg, "요약이 지연 항목을 다시 나열한다"
+        assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
+
+
+class TestEcosSnapshotRowCap20260826:
+    """ECOS 스냅샷 경로만 행 상한이 `/1/100/` 이었다(시계열 경로는 1000) —
+    한 표가 부가 차원을 함께 주면 100행은 쉽게 넘고, 잘리는 쪽이 **최신 월**
+    이라 카드가 조용히 한 달 뒤처진다. 그리고 원천이 `list_total_count` 로
+    총 건수를 알려주는데 주석에만 있고 **읽지 않았다**(#173).
+    """
+
+    def test_snapshot_and_series_use_the_same_cap(self):
+        """같은 원천을 두 값으로 부르면 한쪽만 잘린다(#38)."""
+        import inspect
+        import bot.bok_ecos_client as ec
+        assert ec._ROW_CAP >= 1000, ec._ROW_CAP
+        src = inspect.getsource(ec)
+        assert "json/kr/1/100/" not in src, "스냅샷 경로가 아직 100행 상한"
+
+    def test_truncated_response_refetches_the_tail(self):
+        import bot.bok_ecos_client as ec
+        calls = []
+
+        class _R:
+            def __init__(self, body):
+                self._b = body
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._b
+
+        def _get(url, timeout=None):
+            calls.append(url)
+            # 첫 요청: 총 1500행 중 앞 1000행만(최신이 잘린 상태)
+            if len(calls) == 1:
+                return _R({"StatisticSearch": {
+                    "list_total_count": 1500,
+                    "row": [{"TIME": "202601", "DATA_VALUE": "1"}] * 1000}})
+            return _R({"StatisticSearch": {
+                "list_total_count": 1500,
+                "row": [{"TIME": "202606", "DATA_VALUE": "5000000"},
+                        {"TIME": "202607", "DATA_VALUE": "6000000"}]}})
+
+        import pathlib
+        import tempfile
+        _orig = (ec.requests.get, ec._env_key, ec._CACHE_DIR)
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                ec.requests.get = _get
+                ec._env_key = lambda name: "TESTKEY"
+                ec._CACHE_DIR = pathlib.Path(td)   # 운영 캐시 격리(#30)
+                out = ec._fetch_indicator("export_amt")
+        finally:
+            ec.requests.get, ec._env_key, ec._CACHE_DIR = _orig
+        assert len(calls) == 2, f"꼬리 재요청이 없다: {calls}"
+        assert out and out["time"] == "202607", out

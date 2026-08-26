@@ -280,8 +280,13 @@ def _audit_home_surfaces(show_all):
                 ok += 1
             else:
                 bad.append((f, per, calc))
-        _p(f"   {len(favs)}종목 · ✅ 검산통과 {ok} · ❌ 불일치 {len(bad)}"
-           f" · PER 빈칸(EPS 없음) {blank} · 가격 미수신 {noprice}")
+        # ⚠️ **판정 글자를 계수 라벨로 쓰지 말 것.** 옛 줄은 불일치가 0건
+        # 이어도 `❌ 불일치 0` 을 찍어, ❌ 줄을 결함으로 세는 sweep 이
+        # 멀쩡한 결과를 결함으로 보고했다(2026-08-26 실측 — #47 계수 패턴
+        # 오류의 생산부판). 라벨에서 글자를 빼고, 줄 앞에 **실제 판정**을 둔다.
+        _p(f"   {'❌' if bad else '✅'} {len(favs)}종목 · 검산통과 {ok}"
+           f" · 불일치 {len(bad)} · PER 빈칸(EPS 없음) {blank}"
+           f" · 가격 미수신 {noprice}")
         if noprice:
             _p(f"      ↪ 가격 미수신 {noprice}건은 상장폐지·심볼 오류 후보 —"
                f" 아래 목록 참고")
