@@ -13978,8 +13978,26 @@ _VALUECHAIN_JS = r"""
         '<div class="vc-grp"><div class="vc-grp-h">회사 ('+cos.length+')</div>'+
         cos.slice(0,80).map(function(n){return '<span class="vc-pill">'+esc(n)+'</span>';}).join('')+'</div>';
     } else { focus.innerHTML=''; }
-    var f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
-    renderList('관계 '+f.length+'건 — "'+esc(q)+'" · 최신순', f);
+    // ⚠️ 목록도 **해석된 엔티티**로 거른다 — 헤더는 🏢 GS 로 정확히 풀어
+    // 놓고 목록만 원시 질의 부분문자열로 걸러 GST(무관 회사)가 GS 페이지에
+    // 실렸다(사용자 2026-08-26 "GS 에 GST 가 들어가있어", norm('gst')가
+    // 'gs' 를 포함 — 헤더와 목록이 다른 모집단을 세면 갈라진다 #45).
+    // 해석이 실패했을 때만 자유검색(부분문자열)으로 떨어지고, 그땐 라벨이
+    // '포함' 이라고 밝힌다.
+    var f, flab;
+    if(NAME){
+      var nn=norm(NAME);
+      f=E.filter(function(e){
+        if(KIND==='item') return norm(e.t)===nn;
+        if(KIND==='industry') return norm(e.g)===nn;
+        return norm(e.c)===nn || norm(e.t)===nn;
+      });
+      flab=(KIND==='item'?'품목 ':KIND==='industry'?'업종 ':'')+NAME;
+    } else {
+      f=E.filter(function(e){return norm(e.c).indexOf(nq)>=0 || norm(e.t).indexOf(nq)>=0;});
+      flab='"'+q+'" 포함';
+    }
+    renderList('관계 '+f.length+'건 — '+esc(flab)+' · 최신순', f);
   }
   var s=document.getElementById('vc-search');
   s.addEventListener('input', function(){ render(s.value); });
