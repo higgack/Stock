@@ -40010,3 +40010,62 @@ class TestNoBackfillIsTheDefaultForEveryBlog20260826:
         import bot.blog_watch as bw
         doc = bw.__doc__ or ""
         assert "새 글부터" in doc and "백필" in doc, doc[:400]
+
+
+class TestCheckShowsCategories20260826:
+    """사용자 2026-08-26 "시황만 받아보고 싶어" — `categories=` 필터를 걸려면
+    **원천이 뭐라고 싣는지** 봐야 한다. 이름을 추측하면 접두어가 안 맞아 한
+    건도 안 통과하거나(조용한 0건) 전부 새어 나간다(#12·#25).
+
+    `--check` 가 카테고리 **분포**와, 현재 필터가 몇 건을 통과시키는지를 찍는다.
+    """
+
+    @staticmethod
+    def _xml(pairs):
+        return ("<rss><channel><title>ch</title>"
+                + "".join(f"<item><title>t{i}</title>"
+                          f"<link>https://blog.naver.com/x/{i}</link>"
+                          f"<guid>g{i}</guid><category>{c}</category>"
+                          f"<pubDate>Tue, 25 Aug 2026 09:00:00 +0900</pubDate>"
+                          f"<description>d</description></item>"
+                          for i, c in enumerate(pairs))
+                + "</channel></rss>")
+
+    @staticmethod
+    def _run(monkeypatch, blog, xml):
+        import io
+        import contextlib
+        import bot.blog_watch as bw
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: xml)
+        monkeypatch.setattr(bw, "_BLOGS", (blog,))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bw.check(blog["id"])
+        return buf.getvalue()
+
+    def test_distribution_is_printed(self, monkeypatch):
+        out = self._run(monkeypatch,
+                        {"id": "b", "title": "T", "categories": None},
+                        self._xml(["주식시황"] * 3 + ["운동일지"] * 2))
+        assert "카테고리 분포" in out, out
+        assert "3건  주식시황" in out and "2건  운동일지" in out, out
+
+    def test_current_filter_reports_how_many_pass(self, monkeypatch):
+        out = self._run(monkeypatch,
+                        {"id": "b", "title": "T", "categories": "주식시황"},
+                        self._xml(["주식시황"] * 3 + ["운동일지"] * 2))
+        assert "3/5건 통과" in out, out
+
+    def test_a_filter_that_matches_nothing_is_flagged(self, monkeypatch):
+        """⚠️ 조용한 0건이 가장 나쁘다 — 필터가 안 맞으면 그렇다고 말한다(#54)."""
+        out = self._run(monkeypatch,
+                        {"id": "b", "title": "T", "categories": "시황"},
+                        self._xml(["주식시황"] * 3 + ["운동일지"] * 2))
+        assert "0/5건 통과" in out and "접두어가 원천 카테고리와 안 맞는다" in out, out
+
+    def test_no_filter_line_when_collecting_everything(self, monkeypatch):
+        """⚠️ 반대 증거 — 전체 수집(None)이면 그 줄이 없어야 한다."""
+        out = self._run(monkeypatch,
+                        {"id": "b", "title": "T", "categories": None},
+                        self._xml(["주식시황"] * 3))
+        assert "건 통과" not in out, out
