@@ -53,6 +53,8 @@ _BLOGS = (
     # 사용자 2026-08-24 (blog.naver.com/arirangya, 표시명 사용자 확정).
     # 첫 run 은 per-blog init 으로 기존 글 seen 처리만 — 백필 없이 새 글부터.
     {"id": "arirangya", "title": "사색하는 투자자", "categories": None},  # 전체 글
+    # 사용자 2026-08-26 (blog.naver.com/intelligent_tiger, 표시명 사용자 확정).
+    {"id": "intelligent_tiger", "title": "영리한 타이거", "categories": None},  # 전체 글
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
