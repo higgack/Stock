@@ -39865,3 +39865,82 @@ class TestEcosSnapshotRowCap20260826:
             ec.requests.get, ec._env_key, ec._CACHE_DIR = _orig
         assert len(calls) == 2, f"꼬리 재요청이 없다: {calls}"
         assert out and out["time"] == "202607", out
+
+
+class TestBlogCheckProbe20260826:
+    """사용자 2026-08-26 arirangya 확인 — 내가 **틀린 명령**을 건넸다.
+    `_fetch_rss` 는 파싱 결과가 아니라 **원문 XML 문자열**을 돌려주는데
+    `r[0]` / `len(r[1])` 로 읽게 해서 `채널: <  · 항목: 1` 이라는 무의미한
+    출력이 나왔다(문자열의 첫 글자와 두 번째 글자 길이다). 반복 진단은
+    손으로 조립하지 말고 **제품에 심는다**(§Automation-first).
+
+    그리고 '안 된다'를 한 단어로 말하지 않는다(#82) — 도달 실패 / 항목 0개 /
+    미등록을 **갈라서** 말하고, 항목이 0이면 원문 표본을 같이 찍는다(#54·#109).
+    """
+
+    _XML = ('<?xml version="1.0"?><rss><channel>'
+            '<title><![CDATA[사색하는 투자자]]></title>'
+            '<item><title>첫 글</title>'
+            '<link>https://blog.naver.com/arirangya/1</link><guid>g1</guid>'
+            '<pubDate>Tue, 26 Aug 2026 09:00:00 +0900</pubDate>'
+            '<description>본문</description></item></channel></rss>')
+
+    @staticmethod
+    def _run(monkeypatch, blog_id, xml):
+        import io
+        import contextlib
+        import bot.blog_watch as bw
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: xml)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = bw.check(blog_id)
+        return rc, buf.getvalue()
+
+    def test_a_healthy_feed_reports_title_and_items(self, monkeypatch):
+        rc, out = self._run(monkeypatch, "arirangya", self._XML)
+        assert rc == 0, out
+        assert "사색하는 투자자" in out and "항목: 1개" in out, out
+        assert "등록됨" in out, out
+
+    def test_an_unreachable_feed_says_so(self, monkeypatch):
+        """⚠️ 늘 성공하면 아무것도 안 재는 것과 같다 — 반대 증거(#25)."""
+        rc, out = self._run(monkeypatch, "arirangya", None)
+        assert rc == 1, out
+        assert "RSS 도달 실패" in out, out
+
+    def test_zero_items_is_a_failure_with_a_sample(self, monkeypatch):
+        """대조 0건은 통과가 아니라 실패이고(#54), 원문 표본을 같이 찍는다(#109)."""
+        rc, out = self._run(
+            monkeypatch, "arirangya",
+            '<?xml version="1.0"?><rss><channel><title>x</title>'
+            '<item><nope/></item></channel></rss>')
+        assert rc == 1, out
+        assert "항목 0개" in out and "원문 앞부분" in out, out
+
+    def test_an_unregistered_blog_is_flagged(self, monkeypatch):
+        """레지스트리에 없으면 RSS 가 멀쩡해도 자동수집은 안 된다."""
+        rc, out = self._run(monkeypatch, "nosuchblog", self._XML)
+        assert "미등록" in out, out
+
+    def test_init_flag_reads_the_per_blog_key(self, monkeypatch):
+        """⚠️ per-blog 플래그는 `init` 이다 — 옛 단일 bool `initialized` 를
+        읽으면 어느 블로그든 '미완료' 로 나온다(첫 판이 그랬다)."""
+        import bot.blog_watch as bw
+        monkeypatch.setattr(bw, "_load_state",
+                            lambda: {"seen": [], "init": {"arirangya": True}})
+        rc, out = self._run(monkeypatch, "arirangya", self._XML)
+        assert "초기화: 완료" in out, out
+
+    def test_cli_flag_is_wired(self, monkeypatch):
+        """헬퍼만 있고 CLI 배선이 없으면 사용자는 못 쓴다(#20).
+
+        ⚠️ AST 로 "`check` 호출이 있나 + '--check' 문자열이 있나" 를 재던
+        첫 판은 **눈이 멀었다** — 게이트를 꺼도 호출 노드는 남고, 문자열은
+        사용법 안내가 대신 만족시켰다(#141 배선은 존재가 아니라 **결과**로 ·
+        #75). `main` 을 실제로 태워 디스패치되는지 본다."""
+        import bot.blog_watch as bw
+        called = []
+        monkeypatch.setattr(bw, "check", lambda b: called.append(b) or 0)
+        rc = bw.main(["--check", "arirangya"])
+        assert called == ["arirangya"] and rc == 0, (called, rc)
+        assert bw.main(["--check"]) == 2, "인자 없으면 사용법 + 실패코드"
