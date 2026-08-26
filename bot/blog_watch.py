@@ -490,7 +490,23 @@ def check(blog_id: str) -> int:
         print("     " + xml[:400].replace("\n", " "))
         return 1
     for it in items[:5]:
-        print(f"   · {it['pubDate'][:16]:16} {it['title'][:44]}")
+        _c = it.get("category") or "(없음)"
+        print(f"   · {it['pubDate'][:16]:16} [{_c[:12]:12}] {it['title'][:40]}")
+    # ⚠️ **카테고리 필터를 걸려면 원천이 뭐라고 싣는지 봐야 한다** — 이름을
+    # 추측하면 한 건도 안 맞거나(접두어 불일치) 전부 새어 나간다(#12·#25).
+    # `categories="접두어"` 는 이 값에 startswith 로 걸린다.
+    counts: dict[str, int] = {}
+    for it in items:
+        counts[(it.get("category") or "(없음)")] = counts.get(
+            it.get("category") or "(없음)", 0) + 1
+    print("  카테고리 분포 (categories= 에 쓸 접두어):")
+    for c, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"   · {n:3d}건  {c}")
+    cats = (reg or {}).get("categories")
+    if cats is not None:
+        _hit = sum(n for c, n in counts.items() if c.startswith(cats))
+        print(f"  현재 필터 categories={cats!r} → {_hit}/{len(items)}건 통과"
+              + ("  ⚠️ 0건 — 접두어가 원천 카테고리와 안 맞는다" if not _hit else ""))
     seen = _load_state()
     inited = bool((seen.get("init") or {}).get(blog_id))
     print(f"  초기화: {'완료 — 새 글부터 push' if inited else '미완료 — 다음 run 이 기존 글을 seen 처리(백필 없음)'}")
