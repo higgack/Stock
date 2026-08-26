@@ -39944,3 +39944,65 @@ class TestBlogCheckProbe20260826:
         rc = bw.main(["--check", "arirangya"])
         assert called == ["arirangya"] and rc == 0, (called, rc)
         assert bw.main(["--check"]) == 2, "인자 없으면 사용법 + 실패코드"
+
+
+class TestNoBackfillIsTheDefaultForEveryBlog20260826:
+    """사용자 2026-08-26: "새로운 글만 올라오면 되는거야. **새로 등록되는
+    것들은 모두. 이건 디폴트야.**"
+
+    옛 회귀(`test_new_blog_seeds_without_push`)는 **한 블로그**(teasky0221)로
+    만 이 계약을 봤다 — 이름 열거는 새 항목을 못 잡는다(#24). 사용자가 선언한
+    디폴트는 레지스트리 **전 항목**에 걸리므로 목록을 통째로 훑는다.
+    """
+
+    _XML = ("<rss><channel><title>채널</title>"
+            + "".join(f"<item><title>글{i}</title>"
+                      f"<link>https://blog.naver.com/x/{i}</link>"
+                      f"<guid>g{i}</guid><category>일상</category>"
+                      f"<pubDate>Fri, 21 Aug 2026 09:00:00 +0900</pubDate>"
+                      f"<description>본문</description></item>"
+                      for i in range(1, 6))
+            + "</channel></rss>")
+
+    def test_every_registered_blog_seeds_without_pushing(self, monkeypatch):
+        import bot.blog_watch as bw
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: self._XML)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        assert bw._BLOGS, "레지스트리가 비었다(픽스처 무효)"
+        for blog in bw._BLOGS:
+            pushes: list = []
+            monkeypatch.setattr(bw, "_push", lambda it: pushes.append(it) or True)
+            state = {"seen": [], "init": {}}
+            seen: set = set()
+            n = bw._process_blog(dict(blog), state, seen)
+            assert n == 0 and pushes == [], (blog["id"], n, pushes)
+            assert state["init"][blog["id"]] is True, blog["id"]
+            assert len(seen) == 5, (blog["id"], seen)   # 기존 글은 seen 처리
+
+    def test_the_second_run_does_push_new_posts(self, monkeypatch):
+        """⚠️ 반대 증거 — 영영 push 안 하면 기능이 죽은 것이다(#25)."""
+        import bot.blog_watch as bw
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: self._XML)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        pushes: list = []
+        monkeypatch.setattr(bw, "_push", lambda it: pushes.append(it) or True)
+        blog = dict(bw._BLOGS[0])
+        state = {"seen": [], "init": {blog["id"]: True}}   # 초기화 끝난 상태
+        assert bw._process_blog(blog, state, set()) == 5, pushes
+        assert len(pushes) == 5
+
+    def test_the_registry_has_no_backfill_opt_in(self):
+        """백필은 **옵션조차 두지 않는다** — 키가 셋뿐이라 opt-in 할 자리가
+        없다. 누가 `backfill` 같은 키를 더하면 여기서 걸린다."""
+        import bot.blog_watch as bw
+        for b in bw._BLOGS:
+            assert set(b) == {"id", "title", "categories"}, b
+
+    def test_the_contract_is_written_where_it_is_implemented(self):
+        """규율로 기억할 일은 코드 옆에 적는다(#119) — 다음 사람이 백필
+        옵션을 붙이려 할 때 읽히도록."""
+        import bot.blog_watch as bw
+        doc = bw.__doc__ or ""
+        assert "새 글부터" in doc and "백필" in doc, doc[:400]

@@ -7,7 +7,16 @@ None 이면 전체 글) → 원문 전문 fetch(m.blog.naver.com) → 텔레그�
 맨 밑 원문 링크 + 🗑️).
 
 **LLM 0 → 비용 ₩0** (요약 제거, 사용자 2026-06-11). RSS 실패 시 graceful
-skip. 첫 run 은 폭주 방지 위해 기존 글 seen 처리만(initialized 플래그).
+skip.
+
+⛔ **새로 등록되는 블로그는 예외 없이 '새 글부터'가 디폴트다**(사용자
+2026-08-24·08-26 확정: "새로운 글만 올라오면 되는거야. 새로 등록되는 것들은
+모두. 이건 디폴트야"). 첫 run 은 기존 글을 **seen 처리만** 하고 push 하지
+않는다(`state["init"][blog_id]`) — 백필 옵션은 **두지 않는다**. 레지스트리
+항목은 `{id, title, categories}` 세 키뿐이라 opt-in 할 자리 자체가 없고,
+회귀가 `_BLOGS` **전 항목**에 대해 이 계약을 검사한다(#24 이름 열거는 새
+항목을 못 잡는다). 2차 방어로 날짜가드(`_MAX_AGE_DAYS`)가 있어, 초기화를
+건너뛰어도 오래된 글은 push 되지 않는다.
 
 systemd: blog-watch.timer (30분) → oneshot.
 수동: cd ~/stock && .venv/bin/python -m bot.blog_watch
