@@ -1631,12 +1631,38 @@ def collect_kr_financials(ticker: str) -> dict:
     except Exception as exc:
         log.debug("stock_snapshot: DART quarterly financials skipped: %s", exc)
     _apply_revenue_fallback(ticker, out.get("kr") or {})
+    _attach_kr_ev_ebitda(ticker, out)
     if out.get("kr"):
         out["kr"]["financials_ver"] = _KR_FIN_SCHEMA_VER
         _sig = kr_fin_signature()
         if _sig:
             out["kr"]["financials_sig"] = _sig
     return out
+
+
+def _attach_kr_ev_ebitda(ticker: str, out: dict) -> None:
+    """국내 EV/EBITDA — yfinance 가 안 주면 네이버(FnGuide) 값을 실어 둔다.
+
+    사용자 2026-08-27 "A로. 중요한 지표 아니니까" — EBITDA 를 화면에 싣는
+    ⓑ(현재가 연동 재계산) 대신 벤더값 + 출처 표기. 값은 FnGuide 산정 시점
+    기준이라 '조회 시점 주가' 규칙 **밖**이고, 그래서 렌더가 기준 라벨을
+    반드시 붙인다(#34). fetch 는 12h 디스크 캐시 — 매출 총액 보강이 이미
+    데워 둔 경우 HTTP 0회다. yfinance 가 값을 주면 그걸 존중한다."""
+    if out.get("enterpriseToEbitda") is not None:
+        return
+    kr = out.get("kr")
+    if not isinstance(kr, dict):
+        return                            # KR 스냅샷이 아니다
+    try:
+        from bot.wisereport_financials import (fetch_financial_summary,
+                                               latest_ev_ebitda)
+        got = latest_ev_ebitda(fetch_financial_summary(ticker))
+    except Exception as exc:                            # noqa: BLE001
+        log.debug("stock_snapshot: EV/EBITDA(FnGuide) 건너뜀 %s: %s",
+                  ticker, exc)
+        return
+    if got:
+        kr["ev_ebitda_naver"] = {"value": got[0], "period": got[1]}
 
 
 def _apply_revenue_fallback(ticker: str, kr: dict) -> None:

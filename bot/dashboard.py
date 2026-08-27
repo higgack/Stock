@@ -5886,7 +5886,8 @@ _PEER_MULT_ABS_MAX = 500.0
 _DERIVED_LABEL = {"trailingPE": "PER(후행)", "priceToBook": "PBR",
                   "trailingEps": "EPS(후행)", "bookValue": "BPS",
                   "priceToSalesTrailing12Months": "PSR",
-                  "forwardPE": "PER(선행)", "forwardEps": "EPS(선행)"}
+                  "forwardPE": "PER(선행)", "forwardEps": "EPS(선행)",
+                  "enterpriseToEbitda": "EV/EBITDA"}
 
 
 def _derived_desc(si: dict) -> str:
@@ -6393,6 +6394,20 @@ def _derive_missing_multiples(si: dict) -> dict:
             out["_forward_why"] = "네이버·yfinance 모두 추정 EPS 미제공"
     # 그 밖의 시장은 yfinance 가 준 forwardPE 를 그대로 쓴다 — 컨센서스
     # EPS 가 필요해 우리가 만들 수 없다.
+    # EV/EBITDA — 국내는 yfinance 가 거의 안 줘 '—' 였다(컴투스 실측).
+    # 화면에 분모(EBITDA)가 없어 재계산 불가한 지표라(#203·#206) 네이버
+    # (FnGuide) 값을 그대로 싣고 **기준을 밝힌다**(사용자 2026-08-27 "A로.
+    # 중요한 지표 아니니까"). FnGuide 산정 시점 기준 = '조회 시점 주가' 규칙
+    # 밖 — 그래서 기준 라벨이 필수다(#34). yfinance 가 주면 그 값을 존중한다.
+    _ev_basis = ""
+    if out.get("enterpriseToEbitda") is None:
+        _ev = kr.get("ev_ebitda_naver") or {}
+        _evv = _num(_ev.get("value"))
+        if _evv is not None:
+            out["enterpriseToEbitda"] = _evv
+            derived.add("enterpriseToEbitda")
+            _ev_basis = ("네이버(FnGuide) "
+                         + str(_ev.get("period") or "").strip()).strip()
     if derived:
         out["_derived_multiples"] = sorted(derived)
         # 분모는 **그걸 쓴 항목이 있을 때만** 싣는다 — 아무것도 파생하지
@@ -6410,7 +6425,8 @@ def _derive_missing_multiples(si: dict) -> dict:
         _basis = {"trailingPE": net_basis, "trailingEps": net_basis,
                   "priceToSalesTrailing12Months": rev_basis,
                   "priceToBook": _bps_basis, "bookValue": _bps_basis,
-                  "forwardPE": _fwd_basis, "forwardEps": _fwd_basis}
+                  "forwardPE": _fwd_basis, "forwardEps": _fwd_basis,
+                  "enterpriseToEbitda": _ev_basis}
         out["_derived_basis"] = {k: _basis[k] for k in derived if k in _basis}
         _TOT = "연결 총액(비지배지분 포함)"
         _own = "지배주주 귀속분"
