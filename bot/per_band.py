@@ -798,7 +798,8 @@ def should_trim(splits_known: bool, reverted: bool) -> bool:
     return (not splits_known) or reverted
 
 
-def refill_fiscal_q4(q_rows: list, a_rows: list) -> list:
+def refill_fiscal_q4(q_rows: list, a_rows: list,
+                     trace: list | None = None) -> list:
     """분할 정합 **후** 결산분기 재복원 — 연간 − 직전 3분기 (오름차순 반환).
 
     ⚠️ 왜(2026-08-27 NVDA, #259): edgar_eps 는 as-reported 단계에서 결산분기
@@ -815,6 +816,11 @@ def refill_fiscal_q4(q_rows: list, a_rows: list) -> list:
     """
     if not a_rows:
         return q_rows
+
+    def _t(msg):
+        if trace is not None:
+            trace.append(msg)
+
     qs = sorted((str(p)[:10], v) for p, v in (q_rows or [])
                 if p and v is not None)
     have = {p for p, _v in qs}
@@ -827,16 +833,22 @@ def refill_fiscal_q4(q_rows: list, a_rows: list) -> list:
         sibs = [(p, v) for p, v in qs
                 if p < a_end and (_days_between(p, a_end) or 9999) <= 290]
         if len(sibs) != 3:
+            _t(f"{a_end}: 형제 분기 {len(sibs)}개(3개 필요) — 건너뜀")
             continue
         span = _months_between(sibs[0][0], sibs[-1][0])
         if span is None or not (5 <= span <= 7):
+            _t(f"{a_end}: 형제 3분기 간격 {span}개월(5~7 필요) — 건너뜀")
             continue
         tail = _months_between(sibs[-1][0], a_end)
         if tail is None or not (2 <= tail <= 4):
+            _t(f"{a_end}: 마지막 형제와 {tail}개월(2~4 필요) — 건너뜀")
             continue
         q4 = a_val - sum(v for _p, v in sibs)
         if not _plausible_q4(q4, [v for _p, v in sibs]):
+            _t(f"{a_end}: 복원값 {q4:.4f} 이 형제({[round(v, 4) for _p, v in sibs]})"
+               f"와 급이 안 맞아 폐기 — 연간 {a_val:.4f}")
             continue
+        _t(f"{a_end}: 복원 ✅ {q4:.4f} (연간 {a_val:.4f} − 형제 3분기)")
         out.append((a_end, q4))
         have.add(a_end)
     return sorted(out)
@@ -1501,3 +1513,74 @@ def baidu_per_rows(ticker: str, prices: list | None, years: int = 10) -> list:
         log.debug("per_band: 바이두 PER 실패 %s: %s", ticker, exc)
         return []
     return rows_from_per_history(raw, prices)
+
+# ── EPS 파이프라인 진단 CLI (2026-08-27, NVDA 결산분기 공백 추적 #259) ──────
+_EXPLAIN_VER = 1
+
+
+def explain(ticker: str) -> None:
+    """US(EDGAR) 밴드 EPS 파이프라인을 단계별로 찍는다 — 화면과 **같은
+    함수들**을 같은 순서로 태운다(#35). '없는 기간'이 어느 관문(원천 부재 /
+    복원 폐기 / 연속성)에서 생겼는지 사유를 말한다(#82·#149 단계별 계수)."""
+    import sys
+    print(f"per_band explain v{_EXPLAIN_VER} · 인터프리터 {sys.executable}")
+    tk = (ticker or "").upper()
+    from bot.edgar_eps import eps_history
+    h = eps_history(tk, years=10) or {}
+    q0, a0 = h.get("quarterly") or [], h.get("annual") or []
+    qf, af = h.get("q_filed") or {}, h.get("a_filed") or {}
+    print(f"① EDGAR: 분기 {len(q0)}개 · 연간 {len(a0)}개 · "
+          f"filed 맵 q={len(qf)}/a={len(af)} (tag={h.get('tag')})")
+    if not q0 and not a0:
+        print("   원천 0건 — CIK/커버리지부터 의심")
+        return
+    closes, sp, known = _price_history(tk, 10)
+    print(f"② 분할: {'응답에 포함' if known else '별도 조회'} → "
+          + (" · ".join(f"{d} {r:g}:1" for d, r in dedupe_splits(sp))
+             if sp else "없음"))
+    q1, det_q = adjust_eps_by_filed(q0, qf, sp)
+    a1, det_a = adjust_eps_by_filed(a0, af, sp)
+    print(f"③ 제출일 확정 환산: 분기 {'적용' if det_q else '변화 없음'} · "
+          f"연간 {'적용' if det_a else '변화 없음'}")
+    q2, st_q = reconcile_eps_splits(q1, sp)
+    a2, st_a = reconcile_eps_splits(a1, sp)
+    print(f"④ 측정 정합: 분기 {st_q} · 연간 {st_a}")
+    tr: list = []
+    q3 = refill_fiscal_q4(q2, a2, trace=tr)
+    print(f"⑤ 결산분기 재복원: {len(q2)} → {len(q3)}개 분기")
+    for line in tr:
+        print(f"   · {line}")
+    # 연간에 있는데 분기에 끝내 없는 결산일 = 화면 공백의 뿌리
+    qset = {str(pp)[:10] for pp, _v in q3}
+    holes = [str(pp)[:10] for pp, _v in a2 if str(pp)[:10] not in qset]
+    if holes:
+        print(f"   ⚠️ 여전히 빠진 결산분기: {holes}")
+    ttm = ttm_eps_series(q3)
+    print(f"⑥ TTM: {len(ttm)}개 (분기 {len(q3)}개 − 3 기대 "
+          f"{max(0, len(q3) - 3)}개)")
+    prev = None
+    for pp, _v in ttm:
+        if prev is not None:
+            g = _months_between(prev, pp)
+            if g is not None and g > 4:
+                print(f"   ⚠️ TTM 공백: {prev} → {pp} ({g}개월)")
+        prev = pp
+    if ttm:
+        print(f"   범위 {ttm[0][0]} ~ {ttm[-1][0]} · 최신 TTM {ttm[-1][1]:.4f}")
+
+
+def _main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="PER 밴드 EPS 파이프라인 점검")
+    ap.add_argument("--explain", metavar="TICKER",
+                    help="US(EDGAR) EPS 단계별 진단(예: --explain NVDA)")
+    a = ap.parse_args(argv)
+    if a.explain:
+        explain(a.explain)
+        return 0
+    ap.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
