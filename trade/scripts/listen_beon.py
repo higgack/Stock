@@ -183,9 +183,16 @@ async def _run_listener() -> int:
         await client.disconnect()
         return EX_CONFIG
 
-    source = await client.get_entity(SOURCE_USERNAME)
-    dest = await client.get_entity(DEST_ID)
-    log.info("connected: source=%s dest=%s", source.id, dest.id)
+    # ⚠️ get_entity(username) 은 매 실행 ResolveUsernameRequest — 리스너가
+    # 크래시로 재시작될 때마다 또 나가 계정 한도를 태운다(FloodWait 8073s
+    # 실측 2026-08-27 나쁜양파, #258). resolve_peer = 세션 캐시 우선.
+    from telethon import utils as _tutils
+
+    from trade.tg_entities import resolve_peer
+    source = await resolve_peer(client, SOURCE_USERNAME)
+    dest = await resolve_peer(client, DEST_ID)
+    log.info("connected: source(marked)=%s dest(marked)=%s",
+             _tutils.get_peer_id(source), _tutils.get_peer_id(dest))
 
     album_buf: dict[int, list[int]] = {}
     album_tasks: dict[int, asyncio.Task] = {}
@@ -262,6 +269,19 @@ def main() -> None:
             rc = asyncio.run(_run_auth())
         else:
             rc = asyncio.run(_run_listener())
+    except FloodWaitError as e:
+        # ⚠️ 재인증 대상이 아니다 — 곧장 exit 하면 systemd 즉시 재시작이
+        # 해석 요청을 또 쏘고 그 루프가 한도를 더 태운다(#258 증폭기).
+        # 대기(상한 1h)를 소화한 뒤 종료 → 다음 재시작이 성공한다.
+        from trade.tg_entities import startup_failure_note
+        log.error("flood wait at startup: %s", e)
+        _notify(
+            "⚠️ <b>BeOn 리스너 — 요청 제한</b>\n"
+            + html.escape(startup_failure_note(e))
+        )
+        import time as _time
+        _time.sleep(min(int(getattr(e, "seconds", 0) or 0) + 5, 3600))
+        sys.exit(1)
     except (AuthKeyError, SessionPasswordNeededError) as e:
         log.error("auth error: %s", e)
         _notify(

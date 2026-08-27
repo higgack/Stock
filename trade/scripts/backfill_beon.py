@@ -431,18 +431,22 @@ async def run(
     try:
         await client.start()
         log.info("Telethon session ready")
-        source = await client.get_entity(SOURCE_USERNAME)
-        dest = await client.get_entity(DEST_ID)
+        # ⚠️ get_entity(username) 은 매 실행 ResolveUsernameRequest — 계정
+        # 단위 강한 제한(FloodWait 8073s 실측 2026-08-27 나쁜양파, #258).
+        from trade.tg_entities import resolve_peer
+        source = await resolve_peer(client, SOURCE_USERNAME)
+        dest = await resolve_peer(client, DEST_ID)
         # Marked form (-100… for channels) so it matches what trade-bot
         # records via the Bot API for forward_origin_chat_id.
         source_chat_id = _tutils.get_peer_id(source)
     except Exception as exc:
+        from trade.tg_entities import startup_failure_note
         log.exception("session/access failure during startup")
         _notify(
-            "⚠️ <b>BeOn 동기화 — 세션/접근 실패</b>\n"
+            "⚠️ <b>BeOn 동기화 — 시작 실패</b>\n"
             f"{html.escape(type(exc).__name__)}: "
             f"{html.escape(str(exc)[:200])}\n"
-            "Telethon 세션 만료 또는 채널 접근 불가 — 재인증 확인."
+            + html.escape(startup_failure_note(exc))
         )
         try:
             await client.disconnect()
@@ -452,8 +456,8 @@ async def run(
 
     try:
         log.info(
-            "source=%s (marked=%s) dest=%s",
-            source.id, source_chat_id, dest.id,
+            "source(marked)=%s dest(marked)=%s",
+            source_chat_id, _tutils.get_peer_id(dest),
         )
 
         # reverse=True means iterate oldest-first starting from

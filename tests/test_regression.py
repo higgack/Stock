@@ -39858,6 +39858,130 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestTelethonResolveFloodGuard20260827:
+    """사용자 2026-08-27 알림: "⚠️ 나쁜양파 동기화 — 세션/접근 실패 /
+    FloodWaitError: A wait of 8073 seconds is required (caused by
+    ResolveUsernameRequest) / Telethon 세션 만료 또는 채널 접근 불가 —
+    재인증 확인" (#258).
+
+    결함 둘: ① `client.get_entity("<username>")` 이 **매 실행마다**
+    ResolveUsernameRequest 를 쏜다 — 백필 타이머 2종 + 리스너 2종(크래시
+    → systemd 즉시 재시작 루프가 증폭기) + 진단이 같은 계정으로 반복 해석
+    ② FloodWait(기다리면 풀림)를 '세션 만료 — 재인증 확인'으로 뭉뚱그린
+    알림(#82 갈래를 이름으로 부를 것 · #187b 틀린 사유는 헛걸음을 만든다).
+
+    계약: (a) `resolve_peer` = 세션 캐시(get_input_entity) 우선, 캐시
+    미스에만 get_entity 1회 (b) `startup_failure_note` 가 갈래(요청 제한/
+    세션 만료/채널 접근/미상)를 사실대로 부른다 (c) trade 프로덕션 코드에
+    직접 `client.get_entity(SOURCE_USERNAME)` 호출 0건 — 디렉터리 전수
+    (#24 목록 열거는 새 파일을 못 잡는다) (d) 리스너 main 에 FloodWaitError
+    분기(대기 소화 후 종료 — 재시작 루프 차단).
+    """
+
+    def test_resolver_prefers_the_session_cache(self):
+        import asyncio
+
+        from trade.tg_entities import resolve_peer
+        calls = []
+
+        class C:
+            async def get_input_entity(self, ref):
+                calls.append(("input", ref))
+                return "PEER"
+
+            async def get_entity(self, ref):
+                calls.append(("full", ref))
+                return "FULL"
+
+        out = asyncio.run(resolve_peer(C(), "Badonions"))
+        assert out == "PEER"
+        assert calls == [("input", "Badonions")], \
+            "캐시가 답하면 네트워크 해석(get_entity)이 나가면 안 된다"
+
+    def test_resolver_falls_back_once_on_cache_miss(self):
+        import asyncio
+
+        from trade.tg_entities import resolve_peer
+        calls = []
+
+        class C:
+            async def get_input_entity(self, ref):
+                calls.append("input")
+                raise ValueError("not cached")
+
+            async def get_entity(self, ref):
+                calls.append("full")
+                return "FULL"
+
+        assert asyncio.run(resolve_peer(C(), "Badonions")) == "FULL"
+        assert calls == ["input", "full"]
+
+    def test_failure_note_names_the_branch(self):
+        from trade.tg_entities import startup_failure_note as f
+
+        class FloodWaitError(Exception):
+            pass
+
+        e = FloodWaitError()
+        e.seconds = 8073
+        n = f(e)
+        assert "재인증 불필요" in n and "8073초" in n and "134분" in n, n
+        assert "재인증 확인" not in n
+
+        class AuthKeyError(Exception):
+            pass
+
+        assert "재인증이 필요" in f(AuthKeyError())
+
+        class ChannelPrivateError(Exception):
+            pass
+
+        assert "채널 접근 불가" in f(ChannelPrivateError())
+
+        class WeirdError(Exception):
+            pass
+
+        assert "미상" in f(WeirdError())
+
+    def test_no_production_code_resolves_usernames_directly(self):
+        """디렉터리 전수(#24) — 새 스크립트가 옛 패턴으로 돌아가면 잡힌다.
+        주석 꼬리는 걷어낸다(#59b) — 독스트링 언급은 패턴이 달라 안 걸린다."""
+        import pathlib
+        bad = []
+        for p in pathlib.Path("trade").rglob("*.py"):
+            if "tests" in p.parts or p.name == "tg_entities.py":
+                continue
+            for i, line in enumerate(
+                    p.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("#")[0]
+                if "client.get_entity(SOURCE_USERNAME" in code:
+                    bad.append(f"{p}:{i}")
+        assert not bad, bad
+
+    def test_listeners_wait_out_floodwait_instead_of_crash_looping(self):
+        """리스너 main 의 FloodWaitError 분기 — 핸들러 **본문**(#60 창이
+        아니라 구조)에 sleep 과 exit 이 있는지 AST 로 본다."""
+        import ast as _ast
+        for path in ("trade/scripts/listen_badonion.py",
+                     "trade/scripts/listen_beon.py"):
+            tree = _ast.parse(open(path).read())
+            found = False
+            for h in _ast.walk(tree):
+                if not isinstance(h, _ast.ExceptHandler):
+                    continue
+                names = [n.id for n in _ast.walk(h.type or _ast.Pass())
+                         if isinstance(n, _ast.Name)]
+                if "FloodWaitError" not in names:
+                    continue
+                body_calls = [c.func.attr for c in _ast.walk(
+                    _ast.Module(body=h.body, type_ignores=[]))
+                    if isinstance(c, _ast.Call)
+                    and isinstance(c.func, _ast.Attribute)]
+                if "sleep" in body_calls and "exit" in body_calls:
+                    found = True
+            assert found, f"{path}: FloodWait 대기-후-종료 분기 없음(#258)"
+
+
 class TestEcosSeriesPathTruncation20260827:
     """사용자 2026-08-27 (한국 수출/수입 카드 '기준 2026-06 · ⚠️ 지연'):
     "원천이 지연인지 우리문제인지 알아봐줘."

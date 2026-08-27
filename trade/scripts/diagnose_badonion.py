@@ -126,10 +126,13 @@ async def run(since: datetime, until: datetime | None, grep: str | None,
     try:
         await client.start()
         log.info("Telethon session ready (read-only)")
-        source = await client.get_entity(SOURCE_USERNAME)   # 조회만
-        log.info("source=%s since=%s until=%s grep=%r limit=%d",
-                 source.id, since.date(), until.date() if until else None,
-                 grep, limit)
+        from telethon import utils as _tutils
+
+        from trade.tg_entities import resolve_peer   # ResolveUsername 절약(#258)
+        source = await resolve_peer(client, SOURCE_USERNAME)   # 조회만
+        log.info("source(marked)=%s since=%s until=%s grep=%r limit=%d",
+                 _tutils.get_peer_id(source), since.date(),
+                 until.date() if until else None, grep, limit)
 
         msgs = []
         # reverse=True → offset_date 가 하한(오름차순). 앨범 그룹핑이

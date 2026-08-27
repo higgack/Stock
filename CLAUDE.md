@@ -3124,6 +3124,26 @@ Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기
     전에는 원인 확정이 아니다"라고 적어 두었다). 절단 검사·페이지네이션은
     방어로 유지, 원천이 7월분을 올리면 12h 캐시 안에서 자동 반영된다.
 
+258. **매 실행 username 해석 + 크래시 재시작 루프 = 요청 제한 증폭기, 그리고
+    알림이 엉뚱한 처방을 말했다**(2026-08-27 나쁜양파 "FloodWaitError: A wait
+    of 8073 seconds … (caused by ResolveUsernameRequest)" 인데 알림은 "세션
+    만료 — 재인증 확인"): `client.get_entity("<username>")` 은 매 실행
+    ResolveUsernameRequest 를 쏘고 텔레그램은 그걸 계정 단위로 강하게
+    제한한다. 백필 타이머 2종 + 리스너 2종 + 진단이 같은 계정으로 반복 해석
+    했고, 리스너는 그 예외를 안 잡아 **systemd 재시작마다 또 해석**하는
+    증폭 루프가 됐다. 대응 셋(`trade/tg_entities.py` 단일 헬퍼, #38):
+    (a) `resolve_peer` = 세션 DB 캐시 우선(`get_input_entity`, username 포함)
+        — 캐시 미스 첫 1회만 네트워크 해석, 이후 실행은 해석 요청 0.
+    (b) 리스너 main 에 FloodWaitError 분기 — **대기를 소화한 뒤** 종료(상한
+        1h). 곧장 exit 하면 즉시 재시작이 한도를 더 태운다.
+    (c) 알림 사유는 `startup_failure_note` 가 갈래로 말한다(#82) — FloodWait
+        ="재인증 불필요, 자동 재시도" / AuthKey·SessionRevoked="재인증 필요"
+        / ChannelPrivate="채널 상태 확인". FloodWait 에 '재인증'이라고 적으면
+        운영자가 멀쩡한 세션을 지우러 간다(#187b 틀린 로그가 헛걸음을 만든다).
+    일반화: 장수 프로세스의 시작 경로에서 나가는 **해석성 요청**(이름→ID)은
+    캐시 가능한지 먼저 묻고, 크래시-재시작 루프가 그 요청의 배수기가 되지
+    않는지 볼 것. 회귀는 디렉터리 전수(#24)로 옛 패턴 0건을 고정.
+
    (새 실수 = 날짜 + 한 줄 추가 의무. 항목이 구조적으로 막히면[코드가 그 실패모드
    자체를 불가능하게 바꾼 경우 — 규율로 매번 기억하는 게 아니라] "#N SUPERSEDED by
    <커밋/PR>" 태그 추가, 2026-08-09 Cerebras 지식베이스 블로그 검토 — age-decay
