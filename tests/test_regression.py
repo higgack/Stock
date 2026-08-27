@@ -40041,6 +40041,29 @@ class TestMultiSplitEpsReconcile20260827:
         assert out["q_filed"]["2024-01-28"] == "2024-03-01", out["q_filed"]
         assert out["a_filed"]["2024-01-28"] == "2024-03-01"
 
+    def test_explain_cli_names_the_hole_and_reason(self, monkeypatch, capsys):
+        """3차 라운드(사용자 "여전히 좀 이상한것 같지" — 2021·2023 결산분기
+        공백 잔존): 남은 공백의 **관문별 사유**는 실제 EDGAR 숫자를 봐야
+        답할 수 있다(#12 샌드박스 차단) — 화면과 같은 함수를 같은 순서로
+        태우는 진단 CLI(#35·#252)가 복원 폐기 사유·빠진 결산분기·TTM
+        공백을 이름으로 말한다(#82)."""
+        import bot.edgar_eps as ee
+        import bot.per_band as pb
+        true_q, _rq, true_a, _ra = self._series()
+        tq = [r for r in true_q if r[0] != "2021-01-26"]   # 결산분기 구멍 하나
+        ta = [(p, (v * 30 if p == "2021-01-26" else v))    # 그 해 연간이 이상값
+              for p, v in true_a]
+        monkeypatch.setattr(ee, "eps_history", lambda t, years=10: {
+            "quarterly": tq, "annual": ta, "q_filed": {}, "a_filed": {},
+            "tag": "EarningsPerShareDiluted"})
+        monkeypatch.setattr(pb, "_price_history", lambda t, y: ([], [], True))
+        rc = pb._main(["--explain", "NVDA"])
+        out = capsys.readouterr().out
+        assert rc == 0 and f"per_band explain v{pb._EXPLAIN_VER}" in out, out[:200]
+        assert "폐기" in out and "2021-01-26" in out, out
+        assert "여전히 빠진 결산분기" in out, out
+        assert "TTM 공백" in out, out
+
 
 class TestTelethonResolveFloodGuard20260827:
     """사용자 2026-08-27 알림: "⚠️ 나쁜양파 동기화 — 세션/접근 실패 /
