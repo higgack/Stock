@@ -39858,6 +39858,94 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestEcosSeriesPathTruncation20260827:
+    """사용자 2026-08-27 (한국 수출/수입 카드 '기준 2026-06 · ⚠️ 지연'):
+    "원천이 지연인지 우리문제인지 알아봐줘."
+
+    되짚으니 #251 의 절단 fix 는 **단일값 경로(_fetch_indicator)** 에만
+    들어갔고, 카드(macro_snapshot `_ecos_series`)가 실제로 쓰는 것은
+    **fetch_series_points** 였다 — 고친 경로와 화면 경로가 달랐다(#35).
+    시리즈 경로는 한 번만 받고 총 건수를 안 봐서, 응답이 상한을 넘으면
+    잘리는 쪽이 최신 월이라 카드가 조용히 뒤처진다.
+
+    계약: (a) `list_total_count` 를 세어 모자라면 **페이지 전체**를 이어
+    받는다(스파크라인은 전 구간 필요 — 꼬리만으론 부족) + 절단 경고 로그
+    (#82) (b) 캐시 파일명에 버전 — 같은 날 배포돼도 절단된 옛 캐시를
+    서빙하지 않는다(#21b) (c) 진단 CLI(`--check`)가 화면 경로(#35)와 원시
+    통계를 나란히 찍어 '원천 지연'과 '우리 절단'을 가른다(#252).
+    """
+
+    MONTHS = ["202601", "202602", "202603", "202604", "202605"]
+
+    def _wire(self, monkeypatch, tmp_path, cap=3):
+        import re
+
+        import bot.bok_ecos_client as bec
+        monkeypatch.setattr(bec, "_env_key", lambda n: "K")
+        monkeypatch.setattr(bec, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(bec, "_ROW_CAP", cap)
+        calls = []
+
+        rows_all = [{"TIME": t, "DATA_VALUE": "100"} for t in self.MONTHS]
+
+        class _Resp:
+            def __init__(self, lo, hi):
+                self._rows = rows_all[lo - 1:hi]
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"StatisticSearch": {
+                    "list_total_count": len(rows_all), "row": self._rows}}
+
+        def _get(url, timeout=None):    # noqa: ARG001
+            m = re.search(r"/json/kr/(\d+)/(\d+)/", url)
+            lo, hi = int(m.group(1)), int(m.group(2))
+            calls.append((lo, hi))
+            return _Resp(lo, hi)
+
+        monkeypatch.setattr(bec.requests, "get", _get)
+        return bec, calls
+
+    def test_truncated_series_is_paged_to_completion(self, monkeypatch,
+                                                     tmp_path, caplog):
+        import logging
+        bec, calls = self._wire(monkeypatch, tmp_path, cap=3)
+        caplog.set_level(logging.WARNING, logger="bot.bok_ecos")
+        pts = bec.fetch_series_points("export_amt")
+        assert [t for t, _ in pts] == self.MONTHS, pts
+        assert calls == [(1, 3), (4, 6)], calls
+        assert "시리즈 응답 절단" in caplog.text, "절단은 로그로 알린다(#82)"
+
+    def test_same_day_old_cache_is_not_served(self, monkeypatch, tmp_path):
+        """페이지네이션 배포 당일에도 절단된 옛 캐시가 화면에 남으면 fix 가
+        가려진다(#21b) — 파일명 버전이 그걸 막는다."""
+        import json as _json
+        from datetime import date as _date
+        bec, _ = self._wire(monkeypatch, tmp_path, cap=3)
+        old = tmp_path / f"series_export_amt_400_{_date.today().isoformat()}.json"
+        old.write_text(_json.dumps([["202501", 1.0]]))
+        pts = bec.fetch_series_points("export_amt")
+        assert [t for t, _ in pts] == self.MONTHS, "옛 캐시가 서빙됐다(#21b)"
+        assert any(f"series_v{bec._SERIES_CACHE_VER}_" in p.name
+                   for p in tmp_path.iterdir()), list(tmp_path.iterdir())
+
+    def test_check_cli_separates_source_lag_from_our_truncation(
+            self, monkeypatch, tmp_path, capsys):
+        """`--check` 는 실제로 디스패치되고(#252 배선은 태워야 보인다),
+        화면 경로의 최신 월과 원시 총 건수를 나란히 찍어 절단을 판정한다."""
+        bec, _ = self._wire(monkeypatch, tmp_path, cap=3)
+        rc = bec._main(["--check", "export_amt"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert f"ecos_check v{bec._PROBE_VER}" in out, out[:200]
+        assert "① 화면 경로: 5점 · 최신 202605" in out, out
+        assert "② 원시: 총 5행 · 1쪽 수신 3행" in out, out
+        assert "❌ 절단(우리 문제였음)" in out, out
+        assert "cadence:" in out, out
+
+
 class TestEcosSnapshotRowCap20260826:
     """ECOS 스냅샷 경로만 행 상한이 `/1/100/` 이었다(시계열 경로는 1000) —
     한 표가 부가 차원을 함께 주면 100행은 쉽게 넘고, 잘리는 쪽이 **최신 월**
