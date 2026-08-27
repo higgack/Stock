@@ -127,8 +127,19 @@ def eps_history(ticker: str, years: int = 10) -> dict | None:
             quarters = fill_fiscal_q4(
                 [(e, v, st) for e, (_f, v, st) in q.items()],
                 [(e, v, st) for e, (_f, v, st) in a.items()])
+            # ⚠️ **제출일(filed)을 같이 내보낸다**(#259 2차, 2026-08-27 NVDA):
+            # 분할 '전'에 제출된 보고서의 주당값은 그 분할을 알 수 없으므로
+            # 확실히 미조정이고, '후' 제출분은 소급조정된다(ASC 260) — 기저
+            # 판정을 측정(급변)이 아니라 **원천의 사실**로 할 수 있는 열쇠다.
+            # 복원한 결산분기의 기저는 그 연간 보고서의 기저다.
+            a_filed = {str(e)[:10]: f for e, (f, _v, _s) in a.items()}
+            q_filed = {str(e)[:10]: f for e, (f, _v, _s) in q.items()}
+            for e, _v in quarters:
+                if e not in q_filed and e in a_filed:
+                    q_filed[e] = a_filed[e]
             out = {"quarterly": quarters,
                    "annual": sorted((e, v) for e, (_f, v, _s) in a.items()),
+                   "q_filed": q_filed, "a_filed": a_filed,
                    "tag": tag}
             _save_cache(key, out)
             return out
