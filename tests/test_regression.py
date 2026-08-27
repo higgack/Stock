@@ -40064,6 +40064,49 @@ class TestMultiSplitEpsReconcile20260827:
         assert "여전히 빠진 결산분기" in out, out
         assert "TTM 공백" in out, out
 
+    def test_for_ticker_keeps_history_when_filed_establishes_basis(
+            self, monkeypatch):
+        """4차 라운드 E2E(#20 배선은 태워야 보인다) — #259 3차 VM 프로브가
+        기제를 확정했다: 제출일 확정 환산 뒤에도 측정 정합이 **실적 점프**
+        (FY2024 연 ~7배, 실제 NVDA AI 붐)를 '미정합(reverted)'으로 읽었고,
+        should_trim(reverted) 가 **연간 계열을 잘라** 2021·2023 연간이
+        사라지자 결산분기 복원 재료가 없어져 TTM 4행씩 공백이 남았다.
+
+        계약: 전 행의 기저가 제출일(사실)로 확정된 계열에는 측정 정합·
+        잘라내기(급변 휴리스틱)를 태우지 않는다 — 남은 급변은 정의상
+        실적이다. 독립 검증은 결산검산(TTM=연간, 같은 기간 대조라 성장
+        무관)이 맡는다."""
+        import bot.edgar_eps as ee
+        import bot.per_band as pb
+        true_q, _rq, _ta, _ra = self._series()
+        # 실적 점프: 2023-04 부터 ×7 (실제 NVDA FY2024 모양 — 분할 아님)
+        big_q = [(p, v * (7.0 if p >= "2023-04-26" else 1.0))
+                 for p, v in true_q]
+        bq = dict(big_q)
+        big_a = []
+        for y in range(2018, 2027):
+            sibs = [f"{y - 1}-04-26", f"{y - 1}-07-26", f"{y - 1}-10-26",
+                    f"{y}-01-26"]
+            big_a.append((f"{y}-01-26", sum(bq[p] for p in sibs)))
+        holes = {"2021-01-26", "2023-01-26", "2024-01-26"}
+        q_in = [r for r in big_q if r[0] not in holes]
+        h = {"quarterly": q_in, "annual": big_a,
+             "q_filed": {p: "2026-02-01" for p, _v in big_q},
+             "a_filed": {p: "2026-02-01" for p, _v in big_a},
+             "tag": "EarningsPerShareDiluted"}
+        monkeypatch.setattr(ee, "eps_history", lambda t, years=10: h)
+        closes = [(p, 100.0) for p, _v in big_q]
+        splits = [("2021-07-20", 4.0), ("2024-06-10", 10.0)]
+        monkeypatch.setattr(pb, "_price_history",
+                            lambda t, y: (closes, splits, True))
+        monkeypatch.setattr(pb, "live_price", lambda *a, **k: None)
+        res, why = pb.for_ticker("NVDA")
+        assert res, why
+        periods = {str(r.get("period"))[:10] for r in res.get("rows") or []}
+        for p in ("2021-01-26", "2023-01-26", "2024-01-26"):
+            assert p in periods, (p, sorted(periods))
+        assert not res.get("trim_note"), res.get("trim_note")
+
 
 class TestTelethonResolveFloodGuard20260827:
     """사용자 2026-08-27 알림: "⚠️ 나쁜양파 동기화 — 세션/접근 실패 /
