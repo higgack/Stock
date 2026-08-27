@@ -552,14 +552,27 @@ def kr_registry_shares(ticker: str) -> dict:
 
 
 def apply_class_market_cap(entry: dict) -> dict:
-    """동종비교 한 행의 시총을 **거래되는 클래스 기준**으로 맞춘다(in-place).
+    """동종비교 한 행의 시총 모집단을 정한다(in-place).
 
-    사용자 2026-08-24 (BYD 1211.HK) "H주로." — yfinance 는 A주+H주 전체
-    시총과 H주만의 발행주식수를 같이 줘서, 헤더(네이버 H주 3,431억)와 이
-    표(전 클래스 8,493억)가 같은 회사를 2.5배 다르게 적었다(#34).
-    단일 클래스에서는 둘이 같아 **아무것도 안 바뀐다**(no-op).
+    · 이중상장(HK/CN_A): **거래되는 클래스 기준**으로 재계산 — 사용자
+      2026-08-24 (BYD 1211.HK) "H주로." yfinance 는 A주+H주 전체 시총과
+      H주만의 발행주식수를 같이 줘서, 헤더(네이버 H주 3,431억)와 이 표
+      (전 클래스 8,493억)가 같은 회사를 2.5배 다르게 적었다(#34).
+    · 그 외(미국 포함): **원천(전 클래스) 시총 유지** — 사용자 2026-08-27
+      "야후나 구글도 전 클래스로 보여주지? 맞으면 미국도 전 클래스로 해줘"
+      (#256). 야후의 EPS·순이익·배수가 전 클래스 기준이라 급도 이쪽이 맞다.
+    · 시총이 아예 없으면 시장 무관 현재가 × 발행주식수로 채운다.
+    단일 클래스에서는 어느 규칙이든 값이 같아 **아무것도 안 바뀐다**(no-op).
     """
     from bot.share_count import listed_market_cap
+    try:
+        from bot.market import detect_market
+        _tkr = (entry or {}).get("ticker") or ""
+        _mkt = detect_market(_tkr) if _tkr else ""
+    except Exception:                                          # noqa: BLE001
+        _mkt = ""
+    if (entry or {}).get("market_cap") and _mkt not in ("HK", "CN_A"):
+        return entry
     mc, why = listed_market_cap((entry or {}).get("currentPrice"),
                                 (entry or {}).get("market_cap"),
                                 (entry or {}).get("shares"))
@@ -594,15 +607,30 @@ def _apply_share_count(ticker: str, snap: dict) -> None:
         _src = q.get("_source") or "pykrx"
         _name = "네이버 상장주식수" if _src == "naver" else "KRX 상장주식수"
         reg_label = _name + (f"({q.get('date')})" if q.get("date") else "")
-        # ⚠️ 등록 주식수가 없는 시장(HK/CN 이중상장 등)에서도 시총과
-        # 발행주식수의 **모집단을 맞춘다** — 사용자 2026-08-24 "H주로".
-        # 단일 클래스에서는 no-op 이라 다른 시장은 영향이 없다.
+        # 시총 모집단 규칙(#256): 이중상장(HK/CN_A)만 **거래 클래스 기준**
+        # 으로 재계산(사용자 2026-08-24 BYD "H주로"). 그 외(미국 포함)는
+        # **원천(전 클래스) 시총 유지** — 사용자 2026-08-27 "야후나 구글도
+        # 전 클래스로 보여주지? 맞으면 미국도 전 클래스로 해줘". 값은 두되
+        # 모집단이 다름을 밝힌다(#43) — 복수 클래스인지 재지 않았으므로
+        # 단정하지 않는다(#165). 시총이 아예 없으면 시장 무관 채움.
+        from bot.market import detect_market as _dm
         from bot.share_count import listed_market_cap as _lmc
         _mc, _why = _lmc(snap.get("current_price"), snap.get("market_cap"),
                          snap.get("shares_outstanding"))
         if _why and not q.get("shares"):
-            snap["market_cap"] = _mc
-            snap["market_cap_note"] = _why
+            _m2 = _dm(ticker)
+            if not snap.get("market_cap") or _m2 in ("HK", "CN_A"):
+                snap["market_cap"] = _mc
+                snap["market_cap_note"] = _why
+            elif _mc and _m2 != "KR":
+                # KR 은 이 각주를 달지 않는다 — 시총 원천이 야후가 아니고
+                # (네이버) 복수 클래스도 없다. 어긋남은 발행주식수 카드의
+                # 경고(#219, 비교한 시총을 카드와 같은 문자열로)가 말한다.
+                _r = float(snap["market_cap"]) / _mc
+                snap["market_cap_note"] = (
+                    f"원천 시총 기준(야후·구글과 동일) — 현재가 × 발행주식수"
+                    f"({_mc:,.0f})의 {_r:.2f}배 · 복수 클래스 합산일 수 "
+                    f"있습니다")
         r = _resolve_shares(snap.get("current_price"), snap.get("market_cap"),
                             snap.get("shares_outstanding"), "yfinance",
                             q.get("shares"), reg_label)
