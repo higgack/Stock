@@ -40500,3 +40500,31 @@ class TestEvRowProbeShowsRawColumns20260827:
         import bot.wisereport_financials as wf
         assert wf._main([]) == 2                  # 사용법 + 실패코드
         assert wf._main(["--ev"]) == 2
+
+
+class TestEvProbeSweepsCandidateSurfaces20260827:
+    """VM 실측(078340): cF1001 프래그먼트에는 EV/EBITDA 행 자체가 **없다** —
+    #1147 이 그 행의 존재를 가정했던 게 틀렸다(안전 실패 설계라 화면은 '—'
+    유지, 틀린 값은 안 나갔다). 프로브 v2 는 후보 표면(wisereport 투자지표 ·
+    FnGuide Snapshot/투자지표/재무비율)을 **전부 훑고**, 표가 아니라 스크립트
+    /JSON 에 있어도 원문 발췌를 찍는다(#109·#155 — 표본 없이 파서 금지).
+    """
+
+    def test_snippets_show_nontable_occurrences(self):
+        from bot.wisereport_financials import ev_snippets
+        sn = ev_snippets("<script>chartData={'EV/EBITDA':[5.9,6.5]}</script>")
+        assert sn and "5.9" in sn[0], sn
+
+    def test_snippets_empty_when_absent(self):
+        """⚠️ 반대 증거 — 없는데 발췌를 지어내면 안 된다(#54)."""
+        from bot.wisereport_financials import ev_snippets
+        assert ev_snippets("<table><tr><td>매출액</td></tr></table>") == []
+
+    def test_probe_candidates_cover_both_hosts(self):
+        """후보 목록이 wisereport·fnguide 둘 다 훑는가 — 한 호스트만 보면
+        '없다' 결론이 반쪽이다(#143 대조군)."""
+        from bot.wisereport_financials import _EV_PROBE_URLS
+        hosts = {u.split("/")[2] for _l, u in _EV_PROBE_URLS}
+        assert "navercomp.wisereport.co.kr" in hosts, hosts
+        assert "comp.fnguide.com" in hosts, hosts
+        assert len(_EV_PROBE_URLS) >= 5
