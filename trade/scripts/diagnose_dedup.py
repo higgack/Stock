@@ -86,11 +86,12 @@ async def run(days: int, grep: str | None, sample_count: int) -> int:
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
     await client.start()
     try:
-        source = await client.get_entity(SOURCE_USERNAME)
+        from trade.tg_entities import resolve_peer   # ResolveUsername 절약(#258)
+        source = await resolve_peer(client, SOURCE_USERNAME)
         source_chat_id = _tutils.get_peer_id(source)
         log.info(
-            "source=@%s raw_id=%s marked=%s",
-            SOURCE_USERNAME, source.id, source_chat_id,
+            "source=@%s marked=%s",
+            SOURCE_USERNAME, source_chat_id,
         )
 
         since = datetime.now(timezone.utc) - timedelta(days=days)

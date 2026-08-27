@@ -345,16 +345,21 @@ async def run(
     try:
         await client.start()
         log.info("Telethon session ready")
-        source = await client.get_entity(SOURCE_USERNAME)
-        dest = await client.get_entity(DEST_ID)
+        # ⚠️ get_entity(username) 은 매 실행 ResolveUsernameRequest — 계정
+        # 단위 강한 제한에 걸린다(FloodWait 8073s 실측 2026-08-27, #258).
+        # resolve_peer = 세션 캐시 우선, 첫 1회만 네트워크 해석.
+        from trade.tg_entities import resolve_peer
+        source = await resolve_peer(client, SOURCE_USERNAME)
+        dest = await resolve_peer(client, DEST_ID)
         source_chat_id = _tutils.get_peer_id(source)
     except Exception as exc:
+        from trade.tg_entities import startup_failure_note
         log.exception("session/access failure during startup")
         _notify(
-            "⚠️ <b>나쁜양파 동기화 — 세션/접근 실패</b>\n"
+            "⚠️ <b>나쁜양파 동기화 — 시작 실패</b>\n"
             f"{html.escape(type(exc).__name__)}: "
             f"{html.escape(str(exc)[:200])}\n"
-            "Telethon 세션 만료 또는 채널 접근 불가 — 재인증 확인."
+            + html.escape(startup_failure_note(exc))
         )
         try:
             await client.disconnect()
@@ -364,8 +369,8 @@ async def run(
 
     try:
         log.info(
-            "source=%s (marked=%s) dest=%s",
-            source.id, source_chat_id, dest.id,
+            "source(marked)=%s dest(marked)=%s",
+            source_chat_id, _tutils.get_peer_id(dest),
         )
 
         candidates: list[Message] = []
