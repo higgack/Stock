@@ -787,6 +787,24 @@ def adjust_eps_by_filed(rows: list, filed: dict, splits: list) -> tuple[list, bo
     return out, changed
 
 
+def basis_established_by_filed(rows: list, filed: dict) -> bool:
+    """전 행의 기저가 **제출일(사실)로 확정**됐는가.
+
+    참이면 측정 정합(reconcile)·잘라내기(trim) 같은 **급변 휴리스틱을 아예
+    태우지 않는다** — 기저가 사실로 정해졌으니 남은 급변은 정의상 실적이다.
+
+    ⚠️ 왜(#259 3차, 2026-08-27 NVDA VM 프로브): 제출일 확정 환산 뒤에도
+    측정 정합이 FY2024 실적 점프(연 ~7배, 실제 AI 붐)를 '미정합(reverted)'
+    으로 읽었고, should_trim(reverted) 가 연간 계열을 잘라 2021·2023 연간이
+    사라지자 결산분기 복원 재료가 없어져 TTM 4행씩 공백이 남았다. 측정
+    휴리스틱은 실적 폭발과 기저 불일치를 구별하지 못한다 — 독립 검증은
+    결산검산(TTM=연간, **같은 기간** 대조라 성장 무관)이 맡는다.
+    """
+    if not rows or not filed:
+        return False
+    return all(str(p)[:10] in filed for p, _v in rows)
+
+
 def should_trim(splits_known: bool, reverted: bool) -> bool:
     """잘라내기(trim_at_eps_break)를 적용할 것인가.
 
@@ -1025,8 +1043,14 @@ def for_ticker(ticker: str, snap: dict | None = None,
         if not reported_eps:
             return convert_eps(rows, fx) if fx else rows
         # ① 제출일 기준 **확정** 환산(EDGAR — filed 를 아는 경로만) →
-        # ② 측정 기반 정합(#162)은 남은 급변의 안전망으로만.
+        # ② 측정 기반 정합(#162)은 filed 가 **없는** 경로의 안전망으로만.
         rows, _det = adjust_eps_by_filed(rows, filed or {}, _splits)
+        if basis_established_by_filed(rows, filed or {}):
+            # 기저가 사실로 확정됐다 — 남은 급변은 실적이다. 측정 정합이
+            # 그걸 '미정합'으로 읽어 잘라내면 정당한 이력이 사라진다(#259
+            # 3차: 실적 7배 점프 → 연간 잘림 → 결산분기 복원 재료 소실).
+            _conv.applied.append(bool(_det))
+            return convert_eps(rows, fx) if fx else rows
         rows, _st = reconcile_eps_splits(rows, _splits)
         # 이 계열에 분할 환산이 **실제로 걸렸는지** 기록한다 — 두 계열이 서로
         # 다른 기준으로 끝나면 둘을 대조할 수 없다(아래 결산검산).
@@ -1542,9 +1566,16 @@ def explain(ticker: str) -> None:
     a1, det_a = adjust_eps_by_filed(a0, af, sp)
     print(f"③ 제출일 확정 환산: 분기 {'적용' if det_q else '변화 없음'} · "
           f"연간 {'적용' if det_a else '변화 없음'}")
-    q2, st_q = reconcile_eps_splits(q1, sp)
-    a2, st_a = reconcile_eps_splits(a1, sp)
-    print(f"④ 측정 정합: 분기 {st_q} · 연간 {st_a}")
+    # 화면(_conv)과 같은 분기 — 기저가 사실로 확정됐으면 측정 정합·잘라내기
+    # 를 태우지 않는다(#259 3차, #35 프로브는 화면 경로 그대로).
+    if basis_established_by_filed(q1, qf) and basis_established_by_filed(a1, af):
+        q2, a2 = q1, a1
+        print("④ 측정 정합: 생략 — 전 행의 기저가 제출일로 확정됨"
+              "(남은 급변은 실적)")
+    else:
+        q2, st_q = reconcile_eps_splits(q1, sp)
+        a2, st_a = reconcile_eps_splits(a1, sp)
+        print(f"④ 측정 정합: 분기 {st_q} · 연간 {st_a}")
     tr: list = []
     q3 = refill_fiscal_q4(q2, a2, trace=tr)
     print(f"⑤ 결산분기 재복원: {len(q2)} → {len(q3)}개 분기")
