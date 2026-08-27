@@ -37644,12 +37644,21 @@ class TestShareCountIdentity:
         h = ok["header"] if isinstance(ok, dict) and "header" in ok else str(ok)
         assert _sub(h) == "79,241,527주", _sub(h)
         assert 'title="KRX 상장주식수(2026-08-24) · 시총 재계산"' in h
-        # 어긋나면 경고는 화면에 남는다
+        # ⚠️ 2026-08-27 계약 변경(#222 옛 회귀는 지우지 말고 다시 쓴다):
+        # 옛 판은 시총↔주식수가 어긋나면 발행주식수 카드에 **경고**를 띄웠다.
+        # 이제는 어긋나는 순간 **현재가 × 발행주식수로 재계산**하므로(NKE
+        # 실측 — 낡은 시총이 PSR 분자가 돼 두 탭이 갈렸다) '어긋남'이 화면에
+        # 남지 않는다. 대신 **바뀐 값의 카드**(시가총액)가 사유를 보이는 줄로
+        # 말한다 — 툴팁만이면 없는 것과 같다(#228). 침묵 금지 계약은 그대로다.
         bad = _render_stock_info_html({"ticker": "005490.KS", "stock_info": {
             "currency": "KRW", "current_price": 310000.0,
             "market_cap": 3.9e13, "shares_outstanding": 79241527}})
         hb = bad["header"] if isinstance(bad, dict) and "header" in bad else str(bad)
-        assert "⚠️" in _sub(hb), _sub(hb)
+        i = hb.index("시가총액")
+        seg = hb[i:i + 600]
+        assert "⚠️" in seg and "재계산했습니다" in seg, seg[:300]
+        # 재계산된 값이 실제로 곱과 맞는다(#33)
+        assert f"{310000.0 * 79241527 / 1e12:,.2f}조" in seg, seg[:300]
 
     def test_bps_denominator_deducts_treasury_and_pbr_follows_bps(self):
         """사용자 2026-08-23 POSCO홀딩스 005490.KS: 우리 BPS 809,716 vs
@@ -40245,3 +40254,114 @@ console.log(JSON.stringify({list:__el('vc-list').innerHTML,
         """⚠️ 자유검색을 없애면 오타 탐색이 죽는다 — 라벨이 '포함' 으로 밝힌다."""
         out = self._render("지멘스독일")
         assert "포함" in out["list"] and "관계 0건" in out["list"], out["list"][:200]
+
+
+class TestPriceConsistentMcapAndNonKrPsr20260827:
+    """사용자 2026-08-27 NKE: "왜 밸류에이션이랑 분기실적의 PSR 이 다른거야?
+    매번 주가에 따라 바뀌는 지표는 이거 돌리는 시점의 주가로 모든 탭에서
+    계산되어 보여지게 하지 않았어? 나라와 상관없이 모두?"
+
+    화면 되짚기로 원인이 갈렸다 — 두 결함이 겹쳤다:
+      ① **헤더가 자기 산수를 못 맞췄다**(#33): 현재가 $38.59 × 발행주식수
+         1,202,110,951 = $46.39B 인데 시총 칸은 **$57.25B**($47.62 주가 시절
+         야후 값). 그 낡은 시총이 PSR 의 분자가 됐다(1.23x).
+      ② **#241 의 'PSR 은 화면의 매출로 재계산' 이 KR 전용 배선**이었다 —
+         비-KR 은 `rev` 가 None 이라 소스값이 그대로 살았다(#232 로 비-KR 도
+         분기 매출이 화면에 실리는데 그 전제가 갱신되지 않았다).
+    분기실적 카드는 `시총 = 현재가 × 주식수` 로 자체계산해 1.00배였다.
+
+    계약: (a) 시총이 현재가 × 발행주식수와 2% 넘게 어긋나면 그 곱으로
+    재계산하고 사유를 남긴다 (b) 비-KR TTM 매출은 **카드가 쓰는 같은
+    시리즈**(`series_from_yfinance`)로 만든다 — 규칙을 복제하지 않는다(#38).
+    """
+
+    SH = 1_202_110_951
+
+    @classmethod
+    def _si(cls, **over):
+        def q(p, rev):
+            return {"period": p, "Total Revenue": rev, "Net Income": 0.8e9}
+        si = {"currency": "USD", "current_price": 38.59,
+              "market_cap": 57.25e9, "shares_outstanding": cls.SH,
+              "trailingEps": 2.10, "bookValue": 10.02,
+              "trailingPE": 18.38, "priceToBook": 3.85,
+              "priceToSalesTrailing12Months": 1.23,
+              "financials": {"income_statement": {"quarterly": [
+                  q("2025-08-31", 11.0e9), q("2025-11-30", 11.5e9),
+                  q("2026-02-28", 11.6e9), q("2026-05-31", 12.3e9)]}}}
+        si.update(over)
+        return si
+
+    def test_stale_mcap_is_recalculated_from_price(self):
+        from bot.dashboard import price_consistent_mcap as f
+        mc, note = f(38.59, 57.25e9, self.SH)
+        assert abs(mc - 38.59 * self.SH) < 1.0, mc
+        assert note, "재계산했는데 사유가 없다(#43)"
+
+    def test_a_consistent_mcap_is_left_alone(self):
+        """⚠️ 늘 곱으로 덮으면 아무것도 안 재는 것과 같다 — 반대 증거(#25).
+        주식수 쪽이 낡았을 수도 있어(#190) 미세 차이는 원천을 존중한다."""
+        from bot.dashboard import price_consistent_mcap as f
+        for mc in (38.59 * self.SH, 38.59 * self.SH * 1.015):
+            assert f(38.59, mc, self.SH) == (mc, ""), mc
+
+    def test_no_materials_no_invention(self):
+        from bot.dashboard import price_consistent_mcap as f
+        assert f(None, 57.25e9, self.SH) == (57.25e9, "")
+        assert f(38.59, 57.25e9, None) == (57.25e9, "")
+        assert f(0, 57.25e9, self.SH) == (57.25e9, "")
+
+    def test_non_kr_psr_matches_the_card(self):
+        """밸류에이션 PSR = 시총(현재가 기준) ÷ TTM 매출 — 카드와 같은 값."""
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d(self._si())
+        ttm = (11.0 + 11.5 + 11.6 + 12.3) * 1e9
+        assert abs(out["priceToSalesTrailing12Months"]
+                   - 38.59 * self.SH / ttm) < 1e-6, out
+        assert round(out["priceToSalesTrailing12Months"], 2) == 1.00
+        assert (out.get("_restated") or {}).get(
+            "priceToSalesTrailing12Months") == 1.23, out.get("_restated")
+
+    def test_per_and_pbr_stay_price_over_screen_denominator(self):
+        """⚠️ 시총을 갈아끼워도 PER·PBR 은 현재가 ÷ 화면 분모다(#33)."""
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d(self._si())
+        assert abs(out["trailingPE"] - 38.59 / 2.10) < 1e-9, out
+        assert abs(out["priceToBook"] - 38.59 / 10.02) < 1e-9, out
+
+    def test_broken_quarter_run_makes_no_ttm_revenue(self):
+        """연속 4분기가 아니면 만들지 않는다 — 3분기 합을 1년이라 부르면
+        배수가 33% 부풀어 보인다(#147)."""
+        from bot.dashboard import _yf_ttm_revenue
+        def q(p, rev):
+            return {"period": p, "Total Revenue": rev}
+        gap = {"financials": {"income_statement": {"quarterly": [
+            q("2025-08-31", 11.0e9), q("2025-11-30", 11.5e9),
+            q("2026-05-31", 12.3e9), q("2026-08-31", 12.5e9)]}}}
+        assert _yf_ttm_revenue(gap) is None
+        assert _yf_ttm_revenue({}) is None
+
+    def test_it_uses_the_same_series_as_the_card(self):
+        """⚠️ 규칙을 복제하면 두 탭이 다시 갈린다(#38) — 카드와 같은
+        `series_from_yfinance` 를 부르는지 AST 로 못박는다."""
+        import ast
+        import inspect
+        import bot.dashboard as d
+        src = inspect.getsource(d._yf_ttm_revenue)
+        tree = ast.parse(src)
+        assert any(isinstance(n, ast.ImportFrom)
+                   and n.module == "bot.quarterly_series"
+                   and {a.name for a in n.names} >= {"series_from_yfinance"}
+                   for n in ast.walk(tree)), src[:300]
+
+    def test_the_overlay_applies_the_same_invariant(self):
+        """⚠️ 서버만 고치면 라이브 오버레이가 낡은 시총으로 되돌린다(#199).
+        `build_live_quote` 도 **같은 헬퍼**를 부른다."""
+        import ast
+        import inspect
+        import bot.dashboard as d
+        tree = ast.parse(inspect.getsource(d.build_live_quote))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "price_consistent_mcap"]
+        assert len(calls) == 1, "오버레이가 시총 불변식을 적용하지 않는다"

@@ -5188,6 +5188,20 @@ def build_live_quote(ticker: str, full: bool = False,
     # EPS/BPS(장중 불변)가 있으면 PER=현재가/EPS · PBR=현재가/BPS 로 재산출해 장중
     # 가격 반영(사용자 2026-06-15 'PER/PBR 더 실시간'). 적자(eps≤0)·무BPS 는 yfinance
     # 값 유지. 52주 신고/신저도 장중 라이브가 극값 돌파 시 갱신. 전 시장 universal.
+    # 헤더의 세 칸(현재가·시총·주식수)은 곱이 맞아야 한다(#33) — 야후
+    # .info 스로틀/지연이면 mcap 이 옛 주가 기준으로 남는다(NKE 실측).
+    # 주식수는 저장 스냅샷(등록 주식수 우선 처리 완료분)에서 읽고, 없으면
+    # 원천 시총 그대로(지어내지 않는다). 파생과 **같은 헬퍼**다(#38).
+    _stored_si = None
+    if price:
+        try:
+            _stored_si = _load_stored_stock_info(ticker)
+            _mc2, _why2 = price_consistent_mcap(
+                price, mcap, (_stored_si or {}).get("shares_outstanding"))
+            if _why2:
+                mcap = _mc2
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("build_live_quote: mcap invariant skip %s: %s", ticker, exc)
     _recomputed: set = set()
     if price and not delayed:
         _eps = vals.get("trailingEps")
@@ -5209,7 +5223,8 @@ def build_live_quote(ticker: str, full: bool = False,
         # 자기 산수를 못 맞춘다(컴투스 078340.KS 실측, 위 `live_multiples`).
         _missing = [k for k in _LIVE_MULT_KEYS if k not in _recomputed]
         if _missing:
-            _lm = live_multiples(_load_stored_stock_info(ticker), price, mcap)
+            _lm = live_multiples(_stored_si or _load_stored_stock_info(ticker),
+                                 price, mcap)
             for k in _missing:
                 if k in _lm:
                     vals[k] = _lm[k]
@@ -6060,6 +6075,63 @@ def per_basis_lines(is_kr: bool, fwd_src: str, forward_why=None,
     return lines
 
 
+def price_consistent_mcap(price, mcap, shares, tol: float = 0.02) -> tuple:
+    """(시가총액, note) — 시총이 **현재가 × 발행주식수**와 tol 넘게 어긋나면
+    그 곱으로 재계산한다. 재료가 없거나 tol 안이면 원래 값 그대로(note="").
+
+    ⚠️ 왜(2026-08-27 NKE): 헤더가 현재가 $38.59 옆에 시총 $57.25B 를 실었다
+    — 되짚으면 **주가 $47.62 시절 값**이다(야후 시총이 급락을 아직 반영 안
+    함). 그 낡은 시총이 밸류에이션 PSR(1.23x)의 분자가 되어 분기실적 카드
+    (1.00배 = 현재가×주식수 기준)와 갈렸다(#33 화면의 세 칸이 곱이 맞아야
+    한다 · #34 한 값에 두 원천). tol 안쪽이면 원천 시총을 존중한다 — 주식수
+    쪽이 낡았을 수도 있어(#190) 미세 차이까지 곱으로 덮지 않는다.
+    """
+    try:
+        px = float(price) if isinstance(price, (int, float)) else None
+        mc = float(mcap) if isinstance(mcap, (int, float)) else None
+        sh = float(shares) if isinstance(shares, (int, float)) else None
+    except (TypeError, ValueError):
+        return mcap, ""
+    if not px or px <= 0 or not sh or sh <= 0:
+        return mcap, ""
+    want = px * sh
+    if mc and mc > 0 and abs(mc - want) <= want * tol:
+        return mc, ""
+    note = (f"원천 시총({mc:,.0f})이 현재가 × 발행주식수({want:,.0f})와 "
+            f"어긋나 재계산했습니다" if mc else "현재가 × 발행주식수")
+    return want, note
+
+
+def _yf_ttm_revenue(si: dict):
+    """비-KR TTM 매출 — 분기실적 카드가 쓰는 **같은 시리즈**로 만든다(#35·#38).
+
+    #241 의 "PSR 은 화면의 매출로 재계산" 규칙이 KR 분기 시계열에만 배선돼
+    있어, NKE(2026-08-27)에서 밸류에이션 PSR 은 소스값(낡은 시총 기준
+    1.23x), 분기실적 카드는 1.00배로 갈렸다 — 비-KR 도 분기별 재무추이 표에
+    매출이 실리므로(#232) 같은 재료로 검산 가능한 값을 만든다.
+
+    연속 4분기가 아니면 만들지 않는다(#147 — 3분기 합을 1년이라 부르면
+    배수가 33% 부풀어 보인다). 결측·비양수도 None.
+    """
+    try:
+        from bot.quarterly_series import missing_quarters, series_from_yfinance
+        qs = series_from_yfinance(si, n=5) or []
+    except Exception:                                          # noqa: BLE001
+        return None
+    if len(qs) < 4:
+        return None
+    last4 = qs[-4:]
+    if missing_quarters(last4):
+        return None
+    total = 0.0
+    for q in last4:
+        v = (q.get("financials") or {}).get("매출")
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
+            return None
+        total += float(v)
+    return total
+
+
 def _derive_missing_multiples(si: dict) -> dict:
     """소스가 안 준 멀티플·주당지표를 **이미 가진 값에서** 파생해 채운다.
 
@@ -6116,6 +6188,12 @@ def _derive_missing_multiples(si: dict) -> dict:
 
     mcap = _num(out.get("market_cap"))
     shares = _num(out.get("shares_outstanding"))
+    # 시총이 현재가와 2% 넘게 어긋나면 현재가 × 발행주식수로(위 helper 참조).
+    _mc2, _mc_note = price_consistent_mcap(out.get("current_price"), mcap, shares)
+    if _mc_note:
+        out["market_cap"] = _mc2
+        out["market_cap_note"] = _mc_note
+        mcap = _num(_mc2)
     kr = out.get("kr") or {}
     fin = kr.get("financials") or {}
     qs = kr.get("financials_q") or []
@@ -6182,6 +6260,10 @@ def _derive_missing_multiples(si: dict) -> dict:
                  else "TTM" if rev is not None else "연간")
     if rev is None:
         rev = _num(fin.get("매출"))
+    if rev is None:
+        rev = _yf_ttm_revenue(out)      # 비-KR — 카드와 같은 시리즈(#38)
+        if rev is not None:
+            rev_basis = "TTM"
 
     def _stock(main_key: str, alt_key: str):
         for key, owner in ((main_key, True), (alt_key, False)):
@@ -6486,11 +6568,15 @@ def _render_stock_info_html(rec: dict) -> str:
     if isinstance(_sh_exact, (int, float)) and _sh_exact > 0:
         shares_sub = (f"{int(_sh_exact):,}주"
                       + (f" · {_sh_note}" if _sh_warn else ""))
-    # 시총을 거래 클래스 기준으로 재계산했으면 그 사실도 툴팁에(#43).
     shares_tip = "" if _sh_warn else _sh_note
-    if si.get("market_cap_note"):
-        shares_tip = ((shares_tip + " · ") if shares_tip else "") \
-            + str(si["market_cap_note"])
+    # ⚠️ **시총을 갈아끼웠으면 그 카드가 말한다.** 옛 판은 이 사유를 발행
+    # 주식수 카드의 **툴팁**에만 넣었는데, 툴팁만이면 없는 것과 같고(#228)
+    # 애초에 바뀐 값은 시가총액이다. 2026-08-27 NKE 실측: 야후 시총
+    # $57.25B(주가 $47.62 시절)가 현재가 $38.59 옆에 실려 헤더가 자기
+    # 산수를 못 맞췄고, 그 시총이 PSR 분자가 돼 두 탭이 갈렸다(#33).
+    _mc_note = str(si.get("market_cap_note") or "")
+    _mc_sub = (f'\n    <span class="si-sub" style="color:#c77d2e">⚠️ '
+               f'{esc(_mc_note)}</span>' if _mc_note else "")
     ne = si.get("next_earnings", "")
     ne_label = ne if ne else "—"
     ne_sub = "(추정)" if ne else ""
@@ -6505,7 +6591,7 @@ def _render_stock_info_html(rec: dict) -> str:
   <div class="si-card"><span class="si-label">현재가</span>
     <span class="si-value" data-q="price">{esc(price_str)}</span></div>
   <div class="si-card"><span class="si-label">시가총액</span>
-    <span class="si-value" data-q="mcap">{esc(mcap_str)}</span></div>
+    <span class="si-value" data-q="mcap">{esc(mcap_str)}</span>{_mc_sub}</div>
   {_glitch_html}
   <div class="si-card"><span class="si-label">발행주식수</span>
     <span class="si-value">{esc(shares_str)}</span>
