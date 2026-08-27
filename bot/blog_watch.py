@@ -60,6 +60,10 @@ _BLOGS = (
     # 싣는 이름 그대로** — 추측하면 startswith 가 안 맞아 조용히 0건이 된다.
     {"id": "intelligent_tiger", "title": "영리한 타이거",
      "categories": "국내증시 시황정리"},
+    # 사용자 2026-08-27 (blog.naver.com/hwasikyuljeon, 표시명 사용자 확정).
+    # 첫 run 은 per-blog init 으로 기존 글 seen 처리만 — 백필 없이 새 글부터.
+    {"id": "hwasikyuljeon", "title": "인문학자의 화식열전",
+     "categories": None},  # 전체 글
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
