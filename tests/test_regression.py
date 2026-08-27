@@ -40263,8 +40263,10 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
 
     화면 되짚기로 원인이 갈렸다 — 두 결함이 겹쳤다:
       ① **헤더가 자기 산수를 못 맞췄다**(#33): 현재가 $38.59 × 발행주식수
-         1,202,110,951 = $46.39B 인데 시총 칸은 **$57.25B**($47.62 주가 시절
-         야후 값). 그 낡은 시총이 PSR 의 분자가 됐다(1.23x).
+         1,202,110,951 = $46.39B 인데 시총 칸은 **$57.25B**(전 클래스 A+B
+         모집단 야후 값 — 첫 진단 '주가 $47.62 시절'은 #255 에서 정정됐다.
+         두 가설이 같은 숫자를 내 구별 불가였고 처방은 동일).
+         그 시총이 PSR 의 분자가 됐다(1.23x).
       ② **#241 의 'PSR 은 화면의 매출로 재계산' 이 KR 전용 배선**이었다 —
          비-KR 은 `rev` 가 None 이라 소스값이 그대로 살았다(#232 로 비-KR 도
          분기 매출이 화면에 실리는데 그 전제가 갱신되지 않았다).
@@ -40365,6 +40367,97 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                  and n.func.id == "price_consistent_mcap"]
         assert len(calls) == 1, "오버레이가 시총 불변식을 적용하지 않는다"
+
+
+class TestOverlayMcapWorksWithoutArchive20260827:
+    """사용자 2026-08-27 NKE 2차: "이거 맞는거야? 시총이랑 기타 다른것들...
+    현재가로 말이야... 예전에 한번 돌려서 그게 Fix 된거라서 그런거야?"
+    — 헤더 시총이 $57.25B 인 채 각주만 "거래 클래스 기준 재계산"이라 값이
+    자기 각주를 뒤집었다(#33·#55).
+
+    원인(#255): 라이브 오버레이의 시총 불변식이 주식수를 **분석 아카이브
+    에서만** 읽어(#35 화면과 다른 저장소), 검색으로만 본(분석 이력 없는)
+    종목은 None → `price_consistent_mcap` 이 조용히 no-op → 야후의 전 클래스
+    시총이 서버가 재계산한 $46.39B 를 되덮었다. 옛 회귀는 헬퍼를 **부르는지**
+    (AST)만 봐서 빈 재료로 부르는 no-op 을 못 잡았다(#120 배선은 존재가
+    아니라 결과).
+
+    계약: (a) 저장 스냅샷에 주식수가 없으면 비-KR 은 **같은 .info 응답의
+    sharesOutstanding**(화면 발행주식수 카드와 같은 원천)로 폴백해 재계산
+    (b) 저장 스냅샷 주식수(등록 주식수 우선 처리 완료분)가 있으면 그게 우선
+    (c) KR 은 폴백하지 않는다 — 등록 주식수가 기준이고 yfinance 주식수가
+    낡는 실측(#190)이 있으며, 네이버 국내 시총은 이미 단일 클래스다.
+    """
+
+    SH = 1_202_110_951
+
+    @staticmethod
+    def _yf_stub(info):
+        import types
+
+        m = types.ModuleType("yfinance")
+
+        class T:
+            def __init__(self, _t):
+                self.info = dict(info)
+
+            def history(self, *a, **k):    # noqa: ARG002
+                raise RuntimeError("테스트는 네트워크를 타지 않는다")
+
+        m.Ticker = T
+        return m
+
+    def _light(self, monkeypatch, ticker, info, stored=None, nq=None):
+        import sys
+
+        import bot.dashboard as d
+        monkeypatch.setitem(sys.modules, "yfinance", self._yf_stub(info))
+        monkeypatch.setattr(d, "_load_stored_stock_info", lambda t: stored)
+        import bot.world_quote as wqm
+        monkeypatch.setattr(wqm, "fetch_world_quote", lambda t: None)
+        if nq is not None:
+            import bot.naver_finance_client as nfc
+            import bot.naver_quote as nqm
+            monkeypatch.setattr(nqm, "fetch_kr_quote", lambda t: dict(nq))
+            monkeypatch.setattr(nfc, "get_naver_valuation", lambda t: {})
+        return d.build_live_quote(ticker)
+
+    def test_never_analyzed_ticker_still_gets_the_invariant(self, monkeypatch):
+        """아카이브 없음 + 야후 전 클래스 시총 → 같은 .info 의 상장주식수로
+        재계산(현재 결함의 재현 — 폴백을 지우면 $57.25B 가 그대로 남는다)."""
+        import bot.dashboard as d
+        out = self._light(monkeypatch, "NKE", {
+            "currency": "USD", "currentPrice": 38.59, "marketCap": 57.25e9,
+            "sharesOutstanding": self.SH,
+            "trailingEps": 2.05, "bookValue": 10.02})
+        want = d._fmt_mcap(38.59 * self.SH, "$", "USD")
+        assert out and out["fmt"].get("mcap") == want, out and out["fmt"]
+        assert out["fmt"]["mcap"] != d._fmt_mcap(57.25e9, "$", "USD")
+
+    def test_stored_registry_shares_win_over_live_info_shares(self, monkeypatch):
+        """저장 스냅샷(등록 주식수 처리 완료분)이 있으면 그게 화면의 발행
+        주식수 카드다 — 라이브 .info 주식수가 우선하면 안 된다."""
+        import bot.dashboard as d
+        out = self._light(monkeypatch, "NKE", {
+            "currency": "USD", "currentPrice": 38.59, "marketCap": 57.25e9,
+            "sharesOutstanding": self.SH},
+            stored={"shares_outstanding": 1.0e9})
+        assert out["fmt"]["mcap"] == d._fmt_mcap(38.59 * 1.0e9, "$", "USD"), \
+            out["fmt"]
+        assert out["fmt"]["mcap"] != d._fmt_mcap(38.59 * self.SH, "$", "USD")
+
+    def test_kr_does_not_recompute_naver_mcap_with_yf_shares(self, monkeypatch):
+        """KR: 네이버 국내 시총(단일 클래스·장중 라이브)은 그대로 둔다 —
+        yfinance 주식수는 낡는다(#190 서희건설 실측). 폴백 게이트를 지우는
+        뮤테이션이 여기서 잡힌다."""
+        import bot.dashboard as d
+        naver_mc = 418e12
+        out = self._light(monkeypatch, "005930.KS", {
+            "currency": "KRW", "currentPrice": 69800, "marketCap": 417e12,
+            "sharesOutstanding": 5_000_000_000},   # 70,000×5e9=350조 (16% 어긋남)
+            nq={"price": 70000, "mcap": naver_mc})
+        assert out["fmt"]["mcap"] == d._fmt_mcap(naver_mc, "₩", "KRW"), \
+            out["fmt"]
 
 
 class TestKrEvEbitdaFromFnGuide20260827:
