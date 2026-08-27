@@ -40448,18 +40448,21 @@ class TestKrEvEbitdaFromFnGuide20260827:
         assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                    and n.func.id == "_attach_kr_ev_ebitda"
                    for n in ast.walk(tree)), "수집기가 attach 를 안 부른다"
+        # ⚠️ 2026-08-27 원천 교체(#222 옛 회귀는 지우지 말고 다시 쓴다):
+        # 프로브 v2 실측 — cF1001 요약표엔 EV/EBITDA 행 자체가 없어 옛
+        # 배선(fetch_financial_summary→latest_ev_ebitda)은 늘 None 이었다.
+        # 새 원천 = c1010001 '주요지표' 표(fetch_ev_ebitda).
         out = {"kr": {}}
         orig_f = {}
         import bot.wisereport_financials as wf
         try:
-            orig_f["fetch"] = wf.fetch_financial_summary
-            wf.fetch_financial_summary = lambda c: {
-                "annual": {"2025/12": {"EV/EBITDA": 6.51}}, "quarter": {}}
+            orig_f["fetch"] = wf.fetch_ev_ebitda
+            wf.fetch_ev_ebitda = lambda c: (10.49, "2026/12(E) 기준")
             ss._attach_kr_ev_ebitda("078340.KS", out)
         finally:
-            wf.fetch_financial_summary = orig_f["fetch"]
+            wf.fetch_ev_ebitda = orig_f["fetch"]
         assert out["kr"]["ev_ebitda_naver"] == {
-            "value": 6.51, "period": "2025/12 기준"}, out
+            "value": 10.49, "period": "2026/12(E) 기준"}, out
         # yfinance 값이 있으면 attach 자체가 no-op
         out2 = {"enterpriseToEbitda": 9.9, "kr": {}}
         ss._attach_kr_ev_ebitda("078340.KS", out2)
@@ -40528,3 +40531,73 @@ class TestEvProbeSweepsCandidateSurfaces20260827:
         assert "navercomp.wisereport.co.kr" in hosts, hosts
         assert "comp.fnguide.com" in hosts, hosts
         assert len(_EV_PROBE_URLS) >= 5
+
+
+class TestEvEbitdaFromKeyMetrics20260827:
+    """프로브 v2 실측(078340, 2026-08-27)이 원천을 확정했다: wisereport
+    **c1010001 '주요지표' 표** — 헤더 `['주요지표','2025/12(A)','2026/12(E)']`
+    · EV행 `['EV/EBITDA','22.72','10.49']`. (E) 칸이 네이버가 최신 주가·
+    컨센서스로 갱신하는 값이다(사용자 "실시간을 가져오면 그게 거의 정확").
+    cF1001 요약표엔 이 행 자체가 없고(#1147 의 가정이 틀렸던 지점), FnGuide
+    직접 접근은 1,796자 스텁(봇 차단)이다.
+
+    픽스처는 프로브가 찍은 **실측 구조 그대로**다(#155 — 지어낸 마크업으로
+    만들면 파서가 틀려도 전부 green).
+    """
+
+    _HTML = ("<table><tr><th>주요지표</th><th>2025/12(A)</th>"
+             "<th>2026/12(E)</th></tr>"
+             "<tr><td>EV/EBITDA</td><td>22.72</td><td>10.49</td></tr></table>")
+
+    def test_picks_the_rightmost_filled_column(self):
+        """최신(보통 (E)) 칸 — 기준 라벨을 헤더 그대로 싣는다(#34)."""
+        from bot.wisereport_financials import parse_key_metrics_ev
+        assert parse_key_metrics_ev(self._HTML) == (10.49, "2026/12(E) 기준")
+
+    def test_empty_estimate_falls_back_to_actual(self):
+        from bot.wisereport_financials import parse_key_metrics_ev
+        h = self._HTML.replace("<td>10.49</td>", "<td>-</td>")
+        assert parse_key_metrics_ev(h) == (22.72, "2025/12(A) 기준")
+
+    def test_chart_label_row_is_not_a_value(self):
+        """⚠️ c1040001 실측: `['EV/EBITDA','EV/EBITDA']` 라벨 행이 실재한다 —
+        숫자·(A)/(E) 헤더 요건이 없으면 그걸 값이라 부른다(#47)."""
+        from bot.wisereport_financials import parse_key_metrics_ev
+        h = "<table><tr><td>EV/EBITDA</td><td>EV/EBITDA</td></tr></table>"
+        assert parse_key_metrics_ev(h) is None
+        assert parse_key_metrics_ev("") is None
+
+    def test_fetch_caches_with_version(self, monkeypatch):
+        """캐시 봉투에 `_ver` — 파서 fix 가 옛 캐시에 가리는 병(#216) 차단."""
+        import bot.wisereport_financials as wf
+        calls = []
+
+        class _R:
+            text = ("<table><tr><th>주요지표</th><th>2025/12(A)</th>"
+                    "<th>2026/12(E)</th></tr><tr><td>EV/EBITDA</td>"
+                    "<td>22.72</td><td>10.49</td></tr></table>")
+
+        monkeypatch.setattr(wf.requests, "get",
+                            lambda *a, **k: calls.append(a) or _R())
+        wrote = {}
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_cached", lambda ck, ttl: {"_ver": -1,
+                                                            "got": [1.0, "x"]})
+        monkeypatch.setattr(fv, "_cache_write",
+                            lambda ck, obj: wrote.update({ck: obj}))
+        got = wf.fetch_ev_ebitda("078340.KS")
+        assert calls, "틀린 버전 캐시를 그대로 믿었다(#216)"
+        assert got == (10.49, "2026/12(E) 기준")
+        env = list(wrote.values())[0]
+        assert env["_ver"] == wf._EV_CACHE_VER and env["got"] == [10.49,
+                                                                 "2026/12(E) 기준"]
+
+    def test_derive_label_carries_the_column(self):
+        """(E) 라벨이 화면 각주까지 흐른다 — 뭉뚱그리면 기준이 사라진다(#34)."""
+        from bot.dashboard import _derive_missing_multiples as d
+        out = d({"currency": "KRW", "current_price": 31750.0,
+                 "kr": {"ev_ebitda_naver": {"value": 10.49,
+                                            "period": "2026/12(E) 기준"}}})
+        assert out["enterpriseToEbitda"] == 10.49
+        b = (out.get("_derived_basis") or {}).get("enterpriseToEbitda", "")
+        assert "2026/12(E)" in b and "FnGuide" in b, b

@@ -1654,9 +1654,11 @@ def _attach_kr_ev_ebitda(ticker: str, out: dict) -> None:
     if not isinstance(kr, dict):
         return                            # KR 스냅샷이 아니다
     try:
-        from bot.wisereport_financials import (fetch_financial_summary,
-                                               latest_ev_ebitda)
-        got = latest_ev_ebitda(fetch_financial_summary(ticker))
+        # ⚠️ 원천 교체(2026-08-27 프로브 v2 실측): cF1001 요약표엔 EV/EBITDA
+        # 행 자체가 없다 — c1010001 '주요지표' 표가 원천이고 (E) 칸이
+        # 네이버가 최신 주가·컨센서스로 갱신하는 값이다.
+        from bot.wisereport_financials import fetch_ev_ebitda
+        got = fetch_ev_ebitda(ticker)
     except Exception as exc:                            # noqa: BLE001
         log.debug("stock_snapshot: EV/EBITDA(FnGuide) 건너뜀 %s: %s",
                   ticker, exc)
