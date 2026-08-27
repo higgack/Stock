@@ -315,6 +315,76 @@ def ev_row_dump(html: str) -> list:
 
 _PROBE_VER = 2   # v2: cF1001 에 EV 행 없음(078340 실측) → 후보 페이지 스윕
 
+# ── EV/EBITDA — c1010001 '주요지표' 표 (프로브 v2 실측 2026-08-27) ────
+# 078340 실측: 헤더 ['주요지표','2025/12(A)','2026/12(E)'] · EV행
+# ['EV/EBITDA','22.72','10.49']. (E) 칸이 네이버가 최신 주가·컨센서스로
+# 갱신하는 값이다(사용자 "실시간을 가져오면 그게 거의 정확한 값일텐데").
+# FnGuide 직접 접근(comp.fnguide.com)은 1,796자 스텁만 온다(봇 차단) —
+# 재시도하지 말 것(#25 실측 기록). cF1001 요약표엔 이 행 자체가 없다.
+_URL_C1010001 = ("https://navercomp.wisereport.co.kr/v2/company/"
+                 "c1010001.aspx?cmp_cd={code}")
+_PERIOD_AE = re.compile(r"\b\d{4}/\d{2}\s*\([AE]\)")
+_EV_CACHE_VER = 1
+
+
+def parse_key_metrics_ev(html: str):
+    """'주요지표' 표의 EV/EBITDA → (값, '2026/12(E) 기준') 또는 None.
+
+    **가장 오른쪽의 값 있는 칸**(=최신, 보통 (E))을 집는다 — (E) 가 비면
+    (A) 로 자연 폴백된다. 헤더 라벨을 그대로 실어 화면이 기준을 밝힌다(#34).
+    """
+    for tbl in _TABLE.findall(html or ""):
+        rows = [[_text(c) for c in _CELL.findall(r)] for r in _ROW.findall(tbl)]
+        ev = next((r for r in rows
+                   if r and (r[0] or "").replace(" ", "").startswith("EV/EBITDA")),
+                  None)
+        if not ev:
+            continue
+        hdr = next((r for r in rows
+                    if sum(1 for c in r if _PERIOD_AE.search(c)) >= 1), None)
+        if not hdr:
+            continue
+        best = None
+        for label, cell in zip(hdr[1:], ev[1:]):
+            v = _num(cell)
+            if v is not None and _PERIOD_AE.search(label):
+                best = (float(v), f"{label.strip()} 기준")
+        if best:
+            return best
+    return None
+
+
+def fetch_ev_ebitda(stock_code: str):
+    """c1010001 에서 EV/EBITDA — (값, 기준라벨) 또는 None. 12h 디스크 캐시.
+
+    ⚠️ 캐시 봉투에 `_ver` — 파서를 고치고 버전을 안 올리면 옛 결과가
+    그대로 서빙된다(#216, 이 레포에서 여러 번 겪은 병)."""
+    code = str(stock_code or "").split(".")[0].strip()
+    if not (len(code) == 6 and code.isdigit()):
+        return None
+    try:
+        from bot.finviz_client import _cache_write, _cached
+    except Exception:
+        _cache_write = _cached = None
+    ck = f"wisereport_ev_{code}.json"
+    if _cached:
+        c = _cached(ck, ttl=_CACHE_TTL_H * 3600)
+        if isinstance(c, dict) and c.get("_ver") == _EV_CACHE_VER:
+            got = c.get("got")
+            return tuple(got) if got else None
+    try:
+        resp = requests.get(_URL_C1010001.format(code=code),
+                            headers=_HEADERS, timeout=_TIMEOUT)
+        got = parse_key_metrics_ev(resp.text)
+    except Exception as exc:                            # noqa: BLE001
+        log.debug("wisereport_ev: %s 실패: %s", code, exc)
+        return None
+    if _cache_write:
+        # 빈 결과도 캐시한다(12h) — 행이 없는 종목을 매 조회마다 76KB 씩
+        # 다시 받지 않는다. 원천 장애와 구분 못 하는 비용은 12h 로 유계.
+        _cache_write(ck, {"_ver": _EV_CACHE_VER, "got": list(got) if got else None})
+    return got   # v2: cF1001 에 EV 행 없음(078340 실측) → 후보 페이지 스윕
+
 # EV/EBITDA 를 실을 법한 네이버/FnGuide 표면 후보 — 존재는 **프로브 실측**으로
 # 판정한다(#25 이름이 아니라 실측). 404/빈손이어도 비용은 출력 한 줄이다.
 _EV_PROBE_URLS = (
