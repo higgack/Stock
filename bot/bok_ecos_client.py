@@ -42,6 +42,9 @@ _CACHE_TTL_HOURS = 12
 # ECOS 한 요청의 행 상한. 시계열 경로가 이미 1000 을 쓰고 있어 맞춘다 —
 # 같은 원천을 두 값으로 부르면 한쪽만 잘린다(#38).
 _ROW_CAP = 1000
+# 시리즈 캐시 스키마 버전 — 페이지네이션 도입(2026-08-27) 전의 절단된
+# 결과를 같은 날 캐시가 서빙하지 않게 파일명에 싣는다(#21b·#124).
+_SERIES_CACHE_VER = 2
 _BASE_URL = "https://ecos.bok.or.kr/api"
 _TIMEOUT = 10
 
@@ -307,7 +310,10 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
 
     lb = lookback_days if lookback_days is not None else max(int(cfg["lookback_days"]), 400)
     today_str = date.today().isoformat()
-    cache_file = _CACHE_DIR / f"series_{key}_{lb}_{today_str}.json"
+    # 파일명에 버전(#124 손으로 올리는 버전은 잊는다 — 여기선 페이지네이션
+    # 도입 시점 v2): 같은 날 배포돼도 절단된 옛 결과를 12h 동안 서빙하지
+    # 않게(#21b 캐시가 fix 를 가린다).
+    cache_file = _CACHE_DIR / f"series_v{_SERIES_CACHE_VER}_{key}_{lb}_{today_str}.json"
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
@@ -349,14 +355,17 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
             log.info("ecos: %s resolved %s/'%s' → %s",
                      key, _tbl, cfg["item_name"], _code)
             _item = _code
-        url = (
-            f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/1000/"
-            f"{_tbl}/{cfg['freq']}/{start_str}/{end_str}/{_item}"
-        )
-        try:
+        def _sreq(lo: int, hi: int, _t=_tbl, _i=_item):
+            url = (
+                f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/{lo}/{hi}/"
+                f"{_t}/{cfg['freq']}/{start_str}/{end_str}/{_i}"
+            )
             resp = requests.get(url, timeout=_TIMEOUT)
             resp.raise_for_status()
-            payload = resp.json()
+            return resp.json()
+
+        try:
+            payload = _sreq(1, _ROW_CAP)
         except Exception as exc:
             log.warning("ecos: series fetch failed for %s (%s): %s", key, _tbl, exc)
             continue
@@ -368,7 +377,32 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
             log.warning("ecos: %s RESULT %s — %s (table=%s item=%s)", key,
                         _r.get("CODE"), _r.get("MESSAGE"), _tbl, _item)
             continue
-        rows = payload.get("StatisticSearch", {}).get("row") or []
+        _ss = payload.get("StatisticSearch", {}) or {}
+        rows = _ss.get("row") or []
+        # ⚠️ **화면(스파크라인·기준월)이 쓰는 경로는 여기다** — #251 은 단일값
+        # 경로(_fetch_indicator)에만 절단 검사를 넣어 카드가 그대로 뒤처질 수
+        # 있었다(#35 고친 경로와 화면 경로가 다름). 원천이 총 건수를 주므로
+        # 세어 보고(#173), 잘렸으면 나머지 페이지를 마저 받는다 — 스파크라인은
+        # 전 구간이 필요해 꼬리만이 아니라 페이지 전체를 잇는다. 상한 5쪽 =
+        # 비용 유계(#66), 로그가 절단 사실을 말한다(#82).
+        try:
+            _total = int(_ss.get("list_total_count"))
+        except (TypeError, ValueError):
+            _total = None
+        _page = 1
+        while _total is not None and len(rows) < _total and _page < 5:
+            log.warning("ecos: %s 시리즈 응답 절단 — 총 %d행 중 %d행 수신, "
+                        "%d쪽째 재요청", key, _total, len(rows), _page + 1)
+            try:
+                _more = _sreq(_page * _ROW_CAP + 1, (_page + 1) * _ROW_CAP)
+            except Exception as exc:                           # noqa: BLE001
+                log.warning("ecos: %s 추가 페이지 실패: %s", key, exc)
+                break
+            _mrows = ((_more or {}).get("StatisticSearch", {}) or {}).get("row") or []
+            if not _mrows:
+                break
+            rows = list(rows) + _mrows
+            _page += 1
         if rows:
             break
     _scale = float(cfg.get("scale", 1.0))   # ECOS 원단위 → 카드 단위(예: 천$→억$)
@@ -621,3 +655,114 @@ def fetch_kr_cpi_history(patterns: list[str],
     fetch_kr_price_index_history 의 CPI 전용 얇은 래퍼."""
     return fetch_kr_price_index_history(patterns, table=_KR_CPI_TABLE,
                                         cache_key="kr_cpi", start=start)
+
+
+# ── 지연 진단 CLI (2026-08-27, 사용자 "원천이 지연인지 우리문제인지") ────────
+_PROBE_VER = 1
+
+
+def check(keys: list[str]) -> None:
+    """ECOS 카드 지연 진단 — **원천 지연**과 **우리 절단**을 가른다(#82).
+
+    화면 판정은 화면이 쓰는 그 경로(fetch_series_points, 페이지네이션 포함)를
+    그대로 태우고(#35), 원시 통계(총 건수·1쪽 수신 행수·월별 행수 = 부가 차원
+    유무)는 별도 1회 조회로 찍는다 — 총 > 1쪽 수신이면 옛 코드가 절단됐던
+    것이고(우리 문제, 이제 자동 복구), 절단 없이 최신 월이 뒤처져 있으면
+    원천 지연이다. 키 값은 안 찍고 출처만(#23·#82)."""
+    import sys
+    from collections import Counter
+
+    from bot.env_keys import env_source, env_why
+    print(f"ecos_check v{_PROBE_VER} · 인터프리터 {sys.executable}")
+    src = env_source("BOK_ECOS_API_KEY")
+    print("자격증명 BOK_ECOS_API_KEY = " + (src or "없음")
+          + ("" if src else f" ({env_why('BOK_ECOS_API_KEY')})"))
+    api_key = _env_key("BOK_ECOS_API_KEY")
+    for key in keys:
+        cfg = _SERIES.get(key)
+        print(f"\n■ {key} ({(cfg or {}).get('label', '?')})")
+        if not cfg:
+            print("  ❌ 미등록 시리즈")
+            continue
+        # ① 화면 경로 그대로(#35) — 캐시 경유 포함, 최신 월과 cadence 판정
+        pts = fetch_series_points(key)
+        if pts:
+            print(f"  ① 화면 경로: {len(pts)}점 · 최신 {pts[-1][0]}")
+            try:
+                from bot.macro_cadence import judge
+                j = judge(key, pts[-1][0]) or {}
+                if j:
+                    print("     cadence: "
+                          + ("⚠️ 통상 일정보다 뒤처짐" if j.get("stale")
+                             else "✅ 통상 일정 내")
+                          + f" (규약: {j.get('why', '')} · 기대 {j.get('expected')}"
+                          f" · 실제 {j.get('actual')})")
+                else:
+                    print("     cadence: 규약 미등록(판정 안 함)")
+            except Exception as exc:                           # noqa: BLE001
+                print(f"     cadence 판정 실패: {exc}")
+        else:
+            print("  ① 화면 경로: 0점 ❌ (키 없음/원천 실패/데이터 없음 — 로그 확인)")
+        # ② 원시 1쪽 조회 — 총 건수·수신·월별 행수(절단/부가 차원 판정 재료)
+        if not api_key:
+            print("  ② 원시 조회 생략(키 없음)")
+            continue
+        end = date.today()
+        start = end - timedelta(days=cfg["lookback_days"])
+        if cfg["freq"] == "M":
+            s_str, e_str = start.strftime("%Y%m"), end.strftime("%Y%m")
+        elif cfg["freq"] == "D":
+            s_str, e_str = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+        else:
+            s_str = f"{start.year}Q{(start.month - 1) // 3 + 1}"
+            e_str = f"{end.year}Q{(end.month - 1) // 3 + 1}"
+        url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/{_ROW_CAP}/"
+               f"{cfg['table']}/{cfg['freq']}/{s_str}/{e_str}/"
+               f"{cfg.get('item', '')}")
+        try:
+            payload = requests.get(url, timeout=_TIMEOUT).json()
+        except Exception as exc:                               # noqa: BLE001
+            print(f"  ② 원시 조회 실패: {exc}")
+            continue
+        if "RESULT" in payload and "StatisticSearch" not in payload:
+            _r = payload.get("RESULT") or {}
+            print(f"  ② RESULT {_r.get('CODE')} — {_r.get('MESSAGE')}")
+            continue
+        _ss = payload.get("StatisticSearch", {}) or {}
+        rows = _ss.get("row") or []
+        total = _ss.get("list_total_count")
+        per_t = Counter((r.get("TIME") or "") for r in rows)
+        last_times = sorted(per_t)[-3:]
+        print(f"  ② 원시: 총 {total}행 · 1쪽 수신 {len(rows)}행 · "
+              f"조회창 {s_str}~{e_str}")
+        print("     최근 기간별 행수: "
+              + " · ".join(f"{t}={per_t[t]}" for t in last_times))
+        try:
+            truncated = int(total) > len(rows)
+        except (TypeError, ValueError):
+            truncated = False
+        if truncated:
+            print("  판정: ❌ 절단(우리 문제였음) — 총 건수 > 1쪽 수신. "
+                  "화면 경로는 페이지를 이어 받아 복구한다(로그 '시리즈 응답 절단')")
+        elif rows:
+            print(f"  판정: 절단 없음 — 원천이 주는 최신이 {max(per_t)} 다. "
+                  "이보다 새 달이 없으면 **원천(ECOS) 지연**이다")
+        else:
+            print("  판정: ❓ 행 0 — 조회창·테이블/아이템 코드부터 의심")
+
+
+def _main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="ECOS 클라이언트 점검")
+    ap.add_argument("--check", nargs="+", metavar="SERIES",
+                    help="카드 지연 진단(예: --check export_amt import_amt)")
+    a = ap.parse_args(argv)
+    if a.check:
+        check(a.check)
+        return 0
+    ap.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
