@@ -40365,3 +40365,102 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                  and n.func.id == "price_consistent_mcap"]
         assert len(calls) == 1, "오버레이가 시총 불변식을 적용하지 않는다"
+
+
+class TestKrEvEbitdaFromFnGuide20260827:
+    """사용자 2026-08-27: EV/EBITDA 는 전 시장 yfinance 소스값인데 국내는
+    거의 안 줘 '—' 였다(컴투스 캡처). "1번 소스값이라는게 야후 말하는거야?
+    한국은 네이버에 있을거고" → 선택지 ⓐ/ⓑ 중 **"A로. 중요한 지표
+    아니니까"** — 국내만 네이버(FnGuide) 값 + 출처 표기.
+
+    계약: (a) FnGuide Financial Summary 의 EV/EBITDA 행을 파싱하되 **비율이라
+    억원 스케일(_EOK) 금지**(#34 같은 dict 에 단위가 다른 키) (b) yfinance 가
+    값을 주면 **존중**(덮지 않음) (c) 채웠으면 기준 라벨(네이버(FnGuide) +
+    기간)을 화면이 밝힌다 — FnGuide 산정 시점 기준이라 '조회 시점 주가' 규칙
+    밖이기 때문(#34) (d) 수집기 배선까지(#20).
+    """
+
+    _HTML = ("<table><tr><th>주요재무정보</th><th>2023/12</th><th>2024/12</th>"
+             "<th>2025/12</th></tr>"
+             "<tr><td>매출액</td><td>100</td><td>110</td><td>120</td></tr>"
+             "<tr><td>영업이익</td><td>10</td><td>11</td><td>12</td></tr>"
+             "<tr><td>EV/EBITDA(배)</td><td>8.10</td><td>7.50</td><td>6.51</td></tr>"
+             "</table>")
+
+    def test_parser_captures_the_ratio_unscaled(self):
+        from bot.wisereport_financials import parse_financial_summary
+        out = parse_financial_summary(self._HTML)
+        row = out["annual"]["2025/12"]
+        assert row["매출액"] == 120 * 1e8          # 금액은 억원 → 원
+        assert row["EV/EBITDA"] == 6.51            # 비율은 그대로
+        assert out["annual"]["2023/12"]["EV/EBITDA"] == 8.10
+
+    def test_latest_prefers_annual_and_reports_period(self):
+        from bot.wisereport_financials import (latest_ev_ebitda,
+                                               parse_financial_summary)
+        out = parse_financial_summary(self._HTML)
+        assert latest_ev_ebitda(out) == (6.51, "2025/12 기준")
+        assert latest_ev_ebitda(None) is None
+        assert latest_ev_ebitda({"annual": {}, "quarter": {}}) is None
+        # 연간이 없으면 분기로
+        q = {"annual": {}, "quarter": {"2026/03": {"EV/EBITDA": 5.5}}}
+        assert latest_ev_ebitda(q) == (5.5, "2026/03 기준")
+
+    def test_derive_fills_and_labels_the_basis(self):
+        from bot.dashboard import _derive_missing_multiples as d
+        si = {"currency": "KRW", "current_price": 31750.0,
+              "kr": {"ev_ebitda_naver": {"value": 6.51,
+                                         "period": "2025/12 기준"}}}
+        out = d(si)
+        assert out["enterpriseToEbitda"] == 6.51
+        assert "enterpriseToEbitda" in (out.get("_derived_multiples") or [])
+        b = (out.get("_derived_basis") or {}).get("enterpriseToEbitda", "")
+        assert "FnGuide" in b and "2025/12" in b, b
+
+    def test_a_source_value_is_respected(self):
+        """⚠️ 반대 증거 — yfinance 가 주면 벤더값으로 덮지 않는다(#25)."""
+        from bot.dashboard import _derive_missing_multiples as d
+        si = {"currency": "KRW", "current_price": 31750.0,
+              "enterpriseToEbitda": 9.9,
+              "kr": {"ev_ebitda_naver": {"value": 6.51,
+                                         "period": "2025/12 기준"}}}
+        out = d(si)
+        assert out["enterpriseToEbitda"] == 9.9
+        assert "enterpriseToEbitda" not in (out.get("_derived_multiples") or [])
+
+    def test_the_screen_shows_value_and_source(self):
+        """헬퍼만 부르면 배선을 떼는 변형을 못 잡는다(#20) — 렌더로 확인."""
+        import bot.dashboard as bd
+        r = bd._render_stock_info_html({"ticker": "078340.KS", "stock_info": {
+            "currency": "KRW", "current_price": 31750.0,
+            "kr": {"ev_ebitda_naver": {"value": 6.51,
+                                       "period": "2025/12 기준"}}}})
+        h = "".join(str(v) for v in r.values())
+        assert 'data-q="enterpriseToEbitda">6.51x' in h, "표에 값이 없다"
+        assert "네이버(FnGuide) 2025/12 기준" in h, "기준 라벨이 화면에 없다"
+
+    def test_collector_wires_the_attach(self):
+        """수집기 배선(#20) — ① 호출이 실재하고 ② attach 가 실제로 싣는다."""
+        import ast
+        import inspect
+        import bot.stock_snapshot as ss
+        tree = ast.parse(inspect.getsource(ss.collect_kr_financials))
+        assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                   and n.func.id == "_attach_kr_ev_ebitda"
+                   for n in ast.walk(tree)), "수집기가 attach 를 안 부른다"
+        out = {"kr": {}}
+        orig_f = {}
+        import bot.wisereport_financials as wf
+        try:
+            orig_f["fetch"] = wf.fetch_financial_summary
+            wf.fetch_financial_summary = lambda c: {
+                "annual": {"2025/12": {"EV/EBITDA": 6.51}}, "quarter": {}}
+            ss._attach_kr_ev_ebitda("078340.KS", out)
+        finally:
+            wf.fetch_financial_summary = orig_f["fetch"]
+        assert out["kr"]["ev_ebitda_naver"] == {
+            "value": 6.51, "period": "2025/12 기준"}, out
+        # yfinance 값이 있으면 attach 자체가 no-op
+        out2 = {"enterpriseToEbitda": 9.9, "kr": {}}
+        ss._attach_kr_ev_ebitda("078340.KS", out2)
+        assert "ev_ebitda_naver" not in out2["kr"]

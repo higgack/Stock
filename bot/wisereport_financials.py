@@ -56,7 +56,7 @@ _CACHE_TTL_H = 12
 # 파서를 고치면 이 숫자를 올린다 — 옛 캐시는 즉시 무효.
 #   v1 = 표 전체를 한 종류로 분류 · v2 = 그룹 헤더(연간/분기)로 컬럼별 분리
 #   v3 = 헤더의 **탭별 대체 컬럼 세트**에서 연속 구간을 골라 컬럼 매핑
-_PARSE_VER = 3
+_PARSE_VER = 4   # v4: EV/EBITDA 행 추가(비율 — _EOK 스케일 금지)
 
 # ⚠️ 실패 이유를 남긴다 — "표 없음" 한 마디로는 (a) 요청 실패 (b) 표가 AJAX
 # 라 HTML 에 없음 (c) 파싱 규칙 문제를 못 가른다(실수 #12 silent-fail).
@@ -74,7 +74,23 @@ _PERIOD = re.compile(r"\b(\d{4})/(\d{2})\b")
 # 표에서 가져올 항목(왼쪽 라벨). 들여쓴 하위 항목(당기순이익(지배) 등)은
 # 이름이 달라 자동으로 걸러진다.
 _WANT = ("매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계")
+# ⚠️ 비율 행 — **억원 스케일(_EOK) 금지**. 같은 dict 에 단위가 다른 키가
+# 섞이므로(#34) 소비자는 이름으로 갈라 읽는다(EV/EBITDA = 배).
+_RATIO_WANT = ("EV/EBITDA",)
 _EOK = 1e8          # 억원 → 원
+
+
+def _row_name(lbl: str):
+    """행 라벨 → canonical 이름. 대상이 아니면 None.
+
+    EV/EBITDA 는 원천이 '(배)' 류 접미를 붙일 수 있어 startswith 로 잡고
+    canonical 로 통일한다 — 없으면 그냥 None(빈칸 유지)이라 안전하다."""
+    n = (lbl or "").replace(" ", "")
+    if n in _WANT:
+        return n
+    if n.startswith("EV/EBITDA"):
+        return "EV/EBITDA"
+    return None
 
 
 def _pm(per: str) -> int:
@@ -169,7 +185,7 @@ def parse_financial_summary(html: str) -> dict:
         if periods is None:
             continue
         data_rows = [r for r in rows[hdr_i + 1:]
-                     if (r[0] or "").replace(" ", "") in _WANT]
+                     if _row_name(r[0]) is not None]
         labels = {(r[0] or "").replace(" ", "") for r in rows[hdr_i + 1:]}
         if "매출액" not in labels or "영업이익" not in labels:
             continue                      # Financial Summary 표가 아니다
@@ -199,12 +215,27 @@ def parse_financial_summary(html: str) -> dict:
             continue                     # 못 맞추면 버린다(틀린 매핑 금지)
 
         for r in data_rows:
-            name = (r[0] or "").replace(" ", "")
+            name = _row_name(r[0])
             for (per, kind), cell in zip(col_map, r[1:]):
                 v = _num(cell)
                 if v is not None:
-                    out[kind].setdefault(per, {})[name] = v * _EOK
+                    out[kind].setdefault(per, {})[name] = (
+                        v * _EOK if name in _WANT else v)
     return out
+
+
+def latest_ev_ebitda(summary):
+    """가장 최근 EV/EBITDA — (값, '2025/12 기준') 또는 None.
+
+    연간 우선(FnGuide 산정 기준이 연간), 없으면 분기. 값이 FnGuide 산정
+    시점 기준이라 화면은 이 라벨을 반드시 같이 싣는다(#34)."""
+    for kind in ("annual", "quarter"):
+        bucket = (summary or {}).get(kind) or {}
+        for per in sorted(bucket, key=_pm, reverse=True):
+            v = bucket[per].get("EV/EBITDA")
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return float(v), f"{per} 기준"
+    return None
 
 
 def fetch_financial_summary(stock_code: str) -> Optional[dict]:
