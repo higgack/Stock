@@ -40464,3 +40464,39 @@ class TestKrEvEbitdaFromFnGuide20260827:
         out2 = {"enterpriseToEbitda": 9.9, "kr": {}}
         ss._attach_kr_ev_ebitda("078340.KS", out2)
         assert "ev_ebitda_naver" not in out2["kr"]
+
+
+class TestEvRowProbeShowsRawColumns20260827:
+    """사용자 2026-08-27 "네이버꺼 실시간을 가져오면 거의 정확할 텐데" —
+    본 파서는 매출 보강용이라 추정 칸((E))을 구조적으로 배제하고, 그래서
+    EV/EBITDA 가 최신 **확정 연도**에 묶였을 수 있다. 어느 칸이 네이버가
+    최신으로 갱신하는 값인지는 **원문만 답한다**(#109·#155) — 프로브는
+    (E) 칸을 **거르지 않고 그대로** 찍어야 한다.
+    """
+
+    _HTML = ("<table><tr><th>주요재무정보</th><th>2023/12</th><th>2024/12</th>"
+             "<th>2025/12</th><th>2026/12(E)</th></tr>"
+             "<tr><td>매출액</td><td>100</td><td>110</td><td>120</td><td>130</td></tr>"
+             "<tr><td>EV/EBITDA(배)</td><td>8.10</td><td>7.50</td><td>6.51</td>"
+             "<td>5.90</td></tr></table>")
+
+    def test_dump_keeps_estimate_columns(self):
+        from bot.wisereport_financials import ev_row_dump
+        d = ev_row_dump(self._HTML)
+        assert len(d) == 1
+        hdr, cells = d[0]
+        assert "2026/12(E)" in hdr, hdr          # (E) 칸을 걸러내면 프로브 무용
+        assert "5.90" in cells, cells
+        assert cells[0].replace(" ", "").startswith("EV/EBITDA")
+
+    def test_no_ev_row_no_dump(self):
+        """⚠️ 반대 증거 — 행이 없으면 빈 목록(엉뚱한 행을 EV 라 부르지 않음)."""
+        from bot.wisereport_financials import ev_row_dump
+        assert ev_row_dump("<table><tr><td>매출액</td><td>1</td></tr></table>") == []
+        assert ev_row_dump("") == []
+
+    def test_cli_dispatch(self):
+        """배선은 존재가 아니라 결과로(#252) — main 을 실제로 태운다."""
+        import bot.wisereport_financials as wf
+        assert wf._main([]) == 2                  # 사용법 + 실패코드
+        assert wf._main(["--ev"]) == 2
