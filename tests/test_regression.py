@@ -39981,6 +39981,65 @@ class TestMultiSplitEpsReconcile20260827:
         trims = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                  and getattr(n.func, "id", "") == "should_trim"]
         assert trims, "잘라내기 판정이 should_trim 을 거치지 않는다"
+        convs = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "_conv"
+                 and any(k.arg == "filed" for k in n.keywords)]
+        assert len(convs) >= 2, \
+            "EDGAR 경로가 제출일(q_filed/a_filed)을 _conv 에 넘기지 않는다"
+        dets = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and getattr(n.func, "id", "") == "adjust_eps_by_filed"]
+        assert dets, "_conv 가 제출일 기준 확정 환산을 부르지 않는다"
+
+    def test_filed_date_beats_growth_masking(self):
+        """#259 2차(같은 날 사용자 "그대로임."): 측정 기반 정합은 **성장이
+        기저 차이를 정확히 상쇄하면** 눈이 먼다 — NVDA 실측: 2022년 ×10 기저
+        EPS(~0.59)와 2024년 실제 EPS(~0.60)가 같은 크기라 인접 급변 1.0배 →
+        noop. 제출일 판정은 상쇄와 무관하다: 분할 '전'에 제출된 보고서는 그
+        분할을 알 수 없다(사실), '후' 제출분은 소급조정 의무(ASC 260)."""
+        from bot.per_band import adjust_eps_by_filed, reconcile_eps_splits
+        splits = [("2021-07-20", 4.0), ("2024-06-10", 10.0)]
+        old = [("2022-01-30", 0.55), ("2022-05-01", 0.58),
+               ("2022-07-31", 0.60), ("2022-10-30", 0.59)]
+        new = [("2024-04-28", 0.58), ("2024-07-28", 0.68),
+               ("2024-10-27", 0.81), ("2025-01-26", 0.89)]
+        rows = old + new
+        filed = {p: "2022-11-15" for p, _v in old}
+        filed.update({p: "2025-02-20" for p, _v in new})
+        # 상쇄 확인 — 측정 정합 단독으로는 아무것도 못 본다(화면 재현).
+        _r0, st0 = reconcile_eps_splits(rows, splits)
+        assert not st0["applied"] and not st0["reverted"], st0
+        adj, changed = adjust_eps_by_filed(rows, filed, splits)
+        assert changed
+        got = dict(adj)
+        for p, v in old:
+            # 10:1 만 미반영(4:1 은 제출 전 분할이라 이미 소급조정) → ÷10
+            assert abs(got[p] - v / 10.0) < 1e-12, (p, got[p])
+        for p, v in new:
+            assert got[p] == v, (p, got[p])
+
+    def test_eps_history_exposes_filed_basis(self, monkeypatch):
+        """복원한 결산분기의 기저 = 그 연간 보고서의 제출일 — filed 맵에
+        같이 실어야 확정 환산이 복원분에도 적용된다."""
+        import bot.edgar_client as ec
+        import bot.edgar_eps as ee
+
+        def F(s, e, v, filed):
+            return {"start": s, "end": e, "val": v, "filed": filed}
+
+        facts = [F("2023-01-30", "2023-04-30", 1.0, "2023-05-20"),
+                 F("2023-05-01", "2023-07-30", 1.1, "2023-08-20"),
+                 F("2023-07-31", "2023-10-29", 1.2, "2023-11-20"),
+                 F("2023-01-30", "2024-01-28", 4.6, "2024-03-01")]
+        monkeypatch.setattr(ee, "_rows", lambda cik, tag: facts)
+        monkeypatch.setattr(ec, "_load_cache", lambda *a, **k: None)
+        monkeypatch.setattr(ec, "_save_cache", lambda *a, **k: None)
+        monkeypatch.setattr(ec, "_ticker_to_cik", lambda t: "0000000001")
+        out = ee.eps_history("TSTX", years=10)
+        assert out["q_filed"]["2023-04-30"] == "2023-05-20"
+        q = dict(out["quarterly"])
+        assert abs(q["2024-01-28"] - 1.3) < 1e-9, q      # 4.6 − 3.3 복원
+        assert out["q_filed"]["2024-01-28"] == "2024-03-01", out["q_filed"]
+        assert out["a_filed"]["2024-01-28"] == "2024-03-01"
 
 
 class TestTelethonResolveFloodGuard20260827:

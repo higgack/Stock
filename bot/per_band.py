@@ -751,6 +751,42 @@ def adjust_eps_for_splits(rows: list, splits: list) -> list:
     return reconcile_eps_splits(rows, splits)[0]
 
 
+def adjust_eps_by_filed(rows: list, filed: dict, splits: list) -> tuple[list, bool]:
+    """(rows, changed) — **제출일 기준 확정 환산**(#259 2차, 2026-08-27 NVDA).
+
+    분할 '전'에 제출된 보고서의 주당값은 그 분할을 알 수 없으므로 **확실히
+    미조정**이고(사실), '후' 제출분은 소급조정된다(ASC 260 의무). 그래서
+    각 행의 환산 배수 = 그 행의 제출일 **이후에** 일어난 분할비율의 곱.
+
+    ⚠️ 왜 측정(#162)만으론 안 되나: 급변 지표는 **성장이 기저 차이를 정확히
+    상쇄하면 눈이 먼다** — NVDA 실측: 2022년 ×10 기저 EPS(~0.59/분기)와
+    2024년 실제 EPS(~0.60)가 같은 크기(그 사이 이익 10배 성장)라 인접 급변이
+    1.0배 → 측정 정합이 "고칠 게 없다(noop)"로 판정했고, raw 기저 PER
+    0.5~6 이 화면에 그대로 남았다. 제출일 판정은 그 상쇄와 무관하다.
+
+    filed 정보가 없는 행은 그대로 둔다 — 뒤따르는 측정 정합이 안전망이다.
+    """
+    if not rows or not splits or not filed:
+        return rows, False
+    ded = dedupe_splits(splits)
+    out, changed = [], False
+    for p, v in rows:
+        f = 1.0
+        fd = filed.get(str(p)[:10])
+        if fd:
+            for d, r in ded:
+                if str(d)[:10] > str(fd)[:10]:
+                    f *= r
+        if abs(f - 1.0) > 1e-9 and v is not None:
+            out.append((p, v / f))
+            changed = True
+        else:
+            out.append((p, v))
+    if changed:
+        log.info("per_band: 제출일 기준 분할 환산 적용(%d행 중 일부)", len(out))
+    return out, changed
+
+
 def should_trim(splits_known: bool, reverted: bool) -> bool:
     """잘라내기(trim_at_eps_break)를 적용할 것인가.
 
@@ -961,7 +997,7 @@ def for_ticker(ticker: str, snap: dict | None = None,
     # 가격과 **같은 응답**에서 온 분할을 쓴다(별도 호출은 조용히 빈다).
     _splits = _sp if _splits_known else (_sp or split_factors(tk))
 
-    def _conv(rows, *, reported_eps: bool = True):
+    def _conv(rows, *, reported_eps: bool = True, filed: dict | None = None):
         """통화가 다르면 환산하고, **주식분할 기준을 주가에 맞춘다**.
 
         ⚠️ `reported_eps=False` 는 원천이 **PER 을 직접 주는** 경로다
@@ -976,10 +1012,13 @@ def for_ticker(ticker: str, snap: dict | None = None,
         """
         if not reported_eps:
             return convert_eps(rows, fx) if fx else rows
+        # ① 제출일 기준 **확정** 환산(EDGAR — filed 를 아는 경로만) →
+        # ② 측정 기반 정합(#162)은 남은 급변의 안전망으로만.
+        rows, _det = adjust_eps_by_filed(rows, filed or {}, _splits)
         rows, _st = reconcile_eps_splits(rows, _splits)
         # 이 계열에 분할 환산이 **실제로 걸렸는지** 기록한다 — 두 계열이 서로
         # 다른 기준으로 끝나면 둘을 대조할 수 없다(아래 결산검산).
-        _conv.applied.append(bool(_st["applied"]))
+        _conv.applied.append(bool(_det or _st["applied"]))
         # 아는 날에도 **정합이 되돌려졌으면** 자른다(#259 NVDA) — 남은 급변은
         # '설명된 실적'이 아니라 미정합 기준이라, 안 자르면 raw EPS 가 분할
         # 반영 주가 옆에 조용히 실린다. 잘랐으면 화면이 말한다(#43).
@@ -1003,8 +1042,8 @@ def for_ticker(ticker: str, snap: dict | None = None,
             log.debug("per_band: EDGAR 실패 %s: %s", tk, exc)
             h = {}
         _conv.applied = []
-        _q = _conv(h.get("quarterly"))
-        _a = _conv(h.get("annual"))
+        _q = _conv(h.get("quarterly"), filed=h.get("q_filed"))
+        _a = _conv(h.get("annual"), filed=h.get("a_filed"))
         # 분할 정합 **후** 빠진 결산분기 재복원(#259) — edgar_eps 의 복원은
         # as-reported 단계라 분할 낀 해에 형제 가드로 폐기돼 TTM 4점씩 빈다.
         _q = refill_fiscal_q4(_q, _a)
