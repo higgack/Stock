@@ -39858,6 +39858,131 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestMultiSplitEpsReconcile20260827:
+    """사용자 2026-08-27 NVDA 밴드 표: "분할이 제대로 안먹힌것 같은데...우리
+    이거 이미 몇번 잡지 않았어?" + "중간에 없는 기간이 엄청 많네" (#259).
+
+    화면 재현(#118 구조 가설을 코드로): NVDA 는 분할이 **두 번**(2021 4:1 ·
+    2024 10:1)이라 EDGAR EPS 계열에 기저가 **셋**(×40 · ×10 · ×1) 생긴다 —
+    원천이 사건마다 다른 범위를 소급조정해 주기 때문이다. 옛 단일 경계
+    탐색은 하나만 고칠 수 있어 개선 폭 미달로 통째로 되돌려졌고:
+      ① 옛 구간 EPS 가 raw as-reported 로 남아 PER 0.5~6(정답의 1/40)이
+         **조용히** 화면에 실렸다(분할을 '아는 날'은 잘라내기도 건너뛰므로).
+      ② 결산분기 복원(연간−3분기)이 기저 혼합으로 형제 가드(#167)에 폐기돼
+         분할 낀 해마다 TTM 4점씩 비었다(2021 · 2023~24 = 화면의 공백).
+
+    계약: (a) 분할 사건별로 **하나씩** 정합(최신부터) — 곱이 자동 누적
+    (b) 정합 실패(reverted)면 분할을 알아도 잘라낸다(#43 — 옛 계약 #166c 를
+    #222 로 다시 씀) (c) 기저를 맞춘 **뒤** 빠진 결산분기를 재복원해 TTM
+    공백을 채운다 — 형제 가드는 재사용(#38).
+    """
+
+    SPLITS = [("2021-07-20", 4.0), ("2024-06-10", 10.0)]
+
+    @classmethod
+    def _series(cls):
+        ends = [f"{y}-{m:02d}-26" for y in range(2017, 2027)
+                for m in (1, 4, 7, 10)][:39]          # 2017-01 ~ 2026-07
+        true_q = [(e, 0.10 * (1.06 ** i)) for i, e in enumerate(ends)]
+
+        def _q_scale(e):
+            return 40.0 if e < "2021-07-20" else (
+                10.0 if e < "2024-10-01" else 1.0)     # 분기 소급조정 경계
+
+        rep_q = [(e, v * _q_scale(e)) for e, v in true_q]
+        tq = dict(true_q)
+        true_a = []
+        for y in range(2018, 2027):
+            sibs = [f"{y - 1}-04-26", f"{y - 1}-07-26", f"{y - 1}-10-26",
+                    f"{y}-01-26"]
+            true_a.append((f"{y}-01-26", sum(tq[p] for p in sibs)))
+
+        def _a_scale(e):
+            return 40.0 if e < "2021-07-20" else (
+                10.0 if e < "2025-01-01" else 1.0)     # 연간 경계는 분기와 다르다
+
+        rep_a = [(e, v * _a_scale(e)) for e, v in true_a]
+        return true_q, rep_q, true_a, rep_a
+
+    def test_each_split_event_gets_its_own_boundary(self):
+        from bot.per_band import reconcile_eps_splits
+        true_q, rep_q, _ta, _ra = self._series()
+        rows, st = reconcile_eps_splits(rep_q, self.SPLITS)
+        assert st["applied"] and not st["reverted"], st
+        got = dict(rows)
+        for p, tv in true_q:
+            assert abs(got[p] - tv) < 1e-9, (p, got[p], tv)
+
+    def test_annual_series_reconciles_with_different_boundaries(self):
+        from bot.per_band import reconcile_eps_splits
+        _tq, _rq, true_a, rep_a = self._series()
+        rows, st = reconcile_eps_splits(rep_a, self.SPLITS)
+        assert not st["reverted"], st
+        got = dict(rows)
+        for p, tv in true_a:
+            assert abs(got[p] - tv) < 1e-9, (p, got[p], tv)
+
+    def test_refill_fills_fiscal_q4_after_reconcile(self):
+        from bot.per_band import (refill_fiscal_q4, reconcile_eps_splits,
+                                  ttm_eps_series)
+        true_q, rep_q, _ta, rep_a = self._series()
+        no_q4 = [r for r in rep_q if not r[0].endswith("-01-26")]
+        q, _ = reconcile_eps_splits(no_q4, self.SPLITS)
+        a, _ = reconcile_eps_splits(rep_a, self.SPLITS)
+        full = refill_fiscal_q4(q, a)
+        got, tq = dict(full), dict(true_q)
+        for y in range(2018, 2027):
+            p = f"{y}-01-26"
+            assert p in got and abs(got[p] - tq[p]) < 1e-6, (p, got.get(p))
+        ttm = ttm_eps_series(full)
+        assert len(ttm) == len(full) - 3, \
+            "재복원 후 TTM 이 연속이어야 한다(공백 = 화면의 '없는 기간')"
+
+    def test_refill_rejects_cross_basis_garbage(self):
+        """기저가 갈린 채 재복원하면 쓰레기가 나온다 — 형제 가드(#167)가
+        막는다. 가드를 지우는 뮤테이션이 여기서 잡힌다."""
+        from bot.per_band import refill_fiscal_q4, reconcile_eps_splits
+        true_q, rep_q, _ta, rep_a = self._series()
+        no_q4 = [r for r in rep_q if not r[0].endswith("-01-26")]
+        q, _ = reconcile_eps_splits(no_q4, self.SPLITS)
+        raw_a = [(p, v * 10.0) for p, v in rep_a]     # 연간만 ×10 기저
+        full = refill_fiscal_q4(q, raw_a)
+        assert not any(p.endswith("-01-26") for p, _v in full), \
+            [r for r in full if r[0].endswith("-01-26")][:3]
+
+    def test_reverted_reconcile_reports_and_keeps_values(self):
+        """비율이 안 맞는 급변(×4 기저, 분할은 10:1)은 못 고친다 — 되돌리고
+        reverted 를 말한다. 그때는 분할을 알아도 잘라낸다(should_trim)."""
+        from bot.per_band import reconcile_eps_splits, should_trim
+        rows = [(f"202{i // 4 + 1}-{(i % 4) * 3 + 1:02d}-26",
+                 (4.0 if i < 8 else 1.0) * 0.5 * (1.05 ** i))
+                for i in range(16)]
+        out, st = reconcile_eps_splits(rows, [("2024-06-10", 10.0)])
+        assert st["reverted"], st
+        assert dict(out) == dict(rows), "값을 바꾸면 안 된다"
+        assert should_trim(True, True) is True
+        assert should_trim(True, False) is False      # 아는 날 + 정합 OK = 실적
+        assert should_trim(False, False) is True      # 모르면 안전망 유지
+
+    def test_for_ticker_wires_refill_and_trim_decision(self):
+        """배선은 존재가 아니라 호출(#120) — for_ticker 가 refill 결과를
+        `_q` 에 **되대입**하고, 잘라내기 판정이 should_trim 을 거친다."""
+        import ast
+        import inspect
+
+        import bot.per_band as pb
+        tree = ast.parse(inspect.getsource(pb.for_ticker))
+        refill_assigns = [
+            n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+            and isinstance(n.value, ast.Call)
+            and getattr(n.value.func, "id", "") == "refill_fiscal_q4"
+            and any(getattr(t, "id", "") == "_q" for t in n.targets)]
+        assert refill_assigns, "재복원이 _q 에 배선되지 않았다"
+        trims = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "should_trim"]
+        assert trims, "잘라내기 판정이 should_trim 을 거치지 않는다"
+
+
 class TestTelethonResolveFloodGuard20260827:
     """사용자 2026-08-27 알림: "⚠️ 나쁜양파 동기화 — 세션/접근 실패 /
     FloodWaitError: A wait of 8073 seconds is required (caused by

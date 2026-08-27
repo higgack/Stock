@@ -667,63 +667,143 @@ def _scaled_prefix(rows: list, i: int, f: float) -> list:
         + list(rows[i:])
 
 
-def adjust_eps_for_splits(rows: list, splits: list) -> list:
-    """as-reported EPS 를 **주가와 같은 기준**(분할반영)으로 환산.
+def _one_split_pass(srt: list, d: str, r: float) -> tuple[list, str]:
+    """분할 사건 하나(d, r)에 대한 정합 — (rows, outcome).
 
-    ① 날짜 기준 — 기간 종료일 이후에 일어난 분할의 곱으로 나눈다(10:1 분할
-       전의 EPS 35.91 → 3.591). 계열 전체가 as-reported 인 정상 케이스다.
-    ② **경계 탐색** — 원천이 *일부 기간만* 소급조정해 주면 ① 이 오히려
-       계열을 망가뜨린다. 2026-08-23 LRCX 실측: EDGAR 분기가 2024-06-30
-       부터는 이미 분할반영(후속 10-Q 에 소급조정분이 실린다)인데 그보다
-       앞은 as-reported 라, 날짜로 자르면 이미 조정된 칸까지 10 으로 나눠
-       더 나빠졌다 → 되돌려짐 → **아무것도 안 됨**(옛 PER 1.05~2.5).
-       기준이 갈리는 **자리를 모르므로 찾는다** — 각 경계에서 앞쪽만 누적
-       분할비율로 나눠 보고 인접 급변이 가장 작아지는 것을 고른다.
+    outcome: "uniform"(전 구간이 분할 전 — 늘 옳다) · "dated"(날짜 기준으로
+    급변 감소) · "boundary"(경계 탐색으로 정합) · "noop"(이 사건과 무관) ·
+    "reverted"(급변이 있는데 이 비율로 못 고침 — 미정합).
 
     ⚠️ 어느 쪽이든 **결과를 재서** 고른다(#162). 잘 맞은 환산은 반드시 급변을
     줄인다 — 과다적용(같은 분할 두 번, AAPL 0.74)도 미적용과 똑같이 급변을
     남기고 방향만 반대라 눈으로는 구별이 안 된다.
     """
-    if not rows or not splits:
-        return rows
-    srt = sorted((str(p)[:10], v) for p, v in rows if p)
     base = _max_adjacent_jump(srt)
-    ded = dedupe_splits(splits)
     dated, facs = [], []
     for period, eps in srt:
-        f = 1.0
-        for d, r in ded:
-            if d > period:
-                f *= r
+        f = r if d > period else 1.0
         facs.append(f)
         dated.append((period, (eps / f) if (eps is not None and f) else eps))
-    # ① **균일 스케일**(모든 행이 같은 배수)은 인접 비율을 하나도 안 바꾼다 —
-    # 급변 지표로는 잴 수 없고, 분할이 관측 구간 **밖**에 있다는 뜻이라 늘
-    # 옳다. 관측이 1개뿐이어도 여기로 온다(그때 지표는 아무것도 못 말한다).
-    if len(set(facs)) == 1 and abs(facs[0] - 1.0) > 1e-9:
-        return dated
-    # ② 분할이 구간 **안**에 있으면 지표가 말을 한다 — 급변이 줄면 맞은 것이다.
+    # 균일 스케일(모든 행이 분할 전)은 인접 비율을 하나도 안 바꾼다 — 급변
+    # 지표로는 잴 수 없고, 분할이 관측 구간 **밖**이라는 뜻이라 늘 옳다.
+    # 관측 1개뿐이어도 여기로 온다.
+    if len(set(facs)) == 1:
+        if abs(facs[0] - 1.0) > 1e-9:
+            return dated, "uniform"
+        return srt, "noop"              # 전 구간이 분할 후 — 손댈 것 없음
+    # 분할이 구간 **안**이면 지표가 말을 한다 — 급변이 줄면 맞은 것이다.
     if _max_adjacent_jump(dated) < base:
-        return dated
-    # ③ 날짜 기준이 못 고쳤다 = 원천이 **일부 기간만** 소급조정한 것이다.
-    # 기준이 갈리는 자리를 모르므로 **찾는다**. 여기서만 개선 폭을 요구한다 —
-    # 이건 원천이 알려준 사실이 아니라 우리의 추정이기 때문이다.
-    best, best_j, how = None, base, None
+        return dated, "dated"
+    # 날짜 기준이 못 고쳤다 = 원천이 이 사건을 **일부 기간만** 소급조정한
+    # 것이다(LRCX 실측 — 후속 10-Q 의 소급조정분이 최신 접수분으로 채택돼
+    # 경계가 분할일과 다르다). 기준이 갈리는 자리를 모르므로 **찾는다** —
+    # 여기서만 개선 폭을 요구한다(원천이 알려준 사실이 아니라 추정이므로).
+    best, best_j = None, base
     if base >= _BREAK_MIN:
-        for f in cum_split_factors(splits):
-            for i in range(1, len(srt)):
-                cand = _scaled_prefix(srt, i, f)
-                j = _max_adjacent_jump(cand)
-                if j < best_j:
-                    best, best_j, how = cand, j, f"경계 {srt[i][0]}·÷{f:g}"
-    if best is None or best_j > base * _BREAK_GAIN:
-        log.warning("per_band: 분할 환산이 계열을 악화시켜 되돌림 "
-                    "(전 %.1f배 → 날짜기준 %.1f배 · 경계탐색 %.1f배)",
-                    base, _max_adjacent_jump(dated), best_j)
-        return rows
-    log.info("per_band: 분할 기준 환산(%s) — 인접 급변 %.1f배 → %.1f배",
-             how, base, best_j)
-    return best
+        for i in range(1, len(srt)):
+            cand = _scaled_prefix(srt, i, r)
+            j = _max_adjacent_jump(cand)
+            if j < best_j:
+                best, best_j = cand, j
+    if best is not None and best_j <= base * _BREAK_GAIN:
+        return best, "boundary"
+    if base < _BREAK_MIN:
+        return srt, "noop"              # 기준이 갈린 흔적 자체가 없다
+    return srt, "reverted"
+
+
+def reconcile_eps_splits(rows: list, splits: list) -> tuple[list, dict]:
+    """as-reported EPS 를 주가와 같은 기준(분할반영)으로 — (rows, status).
+
+    status = {"applied": bool, "reverted": bool, "how": [사건별 기록]}.
+
+    ⚠️ 분할 사건을 **최신부터 하나씩** 정합한다(2026-08-27 NVDA 실측, #259):
+    원천(EDGAR)은 사건마다 소급조정 범위가 달라 기저 경계가 **사건 수만큼**
+    생긴다 — NVDA 는 2021 4:1 + 2024 10:1 로 세 기저(×40 · ×10 · ×1)였다.
+    옛 단일 경계 탐색은 하나만 고칠 수 있어 개선 폭 미달로 통째로 되돌려
+    졌고, 옛 구간 PER 이 ~40배 작게(0.5~6) **조용히** 화면에 남았다.
+    사건별 패스는 각자 자기 경계를 찾고, 곱이 자동으로 누적된다.
+    """
+    if not rows or not splits:
+        return rows, {"applied": False, "reverted": False, "how": []}
+    srt = sorted((str(p)[:10], v) for p, v in rows if p)
+    how: list[str] = []
+    reverted = False
+    for d, r in reversed(dedupe_splits(splits)):
+        srt2, oc = _one_split_pass(srt, str(d)[:10], r)
+        if oc == "reverted":
+            reverted = True
+            log.warning("per_band: 분할 %s ÷%g 정합 실패 — 급변이 남아 "
+                        "이 사건은 되돌림", d, r)
+            continue
+        if oc != "noop":
+            how.append(f"{d}·÷{r:g}({oc})")
+            srt = srt2
+    if how:
+        log.info("per_band: 분할 기준 환산 — %s (잔여 급변 %.1f배)",
+                 " · ".join(how), _max_adjacent_jump(srt))
+    return srt, {"applied": bool(how), "reverted": reverted, "how": how}
+
+
+def adjust_eps_for_splits(rows: list, splits: list) -> list:
+    """(하위호환 래퍼) — `reconcile_eps_splits` 의 rows 만. 옛 호출부·테스트
+    계약 보존용(#222) — 상태가 필요한 곳은 reconcile 을 직접 쓴다."""
+    return reconcile_eps_splits(rows, splits)[0]
+
+
+def should_trim(splits_known: bool, reverted: bool) -> bool:
+    """잘라내기(trim_at_eps_break)를 적용할 것인가.
+
+    잘라내기는 원래 '분할을 **모를 때**의 안전망'이었다(#166c — 아는 날의
+    급변은 실적). 2026-08-27 NVDA 가 반례를 냈다: 분할을 **알아도** 정합이
+    실패로 되돌려지면 남은 급변은 실적이 아니라 **미정합 기준**이고, 안
+    자르면 raw as-reported EPS 가 분할반영 주가와 나란히 화면에 간다
+    (PER 0.5~6 이 5년치 — 값이 다 '있어서' 아무 감사도 안 걸렸다, #96)."""
+    return (not splits_known) or reverted
+
+
+def refill_fiscal_q4(q_rows: list, a_rows: list) -> list:
+    """분할 정합 **후** 결산분기 재복원 — 연간 − 직전 3분기 (오름차순 반환).
+
+    ⚠️ 왜(2026-08-27 NVDA, #259): edgar_eps 는 as-reported 단계에서 결산분기
+    를 복원하는데, 분할 소급조정이 분기에만 걸린 해에는 연간(as-reported) −
+    3분기(조정) 가 쓰레기가 되어 형제 가드(#167)가 폐기한다 — 그 해 TTM
+    4점이 통째로 빈다(#168 LRCX 서명). NVDA 는 분할이 두 번이라 2021 ·
+    2023~24 가 **8~12점** 비었고, 사용자가 "중간에 없는 기간이 엄청 많네"
+    로 발견했다. 기저를 맞춘 뒤에는 같은 복원이 성립하므로, **빠진 결산
+    분기만** 다시 채운다(이미 있는 기간은 손대지 않는다).
+
+    가드: 직전 3분기가 연속(첫·끝 5~7개월)이고 연간 끝에 붙어 있으며(마지막
+    형제와 2~4개월), 복원값이 형제와 같은 급일 때만(#167 `_plausible_q4`
+    재사용 — 판정을 복제하면 두 화면이 갈린다, #38).
+    """
+    if not a_rows:
+        return q_rows
+    qs = sorted((str(p)[:10], v) for p, v in (q_rows or [])
+                if p and v is not None)
+    have = {p for p, _v in qs}
+    out = list(qs)
+    from bot.edgar_eps import _plausible_q4
+    for a_end, a_val in sorted((str(p)[:10], v) for p, v in a_rows
+                               if p and v is not None):
+        if a_end in have:
+            continue
+        sibs = [(p, v) for p, v in qs
+                if p < a_end and (_days_between(p, a_end) or 9999) <= 290]
+        if len(sibs) != 3:
+            continue
+        span = _months_between(sibs[0][0], sibs[-1][0])
+        if span is None or not (5 <= span <= 7):
+            continue
+        tail = _months_between(sibs[-1][0], a_end)
+        if tail is None or not (2 <= tail <= 4):
+            continue
+        q4 = a_val - sum(v for _p, v in sibs)
+        if not _plausible_q4(q4, [v for _p, v in sibs]):
+            continue
+        out.append((a_end, q4))
+        have.add(a_end)
+    return sorted(out)
 
 
 def eps_break_reason(rows: list) -> str | None:
@@ -896,12 +976,14 @@ def for_ticker(ticker: str, snap: dict | None = None,
         """
         if not reported_eps:
             return convert_eps(rows, fx) if fx else rows
-        before = rows
-        rows = adjust_eps_for_splits(rows, _splits)
+        rows, _st = reconcile_eps_splits(rows, _splits)
         # 이 계열에 분할 환산이 **실제로 걸렸는지** 기록한다 — 두 계열이 서로
         # 다른 기준으로 끝나면 둘을 대조할 수 없다(아래 결산검산).
-        _conv.applied.append(rows is not before and rows != before)
-        if not _splits_known:
+        _conv.applied.append(bool(_st["applied"]))
+        # 아는 날에도 **정합이 되돌려졌으면** 자른다(#259 NVDA) — 남은 급변은
+        # '설명된 실적'이 아니라 미정합 기준이라, 안 자르면 raw EPS 가 분할
+        # 반영 주가 옆에 조용히 실린다. 잘랐으면 화면이 말한다(#43).
+        if should_trim(_splits_known, _st["reverted"]):
             rows, note = trim_at_eps_break(rows)
             if note:
                 log.warning("per_band: %s %s", tk, note)
@@ -923,6 +1005,9 @@ def for_ticker(ticker: str, snap: dict | None = None,
         _conv.applied = []
         _q = _conv(h.get("quarterly"))
         _a = _conv(h.get("annual"))
+        # 분할 정합 **후** 빠진 결산분기 재복원(#259) — edgar_eps 의 복원은
+        # as-reported 단계라 분할 낀 해에 형제 가드로 폐기돼 TTM 4점씩 빈다.
+        _q = refill_fiscal_q4(_q, _a)
         # ⚠️ 두 계열이 **다른 기준**으로 끝나면 대조 자체가 성립하지 않는다.
         # 2026-08-22 AAPL 실측: EDGAR 분기는 후속 보고서에서 분할 소급조정된
         # 값이 오는데(최신 접수분을 쓰므로) 연간은 as-reported 라, 한쪽만
