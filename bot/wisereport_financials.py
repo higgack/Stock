@@ -313,17 +313,53 @@ def ev_row_dump(html: str) -> list:
     return out
 
 
+_PROBE_VER = 2   # v2: cF1001 에 EV 행 없음(078340 실측) → 후보 페이지 스윕
+
+# EV/EBITDA 를 실을 법한 네이버/FnGuide 표면 후보 — 존재는 **프로브 실측**으로
+# 판정한다(#25 이름이 아니라 실측). 404/빈손이어도 비용은 출력 한 줄이다.
+_EV_PROBE_URLS = (
+    ("wisereport c1010001(기업현황)",
+     "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}"),
+    ("wisereport c1040001(투자지표)",
+     "https://navercomp.wisereport.co.kr/v2/company/c1040001.aspx?cmp_cd={code}"),
+    ("wisereport cF3002 Y",
+     "https://navercomp.wisereport.co.kr/v2/company/cF3002.aspx?cmp_cd={code}&fin_typ=0&freq_typ=Y"),
+    ("wisereport cF4002 Y",
+     "https://navercomp.wisereport.co.kr/v2/company/cF4002.aspx?cmp_cd={code}&fin_typ=0&freq_typ=Y"),
+    ("fnguide SVD_Main(Snapshot)",
+     "https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=101&stkGb=701"),
+    ("fnguide SVD_Invest(투자지표)",
+     "https://comp.fnguide.com/SVO2/ASP/SVD_Invest.asp?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=105&stkGb=701"),
+    ("fnguide SVD_FinanceRatio(재무비율)",
+     "https://comp.fnguide.com/SVO2/ASP/SVD_FinanceRatio.asp?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=104&stkGb=701"),
+)
+
+
+def ev_snippets(html: str, n: int = 3) -> list:
+    """'EV/EBITDA' 출현 지점의 원문 ±180자 — 표가 아니라 스크립트/JSON 에
+    있어도 보이게. 표본이 있어야 파서를 짤 수 있다(#109·#155)."""
+    out = []
+    i = 0
+    while len(out) < n:
+        i = (html or "").find("EV/EBITDA", i)
+        if i < 0:
+            break
+        out.append(re.sub(r"\s+", " ", html[max(0, i - 60):i + 180]))
+        i += 1
+    return out
+
+
 def _main(argv=None):
-    """`python -m bot.wisereport_financials --ev <6자리코드>` — EV/EBITDA
-    행의 **원문 칸 전부**((E) 포함)를 freq 변형별로 찍는다. VM 전용(네이버
-    접근 필요). 시작 줄에 버전(#21)."""
+    """`python -m bot.wisereport_financials --ev <6자리코드>` — 후보 표면을
+    전부 훑어 EV/EBITDA 행(표) 또는 원문 발췌(스크립트)를 찍는다. VM 전용
+    (네이버·FnGuide 접근 필요). 시작 줄에 버전(#21)."""
     import sys
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] != "--ev" or len(args) < 2:
         print("사용법: python -m bot.wisereport_financials --ev <6자리코드>")
         return 2
     code = args[1].split(".")[0]
-    print(f"■ wisereport EV/EBITDA 원문 프로브 v{_PARSE_VER} — {code}")
+    print(f"■ EV/EBITDA 원문 프로브 v{_PROBE_VER} (파서 v{_PARSE_VER}) — {code}")
     found = 0
     for freq in _FREQS:
         try:
@@ -331,22 +367,41 @@ def _main(argv=None):
                                 headers=_HEADERS, timeout=_TIMEOUT)
             dumps = ev_row_dump(resp.text)
         except Exception as exc:                        # noqa: BLE001
-            print(f"  freq={freq}: 요청 실패 {type(exc).__name__}: {exc}")
-            continue
-        if not dumps:
-            print(f"  freq={freq}: EV/EBITDA 행 없음 ({len(resp.text):,}자)")
+            print(f"  cF1001 freq={freq}: 요청 실패 {type(exc).__name__}: {exc}")
             continue
         for hdr, cells in dumps:
             found += 1
-            print(f"  freq={freq} 헤더: {hdr}")
-            print(f"  freq={freq} EV행: {cells}")
+            print(f"  cF1001 freq={freq} 헤더: {hdr}")
+            print(f"  cF1001 freq={freq} EV행: {cells}")
     if not found:
-        print("  ❌ 어느 변형에도 EV/EBITDA 행이 없다 — 이 프래그먼트엔 그"
-              " 행 자체가 없는 것(다른 페이지를 봐야 한다)")
+        print("  cF1001: 전 freq 에 EV/EBITDA 행 없음 (v1 실측과 동일)")
+    for label, tmpl in _EV_PROBE_URLS:
+        try:
+            resp = requests.get(tmpl.format(code=code), headers=_HEADERS,
+                                timeout=_TIMEOUT)
+            if resp.encoding and resp.encoding.lower() in ("iso-8859-1",):
+                resp.encoding = resp.apparent_encoding
+            html = resp.text
+        except Exception as exc:                        # noqa: BLE001
+            print(f"  {label}: 요청 실패 {type(exc).__name__}: {exc}")
+            continue
+        dumps = ev_row_dump(html)
+        hit = "EV/EBITDA" in html
+        print(f"  {label}: {resp.status_code} · {len(html):,}자 · "
+              f"표 행 {len(dumps)}개 · 문자열 출현 {'있음' if hit else '없음'}")
+        for hdr, cells in dumps[:2]:
+            found += 1
+            print(f"    헤더: {hdr}")
+            print(f"    EV행: {cells}")
+        if hit and not dumps:
+            for sn in ev_snippets(html):
+                print(f"    발췌: {sn}")
+    if not found:
+        print("  ❌ 표 형태의 EV/EBITDA 행은 어디에도 없다 — '발췌' 줄이"
+              " 있으면 그 markup 을 보고 파서를 짠다")
     else:
         got = latest_ev_ebitda(fetch_financial_summary(code))
-        print(f"  현재 파서가 집는 값: {got}  ← (E) 칸과 다르면 그 차이가"
-              " 곧 '실시간과의 거리'다")
+        print(f"  현재 파서가 집는 값: {got}")
     return 0
 
 
