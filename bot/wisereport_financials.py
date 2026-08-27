@@ -287,3 +287,69 @@ def fetch_financial_summary(stock_code: str) -> Optional[dict]:
     if _cache_write:
         _cache_write(ck, out)
     return out
+
+
+def ev_row_dump(html: str) -> list:
+    """EV/EBITDA 행이 있는 표마다 (헤더 원문 셀, EV 행 원문 셀) — **프로브
+    전용**(값 가공 없음). (E)/(P) 칸을 **거르지 않고 그대로** 찍는다.
+
+    ⚠️ 왜(사용자 2026-08-27 "네이버꺼 실시간을 가져오면 거의 정확할 텐데"):
+    본 파서는 매출 보강용이라 추정 칸((E))을 구조적으로 배제한다 — 그래서
+    EV/EBITDA 도 최신 확정 연도에 묶였을 수 있다. 어느 칸이 존재하고 어느
+    칸이 '네이버가 최신으로 갱신하는 값'인지는 **원문만 답한다**(#109·#155).
+    """
+    out = []
+    for tbl in _TABLE.findall(html or ""):
+        rows = _ROW.findall(tbl)
+        texts = [[_text(c) for c in _CELL.findall(r)] for r in rows]
+        ev_i = next((i for i, r in enumerate(texts)
+                     if r and (r[0] or "").replace(" ", "").startswith("EV/EBITDA")),
+                    None)
+        if ev_i is None:
+            continue
+        hdr = next((r for r in texts[:ev_i]
+                    if sum(1 for c in r if _PERIOD.search(c)) >= 2), [])
+        out.append((hdr, texts[ev_i]))
+    return out
+
+
+def _main(argv=None):
+    """`python -m bot.wisereport_financials --ev <6자리코드>` — EV/EBITDA
+    행의 **원문 칸 전부**((E) 포함)를 freq 변형별로 찍는다. VM 전용(네이버
+    접근 필요). 시작 줄에 버전(#21)."""
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] != "--ev" or len(args) < 2:
+        print("사용법: python -m bot.wisereport_financials --ev <6자리코드>")
+        return 2
+    code = args[1].split(".")[0]
+    print(f"■ wisereport EV/EBITDA 원문 프로브 v{_PARSE_VER} — {code}")
+    found = 0
+    for freq in _FREQS:
+        try:
+            resp = requests.get(_URL_TMPL.format(code=code, freq=freq),
+                                headers=_HEADERS, timeout=_TIMEOUT)
+            dumps = ev_row_dump(resp.text)
+        except Exception as exc:                        # noqa: BLE001
+            print(f"  freq={freq}: 요청 실패 {type(exc).__name__}: {exc}")
+            continue
+        if not dumps:
+            print(f"  freq={freq}: EV/EBITDA 행 없음 ({len(resp.text):,}자)")
+            continue
+        for hdr, cells in dumps:
+            found += 1
+            print(f"  freq={freq} 헤더: {hdr}")
+            print(f"  freq={freq} EV행: {cells}")
+    if not found:
+        print("  ❌ 어느 변형에도 EV/EBITDA 행이 없다 — 이 프래그먼트엔 그"
+              " 행 자체가 없는 것(다른 페이지를 봐야 한다)")
+    else:
+        got = latest_ev_ebitda(fetch_financial_summary(code))
+        print(f"  현재 파서가 집는 값: {got}  ← (E) 칸과 다르면 그 차이가"
+              " 곧 '실시간과의 거리'다")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(_main())
