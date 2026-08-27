@@ -5084,6 +5084,10 @@ def build_live_quote(ticker: str, full: bool = False,
 
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     mcap = info.get("marketCap")
+    # 시총의 출처 추적 — 라이브(네이버 국내/해외·TWSE) 값이면 아래 전 클래스
+    # 배율 추종을 건너뛴다(#256). 값 동등 비교로 가르면 중간 변환 한 번에
+    # 조용히 눈이 먼다(독립 리뷰 지적) — 플래그로 명시한다.
+    _mcap_is_live = False
     # ⚠️ 국내 선행 지표는 **네이버(FnGuide) 추정 EPS** 가 원천이다 — yfinance
     # 는 국내 forwardEps 를 안 준다. 서버 렌더만 고치면 이 오버레이가 다시
     # yfinance 값으로 되돌린다(2026-08-23 실측: 화면 5.50 vs 서버 5.98).
@@ -5135,6 +5139,7 @@ def build_live_quote(ticker: str, full: bool = False,
                 source, delayed = "네이버 실시간", False
                 if nq.get("mcap"):
                     mcap = nq["mcap"]
+                    _mcap_is_live = True
                 over_line = _fmt_over_line(nq, csym, pdec, "NXT")  # KR=NXT(넥스트레이드)
         except Exception as exc:
             log.debug("build_live_quote: Naver KR quote skipped for %s: %s", ticker, exc)
@@ -5155,8 +5160,14 @@ def build_live_quote(ticker: str, full: bool = False,
             if wq and wq.get("price"):
                 price = wq["price"]
                 source, delayed = wq.get("source", "실시간"), False
-                if wq.get("mcap"):
+                if wq.get("mcap") and (not mcap or _mkt in ("HK", "CN_A")):
+                    # 전 클래스 시장(#256)은 야후 시총(전 클래스 확정)을
+                    # 기준으로 두고 아래 불변식이 현재가 배율만 따라간다 —
+                    # 네이버 해외 시총은 모집단을 재지 않았으므로(#165)
+                    # 야후가 빈 때만 폴백. 이중상장은 어차피 아래에서
+                    # 거래 클래스로 재계산되므로 라이브 값을 받는다.
                     mcap = wq["mcap"]
+                    _mcap_is_live = True
                 # 시간외(장전/장후) 라인 — US/JP/HK/CN 해외 공용 (사용자 2026-06-16
                 # '대만제외 다 적용'). over_session 없으면 "" (JP/HK/CN 은 연장거래
                 # 미지원이라 보통 빈 값 → :empty 숨김).
@@ -5188,29 +5199,35 @@ def build_live_quote(ticker: str, full: bool = False,
     # EPS/BPS(장중 불변)가 있으면 PER=현재가/EPS · PBR=현재가/BPS 로 재산출해 장중
     # 가격 반영(사용자 2026-06-15 'PER/PBR 더 실시간'). 적자(eps≤0)·무BPS 는 yfinance
     # 값 유지. 52주 신고/신저도 장중 라이브가 극값 돌파 시 갱신. 전 시장 universal.
-    # 헤더의 세 칸(현재가·시총·주식수)은 곱이 맞아야 한다(#33). NKE 실측
-    # (2026-08-27): 야후 시총은 Class A+B **전체**($57.25B)인데 발행주식수는
-    # 상장 클래스(B, 1.202B)뿐이라 1.23배 어긋난다 — 낡은 가격이 아니라
-    # **모집단** 차이다(구글도 같은 $57.25B 를 현재가에 붙여 보여준다, #255
-    # 진단 정정). 기준은 사용자 결정(#224) 그대로 거래되는 클래스 =
-    # 현재가 × 발행주식수. 주식수는 저장 스냅샷(등록 주식수 우선 처리
-    # 완료분) 우선 — 분석 이력이 없는 종목(아카이브 없음)은 여기서 조용히
-    # no-op 이 되어 서버가 재계산한 값을 야후 값으로 되덮었다(#255, #35
-    # 오버레이가 화면과 다른 저장소를 봄). 비-KR 만 같은 .info 응답의
-    # sharesOutstanding 로 폴백한다 — 화면의 발행주식수 카드와 같은 원천
-    # 이다. KR 은 등록 주식수(KRX/FSC/네이버)가 기준이고 yfinance 주식수가
-    # 낡는 실측(#190)이 있어 폴백하지 않는다(네이버 국내 시총은 이미 단일
-    # 클래스·장중 라이브라 그대로 둔다). 파생과 **같은 헬퍼**다(#38).
+    # 시총 모집단 규칙(#256, 사용자 2026-08-27 "야후나 구글도 전 클래스로
+    # 보여주지? 맞으면 미국도 전 클래스로 해줘"):
+    #  · 이중상장(HK/CN_A) = 거래 클래스 기준(사용자 2026-08-24 BYD "H주로")
+    #    — 현재가 × 발행주식수로 재계산. 주식수는 저장 스냅샷(등록 주식수
+    #    우선 처리 완료분) 우선, 없으면 같은 .info 의 sharesOutstanding
+    #    (#255 — 분석 이력 없는 종목에서 조용히 no-op 되던 구멍의 폴백).
+    #  · KR = 네이버 국내 시총(단일 클래스·장중 라이브) 그대로(#190).
+    #  · 그 외(미국 포함) = 야후·구글과 같은 **전 클래스(원천) 시총** —
+    #    재계산하지 않고, 원천 모집단을 유지한 채 현재가 배율로만 따라간다
+    #    (야후 .info 의 시총·가격은 같은 응답이라 그 비율이 곧 모집단이다.
+    #    NKE 실측: 57.25B/38.59 = 1.4835B = Class A+B — #255 진단 정정).
     _stored_si = None
     if price:
         try:
             _stored_si = _load_stored_stock_info(ticker)
-            _sh_inv = (_stored_si or {}).get("shares_outstanding")
-            if _sh_inv is None and not is_kr:
-                _sh_inv = info.get("sharesOutstanding")
-            _mc2, _why2 = price_consistent_mcap(price, mcap, _sh_inv)
-            if _why2:
-                mcap = _mc2
+            from bot.market import detect_market as _dm2
+            if _dm2(ticker) in ("HK", "CN_A"):
+                _sh_inv = (_stored_si or {}).get("shares_outstanding")
+                if _sh_inv is None:
+                    _sh_inv = info.get("sharesOutstanding")
+                _mc2, _why2 = price_consistent_mcap(price, mcap, _sh_inv)
+                if _why2:
+                    mcap = _mc2
+            elif not is_kr:
+                _ip = info.get("currentPrice") or info.get("regularMarketPrice")
+                if (mcap and not _mcap_is_live
+                        and isinstance(_ip, (int, float)) and _ip > 0
+                        and price != _ip):
+                    mcap = float(mcap) * float(price) / float(_ip)
         except Exception as exc:                               # noqa: BLE001
             log.debug("build_live_quote: mcap invariant skip %s: %s", ticker, exc)
     _recomputed: set = set()
@@ -6091,6 +6108,11 @@ def price_consistent_mcap(price, mcap, shares, tol: float = 0.02) -> tuple:
     """(시가총액, note) — 시총이 **현재가 × 발행주식수**와 tol 넘게 어긋나면
     그 곱으로 재계산한다. 재료가 없거나 tol 안이면 원래 값 그대로(note="").
 
+    ⚠️ 적용 범위(#256, 사용자 2026-08-27 "미국도 전 클래스로"): 이 재계산은
+    **이중상장(HK/CN_A) 오버레이 경로에만** 쓴다. 미국 등은 원천(전 클래스)
+    시총이 표준이라 이 헬퍼를 타지 않는다 — 아래 왜(NKE)는 그 결정 전의
+    기록이다.
+
     ⚠️ 왜(2026-08-27 NKE): 헤더가 현재가 $38.59 옆에 시총 $57.25B 를 실어
     38.59 × 1.202B(상장 클래스) = $46.39B 와 1.23배 어긋났고, 그 시총이
     밸류에이션 PSR(1.23x)의 분자가 되어 분기실적 카드(1.00배 = 현재가×주식수
@@ -6205,12 +6227,13 @@ def _derive_missing_multiples(si: dict) -> dict:
 
     mcap = _num(out.get("market_cap"))
     shares = _num(out.get("shares_outstanding"))
-    # 시총이 현재가와 2% 넘게 어긋나면 현재가 × 발행주식수로(위 helper 참조).
-    _mc2, _mc_note = price_consistent_mcap(out.get("current_price"), mcap, shares)
-    if _mc_note:
-        out["market_cap"] = _mc2
-        out["market_cap_note"] = _mc_note
-        mcap = _num(_mc2)
+    # ⚠️ 여기서 시총을 현재가 × 발행주식수로 갈아끼우지 **않는다**(#256,
+    # 사용자 2026-08-27 "미국도 전 클래스로"): 스냅샷 시총은 원천(전 클래스)
+    # 기준이 표준이고, 야후 EPS·순이익도 전 클래스 분모라 그걸로 만든
+    # PSR·PER 폴백이 급이 맞는다 — 상장 클래스 시총 ÷ 전사 순이익은 모집단
+    # 혼합이다. 모집단 판정은 수집부(`_apply_share_count`)가 이미 했고
+    # 어긋남은 `market_cap_note` 가 말한다. 이중상장(HK/CN_A)은 수집부가
+    # 거래 클래스로 재계산해 두므로 여기 올 때는 이미 일관돼 있다.
     kr = out.get("kr") or {}
     fin = kr.get("financials") or {}
     qs = kr.get("financials_q") or []

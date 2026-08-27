@@ -37644,21 +37644,24 @@ class TestShareCountIdentity:
         h = ok["header"] if isinstance(ok, dict) and "header" in ok else str(ok)
         assert _sub(h) == "79,241,527주", _sub(h)
         assert 'title="KRX 상장주식수(2026-08-24) · 시총 재계산"' in h
-        # ⚠️ 2026-08-27 계약 변경(#222 옛 회귀는 지우지 말고 다시 쓴다):
-        # 옛 판은 시총↔주식수가 어긋나면 발행주식수 카드에 **경고**를 띄웠다.
-        # 이제는 어긋나는 순간 **현재가 × 발행주식수로 재계산**하므로(NKE
-        # 실측 — 낡은 시총이 PSR 분자가 돼 두 탭이 갈렸다) '어긋남'이 화면에
-        # 남지 않는다. 대신 **바뀐 값의 카드**(시가총액)가 사유를 보이는 줄로
-        # 말한다 — 툴팁만이면 없는 것과 같다(#228). 침묵 금지 계약은 그대로다.
+        # ⚠️ 2026-08-27 두 번째 계약 변경(#256, #222 로 다시 씀): #254 는
+        # 어긋나는 순간 현재가 × 발행주식수로 재계산했지만, 같은 날 사용자
+        # "야후나 구글도 전 클래스로 보여주지? 맞으면 미국도 전 클래스로
+        # 해줘" 로 반전 — 렌더 파생부는 시총을 **재계산하지 않는다**(원천
+        # 전 클래스가 표준, 모집단 판정은 수집부). 침묵 금지 계약은 그대로다
+        # — 어긋남은 발행주식수 카드의 경고가 **비교한 시총을 카드와 같은
+        # 문자열로**(#219) 말한다.
         bad = _render_stock_info_html({"ticker": "005490.KS", "stock_info": {
             "currency": "KRW", "current_price": 310000.0,
             "market_cap": 3.9e13, "shares_outstanding": 79241527}})
         hb = bad["header"] if isinstance(bad, dict) and "header" in bad else str(bad)
         i = hb.index("시가총액")
         seg = hb[i:i + 600]
-        assert "⚠️" in seg and "재계산했습니다" in seg, seg[:300]
-        # 재계산된 값이 실제로 곱과 맞는다(#33)
-        assert f"{310000.0 * 79241527 / 1e12:,.2f}조" in seg, seg[:300]
+        assert "₩39.00조" in seg, seg[:300]              # 원천 값 유지(#256)
+        assert "재계산했습니다" not in seg, seg[:300]
+        j = hb.index("발행주식수")
+        seg2 = hb[j:j + 900]
+        assert "⚠️" in seg2 and "₩39.00조" in seg2, seg2[:300]
 
     def test_bps_denominator_deducts_treasury_and_pbr_follows_bps(self):
         """사용자 2026-08-23 POSCO홀딩스 005490.KS: 우리 BPS 809,716 vs
@@ -38234,15 +38237,36 @@ class TestShareCountIdentity:
         assert round(snap["market_cap"]) == round(93.0 * 3683400000)
         assert snap.get("market_cap_note"), "재계산했으면 말해야 한다(#43)"
         # 동종비교 한 행도 **같은 헬퍼로 값이 바뀌는지** 값으로 확인한다
+        # (#256 게이트가 티커의 시장을 보므로 행에 ticker 가 있어야 한다)
         from bot.stock_snapshot import apply_class_market_cap as A
-        row = {"currentPrice": 93.0, "market_cap": 847.9e9,
-               "shares": 3683400000}
+        row = {"ticker": "1211.HK", "currentPrice": 93.0,
+               "market_cap": 847.9e9, "shares": 3683400000}
         A(row)
         assert round(row["market_cap"]) == round(93.0 * 3683400000), row
         assert row.get("market_cap_note")
-        flat = {"currentPrice": 100.0, "market_cap": 1e10, "shares": 1e8}
+        flat = {"ticker": "AAPL", "currentPrice": 100.0,
+                "market_cap": 1e10, "shares": 1e8}
         A(flat)
         assert flat["market_cap"] == 1e10 and "market_cap_note" not in flat
+        # ⚠️ #256(사용자 2026-08-27 "미국도 전 클래스로"): 미국 다중클래스는
+        # 원천(전 클래스) 시총을 **그대로** 둔다 — 거래 클래스 재계산은
+        # 이중상장(HK/CN_A)만. 게이트를 지우는 뮤테이션이 여기서 잡힌다.
+        usrow = {"ticker": "NKE", "currentPrice": 38.59,
+                 "market_cap": 57.25e9, "shares": 1_202_110_951}
+        A(usrow)
+        assert usrow["market_cap"] == 57.25e9, usrow
+        assert "market_cap_note" not in usrow
+        # 시총이 아예 없으면 시장 무관 현재가 × 발행주식수로 채운다
+        empty = {"ticker": "NKE", "currentPrice": 38.59, "shares": 1e9}
+        A(empty)
+        assert round(empty["market_cap"]) == round(38.59e9), empty
+        # 헤더 쪽도 같은 규칙 — 값은 두고 모집단이 다름만 밝힌다(#43·#165)
+        us = {"current_price": 38.59, "market_cap": 57.25e9,
+              "shares_outstanding": 1_202_110_951}
+        _apply_share_count("NKE", us)
+        assert us["market_cap"] == 57.25e9, us["market_cap"]
+        assert "원천 시총 기준" in (us.get("market_cap_note") or ""), \
+            us.get("market_cap_note")
         # 그리고 수집부가 그 헬퍼를 **부르는지**(정의만 있으면 안 돈다, #120)
         import ast as _ast
         ssrc = open("bot/stock_snapshot.py").read()
@@ -40272,9 +40296,12 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
          분기 매출이 화면에 실리는데 그 전제가 갱신되지 않았다).
     분기실적 카드는 `시총 = 현재가 × 주식수` 로 자체계산해 1.00배였다.
 
-    계약: (a) 시총이 현재가 × 발행주식수와 2% 넘게 어긋나면 그 곱으로
-    재계산하고 사유를 남긴다 (b) 비-KR TTM 매출은 **카드가 쓰는 같은
-    시리즈**(`series_from_yfinance`)로 만든다 — 규칙을 복제하지 않는다(#38).
+    계약: (a) `price_consistent_mcap` 헬퍼 — 시총이 현재가 × 발행주식수와
+    2% 넘게 어긋나면 그 곱으로 재계산하고 사유를 남긴다. ⚠️ #256(사용자
+    2026-08-27 "미국도 전 클래스로")로 적용 범위가 **이중상장(HK/CN_A)
+    오버레이 경로**로 줄었다 — 미국 등은 원천(전 클래스) 시총 유지
+    (b) 비-KR TTM 매출은 **카드가 쓰는 같은 시리즈**(`series_from_yfinance`)
+    로 만든다 — 규칙을 복제하지 않는다(#38).
     """
 
     SH = 1_202_110_951
@@ -40295,6 +40322,8 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
         return si
 
     def test_stale_mcap_is_recalculated_from_price(self):
+        """헬퍼 자체의 계약 — #256 이후 이 재계산은 **이중상장(HK/CN_A)
+        오버레이 경로만** 쓴다(미국 등은 전 클래스 원천 유지)."""
         from bot.dashboard import price_consistent_mcap as f
         mc, note = f(38.59, 57.25e9, self.SH)
         assert abs(mc - 38.59 * self.SH) < 1.0, mc
@@ -40313,16 +40342,21 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
         assert f(38.59, 57.25e9, None) == (57.25e9, "")
         assert f(0, 57.25e9, self.SH) == (57.25e9, "")
 
-    def test_non_kr_psr_matches_the_card(self):
-        """밸류에이션 PSR = 시총(현재가 기준) ÷ TTM 매출 — 카드와 같은 값."""
+    def test_non_kr_psr_uses_the_all_class_mcap(self):
+        """#256(사용자 2026-08-27 "미국도 전 클래스로") 로 다시 쓴 계약 —
+        옛 판은 시총을 현재가 × 상장주식수(46.39B)로 갈아끼워 PSR 1.00 을
+        기대했다(#254, 두 탭 정렬이 목적). 이제 분기실적 카드도 같은 스냅샷
+        시총을 쓰므로 정렬은 유지되고, PSR 은 **원천(전 클래스) 시총** ÷
+        화면의 TTM 매출이다 — 야후 자신의 PSR(1.23)과도 정합이다(야후
+        EPS·순이익이 전 클래스 분모라 급이 맞는 쪽은 전 클래스 시총이다).
+        파생부가 시총을 재계산하는 뮤테이션이 여기서 잡힌다."""
         from bot.dashboard import _derive_missing_multiples as d
         out = d(self._si())
         ttm = (11.0 + 11.5 + 11.6 + 12.3) * 1e9
         assert abs(out["priceToSalesTrailing12Months"]
-                   - 38.59 * self.SH / ttm) < 1e-6, out
-        assert round(out["priceToSalesTrailing12Months"], 2) == 1.00
-        assert (out.get("_restated") or {}).get(
-            "priceToSalesTrailing12Months") == 1.23, out.get("_restated")
+                   - 57.25e9 / ttm) < 1e-6, out
+        assert out["market_cap"] == 57.25e9, "시총을 갈아끼우면 안 된다(#256)"
+        assert "market_cap_note" not in out, out.get("market_cap_note")
 
     def test_per_and_pbr_stay_price_over_screen_denominator(self):
         """⚠️ 시총을 갈아끼워도 PER·PBR 은 현재가 ÷ 화면 분모다(#33)."""
@@ -40357,8 +40391,9 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
                    for n in ast.walk(tree)), src[:300]
 
     def test_the_overlay_applies_the_same_invariant(self):
-        """⚠️ 서버만 고치면 라이브 오버레이가 낡은 시총으로 되돌린다(#199).
-        `build_live_quote` 도 **같은 헬퍼**를 부른다."""
+        """⚠️ 서버만 고치면 라이브 오버레이가 다른 시총으로 되돌린다(#199).
+        `build_live_quote` 도 **같은 헬퍼**를 부른다 — #256 이후 그 한
+        번의 호출은 이중상장(HK/CN_A) 분기에 산다."""
         import ast
         import inspect
         import bot.dashboard as d
@@ -40370,26 +40405,30 @@ class TestPriceConsistentMcapAndNonKrPsr20260827:
 
 
 class TestOverlayMcapWorksWithoutArchive20260827:
-    """사용자 2026-08-27 NKE 2차: "이거 맞는거야? 시총이랑 기타 다른것들...
-    현재가로 말이야... 예전에 한번 돌려서 그게 Fix 된거라서 그런거야?"
-    — 헤더 시총이 $57.25B 인 채 각주만 "거래 클래스 기준 재계산"이라 값이
-    자기 각주를 뒤집었다(#33·#55).
+    """같은 날 두 라운드의 계약을 담는다 — 옛 계약은 지우지 않고 다시
+    썼다(#222).
 
-    원인(#255): 라이브 오버레이의 시총 불변식이 주식수를 **분석 아카이브
-    에서만** 읽어(#35 화면과 다른 저장소), 검색으로만 본(분석 이력 없는)
-    종목은 None → `price_consistent_mcap` 이 조용히 no-op → 야후의 전 클래스
-    시총이 서버가 재계산한 $46.39B 를 되덮었다. 옛 회귀는 헬퍼를 **부르는지**
-    (AST)만 봐서 빈 재료로 부르는 no-op 을 못 잡았다(#120 배선은 존재가
-    아니라 결과).
+    1차(#255, 사용자 "이거 맞는거야? …예전에 한번 돌려서 그게 Fix 된거라서
+    그런거야?"): 오버레이의 시총 처리가 주식수를 **분석 아카이브에서만**
+    읽어(#35) 검색으로만 본 종목은 조용히 no-op — 같은 .info 응답의
+    sharesOutstanding 이 폴백이 됐다.
 
-    계약: (a) 저장 스냅샷에 주식수가 없으면 비-KR 은 **같은 .info 응답의
-    sharesOutstanding**(화면 발행주식수 카드와 같은 원천)로 폴백해 재계산
-    (b) 저장 스냅샷 주식수(등록 주식수 우선 처리 완료분)가 있으면 그게 우선
-    (c) KR 은 폴백하지 않는다 — 등록 주식수가 기준이고 yfinance 주식수가
-    낡는 실측(#190)이 있으며, 네이버 국내 시총은 이미 단일 클래스다.
+    2차(#256, 사용자 "야후나 구글도 전 클래스로 보여주지? 맞으면 미국도
+    전 클래스로 해줘"): 미국(비-KR·비이중상장)의 기준이 **원천(전 클래스)
+    시총**으로 뒤집혔다 — 야후·구글이 그 값이고, 야후 EPS·순이익도 전
+    클래스 분모라 배수의 급이 맞는 쪽이다. 재계산 대신 원천 모집단을
+    유지한 채 **현재가 배율로만** 따라간다. 거래 클래스 재계산(#255 의
+    폴백 포함)은 이중상장(HK/CN_A, 사용자 2026-08-24 BYD "H주로")에만
+    남는다.
+
+    계약: (a) US = 야후 시총 그대로(전 클래스), 현재가가 .info 가격과
+    다르면 배율로만 추종 (b) HK/CN_A = 현재가 × 발행주식수(저장 스냅샷 →
+    같은 .info sharesOutstanding 폴백) (c) KR = 네이버 국내 시총
+    그대로(#190).
     """
 
     SH = 1_202_110_951
+    HK_SH = 3_683_400_000
 
     @staticmethod
     def _yf_stub(info):
@@ -40407,14 +40446,15 @@ class TestOverlayMcapWorksWithoutArchive20260827:
         m.Ticker = T
         return m
 
-    def _light(self, monkeypatch, ticker, info, stored=None, nq=None):
+    def _light(self, monkeypatch, ticker, info, stored=None, nq=None, wq=None):
         import sys
 
         import bot.dashboard as d
         monkeypatch.setitem(sys.modules, "yfinance", self._yf_stub(info))
         monkeypatch.setattr(d, "_load_stored_stock_info", lambda t: stored)
         import bot.world_quote as wqm
-        monkeypatch.setattr(wqm, "fetch_world_quote", lambda t: None)
+        monkeypatch.setattr(wqm, "fetch_world_quote",
+                            lambda t: dict(wq) if wq else None)
         if nq is not None:
             import bot.naver_finance_client as nfc
             import bot.naver_quote as nqm
@@ -40422,34 +40462,59 @@ class TestOverlayMcapWorksWithoutArchive20260827:
             monkeypatch.setattr(nfc, "get_naver_valuation", lambda t: {})
         return d.build_live_quote(ticker)
 
-    def test_never_analyzed_ticker_still_gets_the_invariant(self, monkeypatch):
-        """아카이브 없음 + 야후 전 클래스 시총 → 같은 .info 의 상장주식수로
-        재계산(현재 결함의 재현 — 폴백을 지우면 $57.25B 가 그대로 남는다)."""
+    def test_us_keeps_the_all_class_source_mcap(self, monkeypatch):
+        """#256: 미국은 야후 시총(전 클래스)이 그대로 산다 — 현재가 ×
+        상장주식수(46.39B)로 갈아끼우던 옛 계약(#254/#255)의 반전.
+        재계산을 되살리는 뮤테이션이 여기서 잡힌다."""
         import bot.dashboard as d
         out = self._light(monkeypatch, "NKE", {
             "currency": "USD", "currentPrice": 38.59, "marketCap": 57.25e9,
             "sharesOutstanding": self.SH,
             "trailingEps": 2.05, "bookValue": 10.02})
-        want = d._fmt_mcap(38.59 * self.SH, "$", "USD")
-        assert out and out["fmt"].get("mcap") == want, out and out["fmt"]
-        assert out["fmt"]["mcap"] != d._fmt_mcap(57.25e9, "$", "USD")
+        assert out["fmt"]["mcap"] == d._fmt_mcap(57.25e9, "$", "USD"), \
+            out["fmt"]
+        assert out["fmt"]["mcap"] != d._fmt_mcap(38.59 * self.SH, "$", "USD")
 
-    def test_stored_registry_shares_win_over_live_info_shares(self, monkeypatch):
-        """저장 스냅샷(등록 주식수 처리 완료분)이 있으면 그게 화면의 발행
-        주식수 카드다 — 라이브 .info 주식수가 우선하면 안 된다."""
+    def test_us_mcap_follows_live_price_by_ratio(self, monkeypatch):
+        """현재가가 라이브(네이버 해외)로 갈리면 시총은 원천 모집단을 유지한
+        채 **배율만** 따라간다 — .info 의 시총·가격은 같은 응답이라 그
+        비율이 곧 모집단이다. 배율 추종을 지우는 뮤테이션이 잡힌다."""
         import bot.dashboard as d
         out = self._light(monkeypatch, "NKE", {
             "currency": "USD", "currentPrice": 38.59, "marketCap": 57.25e9,
             "sharesOutstanding": self.SH},
-            stored={"shares_outstanding": 1.0e9})
-        assert out["fmt"]["mcap"] == d._fmt_mcap(38.59 * 1.0e9, "$", "USD"), \
+            wq={"price": 40.00, "source": "네이버 해외"})
+        want = 57.25e9 * 40.00 / 38.59
+        assert out["fmt"]["mcap"] == d._fmt_mcap(want, "$", "USD"), out["fmt"]
+        assert out["meta"]["source"] == "네이버 해외"
+
+    def test_hk_dual_listing_still_recomputes_to_traded_class(self, monkeypatch):
+        """이중상장은 #224 그대로 거래 클래스 — 분석 이력이 없어도 같은
+        .info 의 sharesOutstanding 폴백으로 재계산된다(#255 의 폴백이 이
+        경로에 산다)."""
+        import bot.dashboard as d
+        out = self._light(monkeypatch, "1211.HK", {
+            "currency": "HKD", "currentPrice": 93.0, "marketCap": 847.9e9,
+            "sharesOutstanding": self.HK_SH})
+        want = 93.0 * self.HK_SH
+        assert out["fmt"]["mcap"] == d._fmt_mcap(want, "HK$", "HKD"), \
             out["fmt"]
-        assert out["fmt"]["mcap"] != d._fmt_mcap(38.59 * self.SH, "$", "USD")
+        assert out["fmt"]["mcap"] != d._fmt_mcap(847.9e9, "HK$", "HKD")
+
+    def test_hk_stored_snapshot_shares_win(self, monkeypatch):
+        """저장 스냅샷(등록 주식수 우선 처리 완료분)이 있으면 그게 화면의
+        발행주식수 카드다 — 라이브 .info 주식수가 우선하면 안 된다."""
+        import bot.dashboard as d
+        out = self._light(monkeypatch, "1211.HK", {
+            "currency": "HKD", "currentPrice": 93.0, "marketCap": 847.9e9,
+            "sharesOutstanding": self.HK_SH},
+            stored={"shares_outstanding": 3.0e9})
+        assert out["fmt"]["mcap"] == d._fmt_mcap(93.0 * 3.0e9, "HK$", "HKD"), \
+            out["fmt"]
 
     def test_kr_does_not_recompute_naver_mcap_with_yf_shares(self, monkeypatch):
         """KR: 네이버 국내 시총(단일 클래스·장중 라이브)은 그대로 둔다 —
-        yfinance 주식수는 낡는다(#190 서희건설 실측). 폴백 게이트를 지우는
-        뮤테이션이 여기서 잡힌다."""
+        yfinance 주식수는 낡는다(#190 서희건설 실측)."""
         import bot.dashboard as d
         naver_mc = 418e12
         out = self._light(monkeypatch, "005930.KS", {
