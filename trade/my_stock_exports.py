@@ -54,6 +54,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trade import badonion_metrics as _metrics
 from trade.archive_template import (asof_footer, back_nav_html,
                                     card_html, max_ingest_iso)
 
@@ -98,11 +99,6 @@ _RE_PRICE_YOY = re.compile(
 # 그 줄이 _SKIP_LINE 에 없어 **품목 설명**으로도 새어나갔다.
 # 접두 유무로 가르는 `_RE_EXP_YOY_ANY` 와 같은 관용구를 쓴다. 접두 없는 맨
 # `상관` 은 어느 계열인지 알 수 없으므로 **받지 않는다**(추측 저장 금지).
-_RE_CORR_ANY = re.compile(
-    r"(?:(?P<lead>(?:\d+Q\s*)?선행)|(?P<coin>동시))\s*상관"
-    r"\s*:?\s*(?P<v>[+\-]?\d+(?:\.\d+)?)")
-_RE_DIRHIT_ANY = re.compile(
-    r"(?P<lead>선행\s*)?방향\s*일치율\s*:?\s*(?P<v>\d+(?:\.\d+)?)\s*%")
 # 관련 매출 — 원문 줄 그대로 보존('- CY26Q2 매출 $5.46B(+22.8% YoY)').
 _RE_REVENUE = re.compile(r"^[^\S\n]*[-•*][^\S\n]*(?P<r>[^\n]*매출[^\n]*)$", re.M)
 # 본문 각주("* …") — 해석에 필수인 경고라 버리지 않고 싣는다.
@@ -173,28 +169,11 @@ def parse_my_stock_export(caption: str) -> dict | None:
         elif exp_yoy is None:
             exp_yoy = v
     # 상관·방향일치율 — 접두(선행) 유무로 계열을 가른다. 접두 없는 것이 동시.
-    corr = lead_corr = None
-    for mo in _RE_CORR_ANY.finditer(seg):
-        try:
-            v = float(mo.group("v"))
-        except ValueError:
-            continue
-        if mo.group("lead"):
-            if lead_corr is None:
-                lead_corr = v
-        elif corr is None:
-            corr = v
-    dir_hit = lead_dir_hit = None
-    for mo in _RE_DIRHIT_ANY.finditer(seg):
-        try:
-            v = float(mo.group("v"))
-        except ValueError:
-            continue
-        if mo.group("lead"):
-            if lead_dir_hit is None:
-                lead_dir_hit = v
-        elif dir_hit is None:
-            dir_hit = v
+    # 상관·방향일치율 — 접두(선행) 유무로 계열을 가른다. 판정은
+    # `badonion_metrics` 단일 출처(복제하면 나라마다 갈라진다, #38·#84).
+    _cf = _metrics.parse_corr_fields(seg)
+    corr, dir_hit = _cf["corr"], _cf["dir_hit"]
+    lead_corr, lead_dir_hit = _cf["lead_corr"], _cf["lead_dir_hit"]
     rev = _RE_REVENUE.search(seg)
     notes = [n.strip() for n in _RE_NOTE.findall(seg) if n.strip()]
     return {
