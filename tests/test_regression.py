@@ -39858,6 +39858,87 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestAuditSeveritySplit20260828:
+    """사용자 2026-08-28 일일 감사: "❌ 2건" 이 전날 실측으로 **원천 미게시**
+    로 확정된 ECOS 한국 수출/수입이었다(#257 — 총건수 = 수신건수 · TIME 당
+    1행이라 절단 없음). 감사의 ❌ 는 **우리가 고칠 수 있는 것**만 가리켜야
+    하는데(#182) 원천 지연과 수집 실패가 같은 기호라, 매일 오는 못 고칠
+    ❌ 가 진짜 ❌ 를 가린다(#260).
+
+    계약: (a) 1주기 뒤짐 = 원천 공표 지연 → ⚠️(사람 확인 버킷) (b) 2주기
+    이상 = 시리즈 코드 폐지·개편 의심 → ❌ 유지(#151·#27) (c) 어느 쪽이든
+    **뒤처진 사실과 폭은 항상 말한다**(#41 여유로 사실을 덮지 말 것)
+    (d) sweep 의 결함 계수는 ⚠️ 를 안 세고 ❌ 만 센다(#38 두 모듈 한 계약).
+    """
+
+    @staticmethod
+    def _j(behind, freq="M", expected="2026-07-31"):
+        return {"freq": freq, "lag": 20, "why": "관세청 통관 확정 익월 15일 전후",
+                "actual": "2026-06-30", "expected": expected,
+                "behind": behind, "stale": behind > 0}
+
+    def test_one_period_behind_is_source_lag_not_our_defect(self):
+        from bot.scripts.macro_staleness_audit import stale_verdict
+        bucket, text = stale_verdict(self._j(1))
+        assert bucket == "src_lag", (bucket, text)
+        assert text.startswith("⚠️") and "❌" not in text, text
+
+    def test_two_periods_behind_stays_our_defect(self):
+        """⚠️ 전부 ⚠️ 로 내리면 죽은 시리즈 코드를 영원히 못 본다 — 반대
+        증거(#25)."""
+        from bot.scripts.macro_staleness_audit import stale_verdict
+        bucket, text = stale_verdict(self._j(2))
+        assert bucket == "late", (bucket, text)
+        assert text.startswith("❌") and "의심" in text, text
+
+    def test_both_verdicts_still_state_the_lagging_fact(self):
+        """#41: 기호는 바뀌어도 **뒤처진 사실과 폭**은 사라지면 안 된다."""
+        from bot.scripts.macro_staleness_audit import stale_verdict
+        for behind in (1, 3):
+            _b, text = stale_verdict(self._j(behind))
+            assert "2026-07-31" in text, text
+            assert f"{behind}개월 뒤짐" in text, text
+
+    def test_sweep_counts_our_defect_only(self):
+        """두 모듈이 한 계약을 나눠 갖는다(#38) — ⚠️ 는 사람 확인 버킷이라
+        sweep 의 ❌ 계수에 들어가면 안 된다."""
+        from bot.audit_sweep import _findings
+        from bot.scripts.macro_staleness_audit import stale_verdict
+        _b1, warn = stale_verdict(self._j(1))
+        _b2, bad = stale_verdict(self._j(2))
+        out = ("── 발표지표 신선도\n"
+               f"  한국 수출  ecos:export_amt  관측 202606  {warn}\n"
+               f"  한국 수입  ecos:import_amt  관측 202606  {bad}\n")
+        got = _findings(out)
+        assert len(got) == 1, got
+        assert "한국 수입" in got[0] and "한국 수출" not in got[0], got
+
+    def test_audit_wires_the_split_and_counts_it(self):
+        """배선은 존재가 아니라 호출·집계다(#120)."""
+        import ast
+        import inspect
+
+        import bot.scripts.macro_staleness_audit as m
+        tree = ast.parse(inspect.getsource(m.main))
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "stale_verdict"]
+        assert calls, "main 이 판정 함수를 부르지 않는다"
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        assert "src_lag" in names, "새 버킷이 집계되지 않는다"
+        # ⚠️ 선언·집계만 보면 **배분을 지우는 변형**이 통과한다(#91b) —
+        # 실제로 src_lag 에 담기는 append 가 있는지까지 본다.
+        appends = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                   and isinstance(n.func, ast.Attribute)
+                   and n.func.attr == "append"]
+        assert any(any(getattr(x, "id", "") == "src_lag"
+                       for x in ast.walk(a.func.value)) for a in appends), \
+            "원천 지연이 그 버킷에 담기지 않는다"
+        # 요약이 항목을 **다시 나열**하면 같은 건이 두 번 세어진다(#45).
+        loops = [t.id for n in ast.walk(tree) if isinstance(n, ast.For)
+                 for t in ast.walk(n.iter) if isinstance(t, ast.Name)]
+        assert "src_lag" not in loops, "요약이 원천 지연을 다시 나열한다(#45)"
+
+
 class TestMultiSplitEpsReconcile20260827:
     """사용자 2026-08-27 NVDA 밴드 표: "분할이 제대로 안먹힌것 같은데...우리
     이거 이미 몇번 잡지 않았어?" + "중간에 없는 기간이 엄청 많네" (#259).

@@ -81,6 +81,33 @@ def _treasury_status(mo) -> None:
               else "재무부에 더 새 관측 없음(또는 겹치는 날 불일치로 거부)"))
 
 
+def stale_verdict(j: dict) -> tuple[str, str]:
+    """지연 판정 → (버킷, 화면 문구). 버킷 = "src_lag" | "late".
+
+    ⚠️ 왜 갈래가 필요한가(2026-08-27~28 ECOS 한국 수출/수입, #260): 원천
+    (ECOS 901Y118)이 202607 을 아직 안 실어 카드가 202606 에 멈췄는데 감사가
+    매일 ❌ 를 찍었다. VM 프로브(`bok_ecos_client --check`)가 총건수 = 수신
+    건수 · TIME 당 1행으로 **절단 없음 = 원천 미게시**를 확정했는데도(#257)
+    감사는 '우리 수집 실패'와 같은 기호를 썼다 — ❌ 는 **고칠 수 있는 것**만
+    가리켜야 한다(#182). 매일 오는 못 고칠 ❌ 는 진짜 ❌ 를 가린다.
+
+    판정 근거: 관측을 **받았고**(비었으면 위에서 ❗) 조회창(FRED/ECOS 400일+)
+    이 기대 기간을 덮는데도 원천이 그 기간을 안 주면, 그건 원천 미게시다.
+    ⚠️ 단 **1주기까지만** 그렇게 본다 — 2주기 이상 뒤진 건 시리즈 코드가
+    폐지·개편돼 우리가 죽은 계열을 보고 있을 수 있다(#151 죽은 이름 ·
+    #27 형제 설정 누락). 그건 우리가 고칠 것이므로 ❌ 로 남는다.
+    ⚠️ 어느 쪽이든 **뒤처진 사실과 그 폭은 항상 말한다**(#41 감사는 여유로
+    사실을 덮지 말 것) — 바뀌는 건 기호와 집계 버킷이지 사실이 아니다.
+    """
+    unit = {"M": "개월", "Q": "분기", "W": "주"}.get(j["freq"], "일")
+    tail = f"{j['expected']} 까지 나왔어야 함 ({j['behind']}{unit} 뒤짐)"
+    if j["behind"] <= 1:
+        return "src_lag", (f"⚠️ 원천 공표 지연 — {tail} · 관측은 받았고 "
+                           f"조회창도 그 기간을 덮어 원천 미게시로 봄")
+    return "late", (f"❌ 지연 의심 — {tail} · 2주기 이상이라 시리즈 코드 "
+                    f"폐지·개편(우리 설정) 의심")
+
+
 def main() -> int:
     from bot.macro_cadence import (CADENCE, GRACE_DAYS, _CADENCE_VER, judge)
     from bot.env_keys import env_source
@@ -111,6 +138,7 @@ def main() -> int:
             rows.append(("글로벌 스냅샷", label, f"fred:{sid}"))
 
     late: list[str] = []
+    src_lag: list[str] = []
     unknown: list[str] = []
     for surface, label, key in rows:
         src, sid = key.split(":", 1)
@@ -151,10 +179,9 @@ def main() -> int:
             verdict = "❗ 관측 라벨 판독 실패"
             late.append(f"{label}(라벨 {raw})")
         elif j["stale"]:
-            unit = {"M": "개월", "Q": "분기", "W": "주"}.get(j["freq"], "일")
-            verdict = (f"❌ 지연 의심 — {j['expected']} 까지 나왔어야 함 "
-                       f"({j['behind']}{unit} 뒤짐)")
-            late.append(f"{label} {raw} (기대 {j['expected']})")
+            bucket, verdict = stale_verdict(j)
+            (src_lag if bucket == "src_lag" else late).append(
+                f"{label} {raw} (기대 {j['expected']})")
         else:
             verdict = "✅ 정상"
         _p(f"  {label:<18} {key:<28} 관측 {raw:<12} "
@@ -166,7 +193,7 @@ def main() -> int:
     _treasury_status(mo)
     _p("")
     _p(f"── 요약: 대상 {len(rows)}개 · 지연 의심 {len(late)}개 · "
-       f"규약 없음 {len(unknown)}개")
+       f"원천 공표 지연 {len(src_lag)}개 · 규약 없음 {len(unknown)}개")
     # ⚠️ **요약이 항목을 다시 나열하면 같은 결함이 두 번 세어진다.** 위 표가
     # 이미 지연 항목마다 ❌ 한 줄씩 찍는데 여기서 또 찍어, sweep 의 '❌ N건'
     # 이 정확히 두 배가 됐다(2026-08-26 실측: 실제 2건 → 4건, #45 같은
@@ -174,10 +201,14 @@ def main() -> int:
     # 댄다. ⚪(판정 불가)는 위 표에 ❌ 로 안 찍히므로 여기 남긴다.
     for s in unknown:
         _p(f"   ⚪ {s}")
+    if src_lag:
+        # ⚠️ 사실은 위 표가 이미 폭까지 말했다(#41) — 여기선 **처방**만.
+        _p("   (⚠️ 원천 공표 지연은 우리가 고칠 게 없다 — 원천이 실으면 "
+           "다음 수집에서 자동 반영된다)")
     if late or unknown:
         # ⚠️ "판정 불가"를 "정상"으로 요약하지 않는다 — 그게 오보의 씨앗이다.
         _p("   (⚪ 는 판정을 못 한 것이지 정상이 아니다)")
-    else:
+    elif not src_lag:
         _p("   전부 통상 공표 일정 안쪽 — 늦게 보이는 건 원천 공표지연이다.")
     return 0
 
