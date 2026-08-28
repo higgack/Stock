@@ -90,15 +90,19 @@ class ParseTests(unittest.TestCase):
         ):
             self.assertIsNone(jps.parse_jp_stock_export(bad), repr(bad[:40]))
 
-    def test_header_must_be_one_line(self):
-        # `\\s` 는 개행을 먹는다 — 회사명과 티커가 **다른 줄**인 무관 조합이
-        # 통과하면 빈 행이 저장되고, is_relevant 가 미매칭 알림까지 눌러
-        # 조용한 유실이 된다(독립 리뷰 실측).
+    def test_name_and_ticker_must_share_a_line(self):
+        # 2026-08-28 계약 갱신(#222 옛 회귀는 지우지 말고 다시 쓴다). 옛 이름은
+        # `test_header_must_be_one_line` 이었고 **헤더 전체**가 한 줄이어야
+        # 한다고 못박았는데, 원천이 7월분부터 3줄로 바꿨다:
+        #     Kioxia Holdings (285A) / 일본 수출 / 26년 7월 Update
+        # 그 계약 탓에 7월분이 통째로 드랍됐다(사용자 2026-08-28, #261).
+        # 남는 진짜 계약은 **이름과 티커가 같은 줄**이라는 것 — 개행을 먹으면
+        # 무관 조합이 통과해 빈 행이 저장되고 미매칭 알림까지 눌린다.
         self.assertIsNone(jps.parse_jp_stock_export(
             "어떤회사\n(ABCD) 일본 수출 Update\n26년 6월\n\n수출액: YoY +1.0%"))
-        self.assertIsNone(jps.parse_jp_stock_export(
-            "어떤회사 (ABCD)\n일본 수출 Update\n26년 6월\n\n수출액: YoY +1.0%"))
-        # 정상(한 줄)은 그대로 통과해야 한다
+        # 원천이 실제로 쓰는 두 레이아웃은 **둘 다** 통과해야 한다
+        self.assertIsNotNone(jps.parse_jp_stock_export(
+            "어떤회사 (ABCD)\n일본 수출\n26년 7월 Update\n\n수출액 YoY: +1.0%"))
         self.assertIsNotNone(jps.parse_jp_stock_export(
             "어떤회사 (ABCD) 일본 수출 Update\n26년 6월\n\n수출액: YoY +1.0%"))
 
