@@ -186,6 +186,8 @@ def parse_my_stock_export(caption: str) -> dict | None:
         "price_yoy": _f(_RE_PRICE_YOY, seg),
         "corr": corr,
         "dir_hit": dir_hit,
+        # 접두 없이 온 값의 계열을 밝힌다 — 동시라고 단정하지 않는다(#262).
+        "corr_basis": _cf["corr_basis"],
         "lead_corr": lead_corr,
         "lead_dir_hit": lead_dir_hit,
         "parse_ver": _PARSE_VER,
@@ -201,7 +203,7 @@ CREATE TABLE IF NOT EXISTS my_stock_exports (
   stock_name TEXT,
   item TEXT,
   export_yoy REAL, export_yoy_3m REAL, price_yoy REAL,
-  corr REAL, dir_hit REAL,
+  corr REAL, dir_hit REAL, corr_basis TEXT,
   lead_corr REAL, lead_dir_hit REAL,
   parse_ver INTEGER,
   revenue TEXT,
@@ -216,7 +218,8 @@ CREATE TABLE IF NOT EXISTS my_stock_exports (
 """
 
 _COLS = ("ticker", "month", "stock_name", "item", "export_yoy",
-         "export_yoy_3m", "price_yoy", "corr", "dir_hit", "lead_corr",
+         "export_yoy_3m", "price_yoy", "corr", "dir_hit", "corr_basis",
+         "lead_corr",
          "lead_dir_hit", "revenue", "note", "chart_media",
          "source_message_id", "posted_at", "raw_text", "updated_at",
          "parse_ver")
@@ -225,7 +228,8 @@ _COLS = ("ticker", "month", "stock_name", "item", "export_yoy",
 # 옛 버전으로 구운 값을 버릴 때 이 목록만 비운다 — chart_media·raw_text 처럼
 # 파싱 산물이 아닌 것은 보존해야 한다.
 _DERIVED = ("stock_name", "item", "export_yoy", "export_yoy_3m", "price_yoy",
-            "corr", "dir_hit", "lead_corr", "lead_dir_hit", "revenue", "note")
+            "corr", "dir_hit", "corr_basis", "lead_corr", "lead_dir_hit",
+            "revenue", "note")
 
 
 def open_my_stock_db(path: str | Path) -> sqlite3.Connection:
@@ -238,8 +242,8 @@ def open_my_stock_db(path: str | Path) -> sqlite3.Connection:
     # 기존 테이블을 손대지 않으므로, 이게 없으면 배포 후 첫 쓰기가 터진다.
     have = {r["name"] for r in
             conn.execute("PRAGMA table_info(my_stock_exports)")}
-    for col, decl in (("lead_corr", "REAL"), ("lead_dir_hit", "REAL"),
-                      ("parse_ver", "INTEGER")):
+    for col, decl in (list(_metrics.FIELD_TYPES.items())
+                      + [("parse_ver", "INTEGER")]):
         if col not in have:
             conn.execute(
                 f"ALTER TABLE my_stock_exports ADD COLUMN {col} {decl}")
@@ -430,7 +434,12 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
     # 계열을 라벨에 박는다 — 둘을 같은 이름으로 내면 정의가 섞인다(#34).
-    summary.append(_level("🔗 동시상관", r.get("corr")))
+    # ⚠️ 접두 없이 온 상관은 동시라고 단정하지 않는다 — 화면이 '계열
+    # 미표기' 라고 밝힌다(#262·#43).
+    _cb = r.get("corr_basis")
+    _sfx = _metrics.basis_suffix(_cb)
+    summary.append(_level(("🔗 상관" if _cb == "미표기" else "🔗 동시상관")
+                          + _sfx, r.get("corr")))
     summary.append(_level("🎯 방향 일치율", r.get("dir_hit"), "%", 0))
     summary.append(_level("🔗 선행상관", r.get("lead_corr")))
     summary.append(_level("🎯 선행 방향 일치율", r.get("lead_dir_hit"), "%", 0))

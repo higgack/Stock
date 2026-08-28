@@ -198,6 +198,8 @@ def parse(caption: str, flow: Flow) -> dict | None:
         "price_yoy": _f(_RE_PRICE_YOY, seg),
         "corr": corr,
         "dir_hit": dir_hit,
+        # 접두 없이 온 값의 계열을 밝힌다 — 동시라고 단정하지 않는다(#262).
+        "corr_basis": _cf["corr_basis"],
         "lead_corr": lead_corr,
         "lead_dir_hit": lead_dir_hit,
         "parse_ver": PARSE_VER,
@@ -208,7 +210,8 @@ def parse(caption: str, flow: Flow) -> dict | None:
 
 
 COLS = ("ticker", "month", "stock_name", "item", "amount_yoy",
-        "amount_yoy_3m", "price_yoy", "corr", "dir_hit", "lead_corr",
+        "amount_yoy_3m", "price_yoy", "corr", "dir_hit", "corr_basis",
+        "lead_corr",
         "lead_dir_hit", "revenue", "comment", "note", "chart_media",
         "source_message_id", "posted_at", "raw_text", "updated_at",
         "parse_ver")
@@ -217,7 +220,8 @@ COLS = ("ticker", "month", "stock_name", "item", "amount_yoy",
 # 으로 구운 값을 버릴 때 이 목록만 비운다 — chart_media·raw_text 처럼
 # 파싱 산물이 아닌 것은 보존해야 한다.
 _DERIVED = ("stock_name", "item", "amount_yoy", "amount_yoy_3m", "price_yoy",
-            "corr", "dir_hit", "lead_corr", "lead_dir_hit", "revenue",
+            "corr", "dir_hit", "corr_basis", "lead_corr", "lead_dir_hit",
+            "revenue",
             "comment", "note")
 
 
@@ -229,7 +233,7 @@ CREATE TABLE IF NOT EXISTS {table} (
   stock_name TEXT,
   item TEXT,
   amount_yoy REAL, amount_yoy_3m REAL, price_yoy REAL,
-  corr REAL, dir_hit REAL,
+  corr REAL, dir_hit REAL, corr_basis TEXT,
   lead_corr REAL, lead_dir_hit REAL,
   parse_ver INTEGER,
   revenue TEXT,
@@ -455,7 +459,12 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
     summary.append(_metric(f"📊 3M {flow.amount}", r.get("amount_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
     # 계열을 라벨에 박는다 — 둘을 같은 이름으로 내면 정의가 섞인다(#34).
-    summary.append(_level("🔗 동시상관", r.get("corr")))
+    # ⚠️ 접두 없이 온 상관은 동시라고 단정하지 않는다 — 화면이 '계열
+    # 미표기' 라고 밝힌다(#262·#43).
+    _cb = r.get("corr_basis")
+    _sfx = _metrics.basis_suffix(_cb)
+    summary.append(_level(("🔗 상관" if _cb == "미표기" else "🔗 동시상관")
+                          + _sfx, r.get("corr")))
     summary.append(_level("🎯 방향 일치율", r.get("dir_hit"), "%", 0))
     summary.append(_level("🔗 선행상관", r.get("lead_corr")))
     summary.append(_level("🎯 선행 방향 일치율", r.get("lead_dir_hit"), "%", 0))

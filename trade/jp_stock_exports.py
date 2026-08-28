@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS jp_stock_exports (
   stock_name TEXT,
   item TEXT,
   export_yoy REAL, export_yoy_3m REAL, price_yoy REAL,
-  corr REAL, dir_hit REAL,
+  corr REAL, dir_hit REAL, corr_basis TEXT,
   lead_corr REAL, lead_dir_hit REAL,
   note TEXT,
   chart_media TEXT,
@@ -200,10 +200,10 @@ def open_jp_stock_db(path: str | Path) -> sqlite3.Connection:
     # (my_stock_exports 와 같은 규약).
     have = {r["name"] for r in
             conn.execute("PRAGMA table_info(jp_stock_exports)")}
-    for col in _metrics.FIELDS:
+    for col, decl in _metrics.FIELD_TYPES.items():
         if col not in have:
             conn.execute(
-                f"ALTER TABLE jp_stock_exports ADD COLUMN {col} REAL")
+                f"ALTER TABLE jp_stock_exports ADD COLUMN {col} {decl}")
     return conn
 
 
@@ -371,9 +371,14 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
     # 수준값(상관 -1~1 · 일치율 %)은 부호·화살표 없이(#39) — 형제 보드와
     # 같은 라벨·같은 자릿수를 쓴다(#38 화면끼리 갈라지면 안 된다).
-    summary.append(_metrics.level_html("🔗 동시상관", r.get("corr")))
+    # ⚠️ 원천이 접두 없이 보내는 캡션이 있다(`상관: 0.98`) — 그때는 동시라고
+    # 단정하지 말고 **계열 미표기**라고 적는다(#262 추측 저장 금지 · #43).
+    _cb = r.get("corr_basis")
+    summary.append(_metrics.level_html("🔗 상관" if _cb == "미표기"
+                                       else "🔗 동시상관", r.get("corr"),
+                                       basis=_cb))
     summary.append(_metrics.level_html("🎯 방향 일치율", r.get("dir_hit"),
-                                       "%", 0))
+                                       "%", 0, basis=_cb))
     summary.append(_metrics.level_html("🔮 선행상관", r.get("lead_corr")))
     summary.append(_metrics.level_html("🎯 선행 방향 일치율",
                                        r.get("lead_dir_hit"), "%", 0))

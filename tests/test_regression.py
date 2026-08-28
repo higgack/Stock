@@ -39858,6 +39858,102 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestUnlabeledCorrSeries20260829:
+    """VM 실측(사용자 2026-08-29): 회수한 7월 8건 중 ROHM·Tokyo Electron 만
+    `방향 일치율 100%` 만 덩그러니 뜨고 상관이 비었다. 원문을 찍어 보니
+    원천이 **접두 없이** 보낸 것이었다:
+
+        상관: 0.98
+        방향 일치율: 100%
+
+    공용 파서가 비대칭이라 그렇게 됐다 — 상관은 접두(동시/선행)를 요구해
+    거부하는데 방향 일치율은 접두 없이도 받아 **반쪽만 저장**됐다.
+    ⚠️ 접두 없는 값을 동시로 단정하면 안 된다: my_stock 에서 그게 실제로
+    **선행값이었던** 실측이 있다(#262 추측 저장 금지). 그렇다고 버리면
+    원천이 준 값이 영원히 빈다(#171).
+    답은 **싣되 계열을 밝히는 것**(#43·#55): 값은 저장하고 `corr_basis` 가
+    '동시'/'선행'/'미표기' 를 말하며 화면이 그대로 적는다.
+
+    ⚠️ 짝 추론은 **추측이 아니라 원문 구조**다 — Kioxia 캡션은
+    `동시상관: 0.96` + 접두 없는 `방향 일치율: 89%` 라, 그 일치율은 정의상
+    동시다(경쟁 계열이 없다). 그 규칙으로 기존 값이 안 바뀌는지도 고정한다.
+    """
+
+    ROHM = ("ROHM (6963)\n일본 수출\n26년 7월 Update\n\n"
+            "수출액 YoY: +5.0%\n\n상관: 0.98\n방향 일치율: 100%\n")
+    KIOXIA = ("Kioxia Holdings (285A)\n일본 수출\n26년 7월 Update\n\n"
+              "수출액 YoY: +104.5%\n\n동시상관: 0.96\n방향 일치율: 89%\n")
+    LEAD = ("HPSP (403870)\n한국 수출\n26년 7월 Update\n\n"
+            "수출액 YoY: +1.0%\n\n1Q 선행상관: 0.70\n선행 방향 일치율: 80%\n")
+
+    def test_unlabeled_pair_is_kept_and_marked(self):
+        from trade.jp_stock_exports import parse_jp_stock_export as P
+        g = P(self.ROHM)
+        assert g["corr"] == 0.98, g          # 버리지 않는다(#171)
+        assert g["dir_hit"] == 100.0, g
+        assert g["corr_basis"] == "미표기", g  # 동시라고 단정하지 않는다(#262)
+
+    def test_explicit_coincident_still_wins(self):
+        from trade.jp_stock_exports import parse_jp_stock_export as P
+        g = P(self.KIOXIA)
+        assert (g["corr"], g["dir_hit"]) == (0.96, 89.0), g
+        assert g["corr_basis"] == "동시", g
+
+    def test_bare_dir_hit_follows_the_lead_only_caption(self):
+        """접두 없는 일치율인데 캡션에 **선행 상관만** 있으면 그 계열이다 —
+        동시 칸에 넣으면 없는 계열을 지어내는 것이다."""
+        from trade.badonion_metrics import parse_corr_fields as F
+        g = F("1Q 선행상관: 0.70\n방향 일치율: 80%")
+        assert g["lead_dir_hit"] == 80.0, g
+        assert g["dir_hit"] is None, g
+
+    def test_explicit_lead_pair_unchanged(self):
+        from trade.kr_stock_exports import parse_kr_stock_export as P
+        g = P(self.LEAD)
+        assert (g["lead_corr"], g["lead_dir_hit"]) == (0.70, 80.0), g
+        assert g["corr"] is None and g["corr_basis"] is None, g
+
+    def test_every_board_stores_and_shows_the_basis(self):
+        """레지스트리 전수 — 컬럼·적재·화면이 한 세트다(#262)."""
+        import inspect
+        import tempfile
+        from pathlib import Path
+
+        from trade import badonion_metrics as m
+        from trade.badonion_sources import SOURCES
+        bad = []
+        with tempfile.TemporaryDirectory() as td:
+            for src in SOURCES:
+                if src.basis != "company":
+                    continue
+                flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+                tkr = "005930" if src.key == "krs" else "ABCD"
+                cap = (f"어떤회사 ({tkr})\n{src.country} {flow}\n"
+                       f"26년 7월 Update\n\n{flow}액 YoY: +1.0%\n\n"
+                       f"상관: 0.98\n방향 일치율: 100%\n")
+                conn = src.open_db(Path(td) / src.db_file)
+                tbl = next(r[0] for r in conn.execute(
+                    "select name from sqlite_master where type='table' "
+                    "and name not like 'sqlite_%'"))
+                src.ingest(conn, cap, source_message_id=1,
+                           posted_at="2026-07-01T00:00:00", media_paths=[])
+                row = conn.execute(
+                    f"select corr, dir_hit, corr_basis from {tbl}").fetchone()
+                if tuple(row or ()) != (0.98, 100.0, "미표기"):
+                    bad.append(f"{src.key} 저장 {tuple(row) if row else None}")
+                conn.close()
+                # ⚠️ 카드 함수를 소스로 찾으면 어댑터(중국)에는 없다 —
+                # **생성된 화면**을 보는 게 배선까지 태우는 검사다(#20).
+                out = Path(td) / f"{src.key}.html"
+                src.regenerate(Path(td) / src.db_file, out,
+                               media_url_prefix="/m/")
+                html = out.read_text(encoding="utf-8")
+                if "계열 미표기" not in html:
+                    bad.append(f"{src.key} 화면이 계열을 안 밝힌다")
+        assert not bad, bad
+        assert "corr_basis" in m.FIELDS, m.FIELDS
+
+
 class TestStockBoardCorrMetrics20260829:
     """사용자 2026-08-29: "필요하시면 일본에도 붙이겠습니다 → 진행, 그리고
     이게 좋은거면 다른나라나 보드쪽도 해줘."
@@ -39897,21 +39993,31 @@ class TestStockBoardCorrMetrics20260829:
             for k, v in want.items():
                 if got.get(k) != v:
                     bad.append(f"{src.key}.{k}={got.get(k)!r} (기대 {v})")
-            assert set(m.FIELDS) == set(want), m.FIELDS
+            # ⚠️ 2026-08-29 갱신: 계열 표기 필드(corr_basis)가 늘었다 —
+            # 값 4개는 그대로고 **어느 계열인지**를 같이 싣는다(#222).
+            assert set(want) < set(m.FIELDS), m.FIELDS
+            assert "corr_basis" in m.FIELDS
         assert not bad, bad
 
-    def test_bare_correlation_is_refused_everywhere(self):
-        """⚠️ 접두 없는 `상관` 을 받으면 선행값이 동시 칸에 앉는다 — 값이
-        틀린 채로 조용히 저장되는 부류라 반대 증거로 고정한다(#25)."""
+    def test_bare_correlation_is_never_claimed_as_coincident(self):
+        """⚠️ 2026-08-29 계약 갱신(#222). 옛 이름은
+        `test_bare_correlation_is_refused_everywhere` 였고 접두 없는 `상관` 을
+        **버리는** 것이 계약이었다. VM 실측에서 원천이 실제로 접두 없이
+        보내는 게 확인돼(ROHM·Tokyo Electron `상관: 0.98`) 버리면 원천이 준
+        값이 영원히 빈다(#171). 이제 **싣되 계열을 밝힌다** — 남는 진짜
+        계약은 '동시라고 단정하지 않는다'(#262)."""
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
             if src.basis != "company":
                 continue
             got = src.parse(self._cap(src, "상관: 0.55\n")) or {}
-            if got.get("corr") is not None or got.get("lead_corr") is not None:
-                bad.append(f"{src.key} corr={got.get('corr')!r} "
-                           f"lead={got.get('lead_corr')!r}")
+            if got.get("corr") != 0.55:
+                bad.append(f"{src.key} 값 유실 corr={got.get('corr')!r}")
+            if got.get("corr_basis") != "미표기":
+                bad.append(f"{src.key} 계열 단정 {got.get('corr_basis')!r}")
+            if got.get("lead_corr") is not None:
+                bad.append(f"{src.key} 선행 칸 오염 {got.get('lead_corr')!r}")
         assert not bad, bad
 
     def test_boards_have_columns_for_what_they_parse(self):

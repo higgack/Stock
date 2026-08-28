@@ -209,12 +209,32 @@ class LeadVsCoincidentTests20260820(unittest.TestCase):
         for cap in (_LEAD_CAP, _COIN_CAP):
             self.assertIsNone(mys.parse_my_stock_export(cap)["item"], cap[:20])
 
-    def test_bare_correlation_is_not_guessed(self):
-        """접두 없는 맨 `상관` 은 어느 계열인지 모르므로 받지 않는다."""
+    def test_bare_correlation_is_kept_but_not_claimed_coincident(self):
+        """접두 없는 맨 `상관` — **버리지 않고** 계열만 '미표기'로 밝힌다.
+
+        ⚠️ 계약 정정(2026-08-29, #222 로 옛 계약을 다시 씀). 옛 테스트는
+        `test_bare_correlation_is_not_guessed` 로 "받지 않는다"를 못박고
+        있었다. VM 실측이 그 전제를 반증했다 — 원천이 실제로 접두 없이
+        보낸다(ROHM 6963 · Tokyo Electron 8035 의 7월분이 `상관: 0.98` /
+        `방향 일치율: 100%`). 버리면 그 종목의 상관 칸이 **영원히 빈다**
+        (#171 가드가 '못 만든다'로 끝나면 그 자리가 영원히 비는지 먼저
+        물을 것).
+
+        지키는 것은 그대로다: **선행 칸을 오염시키지 않고**, 동시라고
+        **단정하지도 않는다**(#165) — 값은 싣고 화면이 '(계열 미표기)'라고
+        말한다(#43).
+        """
         cap = _COIN_CAP.replace("동시상관: 0.67", "상관: 0.67")
         r = mys.parse_my_stock_export(cap)
-        self.assertIsNone(r["corr"])
-        self.assertIsNone(r["lead_corr"])
+        self.assertEqual(r["corr"], 0.67)          # 버리지 않는다
+        self.assertEqual(r["corr_basis"], "미표기")  # 동시라고 단정하지 않는다
+        self.assertIsNone(r["lead_corr"], "미표기 상관이 선행 칸을 오염시킴")
+        self.assertIsNone(r["lead_dir_hit"])
+        # 화면이 그 사실을 말한다 — 계산만 하고 안 보여주면 없는 것과 같다.
+        html = mys._card_html(dict(ticker="ADI", stock_name="Analog Devices",
+                                   month="2026-07", corr=0.67,
+                                   corr_basis="미표기"), [], "../media/")
+        self.assertIn("계열 미표기", html)
 
     def test_page_guide_explains_both_series(self):
         """카드에 두 계열이 나오는데 안내문이 한쪽만 설명하면 사용자는 왜
