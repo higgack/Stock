@@ -39858,6 +39858,108 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestBooleanParamsAreKeywordOnly20260828:
+    """Fabien Sanglard `agent.md`(2026-08-28 사용자 공유) 채택분 — "Use enums
+    instead of booleans for function parameters".
+
+    파이썬에서 그 규칙의 값어치는 **호출부 가독성**이고, enum 대신
+    keyword-only 로 같은 효과를 얻는다: `should_trim(True, True)` 는 무엇의
+    스위치인지 안 보이고, `should_trim(splits_known=True, reverted=True)` 는
+    정의를 안 열어도 읽힌다. 어제 만든 그 함수가 실제 위반이었다.
+
+    ⚠️ **프롬프트 규칙 대신 회귀로 못박는다** — 확정적으로 잡히는 것을
+    확률적 지시에 맡기는 건 낭비다(원문 커뮤니티 지적, 우리 #24·#59·#210·
+    #214 가 이미 그 방식). 기존 13건은 allowlist 로 두고 **새로 생기는 것만**
+    잡는다 — 무관한 코드를 건드리지 않는 것도 같은 글의 규칙이다.
+    """
+
+    # (파일, 함수) — 이 글을 읽기 전부터 있던 것. 줄이는 건 각자의 작업에서.
+    ALLOW = {
+        ("bot/akshare_client.py", "format_akshare_cn_block"),
+        ("bot/highlow_render.py", "stock_panel"),
+        ("bot/highlow_render.py", "_enrich_compute"),
+        ("bot/highlow_render.py", "_enrich_incomplete"),
+        ("bot/highlow_render.py", "_kick_enrich"),
+        ("bot/highlow_render.py", "enrich_for_panel"),
+        ("bot/chart_data.py", "_series_payload"),
+        ("bot/chart_data.py", "fetch_chart_payload"),
+        ("bot/dashboard.py", "build_live_quote"),
+        ("bot/twse_client.py", "_tw_all_common"),
+        ("bot/scripts/dart_mcap_audit.py", "_mark"),
+        ("bot/scripts/feed_boards_audit.py", "_mark"),
+        ("bot/scripts/kr_metrics_probe.py", "_reexec_target"),
+    }
+
+    @staticmethod
+    def _positional_bools(fn):
+        import ast
+        pos = fn.args.posonlyargs + fn.args.args
+        defaults = dict(zip([a.arg for a in pos[len(pos) - len(fn.args.defaults):]],
+                            fn.args.defaults))
+        n = 0
+        for a in pos:
+            ann = getattr(a.annotation, "id", "") if a.annotation else ""
+            d = defaults.get(a.arg)
+            if ann == "bool" or (isinstance(d, ast.Constant)
+                                 and isinstance(d.value, bool)):
+                n += 1
+        return n
+
+    def test_new_functions_do_not_take_two_positional_booleans(self):
+        import ast
+        import pathlib
+        bad = []
+        for p in (list(pathlib.Path("bot").rglob("*.py"))
+                  + list(pathlib.Path("trade").rglob("*.py"))):
+            if "tests" in p.parts or "__pycache__" in p.parts:
+                continue
+            try:
+                tree = ast.parse(p.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            for n in ast.walk(tree):
+                if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if self._positional_bools(n) >= 2 \
+                        and (str(p), n.name) not in self.ALLOW:
+                    bad.append(f"{p}:{n.lineno} {n.name}")
+        assert not bad, ("불리언 파라미터가 둘 이상이면 keyword-only(`*`)로 — "
+                         f"호출부에서 뜻이 안 보인다: {bad}")
+
+    def test_the_allowlist_still_describes_reality(self):
+        """⚠️ allowlist 는 **누가 갱신하나**를 먼저 답해야 한다(#24). 항목이
+        사라졌는데 남아 있으면 가드가 그만큼 눈이 먼 것이므로 여기서 잡는다."""
+        import ast
+        import pathlib
+        stale = []
+        for path, name in self.ALLOW:
+            p = pathlib.Path(path)
+            if not p.exists():
+                stale.append(f"{path}(파일 없음)")
+                continue
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+            fns = [n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and n.name == name]
+            if not fns:
+                stale.append(f"{path}:{name}(함수 없음)")
+            elif all(self._positional_bools(f) < 2 for f in fns):
+                stale.append(f"{path}:{name}(이미 고쳐짐 — allowlist 에서 뺄 것)")
+        assert not stale, stale
+
+    def test_should_trim_reads_at_the_call_site(self):
+        """채택을 실제로 적용한 자리 — 값으로 고정한다(#20 배선은 태워야)."""
+        import inspect
+
+        from bot.per_band import should_trim
+        assert should_trim(splits_known=True, reverted=True) is True
+        assert should_trim(splits_known=True, reverted=False) is False
+        assert should_trim(splits_known=False, reverted=False) is True
+        sig = inspect.signature(should_trim)
+        assert all(p.kind is inspect.Parameter.KEYWORD_ONLY
+                   for p in sig.parameters.values()), sig
+
+
 class TestAuditSeveritySplit20260828:
     """사용자 2026-08-28 일일 감사: "❌ 2건" 이 전날 실측으로 **원천 미게시**
     로 확정된 ECOS 한국 수출/수입이었다(#257 — 총건수 = 수신건수 · TIME 당
@@ -40041,9 +40143,9 @@ class TestMultiSplitEpsReconcile20260827:
         out, st = reconcile_eps_splits(rows, [("2024-06-10", 10.0)])
         assert st["reverted"], st
         assert dict(out) == dict(rows), "값을 바꾸면 안 된다"
-        assert should_trim(True, True) is True
-        assert should_trim(True, False) is False      # 아는 날 + 정합 OK = 실적
-        assert should_trim(False, False) is True      # 모르면 안전망 유지
+        assert should_trim(splits_known=True, reverted=True) is True
+        assert should_trim(splits_known=True, reverted=False) is False      # 아는 날 + 정합 OK = 실적
+        assert should_trim(splits_known=False, reverted=False) is True      # 모르면 안전망 유지
 
     def test_for_ticker_wires_refill_and_trim_decision(self):
         """배선은 존재가 아니라 호출(#120) — for_ticker 가 refill 결과를
