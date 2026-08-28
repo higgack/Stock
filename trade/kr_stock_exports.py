@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
   month TEXT NOT NULL DEFAULT '',
   stock_name TEXT,
   price_yoy REAL, export_yoy REAL, export_yoy_3m REAL,
-  corr REAL, dir_hit REAL,
+  corr REAL, dir_hit REAL, corr_basis TEXT,
   lead_corr REAL, lead_dir_hit REAL,
   rev_quarter TEXT, rev_value_krw_b REAL, rev_yoy REAL,
   chart_media TEXT,
@@ -166,10 +166,10 @@ def open_kr_stock_db(path: str | Path) -> sqlite3.Connection:
     # 손대지 않아, 이게 없으면 배포 후 첫 쓰기가 터진다(형제와 같은 규약).
     have = {r["name"] for r in
             conn.execute("PRAGMA table_info(kr_stock_exports)")}
-    for col in _metrics.FIELDS:
+    for col, decl in _metrics.FIELD_TYPES.items():
         if col not in have:
             conn.execute(
-                f"ALTER TABLE kr_stock_exports ADD COLUMN {col} REAL")
+                f"ALTER TABLE kr_stock_exports ADD COLUMN {col} {decl}")
     return conn
 
 
@@ -324,10 +324,15 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
     coin = []
+    _cb = r.get("corr_basis")
+    _sfx = _metrics.basis_suffix(_cb)
     if r.get("corr") is not None:
-        coin.append(f"동시상관 {r['corr']:.2f}")
+        _lb = "상관" if _cb == "미표기" else "동시상관"
+        coin.append(f"{_lb} {r['corr']:.2f}")
     if r.get("dir_hit") is not None:
         coin.append(f"방향 일치율 {r['dir_hit']:.0f}%")
+    if coin and _sfx:
+        coin.append(_sfx)
     if coin:
         summary.append(f'<div class="kr-lead">🔗 {" · ".join(coin)}</div>')
     lead = []

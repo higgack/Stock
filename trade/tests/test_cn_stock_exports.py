@@ -82,11 +82,25 @@ class ParseTests(unittest.TestCase):
                                       _TTM.split("\n", 1)[1])
         self.assertEqual(d["ticker"], "TTMI")
 
-    def test_bare_correlation_is_not_guessed(self):
-        """접두 없는 맨 `상관` 은 어느 계열인지 모른다 — 추측 저장 금지."""
+    def test_bare_correlation_is_kept_but_not_claimed_coincident(self):
+        """접두 없는 맨 `상관` — 버리지 않고 계열만 '미표기'로 밝힌다.
+
+        ⚠️ 계약 정정(2026-08-29, #222). 옛 이름은
+        `test_bare_correlation_is_not_guessed` 였고 "받지 않는다"를 못박고
+        있었다 — VM 실측이 그 전제를 반증했다(원천이 실제로 접두 없이
+        보낸다: ROHM 6963 · Tokyo Electron 8035 7월분). 버리면 그 자리가
+        영원히 빈다(#171). 지키는 것은 그대로 — 선행 칸 오염 금지 + 동시라고
+        단정 금지(#165).
+        """
         cap = _TTM.replace("동시상관: 0.74", "상관: 0.74")
         d = cns.parse_cn_stock_export(cap)
-        self.assertIsNone(d["corr"])
+        self.assertEqual(d["corr"], 0.74)
+        self.assertEqual(d["corr_basis"], "미표기")
+        # 이 픽스처엔 선행 계열도 함께 온다 — 미표기 값이 그 칸을 밀어내면
+        # 안 된다(선행은 자기 값 0.85 를 그대로 지킨다).
+        self.assertEqual(d["lead_corr"], 0.85, "미표기 상관이 선행 칸을 덮었다")
+        self.assertEqual(d["dir_hit"], 87.0)
+        self.assertEqual(d["lead_dir_hit"], 93.0)
 
     def test_metrics_do_not_leak_across_companies(self):
         """한 메시지에 두 회사가 담기면 A 카드에 B 값이 섞이면 안 된다.
