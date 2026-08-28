@@ -39858,6 +39858,144 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestJpStockHeaderLayout20260828:
+    """사용자 2026-08-28: "나쁜양파에 일본종목 7월 수출입 올라왔는데 우리쪽으로
+    전달 안 되는 것 같은데" (Kioxia 285A · SanDisk SNDK 캡처).
+
+    재현(#Pre-commit 9 — 재현 테스트 먼저): 7월분 캡션의 헤더가 **세 줄**로
+    바뀌었다.
+        Kioxia Holdings (285A)      ← 이름·티커
+        일본 수출                    ← 나라·흐름
+        26년 7월 Update             ← 연월 + Update
+    일본 파서는 `이름 (티커) 일본 수출 Update` **한 줄**만 받아 매칭이 통째로
+    실패했고, 이 파서가 곧 리스너의 **관련성 필터**라 저장도 미매칭 알림도
+    없이 조용히 드랍됐다(#83 과 같은 사고 — 이번이 다섯 번째 형식 변주다).
+
+    ⚠️ 형제 대조가 원인을 확정했다: 한국(krs)은 처음부터 3줄, 말레이시아
+    (mys)·중국(cns/cni)은 **양쪽 다** 받는데 일본만 옛 1줄 고정이었다
+    (#27 형제 설정 불일치). 그래서 계약을 **레지스트리 전수**로 못박는다 —
+    이름 열거는 다음에 붙는 나라를 못 잡는다(#24), 그리고 확정적으로 잡히는
+    규칙은 프롬프트가 아니라 회귀다(2026-08-28 채택).
+    """
+
+    NEW = """Kioxia Holdings (285A)
+일본 수출
+26년 7월 Update
+
+단가 YoY: +126.9%
+수출액 YoY: +104.5%
+3M 수출액 YoY: +103.3%
+
+동시상관: 0.96
+방향 일치율: 89%
+
+- AI 추론용 데이터센터·엔터프라이즈 SSD 비중 확대와 10세대 BiCS 샘플 출하가 진행 중입니다.
+
+https://badonion.co.kr/trade/mapping"""
+
+    OLD = """Lumentum (LITE) 일본 수출 Update
+26년 6월
+
+EML·DML·CW 레이저소자
+
+수출액: YoY +446.7% 🔻
+3M 수출액: YoY +537.3% 🔺
+단가: YoY +367.5% 🔺"""
+
+    def test_july_three_line_header_is_parsed(self):
+        from trade.jp_stock_exports import parse_jp_stock_export as P
+        got = P(self.NEW)
+        assert got, "7월 캡션이 드랍된다 — 관련성 필터를 통과 못 함"
+        assert got["ticker"] == "285A", got
+        assert got["stock_name"] == "Kioxia Holdings", got
+        assert got["month"].startswith("2026-07"), got
+        assert abs(got["price_yoy"] - 126.9) < 1e-9, got
+        assert abs(got["export_yoy"] - 104.5) < 1e-9, got
+        assert abs(got["export_yoy_3m"] - 103.3) < 1e-9, got
+        # ⚠️ 새 템플릿이 들여온 `동시상관`·`방향 일치율` 이 **품목 슬롯**을
+        # 차지하면 카드에 `동시상관: 0.96` 이 품목으로 실린다(형제는 이미
+        # 걸러내고 있었다, #27). 코멘트 마커도 `*` → `-` 로 바뀌었다.
+        assert got["item"] is None, got["item"]
+        assert got["note"] and got["note"].startswith("AI 추론용"), got["note"]
+
+    def test_old_one_line_header_still_parsed(self):
+        """⚠️ 새 형식을 받으려다 옛 형식을 깨면 6월 이전이 통째로 드랍된다."""
+        from trade.jp_stock_exports import parse_jp_stock_export as P
+        got = P(self.OLD)
+        assert got and got["ticker"] == "LITE", got
+        assert got["month"].startswith("2026-06"), got
+
+    def test_other_country_caption_is_not_claimed(self):
+        """⚠️ 이 파서가 곧 관련성 필터다 — 넓히다 남의 나라를 먹으면 그
+        소스가 조용히 이 DB 로 샌다(#83 의 반대 방향 사고)."""
+        from trade.jp_stock_exports import parse_jp_stock_export as P
+        assert P(self.NEW.replace("일본 수출", "말레이시아 수출")) is None
+        assert P(self.NEW.replace("일본 수출", "중국 수입")) is None
+
+    def test_every_stock_board_accepts_both_layouts(self):
+        """레지스트리 전수(#24) — 종목(회사) 기준 소스는 **둘 다** 받아야
+        한다. 새 나라가 붙어도 이 계약이 따라간다."""
+        from trade.badonion_sources import SOURCES
+        bad = []
+        for src in SOURCES:
+            if src.basis != "company":
+                continue
+            flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+            tkr = "005930" if src.key == "krs" else "ABCD"
+            three = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
+                     f"{flow}액 YoY: +10.0%\n단가 YoY: +5.0%")
+            one = (f"어떤회사 ({tkr}) {src.country} {flow} Update\n26년 7월\n\n"
+                   f"{flow}액 YoY: +10.0%\n단가 YoY: +5.0%")
+            for layout, cap in (("3줄", three), ("1줄", one)):
+                if not src.parse(cap):
+                    bad.append(f"{src.key}({src.label}) {layout} 미매칭")
+        assert not bad, bad
+
+    def test_new_fields_do_not_pollute_the_item_slot(self):
+        """원천이 지표를 추가하면(`동시상관`·`방향 일치율`) 품목 슬롯이 그걸
+        집는다 — 레지스트리 전수로 막는다(일본이 실제로 그랬다)."""
+        from trade.badonion_sources import SOURCES
+        bad = []
+        for src in SOURCES:
+            if src.basis != "company":
+                continue
+            flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+            tkr = "005930" if src.key == "krs" else "ABCD"
+            cap = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
+                   f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n"
+                   f"동시상관: 0.96\n방향 일치율: 89%\n")
+            got = src.parse(cap) or {}
+            if got.get("item"):
+                bad.append(f"{src.key} item={got['item']!r}")
+        assert not bad, bad
+
+    def test_note_marker_accepts_both_star_and_dash(self):
+        """각주는 '합산하지 마라' 같은 **해석에 필수인 경고**를 싣는다. 원천이
+        마커를 `*` → `-` 로 바꾸며 네 보드가 한꺼번에 잃었다(실측) — 둘 다
+        받는지 전수로 고정한다. `note` 키가 없는 소스(krs)는 계약 대상이
+        아니다(#50 원천이 보장하지 않는 규칙을 단언하지 말 것)."""
+        from trade.badonion_sources import SOURCES
+        bad = []
+        for src in SOURCES:
+            if src.basis != "company":
+                continue
+            flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+            tkr = "005930" if src.key == "krs" else "ABCD"
+            base = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
+                    f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n")
+            probe = src.parse(base + "* 합산하지 않습니다.\n") or {}
+            if "note" not in probe:
+                continue                      # 각주를 안 싣는 소스
+            for marker in ("*", "-"):
+                got = src.parse(base + f"{marker} 합산하지 않습니다.\n") or {}
+                if not got.get("note"):
+                    bad.append(f"{src.key} {marker!r} 각주 유실")
+            # ⚠️ 마커 뒤 공백 필수 — 강조 표기가 각주로 승격되면 안 된다
+            if (src.parse(base + "*중요* 문구\n") or {}).get("note"):
+                bad.append(f"{src.key} 강조표기를 각주로 오인")
+        assert not bad, bad
+
+
 class TestBooleanParamsAreKeywordOnly20260828:
     """Fabien Sanglard `agent.md`(2026-08-28 사용자 공유) 채택분 — "Use enums
     instead of booleans for function parameters".
