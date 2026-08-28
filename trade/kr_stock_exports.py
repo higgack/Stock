@@ -32,6 +32,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from trade import badonion_metrics as _metrics
 from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
 
@@ -59,8 +60,6 @@ _RE_PRICE_YOY = re.compile(r"단가\s*YoY\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%", re.
 # 걸렀는데 공백이 없는 '3M수출액' 을 못 막아 두 값이 같아졌다(독립 리뷰).
 _RE_EXP_YOY_ANY = re.compile(
     r"(?P<pfx>\d+M)?\s*수출액\s*YoY\s*:?\s*(?P<v>[+\-]?\d+(?:\.\d+)?)\s*%", re.I)
-_RE_LEAD_CORR = re.compile(r"선행\s*상관\s*:?\s*([+\-]?\d+(?:\.\d+)?)")
-_RE_LEAD_HIT = re.compile(r"선행\s*방향\s*일치율\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%")
 # "- CY26Q2 매출 ₩29.9B(-20.6% YoY)" — 여러 분기가 올 수 있어 finditer.
 _RE_REV = re.compile(
     r"(CY\d{2}Q\d)\s*매출\s*₩?\s*([\d,]+(?:\.\d+)?)\s*B"
@@ -122,8 +121,10 @@ def parse_kr_stock_export(caption: str) -> dict | None:
         "price_yoy": _f(_RE_PRICE_YOY, text),
         "export_yoy": exp_yoy,
         "export_yoy_3m": exp_yoy_3m,
-        "lead_corr": _f(_RE_LEAD_CORR, text),
-        "lead_dir_hit": _f(_RE_LEAD_HIT, text),
+        # 상관·방향 일치율 — 옛 판은 **선행 쌍만** 받아, 원천이 2026-08 에
+        # 실은 `동시상관`·`방향 일치율` 이 통째로 버려졌다(형제 my·cn 은
+        # 둘 다 받고 있었다, #27). 공용 파서 하나로 모은다(#38·#84).
+        **_metrics.parse_corr_fields(text),
         "rev_quarter": revs[0]["quarter"] if revs else None,
         "rev_value_krw_b": revs[0]["value_krw_b"] if revs else None,
         "rev_yoy": revs[0]["yoy"] if revs else None,
@@ -136,6 +137,7 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
   month TEXT NOT NULL DEFAULT '',
   stock_name TEXT,
   price_yoy REAL, export_yoy REAL, export_yoy_3m REAL,
+  corr REAL, dir_hit REAL,
   lead_corr REAL, lead_dir_hit REAL,
   rev_quarter TEXT, rev_value_krw_b REAL, rev_yoy REAL,
   chart_media TEXT,
@@ -148,7 +150,8 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
 """
 
 _COLS = ("stock_code", "month", "stock_name", "price_yoy", "export_yoy",
-         "export_yoy_3m", "lead_corr", "lead_dir_hit", "rev_quarter",
+         "export_yoy_3m") + _metrics.FIELDS + (
+         "rev_quarter",
          "rev_value_krw_b", "rev_yoy", "chart_media", "source_message_id",
          "posted_at", "raw_text", "updated_at")
 
@@ -159,6 +162,14 @@ def open_kr_stock_db(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    # 기존 DB 에 컬럼 추가 — CREATE TABLE IF NOT EXISTS 는 기존 테이블을
+    # 손대지 않아, 이게 없으면 배포 후 첫 쓰기가 터진다(형제와 같은 규약).
+    have = {r["name"] for r in
+            conn.execute("PRAGMA table_info(kr_stock_exports)")}
+    for col in _metrics.FIELDS:
+        if col not in have:
+            conn.execute(
+                f"ALTER TABLE kr_stock_exports ADD COLUMN {col} REAL")
     return conn
 
 
@@ -312,13 +323,22 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     summary.append(_metric("💰 수출액 YoY", r.get("export_yoy")))
     summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
+    coin = []
+    if r.get("corr") is not None:
+        coin.append(f"동시상관 {r['corr']:.2f}")
+    if r.get("dir_hit") is not None:
+        coin.append(f"방향 일치율 {r['dir_hit']:.0f}%")
+    if coin:
+        summary.append(f'<div class="kr-lead">🔗 {" · ".join(coin)}</div>')
     lead = []
     if r.get("lead_corr") is not None:
         lead.append(f"선행상관 {r['lead_corr']:.2f}")
     if r.get("lead_dir_hit") is not None:
-        lead.append(f"방향 일치율 {r['lead_dir_hit']:.0f}%")
+        # ⚠️ '방향 일치율' 로만 적으면 위 동시 지표와 **같은 이름**이 된다
+        # (#34 같은 주제어면 라벨에 기준을 박을 것).
+        lead.append(f"선행 방향 일치율 {r['lead_dir_hit']:.0f}%")
     if lead:
-        summary.append(f'<div class="kr-lead">🔗 {" · ".join(lead)}</div>')
+        summary.append(f'<div class="kr-lead">🔮 {" · ".join(lead)}</div>')
     if r.get("rev_quarter") and r.get("rev_value_krw_b") is not None:
         summary.append(
             f'<div class="kr-rev">🧾 {_html.escape(r["rev_quarter"])} 매출 '

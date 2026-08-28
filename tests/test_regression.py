@@ -39858,6 +39858,173 @@ class TestAuditCountsRealDefectsOnly20260826:
         assert 'for s in unknown:' in seg, "판정 불가(⚪)는 요약에만 있으므로 남겨야"
 
 
+class TestStockBoardCorrMetrics20260829:
+    """사용자 2026-08-29: "필요하시면 일본에도 붙이겠습니다 → 진행, 그리고
+    이게 좋은거면 다른나라나 보드쪽도 해줘."
+
+    원천이 종목판에 `동시상관`·`방향 일치율`(+ 선행 쌍)을 싣는데 보드마다
+    수용 범위가 갈려 있었다(실측): mys·cns·cni 는 4개 전부, **krs 는 선행
+    쌍만, jps 는 아예 없음**. 같은 정규식이 두 모듈에 복제돼 있었던 게
+    그 드리프트의 뿌리라(#38·#84 "복제 대신 엔진을 나눠라"), 판정을
+    `trade/badonion_metrics.py` **한 벌**로 모으고 네 보드가 그걸 쓴다.
+
+    계약: (a) 종목 기준 소스는 네 지표를 **전부** 받는다 (b) 접두 없는 맨
+    `상관` 은 어느 계열인지 모르므로 **받지 않는다**(추측 저장 금지 — my_stock
+    이 그렇게 선행값을 동시 칸에 흘린 실측이 있다) (c) 저장 컬럼이 있어야
+    적재가 안 터진다 (d) 화면 라벨이 동시/선행을 구분한다(#34).
+    """
+
+    CAP_TAIL = ("동시상관: 0.96\n방향 일치율: 89%\n"
+                "1Q 선행상관: 0.71\n선행 방향 일치율: 83%\n")
+
+    @staticmethod
+    def _cap(src, tail):
+        flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+        tkr = "005930" if src.key == "krs" else "ABCD"
+        return (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
+                f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n" + tail)
+
+    def test_every_stock_board_parses_all_four(self):
+        from trade import badonion_metrics as m
+        from trade.badonion_sources import SOURCES
+        bad = []
+        for src in SOURCES:
+            if src.basis != "company":
+                continue
+            got = src.parse(self._cap(src, self.CAP_TAIL)) or {}
+            want = {"corr": 0.96, "dir_hit": 89.0,
+                    "lead_corr": 0.71, "lead_dir_hit": 83.0}
+            for k, v in want.items():
+                if got.get(k) != v:
+                    bad.append(f"{src.key}.{k}={got.get(k)!r} (기대 {v})")
+            assert set(m.FIELDS) == set(want), m.FIELDS
+        assert not bad, bad
+
+    def test_bare_correlation_is_refused_everywhere(self):
+        """⚠️ 접두 없는 `상관` 을 받으면 선행값이 동시 칸에 앉는다 — 값이
+        틀린 채로 조용히 저장되는 부류라 반대 증거로 고정한다(#25)."""
+        from trade.badonion_sources import SOURCES
+        bad = []
+        for src in SOURCES:
+            if src.basis != "company":
+                continue
+            got = src.parse(self._cap(src, "상관: 0.55\n")) or {}
+            if got.get("corr") is not None or got.get("lead_corr") is not None:
+                bad.append(f"{src.key} corr={got.get('corr')!r} "
+                           f"lead={got.get('lead_corr')!r}")
+        assert not bad, bad
+
+    def test_boards_have_columns_for_what_they_parse(self):
+        """파싱만 하고 컬럼이 없으면 **적재가 터진다** — 스키마까지 전수로
+        본다(마이그레이션 포함: 옛 DB 에 컬럼을 더하는 경로)."""
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        from trade import badonion_metrics as m
+        from trade.badonion_sources import SOURCES
+        bad = []
+        with tempfile.TemporaryDirectory() as td:
+            for src in SOURCES:
+                if src.basis != "company":
+                    continue
+                conn = src.open_db(Path(td) / src.db_file)
+                tbl = next(r[0] for r in conn.execute(
+                    "select name from sqlite_master where type='table' "
+                    "and name not like 'sqlite_%'"))
+                have = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")}
+                missing = [c for c in m.FIELDS if c not in have]
+                if missing:
+                    bad.append(f"{src.key}({tbl}) 컬럼 없음 {missing}")
+                # 실제 적재까지 태운다 — 컬럼만 있고 배선이 빠져도 잡힌다(#20)
+                cap = self._cap(src, self.CAP_TAIL)
+                src.ingest(conn, cap, source_message_id=1,
+                           posted_at="2026-07-01T00:00:00", media_paths=[])
+                row = conn.execute(
+                    f"select corr, dir_hit, lead_corr, lead_dir_hit "
+                    f"from {tbl}").fetchone()
+                if not row or row[0] != 0.96 or row[2] != 0.71:
+                    bad.append(f"{src.key} 저장값 {tuple(row) if row else None}")
+                conn.close()
+        assert not bad, bad
+
+    def test_migration_adds_columns_to_an_old_db(self):
+        """⚠️ CREATE TABLE IF NOT EXISTS 는 기존 테이블을 안 건드린다 —
+        마이그레이션이 없으면 **배포 후 첫 쓰기가 터진다**. 옛 스키마를
+        만들어 실제로 태운다."""
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        from trade import badonion_metrics as m
+        from trade import jp_stock_exports as jps
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "jp_stock.db"
+            old = sqlite3.connect(str(path))
+            old.execute("CREATE TABLE jp_stock_exports (ticker TEXT NOT NULL, "
+                        "month TEXT NOT NULL DEFAULT '', stock_name TEXT)")
+            old.commit()
+            old.close()
+            conn = jps.open_jp_stock_db(path)
+            have = {r[1] for r in
+                    conn.execute("PRAGMA table_info(jp_stock_exports)")}
+            assert set(m.FIELDS) <= have, sorted(have)
+
+    def test_card_labels_separate_lead_from_coincident(self):
+        """같은 주제어(방향 일치율)가 두 계열에 있으므로 라벨에 기준을
+        박는다 — 옛 한국 카드는 선행 일치율을 '방향 일치율'로만 적었다(#34)."""
+        import inspect
+
+        from trade import jp_stock_exports as jps
+        from trade import kr_stock_exports as krs
+        for mod in (jps, krs):
+            src = inspect.getsource(mod._card_html)
+            assert "동시상관" in src, mod.__name__
+            assert "선행 방향 일치율" in src, mod.__name__
+
+    def test_metrics_parser_is_the_single_source(self):
+        """복제가 다시 생기면 나라마다 갈라진다 — 종목판 모듈은 자체 상관
+        정규식을 갖지 않는다(#38·#84). 새 나라가 붙어도 이 검사가 따라간다."""
+        import importlib
+        import pathlib
+        import re as _re
+        bad = []
+        scanned = []
+        for p in sorted(pathlib.Path("trade").glob("*.py")):
+            if p.name in ("badonion_metrics.py", "__init__.py"):
+                continue
+            try:
+                mod = importlib.import_module(f"trade.{p.stem}")
+            except Exception:
+                continue        # 선택 의존성 미설치(telegram 등) — 아래서 계수
+            scanned.append(p.stem)
+            for name, obj in vars(mod).items():
+                if not isinstance(obj, _re.Pattern):
+                    continue
+                # ⚠️ 문자열로 `상관` 을 찾으면 **건너뛰기 목록**(_SKIP_LINE)의
+                # 낱말까지 걸린다 — 실제로 걸렸다. 값을 **뽑아내는지**로
+                # 가른다(#65 문자열이 아니라 구조·동작으로).
+                # 판정 축 둘을 **함께** 본다: 패턴이 `상관` 을 말하고(의미)
+                # + 값을 뽑아낸다(동작). 하나만 보면 건너뛰기 목록(`상관`
+                # 낱말만)이나 일반 `라벨: 숫자` 패턴이 오탐으로 걸린다(실측).
+                if "상관" not in obj.pattern:
+                    continue
+                m = obj.search("동시상관: 0.96")
+                if not m:
+                    continue
+                nums = [g for g in m.groups() or ()
+                        if isinstance(g, str) and _re.fullmatch(
+                            r"[+\-]?\d+(?:\.\d+)?", g or "")]
+                if nums:
+                    bad.append(f"{p.name}.{name}")
+        # ⚠️ 대조 대상이 0건이면 통과가 아니라 **눈이 먼 것**이다(#54) —
+        # 종목판 모듈을 실제로 훑었는지 이름으로 확인한다.
+        must = {"kr_stock_exports", "jp_stock_exports", "my_stock_exports",
+                "cn_stock_flow"}
+        assert must <= set(scanned), sorted(must - set(scanned))
+        assert not bad, f"상관 값 파서 복제: {bad}"
+
+
 class TestJpStockHeaderLayout20260828:
     """사용자 2026-08-28: "나쁜양파에 일본종목 7월 수출입 올라왔는데 우리쪽으로
     전달 안 되는 것 같은데" (Kioxia 285A · SanDisk SNDK 캡처).

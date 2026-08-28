@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trade import badonion_metrics as _metrics
 from trade.archive_template import (asof_footer, back_nav_html,
                                     card_html, max_ingest_iso)
 
@@ -81,11 +82,6 @@ _RE_PRICE_YOY = re.compile(
     r"단가\s*:?\s*YoY\s*:?\s*([+\-]?\d+(?:\.\d+)?)\s*%", re.I)
 # 접두 없는 맨 `상관` 은 어느 계열인지 알 수 없으므로 **받지 않는다**
 # (추측 저장 금지 — my_stock 이 그렇게 선행값을 동시 칸에 흘렸다).
-_RE_CORR_ANY = re.compile(
-    r"(?:(?P<lead>(?:\d+Q\s*)?선행)|(?P<coin>동시))\s*상관"
-    r"\s*:?\s*(?P<v>[+\-]?\d+(?:\.\d+)?)")
-_RE_DIRHIT_ANY = re.compile(
-    r"(?P<lead>선행\s*)?방향\s*일치율\s*:?\s*(?P<v>\d+(?:\.\d+)?)\s*%")
 # 불릿 줄 — 관련 매출과 코멘트를 **같이** 걷어 아래에서 가른다.
 # `*` 는 넣지 않는다: 각주(`* …`)와 겹쳐 ⚠️ 슬롯을 뺏는다(jp_stock 실측).
 _RE_BULLET = re.compile(r"^[^\S\n]*[-•][^\S\n]+(?P<t>[^\n]+)$", re.M)
@@ -173,28 +169,11 @@ def parse(caption: str, flow: Flow) -> dict | None:
         elif amt_yoy is None:
             amt_yoy = v
     # 상관·방향일치율 — 접두(선행) 유무로 계열을 가른다. 접두 없는 것이 동시.
-    corr = lead_corr = None
-    for mo in _RE_CORR_ANY.finditer(seg):
-        try:
-            v = float(mo.group("v"))
-        except ValueError:
-            continue
-        if mo.group("lead"):
-            if lead_corr is None:
-                lead_corr = v
-        elif corr is None:
-            corr = v
-    dir_hit = lead_dir_hit = None
-    for mo in _RE_DIRHIT_ANY.finditer(seg):
-        try:
-            v = float(mo.group("v"))
-        except ValueError:
-            continue
-        if mo.group("lead"):
-            if lead_dir_hit is None:
-                lead_dir_hit = v
-        elif dir_hit is None:
-            dir_hit = v
+    # 상관·방향일치율 — 접두(선행) 유무로 계열을 가른다. 판정은
+    # `badonion_metrics` 단일 출처(복제하면 나라마다 갈라진다, #38·#84).
+    _cf = _metrics.parse_corr_fields(seg)
+    corr, dir_hit = _cf["corr"], _cf["dir_hit"]
+    lead_corr, lead_dir_hit = _cf["lead_corr"], _cf["lead_dir_hit"]
     # 불릿을 금액 유무로 가른다 — 코멘트를 숫자 칸에 넣지 않는다.
     revenue = comment = None
     for mo in _RE_BULLET.finditer(seg):

@@ -38,6 +38,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from trade import badonion_metrics as _metrics
 from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
 
@@ -157,6 +158,9 @@ def parse_jp_stock_export(caption: str) -> dict | None:
         "export_yoy_3m": exp_yoy_3m,
         "price_yoy": _f(_RE_PRICE_YOY, seg),
         "note": " / ".join(notes)[:300] or None,
+        # 상관·방향 일치율 — 나라마다 복제하지 않고 공용 파서를 쓴다
+        # (#38·#84, 2026-08-28 원천이 종목판 전반에 이 지표를 실었다).
+        **_metrics.parse_corr_fields(seg),
     }
 
 
@@ -167,6 +171,8 @@ CREATE TABLE IF NOT EXISTS jp_stock_exports (
   stock_name TEXT,
   item TEXT,
   export_yoy REAL, export_yoy_3m REAL, price_yoy REAL,
+  corr REAL, dir_hit REAL,
+  lead_corr REAL, lead_dir_hit REAL,
   note TEXT,
   chart_media TEXT,
   source_message_id INTEGER,
@@ -178,7 +184,8 @@ CREATE TABLE IF NOT EXISTS jp_stock_exports (
 """
 
 _COLS = ("ticker", "month", "stock_name", "item", "export_yoy",
-         "export_yoy_3m", "price_yoy", "note", "chart_media",
+         "export_yoy_3m", "price_yoy") + _metrics.FIELDS + (
+         "note", "chart_media",
          "source_message_id", "posted_at", "raw_text", "updated_at")
 
 
@@ -188,6 +195,15 @@ def open_jp_stock_db(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    # 이미 만들어진 DB 에 컬럼을 더한다 — CREATE TABLE IF NOT EXISTS 는 기존
+    # 테이블을 손대지 않으므로, 이게 없으면 배포 후 첫 쓰기가 터진다
+    # (my_stock_exports 와 같은 규약).
+    have = {r["name"] for r in
+            conn.execute("PRAGMA table_info(jp_stock_exports)")}
+    for col in _metrics.FIELDS:
+        if col not in have:
+            conn.execute(
+                f"ALTER TABLE jp_stock_exports ADD COLUMN {col} REAL")
     return conn
 
 
@@ -309,16 +325,34 @@ def _hist_table(hist: list[dict]) -> str:
                               reverse=True) if h.get("month")]
     if len(rows) < 2:
         return ""
+    # 값이 있는 계열의 열만 낸다 — 두 계열을 한 열에 합치면 세로로 읽는
+    # 자리에서 정의가 갈린다(#32·#34, cn_stock_flow 와 같은 규약).
+    cols = [("수출액 YoY", "export_yoy", "pct"),
+            ("3M 수출액 YoY", "export_yoy_3m", "pct"),
+            ("단가 YoY", "price_yoy", "pct")]
+    if any(h.get("corr") is not None or h.get("dir_hit") is not None
+           for h in rows):
+        cols.append(("동시상관", "corr", "lv2"))
+        cols.append(("방향 일치율", "dir_hit", "lv0"))
+    if any(h.get("lead_corr") is not None or h.get("lead_dir_hit") is not None
+           for h in rows):
+        cols.append(("선행상관", "lead_corr", "lv2"))
+        cols.append(("선행 방향 일치율", "lead_dir_hit", "lv0"))
+
+    def _fmt(h, key, kind):
+        v = h.get(key)
+        if v is None:
+            return "—"
+        if kind == "pct":
+            return f"{v:+.1f}%"
+        return f"{v:.2f}" if kind == "lv2" else f"{v:.0f}%"
+
     trs = []
     for h in rows:
-        def c(k):
-            v = h.get(k)
-            return f"{v:+.1f}%" if v is not None else "—"
-        trs.append(f"<tr><td>{_html.escape(h['month'])}</td>"
-                   f"<td>{c('export_yoy')}</td><td>{c('export_yoy_3m')}</td>"
-                   f"<td>{c('price_yoy')}</td></tr>")
-    return ('<table class="kr-htbl"><tr><th>월</th><th>수출액 YoY</th>'
-            '<th>3M 수출액 YoY</th><th>단가 YoY</th></tr>'
+        tds = "".join(f"<td>{_fmt(h, k, kind)}</td>" for _lb, k, kind in cols)
+        trs.append(f"<tr><td>{_html.escape(h['month'])}</td>{tds}</tr>")
+    ths = "".join(f"<th>{lb}</th>" for lb, _k, _kind in cols)
+    return ('<table class="kr-htbl"><tr><th>월</th>' + ths + "</tr>"
             + "".join(trs) + "</table>")
 
 
@@ -335,6 +369,14 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
     summary.append(_metric("💰 수출액 YoY", r.get("export_yoy")))
     summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
+    # 수준값(상관 -1~1 · 일치율 %)은 부호·화살표 없이(#39) — 형제 보드와
+    # 같은 라벨·같은 자릿수를 쓴다(#38 화면끼리 갈라지면 안 된다).
+    summary.append(_metrics.level_html("🔗 동시상관", r.get("corr")))
+    summary.append(_metrics.level_html("🎯 방향 일치율", r.get("dir_hit"),
+                                       "%", 0))
+    summary.append(_metrics.level_html("🔮 선행상관", r.get("lead_corr")))
+    summary.append(_metrics.level_html("🎯 선행 방향 일치율",
+                                       r.get("lead_dir_hit"), "%", 0))
     if r.get("note"):
         # 합산 금지 같은 해석 경고 — 카드에 그대로 노출한다(요약·의역 없음).
         summary.append(f'<div class="kr-lead">⚠️ {_html.escape(r["note"])}</div>')
