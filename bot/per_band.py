@@ -805,7 +805,7 @@ def basis_established_by_filed(rows: list, filed: dict) -> bool:
     return all(str(p)[:10] in filed for p, _v in rows)
 
 
-def should_trim(splits_known: bool, reverted: bool) -> bool:
+def should_trim(*, splits_known: bool, reverted: bool) -> bool:
     """잘라내기(trim_at_eps_break)를 적용할 것인가.
 
     잘라내기는 원래 '분할을 **모를 때**의 안전망'이었다(#166c — 아는 날의
@@ -1058,7 +1058,8 @@ def for_ticker(ticker: str, snap: dict | None = None,
         # 아는 날에도 **정합이 되돌려졌으면** 자른다(#259 NVDA) — 남은 급변은
         # '설명된 실적'이 아니라 미정합 기준이라, 안 자르면 raw EPS 가 분할
         # 반영 주가 옆에 조용히 실린다. 잘랐으면 화면이 말한다(#43).
-        if should_trim(_splits_known, _st["reverted"]):
+        if should_trim(splits_known=_splits_known,
+                       reverted=_st["reverted"]):
             rows, note = trim_at_eps_break(rows)
             if note:
                 log.warning("per_band: %s %s", tk, note)
