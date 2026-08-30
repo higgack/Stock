@@ -531,12 +531,21 @@ class DiscontinuedSweepTests(unittest.TestCase):
         # (재무부 TIC)처럼 분기 공표+보고지연이 정상인 시리즈에 월간 6개월
         # 임계값을 그대로 적용하면 매 분기 절반가량 오탐 지연배지가 뜨던 버그.
         # freq='Q' 는 임계값 2배(경고 12개월/제외 24개월).
+        # ⚠️ 나이를 **일수**로 만들면 안 된다(2026-08-30 실측 red): 182일은
+        # 오늘이 며칠이냐에 따라 5개월도 6개월도 된다 — 2026-08-30 에는
+        # 2026-03(5개월)이 나와 '월간 6개월 임계값' 단언이 무너졌다. 계약이
+        # **개월**이므로 픽스처도 개월로 되짚는다(#249 날짜 의존 테스트).
         import datetime as _dt
         from zoneinfo import ZoneInfo
-        now = _dt.datetime.now(ZoneInfo("Asia/Seoul"))
-        age6 = (now - _dt.timedelta(days=182)).strftime("%Y-%m")
-        age9 = (now - _dt.timedelta(days=270)).strftime("%Y-%m")
-        age13 = (now - _dt.timedelta(days=395)).strftime("%Y-%m")
+
+        def _ago(n: int) -> str:
+            t = _dt.datetime.now(ZoneInfo("Asia/Seoul"))
+            y, m = t.year, t.month - n
+            while m <= 0:
+                y, m = y - 1, m + 12
+            return f"{y:04d}-{m:02d}"
+
+        age6, age9, age13 = _ago(6), _ago(9), _ago(13)
         r6 = {"latest_date": age6, "freq": "Q"}
         fb._mark_stale(r6)
         self.assertNotIn("stale", r6)          # 정상 분기 지연(6개월) — 오탐 아님
