@@ -42457,3 +42457,123 @@ class TestNoDocumentReasonOnCard20260830:
         df.enrich_disclosures([item])
         assert tried == [rc], f"쿨다운이 끝났는데 다시 안 물었다: {tried}"
         assert "변경사유" in " ".join(item["detail"]), item
+
+
+class TestViewerAndGateDefects20260830:
+    """뷰어 폴백이 통한 VM 실측(2026-08-30)이 드러낸 결함 셋.
+
+    성공 로그 3건(1,307·2,249·2,503자) 옆에서 같이 나온 것들이다 — 값을
+    채우는 fix 는 그다음 층의 오류를 드러낸다(#96).
+    """
+
+    # ① 뷰어 본문 앞에 스타일시트가 통째로 붙어 온다(실측 원문 표본:
+    #    `.xforms * { font-family: 돋움체;}` …). 태그만 제거하면 CSS **본문**
+    #    이 그대로 남아 파서가 그걸 문서로 본다.
+    def test_viewer_text_drops_style_and_script_blocks(self, monkeypatch):
+        from bot import dart_feed as df
+
+        class _R:
+            def __init__(self, text):
+                self.text, self.content, self.status_code = text, b"", 200
+
+        body = ("<html><head><style>.xforms * { font-family: 돋움체;}"
+                ".xforms td { padding-left:0px; color:#3D3D3D; }</style>"
+                "<script>function f(){var a=1;}</script></head><body>"
+                "<p>주권매매거래정지 기간변경</p><p>2.변경사유 "
+                "상장적격성 실질심사 대상(사유발생) 3.정지기간</p>"
+                "</body></html>")
+
+        def _get(url, params=None, timeout=None, headers=None):
+            if "main.do" in url:
+                return _R(TestDartViewerFallback20260830.MAIN)
+            return _R(body)
+
+        monkeypatch.setattr(df.requests, "get", _get)
+        txt = df._fetch_viewer_text("20260828900980")
+        assert txt, txt
+        assert "font-family" not in txt and "padding-left" not in txt, txt
+        assert "function f" not in txt, txt
+        assert "변경사유" in txt, txt
+
+    # ② report_nm 의 **괄호 부기**까지 훑어 제목완결 예외에 걸렸다:
+    #    `주권매매거래정지기간변경   (상장적격성 실질심사 대상(사유발생))`
+    #    의 부기에 '상장적격성' 이 있어 파싱대상=False → 원문이 와도 카드가
+    #    영원히 빈칸이었다(VM 실측).
+    def test_parenthetical_suffix_does_not_exempt_the_report(self):
+        from bot import dart_feed as df
+        nm = ("주권매매거래정지기간변경              "
+              "(상장적격성 실질심사 대상(사유발생))")
+        assert df.is_parse_target(
+            {"category": "리스크", "report_nm": nm, "corp_code": "x"}) is True
+
+    def test_title_only_exemption_still_holds_when_it_is_the_title(self):
+        """느슨하게만 하면 예외가 통째로 죽는다 — 제목 자체가 그 유형이면
+        여전히 제외다(#57 완화는 다른 축의 증거를 같이 요구하는 것)."""
+        from bot import dart_feed as df
+        for nm in ("상장적격성 실질심사 대상 결정", "기업심사위원회 개최",
+                   "주식매수선택권부여에관한신고"):
+            assert df.is_parse_target(
+                {"category": "리스크", "report_nm": nm,
+                 "corp_code": "x"}) is False, nm
+
+    # ③ 파서를 고쳐 배포해도 **12h 쿨다운이 남아** 그 카드는 반나절 더 빈칸
+    #    이다(VM 실측: 불성실공시법인지정이 쿨다운 중이라 저장 detail 0줄).
+    #    손으로 비우는 규율은 이 레포에서 매번 졌다(#18·#21b·#95·#124·#198)
+    #    → 마크에 **파서 지문**을 실어 배포가 자동 무효화하게 한다(#119).
+    def test_cooldown_is_invalidated_when_the_parser_changes(self,
+                                                             monkeypatch,
+                                                             tmp_path):
+        from bot import dart_feed as df
+        monkeypatch.setattr(df, "_DOC_FAIL", tmp_path / "fail.json")
+        df._doc_fail_mark("20260828900978", hours=12.0)
+        assert df._doc_fail_recent("20260828900978") is True
+        monkeypatch.setattr(df, "_parser_sig", lambda: "deadbeef")
+        assert df._doc_fail_recent("20260828900978") is False, \
+            "파서가 바뀌었는데 쿨다운이 그대로다"
+
+    def test_legacy_cooldown_entries_still_expire_normally(self,
+                                                           monkeypatch,
+                                                           tmp_path):
+        """옛 포맷(만료시각 float)은 그대로 해석한다 — 배포 즉시 전부
+        무효로 만들면 재조회가 한꺼번에 몰린다."""
+        import json
+        import time as _t
+        from bot import dart_feed as df
+        p = tmp_path / "fail.json"
+        p.write_text(json.dumps({"a": _t.time() + 600,
+                                 "b": _t.time() - 600}), encoding="utf-8")
+        monkeypatch.setattr(df, "_DOC_FAIL", p)
+        assert df._doc_fail_recent("a") is True
+        assert df._doc_fail_recent("b") is False
+
+    def test_audit_and_badge_use_the_same_title_rule(self):
+        """감사와 화면 배지가 같은 규칙을 써야 통계가 안 갈라진다(#35·#105).
+        `is_parse_target` 만 제목으로 바꾸면 `_tally_drop`·`coverage_audit`
+        은 여전히 부기를 훑어, 개선 후보가 '의도된 제외'로 사라진다
+        (독립 리뷰 2026-08-30)."""
+        import ast
+        import inspect
+        from bot import dart_feed as df
+        for fn in (df._tally_drop, df.coverage_audit, df.is_parse_target):
+            tree = ast.parse(inspect.getsource(fn).lstrip())
+            uses = [n for n in ast.walk(tree)
+                    if isinstance(n, ast.Name) and n.id == "_TITLE_ONLY_OK_KW"]
+            if not uses:
+                continue
+            calls = [n for n in ast.walk(tree)
+                     if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", "") == "_report_title"]
+            assert calls, f"{fn.__name__} 이 제목 규칙을 안 쓴다"
+
+    def test_comment_only_edits_do_not_invalidate_every_cooldown(self,
+                                                                 monkeypatch,
+                                                                 tmp_path):
+        """지문이 파일 전체 해시면 **주석 한 줄만 고쳐도** 전 쿨다운이
+        한꺼번에 풀려 재조회가 몰린다(독립 리뷰 2026-08-30). 코드가 바뀔
+        때만 바뀌어야 한다 — 주석·독스트링을 걷어낸 뒤 잰다."""
+        from bot import dart_feed as df
+        src = "# c\ndef f():\n    \"\"\"doc\"\"\"\n    return 1\n"
+        same = "# 다른 주석\ndef f():\n    \"\"\"다른 설명\"\"\"\n    return 1\n"
+        diff = "def f():\n    return 2\n"
+        assert df._source_sig(src) == df._source_sig(same)
+        assert df._source_sig(src) != df._source_sig(diff)

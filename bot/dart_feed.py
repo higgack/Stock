@@ -573,12 +573,66 @@ def _doc_fail_load() -> dict:
         return {}
 
 
-def _doc_fail_recent(rcept_no: str) -> bool:
-    """값 = 만료 시각(expiry). 과거 포맷(실패 시각 저장)은 과거값이라 즉시
-    만료로 해석돼 자연 마이그레이션 — 12h 오염 고착도 함께 해소."""
-    exp = _doc_fail_load().get(rcept_no)
+_PARSER_SIG = ""
+
+
+def _source_sig(src: str) -> str:
+    """소스 → 지문. **주석·독스트링을 걷어내고** 잰다.
+
+    ⚠️ 파일 전체를 해시하면 주석 한 줄만 고쳐도 전 쿨다운이 한꺼번에 풀려
+    재조회가 몰린다(독립 리뷰 2026-08-30). 이 파일은 실수 기록·근거 주석이
+    많아 실제로 자주 그렇게 된다 — 동작이 바뀔 때만 바뀌어야 한다.
+    """
+    import ast as _ast
+    import hashlib
     try:
-        return bool(exp) and time.time() < float(exp)
+        tree = _ast.parse(src)
+        for node in _ast.walk(tree):
+            body = getattr(node, "body", None)
+            if (isinstance(body, list) and body
+                    and isinstance(body[0], _ast.Expr)
+                    and isinstance(body[0].value, _ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body.pop(0)          # 독스트링 제거(주석은 파싱에서 이미 빠진다)
+        norm = _ast.unparse(tree)
+    except Exception:                                          # noqa: BLE001
+        norm = src
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:8]
+
+
+def _parser_sig() -> str:
+    """이 모듈 소스의 지문 — **쿨다운 키에 싣는다.**
+
+    ⚠️ 파서를 고쳐 배포해도 12h 쿨다운이 남아 그 카드는 반나절 더 빈칸이다
+    (2026-08-30 VM 실측: 불성실공시법인지정이 쿨다운 중이라 저장 detail
+    0줄). 손으로 비우는 규율은 이 레포에서 매번 졌다(#18·#21b·#95·#124·
+    #198) — 규율로 기억할 일을 구조로 옮긴다(#119). 배포가 곧 무효화다.
+    """
+    global _PARSER_SIG
+    if not _PARSER_SIG:
+        try:
+            with open(__file__, encoding="utf-8") as fh:
+                _PARSER_SIG = _source_sig(fh.read())
+        except Exception:                                      # noqa: BLE001
+            _PARSER_SIG = "nosig"
+    return _PARSER_SIG
+
+
+def _doc_fail_recent(rcept_no: str) -> bool:
+    """값 = 만료 시각(expiry) 또는 [만료시각, 파서지문]. 과거 포맷(실패 시각
+    저장)은 과거값이라 즉시 만료로 해석돼 자연 마이그레이션.
+
+    지문이 실려 있고 **지금 파서와 다르면** 만료로 본다 — 배포로 파서가
+    바뀌었으면 그 실패는 옛 코드의 결과라 다시 물어야 한다.
+    """
+    v = _doc_fail_load().get(rcept_no)
+    sig = None
+    if isinstance(v, (list, tuple)):
+        v, sig = (list(v) + [None, None])[:2]
+    if sig is not None and str(sig) != _parser_sig():
+        return False
+    try:
+        return bool(v) and time.time() < float(v)
     except (TypeError, ValueError):
         return False
 
@@ -589,9 +643,12 @@ def _doc_fail_mark(rcept_no: str, hours: float = 0.5) -> None:
     호출부가 12h 로 길게. 성공 건은 detail 저장 → 재호출 0."""
     try:
         d = _doc_fail_load()
-        d[rcept_no] = time.time() + hours * 3600
+        d[rcept_no] = [time.time() + hours * 3600, _parser_sig()]
         if len(d) > 1500:
-            d = dict(sorted(d.items(), key=lambda kv: kv[1])[-1000:])
+            def _exp(kv):
+                x = kv[1]
+                return float(x[0]) if isinstance(x, (list, tuple)) else float(x)
+            d = dict(sorted(d.items(), key=_exp)[-1000:])
         _DOC_FAIL.parent.mkdir(parents=True, exist_ok=True)
         _DOC_FAIL.write_text(json.dumps(d), encoding="utf-8")
     except Exception:
@@ -758,6 +815,11 @@ def _fetch_viewer_text(rcept_no: str) -> str | None:
         v = requests.get(f"{_DART_VIEWER}/report/viewer.do", params=pr,
                          timeout=20)
         body = getattr(v, "text", "") or ""
+        # ⚠️ 뷰어 본문은 **스타일시트를 통째로 안고 온다**(VM 실측 원문 표본:
+        # `.xforms * { font-family: 돋움체;}` …). 태그만 지우면 CSS 본문이
+        # 그대로 남아 파서가 그걸 문서로 본다(기타시장안내가 1,307자를 받고도
+        # 0줄이었던 이유). 태그 제거 **전에** 블록째 걷어낸다.
+        body = re.sub(r"(?is)<(style|script)[^>]*>.*?</\1\s*>", " ", body)
         txt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()
         if len(txt) < 40:
             log.warning("_fetch_viewer_text %s: 본문이 너무 짧다(%d자)",
@@ -3852,7 +3914,8 @@ def _tally_drop(report_nm: str, stock_code: str) -> None:
             return
         # 제목완결 거버넌스(주주총회/자율공시 결과류 등)는 보강후보 아님 —
         # 의도된 title-only 처리 (사용자 2026-06-13 A안)
-        if any(k in report_nm for k in _TITLE_ONLY_OK_KW):
+        if any(k in _report_title(report_nm)
+               for k in _TITLE_ONLY_OK_KW):
             return
         key = _norm_report_nm(report_nm)
         if key:
@@ -3911,7 +3974,8 @@ def coverage_audit(days_back: int = 2, max_pages: int = 80) -> dict:
             key = _norm_report_nm(nm)
             if _is_noncorp_doc(nm):
                 tgt = dropped_noncorp
-            elif any(k in nm for k in _TITLE_ONLY_OK_KW):
+            elif any(k in _report_title(nm)
+                     for k in _TITLE_ONLY_OK_KW):
                 tgt = dropped_title             # 주주총회/자율공시 결과류 등 제목완결
             else:
                 tgt = dropped_listed
@@ -4228,6 +4292,13 @@ _TITLE_ONLY_OK_KW = ("벌금", "과태료", "과징금", "중대재해", "산업
                      "교환가액", "주권관련사채")
 
 
+def _report_title(report_nm: str) -> str:
+    """`제목      (부기)` → 제목. DART report_nm 은 부기를 **여러 칸 공백**
+    뒤에 붙인다 — 부기가 없거나 `주요사항보고서(소송등의제기)` 처럼 붙어
+    오는 형태는 그대로 돌려준다(그건 제목의 일부다)."""
+    return re.split(r"\s{2,}", str(report_nm or "").strip())[0].strip()
+
+
 def is_parse_target(item: dict) -> bool:
     """이 공시가 구조화/원문 파싱 대상인가 — 제목만이 정상인 유형(IR·
     대량보유 외 지분공시·구조화 없는 자금조달 5종·보강후보 거버넌스류)은
@@ -4244,8 +4315,15 @@ def is_parse_target(item: dict) -> bool:
     # 미파싱과 구분되게'). coverage-audit '의도된 제외'와 대시보드 badge 일치.
     if (not _force) and _is_noncorp_doc(report_nm):
         return False
-    # 제목만으로 완결되는 보강후보 거버넌스/리스크 사건 — 미파싱 색칠 제외
-    if (not _force) and any(k in report_nm for k in _TITLE_ONLY_OK_KW):
+    # 제목만으로 완결되는 보강후보 거버넌스/리스크 사건 — 미파싱 색칠 제외.
+    # ⚠️ **제목 부분으로만** 판정한다(2026-08-30 VM 실측): DART report_nm 은
+    # `제목      (부기)` 형태인데 부기까지 훑는 바람에
+    # `주권매매거래정지기간변경   (상장적격성 실질심사 대상(사유발생))` 이
+    # '상장적격성' 에 걸려 파싱대상=False 가 됐고 — 원문이 와도 그 카드는
+    # 영원히 빈칸이었다. 예외의 뜻은 '이 제목이면 본문이 필요 없다' 이지
+    # '사유에 그 말이 있으면' 이 아니다.
+    if (not _force) and any(k in _report_title(report_nm)
+                            for k in _TITLE_ONLY_OK_KW):
         return False
     # 대표이사/대표집행임원 '변경'(괄호 변형 포함) — 제목 완결 거버넌스
     if (not _force) and "변경" in report_nm and (
