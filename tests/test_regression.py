@@ -42381,12 +42381,15 @@ class TestNoDocumentReasonOnCard20260830:
     def test_reason_line_is_written_when_source_has_no_file(self):
         from bot import dart_feed as df
         assert df.no_document_detail("20260828900980") is None
-        df._DOC_NO_FILE.add("20260828900980")
+        # ⚠️ 계약 정정(2026-08-31): `_DOC_NO_FILE` 이 set → dict 가 됐다 —
+        # 원천이 원문을 안 주는 갈래가 둘(013 접수번호 오류 · 014 파일 없음)
+        # 이고 사유 문구가 달라야 하므로 상태코드를 같이 든다(#222).
+        df._DOC_NO_FILE["20260828900980"] = "014"
         try:
             line = df.no_document_detail("20260828900980")
             assert line and "원천" in line and "미제공" in line, line
         finally:
-            df._DOC_NO_FILE.discard("20260828900980")
+            df._DOC_NO_FILE.pop("20260828900980", None)
 
     def test_enrich_writes_the_reason_instead_of_leaving_it_silent(
             self, monkeypatch):
@@ -42403,14 +42406,14 @@ class TestNoDocumentReasonOnCard20260830:
             lambda *a: None)})())
 
         def _ext(*a, **k):
-            df._DOC_NO_FILE.add("20260828900980")
+            df._DOC_NO_FILE["20260828900980"] = "014"
             return None
 
         monkeypatch.setattr(df, "_extract_detail", _ext)
         try:
             df.enrich_disclosures([it])
         finally:
-            df._DOC_NO_FILE.discard("20260828900980")
+            df._DOC_NO_FILE.pop("20260828900980", None)
         assert it.get("detail"), it
         assert "미제공" in " ".join(it["detail"]), it
 
@@ -42723,3 +42726,115 @@ class TestUnparsedBackfillRerun20260831:
         assert out is not None
         assert df._backfill_unparsed_due() is True, \
             "예산 중단인데 지문이 찍혀 재실행이 막혔다"
+
+
+class TestDocStatusClasses20260831:
+    """원천이 원문을 안 주는 갈래가 **둘**이다(VM 실측 2026-08-31).
+
+    · `014 파일이 존재하지 않습니다` — 거래소 소관 공시(뷰어엔 본문 있음)
+    · `013 접수번호 오류` — 노바렉스 20260827000811. 같은 날 001049 가 있는
+      것으로 보아 정정본으로 **대체된** 문서다.
+
+    둘 다 영구적이라 파서 갭으로 세면 '개선 여지' 숫자가 틀리고(#93), 사유가
+    다르므로 화면 문구도 갈라야 한다(#82 갈래를 이름으로 부를 것).
+    """
+
+    @staticmethod
+    def _blob(code, msg):
+        return (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b"<result><status>" + code.encode() + b"</status><message>"
+                + msg.encode("utf-8") + b"</message></result>")
+
+    def test_status_is_parsed_with_its_message(self):
+        from bot import dart_feed as df
+        code, msg = df._doc_status(self._blob("013", "접수번호 오류 : 2026..."))
+        assert code == "013" and "접수번호" in msg, (code, msg)
+        # ⚠️ 첫 바이트 가드는 **본문 안에 그 XML 이 들어 있는 zip** 이라야
+        # 검증된다 — `PK…binary` 만으로는 정규식도 어차피 안 맞아 가드를
+        # 지워도 통과한다(#91c 깨지는 값까지 밀어 볼 것). DART zip 은 무압축
+        # 엔트리를 담을 수 있고, 그 본문이 상태 XML 을 인용할 수 있다.
+        zipish = (b"PK\x03\x04" + b"\x00" * 20
+                  + b"<result><status>014</status><message>x</message></result>")
+        assert df._doc_status(zipish) == (None, ""), "정상 원문을 미제공으로 오인"
+
+    def test_both_no_document_codes_are_recorded(self, monkeypatch):
+        from bot import dart_feed as df
+        for code in ("013", "014"):
+            df._DOC_TEXT_MEM.clear()
+            df._DOC_BLOB_MEM.clear()
+            df._DOC_NO_FILE.clear()
+            blob = self._blob(code, "사유")
+            monkeypatch.setattr(
+                df.requests, "get",
+                lambda *a, **k: type("R", (), {
+                    "content": blob, "text": "", "status_code": 200})())
+            monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+            monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+            assert df._fetch_doc_text(f"2026082700{code}0", "k") is None
+            assert df.source_has_no_document(f"2026082700{code}0") is True, code
+
+    def test_reason_line_names_the_actual_cause(self, monkeypatch):
+        """'파일이 없다' 와 '접수번호를 인식하지 않는다' 는 처방이 다르다 —
+        후자는 정정본이 따로 있다는 뜻이라 사용자가 그 카드를 찾아야 한다."""
+        from bot import dart_feed as df
+        df._DOC_NO_FILE.clear()
+        df._DOC_NO_FILE["20260827000811"] = "013"
+        df._DOC_NO_FILE["20260828900980"] = "014"
+        try:
+            a = df.no_document_detail("20260827000811")
+            b = df.no_document_detail("20260828900980")
+            assert a and b and a != b, (a, b)
+            assert "접수번호" in a, a
+            assert "정정" in a or "대체" in a, a
+        finally:
+            df._DOC_NO_FILE.clear()
+
+    def test_a_later_success_clears_the_no_document_mark(self, monkeypatch):
+        """정상 원문을 받으면 표시를 지운다 — 안 지우면 그 뒤의 진짜 파서
+        갭이 '원천 미제공'으로 오라벨되고 계수도 갈린다(독립 리뷰 2026-08-31).
+        옛 코드는 뷰어 폴백 분기에서만 지웠다."""
+        import io
+        import zipfile
+        from bot import dart_feed as df
+        df._DOC_TEXT_MEM.clear()
+        df._DOC_BLOB_MEM.clear()
+        df._DOC_NO_FILE.clear()
+        df._DOC_NO_FILE["20260827000811"] = "013"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("doc.xml", "<p>주권매매거래정지 기간변경 본문</p>" * 20)
+        blob = buf.getvalue()
+        monkeypatch.setattr(df.requests, "get", lambda *a, **k: type(
+            "R", (), {"content": blob, "text": "", "status_code": 200})())
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+        assert df._fetch_doc_text("20260827000811", "k")
+        assert df.source_has_no_document("20260827000811") is False
+
+    def test_013_does_not_assert_an_unmeasured_cause(self):
+        """우리가 잰 것은 '원천이 013 을 줬다'까지다 — '정정본으로 대체됨'은
+        **추정**이라 단정하면 화면이 거짓을 말할 수 있다(#165 재지 않은
+        귀속을 단정하지 말 것, 독립 리뷰 2026-08-31)."""
+        from bot import dart_feed as df
+        line = df.no_document_reason_line("013")
+        assert "접수번호" in line, line
+        for word in ("대체되었거나", "수 있습니다"):
+            assert word in line, line
+        assert "대체되었습니다" not in line, line
+
+    def test_uncertain_code_gets_a_shorter_cooldown(self):
+        """014 는 실측상 영구지만 013 은 아직 모른다 — 방금 접수돼 색인 전일
+        수도 있으므로 짧게 잡고 다시 물어본다."""
+        from bot import dart_feed as df
+        assert df.no_document_cooldown_h("014") > \
+            df.no_document_cooldown_h("013")
+
+    def test_leading_whitespace_or_bom_still_detected(self):
+        """BOM·선행 공백이 붙으면 첫 바이트 가드가 상태를 못 본다 —
+        014 를 놓치면 뷰어 폴백이 통째로 안 돈다(독립 리뷰 2026-08-31)."""
+        from bot import dart_feed as df
+        for pre in (b"\xef\xbb\xbf", b"\n  ", b"\r\n"):
+            code, _msg = df._doc_status(
+                pre + b'<?xml version="1.0"?><result><status>014</status>'
+                b"<message>x</message></result>")
+            assert code == "014", pre

@@ -717,7 +717,52 @@ def _blob_put(rcept_no: str, blob: bytes) -> None:
 # 만 없다. 파서를 아무리 고쳐도 안 되는 갈래라 (a) 뷰어를 폴백으로 읽고
 # (b) 그래도 없으면 화면이 '원천 미제공'이라고 말하게 한다(#43·#82).
 _DART_VIEWER = "https://dart.fss.or.kr"
-_DOC_NO_FILE: set = set()      # 원천이 원문 파일 자체를 안 준 접수번호
+# 접수번호 → 원천 상태코드. 013(접수번호 오류 — 정정본으로 대체된 문서)
+# 과 014(파일 없음 — 거래소 소관 공시)는 **사유가 다르다**(2026-08-31
+# VM 실측). 둘 다 영구적이지만 처방이 달라 화면 문구도 갈라야 한다(#82).
+_DOC_NO_FILE: dict = {}
+
+
+# 원천이 원문을 안 주는 상태코드 → 화면에 적을 사유.
+# ⚠️ 우리가 잰 것은 **원천이 그 코드를 줬다**까지다 — 013 의 원인(정정본
+# 대체·취소·색인 지연)은 추정이라 단정하지 않는다(#165). 그리고 014 만
+# 영구가 실측됐으므로 013 은 쿨다운을 짧게 잡고 다시 물어본다.
+_NO_DOC_CODES = {
+    "013": ("원천이 이 접수번호를 인식하지 않습니다(정정본으로 대체되었거나 "
+            "취소·색인 지연일 수 있습니다). 아래 원문 링크로 확인하세요."),
+    "014": ("DART 원문 API 가 이 공시의 파일을 주지 않습니다(거래소 소관 "
+            "공시 등). 아래 원문 링크로 확인하세요."),
+}
+# 코드별 재시도 억제 시간. 014 = 영구(실측) · 013 = 아직 모름 → 짧게.
+_NO_DOC_COOLDOWN_H = {"013": 2.0, "014": 12.0}
+
+
+def no_document_cooldown_h(code: str) -> float:
+    """원천 미제공 코드별 재시도 억제 시간(시간)."""
+    return _NO_DOC_COOLDOWN_H.get(str(code or ""), 12.0)
+
+
+def _doc_status(blob: bytes) -> tuple:
+    """원문 응답이 zip 이 아니라 상태 XML 이면 (코드, 메시지). 아니면 (None, "").
+
+    ⚠️ 로그는 앞 120바이트만 찍어 **메시지가 잘린다**(`접수번호 오류 : 202608`)
+    — 갈래를 코드로 갈라야 한다(#82).
+    """
+    # ⚠️ BOM·선행 공백이 붙으면 첫 바이트만 봐서는 상태를 놓친다 — 014 를
+    # 놓치면 뷰어 폴백이 통째로 안 돈다(독립 리뷰 2026-08-31). zip 배제라는
+    # 목적은 유지하면서(zip 은 `PK`) 앞머리를 걷어내고 본다.
+    head = (blob or b"")[:8].lstrip(b"\xef\xbb\xbf \t\r\n")
+    if not head or head[:1] not in (b"<", b"{"):
+        return (None, "")
+    try:
+        txt = blob[:600].decode("utf-8", errors="ignore")
+    except Exception:                                          # noqa: BLE001
+        return (None, "")
+    m = re.search(r"<status>\s*(\d+)\s*</status>", txt)
+    if not m:
+        return (None, "")
+    g = re.search(r"<message>(.*?)</message>", txt, re.S)
+    return (m.group(1), (g.group(1).strip() if g else ""))
 
 
 def source_has_no_document(rcept_no: str) -> bool:
@@ -732,10 +777,10 @@ def source_has_no_document(rcept_no: str) -> bool:
 _NO_DOC_PREFIX = "원문: 원천 미제공"
 
 
-def no_document_reason_line() -> str:
-    """원천이 원문을 안 주는 카드에 싣는 사유 줄(단일 출처)."""
-    return (f"{_NO_DOC_PREFIX} — DART 원문 API 가 이 공시의 파일을 주지 "
-            "않습니다(거래소 소관 공시 등). 아래 원문 링크로 확인하세요.")
+def no_document_reason_line(code: str = "014") -> str:
+    """원천이 원문을 안 주는 카드에 싣는 사유 줄(단일 출처). 코드별로 다르다."""
+    why = _NO_DOC_CODES.get(str(code or ""), _NO_DOC_CODES["014"])
+    return f"{_NO_DOC_PREFIX} — {why}"
 
 
 def known_detail_is_final(detail, cooling: bool) -> bool:
@@ -761,7 +806,7 @@ def no_document_detail(rcept_no: str) -> str | None:
     """
     if not source_has_no_document(rcept_no):
         return None
-    return no_document_reason_line()
+    return no_document_reason_line(_DOC_NO_FILE.get(str(rcept_no)) or "014")
 
 
 def _viewer_params(html: str) -> dict | None:
@@ -872,8 +917,13 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
                 # 014 = 원천이 파일 자체를 안 준다(거래소 소관 공시 등).
                 # 파서 갭이 아니므로 갈래를 기록하고, 뷰어로 한 번 더 묻는다
                 # — 폴백 조건은 '실패'가 아니라 '요구를 충족했나'(#136).
-                if b"<status>014</status>" in blob:
-                    _DOC_NO_FILE.add(str(rcept_no))
+                _code, _msg = _doc_status(blob)
+                if _code in _NO_DOC_CODES:
+                    # 013·014 = 원천이 원문을 안 준다(영구). 네트워크 실패와
+                    # 달리 파서 갭으로 세면 '개선 여지' 숫자가 틀린다(#93).
+                    _DOC_NO_FILE[str(rcept_no)] = _code
+                    log.warning("_fetch_doc_text %s: 원천 미제공 status=%s %s",
+                                rcept_no, _code, _msg[:80])
                     # ⚠️ 뷰어 폴백은 **평문 요청에만** 쓴다 — 뷰어 본문을
                     # 태그 제거해 돌려주므로, 마크업을 요구한 호출부
                     # (표를 원본 구조로 뜨는 dart_production)에 주면 `<TABLE>`
@@ -885,7 +935,7 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
                     if vt:
                         # 원문을 받았으면 '원천 미제공'이 아니다 — 안 지우면
                         # 파서 갭을 원천 부재로 라벨한다(독립 리뷰).
-                        _DOC_NO_FILE.discard(str(rcept_no))
+                        _DOC_NO_FILE.pop(str(rcept_no), None)
                         _DOC_TEXT_MEM[ck] = vt
                         return vt
                 _doc_fail_mark(rcept_no)
@@ -936,6 +986,10 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
         # 예산을 다 쓴 채 끝났으면 잘린 것이다. 문서가 정확히 상한과 같으면
         # 거짓양성이지만 재시도 1회로 끝나 무해하다.
         _DOC_TRUNC[ck] = budget <= 0
+        # 정상 원문을 받았으면 '원천 미제공'이 아니다 — 안 지우면 그 뒤의
+        # 진짜 파서 갭이 미제공으로 오라벨되고 계수도 갈린다(독립 리뷰
+        # 2026-08-31; 옛 코드는 뷰어 폴백 분기에서만 지웠다).
+        _DOC_NO_FILE.pop(str(rcept_no), None)
         _DOC_TEXT_MEM[ck] = out
         while (len(_DOC_TEXT_MEM) > 64
                or sum(len(v) for v in _DOC_TEXT_MEM.values()) > _DOC_MEM_MAX):
@@ -4805,7 +4859,8 @@ def enrich_disclosures(items: list[dict], max_per_cycle: int | None = None) -> l
                     # 아니므로 **따로 센다** — 어느 쪽에 넣어도 로그가 거짓말
                     # 한다(독립 리뷰 2026-08-30).
                     item["detail"] = [no_document_detail(rcept_no)]
-                    _doc_fail_mark(rcept_no, hours=12.0)
+                    _doc_fail_mark(rcept_no, hours=no_document_cooldown_h(
+                        _DOC_NO_FILE.get(str(rcept_no)) or "014"))
                     nodoc += 1
                 elif rcept_no:
                     # 구조화 API 미매칭/원문 필드 부재 — 2h 재시도 억제
