@@ -1089,19 +1089,45 @@ _DISSOLUTION_FIELDS = [
      r"(\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}-\d{1,2}-\d{1,2})", "text"),
 ]
 
+# ⚠️ 라벨이 한 벌이 아니다(2026-08-30 인베니아 실측, 실수 #73 의 공시판).
+# 코스닥 지정 양식은 표 머리가 '1. 불성실공시법인 지정내역' 이고 행 라벨은
+# **맨 '유형'·'내용'·'지정일'**, 누계는 '최근 1년간 … 부과벌점' 이다 —
+# '불성실공시 유형'·'지정ㆍ부과일자'·'누계벌점' 만 알던 옛 스펙은 그 표에서
+# 벌점 하나만 건졌다. 두 서식을 **한 스펙의 alternation** 으로 받는다
+# (파일을 갈라 두면 한쪽만 고쳐진다, #38).
 _UNFAITHFUL_FIELDS = [
     # 다건 유형('공시불이행,공시번복,공시변경' — 리스크-2) 콤마 허용
     ("유형",
-     r"불성실공시\s*유형[^가-힣A-Za-z0-9]{0,12}?"
+     r"(?:불성실공시\s*유형|지정내역\s*유형)[^가-힣A-Za-z0-9]{0,12}?"
      r"([가-힣A-Za-z0-9,· ]{2,30}?)\s*(?:\d{1,2}\.\s|내\s*용|$)", "text"),
+    # ⚠️ stop 에 맨 '지정' 을 두면 안 된다 — 내용 자체가 '… 관리종목 **지정**ㆍ
+    # 형식적 상장폐지 …' 라 첫 사유만 남고 문장이 뜻을 잃는다(실측). 다음
+    # **라벨**로만 끊는다.
     ("내용",
      r"내\s*용[^가-힣A-Za-z0-9]{1,12}?"
-     r"([가-힣A-Za-z0-9()'’‘%.,·ㆍ \-]{4,80}?)\s*(?:\d{1,2}\.\s|원공시일|지정|$)", "text"),
+     r"([가-힣A-Za-z0-9()'’‘%.,·ㆍ \-]{4,80}?)\s*"
+     r"(?:\d{1,2}\.\s|원공시일|사유\s*발생일|공시일|지정\s*예고일|"
+     r"지정일|지정\s*[ㆍ·]?\s*부과|$)", "text"),
     ("벌점", r"부과\s*벌점[^0-9]{0,16}?([\d.]+)", "text"),
-    ("누계벌점", r"누계\s*벌점[^0-9]{0,12}?([\d.]+)", "text"),
+    # 누계 = '누계벌점'(옛 양식) 또는 '최근 1년간 … 부과벌점(당해 포함)'.
+    # ⚠️ 후자는 **당해 부과벌점 행이 앞에 따로 있을 때만** 누계다(독립 리뷰
+    # 2026-08-30). 지정예고 양식은 `최근 1년간 … 부과벌점 5.0` **한 행뿐**
+    # 이라 위 '벌점' 이 이미 그걸 집는데, 조건 없이 받으면 같은 값이
+    # `벌점: 5.0 / 누계벌점: 5.0` 두 줄로 중복되고 그중 하나는 라벨이
+    # 틀린다(#34 · #45 같은 것을 두 번 세면 갈라진다).
+    ("누계벌점",
+     r"(?:누계\s*벌점|부과\s*벌점[^가-힣]{0,20}?[\d.]+[\s\S]{0,160}?"
+     r"최근\s*1\s*년간[^:]{0,50}?부과\s*벌점(?:\([^)]{0,30}\))?)"
+     r"[^0-9]{0,12}?([\d.]+)", "text"),
     ("제재금",
      r"공시위반\s*제재금\s*\(?원?\)?[^0-9]{0,12}?([\d,]{4,})", "won"),
-    ("지정일", r"지정\s*[ㆍ·]?\s*부과일자[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+    ("사유발생일",
+     r"사유\s*발생일[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+    # '지정ㆍ부과일자'(옛) · '지정일'(코스닥 표) 둘 다. `일자?` 앞에 '예고'가
+    # 오면 매칭되지 않으므로 지정예고일과 섞이지 않는다.
+    ("지정일",
+     r"지정\s*(?:[ㆍ·]\s*부과)?일자?[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})",
+     "text"),
     ("지정예고일", r"지정\s*예고일[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
     ("결정시한", r"결정\s*시한[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
 ]
@@ -1689,6 +1715,61 @@ def _suspension_release_lines(txt: str) -> list[str]:
     return parts
 
 
+def _suspension_change_lines(txt: str) -> list[str]:
+    """주권매매거래정지 **기간변경** (2026-08-30 에스아이리소스 실측). 순수.
+
+    ⚠️ 이 양식엔 `_SUSPENSION_FIELDS` 가 아는 라벨(정지사유·정지일시·
+    해제일시)이 **하나도 없다** — `2.변경사유` + `3.정지기간 가.변경전 /
+    나.변경후` 뿐이라 옛 스펙은 0필드였고, generic 폴백이 `주식병합: 관련 -
+    신주권…` 처럼 번호 항목을 라벨로 오독한 줄을 냈다(라벨이 값과 안 맞으면
+    화면이 거짓말한다, #55).
+
+    싣는 것은 **변경 후** 기간이다 — 변경 전 조건을 실으면 화면이 낡는다.
+    종료조건이 여럿이면(주식병합 관련 / 실질심사 관련) 전부 잇는다: 하나만
+    적으면 나머지를 없는 것으로 만든다(#43).
+    """
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    sym = _g(r"대상종목[^가-힣A-Za-z0-9(]{0,8}?"
+             r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:보통주|\d\s*\.|변경사유|$)")
+    if sym:
+        parts.append(f"대상: {sym}")
+    why = _g(r"변경\s*사유[^가-힣A-Za-z0-9]{0,10}?"
+             r"([가-힣A-Za-z0-9()%,·ㆍ ]{2,60}?)\s*"
+             r"(?:\d{1,2}\s*\.|정지기간|근거|$)")
+    if why:
+        parts.append(f"변경사유: {why}")
+    # ⚠️ 종료 앵커를 정규식 안에 넣고 창을 400자로 두면, 변경후 블록이 그보다
+    # 길 때 **매치 자체가 실패**해 정지기간이 통째로 빠진다 — 그런데 대상·
+    # 변경사유 2줄은 남아 미파싱으로도 안 잡힌다(조용한 누락, 독립 리뷰
+    # 2026-08-30). 앵커를 찾고 **뒤를 잘라** 항상 블록을 얻는다.
+    m = re.search(r"나\s*\.?\s*변경\s*후", txt)
+    blk = ""
+    if m:
+        blk = txt[m.end():m.end() + 400]
+        cut = re.search(r"\d{1,2}\s*\.\s*근거|근거규정", blk)
+        if cut:
+            blk = blk[:cut.start()]
+    seg = []
+    d = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", blk)
+    if d:
+        seg.append(f"{d.group(1)}-{int(d.group(2)):02d}-{int(d.group(3)):02d} ~")
+    tills: list[str] = []
+    for t in re.findall(r"([가-힣A-Za-z0-9()·ㆍ ]{2,40}?까지)", blk):
+        t = t.strip()
+        if t and t not in tills:
+            tills.append(t)
+    if tills:
+        seg.append(" / ".join(tills))
+    if seg:
+        parts.append("정지기간(변경후): " + " ".join(seg))
+    return parts
+
+
 def _tender_result_lines(txt: str) -> list[str]:
     """공개매수의 결과 (미파싱-6 — 세아홀딩스 자사주 소각용 공개매수). 대상
     회사·매수가격·예정/응모/매수수량·기간·공개매수 후 보유비율. 순수."""
@@ -1733,18 +1814,25 @@ def _major_change_lines(txt: str) -> list[str]:
         return m.group(1).strip() if m else None
 
     # 변경내용 표: 변경전 최대주주명 ... 소유비율(%) X ; 변경후 ... Y
-    bn = _g(r"변경전[\s\S]{0,16}?최대주주명?[^가-힣A-Za-z0-9(]{0,8}?"
+    # ⚠️ 라벨이 '최대주주**등**' 인 양식이 있다(2026-08-30 아이큐어 실측) —
+    # `최대주주명?` 만 알던 옛 패턴은 '등' 을 값의 일부로 캡처해 이름이
+    # '등 최영권' 으로 나왔다. 라벨 꼬리를 스펙에 넣어 값에서 뺀다.
+    bn = _g(r"변경전[\s\S]{0,16}?최대주주(?:명|등)?[^가-힣A-Za-z0-9(]{0,8}?"
             r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:소유주식|\d\s*\.|변경후|$)")
     br = _g(r"변경전[\s\S]{0,90}?소유비율\s*\(%\)[^0-9]{0,8}?([\d.]+)")
-    an = _g(r"변경후[\s\S]{0,16}?최대주주명?[^가-힣A-Za-z0-9(]{0,8}?"
+    an = _g(r"변경후[\s\S]{0,16}?최대주주(?:명|등)?[^가-힣A-Za-z0-9(]{0,8}?"
             r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:소유주식|\d\s*\.|$)")
     ar = _g(r"변경후[\s\S]{0,90}?소유비율\s*\(%\)[^0-9]{0,8}?([\d.]+)")
     if bn or an:
         b = f"{bn}({br}%)" if bn and br else (bn or "")
         a = f"{an}({ar}%)" if an and ar else (an or "")
         parts.append(f"최대주주: {b} → {a}")
+    # ⚠️ stop 앞을 `\s*` 로만 두면 **하이픈에서 막힌다** — 실제 양식은 다음
+    # 줄이 '-실권주 인수로 인한 변경 여부' 라, 값 charset 에 '-' 가 없어
+    # 사유가 통째로 안 잡혔다(그 결과 1줄만 남아 미파싱, 2026-08-30 실측).
     why = _g(r"변경사유[^가-힣A-Za-z0-9]{0,8}?"
-             r"([가-힣A-Za-z0-9() ]{4,50}?)\s*(?:\d\s*\.|실권주|지분|$)")
+             r"([가-힣A-Za-z0-9() ]{4,50}?)\s*[-–—ㆍ]?\s*"
+             r"(?:\d\s*\.|실권주|지분|$)")
     if why:
         parts.append(f"사유: {why}")
     return parts
@@ -3302,6 +3390,16 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
             if len(parts) >= 2:
                 return {"lines": parts}
             _doc_fail_mark(rcept_no, hours=12.0)
+    elif "매매거래정지" in t and "기간변경" in t:
+        # 기간변경은 라벨이 통째로 다른 별도 양식 — 평 매매거래정지 분기보다
+        # **먼저** 걸러야 한다(둘 다 '매매거래정지' 를 품는다, 정지해제와 같은
+        # 이유). 전용 파서가 빈손이면 아래 generic 폴백(_extract_detail)이 받는다.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _suspension_change_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "매매거래정지" in t:
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _SUSPENSION_FIELDS, min_fields=2)
@@ -3716,6 +3814,93 @@ def unparsed_audit(days_back: int = 7) -> dict:
             dist[key] = dist.get(key, 0) + 1
             samples.setdefault(key, it.get("url", ""))
     return {"total": total, "dist": dist, "samples": samples}
+
+
+_WHY_VER = 1
+
+
+def explain_unparsed(query: str, days_back: int = 7) -> list[str]:
+    """"이 카드가 왜 ⚠️미파싱인가" 를 **갈래로** 답한다(#82 '없음'만 말하는
+    진단 금지). 순수하지 않다(원문 1회 조회) — 읽기만 하고 아무것도 안 쓴다.
+
+    왜 필요한가(2026-08-30): 사용자가 미파싱 카드 3건을 캡처로 보냈는데,
+    같은 양식을 재구성해 태워 보니 셋 다 **파싱이 됐다** — 즉 화면이 비는
+    원인이 파서 갭인지, 원문 미수신인지, 12h 쿨다운인지, 콜 예산인지 이
+    출력 없이는 갈릴 수 없었다(#12 검증불가면 단정 금지). 갈래마다 처방이
+    다르다: 파서 갭이면 스펙 추가, 미수신이면 DART 상태, 쿨다운·예산이면
+    시간이 답이다.
+
+    query = 접수번호(14자리) 또는 회사명 일부.
+    VM: .venv/bin/python -m bot.dart_feed --why <접수번호|회사명>
+    """
+    # 아래 조회 구간에서 이 둘을 잠시 무력화한다(진단은 읽기 전용) —
+    # 파이썬은 함수 안 어디서든 대입하면 전역 선언을 **맨 위**에 요구한다.
+    global _doc_fail_mark, _doc_fail_recent
+    import sys as _sys
+    from bot.env_keys import env_source, env_why
+    out = [f"[미파싱진단 v{_WHY_VER}] 인터프리터 {_sys.executable}",
+           f"  자격증명 DART_API_KEY={env_source('DART_API_KEY')}"
+           f"{'' if env_source('DART_API_KEY') != '없음' else ' (' + env_why('DART_API_KEY') + ')'}"]
+    key = _dart_api_key()
+    out.append(f"  오늘 콜 예산 {_budget_today()} / {_BUDGET_HARD}")
+    q = (query or "").strip()
+    hits = []
+    for _ds, items in load_all_archives(days_back=days_back).items():
+        for it in items:
+            if q == str(it.get("rcept_no") or "") or (
+                    len(q) >= 2 and q in str(it.get("corp_name") or "")):
+                hits.append(it)
+    if not hits:
+        # ⚠️ 대조 0건은 '이상 없음'이 아니라 진단 실패다(#54).
+        out.append(f"  ❌ 아카이브 {days_back}일에서 '{q}' 를 못 찾았다 — "
+                   "접수번호/회사명 또는 윈도를 확인할 것")
+        return out
+    for it in hits[:5]:
+        rc = str(it.get("rcept_no") or "")
+        nm = it.get("report_nm") or ""
+        detail = [str(l) for l in (it.get("detail") or [])]
+        meaningful = [l for l in detail
+                      if not l.startswith("주요사업:") and "시가총액" not in l]
+        out.append(f"── {it.get('corp_name')} | {nm} | {rc}")
+        out.append(f"   분류={it.get('category')} 파싱대상={is_parse_target(it)} "
+                   f"의도된미파싱={intended_freeform_unparsed(nm)}")
+        out.append(f"   저장된 detail {len(detail)}줄(의미있는 {len(meaningful)}줄)"
+                   + (f" · 예: {meaningful[0][:60]}" if meaningful else ""))
+        cooled = _doc_fail_recent(rc)
+        if cooled:
+            out.append("   ⏸️ 원문 쿨다운 중(negative-cache) — 수집은 지금 이 "
+                       "문서를 건너뛴다. 진단은 그 게이트를 넘어 실제로 받아 본다")
+        if not key:
+            out.append("   ❌ API 키가 없어 원문을 못 받는다 — 여기서 중단")
+            continue
+        # ⚠️ 진단이 운영 상태를 바꾸면 안 된다 — `_fetch_doc_text` 도, 빈손인
+        # 파서도 `_doc_fail_mark` 로 **쿨다운을 새로 심는다**(#30 의 프로브판,
+        # 독립 리뷰 2026-08-30: 옛 코드는 가드를 fetch **뒤**에 걸어 fetch 가
+        # 심는 30분 마크를 못 막았다). 그리고 `_doc_fail_recent` 도 넘겨야
+        # 쿨다운 중인 문서를 진단할 수 있다 — 안 넘기면 조회가 조용히 건너뛴
+        # 것을 '원문 미수신'(원천 문제)으로 **오보**한다.
+        _orig_mark, _orig_recent = _doc_fail_mark, _doc_fail_recent
+        _doc_fail_mark = lambda *a, **k: None            # noqa: E731
+        _doc_fail_recent = lambda *a, **k: False         # noqa: E731
+        try:
+            txt = _fetch_doc_text(rc, key)
+            if not txt:
+                out.append("   ❌ 원문 미수신 — 파서 갭이 아니다(DART "
+                           "document.xml 미제공·정정·삭제 가능). 로그의 "
+                           "_fetch_doc_text 사유 확인")
+                continue
+            out.append(f"   원문 {len(txt):,}자 수신")
+            sp = _extract_detail_specific(nm, rc, it.get("corp_code") or "", key)
+            gen = _extract_generic_document(rc, key)
+        finally:
+            _doc_fail_mark, _doc_fail_recent = _orig_mark, _orig_recent
+        out.append(f"   전용 파서 → {len((sp or {}).get('lines') or [])}줄"
+                   + (f": {((sp or {}).get('lines') or [])[:2]}" if sp else ""))
+        out.append(f"   generic 폴백 → {len((gen or {}).get('lines') or [])}줄")
+        if not ((sp or {}).get("lines") or (gen or {}).get("lines")):
+            # 사유 히스토그램만으론 '그게 정말 그건가'를 못 말한다(#109).
+            out.append(f"   원문 표본: {txt[:300]}")
+    return out
 
 
 def fetch_market_disclosures(target_date: date | None = None,
@@ -5334,6 +5519,18 @@ if __name__ == "__main__":
         for k, v in sorted(rep["dist"].items(), key=lambda kv: -kv[1]):
             print(f"  {v:3d} × {k}")
             print(f"        예: {rep['samples'].get(k, '')}")
+        raise SystemExit(0)
+    if any(a == "--why" for a in _sys.argv[1:]):
+        # 특정 카드가 왜 미파싱인지 갈래로 진단(쓰기 없음):
+        #   .venv/bin/python -m bot.dart_feed --why <접수번호|회사명> [days]
+        _i = _sys.argv.index("--why")
+        _q = _sys.argv[_i + 1] if len(_sys.argv) > _i + 1 else ""
+        _days = 7
+        for a in _sys.argv[_i + 2:]:
+            if a.isdigit():
+                _days = int(a)
+        for _l in explain_unparsed(_q, days_back=_days):
+            print(_l)
         raise SystemExit(0)
     if any("selftest" in a for a in _sys.argv[1:]):
         # VM 1줄 진단(쓰기 없음): 아카이브의 detail 없는 게이트 대상 5건을

@@ -41815,3 +41815,280 @@ class TestEvEbitdaFromKeyMetrics20260827:
         assert out["enterpriseToEbitda"] == 10.49
         b = (out.get("_derived_basis") or {}).get("enterpriseToEbitda", "")
         assert "2026/12(E)" in b and "FnGuide" in b, b
+
+
+class TestDartUnparsedForms20260830:
+    """DART 공시 3종이 ⚠️미파싱으로 남던 양식 변형 (사용자 캡처 2026-08-28).
+
+    셋 다 **파서가 아는 유형인데 원천의 라벨이 다른** 경우다 — 원천이 한 벌
+    서식을 쓴다는 가정이 틀렸던 #73 의 공시판. 아래 본문은 캡처의 표 구조를
+    `_fetch_doc_text` 가 내는 모양(태그 제거 + 공백 1칸)으로 재구성한 것이다
+    (#118 구조 가설을 코드로 태워 가른다).
+    """
+
+    SUS = ("주권매매거래정지 기간변경 1.대상종목 (주)에스아이리소스 보통주 "
+           "2.변경사유 상장적격성 실질심사 대상(사유발생) "
+           "3.정지기간 가.변경전 2026년 07월 30일~ 신주권 변경상장일 전일까지 "
+           "나.변경후 2026년 07월 30일~ 1. 주식병합 관련 - 신주권 변경상장일 전일까지 "
+           "2. 상장적격성 실질심사 관련 - 상장적격성 실질심사 대상여부에 관한 결정일까지 "
+           "4.근거규정 코스닥시장상장규정 제18조 및 동규정시행세칙 제19조 5.기타 -")
+
+    MAJ = ("최대주주 변경 1. 변경내용 변경전 최대주주등 최영권 소유주식수(주) 5,663,353 "
+           "소유비율(%) 15.08 변경후 최대주주등 주식회사 솔루엠코스메틱 외 2인 "
+           "소유주식수(주) 24,177,949 소유비율(%) 39.16 "
+           "2. 변경사유 유상증자(제3자배정) 납입 완료에 따른 신주취득으로 인한 변경 "
+           "-실권주 인수로 인한 변경 여부 아니오 -양수도 주식의 의무보유 여부 아니오 "
+           "3. 지분인수목적 경영 참여 4. 변경일자 2026-08-28 5. 변경확인일자 2026-08-28")
+
+    UNF = ("불성실공시법인지정 1. 불성실공시법인 지정내역 유형 공시불이행 "
+           "내용 내부결산시점 관리종목 지정ㆍ형식적 상장폐지ㆍ상장적격성 실질심사 "
+           "사유 발생 미공시 사유발생일 2026-02-11 공시일 - 지정예고일 2026-07-15 "
+           "지정일 2026-08-31 부과벌점 6.5 공시위반제재금(원) - "
+           "공시책임자 등 교체요구 여부 미해당 - 교체요구 대상 - - 교체사유 - "
+           "2. 최근 1년간 불성실공시법인 부과벌점(당해 부과벌점 포함) 6.5 "
+           "3. 근거규정 코스닥시장공시규정 제27조 및 제32조 4. 기타 -")
+
+    @staticmethod
+    def _fields(txt, spec):
+        import re as _re
+        out = {}
+        for lbl, pat, _kind in spec:
+            m = _re.search(pat, txt)
+            if m:
+                out[lbl] = m.group(1).strip()
+        return out
+
+    # ① 주권매매거래정지 기간변경 — 정지사유/정지일시/해제일시 라벨이 아예
+    #    없다(변경사유 · 정지기간 가.변경전 / 나.변경후). 옛 스펙은 0필드.
+    def test_suspension_period_change_is_parsed(self):
+        from bot import dart_feed as df
+        parts = df._suspension_change_lines(self.SUS)
+        assert len(parts) >= 2, parts
+        joined = " ".join(parts)
+        assert "상장적격성 실질심사 대상" in joined, joined
+        # 변경**후** 기간이어야 한다 — 변경 전 조건을 실으면 화면이 낡은다.
+        assert "2026-07-30" in joined, joined
+        assert "결정일까지" in joined, joined
+
+    def test_suspension_change_ignores_the_pre_change_period(self):
+        """**변경 후**만 싣는다.
+
+        ⚠️ 실측 문서(SUS)는 변경전 조건('신주권 변경상장일 전일까지')이
+        변경후에도 그대로 들어 있어 이 계약을 못 잰다 — 변경전을 같이 읽는
+        뮤테이션이 그대로 통과했다. 두 블록이 **실제로 다른** 픽스처라야
+        발화한다(#91c 깨지는 값까지 밀어 볼 것).
+        """
+        from bot import dart_feed as df
+        cap = self.SUS.replace(
+            "가.변경전 2026년 07월 30일~ 신주권 변경상장일 전일까지",
+            "가.변경전 2026년 06월 01일~ 정정공시 제출일까지")
+        joined = " ".join(df._suspension_change_lines(cap))
+        assert "정정공시 제출일까지" not in joined, joined
+        assert "2026-06-01" not in joined, joined
+        assert "2026-07-30" in joined, joined
+
+    def test_suspension_period_change_routes_to_its_parser(self, monkeypatch):
+        """배선까지 태운다 — 헬퍼만 고치면 화면은 그대로다(#20).
+
+        ⚠️ 줄 **수**로만 재면 눈이 먼다: generic 폴백도 6줄을 냈다(실측).
+        그 줄들은 번호 항목을 라벨로 오독해 `주식병합: 관련 - 신주권…` 처럼
+        라벨과 값이 안 맞았다 — 전용 파서가 이겼는지를 **내용**으로 본다.
+        """
+        from bot import dart_feed as df
+        monkeypatch.setattr(df, "_fetch_doc_text",
+                            lambda *a, **k: self.SUS)
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        r = df._extract_detail("주권매매거래정지기간변경", "1", "c", "k")
+        lines = (r or {}).get("lines") or []
+        assert any(l.startswith("정지기간(변경후)") for l in lines), lines
+        assert not any(l.startswith("주식병합") for l in lines), lines
+        assert not any("가.변경전" in l for l in lines), lines
+
+    def test_plain_suspension_form_still_uses_its_own_spec(self, monkeypatch):
+        """새 분기가 평 매매거래정지를 삼키면 안 된다 — 그 양식은 그대로."""
+        from bot import dart_feed as df
+        plain = ("매매거래정지 1. 대상종목 (주)테스트 보통주 "
+                 "2. 정지사유 조회공시 답변 요구(풍문 또는 보도) "
+                 "3. 매매거래정지 일시 2026-08-28 09:00 "
+                 "4. 해제일시 2026-08-28 11:36")
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda *a, **k: plain)
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        r = df._extract_detail_specific("매매거래정지", "1", "c", "k")
+        lines = (r or {}).get("lines") or []
+        assert any(l.startswith("정지:") for l in lines), lines
+        assert any(l.startswith("해제·만료:") for l in lines), lines
+
+    # ② 최대주주변경 — 라벨이 '최대주주등'(우리는 '최대주주명'만 알았다)이라
+    #    이름이 '등 최영권' 으로 나왔고, 사유는 다음 행이 '-실권주…' 라
+    #    stop 앞의 `\s*` 가 하이픈을 못 넘어 아예 안 잡혔다(1줄 < 2줄 = 미파싱).
+    def test_major_shareholder_change_labels(self):
+        from bot import dart_feed as df
+        parts = df._major_change_lines(self.MAJ)
+        assert len(parts) >= 2, parts
+        line = parts[0]
+        assert "최영권" in line and not line.startswith("최대주주: 등"), line
+        assert "등 최영권" not in line, line
+        assert "솔루엠코스메틱" in line, line
+        assert "15.08%" in line and "39.16%" in line, line
+        assert any("유상증자" in p for p in parts), parts
+
+    # ③ 불성실공시법인지정 — 표 라벨이 '유형'·'지정일' 이고 누계는
+    #    '최근 1년간 … 부과벌점' 이다. 그리고 '내용' 의 stop 이 맨 `지정` 이라
+    #    값이 '내부결산시점 관리종목' 에서 잘려 문장이 뜻을 잃었다.
+    def test_unfaithful_designation_labels(self):
+        from bot import dart_feed as df
+        got = self._fields(self.UNF, df._UNFAITHFUL_FIELDS)
+        assert got.get("유형") == "공시불이행", got
+        assert got.get("지정일") == "2026-08-31", got
+        assert got.get("사유발생일") == "2026-02-11", got
+        assert got.get("누계벌점") == "6.5", got
+        assert got.get("벌점") == "6.5", got
+        # 내용이 'ㆍ' 뒤에서 잘리면 안 된다 — 세 사유 중 하나만 남는다.
+        assert "상장폐지" in (got.get("내용") or ""), got
+
+    def test_cumulative_penalty_is_not_a_duplicate_of_the_case_penalty(self):
+        """지정예고 양식은 `최근 1년간 … 부과벌점` **한 행뿐**이다 — 그걸
+        누계로도 받으면 같은 값이 두 줄, 그중 하나는 라벨이 틀린다(독립 리뷰
+        2026-08-30). 당해 부과벌점 행이 앞에 따로 있을 때만 누계다."""
+        from bot import dart_feed as df
+        one_row = ("불성실공시 유형 공시번복 내용 유상증자결정 철회 "
+                   "원공시일 2025-04-15 지정예고일 2026-06-11 "
+                   "3. 최근 1년간 불성실공시법인 부과벌점 5.0")
+        g1 = self._fields(one_row, df._UNFAITHFUL_FIELDS)
+        assert g1.get("벌점") == "5.0", g1
+        assert "누계벌점" not in g1, g1
+        # 두 행이 다 있는 코스닥 지정 표에서는 둘 다 낸다(둘 다 사실이다).
+        g2 = self._fields(self.UNF, df._UNFAITHFUL_FIELDS)
+        assert g2.get("벌점") == "6.5" and g2.get("누계벌점") == "6.5", g2
+
+    def test_change_block_survives_a_long_period_description(self):
+        """종료 앵커를 정규식 창 안에 두면 블록이 길 때 **매치가 통째로
+        실패**해 정지기간만 조용히 빠진다(대상·변경사유 2줄은 남아 미파싱
+        으로도 안 잡힌다 — 독립 리뷰 2026-08-30)."""
+        from bot import dart_feed as df
+        # ⚠️ 패딩이 짧으면 옛 코드도 통과한다 — 창(400자)을 **실제로** 넘겨야
+        # 매치 실패가 재현된다(첫 픽스처가 그래서 눈이 멀었다, #91c).
+        pad = "3. 기타 관련 - " + ("추가 안내 사항 " * 80)
+        cap = self.SUS.replace("4.근거규정", pad + "4.근거규정")
+        joined = " ".join(df._suspension_change_lines(cap))
+        assert "정지기간(변경후)" in joined, joined
+        assert "2026-07-30" in joined, joined
+
+    def test_unfaithful_content_stop_still_bounded(self):
+        """느슨하게만 하면 다음 라벨까지 삼킨다 — 경계는 남아야 한다."""
+        from bot import dart_feed as df
+        got = self._fields(self.UNF, df._UNFAITHFUL_FIELDS)
+        assert "2026-02-11" not in (got.get("내용") or ""), got
+        assert "부과벌점" not in (got.get("내용") or ""), got
+
+
+class TestDartWhyProbe20260830:
+    """'왜 미파싱인가' 를 갈래로 답하는 프로브(#82). 화면 카드 3건이
+    미파싱인데 같은 양식을 재구성하면 파싱이 됐다 — 파서 갭 / 원문 미수신 /
+    쿨다운 / 예산은 처방이 전부 다른데 화면도 로그도 그걸 안 갈랐다."""
+
+    def test_banner_names_interpreter_and_credential_source(self):
+        from bot import dart_feed as df
+        out = "\n".join(df.explain_unparsed("존재하지않는회사명xyz", days_back=1))
+        import sys
+        assert sys.executable in out, out       # #132 인터프리터 배너
+        assert "DART_API_KEY=" in out, out      # #23 자격증명 출처(값 금지)
+
+    def test_zero_hits_is_a_failure_not_a_pass(self):
+        """대조 0건을 '이상 없음'으로 찍으면 프로브가 눈이 먼다(#54)."""
+        from bot import dart_feed as df
+        out = "\n".join(df.explain_unparsed("존재하지않는회사명xyz", days_back=1))
+        assert "❌" in out, out
+
+    def test_probe_does_not_write_a_cooldown(self, monkeypatch, tmp_path):
+        """진단이 운영 상태를 바꾸면 안 된다 — 파서가 빈손인 문서를 태워도
+        12h 쿨다운이 새로 심기면 다음 실 수집이 막힌다(#30 의 프로브판)."""
+        from bot import dart_feed as df
+        it = {"rcept_no": "20260828000001", "corp_name": "테스트사",
+              "corp_code": "00000000", "report_nm": "불성실공시법인지정",
+              "detail": [], "category": "리스크"}
+        monkeypatch.setattr(df, "load_all_archives",
+                            lambda **k: {"2026-08-28": [it]})
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "k")
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda *a, **k: "무의미한 본문")
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        marks = []
+        monkeypatch.setattr(df, "_doc_fail_mark",
+                            lambda *a, **k: marks.append(a))
+        out = "\n".join(df.explain_unparsed("테스트사"))
+        assert not marks, f"프로브가 쿨다운을 심었다: {marks}"
+        # 그리고 빈손이면 원문 표본을 같이 찍는다(#109).
+        assert "원문 표본" in out, out
+
+    def test_probe_does_not_write_a_cooldown_when_the_fetch_fails(
+            self, monkeypatch):
+        """가드를 fetch **뒤**에 걸면 `_fetch_doc_text` 가 심는 마크를 못
+        막는다(독립 리뷰 2026-08-30). 옛 테스트는 fetch 를 성공 스텁으로
+        둬서 이 경로를 한 번도 안 탔다(#91b 재는 대상이 맞나)."""
+        from bot import dart_feed as df
+        it = {"rcept_no": "20260828000002", "corp_name": "미수신사",
+              "corp_code": "00000000", "report_nm": "최대주주변경",
+              "detail": [], "category": "회사구조"}
+        monkeypatch.setattr(df, "load_all_archives",
+                            lambda **k: {"2026-08-28": [it]})
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "k")
+        marks = []
+        monkeypatch.setattr(df, "_doc_fail_mark",
+                            lambda *a, **k: marks.append(a))
+        # 원문 조회가 실패하면서 스스로 마크를 심는 실제 경로를 흉내낸다.
+        def _boom(rc, key, *a, **k):
+            df._doc_fail_mark(rc)
+            return None
+        monkeypatch.setattr(df, "_fetch_doc_text", _boom)
+        out = "\n".join(df.explain_unparsed("미수신사"))
+        assert not marks, f"프로브가 쿨다운을 심었다: {marks}"
+        assert "원문 미수신" in out, out
+
+    def test_cooldown_is_reported_as_cooldown_not_as_a_missing_document(
+            self, monkeypatch):
+        """쿨다운 중이면 `_fetch_doc_text` 가 조회 없이 None 을 돌려준다 —
+        그걸 '원문 미수신(원천 문제)'으로 적으면 처방이 정반대가 된다(#82).
+        진단은 그 게이트를 넘어 실제로 받아 보고 사실을 말한다."""
+        from bot import dart_feed as df
+        it = {"rcept_no": "20260828000003", "corp_name": "쿨다운사",
+              "corp_code": "00000000", "report_nm": "최대주주변경",
+              "detail": [], "category": "회사구조"}
+        monkeypatch.setattr(df, "load_all_archives",
+                            lambda **k: {"2026-08-28": [it]})
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "k")
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: True)
+        seen = []
+
+        def _fetch(rc, key, *a, **k):
+            # 제품과 같은 게이트 — 쿨다운이면 조회 자체를 건너뛴다.
+            if df._doc_fail_recent(rc):
+                return None
+            seen.append(rc)
+            return TestDartUnparsedForms20260830.MAJ
+
+        monkeypatch.setattr(df, "_fetch_doc_text", _fetch)
+        out = "\n".join(df.explain_unparsed("쿨다운사"))
+        assert "쿨다운" in out, out
+        assert seen, "쿨다운 게이트를 못 넘어 진단이 아무것도 못 봤다"
+        assert "원문 미수신" not in out, out
+
+    def test_cli_dispatches_to_the_probe(self, monkeypatch, capsys):
+        """정의만 있고 배선이 없으면 아무도 못 쓴다(#120 정의 1 + 호출 1).
+
+        ⚠️ `runpy` 는 모듈을 **새 네임스페이스로 다시 실행**하므로 이미
+        import 된 모듈에 건 스텁이 안 먹는다(실측) — 그래서 스텁 호출을
+        세는 대신 **실제 출력**으로 확인한다. 인자(질의·윈도)가 그대로
+        전달됐는지까지 본다(#145 프로브는 인자도 제품과 같아야 한다).
+        """
+        import runpy
+        import sys
+        monkeypatch.setattr(sys, "argv", ["dart_feed", "--why", "005930", "3"])
+        try:
+            runpy.run_module("bot.dart_feed", run_name="__main__")
+        except SystemExit:
+            pass
+        out = capsys.readouterr().out
+        assert "[미파싱진단 v" in out, out          # 배너(#21)
+        assert "005930" in out and "3일" in out, out  # 질의·윈도 전달
+        # run_once() 로 흘러가 실수집을 돌면 안 된다 — 진단은 읽기만 한다.
+        assert "disclosures archived" not in out, out
