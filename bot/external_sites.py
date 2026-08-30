@@ -49,6 +49,9 @@ SITES: tuple[Site, ...] = (
     # 제목은 'Nvidia screener'".
     Site("Nvidia screener", "Nvidia screener",
          "https://nvidiascreener.streamlit.app/"),
+    # 사용자 2026-08-31: "Sites 랑 대쉬보드에 추가, 둘다 제목은
+    # 'Siliconanalysts'" — 두 표면 명시라 nav 등재.
+    Site("Siliconanalysts", "Siliconanalysts", "https://siliconanalysts.com/"),
 )
 
 
