@@ -654,6 +654,123 @@ def _blob_put(rcept_no: str, blob: bytes) -> None:
         _DOC_BLOB_MEM.pop(next(iter(_DOC_BLOB_MEM)))
 
 
+# ⚠️ open API 가 **원문을 안 주는** 공시가 있다(2026-08-30 VM 실측:
+# 에스아이리소스 08-28 3건이 `status=014 파일이 존재하지 않습니다`). 거래소
+# 소관 공시가 그렇다 — DART **뷰어**엔 본문이 멀쩡히 있는데 `document.xml`
+# 만 없다. 파서를 아무리 고쳐도 안 되는 갈래라 (a) 뷰어를 폴백으로 읽고
+# (b) 그래도 없으면 화면이 '원천 미제공'이라고 말하게 한다(#43·#82).
+_DART_VIEWER = "https://dart.fss.or.kr"
+_DOC_NO_FILE: set = set()      # 원천이 원문 파일 자체를 안 준 접수번호
+
+
+def source_has_no_document(rcept_no: str) -> bool:
+    """이 공시의 원문을 **원천이 제공하지 않는가**(status 014).
+
+    '네트워크 실패'와 다른 갈래다 — 전자는 시간이 답이고 이것은 영구적이라
+    파서 갭으로 세면 '개선 여지' 숫자가 통째로 틀린다(#93·#111).
+    """
+    return str(rcept_no or "") in _DOC_NO_FILE
+
+
+_NO_DOC_PREFIX = "원문: 원천 미제공"
+
+
+def no_document_reason_line() -> str:
+    """원천이 원문을 안 주는 카드에 싣는 사유 줄(단일 출처)."""
+    return (f"{_NO_DOC_PREFIX} — DART 원문 API 가 이 공시의 파일을 주지 "
+            "않습니다(거래소 소관 공시 등). 아래 원문 링크로 확인하세요.")
+
+
+def known_detail_is_final(detail, cooling: bool) -> bool:
+    """아카이브에 저장된 detail 을 **최종 답으로 재사용해도 되는가**.
+
+    ⚠️ 사유 줄을 그냥 저장하면 멱등 가드가 그걸 영원히 재생해, 나중에 DART 가
+    파일을 올려도 카드가 안 바뀐다(#18 구운 아카이브의 재발 — 독립 리뷰
+    2026-08-30). 쿨다운 중에는 재사용(화면이 사유를 계속 보여 준다), 쿨다운이
+    끝나면 재사용하지 않는다(= 다시 물어본다). 진짜 파싱 결과는 언제나 최종.
+    """
+    d = list(detail or [])
+    if len(d) == 1 and str(d[0]).startswith(_NO_DOC_PREFIX):
+        return bool(cooling)
+    return True
+
+
+def no_document_detail(rcept_no: str) -> str | None:
+    """원천이 원문을 안 주는 공시의 **카드 사유 줄**. 아니면 None.
+
+    ⚠️ 빈칸으로 두면 사용자가 매번 묻는다 — 값을 비우는 코드는 그 자리에서
+    사유를 같이 기록할 것(#43·#131). 그리고 이 자리는 파서 갭이 아니므로
+    ⚠️미파싱으로 세면 고칠 수 없는 ❌ 가 진짜 ❌ 를 가린다(#260).
+    """
+    if not source_has_no_document(rcept_no):
+        return None
+    return no_document_reason_line()
+
+
+def _viewer_params(html: str) -> dict | None:
+    """뷰어 첫 페이지(main.do) HTML → viewer.do 질의 인자. 순수.
+
+    두 서식을 다 받는다 — `viewDoc('rcp','dcm',null,null,'dtd')` 스크립트와
+    `<iframe src="/report/viewer.do?...">`(원천 서식은 한 벌이 아니다, #73).
+    """
+    m = re.search(r"/report/viewer\.do\?([^\"'\s>]+)", html or "")
+    if m:
+        q = m.group(1).replace("&amp;", "&")
+        out = {}
+        for kv in q.split("&"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                out[k] = v
+        if out.get("rcpNo") and out.get("dcmNo"):
+            return out
+    # ⚠️ 페이지는 `function viewDoc(...)` **정의**도 담고 있다 — 첫 매치를
+    # 그냥 쓰면 인자 없는 정의를 읽고 빈손이 된다(실측). 인자가 실제로 있는
+    # 호출을 찾을 것.
+    keys = ("rcpNo", "dcmNo", "eleId", "offset", "length", "dtd")
+    for m in re.finditer(r"viewDoc\s*\(([^)]*)\)", html or ""):
+        args = [a.strip().strip("'\"") for a in m.group(1).split(",")]
+        # 'null' 은 값이 아니다 — 그대로 보내면 뷰어가 빈 문서를 준다.
+        args = [("" if a.lower() in ("null", "none", "") else a)
+                for a in args]
+        # ⚠️ 페이지는 `function viewDoc(rcpNo, dcmNo, …)` **정의**도 담는다 —
+        # '비었나'로만 거르면 파라미터 **이름**이 질의값이 된다(독립 리뷰
+        # 2026-08-30). 접수번호·문서번호는 숫자다.
+        if (len(args) >= 2 and args[0].isdigit() and args[1].isdigit()):
+            return {k: v for k, v in zip(keys, args) if v}
+    return None
+
+
+def _fetch_viewer_text(rcept_no: str) -> str | None:
+    """DART **뷰어** 본문(태그 제거 평문). open API 가 014 일 때만 쓴다.
+
+    카드가 이미 링크로 걸고 있는 그 공개 페이지다. 실패는 graceful —
+    폴백이 없으면 화면이 그냥 침묵하던 상태로 돌아갈 뿐이다. 단 **탔는지는
+    로그로 알린다**(#42a 폴백은 버그를 숨긴다).
+    """
+    try:
+        r = requests.get(f"{_DART_VIEWER}/dsaf001/main.do",
+                         params={"rcpNo": rcept_no}, timeout=15)
+        pr = _viewer_params(getattr(r, "text", "") or "")
+        if not pr:
+            log.warning("_fetch_viewer_text %s: 뷰어 인자를 못 찾음", rcept_no)
+            return None
+        pr.setdefault("rcpNo", str(rcept_no))
+        v = requests.get(f"{_DART_VIEWER}/report/viewer.do", params=pr,
+                         timeout=20)
+        body = getattr(v, "text", "") or ""
+        txt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()
+        if len(txt) < 40:
+            log.warning("_fetch_viewer_text %s: 본문이 너무 짧다(%d자)",
+                        rcept_no, len(txt))
+            return None
+        log.info("_fetch_viewer_text %s: 뷰어 폴백 성공 %d자", rcept_no, len(txt))
+        return txt
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("_fetch_viewer_text %s 실패: %s: %s",
+                    rcept_no, type(exc).__name__, exc)
+        return None
+
+
 def _fetch_doc_text(rcept_no: str, api_key: str,
                     max_bytes: int = _DOC_TEXT_MAX,
                     raw_markup: bool = False) -> str | None:
@@ -690,6 +807,25 @@ def _fetch_doc_text(rcept_no: str, api_key: str,
                 log.warning(
                     "_fetch_doc_text %s: 본문 아님 (HTTP %s · %d bytes · %r)",
                     rcept_no, r.status_code, len(blob), blob[:120])
+                # 014 = 원천이 파일 자체를 안 준다(거래소 소관 공시 등).
+                # 파서 갭이 아니므로 갈래를 기록하고, 뷰어로 한 번 더 묻는다
+                # — 폴백 조건은 '실패'가 아니라 '요구를 충족했나'(#136).
+                if b"<status>014</status>" in blob:
+                    _DOC_NO_FILE.add(str(rcept_no))
+                    # ⚠️ 뷰어 폴백은 **평문 요청에만** 쓴다 — 뷰어 본문을
+                    # 태그 제거해 돌려주므로, 마크업을 요구한 호출부
+                    # (표를 원본 구조로 뜨는 dart_production)에 주면 `<TABLE>`
+                    # 을 못 찾아 '섹션없음'으로 오보한다. 그리고 그 본문이
+                    # 온전한지는 우리가 재지 않았으므로 잘림 여부도 단정하지
+                    # 않는다(#165). 지금까지 관측된 014 는 전부 짧은 거래소
+                    # 공시라 정기보고서 경로(잘림에 민감)와 겹치지 않는다.
+                    vt = None if raw_markup else _fetch_viewer_text(rcept_no)
+                    if vt:
+                        # 원문을 받았으면 '원천 미제공'이 아니다 — 안 지우면
+                        # 파서 갭을 원천 부재로 라벨한다(독립 리뷰).
+                        _DOC_NO_FILE.discard(str(rcept_no))
+                        _DOC_TEXT_MEM[ck] = vt
+                        return vt
                 _doc_fail_mark(rcept_no)
                 return None
             _blob_put(rcept_no, blob)
@@ -4516,13 +4652,14 @@ def enrich_disclosures(items: list[dict], max_per_cycle: int | None = None) -> l
             for it in day_items:
                 rno = it.get("rcept_no")
                 det = it.get("detail")
-                if rno and det:
+                if rno and det and known_detail_is_final(
+                        det, cooling=_doc_fail_recent(str(rno))):
                     known[str(rno)] = det
     except Exception:
         known = {}
 
     cap = max_per_cycle if max_per_cycle is not None else _ENRICH_MAX_PER_CYCLE
-    attempted = enriched = failed = skipped = 0
+    attempted = enriched = failed = skipped = nodoc = 0
     ok_list: list[str] = []
     for item in items:
         cat = item.get("category", "")
@@ -4565,6 +4702,14 @@ def enrich_disclosures(items: list[dict], max_per_cycle: int | None = None) -> l
                         item["category"] = nc   # 기타경영사항 소송성 → 소송 승격
                     enriched += 1
                     ok_list.append(f"{item.get('corp_name','?')}({rcept_no})")
+                elif rcept_no and no_document_detail(rcept_no):
+                    # 원천이 원문 파일을 안 준다(014) — 파서 갭이 아니다.
+                    # 침묵하면 사용자가 매번 묻는다(#43). 성공도 실패도
+                    # 아니므로 **따로 센다** — 어느 쪽에 넣어도 로그가 거짓말
+                    # 한다(독립 리뷰 2026-08-30).
+                    item["detail"] = [no_document_detail(rcept_no)]
+                    _doc_fail_mark(rcept_no, hours=12.0)
+                    nodoc += 1
                 elif rcept_no:
                     # 구조화 API 미매칭/원문 필드 부재 — 2h 재시도 억제
                     # (당일 지연 반영 케이스는 2h 후 자연 재시도).
@@ -4576,8 +4721,9 @@ def enrich_disclosures(items: list[dict], max_per_cycle: int | None = None) -> l
                             item.get("corp_name", "?"), rcept_no, exc)
                 if rcept_no:
                     _doc_fail_mark(rcept_no, hours=1.0)
-    log.info("dart_feed enrich: 성공 %d · 실패 %d · 보류(상한/쿨다운) %d%s",
-             enriched, failed, skipped,
+    log.info("dart_feed enrich: 성공 %d · 실패 %d · 원천미제공 %d · "
+             "보류(상한/쿨다운) %d%s",
+             enriched, failed, nodoc, skipped,
              (" — " + ", ".join(ok_list)) if ok_list else "")
     return items
 

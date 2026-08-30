@@ -27257,20 +27257,26 @@ class TestDocFetchDiagnostics20260817:
             return (isinstance(a, ast.Constant) and isinstance(a.value, str)
                     and a.value.startswith("_fetch_doc_text"))
 
+        # ⚠️ '바로 앞 형제' 로 좁히면 그 사이에 **분기 하나만 끼어도** 멀쩡한
+        # 로그를 조용한 실패로 오보한다(2026-08-30 실측: 014 → 뷰어 폴백
+        # 블록이 로그와 마킹 사이에 들어가자 red). 계약은 "이 마킹에 사유가
+        # 있는가" 이지 "몇 번째 문장인가" 가 아니다 — 같은 블록에서 **그
+        # 마킹 앞에** 사유 로그가 있었는지로 본다(마킹마다 자기 로그를
+        # 요구하도록 소비한다). 로그를 통째로 지우면 여전히 발화한다.
         found = 0
         for node in ast.walk(tree):
             body = getattr(node, "body", None)
             if not isinstance(body, list):
                 continue
-            for prev, cur in zip(body, body[1:]):
-                if _is_mark(cur):
+            has_reason = False
+            for st in body:
+                if _is_reason_log(st):
+                    has_reason = True
+                    continue
+                if _is_mark(st):
                     found += 1
-                    assert _is_reason_log(prev), \
-                        f"{cur.lineno}행 실패가 조용하다"
-            # 블록의 **첫 문장**이 마킹이면 앞에 사유가 없다는 뜻
-            if body and _is_mark(body[0]):
-                found += 1
-                assert False, f"{body[0].lineno}행 실패가 조용하다(사유 없음)"
+                    assert has_reason, f"{st.lineno}행 실패가 조용하다(사유 없음)"
+                    has_reason = False
         # 대조 대상이 0건이면 '이상 없음'이 아니라 검사 실패다(#54).
         assert found >= 2, f"실패 마킹을 {found}개만 찾았다 — 검사가 눈이 멀었다"
         assert "type(exc).__name__" in src, "예외 종류를 안 남긴다"
@@ -42176,3 +42182,278 @@ class TestWhyProbeHitTruncation20260830:
         i_new = out.index("20260816900000")
         i_old = out.index("20260812900000")
         assert i_new < i_old, out
+
+
+class TestDartViewerFallback20260830:
+    """DART open API 가 원문을 **안 주는** 공시가 있다(VM 실측 2026-08-30,
+    에스아이리소스 08-28 3건: `status=014 파일이 존재하지 않습니다`). 거래소
+    소관 공시가 그렇다 — 뷰어(dart.fss.or.kr)엔 본문이 멀쩡히 있는데
+    `document.xml` 만 없다. 파서를 아무리 고쳐도 안 되는 갈래이므로
+    (a) 뷰어를 폴백으로 읽고 (b) 그래도 없으면 카드가 **사유를 말한다**(#43).
+    """
+
+    MAIN = ("<html><body><script>function viewDoc(){}"
+            "viewDoc('20260828900980', '10386861', null, null, '2019');"
+            "</script></body></html>")
+    BODY = ("<html><body><p>주권매매거래정지 기간변경</p>"
+            "<table><tr><td>1.대상종목</td><td>(주)에스아이리소스</td></tr>"
+            "<tr><td>2.변경사유</td><td>상장적격성 실질심사 대상(사유발생)</td></tr>"
+            "</table></body></html>")
+
+    def test_viewer_params_are_read_from_the_main_page(self):
+        from bot import dart_feed as df
+        p = df._viewer_params(self.MAIN)
+        assert p and p["rcpNo"] == "20260828900980", p
+        assert p["dcmNo"] == "10386861", p
+        # null 인자는 값이 아니다 — 문자열 'null' 을 그대로 보내면 안 된다.
+        assert "null" not in " ".join(str(v) for v in p.values()), p
+
+    def test_viewer_params_from_an_iframe_src(self):
+        """뷰어 페이지가 iframe 으로 오는 변형도 받는다(원천 서식은 한 벌이
+        아니다 — #73)."""
+        from bot import dart_feed as df
+        html = ('<iframe id="ifrm" src="/report/viewer.do?rcpNo=20260828900980'
+                '&amp;dcmNo=10386861&amp;eleId=0&amp;offset=0&amp;length=1000'
+                '&amp;dtd=HTML"></iframe>')
+        p = df._viewer_params(html)
+        assert p and p["dcmNo"] == "10386861", p
+
+    def test_no_params_returns_none_not_a_broken_request(self):
+        from bot import dart_feed as df
+        assert df._viewer_params("<html>아무것도 없음</html>") is None
+
+    def test_doc_fetch_falls_back_to_the_viewer_on_status_014(
+            self, monkeypatch, tmp_path):
+        """`document.xml` 이 014 면 뷰어로 한 번 더 묻는다 — 폴백 조건은
+        '실패'가 아니라 **'요구를 충족했나'**(#136)."""
+        from bot import dart_feed as df
+        df._DOC_TEXT_MEM.clear()
+        df._DOC_BLOB_MEM.clear()
+        seen = []
+
+        class _R:
+            def __init__(self, content=b"", text=""):
+                self.content, self.text, self.status_code = content, text, 200
+
+        def _get(url, params=None, timeout=None, headers=None):
+            seen.append(url)
+            if "document.xml" in url:
+                return _R(content=(b'<?xml version="1.0"?><result>'
+                                   b"<status>014</status></result>"))
+            if "main.do" in url:
+                return _R(text=self.MAIN)
+            return _R(text=self.BODY)
+
+        monkeypatch.setattr(df.requests, "get", _get)
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+        txt = df._fetch_doc_text("20260828900980", "k")
+        assert txt and "상장적격성 실질심사 대상" in txt, txt
+        assert any("main.do" in u for u in seen), seen
+        assert any("viewer.do" in u for u in seen), seen
+        # 그리고 그 원문으로 전용 파서가 실제로 카드를 만든다(배선, #20).
+        parts = df._suspension_change_lines(txt)
+        assert any(p.startswith("변경사유") for p in parts), parts
+
+    def test_empty_viewer_body_is_not_accepted_as_the_document(self,
+                                                               monkeypatch):
+        """뷰어가 껍데기만 주면 **폴백 실패**로 다뤄야 한다 — 빈 문자열을
+        원문으로 캐시하면 카드가 '파싱은 됐는데 내용이 없는' 상태가 되고,
+        사유도 안 남는다(#54 대조 0건은 통과가 아니다)."""
+        from bot import dart_feed as df
+
+        class _R:
+            def __init__(self, text):
+                self.text, self.content, self.status_code = text, b"", 200
+
+        def _get(url, params=None, timeout=None, headers=None):
+            if "main.do" in url:
+                return _R(self.MAIN)
+            return _R("<html><body><div></div></body></html>")
+
+        monkeypatch.setattr(df.requests, "get", _get)
+        assert df._fetch_viewer_text("20260828900980") is None
+
+    def test_function_definition_is_not_mistaken_for_a_call(self):
+        """실제 뷰어 페이지는 `function viewDoc(rcpNo, dcmNo, …)` **정의**를
+        담는다 — 인자가 비어 있지 않으니 '비었나'로만 거르면 **파라미터
+        이름**이 질의값이 된다(독립 리뷰 2026-08-30). 내 픽스처가
+        `viewDoc(){}` 였던 탓에 그 상태로도 통과했다(#155 픽스처는 원천이
+        실제로 보내는 모양대로). 접수번호는 숫자다 — 그걸로 가른다."""
+        from bot import dart_feed as df
+        html = ("<script>function viewDoc(rcpNo, dcmNo, eleId, offset, "
+                "length, dtd) { }</script>"
+                "<a onclick=\"viewDoc('20260828900980','10386861','1','0',"
+                "'1000','dart3.xsd')\">보기</a>")
+        p = df._viewer_params(html)
+        assert p and p["rcpNo"] == "20260828900980", p
+        assert p["dcmNo"] == "10386861", p
+        # 정의만 있는 페이지에서는 아무것도 만들지 않는다.
+        only_def = "<script>function viewDoc(rcpNo, dcmNo, eleId) { }</script>"
+        assert df._viewer_params(only_def) is None
+
+    def test_viewer_success_clears_the_source_missing_flag(self, monkeypatch):
+        """뷰어로 원문을 받았으면 '원천이 파일을 안 준다'가 **아니다** —
+        안 지우면 파서 갭을 원천 부재로 라벨한다(독립 리뷰 2026-08-30,
+        이 변경이 막으려던 그 뒤집힘)."""
+        from bot import dart_feed as df
+        df._DOC_TEXT_MEM.clear()
+        df._DOC_BLOB_MEM.clear()
+        df._DOC_NO_FILE.clear()
+
+        class _R:
+            def __init__(self, content=b"", text=""):
+                self.content, self.text, self.status_code = content, text, 200
+
+        def _get(url, params=None, timeout=None, headers=None):
+            if "document.xml" in url:
+                return _R(content=b"<result><status>014</status></result>")
+            if "main.do" in url:
+                return _R(text=self.MAIN)
+            return _R(text=self.BODY)
+
+        monkeypatch.setattr(df.requests, "get", _get)
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+        assert df._fetch_doc_text("20260828900980", "k")
+        assert df.source_has_no_document("20260828900980") is False
+
+    def test_markup_callers_do_not_get_stripped_viewer_text(self, monkeypatch):
+        """뷰어 폴백은 **평문 요청에만** 쓴다 — 마크업을 요구한 호출부
+        (표를 원본 구조로 뜨는 dart_production)에 평문을 주면 `<TABLE>` 을
+        못 찾아 '섹션없음'으로 오보한다(독립 리뷰 2026-08-30). 그리고 뷰어
+        본문의 완결성(잘림 여부)은 우리가 재지 않았다 — 재지 않은 것을
+        '안 잘렸다'고 단정하지 않는다(#165)."""
+        from bot import dart_feed as df
+        df._DOC_TEXT_MEM.clear()
+        df._DOC_BLOB_MEM.clear()
+
+        class _R:
+            def __init__(self, content=b"", text=""):
+                self.content, self.text, self.status_code = content, text, 200
+
+        seen = []
+
+        def _get(url, params=None, timeout=None, headers=None):
+            seen.append(url)
+            if "document.xml" in url:
+                return _R(content=b"<result><status>014</status></result>")
+            return _R(text=self.MAIN)
+
+        monkeypatch.setattr(df.requests, "get", _get)
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+        assert df._fetch_doc_text("20260828900980", "k",
+                                  raw_markup=True) is None
+        assert not any("main.do" in u for u in seen), seen
+
+    def test_source_has_no_document_is_recorded_as_such(self, monkeypatch):
+        """014 는 '네트워크 실패'가 아니라 **원천 미제공**이다 — 갈래를
+        기록해 화면·진단이 그렇게 말할 수 있게 한다(#82)."""
+        from bot import dart_feed as df
+        df._DOC_TEXT_MEM.clear()
+        df._DOC_BLOB_MEM.clear()
+        df._DOC_NO_FILE.clear()
+
+        class _R:
+            def __init__(self):
+                self.content = (b'<?xml version="1.0"?><result>'
+                                b"<status>014</status></result>")
+                self.text, self.status_code = "", 200
+
+        monkeypatch.setattr(df.requests, "get",
+                            lambda *a, **k: _R())
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+        assert df._fetch_doc_text("20260828900999", "k") is None
+        assert df.source_has_no_document("20260828900999") is True
+        assert df.source_has_no_document("20260828900000") is False
+
+
+class TestNoDocumentReasonOnCard20260830:
+    """원문을 원천이 안 주면(014) 카드가 **왜 비었는지** 말해야 한다.
+
+    값을 비우는 코드를 쓸 때마다 그 자리에서 사유를 기록할 것(#43·#131 —
+    이 레포에서 다섯 번 반복된 실수). 그리고 그 자리는 '파서 갭'이 아니므로
+    ⚠️미파싱으로 세면 고칠 수 없는 ❌ 가 진짜 ❌ 를 가린다(#260).
+    """
+
+    def test_reason_line_is_written_when_source_has_no_file(self):
+        from bot import dart_feed as df
+        assert df.no_document_detail("20260828900980") is None
+        df._DOC_NO_FILE.add("20260828900980")
+        try:
+            line = df.no_document_detail("20260828900980")
+            assert line and "원천" in line and "미제공" in line, line
+        finally:
+            df._DOC_NO_FILE.discard("20260828900980")
+
+    def test_enrich_writes_the_reason_instead_of_leaving_it_silent(
+            self, monkeypatch):
+        """배선까지 태운다 — 헬퍼만 있으면 화면은 그대로 침묵한다(#20)."""
+        from bot import dart_feed as df
+        it = {"rcept_no": "20260828900980", "corp_name": "테스트사",
+              "corp_code": "00000000", "report_nm": "주권매매거래정지기간변경",
+              "category": "리스크", "stock_code": "000000"}
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "k")
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+        monkeypatch.setattr(df, "_budget_today", lambda: 0)
+        monkeypatch.setattr(df, "time", type("T", (), {"sleep": staticmethod(
+            lambda *a: None)})())
+
+        def _ext(*a, **k):
+            df._DOC_NO_FILE.add("20260828900980")
+            return None
+
+        monkeypatch.setattr(df, "_extract_detail", _ext)
+        try:
+            df.enrich_disclosures([it])
+        finally:
+            df._DOC_NO_FILE.discard("20260828900980")
+        assert it.get("detail"), it
+        assert "미제공" in " ".join(it["detail"]), it
+
+
+    def test_reason_line_does_not_bake_the_card_forever(self, monkeypatch):
+        """사유를 detail 에 저장하면 멱등 가드가 그걸 **영원히 재생**해,
+        나중에 DART 가 파일을 올려도 카드가 안 바뀐다(#18 구운 아카이브,
+        독립 리뷰 2026-08-30). 쿨다운이 끝나면 다시 물어야 한다."""
+        from bot import dart_feed as df
+        det = [df.no_document_reason_line()]
+        assert df.known_detail_is_final(det, cooling=True) is True
+        assert df.known_detail_is_final(det, cooling=False) is False
+        # 진짜 파싱 결과는 언제나 최종이다 — 재조회 비용을 늘리면 안 된다.
+        assert df.known_detail_is_final(["유형: 공시불이행"], cooling=False) is True
+
+    def test_enrich_retries_a_no_doc_card_once_the_cooldown_expires(
+            self, monkeypatch):
+        """배선까지 태운다 — 순수 헬퍼만 고정하면 멱등 가드가 사유 줄을 그냥
+        재사용하도록 되돌리는 변형이 통과한다(#20 실측 2026-08-30).
+        쿨다운이 끝났으면 **다시 물어야** 나중에 DART 가 올린 파일이 화면에
+        닿는다(#18 구운 아카이브)."""
+        from bot import dart_feed as df
+        rc = "20260828900980"
+        baked = {"rcept_no": rc, "corp_name": "테스트사",
+                 "corp_code": "00000000", "category": "리스크",
+                 "report_nm": "주권매매거래정지기간변경",
+                 "detail": [df.no_document_reason_line()]}
+        monkeypatch.setattr(df, "load_all_archives",
+                            lambda **k: {"2026-08-28": [baked]})
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "k")
+        monkeypatch.setattr(df, "_doc_fail_recent", lambda *a, **k: False)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **k: None)
+        monkeypatch.setattr(df, "_budget_today", lambda: 0)
+        monkeypatch.setattr(df, "time", type("T", (), {"sleep": staticmethod(
+            lambda *a: None)})())
+        tried = []
+
+        def _ext(nm, rno, *a, **k):
+            tried.append(rno)
+            return {"lines": ["변경사유: 상장적격성 실질심사 대상(사유발생)"]}
+
+        monkeypatch.setattr(df, "_extract_detail", _ext)
+        item = dict(baked, detail=[])
+        df.enrich_disclosures([item])
+        assert tried == [rc], f"쿨다운이 끝났는데 다시 안 물었다: {tried}"
+        assert "변경사유" in " ".join(item["detail"]), item
