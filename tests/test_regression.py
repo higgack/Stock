@@ -42577,3 +42577,149 @@ class TestViewerAndGateDefects20260830:
         diff = "def f():\n    return 2\n"
         assert df._source_sig(src) == df._source_sig(same)
         assert df._source_sig(src) != df._source_sig(diff)
+
+
+class TestSuspensionPeriodItems20260831:
+    """정지기간(변경후)을 '…까지' **어구**로 뽑으면 문장이 잘린다.
+
+    실측(스코넥 276040 08-05): charset 이 괄호를 안 받아
+    `개선기간 종료(차기 사업보고서 …` 가 `차기 사업보고서 …10일) 후` 로
+    시작하고, 번호(`3. `)가 앞을 끊어 `상장적격성` 이 `적격성` 이 됐다 —
+    원본에 없는 자리에서 낱말이 갈린 것(#94). 원문 재현이 목적이면 **번호
+    항목 단위로 통째로** 실을 것.
+    """
+
+    SKN = ("주권매매거래정지 기간변경 1.대상종목 (주)스코넥엔터테인먼트 보통주 "
+           "2.변경사유 상장적격성 실질심사 대상(사유발생) "
+           "3.정지기간 가.변경전 2026년 04월 07일 13:12:00~ "
+           "1. 2025사업연도 감사의견 상장폐지 사유 관련 - 개선기간 종료(차기 "
+           "사업보고서 법정제출기한의 다음날부터 10일) 후 상장폐지여부 결정일까지 "
+           "2. 파산신청 관련 - 법원의 파산신청 기각결정 등으로 사유해소가 확인된 날까지 "
+           "나.변경후 2026년 04월 07일 13:12:00~ "
+           "1. 2025사업연도 감사의견 상장폐지 사유 관련 - 개선기간 종료(차기 "
+           "사업보고서 법정제출기한의 다음날부터 10일) 후 상장폐지여부 결정일까지 "
+           "2. 파산신청 관련 - 법원의 파산신청 기각결정 등으로 사유해소가 확인된 날까지 "
+           "3. 상장적격성 실질심사 사유발생 관련 상장적격성 실질심사 대상여부에 "
+           "관한 결정일까지 "
+           "4.근거규정 코스닥시장상장규정 제18조 및 동규정시행세칙 제19조 "
+           "5.기타 ㅇ 상장적격성 실질심사 사유 : 관리종목 또는 투자주의환기종목의 경영권 변동")
+
+    def test_items_are_not_cut_mid_sentence(self):
+        from bot import dart_feed as df
+        joined = " ".join(df._suspension_change_lines(self.SKN))
+        # 괄호 앞이 통째로 사라지면 안 된다.
+        assert "개선기간 종료" in joined, joined
+        assert "차기 사업보고서 법정제출기한의 다음날부터 10일) 후" in joined
+        # 번호가 낱말을 끊으면 안 된다 — '상장적격성' 이 '적격성' 이 됐었다.
+        assert "적격성 실질심사 사유발생" not in joined.replace(
+            "상장적격성 실질심사 사유발생", ""), joined
+        assert "상장적격성 실질심사 사유발생 관련" in joined, joined
+
+    def test_each_numbered_item_is_its_own_line(self):
+        """세 조건을 한 줄에 이어 붙이면 어디까지가 한 건인지 안 보인다."""
+        from bot import dart_feed as df
+        parts = df._suspension_change_lines(self.SKN)
+        items = [p for p in parts if p.startswith("·")]
+        assert len(items) == 3, parts
+        assert any("파산신청" in p for p in items), items
+
+    def test_start_keeps_its_time(self):
+        """정지 시각(13:12)은 원문이 준 값이다 — 버리면 화면이 덜 말한다."""
+        from bot import dart_feed as df
+        joined = " ".join(df._suspension_change_lines(self.SKN))
+        assert "2026-04-07 13:12" in joined, joined
+
+    def test_a_date_inside_a_condition_is_not_the_start(self):
+        """시작 시각은 블록 **머리**에 온다 — 조건문 안의 날짜를 시작으로
+        잡으면 그 앞이 통째로 잘려 나간다(독립 리뷰 2026-08-31 실측:
+        `· 자 개선기간 종료 후 …` — 고치려던 그 mid-word 절단, #94)."""
+        from bot import dart_feed as df
+        cap = ("주권매매거래정지 기간변경 2.변경사유 상장적격성 실질심사 대상 "
+               "3.정지기간 나.변경후 "
+               "1. 감사의견 상장폐지 사유 관련 - 2026년 04월 07일자 개선기간 "
+               "종료 후 상장폐지여부 결정일까지 "
+               "4.근거규정 코스닥시장상장규정 제18조")
+        parts = df._suspension_change_lines(cap)
+        items = [p for p in parts if p.startswith("·")]
+        # ⚠️ 단언은 **항목이 어디서 시작하나**를 집어야 한다 — 전체 문자열에
+        # `"자 개선기간" not in` 을 걸면 정상 출력(`…07일자 개선기간`)에도
+        # 걸린다(#91b 재는 대상이 맞나).
+        assert items and not items[0].startswith("· 자"), parts
+        assert "2026년 04월 07일자 개선기간 종료" in " ".join(items), parts
+        assert not any(p.startswith("정지기간(변경후): 2026-04-07~")
+                       for p in parts), parts
+
+    def test_undelimited_tail_is_flagged_not_cut(self):
+        """종료 앵커(근거규정)를 못 찾으면 **잘린 조각을 싣지 않는다** —
+        말없이 자르면 뒤 조건이 사라진 줄도 모른다(#43·독립 리뷰)."""
+        from bot import dart_feed as df
+        cap = ("주권매매거래정지 기간변경 2.변경사유 상장적격성 실질심사 대상 "
+               "3.정지기간 나.변경후 2026년 04월 07일 13:12:00~ "
+               + " ".join(f"{i}. 조건 {i} 관련 - 사유해소가 확인된 날까지 "
+                          for i in range(1, 60)))
+        parts = df._suspension_change_lines(cap)
+        # 잘린 조각을 항목으로 싣지 않는다 — 대신 사유를 말한다.
+        assert not any(p.startswith("·") for p in parts), parts
+        assert any(p.startswith("정지기간(변경후):") and "원문" in p
+                   for p in parts), parts
+
+    def test_pre_change_block_is_still_excluded(self):
+        from bot import dart_feed as df
+        cap = self.SKN.replace(
+            "가.변경전 2026년 04월 07일 13:12:00~",
+            "가.변경전 2025년 01월 02일~ 1. 정정공시 제출일까지")
+        joined = " ".join(df._suspension_change_lines(cap))
+        assert "정정공시 제출일까지" not in joined, joined
+        assert "2025-01-02" not in joined, joined
+
+
+class TestUnparsedBackfillRerun20260831:
+    """파서를 고쳐 배포해도 **옛 아카이브 항목**은 재추출 경로가 없다.
+
+    실측(대시보드 2026-08-31): 08-05·08-13·08-14 정지 공시 4건이 미파싱으로
+    남았다 — `run_once` 는 최근 3일만 다시 fetch 하므로 그보다 오래된 항목은
+    `enrich_disclosures` 가 아예 안 본다. 유일한 회수 경로인 미파싱 재추출
+    백필이 **marker 파일 1회**로 고정돼(수동 `_v2` 버전 bump) 배포해도 안 돈다
+    — #18·#21b·#95·#124·#198 과 같은 실패다. 지문으로 바꾼다(#119).
+    """
+
+    def test_marker_carries_the_parser_signature(self, monkeypatch, tmp_path):
+        from bot import dart_feed as df
+        mk = tmp_path / "marker.json"
+        monkeypatch.setattr(df, "_BACKFILL_UNPARSED_MARKER", mk)
+        assert df._backfill_unparsed_due() is True     # 없으면 돈다
+        df._backfill_unparsed_stamp({"checked": 0, "fixed": 0})
+        assert df._backfill_unparsed_due() is False    # 같은 파서면 안 돈다
+        monkeypatch.setattr(df, "_parser_sig", lambda: "deadbeef")
+        assert df._backfill_unparsed_due() is True, \
+            "파서가 바뀌었는데 재추출이 안 돈다"
+
+    def test_legacy_marker_without_signature_triggers_one_rerun(
+            self, monkeypatch, tmp_path):
+        """옛 marker(지문 없음)는 한 번 돌고 지문을 남긴다 — 그래야 이번
+        배포분이 실제로 회수된다."""
+        from bot import dart_feed as df
+        mk = tmp_path / "marker.json"
+        mk.write_text('{"ts": "2026-06-20T00:00:00", "fixed": 3}',
+                      encoding="utf-8")
+        monkeypatch.setattr(df, "_BACKFILL_UNPARSED_MARKER", mk)
+        assert df._backfill_unparsed_due() is True
+
+    def test_budget_abort_does_not_stamp_the_signature(self, monkeypatch,
+                                                       tmp_path):
+        """예산으로 중단된 실행이 지문을 남기면 남은 날짜는 그 배포에서
+        **영영 재추출되지 않는다** — 만들려던 회수 경로가 무력해진다
+        (독립 리뷰 2026-08-31)."""
+        from bot import dart_feed as df
+        mk = tmp_path / "marker.json"
+        monkeypatch.setattr(df, "_BACKFILL_UNPARSED_MARKER", mk)
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "k")
+        monkeypatch.setattr(df, "clear_doc_fail_cache", lambda: 0)
+        monkeypatch.setattr(df, "_budget_today", lambda: df._BUDGET_HARD)
+        monkeypatch.setattr(df, "load_archive", lambda d: [
+            {"rcept_no": "1", "corp_code": "c", "category": "리스크",
+             "report_nm": "주권매매거래정지", "detail": []}])
+        out = df.backfill_unparsed_once_if_needed(days_back=3)
+        assert out is not None
+        assert df._backfill_unparsed_due() is True, \
+            "예산 중단인데 지문이 찍혀 재실행이 막혔다"

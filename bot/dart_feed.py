@@ -1948,23 +1948,42 @@ def _suspension_change_lines(txt: str) -> list[str]:
     m = re.search(r"나\s*\.?\s*변경\s*후", txt)
     blk = ""
     if m:
-        blk = txt[m.end():m.end() + 400]
-        cut = re.search(r"\d{1,2}\s*\.\s*근거|근거규정", blk)
+        # ⚠️ 종료 앵커(근거규정)를 **넓게** 찾되, 못 찾으면 잘린 조각을 싣지
+        # 않는다 — 고정 창을 그냥 자르면 뒤 조건이 말없이 사라지고 마지막
+        # 항목이 낱말 중간에서 끊긴다(독립 리뷰 2026-08-31 실측).
+        rest = txt[m.end():m.end() + 4000]
+        cut = re.search(r"\d{1,2}\s*\.\s*근거|근거규정", rest)
         if cut:
-            blk = blk[:cut.start()]
-    seg = []
-    d = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", blk)
+            blk = rest[:cut.start()]
+        else:
+            parts.append("정지기간(변경후): 원문에서 구간 끝을 찾지 못해 "
+                         "싣지 않았습니다 — 원문 링크로 확인하세요.")
+            return parts
+    # 시작 시각 — 원문이 시:분(:초)까지 주면 버리지 않는다.
+    # ⚠️ 블록 **머리**에서만 찾는다. 아무 데서나 찾으면 조건문 안의 날짜가
+    # 시작으로 잡히고 그 앞이 통째로 잘려 나간다(독립 리뷰 실측:
+    # `· 자 개선기간 종료 후 …` — 고치려던 그 mid-word 절단, #94).
+    d = re.match(r"\s*(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일"
+                 r"(?:\s*(\d{1,2}:\d{2})(?::\d{2})?)?", blk)
     if d:
-        seg.append(f"{d.group(1)}-{int(d.group(2)):02d}-{int(d.group(3)):02d} ~")
-    tills: list[str] = []
-    for t in re.findall(r"([가-힣A-Za-z0-9()·ㆍ ]{2,40}?까지)", blk):
-        t = t.strip()
-        if t and t not in tills:
-            tills.append(t)
-    if tills:
-        seg.append(" / ".join(tills))
-    if seg:
-        parts.append("정지기간(변경후): " + " ".join(seg))
+        head = f"{d.group(1)}-{int(d.group(2)):02d}-{int(d.group(3)):02d}"
+        if d.group(4):
+            head += f" {d.group(4)}"
+        parts.append(f"정지기간(변경후): {head}~")
+        blk = blk[d.end():]
+    elif blk.strip():
+        parts.append("정지기간(변경후):")
+    # ⚠️ 종료조건을 '…까지' **어구**로 뽑으면 문장이 잘린다(스코넥 실측:
+    # charset 이 괄호를 안 받아 `개선기간 종료(차기 …` 가 `차기 …10일) 후`
+    # 로 시작했고, 번호가 앞을 끊어 `상장적격성` 이 `적격성` 이 됐다 — 원본에
+    # 없는 자리에서 낱말이 갈렸다, #94). 원문이 번호로 가른 **항목 단위**로
+    # 통째로 싣는다. 번호가 없으면 남은 문장을 그대로 한 줄.
+    chunks = [c.strip(" -–—") for c in re.split(r"\s(?=\d{1,2}\.\s)", blk)]
+    for c in chunks:
+        c = re.sub(r"^\d{1,2}\.\s*", "", c).strip()
+        c = re.sub(r"\s+", " ", c).strip(" -–—")
+        if len(c) >= 4:
+            parts.append(f"· {c}")
     return parts
 
 
@@ -5388,13 +5407,43 @@ def _has_meaningful_detail(detail) -> bool:
                for l in (detail or []))
 
 
+def _backfill_unparsed_due() -> bool:
+    """미파싱 재추출 백필을 **지금 돌려야 하는가**.
+
+    ⚠️ 옛 코드는 marker 파일 존재 여부로만 갈라(수동 `_v2` 버전 bump) 파서를
+    고쳐 배포해도 다시 돌지 않았다 — `run_once` 는 최근 3일만 재fetch 하므로
+    그보다 오래된 항목은 회수 경로가 **이것뿐**이고, 그래서 08-05·08-13·08-14
+    정지 공시가 미파싱으로 남았다(2026-08-31 실측). 손으로 올리는 버전은 이
+    레포에서 다섯 번 졌다(#18·#21b·#95·#124·#198) → 파서 지문으로 판정한다
+    (#119 규율을 구조로). 지문은 주석·독스트링을 뺀 소스라 문구만 고친
+    배포로는 재실행되지 않는다.
+    """
+    try:
+        d = json.loads(_BACKFILL_UNPARSED_MARKER.read_text(encoding="utf-8"))
+    except Exception:                                          # noqa: BLE001
+        return True                       # 없거나 못 읽으면 돈다
+    return str(d.get("sig") or "") != _parser_sig()
+
+
+def _backfill_unparsed_stamp(stats: dict) -> None:
+    """재추출 결과 + **그때의 파서 지문**을 marker 에 남긴다."""
+    try:
+        _BACKFILL_UNPARSED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _BACKFILL_UNPARSED_MARKER.write_text(json.dumps({
+            "ts": datetime.now(_KST).isoformat(timespec="seconds"),
+            "sig": _parser_sig(), **stats}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
 def backfill_unparsed_once_if_needed(days_back: int = 60) -> dict | None:
     """잔여 미파싱(is_parse_target & meaningful detail 없음) 전 카테고리 재추출 1회
     (사용자 2026-06-20 '미파싱처리'). 파서가 나중 추가됐는데 옛 항목이 generic
     detail(시가총액 줄 등)을 갖고 있어 — detail-부재만 채우는 backfill_admin_issue
     나 kw-한정 reparse_details 에 안 닿던 잔여(관리종목·조회공시 등)를 일괄 해소.
     새 detail 에 meaningful 줄 있을 때만 교체(회귀 0). 콜버짓 가드. marker 1회."""
-    if _BACKFILL_UNPARSED_MARKER.exists():
+    if not _backfill_unparsed_due():
         return None
     api_key = _dart_api_key()
     cleared = clear_doc_fail_cache()      # 신설 파서 과거 실패분 쿨다운 해제
@@ -5445,13 +5494,16 @@ def backfill_unparsed_once_if_needed(days_back: int = 60) -> dict | None:
                 save_archive(d, items)
             except Exception as exc:
                 log.warning("미파싱 재추출 save %s: %s", d, exc)
-    try:
-        _BACKFILL_UNPARSED_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _BACKFILL_UNPARSED_MARKER.write_text(json.dumps({
-            "ts": datetime.now(_KST).isoformat(timespec="seconds"), **stats},
-            ensure_ascii=False))
-    except OSError:
-        pass
+    if stop:
+        # ⚠️ 예산으로 중단된 실행이 지문을 남기면 **남은 날짜는 그 배포에서
+        # 영영 재추출되지 않는다** — 만들려던 회수 경로가 무력해진다(독립
+        # 리뷰 2026-08-31). 다음 실행이 이어서 돌게 둔다(이미 채운 항목은
+        # `_has_meaningful_detail` 가 건너뛰므로 중복 비용 없음).
+        stats["aborted"] = True
+        log.info("dart_feed 미파싱 재추출: 예산으로 중단 — 지문 미기록"
+                 "(다음 실행이 이어감)")
+    else:
+        _backfill_unparsed_stamp(stats)
     log.info("dart_feed 미파싱 재추출: 교체 %d/%d (doc_fail %d 해제)",
              stats["fixed"], stats["checked"], cleared)
     return stats
