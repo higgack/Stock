@@ -42149,3 +42149,30 @@ class TestWhyProbeZeroHitDiagnosis20260830:
         out2 = "\n".join(df.explain_unparsed("없는회사zz", days_back=3))
         assert "이름 후보" not in out2, out2
         assert "드롭" in out2 and "1건" in out2, out2
+
+
+class TestWhyProbeHitTruncation20260830:
+    """`--why` 가 히트를 **오래된 순으로 5건만** 찍고 자른 사실도 말하지
+    않았다(VM 실측 2026-08-30: 에스아이리소스 5건이 08-03~08-11 인데 사용자가
+    찾던 08-28 건은 잘려 안 보였다 — 프로브가 '그 공시는 아카이브에 없다'는
+    **틀린 인상**을 줬다). 총계와 표시분이 다르면 그 사실을 말해야 한다(#45),
+    그리고 정렬 없는 상한은 하필 최신을 버린다."""
+
+    def _items(self, n=7):
+        return [{"rcept_no": f"202608{10 + i:02d}900000", "corp_name": "테스트사",
+                 "corp_code": "0", "report_nm": f"공시{i}", "detail": ["x"],
+                 "category": "리스크"} for i in range(n)]
+
+    def test_newest_first_and_truncation_is_announced(self, monkeypatch):
+        from bot import dart_feed as df
+        monkeypatch.setattr(df, "load_all_archives",
+                            lambda **k: {"2026-08-20": self._items()})
+        monkeypatch.setattr(df, "_dart_api_key", lambda: None)
+        out = "\n".join(df.explain_unparsed("테스트사", days_back=30))
+        assert "7건" in out, out                      # 총계를 말한다
+        assert "20260816900000" in out, out           # 최신이 실린다
+        assert "20260810900000" not in out, out       # 가장 오래된 것은 잘린다
+        # 최신이 먼저 나온다 — 목록 순서로 확인.
+        i_new = out.index("20260816900000")
+        i_old = out.index("20260812900000")
+        assert i_new < i_old, out
