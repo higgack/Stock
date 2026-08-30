@@ -3816,8 +3816,9 @@ def unparsed_audit(days_back: int = 7) -> dict:
     return {"total": total, "dist": dist, "samples": samples}
 
 
-_WHY_VER = 2
+_WHY_VER = 3
 _WHY_WIDE_DAYS = 30   # 요청 윈도에 없으면 여기까지 스스로 넓힌다
+_WHY_SHOW = 5         # 한 번에 진단할 최신 건수(원문 조회 = DART 콜)
 
 
 def explain_unparsed(query: str, days_back: int = 7) -> list[str]:
@@ -3893,7 +3894,16 @@ def explain_unparsed(query: str, days_back: int = 7) -> list[str]:
             out.append("     이름이 비슷한 것도 없다 — 수집 단계에서 드롭됐을 "
                        "수 있다(bot.dart_feed --coverage-audit 로 드롭 확인)")
         return out
-    for it in hits[:5]:
+    # ⚠️ 정렬 없는 상한은 하필 **최신을 버린다**(VM 실측 2026-08-30:
+    # 에스아이리소스 7건 중 08-03~08-11 만 찍혀, 사용자가 찾던 08-28 건이
+    # 잘려 '아카이브에 없다'는 틀린 인상을 줬다). 접수번호는 날짜로 시작
+    # 하므로 내림차순이 곧 최신순이다. 그리고 자른 사실을 **말한다** —
+    # 총계와 표시분이 다르면 사용자가 그걸 알아야 한다(#45).
+    hits.sort(key=lambda it: str(it.get("rcept_no") or ""), reverse=True)
+    out.append(f"  '{q}' 매치 {len(hits)}건"
+               + (f" — 최신 {_WHY_SHOW}건만 아래에 표시"
+                  if len(hits) > _WHY_SHOW else ""))
+    for it in hits[:_WHY_SHOW]:
         rc = str(it.get("rcept_no") or "")
         nm = it.get("report_nm") or ""
         detail = [str(l) for l in (it.get("detail") or [])]
