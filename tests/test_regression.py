@@ -42089,6 +42089,63 @@ class TestDartWhyProbe20260830:
             pass
         out = capsys.readouterr().out
         assert "[미파싱진단 v" in out, out          # 배너(#21)
-        assert "005930" in out and "3일" in out, out  # 질의·윈도 전달
+        # 질의·윈도가 그대로 전달됐는지(#145). ⚠️ 문구 리터럴이 아니라
+        # **값**을 집는다 — v2 에서 0건 메시지를 고치자 옛 `"3일"` 단언이
+        # 깨졌다(#19 이 레포에서 반복된 그 패턴).
+        assert "005930" in out, out
+        assert "요청 3일" in out, out
         # run_once() 로 흘러가 실수집을 돌면 안 된다 — 진단은 읽기만 한다.
         assert "disclosures archived" not in out, out
+
+
+class TestWhyProbeZeroHitDiagnosis20260830:
+    """`--why` 가 0건일 때 **왜 0건인지**를 말해야 한다(VM 실측 2026-08-30:
+    `❌ 아카이브 3일에서 '에스아이리소스' 를 못 찾았다` 한 줄뿐이라, 윈도가
+    좁은 건지·이름 표기가 다른 건지·아카이브 자체가 빈 건지 사용자가 명령을
+    다시 조합해야 했다). 갈래마다 처방이 다르다(#82·#143 대조군)."""
+
+    ITEM = {"rcept_no": "20260828000900", "corp_name": "(주)에스아이리소스",
+            "corp_code": "00000000", "report_nm": "주권매매거래정지기간변경",
+            "detail": [], "category": "리스크"}
+
+    def _arch(self, days):
+        # days=3 창엔 없고 넓은 창에만 있는 아카이브
+        return lambda days_back=7, **k: (
+            {"2026-08-28": [self.ITEM]} if days_back > 3 else {})
+
+    def test_widens_the_window_by_itself_and_says_so(self, monkeypatch):
+        """사용자가 윈도를 다시 고르게 하지 말 것(Automation-first)."""
+        from bot import dart_feed as df
+        monkeypatch.setattr(df, "load_all_archives", self._arch(3))
+        monkeypatch.setattr(df, "_dart_api_key", lambda: None)
+        out = "\n".join(df.explain_unparsed("에스아이리소스", days_back=3))
+        assert "에스아이리소스" in out and "20260828000900" in out, out
+        assert "윈도" in out, out          # 넓혀서 찾았다고 밝힌다
+
+    def test_empty_archive_is_not_the_same_as_missing_company(self,
+                                                              monkeypatch):
+        """아카이브가 비어 있으면 '그 회사가 없다'가 아니라 수집 문제다."""
+        from bot import dart_feed as df
+        monkeypatch.setattr(df, "load_all_archives", lambda **k: {})
+        out = "\n".join(df.explain_unparsed("아무회사", days_back=3))
+        assert "아카이브가 비었다" in out, out
+
+    def test_name_mismatch_offers_candidates(self, monkeypatch):
+        """이름 표기가 다르면 후보를 대라 — '없다'로 끝내면 추측을 부른다.
+
+        ⚠️ 질의를 '에스아이' 로 두면 그건 `(주)에스아이리소스` 의 **부분
+        문자열이라 실제 히트**다 — 후보 경로를 한 번도 안 타서 후보 출력을
+        지우는 뮤테이션이 그대로 통과했다(#91b 재는 대상이 맞나). 히트는
+        아니면서 앞 두 글자를 공유하는 질의라야 그 경로가 돈다.
+        """
+        from bot import dart_feed as df
+        monkeypatch.setattr(df, "load_all_archives",
+                            lambda **k: {"2026-08-28": [self.ITEM]})
+        out = "\n".join(df.explain_unparsed("에스아이알텍", days_back=3))
+        assert "❌" in out, out                      # 찾았다고 하지 않는다
+        assert "이름 후보" in out, out
+        assert "에스아이리소스" in out, out
+        # 앞 두 글자도 안 겹치면 후보를 지어내지 말고 다음 갈래를 가리킨다.
+        out2 = "\n".join(df.explain_unparsed("없는회사zz", days_back=3))
+        assert "이름 후보" not in out2, out2
+        assert "드롭" in out2 and "1건" in out2, out2

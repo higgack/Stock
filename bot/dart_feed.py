@@ -3816,7 +3816,8 @@ def unparsed_audit(days_back: int = 7) -> dict:
     return {"total": total, "dist": dist, "samples": samples}
 
 
-_WHY_VER = 1
+_WHY_VER = 2
+_WHY_WIDE_DAYS = 30   # 요청 윈도에 없으면 여기까지 스스로 넓힌다
 
 
 def explain_unparsed(query: str, days_back: int = 7) -> list[str]:
@@ -3844,16 +3845,53 @@ def explain_unparsed(query: str, days_back: int = 7) -> list[str]:
     key = _dart_api_key()
     out.append(f"  오늘 콜 예산 {_budget_today()} / {_BUDGET_HARD}")
     q = (query or "").strip()
-    hits = []
-    for _ds, items in load_all_archives(days_back=days_back).items():
-        for it in items:
-            if q == str(it.get("rcept_no") or "") or (
-                    len(q) >= 2 and q in str(it.get("corp_name") or "")):
-                hits.append(it)
+
+    def _scan(days: int):
+        arch = load_all_archives(days_back=days)
+        got, seen = [], []
+        for _ds, items in sorted(arch.items()):
+            for it in items:
+                seen.append(it)
+                if q == str(it.get("rcept_no") or "") or (
+                        len(q) >= 2 and q in str(it.get("corp_name") or "")):
+                    got.append(it)
+        return got, seen, sorted(arch)
+
+    hits, seen, dates = _scan(days_back)
+    # ⚠️ 윈도는 사용자가 다시 고르게 하지 말 것(Automation-first) — VM 실측
+    # 2026-08-30 에 '3일에서 못 찾았다' 한 줄로 끝나 사용자가 명령을 다시
+    # 조합해야 했다. 스스로 넓혀 보고 **넓혀서 찾았다고 밝힌다**.
+    if not hits and days_back < _WHY_WIDE_DAYS:
+        wide, seen_w, dates_w = _scan(_WHY_WIDE_DAYS)
+        if wide:
+            out.append(f"  ↪ 요청 윈도 {days_back}일엔 없어 "
+                       f"{_WHY_WIDE_DAYS}일로 넓혀 찾았다")
+            hits, seen, dates = wide, seen_w, dates_w
+        else:
+            seen, dates = seen_w, dates_w
     if not hits:
-        # ⚠️ 대조 0건은 '이상 없음'이 아니라 진단 실패다(#54).
-        out.append(f"  ❌ 아카이브 {days_back}일에서 '{q}' 를 못 찾았다 — "
-                   "접수번호/회사명 또는 윈도를 확인할 것")
+        # ⚠️ 대조 0건은 '이상 없음'이 아니라 진단 실패다(#54). 그리고 0건의
+        # 갈래를 말해야 한다 — 아카이브가 빈 것(수집 문제)과 그 회사가 없는
+        # 것(드롭·표기 차이)은 처방이 다르다(#82·#143 대조군 없이는 '없음'과
+        # '못 받음'을 못 가른다).
+        span = f"{dates[0]}~{dates[-1]}" if dates else "없음"
+        out.append(f"  ❌ '{q}' 를 못 찾았다 — 요청 {days_back}일 · "
+                   f"아카이브 {span} · {len(seen)}건 조회")
+        if not seen:
+            out.append("     아카이브가 비었다 — 그 회사의 문제가 아니라 "
+                       "수집 경로를 볼 것(run_once·타이머·권한)")
+            return out
+        near = []
+        for it in seen:
+            nm = str(it.get("corp_name") or "")
+            if len(q) >= 2 and (q[:2] in nm or nm[:2] in q):
+                if nm not in near:
+                    near.append(nm)
+        if near:
+            out.append(f"     이름 후보(표기 차이 가능): {', '.join(near[:5])}")
+        else:
+            out.append("     이름이 비슷한 것도 없다 — 수집 단계에서 드롭됐을 "
+                       "수 있다(bot.dart_feed --coverage-audit 로 드롭 확인)")
         return out
     for it in hits[:5]:
         rc = str(it.get("rcept_no") or "")
