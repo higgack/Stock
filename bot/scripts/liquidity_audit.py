@@ -64,6 +64,21 @@ def _series_meta(sid: str):
         return None
 
 
+def summary_lines(bad_unit, late, no_rule) -> list:
+    """요약 줄. ⚠️ **세기만 한다** — 이름은 위 표가 이미 댔다.
+
+    옛 코드는 지연 항목을 다시 나열해 같은 결함이 두 번 세어졌다(2026-08-31
+    실측: 지연 7건이 sweep 에서 14건). 총계와 소계가 다른 모집단을 세면
+    갈라진다(#45·#250).
+    """
+    out = [f"── 요약: 단위 의심 {len(bad_unit)} · 지연 {len(late)} · "
+           f"규약 없음 {len(no_rule)}"]
+    if bad_unit or late:
+        out.append(f"   위 표의 ❌ 표시 항목을 볼 것(단위 {len(bad_unit)} · "
+                   f"지연 {len(late)})")
+    return out
+
+
 def main() -> int:
     from bot.fred_boards_catalog import LIQ_SERIES
     from bot.macro_cadence import CADENCE, judge
@@ -144,14 +159,8 @@ def main() -> int:
                    f" → {'**원천이 여기까지밖에 없다**(규약을 늘린다)' if same else '**우리 수집이 뒤처졌다**(캐시·수집 경로 점검)'}")
 
     _p("")
-    _p(f"── 요약: 단위 의심 {len(bad_unit)} · 지연 {len(late)} · "
-       f"규약 없음 {len(no_rule)}")
-    for x in bad_unit:
-        _p(f"   ❌ 단위 {x}")
-    for x in late:
-        _p(f"   ❌ 지연 {x}")
-    for x in no_rule:
-        _p(f"   ⚪ 규약 {x}")
+    for _ln in summary_lines(bad_unit, late, no_rule):
+        _p(_ln)
     return 0
 
 

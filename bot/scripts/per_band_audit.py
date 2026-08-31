@@ -276,6 +276,14 @@ def audit_one(ticker: str, dump: bool = False) -> list[str]:
     return out
 
 
+def total_line(bad: int) -> str:
+    """총계 줄. ⚠️ **판정 글자를 계수 라벨로 쓰지 않는다**(#250) — `총 ❌ 0건`
+    이 sweep 에서 결함으로 세어졌다(2026-08-31 실측). 0 은 문맥에 따라
+    정상이기도 결함이기도 해서 소비부는 그걸 못 가른다."""
+    return (f"총 불일치 {bad}건 — 판정불가(물음표)는 통과가 아니라 "
+            "판정 불가다(#54).")
+
+
 def main() -> None:
     import time
     from bot.scripts.probe_progress import fmt_eta, stream_stdout
@@ -303,7 +311,7 @@ def main() -> None:
         for ln in lines:
             print(ln, flush=True)
     print(fmt_eta(len(tickers), len(tickers), t0))
-    print(f"\n총 ❌ {bad}건 — ❓ 는 통과가 아니라 **판정 불가**다(#54).")
+    print("\n" + total_line(bad))
 
 
 if __name__ == "__main__":
