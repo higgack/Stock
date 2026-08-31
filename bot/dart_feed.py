@@ -4568,6 +4568,58 @@ def _sig_pct(detail: list, label_pat: str) -> float | None:
     return None
 
 
+# 상장폐지 전용 칩(사용자 2026-08-31: "상장폐지 관련을 리스크에서 따로 빼서
+# 리스크 앞에 따로 만들어줘. 이전것까지 모두 백필해서").
+DELIST_CATEGORY = "상장폐지"
+
+
+def is_delisting_related(item: dict) -> bool:
+    """상장폐지 신호인가 — 🔥 판정과 칩 분류가 **같이 쓰는** 단일 술어.
+
+    ⚠️ '상장폐지시까지' 는 기간 boilerplate 다 — 병합/분할 전자등록 변경의
+    기계적 거래정지(에코마케팅 230360, 2026-06-12 오발)가 그 문구만으로
+    발화하던 것을 차단한다. 실제 신호(상장폐지결정·상장폐지일·상장폐지 우려·
+    사유의 상장폐지)와 '실질심사'(상폐 전단계)는 유지.
+
+    발화 라인은 화이트리스트 — 제목/사건(소송·자율공시) + 사유/해제·만료/
+    결론(매매거래정지·기타시장안내). '비고: 상장폐지 아님' 류 자유 서술의
+    오발을 막는다.
+    """
+    rn = str(item.get("report_nm") or "")
+
+    def _hit(s: str) -> bool:
+        s = s.replace("상장폐지시까지", "").replace("상장폐지 시까지", "")
+        return "상장폐지" in s or "실질심사" in s
+
+    if _hit(rn):
+        return True
+    return any(_hit(s) for dl in (item.get("detail") or [])
+               if (s := str(dl)).startswith(("제목:", "사건:", "사유:",
+                                             "해제·만료:", "결론:")))
+
+
+def display_category(item: dict, sig: str | None = None) -> str:
+    """화면에 쓸 카테고리. 리스크 중 **상장폐지 신호**만 전용 칩으로 뺀다.
+
+    ⚠️ **백필이 공짜인 이유** — `significance()` 는 렌더타임 순수 판정이라
+    옛 아카이브를 다시 쓰지 않아도 과거 카드가 그대로 새 칩으로 간다(#32
+    '렌더에서 내리면 옛 아카이브까지 재수집 없이 정리된다' 의 반대 방향).
+    수집기(`_classify_report`)는 손대지 않는다 — 저장은 종전대로 '리스크'다.
+
+    ⚠️ **'리스크에서' 만 뺀다.** 상장폐지를 언급하는 소송·조회공시까지 옮기면
+    한 칩을 만들려고 다른 칩을 비우는 셈이다(사용자 문구도 '리스크에서 빼서').
+    """
+    # ⚠️ 빈 카테고리는 종전 폴백('기타')을 지킨다 — "" 를 돌려주면
+    # `data-cat=""` 빈 칩이 생기고 클릭 시 필터가 전체로 리셋된다(독립 리뷰).
+    cat = str(item.get("category") or "") or "기타"
+    # ⚠️ `sig` 가 아니라 **술어**로 판정한다. `significance()` 는 [기재정정]을
+    # 통째로 제외하는데(🔥 배지 규칙), 그걸 카테고리에도 적용하면 같은 사건의
+    # 원공시와 정정이 **두 칩으로 쪼개진다**(독립 리뷰 2026-08-31).
+    if cat == "리스크" and is_delisting_related(item):
+        return DELIST_CATEGORY
+    return cat
+
+
 def significance(item: dict, shares_outstanding: float | None = None,
                  market_cap: float | None = None) -> str | None:
     """중요 공시 8규칙 판정(사용자 2026-06-12) → 발화 사유 문자열 or None.
@@ -4614,14 +4666,7 @@ def significance(item: dict, shares_outstanding: float | None = None,
     # 기계적 거래정지(에코마케팅 230360, 2026-06-12 오발)가 '구주권
     # 상장폐지시까지 정지' 문구만으로 발화하던 것 차단. 실제 상폐
     # 신호(상장폐지결정/상장폐지일/상장폐지 우려/사유의 상장폐지)는 유지.
-    def _delist_hit(s: str) -> bool:
-        s = s.replace("상장폐지시까지", "").replace("상장폐지 시까지", "")
-        return "상장폐지" in s or "실질심사" in s
-    if ("상장폐지" in rn or "실질심사" in rn or any(
-            _delist_hit(s)
-            for dl in detail
-            if (s := str(dl)).startswith(("제목:", "사건:", "사유:",
-                                          "해제·만료:", "결론:")))):
+    if is_delisting_related(item):
         return "상장폐지 관련"
     # 7b — 관리종목(지정우려/지정/해제) = 상장폐지 전단계 경고, 시총·매출
     # 요건 미달 시그널이라 반드시 확인 대상(사용자 2026-07-05 수성웹툰
