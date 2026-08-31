@@ -42931,3 +42931,52 @@ class TestAuditReportingDefects20260831:
                 if _re.search(r"(총|요약|합계)\s*[^\n]{0,12}[❌✅]", v):
                     bad.append(f"{p.name}: {v[:60]}")
         assert not bad, "요약/총계에 판정 글자: " + " | ".join(bad)
+
+
+class TestH10WeeklyReleaseCadence20260831:
+    """FRED 환율·달러지수는 **관측은 일별인데 공표는 주 1회**(H.10, 월요일).
+
+    VM 실측(2026-08-31 09:34 KST): 7종 전부 `observation_end=2026-08-21` ·
+    `last_updated=2026-08-24 15:16` — 원천은 정상이고 다음 릴리스는 월요일
+    16:15 ET(= 09-01 KST)다. 그런데 규약이 `("D", 3)` 이라 월요일 아침부터
+    다음 릴리스까지 **매일 ❌ 지연**으로 떴다. 감사 스스로 `원천이 여기까지
+    밖에 없다(규약을 늘린다)` 라고 말했다.
+
+    ⚠️ 고칠 수 없는 ❌ 가 매일 오면 진짜 ❌ 를 가린다(#260).
+    """
+
+    H10 = ("DTWEXBGS", "DEXKOUS", "DEXJPUS", "DEXCHUS",
+           "DEXUSEU", "DEXUSUK", "DEXSZUS")
+
+    def test_real_observed_state_is_not_stale(self):
+        """실측 그대로 — 08-31 에 08-21 관측은 정상이다."""
+        import datetime as dt
+        from bot import macro_cadence as mc
+        today = dt.date(2026, 8, 31)
+        for sid in self.H10:
+            j = mc.judge(sid, "2026-08-21", today=today)
+            assert j is not None, sid
+            assert not j["stale"], (sid, j)
+
+    def test_a_real_week_long_pause_is_still_caught(self):
+        """규약을 늘리는 게 '항상 통과'는 아니다 — 한 주기를 더 놓치면
+        여전히 잡혀야 한다(#57 완화는 다른 축의 증거를 같이 요구)."""
+        import datetime as dt
+        from bot import macro_cadence as mc
+        j = mc.judge("DEXKOUS", "2026-08-21", today=dt.date(2026, 9, 8))
+        assert j and j["stale"], j
+
+    def test_all_h10_series_share_one_spec(self):
+        """형제 설정은 한쪽만 고치면 다른 쪽이 조용히 어긋난다(#27·#31) —
+        이름 열거가 아니라 **릴리스 그룹**에서 파생시킨다."""
+        from bot import macro_cadence as mc
+        specs = {mc.CADENCE[s][:2] for s in self.H10}
+        assert len(specs) == 1, specs
+        assert specs.pop()[0] == "W", "H.10 은 주간 릴리스다"
+
+    def test_new_fx_series_cannot_get_a_different_rule(self):
+        """새 DEX* 를 카탈로그에 더할 때 규약을 따로 적으면 또 갈라진다."""
+        from bot import macro_cadence as mc
+        off = [s for s in mc.CADENCE
+               if s.startswith("DEX") and mc.CADENCE[s][0] != "W"]
+        assert not off, f"H.10 계열인데 주간이 아님: {off}"
