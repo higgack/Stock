@@ -42838,3 +42838,96 @@ class TestDocStatusClasses20260831:
                 pre + b'<?xml version="1.0"?><result><status>014</status>'
                 b"<message>x</message></result>")
             assert code == "014", pre
+
+
+class TestAuditReportingDefects20260831:
+    """일일 감사 `❌ 19건`(2026-08-31) 중 다수가 **감사 도구의 오보**였다.
+
+    #250 에서 "판정 글자는 판정에만 쓴다 · 요약은 세기만 한다"를 board_audit
+    에 적용했는데, 같은 병이 다른 감사에 그대로 남아 있었다(#38 한 화면에서
+    버그를 고치면 같은 계산을 하는 다른 화면을 즉시 grep). 못 고칠 ❌ 가 매일
+    오면 진짜 ❌ 를 가린다(#260).
+    """
+
+    def test_per_band_total_line_is_not_counted_as_a_finding(self):
+        """`총 ❌ 0건 — …` 이 결함으로 세어졌다(실측). 판정 글자를 계수
+        라벨로 쓰면 정상 결과가 결함이 된다."""
+        from bot.audit_sweep import _findings
+        from bot.scripts.per_band_audit import total_line
+        out = "PER 밴드 감사\n" + total_line(0)
+        assert not _findings(out), _findings(out)
+        # 진짜 실패가 있으면 그건 여전히 잡혀야 한다.
+        assert _findings("PER 밴드 감사\n[SIE.DE] ❌ 산수 불일치 3건")
+
+    def test_liquidity_summary_counts_without_relisting(self):
+        """요약이 지연 항목을 **다시 나열**해 같은 결함이 두 번 세어졌다
+        (실측: 7건이 14건으로). 이름은 위 표가 댄다."""
+        from bot.scripts.liquidity_audit import summary_lines
+        late = [f"DEX{i} 2026-08-21" for i in range(7)]
+        lines = summary_lines([], late, [])
+        joined = "\n".join(lines)
+        assert "지연 7" in joined, lines
+        for x in late:
+            assert x not in joined, (x, lines)
+        assert sum(1 for ln in lines if "❌" in ln) <= 1, lines
+
+    def test_fcf_findings_name_the_ticker(self):
+        """어느 종목인지 안 찍으면 고칠 수가 없다(#114 감사는 무엇을 보고
+        말하는지 출처를 같이 찍을 것). 실측 출력엔 종목이 없어 `① 재계산 ❌`
+        만 남았다."""
+        from bot.scripts.fcf_audit import mark_finding
+        assert mark_finding("AAPL", "① 재계산 ❌ 3건").startswith("[AAPL]")
+        # 이미 종목이 있으면 두 번 붙이지 않는다.
+        one = mark_finding("AAPL", "[AAPL] ① 재계산 ❌ 3건")
+        assert one.count("AAPL") == 1, one
+        # ❌ 없는 줄은 건드리지 않는다(진행·설명 줄이 지저분해진다).
+        assert mark_finding("AAPL", "① 재계산 ✅") == "① 재계산 ✅"
+
+    def test_fcf_say_is_wired_to_mark_finding(self):
+        """헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20 — 실측으로
+        확인). `audit_one` 은 네트워크가 필요해 값으로 못 태우므로 호출을
+        AST 로 못박는다."""
+        import ast
+        import inspect
+        import textwrap
+        from bot.scripts import fcf_audit
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fcf_audit.audit_one)))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "mark_finding"]
+        assert calls, "audit_one 의 say() 가 mark_finding 을 안 부른다"
+
+    def test_no_audit_uses_a_verdict_glyph_as_a_count_label(self):
+        """디렉터리 전수 — 이름 열거는 다음 감사를 못 잡는다(#24).
+
+        계약: 요약·총계 문구에 판정 글자를 쓰지 않는다. 쓰면 sweep 이 그
+        줄을 결함으로 센다(#250 은 그걸 소비부에서 못 가른다 — 0 은 문맥에
+        따라 정상이기도 결함이기도 하다).
+        """
+        import ast
+        import pathlib
+        import re as _re
+        bad = []
+        for p in sorted(pathlib.Path("bot/scripts").glob("*audit*.py")):
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+            # ⚠️ **독스트링을 걷어내고 본다** — 이 규칙을 설명하는 주석·
+            # 독스트링이 규칙 자체를 위반한 것으로 잡힌다(#59b 소스 검사는
+            # 독스트링을 지우고 볼 것; 실제로 이 가드가 자기 설명을 물었다).
+            for holder in ast.walk(tree):
+                body = getattr(holder, "body", None)
+                if (isinstance(body, list) and body
+                        and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    body.pop(0)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Constant) or not isinstance(
+                        node.value, str):
+                    continue
+                v = node.value
+                if "❌" not in v and "✅" not in v:
+                    continue
+                # '총 ❌ 3건' · '요약 … ✅ 0' 처럼 계수 문구 + 판정 글자
+                if _re.search(r"(총|요약|합계)\s*[^\n]{0,12}[❌✅]", v):
+                    bad.append(f"{p.name}: {v[:60]}")
+        assert not bad, "요약/총계에 판정 글자: " + " | ".join(bad)

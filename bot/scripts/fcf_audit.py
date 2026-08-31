@@ -133,6 +133,13 @@ def _yf_rows(snap: dict, kind: str) -> list[tuple[str, dict]]:
                   key=lambda x: x[0])
 
 
+def mark_finding(tk: str, line: str) -> str:
+    """결함(❌) 줄에 종목을 붙인다. 이미 있거나 결함이 아니면 그대로."""
+    if "❌" not in line or tk in line:
+        return line
+    return f"[{tk}] {line}"
+
+
 def audit_one(tk: str, dart, years: int = 3) -> dict:
     """한 종목 감사 → {"lines": [...], "bad": n, "unknown": n}."""
     from bot.fcf import cumulative_smell, fcf_from_row
@@ -145,7 +152,11 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     bad = unknown = 0
 
     def say(s):
-        out.append(s)
+        # ⚠️ 결함 줄엔 **어느 종목인지** 붙인다 — 안 붙이면 sweep 이 바로 위
+        # 줄을 섹션으로 집어 `[③ 두 화면이…] ① 재계산 ❌` 처럼 종목이 없는
+        # 보고가 된다(2026-08-31 실측). 감사는 무엇을 보고 말하는지 출처를
+        # 같이 찍어야 한다(#114).
+        out.append(mark_finding(tk, s))
 
     def flag(ok: bool | None):
         nonlocal bad, unknown
