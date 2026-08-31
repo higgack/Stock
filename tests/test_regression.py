@@ -14275,18 +14275,28 @@ class TestDartDividendCategoryAndCapitalRaise:
                             market_cap=1e12) is None         # 정정 제외
 
     def test_pill_order_user_spec(self):
+        """사용자 2026-06-12 확정 상대 순서는 불변 — 이후 신설 칩은 **삽입만**.
+
+        ⚠️ 계약 정정(2026-08-31, #222): 옛 테스트는 전체 목록을 리터럴로
+        박아, 사용자가 지시한 삽입(정기보고서 2026-08-16 · 상장폐지
+        2026-08-31)마다 깨졌다. 계약은 "2026-06-12 순서가 유지된다"이지
+        "목록이 그때 그대로다"가 아니다 — 삽입분을 빼면 원본이 복원되는지로
+        본다(#19 소스·리터럴 단언 금지).
+        """
         from bot.dashboard import _DART_CATEGORIES
+        inserted = {"정기보고서", "상장폐지"}
+        assert inserted <= set(_DART_CATEGORIES), _DART_CATEGORIES
         # 배당↔지분공시 교환 (사용자 2026-06-12 2차)
-        assert _DART_CATEGORIES == [
-            "전체", "실적", "정기보고서", "계약", "신규시설투자", "주주환원",
-            "자금조달", "지분공시", "배당", "리스크", "소송", "회사구조",
-            "자산양수도", "조회공시", "IR"]
-        # 정기보고서(2026-08-16 신설)는 **삽입만** 했다 — 사용자가 2026-06-12
-        # 에 확정한 나머지 칩의 상대 순서는 그대로여야 한다(빼면 원본 복원).
-        assert [c for c in _DART_CATEGORIES if c != "정기보고서"] == [
+        assert [c for c in _DART_CATEGORIES if c not in inserted] == [
             "전체", "실적", "계약", "신규시설투자", "주주환원", "자금조달",
             "지분공시", "배당", "리스크", "소송", "회사구조", "자산양수도",
             "조회공시", "IR"]
+        # 삽입 위치도 사용자 지시대로 — 정기보고서는 실적 뒤, 상장폐지는
+        # 리스크 앞.
+        assert (_DART_CATEGORIES.index("정기보고서")
+                == _DART_CATEGORIES.index("실적") + 1)
+        assert (_DART_CATEGORIES.index("상장폐지") + 1
+                == _DART_CATEGORIES.index("리스크"))
 
     def test_v5_reclass_wiring_and_parse_cats(self):
         from bot.dart_feed import _PARSE_CATS, reclassify_v5_once_if_needed
@@ -42980,3 +42990,127 @@ class TestH10WeeklyReleaseCadence20260831:
         off = [s for s in mc.CADENCE
                if s.startswith("DEX") and mc.CADENCE[s][0] != "W"]
         assert not off, f"H.10 계열인데 주간이 아님: {off}"
+
+
+class TestDelistingCategory20260831:
+    """사용자 2026-08-31: "상장폐지 관련을 리스크에서 따로 빼서 리스크 앞에
+    따로 만들어줘. 이전것까지 모두 백필해서."
+
+    ⚠️ **백필은 render-time 파생으로 공짜다** — `significance()` 가 순수
+    판정이라(#32 렌더에서 내리면 옛 아카이브까지 재수집 없이 정리된다) 옛
+    아카이브를 다시 쓰지 않아도 과거 카드가 그대로 새 칩으로 간다.
+    """
+
+    RISK = {"report_nm": "기타시장안내 (개선계획서 제출)", "category": "리스크",
+            "detail": ["결론: 거래소는 동 제출일로부터 20영업일 이내에 "
+                       "기업심사위원회의 심의를 거쳐 상장폐지, 개선"]}
+
+    def test_delisting_risk_moves_to_its_own_category(self):
+        from bot.dart_feed import display_category, significance
+        sig = significance(self.RISK)
+        assert sig == "상장폐지 관련", sig
+        assert display_category(self.RISK, sig) == "상장폐지"
+
+    def test_other_risk_items_stay_in_risk(self):
+        """리스크 칩이 통째로 비면 안 된다 — 상장폐지 신호가 없는 건 그대로."""
+        from bot.dart_feed import display_category
+        it = {"report_nm": "소송등의제기", "category": "리스크", "detail": []}
+        assert display_category(it, None) == "리스크"
+        assert display_category(it, "관리종목 관련") == "리스크"
+
+    def test_other_categories_are_not_emptied(self):
+        """'리스크에서 빼서' 다 — 소송·조회공시가 상장폐지를 언급해도 제 칩에
+        남는다(한 칩을 만들려고 다른 칩을 비우면 안 된다)."""
+        from bot.dart_feed import display_category
+        for cat in ("소송", "조회공시", "회사구조"):
+            it = {"report_nm": "x", "category": cat, "detail": []}
+            assert display_category(it, "상장폐지 관련") == cat, cat
+
+    def test_chip_order_puts_it_right_before_risk(self):
+        from bot.dashboard import _DART_CATEGORIES as C
+        assert "상장폐지" in C, C
+        assert C.index("상장폐지") + 1 == C.index("리스크"), C
+
+    def test_new_chip_has_a_color(self):
+        """색이 없으면 칩이 무채색으로 떠 다른 칩과 구별이 안 된다."""
+        from bot.dashboard import _DART_CAT_COLORS
+        assert _DART_CAT_COLORS.get("상장폐지"), _DART_CAT_COLORS
+        assert (_DART_CAT_COLORS["상장폐지"]
+                != _DART_CAT_COLORS.get("리스크")), "리스크와 같은 색"
+
+    def test_rendered_page_shows_the_new_chip(self):
+        """헬퍼만 있으면 화면은 그대로다(#20) — **렌더된 HTML** 로 확인한다.
+
+        ⚠️ 처음엔 `regenerate_dart_feed_index` 를 AST 로 봤는데 배선은
+        `_render_dart_feed_page` 에 있었다 — 이름을 겨누면 엉뚱한 곳을 재게
+        된다(#91b). 값으로 보면 그 위험이 없다.
+        """
+        from bot.dashboard import _render_dart_feed_page
+        it = dict(self.RISK, rcept_no="20260831900001", corp_name="진원생명과학",
+                  stock_code="011000", date="2026-08-31",
+                  corp_code="00000000", url="https://dart.fss.or.kr/x")
+        other = {"report_nm": "소송등의제기", "category": "리스크",
+                 "detail": ["사건: 손해배상"], "rcept_no": "20260831900002",
+                 "corp_name": "다른회사", "stock_code": "000001",
+                 "date": "2026-08-31", "corp_code": "00000001", "url": "u"}
+        html, _frags = _render_dart_feed_page({"2026-08-31": [it, other]})
+        assert 'data-cat="상장폐지">상장폐지 1<' in html, \
+            [x for x in html.split("<button") if "df-pill" in x][:12]
+        # 리스크 칩은 남은 1건만 센다 — 두 번 세면 총계가 갈린다(#45).
+        assert 'data-cat="리스크">리스크 1<' in html
+        # 칩 순서: 상장폐지가 리스크보다 앞.
+        assert html.index('data-cat="상장폐지"') < html.index('data-cat="리스크"')
+
+    def test_unparsed_badge_survives_the_category_split(self):
+        """카테고리를 먼저 갈아치우면 `is_parse_target` 이 새 이름을 몰라
+        **미파싱 배지가 통째로 사라진다**(독립 리뷰 2026-08-31 실측). 하필
+        #264~#267 의 그 정지 공시들이라, 화면에서 사라지는 동안 감사는 저장된
+        '리스크' 로 계속 세어 둘이 갈린다(#35).
+        """
+        from bot.dashboard import _render_dart_feed_page
+        it = {"report_nm": "주권매매거래정지기간변경              "
+                           "(상장적격성 실질심사 대상(사유발생))",
+              "category": "리스크", "detail": [],
+              "rcept_no": "20260831900003", "corp_name": "스코넥",
+              "stock_code": "276040", "corp_code": "00123456",
+              "date": "2026-08-31", "url": "u"}
+        html, _ = _render_dart_feed_page({"2026-08-31": [it]})
+        assert 'data-cat="상장폐지"' in html, "새 칩이 없다"
+        assert "미파싱" in html and 'data-flag="unparsed"' in html, \
+            "미파싱 배지가 사라졌다"
+
+    def test_correction_of_a_delisting_filing_lands_in_the_same_chip(self):
+        """[기재정정]은 🔥 배지에서만 빼는 규칙이다 — 카테고리까지 갈리면
+        같은 사건이 두 칩으로 쪼개진다(독립 리뷰 2026-08-31)."""
+        from bot.dart_feed import display_category, significance
+        it = dict(self.RISK,
+                  report_nm="[기재정정]기타시장안내 (개선계획서 제출)")
+        assert significance(it) is None, "정정은 🔥 가 아니다(종전 규칙)"
+        assert display_category(it, significance(it)) == "상장폐지"
+
+    def test_missing_category_keeps_the_old_fallback(self):
+        """빈 문자열을 돌려주면 `data-cat=""` 빈 칩이 생기고 클릭하면 필터가
+        전체로 리셋된다(독립 리뷰 2026-08-31)."""
+        from bot.dart_feed import display_category
+        assert display_category({"report_nm": "x"}, None) == "기타"
+        assert display_category({"category": None}, None) == "기타"
+
+    def test_period_boilerplate_does_not_create_a_delisting_card(self):
+        """'구주권 상장폐지시까지 정지' 는 **기간 표현**이다 — 병합/분할
+        전자등록 변경의 기계적 거래정지(에코마케팅 230360, 2026-06-12 오발)가
+        그 문구만으로 발화하던 것을 차단한다.
+
+        ⚠️ 이 가드는 지금까지 **회귀가 없었다**(뮤테이션으로 확인 — 지워도
+        전 스위트가 green). 🔥 배지에만 걸려 있을 땐 넘어갔지만 이제 **칩
+        분류까지** 좌우하므로 못박는다.
+        """
+        from bot.dart_feed import display_category, is_delisting_related
+        it = {"report_nm": "주권매매거래정지", "category": "리스크",
+              "detail": ["사유: 주식병합 — 구주권 상장폐지시까지 매매거래정지"]}
+        assert is_delisting_related(it) is False, it
+        assert display_category(it) == "리스크"
+        # 진짜 신호는 여전히 잡는다.
+        real = {"report_nm": "주권매매거래정지", "category": "리스크",
+                "detail": ["사유: 상장폐지 사유 발생"]}
+        assert is_delisting_related(real) is True
+        assert display_category(real) == "상장폐지"
