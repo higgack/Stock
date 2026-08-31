@@ -43018,13 +43018,33 @@ class TestDelistingCategory20260831:
         assert display_category(it, None) == "리스크"
         assert display_category(it, "관리종목 관련") == "리스크"
 
-    def test_other_categories_are_not_emptied(self):
-        """'리스크에서 빼서' 다 — 소송·조회공시가 상장폐지를 언급해도 제 칩에
-        남는다(한 칩을 만들려고 다른 칩을 비우면 안 된다)."""
+    def test_litigation_and_inquiry_also_move(self):
+        """⚠️ 계약 정정(2026-08-31 2차, #222): 사용자 "상장폐지를 언급하는
+        소송 조회공시도 새로 만든 곳으로 옮겨줘".
+
+        옛 테스트는 '리스크에서만 뺀다'를 못박고 있었다(첫 요청 문구가
+        '리스크에서 빼서' 였다) — 사용자가 범위를 넓혔으므로 다시 쓴다.
+        """
         from bot.dart_feed import display_category
-        for cat in ("소송", "조회공시", "회사구조"):
-            it = {"report_nm": "x", "category": cat, "detail": []}
-            assert display_category(it, "상장폐지 관련") == cat, cat
+        for cat in ("리스크", "소송", "조회공시"):
+            it = {"report_nm": "주권매매거래정지", "category": cat,
+                  "detail": ["사유: 상장폐지 사유 발생"]}
+            assert display_category(it) == "상장폐지", cat
+
+    def test_unrelated_categories_still_keep_their_chip(self):
+        """범위는 **명시된 세 칩**이다 — 정기보고서·자금조달이 본문에서
+        상장폐지를 언급한다고 그 칩까지 비우지 않는다."""
+        from bot.dart_feed import display_category
+        for cat in ("회사구조", "정기보고서", "자금조달", "계약"):
+            it = {"report_nm": "x", "category": cat,
+                  "detail": ["사유: 상장폐지 사유 발생"]}
+            assert display_category(it) == cat, cat
+
+    def test_eligible_set_is_a_single_source(self):
+        """어느 칩에서 옮기는지는 상수 하나가 정한다 — 조건문에 흩어 적으면
+        다음에 범위를 바꿀 때 한쪽만 고쳐진다(#38)."""
+        from bot.dart_feed import DELIST_FROM
+        assert set(DELIST_FROM) == {"리스크", "소송", "조회공시"}, DELIST_FROM
 
     def test_chip_order_puts_it_right_before_risk(self):
         from bot.dashboard import _DART_CATEGORIES as C
