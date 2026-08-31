@@ -16955,13 +16955,25 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
 def regenerate_dart_feed_index() -> None:
     """DART feed archive → dart_feed.html."""
     try:
-        by_date = _load_dart_feed_data(days_back=30)
+        # 창 90일 — 사용자 2026-09-01 "8월 이전은 없는거야?". 30일이면
+        # 이번 달 + 지난달 일부뿐이라 그 앞이 **구조적으로** 안 보였다(상장폐지
+        # 칩만의 문제가 아니라 모든 칩이 그랬다). 90일이면 피드 개시(2026-06)
+        # 부터 전부 덮는다. 본문 HTML 은 최신 달만 인라인이라 클라이언트 부담은
+        # 그대로고(실측 0.32MB 불변), 렌더 CPU 는 4만 건에 1.8초/사이클이다.
+        by_date = _load_dart_feed_data(days_back=90)
         _df_html, _df_frags = _render_dart_feed_page(by_date)
         for _fn, _fc in _df_frags.items():   # 프래그먼트 먼저 + 원자(404/잘림 창 차단)
             try:
-                _ft = (ARCHIVE_ROOT / _fn).with_suffix(".tmp")
+                _dst = ARCHIVE_ROOT / _fn
+                # ⚠️ **내용이 같으면 쓰지 않는다.** 과거 월 아카이브는 안 바뀌는데
+                # 1분 사이클마다 통째로 다시 쓰고 있었다(실측: 30일 창에서도
+                # 7.98MB/분 · 90일이면 24.5MB/분 = 하루 35GB). 창을 넓히는 비용은
+                # CPU 가 아니라 이 I/O 였다 — 없애면 넓히기가 거의 공짜다.
+                if _dst.exists() and _dst.read_text(encoding="utf-8") == _fc:
+                    continue
+                _ft = _dst.with_suffix(".tmp")
                 _ft.write_text(_fc, encoding="utf-8")
-                _ft.replace(ARCHIVE_ROOT / _fn)
+                _ft.replace(_dst)
             except Exception as _fe:
                 log.warning("dashboard: dart fragment %s failed: %s", _fn, _fe)
         html = _inject_update_banner(_df_html)

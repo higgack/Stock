@@ -43134,3 +43134,82 @@ class TestDelistingCategory20260831:
                 "detail": ["사유: 상장폐지 사유 발생"]}
         assert is_delisting_related(real) is True
         assert display_category(real) == "상장폐지"
+
+
+class TestDartFeedWindowAndFragmentWrites20260901:
+    """사용자 2026-09-01: "8월 이전은 없는거야?"
+
+    상장폐지만의 문제가 아니라 **페이지 자체가 30일 창**이었다 — 모든 칩이
+    그렇다. 넓히는 비용은 CPU 가 아니라 **디스크 쓰기**다: 과거 월
+    프래그먼트가 1분 사이클마다 통째로 다시 쓰인다(샌드박스 실측: 30일 창의
+    과거 월 프래그먼트 7.98MB · 90일이면 24.5MB — 분당).
+
+    과거 월 아카이브는 바뀌지 않으므로 **내용이 같으면 쓰지 않는다** — 그러면
+    창을 넓혀도 I/O 가 늘지 않는다.
+    """
+
+    def _items(self, day: str, n: int = 2):
+        return [{"rcept_no": f"{day.replace('-','')}{j:06d}",
+                 "corp_name": f"회사{j}", "stock_code": f"{j:06d}",
+                 "corp_code": f"{j:08d}", "report_nm": "단일판매ㆍ공급계약체결",
+                 "category": "계약", "detail": ["계약금액: 100억원"],
+                 "date": day, "url": "u"} for j in range(n)]
+
+    def test_window_covers_more_than_one_month(self):
+        """30일이면 이번 달 + 지난달 일부뿐 — 사용자가 물은 '8월 이전'이
+        구조적으로 안 보인다."""
+        import ast
+        import inspect
+        import textwrap
+        from bot import dashboard
+        tree = ast.parse(textwrap.dedent(
+            inspect.getsource(dashboard.regenerate_dart_feed_index)))
+        got = [kw.value.value for n in ast.walk(tree)
+               if isinstance(n, ast.Call)
+               for kw in n.keywords if kw.arg == "days_back"
+               and isinstance(kw.value, ast.Constant)]
+        assert got and min(got) >= 90, got
+
+    def test_unchanged_fragment_is_not_rewritten(self, monkeypatch, tmp_path):
+        """내용이 같으면 건드리지 않는다 — 안 그러면 창을 넓힌 만큼 분당
+        쓰기가 그대로 늘어난다(SSD·I/O). mtime 으로 확인한다."""
+        import datetime as _dt
+        from bot import dashboard
+        monkeypatch.setattr(dashboard, "ARCHIVE_ROOT", tmp_path)
+        today = _dt.date.today()
+        old = today - _dt.timedelta(days=45)
+        by = {today.isoformat(): self._items(today.isoformat()),
+              old.isoformat(): self._items(old.isoformat())}
+        monkeypatch.setattr(dashboard, "_load_dart_feed_data",
+                            lambda days_back=90: by)
+        dashboard.regenerate_dart_feed_index()
+        frags = sorted(p for p in tmp_path.glob("*.html")
+                       if p.name != "dart_feed.html")
+        assert frags, list(tmp_path.iterdir())
+        before = {p: p.stat().st_mtime_ns for p in frags}
+        import time as _t
+        _t.sleep(0.01)
+        dashboard.regenerate_dart_feed_index()
+        after = {p: p.stat().st_mtime_ns for p in frags}
+        assert before == after, "안 바뀐 프래그먼트를 다시 썼다"
+
+    def test_changed_fragment_is_still_written(self, monkeypatch, tmp_path):
+        """조건부 쓰기가 '영영 안 씀'이 되면 과거 월이 굳는다."""
+        import datetime as _dt
+        from bot import dashboard
+        monkeypatch.setattr(dashboard, "ARCHIVE_ROOT", tmp_path)
+        today = _dt.date.today()
+        old = today - _dt.timedelta(days=45)
+        state = {"n": 2}
+        monkeypatch.setattr(
+            dashboard, "_load_dart_feed_data",
+            lambda days_back=90: {
+                today.isoformat(): self._items(today.isoformat()),
+                old.isoformat(): self._items(old.isoformat(), state["n"])})
+        dashboard.regenerate_dart_feed_index()
+        frag = next(p for p in tmp_path.glob("*.html")
+                    if p.name != "dart_feed.html")
+        first = frag.read_text(encoding="utf-8")
+        state["n"] = 5
+        dashboard.regenerate_dart_feed_index()
+        assert frag.read_text(encoding="utf-8") != first, "새 내용이 안 쓰였다"
