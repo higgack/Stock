@@ -3690,6 +3690,17 @@ corp action HARD GUARD 시 기술트리거(RSI/MACD/SMA) 무효 — catalyst/dat
   (텍스트 레이어 없음)면 여전히 실패 — 진짜 가이드 PDF 로 추출 텍스트 한 번 눈검사.
   머신별 설치(`npx skills add virgiliojr94/book-to-skill`, repo 커밋 불요). 1차 용도 =
   DART·ECOS·KRX API 매뉴얼 → grounded 레퍼런스(실수 #12 — #96·#214·#238 "원천 문서 확인" 반복).
+- **agent-notion-template-docs** (heyman333, 2026-09-01 리뷰 — **블록 사전만 채택**):
+  그 스킬의 핵심은 *용도↔블록 1:1 표* + "블록을 장식으로 쓰지 말 것" 한 줄이다.
+  같은 형태를 우리 실제 클래스(`bot/dashboard.py` 소스오브트루스)로 옮겨
+  `DESIGN.md` §2.1 에 두었다 — 우리 #34(라벨에 기준 박기)·#43(사유 표시)·
+  #201(클래스만 쓰고 CSS 미정의)과 결이 같고 비용 0. 미채택: 템플릿 복사·
+  CSS 바이트 대조(우리는 문서가 아니라 앱을 만든다) · inline-style 전면금지 ·
+  Prism 검사 · 플러그인 설치. ⚠️ 그 repo 의 `lint.py` 식 **소스 문자열 스캔은
+  이 레포에서 오탐 71건**(복합선택자 `.df-pill-sig.active{` · JS 훅 `.fav-top` ·
+  스크레이퍼 선택자 `.rank-td` · 테스트 픽스처) — 렌더 **출력**을 재면
+  `_render_dart_feed_page` 49KB 에 정의 128·사용 33·**미정의 0** 이다.
+  린트를 붙인다면 소스가 아니라 출력에(#35 화면이 쓰는 그 경로).
 - 자동화 인벤토리·CLAUDE.md 룰↔테스트 커버리지 매핑 = `docs/automation.md` / `docs/tests.md`.
 
 ## 멀티마켓 · 기능 상세 → CLAUDE_REFERENCE.md
