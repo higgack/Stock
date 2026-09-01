@@ -782,3 +782,83 @@ class MomentumSeriesCountTests20260820(unittest.TestCase):
             self.assertNotIn("40개 시계열", html)
         src = open("trade/customs_provisional.py", encoding="utf-8").read()
         self.assertNotIn("40개 시계열", src, "하드코딩 재발")
+
+
+class WindowSanityProbe20260902(unittest.TestCase):
+    """사용자 2026-09-02: "09/01 에 8월 전체 잠정이 나오는데 이거 8월 잠정 맞어?"
+
+    타이밍은 정상이다(관세청은 익월 1일에 전월 1~말일 잠정을 낸다 — 모듈
+    독스트링에도 그렇게 적혀 있다). 의심스러운 건 **크기**다. 그런데 '한 달
+    수출이 이 정도일 리 없다'는 내 사전지식이지 측정이 아니다(#12) —
+    데이터 스스로 답하게, **누적창의 불변식**으로 잰다:
+
+      · 같은 달에서 FULL ≥ D2 ≥ D1 (월초 누적이므로 단조 증가)
+      · 창 폭 비율이 대략 30:20:10 을 따른다(FULL/D2 ≈ 1.5, D2/D1 ≈ 2.0)
+
+    이게 깨지면 원천이 누적이 아니거나 우리가 창을 잘못 고른 것이다.
+    """
+
+    def test_monotonic_windows_pass(self):
+        from trade.customs_provisional import window_sanity
+        rows = [{"ym": "2026-08", "decile": d, "priod_dt": p,
+                 "amt": [v] + [0] * 10}
+                for d, p, v in (("D1", "01~10", 190), ("D2", "01~20", 380),
+                                ("FULL", "01~31", 570))]
+        bad = window_sanity(rows, "2026-08")
+        assert bad == [], bad
+
+    def test_non_monotonic_is_flagged(self):
+        """FULL < D2 면 누적이 아니다 — 원천 해석이 틀린 것."""
+        from trade.customs_provisional import window_sanity
+        rows = [{"ym": "2026-08", "decile": d, "priod_dt": p,
+                 "amt": [v] + [0] * 10}
+                for d, p, v in (("D2", "01~20", 380), ("FULL", "01~31", 300))]
+        bad = window_sanity(rows, "2026-08")
+        assert any("단조" in b for b in bad), bad
+
+    def test_window_ratio_outlier_is_flagged(self):
+        """FULL 이 D2 의 1.5배 언저리가 아니라 2.6배면 합산 의심."""
+        from trade.customs_provisional import window_sanity
+        rows = [{"ym": "2026-08", "decile": d, "priod_dt": p,
+                 "amt": [v] + [0] * 10}
+                for d, p, v in (("D1", "01~10", 190), ("D2", "01~20", 380),
+                                ("FULL", "01~31", 983))]
+        bad = window_sanity(rows, "2026-08")
+        assert any("비율" in b for b in bad), bad
+
+    def test_probe_prints_windows_and_yoy(self):
+        """프로브는 창별 절대액과 작년 동창을 **나란히** 찍는다 — 어느 쪽이
+        부풀었는지는 나란히 놔야 보인다(#51)."""
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [98_300_000_000] + [0] * 10},
+                {"ym": "2025-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [58_300_000_000] + [0] * 10}]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "2026-08" in out and "2025-08" in out, out
+        assert "983" in out.replace(",", ""), out      # 억$ 로 환산해 찍는다
+        assert "YoY" in out, out
+
+    def test_cli_dispatches_to_the_probe(self, ):
+        """정의만 있고 배선이 없으면 아무도 못 쓴다(#120). `--why` 는 읽기
+        전용이라 수집(run)으로 흘러가면 안 된다."""
+        import io
+        import contextlib
+        import sys as _sys
+        from unittest import mock
+        from trade.scripts import fetch_provisional as fp
+        ran = []
+        buf = io.StringIO()
+        with mock.patch.object(fp, "run", lambda **k: ran.append(k) or 0), \
+                mock.patch.object(fp.prov, "load_rows",
+                                  lambda c: {"exp_item": []}), \
+                mock.patch.object(fp.customs, "open_db",
+                                  lambda *a, **k: mock.MagicMock()), \
+                mock.patch.object(_sys, "argv",
+                                  ["fetch_provisional", "--why", "2026-08"]), \
+                contextlib.redirect_stdout(buf):
+            rc = fp.main()
+        out = buf.getvalue()
+        assert rc == 0, out
+        assert not ran, "진단인데 수집이 돌았다"
+        assert "잠정 창 진단" in out and _sys.executable in out, out

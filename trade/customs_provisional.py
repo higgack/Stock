@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 BASE = "https://apis.data.go.kr/1220000"
+_WHY_VER = 1
 
 # kind → (service path, operation). 운영자 활용신청·승인된 4종.
 ENDPOINTS: dict[str, tuple[str, str]] = {
@@ -174,6 +175,80 @@ def fetch(
 # ---------------------------------------------------------------------
 
 _DECILE_ORDER = {"D1": 1, "D2": 2, "FULL": 3}
+
+
+# 누적창 폭(영업일이 아니라 달력일 기준 근사) — FULL≈30, D2=20, D1=10.
+_WIN_DAYS = {"D1": 10.0, "D2": 20.0, "FULL": 30.0}
+# 비율이 이 배수 밖이면 '창 해석이 이상하다'로 본다. 월중 편차(월말 밀어내기·
+# 휴일)를 감안해 넉넉히 — 좁게 잡으면 정상 달마다 경고가 떠 아무도 안 본다(#260).
+_WIN_RATIO_TOL = 1.6
+
+
+def window_sanity(rows: list[dict], ym: str) -> list[str]:
+    """한 달의 누적창들이 **스스로 앞뒤가 맞는가**. 이상하면 사유 리스트.
+
+    ⚠️ '한 달 수출이 이 정도일 리 없다' 는 사전지식이지 측정이 아니다(#12).
+    데이터 스스로 답하게 **불변식**으로 잰다 — priodDt 는 월초 누적이므로
+    (모듈 독스트링) 같은 달에서 FULL ≥ D2 ≥ D1 이어야 하고, 창 폭이 30:20:10
+    이니 금액비도 대략 그 비율을 따라야 한다. 깨지면 원천이 누적이 아니거나
+    우리가 창을 잘못 고른(혹은 합산한) 것이다.
+    """
+    got = {}
+    for r in rows:
+        if r.get("ym") != ym:
+            continue
+        v = (r.get("amt") or [0])[0]
+        if v:
+            got[r.get("decile")] = v
+    bad: list[str] = []
+    order = [d for d in ("D1", "D2", "FULL") if d in got]
+    for a, b in zip(order, order[1:]):
+        if got[b] < got[a]:
+            bad.append(f"누적 단조 위반: {a} {got[a]:,} > {b} {got[b]:,}"
+                       " — priodDt 가 월초 누적이 아닐 수 있다")
+    for a, b in zip(order, order[1:]):
+        exp = _WIN_DAYS[b] / _WIN_DAYS[a]
+        act = got[b] / got[a] if got[a] else 0.0
+        if act and not (exp / _WIN_RATIO_TOL <= act <= exp * _WIN_RATIO_TOL):
+            bad.append(f"창 폭 대비 금액 비율 이상: {a}→{b} 실제 {act:.2f}배"
+                       f" (창 폭 비 {exp:.2f}배) — 합산·창 오선택 의심")
+    return bad
+
+
+def explain_windows(rows_by_kind: dict, ym: Optional[str] = None) -> list[str]:
+    """'이 달 잠정, 이거 맞아?' 를 **데이터로** 답한다 — 창별 절대액과 작년
+    동창을 나란히 찍고 불변식 위반을 표시한다(#51 나란히 놔야 보인다).
+
+    VM: .venv/bin/python -m trade.scripts.fetch_provisional --why [YYYY-MM]
+    """
+    out = [f"[잠정 창 진단 v{_WHY_VER}]"]
+    for kind, rows in sorted((rows_by_kind or {}).items()):
+        if not rows:
+            out.append(f"── {kind}: 행 없음")
+            continue
+        target = ym or max(r["ym"] for r in rows)
+        py = f"{int(target[:4]) - 1}-{target[5:7]}"
+        out.append(f"── {kind} · {target}")
+        for dec in ("D1", "D2", "FULL"):
+            cur = next((r for r in rows
+                        if r["ym"] == target and r["decile"] == dec), None)
+            prv = next((r for r in rows
+                        if r["ym"] == py and r["decile"] == dec), None)
+            if cur is None and prv is None:
+                continue
+            c = (cur or {}).get("amt", [0])[0]
+            p = (prv or {}).get("amt", [0])[0]
+            yoy = ((c - p) / p * 100.0) if (c and p) else None
+            out.append(
+                f"   {dec:<4} {(cur or {}).get('priod_dt', '-'):<8}"
+                f" {target} {c / 1e8:>9,.1f}억$   {py} {p / 1e8:>9,.1f}억$"
+                + (f"   YoY {yoy:+.1f}%" if yoy is not None else "   YoY —"))
+        for b in window_sanity(rows, target):
+            out.append(f"   ⚠️ {b}")
+        # 대조 0건은 통과가 아니다(#54).
+        if not any(r["ym"] == target for r in rows):
+            out.append(f"   ❌ {target} 행이 아예 없다 — 수집 경로 확인")
+    return out
 
 
 def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
