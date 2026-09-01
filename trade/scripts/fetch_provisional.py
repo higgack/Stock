@@ -113,8 +113,33 @@ def main() -> int:
     ap.add_argument(
         "--max-age-h", type=float, default=MAX_AGE_H_DEFAULT, metavar="H",
         help=f"--if-stale 신선도 기준 시간(기본 {MAX_AGE_H_DEFAULT})")
+    ap.add_argument(
+        "--why", nargs="?", const="", metavar="YYYY-MM",
+        help=("'이 달 잠정, 이거 맞아?' 진단 — 저장된 창(D1/D2/FULL)별 절대액을 "
+              "작년 동창과 나란히 찍고 누적 불변식 위반을 표시한다. API 0콜."))
     args = ap.parse_args()
+    if args.why is not None:
+        return _why(args.why or None)
     return run(if_stale=args.if_stale, max_age_h=args.max_age_h)
+
+
+def _why(ym) -> int:
+    """저장된 시계열만 읽어 창 진단(네트워크 0). 쓰기 없음."""
+    import sys as _sys
+    print(f"[잠정 진단] 인터프리터 {_sys.executable}")
+    conn = customs.open_db(customs.DEFAULT_DB)
+    try:
+        rows_by_kind = prov.load_rows(conn)
+    finally:
+        conn.close()
+    if not rows_by_kind:
+        # 대조 0건은 통과가 아니라 진단 실패다(#54).
+        print("❌ 저장된 잠정 시계열이 없다 — 먼저 수집:"
+              " .venv/bin/python -m trade.scripts.fetch_provisional")
+        return 1
+    for line in prov.explain_windows(rows_by_kind, ym):
+        print(line)
+    return 0
 
 
 if __name__ == "__main__":
