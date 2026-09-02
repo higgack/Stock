@@ -49,6 +49,13 @@
 | 같은 주제어의 다른 기준 | 라벨에 기준을 박은 `.badge`/`.si-note` | 기준 없는 같은 이름 두 개(실수 #34) |
 | 긴 보조 내용 접기 | `.csec`(`<details>`, 상태 localStorage) | 기본 노출이어야 할 만큼 중요한 것 |
 | 원시 데이터 내보내기 | `.csv-btn` · `.df-csv-btn` | 화면에 이미 다 보이는 표 |
+| JS 가 잡을 자리(스타일 없음) | **`js-` 접두** (`js-mc-tab`·`js-cs-day`) | 스타일이 붙으면 접두를 뗄 것 |
+
+**같은 용도에 이름을 새로 만들지 말 것.** stat 타일이 `.stat-v`/`.stat-l` ·
+`.stat-value`/`.stat-label` · `.stat-num`/`.stat-lbl` 셋으로 갈렸고, 셋째는
+**CSS 가 아예 없는 채로 33곳에서 쓰이고 있었다**(2026-09-02 발견 · 실수 #273).
+회귀가 렌더 **출력**으로 이걸 잰다 — 쓰는 클래스는 그 페이지 CSS 에 정의가
+있거나 `js-` 훅이어야 한다(`test_rendered_pages_define_every_class_they_use`).
 
 ### 2.2 컴포넌트 실측 스펙
 
