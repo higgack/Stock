@@ -897,6 +897,124 @@ class WindowSanityProbe20260902(unittest.TestCase):
         assert "40.7%" in line, line          # 올해 40.0/98.25
         assert "작년" in line and "51.5%" in line, line   # 작년 30.0/58.26
 
+    # ── 2026-09-02 독립 리뷰가 잡은 눈멂 7건 ────────────────────────────
+    def _row(self, ym, dec, total, item=None, n=10):
+        amt = [total] + [(item if item is not None else total * 0.06)] * n
+        return {"ym": ym, "decile": dec,
+                "priod_dt": {"D1": "01~10", "D2": "01~20"}.get(dec, "01~31"),
+                "amt": amt}
+
+    def test_share_collapse_is_judged_not_just_printed(self):
+        """상위10 비중을 **찍기만** 하면 #274 가 근거로 든 그 시나리오에
+        여전히 ✅ 가 찍힌다 — 전체만 부풀어도 창 불변식은 전부 통과한다."""
+        from trade.customs_provisional import explain_windows
+        rows = [self._row("2026-08", "D1", 21_290_000_000, 1_500_000_000),
+                self._row("2026-08", "D2", 55_210_000_000, 3_900_000_000),
+                self._row("2026-08", "FULL", 98_250_000_000, 4_150_000_000),
+                self._row("2025-08", "D1", 14_650_000_000, 1_500_000_000),
+                self._row("2025-08", "D2", 35_390_000_000, 3_900_000_000),
+                self._row("2025-08", "FULL", 58_260_000_000, 4_150_000_000)]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "✅" not in out, f"비중이 무너졌는데 정상이라 한다:\n{out}"
+        assert "비중" in out, out
+
+    def test_verdict_names_every_check_that_ran(self):
+        """✅ 는 **무엇을 쟀는지** 말해야 한다 — 상위10 검사가 돌았는지
+        알 수 없으면 침묵이 한 층 아래에서 재발한다."""
+        from trade.customs_provisional import explain_windows
+        rows = [self._row("2026-08", "D1", 200), self._row("2026-08", "D2", 400),
+                self._row("2026-08", "FULL", 600),
+                self._row("2025-08", "D1", 100), self._row("2025-08", "D2", 200),
+                self._row("2025-08", "FULL", 300)]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "✅" in out, out
+        assert "상위10" in out.split("✅")[1], f"✅ 가 상위10 검사를 안 말한다:\n{out}"
+
+    def test_violation_never_gets_a_pass_line(self):
+        """⚠️ 와 ✅ 가 같이 찍히면 안 된다(`elif not bad` → `else` 뮤테이션)."""
+        from trade.customs_provisional import explain_windows
+        rows = [self._row("2026-08", "D2", 400), self._row("2026-08", "FULL", 300)]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "⚠️" in out and "✅" not in out, out
+
+    def test_zero_total_with_filled_top10_is_flagged(self):
+        """전체=0 인데 상위10 이 채워진 행은 가장 확실한 손상인데
+        `not amt[0]` 가드에 걸려 검사가 통째로 안 돌았다."""
+        from trade.customs_provisional import window_sanity
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [0] + [4_000_000_000] * 10}]
+        bad = window_sanity(rows, "2026-08")
+        assert bad, "전체 0 · 상위10 채움인데 이상 없다고 한다"
+
+    def test_undecidable_reason_states_the_real_condition(self):
+        """❓ 사유가 '창이 하나뿐'으로 고정이라, 표에 3줄이 찍힌 뒤 자기 표를
+        뒤집는다 — 실제 조건은 '금액이 있는 창이 2개 미만'이다."""
+        from trade.customs_provisional import explain_windows
+        rows = [self._row("2026-08", "D1", 0), self._row("2026-08", "D2", 0),
+                self._row("2026-08", "FULL", 600)]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "하나뿐" not in out, f"표에 3줄인데 '하나뿐'이라 한다:\n{out}"
+
+    def test_all_zero_month_is_a_failure_not_undecidable(self):
+        """전 창이 0 이면 판정 불가가 아니라 손상이다(#54)."""
+        from trade.customs_provisional import explain_windows
+        rows = [self._row("2026-08", d, 0) for d in ("D1", "D2", "FULL")]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "❌" in out, out
+
+    def test_duplicate_decile_is_flagged(self):
+        """중복 decile 이면 표(첫 행)와 판정(마지막 행)이 다른 값을 본다 —
+        사용자의 눈검산과 ✅ 줄의 실측배수가 어긋난다."""
+        from trade.customs_provisional import window_sanity
+        rows = [self._row("2026-08", "D2", 400), self._row("2026-08", "D2", 700),
+                self._row("2026-08", "FULL", 600)]
+        bad = window_sanity(rows, "2026-08")
+        assert any("중복" in b for b in bad), bad
+
+    def test_duplicate_decile_ratio_uses_the_row_the_table_shows(self):
+        """표는 첫 행을 찍는데 판정이 마지막 행을 보면, ✅ 줄의 실측배수가
+        사용자의 눈검산과 어긋난다(표 552.1→982.5 인데 판정 1.27배)."""
+        from trade.customs_provisional import window_ratios
+        rows = [self._row("2026-08", "D2", 400), self._row("2026-08", "D2", 700),
+                self._row("2026-08", "FULL", 600)]
+        got = {(a, b): act for a, b, act, _exp in window_ratios(rows, "2026-08")}
+        assert got[("D2", "FULL")] == 600 / 400, got   # 첫 행(400) 기준
+
+    def test_verdict_reports_the_measured_share_shift(self):
+        """✅ 는 상위10 비중을 **얼마로 쟀는지** 적어야 한다 — 이름만 적으면
+        비중 계산을 지워도 통과한다(#75)."""
+        from trade.customs_provisional import explain_windows
+        # 항목 10개 합이 전체의 60% 가 되게 — 두 해 비중이 같아 shift 1.00
+        rows = [self._row("2026-08", "D1", 200, 12),
+                self._row("2026-08", "D2", 400, 24),
+                self._row("2026-08", "FULL", 600, 36),
+                self._row("2025-08", "D1", 100, 6),
+                self._row("2025-08", "D2", 200, 12),
+                self._row("2025-08", "FULL", 300, 18)]
+        line = next(x for x in explain_windows({"exp_item": rows}, "2026-08")
+                    if "✅" in x and "누적" in x)
+        assert "상위10 비중 작년 대비" in line and "배" in line, line
+        assert "1.00~1.00배" in line, line
+
+    def test_cross_kind_totals_must_agree(self):
+        """exp_item 전체 == exp_cnty 전체(같은 총수출액) — 문턱 없는 정확
+        불변식이라 전체 칸 이상을 가장 직접 잰다."""
+        from trade.customs_provisional import cross_kind_mismatch
+        a = [{"ym": "2026-08", "decile": "FULL", "amt": [100] + [6] * 10}]
+        b = [{"ym": "2026-08", "decile": "FULL", "amt": [169] + [6] * 10}]
+        bad = cross_kind_mismatch({"exp_item": a, "exp_cnty": b}, "2026-08")
+        assert bad, "두 breakdown 총계가 1.69배 다른데 통과한다"
+        ok = cross_kind_mismatch({"exp_item": a, "exp_cnty": a}, "2026-08")
+        assert ok == [], ok
+
+    def test_amt_missing_does_not_crash_the_probe(self):
+        """손상 데이터를 보려는 도구가 손상 데이터에서 먼저 죽으면 안 된다."""
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31"},
+                {"ym": "2026-08", "decile": "D1", "priod_dt": "01~10", "amt": []}]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert out, out
+
     def test_cli_dispatches_to_the_probe(self, ):
         """정의만 있고 배선이 없으면 아무도 못 쓴다(#120). `--why` 는 읽기
         전용이라 수집(run)으로 흘러가면 안 된다."""
