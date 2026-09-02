@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 BASE = "https://apis.data.go.kr/1220000"
-_WHY_VER = 4
+_WHY_VER = 5
 
 # kind → (service path, operation). 운영자 활용신청·승인된 4종.
 ENDPOINTS: dict[str, tuple[str, str]] = {
@@ -67,6 +67,15 @@ LABELS: dict[str, tuple[str, ...]] = {
     "exp_cnty": ("중국", "미국", "유럽연합", "베트남", "일본", "홍콩", "대만",
                  "싱가포르", "인도", "멕시코"),
 }
+
+# 슬롯 순서를 원천(미리보기 설명문)으로 **확인한** 계열. 나머지는 spec 순서
+# 가정이라 이름을 사실처럼 적으면 안 된다 — 잘못된 슬롯은 엉뚱한 품목을
+# 증가 주역으로 지목한다(#165 재지 않은 귀속을 단정하지 말 것 · #50).
+LABELS_VERIFIED: frozenset = frozenset({"imp_cnty"})
+
+# 계열이 무엇을 쪼갠 것인가 — 국가별 표에 '품목별'이라 적으면 거짓말이다(#34).
+_KIND_AXIS = {"exp_item": "품목별", "imp_item": "품목별",
+              "exp_cnty": "국가별", "imp_cnty": "국가별"}
 
 _DECILE_LABEL = {"D1": "1~10일", "D2": "1~20일", "FULL": "전월(1~말일)"}
 
@@ -213,6 +222,41 @@ def top10_shift(cur: dict, prv: dict) -> Optional[float]:
     """올해 상위10 비중 ÷ 작년 동창 비중. 한쪽이라도 없으면 None."""
     sc, sp = top10_share(cur or {}), top10_share(prv or {})
     return (sc / sp) if (sc is not None and sp) else None
+
+
+def item_breakdown(cur: dict, prv: Optional[dict],
+                   labels: tuple[str, ...]) -> list[dict]:
+    """상위10 + '나머지' 의 (올해, 작년, YoY, 증감액, 증감 기여율).
+
+    총계만 보면 '어디서 늘었나' 를 알 수 없다. 증가액 내림차순으로 정렬하고
+    **상위10 + 나머지 = 전체** 항등식이 성립하게 만든다 — 화면의 칸끼리
+    더해서 맞아야 한다(#33). 작년이 없으면 YoY·기여율은 None(지어내지 않는다).
+    """
+    ca = (cur or {}).get("amt") or []
+    if len(ca) < 11:
+        return []
+    pa = (prv or {}).get("amt") or []
+    has_py = len(pa) >= 11 and bool(pa[0])
+    tot_delta = (ca[0] - pa[0]) if has_py else None
+
+    def _mk(name, c, p):
+        d = (c - p) if has_py else None
+        return {
+            "name": name, "cur": c, "prv": p if has_py else None,
+            "yoy": ((c - p) / p * 100.0) if (has_py and p) else None,
+            "delta": d,
+            "share_of_delta": (d / tot_delta) if (d is not None and tot_delta) else None,
+        }
+
+    out = [_mk(labels[i - 1] if i - 1 < len(labels) else f"슬롯{i}",
+               ca[i], pa[i] if has_py else 0)
+           for i in range(1, 11)]
+    # 나머지 = 전체 − 상위10. 이게 있어야 기여율 합이 100% 가 된다.
+    out.append(_mk("나머지", ca[0] - sum(ca[1:11]),
+                   (pa[0] - sum(pa[1:11])) if has_py else 0))
+    out.sort(key=lambda r: (r["delta"] if r["delta"] is not None else r["cur"]),
+             reverse=True)
+    return out
 
 
 def cross_kind_pairs(rows_by_kind: dict, ym: str) -> int:
@@ -365,6 +409,49 @@ def explain_windows(rows_by_kind: dict, ym: Optional[str] = None) -> list[str]:
                 f" {target} {c / 1e8:>9,.1f}억$   {py} {p / 1e8:>9,.1f}억$"
                 + (f"   YoY {yoy:+.1f}%" if yoy is not None else "   YoY —")
                 + shr)
+        # 계산해 놓고 안 보여주면 없는 것과 같다(#123·#129·#131·#189·#228).
+        # 이름은 LABELS 슬롯 매핑 — 대시보드가 쓰는 그 표와 같은 출처(#38).
+        # 창 선택은 _decile_amounts(전체 0 은 건너뜀)와 **같은 출처**여야
+        # 한다 — 갈리면 손상된 창을 집어 손상 경고보다 먼저 표를 찍는다(#38).
+        _amts = _decile_amounts(rows, target)
+        dec = next((d for d in ("FULL", "D2", "D1") if d in _amts), None)
+        if dec:
+            c_row = next(r for r in rows
+                         if r["ym"] == target and r["decile"] == dec)
+            p_row = next((r for r in rows
+                          if r["ym"] == py and r["decile"] == dec), None)
+            # 작년 전체만 0 이고 항목은 채워져 있으면 '작년 —' 로 조용히
+            # 비우지 말고 왜 비는지 말한다(#43·#131).
+            if p_row is not None and not ((p_row.get("amt") or [0])[0]) \
+                    and top10_sum(p_row):
+                out.append(f"   ⚠️ 작년 {py} {dec} 은 전체가 0 인데 상위10 합은"
+                           f" {top10_sum(p_row) / 1e8:,.1f}억$ — 작년 열을"
+                           " 비운 이유이고, 원천/저장 확인 대상")
+            items = item_breakdown(c_row, p_row, LABELS.get(kind, ()))
+            if items:
+                axis = _KIND_AXIS.get(kind, "구성")
+                td = next((i["delta"] for i in items if i["delta"] is not None),
+                          None)
+                tot_d = ((c_row.get("amt") or [0])[0]
+                         - ((p_row or {}).get("amt") or [0])[0]) if td is not None else None
+                ver = "" if kind in LABELS_VERIFIED else " · 슬롯 순서 미검증"
+                if tot_d is None:
+                    # 작년이 없으면 기여를 못 낸다 — 약속하지 않는다(#43).
+                    hdr = f"{axis} 구성 — 작년 없음"
+                else:
+                    dirn = "증감" if not tot_d else ("증가" if tot_d > 0 else "감소")
+                    hdr = f"{axis} {dirn} 기여 — 슬롯 라벨"
+                out.append(f"   [{dec} {hdr}{ver}]")
+                for it in items:
+                    yo = (f"{it['yoy']:+7.1f}%" if it["yoy"] is not None
+                          else "      —")
+                    sh = (f"{it['share_of_delta'] * 100:+6.1f}%"
+                          if it["share_of_delta"] is not None else "     —")
+                    pv = (f"{it['prv'] / 1e8:>8,.1f}" if it["prv"] is not None
+                          else "       —")
+                    out.append(f"     {it['name']:<12}"
+                               f"{it['cur'] / 1e8:>8,.1f}억$  작년 {pv}억$"
+                               f"  YoY {yo}   기여 {sh}")
         bad = window_sanity(rows, target)
         # 상위10 비중은 **찍기만 하면 안 된다** — 전체 칸만 부풀어도 창
         # 불변식은 전부 통과하므로, 찍고 판정하지 않으면 #274 가 근거로 든
