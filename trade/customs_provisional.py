@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 BASE = "https://apis.data.go.kr/1220000"
-_WHY_VER = 1
+_WHY_VER = 4
 
 # kind → (service path, operation). 운영자 활용신청·승인된 4종.
 ENDPOINTS: dict[str, tuple[str, str]] = {
@@ -182,6 +182,111 @@ _WIN_DAYS = {"D1": 10.0, "D2": 20.0, "FULL": 30.0}
 # 비율이 이 배수 밖이면 '창 해석이 이상하다'로 본다. 월중 편차(월말 밀어내기·
 # 휴일)를 감안해 넉넉히 — 좁게 잡으면 정상 달마다 경고가 떠 아무도 안 본다(#260).
 _WIN_RATIO_TOL = 1.6
+# 상위10 합은 전체를 넘을 수 없다. 원천이 항목별로 올림해 오면 아주 조금
+# 넘을 수 있으므로 0.1% 여유 — 매번 뜨는 경고는 진짜를 가린다(#260).
+_TOP10_TOL = 1.001
+# 상위10 **비중**이 작년 동창 대비 이만큼 밖으로 움직이면 전체 칸 이상을
+# 의심한다 — 전 품목이 고루 늘면 비중은 그대로다. 구성이 실제로 바뀌는 달이
+# 있으므로 넉넉히 잡는다(#260 매번 뜨는 경고는 진짜를 가린다).
+_SHARE_SHIFT_TOL = 1.33
+# 같은 무역방향의 두 breakdown(품목별·국가별) 총계는 같은 총액이라 정확히
+# 맞아야 한다 — 문턱이 필요 없는 불변식. 반올림만 허용.
+_CROSS_TOL = 0.01
+
+
+def top10_sum(row: dict) -> float:
+    """상위10 합. amt 가 없거나 짧으면 0."""
+    amt = row.get("amt") or []
+    return sum(amt[1:11]) if len(amt) >= 2 else 0.0
+
+
+def top10_share(row: dict) -> Optional[float]:
+    """상위10 합 ÷ 전체. 전체가 0/부재면 None(판정 불가 — 손상 판정은
+    window_sanity 가 따로 한다: 전체 0 인데 상위10 이 있으면 손상이다)."""
+    amt = row.get("amt") or []
+    if len(amt) < 11 or not amt[0]:
+        return None
+    return sum(amt[1:11]) / amt[0]
+
+
+def top10_shift(cur: dict, prv: dict) -> Optional[float]:
+    """올해 상위10 비중 ÷ 작년 동창 비중. 한쪽이라도 없으면 None."""
+    sc, sp = top10_share(cur or {}), top10_share(prv or {})
+    return (sc / sp) if (sc is not None and sp) else None
+
+
+def cross_kind_pairs(rows_by_kind: dict, ym: str) -> int:
+    """실제로 대조된 (창) 쌍 수. 0 이면 ✅ 를 찍으면 안 된다(#54)."""
+    n = 0
+    for side in ("exp", "imp"):
+        ra = (rows_by_kind or {}).get(f"{side}_item")
+        rb = (rows_by_kind or {}).get(f"{side}_cnty")
+        if not ra or not rb:
+            continue
+        ga, gb = _decile_amounts(ra, ym), _decile_amounts(rb, ym)
+        n += sum(1 for d in ("D1", "D2", "FULL") if ga.get(d) and gb.get(d))
+    return n
+
+
+def cross_kind_mismatch(rows_by_kind: dict, ym: str) -> list[str]:
+    """같은 방향의 품목별·국가별 총계가 어긋나는가 — 정확 불변식(#51).
+
+    exp_item 과 exp_cnty 는 같은 총수출액을 다르게 쪼갠 것이라 창별 전체
+    금액이 같아야 한다. 문턱 튜닝이 필요 없어 전체 칸 이상을 가장 직접 잰다.
+    """
+    bad: list[str] = []
+    for side in ("exp", "imp"):
+        a, b = f"{side}_item", f"{side}_cnty"
+        ra, rb = rows_by_kind.get(a), rows_by_kind.get(b)
+        if not ra or not rb:
+            continue
+        ga, gb = _decile_amounts(ra, ym), _decile_amounts(rb, ym)
+        for dec in ("D1", "D2", "FULL"):
+            va, vb = ga.get(dec), gb.get(dec)
+            if not va or not vb:
+                continue
+            if abs(va - vb) / max(va, vb) > _CROSS_TOL:
+                bad.append(f"{side} {dec}: 품목별 {va / 1e8:,.1f}억$ ≠ "
+                           f"국가별 {vb / 1e8:,.1f}억$ — 같은 총액이어야 한다")
+    return bad
+
+
+def _decile_amounts(rows: list[dict], ym: str) -> dict:
+    """그 달의 창별 전체금액 {D1|D2|FULL: USD}. 판정·표시의 단일 출처(#38).
+
+    표는 첫 행을 쓰므로 여기서도 **첫 행**을 쓴다 — 마지막 행을 쓰면 중복
+    decile 에서 화면의 눈검산과 ✅ 줄의 실측배수가 어긋난다.
+    """
+    got = {}
+    for r in rows:
+        if r.get("ym") != ym:
+            continue
+        amt = r.get("amt") or [0]
+        v = amt[0] if amt else 0
+        if v and r.get("decile") not in got:
+            got[r.get("decile")] = v
+    return got
+
+
+def duplicate_deciles(rows: list[dict], ym: str) -> list[str]:
+    """한 달에 같은 창이 두 번 있으면 어느 값이 참인지 모른다."""
+    seen, dup = set(), []
+    for r in rows:
+        if r.get("ym") != ym:
+            continue
+        d = r.get("decile")
+        if d in seen and d not in dup:
+            dup.append(d)
+        seen.add(d)
+    return dup
+
+
+def window_ratios(rows: list[dict], ym: str) -> list[tuple]:
+    """인접 창의 (앞, 뒤, 실측배수, 창폭배수). 창이 하나뿐이면 빈 리스트."""
+    got = _decile_amounts(rows, ym)
+    order = [d for d in ("D1", "D2", "FULL") if d in got]
+    return [(a, b, got[b] / got[a], _WIN_DAYS[b] / _WIN_DAYS[a])
+            for a, b in zip(order, order[1:]) if got[a]]
 
 
 def window_sanity(rows: list[dict], ym: str) -> list[str]:
@@ -193,19 +298,30 @@ def window_sanity(rows: list[dict], ym: str) -> list[str]:
     이니 금액비도 대략 그 비율을 따라야 한다. 깨지면 원천이 누적이 아니거나
     우리가 창을 잘못 고른(혹은 합산한) 것이다.
     """
-    got = {}
-    for r in rows:
-        if r.get("ym") != ym:
-            continue
-        v = (r.get("amt") or [0])[0]
-        if v:
-            got[r.get("decile")] = v
+    got = _decile_amounts(rows, ym)
     bad: list[str] = []
     order = [d for d in ("D1", "D2", "FULL") if d in got]
     for a, b in zip(order, order[1:]):
         if got[b] < got[a]:
             bad.append(f"누적 단조 위반: {a} {got[a]:,} > {b} {got[b]:,}"
                        " — priodDt 가 월초 누적이 아닐 수 있다")
+    # 창 불변식은 한 달 **안에서**만 본다 — 전체 칸 자체가 어긋난 경우는
+    # 구성요소와 대조해야 갈린다(#51). 상위10 합 > 전체 는 불가능하다.
+    for d in duplicate_deciles(rows, ym):
+        bad.append(f"창 {d} 중복 — 같은 창이 여러 번 있어 어느 값이 참인지 모른다")
+    for r in rows:
+        if r.get("ym") != ym:
+            continue
+        sh = top10_share(r)
+        if sh is not None and sh > _TOP10_TOL:
+            bad.append(f"상위10 합이 전체를 넘는다({r.get('decile')}: "
+                       f"{sh * 100:.1f}%) — 전체 칸 또는 합산이 틀렸다")
+        elif sh is None and top10_sum(r):
+            # 전체=0 인데 상위10 이 채워진 행 — 가장 확실한 손상인데
+            # `not amt[0]` 가드에 걸려 검사가 통째로 안 돌고 있었다.
+            bad.append(f"전체가 0 인데 상위10 합은 "
+                       f"{top10_sum(r) / 1e8:,.1f}억$({r.get('decile')})"
+                       " — 전체 칸이 비었다")
     for a, b in zip(order, order[1:]):
         exp = _WIN_DAYS[b] / _WIN_DAYS[a]
         act = got[b] / got[a] if got[a] else 0.0
@@ -236,18 +352,71 @@ def explain_windows(rows_by_kind: dict, ym: Optional[str] = None) -> list[str]:
                         if r["ym"] == py and r["decile"] == dec), None)
             if cur is None and prv is None:
                 continue
-            c = (cur or {}).get("amt", [0])[0]
-            p = (prv or {}).get("amt", [0])[0]
+            c = (((cur or {}).get("amt") or [0]) + [0])[0]
+            p = (((prv or {}).get("amt") or [0]) + [0])[0]
             yoy = ((c - p) / p * 100.0) if (c and p) else None
+            sc, sp = top10_share(cur or {}), top10_share(prv or {})
+            shr = ("   상위10 "
+                   + (f"{sc * 100:.1f}%" if sc is not None else "—")
+                   + " / 작년 "
+                   + (f"{sp * 100:.1f}%" if sp is not None else "—"))
             out.append(
                 f"   {dec:<4} {(cur or {}).get('priod_dt', '-'):<8}"
                 f" {target} {c / 1e8:>9,.1f}억$   {py} {p / 1e8:>9,.1f}억$"
-                + (f"   YoY {yoy:+.1f}%" if yoy is not None else "   YoY —"))
-        for b in window_sanity(rows, target):
-            out.append(f"   ⚠️ {b}")
-        # 대조 0건은 통과가 아니다(#54).
-        if not any(r["ym"] == target for r in rows):
+                + (f"   YoY {yoy:+.1f}%" if yoy is not None else "   YoY —")
+                + shr)
+        bad = window_sanity(rows, target)
+        # 상위10 비중은 **찍기만 하면 안 된다** — 전체 칸만 부풀어도 창
+        # 불변식은 전부 통과하므로, 찍고 판정하지 않으면 #274 가 근거로 든
+        # 그 시나리오에 ✅ 가 그대로 찍힌다(2026-09-02 독립 리뷰).
+        shifts = []
+        for dec in ("D1", "D2", "FULL"):
+            cur = next((r for r in rows
+                        if r["ym"] == target and r["decile"] == dec), None)
+            prv = next((r for r in rows
+                        if r["ym"] == py and r["decile"] == dec), None)
+            sh = top10_shift(cur, prv)
+            if sh is None:
+                continue
+            shifts.append(sh)
+            if not (1 / _SHARE_SHIFT_TOL <= sh <= _SHARE_SHIFT_TOL):
+                bad.append(f"상위10 비중이 작년 대비 {sh:.2f}배({dec}) — 전체만"
+                           " 부풀면 비중이 떨어진다(전 품목이 고루 늘면 그대로)")
+        for line in bad:
+            out.append(f"   ⚠️ {line}")
+        # 이상이 없어도 **판정을 말한다** — 침묵하면 검사가 돌아서 통과한
+        # 건지 아예 안 돈 건지 사용자가 알 수 없다(실수 #41·#43·#274).
+        # 무엇을 쟀는지 실측값을 같이 적어야 눈으로 검산된다(#202).
+        ratios = window_ratios(rows, target)
+        month = [r for r in rows if r["ym"] == target]
+        if not month:
+            # 대조 0건은 통과가 아니다(#54).
             out.append(f"   ❌ {target} 행이 아예 없다 — 수집 경로 확인")
+        elif not window_ratios(rows, target) and not _decile_amounts(rows, target):
+            out.append(f"   ❌ {target} 창이 {len(month)}개 있는데 전체 금액이"
+                       " 전부 0 이다 — 판정 불가가 아니라 손상")
+        elif not ratios:
+            n = len(_decile_amounts(rows, target))
+            out.append(f"   ❓ 판정 불가 — 금액이 있는 창이 {n}개뿐이라"
+                       " 비율을 못 잰다")
+        elif not bad:
+            det = " · ".join(f"{x}→{y} {act:.2f}배[창 {exp:.2f}]"
+                             for x, y, act, exp in ratios)
+            shd = (f" · 상위10 비중 작년 대비 {min(shifts):.2f}~{max(shifts):.2f}배"
+                   if shifts else " · 상위10 비중 대조불가(작년 없음)")
+            out.append(f"   ✅ 누적 단조 · 창 폭 비율 · 상위10 정상({det}{shd})")
+    tgt = ym or max((r["ym"] for rs in (rows_by_kind or {}).values()
+                     for r in rs), default=None)
+    if tgt:
+        cross = cross_kind_mismatch(rows_by_kind or {}, tgt)
+        for line in cross:
+            out.append(f"⚠️ 교차 대조 {line}")
+        pairs = cross_kind_pairs(rows_by_kind or {}, tgt)
+        if not pairs:
+            # 대조 0건은 통과가 아니다(#54).
+            out.append("❓ 교차 대조 불가 — 품목별·국가별 짝이 없다")
+        elif not cross:
+            out.append(f"✅ 교차 대조 — 품목별·국가별 총계 일치({pairs}쌍)")
     return out
 
 
