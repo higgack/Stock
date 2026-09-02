@@ -966,6 +966,11 @@ h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.014em; }
   font-size: 11px; padding: 2px 9px; border-radius: 999px;
   color: white; font-weight: 600; white-space: nowrap;
 }
+/* nav — 홈/그룹 링크 줄(CLAUDE.md §Help/Dashboard nav 의무). _SCREENER_CSS 는
+   자기 번들에 같은 규칙을 갖고 있고 둘은 절대 합쳐지지 않는다(별도 문서). */
+.nav { margin-bottom: 12px; }
+.nav a { color: var(--accent); text-decoration: none; font-size: 13px; }
+.nav a:hover { text-decoration: underline; }
 """
 
 _INDEX_CSS = _BASE_CSS + """
@@ -10712,7 +10717,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         _cs_prev_month = ""
         def _cs_month_open(p, month_str, count, is_open):
             p.append(
-                f'<details class="month cs-month"{" open" if is_open else ""}>'
+                f'<details class="month js-cs-month"{" open" if is_open else ""}>'
                 f'<summary>📅 {month_str[:4]}년 {int(month_str[5:7])}월'
                 f'<span class="cnt">{count} 건</span></summary>'
             )
@@ -10732,7 +10737,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
             # 첫 진입 시 날짜는 접힌 상태(사용자 2026-06-11) — 월만 펼쳐
             # 날짜 목록 보이고, 결과는 클릭해서 펼침.
             parts.append(
-                f'<details class="day cs-day" data-date="{_shtml.escape(_cs_d)}">'
+                f'<details class="day js-cs-day" data-date="{_shtml.escape(_cs_d)}">'
                 f'<summary>📅 {_cs_d} <span class="cnt">{len(_cs_day_items)} 건</span></summary>'
             )
 
@@ -10804,7 +10809,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                 _scr_mbadge = {"US": " 🇺🇸", "JP": " 🇯🇵", "HK": " 🇭🇰",
                                "CN_A": " 🇨🇳", "TW": " 🇹🇼"}.get(_scr_market, "")
                 parts.append(
-                    f"<details class='scr-det cs-card' data-date=\"{_shtml.escape(_scr_date)}\""
+                    f"<details class='scr-det js-cs-card' data-date=\"{_shtml.escape(_scr_date)}\""
                     f" data-file=\"{_shtml.escape(_scr_file)}\""
                     f" data-imp-id=\"cs|{_shtml.escape(_scr_date)}|{_shtml.escape(_scr_file)}\""
                     f" data-search=\"{_shtml.escape(_search_hay)}\">"
@@ -11158,9 +11163,9 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
   var csSts = document.getElementById('cs-status');
   var csEmp = document.getElementById('cs-empty');
   if (!csInp) return;
-  var csCards = Array.from(document.querySelectorAll('.cs-card'));
-  var csDays = Array.from(document.querySelectorAll('.cs-day'));
-  var csMonths = Array.from(document.querySelectorAll('.cs-month'));
+  var csCards = Array.from(document.querySelectorAll('.js-cs-card'));
+  var csDays = Array.from(document.querySelectorAll('.js-cs-day'));
+  var csMonths = Array.from(document.querySelectorAll('.js-cs-month'));
   // 복원 문구 = 서버가 찍은 그 문구(#48 — 지금은 일치하지만
   // 하드코딩은 언젠가 갈린다. Bottleneck 쪽과 같은 패턴).
   var csBase = (csSts.textContent || '').trim();
@@ -11193,12 +11198,12 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
       if (show) hits++;
     });
     csDays.forEach(function(d) {
-      var any = d.querySelector('.cs-card:not([style*="display: none"])');
+      var any = d.querySelector('.js-cs-card:not([style*="display: none"])');
       d.style.display = any ? '' : 'none';
       if (any) d.open = true;
     });
     csMonths.forEach(function(m) {
-      var any = m.querySelector('.cs-day:not([style*="display: none"])');
+      var any = m.querySelector('.js-cs-day:not([style*="display: none"])');
       m.style.display = any ? '' : 'none';
       if (any) m.open = true;
     });
@@ -11314,7 +11319,7 @@ noahConsoleSetup({
   });
 })();
 </script>
-""" + _imp_cfg("screener", card_sel=".card, .cs-card", head_sel="summary", search_sel="#scr-search, #cs-search") + _IMPORTANT_BLOCK + """
+""" + _imp_cfg("screener", card_sel=".card, .js-cs-card", head_sel="summary", search_sel="#scr-search, #cs-search") + _IMPORTANT_BLOCK + """
 </body></html>
 """)
     return "".join(parts)
@@ -11410,6 +11415,9 @@ details.day .day-body { padding-top:14px; }
 .stat { background:var(--card); border:1px solid var(--border);
   border-radius:10px; padding:14px 16px; }
 .stat-v { font-size:20px; font-weight:600; }
+.muted { color:var(--muted); }
+/* .cnt — 접기 헤더의 건수 배지(다른 보드의 `.cnt` 와 같은 표기). */
+.cnt { color:var(--muted); font-size:12px; font-weight:normal; }
 .stat-l { color:var(--muted); font-size:11px; margin-top:2px;
   text-transform:uppercase; letter-spacing:0.5px; }
 .card, details.card { background:var(--card); border:1px solid var(--border);
@@ -12128,7 +12136,7 @@ html.imp-only .df-month-body,html.imp-only .df-date-body,html.memo-only .df-mont
       if(d.matches&&d.matches(CARDSEL)) return;
       if(d.querySelector(sel)) d.open=true;
     });
-    document.querySelectorAll('.df-month,.df-date-group,.day,.cs-day').forEach(function(g){
+    document.querySelectorAll('.df-month,.df-date-group,.day,.js-cs-day').forEach(function(g){
       if(g.querySelector(sel)) g.classList.remove('collapsed');
     });
   }
@@ -12802,7 +12810,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
                 png_rel = (r.get("png") or "").strip()
                 img_html = ""
                 if png_rel and re.match(r"^daily_byte_img/[\w.\-]+\.png$", png_rel):
-                    img_html = (f'<img class="db-info" src="{_html.escape(png_rel)}" '
+                    img_html = (f'<img src="{_html.escape(png_rel)}" '
                                 f'alt="Daily Byte 인포그래픽" loading="lazy" '
                                 f'style="width:100%;max-width:680px;border-radius:10px;'
                                 f'margin:8px auto 14px;display:block">')
@@ -14458,18 +14466,18 @@ def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: li
         ' <span style="color:var(--muted)">(일부 현재가 미조회 — 평가/총자산 부분값)</span>')
     stats = (
         '<div class="stats">'
-        f'<div class="stat"><div class="stat-num">{_pf_won(summ["total_equity_krw"])}</div>'
-        f'<div class="stat-lbl">총자산{part}</div></div>'
-        f'<div class="stat"><div class="stat-num">{_pf_won(summ["cash_krw"])}</div>'
-        '<div class="stat-lbl">현금</div></div>'
-        f'<div class="stat"><div class="stat-num">{_pf_won(summ["positions_value_krw"])}</div>'
-        '<div class="stat-lbl">포지션 평가</div></div>'
-        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(summ["unrealized_pnl_krw"])}">'
-        f'{_pf_won(summ["unrealized_pnl_krw"])}</div><div class="stat-lbl">미실현 손익</div></div>'
-        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(summ["realized_pnl_krw"])}">'
-        f'{_pf_won(summ["realized_pnl_krw"])}</div><div class="stat-lbl">실현 손익</div></div>'
-        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(summ["total_return_pct"])}">'
-        f'{summ["total_return_pct"]:+.2f}%</div><div class="stat-lbl">총 수익률</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pf_won(summ["total_equity_krw"])}</div>'
+        f'<div class="stat-l">총자산{part}</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pf_won(summ["cash_krw"])}</div>'
+        '<div class="stat-l">현금</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pf_won(summ["positions_value_krw"])}</div>'
+        '<div class="stat-l">포지션 평가</div></div>'
+        f'<div class="stat"><div class="stat-v" style="color:{_pf_col(summ["unrealized_pnl_krw"])}">'
+        f'{_pf_won(summ["unrealized_pnl_krw"])}</div><div class="stat-l">미실현 손익</div></div>'
+        f'<div class="stat"><div class="stat-v" style="color:{_pf_col(summ["realized_pnl_krw"])}">'
+        f'{_pf_won(summ["realized_pnl_krw"])}</div><div class="stat-l">실현 손익</div></div>'
+        f'<div class="stat"><div class="stat-v" style="color:{_pf_col(summ["total_return_pct"])}">'
+        f'{summ["total_return_pct"]:+.2f}%</div><div class="stat-l">총 수익률</div></div>'
         '</div>')
 
     pos_html = ""
@@ -14907,6 +14915,9 @@ _PF_CSS = """<style>
 .pf-tbl th[data-k]:hover::after{opacity:.65}
 .pf-tbl th.pf-sorted::after{content:""}
 .pf-ar{opacity:.85;font-size:10px;margin-left:2px}
+/* 표 셀의 .muted — 일반 규칙(_SCREENER_CSS)은 `.pf-tbl td`(더 높은 명시도)
+   에 져서 죽는다. 여기서 명시도를 올려 잡는다(2026-09-02 실수 #273). */
+.pf-tbl td.muted,.pf-tbl th.muted{color:var(--muted)}
 @media (max-width:760px){.pf-grid>.pf-card{flex:1 1 100% !important;min-width:0 !important}}
 </style>"""
 
@@ -14980,8 +14991,8 @@ _PF_SEND_JS = """<script>(function(){
     row(['자산 스냅샷', snapDate()]);row([]);
     row(['[요약]']);
     document.querySelectorAll('.stats .stat').forEach(function(s){
-      var l=(s.querySelector('.stat-lbl')||{}).textContent||'';
-      var n=(s.querySelector('.stat-num')||{}).textContent||'';
+      var l=(s.querySelector('.stat-l')||{}).textContent||'';
+      var n=(s.querySelector('.stat-v')||{}).textContent||'';
       row([l.trim(), n.trim()]);
     });
     var bro=tblRows('pf-bro');
@@ -15185,17 +15196,17 @@ def _render_portfolio_page(model, noah=None) -> str:
             '증분 표시</div>')
 
     _free_cash = _alloc.get("자유입출금 자산") or 0
-    cash_stat = (f'<div class="stat"><div class="stat-num">{_pf_won(_free_cash)}</div>'
-                  '<div class="stat-lbl">자유입출금</div></div>') if _free_cash else ""
+    cash_stat = (f'<div class="stat"><div class="stat-v">{_pf_won(_free_cash)}</div>'
+                  '<div class="stat-l">자유입출금</div></div>') if _free_cash else ""
     stats = (
         '<div class="stats">'
-        f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("순자산"))}</div><div class="stat-lbl">순자산</div></div>'
-        f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총자산"))}</div><div class="stat-lbl">총자산</div></div>'
-        f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총부채"))}</div><div class="stat-lbl">총부채</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pf_won(nw.get("순자산"))}</div><div class="stat-l">순자산</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pf_won(nw.get("총자산"))}</div><div class="stat-l">총자산</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pf_won(nw.get("총부채"))}</div><div class="stat-l">총부채</div></div>'
         + cash_stat +
-        f'<div class="stat"><div class="stat-num">{_pf_won(eval_sum)}</div><div class="stat-lbl">주식 평가</div></div>'
-        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</div><div class="stat-lbl">주식 평가손익</div></div>'
-        f'<div class="stat"><div class="stat-num">{_distinct}</div><div class="stat-lbl">보유 종목</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pf_won(eval_sum)}</div><div class="stat-l">주식 평가</div></div>'
+        f'<div class="stat"><div class="stat-v" style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</div><div class="stat-l">주식 평가손익</div></div>'
+        f'<div class="stat"><div class="stat-v">{_distinct}</div><div class="stat-l">보유 종목</div></div>'
         '</div>')
 
     # 자산 배분 도넛
@@ -15552,8 +15563,8 @@ _BG_SEND_JS = """<script>(function(){
     row(['가계부 스냅샷', d]);row([]);
     row(['[요약]']);
     document.querySelectorAll('.stats .stat').forEach(function(s){
-      var l=(s.querySelector('.stat-lbl')||{}).textContent||'';
-      var n=(s.querySelector('.stat-num')||{}).textContent||'';
+      var l=(s.querySelector('.stat-l')||{}).textContent||'';
+      var n=(s.querySelector('.stat-v')||{}).textContent||'';
       row([l.trim(), n.trim()]);
     });
     var ec=legItems('bg-exp-cats');
@@ -15620,10 +15631,10 @@ def _render_budget_page(budget) -> str:
     # 요약 카드 (기간 월평균 + 저축률)
     cards = (
         '<div class="stats">'
-        f'<div class="stat"><div class="stat-num" style="color:var(--pos)">{_pf_won(tot.get("income_avg"))}</div><div class="stat-lbl">월평균 수입</div></div>'
-        f'<div class="stat"><div class="stat-num" style="color:var(--neg)">{_pf_won(tot.get("expense_avg"))}</div><div class="stat-lbl">월평균 지출</div></div>'
-        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(tot.get("net"))}">{_pf_won((tot.get("net") or 0) / n if n else 0)}</div><div class="stat-lbl">월평균 순저축</div></div>'
-        f'<div class="stat"><div class="stat-num">{_pct(tot.get("savings_rate"))}</div><div class="stat-lbl">저축률(기간)</div></div>'
+        f'<div class="stat"><div class="stat-v" style="color:var(--pos)">{_pf_won(tot.get("income_avg"))}</div><div class="stat-l">월평균 수입</div></div>'
+        f'<div class="stat"><div class="stat-v" style="color:var(--neg)">{_pf_won(tot.get("expense_avg"))}</div><div class="stat-l">월평균 지출</div></div>'
+        f'<div class="stat"><div class="stat-v" style="color:{_pf_col(tot.get("net"))}">{_pf_won((tot.get("net") or 0) / n if n else 0)}</div><div class="stat-l">월평균 순저축</div></div>'
+        f'<div class="stat"><div class="stat-v">{_pct(tot.get("savings_rate"))}</div><div class="stat-l">저축률(기간)</div></div>'
         '</div>')
 
     # 월별 수입/지출 막대 (수입 녹 · 지출 빨강), 저축률 라벨
@@ -15850,7 +15861,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
         if d.get("stale") and rows:
             any_stale = True
         pills.append(
-            f'<button type="button" class="mc-pill mc-embed'
+            f'<button type="button" class="mc-pill js-mc-embed'
             f'{" active" if key == "marketcap" else ""}" data-axis="{key}">'
             f'{_html.escape(lbl)}</button>')
         has_chg = any(r.get("chg_pct") is not None for r in rows)
@@ -15877,7 +15888,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
             else:
                 name_html = f'<div class="mc-name">{_nm_esc}</div>'
             name_cell = (
-                f'<td class="mc-name-td"><div class="mc-namewrap">{logo}'
+                f'<td><div class="mc-namewrap">{logo}'
                 f'<div>{name_html}'
                 f'<div class="mc-tk">{_tk_esc}</div>'
                 f'</div></div></td>')
@@ -15919,7 +15930,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
         _stale_note = (' · <span style="color:#f5a623">⚠️ 최신 수집 실패 — '
                        '마지막 성공분</span>' if (d.get("stale") and rows) else "")
         tabs.append(f"""
-  <div class="mc-tab" data-axis="{key}" style="display:{'block' if key == 'marketcap' else 'none'}">
+  <div class="js-mc-tab" data-axis="{key}" style="display:{'block' if key == 'marketcap' else 'none'}">
     <p class="sub" style="margin:2px 0 8px;font-size:12px">기준 {_fetched} KST{_stale_note} <span style="opacity:.65">· 축마다 따로 수집(수 초 차) — 장중 시장은 탭 간 Today% 가 소수점에서 다를 수 있습니다</span></p>
     <div style="overflow-x:auto"><table class="mc-table">
       <thead><tr><th>#</th><th>기업</th><th class="mc-r">{_html.escape(mcol)}</th>
@@ -15986,8 +15997,8 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
 </div>
 <script>
 (function(){{
-  var pills=document.querySelectorAll('.mc-pill.mc-embed');
-  var tabs=document.querySelectorAll('.mc-tab');
+  var pills=document.querySelectorAll('.mc-pill.js-mc-embed');
+  var tabs=document.querySelectorAll('.js-mc-tab');
   pills.forEach(function(p){{p.addEventListener('click',function(){{
     pills.forEach(function(x){{x.classList.toggle('active',x===p);}});
     tabs.forEach(function(t){{t.style.display=(t.dataset.axis===p.dataset.axis)?'block':'none';}});
@@ -16078,14 +16089,14 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
     가 결정 트래킹 surface (Telegram 알림은 휘발성).
   </p>
   <div class="stats">
-    <div class="stat"><div class="stat-num">{total_runs}</div>
-      <div class="stat-lbl">총 점검 횟수</div></div>
-    <div class="stat"><div class="stat-num">₩{int(today_cost_krw):,} / ₩{int(month_cost_krw):,} / ₩{int(total_cost_krw):,}</div>
-      <div class="stat-lbl">비용 (오늘/이번 달/누적)</div></div>
-    <div class="stat"><div class="stat-num">{last_ts}</div>
-      <div class="stat-lbl">마지막 점검일</div></div>
-    <div class="stat"><div class="stat-num">{pending_count}</div>
-      <div class="stat-lbl">⏳ 미결정 후보</div></div>
+    <div class="stat"><div class="stat-v">{total_runs}</div>
+      <div class="stat-l">총 점검 횟수</div></div>
+    <div class="stat"><div class="stat-v">₩{int(today_cost_krw):,} / ₩{int(month_cost_krw):,} / ₩{int(total_cost_krw):,}</div>
+      <div class="stat-l">비용 (오늘/이번 달/누적)</div></div>
+    <div class="stat"><div class="stat-v">{last_ts}</div>
+      <div class="stat-l">마지막 점검일</div></div>
+    <div class="stat"><div class="stat-v">{pending_count}</div>
+      <div class="stat-l">⏳ 미결정 후보</div></div>
   </div>
 """)
 
@@ -16115,7 +16126,7 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
             meta = (f"유형: {kind_txt} · 상위: {parent} · 효력: {eff}"
                     f" · 출처: {src}")
         return (
-            f'<div class="run-card" style="margin:10px 0;padding:12px 14px">'
+            f'<div class="card" style="margin:10px 0;padding:12px 14px">'
             f'<div style="display:flex;align-items:center;gap:10px;'
             f'flex-wrap:wrap"><b>{name}</b>'
             f'<span style="color:var(--fg-soft)">({kr})</span>'
@@ -16143,13 +16154,13 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
                        if not it.get("already_covered")]
 
         parts.append(f"""
-<details class="run-wrap">
-  <summary class="run-summary">
-    <span class="run-date">{ts},</span>
-    <span class="run-meta">{win_start} ~ {win_end} 윈도우, ₩{cost:,}
+<details class="day">
+  <summary class="day-head">
+    <span>{ts}</span>
+    <span class="count">{win_start} ~ {win_end} 윈도우, ₩{cost:,}
       · GICS 변경 {len(gics_items)} · 신규 trend {len(trend_items)}</span>
   </summary>
-  <div class="run-body">
+  <div class="day-body">
 """)
         if summary:
             parts.append(f'<div class="sub" style="margin:8px 0 14px 0">'

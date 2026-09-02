@@ -432,10 +432,13 @@ def audit_marketcap() -> None:
 
     # 렌더 경로
     page = d._render_marketcap_page(data)
-    _ntab = page.count('class="mc-tab"')
+    _ntab = page.count('class="js-mc-tab"')
     _next = page.count("mc-ext")
     _p("")
-    _p(f"[렌더] {len(page):,}자 · 탭 {_ntab}개 · 외부필 {_next}개")
+    # 계수 패턴이 화면과 갈리면 0건을 세고 조용히 통과한다 — 대조 0건은
+    # 통과가 아니라 실패로 찍는다(실수 #47·#54·#273).
+    _p(f"{_mark(_ntab == len(mc.EMBED_AXES))} [렌더] {len(page):,}자 · "
+       f"탭 {_ntab}개(기대 {len(mc.EMBED_AXES)}) · 외부필 {_next}개")
     hdr = re.search(r'글로벌 기업 순위 · 출처.*?</p>', page, re.S)
     _p(f"{_mark(bool(hdr))} 헤더 기준시각: "
        + (re.sub(r'<[^>]+>', ' ', hdr.group(0)) if hdr else '(없음)').strip()[:180])

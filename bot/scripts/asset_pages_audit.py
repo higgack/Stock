@@ -71,7 +71,7 @@ def audit_portfolio() -> None:
     _p(f"[분해] 국내 {domestic:,.0f} + 해외 {overseas:,.0f} = {domestic + overseas:,.0f} "
        f"{_mark(abs(domestic + overseas - eval_sum) < 1)}")
     # 고유 종목 ≤ 포지션
-    m = re.search(r'stat-num">(\d+)</div><div class="stat-lbl">보유 종목', html)
+    m = re.search(r'stat-v">(\d+)</div><div class="stat-l">보유 종목', html)
     if m:
         _p(f"{_mark(int(m.group(1)) <= len(holdings))} 보유 종목(고유) "
            f"{m.group(1)} ≤ 포지션 {len(holdings)}")

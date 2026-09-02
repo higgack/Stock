@@ -21011,7 +21011,7 @@ class TestCreditSplitAndMarketcap20260706:
                 for k, _, _, _ in mc.EMBED_AXES}
         page = d._render_marketcap_page(data)
         assert page.rstrip().endswith("</body></html>")
-        assert page.count('class="mc-tab"') == 6
+        assert page.count('class="js-mc-tab"') == 6
         assert page.count("mc-ext") >= 9 and "Employees ↗" in page
         assert "Price (30 days)" in page and "mc-spark-svg" in page
         assert 'stroke="#ef5350"' in page           # 인라인 SVG 스파크(red)
@@ -43213,3 +43213,200 @@ class TestDartFeedWindowAndFragmentWrites20260901:
         state["n"] = 5
         dashboard.regenerate_dart_feed_index()
         assert frag.read_text(encoding="utf-8") != first, "새 내용이 안 쓰였다"
+
+
+# ── 렌더 출력 기준 CSS 커버리지 (실수 #201, 2026-09-02) ───────────────────
+# 클래스를 쓰면서 CSS 를 안 정의하면 조용히 스타일이 빠진다 — 샌드박스는 렌더를
+# 못 보므로(실수 #14) 사용자만 발견한다. 소스 문자열 스캔은 이 레포에서 오탐
+# 71건(복합선택자 `.df-pill-sig.active{` · JS 훅 · 스크레이퍼 선택자 · 픽스처)
+# 이라 **렌더 출력**으로 잰다(실수 #35 감사는 화면이 쓰는 그 경로).
+# CSS 가 없는 게 정상인 JS 훅은 `js-` 접두로 스스로 밝힌다 — 이름 열거는 다음
+# 훅을 못 잡는다(실수 #24).
+_CSS_USED_RE = re.compile(r"""class\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+# 클래스명 뒤로 셀렉터 문자만 이어지다 '{' 를 만나면 그건 정의다. <style> 뿐
+# 아니라 JS 가 런타임 주입하는 CSS 문자열(.cmd-panel 등)도 출력에 있으므로
+# 같이 센다 — <style> 만 보면 멀쩡한 코드를 미정의로 오보한다(실측 5건).
+_CSS_DEF_RE = re.compile(r"""\.(-?[A-Za-z_][A-Za-z0-9_-]*)(?=[^{};<>()"']*\{)""")
+# 유효한 CSS 식별자만 센다. `class="vc-row'+fc+'"` 처럼 JS 가 이어 붙이는
+# 토큰은 렌더 시점에 정해지지 않아 잴 수 없다(오탐 방지).
+_CSS_IDENT_RE = re.compile(r"^-?[A-Za-z_][A-Za-z0-9_-]*$")
+_SCRIPT_RE = re.compile(r"<script[^>]*>(.*?)</script>", re.S | re.I)
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+
+
+def css_coverage(html: str) -> tuple[set[str], set[str], list[str]]:
+    """(사용, 정의, 미정의) — 미정의는 `js-` 훅을 뺀 것."""
+    used: set[str] = set()
+    for m in _CSS_USED_RE.finditer(html):
+        for tok in (m.group(1) or m.group(2) or "").split():
+            if _CSS_IDENT_RE.match(tok):
+                used.add(tok)
+    # 주석은 지우고 본다 — `/* .foo 는 … */` 가 정의로 세어지면 진짜 미정의를
+    # 가린다(실수 #59b, 2026-09-02 이 가드 자신에게서 발각).
+    defined = set(_CSS_DEF_RE.findall(_CSS_COMMENT_RE.sub(" ", html)))
+    missing = sorted(c for c in used - defined if not c.startswith("js-"))
+    return used, defined, missing
+
+
+def _render_all_pages():
+    """화면이 실제로 그리는 경로 그대로 — **내용이 있는** 픽스처로 태운다.
+
+    빈 픽스처는 페이지 껍데기(nav·wrap)만 그려서 카드·표·상세 블록의 클래스를
+    한 번도 안 본다 — 2026-09-02 독립 리뷰가 그렇게 눈먼 가드를 잡았다
+    (빈 gics 는 초록인데 run 하나를 넣자 미정의 6개가 드러났다, 실수 #91c).
+    """
+    from bot import dashboard as _d
+
+    summ = {"total_equity_krw": 1000, "cash_krw": 100, "positions_value_krw": 900,
+            "unrealized_pnl_krw": 10, "realized_pnl_krw": 5, "total_return_pct": 1.0,
+            # rows·trades 가 없으면 _render_paper_page 가 조기 반환해
+            # stat 타일 블록을 통째로 안 그린다(리뷰 지적).
+            "rows": [{"ticker": "AAPL", "qty": 1, "avg_price": 100.0, "currency": "USD",
+                      "last_price": 110.0, "eval_krw": 150000, "pnl_krw": 5000,
+                      "pnl_pct": 3.3, "market": "US"}],
+            "trades": [{"ts": 1756000000, "side": "buy", "ticker": "AAPL", "qty": 1,
+                        "price": 100.0, "currency": "USD", "note": ""}]}
+    feed = {"2026-08-30": [{"date": "2026-08-30", "corp": "테스트", "rcept_no": "20260830000001",
+                            "report": "주요사항보고서", "category": "리스크",
+                            "url": "https://example.invalid", "detail": "내용"}]}
+    gics_run = {"ts": "2026-08-30T00:00:00+09:00", "cost_krw": 10,
+                "report": {"window_start": "2026-05", "window_end": "2026-08",
+                           "summary": "요약",
+                           "official_gics_changes": [{"name": "X", "kr": "엑스",
+                                                      "suggested_slug": "x", "layer": "L1",
+                                                      "rationale": "근거"}],
+                           "emerging_trends": [{"name": "Y", "kr": "와이",
+                                                "suggested_slug": "y", "layer": "L2",
+                                                "rationale": "근거"}]}}
+    port = {"holdings": [{"종목": "삼성전자", "티커": "005930.KS", "수량": 10,
+                          "평균단가": 70000, "평가금액": 750000, "통화": "KRW", "계좌": "A"}],
+            "cash": [{"계좌": "A", "통화": "KRW", "금액": 100000}], "as_of": "2026-08-30"}
+    budget = {"months": ["2026-07", "2026-08"], "income": [100, 120],
+              "expense": [80, 90], "net": [20, 30], "savings_rate": [0.2, 0.25]}
+    return [
+        ("dart_feed", _d._render_dart_feed_page(feed)),
+        # screen_archives 가 없으면 월 접기 블록(js-cs-month 훅)을 안 그려
+        # 훅 가드가 그 훅을 한 번도 안 본다(2026-09-02 뮤테이션으로 발각).
+        ("screener", _d._render_screener_page([], {}, [{
+            "_date": "2026-08-30", "ts": "2026-08-30T09:00:00+09:00",
+            "cond": "PER<15", "count": 1, "cost_krw": 0, "elapsed": 1.0,
+            "filename": "x.json",
+            "rows": [{"ticker": "005930.KS", "name": "삼성전자", "per": 10.0}]}])),
+        ("screener_domains", _d._render_screener_domains_page()),
+        ("daily_byte", _d._render_daily_byte_page([])),
+        ("realestate", _d._render_realestate_page([])),
+        ("reddit_insider", _d._render_reddit_insider_page([])),
+        ("blog", _d._render_blog_page([])),
+        ("watchlist", _d._render_watchlist_page([], [])),
+        ("screen", _d._render_screen_page([])),
+        ("gics_candidates", _d._render_gics_candidates_page([gics_run])),
+        ("paper", _d._render_paper_page(summ, [], [])),
+        ("portfolio", _d._render_portfolio_page(port)),
+        ("budget", _d._render_budget_page(budget)),
+        ("valuechain", _d._render_valuechain_page([])),
+        ("marketcap", _d._render_marketcap_page({})),
+    ]
+
+
+def _render_all_pages_by_name() -> dict:
+    return {n: r for n, r in _render_all_pages()}
+
+
+def _page_html(rendered) -> str:
+    if isinstance(rendered, tuple):          # (html, fragments)
+        head, rest = rendered[0], rendered[1]
+        return head + ("".join(rest.values()) if isinstance(rest, dict) else "")
+    return rendered
+
+
+def test_rendered_pages_define_every_class_they_use():
+    """실수 #201 — 쓰는 클래스는 그 페이지 CSS 에 정의가 있어야 한다.
+
+    2026-09-02 이 가드가 켜자마자 잡은 것(새 가드는 뭔가 잡는 게 정상 — #87a):
+      · `.stat-num`/`.stat-lbl` 은 **레포 어디에도 정의가 없었다**(33곳 사용) —
+        `.stat-v`/`.stat-l`·`.stat-value`/`.stat-label` 과 같은 용도의 세 번째
+        이름이 CSS 없이 살아 있었다(DESIGN.md §2.1 블록 사전이 막으려는 그것).
+      · `.nav` 가 _BASE_CSS 계열(watchlist·screener_domains)에 없어 nav 링크가
+        기본 스타일로 떴다. · `.muted` 가 paper 페이지 번들에 없었다.
+    """
+    bad: list[str] = []
+    for name, rendered in _render_all_pages():
+        html = _page_html(rendered)
+        used, defined, missing = css_coverage(html)
+        # 대조 0건은 통과가 아니라 실패다(실수 #54) — 빈 픽스처가 조용히
+        # 초록을 내면 이 가드는 아무것도 안 재는 것이다.
+        assert len(used) >= 3, f"{name}: 클래스를 {len(used)}개만 써서 잴 게 없다"
+        assert len(defined) >= 20, f"{name}: CSS 정의 {len(defined)}개 — 번들 누락?"
+        if missing:
+            bad.append(f"{name}: {', '.join(missing)}")
+    assert not bad, "CSS 정의 없는 클래스(= 조용히 스타일 빠짐):\n  " + "\n  ".join(bad)
+
+
+def _specificity(sel: str) -> tuple[int, int, int]:
+    """(id, class/attr/pseudo-class, element) — 간이 명시도."""
+    sel = re.sub(r"::[a-z-]+", " ", sel)
+    ids = len(re.findall(r"#[\w-]+", sel))
+    cls = len(re.findall(r"[.\[:][\w-]+", sel))
+    els = len(re.findall(r"(?:^|[\s>+~])([a-z][a-z0-9]*)", sel))
+    return ids, cls, els
+
+
+def test_muted_cells_win_the_cascade_on_the_paper_bundle():
+    """정의가 있어도 **캐스케이드에서 지면** 화면은 그대로 깨져 있다.
+
+    2026-09-02 독립 리뷰가 잡은 것: paper 번들은 `_SCREENER_CSS + _PF_CSS` 라
+    뒤에 오는 `.pf-tbl th,.pf-tbl td{…color:var(--text)}` 가 일반 `.muted`
+    (명시도 (0,1,0))보다 높은 (0,1,1) 이라 표 셀의 `.muted` 는 죽는다.
+    커버리지 가드는 '정의가 있다'까지만 보므로 이 축을 따로 못박는다.
+    """
+    from bot import dashboard as _d
+
+    html = _CSS_COMMENT_RE.sub(" ", _page_html(_render_all_pages_by_name()["paper"]))
+    rules = re.findall(r"([^{}<>]+)\{([^{}]*)\}", html)
+    # `<td class="muted">` 에 color 를 주는 규칙 중 가장 센 것을 고른다.
+    best = None
+    for sel, body in rules:
+        for one in sel.split(","):
+            one = one.strip()
+            if "muted" not in one or "color" not in body:
+                continue
+            if not re.search(r"(^|[\s.])(td\.muted|\.muted)$", one):
+                continue
+            sp = _specificity(one)
+            if best is None or sp >= best[0]:
+                best = (sp, one, body)
+    assert best, "paper 번들에 .muted 색 규칙이 없다(대조 0건, #54)"
+    # 이기려는 상대: `.pf-tbl td` (0,1,1)
+    assert best[0] >= (0, 1, 1), (
+        f"가장 센 .muted 규칙이 {best[1]} {best[0]} — `.pf-tbl td`(0,1,1) 에 진다")
+    assert "var(--muted)" in best[2], f"{best[1]} 가 muted 색을 안 준다: {best[2]}"
+
+
+def test_js_hook_classes_are_prefixed_and_have_no_css():
+    """JS 훅(`js-`)은 CSS 를 갖지 않는다 — 규약이 규약대로 쓰이는지 본다.
+
+    `js-` 를 면제로 두면 스타일 있는 클래스를 `js-` 로 이름 붙여 가드를 우회할
+    수 있다. 그래서 반대 증거도 같이 본다(실수 #25 '있다'만 묻는 검사는 눈이 먼다).
+    """
+    from bot import dashboard as _d
+
+    hooks: set[str] = set()
+    for _name, rendered in _render_all_pages():
+        html = _page_html(rendered)
+        used, defined, _ = css_coverage(html)
+        for c in used:
+            if c.startswith("js-"):
+                hooks.add(c)
+                assert c not in defined, f"{c}: JS 훅인데 CSS 가 있다 — 접두를 떼라"
+    assert hooks, "js- 훅이 하나도 안 잡혔다 — 규약이 죽었는지 확인(대조 0건, #54)"
+    # 훅은 JS 가 실제로 **쿼리해야** 훅이다(죽은 이름 금지, 실수 #53).
+    # 소스에 이름이 있는지로 재면 주석·독스트링이 대신 만족시키고(실수 #59b)
+    # 이름만 남은 죽은 훅을 못 잡는다 — 렌더 출력의 <script> 안에서 그 훅을
+    # 쿼리 함수에 넘기는지를 본다(실수 #35 화면이 쓰는 그 경로).
+    scripts = "\n".join(_SCRIPT_RE.findall("\n".join(
+        _page_html(r) for _n, r in _render_all_pages())))
+    for c in hooks:
+        pat = re.compile(
+            r"""(querySelector|querySelectorAll|closest|matches)\s*\(\s*['"][^'"]*\."""
+            + re.escape(c) + r"""\b""")
+        assert pat.search(scripts), f"{c}: 아무 JS 도 이 훅을 쿼리하지 않는다"
