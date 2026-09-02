@@ -1015,6 +1015,126 @@ class WindowSanityProbe20260902(unittest.TestCase):
         out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
         assert out, out
 
+    def test_item_breakdown_attributes_the_increase(self):
+        """'어디서 늘었나' 는 품목별 **증가 기여**로만 답한다(사용자 요청
+        2026-09-02). 총계만 보면 +68.7% 가 어디서 왔는지 알 수 없다."""
+        from trade.customs_provisional import item_breakdown
+        # 최대 기여를 **두 번째 슬롯**에 둔다 — 첫 슬롯이면 정렬을 지워도
+        # 통과해 아무것도 안 재는 테스트가 된다(#91c).
+        cur = {"ym": "2026-08", "decile": "FULL",
+               "amt": [1000] + [100, 400] + [10] * 8}
+        prv = {"ym": "2025-08", "decile": "FULL",
+               "amt": [600] + [100, 100] + [10] * 8}
+        labels = tuple(f"품목{i}" for i in range(1, 11))
+        rows = item_breakdown(cur, prv, labels)
+        top = rows[0]
+        assert top["name"] == "품목2", [r["name"] for r in rows]
+        assert top["delta"] == 300 and abs(top["yoy"] - 300.0) < 1e-6, top
+        # 기여율은 전체 증가(400) 대비 — 눈으로 검산된다(#33).
+        assert abs(top["share_of_delta"] - 0.75) < 1e-6, top
+        # 상위10 + 나머지 = 전체. 항등식이 깨지면 표가 거짓말한다.
+        assert abs(sum(r["delta"] for r in rows) - 400) < 1e-6, rows
+        assert any(r["name"] == "나머지" for r in rows), rows
+
+    def test_item_breakdown_without_last_year_says_so(self):
+        """작년이 없으면 YoY 를 지어내지 말 것 — None 이고 기여율도 없다."""
+        from trade.customs_provisional import item_breakdown
+        cur = {"ym": "2026-08", "decile": "FULL", "amt": [1000] + [50] * 10}
+        rows = item_breakdown(cur, None, tuple(f"품목{i}" for i in range(1, 11)))
+        assert rows and all(r["yoy"] is None for r in rows), rows
+
+    def test_probe_prints_item_attribution(self):
+        """진단이 품목별 기여를 찍는다 — 계산해 놓고 안 보여주면 없는 것과
+        같다(#123·#129·#131·#189·#228 의 반복)."""
+        from trade.customs_provisional import explain_windows
+        cur = [self._row("2026-08", "FULL", 1000, 40),
+               self._row("2025-08", "FULL", 600, 20)]
+        out = "\n".join(explain_windows({"exp_item": cur}, "2026-08"))
+        assert "반도체" in out, out          # LABELS['exp_item'][0]
+        assert "기여" in out, out
+
+    def test_declining_month_does_not_invert_contribution(self):
+        """총계가 줄어든 달에 '증가 기여'라고 적으면 부호가 뒤집혀 읽힌다 —
+        늘어난 품목이 기여 -200% 로 찍혔다(2026-09-02 독립 리뷰)."""
+        from trade.customs_provisional import explain_windows
+        cur = {"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+               "amt": [900] + [300, 100] + [50] * 8}
+        prv = {"ym": "2025-08", "decile": "FULL", "priod_dt": "01~31",
+               "amt": [1000] + [100, 300] + [50] * 8}
+        out = "\n".join(explain_windows({"exp_item": [cur, prv]}, "2026-08"))
+        assert "증가 기여" not in out, f"줄어든 달인데 '증가 기여'라 한다:\n{out}"
+        assert "감소" in out, out
+
+    def test_window_pick_matches_the_single_source(self):
+        """창 선택이 _decile_amounts(전체 0 은 건너뜀)와 갈리면, 손상된 FULL 을
+        집어 '나머지 -400억 · 기여 +111%' 를 손상 경고보다 **먼저** 찍는다."""
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [0] + [4_000_000_000] * 10},
+                {"ym": "2026-08", "decile": "D2", "priod_dt": "01~20",
+                 "amt": [50_000_000_000] + [3_000_000_000] * 10}]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "[FULL 품목" not in out, f"전체 0 인 창을 품목 분해에 썼다:\n{out}"
+
+    def test_prior_year_zero_total_is_explained_not_blank(self):
+        """작년 전체만 0 이고 항목은 채워져 있으면 '작년 —' 로 조용히 비우지
+        말고 왜 비었는지 말할 것(#43·#131)."""
+        from trade.customs_provisional import explain_windows
+        cur = {"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+               "amt": [90_000_000_000] + [4_000_000_000] * 10}
+        prv = {"ym": "2025-08", "decile": "FULL", "priod_dt": "01~31",
+               "amt": [0] + [3_000_000_000] * 10}
+        out = "\n".join(explain_windows({"exp_item": [cur, prv]}, "2026-08"))
+        assert "⚠️" in out, f"작년 전체가 0 인데 아무 말도 없다:\n{out}"
+
+    def test_header_names_the_right_breakdown(self):
+        """국가별 계열에 '품목별'이라고 적으면 화면이 거짓말한다(#34)."""
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [90_000_000_000] + [4_000_000_000] * 10}]
+        # 페이지 전체 grep 은 교차 대조 문구('품목별·국가별 짝이 없다')가
+        # 대신 만족시킨다 — 그 **헤더 줄 하나**를 잘라서 본다(#55).
+        head = next(x for x in explain_windows({"exp_cnty": rows}, "2026-08")
+                    if x.lstrip().startswith("[FULL"))
+        assert "품목별" not in head, head
+        assert "국가별" in head, head
+
+    def test_unverified_slot_order_is_disclosed(self):
+        """슬롯 순서가 원천 확인이 안 된 계열은 이름을 사실처럼 적지 말 것
+        (#165 재지 않은 귀속을 단정하지 말 것). 소스 주석이 exp_cnty 를
+        '미리보기 추가 검증 권장'이라 적어 두었다."""
+        from trade.customs_provisional import explain_windows, LABELS_VERIFIED
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [90_000_000_000] + [4_000_000_000] * 10}]
+        head = next(x for x in explain_windows({"exp_cnty": rows}, "2026-08")
+                    if x.lstrip().startswith("[FULL"))
+        assert "exp_cnty" not in LABELS_VERIFIED
+        assert "미검증" in head, head
+
+    def test_contribution_column_is_actually_printed(self):
+        """헤더의 '기여' 가 단언을 대신 만족시키면, 이 기능이 존재하는 이유인
+        그 칸을 지워도 통과한다(#75 — 리뷰가 뮤테이션으로 확인)."""
+        from trade.customs_provisional import explain_windows
+        cur = {"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+               "amt": [100_000_000_000] + [40_000_000_000] + [1_000_000_000] * 9}
+        prv = {"ym": "2025-08", "decile": "FULL", "priod_dt": "01~31",
+               "amt": [60_000_000_000] + [10_000_000_000] + [1_000_000_000] * 9}
+        line = next(x for x in explain_windows({"exp_item": [cur, prv]}, "2026-08")
+                    if "반도체" in x)
+        assert "기여" in line, line
+        assert "%" in line.split("기여")[1], line
+
+    def test_no_prior_year_does_not_promise_contribution(self):
+        """작년이 없으면 기여를 못 낸다 — 헤더가 '기여'를 약속하면 전 칸이
+        '—' 인 표를 보고 사용자가 결함으로 읽는다(#43)."""
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [90_000_000_000] + [4_000_000_000] * 10}]
+        head = next(x for x in explain_windows({"exp_item": rows}, "2026-08")
+                    if x.lstrip().startswith("[FULL"))
+        assert "기여" not in head, head
+        assert "작년 없음" in head, head
+
     def test_cli_dispatches_to_the_probe(self, ):
         """정의만 있고 배선이 없으면 아무도 못 쓴다(#120). `--why` 는 읽기
         전용이라 수집(run)으로 흘러가면 안 된다."""
