@@ -839,6 +839,64 @@ class WindowSanityProbe20260902(unittest.TestCase):
         assert "983" in out.replace(",", ""), out      # 억$ 로 환산해 찍는다
         assert "YoY" in out, out
 
+    def test_probe_states_the_verdict_even_when_clean(self):
+        """이상이 없어도 **판정을 말해야** 한다(2026-09-02 VM 실측).
+
+        `--why 2026-08` 출력에 ✅/⚠️ 가 한 줄도 없었다 — 검사가 돌아서 통과한
+        건지 아예 안 돈 건지 사용자가 알 수 없다(실수 #41 감사는 사실을 항상
+        말할 것 · #43 침묵이 최악 · #54 대조 0건은 통과가 아니다).
+        그리고 무엇을 쟀는지(실측 비율)를 같이 적어야 검산이 된다(#202).
+        """
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": d, "priod_dt": p,
+                 "amt": [v] + [0] * 10}
+                for d, p, v in (("D1", "01~10", 21_290_000_000),
+                                ("D2", "01~20", 55_210_000_000),
+                                ("FULL", "01~31", 98_250_000_000))]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "✅" in out, f"통과를 말하지 않는다:\n{out}"
+        # 무엇을 쟀는지 값으로 적는다 — D1→D2 2.59배, D2→FULL 1.78배.
+        assert "2.59" in out and "1.78" in out, out
+
+    def test_probe_says_undecidable_when_one_window(self):
+        """창이 하나면 비율을 못 잰다 — ✅ 가 아니라 판정 불가다(#54)."""
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [98_250_000_000] + [0] * 10}]
+        out = "\n".join(explain_windows({"exp_item": rows}, "2026-08"))
+        assert "✅" not in out, f"한 창뿐인데 통과라고 한다:\n{out}"
+        assert "판정 불가" in out, out
+
+    def test_top10_over_total_is_flagged(self):
+        """상위10 합 > 전체 는 **불가능**하다 — 전체 칸이 틀린 것이다.
+
+        2026-09-02: 8월 수출이 YoY +68.7% 로 나왔는데 창 불변식은 전부
+        통과했다(누적 단조·창 폭 비율). 그 검사들은 한 달 **안에서**만 보므로
+        전체 칸 자체가 어긋난 경우를 못 잡는다 — 구성요소(상위10)와 대조해야
+        갈린다(#51 여러 축 대조).
+        """
+        from trade.customs_provisional import window_sanity
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [100] + [20] * 10}]      # 상위10 합 200 > 전체 100
+        bad = window_sanity(rows, "2026-08")
+        assert any("상위10" in b for b in bad), bad
+
+    def test_probe_prints_top10_coverage_both_years(self):
+        """상위10 비중을 작년과 **나란히** 찍는다 — 전체만 부풀면 비중이
+        떨어지고, 전 품목이 고루 늘었으면 비중은 그대로다(#51)."""
+        from trade.customs_provisional import explain_windows
+        rows = [{"ym": "2026-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [98_250_000_000] + [4_000_000_000] * 10},
+                {"ym": "2025-08", "decile": "FULL", "priod_dt": "01~31",
+                 "amt": [58_260_000_000] + [3_000_000_000] * 10}]
+        lines = explain_windows({"exp_item": rows}, "2026-08")
+        # 라벨 없이 두 값만 있으면 어느 쪽이 올해인지 알 수 없다 — 그 줄
+        # **하나**를 집어서 본다(#75 옆 값이 대신 만족시키지 않게).
+        line = next((x for x in lines if "상위10" in x), "")
+        assert line, lines
+        assert "40.7%" in line, line          # 올해 40.0/98.25
+        assert "작년" in line and "51.5%" in line, line   # 작년 30.0/58.26
+
     def test_cli_dispatches_to_the_probe(self, ):
         """정의만 있고 배선이 없으면 아무도 못 쓴다(#120). `--why` 는 읽기
         전용이라 수집(run)으로 흘러가면 안 된다."""

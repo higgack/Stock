@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 BASE = "https://apis.data.go.kr/1220000"
-_WHY_VER = 1
+_WHY_VER = 3
 
 # kind → (service path, operation). 운영자 활용신청·승인된 4종.
 ENDPOINTS: dict[str, tuple[str, str]] = {
@@ -184,6 +184,28 @@ _WIN_DAYS = {"D1": 10.0, "D2": 20.0, "FULL": 30.0}
 _WIN_RATIO_TOL = 1.6
 
 
+def top10_share(row: dict) -> Optional[float]:
+    """상위10 합 ÷ 전체. 전체가 0/부재면 None."""
+    amt = row.get("amt") or []
+    if len(amt) < 11 or not amt[0]:
+        return None
+    return sum(amt[1:11]) / amt[0]
+
+
+def window_ratios(rows: list[dict], ym: str) -> list[tuple]:
+    """인접 창의 (앞, 뒤, 실측배수, 창폭배수). 창이 하나뿐이면 빈 리스트."""
+    got = {}
+    for r in rows:
+        if r.get("ym") != ym:
+            continue
+        v = (r.get("amt") or [0])[0]
+        if v:
+            got[r.get("decile")] = v
+    order = [d for d in ("D1", "D2", "FULL") if d in got]
+    return [(a, b, got[b] / got[a], _WIN_DAYS[b] / _WIN_DAYS[a])
+            for a, b in zip(order, order[1:]) if got[a]]
+
+
 def window_sanity(rows: list[dict], ym: str) -> list[str]:
     """한 달의 누적창들이 **스스로 앞뒤가 맞는가**. 이상하면 사유 리스트.
 
@@ -206,6 +228,15 @@ def window_sanity(rows: list[dict], ym: str) -> list[str]:
         if got[b] < got[a]:
             bad.append(f"누적 단조 위반: {a} {got[a]:,} > {b} {got[b]:,}"
                        " — priodDt 가 월초 누적이 아닐 수 있다")
+    # 창 불변식은 한 달 **안에서**만 본다 — 전체 칸 자체가 어긋난 경우는
+    # 구성요소와 대조해야 갈린다(#51). 상위10 합 > 전체 는 불가능하다.
+    for r in rows:
+        if r.get("ym") != ym:
+            continue
+        sh = top10_share(r)
+        if sh is not None and sh > 1.0:
+            bad.append(f"상위10 합이 전체를 넘는다({r.get('decile')}: "
+                       f"{sh * 100:.1f}%) — 전체 칸 또는 합산이 틀렸다")
     for a, b in zip(order, order[1:]):
         exp = _WIN_DAYS[b] / _WIN_DAYS[a]
         act = got[b] / got[a] if got[a] else 0.0
@@ -239,15 +270,32 @@ def explain_windows(rows_by_kind: dict, ym: Optional[str] = None) -> list[str]:
             c = (cur or {}).get("amt", [0])[0]
             p = (prv or {}).get("amt", [0])[0]
             yoy = ((c - p) / p * 100.0) if (c and p) else None
+            sc, sp = top10_share(cur or {}), top10_share(prv or {})
+            shr = ("   상위10 "
+                   + (f"{sc * 100:.1f}%" if sc is not None else "—")
+                   + " / 작년 "
+                   + (f"{sp * 100:.1f}%" if sp is not None else "—"))
             out.append(
                 f"   {dec:<4} {(cur or {}).get('priod_dt', '-'):<8}"
                 f" {target} {c / 1e8:>9,.1f}억$   {py} {p / 1e8:>9,.1f}억$"
-                + (f"   YoY {yoy:+.1f}%" if yoy is not None else "   YoY —"))
-        for b in window_sanity(rows, target):
-            out.append(f"   ⚠️ {b}")
-        # 대조 0건은 통과가 아니다(#54).
+                + (f"   YoY {yoy:+.1f}%" if yoy is not None else "   YoY —")
+                + shr)
+        bad = window_sanity(rows, target)
+        for line in bad:
+            out.append(f"   ⚠️ {line}")
+        # 이상이 없어도 **판정을 말한다** — 침묵하면 검사가 돌아서 통과한
+        # 건지 아예 안 돈 건지 사용자가 알 수 없다(실수 #41·#43·#274).
+        # 무엇을 쟀는지 실측값을 같이 적어야 눈으로 검산된다(#202).
+        ratios = window_ratios(rows, target)
         if not any(r["ym"] == target for r in rows):
+            # 대조 0건은 통과가 아니다(#54).
             out.append(f"   ❌ {target} 행이 아예 없다 — 수집 경로 확인")
+        elif not ratios:
+            out.append("   ❓ 판정 불가 — 창이 하나뿐이라 비율을 못 잰다")
+        elif not bad:
+            det = " · ".join(f"{x}→{y} {act:.2f}배[창 {exp:.2f}]"
+                             for x, y, act, exp in ratios)
+            out.append(f"   ✅ 누적 단조 · 창 폭 비율 정상({det})")
     return out
 
 
