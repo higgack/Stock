@@ -44981,33 +44981,92 @@ class TestThemePageIsNotSevenSerialFetches20260904:
                             lambda: {"themes": [row], "ts": "09-04 10:00"})
         assert "갱신 중" not in np.render_theme_page()
 
+    def test_background_refresh_does_not_bake_partial(self, monkeypatch, tmp_path):
+        """저장 판정은 `_collect_and_store` 하나가 한다(#38).
+
+        옛 판은 배경 스레드가 `once()` 결과를 다시 `_cache_write` 해서,
+        `_collect_and_store` 가 "부분이라 안 굽는다"고 거부한 스냅샷을
+        그대로 덮어 구웠다(독립 리뷰 실측 — 4/7쪽 결과가 완전본으로
+        캐시되고, 장 마감 뒤엔 `_session_fresh` 가 다음 개장까지 fresh 로
+        본다). 배경은 **읽기만** 한다.
+        """
+        import threading
+        nsc = self._clean(monkeypatch, tmp_path)
+        wrote: list = []
+        monkeypatch.setattr(nsc, "_cache_write",
+                            lambda name, obj: wrote.append((name, obj)))
+        done = threading.Event()
+
+        def _fn():
+            # _collect_and_store 가 부분 결과를 거부한 뒤의 반환값 그대로.
+            done.set()
+            return {"themes": [{"no": "1", "name": "t"}], "partial": True}
+
+        nsc._refresh_async("theme.json", _fn, "naver:themes-test-partial")
+        assert done.wait(5), "배경 스레드가 안 돌았다"
+        for _ in range(200):
+            with nsc._BG_LOCK:
+                if "theme.json" not in nsc._BG_KEYS:
+                    break
+            threading.Event().wait(0.02)
+        assert wrote == [], f"배경이 부분 스냅샷을 구웠다: {wrote}"
+
+    def test_collect_and_store_is_the_only_writer(self, monkeypatch, tmp_path):
+        """반대 증거 — 완전본이면 `fn` 안에서 저장된다(배경이 아니라)."""
+        nsc = self._clean(monkeypatch, tmp_path)
+        wrote: list = []
+        monkeypatch.setattr(nsc, "_cache_write",
+                            lambda name, obj: wrote.append(name))
+        monkeypatch.setattr(
+            nsc, "collect_themes",
+            lambda: {"themes": [{"no": "1", "name": "t"}], "ts": "x",
+                     "partial": False})
+        nsc._collect_and_store()
+        assert wrote == ["theme.json"], wrote
+
 
 class TestTimerClaimIsAskedOfSystemd20260905:
-    """⑥ 의 '↪' 줄은 **systemd 에 물어서** 말한다(#279 의 다음 층).
+    """⑥ 의 '↪' 줄은 **systemd 에 물어서** 말한다(#279 → #281).
 
     2026-09-04 VM 실행에서 `↪ 점검 도장이 없다 — 타이머가 아예 안 돌았을 수
     있다` 가 떴는데, 도장을 찍는 `feed_health.mark` 자체가 **마지막 발화
     (09-04 19:00 KST) 뒤에 배포**됐다. 즉 도장 부재는 타이머 실패의 증거가
     아니었다 — 안 잰 문장이 헛걸음을 만든 것이다(#165·#187b).
-    상태는 **아는 쪽에 묻는다**(#86): 타이머 발화 시각과 서비스 종료 상태는
-    systemd 가 알고 있다.
+    상태는 **아는 쪽에 묻는다**(#86).
+
+    ⚠️ 계약이 독립 리뷰로 두 번 좁혀졌다(#222 로 옛 테스트를 다시 씀):
+    (a) **도장이 있어도 낡았으면** systemd 에 묻는다 — 도장은 실행 *시작*에
+        찍히므로 옛 도장은 '지난주에 돌았다'는 뜻이고, 그걸 현재형으로 말하면
+        `systemctl show` 를 통째로 건너뛴다.
+    (b) `LoadState` 만으로는 **멈춘 타이머**를 못 가른다(중지·비활성도
+        `loaded` 이고 `LastTriggerUSec` 는 `Persistent=true` 로 남는다) —
+        `ActiveState` 를 같이 묻는다. `Type=oneshot` 서비스는 실행 중에도
+        `Result=success` 라 `SubState` 없이는 '정상 종료'로 오보한다.
     """
 
-    _RAN = {"ok": True, "t_LoadState": "loaded",
+    _RAN = {"ok": True, "t_LoadState": "loaded", "t_ActiveState": "active",
             "t_LastTriggerUSec": "Fri 2026-09-04 19:00:00 KST",
+            "t_NextElapseUSecRealtime": "Mon 2026-09-07 19:00:00 KST",
+            "s_ActiveState": "inactive", "s_SubState": "dead",
             "s_ExecMainStartTimestamp": "Fri 2026-09-04 19:00:00 KST",
             "s_ExecMainStatus": "0", "s_Result": "success"}
 
-    def test_stamp_wins_when_present(self):
+    def test_fresh_stamp_wins_but_stale_stamp_does_not(self):
+        """옛 계약은 '도장이 있으면 무조건 그 줄' 이었다 — 낡은 도장이
+        '실행은 됐다' 를 현재형으로 주장해 systemd 를 안 물었다."""
         from bot.daily_kr_flow import timer_verdict
-        assert "타이머는 돌았다" in timer_verdict({}, "2026-09-04 07:10")
+        fresh = timer_verdict({}, "2026-09-04 19:00")
+        assert "타이머는 돌았다" in fresh
+        stale = timer_verdict({**self._RAN, "t_ActiveState": "inactive"},
+                              "2026-08-27 19:00", stamp_stale=True)
+        assert "타이머는 돌았다" not in stale, stale
+        assert "낡았다" in stale and "멈춰 있다" in stale, stale
 
     def test_unmeasured_claim_is_gone(self):
         """도장이 없다는 이유만으로 '안 돌았을 수 있다' 고 단정하지 않는다."""
         from bot.daily_kr_flow import timer_verdict
         for facts in ({}, {"ok": False, "err": "x"}, self._RAN,
-                      {"ok": True, "t_LoadState": "loaded",
-                       "t_LastTriggerUSec": "n/a"}):
+                      {**self._RAN, "t_LastTriggerUSec": "n/a"}):
             assert "안 돌았을 수 있다" not in timer_verdict(facts, "")
 
     def test_branches_are_named_and_distinct(self):
@@ -45015,22 +45074,46 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         from bot.daily_kr_flow import timer_verdict
         got = {
             "no_systemd": timer_verdict({"ok": False, "err": "no bus"}, ""),
-            "not_installed": timer_verdict(
+            "not_found": timer_verdict(
                 {"ok": True, "t_LoadState": "not-found"}, ""),
-            "never": timer_verdict({"ok": True, "t_LoadState": "loaded",
-                                    "t_LastTriggerUSec": "n/a"}, ""),
+            "masked": timer_verdict({"ok": True, "t_LoadState": "masked"}, ""),
+            "bad_setting": timer_verdict(
+                {"ok": True, "t_LoadState": "bad-setting"}, ""),
+            "stopped": timer_verdict(
+                {**self._RAN, "t_ActiveState": "inactive"}, ""),
+            "never": timer_verdict(
+                {**self._RAN, "t_LastTriggerUSec": "n/a"}, ""),
+            "running": timer_verdict(
+                {**self._RAN, "s_ActiveState": "activating",
+                 "s_SubState": "start"}, ""),
             "failed": timer_verdict({**self._RAN, "s_ExecMainStatus": "1",
                                      "s_Result": "exit-code"}, ""),
             "ran": timer_verdict(self._RAN, ""),
         }
-        assert len(set(got.values())) == 5, got
+        assert len(set(got.values())) == 9, got
         assert "no bus" in got["no_systemd"]            # 사유를 밝힌다(#82)
-        assert "enable --now" in got["not_installed"]
+        assert "enable --now" in got["not_found"]
+        # masked 에 `enable --now` 만 시키면 실패한다 — 처방이 달라야 한다.
+        assert "unmask" in got["masked"]
+        assert "daemon-reload" in got["bad_setting"]
+        assert "멈춰" in got["stopped"] and "다음 발화가 없다" in got["stopped"]
         assert "한 번도 발화하지 않았다" in got["never"]
+        assert "실행 중" in got["running"]
         assert "exit-code" in got["failed"] and "journalctl" in got["failed"]
-        # 발화 사실을 실었고, 도장 부재의 원인은 **단정하지 않는다**(#165).
-        assert "19:00:00" in got["ran"] and "이거나" not in got["ran"]
-        assert "나중에 배포됐거나" in got["ran"]
+        assert "19:00:00" in got["ran"]
+
+    def test_stopped_timer_is_not_reported_healthy(self):
+        """이 도구의 존재 이유 — 재배포 뒤 조용히 멈춘 타이머."""
+        from bot.daily_kr_flow import timer_verdict
+        line = timer_verdict({**self._RAN, "t_ActiveState": "inactive"}, "")
+        assert "정상 종료" not in line and "다시 볼 것" not in line, line
+
+    def test_running_oneshot_is_not_reported_finished(self):
+        """Type=oneshot 은 실행 중에도 Result=success 다."""
+        from bot.daily_kr_flow import timer_verdict
+        line = timer_verdict({**self._RAN, "s_ActiveState": "activating",
+                              "s_SubState": "start"}, "")
+        assert "정상 종료" not in line, line
 
     def test_failed_service_is_not_reported_as_success(self):
         """Result 만 실패여도(exit 0) 실패로 읽어야 한다 — 한쪽만 보면 샌다."""
@@ -45038,8 +45121,9 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         line = timer_verdict({**self._RAN, "s_Result": "timeout"}, "")
         assert "서비스가 실패했다" in line, line
 
-    def test_systemd_facts_reads_both_units_and_never_writes(self, monkeypatch):
-        """진단이 운영 상태를 바꾸면 안 된다(#264) — show 만 부른다."""
+    def test_systemd_facts_asks_for_run_state(self, monkeypatch):
+        """진단이 운영 상태를 바꾸면 안 되고(#264), LoadState 만 물으면
+        멈춘 타이머를 못 가른다 — 두 축을 한 테스트에서 못박는다."""
         import subprocess
         import bot.daily_kr_flow as kf
         calls: list[list] = []
@@ -45047,19 +45131,21 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         class _R:
             returncode = 0
             stderr = ""
-            stdout = "LoadState=loaded\nLastTriggerUSec=Fri 2026-09-04 19:00:00 KST\n"
+            stdout = "LoadState=loaded\nActiveState=active\n"
 
         monkeypatch.setattr(subprocess, "run",
                             lambda cmd, **kw: (calls.append(cmd), _R())[1])
         facts = kf.systemd_facts()
-        assert facts["ok"] and facts["t_LoadState"] == "loaded"
-        assert facts["t_LastTriggerUSec"].endswith("KST")
+        assert facts["ok"] and facts["t_ActiveState"] == "active"
         assert len(calls) == 2, calls
         units = [c[2] for c in calls]
         assert units == ["daily-byte.timer", "daily-byte.service"], units
         for c in calls:
             assert c[:2] == ["systemctl", "show"], c
             assert not ({"start", "restart", "stop", "enable"} & set(c)), c
+        flat = " ".join(calls[0]), " ".join(calls[1])
+        assert "-pActiveState" in flat[0], flat        # 멈춤 판정의 재료
+        assert "-pSubState" in flat[1], flat           # oneshot 실행중 판정
 
     def test_systemd_failure_is_verdict_not_assertion(self, monkeypatch):
         """물어보지 못했으면 판정 보류 — '안 돌았다' 로 우기지 않는다(#12)."""
@@ -45087,28 +45173,27 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
         assert kf.systemd_facts()["ok"] is False
 
-    def test_why_wires_the_measurement_in(self, monkeypatch):
-        """배선은 존재가 아니라 **결과**로 확인한다(#141·#120).
-
-        why() 가 systemd 를 물어서 그 답을 ⑥ 에 싣는가 — 게이트만 꺼도
-        통과하지 않도록 실제 출력 문자열을 본다.
-        """
-        import bot.daily_kr_flow as kf
-        seen: list = []
-        monkeypatch.setattr(
-            kf, "systemd_facts",
-            lambda *a, **k: (seen.append(1), dict(self._RAN))[1])
-        lines = kf.why_verdict(
-            td=True, llm_ok=True, login_kind="ok", login_fix="",
-            krx_ok=True, kr_age=9, missed_sessions=6, stamp="",
-            timer=kf.timer_verdict(kf.systemd_facts(), ""))
-        assert seen, "systemd 를 안 물었다"
-        assert any("타이머는 발화했고" in l for l in lines), lines
+    def test_stamp_age_is_measured_by_the_feed_cap(self, monkeypatch):
+        """'낡음' 판정은 `feed_health` 의 상한으로 잰다 — 여기서 다시
+        계산하면 화면과 갈라진다(#38). 그리고 미등록·형식이상은 None
+        (판정 불가)이라 도장을 신선하다고 우기지 않는다(#54)."""
+        from bot import feed_health
+        monkeypatch.setattr(feed_health, "last",
+                            lambda f: "2026-09-05 07:00")
+        assert feed_health.overdue("daily_byte_kr") is False
+        monkeypatch.setattr(feed_health, "last", lambda f: "2026-08-01 07:00")
+        assert feed_health.overdue("daily_byte_kr") is True
+        assert feed_health.overdue("no_such_feed_xyz") is None
+        monkeypatch.setattr(feed_health, "last", lambda f: "쓰레기")
+        assert feed_health.overdue("daily_byte_kr") is None
 
     def test_why_e2e_prints_what_systemd_said(self, monkeypatch):
         """배선은 태워야 보인다(#20) — why() 를 통째로 돌려 ⑥ 에 실리는지 본다.
 
         소스에 이름이 있는지로 재면 게이트만 꺼도 통과한다(#141·#59b).
+        옛 `test_why_wires_the_measurement_in` 은 **테스트가 직접 배선을
+        수행**하고 그 호출을 세어, 호출부의 `timer=` 를 지워도 통과했다
+        (독립 리뷰가 뮤테이션으로 실측) — 그래서 지우고 이걸로 대체했다(#222).
         """
         import bot.daily_kr_flow as kf
         from bot import feed_health
@@ -45116,17 +45201,34 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         monkeypatch.setattr(kf, "systemd_facts", lambda *a, **k: dict(self._RAN))
         out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
             monkeypatch, totals_side=dict, trading_day=True)
-        assert "타이머는 발화했고" in out, out
+        assert "타이머는 켜져 있고 발화했으며" in out, out
         assert "안 돌았을 수 있다" not in out, out
 
-    def test_why_does_not_ask_systemd_when_stamped(self, monkeypatch):
-        """도장이 있으면 물을 이유가 없다 — 진단이 쓸데없이 쉘을 부르지 않게."""
+    def test_why_asks_systemd_when_the_stamp_is_stale(self, monkeypatch):
+        """옛 도장이 systemd 조회를 건너뛰게 하면 안 된다(독립 리뷰 실측)."""
+        import bot.daily_kr_flow as kf
+        from bot import feed_health
+        monkeypatch.setattr(feed_health, "last", lambda f: "2026-08-27 19:00")
+        monkeypatch.setattr(feed_health, "overdue", lambda f: True)
+        seen: list = []
+        monkeypatch.setattr(
+            kf, "systemd_facts",
+            lambda *a, **k: (seen.append(1),
+                             {**self._RAN, "t_ActiveState": "inactive"})[1])
+        out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
+            monkeypatch, totals_side=dict, trading_day=True)
+        assert seen, "도장이 낡았는데 systemd 를 안 물었다"
+        assert "멈춰 있다" in out, out
+
+    def test_why_does_not_ask_systemd_when_stamped_fresh(self, monkeypatch):
+        """신선한 도장이면 물을 이유가 없다 — 쓸데없이 쉘을 부르지 않게."""
         import bot.daily_kr_flow as kf
         from bot import feed_health
         monkeypatch.setattr(feed_health, "last", lambda f: "2026-09-04 19:00")
+        monkeypatch.setattr(feed_health, "overdue", lambda f: False)
 
         def _boom(*a, **k):
-            raise AssertionError("도장이 있는데 systemd 를 물었다")
+            raise AssertionError("신선한 도장인데 systemd 를 물었다")
 
         monkeypatch.setattr(kf, "systemd_facts", _boom)
         out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
@@ -45144,14 +45246,14 @@ class TestNaverSectorCheckTellsTheBranch20260905:
     돌려도 답이 안 나왔다(2026-09-04 실측).
     """
 
-    def _fresh(self, monkeypatch, *, fresh, age_sec):
+    def _fresh(self, monkeypatch, *, fresh, age_sec, obj=None):
         import time as _t
         import bot.naver_sector_client as nsc
-        monkeypatch.setattr(nsc, "_cached",
-                            lambda name: {"themes": [{"name": "반도체"}]} if fresh else None)
+        if obj is None:
+            obj = {"themes": [{"name": "반도체"}]}
+        monkeypatch.setattr(nsc, "_cached", lambda name: obj if fresh else None)
         monkeypatch.setattr(
-            nsc, "_read_cache",
-            lambda name: ({"themes": [{"name": "반도체"}]}, _t.time() - age_sec))
+            nsc, "_read_cache", lambda name: (obj, _t.time() - age_sec))
 
         class _St:
             st_mtime = _t.time() - age_sec
@@ -45168,6 +45270,36 @@ class TestNaverSectorCheckTellsTheBranch20260905:
         with redirect_stdout(buf):
             rc = nsc.check(fetch=False)
         return rc, buf.getvalue()
+
+    def test_fresh_but_empty_cache_is_a_defect_not_ok(self, monkeypatch):
+        """대조 0건은 통과가 아니다(#54) — 빈 스냅샷이 fresh 로 굳으면
+        다음 개장까지 빈 화면이 재시도 없이 서빙된다(#119·#280).
+        독립 리뷰 실측: 옛 판은 `테마 0개` 옆에 ✅ 를 찍었다."""
+        rc, out = self._run(monkeypatch, fresh=True, age_sec=60,
+                            obj={"themes": [], "ts": ""})
+        assert "❌" in out and "0개" in out, out
+        assert "✅ 신선 판정" not in out, out
+        assert rc == 1, "❌ 를 찍고 0 을 돌려주면 자동화가 못 잡는다"
+
+    def test_cached_partial_is_reported(self, monkeypatch):
+        """부분 스냅샷이 디스크에 있으면 화면이 완전본처럼 그린다(#280) —
+        `--fetch` 때만 말하면 정작 굳어 있는 상태를 못 본다."""
+        _, out = self._run(monkeypatch, fresh=True, age_sec=60,
+                           obj={"themes": [{"name": "x"}], "partial": True})
+        assert "partial=True" in out, out
+
+    def test_swr_branch_uses_the_same_have_old_as_the_screen(self, monkeypatch):
+        """`fetch_themes` 는 SWR 창 안이어도 **쓸 저장분이 없으면** 동기
+        수집을 탄다 — 나이만 보면 '즉시 응답'이라 거짓말한다(독립 리뷰 실측).
+        """
+        import bot.naver_sector_client as nsc
+        _, out = self._run(monkeypatch, fresh=False, age_sec=60,
+                           obj={"themes": [], "ts": ""})
+        assert "즉시 응답" not in out, out
+        assert "동기 수집" in out, out
+        # 반대 증거 — 저장분이 있으면 그대로 SWR 안내다.
+        _, ok = self._run(monkeypatch, fresh=False, age_sec=60)
+        assert "즉시 응답" in ok, ok
 
     def test_banner_prints_version_and_interpreter(self, monkeypatch):
         """진단은 버전을 찍는다(#21)·인터프리터를 찍는다(#132)."""
