@@ -33,6 +33,10 @@ _MAX_GAP_H: dict[str, float] = {
     "reddit": 2.0,
     "cheongyak": 36.0,      # 금→월 주말을 건너도 안 울리게
     "realestate": 200.0,    # 주 1회(금) + 월 1회 → 8일 여유
+    # Daily Byte — 평일 19:00(KR)·08:00(US). 금요일 밤부터 월요일 저녁까지
+    # 주말을 통째로 건너도 안 울리게 넉넉히(#27 경계는 넉넉하게).
+    "daily_byte_kr": 80.0,
+    "daily_byte_us": 80.0,
 }
 
 

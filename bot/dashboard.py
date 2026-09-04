@@ -18321,6 +18321,84 @@ def _load_latest_market_daily(archive_name: str, kind_filter: str = "daily") -> 
     return None
 
 
+# 시간 단위 메모(키에 시각이 들어가 자동 만료 — 오래된 키는 갱신 시 비운다).
+_LAST_DAILY_CACHE: dict[tuple, str] = {}
+
+
+def _last_market_daily_date(archive_name: str, kind_filter: str,
+                            days: int = 90) -> str:
+    """그 종류의 **마지막 기록 날짜**('YYYY-MM-DD'), 없으면 ''.
+
+    ⚠️ 카드 로더는 최근 7개 날짜만 본다 — 8일 넘게 멈추면 카드가 "아카이브가
+    아직 없습니다"라고 **사실과 다른** 말을 하고, 그게 2026-09-04 사용자가
+    며칠 뒤에야 알아챈 이유다(#43 침묵이 최악 · #52 조용한 것과 죽은 것).
+    빈 카드는 '한 번도 없음' 과 '멈춤' 을 갈라 말해야 한다(#82).
+
+    ⚠️ 이 경로는 **카드가 비어 있는 동안 30초마다** 불린다(market.html 재생성).
+    값은 하루에 한 번 바뀌므로 날짜별로 기억한다 — 안 그러면 멈춘 상태가
+    길수록 90개 디렉터리를 계속 다시 읽는다(독립 리뷰 · #271 낭비를 먼저
+    없앨 것)."""
+    import datetime as _dt
+    _kst = _dt.timezone(_dt.timedelta(hours=9))
+    key = (archive_name, kind_filter, days,
+           _dt.datetime.now(_kst).strftime("%Y-%m-%d %H"))
+    hit = _LAST_DAILY_CACHE.get(key)
+    if hit is not None:
+        return hit
+    archive_dir = Path.home() / ".tradingagents" / archive_name
+    if not archive_dir.exists():
+        _LAST_DAILY_CACHE.clear()
+        _LAST_DAILY_CACHE[key] = ""
+        return ""
+    for d in sorted(archive_dir.iterdir(), reverse=True)[:days]:
+        if not d.is_dir():
+            continue
+        for f in sorted(d.iterdir(), reverse=True):
+            if not f.name.endswith(".json"):
+                continue
+            try:
+                rec = json.loads(f.read_text("utf-8"))
+            except Exception:                                  # noqa: BLE001
+                continue
+            if rec.get("kind", "daily") == kind_filter and rec.get("body"):
+                _LAST_DAILY_CACHE.clear()
+                _LAST_DAILY_CACHE[key] = d.name
+                return d.name
+    _LAST_DAILY_CACHE.clear()
+    _LAST_DAILY_CACHE[key] = ""
+    return ""
+
+
+def daily_empty_note(last_date: str, health: str = "",
+                     today: str = "") -> str:
+    """빈 카드에 적을 **사유 한 줄**. 순수 함수라 값으로 검증된다(#41).
+
+    갈래(#82): 기록이 아예 없다 / 있었는데 멈췄다(+ 유닛이 돌긴 했나).
+    유닛 도장(`feed_health`)과 마지막 기록을 **함께** 봐야 '타이머가 안 돌았다'
+    와 '돌았는데 재료가 없었다' 가 갈린다 — 처방이 정반대다."""
+    import datetime as _dt
+    if not last_date:
+        base = "Daily Byte 기록이 아직 없습니다."
+    else:
+        try:
+            d0 = _dt.date.fromisoformat(last_date)
+            # ⚠️ 모든 시각은 KST 명시계산 — 서버 로컬타임 의존 금지(규칙 10a).
+            # 이 모듈엔 공용 `_KST` 상수가 없어 여기서 만든다(#210 가드가
+            # 미정의 전역을 잡아 발각 — 내 테스트는 `today` 를 늘 넘겨
+            # 이 분기를 한 번도 안 태웠다, #91c).
+            _kst = _dt.timezone(_dt.timedelta(hours=9))
+            ref = (_dt.date.fromisoformat(today) if today
+                   else _dt.datetime.now(_kst).date())
+            age = (ref - d0).days
+            base = (f"마지막 브리프 {last_date} ({age}일 전) — 이후 생성이 "
+                    f"멈췄습니다.")
+        except Exception:                                      # noqa: BLE001
+            base = f"마지막 브리프 {last_date} — 이후 생성이 멈췄습니다."
+    if health:
+        base += f" {health}"
+    return base
+
+
 def _extract_daily_title(body: str) -> str:
     """Extract title from Daily Byte body (after 'Daily Byte: YYYYMMDD ')."""
     import re as _re
@@ -18392,13 +18470,25 @@ def _render_market_daily_cards() -> str:
     us = _load_latest_market_daily("daily_byte_archive", "us_daily")
 
     def _card(rec: dict | None, label: str, flag: str, link: str,
-              empty_msg: str, schedule: str) -> str:
+              empty_msg: str, schedule: str, kind: str = "",
+              feed: str = "") -> str:
         sched = (f'<span class="md-time">⏰ 매일 {_html.escape(schedule)} KST</span>')
         if not rec or not rec.get("body"):
+            # '없다'고 단정하지 말고 **갈래로** 말한다 — 마지막 기록 + 유닛
+            # 도장(#43·#82). 옛 문구는 8일 넘게 멈추면 거짓말이었다.
+            note = empty_msg
+            if kind:
+                try:
+                    from bot import feed_health as _fh
+                    note = daily_empty_note(
+                        _last_market_daily_date("daily_byte_archive", kind),
+                        _fh.note(feed) if feed else "")
+                except Exception:                              # noqa: BLE001
+                    pass
             return (
                 f'<div class="md-card">'
                 f'<div class="md-label">{flag} {_html.escape(label)} {sched}</div>'
-                f'<div class="md-empty">{_html.escape(empty_msg)}</div>'
+                f'<div class="md-empty">{_html.escape(note)}</div>'
                 f'</div>'
             )
         body = rec["body"]
@@ -18437,9 +18527,11 @@ def _render_market_daily_cards() -> str:
         )
 
     kr_card = _card(kr, "한국 Daily Byte", "🇰🇷", "daily_byte.html",
-                     "Daily Byte 아카이브가 아직 없습니다.", "19:00")
+                     "Daily Byte 아카이브가 아직 없습니다.", "19:00",
+                     kind="daily", feed="daily_byte_kr")
     us_card = _card(us, "미국 Daily Byte", "🇺🇸", "daily_byte.html",
-                     "US Daily Byte 준비 중입니다.", "08:00")
+                     "US Daily Byte 준비 중입니다.", "08:00",
+                     kind="us_daily", feed="daily_byte_us")
     return f'<div class="md-row">{kr_card}{us_card}</div>'
 
 
