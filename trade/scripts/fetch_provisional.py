@@ -135,7 +135,7 @@ def _why(ym) -> int:
     if not rows_by_kind:
         # 대조 0건은 통과가 아니라 진단 실패다(#54).
         print("❌ 저장된 잠정 시계열이 없다 — 먼저 수집:"
-              " .venv/bin/python -m trade.scripts.fetch_provisional")
+              " cd ~/stock-trade && .venv/bin/python -m trade.scripts.fetch_provisional")
         return 1
     for line in prov.explain_windows(rows_by_kind, ym):
         print(line)

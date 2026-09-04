@@ -803,8 +803,10 @@ def why(argv: list[str] | None = None) -> int:
         except Exception:                                      # noqa: BLE001
             missing.append(mod)
     if missing:
-        print(f"   ❌ 필수 모듈 없음: {', '.join(missing)} — venv 로 실행하세요"
-              f" (~/stock/.venv/bin/python -m bot.daily_kr_flow --why)")
+        # ⚠️ `python -m` 은 **cwd 에서** 패키지를 찾는다 — `cd` 를 빼면 홈에서
+        # 돌렸을 때 `No module named 'bot'` 이다(2026-09-04 사용자 실측).
+        print(f"   ❌ 필수 모듈 없음: {', '.join(missing)} — 레포에서 venv 로:")
+        print("      cd ~/stock && .venv/bin/python -m bot.daily_kr_flow --why")
         return 1
     print("   ✅ pykrx·dotenv 로드됨")
 

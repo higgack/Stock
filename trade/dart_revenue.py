@@ -535,6 +535,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n■ 정기보고서 없음 {len(no_report)}건 — 스팩·펀드·리츠·신규/관리종목 "
               "(파서 문제 아님, 정상)")
         print("\n→ 진짜 보강 대상 1건 원문 확인: "
+              "cd ~/stock-trade && "
               ".venv/bin/python -m trade.scripts.probe_dart_revenue --tickers <code>")
         print("  → 원문 저장 위치: <DATA>/dart_revenue_probe/raw/<code>_<rcept>.txt "
               "(표 마크업+평문 — 포맷 파악 후 파서 보강)")
@@ -547,7 +548,8 @@ def main(argv: list[str] | None = None) -> int:
         for s in sus:
             print(f"  {s['code']} {s['company'][:16]:<18} 제품{s['n']} · {' | '.join(s['reasons'])[:70]}")
         print(f"\n→ 이 목록의 원문을 보고(아래) 전용 파서/별칭 보강:")
-        print("   회사 1건 원문: .venv/bin/python -m trade.company_report <회사명>  # 또는 probe raw/")
+        print("   회사 1건 원문: cd ~/stock-trade && "
+              ".venv/bin/python -m trade.company_report <회사명>  # 또는 probe raw/")
         return 0
     _load_env()
     key = (os.environ.get("DART_API_KEY") or "").strip()

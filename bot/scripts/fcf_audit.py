@@ -340,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     if _missing:
         print(f"❌ 필수 모듈 없음: {', '.join(_missing)} — 봇과 **같은**"
               " 인터프리터로 돌릴 것:")
-        print("   ~/stock/.venv/bin/python -m bot.scripts.fcf_audit ASML")
+        print("   cd ~/stock && .venv/bin/python -m bot.scripts.fcf_audit ASML")
         return 2
     print()
 
