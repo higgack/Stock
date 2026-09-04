@@ -44262,3 +44262,73 @@ console.log(JSON.stringify({tb:__el('tb').innerHTML,
             r = subprocess.run([node, "--check", path],
                                capture_output=True, text=True, timeout=30)
         assert r.returncode == 0, r.stderr[-800:]
+
+
+class TestPrintedRunCommandsIncludeCd20260904:
+    """사용자 2026-09-04 VM 실측: `~/stock/.venv/bin/python -m bot.daily_kr_flow
+    --why` → `ModuleNotFoundError: No module named 'bot'`. `python -m` 은
+    **cwd 에서** 패키지를 찾으므로 홈에서 돌리면 진단 도구 자체가 안 뜬다 —
+    그리고 그 명령을 인쇄한 게 제품 코드였다(내가 바로 전 커밋에 넣었다).
+
+    레포 관례는 `cd ~/stock && .venv/bin/python -m …`(trade 는 ~/stock-trade)
+    이고 systemd 도 `WorkingDirectory=` 를 준다. 안내 문구를 다듬는 규율로는
+    또 진다(#191 같은 벽에 두 번) → **인쇄되는 실행 안내**를 디렉터리 전수로
+    검사한다(이름 열거 금지, #24).
+
+    ⚠️ 검사 범위가 중요하다: 처음에 문자열 상수 전체를 훑었더니 49건이
+    나왔는데 대부분 독스트링의 `cd` 가 창 밖에 있던 **내 계수 패턴 오류**
+    였다(#47 감사 도구의 계수 패턴 자체가 틀릴 수 있다). 사용자가 실제로
+    보는 것은 `print(...)` 이므로 거기로 좁힌다.
+    """
+
+    _RE = r"[^\s(]*\.venv/bin/python\s+-m\s+(?:bot|trade)\.[\w.]+"
+
+    @classmethod
+    def _printed(cls):
+        """(파일:줄, 본문) — `print(...)` 안에서 실행 안내를 담은 것 전부."""
+        import ast
+        import pathlib
+        import re
+
+        out = []
+        for f in (sorted(pathlib.Path("bot").rglob("*.py"))
+                  + sorted(pathlib.Path("trade").rglob("*.py"))):
+            try:
+                tree = ast.parse(f.read_text(encoding="utf-8"))
+            except Exception:                                  # noqa: BLE001
+                continue
+            for n in ast.walk(tree):
+                if not (isinstance(n, ast.Call)
+                        and getattr(n.func, "id", "") == "print"):
+                    continue
+                txt = "".join(
+                    c.value for c in ast.walk(n)
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str))
+                if re.search(cls._RE, txt):
+                    out.append((f"{f}:{n.lineno}", txt))
+        return out
+
+    def test_no_printed_command_omits_the_cd(self):
+        bad = [loc for loc, txt in self._printed()
+               if "cd ~/" not in txt and "cd /" not in txt]
+        assert not bad, (
+            "인쇄되는 실행 안내에 `cd` 가 없다 — 홈에서 돌리면 "
+            f"ModuleNotFoundError 다: {bad}")
+
+    def test_the_guard_actually_sees_printed_commands(self):
+        """대조 대상이 0건이면 통과가 아니라 눈이 먼 것이다(#54) — 검사가
+        실제로 인쇄되는 명령을 세고 있는지 반대 증거로 확인한다."""
+        assert len(self._printed()) >= 5, (
+            f"인쇄되는 실행 안내를 {len(self._printed())}건밖에 못 본다")
+
+    def test_why_hint_names_the_repo_directory(self):
+        """이번에 실제로 사용자를 막은 그 문구 — 값으로 못박는다."""
+        import ast
+        import inspect
+
+        from bot import daily_kr_flow as kf
+
+        src = ast.parse(inspect.getsource(kf.why))
+        txt = "".join(c.value for c in ast.walk(src)
+                      if isinstance(c, ast.Constant) and isinstance(c.value, str))
+        assert "cd ~/stock && .venv/bin/python -m bot.daily_kr_flow --why" in txt
