@@ -766,7 +766,7 @@ def main() -> int:
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 2
+_WHY_VER = 4
 
 # pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
 # 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
@@ -817,8 +817,132 @@ def krx_login_verdict(captured: str) -> tuple[str, str]:
     return "ok", ""
 
 
+_TIMER_UNIT = "daily-byte.timer"
+_SERVICE_UNIT = "daily-byte.service"
+_TIMER_CMDS = (f"`systemctl status {_TIMER_UNIT}` · "
+               f"`journalctl -u {_SERVICE_UNIT} -n 50`")
+
+
+def systemd_facts(timer: str = _TIMER_UNIT, service: str = _SERVICE_UNIT) -> dict:
+    """systemd 에 **물어서** 타이머 상태를 재 온다(읽기 전용).
+
+    도장(`feed_health`)이 없다는 사실만으로 '타이머가 안 돌았을 수 있다' 고
+    적으면 그건 안 잰 문장이다(#165) — 실제로 2026-09-04 실행에서 그 줄이
+    떴는데, 도장을 찍는 코드가 **마지막 발화 뒤에 배포**된 것뿐이었다.
+    상태는 **아는 쪽에 묻는다**(#86 systemctl · #64).
+
+    ⚠️ `LoadState` 는 '유닛 파일이 파싱됐다' 까지만 말한다 — 중지·비활성
+    타이머도 `loaded` 이고 `LastTriggerUSec` 는 `Persistent=true` 로 남는다.
+    그래서 **`ActiveState` 를 같이 묻지 않으면** '재배포 뒤 타이머가 조용히
+    멈춤'(이 도구의 존재 이유)이 '정상'으로 보고된다(독립 리뷰 실측).
+    서비스도 `Type=oneshot` 이라 **실행 중**과 **끝남**을 `ActiveState`/
+    `SubState` 없이는 못 가른다.
+
+    `ok=False` 면 판정 불가 — 단정하지 않는다.
+    """
+    import subprocess
+
+    out: dict = {"ok": False}
+    try:
+        for unit, keys in (
+                (timer, ("LoadState", "ActiveState", "SubState",
+                         "LastTriggerUSec", "NextElapseUSecRealtime")),
+                (service, ("ActiveState", "SubState",
+                           "ExecMainStartTimestamp", "ExecMainStatus", "Result"))):
+            r = subprocess.run(
+                ["systemctl", "show", unit, *[f"-p{k}" for k in keys]],
+                capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                out["err"] = (r.stderr or "").strip()[:120] or f"rc={r.returncode}"
+                return out
+            pre = "t_" if unit == timer else "s_"
+            for ln in (r.stdout or "").splitlines():
+                if "=" in ln:
+                    k, _, v = ln.partition("=")
+                    out[pre + k.strip()] = v.strip()
+    except Exception as exc:                                   # noqa: BLE001
+        out["err"] = f"{type(exc).__name__}: {exc}"[:120]
+        return out
+    out["ok"] = True
+    return out
+
+
+# LoadState 갈래마다 처방이 다르다 — 하나로 뭉뚱그리면 `masked` 에
+# `enable --now` 를 시켜 실패한다(독립 리뷰 실측, #82).
+_LOAD_FIX = {
+    "not-found": f"유닛 파일이 없다(설치 안 됨): `systemctl enable --now {_TIMER_UNIT}`",
+    "masked": f"마스크 해제부터: `systemctl unmask {_TIMER_UNIT}` 뒤 "
+              f"`systemctl enable --now {_TIMER_UNIT}`",
+    "error": f"유닛 파일을 읽지 못했다: `systemctl status {_TIMER_UNIT}` · "
+             f"`systemctl daemon-reload`",
+    "bad-setting": f"유닛 파일 설정 오류: `systemctl status {_TIMER_UNIT}` · "
+                   f"`systemctl daemon-reload`",
+}
+
+
+def _timer_line(facts: dict) -> str:
+    """systemd 가 말한 사실 한 줄(↪ 없이). 갈래마다 처방이 다르다(#82)."""
+    if not facts.get("ok"):
+        why = facts.get("err") or "사유 미상"
+        return f"systemd 에 못 물었다({why}) — 직접 확인: {_TIMER_CMDS}"
+    load = facts.get("t_LoadState") or "?"
+    if load != "loaded":
+        # ⚠️ systemd 판에 따라 없는 유닛에 `show` 가 rc != 0 을 줄 수 있고,
+        # 그러면 이 갈래 대신 위의 '못 물었다'(사유 원문 포함)가 나간다 —
+        # 어느 쪽이든 운영자가 할 일은 출력에 적혀 있다.
+        fix = _LOAD_FIX.get(load, f"`systemctl status {_TIMER_UNIT}` 로 확인")
+        return f"타이머 유닛 상태가 `{load}` 다 — {fix}"
+    trig = facts.get("t_LastTriggerUSec") or ""
+    active = facts.get("t_ActiveState") or "?"
+    if active != "active":
+        # ⚠️ 여기가 이 도구의 존재 이유다 — 중지된 타이머도 LoadState=loaded
+        # 이고 LastTriggerUSec 가 남아 '정상'처럼 보인다(독립 리뷰 실측).
+        return (f"타이머가 **멈춰 있다**(ActiveState={active}) — 다음 발화가 "
+                f"없다. `systemctl enable --now {_TIMER_UNIT}`")
+    if not trig or trig in ("n/a", "0"):
+        return (f"타이머는 켜져 있는데 **한 번도 발화하지 않았다** — "
+                f"`systemctl status {_TIMER_UNIT}`")
+    nxt = facts.get("t_NextElapseUSecRealtime") or "?"
+    s_active = facts.get("s_ActiveState") or ""
+    s_sub = facts.get("s_SubState") or ""
+    if s_active in ("activating", "reloading") or s_sub in ("start", "running"):
+        # Type=oneshot 은 실행 중에도 Result=success 라 상태를 안 보면
+        # '정상 종료'로 오보한다(독립 리뷰 실측).
+        return (f"지금 **실행 중**이다(ActiveState={s_active or '?'} "
+                f"SubState={s_sub or '?'}, 마지막 발화 {trig}) — 끝난 뒤 다시 볼 것")
+    status = facts.get("s_ExecMainStatus") or ""
+    result = facts.get("s_Result") or ""
+    started = facts.get("s_ExecMainStartTimestamp") or "?"
+    if (result and result != "success") or (status and status != "0"):
+        return (f"타이머는 발화했지만(마지막 {trig}) 서비스가 실패했다"
+                f"(Result={result or '?'} exit={status or '?'}) — "
+                f"`journalctl -u {_SERVICE_UNIT} -n 50`")
+    return (f"타이머는 켜져 있고 발화했으며(마지막 {trig}, 다음 {nxt}) 서비스도 "
+            f"정상 종료했다(마지막 실행 {started}) — 실행은 됐다는 뜻이므로 "
+            f"위 사유가 원인이다")
+
+
+def timer_verdict(facts: dict, stamp: str, stamp_stale: bool = False) -> str:
+    """↪ 한 줄을 **값으로** 만든다 — 갈래마다 처방이 다르다(#82).
+
+    도장이 없다는 것과 타이머가 안 돌았다는 것은 다른 사실이다(도장 코드가
+    마지막 발화보다 나중에 배포됐어도 도장은 없다). 그리고 **도장이 있다고
+    현재형으로 말해서도 안 된다** — 도장은 실행 **시작**에 찍히므로 옛
+    도장은 '지난주에 돌았다'는 뜻이다. `stamp_stale` 이면 systemd 가 말한
+    사실을 대신 싣는다(#281 독립 리뷰 실측).
+    """
+    if stamp and not stamp_stale:
+        return (f"↪ 타이머는 돌았다(마지막 점검 {stamp}) — 실행은 됐는데 "
+                f"생성이 실패한 것이므로 위 사유가 원인이다")
+    head = (f"↪ 점검 도장이 낡았다(마지막 {stamp}). " if stamp
+            else "↪ 점검 도장이 없다. ")
+    return head + _timer_line(facts)
+
+
+
 def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
-                krx_ok, kr_age, missed_sessions=None, stamp: str = "") -> list[str]:
+                krx_ok, kr_age, missed_sessions=None, stamp: str = "",
+                timer: str = "") -> list[str]:
     """⑥ 판정을 **값으로** 만든다 — 휴장이 확정된 실패를 덮지 못하게.
 
     ⚠️ 옛 판은 휴장을 가장 먼저 보고 '이상 없음' 으로 끝냈다. 그래서
@@ -833,7 +957,10 @@ def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
     난다 — 늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260).
     `stamp` = `feed_health.last('daily_byte_kr')` — 타이머가 **돌긴 했는지**
     를 재서 말한다. 안 재고 '타이머가 안 돌았을 수 있다' 고 적으면 그게
-    헛걸음을 만든다(#165·#187b).
+    헛걸음을 만든다(#165·#187b). `timer` = `timer_verdict(systemd_facts(), stamp)`
+    — 도장이 없을 때 systemd 가 말한 사실(발화 시각·종료 상태)을 싣는다.
+    안 주면 systemd 에 못 물은 것으로 보고 판정 보류 문구가 나간다.
+    도장이 **낡았으면** 그것도 systemd 에 묻는다(옛 도장 ≠ 지금 돈다).
     """
     out: list[str] = []
     confirmed = login_kind in _LOGIN_CONFIRMED
@@ -871,13 +998,7 @@ def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
 
     # ── '타이머가 안 돌았다' 는 재서 말한다(#165) ──
     if any(l.startswith(("⚠️", "❌")) for l in out):
-        if stamp:
-            out.append(f"↪ 타이머는 돌았다(마지막 점검 {stamp}) — 실행은 됐는데 "
-                       f"생성이 실패한 것이므로 위 사유가 원인이다")
-        else:
-            out.append("↪ 점검 도장이 없다 — 타이머가 아예 안 돌았을 수 있다: "
-                       "`systemctl status daily-byte.timer` · "
-                       "`journalctl -u daily-byte.service -n 50`")
+        out.append(timer or timer_verdict({}, stamp))
     if not out:
         out.append("❓ 재료도 기록도 이상 없어 보인다 — 화면이 비면 렌더/창 확인")
     return out
@@ -1078,13 +1199,19 @@ def why(argv: list[str] | None = None) -> int:
     try:
         from bot import feed_health
         stamp = feed_health.last("daily_byte_kr")
+        # 도장 나이를 **재서** 쓴다 — 옛 도장을 현재형으로 말하면 systemd
+        # 조회를 통째로 건너뛰고 엉뚱한 곳을 짚게 한다(#281).
+        fresh_stamp = bool(stamp) and feed_health.overdue("daily_byte_kr") is False
     except Exception:                                          # noqa: BLE001
-        stamp = ""
+        stamp, fresh_stamp = "", False
 
     print("⑥ 판정")
     for line in why_verdict(td=td, llm_ok=llm_ok, login_kind=login_kind,
                             login_fix=login_fix, krx_ok=krx_ok, kr_age=kr_age,
-                            missed_sessions=missed, stamp=stamp):
+                            missed_sessions=missed, stamp=stamp,
+                            timer=timer_verdict(
+                                {} if fresh_stamp else systemd_facts(),
+                                stamp, stamp_stale=bool(stamp and not fresh_stamp))):
         print(f"   {line}")
     return 0
 

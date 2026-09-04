@@ -63,6 +63,27 @@ def last(feed: str) -> str:
         return ""
 
 
+def overdue(feed: str) -> "bool | None":
+    """도장이 `_MAX_GAP_H` 를 넘겼나. 기록 없음·미등록·형식이상이면 None
+    (판정 불가 — 단정하지 않는다, #54).
+
+    ⚠️ 도장은 **실행 시작**에 찍히므로 `last()` 는 '마지막으로 돌았을 때'다.
+    '지금 돌고 있다'가 아니므로, 도장 하나로 현재 상태를 말하려면 반드시
+    나이를 같이 재야 한다(#281 독립 리뷰 실측 — 옛 도장이 '타이머는 돌았다'
+    를 현재형으로 주장해 systemd 조회를 통째로 건너뛰었다).
+    """
+    ts = last(feed)
+    cap = _MAX_GAP_H.get(feed)
+    if not ts or cap is None:
+        return None
+    try:
+        gap = (datetime.now(_KST)
+               - datetime.strptime(ts, "%Y-%m-%d %H:%M").replace(tzinfo=_KST))
+    except ValueError:
+        return None
+    return gap > timedelta(hours=cap)
+
+
 def note(feed: str) -> str:
     """화면에 붙일 한 줄 — '점검 08-20 12:40' / '점검 … ⚠️ 지연' / '점검 기록 없음'.
 

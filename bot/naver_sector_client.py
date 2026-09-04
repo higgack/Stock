@@ -575,6 +575,7 @@ _THEME_PAGES = 7
 # — 낡은 값을 '현재'로 내보내지 않기 위해서다(#163). 화면은 어느 쪽이든
 # 스냅샷 시각(ts)을 그대로 찍는다(#43).
 _THEME_SWR_SEC = 600
+_CHECK_VER = 1        # 진단은 버전을 찍는다(#21)
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -595,6 +596,9 @@ def _refresh_async(name: str, fn, key: str) -> None:
     ⚠️ 배경과 전경이 **같은 single-flight 키**를 타야 한다. `_BG_KEYS` 만으로
     막으면 배경 수집이 도는 중에 SWR 창을 벗어난 요청이 들어와 두 벌(=14건)이
     동시에 네이버로 나가고 두 writer 가 경합한다(독립 리뷰 실측).
+
+    ⚠️ **저장은 `fn` 이 한다** — 여기는 읽기만 한다. 배경이 따로 쓰면 `fn` 의
+    저장 판정(부분·빈 결과 거부)이 우회된다(#38 쓰기는 단일 출처).
     """
     with _BG_LOCK:
         if name in _BG_KEYS:
@@ -605,12 +609,12 @@ def _refresh_async(name: str, fn, key: str) -> None:
         try:
             from bot.singleflight import once
             got = once(key, fn)
-            # ⚠️ 빈 결과로 **멀쩡한 스냅샷을 덮지 않는다** — 덮으면 다음
-            # 클릭이 내줄 낡은 값조차 없어 그때부터 기다리게 된다(원천 장애
-            # 한 번이 화면을 비운다, #119 의 짝).
-            if got and got.get("themes"):
-                _cache_write(name, got)
-            else:
+            # ⚠️ **여기서 쓰지 않는다.** 저장 판정은 `fn`(=_collect_and_store)
+            # 하나가 한다 — 여기서 또 쓰면 fn 이 "부분이라 안 굽는다"고 거부한
+            # 결과를 배경이 그대로 덮어 굽는다(독립 리뷰 실측: 4/7쪽 결과가
+            # 완전본으로 캐시되고, 장 마감 뒤엔 `_session_fresh` 가 다음
+            # 개장까지 그걸 fresh 로 본다). 쓰기는 단일 출처(#38·#119).
+            if not (got and got.get("themes")):
                 log.warning("naver_sector: 배경 갱신이 빈 결과 — %s 유지", name)
         except Exception as exc:                               # noqa: BLE001
             log.warning("naver_sector: 배경 갱신 실패 %s: %s", name, exc)
@@ -772,8 +776,84 @@ def fetch_upper_lower(limit: int = 50) -> dict:
     return out
 
 
-if __name__ == "__main__":
+def check(fetch: bool = False) -> int:
+    """`--check` — 업종별 시세(전체)가 왜 그 속도인지 **갈래로** 말한다.
+
+    ⚠️ 로그 한 줄(`naver_sector: themes …`)은 **수집이 실제로 돌 때만** 찍힌다.
+    장 마감 뒤엔 `_session_fresh` 가 마지막 마감 이후 스냅샷을 fresh 로 보므로
+    수집이 아예 안 돌고, 그러면 `journalctl | grep` 이 **비어 있는 게 정상**
+    이다 — 그 침묵은 '배포 안 됨'·'재시작 안 됨'·'페이지를 안 눌렀음'과
+    구별되지 않는다(#274 이상 없음도 말해야 한다 · #82 갈래로 말하라).
+    읽기 전용이며, `--fetch` 를 줘야 실제 수집을 1회 재 본다(#264 진단이
+    운영 상태를 바꾸지 않게 기본은 조회만).
+    """
+    import sys
+    from datetime import datetime, timedelta, timezone
+
+    print(f"[naver_sector --check v{_CHECK_VER}]")
+    print(f"① 인터프리터: {sys.executable}")
+    rc = 0
+    f = _CACHE_DIR / "theme.json"
+    if not f.exists():
+        print(f"② 캐시 없음: {f}")
+        print("   ↪ 다음 클릭이 전 페이지를 수집한다(그때 로그가 찍힌다)")
+    else:
+        mt = f.stat().st_mtime
+        age = time.time() - mt
+        obj, _ = _read_cache("theme.json")
+        n = len((obj or {}).get("themes") or [])
+        when = datetime.fromtimestamp(mt, timezone(timedelta(hours=9)))
+        print(f"② 캐시: 테마 {n}개 · {when:%Y-%m-%d %H:%M} KST ({age / 60:.1f}분 전)")
+        # 판정은 화면이 쓰는 그 술어·그 조건으로(#35) — 다시 계산하면 갈라진다.
+        # `have_old` 는 `fetch_themes` 와 같은 뜻이어야 한다: 이게 거짓이면
+        # SWR 창 안이어도 **동기 수집**을 기다린다(독립 리뷰 실측).
+        fresh = _cached("theme.json") is not None
+        have_old = bool(obj and obj.get("themes"))
+        if fresh and not have_old:
+            # 빈 스냅샷이 fresh 로 굳으면 다음 개장까지 빈 화면이 재시도 없이
+            # 서빙된다 — 대조 0건은 통과가 아니다(#54·#119).
+            print("   ❌ 테마 0개인데 신선 판정 — 빈 스냅샷이 굳었다. "
+                  "`--check --fetch` 로 원천을 확인할 것")
+            rc = 1
+        elif fresh:
+            print("   ✅ 신선 판정 — 클릭은 캐시 히트(수집 안 돎 = 로그도 안 찍힘)")
+        elif have_old and age < _THEME_SWR_SEC:
+            print(f"   ⏳ 낡음이지만 SWR 창({_THEME_SWR_SEC // 60}분) 안 — "
+                  "즉시 응답 + 배경 갱신(로그는 배경에서 찍힌다)")
+        elif have_old:
+            print("   ⚠️ SWR 창 밖 — 다음 클릭이 수집을 기다린다(로그가 찍힌다)")
+        else:
+            print("   ⚠️ 쓸 수 있는 저장분이 없다 — 다음 클릭이 동기 수집을 "
+                  "기다린다(로그가 찍힌다)")
+        if (obj or {}).get("partial"):
+            # 부분 스냅샷이 디스크에 있으면 화면이 그걸 완전본처럼 그린다(#280).
+            print("   ⚠️ 저장분이 partial=True — 일부 페이지가 빠진 스냅샷이다")
+    if not fetch:
+        print("③ 실제 수집은 안 했다 — 재려면 `--check --fetch`")
+        return rc
+    t0 = time.time()
+    out = collect_themes()
+    print(f"③ 실측 수집: 테마 {len(out['themes'])}개 · "
+          f"{time.time() - t0:.2f}초 · partial={out.get('partial')}")
+    if not out["themes"]:
+        # 대조 0건은 통과가 아니다(#54).
+        print("   ❌ 0개 — 네이버 도달 실패이거나 파싱이 깨졌다")
+        return 1
+    return 0
+
+
+def main(argv: list | None = None) -> int:
+    """CLI 진입점. `--check` 면 진단만, 아니면 세 수집을 스모크한다.
+
+    ⚠️ 디스패치를 `if __name__` 블록에 인라인으로 두면 테스트가 못 태워
+    '게이트만 꺼도 통과'하는 눈먼 회귀가 된다(#252 실측).
+    """
+    import sys
+
+    args = list(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(level=logging.INFO)
+    if "--check" in args:
+        return check(fetch="--fetch" in args)
     mv = fetch_sector_movers()
     print(f"업종 상승 {len(mv['up'])} / 하락 {len(mv['down'])}")
     th = fetch_themes()
@@ -782,3 +862,9 @@ if __name__ == "__main__":
         print("  ", t["name"], t["pct"])
     ul = fetch_upper_lower()
     print(f"상한가 {len(ul['upper'])} / 하한가 {len(ul['lower'])}")
+    return 0
+
+
+# 엔트리포인트는 **항상 파일 끝**(#276 — 위에 두면 아래 정의에 영영 못 닿는다)
+if __name__ == "__main__":
+    raise SystemExit(main())
