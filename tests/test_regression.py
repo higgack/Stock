@@ -44040,3 +44040,225 @@ class TestDailyByteSilentFailure20260904:
         for feed in marked:
             assert feed in fh._MAX_GAP_H, f"{feed} 지연 상한 미등록"
             assert "미등록" not in fh.note(feed)
+
+
+class TestLiquidityRowDeclaresItsBasis20260904:
+    """사용자 2026-09-04 "행 자체가 밝히게 해줘" — 유동성 보드에서 실시간
+    오버레이가 걸린 행은 **최신값과 등락의 기준이 다르고**(최신=네이버/야후
+    실시간, 1M/3M/YoY·차트=FRED 확정), 스프레드 행은 위 두 행의 뺄셈이 아니라
+    원천의 자체 시리즈다. 실측: `10Y 4.76 − 2Y 4.39 = 0.37` 인데 스프레드 행은
+    `0.43` — 세 칸이 서로 검산이 안 됐다(#33). ℹ️ 가이드에만 적혀 있어
+    사용자가 물어야 했다(#43·#202 '다르다'만 말하면 안 통한다).
+
+    ⚠️ 생성물이 JS 면 파서에 태우는 것만으로는 부족하다 — **실행**해서 값을
+    봐야 한다(#26 → #253). DOM 스텁으로 실제 table() 을 태운다.
+    """
+
+    ROWS = [
+        {"id": "DGS10", "name": "10Y Treasury", "category": "금리/수익률곡선",
+         "unit": "%", "is_rate": True, "latest": 4.72,
+         "latest_date": "2026-09-03", "mom": 0.04, "m3": 0.35, "yoy": 0.63,
+         "rate_delta": True, "hist": [["2026-09-03", 4.72]], "desc": "10년물"},
+        {"id": "DGS2", "name": "2Y Treasury", "category": "금리/수익률곡선",
+         "unit": "%", "is_rate": True, "latest": 4.39,
+         "latest_date": "2026-09-02", "mom": 0.05, "m3": 0.25, "yoy": 0.79,
+         "rate_delta": True, "hist": [["2026-09-02", 4.39]], "desc": "2년물"},
+        {"id": "T10Y2Y", "name": "10Y-2Y Spread", "category": "금리/수익률곡선",
+         "unit": "%", "derived_from": ["DGS10", "DGS2"],
+         "derived_label": "10Y−2Y", "is_rate": True, "latest": 0.43,
+         "latest_date": "2026-09-03", "mom": 0.02, "m3": 0.13, "yoy": -0.13,
+         "rate_delta": True, "hist": [["2026-09-03", 0.43]], "desc": "금리차"},
+        {"id": "DEXKOUS", "name": "원/달러 환율", "category": "환율",
+         "unit": "KRW", "latest": 1407.3, "latest_date": "2026-08-29",
+         "mom": -3.99, "m3": -8.3, "yoy": -0.7,
+         "hist": [["2026-08-29", 1407.3]], "desc": "USD/KRW"},
+    ]
+
+    _PRE = r"""
+var __els={},__mkN=0;
+function __mk(id){
+  var o={id:id,_t:'',style:{},className:'',
+    setAttribute:function(k,v){o['_a_'+k]=v;},
+    getAttribute:function(k){return o['_a_'+k]===undefined?'':o['_a_'+k];},
+    addEventListener:function(){},appendChild:function(){},
+    scrollIntoView:function(){},closest:function(){return null;}};
+  // ⚠️ 두 속성을 한 칸으로 쓰면 `esc()`(createElement+textContent→innerHTML)
+  // 가 **항등 함수**가 되어 이스케이프 회귀를 못 잡는다(독립 리뷰 실측).
+  // 실제 DOM 처럼 textContent 로 넣은 값은 innerHTML 에서 escape 되어 나온다.
+  Object.defineProperty(o,'textContent',{get:function(){return o._t;},
+    set:function(v){o._t=(v==null?'':String(v));o._raw=null;}});
+  Object.defineProperty(o,'innerHTML',{get:function(){
+      if(o._raw!=null)return o._raw;
+      return o._t.split('&').join('&amp;').split('<').join('&lt;')
+                 .split('>').join('&gt;');},
+    set:function(v){o._raw=(v==null?'':String(v));o._t=o._raw;}});
+  return o;
+}
+function __el(id){if(!__els[id])__els[id]=__mk(id);return __els[id];}
+var document={getElementById:__el,addEventListener:function(){},
+  createElement:function(){return __mk('t'+(++__mkN));}};
+var window={};
+var Chart=undefined;
+// ⚠️ 스태시(fred_date 보존)를 하네스가 재구현하면 제품에서 지워도 통과한다
+// (#19). 대신 **제품의 liveFx() 를 그대로 태운다** — fetch 를 동기 thenable
+// 로 스텁해서 dgs10 틱만 도착시킨다.
+var __TICK=(process.argv[3]==='live');
+function fetch(url){
+  var name=String(url).replace('api/','');
+  var body=(__TICK&&name==='dgs10')?{rate:4.76,src:'yfinance 실시간'}:null;
+  function P(v){return {then:function(f){return P(f(v));},
+                        catch:function(){return P(v);}};}
+  return P({json:function(){return body;}});
+}
+function setInterval(){}
+__el('liq-data').textContent=process.argv[2];
+__el('cats').setAttribute('data-cats','[]');
+"""
+    _POST = r"""
+console.log(JSON.stringify({tb:__el('tb').innerHTML,
+                            dnote:__el('d-note').innerHTML}));
+"""
+
+    @classmethod
+    def _render(cls, mode="static"):
+        import json
+        import re as _re
+        import shutil
+        import subprocess
+        import tempfile
+
+        import pytest as _pt
+
+        from bot import fred_boards as fb
+
+        node = shutil.which("node")
+        if not node:
+            _pt.skip("node 없음 — JS 렌더 실행 불가")
+        rows = [dict(r) for r in cls.ROWS]
+        if mode == "live_spread":
+            # 첫 행이 곧 초기 선택(detail(R[0].id)) — 스프레드를 열어 둔 채
+            # 구성 행에 틱이 오는 상황을 재현한다.
+            rows.sort(key=lambda r: r["id"] != "T10Y2Y")
+        html = fb.render_liquidity_page(rows, {}, 50)
+        blocks = _re.findall(r"<script>(.*?)</script>", html, _re.S)
+        inner = max(blocks, key=len)
+        payload = json.dumps({"rows": rows}, ensure_ascii=False)
+        with tempfile.TemporaryDirectory() as td:
+            path = f"{td}/liq_harness.js"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(cls._PRE + inner + cls._POST)
+            r = subprocess.run([node, path, payload,
+                                "live" if mode.startswith("live") else mode],
+                               capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr[-1500:]
+        out = json.loads(r.stdout)
+        return out if mode == "live_spread" else out["tb"]
+
+    def test_spread_row_names_which_component_is_on_another_basis(self):
+        """구성 행과 기준일이 달라 화면에서 빼면 안 맞는다 — 행이 **어느**
+        구성 행이 어떤 기준인지 댄다.
+
+        ⚠️ 2026-09-04 계약 정정(#222): 처음엔 'FRED 자체 시리즈(위 두 행
+        뺄셈과 다름)' 이라고 적었는데 그건 **틀린 사유**다 — T10Y2Y 는 FRED
+        정의상 DGS10−DGS2 이고(`macro_cadence` 도 "위 둘의 차"), 안 맞는
+        진짜 이유는 화면에 실린 값들의 기준일이 다르기 때문이다. 우리가 잰
+        것만 적는다(#165 재지 않은 귀속 금지)."""
+        tb = self._render()
+        assert "10Y−2Y" in tb
+        assert "기준일 다름" in tb, tb[:600]
+        # 어긋난 쪽(2Y, 09-02)을 집어 말하고, 맞는 쪽(10Y)은 안 적는다.
+        assert "2Y 2026-09-02" in tb, tb[:600]
+        assert "자체 시리즈" not in tb
+
+    def test_live_overlay_row_names_its_delta_anchor(self):
+        """실시간으로 덮인 행은 등락이 **무엇을 기준으로** 계산됐는지 밝힌다.
+        덮기 전에 앵커를 남기지 않으면 화면이 영영 말할 수 없다."""
+        tb = self._render("live")
+        assert "등락·차트 기준 FRED 2026-09-03" in tb, tb[:800]
+        assert "yfinance 실시간" in tb
+
+    def test_quiet_when_the_bases_agree(self):
+        """맞을 땐 조용해야 한다 — 늘 뜨는 경고는 아무것도 안 재는 것과
+        같다(#25·#260). 구성 행 기준일을 맞추면 경고가 사라진다."""
+        import copy
+
+        rows = copy.deepcopy(self.ROWS)
+        for r in rows:
+            r["latest_date"] = "2026-09-03"
+        old = self.ROWS
+        try:
+            type(self).ROWS = rows
+            tb = self._render()
+        finally:
+            type(self).ROWS = old
+        assert "10Y−2Y" in tb
+        assert "기준일 다름" not in tb, tb[:600]
+
+    def test_open_detail_refreshes_when_a_component_ticks(self):
+        """스프레드 상세를 열어 둔 채 구성 행에 실시간 틱이 오면 **상세도**
+        갱신돼야 한다 — 안 그러면 표는 '기준일 다름' 이라고 적는데 상세는
+        옛 구성값(4.72)을 그대로 보여준다(독립 리뷰가 하네스로 재현).
+        한 화면이 두 말을 하면 없느니만 못하다(#38)."""
+        out = self._render("live_spread")
+        assert "기준일 다름" in out["tb"]
+        # 상세 각주가 **틱 이후 값**을 보여준다.
+        assert "4.76" in out["dnote"], out["dnote"][:400]
+        assert "4.72%" not in out["dnote"], out["dnote"][:400]
+
+    def test_derived_components_are_on_the_board(self):
+        """⚠️ 픽스처가 `derived_from` 을 직접 들고 있어 **카탈로그에서 지워도**
+        나머지 테스트가 통과했다(실측, #20 배선 사각). 그리고 실제로 T10Y3M 은
+        구성요소 `DGS3MO` 가 보드에 없어 판정이 영원히 no-op 이었다 —
+        대조할 게 없으면 ✅ 가 아니라 애초에 달지 말아야 한다(#54).
+
+        계약: 카탈로그의 `derived_from` 은 **같은 보드에 실재하는 id** 만
+        가리키고, 화면에서 뺄 수 있는 조합(10Y−2Y)에는 실제로 달려 있다."""
+        from bot import fred_boards_catalog as cat
+
+        # ⚠️ id 를 보드 횡단으로 합치면 **남의 보드 id** 를 가리켜도 통과한다
+        # (독립 리뷰 실측: LIQ 행이 PPIACO 를 가리켜도 green 인데 런타임엔
+        # 조용한 no-op). 같은 목록 안에서만 대조한다(#54).
+        lists = {n: getattr(cat, n) for n in dir(cat)
+                 if isinstance(getattr(cat, n), list)
+                 and getattr(cat, n)
+                 and isinstance(getattr(cat, n)[0], dict)
+                 and getattr(cat, n)[0].get("id")}
+        found = 0
+        for name, board in lists.items():
+            ids = {r["id"] for r in board if isinstance(r, dict)}
+            for r in board:
+                if not isinstance(r, dict) or not r.get("derived_from"):
+                    continue
+                found += 1
+                missing = [c for c in r["derived_from"] if c not in ids]
+                assert not missing, f"{name}/{r['id']}: 같은 보드에 없는 {missing}"
+        assert found, "derived_from 이 하나도 없다 — 가드가 눈이 멀었다"
+        derived = {r["id"]: r["derived_from"] for b in lists.values()
+                   for r in b if isinstance(r, dict) and r.get("derived_from")}
+        # 화면에서 실제로 뺄 수 있는 조합엔 달려 있어야 한다.
+        assert derived.get("T10Y2Y") == ["DGS10", "DGS2"]
+
+    def test_generated_js_parses(self):
+        """비-raw 삼중따옴표의 먹힌 이스케이프가 스크립트를 통째로 죽인
+        전례가 있다(#26 — 보드 3종 동시 백지)."""
+        import re as _re
+        import shutil
+        import subprocess
+        import tempfile
+
+        import pytest as _pt
+
+        from bot import fred_boards as fb
+
+        node = shutil.which("node")
+        if not node:
+            _pt.skip("node 없음")
+        html = fb.render_liquidity_page([dict(r) for r in self.ROWS], {}, 50)
+        js = "\n".join(_re.findall(r"<script>(.*?)</script>", html, _re.S))
+        with tempfile.TemporaryDirectory() as td:
+            path = f"{td}/t.js"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(js)
+            r = subprocess.run([node, "--check", path],
+                               capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr[-800:]

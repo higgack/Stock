@@ -863,7 +863,14 @@ function pcd(r,v,dg){if(v==null)return"<span class='flat'>—</span>";
 // SyntaxError 가 되고, 스크립트 전체가 죽어 표·필터·차트가 통째로 빈다
 // (2026-08-19 PPI·CPI·유동성 보드 3종 동시 백지 실측).
 function aesc(s){return esc(s).split('"').join('&quot;');}
-function ld(r){return esc(r.latest_date)+(r.stale?" <span class='stale' title=\\""+aesc(r.stale_why)+"\\">⚠️지연</span>":"");}
+// 실시간 오버레이가 걸린 행은 **최신값과 등락의 기준이 다르다** — 최신은
+// 네이버/야후 실시간이고 1M/3M/YoY·차트는 FRED 확정 히스토리다. ℹ️ 가이드에만
+// 적어 두면 사용자는 행을 가로로 읽다가 "왜 안 맞지" 를 묻는다(2026-09-04
+// 실측: 1,351.1 옆 -3.99% 는 그 값 기준이 아니다). **행 자체가** 밝힌다(#43·#202).
+function ld(r){var d=esc(r.latest_date);
+ if(r.fred_date!=null&&r.fred_date!==r.latest_date)
+  d+="<div style='color:#8b8fa3;font-size:10px'>등락·차트 기준 FRED "+esc(r.fred_date)+"</div>";
+ return d+(r.stale?" <span class='stale' title=\\""+aesc(r.stale_why)+"\\">⚠️지연</span>":"");}
 var CHART_OPTS={plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8a8f98',maxTicksLimit:12},grid:{color:'rgba(128,132,140,.18)'}},y:{ticks:{color:'#8a8f98'},grid:{color:'rgba(128,132,140,.18)'}}},maintainAspectRatio:false};
 function mkChart(el,labels,data,color,fill){
  if(typeof Chart==='undefined'||!el)return null;
@@ -1181,7 +1188,13 @@ TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
 <b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API). 단 <b>환율 6종·VIX·비트코인·이더리움·미 국채 10Y/30Y</b>는
 페이지가 열려 있는 동안 <b>5분마다 실시간 값</b>으로 최신값·기준일을 덮습니다(환율·VIX=네이버,
 코인=yfinance USD — 기준일 자리에 소스가 표시되면 실시간 값). 1M/3M/YoY·차트는 FRED 확정
-히스토리 기준 그대로라 실시간 최신값과 정의가 다릅니다(섞지 않음).
+히스토리 기준 그대로라 실시간 최신값과 정의가 다릅니다(섞지 않음) — 그래서 그 행의
+<b>기준일 칸에 "등락·차트 기준 FRED …" 를 같이 적습니다</b>. 최신값과 등락을 가로로 나눠
+보면 맞지 않는 것이 정상이고, 행을 클릭하면 두 기준의 값이 나란히 뜹니다.<br>
+<b>6) 스프레드 행</b> — 10Y-2Y 는 원천 정의상 <b>같은 날 10Y − 2Y</b> 가 맞습니다. 다만
+화면의 10Y 는 실시간, 2Y 는 FRED 종가라 <b>기준일이 다르면 그대로 빼도 안 맞고</b>, 그럴
+때만 행이 어느 구성 행이 어떤 기준인지 적습니다(맞을 땐 조용합니다). 10Y-3M 은 3개월물
+행이 이 보드에 없어 뺄 대상 자체가 없습니다.
 </details>
 {empty}
 <div class="panel"><div class="panel-title">종합 유동성 점수</div>
@@ -1237,9 +1250,45 @@ function pills(){{var cats=JSON.parse(document.getElementById('cats').getAttribu
  document.getElementById('cats').innerHTML=["<span class='pill"+(fcat==='all'?' active':'')+"' data-c='all'>전체</span>"]
  .concat(cats.map(function(c){{return "<span class='pill"+(fcat===c?' active':'')+"' data-c=\\""+esc(c)+"\\">"+esc(c)+"</span>";}})).join('');}}
 function frows(){{return R.filter(function(r){{return fcat==='all'||(r.category||'기타')===fcat;}});}}
+// 스프레드 행은 화면에서 위 두 행을 빼면 맞아야 한다 — 실제로 T10Y2Y 는
+// FRED 정의상 DGS10−DGS2 다(`macro_cadence` 도 "위 둘의 차"라고 적어 뒀다).
+// 2026-09-04 실측 불일치(10Y 4.76 − 2Y 4.39 = 0.37 vs 0.43)의 원인은 시리즈가
+// 달라서가 아니라 **화면에 실린 값들의 기준일이 다르기 때문**이다(10Y 는
+// 실시간 틱, 2Y 는 하루 전 FRED 종가).
+// ⚠️ 그래서 사유를 '자체 시리즈'라고 적으면 **틀린 이유**를 말하는 것이다
+// (#165 재지 않은 귀속 금지 · #187b 틀린 로그가 헛걸음을 만든다). 우리가
+// 잰 것은 '어느 구성 행이 어떤 기준인가' 까지이므로 그것만 적는다.
+function dparts(r){{
+ if(!r.derived_from||!r.derived_from.length)return null;
+ var parts=r.derived_from.map(function(id){{
+  return R.find(function(x){{return x.id===id;}});}});
+ return parts.some(function(x){{return !x;}}) ? null : parts;
+}}
+function dnote(r){{
+ var lbl=r.derived_label||(r.derived_from||[]).join('−');
+ var parts=dparts(r);
+ if(!parts)return lbl;
+ var off=parts.filter(function(x){{
+  return x.fred_date!=null||(x.latest_date!==r.latest_date);}});
+ if(!off.length)return lbl;
+ return lbl+' · 기준일 다름('+off.map(function(x){{
+  return esc(x.name.split(' ')[0])+' '+esc(x.latest_date);}}).join(' · ')+')';
+}}
+// 상세 패널엔 자리가 있으니 **값과 날짜**를 그대로 나란히 적는다 — 표 안
+// 각주가 길면 브라우저가 아무 데서나 접는다(#211), 그리고 '다르다'만 말하면
+// 얼마나 다른지 알 수 없다(#202).
+function dwhy(r){{
+ var parts=dparts(r);
+ if(!parts)return '';
+ return parts.map(function(x){{
+  return esc(x.name)+' '+esc(fv(x))+'('+esc(x.latest_date)+')';}}).join(' − ')
+  +' = '+esc(fv(r))+'('+esc(r.latest_date)+') — 같은 날 기준으로는 맞지만'
+  +' 화면의 값들은 기준일이 달라 그대로 빼면 어긋납니다';
+}}
 function table(){{document.getElementById('tb').innerHTML=frows()
  .map(function(r){{return "<tr class='row"+(sel===r.id?' selected':'')+"' data-id='"+esc(r.id)+"'>"+
- "<td><b>"+esc(r.name)+"</b><div style='color:#8b8fa3;font-size:10px'>"+esc(r.id)+"</div></td>"+
+ "<td><b>"+esc(r.name)+"</b><div style='color:#8b8fa3;font-size:10px'>"+esc(r.id)+
+ (dnote(r)?" · "+esc(dnote(r)):"")+"</div></td>"+
  "<td>"+esc(r.category||'—')+"</td><td><b>"+fv(r)+"</b></td>"+
  "<td>"+pcd(r,r.mom,2)+"</td><td>"+pcd(r,r.m3)+"</td><td>"+pcd(r,r.yoy)+"</td><td style='color:#8b8fa3'>"+ld(r)+"</td></tr>";}}).join('');}}
 function detail(id){{var r=R.find(function(x){{return x.id===id;}});if(!r)return;sel=id;
@@ -1247,6 +1296,13 @@ function detail(id){{var r=R.find(function(x){{return x.id===id;}});if(!r)return
  document.getElementById('d-title').textContent=r.name+' ('+r.id+') — 최신 '+fv(r);
  var n=['📖 '+(r.desc||''),'🧭 '+(r.interpret||''),'👁 '+(r.how_to_read||''),'🇰🇷 '+(r.kr_impact||'')]
   .filter(function(x){{return x.length>4;}}).map(esc).join('<br>');
+ // 두 기준을 값으로 나란히 — '다르다'만 말하면 얼마나 다른지 알 수 없다(#202).
+ if(r.fred_date!=null&&r.fred_latest!=null){{
+  var fr=Object.assign({{}},r);fr.latest=r.fred_latest;
+  n='🕐 최신 '+esc(fv(r))+' ('+esc(r.latest_date)+') · 1M/3M/YoY·차트는 '
+    +esc(fv(fr))+' ('+esc(r.fred_date)+', FRED) 기준<br>'+n;
+ }}
+ if(dnote(r))n='🧮 '+esc(dnote(r))+(dwhy(r)?'<br>　'+dwhy(r):'')+'<br>'+n;
  document.getElementById('d-note').innerHTML=n;
  if(chart)chart.destroy();
  chart=mkChart(document.getElementById('d-chart'),r.hist.map(function(h){{return h[0];}}),r.hist.map(function(h){{return h[1];}}));
@@ -1295,8 +1351,16 @@ function liveFx(){{
     else if(!(q>0.75&&q<1.25))return;
     if(!(v/f>0.75&&v/f<1.25))return;
    }}
+   // 덮기 **전에** FRED 앵커를 남긴다 — 덮고 나면 등락이 무엇을 기준으로
+   // 계산됐는지 화면이 영영 말할 수 없다. 최초 1회만(재틱에 덮이지 않게).
+   if(r.fred_date==null){{r.fred_date=r.latest_date;r.fred_latest=r.latest;}}
    r.latest=v;r.latest_date=j.src||'실시간';
-   table();if(sel===p[1])detail(p[1]);
+   // 열려 있는 상세가 **이 틱에 의존하는 행**이면 같이 갱신한다 — 안 그러면
+   // 표는 '기준일 다름' 이라고 적는데 상세는 옛 구성값을 그대로 보여준다
+   // (독립 리뷰가 하네스로 재현). 갈라진 화면은 없느니만 못하다(#38).
+   var cur=R.find(function(x){{return x.id===sel;}});
+   var dep=cur&&cur.derived_from&&cur.derived_from.indexOf(p[1])>=0;
+   table();if(sel===p[1]||dep)detail(sel);
   }}).catch(function(){{}});
  }});
 }}
