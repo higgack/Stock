@@ -44980,3 +44980,305 @@ class TestThemePageIsNotSevenSerialFetches20260904:
         monkeypatch.setattr(nsc, "fetch_themes",
                             lambda: {"themes": [row], "ts": "09-04 10:00"})
         assert "갱신 중" not in np.render_theme_page()
+
+
+class TestTimerClaimIsAskedOfSystemd20260905:
+    """⑥ 의 '↪' 줄은 **systemd 에 물어서** 말한다(#279 의 다음 층).
+
+    2026-09-04 VM 실행에서 `↪ 점검 도장이 없다 — 타이머가 아예 안 돌았을 수
+    있다` 가 떴는데, 도장을 찍는 `feed_health.mark` 자체가 **마지막 발화
+    (09-04 19:00 KST) 뒤에 배포**됐다. 즉 도장 부재는 타이머 실패의 증거가
+    아니었다 — 안 잰 문장이 헛걸음을 만든 것이다(#165·#187b).
+    상태는 **아는 쪽에 묻는다**(#86): 타이머 발화 시각과 서비스 종료 상태는
+    systemd 가 알고 있다.
+    """
+
+    _RAN = {"ok": True, "t_LoadState": "loaded",
+            "t_LastTriggerUSec": "Fri 2026-09-04 19:00:00 KST",
+            "s_ExecMainStartTimestamp": "Fri 2026-09-04 19:00:00 KST",
+            "s_ExecMainStatus": "0", "s_Result": "success"}
+
+    def test_stamp_wins_when_present(self):
+        from bot.daily_kr_flow import timer_verdict
+        assert "타이머는 돌았다" in timer_verdict({}, "2026-09-04 07:10")
+
+    def test_unmeasured_claim_is_gone(self):
+        """도장이 없다는 이유만으로 '안 돌았을 수 있다' 고 단정하지 않는다."""
+        from bot.daily_kr_flow import timer_verdict
+        for facts in ({}, {"ok": False, "err": "x"}, self._RAN,
+                      {"ok": True, "t_LoadState": "loaded",
+                       "t_LastTriggerUSec": "n/a"}):
+            assert "안 돌았을 수 있다" not in timer_verdict(facts, "")
+
+    def test_branches_are_named_and_distinct(self):
+        """갈래마다 처방이 다르다(#82) — 문구가 겹치면 갈린 게 아니다."""
+        from bot.daily_kr_flow import timer_verdict
+        got = {
+            "no_systemd": timer_verdict({"ok": False, "err": "no bus"}, ""),
+            "not_installed": timer_verdict(
+                {"ok": True, "t_LoadState": "not-found"}, ""),
+            "never": timer_verdict({"ok": True, "t_LoadState": "loaded",
+                                    "t_LastTriggerUSec": "n/a"}, ""),
+            "failed": timer_verdict({**self._RAN, "s_ExecMainStatus": "1",
+                                     "s_Result": "exit-code"}, ""),
+            "ran": timer_verdict(self._RAN, ""),
+        }
+        assert len(set(got.values())) == 5, got
+        assert "no bus" in got["no_systemd"]            # 사유를 밝힌다(#82)
+        assert "enable --now" in got["not_installed"]
+        assert "한 번도 발화하지 않았다" in got["never"]
+        assert "exit-code" in got["failed"] and "journalctl" in got["failed"]
+        # 발화 사실을 실었고, 도장 부재의 원인은 **단정하지 않는다**(#165).
+        assert "19:00:00" in got["ran"] and "이거나" not in got["ran"]
+        assert "나중에 배포됐거나" in got["ran"]
+
+    def test_failed_service_is_not_reported_as_success(self):
+        """Result 만 실패여도(exit 0) 실패로 읽어야 한다 — 한쪽만 보면 샌다."""
+        from bot.daily_kr_flow import timer_verdict
+        line = timer_verdict({**self._RAN, "s_Result": "timeout"}, "")
+        assert "서비스가 실패했다" in line, line
+
+    def test_systemd_facts_reads_both_units_and_never_writes(self, monkeypatch):
+        """진단이 운영 상태를 바꾸면 안 된다(#264) — show 만 부른다."""
+        import subprocess
+        import bot.daily_kr_flow as kf
+        calls: list[list] = []
+
+        class _R:
+            returncode = 0
+            stderr = ""
+            stdout = "LoadState=loaded\nLastTriggerUSec=Fri 2026-09-04 19:00:00 KST\n"
+
+        monkeypatch.setattr(subprocess, "run",
+                            lambda cmd, **kw: (calls.append(cmd), _R())[1])
+        facts = kf.systemd_facts()
+        assert facts["ok"] and facts["t_LoadState"] == "loaded"
+        assert facts["t_LastTriggerUSec"].endswith("KST")
+        assert len(calls) == 2, calls
+        units = [c[2] for c in calls]
+        assert units == ["daily-byte.timer", "daily-byte.service"], units
+        for c in calls:
+            assert c[:2] == ["systemctl", "show"], c
+            assert not ({"start", "restart", "stop", "enable"} & set(c)), c
+
+    def test_systemd_failure_is_verdict_not_assertion(self, monkeypatch):
+        """물어보지 못했으면 판정 보류 — '안 돌았다' 로 우기지 않는다(#12)."""
+        import subprocess
+        import bot.daily_kr_flow as kf
+
+        def _boom(*a, **k):
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(subprocess, "run", _boom)
+        facts = kf.systemd_facts()
+        assert facts["ok"] is False and "systemctl" in facts["err"]
+        assert "못 물었다" in kf.timer_verdict(facts, "")
+
+    def test_nonzero_rc_does_not_claim_facts(self, monkeypatch):
+        """rc != 0 인데 ok=True 로 보면 빈 값을 사실처럼 말한다(#54)."""
+        import subprocess
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 1
+            stderr = "Failed to connect to bus"
+            stdout = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
+        assert kf.systemd_facts()["ok"] is False
+
+    def test_why_wires_the_measurement_in(self, monkeypatch):
+        """배선은 존재가 아니라 **결과**로 확인한다(#141·#120).
+
+        why() 가 systemd 를 물어서 그 답을 ⑥ 에 싣는가 — 게이트만 꺼도
+        통과하지 않도록 실제 출력 문자열을 본다.
+        """
+        import bot.daily_kr_flow as kf
+        seen: list = []
+        monkeypatch.setattr(
+            kf, "systemd_facts",
+            lambda *a, **k: (seen.append(1), dict(self._RAN))[1])
+        lines = kf.why_verdict(
+            td=True, llm_ok=True, login_kind="ok", login_fix="",
+            krx_ok=True, kr_age=9, missed_sessions=6, stamp="",
+            timer=kf.timer_verdict(kf.systemd_facts(), ""))
+        assert seen, "systemd 를 안 물었다"
+        assert any("타이머는 발화했고" in l for l in lines), lines
+
+    def test_why_e2e_prints_what_systemd_said(self, monkeypatch):
+        """배선은 태워야 보인다(#20) — why() 를 통째로 돌려 ⑥ 에 실리는지 본다.
+
+        소스에 이름이 있는지로 재면 게이트만 꺼도 통과한다(#141·#59b).
+        """
+        import bot.daily_kr_flow as kf
+        from bot import feed_health
+        monkeypatch.setattr(feed_health, "last", lambda f: "")
+        monkeypatch.setattr(kf, "systemd_facts", lambda *a, **k: dict(self._RAN))
+        out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
+            monkeypatch, totals_side=dict, trading_day=True)
+        assert "타이머는 발화했고" in out, out
+        assert "안 돌았을 수 있다" not in out, out
+
+    def test_why_does_not_ask_systemd_when_stamped(self, monkeypatch):
+        """도장이 있으면 물을 이유가 없다 — 진단이 쓸데없이 쉘을 부르지 않게."""
+        import bot.daily_kr_flow as kf
+        from bot import feed_health
+        monkeypatch.setattr(feed_health, "last", lambda f: "2026-09-04 19:00")
+
+        def _boom(*a, **k):
+            raise AssertionError("도장이 있는데 systemd 를 물었다")
+
+        monkeypatch.setattr(kf, "systemd_facts", _boom)
+        out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
+            monkeypatch, totals_side=dict, trading_day=True)
+        assert "타이머는 돌았다(마지막 점검 2026-09-04 19:00)" in out, out
+
+
+class TestNaverSectorCheckTellsTheBranch20260905:
+    """`--check` — 빈 로그가 무엇을 뜻하는지 화면이 말한다(#274·#82).
+
+    `journalctl … | grep 'naver_sector: themes'` 가 **비어 있는 게 정상**인
+    경우가 있다: 장 마감 뒤엔 `_session_fresh` 가 마지막 마감 이후 스냅샷을
+    fresh 로 보므로 수집이 아예 안 돈다. 그 침묵은 '배포 안 됨'·'재시작
+    안 됨'·'페이지를 안 눌렀음'과 구별되지 않아, 사용자가 명령을 세 번
+    돌려도 답이 안 나왔다(2026-09-04 실측).
+    """
+
+    def _fresh(self, monkeypatch, *, fresh, age_sec):
+        import time as _t
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_cached",
+                            lambda name: {"themes": [{"name": "반도체"}]} if fresh else None)
+        monkeypatch.setattr(
+            nsc, "_read_cache",
+            lambda name: ({"themes": [{"name": "반도체"}]}, _t.time() - age_sec))
+
+        class _St:
+            st_mtime = _t.time() - age_sec
+
+        monkeypatch.setattr(nsc.Path, "exists", lambda self: True)
+        monkeypatch.setattr(nsc.Path, "stat", lambda self: _St())
+
+    def _run(self, monkeypatch, **kw):
+        import io
+        from contextlib import redirect_stdout
+        import bot.naver_sector_client as nsc
+        self._fresh(monkeypatch, **kw)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = nsc.check(fetch=False)
+        return rc, buf.getvalue()
+
+    def test_banner_prints_version_and_interpreter(self, monkeypatch):
+        """진단은 버전을 찍는다(#21)·인터프리터를 찍는다(#132)."""
+        import sys
+        rc, out = self._run(monkeypatch, fresh=True, age_sec=60)
+        assert rc == 0
+        assert "naver_sector --check v" in out
+        assert sys.executable in out, out
+
+    def test_fresh_cache_says_the_silence_is_expected(self, monkeypatch):
+        """✅ 로 끝내지 말고 **왜 로그가 안 찍히는지**까지(#274)."""
+        _, out = self._run(monkeypatch, fresh=True, age_sec=60)
+        assert "캐시 히트" in out and "로그도 안 찍힘" in out, out
+
+    def test_swr_and_cold_branches_differ(self, monkeypatch):
+        """세 갈래가 서로 다른 말을 해야 갈린 것이다(#82)."""
+        import bot.naver_sector_client as nsc
+        outs = [self._run(monkeypatch, fresh=True, age_sec=60)[1],
+                self._run(monkeypatch, fresh=False, age_sec=60)[1],
+                self._run(monkeypatch, fresh=False,
+                          age_sec=nsc._THEME_SWR_SEC + 60)[1]]
+        marks = [o.splitlines()[3].strip()[:2] for o in outs]
+        assert len(set(marks)) == 3, marks
+        assert "SWR" in outs[1] and "SWR 창 밖" in outs[2]
+
+    def test_freshness_uses_the_screen_predicate(self, monkeypatch):
+        """판정을 여기서 다시 계산하면 화면과 갈라진다(#35)."""
+        import bot.naver_sector_client as nsc
+        seen: list = []
+        self._fresh(monkeypatch, fresh=True, age_sec=60)
+        real = nsc._cached
+        monkeypatch.setattr(nsc, "_cached",
+                            lambda n: (seen.append(n), real(n))[1])
+        import io
+        from contextlib import redirect_stdout
+        with redirect_stdout(io.StringIO()):
+            nsc.check(fetch=False)
+        assert "theme.json" in seen, seen
+
+    def test_read_only_by_default(self, monkeypatch):
+        """진단이 운영 상태를 바꾸면 안 된다(#264) — 기본은 수집 안 함."""
+        import bot.naver_sector_client as nsc
+        called: list = []
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: called.append(1) or {"themes": []})
+        _, out = self._run(monkeypatch, fresh=True, age_sec=60)
+        assert not called, "기본 실행이 네이버를 두드렸다"
+        assert "--check --fetch" in out, out
+
+    def test_fetch_reports_zero_as_failure(self, monkeypatch):
+        """대조 0건은 통과가 아니라 실패다(#54)."""
+        import io
+        from contextlib import redirect_stdout
+        import bot.naver_sector_client as nsc
+        self._fresh(monkeypatch, fresh=True, age_sec=60)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: {"themes": [], "partial": True})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = nsc.check(fetch=True)
+        assert rc == 1 and "❌" in buf.getvalue(), buf.getvalue()
+
+    def test_fetch_reports_partial(self, monkeypatch):
+        """부분 스냅샷은 조용히 넘어가면 안 된다(#280)."""
+        import io
+        from contextlib import redirect_stdout
+        import bot.naver_sector_client as nsc
+        self._fresh(monkeypatch, fresh=True, age_sec=60)
+        monkeypatch.setattr(
+            nsc, "collect_themes",
+            lambda: {"themes": [{"name": "x"}], "partial": True})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = nsc.check(fetch=True)
+        assert rc == 0 and "partial=True" in buf.getvalue(), buf.getvalue()
+
+    def test_missing_cache_is_its_own_branch(self, monkeypatch):
+        import io
+        from contextlib import redirect_stdout
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc.Path, "exists", lambda self: False)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            nsc.check(fetch=False)
+        assert "캐시 없음" in buf.getvalue(), buf.getvalue()
+
+    def test_main_dispatches_check(self, monkeypatch):
+        """디스패치를 `if __name__` 에 인라인으로 두면 테스트가 못 태운다(#252).
+
+        게이트만 꺼도 통과하지 않도록 **결과**로 본다(#141).
+        """
+        import bot.naver_sector_client as nsc
+        seen: list = []
+        monkeypatch.setattr(nsc, "check", lambda fetch: seen.append(fetch) or 7)
+        monkeypatch.setattr(nsc, "fetch_sector_movers",
+                            lambda: pytest.fail("--check 인데 수집했다"))
+        assert nsc.main(["--check"]) == 7
+        assert nsc.main(["--check", "--fetch"]) == 7
+        assert seen == [False, True], seen
+
+    def test_entrypoint_is_at_the_end_of_the_file(self):
+        """엔트리포인트를 파일 중간에 두면 그 아래 정의에 영영 못 닿는다(#276)."""
+        import ast
+        import pathlib
+        import bot.naver_sector_client as nsc
+        src = pathlib.Path(nsc.__file__).read_text(encoding="utf-8")
+        mod = ast.parse(src)
+        guards = [n for n in mod.body
+                  if isinstance(n, ast.If)
+                  and "__main__" in ast.dump(n.test)]
+        assert len(guards) == 1, guards
+        assert guards[0].lineno > max(
+            n.lineno for n in mod.body
+            if isinstance(n, (ast.FunctionDef, ast.ClassDef)))

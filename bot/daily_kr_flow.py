@@ -766,7 +766,7 @@ def main() -> int:
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 2
+_WHY_VER = 3
 
 # pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
 # 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
@@ -817,8 +817,85 @@ def krx_login_verdict(captured: str) -> tuple[str, str]:
     return "ok", ""
 
 
+_TIMER_UNIT = "daily-byte.timer"
+_SERVICE_UNIT = "daily-byte.service"
+_TIMER_CMDS = (f"`systemctl status {_TIMER_UNIT}` · "
+               f"`journalctl -u {_SERVICE_UNIT} -n 50`")
+
+
+def systemd_facts(timer: str = _TIMER_UNIT, service: str = _SERVICE_UNIT) -> dict:
+    """systemd 에 **물어서** 타이머가 돌았는지 재 온다(읽기 전용).
+
+    도장(`feed_health`)이 없다는 사실만으로 '타이머가 안 돌았을 수 있다' 고
+    적으면 그건 안 잰 문장이다(#165) — 실제로 2026-09-04 실행에서 그 줄이
+    떴는데, 도장을 찍는 코드가 **마지막 발화 뒤에 배포**된 것뿐일 수도
+    있었다. 상태는 **아는 쪽에 묻는다**(#86 systemctl · #64).
+
+    `ok=False` 면 판정 불가 — 단정하지 않는다.
+    """
+    import subprocess
+
+    out: dict = {"ok": False}
+    try:
+        for unit, keys in ((timer, ("LoadState", "LastTriggerUSec")),
+                           (service, ("ExecMainStartTimestamp",
+                                      "ExecMainStatus", "Result"))):
+            r = subprocess.run(
+                ["systemctl", "show", unit, *[f"-p{k}" for k in keys]],
+                capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                out["err"] = (r.stderr or "").strip()[:120] or f"rc={r.returncode}"
+                return out
+            pre = "t_" if unit == timer else "s_"
+            for ln in (r.stdout or "").splitlines():
+                if "=" in ln:
+                    k, _, v = ln.partition("=")
+                    out[pre + k.strip()] = v.strip()
+    except Exception as exc:                                   # noqa: BLE001
+        out["err"] = f"{type(exc).__name__}: {exc}"[:120]
+        return out
+    out["ok"] = True
+    return out
+
+
+def timer_verdict(facts: dict, stamp: str) -> str:
+    """↪ 한 줄을 **값으로** 만든다 — 갈래마다 처방이 다르다(#82).
+
+    도장이 없다는 것과 타이머가 안 돌았다는 것은 다른 사실이다. 도장을
+    찍는 코드가 마지막 발화보다 **나중에 배포**됐어도 도장은 없다 —
+    그래서 도장 부재만으로 원인을 단정하지 않고, systemd 가 말한 사실을
+    먼저 싣는다.
+    """
+    if stamp:
+        return (f"↪ 타이머는 돌았다(마지막 점검 {stamp}) — 실행은 됐는데 "
+                f"생성이 실패한 것이므로 위 사유가 원인이다")
+    if not facts.get("ok"):
+        why = facts.get("err") or "사유 미상"
+        return (f"↪ 점검 도장이 없다. systemd 에 못 물었다({why}) — "
+                f"직접 확인: {_TIMER_CMDS}")
+    if facts.get("t_LoadState") not in ("loaded",):
+        return (f"↪ 타이머가 설치돼 있지 않다(LoadState="
+                f"{facts.get('t_LoadState') or '?'}) — "
+                f"`systemctl enable --now {_TIMER_UNIT}`")
+    trig = facts.get("t_LastTriggerUSec") or ""
+    if not trig or trig in ("n/a", "0"):
+        return (f"↪ 타이머가 **한 번도 발화하지 않았다** — "
+                f"`systemctl enable --now {_TIMER_UNIT}`")
+    status, result = facts.get("s_ExecMainStatus") or "", facts.get("s_Result") or ""
+    started = facts.get("s_ExecMainStartTimestamp") or "?"
+    if (result and result != "success") or (status and status != "0"):
+        return (f"↪ 타이머는 발화했지만(마지막 {trig}) 서비스가 실패했다"
+                f"(Result={result or '?'} exit={status or '?'}) — "
+                f"`journalctl -u {_SERVICE_UNIT} -n 50`")
+    return (f"↪ 타이머는 발화했고(마지막 {trig}) 서비스도 정상 종료했다"
+            f"(마지막 실행 {started}) — 도장이 없는 것은 도장 코드가 그 "
+            f"실행보다 나중에 배포됐거나 실행이 도장 앞에서 죽은 것이다. "
+            f"다음 발화 뒤 다시 볼 것")
+
+
 def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
-                krx_ok, kr_age, missed_sessions=None, stamp: str = "") -> list[str]:
+                krx_ok, kr_age, missed_sessions=None, stamp: str = "",
+                timer: str = "") -> list[str]:
     """⑥ 판정을 **값으로** 만든다 — 휴장이 확정된 실패를 덮지 못하게.
 
     ⚠️ 옛 판은 휴장을 가장 먼저 보고 '이상 없음' 으로 끝냈다. 그래서
@@ -833,7 +910,9 @@ def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
     난다 — 늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260).
     `stamp` = `feed_health.last('daily_byte_kr')` — 타이머가 **돌긴 했는지**
     를 재서 말한다. 안 재고 '타이머가 안 돌았을 수 있다' 고 적으면 그게
-    헛걸음을 만든다(#165·#187b).
+    헛걸음을 만든다(#165·#187b). `timer` = `timer_verdict(systemd_facts(), stamp)`
+    — 도장이 없을 때 systemd 가 말한 사실(발화 시각·종료 상태)을 싣는다.
+    안 주면 systemd 에 못 물은 것으로 보고 판정 보류 문구가 나간다.
     """
     out: list[str] = []
     confirmed = login_kind in _LOGIN_CONFIRMED
@@ -871,13 +950,7 @@ def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
 
     # ── '타이머가 안 돌았다' 는 재서 말한다(#165) ──
     if any(l.startswith(("⚠️", "❌")) for l in out):
-        if stamp:
-            out.append(f"↪ 타이머는 돌았다(마지막 점검 {stamp}) — 실행은 됐는데 "
-                       f"생성이 실패한 것이므로 위 사유가 원인이다")
-        else:
-            out.append("↪ 점검 도장이 없다 — 타이머가 아예 안 돌았을 수 있다: "
-                       "`systemctl status daily-byte.timer` · "
-                       "`journalctl -u daily-byte.service -n 50`")
+        out.append(timer or timer_verdict({}, stamp))
     if not out:
         out.append("❓ 재료도 기록도 이상 없어 보인다 — 화면이 비면 렌더/창 확인")
     return out
@@ -1084,7 +1157,9 @@ def why(argv: list[str] | None = None) -> int:
     print("⑥ 판정")
     for line in why_verdict(td=td, llm_ok=llm_ok, login_kind=login_kind,
                             login_fix=login_fix, krx_ok=krx_ok, kr_age=kr_age,
-                            missed_sessions=missed, stamp=stamp):
+                            missed_sessions=missed, stamp=stamp,
+                            timer=timer_verdict(
+                                {} if stamp else systemd_facts(), stamp)):
         print(f"   {line}")
     return 0
 
