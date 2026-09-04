@@ -170,8 +170,16 @@ def render_theme_page() -> str:
                 f'{_pct_cell(pct)}{_pct_cell(pct3)}'
                 f'<td class="ld">{leaders or "—"}</td></tr>')
         from bot.highlow_render import GENERIC_FILTER_JS as _gfjs
+        # 낡은 스냅샷을 즉시 내준 경우 그 사실을 **행 위에서** 말한다 —
+        # 침묵하면 사용자가 그걸 '지금'으로 읽는다(#43·#163).
+        # ⚠️ 단 SWR 창(10분)이 캐시 TTL(30초)보다 넓어 정상 조회의 대부분이
+        # `stale` 이다 — 늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260).
+        # 정말 뒤처졌을 때(TTL 의 4배)만, 그것도 **잰 값**으로 말한다.
+        _age = int(data.get("stale_age") or 0)
+        note = (f" · {_age // 60}분 전 스냅샷 · 갱신 중"
+                if data.get("stale") and _age >= 120 else "")
         body = (f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
-                f'<span class="ts">{ts} 기준</span></h2>'
+                f'<span class="ts">{ts} 기준{note}</span></h2>'
                 f'<table id="thm-tbl" class="cflt"><thead><tr><th>#</th>'
                 f'<th class="th-sort" data-k="name">테마</th>'
                 f'<th class="th-sort" data-k="pct" style="text-align:right">등락률</th>'

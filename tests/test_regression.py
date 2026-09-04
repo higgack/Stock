@@ -44647,3 +44647,336 @@ class TestDailyByteWhyNamesTheLoginBranch20260904:
                 if "STANDARDVIEW_TELEGRAM_TOKEN" in l][0]
         assert line.lstrip().startswith("ℹ️"), line
         assert "대체" in line
+
+
+class TestThemePageIsNotSevenSerialFetches20260904:
+    """업종별 시세(전체) 클릭이 느렸다 — 요청 경로에서 테마 7페이지를 **직렬**로
+    받고 있었다 (2026-09-04 사용자 "업종별(시세) 여기는 … 좀 많이 느려").
+
+    캐시는 장중 30초라 대부분의 클릭이 콜드였고, 페이지마다 `_get` 상한이
+    15초다. 페이지끼리 의존이 없으므로 한 물결로 받는다(#116).
+    """
+
+    def _clean(self, monkeypatch, tmp_path):
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path / "ns")
+        nsc._BG_KEYS.clear()                 # 전역 상태는 시작할 때 비운다(#127)
+        import bot.singleflight as sf
+        sf._INFLIGHT.clear()
+        return nsc
+
+    def _stub_pages(self, nsc, monkeypatch, *, rows_per_page=2, delay=0.0):
+        """페이지 번호를 받아 그 페이지의 행을 만든다 + 동시 실행 수를 잰다."""
+        import threading, time as _t
+        state = {"live": 0, "peak": 0, "calls": []}
+        lock = threading.Lock()
+
+        def _page(page):
+            with lock:
+                state["live"] += 1
+                state["peak"] = max(state["peak"], state["live"])
+                state["calls"].append(page)
+            try:
+                if delay:
+                    _t.sleep(delay)
+                return [{"no": f"{page}{i}", "name": f"t{page}{i}",
+                         "pct": float(page), "pct3": None, "leaders": []}
+                        for i in range(rows_per_page)]
+            finally:
+                with lock:
+                    state["live"] -= 1
+
+        monkeypatch.setattr(nsc, "_theme_page", _page)
+        return state
+
+    def test_all_pages_are_handed_to_the_fanout_at_once(self, monkeypatch,
+                                                        tmp_path):
+        """옛 판은 1→7 페이지를 직렬로 돌았다. 계약은 "남은 항목을 **한 번에**
+        팬아웃에 넘긴다" 이다.
+
+        ⚠️ 이걸 '최대 동시 실행 수' 로 재면 전체 실행에서 오보한다 — 공용 풀의
+        빈 슬롯에 기대는 단언이기 때문이다(#130 을 적어 두고 그대로 반복해서
+        full suite 가 잡았다). 풀 자체의 동시성은 풀 테스트가 고정한다.
+        """
+        nsc = self._clean(monkeypatch, tmp_path)
+        self._stub_pages(nsc, monkeypatch)
+        import bot.pool as pool
+        seen = []
+        real = pool.map_bounded
+
+        def _spy(fn, items):
+            seen.append(list(items))
+            return real(fn, items)
+
+        monkeypatch.setattr(pool, "map_bounded", _spy)
+        out = nsc.collect_themes()
+        assert seen == [list(range(1, nsc._THEME_PAGES + 1))], seen
+        assert out.get("partial") is False
+        assert len(out["themes"]) == 2 * nsc._THEME_PAGES
+
+    def test_page_order_still_decides_duplicates(self, monkeypatch, tmp_path):
+        """병렬로 받아도 **입력 순서**로 합쳐야 중복 제거 규약이 그대로다."""
+        nsc = self._clean(monkeypatch, tmp_path)
+
+        def _page(page):
+            # 같은 no 를 두 페이지가 준다 — 앞 페이지가 이겨야 한다.
+            return [{"no": "dup", "name": f"page{page}", "pct": 1.0,
+                     "pct3": None, "leaders": []}]
+
+        monkeypatch.setattr(nsc, "_theme_page", _page)
+        out = nsc.collect_themes()
+        assert [t["name"] for t in out["themes"]] == ["page1"]
+
+    def test_one_dead_page_does_not_kill_the_rest(self, monkeypatch, tmp_path):
+        nsc = self._clean(monkeypatch, tmp_path)
+
+        def _page(page):
+            if page == 3:
+                raise RuntimeError("naver 5xx")
+            return [{"no": str(page), "name": f"t{page}", "pct": float(page),
+                     "pct3": None, "leaders": []}]
+
+        monkeypatch.setattr(nsc, "_theme_page", _page)
+        assert len(nsc.collect_themes()["themes"]) == 6
+
+    def test_stale_cache_is_served_at_once_and_refreshed_behind(
+            self, monkeypatch, tmp_path):
+        """SWR — 클릭이 수집을 기다리지 않는다(#116)."""
+        import time as _t
+        nsc = self._clean(monkeypatch, tmp_path)
+        nsc._cache_write("theme.json", {"themes": [{"no": "1", "name": "old",
+                                                    "pct": 1.0, "pct3": None,
+                                                    "leaders": []}],
+                                        "ts": "2026-09-04 09:00"})
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)  # 낡았다
+        done = __import__("threading").Event()
+
+        def _collect():
+            done.set()
+            return {"themes": [], "ts": "new"}
+
+        monkeypatch.setattr(nsc, "collect_themes", _collect)
+        got = nsc.fetch_themes()
+        assert got["themes"][0]["name"] == "old"
+        assert got.get("stale") is True, "낡은 값을 그렇게 밝히지 않았다"
+        assert done.wait(5), "배경 갱신이 안 돌았다"
+        _t.sleep(0.05)
+
+    def test_repeat_clicks_do_not_pile_up_background_refreshes(
+            self, monkeypatch, tmp_path):
+        """낡은 캐시를 여러 번 내주는 동안 배경 수집은 **한 번**이어야 한다 —
+        안 그러면 클릭 수만큼 네이버로 나간다(#113·#127)."""
+        import threading
+        nsc = self._clean(monkeypatch, tmp_path)
+        nsc._cache_write("theme.json", {"themes": [{"no": "1", "name": "old",
+                                                    "pct": 1.0, "pct3": None,
+                                                    "leaders": []}], "ts": "t"})
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        calls, hold, started = [], threading.Event(), threading.Event()
+
+        def _collect():
+            calls.append(1)
+            started.set()
+            hold.wait(5)
+            return {"themes": [], "ts": "new"}
+
+        monkeypatch.setattr(nsc, "collect_themes", _collect)
+        assert nsc.fetch_themes().get("stale") is True
+        assert started.wait(5)
+        for _ in range(3):                    # 갱신이 도는 동안 더 클릭한다
+            assert nsc.fetch_themes().get("stale") is True
+        assert calls == [1], calls
+        hold.set()
+
+    def test_empty_refresh_does_not_clobber_a_good_snapshot(
+            self, monkeypatch, tmp_path):
+        """원천이 한 번 죽었다고 낡은 값까지 잃으면 그때부터 클릭이 기다린다."""
+        import threading
+        nsc = self._clean(monkeypatch, tmp_path)
+        good = {"themes": [{"no": "1", "name": "old", "pct": 1.0,
+                            "pct3": None, "leaders": []}], "ts": "t"}
+        nsc._cache_write("theme.json", good)
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        done = threading.Event()
+
+        def _empty():
+            done.set()
+            return {"themes": [], "ts": ""}
+
+        monkeypatch.setattr(nsc, "collect_themes", _empty)
+        nsc.fetch_themes()
+        assert done.wait(5)
+        for _ in range(50):                    # 배경 스레드가 쓰기까지 대기
+            if not nsc._BG_KEYS:
+                break
+            __import__("time").sleep(0.02)
+        kept, _mt = nsc._read_cache("theme.json")
+        assert kept["themes"][0]["name"] == "old", kept
+
+    def test_a_failed_page_is_not_baked_as_a_complete_snapshot(
+            self, monkeypatch, tmp_path):
+        """옛 직렬 판은 첫 실패에서 멈춰 부분 결과를 안 만들었다. 병렬로 바꾸면
+        4쪽만 429 여도 나머지가 합쳐져 '완전본' 으로 구워진다(독립 리뷰)."""
+        nsc = self._clean(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "_get",
+                            lambda url, **kw: None if kw.get("params", {})
+                            .get("page") == 4 else "<html></html>")
+        monkeypatch.setattr(nsc, "parse_themes_full",
+                            lambda h: [{"no": "x", "name": "t", "pct": 1.0,
+                                        "pct3": None, "leaders": []}])
+        got = nsc.collect_themes()
+        assert got["partial"] is True, got
+        # 그리고 그 부분 결과는 캐시를 덮지 않는다.
+        nsc._cache_write("theme.json", {"themes": [{"no": "1", "name": "good",
+                                                    "pct": 1.0, "pct3": None,
+                                                    "leaders": []}], "ts": "t"})
+        monkeypatch.setattr(nsc, "collect_themes", lambda: got)
+        nsc._collect_and_store()
+        kept, _ = nsc._read_cache("theme.json")
+        assert kept["themes"][0]["name"] == "good", kept
+
+    def test_empty_collect_never_overwrites_on_the_cold_path(
+            self, monkeypatch, tmp_path):
+        """전 페이지 실패 → `{"themes": []}` 를 구우면, 장 마감 뒤엔
+        `_session_fresh` 가 그걸 fresh 로 봐 **다음 개장까지 빈 화면**이다."""
+        nsc = self._clean(monkeypatch, tmp_path)
+        good = {"themes": [{"no": "1", "name": "good", "pct": 1.0,
+                            "pct3": None, "leaders": []}], "ts": "t"}
+        nsc._cache_write("theme.json", good)
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: {"themes": [], "ts": "", "partial": True})
+        # ⚠️ 캐시를 SWR 창 **밖**으로 밀어야 콜드 경로(수집→폴백)를 탄다 —
+        # 안 그러면 SWR 이 먼저 반환해 이 계약을 한 번도 안 잰다(#91c).
+        import os as _os
+        f = nsc._CACHE_DIR / "theme.json"
+        t = __import__("time").time() - nsc._THEME_SWR_SEC - 60
+        _os.utime(f, (t, t))
+        got = nsc.fetch_themes()
+        kept, _ = nsc._read_cache("theme.json")
+        assert kept["themes"][0]["name"] == "good", kept
+        # 그리고 빈손이면 저장분이라도 화면에 준다(빈 화면보다 낫다, #43).
+        assert got["themes"][0]["name"] == "good", got
+        assert got.get("stale") is True
+
+    def test_background_and_foreground_share_one_flight_key(
+            self, monkeypatch, tmp_path):
+        """`_BG_KEYS` 만으로 막으면 배경이 도는 중 창을 벗어난 요청이 두 벌을
+        동시에 내보내고 두 writer 가 경합한다(독립 리뷰)."""
+        import inspect
+        nsc = self._clean(monkeypatch, tmp_path)
+        src = inspect.getsource(nsc._refresh_async)
+        assert "once(key, fn)" in src, src
+        sig = inspect.signature(nsc._refresh_async)
+        assert "key" in sig.parameters
+
+    def test_cache_write_is_atomic(self, monkeypatch, tmp_path):
+        """배경 writer 와 요청 reader 가 겹친다 — truncate 중 읽으면 찢어진
+        JSON 이라 둘 다 None 을 받고 그 클릭이 전체 수집을 기다린다."""
+        import os as _os
+        nsc = self._clean(monkeypatch, tmp_path)
+        real, seen = _os.replace, []
+        monkeypatch.setattr(nsc.os, "replace",
+                            lambda a, b: (seen.append((str(a), str(b))),
+                                          real(a, b))[1])
+        nsc._cache_write("t.json", {"a": 1})
+        assert seen and seen[0][1].endswith("t.json"), seen
+        assert seen[0][0] != seen[0][1], "같은 경로면 원자 교체가 아니다"
+        assert nsc._read_cache("t.json")[0] == {"a": 1}
+        assert not list((tmp_path / "ns").glob("*.tmp"))
+
+    def test_thread_start_failure_does_not_wedge_the_key(
+            self, monkeypatch, tmp_path):
+        """start() 가 던지면 `finally` 가 안 돌아 그 키의 배경 갱신이 프로세스
+        수명 내내 죽는다(독립 리뷰)."""
+        import threading
+        nsc = self._clean(monkeypatch, tmp_path)
+
+        class _Boom(threading.Thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(threading, "Thread", _Boom)
+        nsc._refresh_async("theme.json", lambda: None, "naver:themes")
+        assert "theme.json" not in nsc._BG_KEYS
+
+    def test_too_old_cache_is_not_served_as_current(self, monkeypatch, tmp_path):
+        """#163 — 낡은 값을 '현재'로 내보내지 말 것. 창 밖이면 기다린다."""
+        import os
+        nsc = self._clean(monkeypatch, tmp_path)
+        nsc._cache_write("theme.json", {"themes": [{"no": "1", "name": "old",
+                                                    "pct": 1.0, "pct3": None,
+                                                    "leaders": []}],
+                                        "ts": "옛날"})
+        f = nsc._CACHE_DIR / "theme.json"
+        old_ts = __import__("time").time() - nsc._THEME_SWR_SEC - 60
+        os.utime(f, (old_ts, old_ts))
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: {"themes": [{"no": "9", "name": "fresh",
+                                                 "pct": 1.0, "pct3": None,
+                                                 "leaders": []}], "ts": "now"})
+        got = nsc.fetch_themes()
+        assert got["themes"][0]["name"] == "fresh", got
+        assert not got.get("stale")
+
+    def test_cold_fetch_goes_through_single_flight(self, monkeypatch,
+                                                  tmp_path):
+        """동시 클릭이 같은 수집을 배로 두드리지 않아야 한다(#113).
+
+        ⚠️ 스레드 세 개로 재던 옛 판은 **전체 실행에서 흔들렸다** — 부하가
+        걸리면 리더가 팔로워보다 먼저 끝나 셋 다 리더가 된다(#130·#128).
+        여기서는 배선(그 키로 `once` 를 탄다)만 값으로 고정하고, 겹침 자체의
+        의미론은 `bot.singleflight` 의 제 테스트가 맡는다.
+        """
+        nsc = self._clean(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_read_cache", lambda name: (None, None))
+        payload = {"themes": [{"no": "1", "name": "x", "pct": 1.0,
+                               "pct3": None, "leaders": []}], "ts": "t"}
+        monkeypatch.setattr(nsc, "collect_themes", lambda: payload)
+        import bot.singleflight as sf
+        keys = []
+        real = sf.once
+
+        def _spy(key, fn, **kw):
+            keys.append(key)
+            return real(key, fn, **kw)
+
+        monkeypatch.setattr(sf, "once", _spy)
+        got = nsc.fetch_themes()
+        assert keys == ["naver:themes"], keys
+        assert got["themes"][0]["name"] == "x"
+
+    def test_fresh_cache_makes_no_request_at_all(self, monkeypatch, tmp_path):
+        """반대 증거 — 신선하면 한 건도 안 나가야 한다(#25 '있다'만 묻지 말 것)."""
+        nsc = self._clean(monkeypatch, tmp_path)
+        st = self._stub_pages(nsc, monkeypatch)
+        nsc._cache_write("theme.json", {"themes": [{"no": "1", "name": "c",
+                                                    "pct": 1.0, "pct3": None,
+                                                    "leaders": []}], "ts": "t"})
+        monkeypatch.setattr(nsc, "_cached",
+                            lambda *a, **k: {"themes": [], "ts": "t"})
+        nsc.fetch_themes()
+        assert st["calls"] == []
+
+    def test_page_says_it_is_refreshing_when_stale(self, monkeypatch):
+        """계산해 둔 사유를 화면이 말해야 한다(#43·#228 툴팁만으론 부족)."""
+        import bot.naver_pages as np
+        import bot.naver_sector_client as nsc
+        row = {"no": "1", "name": "반도체", "pct": 1.5, "pct3": 0.5,
+               "leaders": []}
+        monkeypatch.setattr(nsc, "fetch_themes",
+                            lambda: {"themes": [row], "ts": "09-04 10:00",
+                                     "stale": True, "stale_age": 300})
+        html = np.render_theme_page()
+        assert "갱신 중" in html and "5분 전" in html, html[:400]
+        # ⚠️ SWR 창이 TTL 보다 넓어 정상 조회의 대부분이 stale 이다 — 그때까지
+        # 배지를 띄우면 늘 켜져 신호가 죽는다(#25·#260, 독립 리뷰 실측).
+        monkeypatch.setattr(nsc, "fetch_themes",
+                            lambda: {"themes": [row], "ts": "09-04 10:00",
+                                     "stale": True, "stale_age": 45})
+        assert "갱신 중" not in np.render_theme_page()
+        monkeypatch.setattr(nsc, "fetch_themes",
+                            lambda: {"themes": [row], "ts": "09-04 10:00"})
+        assert "갱신 중" not in np.render_theme_page()
