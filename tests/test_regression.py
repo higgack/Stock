@@ -27174,9 +27174,18 @@ class TestBiweeklyBacklogReview20260817:
 
     @staticmethod
     def _rows(tmp_path, rows):
+        """⚠️ 2026-09-04(#275): 기록에 **진단 어휘 판**(`dv`)이 생겼고
+        `review_text` 는 옛 판을 안 센다. 이 클래스의 계약은 "사유·종목을
+        이름으로 댄다" 이지 "스탬프 없는 줄도 센다" 가 아니므로, 픽스처가
+        현행 판을 실어 원래 계약만 남긴다(#222 — 옛 계약은 지우지 말고
+        다시 쓸 것). 어휘 폐기 자체의 계약은
+        `TestBacklogDiagnosisWindowAndTicker20260904` 가 따로 잰다."""
         import json
+
+        from bot.dart_backlog import _DETAIL_VOCAB
         f = tmp_path / "m.jsonl"
-        f.write_text("\n".join(json.dumps(r, ensure_ascii=False)
+        f.write_text("\n".join(json.dumps({**r, "dv": _DETAIL_VOCAB},
+                                          ensure_ascii=False)
                                 for r in rows) + "\n", encoding="utf-8")
         return f
 
@@ -43487,6 +43496,126 @@ class TestBacklogDiagnosisWindowAndTicker20260904:
         assert "외화" in det, det
         assert "비금액" not in det, det
 
+    def test_caption_class_uses_full_text_not_display_truncation(self):
+        """분류는 **온전한 캡션**으로 — 표시용 24자 절단이 판정을 좌우하면
+        긴 캡션에서 단위 토큰이 잘려 엉뚱한 갈래가 된다(#91b 재는 대상).
+
+        그리고 '미지원단위' 갈래는 **도달 불가**였다: 창 안에 금액 캡션이
+        있으면 `_unit_mult` 가 이미 성공해 이 분기에 오지 않는다. 죽은
+        분기를 남기면 다음 사람이 그 라벨을 근거로 `_UNIT_MULT` 를 늘린다.
+        """
+        from bot import dart_backlog as bl
+
+        long_fx = ("(단위 : 해외 자회사 실적 포함 백만달러)" + "나" * 200
+                   + " 수주잔고 합 계 1,000 200 800 ")
+        det = bl.diagnose_detail(long_fx)
+        assert det.startswith("캡션 외화"), det
+        assert "미지원단위" not in det, det
+        # 25자를 넘는 수량 캡션은 절단본에 **닫는 괄호가 없어** 수량 판정이
+        # 통째로 빠진다 — 절단본으로 분류하면 여기서 갈래가 뒤집힌다.
+        long_cnt = ("(단위 : 국내 및 해외 협력 거래처 등 회사)" + "나" * 200
+                    + " 수주잔고 합 계 1,000 200 800 ")
+        det2 = bl.diagnose_detail(long_cnt)
+        assert det2.startswith("캡션 비금액"), det2
+
+    def test_count_caption_and_unknown_caption_are_separate(self):
+        """`사`(회사 수)는 **무관표** 신호이고, 우리가 못 읽는 화폐 단위는
+        **미지원**이다 — 처방이 다르므로 한 이름으로 뭉뚱그리지 않는다(#82)."""
+        from bot import dart_backlog as bl
+
+        def _det(cap):
+            return bl.diagnose_detail(
+                cap + "나" * 200 + " 수주잔고 합 계 1,000 200 800 ")
+
+        for cap in ("(단위 : 사)", "(단위 : 천톤)", "(단위 : 천개)", "(단위 : 회사)"):
+            # 앞 글자를 막으면 `천톤`·`회사` 가 빠진다 — 끝 토큰만 본다.
+            assert _det(cap).startswith("캡션 비금액"), (cap, _det(cap))
+        # 2026-09-04 같은 커밋에서 뒤집힌 계약(#222): `불` 은 달러 약어라
+        # '미지원' 이 아니라 **외화**다 — '미지원' 이면 다음 사람이
+        # `_UNIT_MULT` 에 넣어 1,400배 오차를 만든다(독립 리뷰가 잡았다).
+        assert _det("(단위 : 억불)").startswith("캡션 외화"), _det("(단위 : 억불)")
+        # 화폐도 수량도 아닌 것만 '미지원' 이다.
+        assert _det("(단위 : 배럴)").startswith("캡션 미지원"), _det("(단위 : 배럴)")
+        # 금액 캡션이 이 목록에 걸리면 안 된다(창 밖으로 밀어 분기를 태운다).
+        far = "(단위 : 백만원)" + "가" * 5000 + " 수주잔고 합 계 1,000 200 800 "
+        from bot import dart_backlog as _bl
+        assert "비금액" not in _bl.diagnose_detail(far), _bl.diagnose_detail(far)
+
+    def test_unit_lookahead_survives_whitespace(self):
+        """`(단위 : 백만 달러)` 가 **1e6(백만원)** 으로 읽히고 있었다 — 공백
+        하나로 달러가 원화가 되니 1,400배 오차이고, 열간 검산은 스케일
+        오류를 못 잡아 조용히 통과한다(2026-09-04 독립 리뷰 실측).
+
+        `_UNIT_RE` 의 lookahead `(?![가-힣A-Za-z$])` 가 **공백을 못 넘어**
+        무공백형(`백만달러`)만 거부하고 있었다. `(단위 : 천 주)`(주식 수)도
+        1e3 으로 읽혔다.
+        """
+        from bot import dart_backlog as bl
+
+        for cap in ("(단위 : 백만 달러)", "(단위 : 백만달러)", "(단위 : 백만 USD)",
+                    "(단위 : 천 주)", "(단위 : 천주)", "(단위 : 백만 엔)"):
+            t = cap + " 수주잔고"
+            assert bl._unit_mult(t, len(t) - 4) is None, (cap, bl._unit_mult(t, len(t) - 4))
+        # 정상 금액 캡션은 그대로 읽혀야 한다(가드가 과하게 물면 전부 빈칸).
+        for cap, want in (("(단위 : 백만원)", 1e6), ("(단위 : 백만 원)", 1e6),
+                          ("(단위 : 억원)", 1e8), ("(단위 : 천원)", 1e3),
+                          ("(단위 : 백만)", 1e6)):
+            t = cap + " 수주잔고"
+            assert bl._unit_mult(t, len(t) - 4) == want, (cap, bl._unit_mult(t, len(t) - 4))
+
+    def test_foreign_currency_covers_won_abbrev_and_yen(self):
+        """`불`(달러)·`엔` 은 외화다 — '미지원' 으로 부르면 다음 사람이
+        `_UNIT_MULT` 에 넣어 1,400배 오차를 만든다(주석이 `천불` 을 바로 그
+        위험 사례로 지목하고 있었다)."""
+        from bot import dart_backlog as bl
+
+        def _det(cap):
+            return bl.diagnose_detail(
+                cap + "나" * 200 + " 수주잔고 합 계 1,000 200 800 ")
+
+        for cap in ("(단위 : 천불)", "(단위 : 백만불)", "(단위 : 백만엔)",
+                    "(단위 : 억엔)"):
+            assert _det(cap).startswith("캡션 외화"), (cap, _det(cap))
+
+    def test_far_caption_branch_names_the_kind_too(self):
+        """원거리 캡션도 갈래를 말해야 한다 — 전부 '금액캡션 멀다' 로 적으면
+        '창을 넓혀라' 로 읽히는데 실제 처방은 무관표·환율일 수 있다.
+        #275 가 죽이려던 오도가 far 갈래로 옮겨간 것(독립 리뷰)."""
+        from bot import dart_backlog as bl
+
+        def _far(cap):
+            return bl.diagnose_detail(
+                cap + "가" * 5000 + " 수주잔고 합 계 1,000 200 800 ")
+
+        assert _far("(단위 : 백만원)").startswith("금액캡션 멀다"), _far("(단위 : 백만원)")
+        # ⚠️ `"금액" not in` 은 **비금액**의 부분문자열에 걸린다(#75) —
+        # 머리말 자체를 집을 것.
+        assert _far("(단위 : 사)").startswith("캡션 비금액 멀다"), _far("(단위 : 사)")
+        assert _far("(단위 : 백만달러)").startswith("캡션 외화 멀다"), _far("(단위 : 백만달러)")
+
+    def test_supported_unit_at_window_edge_is_not_called_unsupported(self):
+        """창 경계에서 `_CAP_ANY_RE.end()`(닫는 괄호 뒤)와 `_unit_mult`
+        (단위 토큰 뒤)의 기준점이 달라, 파서가 거부한 **지원 단위**가
+        `캡션 미지원` 으로 찍혔다(독립 리뷰 실측 gap 4000/4001)."""
+        from bot import dart_backlog as bl
+
+        edge = "(단위 : 백만원)" + "가" * 3999 + " 수주잔고 합 계 1,000 200 800 "
+        det = bl.diagnose_detail(edge)
+        assert "미지원" not in det, det
+        assert "금액캡션" in det, det
+
+    def test_displayed_captions_include_the_one_that_set_the_label(self):
+        """라벨이 주장하는 근거가 화면에 없으면 사용자가 검산할 수 없다
+        (#202) — `캡션 외화` 인데 표시된 둘이 ㎥·% 이면 거짓말로 읽힌다."""
+        from bot import dart_backlog as bl
+
+        txt = ("(단위 : ㎥)" + "가" * 50 + " 수주잔고 " + "나" * 50
+               + "(단위 : %)" + "다" * 50 + " 수주잔액 " + "라" * 50
+               + "(단위 : 백만달러)" + "마" * 50 + " 계약잔액 합 계 1 2 3 ")
+        det = bl.diagnose_detail(txt)
+        if det.startswith("캡션 외화"):
+            assert "달러" in det, det
+
     def test_caption_scan_uses_the_parser_window(self):
         """진단의 역탐색 창 = 파서의 창. 두 값을 각자 적으면 갈라진다(#38)."""
         import inspect
@@ -43529,8 +43658,206 @@ class TestBacklogDiagnosisWindowAndTicker20260904:
                  log.read_text(encoding="utf-8").splitlines() if x]
         assert [r["ticker"] for r in lines] == ["000660"], lines
 
-    def test_review_merges_legacy_split_tickers(self, tmp_path, monkeypatch):
-        """이미 쌓인 로그가 두 표기로 섞여 있으므로 **읽을 때도** 합친다."""
+    def test_legacy_vocabulary_rows_are_dropped_and_said(self, tmp_path,
+                                                          monkeypatch):
+        """진단 어휘가 바뀌면 **이미 쌓인 기록**이 다음 보고서를 지배한다 —
+        옛 `미지원단위 (단위 : 사)` 줄이 그대로 최상단에 올라 이번 fix 가
+        화면에 한 글자도 안 닿는다(#21b·#216 캐시가 fix 를 가리는 형태).
+
+        레코드에 어휘 버전을 찍고 옛 줄은 **세지 않되 말한다**(#43).
+        """
+        import json
+
+        from bot import dart_backlog as bl
+
+        log = tmp_path / "misses.jsonl"
+        rows = [{"ticker": "000660.KS", "year": 2026, "reprt": "11012",
+                 "reason": "단위없음", "detail": "미지원단위 (단위 : 사)"},
+                {"ticker": "000660", "year": 2025, "reprt": "11011",
+                 "reason": "단위없음", "detail": "캡션 비금액 (단위 : 사)",
+                 "dv": bl._DETAIL_VOCAB}]
+        log.write_text("\n".join(json.dumps(r, ensure_ascii=False)
+                                  for r in rows) + "\n", encoding="utf-8")
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        out = bl.review_text()
+        assert "미지원단위" not in out, out
+        assert "막힌 조회 1건" in out, out          # 옛 줄은 안 센다
+        assert "옛 어휘" in out and "1건" in out, out   # 말은 한다
+
+    def test_log_miss_stamps_and_prunes_legacy(self, tmp_path, monkeypatch):
+        """쓰기 때 옛 어휘 줄을 걷어낸다 — 안 그러면 4000줄 캡이 돌 때까지
+        남아 중복 계수·중복기록 방지 무력화가 이어진다."""
+        import json
+
+        from bot import dart_backlog as bl
+
+        log = tmp_path / "misses.jsonl"
+        log.write_text(json.dumps(
+            {"ticker": "000660.KS", "year": 2026, "reprt": "11012",
+             "reason": "단위없음", "detail": "미지원단위 (단위 : 사)"},
+            ensure_ascii=False) + "\n", encoding="utf-8")
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        bl._log_miss("005930.KS", 2026, "11012", "형식미지원", "캡션없음")
+        recs = [json.loads(x) for x in
+                log.read_text(encoding="utf-8").splitlines() if x]
+        # 2026-09-04 계약 보강(#222): 걷어낸 사실을 **묘비**로 남긴다 —
+        # 안 그러면 보고서가 조용히 줄어든다(독립 리뷰). 기록은 여전히 1건.
+        misses = [r for r in recs if not r.get(bl._TOMB_KEY)]
+        assert len(misses) == 1, recs
+        assert misses[0]["ticker"] == "005930"
+        assert misses[0]["dv"] == bl._DETAIL_VOCAB
+        assert [r[bl._TOMB_KEY] for r in recs if r.get(bl._TOMB_KEY)] == [1]
+
+    def test_money_caption_survives_a_trailing_korean_word(self):
+        """⚠️ 이 커밋에서 낸 회귀(2026-09-04 독립 리뷰 실측): `백만 달러` 를
+        막으려 lookahead 를 공백 너머로 넓혔더니 **정상 캡션**까지 죽었다 —
+        `(단위 : 억원 기준)`·`(단위 : 백만원 미만 절사)` 가 통째로 None 이
+        되어 0.35조짜리 표가 `캡션 미지원` 으로 찍혔다.
+
+        규칙: 토큰에 **`원` 이 있으면 통화가 확정**이므로 뒤 낱말과 무관하고,
+        맨 스케일(`백만`·`천`)일 때만 공백을 넘어 막는다(#146 증상이 아니라
+        원인으로 막을 것).
+        """
+        from bot import dart_backlog as bl
+
+        def mult(cap):
+            return bl._unit_mult(cap + " " * 10 + "수주잔고", len(cap) + 12)
+
+        # 살아야 하는 것 — 원 계열은 뒤에 무슨 낱말이 와도 원이다.
+        assert mult("(단위 : 억원)") == 1e8
+        assert mult("(단위 : 억원 기준)") == 1e8
+        assert mult("(단위 : 백만원 미만 절사)") == 1e6
+        assert mult("(단위 : 원 단위)") == 1.0
+        assert mult("(단위 : 백만 원)") == 1e6          # 띄어쓴 원도 원이다
+        # 죽어야 하는 것 — 통화·수량이 갈리면 스케일이 아니라 **의미**가 틀린다.
+        for bad in ("(단위 : 백만 달러)", "(단위 : 천 주)", "(단위 : 백만USD)",
+                    "(단위 : 억불)", "(단위 : 사)"):
+            assert mult(bad) is None, bad
+
+    def test_gate_labels_are_single_sourced_into_the_vocab(self):
+        """단위를 **찾은** 행의 상세는 전부 `_gate_stage` 가 만든다 — 그 문구가
+        어휘 판에 안 들어가면 문구를 바꿔도 판이 그대로라 옛 줄이 살아남는다
+        (2026-09-04 독립 리뷰). 문구는 `_GATE_LABELS` 한 곳에서만 온다(#38)."""
+        from bot import dart_backlog as bl
+
+        for lab in bl._GATE_LABELS:
+            assert lab in bl._DETAIL_KINDS
+        assert bl._vocab_sig(
+            tuple(x for x in bl._DETAIL_KINDS if x != bl._GATE_LABELS[0])
+        ) != bl._DETAIL_VOCAB
+        # 문구를 바꾸면 `_gate_stage` 출력도 따라온다 = 리터럴 복제가 없다.
+        # ⚠️ 독스트링을 지우고 본다 — 설명이 검사를 만족시키면 눈이 먼다(#59b).
+        import ast
+        import inspect
+        fn = ast.parse(inspect.getsource(bl._gate_stage)).body[0]
+        fn.body = [n for n in fn.body
+                   if not (isinstance(n, ast.Expr)
+                           and isinstance(n.value, ast.Constant)
+                           and isinstance(n.value.value, str))]
+        lits = {n.value for n in ast.walk(fn)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        for lab in bl._GATE_LABELS:
+            assert lab not in lits, f"문구 복제: {lab}"
+
+    def test_far_money_caption_is_not_hidden_by_a_near_count_caption(self):
+        """고칠 수 있는 사유가 못 고칠 사유에 가려지면 안 된다(#260).
+
+        2026-09-04 독립 리뷰 재현: 라벨 자리가 둘일 때 한쪽의 가까운
+        `(단위 : 사)` 가 먼저 반환돼, 다른 쪽 4,500자 앞의 `(단위 : 백만원)`
+        (=표 경계·창 문제, **고칠 수 있는 것**)이 한 번도 안 나왔다."""
+        from bot import dart_backlog as bl
+
+        far_cap = "(단위 : 백만원)"
+        body = (far_cap + "채움" * 2500 + "수주잔고 합계 1,000"
+                + "\n" + "(단위 : 사) 협력사 수주잔고 12")
+        det = bl.diagnose_detail(body)
+        assert det.startswith("금액캡션 멀다"), det
+        assert "백만원" in det, det
+
+    def test_broken_log_line_is_not_called_old_vocabulary(self):
+        """깨진 줄을 '옛 어휘' 로 세면 **틀린 사유**를 말한다 — 갈래가
+        다르면 처방도 다르다(#82). 그리고 두 표면이 같은 술어를 써야
+        총계가 안 갈린다(#38, 2026-09-04 독립 리뷰)."""
+        from bot import dart_backlog as bl
+
+        assert bl.parse_miss_line("{깨짐") is None
+        assert bl.is_current_vocab("{깨짐") is True        # 옛 어휘가 아니다
+        assert bl.is_current_vocab('{"dv": "옛것"}') is False
+
+    def test_pruning_leaves_a_tombstone_so_the_notice_still_fires(self,
+                                                                  tmp_path,
+                                                                  monkeypatch):
+        """⚠️ prune 은 **첫 쓰기**에 끝나므로, 묘비가 없으면 격주 보고서가
+        299건에서 몇 건으로 **조용히** 줄어든다(2026-09-04 독립 리뷰).
+        걷어낸 수를 남겨 30일 동안은 이유를 말한다(#43 → #260)."""
+        import json
+        import time
+
+        from bot import dart_backlog as bl
+
+        log = tmp_path / "m.jsonl"
+        log.write_text("\n".join(json.dumps(
+            {"ticker": t, "year": 2026, "reprt": "11012",
+             "reason": "단위없음", "detail": "미지원단위 (단위 : 사)"},
+            ensure_ascii=False) for t in ("000660", "012450")) + "\n",
+            encoding="utf-8")
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        bl._log_miss("005930.KS", 2026, "11012", "형식미지원", "캡션없음")
+        out = bl.review_text()
+        assert "막힌 조회 1건" in out, out
+        assert "옛 어휘 2건" in out, out                  # 묘비가 말한다
+        # 30일이 지나면 말하지 않는다 — 못 고칠 경고가 매번 뜨면 진짜를 가린다.
+        recs = [json.loads(x) for x in
+                log.read_text(encoding="utf-8").splitlines() if x]
+        assert bl.legacy_notice(recs) != ""
+        assert bl.legacy_notice(recs, now=time.time() + 40 * 86400) == ""
+
+    def test_detail_vocab_is_derived_from_the_kind_list(self):
+        """어휘 판은 **어휘에서 파생**돼야 한다 — 손으로 올리는 상수는 이
+        레포에서 다섯 번 졌다(#18·#21b·#95·#124·#198). 갈래를 더하면 값이
+        저절로 바뀌어 옛 줄이 자동 폐기된다(#119 규율을 구조로)."""
+        from bot import dart_backlog as bl
+
+        assert bl._DETAIL_VOCAB == bl._vocab_sig(bl._DETAIL_KINDS)
+        # 상수를 돌려주는 뮤테이션이면 여기서 잡힌다(#91b 재는 대상).
+        assert bl._vocab_sig(bl._DETAIL_KINDS + ("새갈래",)) != bl._DETAIL_VOCAB
+        # `_cap_kind` 의 우선순위 목록과 **같은 출처**여야 한다(#38).
+        for kind in bl._CAP_KINDS:
+            assert kind in bl._DETAIL_KINDS
+
+    def test_backlog_misses_cli_uses_the_same_vocab_filter(self, tmp_path,
+                                                            monkeypatch,
+                                                            capsys):
+        """감사(CLI)와 화면(`review_text`)이 같은 필터를 써야 통계가 안
+        갈린다(#35) — 한쪽만 옛 줄을 세면 `막힌 조회 N건` 이 어긋난다."""
+        import json
+
+        from bot import dart_backlog as bl
+        from bot.scripts import backlog_misses as bm
+
+        log = tmp_path / "misses.jsonl"
+        log.write_text("\n".join([
+            json.dumps({"ticker": "000660.KS", "year": 2026, "reprt": "11012",
+                        "reason": "단위없음",
+                        "detail": "미지원단위 (단위 : 사)"}, ensure_ascii=False),
+            json.dumps({"ticker": "000660", "year": 2025, "reprt": "11011",
+                        "reason": "단위없음", "detail": "캡션 비금액 (단위 : 사)",
+                        "dv": bl._DETAIL_VOCAB}, ensure_ascii=False),
+        ]) + "\n", encoding="utf-8")
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        bm.summarize()
+        out = capsys.readouterr().out
+        assert "미스 1건" in out, out
+        assert "옛 어휘 1건" in out, out
+        assert "미지원단위" not in out, out
+
+    def test_review_merges_split_tickers(self, tmp_path, monkeypatch):
+        """이미 쌓인 로그가 두 표기로 섞여 있으므로 **읽을 때도** 합친다.
+
+        ⚠️ 2026-09-04 계약 변경(#222): 같은 날 뒤에 `_DETAIL_VOCAB` 이 생겨
+        어휘 스탬프가 없는 줄은 아예 안 세게 됐다. 이 테스트의 계약은
+        "읽을 때 티커 표기를 합친다" 이지 "스탬프 없는 줄도 센다" 가 아니므로
+        픽스처에 스탬프를 실어 원래 계약만 남긴다."""
         import json
 
         from bot import dart_backlog as bl
@@ -43538,7 +43865,8 @@ class TestBacklogDiagnosisWindowAndTicker20260904:
         log = tmp_path / "misses.jsonl"
         log.write_text("\n".join(
             json.dumps({"ticker": t, "year": 2026, "reprt": "11012",
-                        "reason": "단위없음"}, ensure_ascii=False)
+                        "reason": "단위없음", "dv": bl._DETAIL_VOCAB},
+                       ensure_ascii=False)
             for t in ("000660", "000660.KS", "000660")) + "\n", encoding="utf-8")
         monkeypatch.setattr(bl, "_MISS_LOG", log)
         out = bl.review_text()
