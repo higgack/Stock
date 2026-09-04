@@ -85,10 +85,24 @@ _UNIT_MULT = {"원": 1.0, "천원": 1e3, "백만원": 1e6, "억원": 1e8,
 # 를 금액 단위로 읽으면 **스케일이 통째로 틀린다** — 검산은 열 사이 항등식만
 # 보므로 스케일 오류는 그대로 통과한다(조용한 오답). 단위 뒤에 한글·영문·
 # 통화기호가 붙으면 우리가 아는 단위가 아니다.
+# ⚠️ 차단 규칙이 **토큰에 원이 있느냐**로 갈린다(2026-09-04 독립 리뷰):
+#   · `원` 계열(`억원`·`백만 원`) = 통화가 이미 확정 → 붙은 글자만 차단.
+#     공백을 넘어 차단하면 `(단위 : 억원 기준)`·`(단위 : 백만원 미만 절사)`
+#     같은 **정상 캡션이 통째로 죽는다**(내가 이 커밋에서 실제로 냈다 —
+#     0.35조짜리 표가 `캡션 미지원` 으로 찍혔다).
+#   · 맨 스케일(`백만`·`천`) = 통화 미확정 → **공백을 넘어** 차단해야
+#     `(단위 : 백만 달러)`(1,400배)·`(단위 : 천 주)` 를 금액으로 안 읽는다.
+# 띄어쓴 `백만 원` 을 원 계열에 넣지 않으면 `백만` 이 차단당해 물러나며 맨
+# `원` 이 잡혀 **1.0**(100만배 오차)이 된다 — 두 갈래가 한 세트다.
 _UNIT_RE = re.compile(
     r"단위\s*[:：]?[^)\]]{0,20}?"
-    r"(조원|십억원|백만원|억원|천원|원|조|십억|백만|억|천)"
-    r"(?![가-힣A-Za-z$])")
+    r"(?:(조\s*원|십억\s*원|백만\s*원|억\s*원|천\s*원|원)(?![가-힣A-Za-z$])"
+    r"|(조|십억|백만|억|천)(?!\s*[가-힣A-Za-z$]))")
+
+
+def _unit_token(m: "re.Match") -> str:
+    """`_UNIT_RE` 매치의 단위 토큰 — 두 갈래 중 잡힌 쪽에서 공백을 뗀다."""
+    return re.sub(r"\s+", "", m.group(1) or m.group(2))
 # 값 토큰. 콤마 묶음 또는 **콤마 없는 1~4자리**.
 # ⚠️ 처음엔 콤마를 필수로 했는데(절번호·연도 차단용) 억원 단위 표에서 값이
 # 네 자리 미만이면 통째로 잃는다 — 엠플러스 `합 계 - 1,461 - 830 - 631` 에서
@@ -167,6 +181,68 @@ def _to_num(tok: str) -> float | None:
     return -v if neg else v
 
 
+# 캡션 역탐색 창. **파서와 진단이 같은 값을 써야** 한다 — 진단이 더 멀리
+# 보면 파서가 거리 때문에 거부한 캡션을 '미지원단위' 라고 오보한다(#38·#105).
+_CAP_WINDOW = 4000
+# 금액 여부를 안 가리는 캡션 매치 — 무엇을 봤는지 말하기 위한 것(#82).
+_CAP_ANY_RE = re.compile(r"\(\s*단위[^)]{0,40}\)")
+# 외화 캡션은 무관표가 아니다 — 환율이 필요할 뿐이라 처방이 다르다(#82).
+# ⚠️ `불`·`엔` 을 빠뜨리면 `(단위 : 천불)` 이 '미지원' 으로 찍혀 다음
+# 사람이 `_UNIT_MULT` 에 넣는다 — 그게 1,400배 오차다(_UNIT_MULT 주석이
+# 바로 그 사례를 지목하고 있었다).
+_FX_CAP_RE = re.compile(
+    r"달러|USD|\$|엔화|유로|위안|EUR|JPY|CNY|파운드|GBP"
+    r"|(?:천|백만|십억|억|조)\s*(?:불|엔)\s*\)", re.I)
+# 수량 단위 = 그 라벨이 **다른 표**에 있다는 신호(협력사 수·주식 수·중량).
+# 화폐가 아닌 걸 `_UNIT_MULT` 에 넣으면 개수를 금액으로 읽는다.
+# ⚠️ 앞 글자를 막으면(`(?<![가-힣])`) 실제 원문 형태인 `천톤`·`천개`·`회사`
+# 가 통째로 빠진다 — 캡션의 **끝 토큰**만 본다. 금액 캡션은 원/억/조로
+# 끝나므로 이 목록과 겹치지 않는다.
+_COUNT_CAP_RE = re.compile(
+    r"(사|주|개|대|명|건|매|장|톤|Ton|kg|KG|㎏|㎡|평|호)\s*\)", re.I)
+
+
+# 진단 상세가 쓰는 **갈래 어휘** — `_cap_kind` 의 우선순위 목록이자
+# `_DETAIL_VOCAB` 의 재료다. 두 곳에 따로 적으면 갈래를 더할 때 한쪽만
+# 바뀐다(#38).
+_CAP_KINDS = ("금액캡션", "캡션 외화", "캡션 비금액", "캡션 미지원")
+# ⚠️ 관문 문구도 어휘다 — 단위를 찾은 행(상세 히스토그램의 **다수**)은 전부
+# `_gate_stage` 가 문구를 만든다. 여기서 빠뜨리면 그 문구를 바꿔도 판이 그대로라
+# 옛 줄이 다음 보고서를 계속 지배한다(2026-09-04 독립 리뷰).
+# ⚠️ 문구를 여기 **한 곳**에 두고 `_gate_stage` 가 읽는다 — 문구와 어휘
+# 목록을 따로 적으면 문구만 바꿨을 때 판이 안 바뀌어 옛 줄이 살아남는다(#38).
+_GATE_LABELS = ("헤더에 기초·수주총액 열 없음", "헤더에 기납품·매출 열 없음",
+                "헤더는 통과 · 합계행 없음", "헤더 통과 · 합계행 {n}값(검산실패)")
+_DETAIL_KINDS = _CAP_KINDS + ("멀다", "캡션이 라벨 뒤", "캡션없음") + _GATE_LABELS
+
+
+def _vocab_sig(kinds: tuple[str, ...]) -> str:
+    import hashlib
+    return hashlib.sha1("|".join(kinds).encode("utf-8")).hexdigest()[:8]
+
+
+# 진단 어휘가 바뀌면 **이미 쌓인 기록이 다음 보고서를 지배한다** — 옛
+# `미지원단위 (단위 : 사)` 줄이 최상단에 남아 이번 fix 가 화면에 한 글자도
+# 안 닿는다(#21b·#216 캐시가 fix 를 가리는 형태). 손으로 올리는 버전 상수는
+# 이 레포에서 다섯 번 졌으므로 **어휘 자체에서 파생**시킨다(#119 규율을
+# 구조로): 갈래를 더하거나 이름을 바꾸면 값이 자동으로 바뀐다.
+_DETAIL_VOCAB = _vocab_sig(_DETAIL_KINDS)
+
+
+def _cap_kind(full: str) -> str:
+    """캡션 하나의 갈래 — 표시 문구의 머리말. far/near 가 **같은 판정**을
+    써야 한다(far 를 전부 '금액캡션' 이라 부르면 '창을 넓혀라' 로 읽히는데
+    실제 처방은 무관표·환율일 수 있다, 2026-09-04 독립 리뷰).
+    """
+    if _UNIT_RE.search(full):
+        return "금액캡션"
+    if _FX_CAP_RE.search(full):
+        return "캡션 외화"
+    if _COUNT_CAP_RE.search(full):
+        return "캡션 비금액"
+    return "캡션 미지원"
+
+
 def _unit_mult(text: str, at: int) -> float | None:
     """`at` **앞쪽** 가장 가까운 `(단위 : X)`. 표 캡션은 항상 표 위에 온다.
 
@@ -175,9 +251,9 @@ def _unit_mult(text: str, at: int) -> float | None:
     best = None
     for m in _UNIT_RE.finditer(text, 0, at):
         best = m
-    if not best or at - best.end() > 4000:
+    if not best or at - best.end() > _CAP_WINDOW:
         return None
-    return _UNIT_MULT.get(best.group(1))
+    return _UNIT_MULT.get(_unit_token(best))
 
 
 def _row_values(text: str, at: int, limit: int = 400) -> list[float]:
@@ -679,21 +755,73 @@ def diagnose_detail(text: str) -> str:
         return ""
     with_unit = [p for p in spots if _unit_mult(text, p) is not None]
     if not with_unit:
-        # 캡션이 **있는데** 우리가 모르는 단위인지, 아예 없는지를 가른다.
-        # 출현이 여럿이면 서로 다른 표를 보고 있는 것이므로 **모아서** 말한다.
+        # ⚠️ 여기서 무엇을 말하느냐가 **다음 라운드의 작업 목록**이 된다.
+        # 셋은 처방이 완전히 다른데 예전엔 전부 '미지원단위' 였다(2026-09-04
+        # 격주 리뷰가 `(단위 : 사) 30건` 을 최대 버킷으로 올렸다):
+        #   · 금액 캡션이 파서 창 **밖**  → 표 경계·창 문제(단위 추가 아님)
+        #   · 캡션이 **금액 단위가 아님** → 그 라벨이 다른 표에 있다(무관표)
+        #   · 아예 없음                   → 캡션없음
+        # `사`(회사 수)를 `_UNIT_MULT` 에 넣으면 개수를 금액으로 읽는다.
         caps: list[str] = []
+        caps_full: list[str] = []
+        far: tuple[str, int, str] | None = None
         for at in spots:
             cap = None
-            for m in re.finditer(r"\(\s*단위[^)]{0,40}\)", text):
-                if m.start() < at:
-                    cap = re.sub(r"\s+", " ", m.group(0))[:24]
-            if cap and cap not in caps:
-                caps.append(cap)
+            for m in _CAP_ANY_RE.finditer(text, 0, at):
+                cap = m
+            if cap is None:
+                continue
+            full = re.sub(r"\s+", " ", cap.group(0))
+            txt = full[:24]
+            gap = at - cap.end()
+            # ⚠️ 기준점이 달라 경계에서 갈린다(_CAP_ANY_RE 는 `)` 뒤,
+            # `_unit_mult` 는 단위 토큰 뒤). 파서가 못 읽은 금액 캡션은
+            # 근처여도 '멀다'(=경계) 로 보내야 '미지원' 오보를 안 만든다.
+            if gap > _CAP_WINDOW or _UNIT_RE.search(full):
+                # 파서가 **거리** 때문에 거부한 캡션이다. 지원하는 단위일 수
+                # 있으므로 '미지원' 이라 부르면 정면으로 틀린 안내가 된다.
+                if far is None or gap < far[1]:
+                    far = (txt, gap, full)
+                continue
+            if txt not in caps:
+                caps.append(txt)
+                caps_full.append(full)
+        # ⚠️ 먼저 `far` 를 본다 — 금액 캡션이 창 밖에 있다는 건 **고칠 수
+        # 있는 사유**(표 경계·창)인데, 다른 라벨 자리의 가까운 무관표 캡션이
+        # 먼저 반환되면 그 사실이 통째로 가려진다(2026-09-04 독립 리뷰 재현:
+        # `캡션 비금액 (단위 : 사)` 만 나오고 4,500자 앞 `(단위 : 백만원)` 은
+        # 한 번도 안 나왔다). ❌ 는 고칠 수 있는 것을 가리켜야 한다(#260).
+        def _far_msg(f):
+            return f"{_cap_kind(f[2])} 멀다 {f[0]} {f[1]}자(창 {_CAP_WINDOW})"
+
+        if far is not None and _cap_kind(far[2]) == "금액캡션":
+            return _far_msg(far)
         if caps:
-            return ("미지원단위 " + " / ".join(caps[:2])
-                    + (f" 외 {len(caps) - 2}" if len(caps) > 2 else "")
+            # ⚠️ 판정은 **온전한 캡션**(caps_full)으로 — 표시용 절단을 재면
+            # 긴 캡션에서 단위 토큰이 잘려 갈래가 뒤집힌다(#91b).
+            # ⚠️ 그리고 라벨을 정한 그 캡션을 **화면에 실어야** 한다 — `캡션
+            # 외화` 라고 써 놓고 ㎥·% 두 개만 보이면 검산이 불가능하다(#202).
+            kinds = [(_cap_kind(f), t, f) for t, f in zip(caps, caps_full)]
+            # ⚠️ 루프 안에서 재대입하면 마지막 반복이 빈 리스트를 남긴다 —
+            # `_cap_kind` 가 목록 밖 값을 내는 날 `picked[0]` 이 IndexError 다
+            # (2026-09-04 독립 리뷰가 재현). 찾았을 때만 바꾼다.
+            picked = kinds[:1]
+            for want in _CAP_KINDS:
+                hit = [k for k in kinds if k[0] == want]
+                if hit:
+                    picked = hit
+                    break
+            head = picked[0][0]
+            shown = [k[1] for k in picked] + [k[1] for k in kinds
+                                              if k[0] != head]
+            rest = len(caps) - min(len(shown), 2)
+            return (head + " " + " / ".join(shown[:2])
+                    + (f" 외 {rest}" if rest > 0 else "")
                     + (f" (라벨 {len(spots)}곳)" if len(spots) > 1 else ""))
-        fwd = re.search(r"\(\s*단위[^)]{0,40}\)", text[spots[0]:spots[0] + 1500])
+        if far is not None:
+            # 금액캡션은 위에서 이미 반환됐다 — 여기 남는 건 외화·비금액·미지원.
+            return _far_msg(far)
+        fwd = _CAP_ANY_RE.search(text, spots[0], spots[0] + 1500)
         if fwd:
             return f"캡션이 라벨 뒤 {fwd.group(0)[:24]}"
         return "캡션없음"
@@ -713,26 +841,26 @@ def _gate_stage(text: str, spots: list[int]) -> str:
 
     파서는 전 출현을 훑으므로 진단도 그래야 한다 — 첫 자리에서 막혔다고
     보고하면 뒤 자리에서 검산까지 갔다가 실패한 사실이 가려진다."""
-    best, rank = "헤더에 기초·수주총액 열 없음", 0
+    best, rank = _GATE_LABELS[0], 0
     for at in spots:
         head = text[max(0, at - 260):at]
         if not any(k in head for k in _OPEN_LABELS):
             continue
         if not any(k in head for k in _DELIV_LABELS):
             if rank < 1:
-                best, rank = "헤더에 기납품·매출 열 없음", 1
+                best, rank = _GATE_LABELS[1], 1
             continue
         seg = _cut_table(text[at:at + 2500])
         m = re.search(r"합\s*계", seg)
         if not m:
             if rank < 2:
-                best, rank = "헤더는 통과 · 합계행 없음", 2
+                best, rank = _GATE_LABELS[2], 2
             continue
         vals = _row_values(seg, m.end())
         # ⚠️ 값 자체는 넣지 않는다 — 종목마다 달라 히스토그램이 전부 1건씩
         # 으로 쪼개져 "무엇이 많은가"를 못 본다. **모양**만 센다.
         if rank < 3:
-            best, rank = f"헤더 통과 · 합계행 {len(vals)}값(검산실패)", 3
+            best, rank = _GATE_LABELS[3].format(n=len(vals)), 3
     return best
 
 
@@ -759,6 +887,69 @@ def backlog_excerpt(text: str, width: int = 240) -> str:
     return re.sub(r"\s+", " ", seg).strip()
 
 
+# ⚠️ KONEX(`.KN`)도 국내다 — `screener` 가 `.KS/.KQ/.KN` 을 KR 로 적는다.
+# 열거를 쓰되 목록이 갈리지 않게 회귀가 대조한다(#24).
+_KR_SUFFIXES = ("KS", "KQ", "KN")
+_KR_SUFFIX_RE = re.compile(r"^(\d{6})\.(?:" + "|".join(_KR_SUFFIXES) + r")$")
+
+
+def norm_miss_ticker(ticker) -> str:
+    """미스 집계용 표기 통일 — `000660.KS` 와 `000660` 은 같은 종목이다.
+
+    ⚠️ **국내 6자리 + KS/KQ/KN 만** 뗀다. 해외는 접미가 시장을 가르므로
+    (`7203.T`) 떼면 다른 나라 코드와 충돌한다.
+    """
+    t = str(ticker or "")
+    m = _KR_SUFFIX_RE.match(t)
+    return m.group(1) if m else t
+
+
+# 옛 어휘를 걷어낸 사실을 남기는 **묘비**. 없으면 보고서가 299건에서 몇 건
+# 으로 조용히 줄어든다 — 왜 줄었는지 말할 방법이 사라진다(#43, 2026-09-04
+# 독립 리뷰). 30일이 지나면 말하지 않는다(고칠 수 없는 경고를 매번 띄우면
+# 진짜 경고를 가린다, #260).
+_TOMB_KEY = "legacy_dropped"
+_TOMB_SAY_DAYS = 30
+
+
+def parse_miss_line(line: str) -> dict | None:
+    """기록 한 줄 → dict. 깨진 줄은 None(옛 어휘가 **아니다**)."""
+    try:
+        rec = _json.loads(line)
+    except Exception:                                          # noqa: BLE001
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def is_current_vocab(line: str) -> bool:
+    """기록 한 줄이 **지금 어휘**로 쓰였나. 읽는 쪽·쓰는 쪽이 같은 판정을
+    써야 한다(#38) — 한쪽만 걸러내면 총계와 소계가 갈린다(#45).
+
+    ⚠️ 깨진 줄은 True 로 둔다 — False 면 '옛 어휘' 로 세어져 **틀린 사유**를
+    말한다(2026-09-04 독립 리뷰). 어휘 판정과 파싱 실패는 다른 갈래다(#82).
+    """
+    rec = parse_miss_line(line)
+    return rec is None or rec.get("dv") == _DETAIL_VOCAB
+
+
+def _tomb_count(rows: list) -> int:
+    return sum(int(r[_TOMB_KEY]) for r in rows
+               if isinstance(r, dict) and r.get(_TOMB_KEY))
+
+
+def legacy_notice(rows: list, now: float | None = None) -> str:
+    """묘비를 읽어 '옛 어휘 N건 제외' 한 줄. 없거나 오래됐으면 빈 문자열."""
+    import time
+    now = time.time() if now is None else now
+    n = _tomb_count(rows)
+    at = max([float(r.get("at") or 0) for r in rows
+              if isinstance(r, dict) and r.get(_TOMB_KEY)] or [0])
+    if not n or now - at > _TOMB_SAY_DAYS * 86400:
+        return ""
+    return (f"옛 어휘 {n}건 제외 — 진단 문구가 바뀌었습니다. "
+            "다음 조회부터 새 어휘로 다시 쌓입니다.")
+
+
 def _log_miss(ticker: str, year, reprt_code, reason: str,
               detail: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
@@ -766,8 +957,8 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
         return                      # 원천에 값이 없다 — 개선 대상 아님
     try:
         _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
-        rec = {"ticker": ticker, "year": year,
-               "reprt": reprt_code, "reason": reason}
+        rec = {"ticker": norm_miss_ticker(ticker), "year": year,
+               "reprt": reprt_code, "reason": reason, "dv": _DETAIL_VOCAB}
         if detail:
             # 사유만으론 뭘 고쳐야 할지 모른다(#93) — 상세를 같이 남긴다.
             rec["detail"] = detail
@@ -775,6 +966,22 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
         old = []
         if _MISS_LOG.exists():
             old = _MISS_LOG.read_text(encoding="utf-8").splitlines()[-_MISS_CAP:]
+        # 옛 어휘 줄은 **쓰는 김에 걷어낸다**. 남겨 두면 4000줄 캡이 돌 때까지
+        # 보고서를 지배하고, 표기가 달라 중복기록 방지(`line in old`)도 무력해
+        # 같은 건이 두 줄로 쌓인다. 파서 지문(`_parse_sig`)이 바뀌면 캐시가
+        # 무효라 다음 조회에서 새 어휘로 다시 쌓인다 — 잃는 정보가 없다.
+        keep = [ln for ln in old if is_current_vocab(ln)]
+        dropped = len(old) - len(keep)
+        old = keep
+        if dropped:
+            import time
+            prev = sum(int((parse_miss_line(ln) or {}).get(_TOMB_KEY) or 0)
+                       for ln in old)
+            old = [ln for ln in old
+                   if not (parse_miss_line(ln) or {}).get(_TOMB_KEY)]
+            old.append(_json.dumps(
+                {"dv": _DETAIL_VOCAB, _TOMB_KEY: prev + dropped,
+                 "at": int(time.time())}, ensure_ascii=False))
         if line in old:
             return                  # 같은 종목·분기 중복 기록 안 함
         _MISS_LOG.write_text("\n".join(old + [line]) + "\n", encoding="utf-8")
@@ -844,19 +1051,37 @@ def review_text() -> str:
     from collections import Counter
     if not _MISS_LOG.exists():
         return ""
-    rows = []
+    rows, legacy, all_rec = [], 0, []
     for ln in _MISS_LOG.read_text(encoding="utf-8").splitlines():
-        try:
-            rows.append(json.loads(ln))
-        except Exception:
+        if not ln.strip():
             continue
+        rec = parse_miss_line(ln)
+        if rec is None:
+            continue
+        all_rec.append(rec)
+        if rec.get(_TOMB_KEY):
+            continue            # 묘비는 기록이 아니다 — 세지 않는다(#45)
+        # 옛 어휘 줄은 **세지 않되 말한다**(#43). 2026-09-04 실측: 진단이
+        # 파서와 다른 창을 봐 `미지원단위 (단위 : 사) 30건` 을 최대 버킷으로
+        # 올렸는데, 그 줄들이 남아 있으면 fix 뒤에도 같은 보고서가 나간다.
+        if rec.get("dv") != _DETAIL_VOCAB:
+            legacy += 1
+            continue
+        rows.append(rec)
     if not rows:
         return ""
+    legacy += _tomb_count(all_rec)
     by = Counter(r.get("reason", "?") for r in rows)
-    tick = Counter(r.get("ticker") for r in rows)
+    tick = Counter(norm_miss_ticker(r.get("ticker")) for r in rows)
     out = [f"📐 <b>수주잔고 파서 리뷰</b> (격주 금요일)",
            f"막힌 조회 {len(rows)}건 · 종목 {len(tick)}개",
            ""]
+    note = legacy_notice(all_rec) if legacy else ""
+    if legacy and not note:
+        # 묘비가 오래됐거나 없다 — 그래도 이번 판정에서 뺀 사실은 말한다(#41).
+        note = f"옛 어휘 {legacy}건 제외"
+    if note:
+        out += [f"⚠️ {note}", ""]
     out += [f"· {r}: {n}건" for r, n in by.most_common()]
     det = Counter(r.get("detail") for r in rows if r.get("detail"))
     if det:

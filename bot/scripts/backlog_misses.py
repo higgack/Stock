@@ -31,33 +31,50 @@ import json
 import sys
 from collections import Counter, defaultdict
 
+from bot.dart_backlog import _TOMB_KEY, is_current_vocab as _cur
+from bot.dart_backlog import legacy_notice as _legnote
+from bot.dart_backlog import norm_miss_ticker as _norm
+from bot.dart_backlog import parse_miss_line as _pline
+
 
 def summarize() -> int:
     from bot.dart_backlog import _MISS_LOG
     if not _MISS_LOG.exists():
         print(f"기록 없음 ({_MISS_LOG}) — 아직 막힌 종목이 없거나 조회 이력이 없다.")
         return 0
-    rows = []
+    rows, legacy, all_rec = [], 0, []
     for ln in _MISS_LOG.read_text(encoding="utf-8").splitlines():
-        try:
-            rows.append(json.loads(ln))
-        except Exception:
+        if not ln.strip():
             continue
+        rec = _pline(ln)
+        if rec is None:
+            continue
+        all_rec.append(rec)
+        if rec.get(_TOMB_KEY):
+            continue
+        # 화면(`review_text`)과 **같은 술어**를 써야 통계가 안 갈린다(#35).
+        if not _cur(ln):
+            legacy += 1
+            continue
+        rows.append(rec)
+    legacy += sum(int(r[_TOMB_KEY]) for r in all_rec if r.get(_TOMB_KEY))
+    if legacy:
+        print("⚠️ " + (_legnote(all_rec) or f"옛 어휘 {legacy}건 제외"))
     if not rows:
-        print("기록 없음")
+        print("기록 없음" if not legacy else "새 어휘 기록 없음")
         return 0
     by_reason: dict[str, list] = defaultdict(list)
     for r in rows:
         by_reason[r.get("reason", "?")].append(r)
     print(f"■ 수주잔고 파서 미스 {len(rows)}건 · 종목 "
-          f"{len({r.get('ticker') for r in rows})}개  ({_MISS_LOG})")
+          f"{len({_norm(r.get('ticker')) for r in rows})}개  ({_MISS_LOG})")
     print("=" * 74)
     for reason, items in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
-        tick = Counter(i.get("ticker") for i in items)
+        tick = Counter(_norm(i.get("ticker")) for i in items)
         print(f"\n[{reason}] {len(items)}건 · 종목 {len(tick)}개")
         for t, n in tick.most_common(15):
             qs = " ".join(f"{i.get('year')}/{i.get('reprt')}"
-                          for i in items if i.get("ticker") == t)
+                          for i in items if _norm(i.get("ticker")) == t)
             print(f"    {t:12s} {n}회  {qs}")
     print("\n→ `형식미지원`·`검산실패` 가 새 형식 신호다. 해당 종목을 "
           "`--ticker` 로 다시 보거나 backlog_format_probe 로 원문을 뜬다.")
