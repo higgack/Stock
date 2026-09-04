@@ -167,6 +167,15 @@ def _to_num(tok: str) -> float | None:
     return -v if neg else v
 
 
+# 캡션 역탐색 창. **파서와 진단이 같은 값을 써야** 한다 — 진단이 더 멀리
+# 보면 파서가 거리 때문에 거부한 캡션을 '미지원단위' 라고 오보한다(#38·#105).
+_CAP_WINDOW = 4000
+# 금액 여부를 안 가리는 캡션 매치 — 무엇을 봤는지 말하기 위한 것(#82).
+_CAP_ANY_RE = re.compile(r"\(\s*단위[^)]{0,40}\)")
+# 외화 캡션은 무관표가 아니다 — 환율이 필요할 뿐이라 처방이 다르다(#82).
+_FX_CAP_RE = re.compile(r"달러|USD|\$|엔화|유로|위안|EUR|JPY|CNY", re.I)
+
+
 def _unit_mult(text: str, at: int) -> float | None:
     """`at` **앞쪽** 가장 가까운 `(단위 : X)`. 표 캡션은 항상 표 위에 온다.
 
@@ -175,7 +184,7 @@ def _unit_mult(text: str, at: int) -> float | None:
     best = None
     for m in _UNIT_RE.finditer(text, 0, at):
         best = m
-    if not best or at - best.end() > 4000:
+    if not best or at - best.end() > _CAP_WINDOW:
         return None
     return _UNIT_MULT.get(best.group(1))
 
@@ -679,21 +688,44 @@ def diagnose_detail(text: str) -> str:
         return ""
     with_unit = [p for p in spots if _unit_mult(text, p) is not None]
     if not with_unit:
-        # 캡션이 **있는데** 우리가 모르는 단위인지, 아예 없는지를 가른다.
-        # 출현이 여럿이면 서로 다른 표를 보고 있는 것이므로 **모아서** 말한다.
+        # ⚠️ 여기서 무엇을 말하느냐가 **다음 라운드의 작업 목록**이 된다.
+        # 셋은 처방이 완전히 다른데 예전엔 전부 '미지원단위' 였다(2026-09-04
+        # 격주 리뷰가 `(단위 : 사) 30건` 을 최대 버킷으로 올렸다):
+        #   · 금액 캡션이 파서 창 **밖**  → 표 경계·창 문제(단위 추가 아님)
+        #   · 캡션이 **금액 단위가 아님** → 그 라벨이 다른 표에 있다(무관표)
+        #   · 아예 없음                   → 캡션없음
+        # `사`(회사 수)를 `_UNIT_MULT` 에 넣으면 개수를 금액으로 읽는다.
         caps: list[str] = []
+        far: tuple[str, int] | None = None
         for at in spots:
             cap = None
-            for m in re.finditer(r"\(\s*단위[^)]{0,40}\)", text):
-                if m.start() < at:
-                    cap = re.sub(r"\s+", " ", m.group(0))[:24]
-            if cap and cap not in caps:
-                caps.append(cap)
+            for m in _CAP_ANY_RE.finditer(text, 0, at):
+                cap = m
+            if cap is None:
+                continue
+            txt = re.sub(r"\s+", " ", cap.group(0))[:24]
+            gap = at - cap.end()
+            if gap > _CAP_WINDOW:
+                # 파서가 **거리** 때문에 거부한 캡션이다. 지원하는 단위일 수
+                # 있으므로 '미지원' 이라 부르면 정면으로 틀린 안내가 된다.
+                if far is None or gap < far[1]:
+                    far = (txt, gap)
+                continue
+            if txt not in caps:
+                caps.append(txt)
         if caps:
-            return ("미지원단위 " + " / ".join(caps[:2])
+            if any(_UNIT_RE.search(c) for c in caps):
+                head = "미지원단위 "
+            elif any(_FX_CAP_RE.search(c) for c in caps):
+                head = "캡션 외화 "
+            else:
+                head = "캡션 비금액 "
+            return (head + " / ".join(caps[:2])
                     + (f" 외 {len(caps) - 2}" if len(caps) > 2 else "")
                     + (f" (라벨 {len(spots)}곳)" if len(spots) > 1 else ""))
-        fwd = re.search(r"\(\s*단위[^)]{0,40}\)", text[spots[0]:spots[0] + 1500])
+        if far is not None:
+            return f"금액캡션 멀다 {far[0]} {far[1]}자(창 {_CAP_WINDOW})"
+        fwd = _CAP_ANY_RE.search(text, spots[0], spots[0] + 1500)
         if fwd:
             return f"캡션이 라벨 뒤 {fwd.group(0)[:24]}"
         return "캡션없음"
@@ -759,6 +791,20 @@ def backlog_excerpt(text: str, width: int = 240) -> str:
     return re.sub(r"\s+", " ", seg).strip()
 
 
+_KR_SUFFIX_RE = re.compile(r"^(\d{6})\.(?:KS|KQ)$")
+
+
+def norm_miss_ticker(ticker) -> str:
+    """미스 집계용 표기 통일 — `000660.KS` 와 `000660` 은 같은 종목이다.
+
+    ⚠️ **국내 6자리 + KS/KQ 만** 뗀다. 해외는 접미가 시장을 가르므로
+    (`7203.T`) 떼면 다른 나라 코드와 충돌한다.
+    """
+    t = str(ticker or "")
+    m = _KR_SUFFIX_RE.match(t)
+    return m.group(1) if m else t
+
+
 def _log_miss(ticker: str, year, reprt_code, reason: str,
               detail: str = "") -> None:
     """미스 1건 기록. 실패는 조용히 삼킨다 — 진단 로그가 본 기능을 막으면 안 된다."""
@@ -766,7 +812,7 @@ def _log_miss(ticker: str, year, reprt_code, reason: str,
         return                      # 원천에 값이 없다 — 개선 대상 아님
     try:
         _MISS_LOG.parent.mkdir(parents=True, exist_ok=True)
-        rec = {"ticker": ticker, "year": year,
+        rec = {"ticker": norm_miss_ticker(ticker), "year": year,
                "reprt": reprt_code, "reason": reason}
         if detail:
             # 사유만으론 뭘 고쳐야 할지 모른다(#93) — 상세를 같이 남긴다.
@@ -853,7 +899,7 @@ def review_text() -> str:
     if not rows:
         return ""
     by = Counter(r.get("reason", "?") for r in rows)
-    tick = Counter(r.get("ticker") for r in rows)
+    tick = Counter(norm_miss_ticker(r.get("ticker")) for r in rows)
     out = [f"📐 <b>수주잔고 파서 리뷰</b> (격주 금요일)",
            f"막힌 조회 {len(rows)}건 · 종목 {len(tick)}개",
            ""]

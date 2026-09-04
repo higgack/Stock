@@ -7002,8 +7002,13 @@ class TestBacklogUnitCaptions20260821:
         from bot.dart_backlog import diagnose, diagnose_detail as d
         no_cap = "수주총액 기납품액 수주잔고 합 계 571,122 221,121 350,001"
         assert diagnose(no_cap) == "단위없음" and d(no_cap) == "캡션없음"
+        # 2026-09-04 계약 변경(#275): `(단위 : 백만달러)` 를 '미지원단위' 라
+        # 부르면 다음 수가 '단위 추가' 로 읽히는데, 그러면 외화를 원화로
+        # 읽어 스케일이 통째로 틀린다. 외화는 **환율이 필요한 것**이지
+        # 미지원 단위가 아니다 — 갈래로 말한다(#82).
         bad = "(단위 : 백만달러) 수주총액 기납품액 수주잔고 합 계 1 2 3"
-        assert d(bad).startswith("미지원단위"), d(bad)
+        assert d(bad).startswith("캡션 외화"), d(bad)
+        assert "(단위 : 백만달러)" in d(bad), d(bad)   # 무엇을 봤는지는 말한다
         late = "수주잔고 현황 (단위 : 백만원) 수주총액 기납품액 합 계 1 2 3"
         assert d(late).startswith("캡션이 라벨 뒤"), d(late)
         odd = "(단위 : 억원) 수주총액 기납품액 수주잔고 합 계 9 1 2 3 4"
@@ -27195,7 +27200,11 @@ class TestBiweeklyBacklogReview20260817:
              "reason": "검산실패"}]))
         t = bl.review_text()
         assert "형식미지원: 2건" in t and "검산실패: 1건" in t
-        assert "012450.KS ×2" in t and "034020.KS ×1" in t
+        # 2026-09-04 계약 변경(#275): 같은 종목이 `012450` 과 `012450.KS`
+        # 두 표기로 따로 세어져 상위 10 목록에 나란히 올랐다(#45) — 국내
+        # 접미를 떼어 한 번만 센다. 해외 접미(`7203.T`)는 그대로 둔다.
+        assert "012450 ×2" in t and "034020 ×1" in t
+        assert "012450.KS" not in t, t
         assert "붙여넣으면" in t, "다음 행동이 안 적혀 있다"
 
     def test_schedule_is_biweekly_friday_16h_kst(self):
@@ -27367,7 +27376,10 @@ class TestBacklogObservability20260817:
         bl._log_miss("012450.KS", 2026, "11013", "형식미지원")   # 중복
         lines = f.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 1, f"중복 기록: {lines}"
-        assert "012450.KS" in lines[0] and "형식미지원" in lines[0]
+        # 2026-09-04 계약 변경(#275): 기록도 통일된 표기로 남긴다 —
+        # 읽을 때만 합치면 중복 기록 방지(`line in old`)가 무력해져 같은
+        # 종목·분기가 두 줄로 쌓인다.
+        assert '"ticker": "012450"' in lines[0] and "형식미지원" in lines[0]
 
     def test_backlog_for_records_its_misses(self, monkeypatch):
         """헬퍼만 만들고 호출부에 안 걸면 로그는 영원히 빈다(실수 #12).
@@ -40986,6 +40998,24 @@ class TestEcosSnapshotRowCap20260826:
         assert out and out["time"] == "202607", out
 
 
+def _rss_pubdate(days_ago: int = 1) -> str:
+    """RSS pubDate — **오늘 기준 상대**로 만든다.
+
+    절대 날짜를 박으면 `blog_watch._MAX_AGE_DAYS`(14일) 를 넘는 날 멀쩡한
+    코드가 빨간불이 된다 — 2026-09-04 에 `Fri, 21 Aug 2026` 픽스처가 정확히
+    그렇게 터졌고, 같은 형태가 네 클래스에 있었다(#249 날짜 의존 테스트 ·
+    #24 이름 열거는 다음 것을 못 잡는다). 날짜가드 **자체**를 재는 곳은
+    일부러 옛 날짜를 쓰므로 이 헬퍼를 쓰지 않는다.
+    """
+    import datetime as _dtm
+    from email.utils import format_datetime
+
+    from bot.blog_watch import _KST, _now_kst
+
+    return format_datetime((_now_kst() - _dtm.timedelta(days=days_ago))
+                           .astimezone(_KST))
+
+
 class TestBlogCheckProbe20260826:
     """사용자 2026-08-26 arirangya 확인 — 내가 **틀린 명령**을 건넸다.
     `_fetch_rss` 는 파싱 결과가 아니라 **원문 XML 문자열**을 돌려주는데
@@ -41001,7 +41031,7 @@ class TestBlogCheckProbe20260826:
             '<title><![CDATA[사색하는 투자자]]></title>'
             '<item><title>첫 글</title>'
             '<link>https://blog.naver.com/arirangya/1</link><guid>g1</guid>'
-            '<pubDate>Tue, 26 Aug 2026 09:00:00 +0900</pubDate>'
+            "<pubDate>" + _rss_pubdate() + "</pubDate>"
             '<description>본문</description></item></channel></rss>')
 
     @staticmethod
@@ -41078,7 +41108,7 @@ class TestNoBackfillIsTheDefaultForEveryBlog20260826:
             + "".join(f"<item><title>글{i}</title>"
                       f"<link>https://blog.naver.com/x/{i}</link>"
                       f"<guid>g{i}</guid><category>일상</category>"
-                      f"<pubDate>Fri, 21 Aug 2026 09:00:00 +0900</pubDate>"
+                      f"<pubDate>{_rss_pubdate()}</pubDate>"
                       f"<description>본문</description></item>"
                       for i in range(1, 6))
             + "</channel></rss>")
@@ -41141,7 +41171,7 @@ class TestCheckShowsCategories20260826:
                 + "".join(f"<item><title>t{i}</title>"
                           f"<link>https://blog.naver.com/x/{i}</link>"
                           f"<guid>g{i}</guid><category>{c}</category>"
-                          f"<pubDate>Tue, 25 Aug 2026 09:00:00 +0900</pubDate>"
+                          f"<pubDate>{_rss_pubdate()}</pubDate>"
                           f"<description>d</description></item>"
                           for i, c in enumerate(pairs))
                 + "</channel></rss>")
@@ -41214,7 +41244,7 @@ class TestIntelligentTigerMarketOnly20260826:
                + "".join(f"<item><title>글{i}</title>"
                          f"<link>https://blog.naver.com/intelligent_tiger/{i}</link>"
                          f"<guid>g{i}</guid><category>{c}</category>"
-                         f"<pubDate>Tue, 25 Aug 2026 09:00:00 +0900</pubDate>"
+                         f"<pubDate>{_rss_pubdate()}</pubDate>"
                          f"<description>본문</description></item>"
                          for i, c in enumerate(self._CATS))
                + "</channel></rss>")
@@ -43410,3 +43440,108 @@ def test_js_hook_classes_are_prefixed_and_have_no_css():
             r"""(querySelector|querySelectorAll|closest|matches)\s*\(\s*['"][^'"]*\."""
             + re.escape(c) + r"""\b""")
         assert pat.search(scripts), f"{c}: 아무 JS 도 이 훅을 쿼리하지 않는다"
+
+
+class TestBacklogDiagnosisWindowAndTicker20260904:
+    """격주 리뷰(2026-09-04 붙여넣기)가 드러낸 **진단 자체의 결함** 2건.
+
+    보고서는 `미지원단위 (단위 : 사) 30건` 을 최대 상세 버킷으로 올렸다 —
+    읽으면 "단위를 더 지원하면 30건이 풀린다" 로 읽히지만, `사` 는 금액
+    단위가 아니고 거기 `_UNIT_MULT` 를 늘리면 개수를 금액으로 읽는다.
+    #105·#109·#111 이 같은 보고서에서 세 라운드를 태운 바로 그 함정이라,
+    파서를 늘리기 전에 **진단이 파서와 같은 것을 보는지** 먼저 못박는다.
+    """
+
+    def test_supported_unit_outside_window_is_not_called_unsupported(self):
+        """가장 나쁜 오보: 파서가 **거리** 때문에 거부한 `(단위 : 백만원)` 을
+        '미지원단위' 라고 말한다 — 백만원은 우리가 지원하는 단위다.
+
+        파서 `_unit_mult` 는 캡션이 4000자보다 멀면 None 을 주는데, 진단은
+        본문 **전체**를 역탐색해 그 캡션을 집었다(#105·#35 감사는 화면이
+        쓰는 그 경로를 볼 것 — 여기선 '그 창').
+        """
+        from bot import dart_backlog as bl
+
+        far = "(단위 : 백만원)" + "가" * 5000 + " 수주잔고 합 계 1,000 200 800 "
+        det = bl.diagnose_detail(far)
+        assert "미지원단위" not in det, f"지원하는 단위를 미지원이라 한다: {det}"
+        assert "멀" in det or "창" in det, det
+
+    def test_non_money_caption_is_not_called_unsupported_unit(self):
+        """`(단위 : 사)`(회사 수)는 미지원 '단위' 가 아니라 **다른 표의 캡션**
+        이다. 그렇게 말해야 다음 수가 '단위 추가' 가 아니라 '표 경계' 가 된다."""
+        from bot import dart_backlog as bl
+
+        non = "(단위 : 사)" + "나" * 200 + " 수주잔고 합 계 1,000 200 800 "
+        det = bl.diagnose_detail(non)
+        assert "미지원단위" not in det, f"금액 아닌 캡션을 단위라 한다: {det}"
+        assert "(단위 : 사)" in det, det          # 무엇을 봤는지는 말한다(#82)
+
+    def test_foreign_currency_caption_is_named_as_such(self):
+        """`(단위 : 백만달러)` 는 무관표가 아니라 **외화 표**다 — 처방이
+        다르다(환율이 필요하지 표 경계 문제가 아니다). 갈래로 말할 것(#82)."""
+        from bot import dart_backlog as bl
+
+        fx = "(단위 : 백만달러)" + "라" * 200 + " 수주잔고 합 계 1,000 200 800 "
+        det = bl.diagnose_detail(fx)
+        assert "외화" in det, det
+        assert "비금액" not in det, det
+
+    def test_caption_scan_uses_the_parser_window(self):
+        """진단의 역탐색 창 = 파서의 창. 두 값을 각자 적으면 갈라진다(#38)."""
+        import inspect
+
+        from bot import dart_backlog as bl
+
+        src = inspect.getsource(bl.diagnose_detail)
+        assert "_CAP_WINDOW" in src, "진단이 파서와 다른 창 상수를 쓴다"
+        assert "_CAP_WINDOW" in inspect.getsource(bl._unit_mult)
+
+    def test_miss_log_counts_one_ticker_once(self):
+        """`000660` 과 `000660.KS` 는 같은 종목이다 — 보고서가 둘로 세어
+        상위 10 목록에 나란히 올랐고(`000660 ×10` · `000660.KS ×4`)
+        '종목 N개' 도 부풀었다(#45 총계와 소계가 다른 모집단)."""
+        from bot import dart_backlog as bl
+
+        assert bl.norm_miss_ticker("000660.KS") == bl.norm_miss_ticker("000660")
+        assert bl.norm_miss_ticker("294570.KQ") == "294570"
+        # 국내 접미만 떼고 나머지는 그대로 — 4자리 해외 코드와 충돌 금지.
+        assert bl.norm_miss_ticker("7203.T") == "7203.T"
+        assert bl.norm_miss_ticker("AAPL") == "AAPL"
+
+    def test_log_miss_stores_the_normalized_ticker(self, tmp_path, monkeypatch):
+        """쓰는 쪽도 통일해야 **중복 기록 방지**(`line in old`)가 성립한다 —
+        읽기만 합치면 같은 종목·분기가 두 줄로 쌓인다.
+
+        (2026-09-04 뮤테이션이 이 사각을 드러냈다: 쓰기 정규화를 지워도
+        전 테스트가 통과했다 — 읽기 테스트는 로그를 직접 써서 그 경로를
+        한 번도 안 탄다, #20 배선은 태워야 보인다.)
+        """
+        import json
+
+        from bot import dart_backlog as bl
+
+        log = tmp_path / "misses.jsonl"
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        bl._log_miss("000660.KS", 2026, "11012", "단위없음")
+        bl._log_miss("000660", 2026, "11012", "단위없음")     # 같은 건 = 1줄
+        lines = [json.loads(x) for x in
+                 log.read_text(encoding="utf-8").splitlines() if x]
+        assert [r["ticker"] for r in lines] == ["000660"], lines
+
+    def test_review_merges_legacy_split_tickers(self, tmp_path, monkeypatch):
+        """이미 쌓인 로그가 두 표기로 섞여 있으므로 **읽을 때도** 합친다."""
+        import json
+
+        from bot import dart_backlog as bl
+
+        log = tmp_path / "misses.jsonl"
+        log.write_text("\n".join(
+            json.dumps({"ticker": t, "year": 2026, "reprt": "11012",
+                        "reason": "단위없음"}, ensure_ascii=False)
+            for t in ("000660", "000660.KS", "000660")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(bl, "_MISS_LOG", log)
+        out = bl.review_text()
+        assert "000660.KS" not in out, out
+        assert "· 000660 ×3" in out, out
+        assert "종목 1개" in out, out
