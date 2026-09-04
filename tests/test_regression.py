@@ -44332,3 +44332,318 @@ class TestPrintedRunCommandsIncludeCd20260904:
         txt = "".join(c.value for c in ast.walk(src)
                       if isinstance(c, ast.Constant) and isinstance(c.value, str))
         assert "cd ~/stock && .venv/bin/python -m bot.daily_kr_flow --why" in txt
+
+
+class TestDailyByteWhyNamesTheLoginBranch20260904:
+    """`--why` 가 KRX 로그인 실패를 **갈래로** 말하고, 휴장이 그 사실을 덮지
+    않게 한다 (2026-09-04 VM 실측 · CLAUDE.md #279).
+
+    실측 상태: 휴장(09-05) + KRX 계정 '패스워드 변경 필요' + 한국 아카이브
+    9일 낡음 → 옛 판은 `⏸ 오늘은 휴장 — 이상 없음` 만 찍었다.
+    """
+
+    # 사용자 VM 이 그대로 붙여 준 원문 — 픽스처는 원천이 실제로 보내는
+    # 모양이어야 한다(#155). 지어낸 문구로 만들면 매칭이 틀려도 green 이다.
+    REAL = (
+        "KRX 로그인 시도...\n"
+        "  로그인 ID: higgack\n"
+        "⚠️ KRX 비밀번호 변경이 필요합니다.\n"
+        "   오류 메시지: 패스워드 변경 필요\n"
+        "   https://www.krx.co.kr 에서 비밀번호를 변경한 후 다시 시도하세요.\n"
+        "KRX 로그인 실패: 자격 증명을 확인하세요.\n"
+        "Error occurred in get_market_trading_value_and_volume_on_market_by_"
+        "investor: Expecting value: line 1 column 1 (char 0)\n"
+    )
+
+    def test_password_change_beats_the_generic_login_failure(self):
+        """같은 실행에 둘 다 찍힌다 — 더 **행동 가능한** 쪽이 이겨야 한다(#275).
+
+        'bad_cred' 로 읽으면 사용자는 .env 의 키를 다시 넣으러 가는데, 계정이
+        비밀번호 변경 상태면 그걸로는 절대 안 풀린다(#187b).
+        """
+        from bot.daily_kr_flow import krx_login_verdict
+        kind, fix = krx_login_verdict(self.REAL)
+        assert kind == "pw_change"
+        assert "krx.co.kr" in fix and "KRX_PW" in fix
+
+    def test_unknown_wording_reports_the_raw_sample_instead_of_asserting(self):
+        """원천이 문구를 바꾸면 단정하지 말고 원문을 보여줄 것(#109·#165)."""
+        from bot.daily_kr_flow import krx_login_verdict
+        kind, fix = krx_login_verdict("KRX 로그인 시도...\n⚠️ 알 수 없는 상태\n")
+        assert kind == "unknown"
+        assert "알 수 없는 상태" in fix          # 원문 표본이 실려야 한다
+        # 반대 증거 — 로그인과 무관한 한글 오류는 'unknown' 이 아니다.
+        assert krx_login_verdict("캐시 읽기 실패 — 오류 무시")[0] == "ok"
+
+    def test_clean_login_is_not_called_a_failure(self):
+        """대조군 — 실패 흔적이 없으면 'ok'(#143). 아니면 늘 ❌ 가 뜬다."""
+        from bot.daily_kr_flow import krx_login_verdict
+        assert krx_login_verdict("KRX 로그인 성공\n")[0] == "ok"
+        assert krx_login_verdict("")[0] == "ok"
+
+    def test_holiday_does_not_mask_a_confirmed_login_failure(self):
+        """#41 감사는 여유로 사실을 덮지 말 것 · #260 ❌ 는 고칠 것만."""
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=False, llm_ok=True, login_kind="pw_change",
+                            login_fix="비밀번호 변경", krx_ok=False, kr_age=9,
+                            missed_sessions=6, stamp="2026-09-04 07:10")
+        assert any(l.startswith("❌") and "pw_change" in l for l in lines)
+        assert not any("이상 없음" in l for l in lines)
+
+    def test_holiday_does_not_mask_a_stale_archive(self):
+        """로그인을 못 재도(login_kind='ok') 9일 공백은 휴장으로 설명 안 된다."""
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=False, llm_ok=True, login_kind="ok",
+                            login_fix="", krx_ok=False, kr_age=9,
+                            missed_sessions=6, stamp="")
+        assert any(l.startswith("⚠️") and "6일" in l for l in lines), lines
+
+    def test_real_holiday_with_fresh_archive_stays_quiet(self):
+        """반대 증거 — 정상 휴장을 ❌ 로 만들면 매일 오탐이라 아무도 안 본다.
+
+        (2026-09-04 독립 리뷰로 문구 개정: 단정하지 않는 '정상일 수 있다'.)
+        """
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=False, llm_ok=True, login_kind="ok",
+                            login_fix="", krx_ok=False, kr_age=1,
+                            missed_sessions=0, stamp="")
+        assert len(lines) == 1 and lines[0].startswith("⏸")
+        assert "판정 보류" in lines[0]
+
+    def test_calendar_unavailable_is_held_not_blamed(self):
+        """`td is None`(캘린더 판정 불가)에서 옛 판은 '자격증명 확인' 이라고
+        단정했다 — 진짜 휴장이면 그게 헛걸음이다(독립 리뷰 실측 · #12)."""
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=None, llm_ok=True, login_kind="ok",
+                            login_fix="", krx_ok=False, kr_age=1,
+                            missed_sessions=0, stamp="")
+        assert lines[0].startswith("⏸") and "판정 못 해" in lines[0]
+
+    def test_received_data_never_gets_blamed_on_login(self):
+        """④ 가 '✅ 수신' 인데 ⑥ 이 '❌ 로그인 실패가 원인' 이면 한 화면이
+        두 말을 한다 — 버퍼에 남은 문구로 단정하지 말 것(독립 리뷰 실측)."""
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=True, llm_ok=True, login_kind="unknown",
+                            login_fix="뭔가 이상", krx_ok=True, kr_age=0,
+                            missed_sessions=0, stamp="2026-09-04 07:10")
+        assert not any("원인이다" in l for l in lines), lines
+        assert lines[0].startswith("✅")
+
+    def test_two_day_old_record_does_not_contradict_section_five(self):
+        """⑤ 는 3일까지 ✅ 인데 ⑥ 이 '기록이 없다' 고 했다 — 같은 상수를
+        봐야 한 화면이 두 말을 안 한다(독립 리뷰 실측 · #38)."""
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=True, llm_ok=True, login_kind="ok",
+                            login_fix="", krx_ok=True, kr_age=2,
+                            missed_sessions=1, stamp="2026-09-04 07:10")
+        assert lines[0].startswith("✅"), lines
+        assert not any("기록이 없다" in l for l in lines)
+
+    def test_long_holiday_cluster_does_not_raise_a_false_alarm(self):
+        """설·추석은 비거래일이 4~6일이라 달력 일수로 재면 매년 오탐이다 —
+        **놓친 거래일**로 재면 0 이다(독립 리뷰 실측 · #260)."""
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=False, llm_ok=True, login_kind="ok",
+                            login_fix="", krx_ok=False, kr_age=6,
+                            missed_sessions=0, stamp="2026-09-04 07:10")
+        assert not any(l.startswith("⚠️") for l in lines), lines
+
+    def test_missed_trading_sessions_are_named(self):
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=True, llm_ok=True, login_kind="ok",
+                            login_fix="", krx_ok=True, kr_age=9,
+                            missed_sessions=6, stamp="")
+        assert any("거래일이 6일" in l for l in lines), lines
+
+    def test_timer_claim_is_measured_not_guessed(self):
+        """'타이머가 안 돌았을 수 있다' 는 #276 에서 심은 점검 도장으로
+        **재서** 말한다 — 안 재고 적으면 헛걸음을 만든다(#165·#187b)."""
+        from bot.daily_kr_flow import why_verdict
+        kw = dict(td=True, llm_ok=True, login_kind="ok", login_fix="",
+                  krx_ok=True, kr_age=9, missed_sessions=6)
+        ran = why_verdict(**kw, stamp="2026-09-04 07:10")
+        never = why_verdict(**kw, stamp="")
+        assert any("타이머는 돌았다" in l for l in ran), ran
+        assert any("도장이 없다" in l for l in never), never
+
+    def test_missed_sessions_counts_trading_days_only(self, monkeypatch):
+        """헬퍼가 실제로 거래일만 세는가 — 안 그러면 위 계약이 무의미하다."""
+        import bot.market_calendar as mc
+        from bot.daily_kr_flow import _missed_sessions
+        monkeypatch.setattr(
+            mc, "is_trading_day",
+            lambda m, d: d not in ("2026-09-05", "2026-09-06"))   # 주말
+        assert _missed_sessions("2026-09-03", "2026-09-07") == 2   # 04, 07
+
+    def test_trading_day_with_empty_response_is_still_a_failure(self):
+        from bot.daily_kr_flow import why_verdict
+        lines = why_verdict(td=True, llm_ok=True, login_kind="ok",
+                            login_fix="", krx_ok=False, kr_age=2,
+                            missed_sessions=1, stamp="")
+        # 무엇을 쟀는지 정확히 — 제품은 종목별 수급만 있어도 진행한다(#165).
+        assert any("시장 수급(totals)이 비었다" in l for l in lines), lines
+
+    # ── E2E: 헬퍼가 아니라 why() 를 통째로 태운다(#20 배선은 태워야 보인다) ──
+
+    def _run_why(self, monkeypatch, *, totals_side, trading_day):
+        """why() 를 실제로 돌리고 (stdout, 조회 호출 횟수) 를 돌려준다."""
+        import importlib.util
+        import io, sys, types
+        from contextlib import redirect_stdout
+        import bot.daily_kr_flow as kf
+        import bot.pykrx_client as pk
+        import bot.market_calendar as mc
+
+        # ① 의 모듈 검사를 통과시킨다 — pykrx 는 이 환경에 없다.
+        # ⚠️ 무조건 스텁을 꽂으면 import-노이즈 테스트가 건 finder 를 덮어
+        # `__import__` 가 아무것도 실행하지 않는다 — redirect 를 지워도
+        # 통과하는 눈먼 가드가 된다(뮤테이션 M1 실측, #91c). find_spec 은
+        # **실행 없이** 물으므로 finder 가 있으면 그쪽이 이긴다.
+        for name in ("pykrx", "dotenv"):
+            if name in sys.modules:
+                continue
+            try:
+                found = importlib.util.find_spec(name) is not None
+            except Exception:                                   # noqa: BLE001
+                found = False
+            if not found:
+                monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+        # 실물 dotenv 가 깔려 있으면 아직 sys.modules 에 없을 수 있다.
+        monkeypatch.setattr(importlib.import_module("dotenv"), "load_dotenv",
+                            lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(pk, "krx_login_ready", lambda: True)
+        monkeypatch.setattr(pk, "_quiet_pykrx_logging", lambda: None)
+        monkeypatch.setattr(mc, "is_trading_day", lambda m, d: trading_day)
+        monkeypatch.setattr(kf, "_effective_key", lambda: "k")
+        monkeypatch.setattr(kf, "_resolve_trading_date", lambda: "20260904")
+        monkeypatch.setattr(kf, "_prev_bday", lambda d, n: "20260903")
+        monkeypatch.setattr(kf, "_archive_scan",
+                            lambda kind: (("2026-08-27", 90) if kind == "daily"
+                                          else ("2026-09-04", 90)))
+        calls = []
+
+        def _totals(d):
+            calls.append(d)
+            return totals_side()
+
+        monkeypatch.setattr(kf, "_fetch_market_totals", _totals)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            kf.why([])
+        return buf.getvalue(), len(calls)
+
+    def test_confirmed_login_failure_stops_the_walk_back(self, monkeypatch):
+        """옛 판은 답이 나온 뒤에도 4일 × 2시장을 더 돌아 실패 로그인을 열 번
+        반복했다(VM 실측). 확정 실패면 **한 번**에 멈춰야 한다."""
+        def side():
+            print(self.REAL, end="")      # pykrx 가 stdout 으로 찍는 그 원문
+            return {}
+        out, n = self._run_why(monkeypatch, totals_side=side, trading_day=False)
+        assert n == 1, f"확정 실패인데 {n}회 조회 = 계정만 두드린다"
+        assert "로그인 갈래 [pw_change]" in out
+        assert "❌ KRX 로그인 실패 [pw_change]" in out
+        assert "이상 없음" not in out
+
+    def test_silent_empty_response_still_walks_back_like_the_product(self, monkeypatch):
+        """반대 증거 — 로그인이 멀쩡한데 그날 데이터만 없으면 제품과 같이
+        4영업일까지 거슬러야 한다(#56). 안 그러면 장중·휴장에 오보한다."""
+        out, n = self._run_why(monkeypatch, totals_side=dict, trading_day=False)
+        assert n == 5, n                      # 당일 + 4회 walk-back
+        assert "판정 보류" in out
+
+    def test_import_time_login_noise_is_not_printed_above_the_creds_section(
+            self, monkeypatch):
+        """pykrx 는 import 시점에 'KRX_ID 또는 KRX_PW 환경 변수가 설정되지
+        않았습니다' 를 stdout 으로 찍는다 — load_dotenv 前이라 키가 멀쩡해도
+        늘 나오고, 바로 아래 ② 의 ✅ 와 정면으로 모순된다(VM 실측 · #187b).
+
+        ⚠️ 스텁을 sys.modules 에 미리 넣어 두면 `__import__` 가 그걸 그냥
+        돌려줘 **아무것도 안 찍힌다** — 그러면 redirect 를 지워도 통과하는
+        눈먼 가드다(#91b). 실제로 import 가 일어나며 찍히게 finder 를 건다.
+        """
+        import importlib.abc, importlib.machinery, sys, types
+
+        NOISE = "KRX 로그인 실패: KRX_ID 또는 KRX_PW 환경 변수가 설정되지 않았습니다."
+
+        class _Loader(importlib.abc.Loader):
+            def create_module(self, spec):
+                return types.ModuleType(spec.name)
+
+            def exec_module(self, module):
+                print(NOISE)          # pykrx 가 import 중에 찍는 그 줄
+
+            def get_code(self, name):
+                return None
+
+        class _Finder(importlib.abc.MetaPathFinder):
+            def find_spec(self, name, path=None, target=None):
+                if name != "pykrx":
+                    return None
+                return importlib.machinery.ModuleSpec(name, _Loader())
+
+        monkeypatch.delitem(sys.modules, "pykrx", raising=False)
+        monkeypatch.setattr(sys, "meta_path", [_Finder(), *sys.meta_path])
+        out, _ = self._run_why(monkeypatch, totals_side=dict, trading_day=False)
+        assert "① 인터프리터" in out and "pykrx·dotenv 로드됨" in out
+        assert NOISE not in out, "import 시점 노이즈가 ② 의 ✅ 와 모순된 채 새어나갔다"
+
+    def test_unrelated_korean_error_is_not_read_as_a_login_failure(
+            self, monkeypatch):
+        """'실패·오류' 만 보면 아무 한글 오류나 로그인 실패로 읽고, 그게
+        재조회를 멈추고 휴장·LLM 분기까지 덮는다(독립 리뷰 실측)."""
+        def side():
+            print("캐시 읽기 실패 — 오류 무시하고 진행")
+            return {}
+        out, n = self._run_why(monkeypatch, totals_side=side, trading_day=False)
+        assert n == 5, f"무관한 오류가 walk-back 을 멈췄다({n}회)"
+        assert "로그인 갈래" not in out
+        # 힌트로라도 '로그인 실패' 라고 말하면 그건 사실이 아니다(#165).
+        assert "갈래를 못 정했다" not in out, out
+
+    def test_unknown_login_wording_is_a_hint_not_a_confirmed_cause(
+            self, monkeypatch):
+        """갈래를 못 정했으면 재조회를 멈추지도, '이게 원인이다' 라고 하지도
+        말 것 — 확정과 추측은 다르다(#12·#165)."""
+        def side():
+            print("KRX 로그인 시도...\n⚠️ 알 수 없는 상태\n")
+            return {}
+        out, n = self._run_why(monkeypatch, totals_side=side, trading_day=False)
+        assert n == 5, f"확정도 아닌데 멈췄다({n}회)"
+        assert "이게 원인이다" not in out
+        assert "갈래를 못 정했다" in out and "알 수 없는 상태" in out
+
+    def test_capturing_output_does_not_bind_logging_to_a_dead_buffer(
+            self, monkeypatch):
+        """`StreamHandler` 는 **생성 시점**의 스트림을 잡는다 — 리다이렉트
+        중에 로깅 핸들러가 처음 만들어지면 그 StringIO 에 영구히 묶여
+        이후 모든 로그가 조용히 사라진다(배포전 셀프리뷰에서 발견).
+        """
+        import io as _io
+        import logging as _logging
+        import bot.daily_kr_flow as kf
+
+        monkeypatch.setattr(_logging.root, "handlers", [])
+
+        def side():
+            _logging.basicConfig()      # 라이브러리가 리다이렉트 중에 부를 수 있다
+            kf.log.warning("리다이렉트 중 첫 로그")
+            return {}
+
+        self._run_why(monkeypatch, totals_side=side, trading_day=False)
+        bound = [getattr(h, "stream", None) for h in _logging.root.handlers]
+        assert bound, "핸들러가 하나도 없다 — 이 계약을 잴 대상이 없다"
+        assert not any(isinstance(b, _io.StringIO) for b in bound), \
+            "로깅이 죽은 StringIO 에 묶였다 — 이후 모든 로그가 사라진다"
+
+    def test_fallback_credential_is_not_marked_as_a_defect(self, monkeypatch):
+        """SV 토큰은 TELEGRAM_BOT_TOKEN 의 폴백이라 없는 게 정상 — ❌ 로
+        찍으면 사용자 눈이 무해한 줄로 끌린다(#260)."""
+        import bot.env_keys as ek
+        monkeypatch.setattr(
+            ek, "env_source",
+            lambda k: "없음" if k == "STANDARDVIEW_TELEGRAM_TOKEN" else ".env 파일")
+        out, _ = self._run_why(monkeypatch, totals_side=dict, trading_day=False)
+        line = [l for l in out.splitlines()
+                if "STANDARDVIEW_TELEGRAM_TOKEN" in l][0]
+        assert line.lstrip().startswith("ℹ️"), line
+        assert "대체" in line

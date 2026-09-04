@@ -766,7 +766,144 @@ def main() -> int:
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 1
+_WHY_VER = 2
+
+# pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
+# 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
+# 순서 = 우선순위. 같은 실행에 '패스워드 변경 필요' 와 그 결과인 '자격
+# 증명을 확인하세요' 가 **둘 다** 찍히므로(2026-09-04 VM 실측), 더
+# **행동 가능한** 쪽을 머리에 둔다(#275).
+_LOGIN_BRANCHES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("pw_change", ("비밀번호 변경", "패스워드 변경"),
+     "KRX 계정이 비밀번호 변경 필요 상태다 — .env 의 키를 고쳐도 안 풀린다. "
+     "https://www.krx.co.kr 에서 비밀번호를 바꾼 뒤 .env 의 KRX_PW 갱신"),
+    ("env_unset", ("환경 변수가 설정되지 않았",),
+     "로그인 시점에 KRX_ID/KRX_PW 가 환경에 없었다 — .env 로드 순서 확인"),
+    ("bad_cred", ("자격 증명을 확인", "로그인 실패"),
+     "KRX 가 로그인을 거부했다 — .env 의 KRX_ID/KRX_PW 값 확인"),
+)
+_LOGIN_FAIL_HINTS = ("실패", "오류", "⚠️")
+# 사유를 **확정**한 갈래 — 여기 들어야 원인이라고 말하고 재조회를 멈춘다.
+# 'unknown' 은 확정이 아니므로 힌트로만 쓴다(독립 리뷰: 넓은 힌트가 휴장·
+# LLM 분기를 통째로 덮어썼다).
+_LOGIN_CONFIRMED = ("pw_change", "env_unset", "bad_cred")
+
+# 서로 **대체 가능한** 자격증명 — push_telegram 은 `A or B` 라 둘 중 하나면
+# 된다. 한 방향으로만 적으면 B 만 있는 호스트에서 A 가 ❌ 로 뜬다(리뷰 실측).
+_CRED_EITHER = (("TELEGRAM_BOT_TOKEN", "STANDARDVIEW_TELEGRAM_TOKEN"),)
+
+# ⑤ 의 ✅ 기준과 ⑥ 의 판정이 **같은 상수**를 봐야 한 화면이 두 말을 안 한다
+# (리뷰 실측: kr_age 2~3 이 ⑤ 는 ✅ 인데 ⑥ 은 '기록이 없다' 였다 — #38).
+_FRESH_DAYS = 3
+
+
+def krx_login_verdict(captured: str) -> tuple[str, str]:
+    """로그인 원문에서 (갈래, 처방)을 읽는다. 실패 흔적이 없으면 ("ok", "").
+
+    ⚠️ 아는 문구가 하나도 안 걸리면 단정하지 말고 **원문 표본**을 돌려준다
+    — 원천이 문구를 바꾸면 '로그인 만료/차단 의심' 같은 **틀린 사유**가
+    다음 라운드를 엉뚱한 데로 보낸다(#109·#165·#187b).
+    """
+    text = captured or ""
+    for kind, needles, fix in _LOGIN_BRANCHES:
+        if any(n in text for n in needles):
+            return kind, fix
+    # ⚠️ '실패·오류' 만 보면 **아무 한글 오류**나 로그인 실패로 읽는다 —
+    # 그러면 진짜 원인(휴장·LLM 키)이 덮인다(독립 리뷰 실측). 로그인 문맥이
+    # 같이 있을 때만 'unknown' 이고, 그마저 **확정이 아니라 힌트**다.
+    if "로그인" in text and any(h in text for h in _LOGIN_FAIL_HINTS):
+        tail = [ln.strip() for ln in text.splitlines() if ln.strip()][-3:]
+        return "unknown", "로그인 실패 사유를 모르겠다 — 원문: " + " / ".join(tail)
+    return "ok", ""
+
+
+def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
+                krx_ok, kr_age, missed_sessions=None, stamp: str = "") -> list[str]:
+    """⑥ 판정을 **값으로** 만든다 — 휴장이 확정된 실패를 덮지 못하게.
+
+    ⚠️ 옛 판은 휴장을 가장 먼저 보고 '이상 없음' 으로 끝냈다. 그래서
+    로그인이 확정 실패(비밀번호 변경 필요)이고 한국 아카이브가 9일 낡은
+    실행이 `⏸ 오늘은 휴장 — 이상 없음` 으로 나왔다(2026-09-04 VM 실측
+    · #41 여유로 사실을 덮지 말 것 · #260 ❌ 는 고칠 수 있는 것을
+    가리켜야 한다). 휴장이 정당하게 설명하는 것은 **빈 수급 응답**뿐이고,
+    로그인 실패와 낡은 아카이브는 휴장과 무관하다.
+
+    `missed_sessions` = 마지막 기록 이후 **놓친 거래일 수**(캘린더를 못
+    쓰면 None). 달력 일수로 재면 설·추석 연휴(4~6일 비거래일)마다 오탐이
+    난다 — 늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260).
+    `stamp` = `feed_health.last('daily_byte_kr')` — 타이머가 **돌긴 했는지**
+    를 재서 말한다. 안 재고 '타이머가 안 돌았을 수 있다' 고 적으면 그게
+    헛걸음을 만든다(#165·#187b).
+    """
+    out: list[str] = []
+    confirmed = login_kind in _LOGIN_CONFIRMED
+    if krx_ok:
+        # ⚠️ 재료를 받았으면 로그인은 정의상 됐다 — 버퍼에 남은 옛 실패
+        # 문구로 '로그인 실패가 원인' 이라고 말하면 ④ 의 ✅ 와 모순된다.
+        if kr_age is not None and kr_age <= _FRESH_DAYS:
+            out.append("✅ 재료·기록 둘 다 정상 — 화면이 안 보이면 렌더/창 문제")
+    elif confirmed:
+        out.append(f"❌ KRX 로그인 실패 [{login_kind}] — 이게 원인이다. {login_fix}")
+    elif not llm_ok:
+        out.append("❌ LLM 키 없음(AI Studio·Vertex 둘 다) — 브리프 생성 불가")
+    elif krx_ok is False and td is not True:
+        # 휴장이거나 캘린더 판정 불가 — 빈 수급이 정상일 수 있다. 단정 금지.
+        why = "휴장이라" if td is False else "거래일인지 판정 못 해"
+        out.append(f"⏸ {why} 수급이 비는 것은 정상일 수 있다 — 오늘 자체는 판정 보류")
+    elif krx_ok is False:
+        out.append("❌ 거래일인데 시장 수급(totals)이 비었다 — KRX Data "
+                   "Marketplace 자격증명 확인 후 "
+                   "`systemctl start daily-byte.service`")
+    if login_kind == "unknown" and not krx_ok:
+        out.append(f"⚠️ 로그인 원문에 실패 흔적은 있는데 갈래를 못 정했다. {login_fix}")
+
+    # ── 아카이브 공백은 휴장과 무관한 별개의 사실이다 ──
+    if kr_age is None:
+        out.append("❌ 한국 기록이 아예 없다")
+    elif missed_sessions is not None:
+        if missed_sessions >= 2:
+            out.append(f"⚠️ 마지막 기록({kr_age}일 전) 이후 거래일이 "
+                       f"{missed_sessions}일 지났는데 브리프가 없다 — "
+                       f"연휴로는 설명되지 않는다")
+    elif kr_age > _FRESH_DAYS:
+        out.append(f"⚠️ 한국 마지막 기록이 {kr_age}일 전 — 거래일 판정을 "
+                   f"못 해 연휴인지까지는 못 가른다")
+
+    # ── '타이머가 안 돌았다' 는 재서 말한다(#165) ──
+    if any(l.startswith(("⚠️", "❌")) for l in out):
+        if stamp:
+            out.append(f"↪ 타이머는 돌았다(마지막 점검 {stamp}) — 실행은 됐는데 "
+                       f"생성이 실패한 것이므로 위 사유가 원인이다")
+        else:
+            out.append("↪ 점검 도장이 없다 — 타이머가 아예 안 돌았을 수 있다: "
+                       "`systemctl status daily-byte.timer` · "
+                       "`journalctl -u daily-byte.service -n 50`")
+    if not out:
+        out.append("❓ 재료도 기록도 이상 없어 보인다 — 화면이 비면 렌더/창 확인")
+    return out
+
+
+def _missed_sessions(last_day: str, today: str) -> "int | None":
+    """`last_day` **다음날**부터 `today` 까지의 거래일 수. 캘린더를 못 쓰면
+    None(판정 불가 — 달력 일수로 대신 우기지 않는다, #12)."""
+    try:
+        from bot.market_calendar import is_trading_day
+    except Exception:                                          # noqa: BLE001
+        return None
+    try:
+        cur = datetime.strptime(last_day, "%Y-%m-%d").date() + timedelta(days=1)
+        end = datetime.strptime(today, "%Y-%m-%d").date()
+    except Exception:                                          # noqa: BLE001
+        return None
+    n = 0
+    while cur <= end:
+        try:
+            if is_trading_day("KR", cur.strftime("%Y-%m-%d")):
+                n += 1
+        except Exception:                                      # noqa: BLE001
+            return None
+        cur += timedelta(days=1)
+    return n
 
 
 def _archive_scan(kind: str, days: int = 90) -> tuple[str, int]:
@@ -791,15 +928,30 @@ def why(argv: list[str] | None = None) -> int:
     없어 '원천 실패' 처럼 보인다(#132 를 이 도구에서 반복하지 않기 위해).
     자격증명은 **출처와 길이까지만**(값 금지, §Secrets · #23).
     """
+    import io
     import sys
+    from contextlib import redirect_stderr, redirect_stdout
+
     from bot.env_keys import env_source, env_why
 
+    # ⚠️ 아래에서 stdout/stderr 를 잠깐 가로채는데, 그 사이에 로깅 핸들러가
+    # 처음 만들어지면 **StringIO 에 영구히 묶인다**(StreamHandler 는 생성
+    # 시점의 스트림을 잡는다) — 그다음부터 모든 로그가 조용히 사라진다.
+    # 진짜 stderr 로 먼저 붙여 두면 이후 basicConfig 는 no-op 이다.
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING,
+                        format="%(levelname)s:%(name)s:%(message)s")
     print(f"[Daily Byte KR 진단 v{_WHY_VER}]")
     print(f"① 인터프리터: {sys.executable}")
-    missing = []
+    missing, noise = [], io.StringIO()
     for mod in ("pykrx", "dotenv"):
         try:
-            __import__(mod)
+            # ⚠️ pykrx 는 **import 시점에** 로그인을 시도해 stdout 으로
+            # 'KRX_ID 또는 KRX_PW 환경 변수가 설정되지 않았습니다' 를 찍는다
+            # — load_dotenv 前이라 키가 멀쩡해도 늘 그렇게 나오고, 바로
+            # 아래 ② 의 ✅ 와 정면으로 모순돼 사용자가 그 첫 줄을 원인으로
+            # 읽는다(2026-09-04 VM 실측 · #187b).
+            with redirect_stdout(noise), redirect_stderr(noise):
+                __import__(mod)
         except Exception:                                      # noqa: BLE001
             missing.append(mod)
     if missing:
@@ -820,8 +972,16 @@ def why(argv: list[str] | None = None) -> int:
               "CHANNEL_CHAT_IDS"):
         src = env_source(k)
         creds[k] = src != "없음"
-        extra = f" — {env_why(k)}" if src == "없음" else ""
-        print(f"   {'✅' if src != '없음' else '❌'} {k}: {src}{extra}")
+        if src != "없음":
+            mark, extra = "✅", ""
+        elif (alt := next((o for g in _CRED_EITHER if k in g for o in g
+                           if o != k and creds.get(o)), "")):
+            # ⚠️ 대체 가능한 키가 있으면 없는 게 정상인데 ❌ 로 찍어 사용자
+            # 눈을 끌었다(2026-09-04 VM 실측 · #260 ❌ 는 고칠 것만).
+            mark, extra = "ℹ️", f" — {alt} 로 대체되므로 없어도 정상"
+        else:
+            mark, extra = "❌", f" — {env_why(k)}"
+        print(f"   {mark} {k}: {src}{extra}")
 
     try:
         from dotenv import load_dotenv
@@ -849,7 +1009,7 @@ def why(argv: list[str] | None = None) -> int:
         print(f"   ✅ {today} KR 거래일 — 생성됐어야 함")
 
     print("④ KRX 로그인 (env 유무가 아니라 **실호출**로 판정, #25)")
-    krx_ok = None
+    krx_ok, login_kind, login_fix = None, "", ""
     try:
         from bot.pykrx_client import krx_login_ready, _quiet_pykrx_logging
         _quiet_pykrx_logging()
@@ -857,19 +1017,38 @@ def why(argv: list[str] | None = None) -> int:
             print("   ❌ KRX_ID/KRX_PW 미설정 — pykrx 수급 fetch 불가라 "
                   "generate() 가 여기서 return None (조용한 skip)")
             krx_ok = False
+            login_kind, login_fix = "env_unset", ".env 에 KRX_ID/KRX_PW 추가"
         else:
             # generate() 는 빈 응답이면 **4영업일까지 거슬러** 다시 묻는다 —
             # 프로브가 오늘 하루만 보면 장중·휴장에 '조회 실패' 로 오보한다
             # (독립 리뷰 실측 — #56 프로브는 제품의 루프 구조까지 베낄 것).
-            d = _resolve_trading_date()
-            tot, tries = _fetch_market_totals(d), 0
-            while not tot and tries < 4:
-                d = _prev_bday(d, 1)
-                tot, tries = _fetch_market_totals(d), tries + 1
+            # ⚠️ 단 **로그인이 확정 실패면 거기서 멈춘다** — 옛 판은 그대로
+            # 4일 × 2시장을 돌아 실패한 로그인을 10회 반복했고, 이미 답이
+            # 나온 뒤의 9회는 계정만 두드린다(2026-09-04 VM 실측).
+            buf = io.StringIO()
+            d, tries, tot = _resolve_trading_date(), 0, None
+            while True:
+                with redirect_stdout(buf), redirect_stderr(buf):
+                    tot = _fetch_market_totals(d)
+                login_kind, login_fix = krx_login_verdict(buf.getvalue())
+                if tot or login_kind in _LOGIN_CONFIRMED or tries >= 4:
+                    break
+                d, tries = _prev_bday(d, 1), tries + 1
             krx_ok = bool(tot)
-            print(f"   {'✅' if krx_ok else '❌'} 시장 수급 실조회"
+            # ⚠️ 여기서 재는 것은 **시장 수급(totals)** 하나다 — 제품은
+            # totals 든 종목별이든 하나만 있어도 진행하므로(generate 의
+            # walk-back 조건), '수급 전체가 죽었다' 고 말하면 과장이다(#165).
+            print(f"   {'✅' if krx_ok else '❌'} 시장 수급(totals) 실조회"
                   f"({d}, {tries}회 거슬러봄): "
-                  f"{'수신' if krx_ok else '전부 빈 응답 — 로그인 만료/차단 의심'}")
+                  f"{'수신' if krx_ok else '빈 응답'}")
+            if login_kind in _LOGIN_CONFIRMED:
+                print(f"   ❌ 로그인 갈래 [{login_kind}] {login_fix}")
+            elif not krx_ok:
+                # 로그인은 멀쩡한데 비었다 — 가로챈 원문을 보여준다(#109).
+                tail = [ln.strip() for ln in buf.getvalue().splitlines()
+                        if ln.strip()][-2:]
+                if tail:
+                    print("   ↪ 원문: " + " / ".join(tail))
     except Exception as exc:                                   # noqa: BLE001
         krx_ok = False
         print(f"   ❌ pykrx 조회 예외: {type(exc).__name__}: {exc}")
@@ -877,10 +1056,16 @@ def why(argv: list[str] | None = None) -> int:
     print("⑤ 아카이브 (미국은 **대조군** — 둘 다 비면 공통 원인, #143)")
     kr_d, scanned = _archive_scan("daily")
     us_d, _ = _archive_scan("us_daily")
-    for lab, d in (("한국", kr_d), ("미국", us_d)):
+
+    def _age(d: str | None):
+        if not d:
+            return None
+        return (_now_kst().date()
+                - datetime.strptime(d, "%Y-%m-%d").date()).days
+
+    kr_age, us_age = _age(kr_d), _age(us_d)
+    for lab, d, age in (("한국", kr_d, kr_age), ("미국", us_d, us_age)):
         if d:
-            age = (_now_kst().date()
-                   - datetime.strptime(d, "%Y-%m-%d").date()).days
             print(f"   {'✅' if age <= 3 else '⚠️'} {lab} 마지막 기록 {d}"
                   f" ({age}일 전)")
         else:
@@ -889,24 +1074,18 @@ def why(argv: list[str] | None = None) -> int:
         print(f"   ↪ 미국은 {us_d} 까지 정상 — 공통 인프라가 아니라 "
               f"**KR 경로**(KRX 로그인·pykrx) 문제")
 
+    missed = _missed_sessions(kr_d, today) if kr_d else None
+    try:
+        from bot import feed_health
+        stamp = feed_health.last("daily_byte_kr")
+    except Exception:                                          # noqa: BLE001
+        stamp = ""
+
     print("⑥ 판정")
-    # ⚠️ 휴장을 **가장 먼저** 본다 — 휴장일엔 수급 조회가 정상적으로 비어
-    # krx_ok=False 가 되는데, 그걸 먼저 보면 멀쩡한 자격증명을 범인으로
-    # 지목한다(독립 리뷰 실측 · #187b 틀린 사유가 헛걸음을 만든다).
-    if td is False:
-        print("   ⏸ 오늘은 휴장 — 이상 없음. 마지막 거래일 기록을 ⑤ 로 확인")
-    elif not llm_ok:
-        print("   ❌ LLM 키 없음(AI Studio·Vertex 둘 다) — 브리프 생성 불가")
-    elif krx_ok is False:
-        print("   ❌ KRX 수급 조회 실패 — 이게 원인이다. KRX Data Marketplace "
-              "자격증명 확인 후 `systemctl start daily-byte.service`")
-    elif kr_d and (_now_kst().date()
-                   - datetime.strptime(kr_d, "%Y-%m-%d").date()).days <= 1:
-        print("   ✅ 최근 기록 존재 — 화면이 안 보이면 렌더/창 문제")
-    else:
-        print("   ❓ 재료는 정상인데 기록이 없다 — 타이머가 안 돌았을 수 있다: "
-              "`systemctl status daily-byte.timer` · "
-              "`journalctl -u daily-byte.service -n 50`")
+    for line in why_verdict(td=td, llm_ok=llm_ok, login_kind=login_kind,
+                            login_fix=login_fix, krx_ok=krx_ok, kr_age=kr_age,
+                            missed_sessions=missed, stamp=stamp):
+        print(f"   {line}")
     return 0
 
 
