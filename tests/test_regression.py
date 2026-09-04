@@ -43873,3 +43873,170 @@ class TestBacklogDiagnosisWindowAndTicker20260904:
         assert "000660.KS" not in out, out
         assert "· 000660 ×3" in out, out
         assert "종목 1개" in out, out
+
+
+class TestDailyByteSilentFailure20260904:
+    """사용자 2026-09-04 "한글 Daily byte 가 갑자기 며칠간 또 작동안한것 같은데
+    이것 또 왜그런거야?" — 화면이 "아카이브가 아직 없습니다" 라고만 적어
+    **며칠 뒤에야** 알아챘다. `generate()` 는 다섯 자리에서 조용히 None 을
+    돌려주고 아무도 안 알려준다(#43 침묵이 최악 · #52 조용한 것과 죽은 것)."""
+
+    def test_empty_card_says_which_branch_not_just_none(self):
+        """빈 카드 문구는 '한 번도 없음' 과 '멈춤' 을 **갈라서** 말해야 한다.
+
+        옛 문구는 8일 넘게 멈추면 사실과 다른 말을 했다 — 카드 로더가 최근
+        7개 날짜만 보기 때문이다(#82 갈래로 말하라)."""
+        from bot.dashboard import daily_empty_note
+
+        never = daily_empty_note("", today="2026-09-04")
+        stalled = daily_empty_note("2026-08-28", today="2026-09-04")
+        assert never != stalled
+        assert "아직 없습니다" in never
+        assert "2026-08-28" in stalled and "7일 전" in stalled
+        assert "멈췄" in stalled
+        # 유닛 도장이 있으면 '돌긴 했다' 를 같이 말한다 — 처방이 갈린다.
+        with_health = daily_empty_note("2026-08-28", "점검 09-04 19:00",
+                                       "2026-09-04")
+        assert "점검 09-04 19:00" in with_health
+        # ⚠️ `today` 를 **안 넘기는** 실제 호출부 경로도 태운다 — 픽스처가
+        # 늘 넘기면 그 분기가 한 번도 안 돌아 NameError 를 놓친다(#91c,
+        # 실제로 `_KST` 미정의를 #210 가드가 대신 잡았다).
+        import datetime as _d
+        _k = _d.timezone(_d.timedelta(hours=9))
+        five = (_d.datetime.now(_k).date() - _d.timedelta(days=5)).isoformat()
+        assert "5일 전" in daily_empty_note(five)
+
+    def test_card_render_uses_the_branching_note(self, monkeypatch):
+        """⚠️ AST 로 "`daily_empty_note` 호출이 있나" 만 재면 **게이트만 꺼도
+        호출 노드는 남아** 뮤테이션이 통과한다(실측 — #141 그대로).
+        렌더된 HTML 을 값으로 볼 것(#20 배선은 태워야 보인다)."""
+        from bot import dashboard as db
+
+        monkeypatch.setattr(db, "_load_latest_market_daily",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(db, "_last_market_daily_date",
+                            lambda archive, kind, days=90:
+                            "2026-08-28" if kind == "daily" else "")
+        html = db._render_market_daily_cards()
+        # 한국 = 멈춤(날짜를 댄다) · 미국 = 기록 없음 — 두 갈래가 한 화면에
+        # 동시에 나와야 카드가 서로 다른 사실을 말한다는 것이 증명된다.
+        assert "2026-08-28" in html and "멈췄" in html, html[:400]
+        assert "아직 없습니다" in html
+        # ⚠️ 도장(점검 시각) 배선은 따로 재야 한다 — `_fh.note` 를 ""로
+        # 바꾸는 뮤테이션이 나머지 단언을 전부 통과했다(독립 리뷰 실측, #20).
+        # 그게 빠지면 '타이머가 안 돌았다' 와 '돌았는데 재료가 없었다' 가
+        # 다시 구별 불가가 된다.
+        from bot import feed_health as _fh
+        monkeypatch.setattr(_fh, "note", lambda feed: f"점검없음:{feed}")
+        html2 = db._render_market_daily_cards()
+        assert "점검없음:daily_byte_kr" in html2
+        assert "점검없음:daily_byte_us" in html2
+
+    def test_last_record_lookup_sees_past_the_card_window(self, tmp_path,
+                                                          monkeypatch):
+        """⚠️ 카드 로더의 **7일 창**이 이 결함의 원인이다 — 8일 넘게 멈추면
+        기록이 있는데도 '없다'고 말했다. 스텁으로 재면 그 창을 되돌리는
+        뮤테이션이 통과한다(실측) → 실제 아카이브를 만들어 값으로 본다."""
+        import json as _json
+
+        from bot import dashboard as db
+
+        # ⚠️ 경로 모양이 원천과 같아야 한다 — `~/.tradingagents/<archive>`
+        # 를 빼먹으면 검사가 아무것도 안 재고 빈 문자열만 본다(#155).
+        root = tmp_path / ".tradingagents" / "daily_byte_archive"
+        (root / "2026-08-20").mkdir(parents=True)
+        (root / "2026-08-20" / "190000_daily_byte.json").write_text(
+            _json.dumps({"kind": "daily", "body": "본문"}), encoding="utf-8")
+        # 그 뒤 날짜는 미국 것만 — 한국은 15일째 멈춘 상태를 재현한다.
+        for day in range(21, 33):
+            d = root / f"2026-08-{day:02d}" if day <= 31 else root / "2026-09-01"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "080000_daily_byte.json").write_text(
+                _json.dumps({"kind": "us_daily", "body": "us"}),
+                encoding="utf-8")
+        monkeypatch.setattr(db.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(db, "ARCHIVE_ROOT", tmp_path, raising=False)
+        assert db._last_market_daily_date(
+            "daily_byte_archive", "daily") == "2026-08-20"
+
+    def test_why_cli_is_dispatched_not_just_defined(self):
+        """정의만 있고 호출이 없으면 아무 일도 안 한다(#120·#252).
+
+        ⚠️ 이 커밋에서 실제로 냈다 — `if __name__` 블록이 `why` **위에**
+        있어 `--why` 가 영영 안 닿았다(#68). 엔트리포인트는 파일 맨 끝."""
+        import ast
+
+        from bot import daily_kr_flow as kf
+
+        src = ast.parse(open(kf.__file__, encoding="utf-8").read())
+        names = {}
+        for i, node in enumerate(src.body):
+            if isinstance(node, ast.FunctionDef):
+                names[node.name] = i
+            if isinstance(node, ast.If):
+                names["__entry__"] = i
+        assert names["why"] < names["__entry__"], (
+            "엔트리포인트가 why 정의보다 앞이면 --why 가 안 닿는다")
+        assert names["main"] < names["__entry__"]
+        # main 이 실제로 why 로 디스패치하는가(문자열이 아니라 호출로).
+        main_fn = [n for n in src.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "main"][0]
+        assert any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "why"
+                   for n in ast.walk(main_fn)), "main 이 why 를 안 부른다"
+
+    def test_stamp_precedes_the_trading_day_gate(self):
+        """도장의 뜻은 '유닛이 돌았다' 뿐이다 — 거래일 게이트 **뒤**에 두면
+        금요일 공휴일 + 주말에 96시간 공백이 생겨 멀쩡한 타이머가 ⚠️ 로 뜬다
+        (독립 리뷰 실측, 상한 80h). 순서를 AST 로 못박는다 — 값이 아니라
+        **위치**가 계약이라 문자열 검사로는 못 잡는다(#60 구조로 볼 것)."""
+        import ast
+
+        from bot import daily_kr_flow as kf
+
+        tree = ast.parse(open(kf.__file__, encoding="utf-8").read())
+        main_fn = [n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "main"][0]
+        mark_ln = [n.lineno for n in ast.walk(main_fn)
+                   if isinstance(n, ast.Call)
+                   and getattr(n.func, "attr", "") == "mark"]
+        gate_ln = [n.lineno for n in ast.walk(main_fn)
+                   if isinstance(n, ast.Call)
+                   and getattr(n.func, "id", "") == "is_trading_day"]
+        assert mark_ln and gate_ln, (mark_ln, gate_ln)
+        assert min(mark_ln) < min(gate_ln), (
+            "도장이 거래일 게이트 뒤에 있다 — 공휴일에 거짓 ⚠️ 가 뜬다")
+
+    def test_probe_and_screen_share_the_last_record_helper(self):
+        """프로브가 스캔을 복제하면 언젠가 카드와 다른 '마지막 기록'을
+        말한다(#35·#38). 같은 함수를 부르는지 AST 로 본다."""
+        import ast
+
+        from bot import daily_kr_flow as kf
+
+        tree = ast.parse(open(kf.__file__, encoding="utf-8").read())
+        fn = [n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "_archive_scan"][0]
+        assert any(isinstance(n, ast.Call)
+                   and getattr(n.func, "id", "") == "_last_market_daily_date"
+                   for n in ast.walk(fn)), "화면 헬퍼를 안 쓴다"
+
+    def test_both_daily_byte_feeds_have_a_lag_cap(self):
+        """이름 열거는 새 피드를 못 잡는다(#24·#52) — 도장을 찍는 피드는
+        지연 상한이 등록돼 있어야 '점검 기준 미등록' 으로 조용히 통과하지
+        않는다(#41)."""
+        import ast
+
+        from bot import feed_health as fh
+
+        marked = set()
+        for mod in ("bot/daily_kr_flow.py", "bot/us_market_daily.py"):
+            tree = ast.parse(open(mod, encoding="utf-8").read())
+            for n in ast.walk(tree):
+                if (isinstance(n, ast.Call)
+                        and getattr(n.func, "attr", "") == "mark"
+                        and n.args and isinstance(n.args[0], ast.Constant)):
+                    marked.add(n.args[0].value)
+        assert marked == {"daily_byte_kr", "daily_byte_us"}, marked
+        for feed in marked:
+            assert feed in fh._MAX_GAP_H, f"{feed} 지연 상한 미등록"
+            assert "미등록" not in fh.note(feed)

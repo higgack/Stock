@@ -703,6 +703,9 @@ def push_telegram_photo(png_path: str, caption: str = "") -> bool:
 
 
 def main() -> int:
+    import sys as _sys
+    if "--why" in _sys.argv[1:]:
+        return why(_sys.argv[1:])
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
     # httpx 가 sendMessage URL(봇 토큰 포함)을 INFO 로 찍어 journald 에
@@ -714,6 +717,17 @@ def main() -> int:
         from pathlib import Path
         load_dotenv(Path.home() / "stock" / ".env")
     except Exception:
+        pass
+    # 실행됐다는 도장 — 화면이 '타이머가 안 돌았다' 와 '돌았는데 재료가
+    # 없었다' 를 구별할 수 있게(#52). ⚠️ **거래일 게이트보다 앞**에 찍는다:
+    # 뒤에 두면 금요일 공휴일 + 주말에 96시간 공백이 생겨 멀쩡한 타이머가
+    # ⚠️ 로 뜬다(독립 리뷰 실측). 이 도장의 뜻은 '유닛이 돌았다' 뿐이고,
+    # 브리프가 나왔는지는 아카이브 날짜가 말한다 — 둘을 합쳐야 갈래가
+    # 갈린다(#82). 형제(US)도 조건 없이 찍으므로 판정 기준이 같다(#38).
+    try:
+        from bot import feed_health
+        feed_health.mark("daily_byte_kr")
+    except Exception:                                          # noqa: BLE001
         pass
     # 한국 거래일에만 — 주말 + 한국 공휴일이면 graceful skip (사용자 정책
     # 2026-06-06). is_trading_day 가 주말·공휴일 모두 커버. 캘린더 라이브러리
@@ -742,6 +756,156 @@ def main() -> int:
     ok = push_telegram(body)
     log.info("daily_byte: push %s", "OK" if ok else "with failures")
     return 0 if ok else 1
+
+
+
+
+# ── 진단: 왜 오늘 브리프가 안 나왔나 (사용자 2026-09-04) ──────────────────
+# `generate()` 는 **다섯 자리에서 조용히 None** 을 돌려주고 화면은 그저
+# "아카이브가 아직 없습니다" 라고만 적는다 — 사용자가 며칠 뒤 물어야 알았다
+# (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
+# 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
+# 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
+_WHY_VER = 1
+
+
+def _archive_scan(kind: str, days: int = 90) -> tuple[str, int]:
+    """(마지막 기록 날짜, 스캔한 날짜 디렉터리 수). 없으면 ("", n).
+
+    ⚠️ 날짜 판정은 **화면이 쓰는 그 함수**를 부른다(#35·#38) — 여기에 같은
+    스캔을 복제하면 언젠가 프로브와 카드가 다른 '마지막 기록'을 말한다."""
+    import os as _os
+    from bot.dashboard import _last_market_daily_date
+    root = _DAILY_BYTE_ARCHIVE_DIR
+    n = 0
+    if _os.path.isdir(root):
+        n = len([d for d in _os.listdir(root)
+                 if _os.path.isdir(_os.path.join(root, d))])
+    return _last_market_daily_date("daily_byte_archive", kind, days), min(n, days)
+
+
+def why(argv: list[str] | None = None) -> int:
+    """`--why` — 오늘 브리프가 왜 없는지 **갈래로** 말한다. Pro 호출 0건.
+
+    ⚠️ 배너에 인터프리터·필수 모듈을 먼저 찍는다 — venv 밖에서 돌면 pykrx 가
+    없어 '원천 실패' 처럼 보인다(#132 를 이 도구에서 반복하지 않기 위해).
+    자격증명은 **출처와 길이까지만**(값 금지, §Secrets · #23).
+    """
+    import sys
+    from bot.env_keys import env_source, env_why
+
+    print(f"[Daily Byte KR 진단 v{_WHY_VER}]")
+    print(f"① 인터프리터: {sys.executable}")
+    missing = []
+    for mod in ("pykrx", "dotenv"):
+        try:
+            __import__(mod)
+        except Exception:                                      # noqa: BLE001
+            missing.append(mod)
+    if missing:
+        print(f"   ❌ 필수 모듈 없음: {', '.join(missing)} — venv 로 실행하세요"
+              f" (~/stock/.venv/bin/python -m bot.daily_kr_flow --why)")
+        return 1
+    print("   ✅ pykrx·dotenv 로드됨")
+
+    # ⚠️ 출처 판정을 **먼저** 한다 — `load_dotenv` 가 .env 를 os.environ 으로
+    # 옮기면 `env_source` 가 전부 '환경변수' 라고 답해 갈래가 사라진다
+    # (독립 리뷰 실측 — #23 이 출처를 찍게 한 이유가 통째로 무력화된다).
+    print("② 자격증명 (값은 안 찍습니다)")
+    creds = {}
+    for k in ("GOOGLE_API_KEY", "KRX_ID", "KRX_PW",
+              "TELEGRAM_BOT_TOKEN", "STANDARDVIEW_TELEGRAM_TOKEN",
+              "CHANNEL_CHAT_IDS"):
+        src = env_source(k)
+        creds[k] = src != "없음"
+        extra = f" — {env_why(k)}" if src == "없음" else ""
+        print(f"   {'✅' if src != '없음' else '❌'} {k}: {src}{extra}")
+
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path as _P
+        load_dotenv(_P.home() / "stock" / ".env")
+    except Exception:                                          # noqa: BLE001
+        pass
+    # ⚠️ 생성 가능 여부는 raw 키가 아니라 **제품이 쓰는 판정**으로 — Vertex
+    # 모드에선 GOOGLE_API_KEY 가 없어도 정상이다(#35 화면이 쓰는 그 경로).
+    llm_ok = bool(_effective_key())
+    print(f"   {'✅' if llm_ok else '❌'} LLM 키(genai_factory.effective_key): "
+          f"{'사용 가능' if llm_ok else '없음 — AI Studio 키도 Vertex 설정도 없음'}")
+
+    print("③ 거래일 게이트 (아니면 그날은 정상 skip)")
+    today = _now_kst().strftime("%Y-%m-%d")
+    try:
+        from bot.market_calendar import is_trading_day
+        td = is_trading_day("KR", today)
+    except Exception as exc:                                   # noqa: BLE001
+        td = None
+        print(f"   ❓ 캘린더 판정 불가({exc}) — 폴백으로 진행됨")
+    if td is False:
+        print(f"   ⏸ {today} KR 휴장 — 오늘은 생성 안 하는 게 정상")
+    elif td is True:
+        print(f"   ✅ {today} KR 거래일 — 생성됐어야 함")
+
+    print("④ KRX 로그인 (env 유무가 아니라 **실호출**로 판정, #25)")
+    krx_ok = None
+    try:
+        from bot.pykrx_client import krx_login_ready, _quiet_pykrx_logging
+        _quiet_pykrx_logging()
+        if not krx_login_ready():
+            print("   ❌ KRX_ID/KRX_PW 미설정 — pykrx 수급 fetch 불가라 "
+                  "generate() 가 여기서 return None (조용한 skip)")
+            krx_ok = False
+        else:
+            # generate() 는 빈 응답이면 **4영업일까지 거슬러** 다시 묻는다 —
+            # 프로브가 오늘 하루만 보면 장중·휴장에 '조회 실패' 로 오보한다
+            # (독립 리뷰 실측 — #56 프로브는 제품의 루프 구조까지 베낄 것).
+            d = _resolve_trading_date()
+            tot, tries = _fetch_market_totals(d), 0
+            while not tot and tries < 4:
+                d = _prev_bday(d, 1)
+                tot, tries = _fetch_market_totals(d), tries + 1
+            krx_ok = bool(tot)
+            print(f"   {'✅' if krx_ok else '❌'} 시장 수급 실조회"
+                  f"({d}, {tries}회 거슬러봄): "
+                  f"{'수신' if krx_ok else '전부 빈 응답 — 로그인 만료/차단 의심'}")
+    except Exception as exc:                                   # noqa: BLE001
+        krx_ok = False
+        print(f"   ❌ pykrx 조회 예외: {type(exc).__name__}: {exc}")
+
+    print("⑤ 아카이브 (미국은 **대조군** — 둘 다 비면 공통 원인, #143)")
+    kr_d, scanned = _archive_scan("daily")
+    us_d, _ = _archive_scan("us_daily")
+    for lab, d in (("한국", kr_d), ("미국", us_d)):
+        if d:
+            age = (_now_kst().date()
+                   - datetime.strptime(d, "%Y-%m-%d").date()).days
+            print(f"   {'✅' if age <= 3 else '⚠️'} {lab} 마지막 기록 {d}"
+                  f" ({age}일 전)")
+        else:
+            print(f"   ❌ {lab} 기록 없음 (최근 {scanned}개 날짜 확인)")
+    if kr_d and us_d and kr_d < us_d:
+        print(f"   ↪ 미국은 {us_d} 까지 정상 — 공통 인프라가 아니라 "
+              f"**KR 경로**(KRX 로그인·pykrx) 문제")
+
+    print("⑥ 판정")
+    # ⚠️ 휴장을 **가장 먼저** 본다 — 휴장일엔 수급 조회가 정상적으로 비어
+    # krx_ok=False 가 되는데, 그걸 먼저 보면 멀쩡한 자격증명을 범인으로
+    # 지목한다(독립 리뷰 실측 · #187b 틀린 사유가 헛걸음을 만든다).
+    if td is False:
+        print("   ⏸ 오늘은 휴장 — 이상 없음. 마지막 거래일 기록을 ⑤ 로 확인")
+    elif not llm_ok:
+        print("   ❌ LLM 키 없음(AI Studio·Vertex 둘 다) — 브리프 생성 불가")
+    elif krx_ok is False:
+        print("   ❌ KRX 수급 조회 실패 — 이게 원인이다. KRX Data Marketplace "
+              "자격증명 확인 후 `systemctl start daily-byte.service`")
+    elif kr_d and (_now_kst().date()
+                   - datetime.strptime(kr_d, "%Y-%m-%d").date()).days <= 1:
+        print("   ✅ 최근 기록 존재 — 화면이 안 보이면 렌더/창 문제")
+    else:
+        print("   ❓ 재료는 정상인데 기록이 없다 — 타이머가 안 돌았을 수 있다: "
+              "`systemctl status daily-byte.timer` · "
+              "`journalctl -u daily-byte.service -n 50`")
+    return 0
 
 
 if __name__ == "__main__":

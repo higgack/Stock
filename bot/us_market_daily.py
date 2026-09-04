@@ -640,6 +640,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     import dotenv
     dotenv.load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    # 형제(KR)와 **같은 규율** — 유닛이 돌았다는 도장. 한쪽만 찍으면 화면이
+    # 두 카드를 다른 기준으로 판정한다(#38).
+    try:
+        from bot import feed_health
+        feed_health.mark("daily_byte_us")
+    except Exception:                                          # noqa: BLE001
+        pass
     result = generate()
     if result:
         body, cost = result
