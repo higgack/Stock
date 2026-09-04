@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -193,9 +194,15 @@ def _cached(name: str, ttl: float | None = None):
 
 
 def _cache_write(name: str, obj) -> None:
+    """원자적 저장 — `write_text` 는 truncate 후 버퍼 쓰기라, 배경 갱신
+    스레드가 쓰는 중에 요청 스레드가 읽으면 **찢어진 JSON** 을 본다(둘 다
+    None → 그 클릭이 전체 수집을 기다린다). 임시파일 + `os.replace`."""
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (_CACHE_DIR / name).write_text(json.dumps(obj, ensure_ascii=False))
+        dst = _CACHE_DIR / name
+        tmp = dst.with_suffix(dst.suffix + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(obj, ensure_ascii=False))
+        os.replace(tmp, dst)
     except Exception:
         pass
 
@@ -561,30 +568,148 @@ def _fetch_deposit_naver() -> dict:
     return out
 
 
-def fetch_themes() -> dict:
-    """테마별 시세 → {'themes': [{name, no, pct, pct3, leaders}] 등락률 내림차순,
-    'ts'}. 장중 30초 캐시. 여러 페이지(전 테마) 수집."""
-    c = _cached("theme.json")
-    if c is not None:
-        return c
+# 테마 ~200개 = 페이지당 ~30 × 7. **리터럴로** 못박는다 — 상수로 검증하면
+# 그 상수를 바꾸는 뮤테이션이 자기 자신을 통과시킨다(#66 tautology).
+_THEME_PAGES = 7
+# 낡은 캐시를 즉시 내줘도 되는 상한. 이보다 낡았으면 기다려서라도 새로 받는다
+# — 낡은 값을 '현재'로 내보내지 않기 위해서다(#163). 화면은 어느 쪽이든
+# 스냅샷 시각(ts)을 그대로 찍는다(#43).
+_THEME_SWR_SEC = 600
+
+_BG_KEYS: set = set()
+_BG_LOCK = threading.Lock()
+
+
+def _read_cache(name: str):
+    """신선도와 **무관하게** 저장분을 읽는다(SWR 용). 없으면 (None, None)."""
+    f = _CACHE_DIR / name
+    try:
+        return json.loads(f.read_text()), f.stat().st_mtime
+    except Exception:                                          # noqa: BLE001
+        return None, None
+
+
+def _refresh_async(name: str, fn, key: str) -> None:
+    """낡은 값을 내준 뒤 뒤에서 채운다 — 같은 키는 한 번만(#113·#127).
+
+    ⚠️ 배경과 전경이 **같은 single-flight 키**를 타야 한다. `_BG_KEYS` 만으로
+    막으면 배경 수집이 도는 중에 SWR 창을 벗어난 요청이 들어와 두 벌(=14건)이
+    동시에 네이버로 나가고 두 writer 가 경합한다(독립 리뷰 실측).
+    """
+    with _BG_LOCK:
+        if name in _BG_KEYS:
+            return
+        _BG_KEYS.add(name)
+
+    def _run() -> None:
+        try:
+            from bot.singleflight import once
+            got = once(key, fn)
+            # ⚠️ 빈 결과로 **멀쩡한 스냅샷을 덮지 않는다** — 덮으면 다음
+            # 클릭이 내줄 낡은 값조차 없어 그때부터 기다리게 된다(원천 장애
+            # 한 번이 화면을 비운다, #119 의 짝).
+            if got and got.get("themes"):
+                _cache_write(name, got)
+            else:
+                log.warning("naver_sector: 배경 갱신이 빈 결과 — %s 유지", name)
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("naver_sector: 배경 갱신 실패 %s: %s", name, exc)
+        finally:
+            with _BG_LOCK:
+                _BG_KEYS.discard(name)
+
+    try:
+        threading.Thread(target=_run, daemon=True, name=f"naver-{name}").start()
+    except Exception as exc:                                   # noqa: BLE001
+        # start() 가 던지면 `finally` 가 안 돌아 그 키의 배경 갱신이 프로세스
+        # 수명 내내 죽는다 — 여기서 되돌린다.
+        with _BG_LOCK:
+            _BG_KEYS.discard(name)
+        log.warning("naver_sector: 배경 갱신 스레드 시작 실패 %s: %s", name, exc)
+
+
+def _theme_page(page: int):
+    """테마 한 페이지 → 행 목록. **수신 실패는 None**(빈 페이지 `[]` 와 다르다).
+
+    옛 직렬 판은 첫 실패에서 `break` 해 부분 결과를 만들지 않았다. 병렬로
+    바꾸면 4쪽만 429 를 맞아도 나머지가 그대로 합쳐져 **~170개를 완전본으로**
+    굽는다(독립 리뷰) — 갈래를 남겨 호출부가 캐시 여부를 정한다(#82·#119).
+    """
+    html = _get(f"{_BASE}/theme.naver", params={"page": page})
+    return parse_themes_full(html) if html else None
+
+
+def collect_themes() -> dict:
+    """전 페이지를 **병렬로** 받아 합친다.
+
+    ⚠️ 옛 판은 1→7 페이지를 **직렬로** 돌며 각 페이지를 최대 15초까지
+    기다렸다(요청 경로에서, 캐시는 장중 30초) — 클릭 한 번이 왕복 7번을
+    그대로 기다린다(#116 본 응답 경로의 무거운 값). 페이지끼리 의존이
+    없으므로 한 물결로 받는다. `map_bounded` 가 **입력 순서**를 지키므로
+    중복 제거가 앞 페이지를 남기는 규약도 그대로다.
+    """
+    from bot.pool import map_bounded
+
+    t0 = time.time()
+    pages = map_bounded(_theme_page, list(range(1, _THEME_PAGES + 1)))
+    failed = [i for i, rows in enumerate(pages, 1) if rows is None]
     themes: list[dict] = []
     seen: set[str] = set()
-    for page in range(1, 8):  # 테마 ~200개 → 페이지네이션
-        html = _get(f"{_BASE}/theme.naver", params={"page": page})
-        if not html:
-            break
-        page_rows = parse_themes_full(html)
-        if not page_rows:
-            break
-        for t in page_rows:
+    for rows in pages:
+        for t in rows or []:
             if t["no"] in seen:
                 continue
             seen.add(t["no"])
             themes.append(t)
     themes.sort(key=lambda x: (x.get("pct") is None, -(x.get("pct") or 0)))
-    out = {"themes": themes,
-           "ts": _now_kst_label() if themes else ""}
-    _cache_write("theme.json", out)
+    # 재지 않으면 '느리다'는 진단이 아니다(#69·#110) — 실측을 로그에 남긴다.
+    log.info("naver_sector: themes %d개 · %d페이지(실패 %s) · %.2fs",
+             len(themes), _THEME_PAGES, failed or "없음", time.time() - t0)
+    if failed:
+        log.warning("naver_sector: 테마 페이지 수신 실패 %s — 부분 스냅샷", failed)
+    return {"themes": themes, "ts": _now_kst_label() if themes else "",
+            "partial": bool(failed)}
+
+
+def _collect_and_store() -> dict:
+    """수집 → **완전한 결과만** 저장.
+
+    ⚠️ 옛 판은 결과를 무조건 캐시했다. 전 페이지가 실패하면 `{"themes": []}`
+    가 저장되고, `_session_fresh` 는 장 마감 뒤 스냅샷을 무조건 fresh 로 보므로
+    **다음 개장까지 빈 화면이 재시도 없이** 서빙된다(독립 리뷰 실측). 부분·빈
+    결과는 굽지 않는다(#119 예외로 끝난 실행은 캐시하지 말 것).
+    """
+    out = collect_themes()
+    if out.get("themes") and not out.get("partial"):
+        _cache_write("theme.json", out)
+    else:
+        log.warning("naver_sector: 테마 수집 불완전(themes=%d partial=%s) — "
+                    "캐시를 덮지 않는다",
+                    len(out.get("themes") or []), out.get("partial"))
+    return out
+
+
+def fetch_themes() -> dict:
+    """테마별 시세 → {'themes': [...] 등락률 내림차순, 'ts'}. 장중 30초 캐시.
+
+    캐시가 낡았어도 `_THEME_SWR_SEC` 안이면 **그걸 즉시 주고** 뒤에서
+    갱신한다(`stale`·`stale_age` — 화면이 얼마나 낡았는지 말한다, #43·#163).
+    """
+    c = _cached("theme.json")
+    if c is not None:
+        return c
+    old, mt = _read_cache("theme.json")
+    have_old = bool(old and old.get("themes"))
+    age = None if mt is None else time.time() - mt
+    if have_old and age is not None and age < _THEME_SWR_SEC:
+        _refresh_async("theme.json", _collect_and_store, "naver:themes")
+        return dict(old, stale=True, stale_age=int(age))
+    from bot.singleflight import once
+    out = once("naver:themes", _collect_and_store)
+    if not out.get("themes") and have_old:
+        # 수집이 빈손이면 저장분이라도 준다 — 빈 화면보다 낫고 ts 가 언제
+        # 것인지 말한다(#43·#163 낡은 값을 '현재'라 하지 않는다).
+        return dict(old, stale=True, stale_age=int(age or 0))
     return out
 
 
