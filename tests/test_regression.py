@@ -45360,6 +45360,97 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         assert "⑦" not in out, out
 
 
+class TestDailyByteDryRunProvesGenerationWithoutPushing20260905:
+    """`--why` 는 **재료**까지만 잰다 — 생성·푸시는 다른 층이다.
+
+    2026-09-05 저널이 09-04 19:06 실패의 원인을 `패스워드 변경 필요` 로
+    확정했고 자격증명은 고쳐졌다(④ 실호출 ✅). 그런데 **생성 층은 08-27
+    이후 한 번도 안 돌아** '이제 제대로 오나' 를 다음 거래일 저녁까지 기다려야
+    답할 수 있었다 — 재지 않고 '될 겁니다' 라고 말하는 자리다(#79).
+    푸시 없이 생성만 태워 그 자리를 없앤다.
+    """
+
+    def _run(self, monkeypatch, *, gen, trading_day=False):
+        import io
+        from contextlib import redirect_stdout
+        import bot.daily_kr_flow as kf
+        import bot.market_calendar as mc
+        monkeypatch.setattr(mc, "is_trading_day", lambda m, d: trading_day)
+        monkeypatch.setattr(kf, "generate", gen)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = kf.dry_run()
+        return rc, buf.getvalue()
+
+    def test_never_pushes(self, monkeypatch):
+        """이름이 dry-run 인데 푸시하면 사용자에게 실물이 나간다."""
+        import bot.daily_kr_flow as kf
+
+        def _boom(*a, **k):
+            raise AssertionError("dry-run 이 푸시했다")
+
+        monkeypatch.setattr(kf, "push_telegram", _boom)
+        monkeypatch.setattr(kf, "push_telegram_photo", _boom)
+        rc, out = self._run(monkeypatch, gen=lambda: ("본문\n둘째줄", 12.5, None))
+        assert rc == 0 and "푸시는 안 했다" in out, out
+
+    def test_reports_cost_and_shape(self, monkeypatch):
+        """요금이 드는 도구는 얼마였는지 말해야 한다(#43)."""
+        rc, out = self._run(monkeypatch, gen=lambda: ("본문", 12.5, "/tmp/x.png"))
+        assert rc == 0
+        assert "₩12.5" in out and "인포그래픽 있음" in out, out
+
+    def test_warns_that_it_costs_before_calling(self, monkeypatch):
+        """부르기 전에 요금이 든다고 밝힌다 — 에이전트가 임의 과금 유발 금지."""
+        rc, out = self._run(monkeypatch, gen=lambda: ("x", 0.0, None))
+        assert "요금" in out.split("①")[1].split("②")[0], out
+
+    def test_holiday_gate_is_skipped_and_said_so(self, monkeypatch):
+        """휴장일에 '되는지' 를 묻는 게 이 플래그의 존재 이유다 —
+        건너뛰되 **건너뛴다고 말한다**(#43)."""
+        rc, out = self._run(monkeypatch, gen=lambda: ("x", 0.0, None),
+                            trading_day=False)
+        assert rc == 0, out
+        assert "휴장" in out and "게이트를 건너뛴다" in out, out
+
+    def test_none_is_a_failure_with_an_exit_code(self, monkeypatch):
+        """생성 실패를 0 으로 돌려주면 자동화가 못 잡는다(#54)."""
+        rc, out = self._run(monkeypatch, gen=lambda: None)
+        assert rc == 1 and "❌" in out and "--why" in out, out
+
+    def test_exception_is_named_not_swallowed(self, monkeypatch):
+        """예외를 삼키면 '왜 없는지' 를 다시 못 묻는다(#12)."""
+        def _raise():
+            raise RuntimeError("boom-xyz")
+
+        rc, out = self._run(monkeypatch, gen=_raise)
+        assert rc == 1 and "boom-xyz" in out and "RuntimeError" in out, out
+
+    def test_main_dispatches_dry_run(self, monkeypatch):
+        """디스패치를 인라인으로 두면 테스트가 못 태운다(#252) —
+        게이트만 꺼도 통과하지 않도록 **결과**로 본다(#141)."""
+        import sys
+        import bot.daily_kr_flow as kf
+        seen: list = []
+        monkeypatch.setattr(kf, "dry_run", lambda: seen.append(1) or 7)
+        monkeypatch.setattr(
+            kf, "generate", lambda: pytest.fail("--dry-run 인데 정기 경로가 돌았다"))
+        monkeypatch.setattr(sys, "argv", ["daily_kr_flow", "--dry-run"])
+        assert kf.main() == 7
+        assert seen == [1], seen
+
+    def test_why_and_dry_run_do_not_collide(self, monkeypatch):
+        """--why 가 먼저다(읽기 전용) — 둘 다 주면 요금 드는 쪽을 안 탄다."""
+        import sys
+        import bot.daily_kr_flow as kf
+        monkeypatch.setattr(kf, "why", lambda argv: 3)
+        monkeypatch.setattr(
+            kf, "dry_run", lambda: pytest.fail("--why 인데 dry-run 이 돌았다"))
+        monkeypatch.setattr(sys, "argv",
+                            ["daily_kr_flow", "--why", "--dry-run"])
+        assert kf.main() == 3
+
+
 class TestNaverSectorCheckTellsTheBranch20260905:
     """`--check` — 빈 로그가 무엇을 뜻하는지 화면이 말한다(#274·#82).
 
