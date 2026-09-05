@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import os
 from bot.genai_factory import effective_key as _effective_key
 from datetime import datetime, timedelta, timezone
@@ -707,6 +708,8 @@ def main() -> int:
     import sys as _sys
     if "--why" in _sys.argv[1:]:
         return why(_sys.argv[1:])
+    if "--dry-run" in _sys.argv[1:]:
+        return dry_run()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
     # httpx 가 sendMessage URL(봇 토큰 포함)을 INFO 로 찍어 journald 에
@@ -761,13 +764,70 @@ def main() -> int:
 
 
 
+# ── 진단: 지금 만들면 되나 (사용자 2026-09-05) ────────────────────────
+# `--why` 는 **재료**(자격증명·KRX 실호출·아카이브)까지만 잰다. 재료가
+# 멀쩡해도 생성(LLM)·푸시는 다른 층이고, 그 층은 09-04 19:06 실패 이후 한
+# 번도 안 돌았다 — 그런데 다음 거래일 저녁까지 기다려야만 알 수 있으면
+# "제대로 오는거야?" 에 매번 '기다려 보세요' 로 답하게 된다(#79 그 경로가
+# 실제로 실행됐나를 먼저 답할 것).
+# 그래서 **푸시 없이** 생성만 태워 본다. 휴장일에도 돈다(그게 요점이다).
+# ⚠️ LLM 을 실제로 부르므로 **요금이 든다** — 그래서 자동 실행이 아니라
+# 사람이 명시적으로 부르는 플래그다(에이전트가 임의 과금 유발 금지).
+def dry_run() -> int:
+    """`--dry-run` — 생성만 태워 보고 **푸시는 안 한다**. 요금이 든다."""
+    import sys
+
+    print(f"[Daily Byte KR dry-run v{_WHY_VER}]")
+    print(f"① 인터프리터: {sys.executable}")
+    print("   ⚠️ LLM 을 실제로 부릅니다(요금 발생) · 텔레그램 푸시는 **안 합니다**")
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        load_dotenv(Path.home() / "stock" / ".env")
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"   ⚠️ .env 로드 실패: {exc}")
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # 거래일 게이트는 **일부러 건너뛴다** — 휴장일에 '되는지' 를 묻는 게
+    # 이 플래그의 존재 이유다. 그 사실을 밝힌다(#43 침묵이 최악).
+    try:
+        from bot.market_calendar import is_trading_day
+        td = is_trading_day("KR", _now_kst().strftime("%Y-%m-%d"))
+        if td is False:
+            print("② 오늘은 휴장 — 정기 실행이라면 skip 이지만 dry-run 은 "
+                  "게이트를 건너뛴다(마지막 거래일 재료로 생성)")
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"② 거래일 판정 불가({exc}) — 그대로 진행")
+    t0 = time.time()
+    try:
+        result = generate()
+    except Exception as exc:                                   # noqa: BLE001
+        # 예외를 삼키면 '왜 없는지' 를 다시 못 묻는다(#12 silent-fail 금지).
+        print(f"③ ❌ 생성 중 예외: {type(exc).__name__}: {exc}")
+        return 1
+    took = time.time() - t0
+    if result is None:
+        print(f"③ ❌ 생성 실패 — generate() 가 None ({took:.1f}초). "
+              f"사유는 위 로그에, 재료 갈래는 `--why` 가 말한다")
+        return 1
+    body, cost, png = result
+    print(f"③ ✅ 생성 성공 ({took:.1f}초) · 비용 ₩{cost:.1f} · "
+          f"인포그래픽 {'있음' if png else '없음'} · 본문 {len(body)}자")
+    head = " / ".join(body.splitlines()[:3])[:200]
+    print(f"   | {head}")
+    print("④ 푸시는 안 했다 — 정기 실행(daily-byte.timer)이 같은 경로로 보낸다")
+    return 0
+
+
 # ── 진단: 왜 오늘 브리프가 안 나왔나 (사용자 2026-09-04) ──────────────────
 # `generate()` 는 **다섯 자리에서 조용히 None** 을 돌려주고 화면은 그저
 # "아카이브가 아직 없습니다" 라고만 적는다 — 사용자가 며칠 뒤 물어야 알았다
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 5
+_WHY_VER = 6
 
 # pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
 # 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
