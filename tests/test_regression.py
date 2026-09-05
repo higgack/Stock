@@ -45391,36 +45391,36 @@ class TestDailyByteDryRunProvesGenerationWithoutPushing20260905:
 
         monkeypatch.setattr(kf, "push_telegram", _boom)
         monkeypatch.setattr(kf, "push_telegram_photo", _boom)
-        rc, out = self._run(monkeypatch, gen=lambda: ("본문\n둘째줄", 12.5, None))
-        assert rc == 0 and "푸시는 안 했다" in out, out
+        rc, out = self._run(monkeypatch, gen=lambda **kw: ("본문\n둘째줄", 12.5, None))
+        assert rc == 0 and "푸시·아카이브 둘 다 안 했다" in out, out
 
     def test_reports_cost_and_shape(self, monkeypatch):
         """요금이 드는 도구는 얼마였는지 말해야 한다(#43)."""
-        rc, out = self._run(monkeypatch, gen=lambda: ("본문", 12.5, "/tmp/x.png"))
+        rc, out = self._run(monkeypatch, gen=lambda **kw: ("본문", 12.5, "/tmp/x.png"))
         assert rc == 0
         assert "₩12.5" in out and "인포그래픽 있음" in out, out
 
     def test_warns_that_it_costs_before_calling(self, monkeypatch):
         """부르기 전에 요금이 든다고 밝힌다 — 에이전트가 임의 과금 유발 금지."""
-        rc, out = self._run(monkeypatch, gen=lambda: ("x", 0.0, None))
+        rc, out = self._run(monkeypatch, gen=lambda **kw: ("x", 0.0, None))
         assert "요금" in out.split("①")[1].split("②")[0], out
 
     def test_holiday_gate_is_skipped_and_said_so(self, monkeypatch):
         """휴장일에 '되는지' 를 묻는 게 이 플래그의 존재 이유다 —
         건너뛰되 **건너뛴다고 말한다**(#43)."""
-        rc, out = self._run(monkeypatch, gen=lambda: ("x", 0.0, None),
+        rc, out = self._run(monkeypatch, gen=lambda **kw: ("x", 0.0, None),
                             trading_day=False)
         assert rc == 0, out
         assert "휴장" in out and "게이트를 건너뛴다" in out, out
 
     def test_none_is_a_failure_with_an_exit_code(self, monkeypatch):
         """생성 실패를 0 으로 돌려주면 자동화가 못 잡는다(#54)."""
-        rc, out = self._run(monkeypatch, gen=lambda: None)
+        rc, out = self._run(monkeypatch, gen=lambda **kw: None)
         assert rc == 1 and "❌" in out and "--why" in out, out
 
     def test_exception_is_named_not_swallowed(self, monkeypatch):
         """예외를 삼키면 '왜 없는지' 를 다시 못 묻는다(#12)."""
-        def _raise():
+        def _raise(**kw):
             raise RuntimeError("boom-xyz")
 
         rc, out = self._run(monkeypatch, gen=_raise)
@@ -45434,7 +45434,7 @@ class TestDailyByteDryRunProvesGenerationWithoutPushing20260905:
         seen: list = []
         monkeypatch.setattr(kf, "dry_run", lambda: seen.append(1) or 7)
         monkeypatch.setattr(
-            kf, "generate", lambda: pytest.fail("--dry-run 인데 정기 경로가 돌았다"))
+            kf, "generate", lambda **kw: pytest.fail("--dry-run 인데 정기 경로가 돌았다"))
         monkeypatch.setattr(sys, "argv", ["daily_kr_flow", "--dry-run"])
         assert kf.main() == 7
         assert seen == [1], seen
@@ -45449,6 +45449,82 @@ class TestDailyByteDryRunProvesGenerationWithoutPushing20260905:
         monkeypatch.setattr(sys, "argv",
                             ["daily_kr_flow", "--why", "--dry-run"])
         assert kf.main() == 3
+
+    # ── 진단이 자기가 읽을 신호를 오염시켰다 (2026-09-05 VM 실측) ──────
+    # dry-run 출력에 `dashboard: daily_byte.html regenerated (155 runs)` 가
+    # 찍혔다 — `generate()` 는 "push 와 무관하게 항상 기록" 이라 09-04
+    # 아카이브를 남겼고, 그래서 **텔레그램엔 안 간 브리프가 화면엔 있고**
+    # `--why` ⑤ 가 '마지막 기록 2026-09-04' 로 공백이 메워진 것처럼 보고하게
+    # 됐다(#30 의 진단판 · #264 진단은 운영 상태를 바꾸지 않는다).
+
+    def test_dry_run_does_not_write_the_archive(self, monkeypatch):
+        import bot.daily_kr_flow as kf
+        seen: list = []
+        monkeypatch.setattr(
+            kf, "generate",
+            lambda **kw: (seen.append(kw), ("x", 0.0, None))[1])
+        import io
+        from contextlib import redirect_stdout
+        import bot.market_calendar as mc
+        monkeypatch.setattr(mc, "is_trading_day", lambda m, d: True)
+        with redirect_stdout(io.StringIO()):
+            kf.dry_run()
+        assert seen == [{"archive": False}], seen
+
+    def test_archive_defaults_to_on_for_the_scheduled_run(self):
+        """반대 증거 — 기본값이 꺼지면 대시보드가 통째로 빈다.
+
+        진단만 끄는 것이지 정기 실행의 기록을 끄는 게 아니다.
+        """
+        import bot.daily_kr_flow as kf
+        assert kf.generate.__kwdefaults__ == {"archive": True}, \
+            kf.generate.__kwdefaults__
+
+
+    def test_archive_gate_is_wired_by_ast_not_by_string(self):
+        """`if archive:` 가 실제로 저장 호출을 감싸는가 — 주석·독스트링이
+        대신 만족시키지 않게 AST 로 본다(#59b·#239)."""
+        import ast as _ast
+        import inspect
+        import bot.daily_kr_flow as kf
+        tree = _ast.parse(inspect.getsource(kf.generate))
+        guarded = False
+        for node in _ast.walk(tree):
+            if not (isinstance(node, _ast.If)
+                    and isinstance(node.test, _ast.Name)
+                    and node.test.id == "archive"):
+                continue
+            names = {n.func.id for n in _ast.walk(node)
+                     if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)}
+            if "_save_daily_byte_archive" in names:
+                guarded = True
+        assert guarded, "아카이브 저장이 archive 게이트 밖에 있다"
+        # 그리고 게이트 **밖**에서 부르는 곳이 없어야 한다.
+        calls = [n for n in _ast.walk(tree)
+                 if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                 and n.func.id == "_save_daily_byte_archive"]
+        assert len(calls) == 1, calls
+
+    def test_infographic_stays_out_of_the_served_dir_on_dry_run(self):
+        """서빙 디렉터리에 고아 PNG 를 남기면 화면이 그걸 들고 있는다."""
+        import ast as _ast
+        import inspect
+        import bot.daily_kr_flow as kf
+        src = inspect.getsource(kf.generate)
+        tree = _ast.parse(src)
+        # `_DBYTE_IMG_DIR if archive else <임시경로>` 형태여야 한다.
+        picked = [n for n in _ast.walk(tree)
+                  if isinstance(n, _ast.IfExp)
+                  and isinstance(n.test, _ast.Name) and n.test.id == "archive"]
+        assert picked, "인포그래픽 경로가 archive 로 안 갈린다"
+        body = _ast.dump(picked[0].body)
+        assert "_DBYTE_IMG_DIR" in body, body
+
+    def test_dry_run_says_it_writes_nothing(self, monkeypatch):
+        """무엇을 안 쓰는지 말하지 않으면 사용자가 화면을 보고 놀란다(#43)."""
+        rc, out = self._run(monkeypatch, gen=lambda **kw: ("x", 0.0, None))
+        assert "아카이브" in out and "안 씁니다" in out, out
+        assert "푸시·아카이브 둘 다 안 했다" in out, out
 
 
 class TestNaverSectorCheckTellsTheBranch20260905:

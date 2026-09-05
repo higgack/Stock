@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
 import time
 import os
 from bot.genai_factory import effective_key as _effective_key
@@ -533,7 +534,7 @@ def _save_daily_byte_archive(body: str, cost_krw: float, date_yyyymmdd: str,
     return path
 
 
-def generate() -> tuple[str, float, str | None] | None:
+def generate(*, archive: bool = True) -> tuple[str, float, str | None] | None:
     """수급 fetch → Pro narrate → guard → archive + 인포그래픽 →
     (제목 포함 본문, cost_krw, png_path|None). 데이터 전무 시 None."""
     import time as _time
@@ -595,18 +596,29 @@ def generate() -> tuple[str, float, str | None] | None:
     try:
         from bot.daily_byte_infographic import render_infographic
         fname = f"{date}_{_now_kst():%H%M%S}.png"
-        out = os.path.join(_DBYTE_IMG_DIR, fname)
+        # ⚠️ `archive=False`(진단) 면 대시보드가 **서빙하는** 디렉터리에
+        # 파일을 남기지 않는다 — 렌더가 되는지는 임시 경로로도 증명된다.
+        out = os.path.join(
+            _DBYTE_IMG_DIR if archive else tempfile.mkdtemp(prefix="dbyte-dry-"),
+            fname)
         png_path = render_infographic(data, _iso_dot(date), out)
-        if png_path:
+        if png_path and archive:
             png_rel = f"daily_byte_img/{fname}"
     except Exception as exc:
         log.warning("daily_byte: infographic render failed: %s", exc)
 
     # 아카이브 (대시보드 카드용 — Python 제목/부제 제외 본문 + 인포그래픽
-    # 상대경로) + daily_byte.html regenerate. push 와 무관하게 항상 기록.
-    _save_daily_byte_archive(body, cost_krw, date,
-                             elapsed_sec=_time.monotonic() - _t0,
-                             kind="daily", png_rel=png_rel)
+    # 상대경로) + daily_byte.html regenerate. **푸시 성공 여부와 무관하게**
+    # 기록한다(푸시가 실패해도 화면엔 남는다).
+    # ⚠️ 단 **진단(`--dry-run`)에서는 쓰지 않는다** — 2026-09-05 실측:
+    # dry-run 이 09-04 아카이브를 남기고 daily_byte.html 을 다시 그려,
+    # 텔레그램엔 안 간 브리프가 화면엔 있고 `--why` ⑤ 가 '마지막 기록
+    # 2026-09-04' 로 **공백이 메워진 것처럼** 보고하게 됐다. 진단이 자기가
+    # 읽을 신호를 오염시킨 것이다(#30 의 진단판 · #264).
+    if archive:
+        _save_daily_byte_archive(body, cost_krw, date,
+                                 elapsed_sec=_time.monotonic() - _t0,
+                                 kind="daily", png_rel=png_rel)
 
     title = f"📰 <b>한국 Daily Byte - {_iso_dot(date)}</b>"
     full = f"{title}\n<i>장 마감 후 KR 수급 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"
@@ -780,6 +792,8 @@ def dry_run() -> int:
     print(f"[Daily Byte KR dry-run v{_WHY_VER}]")
     print(f"① 인터프리터: {sys.executable}")
     print("   ⚠️ LLM 을 실제로 부릅니다(요금 발생) · 텔레그램 푸시는 **안 합니다**")
+    print("   ⚠️ 아카이브·대시보드에도 **안 씁니다** — 진단이 자기가 읽을 "
+          "신호를 오염시키면 안 된다(#264)")
     try:
         from dotenv import load_dotenv
         from pathlib import Path
@@ -802,7 +816,7 @@ def dry_run() -> int:
         print(f"② 거래일 판정 불가({exc}) — 그대로 진행")
     t0 = time.time()
     try:
-        result = generate()
+        result = generate(archive=False)
     except Exception as exc:                                   # noqa: BLE001
         # 예외를 삼키면 '왜 없는지' 를 다시 못 묻는다(#12 silent-fail 금지).
         print(f"③ ❌ 생성 중 예외: {type(exc).__name__}: {exc}")
@@ -817,7 +831,8 @@ def dry_run() -> int:
           f"인포그래픽 {'있음' if png else '없음'} · 본문 {len(body)}자")
     head = " / ".join(body.splitlines()[:3])[:200]
     print(f"   | {head}")
-    print("④ 푸시는 안 했다 — 정기 실행(daily-byte.timer)이 같은 경로로 보낸다")
+    print("④ 푸시·아카이브 둘 다 안 했다 — 정기 실행(daily-byte.timer)이 "
+          "같은 경로로 보내고 기록한다")
     return 0
 
 
@@ -827,7 +842,7 @@ def dry_run() -> int:
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 6
+_WHY_VER = 7
 
 # pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
 # 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
