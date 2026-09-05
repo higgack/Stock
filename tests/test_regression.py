@@ -45705,3 +45705,67 @@ class TestNaverSectorCheckTellsTheBranch20260905:
         assert guards[0].lineno > max(
             n.lineno for n in mod.body
             if isinstance(n, (ast.FunctionDef, ast.ClassDef)))
+
+
+class TestMalformedRequestDoesNotTracebackTheHandler20260905:
+    """잘린 요청·포트스캔이 저널을 traceback 으로 덮고 있었다(2026-09-05 실측).
+
+    `http.server.parse_request()` 가 실패하면 `send_error()` → `end_headers()`
+    가 **`self.path` 가 바인딩되기 전에** 불린다:
+        AttributeError: 'DashboardHandler' object has no attribute 'path'
+    그 스레드만 죽고 서버는 살지만, 대시보드가 안 뜬다고 저널을 뒤질 때
+    **진짜 오류가 이 소음에 묻힌다**(#12 의 반대편 — silent-fail 이 아니라
+    noisy-fail 이 신호를 가린다).
+    """
+
+    def _handler(self, monkeypatch):
+        import http.server
+        import bot.dashboard_server as ds
+        h = ds.DashboardHandler.__new__(ds.DashboardHandler)
+        sent: list = []
+        h.send_header = lambda k, v: sent.append((k, v))
+        # 부모의 end_headers 는 wfile 을 쓰므로 막는다 — 우리가 재는 것은
+        # 이 클래스의 헤더 판정이지 소켓 쓰기가 아니다.
+        monkeypatch.setattr(http.server.SimpleHTTPRequestHandler,
+                            "end_headers", lambda self: None)
+        return h, sent
+
+    def test_end_headers_without_path_does_not_raise(self, monkeypatch):
+        h, _ = self._handler(monkeypatch)
+        assert not hasattr(h, "path"), "픽스처가 증상을 재현하지 못한다"
+        h.end_headers()          # 옛 판은 여기서 AttributeError
+
+    def test_normal_path_still_gets_no_cache(self, monkeypatch):
+        """반대 증거 — 정상 경로에선 캐시 헤더가 그대로 붙는다.
+
+        폴백이 경로 판정을 통째로 죽이면 옛 HTML 이 브라우저에 캐시돼
+        갱신이 안 보인다(2026-06-10 에 고친 그 문제).
+        """
+        h, sent = self._handler(monkeypatch)
+        h.path = "/tok/market.html"
+        h.end_headers()
+        keys = {k.lower() for k, _ in sent}
+        assert "cache-control" in keys, sent
+
+    def test_static_asset_still_gets_no_no_cache(self, monkeypatch):
+        """⚠️ `path_lower = ""` 로 죽이는 뮤테이션은 **HTML 로는 안 잡힌다**
+        — 빈 문자열도 no-cache 목록에 들어 있기 때문이다(실측). 정적 자산
+        처럼 **no-cache 가 붙으면 안 되는** 경로로 재야 발화한다(#91c).
+        """
+        h, sent = self._handler(monkeypatch)
+        h.path = "/tok/daily_byte_img/x.png"
+        h.end_headers()
+        cc = [v for k, v in sent if k.lower() == "cache-control"]
+        assert not any("no-cache" in v.lower() for v in cc), sent
+
+    def test_source_reads_path_defensively(self):
+        """직접 `self.path` 를 읽는 코드로 되돌리는 변형이 잡히게 —
+        소스 문자열이 아니라 AST 로(#19)."""
+        import ast as _ast
+        import inspect
+        import textwrap
+        import bot.dashboard_server as ds
+        src = textwrap.dedent(inspect.getsource(ds.DashboardHandler.end_headers))
+        tree = _ast.parse(src)
+        first = [n for n in _ast.walk(tree) if isinstance(n, _ast.Assign)][0]
+        assert "getattr" in _ast.dump(first.value), _ast.dump(first.value)
