@@ -20,6 +20,7 @@ systemd: daily-byte.timer (19:00 KST) → daily-byte.service oneshot.
 from __future__ import annotations
 
 import logging
+import re
 import os
 from bot.genai_factory import effective_key as _effective_key
 from datetime import datetime, timedelta, timezone
@@ -766,7 +767,7 @@ def main() -> int:
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 4
+_WHY_VER = 5
 
 # pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
 # 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
@@ -914,9 +915,12 @@ def _timer_line(facts: dict) -> str:
     result = facts.get("s_Result") or ""
     started = facts.get("s_ExecMainStartTimestamp") or "?"
     if (result and result != "success") or (status and status != "0"):
+        # ⚠️ 타이머의 마지막 발화와 서비스의 마지막 **실행**은 다를 수 있다
+        # (손으로 `systemctl start` 하면 갈린다) — 저널을 맞춰 보려면
+        # 실행 시각이 필요하다(#114 감사는 무엇을 보고 말하는지 밝힐 것).
         return (f"타이머는 발화했지만(마지막 {trig}) 서비스가 실패했다"
-                f"(Result={result or '?'} exit={status or '?'}) — "
-                f"`journalctl -u {_SERVICE_UNIT} -n 50`")
+                f"(마지막 실행 {started} · Result={result or '?'} "
+                f"exit={status or '?'}) — 아래 ⑦ 참고")
     return (f"타이머는 켜져 있고 발화했으며(마지막 {trig}, 다음 {nxt}) 서비스도 "
             f"정상 종료했다(마지막 실행 {started}) — 실행은 됐다는 뜻이므로 "
             f"위 사유가 원인이다")
@@ -938,6 +942,76 @@ def timer_verdict(facts: dict, stamp: str, stamp_stale: bool = False) -> str:
             else "↪ 점검 도장이 없다. ")
     return head + _timer_line(facts)
 
+
+
+# 저널에 토큰이 섞여 들어올 수 있다 — 값은 **절대** 찍지 않는다(§Secrets).
+# httpx 로거는 이미 WARNING 으로 눌러 뒀지만(2026-05-29) 그건 이 프로세스
+# 얘기이고, 저널은 옛 줄·다른 유닛의 줄을 담는다. 마스킹은 읽는 쪽에서.
+_SECRET_RE = re.compile(
+    r"(\d{8,10}:[A-Za-z0-9_-]{30,})"                       # 텔레그램 봇 토큰
+    r"|((?i:api[_-]?key|token|passwd|password|secret)=)[^\s&\"']+")
+_ERR_HINTS = ("ERROR", "Traceback", "Error", "error", "실패", "없습니다", "변경")
+
+
+def redact(line: str) -> str:
+    """저널 한 줄에서 비밀값을 지운다. 값은 안 찍고 **자리만** 남긴다."""
+    return _SECRET_RE.sub(
+        lambda m: (m.group(2) + "***REDACTED***") if m.group(2) else "***REDACTED***",
+        line)
+
+
+def service_failed(facts: dict) -> bool:
+    """마지막 **실행**이 실패로 끝났나. 판정 불가·실행 중이면 False.
+
+    ⚠️ `Type=oneshot` 은 실행 중에 `Result=success` 라 그때 '실패 아님' 이
+    맞고, 물어보지 못했으면(`ok=False`) 단정하지 않는다(#12·#54).
+    """
+    if not facts.get("ok"):
+        return False
+    if facts.get("s_ActiveState") in ("activating", "reloading"):
+        return False
+    result = facts.get("s_Result") or ""
+    status = facts.get("s_ExecMainStatus") or ""
+    return bool((result and result != "success") or (status and status != "0"))
+
+
+def journal_tail(unit: str = _SERVICE_UNIT, n: int = 60) -> tuple:
+    """유닛 저널 마지막 n줄(읽기 전용). 실패면 ([], 사유).
+
+    ⚠️ 진단이 "`journalctl` 로 확인하세요" 로 끝나면 라운드가 하나 더
+    든다 — 반복 확인은 제품에 심는다(#252·Automation-first). 읽기만 하고
+    운영 상태를 바꾸지 않는다(#264). 권한이 없으면(저널 그룹 밖) 그
+    사실을 갈래로 말한다(#82).
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["journalctl", "--no-pager", "-n", str(n), "-u", unit,
+             "-o", "short-iso"],
+            capture_output=True, text=True, timeout=15)
+    except Exception as exc:                                   # noqa: BLE001
+        return [], f"{type(exc).__name__}: {exc}"[:120]
+    if r.returncode != 0:
+        return [], (r.stderr or "").strip()[:160] or f"rc={r.returncode}"
+    # ⚠️ journalctl 은 빈 결과에 `-- No entries --` 배너를 준다 — 그걸
+    # 내용으로 세면 '읽었다'가 거짓이 된다(#54 대조 0건은 통과가 아니다).
+    lines = [ln for ln in (r.stdout or "").splitlines()
+             if ln.strip() and not ln.strip().startswith("-- ")]
+    if not lines:
+        # 대조 0건은 통과가 아니다(#54) — 없는 것도 갈래다.
+        return [], "저널에 이 유닛의 줄이 없다(로테이션·권한 확인)"
+    return lines, ""
+
+
+def error_lines(lines: list, keep: int = 12) -> list:
+    """저널 줄에서 **사유로 읽히는 것**만. 없으면 마지막 몇 줄을 그대로.
+
+    아무 줄이나 걸러 놓고 '이게 원인' 이라 하면 헛걸음이다(#187b) —
+    걸러진 게 없으면 걸렀다고 말하지 말고 꼬리를 준다.
+    """
+    hits = [ln for ln in lines if any(h in ln for h in _ERR_HINTS)]
+    return [redact(ln) for ln in (hits or lines)[-keep:]]
 
 
 def why_verdict(*, td, llm_ok: bool, login_kind: str, login_fix: str,
@@ -1205,14 +1279,31 @@ def why(argv: list[str] | None = None) -> int:
     except Exception:                                          # noqa: BLE001
         stamp, fresh_stamp = "", False
 
+    facts = {} if fresh_stamp else systemd_facts()
     print("⑥ 판정")
     for line in why_verdict(td=td, llm_ok=llm_ok, login_kind=login_kind,
                             login_fix=login_fix, krx_ok=krx_ok, kr_age=kr_age,
                             missed_sessions=missed, stamp=stamp,
                             timer=timer_verdict(
-                                {} if fresh_stamp else systemd_facts(),
-                                stamp, stamp_stale=bool(stamp and not fresh_stamp))):
+                                facts, stamp,
+                                stamp_stale=bool(stamp and not fresh_stamp))):
         print(f"   {line}")
+
+    # ⑦ 서비스가 실패했으면 **저널까지 보여준다** — "journalctl 로 확인
+    # 하세요" 로 끝나면 라운드가 하나 더 든다(#252·Automation-first).
+    if service_failed(facts):
+        # ⚠️ 헤더가 '사유' 라고 단정하면 안 된다 — 우리가 고른 건 '사유로
+        # 읽히는 줄' 이고, `-n` 은 실행 경계를 모르므로 옛 실행 줄이 섞일 수
+        # 있다. 무엇을 보여주는지 그대로 적는다(#165·#187b).
+        print(f"⑦ 서비스 마지막 실행이 실패했다 — `journalctl -u "
+              f"{_SERVICE_UNIT}` 발췌(여러 실행이 섞일 수 있음 · 비밀값 가림)")
+        lines, err = journal_tail()
+        if err:
+            print(f"   ❓ 저널을 못 읽었다({err}) — "
+                  f"`journalctl -u {_SERVICE_UNIT} -n 50` 를 직접 볼 것")
+        else:
+            for ln in error_lines(lines):
+                print(f"   | {ln}")
     return 0
 
 
