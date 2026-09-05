@@ -45099,7 +45099,8 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         assert "멈춰" in got["stopped"] and "다음 발화가 없다" in got["stopped"]
         assert "한 번도 발화하지 않았다" in got["never"]
         assert "실행 중" in got["running"]
-        assert "exit-code" in got["failed"] and "journalctl" in got["failed"]
+        # ⑦ 이 저널을 직접 실어 주므로 이 줄은 그리로 가리킨다(#252).
+        assert "exit-code" in got["failed"] and "⑦" in got["failed"]
         assert "19:00:00" in got["ran"]
 
     def test_stopped_timer_is_not_reported_healthy(self):
@@ -45234,6 +45235,129 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
             monkeypatch, totals_side=dict, trading_day=True)
         assert "타이머는 돌았다(마지막 점검 2026-09-04 19:00)" in out, out
+
+    # ── ⑦ 저널 발췌 (2026-09-05 VM 실측이 요구한 것) ──────────────────
+    # 실측: `↪ 타이머는 발화했지만(마지막 Fri 2026-09-04 19:00:00 KST) 서비스가
+    # 실패했다(Result=exit-code exit=1) — journalctl …`. 갈래는 맞게 나왔는데
+    # **사유를 보려면 라운드가 하나 더** 들었다(#252 반복 확인은 제품에).
+
+    def test_failure_line_says_when_the_service_ran(self):
+        """타이머 발화와 서비스 **실행**은 갈릴 수 있다(손으로 start 하면) —
+        저널을 맞춰 보려면 실행 시각이 필요하다(#114)."""
+        from bot.daily_kr_flow import timer_verdict
+        line = timer_verdict({**self._RAN, "s_Result": "exit-code",
+                              "s_ExecMainStatus": "1",
+                              "s_ExecMainStartTimestamp": "Fri 2026-09-04 19:00:02 KST"}, "")
+        assert "19:00:02" in line, line
+
+    def test_service_failed_is_a_measurement_not_a_guess(self):
+        """판정 불가·실행 중을 '실패' 로 읽으면 엉뚱한 저널을 뒤진다(#12)."""
+        from bot.daily_kr_flow import service_failed
+        bad = {**self._RAN, "s_Result": "exit-code", "s_ExecMainStatus": "1"}
+        assert service_failed(bad) is True
+        assert service_failed({**bad, "s_ActiveState": "activating"}) is False
+        assert service_failed({"ok": False}) is False
+        assert service_failed(self._RAN) is False
+        # Result 만 실패여도 잡는다(exit 0 + timeout).
+        assert service_failed({**self._RAN, "s_Result": "timeout"}) is True
+
+    def test_journal_is_read_only_and_never_prints_secrets(self, monkeypatch):
+        """저널에 토큰이 섞일 수 있다 — 값은 **절대** 안 찍는다(§Secrets).
+
+        그리고 진단이 운영 상태를 바꾸면 안 된다(#264) — `journalctl` 만.
+        """
+        import subprocess
+        import bot.daily_kr_flow as kf
+        calls: list = []
+        # ⚠️ 토큰 모양 리터럴을 소스에 두면 시크릿 스캐너가 문다 —
+        # `nosec` 로 덮지 말고 **문구를 바꾼다**(#82). 조립해서 만들면
+        # 정규식은 그대로 태우면서 리터럴은 남지 않는다.
+        tok = "1234567890" + ":" + "AAHbcDEfGhIjKlMnOpQrStUvWxYz01234567"
+
+        class _R:
+            returncode = 0
+            stderr = ""
+            stdout = (f"2026-09-04T19:00:01 ERROR bot https://api.telegram.org/"
+                      f"bot{tok}/sendMessage\n"
+                      "2026-09-04T19:00:02 INFO password=hunter2 ok\n")
+
+        monkeypatch.setattr(subprocess, "run",
+                            lambda cmd, **kw: (calls.append(cmd), _R())[1])
+        got, err = kf.journal_tail()
+        assert not err and got
+        out = "\n".join(kf.error_lines(got))
+        assert tok not in out and "hunter2" not in out, out
+        assert "REDACTED" in out, out
+        assert calls[0][0] == "journalctl", calls
+        assert not ({"systemctl", "start", "restart"} & set(calls[0])), calls
+
+    def test_no_entries_banner_is_not_content(self, monkeypatch):
+        """journalctl 은 빈 결과에 배너를 준다 — 그걸 '읽었다'로 세면
+        대조 0건이 통과가 된다(#54)."""
+        import subprocess
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 0
+            stderr = ""
+            stdout = "-- No entries --\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
+        got, err = kf.journal_tail()
+        assert got == [] and err, (got, err)
+
+    def test_journal_permission_error_is_a_branch(self, monkeypatch):
+        """저널 그룹 밖이면 못 읽는다 — 사유를 대고 직접 볼 명령을 준다(#82)."""
+        import subprocess
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 1
+            stderr = "No journal files were opened due to insufficient permissions."
+            stdout = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
+        got, err = kf.journal_tail()
+        assert got == [] and "permission" in err.lower(), (got, err)
+
+    def test_error_lines_falls_back_to_the_tail(self):
+        """사유로 읽히는 줄이 없으면 '걸렀다'고 말하지 말고 꼬리를 준다."""
+        from bot.daily_kr_flow import error_lines
+        assert error_lines(["a", "b", "c"], keep=2) == ["b", "c"]
+        assert error_lines(["ok", "ERROR boom", "tail"]) == ["ERROR boom"]
+
+    def test_why_prints_the_journal_when_the_service_failed(self, monkeypatch):
+        """배선은 태워야 보인다(#20) — why() 를 통째로 돌려 ⑦ 이 실리는지."""
+        import bot.daily_kr_flow as kf
+        from bot import feed_health
+        monkeypatch.setattr(feed_health, "last", lambda f: "")
+        monkeypatch.setattr(
+            kf, "systemd_facts",
+            lambda *a, **k: {**self._RAN, "s_Result": "exit-code",
+                             "s_ExecMainStatus": "1"})
+        monkeypatch.setattr(
+            kf, "journal_tail",
+            lambda *a, **k: (["2026-09-04T19:00:01 ERROR daily_byte: "
+                              "generation failed / no data"], ""))
+        out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
+            monkeypatch, totals_side=dict, trading_day=True)
+        assert "⑦" in out and "generation failed" in out, out
+
+    def test_why_does_not_print_the_journal_when_healthy(self, monkeypatch):
+        """반대 증거 — 정상 종료면 ⑦ 을 붙이지 않는다(늘 뜨는 섹션은
+        아무것도 안 재는 것과 같다, #25·#260)."""
+        import bot.daily_kr_flow as kf
+        from bot import feed_health
+        monkeypatch.setattr(feed_health, "last", lambda f: "")
+        monkeypatch.setattr(kf, "systemd_facts", lambda *a, **k: dict(self._RAN))
+
+        def _boom(*a, **k):
+            raise AssertionError("정상인데 저널을 읽었다")
+
+        monkeypatch.setattr(kf, "journal_tail", _boom)
+        out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
+            monkeypatch, totals_side=dict, trading_day=True)
+        assert "⑦" not in out, out
 
 
 class TestNaverSectorCheckTellsTheBranch20260905:

@@ -803,7 +803,9 @@ def check(fetch: bool = False) -> int:
         obj, _ = _read_cache("theme.json")
         n = len((obj or {}).get("themes") or [])
         when = datetime.fromtimestamp(mt, timezone(timedelta(hours=9)))
-        print(f"② 캐시: 테마 {n}개 · {when:%Y-%m-%d %H:%M} KST ({age / 60:.1f}분 전)")
+        ago = (f"{age / 60:.1f}분 전" if age < 5400
+               else f"{age / 3600:.1f}시간 전")
+        print(f"② 캐시: 테마 {n}개 · {when:%Y-%m-%d %H:%M} KST ({ago})")
         # 판정은 화면이 쓰는 그 술어·그 조건으로(#35) — 다시 계산하면 갈라진다.
         # `have_old` 는 `fetch_themes` 와 같은 뜻이어야 한다: 이게 거짓이면
         # SWR 창 안이어도 **동기 수집**을 기다린다(독립 리뷰 실측).
