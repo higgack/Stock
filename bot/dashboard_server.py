@@ -755,7 +755,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return self._strip_token_or_404() and self._check_basic_auth_or_401()
 
     def end_headers(self):
-        path_lower = self.path.lower().split("?")[0]
+        # ⚠️ `parse_request()` 가 실패하면(잘린 요청·포트스캔·비HTTP 바이트)
+        # `send_error()` → `end_headers()` 가 **`self.path` 가 바인딩되기
+        # 전에** 불린다 — 2026-09-05 저널 실측:
+        #   AttributeError: 'DashboardHandler' object has no attribute 'path'
+        # 그 스레드만 죽고 서버는 살지만, 저널이 traceback 으로 덮여 **진짜
+        # 오류를 찾을 때 눈이 먼다**(#12 silent-fail 의 반대 — 소음이 신호를
+        # 가린다). 없으면 캐시 헤더를 붙일 대상이 없는 것이므로 빈 경로로 본다.
+        path_lower = getattr(self, "path", "").lower().split("?")[0]
         # on-demand HTML 페이지도 no-cache — 안 하면 옛 페이지가 브라우저에
         # 캐시돼 stale(예: 신고가→상한가 변경이 안 보이던 문제, 2026-06-10).
         # .json 도 no-cache — analysis_csv.json 등 regen 산출물이 브라우저
