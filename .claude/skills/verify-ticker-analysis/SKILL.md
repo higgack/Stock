@@ -48,7 +48,12 @@ this file is the *procedure*, CLAUDE.md stays the source of truth for the rules.
 7. **5거래일 horizon** — conclusion is a 5-trading-day directional call, not a 12-month
    thesis; DCF is reference-only, never the dominant driver of the verdict line.
 
-### Gotchas (numbered, failure → fix — mirrors CLAUDE.md "⛔ 과거 실수")
+### Gotchas — **발췌** (numbered, failure → fix)
+
+> ⚠️ 이 목록은 CLAUDE.md `## ⛔ 과거 실수` 의 **초기 항목 발췌**이지 그 섹션의
+> 사본이 아니다(원본은 현재 수백 개이고 계속 는다). 여기 없다고 해서 그 실패모드가
+> 없는 것이 아니므로, 리뷰 전에 **CLAUDE.md 의 그 섹션과 §주제 색인을 직접 열 것**.
+> 이 파일은 *절차*이고 규칙의 출처는 CLAUDE.md 다 — 충돌하면 **CLAUDE.md 가 이긴다**.
 
 1. **Deploy ≠ merged.** A draft PR alone is not a deploy — only report "배포함" after
    confirming the squash-merge landed on base (`git log origin/<base> -1`).

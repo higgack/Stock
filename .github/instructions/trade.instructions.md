@@ -8,6 +8,9 @@ applyTo: "trade/**"
 매칭 로직을 건드릴 때만 아래를 추가로 확인하세요. 상세 매핑 표·핀 목록·DART
 파서 구현은 `/CLAUDE_REFERENCE.md` 의 "트레이드 레퍼런스북" 섹션 참고.
 
+> 이 파일도 **요약본**입니다. `trade/` 규칙의 출처는 `/trade/CLAUDE.md` 이고
+> 레포 전역 규칙의 출처는 `/CLAUDE.md` 입니다 — **충돌하면 그 두 문서가 이깁니다.**
+
 ## HS ↔ 수출입 ↔ 회사 매칭
 - 회사명 오타 교정은 **두 곳에 동시 반영**해야 합니다: 매칭용
   `mti_companies._COMPANY_TYPO` + 가격조회용 `price_provider._NAME_ALIASES`.

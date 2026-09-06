@@ -206,3 +206,95 @@ def test_injected_rules_file_stays_within_budget():
     assert n <= 240_000, (
         f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산을 넘었다. "
         "긴 항목의 서사를 CLAUDE_REFERENCE.md 로 접을 것(규칙 문장은 남긴다).")
+
+
+# ── 요약 문서 ↔ CLAUDE.md 동기화 (2026-09-06 지시서 감사 (e) 회수분) ────────────
+_COPILOT = _ROOT / ".github" / "copilot-instructions.md"
+_TRADE_INST = _ROOT / ".github" / "instructions" / "trade.instructions.md"
+# CLAUDE.md 가 **스스로** '⛔' 또는 '— 의무' 로 표시한 섹션만 의무로 본다.
+_MANDATORY_RE = re.compile(r'(?m)^## (⛔ .+|.+ — 의무.*)$')
+
+
+def _mandatory_section_keys():
+    """의무 섹션의 **안정 키** — 헤딩에서 파생한다(손 목록 금지, #24).
+
+    괄호 부기와 ` — ` 뒤 설명은 자주 다듬어지므로 잘라낸다. 그러지 않으면
+    "(가장 중요)" 를 한 번 고치는 것만으로 회귀가 깨진다(#19·#200)."""
+    txt = _CLAUDE.read_text(encoding="utf-8")
+    out = []
+    for m in _MANDATORY_RE.finditer(txt):
+        key = re.split(r' — | \(', m.group(1))[0].strip()
+        out.append(key)
+    return out
+
+
+def test_copilot_summary_declares_which_mandatory_sections_it_covers():
+    """Copilot 이 **자동 주입받는 유일한 문서**는 `.github/copilot-instructions.md`
+    다(378KB CLAUDE.md 는 자동 로드되지 않는다). 그래서 CLAUDE.md 에 새 의무
+    섹션이 생겨도 Copilot 은 영영 모른다 — 2026-09-06 감사가 그 드리프트를
+    지적했고(#17 이후 미반영), 실제로 이 세션에서 두 문서가 "라이브 장애" 한
+    낱말에 **서로 다른 면제**를 걸고 있는 것이 발견됐다.
+
+    커버리지 선언을 파일 안 매니페스트로 두고, 목록을 **CLAUDE.md 의 실제
+    헤딩에서 파생**해 대조한다 — "이 목록은 누가 갱신하나"(#24)의 답이 사람이
+    아니라 이 테스트가 되게. 대조 대상이 0건이면 통과가 아니라 실패(#54)."""
+    keys = _mandatory_section_keys()
+    assert len(keys) >= 3, f"CLAUDE.md 의무 섹션을 {len(keys)}개만 찾았다 — 눈먼 가드"
+    txt = _COPILOT.read_text(encoding="utf-8")
+    block = re.search(r'<!-- covers-claude-md-sections:(.*?)-->', txt, re.S)
+    assert block, "copilot-instructions.md 에 covers-claude-md-sections 매니페스트가 없다"
+    declared = {ln.strip("- ").strip() for ln in block.group(1).splitlines()
+                if ln.strip().startswith("- ")}
+    missing = [k for k in keys if k not in declared]
+    extra = [d for d in declared if d not in keys]
+    assert not missing, (
+        f"CLAUDE.md 의 의무 섹션이 Copilot 요약에 선언돼 있지 않다 — 요약을 쓰고 "
+        f"매니페스트에 추가할 것: {missing}")
+    assert not extra, f"매니페스트가 없는 섹션을 가리킨다(이름 변경/삭제): {extra}"
+
+
+def test_summary_docs_name_their_source_and_who_wins():
+    """요약본이 출처와 **우선순위**를 밝히지 않으면, 요약이 낡아 더 느슨해졌을 때
+    읽는 쪽이 그걸 '예외' 로 읽는다 — 이 세션에서 실제로 그렇게 됐다(copilot 의
+    회귀 불릿이 CLAUDE.md 에 없는 예외를 열고 있었다).
+
+    ⚠️ 대상은 이름 열거가 아니라 **구조**로 고른다(#24): Copilot 이 자동 주입하는
+    `.github` 지침 두 개 + CLAUDE.md 의 실수 섹션을 요약하는 스킬(본문이 그렇게
+    말하는 것). 새 스킬이 실수 목록을 베끼면 자동으로 이 검사에 들어온다."""
+    import pathlib as _p
+    targets = [_COPILOT, _TRADE_INST]
+    for sk in sorted((_ROOT / ".claude" / "skills").glob("*/SKILL.md")):
+        if "과거 실수" in sk.read_text(encoding="utf-8"):
+            targets.append(sk)
+    assert len(targets) >= 3, f"대조 대상이 {len(targets)}개뿐 — 눈먼 가드(#54)"
+    bad = []
+    for f in targets:
+        t = f.read_text(encoding="utf-8")
+        names_source = "CLAUDE.md" in t
+        # 우선순위: '이긴다' 또는 'source of truth' 를 명시
+        declares_precedence = ("이깁니다" in t or "이긴다" in t
+                               or "source of truth" in t.lower())
+        if not (names_source and declares_precedence):
+            bad.append((str(f.relative_to(_ROOT)), names_source, declares_precedence))
+    assert not bad, (
+        "요약본이 출처 또는 '충돌 시 누가 이기는지' 를 안 밝힌다 "
+        f"(파일, 출처명시, 우선순위명시): {bad}")
+
+
+def test_summary_docs_do_not_claim_to_mirror_the_full_mistake_list():
+    """요약본이 '전량 반영' 을 주장하면 읽는 쪽이 거기 없는 실패모드를 **없는
+    것으로** 읽는다. 스킬의 Gotchas 헤더가 `mirrors CLAUDE.md "⛔ 과거 실수"`
+    라고 적어 놓고 실제로는 초기 항목만 담고 있었다(2026-09-06 감사).
+
+    발췌라고 밝히는 것까지가 계약이다 — 264개를 복제하면 감사가 지적한 예산
+    문제를 스킬 쪽에 새로 만든다."""
+    claims = re.compile(r'(mirrors|전량|전부 반영|모든 실수)', re.I)
+    excerpt = re.compile(r'(발췌|excerpt|subset)', re.I)
+    bad = []
+    for f in [_COPILOT, _TRADE_INST, *sorted((_ROOT / ".claude" / "skills").glob("*/SKILL.md"))]:
+        t = f.read_text(encoding="utf-8")
+        if "과거 실수" not in t:
+            continue
+        if claims.search(t) and not excerpt.search(t):
+            bad.append(str(f.relative_to(_ROOT)))
+    assert not bad, f"실수 목록을 '전량 반영' 인 것처럼 적었다(발췌라고 밝힐 것): {bad}"
