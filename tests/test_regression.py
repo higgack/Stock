@@ -46094,3 +46094,69 @@ class TestDailyByteAsofIsSplitByCountry20260906:
         import bot.dashboard as d
         st = self._stats(d._render_daily_byte_page(self._runs()))
         assert [l for l in st if "마지막" in l or "최신" in l], st
+
+
+class TestShadowedTopLevelDefs20260906:
+    """모듈 top-level 의 **중복 정의**를 bot/·trade/ 전수로 막는다.
+
+    #59(2026-08-21)는 "AST 로 모듈의 top-level def 중복을 전수 검사" 라고
+    적어 뒀지만, 실제 가드는 `bot/dart_production.py` **한 파일**을 리터럴로
+    열고 있었다(tests/test_dart_production.py). 나머지 719개 모듈은 무방비였고,
+    #74 가 요구한 **모듈 상수** 중복 검사는 tests/ 에 0건이었다 — 지시서가
+    자기 자신에 대해 사실이 아닌 것을 말하고 있었다(2026-09-06 지시서 감사).
+
+    넓히자마자 둘을 잡았다(#87a — 새 가드는 켜자마자 뭔가 잡는 게 정상):
+      · `bot/chart_data.py` `_LiteSkip` 이 166·939 두 번 정의 — 166 을 고쳐도
+        조용히 무시된다(뒤엣것이 이긴다).
+      · `trade/archive_template.py` `_KST` 가 127·177 두 번.
+
+    이름 열거가 아니라 **디렉터리 전수 + allowlist**(#24), 그리고 대조 대상이
+    0건이면 통과가 아니라 실패(#54).
+    """
+
+    _ALLOW: set[tuple[str, str]] = set()   # (파일, 이름) — 의도된 재정의만. 비어 있는 게 정상.
+
+    def _dups(self):
+        import ast
+        import collections
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        scanned, out = 0, []
+        for d in ("bot", "trade"):
+            for f in sorted((root / d).rglob("*.py")):
+                try:
+                    tree = ast.parse(f.read_text(encoding="utf-8"))
+                except SyntaxError:          # 파싱 실패는 다른 가드의 몫
+                    continue
+                scanned += 1
+                rel = str(f.relative_to(root))
+                names = [n.name for n in tree.body
+                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                           ast.ClassDef))]
+                names += [t.id for n in tree.body if isinstance(n, ast.Assign)
+                          for t in n.targets
+                          if isinstance(t, ast.Name) and t.id.isupper()]
+                for k, v in collections.Counter(names).items():
+                    if v > 1 and (rel, k) not in self._ALLOW:
+                        out.append((rel, k, v))
+        return scanned, out
+
+    def test_no_shadowed_top_level_definitions_repo_wide(self):
+        scanned, dups = self._dups()
+        assert scanned > 300, f"전수 스캔이 {scanned}개만 봤다 — 눈먼 가드(#54)"
+        assert not dups, f"중복 정의(뒤엣것이 앞을 가린다, #59·#74): {dups}"
+
+    def test_guard_actually_fires_on_a_shadowed_definition(self):
+        """가드가 '작동함'을 보이려면 실제로 깨지는 입력까지 밀어 볼 것(#91c).
+        위 테스트가 초록인 게 '중복이 없어서'인지 '검사가 눈이 멀어서'인지
+        이 테스트가 가른다."""
+        import ast
+        import collections
+        src = "def f():\n    pass\n\n\nX = 1\n\n\ndef f():\n    pass\n\n\nX = 2\n"
+        tree = ast.parse(src)
+        names = [n.name for n in tree.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        names += [t.id for n in tree.body if isinstance(n, ast.Assign)
+                  for t in n.targets if isinstance(t, ast.Name) and t.id.isupper()]
+        dup = sorted(k for k, v in collections.Counter(names).items() if v > 1)
+        assert dup == ["X", "f"], f"중복을 못 잡는다: {dup}"

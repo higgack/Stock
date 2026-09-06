@@ -1034,17 +1034,10 @@ class TestProducts20260821:
         assert got["basis_label"] == "26.2Q", "기준 보고서 라벨이 안 붙었다"
         assert seen, "원문을 한 번도 안 받았다"
 
-    def test_module_has_no_shadowed_top_level_definitions(self):
-        """같은 이름을 두 번 정의하면 **뒤엣것이 이긴다** — 리팩터 중 옛
-        블록이 남아도 문법·import·헬퍼 테스트가 전부 통과한다. 이름 목록을
-        손으로 유지하지 않고 AST 로 전수 확인한다(#24)."""
-        import ast
-        import collections
-        tree = ast.parse(open("bot/dart_production.py", encoding="utf-8").read())
-        names = [n.name for n in tree.body
-                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-        dup = [k for k, v in collections.Counter(names).items() if v > 1]
-        assert not dup, f"중복 정의(뒤엣것이 앞을 가림): {dup}"
+    # NOTE(2026-09-06): 이 모듈만 보던 중복-정의 검사는 bot/·trade/ 전수로
+    # 넓혀 tests/test_regression.py 의 TestShadowedTopLevelDefs20260906 로
+    # 옮겼다 — #59 는 "전수 검사" 라고 적어 놓고 실제 가드가 파일 1개였다.
+    # 계약이 넓어진 것이지 사라진 것이 아니다(#222).
 
 
 class TestFetchCost20260821:
