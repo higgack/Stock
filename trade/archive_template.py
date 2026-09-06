@@ -124,7 +124,7 @@ class Stat:
 # Internals
 # ─────────────────────────────────────────────────────────────────────────
 
-_KST = timezone(timedelta(hours=9))
+_KST = timezone(timedelta(hours=9))     # KST 는 DST 없음 — 고정 오프셋으로 충분
 
 
 def card_html(prefix: str, summary_parts: list[str],
@@ -172,9 +172,6 @@ def back_nav_html(depth: int = 0) -> str:
     import 하므로 그쪽에 두면 **순환 import** 가 된다. 이 모듈은 trade 내부
     의존이 0인 leaf 라 누구나 가져다 쓸 수 있다."""
     return f'<div class="nav">{back_link_html(depth)}</div>'
-
-
-_KST = timezone(timedelta(hours=9))     # KST 는 DST 없음 — 고정 오프셋으로 충분
 
 
 def max_ingest_iso(conn, table: str) -> str | None:

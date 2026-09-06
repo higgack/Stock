@@ -936,9 +936,6 @@ def _fetch_series_fallback(ticker: str, period: str):
 from bot.timing import Stages as _Stages
 
 
-class _LiteSkip(Exception):
-    """lite 모드의 의도된 생략 — 오류 로그를 남기지 않으려는 내부 신호."""
-
 # ⚠️ **요청 키별**로 가른다 — 전역 dict 하나면 탭 세 개를 열었을 때 한
 # 줄이 누구 것인지 알 수 없다(2026-08-22 실측, bot/timing.py 주석 참조).
 _TIMING = _Stages()
