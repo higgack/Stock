@@ -14876,15 +14876,25 @@ class TestFeedBoardsShared20260820:
     def test_every_feed_page_says_when_its_data_is_from(self):
         # "이거 최신이야?"에 화면이 답해야 한다(규칙 10b·실수 #43).
         import re
+        # 2026-09-06 계약 변경(#222): Daily Byte 는 🇰🇷/🇺🇸 를 **나눠** 찍는다
+        # — 섞어서 최신 하나만 보이면 한쪽의 침묵이 다른 쪽 기록에 가려진다
+        # (실측: KR 이 08-27 에 멈춘 동안 이 칸은 미국 09-04 를 띄웠다).
+        # 계약은 '기준시각을 말한다' 이지 '라벨이 그 문자열로 시작한다' 가
+        # 아니므로 **포함**으로 재고, daily_byte 는 국가 칸이 둘인지도 본다.
         want = {"daily_byte": "마지막 브리프 (KST)", "reddit": "마지막 포워드 (KST)",
                 "blog": "마지막 새 글 (KST)", "realestate": "마지막 기록 (KST)"}
         for name, (html, _lbl) in self._pages().items():
-            # 라벨엔 수집기 점검 문구가 뒤에 붙을 수 있어 prefix 로 찾는다
+            # 라벨엔 수집기 점검 문구가 뒤에, 국기가 앞에 붙을 수 있다
             stats = [(l, v) for v, l in re.findall(
                 r'<div class="stat-v">([^<]*)</div>\s*<div class="stat-l">([^<]*)</div>',
-                html) if l.startswith(want[name])]
+                html) if want[name] in l]
             assert stats, f"{name}: 기준시각 stat 없음"
-            assert stats[0][1].startswith("2026-08-20"), (name, stats[0])
+            assert [x for x in stats if x[1].startswith("2026-08-20")], (name, stats)
+            if name == "daily_byte":
+                assert len(stats) == 2, stats
+                # 국기는 regional indicator **두 코드포인트**다 —
+                # l[0] 로 자르면 반쪽만 나온다(실측).
+                assert {l.split()[0] for l, _v in stats} == {"🇰🇷", "🇺🇸"}, stats
 
     def test_asof_is_max_ts_not_first_element(self):
         # 부동산 페이지는 실거래+청약 아카이브를 **이어붙여** 받는다 —
@@ -45283,8 +45293,8 @@ class TestTimerClaimIsAskedOfSystemd20260905:
 
         monkeypatch.setattr(subprocess, "run",
                             lambda cmd, **kw: (calls.append(cmd), _R())[1])
-        got, err = kf.journal_tail()
-        assert not err and got
+        got, err, kind = kf.journal_tail()
+        assert not err and got and kind == "", (err, kind)
         out = "\n".join(kf.error_lines(got))
         assert tok not in out and "hunter2" not in out, out
         assert "REDACTED" in out, out
@@ -45303,8 +45313,10 @@ class TestTimerClaimIsAskedOfSystemd20260905:
             stdout = "-- No entries --\n"
 
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
-        got, err = kf.journal_tail()
+        got, err, kind = kf.journal_tail()
         assert got == [] and err, (got, err)
+        # 갈래가 같이 나와야 ⑦ 이 '직접 볼 것' 을 붙일지 정한다(#222).
+        assert kind in ("rotated", "denied", "unknown"), kind
 
     def test_journal_permission_error_is_a_branch(self, monkeypatch):
         """저널 그룹 밖이면 못 읽는다 — 사유를 대고 직접 볼 명령을 준다(#82)."""
@@ -45317,7 +45329,7 @@ class TestTimerClaimIsAskedOfSystemd20260905:
             stdout = ""
 
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
-        got, err = kf.journal_tail()
+        got, err, kind = kf.journal_tail()
         assert got == [] and "permission" in err.lower(), (got, err)
 
     def test_error_lines_falls_back_to_the_tail(self):
@@ -45338,7 +45350,7 @@ class TestTimerClaimIsAskedOfSystemd20260905:
         monkeypatch.setattr(
             kf, "journal_tail",
             lambda *a, **k: (["2026-09-04T19:00:01 ERROR daily_byte: "
-                              "generation failed / no data"], ""))
+                              "generation failed / no data"], "", ""))
         out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
             monkeypatch, totals_side=dict, trading_day=True)
         assert "⑦" in out and "generation failed" in out, out
@@ -45891,7 +45903,8 @@ class TestJournalEmptyTellsWhichBranch20260906:
         seen = []
         monkeypatch.setattr(kf, "journal_readable",
                             lambda: seen.append(1) or True)
-        lines, err = kf.journal_tail("x.service")
+        lines, err, kind = kf.journal_tail("x.service")
+        assert kind == "rotated", kind
         assert lines == [], lines
         assert seen == [1], "대조군을 안 쟀다"
         assert err == kf.journal_empty_reason(True), err
@@ -45929,7 +45942,28 @@ class TestJournalEmptyTellsWhichBranch20260906:
             stderr = ""
 
         monkeypatch.setattr("subprocess.run", lambda *a, **k: _R())
-        assert kf.journal_readable() is False
+        # 2026-09-06 계약 변경(#222 · 독립 리뷰): rc=0 인데 줄이 0건인 것은
+        # '비었다' 와 '못 읽는다' 를 **구별 못 한다** — 그걸 False(권한 확정)
+        # 로 매기면 멀쩡히 빈 저널에 대고 그룹 추가를 시킨다(#165).
+        assert kf.journal_readable() is None
+
+    def test_control_group_targets_the_system_journal(self, monkeypatch):
+        """`-u` 없이 그냥 물으면 **자기 사용자 저널**이라 권한이 없어도
+        읽힌다 — 유닛이 사는 시스템 저널을 겨냥해야 대조군이 성립한다
+        (독립 리뷰 지적: 이 오진이 바로 이 변경이 없애려던 것이다)."""
+        import bot.daily_kr_flow as kf
+        seen: list = []
+
+        class _R:
+            returncode = 0
+            stdout = "2026-09-06T00:00:00 host x[1]: hi\n"
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run",
+                            lambda cmd, **k: (seen.append(cmd), _R())[1])
+        kf.journal_readable()
+        assert seen and "--system" in seen[0], seen
+        assert "-u" not in seen[0], seen
 
     def test_real_lines_mean_readable(self, monkeypatch):
         import bot.daily_kr_flow as kf
@@ -45970,3 +46004,93 @@ class TestJournalEmptyTellsWhichBranch20260906:
         assert "보존기간" in out and "권한 문제 아님" in out, out
         # 옛 뭉뚱그린 문구로 되돌리면 발화해야 한다.
         assert "로테이션·권한 확인" not in out, out
+        # 회전으로 **확정**된 자리에 "직접 볼 것" 을 붙이면 스스로를 뒤집는다
+        # — 같은 명령은 아무것도 안 보여준다(독립 리뷰 지적).
+        assert "-n 50" not in out, out
+        assert "❓ 저널" not in out, out
+
+
+class TestDailyByteAsofIsSplitByCountry20260906:
+    """섞어서 최신 하나만 찍으면 한쪽의 침묵이 다른 쪽 기록에 가려진다.
+
+    2026-09-06 실측: KR 브리프가 08-27 에 멈춘 채 열흘이 지났는데 화면의
+    `마지막 브리프 (KST)` 는 **미국 09-04 08:02** 를 띄우고 있었다 —
+    `_feed_latest_ts(runs)` 가 kind 를 안 가렸기 때문이다. 바로 옆
+    `Weekly 종합` 은 kind 로 세는데 이 칸만 안 갈랐다.
+    사용자 지시(2026-09-06): "🇰🇷/🇺🇸 를 나눠 찍어주고".
+
+    화면이 '이거 최신이야?' 에 답하지 못하면 그게 결함이다(#43·#52) —
+    사용자가 매번 물어야 했다.
+    """
+
+    def _runs(self):
+        return [
+            {"_date": "2026-08-27", "ts": "2026-08-27T19:02:11", "kind": "daily",
+             "body": "kr", "cost_krw": 50.0, "_filename": "190211_daily_byte.json"},
+            {"_date": "2026-09-04", "ts": "2026-09-04T08:02:33", "kind": "us_daily",
+             "body": "us", "cost_krw": 40.0,
+             "_filename": "080233_us_daily_byte.json"},
+        ]
+
+    def _stats(self, html):
+        import re
+        return {l: v for v, l in re.findall(
+            r'<div class="stat-v">([^<]*)</div>\s*'
+            r'<div class="stat-l">([^<]*)</div>', html)}
+
+    def test_each_country_shows_its_own_last_brief(self):
+        """섞인 최신 하나로 되돌리면 발화한다 — 실제 증상 그대로."""
+        import bot.dashboard as d
+        st = self._stats(d._render_daily_byte_page(self._runs()))
+        kr = [l for l in st if "🇰🇷" in l]
+        us = [l for l in st if "🇺🇸" in l]
+        assert kr and us, st
+        assert st[kr[0]].startswith("2026-08-27"), st
+        assert st[us[0]].startswith("2026-09-04"), st
+
+    def test_the_two_buckets_are_exhaustive_and_exclusive(self):
+        """합이 총 건수와 다르면 어느 칸이든 거짓말이다(#45)."""
+        from bot.dashboard import _daily_byte_is_us
+        kinds = ["daily", "weekly", "us_daily", "us_weekly", "", None]
+        us = [k for k in kinds if _daily_byte_is_us(k)]
+        kr = [k for k in kinds if not _daily_byte_is_us(k)]
+        assert len(us) + len(kr) == len(kinds)
+        assert set(us) == {"us_daily", "us_weekly"}, us
+
+    def test_missing_kind_counts_as_korea(self):
+        """옛 아카이브엔 kind 가 없다 — 카드 배지와 같은 규약이어야 한다(#38)."""
+        import bot.dashboard as d
+        from bot.dashboard import _daily_byte_is_us
+        assert _daily_byte_is_us(None) is False
+        runs = [{"_date": "2026-08-27", "ts": "2026-08-27T19:02:11",
+                 "body": "old", "_filename": "190211_daily_byte.json"}]
+        st = self._stats(d._render_daily_byte_page(runs))
+        kr = [l for l in st if "🇰🇷" in l]
+        us = [l for l in st if "🇺🇸" in l]
+        assert st[kr[0]].startswith("2026-08-27"), st
+        assert st[us[0]] == "—", st
+
+    def test_empty_side_says_dash_not_the_other_side(self):
+        """한쪽이 없으면 '—' — 남의 값을 빌려 오면 그게 이 버그다."""
+        import bot.dashboard as d
+        only_us = [r for r in self._runs() if r["kind"] == "us_daily"]
+        st = self._stats(d._render_daily_byte_page(only_us))
+        kr = [l for l in st if "🇰🇷" in l]
+        assert st[kr[0]] == "—", st
+
+    def test_weekly_rides_with_its_own_country(self):
+        import bot.dashboard as d
+        runs = self._runs() + [
+            {"_date": "2026-09-06", "ts": "2026-09-06T22:10:00", "kind": "us_weekly",
+             "body": "usw", "_filename": "221000_us_daily_byte_weekly.json"}]
+        st = self._stats(d._render_daily_byte_page(runs))
+        kr = [l for l in st if "🇰🇷" in l]
+        us = [l for l in st if "🇺🇸" in l]
+        assert st[us[0]].startswith("2026-09-06"), st
+        assert st[kr[0]].startswith("2026-08-27"), st
+
+    def test_audit_still_finds_an_asof_stat(self):
+        """훅·라벨을 바꾸면 감사의 계수 패턴도 같이 봐야 한다(#273)."""
+        import bot.dashboard as d
+        st = self._stats(d._render_daily_byte_page(self._runs()))
+        assert [l for l in st if "마지막" in l or "최신" in l], st

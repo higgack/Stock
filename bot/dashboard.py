@@ -12655,6 +12655,18 @@ def _inject_update_banner(html: str) -> str:
     return html.replace("</body>", _UPDATE_BANNER_JS + "</body>", 1)
 
 
+def _daily_byte_is_us(kind) -> bool:
+    """이 브리프가 미국 것인가 — 아카이브 `kind` 는 `us_daily`·`us_weekly`
+    처럼 **접두**로 갈린다(파일명도 `us_daily_byte*`).
+
+    목록을 열거하면 새 미국 kind 가 조용히 한국 칸에 앉는다(#24) — 접두로
+    본다. `kind` 가 없는 옛 아카이브는 한국 daily 다(카드 배지의
+    `r.get("kind", "daily")` 와 같은 규약, #38). 두 갈래는 **배타·전수**라
+    합이 항상 총 건수와 같다(회귀로 고정).
+    """
+    return str(kind or "").startswith("us_")
+
+
 def _render_daily_byte_page(runs: list[dict]) -> str:
     """Render daily_byte.html — date-grouped brief cards. Reuses
     _SCREENER_CSS (theme + card + search-bar + snippet styles) and the
@@ -12681,7 +12693,14 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         if (r.get("_date") or "").startswith(_month_kst_db)
     )
     weekly_n = sum(1 for r in runs if r.get("kind") in ("weekly", "us_weekly"))
-    _db_asof = _feed_latest_ts(runs)
+    # 🇰🇷/🇺🇸 를 나눠 찍는다(사용자 2026-09-06). 섞어서 최신 하나만 보여주면
+    # 한쪽이 며칠 조용해도 **다른 쪽 기록이 그 자리를 채워** 화면이 '이거
+    # 최신이야?' 에 답을 못 한다 — 실측: KR 이 08-27 에 멈춘 동안 이 칸은
+    # 미국 09-04 를 띄우고 있었다(#52 조용한 것과 죽은 것 · #43).
+    _db_kr = _feed_latest_ts([r for r in runs
+                              if not _daily_byte_is_us(r.get("kind"))])
+    _db_us = _feed_latest_ts([r for r in runs
+                              if _daily_byte_is_us(r.get("kind"))])
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -12695,7 +12714,8 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
-    <div class="stat"><div class="stat-v">{_html.escape(_db_asof) if _db_asof else '—'}</div><div class="stat-l">마지막 브리프 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(_db_kr) if _db_kr else '—'}</div><div class="stat-l">🇰🇷 마지막 브리프 (KST)</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(_db_us) if _db_us else '—'}</div><div class="stat-l">🇺🇸 마지막 브리프 (KST)</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost_krw:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost_krw:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
