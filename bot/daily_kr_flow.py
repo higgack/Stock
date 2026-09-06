@@ -845,7 +845,7 @@ def dry_run() -> int:
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 8
+_WHY_VER = 9
 
 # pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
 # 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
@@ -1077,9 +1077,43 @@ def journal_tail(unit: str = _SERVICE_UNIT, n: int = 60) -> tuple:
     lines = [ln for ln in (r.stdout or "").splitlines()
              if ln.strip() and not ln.strip().startswith("-- ")]
     if not lines:
-        # 대조 0건은 통과가 아니다(#54) — 없는 것도 갈래다.
-        return [], "저널에 이 유닛의 줄이 없다(로테이션·권한 확인)"
+        # 대조 0건은 통과가 아니다(#54) — 없는 것도 갈래다. 그리고 갈래를
+        # 뭉뚱그리면 처방이 정반대인 둘을 사람이 짐작하게 된다(#82) —
+        # **대조군**으로 잰다(#143).
+        return [], journal_empty_reason(journal_readable())
     return lines, ""
+
+
+def journal_readable() -> bool | None:
+    """유닛 없이 저널이 읽히는가 — 읽기 권한 **대조군**(#143). 판정 불가면 None.
+
+    이 유닛의 줄이 없을 때 그게 보존기간(회전)인지 권한인지 가르는 유일한
+    측정이다. 읽기 전용이고 유닛을 지정하지 않으므로 한 줄이면 충분하다.
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(["journalctl", "--no-pager", "-n", "1"],
+                           capture_output=True, text=True, timeout=15)
+    except Exception:                                          # noqa: BLE001
+        return None
+    if r.returncode != 0:
+        err = (r.stderr or "").lower()
+        # 권한 거부는 확정 갈래, 그 밖의 실패는 단정하지 않는다(#165).
+        return False if ("permission" in err or "denied" in err) else None
+    return bool([ln for ln in (r.stdout or "").splitlines()
+                 if ln.strip() and not ln.strip().startswith("-- ")])
+
+
+def journal_empty_reason(readable) -> str:
+    """이 유닛 줄이 0건일 때의 **갈래**(#82) — 처방이 서로 다르다."""
+    if readable is True:
+        return ("저널은 읽히는데 이 유닛의 줄만 없다 — 보존기간·회전으로 "
+                "지워진 것이다(권한 문제 아님)")
+    if readable is False:
+        return ("저널 읽기 권한이 없다 — `sudo usermod -aG systemd-journal "
+                "$USER` 후 다시 로그인")
+    return "이 유닛의 줄이 없고, 읽기 권한도 판정 불가(journalctl 자체 실패)"
 
 
 def error_lines(lines: list, keep: int = 12) -> list:

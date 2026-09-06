@@ -45847,3 +45847,126 @@ class TestMalformedRequestDoesNotTracebackTheHandler20260905:
         tree = _ast.parse(src)
         first = [n for n in _ast.walk(tree) if isinstance(n, _ast.Assign)][0]
         assert "getattr" in _ast.dump(first.value), _ast.dump(first.value)
+
+
+class TestJournalEmptyTellsWhichBranch20260906:
+    """'로테이션·권한 확인' 은 처방이 정반대인 둘을 뭉뚱그린 문구였다.
+
+    2026-09-06 VM 실측: ⑦ 이 `저널을 못 읽었다(저널에 이 유닛의 줄이
+    없다(로테이션·권한 확인))` 만 찍었다. 전날(09-05)에는 **같은 코드가
+    같은 유닛의 저널을 읽어** 실패 원문(KRX 패스워드 변경 필요)을 실었으므로
+    권한은 정상이었고, 하루 사이 09-04 줄이 사라진 것 = 보존기간·회전이다.
+    그런데 문구가 갈래를 안 갈라 사용자가 짐작해야 했다(#82) — 권한이면
+    그룹 추가, 회전이면 손쓸 게 없다.
+
+    갈래는 **잴 수 있다**: 유닛 없이 한 줄이라도 읽히면 읽기 권한은 있는
+    것이므로 이 유닛만 빈 것은 회전이다(#143 대조군). 판정을 순수 함수로
+    빼서 **값**으로 고정한다(#41·#19 소스 문자열 금지).
+    """
+
+    def test_three_branches_are_distinct_and_prescribe_differently(self):
+        import bot.daily_kr_flow as kf
+        rot = kf.journal_empty_reason(True)
+        perm = kf.journal_empty_reason(False)
+        unknown = kf.journal_empty_reason(None)
+        assert len({rot, perm, unknown}) == 3, (rot, perm, unknown)
+        # 회전 갈래는 권한을 범인으로 지목하면 안 된다(#187b 틀린 사유).
+        assert "권한 문제 아님" in rot, rot
+        assert "systemd-journal" not in rot, rot
+        # 권한 갈래만 고칠 명령을 준다.
+        assert "systemd-journal" in perm, perm
+        # 판정 불가는 단정하지 않는다(#165).
+        assert "판정 불가" in unknown, unknown
+
+    def test_empty_unit_journal_asks_the_control_group(self, monkeypatch):
+        """빈 결과를 그냥 뭉뚱그리면 이 테스트가 깨진다 — 대조군을 재는가."""
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 0
+            stdout = "-- No entries --\n"
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _R())
+        seen = []
+        monkeypatch.setattr(kf, "journal_readable",
+                            lambda: seen.append(1) or True)
+        lines, err = kf.journal_tail("x.service")
+        assert lines == [], lines
+        assert seen == [1], "대조군을 안 쟀다"
+        assert err == kf.journal_empty_reason(True), err
+
+    def test_permission_denied_is_measured_not_guessed(self, monkeypatch):
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 1
+            stdout = ""
+            stderr = "Failed to open journal: Permission denied"
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _R())
+        assert kf.journal_readable() is False
+
+    def test_other_failure_is_not_called_permission(self, monkeypatch):
+        """rc!=0 을 전부 권한이라 하면 틀린 처방을 준다(#165)."""
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 1
+            stdout = ""
+            stderr = "journalctl: command produced an unrelated error"
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _R())
+        assert kf.journal_readable() is None
+
+    def test_banner_only_output_is_not_readable(self, monkeypatch):
+        """`-- No entries --` 를 내용으로 세면 '읽었다'가 거짓이 된다(#54)."""
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 0
+            stdout = "-- No entries --\n"
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _R())
+        assert kf.journal_readable() is False
+
+    def test_real_lines_mean_readable(self, monkeypatch):
+        import bot.daily_kr_flow as kf
+
+        class _R:
+            returncode = 0
+            stdout = "2026-09-06T00:00:00+0900 host unit[1]: hello\n"
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _R())
+        assert kf.journal_readable() is True
+
+    _FAILED = {"ok": True, "t_LoadState": "loaded", "t_ActiveState": "active",
+               "t_LastTriggerUSec": "Fri 2026-09-04 19:00:00 KST",
+               "t_NextElapseUSecRealtime": "Mon 2026-09-07 19:00:00 KST",
+               "s_ActiveState": "failed", "s_SubState": "failed",
+               "s_ExecMainStartTimestamp": "Fri 2026-09-04 19:00:00 KST",
+               "s_ExecMainStatus": "1", "s_Result": "exit-code"}
+
+    def test_why_prints_the_measured_branch(self, monkeypatch):
+        """헬퍼만 고치고 배선을 안 하면 화면은 그대로다(#20) —
+        ⑦ 이 실제로 그 갈래 문구를 싣는지 why() 를 통째로 태워 본다."""
+        import bot.daily_kr_flow as kf
+        from bot import feed_health
+        monkeypatch.setattr(feed_health, "last", lambda f: "")
+        monkeypatch.setattr(kf, "systemd_facts",
+                            lambda *a, **k: dict(self._FAILED))
+        monkeypatch.setattr(kf, "journal_readable", lambda: True)
+
+        class _R:
+            returncode = 0
+            stdout = "-- No entries --\n"
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: _R())
+        out, _ = TestDailyByteWhyNamesTheLoginBranch20260904()._run_why(
+            monkeypatch, totals_side=dict, trading_day=True)
+        assert "보존기간" in out and "권한 문제 아님" in out, out
+        # 옛 뭉뚱그린 문구로 되돌리면 발화해야 한다.
+        assert "로테이션·권한 확인" not in out, out
