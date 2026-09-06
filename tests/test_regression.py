@@ -46116,47 +46116,60 @@ class TestShadowedTopLevelDefs20260906:
 
     _ALLOW: set[tuple[str, str]] = set()   # (파일, 이름) — 의도된 재정의만. 비어 있는 게 정상.
 
-    def _dups(self):
+    @staticmethod
+    def _dup_names(src: str) -> list[str]:
+        """**순수 함수** — 소스 한 벌에서 중복된 top-level 이름을 돌려준다.
+
+        ⚠️ 아래 두 테스트가 **둘 다 이걸** 부른다. 예전 판은 fires 테스트가 AST
+        스캔을 인라인으로 **재구현**해서, 스캔 본문을 `return 999, []` 로 바꾸는
+        뮤테이션이 0.01초에 통과했다(독립 리뷰 실측). 감시 대상을 안 부르는
+        '작동 확인' 테스트는 아무것도 확인하지 않는다(#19·#91b)."""
         import ast
         import collections
-        import pathlib
-        root = pathlib.Path(__file__).resolve().parent.parent
-        scanned, out = 0, []
-        for d in ("bot", "trade"):
-            for f in sorted((root / d).rglob("*.py")):
-                try:
-                    tree = ast.parse(f.read_text(encoding="utf-8"))
-                except SyntaxError:          # 파싱 실패는 다른 가드의 몫
-                    continue
-                scanned += 1
-                rel = str(f.relative_to(root))
-                names = [n.name for n in tree.body
-                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                           ast.ClassDef))]
-                names += [t.id for n in tree.body if isinstance(n, ast.Assign)
-                          for t in n.targets
-                          if isinstance(t, ast.Name) and t.id.isupper()]
-                for k, v in collections.Counter(names).items():
-                    if v > 1 and (rel, k) not in self._ALLOW:
-                        out.append((rel, k, v))
-        return scanned, out
-
-    def test_no_shadowed_top_level_definitions_repo_wide(self):
-        scanned, dups = self._dups()
-        assert scanned > 300, f"전수 스캔이 {scanned}개만 봤다 — 눈먼 가드(#54)"
-        assert not dups, f"중복 정의(뒤엣것이 앞을 가린다, #59·#74): {dups}"
-
-    def test_guard_actually_fires_on_a_shadowed_definition(self):
-        """가드가 '작동함'을 보이려면 실제로 깨지는 입력까지 밀어 볼 것(#91c).
-        위 테스트가 초록인 게 '중복이 없어서'인지 '검사가 눈이 멀어서'인지
-        이 테스트가 가른다."""
-        import ast
-        import collections
-        src = "def f():\n    pass\n\n\nX = 1\n\n\ndef f():\n    pass\n\n\nX = 2\n"
         tree = ast.parse(src)
         names = [n.name for n in tree.body
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
         names += [t.id for n in tree.body if isinstance(n, ast.Assign)
-                  for t in n.targets if isinstance(t, ast.Name) and t.id.isupper()]
-        dup = sorted(k for k, v in collections.Counter(names).items() if v > 1)
-        assert dup == ["X", "f"], f"중복을 못 잡는다: {dup}"
+                  for t in n.targets
+                  if isinstance(t, ast.Name) and t.id.isupper()]
+        return sorted(k for k, v in collections.Counter(names).items() if v > 1)
+
+    def _dups(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        files = sorted(f for d in ("bot", "trade") for f in (root / d).rglob("*.py"))
+        scanned, out = 0, []
+        for f in files:
+            try:
+                names = self._dup_names(f.read_text(encoding="utf-8"))
+            except SyntaxError:              # 파싱 실패는 다른 가드의 몫(#210)
+                continue
+            scanned += 1
+            rel = str(f.relative_to(root))
+            out += [(rel, k) for k in names if (rel, k) not in self._ALLOW]
+        return scanned, len(files), out
+
+    def test_no_shadowed_top_level_definitions_repo_wide(self):
+        scanned, found, dups = self._dups()
+        # 상한을 리터럴로 두면 절반이 조용히 빠져도 통과한다 — 발견한 파일 수에서
+        # 도출한다(#54 대조 0건 금지 · #66 자기 상수로 자기를 검증하는 tautology 금지).
+        assert found > 300, f"bot/·trade/ 에서 {found}개 파일만 찾았다 — 눈먼 가드"
+        assert scanned >= found - 2, f"{found}개 중 {scanned}개만 파싱됐다"
+        assert not dups, f"중복 정의(뒤엣것이 앞을 가린다, #59·#74): {dups}"
+
+    def test_allowlist_is_empty_so_it_cannot_become_a_bypass(self):
+        """allowlist 에 항목을 넣는 것만으로 가드가 무음이 된다 — 크기를 못박아
+        늘리려면 이 테스트도 같이 고치게 한다(독립 리뷰 실측: 300건을 주입해도
+        전 스위트가 통과했다). 규율로 기억할 일은 구조로(#119)."""
+        assert self._ALLOW == set(), (
+            f"의도된 재정의를 등재했으면 왜인지 여기에 적고 이 단언을 고칠 것: {self._ALLOW}")
+
+    def test_guard_actually_fires_on_a_shadowed_definition(self):
+        """가드가 '작동함'을 보이려면 실제로 깨지는 입력까지 밀어 볼 것(#91c).
+        위 테스트가 초록인 게 '중복이 없어서'인지 '검사가 눈이 멀어서'인지
+        이 테스트가 가른다 — **제품 함수를 그대로 태워서** 확인한다."""
+        src = ("def f():\n    pass\n\n\nclass C:\n    pass\n\n\nX = 1\n\n\n"
+               "def f():\n    pass\n\n\nclass C:\n    pass\n\n\nX = 2\n")
+        assert self._dup_names(src) == ["C", "X", "f"], (
+            f"def·class·모듈 상수 세 축 중 못 잡는 것이 있다: {self._dup_names(src)}")
+        assert self._dup_names("def f():\n    pass\nY = 1\n") == [], "오탐"

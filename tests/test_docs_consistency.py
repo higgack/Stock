@@ -65,6 +65,36 @@ def _themes(sec):
     return {m.group(1).strip(): m.group(2).split() for m in _THEME_RE.finditer(sec)}
 
 
+def _parent(n):
+    """`#91b`·`#59b` 처럼 문자 접미로 인용하는 하위 항목을 부모 번호로 맞춘다
+    (실수 섹션에 13종 실재 — `21b` 만 실제 항목이라 나머지는 오탐이 났다)."""
+    return n if n in ("21b",) else re.sub(r'[a-z]$', '', n)
+
+
+# 항목 번호만으로 키잉한다(라벨은 산문이라 다듬어지면 깨진다, #19·#200).
+_NOT_MEMBER = {
+    # #286 은 지시서 감사 자체의 기록이다. #119(규율을 구조로)·#216·#233 을
+    # 인용하지만 그건 '손 bump 실패'와 '서수 드리프트'를 예로 든 것이지
+    # 캐시가 fix 를 가린 사례가 아니다.
+    "286",
+}
+
+
+def unlisted_family_members(themes, entries, allow):
+    """**순수 함수** — 한 계열의 항목을 3개 이상 인용하는데 색인에 없는 항목.
+    실물 파일 검사와 '작동 확인' 테스트가 **둘 다 이걸** 부른다."""
+    out = []
+    for name, listed in themes.items():
+        fam = {_parent(_REF_RE.fullmatch(r).group(1)) for r in listed}
+        for n, body in entries.items():
+            if n in fam or n in allow:
+                continue
+            cites = {_parent(x) for x in _REF_RE.findall(body)} - {n}
+            if len(cites & fam) >= 3:
+                out.append((name, n, sorted(cites & fam)))
+    return out
+
+
 def test_topic_index_refs_resolve():
     """주제 색인이 가리키는 번호는 실제 항목이어야 한다. 그리고 대조 대상이
     0건이면 통과가 아니라 실패(#54) — 색인을 통째로 지우는 변형이 조용히
@@ -100,39 +130,40 @@ def test_new_entry_citing_a_family_is_listed_in_the_index():
     찾을 뿐 멤버십의 독립 근거가 없기 때문이다(색인이 곧 단일 출처, #38). 잡는 것은
     **추가 방향**(새 항목이 계열을 인용하는데 색인에 없음)이고, 그게 실제 성장 경로다."""
 
-    # (계열, 항목) — 그 계열 항목을 여럿 인용하지만 **그 계열의 사례는 아닌** 것.
-    _NOT_MEMBER = {  # noqa: N806 — 테스트 지역 allowlist(#24)
-        # #286 은 지시서 감사 자체의 기록이다. #119(규율을 구조로)·#216·#233 을
-        # 인용하지만 그건 '손 bump 실패'와 '서수 드리프트'를 예로 든 것이지
-        # 캐시가 fix 를 가린 사례가 아니다.
-        ("캐시가 fix 를 가림", "286"),
-    }
-
     sec, ent = _mistake_entries()
     themes = _themes(sec)
-    missing = []
-    for name, listed in themes.items():
-        fam = {_REF_RE.fullmatch(r).group(1) for r in listed}
-        for n, body in ent.items():
-            if n in fam or (name, n) in _NOT_MEMBER:
-                continue
-            cites = set(_REF_RE.findall(body)) - {n}
-            if len(cites & fam) >= 3:
-                missing.append((name, n, sorted(cites & fam)))
+    missing = unlisted_family_members(themes, ent, _NOT_MEMBER)
     assert not missing, (
         "이 계열을 3개 이상 인용하는데 색인에 없다 — 색인 줄에 번호를 추가할 것: "
         f"{missing}")
 
 
+def test_index_allowlist_keys_resolve_and_stay_small():
+    """allowlist 는 **항목 번호로만** 키잉한다 — 예전 판은 색인의 한글 라벨을
+    키로 써서, 라벨을 한 단어 다듬자 오탐이 살아나며 "#286 을 캐시 계열에
+    등재하라" 는 **틀린 수정**을 지시했다(독립 리뷰 실측, #19·#200 라벨 동등
+    비교의 재발). 그리고 크기를 못박아 **우회 통로**가 되지 않게 한다 — 항목을
+    넣는 것만으로 가드가 무음이 되면 안 된다(#24·#119)."""
+    _, ent = _mistake_entries()
+    assert len(_NOT_MEMBER) <= 2, (
+        f"예외를 늘렸으면 왜 그 계열이 아닌지 적고 이 단언도 고칠 것: {_NOT_MEMBER}")
+    unknown = sorted(n for n in _NOT_MEMBER if n not in ent)
+    assert not unknown, f"allowlist 가 없는 항목을 가리킨다: {unknown}"
+
+
 def test_family_rule_actually_fires():
     """가드가 '작동함'을 보이려면 실제로 깨지는 입력까지 밀어 볼 것(#91c).
-    위 테스트가 초록인 게 '색인이 최신이라서'인지 '규칙이 아무것도 안 세서'인지
-    이 테스트가 가른다."""
-    fam = {"1", "2", "3"}
-    body = "…#1·#2·#3 에 이은 같은 실패다."
-    cites = set(_REF_RE.findall(body))
-    assert len(cites & fam) >= 3, "3개 인용을 못 센다"
-    assert len({"1", "2"} & fam) < 3, "2개 인용까지 잡으면 오탐이 난다"
+
+    ⚠️ 예전 판은 판정을 **인라인으로 재구현**해서, 문턱을 99로 올리거나 루프를
+    통째로 skip 시키는 뮤테이션이 전부 통과했다(독립 리뷰 실측). 감시 대상을
+    안 부르는 '작동 확인'은 아무것도 확인하지 않는다 — **제품 함수를 태운다**."""
+    themes = {"가짜 계열": ["#1", "#2", "#3"]}
+    ent = {"9": "…#1·#2·#3 에 이은 같은 실패다.", "8": "…#1·#2 만 인용한다."}
+    assert unlisted_family_members(themes, ent, set()) == [("가짜 계열", "9", ["1", "2", "3"])]
+    assert unlisted_family_members(themes, ent, {"9"}) == [], "allowlist 가 안 먹는다"
+    # 2건 인용은 계열이 아니다(오탐 방지) — #286 이 정확히 그 경계에서 걸렸다.
+    assert all(m[1] != "8" for m in unlisted_family_members(themes, ent, set()))
+
 
 
 def test_folded_entries_point_at_a_real_reference_section():
@@ -148,10 +179,14 @@ def test_folded_entries_point_at_a_real_reference_section():
     지우는 변형이 조용히 초록이 되면 이 가드는 눈이 먼다."""
     txt = _CLAUDE.read_text(encoding="utf-8")
     ref = _REFERENCE.read_text(encoding="utf-8")
-    pointed = sorted(set(re.findall(r'→ REFERENCE §실수 #(\d+[a-z]?)', txt)))
+    pointed = set(re.findall(r'→ REFERENCE §실수 #(\d+[a-z]?)', txt))
+    secs = set(re.findall(r'(?m)^### 실수 #(\d+[a-z]?)$', ref))
     assert len(pointed) >= 20, f"REFERENCE 포인터가 {len(pointed)}건뿐 — 눈먼 가드"
-    dangling = [n for n in pointed if f"### 실수 #{n}\n" not in ref]
-    assert not dangling, f"CLAUDE.md 가 없는 REFERENCE 절을 가리킨다: {dangling}"
+    # **양방향**으로 본다. 예전 판은 dangling 만 봐서, CLAUDE.md 에서 포인터 줄을
+    # 지우면 그 절이 아무도 못 찾는 **고아**가 되는데 조용히 통과했다(독립 리뷰).
+    assert pointed == secs, (
+        f"포인터↔절 불일치 — 고아 절(아무도 안 가리킴)={sorted(secs - pointed)}, "
+        f"dangling(절이 없음)={sorted(pointed - secs)}")
 
 
 def test_injected_rules_file_stays_within_budget():
@@ -160,8 +195,14 @@ def test_injected_rules_file_stays_within_budget():
     2026-09-06 감사 실측: 항목 평균이 319자(첫 60개)에서 1,090자(마지막 60개)로
     3.4배 자랐고, 6~8주마다 파일이 배가되는 궤적이었다. 상한을 두면 다음에 넘길 때
     "접을 것을 접었나"를 묻게 된다(넘으면 §주제 색인 기준으로 서사를 REFERENCE 로).
-    상한은 현재값(179k)에 여유를 준 값이며, 늘릴 땐 왜 늘리는지 같이 적을 것."""
+    ⚠️ **상한을 현재값에 바싹 붙이면 안 된다.** 처음엔 195,000 으로 잡았는데 git
+    이력 실측 증가율이 **≈4,300자/일**(2026-08-26 154,624 → 09-05 199,207)이라
+    여유가 **3일**뿐이었다 — 며칠 뒤 실수 항목 하나만 추가해도 `make test` 가
+    빨간불이 되고, `fail 시 commit 금지(누구든)`(§Pre-commit) 때문에 **문서 크기
+    단언 하나가 무관한 기능 커밋을 통째로 막는다**(#67·#275 의 무관한 빨간불).
+    240,000 은 그 증가율로 **약 2주** 창이다. 늘릴 땐 그때의 증가율을 다시 재서
+    같이 적을 것 — 근거 없이 올리면 이 가드는 영원히 안 걸린다(#25·#260)."""
     n = len(_CLAUDE.read_text(encoding="utf-8"))
-    assert n <= 195_000, (
+    assert n <= 240_000, (
         f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산을 넘었다. "
         "긴 항목의 서사를 CLAUDE_REFERENCE.md 로 접을 것(규칙 문장은 남긴다).")

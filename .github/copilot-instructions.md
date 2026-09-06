@@ -24,13 +24,14 @@
 - 개발은 별도 dev 브랜치에서 하고 PR 로 base 에 **squash merge**. 직접 base 에
   push 하지 마세요(권한이 있어도 리뷰 없는 직접배포는 지양).
 - **머지 전 회귀 테스트 통과 필수** — 실패 시 commit·merge 금지(라이브 장애도
-  예외 아님. CLAUDE.md `fail 시 commit 금지(누구든)` 와 같은 기준). 변경과
-  무관해 보이는 빨간불이면 무관함을 **확인한 뒤** 진행하고 그 사실을 보고에
-  적는다(날짜 경과·픽스처 하드코딩 날짜·'단독 green, 전체 red' 실측 사례 있음):
+  예외 아님. CLAUDE.md `fail 시 commit 금지(누구든)` 와 같은 기준):
   ```bash
   make test        # = pytest tests/  (VM 기준 ~37초)
   ```
-  실패 시 원인 해결 전까지 merge 금지.
+  변경과 무관해 보이는 빨간불도 **초록으로 만든 뒤** merge 한다 — 원인이 픽스처의
+  하드코딩 날짜처럼 무관하더라도 **그 테스트를 고치는 것이 fix 다**(실측: 날짜 경과로
+  멀쩡한 코드가 빨간불 · '단독 green, 전체 red'). 무관함을 확인한 것만으로는 진행
+  근거가 되지 않는다.
 - 변경한 모든 `.py` 파일은 최소 syntax 체크:
   ```bash
   python3 -c "import ast; ast.parse(open('<file>').read())"
