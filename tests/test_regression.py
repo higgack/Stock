@@ -45520,11 +45520,89 @@ class TestDailyByteDryRunProvesGenerationWithoutPushing20260905:
         body = _ast.dump(picked[0].body)
         assert "_DBYTE_IMG_DIR" in body, body
 
-    def test_dry_run_says_it_writes_nothing(self, monkeypatch):
-        """무엇을 안 쓰는지 말하지 않으면 사용자가 화면을 보고 놀란다(#43)."""
+    def test_dry_run_says_what_it_leaves_and_what_it_does_not(self, monkeypatch):
+        """무엇을 안 쓰는지 말하지 않으면 사용자가 화면을 보고 놀란다(#43).
+
+        2026-09-06 계약 변경(#222 — 지우지 말고 다시 쓴다): 옛 단언은
+        `안 씁니다` 라는 **문구**를 쟀는데, 그 문구가 적던 "아카이브·
+        대시보드에도 안 씁니다" 가 사실이 아니었다 — `generate()` 는
+        `_log_daily_byte_usage` 로 **실제 과금된 비용**을 남기고 그 로그가
+        대시보드 비용 카드를 만든다(#55 설명이 코드와 어긋나면 버그).
+        계약은 '안 쓴다고 말한다' 가 아니라 **'무엇을 남기고 무엇을 안
+        남기는지 정확히 말한다'** 이다.
+        """
         rc, out = self._run(monkeypatch, gen=lambda **kw: ("x", 0.0, None))
-        assert "아카이브" in out and "안 씁니다" in out, out
+        assert "아카이브" in out and "안 남깁니다" in out, out
         assert "푸시·아카이브 둘 다 안 했다" in out, out
+
+
+class TestDryRunBannerNamesTheCostItLeaves20260906:
+    """진단이 '아무것도 안 쓴다' 고 말했는데 **비용은 쓰고 있었다**.
+
+    #283 에서 `--dry-run` 이 아카이브·인포그래픽을 남기지 못하게 막고
+    배너에 "아카이브·대시보드에도 **안 씁니다**" 라고 적었다. 그런데
+    `generate()` 는 `_log_daily_byte_usage()` 로 daily_byte_usage.jsonl 과
+    usage.jsonl 에 **실제 과금된 비용**을 남기고, 그 두 로그가 곧 대시보드
+    비용 카드다(§Help/Dashboard 비용합산). 즉 배너의 '대시보드에도' 가
+    거짓이었다(#55).
+
+    비용 기록 자체는 **옳다** — dry-run 은 진짜 돈을 쓰므로(실측 ₩54.7)
+    장부에서 빼면 지출이 조용히 사라진다. 고칠 것은 동작이 아니라 문구다.
+    소스 문자열이 아니라 **찍히는 출력**으로 잰다(#19·#89·#117 — 이 레포에서
+    가장 자주 깨진 단언 형태).
+    """
+
+    def _out(self, monkeypatch):
+        import io
+        from contextlib import redirect_stdout
+        import bot.daily_kr_flow as kf
+        import bot.market_calendar as mc
+        monkeypatch.setattr(mc, "is_trading_day", lambda m, d: True)
+        monkeypatch.setattr(kf, "generate", lambda **kw: ("본문", 54.7, None))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = kf.dry_run()
+        return rc, buf.getvalue()
+
+    def test_banner_names_the_cost_record_it_leaves(self, monkeypatch):
+        """남기는 것을 말하지 않으면 사용자가 비용 카드를 보고 놀란다(#43)."""
+        rc, out = self._out(monkeypatch)
+        assert rc == 0, out
+        head = out.split("③")[0]
+        assert "비용" in head and "기록" in head, head
+
+    def test_banner_does_not_claim_the_dashboard_is_untouched(self, monkeypatch):
+        """옛 문구로 되돌리면 발화해야 한다 — 대시보드를 안 건드린다는
+        주장은 비용 카드 때문에 거짓이다."""
+        rc, out = self._out(monkeypatch)
+        bad = [ln for ln in out.splitlines()
+               if "대시보드" in ln
+               and ("안 씁니다" in ln or "안 남깁니다" in ln or "안 쓴다" in ln)]
+        assert not bad, bad
+
+    def test_cost_logging_is_not_behind_the_archive_gate(self):
+        """비용 기록을 `if archive:` 안으로 옮기면 dry-run 의 실제 지출이
+        장부에서 사라진다 — 주석이 대신 만족시키지 않게 AST 로 본다(#59b).
+        아카이브 저장(게이트 안)과 **대칭**이라 같은 파일에서 함께 고정한다."""
+        import ast as _ast
+        import inspect
+        import bot.daily_kr_flow as kf
+        tree = _ast.parse(inspect.getsource(kf.generate))
+        calls = [n for n in _ast.walk(tree)
+                 if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                 and n.func.id == "_log_daily_byte_usage"]
+        assert len(calls) == 1, calls
+        gated = {id(n) for gate in _ast.walk(tree)
+                 if isinstance(gate, _ast.If) and isinstance(gate.test, _ast.Name)
+                 and gate.test.id == "archive"
+                 for n in _ast.walk(gate)}
+        assert id(calls[0]) not in gated, "비용 기록이 archive 게이트 안에 있다"
+
+    def test_version_banner_moves_when_the_wording_changes(self):
+        """진단 출력이 바뀌면 판을 올려야 옛 출력과 구별된다(#21·#67 —
+        리터럴이 아니라 **하한**으로)."""
+        import bot.daily_kr_flow as kf
+        assert kf._WHY_VER >= 8, kf._WHY_VER
 
 
 class TestNaverSectorCheckTellsTheBranch20260905:
