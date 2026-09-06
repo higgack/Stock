@@ -845,7 +845,7 @@ def dry_run() -> int:
 # (#43 침묵이 최악 · #52 조용한 것과 죽은 것을 화면이 구별 못 함). 갈래마다
 # 처방이 완전히 다르므로 이름을 대서 말한다(#82). 반복 확인은 제품에
 # 심는다(#252 — 손으로 조립한 명령은 제품 코드로 검증되지 않는다).
-_WHY_VER = 8
+_WHY_VER = 10
 
 # pykrx 로그인은 우리 코드가 아니라 **라이브러리가 stdout 으로** 사유를
 # 찍는다. 그 원문을 잡아 갈래를 읽는다 — 갈래마다 처방이 다르다(#82).
@@ -1054,7 +1054,7 @@ def service_failed(facts: dict) -> bool:
 
 
 def journal_tail(unit: str = _SERVICE_UNIT, n: int = 60) -> tuple:
-    """유닛 저널 마지막 n줄(읽기 전용). 실패면 ([], 사유).
+    """유닛 저널 마지막 n줄(읽기 전용). 비면 ([], 사유, 갈래).
 
     ⚠️ 진단이 "`journalctl` 로 확인하세요" 로 끝나면 라운드가 하나 더
     든다 — 반복 확인은 제품에 심는다(#252·Automation-first). 읽기만 하고
@@ -1069,17 +1069,77 @@ def journal_tail(unit: str = _SERVICE_UNIT, n: int = 60) -> tuple:
              "-o", "short-iso"],
             capture_output=True, text=True, timeout=15)
     except Exception as exc:                                   # noqa: BLE001
-        return [], f"{type(exc).__name__}: {exc}"[:120]
+        return [], f"{type(exc).__name__}: {exc}"[:120], "unknown"
     if r.returncode != 0:
-        return [], (r.stderr or "").strip()[:160] or f"rc={r.returncode}"
+        return ([], (r.stderr or "").strip()[:160] or f"rc={r.returncode}",
+                "unknown")
     # ⚠️ journalctl 은 빈 결과에 `-- No entries --` 배너를 준다 — 그걸
     # 내용으로 세면 '읽었다'가 거짓이 된다(#54 대조 0건은 통과가 아니다).
     lines = [ln for ln in (r.stdout or "").splitlines()
              if ln.strip() and not ln.strip().startswith("-- ")]
     if not lines:
-        # 대조 0건은 통과가 아니다(#54) — 없는 것도 갈래다.
-        return [], "저널에 이 유닛의 줄이 없다(로테이션·권한 확인)"
-    return lines, ""
+        # 대조 0건은 통과가 아니다(#54) — 없는 것도 갈래다. 그리고 갈래를
+        # 뭉뚱그리면 처방이 정반대인 둘을 사람이 짐작하게 된다(#82) —
+        # **대조군**으로 잰다(#143).
+        kind = journal_empty_kind(journal_readable())
+        return [], _JOURNAL_EMPTY_TEXT[kind], kind
+    return lines, "", ""
+
+
+def journal_readable() -> bool | None:
+    """**시스템** 저널이 읽히는가 — 읽기 권한 대조군(#143). 애매하면 None.
+
+    ⚠️ `-u` 없이 그냥 물으면 안 된다(독립 리뷰 지적) — 그건 호출자 **자기
+    사용자 저널**이라 systemd-journal 그룹 밖에서도 읽힌다. 유닛은 시스템
+    저널에 살므로 `--system` 을 겨냥해야 대조군이 성립한다.
+
+    그리고 rc=0 인데 줄이 0건인 것은 '비었다' 와 '못 읽는다' 를 **구별하지
+    못한다** — 그건 False(권한 확정)가 아니라 None(판정 불가)이다. 확정
+    갈래는 원천이 권한이라고 말할 때뿐이다(#165 재지 않은 귀속 금지).
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(["journalctl", "--no-pager", "-n", "1", "--system"],
+                           capture_output=True, text=True, timeout=15)
+    except Exception:                                          # noqa: BLE001
+        return None
+    err = (r.stderr or "").lower()
+    if "permission" in err or "denied" in err or "insufficient permission" in err:
+        return False
+    if r.returncode != 0:
+        return None
+    lines = [ln for ln in (r.stdout or "").splitlines()
+             if ln.strip() and not ln.strip().startswith("-- ")]
+    return True if lines else None
+
+
+def journal_empty_kind(readable) -> str:
+    """이 유닛 줄이 0건일 때의 갈래 — 처방이 서로 다르다(#82).
+
+    `rotated`(보존기간) / `denied`(권한) / `unknown`(판정 불가).
+    문구·화면 표기는 전부 이 값에서 파생시킨다(#38 단일 출처).
+    """
+    if readable is True:
+        return "rotated"
+    if readable is False:
+        return "denied"
+    return "unknown"
+
+
+_JOURNAL_EMPTY_TEXT = {
+    "rotated": ("시스템 저널은 읽히는데 이 유닛의 줄만 없다 — 보존기간·회전"
+                "으로 지워진 것이다(권한 문제 아님 · 다시 조회해도 안 나온다)"),
+    "denied": ("시스템 저널 읽기 권한이 없다 — `sudo usermod -aG "
+               "systemd-journal $USER` 후 다시 로그인"),
+    "unknown": ("이 유닛의 줄이 없다 — 비어 있는 것인지 못 읽는 것인지 "
+                "판정 불가(`sudo journalctl -u <unit> -n 50` 로 확인)"),
+}
+
+
+def journal_empty_reason(readable) -> str:
+    """0건 갈래의 사람 문구 — 판정은 `journal_empty_kind` 단일 출처."""
+    return _JOURNAL_EMPTY_TEXT[journal_empty_kind(readable)]
 
 
 def error_lines(lines: list, keep: int = 12) -> list:
@@ -1375,10 +1435,17 @@ def why(argv: list[str] | None = None) -> int:
         # 있다. 무엇을 보여주는지 그대로 적는다(#165·#187b).
         print(f"⑦ 서비스 마지막 실행이 실패했다 — `journalctl -u "
               f"{_SERVICE_UNIT}` 발췌(여러 실행이 섞일 수 있음 · 비밀값 가림)")
-        lines, err = journal_tail()
+        lines, err, kind = journal_tail()
         if err:
-            print(f"   ❓ 저널을 못 읽었다({err}) — "
-                  f"`journalctl -u {_SERVICE_UNIT} -n 50` 를 직접 볼 것")
+            # 회전으로 확정된 자리에 "직접 볼 것" 을 붙이면 스스로를
+            # 뒤집는다 — 같은 명령은 아무것도 안 보여준다(독립 리뷰 지적).
+            if kind == "rotated":
+                print(f"   ℹ️ 저널 발췌 없음 — {err}")
+            else:
+                print(f"   ❓ 저널 발췌 없음 — {err}")
+                if kind != "unknown":
+                    print(f"      고친 뒤 `journalctl -u {_SERVICE_UNIT} "
+                          f"-n 50` 로 다시 볼 것")
         else:
             for ln in error_lines(lines):
                 print(f"   | {ln}")
