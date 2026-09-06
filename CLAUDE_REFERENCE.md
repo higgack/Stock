@@ -367,7 +367,14 @@ catches a distinct class of bug. Result format:
 4. **Cross-file consistency check** when a rule moves between modules —
    `grep -rn` to confirm no orphaned references remain (e.g. when
    renaming RULE numbers or relocating a helper).
-5. **Multi-step phase work**: after each item finishes, verify the
+5. **Multi-step phase work** — ⚠️ **2026-09-06 대체됨**. 아래는 원문 보존이고
+   현행 규칙은 `CLAUDE.md` §Pre-commit 5 다(항목별로 검증하되 한 턴에 끝까지
+   간다 · 대기는 merge 게이트에서만 · 사용자가 순차 검증을 명시하면 그때는 기다림).
+   2026-06-20 압축이 아래 한정어 둘("or no objection arrives" · "when the user
+   asked for sequential validation")을 떨어뜨려, 2026-06-12 배치 적재 정책이
+   이미 대체한 review-first 가 78일 동안 정지 규칙으로 살아남았다(#287).
+   원문:
+   after each item finishes, verify the
    item works in isolation (syntax + smoke test + help text if user-
    visible) BEFORE starting the next item in the sequence. Report the
    verification result to the user; only continue when they signal

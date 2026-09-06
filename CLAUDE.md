@@ -3540,6 +3540,27 @@ Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기
     "37건 반증" 으로 위장했다 — **대조 0건은 통과도 반증도 아니다**(#54 의 반대 방향).
     판정은 verified/refuted/**unjudged** 세 상태로 가를 것.
 
+287. **압축이 한정어를 떨어뜨리면 이미 대체된 규칙이 살아남는다 — 78일 동안**
+    (2026-09-06 지시서 감사 ⑧, 사용자 승인 후 복원): `§Pre-commit 5` 가
+    `항목별 검증 후 다음("OK/다음" 전 batch 금지)` 였는데, 원문
+    (`CLAUDE_REFERENCE.md` §5)에는 한정어가 **둘** 있었다 — `or no objection
+    arrives`(침묵이면 진행)와 `when the user asked for sequential validation`
+    (사용자가 순차 검증을 요청했을 때만). 2026-06-20 압축 커밋(3047→128줄)이
+    둘 다 떨어뜨려, **사용자가 8일 전(2026-06-12)에 배치 적재로 이미 대체한**
+    review-first 가 무조건 정지 규칙으로 남았다. #101("'안 건드린 것 둘' 은
+    보고가 아니라 미이행")이 그 정지가 만든 사고 기록이다.
+    ⚠️ 판정 근거는 **git 이력**이었다 — `git log -S'OK/다음'` 이 그 줄을 딱
+    한 번(압축 커밋) 보여 줬고 이후 재확인이 없었다. "사용자가 정한 정지인가"는
+    문구를 읽어서가 아니라 **언제 누가 넣었는지를 재서** 답할 것(#12·#165).
+    보조 신호: 이 파일은 사용자가 정한 정지에 예외 없이 **날짜 귀속**을 붙이는데
+    그 항목에만 없었다.
+    ⚠️ 그래서 **압축할 때 조건절·예외절을 먼저 세라**. 규칙에서 "~할 때만"·
+    "~아니면"이 빠지면 남은 문장은 더 강해지고, 강해진 규칙은 나중 정책과
+    조용히 충돌한다(#200 라벨이 자라면 동등 비교가 깨지는 것의 반대 방향 —
+    여기선 라벨이 **줄어서** 범위가 넓어졌다).
+    ⚠️ 그리고 대체된 원문을 아카이브에 그대로 두면 다음 사람이 되살린다 —
+    `CLAUDE_REFERENCE.md` 쪽에 **대체됨 + 현행 위치**를 박았다(#55).
+
    (새 실수 = 날짜 + 한 줄 추가 의무. 항목이 구조적으로 막히면[코드가 그 실패모드
    자체를 불가능하게 바꾼 경우 — 규율로 매번 기억하는 게 아니라] "#N SUPERSEDED by
    <커밋/PR>" 태그 추가, 2026-08-09 Cerebras 지식베이스 블로그 검토 — age-decay
@@ -3571,7 +3592,12 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
 1. **syntax**: `python3 -c "import ast; ast.parse(open('<f>').read())"` 모든 touch 파일.
 2. **logic smoke**: 새 parser/classifier/mapper/formatter = happy + edge 인라인 테스트.
 3. `_HELP_TEXT` 길이 체크(§Help). 4. 룰 이동 시 `grep -rn` orphan 참조 확인.
-5. 다단계: 항목별 검증 후 다음("OK/다음" 전 batch 금지).
+5. 다단계: 항목별로 검증하고(항목 A 검증 → 항목 B, **마지막에 몰아서 검증 금지**)
+   한 턴에 끝까지 간다. 사용자 확인 대기는 §Default workflow 1 의 merge 게이트
+   에서만 — 항목 사이에서는 멈추지 않는다(사용자 2026-09-06 복원. 2026-06-20
+   압축이 원문의 한정어 둘을 떨어뜨려 "or no objection arrives"·"when the user
+   asked for sequential validation" 이 사라진 것이었다). ⚠️ 사용자가 그 건에서
+   **순차 검증을 명시하면** 그때는 항목마다 보고하고 기다린다.
 6. **회귀**: `make test`(=pytest tests/, VM ~37초) commit 전 의무. fail 시 commit 금지(누구든).
    새 회귀패턴 = `tests/test_regression.py` 영구추가(ad-hoc 1회용 금지). `make syntax`/`make help-len` 단축.
    - **rtk opt-in 토큰절감**(`command -v rtk` 있을 때만): noisy pass/fail 출력 = `rtk` 래핑
