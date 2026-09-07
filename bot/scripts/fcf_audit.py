@@ -244,17 +244,46 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         say(f"     연 {p}  " + (f"{v:,.0f}" if v is not None else "— 재료없음"))
     for p, v in list(yq_fcf.items())[-5:]:
         say(f"     분 {p}  " + (f"{v:,.0f}" if v is not None else "— 재료없음"))
-    # ① 재계산 — 원천이 직접 준 FCF 가 아니면 OCF−|CAPEX| 와 같아야 한다
+    # ① 재계산 — **원천이 직접 준 FCF** 를 우리가 재료로 만든 `OCF−|CAPEX|`
+    # 와 대조한다. 두 값이 서로 **다른 입력**에서 오므로 이 축은 실제로
+    # 무언가를 잰다.
+    # ⚠️ 옛 판은 정반대였다 — 직접 제공분을 건너뛰고 **파생분만** 다시
+    # 계산했는데, 파생분의 `fcf_from_row` 는 정의상 `fcf_from_parts` 그
+    # 자체라 영원히 일치했다(독립 리뷰 실측: 4,589행 비교 · 불일치 0건,
+    # CAPEX 를 흔든 대조군은 3,023건 → 검사가 눈먼 게 아니라 **구조상
+    # 같았다**). #291 이 같은 날 DART 축에서 지운 tautology 가 yfinance
+    # 쌍둥이에 그대로 남아 있었다 — 두 경로를 합치거나 파생값을 대조할
+    # 땐 "이 대조가 여전히 무언가를 재나"를 먼저 답할 것(#54·#291).
     from bot.fcf import _CAPEX_NAMES, _FCF_NAMES, _OCF_NAMES, _first
     from bot.fcf import fcf_from_parts as _parts
-    _re_bad, _re_n = [], 0
+    from bot.fcf import missing_reason as _why_row
+    _re_bad: list[str] = []
+    # ⚠️ 건너뛴 행을 **행마다 한 줄씩** 모은다 — 총계를 이 리스트에서
+    # 파생시키면 소계와 총계가 갈릴 수 없다(#45). 사유 문구는 화면 각주와
+    # 같은 `bot.fcf.missing_reason` 에서 온다(복제하면 갈라진다, #38).
+    _skips: list[str] = []
+    _re_n = 0
     for p, r in yq + ya:
-        v = fcf_from_row(r)
-        if v is None or _first(r, _FCF_NAMES) is not None:
-            continue                       # 직접 제공분은 재계산 대상 아님
+        # 원천이 준 FCF 를 빼고 물으면 **재료만으로 만들 수 있나**를 답한다
+        why = _why_row({k: v for k, v in r.items() if k not in _FCF_NAMES})
+        if why:
+            _skips.append(f"재료 부족 — {why}")
+            continue
+        direct = _first(r, _FCF_NAMES)
+        if direct is None:
+            _skips.append("원천이 FCF 를 직접 주지 않음(우리가 만든 값뿐이라"
+                          " 대조 상대가 없다)")
+            continue
+        _p = _parts(_first(r, _OCF_NAMES), _first(r, _CAPEX_NAMES))
+        g = _pct(float(direct), _p)
+        if g is None:
+            # ⚠️ 분모가 0 이면 비율이 없다 — 그걸 `_re_n` 에 세면 판정
+            # 불가가 조용히 통과가 된다(#54). 세지 말고 사유로 남긴다.
+            _skips.append("OCF−|CAPEX| 가 0 이라 비율 대조 불가")
+            continue
         _re_n += 1
-        if v != _parts(_first(r, _OCF_NAMES), _first(r, _CAPEX_NAMES)):
-            _re_bad.append(p)
+        if g > _GAP_OK:
+            _re_bad.append(f"{p} {g:.2f}%")
     # ⚠️ **대조 0건은 통과가 아니다**(#54). 2026-08-22 실측: VM 에서 venv
     # 밖 인터프리터로 돌려 yfinance 가 없자 스냅샷이 통째로 비었는데
     # `① 재계산 ✅ 전 기간 일치` 가 찍혔다 — 감사가 거짓 안심을 준 것.
@@ -262,9 +291,21 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         say("     ① 재계산 ❌ 대조 0건 — 현금흐름표를 못 받았다"
             "(스냅샷 실패·원천 차단·의존성 누락 중 하나)")
         flag(False, "①재계산(yf)")
+    elif not _re_n:
+        # ⚠️ 행은 받았는데 **한 건도 대조하지 않은** 경우다. 2026-09-07 VM
+        # 실측(098070.KQ)에서 옛 판이 이 자리를 `✅ 전 기간 일치(0건)` 이라
+        # 찍었다 — 아무것도 안 잰 자리가 통과로 보고된 것이다(#54).
+        # 사유는 뭉뚱그리지 말고 **갈래로** 적는다(#82·#292).
+        say(f"     ① 재계산 ❓ 대조 대상 없음 — 받은 {len(_skips)}행: "
+            f"{_axis_tally(_skips)}")
+        flag(None, "①재계산(yf)")
     else:
-        say(f"     ① 재계산 " + (f"✅ 전 기간 일치({_re_n}건)" if not _re_bad
-                                else f"❌ 불일치 {_re_bad}"))
+        # ⚠️ '전 기간' 이라 적으면 **건너뛴 행을 뺀 모집단**을 전체인 것처럼
+        # 말한다(#45) — 대조한 수와 제외한 수를 같이 적는다.
+        say("     ① 재계산 "
+            + (f"✅ 원천 FCF ↔ OCF−|CAPEX| 일치 {_re_n}건"
+               if not _re_bad else f"❌ 불일치 {_re_bad}")
+            + (f" · 대조 제외 {len(_skips)}행" if _skips else ""))
         flag(not _re_bad, "①재계산(yf)")
     # ④ 검산(회계연도 정렬)
     win = fiscal_window(list(yq_fcf.items()), list(ya_fcf.items()))
