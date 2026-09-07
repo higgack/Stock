@@ -87,11 +87,21 @@ def _dotenv_lookup(name: str) -> tuple[str | None, str, str]:
     except Exception as exc:                                   # noqa: BLE001
         return None, f"python-dotenv 없음({type(exc).__name__})", f"{type(exc).__name__}: {exc}"
     seen, empty = [], ""
-    for p in (find_dotenv(usecwd=True), str(_P.home() / "stock" / ".env")):
-        if not p or not _P(p).exists():
-            continue
-        seen.append(p)
+    try:
+        # ⚠️ **경로 계산도 try 안이다** — `find_dotenv(usecwd=True)` 는 cwd 가
+        # 지워졌으면 FileNotFoundError, `Path.home()` 은 HOME 이 없으면
+        # RuntimeError 를 던진다. 옛 `env_key` 는 이 둘을 통째로 감싸 로그만
+        # 남기고 "" 를 냈는데, 스캔을 합치며 범위가 좁아져 **레포 단일
+        # 자격증명 게터가 던질 수 있게** 됐다(독립 리뷰 실측 — 호출부 47곳,
+        # `daily_kr_flow` 의 `except: pass` 가 게이트를 통째로 건너뛰게 된다).
+        paths = (find_dotenv(usecwd=True), str(_P.home() / "stock" / ".env"))
+    except Exception as exc:                                   # noqa: BLE001
+        return None, f".env 경로 확인 실패({type(exc).__name__})", f"{type(exc).__name__}: {exc}"
+    for p in paths:
         try:
+            if not p or not _P(p).exists():
+                continue
+            seen.append(p)
             vals = dotenv_values(p) or {}
         except Exception as exc:                               # noqa: BLE001
             return None, f"{p}: 읽기 실패({type(exc).__name__})", f"{type(exc).__name__}: {exc}"
@@ -138,15 +148,23 @@ def env_diag(*names: str) -> str:
     생긴다 — 2026-09-07 VM 실측에서 `pykrx: KRX_ID/KRX_PW 미설정` 바로
     뒤에 라이브러리가 `KRX 로그인 완료` 를 찍었다. 그 상태를 추측이 아니라
     **재서** 이름으로 부른다(#165 안 잰 것을 단정하지 말 것 · #279).
+
+    ⚠️ **진단은 자기가 잴 것을 바꾸지 않는다**(#30·#264) — `env_key` 를 부르면
+    `_TRIED`·`os.environ` 이 바뀐다. 여기선 환경만 읽고 `.env` 는 캐시를
+    건너뛴 스캔으로 본다.
     """
     out: list[str] = []
     for n in names:
-        if env_key(n):
+        if (os.environ.get(n) or "").strip():
             continue                       # 이 키는 정상 — 적을 게 없다
         val, why, _err = _dotenv_lookup(n)
         if val is not None:
-            # 지금 다시 읽으면 있다 = 첫 조회 시점에만 못 읽은 것이다.
-            why += (" — ⚠️ 지금 다시 읽으면 있다(첫 조회가 실패해 캐시됨:"
-                    " 실행 cwd·.env 생성 시점 확인)")
+            # 지금 다시 읽으면 값이 있다 — 두 갈래를 **재서** 가른다(#165):
+            # 이미 조회했었다면 그 실패가 캐시된 것이고, 아직이면 이 프로세스
+            # 가 `.env` 를 안 읽은 것이다(호출 순서·지연 load_dotenv 확인).
+            why += (" — ⚠️ 지금 다시 읽으면 있다("
+                    + ("첫 조회가 실패해 캐시됨: 실행 cwd·.env 생성 시점 확인"
+                       if n in _TRIED else "이 프로세스에서 아직 조회 전")
+                    + ")")
         out.append(f"{n}: {why}")
     return " · ".join(out)

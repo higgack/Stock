@@ -8122,10 +8122,16 @@ def _render_stock_info_html(rec: dict) -> str:
                 _why = ""
                 if not _pd_any:
                     try:
+                        from bot.env_keys import env_diag
                         from bot.pykrx_client import krx_login_ready
+                        # ⚠️ '미설정' 만 적으면 사용자가 그다음(파일을 못 찾았나·
+                        # 키가 없나·값이 비었나)을 짐작한다(#82) — 갈래를 같이
+                        # 적는다. 값은 안 실리고 경로·길이까지만(§Secrets),
+                        # 경로가 HTML 을 깨지 않게 escape(실수 #7).
                         _why = ("" if krx_login_ready() else
                                 ' <b style="color:#f5a623">기간 칸이 빈 이유: '
                                 'KRX 로그인 자격증명(KRX_ID/KRX_PW) 미설정 — '
+                                + _html.escape(env_diag("KRX_ID", "KRX_PW")) + ' — '
                                 'KRX 가 2025-12-27 부터 로그인 필수라 일별 시계열을 '
                                 '못 받습니다. 현재값은 폴백 소스입니다.</b>')
                     except Exception:
