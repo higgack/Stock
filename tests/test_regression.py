@@ -43581,6 +43581,70 @@ def test_every_full_page_module_is_in_the_css_guard_or_listed():
     assert not stale, f"부채 목록에 완결 페이지가 아닌 모듈: {stale}"
 
 
+def _winning_decl(html: str, classes: set[str], prop: str) -> str | None:
+    """렌더된 CSS 에서 그 클래스 조합에 **실제로 적용되는** 선언값.
+
+    같은 명시도면 **뒤에 온 규칙이 이긴다** — 소스를 눈으로 읽으면 이걸
+    놓친다(#273 명시도 축은 따로 못박을 것).
+    """
+    import re as _re
+    css = "\n".join(_re.findall(r"<style[^>]*>(.*?)</style>", html, _re.S))
+    css = _re.sub(r"/\*.*?\*/", "", css, flags=_re.S)     # 주석 제거(#59b)
+    best = None
+    for sel, decls in _re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        for one in sel.split(","):
+            one = one.strip()
+            if not one or " " in one or not one.startswith("."):
+                continue                       # 단일 요소 셀렉터만 본다
+            need = set(one.lstrip(".").split("."))
+            if not need or not need <= classes:
+                continue
+            m = _re.search(rf"(?:^|;)\s*{prop}\s*:\s*([^;]+)", decls)
+            if not m:
+                continue
+            spec = _specificity(one)
+            if best is None or spec >= best[0]:   # 동점이면 뒤엣것이 이긴다
+                best = (spec, m.group(1).strip())
+    return best[1] if best else None
+
+
+def test_important_card_keeps_its_gold_border_next_to_other_flags():
+    """사용자 2026-09-07 "중요로 필터했을때 … 왜 어떤건 금색테두리로 표시
+    안되는거야?" — `🔥` 배지와 금색 테두리는 **같은 `_sig`** 에서 나오는데도
+    화면에서 갈렸다.
+
+    원인은 CSS 캐스케이드다: `.df-card.df-significant`(금색)와
+    `.df-card.df-noparse`(회색 점선)가 **같은 명시도**인데 후자가 뒤에
+    선언돼 `border-color` 를 이긴다. 즉 🔥 이면서 미파싱제외인 카드는
+    배지만 금색이고 테두리는 회색이 된다(#273 명시도 · #38 같은 판정을
+    두 곳이 다르게 그림).
+
+    ⚠️ 소스를 눈으로 읽으면 못 잡는다 — **렌더된 CSS 로 승자를 계산**한다.
+    """
+    from bot import dashboard as _d
+    item = {"date": "2026-09-07", "corp": "테스트", "stock_code": "025870",
+            "rcept_no": "20260907000001", "category": "상장폐지",
+            "report_nm": "기타시장안내 (시가총액 미달에 따른 상장폐지 우려 관련 안내)",
+            "detail": ["제목: …"], "url": "https://example.invalid",
+            "_sig": "상장폐지 관련", "_unparsed": False, "_noparse": True}
+    out = _d._render_dart_feed_page({"2026-09-07": [item]})
+    html = _page_html(out)
+    import re as _re
+    cls = _re.search(r'<div class="(df-card[^"]*)" data-cat=', html)
+    assert cls, "카드가 안 그려졌다 — 픽스처가 눈멀었다(#91c)"
+    classes = set(cls.group(1).split())
+    assert {"df-significant", "df-noparse"} <= classes, classes
+
+    gold = _winning_decl(html, {"df-card", "df-significant"}, "border-color")
+    assert gold and gold.lower().startswith("#d4a017"), gold
+    both = _winning_decl(html, classes, "border-color")
+    assert both == gold, (
+        f"🔥 카드인데 금색을 잃는다 — 이기는 규칙: {both} (기대 {gold})")
+    # 미파싱제외의 **점선**은 그대로 남아야 한다(두 신호를 다 보여준다)
+    style = _winning_decl(html, classes, "border-style")
+    assert style == "dotted", style
+
+
 def test_rendered_pages_define_every_class_they_use():
     """실수 #201 — 쓰는 클래스는 그 페이지 CSS 에 정의가 있어야 한다.
 
