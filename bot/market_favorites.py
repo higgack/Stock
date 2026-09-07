@@ -235,6 +235,20 @@ def get_favorites() -> list[dict]:
     return _load()
 
 
+def sort_by_saved(favorites: list[dict]) -> list[dict]:
+    """저장일 **내림차순**(최신이 위)으로 정렬한 새 리스트. 순수 함수.
+
+    ⚠️ 같은 날짜·시각은 **원래 순서를 유지**한다(stable) — 안 그러면 정리
+    한 번에 사용자가 ↕ 로 맞춰 둔 배열이 무작위로 섞인다.
+    ⚠️ `saved_date` 가 없는 항목은 **맨 아래**로. 모르는 값을 '최신' 으로
+    올리면 담은 적 없는 종목이 맨 위에 온다 — 빈칸이 틀린 라벨보다 낫다(#29).
+    """
+    return sorted(favorites,
+                  key=lambda f: (str(f.get("saved_date") or ""),
+                                 str(f.get("saved_time") or "")),
+                  reverse=True)
+
+
 def reorder_favorite(ticker: str, direction: str) -> bool:
     """Move a ticker in the saved order. Persists.
 
@@ -643,3 +657,113 @@ def _compute_favorites_with_prices() -> list[dict]:
     _FAV_CACHE_TS = _time.time()
     _snapshot_save(favorites, _FAV_CACHE_TS)
     return favorites
+
+
+# ── 1회성 정리 CLI ───────────────────────────────────────────────────
+# ⚠️ **엔트리포인트는 파일 맨 끝**이다 — 중간에 두면 그 아래 정의가 영영
+# 안 닿는다(#276). 그리고 인쇄하는 실행 안내엔 `cd ~/stock &&` 를 반드시
+# 붙인다: `python -m` 은 cwd 에서 패키지를 찾으므로 홈에서 돌리면
+# `ModuleNotFoundError` 다(#278).
+def _cli_sort_saved(apply_it: bool) -> int:
+    """저장일 내림차순으로 목록을 정리한다 → rc(0 정상).
+
+    ⚠️ **바꾸기 전에 백업**한다. 이 정렬은 사용자가 ↕ 로 맞춰 둔 배열을
+    덮어쓰므로 되돌릴 길이 없으면 안 된다 — 백업 경로와 복구 명령을 같이
+    찍는다(#43 침묵이 최악).
+    ⚠️ 무엇을 바꿨는지 **숫자로** 보여준다 — '정리했습니다' 만으로는 사용자가
+    확인할 방법이 없다(#202·#274 이상 없음도 말할 것).
+    """
+    import json
+    import shutil
+    from datetime import datetime as _dt
+
+    cur = _load()
+    if not cur:
+        # ⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279) — `_load` 가
+        # JSON 예외를 삼켜 `[]` 를 주므로 여기서 갈래를 이름으로 부른다.
+        why = "파일이 없다 — 관심종목을 한 번도 안 담았다"
+        try:
+            if _FAVORITES_FILE.exists():
+                raw = _FAVORITES_FILE.read_text("utf-8")
+                try:
+                    json.loads(raw)
+                    why = f"파일은 정상 JSON 인데 목록이 비어 있다({len(raw)}바이트)"
+                except Exception as exc:                       # noqa: BLE001
+                    why = (f"파일을 못 읽는다 — {type(exc).__name__}: {exc}"
+                           f" ({len(raw)}바이트). 백업에서 복구할 것")
+        except Exception as exc:                               # noqa: BLE001
+            why = f"파일 접근 실패 — {type(exc).__name__}: {exc}"
+        print(f"❌ 관심종목이 0건이다 — {why}\n   경로: {_FAVORITES_FILE}")
+        return 1
+    new = sort_by_saved(cur)
+    no_date = [f.get("ticker") for f in cur if not f.get("saved_date")]
+    moved = sum(1 for a, b in zip(cur, new)
+                if a.get("ticker") != b.get("ticker"))
+
+    def _line(f):
+        return f"{f.get('saved_date') or '날짜없음':>10}  {f.get('ticker')}"
+
+    print(f"관심종목 {len(cur)}건 · 저장일 내림차순 정리"
+          f"{' (미리보기)' if not apply_it else ''}")
+    print("  [현재 위 3]  " + " | ".join(_line(f) for f in cur[:3]))
+    print("  [정리 후 위 3] " + " | ".join(_line(f) for f in new[:3]))
+    print("  [정리 후 아래 3] " + " | ".join(_line(f) for f in new[-3:]))
+    print(f"  자리가 바뀌는 항목 {moved}건 · 저장일 없는 항목 "
+          f"{len(no_date)}건(맨 아래로){' — ' + ', '.join(map(str, no_date[:5])) if no_date else ''}")
+    # ⚠️ 개수만 세면 `sorted()` 가 길이를 안 바꾸므로 **영원히 통과하는 죽은
+    # 가드**다(#291 늘 ✅ 인 축은 판정이 아니다). 티커 **다중집합**으로 재야
+    # 정렬이 항목을 바꾸거나 잃는 변형을 실제로 잡는다.
+    if sorted(map(str, (f.get("ticker") for f in new))) != \
+       sorted(map(str, (f.get("ticker") for f in cur))):
+        print(f"❌ 종목 구성이 달라졌다 {len(cur)} → {len(new)} — 중단(쓰지 않음)")
+        return 1
+    if moved == 0:
+        # ⚠️ 바꿀 게 없는데 백업하고 다시 쓰면, 그 백업은 **이미 정렬된 것**이라
+        # 되돌릴 원본이 사라진다(독립 리뷰 실측). 계산해 둔 `moved` 를 판정에
+        # 쓴다(#123 계열) — 이상 없음도 한 줄로 말한다(#274).
+        print("\n✅ 이미 저장일 순이다 — 바꿀 것이 없어 파일을 건드리지 않았다.")
+        return 0
+    if not apply_it:
+        print("\n미리보기만 했다. 실제로 바꾸려면 `--apply` 를 붙일 것:")
+        print("  cd ~/stock && .venv/bin/python -m bot.market_favorites"
+              " --sort-saved --apply")
+        return 0
+    ts = _dt.now().strftime("%Y%m%d-%H%M%S")
+    bak = _FAVORITES_FILE.with_name(f"market_favorites.backup-{ts}.json")
+    if bak.exists():
+        # ⚠️ 초 해상도라 같은 초에 두 번 돌면 **유일한 백업이 정렬본으로
+        # 덮인다** — 그 순간 되돌릴 길이 0 이다(#43 백업 의무가 무력화).
+        print(f"❌ 같은 이름의 백업이 이미 있다 — 중단(쓰지 않음)\n   {bak}")
+        return 1
+    shutil.copy2(_FAVORITES_FILE, bak)
+    _save(new)
+    # ⚠️ 쓴 뒤 **되읽어 확인**한다 — 대시보드의 name_kr 백필도 같은 파일을
+    # `_load`→`_save` 하므로 겹치면 옛 순서로 되덮일 수 있다(#79 그 경로가
+    # 실제로 반영됐나).
+    back = [str(f.get("ticker")) for f in _load()]
+    want = [str(f.get("ticker")) for f in new]
+    if back != want:
+        print(f"\n❌ 썼는데 되읽은 순서가 다르다 — 다른 프로세스가 같이 썼을 수 있다."
+              f"\n   되돌리려면: cp {bak} {_FAVORITES_FILE}")
+        return 1
+    print(f"\n✅ 정리 완료 · {moved}건 이동 · 백업 {bak}")
+    print(f"   되돌리려면: cp {bak} {_FAVORITES_FILE}")
+    print("   ⚠️ 대시보드는 3분 캐시가 만료돼도 **옛 목록을 즉시 주고**"
+          " 뒤에서 갱신한다 — 화면 순서는 다음 백그라운드 갱신(139종목 시세"
+          " 수집)이 끝난 뒤에 바뀐다.")
+    return 0
+
+
+if __name__ == "__main__":                                     # pragma: no cover
+    import argparse
+
+    _ap = argparse.ArgumentParser(
+        description="관심종목 유지보수 — 저장일 내림차순 1회성 정리")
+    _ap.add_argument("--sort-saved", action="store_true",
+                     help="저장일 내림차순(최신이 위)으로 정리")
+    _ap.add_argument("--apply", action="store_true",
+                     help="실제로 파일을 바꾼다(없으면 미리보기)")
+    _a = _ap.parse_args()
+    if _a.sort_saved:
+        raise SystemExit(_cli_sort_saved(_a.apply))
+    _ap.print_help()
