@@ -552,10 +552,12 @@ def generate(*, archive: bool = True) -> tuple[str, float, str | None] | None:
         from bot.pykrx_client import krx_login_ready, _quiet_pykrx_logging
         _quiet_pykrx_logging()
         if not krx_login_ready():
+            from bot.env_keys import env_diag as _env_diag
             log.warning(
-                "daily_byte: KRX_ID/KRX_PW 미설정 — pykrx 수급 fetch 불가, "
+                "daily_byte: KRX_ID/KRX_PW 미설정 — %s. pykrx 수급 fetch 불가, "
                 "Daily Byte skip. KRX Data Marketplace 무료 가입(Naver/Kakao) "
-                "후 .env 에 KRX_ID/KRX_PW 추가 필요."
+                "후 .env 에 KRX_ID/KRX_PW 추가 필요.",
+                _env_diag("KRX_ID", "KRX_PW"),
             )
             return None
     except Exception:
@@ -1347,8 +1349,10 @@ def why(argv: list[str] | None = None) -> int:
         from bot.pykrx_client import krx_login_ready, _quiet_pykrx_logging
         _quiet_pykrx_logging()
         if not krx_login_ready():
+            from bot.env_keys import env_diag as _env_diag
             print("   ❌ KRX_ID/KRX_PW 미설정 — pykrx 수급 fetch 불가라 "
-                  "generate() 가 여기서 return None (조용한 skip)")
+                  "generate() 가 여기서 return None (조용한 skip)\n"
+                  f"      ↪ {_env_diag('KRX_ID', 'KRX_PW')}")
             krx_ok = False
             login_kind, login_fix = "env_unset", ".env 에 KRX_ID/KRX_PW 추가"
         else:

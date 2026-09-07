@@ -141,7 +141,11 @@ def _per_from_shown(price, eps) -> Optional[float]:
 
 
 def add_favorite(ticker: str) -> Optional[dict]:
-    """Fetch snapshot from yfinance and append to favorites. None on dupe/error."""
+    """Fetch snapshot from yfinance and **prepend** to favorites. None on dupe/error.
+
+    ⚠️ prepend 다 — 새로 저장한 종목이 목록 **맨 위**에 온다(사용자 2026-09-07).
+    문구를 'append' 로 두면 다음 사람이 순서를 반대로 읽는다(#55).
+    """
     import yfinance as yf
 
     favorites = _load()
@@ -203,7 +207,14 @@ def add_favorite(ticker: str) -> Optional[dict]:
         "next_earnings": _future_or_none(next_earn),
     }
 
-    favorites.append(entry)
+    # ⚠️ **맨 앞**에 넣는다 — 새로 저장한 종목이 목록 맨 위에 온다(사용자
+    # 2026-09-07 "최신에 저장한게 가장 위쪽으로 가게해줘. 현재는 반대로 되어
+    # 있어"). 옛 `append` 는 새 종목을 154번째 줄에 놓아 페이지를 끝까지
+    # 넘겨야 보였다. 화면은 저장 순서를 그대로 그리므로(정렬 헤더·↕ 버튼은
+    # 그 위에서 동작) 이 한 줄이 곧 표시 순서다 — 기존 항목의 **수동 순서는
+    # 건드리지 않는다**(↕ 로 직접 맞춘 배열을 날짜 정렬로 덮으면 사용자가
+    # 요청해 만든 기능이 무의미해진다, #222 계약을 바꿀 땐 범위를 먼저).
+    favorites.insert(0, entry)
     _save(favorites)
     return entry
 

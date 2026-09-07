@@ -59,6 +59,10 @@ def probe(ticker: str) -> None:
           f"KRX_PW={'설정' if has_pw else '미설정'} · 출처={_src} → "
           f"krx_login_ready={ready}")
     if not ready:
+        # ⚠️ '미설정' 만 적으면 처방이 하나로 뭉뚱그려진다 — 파일을 못 찾은
+        # 것과 키가 없는 것과 값이 빈 것은 고치는 법이 다르다(#82·#279).
+        from bot.env_keys import env_diag
+        print(f"    ↪ {env_diag('KRX_ID', 'KRX_PW')}")
         print("    ⚠️ 원인 ① 확정 — pykrx 경로가 통째로 skip 된다.")
         print("       현재값만 Seibro/네이버 폴백으로 채워지고 기간 칸은 못 만든다.")
         print("       .env 에 KRX_ID/KRX_PW 추가 후 재확인(값 확인은"

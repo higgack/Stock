@@ -26333,8 +26333,17 @@ class TestFlowTrendDiagnosis20260818:
         import re
         from pathlib import Path
         helper = Path("bot/env_keys.py").read_text(encoding="utf-8")
-        # 모듈 docstring 은 `load_dotenv` 를 **설명**하므로 본문만 본다.
-        body = helper.split('"""', 2)[-1]
+        # ⚠️ **주석·독스트링을 지우고 본다**(#59b) — 옛 판은 모듈 docstring 만
+        # 잘라내서, 함수 안 주석이 `load_dotenv` 를 **설명**하기만 해도 멀쩡한
+        # 코드를 '전체 주입' 이라고 물었다(2026-09-07 실측: `env_diag` 가 지연
+        # load_dotenv 를 사유 후보로 적자 빨간불). 토큰화로 실제 코드만 남긴다.
+        import io as _io
+        import tokenize as _tk
+        _skip = {_tk.COMMENT, _tk.STRING, _tk.NL, _tk.NEWLINE, _tk.INDENT,
+                 _tk.DEDENT, _tk.ENDMARKER, _tk.ENCODING}
+        body = " ".join(
+            t.string for t in _tk.generate_tokens(
+                _io.StringIO(helper).readline) if t.type not in _skip)
         assert "dotenv_values" in body, "필요한 키만 읽는 방식이 아니다"
         assert "load_dotenv" not in body, ".env 전체를 주입한다"
 
@@ -46851,3 +46860,318 @@ class TestFcfAuditRecomputeZeroIsNotAPass20260907:
         line = self._line(r)
         assert "❌" in line and "대조 0건" in line, line
         assert "①재계산(yf)" in r["bad_axes"], r["bad_axes"]
+
+
+class TestEnvDiagNamesTheBranch20260907:
+    """`KRX_ID/KRX_PW 미설정` 경고가 **왜 없는지**를 말하지 않았다.
+
+    2026-09-07 VM 실측(`fcf_audit` 로그): `pykrx: KRX_ID/KRX_PW 미설정`
+    바로 뒤에 라이브러리가 `KRX 로그인 완료` 를 찍었다 — 둘 중 무엇이 맞는지
+    출력만으로는 가를 수 없었고, 갈래마다 처방이 완전히 다르다(파일을 못
+    찾음 = cwd 확인 / 키 없음 = .env 추가 / 값 비었음 = 값 확인 / dotenv
+    미설치 = 설치 / **첫 조회만 실패해 캐시됨** = 실행 순서 확인). '없음'
+    만 말하는 진단은 추측을 부른다(#82·#279).
+
+    ⚠️ 값은 절대 안 찍고 **길이까지만**(§Secrets · #82).
+    """
+
+    def _in(self, monkeypatch, tmp_path, body: str | None):
+        """⚠️ `Path.home()` 을 **반드시** 막는다 — `_dotenv_lookup` 의 둘째
+        경로가 `~/stock/.env`(운영자의 **진짜 자격증명 파일**)라, 안 막으면
+        이 테스트가 VM 의 실제 KRX 키를 읽는다. 그러면 이 fix 가 지시하는
+        조치("`.env` 에 KRX_ID/KRX_PW 추가")를 운영자가 하는 순간 `make test`
+        가 빨간불이 되고 §Pre-commit 6('fail 시 commit 금지')으로 **무관한
+        커밋 전부가 막힌다** — 성공 조건이 뇌관인 시한폭탄이다(독립 리뷰
+        실측 5 failed, #67·#249·#291). 회귀가 운영 파일을 읽는 것 자체도
+        금지다(#30).
+        """
+        import bot.env_keys as ek
+        # 전역 캐시는 **복원되게** 갈아끼운다(clear 만 하면 앞뒤 테스트에 샌다, #30·#130)
+        monkeypatch.setattr(ek, "_TRIED", set())
+        home = tmp_path / "_home"
+        (home / "stock").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: home))
+        cwd = tmp_path / "_cwd"
+        cwd.mkdir(exist_ok=True)
+        if body is not None:
+            (cwd / ".env").write_text(body, encoding="utf-8")
+        monkeypatch.chdir(cwd)
+        monkeypatch.delenv("KRX_ID", raising=False)
+        monkeypatch.delenv("KRX_PW", raising=False)
+        return ek
+
+    def test_missing_key_branch_is_named(self, monkeypatch, tmp_path):
+        ek = self._in(monkeypatch, tmp_path, "OTHER=1\n")
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "KRX_ID:" in d and "KRX_PW:" in d, d
+        assert "키 없음" in d, d
+
+    def test_empty_value_branch_is_named(self, monkeypatch, tmp_path):
+        ek = self._in(monkeypatch, tmp_path, "KRX_ID=\nKRX_PW=\n")
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "값이 비었다" in d, d
+
+    def test_filled_key_is_not_listed(self, monkeypatch, tmp_path):
+        """⚠️ 반대 증거 — 정상 키는 적지 않는다(적으면 경고가 통째로 잡음).
+
+        이게 없으면 `env_diag` 가 무조건 전 키를 나열하는 변형이 통과한다(#25).
+        """
+        ek = self._in(monkeypatch, tmp_path, "KRX_ID=abcdef\n")
+        # ⚠️ 제품과 **같은 순서**로 태운다 — 4곳 전부 `env_ready()` 뒤에
+        # `env_diag()` 를 부른다(#35 프로브는 화면이 쓰는 그 경로를).
+        assert ek.env_ready("KRX_ID", "KRX_PW") is False
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "KRX_ID" not in d, d
+        assert "KRX_PW" in d, d
+
+    def test_never_prints_the_value(self, monkeypatch, tmp_path):
+        """§Secrets — 길이는 되지만 값은 절대 안 된다.
+
+        ⚠️ 첫 판은 **동어반복**이었다(독립 리뷰 실측): 비밀값을 *채워진* 키에
+        넣었는데 `env_diag` 는 채워진 키를 통째로 건너뛰므로 그 값은 애초에
+        출력 후보가 아니었다 — `환경변수(길이 N)` → `{v}` 누출 뮤테이션이
+        **그대로 통과**했다. 값이 실제로 실릴 수 있는 **두 갈래를 직접**
+        집는다(#286 fires 테스트는 감시 대상을 태울 것 · #292).
+        """
+        ek = self._in(monkeypatch, tmp_path, "KRX_PW=s3cr3t-token\n")
+        # ① `.env` 에 값이 있는 갈래
+        w = ek.env_why("KRX_PW")
+        assert "s3cr3t" not in w, w
+        assert "길이 12" in w, w
+        # ② 환경변수에 값이 있는 갈래(env_diag 는 여기까지 안 가지만
+        #    `env_why` 는 간다 — 누출은 갈래마다 막는다)
+        monkeypatch.setenv("KRX_ID", "env-s3cr3t")
+        w2 = ek.env_why("KRX_ID")
+        assert "s3cr3t" not in w2, w2
+        assert "환경변수(길이 10)" == w2, w2
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "s3cr3t" not in d, d
+
+    def test_env_key_never_raises(self, monkeypatch, tmp_path):
+        """**레포 단일 자격증명 게터는 던지면 안 된다**(독립 리뷰 High).
+
+        스캔을 합치며 `find_dotenv(usecwd=True)`·`Path.home()` 이 try 밖으로
+        나가 `env_key` 가 던질 수 있게 됐다 — 호출부 47곳이고, 특히
+        `daily_kr_flow` 의 `except Exception: pass` 안에서 던지면 `return None`
+        게이트를 건너뛰어 막으려던 pykrx 로그폭주가 그대로 열린다.
+        옛 `env_key` 는 이 둘을 통째로 감싸 로그만 남기고 "" 를 냈다.
+        """
+        ek = self._in(monkeypatch, tmp_path, None)
+
+        def _boom():
+            raise RuntimeError("no home")
+
+        monkeypatch.setattr("pathlib.Path.home", staticmethod(_boom))
+        assert ek.env_key("KRX_ID") == ""          # 던지지 않는다
+        assert ek.env_ready("KRX_ID") is False
+        assert "경로 확인 실패" in ek.env_why("KRX_PW")
+
+    def test_stale_cache_contradiction_is_named(self, monkeypatch, tmp_path):
+        """**이 라운드의 증상** — 경고는 남고 값은 있는 모순을 이름으로 부른다.
+
+        `env_key` 는 첫 조회 실패를 `_TRIED` 에 넣고 다시 안 읽는다. 그 뒤
+        `.env` 가 읽히게 되면(cwd 가 바뀌거나 파일이 나중에 생기거나) 경고만
+        남는다 — 그걸 '미설정' 이라고만 적으면 운영자가 없는 키를 넣으러
+        간다(#187b 틀린 로그가 헛걸음을 만든다).
+        """
+        empty = tmp_path / "nowhere"
+        empty.mkdir()
+        ek = self._in(monkeypatch, empty, None)      # home 도 여기서 격리된다
+        assert ek.env_key("KRX_ID") == ""          # 여기서 _TRIED 에 박힌다
+        later = tmp_path / "repo"
+        later.mkdir()
+        (later / ".env").write_text("KRX_ID=abcdef\n", encoding="utf-8")
+        monkeypatch.chdir(later)
+        assert ek.env_key("KRX_ID") == "", "캐시 전제가 깨졌다 — 이 테스트 무의미"
+        d = ek.env_diag("KRX_ID")
+        assert "지금 다시 읽으면 있다" in d, d
+        assert "길이 6" in d, d
+
+    def test_warning_carries_the_branch(self, monkeypatch, tmp_path, caplog):
+        """**배선은 결과로 본다**(#20·#292) — AST 모양이 아니라 실제 로그.
+
+        `krx_login_ready` 가 `env_diag` 를 안 부르게 되돌리는 변형은 이
+        단언에서만 잡힌다.
+        """
+        import logging
+
+        import bot.pykrx_client as pk
+        ek = self._in(monkeypatch, tmp_path, "OTHER=1\n")
+        assert ek is not None
+        monkeypatch.setattr(pk, "_KRX_CRED_WARNED", False, raising=False)
+        with caplog.at_level(logging.WARNING, logger="bot.pykrx"):
+            assert pk.krx_login_ready() is False
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "미설정" in msg, msg
+        assert "KRX_ID:" in msg and "키 없음" in msg, msg
+
+    def test_every_missing_credential_message_names_the_branch(self):
+        """**'미설정' 이라고 적는 자리는 전부 갈래를 같이 말해야 한다**(#82).
+
+        ⚠️ 첫 판은 4곳 중 `pykrx_client` 하나만 덮였다 — 나머지 셋
+        (`daily_kr_flow` 두 자리 · `kr_flow_trend_probe`)의 `env_diag` 배선을
+        **동시에 지워도 61 passed** 였다(독립 리뷰 실측, #20·#292).
+        이름을 열거하면 다음에 생길 네 번째 자리를 못 잡으므로(#24)
+        `bot/` 를 **전수**로 훑어 "자격증명 이름 + 미설정" 을 적는 함수엔
+        `env_diag`/`env_why` 호출이 있어야 한다는 **불변식**으로 건다.
+        """
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1] / "bot"
+        bad, checked = [], 0
+        for f in sorted(root.rglob("*.py")):
+            try:
+                tree = ast.parse(f.read_text(encoding="utf-8"))
+            except SyntaxError:                       # pragma: no cover
+                continue
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                lits = [n.value for n in ast.walk(fn)
+                        if isinstance(n, ast.Constant)
+                        and isinstance(n.value, str)]
+                # 독스트링은 규칙을 **설명**할 뿐이므로 뺀다(#59b)
+                # ⚠️ `clean=True` 는 들여쓰기를 지워 원본 리터럴과 안 맞는다
+                # — 그러면 규칙을 **설명하는** 독스트링이 스스로 걸린다(#59b).
+                doc = ast.get_docstring(fn, clean=False) or ""
+                lits = [t for t in lits if t != doc]
+                if not any("미설정" in t and "KRX_ID" in t for t in lits):
+                    continue
+                checked += 1
+                # ⚠️ 별칭 import(`env_diag as _env_diag`)도 인정해야 한다 —
+                # 정확 일치로 재면 멀쩡한 배선을 '없다'고 한다(#47 계수 패턴
+                # 자체가 틀릴 수 있다 — 실측으로 발각).
+                calls = {(getattr(n.func, "id", "")
+                          or getattr(n.func, "attr", ""))
+                         for n in ast.walk(fn) if isinstance(n, ast.Call)}
+                if not any(c.endswith("env_diag") or c.endswith("env_why")
+                           for c in calls):
+                    bad.append(f"{f.relative_to(root.parent)}:{fn.name}")
+        # ⚠️ 대조 0건은 통과가 아니다(#54) — 훑을 자리가 없으면 검사가 눈이 먼 것.
+        assert checked >= 3, f"'미설정' 문구를 적는 함수를 {checked}개만 찾았다"
+        assert not bad, f"갈래를 안 말하는 자격증명 경고: {bad}"
+
+    def test_env_why_and_env_diag_share_one_scan(self):
+        """두 진단이 **같은 스캔**을 써야 한 곳을 고치면 둘 다 따라온다(#38).
+
+        복제하면 한쪽만 고쳐져 같은 상태를 세 자리가 다르게 말한다 —
+        실제로 `env_key` 가 자기 루프를 따로 갖고 있었고, 이 단언을 처음
+        쓸 때 내가 그걸 '오탐' 으로 착각할 뻔했다(#47 계수 패턴 자체가
+        틀릴 수 있다 — 여기선 패턴이 맞았고 코드가 정말 중복이었다).
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        import bot.env_keys as ek
+        for fn in (ek.env_key, ek.env_why, ek.env_diag):
+            src = textwrap.dedent(inspect.getsource(fn))
+            calls = [n for n in ast.walk(ast.parse(src))
+                     if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", "") == "_dotenv_lookup"]
+            assert calls, f"{fn.__name__} 이 공용 스캔을 안 쓴다"
+        # 그리고 그 스캔은 **한 곳**뿐이어야 한다(dotenv_values 를 직접 부르는
+        # 자리가 늘면 다시 갈라진다). ⚠️ 리터럴 `"dotenv_values(p)"` 를 세면
+        # 주석 한 줄에 무관한 빨간불이고 루프 변수 이름만 바꾼 복제는 그냥
+        # 통과한다(#59b·#19) — **AST 호출 노드**를 센다.
+        tree = ast.parse(inspect.getsource(ek))
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "dotenv_values"]
+        assert len(calls) == 1, f"스캔이 {len(calls)}곳으로 복제됐다"
+        owner = [f.name for f in ast.walk(tree)
+                 if isinstance(f, ast.FunctionDef)
+                 and any(c in ast.walk(f) for c in calls)]
+        assert owner == ["_dotenv_lookup"], owner
+
+    def test_empty_in_first_env_does_not_hide_the_second(self, monkeypatch,
+                                                         tmp_path):
+        """빈 값에서 멈추면 **뒤 경로의 진짜 값**을 못 본다.
+
+        옛 `env_key` 는 falsy 면 계속 돌았는데, 스캔을 합치면서 그 동작을
+        잃을 뻔했다(2026-09-07 배포전 셀프리뷰가 잡음) — 함수를 합칠 땐
+        **반환 조건**부터 대조할 것(#7a 기존 함수 반환형·동작 확인).
+        """
+        import bot.env_keys as ek
+        ek._TRIED.clear()
+        monkeypatch.delenv("KRX_ID", raising=False)
+        cwd, home = tmp_path / "cwd", tmp_path / "home"
+        cwd.mkdir()
+        (home / "stock").mkdir(parents=True)
+        (cwd / ".env").write_text("KRX_ID=\n", encoding="utf-8")
+        (home / "stock" / ".env").write_text("KRX_ID=realval\n", encoding="utf-8")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: home))
+        assert ek.env_key("KRX_ID") == "realval", ek.env_why("KRX_ID")
+
+
+class TestNewFavoriteGoesOnTop20260907:
+    """새로 저장한 관심종목이 목록 **맨 아래**에 붙고 있었다.
+
+    사용자 2026-09-07: "관심종목이 나오는 순서는 최신에 저장한게 가장
+    위쪽으로 가게해줘. 현재는 반대로 되어 있어." 154종목이라 새로 담은
+    종목을 보려면 페이지를 끝까지 넘겨야 했다 — `add_favorite` 가
+    `favorites.append(entry)` 였고 화면은 저장 순서를 그대로 그린다.
+
+    ⚠️ 기존 항목의 **수동 순서(↕ 버튼)는 건드리지 않는다** — 날짜로 통째
+    재정렬하면 사용자가 요청해 만든 기능이 무의미해진다(#222 계약을 바꿀
+    땐 범위를 먼저 물을 것).
+    """
+
+    def _add(self, monkeypatch, existing):
+        import sys
+        import types
+
+        import bot.market_favorites as mf
+        saved = {}
+        monkeypatch.setattr(mf, "_load", lambda: list(existing))
+        monkeypatch.setattr(mf, "_save", lambda v: saved.setdefault("v", v))
+        monkeypatch.setattr(mf, "_resolve_kr_name", lambda *a, **k: None,
+                            raising=False)
+
+        class _Tk:
+            info = {"shortName": "NEW", "currentPrice": 10.0}
+            calendar = {}
+
+        fake = types.ModuleType("yfinance")
+        fake.Ticker = lambda t: _Tk()
+        monkeypatch.setitem(sys.modules, "yfinance", fake)
+        entry = mf.add_favorite("NEWT")
+        return entry, saved.get("v")
+
+    def test_new_entry_is_first(self, monkeypatch):
+        old = [{"ticker": "AAA"}, {"ticker": "BBB"}, {"ticker": "CCC"}]
+        entry, out = self._add(monkeypatch, old)
+        assert entry is not None
+        assert out[0]["ticker"].upper() == "NEWT", [f["ticker"] for f in out]
+
+    def test_existing_manual_order_is_preserved(self, monkeypatch):
+        """⚠️ 반대 증거 — 뒤 항목의 **상대 순서**는 그대로여야 한다.
+
+        이게 없으면 '저장일 내림차순으로 통째 재정렬' 같은 변형이 통과해
+        사용자가 ↕ 로 맞춰 둔 배열을 조용히 날린다(#25·#222).
+        """
+        old = [{"ticker": "AAA", "saved": "2026-01-01"},
+               {"ticker": "BBB", "saved": "2026-09-01"},
+               {"ticker": "CCC", "saved": "2026-05-01"}]
+        _e, out = self._add(monkeypatch, old)
+        assert [f["ticker"] for f in out[1:]] == ["AAA", "BBB", "CCC"], out
+
+    def test_docstring_does_not_say_append(self):
+        """설명이 코드와 어긋나면 버그다(#55) — 'append' 라 적어 두면
+        다음 사람이 순서를 반대로 읽는다."""
+        import bot.market_favorites as mf
+        doc = mf.add_favorite.__doc__ or ""
+        assert "prepend" in doc and "append to favorites" not in doc, doc
+
+    def test_screen_says_where_a_new_save_lands(self):
+        """동작이 바뀌면 **설명도 같은 커밋에서**(§Help/Dashboard 등록).
+
+        순서 규칙은 화면에 안 적으면 사용자가 매번 확인해야 한다(#43) —
+        바로 옆에 '↕ 화살표로 순서 변경' 이 있어 더더욱 갈린다.
+        """
+        import inspect
+
+        import bot.dashboard as db
+        body = inspect.getsource(db._render_market_page)
+        assert "새로 저장한 종목이 맨 위" in body, "순서 규칙이 화면에 없다"

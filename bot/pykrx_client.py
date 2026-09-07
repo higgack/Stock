@@ -53,13 +53,19 @@ def krx_login_ready() -> bool:
     global _KRX_CRED_WARNED
     # `.env` 폴백은 공용 헬퍼가 담당한다(bot/env_keys.py) — 같은 코드를
     # 파일마다 복제하면 새 키를 붙일 때 또 하나를 빠뜨린다(실측: FRED).
-    from bot.env_keys import env_ready
+    from bot.env_keys import env_diag, env_ready
     ready = env_ready("KRX_ID", "KRX_PW")
     if not ready and not _KRX_CRED_WARNED:
+        # ⚠️ '미설정' 만 적으면 그다음을 운영자가 짐작한다(#82) — 어느 키가
+        # 왜 없는지 `env_diag` 가 갈래로 말한다(값은 안 찍고 길이까지만,
+        # §Secrets). 2026-09-07 VM 실측에서 이 경고 **바로 뒤에** 라이브러리
+        # 가 `KRX 로그인 완료` 를 찍어 둘 중 무엇이 맞는지 알 수 없었다 —
+        # 그 모순도 `env_diag` 가 이름으로 부른다(#187b 틀린 로그는 헛걸음).
         log.warning(
-            "pykrx: KRX_ID/KRX_PW 미설정 — KRX 가 2025-12-27 부터 로그인 "
+            "pykrx: KRX_ID/KRX_PW 미설정 — %s. KRX 가 2025-12-27 부터 로그인 "
             "필수(KRX Data Marketplace, 무료). Naver/Kakao 로 가입 후 .env "
-            "에 KRX_ID/KRX_PW 추가 필요. 그때까지 KR pykrx 수급 데이터 skip."
+            "에 KRX_ID/KRX_PW 추가 필요. 그때까지 KR pykrx 수급 데이터 skip.",
+            env_diag("KRX_ID", "KRX_PW"),
         )
         _KRX_CRED_WARNED = True
     return ready
