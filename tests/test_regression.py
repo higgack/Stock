@@ -31731,9 +31731,17 @@ class TestFcfAuditNoFalsePass20260822:
         assert "✅ 누적 냄새 없음" not in body, body
 
     def test_real_data_still_passes(self, monkeypatch):
-        """가드를 조이면 **무엇이 여전히 통과하는지**도 못박는다(#57)."""
+        """가드를 조이면 **무엇이 여전히 통과하는지**도 못박는다(#57).
+
+        ⚠️ 2026-09-07 계약 변경(#293): 축 ① 은 이제 **원천이 직접 준 FCF**
+        를 우리가 만든 `OCF−|CAPEX|` 와 댄다. 옛 픽스처는 직접 제공분이
+        없어(파생분만) 그 자리가 구조상 자기 자신과의 비교였고 항상 ✅
+        였다 — 지우지 않고 **새 계약으로 다시 쓴다**(#222). 이제 ✅ 를
+        보려면 원천 FCF 가 있어야 한다.
+        """
         q = [{"period": f"2026-{m:02d}-30", "Operating Cash Flow": 2e9 + i,
-              "Capital Expenditure": -3e8} for i, m in enumerate((3, 6, 9, 12))]
+              "Capital Expenditure": -3e8, "Free Cash Flow": 1.7e9 + i}
+             for i, m in enumerate((3, 6, 9, 12))]
         r = self._audit(monkeypatch, {"financials": {"cash_flow": {
             "quarterly": q}}})
         body = "\n".join(r["lines"])
@@ -46719,83 +46727,127 @@ class TestFcfAuditNamesTheAxis20260907:
 
 
 class TestFcfAuditRecomputeZeroIsNotAPass20260907:
-    """`① 재계산 ✅ 전 기간 일치(0건)` — **한 건도 재계산 안 했는데 ✅** 였다.
+    """축 ① 이 **아무것도 안 재고** ✅ 를 찍고 있었다 — 두 겹이었다.
 
-    2026-09-07 VM 실측(098070.KQ): 현금흐름표 8행을 받았는데 전부 원천이
-    `Free Cash Flow` 를 직접 준 행이라 재계산 대상이 0건이었다. 그런데 축은
-    '전 기간 일치' 라고 찍혀 **아무것도 안 잰 자리가 통과로 보고**됐다
-    — 대조 0건은 통과가 아니다(#54). 위 분기(`not yq and not ya`)는
-    스냅샷이 통째로 빈 경우만 막고 이 갈래는 안 막고 있었다.
+    (a) 2026-09-07 VM 실측(098070.KQ): 현금흐름표 8행을 받았는데 재계산
+        대상이 0건인데도 `✅ 전 기간 일치(0건)` — 대조 0건은 통과가
+        아니다(#54).
+    (b) 그리고 더 깊이: 옛 판은 **원천이 직접 준 FCF 행을 건너뛰고 파생분만**
+        다시 계산했는데, 파생분의 `fcf_from_row` 는 정의상 `fcf_from_parts`
+        그 자체라 **구조상 영원히 일치**했다(독립 리뷰 실측 4,589행 0건).
+        #291 이 같은 날 DART 축에서 지운 tautology 가 그대로 남아 있었다.
 
-    형제 축 ④·⑤ 는 이미 같은 규율을 지킨다(재료 부족 → ❓ + 사유).
+    현행 계약: **원천이 직접 준 FCF ↔ 우리가 만든 `OCF−|CAPEX|`** 를
+    대조한다(입력이 서로 다르므로 실제로 잰다). 대조할 수 없는 행은 사유를
+    갈래로 적고 ❓(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
     """
 
     @staticmethod
-    def _snap(rows):
-        return {"financials": {"cash_flow": {"quarterly": rows, "annual": []}}}
+    def _snap(q=None, a=None):
+        return {"financials": {"cash_flow": {"quarterly": list(q or []),
+                                             "annual": list(a or [])}}}
 
-    def _run(self, monkeypatch, rows):
+    def _run(self, monkeypatch, q=None, a=None):
         import bot.stock_snapshot as ss
         from bot.scripts import fcf_audit as fa
         monkeypatch.setattr(ss, "collect_stock_snapshot",
-                            lambda tk, use_cache=False: self._snap(rows))
+                            lambda tk, use_cache=False: self._snap(q, a))
         return fa.audit_one("AAPL", None)
 
-    def test_all_rows_source_provided_is_unknown_not_ok(self, monkeypatch):
-        # 원천이 FCF 를 직접 준 행만 있는 경우 = 재계산 대상 0건
-        rows = [{"period": f"2025-0{i}-30", "Free Cash Flow": 100.0 + i,
-                 "Operating Cash Flow": 200.0 + i,
-                 "Capital Expenditure": -100.0} for i in (3, 6, 9)]
+    @staticmethod
+    def _line(r):
+        return next(s for s in r["lines"] if "① 재계산" in s)
+
+    @staticmethod
+    def _row(period, *, fcf=None, ocf=None, capex=None):
+        d = {"period": period}
+        if fcf is not None:
+            d["Free Cash Flow"] = fcf
+        if ocf is not None:
+            d["Operating Cash Flow"] = ocf
+        if capex is not None:
+            d["Capital Expenditure"] = capex
+        return d
+
+    def test_derived_only_rows_are_unknown_not_ok(self, monkeypatch):
+        """**(b) 의 회귀** — 원천이 FCF 를 안 준 행만 있으면 대조 상대가 없다.
+
+        옛 판은 바로 이 행들을 '재계산' 해서 ✅ 를 찍었다(자기 자신과의
+        비교). 이제는 ❓ + 사유여야 한다."""
+        rows = [self._row(f"2025-{m:02d}-30", ocf=300.0 + m, capex=-100.0)
+                for m in (3, 6, 9)]
         r = self._run(monkeypatch, rows)
-        line = next(s for s in r["lines"] if "① 재계산" in s)
-        assert "✅" not in line, f"대조 0건인데 통과로 찍었다(#54): {line}"
-        assert "❓" in line and "3행" in line, line
-        # **사유를 말한다** — '왜 못 쟀나' 를 안 적으면 다음 라운드가 추측이다
-        # (#82·#274 이상 없음을 말하지 않는 진단은 검사가 돈 걸 증명 못 한다).
-        assert "직접" in line, line
+        line = self._line(r)
+        assert "✅" not in line, f"구조상 일치를 통과로 찍었다(#54): {line}"
+        assert "❓" in line and "직접 주지 않음" in line, line
         assert "①재계산(yf)" in r["unknown_axes"], r["unknown_axes"]
         assert "①재계산(yf)" not in r["bad_axes"], r["bad_axes"]
 
-    def test_skip_reason_is_split_not_lumped(self, monkeypatch):
-        """건너뛴 사유는 **갈래로** 적는다 — 뭉뚱그리면 틀린 라벨이 된다.
+    def test_source_provided_rows_are_actually_compared(self, monkeypatch):
+        """⚠️ **반대 증거** — 잴 수 있는 행은 여전히 ✅ 와 건수를 말한다.
 
-        재료가 통째로 없는 행까지 "원천이 직접 줬다" 고 적으면 운영자를
-        엉뚱한 데로 보낸다(#292 틀린 라벨은 라벨이 없는 것보다 나쁘다 ·
-        #82 갈래는 이름으로). 배포전 셀프리뷰가 잡은 결함이다.
-        """
-        rows = [{"period": "2025-03-30", "Free Cash Flow": 1.0,
-                 "Operating Cash Flow": 2.0, "Capital Expenditure": -1.0},
-                {"period": "2025-06-30"},          # 재료 자체가 없는 행
-                {"period": "2025-09-30"}]
-        r = self._run(monkeypatch, rows)
-        line = next(s for s in r["lines"] if "① 재계산" in s)
-        assert "직접 준 행 1건" in line, line
-        assert "재료" in line and "2건" in line, line
-        assert "①재계산(yf)" in r["unknown_axes"]
-
-    def test_no_material_only_does_not_claim_source_provided(self, monkeypatch):
-        """⚠️ 반대 증거 — 직접 제공분이 0이면 그 문구가 **없어야** 한다."""
-        r = self._run(monkeypatch, [{"period": "2025-06-30"}])
-        line = next(s for s in r["lines"] if "① 재계산" in s)
-        assert "직접" not in line, f"없는 사유를 적었다: {line}"
-        assert "재료" in line, line
-
-    def test_real_recompute_still_reports_the_count(self, monkeypatch):
-        """⚠️ 반대 증거 — 실제로 잰 자리는 여전히 ✅ 와 **건수**를 말한다.
-
-        이걸 같이 두지 않으면 축을 통째로 ❓ 로 바꾸는 변형이 통과한다
-        ('있다'를 묻는 검사에는 반대 증거를 같이, #25)."""
-        rows = [{"period": "2025-06-30", "Operating Cash Flow": 300.0,
-                 "Capital Expenditure": -100.0}]
-        r = self._run(monkeypatch, rows)
-        line = next(s for s in r["lines"] if "① 재계산" in s)
+        이게 없으면 축을 통째로 ❓ 로 바꾸는 변형이 통과한다(#25)."""
+        r = self._run(monkeypatch,
+                      [self._row("2025-06-30", fcf=200.0, ocf=300.0,
+                                 capex=-100.0)])
+        line = self._line(r)
         assert "✅" in line and "1건" in line, line
+        assert "원천 FCF" in line, "무엇과 무엇을 댔는지 안 적었다(#202)"
         assert "①재계산(yf)" not in r["unknown_axes"] + r["bad_axes"]
+
+    def test_mismatch_is_a_defect(self, monkeypatch):
+        """그리고 **실제로 어긋나면 잡아야** 한다 — 안 그러면 늘 ✅ 다."""
+        r = self._run(monkeypatch,
+                      [self._row("2025-06-30", fcf=260.0, ocf=300.0,
+                                 capex=-100.0)])
+        line = self._line(r)
+        assert "❌" in line and "2025-06-30" in line, line
+        assert "①재계산(yf)" in r["bad_axes"], r["bad_axes"]
+
+    def test_skip_reasons_are_split_not_lumped(self, monkeypatch):
+        """건너뛴 사유는 **갈래로** 적는다(#82·#292).
+
+        뭉뚱그려 "원천이 직접 줬다" 고 적으면 재료가 없는 종목에도 그렇게
+        찍혀 운영자를 엉뚱한 데로 보낸다."""
+        rows = [self._row("2025-03-30", ocf=300.0, capex=-100.0),  # 파생분
+                self._row("2025-06-30"),                            # 재료 없음
+                self._row("2025-09-30", ocf=300.0)]                 # CAPEX 없음
+        line = self._line(self._run(monkeypatch, rows))
+        assert "직접 주지 않음" in line, line
+        assert "모두 미제공" in line, line
+        assert "CAPEX 미제공" in line, line
+
+    def test_skipped_total_cannot_diverge_from_the_subtotals(self, monkeypatch):
+        """총계와 소계는 **같은 리스트 하나**에서 나와야 한다(#45).
+
+        옛 판은 총계를 `len(yq) + len(ya)` 로 따로 세서, 연간 행을 빼먹는
+        변형이 회귀 23개를 전부 통과했다(독립 리뷰 실측 — 소계 8건인데
+        총계 5행). 픽스처에 **연간 행을 반드시** 넣는다(#91c).
+        """
+        q = [self._row("2025-06-30"), self._row("2025-09-30")]
+        a = [self._row("2024-12-31"), self._row("2023-12-31"),
+             self._row("2022-12-31")]
+        line = self._line(self._run(monkeypatch, q, a))
+        import re as _re
+        total = int(_re.search(r"받은 (\d+)행", line).group(1))
+        subs = sum(int(m or 1) for m in
+                   _re.findall(r"×(\d+)|미제공(?!.*×)", line) if m)
+        assert total == 5, f"연간 행이 총계에서 빠졌다: {line}"
+        assert subs == 5 or "×5" in line, line
+
+    def test_zero_denominator_is_not_a_pass(self, monkeypatch):
+        """`OCF−|CAPEX| = 0` 이면 비율이 없다 — 세면 판정불가가 통과가 된다."""
+        r = self._run(monkeypatch,
+                      [self._row("2025-06-30", fcf=5.0, ocf=100.0,
+                                 capex=-100.0)])
+        line = self._line(r)
+        assert "✅" not in line and "❓" in line, line
+        assert "0 이라" in line, line
 
     def test_empty_snapshot_is_still_a_defect(self, monkeypatch):
         """행 자체를 못 받은 것은 ❓ 가 아니라 ❌ 다 — 새 갈래가 옛 갈래를
         덮으면 스냅샷 실패가 조용해진다(2026-08-22 실측 사고, #54)."""
         r = self._run(monkeypatch, [])
-        line = next(s for s in r["lines"] if "① 재계산" in s)
+        line = self._line(r)
         assert "❌" in line and "대조 0건" in line, line
         assert "①재계산(yf)" in r["bad_axes"], r["bad_axes"]
