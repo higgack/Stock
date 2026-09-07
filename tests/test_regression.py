@@ -43422,6 +43422,33 @@ def css_coverage(html: str) -> tuple[set[str], set[str], list[str]]:
     return used, defined, missing
 
 
+def _breadth_html(data: dict) -> str:
+    """Breadth 페이지 — **확정 이력이 있는** 상태로 렌더한다.
+
+    이력이 비면 표 자체가 안 그려져 각주 클래스를 한 번도 안 본다(#91c).
+    운영 신호 로그를 건드리지 않도록 임시 디렉터리로 갈아끼운다(#30).
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from bot import breadth_strategy as _bs
+    old = _bs._SIGNAL_DIR
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            _bs._SIGNAL_DIR = Path(td)
+            _bs.signal_path("KR").write_text(json.dumps({
+                "month": "2026-08", "asof": "2026-08-31", "state": "CASH",
+                "regime": "RECOVERY", "breadth_pct": 30.77,
+                "breadth_above": 4, "breadth_counted": 13,
+                "breadth_skipped": [], "dd_pct": -25.52, "index_w": 0,
+                "total_w": 0, "cash_w": 1.0, "targets": [], "top3": []}) + "\n",
+                encoding="utf-8")
+            return _bs.render_page(data)
+    finally:
+        _bs._SIGNAL_DIR = old
+
+
 def _render_all_pages():
     """화면이 실제로 그리는 경로 그대로 — **내용이 있는** 픽스처로 태운다.
 
@@ -43429,7 +43456,9 @@ def _render_all_pages():
     한 번도 안 본다 — 2026-09-02 독립 리뷰가 그렇게 눈먼 가드를 잡았다
     (빈 gics 는 초록인데 run 하나를 넣자 미정의 6개가 드러났다, 실수 #91c).
     """
+    from bot import breadth_strategy as _bs
     from bot import dashboard as _d
+    from bot import market_timing as _mt
 
     summ = {"total_equity_krw": 1000, "cash_krw": 100, "positions_value_krw": 900,
             "unrealized_pnl_krw": 10, "realized_pnl_krw": 5, "total_return_pct": 1.0,
@@ -43479,6 +43508,32 @@ def _render_all_pages():
         ("budget", _d._render_budget_page(budget)),
         ("valuechain", _d._render_valuechain_page([])),
         ("marketcap", _d._render_marketcap_page({})),
+        # ⚠️ 이 목록이 `bot/dashboard.py` 페이지만 열거하고 있어, 다른 모듈의
+        # 완결 페이지는 가드 **밖**이었다(#24) — 실제로 2026-09-07 에
+        # `breadth_strategy` 가 `.si-note` 를 정의 없이 써서 각주가 본문
+        # 크기로 뜨고 있었는데 이 가드가 못 잡았다.
+        # ⚠️ 확정 이력이 **비면** 각주(si-note) 블록을 한 번도 안 그려 가드가
+        # 눈이 먼다 — 첫 판이 실제로 그랬다(정의를 지워도 통과, #91c).
+        ("breadth_strategy", _breadth_html({"KR": {
+            "market": "KR", "regime": "RECOVERY", "state": "CASH",
+            "targets": [], "index_w": 0.0, "total_w": 0.0, "cash_w": 1.0,
+            "breadth_pct": 30.77, "dd_pct": -25.52, "bench_name": "KOSPI",
+            "breadth": {"pct": 30.77, "above": 4, "counted": 13,
+                        "skipped": [], "period": 120},
+            "source_label": "KODEX 섹터 ETF", "sectors_missing": [],
+            "rs_ranked": [{"name": "IT", "rs": 12.3}],
+            "fng": {"index": 42, "label": "공포"}, "asof": "2026-09-07",
+            "is_confirmed": False, "resolution_note": "표본 13개"}})),
+        ("market_timing", _mt.render_market_timing_page({"markets": {"US": {
+            "ticker": "^GSPC", "name": "S&P 500",
+            "dd": {"d5": 1, "d15": 3, "d25": 3, "risk_level": "HIGH",
+                   "active_records": [], "unjudged": ["2026-09-04"]},
+            "ftd": {"state": "FTD_CONFIRMED", "day": 4, "gain_pct": 1.8,
+                    "window": "prime", "quality_score": 70,
+                    "ftd_date": "2026-08-27"},
+            "ftd_note": {"ftd_date": "2026-08-27", "age_sessions": 6,
+                         "dd_after": 3},
+            "latest_date": "2026-09-04", "latest_close": 7718.6}}})),
     ]
 
 
@@ -43491,6 +43546,39 @@ def _page_html(rendered) -> str:
         head, rest = rendered[0], rendered[1]
         return head + ("".join(rest.values()) if isinstance(rest, dict) else "")
     return rendered
+
+
+# 완결 페이지를 그리는데 아직 위 목록에 없는 모듈 — **줄이기만** 하는 부채.
+# 늘리려면 이 집합을 고쳐야 하므로 새 페이지가 조용히 새지 않는다(#24).
+_PAGE_MODULES_NOT_COVERED = {
+    "earnings_calendar", "econ_calendar", "fred_boards", "intl_pages",
+    "naver_pages", "tw_pages", "us_pages", "dashboard_server",
+}
+
+
+def test_every_full_page_module_is_in_the_css_guard_or_listed():
+    """⚠️ 위 목록이 `bot/dashboard.py` 페이지만 열거해, 다른 모듈의 완결
+    페이지는 CSS 가드 **밖**이었다(#24 열거형 가드는 목록 밖을 못 잡는다).
+
+    실측(2026-09-07): `breadth_strategy` 가 `.si-note` 를 정의 없이 써서
+    각주가 본문 크기로 떴는데(#201 재발) 가드가 못 잡았다. 이제 완결 페이지를
+    그리는 모듈은 **목록에 있거나 부채로 명시**돼야 한다.
+    """
+    import pathlib
+    import re
+    doc = re.compile(r"<!doctype html>", re.I)
+    mods = {p.stem for p in pathlib.Path("bot").glob("*.py")
+            if doc.search(p.read_text(encoding="utf-8"))}
+    assert len(mods) >= 5, f"완결 페이지 모듈을 {len(mods)}개만 찾았다 — 패턴 회귀?"
+    covered = {name for name, _ in _render_all_pages()}
+    # dashboard 는 여러 페이지가 개별 이름으로 등재돼 있다
+    covered |= {"dashboard"}
+    gap = mods - covered - _PAGE_MODULES_NOT_COVERED
+    assert not gap, f"완결 페이지를 그리는데 CSS 가드에도 부채 목록에도 없다: {gap}"
+    # 부채 목록은 **줄기만** 한다 — 늘리려면 이 숫자를 고쳐야 한다(#286).
+    assert len(_PAGE_MODULES_NOT_COVERED) <= 8, "부채가 늘었다"
+    stale = _PAGE_MODULES_NOT_COVERED - mods
+    assert not stale, f"부채 목록에 완결 페이지가 아닌 모듈: {stale}"
 
 
 def test_rendered_pages_define_every_class_they_use():
