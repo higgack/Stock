@@ -46992,3 +46992,76 @@ class TestEnvDiagNamesTheBranch20260907:
         monkeypatch.chdir(cwd)
         monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: home))
         assert ek.env_key("KRX_ID") == "realval", ek.env_why("KRX_ID")
+
+
+class TestNewFavoriteGoesOnTop20260907:
+    """새로 저장한 관심종목이 목록 **맨 아래**에 붙고 있었다.
+
+    사용자 2026-09-07: "관심종목이 나오는 순서는 최신에 저장한게 가장
+    위쪽으로 가게해줘. 현재는 반대로 되어 있어." 154종목이라 새로 담은
+    종목을 보려면 페이지를 끝까지 넘겨야 했다 — `add_favorite` 가
+    `favorites.append(entry)` 였고 화면은 저장 순서를 그대로 그린다.
+
+    ⚠️ 기존 항목의 **수동 순서(↕ 버튼)는 건드리지 않는다** — 날짜로 통째
+    재정렬하면 사용자가 요청해 만든 기능이 무의미해진다(#222 계약을 바꿀
+    땐 범위를 먼저 물을 것).
+    """
+
+    def _add(self, monkeypatch, existing):
+        import sys
+        import types
+
+        import bot.market_favorites as mf
+        saved = {}
+        monkeypatch.setattr(mf, "_load", lambda: list(existing))
+        monkeypatch.setattr(mf, "_save", lambda v: saved.setdefault("v", v))
+        monkeypatch.setattr(mf, "_resolve_kr_name", lambda *a, **k: None,
+                            raising=False)
+
+        class _Tk:
+            info = {"shortName": "NEW", "currentPrice": 10.0}
+            calendar = {}
+
+        fake = types.ModuleType("yfinance")
+        fake.Ticker = lambda t: _Tk()
+        monkeypatch.setitem(sys.modules, "yfinance", fake)
+        entry = mf.add_favorite("NEWT")
+        return entry, saved.get("v")
+
+    def test_new_entry_is_first(self, monkeypatch):
+        old = [{"ticker": "AAA"}, {"ticker": "BBB"}, {"ticker": "CCC"}]
+        entry, out = self._add(monkeypatch, old)
+        assert entry is not None
+        assert out[0]["ticker"].upper() == "NEWT", [f["ticker"] for f in out]
+
+    def test_existing_manual_order_is_preserved(self, monkeypatch):
+        """⚠️ 반대 증거 — 뒤 항목의 **상대 순서**는 그대로여야 한다.
+
+        이게 없으면 '저장일 내림차순으로 통째 재정렬' 같은 변형이 통과해
+        사용자가 ↕ 로 맞춰 둔 배열을 조용히 날린다(#25·#222).
+        """
+        old = [{"ticker": "AAA", "saved": "2026-01-01"},
+               {"ticker": "BBB", "saved": "2026-09-01"},
+               {"ticker": "CCC", "saved": "2026-05-01"}]
+        _e, out = self._add(monkeypatch, old)
+        assert [f["ticker"] for f in out[1:]] == ["AAA", "BBB", "CCC"], out
+
+    def test_docstring_does_not_say_append(self):
+        """설명이 코드와 어긋나면 버그다(#55) — 'append' 라 적어 두면
+        다음 사람이 순서를 반대로 읽는다."""
+        import bot.market_favorites as mf
+        doc = mf.add_favorite.__doc__ or ""
+        assert "prepend" in doc and "append to favorites" not in doc, doc
+
+    def test_screen_says_where_a_new_save_lands(self):
+        """동작이 바뀌면 **설명도 같은 커밋에서**(§Help/Dashboard 등록).
+
+        순서 규칙은 화면에 안 적으면 사용자가 매번 확인해야 한다(#43) —
+        바로 옆에 '↕ 화살표로 순서 변경' 이 있어 더더욱 갈린다.
+        """
+        import bot.dashboard as db
+        src = db._render_market_page.__doc__ or ""
+        assert src is not None
+        import inspect
+        body = inspect.getsource(db._render_market_page)
+        assert "새로 저장한 종목이 맨 위" in body, "순서 규칙이 화면에 없다"

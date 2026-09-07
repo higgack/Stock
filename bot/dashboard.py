@@ -19150,7 +19150,7 @@ def _render_market_page(data: dict) -> str:
         : '';
       var ctrl = '<div class="fav-ctrl">'
         + '<select id="fav-country">' + copts + '</select>' + dctrl
-        + '<span style="font-size:11px;color:var(--muted)">↕ 화살표로 순서 변경 · 헤더 클릭 정렬'
+        + '<span style="font-size:11px;color:var(--muted)">새로 저장한 종목이 맨 위 · ↕ 화살표로 순서 변경 · 헤더 클릭 정렬'
         + ' · 현재 PER = 현재가 ÷ 실적 EPS(국내는 KRX 투자지표)</span></div>';
 
       /* 정렬 헤더 (data-k/data-t) */
