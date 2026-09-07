@@ -745,6 +745,11 @@ _BS_CSS = """
 .bs-tbl th{color:var(--fg-soft,#93a0bd);font-weight:500}
 .bs-tbl th.num,.bs-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
 .bs-tbl tr.on{background:rgba(77,163,255,.14);font-weight:600}
+/* 각주(확정 기준일·현금 사유) — 표보다 작고 흐리게. ⚠️ 이 클래스를 쓰면서
+   **이 페이지 번들에 정의를 안 두면** 각주가 본문 크기로 떠서 표보다 커
+   보인다(실수 #201 "너무 크잖아"). 대시보드에 같은 이름이 있어도 이 페이지는
+   그 번들을 안 쓴다 — 쓰는 곳이 전부 그 번들인지 먼저 답할 것(#273). */
+.bs-tbl .si-note{font-size:11px;color:var(--fg-soft,#93a0bd);font-weight:400}
 </style>
 """
 
