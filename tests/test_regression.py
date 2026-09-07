@@ -46756,6 +46756,30 @@ class TestFcfAuditRecomputeZeroIsNotAPass20260907:
         assert "①재계산(yf)" in r["unknown_axes"], r["unknown_axes"]
         assert "①재계산(yf)" not in r["bad_axes"], r["bad_axes"]
 
+    def test_skip_reason_is_split_not_lumped(self, monkeypatch):
+        """건너뛴 사유는 **갈래로** 적는다 — 뭉뚱그리면 틀린 라벨이 된다.
+
+        재료가 통째로 없는 행까지 "원천이 직접 줬다" 고 적으면 운영자를
+        엉뚱한 데로 보낸다(#292 틀린 라벨은 라벨이 없는 것보다 나쁘다 ·
+        #82 갈래는 이름으로). 배포전 셀프리뷰가 잡은 결함이다.
+        """
+        rows = [{"period": "2025-03-30", "Free Cash Flow": 1.0,
+                 "Operating Cash Flow": 2.0, "Capital Expenditure": -1.0},
+                {"period": "2025-06-30"},          # 재료 자체가 없는 행
+                {"period": "2025-09-30"}]
+        r = self._run(monkeypatch, rows)
+        line = next(s for s in r["lines"] if "① 재계산" in s)
+        assert "직접 준 행 1건" in line, line
+        assert "재료" in line and "2건" in line, line
+        assert "①재계산(yf)" in r["unknown_axes"]
+
+    def test_no_material_only_does_not_claim_source_provided(self, monkeypatch):
+        """⚠️ 반대 증거 — 직접 제공분이 0이면 그 문구가 **없어야** 한다."""
+        r = self._run(monkeypatch, [{"period": "2025-06-30"}])
+        line = next(s for s in r["lines"] if "① 재계산" in s)
+        assert "직접" not in line, f"없는 사유를 적었다: {line}"
+        assert "재료" in line, line
+
     def test_real_recompute_still_reports_the_count(self, monkeypatch):
         """⚠️ 반대 증거 — 실제로 잰 자리는 여전히 ✅ 와 **건수**를 말한다.
 

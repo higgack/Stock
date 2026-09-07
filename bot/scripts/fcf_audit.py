@@ -247,11 +247,18 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     # ① 재계산 — 원천이 직접 준 FCF 가 아니면 OCF−|CAPEX| 와 같아야 한다
     from bot.fcf import _CAPEX_NAMES, _FCF_NAMES, _OCF_NAMES, _first
     from bot.fcf import fcf_from_parts as _parts
-    _re_bad, _re_n = [], 0
+    # ⚠️ 건너뛴 사유를 **갈래로** 센다 — 아래 ❓ 줄이 "왜 잴 게 없었나"를
+    # 사실대로 말해야 한다. 하나로 뭉뚱그리면 재료가 통째로 없는 종목에도
+    # "원천이 직접 줬다" 는 **틀린 라벨**이 붙는다(#292·#82).
+    _re_bad, _re_n, _skip_direct, _skip_nomat = [], 0, 0, 0
     for p, r in yq + ya:
         v = fcf_from_row(r)
-        if v is None or _first(r, _FCF_NAMES) is not None:
-            continue                       # 직접 제공분은 재계산 대상 아님
+        if v is None:
+            _skip_nomat += 1               # 재료(OCF·CAPEX·FCF)가 아예 없다
+            continue
+        if _first(r, _FCF_NAMES) is not None:
+            _skip_direct += 1              # 직접 제공분은 재계산 대상 아님
+            continue
         _re_n += 1
         if v != _parts(_first(r, _OCF_NAMES), _first(r, _CAPEX_NAMES)):
             _re_bad.append(p)
@@ -263,14 +270,18 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             "(스냅샷 실패·원천 차단·의존성 누락 중 하나)")
         flag(False, "①재계산(yf)")
     elif not _re_n:
-        # ⚠️ 행은 받았는데 **한 건도 재계산하지 않은** 경우다 — 전부 원천이
-        # `Free Cash Flow` 를 직접 준 행이라 우리가 만든 값이 없다. 그걸
+        # ⚠️ 행은 받았는데 **한 건도 재계산하지 않은** 경우다. 그걸
         # `✅ 전 기간 일치(0건)` 이라고 찍고 있었다(2026-09-07 VM 실측
-        # 098070.KQ: 8행 전부 직접 제공 → 0건인데 ✅). **대조 0건은 통과가
-        # 아니다**(#54) — 위 분기가 스냅샷 실패만 막고 이 갈래는 안 막았다.
-        say(f"     ① 재계산 ❓ 재계산 대상 없음 — 받은 {len(yq) + len(ya)}행이"
-            " 전부 원천이 FCF 를 직접 준 행이다(우리가 만든 값이 없어"
-            " 대조할 게 없다)")
+        # 098070.KQ: 8행 전부 원천 직접 제공 → 0건인데 ✅). **대조 0건은
+        # 통과가 아니다**(#54) — 위 분기가 스냅샷 실패만 막고 이 갈래는
+        # 안 막았다. 사유는 갈래로 적는다(#82).
+        _why = " · ".join(
+            x for x in (f"원천이 FCF 를 직접 준 행 {_skip_direct}건"
+                        if _skip_direct else "",
+                        f"재료(영업CF·CAPEX)가 없는 행 {_skip_nomat}건"
+                        if _skip_nomat else "") if x)
+        say(f"     ① 재계산 ❓ 재계산 대상 없음 — 받은 {len(yq) + len(ya)}행: "
+            f"{_why}(우리가 만든 값이 없어 대조할 게 없다)")
         flag(None, "①재계산(yf)")
     else:
         say(f"     ① 재계산 " + (f"✅ 전 기간 일치({_re_n}건)" if not _re_bad
