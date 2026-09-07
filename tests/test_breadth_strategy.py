@@ -803,6 +803,117 @@ class ConfirmedSignalAuditTests(unittest.TestCase):
                 ("CONTRARIAN", "RECOVERY", "NON_TREND")}
         assert len(outs) == 3, outs
 
+    def test_month_end_is_corrected_when_a_later_close_arrives(self):
+        """⚠️ VM 실측(2026-09-07): 2026-08 확정이 `asof=08-28`(금)인데 실제
+        마지막 거래일은 **08-31**(월)이었다 — 09-01 에 기록될 때 야후 시계열에
+        08-31 이 아직 없었고, 멱등 가드가 `month` 만 봐서 나중에 그 봉이 와도
+        영영 안 고쳐졌다(#18 구워진 데이터).
+
+        무해하지 않다 — 같은 실행에서 08-24 는 `과거 리더 놀림목`(50% 투자),
+        08-25~31 은 `현금 대기` 였다. **어느 날을 월말로 잡느냐가 신호를 바꾼다.**
+        """
+        import json
+        import tempfile
+        from pathlib import Path
+
+        old_dir = bs._SIGNAL_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                bs._SIGNAL_DIR = Path(td)
+                early = {"month": "2026-08", "asof": "2026-08-28",
+                         "state": "CASH", "regime": "RECOVERY",
+                         "breadth_pct": 30.8, "top3": ["IT"]}
+                assert bs.append_signal("KR", early) is True
+                # 같은 기준일 재실행 → 멱등(종전 그대로)
+                assert bs.append_signal("KR", early) is False
+                # 더 **이른** 종가는 무시한다(뒤로 가지 않는다)
+                assert bs.append_signal(
+                    "KR", {**early, "asof": "2026-08-27"}) is False
+                # 더 **늦은** 종가가 오면 정정본을 쓴다
+                late = {**early, "asof": "2026-08-31", "state": "CASH",
+                        "breadth_pct": 30.77, "top3": ["보험"]}
+                assert bs.append_signal("KR", late) is True
+                recs = bs.load_signals("KR")
+                # 화면·후보 풀 모두 달마다 **하나**여야 한다
+                assert len(recs) == 1, recs
+                assert recs[0]["asof"] == "2026-08-31"
+                assert recs[0]["top3"] == ["보험"]
+        finally:
+            bs._SIGNAL_DIR = old_dir
+
+    def test_backfill_loop_reruns_a_month_when_a_later_close_arrives(self):
+        """⚠️ 헬퍼(append_signal)만 재면 **루프의 스킵 조건**을 되돌리는 변형을
+        못 잡는다(#20 실측: `if d[:7] in have` 로 되돌려도 회귀 65개가 전부
+        통과했다). 수집기를 통째로 태워 정정이 실제로 일어나는지 본다."""
+        import datetime as _dt
+        import json
+        import tempfile
+        from pathlib import Path
+
+        days, d = [], _dt.date(2025, 7, 1)
+        while len(days) < 320:
+            if d.weekday() < 5:
+                days.append(d.isoformat())
+            d += _dt.timedelta(days=1)
+        days = [x for x in days if x <= "2026-09-04"][-320:]
+        assert "2026-08-31" in days and "2026-09-01" in days
+        fall = [100 - i * 0.1 for i in range(len(days))]
+        rise = [100 + i * 0.1 for i in range(len(days))]
+        labels = {f"S{i:02d}": (rise if i < 4 else list(fall))
+                  for i in range(13)}
+
+        def ser(v):
+            return [{"date": a, "close": c} for a, c in zip(days, v)]
+
+        from bot import market_timing as mt
+        old = (bs._series, mt._BREADTH_SECTORS, mt._BREADTH_SOURCE_LABEL,
+               bs._SIGNAL_DIR)
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                bs._SIGNAL_DIR = Path(td)
+                bs._series = (lambda t, days_=400:
+                              ser(fall) if t == "^KS11" else ser(labels[t]))
+                mt._BREADTH_SECTORS = {"KR": {k: k for k in labels}}
+                mt._BREADTH_SOURCE_LABEL = {"KR": "테스트"}
+                # 원천이 늦어 **08-28 로 굳은** 옛 기록을 심는다(실측 재현)
+                bs.signal_path("KR").write_text(json.dumps({
+                    "month": "2026-08", "asof": "2026-08-28", "state": "CASH",
+                    "regime": "RECOVERY", "breadth_pct": 30.8,
+                    "top3": ["옛값"]}) + "\n", encoding="utf-8")
+                bs.build_with_signals("KR")
+                recs = [r for r in bs.load_signals("KR")
+                        if r.get("month") == "2026-08"]
+        finally:
+            (bs._series, mt._BREADTH_SECTORS, mt._BREADTH_SOURCE_LABEL,
+             bs._SIGNAL_DIR) = old
+        assert len(recs) == 1, recs
+        assert recs[0]["asof"] == "2026-08-31", recs[0]
+        assert recs[0]["top3"] != ["옛값"], "정정본이 아니라 옛 기록이다"
+
+    def test_history_row_shows_which_close_confirmed_it(self):
+        """월만 적으면 월말이 며칠 이르게 굳은 사실이 안 보인다(#43)."""
+        import json
+        import re
+        import tempfile
+        from pathlib import Path
+
+        old_dir = bs._SIGNAL_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                bs._SIGNAL_DIR = Path(td)
+                bs.signal_path("KR").write_text(json.dumps({
+                    "month": "2026-08", "asof": "2026-08-28", "state": "CASH",
+                    "regime": "RECOVERY", "breadth_pct": 30.8,
+                    "dd_pct": -25.52, "index_w": 0, "total_w": 0,
+                    "cash_w": 1.0, "targets": [], "top3": []}) + "\n",
+                    encoding="utf-8")
+                html = bs.render_page({"KR": RenderTests._snap(
+                    "KR", 30.8, "CASH", "RECOVERY", 0.0, 1.0)})
+        finally:
+            bs._SIGNAL_DIR = old_dir
+        row = re.search(r"<tbody>(.*?)</tbody>", html, re.S).group(1)
+        assert "2026-08-28" in row, row
+
     def test_entrypoint_is_last_and_dispatches_why(self):
         """⚠️ 엔트리포인트가 파일 중간이면 그 아래 정의는 영영 안 닿는다
         (#276). 그리고 배선은 **존재가 아니라 호출**이다(#120)."""

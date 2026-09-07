@@ -295,17 +295,44 @@ def load_signals(market: str, limit: int = 60) -> list[dict]:
         return []
     # 파일 순서 ≠ 시간 순서 — 빠진 달을 나중에 백필하면 뒤에 append 된다.
     # 회복 후보 풀도 화면 이력도 '최근 N개월' 기준이라 월로 정렬해서 준다.
-    out.sort(key=lambda r: str(r.get("month") or ""))
+    #
+    # ⚠️ 한 달에 **정정본**이 여러 줄 있을 수 있다(원천이 늦어 이른 종가로
+    # 먼저 굳은 뒤 진짜 월말이 들어온 경우 — append_signal 참조). 화면·후보
+    # 풀 모두 달마다 **하나**여야 하므로 기준일이 가장 늦은 것만 남긴다.
+    best: dict[str, dict] = {}
+    for r in out:
+        m = str(r.get("month") or "")
+        cur = best.get(m)
+        if cur is None or str(r.get("asof") or "") >= str(cur.get("asof") or ""):
+            best[m] = r
+    out = sorted(best.values(), key=lambda r: str(r.get("month") or ""))
     return out[-limit:]
 
 
 def append_signal(market: str, rec: dict) -> bool:
-    """월말 확정 신호 append. 같은 `month` 가 이미 있으면 쓰지 않는다
-    (재실행·재시작에 멱등 — 3시간 주기로 도는 잡이라 필수)."""
+    """월말 확정 신호 append. 재실행·재시작에 멱등(3시간 주기 잡이라 필수).
+
+    ⚠️ 옛 판은 `month` 만 보고 건너뛰었다 — 그래서 **원천이 하루 늦은 날**
+    기록되면 그 달의 '월말' 이 영영 틀린 채로 굳었다(2026-09-07 VM 실측:
+    2026-08 확정이 `asof=08-28`(금)인데 실제 마지막 거래일은 **08-31**(월)
+    이었다. 09-01 에 기록될 때 야후 시계열에 08-31 이 아직 없었던 것).
+    기록은 회복 후보 풀(Top3 이력)의 원천이라 그 오염이 뒤로 전파된다(#18
+    구워진 데이터는 코드를 고쳐도 안 바뀐다).
+
+    무해한 사고가 아니다 — 같은 실행의 프로브가 08-24 는 `과거 리더 놀림목`
+    (50% 투자), 08-25~31 은 `현금 대기` 임을 보였다. **어느 날을 월말로 잡느냐가
+    신호를 바꾼다.**
+
+    그래서 멱등 기준을 (월) → (월, 기준일)로 좁힌다: 같은 달에 **더 늦은
+    종가**가 들어오면 정정본을 덧쓴다. 같거나 이른 기준일은 종전대로 무시한다.
+    """
     month = rec.get("month")
     if not month:
         return False
-    if any(r.get("month") == month for r in load_signals(market, limit=10_000)):
+    asof = str(rec.get("asof") or "")
+    prior = [str(r.get("asof") or "") for r in load_signals(market, limit=10_000)
+             if r.get("month") == month]
+    if prior and max(prior) >= asof:
         return False
     try:
         _SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -538,11 +565,14 @@ def build_with_signals(market: str) -> tuple[dict, list[dict]]:
     if not got:
         return {}, []
     sectors, bench_name, bench_rows, rows_by_label, missing = got
-    have = {str(r.get("month") or "") for r in load_signals(market, limit=10_000)}
+    have = {str(r.get("month") or ""): str(r.get("asof") or "")
+            for r in load_signals(market, limit=10_000)}
     written: list[dict] = []
     for d in completed_month_ends([r["date"] for r in bench_rows],
                                   limit=_BACKFILL_MONTHS):
-        if d[:7] in have:
+        # ⚠️ `have` 는 (월 → 기록된 기준일)이다. 같은 달이라도 **더 늦은
+        # 종가**가 들어왔으면 다시 계산해 정정한다(append_signal 참조).
+        if have.get(d[:7], "") >= d:
             continue
         snap = _assemble(market, sectors, bench_name, bench_rows, rows_by_label,
                          missing, cut=d)
@@ -658,7 +688,12 @@ def _market_section(d: dict) -> str:
     fng_s = (f"{fng['index']:.0f} ({_h.escape(fng.get('label', ''))}, 美 CNN)"
              if fng.get("index") is not None else "—")
     hist = "".join(
-        f"<tr><td>{_h.escape(str(r.get('month', '')))}</td>"
+        f"<tr><td>{_h.escape(str(r.get('month', '')))}"
+        # ⚠️ **어느 종가로 확정했는지**를 적는다 — 원천이 늦으면 월말이 며칠
+        # 이르게 굳을 수 있고(2026-09-07 실측: 2026-08 이 08-28 로 굳었는데
+        # 실제 마지막 거래일은 08-31), 월만 적으면 그 사실이 안 보인다(#43).
+        f"<div class='si-note'>{_h.escape(str(r.get('asof', '') or ''))}"
+        f" 종가</div></td>"
         # ⚠️ **구간**은 기록에 있는데 표에 열이 없었다 — 사용자가 "이거는
         # 역추세·추세·회복·비추세 중 어떤거야?" 를 물어야 했다(2026-09-07).
         # 상태만으로는 못 가른다(`현금 대기` 는 네 구간 모두에서 나온다).
