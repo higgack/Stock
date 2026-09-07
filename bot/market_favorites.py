@@ -673,13 +673,27 @@ def _cli_sort_saved(apply_it: bool) -> int:
     ⚠️ 무엇을 바꿨는지 **숫자로** 보여준다 — '정리했습니다' 만으로는 사용자가
     확인할 방법이 없다(#202·#274 이상 없음도 말할 것).
     """
+    import json
     import shutil
     from datetime import datetime as _dt
 
     cur = _load()
     if not cur:
-        print("❌ 관심종목이 0건이다 — 파일을 못 읽었거나 비어 있다"
-              f"\n   경로: {_FAVORITES_FILE}")
+        # ⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279) — `_load` 가
+        # JSON 예외를 삼켜 `[]` 를 주므로 여기서 갈래를 이름으로 부른다.
+        why = "파일이 없다 — 관심종목을 한 번도 안 담았다"
+        try:
+            if _FAVORITES_FILE.exists():
+                raw = _FAVORITES_FILE.read_text("utf-8")
+                try:
+                    json.loads(raw)
+                    why = f"파일은 정상 JSON 인데 목록이 비어 있다({len(raw)}바이트)"
+                except Exception as exc:                       # noqa: BLE001
+                    why = (f"파일을 못 읽는다 — {type(exc).__name__}: {exc}"
+                           f" ({len(raw)}바이트). 백업에서 복구할 것")
+        except Exception as exc:                               # noqa: BLE001
+            why = f"파일 접근 실패 — {type(exc).__name__}: {exc}"
+        print(f"❌ 관심종목이 0건이다 — {why}\n   경로: {_FAVORITES_FILE}")
         return 1
     new = sort_by_saved(cur)
     no_date = [f.get("ticker") for f in cur if not f.get("saved_date")]
@@ -696,9 +710,19 @@ def _cli_sort_saved(apply_it: bool) -> int:
     print("  [정리 후 아래 3] " + " | ".join(_line(f) for f in new[-3:]))
     print(f"  자리가 바뀌는 항목 {moved}건 · 저장일 없는 항목 "
           f"{len(no_date)}건(맨 아래로){' — ' + ', '.join(map(str, no_date[:5])) if no_date else ''}")
-    if len(new) != len(cur):                      # 정렬은 개수를 안 바꾼다
-        print(f"❌ 개수가 달라졌다 {len(cur)} → {len(new)} — 중단")
+    # ⚠️ 개수만 세면 `sorted()` 가 길이를 안 바꾸므로 **영원히 통과하는 죽은
+    # 가드**다(#291 늘 ✅ 인 축은 판정이 아니다). 티커 **다중집합**으로 재야
+    # 정렬이 항목을 바꾸거나 잃는 변형을 실제로 잡는다.
+    if sorted(map(str, (f.get("ticker") for f in new))) != \
+       sorted(map(str, (f.get("ticker") for f in cur))):
+        print(f"❌ 종목 구성이 달라졌다 {len(cur)} → {len(new)} — 중단(쓰지 않음)")
         return 1
+    if moved == 0:
+        # ⚠️ 바꿀 게 없는데 백업하고 다시 쓰면, 그 백업은 **이미 정렬된 것**이라
+        # 되돌릴 원본이 사라진다(독립 리뷰 실측). 계산해 둔 `moved` 를 판정에
+        # 쓴다(#123 계열) — 이상 없음도 한 줄로 말한다(#274).
+        print("\n✅ 이미 저장일 순이다 — 바꿀 것이 없어 파일을 건드리지 않았다.")
+        return 0
     if not apply_it:
         print("\n미리보기만 했다. 실제로 바꾸려면 `--apply` 를 붙일 것:")
         print("  cd ~/stock && .venv/bin/python -m bot.market_favorites"
@@ -706,12 +730,27 @@ def _cli_sort_saved(apply_it: bool) -> int:
         return 0
     ts = _dt.now().strftime("%Y%m%d-%H%M%S")
     bak = _FAVORITES_FILE.with_name(f"market_favorites.backup-{ts}.json")
+    if bak.exists():
+        # ⚠️ 초 해상도라 같은 초에 두 번 돌면 **유일한 백업이 정렬본으로
+        # 덮인다** — 그 순간 되돌릴 길이 0 이다(#43 백업 의무가 무력화).
+        print(f"❌ 같은 이름의 백업이 이미 있다 — 중단(쓰지 않음)\n   {bak}")
+        return 1
     shutil.copy2(_FAVORITES_FILE, bak)
     _save(new)
-    print(f"\n✅ 정리 완료 · 백업 {bak}")
+    # ⚠️ 쓴 뒤 **되읽어 확인**한다 — 대시보드의 name_kr 백필도 같은 파일을
+    # `_load`→`_save` 하므로 겹치면 옛 순서로 되덮일 수 있다(#79 그 경로가
+    # 실제로 반영됐나).
+    back = [str(f.get("ticker")) for f in _load()]
+    want = [str(f.get("ticker")) for f in new]
+    if back != want:
+        print(f"\n❌ 썼는데 되읽은 순서가 다르다 — 다른 프로세스가 같이 썼을 수 있다."
+              f"\n   되돌리려면: cp {bak} {_FAVORITES_FILE}")
+        return 1
+    print(f"\n✅ 정리 완료 · {moved}건 이동 · 백업 {bak}")
     print(f"   되돌리려면: cp {bak} {_FAVORITES_FILE}")
-    print("   ⚠️ 대시보드는 관심종목을 3분 캐시하므로 화면 반영까지 최대"
-          " 3분 걸린다(새로고침해도 그 전엔 옛 순서).")
+    print("   ⚠️ 대시보드는 3분 캐시가 만료돼도 **옛 목록을 즉시 주고**"
+          " 뒤에서 갱신한다 — 화면 순서는 다음 백그라운드 갱신(139종목 시세"
+          " 수집)이 끝난 뒤에 바뀐다.")
     return 0
 
 

@@ -11864,13 +11864,13 @@ class TestFavoritesFastInfoGuard:
         import time
         import bot.market_favorites as mf
         sentinel = [{"ticker": "X", "current_price": 1}]
-        monkeypatch.setattr(mf, "_FAV_CACHE", sentinel, raising=False)
-        monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time(), raising=False)
+        monkeypatch.setattr(mf, "_FAV_CACHE", sentinel)
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time())
         # TTL(3분) 내면 yfinance 안 타고 캐시 그대로 반환
         assert mf.get_favorites_with_prices() is sentinel
         # TTL 만료 + 빈 관심종목 → 재진입(네트워크 0)
-        monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time() - 9999, raising=False)
-        monkeypatch.setattr(mf, "_FAV_CACHE", None, raising=False)
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time() - 9999)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
         monkeypatch.setattr(mf, "_load", lambda: [])
         assert mf.get_favorites_with_prices() == []
 
@@ -47211,6 +47211,9 @@ class TestNewFavoriteGoesOnTop20260907:
                 {"ticker": "NEW", "saved_date": "2026-09-01"}]
         f.write_text(json.dumps(rows), encoding="utf-8")
         monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
+        # ⚠️ `_save` 가 `_FAV_CACHE` 를 지우므로 그것도 monkeypatch 로 잡는다 —
+        # 손대입이면 전역으로 샌다(#130, 이 테스트가 고친 바로 그 병).
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
         # ① 미리보기는 파일을 **안 건드린다**(#264 진단이 운영 상태를 바꾸면 안 된다)
         assert mf._cli_sort_saved(False) == 0
         assert json.loads(f.read_text())[0]["ticker"] == "OLD"
@@ -47234,6 +47237,127 @@ class TestNewFavoriteGoesOnTop20260907:
         monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
         assert mf._cli_sort_saved(True) == 1
         assert not list(tmp_path.glob("*backup*")), "빈 목록인데 백업을 만들었다"
+
+    def test_sort_cli_does_nothing_when_already_sorted(self, tmp_path,
+                                                       monkeypatch, capsys):
+        """⚠️ 바꿀 게 없는데 백업하고 다시 쓰면 그 백업은 **이미 정렬된 것**이라
+        되돌릴 원본이 사라진다(독립 리뷰 실측 — 같은 초에 두 번 돌리면 유일한
+        백업이 정렬본으로 덮인다). `moved` 를 계산해 놓고 판정에 안 쓰던 것
+        (#123 계열)을 고쳐, 두 번째 실행은 **파일을 아예 안 건드린다**."""
+        import json
+
+        import bot.market_favorites as mf
+        f = tmp_path / "market_favorites.json"
+        rows = [{"ticker": "NEW", "saved_date": "2026-09-01"},
+                {"ticker": "OLD", "saved_date": "2026-01-01"}]
+        f.write_text(json.dumps(rows), encoding="utf-8")
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+        before = f.stat().st_mtime_ns
+        assert mf._cli_sort_saved(True) == 0
+        assert not list(tmp_path.glob("*backup*")), "안 바뀌는데 백업을 만들었다"
+        assert f.stat().st_mtime_ns == before, "안 바뀌는데 파일을 다시 썼다"
+        out = capsys.readouterr().out
+        assert "이미 저장일 순" in out and "정리 완료" not in out, out
+
+    def test_sort_cli_refuses_to_clobber_an_existing_backup(self, tmp_path,
+                                                            monkeypatch):
+        """⚠️ 백업 파일명이 **초 해상도**라 같은 초에 두 번 돌면 `shutil.copy2`
+        가 말없이 덮어쓴다 — 그 순간 원본이 영구 유실된다. 이름이 겹치면
+        **아무것도 쓰지 않고** 멈춘다."""
+        import json
+
+        import bot.market_favorites as mf
+        f = tmp_path / "market_favorites.json"
+        rows = [{"ticker": "OLD", "saved_date": "2026-01-01"},
+                {"ticker": "NEW", "saved_date": "2026-09-01"}]
+        f.write_text(json.dumps(rows), encoding="utf-8")
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+
+        class _Fixed:
+            @staticmethod
+            def now():
+                class _T:
+                    @staticmethod
+                    def strftime(_):
+                        return "20260907-000000"
+                return _T()
+        import datetime as _dtmod
+        monkeypatch.setattr(_dtmod, "datetime", _Fixed)
+        assert mf._cli_sort_saved(True) == 0          # ① 첫 실행 — 백업 1개
+        baks = list(tmp_path.glob("market_favorites.backup-*.json"))
+        assert len(baks) == 1
+        assert json.loads(baks[0].read_text())[0]["ticker"] == "OLD"
+        # ② 순서를 되돌려 '바꿀 것이 있는' 상태로 만든 뒤 같은 초에 재실행
+        f.write_text(json.dumps(rows), encoding="utf-8")
+        assert mf._cli_sort_saved(True) == 1
+        assert len(list(tmp_path.glob("market_favorites.backup-*.json"))) == 1
+        assert json.loads(baks[0].read_text())[0]["ticker"] == "OLD", "백업이 덮였다"
+        assert json.loads(f.read_text())[0]["ticker"] == "OLD", "거부했는데 썼다"
+
+    def test_sort_cli_names_why_the_list_is_empty(self, tmp_path, monkeypatch,
+                                                  capsys):
+        """⚠️ '비었다' 와 '못 읽는다' 는 처방이 정반대다(#82·#279) — `_load` 가
+        JSON 예외를 삼켜 `[]` 를 주므로 CLI 가 갈래를 이름으로 불러야 한다."""
+        import bot.market_favorites as mf
+        f = tmp_path / "market_favorites.json"
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
+        assert mf._cli_sort_saved(True) == 1          # ① 파일 없음
+        assert "파일이 없다" in capsys.readouterr().out
+        f.write_text("[]", encoding="utf-8")
+        assert mf._cli_sort_saved(True) == 1          # ② 정상 JSON · 빈 목록
+        assert "비어 있다" in capsys.readouterr().out
+        f.write_text('[{"ticker": "A"', encoding="utf-8")
+        assert mf._cli_sort_saved(True) == 1          # ③ 깨진 파일
+        out = capsys.readouterr().out
+        assert "못 읽는다" in out and "복구" in out, out
+        assert not list(tmp_path.glob("*backup*"))
+
+    def test_sort_cli_reads_back_what_it_wrote(self, tmp_path, monkeypatch,
+                                               capsys):
+        """⚠️ 대시보드의 name_kr 백필도 같은 파일을 `_load`→`_save` 하므로 겹치면
+        옛 순서로 되덮인다 — 쓴 뒤 **되읽어** 확인하고 아니면 사실대로 말한다
+        (#79 그 경로가 실제로 반영됐나)."""
+        import json
+
+        import bot.market_favorites as mf
+        f = tmp_path / "market_favorites.json"
+        rows = [{"ticker": "OLD", "saved_date": "2026-01-01"},
+                {"ticker": "NEW", "saved_date": "2026-09-01"}]
+        f.write_text(json.dumps(rows), encoding="utf-8")
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+        # 남이 곧바로 옛 순서로 되덮는 상황을 재현
+        monkeypatch.setattr(mf, "_save",
+                            lambda favs: f.write_text(json.dumps(rows),
+                                                      encoding="utf-8"))
+        assert mf._cli_sort_saved(True) == 1
+        out = capsys.readouterr().out
+        assert "되읽은 순서가 다르다" in out and "되돌리려면" in out, out
+
+    def test_sort_cli_refuses_when_the_set_of_tickers_changes(self, tmp_path,
+                                                              monkeypatch,
+                                                              capsys):
+        """⚠️ `len(new) != len(cur)` 는 `sorted()` 가 길이를 안 바꾸므로 **영원히
+        통과하는 죽은 가드**였다(#291 늘 ✅ 인 축은 판정이 아니다) — 티커
+        다중집합으로 재야 항목을 바꾸거나 잃는 변형을 실제로 잡는다."""
+        import json
+
+        import bot.market_favorites as mf
+        f = tmp_path / "market_favorites.json"
+        rows = [{"ticker": "OLD", "saved_date": "2026-01-01"},
+                {"ticker": "NEW", "saved_date": "2026-09-01"}]
+        f.write_text(json.dumps(rows), encoding="utf-8")
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", f)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+        monkeypatch.setattr(mf, "sort_by_saved",
+                            lambda favs: [dict(favs[0], ticker="GHOST")]
+                            + list(favs[1:]))
+        assert mf._cli_sort_saved(True) == 1
+        assert "종목 구성이 달라졌다" in capsys.readouterr().out
+        assert not list(tmp_path.glob("*backup*")), "거부했는데 백업을 만들었다"
+        assert json.loads(f.read_text())[0]["ticker"] == "OLD", "거부했는데 썼다"
 
     def test_sort_cli_is_actually_reachable_from_the_command_line(self, tmp_path):
         """⚠️ 배선은 **태워야** 보인다(#20) — 헬퍼 테스트는 argparse 가
@@ -47262,14 +47386,27 @@ class TestNewFavoriteGoesOnTop20260907:
         assert r.returncode == 0, r.stderr[-800:]
         # ⚠️ `"미리보기" in stdout` 로 재면 **argparse 도움말**이 대신 만족시킨다
         # (`--apply` 헬프에 "없으면 미리보기" 가 있다) — 디스패치를 통째로
-        # 지우는 뮤테이션이 실제로 통과했다(#75). 이 실행에서만 나오는 값을
-        # 집는다: 읽은 건수와 정리 후 맨 위 종목.
+        # 지우는 뮤테이션이 실제로 통과했다(#75).
+        # ⚠️ 그리고 `"NEW" in stdout` 도 **바로 위 `[현재 위 3]` 줄이 대신
+        # 만족**시켜 정렬을 아예 안 하는 뮤테이션이 통과했다(독립 리뷰 실측)
+        # — 그 **줄 하나를 잘라내서** 순서를 본다(#55 표면별 문구는 잘라서).
         assert "관심종목 2건" in r.stdout, r.stdout
-        assert "[정리 후 위 3] " in r.stdout and "NEW" in r.stdout, r.stdout
+        after = [ln for ln in r.stdout.splitlines() if "[정리 후 위 3]" in ln]
+        assert len(after) == 1, r.stdout
+        assert after[0].index("NEW") < after[0].index("OLD"), after[0]
         # 미리보기는 파일을 안 건드린다
         cur = json.loads((home / ".tradingagents"
                           / "market_favorites.json").read_text())
         assert cur[0]["ticker"] == "OLD"
+        # ⚠️ 그리고 **쓰기 경로도 프로세스로** 태운다 — 미리보기만 재면
+        # `--apply` 배선이 끊겨도 green 이다(#20).
+        r2 = subprocess.run([sys.executable, "-m", "bot.market_favorites",
+                             "--sort-saved", "--apply"], capture_output=True,
+                            text=True, env=env, cwd=str(root), timeout=120)
+        assert r2.returncode == 0, r2.stderr[-800:]
+        done = json.loads((home / ".tradingagents"
+                           / "market_favorites.json").read_text())
+        assert [f["ticker"] for f in done] == ["NEW", "OLD"], done
 
     def test_screen_says_where_a_new_save_lands(self):
         """동작이 바뀌면 **설명도 같은 커밋에서**(§Help/Dashboard 등록).
