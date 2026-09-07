@@ -127,6 +127,38 @@ def _new_unmatched() -> list[str]:
     return [] if first_run else new
 
 
+def err_breakdown(n: int, kinds: dict | None, top: int = 3) -> str:
+    """오류 횟수 + **갈래** 한 줄 → `probe 오류 42회(타임아웃 40 · 원천장애 2)`.
+
+    ⚠️ 왜(2026-09-06 결산 `probe 오류 42회`): 숫자만으로는 타임아웃·요청한도·
+    인증·원천장애를 못 가르는데 **처방이 정반대**라, 운영자가 그 42를 보고
+    짐작하게 된다(#82 '없음'만 말하는 진단은 추측을 부른다).
+
+    ⚠️ 소계 합은 항상 총계와 같다 — 갈래를 모르는 건수(이 배포 이전에
+    쌓인 원장)는 버리지 말고 `갈래미상` 으로 남긴다. 총계와 소계가 다른
+    모집단을 세면 사용자가 눈으로 잡는다(#45). 반대(소계 > 총계)는 적립
+    순서로 막는다 — 호출부가 총계를 **먼저** 올린다.
+    """
+    items = [(k, int(v)) for k, v in (kinds or {}).items()
+             if isinstance(v, (int, float)) and int(v) > 0]
+    if not items:
+        return f"{n}회"
+    items.sort(key=lambda kv: (-kv[1], kv[0]))
+    rest = n - sum(v for _k, v in items)
+    shown = items[:top]
+    tail = items[top:]
+    parts = [f"{k} {v}" for k, v in shown]
+    if tail:
+        parts.append(f"그 외 {len(tail)}종 {sum(v for _k, v in tail)}")
+    if rest > 0:
+        parts.append(f"갈래미상 {rest}")
+    elif rest < 0:
+        # 소계가 총계를 넘는 건 정상이 아니다(자정 KST 경계에서 총계와 갈래가
+        # 다른 날짜로 갈릴 수 있다) — 침묵하면 그 사실이 사라진다(#43·#45).
+        parts.append(f"⚠️ 소계>총계 {-rest}")
+    return f"{n}회(" + " · ".join(parts) + ")"
+
+
 def compose(date_key: str, fwd: int, counts: dict,
             listener_down: bool, stale_min: int | None,
             new_unmatched: list[str] | None = None) -> str | None:
@@ -149,7 +181,8 @@ def compose(date_key: str, fwd: int, counts: dict,
                          ("scan_partial", "부분 스캔")):
         n = counts.get(field, 0)
         if n:
-            errs.append(f"{label} {n}회")
+            errs.append(f"{label} "
+                        + err_breakdown(n, counts.get(f"{field}_kinds")))
     sys_warn: list[str] = []
     if listener_down:
         sys_warn.append("⛔ BeOn 리스너 비활성 — 포워드 중단 상태")

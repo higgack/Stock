@@ -72,6 +72,32 @@ def fcf_from_row(row: dict | None) -> float | None:
     return fcf_from_parts(_first(row, _OCF_NAMES), _first(row, _CAPEX_NAMES))
 
 
+# DART 는 CAPEX 를 단일 계정으로 주지 않는다 — 취득이 자산 종류별로 온다.
+# ⚠️ **유형자산취득만** 쓴다. 사용자가 신뢰 기준으로 제시한 FnGuide 산식이
+# `CAPEX = 유형자산의증가` 이고 무형은 안 들어간다(LG이노텍 011070.KS 세 해
+# 실측, #215). yfinance `Capital Expenditure`(PP&E 취득)와도 정의가 같아
+# 시장 간 기준이 하나로 맞는다.
+_DART_CAPEX_KEY = "유형자산취득"
+
+
+def dart_capex(fin: dict | None):
+    """DART 재무 dict → CAPEX 크기(없으면 None). **단일 출처**.
+
+    ⚠️ 화면(`dart_quarterly._attach_fcf`)과 감사(`scripts.fcf_audit
+    .recompute_dart`)가 **둘 다 이걸** 부른다. 예전엔 각자 적어 놓고
+    #215 로 화면만 유형자산취득으로 좁혀서, 감사가 무형까지 더한 값으로
+    대조해 정상 종목을 ❌ 로 찍었다(2026-09-07 098070.KQ 4분기 전부 —
+    차이가 정확히 그 분기 무형자산취득이었다). 감사가 판정을 **재계산**
+    하면 제품과 다른 기준선을 비교한다(#169·#35).
+
+    ⚠️ 값은 `_num` 을 통과시킨다 — 이 모듈의 다른 진입점과 **같은 규약**
+    (bool 배제 · NaN → None · 숫자가 아니면 None)이어야 한다. 단일 출처가
+    된 뒤로는 여기서 `float()` 가 던지면 화면 렌더 경로가 통째로 터진다.
+    """
+    v = _num((fin or {}).get(_DART_CAPEX_KEY))
+    return None if v is None else abs(v)
+
+
 def fcf_from_parts(ocf, capex) -> float | None:
     """영업활동현금흐름 · CAPEX → FCF(= OCF − |CAPEX|).
 

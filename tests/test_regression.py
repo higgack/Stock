@@ -42986,8 +42986,13 @@ class TestAuditReportingDefects20260831:
                 v = node.value
                 if "❌" not in v and "✅" not in v:
                     continue
-                # '총 ❌ 3건' · '요약 … ✅ 0' 처럼 계수 문구 + 판정 글자
-                if _re.search(r"(총|요약|합계)\s*[^\n]{0,12}[❌✅]", v):
+                # '총 ❌ 3건' · '요약 … ✅ 0' · '판정: ❌ 불일치 1건' 처럼
+                # 계수·재진술 문구 + 판정 글자.
+                # ⚠️ `판정` 을 2026-09-07 에 더했다 — `fcf_audit` 의 종목별
+                # 요약이 정확히 그 모양이라 이 가드를 통과했고, 결산이 같은
+                # 결함을 두 번 세며 **엉뚱한 섹션**을 지목했다(#289).
+                # 인스턴스만 고치고 가드를 안 넓히면 다음 감사가 또 샌다(#24).
+                if _re.search(r"(총|요약|합계|판정)\s*[^\n]{0,12}[❌✅]", v):
                     bad.append(f"{p.name}: {v[:60]}")
         assert not bad, "요약/총계에 판정 글자: " + " | ".join(bad)
 
@@ -46173,3 +46178,389 @@ class TestShadowedTopLevelDefs20260906:
         assert self._dup_names(src) == ["C", "X", "f"], (
             f"def·class·모듈 상수 세 축 중 못 잡는 것이 있다: {self._dup_names(src)}")
         assert self._dup_names("def f():\n    pass\nY = 1\n") == [], "오탐"
+
+
+class TestFcfCapexSingleSource20260907:
+    """DART CAPEX 선택은 **화면과 감사가 같은 함수**를 불러야 한다.
+
+    2026-09-07 일일 감사가 098070.KQ 를 4분기 전부 `① 재계산 ❌` 로 찍었다 —
+    차이가 정확히 그 분기 **무형자산취득**이었다(25.3Q 4,660,000 · 25.4Q
+    2,770,400 · 26.1Q 2,039,400 · 26.2Q 74,500). 원인은 종목이 아니라 도구다:
+    #215(2026-08-23)가 화면의 CAPEX 를 `유형자산취득만` 으로 좁혔는데
+    `fcf_audit.recompute_dart` 는 `유형+무형` 옛 산식에 남아 있었다.
+    감사가 산식을 **재구현**하면 제품과 다른 기준선을 비교한다(#169·#35),
+    그리고 한 곳을 고쳤으면 같은 계산을 하는 다른 곳을 즉시 grep 해야
+    한다(#38·#147 — 감사도 그 '다른 화면'이다).
+
+    ⚠️ 이 축은 tautology 가 아니다 — 산식만 공유하고 **값**을 대조하므로
+    캐시가 옛 FCF 를 서빙하거나(#95) 차분이 파생값만 남기는(#102a) 경우는
+    여전히 잡힌다.
+    """
+
+    _FIN = {"영업활동현금흐름": 30_000_000_000.0,
+            "유형자산취득": 2_258_631_668.0,
+            "무형자산취득": 4_660_000.0}      # ⚠️ 무형이 0 이면 아무것도 안 잰다
+
+    def test_screen_and_audit_agree_when_intangibles_exist(self):
+        """fail-before 재현: 옛 감사 산식이면 정확히 무형자산취득만큼 벌어진다."""
+        from bot.dart_quarterly import _attach_fcf
+        from bot.scripts.fcf_audit import recompute_dart
+        entries = [{"financials": dict(self._FIN)}]
+        _attach_fcf(entries)
+        screen = entries[0]["financials"]["FCF"]
+        assert screen == recompute_dart(dict(self._FIN)), (
+            "화면과 진단의 CAPEX 산식이 갈렸다 — 진단이 정상 종목을 지목한다")
+        # 그리고 그 값은 '유형만' 규약이어야 한다(무형을 더하면 이 단언이 깨진다).
+        assert screen == self._FIN["영업활동현금흐름"] - self._FIN["유형자산취득"]
+
+    def test_neither_side_selects_capex_on_its_own(self):
+        """산식을 각자 적으면 또 갈린다 — 전부 `dart_capex` 를 부를 것.
+
+        ⚠️ 2026-09-07 독립 리뷰가 **세 번째 화면**을 찾았다: `fcf_probe._mark`
+        가 옛 `유형+무형` 규약이라, 무형만 있는 기간에 제품이 정상적으로
+        비운 FCF 를 '배선 결함' 이라 지목하고 있었다(#38·#147 같은 산식을
+        적은 곳을 즉시 grep). 이름 열거는 네 번째를 못 잡으므로 목록이
+        자라면 여기에 더한다(#24).
+
+        ⚠️ 소스 문자열로 재면 이 항목을 설명하는 **독스트링·주석이 대신
+        만족**시킨다(#59b) — AST 로 본문만 본다."""
+        import ast
+        import inspect
+        import bot.dart_quarterly as dq
+        import bot.scripts.fcf_audit as fa
+        import bot.scripts.fcf_probe as fp
+        for mod, fname in ((dq, "_attach_fcf"), (fa, "recompute_dart"),
+                           (fp, "_mark")):
+            src = inspect.getsource(getattr(mod, fname))
+            fn = ast.parse(src.lstrip()).body[0]
+            body = fn.body[1:] if (fn.body and isinstance(fn.body[0], ast.Expr)
+                                   and isinstance(fn.body[0].value, ast.Constant)
+                                   ) else fn.body
+            lits = {n.value for b in body for n in ast.walk(b)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+            assert "무형자산취득" not in lits, (
+                f"{fname} 이 CAPEX 계정을 직접 고른다 — bot.fcf.dart_capex 를 쓸 것")
+            calls = {n.func.id for b in body for n in ast.walk(b)
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            assert "dart_capex" in calls, f"{fname} 이 단일 출처를 안 부른다"
+
+    def test_guard_actually_fires_on_the_old_formula(self):
+        """가드가 '작동함'을 보이려면 실제로 깨지는 값까지 밀어 볼 것(#91c)."""
+        from bot.fcf import fcf_from_parts
+        old = fcf_from_parts(self._FIN["영업활동현금흐름"],
+                             abs(self._FIN["유형자산취득"])
+                             + abs(self._FIN["무형자산취득"]))
+        new = fcf_from_parts(self._FIN["영업활동현금흐름"],
+                             abs(self._FIN["유형자산취득"]))
+        assert new - old == self._FIN["무형자산취득"], "픽스처가 두 산식을 못 가른다"
+
+
+class TestProbeFailKind20260907:
+    """결산이 `probe 오류 42회` 라고만 말해 원인을 못 짚었다(2026-09-06 결산).
+
+    갈래마다 **처방이 정반대**다 — 타임아웃·원천장애는 기다리면 되고,
+    요청한도는 호출을 줄이고, 인증·키는 키를 갈아야 한다. 숫자만 세면
+    운영자가 그 42를 보고 짐작하게 된다(#82 · #279).
+
+    ⚠️ `_exc_detail` 은 사유를 만들 줄 **이미 알았지만 일 1회 알림에만**
+    쓰였다 — 원장엔 안 남아 결산이 못 읽었다. 계산해 둔 판정을 표시까지
+    배선하지 않으면 없는 것과 같다(#123 · #129 · #189 · #228).
+    """
+
+    @staticmethod
+    def _http(code):
+        import io
+        import urllib.error
+        return urllib.error.HTTPError("u", code, "Reason", {}, io.BytesIO(b""))
+
+    def test_branches_have_distinct_names(self):
+        """처방이 다른 갈래는 이름이 달라야 한다 — 값으로 고정."""
+        import socket
+        import urllib.error
+        from trade import customs
+        from trade.scripts.scan_customs import probe_fail_kind
+        assert probe_fail_kind(self._http(429)) == "요청한도"
+        assert probe_fail_kind(self._http(403)) == "인증·키"
+        assert probe_fail_kind(self._http(401)) == "인증·키"
+        assert probe_fail_kind(self._http(503)) == "원천장애 503"
+        assert probe_fail_kind(self._http(400)) == "요청오류 400"
+        assert probe_fail_kind(TimeoutError("timed out")) == "타임아웃"
+        # URLError 는 reason 에 진짜 원인이 들어 있다 — 껍데기만 보면
+        # 타임아웃이 '네트워크' 로 뭉개진다.
+        assert probe_fail_kind(
+            urllib.error.URLError(socket.timeout("timed out"))) == "타임아웃"
+        assert probe_fail_kind(urllib.error.URLError("refused")) == "네트워크"
+        # 관세청 resultCode 는 **코드까지** — 22(한도)와 30(키 미등록)은
+        # 같은 예외 클래스지만 처방이 다르다.
+        assert probe_fail_kind(customs.CustomsAPIError(
+            "resultCode=22 resultMsg='LIMITED NUMBER OF SERVICE REQUESTS'")
+        ) == "원천응답 22"
+
+    def test_wrapped_http_errors_still_split(self):
+        """**픽스처는 원천이 실제로 보내는 모양대로**(#155).
+
+        `customs._http_get` 은 HTTPError 를 `CustomsAPIError(...) from exc` 로
+        재포장한다 — 그래서 프로덕션 probe 실패는 HTTPError 로 **도달하지
+        않는다**. 직접 `HTTPError()` 를 만들어 재는 테스트는 그 사각을 못 본다
+        (2026-09-07 독립 리뷰 실측: 429·403·5xx 가 전부 '원천응답' 한 통).
+        제품이 만드는 그 예외를 그대로 태운다(#20·#141)."""
+        import urllib.error
+        from trade import customs
+        from trade.scripts.scan_customs import probe_fail_kind
+
+        def wrapped(code):
+            try:
+                try:
+                    raise self._http(code)
+                except urllib.error.HTTPError as exc:
+                    raise customs.CustomsAPIError(f"HTTP {code} R — u") from exc
+            except customs.CustomsAPIError as exc:
+                return exc
+
+        assert probe_fail_kind(wrapped(429)) == "요청한도"
+        assert probe_fail_kind(wrapped(403)) == "인증·키"
+        assert probe_fail_kind(wrapped(503)) == "원천장애 503"
+        # 자격증명 미설정도 CustomsAPIError 로 온다 — 처방이 또 다르다
+        assert probe_fail_kind(
+            customs.CustomsAPIError("TRADE_DATA_GO_KR_KEY not set")) == "인증·키"
+        # resultCode 는 `INFO-00` 처럼 하이픈을 쓰기도 한다
+        assert probe_fail_kind(customs.CustomsAPIError(
+            "resultCode=INFO-00 resultMsg='x'")) == "원천응답 INFO-00"
+
+    def test_scan_failure_sites_record_the_branch(self):
+        """렌더러는 오류 **3종**을 갈래로 그리는데 적립이 probe 한 곳뿐이면
+        나머지 둘은 영원히 `N회` 다(#38·#147 — 2026-09-07 독립 리뷰).
+
+        ⚠️ 총계는 실행 1회당 1 이므로 갈래도 1개여야 한다(#45)."""
+        import ast
+        import inspect
+        import textwrap
+        import trade.scripts.scan_customs as sc
+        tree = ast.parse(textwrap.dedent(inspect.getsource(sc.main)))
+        fields = {n.args[0].value for n in ast.walk(tree)
+                  if isinstance(n, ast.Call)
+                  and getattr(n.func, "attr", "") == "bump_kind"
+                  and n.args and isinstance(n.args[0], ast.Constant)}
+        assert {"scan_fail", "scan_partial"} <= fields, (
+            f"결산이 갈래를 못 말하는 오류 종류가 남아 있다: {fields}")
+
+    def test_unknown_exception_is_not_asserted_a_cause(self):
+        """모르는 예외에 그럴듯한 사유를 붙이지 말 것(#165).
+
+        낯선 클래스명이 결산에 뜨면 그 자체가 '새 실패모드' 신호다 —
+        '네트워크' 로 뭉개면 영원히 안 보인다."""
+        from trade.scripts.scan_customs import probe_fail_kind
+        assert probe_fail_kind(ValueError("boom")) == "ValueError"
+        assert probe_fail_kind(None) == "미상"
+
+    def test_failure_site_records_the_branch(self):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 실패 경로를 태운다."""
+        import trade.scripts.scan_customs as sc
+        from trade import customs, customs_scan, run_ledger
+        seen = []
+        orig_kind, orig_bump, orig_send, orig_sleep = (
+            run_ledger.bump_kind, run_ledger.bump, sc._send_alert, sc.time.sleep)
+        orig_fetch = customs_scan.fetch_chapter
+        try:
+            run_ledger.bump_kind = lambda f, k, **kw: seen.append((f, k))
+            run_ledger.bump = lambda f, n=1, **kw: 2      # 알림 dedup 통과
+            sc._send_alert = lambda *_a, **_k: True
+            sc.time.sleep = lambda *_a, **_k: None
+            def _boom(*_a, **_kw):
+                raise customs.CustomsAPIError("resultCode=22 resultMsg='x'")
+            customs_scan.fetch_chapter = _boom
+            assert sc._probe_fingerprint("k") is None
+        finally:
+            (run_ledger.bump_kind, run_ledger.bump, sc._send_alert,
+             sc.time.sleep) = orig_kind, orig_bump, orig_send, orig_sleep
+            customs_scan.fetch_chapter = orig_fetch
+        assert seen == [("probe_fail", "원천응답 22")], (
+            f"실패 경로가 갈래를 원장에 안 남긴다: {seen}")
+
+    def test_ledger_keeps_kinds_per_day(self):
+        """원장은 날짜별로 갈래를 누적하고, 옛 형식을 만나도 안 죽는다."""
+        import importlib
+        import json
+        import os
+        import tempfile
+        # ⚠️ 날짜를 리터럴로 박으면 `_save` 의 14일 prune 이 그 키를 지워
+        # **며칠 뒤 무관한 커밋에서** 빨간불이 된다(2026-09-07 독립 리뷰가
+        # 시간을 앞당겨 실측 — #249 날짜 의존 · #286 상한을 현재값에 붙이지
+        # 말 것). 원장이 쓰는 그 '오늘' 을 그대로 쓴다.
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["TRADE_DATA_DIR"] = td
+            try:
+                rl = importlib.reload(importlib.import_module("trade.run_ledger"))
+                _day = rl._today()
+                rl.bump_kind("probe_fail", "타임아웃", date_key=_day)
+                rl.bump_kind("probe_fail", "타임아웃", date_key=_day)
+                rl.bump_kind("probe_fail", "요청한도", date_key=_day)
+                rl.bump_kind("probe_fail", "", date_key=_day)   # 무시
+                got = rl.day_counts(_day)
+                assert got["probe_fail_kinds"] == {"타임아웃": 2, "요청한도": 1}
+                # 옛 형식(리스트)이 들어 있어도 죽지 않는다
+                d = json.loads(rl.LEDGER_PATH.read_text(encoding="utf-8"))
+                d[_day]["probe_fail_kinds"] = ["old"]
+                rl.LEDGER_PATH.write_text(json.dumps(d), encoding="utf-8")
+                rl.bump_kind("probe_fail", "타임아웃", date_key=_day)
+                assert rl.day_counts(_day)["probe_fail_kinds"] == {
+                    "타임아웃": 1}
+            finally:
+                os.environ.pop("TRADE_DATA_DIR", None)
+                importlib.reload(importlib.import_module("trade.run_ledger"))
+
+    def test_breakdown_subtotal_always_equals_total(self):
+        """총계와 소계가 다른 모집단을 세면 사용자가 눈으로 잡는다(#45).
+
+        이 배포 이전에 쌓인 원장은 갈래가 없다 — 버리지 말고 `갈래미상`."""
+        from trade.scripts.daily_digest import err_breakdown
+        assert err_breakdown(42, None) == "42회"
+        assert err_breakdown(42, {"타임아웃": 40, "원천장애 503": 2}) == (
+            "42회(타임아웃 40 · 원천장애 503 2)")
+        assert "갈래미상 12" in err_breakdown(42, {"타임아웃": 30})
+        # 갈래가 많으면 상위만 보이되 **합은 유지**된다
+        line = err_breakdown(9, {"a": 1, "b": 2, "c": 3, "d": 2, "e": 1})
+        assert "그 외 2종 2" in line and "갈래미상" not in line
+
+    def test_digest_line_shows_the_branch(self):
+        """계산해 둔 갈래가 결산 줄에 실려야 의미가 있다(#228 툴팁만 = 없는 것)."""
+        from trade.scripts.daily_digest import compose
+        body = compose("2026-09-06", 0,
+                       {"sweeps": 3, "refresh": 1, "probe_fail": 42,
+                        "probe_fail_kinds": {"타임아웃": 40, "원천응답 22": 2},
+                        "scan_partial": 1},
+                       False, None)
+        assert "probe 오류 42회(타임아웃 40 · 원천응답 22 2)" in body
+        # 갈래가 없던 날은 종전 그대로 — 옛 원장이 결산을 깨뜨리지 않는다
+        old = compose("2026-09-06", 0, {"probe_fail": 42}, False, None)
+        # ⚠️ `"(" not in old.split("❌")[1]` 로 쓰면 compose 에 괄호 있는 문구가
+        # 하나만 늘어도 무관하게 깨진다(#19 소스·출력 문자열 단언).
+        assert "probe 오류 42회" in old and "probe 오류 42회(" not in old
+
+
+class TestFcfAuditRecapDoesNotDoubleCount20260907:
+    """요약 줄이 ❌ 를 다시 써서 같은 결함이 두 번 세어졌다(2026-09-07 결산).
+
+    098070.KQ 는 결함이 ① 재계산 하나뿐인데 결산에 두 줄이 떴고, 둘째 줄엔
+    하필 **직전 섹션 제목**(② 교차출처)이 붙어 **엉뚱한 축**을 지목했다 —
+    ② 는 멀쩡했다. #250(판정 글자는 판정에만) · #268(요약은 세기만 하고
+    이름은 위 줄이 댄다)을 `fcf_audit` 에는 적용하지 않았던 것(#38·#147
+    한 화면에서 고쳤으면 같은 계산을 하는 다른 화면을 즉시 grep).
+    """
+
+    def test_recap_has_no_defect_glyph(self):
+        from bot.scripts.fcf_audit import verdict_line
+        assert "❌" not in verdict_line(1, 0)
+        assert "❌" not in verdict_line(3, 2)
+        # 정상·판정불가는 종전 그대로(❓ 는 sweep 이 안 센다, #41 판정불가를
+        # 통과로 찍지도 않는다).
+        assert verdict_line(0, 0) == "✅ 이상 없음"
+        assert verdict_line(0, 2) == "❓ 판정불가 2건"
+        # 건수는 여전히 말한다 — ❌ 를 뺀 게 침묵하라는 뜻이 아니다(#43).
+        assert "1건" in verdict_line(1, 0)
+        # ⚠️ 설명 문구에 ❌ 를 쓰는 것도 안 된다 — sweep 은 **줄에 그
+        # 글자가 있으면** 결함으로 센다(첫 시도가 "위 ❌ 줄 참조" 였고
+        # 이 테스트가 잡았다, #91b 재는 대상이 맞나).
+        assert "판정불가 1건" in verdict_line(1, 1)
+
+    def test_sweep_counts_the_defect_once(self):
+        """생산부 fix 를 소비부로 확인 — 결함 1건이 1건으로 세어진다."""
+        from bot.audit_sweep import _findings
+        from bot.scripts.fcf_audit import verdict_line
+        out = "\n".join([
+            "── 098070.KQ  [KR]",
+            "     ① 재계산 ❌ 불일치 ['25.3Q: 화면 1 ≠ 재계산 2']",
+            "     ② 교차출처(DART ↔ yfinance)",
+            "        25.3Q (2025-09-30)  DART 1.0억 vs yfinance 1.0억  ✅ 차이 0.00%",
+            f"  판정: {verdict_line(1, 1)}",
+        ])
+        hits = _findings(out)
+        assert len(hits) == 1, f"같은 결함이 두 번 세어진다: {hits}"
+        assert "재계산" in hits[0], f"엉뚱한 줄을 집었다: {hits[0]}"
+
+    def test_guard_fires_on_the_old_recap(self):
+        """가드가 '작동함'을 보이려면 실제로 깨지는 값까지 밀어 볼 것(#91c)."""
+        from bot.audit_sweep import _findings
+        old_recap = "  판정: ❌ 불일치 1건 (판정불가 1건)"
+        out = "\n".join([
+            "     ① 재계산 ❌ 불일치 ['25.3Q']",
+            "     ② 교차출처(DART ↔ yfinance)",
+            old_recap,
+        ])
+        hits = _findings(out)
+        assert len(hits) == 2 and "② 교차출처" in hits[1], (
+            "픽스처가 옛 동작(중복 계수 + 엉뚱한 섹션)을 재현하지 못한다")
+
+
+class TestFcfAuditWiring20260907:
+    """헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20 — 2026-09-07 독립
+    리뷰가 실측으로 보였다: `main()` 이 `verdict_line` 을 우회하고 옛 인라인
+    `❌ 불일치 N건` 으로 되돌아가도 `-k fcf` 37개가 전부 green 이었다).
+
+    같은 파일의 `mark_finding` 은 #268 에서 이미 AST 로 호출을 못박아 뒀는데
+    새 헬퍼엔 그걸 안 했다 — 가드를 만들 때 **형제가 어떻게 지켜지는지**를
+    보고 같은 수준으로 맞출 것.
+    """
+
+    @staticmethod
+    def _body(fn):
+        import ast
+        import inspect
+        import textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        # 독스트링·주석은 배선이 아니다(#59b)
+        for holder in ast.walk(tree):
+            body = getattr(holder, "body", None)
+            if (isinstance(body, list) and body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body.pop(0)
+        return tree
+
+    def test_main_calls_verdict_line(self):
+        import ast
+        from bot.scripts import fcf_audit
+        tree = self._body(fcf_audit.main)
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "verdict_line"]
+        assert calls, "main() 이 verdict_line 을 안 부른다 — 요약이 다시 ❌ 를 쓴다"
+
+    def test_main_has_no_inline_verdict_glyph(self):
+        """우회 변형은 보통 옛 문구를 되살린다 — 상수에서 직접 막는다."""
+        import ast
+        from bot.scripts import fcf_audit
+        lits = [n.value for n in ast.walk(self._body(fcf_audit.main))
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        assert not [v for v in lits if "❌" in v and "불일치" in v], (
+            "main() 이 요약 줄에서 판정 글자를 다시 쓴다(#289·#250)")
+
+    def test_audit_no_longer_uses_the_tautological_recompute(self):
+        """`get_quarterly_series` 는 반환 직전 `_attach_fcf` 로 그 dict 를
+        채우므로, 같은 재료를 `recompute_dart` 로 다시 계산해 대조하면
+        **구조상 영원히 일치**한다 — 늘 ✅ 인 축은 거짓 안심이다(#54·#41).
+
+        그 자리를 실제 실패모드(누적 오염, #96)로 바꿨다. 되돌리는 변형이
+        여기서 잡힌다."""
+        import ast
+        from bot.scripts import fcf_audit
+        names = {getattr(n.func, "id", "") for n in ast.walk(
+            self._body(fcf_audit.audit_one)) if isinstance(n, ast.Call)}
+        assert "recompute_dart" not in names, (
+            "감사가 화면 dict 를 재계산한다 — 그 축은 영원히 ✅ 다")
+        assert "cumulative_smell" in names, "누적 오염 축이 사라졌다"
+
+    def test_tautology_is_real_not_asserted(self):
+        """'영원히 일치' 를 주장만 하지 말고 **재서** 고정한다(#12·#25).
+
+        화면 경로가 채운 dict 는 재계산과 정의상 같다 — 옛 FCF 가 박혀
+        있어도, CAPEX 가 없어 지워져도 마찬가지다."""
+        from bot.dart_quarterly import _attach_fcf
+        from bot.scripts.fcf_audit import recompute_dart
+        for fin in ({"영업활동현금흐름": 1e10, "유형자산취득": 3e9, "FCF": 42.0},
+                    {"영업활동현금흐름": 1e10, "무형자산취득": 3e9, "FCF": 42.0},
+                    {"영업활동현금흐름": 1e10, "유형자산취득": -3e9}):
+            e = [{"financials": dict(fin)}]
+            _attach_fcf(e)
+            got = e[0]["financials"]
+            assert got.get("FCF") == recompute_dart(got), fin

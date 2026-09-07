@@ -469,11 +469,14 @@ def _attach_fcf(entries: list[dict] | None) -> int:
     """DART 현금흐름 계정 → `financials["FCF"]`. 채운 개수를 돌려준다.
 
     ⚠️ DART 는 CAPEX 를 **단일 계정으로 주지 않는다** — 유형자산·무형자산
-    취득이 따로 온다. 둘을 더해야 FnGuide CAPEX 와 맞는다. 한쪽만 있는
-    회사도 있어 있는 것만 합산하되, **둘 다 없으면 FCF 를 만들지 않는다**
-    (영업현금흐름을 그대로 FCF 로 쓰면 설비투자가 큰 회사가 크게 부풀려진다).
+    취득이 따로 온다. **유형자산취득만** 쓴다(#215: 사용자가 기준으로 제시한
+    FnGuide 산식이 `CAPEX = 유형자산의증가` 이고 LG이노텍 011070.KS 세 해
+    실측이 그걸 확정했다 — 예전 주석은 "둘을 더해야 맞는다" 고 단언했는데
+    한 종목만 보고 쓴 것이었다). 선택은 `bot.fcf.dart_capex` **단일 출처**가
+    한다. 유형자산취득이 없으면 **FCF 를 만들지 않는다**(영업현금흐름을
+    그대로 FCF 로 쓰면 설비투자가 큰 회사가 크게 부풀려진다).
     """
-    from bot.fcf import fcf_from_parts
+    from bot.fcf import dart_capex, fcf_from_parts
     n = 0
     for e in entries or []:
         fin = (e or {}).get("financials") or {}
@@ -488,10 +491,10 @@ def _attach_fcf(entries: list[dict] | None) -> int:
         # 와도 같아 **시장 간 정의가 하나로 맞는다**.
         # ⚠️ 처분액은 빼지 않는다 — 표준 FCF 의 CAPEX 는 총 취득액이고,
         # 순취득(취득−처분)을 쓰면 자산을 판 해에 FCF 가 부풀려진다.
-        _capex = fin.get("유형자산취득")
+        _capex = dart_capex(fin)
         v = None
         if _capex is not None:
-            v = fcf_from_parts(fin.get("영업활동현금흐름"), abs(float(_capex)))
+            v = fcf_from_parts(fin.get("영업활동현금흐름"), _capex)
         if v is None:
             # ⚠️ **지운다.** 누적 dict 에 이미 FCF 가 있으면 4분기 차분이
             # 그걸 그대로 차분해 남긴다 — 그런데 같은 차분에서 구성요소가
