@@ -46851,3 +46851,144 @@ class TestFcfAuditRecomputeZeroIsNotAPass20260907:
         line = self._line(r)
         assert "❌" in line and "대조 0건" in line, line
         assert "①재계산(yf)" in r["bad_axes"], r["bad_axes"]
+
+
+class TestEnvDiagNamesTheBranch20260907:
+    """`KRX_ID/KRX_PW 미설정` 경고가 **왜 없는지**를 말하지 않았다.
+
+    2026-09-07 VM 실측(`fcf_audit` 로그): `pykrx: KRX_ID/KRX_PW 미설정`
+    바로 뒤에 라이브러리가 `KRX 로그인 완료` 를 찍었다 — 둘 중 무엇이 맞는지
+    출력만으로는 가를 수 없었고, 갈래마다 처방이 완전히 다르다(파일을 못
+    찾음 = cwd 확인 / 키 없음 = .env 추가 / 값 비었음 = 값 확인 / dotenv
+    미설치 = 설치 / **첫 조회만 실패해 캐시됨** = 실행 순서 확인). '없음'
+    만 말하는 진단은 추측을 부른다(#82·#279).
+
+    ⚠️ 값은 절대 안 찍고 **길이까지만**(§Secrets · #82).
+    """
+
+    @staticmethod
+    def _fresh():
+        import bot.env_keys as ek
+        ek._TRIED.clear()          # 전역 캐시를 쓰는 테스트는 비우고 시작(#127)
+        return ek
+
+    def _in(self, monkeypatch, tmp_path, body: str | None):
+        ek = self._fresh()
+        if body is not None:
+            (tmp_path / ".env").write_text(body, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ek._os_home_marker, "value", str(tmp_path),
+                            raising=False) if False else None
+        monkeypatch.delenv("KRX_ID", raising=False)
+        monkeypatch.delenv("KRX_PW", raising=False)
+        return ek
+
+    def test_missing_key_branch_is_named(self, monkeypatch, tmp_path):
+        ek = self._in(monkeypatch, tmp_path, "OTHER=1\n")
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "KRX_ID:" in d and "KRX_PW:" in d, d
+        assert "키 없음" in d, d
+
+    def test_empty_value_branch_is_named(self, monkeypatch, tmp_path):
+        ek = self._in(monkeypatch, tmp_path, "KRX_ID=\nKRX_PW=\n")
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "값이 비었다" in d, d
+
+    def test_filled_key_is_not_listed(self, monkeypatch, tmp_path):
+        """⚠️ 반대 증거 — 정상 키는 적지 않는다(적으면 경고가 통째로 잡음).
+
+        이게 없으면 `env_diag` 가 무조건 전 키를 나열하는 변형이 통과한다(#25).
+        """
+        ek = self._in(monkeypatch, tmp_path, "KRX_ID=abcdef\n")
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "KRX_ID" not in d, d
+        assert "KRX_PW" in d, d
+
+    def test_never_prints_the_value(self, monkeypatch, tmp_path):
+        """§Secrets — 길이는 되지만 값은 절대 안 된다."""
+        ek = self._in(monkeypatch, tmp_path, "KRX_PW=s3cr3t-token\n")
+        d = ek.env_diag("KRX_ID", "KRX_PW")
+        assert "s3cr3t" not in d, d
+
+    def test_stale_cache_contradiction_is_named(self, monkeypatch, tmp_path):
+        """**이 라운드의 증상** — 경고는 남고 값은 있는 모순을 이름으로 부른다.
+
+        `env_key` 는 첫 조회 실패를 `_TRIED` 에 넣고 다시 안 읽는다. 그 뒤
+        `.env` 가 읽히게 되면(cwd 가 바뀌거나 파일이 나중에 생기거나) 경고만
+        남는다 — 그걸 '미설정' 이라고만 적으면 운영자가 없는 키를 넣으러
+        간다(#187b 틀린 로그가 헛걸음을 만든다).
+        """
+        empty = tmp_path / "nowhere"
+        empty.mkdir()
+        ek = self._in(monkeypatch, empty, None)
+        assert ek.env_key("KRX_ID") == ""          # 여기서 _TRIED 에 박힌다
+        later = tmp_path / "repo"
+        later.mkdir()
+        (later / ".env").write_text("KRX_ID=abcdef\n", encoding="utf-8")
+        monkeypatch.chdir(later)
+        assert ek.env_key("KRX_ID") == "", "캐시 전제가 깨졌다 — 이 테스트 무의미"
+        d = ek.env_diag("KRX_ID")
+        assert "지금 다시 읽으면 있다" in d, d
+        assert "길이 6" in d, d
+
+    def test_warning_carries_the_branch(self, monkeypatch, tmp_path, caplog):
+        """**배선은 결과로 본다**(#20·#292) — AST 모양이 아니라 실제 로그.
+
+        `krx_login_ready` 가 `env_diag` 를 안 부르게 되돌리는 변형은 이
+        단언에서만 잡힌다.
+        """
+        import logging
+
+        import bot.pykrx_client as pk
+        ek = self._in(monkeypatch, tmp_path, "OTHER=1\n")
+        assert ek is not None
+        monkeypatch.setattr(pk, "_KRX_CRED_WARNED", False, raising=False)
+        with caplog.at_level(logging.WARNING, logger="bot.pykrx"):
+            assert pk.krx_login_ready() is False
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "미설정" in msg, msg
+        assert "KRX_ID:" in msg and "키 없음" in msg, msg
+
+    def test_env_why_and_env_diag_share_one_scan(self):
+        """두 진단이 **같은 스캔**을 써야 한 곳을 고치면 둘 다 따라온다(#38).
+
+        복제하면 한쪽만 고쳐져 같은 상태를 세 자리가 다르게 말한다 —
+        실제로 `env_key` 가 자기 루프를 따로 갖고 있었고, 이 단언을 처음
+        쓸 때 내가 그걸 '오탐' 으로 착각할 뻔했다(#47 계수 패턴 자체가
+        틀릴 수 있다 — 여기선 패턴이 맞았고 코드가 정말 중복이었다).
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        import bot.env_keys as ek
+        for fn in (ek.env_key, ek.env_why, ek.env_diag):
+            src = textwrap.dedent(inspect.getsource(fn))
+            calls = [n for n in ast.walk(ast.parse(src))
+                     if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", "") == "_dotenv_lookup"]
+            assert calls, f"{fn.__name__} 이 공용 스캔을 안 쓴다"
+        # 그리고 그 스캔은 **한 곳**뿐이어야 한다(dotenv_values 를 직접 부르는
+        # 자리가 늘면 다시 갈라진다).
+        body = inspect.getsource(ek)
+        assert body.count("dotenv_values(p)") == 1, "스캔이 복제됐다"
+
+    def test_empty_in_first_env_does_not_hide_the_second(self, monkeypatch,
+                                                         tmp_path):
+        """빈 값에서 멈추면 **뒤 경로의 진짜 값**을 못 본다.
+
+        옛 `env_key` 는 falsy 면 계속 돌았는데, 스캔을 합치면서 그 동작을
+        잃을 뻔했다(2026-09-07 배포전 셀프리뷰가 잡음) — 함수를 합칠 땐
+        **반환 조건**부터 대조할 것(#7a 기존 함수 반환형·동작 확인).
+        """
+        import bot.env_keys as ek
+        ek._TRIED.clear()
+        monkeypatch.delenv("KRX_ID", raising=False)
+        cwd, home = tmp_path / "cwd", tmp_path / "home"
+        cwd.mkdir()
+        (home / "stock").mkdir(parents=True)
+        (cwd / ".env").write_text("KRX_ID=\n", encoding="utf-8")
+        (home / "stock" / ".env").write_text("KRX_ID=realval\n", encoding="utf-8")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr("pathlib.Path.home", staticmethod(lambda: home))
+        assert ek.env_key("KRX_ID") == "realval", ek.env_why("KRX_ID")
