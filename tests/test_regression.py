@@ -21390,6 +21390,95 @@ class TestMarketTiming20260726:
         dd = next(r for r in records if r["age_sessions"] == 26)
         assert dd["status"] == "expired"
 
+    def test_missing_volume_never_waives_the_ftd_volume_rule(self):
+        """⚠️ 옛 판은 `(row.volume or 0) > (prev_volume or 0)` 이라 **직전 봉의
+        거래량이 없으면 0 으로 읽혀** 어떤 거래량이든 '증가' 가 됐다 — 거래량
+        증가는 FTD 의 **정의**인데 그게 조용히 면제됐다.
+
+        실측(2026-09-07): 거래량이 1000 → 500 으로 **줄었는데도**
+        `FTD_CONFIRMED · 품질점수 80` 이 나왔다. 야후가 하루 늦으면
+        `_quote_tail` 이 `volume: None` 봉을 붙이므로 실제로 일어날 수 있다.
+        """
+        from bot import market_timing as mt
+        rally = [94.5, 95, 95.2, 96, 98.5]
+        rows = self._ftd_scenario(rally)
+        rows[-len(rally)]["volume"] = 2000      # day1
+        rows[-2]["volume"] = None               # 직전 봉 거래량 결측
+        rows[-1]["volume"] = 500                # FTD 후보일 — 거래량 **감소**
+        res = mt.detect_ftd(rows)
+        assert res["state"] != "FTD_CONFIRMED", res
+        assert res.get("vol_unknown_days", 0) >= 1, res
+        # 반대 증거: 거래량이 실제로 늘면 여전히 확정된다(가드가 과잉이 아님)
+        rows[-2]["volume"] = 1000
+        rows[-1]["volume"] = 2000
+        assert mt.detect_ftd(rows)["state"] == "FTD_CONFIRMED"
+
+    def test_distribution_summary_says_what_it_could_not_judge(self):
+        """⚠️ 거래량이 없으면 '증가' 를 물을 수 없어 그 세션은 건너뛰는데,
+        **조용히** 건너뛰면 화면의 `0` 이 '분산일 없음' 인지 '못 셌음' 인지
+        구별되지 않는다(#54·#43). 보강 봉 하나가 **두 세션**을 막는다."""
+        from bot import market_timing as mt
+        rows = self._flat_history(30)
+        for i, r in enumerate(rows):
+            r["close"] = 100 - i * 0.5          # desc: 오늘이 가장 높음
+        rows[0]["close"] = rows[1]["close"] * 0.99
+        rows[0]["volume"] = None
+        summ = mt.distribution_day_summary(rows)
+        assert summ["d5"] == 0
+        assert rows[0]["date"] in summ["unjudged"], summ["unjudged"]
+        # 거래량이 있으면 같은 하루가 분산일로 잡힌다(가드가 눈멀지 않았다)
+        rows[0]["volume"] = 5000
+        again = mt.distribution_day_summary(rows)
+        assert again["d5"] == 1 and not again["unjudged"], again
+
+    def test_confirmed_ftd_says_when_and_what_happened_since(self):
+        """⚠️ 화면이 `🟢 FTD 확정` 을 **날짜 없이** 띄우고 있었다 — 탐색 창이
+        41봉이라 두 달 전 신호일 수 있다(#43, `ftd_date` 를 계산해 놓고 표시에
+        안 쓰던 것). 그리고 FTD 뒤 분산일 개수는 **사실만** 말한다(#165)."""
+        from bot import market_timing as mt
+        dates = [f"2026-07-{d:02d}" for d in range(1, 21)]
+        ftd = {"state": "FTD_CONFIRMED", "ftd_date": "2026-07-15"}
+        recs = [{"date": "2026-07-17"}, {"date": "2026-07-19"},
+                {"date": "2026-07-02"}]        # FTD 이전 건은 안 센다
+        note = mt.post_ftd_note(ftd, recs, dates)
+        assert note["ftd_date"] == "2026-07-15"
+        assert note["age_sessions"] == 5       # 07-15 는 끝에서 6번째
+        assert note["dd_after"] == 2
+        # 확정이 아니면 아무 말도 안 한다(늘 뜨는 문구 금지, #25·#260).
+        # ⚠️ 픽스처에 `ftd_date` 를 **같이** 넣어야 상태 가드가 실제로 발화한다
+        # — 날짜만 없는 dict 로 재면 날짜 가드가 대신 만족시킨다(#91c 실측).
+        assert mt.post_ftd_note({"state": "RALLY_FAILED",
+                                 "ftd_date": "2026-07-15"}, recs, dates) == {}
+        assert mt.post_ftd_note({"state": "RALLY_ATTEMPT"}, recs, dates) == {}
+        # 창 밖 날짜면 나이를 **단정하지 않는다**(#165)
+        out = mt.post_ftd_note({"state": "FTD_CONFIRMED",
+                                "ftd_date": "2026-05-01"}, recs, dates)
+        assert out == {"ftd_date": "2026-05-01"}, out
+
+    def test_card_actually_renders_the_ftd_date_and_unjudged_note(self):
+        """⚠️ 헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20) — `ftd_date` 는
+        원래도 payload 에 있었지만 렌더가 안 써서 화면엔 없었다. 렌더된 HTML
+        에 실리는지 값으로 본다."""
+        from bot import market_timing as mt
+        data = {"markets": {"US": {
+            "ticker": "^GSPC", "name": "S&P 500",
+            "dd": {"d5": 1, "d15": 3, "d25": 3, "risk_level": "HIGH",
+                   "active_records": [], "unjudged": ["2026-09-04"]},
+            "ftd": {"state": "FTD_CONFIRMED", "day": 4, "gain_pct": 1.8,
+                    "window": "prime", "quality_score": 70,
+                    "ftd_date": "2026-08-27"},
+            "ftd_note": {"ftd_date": "2026-08-27", "age_sessions": 6,
+                         "dd_after": 3},
+            "latest_date": "2026-09-04", "latest_close": 7718.6}}}
+        html = mt.render_market_timing_page(data)
+        assert "2026-08-27" in html, "FTD 날짜가 화면에 없다"
+        assert "6세션 전" in html
+        assert "이후 분산일 3개" in html
+        assert "판정을 못 한 세션 1개" in html
+        # 미판정이 없으면 그 문구는 **아예 안 나온다**(늘 뜨는 문구 금지)
+        data["markets"]["US"]["dd"]["unjudged"] = []
+        assert "판정을 못 한 세션" not in mt.render_market_timing_page(data)
+
     def test_risk_classification_thresholds(self):
         from bot import market_timing as mt
         assert mt.classify_risk(0, 0, 0) == "NORMAL"

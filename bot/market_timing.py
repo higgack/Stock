@@ -57,7 +57,14 @@ def detect_distribution_days(history_desc: list[dict]) -> list[dict]:
         today, yesterday = history_desc[i], history_desc[i + 1]
         c0, c1 = today.get("close"), yesterday.get("close")
         v0, v1 = today.get("volume"), yesterday.get("volume")
-        if not c0 or not c1 or not v0 or not v1:
+        if not c0 or not c1:
+            continue
+        if not v0 or not v1:
+            # ⚠️ 거래량이 없으면 '증가' 를 물을 수 없다 — 건너뛰는 건 맞지만
+            # **조용히** 건너뛰면 화면의 `0` 이 '분산일 없음' 인지 '못 셌음'
+            # 인지 구별되지 않는다(#54·#43). 야후가 하루 늦으면 네이버 보강
+            # 봉이 `volume: None` 이라 **25창 안에서 최대 2세션**이 이렇게
+            # 빠진다(2026-09-07 실측). 몇 개를 못 셌는지 세어 돌려준다.
             continue
         pct = c0 / c1 - 1
         if pct <= _DD_MIN_DECLINE_PCT + 1e-12 and v0 > v1:
@@ -76,6 +83,26 @@ def detect_distribution_days(history_desc: list[dict]) -> list[dict]:
                 r["status"] = "invalidated"
                 break
     return records
+
+
+def unjudged_sessions(history_desc: list[dict],
+                      max_age_sessions: int = _DD_EXPIRATION_SESSIONS) -> list[str]:
+    """거래량이 없어 **분산일 판정을 할 수 없었던** 세션 날짜들.
+
+    ⚠️ 왜 필요한가 — 화면의 `0` 이 '분산일 없음' 인지 '못 셌음' 인지 구별되지
+    않으면 사용자는 앞쪽으로 읽는다(#54 대조 0건은 통과가 아니다 · #43).
+    야후가 하루 늦으면 `_quote_tail` 이 네이버 종가를 `volume: None` 으로
+    붙이는데, 그 봉은 자기 자신뿐 아니라 **다음 세션의 판정까지** 막는다
+    (전일 거래량이 없으므로) — 25창 안에서 최대 2세션이 조용히 빠진다.
+    """
+    out: list[str] = []
+    for i in range(min(len(history_desc) - 1, max_age_sessions + 1)):
+        today, yesterday = history_desc[i], history_desc[i + 1]
+        if not today.get("close") or not yesterday.get("close"):
+            continue
+        if not today.get("volume") or not yesterday.get("volume"):
+            out.append(str(today.get("date") or ""))
+    return out
 
 
 def count_active(records: list[dict], max_age_sessions: int) -> int:
@@ -100,14 +127,18 @@ def distribution_day_summary(history_desc: list[dict]) -> dict:
     """→ {d5, d15, d25, risk_level, active_records}. 히스토리 부족(<26) 시
     d*=0/NORMAL(graceful, 크래시 대신 '판단보류' 취급)."""
     if len(history_desc) < 26:
-        return {"d5": 0, "d15": 0, "d25": 0, "risk_level": "NORMAL", "active_records": []}
+        return {"d5": 0, "d15": 0, "d25": 0, "risk_level": "NORMAL",
+                "active_records": [], "unjudged": []}
     records = detect_distribution_days(history_desc)
     d5 = count_active(records, 5)
     d15 = count_active(records, 15)
     d25 = count_active(records, 25)
     return {"d5": d5, "d15": d15, "d25": d25,
             "risk_level": classify_risk(d5, d15, d25),
-            "active_records": [r for r in records if r["status"] == "active"]}
+            "active_records": [r for r in records if r["status"] == "active"],
+            # 거래량 결측으로 **판정 못 한** 세션 — 0 이 '없음'인지 '못 셌음'
+            # 인지 화면이 말할 수 있게 같이 낸다(#43·#54).
+            "unjudged": unjudged_sessions(history_desc)}
 
 
 # ── 팔로우스루데이(Follow-Through Day, O'Neil 방식) ─────────────────────────
@@ -157,14 +188,26 @@ def detect_ftd(history_asc: list[dict]) -> dict:
     rest = after[day1_idx + 1:]
     prev_close = day1["close"]
     prev_volume = day1.get("volume")
+    vol_unknown = 0        # 거래량이 없어 **판정할 수 없었던** 세션 수(#54)
     for day_num, row in enumerate(rest, start=2):
         if row["close"] < day1_low:
             return {"state": "RALLY_FAILED", "day1_date": day1["date"], "day": day_num}
         if day_num > 10:
-            return {"state": "RALLY_ATTEMPT_EXPIRED", "day1_date": day1["date"]}
+            return {"state": "RALLY_ATTEMPT_EXPIRED", "day1_date": day1["date"],
+                "vol_unknown_days": vol_unknown}
         if day_num >= 4:
             gain = (row["close"] / prev_close - 1) if prev_close else 0.0
-            vol_up = (row.get("volume") or 0) > (prev_volume or 0)
+            # ⚠️ 옛 판은 `(row.get("volume") or 0) > (prev_volume or 0)` 였다 —
+            # 직전 봉의 거래량이 **없으면 0 으로 읽혀** 어떤 거래량이든 '증가'
+            # 가 됐다. 거래량 증가는 FTD 의 **정의**인데 그게 조용히 면제된
+            # 것이다(2026-09-07 실측: 거래량이 1000→500 으로 **줄었는데도**
+            # `FTD_CONFIRMED · 품질점수 80`). 둘 다 있어야 판정한다(#12).
+            v0, v1 = row.get("volume"), prev_volume
+            if not v0 or not v1:
+                vol_unknown += 1
+                vol_up = False
+            else:
+                vol_up = v0 > v1
             if gain >= 0.0125 and vol_up:
                 prime = day_num <= 7
                 base = 60 if prime else 50
@@ -173,10 +216,55 @@ def detect_ftd(history_asc: list[dict]) -> dict:
                         "gain_pct": round(gain * 100, 2),
                         "window": "prime" if prime else "late",
                         "quality_score": min(100, base + bonus),
+                        "vol_unknown_days": vol_unknown,
                         "ftd_date": row["date"]}
         prev_close = row["close"]
         prev_volume = row.get("volume")
-    return {"state": "RALLY_ATTEMPT", "day1_date": day1["date"], "day": len(rest) + 1}
+    return {"state": "RALLY_ATTEMPT", "day1_date": day1["date"],
+            "day": len(rest) + 1, "vol_unknown_days": vol_unknown}
+
+
+def _unjudged_note(dd: dict) -> str:
+    """분산일 판정을 **못 한** 세션이 있으면 카드가 그 사실을 말한다.
+
+    ⚠️ 없으면 아무 말도 안 한다 — 늘 뜨는 문구는 아무것도 안 재는 것과
+    같다(#25·#260). 있을 때만 붙인다(#43 침묵이 최악).
+    """
+    u = dd.get("unjudged") or []
+    if not u:
+        return ""
+    import html as _hh
+    return (f" · ⚠️ 거래량이 없어 분산일 판정을 못 한 세션 {len(u)}개"
+            f"({_hh.escape(', '.join(u[:3]))}"
+            + ("…" if len(u) > 3 else "") + ")")
+
+
+def post_ftd_note(ftd: dict, active_records: list[dict],
+                  dates_asc: list[str]) -> dict:
+    """FTD 이후 **경과 세션 수**와 그 사이 **분산일 수** → 사실만 낸다.
+
+    ⚠️ 왜 필요한가(2026-09-07 사용자 "제대로 입력되는지 꼼꼼히 봐줘"):
+    화면이 `🟢 FTD 확정` 을 **날짜 없이** 띄우고 있었다. 탐색 창이 41봉이라
+    그 FTD 는 최대 ~37세션(≈2개월) 전 것일 수 있는데, 카드만 보면 오늘
+    일어난 일처럼 읽힌다(#43 기준일 표기 의무 · `ftd_date` 를 계산해 놓고
+    표시에 안 쓰던 것 — #123·#129·#189·#228 계열).
+
+    ⚠️ 그리고 US 카드가 `🟢 FTD 확정` 과 `위험도 HIGH` 를 **나란히** 띄우고
+    아무 설명이 없었다. IBD 해석에선 FTD 뒤 분산일이 쌓이면 랠리를 '압박'
+    으로 읽지만 **몇 개부터인지는 원본이 명시하지 않는다** — 우리는 개수만
+    말하고 결론을 대신 내리지 않는다(#165 안 잰 것을 단정하지 말 것).
+    """
+    date = str(ftd.get("ftd_date") or "")
+    if ftd.get("state") != "FTD_CONFIRMED" or not date:
+        return {}
+    try:
+        idx = dates_asc.index(date)
+    except ValueError:
+        return {"ftd_date": date}          # 창 밖 — 나이를 모른다(단정 금지)
+    return {"ftd_date": date,
+            "age_sessions": len(dates_asc) - 1 - idx,
+            "dd_after": sum(1 for r in active_records
+                            if str(r.get("date") or "") > date)}
 
 
 # ── 매크로 크로스에셋 레짐(ETF 비율 기반) ───────────────────────────────────
@@ -1307,10 +1395,15 @@ def _load_market_timing() -> dict:
             markets[mkt] = {"ticker": ticker, "name": name, "error": "데이터 없음"}
             continue
         hist_desc = list(reversed(hist))
+        _dd = distribution_day_summary(hist_desc)
+        _ftd = detect_ftd(hist)
         markets[mkt] = {
             "ticker": ticker, "name": name,
-            "dd": distribution_day_summary(hist_desc),
-            "ftd": detect_ftd(hist),
+            "dd": _dd, "ftd": _ftd,
+            # 계산해 둔 사실을 **표시까지 배선**한다(#43) — 날짜만 payload 에
+            # 남기고 화면이 안 쓰면 없는 것과 같다.
+            "ftd_note": post_ftd_note(_ftd, _dd.get("active_records") or [],
+                                      [r["date"] for r in hist]),
             "latest_date": hist[-1]["date"], "latest_close": hist[-1]["close"],
         }
 
@@ -1504,6 +1597,14 @@ def render_market_timing_page(data: dict, now=None) -> str:
         if ftd.get("state") == "FTD_CONFIRMED":
             extra = (f' · 품질점수 {ftd.get("quality_score")} '
                      f'({ftd.get("window")}, Day{ftd.get("day")})')
+            fn = m.get("ftd_note") or {}
+            if fn.get("ftd_date"):
+                age = fn.get("age_sessions")
+                extra += f' · {fn["ftd_date"]}'
+                if age is not None:
+                    extra += ("(당일)" if age == 0 else f"({age}세션 전)")
+                if fn.get("dd_after"):
+                    extra += f" · 이후 분산일 {fn['dd_after']}개"
         cards += f"""
 <div class="panel"><div class="panel-title">{_h.escape(mkt)} — {_h.escape(m.get("name",""))}</div>
 <div class="stat-grid">
@@ -1515,7 +1616,7 @@ def render_market_timing_page(data: dict, now=None) -> str:
 <div class="v" style="font-size:14px">{ftd_label}{_h.escape(extra)}</div></div>
 </div>
 <div class="sub" style="margin:4px 0 0">기준 {_h.escape(str(m.get("latest_date","—")))}{_idx_stale(mkt, m.get("latest_date"))} ·
-최근 종가 {m.get("latest_close","—")}</div></div>"""
+최근 종가 {m.get("latest_close","—")}{_unjudged_note(dd)}</div></div>"""
 
     macro = data.get("macro", {})
     macro_card = f"""
@@ -1752,13 +1853,25 @@ SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10
 소스 yfinance + FRED + CoinGecko + CFTC + 네이버(VIX) + CNN(센티먼트)(전부 무료, 3시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
 <b>1) 분산일(Distribution Day)</b> — 종가 -0.2%+ 하락 & 거래량 증가 = 기관 매도 신호.
-D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. 위험도는 셋 중 가장 높은 신호로 판정
+D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. <b>거래량이 없는 세션은 셀 수
+없으므로</b> 그런 세션이 있으면 카드가 개수를 밝힙니다(0 이 '없음'인지 '못 셌음'인지
+구별되게). <b>TW·CN_A·HK 는 지수가 아니라 ETF</b>(0050.TW·510300.SS·2800.HK)라
+거래량이 <b>그 펀드의 거래량</b>입니다 — 시장 전체 거래량이 아니므로 US·KR·JP 와
+같은 강도로 읽지 마세요. 위험도는 셋 중 가장 높은 신호로 판정
 (예: D5≥2 또는 D15≥3 만으로도 HIGH, D25 가 낮아도 무관) — CAUTION D25≥3 · HIGH
 D25≥5·D15≥3·D5≥2 중 하나만 충족 · SEVERE D25≥6·D15≥4 중 하나만 충족. 높을수록
 경계.<br>
 <b>2) 팔로우스루데이(FTD)</b> — 3%+ 조정(3거래일+ 연속 하락) 후 반등 4~10일째
 +1.25%+ 상승·거래량 증가 = 바닥 확인 신호(O'Neil 방법론). 🟢 FTD 확정만 유효 신호,
-나머지는 대기/무효.<br>
+나머지는 대기/무효. 확정이면 <b>그 FTD 가 며칠 전인지</b>를 같이 적습니다 —
+탐색 창이 41봉이라 최대 두 달 전 신호일 수 있고, 날짜 없이 보면 오늘 일처럼 읽힙니다.<br>
+&nbsp;&nbsp;· <b>품질점수는 O'Neil 원본에 없는 우리 자체 산식</b>입니다:
+Day4~7=60 / Day8~10=50 에 상승폭 보너스(+2%↑ 20 · +1.5%↑ 10 · 그 외 0)를 더한 값
+(50~80). 원본의 거래량 <i>크기</i>는 반영하지 않습니다 — 참고용 순위이지 O'Neil 이
+정의한 등급이 아닙니다.<br>
+&nbsp;&nbsp;· FTD 뒤에 분산일이 쌓이면 IBD 해석에서 랠리를 '압박' 으로 읽지만
+<b>몇 개부터인지는 원본이 정하지 않습니다</b> — 그래서 우리는 판정하지 않고
+<b>FTD 이후 분산일 개수만</b> 카드에 적습니다(🟢 와 위험도 HIGH 가 같이 뜨는 이유).<br>
 <b>3) 시장 폭</b> — 섹터 ETF 중 20/50/200일선 상회 비율(개별종목 breadth 의 섹터-레벨
 근사) — 20일=단기 모멘텀·50일=중기·200일=장기 추세. 낮으면 소수 대형주만 지수 방어,
 높으면 전반적 참여. <b>KR</b>=KODEX 섹터 12개(KRX 업종) · <b>US</b>=SPDR GICS 11개.
