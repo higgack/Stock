@@ -580,3 +580,189 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfirmedSignalAuditTests(unittest.TestCase):
+    """사용자 2026-09-07 "8월말 현금대기가 맞는거야? 8월 마지막날엔 극단적
+    과매도로 봤는데" — 화면이 Breadth **%만** 보여줘 그 질문에 답할 수 없었다.
+
+    셋을 고쳤다: ① 판정 전 반올림 제거(4/13 이 `30.80%` 로 보였다) ② 확정
+    기록에 분모 저장 ③ 이력 표에 분모 표시. 그리고 그 달을 재계산해 대조하는
+    `--why` 를 심었다(#252 반복 확인은 제품에).
+    """
+
+    def test_breadth_is_not_rounded_before_the_regime_is_judged(self):
+        """⚠️ 옛 판은 `round(pct, 1)` 이라 **판정이 반올림된 값**을 봤고,
+        화면은 2자리로 찍어 4/13 이 `30.80%` 로 보였다 — 사용자가 눈으로
+        나눠 봐도 안 맞는다(#33). 반올림은 표시에서만 한다."""
+        up = [100 + i * 0.1 for i in range(200)]
+        down = [100 - i * 0.1 for i in range(200)]
+        sectors = {f"S{i}": (up if i < 4 else down) for i in range(13)}
+        b = bs.breadth_above_ma(sectors, 120)
+        self.assertEqual((b["above"], b["counted"]), (4, 13))
+        self.assertAlmostEqual(b["pct"], 400 / 13, places=9)   # 30.769…
+        self.assertEqual(bs._pct_s(b["pct"]), "30.77%")        # 30.80% 아님
+        self.assertEqual(bs.classify_regime(b["pct"]), "RECOVERY")
+
+    def test_confirmed_record_keeps_the_denominator(self):
+        """⚠️ %만 남기면 그 30.8% 가 4/13 인지, 원천 절단으로 분모가 줄어든
+        4/12 인지 **영원히 못 가른다**. 기록은 멱등이라 한 번 잘못 들어가면
+        그대로 굳는다(#18·#45)."""
+        rec = bs._signal_record({
+            "asof": "2026-08-29", "state": "CASH", "regime": "RECOVERY",
+            "breadth_pct": 30.77, "dd_pct": -25.52,
+            "breadth": {"above": 4, "counted": 13, "skipped": ["철강"]},
+            "index_w": 0.0, "total_w": 0.0, "cash_w": 1.0,
+            "targets": [], "rs_ranked": []})
+        self.assertEqual(rec["breadth_above"], 4)
+        self.assertEqual(rec["breadth_counted"], 13)
+        self.assertEqual(rec["breadth_skipped"], ["철강"])
+
+    def test_history_cell_shows_the_denominator_but_never_invents_one(self):
+        """분모가 있으면 `30.77% (4/13)`, 옛 기록이면 % 만(#32 지어내지 않는다)."""
+        cell = bs._breadth_cell({"breadth_pct": 400 / 13,
+                                 "breadth_above": 4, "breadth_counted": 13})
+        self.assertEqual(cell, "30.77% (4/13)")
+        with_skip = bs._breadth_cell({"breadth_pct": 30.0, "breadth_above": 3,
+                                      "breadth_counted": 10,
+                                      "breadth_skipped": ["a", "b"]})
+        self.assertIn("(3/10, 제외 2)", with_skip)
+        self.assertEqual(bs._breadth_cell({"breadth_pct": 30.8}), "30.80%")
+
+    def test_verdict_is_three_state_and_tolerates_old_rounding(self):
+        """⚠️ 대조할 게 없으면 통과가 아니라 **판정 불가**(#54·#274). 옛 기록은
+        1자리로 반올림돼 있으므로 0.05%p 여유 — 반올림 차이를 '불일치' 로
+        부르면 진짜 불일치를 가린다."""
+        snap = {"breadth_pct": 400 / 13, "dd_pct": -25.52, "regime": "RECOVERY",
+                "state": "CASH", "total_w": 0.0, "index_w": 0.0}
+        rec = {"breadth_pct": 30.8, "dd_pct": -25.52, "regime": "RECOVERY",
+               "state": "CASH", "total_w": 0.0, "index_w": 0.0}
+        self.assertTrue(bs._why_verdict(rec, snap)[0].startswith("✅"))
+        self.assertTrue(bs._why_verdict({}, snap)[0].startswith("❓"))
+        self.assertTrue(
+            bs._why_verdict(rec, {"breadth_pct": None})[0].startswith("❓"))
+        v, bad = bs._why_verdict({**rec, "breadth_pct": 23.1}, snap)
+        self.assertTrue(v.startswith("❌"))
+        self.assertTrue(any("Breadth" in x for x in bad), bad)
+
+    def test_why_is_read_only(self):
+        """⚠️ 진단이 자기가 읽을 신호를 오염시키면 안 된다(#30·#264·#283) —
+        `build_with_signals`·`append_signal` 은 확정 신호를 **쓴다**."""
+        import ast
+        src = open("bot/breadth_strategy.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_cli_why")
+        called = {n.func.id for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        self.assertNotIn("build_with_signals", called)
+        self.assertNotIn("append_signal", called)
+        self.assertIn("_assemble", called)          # 화면이 쓰는 그 경로(#35)
+        self.assertIn("_fetch_market", called)
+
+    def test_why_prints_the_sample_and_the_last_days_of_the_month(self):
+        """⚠️ 사용자의 질문("월말엔 과매도였는데")은 **날짜별 재계산** 없이는
+        답이 안 나온다 — 원시 float 을 노출하지 않고(#43b) 섹터 표본과 그 달
+        마지막 거래일들을 찍는지 값으로 확인한다."""
+        import datetime as _dt
+        import io
+        import json
+        import re
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+
+        days, d = [], _dt.date(2025, 7, 1)
+        while len(days) < 300:
+            if d.weekday() < 5:
+                days.append(d.isoformat())
+            d += _dt.timedelta(days=1)
+        days = [x for x in days if x <= "2026-08-31"][-300:]
+        fall = [100 - i * 0.1 for i in range(300)]
+        rise = [100 + i * 0.1 for i in range(300)]
+        late = list(fall)
+        late[-1] = 200.0                    # 마지막 종가에만 MA120 위로
+        labels = {f"S{i:02d}": (rise if i < 3 else list(fall))
+                  for i in range(13)}
+        labels["S12"] = late
+
+        def ser(v):
+            return [{"date": a, "close": c} for a, c in zip(days, v)]
+
+        from bot import market_timing as mt
+        old_series, old_sec = bs._series, mt._BREADTH_SECTORS
+        old_lbl, old_dir = mt._BREADTH_SOURCE_LABEL, bs._SIGNAL_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                bs._SIGNAL_DIR = Path(td)
+                bs._series = (lambda t, days_=400:
+                              ser(fall) if t == "^KS11" else ser(labels[t]))
+                mt._BREADTH_SECTORS = {"KR": {k: k for k in labels}}
+                mt._BREADTH_SOURCE_LABEL = {"KR": "테스트"}
+                bs.signal_path("KR").write_text(json.dumps({
+                    "month": "2026-08", "asof": days[-1], "state": "CASH",
+                    "regime": "RECOVERY", "breadth_pct": 30.8,
+                    "dd_pct": -26.37, "index_w": 0, "total_w": 0,
+                    "cash_w": 1.0, "targets": [], "top3": []}) + "\n",
+                    encoding="utf-8")
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = bs._cli_why("KR", "2026-08")
+                out = buf.getvalue()
+        finally:
+            bs._series, mt._BREADTH_SECTORS = old_series, old_sec
+            mt._BREADTH_SOURCE_LABEL, bs._SIGNAL_DIR = old_lbl, old_dir
+
+        self.assertEqual(rc, 0, out)
+        self.assertIn("상회 4개 / 표본 13개 = 30.77%", out)   # ③ 분모를 센다
+        self.assertIn("23.08% · 역추세 구간", out)            # ⑤ 달 안의 변화
+        self.assertIn("30.77% · 회복 구간", out)              # ⑤ 월말 종가
+        self.assertIn("← 월말 확정", out)
+        self.assertIn("경계 민감도", out)                     # ④ 3개였다면?
+        self.assertRegex(out, r"상회\s+3개 →\s+23\.1% · 역추세")
+        # ⚠️ 원시 float 금지 — `30.76923076923077%` 같은 노출이 있으면 실패
+        self.assertNotRegex(out, r"\d\.\d{4,}", out)
+
+    def test_history_table_actually_renders_the_denominator(self):
+        """⚠️ 헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20 — 실측: 이력 표를
+        옛 `_pct_s` 로 되돌리는 뮤테이션이 회귀 60개를 전부 통과했다).
+        렌더된 HTML 에 분모가 실리는지 값으로 본다."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        old_dir = bs._SIGNAL_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                bs._SIGNAL_DIR = Path(td)
+                bs.signal_path("KR").write_text(json.dumps({
+                    "month": "2026-08", "asof": "2026-08-29", "state": "CASH",
+                    "regime": "RECOVERY", "breadth_pct": 400 / 13,
+                    "breadth_above": 4, "breadth_counted": 13,
+                    "breadth_skipped": [], "dd_pct": -25.52,
+                    "index_w": 0, "total_w": 0, "cash_w": 1.0,
+                    "targets": [], "top3": []}) + "\n", encoding="utf-8")
+                html = bs.render_page({"KR": RenderTests._snap(
+                    "KR", 400 / 13, "CASH", "RECOVERY", 0.0, 1.0)})
+        finally:
+            bs._SIGNAL_DIR = old_dir
+        self.assertIn("30.77% (4/13)", html)
+        self.assertNotIn("30.80%", html)
+
+    def test_entrypoint_is_last_and_dispatches_why(self):
+        """⚠️ 엔트리포인트가 파일 중간이면 그 아래 정의는 영영 안 닿는다
+        (#276). 그리고 배선은 **존재가 아니라 호출**이다(#120)."""
+        import ast
+        src = open("bot/breadth_strategy.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        mains = [n for n in tree.body
+                 if isinstance(n, ast.If) and "__main__" in ast.dump(n.test)]
+        self.assertEqual(len(mains), 1)
+        self.assertIs(mains[0], tree.body[-1], "엔트리포인트가 맨 끝이 아니다")
+        # ⚠️ 소스 문자열(`"'--why'" in src`)로 재면 따옴표 종류 하나에 깨진다
+        # (#19 — 실제로 깨졌다). 그 블록의 **상수와 호출**을 AST 로 본다.
+        consts = {n.value for n in ast.walk(mains[0])
+                  if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        self.assertIn("--why", consts)
+        calls = {n.func.id for n in ast.walk(mains[0])
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        self.assertIn("_cli_why", calls)

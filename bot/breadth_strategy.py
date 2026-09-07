@@ -225,7 +225,11 @@ def breadth_above_ma(sector_closes: dict, period: int = 120) -> dict:
         counted += 1
         if closes[-1] > m:
             above += 1
-    return {"pct": round(above / counted * 100, 1) if counted else None,
+    # ⚠️ **여기서 반올림하지 않는다** — 옛 판은 `round(...,1)` 이라 (a) 구간
+    # 판정이 반올림된 값을 보고 (b) 화면이 2자리로 찍어 `4/13` 이 `30.80%` 로
+    # 보였다(실제 30.77% — 사용자가 눈으로 나눠 봐도 안 맞는다, #33·2026-09-07).
+    # 반올림은 표시에서만 한다.
+    return {"pct": above / counted * 100 if counted else None,
             "above": above, "counted": counted, "skipped": skipped,
             "period": period}
 
@@ -477,6 +481,12 @@ def _signal_record(d: dict) -> dict:
         "month": str(d.get("asof", ""))[:7], "asof": d.get("asof"),
         "state": d.get("state"), "regime": d.get("regime"),
         "breadth_pct": d.get("breadth_pct"), "dd_pct": d.get("dd_pct"),
+        # ⚠️ **분모를 같이 남긴다** — %만 남기면 그 30.8% 가 4/13 인지, 원천
+        # 절단으로 분모가 줄어든 4/12 인지 **영원히 못 가른다**. 기록은
+        # 멱등이라 한 번 잘못 들어가면 그대로 굳는다(#18·#43·#45, 2026-09-07).
+        "breadth_above": (d.get("breadth") or {}).get("above"),
+        "breadth_counted": (d.get("breadth") or {}).get("counted"),
+        "breadth_skipped": (d.get("breadth") or {}).get("skipped") or [],
         "index_w": d.get("index_w"), "total_w": d.get("total_w"),
         "cash_w": d.get("cash_w"),
         "targets": [t["name"] for t in (d.get("targets") or [])],
@@ -542,6 +552,23 @@ def _pct_s(v, digits: int = 2) -> str:
     return "—" if v is None else f"{v:,.{digits}f}%"
 
 
+def _breadth_cell(rec: dict) -> str:
+    """확정 이력의 Breadth 칸 — 있으면 **분모까지** 적는다(`30.77% (4/13)`).
+
+    ⚠️ %만 적으면 사용자가 눈으로 나눠 검산할 수 없고, 원천 절단으로 분모가
+    줄어든 달을 정상 달과 구별할 수도 없다(#33·#45, 사용자 2026-09-07
+    "8월말 현금대기가 맞는거야?"). 옛 기록엔 분모가 없으므로 **지어내지 않고**
+    %만 적는다(#32).
+    """
+    pct = _pct_s(rec.get("breadth_pct"))
+    above, counted = rec.get("breadth_above"), rec.get("breadth_counted")
+    if above is None or not counted:
+        return pct
+    skip = rec.get("breadth_skipped") or []
+    tail = f" ({above}/{counted}" + (f", 제외 {len(skip)}" if skip else "") + ")"
+    return pct + tail
+
+
 def _market_section(d: dict) -> str:
     import html as _h
     if not d:
@@ -586,7 +613,7 @@ def _market_section(d: dict) -> str:
     hist = "".join(
         f"<tr><td>{_h.escape(str(r.get('month', '')))}</td>"
         f"<td>{_h.escape(STATE_LABEL.get(r.get('state'), r.get('state') or '—'))}</td>"
-        f"<td class='num'>{_pct_s(r.get('breadth_pct'))}</td>"
+        f"<td class='num'>{_breadth_cell(r)}</td>"
         f"<td class='num'>{_pct_s(r.get('dd_pct'))}</td>"
         f"<td class='num'>{(r.get('index_w') or 0) * 100:.0f}%</td>"
         f"<td class='num'>{(r.get('total_w') or 0) * 100:.0f}%</td>"
@@ -732,3 +759,172 @@ def regenerate() -> None:
         log.info("breadth_strategy: 페이지 재생성 완료")
     except Exception as exc:
         log.warning("breadth_strategy: 재생성 실패: %s", exc)
+
+
+# ── 진단 CLI ────────────────────────────────────────────────────────────────
+# ⚠️ **읽기 전용**이다 — `build_with_signals` 는 확정 신호를 append 하므로
+# 절대 부르지 않는다(진단이 자기가 읽을 신호를 오염시키면 안 된다, #30·#264·
+# #283). 수집(`_fetch_market`)과 순수 계산(`_assemble`)만 쓴다.
+def _sector_lines(sliced: dict, cut: str) -> list[str]:
+    """섹터별 (마지막 봉·종가·MA120·상회 여부) 한 줄씩 — 분모를 눈으로 센다.
+
+    ⚠️ 확정 이력은 Breadth **%만** 남기므로(2026-09-07 실측) '30.8% 가 4/13
+    인가 4/12 인가' 를 사람이 확인할 방법이 없었다. 표본 원문을 같이 찍는다
+    (#109 · #43).
+    """
+    out = []
+    for label, closes in sorted(sliced.items()):
+        m = ma(closes, 120)
+        if m is None:
+            out.append(f"   {label:<14} 봉 {len(closes):>4}개 — MA120 불가"
+                       f"(기간부족) → **분모에서 제외**")
+            continue
+        c = closes[-1]
+        mark = "위 ✅" if c > m else "아래  "
+        out.append(f"   {label:<14} 봉 {len(closes):>4}개 · 종가 {c:>10,.2f}"
+                   f" · MA120 {m:>10,.2f} · {mark}")
+    return out
+
+
+def _why_verdict(rec: dict, snap: dict) -> tuple[str, list[str]]:
+    """기록 ↔ 재계산 대조 → (판정, 어긋난 칸들).
+
+    ⚠️ 대조할 게 없으면 통과가 아니라 **판정 불가**다(#54·#274). 그리고
+    옛 기록은 `breadth_pct` 가 1자리로 반올림돼 있으므로 0.05%p 여유를 준다
+    (반올림 차이를 '불일치' 로 부르면 진짜 불일치를 가린다).
+    """
+    if not rec:
+        return "❓ 판정 불가 — 그 달 확정 기록이 없다", []
+    if snap.get("breadth_pct") is None:
+        return "❓ 판정 불가 — 그 시점 히스토리가 모자라 재계산이 안 된다", []
+    bad = []
+    a, b = rec.get("breadth_pct"), snap.get("breadth_pct")
+    if a is None or b is None or abs(float(a) - float(b)) > 0.05:
+        bad.append(f"Breadth 기록 {_pct_s(a)} vs 재계산 {_pct_s(b)}")
+    for key, name in (("dd_pct", "지수 DD"), ("regime", "구간"),
+                      ("state", "상태"), ("total_w", "최종비중"),
+                      ("index_w", "지수비중")):
+        x, y = rec.get(key), snap.get(key)
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            if abs(float(x) - float(y)) > 0.05:
+                bad.append(f"{name} 기록 {x} vs 재계산 {y}")
+        elif x != y:
+            bad.append(f"{name} 기록 {x} vs 재계산 {y}")
+    if bad:
+        return "❌ 기록과 재계산이 다르다", bad
+    return "✅ 기록 = 재계산(그 달 종가 기준으로 재현됨)", []
+
+
+def _cli_why(market: str, month: str | None) -> int:
+    """확정 신호 한 달을 **원문까지** 펼쳐 보인다 → rc(0 일치 / 1 그 외).
+
+    사용자 2026-09-07 "8월말 현금대기가 맞는거야? 8월 마지막날엔 극단적
+    과매도로 봤는데" — 화면은 Breadth **%만** 보여줘 (a) 분모가 몇이었는지
+    (b) 그 달 마지막 며칠이 어떻게 움직였는지 를 답할 수 없었다.
+    """
+    import sys
+
+    print(f"🧭 breadth_strategy --why · {market.upper()} · 읽기 전용"
+          "(확정 신호를 쓰지 않는다)")
+    print(f"   인터프리터: {sys.executable}")
+    print(f"   신호 로그: {signal_path(market)}")
+
+    recs = load_signals(market, limit=10_000)
+    if not recs:
+        print("❌ 확정 신호 이력이 0건 — 아직 한 달도 기록되지 않았다"
+              "(첫 월말 종가에 기록된다)")
+        return 1
+    months = [str(r.get("month") or "") for r in recs]
+    target = month or months[-1]
+    rec = next((r for r in recs if str(r.get("month") or "") == target), None)
+    if rec is None:
+        print(f"❌ {target} 기록이 없다 — 있는 달: {', '.join(months)}")
+        return 1
+    print(f"\n① 기록된 확정 신호 {target} (기준일 {rec.get('asof')})")
+    print(f"   Breadth {_pct_s(rec.get('breadth_pct'))}"
+          f" · DD {_pct_s(rec.get('dd_pct'))}"
+          f" · 구간 {REGIME_LABEL.get(rec.get('regime'), rec.get('regime'))}"
+          f" · 상태 {STATE_LABEL.get(rec.get('state'), rec.get('state'))}")
+    print(f"   지수비중 {rec.get('index_w')} · 최종비중 {rec.get('total_w')}"
+          f" · 현금 {rec.get('cash_w')} · 대상 {rec.get('targets')}")
+    if rec.get("breadth_above") is None:
+        print("   ⚠️ 이 기록엔 **분모(상회/표본)가 없다** — 옛 형식이라"
+              " %만 남았다. 아래 ③ 이 그 자리를 대신한다.")
+    else:
+        print(f"   표본 {rec.get('breadth_counted')}개 중 상회"
+              f" {rec.get('breadth_above')}개"
+              f" · 기간부족 제외 {rec.get('breadth_skipped') or []}")
+
+    print(f"\n② 원천 재수집 — 섹터 시계열을 받는다(수십 초)")
+    got = _fetch_market(market)
+    if not got:
+        print("❌ 섹터 레지스트리가 비었다 — 재계산 불가")
+        return 1
+    sectors, bench_name, bench_rows, rows_by_label, missing = got
+    print(f"   섹터 {len(rows_by_label)}/{len(sectors)}개 수신"
+          f" · 벤치 {bench_name} {len(bench_rows)}봉"
+          + (f" · 미수신 {missing}" if missing else ""))
+    if not bench_rows:
+        print("❌ 벤치마크 시계열을 못 받았다 — 재계산 불가(원천 장애 의심)")
+        return 1
+
+    cut = str(rec.get("asof") or "")
+    snap = _assemble(market, sectors, bench_name, bench_rows, rows_by_label,
+                     missing, cut=cut)
+    sliced = {k: [r["close"] for r in _cut_rows(v, cut)]
+              for k, v in rows_by_label.items()}
+    b = snap.get("breadth") or {}
+    print(f"\n③ {cut} 종가로 재계산 — 상회 {b.get('above')}개"
+          f" / 표본 {b.get('counted')}개 = {_pct_s(snap.get('breadth_pct'))}")
+    for line in _sector_lines(sliced, cut):
+        print(line)
+
+    n = b.get("counted") or 0
+    if n:
+        print(f"\n④ 경계 민감도(표본 {n}개 · 한 섹터 = {100 / n:.1f}%p)")
+        for k in (b.get("above", 0) - 1, b.get("above", 0),
+                  b.get("above", 0) + 1):
+            if 0 <= k <= n:
+                pct = round(k / n * 100, 1)
+                reg = classify_regime(pct)
+                here = "  ← 이 달" if k == b.get("above") else ""
+                print(f"   상회 {k:>2}개 → {pct:>5.1f}%"
+                      f" · {REGIME_LABEL.get(reg, reg)}{here}")
+
+    print(f"\n⑤ 그 달 마지막 거래일들 — 날짜마다 종가로 다시 계산")
+    same_month = [r["date"] for r in bench_rows
+                  if str(r.get("date") or "")[:7] == target]
+    if not same_month:
+        print(f"   ❓ 벤치 시계열에 {target} 봉이 없다"
+              " — 400일 창 밖이라 이 구간은 판정 불가")
+    for d in same_month[-7:]:
+        s = _assemble(market, sectors, bench_name, bench_rows, rows_by_label,
+                      missing, cut=d)
+        sb = s.get("breadth") or {}
+        star = "  ← 월말 확정" if d == cut else ""
+        print(f"   {d}  상회 {sb.get('above')}/{sb.get('counted')}"
+              f" = {_pct_s(s.get('breadth_pct'))}"
+              f" · {REGIME_LABEL.get(s.get('regime'), s.get('regime'))}"
+              f" · {STATE_LABEL.get(s.get('state'), s.get('state'))}{star}")
+
+    verdict, bad = _why_verdict(rec, snap)
+    print(f"\n⑥ 판정: {verdict}")
+    for line in bad:
+        print(f"   · {line}")
+    print("   ⚠️ 화면의 '중간점검' 은 **오늘 마지막 봉**(장중이면 부분봉)이고"
+          " 확정 이력은 **그 달 마지막 종가**다 — 둘이 다른 건 정상이다.")
+    return 0 if verdict.startswith("✅") else 1
+
+
+if __name__ == "__main__":                                     # pragma: no cover
+    import argparse
+
+    _ap = argparse.ArgumentParser(
+        description="Breadth 전략 확정 신호 진단(읽기 전용)")
+    _ap.add_argument("--why", nargs="?", const="", metavar="YYYY-MM",
+                     help="그 달 확정 신호를 재계산해 대조(생략 시 최신 달)")
+    _ap.add_argument("--market", default="KR", help="KR 또는 US")
+    _a = _ap.parse_args()
+    if _a.why is not None:
+        raise SystemExit(_cli_why(_a.market, _a.why or None))
+    _ap.print_help()
