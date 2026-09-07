@@ -16322,10 +16322,15 @@ _DART_FEED_CSS = """
    혼동) */
 /* 강조 링은 **안쪽**으로(inset) — 바깥 box-shadow 는 카드 바깥으로 1px
    더 그려져 강조된 카드만 커 보인다(같은 지적). */
-.df-card.df-significant{border-color:#d4a017;box-shadow:inset 0 0 0 1px #d4a01755}
 .df-card.df-unparsed{border-style:dashed;border-color:#5c9ce6aa}
 /* 미파싱제외(의도) — 회색 점선, 진짜 미파싱(파랑 점선)과 구별(사용자 2026-06-14) */
 .df-card.df-noparse{border-style:dotted;border-color:#6b727e88}
+/* ⚠️ 중요(금색)는 **이 둘 뒤에** 와야 한다 — 셋 다 명시도가 같아서 뒤엣것이
+   `border-color` 를 이긴다. 옛 순서에서는 🔥 이면서 미파싱제외인 카드가
+   배지만 금색이고 테두리는 회색이었다(사용자 2026-09-07 "왜 어떤건 금색
+   테두리로 표시안되는거야?"). 점선/파선 `border-style` 은 위 규칙이 계속
+   담당하므로 두 신호가 **같이** 보인다(금색 점선 = 중요 + 미파싱제외). */
+.df-card.df-significant{border-color:#d4a017;box-shadow:inset 0 0 0 1px #d4a01755}
 .df-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;align-self:flex-start;line-height:1.5}
 .df-badge-sig{background:#d4a01726;color:#b8860b;border:1px solid #d4a01766}
 .df-badge-unp{background:#5c9ce618;color:#3b82c4;border:1px solid #5c9ce655}
