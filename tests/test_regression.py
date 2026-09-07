@@ -46525,7 +46525,14 @@ class TestProbeFailKind20260907:
 
         이 배포 이전에 쌓인 원장은 갈래가 없다 — 버리지 말고 `갈래미상`."""
         from trade.scripts.daily_digest import err_breakdown
-        assert err_breakdown(42, None) == "42회"
+        # ⚠️ 계약 변경(2026-09-07): 옛 판은 갈래가 **하나도** 없으면 `42회` 로
+        # 침묵했다. 그날 결산이 실제로 `probe 오류 5회` 로 떴는데, 그게 '배포
+        # 전에 쌓인 원장' 인지 '적립부가 고장났다' 인지 구별할 수 없었다 —
+        # 바로 이 함수의 독스트링이 "갈래미상으로 남긴다" 고 약속해 놓고
+        # 조기 반환이 그 경로를 건너뛰고 있었다(#55·#43). 세 필드 모두 적립
+        # 배선이 있으므로 이 문구가 계속 뜨면 그 자체가 고장 신호다(#25·#260).
+        assert err_breakdown(42, None) == "42회(갈래미상 42)"
+        assert err_breakdown(0, None) == "0회"          # 0 건에는 안 붙인다
         assert err_breakdown(42, {"타임아웃": 40, "원천장애 503": 2}) == (
             "42회(타임아웃 40 · 원천장애 503 2)")
         assert "갈래미상 12" in err_breakdown(42, {"타임아웃": 30})
@@ -46542,11 +46549,10 @@ class TestProbeFailKind20260907:
                         "scan_partial": 1},
                        False, None)
         assert "probe 오류 42회(타임아웃 40 · 원천응답 22 2)" in body
-        # 갈래가 없던 날은 종전 그대로 — 옛 원장이 결산을 깨뜨리지 않는다
+        # 갈래가 없던 날은 **모른다고 말한다** — 옛 원장이 결산을 깨뜨리지도
+        # 않고, 조용히 정상인 척하지도 않는다(계약 변경 2026-09-07, 위 참조).
         old = compose("2026-09-06", 0, {"probe_fail": 42}, False, None)
-        # ⚠️ `"(" not in old.split("❌")[1]` 로 쓰면 compose 에 괄호 있는 문구가
-        # 하나만 늘어도 무관하게 깨진다(#19 소스·출력 문자열 단언).
-        assert "probe 오류 42회" in old and "probe 오류 42회(" not in old
+        assert "probe 오류 42회(갈래미상 42)" in old
 
 
 class TestFcfAuditRecapDoesNotDoubleCount20260907:

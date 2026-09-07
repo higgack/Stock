@@ -142,7 +142,15 @@ def err_breakdown(n: int, kinds: dict | None, top: int = 3) -> str:
     items = [(k, int(v)) for k, v in (kinds or {}).items()
              if isinstance(v, (int, float)) and int(v) > 0]
     if not items:
-        return f"{n}회"
+        # ⚠️ 갈래가 **하나도** 없을 때 그냥 `5회` 로 내면, 그게 '이 배포 전에
+        # 쌓인 원장' 인지 '적립부가 고장났다' 인지 구별되지 않는다 — 위
+        # 독스트링이 "갈래미상으로 남긴다" 고 약속해 놓고 이 조기 반환이 그
+        # 경로를 건너뛰고 있었다(2026-09-07 결산 `probe 오류 5회` 로 발각,
+        # #55 설명이 코드와 어긋나면 버그 · #43 침묵이 최악).
+        # 세 필드 모두 적립 배선이 있으므로(probe_fail·scan_fail·
+        # scan_partial) 이 문구가 계속 뜨면 그 자체가 고장 신호다 —
+        # 늘 뜨는 문구가 아니다(#25·#260).
+        return f"{n}회(갈래미상 {n})" if n > 0 else f"{n}회"
     items.sort(key=lambda kv: (-kv[1], kv[0]))
     rest = n - sum(v for _k, v in items)
     shown = items[:top]
