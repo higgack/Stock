@@ -46578,6 +46578,10 @@ class TestFcfAuditNamesTheAxis20260907:
 
     def test_tally_is_frequency_ordered(self):
         from bot.scripts.fcf_audit import _axis_tally
+        # ⚠️ 삽입순과 **갈리는** 픽스처여야 빈도순을 잰다 — `["②","④","②"]`
+        # 는 두 순서가 같은 값이라 `.most_common()` → `.items()` 뮤테이션이
+        # 그대로 통과했다(독립 리뷰 실측, #91c).
+        assert _axis_tally(["④검산", "②교차", "②교차"]) == "②교차×2 · ④검산"
         assert _axis_tally(["②", "④", "②"]) == "②×2 · ④"
         assert _axis_tally([]) == ""
         assert _axis_tally(None) == ""
@@ -46590,6 +46594,33 @@ class TestFcfAuditNamesTheAxis20260907:
         # 축을 모르는 옛 호출부도 죽지 않는다(건수는 그대로 말한다)
         assert verdict_line(1, 1) == "불일치 1건 — 위 결함 줄 참조 (판정불가 1건)"
         assert verdict_line(0, 0) == "✅ 이상 없음"
+
+    def test_flag_actually_records_the_axis(self, monkeypatch):
+        """**AST 모양이 아니라 결과로 본다**(#20 배선은 태워야 보인다).
+
+        ⚠️ 이 클래스의 다른 테스트는 전부 AST 모양 검사라, `flag()` 안의
+        `bad_axes.append` / `unknown_axes.append` **두 줄을 삭제해도** 전부
+        green 이었다(2026-09-07 독립 리뷰 실측) — 요약이 다시 `판정불가 1건`
+        으로 되돌아가는 바로 그 회귀가 무가드였다. 같은 파일의 형제
+        (`TestFcfAuditWiring.test_tautology_is_real_not_asserted`)는 이미
+        재서 고정하고 있다 — 새 가드는 형제와 같은 수준으로(#291).
+
+        스냅샷을 비워 조기 경로만 태우므로 **네트워크 0**이다.
+        """
+        import bot.stock_snapshot as ss
+        from bot.scripts import fcf_audit as fa
+        monkeypatch.setattr(ss, "collect_stock_snapshot",
+                            lambda tk, use_cache=False: {})
+        r = fa.audit_one("AAPL", None)      # 비-KR · 빈 스냅샷
+        assert r["bad_axes"] == ["①재계산(yf)"], r["bad_axes"]
+        assert r["unknown_axes"] == ["④검산", "⑤누적냄새(yf)"], r["unknown_axes"]
+        # 총계와 소계는 같은 모집단이어야 한다(#45)
+        assert len(r["bad_axes"]) == r["bad"]
+        assert len(r["unknown_axes"]) == r["unknown"]
+        v = fa.verdict_line(r["bad"], r["unknown"],
+                            r["bad_axes"], r["unknown_axes"])
+        assert "①재계산(yf)" in v and "④검산" in v and "⑤누적냄새(yf)" in v
+        assert "❌" not in v, "요약은 판정 글자를 쓰지 않는다(#289)"
 
     def test_every_flag_call_names_an_axis(self):
         """축을 안 넘기는 `flag()` 가 하나라도 남으면 그 판정은 익명이 된다.
@@ -46604,10 +46635,23 @@ class TestFcfAuditNamesTheAxis20260907:
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                  and getattr(n.func, "id", "") == "flag"]
         assert calls, "flag() 호출이 0건 — 대조 0건은 통과가 아니다(#54)"
-        bare = [ast.unparse(n) for n in calls if len(n.args) < 2]
+        # ⚠️ 계약은 "축을 넘긴다" 이지 "두 번째 **위치**인자다" 가 아니다 —
+        # `flag(None, axis="④검산")` 을 오탐하면 정당한 리팩터가 빨간불이
+        # 된다(#19 계열, 독립 리뷰 실측).
+        bare = [ast.unparse(n) for n in calls if len(n.args) < 2
+                and not any(k.arg == "axis" for k in n.keywords)]
         assert not bare, f"축 없는 flag(): {bare}"
-        # 축은 리터럴이어야 집계가 의미 있다(변수면 런타임에만 안다)
-        assert all(isinstance(n.args[1], ast.Constant) for n in calls)
+        # 축은 **문자열 리터럴**이어야 한다 — 변수면 런타임에만 알고,
+        # str 이 아니면 `_axis_tally` 의 join 이 던져 주간 감사가 죽는다.
+        lits = [n.args[1] for n in calls if len(n.args) > 1]
+        assert all(isinstance(a, ast.Constant) and isinstance(a.value, str)
+                   for a in lits), "축이 문자열 리터럴이 아니다"
+        # ⚠️ 축 이름이 요약 줄에 **그대로 삽입**되므로 판정 글자가 섞이면
+        # sweep 이 요약을 결함으로 세고 엉뚱한 섹션을 붙인다(#289 재발) —
+        # 옛 `verdict_line` 은 닫힌 리터럴 집합이라 전수 가드가 덮었지만
+        # 이제는 300줄 떨어진 13개 리터럴이 실린다(독립 리뷰 실측).
+        assert not [a.value for a in lits
+                    if any(g in a.value for g in "❌✅⚠️")], "축 이름에 판정 글자"
 
     def test_dart_missing_branch_is_not_labelled_as_the_payload_axis(self):
         """**틀린 라벨은 라벨이 없는 것보다 나쁘다**(#82·#187b).
@@ -46647,10 +46691,14 @@ class TestFcfAuditNamesTheAxis20260907:
                 and isinstance(n.value, ast.Dict)]
         assert rets, "반환 dict 가 없다"
         for r in rets:
-            keys = {k.value for k in r.value.keys
-                    if isinstance(k, ast.Constant)}
-            assert {"bad_axes", "unknown_axes"} <= keys, (
-                f"축 목록을 안 싣는 반환이 있다: {sorted(keys)}")
+            # ⚠️ **키만 세면 값을 뒤바꿔도 통과한다** — `"bad_axes":
+            # unknown_axes` 로 뒤집으면 불일치 축이 판정불가 버킷에 찍혀
+            # '틀린 라벨' 이 된다(독립 리뷰 실측). 쌍으로 대조할 것.
+            pairs = {k.value: ast.unparse(v)
+                     for k, v in zip(r.value.keys, r.value.values)
+                     if isinstance(k, ast.Constant)}
+            assert pairs.get("bad_axes") == "bad_axes", pairs
+            assert pairs.get("unknown_axes") == "unknown_axes", pairs
 
     def test_main_passes_the_axes_through(self):
         """`main()` 이 축을 안 넘기면 화면은 종전대로 건수만 말한다(#20·#291)."""
@@ -46662,6 +46710,9 @@ class TestFcfAuditNamesTheAxis20260907:
         call = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                 and getattr(n.func, "id", "") == "verdict_line"]
         assert call, "main() 이 verdict_line 을 안 부른다"
-        src = {ast.unparse(a) for a in call[0].args}
-        assert any("bad_axes" in a for a in src), f"축 미전달: {src}"
-        assert any("unknown_axes" in a for a in src), f"축 미전달: {src}"
+        # ⚠️ set 으로 "글자가 있나" 만 보면 **순서를 뒤바꿔도 통과**한다 —
+        # 두 버킷이 서로 뒤집혀 찍힌다(독립 리뷰 실측). 위치로 잰다.
+        args = call[0].args
+        assert len(args) >= 4, f"축 미전달: {[ast.unparse(a) for a in args]}"
+        assert "bad_axes" in ast.unparse(args[2]), ast.unparse(args[2])
+        assert "unknown_axes" in ast.unparse(args[3]), ast.unparse(args[3])

@@ -49,7 +49,10 @@ def _pct(a, b) -> float | None:
 def _axis_tally(axes) -> str:
     """축 이름 목록 → `②교차출처(분기)×2 · ④검산` (빈도순). 순수."""
     from collections import Counter
-    return " · ".join(f"{a}×{n}" if n > 1 else a
+    # ⚠️ `str(a)` — 축이 str 이 아니면 join 이 TypeError 를 던지고,
+    # `main()` 은 이걸 `audit_one` 의 try/except **밖**에서 부르므로 종목
+    # 하나 때문에 주간 FCF 감사가 통째로 죽는다(독립 리뷰 실측).
+    return " · ".join(f"{a}×{n}" if n > 1 else str(a)
                       for a, n in Counter(axes or []).most_common())
 
 
@@ -69,7 +72,11 @@ def verdict_line(bad: int, unknown: int, bad_axes=None,
     if not bad and not unknown:
         return "✅ 이상 없음"
     # ⚠️ 건수만 말하면 "어느 축이?" 를 사람이 전체 로그를 열어 찾아야 한다
-    # — 갈래마다 처방이 다르다(#82). 축을 알면 그 자리를 바로 연다.
+    # — 갈래마다 처방이 다르다(#82).
+    # ⚠️ **못 보는 축**(#274): 이 줄은 ❌ 를 안 쓰므로(하드 제약, #289)
+    # `audit_sweep._findings` 가 ❌ 줄만 수집하는 알림 경로에는 **실리지
+    # 않는다**. 축 이름은 로그를 여는 사람에게만 닿는다 — 알림에 실으려고
+    # 여기에 ❌ 를 넣으면 #289 가 그대로 재발한다.
     u = _axis_tally(unknown_axes)
     if not bad:
         return f"❓ 판정불가 {unknown}건" + (f" — {u}" if u else "")
@@ -184,7 +191,12 @@ def mark_finding(tk: str, line: str) -> str:
 
 
 def audit_one(tk: str, dart, years: int = 3) -> dict:
-    """한 종목 감사 → {"lines": [...], "bad": n, "unknown": n}."""
+    """한 종목 감사 → {"lines", "bad", "unknown", "bad_axes", "unknown_axes"}.
+
+    `*_axes` 는 그 카운터를 올린 **축 이름**이라 `len(bad_axes) == bad` 가
+    항상 참이다(같은 분기에서 함께 올린다 — 총계와 소계가 다른 모집단을
+    세면 갈라진다, #45).
+    """
     from bot.fcf import cumulative_smell, fcf_from_row
     from bot.market import detect_market
     from bot.scripts.fcf_probe import fiscal_window
