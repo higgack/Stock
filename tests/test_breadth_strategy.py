@@ -748,6 +748,61 @@ class ConfirmedSignalAuditTests(unittest.TestCase):
         self.assertIn("30.77% (4/13)", html)
         self.assertNotIn("30.80%", html)
 
+    def test_history_row_says_which_regime_and_why_cash(self):
+        """사용자 2026-09-07 "8월말에 왜 현금대기인지 안알려줘? 이거는 역추세·
+        추세·회복·비추세중에 어떤건거야?" — 확정 이력에 **구간 열이 아예
+        없었고**, `현금 대기` 는 네 구간 모두에서 나오는 라벨이라 상태만으론
+        못 가른다(#82·#34).
+
+        ⚠️ 저장된 필드에서 렌더타임에 파생하므로 **옛 기록도 그대로 따라온다**
+        (#270) — 이 픽스처가 바로 그 옛 형식이다(분모·사유 필드 없음).
+        """
+        import json
+        import re
+        import tempfile
+        from pathlib import Path
+
+        old_dir = bs._SIGNAL_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                bs._SIGNAL_DIR = Path(td)
+                bs.signal_path("KR").write_text(json.dumps({
+                    "month": "2026-08", "asof": "2026-08-29", "state": "CASH",
+                    "regime": "RECOVERY", "breadth_pct": 30.8,
+                    "dd_pct": -25.52, "index_w": 0, "total_w": 0,
+                    "cash_w": 1.0, "targets": [], "top3": []}) + "\n",
+                    encoding="utf-8")
+                html = bs.render_page({"KR": RenderTests._snap(
+                    "KR", 30.8, "CASH", "RECOVERY", 0.0, 1.0)})
+        finally:
+            bs._SIGNAL_DIR = old_dir
+        row = re.search(r"<tbody>(.*?)</tbody>", html, re.S).group(1)
+        assert "회복 구간" in row, row          # 구간 열
+        assert "현금 대기" in row
+        assert "회복조건" in row and "충족한 섹터가" in row   # 왜 현금인지
+        # ⚠️ escape 를 거치므로 마크다운 볼드는 기호가 그대로 나온다(실측)
+        assert "**" not in row, row
+        # 헤더에도 열이 늘어야 셀과 어긋나지 않는다(#45)
+        assert html.count("<th>구간</th>") >= 1
+
+    def test_cash_reason_names_the_branch_and_never_guesses(self):
+        """`CASH` 는 **네 갈래**로 도달한다 — 처방이 다 다르므로 이름을 댄다
+        (#82). 현금이 아니면 아무 말도 안 하고(늘 뜨는 문구 금지 #25·#260),
+        모르는 조합은 지어내지 않는다(#165)."""
+        assert "회복조건" in bs.cash_reason("RECOVERY", "CASH")
+        assert "트랜치" in bs.cash_reason("CONTRARIAN", "CASH", -5.2)
+        assert "-5.20%" in bs.cash_reason("CONTRARIAN", "CASH", -5.2)
+        assert "RS" in bs.cash_reason("NON_TREND", "CASH")
+        assert "RS" in bs.cash_reason("TREND", "CASH")
+        assert "판정 불가" in bs.cash_reason(None, "CASH")
+        # 현금이 아닌 상태엔 한 글자도 안 붙는다
+        assert bs.cash_reason("TREND", "TREND_RS_TOP3") == ""
+        assert bs.cash_reason("RECOVERY", "RECOVERY_LEADER_PULLBACK") == ""
+        # 네 갈래가 **서로 다른 문장**이어야 라벨 노릇을 한다
+        outs = {bs.cash_reason(r, "CASH") for r in
+                ("CONTRARIAN", "RECOVERY", "NON_TREND")}
+        assert len(outs) == 3, outs
+
     def test_entrypoint_is_last_and_dispatches_why(self):
         """⚠️ 엔트리포인트가 파일 중간이면 그 아래 정의는 영영 안 닿는다
         (#276). 그리고 배선은 **존재가 아니라 호출**이다(#120)."""

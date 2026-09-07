@@ -24649,15 +24649,24 @@ class TestChronologicalTablesAndVol20260816:
         html = bs.render_page({"KR": d})
         # 가이드 문구에도 같은 표현이 있어 **마지막** 등장(실제 표)을 쓴다.
         seg = html[html.rindex("확정 신호 이력"):]
-        hdr = re.findall(r"<th( class='num')?>([^<]+)</th>", seg)[:7]
+        # ⚠️ 옛 판은 `[:7]` 로 **열 개수를 리터럴**로 박아 뒀다 — 2026-09-07
+        # 에 `구간` 열이 늘자 마지막 열(현금)이 잘려 멀쩡한 코드를 틀렸다고
+        # 했다(#19·#67). 계약은 "숫자 헤더는 우측정렬" 이지 "열이 7개" 가
+        # 아니다 → **헤더 행 전체**를 파싱한다.
+        head_row = re.search(r"<thead><tr>(.*?)</tr>", seg, re.S).group(1)
+        hdr = re.findall(r"<th( class='num')?>([^<]+)</th>", head_row)
         got = {name: bool(cls) for cls, name in hdr}
-        assert got["월"] is False and got["상태"] is False, got
+        assert len(got) == len(hdr), f"헤더 이름 중복: {hdr}"
+        for k in ("월", "구간", "상태"):     # 글자 열은 좌측
+            assert got.get(k) is False, f"{k} 헤더가 우측정렬: {got}"
         for k in ("Breadth", "지수 DD", "지수비중", "최종비중", "현금"):
             assert got.get(k) is True, f"{k} 헤더가 좌측정렬: {got}"
         assert ".bs-tbl th.num" in html, "헤더 우측정렬 CSS 없음"
         # 헤더 수 == 데이터 셀 수 (컬럼 어긋남 방지)
+        # ⚠️ 여기도 `== 7` 리터럴이었다 — 열이 하나 늘자 깨졌다. 계약은
+        # "헤더 수와 셀 수가 같다" 이므로 **헤더에서 파생**시킨다(#19·#67).
         body = seg[seg.index("<tbody>"):]
-        assert body.count("<td") // max(body.count("<tr>"), 1) == 7
+        assert body.count("<td") // max(body.count("<tr>"), 1) == len(hdr)
 
     # ── ④ 갱신 주기가 화면에 적혀 있어야 한다 ────────────────────────
     def test_refresh_cadence_is_stated_on_screen(self):
@@ -46525,7 +46534,14 @@ class TestProbeFailKind20260907:
 
         이 배포 이전에 쌓인 원장은 갈래가 없다 — 버리지 말고 `갈래미상`."""
         from trade.scripts.daily_digest import err_breakdown
-        assert err_breakdown(42, None) == "42회"
+        # ⚠️ 계약 변경(2026-09-07): 옛 판은 갈래가 **하나도** 없으면 `42회` 로
+        # 침묵했다. 그날 결산이 실제로 `probe 오류 5회` 로 떴는데, 그게 '배포
+        # 전에 쌓인 원장' 인지 '적립부가 고장났다' 인지 구별할 수 없었다 —
+        # 바로 이 함수의 독스트링이 "갈래미상으로 남긴다" 고 약속해 놓고
+        # 조기 반환이 그 경로를 건너뛰고 있었다(#55·#43). 세 필드 모두 적립
+        # 배선이 있으므로 이 문구가 계속 뜨면 그 자체가 고장 신호다(#25·#260).
+        assert err_breakdown(42, None) == "42회(갈래미상 42)"
+        assert err_breakdown(0, None) == "0회"          # 0 건에는 안 붙인다
         assert err_breakdown(42, {"타임아웃": 40, "원천장애 503": 2}) == (
             "42회(타임아웃 40 · 원천장애 503 2)")
         assert "갈래미상 12" in err_breakdown(42, {"타임아웃": 30})
@@ -46542,11 +46558,10 @@ class TestProbeFailKind20260907:
                         "scan_partial": 1},
                        False, None)
         assert "probe 오류 42회(타임아웃 40 · 원천응답 22 2)" in body
-        # 갈래가 없던 날은 종전 그대로 — 옛 원장이 결산을 깨뜨리지 않는다
+        # 갈래가 없던 날은 **모른다고 말한다** — 옛 원장이 결산을 깨뜨리지도
+        # 않고, 조용히 정상인 척하지도 않는다(계약 변경 2026-09-07, 위 참조).
         old = compose("2026-09-06", 0, {"probe_fail": 42}, False, None)
-        # ⚠️ `"(" not in old.split("❌")[1]` 로 쓰면 compose 에 괄호 있는 문구가
-        # 하나만 늘어도 무관하게 깨진다(#19 소스·출력 문자열 단언).
-        assert "probe 오류 42회" in old and "probe 오류 42회(" not in old
+        assert "probe 오류 42회(갈래미상 42)" in old
 
 
 class TestFcfAuditRecapDoesNotDoubleCount20260907:
