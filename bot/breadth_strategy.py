@@ -120,6 +120,38 @@ def is_recovery_candidate(m: dict) -> bool:
     return close > ma120 and rs6m > 0 and _PULLBACK_MIN <= pb <= _PULLBACK_MAX
 
 
+def cash_reason(regime: str | None, state: str | None,
+                dd_pct: float | None = None) -> str:
+    """`현금 대기` 가 **왜** 현금인지 — 저장된 필드에서 파생하는 순수 함수.
+
+    ⚠️ 왜 필요한가(사용자 2026-09-07 "8월말에 왜 현금대기인지 안알려줘?"):
+    `CASH` 는 **네 갈래**로 도달한다 — ① 역추세인데 낙폭이 트랜치(-12%)에
+    못 미침 ② 회복인데 조건 충족 섹터 없음 ③ 비추세·추세인데 지수를 웃도는
+    섹터 없음 ④ 판정 불가. 처방이 다 다른데 화면은 넷을 **한 라벨**로 묶어
+    놨다(#82 갈래는 이름으로 · #34 한 라벨이 여럿을 대표하면 하나는 거짓말).
+
+    ⚠️ 렌더타임 파생이라 **옛 확정 기록도 그대로 따라온다**(#270) — 백필이
+    필요 없다. 대신 모르는 조합은 **지어내지 않고** 빈 문자열을 낸다(#165).
+    """
+    if state != "CASH":
+        return ""
+    if regime is None:
+        return "판정 불가 — Breadth 를 계산하지 못했습니다"
+    if regime == "CONTRARIAN":
+        dd = f"{dd_pct:.2f}%" if isinstance(dd_pct, (int, float)) else "—"
+        return (f"지수 낙폭({dd})이 첫 매수 트랜치(−12%)에 못 미쳐 "
+                "단계매수를 시작하지 않았습니다")
+    if regime == "RECOVERY":
+        # ⚠️ 이 문자열은 HTML escape 를 거치므로 `**볼드**`·태그를 쓰면
+        # 기호가 그대로 화면에 나온다(실측). 평문으로 쓴다.
+        return ("과거 리더 중 회복조건(현재가>MA120 · 6개월 RS>0 · "
+                "20일 고점 대비 −15~−5% 놀림목)을 셋 다 충족한 섹터가 "
+                "없었습니다")
+    if regime in ("NON_TREND", "TREND"):
+        return "RS 가 지수를 웃도는(>0) 섹터가 없어 매수 대상이 없었습니다"
+    return ""
+
+
 def decide(breadth_pct: float | None, dd_pct: float | None, *,
            recovery_pool: list[dict] | None = None,
            rs_ranked: list[dict] | None = None) -> dict:
@@ -552,6 +584,21 @@ def _pct_s(v, digits: int = 2) -> str:
     return "—" if v is None else f"{v:,.{digits}f}%"
 
 
+def _cash_why(rec: dict) -> str:
+    """`현금 대기` 옆에 **왜** 현금인지 한 줄. 없으면 아무것도 안 붙인다.
+
+    ⚠️ 저장된 (구간·상태·DD)에서 **렌더타임에 파생**하므로 옛 확정 기록도
+    그대로 따라온다 — 백필 패스가 필요 없다(#270). 모르는 조합엔 지어내지
+    않는다(#165).
+    """
+    import html as _hh          # `_h` 는 렌더 함수 안의 지역 import 다
+    why = cash_reason(rec.get("regime"), rec.get("state"), rec.get("dd_pct"))
+    if not why:
+        return ""
+    return (f"<div class='si-note' style='margin-top:2px'>"
+            f"{_hh.escape(why)}</div>")
+
+
 def _breadth_cell(rec: dict) -> str:
     """확정 이력의 Breadth 칸 — 있으면 **분모까지** 적는다(`30.77% (4/13)`).
 
@@ -612,7 +659,12 @@ def _market_section(d: dict) -> str:
              if fng.get("index") is not None else "—")
     hist = "".join(
         f"<tr><td>{_h.escape(str(r.get('month', '')))}</td>"
-        f"<td>{_h.escape(STATE_LABEL.get(r.get('state'), r.get('state') or '—'))}</td>"
+        # ⚠️ **구간**은 기록에 있는데 표에 열이 없었다 — 사용자가 "이거는
+        # 역추세·추세·회복·비추세 중 어떤거야?" 를 물어야 했다(2026-09-07).
+        # 상태만으로는 못 가른다(`현금 대기` 는 네 구간 모두에서 나온다).
+        f"<td>{_h.escape(REGIME_LABEL.get(r.get('regime'), '—'))}</td>"
+        f"<td>{_h.escape(STATE_LABEL.get(r.get('state'), r.get('state') or '—'))}"
+        f"{_cash_why(r)}</td>"
         f"<td class='num'>{_breadth_cell(r)}</td>"
         f"<td class='num'>{_pct_s(r.get('dd_pct'))}</td>"
         f"<td class='num'>{(r.get('index_w') or 0) * 100:.0f}%</td>"
@@ -621,7 +673,7 @@ def _market_section(d: dict) -> str:
         for r in reversed(load_signals(mkt, limit=24)))
     # ⚠️ 숫자 컬럼은 **헤더도** 우측정렬(class="num") — 셀만 우측이고 헤더가
     # 좌측이면 제목과 값이 어긋나 보인다(사용자 2026-08-16 스크린샷).
-    hist_html = (f"<table class='bs-tbl'><thead><tr><th>월</th><th>상태</th>"
+    hist_html = (f"<table class='bs-tbl'><thead><tr><th>월</th><th>구간</th><th>상태</th>"
                  f"<th class='num'>Breadth</th><th class='num'>지수 DD</th>"
                  f"<th class='num'>지수비중</th><th class='num'>최종비중</th>"
                  f"<th class='num'>현금</th></tr></thead><tbody>{hist}"

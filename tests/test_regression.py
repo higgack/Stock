@@ -24649,15 +24649,24 @@ class TestChronologicalTablesAndVol20260816:
         html = bs.render_page({"KR": d})
         # 가이드 문구에도 같은 표현이 있어 **마지막** 등장(실제 표)을 쓴다.
         seg = html[html.rindex("확정 신호 이력"):]
-        hdr = re.findall(r"<th( class='num')?>([^<]+)</th>", seg)[:7]
+        # ⚠️ 옛 판은 `[:7]` 로 **열 개수를 리터럴**로 박아 뒀다 — 2026-09-07
+        # 에 `구간` 열이 늘자 마지막 열(현금)이 잘려 멀쩡한 코드를 틀렸다고
+        # 했다(#19·#67). 계약은 "숫자 헤더는 우측정렬" 이지 "열이 7개" 가
+        # 아니다 → **헤더 행 전체**를 파싱한다.
+        head_row = re.search(r"<thead><tr>(.*?)</tr>", seg, re.S).group(1)
+        hdr = re.findall(r"<th( class='num')?>([^<]+)</th>", head_row)
         got = {name: bool(cls) for cls, name in hdr}
-        assert got["월"] is False and got["상태"] is False, got
+        assert len(got) == len(hdr), f"헤더 이름 중복: {hdr}"
+        for k in ("월", "구간", "상태"):     # 글자 열은 좌측
+            assert got.get(k) is False, f"{k} 헤더가 우측정렬: {got}"
         for k in ("Breadth", "지수 DD", "지수비중", "최종비중", "현금"):
             assert got.get(k) is True, f"{k} 헤더가 좌측정렬: {got}"
         assert ".bs-tbl th.num" in html, "헤더 우측정렬 CSS 없음"
         # 헤더 수 == 데이터 셀 수 (컬럼 어긋남 방지)
+        # ⚠️ 여기도 `== 7` 리터럴이었다 — 열이 하나 늘자 깨졌다. 계약은
+        # "헤더 수와 셀 수가 같다" 이므로 **헤더에서 파생**시킨다(#19·#67).
         body = seg[seg.index("<tbody>"):]
-        assert body.count("<td") // max(body.count("<tr>"), 1) == 7
+        assert body.count("<td") // max(body.count("<tr>"), 1) == len(hdr)
 
     # ── ④ 갱신 주기가 화면에 적혀 있어야 한다 ────────────────────────
     def test_refresh_cadence_is_stated_on_screen(self):
