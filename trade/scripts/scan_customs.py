@@ -30,9 +30,12 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
+import socket
 import sys
 import time
 import urllib.error
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -255,6 +258,63 @@ def _exc_detail(exc: Exception | None, limit: int = 160) -> str:
     return f"{name}: {msg}"
 
 
+def probe_fail_kind(exc: Exception | None) -> str:
+    """probe 실패 예외 → **갈래** 한 낱말(원장 적립용). 순수·테스트 가능.
+
+    ⚠️ 왜 갈래인가: 결산이 `probe 오류 42회` 라고만 말하면 운영자가 원인을
+    짐작해야 하는데, 갈래마다 **처방이 정반대**다 — 타임아웃·원천장애는
+    손쓸 게 없고(기다린다), 요청한도는 호출을 줄이고, 인증·키는 키를
+    갈아야 한다(#82 · #279 갈래는 이름으로 부를 것).
+
+    ⚠️ 모르는 예외는 **단정하지 않는다** — 클래스명을 그대로 돌려준다
+    (#165 재지 않은 귀속을 이름으로 단정하지 말 것). 그러면 결산에 낯선
+    낱말이 떠서 그 자체가 '새 실패모드' 신호가 된다.
+
+    ⚠️ 관세청 `resultCode` 는 **코드까지** 싣는다 — 22(요청한도)와
+    30/31(키 미등록·기간만료)은 같은 CustomsAPIError 지만 처방이 다르다.
+    """
+    if exc is None:
+        return "미상"
+    if isinstance(exc, urllib.error.HTTPError):
+        code = getattr(exc, "code", 0) or 0
+        if code == 429:
+            return "요청한도"
+        if code in (401, 403):
+            return "인증·키"
+        if 500 <= code < 600:
+            return f"원천장애 {code}"
+        return f"요청오류 {code}"
+    if isinstance(exc, TimeoutError) or isinstance(exc, socket.timeout):
+        return "타임아웃"
+    if isinstance(exc, urllib.error.URLError):
+        # URLError 는 reason 에 진짜 원인이 들어 있다(타임아웃·DNS·연결거부).
+        # HTTPError 는 URLError 의 하위라 위에서 이미 갈렸다.
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return "타임아웃"
+        return "네트워크"
+    if isinstance(exc, customs.CustomsAPIError):
+        # ⚠️ `customs._http_get` 은 HTTPError 를 **CustomsAPIError 로 재포장**
+        # 한다(`raise … from exc`) — 그래서 프로덕션 probe 실패는 위 HTTPError
+        # 분기에 **한 번도 도달하지 않는다**. 429·403·5xx 가 전부 '원천응답'
+        # 한 통에 담기면 이 갈래 기능 자체가 무의미해진다(2026-09-07 독립
+        # 리뷰 실측). 원인은 `__cause__` 에 살아 있으므로 풀어서 다시 본다
+        # (#20 배선은 태워야 보인다 · #141 호출이 있어도 조건이 막으면 안 돈다).
+        cause = getattr(exc, "__cause__", None)
+        if isinstance(cause, (urllib.error.URLError, TimeoutError,
+                              socket.timeout)):
+            return probe_fail_kind(cause)
+        msg = str(exc)
+        if "not set" in msg:
+            return "인증·키"
+        # resultCode 는 `INFO-00`·`ERROR-300` 처럼 하이픈을 쓰기도 한다.
+        m = re.search(r"resultCode=([\w-]+)", msg)
+        return f"원천응답 {m.group(1)}" if m else "원천응답"
+    if isinstance(exc, ET.ParseError):
+        return "응답파싱"
+    return type(exc).__name__
+
+
 def _err_summary(errs: list, top: int = 3) -> str:
     """실패 사유 리스트 → 알림 본문 한 덩어리(빈도순 상위 top). 순수·테스트 가능.
 
@@ -300,9 +360,16 @@ def _probe_fingerprint(key: str) -> dict | None:
         log.warning("probe fetch failed (2회): %s", last_exc)
         try:
             from trade import run_ledger
-            if run_ledger.bump("probe_fail") == 1:   # 일 1회 dedup
+            first = run_ledger.bump("probe_fail") == 1   # 일 1회 dedup
+            if first:
                 _send_alert(f"❌ <b>관세청 probe 오류</b>\n{_exc_detail(last_exc)}"
                             " — 정기 4회/일 풀스윕이 안전망으로 계속 작동")
+            # 갈래를 같이 적립 — 결산이 `probe 오류 42회(타임아웃 40 · …)`
+            # 로 처방까지 말하게 한다(#82 · #279). ⚠️ 순서 둘: **총계를 먼저**
+            # 올려야 소계가 총계를 넘지 않고(#45), **알림 뒤에** 둬야 적립이
+            # 던져도 일 1회 운영자 알림이 조용히 사라지지 않는다(이 블록 전체가
+            # `except Exception: pass` 안이다 — silent-fail 금지, #12).
+            run_ledger.bump_kind("probe_fail", probe_fail_kind(last_exc))
         except Exception:
             pass
         return None
@@ -408,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     all_rows: list[dict] = []
     ok = fail = 0
     errs: list[str] = []          # 실패 사유 — 알림에 실어 원인을 바로 보이게
+    kinds: list[str] = []         # 실패 **갈래** — 결산이 처방을 말하게(#82·#290)
     for ch in chapters:
         try:
             # fetch_chapter_range — 13개월 윈도를 ≤12개월로 쪼개 호출.
@@ -422,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             fail += 1
             errs.append(_exc_detail(exc))
+            kinds.append(probe_fail_kind(exc))
             log.warning("chapter %s failed: %s", ch, exc)
     log.info("scan: chapters ok=%d fail=%d rows=%d", ok, fail, len(all_rows))
     from trade import run_ledger
@@ -434,6 +503,12 @@ def main(argv: list[str] | None = None) -> int:
             _send_alert("❌ <b>관세청 스캔 실패</b>\n"
                         f"{len(chapters)}챕터 전부 실패 (이전 스냅샷은 유지됨)\n"
                         f"{_err_summary(errs)}")
+        # 결산이 `스캔 전체실패 3회` 라고만 말하면 처방을 못 고른다(#290).
+        # ⚠️ 총계는 **실행 1회당 1** 이므로 갈래도 1개만 — 챕터마다 적립하면
+        # 소계가 총계를 훌쩍 넘는다(#45). 가장 흔한 갈래가 그 실행을 대표한다.
+        if kinds:
+            from collections import Counter
+            run_ledger.bump_kind("scan_fail", Counter(kinds).most_common(1)[0][0])
         return 1
     coverage = ok / (ok + fail) if (ok + fail) else 0.0
 
@@ -506,6 +581,15 @@ def main(argv: list[str] | None = None) -> int:
             _send_alert(f"⚠️ <b>관세청 부분 스캔</b>\n커버리지 "
                         f"{coverage * 100:.0f}% (ok={ok} fail={fail}) — "
                         "이전 스냅샷 유지, 다음 스캔 재시도")
+        # 부분 스캔은 예외가 아니라 **커버리지 게이트**다 — 그래도 어느 갈래가
+        # 챕터를 죽였는지는 결산이 말해야 한다(#82). 갈래를 못 세면 게이트
+        # 자체를 사유로 남긴다(침묵이 최악, #43).
+        if kinds:
+            from collections import Counter
+            run_ledger.bump_kind("scan_partial",
+                                 Counter(kinds).most_common(1)[0][0])
+        else:
+            run_ledger.bump_kind("scan_partial", "커버리지미달")
         return 0
 
     empty = not any(ranked.get(s) for s in (

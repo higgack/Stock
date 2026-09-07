@@ -29,15 +29,25 @@ _PARTS = ("영업활동현금흐름", "유형자산취득", "무형자산취득"
 
 
 def _mark(fin: dict) -> str:
-    """이 기간의 재료 상태 한 줄 — 무엇이 있고 무엇이 없나."""
-    got = [k for k in _PARTS if (fin or {}).get(k) is not None]
+    """이 기간의 재료 상태 한 줄 — 무엇이 있고 무엇이 없나.
+
+    ⚠️ 판정은 **제품이 쓰는 CAPEX**(`bot.fcf.dart_capex` = 유형자산취득만,
+    #215)로 한다. 무형자산취득은 **표시만** 한다 — 예전엔 무형만 있어도
+    ✅ 로 찍어, 제품이 정상적으로 비운 기간을 '배선 결함' 이라 지목했다
+    (2026-09-07 독립 리뷰 실측). 진단이 화면과 다른 산식을 쓰면 운영자를
+    없는 버그 사냥으로 보낸다(#35·#38·#109).
+    """
+    from bot.fcf import dart_capex
+    fin = fin or {}
+    got = [k for k in _PARTS if fin.get(k) is not None]
     if not got:
         return "❌ 셋 다 없음"
     miss = [k for k in _PARTS if k not in got]
     if "영업활동현금흐름" not in got:
         return f"❌ 영업CF 없음 (있는 것: {'·'.join(got)})"
-    if len(got) == 1:
-        return "❌ CAPEX 없음 (영업CF만)"
+    if dart_capex(fin) is None:
+        return ("❌ CAPEX(유형자산취득) 없음 "
+                f"(있는 것: {'·'.join(got)})")
     return f"✅ {'·'.join(got)}" + (f"  (없음: {'·'.join(miss)})" if miss else "")
 
 
@@ -152,9 +162,10 @@ def main(argv: list[str] | None = None) -> int:
     stream_stdout()
     from bot.dart_client import _FIN_CACHE_VER
     from bot.env_keys import env_source
-    from bot.fcf import fcf_from_parts
+    from bot.scripts.fcf_audit import recompute_dart
     print(f"=== FCF 재료 진단 v{_PROBE_VER} (재무캐시 v{_FIN_CACHE_VER}) ===")
-    print(f"판정 대상: {' / '.join(_PARTS)}  → FCF = 영업CF − |유형+무형|")
+    print(f"관찰 대상: {' / '.join(_PARTS)}  "
+          "→ FCF = 영업CF − |유형자산취득|  (무형은 표시만, #215)")
     print(f"자격증명 DART_API_KEY={env_source('DART_API_KEY') or '없음'}")
     # ⚠️ 실측 2026-08-21: 최근 기간만 재료가 없고 옛 기간은 멀쩡했다 —
     # 원인은 파서가 아니라 **7일 TTL 디스크 캐시**였다(키를 안 올려 CF 없는
@@ -229,11 +240,10 @@ def main(argv: list[str] | None = None) -> int:
         # 재료가 있는데 FCF 가 없으면 그건 산식 배선 문제다.
         for q in qs:
             f = q.get("financials") or {}
-            if f.get("FCF") is None and f.get("영업활동현금흐름") is not None \
-                    and any(f.get(k) is not None for k in _PARTS[1:]):
+            _again = recompute_dart(f)
+            if f.get("FCF") is None and _again is not None:
                 print(f"   ⚠️ {q.get('label')}: 재료는 있는데 FCF 가 없다 "
-                      f"— 배선 확인 필요 "
-                      f"(계산해 보면 {fcf_from_parts(f['영업활동현금흐름'], sum(abs(f[k]) for k in _PARTS[1:] if f.get(k) is not None))})")
+                      f"— 배선 확인 필요 (계산해 보면 {_again})")
         # 캐시 특유의 패턴을 **기계가 지목**한다 — 사람이 매번 알아보길
         # 기대하면 안 된다(이번에 실제로 못 알아볼 뻔했다).
         # KR — 분기합 vs 연간 검산(#33 눈으로 나눗셈). 누적 오염이면 안 맞는다.

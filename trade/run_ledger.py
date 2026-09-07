@@ -53,6 +53,25 @@ def bump(field: str, n: int = 1, date_key: str | None = None) -> int:
     return day[field]
 
 
+def bump_kind(field: str, kind: str, date_key: str | None = None) -> None:
+    """오류 **갈래**를 같이 적립 — `{field}_kinds` 하위 카운터.
+
+    ⚠️ 숫자만 세면 결산이 `probe 오류 42회` 라고만 말한다. 타임아웃·요청한도·
+    인증·원천장애는 **처방이 정반대**라 운영자가 그 42를 보고 짐작하게 된다
+    (#82 '없음'만 말하는 진단은 추측을 부른다 · #279 진단의 모든 문장이 잰
+    것인지 물을 것). 갈래는 예외에서 **재서** 붙인다 — 모르면 클래스명 그대로.
+    """
+    if not kind:
+        return
+    d = _load()
+    day = d.setdefault(date_key or _today(), {})
+    kinds = day.setdefault(f"{field}_kinds", {})
+    if not isinstance(kinds, dict):          # 옛 형식 방어
+        kinds = day[f"{field}_kinds"] = {}
+    kinds[kind] = int(kinds.get(kind, 0)) + 1
+    _save(d)
+
+
 def day_counts(date_key: str) -> dict:
     """해당 KST 날짜의 카운터 dict (없으면 {})."""
     return dict(_load().get(date_key, {}))

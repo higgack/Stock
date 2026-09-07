@@ -46,6 +46,26 @@ def _pct(a, b) -> float | None:
     return abs(a - b) / abs(b) * 100.0
 
 
+def verdict_line(bad: int, unknown: int) -> str:
+    """종목 하나의 **요약** 한 줄. 순수 — 값으로 고정한다(#41).
+
+    ⚠️ ❌ 글리프를 **한 자도** 쓰지 않는다(설명 문구에도). 이 줄은 위
+    판정들의 **재진술**이고, 결함은 이미
+    `① 재계산 ❌ …` 처럼 이름과 함께 나갔다. 여기에 ❌ 를 또 쓰면
+    `audit_sweep._findings` 가 같은 결함을 두 번 세고(#45 총계와 소계가
+    다른 모집단), 하필 **직전 섹션 제목**이 붙어 엉뚱한 축을 지목한다 —
+    2026-09-07 결산 실측: 098070.KQ 는 결함이 ① 재계산 하나뿐인데
+    `[② 교차출처(DART ↔ yfinance)] 판정: ❌ 불일치 1건` 이 따로 떴다.
+    요약은 **세기만** 하고 이름은 위 줄이 댄다(#250 · #268).
+    """
+    if not bad and not unknown:
+        return "✅ 이상 없음"
+    if not bad:
+        return f"❓ 판정불가 {unknown}건"
+    tail = f" (판정불가 {unknown}건)" if unknown else ""
+    return f"불일치 {bad}건 — 위 결함 줄 참조{tail}"
+
+
 def _mark(gap: float | None, tol: float) -> str:
     if gap is None:
         return "❓ 판정불가"
@@ -116,14 +136,25 @@ def _materials(dart_fin: dict, yf_row: dict) -> str:
 
 
 def recompute_dart(fin: dict) -> float | None:
-    """DART 재료로 FCF 를 **다시** 계산 — 화면 값과 대조용."""
-    from bot.fcf import fcf_from_parts
-    parts = [fin.get(k) for k in ("유형자산취득", "무형자산취득")
-             if fin.get(k) is not None]
-    if not parts:
+    """DART 재료로 FCF 를 **다시** 계산 — 화면 값과 대조용.
+
+    ⚠️ CAPEX 선택은 `bot.fcf.dart_capex` **단일 출처**를 부른다. 예전엔 여기서
+    `유형+무형` 을 더했는데 #215 가 화면을 `유형만` 으로 좁힌 뒤 감사만 옛
+    산식에 남아, 정상 종목 098070.KQ 를 4분기 전부 ❌ 로 찍었다(차이가 정확히
+    그 분기 무형자산취득, 2026-09-07). 감사가 산식을 **재구현**하면 제품과
+    다른 기준선을 비교한다(#169·#35).
+
+    ⚠️ **감사 축으로는 쓰지 않는다.** `get_quarterly_series` 가 반환 직전에
+    `_attach_fcf` 로 같은 재료·같은 식으로 그 dict 를 채우므로, 그 결과를
+    이 함수로 다시 계산해 대조하면 **구조상 영원히 일치**한다(2026-09-07
+    독립 리뷰 실측). 남은 용도는 **원본 재료에서 직접** 만들어 보는
+    진단(`scripts.fcf_probe`)이다 — 거기선 화면 dict 가 아니라 DART 계정을
+    받으므로 tautology 가 아니다."""
+    from bot.fcf import dart_capex, fcf_from_parts
+    capex = dart_capex(fin)
+    if capex is None:
         return None
-    return fcf_from_parts(fin.get("영업활동현금흐름"),
-                          sum(abs(float(x)) for x in parts))
+    return fcf_from_parts(fin.get("영업활동현금흐름"), capex)
 
 
 def _yf_rows(snap: dict, kind: str) -> list[tuple[str, dict]]:
@@ -254,17 +285,36 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     if not qs:
         flag(None)
         return {"lines": out, "bad": bad, "unknown": unknown}
-    _re_bad = []
-    for q in qs:
-        fin = q.get("financials") or {}
-        v, again = fin.get("FCF"), recompute_dart(fin)
+    # ① 누적 오염(DART 분기) — 이 경로가 실제로 앓았던 병이다(#96: DART
+    # 현금흐름은 연초부터의 **누적**이라 그대로 실으면 분기 칸에 누적이
+    # 앉는다. 농심 25.4Q 가 FY2025 와 완전히 같았다).
+    #
+    # ⚠️ 예전엔 여기서 화면 dict 를 `recompute_dart` 로 **다시 계산**해
+    # 대조했다. 그건 구조상 **영원히 일치**한다 — `get_quarterly_series` 는
+    # 반환 직전에 `_attach_fcf` 로 그 dict 의 FCF 를 같은 재료·같은 식으로
+    # 만들어 넣기 때문이다(2026-09-07 독립 리뷰가 2,000회 시행으로 실측,
+    # 불일치 0건). 늘 ✅ 를 찍는 축은 판정이 아니라 **거짓 안심**이다
+    # (#54 대조 0건은 통과가 아니다 · #41 여유로 사실을 덮지 말 것).
+    # 그래서 재계산이 아니라 **시계열 모양**을 본다 — 화면이 만든 값
+    # 그대로를 읽으므로 감사가 제품을 재구현하지도 않는다(#169·#35).
+    _q_fcf = [(q.get("financials") or {}).get("FCF") for q in qs]
+    for q, v in zip(qs, _q_fcf):
         say(f"     {q.get('label', '?'):<7} "
             + (f"{v / 1e8:,.0f}억" if v is not None else "— 재료없음"))
-        if v != again:
-            _re_bad.append(f"{q.get('label')}: 화면 {v} ≠ 재계산 {again}")
-    say("     ① 재계산 " + ("✅ 전 분기 일치" if not _re_bad
-                           else f"❌ {_re_bad}"))
-    flag(not _re_bad)
+    import datetime as _dt0
+    _ann = ((dart.get_normalized_financials(tk, year=_dt0.date.today().year - 1)
+             or {}).get("financials") or {}).get("FCF")
+    _vals = [v for v in _q_fcf if v is not None]
+    if len(_vals) < 3 or _ann is None:
+        # ⚠️ 재료가 모자라면 ✅ 가 아니라 **판정 불가**다(#54·#41).
+        say(f"     ① 누적오염 ❓ 판정 불가 — 분기 {len(_vals)}개"
+            f"(3개 필요) · 연간 {'있음' if _ann is not None else '없음'}")
+        flag(None)
+    else:
+        _sm = cumulative_smell(_vals, _ann)
+        say("     ① 누적오염 " + (f"❌ {_sm}" if _sm
+                                else f"✅ 없음({len(_vals)}분기 · 연간 대조)"))
+        flag(not _sm)
     # ② 교차출처 — 같은 기간의 DART 값과 yfinance 값
     say("     ② 교차출처(DART ↔ yfinance)")
     seen = 0
@@ -363,12 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             tot_bad += 1
             continue
         print("\n".join(r["lines"]))
-        v = ("✅ 이상 없음" if not r["bad"] and not r["unknown"]
-             else (f"❌ 불일치 {r['bad']}건" if r["bad"]
-                   else f"❓ 판정불가 {r['unknown']}건"))
-        print(f"  판정: {v}"
-              + (f" (판정불가 {r['unknown']}건)"
-                 if r["bad"] and r["unknown"] else "")
+        print(f"  판정: {verdict_line(r['bad'], r['unknown'])}"
               + f"  {fmt_eta(_i, len(tickers), _t0)}\n")
         tot_bad += r["bad"]
         tot_unknown += r["unknown"]
