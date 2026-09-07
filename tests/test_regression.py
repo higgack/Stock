@@ -46564,3 +46564,104 @@ class TestFcfAuditWiring20260907:
             _attach_fcf(e)
             got = e[0]["financials"]
             assert got.get("FCF") == recompute_dart(got), fin
+
+
+class TestFcfAuditNamesTheAxis20260907:
+    """요약이 `판정불가 1건` 이라고만 말해 **어느 축인지** 알 수 없었다.
+
+    2026-09-07 사용자: "[② 교차출처] ❌ 불일치 1건도 확인해줘" — 실제로 ② 는
+    멀쩡했고(❌ 는 ① 재계산의 재진술, #289) 남은 `판정불가 1건` 의 축은 요약이
+    안 말해서 전체 로그를 따로 열어야 했다. `flag()` 가 축 이름을 버리고
+    카운터만 올렸기 때문이다 — 갈래마다 처방이 다르므로 이름을 대야 한다
+    (#82 · #123·#129·#189·#228 계산해 둔 판정을 표시까지 배선할 것).
+    """
+
+    def test_tally_is_frequency_ordered(self):
+        from bot.scripts.fcf_audit import _axis_tally
+        assert _axis_tally(["②", "④", "②"]) == "②×2 · ④"
+        assert _axis_tally([]) == ""
+        assert _axis_tally(None) == ""
+
+    def test_verdict_names_both_buckets(self):
+        from bot.scripts.fcf_audit import verdict_line
+        v = verdict_line(1, 1, ["①재계산(DART)"], ["②교차출처(분기)"])
+        assert "①재계산(DART)" in v and "②교차출처(분기)" in v
+        assert "❌" not in v, "요약은 판정 글자를 쓰지 않는다(#289)"
+        # 축을 모르는 옛 호출부도 죽지 않는다(건수는 그대로 말한다)
+        assert verdict_line(1, 1) == "불일치 1건 — 위 결함 줄 참조 (판정불가 1건)"
+        assert verdict_line(0, 0) == "✅ 이상 없음"
+
+    def test_every_flag_call_names_an_axis(self):
+        """축을 안 넘기는 `flag()` 가 하나라도 남으면 그 판정은 익명이 된다.
+
+        ⚠️ 이름 열거가 아니라 **함수 안의 모든 호출**을 센다(#24) — 축을
+        새로 넣을 때 빠뜨리면 여기서 잡힌다."""
+        import ast
+        import inspect
+        import textwrap
+        from bot.scripts import fcf_audit
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fcf_audit.audit_one)))
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "flag"]
+        assert calls, "flag() 호출이 0건 — 대조 0건은 통과가 아니다(#54)"
+        bare = [ast.unparse(n) for n in calls if len(n.args) < 2]
+        assert not bare, f"축 없는 flag(): {bare}"
+        # 축은 리터럴이어야 집계가 의미 있다(변수면 런타임에만 안다)
+        assert all(isinstance(n.args[1], ast.Constant) for n in calls)
+
+    def test_dart_missing_branch_is_not_labelled_as_the_payload_axis(self):
+        """**틀린 라벨은 라벨이 없는 것보다 나쁘다**(#82·#187b).
+
+        `mkt == "KR"` 인데 DART 클라이언트가 없어 조기 반환하는 자리는
+        ③ payload 축이 아니다 — KR 경로 전체를 못 탄 것이고 원인은
+        자격증명이다. `③payload` 라고 적으면 운영자를
+        `get_quarterly_series` 로 보낸다(2026-09-07 배포전 셀프리뷰가 잡음).
+        """
+        import ast
+        import inspect
+        import textwrap
+        from bot.scripts import fcf_audit
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fcf_audit.audit_one)))
+        # `if mkt != "KR" or not dart:` 분기를 구조로 찾는다(줄 창 금지, #60)
+        target = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+                  and isinstance(n.test, ast.BoolOp)
+                  and "not dart" in ast.unparse(n.test)]
+        assert len(target) == 1, f"DART 부재 분기를 못 찾았다: {len(target)}"
+        labels = [n.args[1].value for n in ast.walk(target[0])
+                  if isinstance(n, ast.Call)
+                  and getattr(n.func, "id", "") == "flag"
+                  and len(n.args) > 1 and isinstance(n.args[1], ast.Constant)]
+        assert labels, "그 분기에 flag() 가 없다 — 판정불가가 조용히 사라진다(#54)"
+        assert all("DART" in v for v in labels), (
+            f"DART 부재를 다른 축 이름으로 적었다: {labels}")
+        assert not any("payload" in v for v in labels)
+
+    def test_audit_one_returns_the_axis_lists(self):
+        """계산해 두고 **반환하지 않으면** 표시까지 못 간다(#20 배선)."""
+        import ast
+        import inspect
+        import textwrap
+        from bot.scripts import fcf_audit
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fcf_audit.audit_one)))
+        rets = [n for n in ast.walk(tree) if isinstance(n, ast.Return)
+                and isinstance(n.value, ast.Dict)]
+        assert rets, "반환 dict 가 없다"
+        for r in rets:
+            keys = {k.value for k in r.value.keys
+                    if isinstance(k, ast.Constant)}
+            assert {"bad_axes", "unknown_axes"} <= keys, (
+                f"축 목록을 안 싣는 반환이 있다: {sorted(keys)}")
+
+    def test_main_passes_the_axes_through(self):
+        """`main()` 이 축을 안 넘기면 화면은 종전대로 건수만 말한다(#20·#291)."""
+        import ast
+        import inspect
+        import textwrap
+        from bot.scripts import fcf_audit
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fcf_audit.main)))
+        call = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and getattr(n.func, "id", "") == "verdict_line"]
+        assert call, "main() 이 verdict_line 을 안 부른다"
+        src = {ast.unparse(a) for a in call[0].args}
+        assert any("bad_axes" in a for a in src), f"축 미전달: {src}"
+        assert any("unknown_axes" in a for a in src), f"축 미전달: {src}"

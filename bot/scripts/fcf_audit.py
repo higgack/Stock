@@ -46,7 +46,15 @@ def _pct(a, b) -> float | None:
     return abs(a - b) / abs(b) * 100.0
 
 
-def verdict_line(bad: int, unknown: int) -> str:
+def _axis_tally(axes) -> str:
+    """축 이름 목록 → `②교차출처(분기)×2 · ④검산` (빈도순). 순수."""
+    from collections import Counter
+    return " · ".join(f"{a}×{n}" if n > 1 else a
+                      for a, n in Counter(axes or []).most_common())
+
+
+def verdict_line(bad: int, unknown: int, bad_axes=None,
+                 unknown_axes=None) -> str:
     """종목 하나의 **요약** 한 줄. 순수 — 값으로 고정한다(#41).
 
     ⚠️ ❌ 글리프를 **한 자도** 쓰지 않는다(설명 문구에도). 이 줄은 위
@@ -60,10 +68,14 @@ def verdict_line(bad: int, unknown: int) -> str:
     """
     if not bad and not unknown:
         return "✅ 이상 없음"
+    # ⚠️ 건수만 말하면 "어느 축이?" 를 사람이 전체 로그를 열어 찾아야 한다
+    # — 갈래마다 처방이 다르다(#82). 축을 알면 그 자리를 바로 연다.
+    u = _axis_tally(unknown_axes)
     if not bad:
-        return f"❓ 판정불가 {unknown}건"
-    tail = f" (판정불가 {unknown}건)" if unknown else ""
-    return f"불일치 {bad}건 — 위 결함 줄 참조{tail}"
+        return f"❓ 판정불가 {unknown}건" + (f" — {u}" if u else "")
+    tail = f" (판정불가 {unknown}건{f' — {u}' if u else ''})" if unknown else ""
+    b = _axis_tally(bad_axes)
+    return (f"불일치 {bad}건{f' — {b}' if b else ''} — 위 결함 줄 참조{tail}")
 
 
 def _mark(gap: float | None, tol: float) -> str:
@@ -181,6 +193,8 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     mkt = detect_market(tk.upper()) or "?"
     out: list[str] = []
     bad = unknown = 0
+    bad_axes: list[str] = []
+    unknown_axes: list[str] = []
 
     def say(s):
         # ⚠️ 결함 줄엔 **어느 종목인지** 붙인다 — 안 붙이면 sweep 이 바로 위
@@ -189,12 +203,22 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         # 같이 찍어야 한다(#114).
         out.append(mark_finding(tk, s))
 
-    def flag(ok: bool | None):
+    def flag(ok: bool | None, axis: str):
+        """축 판정 하나를 집계 — **어느 축인지 같이 남긴다**.
+
+        ⚠️ 예전엔 카운터만 올려서 요약이 `판정불가 1건` 이라고만 말했고,
+        어느 축이 판정 불가였는지는 전체 로그를 따로 열어야 알 수 있었다
+        (2026-09-07 사용자 질문: "② 교차출처 ❌ 불일치 1건도 확인해줘").
+        갈래마다 처방이 다르므로 이름을 대야 한다(#82) — 계산해 둔 판정을
+        표시까지 배선하지 않으면 없는 것과 같다(#123·#129·#189·#228).
+        """
         nonlocal bad, unknown
         if ok is None:
             unknown += 1
+            unknown_axes.append(axis)
         elif not ok:
             bad += 1
+            bad_axes.append(axis)
 
     say(f"── {tk}  [{mkt}]")
     snap = collect_stock_snapshot(tk, use_cache=False) or {}
@@ -225,11 +249,11 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     if not yq and not ya:
         say("     ① 재계산 ❌ 대조 0건 — 현금흐름표를 못 받았다"
             "(스냅샷 실패·원천 차단·의존성 누락 중 하나)")
-        flag(False)
+        flag(False, "①재계산(yf)")
     else:
         say(f"     ① 재계산 " + (f"✅ 전 기간 일치({_re_n}건)" if not _re_bad
                                 else f"❌ 불일치 {_re_bad}"))
-        flag(not _re_bad)
+        flag(not _re_bad, "①재계산(yf)")
     # ④ 검산(회계연도 정렬)
     win = fiscal_window(list(yq_fcf.items()), list(ya_fcf.items()))
     if win:
@@ -237,7 +261,7 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         g = _pct(sum(vals), a)
         say(f"     ④ {fy} 분기합 {sum(vals):,.0f} vs 연간 {a:,.0f} "
             + _mark(g, _SUM_OK))
-        flag(None if g is None else g <= _SUM_OK)
+        flag(None if g is None else g <= _SUM_OK, "④검산")
     else:
         _last_a = next((p for p, v in reversed(list(ya_fcf.items()))
                         if v is not None), "")
@@ -248,7 +272,7 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
                f"{', '.join(_miss)}" if _miss
                else "연간 기준일과 맞는 분기 시계열이 없다")
             + " (yfinance 는 분기 현금흐름을 5개 안팎만 준다)")
-        flag(None)
+        flag(None, "④검산")
     # ⑤ 누적냄새 — ⚠️ 판정에 쓸 값이 없으면 **✅ 가 아니다**(#54).
     # `cumulative_smell` 은 값 3개 미만이면 None(판단보류)을 주는데, 그걸
     # "냄새 없음"으로 찍으면 데이터가 통째로 빈 종목이 통과한다.
@@ -256,7 +280,7 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     if len(_sm_vals) < 3:
         say(f"     ⑤ ❓ 판정 불가 — 분기 FCF 가 {len(_sm_vals)}개뿐"
             "(3개 이상 있어야 누적 여부를 가른다)")
-        flag(None)
+        flag(None, "⑤누적냄새(yf)")
     else:
         sm = cumulative_smell(
             [v for _p, v in list(yq_fcf.items())[-4:]],
@@ -264,7 +288,7 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
                   if v is not None), None))
         say("     ⑤ " + (f"❌ 누적 오염 의심: {sm}"
                          if sm else f"✅ 누적 냄새 없음({len(_sm_vals)}분기)"))
-        flag(not sm)
+        flag(not sm, "⑤누적냄새(yf)")
 
     if mkt != "KR" or not dart:
         # 비-KR 은 인포그래픽도 같은 yfinance 현금흐름을 쓴다 — 원천이
@@ -273,8 +297,13 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             "(yfinance) — 교차출처 검사 대상 없음"
             if mkt != "KR" else "  ❓ DART 없음 — KR 경로 판정 불가")
         if mkt == "KR":
-            flag(None)
-        return {"lines": out, "bad": bad, "unknown": unknown}
+            # ⚠️ 여기는 ③ payload 축이 아니다 — DART 클라이언트가 **아예
+            # 없어** KR 경로 전체를 못 탄 것이다. `③payload` 라고 적으면
+            # 운영자를 `get_quarterly_series` 로 보내는데 진짜 원인은
+            # 자격증명이다. 틀린 라벨은 라벨이 없는 것보다 나쁘다(#82·#187b).
+            flag(None, "DART경로(클라이언트 없음)")
+        return {"lines": out, "bad": bad, "unknown": unknown,
+            "bad_axes": bad_axes, "unknown_axes": unknown_axes}
 
     # ── 밸류에이션 탭 · 분기실적 탭(KR) — 둘 다 이 시계열 하나를 본다
     from bot.dart_quarterly import get_quarterly_series
@@ -283,8 +312,9 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
     say("     ③ 두 화면이 같은 payload(get_quarterly_series)를 본다 ✅"
         if qs else "     ③ ❓ 분기 시계열 없음")
     if not qs:
-        flag(None)
-        return {"lines": out, "bad": bad, "unknown": unknown}
+        flag(None, "③payload")
+        return {"lines": out, "bad": bad, "unknown": unknown,
+            "bad_axes": bad_axes, "unknown_axes": unknown_axes}
     # ① 누적 오염(DART 분기) — 이 경로가 실제로 앓았던 병이다(#96: DART
     # 현금흐름은 연초부터의 **누적**이라 그대로 실으면 분기 칸에 누적이
     # 앉는다. 농심 25.4Q 가 FY2025 와 완전히 같았다).
@@ -309,12 +339,12 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         # ⚠️ 재료가 모자라면 ✅ 가 아니라 **판정 불가**다(#54·#41).
         say(f"     ① 누적오염 ❓ 판정 불가 — 분기 {len(_vals)}개"
             f"(3개 필요) · 연간 {'있음' if _ann is not None else '없음'}")
-        flag(None)
+        flag(None, "①누적오염(DART)")
     else:
         _sm = cumulative_smell(_vals, _ann)
         say("     ① 누적오염 " + (f"❌ {_sm}" if _sm
                                 else f"✅ 없음({len(_vals)}분기 · 연간 대조)"))
-        flag(not _sm)
+        flag(not _sm, "①누적오염(DART)")
     # ② 교차출처 — 같은 기간의 DART 값과 yfinance 값
     say("     ② 교차출처(DART ↔ yfinance)")
     seen = 0
@@ -331,12 +361,12 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         if g is not None and g > _GAP_OK:
             say("           " + _materials(q.get("financials") or {},
                                            dict(yq).get(p) or {}))
-        flag(None if g is None else g <= _GAP_OK)
+        flag(None if g is None else g <= _GAP_OK, "②교차출처(분기)")
     if not seen:
         # ⚠️ 대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54).
         say("        ❌ 대조된 기간이 0건 — 기간 키가 안 맞는다"
             "(12월 결산이 아니거나 원천이 그 분기를 안 준다)")
-        flag(False)
+        flag(False, "②교차출처(분기)")
     # 연간도 같은 방식으로
     import datetime as _dt
     yr = _dt.date.today().year
@@ -355,8 +385,9 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             f"yfinance {a / 1e8:,.1f}억  " + _mark(g, _GAP_OK))
         if g is not None and g > _GAP_OK:
             say("           " + _materials(fin, dict(ya).get(p) or {}))
-        flag(None if g is None else g <= _GAP_OK)
-    return {"lines": out, "bad": bad, "unknown": unknown}
+        flag(None if g is None else g <= _GAP_OK, "②교차출처(연간)")
+    return {"lines": out, "bad": bad, "unknown": unknown,
+            "bad_axes": bad_axes, "unknown_axes": unknown_axes}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -413,7 +444,10 @@ def main(argv: list[str] | None = None) -> int:
             tot_bad += 1
             continue
         print("\n".join(r["lines"]))
-        print(f"  판정: {verdict_line(r['bad'], r['unknown'])}"
+        # ⚠️ py3.11 f-string 은 표현식 안에서 줄바꿈을 못 한다 — 먼저 만든다.
+        _v = verdict_line(r["bad"], r["unknown"],
+                          r.get("bad_axes"), r.get("unknown_axes"))
+        print(f"  판정: {_v}"
               + f"  {fmt_eta(_i, len(tickers), _t0)}\n")
         tot_bad += r["bad"]
         tot_unknown += r["unknown"]
