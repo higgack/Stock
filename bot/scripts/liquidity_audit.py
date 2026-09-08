@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 # 표기 단위 → 배수(화면 JS `UM` 과 같은 규약).
 _MULT = {"M USD": 1e6, "B USD": 1e9, "M EUR": 1e6, "100M JPY": 1e8}
@@ -38,6 +38,9 @@ _SANE = {
     "BUSLOANS": (1e12, 5e12, "상업·산업대출은 1~5조 달러"),
     "DPSACBW027SBOG": (5e12, 3e13, "은행 예금은 5~30조 달러"),
 }
+
+
+_NO_META = object()   # '지연 아님' 과 '메타 못 받음'을 가르는 sentinel
 
 
 def _p(*a):
@@ -64,7 +67,7 @@ def _series_meta(sid: str):
         return None
 
 
-def summary_lines(bad_unit, late, no_rule) -> list:
+def summary_lines(bad_unit, late, no_rule, src_lag=()) -> list:
     """요약 줄. ⚠️ **세기만 한다** — 이름은 위 표가 이미 댔다.
 
     옛 코드는 지연 항목을 다시 나열해 같은 결함이 두 번 세어졌다(2026-08-31
@@ -72,16 +75,20 @@ def summary_lines(bad_unit, late, no_rule) -> list:
     갈라진다(#45·#250).
     """
     out = [f"── 요약: 단위 의심 {len(bad_unit)} · 지연 {len(late)} · "
-           f"규약 없음 {len(no_rule)}"]
+           f"규약 없음 {len(no_rule)} · 원천 공표 지연 {len(src_lag)}"]
     if bad_unit or late:
-        out.append(f"   위 표의 ❌ 표시 항목을 볼 것(단위 {len(bad_unit)} · "
+        # ⚠️ 판정 글자(❌·⚠️)를 **설명 문구로도** 쓰지 않는다 — sweep 은 줄에
+        # 그 글자가 있으면 결함으로 센다. 2026-09-09 실측: 감사가 `❌ 2건`
+        # 이라 했는데 하나가 이 줄이었다(#289 그대로 — 위 독스트링이 '세기만
+        # 한다'고 적어 놓고 본문이 글리프를 썼다).
+        out.append(f"   위 표의 표시된 항목을 볼 것(단위 {len(bad_unit)} · "
                    f"지연 {len(late)})")
     return out
 
 
 def main() -> int:
     from bot.fred_boards_catalog import LIQ_SERIES
-    from bot.macro_cadence import CADENCE, judge
+    from bot.macro_cadence import CADENCE, judge, stale_bucket
     _p(f"liquidity_audit v{_PROBE_VER} · 항목 {len(LIQ_SERIES)}개")
 
     # 화면이 쓰는 **그 로더**로 받는다(별도 경로를 만들면 화면과 어긋난다).
@@ -101,10 +108,15 @@ def main() -> int:
         hist = None
         _p(f"⚠️ 로더 import 실패({type(exc).__name__}) — 배치·규약만 점검")
 
-    bad_unit, late, no_rule = [], [], []
+    # ⚠️ `src_lag` 는 **못 고치는** 갈래(원천 미게시)라 결함 집계와 분리한다
+    #    — 매일 오는 못 고칠 ❌ 는 진짜 ❌ 를 가린다(#182·#260).
+    bad_unit, late, no_rule, src_lag = [], [], [], []
     for s in LIQ_SERIES:
         sid, unit = s["id"], s.get("unit", "")
         cat = s.get("category", "—")
+        # ⚠️ 반복마다 리셋 — 앞 항목의 메타가 다음 항목의 근거로 새면 감사가
+        # 엉뚱한 원문으로 판정한다(#114 루프의 잔여 상태).
+        _stale_meta = _NO_META
         pts = (hist or {}).get(sid) or []
         latest = pts[-1] if pts else None
         val = latest[1] if latest else None
@@ -130,8 +142,18 @@ def main() -> int:
             if j is None or j["freq"] == "E":
                 verdict = "⚪ 이벤트성"
             elif j["stale"]:
-                verdict = f"❌ 지연(기대 {j['expected']})"
-                late.append(f"{sid} {asof}")
+                # ⚠️ 갈래는 **원천이 스스로 보고한 마지막 관측일**이 정한다
+                # — 주기 휴리스틱만 쓰면 '원천 미게시'와 '우리 수집 실패'가
+                # 같은 기호가 된다(#86·#82). 메타는 **여기서 한 번만** 받고
+                # 아래 ↪ 줄이 그걸 재사용한다(두 번 물으면 그 사이 갱신된
+                # 값의 나이를 옛 값에 붙인다, #160·#61).
+                _stale_meta = _series_meta(sid)
+                _oe = (_stale_meta or {}).get("observation_end")
+                bucket, verdict = stale_bucket(j, source_end=_oe, asof=asof)
+                if bucket == "late":
+                    late.append(f"{sid} {asof}")
+                else:
+                    src_lag.append(f"{sid} {asof}")
             else:
                 verdict = "✅ 최신"
 
@@ -143,23 +165,21 @@ def main() -> int:
         if umsg:
             _p(f"       ↪ 원시값 {val:,} · 배수 {_MULT.get(unit, 1):g} "
                f"(원시가 다른 단위면 카탈로그 unit 을 고쳐야 한다)")
-        if verdict.startswith("❌ 지연"):
+        if _stale_meta is not _NO_META:
             _p(f"       ↪ 최근 관측 {[d for d, _v in pts[-4:]]}")
-            # ⚠️ 관측치만 보면 '우리 수집이 끊긴 것'과 '원천이 늦는 것'이
-            # 똑같이 보인다 — FRED 가 스스로 보고하는 observation_end 로
-            # 가른다(2026-08-19 FDHBFIN. 추측 대신 원천 자백).
-            meta = _series_meta(sid)
-            if meta is None:
-                _p("       ↪ 원천 메타 조회 실패(키 부재·네트워크) — 판정 보류")
+            # ⚠️ 위 판정이 **이미 이 메타로** 갈렸다 — 여기선 근거만 보인다.
+            # 예전엔 갈래를 주기로 정해 놓고 이 줄만 사실을 말해, 화면과
+            # 판정이 다른 얘기를 했다(#123·#189·#228 계산해 두고 안 쓰기).
+            if _stale_meta is None:
+                _p("       ↪ 원천 메타 조회 실패(키 부재·네트워크) — 주기 "
+                   "규약으로 폴백했다(단정 아님, #12)")
             else:
-                oe = meta.get("observation_end", "?")
-                lu = (meta.get("last_updated") or "?")[:19]
-                same = oe == asof
-                _p(f"       ↪ 원천 observation_end={oe} · last_updated={lu}"
-                   f" → {'**원천이 여기까지밖에 없다**(규약을 늘린다)' if same else '**우리 수집이 뒤처졌다**(캐시·수집 경로 점검)'}")
+                _p(f"       ↪ 원천 observation_end="
+                   f"{_stale_meta.get('observation_end', '?')} · last_updated="
+                   f"{(_stale_meta.get('last_updated') or '?')[:19]}")
 
     _p("")
-    for _ln in summary_lines(bad_unit, late, no_rule):
+    for _ln in summary_lines(bad_unit, late, no_rule, src_lag):
         _p(_ln)
     return 0
 
