@@ -264,7 +264,7 @@ async def _run_auth() -> int:
 # 심는다(§Automation-first · #252 · #12). 읽기 전용 — 아무것도 시작·설치하지
 # 않는다(#264). 판정은 `trade/listener_health.py` 에 있다(#176).
 from trade.listener_health import (          # noqa: E402
-    _SERVICE, _UNIT, floodwait_state, listener_verdict,
+    _SERVICE, _UNIT, floodwait_state, listener_verdict, scanned_span,
 )
 
 
@@ -286,8 +286,15 @@ def _why() -> int:
         return 0 if v["kind"] == "running" else 1
     st = floodwait_state(lines, now=datetime.now(timezone.utc)
                          .astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"))
+    # ⚠️ '몇 줄' 만으로는 그게 3일치인지 4초치인지 알 수 없다 — 재시작
+    # 직후엔 후자이고, 그때 '없음'을 '깨끗하다'로 읽으면 안 된다(#52·#41).
+    sp = scanned_span(lines)
+    span = (f"{sp['hours']}시간치 · {sp['first']}~{sp['last']}"
+            if sp["hours"] is not None else "구간 판정 불가(시각을 못 읽음)")
+    short = sp["seconds"] is not None and sp["seconds"] < 600
     if not st["seen"]:
-        print(f"  ② FloodWait: 최근 {len(lines)}줄에 없음 ✅")
+        note = " ⚠️ 스캔 구간이 짧다(재시작 직후일 수 있다)" if short else ""
+        print(f"  ② FloodWait: 최근 {len(lines)}줄({span})에 없음 ✅{note}")
     else:
         rem = ("판정 불가(로그 시각을 못 읽음)" if st["remaining"] is None
                else f"남은 {st['remaining']}초" if st["remaining"]
@@ -299,7 +306,8 @@ def _why() -> int:
     for ln in lines[-5:]:
         print(f"     {redact(ln)}")
     ok = v["kind"] == "running" and not st["seen"]
-    print("  ⑥ 판정: " + ("✅ 리스너 정상 · FloodWait 없음"
+    print("  ⑥ 판정: " + (("✅ 리스너 정상 · FloodWait 없음"
+                           + ("(스캔 구간 짧음 — 증거 약함)" if short else ""))
                           if ok else "❗ 위 ①② 사유 확인"))
     return 0 if ok else 1
 

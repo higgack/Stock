@@ -75,6 +75,36 @@ def listener_verdict(facts: dict, unit: str = _UNIT) -> dict:
                      f"마지막 시작 {started})")}
 
 
+def _ts(line: str):
+    """저널 한 줄의 ISO 시각(`-o short-iso`). 못 읽으면 None — 지어내지 않는다."""
+    from datetime import datetime
+
+    head = (line or "").split(" ", 1)[0]
+    try:
+        return datetime.strptime(head, "%Y-%m-%dT%H:%M:%S%z")
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def scanned_span(lines) -> dict:
+    """스캔한 줄들이 **몇 시간치인가**. 순수 함수.
+
+    ⚠️ 왜 필요한가(2026-09-08 첫 실전 실행이 드러냈다): "최근 80줄에
+    FloodWait 없음" 은 그 80줄이 **3일치인지 4초치인지** 말하지 않는다.
+    재시작 직후엔 후자이고, 그때 '없음'을 '깨끗하다'로 읽으면 안 된다
+    (#52 조용한 것과 죽은 것 · #41 진단은 뒤처진 사실을 항상 말할 것).
+    못 읽으면 단정하지 않는다(#165·#54).
+    """
+    stamps = [t for t in (_ts(ln) for ln in (lines or [])) if t is not None]
+    if not stamps:
+        return {"first": None, "last": None, "seconds": None, "hours": None}
+    lo, hi = min(stamps), max(stamps)
+    sec = int((hi - lo).total_seconds())
+    return {"first": lo.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "last": hi.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "seconds": sec, "hours": round(sec / 3600, 1)}
+
+
 _FLOOD_RE = re.compile(r"wait of (\d+) seconds", re.I)
 
 
@@ -95,16 +125,12 @@ def floodwait_state(lines, now: str | None = None) -> dict:
     if best is None:
         return {"seen": False, "seconds": None, "at": None, "remaining": None}
     sec, ln = best
-    at = ln.split(" ", 1)[0] if ln[:4].isdigit() else None
+    t0 = _ts(ln)                     # 파싱은 한 곳에서만(#38)
+    at = t0.strftime("%Y-%m-%dT%H:%M:%S%z") if t0 else None
     remaining = None
-    if at and now:
-        try:
-            from datetime import datetime
-            t0 = datetime.strptime(at, "%Y-%m-%dT%H:%M:%S%z")
-            t1 = datetime.strptime(now, "%Y-%m-%dT%H:%M:%S%z")
-            remaining = max(0, sec - int((t1 - t0).total_seconds()))
-        except Exception:                                      # noqa: BLE001
-            remaining = None
+    t1 = _ts(now or "")
+    if t0 and t1:
+        remaining = max(0, sec - int((t1 - t0).total_seconds()))
     return {"seen": True, "seconds": sec, "at": at, "remaining": remaining}
 
 
