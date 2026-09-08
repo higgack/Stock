@@ -129,7 +129,10 @@ def _audit_macro_snapshot_rows(rows: list[dict]) -> None:
     for r in noasof:
         # 실시간 카드가 여기 남으면 값 풀의 나이를 **못 잰** 것이다(히스토리
         # 폴백 등) — '없음'이 아니라 왜 못 쟀는지를 갈래로 말한다(#82).
-        _why = ("값 수집 시각 미측정(값이 히스토리 폴백에서 왔다)"
+        # ⚠️ 사유를 감사가 **지어내면 안 된다** — 수집기가 잰 갈래를 그대로
+        # 옮긴다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
+        _why = ("값 수집 시각 미측정 — "
+                + str(r.get("value_age_why") or "사유 미기록")
                 if r.get("asof_kind") == "live" else "기준일 미표기")
         _p(f"   ❓ {str(r.get('label', '?'))[:24]:24} {_why}")
 

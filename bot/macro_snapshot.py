@@ -382,14 +382,17 @@ def _yf_daily_change(tickers: list[str]) -> dict[str, dict]:
     return out
 
 
-# 실시간 가격 카드가 얼마나 안 갱신되면 '지연'인가. 페이지는 30초마다 다시
-# 그리고 값 풀 TTL 도 30초라 정상 나이는 1분 이내다 — 15분은 30사이클을 놓친
-# 것이라 오탐이 없다. 늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260).
-_LIVE_STALE_SEC = 900.0
+# 실시간 가격 카드가 얼마나 안 갱신되면 '지연'인가 — **그 값을 채우는 캐시의
+# 갱신 주기에서** 정한다. 네이버 값 풀은 TTL 30초(페이지도 30초 주기)라 정상
+# 나이가 1분 이내지만, yf 월간 배치는 TTL 1시간이라 같은 문턱을 쓰면 한 시간 중
+# 45분이 '지연'으로 뜬다(독립 리뷰 실측 DXY 40분 → stale). 늘 뜨는 배지는
+# 아무것도 안 재는 것과 같다(#25·#260) — 문턱은 주기의 배수로 잡는다.
+_LIVE_STALE_SEC = 900.0            # 네이버 값 풀(TTL 30초) — 30사이클
+_LIVE_STALE_YFM_SEC = 10800.0      # yf 월간 배치(TTL 1시간) — 3주기
 
 
-def live_asof(age_sec: float | None,
-              now: Optional[datetime] = None) -> tuple[str, bool, Optional[int]]:
+def live_asof(age_sec: float | None, now: Optional[datetime] = None,
+              stale_after: float = _LIVE_STALE_SEC) -> tuple[str, bool, Optional[int]]:
     """(라벨, 지연인가, 경과 분) — 실시간 가격 카드의 **값 수집 시각**. 순수.
 
     ⚠️ 우리가 잰 것은 **우리가 원천에서 값을 받아온 시각**이지 거래소가 그
@@ -404,22 +407,37 @@ def live_asof(age_sec: float | None,
     got = t - timedelta(seconds=age_sec)
     label = (got.strftime("%H:%M") if got.date() == t.date()
              else got.strftime("%m-%d %H:%M"))
-    return label, age_sec > _LIVE_STALE_SEC, int(age_sec // 60)
+    return label, age_sec > stale_after, int(age_sec // 60)
 
 
-def _value_age_sec(tag: str) -> float | None:
-    """값이 실제로 온 캐시의 나이(초). tag = 값을 **채운 그 경로**다 —
-    분기 이름이 아니라 값의 출처로 정한다(#35 화면이 쓰는 그 경로)."""
+def _value_age_sec(tag: str, rec: dict | None = None) -> tuple[float | None, float]:
+    """(나이 초, 지연 문턱) — 값이 실제로 온 그 캐시를 잰다. tag 는 값을
+    **채운 그 경로**다(분기 이름이 아니라 값의 출처로 정한다, #35).
+
+    나이를 못 재면 (None, 문턱) — 판정 불가는 통과가 아니다(#54).
+    """
     try:
         if tag.startswith("nv:"):
             from bot.naver_marketindex import value_age_sec
-            return value_age_sec(tag[3:])
+            return value_age_sec(tag[3:], rec), _LIVE_STALE_SEC
         if tag == "yfm":
             from bot.finviz_client import cache_age_sec
-            return cache_age_sec("macro_yf_monthly.json")
-    except Exception:                                        # noqa: BLE001
-        return None
-    return None
+            return (cache_age_sec("macro_yf_monthly.json"),
+                    _LIVE_STALE_YFM_SEC)
+    except Exception as exc:                                 # noqa: BLE001
+        # silent-fail 금지(#12) — 조용히 None 을 내면 감사가 '히스토리
+        # 폴백' 이라는 **틀린 사유**를 지어낸다(#292 틀린 라벨은 없느니만 못하다).
+        log.warning("macro: 값 나이 측정 실패(tag=%s): %s", tag, exc)
+    return None, _LIVE_STALE_SEC
+
+
+def live_age_why(tag: str) -> str:
+    """나이를 못 잰 이유 — 갈래를 이름으로(#82). 잰 경우엔 빈 문자열."""
+    if tag == "hist":
+        return "값이 네이버 히스토리 폴백에서 왔다(그 경로는 나이 미측정)"
+    if not tag:
+        return "값 출처가 기록되지 않았다"
+    return "캐시 나이 측정 실패 — 로그 확인"
 
 
 def _fmt_asof(raw: str, full: bool = False) -> str:
@@ -592,7 +610,11 @@ def _fetch_macro_naver_values(sids: list) -> dict:
     for sid, (k, code) in need:
         rec = (pools.get(k) or {}).get(code)
         if rec and rec.get("close") is not None:
-            out[sid] = {"value": rec["close"], "change": rec.get("change", 0.0)}
+            # `_at` = 그 코드를 **실제로 받은** 시각(병합 캐리오버는 옛 도장을
+            # 그대로 들고 온다) — 파일 mtime 만 보면 원천이 빠뜨린 코드까지
+            # '방금 받은 것'이 된다(독립 리뷰 실측).
+            out[sid] = {"value": rec["close"], "change": rec.get("change", 0.0),
+                        "_at": rec.get("_at")}
     return out
 
 
@@ -797,10 +819,13 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             # 아무 기준도 안 실어 감사가 "❓ 규약없음 = 판정 자체를 못 한다"
             # 라고 매일 적고 있었고, 네이버·yf 값 풀은 실패하면 최대 24시간
             # 낡은 값을 조용히 돌려준다(규칙 10b · #43 · #52).
-            _live_label, _live_stale, _live_min = ("", False, None)
+            _live_label, _live_stale, _live_min, _live_why = ("", False, None, "")
             if src == "yf":
+                _age, _cap = _value_age_sec(_val_tag, nv if _val_tag[:3] == "nv:" else None)
                 _live_label, _live_stale, _live_min = live_asof(
-                    _value_age_sec(_val_tag))
+                    _age, stale_after=_cap)
+                if _age is None:
+                    _live_why = live_age_why(_val_tag)
             rows.append({
                 "key": key, "label": label, "unit": unit,
                 "value": value, "change": change, "change_pct": change_pct,
@@ -829,6 +854,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # 뭉뚱그리면 한쪽은 반드시 거짓말이 된다(#34·#245).
                 "asof_kind": "live" if src == "yf" else "obs",
                 "value_age_min": _live_min,
+                # 못 잰 이유를 같이 싣는다 — 침묵이 최악이고(#43), 사유를
+                # 버리면 감사가 지어낸다(#82·#292).
+                "value_age_why": _live_why,
                 "asof_lag": None if _is_daily_card else _asof_lag_months(asof_raw),
                 # 통상 공표 일정 대비 뒤처졌는지 — 경과 개월만으론 정상 지연과
                 # 갱신 중단을 구분 못 한다(사용자 2026-08-18).

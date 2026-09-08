@@ -300,8 +300,16 @@ def _codeset_finalize(known: dict, fetched: dict, codes: tuple) -> tuple:
     """(write, ret) — known=기존(임의 age) 캐시, fetched=이번 fetch 결과. 병합으로
     **캐시 축소 방지**(부분집합 호출이 전체 카드를 블랭크로 만들던 회귀 차단) +
     요청 코드 부분집합 반환."""
+    import time as _t
     known = known if isinstance(known, dict) else {}
     fetched = fetched if isinstance(fetched, dict) else {}
+    # ⚠️ 캐리오버는 **파일 mtime 을 거짓말로 만든다** — 병합본을 다시 쓰면
+    # 원천이 빠뜨린 코드까지 '방금 받은 것'이 된다(독립 리뷰 실측). 값의
+    # 나이는 값이 알아야 하므로 이번에 **실제로 받은 것에만** 도장을 찍고
+    # 캐리오버는 옛 도장을 그대로 들고 간다(#64 상태는 아는 쪽이 말하게).
+    _now = _t.time()
+    fetched = {c: ({**r, "_at": _now} if isinstance(r, dict) else r)
+               for c, r in fetched.items()}
     merged = {**known, **fetched}
     ret = {c: merged[c] for c in codes if c in merged} if codes else merged
     return merged, ret
@@ -678,11 +686,19 @@ _VALUE_CACHE = {"idx": _IDX_CACHE, "com": _CACHE,
                 "coin": _COIN_CACHE, "fx": _KRFX_CACHE}
 
 
-def value_age_sec(kind: str) -> float | None:
-    """그 값 풀이 마지막으로 원천에서 채워진 뒤 흐른 초(모르면 None).
+def value_age_sec(kind: str, rec: dict | None = None) -> float | None:
+    """그 값이 마지막으로 원천에서 온 뒤 흐른 초(모르면 None).
 
     kind ∈ idx|com|coin|fx (`macro_snapshot._MACRO_NAVER` 의 첫 원소).
+    `rec` 는 그 코드의 값 레코드 — 코드별 도장(`_at`)이 있으면 **그게 먼저**다.
+    지수 풀은 병합 캐리오버라 파일 mtime 이 원천이 빠뜨린 코드까지 새것으로
+    보이게 만든다(`_codeset_finalize`). 도장이 없으면(단일 fetch 로 통째
+    갱신되는 com·coin·fx) 파일 mtime 이 곧 그 값의 나이다.
     """
+    import time as _t
+    at = (rec or {}).get("_at") if isinstance(rec, dict) else None
+    if isinstance(at, (int, float)):
+        return max(0.0, _t.time() - float(at))
     name = _VALUE_CACHE.get(kind)
     if not name:
         return None
