@@ -49956,3 +49956,60 @@ class TestSystemdFactsTimerless20260908:
                             lambda cmd, **kw: keys.extend(cmd[3:]) or _R())
         dk.systemd_facts(timer=None, service="x.service")
         assert "-pLoadState" in keys, keys
+
+
+# ── '몇 줄' 은 '몇 시간'이 아니다 (2026-09-08, 첫 실전 실행이 드러냈다) ────
+# `--why` 가 "최근 80줄에 FloodWait 없음 ✅" 이라고만 적어, 그 80줄이 3일치인지
+# 4초치인지 알 수 없었다. VM 실측에서 서비스는 배포 직후 재시작(22:42:04)이라
+# 후자에 가까웠다 — 그때 '없음'을 '깨끗하다'로 읽으면 안 된다(#52·#41·#54).
+class TestScannedSpan20260908:
+
+    def _s(self, lines):
+        from trade.listener_health import scanned_span
+        return scanned_span(lines)
+
+    def test_span_is_measured_from_the_line_timestamps(self):
+        sp = self._s(["2026-09-05T10:00:00+0900 a: x",
+                      "2026-09-08T22:42:08+0900 a: y"])
+        assert sp["first"] == "2026-09-05T10:00:00+0900"
+        assert sp["last"] == "2026-09-08T22:42:08+0900"
+        assert 84 <= sp["hours"] <= 85, sp
+
+    def test_short_span_is_not_dressed_up_as_long(self):
+        sp = self._s(["2026-09-08T22:42:04+0900 a: started",
+                      "2026-09-08T22:42:08+0900 a: up"])
+        assert sp["hours"] == 0.0 and sp["seconds"] == 4
+
+    def test_unparseable_lines_do_not_guess(self):
+        """못 읽었으면 0 이 아니라 None — 0 이면 '방금'으로 읽힌다(#54·#165)."""
+        sp = self._s(["no timestamp here", "another"])
+        assert sp["first"] is None and sp["hours"] is None
+
+    def test_empty_is_not_a_pass(self):
+        sp = self._s([])
+        assert sp["first"] is None and sp["hours"] is None
+
+    def test_probe_prints_the_span_and_flags_a_short_one(self):
+        """계산해 두고 화면에 안 실으면 없는 것과 같다(#123·#189·#228 계열)."""
+        import ast
+        import inspect
+        import trade.listener_health as lh
+        src = open("trade/scripts/listen_beon.py", encoding="utf-8").read()
+        t = ast.parse(src)
+        why = [n for n in t.body
+               if isinstance(n, ast.FunctionDef) and n.name == "_why"][0]
+        body = "".join(src.splitlines(keepends=True)[why.lineno - 1:why.end_lineno])
+        assert "scanned_span(" in body, "구간을 재지 않는다"
+        # 배선은 존재가 아니라 **쓰임**으로 — 재고 안 찍으면 소용없다(#141)
+        assert body.count("span") >= 2 and "짧다" in body, body[-400:]
+        assert inspect.isfunction(lh.scanned_span)
+
+    def test_timestamp_parsing_lives_in_one_place(self):
+        """복제하면 두 판정이 같은 줄을 다르게 읽는다(#38)."""
+        import ast
+        import inspect
+        import trade.listener_health as lh
+        tree = ast.parse(inspect.getsource(lh))
+        strptime = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                    and getattr(n.func, "attr", "") == "strptime"]
+        assert len(strptime) == 1, f"시각 파싱이 {len(strptime)}곳이다"
