@@ -376,6 +376,31 @@ def _audit_home_surfaces(show_all):
         _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
 
+def _vol_card_line(key: str, rec: dict) -> str:
+    """변동성 카드 한 줄 — **순수 함수**라 회귀가 값으로 잰다(#176·#41).
+
+    ⚠️ 인라인으로 두면 "이 함수를 부르는가" 라는 모양 검사밖에 못 걸고,
+    호출을 남겨 두고 결과를 무시하는 변형이 통과한다(독립 리뷰 2026-09-08
+    실측 — 고치려던 `vix … 기준 —` 이 안 잡혔다, #292).
+
+    실시간 값은 종가가 아니라 '기준일' 이 없다 — `기준 —` 로만 찍으면 판정
+    불가와 구별되지 않는다(#54·#304). 판정은 **제품의 그 함수**에서 온다
+    (#35·#169) — 여기서 재구현하면 화면과 갈라진다.
+    """
+    from bot import market_timing as mt
+    age = mt._vol_age_days(rec.get("date"), rec.get("market"))
+    wins = ", ".join(k for k, v in (rec.get("history") or {}).items()
+                     if v is not None) or "없음"
+    st = mt.vol_asof_label(rec)
+    mark = {"unmeasured": " ❌", "stale": " ⚠️", "missing": " ❌"}.get(
+        st["verdict"], "")
+    stamp = (st["label"] or "기준 미표기") + mark
+    return (f"   {key:8} {rec['value']:.1f} · {stamp}"
+            f"{f' ({age}일 전)' if age is not None else ''} · "
+            f"소스 {rec.get('source') or '—'}"
+            f"{' · **캐시**' if rec.get('from_cache') else ''} · 창 [{wins}]")
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:]]
     show_all = "--all" in args
@@ -492,20 +517,7 @@ def main() -> int:
             if not rec:
                 _p(f"   {key:8} ❌ 없음 → 카드 생략")
                 continue
-            age = mt._vol_age_days(rec.get("date"), rec.get("market"))
-            wins = ", ".join(k for k, v in (rec.get("history") or {}).items()
-                             if v is not None) or "없음"
-            # 실시간 값은 종가가 아니라 '기준일' 이 없다 — 그걸 `기준 —` 로만
-            # 찍으면 판정 불가와 구별되지 않는다(#54·#304). 판정을 여기서
-            # 재구현하면 화면과 갈라지므로 **제품의 그 함수**를 부른다(#35·#169).
-            _st = mt.vol_asof_label(rec)
-            _mark = {"unmeasured": " ❌", "stale": " ⚠️", "missing": " ❌"}.get(
-                _st["verdict"], "")
-            _stamp = (_st["label"] or "기준 미표기") + _mark
-            _p(f"   {key:8} {rec['value']:.1f} · {_stamp}"
-               f"{f' ({age}일 전)' if age is not None else ''} · "
-               f"소스 {rec.get('source') or '—'}"
-               f"{' · **캐시**' if rec.get('from_cache') else ''} · 창 [{wins}]")
+            _p(_vol_card_line(key, rec))
 
     if not want or "home" in want:
         _audit_home_surfaces(show_all)

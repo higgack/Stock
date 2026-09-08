@@ -102,8 +102,15 @@ def sessions_behind(market: str, have: str, expected: str) -> Optional[int]:
         sessions = cal.sessions_in_range(have, expected)
         if sessions is None or len(sessions) == 0:
             return None
-        # `have` 자신이 세션이면 그것도 포함되므로 1을 뺀다.
-        return max(0, len(sessions) - 1)
+        # `have` 가 **세션일 때만** 자기 자신이 포함되므로 1을 뺀다. 휴일
+        # 봉(원천이 준 비거래일 날짜)이면 포함되지 않으므로 빼면 하나 모자란다
+        # — 그러면 '2세션 뒤짐'을 1로 보고 못 잇는 보강을 시도한다(독립 리뷰
+        # 2026-09-08). `is_session` 으로 갈라야 옳다.
+        try:
+            self_is_session = bool(cal.is_session(pd.Timestamp(have)))
+        except Exception:                                      # noqa: BLE001
+            self_is_session = True
+        return max(0, len(sessions) - (1 if self_is_session else 0))
     except Exception as exc:                                   # noqa: BLE001
         log.debug("market_calendar.sessions_behind(%s,%s,%s) failed: %s",
                   market, have, expected, exc)

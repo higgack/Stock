@@ -423,7 +423,12 @@ def get_favorites_with_prices() -> list[dict]:
 _VOLATILE_FIELDS = ("current_price", "per", "eps_estimate", "market_cap",
                     "eps_trailing_src",
                     "eps_is_actual", "eps_fy_label", "eps_negative",
-                    "per_is_trailing", "eps_trailing", "per_trailing")
+                    "per_is_trailing", "eps_trailing", "per_trailing",
+                    # 야후 표기 별칭 해석 결과(2467.TT → 2467.TW). 없으면
+                    # 재시작마다 "→ … 로 조회" 힌트가 사라졌다가 다음 데몬
+                    # 갱신에 돌아온다 — 화면이 깜빡이면 사용자는 그걸 결함으로
+                    # 읽는다(독립 리뷰 2026-09-08 · #163 되살린 값 규약).
+                    "yf_ticker")
 
 
 def _cold_rows() -> list[dict]:

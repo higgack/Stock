@@ -403,6 +403,19 @@ _NAVER_TAIL_TOL = 0.001      # 전일종가 일치 허용오차 0.1%
 _NAVER_TAIL_MAX_MOVE = 0.20  # 하루 ±20% 초과면 정렬이 틀린 것으로 보고 폐기
 
 
+def _market_of(ticker: str) -> str | None:
+    """티커 → 시장 코드(모르면 None). `_quote_tail` 과 신선도 판정이 **같은
+    해석**을 써야 두 곳이 갈리지 않는다(#38)."""
+    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
+    if spec:
+        return spec[0]
+    try:
+        from bot.market import detect_market
+        return detect_market(ticker)
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
 def _quote_tail_supported(ticker: str) -> bool:
     """이 티커에 신선도 보강 경로가 있는가(감사 표기용 — 화면과 같은 판정)."""
     if str(ticker).upper() in _NAVER_INDEX_FOR:
@@ -531,15 +544,9 @@ def _quote_tail(ticker: str, rows: list[dict]) -> list[dict]:
     않는다(장중이면 여기서 자동으로 걸러진다)."""
     if not rows:
         return rows
-    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
-    if spec:
-        market = spec[0]
-    else:
-        try:
-            from bot.market import detect_market
-            market = detect_market(ticker)
-        except Exception:                                      # noqa: BLE001
-            return rows
+    market = _market_of(ticker)
+    if not market:
+        return rows
     expected, _grace = _expected_session(market)
     last = str(rows[-1].get("date") or "")[:10]
     if not expected or last >= expected:
@@ -661,18 +668,52 @@ def fetch_index_history(ticker: str, days: int = 120,
         # 경우엔 한 번도 안 탔다 — 그때 남은 수단은 한 봉 보강뿐인데 그건
         # 정의상 1세션만 잇는다(#301: 다음 장이 열리면 영영 못 잇는다).
         # 일봉은 날짜를 갖고 오므로 몇 세션이든 잇는다.
+        # ⚠️ '오늘'은 **시장 현지일**이다(#40·#249 한 함수가 두 개의 오늘을
+        # 쓰면 갈라진다). market 없이 재면 KST 기준이라 금요일 봉이 월요일에
+        # 3일 지연으로 보여, 주말마다 전 비-KR 지수·ETF 가 순손실 HTTP 를
+        # 낸다(독립 리뷰 실측: XLK 월요일 age=3 > gate=1 → 네이버 2콜).
+        # 세션으로 재면 휴일까지 맞는다.
+        _mkt2 = _market_of(ticker)
+        _last2 = out[-1]["date"] if out else ""
+        _behind = None
+        if out:
+            _exp2 = _expected_session(_mkt2)[0] if _mkt2 else None
+            try:
+                from bot.market_calendar import sessions_behind
+                _behind = sessions_behind(_mkt2, _last2, _exp2) if _exp2 else None
+            except Exception as exc:                           # noqa: BLE001
+                log.debug("market_timing: %s 세션 격차 측정 실패: %s", ticker, exc)
+            if _behind is None:      # 캘린더 부재 — 시장 현지일로 폴백
+                _behind = _vol_age_days(_last2, _mkt2)
         _nv_rows = None          # 같은 페이로드를 아래 min_rows 분기와 공유
-        _age2 = _vol_age_days(out[-1]["date"]) if out else None
-        if out and _age2 is not None and _age2 > _stale_gate:
+        if out and _behind is not None and _behind > _stale_gate:
             _nv_rows = _payload_to_rows(_fetch_naver_daily(ticker, period), days)
             alt = _nv_rows
-            alt_age2 = _vol_age_days(alt[-1]["date"]) if alt else None
-            if alt and alt_age2 is not None and alt_age2 < _age2:
+            alt_behind = None
+            if alt:
+                try:
+                    from bot.market_calendar import sessions_behind
+                    alt_behind = (sessions_behind(_mkt2, alt[-1]["date"], _exp2)
+                                  if _exp2 else None)
+                except Exception:                              # noqa: BLE001
+                    alt_behind = None
+                if alt_behind is None:
+                    alt_behind = _vol_age_days(alt[-1]["date"], _mkt2)
+            # ⚠️ 신선하다고 **짧은 계열로 갈아타지 않는다** — 200일 SMA 를
+            # 쓰는 호출부(min_rows=200)가 30행짜리로 계산하게 된다(독립 리뷰
+            # 실측: XLK 400행 → 30행). 길이 요구는 신선도와 별개 축이다.
+            _long_enough = (not min_rows) or len(alt) >= min_rows
+            if (alt and alt_behind is not None and alt_behind < _behind
+                    and _long_enough):
                 # 조용한 대체 금지 — 폴백을 탄 사실을 남긴다(#42a).
-                log.info("market_timing: %s 야후 최신 %s(%d일 지연) — 네이버 "
-                         "일봉 최신 %s 로 대체", ticker, out[-1]["date"],
-                         _age2, alt[-1]["date"])
+                log.info("market_timing: %s 야후 최신 %s(%s세션 지연) — 네이버 "
+                         "일봉 최신 %s 로 대체", ticker, _last2, _behind,
+                         alt[-1]["date"])
                 out = alt
+            elif alt and not _long_enough:
+                log.info("market_timing: %s 네이버 일봉이 더 신선하지만 %d행"
+                         "(<min_rows %d) — 갈아타지 않는다", ticker, len(alt),
+                         min_rows)
         # `out` 이 비었으면 fetch_chart_payload 가 **이미** 네이버를 시도한
         # 뒤다(그 폴백은 빈 결과에서 걸린다) — 여기서 또 부르면 10초 타임아웃
         # HTTP 호출만 티커마다 중복된다. 절단(0<len<min_rows)일 때만 재시도.
@@ -687,7 +728,7 @@ def fetch_index_history(ticker: str, days: int = 120,
                          "%d행으로 대체", ticker, len(out), min_rows, len(alt))
                 return alt
             log.warning("market_timing: %s 히스토리 %d행 — min_rows %d 미만이고 "
-                        "네이버 폴백도 %d행(그대로 반환)",
+                        "네이버 일봉도 %d행(그대로 반환)",
                         ticker, len(out), min_rows, len(alt))
         # ⚠️ **여기서** 붙인다 — 시장타이밍과 Breadth 가 둘 다 이 함수를 쓰므로
         # 호출부마다 배선하면 한쪽을 빠뜨린다(실수 #12 배선 누락).
@@ -1924,6 +1965,10 @@ SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10
             if _st["label"]:
                 src = f'{src} · {_st["label"]}' if src else _st["label"]
             stale_note = ""
+            # 판정이 'stale' 인데 화면엔 아무 표시가 없으면 감사와 화면이
+            # 같은 값을 다르게 말한다(#38 — 독립 리뷰 2026-09-08).
+            if _st["verdict"] == "stale":
+                src += " ⚠"
             if age is not None and age > _VOL_STALE_DAYS:
                 src += " ⚠"
                 stale_note = (f'<div class="note">⚠️ 이 지수는 원천 시계열이 '

@@ -43586,6 +43586,19 @@ def _render_all_pages():
 _FETCHING_CACHE: list | None = None
 
 
+class _TestFixtureHitTheNetwork(RuntimeError):
+    """픽스처가 못 덮은 원천 호출 — 조용히 통과시키지 않는다(#54)."""
+
+
+def _no_net(*a, **k):
+    raise _TestFixtureHitTheNetwork(f"픽스처 밖 HTTP: {a[:3]}")
+
+
+class _NoNetTicker:
+    def __init__(self, *a, **k):
+        raise _TestFixtureHitTheNetwork(f"픽스처 밖 yfinance: {a[:1]}")
+
+
 def _fetching_pages() -> list:
     """[(name, html)] — 결과를 메모이즈(가드 여러 개가 반복 호출한다)."""
     global _FETCHING_CACHE
@@ -43621,6 +43634,35 @@ def _fetching_pages() -> list:
     out = []
     with ExitStack() as st:
         P = lambda t, **k: st.enter_context(mock.patch(t, **k))   # noqa: E731
+        # ⚠️⚠️ **네트워크·과금 차단이 먼저다**(독립 리뷰 2026-09-08 Blocking).
+        # 이 페이지들은 렌더 중에 이름 번역을 백그라운드 daemon 으로 킥하는데
+        # (`highlow_render._kick_name_fill` → `chart_translate.translate_names_kr`,
+        # cache_only=False), VM 처럼 GEMINI_API_KEY 가 있는 환경에서 `make test`
+        # 를 돌리면 **실제로 과금되고** 그 비용이 운영 원장(usage.jsonl → 비용
+        # 카드)에 들어가며, 가짜 티커(TW1·0001)의 한글명이 names_kr.json 에
+        # 영구 캐시된다(#30 테스트가 운영 상태를 오염시킬 수 있다 · #284).
+        # 게다가 그 스레드는 이 ExitStack 보다 오래 살아 목이 풀린 뒤 진짜
+        # 원천을 친다. 그래서 킥 자체를 막고, 번역은 캐시 조회만 남긴다.
+        P("bot.highlow_render._kick_name_fill", new=lambda pairs: None)
+        P("bot.chart_translate.translate_names_kr",
+          new=lambda pairs, cache_only=True: {})
+        # 이름/업종 조회도 전부 스텁 — 픽스처가 원천에 의존하면 CI 와 VM 이
+        # 다른 것을 재고, 원천이 죽은 날 가드가 조용히 눈이 먼다(#35·#143).
+        P("bot.us_symbol_names.us_symbol_names", new=lambda *a, **k: {})
+        P("bot.edgar_client.sec_ticker_names", new=lambda *a, **k: {})
+        P("bot.finviz_client._sp500_names", new=lambda *a, **k: {})
+        P("bot.finviz_client._industries_for", new=lambda *a, **k: {})
+        P("bot.twse_client._fetch_one_industry_source", new=lambda *a, **k: {})
+        P("bot.market_overview.fetch_earnings_calendar_intl",
+          new=lambda *a, **k: [])
+        # 마지막 그물 — 여기서 나가는 HTTP 는 **하나도 없어야** 한다. 남으면
+        # 조용히 통과하지 말고 터뜨려 픽스처가 못 덮은 경로를 드러낸다(#54).
+        P("requests.Session.request", new=_no_net)
+        P("requests.api.request", new=_no_net)
+        # yfinance 는 requests 가 아니라 curl_cffi 로 나간다 — 위 그물에 안
+        # 걸린다(실측: `Failed to get ticker 'TW1'`). 원천별로 막아야 한다.
+        P("yfinance.Ticker", new=_NoNetTicker)
+        P("yfinance.download", new=_no_net)
         P("bot.intl_highlow.fetch_intl_highlow", return_value={
             "high": _rows("JP"), "low": _rows("JP", pct=-3.5),
             "ts": "2026-09-08 13:11", "source": "yfinance",
@@ -43843,24 +43885,76 @@ def test_important_card_keeps_its_gold_border_next_to_other_flags():
 _TINY_SELF_CONTAINED_PAGES = {"search_error"}
 
 
+# CSS 가드가 덮어야 하는 모듈 ↔ 그 모듈에서 나온 페이지 이름. 이름 집합을
+# 두 곳에 적으면 갈라지므로(#38) 커버리지 단언·부채 대조가 **이 매핑 하나**를
+# 쓴다. 항목을 지우면 그 모듈이 조용히 가드 밖으로 나간다 — 아래 회귀가 막는다.
+_FETCHED_PAGE_OWNERS = {
+    "intl_pages": {"intl_highlow52", "intl_movers", "jp_stop", "kr_prepost"},
+    "naver_pages": {"naver_theme", "naver_highlow"},
+    "tw_pages": {"tw_movers", "tw_highlow52"},
+    "us_pages": {"us_industry", "us_highlow", "us_movers", "us_prepost"},
+    "earnings_calendar": {"earnings_us"},
+    "fred_boards": {"fred_ppi", "fred_cpi", "fred_liquidity"},
+    "econ_calendar": {"econ_calendar"},
+    "dashboard_server": {"search_error"},
+}
+
+
 def test_fetching_pages_actually_render_the_new_modules():
     """수집기를 스텁해 그리는 페이지가 **실제로 있는지** 센다.
 
-    `_fetching_pages()` 가 빈 리스트를 돌려주면 CSS 가드는 조용히 통과한다
-    — 대조 0건은 통과가 아니다(#54). 그리고 부채에서 뺀 8개 모듈이 전부
-    한 번씩은 그려져야 한다(이름이 아니라 **모듈**로 대조, #24).
+    ⚠️ 첫 판은 `importlib.import_module` 만 단언해 **동어반복**이었다(독립
+    리뷰 2026-09-08 실측: 컬렉터에서 naver_pages 두 페이지를 지우고 `js-`
+    접두까지 되돌려도 4개 가드가 전부 green). 모듈이 import 된다는 사실은
+    그 모듈의 페이지가 가드를 탄다는 뜻이 아니다(#292 모양이 아니라 결과로).
     """
-    import importlib
-    pages = _fetching_pages()
+    pages = dict(_fetching_pages())
     assert len(pages) >= 15, f"스텁 렌더가 {len(pages)}개뿐 — 가드가 눈이 먼다"
-    want = {"earnings_calendar", "econ_calendar", "fred_boards", "intl_pages",
-            "naver_pages", "tw_pages", "us_pages", "dashboard_server"}
-    # 각 페이지가 그 모듈의 렌더 함수에서 나왔는지 — 이름 매칭 대신 **내용**이
-    # 비지 않았는지로 본다(껍데기면 가드가 눈이 먼다, #91c).
-    for name, html in pages:
+    for mod, names in _FETCHED_PAGE_OWNERS.items():
+        missing = names - set(pages)
+        assert not missing, f"{mod}: 가드 밖으로 나간 페이지 {sorted(missing)}"
+    # 껍데기면 가드가 눈이 먼다(#91c).
+    for name, html in pages.items():
         assert len(_page_html(html)) >= 300, f"{name}: 껍데기만 그렸다"
-    for mod in want:
-        assert importlib.import_module(f"bot.{mod}"), mod
+
+
+def test_fetching_pages_never_touch_the_network_or_bill_anything():
+    """⚠️⚠️ 독립 리뷰 2026-09-08 **Blocking**: 이 컬렉터가 `make test` 중에
+    실제 HTTP 를 13건 냈고, 그중 `chart_translate.translate_names_kr(
+    cache_only=False)` 는 **과금되는 LLM 호출**이라 VM 에서 돌리면 운영 비용
+    원장(usage.jsonl → 대시보드 비용 카드)에 가짜 행이 쌓이고 가짜 티커의
+    한글명이 names_kr.json 에 영구 캐시된다(#30·#284).
+
+    그 daemon 스레드는 mock 이 풀린 뒤까지 살아 **진짜 원천**을 친다.
+    그래서 여기서는 호출 수를 0 으로 못박는다 — 늘면 그때 빨간불이다.
+    """
+    import requests
+    import yfinance as yf
+    global _FETCHING_CACHE
+    _FETCHING_CACHE = None            # 메모를 지우고 실제로 다시 그린다
+    import bot.chart_translate as ct
+    import bot.highlow_render as hr
+    http, translated, tickers, kicked = [], [], [], []
+    _req, _tk, _tr, _kick = (requests.Session.request, yf.Ticker,
+                             ct.translate_names_kr, hr._kick_name_fill)
+    requests.Session.request = lambda self, *a, **k: http.append(a[:2])
+    yf.Ticker = lambda *a, **k: tickers.append(a[:1])
+    ct.translate_names_kr = lambda pairs, cache_only=True: (
+        translated.append(cache_only) or {})
+    # ⚠️ 번역만 재면 **눈이 먼다** — 그건 daemon 스레드에서 도는 호출이라
+    # 단언이 스레드보다 먼저 끝난다(실측: 킥 스텁을 지워도 통과했다).
+    # 동기 지점인 **킥 자체**를 재야 경합이 없다(#128 시간·순서로 재지 말 것).
+    hr._kick_name_fill = lambda pairs: kicked.append(len(pairs or []))
+    try:
+        pages = _fetching_pages()
+    finally:
+        (requests.Session.request, yf.Ticker, ct.translate_names_kr,
+         hr._kick_name_fill) = _req, _tk, _tr, _kick
+    assert len(pages) >= 15, "렌더가 안 됐으면 0건은 통과가 아니다(#54)"
+    assert not http, f"픽스처 밖 HTTP {len(http)}건: {http[:3]}"
+    assert not tickers, f"픽스처 밖 yfinance {len(tickers)}건: {tickers[:3]}"
+    assert not translated, f"이름 번역이 불렸다(과금 경로): {translated[:3]}"
+    assert not kicked, f"이름 채우기 킥이 돌았다(과금 스레드): {kicked[:3]}"
 
 
 def test_tiny_page_exemption_stays_tiny():
@@ -48671,18 +48765,40 @@ class TestVolatilityLiveAsOf20260908:
                       "value_age_min": None, "value_age_why": "캐시 나이 미측정"})
         assert "미기록" in blind and "캐시 나이 미측정" in blind, blind
 
-    def test_screen_and_audit_share_one_judgment(self):
+    def test_screen_and_audit_share_one_judgment(self, monkeypatch, capsys):
         """감사가 판정을 재구현하면 화면과 다른 기준선을 비교한다(#35·#169).
-        감사가 **제품의 그 함수**를 부르는지 AST 로 못박는다 — 인라인으로
-        되돌리는 변형이 그때 잡힌다."""
-        import ast
-        import pathlib
-        src = pathlib.Path("bot/scripts/board_audit.py").read_text(
-            encoding="utf-8")
-        calls = [n for n in ast.walk(ast.parse(src))
-                 if isinstance(n, ast.Call)
-                 and getattr(n.func, "attr", "") == "vol_asof_label"]
-        assert calls, "감사가 제품의 판정 함수를 안 부른다(#35)"
+
+        ⚠️ 첫 판은 "`vol_asof_label` 호출 노드가 있나" 라는 **모양 검사**라
+        호출을 남겨 두고 결과를 무시하는 변형이 그대로 통과했다(독립 리뷰
+        2026-09-08 실측: `_stamp = "기준 " + date` 로 되돌려도 142 passed).
+        고치려던 바로 그 증상(`vix … 기준 —`)이 안 잡히는 것이다 —
+        모양이 아니라 **결과**로 잰다(#292·#141).
+        """
+        import bot.scripts.board_audit as ba
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_volatility_snapshot", lambda: {
+            "vix": {"value": 15.3, "date": None, "market": "US",
+                    "source": "네이버(실시간)", "asof_kind": "live",
+                    "value_asof": "13:11", "asof_stale": False,
+                    "value_age_min": 2, "history": {}}})
+        line = ba._vol_card_line("vix", mt.fetch_volatility_snapshot()["vix"])
+        assert "값 수집 13:11" in line, line
+        assert "기준 —" not in line and "기준 미표기" not in line, line
+
+    def test_audit_line_names_the_unmeasured_case(self):
+        """나이를 못 잰 실시간 값은 sweep 이 세는 글자로 찍혀야 한다(#303)."""
+        import bot.scripts.board_audit as ba
+        line = ba._vol_card_line("vix", {
+            "value": 15.3, "date": None, "market": "US",
+            "source": "네이버(실시간)", "asof_kind": "live",
+            "value_asof": "", "value_age_why": "캐시 나이 미측정",
+            "history": {}})
+        assert "❌" in line and "캐시 나이 미측정" in line, line
+        # 종가 경로는 종전대로 기준일을 적는다
+        close = ba._vol_card_line("move", {
+            "value": 90.0, "date": "2026-09-05", "market": "US",
+            "source": "yfinance", "history": {}})
+        assert "09-05" in close and "❌" not in close, close
 
     def test_label_fn_covers_every_branch(self):
         """판정은 세 상태가 아니라 넷이다 — 종가/실시간/낡음/판정불가.
@@ -48950,6 +49066,18 @@ class TestFeedCadenceAndDepositLag20260908:
         out = self._note(monkeypatch, "realestate", "2026-09-04 09:01", now)
         assert "⚠️" in out and "점검 없음" in out, out
 
+    def test_elapsed_and_cap_round_the_same_way(self):
+        """⚠️ 독립 리뷰 2026-09-08: 두 값이 한 줄에 나란히 놓여 'N/M 지났다'
+        로 읽히는데 반올림 방향이 달랐다 — 36시간 상한이 '2일'로 올라가
+        35시간 경과(1시간 남음)가 여유 있어 보였다(#33)."""
+        import datetime as dt
+        import bot.feed_health as fh
+        assert fh._ago(dt.timedelta(hours=35)) == "1일 전"
+        assert fh._cap_label(36.0) == "1일", "상한만 올림하면 비교가 거짓"
+        assert fh._ago(dt.timedelta(hours=96)) == "4일 전"
+        assert fh._cap_label(200.0) == "8일"
+        assert fh._cap_label(3.0) == "3시간"
+
     def test_deposit_lag_is_measured_not_guessed(self):
         import bot.naver_sector_client as ns
         assert ns.deposit_lag("20260904", "2026-09-07")["gap_d"] == 3
@@ -48959,11 +49087,38 @@ class TestFeedCadenceAndDepositLag20260908:
         assert ns.deposit_lag("20260904", None)["gap_d"] is None
         assert ns.deposit_lag("nope", "2026-09-07")["gap_d"] is None
 
-    def test_deposit_lag_threshold_is_generous_but_fires(self):
-        """연휴를 건너도 안 울리되, 진짜 정체는 잡아야 한다(#27·#25)."""
+    def test_deposit_lag_threshold_counts_sessions_not_calendar_days(self):
+        """⚠️ 독립 리뷰 2026-09-08: 기준은 '마지막 완결 **세션**' 인데 문턱만
+        달력일이라 연휴가 그대로 오차였다 — 실측 XKRX 2026 에서 T+1 가정에도
+        9세션(설·추석·대체공휴일)에서 ⚠️ 가 떴다. 늘 뜨는 배지는 아무것도
+        안 재는 것과 같다(#25·#260). 세션으로 세면 구조적으로 안 뜬다.
+        """
         import bot.naver_sector_client as ns
-        assert not ns.deposit_lag("20260904", "2026-09-07")["stale"]
+        import bot.market_calendar as mc
+        if mc.sessions_behind("KR", "2026-09-04", "2026-09-07") is None:
+            import pytest
+            pytest.skip("exchange_calendars 미설치")
+        # 금→월(1세션): 달력으로는 3일이라 옛 문턱(4일)에 하루 차이였다
+        near = ns.deposit_lag("20260904", "2026-09-07")
+        assert near["gap_d"] == 3 and near["gap_sessions"] == 1
+        assert not near["stale"], "1세션 뒤짐에 경보가 떴다"
+        # 추석 연휴를 건너도 T+1 이면 여전히 1세션이라 안 운다
+        for obs, ses in (("20260925", "2026-09-28"), ("20260213", "2026-02-16")):
+            r = ns.deposit_lag(obs, ses)
+            if r["gap_sessions"] == 1:
+                assert not r["stale"], (obs, ses, r)
+        # 진짜 정체(5세션)는 잡는다
         assert ns.deposit_lag("20260901", "2026-09-08")["stale"]
+
+    def test_deposit_lag_does_not_warn_without_a_calendar(self, monkeypatch):
+        """캘린더가 없으면 세션을 못 센다 — 달력일로 대신 재면 고치려던
+        연휴 오탐이 그대로 돌아온다(#146). 그때는 **경보하지 않는다**."""
+        import bot.naver_sector_client as ns
+        import bot.market_calendar as mc
+        monkeypatch.setattr(mc, "sessions_behind", lambda *a, **k: None)
+        r = ns.deposit_lag("20260801", "2026-09-08")
+        assert r["gap_d"] == 38 and r["gap_sessions"] is None
+        assert not r["stale"]
 
     def test_deposit_widget_shows_both_dates(self, monkeypatch):
         """'다르다'만 말하면 안 통한다 — 두 날짜를 나란히(#202)."""
@@ -49195,6 +49350,70 @@ class TestQuoteTailRange20260908:
         out = mt.fetch_index_history("^KS11", days=120)
         assert called == ["^KS11"], "신선도 미달인데 일봉을 안 물었다"
         assert out[-1]["date"] == "2026-09-07"
+
+    def test_weekend_does_not_pay_for_the_fallback(self, monkeypatch):
+        """⚠️ 독립 리뷰 2026-09-08 High: 나이를 **KST 달력일**로 재고 있어
+        금요일 봉이 월요일엔 3일 지연으로 보였다 — gate 1 을 넘겨 주말마다
+        전 비-KR 지수·ETF 가 순손실 HTTP 를 냈다(#40·#249 한 함수가 두 개의
+        '오늘'). 세션으로 재면 금→월은 1세션이라 안 나간다.
+        """
+        import bot.market_timing as mt
+        import bot.chart_data as cd
+        rows = [{"date": "2026-09-04", "close": 100.0}]     # 금요일 종가
+        monkeypatch.setattr(mt, "_payload_to_rows", lambda p, days: rows)
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: {"x": 1})
+        monkeypatch.setattr(mt, "_expected_session",
+                            lambda m: ("2026-09-07", 2))     # 월요일
+        called = []
+        monkeypatch.setattr(cd, "_fetch_naver_daily",
+                            lambda t, p: called.append(t) or None)
+        monkeypatch.setattr(mt, "_quote_tail", lambda t, r: r)
+        mt.fetch_index_history("XLK", days=400)
+        assert not called, "금→월(1세션)인데 네이버를 불렀다"
+
+    def test_short_but_fresh_series_does_not_break_min_rows(self, monkeypatch):
+        """⚠️ 독립 리뷰 2026-09-08 High: 신선도만 보고 갈아타면 200일 SMA 를
+        쓰는 호출부(min_rows=200)가 **30행짜리**로 계산한다. 길이 요구는
+        신선도와 **별개 축**이다."""
+        import bot.market_timing as mt
+        import bot.chart_data as cd
+        import datetime as _dt
+        # ⚠️ 날짜를 손으로 조립하면 '2026-015-01' 같은 게 나와 나이 판정이
+        # 통째로 None 이 되고 분기가 안 탄다 — 첫 픽스처가 실제로 그랬다
+        # (뮤테이션이 통과했다, #91c). 실제 날짜로 만든다.
+        _end = _dt.date(2026, 8, 3)          # 기대 세션(09-07)보다 뒤처짐
+        long_stale = [{"date": (_end - _dt.timedelta(days=399 - i)).isoformat(),
+                       "close": 100.0} for i in range(400)]
+        short_fresh = [{"date": "2026-09-07", "close": 100.0}] * 30
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: "Y")
+        monkeypatch.setattr(cd, "_fetch_naver_daily", lambda t, p: "N")
+        monkeypatch.setattr(mt, "_payload_to_rows",
+                            lambda p, days: short_fresh if p == "N" else long_stale)
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-07", 2))
+        monkeypatch.setattr(mt, "_quote_tail", lambda t, r: r)
+        out = mt.fetch_index_history("XLK", days=400, min_rows=200)
+        assert len(out) >= 200, f"짧은 계열로 갈아탔다({len(out)}행)"
+
+    def test_naver_daily_is_fetched_at_most_once(self, monkeypatch):
+        """⚠️ 독립 리뷰 2026-09-08: 중복 호출 방지 주석이 #61 을 인용해 놓고
+        **아무도 호출 수를 세지 않았다** — 되돌리는 변형이 통과했다.
+        신선도 분기와 min_rows 분기가 둘 다 걸리는 조건에서 센다."""
+        import datetime as _dt
+        import bot.market_timing as mt
+        import bot.chart_data as cd
+        _end = _dt.date(2026, 8, 3)
+        short_stale = [{"date": (_end - _dt.timedelta(days=9 - i)).isoformat(),
+                        "close": 100.0} for i in range(10)]
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: "Y")
+        calls = []
+        monkeypatch.setattr(cd, "_fetch_naver_daily",
+                            lambda t, p: calls.append(t) or "N")
+        monkeypatch.setattr(mt, "_payload_to_rows",
+                            lambda p, days: short_stale)
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-07", 2))
+        monkeypatch.setattr(mt, "_quote_tail", lambda t, r: r)
+        mt.fetch_index_history("XLK", days=400, min_rows=200)
+        assert len(calls) == 1, f"같은 일봉을 {len(calls)}번 받았다(#61)"
 
     def test_fresh_series_does_not_pay_for_the_fallback(self, monkeypatch):
         """정상일 땐 추가 HTTP 0 — 늘 부르면 티커마다 순손실이다(#116)."""

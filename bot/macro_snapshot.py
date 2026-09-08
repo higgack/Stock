@@ -1051,7 +1051,7 @@ def _why(keys: tuple[str, ...] = ()) -> int:
         return 1
     from bot.finviz_client import cache_age_sec
     from bot.naver_marketindex import fetch_commodities
-    bad = 0
+    bad = unjudged = 0
     for r in rows:
         spark = list(r.get("spark") or [])
         distinct = len({round(float(v), 10) for v in spark if v is not None})
@@ -1077,8 +1077,18 @@ def _why(keys: tuple[str, ...] = ()) -> int:
                 "unknown": "❓"}[verdict]
         print(f"      스파크 {len(spark)}점 · 서로 다른 값 {distinct}개 "
               f"{mark} {why}")
-        if verdict in ("cache", "unknown"):
+        # ⚠️ rc 는 **고칠 수 있는 것**만 센다. 원자재 캐시가 없는 카드(FRED·
+        # ECOS 40장 중 27장)는 라인 나이를 잴 길이 자체가 없어 늘 '판정 불가'
+        # 다 — 그걸 실패로 세면 정상적으로 평평한 정책금리 하나 때문에 도구가
+        # 항상 rc=1 이 되고, 그러면 아무도 rc 를 안 본다(#25·#260).
+        # 판정 불가는 **출력에는 남기고**(#54) 종료코드에서만 뺀다.
+        if verdict == "cache":
             bad += 1
+        elif verdict == "unknown":
+            unjudged += 1
+    if unjudged:
+        print(f"  ❓ 판정 불가 {unjudged}건 — 라인 캐시가 없는 카드"
+              "(FRED·ECOS 등)는 원천/캐시를 가를 재료가 없다")
     return 1 if bad else 0
 
 

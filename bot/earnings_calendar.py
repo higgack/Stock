@@ -125,9 +125,15 @@ _US_REASON = {
     "empty": "원천(Finnhub)이 이 달을 0건으로 응답했습니다",
     "": "",
 }
-# 빈 응답은 **짧게만** 믿는다 — 6시간을 믿으면 원천 장애 한 번이 반나절
-# 빈 달력이 된다(#161·#303). 값이 있는 달은 종전대로 6시간.
-_EMPTY_TTL_SEC = 600
+# ⚠️ 2026-09-08 독립 리뷰가 전제를 뒤집었다: **원천 장애는 애초에 캐시되지
+# 않는다**(예외 경로가 `return [], "http"` 로 쓰기 전에 빠진다). 그래서 여기서
+# 짧게 믿어 봐야 고칠 수 있는 실패모드가 없고, 정당하게 0건인 달(먼 미래 등)만
+# 6시간 → 10분으로 바뀌어 **상류 호출이 36배**가 된다. `/earnings` 는 요청마다
+# 라이브로 그리는 no-cache 경로라 그 비용이 그대로 나간다(#116 본문 아닌 값에
+# 예산·캐시를 달 것의 반대 방향 — 재지 않은 이득을 위해 비용을 늘렸다).
+# 되돌린다. 다만 6시간을 통째로 믿지는 않는다 — 원천이 이제 막 채우는
+# 당월·익월은 한 시간이면 다시 물어볼 값어치가 있다(그 이상은 안 바뀐다).
+_EMPTY_TTL_SEC = 3600
 
 
 def us_month(year: int, month: int) -> tuple[list[dict], str]:
@@ -394,7 +400,9 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
         # 있는 척만 한다(#291). 그 불변식은 회귀가 AST 로 못박는다.
         _why = _US_REASON.get(_us_reason, "")
         _empty_note = (
-            '<div class="empty-why" style="margin:10px 0;padding:10px 12px;'
+            # 클래스를 달지 않는다 — `empty-why` 는 이 번들에 정의가 없어
+            # CSS 가드가 잡는다(#201·#273). 스타일은 전부 인라인이다.
+            '<div style="margin:10px 0;padding:10px 12px;'
             'border-radius:8px;background:rgba(255,170,0,.10);'
             'font-size:12px;color:var(--muted)">'
             + _html.escape(f"이 달에 일정이 없습니다 — {_why}" if _why
