@@ -403,6 +403,19 @@ _NAVER_TAIL_TOL = 0.001      # 전일종가 일치 허용오차 0.1%
 _NAVER_TAIL_MAX_MOVE = 0.20  # 하루 ±20% 초과면 정렬이 틀린 것으로 보고 폐기
 
 
+def _market_of(ticker: str) -> str | None:
+    """티커 → 시장 코드(모르면 None). `_quote_tail` 과 신선도 판정이 **같은
+    해석**을 써야 두 곳이 갈리지 않는다(#38)."""
+    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
+    if spec:
+        return spec[0]
+    try:
+        from bot.market import detect_market
+        return detect_market(ticker)
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
 def _quote_tail_supported(ticker: str) -> bool:
     """이 티커에 신선도 보강 경로가 있는가(감사 표기용 — 화면과 같은 판정)."""
     if str(ticker).upper() in _NAVER_INDEX_FOR:
@@ -484,14 +497,23 @@ def _naver_index_quote(ticker: str) -> dict | None:
 #   implausible  → 하루 변동이 상한을 넘음(정렬 오류 의심)
 #   ok           → 붙인다
 def tail_diag(expected: str | None, last_date: str, last_close,
-              quote: dict | None) -> tuple[str, dict]:
-    """(갈래, 수치) — 네이버/시세 한 봉 보강을 붙일 수 있는가."""
+              quote: dict | None, gap_sessions: int | None = None
+              ) -> tuple[str, dict]:
+    """(갈래, 수치) — 네이버/시세 한 봉 보강을 붙일 수 있는가.
+
+    `gap_sessions` 를 주면 **사거리**를 먼저 본다. 한 봉 보강은 정의상
+    1세션만 이을 수 있으므로 2세션 이상 뒤처졌으면 시세를 물어볼 필요조차
+    없다 — 그걸 `misaligned` 로 뭉뚱그리면 '장중이라 못 붙였다'와 '사거리를
+    넘었다'가 같은 말이 되어 다음 라운드가 엉뚱한 곳을 본다(#82·#301).
+    """
     d: dict = {"expected": expected, "last_date": last_date,
-               "last_close": last_close}
+               "last_close": last_close, "gap_sessions": gap_sessions}
     if not expected:
         return "no_expected", d
     if last_date >= expected:
         return "fresh", d
+    if gap_sessions is not None and gap_sessions >= 2:
+        return "too_far_behind", d
     if not quote:
         return "no_quote", d
     d["quote_close"], d["quote_prev"] = quote.get("close"), quote.get("prev")
@@ -522,21 +544,23 @@ def _quote_tail(ticker: str, rows: list[dict]) -> list[dict]:
     않는다(장중이면 여기서 자동으로 걸러진다)."""
     if not rows:
         return rows
-    spec = _NAVER_INDEX_FOR.get(str(ticker).upper())
-    if spec:
-        market = spec[0]
-    else:
-        try:
-            from bot.market import detect_market
-            market = detect_market(ticker)
-        except Exception:                                      # noqa: BLE001
-            return rows
+    market = _market_of(ticker)
+    if not market:
+        return rows
     expected, _grace = _expected_session(market)
     last = str(rows[-1].get("date") or "")[:10]
     if not expected or last >= expected:
         return rows                     # 이미 최신 — 건드리지 않는다
-    q = _market_quote(ticker)
-    code, d = tail_diag(expected, last, rows[-1].get("close"), q)
+    gap = None
+    try:
+        from bot.market_calendar import sessions_behind
+        gap = sessions_behind(market, last, expected)
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_timing: %s 세션 격차 측정 실패: %s", ticker, exc)
+    # 사거리를 넘었으면 시세를 부르지 않는다 — 한 봉으로는 못 잇는다.
+    q = None if (gap is not None and gap >= 2) else _market_quote(ticker)
+    code, d = tail_diag(expected, last, rows[-1].get("close"), q,
+                        gap_sessions=gap)
     if code != "ok":
         # 조용한 생략 금지 — 어느 갈래에서 멈췄는지 남긴다(#12 silent-fail).
         log.info("market_timing: %s 보강 생략(%s) — %s", ticker, code,
@@ -566,6 +590,10 @@ def tail_reason(code: str, d: dict) -> str:
                 f"(차이 {100 * (d.get('align_gap') or 0):.2f}%"
                 f" > 허용 {100 * (d.get('align_tol') or 0):.2f}%)"
                 " — 장중이거나 야후가 2세션 이상 뒤처져 한 봉으로는 못 잇는다")
+    if code == "too_far_behind":
+        return (f"야후가 {last} 에서 {d.get('gap_sessions')}세션 뒤처졌다"
+                f"(기대 {exp}) — 한 봉 보강은 1세션만 이을 수 있어 "
+                "일봉 원천이 필요하다")
     if code == "implausible":
         return (f"시세 종가가 전일 대비 {100 * (d.get('move') or 0):.1f}%"
                 f" — 상한 {100 * (d.get('move_max') or 0):.0f}% 초과로 폐기")
@@ -635,18 +663,72 @@ def fetch_index_history(ticker: str, days: int = 120,
                          out[-1]["date"] if out else "—",
                          len(alt), alt[-1]["date"])
                 out = alt
+        # ⚠️ 폴백 조건을 **'요구를 충족했나'**로 잡는다(#136). 네이버 일봉은
+        # 여태 '행 수가 모자랄 때'만 걸려 있어, 야후가 **2세션 이상** 뒤처진
+        # 경우엔 한 번도 안 탔다 — 그때 남은 수단은 한 봉 보강뿐인데 그건
+        # 정의상 1세션만 잇는다(#301: 다음 장이 열리면 영영 못 잇는다).
+        # 일봉은 날짜를 갖고 오므로 몇 세션이든 잇는다.
+        # ⚠️ '오늘'은 **시장 현지일**이다(#40·#249 한 함수가 두 개의 오늘을
+        # 쓰면 갈라진다). market 없이 재면 KST 기준이라 금요일 봉이 월요일에
+        # 3일 지연으로 보여, 주말마다 전 비-KR 지수·ETF 가 순손실 HTTP 를
+        # 낸다(독립 리뷰 실측: XLK 월요일 age=3 > gate=1 → 네이버 2콜).
+        # 세션으로 재면 휴일까지 맞는다.
+        _mkt2 = _market_of(ticker)
+        _last2 = out[-1]["date"] if out else ""
+        _behind = None
+        if out:
+            _exp2 = _expected_session(_mkt2)[0] if _mkt2 else None
+            try:
+                from bot.market_calendar import sessions_behind
+                _behind = sessions_behind(_mkt2, _last2, _exp2) if _exp2 else None
+            except Exception as exc:                           # noqa: BLE001
+                log.debug("market_timing: %s 세션 격차 측정 실패: %s", ticker, exc)
+            if _behind is None:      # 캘린더 부재 — 시장 현지일로 폴백
+                _behind = _vol_age_days(_last2, _mkt2)
+        _nv_rows = None          # 같은 페이로드를 아래 min_rows 분기와 공유
+        if out and _behind is not None and _behind > _stale_gate:
+            _nv_rows = _payload_to_rows(_fetch_naver_daily(ticker, period), days)
+            alt = _nv_rows
+            alt_behind = None
+            if alt:
+                try:
+                    from bot.market_calendar import sessions_behind
+                    alt_behind = (sessions_behind(_mkt2, alt[-1]["date"], _exp2)
+                                  if _exp2 else None)
+                except Exception:                              # noqa: BLE001
+                    alt_behind = None
+                if alt_behind is None:
+                    alt_behind = _vol_age_days(alt[-1]["date"], _mkt2)
+            # ⚠️ 신선하다고 **짧은 계열로 갈아타지 않는다** — 200일 SMA 를
+            # 쓰는 호출부(min_rows=200)가 30행짜리로 계산하게 된다(독립 리뷰
+            # 실측: XLK 400행 → 30행). 길이 요구는 신선도와 별개 축이다.
+            _long_enough = (not min_rows) or len(alt) >= min_rows
+            if (alt and alt_behind is not None and alt_behind < _behind
+                    and _long_enough):
+                # 조용한 대체 금지 — 폴백을 탄 사실을 남긴다(#42a).
+                log.info("market_timing: %s 야후 최신 %s(%s세션 지연) — 네이버 "
+                         "일봉 최신 %s 로 대체", ticker, _last2, _behind,
+                         alt[-1]["date"])
+                out = alt
+            elif alt and not _long_enough:
+                log.info("market_timing: %s 네이버 일봉이 더 신선하지만 %d행"
+                         "(<min_rows %d) — 갈아타지 않는다", ticker, len(alt),
+                         min_rows)
         # `out` 이 비었으면 fetch_chart_payload 가 **이미** 네이버를 시도한
         # 뒤다(그 폴백은 빈 결과에서 걸린다) — 여기서 또 부르면 10초 타임아웃
         # HTTP 호출만 티커마다 중복된다. 절단(0<len<min_rows)일 때만 재시도.
         if min_rows and 0 < len(out) < min_rows:
             # 조용한 대체 금지 — 폴백을 탄 사실을 남긴다(이 파일 기존 규약).
-            alt = _payload_to_rows(_fetch_naver_daily(ticker, period), days)
+            # ⚠️ 위 신선도 분기가 이미 받아 왔으면 **다시 받지 않는다** —
+            # 같은 문서를 두 번 받는 낭비는 모듈 테스트가 못 잡는다(#61).
+            alt = (_nv_rows if _nv_rows is not None
+                   else _payload_to_rows(_fetch_naver_daily(ticker, period), days))
             if len(alt) > len(out):
                 log.info("market_timing: %s 히스토리 %d행(<%d) — 네이버 폴백 "
                          "%d행으로 대체", ticker, len(out), min_rows, len(alt))
                 return alt
             log.warning("market_timing: %s 히스토리 %d행 — min_rows %d 미만이고 "
-                        "네이버 폴백도 %d행(그대로 반환)",
+                        "네이버 일봉도 %d행(그대로 반환)",
                         ticker, len(out), min_rows, len(alt))
         # ⚠️ **여기서** 붙인다 — 시장타이밍과 Breadth 가 둘 다 이 함수를 쓰므로
         # 호출부마다 배선하면 한쪽을 빠뜨린다(실수 #12 배선 누락).
@@ -856,17 +938,38 @@ def fetch_market_breadth(market: str = "US") -> dict:
 # 원시 VIX 가격을 공개적으로 노출하지 않아 그 시도는 잘못된 전제 —
 # bot/fear_greed_client.py 참조, 되돌림. VIX 는 계속 네이버가 정확한
 # 소스(메인 대시보드 bot/macro_snapshot.py 와 동일 — canonical 일치).)
+def _live_age_fields(age_sec):
+    """실시간 값의 **값 수집 시각** 필드. 라벨 규약은 매크로 카드와 같은 곳
+    (`macro_snapshot.live_asof`)에서 온다 — 복제하면 두 보드가 같은 값을 다르게
+    말한다(#38). 못 재면 조용히 비우지 말고 사유를 남긴다(#43·#54).
+
+    ⚠️ 잰 것은 **우리가 원천에서 값을 받아온 시각**이지 거래소가 그 값을 찍은
+    시각이 아니다 — 그래서 접두사가 '기준' 이 아니라 '값 수집' 이다(#165).
+    """
+    from bot.macro_snapshot import live_asof
+    label, stale, mins = live_asof(age_sec)
+    return {"value_asof": label, "asof_stale": stale, "value_age_min": mins,
+            "value_age_why": ("" if label else
+                              "네이버 값 풀 캐시 나이를 못 쟀다 — 로그 확인")}
+
+
 def _fetch_vix_naver():
     """네이버 worldstock .VIX — bot/macro_snapshot.py 의 메인 대시보드 매크로9
     위젯과 동일 소스. 사용자 2026-07-26 리포트('빅스지수가 다른데
     메인대시보드랑 시장타이밍이랑') — 이 카드가 독립적으로 yfinance ^VIX 만
     썼던 게 원인(다른 소스 + 최대 6시간 stale, canonical 값 불일치). 30초
-    캐시라 사실상 실시간. 실패 시 None(호출부가 yfinance 로 최종 폴백)."""
+    캐시라 사실상 실시간. 실패 시 None(호출부가 yfinance 로 최종 폴백).
+
+    ⚠️ 반환은 **값과 나이를 같은 응답에서** 묶은 dict 다(#160) — 나이를 따로
+    한 번 더 물으면 그 사이 갱신된 값의 나이를 옛 값에 붙일 수 있다.
+    실패 sentinel 은 계속 None 이라 기존 스텁(`lambda: None`)이 그대로 산다.
+    """
     try:
         from bot import naver_marketindex as nm
         rec = (nm.fetch_world_indices((".VIX",)) or {}).get(".VIX")
         if rec and rec.get("close") is not None:
-            return float(rec["close"])
+            return {"value": float(rec["close"]),
+                    "age_sec": nm.value_age_sec("idx", rec)}
     except Exception as exc:
         log.debug("market_timing: VIX naver fetch failed: %s", exc)
     return None
@@ -1048,6 +1151,48 @@ def _vol_age_days(date_str: str | None, market: str | None = None) -> int | None
         return None
     today = _market_today(market) if market else _kst_now().date()
     return (today - d).days
+
+
+def vol_asof_label(rec: dict) -> dict:
+    """변동성 카드의 '언제 값인가' — **화면과 감사가 같은 함수**를 쓴다(#35).
+
+    감사가 판정을 재구현하면 제품과 다른 기준선을 비교한다(#169). 그래서 이
+    판정은 인라인이 아니라 순수 함수로 있고, 회귀가 값으로 고정한다(#41·#176).
+
+    반환 {"label", "kind", "verdict"}
+      label   원천 라벨 뒤에 붙는 문구 — "09-05 종가" · "값 수집 13:11" · ""
+      kind    "종가"|"장중"|"live"|""  (지연 각주 문구가 이걸 쓴다)
+      verdict ""            정상
+              "stale"       실시간인데 값이 문턱을 넘게 낡음(⚠️)
+              "unmeasured"  실시간인데 나이를 못 쟀다 — 판정 불가는 통과가
+                            아니다(#54)
+              "missing"     종가도 실시간도 아닌데 기준이 없다(#43)
+    """
+    if rec.get("date"):
+        # ⚠️ 장중엔 '종가' 가 아니다. VKOSPI 가 한국 현지 10:26 에
+        # "KIS · 08-20 종가" 로 떠 있었다(사용자 2026-08-20 캡처) — 그
+        # 시각은 장 중이라 종가가 아니라 **현재값**이다.
+        mkt = rec.get("market")
+        live = (_market_closed_today(mkt) is False
+                and str(rec["date"])[:10] == (
+                    _market_today(mkt).isoformat() if mkt else ""))
+        kind = "장중" if live else "종가"
+        return {"label": f'{str(rec["date"])[5:]} {kind}', "kind": kind,
+                "verdict": ""}
+    if rec.get("asof_kind") == "live":
+        # 실시간 값엔 기준일이 없다 — 그렇다고 비워 두면 화면도 감사도
+        # "이거 최신이야?" 에 답하지 못한다(#43·#304).
+        lab = rec.get("value_asof") or ""
+        if not lab:
+            why = rec.get("value_age_why") or "사유 미기록"
+            return {"label": f"값 수집 시각 미기록 — {why}", "kind": "live",
+                    "verdict": "unmeasured"}
+        mins = rec.get("value_age_min")
+        if rec.get("asof_stale") and isinstance(mins, int):
+            return {"label": f"값 수집 {lab} ({mins}분 전)", "kind": "live",
+                    "verdict": "stale"}
+        return {"label": f"값 수집 {lab}", "kind": "live", "verdict": ""}
+    return {"label": "", "kind": "", "verdict": "missing"}
 
 
 # ── 관측 누적 시계열 + 시세 메타 폴백 ──────────────────────────────────
@@ -1393,8 +1538,13 @@ def fetch_volatility_snapshot() -> dict:
         vix_hist = fetch_index_history("^VIX", days=400, min_rows=200)
         nv = _fetch_vix_naver()
         if nv is not None:
-            out["vix"] = {"value": nv, "date": None, "source": "네이버(실시간)",
-                          "market": "US"}
+            # 실시간 값은 '기준일'이 없다 — 그렇다고 비워 두면 화면도 감사도
+            # "이거 최신이야?" 에 답을 못 한다(#43, 실측: 감사가 `기준 —`).
+            # 대신 **값 수집 시각**을 싣는다(#304 매크로 카드와 같은 규약).
+            out["vix"] = {"value": nv["value"], "date": None,
+                          "source": "네이버(실시간)", "market": "US",
+                          "asof_kind": "live",
+                          **_live_age_fields(nv.get("age_sec"))}
         elif vix_hist:
             out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
                           "market": "US",
@@ -1807,20 +1957,18 @@ SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10
             """CNN F&G 카드와 **같은 형식** — 현재 + 전일·1주·1달·1년
             (사용자 2026-08-16). 없는 창은 칸 자체를 만들지 않는다."""
             src = rec.get("source", "")
-            # 종가 기반 값은 **며칠 종가인지**를 같이 낸다(규칙 10b).
+            # 종가 기반 값은 **며칠 종가인지**를 같이 낸다(규칙 10b). 판정은
+            # 감사와 공유하는 순수 함수에서 온다(#35·#38).
             age = _vol_age_days(rec.get("date"), rec.get("market"))
-            if rec.get("date"):
-                # ⚠️ 장중엔 '종가' 가 아니다. VKOSPI 가 한국 현지 10:26 에
-                # "KIS · 08-20 종가" 로 떠 있었다(사용자 2026-08-20 캡처) —
-                # 그 시각은 장 중이라 종가가 아니라 **현재값**이다.
-                _mkt = rec.get("market")
-                _live = (_market_closed_today(_mkt) is False
-                         and str(rec["date"])[:10] == (
-                             _market_today(_mkt).isoformat() if _mkt else ""))
-                _kind = "장중" if _live else "종가"
-                src = f'{src} · {str(rec["date"])[5:]} {_kind}' if src \
-                    else f'{str(rec["date"])[5:]} {_kind}'
+            _st = vol_asof_label(rec)
+            _kind = _st["kind"]
+            if _st["label"]:
+                src = f'{src} · {_st["label"]}' if src else _st["label"]
             stale_note = ""
+            # 판정이 'stale' 인데 화면엔 아무 표시가 없으면 감사와 화면이
+            # 같은 값을 다르게 말한다(#38 — 독립 리뷰 2026-09-08).
+            if _st["verdict"] == "stale":
+                src += " ⚠"
             if age is not None and age > _VOL_STALE_DAYS:
                 src += " ⚠"
                 stale_note = (f'<div class="note">⚠️ 이 지수는 원천 시계열이 '

@@ -108,6 +108,36 @@ _GZIP_MIME_PREFIXES = ("text/html", "text/css", "application/javascript",
                        "text/plain")
 
 
+def render_search_error(query: str) -> str:
+    """검색 실패 안내 페이지 — 핸들러 **밖**의 순수 함수.
+
+    HTTP 핸들러 메서드 안에 인라인으로 두면 렌더를 태워볼 수 없어 CSS 가드
+    (미정의 클래스·명시도) 밖에 남는다(#176·#273). 순수 함수라 값으로 잰다.
+    """
+    import html as _h
+    q_esc = _h.escape(query)
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>검색 결과 없음</title>'
+        '<style>body{font-family:system-ui;background:#0d1117;color:#c9d1d9;'
+        'display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}'
+        '.box{text-align:center;max-width:400px;padding:40px}'
+        'h2{font-size:20px;margin-bottom:12px}'
+        'p{color:#8b949e;font-size:14px;line-height:1.6}'
+        'a{color:#58a6ff;text-decoration:none}'
+        'a:hover{text-decoration:underline}'
+        '.q{color:#f0883e;font-weight:600}'
+        '</style></head><body><div class="box">'
+        f'<h2>검색 결과 없음</h2>'
+        f'<p><span class="q">"{q_esc}"</span>에 해당하는 종목을 찾지 못했습니다.</p>'
+        '<p>티커(NVDA, 005930.KS)를 직접 입력하거나<br>'
+        '한국 종목명(삼성전자, LG에너지솔루션)을 정확히 입력해 주세요.</p>'
+        '<p><a href="market.html">← 홈으로 돌아가기</a></p>'
+        '</div></body></html>'
+    )
+
+
 def _render_note() -> str:
     """분기 인포그래픽 이미지가 없을 때의 **진짜 이유** 한 문장."""
     try:
@@ -2417,28 +2447,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _serve_search_error(self, query: str) -> None:
         """Render a user-friendly 'not found' page for failed name search."""
-        import html as _h
-        q_esc = _h.escape(query)
-        body = (
-            '<!DOCTYPE html><html><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>검색 결과 없음</title>'
-            '<style>body{font-family:system-ui;background:#0d1117;color:#c9d1d9;'
-            'display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}'
-            '.box{text-align:center;max-width:400px;padding:40px}'
-            'h2{font-size:20px;margin-bottom:12px}'
-            'p{color:#8b949e;font-size:14px;line-height:1.6}'
-            'a{color:#58a6ff;text-decoration:none}'
-            'a:hover{text-decoration:underline}'
-            '.q{color:#f0883e;font-weight:600}'
-            '</style></head><body><div class="box">'
-            f'<h2>검색 결과 없음</h2>'
-            f'<p><span class="q">"{q_esc}"</span>에 해당하는 종목을 찾지 못했습니다.</p>'
-            '<p>티커(NVDA, 005930.KS)를 직접 입력하거나<br>'
-            '한국 종목명(삼성전자, LG에너지솔루션)을 정확히 입력해 주세요.</p>'
-            '<p><a href="market.html">← 홈으로 돌아가기</a></p>'
-            '</div></body></html>'
-        ).encode("utf-8")
+        body = render_search_error(query).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

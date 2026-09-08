@@ -85,6 +85,38 @@ def last_session_on_or_before(market: str, date_str: str) -> Optional[str]:
     return _back_trading_days(cal, date_str, 0)
 
 
+def sessions_behind(market: str, have: str, expected: str) -> Optional[int]:
+    """`have` 가 `expected` 보다 **몇 세션** 뒤인가(같으면 0). 못 재면 None.
+
+    달력 없이 날짜 차이로 세면 연휴가 그대로 오차가 된다(#29 위치·달력일로
+    되짚은 기간 라벨은 시계열이 성기면 거짓말한다). 판정 불가는 0 이 아니라
+    None 이다 — 0 으로 두면 '한 봉으로 이을 수 있다'로 잘못 읽힌다(#54).
+    """
+    cal = _calendar(market)
+    if cal is None or not have or not expected:
+        return None
+    try:
+        import pandas as pd
+        if pd.Timestamp(have) > pd.Timestamp(expected):
+            return 0
+        sessions = cal.sessions_in_range(have, expected)
+        if sessions is None or len(sessions) == 0:
+            return None
+        # `have` 가 **세션일 때만** 자기 자신이 포함되므로 1을 뺀다. 휴일
+        # 봉(원천이 준 비거래일 날짜)이면 포함되지 않으므로 빼면 하나 모자란다
+        # — 그러면 '2세션 뒤짐'을 1로 보고 못 잇는 보강을 시도한다(독립 리뷰
+        # 2026-09-08). `is_session` 으로 갈라야 옳다.
+        try:
+            self_is_session = bool(cal.is_session(pd.Timestamp(have)))
+        except Exception:                                      # noqa: BLE001
+            self_is_session = True
+        return max(0, len(sessions) - (1 if self_is_session else 0))
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("market_calendar.sessions_behind(%s,%s,%s) failed: %s",
+                  market, have, expected, exc)
+        return None
+
+
 def add_trading_days(market: str, date_str: str, n: int) -> Optional[str]:
     """`date_str`(YYYY-MM-DD, 거래일 가정)의 세션 기준 **거래일 n일 뒤** 날짜.
 

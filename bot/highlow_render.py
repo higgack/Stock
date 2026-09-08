@@ -529,7 +529,13 @@ def ind_dist_line(items: list, top_k: int = 5) -> str:
         return ""
     parts = [f"{_html.escape(name)} {n}" for name, n in cnt.most_common(top_k)]
     extra = " 외" if len(cnt) > top_k else ""
-    return (f'<div class="ind-dist" style="color:var(--muted);font-size:12px;'
+    # ⚠️ 클래스를 달지 않는다. `class="ind-dist"` 는 **어떤 번들에도 정의가
+    # 없었고**(레포 전체 참조 1건 = 이 줄), JS 도 쿼리하지 않는 죽은 이름이었다
+    # (#201·#273 — 2026-09-08 CSS 가드를 tw_pages 에 켜자마자 잡혔다).
+    # 스타일은 전부 인라인이라 이름을 떼도 화면은 그대로다. 이 조각은
+    # us/tw/intl/naver 여러 번들에 실리므로 규칙을 각 번들에 복제하는 쪽이
+    # 오히려 갈라진다(#38·#273 "지금 쓰는 곳이 전부 그 번들인가").
+    return (f'<div style="color:var(--muted);font-size:12px;'
             f'margin:2px 0 8px">업종 분포: {" · ".join(parts)}{extra}</div>')
 
 

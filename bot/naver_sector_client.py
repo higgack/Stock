@@ -415,6 +415,52 @@ def _fetch_deposit_fsc() -> dict:
     return out
 
 
+# 예탁금 기준일이 얼마나 뒤처졌나 — 판정을 재구현하지 않고 시장타이밍의
+# '마지막 완결 세션' 을 그대로 쓴다(#35·#38 복제하면 두 화면이 갈라진다).
+# ⚠️ KOFIA 의 실제 공표 시차(T+1 인지 T+2 인지)는 **재지 않았다** — 그래서
+# 여기서 단정하지 않고 두 날짜를 나란히 보여 사용자가 검산하게 한다(#165·#202).
+# ⚠️ 문턱의 **단위**가 기준과 같아야 한다(독립 리뷰 2026-09-08): 기준은
+# '마지막 완결 **세션**' 인데 문턱을 **달력일**로 두면 연휴가 그대로 오차가
+# 된다 — 실측(XKRX 2026 캘린더)으로 T+1 공표 가정에서도 9세션, T+2 면
+# 103세션에서 ⚠️ 가 떴다(추석·설·대체공휴일). 늘 뜨는 배지는 아무것도 안
+# 재는 것과 같다(#25·#260). 같은 커밋의 `sessions_behind` 로 센다(#29).
+_DEPOSIT_LAG_WARN_SESSIONS = 3   # 공표 시차를 못 쟀으므로 넉넉히(#27·#165)
+
+
+def deposit_lag(date_str: str, session: str | None) -> dict:
+    """{"gap_d", "gap_sessions", "session", "stale"} — 기준일이 마지막 완결
+    세션보다 얼마나 뒤인가.
+
+    순수 함수. 판정을 인라인으로 두면 태워볼 수 없다(#176·#41).
+    재료가 없으면 판정하지 않는다 — 판정 불가는 통과가 아니다(#54).
+    ⚠️ 화면에 적는 '며칠 전'은 사용자가 달력으로 검산하는 값이라 **달력일**
+    이고, 경보 판정만 **세션**으로 한다 — 둘을 한 이름으로 뭉치지 않는다(#34).
+    """
+    from datetime import date as _date
+    d = str(date_str or "").replace(".", "").replace("-", "")[:8]
+    none = {"gap_d": None, "gap_sessions": None,
+            "session": session or "", "stale": False}
+    if len(d) != 8 or not d.isdigit() or not session:
+        return none
+    try:
+        obs = _date(int(d[:4]), int(d[4:6]), int(d[6:8]))
+        ses = _date(int(session[:4]), int(session[5:7]), int(session[8:10]))
+    except (ValueError, IndexError):
+        return none
+    gap = (ses - obs).days
+    sessions = None
+    try:
+        from bot.market_calendar import sessions_behind
+        sessions = sessions_behind("KR", obs.isoformat(), ses.isoformat())
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("deposit_lag: 세션 격차 측정 실패: %s", exc)
+    # 캘린더가 없으면 세션을 못 세므로 **경보하지 않는다** — 달력일로
+    # 대신 재면 고치려던 연휴 오탐이 그대로 돌아온다(#146).
+    return {"gap_d": gap, "gap_sessions": sessions, "session": session,
+            "stale": bool(sessions is not None
+                          and sessions >= _DEPOSIT_LAG_WARN_SESSIONS)}
+
+
 def fetch_deposit() -> dict:
     """고객예탁금·신용잔고 → {date, deposit, credit, deposit_chg, credit_chg,
     deposit_series, credit_series}. 억원. 1h TTL(세션-인지 아님, 2026-08-08

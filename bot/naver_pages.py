@@ -181,9 +181,9 @@ def render_theme_page() -> str:
         body = (f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
                 f'<span class="ts">{ts} 기준{note}</span></h2>'
                 f'<table id="thm-tbl" class="cflt"><thead><tr><th>#</th>'
-                f'<th class="th-sort" data-k="name">테마</th>'
-                f'<th class="th-sort" data-k="pct" style="text-align:right">등락률</th>'
-                f'<th class="th-sort" data-k="pct3" style="text-align:right">최근3일</th>'
+                f'<th class="js-th-sort" data-k="name">테마</th>'
+                f'<th class="js-th-sort" data-k="pct" style="text-align:right">등락률</th>'
+                f'<th class="js-th-sort" data-k="pct3" style="text-align:right">최근3일</th>'
                 f'<th>주도주</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>{_THEME_SORT_JS}{_gfjs}')
     return _shell("테마별 시세",
@@ -195,7 +195,10 @@ _THEME_SORT_JS = """<script>
 (function(){
 var tbl=document.getElementById('thm-tbl');if(!tbl)return;
 var dir={};
-tbl.querySelectorAll('th.th-sort').forEach(function(th){
+/* `js-` 접두 = CSS 가 없는 게 정상인 **JS 훅**(#273) — 커서·정렬은 여기서
+   붙인다. 접두가 없으면 CSS 미정의 가드가 '스타일이 조용히 빠졌다'로
+   오보한다(2026-09-08 그 가드를 이 페이지에 켜자마자 잡혔다, #87a). */
+tbl.querySelectorAll('th.js-th-sort').forEach(function(th){
   th.style.cursor='pointer';
   th.addEventListener('click',function(){
     var k=th.dataset.k;var d=dir[k]=-(dir[k]||1);
