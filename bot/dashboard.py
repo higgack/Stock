@@ -17741,9 +17741,11 @@ def _render_macro_card(ind: dict) -> str:
     # FRED/ECOS 는 12개월 월간이라 12개월(원래대로 그래프 — 사용자 2026-06-10).
     # 라인 기간(1개월/12개월)을 카드에 작게 명시(사용자 2026-06-10).
     spark = _macro_spark_svg(ind.get("spark", []))
-    # 기준월 라벨(사용자 2026-06-24) — 헤드라인 값이 어느 기간 관측치인지(ECOS/FRED
-    # 발표지표). 실시간 가격 카드(asof='')는 미표시. CLAUDE.md 규칙10b(데이터 위젯=
-    # 적용시각·소스 라벨) 정합.
+    # 기준 라벨(사용자 2026-06-24) — 헤드라인 값이 어느 기간 관측치인지(ECOS/FRED
+    # 발표지표). ⚠️ 2026-09-08 까지 실시간 가격 카드는 asof='' 로 **아무것도 안
+    # 실었다** — 규칙10b(데이터 위젯=적용시각·소스 라벨) 위반이고, 값 풀이
+    # 실패하면 최대 24시간 낡은 값이 조용히 '현재'로 그려졌다(#43·#52·#163).
+    # 이제 그 카드는 **값 수집 시각**을 싣는다(asof_kind='live').
     asof = _html.escape(ind.get("asof", ""))
     # 경과 개월 병기 — "8월인데 왜 6월 숫자냐"(사용자 2026-08-01). 원천 통계 공표
     # 지연이라 정상인데, 화면만 봐선 정상 지연인지 갱신이 막힌 건지 알 수 없었다.
@@ -17752,7 +17754,15 @@ def _render_macro_card(ind: dict) -> str:
     # (=현재 기준, 사용자 2026-08-02 "미국 국채도 한국처럼 현재 기준으로").
     _lag = ind.get("asof_lag")
     _lag_d = ind.get("asof_lag_days")
-    if isinstance(_lag_d, int) and _lag_d > 0:
+    # 실시간 가격 카드는 '값 수집 시각' 이라 경과도 **분** 단위다. 그리고
+    # 평소(30초 주기)엔 안 뜬다 — 늘 뜨는 배지는 아무것도 안 재는 것과
+    # 같다(#25·#260). 뜨면 값 풀이 막힌 것이다.
+    _live = ind.get("asof_kind") == "live"
+    _lag_m = ind.get("value_age_min")
+    if _live:
+        _lag_html = (f' <span style="opacity:.75">({_lag_m}분 전)</span>'
+                     if ind.get("asof_stale") and isinstance(_lag_m, int) else "")
+    elif isinstance(_lag_d, int) and _lag_d > 0:
         _lag_html = f' <span style="opacity:.75">({_lag_d}일 전)</span>'
     elif isinstance(_lag, int) and _lag > 0:
         _lag_html = f' <span style="opacity:.75">({_lag}개월 전)</span>'
@@ -17762,8 +17772,21 @@ def _render_macro_card(ind: dict) -> str:
     # (사용자 2026-08-18 "제때제때 잘 가져오는지"). 규약 = bot/macro_cadence.
     if ind.get("asof_stale"):
         _lag_html += ' <span style="color:#d97706">⚠ 지연</span>'
-    asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
-                 f'margin-top:2px">기준 {asof}{_lag_html}</div>') if asof else ""
+    # 접두사를 하나로 뭉뚱그리면 한쪽이 거짓말이 된다(#34·#245) — 발표지표는
+    # 관측 **기준** 기간이고 실시간 카드는 우리가 값을 받아온 **수집** 시각
+    # 이지 거래소가 그 가격을 찍은 시각이 아니다(#165 안 잰 것을 단정 금지).
+    _asof_pre = "값 수집" if _live else "기준"
+    # ⚠️ 실시간 카드인데 나이를 못 쟀으면 **비우지 말고 그렇게 말한다** —
+    # ℹ️ 가이드는 이 카드들에 수집 시각이 있다고 약속하므로, 조용히 빈 줄이면
+    # 화면이 자기 범례와 어긋난다(#43·#55, 독립 리뷰 지적).
+    if _live and not asof:
+        _why = _html.escape(str(ind.get("value_age_why") or ""))
+        asof_html = ('<div class="masof" style="font-size:10px;color:var(--muted);'
+                     'margin-top:2px">값 수집 시각 미기록'
+                     + (f' — {_why}' if _why else '') + '</div>')
+    else:
+        asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
+                     f'margin-top:2px">{_asof_pre} {asof}{_lag_html}</div>') if asof else ""
     # 기간 시작값 + 직전 관측 대비 — "얼마나 올랐나"의 기준점을 보여준다
     # (사용자 2026-08-01 '기간대로 시작가도 포함'). 직전 대비는 헤드라인에서
     # 밀려났지만 FRED/ECOS 의 전월 대비는 표준 해석이라 여기 남긴다.
@@ -18241,9 +18264,15 @@ def _render_macro_snapshot(macro: dict) -> str:
       <li><b>(N개월 전)</b> = 오늘 기준 경과. 경과만으론 정상인지 알 수 없어, 지표마다
           <b>통상 공표 일정</b>을 등록해두고 그보다 뒤처진 카드에만 <b>⚠ 지연</b>을 붙입니다.
           <b>배지가 없으면 그 지표 기준으로는 최신</b>입니다.</li>
-      <li>지수·원자재·환율은 기준월 없이 <b>실시간 현재가</b>. 국채·기준금리처럼 매일
-          갱신되는 카드는 <b>기준 YYYY-MM-DD</b> 를 보여주고, 여러 날 정체된 경우만
-          <b>(N일 전)</b>으로 경고합니다.</li>
+      <li>지수·원자재·코인·환율은 <b>실시간 현재가</b>라 관측 기간이 없습니다 — 대신
+          <b>값 수집 HH:MM</b>(KST)로 <b>우리가 원천에서 값을 받아온 시각</b>을 적습니다
+          (거래소가 그 가격을 찍은 시각이 아닙니다). 원천마다 갱신 주기가 달라
+          (네이버 값 30초 · 달러인덱스 1시간) <b>그 주기를 크게 넘기면</b>
+          <b>(N분 전) ⚠ 지연</b>이 붙습니다 — 값 원천이 막혀 <b>저장분</b>을
+          그리고 있다는 뜻입니다. 수집 시각을 못 잰 카드는 <b>미기록</b>과 그
+          사유를 적습니다.</li>
+      <li>국채·기준금리처럼 매일 갱신되는 카드는 <b>기준 YYYY-MM-DD</b> 를 보여주고,
+          여러 날 정체된 경우만 <b>(N일 전)</b>으로 경고합니다.</li>
     </ul>
   </details>""")
 

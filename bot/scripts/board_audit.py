@@ -103,6 +103,40 @@ def macro_rows(data: dict | None) -> list[dict]:
     return list(d.get("domestic") or []) + list(d.get("global") or [])
 
 
+def _audit_macro_snapshot_rows(rows: list[dict]) -> None:
+    """매크로 카드 판정 한 덩어리 — 인라인으로 두면 회귀가 소스 문자열만
+    보게 되고, 감사가 화면과 같은 판정을 쓰는지 태워볼 수 없다(#176·#19).
+
+    ⚠️ 실시간 가격 카드는 '관측 기간'이 없다 — **값 수집 시각**으로 판정한다.
+    2026-09-08 까지 이 22장(가격·원자재·코인·환율)은 아무 기준도 안 실어 전부
+    "❓ 기준일 미표기" 였다. 이 섹션이 스스로 "판정 자체를 못 한다 = 가장
+    위험하다"고 적는 바로 그 상태이고, 네이버 값 풀·yf 배치는 실패하면 최대
+    24시간 낡은 값을 조용히 돌려준다(#43·#52·#163). 이제 나이가 실려
+    지연이면 ⚠️ 로 뜨고, 그건 sweep 이 센다(#250·#303).
+    """
+    late = [r for r in rows if r.get("asof_stale")]
+    live = [r for r in rows if r.get("asof_kind") == "live"]
+    noasof = [r for r in rows if not r.get("asof")]
+    _p(f"   카드 {len(rows)}개 · ⚠️ 지연 {len(late)} · 실시간(값 수집) "
+       f"{len(live)} · 기준 미표기 {len(noasof)}")
+    if not rows:
+        _p("   ❌ 카드 0개 — 감사가 스냅샷을 못 읽었다(대조 실패, 이상 없음 아님)")
+    for r in late:
+        _pre = "값 수집" if r.get("asof_kind") == "live" else "기준"
+        _age = r.get("value_age_min")
+        _p(f"   ⚠️ {str(r.get('label', '?'))[:24]:24} {_pre} {r.get('asof', '—')}"
+           + (f" ({_age}분 전)" if isinstance(_age, int) else ""))
+    for r in noasof:
+        # 실시간 카드가 여기 남으면 값 풀의 나이를 **못 잰** 것이다(히스토리
+        # 폴백 등) — '없음'이 아니라 왜 못 쟀는지를 갈래로 말한다(#82).
+        # ⚠️ 사유를 감사가 **지어내면 안 된다** — 수집기가 잰 갈래를 그대로
+        # 옮긴다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
+        _why = ("값 수집 시각 미측정 — "
+                + str(r.get("value_age_why") or "사유 미기록")
+                if r.get("asof_kind") == "live" else "기준일 미표기")
+        _p(f"   ❓ {str(r.get('label', '?'))[:24]:24} {_why}")
+
+
 def freshness_mark(n_rows: int, latest: str | None, expected: str | None,
                    behind: int | None, grace: int, closed: bool | None) -> str:
     """기준일 판정 한 줄 — **순수 함수**(동작 테스트용).
@@ -172,15 +206,7 @@ def _audit_home_surfaces(show_all):
         from bot.macro_snapshot import fetch_macro_snapshot
         data = fetch_macro_snapshot()
         rows = macro_rows(data)
-        late = [r for r in rows if r.get("asof_stale")]
-        noasof = [r for r in rows if not r.get("asof")]
-        _p(f"   카드 {len(rows)}개 · ⚠️ 지연 {len(late)} · 기준일 없음 {len(noasof)}")
-        if not rows:
-            _p("   ❌ 카드 0개 — 감사가 스냅샷을 못 읽었다(대조 실패, 이상 없음 아님)")
-        for r in late:
-            _p(f"   ⚠️ {r.get('label','?')[:24]:24} 기준 {r.get('asof','—')}")
-        for r in noasof:
-            _p(f"   ❓ {r.get('label','?')[:24]:24} 기준일 미표기")
+        _audit_macro_snapshot_rows(rows)
         # 기간 시작 라벨이 **날짜**인가(어림 '12개월 전' 은 검산이 안 된다)
         fred_rows = [r for r in rows if r.get("period_start") is not None]
         vague = [r for r in fred_rows if not r.get("period_start_asof")
