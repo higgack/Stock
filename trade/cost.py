@@ -168,9 +168,12 @@ def format_telegram(snap: dict | None = None) -> str:
     llm = s.get("llm")
     if llm and llm.get("total_calls"):
         d30, td = llm["d30"], llm["today"]
+        # 두 표면이 같은 사실을 말해야 한다 — 한쪽만 밝히면 갈라진다(#38·#43).
+        _unp30 = d30.get("unpriced") or 0
         lines.append(
             f"• LLM (Gemini, 🔍산업 추가신호): 30일 <b>{d30['calls']}</b>콜 · "
             f"<b>{d30['cost_krw']:,}</b>원 (오늘 {td['calls']}콜), 데이터 변동 시만"
+            + (f" ⚠️ 단가 미등재 {_unp30}콜 — 실제 비용은 더 큼" if _unp30 else "")
         )
     else:
         lines.append("• LLM (Gemini, 🔍추가신호): 호출 0 — 데이터 변동 시만, 사실상 무료")
@@ -203,10 +206,14 @@ def format_dashboard_line(snap: dict | None = None) -> str:
     # 폴백 분기 없음(리뷰 2026-07-05 dead-branch 제거).
     llm = s.get("llm")
     if llm and llm.get("total_calls"):
+        # ⚠️ 단가표에 없는 모델은 ₩0 으로 집계된다 — 그 사실을 말하지 않으면
+        # 화면이 '공짜'라고 거짓말한다(#43·#284). 0 건이면 조용하다(#25·#260).
+        _unp = (llm.get("total") or {}).get("unpriced") or 0
         parts.append(
             f"LLM 오늘 {llm['today_kst']['cost_krw']:,}원 · "
             f"이번달 {llm['month']['cost_krw']:,}원 · "
             f"누적 {llm['total']['cost_krw']:,}원({llm['total_calls']}콜)"
+            + (f" ⚠️ 단가 미등재 {_unp}콜 — 실제 비용은 더 큼" if _unp else "")
         )
     else:
         parts.append("LLM 0원(변동시만)")

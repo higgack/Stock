@@ -63,6 +63,16 @@ MODEL_PURPOSE: dict[str, str] = {
 KRW_PER_USD = 1380
 
 
+# 단가표에 없는 모델을 **모델당 한 번만** 알리기 위한 기억(#25 늘 뜨는 경고
+# 금지). 테스트는 이걸 monkeypatch 로 갈아끼워 격리한다(#30).
+_UNPRICED_SEEN: set[str] = set()
+
+
+def is_priced(model: str) -> bool:
+    """단가표에 있는 모델인가 — 원장이 ₩0 을 사실인 척 적지 않게(#43)."""
+    return model in _PRICING
+
+
 def estimate_cost_usd(
     model: str,
     prompt_tokens: int,
@@ -79,6 +89,15 @@ def estimate_cost_usd(
     Defaults to 0 → identical to the previous behaviour when no cache hit."""
     rate = _PRICING.get(model)
     if not rate:
+        # ⚠️ 조용한 ₩0 금지. 모델 id 가 바뀌면(2.5→3.0 류) 모든 호출이 0 으로
+        # 적히고 **비용카드가 '공짜'라고 말한다** — 값이 다 '있어서' 어떤
+        # 감사도 안 걸린다(#284·#43·#82). 단가를 지어낼 수는 없으므로(#32)
+        # 0 은 그대로 두되 **모델 이름을 대서** 알린다.
+        # 모델당 한 번만 — 늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260).
+        if model not in _UNPRICED_SEEN:
+            _UNPRICED_SEEN.add(model)
+            log.warning("usage_tracker: 단가 미등재 모델 %r — 이 호출들의 비용이 "
+                        "0 으로 집계된다. _PRICING 에 추가할 것", model)
         return 0.0
     cached_tokens = max(0, min(cached_tokens, prompt_tokens))
     effective_input = prompt_tokens - 0.75 * cached_tokens
@@ -194,6 +213,9 @@ class UsageCallback(BaseCallbackHandler):
                 "completion_tokens": c_tokens,
                 "cost_usd": cost,
             }
+            if not is_priced(model):
+                # ₩0 을 사실인 척 남기지 않는다 — 원장이 스스로 밝힌다(#43).
+                record["unpriced"] = True
             # Only emit cached_tokens when non-zero — keeps legacy log lines
             # unchanged + makes cache hits greppable for effectiveness checks.
             if cached_tokens:

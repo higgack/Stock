@@ -50013,3 +50013,156 @@ class TestScannedSpan20260908:
         strptime = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                     and getattr(n.func, "attr", "") == "strptime"]
         assert len(strptime) == 1, f"시각 파싱이 {len(strptime)}곳이다"
+
+
+# ── 비용 원장이 조용히 '공짜'라고 말하던 자리 (2026-09-08) ────────────────
+# `or 0` 계열 전수 스캔(54건) 중 '없음 → 판정 완화·사실 날조' 인 것만 골라
+# 실측한 결과 남은 둘:
+#   ① 단가표가 **두 벌**이었다(bot/usage_tracker · trade/llm_usage). 오늘은
+#      한 자리도 안 틀렸지만 메인 비용카드는 **둘을 합산**하므로(§Help/
+#      Dashboard 비용합산) 한쪽만 고치는 날 화면이 조용히 틀린다(#38).
+#      산식도 따로였다 — 실측 차이는 부동소수 연산 순서뿐(1e-20)이라
+#      위임해도 값이 안 바뀐다.
+#   ② 단가표에 없는 모델은 **100만 토큰을 쓰고도 ₩0 · 로그 한 줄 없음**
+#      이었다. 모델 id 는 실제로 바뀐다(2.5→3.0) — 그날 비용카드가 '공짜'
+#      라고 말하고 값이 다 '있어서' 어떤 감사도 안 걸린다(#284·#43·#82).
+# 단가를 지어낼 수는 없으므로(#32) 0 은 그대로 두되 이름을 대서 알리고,
+# 원장에 `unpriced` 표식을 남겨 화면이 사실대로 말할 수 있게 한다.
+class TestPricingSingleSource:
+    def test_only_one_pricing_literal_in_the_repo(self):
+        """단가표가 두 벌이면 언젠가 갈라지고, 메인 비용카드는 **둘을 합산**
+        한다 — 한쪽만 고치면 화면이 조용히 틀린다(#38·#24 디렉터리 전수)."""
+        import ast
+        import pathlib
+        found = []
+        for p in (list(pathlib.Path("bot").rglob("*.py"))
+                  + list(pathlib.Path("trade").rglob("*.py"))):
+            try:
+                tree = ast.parse(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for n in ast.walk(tree):
+                tgt = ([n.target] if isinstance(n, ast.AnnAssign)
+                       else getattr(n, "targets", []) if isinstance(n, ast.Assign)
+                       else [])
+                for t in tgt:
+                    if (getattr(t, "id", "") == "_PRICING"
+                            and isinstance(getattr(n, "value", None), ast.Dict)):
+                        found.append(str(p))
+        assert found == ["bot/usage_tracker.py"], found
+
+    def test_trade_reads_the_same_table(self):
+        import bot.usage_tracker as ut
+        import trade.llm_usage as lu
+        assert lu._PRICING is ut._PRICING
+
+    def test_costs_agree_exactly(self):
+        import bot.usage_tracker as ut
+        import trade.llm_usage as lu
+        for m in ut._PRICING:
+            for i, o in ((0, 0), (1, 1), (1000, 500), (1234567, 98765)):
+                assert lu.cost_usd(m, i, o) == ut.estimate_cost_usd(m, i, o)
+
+
+class TestUnpricedModelIsNotSilent:
+    def _reset(self, monkeypatch):
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "_UNPRICED_SEEN", set())
+
+    def test_unknown_model_warns_with_its_name(self, monkeypatch, caplog):
+        """100만 토큰을 쓰고도 ₩0 인데 아무도 모른다 — 비용카드가 '공짜'라고
+        말하게 된다(#43·#82·#284)."""
+        import logging
+        import bot.usage_tracker as ut
+        self._reset(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            assert ut.estimate_cost_usd("gemini-3.0-pro", 10**6, 10**6) == 0.0
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("gemini-3.0-pro" in m for m in msgs), msgs
+
+    def test_warns_once_per_model_not_per_call(self, monkeypatch, caplog):
+        """늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260)."""
+        import logging
+        import bot.usage_tracker as ut
+        self._reset(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            for _ in range(5):
+                ut.estimate_cost_usd("gemini-3.0-pro", 1, 1)
+        n = sum("gemini-3.0-pro" in r.getMessage() for r in caplog.records)
+        assert n == 1, n
+
+    def test_known_model_stays_silent(self, monkeypatch, caplog):
+        """반대 증거(#25) — 정상 모델까지 경고하면 신호가 죽는다."""
+        import logging
+        import bot.usage_tracker as ut
+        self._reset(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            ut.estimate_cost_usd("gemini-2.5-flash", 1000, 500)
+        assert not [r for r in caplog.records if "단가" in r.getMessage()]
+
+    def test_record_marks_the_call_as_unpriced(self, monkeypatch, tmp_path):
+        """₩0 을 사실인 척 남기지 않는다 — 원장이 스스로 밝힌다(#43)."""
+        import json
+        import bot.usage_tracker as ut
+        import trade.llm_usage as lu
+        self._reset(monkeypatch)
+        monkeypatch.setattr(lu, "USAGE_LOG", tmp_path / "usage.jsonl")
+        lu.record("gemini-3.0-pro", 100, 50)
+        rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
+        assert rec["cost_usd"] == 0 and rec.get("unpriced") is True, rec
+
+    def test_priced_call_has_no_marker(self, monkeypatch, tmp_path):
+        import json
+        import bot.usage_tracker as ut
+        import trade.llm_usage as lu
+        self._reset(monkeypatch)
+        monkeypatch.setattr(lu, "USAGE_LOG", tmp_path / "usage.jsonl")
+        lu.record("gemini-2.5-flash", 1000, 500)
+        rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
+        assert rec["cost_usd"] > 0 and "unpriced" not in rec, rec
+
+
+class TestUnpricedIsSurfaced20260908:
+    """계산해 두고 화면에 안 실으면 없는 것과 같다 — 이 레포에서 여섯 번째
+    같은 실수가 될 자리였다(#123 계정 불일치 · #129 수주잔고 · #131 FCF ·
+    #189 밴드 칩 · #228 툴팁). 두 표면이 **같은 사실**을 말해야 한다(#38)."""
+
+    def _snap(self, unpriced: int):
+        """⚠️ 손으로 만든 dict 은 포맷터가 쓰는 키를 빠뜨린다(실측 KeyError)
+        — 픽스처는 **원천이 실제로 내는 모양**이어야 한다(#155). `collect()`
+        는 로컬 파일·디스크만 보므로 네트워크 0 이다."""
+        import trade.cost as c
+        w = {"calls": 3, "in_tok": 1, "out_tok": 1, "cost_usd": 0.0,
+             "cost_krw": 0, "unpriced": unpriced}
+        snap = c.collect()
+        snap["llm"] = {"total_calls": 3, "today": dict(w), "d30": dict(w),
+                       "today_kst": dict(w), "month": dict(w),
+                       "total": dict(w)}
+        return snap
+
+    def test_summary_counts_unpriced_calls_per_window(self, monkeypatch,
+                                                      tmp_path):
+        import trade.llm_usage as lu
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "_UNPRICED_SEEN", set())
+        monkeypatch.setattr(lu, "USAGE_LOG", tmp_path / "usage.jsonl")
+        lu.record("gemini-2.5-flash", 1000, 500)
+        lu.record("gemini-3.0-pro", 1000, 500)
+        s = lu.summary()
+        assert s["total"]["calls"] == 2 and s["total"]["unpriced"] == 1, s
+
+    def test_dashboard_line_says_the_cost_is_understated(self):
+        import trade.cost as c
+        line = c.format_dashboard_line(self._snap(2))
+        assert "단가 미등재 2콜" in line, line
+
+    def test_telegram_line_says_it_too(self):
+        import trade.cost as c
+        txt = c.format_telegram(self._snap(2))
+        assert "단가 미등재 2콜" in txt, txt
+
+    def test_zero_unpriced_stays_quiet(self):
+        """늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260)."""
+        import trade.cost as c
+        assert "단가 미등재" not in c.format_dashboard_line(self._snap(0))
+        assert "단가 미등재" not in c.format_telegram(self._snap(0))
