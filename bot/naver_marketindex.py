@@ -668,6 +668,28 @@ def _parse_coins(rows) -> dict:
     return out
 
 
+# ── 값의 나이 ───────────────────────────────────────────────────────
+# ⚠️ 네 값 풀(idx/com/coin/fx)은 **실패하면 전부** `_cached(..., ttl=86400)` 로
+# 떨어져 최대 24시간 낡은 값을 그대로 돌려준다. 호출부가 그 나이를 모르면
+# 화면이 그걸 '현재'로 그리고, 사용자는 원천이 죽은 걸 영영 모른다
+# (#43 침묵이 최악 · #52 조용한 것과 죽은 것 · #163 되살린 값엔 기준시각).
+# 파일명을 호출부가 다시 적으면 갈라지므로(#38) 매핑은 여기 하나만 둔다.
+_VALUE_CACHE = {"idx": _IDX_CACHE, "com": _CACHE,
+                "coin": _COIN_CACHE, "fx": _KRFX_CACHE}
+
+
+def value_age_sec(kind: str) -> float | None:
+    """그 값 풀이 마지막으로 원천에서 채워진 뒤 흐른 초(모르면 None).
+
+    kind ∈ idx|com|coin|fx (`macro_snapshot._MACRO_NAVER` 의 첫 원소).
+    """
+    name = _VALUE_CACHE.get(kind)
+    if not name:
+        return None
+    from bot.finviz_client import cache_age_sec
+    return cache_age_sec(name)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     print("국내지수:", fetch_domestic_indices(("KOSPI", "KOSDAQ")))

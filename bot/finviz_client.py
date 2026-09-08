@@ -114,6 +114,22 @@ def _cached(name: str, ttl: float = _CACHE_TTL_SEC):
     return None
 
 
+def cache_age_sec(name: str) -> float | None:
+    """캐시 파일이 마지막으로 **쓰인** 뒤 흐른 초(파일 없으면 None).
+
+    값이 언제 원천에서 온 것인지는 캐시가 안다 — 호출부가 짐작하지 말고
+    물어야 한다(#64 상태는 아는 쪽이 말하게 하라). `_cached` 는 TTL 안이면
+    내용만 주고 나이는 안 알려주는데, 실패 폴백(`ttl=86400`)은 **낡은 내용을
+    그대로** 돌려주므로 화면이 그걸 '현재'로 그린다(#163 되살린 값에는
+    기준시각을 반드시 같이 실을 것).
+    """
+    try:
+        f = _CACHE_DIR / name
+        return (time.time() - f.stat().st_mtime) if f.exists() else None
+    except OSError:
+        return None
+
+
 def _cache_write(name: str, obj) -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)

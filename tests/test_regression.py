@@ -25732,10 +25732,25 @@ class TestFlowTrendDiagnosis20260818:
         assert _cadence_stale("yf", "fx_reserve", "202001") is False, \
             "실시간 가격 카드에까지 공표규약을 적용하면 안 된다"
         assert _cadence_stale("ecos", "fx_reserve", "") is False
+        # ⚠️ 2026-09-08 재작성(#222): 옛 판은 대입식을 **소스 문자열**로
+        # 박아 뒀는데(`'"asof_stale": _cadence_stale(src, sid, asof_raw),'`),
+        # 실시간 카드가 수집 시각으로 판정하게 되며 그 표현이 조건부가 되어
+        # 멀쩡한 코드를 틀렸다고 했다(#19 — 이 레포에서 반복된 그 패턴).
+        # 계약은 "페이로드가 그 키를 싣고, 발표지표는 공표규약으로 판정한다"
+        # 이지 특정 표현이 아니다 → 구조(AST)로 고정한다.
+        import ast as _ast
         import pathlib
-        src = pathlib.Path("bot/macro_snapshot.py").read_text(encoding="utf-8")
-        assert '"asof_stale": _cadence_stale(src, sid, asof_raw),' in src, \
-            "페이로드에 asof_stale 이 실리지 않는다"
+        tree = _ast.parse(pathlib.Path("bot/macro_snapshot.py")
+                          .read_text(encoding="utf-8"))
+        build = next(n for n in _ast.walk(tree)
+                     if isinstance(n, _ast.FunctionDef) and n.name == "_build")
+        keys = {k.value for d in _ast.walk(build)
+                if isinstance(d, _ast.Dict) for k in d.keys
+                if isinstance(k, _ast.Constant) and isinstance(k.value, str)}
+        assert "asof_stale" in keys, "페이로드에 asof_stale 이 실리지 않는다"
+        calls = {c.func.id for c in _ast.walk(build)
+                 if isinstance(c, _ast.Call) and isinstance(c.func, _ast.Name)}
+        assert "_cadence_stale" in calls, "공표규약 판정이 배선에서 빠졌다"
 
     def test_audit_says_out_loud_when_treasury_enrichment_is_not_live(
             self, tmp_path, capsys):
@@ -48080,3 +48095,149 @@ def test_treasury_audit_uses_product_judgment_not_its_own(monkeypatch):
              if isinstance(n, ast.ImportFrom) for a in n.names}
     assert "fresher_diag" in names and "fresher_reason" in names, names
     assert "_expected_session" in names, names   # 최선은 자체 재구현 금지
+
+
+# ── 매크로 실시간 카드의 '값 수집 시각' (2026-09-08) ─────────────────
+# 사용자 "매크로 22카드 기준일부터 봐줘". 그 22장(가격·원자재·코인·환율)은
+# 기준을 **아무것도** 안 실어 board_audit 이 매일 "❓ 기준일 미표기 22" 를
+# 찍고 있었다 — 그 섹션이 스스로 "판정 자체를 못 한다 = 가장 위험하다"고
+# 적는 상태다. 그리고 네이버 값 풀 4종·yf 월간 배치는 **실패하면 전부**
+# `_cached(..., ttl=86400)` 로 떨어져 최대 24시간 낡은 값을 그대로 돌려준다
+# (소스 확인) — 나이를 안 실으면 화면이 그걸 '현재'로 그린다(#43·#52·#163).
+class TestMacroLiveAsOf20260908:
+    """실시간 가격 카드가 **값 수집 시각**을 싣는가 — 그리고 그 라벨이
+    관측 기간인 척하지 않는가(#34·#165·규칙 10b)."""
+
+    def test_live_asof_is_pure_and_names_the_collection_time(self):
+        from datetime import datetime
+        from bot.macro_snapshot import live_asof, _LIVE_STALE_SEC
+        now = datetime(2026, 9, 8, 14, 3, 30)
+        assert live_asof(45.0, now) == ("14:02", False, 0)
+        # 오래되면 지연 + 경과 분. 라벨은 **수집 시각**이지 지금이 아니다.
+        assert live_asof(47 * 60, now) == ("13:16", True, 47)
+        # 날짜가 넘어가면 날짜까지 — "13:16" 만 찍으면 어제 것이 오늘로 읽힌다.
+        assert live_asof(20 * 3600, now)[0] == "09-07 18:03"
+        # 모르면 판정 불가다. 통과가 아니다(#54).
+        assert live_asof(None, now) == ("", False, None)
+        assert live_asof(-5, now) == ("", False, None)
+        # 경계: 문턱 **초과**에서만 지연(문턱 자체는 정상 — 늘 뜨는 배지 금지).
+        assert live_asof(_LIVE_STALE_SEC, now)[1] is False
+        assert live_asof(_LIVE_STALE_SEC + 1, now)[1] is True
+
+    def test_value_pool_age_covers_every_kind_macro_uses(self):
+        """값 풀 매핑은 **전수**여야 한다 — 종류를 손으로 열거하면 새 풀이
+        조용히 나이 없는 카드가 된다(#24)."""
+        from bot.naver_marketindex import _VALUE_CACHE, value_age_sec
+        from bot.macro_snapshot import _MACRO_NAVER
+        kinds = {k for k, _ in _MACRO_NAVER.values()}
+        assert kinds and kinds <= set(_VALUE_CACHE), (kinds, set(_VALUE_CACHE))
+        assert value_age_sec("없는종류") is None      # 모르면 None(추측 금지)
+
+    def test_cache_age_sec_reads_the_write_time_not_a_guess(self, tmp_path,
+                                                            monkeypatch):
+        import os
+        import time as _t
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", tmp_path)
+        assert fc.cache_age_sec("없는파일.json") is None
+        f = tmp_path / "x.json"
+        f.write_text("{}")
+        os.utime(f, (_t.time() - 600, _t.time() - 600))
+        assert 590 < fc.cache_age_sec("x.json") < 640
+
+    # ── 배선 ── 헬퍼만 부르는 테스트는 배선을 떼는 변형을 못 잡는다(#20).
+    def _snapshot(self, tmp_path, monkeypatch, ages: dict):
+        import os
+        import time as _t
+        import bot.finviz_client as fc
+        import bot.macro_snapshot as ms
+        import bot.naver_marketindex as nm
+        cache = tmp_path / "nv"
+        cache.mkdir()
+        monkeypatch.setattr(fc, "_CACHE_DIR", cache)
+        for name, age in ages.items():
+            p = cache / name
+            p.write_text("{}")
+            os.utime(p, (_t.time() - age, _t.time() - age))
+        monkeypatch.setattr(ms, "_CACHE_DIR", tmp_path / "snap")
+        (tmp_path / "snap").mkdir()
+        monkeypatch.setattr(ms, "_fetch_macro_naver_values",
+                            lambda sids: {s: {"value": 100.0, "change": 1.0}
+                                          for s in sids if s in ms._MACRO_NAVER})
+        monkeypatch.setattr(ms, "_yf_monthly_batch",
+                            lambda tk: {t: [90.0, 95.0, 99.0] for t in tk})
+        monkeypatch.setattr(ms, "_yf_daily_1mo_batch",
+                            lambda tk: {t: [98.0, 99.0] for t in tk})
+        monkeypatch.setattr(ms, "_ecos_series",
+                            lambda k: [("202607", 1.0), ("202608", 2.0)])
+        monkeypatch.setattr(ms, "_fred_monthly",
+                            lambda sid, months=12: [1.0, 2.0, 3.0])
+        for fn in ("fetch_commodity_spark", "fetch_naver_index_history",
+                   "fetch_naver_crypto_history", "fetch_naver_fx_history"):
+            monkeypatch.setattr(nm, fn, lambda *a, **k: [1.0, 2.0, 3.0])
+        out = ms.fetch_macro_snapshot()
+        return list(out["domestic"]) + list(out["global"])
+
+    def test_every_live_card_carries_its_collection_time(self, tmp_path,
+                                                         monkeypatch):
+        rows = self._snapshot(tmp_path, monkeypatch, {
+            "naver_worldindex.json": 47 * 60, "naver_marketindex.json": 30,
+            "naver_coins.json": 30, "naver_krfx.json": 30,
+            "macro_yf_monthly.json": 5 * 60,
+        })
+        live = [r for r in rows if r.get("asof_kind") == "live"]
+        # 22장이 그 카드들이다 — 하나도 빠짐없이 기준을 싣는다.
+        assert len(live) >= 20, len(live)
+        assert [r["key"] for r in live if not r["asof"]] == []
+        idx = {r["key"]: r for r in live}
+        # 지수 풀만 47분 → 그 카드만 지연. 나머지는 조용하다(#260).
+        for k in ("sp500", "nasdaq", "vix"):
+            assert idx[k]["value_age_min"] == 47 and idx[k]["asof_stale"], idx[k]
+        for k in ("dxy", "usdkrw", "gold", "btc"):
+            assert not idx[k]["asof_stale"], idx[k]
+        assert idx["dxy"]["value_age_min"] == 5          # yf 월간 배치 경로
+        # 발표지표(ECOS/FRED)는 건드리지 않는다 — 라벨의 뜻이 다르다(#34).
+        obs = [r for r in rows if r.get("asof_kind") == "obs"]
+        assert obs and all(r.get("value_age_min") is None for r in obs)
+        assert {r["asof"] for r in obs if r["asof"]} >= {"2026-08"}
+
+    def test_render_says_collected_not_observed_and_is_quiet_when_fresh(self):
+        from bot.dashboard import _render_macro_card as R
+        base = {"label": "VIX", "value": 15.3, "decimals": 2, "unit": "",
+                "spark": [1, 2], "asof_kind": "live"}
+        stale = R(dict(base, asof="13:16", value_age_min=47, asof_stale=True))
+        assert "값 수집 13:16" in stale and "(47분 전)" in stale
+        assert "⚠ 지연" in stale
+        # ⚠️ 반대 증거 — 평소엔 배지가 없어야 한다. 늘 뜨는 배지는 아무것도
+        # 안 재는 것과 같다(#25·#260).
+        fresh = R(dict(base, asof="14:02", value_age_min=0, asof_stale=False))
+        assert "값 수집 14:02" in fresh
+        assert "분 전" not in fresh and "지연" not in fresh
+        # 발표지표는 '기준' 이고 경과는 개월이다 — 접두사를 하나로 뭉뚱그리면
+        # 한쪽은 반드시 거짓말이 된다(#34·#245).
+        obs = R({"label": "미국 CPI", "value": 320.0, "decimals": 2, "unit": "",
+                 "spark": [1, 2], "asof": "2026-07", "asof_kind": "obs",
+                 "asof_lag": 2, "asof_stale": False})
+        assert "기준 2026-07" in obs and "(2개월 전)" in obs
+        assert "값 수집" not in obs
+
+    def test_board_audit_judges_live_cards_instead_of_giving_up(self, capsys):
+        """감사가 이 22장을 **판정**한다 — 옛 판은 전부 '기준일 미표기'로
+        세어 조용히 낡는 걸 못 봤다(그 섹션이 스스로 가장 위험하다고 적는
+        상태다). 지연이면 ⚠️ 로 떠서 sweep 이 센다(#250·#303)."""
+        import bot.scripts.board_audit as ba
+        rows = [
+            {"label": "VIX", "asof": "13:16", "asof_kind": "live",
+             "value_age_min": 47, "asof_stale": True},
+            {"label": "금", "asof": "14:02", "asof_kind": "live",
+             "value_age_min": 0, "asof_stale": False},
+            {"label": "미국 CPI", "asof": "2026-07", "asof_kind": "obs"},
+            {"label": "니켈", "asof": "", "asof_kind": "live"},
+        ]
+        ba._audit_macro_snapshot_rows(rows)
+        out = capsys.readouterr().out
+        assert "실시간(값 수집) 3" in out and "기준 미표기 1" in out
+        assert "⚠️" in out and "VIX" in out and "(47분 전)" in out
+        assert "금" not in out.split("VIX")[1].split("❓")[0]   # 정상은 조용히
+        # 못 잰 것은 '없음'이 아니라 **왜 못 쟀는지**를 말한다(#82).
+        assert "값 수집 시각 미측정" in out
