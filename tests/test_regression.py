@@ -47792,3 +47792,102 @@ def test_market_timing_why_probe_dispatches_and_is_read_only():
     h = subprocess.run([sys.executable, "-m", "bot.market_timing"],
                        capture_output=True, text=True, timeout=120)
     assert "cd ~/stock" in h.stdout, h.stdout
+
+
+# ── 미국채 신선도: 보강 판정 갈래 + 달 경계 + `--why` (사용자 2026-09-08) ──
+# "미국채는 오늘 9/8 일인데 이게 가져올수 있는 최선인거야?" — 화면 기준 09-03.
+def _ust_stub(monkeypatch, by_month):
+    from bot import treasury_yield_client as t
+    monkeypatch.setattr(t, "fetch_daily_curve",
+                        lambda ym=None: dict(by_month.get(ym or "", {})))
+    return t
+
+
+def test_treasury_fresher_names_the_branch(monkeypatch):
+    """'없음'만 말하는 판정은 추측을 부른다(#82). 옛 판은 네 갈래 중 **셋이
+    조용**해서 화면이 왜 안 당겨졌는지 로그로도 알 수 없었다(#12)."""
+    t = _ust_stub(monkeypatch, {"202609": {"2026-09-03": {"DGS2": 4.34},
+                                           "2026-09-04": {"DGS2": 4.29}}})
+    assert t.fresher_diag("2026-09-03", 4.34, "DGS2")[0] == "ok"
+    assert t.fresher_than("2026-09-03", 4.34, "DGS2") == ("2026-09-04", 4.29)
+    # 원천이 이미 최선 — 우리 문제가 아니다(❌ 로 세면 진짜 결함을 가린다 #260)
+    assert t.fresher_diag("2026-09-04", 4.29, "DGS2")[0] == "no_newer"
+    # 곡선 미수신
+    monkeypatch.setattr(t, "fetch_daily_curve", lambda ym=None: {})
+    assert t.fresher_diag("2026-09-04", 4.29, "DGS2")[0] == "no_curve"
+    # 태그 오집(만기가 다른 값) — 이 검산이 이 모듈의 존재 이유다
+    _ust_stub(monkeypatch, {"202609": {"2026-09-03": {"DGS2": 3.90},
+                                       "2026-09-04": {"DGS2": 3.88}}})
+    code, d = t.fresher_diag("2026-09-03", 4.34, "DGS2")
+    assert code == "mismatch" and d["overlap_gap"] > d["tol"], (code, d)
+    assert t.fresher_than("2026-09-03", 4.34, "DGS2") is None
+
+
+def test_treasury_curve_spans_month_boundary(monkeypatch):
+    """⚠️ 현재 달만 받으면 **매달 초 2~3영업일 동안 보강이 조용히 죽는다** —
+    그때 FRED 최신일은 아직 지난달이라 겹치는 날이 표에 없고, 검산이 성립
+    하지 않아 그냥 None 이 된다(#171 가드가 '못 만든다'로 끝나면 그 자리가
+    영원히 빈다).
+    """
+    t = _ust_stub(monkeypatch, {"202609": {"2026-09-01": {"DGS2": 4.30}},
+                                "202608": {"2026-08-31": {"DGS2": 4.28}}})
+    code, d = t.fresher_diag("2026-08-31", 4.28, "DGS2")
+    assert code == "ok", (code, d)
+    assert d["newer"] == ("2026-09-01", 4.30)
+    assert "202608" in d["months"], d["months"]
+    # 겹치는 날이 현재 달에 있으면 직전 달을 **안 받는다**(불필요한 HTTP 금지)
+    _c, months = t.curve_for("2026-09-01", ym="202609")
+    assert months == ["202609"], months
+    assert t._prev_ym("202601") == "202512"          # 연 경계
+
+
+def test_treasury_fresher_logs_the_branch_not_silence(monkeypatch, caplog):
+    """생략은 조용하면 안 된다(#12) — 그리고 사유엔 수치가 있어야 눈으로
+    검산된다(#202). ⚠️ 헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20)."""
+    import logging as _lg
+
+    t = _ust_stub(monkeypatch, {"202609": {"2026-09-04": {"DGS2": 4.29}}})
+    with caplog.at_level(_lg.INFO, logger="bot.treasury_yield"):
+        assert t.fresher_than("2026-09-04", 4.29, "DGS2") is None
+    blob = "\n".join(r.getMessage() for r in caplog.records)
+    assert "no_newer" in blob and "2026-09-04" in blob, blob
+    # 갈래마다 **다른** 문장이어야 한다(한 문구로 뭉뚱그리면 하나는 거짓말 #245)
+    seen = {t.fresher_reason(c, {"sid": "DGS2", "fred_date": "2026-09-03",
+                                 "months": ["202609"], "curve_days": [],
+                                 "tol": 0.1, "fred_value": 4.34,
+                                 "overlap_value": 3.9, "overlap_gap": 0.44})
+            for c in ("no_curve", "no_overlap", "mismatch", "no_newer", "ok")}
+    assert len(seen) == 5, seen
+
+
+def test_treasury_why_probe_dispatches_and_reports_the_best(monkeypatch):
+    """반복 확인은 제품에 심는다(§Automation-first·#252). 그리고 '최선'은
+    미 휴장일을 반영해야 한다 — 노동절이 끼면 오늘이 최선이 아니다.
+    ⚠️ 최선 판정은 시장타이밍과 **같은 함수**를 써야 갈라지지 않는다(#38).
+    """
+    import ast
+    import pathlib
+    import subprocess
+    import sys
+
+    src = pathlib.Path("bot/treasury_yield_client.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    # 최선 판정을 자체 재구현하지 않는다(#35 감사는 화면이 쓰는 그 경로)
+    imported = {a.name for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert "_expected_session" in imported, imported
+
+    r = subprocess.run([sys.executable, "-m", "bot.treasury_yield_client",
+                        "--why", "DGSX"], capture_output=True, text=True,
+                       timeout=180)
+    assert r.returncode == 1, r.stdout + r.stderr
+    out = r.stdout
+    assert "인터프리터" in out and sys.executable in out, out[:400]   # #132
+    assert "재생성하지 않는다" in out, out[:400]                      # #284
+    verdict = [ln for ln in out.splitlines() if ln.startswith("판정:")]
+    assert verdict and "조회 실패" in verdict[0], verdict            # #292
+    assert not any("최선까지 왔다" in v for v in verdict), verdict
+
+    h = subprocess.run([sys.executable, "-m", "bot.treasury_yield_client"],
+                       capture_output=True, text=True, timeout=120)
+    assert "cd ~/stock" in h.stdout, h.stdout                        # #278
