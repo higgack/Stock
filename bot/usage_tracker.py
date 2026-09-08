@@ -73,6 +73,23 @@ def is_priced(model: str) -> bool:
     return model in _PRICING
 
 
+def is_unpriced_record(rec: dict) -> bool:
+    """이 레코드의 비용이 **단가 미등재 때문에** 0 인가.
+
+    ⚠️ 저장된 표식만 믿으면 안 된다(독립 리뷰 2026-09-08 실측): 이 원장에 쓰는
+    곳이 13곳인데 표식을 붙이는 곳은 둘뿐이고(#24 열거형), 이 커밋 **이전**
+    레코드엔 아예 없다. 그래서 **모델 이름을 단가표에 대조**하는 쪽을 같이 둔다
+    — 읽는 쪽이 원천(단가표)에 직접 물으면 쓰는 쪽이 몇 곳이든 안 샌다(#86).
+    저장된 표식도 그대로 존중한다: 나중에 그 모델이 `_PRICING` 에 추가되면
+    이름 대조는 '있음'이 되지만 **그때 저장된 cost_usd 는 여전히 0** 이므로,
+    표식이 있는 옛 레코드는 계속 미등재로 세야 사실이다.
+    """
+    if rec.get("unpriced"):
+        return True
+    m = rec.get("model")
+    return bool(m) and not is_priced(m)
+
+
 def estimate_cost_usd(
     model: str,
     prompt_tokens: int,

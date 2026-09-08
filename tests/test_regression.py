@@ -50051,17 +50051,44 @@ class TestPricingSingleSource:
                         found.append(str(p))
         assert found == ["bot/usage_tracker.py"], found
 
-    def test_trade_reads_the_same_table(self):
-        import bot.usage_tracker as ut
+    def test_trade_does_not_keep_its_own_table_alias(self):
+        """⚠️ 2026-09-08 다시 씀(#222): 옛 판은 `lu._PRICING is ut._PRICING`
+        을 봤는데, trade 에서 그 이름을 **아무도 안 쓴다**(죽은 바인딩) —
+        `from X import _PRICING` 은 바인딩을 **찍어 오므로**, 누가 `ut._PRICING`
+        을 재대입하면 별칭만 낡고 `estimate_cost_usd` 는 새것을 쓴다. 그러면
+        이 단언은 '같은 표'라고 **거짓 안심**을 준다. 계약은 "trade 가 자기
+        표를 안 갖는다" 이므로 그걸 잰다(작업 원칙 — 죽은 경로는 삭제).
+        """
         import trade.llm_usage as lu
-        assert lu._PRICING is ut._PRICING
+        assert not hasattr(lu, "_PRICING"), "trade 가 표 별칭을 다시 들었다"
+        assert lu.cost_usd("gemini-2.5-flash", 1_000_000, 0) == 0.30
 
-    def test_costs_agree_exactly(self):
+    def test_canonical_rates_are_the_published_ones(self):
+        """⚠️ 2026-09-08 다시 씀(#222·#291): 옛 판은 `lu.cost_usd` 와
+        `ut.estimate_cost_usd` 를 대조했는데, **합치는 순간 그 둘은 같은
+        함수**라 출력 요율을 두 배로 만드는 뮤테이션도 통과했다(리뷰 실측).
+        합친 뒤에 남는 진짜 계약은 **표의 값 자체**다 — 요율이 틀리면 돈이
+        틀린다. 출처: ai.google.dev/gemini-api/docs/pricing (≤200K 입력).
+        """
         import bot.usage_tracker as ut
+        assert ut._PRICING == {
+            "gemini-2.5-flash":      {"in": 0.30, "out": 2.50},
+            "gemini-2.5-flash-lite": {"in": 0.10, "out": 0.40},
+            "gemini-2.5-pro":        {"in": 1.25, "out": 10.00},
+        }, ut._PRICING
+
+    def test_trade_delegates_instead_of_recomputing(self):
+        """복제된 산식이 되살아나면 두 화면이 갈라진다(#38)."""
+        import ast
+        import inspect
         import trade.llm_usage as lu
-        for m in ut._PRICING:
-            for i, o in ((0, 0), (1, 1), (1000, 500), (1234567, 98765)):
-                assert lu.cost_usd(m, i, o) == ut.estimate_cost_usd(m, i, o)
+        fn = ast.parse(inspect.getsource(lu.cost_usd)).body[0]
+        calls = [getattr(n.func, "id", "") for n in ast.walk(fn)
+                 if isinstance(n, ast.Call)]
+        assert "estimate_cost_usd" in calls, calls
+        # 자체 산술이 다시 생기면 그때 발화한다
+        assert not [n for n in ast.walk(fn) if isinstance(n, ast.BinOp)], \
+            "cost_usd 안에 산술이 다시 생겼다"
 
 
 class TestUnpricedModelIsNotSilent:
@@ -50127,18 +50154,33 @@ class TestUnpricedIsSurfaced20260908:
     같은 실수가 될 자리였다(#123 계정 불일치 · #129 수주잔고 · #131 FCF ·
     #189 밴드 칩 · #228 툴팁). 두 표면이 **같은 사실**을 말해야 한다(#38)."""
 
-    def _snap(self, unpriced: int):
+    def _snap(self, monkeypatch, unpriced_30d: int, unpriced_total: int):
         """⚠️ 손으로 만든 dict 은 포맷터가 쓰는 키를 빠뜨린다(실측 KeyError)
-        — 픽스처는 **원천이 실제로 내는 모양**이어야 한다(#155). `collect()`
-        는 로컬 파일·디스크만 보므로 네트워크 0 이다."""
+        — 픽스처는 **원천이 실제로 내는 모양**이어야 한다(#155).
+
+        ⚠️⚠️ 그런데 `collect()` 를 그냥 부르면 **운영 파일을 만든다**(독립
+        리뷰 실측: `hs_map._ensure` 가 `~/.trade/hs_map.tsv` 를 touch 하고,
+        실제 `~/.trade/media/` 를 os.walk 하고, 진짜 usage.jsonl 을 읽는다).
+        테스트는 운영 상태를 건드리면 안 된다(#30·#284·#312) — 쓰는·훑는
+        곳만 스텁하고 **키 집합은 진짜**를 그대로 쓴다.
+        ⚠️ 두 창에 **다른 값**을 넣는다: 같게 두면 어느 창을 읽는지 단언이
+        구별하지 못해 창을 바꾸는 변형이 통과한다(리뷰 실측, #91c).
+        """
         import trade.cost as c
-        w = {"calls": 3, "in_tok": 1, "out_tok": 1, "cost_usd": 0.0,
-             "cost_krw": 0, "unpriced": unpriced}
-        snap = c.collect()
-        snap["llm"] = {"total_calls": 3, "today": dict(w), "d30": dict(w),
-                       "today_kst": dict(w), "month": dict(w),
-                       "total": dict(w)}
-        return snap
+        import trade.hs_map as hs_map
+        monkeypatch.setattr(c, "_WATCHED", {})
+        monkeypatch.setattr(c, "_dir_bytes", lambda p: 0)
+        monkeypatch.setattr(hs_map, "entries", lambda: [])
+
+        def _w(n):
+            return {"calls": 3, "in_tok": 1, "out_tok": 1, "cost_usd": 0.0,
+                    "cost_krw": 0, "unpriced": n}
+
+        import trade.llm_usage as lu
+        monkeypatch.setattr(lu, "summary", lambda **kw: {
+            "total_calls": 3, "today": _w(0), "d30": _w(unpriced_30d),
+            "today_kst": _w(0), "month": _w(0), "total": _w(unpriced_total)})
+        return c.collect()
 
     def test_summary_counts_unpriced_calls_per_window(self, monkeypatch,
                                                       tmp_path):
@@ -50151,18 +50193,247 @@ class TestUnpricedIsSurfaced20260908:
         s = lu.summary()
         assert s["total"]["calls"] == 2 and s["total"]["unpriced"] == 1, s
 
-    def test_dashboard_line_says_the_cost_is_understated(self):
+    def test_dashboard_line_reads_the_total_window(self, monkeypatch):
+        """창이 다르면 N 도 다르다 — 라벨이 없으면 한쪽이 틀린 것처럼
+        읽힌다(#34, 리뷰 실측: 100일 전 1건이면 한쪽만 경고)."""
         import trade.cost as c
-        line = c.format_dashboard_line(self._snap(2))
-        assert "단가 미등재 2콜" in line, line
+        line = c.format_dashboard_line(self._snap(monkeypatch, 0, 7))
+        assert "단가 미등재 7콜(누적)" in line, line
 
-    def test_telegram_line_says_it_too(self):
+    def test_telegram_line_reads_the_30d_window(self, monkeypatch):
         import trade.cost as c
-        txt = c.format_telegram(self._snap(2))
-        assert "단가 미등재 2콜" in txt, txt
+        txt = c.format_telegram(self._snap(monkeypatch, 5, 0))
+        assert "단가 미등재 5콜(30일)" in txt, txt
 
-    def test_zero_unpriced_stays_quiet(self):
+    def test_zero_unpriced_stays_quiet(self, monkeypatch):
         """늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260)."""
         import trade.cost as c
-        assert "단가 미등재" not in c.format_dashboard_line(self._snap(0))
-        assert "단가 미등재" not in c.format_telegram(self._snap(0))
+        snap = self._snap(monkeypatch, 0, 0)
+        assert "단가 미등재" not in c.format_dashboard_line(snap)
+        assert "단가 미등재" not in c.format_telegram(snap)
+
+
+class TestRateLiteralsMatchTheTable20260908:
+    """같은 요율이 `bot/` 12개 모듈에 **리터럴로** 더 있다(독립 리뷰 실측).
+    그것들도 같은 원장(`usage.jsonl`)에 쓰므로, `_PRICING` 만 고치는 날
+    화면이 갈라진다(#38). 한 커밋에 다 옮기기엔 회귀 위험이 커서 **기계가
+    대조**한다 — 요율을 바꾸면 여기가 빨간불이 되고 전 사이트를 가리킨다
+    (#24 이름 열거 금지 · #119 규율을 구조로)."""
+
+    # 상수 이름 → (_PRICING 모델, 'in'|'out')
+    _NAMES = {
+        "_PRO_IN": ("gemini-2.5-pro", "in"),
+        "_PRO_OUT": ("gemini-2.5-pro", "out"),
+        "_PRO_INPUT_USD_PER_M": ("gemini-2.5-pro", "in"),
+        "_PRO_OUTPUT_USD_PER_M": ("gemini-2.5-pro", "out"),
+        "_FLASH_IN": ("gemini-2.5-flash", "in"),
+        "_FLASH_OUT": ("gemini-2.5-flash", "out"),
+    }
+
+    def _sites(self):
+        import ast
+        import pathlib
+        out = []
+        for p in (list(pathlib.Path("bot").rglob("*.py"))
+                  + list(pathlib.Path("trade").rglob("*.py"))):
+            try:
+                tree = ast.parse(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for n in ast.walk(tree):
+                if not isinstance(n, ast.Assign):
+                    continue
+                for t in n.targets:
+                    # `_PRO_IN, _PRO_OUT = 1.25, 10.00` 튜플 대입도 본다
+                    pairs = (list(zip(t.elts, n.value.elts))
+                             if isinstance(t, ast.Tuple)
+                             and isinstance(n.value, ast.Tuple)
+                             else [(t, n.value)])
+                    for name_node, val in pairs:
+                        nm = getattr(name_node, "id", "")
+                        if nm in self._NAMES and isinstance(val, ast.Constant) \
+                                and isinstance(val.value, (int, float)):
+                            out.append((str(p), n.lineno, nm, float(val.value)))
+        return out
+
+    def test_every_rate_literal_equals_the_canonical_table(self):
+        import bot.usage_tracker as ut
+        sites = self._sites()
+        # 대조 0건은 통과가 아니다(#54) — 이름이 바뀌면 조용히 ✅ 가 된다
+        assert len(sites) >= 10, f"요율 상수를 {len(sites)}개만 찾았다"
+        bad = []
+        for path, ln, nm, val in sites:
+            model, side = self._NAMES[nm]
+            want = ut._PRICING[model][side]
+            if val != want:
+                bad.append(f"{path}:{ln} {nm}={val} ≠ {model}.{side}={want}")
+        assert not bad, bad
+
+    def test_guard_fires_when_a_literal_drifts(self):
+        """가드가 눈멀지 않았음을 값으로 보인다(#47 — 틀린 상태를 재현해
+        ❌ 가 뜨는 걸 본 뒤 믿는다)."""
+        import bot.usage_tracker as ut
+        model, side = self._NAMES["_PRO_IN"]
+        want = ut._PRICING[model][side]
+        assert any(val == want for _p, _l, nm, val in self._sites()
+                   if nm == "_PRO_IN"), "대조 대상이 없다"
+        assert want != 999.0 and _rate_mismatch(999.0, want)
+
+
+def _rate_mismatch(got: float, want: float) -> bool:
+    return got != want
+
+
+class TestUnpricedReadFromTheTable20260908:
+    """저장된 표식만 믿으면 안 된다 — 이 원장에 쓰는 곳이 13곳인데 표식을
+    붙이는 곳은 둘뿐이고(#24) 옛 레코드엔 아예 없다. 읽는 쪽이 **원천(단가표)
+    에 직접 물으면** 쓰는 곳이 몇 곳이든 안 샌다(#86·#38)."""
+
+    def test_record_without_the_marker_is_still_counted(self):
+        """`technical_analysis`·`dart_growth_risk` 는 같은 원장에 쓰면서 표식을
+        안 붙인다(리뷰 실측) — 그것들도 세어져야 한다."""
+        import bot.usage_tracker as ut
+        assert ut.is_unpriced_record({"model": "gemini-3.0-pro"}) is True
+
+    def test_legacy_record_with_a_known_model_is_not_counted(self):
+        import bot.usage_tracker as ut
+        assert ut.is_unpriced_record({"model": "gemini-2.5-flash"}) is False
+
+    def test_stored_marker_still_wins_after_the_model_is_added(self):
+        """나중에 그 모델이 표에 추가돼도 **그때 저장된 cost_usd 는 0** 이다 —
+        표식이 있는 옛 레코드는 계속 미등재로 세야 사실이다(#43)."""
+        import bot.usage_tracker as ut
+        assert ut.is_unpriced_record(
+            {"model": "gemini-2.5-flash", "unpriced": True}) is True
+
+    def test_non_llm_records_are_not_counted(self):
+        """반대 증거(#25) — 모델이 없는 레코드까지 세면 카드가 늘 경고한다."""
+        import bot.usage_tracker as ut
+        assert ut.is_unpriced_record({"type": "failure"}) is False
+        assert ut.is_unpriced_record({}) is False
+
+    def test_callback_stamps_the_marker_on_the_noah_ledger(self, monkeypatch,
+                                                           tmp_path):
+        """`UsageCallback` 은 회귀가 하나도 없었다(리뷰 실측: 세 줄을 지워도
+        전 스위트 green) — 형제와 같은 수준으로 맞춘다(#20·#291)."""
+        import json
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "_UNPRICED_SEEN", set())
+        monkeypatch.setattr(ut, "USAGE_LOG", tmp_path / "usage.jsonl")
+        monkeypatch.setattr(ut, "_extract_token_usage",
+                            lambda resp: ("gemini-3.0-pro", 10, 5, 0))
+        ut.UsageCallback().on_llm_end(object())
+        rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
+        assert rec["cost_usd"] == 0.0 and rec.get("unpriced") is True, rec
+
+    def test_callback_leaves_priced_calls_unmarked(self, monkeypatch, tmp_path):
+        import json
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "_UNPRICED_SEEN", set())
+        monkeypatch.setattr(ut, "USAGE_LOG", tmp_path / "usage.jsonl")
+        monkeypatch.setattr(ut, "_extract_token_usage",
+                            lambda resp: ("gemini-2.5-flash", 1000, 500, 0))
+        ut.UsageCallback().on_llm_end(object())
+        rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
+        assert rec["cost_usd"] > 0 and "unpriced" not in rec, rec
+
+
+class TestMainCostCardSurfacesUnpriced20260908:
+    """드리프트가 실제로 일어나는 곳은 **NOAH 본체**(분석·Screener·DailyByte)
+    인데, 표식을 쓰기만 하고 그 큰 화면에선 아무도 안 읽고 있었다(리뷰 H1).
+    §Help/Dashboard 가 `_compute_stats` + `cmd_usage` 를 한 쌍으로 못박는다."""
+
+    def _rec(self, model, ts):
+        return {"type": "llm_call", "model": model, "cost_usd": 0.0, "ts": ts}
+
+    def test_stats_count_unpriced_calls(self, monkeypatch):
+        """헬퍼만 부르면 배선을 떼는 변형을 못 잡는다 — 집계기를 통째로
+        태운다(#20). 스텁 대상은 **실재하는 이름**이어야 한다(raising 기본값
+        True 로 오타를 잡는다)."""
+        import time
+        import bot.dashboard as d
+        now = time.time()
+        monkeypatch.setattr(d, "_read_usage_records",
+                            lambda *a, **k: [self._rec("gemini-3.0-pro", now),
+                                             self._rec("gemini-2.5-flash", now)])
+        monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
+        st = d._compute_stats([])
+        assert st["unpriced_calls"] == 1, st["unpriced_calls"]
+
+    def test_card_says_it_and_names_the_window(self, monkeypatch):
+        """렌더를 **실제로 태운다** — 소스 grep 폴백은 옆 문구가 대신
+        만족시킨다(#75·#19)."""
+        import bot.dashboard as d
+        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: [])
+        monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
+        st = dict(d._compute_stats([]))
+        # ⚠️ 분석 0건이면 패널이 통째로 빈 문자열이다 — 빈 픽스처는 껍데기만
+        # 그리고 그러면 이 단언은 아무것도 안 잰다(#91c·#299).
+        st["total"] = 1
+        st["unpriced_calls"] = 4
+        html = d._render_stats_panel(st)
+        assert "단가 미등재 4콜(누적)" in html, html[:600]
+
+    def test_card_is_quiet_when_everything_is_priced(self, monkeypatch):
+        """반대 증거(#25) — 늘 뜨는 배지는 아무것도 안 잰다."""
+        import bot.dashboard as d
+        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: [])
+        monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
+        st = dict(d._compute_stats([]))
+        st["total"] = 1
+        st["unpriced_calls"] = 0
+        html = d._render_stats_panel(st)
+        assert html, "패널이 비면 아무것도 안 재는 것이다(#54)"
+        assert "단가 미등재" not in html
+
+    def test_model_breakdown_is_derived_not_enumerated(self):
+        """이름 열거는 새 모델을 못 잡는다 — 드리프트가 일어나는 바로 그날
+        그 모델만 분해에서 사라진다(#24)."""
+        import ast
+        import inspect
+        import bot.dashboard as d
+        src = inspect.getsource(d)
+        assert '("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite")' \
+            not in src, "모델 이름을 다시 열거한다"
+        assert "_ut._PRICING" in src
+
+
+class TestUsageCommandSurfacesUnpriced20260908:
+    """§Help/Dashboard 는 새 비용 surface 를 `_compute_stats` + `cmd_usage`
+    **한 쌍**으로 갱신하라고 못박는다 — 카드만 고치면 두 표면이 갈라진다(#38).
+    (`/usage` 본문은 `_build_usage_report` 가 만들고 `cmd_usage` 는 그걸
+    보내기만 한다 — 재는 대상은 본문 쪽이다, #91b.)
+
+    ⚠️ 못 보는 축(#274): 이 레포 샌드박스엔 `telegram` 이 없어 `cmd_usage` 를
+    **실행할 수 없다**(회귀 5건이 그 이유로 skip 된다). 그래서 여기선 배선을
+    AST 로만 잰다 — 존재가 아니라 **호출과 사용**까지 본다(#141).
+    """
+
+    def _fn(self):
+        import ast
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = [n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+              and n.name == "_build_usage_report"]
+        assert fn, "_build_usage_report 가 사라졌다"
+        lines = src.splitlines(keepends=True)
+        return "".join(lines[fn[0].lineno - 1:fn[0].end_lineno])
+
+    def test_usage_counts_unpriced_via_the_table(self):
+        body = self._fn()
+        assert "is_unpriced_record" in body, "저장된 표식만 믿고 있다(#24·#86)"
+
+    def test_usage_prints_it_with_the_window_named(self):
+        """계산해 놓고 안 찍으면 없는 것과 같다(#123·#189·#228). 창을 안
+        적으면 카드(누적)와 같은 문구에 다른 N 이 뜬다(#34)."""
+        body = self._fn()
+        assert "_unpriced_30d" in body
+        assert body.count("_unpriced_30d") >= 2, "재기만 하고 안 찍는다"
+        assert "단가 미등재 {_unpriced_30d}콜(30일)" in body, body[-500:]
+
+    def test_usage_stays_quiet_when_zero(self):
+        """반대 증거(#25) — 조건 없이 붙이면 늘 뜬다."""
+        body = self._fn()
+        i = body.index("단가 미등재 {_unpriced_30d}")
+        assert "if _unpriced_30d else" in body[i:i + 200], body[i:i + 200]

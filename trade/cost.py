@@ -11,8 +11,11 @@ Why free (verified):
     10,000/day on the free tier).
   - Telegram Bot API + Telethon: free.
   - HS code reference file: free download.
-  - NO LLM: unlike the NOAH stock-bot (Gemini, per-token billing), the
-    trade-bot calls no paid model. Token cost is structurally zero.
+  - LLM: 산업 추가신호·기업리포트·관계후보에서 Gemini 를 **쓴다**(호출 수는
+    적지만 0 이 아니다 — `trade/llm_usage.py` 가 ~/.trade/usage.jsonl 에 적고
+    아래 두 포맷터가 그 비용을 그린다). 예전 문구가 "no paid model · 비용은
+    구조적으로 0" 이라고 단언하고 있었는데, 같은 파일이 비용 줄을 그리므로
+    설명이 코드와 어긋난 것이었다(#55, 독립 리뷰 2026-09-08).
 
 The genuine resource concerns are local:
   - Disk: inbox.jsonl + media/ + store.db + customs.db accumulate.
@@ -168,12 +171,14 @@ def format_telegram(snap: dict | None = None) -> str:
     llm = s.get("llm")
     if llm and llm.get("total_calls"):
         d30, td = llm["d30"], llm["today"]
-        # 두 표면이 같은 사실을 말해야 한다 — 한쪽만 밝히면 갈라진다(#38·#43).
+        # ⚠️ 이 줄은 **30일 창**, 대시보드 줄은 **누적** 창이다 — 창을
+        # 라벨에 박지 않으면 같은 문구에 다른 N 이 떠 한쪽이 틀린 것처럼
+        # 읽힌다(#34, 독립 리뷰 실측: 100일 전 1건이면 한쪽만 경고).
         _unp30 = d30.get("unpriced") or 0
         lines.append(
             f"• LLM (Gemini, 🔍산업 추가신호): 30일 <b>{d30['calls']}</b>콜 · "
             f"<b>{d30['cost_krw']:,}</b>원 (오늘 {td['calls']}콜), 데이터 변동 시만"
-            + (f" ⚠️ 단가 미등재 {_unp30}콜 — 실제 비용은 더 큼" if _unp30 else "")
+            + (f" ⚠️ 단가 미등재 {_unp30}콜(30일) — 실제 비용은 더 큼" if _unp30 else "")
         )
     else:
         lines.append("• LLM (Gemini, 🔍추가신호): 호출 0 — 데이터 변동 시만, 사실상 무료")
@@ -213,7 +218,7 @@ def format_dashboard_line(snap: dict | None = None) -> str:
             f"LLM 오늘 {llm['today_kst']['cost_krw']:,}원 · "
             f"이번달 {llm['month']['cost_krw']:,}원 · "
             f"누적 {llm['total']['cost_krw']:,}원({llm['total_calls']}콜)"
-            + (f" ⚠️ 단가 미등재 {_unp}콜 — 실제 비용은 더 큼" if _unp else "")
+            + (f" ⚠️ 단가 미등재 {_unp}콜(누적) — 실제 비용은 더 큼" if _unp else "")
         )
     else:
         parts.append("LLM 0원(변동시만)")

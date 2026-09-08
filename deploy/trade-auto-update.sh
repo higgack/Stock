@@ -60,7 +60,7 @@ SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
 # SILENTLY — 채널 알림 없음 (사용자 2026-06-11: NOAH 쪽 변경이 수출입
 # 채널로 알람 오던 것 차단). 추적은 journald 로그로만.
 CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
-TRADE_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(trade/|deploy/(trade-auto-update\.sh|trade-watchdog\.sh|trade-bot[^/]*\.(service|timer))$)' || true)
+TRADE_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(trade/|bot/|deploy/(trade-auto-update\.sh|trade-watchdog\.sh|trade-bot[^/]*\.(service|timer))$)' || true)
 if [ -z "$TRADE_RELEVANT" ]; then
     echo "trade-bot-update: non-trade-bot changes (${LOCAL_SHORT} → ${REMOTE_SHORT}: ${SUBJECT}) — silent pull, no restart/notify"
     git reset --hard "origin/${BRANCH}" --quiet
