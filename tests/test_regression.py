@@ -47675,3 +47675,120 @@ class TestNewFavoriteGoesOnTop20260907:
         import bot.dashboard as db
         body = inspect.getsource(db._render_market_page)
         assert "새로 저장한 종목이 맨 위" in body, "순서 규칙이 화면에 없다"
+
+
+# ── 시장타이밍 지수 신선도: 보강 판정 갈래 + `--why` (사용자 2026-09-08) ──
+# "이건 왜 지연되는거야?" — KR·JP 가 기준 09-04 인데 기대 09-07. 같은 증상
+# 2회째(2026-08-20 #37)라 추측 대신 가시성을 심었다(#12·#252).
+def test_tail_diag_names_the_branch_not_just_failure():
+    """보강 생략 사유는 **갈래로** 말해야 한다(#82) — 처방이 다 다르다."""
+    from bot import market_timing as mt
+    # 이미 최신
+    assert mt.tail_diag("2026-09-04", "2026-09-04", 100.0, None)[0] == "fresh"
+    assert mt.tail_diag("2026-09-07", "2026-09-08", 100.0, None)[0] == "fresh"
+    # 캘린더가 없어 기대 세션을 못 정함 → 추측 금지
+    assert mt.tail_diag(None, "2026-09-04", 100.0, {"close": 1, "prev": 1})[0] \
+        == "no_expected"
+    # 시세 원천 실패
+    assert mt.tail_diag("2026-09-07", "2026-09-04", 100.0, None)[0] == "no_quote"
+    # 야후 마지막 봉에 종가가 없음
+    assert mt.tail_diag("2026-09-07", "2026-09-04", None,
+                        {"close": 101.0, "prev": 100.0})[0] == "no_prev_close"
+    # 정렬 불가 — **이 화면이 실제로 걸린 갈래**(장중이거나 2세션 뒤처짐)
+    code, d = mt.tail_diag("2026-09-07", "2026-09-04", 100.0,
+                           {"close": 102.0, "prev": 101.0})
+    assert code == "misaligned", (code, d)
+    assert d["align_gap"] > d["align_tol"]
+    # 하루 변동 과다
+    assert mt.tail_diag("2026-09-07", "2026-09-04", 100.0,
+                        {"close": 130.0, "prev": 100.0})[0] == "implausible"
+    # 붙일 수 있는 경우
+    assert mt.tail_diag("2026-09-07", "2026-09-04", 100.0,
+                        {"close": 101.0, "prev": 100.0})[0] == "ok"
+
+
+def test_tail_reason_carries_the_numbers_not_just_a_label():
+    """사유는 수치를 같이 적어 눈으로 검산되게 한다(#202) — 그리고 갈래마다
+    **다른** 문장이어야 한다(한 문구로 뭉뚱그리면 하나는 거짓말, #245)."""
+    from bot import market_timing as mt
+    code, d = mt.tail_diag("2026-09-07", "2026-09-04", 100.0,
+                           {"close": 102.0, "prev": 101.0})
+    msg = mt.tail_reason(code, d)
+    assert "101" in msg and "100" in msg and "2026-09-04" in msg, msg
+    assert "2세션" in msg, msg          # 왜 못 잇는지까지 말한다
+    seen = {mt.tail_reason(c, {"expected": "2026-09-07",
+                               "last_date": "2026-09-04"})
+            for c in ("fresh", "no_expected", "no_quote", "no_prev_close",
+                      "implausible", "ok")}
+    assert len(seen) == 6, seen
+
+
+def test_quote_tail_uses_the_shared_judgment_and_logs_the_branch(monkeypatch,
+                                                                 caplog):
+    """화면이 감사와 **같은 판정**을 써야 통계와 화면이 안 갈린다(#35·#38).
+    그리고 생략은 조용하면 안 된다 — 갈래를 로그에 남긴다(#12 silent-fail).
+
+    ⚠️ 헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — `_quote_tail` 을
+    실제로 태워 **결과**로 본다.
+    """
+    import logging as _lg
+
+    from bot import market_timing as mt
+    rows = [{"date": "2026-09-03", "close": 99.0, "high": 99.0, "low": 99.0,
+             "volume": 1},
+            {"date": "2026-09-04", "close": 100.0, "high": 100.0, "low": 100.0,
+             "volume": 1}]
+    monkeypatch.setattr(mt, "_expected_session",
+                        lambda market: ("2026-09-07", 0))
+    # ① 정렬 불가 → 붙이지 않고, 갈래를 로그에 남긴다
+    monkeypatch.setattr(mt, "_market_quote",
+                        lambda t: {"close": 102.0, "prev": 101.0})
+    with caplog.at_level(_lg.INFO, logger="bot.market_timing"):
+        out = mt._quote_tail("^KS11", list(rows))
+    assert [r["date"] for r in out] == ["2026-09-03", "2026-09-04"]
+    blob = "\n".join(r.getMessage() for r in caplog.records)
+    assert "misaligned" in blob, blob
+    assert "2세션" in blob, blob        # 사유까지(라벨만이면 추측을 부른다)
+    # ② 정렬되면 붙는다 — 반대 증거가 없으면 '항상 생략'하는 변형이 통과한다
+    caplog.clear()
+    monkeypatch.setattr(mt, "_market_quote",
+                        lambda t: {"close": 101.0, "prev": 100.0})
+    out2 = mt._quote_tail("^KS11", list(rows))
+    assert [r["date"] for r in out2][-1] == "2026-09-07"
+    assert out2[-1]["close"] == 101.0
+    assert out2[-1]["volume"] is None   # 시세엔 거래량이 없다(#297 분산일)
+
+
+def test_market_timing_why_probe_dispatches_and_is_read_only():
+    """반복 확인은 제품에 심는다(§Automation-first·#252). 진입점이 실제로
+    디스패치되는지 **프로세스로** 본다 — AST 로 재면 게이트만 꺼도 통과한다
+    (#141·#252). 그리고 진단이 화면을 재생성하면 안 된다(#30·#264·#283).
+    """
+    import ast
+    import pathlib
+    import subprocess
+    import sys
+
+    src = pathlib.Path("bot/market_timing.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    called = {n.func.id for n in ast.walk(tree)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "regenerate_market_timing" not in called, \
+        "진단이 화면을 재생성하면 자기가 읽을 신호를 오염시킨다(#283)"
+
+    # 네트워크 없이 갈래가 나오는 경로(미지원 시장)로 디스패치만 확인
+    r = subprocess.run([sys.executable, "-m", "bot.market_timing", "--why",
+                        "ZZ"], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 1, r.stdout + r.stderr
+    out = r.stdout
+    assert "인터프리터" in out and sys.executable in out, out[:400]  # #132
+    assert "재생성하지 않는다" in out, out[:400]                     # #284
+    # 실패는 '지연'이 아니다 — 라벨이 갈려야 한다(#292)
+    verdict = [ln for ln in out.splitlines() if ln.startswith("판정:")]
+    assert verdict and "조회 실패" in verdict[0], verdict
+    assert not any("지연 없음" in v for v in verdict), verdict
+
+    # 사용법에 `cd` 가 있어야 한다 — `python -m` 은 cwd 에서 패키지를 찾는다(#278)
+    h = subprocess.run([sys.executable, "-m", "bot.market_timing"],
+                       capture_output=True, text=True, timeout=120)
+    assert "cd ~/stock" in h.stdout, h.stdout
