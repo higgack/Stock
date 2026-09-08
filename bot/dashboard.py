@@ -46,7 +46,11 @@ def _extract(pattern: re.Pattern, text: str) -> str:
 # ─── stats sources ───────────────────────────────────────────────────
 _USAGE_LOG_PATH = Path.home() / ".tradingagents" / "usage.jsonl"
 _MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.md"
-_KRW_PER_USD = 1380  # mirrors usage_tracker's constant; keep in sync
+# ⚠️ "keep in sync" 는 규율이라 매번 진다 — 정의는 `usage_tracker` 한 곳이다
+# (#38·#119). 실측 2026-09-08: 이 파일이 trade KRW→USD 를 **1330** 으로
+# 환산해 같은 레코드가 /usage(1380)와 다른 값으로 집계되고 있었다.
+from bot import usage_tracker as _ut                        # noqa: E402
+_KRW_PER_USD = _ut.KRW_PER_USD
 
 _BATCH_REGEN = False  # True during regenerate_index — skip live network fetches
 
@@ -442,6 +446,10 @@ def _compute_stats(records: list[dict]) -> dict:
     # 로테이션 시 빠지는 비용을 usage_rollup.json 에 적산(리뷰 2026-07-05).
     total_cost_usd = _read_usage_rollup_usd()
     month_cost_by_model: dict[str, float] = {}
+    # 단가 미등재 호출 수 — 그만큼 위 금액이 **과소집계**다. 판정은 저장된
+    # 표식이 아니라 **단가표에 직접 대조**한다(쓰는 곳이 13곳이라 표식만 믿으면
+    # 샌다 · 옛 레코드엔 표식이 아예 없다 — 독립 리뷰 실측, #24·#86).
+    unpriced_calls = 0
     # Per-subsystem breakdown (분석 / Screener / …) so the main dashboard
     # surfaces where the total bill is coming from. Screener Pro calls
     # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
@@ -458,6 +466,8 @@ def _compute_stats(records: list[dict]) -> dict:
         # (trade 루프와 동일 불변식).
         cost = r.get("cost_usd", 0) or 0
         total_cost_usd += cost
+        if _ut.is_unpriced_record(r):
+            unpriced_calls += 1
         ts = r.get("ts")
         if not ts:
             continue
@@ -509,7 +519,7 @@ def _compute_stats(records: list[dict]) -> dict:
                         cost_usd_tr = float(_cu)
                     else:
                         _ck = rec.get("cost_krw", 0) or 0
-                        cost_usd_tr = float(_ck) / 1330.0 if _ck > 0 else 0.0
+                        cost_usd_tr = (float(_ck) / _KRW_PER_USD) if _ck > 0 else 0.0
                     if cost_usd_tr <= 0:
                         continue
                     # 누적(전체)은 날짜 파싱 전에 합산 — 날짜 필드가 깨진
@@ -602,6 +612,7 @@ def _compute_stats(records: list[dict]) -> dict:
         "today_cost_usd": today_cost_usd,
         "month_cost_usd": month_cost_usd,
         "total_cost_usd": total_cost_usd,
+        "unpriced_calls": unpriced_calls,
         "month_cost_by_model": month_cost_by_model,
         "today_cost_by_sub_usd": today_cost_by_sub_usd,
         "month_cost_by_sub_usd": month_cost_by_sub_usd,
@@ -673,7 +684,11 @@ def _render_stats_panel(stats: dict) -> str:
 
     # Card 2: 비용 (오늘 / 이번 달 / 누적)
     cost_label_parts = []
-    for model in ("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"):
+    # ⚠️ 이름 열거는 새 모델을 못 잡는다 — 드리프트가 일어나는 바로 그날
+    # 그 모델만 분해에서 사라진다(#24). 단가표 + 실제 관측 모델에서 파생한다.
+    _models = list(_ut._PRICING) + [m for m in stats["month_cost_by_model"]
+                                    if m not in _ut._PRICING]
+    for model in _models:
         usd = stats["month_cost_by_model"].get(model, 0)
         if usd > 0:
             short = model.replace("gemini-2.5-", "")
@@ -682,6 +697,11 @@ def _render_stats_panel(stats: dict) -> str:
                   f"{_krw(stats['month_cost_usd'])} / "
                   f"{_krw(stats.get('total_cost_usd', 0))}")
     cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']} / 누적(전체)"]
+    # ⚠️ 단가표에 없는 모델은 ₩0 으로 집계된다 — 말하지 않으면 카드가 '공짜'
+    # 라고 거짓말한다(#43·#284). 창을 같이 밝힌다(#34).
+    if stats.get("unpriced_calls"):
+        cost_sub_parts.append(
+            f"⚠️ 단가 미등재 {stats['unpriced_calls']}콜(누적) — 실제 비용은 더 큼")
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
     # Per-subsystem breakdown. Surface only buckets with non-zero

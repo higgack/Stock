@@ -1474,6 +1474,9 @@ def _build_usage_report() -> str:
     watchdog_24h = _count_watchdog_restarts_24h()
 
     fx = usage_tracker.KRW_PER_USD
+    _unpriced_30d = sum(1 for r in records
+                        if r.get("type") == "llm_call"
+                        and usage_tracker.is_unpriced_record(r))
 
     def krw(usd: float) -> str:
         return f"₩{int(round(usd * fx)):,}"
@@ -1591,7 +1594,11 @@ def _build_usage_report() -> str:
         f"  • 7일:  {len(week_runs)}건",
         f"  • 30일: {len(month_runs)}건",
         "",
-        f"💰 <b>총 비용 (전체 surface 합산)</b> (₩{fx}/$)",
+        f"💰 <b>총 비용 (전체 surface 합산)</b> (₩{fx}/$)"
+        # ⚠️ 단가 미등재는 ₩0 으로 집계된다 — 말하지 않으면 '공짜'가 된다
+        # (#43·#284). 판정은 단가표에 직접 대조(#24·#86). 0 건이면 조용히.
+        + (f"  ⚠️ 단가 미등재 {_unpriced_30d}콜(30일) — 실제 비용은 더 큼"
+           if _unpriced_30d else ""),
         f"  • 오늘: <b>{krw(today_total_usd)}</b>  (${today_total_usd:.2f})",
         f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",
         f"  • 누적: <b>{krw(all_total_usd)}</b>  (${all_total_usd:.2f})",
