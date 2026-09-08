@@ -45498,12 +45498,23 @@ class TestTimerClaimIsAskedOfSystemd20260905:
     def test_stamp_age_is_measured_by_the_feed_cap(self, monkeypatch):
         """'낡음' 판정은 `feed_health` 의 상한으로 잰다 — 여기서 다시
         계산하면 화면과 갈라진다(#38). 그리고 미등록·형식이상은 None
-        (판정 불가)이라 도장을 신선하다고 우기지 않는다(#54)."""
+        (판정 불가)이라 도장을 신선하다고 우기지 않는다(#54).
+
+        ⚠️ 2026-09-08 재작성: 옛 판이 도장 시각을 **리터럴**(`2026-09-05
+        07:00`)로 박아 뒀다. 상한이 80시간이라 그 날짜가 오늘로부터 80시간을
+        넘긴 순간(정확히 2026-09-08) 무관한 커밋에서 빨간불이 됐다 — 계약은
+        '상한 안이면 신선 · 밖이면 낡음' 이지 특정 날짜가 아니다. 시한폭탄
+        금지(#249·#286·#291) → 상한에서 **파생**시킨다.
+        """
+        from datetime import datetime, timedelta
         from bot import feed_health
-        monkeypatch.setattr(feed_health, "last",
-                            lambda f: "2026-09-05 07:00")
+        cap_h = feed_health._MAX_GAP_H["daily_byte_kr"]
+        now = datetime.utcnow() + timedelta(hours=9)          # KST
+        fresh = (now - timedelta(hours=cap_h / 2)).strftime("%Y-%m-%d %H:%M")
+        stale = (now - timedelta(hours=cap_h * 3)).strftime("%Y-%m-%d %H:%M")
+        monkeypatch.setattr(feed_health, "last", lambda f: fresh)
         assert feed_health.overdue("daily_byte_kr") is False
-        monkeypatch.setattr(feed_health, "last", lambda f: "2026-08-01 07:00")
+        monkeypatch.setattr(feed_health, "last", lambda f: stale)
         assert feed_health.overdue("daily_byte_kr") is True
         assert feed_health.overdue("no_such_feed_xyz") is None
         monkeypatch.setattr(feed_health, "last", lambda f: "쓰레기")
