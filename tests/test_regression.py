@@ -49812,3 +49812,147 @@ class TestFavoritesAliasMemo20260908:
         n = len(calls)
         assert mf._resolve_yf("2467.TT") == "2467.TW"
         assert len(calls) == n
+
+
+# ── 리스너 상태를 추측으로 묻지 않는다 (2026-09-08, 사용자 실측이 발각) ────
+# `systemctl --user status trade-bot-beon-listener` 를 안내했다가
+# `Unit ... could not be found` 만 받았다 — 유닛은 **시스템** 스코프
+# (`WantedBy=multi-user.target` · `User=higgack`)인데 스코프를 추측한 것이다
+# (#86 상태는 아는 쪽에 물어라 · #281). 반복될 확인은 제품에 심는다(#252).
+class TestBeonListenerWhy20260908:
+
+    def _v(self, **facts):
+        from trade.listener_health import listener_verdict
+        return listener_verdict({"ok": True, **facts})
+
+    def test_cannot_ask_is_not_a_pass(self):
+        from trade.listener_health import listener_verdict
+        out = listener_verdict({"ok": False, "err": "boom"})
+        assert out["kind"] == "unknown" and "boom" in out["text"]
+
+    def test_unit_missing_names_the_scope(self):
+        """`--user` 로 물으면 시스템 유닛이 '없다'고 나온다 — 그 함정을
+        진단이 직접 말해야 다음 사람이 같은 라운드를 안 쓴다(#82)."""
+        out = self._v(s_LoadState="not-found")
+        assert out["kind"] == "not_installed"
+        assert "--user" in out["text"], out["text"]
+
+    def test_masked_gets_its_own_prescription(self):
+        """`masked` 에 `enable --now` 를 시키면 실패한다 — 갈래마다 처방이
+        다르다(#82, daily_kr_flow 의 _LOAD_FIX 와 같은 이유)."""
+        out = self._v(s_LoadState="masked")
+        assert out["kind"] == "masked" and "unmask" in out["text"]
+
+    def test_running_is_said_plainly_with_start_time(self):
+        out = self._v(s_LoadState="loaded", s_ActiveState="active",
+                      s_SubState="running",
+                      s_ExecMainStartTimestamp="Mon 2026-09-08 09:00:00 KST")
+        assert out["kind"] == "running" and "09:00:00" in out["text"]
+
+    def test_restart_loop_is_its_own_branch(self):
+        """#258 의 증폭기 — 크래시 재시작마다 username 해석이 다시 나가
+        계정 한도를 태운다. '멈춤'과 같은 갈래로 적으면 원인을 못 짚는다."""
+        out = self._v(s_LoadState="loaded", s_ActiveState="activating",
+                      s_SubState="auto-restart")
+        assert out["kind"] == "restart_loop"
+
+    def test_exit_78_means_reauth_not_reinstall(self):
+        """유닛이 `RestartPreventExitStatus=78` 로 hot-loop 를 막는 그 코드다
+        — '설치 문제'로 적으면 운영자가 헛걸음한다(#187b)."""
+        out = self._v(s_LoadState="loaded", s_ActiveState="failed",
+                      s_SubState="failed", s_Result="exit-code",
+                      s_ExecMainStatus="78")
+        assert out["kind"] == "needs_auth" and "--auth" in out["text"]
+
+    def test_other_failure_names_result_and_exit(self):
+        out = self._v(s_LoadState="loaded", s_ActiveState="failed",
+                      s_SubState="failed", s_Result="exit-code",
+                      s_ExecMainStatus="1")
+        assert out["kind"] == "stopped"
+        assert "exit-code" in out["text"] and "exit=1" in out["text"]
+
+    def test_running_and_stopped_do_not_share_a_verdict(self):
+        """반대 증거(#25) — 모든 갈래가 같은 문자열이면 아무것도 안 잰다."""
+        kinds = {self._v(s_LoadState="loaded", s_ActiveState=a, s_SubState=b,
+                         s_ExecMainStatus=c)["kind"]
+                 for a, b, c in (("active", "running", "0"),
+                                 ("activating", "auto-restart", ""),
+                                 ("failed", "failed", "78"),
+                                 ("failed", "failed", "1"))}
+        assert len(kinds) == 4, kinds
+
+
+class TestFloodWaitState20260908:
+
+    def _f(self, lines, now="2026-09-08T12:00:00+0900"):
+        from trade.listener_health import floodwait_state
+        return floodwait_state(lines, now=now)
+
+    def test_no_floodwait_says_so(self):
+        st = self._f(["2026-09-08T11:00:00+0900 host x[1]: started"])
+        assert st["seen"] is False and st["remaining"] is None
+
+    def test_remaining_is_measured_from_the_log_time(self):
+        st = self._f(["2026-09-08T11:00:00+0900 host x[1]: "
+                      "FloodWaitError: A wait of 8073 seconds is required"])
+        assert st["seen"] is True and st["seconds"] == 8073
+        assert st["remaining"] == 8073 - 3600, st
+
+    def test_expired_floodwait_reports_zero_not_negative(self):
+        st = self._f(["2026-09-08T01:00:00+0900 host x[1]: "
+                      "A wait of 60 seconds is required"])
+        assert st["remaining"] == 0
+
+    def test_unparseable_timestamp_does_not_guess(self):
+        """시각을 못 읽었으면 남은 시간을 **단정하지 않는다**(#165) —
+        '곧 풀린다'를 지어내면 운영자가 기다리다 만다."""
+        st = self._f(["FloodWaitError: A wait of 30 seconds is required"])
+        assert st["seen"] is True and st["seconds"] == 30
+        assert st["remaining"] is None
+
+    def test_largest_wait_wins(self):
+        st = self._f(["2026-09-08T11:00:00+0900 a: A wait of 30 seconds is required",
+                      "2026-09-08T11:30:00+0900 a: A wait of 900 seconds is required"])
+        assert st["seconds"] == 900
+
+
+class TestSystemdFactsTimerless20260908:
+
+    def test_timer_none_asks_only_the_service(self, monkeypatch):
+        """타이머가 없는 유닛(Type=simple 리스너)도 물을 수 있어야 한다 —
+        없는 타이머를 물으면 rc!=0 으로 **판정 불가**가 되고, 그건 '멈췄다'와
+        구별되지 않는다(#54·#82)."""
+        import subprocess
+        import bot.daily_kr_flow as dk
+        asked = []
+
+        class _R:
+            returncode = 0
+            stdout = "LoadState=loaded\nActiveState=active\nSubState=running\n"
+            stderr = ""
+
+        def _run(cmd, **kw):
+            asked.append(cmd[2])
+            return _R()
+
+        monkeypatch.setattr(subprocess, "run", _run)
+        out = dk.systemd_facts(timer=None, service="x.service")
+        assert asked == ["x.service"], asked
+        assert out["ok"] and out["s_LoadState"] == "loaded"
+
+    def test_service_query_carries_loadstate(self, monkeypatch):
+        """리스너 판정은 '설치 안 됨'과 '멈춤'을 갈라야 하므로 서비스에도
+        LoadState 가 필요하다 — 안 물으면 그 갈래가 영원히 안 나온다."""
+        import subprocess
+        import bot.daily_kr_flow as dk
+        keys = []
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        monkeypatch.setattr(subprocess, "run",
+                            lambda cmd, **kw: keys.extend(cmd[3:]) or _R())
+        dk.systemd_facts(timer=None, service="x.service")
+        assert "-pLoadState" in keys, keys

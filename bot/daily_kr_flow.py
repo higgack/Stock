@@ -904,7 +904,8 @@ _TIMER_CMDS = (f"`systemctl status {_TIMER_UNIT}` · "
                f"`journalctl -u {_SERVICE_UNIT} -n 50`")
 
 
-def systemd_facts(timer: str = _TIMER_UNIT, service: str = _SERVICE_UNIT) -> dict:
+def systemd_facts(timer: str | None = _TIMER_UNIT,
+                  service: str = _SERVICE_UNIT) -> dict:
     """systemd 에 **물어서** 타이머 상태를 재 온다(읽기 전용).
 
     도장(`feed_health`)이 없다는 사실만으로 '타이머가 안 돌았을 수 있다' 고
@@ -924,12 +925,17 @@ def systemd_facts(timer: str = _TIMER_UNIT, service: str = _SERVICE_UNIT) -> dic
     import subprocess
 
     out: dict = {"ok": False}
+    # ⚠️ `timer=None` 은 **타이머가 없는 유닛**(Type=simple 리스너)용이다 —
+    # 그 경우 서비스만 묻는다. 없는 유닛을 물으면 rc!=0 이 나서 판정 불가로
+    # 떨어지고, 그건 '멈췄다'와 구별되지 않는다(#82·#54).
+    # 그리고 리스너 판정엔 `LoadState` 가 필요하다(설치 안 됨 ↔ 멈춤).
+    _pairs = [(service, ("LoadState", "ActiveState", "SubState",
+                         "ExecMainStartTimestamp", "ExecMainStatus", "Result"))]
+    if timer:
+        _pairs.insert(0, (timer, ("LoadState", "ActiveState", "SubState",
+                                  "LastTriggerUSec", "NextElapseUSecRealtime")))
     try:
-        for unit, keys in (
-                (timer, ("LoadState", "ActiveState", "SubState",
-                         "LastTriggerUSec", "NextElapseUSecRealtime")),
-                (service, ("ActiveState", "SubState",
-                           "ExecMainStartTimestamp", "ExecMainStatus", "Result"))):
+        for unit, keys in _pairs:
             r = subprocess.run(
                 ["systemctl", "show", unit, *[f"-p{k}" for k in keys]],
                 capture_output=True, text=True, timeout=10)

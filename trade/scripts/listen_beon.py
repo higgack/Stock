@@ -44,6 +44,7 @@ import html
 import logging
 import os
 import subprocess
+import re
 import sys
 
 from dotenv import load_dotenv
@@ -254,6 +255,55 @@ async def _run_auth() -> int:
     return 0
 
 
+
+# ── `--why` 진단 ────────────────────────────────────────────────────────
+# ⚠️ 왜 있나. 2026-09-08 에 리스너 상태를 물으려고 `systemctl --user status
+# trade-bot-beon-listener` 를 안내했다가 `Unit ... could not be found` 만
+# 받았다 — 유닛은 **시스템** 스코프(`WantedBy=multi-user.target`)인데 내가
+# 스코프를 추측한 것이다. 반복될 확인은 명령을 건네는 게 아니라 제품에
+# 심는다(§Automation-first · #252 · #12). 읽기 전용 — 아무것도 시작·설치하지
+# 않는다(#264). 판정은 `trade/listener_health.py` 에 있다(#176).
+from trade.listener_health import (          # noqa: E402
+    _SERVICE, _UNIT, floodwait_state, listener_verdict,
+)
+
+
+def _why() -> int:
+    """리스너가 살아 있나 · FloodWait 가 남았나 — 갈래로 답한다."""
+    from datetime import datetime, timezone
+
+    from bot.daily_kr_flow import journal_tail, redact, systemd_facts
+
+    print(f"listen_beon --why v1 · 유닛 {_SERVICE}")
+    print(f"  인터프리터 {sys.executable}")
+    facts = systemd_facts(timer=None, service=_SERVICE)
+    v = listener_verdict(facts)
+    print(f"  ① 유닛: {v['text']}")
+    lines, why, _kind = journal_tail(_SERVICE, n=80)
+    if not lines:
+        # 대조 0건은 통과가 아니다(#54) — 못 읽은 것도 갈래다(#82).
+        print(f"  ② 저널: {why}")
+        return 0 if v["kind"] == "running" else 1
+    st = floodwait_state(lines, now=datetime.now(timezone.utc)
+                         .astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"))
+    if not st["seen"]:
+        print(f"  ② FloodWait: 최근 {len(lines)}줄에 없음 ✅")
+    else:
+        rem = ("판정 불가(로그 시각을 못 읽음)" if st["remaining"] is None
+               else f"남은 {st['remaining']}초" if st["remaining"]
+               else "이미 지남")
+        print(f"  ② FloodWait: {st['seconds']}초 요구({st['at'] or '시각 미상'})"
+              f" · {rem} ⚠️")
+    # 저널에 토큰이 섞여 들어올 수 있다 — 값은 절대 안 찍는다(§Secrets·#282)
+    print("  ③ 저널 마지막 5줄:")
+    for ln in lines[-5:]:
+        print(f"     {redact(ln)}")
+    ok = v["kind"] == "running" and not st["seen"]
+    print("  ⑥ 판정: " + ("✅ 리스너 정상 · FloodWait 없음"
+                          if ok else "❗ 위 ①② 사유 확인"))
+    return 0 if ok else 1
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Live BeOn → trade forwarder (Telethon NewMessage listener)."
@@ -263,7 +313,13 @@ def main() -> None:
         action="store_true",
         help="One-time interactive authentication (phone + code + 2FA).",
     )
+    ap.add_argument(
+        "--why", action="store_true",
+        help="읽기 전용 진단 — 유닛 상태·FloodWait 잔여를 갈래로 찍는다.",
+    )
     args = ap.parse_args()
+    if args.why:
+        sys.exit(_why())
     try:
         if args.auth:
             rc = asyncio.run(_run_auth())
