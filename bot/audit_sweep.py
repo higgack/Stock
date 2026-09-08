@@ -176,7 +176,7 @@ def report_text(result: dict | None = None,
         body.append(f"• {s}")
         if sum(len(x) for x in body) > _TG_CAP - len(head) - 80:
             body.append(f"… 외 {len(bad) - len(body) + 1}건 "
-                        "(<code>python -m bot.audit_sweep</code> 로 전문)")
+                        "(<code>cd ~/stock && .venv/bin/python -m bot.audit_sweep</code> 로 전문)")
             break
     return head + "\n".join(body)
 
