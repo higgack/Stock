@@ -1540,6 +1540,10 @@ def fetch_volatility_snapshot() -> dict:
     # **통째로** 사라졌다 — 바로 아래 yfinance 폴백까지 같은 try 안이라 함께
     # 죽었고, 남는 건 debug 한 줄뿐이었다(#42a 폴백은 버그를 숨긴다 · #12
     # silent-fail 금지). 값 > 나이 > 과거창 순으로 **덜 중요한 것만** 잃는다.
+    # ⚠️ 정직하게: 오늘 **실제로 던질 수 있는 건 과거창 조립뿐**이다
+    # (`fetch_index_history` 는 본문 전체가 try 로 감싸여 [] 를 돌려주고,
+    # `live_asof` 는 float|None 에 대해 순수하다). 나머지 둘은 방어이지
+    # 도달을 증명한 가드가 아니다 — 회귀도 monkeypatch 로만 태운다(#315·#291).
     vix_hist: list = []
     try:
         vix_hist = fetch_index_history("^VIX", days=400, min_rows=200)

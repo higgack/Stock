@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import threading as _threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -95,17 +96,37 @@ def yf_candidates(ticker: str) -> list[str]:
     return [t] if t else []
 
 
+# 부정 해석의 **만료** — '오늘 안 온다'가 영원이 되면 안 된다.
+# ⚠️ 빈 프레임은 '없다'와 '못 물었다'를 **구별해 주지 않는다**(독립 리뷰
+# 2026-09-08 실측): yfinance 는 `hide_exceptions` 기본값 때문에 read timeout·
+# 5xx 에도 예외 없이 `empty_df()` 를 돌려주고, 로그 문구도 스스로
+# "possibly delisted" 라고 적는다. 그래서 예외 유무로 갈라 **영구** 기억하면
+# 야후의 30초 블립 하나가 그 티커를 프로세스 수명 내내 굳힌다(화면은 값이
+# 빈 채로, 로그 한 줄도 없이 — #43·#52 조용한 것과 죽은 것). 갈래를 못 재면
+# 단정하지 말고(#165) **시간으로 만료**시킨다. 상장 직후 편입도 이걸로 회복된다.
+_YF_NEG_TTL_SEC = 3600
+_YF_EMPTY: dict[str, float] = {}
+
+
 def _resolve_yf(ticker: str) -> str:
     """후보 중 **실제로 데이터가 오는** 심볼. 못 찾으면 원문 그대로.
 
-    ⚠️ 이름이나 규칙이 아니라 **실측**으로 고른다(#25). 프로세스 수명 동안
-    기억해 재조회를 안 한다(후보가 하나면 네트워크 0).
+    ⚠️ 이름이나 규칙이 아니라 **실측**으로 고른다(#25). 성공은 프로세스 수명
+    동안 기억하고(후보가 하나면 네트워크 0), **빈 답은 `_YF_NEG_TTL_SEC` 만큼만**
+    기억한다 — 빈 답이 '없다'인지 '못 물었다'인지 원천이 안 갈라 주기 때문이다
+    (위 주석). 그동안은 원문을 쓰되 그 사실을 로그로 남긴다(#43 침묵 금지).
     """
     cands = yf_candidates(ticker)
     if len(cands) <= 1:
         return cands[0] if cands else ticker
     if ticker in _YF_RESOLVED:
         return _YF_RESOLVED[ticker]
+    seen = _YF_EMPTY.get(ticker)
+    if seen is not None and (time.time() - seen) < _YF_NEG_TTL_SEC:
+        log.info("favorites: %s — 야후 표기 후보가 %d분 전 전부 비어 원문을 쓴다"
+                 "(%d분 뒤 다시 묻는다)", ticker, int((time.time() - seen) // 60),
+                 max(0, int((_YF_NEG_TTL_SEC - (time.time() - seen)) // 60)))
+        return ticker
     import yfinance as yf
     asked_all = True     # 후보를 **전부 물어봤나** — 예외가 있으면 못 물은 것
     for c in cands:
@@ -113,6 +134,7 @@ def _resolve_yf(ticker: str) -> str:
             h = yf.Ticker(c).history(period="5d")
             if h is not None and len(h):
                 _YF_RESOLVED[ticker] = c
+                _YF_EMPTY.pop(ticker, None)
                 # 폴백을 로그로만 알리면 사용자는 영영 모른다(#42a) — 화면도
                 # `yf_ticker` 로 같이 밝힌다(#136).
                 log.info("favorites: %s → 야후 표기 %s 로 조회", ticker, c)
@@ -121,14 +143,13 @@ def _resolve_yf(ticker: str) -> str:
             asked_all = False
             log.debug("favorites: %s 후보 %s 실패: %s", ticker, c, exc)
     if asked_all:
-        _YF_RESOLVED[ticker] = ticker
-        # 원천이 "그런 심볼 없다"고 **답한** 것이므로 기억한다 — 안 그러면
-        # 갱신 주기마다 후보 수만큼 순손실 호출이 나간다(독립 리뷰 2026-09-08).
-        log.warning("favorites: %s — 야후 표기 후보 %s 가 전부 비었다(원문 유지)",
-                    ticker, cands)
+        # 전부 빈 답 — **만료되는** 부정 기억. 갱신 주기(3분)마다 후보 수만큼
+        # 나가던 순손실 호출을 줄이되, 영구히 굳히지는 않는다.
+        _YF_EMPTY[ticker] = time.time()
+        log.warning("favorites: %s — 야후 표기 후보 %s 가 전부 비었다(원문 유지 · "
+                    "%d분 뒤 재시도)", ticker, cands, _YF_NEG_TTL_SEC // 60)
     else:
-        # 예외는 '없다'가 아니라 **못 물었다** 다 — 기억하면 일시적 네트워크
-        # 실패가 프로세스 수명 내내 굳는다(#143 대조군 없이 '없음' 단정 금지).
+        # 예외는 '없다'가 아니라 **못 물었다** 다 — 기억조차 하지 않는다(#143).
         log.warning("favorites: %s — 야후 표기 후보 %s 를 못 물었다(재시도 대상)",
                     ticker, cands)
     return ticker

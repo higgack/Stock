@@ -24878,11 +24878,53 @@ class TestVolAndTableReviewFixes20260816:
 
     def test_volatility_tests_do_not_hit_the_network(self):
         """VKOSPI 스텁을 빠뜨리면 테스트가 실제 HTTPS 를 때리고, 엔드포인트가
-        살아나는 순간 VM 에서 make test 가 깨진다."""
+        살아나는 순간 VM 에서 make test 가 깨진다.
+
+        ⚠️ 2026-09-08 다시 씀(#222·#24): 옛 판은 테스트 **하나를 이름으로**
+        열거해, 그 뒤에 추가된 5개 호출부를 전혀 못 봤다(독립 리뷰). 이름
+        열거는 다음 테스트를 못 잡는다 — `fetch_volatility_snapshot` 을 부르는
+        **모든** 테스트를 AST 로 훑고 협력자 스텁을 요구한다. 헬퍼(`_stub_rest`)
+        로 묶은 경우도 있으므로 함수 본문 **또는 감싸는 클래스**에서 찾는다.
+        """
+        import ast
         src = open("tests/test_regression.py", encoding="utf-8").read()
-        blk = src[src.index("def test_fetch_volatility_snapshot_both_fail_graceful"):]
-        blk = blk[:blk.index("\n    def ", 1)]
-        assert "fetch_vkospi_rows" in blk, "VKOSPI 스텁 누락 — 라이브 호출"
+        tree = ast.parse(src)
+        # ⚠️ 요구 목록은 **실제 네트워크 문**이어야 한다(#47·#50 내 가정을
+        # 원천의 보장으로 착각하지 말 것). `fetch_move_rows` 는 스스로 나가지
+        # 않고 `fetch_index_history` 위에 얹혀 있어, 그걸 요구하면 멀쩡한
+        # 기존 테스트 6개를 오보한다(실측). 문은 셋이다:
+        #   fetch_index_history(야후·VIX/MOVE) · fetch_vkospi_rows(KIS)
+        #   · _fetch_vix_naver(네이버)
+        # 이 목록이 맞다는 반대 증거는 `test_no_network_when_the_three_doors_are_stubbed`
+        # 가 소켓을 막고 실제로 잰다(#25).
+        need = ("fetch_vkospi_rows", "fetch_index_history", "_fetch_vix_naver")
+        lines = src.splitlines(keepends=True)
+
+        def seg(node):
+            # ⚠️ `ast.get_source_segment` 을 노드마다 부르면 5만 줄 파일에서
+            # 매번 전체를 다시 쪼개 O(n²) 가 된다 — 실측으로 이 테스트가
+            # 300초를 넘겨 멈춰 섰다(faulthandler 스택이 여기를 가리켰다).
+            return "".join(lines[node.lineno - 1:node.end_lineno])
+
+        checked = 0
+        for node in [tree] + [n for n in tree.body
+                              if isinstance(n, ast.ClassDef)]:
+            scope = src if isinstance(node, ast.Module) else seg(node)
+            for fn in ast.walk(node):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                body = seg(fn)
+                if "fetch_volatility_snapshot(" not in body:
+                    continue
+                if isinstance(node, ast.Module) and fn.col_offset:
+                    continue        # 클래스 안의 것은 그 클래스에서 센다
+                checked += 1
+                hay = body if isinstance(node, ast.Module) else scope
+                missing = [n for n in need if n not in hay]
+                assert not missing, (
+                    f"{fn.name}: {missing} 스텁 누락 — 라이브 호출 위험")
+        # 대조 0건은 통과가 아니다(#54) — 훑는 패턴이 틀리면 조용히 ✅ 가 된다
+        assert checked >= 10, f"수집기를 부르는 테스트를 {checked}개만 찾았다"
 
     def test_badge_does_not_overclaim_daily_only_updates(self):
         """F&G 는 6시간마다 갱신되므로 '하루 1회만 변한다'는 배지 문구는
@@ -48734,10 +48776,13 @@ class TestVolatilityLiveAsOf20260908:
         monkeypatch.setattr(nm, "fetch_world_indices",
                             lambda codes: fetched.append(codes) or {".VIX": rec})
         monkeypatch.setattr(nm, "value_age_sec",
-                            lambda pool, r: aged.append(r) or 120.0)
+                            lambda pool, r: aged.append((pool, r)) or 120.0)
         assert mt._fetch_vix_naver() == {"value": 15.3, "age_sec": 120.0}
         assert len(fetched) == 1, "값 때문에 원천을 두 번 물었다"
-        assert len(aged) == 1 and aged[0] is rec, "다른 레코드로 나이를 쟀다"
+        assert len(aged) == 1 and aged[0][1] is rec, "다른 레코드로 나이를 쟀다"
+        # ⚠️ pool 태그도 계약이다 — 어느 **캐시 파일의 mtime** 을 읽을지
+        # 정한다(#304). 'com'/'fx' 로 바뀌면 남의 수집 시각을 VIX 에 붙인다.
+        assert aged[0][0] == "idx", aged[0][0]
 
     def test_render_shows_the_collection_time(self):
         import re
@@ -49175,10 +49220,12 @@ def _run_favorites_row(f: dict) -> str:
     import shutil
     import subprocess
     import tempfile
-    node = shutil.which("node")
+    node = shutil.which("node") or shutil.which("nodejs")
     if not node:
         import pytest
-        pytest.skip("node 없음")
+        # 백스톱을 남긴 뒤 스킵한다 — 판정 불가는 통과가 아니다(#54).
+        # (`test_alias_wiring_survives_without_node` 가 node 없이도 돈다)
+        pytest.skip("node 없음 — 소스 백스톱(test_alias_wiring_survives_without_node)")
     seg = _favorites_row_segment().replace("{{", "{").replace("}}", "}")
     js = (
         "const usd=v=>v==null?'':String(v);"
@@ -49191,7 +49238,11 @@ def _run_favorites_row(f: dict) -> str:
                                      encoding="utf-8") as fh:
         fh.write(js)
         path = fh.name
-    r = subprocess.run([node, path], capture_output=True, text=True)
+    try:
+        r = subprocess.run([node, path], capture_output=True, text=True)
+    finally:
+        import os
+        os.unlink(path)
     assert r.returncode == 0, r.stderr[:800]
     return r.stdout
 
@@ -49312,6 +49363,16 @@ class TestFrozenValueAndTickerAlias20260908:
         html = _run_favorites_row({"ticker": "AAPL", "name": "Apple",
                                    "country": "US"})
         assert "로 조회" not in html, html
+
+    def test_alias_wiring_survives_without_node(self):
+        """node 가 없는 환경의 **백스톱** — 판정 불가는 통과가 아니다(#54).
+
+        렌더 실행 테스트가 스킵되면 별칭 배선에 아무 신호도 안 남는다. 이
+        단언은 순서·위치까지는 못 재지만(그건 실행이 한다) '조회 심볼을
+        밝히는 코드가 행 렌더 안에 있다'는 최소 계약은 지킨다.
+        """
+        seg = _favorites_row_segment()
+        assert "f.yf_ticker" in seg, "행 렌더가 조회 심볼을 안 밝힌다"
 
     def test_generated_favorites_js_still_parses(self):
         """생성한 JS 는 파이썬이 문법을 안 봐준다 — 파서에 태운다(#26)."""
@@ -49580,6 +49641,53 @@ class TestVixCardSurvivesItsGarnish20260908:
         rec = mt.fetch_volatility_snapshot().get("vix")
         assert rec and rec["value"] == 15.3, "히스토리 실패가 실시간 값을 지웠다"
 
+    def test_vkospi_failure_is_not_buried_in_debug(self, monkeypatch, caplog):
+        """카드가 통째로 비는 실패를 debug 로 묻으면 아무도 모른다(#12·#82).
+
+        ⚠️ 독립 리뷰 실측: 이 줄만 가드가 없어, `log.debug` 로 되돌리는
+        뮤테이션이 전체 3035 tests 를 통과했다(§Pre-commit 9 — 새 가드는
+        뮤테이션 fail-before 까지 한 세트).
+        """
+        import logging
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "fetch_move_rows", lambda *a, **k: ([], ""))
+        monkeypatch.setattr(mt, "_vol_cache_load", lambda k: None)
+
+        def _boom(*a, **k):
+            raise RuntimeError("KIS down")
+
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", _boom)
+        with caplog.at_level(logging.WARNING):
+            out = mt.fetch_volatility_snapshot()
+        assert "vkospi" not in out
+        vk = [r.getMessage() for r in caplog.records if "VKOSPI" in r.getMessage()]
+        assert vk and any("RuntimeError" in m for m in vk), vk
+
+    def test_no_network_when_the_three_doors_are_stubbed(self, monkeypatch):
+        """요구 목록이 맞다는 **반대 증거**(#25) — 소켓을 막고 실제로 잰다.
+
+        `test_volatility_tests_do_not_hit_the_network` 가 요구하는 셋만
+        스텁해도 바깥으로 한 번도 안 나가는지 확인한다. `fetch_move_rows` 를
+        목록에서 뺀 판단(그건 `fetch_index_history` 위에 얹혀 있다)이 여기서
+        검증된다 — 틀렸으면 이 테스트가 발화한다.
+        """
+        import socket
+        import bot.market_timing as mt
+        opened = []
+
+        def _no_net(self, addr, *a, **k):
+            opened.append(addr)
+            raise OSError("network blocked in tests")
+
+        monkeypatch.setattr(socket.socket, "connect", _no_net, raising=False)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        mt.fetch_volatility_snapshot()
+        assert not opened, opened
+
     def test_both_sources_dead_is_not_silent(self, monkeypatch, caplog):
         """카드가 통째로 없어지는 경우야말로 말해야 한다(#43·#12)."""
         import logging
@@ -49644,16 +49752,34 @@ class TestFavoritesAliasMemo20260908:
         monkeypatch.setitem(__import__("sys").modules, "yfinance",
                             type("M", (), {"Ticker": _T}))
 
-    def test_empty_answer_is_remembered(self, monkeypatch):
+    def test_empty_answer_is_remembered_but_expires(self, monkeypatch, caplog):
+        """빈 답은 기억하되 **만료**된다.
+
+        ⚠️ 2026-09-08 다시 씀(#222): 첫 판은 빈 답을 **영구** 기억했다. 전제가
+        틀렸다 — yfinance 는 `hide_exceptions` 기본값 때문에 read timeout·5xx
+        에도 예외 없이 빈 프레임을 준다(독립 리뷰 실측). 즉 이 스텁(`[]`)은
+        '없다'가 아니라 **'못 물었다'의 모양이기도 하다**. 영구 기억하면
+        야후 블립 하나가 그 티커를 프로세스 수명 내내 굳힌다(#143·#43).
+        """
+        import logging
         import bot.market_favorites as mf
         monkeypatch.setattr(mf, "_YF_RESOLVED", {})
+        monkeypatch.setattr(mf, "_YF_EMPTY", {})
         calls = []
         self._yf(monkeypatch, calls, lambda: [])
         assert mf._resolve_yf("2467.TT") == "2467.TT"
         n = len(calls)
         assert n, "후보를 아예 안 물었다"
-        assert mf._resolve_yf("2467.TT") == "2467.TT"
+        with caplog.at_level(logging.INFO):
+            assert mf._resolve_yf("2467.TT") == "2467.TT"
         assert len(calls) == n, "빈 답을 안 기억해 매 갱신마다 다시 묻는다"
+        # 조용히 굳지 않는다 — 왜 원문을 쓰는지 말한다(#43·#82)
+        assert any("다시 묻는다" in r.getMessage() for r in caplog.records), \
+            [r.getMessage() for r in caplog.records]
+        # 만료되면 다시 묻는다 — 블립·신규상장이 재시작 없이 회복된다
+        mf._YF_EMPTY["2467.TT"] -= mf._YF_NEG_TTL_SEC + 1
+        assert mf._resolve_yf("2467.TT") == "2467.TT"
+        assert len(calls) > n, "부정 기억이 만료되지 않는다"
 
     def test_exception_is_not_remembered(self, monkeypatch):
         """예외는 '원천이 없다'가 아니라 '못 물었다' 다 — 대조군 없이
@@ -49665,6 +49791,7 @@ class TestFavoritesAliasMemo20260908:
         def _boom():
             raise OSError("net")
 
+        monkeypatch.setattr(mf, "_YF_EMPTY", {})
         self._yf(monkeypatch, calls, _boom)
         mf._resolve_yf("2467.TT")
         n = len(calls)
@@ -49675,9 +49802,13 @@ class TestFavoritesAliasMemo20260908:
         """반대 증거 — 성공 경로가 부정 기억에 가려지지 않는다(#25)."""
         import bot.market_favorites as mf
         monkeypatch.setattr(mf, "_YF_RESOLVED", {})
+        monkeypatch.setattr(mf, "_YF_EMPTY", {"2467.TT": __import__("time").time()})
         calls = []
         self._yf(monkeypatch, calls, lambda: [1])
+        # 만료 전이라도 **성공 기억이 이긴다** — 부정 기억이 성공을 가리면 안 된다
+        mf._YF_EMPTY["2467.TT"] -= mf._YF_NEG_TTL_SEC + 1
         assert mf._resolve_yf("2467.TT") == "2467.TW"
+        assert "2467.TT" not in mf._YF_EMPTY, "성공했는데 부정 기억이 남았다"
         n = len(calls)
         assert mf._resolve_yf("2467.TT") == "2467.TW"
         assert len(calls) == n
