@@ -107,6 +107,7 @@ def _resolve_yf(ticker: str) -> str:
     if ticker in _YF_RESOLVED:
         return _YF_RESOLVED[ticker]
     import yfinance as yf
+    asked_all = True     # 후보를 **전부 물어봤나** — 예외가 있으면 못 물은 것
     for c in cands:
         try:
             h = yf.Ticker(c).history(period="5d")
@@ -117,8 +118,19 @@ def _resolve_yf(ticker: str) -> str:
                 log.info("favorites: %s → 야후 표기 %s 로 조회", ticker, c)
                 return c
         except Exception as exc:
+            asked_all = False
             log.debug("favorites: %s 후보 %s 실패: %s", ticker, c, exc)
-    log.warning("favorites: %s — 야후 표기 후보 %s 가 전부 비었다", ticker, cands)
+    if asked_all:
+        _YF_RESOLVED[ticker] = ticker
+        # 원천이 "그런 심볼 없다"고 **답한** 것이므로 기억한다 — 안 그러면
+        # 갱신 주기마다 후보 수만큼 순손실 호출이 나간다(독립 리뷰 2026-09-08).
+        log.warning("favorites: %s — 야후 표기 후보 %s 가 전부 비었다(원문 유지)",
+                    ticker, cands)
+    else:
+        # 예외는 '없다'가 아니라 **못 물었다** 다 — 기억하면 일시적 네트워크
+        # 실패가 프로세스 수명 내내 굳는다(#143 대조군 없이 '없음' 단정 금지).
+        log.warning("favorites: %s — 야후 표기 후보 %s 를 못 물었다(재시도 대상)",
+                    ticker, cands)
     return ticker
 
 

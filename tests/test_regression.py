@@ -48717,20 +48717,27 @@ class TestVolatilityLiveAsOf20260908:
         assert rec["source"] == "yfinance(폴백)" and rec["date"] == "2026-09-05"
         assert rec.get("asof_kind") != "live"   # 종가 경로엔 안 붙는다
 
-    def test_value_and_age_come_from_one_response(self):
+    def test_value_and_age_come_from_one_response(self, monkeypatch):
         """나이를 **두 번째 호출**로 물으면 그 사이 갱신된 값의 나이를 옛
-        값에 붙일 수 있다(#160). 같은 rec 에서 재는지 AST 로 못박는다."""
-        import ast
-        import inspect
+        값에 붙일 수 있다(#160).
+
+        ⚠️ 2026-09-08 다시 씀(#222): 옛 판은 AST 로 인자가 `ast.Name` 이고
+        `id == "rec"` 인지를 봤다 — **지역 변수 이름**이 계약인 줄 안 것이다.
+        이름을 바꾸는 무해한 리팩터에 깨지고, 정작 `rec` 라는 이름의 *다른*
+        레코드를 넘기는 변형은 통과한다. 계약은 "받아 온 **그 객체**로
+        잰다" 이므로 **객체 동일성**으로 잰다(#19 소스 문자열 단언 금지).
+        """
         import bot.market_timing as mt
-        fn = ast.parse(inspect.getsource(mt._fetch_vix_naver)).body[0]
-        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
-        age = [c for c in calls
-               if getattr(c.func, "attr", "") == "value_age_sec"]
-        assert len(age) == 1, "나이 측정 호출이 하나여야 한다"
-        # 인자가 같은 응답의 레코드(`rec`)여야 한다 — 새로 fetch 하면 안 된다
-        assert any(isinstance(a, ast.Name) and a.id == "rec"
-                   for a in age[0].args), "같은 응답의 rec 로 재지 않는다"
+        import bot.naver_marketindex as nm
+        rec = {"close": 15.3}
+        fetched, aged = [], []
+        monkeypatch.setattr(nm, "fetch_world_indices",
+                            lambda codes: fetched.append(codes) or {".VIX": rec})
+        monkeypatch.setattr(nm, "value_age_sec",
+                            lambda pool, r: aged.append(r) or 120.0)
+        assert mt._fetch_vix_naver() == {"value": 15.3, "age_sec": 120.0}
+        assert len(fetched) == 1, "값 때문에 원천을 두 번 물었다"
+        assert len(aged) == 1 and aged[0] is rec, "다른 레코드로 나이를 쟀다"
 
     def test_render_shows_the_collection_time(self):
         import re
@@ -49139,6 +49146,56 @@ class TestFeedCadenceAndDepositLag20260908:
 # 평평한 건지 우리 캐시가 언 건지 화면으로도 로그로도 알 수 없었다(#21b·#82).
 # 관심종목 `2467.TT` 는 야후에 없는 표기(블룸버그)라 `_detect_country` 가
 # 조용히 'US' 로 추측해 가격이 통째로 비었다(#46).
+def _favorites_row_segment() -> str:
+    """관심종목 **행을 만드는 JS 조각**만 잘라 온다(#55·#174 — 페이지 전체
+    grep 은 옆 문구가 대신 만족시킨다).
+
+    ⚠️ `src.index(...)` 를 맨손으로 쓰면 앵커가 사라진 날 ValueError 로 터져
+    '테스트가 깨졌다'로 읽힌다 — 계약 위반이라고 **말해야** 한다(#47 감사
+    도구의 계수 패턴 자체가 틀릴 수 있다).
+    """
+    import inspect
+    import bot.dashboard as d
+    src = inspect.getsource(d)
+    a, b = "var da = 'data-name=", "}}).join('');"
+    assert a in src, f"관심종목 행 렌더 시작 앵커 {a!r} 가 사라졌다"
+    seg = src[src.index(a):]
+    assert b in seg, f"관심종목 행 렌더 종료 앵커 {b!r} 가 사라졌다"
+    return seg[:seg.index(b)]
+
+
+def _run_favorites_row(f: dict) -> str:
+    """그 조각을 **실행해** 렌더된 행 HTML 을 돌려준다.
+
+    파서에만 태우면(#26) '어느 칸에 붙었나'를 못 잰다 — 그래서 옛 회귀는
+    공백까지 박은 정규식으로 그걸 재다가 줄바꿈에 깨졌다(#19). 우리 환경에
+    node 가 있다는 것은 실측으로 확인됐다(#253 — 능력은 이름이 아니라 실측).
+    """
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+    node = shutil.which("node")
+    if not node:
+        import pytest
+        pytest.skip("node 없음")
+    seg = _favorites_row_segment().replace("{{", "{").replace("}}", "}")
+    js = (
+        "const usd=v=>v==null?'':String(v);"
+        "const fmtMcap=(v,s)=>'MCAP';const fmtPrice=(v,s)=>'PRICE';"
+        "const fmtPER=()=>'PER';const tperTitle=()=>'';"
+        "function _row(f, flag, pctVal, curCell, pctCell){\n" + seg + "\n}"
+        "console.log(_row(" + json.dumps(f) + ",'FLAG','','C','P'));"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(js)
+        path = fh.name
+    r = subprocess.run([node, path], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[:800]
+    return r.stdout
+
+
 class TestFrozenValueAndTickerAlias20260908:
 
     def test_flatness_is_judged_not_guessed(self):
@@ -49232,18 +49289,29 @@ class TestFrozenValueAndTickerAlias20260908:
     def test_screen_says_which_symbol_was_queried(self):
         """조용히 바꾸면 사용자가 자기 목록과 화면 값을 대조하지 못한다(#136).
 
-        ⚠️ 페이지 전체 grep 은 옆 문구가 대신 만족시킨다(#75) — 관심종목
-        **행을 만드는 그 조각**만 잘라서 본다(#55·#174).
+        ⚠️ 2026-09-08 다시 씀(#222): 옛 판은 `+ f.ticker\\s*\\n\\s*+ (f.yf_ticker`
+        라는 **공백까지 박은 정규식**이라, 줄바꿈 한 번에 멀쩡한 코드를 틀렸다고
+        한다(#19 — 이 레포에서 가장 많이 반복된 실패). 계약은 "별칭이 티커
+        **바로 뒤, 같은 셀**에 보인다" 이므로 조각을 **실행해** 그 결과로
+        잰다(#253 생성물이 JS 면 파서만 태우지 말고 실행까지).
         """
-        import inspect
         import re
-        import bot.dashboard as d
-        src = inspect.getsource(d)
-        seg = src[src.index("var da = 'data-name="):]
-        seg = seg[:seg.index("}}).join('');")]
-        assert "f.yf_ticker" in seg, "행 렌더가 조회 심볼을 안 밝힌다"
-        # 티커 줄 안에 있어야 한다 — 엉뚱한 칸에 붙으면 읽히지 않는다
-        assert re.search(r"\+ f\.ticker\s*\n\s*\+ \(f\.yf_ticker", seg), seg[:400]
+        html = _run_favorites_row({"ticker": "2467.TT", "yf_ticker": "2467.TW",
+                                   "name": "Yageo", "country": "TW"})
+        assert "2467.TW 로 조회" in html, html
+        # ⚠️ **보이는 텍스트**로 잰다 — 태그를 안 걷으면 `href="lookup/2467.TT"`
+        # 와 `data-name` 이 순서 단언을 대신 만족시켜, 별칭을 티커 앞으로
+        # 옮기는 변형이 그대로 통과한다(실측 2026-09-08, #75).
+        text = re.sub(r"<[^>]*>", "", html.split("</td>")[0])
+        assert "2467.TT" in text and "2467.TW 로 조회" in text, text
+        assert text.index("2467.TT") < text.index("2467.TW 로 조회"), text
+
+    def test_row_without_alias_says_nothing_extra(self):
+        """반대 증거 — 없어야 할 것도 확인한다(#25). 별칭이 없는 대다수
+        종목에 군더더기가 붙으면 그것도 결함이다."""
+        html = _run_favorites_row({"ticker": "AAPL", "name": "Apple",
+                                   "country": "US"})
+        assert "로 조회" not in html, html
 
     def test_generated_favorites_js_still_parses(self):
         """생성한 JS 는 파이썬이 문법을 안 봐준다 — 파서에 태운다(#26)."""
@@ -49251,18 +49319,13 @@ class TestFrozenValueAndTickerAlias20260908:
         import shutil
         import subprocess
         import tempfile
-        import inspect
-        import bot.dashboard as d
         node = shutil.which("node")
         if not node:
             import pytest
             pytest.skip("node 없음")
-        src = inspect.getsource(d)
-        seg = src[src.index("var da = 'data-name="):]
-        seg = seg[:seg.index("}}).join('');")]
         # f-string 이스케이프 되돌리기 — 이 조각은 f-string 안에 산다
         js = "function _row(f, flag, pctVal, curCell, pctCell) {\n" + \
-             seg.replace("{{", "{").replace("}}", "}") + "\n}"
+             _favorites_row_segment().replace("{{", "{").replace("}}", "}") + "\n}"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
                                          encoding="utf-8") as fh:
             fh.write(js)
@@ -49429,3 +49492,192 @@ class TestQuoteTailRange20260908:
         monkeypatch.setattr(mt, "_quote_tail", lambda t, r: r)
         mt.fetch_index_history("^KS11", days=120)
         assert not called
+
+
+# ── 곁들이가 본체를 지우던 넓은 try (2026-09-08, 독립 리뷰 Low #19) ────────
+# `fetch_volatility_snapshot` 의 VIX 블록은 히스토리·현재값·나이·과거창이 한
+# `try` 안이라, `_live_age_fields`/`live_asof` 의 모양이 어긋나기만 해도 카드가
+# **통째로** 사라졌다(바로 아래 yfinance 폴백까지 같은 try 안이라 함께 죽었다).
+# 남는 건 debug 한 줄뿐이라 화면이 비어도 아무도 모른다(#12·#42a·#82).
+class TestVixCardSurvivesItsGarnish20260908:
+
+    def _stub_rest(self, monkeypatch, mt):
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "fetch_move_rows", lambda *a, **k: ([], ""))
+        monkeypatch.setattr(mt, "_vol_cache_load", lambda k: None)
+
+    def test_age_failure_keeps_the_value_and_says_why(self, monkeypatch,
+                                                     caplog):
+        import logging
+        import bot.market_timing as mt
+        self._stub_rest(monkeypatch, mt)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver",
+                            lambda: {"value": 15.3, "age_sec": 120.0})
+
+        def _boom(age):
+            raise TypeError("shape mismatch")
+
+        monkeypatch.setattr(mt, "_live_age_fields", _boom)
+        with caplog.at_level(logging.WARNING):
+            rec = mt.fetch_volatility_snapshot().get("vix")
+        assert rec, "나이 계산 실패가 VIX 카드를 통째로 지웠다"
+        assert rec["value"] == 15.3
+        assert rec.get("value_age_why"), "못 붙였으면 사유를 남긴다(#54·#82)"
+        # ⚠️ 옆 카드(MOVE)의 경고가 대신 만족시킨다 — VIX 줄만 본다(#75)
+        vix_logs = [r.getMessage() for r in caplog.records
+                    if "VIX" in r.getMessage()]
+        assert any("값 수집 시각 계산 실패" in m for m in vix_logs), vix_logs
+        # '판정 불가'는 통과가 아니다 — 감사가 ❌ 로 집어야 한다(#54)
+        assert mt.vol_asof_label(rec)["verdict"] == "unmeasured"
+
+    def test_age_failure_does_not_eat_the_whole_branch(self, monkeypatch):
+        """쓸 수 있는 재료(히스토리·현재값)가 다 있는데도 카드가 사라지던
+        바로 그 증상 — 곁들이 하나가 본체를 지웠다."""
+        import bot.market_timing as mt
+        self._stub_rest(monkeypatch, mt)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [
+            {"date": "2026-09-05", "close": 14.9}])
+        monkeypatch.setattr(mt, "_fetch_vix_naver",
+                            lambda: {"value": 15.3, "age_sec": 60.0})
+
+        def _boom(*a, **k):
+            raise TypeError("shape mismatch")
+
+        monkeypatch.setattr(mt, "_live_age_fields", _boom)
+        rec = mt.fetch_volatility_snapshot().get("vix")
+        assert rec and rec["value"] == 15.3, rec
+
+    def test_history_assembly_failure_only_drops_the_windows(self, monkeypatch,
+                                                             caplog):
+        import logging
+        import bot.market_timing as mt
+        self._stub_rest(monkeypatch, mt)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver",
+                            lambda: {"value": 15.3, "age_sec": 60.0})
+
+        def _boom(*a, **k):
+            raise ValueError("bad series")
+
+        monkeypatch.setattr(mt, "vol_history", _boom)
+        with caplog.at_level(logging.WARNING):
+            rec = mt.fetch_volatility_snapshot().get("vix")
+        assert rec and rec["value"] == 15.3, "과거창 실패가 현재값을 지웠다"
+        assert any("과거 비교창" in r.getMessage() for r in caplog.records), \
+            "조용히 사라졌다(#12)"
+
+    def test_history_fetch_failure_keeps_the_live_value(self, monkeypatch):
+        import bot.market_timing as mt
+        self._stub_rest(monkeypatch, mt)
+
+        def _boom(*a, **k):
+            raise RuntimeError("yahoo down")
+
+        monkeypatch.setattr(mt, "fetch_index_history", _boom)
+        monkeypatch.setattr(mt, "_fetch_vix_naver",
+                            lambda: {"value": 15.3, "age_sec": 60.0})
+        rec = mt.fetch_volatility_snapshot().get("vix")
+        assert rec and rec["value"] == 15.3, "히스토리 실패가 실시간 값을 지웠다"
+
+    def test_both_sources_dead_is_not_silent(self, monkeypatch, caplog):
+        """카드가 통째로 없어지는 경우야말로 말해야 한다(#43·#12)."""
+        import logging
+        import bot.market_timing as mt
+        self._stub_rest(monkeypatch, mt)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        with caplog.at_level(logging.WARNING):
+            out = mt.fetch_volatility_snapshot()
+        assert "vix" not in out
+        assert any("VIX" in r.getMessage() and "둘 다 실패" in r.getMessage()
+                   for r in caplog.records), [r.getMessage()
+                                              for r in caplog.records]
+
+
+# ── 앞선 봉(장중 부분봉)의 세션 격차 — 죽은 가드가 아니다 (2026-09-08) ────
+# 독립 리뷰가 `sessions_behind` 의 `have > expected → 0` 분기를 "유일한
+# 호출부에서 도달 불가"로 지적했는데, 그건 `_quote_tail`(호출 전에
+# `last >= expected` 로 걸러진다)만 본 것이다. `fetch_index_history` 는 그
+# 가드가 없어 **장중 부분봉**(#40)이 그대로 온다. 지우는 대신 **닿는다는
+# 것을 값으로 증명**한다(#291 도달 불가한 가드는 가드인 척한다).
+class TestSessionsBehindAheadBar20260908:
+
+    def test_bar_ahead_of_expected_is_zero_not_none(self):
+        import pytest
+        from bot.market_calendar import sessions_behind
+        pytest.importorskip("exchange_calendars")
+        assert sessions_behind("US", "2026-09-04", "2026-09-03") == 0
+
+    def test_collector_does_not_fall_back_for_an_ahead_bar(self, monkeypatch):
+        """그 분기가 **호출부에서 실제로 닿는다**. None 을 돌려주면 달력일
+        폴백으로 넘어가 멀쩡한 봉에 네이버 일봉 요청이 나간다."""
+        import pytest
+        import bot.chart_data as cd
+        import bot.market_timing as mt
+        pytest.importorskip("exchange_calendars")
+        pay = {"times": ["2026-09-02", "2026-09-03", "2026-09-04"],
+               "close": [1.0, 2.0, 3.0]}
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: dict(pay))
+        called = []
+        monkeypatch.setattr(cd, "_fetch_naver_daily",
+                            lambda *a, **k: called.append(a) or None)
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-03", 0))
+        out = mt.fetch_index_history("^GSPC", days=5)
+        assert out and not called, "앞선 봉인데 네이버 폴백을 탔다"
+
+
+# ── 야후 표기 후보의 '없다'를 기억한다 (2026-09-08, 독립 리뷰) ────────────
+# `_resolve_yf` 는 성공만 기억해, 후보가 전부 빈 티커는 **갱신 주기마다**
+# 후보 수만큼 순손실 호출을 냈다. 다만 예외는 '없다'가 아니라 '못 물었다'
+# 이므로 기억하면 일시적 네트워크 실패가 프로세스 수명 내내 굳는다(#143).
+class TestFavoritesAliasMemo20260908:
+
+    def _yf(self, monkeypatch, calls, behaviour):
+        class _T:
+            def __init__(self, sym):
+                calls.append(sym)
+
+            def history(self, period="5d"):
+                return behaviour()
+
+        monkeypatch.setitem(__import__("sys").modules, "yfinance",
+                            type("M", (), {"Ticker": _T}))
+
+    def test_empty_answer_is_remembered(self, monkeypatch):
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_YF_RESOLVED", {})
+        calls = []
+        self._yf(monkeypatch, calls, lambda: [])
+        assert mf._resolve_yf("2467.TT") == "2467.TT"
+        n = len(calls)
+        assert n, "후보를 아예 안 물었다"
+        assert mf._resolve_yf("2467.TT") == "2467.TT"
+        assert len(calls) == n, "빈 답을 안 기억해 매 갱신마다 다시 묻는다"
+
+    def test_exception_is_not_remembered(self, monkeypatch):
+        """예외는 '원천이 없다'가 아니라 '못 물었다' 다 — 대조군 없이
+        '없음'을 단정하지 않는다(#143)."""
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_YF_RESOLVED", {})
+        calls = []
+
+        def _boom():
+            raise OSError("net")
+
+        self._yf(monkeypatch, calls, _boom)
+        mf._resolve_yf("2467.TT")
+        n = len(calls)
+        mf._resolve_yf("2467.TT")
+        assert len(calls) > n, "일시 실패를 영구 기억했다"
+
+    def test_success_still_wins_and_is_remembered(self, monkeypatch):
+        """반대 증거 — 성공 경로가 부정 기억에 가려지지 않는다(#25)."""
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_YF_RESOLVED", {})
+        calls = []
+        self._yf(monkeypatch, calls, lambda: [1])
+        assert mf._resolve_yf("2467.TT") == "2467.TW"
+        n = len(calls)
+        assert mf._resolve_yf("2467.TT") == "2467.TW"
+        assert len(calls) == n
