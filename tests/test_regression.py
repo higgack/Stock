@@ -50437,3 +50437,43 @@ class TestUsageCommandSurfacesUnpriced20260908:
         body = self._fn()
         i = body.index("단가 미등재 {_unpriced_30d}")
         assert "if _unpriced_30d else" in body[i:i + 200], body[i:i + 200]
+
+
+class TestLegacyKrwRoundTrip20260908:
+    """1330 과 1380 은 **서로 다른 일**을 한다 — 같은 숫자처럼 묶으면
+    과거 합계가 3.6% 틀어진다(#34).
+
+    ⚠️ 2026-09-08: 독립 리뷰가 "1330 vs 1380 분기" 라고 지적했고 나는 **재지
+    않고** 표시 환율로 통일했다가, 두 상수가 다른 일을 한다는 걸 실측하고
+    되돌렸다(#12 검증불가면 단정 금지 · #165). 리뷰 지적도 재고 나서 채택할 것.
+    """
+
+    def test_legacy_records_round_trip_at_the_write_rate(self):
+        """`cheongyak_brief` 등은 `cost_krw = usd × _USD_TO_KRW` 로 적고
+        `cost_usd = cost_krw / _USD_TO_KRW` 로 되돌린다 — 되읽는 쪽이 다른
+        환율을 쓰면 그 왕복이 깨진다."""
+        import bot.cheongyak_brief as cb
+        import bot.dashboard as d
+        assert d._LEGACY_KRW_WRITE_FX == cb._USD_TO_KRW, (
+            d._LEGACY_KRW_WRITE_FX, cb._USD_TO_KRW)
+        usd = 0.0125
+        krw = usd * cb._USD_TO_KRW
+        assert abs(krw / d._LEGACY_KRW_WRITE_FX - usd) < 1e-12
+
+    def test_display_fx_is_separate_and_single_sourced(self):
+        """표시 환율은 `usage_tracker` 한 곳 — 그건 실제로 묶는 게 맞다(#38)."""
+        import bot.dashboard as d
+        import bot.usage_tracker as ut
+        assert d._KRW_PER_USD == ut.KRW_PER_USD
+        assert d._KRW_PER_USD != d._LEGACY_KRW_WRITE_FX, \
+            "두 상수를 같게 두면 무엇이 무엇인지 구별할 수 없다"
+
+    def test_no_bare_legacy_rate_literal_left_in_the_reader(self):
+        """리터럴로 흩어 두면 다음 사람이 또 '분기'로 읽고 통일하려 든다."""
+        import ast
+        import inspect
+        import bot.dashboard as d
+        tree = ast.parse(inspect.getsource(d))
+        bare = [n.lineno for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and n.value == 1330.0]
+        assert len(bare) == 1, f"1330.0 리터럴이 {len(bare)}곳이다: {bare}"

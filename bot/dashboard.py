@@ -46,11 +46,18 @@ def _extract(pattern: re.Pattern, text: str) -> str:
 # ─── stats sources ───────────────────────────────────────────────────
 _USAGE_LOG_PATH = Path.home() / ".tradingagents" / "usage.jsonl"
 _MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.md"
-# ⚠️ "keep in sync" 는 규율이라 매번 진다 — 정의는 `usage_tracker` 한 곳이다
-# (#38·#119). 실측 2026-09-08: 이 파일이 trade KRW→USD 를 **1330** 으로
-# 환산해 같은 레코드가 /usage(1380)와 다른 값으로 집계되고 있었다.
+# ⚠️ "keep in sync" 는 규율이라 매번 진다 — **표시** 환율의 정의는
+# `usage_tracker` 한 곳이다(#38·#119).
 from bot import usage_tracker as _ut                        # noqa: E402
 _KRW_PER_USD = _ut.KRW_PER_USD
+
+# ⚠️ 이건 표시 환율과 **다른 것**이다: 레거시 `cost_krw` 레코드가 기록될 때
+# 쓰인 환율(`_USD_TO_KRW = 1330.0`, bot/cheongyak_brief·realestate_brief·
+# daily_kr_flow 등)이라, 되읽을 때 **그 값으로 나눠야** 왕복이 정확하다.
+# 2026-09-08: 독립 리뷰가 "1330 vs 1380 분기" 라고 지적했고 나는 재지 않고
+# 표시 환율로 바꿨다가, 두 상수가 서로 다른 일을 한다는 걸 실측하고 되돌렸다
+# (#12 검증불가면 단정 금지 · #34 같은 숫자라도 기준이 다르면 다른 값이다).
+_LEGACY_KRW_WRITE_FX = 1330.0
 
 _BATCH_REGEN = False  # True during regenerate_index — skip live network fetches
 
@@ -519,7 +526,14 @@ def _compute_stats(records: list[dict]) -> dict:
                         cost_usd_tr = float(_cu)
                     else:
                         _ck = rec.get("cost_krw", 0) or 0
-                        cost_usd_tr = (float(_ck) / _KRW_PER_USD) if _ck > 0 else 0.0
+                        # ⚠️ 여기 1330 은 **표시 환율이 아니다** — 레거시
+                        # `cost_krw` 레코드가 기록될 때 쓰인 환율이라
+                        # 그걸로 되돌려야 왕복이 정확하다(`cheongyak_brief`
+                        # 등이 `cost_krw/_USD_TO_KRW` 로 canonical USD 를
+                        # 적는 것과 같은 상수). 표시 환율(1380)로 바꾸면
+                        # 과거 합계가 3.6% 틀어진다 — 2026-09-08 에 리뷰
+                        # 지적을 재지 않고 바꿨다가 되돌렸다(#12·#165).
+                        cost_usd_tr = (float(_ck) / _LEGACY_KRW_WRITE_FX) if _ck > 0 else 0.0
                     if cost_usd_tr <= 0:
                         continue
                     # 누적(전체)은 날짜 파싱 전에 합산 — 날짜 필드가 깨진
@@ -13574,7 +13588,7 @@ def _kg_candidate_cost_usd(kinds=None) -> tuple[float, float, float]:
                     cu = float(_cu)
                 else:
                     _ck = rec.get("cost_krw", 0) or 0
-                    cu = float(_ck) / 1330.0 if _ck > 0 else 0.0
+                    cu = float(_ck) / _LEGACY_KRW_WRITE_FX if _ck > 0 else 0.0
                 if cu <= 0:
                     continue
                 # 누적은 날짜 파싱 전 합산 — 날짜 깨진 레코드도 총액 포함.
