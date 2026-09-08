@@ -1534,27 +1534,56 @@ def fetch_volatility_snapshot() -> dict:
     VIX·VKOSPI 는 CNN F&G 카드와 같은 형식으로 **전일·1주·1달·1년** 과거값을
     함께 싣는다(사용자 2026-08-16). 실패한 쪽만 생략한다."""
     out: dict = {}
+    # ⚠️ **곁들이가 본체를 지우지 않게** 단계마다 따로 감싼다(리뷰 Low #19,
+    # 2026-09-08). 예전엔 히스토리·현재값·나이·과거창이 한 `try` 안이라
+    # `_live_age_fields`/`live_asof` 의 모양이 어긋나기만 해도 VIX 카드가
+    # **통째로** 사라졌다 — 바로 아래 yfinance 폴백까지 같은 try 안이라 함께
+    # 죽었고, 남는 건 debug 한 줄뿐이었다(#42a 폴백은 버그를 숨긴다 · #12
+    # silent-fail 금지). 값 > 나이 > 과거창 순으로 **덜 중요한 것만** 잃는다.
+    # ⚠️ 정직하게: 오늘 **실제로 던질 수 있는 건 과거창 조립뿐**이다
+    # (`fetch_index_history` 는 본문 전체가 try 로 감싸여 [] 를 돌려주고,
+    # `live_asof` 는 float|None 에 대해 순수하다). 나머지 둘은 방어이지
+    # 도달을 증명한 가드가 아니다 — 회귀도 monkeypatch 로만 태운다(#315·#291).
+    vix_hist: list = []
     try:
         vix_hist = fetch_index_history("^VIX", days=400, min_rows=200)
-        nv = _fetch_vix_naver()
-        if nv is not None:
-            # 실시간 값은 '기준일'이 없다 — 그렇다고 비워 두면 화면도 감사도
-            # "이거 최신이야?" 에 답을 못 한다(#43, 실측: 감사가 `기준 —`).
-            # 대신 **값 수집 시각**을 싣는다(#304 매크로 카드와 같은 규약).
-            out["vix"] = {"value": nv["value"], "date": None,
-                          "source": "네이버(실시간)", "market": "US",
-                          "asof_kind": "live",
-                          **_live_age_fields(nv.get("age_sec"))}
-        elif vix_hist:
-            out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
-                          "market": "US",
-                          "source": "yfinance(폴백)"}
-        if out.get("vix"):
+    except Exception as exc:
+        log.warning("market_timing: VIX 히스토리 실패(%s) — 현재값만 시도", exc)
+    nv = _fetch_vix_naver()          # 자체 try — 실패 sentinel 은 None(#183)
+    if nv is not None:
+        # 실시간 값은 '기준일'이 없다 — 그렇다고 비워 두면 화면도 감사도
+        # "이거 최신이야?" 에 답을 못 한다(#43, 실측: 감사가 `기준 —`).
+        # 대신 **값 수집 시각**을 싣는다(#304 매크로 카드와 같은 규약).
+        card = {"value": nv["value"], "date": None,
+                "source": "네이버(실시간)", "market": "US",
+                "asof_kind": "live"}
+        try:
+            card.update(_live_age_fields(nv.get("age_sec")))
+        except Exception as exc:
+            # 나이를 못 붙여도 값은 산다. 그리고 '판정 불가'는 통과가 아니다
+            # (#54) — `vol_asof_label` 이 이 사유를 보고 unmeasured 로 찍는다.
+            log.warning("market_timing: VIX 값 수집 시각 계산 실패(%s: %s) — "
+                        "값은 싣고 나이는 판정 불가로 남긴다",
+                        type(exc).__name__, exc)
+            card.update({"value_asof": "", "asof_stale": False,
+                         "value_age_min": None,
+                         "value_age_why": (f"값 수집 시각 계산 실패"
+                                           f"({type(exc).__name__}) — 로그 확인")})
+        out["vix"] = card
+    elif vix_hist:
+        out["vix"] = {"value": vix_hist[-1]["close"], "date": vix_hist[-1]["date"],
+                      "market": "US",
+                      "source": "yfinance(폴백)"}
+    else:
+        log.warning("market_timing: VIX 네이버·yfinance 둘 다 실패 — 카드 생략")
+    if out.get("vix"):
+        try:
             # 과거값은 항상 히스토리에서 — 현재값 소스(네이버 실시간)와
             # 달라도 '전일 대비' 의 비교 대상은 종가 시계열이 맞다.
             out["vix"]["history"] = vol_history(_vol_series_merge("vix", vix_hist))
-    except Exception as exc:
-        log.debug("market_timing: VIX fetch failed: %s", exc)
+        except Exception as exc:
+            log.warning("market_timing: VIX 과거 비교창 조립 실패(%s) — "
+                        "현재값만 싣는다", exc)
     try:
         vk = fetch_vkospi_rows()
         if vk:
@@ -1563,7 +1592,9 @@ def fetch_volatility_snapshot() -> dict:
                              "history": vol_history(
                                  _vol_series_merge("vkospi", vk))}
     except Exception as exc:
-        log.debug("market_timing: VKOSPI fetch failed: %s", exc)
+        # 카드가 통째로 비는 실패를 debug 로 묻으면 아무도 모른다(#12·#82).
+        log.warning("market_timing: VKOSPI fetch 실패(%s: %s) — 카드 생략",
+                    type(exc).__name__, exc)
     try:
         # ⚠️ days=10 이면 1달(21)·1년(252) 창을 만들 수 없다 — VIX 와 같은
         # 기간 비교를 붙이려면 히스토리를 그만큼 받아야 한다(사용자 2026-08-19
