@@ -47,6 +47,35 @@ def _num(s: str) -> float | None:
 
 _CACHE: dict[str, tuple[float, dict]] = {}
 _TTL_SEC = 1800.0          # 30분 — 재무부는 하루 한 번(15:30 ET) 갱신
+_FAIL_TTL_SEC = 600.0      # 실패는 10분만 믿는다(#152 빈 결과를 오래 믿지 말 것)
+_TIMEOUT_SEC = 20.0        # 12초는 실측에서 6/6 read timeout — 원천이 느린 날이 있다
+_UA = ("Mozilla/5.0 (compatible; NOAH-StockBot/1.0; "
+       "+https://home.treasury.gov)")
+# 마지막 실패 갈래(달별) — 처방이 갈린다: timeout=느림/차단 · http=상태코드 ·
+# network=DNS·연결 · other. 진단이 이걸 읽어 이름을 댄다(#82).
+_FAIL: dict[str, str] = {}
+
+
+def _fail_kind(exc: BaseException) -> str:
+    """예외 → 갈래 이름. 원천이 재포장한 예외도 풀어서 본다(#291)."""
+    seen, cur = [], exc
+    while cur is not None and len(seen) < 5:
+        seen.append(type(cur).__name__)
+        cur = cur.__cause__ or cur.__context__
+    names = " ".join(seen)
+    if "Timeout" in names:
+        return "timeout"
+    if "HTTPError" in names:
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        return f"http{code}" if code else "http"
+    if "ConnectionError" in names or "DNS" in names:
+        return "network"
+    return seen[0] if seen else "other"
+
+
+def last_fail(ym: str | None = None) -> str | None:
+    """그 달의 마지막 도달 실패 갈래(없으면 None) — 진단·감사가 읽는다."""
+    return _FAIL.get(ym or date.today().strftime("%Y%m"))
 
 
 def fetch_daily_curve(ym: str | None = None) -> dict[str, dict[str, float]]:
@@ -57,15 +86,27 @@ def fetch_daily_curve(ym: str | None = None) -> dict[str, dict[str, float]]:
     import requests
     ym = ym or date.today().strftime("%Y%m")
     _hit = _CACHE.get(ym)
-    if _hit and time.time() - _hit[0] < _TTL_SEC:
+    if _hit and time.time() - _hit[0] < (_TTL_SEC if _hit[1] else _FAIL_TTL_SEC):
         return _hit[1]
     try:
-        r = requests.get(_URL.format(ym=ym), timeout=12)
+        # ⚠️ UA 를 안 보내면 기본 `python-requests/…` 로 나간다 — 정부 사이트는
+        # 그런 요청을 WAF 가 늘어뜨리거나 막는 일이 있다. 우리가 통제할 수 있는
+        # 축이므로 먼저 맞춘다("도달 실패"는 원천 장애일 수도, 우리 요청 모양
+        # 때문일 수도 있다 — 둘을 못 가르면 처방이 갈린다, #82).
+        r = requests.get(_URL.format(ym=ym), timeout=_TIMEOUT_SEC,
+                         headers={"User-Agent": _UA, "Accept": "application/xml"})
         r.raise_for_status()
         xml = r.text
     except Exception as exc:
-        log.info("treasury: fetch %s failed: %s", ym, exc)
+        _FAIL[ym] = _fail_kind(exc)
+        log.info("treasury: fetch %s failed(%s): %s", ym, _FAIL[ym], exc)
+        # ⚠️ 실패를 **짧게** 캐시한다. 안 하면 렌더 경로가 시리즈 3종 × 달 2개
+        # = 6회를 매번 타임아웃까지 기다린다(2026-09-08 VM 실측 read timeout
+        # 6/6). 길게 믿으면 원천 장애 한 번이 하루를 비운다(#152·#161) —
+        # 그래서 성공(30분)보다 훨씬 짧게(#116 예산과 캐시는 한 세트).
+        _CACHE[ym] = (time.time(), {})
         return {}
+    _FAIL.pop(ym, None)
 
     out: dict[str, dict[str, float]] = {}
     # <entry> 단위로 자른다. 태그 접두사(d:/m:)는 무시.
@@ -133,6 +174,8 @@ def fresher_diag(fred_last_date: str, fred_last_value: float, sid: str,
                "fred_value": fred_last_value, "months": months,
                "curve_days": sorted(curve), "tol": tol}
     if not curve:
+        d["fail"] = " · ".join(
+            f"{m}:{last_fail(m)}" for m in months if last_fail(m)) or "미상"
         return "no_curve", d
     same = (curve.get(fred_last_date) or {}).get(sid)
     d["overlap_value"] = same
@@ -156,7 +199,8 @@ def fresher_reason(code: str, d: dict) -> str:
     days = d.get("curve_days") or []
     span = f"{days[0]}~{days[-1]} ({len(days)}일)" if days else "0일"
     if code == "no_curve":
-        return f"재무부 XML 을 못 받았다(조회 달 {months})"
+        return (f"재무부 XML 을 못 받았다(조회 달 {months}) — "
+                f"갈래 {d.get('fail') or '미상'}")
     if code == "no_overlap":
         return (f"FRED 최신일 {fd} 가 재무부 표에 없다 — 조회 달 {months}, "
                 f"표에 있는 날 {span}")
@@ -199,7 +243,8 @@ def fresher_than(fred_last_date: str, fred_last_value: float, sid: str,
 # (`market_overview._fred_fetch_series`)를 태우므로 그 함수의 일별 캐시는
 # 채워질 수 있다 — 제품이 매 사이클 채우는 그 캐시다(가짜 값 아님).
 _WHY_FIX = {
-    "no_curve": "재무부(home.treasury.gov) 도달 실패 — 네트워크·원천 장애",
+    "no_curve": "재무부 도달 실패 — timeout=원천이 느리거나 요청이 늘어짐"
+                " · http4xx=차단·경로변경 · network=DNS·연결. 갈래는 위 사유에 있다",
     "no_overlap": "겹치는 날이 없다 — 달 경계면 직전 달까지 받아야 한다",
     "mismatch": "태그 오집 의심 — `_FIELDS` 만기 매핑을 원문으로 확인할 것",
     "no_newer": "원천이 이미 최선이다 — 우리 문제가 아니다",

@@ -27,58 +27,72 @@ def _treasury_status(mo) -> None:
 
     ⚠️ 보강은 try/except 안에 있어 실패해도 화면엔 아무 표시가 없다 —
     조용히 FRED 값(D+1)으로 되돌아갈 뿐이다(실수 #12 silent-fail 가시화).
-    여기서 ① FRED 디스크 캐시 나이·내용 ② 재무부 원천 직접 조회 ③ 검산
-    결과를 셋 다 찍어, '왜 어제 날짜인가'를 추측 없이 가른다."""
+
+    ⚠️⚠️ 판정 글자는 **sweep 이 세는 것**만 쓴다. 2026-09-08 까지 이 섹션은
+    도달 실패를 `❗` 로 찍었는데 `audit_sweep._findings` 는 `❌` 만 세고
+    `warn` 은 `⚠️` 만 센다 — 즉 재무부가 며칠을 못 닿아도 **일일 결산이
+    한 글자도 말하지 않았다**. 사용자가 화면을 눈으로 보고 다섯 번째로
+    물어야 했던 이유다(#250 판정 글자는 판정에만 · #24 새 글자는 집계 밖).
+
+    ⚠️ 그리고 판정을 여기서 **재구현하지 않는다** — 제품(`fresher_diag`)이
+    쓰는 그 갈래를 그대로 받아 적는다(#35·#38·#169).
+    """
     import time
     from datetime import date as _date
+
     _p("── 재무부 보강(국채금리 DGS2/10/30) 상태")
+    try:
+        from bot.treasury_yield_client import fresher_diag, fresher_reason
+    except Exception as exc:                          # noqa: BLE001
+        _p(f"   ❌ 재무부 클라이언트를 못 불러왔다: {type(exc).__name__}: {exc}")
+        return
+    # 원천이 낼 수 있는 최신 세션(미 휴장일 반영) — 시장타이밍과 같은 함수를
+    # 쓴다. 노동절이 끼면 '오늘'이 최선이 아니다(#302).
+    best = None
+    try:
+        from bot.market_timing import _expected_session
+        best, _g = _expected_session("US")
+    except Exception as exc:                          # noqa: BLE001
+        _p(f"   ⚠️ 기대 세션 판정 불가({type(exc).__name__}) — 최선 대비는 생략")
+    if best:
+        _p(f"   원천이 낼 수 있는 최신 세션: {best}")
+
     cache_dir = mo._CACHE_DIR / "fred"
     for sid in sorted(mo._TREASURY_SIDS):
         f = cache_dir / f"{sid}_{_date.today().isoformat()}.json"
+        base_date = base_val = None
+        src = "FRED"
         if f.exists():
             import json
             age_m = (time.time() - f.stat().st_mtime) / 60
             try:
                 d = json.loads(f.read_text())
+                base_date, base_val = d.get("time"), d.get("value")
+                src = d.get("src") or "FRED"
             except Exception:
-                d = {}
-            src = d.get("src") or "FRED"
-            _p(f"   {sid}: 디스크캐시 {age_m:.0f}분 전 · 관측 {d.get('time')} "
-               f"· 원천 {src}"
-               + ("" if src == "UST" else
-                  f"  ⚠️ 재무부 미적용 (캐시 TTL {mo._FRED_TTL_DAILY_H}h 지나면 재시도)"))
+                d, age_m = {}, 0.0
+            _p(f"   {sid}: 디스크캐시 {age_m:.0f}분 전 · 관측 {base_date} · 원천 {src}")
         else:
             _p(f"   {sid}: 디스크캐시 없음")
-    try:
-        from bot.treasury_yield_client import fetch_daily_curve, fresher_than
-        curve = fetch_daily_curve()
-    except Exception as exc:                          # noqa: BLE001
-        _p(f"   ❗ 재무부 원천 조회 자체가 실패: {type(exc).__name__}: {exc}")
-        return
-    if not curve:
-        _p("   ❗ 재무부 원천이 빈 값 — 차단·양식변경 의심. FRED(D+1)로만 돈다.")
-        return
-    days = sorted(curve)
-    _p(f"   재무부 원천: 관측 {len(days)}일 · 최신 {days[-1]} {curve[days[-1]]}")
-    for sid in sorted(mo._TREASURY_SIDS):
-        f = cache_dir / f"{sid}_{_date.today().isoformat()}.json"
-        base_date = base_val = None
-        if f.exists():
-            import json
-            try:
-                d = json.loads(f.read_text())
-                # 캐시가 이미 UST 면 prev_value 가 FRED 마지막 값이다.
-                base_date = d.get("time")
-                base_val = d.get("value")
-            except Exception:
-                pass
         if base_date is None or base_val is None:
-            _p(f"   {sid}: 비교 기준(캐시) 없음 — 판정 생략")
+            # 대조할 게 없으면 통과가 아니다(#54) — 다만 '우리 결함'도 아니다.
+            _p(f"      ⚠️ 비교 기준(캐시)이 없어 판정 불가")
             continue
-        nf = fresher_than(base_date, float(base_val), sid)
-        _p(f"   {sid}: 현재값 {base_date}={base_val} → "
-           + (f"재무부 더 최신 {nf[0]}={nf[1]}" if nf
-              else "재무부에 더 새 관측 없음(또는 겹치는 날 불일치로 거부)"))
+        code, dg = fresher_diag(str(base_date), float(base_val), sid)
+        _p(f"      대조: {code} — {fresher_reason(code, dg)}")
+        shown = dg.get("newer", (base_date,))[0] if code == "ok" else base_date
+        if not best:
+            continue
+        if str(shown) >= best:
+            _p(f"      ✅ 최선({best})까지 왔다")
+        elif code in ("no_newer",):
+            # 원천에도 그보다 새 관측이 없다 = 우리가 고칠 게 없다(#260).
+            _p(f"      ⚠️ 최선({best})보다 뒤지지만 재무부에도 더 새 값이 없다"
+               " — 원천 공표 지연")
+        else:
+            # 도달 실패·겹침 없음·검산 불일치 = **우리가 고칠 축이 있다**.
+            _p(f"      ❌ 화면 {shown} 이 최선({best})보다 뒤처졌고 보강이"
+               f" 걸리지 않았다({code})")
 
 
 def stale_verdict(j: dict) -> tuple[str, str]:
@@ -91,7 +105,7 @@ def stale_verdict(j: dict) -> tuple[str, str]:
     감사는 '우리 수집 실패'와 같은 기호를 썼다 — ❌ 는 **고칠 수 있는 것**만
     가리켜야 한다(#182). 매일 오는 못 고칠 ❌ 는 진짜 ❌ 를 가린다.
 
-    판정 근거: 관측을 **받았고**(비었으면 위에서 ❗) 조회창(FRED/ECOS 400일+)
+    판정 근거: 관측을 **받았고**(비었으면 위에서 ❌) 조회창(FRED/ECOS 400일+)
     이 기대 기간을 덮는데도 원천이 그 기간을 안 주면, 그건 원천 미게시다.
     ⚠️ 단 **1주기까지만** 그렇게 본다 — 2주기 이상 뒤진 건 시리즈 코드가
     폐지·개편돼 우리가 죽은 계열을 보고 있을 수 있다(#151 죽은 이름 ·
@@ -153,7 +167,8 @@ def main() -> int:
                 if (spot or {}).get("src") == "UST":
                     key += " ·UST"          # 재무부로 하루 당겨진 행
         except Exception as exc:                     # noqa: BLE001
-            _p(f"  {label:<18} {key:<28} ❗ 조회 실패: {exc}")
+            _p(f"  {label:<18} {key:<28} ❌ 조회 실패: {exc}")
+            late.append(f"{label}(조회 실패)")
             continue
         if not raw:
             # ⚠️ 키가 없어서 못 받은 것을 '지연'으로 세면 오보다(실수 #23).
@@ -161,7 +176,7 @@ def main() -> int:
                 _p(f"  {label:<18} {key:<28} ⚪ 판정 불가 — API 키 없음")
                 unknown.append(f"{label}(키 없음)")
             else:
-                _p(f"  {label:<18} {key:<28} ❗ 관측 없음 — 원천이 비었다"
+                _p(f"  {label:<18} {key:<28} ❌ 관측 없음 — 원천이 비었다"
                    f"(키는 {_keysrc.get(src)})")
                 late.append(f"{label}(관측 없음)")
             continue
@@ -176,7 +191,7 @@ def main() -> int:
         if j["freq"] == "E":
             verdict = "⚪ 이벤트성 — 지연 판정 안 함"
         elif j["expected"] is None or j["actual"] is None:
-            verdict = "❗ 관측 라벨 판독 실패"
+            verdict = "❌ 관측 라벨 판독 실패"
             late.append(f"{label}(라벨 {raw})")
         elif j["stale"]:
             bucket, verdict = stale_verdict(j)

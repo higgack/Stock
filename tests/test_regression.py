@@ -25741,26 +25741,45 @@ class TestFlowTrendDiagnosis20260818:
             self, tmp_path, capsys):
         """⚠️ 재무부 보강은 try/except 안이라 실패해도 화면은 그냥 FRED
         값(D+1)을 보여준다 — 조용한 되돌림. 감사 프로브가 그 상태를
-        **말하게** 한다(실수 #12 silent-fail 가시화)."""
+        **말하게** 한다(실수 #12 silent-fail 가시화).
+
+        ⚠️ 계약이 2026-09-08 에 바뀌어 다시 썼다(#222 — 지우지 않는다).
+        옛 판은 `"재무부 미적용"` 이라는 **소스 문구**를 봤는데(#19), 그건
+        `audit_sweep` 이 세지 않는 줄이라 **일일 결산이 무음**이었다 —
+        재무부가 며칠을 못 닿아도 사용자가 화면을 눈으로 봐야 알았다(#303).
+        새 계약은 셋이다: ① 뒤처졌으면 sweep 이 세는 `❌` 를 찍는다
+        ② 도달 실패 갈래를 **이름으로** 말한다(#82) ③ 최선까지 왔으면
+        ❌ 를 안 찍는다(반대 증거, #25).
+        """
         import json, types
         from datetime import date
+        from bot.market_timing import _expected_session
         from bot.scripts.macro_staleness_audit import _treasury_status
         d = tmp_path / "fred"
         d.mkdir(parents=True)
         today = date.today().isoformat()
-        (d / f"DGS10_{today}.json").write_text(json.dumps(
-            {"value": 4.68, "time": "2026-08-14"}))      # src 없음 = FRED
+        best, _g = _expected_session("US")
         fake = types.SimpleNamespace(_CACHE_DIR=tmp_path,
                                      _TREASURY_SIDS={"DGS10"},
                                      _FRED_TTL_DAILY_H=1.0)
+        # ① 화면이 뒤처졌고 보강도 안 걸림 → sweep 이 세는 ❌
+        (d / f"DGS10_{today}.json").write_text(json.dumps(
+            {"value": 4.68, "time": "2026-08-14"}))      # src 없음 = FRED
         _treasury_status(fake)
         out = capsys.readouterr().out
-        assert "재무부 미적용" in out, "FRED 로 되돌아간 사실이 안 보인다"
-        # 반대로 보강이 살아 있으면 경고를 띄우지 않는다.
-        (d / f"DGS10_{today}.json").write_text(json.dumps(
-            {"value": 4.72, "time": "2026-08-17", "src": "UST"}))
-        _treasury_status(fake)
-        assert "재무부 미적용" not in capsys.readouterr().out
+        assert "❌" in out, f"조용한 되돌림이 안 보인다\n{out}"
+        from bot.audit_sweep import _findings
+        assert _findings(out), f"sweep 이 못 센다 — 결산이 무음이 된다\n{out}"
+        # ② 갈래를 이름으로(무엇을 고쳐야 하는지가 갈린다)
+        assert "no_curve" in out or "no_overlap" in out or "mismatch" in out, out
+
+        # ③ 반대 증거 — 이미 최선까지 왔으면 ❌ 를 안 찍는다.
+        if best:
+            (d / f"DGS10_{today}.json").write_text(json.dumps(
+                {"value": 4.72, "time": best, "src": "UST"}))
+            _treasury_status(fake)
+            out2 = capsys.readouterr().out
+            assert "❌" not in out2, f"정상인데 결함으로 찍는다\n{out2}"
 
     def test_supplementary_consensus_names_its_source(self):
         """⚠️ POSCO홀딩스에서 ₩461,888(18명)과 ₩557,500(6명)이 나란히 떠
@@ -47891,3 +47910,173 @@ def test_treasury_why_probe_dispatches_and_reports_the_best(monkeypatch):
     h = subprocess.run([sys.executable, "-m", "bot.treasury_yield_client"],
                        capture_output=True, text=True, timeout=120)
     assert "cd ~/stock" in h.stdout, h.stdout                        # #278
+
+
+# ── 감사 도구는 sweep 이 세는 판정 글자만 쓴다 (사용자 2026-09-08) ──────────
+# "전체적으로 메인대시보드에것들 Delay 되는게 없는지 봐줘. 이것만 벌써 다섯번째"
+# — 다섯 번 다 사용자가 화면을 눈으로 보고 먼저 발견했다. 원인은 감사가 못
+# 잡은 게 아니라 **잡아 놓고 sweep 이 안 세는 글자로 찍은 것**이다:
+# `audit_sweep._findings` 는 `❌` 만 결함으로 세고 `warn` 은 `⚠️` 만 센다.
+# `macro_staleness_audit` 은 도달 실패·관측 없음·라벨 판독 실패를 `❗` 로
+# 찍고 있어서, 재무부가 며칠을 못 닿아도 일일 결산이 무음이었다(#250·#24).
+_SWEEP_COUNTED = ("❌", "⚠️")
+# 판정처럼 보이지만 sweep 이 세지 않는 글자들. ⚠️ 이 목록은 **열거형**이라
+# 새 이모지를 지어 쓰면 못 잡는다(#24·#274 못 보는 축을 밝힐 것) — 다만
+# 실제로 이 레포에서 난 재발은 전부 이 모양이었고, 열거 아닌 판정("판정
+# 위치의 이모지")은 구조로 갈릴 수가 없어 감도를 택했다.
+_UNCOUNTED_VERDICT_MARKS = ("❗", "❕", "‼", "🚨", "🔴", "⛔", "❎", "🟥", "🆘")
+
+
+def _audit_source_wo_docs(path) -> str:
+    """독스트링·주석을 걷어낸 소스 — 규칙을 설명하는 글이 스스로 걸리면
+    가드가 눈이 먼다(#59b·#268 에서 실제로 그랬다)."""
+    import ast
+    import io
+    import tokenize
+    src = path.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    lines = src.splitlines(True)
+    docs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            d = ast.get_docstring(node, clean=False)
+            if d is None or not node.body:
+                continue
+            first = node.body[0]
+            docs.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    kept = "".join("" if i + 1 in docs else ln for i, ln in enumerate(lines))
+    out = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(kept).readline):
+            if tok.type != tokenize.COMMENT:
+                out.append(tok.string)
+    except tokenize.TokenError:
+        return kept
+    return "\n".join(out)
+
+
+def _audit_modules():
+    import pathlib
+    root = pathlib.Path("bot/scripts")
+    return sorted(p for p in root.glob("*.py") if "audit" in p.name)
+
+
+def test_audit_tools_only_use_marks_the_sweep_counts():
+    """사용자 2026-09-08 "이것만 벌써 다섯번째" — 감사가 잡고도 결산이 무음
+    이던 이유.
+
+    `bot/audit_sweep.py` 는 `❌` 를 결함으로, `⚠️` 를 '사람 확인' 으로 센다.
+    그 밖의 판정 글자는 **어디에도 안 실린다** — 원문 로그에만 남고 사용자는
+    화면을 눈으로 봐야 안다. 가드는 이름 열거가 아니라 **디렉터리 전수**(#24).
+    """
+    import pathlib
+    mods = _audit_modules()
+    assert len(mods) >= 8, f"감사 도구를 못 찾았다 — 경로 확인({mods})"  # 대조 0건 금지(#54)
+    bad = []
+    for p in mods:
+        body = _audit_source_wo_docs(p)
+        for mark in _UNCOUNTED_VERDICT_MARKS:
+            if mark in body:
+                bad.append(f"{p.name}: {mark!r}")
+    assert not bad, (
+        "sweep 이 세지 않는 판정 글자를 쓰는 감사 도구 — 결산이 무음이 된다: "
+        + " · ".join(bad))
+
+    # 그리고 sweep 이 실제로 그 둘을 센다는 것도 같이 못박는다(한쪽만 바뀌면
+    # 이 가드가 엉뚱한 집합을 지킨다, #38).
+    sw = pathlib.Path("bot/audit_sweep.py").read_text(encoding="utf-8")
+    for mark in _SWEEP_COUNTED:
+        assert mark in sw, mark
+
+
+def test_audit_mark_guard_actually_fires(tmp_path, monkeypatch):
+    """가드가 눈멀지 않았음을 **제품 함수를 태워** 보인다(#286 fires 테스트는
+    인라인 재구현이 아니라 실제 대상을 부를 것 · #47 틀린 상태를 재현할 것)."""
+    import pathlib
+    d = tmp_path / "scripts"
+    d.mkdir()
+    (d / "fake_audit.py").write_text(
+        '"""설명 안의 ❗ 는 걸리면 안 된다."""\n'
+        "# 주석 안의 🚨 도 마찬가지\n"
+        'def go():\n    print("❗ 원천 도달 실패")\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path.parent)
+    body = _audit_source_wo_docs(d / "fake_audit.py")
+    assert "❗" in body, "본문의 ❗ 를 못 봤다 — 가드가 눈이 멀었다"
+    assert "🚨" not in body, "주석이 걸렸다 — 오탐(#59b)"
+    # 독스트링만 있는 파일은 통과해야 한다(반대 증거, #25)
+    (d / "clean_audit.py").write_text(
+        '"""❗ 를 설명만 하는 파일."""\ndef go():\n    print("❌ 진짜 결함")\n',
+        encoding="utf-8")
+    assert "❗" not in _audit_source_wo_docs(d / "clean_audit.py")
+
+
+def test_treasury_unreachable_names_the_branch():
+    """도달 실패는 갈래를 이름으로 말해야 한다 — timeout/http4xx/network 는
+    처방이 완전히 다르다(#82·#282 처방이 정반대인 둘을 한 괄호에 넣지 말 것).
+    2026-09-08 VM 실측이 `no_curve` 였는데 옛 문구는 "네트워크·원천 장애" 로
+    뭉뚱그려 어느 쪽인지 알 수 없었다.
+    """
+    import requests
+
+    from bot import treasury_yield_client as t
+    assert t._fail_kind(requests.exceptions.ReadTimeout("x")) == "timeout"
+    assert t._fail_kind(requests.exceptions.ConnectionError("x")) == "network"
+    assert t._fail_kind(ValueError("x")) == "ValueError"
+    # 재포장된 예외도 풀어서 본다(#291)
+    try:
+        try:
+            raise requests.exceptions.ReadTimeout("inner")
+        except Exception as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as exc:
+        assert t._fail_kind(exc) == "timeout"
+
+
+def test_treasury_failure_is_cached_briefly_not_retried_every_call(monkeypatch):
+    """실패를 안 캐시하면 렌더 경로가 시리즈 3종 × 달 2개 = 6회를 매번
+    타임아웃까지 기다린다(2026-09-08 VM 실측 read timeout 6/6, #116 예산과
+    캐시는 한 세트). 다만 **짧게만** 믿는다 — 길게 믿으면 원천 장애 한 번이
+    하루를 비운다(#152·#161).
+    """
+    import requests
+
+    from bot import treasury_yield_client as t
+    monkeypatch.setattr(t, "_CACHE", {})
+    monkeypatch.setattr(t, "_FAIL", {})
+    calls = []
+
+    class _S:
+        @staticmethod
+        def get(url, **kw):
+            calls.append(kw)
+            raise requests.exceptions.ReadTimeout("boom")
+
+    monkeypatch.setitem(__import__("sys").modules, "requests",
+                        type("M", (), {"get": _S.get,
+                                       "exceptions": requests.exceptions}))
+    assert t.fetch_daily_curve("202609") == {}
+    assert t.fetch_daily_curve("202609") == {}     # 두 번째는 캐시
+    assert len(calls) == 1, f"실패를 매번 다시 친다 — {len(calls)}회"
+    assert t.last_fail("202609") == "timeout"
+    # UA 를 보낸다(기본 python-requests UA 는 정부 사이트가 늘어뜨린다)
+    assert "User-Agent" in (calls[0].get("headers") or {}), calls[0]
+    # 실패 TTL 은 성공 TTL 보다 **짧아야** 한다
+    assert t._FAIL_TTL_SEC < t._TTL_SEC
+
+
+def test_treasury_audit_uses_product_judgment_not_its_own(monkeypatch):
+    """감사가 판정을 재계산하면 제품과 다른 기준선을 비교한다(#169·#35).
+    그리고 최선 판정은 시장타이밍과 같은 함수를 써야 갈라지지 않는다(#38).
+    """
+    import ast
+    import pathlib
+    src = pathlib.Path("bot/scripts/macro_staleness_audit.py").read_text(
+        encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_treasury_status")
+    names = {a.name for n in ast.walk(fn)
+             if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert "fresher_diag" in names and "fresher_reason" in names, names
+    assert "_expected_session" in names, names   # 최선은 자체 재구현 금지
