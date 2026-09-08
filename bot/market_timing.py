@@ -470,6 +470,50 @@ def _naver_index_quote(ticker: str) -> dict | None:
     return {"close": c, "prev": pv} if c and pv else None
 
 
+# 보강 판정을 **순수 함수**로 — 화면(`_quote_tail`)과 진단(`--why`)이 같은
+# 갈래를 써야 통계와 화면이 안 갈린다(#35·#38). 갈래는 이름으로 부른다
+# (#82 '없음'만 말하는 진단은 추측을 부른다) — 처방이 갈래마다 다르다:
+#   fresh        → 손쓸 것 없음
+#   no_expected  → 휴장일 캘린더 부재(판정 불가, 추측 금지)
+#   no_quote     → 시세 원천 실패(네트워크·원천 장애)
+#   no_prev_close→ 야후 마지막 봉에 종가가 없음
+#   misaligned   → 시세의 전일종가가 야후 마지막 봉과 다르다. 즉 **장중**
+#                  이거나 야후가 2세션 이상 뒤처져 한 봉으로는 못 잇는다.
+#                  ⚠️ 이 보강은 정의상 **1세션**만 이을 수 있다 — 다음 장이
+#                  열리는 순간 시세의 prev 가 옮겨가 영영 못 잇는다.
+#   implausible  → 하루 변동이 상한을 넘음(정렬 오류 의심)
+#   ok           → 붙인다
+def tail_diag(expected: str | None, last_date: str, last_close,
+              quote: dict | None) -> tuple[str, dict]:
+    """(갈래, 수치) — 네이버/시세 한 봉 보강을 붙일 수 있는가."""
+    d: dict = {"expected": expected, "last_date": last_date,
+               "last_close": last_close}
+    if not expected:
+        return "no_expected", d
+    if last_date >= expected:
+        return "fresh", d
+    if not quote:
+        return "no_quote", d
+    d["quote_close"], d["quote_prev"] = quote.get("close"), quote.get("prev")
+    try:
+        prev_y = float(last_close)
+    except (TypeError, ValueError):
+        prev_y = 0.0
+    if not prev_y:
+        return "no_prev_close", d
+    gap = abs(float(quote["prev"]) - prev_y) / prev_y
+    d["align_gap"] = gap
+    d["align_tol"] = _NAVER_TAIL_TOL
+    if gap > _NAVER_TAIL_TOL:
+        return "misaligned", d
+    move = abs(float(quote["close"]) - prev_y) / prev_y
+    d["move"] = move
+    d["move_max"] = _NAVER_TAIL_MAX_MOVE
+    if move > _NAVER_TAIL_MAX_MOVE:
+        return "implausible", d
+    return "ok", d
+
+
 def _quote_tail(ticker: str, rows: list[dict]) -> list[dict]:
     """야후 시계열이 기대 거래일보다 뒤처졌으면 네이버 종가 한 봉을 덧붙인다.
 
@@ -492,23 +536,42 @@ def _quote_tail(ticker: str, rows: list[dict]) -> list[dict]:
     if not expected or last >= expected:
         return rows                     # 이미 최신 — 건드리지 않는다
     q = _market_quote(ticker)
-    if not q:
-        return rows
-    prev_y = float(rows[-1]["close"])
-    if not prev_y or abs(q["prev"] - prev_y) / prev_y > _NAVER_TAIL_TOL:
-        log.info("market_timing: %s 시세 전일종가 %.2f ≠ 야후 마지막 봉 "
-                 "%.2f — 정렬 불가로 보강 생략(장중 추정)",
-                 ticker, q["prev"], prev_y)
-        return rows
-    move = abs(q["close"] - prev_y) / prev_y
-    if move > _NAVER_TAIL_MAX_MOVE:
-        log.warning("market_timing: %s 시세 종가 %.2f 가 전일 대비 %.1f%% — "
-                    "정렬 오류 의심으로 폐기", ticker, q["close"], move * 100)
+    code, d = tail_diag(expected, last, rows[-1].get("close"), q)
+    if code != "ok":
+        # 조용한 생략 금지 — 어느 갈래에서 멈췄는지 남긴다(#12 silent-fail).
+        log.info("market_timing: %s 보강 생략(%s) — %s", ticker, code,
+                 tail_reason(code, d))
         return rows
     log.info("market_timing: %s 야후 %s → 시세 %s 종가 %.2f 보강",
              ticker, last, expected, q["close"])
     return rows + [{"date": expected, "close": q["close"],
                     "high": q["close"], "low": q["close"], "volume": None}]
+
+
+# 사유 문구는 로그·진단이 **같은 곳**에서 가져온다 — 복제하면 갈라진다(#38).
+# 수치를 같이 적어 눈으로 검산되게 한다(#202).
+def tail_reason(code: str, d: dict) -> str:
+    exp, last = d.get("expected") or "—", d.get("last_date") or "—"
+    if code == "fresh":
+        return f"야후가 이미 기대 세션({exp})까지 준다 — 보강 불필요"
+    if code == "no_expected":
+        return "휴장일 캘린더가 없어 기대 세션을 못 정했다(판정 불가)"
+    if code == "no_quote":
+        return f"시세 원천이 값을 안 줬다(야후 {last} · 기대 {exp})"
+    if code == "no_prev_close":
+        return f"야후 마지막 봉({last})에 종가가 없다"
+    if code == "misaligned":
+        return (f"시세의 전일종가 {d.get('quote_prev')} 가 야후 마지막 봉"
+                f"({last}) 종가 {d.get('last_close')} 와 다르다"
+                f"(차이 {100 * (d.get('align_gap') or 0):.2f}%"
+                f" > 허용 {100 * (d.get('align_tol') or 0):.2f}%)"
+                " — 장중이거나 야후가 2세션 이상 뒤처져 한 봉으로는 못 잇는다")
+    if code == "implausible":
+        return (f"시세 종가가 전일 대비 {100 * (d.get('move') or 0):.1f}%"
+                f" — 상한 {100 * (d.get('move_max') or 0):.0f}% 초과로 폐기")
+    if code == "ok":
+        return f"{exp} 종가 {d.get('quote_close')} 로 보강 가능"
+    return code
 
 
 def fetch_index_history(ticker: str, days: int = 120,
@@ -1942,3 +2005,114 @@ def regenerate_market_timing() -> None:
         log.info("market_timing: market_timing.html regenerated")
     except Exception:
         log.exception("market_timing: regen failed")
+
+
+# ── 진단: 왜 지수 기준일이 뒤처졌나(`--why`) ────────────────────────────────
+# 사용자 2026-09-08 "이건 왜 지연되는거야?"(KR·JP 가 기준 09-04, 기대 09-07).
+# 같은 증상 2회째다(2026-08-20 #37 이 KOSPI·니케이 08-18/08-20). 명령을 건네는
+# 것으로 끝내지 말고 제품에 심는다(§Automation-first · 실수 #12·#252).
+#
+# ⚠️ 무엇을 쓰나(#283·#284 '안 쓴다'는 무엇을 안 쓰는지까지 적어야 참):
+#   - `market_timing.html` 을 **재생성하지 않는다**(regenerate 미호출).
+#   - 다만 화면이 쓰는 그 경로(`fetch_index_history`)를 그대로 태우므로(#35)
+#     네트워크를 실제로 치고 `chart_data` 의 payload 디스크 캐시를 채운다.
+#     그건 제품이 매 사이클 채우는 바로 그 캐시라 가짜 값을 넣지 않는다(#30).
+_WHY_TAIL_FIX = {
+    "misaligned": "야후가 2세션 이상 뒤처졌으면 한 봉 보강으로는 못 잇는다 "
+                  "— 일봉 폴백(날짜가 붙은 시계열)이 필요하다",
+    "no_quote": "시세 원천(네이버/월드) 도달 실패 — 네트워크·원천 장애",
+    "no_expected": "휴장일 캘린더 미설치 — `pip install exchange_calendars`",
+    "no_prev_close": "야후 마지막 봉에 종가가 없다 — 원천 응답 확인",
+    "implausible": "시세와 야후 마지막 봉이 20% 넘게 벌어졌다 — 정렬 오류",
+    "fresh": "손쓸 것 없음",
+    "ok": "다음 재생성에서 보강된다",
+}
+
+
+def _why(markets: list[str]) -> int:
+    """지수 신선도 진단. rc=0 이면 지연 없음, rc=1 이면 뒤처진 시장이 있다."""
+    import sys
+    print(f"# 시장타이밍 지수 신선도 진단 — 인터프리터 {sys.executable}")
+    print(f"#   cwd={Path.cwd()}  KST={_kst_now():%Y-%m-%d %H:%M}")
+    try:
+        from bot.market_calendar import is_trading_day       # noqa: F401
+        print("#   휴장일 캘린더: 사용 가능")
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"#   ⚠️ 휴장일 캘린더 없음({exc}) — 주중 기준으로만 판정한다")
+    print("#   ⚠️ 화면을 재생성하지 않는다. 다만 화면과 같은 경로를 타므로"
+          " 실제 네트워크 호출 + 차트 payload 캐시 채움.\n")
+
+    behind: list[str] = []
+    failed: list[str] = []
+    checked = 0
+    for market in markets:
+        m = str(market).upper()
+        pairs = MARKET_INDICES.get(m) or []
+        print(f"── {m} ─────────────────────────────────────")
+        if not pairs:
+            print(f"  ❌ MARKET_INDICES 에 {m} 이 없다 — 오타이거나 미지원\n")
+            failed.append(m)
+            continue
+        today = _market_today(m)
+        closed = _market_closed_today(m)
+        expected, grace = _expected_session(m)
+        print(f"  현지일 {today} · 정규장 마감 "
+              f"{'예' if closed else ('아니오' if closed is False else '판정불가')}"
+              f" · 기대 세션 {expected or '판정불가'} (여유 {grace})")
+        for ticker, label in pairs:
+            rows = fetch_index_history(ticker, days=120)
+            if not rows:
+                print(f"  ❌ {label}({ticker}) 시계열 0행 — 원천 도달 실패")
+                failed.append(f"{m}:{ticker}")
+                continue
+            checked += 1
+            got = str(rows[-1].get("date") or "")[:10]
+            n = _sessions_between(m, got, expected) if expected else None
+            tail = [f"{r.get('date')} {r.get('close')}" for r in rows[-3:]]
+            print(f"  {label}({ticker}) {len(rows)}행 · 마지막 3봉: "
+                  + " | ".join(tail))
+            if expected and got >= expected:
+                print(f"  ✅ 기준 {got} — 기대({expected})까지 왔다(지연 없음)")
+                continue
+            behind.append(f"{m}:{ticker}")
+            q = _market_quote(ticker)
+            code, d = tail_diag(expected, got, rows[-1].get("close"), q)
+            print(f"  ⚠️ 기준 {got} — 기대 {expected} 보다 "
+                  f"{n if n is not None else '?'}거래일 뒤")
+            print(f"     보강 판정: {code} — {tail_reason(code, d)}")
+            print(f"     처방: {_WHY_TAIL_FIX.get(code, code)}")
+        print()
+
+    if failed:
+        print(f"판정: ❌ 조회 실패 {len(failed)}건 — {' · '.join(failed)}")
+    if behind:
+        print(f"판정: ⚠️ 뒤처진 지수 {len(behind)}건 — {' · '.join(behind)}"
+              " (위 '보강 판정' 갈래가 원인이다)")
+    if failed or behind:
+        return 1
+    if not checked:
+        # 아무것도 못 쟀는데 ✅ 를 찍으면 거짓 안심이다(#54).
+        print("판정: ❓ 대조한 지수가 0건 — 인자를 확인할 것")
+        return 1
+    print(f"판정: ✅ 대조 {checked}건 전부 기대 세션까지 왔다 — 지연 없음.")
+    return 0
+
+
+if __name__ == "__main__":                # pragma: no cover - 수동 진단
+    import argparse
+    import sys
+
+    ap = argparse.ArgumentParser(
+        prog="python -m bot.market_timing",
+        description="시장타이밍 지수 신선도 진단(읽기 전용 · 화면 재생성 안 함)",
+        epilog="예: cd ~/stock && .venv/bin/python -m bot.market_timing "
+               "--why KR JP")
+    ap.add_argument("--why", nargs="*", metavar="MARKET",
+                    help="지수 기준일이 왜 뒤처졌는지 갈래로 진단"
+                         "(생략 시 전 시장)")
+    a = ap.parse_args()
+    if a.why is None:
+        ap.print_help()
+        sys.exit(0)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    sys.exit(_why([x.upper() for x in a.why] or list(MARKET_INDICES)))
