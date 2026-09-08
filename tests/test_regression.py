@@ -28484,14 +28484,28 @@ class TestStalenessSourceEvidence20260819:
         assert _series_meta("AK:LPR1Y") is None
 
     def test_audit_wires_meta_into_stale_branch(self):
-        # 배선 확인 — 지연 판정 블록 안에서 원천 메타를 읽고 두 처방을
-        # 문장으로 갈라 준다(grep 은 존재만 보므로 문구 두 개를 함께 본다).
+        """⚠️ 2026-09-09 다시 씀(#222): 옛 판은 `liquidity_audit.main` 소스에
+        `"규약을 늘린다"`·`"수집 경로 점검"` 문구가 있는지 봤다. 그 문구는
+        판정이 `macro_cadence.stale_bucket` 으로 올라가며 옮겨갔다 — 계약은
+        "지연 판정이 **원천 메타로 갈린다**" 이지 특정 문구의 소재지가
+        아니다(#19). **결과**로 잰다(#141 배선은 존재가 아니라 결과로).
+        """
+        from bot.macro_cadence import stale_bucket
+        j = {"freq": "D", "behind": 1, "expected": "2026-09-04"}
+        # 원천이 거기까지 → 우리가 고칠 게 없다
+        b1, t1 = stale_bucket(j, source_end="2026-09-03", asof="2026-09-03")
+        # 원천이 앞선다 → 우리 수집 문제
+        b2, t2 = stale_bucket(j, source_end="2026-09-08", asof="2026-09-03")
+        assert (b1, b2) == ("src_lag", "late"), (b1, b2)
+        assert "원천이 여기까지" in t1 and "우리 수집" in t2, (t1, t2)
+        # 그리고 감사가 그 판정을 **실제로 부른다**(자체 재구현 금지, #169)
+        import ast
         import inspect
         from bot.scripts import liquidity_audit as la
-        src = inspect.getsource(la.main)
-        assert "_series_meta(sid)" in src
-        assert "observation_end" in src
-        assert "규약을 늘린다" in src and "수집 경로 점검" in src
+        tree = ast.parse(inspect.getsource(la.main))
+        calls = {getattr(n.func, "id", "") or getattr(n.func, "attr", "")
+                 for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        assert {"stale_bucket", "_series_meta"} <= calls, calls
 
     def test_fdhbfin_cadence_matches_source_lag(self):
         # 원천이 자백한 값(2026-08-19 FRED 메타: observation_end 2025-10-01 ·
@@ -50477,3 +50491,213 @@ class TestLegacyKrwRoundTrip20260908:
         bare = [n.lineno for n in ast.walk(tree)
                 if isinstance(n, ast.Constant) and n.value == 1330.0]
         assert len(bare) == 1, f"1330.0 리터럴이 {len(bare)}곳이다: {bare}"
+
+
+# ── 감사가 제 요약을 결함으로 세고, 못 고칠 지연을 ❌ 로 찍었다 (2026-09-09) ──
+# 사용자 일일 감사: `❌ 2건` 인데 하나가 **요약 줄**이었다 — 독스트링이 "세기만
+# 한다"고 적어 놓고 본문이 `위 표의 ❌ 표시 항목을 볼 것` 이라 sweep 이 그
+# 설명 문구까지 셌다(#289 가 적어 둔 그 함정: 글리프는 한 자도 안 쓴다).
+# 그리고 `liquidity_audit` 은 #260 의 갈래(1주기=원천 지연 / 2주기+=우리 문제)를
+# 안 써서 매일 못 고칠 ❌ 를 냈고(#38·#147), 정작 FRED 의 `observation_end` 를
+# **이미 받아 오면서** 판정엔 안 쓰고 출력만 했다(#123·#189·#228).
+class TestSummaryDoesNotCarryVerdictGlyphs20260909:
+    def test_liquidity_summary_is_countable_free(self):
+        """sweep 은 줄에 ❌/⚠️ 가 있으면 결함으로 센다 — 요약이 그 글자를
+        **설명 문구로** 써도 세어진다(#289). 독스트링은 '세기만 한다'고
+        적어 놓고 본문이 ❌ 를 쓰고 있었다(2026-09-09 실측: ❌ 2건 중
+        1건이 이 줄)."""
+        from bot.scripts.liquidity_audit import summary_lines
+        for ln in summary_lines([], ["BAA10Y 2026-09-03"], []):
+            assert "❌" not in ln and "⚠️" not in ln, ln
+
+    def test_summary_still_reports_the_counts(self):
+        """반대 증거(#25) — 글리프를 빼느라 사실까지 지우면 안 된다."""
+        from bot.scripts.liquidity_audit import summary_lines
+        txt = "\n".join(summary_lines([], ["BAA10Y 2026-09-03"], []))
+        assert "지연 1" in txt
+
+    def test_every_audit_summary_helper_is_glyph_free(self):
+        """이름 열거는 다음 감사를 못 잡는다 — 디렉터리 전수(#24)."""
+        import importlib
+        import pathlib
+        checked = 0
+        for p in sorted(pathlib.Path("bot/scripts").glob("*audit*.py")):
+            mod = importlib.import_module(f"bot.scripts.{p.stem}")
+            fn = getattr(mod, "summary_lines", None)
+            if not callable(fn):
+                continue
+            checked += 1
+            for ln in fn(["x"], ["y"], ["z"]):
+                assert "❌" not in ln and "⚠️" not in ln, f"{p}: {ln}"
+        assert checked >= 1, "대조 대상 0건은 통과가 아니다(#54)"
+
+
+class TestLiquidityUsesTheSharedVerdict20260909:
+    def test_one_period_behind_is_source_lag_not_our_bug(self):
+        """#260: 1주기 뒤짐 = 원천 공표 지연(⚠️) · 2주기+ = ❌.
+        `liquidity_audit` 이 그걸 안 써서 매일 못 고칠 ❌ 를 냈다(#38·#147)."""
+        from bot.macro_cadence import stale_verdict
+        b, txt = stale_verdict({"freq": "D", "behind": 1,
+                                "expected": "2026-09-04"})
+        assert b == "src_lag" and txt.startswith("⚠️"), (b, txt)
+
+    def test_two_periods_behind_stays_a_finding(self):
+        from bot.macro_cadence import stale_verdict
+        b, txt = stale_verdict({"freq": "D", "behind": 2,
+                                "expected": "2026-09-04"})
+        assert b == "late" and txt.startswith("❌"), (b, txt)
+
+    def test_macro_audit_still_exposes_it(self):
+        """옛 import 경로가 살아 있어야 그 감사가 안 깨진다(#222)."""
+        from bot.scripts.macro_staleness_audit import stale_verdict as a
+        from bot.macro_cadence import stale_verdict as b
+        assert a is b
+
+    def test_liquidity_audit_calls_the_shared_judge(self):
+        """⚠️ 같은 턴에 다시 씀(#222): 처음엔 `stale_verdict` 호출을 봤는데,
+        같은 작업에서 판정이 **원천 메타를 쓰는 `stale_bucket`** 으로 올라갔다
+        — 계약은 "판정을 자체 재구현하지 않는다" 이지 특정 함수 이름이 아니다.
+        """
+        import ast
+        import inspect
+        from bot.scripts import liquidity_audit as la
+        tree = ast.parse(inspect.getsource(la))
+        names = {getattr(n.func, "id", "") or getattr(n.func, "attr", "")
+                 for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        assert names & {"stale_bucket", "stale_verdict"}, \
+            "판정을 자체 재구현한다(#169)"
+        # 그리고 판정 문구를 인라인으로 다시 짓지 않는다
+        src = inspect.getsource(la)
+        assert "❌ 지연(기대" not in src, "옛 인라인 판정이 되살아났다"
+
+
+class TestBucketFromTheSourceItself20260909:
+    """감사는 FRED 의 `observation_end` 를 **이미 받아 오면서** 판정엔 안
+    썼다 — 출력만 하고 갈래는 주기 휴리스틱이 정했다(#123·#189·#228).
+    원천이 스스로 답하면 추정이 0 이다(#86·#28)."""
+
+    def _j(self, behind):
+        return {"freq": "D", "behind": behind, "expected": "2026-09-04"}
+
+    def test_source_has_nothing_newer_is_source_lag_even_far_behind(self):
+        """2주기 이상이어도 원천이 거기까지밖에 없으면 우리가 고칠 게 없다 —
+        휴리스틱만 쓰면 이걸 매일 ❌ 로 찍는다(#182·#260)."""
+        from bot.macro_cadence import stale_bucket
+        b, txt = stale_bucket(self._j(5), source_end="2026-09-03",
+                              asof="2026-09-03")
+        assert b == "src_lag" and txt.startswith("⚠️"), (b, txt)
+        assert "원천이 여기까지" in txt, txt
+
+    def test_source_newer_than_us_is_our_bug_even_one_period(self):
+        """1주기여도 원천에 더 새 게 있으면 그건 **우리 수집**이 뒤처진 것이다
+        — 휴리스틱은 이걸 조용히 넘긴다."""
+        from bot.macro_cadence import stale_bucket
+        b, txt = stale_bucket(self._j(1), source_end="2026-09-08",
+                              asof="2026-09-03")
+        assert b == "late" and txt.startswith("❌"), (b, txt)
+        assert "우리 수집" in txt, txt
+
+    def test_no_meta_falls_back_and_says_so(self):
+        """못 물었으면 단정하지 말고 폴백했다고 밝힌다(#12·#165·#82)."""
+        from bot.macro_cadence import stale_bucket, stale_verdict
+        b, txt = stale_bucket(self._j(1), source_end=None, asof="2026-09-03")
+        assert (b, txt.split(" · 원천")[0]) == (stale_verdict(self._j(1))[0],
+                                               stale_verdict(self._j(1))[1])
+        assert "원천 메타 없음" in txt, txt
+
+    def test_facts_are_always_stated(self):
+        """어느 갈래든 뒤처진 사실과 폭은 말한다(#41)."""
+        from bot.macro_cadence import stale_bucket
+        for se in ("2026-09-03", "2026-09-08", None):
+            _b, txt = stale_bucket(self._j(2), source_end=se, asof="2026-09-03")
+            assert "2026-09-04" in txt and "2일 뒤짐" in txt, (se, txt)
+
+
+class TestLiquidityAuditEndToEnd20260909:
+    """헬퍼만 부르면 배선을 떼는 변형을 못 잡는다 — 감사를 통째로 태운다(#20).
+
+    ⚠️ 옛 휴리스틱이 **놓치던 경우**가 여기서 갈린다: 1주기밖에 안 뒤졌는데
+    원천엔 더 새 게 있는 것 = 우리 수집 실패(❌). 반대로 5주기를 뒤졌어도
+    원천이 거기까지면 우리가 고칠 게 없다(⚠️).
+    """
+
+    def _run(self, metas):
+        """⚠️ 픽스처에 **신선한 항목**(WALCL)을 지연 항목 뒤에 둔다 — 전부
+        지연이면 루프 잔여 상태(#114)가 매번 새로 덮여 그 변형이 통과한다
+        (실측: 리셋을 지워도 green 이었다, #91c).
+        """
+        import datetime as dt
+        from unittest import mock
+        import bot.fred_boards_catalog as fbc
+        import bot.fred_client as fc
+        import bot.macro_cadence as mc
+        import bot.scripts.liquidity_audit as la
+        # 신선 기준을 날짜에 의존시키지 않는다 — 시한폭탄 금지(#249·#291)
+        fresh = mc.expected_period_end("D", 1, dt.date.today())
+        cat = [{"id": "BAA10Y", "unit": "%", "category": "신용스프레드"},
+               {"id": "DGS10", "unit": "%", "category": "금리"},
+               # ⚠️ 단위 문자열은 실제 카탈로그와 **같아야** 한다("M USD",
+               # 공백 포함) — 다르면 배수가 1 이 되어 단위 상식 검사가
+               # 멀쩡한 값을 ❌ 로 찍고, 그 ❌ 가 이 테스트를 오염시킨다
+               # (실측, #155 픽스처는 원천이 내는 모양대로).
+               {"id": "WALCL", "unit": "M USD", "category": "연준"}]
+        hist = {"BAA10Y": [("2026-09-01", 1.5), ("2026-09-03", 1.6)],
+                "DGS10": [("2026-09-01", 4.1), ("2026-09-03", 4.2)],
+                "WALCL": [(str(fresh), 6_900_000.0)]}
+        out, calls = [], []
+        with mock.patch.object(fbc, "LIQ_SERIES", cat), \
+             mock.patch.object(fc, "fetch_history", lambda sid, start: hist[sid]), \
+             mock.patch.object(la, "_series_meta",
+                               lambda sid: calls.append(sid) or metas.get(sid)), \
+             mock.patch.object(la, "_p",
+                               lambda *a: out.append(" ".join(str(x) for x in a))):
+            la.main()
+        return out, calls
+
+    _SRC_ONLY = {"BAA10Y": {"observation_end": "2026-09-03"},
+                 "DGS10": {"observation_end": "2026-09-03"}}
+    _MIXED = {"BAA10Y": {"observation_end": "2026-09-03"},
+              "DGS10": {"observation_end": "2026-09-08"}}
+
+    def test_source_lag_is_not_counted_as_a_finding(self):
+        out, _ = self._run(self._SRC_ONLY)
+        assert sum(1 for ln in out if "❌" in ln) == 0, out
+        assert any("원천 공표 지연" in ln for ln in out), out
+
+    def test_our_own_gap_is_still_a_finding(self):
+        out, _ = self._run(self._MIXED)
+        bad = [ln for ln in out if "❌" in ln]
+        assert len(bad) == 1 and "DGS10" in bad[0], bad
+        assert "우리 수집이 뒤처졌다" in bad[0], bad[0]
+
+    def test_the_lag_fact_is_never_hidden(self):
+        """기호와 버킷은 바뀌어도 뒤처진 사실과 폭은 항상 말한다(#41)."""
+        out, _ = self._run(self._SRC_ONLY)
+        line = [ln for ln in out if "BAA10Y" in ln and "지연" in ln][0]
+        assert "2026-09-04" in line and "1일 뒤짐" in line, line
+
+    def test_meta_is_fetched_once_per_stale_series(self):
+        """두 번 물으면 그 사이 갱신된 값의 나이를 옛 값에 붙인다(#160·#61)."""
+        _out, calls = self._run(self._MIXED)
+        assert calls == ["BAA10Y", "DGS10"], calls
+
+    def test_summary_line_carries_no_countable_glyph(self):
+        out, _ = self._run(self._MIXED)
+        summ = [ln for ln in out if "요약:" in ln or "볼 것" in ln]
+        assert summ, out
+        assert all("❌" not in ln and "⚠️" not in ln for ln in summ), summ
+
+    def test_summary_counts_the_two_buckets_apart(self):
+        """⚠️ 버킷을 합치면(둘 다 `late`) 화면 글자는 그대로라 안 잡힌다 —
+        **세는 수**를 봐야 발화한다(실측: 그 변형이 통과했다, #91b)."""
+        out, _ = self._run(self._MIXED)
+        line = [ln for ln in out if "요약:" in ln][0]
+        assert "지연 1" in line and "원천 공표 지연 1" in line, line
+
+    def test_fresh_item_does_not_inherit_the_previous_meta(self):
+        """루프 잔여 상태(#114) — 리셋이 없으면 신선한 항목이 앞 항목의
+        `observation_end` 를 자기 근거로 찍는다."""
+        out, _ = self._run(self._MIXED)
+        i = [n for n, ln in enumerate(out) if "WALCL" in ln][0]
+        after = out[i + 1:i + 4]
+        assert not [ln for ln in after if "observation_end" in ln], after
