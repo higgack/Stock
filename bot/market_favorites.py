@@ -56,8 +56,8 @@ def _detect_country(ticker: str) -> str:
         return "KR"
     if t.endswith(".T"):
         return "JP"
-    if t.endswith((".TW", ".TWO")):
-        return "TW"
+    if t.endswith((".TW", ".TWO", ".TT")):
+        return "TW"     # .TT = 블룸버그 대만 표기(야후엔 없다) — 아래 _YF_ALIAS
     if t.endswith((".SS", ".SZ")):
         return "CN"
     if t.endswith(".HK"):
@@ -69,6 +69,57 @@ def _detect_country(ticker: str) -> str:
     if t.endswith(".PA"):
         return "FR"
     return "US"
+
+
+# 야후가 쓰지 않는 표기로 저장된 티커 — **목록은 사용자 것이므로 원문을 고치지
+# 않고**, 조회할 때만 야후 표기 후보로 바꾼다. 실측 2026-09-08: `2467.TT`
+# (블룸버그 대만 표기)가 `_detect_country` 에서 조용히 'US' 로 떨어져 네이버도
+# 야후도 못 찾고 **가격 미수신 1건**이 됐다 — 알 수 없는 접미를 US 로 추측한
+# 것이 원인이다(#46 위치·형태로 추정하지 말 것 · #82 갈래를 이름으로).
+# 후보가 둘인 이유: 대만은 上市(.TW)와 上櫃(.TWO)가 갈리고 어느 쪽인지는
+# **재야** 안다(finviz_client 의 `.TWO` 폴백과 같은 규율, §작업 원칙 선행 사례).
+_YF_ALIAS: dict[str, tuple[str, ...]] = {".TT": (".TW", ".TWO")}
+_YF_RESOLVED: dict[str, str] = {}
+
+
+def yf_candidates(ticker: str) -> list[str]:
+    """야후에 물어볼 심볼 후보 — 순서가 곧 우선순위. 순수 함수.
+
+    야후가 아는 표기면 원문 하나뿐이다(대부분의 종목에서 no-op).
+    """
+    t = str(ticker or "").strip()
+    for suf, alts in _YF_ALIAS.items():
+        if t.upper().endswith(suf):
+            base = t[: -len(suf)]
+            return [base + a for a in alts]
+    return [t] if t else []
+
+
+def _resolve_yf(ticker: str) -> str:
+    """후보 중 **실제로 데이터가 오는** 심볼. 못 찾으면 원문 그대로.
+
+    ⚠️ 이름이나 규칙이 아니라 **실측**으로 고른다(#25). 프로세스 수명 동안
+    기억해 재조회를 안 한다(후보가 하나면 네트워크 0).
+    """
+    cands = yf_candidates(ticker)
+    if len(cands) <= 1:
+        return cands[0] if cands else ticker
+    if ticker in _YF_RESOLVED:
+        return _YF_RESOLVED[ticker]
+    import yfinance as yf
+    for c in cands:
+        try:
+            h = yf.Ticker(c).history(period="5d")
+            if h is not None and len(h):
+                _YF_RESOLVED[ticker] = c
+                # 폴백을 로그로만 알리면 사용자는 영영 모른다(#42a) — 화면도
+                # `yf_ticker` 로 같이 밝힌다(#136).
+                log.info("favorites: %s → 야후 표기 %s 로 조회", ticker, c)
+                return c
+        except Exception as exc:
+            log.debug("favorites: %s 후보 %s 실패: %s", ticker, c, exc)
+    log.warning("favorites: %s — 야후 표기 후보 %s 가 전부 비었다", ticker, cands)
+    return ticker
 
 
 _CURRENCY_MAP = {
@@ -485,7 +536,11 @@ def _compute_favorites_with_prices() -> list[dict]:
             if _new_kr:
                 f["name_kr"] = _new_kr
         try:
-            tk = yf.Ticker(f["ticker"])
+            _sym = _resolve_yf(f["ticker"])
+            # 원문과 다르면 화면이 밝힌다 — 조용히 바꾸면 사용자가 자기 목록의
+            # 티커와 화면 값을 대조하지 못한다(#136·#43).
+            f["yf_ticker"] = _sym if _sym != f["ticker"] else None
+            tk = yf.Ticker(_sym)
             price = naver_price       # 네이버 있으면 fast_info 생략(야후 부하·글리치↓)
             info = None
             prev_close = None

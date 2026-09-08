@@ -492,10 +492,17 @@ def main() -> int:
             if not rec:
                 _p(f"   {key:8} ❌ 없음 → 카드 생략")
                 continue
-            age = mt._vol_age_days(rec.get("date"))
+            age = mt._vol_age_days(rec.get("date"), rec.get("market"))
             wins = ", ".join(k for k, v in (rec.get("history") or {}).items()
                              if v is not None) or "없음"
-            _p(f"   {key:8} {rec['value']:.1f} · 기준 {rec.get('date') or '—'}"
+            # 실시간 값은 종가가 아니라 '기준일' 이 없다 — 그걸 `기준 —` 로만
+            # 찍으면 판정 불가와 구별되지 않는다(#54·#304). 판정을 여기서
+            # 재구현하면 화면과 갈라지므로 **제품의 그 함수**를 부른다(#35·#169).
+            _st = mt.vol_asof_label(rec)
+            _mark = {"unmeasured": " ❌", "stale": " ⚠️", "missing": " ❌"}.get(
+                _st["verdict"], "")
+            _stamp = (_st["label"] or "기준 미표기") + _mark
+            _p(f"   {key:8} {rec['value']:.1f} · {_stamp}"
                f"{f' ({age}일 전)' if age is not None else ''} · "
                f"소스 {rec.get('source') or '—'}"
                f"{' · **캐시**' if rec.get('from_cache') else ''} · 창 [{wins}]")

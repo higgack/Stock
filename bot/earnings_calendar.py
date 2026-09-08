@@ -110,18 +110,53 @@ def fetch_month(year: int, month: int) -> list[dict]:
 
 
 def _fetch_us_month(year: int, month: int) -> list[dict]:
-    """Fetch US earnings for a full month from Finnhub. 6h cache."""
+    """Fetch US earnings for a full month from Finnhub. 6h cache.
+
+    사유를 버리는 얇은 래퍼 — 화면·진단은 `us_month(...)` 를 쓴다. 값만
+    꺼내 던지면 "0건인데 왜?" 에 아무도 답하지 못한다(#129).
+    """
+    return us_month(year, month)[0]
+
+
+# 미수집 사유 갈래 — 처방이 다 다르다(#82). 화면·진단이 같은 문구를 쓴다(#38).
+_US_REASON = {
+    "key": "FINNHUB_API_KEY 가 없어 원천을 부르지 못했습니다",
+    "http": "원천 호출이 실패했습니다(로그의 HTTP 상태 확인)",
+    "empty": "원천(Finnhub)이 이 달을 0건으로 응답했습니다",
+    "": "",
+}
+# 빈 응답은 **짧게만** 믿는다 — 6시간을 믿으면 원천 장애 한 번이 반나절
+# 빈 달력이 된다(#161·#303). 값이 있는 달은 종전대로 6시간.
+_EMPTY_TTL_SEC = 600
+
+
+def us_month(year: int, month: int) -> tuple[list[dict], str]:
+    """(행, 사유) — Finnhub 실적 한 달. 사유는 `_US_REASON` 의 키다.
+
+    실측 2026-09-08: 화면이 `🇺🇸 미국 실적 0건` 이라고만 적어, 원천에 없는
+    건지 키가 없는 건지 우리가 실패한 건지 **화면으로도 로그로도** 가릴 수
+    없었다(#43·#82). 갈래를 이름으로 부른다.
+    """
     key = _api_key()
     if not key:
-        return []
+        # '없음' 만 말하면 이미 넣은 키를 다시 넣으러 간다(#82·#294).
+        try:
+            from bot.env_keys import env_diag
+            log.warning("earnings_cal: US 건너뜀 — %s",
+                        env_diag("FINNHUB_API_KEY"))
+        except Exception:                                     # noqa: BLE001
+            log.warning("earnings_cal: US 건너뜀 — FINNHUB_API_KEY 미설정")
+        return [], "key"
 
     tag = f"{year:04d}-{month:02d}"
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = _CACHE_DIR / f"{tag}.json"
     if cache_file.exists():
         try:
-            if time.time() - cache_file.stat().st_mtime < _CACHE_TTL_SEC:
-                return json.loads(cache_file.read_text())
+            cached = json.loads(cache_file.read_text())
+            ttl = _CACHE_TTL_SEC if cached else _EMPTY_TTL_SEC
+            if time.time() - cache_file.stat().st_mtime < ttl:
+                return cached, ("" if cached else "empty")
         except Exception:
             pass
 
@@ -140,8 +175,13 @@ def _fetch_us_month(year: int, month: int) -> list[dict]:
         resp.raise_for_status()
         raw = resp.json().get("earningsCalendar", [])
     except Exception as exc:
-        log.warning("earnings_cal: fetch failed for %s: %s", tag, exc)
-        return []
+        # 상태코드까지 — 403(플랜 제한)과 429(요청한도)와 타임아웃은 처방이
+        # 완전히 다르다(#82·#290).
+        _st = getattr(getattr(exc, "response", None), "status_code", None)
+        log.warning("earnings_cal: fetch failed for %s: %s%s", tag,
+                    type(exc).__name__,
+                    f" (HTTP {_st})" if _st else f": {exc}")
+        return [], "http"
 
     result = []
     names = _us_name_map()
@@ -164,7 +204,7 @@ def _fetch_us_month(year: int, month: int) -> list[dict]:
         cache_file.write_text(json.dumps(result, ensure_ascii=False))
     except Exception:
         pass
-    return result
+    return result, ("" if result else "empty")
 
 
 def _hour_label(h: str) -> str:
@@ -312,6 +352,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
     except Exception:
         _us_names = {}
     market = market if market in ("kr", "us", "jp", "tw", "cn", "hk") else "kr"
+    _us_reason = ""          # us 분기 밖에서도 참조된다(#63 조기 바인딩)
     # intl 가용성 — cache_only(동기 스캔 0·페이지 hang 방지). 데이터 있는 시장만
     # 토글 노출. 캐시는 market.html 백그라운드 갱신 + 아침 pre-warm 이 데움.
     intl_avail: dict[str, bool] = {}
@@ -332,6 +373,11 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
                       if str(e.get("date", "")).startswith(_mprefix)]
         except Exception:
             events = []
+    elif market == "us":
+        # 사유는 화면까지 배선해야 의미가 있다(#123·#129·#189 계열) — 값만
+        # 꺼내면 `0건` 이 원천 부재인지 우리 실패인지 아무도 못 가른다.
+        _rows, _us_reason = us_month(year, month)
+        events = [dict(e, market="us") for e in _rows]
     else:
         events = [e for e in fetch_month(year, month)
                   if e.get("market", "us") == market]
@@ -340,6 +386,20 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
         by_date[e["date"]].append(e)
 
     total = len(events)
+    # 0건이면 **왜** 0건인지 말한다 — 침묵이 최악이다(#43·#54).
+    _empty_note = ""
+    if total == 0:
+        # 시장 게이트를 따로 두지 않는다 — `_us_reason` 은 us 분기에서만
+        # 설정되므로 게이트는 **도달 불가능한 죽은 코드**였고, 죽은 가드는
+        # 있는 척만 한다(#291). 그 불변식은 회귀가 AST 로 못박는다.
+        _why = _US_REASON.get(_us_reason, "")
+        _empty_note = (
+            '<div class="empty-why" style="margin:10px 0;padding:10px 12px;'
+            'border-radius:8px;background:rgba(255,170,0,.10);'
+            'font-size:12px;color:var(--muted)">'
+            + _html.escape(f"이 달에 일정이 없습니다 — {_why}" if _why
+                           else "이 달에 일정이 없습니다.")
+            + '</div>')
     today = date.today()
     cur = date(year, month, 1)
 
@@ -476,6 +536,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
   <span class="cnt">{({'kr': '🇰🇷 한국 IR', 'us': '🇺🇸 미국 실적'}.get(market) or (_INTL_CAL_MAP.get(market, ('', '🌐'))[1] + ' 실적'))} {total}건</span>
 </div>
 <div class="month-nav">{nav_html}</div>
+{_empty_note}
 <div class="cal-grid">{grid}</div>
 <div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 KIND IR일정(DART 폴백) · 미국 Finnhub 실적 · 일본·홍콩·대만 yfinance 확정 실적일(주요종목) · 장전=BMO / 장후=AMC{_ts_sfx}</div>
 <script>
@@ -497,3 +558,49 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
 }})();
 </script>
 </body></html>"""
+
+
+# ── 진단 ────────────────────────────────────────────────────────────────────
+# 반복되는 확인은 제품에 심는다(§Automation-first·#252).
+# ⚠️ '무엇을 안 쓰는지'까지 적어야 참이 된다(#284): 이 진단은 화면이 쓰는
+# 그 경로(`us_month`)를 그대로 태우므로 **정상 응답이면 6시간 캐시를 채운다**
+# (화면이 하는 것과 같은 쓰기라 오염이 아니다). 대신 판정 신호를 **지우거나
+# 새로 만들지는 않는다** — 쿨다운·도장·아카이브는 건드리지 않는다(#30·#264·#283).
+def _why(year: int, month: int) -> int:
+    import sys as _s
+    print(f"earnings_calendar --why v1 · {year:04d}-{month:02d}")
+    print(f"  인터프리터 {_s.executable}")          # #132 인터프리터판
+    try:
+        from bot.env_keys import env_source, env_diag
+        _src = env_source("FINNHUB_API_KEY")
+        print(f"  FINNHUB_API_KEY 출처: {_src or '없음'}"
+              + (f" — {env_diag('FINNHUB_API_KEY')}" if not _src else ""))
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"  자격증명 출처 판정 실패: {type(exc).__name__}: {exc}")
+    rows, reason = us_month(year, month)
+    print(f"  🇺🇸 미국 {len(rows)}건"
+          + (f" — {_US_REASON.get(reason, reason)}" if reason else " ✅"))
+    if rows[:3]:
+        for r in rows[:3]:
+            print(f"     {r.get('date')} {r.get('symbol')} {r.get('hour')}")
+    # 대조군 — 한국이 살아 있으면 페이지·네트워크가 아니라 **미국 경로**가
+    # 문제다. 대조군이 같이 죽으면 '미제공' 이 아니라 판정 불가다(#143).
+    try:
+        kr = [e for e in fetch_month(year, month)
+              if e.get("market") == "kr"]
+        print(f"  🇰🇷 대조군 한국 {len(kr)}건"
+              + ("" if kr else " — 대조군도 0건이라 미국만의 문제라고 말할 수 없다"))
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"  🇰🇷 대조군 조회 실패: {type(exc).__name__}: {exc}")
+    return 0 if rows else 1
+
+
+if __name__ == "__main__":                # cd ~/stock && .venv/bin/python -m bot.earnings_calendar --why
+    import sys
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    _args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    _y, _m = (int(_args[0][:4]), int(_args[0][5:7])) if _args else (
+        date.today().year, date.today().month)
+    if "--why" in sys.argv[1:]:
+        raise SystemExit(_why(_y, _m))
+    print(f"{_y:04d}-{_m:02d}: {len(fetch_month(_y, _m))}건")

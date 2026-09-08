@@ -18024,6 +18024,22 @@ def _render_deposit_widget(dep: dict) -> str:
 
     date = _html.escape(str(dep.get("date", "")))
     src = _html.escape(str(dep.get("source") or "금융투자협회"))
+    # "이거 최신이야?" 에 화면이 답하게 한다(#43) — 기준일만 적으면 사용자가
+    # 달력을 봐야 한다. 마지막 완결 세션을 **나란히** 놓아 눈으로 검산되게
+    # 하고(#202), 우리가 재지 않은 KOFIA 공표 시차는 단정하지 않는다(#165).
+    _dep_lag = " "
+    try:
+        from bot.market_timing import _expected_session
+        from bot.naver_sector_client import deposit_lag
+        _lag = deposit_lag(str(dep.get("date", "")), _expected_session("KR")[0])
+        if _lag["gap_d"] is not None and _lag["gap_d"] > 0:
+            _dep_lag = (f' <span style="opacity:.8">(마지막 완결 세션 '
+                        f'{_html.escape(_lag["session"][5:])} 대비 '
+                        f'{_lag["gap_d"]}일 전{" ⚠️" if _lag["stale"] else ""})'
+                        f'</span> ')
+    except Exception as exc:                                   # noqa: BLE001
+        # 조용히 삼키지 않는다 — 판정이 사라진 이유를 로그가 말한다(#12).
+        log.warning("deposit lag 판정 실패: %s", exc)
     dv = (f'<div class="dp-item"><span class="dp-l">고객예탁금</span>'
           f'<span class="dp-v">{_won(dep.get("deposit"))}{_chg(dep.get("deposit_chg"))}</span></div>')
     cv = ""
@@ -18056,7 +18072,7 @@ def _render_deposit_widget(dep: dict) -> str:
     return (
         '<div class="dp-wrap">'
         '<div class="dp-top"><div class="dp-hd">💰 투자자 예탁금·신용</div>'
-        f'<span class="dp-ts">기준일 {date} · {src}</span></div>'
+        f'<span class="dp-ts">기준일 {date}{_dep_lag}· {src}</span></div>'
         f'<div class="dp-grid">{dv}{ev}{cv}</div></div>'   # 차트 순서와 동일
     )
 
@@ -18189,6 +18205,16 @@ def _render_etf_sector_movers(movers: dict, heading: str, links: str = "") -> st
 
     ts = _html.escape((movers or {}).get("ts", ""))
     src = _html.escape((movers or {}).get("source", "섹터 ETF·yfinance"))
+    # 저장분 복원이면 그렇게 말한다 — 형제 위젯은 매번 새로 받은 시각이라
+    # TW 만 몇 시간 전 라벨을 달고 있으면 사용자가 이유를 물어야 한다
+    # (#136 폴백은 화면이 밝힌다 · #43 침묵이 최악). 플래그가 없는 시장은
+    # 그대로라 시장 게이트가 없다(재료 유무가 곧 조건, #241).
+    if (movers or {}).get("stale"):
+        _m = (movers or {}).get("stale_min")
+        _ago = ""
+        if isinstance(_m, int):
+            _ago = (f"{_m}분 전" if _m < 120 else f"{_m // 60}시간 전")
+        ts = f'저장분 {ts}{f" ({_ago})" if _ago else ""} ⚠️'
     return (
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
         f'<h2>{heading}</h2>{links}'
@@ -19241,7 +19267,9 @@ def _render_market_page(data: dict) -> str:
         return '<tr ' + da + '>'
           + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="color:inherit;text-decoration:none">'
           + '<span style="font-weight:600;font-size:13px">' + (f.name_kr||f.name||f.ticker) + '</span>'
-          + '<span style="display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:1px">' + f.ticker + '</span></a></td>'
+          + '<span style="display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:1px">' + f.ticker
+          + (f.yf_ticker ? ' <span style="opacity:.8">→ ' + f.yf_ticker + ' 로 조회</span>' : '')
+          + '</span></a></td>'
           + '<td>' + flag + '</td>'
           + '<td style="white-space:nowrap">' + (f.saved_date||'') + '</td>'
           + '<td style="white-space:nowrap">' + fmtMcap(f.market_cap, f.currency_symbol) + '</td>'

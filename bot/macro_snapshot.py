@@ -995,3 +995,97 @@ def sentiment_label(score: int) -> str:
     if score >= 25:
         return "불안"
     return "공포"
+
+
+# ── 진단 ────────────────────────────────────────────────────────────────────
+# "이 값이 왜 안 움직여?" — 원천이 평평한 것과 우리 캐시가 언 것을 가른다.
+# 실측 2026-09-08: '알루미늄 합금 3200.0' 이 스파크 22점 전부 같은 값이라
+# 원천 고정인지 캐시 고정인지 화면으로도 로그로도 알 수 없었다(#82·#21b).
+# 판정 규칙: **라인 캐시가 방금 새로 왔는데도 평평하면 원천이 평평한 것**이다
+# (캐시가 얼었다면 나이가 TTL 을 넘겨 있다). 잴 수 없으면 단정하지 않는다(#12).
+_SPARK_CACHE_TTL_SEC = 3600      # naver_comhist_*.json (naver_marketindex)
+
+
+def flatness_verdict(distinct: int, points: int,
+                     line_age_sec: float | None) -> tuple[str, str]:
+    """(판정, 사유) — 순수 함수라 값으로 고정된다(#41·#176).
+
+    판정 ∈ "source"(원천이 평평) · "cache"(우리 캐시가 얼었을 수 있다)
+          · "moving"(움직인다) · "unknown"(판정 불가 — 통과가 아니다, #54)
+    """
+    if points <= 1:
+        return "unknown", f"점이 {points}개라 평평한지 판정할 수 없다"
+    if distinct > 1:
+        return "moving", f"서로 다른 값 {distinct}개 — 움직인다"
+    if line_age_sec is None:
+        return "unknown", "라인 캐시 나이를 못 재 원천/캐시를 가를 수 없다"
+    if line_age_sec <= _SPARK_CACHE_TTL_SEC:
+        return "source", (f"라인이 {line_age_sec / 60:.0f}분 전에 새로 왔는데도 "
+                          f"{points}점이 전부 같다 — 원천이 평평한 것")
+    return "cache", (f"라인 캐시가 {line_age_sec / 3600:.1f}시간째라 "
+                     f"TTL({_SPARK_CACHE_TTL_SEC / 3600:.0f}h)을 넘겼다 "
+                     "— 캐시가 얼었을 수 있다")
+
+
+def _sid_for(key: str) -> str:
+    """카드 key → 정의의 source_id. 정의를 단일 출처로 되짚는다(#38)."""
+    for d in (DOMESTIC, GLOBAL):
+        for row in d:
+            if row[0] == key:
+                return row[4]
+    return ""
+
+
+def _why(keys: tuple[str, ...] = ()) -> int:
+    import sys as _s
+    print(f"macro_snapshot --why v1 · 지표정의 {_DEFS_VERSION[:12]}…")
+    print(f"  인터프리터 {_s.executable}")                    # #132
+    snap = fetch_macro_snapshot()
+    rows = list(snap.get("domestic") or []) + list(snap.get("global") or [])
+    if keys:
+        rows = [r for r in rows
+                if r.get("key") in keys or any(k in r.get("label", "")
+                                               for k in keys)]
+    if not rows:
+        print("  ❌ 대조할 카드가 없다 — 키를 확인하라(대조 0건은 통과가 아니다)")
+        return 1
+    from bot.finviz_client import cache_age_sec
+    from bot.naver_marketindex import fetch_commodities
+    bad = 0
+    for r in rows:
+        spark = list(r.get("spark") or [])
+        distinct = len({round(float(v), 10) for v in spark if v is not None})
+        age_min = r.get("value_age_min")
+        print(f"  {r.get('label','')} = {r.get('value')} "
+              f"[{r.get('asof_kind','')}] "
+              f"값수집 {r.get('asof') or '미기록'}"
+              + (f" ({age_min}분 전)" if isinstance(age_min, int) else ""))
+        line_age = None
+        try:                 # 라인(스파크)이 어느 캐시에서 왔나 — 원자재만 잰다
+            # payload 엔 sid 가 없다 — **정의에서** 되짚는다(새 필드를 더하면
+            # 캐시 salt 를 같이 올려야 한다, #304).
+            sid = _sid_for(r.get("key") or "")
+            kind, code = _MACRO_NAVER.get(sid or "", ("", ""))
+            rec = ((fetch_commodities() or {}).get(code) or {}) if kind == "com" else {}
+            if rec.get("category") and rec.get("reutersCode"):
+                line_age = cache_age_sec(
+                    f"naver_comhist_{rec['category']}_{rec['reutersCode']}_30.json")
+        except Exception as exc:                              # noqa: BLE001
+            print(f"      라인 캐시 나이 측정 실패: {type(exc).__name__}: {exc}")
+        verdict, why = flatness_verdict(distinct, len(spark), line_age)
+        mark = {"source": "✅", "moving": "✅", "cache": "⚠️",
+                "unknown": "❓"}[verdict]
+        print(f"      스파크 {len(spark)}점 · 서로 다른 값 {distinct}개 "
+              f"{mark} {why}")
+        if verdict in ("cache", "unknown"):
+            bad += 1
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":       # cd ~/stock && .venv/bin/python -m bot.macro_snapshot --why 알루미늄
+    import sys
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if "--why" in sys.argv[1:]:
+        raise SystemExit(_why(tuple(a for a in sys.argv[1:]
+                                    if not a.startswith("--"))))
+    print(fetch_macro_snapshot().get("ts"))

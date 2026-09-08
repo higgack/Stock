@@ -101,6 +101,23 @@ def note(feed: str) -> str:
                - datetime.strptime(ts, "%Y-%m-%d %H:%M").replace(tzinfo=_KST))
         if gap > timedelta(hours=cap):
             return f"{out} ⚠️ {gap.total_seconds() / 3600:.0f}시간째 점검 없음"
+        # 상한 안이면 **왜 며칠 전이어도 정상인지**를 화면이 말한다. 실측
+        # 2026-09-08: 부동산이 `점검 09-04`(96h) 인데 청약은 `09-08` 이라
+        # 사용자가 "죽은 거냐"고 물어야 했다 — 주 1회 피드에선 96h 가 정상인데
+        # 화면엔 그 규약이 없었다(#52 조용한 것과 죽은 것 · #43 침묵이 최악).
+        # 자주 도는 피드(하루 안)는 종전대로 조용하다 — 늘 뜨는 배지는
+        # 아무것도 안 재는 것과 같다(#25·#260).
+        if gap >= timedelta(hours=24):
+            return f"{out} ({_ago(gap)} · 상한 {_cap_label(cap)})"
     except ValueError:
         return out + " (형식 이상)"
     return out
+
+
+def _ago(gap: timedelta) -> str:
+    h = gap.total_seconds() / 3600
+    return f"{h / 24:.0f}일 전" if h >= 24 else f"{h:.0f}시간 전"
+
+
+def _cap_label(cap: float) -> str:
+    return f"{cap / 24:.0f}일" if cap >= 24 else f"{cap:.0f}시간"

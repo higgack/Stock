@@ -415,6 +415,33 @@ def _fetch_deposit_fsc() -> dict:
     return out
 
 
+# 예탁금 기준일이 얼마나 뒤처졌나 — 판정을 재구현하지 않고 시장타이밍의
+# '마지막 완결 세션' 을 그대로 쓴다(#35·#38 복제하면 두 화면이 갈라진다).
+# ⚠️ KOFIA 의 실제 공표 시차(T+1 인지 T+2 인지)는 **재지 않았다** — 그래서
+# 여기서 단정하지 않고 두 날짜를 나란히 보여 사용자가 검산하게 한다(#165·#202).
+_DEPOSIT_LAG_WARN_D = 4          # 이보다 뒤처지면 ⚠️ (연휴를 건너도 안 울리게, #27)
+
+
+def deposit_lag(date_str: str, session: str | None) -> dict:
+    """{"gap_d", "session", "stale"} — 기준일이 마지막 완결 세션보다 며칠 뒤인가.
+
+    순수 함수. 판정을 인라인으로 두면 태워볼 수 없다(#176·#41).
+    재료가 없으면 판정하지 않는다 — 판정 불가는 통과가 아니다(#54).
+    """
+    from datetime import date as _date
+    d = str(date_str or "").replace(".", "").replace("-", "")[:8]
+    if len(d) != 8 or not d.isdigit() or not session:
+        return {"gap_d": None, "session": session or "", "stale": False}
+    try:
+        obs = _date(int(d[:4]), int(d[4:6]), int(d[6:8]))
+        ses = _date(int(session[:4]), int(session[5:7]), int(session[8:10]))
+    except (ValueError, IndexError):
+        return {"gap_d": None, "session": session or "", "stale": False}
+    gap = (ses - obs).days
+    return {"gap_d": gap, "session": session,
+            "stale": gap >= _DEPOSIT_LAG_WARN_D}
+
+
 def fetch_deposit() -> dict:
     """고객예탁금·신용잔고 → {date, deposit, credit, deposit_chg, credit_chg,
     deposit_series, credit_series}. 억원. 1h TTL(세션-인지 아님, 2026-08-08

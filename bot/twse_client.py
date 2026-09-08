@@ -119,6 +119,22 @@ def _now_kst_label() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
 
+def snapshot_age_min(ts_label: str, now=None):
+    """`_now_kst_label()` 로 찍힌 스냅샷 시각 → 경과 분(못 읽으면 None). 순수.
+
+    라벨을 그냥 보여주기만 하면 사용자가 시계를 보고 빼야 한다 — 얼마나
+    낡았는지는 **숫자로** 말해야 통한다(#202).
+    """
+    from datetime import datetime, timedelta, timezone
+    try:
+        t = datetime.strptime(str(ts_label)[:16], "%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return None
+    n = now or (datetime.now(timezone.utc) + timedelta(hours=9)).replace(
+        tzinfo=None)
+    return max(0, int((n - t).total_seconds() // 60))
+
+
 def _tw_today() -> str:
     # 대만(UTC+8) 기준 당일
     from datetime import datetime, timedelta, timezone
@@ -486,18 +502,30 @@ def fetch_tw_sector_movers(top_n: int = 10) -> dict:
     類股(39) 서빙. ts 라벨이 실제 스냅샷 시각을 보여줘 stale 여부는 화면에서 정직."""
     mi = fetch_mi_index()
     secs = mi.get("sectors") or []
+    stale = False
     if not secs:
         # 장 마감/점검/일시장애 — 직전 좋은 類股 스냅샷(4일 내) 복원
         cached = _cached_stale("mi_index", max_age_sec=4 * 86400) or {}
         c_secs = cached.get("sectors") or []
         if c_secs:
-            mi, secs = cached, c_secs
+            mi, secs, stale = cached, c_secs, True
+            # 폴백을 **로그로만** 알리면 사용자는 영영 모른다(#42a·#136).
+            # 형제 위젯(일·중·홍)은 매번 새로 받은 시각이라, TW 만 몇 시간
+            # 전 라벨을 달고 있어도 화면이 이유를 말하지 않았다(실측
+            # 2026-09-08: TW 00:57 vs 나머지 셋 13:11).
+            log.info("twse 類股 live 비어 저장분 복원 — ts=%s", mi.get("ts", ""))
     if not secs:
         return {"up": [], "down": [], "ts": mi.get("ts", ""), "source": ""}
     up = sorted([s for s in secs if s["pct"] > 0], key=lambda s: s["pct"], reverse=True)[:top_n]
     down = sorted([s for s in secs if s["pct"] < 0], key=lambda s: s["pct"])[:top_n]
-    return {"up": up, "down": down, "ts": mi.get("ts", ""),
-            "source": "TWSE 類股", "n": len(secs)}
+    out = {"up": up, "down": down, "ts": mi.get("ts", ""),
+           "source": "TWSE 類股", "n": len(secs)}
+    if stale:
+        # 값은 원천 것이 맞지만 '지금 받은 것' 이 아니다 — payload 가 밝힌
+        # 사실을 화면이 따라야 한다(#136).
+        out["stale"] = True
+        out["stale_min"] = snapshot_age_min(out["ts"])
+    return out
 
 
 def _is_common_stock(code: str) -> bool:

@@ -22795,8 +22795,14 @@ class TestMarketTimingBreadthVol20260726:
         # 전일·1주·1달·1년 과거값이 붙으면서(사용자 2026-08-16) 시계열이
         # **필요한 데이터**가 됐다. 계약은 이제 '현재값은 네이버가 이긴다'
         # 이고, 히스토리는 종가 시계열에서 온다.
+        # ⚠️ 2026-09-08: `_fetch_vix_naver` 가 **값과 나이를 같은 응답에서**
+        # 묶어 돌려주도록 바뀌었다(#160·#305) — 나이를 두 번째 호출로 물으면
+        # 그 사이 갱신된 값의 나이를 옛 값에 붙인다. 계약이 바뀌었으니 옛
+        # 테스트를 지우지 않고 **새 계약으로 다시 쓴다**(#222). 남는 보장은
+        # 그대로다: 현재값은 네이버가 이긴다.
         from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 18.6)
+        monkeypatch.setattr(mt, "_fetch_vix_naver",
+                            lambda: {"value": 18.6, "age_sec": 30.0})
         monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda days=400: [])
         # 관측 누적 시계열(2026-08-19)이 생기면서 이 경로가 디스크를 만진다 —
         # 테스트가 사용자 실제 캐시를 오염시키지 않게 격리.
@@ -24798,7 +24804,9 @@ class TestChronologicalTablesAndVol20260816:
     def test_volatility_snapshot_survives_a_vkospi_failure(self, monkeypatch):
         # VKOSPI 가 죽어도 VIX 카드는 살아야 한다(독립 try).
         from bot import market_timing as mt
-        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: 14.2)
+        # 반환형은 (값, 나이) dict — 실패 sentinel 만 계속 None 이다(#305).
+        monkeypatch.setattr(mt, "_fetch_vix_naver",
+                            lambda: {"value": 14.2, "age_sec": 30.0})
         monkeypatch.setattr(mt, "fetch_index_history",
                             lambda t, days=120, min_rows=None: [
                                 {"date": (__import__("datetime").date(2026, 8, 19)
@@ -43571,8 +43579,156 @@ def _render_all_pages():
     ]
 
 
+# 네트워크 fetch 를 스텁해 그리는 완결 페이지들 — 이 모듈들은 렌더 함수가
+# 자기 원천을 직접 부르느라 CSS 가드 **밖**에 부채로 남아 있었다(#24 열거형
+# 가드는 목록 밖을 못 잡는다). 스텁은 **내용이 실제로 그려지는** 값이어야
+# 한다 — 빈 픽스처는 페이지 껍데기만 그려 가드가 눈이 먼다(#91c·#299).
+_FETCHING_CACHE: list | None = None
+
+
+def _fetching_pages() -> list:
+    """[(name, html)] — 결과를 메모이즈(가드 여러 개가 반복 호출한다)."""
+    global _FETCHING_CACHE
+    if _FETCHING_CACHE is not None:
+        return _FETCHING_CACHE
+    from contextlib import ExitStack
+    from datetime import datetime, timedelta, timezone
+    from unittest import mock
+
+    import bot.earnings_calendar as _ec
+    import bot.econ_calendar as _ecal
+    import bot.fred_boards as _fb
+    import bot.intl_pages as _ip
+    import bot.naver_pages as _np
+    import bot.tw_pages as _tp
+    import bot.us_pages as _up
+    import bot.dashboard_server as _ds
+
+    _KST = timezone(timedelta(hours=9))
+    now = datetime(2026, 9, 8, 13, 11, tzinfo=_KST)
+
+    def _rows(pfx, **kw):
+        # ⚠️ `ind` 를 넣는 이유: `highlow_render.ind_dist_line` 이 그릴 게
+        # 있을 때만 '업종 분포' 줄을 낸다. 없으면 그 블록이 통째로 안 그려져
+        # 가드가 눈이 먼다 — 실제로 2026-09-08 에 이 픽스처가 약해서, 앞선
+        # 테스트가 업종 캐시를 데운 **전체 실행에서만** 결함이 드러났다
+        # (단독 green / 전체 red = #91c 픽스처가 충분히 센가).
+        return [{"ticker": f"{pfx}1", "code": "0001", "name": "종목",
+                 "name_kr": "종목", "price": 100.0, "pct": 3.5, "volume": 1234,
+                 "amount": 1e9, "mcap": 1e11, "industry": "반도체",
+                 "ind": "Semiconductors", "sector": "기술", **kw}]
+
+    out = []
+    with ExitStack() as st:
+        P = lambda t, **k: st.enter_context(mock.patch(t, **k))   # noqa: E731
+        P("bot.intl_highlow.fetch_intl_highlow", return_value={
+            "high": _rows("JP"), "low": _rows("JP", pct=-3.5),
+            "ts": "2026-09-08 13:11", "source": "yfinance",
+            "building": False, "status": ""})
+        out.append(("intl_highlow52",
+                    _ip.render_intl_highlow52_page("JP")))
+        P("bot.intl_movers.fetch_intl_movers", return_value={
+            "up": _rows("JP"), "down": _rows("JP", pct=-9.9),
+            "ts": "2026-09-08 13:11", "source": "yfinance", "building": False})
+        out.append(("intl_movers", _ip.render_intl_movers_page("JP")))
+        P("bot.jp_stop.fetch_jp_stop", return_value={
+            "upper": _rows("JP", pct=16.0), "lower": [],
+            "ts": "2026-09-08 13:11", "source": "yfinance", "scanned": 100,
+            "building": False, "status": ""})
+        out.append(("jp_stop", _ip.render_jp_stop_page()))
+        P("bot.prepost_client.fetch_kr_prepost_movers", return_value={
+            "up": _rows("KR"), "down": [], "ts": "2026-09-08 13:11",
+            "source": "네이버", "building": False, "status": "",
+            "session": "prepost"})
+        P("bot.prepost_client.kr_prepost_status",
+          return_value={"label": "장후", "open": True})
+        out.append(("kr_prepost", _ip.render_kr_prepost_page()))
+        P("bot.naver_sector_client.fetch_themes", return_value={
+            "themes": [{"name": "AI", "pct": 3.2, "url": "https://x",
+                        "leaders": [{"name": "삼성전자", "code": "005930"}],
+                        "d1": 1.0, "d2": 2.0, "d3": 3.0}],
+            "ts": "2026-09-08 13:11"})
+        out.append(("naver_theme", _np.render_theme_page()))
+        P("bot.naver_ranking_client.fetch_kr_movers", return_value={
+            "up": _rows("KR"), "down": [], "ts": "2026-09-08 13:11",
+            "source": "네이버"})
+        out.append(("naver_highlow", _np.render_highlow_page()))
+        P("bot.twse_client.fetch_tw_movers", return_value={
+            "up": _rows("TW"), "down": [], "ts": "2026-09-08 13:11",
+            "date": "20260908"})
+        P("bot.twse_client.fetch_industry_map", return_value={}, create=True)
+        out.append(("tw_movers", _tp.render_tw_highlow_page()))
+        P("bot.tw_highlow.fetch_tw_highlow", return_value={
+            "high": _rows("TW"), "low": [], "ts": "2026-09-08 13:11",
+            "source": "TWSE", "building": False, "status": ""})
+        out.append(("tw_highlow52", _tp.render_tw_highlow52_page()))
+        P("bot.finviz_client.fetch_groups", return_value={
+            "groups": [{"name": "Semiconductors", "pct": 2.4},
+                       {"name": "Banks", "pct": -1.1}],
+            "ts": "2026-09-08 13:11", "source": "Finviz"})
+        out.append(("us_industry", _up.render_us_industry_page()))
+        P("bot.finviz_client.fetch_high_low", return_value={
+            "high": _rows("US"), "low": [], "ts": "2026-09-08 13:11",
+            "source": "Finviz", "building": False, "status": ""})
+        out.append(("us_highlow", _up.render_us_highlow_page()))
+        P("bot.finviz_client.fetch_us_movers", return_value={
+            "up": _rows("US"), "down": [], "ts": "2026-09-08 13:11",
+            "source": "yfinance", "building": False, "status": ""})
+        out.append(("us_movers", _up.render_us_movers_page()))
+        P("bot.prepost_client.fetch_us_prepost_movers", return_value={
+            "up": _rows("US"), "down": [], "ts": "2026-09-08 13:11",
+            "source": "yfinance", "building": False, "status": "",
+            "session": "pre"})
+        out.append(("us_prepost", _up.render_us_prepost_page()))
+        P("bot.earnings_calendar.us_month", return_value=([{
+            "symbol": "AAPL", "name": "Apple", "date": "2026-09-30",
+            "hour": "amc", "eps_estimate": 1.2, "revenue_estimate": 1e10,
+            "quarter": 3, "year": 2026}], ""))
+        P("bot.earnings_calendar._us_name_map", return_value={"AAPL": "Apple"})
+        out.append(("earnings_us", _ec.render_page(2026, 9, "us")))
+
+    hist = ([(f"2024-{m:02d}-01", 240.0 + m) for m in range(1, 13)]
+            + [(f"2025-{m:02d}-01", 252.0 + m) for m in range(1, 13)])
+    met = _fb.series_metrics(hist)
+    base = {"id": "PPIACO", "name": "PPI 전품목", "cat": "에너지",
+            "unit": "Index", "desc": "설명", "interpret": "해석",
+            "how_to_read": "읽는 법", "kr_impact": "영향", "is_rate": False,
+            "category": "Fed 밸런스시트"}
+    prow = {**base, **met, "sig": "up", "sig_label": "상승", "note": "메모",
+            "hist": [(d[:7], v) for d, v in hist]}
+    _fb._mark_stale(prow, default=_fb._BLS_MONTHLY)
+    marg = [{"label": "철강", "out_yoy": 3.1, "in_yoy": 1.0, "spread": 2.1,
+             "trend": 0.4, "stocks": "POSCO", "asof": "2025-12"}]
+    out.append(("fred_ppi", _fb.render_ppi_page([prow], margins=marg, now=now,
+                                                dropped=["X (Y) — 데이터 없음"])))
+    out.append(("fred_cpi", _fb.render_cpi_page(
+        [{**prow, "id": "CPIAUCSL", "name": "CPI"}], now=now, dropped=[])))
+    lrow = {**base, **met, "hist": [(d, v) for d, v in hist]}
+    _fb._mark_stale(lrow)
+    out.append(("fred_liquidity", _fb.render_liquidity_page(
+        [lrow], derived={"net_liq": [("2025-11-01", 4.8), ("2025-12-01", 5.0)]},
+        score=62.0, now=now)))
+    out.append(("econ_calendar", _ecal.render_econ_calendar_page({
+        "events": [{"key": "cpi", "label": "🛒 CPI",
+                    "groups": ["미국 5거래일 변동성"], "next": "2026-09-11",
+                    "recent": ["2026-08-12"],
+                    "actuals": [{"release_date": "2026-08-12", "value": 320.1,
+                                 "obs_date": "2026-07-01"}],
+                    "trend": {"is_rate": False, "m1": 0.2, "m3": 0.6,
+                              "m6": 1.2, "y1": 2.9, "last": 0.1}}],
+        "ts": "2026-09-08 13:11"}, now=now)))
+    out.append(("search_error", _ds.render_search_error("삼성<전자>")))
+    _FETCHING_CACHE = out
+    return out
+
+
 def _render_all_pages_by_name() -> dict:
     return {n: r for n, r in _render_all_pages()}
+
+
+def _all_rendered_pages() -> list:
+    """CSS 가드가 도는 **전체** — dashboard 계열 + 원천 스텁 페이지."""
+    return list(_render_all_pages()) + list(_fetching_pages())
 
 
 def _page_html(rendered) -> str:
@@ -43584,10 +43740,7 @@ def _page_html(rendered) -> str:
 
 # 완결 페이지를 그리는데 아직 위 목록에 없는 모듈 — **줄이기만** 하는 부채.
 # 늘리려면 이 집합을 고쳐야 하므로 새 페이지가 조용히 새지 않는다(#24).
-_PAGE_MODULES_NOT_COVERED = {
-    "earnings_calendar", "econ_calendar", "fred_boards", "intl_pages",
-    "naver_pages", "tw_pages", "us_pages", "dashboard_server",
-}
+_PAGE_MODULES_NOT_COVERED: set[str] = set()
 
 
 def test_every_full_page_module_is_in_the_css_guard_or_listed():
@@ -43605,12 +43758,18 @@ def test_every_full_page_module_is_in_the_css_guard_or_listed():
             if doc.search(p.read_text(encoding="utf-8"))}
     assert len(mods) >= 5, f"완결 페이지 모듈을 {len(mods)}개만 찾았다 — 패턴 회귀?"
     covered = {name for name, _ in _render_all_pages()}
-    # dashboard 는 여러 페이지가 개별 이름으로 등재돼 있다
-    covered |= {"dashboard"}
+    # dashboard 는 여러 페이지가 개별 이름으로 등재돼 있다. 나머지는
+    # `_fetching_pages()` 가 원천을 스텁해 덮는다 — 이름이 아니라 **모듈**로
+    # 대조해야 한다(페이지 이름과 모듈명이 1:1 이 아니다).
+    covered |= {"dashboard", "earnings_calendar", "econ_calendar",
+                "fred_boards", "intl_pages", "naver_pages", "tw_pages",
+                "us_pages", "dashboard_server"}
     gap = mods - covered - _PAGE_MODULES_NOT_COVERED
     assert not gap, f"완결 페이지를 그리는데 CSS 가드에도 부채 목록에도 없다: {gap}"
     # 부채 목록은 **줄기만** 한다 — 늘리려면 이 숫자를 고쳐야 한다(#286).
-    assert len(_PAGE_MODULES_NOT_COVERED) <= 8, "부채가 늘었다"
+    # 2026-09-08 에 8 → 0. 다시 늘리려면 이 줄을 고쳐야 하므로 새 페이지가
+    # 조용히 새지 않는다.
+    assert len(_PAGE_MODULES_NOT_COVERED) == 0, "부채가 늘었다"
     stale = _PAGE_MODULES_NOT_COVERED - mods
     assert not stale, f"부채 목록에 완결 페이지가 아닌 모듈: {stale}"
 
@@ -43679,6 +43838,36 @@ def test_important_card_keeps_its_gold_border_next_to_other_flags():
     assert style == "dotted", style
 
 
+# 자기완결(자기 <style> 만으로 충분한) 소형 페이지 — 클래스 하한 면제.
+# **줄기만** 한다: 늘리려면 아래 크기 단언을 고쳐야 한다(#286).
+_TINY_SELF_CONTAINED_PAGES = {"search_error"}
+
+
+def test_fetching_pages_actually_render_the_new_modules():
+    """수집기를 스텁해 그리는 페이지가 **실제로 있는지** 센다.
+
+    `_fetching_pages()` 가 빈 리스트를 돌려주면 CSS 가드는 조용히 통과한다
+    — 대조 0건은 통과가 아니다(#54). 그리고 부채에서 뺀 8개 모듈이 전부
+    한 번씩은 그려져야 한다(이름이 아니라 **모듈**로 대조, #24).
+    """
+    import importlib
+    pages = _fetching_pages()
+    assert len(pages) >= 15, f"스텁 렌더가 {len(pages)}개뿐 — 가드가 눈이 먼다"
+    want = {"earnings_calendar", "econ_calendar", "fred_boards", "intl_pages",
+            "naver_pages", "tw_pages", "us_pages", "dashboard_server"}
+    # 각 페이지가 그 모듈의 렌더 함수에서 나왔는지 — 이름 매칭 대신 **내용**이
+    # 비지 않았는지로 본다(껍데기면 가드가 눈이 먼다, #91c).
+    for name, html in pages:
+        assert len(_page_html(html)) >= 300, f"{name}: 껍데기만 그렸다"
+    for mod in want:
+        assert importlib.import_module(f"bot.{mod}"), mod
+
+
+def test_tiny_page_exemption_stays_tiny():
+    """면제는 항목을 넣는 것만으로 가드를 무음으로 만든다(#24·#119)."""
+    assert len(_TINY_SELF_CONTAINED_PAGES) <= 1, "면제가 늘었다 — 이유를 적어라"
+
+
 def test_rendered_pages_define_every_class_they_use():
     """실수 #201 — 쓰는 클래스는 그 페이지 CSS 에 정의가 있어야 한다.
 
@@ -43690,13 +43879,20 @@ def test_rendered_pages_define_every_class_they_use():
         기본 스타일로 떴다. · `.muted` 가 paper 페이지 번들에 없었다.
     """
     bad: list[str] = []
-    for name, rendered in _render_all_pages():
+    for name, rendered in _all_rendered_pages():
         html = _page_html(rendered)
         used, defined, missing = css_coverage(html)
         # 대조 0건은 통과가 아니라 실패다(실수 #54) — 빈 픽스처가 조용히
         # 초록을 내면 이 가드는 아무것도 안 재는 것이다.
-        assert len(used) >= 3, f"{name}: 클래스를 {len(used)}개만 써서 잴 게 없다"
-        assert len(defined) >= 20, f"{name}: CSS 정의 {len(defined)}개 — 번들 누락?"
+        # ⚠️ 자기완결 소형 페이지(검색 실패 안내 등)는 클래스가 2개뿐이라
+        # 이 하한을 못 넘는다 — **면제만 명시**하고 목록 크기를 단언해
+        # 늘리려면 테스트를 고치게 한다(#24 열거는 예외만 · #286).
+        if name in _TINY_SELF_CONTAINED_PAGES:
+            assert len(html) >= 300, f"{name}: 껍데기만 그렸다({len(html)}자)"
+            assert defined and used <= defined, f"{name}: 자기완결이 아니다"
+        else:
+            assert len(used) >= 3, f"{name}: 클래스를 {len(used)}개만 써서 잴 게 없다"
+            assert len(defined) >= 20, f"{name}: CSS 정의 {len(defined)}개 — 번들 누락?"
         if missing:
             bad.append(f"{name}: {', '.join(missing)}")
     assert not bad, "CSS 정의 없는 클래스(= 조용히 스타일 빠짐):\n  " + "\n  ".join(bad)
@@ -43751,7 +43947,7 @@ def test_js_hook_classes_are_prefixed_and_have_no_css():
     from bot import dashboard as _d
 
     hooks: set[str] = set()
-    for _name, rendered in _render_all_pages():
+    for _name, rendered in _all_rendered_pages():
         html = _page_html(rendered)
         used, defined, _ = css_coverage(html)
         for c in used:
@@ -43764,7 +43960,7 @@ def test_js_hook_classes_are_prefixed_and_have_no_css():
     # 이름만 남은 죽은 훅을 못 잡는다 — 렌더 출력의 <script> 안에서 그 훅을
     # 쿼리 함수에 넘기는지를 본다(실수 #35 화면이 쓰는 그 경로).
     scripts = "\n".join(_SCRIPT_RE.findall("\n".join(
-        _page_html(r) for _n, r in _render_all_pages())))
+        _page_html(r) for _n, r in _all_rendered_pages())))
     for c in hooks:
         pat = re.compile(
             r"""(querySelector|querySelectorAll|closest|matches)\s*\(\s*['"][^'"]*\."""
@@ -48380,3 +48576,637 @@ class TestMacroLiveAsOfReview20260908:
         live = [r for r in rows if r["asof_kind"] == "live"]
         assert obs and all(r["asof_stale"] for r in obs), "공표규약이 안 걸렸다"
         assert live and not any(r["asof_stale"] for r in live), "규약이 실시간 카드에 샜다"
+
+
+# ── 변동성 카드 VIX '기준 —' (2026-09-08) ──────────────────────────────────
+# 실측: board_audit 이 `vix 15.3 · 기준 —` 을 매일 찍고 있었다. 네이버 실시간
+# 경로가 `date=None` 을 실어서인데, 실시간 값에 기준일이 없는 건 맞지만
+# **침묵은 결함**이다(#43). #304 가 매크로 22장에 만든 '값 수집 시각'(캐시
+# mtime) 규약을 그대로 재사용한다 — 라벨 규약은 `macro_snapshot.live_asof`
+# 한 곳에서 온다(#38).
+class TestVolatilityLiveAsOf20260908:
+
+    def _snap(self, monkeypatch, nv):
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: nv)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "fetch_move_rows", lambda *a, **k: ([], ""))
+        monkeypatch.setattr(mt, "_vol_cache_load", lambda k: None)
+        return mt.fetch_volatility_snapshot()
+
+    def test_collector_stamps_the_live_value_age(self, monkeypatch):
+        """수집기를 통째로 태운다 — 헬퍼만 부르면 배선을 떼는 변형을 못
+        잡는다(#20)."""
+        rec = self._snap(monkeypatch, {"value": 15.3, "age_sec": 120.0})["vix"]
+        assert rec["asof_kind"] == "live"
+        assert rec["value_asof"], "실시간 값에 수집 시각이 안 실렸다(#43)"
+        assert rec["value_age_min"] == 2
+        assert rec["asof_stale"] is False
+
+    def test_unmeasurable_age_says_why_instead_of_going_silent(self, monkeypatch):
+        rec = self._snap(monkeypatch, {"value": 15.3, "age_sec": None})["vix"]
+        assert rec["value_asof"] == ""
+        assert rec["value_age_why"], "못 쟀으면 사유를 남긴다(#54·#82)"
+
+    def test_none_still_means_failure_so_old_stubs_survive(self, monkeypatch):
+        """실패 sentinel 을 dict 로 바꾸지 않았다 — `lambda: None` 스텁이
+        그대로 살아야 yfinance 폴백 회귀들이 계약을 계속 잰다(#183)."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: None)
+        monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [
+            {"date": "2026-09-05", "close": 14.9}])
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "fetch_move_rows", lambda *a, **k: ([], ""))
+        monkeypatch.setattr(mt, "_vol_cache_load", lambda k: None)
+        rec = mt.fetch_volatility_snapshot()["vix"]
+        assert rec["source"] == "yfinance(폴백)" and rec["date"] == "2026-09-05"
+        assert rec.get("asof_kind") != "live"   # 종가 경로엔 안 붙는다
+
+    def test_value_and_age_come_from_one_response(self):
+        """나이를 **두 번째 호출**로 물으면 그 사이 갱신된 값의 나이를 옛
+        값에 붙일 수 있다(#160). 같은 rec 에서 재는지 AST 로 못박는다."""
+        import ast
+        import inspect
+        import bot.market_timing as mt
+        fn = ast.parse(inspect.getsource(mt._fetch_vix_naver)).body[0]
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        age = [c for c in calls
+               if getattr(c.func, "attr", "") == "value_age_sec"]
+        assert len(age) == 1, "나이 측정 호출이 하나여야 한다"
+        # 인자가 같은 응답의 레코드(`rec`)여야 한다 — 새로 fetch 하면 안 된다
+        assert any(isinstance(a, ast.Name) and a.id == "rec"
+                   for a in age[0].args), "같은 응답의 rec 로 재지 않는다"
+
+    def test_render_shows_the_collection_time(self):
+        import re
+        import bot.market_timing as mt
+        base = {"value": 15.3, "date": None, "market": "US",
+                "source": "네이버(실시간)", "asof_kind": "live",
+                "value_asof": "13:11", "asof_stale": False,
+                "value_age_min": 2, "value_age_why": "",
+                "history": {"전일": 15.0}}
+        html = mt.render_market_timing_page(
+            {"volatility": {"vix": dict(base)}, "markets": {},
+             "ts": "2026-09-08 13:11"})
+        cur = re.findall(r'<div class="k">현재[^<]*</div>', html)
+        assert cur and "값 수집 13:11" in cur[0], cur
+
+    def test_render_says_stale_minutes_and_missing_reason(self):
+        import re
+        import bot.market_timing as mt
+
+        def _cur(rec):
+            html = mt.render_market_timing_page(
+                {"volatility": {"vix": rec}, "markets": {}, "ts": "x"})
+            return re.findall(r'<div class="k">현재[^<]*</div>', html)[0]
+
+        base = {"value": 15.3, "date": None, "market": "US",
+                "source": "네이버(실시간)", "asof_kind": "live",
+                "history": {}}
+        stale = _cur({**base, "value_asof": "12:05", "asof_stale": True,
+                      "value_age_min": 66, "value_age_why": ""})
+        assert "66분 전" in stale, stale
+        blind = _cur({**base, "value_asof": "", "asof_stale": False,
+                      "value_age_min": None, "value_age_why": "캐시 나이 미측정"})
+        assert "미기록" in blind and "캐시 나이 미측정" in blind, blind
+
+    def test_screen_and_audit_share_one_judgment(self):
+        """감사가 판정을 재구현하면 화면과 다른 기준선을 비교한다(#35·#169).
+        감사가 **제품의 그 함수**를 부르는지 AST 로 못박는다 — 인라인으로
+        되돌리는 변형이 그때 잡힌다."""
+        import ast
+        import pathlib
+        src = pathlib.Path("bot/scripts/board_audit.py").read_text(
+            encoding="utf-8")
+        calls = [n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "attr", "") == "vol_asof_label"]
+        assert calls, "감사가 제품의 판정 함수를 안 부른다(#35)"
+
+    def test_label_fn_covers_every_branch(self):
+        """판정은 세 상태가 아니라 넷이다 — 종가/실시간/낡음/판정불가.
+        대조 0건(나이 미측정)은 통과가 아니라 결함이다(#54)."""
+        import bot.market_timing as mt
+        live = mt.vol_asof_label({"asof_kind": "live", "value_asof": "13:11"})
+        assert live == {"label": "값 수집 13:11", "kind": "live", "verdict": ""}
+        stale = mt.vol_asof_label({"asof_kind": "live", "value_asof": "12:05",
+                                   "asof_stale": True, "value_age_min": 66})
+        assert stale["verdict"] == "stale" and "66분 전" in stale["label"]
+        blind = mt.vol_asof_label({"asof_kind": "live", "value_asof": "",
+                                   "value_age_why": "캐시 나이 미측정"})
+        assert blind["verdict"] == "unmeasured"
+        assert "캐시 나이 미측정" in blind["label"]   # 지어내지 않는다(#165)
+        gone = mt.vol_asof_label({"value": 1.0})
+        assert gone == {"label": "", "kind": "", "verdict": "missing"}
+        close = mt.vol_asof_label({"date": "2026-09-05", "market": "US"})
+        assert close["label"].endswith("종가") and close["verdict"] == ""
+
+    def test_audit_marks_a_blind_live_value_with_a_counted_glyph(self):
+        """sweep 은 ❌/⚠️ 만 센다(#303) — 판정 불가를 무표기로 두면 결산이
+        한 글자도 말하지 않는다."""
+        import ast
+        import pathlib
+        src = pathlib.Path("bot/scripts/board_audit.py").read_text(
+            encoding="utf-8")
+        node = [n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Dict)
+                and {getattr(k, "value", None) for k in n.keys}
+                >= {"unmeasured", "missing"}]
+        assert node, "판정→글자 매핑이 없다"
+        vals = {getattr(k, "value", None): getattr(v, "value", None)
+                for k, v in zip(node[0].keys, node[0].values)}
+        assert "❌" in (vals["unmeasured"] or ""), vals
+        assert "❌" in (vals["missing"] or ""), vals
+        assert "⚠️" in (vals["stale"] or ""), vals
+
+
+
+# ── TW 업종 저장분 폴백이 조용했다 (2026-09-08) ────────────────────────────
+# 실측: ASIA 보드에서 대만만 `2026-09-08 00:57`, 일·중·홍은 `13:11`. TWSE
+# 類股 live 가 비면 4일 창 저장분을 복원하는데 `source` 가 'TWSE 類股' 로
+# 같아 **폴백인지 알 수 없었다**(#42a 폴백은 버그를 숨긴다 · #136 payload 가
+# 밝힌 원천을 화면이 따라야 한다).
+class TestTwSectorStaleFallback20260908:
+
+    def _movers(self, monkeypatch, live_secs, cached_secs):
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "fetch_mi_index", lambda: {
+            "sectors": live_secs, "stocks": [], "ts": "2026-09-08 13:11"})
+        monkeypatch.setattr(tw, "_cached_stale", lambda *a, **k: {
+            "sectors": cached_secs, "stocks": [], "ts": "2026-09-08 00:57"})
+        return tw.fetch_tw_sector_movers()
+
+    def test_collector_marks_the_restored_snapshot(self, monkeypatch):
+        out = self._movers(monkeypatch, [], [{"name": "半導體", "pct": 1.2}])
+        assert out["stale"] is True
+        assert out["ts"] == "2026-09-08 00:57", "저장분의 시각이어야 한다"
+        assert isinstance(out["stale_min"], int)
+
+    def test_live_path_carries_no_stale_flag(self, monkeypatch):
+        out = self._movers(monkeypatch, [{"name": "金融", "pct": -0.4}], [])
+        assert "stale" not in out and out["ts"] == "2026-09-08 13:11"
+
+    def test_age_is_measured_not_guessed(self):
+        import bot.twse_client as tw
+        from datetime import datetime
+        assert tw.snapshot_age_min(
+            "2026-09-08 00:57", now=datetime(2026, 9, 8, 13, 11)) == 734
+        assert tw.snapshot_age_min("", now=datetime(2026, 9, 8)) is None
+        assert tw.snapshot_age_min("nope", now=datetime(2026, 9, 8)) is None
+        # 미래 라벨(시계 어긋남)에 음수를 내지 않는다
+        assert tw.snapshot_age_min(
+            "2026-09-08 13:11", now=datetime(2026, 9, 8, 12, 0)) == 0
+
+    def test_screen_says_it_is_a_restored_snapshot(self):
+        import bot.dashboard as d
+        base = {"up": [{"name": "半導體", "pct": 1.2}], "down": [],
+                "ts": "2026-09-08 00:57", "source": "TWSE 類股"}
+        html = d._render_etf_sector_movers(
+            {**base, "stale": True, "stale_min": 734}, "🇹🇼 대만")
+        assert "저장분" in html and "12시간 전" in html, html[:400]
+        # 플래그가 없는 형제(일·중·홍)는 그대로 — 시장 게이트 없이(#241)
+        plain = d._render_etf_sector_movers(base, "🇯🇵 일본")
+        assert "저장분" not in plain and "2026-09-08 00:57" in plain
+
+
+# ── 실적 캘린더 US 0건이 사유를 안 말했다 (2026-09-08) ─────────────────────
+# 실측: `🇺🇸 미국 실적 0건` 옆에 KR 은 562건. 원천 부재/키 미설정/호출 실패가
+# 전부 같은 `0건` 이라 처방을 고를 수 없었다(#82·#43). 그리고 **빈 응답을
+# 6시간 캐시**해 원천 장애 한 번이 반나절 빈 달력이 됐다(#161·#303).
+class TestEarningsUsEmptyReason20260908:
+
+    def _iso(self, tmp_path, monkeypatch):
+        import bot.earnings_calendar as ec
+        monkeypatch.setattr(ec, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(ec, "_us_name_map", lambda: {})
+        return ec
+
+    def test_missing_key_is_named_not_silent(self, tmp_path, monkeypatch):
+        ec = self._iso(tmp_path, monkeypatch)
+        monkeypatch.setattr(ec, "_api_key", lambda: "")
+        rows, why = ec.us_month(2026, 9)
+        assert rows == [] and why == "key"
+
+    def test_http_failure_and_empty_are_different_branches(
+            self, tmp_path, monkeypatch):
+        """처방이 다르다 — 실패는 재시도, 0건은 원천 사실이다(#82)."""
+        ec = self._iso(tmp_path, monkeypatch)
+        monkeypatch.setattr(ec, "_api_key", lambda: "k")
+
+        class _R:
+            status_code = 403
+
+            def raise_for_status(self):
+                raise RuntimeError("403")
+
+            def json(self):
+                return {}
+        monkeypatch.setattr(ec.requests, "get", lambda *a, **k: _R())
+        assert ec.us_month(2026, 9) == ([], "http")
+
+        class _Ok(_R):
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"earningsCalendar": []}
+        monkeypatch.setattr(ec.requests, "get", lambda *a, **k: _Ok())
+        assert ec.us_month(2026, 9) == ([], "empty")
+
+    def test_empty_result_is_believed_only_briefly(self, tmp_path, monkeypatch):
+        """빈 결과를 6시간 믿으면 원천 장애 한 번이 반나절 빈 달력이 된다
+        (#161·#303 실패는 짧게만)."""
+        import json
+        import os
+        import time
+        ec = self._iso(tmp_path, monkeypatch)
+        monkeypatch.setattr(ec, "_api_key", lambda: "k")
+        f = tmp_path / "2026-09.json"
+        f.write_text(json.dumps([]))
+        old = time.time() - (ec._EMPTY_TTL_SEC + 60)
+        os.utime(f, (old, old))
+        calls = []
+
+        class _Ok:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                calls.append(1)
+                return {"earningsCalendar": [
+                    {"symbol": "AAPL", "date": "2026-09-30", "hour": "amc"}]}
+        monkeypatch.setattr(ec.requests, "get", lambda *a, **k: _Ok())
+        rows, why = ec.us_month(2026, 9)
+        assert calls, "만료된 빈 캐시를 그대로 믿었다"
+        assert why == "" and rows[0]["symbol"] == "AAPL"
+        # 값이 있는 달은 종전대로 6시간 — 방금 쓴 캐시를 다시 안 부른다
+        calls.clear()
+        assert ec.us_month(2026, 9)[0][0]["symbol"] == "AAPL"
+        assert not calls, "정상 캐시까지 짧게 믿는다"
+
+    def test_thin_wrapper_still_returns_rows_for_old_callers(
+            self, tmp_path, monkeypatch):
+        """`econ_calendar` 등 기존 호출부·스텁이 그대로 살아야 한다(#183)."""
+        ec = self._iso(tmp_path, monkeypatch)
+        monkeypatch.setattr(ec, "us_month", lambda y, m: ([{"symbol": "X"}], ""))
+        assert ec._fetch_us_month(2026, 9) == [{"symbol": "X"}]
+
+    def test_page_says_why_it_is_empty(self, monkeypatch):
+        """사유를 계산해 놓고 화면에 안 실으면 없는 것과 같다(#123·#129·#189)."""
+        import bot.earnings_calendar as ec
+        monkeypatch.setattr(ec, "us_month", lambda y, m: ([], "key"))
+        html = ec.render_page(2026, 9, "us")
+        assert "FINNHUB_API_KEY" in html, "0건 사유가 화면에 없다(#43)"
+        monkeypatch.setattr(ec, "us_month", lambda y, m: ([], "empty"))
+        assert "Finnhub" in ec.render_page(2026, 9, "us")
+
+    def test_other_markets_do_not_borrow_the_us_reason(self, monkeypatch):
+        """한 라벨이 두 시장을 대표하면 한쪽은 반드시 거짓말이다(#34).
+
+        ⚠️ 이 동작 단언만으로는 눈이 멀었다 — `market == "us"` 게이트를
+        지우는 뮤테이션이 통과했다(실측). 게이트가 **도달 불가능**했기
+        때문이다(#291 죽은 가드). 실제로 지키는 것은 아래 불변식이다.
+        """
+        import bot.earnings_calendar as ec
+        monkeypatch.setattr(ec, "fetch_month", lambda y, m: [])
+        monkeypatch.setattr(ec, "us_month", lambda y, m: ([], "key"))
+        html = ec.render_page(2026, 9, "kr")
+        assert "FINNHUB_API_KEY" not in html
+        assert "일정이 없습니다" in html      # 그래도 침묵하지는 않는다
+
+    def test_us_reason_is_assigned_only_in_the_us_branch(self):
+        """다른 시장 분기가 `_us_reason` 을 쓰기 시작하면 그때 KR 화면이
+        미국 사유를 실어 거짓말한다(#34). 그 순간 이 회귀가 깨진다."""
+        import ast
+        import inspect
+        import bot.earnings_calendar as ec
+        fn = ast.parse(inspect.getsource(ec.render_page)).body[0]
+        # `_us_reason` 을 대입하는 자리 — 초기화 1 + us 분기 1 이어야 한다
+        assigns = [n for n in ast.walk(fn)
+                   if isinstance(n, (ast.Assign, ast.AugAssign))
+                   and any(getattr(t, "id", None) == "_us_reason"
+                           for tgt in ([n.target] if isinstance(n, ast.AugAssign)
+                                       else n.targets)
+                           for t in ast.walk(tgt) if isinstance(t, ast.Name))]
+        assert len(assigns) == 2, [ast.dump(a)[:80] for a in assigns]
+        us = [n for n in ast.walk(fn) if isinstance(n, ast.If)
+              and "_us_reason" in ast.dump(n)
+              and 'us' in ast.dump(n.test)]
+        assert us, "us 분기 안에서 설정되지 않는다"
+
+    def test_why_entrypoint_is_dispatched(self, monkeypatch, capsys):
+        """정의만 있고 배선이 없으면 안 돈다 — main 을 실제로 태운다(#252)."""
+        import runpy
+        import sys
+        import bot.earnings_calendar as ec
+        monkeypatch.setattr(ec, "us_month", lambda y, m: ([], "empty"))
+        monkeypatch.setattr(ec, "fetch_month", lambda y, m: [])
+        monkeypatch.setattr(sys, "argv", ["earnings_calendar", "2026-09", "--why"])
+        try:
+            runpy.run_module("bot.earnings_calendar", run_name="__main__")
+        except SystemExit as e:
+            assert e.code == 1        # 0건이면 rc=1
+        out = capsys.readouterr().out
+        assert "--why" in out and "미국 0건" in out
+        assert "대조군" in out, "대조군 없이는 '미제공'을 말할 수 없다(#143)"
+
+
+# ── 며칠 전 도장이 정상인지 화면이 안 말했다 (2026-09-08) ──────────────────
+# 실측: 부동산 `점검 09-04 09:01`(96h) 인데 청약은 `09-08` — 주 1회 피드라
+# 정상인데 화면에 그 규약이 없어 "죽은 거냐"를 물어야 했다(#52·#43).
+# 예탁금도 `기준일 20260904` 만 적어 최신인지 알 수 없었다.
+class TestFeedCadenceAndDepositLag20260908:
+
+    def _note(self, monkeypatch, feed, stamp, now):
+        import datetime as dt
+        import bot.feed_health as fh
+        monkeypatch.setattr(fh, "last", lambda f: stamp)
+        monkeypatch.setattr(fh, "datetime", type("D", (), {
+            "now": staticmethod(lambda tz=None: now),
+            "strptime": staticmethod(dt.datetime.strptime)}))
+        return fh.note(feed)
+
+    def test_weekly_feed_says_why_four_days_is_fine(self, monkeypatch):
+        import datetime as dt
+        import bot.feed_health as fh
+        now = dt.datetime(2026, 9, 8, 13, 11, tzinfo=fh._KST)
+        out = self._note(monkeypatch, "realestate", "2026-09-04 09:01", now)
+        assert "⚠️" not in out, "상한(8일) 안인데 경보를 울렸다"
+        assert "4일 전" in out and "상한 8일" in out, out
+
+    def test_frequent_feed_stays_quiet(self, monkeypatch):
+        """늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260)."""
+        import datetime as dt
+        import bot.feed_health as fh
+        now = dt.datetime(2026, 9, 8, 13, 11, tzinfo=fh._KST)
+        out = self._note(monkeypatch, "blog", "2026-09-08 12:40", now)
+        assert out == "점검 09-08 12:40", out
+
+    def test_over_cap_still_warns(self, monkeypatch):
+        import datetime as dt
+        import bot.feed_health as fh
+        now = dt.datetime(2026, 9, 20, 13, 11, tzinfo=fh._KST)
+        out = self._note(monkeypatch, "realestate", "2026-09-04 09:01", now)
+        assert "⚠️" in out and "점검 없음" in out, out
+
+    def test_deposit_lag_is_measured_not_guessed(self):
+        import bot.naver_sector_client as ns
+        assert ns.deposit_lag("20260904", "2026-09-07")["gap_d"] == 3
+        assert ns.deposit_lag("2026.09.04", "2026-09-07")["gap_d"] == 3
+        # 재료가 없으면 판정하지 않는다 — 판정 불가는 통과가 아니다(#54)
+        assert ns.deposit_lag("", "2026-09-07")["gap_d"] is None
+        assert ns.deposit_lag("20260904", None)["gap_d"] is None
+        assert ns.deposit_lag("nope", "2026-09-07")["gap_d"] is None
+
+    def test_deposit_lag_threshold_is_generous_but_fires(self):
+        """연휴를 건너도 안 울리되, 진짜 정체는 잡아야 한다(#27·#25)."""
+        import bot.naver_sector_client as ns
+        assert not ns.deposit_lag("20260904", "2026-09-07")["stale"]
+        assert ns.deposit_lag("20260901", "2026-09-08")["stale"]
+
+    def test_deposit_widget_shows_both_dates(self, monkeypatch):
+        """'다르다'만 말하면 안 통한다 — 두 날짜를 나란히(#202)."""
+        import bot.dashboard as d
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-07", 2))
+        html = d._render_deposit_widget(
+            {"deposit": 1234.0, "date": "20260904", "source": "금융투자협회"})
+        assert "20260904" in html and "09-07" in html and "3일 전" in html
+        # 같은 날이면 군더더기를 안 붙인다
+        same = d._render_deposit_widget(
+            {"deposit": 1.0, "date": "20260907", "source": "금융투자협회"})
+        assert "마지막 완결 세션" not in same, same
+
+
+# ── 값이 안 움직일 때 원천/캐시를 못 갈랐다 (2026-09-08) ───────────────────
+# 실측: 매크로 '알루미늄 합금 3200.0' 스파크 22점이 전부 같은 값인데, 원천이
+# 평평한 건지 우리 캐시가 언 건지 화면으로도 로그로도 알 수 없었다(#21b·#82).
+# 관심종목 `2467.TT` 는 야후에 없는 표기(블룸버그)라 `_detect_country` 가
+# 조용히 'US' 로 추측해 가격이 통째로 비었다(#46).
+class TestFrozenValueAndTickerAlias20260908:
+
+    def test_flatness_is_judged_not_guessed(self):
+        import bot.macro_snapshot as ms
+        # 라인이 방금 왔는데 평평 → 원천이 평평한 것
+        assert ms.flatness_verdict(1, 22, 600)[0] == "source"
+        # 라인 캐시가 TTL 을 넘김 → 캐시 의심
+        assert ms.flatness_verdict(1, 22, 7200)[0] == "cache"
+        assert ms.flatness_verdict(5, 22, 600)[0] == "moving"
+        # 재료가 없으면 통과가 아니라 판정 불가(#54)
+        assert ms.flatness_verdict(1, 22, None)[0] == "unknown"
+        assert ms.flatness_verdict(1, 1, 10)[0] == "unknown"
+
+    def test_flatness_reason_is_always_given(self):
+        """'없음' 만 말하는 진단은 추측을 부른다(#82)."""
+        import bot.macro_snapshot as ms
+        for args in ((1, 22, 600), (1, 22, 7200), (5, 22, 600),
+                     (1, 22, None), (1, 1, 10)):
+            assert ms.flatness_verdict(*args)[1].strip(), args
+
+    def test_sid_is_derived_from_the_definitions(self):
+        """payload 에 sid 를 더하면 캐시 salt 를 같이 올려야 한다 —
+        정의에서 되짚어 그 부채를 만들지 않는다(#38·#304)."""
+        import bot.macro_snapshot as ms
+        assert ms._sid_for("aluminum") == "ALI=F"
+        assert ms._sid_for("모르는키") == ""
+
+    def test_macro_why_is_dispatched_and_reports_zero_as_failure(
+            self, monkeypatch, capsys):
+        import runpy
+        import sys
+        import bot.macro_snapshot as ms
+        monkeypatch.setattr(ms, "fetch_macro_snapshot", lambda: {
+            "domestic": [], "global": []})
+        monkeypatch.setattr(sys, "argv", ["macro_snapshot", "없는키", "--why"])
+        try:
+            runpy.run_module("bot.macro_snapshot", run_name="__main__")
+        except SystemExit as e:
+            assert e.code == 1, "대조 0건은 통과가 아니다(#54)"
+        assert "대조할 카드가 없다" in capsys.readouterr().out
+
+    def test_unknown_yahoo_suffix_is_not_guessed_as_us(self):
+        """알 수 없는 접미를 US 로 추측하면 조용히 전부 실패한다(#46)."""
+        import bot.market_favorites as mf
+        assert mf._detect_country("2467.TT") == "TW"
+
+    def test_alias_resolves_to_yahoo_candidates_in_order(self):
+        import bot.market_favorites as mf
+        assert mf.yf_candidates("2467.TT") == ["2467.TW", "2467.TWO"]
+        # 야후가 아는 표기는 no-op — 대부분의 종목에 영향 0
+        assert mf.yf_candidates("AAPL") == ["AAPL"]
+        assert mf.yf_candidates("005930.KS") == ["005930.KS"]
+        assert mf.yf_candidates("") == []
+
+    def test_resolution_is_measured_not_assumed(self, monkeypatch):
+        """이름이 아니라 실측으로 고른다(#25) — 첫 후보가 비면 다음을 쓴다."""
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_YF_RESOLVED", {})
+        seen = []
+
+        class _T:
+            def __init__(self, sym):
+                seen.append(sym)
+                self.sym = sym
+
+            def history(self, period="5d"):
+                return [1] if self.sym.endswith(".TWO") else []
+        monkeypatch.setitem(__import__("sys").modules, "yfinance",
+                            type("M", (), {"Ticker": _T}))
+        assert mf._resolve_yf("2467.TT") == "2467.TWO"
+        assert seen == ["2467.TW", "2467.TWO"], seen
+        # 두 번째 호출은 기억한다(네트워크 0)
+        seen.clear()
+        assert mf._resolve_yf("2467.TT") == "2467.TWO" and not seen
+
+    def test_all_candidates_empty_keeps_the_users_ticker(self, monkeypatch):
+        """조용히 지어낸 심볼로 바꾸지 않는다 — 원문을 돌려주고 로그로 알린다."""
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_YF_RESOLVED", {})
+
+        class _T:
+            def __init__(self, sym):
+                pass
+
+            def history(self, period="5d"):
+                return []
+        monkeypatch.setitem(__import__("sys").modules, "yfinance",
+                            type("M", (), {"Ticker": _T}))
+        assert mf._resolve_yf("2467.TT") == "2467.TT"
+
+    def test_screen_says_which_symbol_was_queried(self):
+        """조용히 바꾸면 사용자가 자기 목록과 화면 값을 대조하지 못한다(#136).
+
+        ⚠️ 페이지 전체 grep 은 옆 문구가 대신 만족시킨다(#75) — 관심종목
+        **행을 만드는 그 조각**만 잘라서 본다(#55·#174).
+        """
+        import inspect
+        import re
+        import bot.dashboard as d
+        src = inspect.getsource(d)
+        seg = src[src.index("var da = 'data-name="):]
+        seg = seg[:seg.index("}}).join('');")]
+        assert "f.yf_ticker" in seg, "행 렌더가 조회 심볼을 안 밝힌다"
+        # 티커 줄 안에 있어야 한다 — 엉뚱한 칸에 붙으면 읽히지 않는다
+        assert re.search(r"\+ f\.ticker\s*\n\s*\+ \(f\.yf_ticker", seg), seg[:400]
+
+    def test_generated_favorites_js_still_parses(self):
+        """생성한 JS 는 파이썬이 문법을 안 봐준다 — 파서에 태운다(#26)."""
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        import inspect
+        import bot.dashboard as d
+        node = shutil.which("node")
+        if not node:
+            import pytest
+            pytest.skip("node 없음")
+        src = inspect.getsource(d)
+        seg = src[src.index("var da = 'data-name="):]
+        seg = seg[:seg.index("}}).join('');")]
+        # f-string 이스케이프 되돌리기 — 이 조각은 f-string 안에 산다
+        js = "function _row(f, flag, pctVal, curCell, pctCell) {\n" + \
+             seg.replace("{{", "{").replace("}}", "}") + "\n}"
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(js)
+            path = fh.name
+        r = subprocess.run([node, "--check", path], capture_output=True,
+                           text=True)
+        assert r.returncode == 0, r.stderr[:600]
+
+
+# ── 한 봉 보강의 사거리가 1세션이었다 (2026-09-08, #301 의 구조 결함) ─────
+# 야후가 지수 종가를 하루 늦게 주면 시세 한 봉을 잇는데, 붙일 자격이
+# '시세 prev == 야후 마지막 봉' 이라 **다음 장이 열리면 영영 못 잇는다**.
+# 그리고 네이버 일봉 폴백은 '행 수가 모자랄 때'만 걸려 있어 그 경우 한 번도
+# 안 탔다(#136 폴백 조건은 '실패'가 아니라 '요구를 충족했나').
+class TestQuoteTailRange20260908:
+
+    def test_two_sessions_behind_is_its_own_branch(self):
+        """'장중이라 못 붙였다'와 '사거리를 넘었다'는 처방이 다르다(#82)."""
+        import bot.market_timing as mt
+        code, d = mt.tail_diag("2026-09-08", "2026-09-04", 100.0,
+                               {"close": 101, "prev": 100}, gap_sessions=2)
+        assert code == "too_far_behind" and d["gap_sessions"] == 2
+        assert "1세션만" in mt.tail_reason(code, d)
+
+    def test_one_session_gap_still_bridges(self):
+        import bot.market_timing as mt
+        code, _ = mt.tail_diag("2026-09-08", "2026-09-05", 100.0,
+                               {"close": 101, "prev": 100}, gap_sessions=1)
+        assert code == "ok"
+
+    def test_unmeasurable_gap_does_not_block_the_bridge(self):
+        """판정 불가를 '너무 뒤처짐'으로 읽으면 캘린더 없는 환경에서 보강이
+        통째로 죽는다 — 0 이 아니라 None 이어야 하는 이유(#54)."""
+        import bot.market_timing as mt
+        code, _ = mt.tail_diag("2026-09-08", "2026-09-05", 100.0,
+                               {"close": 101, "prev": 100}, gap_sessions=None)
+        assert code == "ok"
+
+    def test_sessions_behind_counts_sessions_not_calendar_days(self):
+        import bot.market_calendar as mc
+        n = mc.sessions_behind("KR", "2026-09-04", "2026-09-07")
+        if n is None:
+            import pytest
+            pytest.skip("exchange_calendars 미설치")
+        assert n == 1, "금→월은 1세션이다(주말은 세션이 아니다, #29)"
+        assert mc.sessions_behind("KR", "2026-09-07", "2026-09-07") == 0
+        assert mc.sessions_behind("KR", "", "2026-09-07") is None
+
+    def test_quote_is_not_even_asked_when_out_of_range(self, monkeypatch):
+        """사거리를 넘었으면 시세를 부를 이유가 없다 — 순손실 요청 금지."""
+        import bot.market_timing as mt
+        asked = []
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-08", 2))
+        monkeypatch.setattr(mt, "_market_quote",
+                            lambda t: asked.append(t) or {"close": 1, "prev": 1})
+        monkeypatch.setattr("bot.market_calendar.sessions_behind",
+                            lambda m, h, e: 3)
+        rows = [{"date": "2026-09-02", "close": 100.0}]
+        assert mt._quote_tail("^KS11", rows) == rows
+        assert not asked, "사거리 밖인데 시세를 물었다"
+
+    def test_stale_series_falls_back_to_dated_daily_bars(self, monkeypatch):
+        """야후가 여러 세션 뒤처지면 **일봉**으로 잇는다 — 한 봉으로는 못
+        잇는 구간이다(#301). 종전엔 행 수가 모자랄 때만 걸려 안 탔다."""
+        import bot.market_timing as mt
+        import bot.chart_data as cd
+        stale = {"candles": [{"time": "2026-09-01", "close": 100.0,
+                              "high": 100.0, "low": 100.0, "volume": 1}]}
+        fresh_rows = [{"date": d, "close": 100.0, "high": 100.0,
+                       "low": 100.0, "volume": 1}
+                      for d in ("2026-09-01", "2026-09-07")]
+        monkeypatch.setattr(mt, "_payload_to_rows",
+                            lambda p, days: (fresh_rows if p is fresh_rows
+                                             else [{"date": "2026-09-01",
+                                                    "close": 100.0}]))
+        monkeypatch.setattr(cd, "fetch_chart_payload",
+                            lambda *a, **k: stale)
+        called = []
+        monkeypatch.setattr(cd, "_fetch_naver_daily",
+                            lambda t, p: called.append(t) or fresh_rows)
+        monkeypatch.setattr(mt, "_vol_age_days",
+                            lambda d, m=None: {"2026-09-01": 7,
+                                               "2026-09-07": 1}.get(d))
+        monkeypatch.setattr(mt, "_quote_tail", lambda t, r: r)
+        out = mt.fetch_index_history("^KS11", days=120)
+        assert called == ["^KS11"], "신선도 미달인데 일봉을 안 물었다"
+        assert out[-1]["date"] == "2026-09-07"
+
+    def test_fresh_series_does_not_pay_for_the_fallback(self, monkeypatch):
+        """정상일 땐 추가 HTTP 0 — 늘 부르면 티커마다 순손실이다(#116)."""
+        import bot.market_timing as mt
+        import bot.chart_data as cd
+        rows = [{"date": "2026-09-07", "close": 100.0}]
+        monkeypatch.setattr(mt, "_payload_to_rows", lambda p, days: rows)
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: {"x": 1})
+        called = []
+        monkeypatch.setattr(cd, "_fetch_naver_daily",
+                            lambda t, p: called.append(t) or None)
+        monkeypatch.setattr(mt, "_vol_age_days", lambda d, m=None: 0)
+        monkeypatch.setattr(mt, "_quote_tail", lambda t, r: r)
+        mt.fetch_index_history("^KS11", days=120)
+        assert not called
