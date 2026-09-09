@@ -470,8 +470,18 @@ def fetch_intl_highlow_live(market: str) -> dict | None:
         r["ind"] = inds.get(r["ticker"])
     high.sort(key=lambda r: (r.get("mcap") or 0), reverse=True)
     low.sort(key=lambda r: (r.get("mcap") or 0), reverse=True)
-    out = {"high": high, "low": low, "ts": _now_label(),
-           "source": f"{_CFG[market][3]} — 네이버 현재가 × 52주 baseline(live)"}
+    src = f"{_CFG[market][3]} — 네이버 현재가 × 52주 baseline(live)"
+    try:
+        # 공식 상장목록 원천이 죽어 만료 캐시로 버티는 중이면 여기서도 말한다 —
+        # Bollinger 카드만 고치면 같은 유니버스를 쓰는 이 보드는 조용히 낡은
+        # 목록을 오늘 것처럼 보인다(#38·#43·#306).
+        from bot.intl_universe import stale_hours
+        st = stale_hours(market)
+        if st is not None:
+            src += f" · 상장목록 {st / 24:.0f}일 전 캐시(원천 조회 실패)"
+    except Exception:
+        pass
+    out = {"high": high, "low": low, "ts": _now_label(), "source": src}
     _cache_write(cache, out)
     return out
 
