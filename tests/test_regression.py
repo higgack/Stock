@@ -51920,6 +51920,91 @@ class TestBollingerKrUniverse20260909:
         assert code == "005930" and name == "삼성전자"
         assert mcap == 5123456.0            # 원 → 억 (KIS 마스터와 같은 단위)
 
+    def test_naver_rung_tries_every_candidate_host_and_reports_each(
+            self, monkeypatch):
+        """2026-09-09 VM 실측: `m.stock.naver.com` 판이 네 표기 모두 HTTP 400 ·
+        **빈 본문**이라 ② 가 죽어 있었는데, 진단은 `키 []` 만 찍고 어느 호스트가
+        무엇을 돌려줬는지 한 마디도 안 했다 — 빈 본문이라 `raw` 가 falsy 여서
+        원문 줄이 통째로 생략됐다(#82 '없음'만 말하는 진단 · #109 표본 원문).
+
+        계약: 후보를 **전부** 시도하고 각 후보의 (호스트·상태·본문 사실)을
+        진단에 남긴다. 빈 본문은 '못 받음'과 다른 사실이므로 그렇게 말한다.
+        """
+        import bot.bollinger_board as bb
+
+        seen = []
+
+        class _R:
+            def __init__(self, code, body, ctype="application/json"):
+                self.status_code, self._b = code, body
+                self.headers = {"Content-Type": ctype}
+
+            @property
+            def text(self):
+                return self._b
+
+            def json(self):
+                import json
+                return json.loads(self._b)
+
+        def _get(url, **kw):
+            seen.append(url)
+            if url.startswith("https://api.stock.naver.com"):
+                return _R(200, '{"stocks": [{"itemCode": "005930", '
+                               '"stockName": "\uc0bc\uc131\uc804\uc790"}]}')
+            return _R(400, "")          # 실측 모양: 400 + 빈 본문
+
+        monkeypatch.setattr(bb, "_NAVER_INDEX_URLS", (
+            "https://m.stock.naver.com/api/index/{code}/enrollStocks"
+            "?page={page}&pageSize={size}",
+            "https://api.stock.naver.com/index/{code}/enrollStocks"
+            "?page={page}&pageSize={size}",
+        ))
+        import requests
+        monkeypatch.setattr(requests, "get", _get)
+
+        items, diag = bb._naver_index_stocks("KPI200")
+        hosts = [a["host"] for a in diag["tried"]]
+        assert hosts == ["m.stock.naver.com", "api.stock.naver.com"], (
+            "죽은 후보에서 멈추면 살아 있는 후보를 영영 안 본다")
+        dead = diag["tried"][0]
+        assert dead["http"] == 400 and dead["items"] == 0
+        assert "빈 본문" in dead["body"], (
+            "빈 본문을 침묵으로 두면 '못 받음'과 구별되지 않는다(#82)")
+        assert len(items) == 1 and diag.get("host") == "api.stock.naver.com"
+        assert not any("m.stock" in u for u in seen[2:]), (
+            "항목을 얻은 뒤 더 묻는 것은 순손실 요청이다")
+
+    def test_naver_candidate_results_reach_the_why_output(self, monkeypatch,
+                                                          capsys):
+        """진단을 모아 놓고 표시에 배선하지 않으면 없는 것과 같다 —
+        #123·#129·#189·#228 계열. 후보별 줄이 실제로 화면에 나가는지 본다."""
+        import bot.bollinger_board as bb
+
+        monkeypatch.setattr(bb, "kr_universe", lambda **kw: ({}, {
+            "rungs": [{"n": 2, "name": "네이버", "note": "n", "ok": False,
+                       "why": "0개", "diag": {"indices": {"KOSPI200": {
+                           "tried": {"KPI200": {
+                               "http": 400, "items": 0, "keys": [], "raw": "",
+                               "tried": [{"host": "m.stock.naver.com",
+                                          "http": 400, "items": 0,
+                                          "body": "빈 본문 (Content-Type "
+                                                  "text/html)"}]}}}}}}],
+            "rung": None, "reason": "x"}))
+        bb._why_universe_kr()
+        out = capsys.readouterr().out
+        assert "m.stock.naver.com: HTTP 400" in out
+        assert "빈 본문" in out, "본문 사실이 화면까지 가야 다음 라운드가 산다"
+
+    def test_twenty_session_delta_carries_its_unit(self):
+        """같은 줄의 d5 는 '종목'인데 d20 만 맨 숫자라 `-35.4` 를 %로 읽게
+        했다(2026-09-09 VM 실측 출력). 한 줄에 단위가 갈리면 거짓말이다(#34)."""
+        from bot.bollinger_board import _trend_line
+        line = _trend_line({"trend": {"dir": "up", "d5": 3.6, "pct5": 40.0,
+                                      "d20": -35.4, "th": 3.5}})
+        assert "3.6 종목" in line and "-35.4 종목" in line
+        assert "-35.4 vs" not in line
+
     def test_universe_cache_is_keyed_by_the_parser_spec(self, monkeypatch,
                                                         tmp_path):
         """버전 상수를 손으로 올리는 방식은 이 레포에서 여섯 번 졌다 —
@@ -51938,6 +52023,16 @@ class TestBollingerKrUniverse20260909:
         assert bb._kr_universe_sig() != sig_before, "지문이 컬럼 폭에 반응 안 함"
         bb.kr_universe()
         assert len(hits) == 2, "지문이 바뀌었는데 옛 캐시를 그대로 썼다"
+
+    def test_universe_signature_reacts_to_the_source_urls(self, monkeypatch):
+        """원천 URL 도 '파서를 정하는 것'이다 — 2026-09-09 네이버 후보를 다른
+        호스트로 바꾸면서 지문에 넣는 걸 빠뜨렸고, 그대로 뒀으면 7일 캐시가 옛
+        결과를 서빙해 fix 가 화면에 한 글자도 안 닿았다(#18·#21b·#216)."""
+        from bot import bollinger_board as bb
+        before = bb._kr_universe_sig()
+        monkeypatch.setattr(bb, "_NAVER_INDEX_URLS",
+                            bb._NAVER_INDEX_URLS + ("https://x/{code}",))
+        assert bb._kr_universe_sig() != before, "지문이 원천 URL 에 반응 안 함"
 
 
 class TestBollingerCollector20260909:

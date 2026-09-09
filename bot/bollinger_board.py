@@ -265,56 +265,93 @@ def _rung_kis(*, raw: dict | None = None) -> tuple[dict, str, dict]:
 
 
 # ── KR 유니버스 ② 네이버 지수 구성종목(무키) ───────────────────────────────
-# 지수 코드 표기가 확실하지 않아 **두 표기를 모두** 시도한다 — 이름을 추측해
-# 하나만 걸면 그 표기가 아닐 때 원천이 통째로 죽는다(#25 능력은 실측).
+# 지수 코드 표기도 **호스트·경로**도 확실하지 않아 후보를 전부 시도하고 각
+# 후보가 무엇을 돌려줬는지 진단에 남긴다 — 이름을 추측해 하나만 걸면 그 표기가
+# 아닐 때 원천이 통째로 죽는다(#25 능력은 실측).
+#
+# 2026-09-09 VM 실측: `m.stock.naver.com` 판은 네 표기 모두 **HTTP 400 · 빈
+# 본문**이라 이 단이 죽어 있었다(#42a 폴백은 안 타면 죽은 줄도 모른다). 레포의
+# 다른 모든 네이버 호출이 `api.stock.naver.com` 을 쓰므로 그 호스트를 후보에
+# 넣었으나 **아직 실측 전이다** — 어느 후보가 답하는지는 `--why` 가 원문으로
+# 말한다(#12 재기 전에 단정하지 않는다). 파싱은 기존 JSON 봉투만 하고, 다른
+# 모양이 오면 원문을 남겨 다음 라운드가 실측으로 파서를 짠다(#155).
 _NAVER_INDEX_CODES = {
     "KOSPI200": (("KPI200", "KOSPI200"), ".KS"),
     "KOSDAQ150": (("KQ150", "KOSDAQ150"), ".KQ"),
 }
-_NAVER_INDEX_URL = ("https://m.stock.naver.com/api/index/{code}/enrollStocks"
-                    "?page={page}&pageSize={size}")
+_NAVER_INDEX_URLS = (
+    "https://api.stock.naver.com/index/{code}/enrollStocks"
+    "?page={page}&pageSize={size}",
+    "https://m.stock.naver.com/api/index/{code}/enrollStocks"
+    "?page={page}&pageSize={size}",
+)
+
+
+def _body_note(resp) -> str:
+    """응답 본문을 **사실대로** 한 줄로. 빈 본문은 '못 받음'과 다른 사실이므로
+    그렇게 말한다 — '없음'만 말하는 진단은 추측을 부른다(#82). 형식·길이를
+    같이 적어 다음 라운드가 파서를 실측으로 짠다(#109·#155)."""
+    try:
+        body = resp.text or ""
+    except Exception as exc:                                   # noqa: BLE001
+        return f"본문 읽기 실패: {type(exc).__name__}: {exc}"
+    ctype = (resp.headers.get("Content-Type") or "?").split(";")[0].strip()
+    if not body:
+        return f"빈 본문 (Content-Type {ctype})"
+    return f"{ctype} {len(body)}자: {body[:300]}"
 
 
 def _naver_index_stocks(code: str, size: int = 100,
                         max_pages: int = 10) -> tuple[list, dict]:
-    """(항목 목록, 진단). 봉투가 어떻든 원문을 진단에 남긴다 — 0건일 때
-    '원천에 없음'과 '우리가 못 읽음'을 가르는 유일한 재료다(#109·#143)."""
-    diag: dict = {"http": None, "pages": 0, "raw": "", "keys": []}
-    items: list = []
+    """(항목 목록, 진단). 후보 URL 을 순서대로 시도하고 **각 후보가 무엇을
+    돌려줬는지**(상태·형식·길이·원문 앞머리)를 전부 남긴다 — 0건일 때
+    '원천에 없음'과 '우리가 못 읽음'을 가르는 유일한 재료다(#109·#143).
+    항목을 얻은 후보에서 멈춘다: 뒤 후보는 순손실 요청이다."""
+    diag: dict = {"http": None, "pages": 0, "raw": "", "keys": [], "tried": []}
     try:
         import requests
     except Exception as exc:                                   # noqa: BLE001
         diag["raw"] = f"requests import 실패: {exc}"
         return [], diag
-    for page in range(1, max_pages + 1):
-        url = _NAVER_INDEX_URL.format(code=code, page=page, size=size)
-        try:
-            r = requests.get(url, timeout=12,
-                             headers={"User-Agent": _KIS_UA,
-                                      "Referer": "https://m.stock.naver.com/"})
-        except Exception as exc:                               # noqa: BLE001
-            diag["raw"] = diag["raw"] or f"{type(exc).__name__}: {exc}"
-            break
-        diag["http"] = r.status_code
-        if r.status_code != 200:
-            diag["raw"] = diag["raw"] or r.text[:500]
-            break
-        try:
-            d = r.json()
-        except Exception:                                      # noqa: BLE001
-            diag["raw"] = diag["raw"] or r.text[:500]
-            break
-        got = _naver_items(d)
-        if not got:
-            diag["raw"] = diag["raw"] or r.text[:500]
-            break
-        items += got
-        diag["pages"] = page
-        if len(got) < size:
-            break
-    if items and not diag["keys"]:
-        diag["keys"] = sorted(items[0].keys())[:20]
-    return items, diag
+    for tmpl in _NAVER_INDEX_URLS:
+        host = tmpl.split("/")[2]
+        attempt: dict = {"host": host, "http": None, "body": "", "items": 0}
+        items: list = []
+        for page in range(1, max_pages + 1):
+            url = tmpl.format(code=code, page=page, size=size)
+            try:
+                r = requests.get(url, timeout=12,
+                                 headers={"User-Agent": _KIS_UA,
+                                          "Referer": f"https://{host}/"})
+            except Exception as exc:                           # noqa: BLE001
+                attempt["body"] = f"{type(exc).__name__}: {exc}"
+                break
+            attempt["http"] = r.status_code
+            if r.status_code != 200:
+                attempt["body"] = _body_note(r)
+                break
+            try:
+                d = r.json()
+            except Exception:                                  # noqa: BLE001
+                attempt["body"] = _body_note(r)
+                break
+            got = _naver_items(d)
+            if not got:
+                attempt["body"] = _body_note(r)
+                break
+            items += got
+            diag["pages"] = page
+            if len(got) < size:
+                break
+        attempt["items"] = len(items)
+        diag["tried"].append(attempt)
+        diag["http"] = attempt["http"]
+        diag["raw"] = diag["raw"] or attempt["body"]
+        if items:
+            diag["keys"] = sorted(items[0].keys())[:20]
+            diag["host"] = host
+            return items, diag
+    return [], diag
 
 
 def _naver_items(payload) -> list:
@@ -378,7 +415,8 @@ def _rung_naver() -> tuple[dict, str, dict]:
         for code in codes:
             items, d = _naver_index_stocks(code)
             detail[code] = {"http": d["http"], "items": len(items),
-                            "keys": d["keys"], "raw": d["raw"][:500]}
+                            "keys": d["keys"], "raw": d["raw"][:500],
+                            "tried": d.get("tried") or []}
             if len(items) > len(best):
                 best, best_code = items, code
         diag["indices"][index_name] = {"tried": detail, "picked": best_code,
@@ -502,10 +540,13 @@ def _kr_universe_sig() -> str:
 
     버전 상수를 손으로 올리는 방식은 이 레포에서 여섯 번 졌다(#18·#21b·#95·
     #124·#198·#216). 컬럼 폭·컬럼명·지수 코드·기대 개수가 바뀌면 다음 조회에서
-    자동으로 다시 받는다(규율이 아니라 구조로, #119)."""
+    자동으로 다시 받는다(규율이 아니라 구조로, #119). 원천 **URL** 도
+    파서를 정한다 — 후보를 바꿔 놓고 옛 캐시를 서빙하면 fix 가 화면에 한 글자도
+    안 닿는다(2026-09-09 네이버 후보 교체 때 실제로 빠뜨렸다가 셀프리뷰가 잡음)."""
     import hashlib
     blob = repr((_KR_UNIVERSE_VER, _KOSPI_WIDTHS, _KOSPI_COLS, _KOSDAQ_WIDTHS,
-                 _KOSDAQ_COLS, _KIS_TAIL, _NAVER_INDEX_CODES, _KR_EXPECT))
+                 _KOSDAQ_COLS, _KIS_TAIL, _NAVER_INDEX_CODES,
+                 _NAVER_INDEX_URLS, _KR_EXPECT))
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
 
 
@@ -1065,7 +1106,7 @@ def _trend_line(d: dict) -> str:
         bits.append(f"({_n(tr.get('pct5'))}%)")
     bits.append("vs 5세션 전")
     if tr.get("d20") is not None:
-        bits.append(f"· {_n(tr.get('d20'))} vs 20세션 전")
+        bits.append(f"· {_n(tr.get('d20'))} 종목 vs 20세션 전")
     bits.append(f"· 문턱 ±{_n(tr.get('th'))}")
     return " ".join(bits)
 
@@ -1354,7 +1395,10 @@ def _why_universe_kr() -> None:
             for code, t in (info.get("tried") or {}).items():
                 _p(f"      {idx}/{code}: HTTP {t.get('http')} · "
                    f"항목 {t.get('items')} · 키 {t.get('keys')}")
-                if not t.get("items") and t.get("raw"):
+                for a in (t.get("tried") or []):
+                    _p(f"        {a.get('host')}: HTTP {a.get('http')} · "
+                       f"항목 {a.get('items')} · {a.get('body') or '—'}")
+                if not (t.get("tried") or t.get("items")) and t.get("raw"):
                     _p(f"        원문: {t['raw'][:300]}")
     if "overlap" in meta:
         n = meta["overlap"]
