@@ -655,11 +655,19 @@ def _universe(market: str) -> tuple[dict, dict]:
             names = _sp500_names() or {}
             meta["label"] = "S&P 500"
         elif m in ("JP", "HK"):
-            from bot.intl_universe import full_universe_names
-            from bot.stock_screener import (_get_hk_universe,
-                                            _get_jp_universe)
-            tickers = list((_get_jp_universe() if m == "JP"
-                            else _get_hk_universe()) or [])
+            # 52주 신고저 보드와 **같은 경로**(intl_universe.full_universe →
+            # 시총상위 캡). 옛 판은 스크리너의 `_get_jp_universe` 를 거쳤는데 그
+            # 함수는 결과를 자기 7일 캐시(jp_n225.json)에 굳혀서, 만료 캐시로
+            # 살린 목록이 다음 실행부터 **원천을 안 물은 채** 서빙됐다 — stale
+            # 깃발이 안 서고 화면이 "공식 상장목록 기준" 이라고만 말했다(2026-09-09
+            # VM 실측: 9일 전 목록인데 캐시 문구가 사라짐. #43·#306 두 번째 캐시
+            # 층이 첫 층의 사실을 지운다). intl_universe 의 7일 캐시가 있어 평소
+            # 비용은 같고, 원천이 죽어 있을 땐 3시간마다 다시 묻는다(그래야
+            # 목록 페이지 탐색·복구도 돈다).
+            from bot.intl_universe import full_universe, full_universe_names
+            from bot.stock_screener import _cap_by_liq
+            full = list(full_universe(m) or [])
+            tickers = _cap_by_liq(full, m) if len(full) > 100 else []
             names = full_universe_names(m) or {}
             meta["label"] = "시총상위 (공식 상장목록 기준)"
             from bot.intl_universe import stale_hours
@@ -1597,9 +1605,20 @@ def _why_universe_intl(m: str) -> list[str]:
         name = f"full_universe_{m}_v2.json"
         age = cache_age_sec(name)
         out.append(f"공식 상장목록 7일 캐시: {_CACHE_DIR / name} "
-                   f"({'없음' if age is None else f'{age / 3600:.1f}시간 전 기록'})")
+                   f"({'없음' if age is None else f'{age / 3600:.1f}시간 전 기록'})"
+                   " — 이 파일이 오늘 다시 써졌으면 원천이 살아난 것")
     except Exception as exc:                                   # noqa: BLE001
         out.append(f"캐시 경로 확인 실패: {type(exc).__name__}: {exc}")
+    try:
+        import time as _t
+        from bot import stock_screener as ss
+        sc = ss._JP_UNIVERSE_CACHE if m == "JP" else ss._HK_UNIVERSE_CACHE
+        sage = (_t.time() - sc.stat().st_mtime) / 3600 if sc.exists() else None
+        out.append(f"스크리너 유니버스 캐시: {sc} "
+                   f"({'없음' if sage is None else f'{sage:.1f}시간 전 기록'})"
+                   " — Bollinger 는 이 층을 읽지 않는다(스크리너용, 만료 폴백분은 안 굳힘)")
+    except Exception as exc:                                   # noqa: BLE001
+        out.append(f"스크리너 캐시 확인 실패: {type(exc).__name__}: {exc}")
     try:
         full = iu.full_universe(m)
         st = iu.stale_hours(m)
@@ -1647,7 +1666,10 @@ def _why(market: str) -> int:
         uni, meta = _universe(m)
         _p(f"   {universe_label(m, meta)}"
            f"{' · ' + meta['reason'] if meta.get('reason') else ''}")
-        if not uni and m in ("JP", "HK"):
+        if m in ("JP", "HK"):
+            # 비었을 때만 찍으면 '만료 캐시로 살아 있는' 상태가 침묵한다 —
+            # 2026-09-09 실측: 캐시 문구가 사라졌는데 원천을 물은 흔적이 없어
+            # 복구인지 두 번째 캐시 층인지 출력만으론 못 갈랐다(#54·#82).
             for line in _why_universe_intl(m):
                 _p(f"   {line}")
     _p("")
