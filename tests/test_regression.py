@@ -52775,6 +52775,27 @@ class TestHighlowUniverseStaleNote20260909:
         assert "캐시" not in ns["out"]["source"]
 
 
+class TestBollingerTableShowsEveryMatch20260909:
+    """사용자 2026-09-09: "조건에 맞는건 가능한 다 나오게 해줘". 옛 상한 50 은
+    S&P500 같은 유니버스에서 조용히 잘랐다 — 카드는 '오늘 돌파 62종목'인데 표는
+    50행이면 총계와 소계가 갈린다(#45). 상한은 어느 유니버스보다 커야 한다."""
+
+    def test_cap_exceeds_every_default_universe(self):
+        from bot import bollinger_board as bb
+        assert bb._TABLE_ROWS >= max(bb._DEFAULT_CAP.values()), (
+            "표 상한이 유니버스보다 작으면 돌파 종목이 조용히 잘린다")
+
+    def test_all_matching_rows_reach_the_table(self, monkeypatch):
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_NAME_KICK", lambda pairs: None)
+        rows = [{"ticker": f"{i:04d}.T", "name": f"n{i}", "close": 1.0,
+                 "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0,
+                 "mcap": float(600 - i), "new": False} for i in range(600)]
+        html = bb._rows_table(rows[:bb._TABLE_ROWS], len(rows), 600, "t")
+        assert "0599.T" in html, "시총 최하위까지 표에 있어야 한다"
+        assert "시총 상위만 표시" not in html
+
+
 class TestBollingerReviewFindings20260909:
     """배포전 독립 리뷰(2026-09-09)가 잡은 다섯. 전부 **동작으로** 고정한다 —
     이름·모양만 재면 '호출은 남기고 결과를 버리는' 변형을 못 잡는다(#313).
