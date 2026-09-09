@@ -52902,6 +52902,35 @@ class TestBollingerGuideAnswersTheQuestions20260909:
         # 옛 문구 하나만 남고 중복되지 않았는지(블록 교체가 잘못되면 두 번 나온다)
         assert g.count("<b>위험 관리</b>") == 1 and g.count("<b>이력 백분위</b>") == 1
 
+    def test_guide_explains_what_the_screen_shows_but_never_defined(self):
+        """2026-09-09 "판단해서 이 보드를 읽는데 필요한 내용이 있다면 추가":
+        화면에 있는데 뜻이 없던 것들 — 국면 9개 이름 · 수준은 5일 평균으로 · 추이
+        문턱 · 카드 숫자 · 차트 범례 · 표 열 · 잠정/부분 스캔/갱신 · 시장별
+        유니버스. 국면·유니버스 표는 **상수에서 생성**돼야 코드와 안 갈린다(#55)."""
+        from bot import bollinger as b
+        from bot import bollinger_board as bb
+        g = self._guide()
+        for name in set(b.PHASE.values()):
+            assert name in g, f"국면 '{name}' 이 가이드에 없다"
+        for _flag, kname in bb._MARKET_META.values():
+            assert kname in g, f"시장 '{kname}' 유니버스 줄이 없다"
+        assert "5일 평균으로 판정" in g and "유니버스의 1%" in g
+        assert "N ÷ M" in g                                    # 카드 X% 정의
+        assert "종가 ÷ 상단밴드 − 1" in g                       # 돌파폭
+        assert "옅은 막대 = 백필" in g and "주황" in g and "점선" in g
+        assert "🕒 잠정" in g and "⚠️ 부분 스캔" in g and "3시간" in g
+        # 생성 표가 진짜 상수에서 왔는지 — 손으로 적은 표는 상수를 바꿔도 안 변한다
+        assert bb._phase_table_html().count("<td>") == len(b.PHASE)
+        assert bb._universe_table_html().count("<tr>") == len(bb._MARKET_META)
+        # ⚠️ 헬퍼가 맞아도 가이드가 그걸 **안 쓰면** 소용없다(#20). 국면 이름을
+        # 손글씨로 8개만 적는 뮤테이션이 통과했다 — 빠진 "에너지 소진"을 옆 문장이
+        # 대신 만족시켰다(#75). 생성된 표 HTML 이 가이드 원문에 그대로 있어야 한다.
+        raw = _bollinger_html()
+        raw = raw[raw.index("이 보드 읽는 법"):]
+        raw = raw[:raw.index("</details>")]
+        assert bb._phase_table_html() in raw, "국면 표가 상수에서 생성되지 않았다"
+        assert bb._universe_table_html() in raw, "유니버스 표가 상수에서 생성되지 않았다"
+
     def test_why_universe_line_does_not_double_count(self, monkeypatch, capsys):
         """`--why JP` 실측 출력 `… · 225종목 · 225종목` — universe_label 이 이미
         개수를 실으므로 한 번만(#45)."""

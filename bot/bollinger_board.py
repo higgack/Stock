@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from bot.bollinger import (avg5, breakouts_by_date, breakouts_on,
+from bot.bollinger import (PHASE, avg5, breakouts_by_date, breakouts_on,
                            energy_phase, history_pct_rank, level_of,
                            level_thresholds, merge_series, series_rows,
                            trend, weak_streak, weak_streak_note,
@@ -1078,6 +1078,9 @@ _BB_CSS = """
  color:var(--accent)}
 .bb-flag{font-size:16px;margin-right:5px}
 .bb-empty{font-size:12.5px;color:var(--muted);padding:10px 2px}
+.bb-mini{border-collapse:collapse;margin:6px 0 8px;font-size:12px}
+.bb-mini th,.bb-mini td{border:1px solid var(--border);padding:3px 8px;text-align:center}
+.bb-mini th{color:var(--muted);font-weight:600}
 .bb-links{font-size:12px;margin-top:10px}
 .bb-links a{color:var(--accent);text-decoration:none}
 .bb-links a:hover{text-decoration:underline}
@@ -1149,6 +1152,43 @@ def korean_names(rows: list, market: str) -> int:
         except Exception as exc:                               # noqa: BLE001
             log.debug("bollinger: 한글명 워밍 킥 실패: %s", exc)
     return hit
+
+
+def _phase_table_html() -> str:
+    """국면 9개를 **PHASE 상수에서** 격자로 그린다 — 손으로 적으면 코드와 어긋난다
+    (#55). 행 = 수준, 열 = 추이."""
+    import html as _h
+    dirs = ("up", "flat", "down")
+    out = ["<table class='bb-mini'><tr><th></th>"]
+    out += [f"<th>{_h.escape(DIR_LABEL[d])}</th>" for d in dirs]
+    out.append("</tr>")
+    for lv in ("strong", "neutral", "weak"):
+        out.append(f"<tr><th>{_h.escape(LEVEL_LABEL[lv])}</th>")
+        out += [f"<td>{_h.escape(PHASE[(lv, d)])}</td>" for d in dirs]
+        out.append("</tr>")
+    out.append("</table>")
+    return "".join(out)
+
+
+_UNIVERSE_DESC = {
+    "KR": "코스피200 + 코스닥150(KIS 마스터파일, 실패 시 네이버·pykrx·시총상위 순)",
+    "US": "S&P 500",
+    "JP": "JPX 상장목록 중 시총상위 225",
+    "HK": "HKEX 상장목록 중 시총상위 225",
+    "CN_A": "CSI 300 구성종목",
+    "TW": "TWSE/TPEx 거래대금 상위 225(시총 아님)",
+}
+
+
+def _universe_table_html() -> str:
+    """시장별 유니버스 정의 — `_MARKET_META` 의 모든 시장이 한 줄씩(빠지면
+    회귀가 잡는다, #24)."""
+    import html as _h
+    rows = "".join(
+        f"<tr><th>{flag} {_h.escape(name)}</th>"
+        f"<td>{_h.escape(_UNIVERSE_DESC.get(m, '—'))}</td></tr>"
+        for m, (flag, name) in _MARKET_META.items())
+    return f"<table class='bb-mini'>{rows}</table>"
 
 
 def _n(v, digits: int = 1) -> str:
@@ -1397,9 +1437,31 @@ def render_page(data: dict, now=None) -> str:
 나타내는 지표입니다(원문 주의사항). 앞날을 맞히는 값이 아닙니다.<br>
 <b>밴드</b> — 20일 이동평균 ±2σ. 종가의 약 95.4% 가 이 안에 들어오므로 상단 밖
 마감은 드문 사건(대략 2.3%)이고, 실적·재료로 강하게 오른 종목에서 나옵니다.<br>
+<b>돌파 종목 표의 열</b> — 종가 · 등락(<b>전일 종가 대비</b> %) · 상단밴드(그날의
+20일 이동평균 +2σ) · 돌파폭 = <b>종가 ÷ 상단밴드 − 1</b>(밴드를 얼마나 넘어
+마감했나) · 시총(억·조 / $B). 티커 옆 태그는 거래소입니다.<br>
+<b>돌파 종목 표</b> — 유니버스 전체를 스캔해 조건에 맞는 종목을 <b>전부</b>
+싣습니다(시총 내림차순). 카드의 "오늘 돌파 N종목"과 표의 행 수는 같은 목록에서
+나오므로 항상 같습니다. 🆕 는 <b>전일엔 밴드 안이었다가 오늘 밖에서 마감</b>한
+신규 돌파이고, 🆕 가 없는 행은 전일에도 이미 밖에 있던 <b>지속 돌파</b>입니다 —
+카드의 "신규 N" 이 🆕 개수입니다. 상장 첫 20봉처럼 전일 밴드를 만들 수 없는
+날은 "신규인지 알 수 없는" 것이라 🆕 를 붙이지 않습니다.<br>
+<b>카드의 숫자</b> — "오늘 돌파 N종목"은 기준일 종가 기준 돌파 개수, 그 아래
+"스캔 M종목 중 X%" 는 N ÷ M 입니다(유니버스 중 실제로 시계열을 받은 종목만
+분모). "신규" 는 🆕 개수. "5일 평균" 은 최근 5거래일 돌파 개수의 평균입니다.<br>
+<b>수준은 오늘 개수가 아니라 5일 평균으로 판정합니다</b> — 오늘 21종목이라
+강세 문턱 20 을 넘었어도 5일 평균이 12.6 이면 수준은 "중립" 입니다. 하루 급등에
+판정이 튀지 않게 하려는 것이고, 원문도 5일 평균선을 봅니다.<br>
 <b>절댓값보다 추이</b> — 원문이 가장 강조한 점입니다. 그래서 이 보드의 판정
 1순위는 <b>5일 평균선의 방향</b>이고, 수준(문턱)은 그다음입니다.
 국면 이름은 <b>수준 × 추이</b>로 정합니다.<br>
+<b>추이 판정 문턱</b> — 5일 평균의 5세션 전 대비 변화(Δ5)가 <b>유니버스의 1%
+(최소 1종목)</b>를 넘어야 ↑/↓ 이고, 그 안이면 "→ 횡보" 입니다. 예: 문턱 ±2.2 인
+시장에서 −1.2 종목은 하락이 아니라 횡보입니다. 옆의 "vs 20세션 전" 은 참고
+값이고 판정엔 들어가지 않습니다.<br>
+<b>국면 이름</b> — 수준(행) × 추이(열)로 정해지는 <b>현재 상태의 이름</b>입니다
+(예측이 아닙니다). 약세에서 횡보·하락은 둘 다 "에너지 소진" 입니다.
+{_phase_table_html()}
 <b>세션</b> — 이 보드의 "세션"은 <b>그 시장의 거래일 하나</b>입니다(달력일이
 아닙니다). 주말·휴장일은 세지 않으므로 "5세션 전"은 대략 1주 전, "20세션 전"은
 대략 1개월 전입니다.<br>
@@ -1416,12 +1478,17 @@ def render_page(data: dict, now=None) -> str:
 같은 유일한 축</b>입니다. 60세션 이상 쌓여야 판정하고, 이력 대부분이 백필이라
 생존편향이 있습니다(과거 돌파 수가 실제보다 적게 잡혀 오늘의 백분위가 <b>약간
 높게</b> 나오는 방향). 백분위는 <b>수준</b>만 말하고 <b>추이</b>는 옆 칸이 말합니다.<br>
-<b>돌파 종목 표</b> — 유니버스 전체를 스캔해 조건에 맞는 종목을 <b>전부</b>
-싣습니다(시총 내림차순). 카드의 "오늘 돌파 N종목"과 표의 행 수는 같은 목록에서
-나오므로 항상 같습니다. 🆕 는 <b>전일엔 밴드 안이었다가 오늘 밖에서 마감</b>한
-신규 돌파이고, 🆕 가 없는 행은 전일에도 이미 밖에 있던 <b>지속 돌파</b>입니다 —
-카드의 "신규 N" 이 🆕 개수입니다. 상장 첫 20봉처럼 전일 밴드를 만들 수 없는
-날은 "신규인지 알 수 없는" 것이라 🆕 를 붙이지 않습니다.<br>
+<b>차트</b> — 막대는 <b>일별 돌파 종목수</b>(옅은 막대 = 백필 구간), 주황
+선은 <b>5일 평균</b>, 초록·빨강 점선은 강세·약세 <b>문턱</b>입니다. 판정은 주황
+선이 점선의 어디에 있고 어느 방향으로 움직이는지로 읽으면 됩니다.<br>
+<b>기준일 · 잠정 · 갱신</b> — 보드는 3시간마다 갱신되지만 <b>기록은 마지막 완결
+세션(종가 확정)만</b> 남깁니다. 장중에는 "🕒 잠정" 줄에 그 시각까지의 개수를 따로
+보여 주고, 종가가 확정된 다음 갱신에서 기록합니다(장중 값은 카드·차트에 섞이지
+않습니다). "⚠️ 부분 스캔" 이 뜨면 시세 다운로드가 모자라 그 값을 기록하지 않고
+표도 접은 것입니다 — 다음 갱신에서 다시 시도합니다.<br>
+<b>시장별 유니버스</b> — 시장마다 정의가 다르므로 종목수를 시장 간에 직접 비교하지
+마세요.
+{_universe_table_html()}
 <b>위험 관리</b> — 원문은 "5일 평균 10 이하가 두 달 연속"일 때 현금 비중
 60~70% 를 <b>예로</b> 듭니다. 이 보드는 비중을 처방하지 않고 약세가 몇
 세션 연속인지만 사실로 적으며, 그 조건을 채웠을 때만 원문을 인용합니다.<br>
@@ -1431,7 +1498,7 @@ def render_page(data: dict, now=None) -> str:
 상장폐지는 반영되지 않습니다. 원천이 복구되면 문구가 사라집니다.<br>
 <b>해석이 들어간 지점 넷</b> —
 ① 돌파는 <b>종가 &gt; 상단</b>(그날 밴드 밖에서 마감한 상태)으로 셉니다.
-🆕 는 전일엔 밴드 안이었던 신규 돌파입니다. HTS 는 표준편차 정의가 다를 수 있어
+HTS 는 표준편차 정의가 다를 수 있어
 종목수가 한두 개 차이 날 수 있습니다(우리가 재 보지는 않았습니다).
 ② 문턱 20/10 은 원문이 밝힌 <b>예시</b>이고 코스피200+코스닥150(350종목)
 기준입니다 — 다른 시장은 유니버스 크기로 환산했을 뿐 <b>검증된 기준이
