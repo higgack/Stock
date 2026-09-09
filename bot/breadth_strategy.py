@@ -610,6 +610,47 @@ def min_sectors_for(n: int, pct: float) -> int:
     return max(0, min(n, math.ceil(n * pct / 100.0 - 1e-9)))
 
 
+# ── 가이드용 생성 표 — 손으로 적으면 상수와 어긋난다(#55) ────────────────────
+# 상태 → (속한 구간, 규칙 한 줄). STATE_LABEL 의 **모든** 키가 있어야 한다(회귀).
+_STATE_RULE = {
+    "CONTRARIAN_KOSPI": ("CONTRARIAN", "지수를 낙폭 트랜치대로 단계매수(아래 트랜치 표)"),
+    "RECOVERY_LEADER_PULLBACK": ("RECOVERY",
+        f"과거 리더(최근 {_RECOVERY_MONTHS}개월 확정 신호의 RS Top3 이력) 중 "
+        f"회복조건 셋(현재가>MA{120} · 6개월 RS>0 · 20일 고점 대비 −15~−5% 놀림목)을 "
+        f"다 채운 섹터에 총 {int(_RECOVERY_TOTAL_W*100)}%, 나머지 현금"),
+    "NON_TREND_RS": ("NON_TREND",
+        "현재 RS Top3(지수를 웃도는 섹터만)에 '지수 상회 섹터 비율' 4분위 비중(25/50/75/100%)"),
+    "TREND_RS_TOP3": ("TREND", "현재 RS Top3 에 100%(현금 0)"),
+    "CASH": (None, "구간 조건은 맞지만 매수 대상이 없어 현금 — 별도 구간이 아니라 결과"),
+}
+
+
+def _state_table_html() -> str:
+    import html as _hh
+    rows = []
+    for key, label in STATE_LABEL.items():
+        regime, rule = _STATE_RULE[key]
+        rows.append(f"<tr><th>{_hh.escape(label)}</th>"
+                    f"<td>{_hh.escape(REGIME_LABEL.get(regime, '어느 구간이든'))}</td>"
+                    f"<td>{_hh.escape(rule)}</td></tr>")
+    return ("<table class='mini-tbl'><tr><th>상태</th><th>구간</th><th>규칙</th></tr>"
+            + "".join(rows) + "</table>")
+
+
+def _tranche_table_html() -> str:
+    """역추세 단계매수 트랜치 — `_DD_TRANCHES` 에서 생성."""
+    rows = "".join(f"<tr><th>{dd:+.0f}% 이하</th><td>{int(w*100)}%</td></tr>"
+                   for dd, w in sorted(_DD_TRANCHES, key=lambda t: -t[0]))
+    return ("<table class='mini-tbl'><tr><th>지수 252일 고점 대비 낙폭</th>"
+            "<th>지수 비중</th></tr>" + rows + "</table>")
+
+
+def _threshold_line() -> str:
+    """구간 경계 — `_B_*` 상수에서."""
+    return (f"Breadth &lt; {_B_RECOVERY:.0f}% 역추세 · {_B_RECOVERY:.0f}~{_B_NON_TREND:.0f}% 회복 · "
+            f"{_B_NON_TREND:.0f}~{_B_TREND:.0f}% 비추세 · ≥ {_B_TREND:.0f}% 추세")
+
+
 def _pct_s(v, digits: int = 2) -> str:
     return "—" if v is None else f"{v:,.{digits}f}%"
 
@@ -794,8 +835,19 @@ def render_page(data: dict, now=None) -> str:
 <details class="guide"><summary>ℹ️ 이 보드 읽는 법</summary>
 <b>Breadth</b> — 섹터 ETF 중 120일 이평선 위에 있는 비율. 낮으면 소수만 버티는 장,
 높으면 전반적 참여.<br>
-<b>구간</b> — 30/40/60% 를 경계로 역추세·회복·비추세·추세 4구간. 구간마다 투자 대상과
+<b>카드의 숫자</b> — "Breadth (MA120 상회)" 는 섹터 ETF 중 120일 이평선 위에 있는
+비율(분모 = 히스토리가 충분한 섹터만, 빠진 개수는 같이 적습니다) · "지수 252일 DD" 는
+그 시장 벤치마크 지수(KR=KOSPI · US=S&amp;P 500)의 <b>최근 252거래일 고점 대비 낙폭</b> ·
+"최종 투자비중" 은 아래 상태 규칙으로 정한 총 투자 비중, "현금" 은 그 나머지입니다.<br>
+<b>RS(상대강도)</b> — 섹터 ETF 의 <b>6개월(126거래일) 수익률 − 지수의 같은 기간 수익률</b>
+(%p). 양수면 지수를 이긴 것. "RS Top3" 는 이 값이 큰 순서 셋입니다.<br>
+<b>구간</b> — 30/40/60% 를 경계로 역추세·회복·비추세·추세 4구간({_threshold_line()}). 구간마다 투자 대상과
 비중이 달라집니다(아래 표에서 <b>현재 구간이 강조</b>됩니다).<br>
+<b>상태</b> — 구간이 정해지면 그 안에서 <b>무엇을 얼마나</b> 사는지가 상태입니다.
+{_state_table_html()}
+<b>역추세 단계매수 트랜치</b> — 낙폭이 깊어질수록 지수 비중을 올립니다. 첫 트랜치(−12%)에
+못 미치면 비중 0 = "현금 대기" 입니다.
+{_tranche_table_html()}
 <b>현금 대기</b> — 역추세 구간이어도 지수 낙폭이 −12%에 못 미치면 매수 트랜치가 0이라
 현금입니다(별도 구간이 아니라 이 조건의 결과).<br>
 <b>중간점검 vs 확정</b> — 원 전략은 <b>월말 종가 신호를 다음 거래일부터 적용</b>합니다.
@@ -806,6 +858,10 @@ def render_page(data: dict, now=None) -> str:
 표시용이라 재계산 때마다(3시간) 최신값으로 바뀝니다.
 아래 <b>확정 신호 이력</b>만 월말 종가 기준이며, 이력에 기록되는 값은 그 달 마지막
 거래일까지만 잘라 계산해 장중에 조회해도 달라지지 않습니다.<br>
+<b>확정 신호 이력 표의 열</b> — 월 · 구간 · 상태 · Breadth(그 달 마지막 거래일 종가
+기준, 분모 같이 표기) · 지수 DD · 지수비중(역추세 트랜치분) · 최종비중 · 현금. 확정에
+쓴 종가 날짜를 같이 적으니, 월말 봉이 늦게 들어와 정정된 달은 그 날짜가 바뀝니다.
+"현금 대기" 옆의 사유는 저장된 (구간·상태·DD)에서 화면이 만들어 붙입니다.<br>
 <b>비추세 구간의 'RS 강도'</b> — 원 전략은 25/50/75/100% 4단계만 밝히고 강도의 정의를
 주지 않아, 여기서는 <b>지수를 이긴 섹터의 비율</b>을 4분위로 나눠 씁니다(≤25%→25% …
 &gt;75%→100%). 표본 수와 무관한 정의라 KR·US 에 같은 뜻으로 적용됩니다 —

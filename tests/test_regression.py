@@ -14749,10 +14749,15 @@ class TestRegimeCardExplanations20260820:
 
     def test_guide_covers_both_cards(self):
         html = self._page()
-        for k in ("동일가중", "신용 스프레드", "국채 커브",
-                  "Concentration(집중)", "Inflationary(인플레)",
-                  "risk-on", "SMA50·SMA200"):
+        for k in ("동일가중", "신용 스프레드", "국채 커브", "risk-on", "SMA50·SMA200"):
             assert k in html, f"ℹ️ 가이드에 '{k}' 설명이 없다"
+        # 국면 이름·뜻은 2026-09-09 부터 `_MACRO_REGIME_KR` 에서 **생성된 표**로
+        # 실린다 — 'Concentration(집중)' 같은 손글씨 리터럴이 아니라 상수의 키와
+        # 뜻 머리말이 모두 있는지로 본다(#19·#222 계약은 유지, 표현만 다시 씀).
+        from bot import market_timing as mt
+        for name, desc in mt._MACRO_REGIME_KR.items():
+            head = desc.split(" — ")[0]
+            assert name in html and head in html, f"ℹ️ 가이드에 국면 '{name}({head})' 이 없다"
 
 
 class TestBoardAuditReadsRealKeys20260820:
@@ -23128,7 +23133,10 @@ class TestMarketTimingBreadthVol20260726:
         from bot import market_timing as mt
         html = mt.render_market_timing_page({"markets": {}, "macro": {}, "crypto": {}})
         assert "20/50/200일선" in html   # (a)
-        assert "D5≥2" in html and "D15≥3" in html   # (b) — d25 단일축 아님 명시
+        # (b) — d25 단일축 아님 명시. 2026-09-09 부터 문턱은 `_RISK_*` 상수에서
+        # **생성된 표**로 실리므로 `D5≥2` 같은 띄어쓰기 리터럴이 아니라 상수로
+        # 본다(#19 소스 문자열 단언 · #222 계약은 유지하고 표현만 다시 쓴다).
+        assert f"D5 ≥ {mt._RISK_HIGH_D5}" in html and f"D15 ≥ {mt._RISK_HIGH_D15}" in html
         assert "Transitional" in html and "판단보류" in html   # (c)
         assert "네이버(VIX)" in html and "CNN(센티먼트)" in html   # (d)
 
@@ -52902,6 +52910,35 @@ class TestBollingerGuideAnswersTheQuestions20260909:
         # 옛 문구 하나만 남고 중복되지 않았는지(블록 교체가 잘못되면 두 번 나온다)
         assert g.count("<b>위험 관리</b>") == 1 and g.count("<b>이력 백분위</b>") == 1
 
+    def test_guide_explains_what_the_screen_shows_but_never_defined(self):
+        """2026-09-09 "판단해서 이 보드를 읽는데 필요한 내용이 있다면 추가":
+        화면에 있는데 뜻이 없던 것들 — 국면 9개 이름 · 수준은 5일 평균으로 · 추이
+        문턱 · 카드 숫자 · 차트 범례 · 표 열 · 잠정/부분 스캔/갱신 · 시장별
+        유니버스. 국면·유니버스 표는 **상수에서 생성**돼야 코드와 안 갈린다(#55)."""
+        from bot import bollinger as b
+        from bot import bollinger_board as bb
+        g = self._guide()
+        for name in set(b.PHASE.values()):
+            assert name in g, f"국면 '{name}' 이 가이드에 없다"
+        for _flag, kname in bb._MARKET_META.values():
+            assert kname in g, f"시장 '{kname}' 유니버스 줄이 없다"
+        assert "5일 평균으로 판정" in g and "유니버스의 1%" in g
+        assert "N ÷ M" in g                                    # 카드 X% 정의
+        assert "종가 ÷ 상단밴드 − 1" in g                       # 돌파폭
+        assert "옅은 막대 = 백필" in g and "주황" in g and "점선" in g
+        assert "🕒 잠정" in g and "⚠️ 부분 스캔" in g and "3시간" in g
+        # 생성 표가 진짜 상수에서 왔는지 — 손으로 적은 표는 상수를 바꿔도 안 변한다
+        assert bb._phase_table_html().count("<td>") == len(b.PHASE)
+        assert bb._universe_table_html().count("<tr>") == len(bb._MARKET_META)
+        # ⚠️ 헬퍼가 맞아도 가이드가 그걸 **안 쓰면** 소용없다(#20). 국면 이름을
+        # 손글씨로 8개만 적는 뮤테이션이 통과했다 — 빠진 "에너지 소진"을 옆 문장이
+        # 대신 만족시켰다(#75). 생성된 표 HTML 이 가이드 원문에 그대로 있어야 한다.
+        raw = _bollinger_html()
+        raw = raw[raw.index("이 보드 읽는 법"):]
+        raw = raw[:raw.index("</details>")]
+        assert bb._phase_table_html() in raw, "국면 표가 상수에서 생성되지 않았다"
+        assert bb._universe_table_html() in raw, "유니버스 표가 상수에서 생성되지 않았다"
+
     def test_why_universe_line_does_not_double_count(self, monkeypatch, capsys):
         """`--why JP` 실측 출력 `… · 225종목 · 225종목` — universe_label 이 이미
         개수를 실으므로 한 번만(#45)."""
@@ -52914,6 +52951,87 @@ class TestBollingerGuideAnswersTheQuestions20260909:
         bb._why("JP")
         out = capsys.readouterr().out
         assert out.count("225종목") == 1
+
+
+class TestBoardGuidesAnswerTheScreen20260909:
+    """사용자 2026-09-09 "글로벌 유동성·시장타이밍·Breadth 전략의 사용법도 같은
+    방식으로" — Bollinger 와 같은 규율: 화면에 있는데 뜻이 없던 것을 채우고, 상수에서
+    만들 수 있는 표는 **생성**해 코드와 못 어긋나게(#55), 생성물이 가이드 원문에
+    그대로 실리는지(#20) 본다. 페이지는 컬렉터가 그리는 그 경로로 그린다(#35)."""
+
+    @staticmethod
+    def _guide(html: str, summary: str) -> tuple[str, str]:
+        import html as _hh
+        i = html.index(summary)
+        raw = html[i:html.index("</details>", i)]
+        # 브라우저 기준으로 본다: 공백은 합치고 엔티티(F&amp;G)는 푼다
+        return raw, _hh.unescape(" ".join(raw.split()))
+
+    @classmethod
+    def _page(cls, name: str) -> str:
+        pages = {n: h for n, h in _all_rendered_pages()}
+        assert name in pages, f"컬렉터에 {name} 페이지가 없다"
+        return _page_html(pages[name])
+
+    def test_market_timing_guide_tables_come_from_constants(self):
+        import bot.market_timing as mt
+        raw, g = self._guide(self._page("market_timing"), "사용법 — 처음이면 펼쳐 보세요")
+        for tbl in (mt._risk_table_html(), mt._ftd_state_table_html(),
+                    mt._macro_regime_table_html()):
+            assert tbl in raw, "생성 표가 가이드 원문에 그대로 실려야 한다(#20)"
+        for lbl in mt._FTD_LABEL.values():
+            assert lbl in g, f"FTD 상태 '{lbl}' 뜻이 없다"
+        assert set(mt._FTD_MEANING) == set(mt._FTD_LABEL), "상태를 더하면 뜻도 더해야 한다"
+        for k in mt._MACRO_REGIME_KR:
+            assert k in g
+        assert f"D25 ≥ {mt._RISK_SEVERE_D25}" in g and f"D5 ≥ {mt._RISK_HIGH_D5}" in g
+        assert "🕒 장중(미확정)" in g and "거래일 지연" in g and "기준 저장분" in g   # 배지 어휘
+        assert "표본" in g and "포지셔닝" in g                                       # 카드 라벨
+        assert "판단보류" in g                                                      # Transitional 설명 유지
+
+    def test_breadth_guide_tables_come_from_constants(self):
+        import bot.breadth_strategy as bs
+        raw, g = self._guide(self._page("breadth_strategy"), "이 보드 읽는 법")
+        for tbl in (bs._state_table_html(), bs._tranche_table_html()):
+            assert tbl in raw
+        for lbl in bs.STATE_LABEL.values():
+            assert lbl in g, f"상태 '{lbl}' 규칙이 없다"
+        assert set(bs._STATE_RULE) == set(bs.STATE_LABEL)
+        for dd, w in bs._DD_TRANCHES:
+            assert f"{dd:+.0f}% 이하" in g and f"{int(w*100)}%" in g
+        assert f"{bs._B_RECOVERY:.0f}%" in g and f"{bs._B_TREND:.0f}%" in g
+        assert "126거래일" in g and "수익률 − 지수" in g                            # RS 정의
+        assert "252거래일 고점 대비 낙폭" in g                                       # 카드 DD
+        assert "확정 신호 이력 표의 열" in g and "지수비중" in g
+        # 옛 문단이 그대로 살아 있는지(접기가 규칙을 잃는 것을 막는다, #286)
+        for keep in ("중간점검 vs 확정", "RS 강도", "F&G", "직접 비교하지 마세요"):
+            assert keep in g
+
+    def test_liquidity_guide_tables_come_from_functions(self):
+        import bot.fred_boards as fb
+        raw, g = self._guide(self._page("fred_liquidity"), "사용법 — 처음이면 펼쳐 보세요")
+        for tbl in (fb._liq_components_table_html(), fb._liq_verdict_table_html()):
+            assert tbl in raw
+        for lbl in fb._COMP_KR.values():
+            assert lbl in g, f"구성요소 '{lbl}' 이 표에 없다"
+        for x in (75.0, 55.0, 35.0, 15.0):
+            assert fb.score_verdict(x)[0] in g, "판정 라벨은 함수가 낸 그대로여야 한다"
+        assert "100−백분위" in g and "백분위 그대로" in g                          # 반영 방향
+        assert "지표 일람의 열" in g and "⚠️지연 배지" in g
+        for keep in ("순유동성 차트", "소스·표기", "갱신", "스프레드 행"):
+            assert keep in g
+
+    def test_mini_table_class_is_defined_once_in_the_shared_css(self):
+        """세 보드가 같은 `.mini-tbl` 을 쓴다 — 정의는 `_BOARD_CSS` 한 곳(#38·#201).
+        모듈별 복제 정의가 다시 생기면 잡는다."""
+        import bot.fred_boards as fb
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        assert ".mini-tbl{" in fb._BOARD_CSS
+        for mod in (bs, mt):
+            src = open(mod.__file__, encoding="utf-8").read()
+            assert ".mini-tbl{" not in src, f"{mod.__name__} 가 공용 클래스를 다시 정의했다"
+            assert "class='mini-tbl'" in src, f"{mod.__name__} 가 공용 클래스를 안 쓴다"
 
 
 class TestBollingerReviewFindings20260909:

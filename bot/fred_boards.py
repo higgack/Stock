@@ -378,6 +378,28 @@ def score_verdict(score: float | None) -> tuple[str, str]:
     return ("🔴 긴축", "유동성 위축 — 방어적 포지셔닝 권고.")
 
 
+# ── 유동성 가이드용 생성 표 — 손으로 적으면 상수·함수와 어긋난다(#55) ──────────
+def _liq_components_table_html() -> str:
+    """종합점수 구성요소 8개 — `_COMP_KR` 에서. '(역)' 이 붙은 것은 높을수록
+    긴축이라 100−p 로 뒤집어 반영한다(`compute_score` 의 invert)."""
+    import html as _hh
+    rows = "".join(
+        f"<tr><th>{_hh.escape(label)}</th>"
+        f"<td>{'높을수록 긴축 → 100−백분위' if label.endswith('(역)') else '높을수록 완화 → 백분위 그대로'}</td></tr>"
+        for label in _COMP_KR.values())
+    return "<table class='mini-tbl'><tr><th>구성요소</th><th>반영 방향</th></tr>" + rows + "</table>"
+
+
+def _liq_verdict_table_html() -> str:
+    """판정 4단계 — `score_verdict` 를 대표 점수로 **실제로 불러** 라벨을 얻는다."""
+    import html as _hh
+    rows = "".join(
+        f"<tr><th>{band}</th><td>{_hh.escape(score_verdict(x)[0])}</td>"
+        f"<td>{_hh.escape(score_verdict(x)[1])}</td></tr>"
+        for band, x in (("70 이상", 75.0), ("50 ~ 70", 55.0), ("30 ~ 50", 35.0), ("30 미만", 15.0)))
+    return "<table class='mini-tbl'><tr><th>점수</th><th>판정</th><th>뜻</th></tr>" + rows + "</table>"
+
+
 # ── 마진 스프레드(산업 PPI − 원재료 PPI, 사용자 2026-07-02 Phase2) ─────────
 # 판가(output) YoY − 원가(input) YoY (pp) = 마진 방향 프록시. 양수=마진 개선.
 # input 이 단일 원재료 proxy 인 쌍만(문서화) — 정확 원가바스켓 아님, 방향 신호용.
@@ -796,6 +818,9 @@ body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-
 .nav{margin-bottom:14px;font-size:13px}.nav a{color:var(--muted);text-decoration:none}.nav a:hover{color:var(--fg)}
 h1{font-size:24px;margin:6px 0}h1 em{color:var(--accent);font-style:normal}
 .sub{color:var(--fg);opacity:.78;font-size:13px;line-height:1.6;margin:4px 0 14px}
+.mini-tbl{border-collapse:collapse;margin:6px 0 8px 18px;font-size:12px}
+.mini-tbl th,.mini-tbl td{border:1px solid var(--border,#2a3656);padding:3px 8px;text-align:left;vertical-align:top}
+.mini-tbl th{color:var(--muted,#8b8fa3);font-weight:600;white-space:nowrap}
 .pills{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 .pill{padding:6px 14px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;border:2px solid transparent;background:var(--card);color:var(--muted);box-shadow:0 0 0 1px var(--border)}
 .pill.active{border-color:var(--pillbd);color:var(--fg)}
@@ -1181,9 +1206,21 @@ def render_liquidity_page(rows: list[dict], derived: dict, score: float | None,
 <b>1) 종합점수(0~100)</b> — 구성요소 8개 각각의 <b>최근값이 최근 5년 분포에서 어디쯤인지</b>(백분위)를
 평균. 순유동성 13주Δ·지준 13주Δ·M2 YoY·은행신용 YoY 는 높을수록 완화, HY스프레드·NFCI·VIX 는
 높을수록 긴축이라 <b>역방향(역)</b>으로 반영. 70↑ 풍부 / 50~70 중립(완화) / 30~50 중립(긴축) / 30↓ 긴축.<br>
+&nbsp;&nbsp;· 구성요소와 반영 방향(카드에 각 요소의 백분위가 같이 뜹니다):
+{_liq_components_table_html()}
+&nbsp;&nbsp;· 판정 4단계(점수 경계는 위에서부터 먼저 맞는 것):
+{_liq_verdict_table_html()}
+&nbsp;&nbsp;· "5년 분포에서 어디쯤" 이란 그 요소의 최근값이 지난 5년 관측치 중 몇 %보다
+높은가입니다(백분위 0~100). 8개 평균이라 한 요소가 극단이어도 점수는 완만하게
+움직입니다 — 방향은 순유동성·스프레드 요소를 따로 보세요.<br>
 <b>2) 순유동성 차트</b> — Fed 총자산 − 재무부계정(TGA) − 역레포(RRP), 단위 B$.
 TGA 급증(국채 대량발행)·RRP 증가 = 시장 유동성 흡수.<br>
-<b>3) 지표 일람</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
+<b>3) 지표 일람의 열</b> — 지표 · 분류(알약으로 필터) · 최신(값과 단위) · 1M/3M/YoY
+(최신 대비 1개월·3개월·1년 전과의 차이 — 아래 4) 의 %p/% 규칙) · 기준일(그 값의
+관측일 — 실시간 행은 소스 이름이 대신 뜹니다). ⚠️지연 배지는 <b>그 시리즈의 공표
+주기</b>로 기대되는 관측이 아직 안 온 것이고, 배지에 마우스를 올리면 기대 기간과
+근거가 뜹니다 — 원천 공표가 늦은 것이지 우리가 못 받은 것과는 다릅니다.<br>
+<b>행 클릭</b> — 분류 알약으로 필터, <b>행 클릭</b> = 차트 + 해설(정의·해석·읽는법·🇰🇷 한국 영향).<br>
 <b>4) 소스·표기</b> — FRED 중단 시리즈는 원천으로 대체(한국 M2·기준금리=한국은행 ECOS, 중국 LPR=인민은행/AKShare, 2026-07-04).
 금리·스프레드 계열의 1M/3M/YoY 는 <b>%p 차이</b>(예: 2.15→2.40 = +0.25%p), 그 외는 %변화율. 각 시리즈의 <b>실제 공표일정</b>(주기+통상 지연일)을 기준으로 늦은 것만 <b>⚠️지연</b> 배지 — 배지에 마우스를 올리면 기대 관측기간과 근거가 뜹니다. 분기·반년 지연 계열(예 외국인 보유 미 연방부채)은 정상 지연이라 배지가 뜨지 않습니다. 12개월+ 미갱신(중단)은 목록에서 자동 제외(상단 제외 안내).<br>
 <b>5) 갱신</b> — 3시간 주기 자동 재생성(전부 무료 API). 단 <b>환율 6종·VIX·비트코인·이더리움·미 국채 10Y/30Y</b>는
