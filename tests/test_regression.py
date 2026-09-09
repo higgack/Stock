@@ -50393,18 +50393,20 @@ class TestMainCostCardSurfacesUnpriced20260908:
         st["total"] = 1
         st["unpriced_calls"] = 4
         html = d._render_stats_panel(st)
-        # ⚠️ 2026-09-09 다시 씀(#222): 옛 판은 창을 '누적' 으로 못박았는데
-        # 그건 거짓이었다 — 옆의 **금액**은 롤업까지 더한 누적이지만 이
-        # **계수**는 `usage.jsonl` 하나만 본다(로테이션 밖은 못 본다, #34).
-        # 계약은 "수를 적고 · 그 수의 창을 정직하게 밝힌다" 이다.
-        import bot.usage_tracker as _ut
+        # ⚠️ 2026-09-09 **두 번** 다시 씀(#222). ① 옛 판은 창을 '누적' 으로
+        # 못박았는데 거짓이었다(옆의 **금액**만 롤업까지 더한 누적이고 이
+        # **계수**는 `usage.jsonl` 하나만 본다, #34). ② 그래서 '원장 30일'
+        # 로 바꿨더니 그것도 거짓이었다 — 로테이션은 `/usage` 를 칠 때만
+        # 도는 유일한 경로(load_records)라 파일은 30일보다 길 수 있다(#165,
+        # 독립 리뷰 실측). 남는 계약은 "수를 적고 · **재지 않은 창을 주장하지
+        # 않는다**" 이고, 창 금지 자체는 형제 테스트(F4)가 못박는다.
         assert "단가 미등재 4콜" in html, html[:600]
         # ⚠️ 같은 <div> 에 **금액의 창**("누적(전체)")이 나란히 있다 — 줄로
         # 재면 그게 대신 만족시킨다(#75). 배지 조각만 잘라 본다(#55).
         seg = [x for x in html.replace("<br>", "\n").splitlines()
                if "단가 미등재" in x][0]
-        assert f"{_ut.ROTATION_DAYS}일" in seg, seg
-        assert "누적" not in seg, seg
+        assert "원장" in seg, seg
+        assert "실제 비용은 더 큼" in seg, seg
 
     def test_card_is_quiet_when_everything_is_priced(self, monkeypatch):
         """반대 증거(#25) — 늘 뜨는 배지는 아무것도 안 잰다."""
@@ -51128,3 +51130,121 @@ class TestUnpricedSplitsByPrescription20260909:
         assert "모델 미기록" in html, [
             ln for ln in html.splitlines() if "미기록" in ln]
         assert "단가 미등재 2콜" not in html, html
+
+
+class TestUnpricedBadgeReviewFindings20260909:
+    """배포전 독립 리뷰가 잡은 넷 — 전부 실측으로 재현했다.
+
+    F1 **비용 과소집계 경고가 VM 실제 모양에서 통째로 사라진다**: 원장이
+    `unknown` 만 12콜이면 `_rate_gap == 0` 이라 '실제 비용은 더 큼' 줄이 안
+    뜬다. 두 갈래 **모두** ₩0 으로 집계되므로 그 사실은 갈래와 무관하다 —
+    갈라야 하는 건 **처방**이지 '비용이 덜 세어졌다'가 아니다(#43·#284).
+    F2 `split_unpriced` 가 **model 이 빈 레코드를 어느 버킷에도 안 넣는다** —
+    `--check` 는 `unrecorded` 로 세므로 CLI 와 화면이 다른 수를 말한다(#38).
+    F3 **레코드 하나의 `ts` 가 숫자가 아니면 스캔이 통째로 중단**돼 그 뒤의
+    진짜 요율 갭이 가려진다(JSON 파싱 실패는 레코드 단위로 건너뛰는데 숫자
+    변환만 루프 전체를 죽였다, #315 넓은 try 는 본체까지 삼킨다).
+    F4 배지가 **재지 않은 창**을 적었다 — 로테이션은 `/usage` 를 칠 때만
+    돌므로(유일한 `load_records` 호출부) 파일은 30일보다 길 수 있다(#165).
+    """
+
+    def _stats(self, monkeypatch, rows):
+        import bot.dashboard as d
+        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: rows)
+        monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
+        st = dict(d._compute_stats([]))
+        st["total"] = 1
+        return d, st
+
+    def _badges(self, html):
+        return [x.strip() for x in html.replace("<br>", "\n").splitlines()
+                if "미등재" in x or "미기록" in x]
+
+    def test_f1_unknown_only_still_says_the_total_is_understated(
+            self, monkeypatch):
+        now = time.time()
+        rows = [{"type": "llm_call", "model": "unknown", "cost_usd": 0.0,
+                 "ts": now, "prompt_tokens": 700, "completion_tokens": 300}
+                for _ in range(12)]
+        d, st = self._stats(monkeypatch, rows)
+        seg = self._badges(d._render_stats_panel(st))
+        assert seg, "배지가 아예 없다"
+        assert any("더 큼" in s for s in seg), seg
+
+    def test_f1_rate_gap_branch_keeps_saying_it_too(self, monkeypatch):
+        """반대 증거(#25) — 요율 갭 쪽 문구를 잃으면 안 된다."""
+        now = time.time()
+        d, st = self._stats(monkeypatch, [
+            {"type": "llm_call", "model": "brand-new", "cost_usd": 0.0,
+             "ts": now}])
+        seg = self._badges(d._render_stats_panel(st))
+        assert seg and any("더 큼" in s for s in seg), seg
+        assert any("미등재" in s for s in seg), seg
+
+    def test_f1_prescriptions_still_differ(self, monkeypatch):
+        """둘을 같은 문구로 합치면 `unknown` 에 요율표를 시키게 된다(#82)."""
+        now = time.time()
+        d, st = self._stats(monkeypatch, [
+            {"type": "llm_call", "model": "brand-new", "cost_usd": 0.0,
+             "ts": now},
+            {"type": "llm_call", "model": "unknown", "cost_usd": 0.0,
+             "ts": now}])
+        seg = self._badges(d._render_stats_panel(st))
+        assert len(seg) == 2, seg
+        assert any("기록 경로" in s for s in seg), seg
+        assert sum("기록 경로" in s for s in seg) == 1, seg
+
+    def test_f2_blank_model_is_counted_by_both_surfaces(self):
+        import bot.usage_tracker as ut
+        rec = {"type": "llm_call", "cost_usd": 0.0, "ts": time.time(),
+               "prompt_tokens": 5, "completion_tokens": 5}
+        out = ut.split_unpriced([rec])
+        assert out["total"] == 1 and out["no_model"] == 1, out
+        assert out["no_model_tokens"] == 10, out
+
+    def test_f2_stats_agree_with_the_cli(self, monkeypatch):
+        d, st = self._stats(monkeypatch, [
+            {"type": "llm_call", "cost_usd": 0.0, "ts": time.time()}])
+        assert st["unpriced_calls"] == 1, st
+        assert st["unpriced_nomodel_calls"] == 1, st
+
+    def test_f2_priced_record_is_still_not_counted(self):
+        """반대 증거 — 게이트를 넓히다 정상 호출까지 세면 배지가 늘 뜬다."""
+        import bot.usage_tracker as ut
+        from bot.usage_tracker import _PRICING
+        rec = {"type": "llm_call", "model": sorted(_PRICING)[0],
+               "cost_usd": 1.0, "ts": time.time()}
+        assert ut.split_unpriced([rec])["total"] == 0
+
+    def test_f3_one_bad_record_does_not_kill_the_scan(self, monkeypatch,
+                                                     tmp_path):
+        import bot.usage_tracker as ut
+        log = tmp_path / "usage.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in [
+            {"type": "llm_call", "ts": "bad-ts", "model": "unknown",
+             "prompt_tokens": 1},
+            {"type": "llm_call", "ts": time.time(), "model": "brand-new",
+             "prompt_tokens": 10}]), encoding="utf-8")
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "rollup.json")
+        monkeypatch.setattr(sys, "argv", ["bot.usage_tracker", "--check"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ut.main()
+        out = buf.getvalue()
+        assert "brand-new" in out, out          # 뒤의 진짜 갭이 가려지면 안 된다
+        assert rc == 1 and "❌" in out, out
+
+    def test_f4_badge_does_not_claim_a_window_it_cannot_measure(self,
+                                                               monkeypatch):
+        """로테이션은 `/usage` 를 칠 때만 돈다 — 파일은 30일보다 길 수 있다.
+        옛 판(`누적`)도 거짓이었으므로 **둘 다** 주장하지 않는다(#165·#222)."""
+        import bot.usage_tracker as ut
+        d, st = self._stats(monkeypatch, [
+            {"type": "llm_call", "model": "brand-new", "cost_usd": 0.0,
+             "ts": time.time()}])
+        seg = self._badges(d._render_stats_panel(st))
+        assert seg, "배지가 없다"
+        assert "누적" not in seg[0], seg
+        assert f"{ut.ROTATION_DAYS}일" not in seg[0], seg
+        assert "원장" in seg[0], seg

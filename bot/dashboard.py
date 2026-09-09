@@ -474,7 +474,7 @@ def _compute_stats(records: list[dict]) -> dict:
         # (trade 루프와 동일 불변식).
         cost = r.get("cost_usd", 0) or 0
         total_cost_usd += cost
-        if _ut.is_unpriced_record(r):
+        if _ut.counts_as_unpriced(r):
             unpriced_calls += 1
             # 처방이 다른 갈래를 같이 센다 — 한 라벨로 묶으면 `unknown` 에
             # '요율표에 추가' 를 시키게 된다(#82·#34, VM 실측 12콜).
@@ -722,17 +722,21 @@ def _render_stats_panel(stats: dict) -> str:
     _nomodel = stats.get("unpriced_nomodel_calls", 0)
     _rate_gap = stats.get("unpriced_calls", 0) - _nomodel
     # ⚠️ 창을 '누적' 이라 적으면 안 된다 — 옆의 **금액**은 롤업까지 더한
-    # 누적이지만 이 **계수**는 `usage.jsonl` 하나만 본다(로테이션으로 그보다
-    # 오래된 콜은 파일에 없다). 같은 줄에 다른 창을 두 이름 없이 놓으면
-    # 한쪽이 거짓말한다(#34). 리터럴 대신 상수에서 파생시킨다(#38·#67).
-    _win = f"원장 {_ut.ROTATION_DAYS}일"
+    # 누적이지만 이 **계수**는 `usage.jsonl` 하나만 본다. 그렇다고 '30일' 도
+    # 아니다: 로테이션은 `/usage` 를 칠 때만 도는 유일한 경로라(load_records)
+    # 파일은 그보다 길 수 있다 — 재지 않은 창을 적지 않는다(#165, 리뷰 실측).
+    _win = "현재 원장"
+    # ⚠️ **두 갈래 모두 ₩0 으로 집계된다** — '실제 비용은 더 큼' 은 갈래와
+    # 무관한 사실이므로 양쪽에 적는다. 한쪽에만 두면 원장이 `unknown` 뿐인
+    # 날(VM 실측 12콜) 그 경고가 통째로 사라져 카드가 '공짜'라고 말한다
+    # (#43·#284 — 배지의 존재 이유다). 갈리는 건 **처방**이다(#82).
     if _rate_gap:
         cost_sub_parts.append(
             f"⚠️ 단가 미등재 {_rate_gap}콜({_win}) — 실제 비용은 더 큼")
     if _nomodel:
-        # ⚠️ 요율표로는 못 고친다 — 갈래를 이름으로 부른다(#82·#260).
         cost_sub_parts.append(
-            f"⚠️ 모델 미기록 {_nomodel}콜({_win}) — 기록 경로 문제(요율표 아님)")
+            f"⚠️ 모델 미기록 {_nomodel}콜({_win}) — 실제 비용은 더 큼 · "
+            "기록 경로 문제(요율표 아님)")
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
     # Per-subsystem breakdown. Surface only buckets with non-zero

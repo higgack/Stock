@@ -1599,8 +1599,10 @@ def _build_usage_report() -> str:
         # (#43·#284). 판정은 단가표에 직접 대조(#24·#86). 0 건이면 조용히.
         + (f"  ⚠️ 단가 미등재 {_split_30d['missing_rate']}콜(30일) — 실제 비용은 더 큼"
            if _split_30d["missing_rate"] else "")
-        # ⚠️ `unknown` 은 요율표로 못 고친다 — 갈래를 이름으로(#82·#260).
-        + (f"  ⚠️ 모델 미기록 {_split_30d['no_model']}콜(30일) — 기록 경로 문제"
+        # ⚠️ 둘 다 ₩0 으로 집계된다 — '더 큼' 은 양쪽에 적고(#43·#284) 갈리는
+        #    건 **처방**이다: `unknown` 은 요율표로 못 고친다(#82·#260).
+        + (f"  ⚠️ 모델 미기록 {_split_30d['no_model']}콜(30일) — 실제 비용은 "
+           "더 큼 · 기록 경로 문제"
            if _split_30d["no_model"] else ""),
         f"  • 오늘: <b>{krw(today_total_usd)}</b>  (${today_total_usd:.2f})",
         f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",

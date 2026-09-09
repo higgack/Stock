@@ -106,6 +106,17 @@ def is_unrecorded_model(rec: dict) -> bool:
     return (rec.get("model") or UNRECORDED_MODEL) == UNRECORDED_MODEL
 
 
+def counts_as_unpriced(rec: dict) -> bool:
+    """₩0 으로 적힌 llm_call 인가 — 화면·CLI 가 **같은 술어**로 세게(#38).
+
+    ⚠️ `is_unpriced_record` 만 쓰면 `model` 이 **빈** 레코드가 어느 버킷에도
+    안 들어간다(그 함수는 모델 이름이 있어야 True). 그런데 `--check` 의 원장
+    스캔은 그걸 `unrecorded` 로 세므로 CLI 와 화면이 다른 수를 말한다
+    (독립 리뷰 2026-09-09 실측).
+    """
+    return is_unpriced_record(rec) or is_unrecorded_model(rec)
+
+
 def split_unpriced(records) -> dict:
     """₩0 으로 적힌 호출을 **처방이 다른 두 갈래**로 가른다(#82).
 
@@ -121,13 +132,13 @@ def split_unpriced(records) -> dict:
     """
     out = {"missing_rate": 0, "no_model": 0, "total": 0, "no_model_tokens": 0}
     for rec in records or []:
-        if rec.get("type") != "llm_call" or not is_unpriced_record(rec):
+        if rec.get("type") != "llm_call" or not counts_as_unpriced(rec):
             continue
         out["total"] += 1
         if is_unrecorded_model(rec):
             out["no_model"] += 1
-            out["no_model_tokens"] += (int(rec.get("prompt_tokens") or 0)
-                                       + int(rec.get("completion_tokens") or 0))
+            out["no_model_tokens"] += int(_num(rec.get("prompt_tokens"))
+                                          + _num(rec.get("completion_tokens")))
         else:
             out["missing_rate"] += 1
     return out
@@ -481,12 +492,18 @@ _CHECK_VER = 2
 # 뇌관인 시한폭탄 · #67 리터럴을 박으면 bump 마다 무관한 빨간불).
 _UNPRICED_SAMPLE = "__단가미등재_표본__"
 
-_UNKNOWN_MODEL = UNRECORDED_MODEL   # 하위호환 별칭(#38 단일 출처)
-
 # 공표 요율을 그대로 못박아 둔 회귀. 단가표를 고치면 여기도 같이 고쳐야
 # 한다 — 요율 변경을 **의도적으로** 만들려고 둔 마찰이다(#317).
 _RATE_PIN = ("tests/test_regression.py::TestPricingSingleSource"
              "::test_canonical_rates_are_the_published_ones")
+
+
+def _num(v) -> float:
+    """숫자로 못 읽으면 0 — 레코드 하나가 스캔 전체를 죽이면 안 된다(#315)."""
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _scan_ledger_readonly() -> dict:
@@ -520,15 +537,15 @@ def _scan_ledger_readonly() -> dict:
                     continue
                 out["total"] += 1
                 m = rec.get("model")
-                if not m or m == _UNKNOWN_MODEL:
+                if not m or m == UNRECORDED_MODEL:
                     out["unrecorded" if not m else "unknown"] += 1
-                    out["nomodel_tokens"] += (
-                        int(rec.get("prompt_tokens") or 0)
-                        + int(rec.get("completion_tokens") or 0))
+                    out["nomodel_tokens"] += int(
+                        _num(rec.get("prompt_tokens"))
+                        + _num(rec.get("completion_tokens")))
                     # 언제 그랬는지를 알아야 어느 배포·어느 경로인지 좁힌다 —
                     # 안 실으면 다음 라운드에 또 손으로 명령을 조립하게 된다
                     # (#319 가 바로 그 사고다).
-                    ts = float(rec.get("ts") or 0)
+                    ts = _num(rec.get("ts"))
                     if ts:
                         out["nomodel_first"] = min(out["nomodel_first"] or ts, ts)
                         out["nomodel_last"] = max(out["nomodel_last"], ts)
@@ -626,7 +643,7 @@ def _check() -> int:
               "(그때 0 으로 적힘 · 지금은 단가표에 있다 · 과거분이라 고칠 수 없음)")
     if sc["unknown"] or sc["unrecorded"]:
         # 규모를 모르면 고칠지 말지 못 정한다 — 토큰 합을 같이 적는다(#202).
-        print(f"   ⚠️ 모델 미기록('{_UNKNOWN_MODEL}') "
+        print(f"   ⚠️ 모델 미기록('{UNRECORDED_MODEL}') "
               f"{sc['unknown'] + sc['unrecorded']:,}콜 · "
               f"토큰 {sc['nomodel_tokens']:,} · {_span(sc)} — 단가표가 아니라 "
               "**기록 경로**(_extract_token_usage) 문제다. "
