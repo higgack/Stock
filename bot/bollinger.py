@@ -189,6 +189,35 @@ def avg5_series(rows: list[dict]) -> list[float | None]:
     return out
 
 
+# 기본 인자로 쓰는 상수는 정의부보다 위에 있어야 한다(#63b).
+RECENT_REWRITE = 25    # 이 세션 수만큼은 매 실행 덮어쓴다(늦게 온 봉 정정)
+MAX_ROWS = 400         # 약 1.5년
+
+
+def _extremes(rows: list[dict], key: str) -> dict | None:
+    """`key`(avg5 | count) 의 최저·최고 시점 — 두 카드가 **같은 규약**(동률이면
+    최근 · 값 없는 행 제외 · 판정 0행이면 None)을 쓰도록 한 함수에서 파생한다(#38)."""
+    rows = list(rows or [])
+    judged = [r for r in rows if r.get(key) is not None]
+    if not judged:
+        return None
+
+    def _pick(worst: bool) -> dict:
+        best = None
+        for r in judged:                         # 뒤에 오는 동률이 이긴다(최근)
+            v = float(r[key])
+            if best is None or (v <= best[0] if worst else v >= best[0]):
+                best = (v, r)
+        v, r = best
+        a5 = r.get("avg5")
+        return {"date": str(r.get("date")),
+                "avg5": (round(float(a5), 1) if a5 is not None else None),
+                "count": r.get("count")}
+
+    return {"min": _pick(True), "max": _pick(False),
+            "window": len(rows), "judged": len(judged)}
+
+
 def avg5_extremes(rows: list[dict]) -> dict | None:
     """차트 구간 안에서 **5일 평균의 최저·최고 시점**(순수).
 
@@ -198,23 +227,59 @@ def avg5_extremes(rows: list[dict]) -> dict | None:
     "judged": 5일 평균이 있는 행 수}. 5일 평균이 없는 행(구간 앞머리·결측)은
     판정에서 빼고, 동률이면 **가장 최근** 날짜를 든다(오늘과 가까운 쪽이 행동에
     쓸모 있다 — 규약은 가이드에 적는다). 판정할 행이 없으면 None(#54)."""
-    rows = list(rows or [])
-    judged = [r for r in rows if r.get("avg5") is not None]
-    if not judged:
-        return None
+    return _extremes(rows, "avg5")
 
-    def _pick(worst: bool) -> dict:
-        best = None
-        for r in judged:                         # 뒤에 오는 동률이 이긴다(최근)
-            v = float(r["avg5"])
-            if best is None or (v <= best[0] if worst else v >= best[0]):
-                best = (v, r)
-        v, r = best
-        return {"date": str(r.get("date")), "avg5": round(v, 1),
-                "count": r.get("count")}
 
-    return {"min": _pick(True), "max": _pick(False),
-            "window": len(rows), "judged": len(judged)}
+def count_extremes(rows: list[dict]) -> dict | None:
+    """차트 구간 안에서 **일별 돌파 종목수의 최소·최다 시점**(순수) — 사용자
+    2026-09-10 "5일 평균이 아니라 돌파종목이 가장 적은/많은 날짜와 그때의 개수".
+    반환 모양·동률 규약은 `avg5_extremes` 와 같다(그날의 5일 평균을 같이 싣는다)."""
+    return _extremes(rows, "count")
+
+
+def coverage_by_date(closes_by_ticker: dict) -> dict:
+    """{날짜: 그 날짜 봉을 가진 종목 수}(순수). 원천이 어느 날짜를 **몇 종목에게만**
+    줬는지 세는 재료 — 2026-09-10 실측: 야후 3개월 응답에 TW 는 09-09 봉이 **1종목**,
+    HK 는 19종목에만 있었고, 그걸 세션으로 세자 카드가 `0종목 · 스캔 1종목` 이 됐다."""
+    cov: dict = {}
+    for s in (closes_by_ticker or {}).values():
+        if s is None or not len(s):
+            continue
+        for d in s.index:
+            k = _date_key(d)
+            cov[k] = cov.get(k, 0) + 1
+    return cov
+
+
+def sparse_dates(closes_by_ticker: dict, min_ratio: float) -> dict:
+    """{날짜: 종목 수} — 유니버스(closes 의 종목 수)의 `min_ratio` 미만만 봉을 가진
+    날짜. 그 날은 시장 세션의 관측이 아니라 **일부 종목에만 먼저 온 봉**이므로
+    세지 않는다(#280 부분을 완전본으로 굽지 않는다). 빈 closes 면 {}."""
+    n = len(closes_by_ticker or {})
+    if not n:
+        return {}
+    return {d: c for d, c in coverage_by_date(closes_by_ticker).items()
+            if c < n * min_ratio}
+
+
+def prune_sparse_rows(series: dict, min_ratio: float,
+                      window: int = RECENT_REWRITE) -> tuple[dict, dict]:
+    """저장 시계열의 **최근 `window` 행** 중 `scanned` 가 그 창 최대의 `min_ratio`
+    미만인 행을 뺀다(순수) → (새 시계열, 뺀 {날짜: scanned}). 옛 판이 굽어 둔 희소
+    행(TW 09-09 scanned=1)을 다음 실행이 스스로 걷어내게 한다 — 규율이 아니라
+    구조로(#119). 창 밖 과거는 유니버스가 달랐을 수 있어 손대지 않는다."""
+    out = {str(k): dict(v) for k, v in (series or {}).items()}
+    keys = sorted(out)[-window:]
+    vals = [out[k].get("scanned") for k in keys]
+    ref = max((v for v in vals if isinstance(v, (int, float))), default=None)
+    dropped: dict = {}
+    if False:
+        for k in keys:
+            sc = out[k].get("scanned")
+            if isinstance(sc, (int, float)) and sc < ref * min_ratio:
+                dropped[k] = sc
+                out.pop(k, None)
+    return out, dropped
 
 
 def level_thresholds(scanned) -> tuple[int | None, int | None]:
@@ -334,8 +399,6 @@ def weak_streak_note(streak: int) -> str:
 
 
 # ── 저장 병합 ───────────────────────────────────────────────────────────────
-RECENT_REWRITE = 25    # 이 세션 수만큼은 매 실행 덮어쓴다(늦게 온 봉 정정)
-MAX_ROWS = 400         # 약 1.5년
 
 
 def merge_series(stored: dict, fresh: dict, *, partial: bool = False) -> dict:

@@ -10,8 +10,10 @@
 모듈은 **유니버스·수집·저장·렌더·진단**만 한다.
 
 시장: KR·US·JP·HK·CN_A·TW — 계산·판정·저장·감사 경로는 6시장 **완전 동일**하고
-시장 게이트가 없다. 다른 것은 유니버스 원천뿐이고(원천이 시장별이라서), 그
-정의는 **카드 라벨이 항상 말한다**(#34).
+시장 게이트가 없다. 다른 것은 두 원천뿐이다(원천이 시장별이라서) — 유니버스
+원천(정의는 **카드 라벨이 항상 말한다**, #34)과 원천 응답에 기대 완결 세션이
+없을 때 그 하루 종가를 채우는 벌크 원천(`_SESSION_FILL`, 현재 KR=KRX 만 — 채웠으면
+표 위 `🧩` 줄이 말한다, #326).
 """
 from __future__ import annotations
 
@@ -23,7 +25,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from bot.bollinger import (PHASE, avg5, avg5_extremes, breakouts_by_date, breakouts_on,
+from bot.bollinger import (PHASE, _date_key, avg5, avg5_extremes, breakouts_by_date, breakouts_on,
+                           count_extremes, prune_sparse_rows, sparse_dates,
                            energy_phase, history_pct_rank, level_of,
                            level_thresholds, merge_series, series_rows,
                            trend, weak_streak, weak_streak_note,
@@ -860,6 +863,154 @@ def _download_closes(tickers: list, period: str) -> tuple[dict, dict]:
     return out, stats
 
 
+# ── 기대 세션 보강 ─────────────────────────────────────────────────────────
+# 야후가 KR·JP 에서 종가 봉을 하루 늦게 주거나 저녁에 줬다가 자정 넘어 빼는
+# 날(#301·#310·#325 실측), 기대 완결 세션이 이번 응답에 없어 카드는 "21종목"
+# 인데 그날 표를 만들 재료가 없다. 저장분 폴백(#325)은 **그 날짜를 한 번이라도
+# 만든 적이 있어야** 서는데, 배포 직후처럼 한 번도 못 만든 날은 영영 빈칸이다
+# (2026-09-10 "종목은 아직 안나오네"). 그 하루를 시장의 **벌크 종가 원천**으로
+# 채운다 — KR 은 KRX 공식값(pykrx `get_market_cap_by_ticker(date, market="ALL")`,
+# 스크리너 `_fetch_kr_bulk` 가 이미 부르는 검증된 호출 · HTTP 1건, #141·#150
+# 이미 부르는 호출이 무엇을 더 주는지 먼저 볼 것). 그 밖의 시장은 검증된 벌크
+# 원천이 없어 채우지 않고 **그렇게 밝힌다**(#43 침묵이 최악).
+# 벌크가 유니버스의 이 비율 미만만 채우면 쓰지 않는다 — 장전에는 KRX 가 그날
+# 행을 0 값 placeholder 로 주고(`_fetch_kr_bulk` 실측), 그걸 붙이면 전 종목이
+# 0 원 종가로 '밴드 아래' 가 된다. 부분을 완전본으로 굽지 않는다(#280).
+_MIN_FILL_RATIO = 0.5
+
+
+def _kr_closes_on(date: str) -> tuple[dict, str]:
+    """KRX 벌크 — `date`(YYYY-MM-DD) 의 전 종목 종가 `{6자리코드: float}`.
+    (dict, 실패 사유). 함수 존재는 실호출 가능 여부로 판정한다(#151·#25)."""
+    try:
+        from bot.pykrx_client import krx_login_ready
+        if not krx_login_ready():
+            return {}, "KRX 자격증명 없음"
+        from pykrx import stock
+    except Exception as exc:                                   # noqa: BLE001
+        return {}, f"pykrx 없음({type(exc).__name__})"
+    fn = getattr(stock, "get_market_cap_by_ticker", None)
+    if not callable(fn):
+        return {}, "get_market_cap_by_ticker 없음(설치본)"
+    ds = str(date).replace("-", "")[:8]
+    try:
+        try:
+            df = fn(ds, market="ALL")
+        except TypeError:
+            # 옛 pykrx 는 market 인자가 없다 — KOSPI 만 온다(코스닥 누락).
+            # 그러면 KOSDAQ 종목은 못 채우는데 그 사실은 filled/of 로 드러난다.
+            df = fn(ds)
+    except Exception as exc:                                   # noqa: BLE001
+        return {}, f"KRX 조회 실패({type(exc).__name__})"
+    if df is None or len(df) == 0:
+        return {}, "KRX 응답 비어 있음"
+    col = next((c for c in df.columns if "종가" in str(c)), None)
+    if col is None:
+        return {}, "KRX 응답에 종가 컬럼 없음"
+    out: dict = {}
+    for code in df.index:
+        try:
+            v = float(df.loc[code, col])
+        except Exception:                                      # noqa: BLE001
+            continue
+        if v > 0:
+            out[str(code).zfill(6)] = v
+    if not out:
+        return {}, "KRX 종가가 전부 0(장전 placeholder)"
+    return out, ""
+
+
+# 시장별 벌크 종가 원천 — 없는 시장은 채우지 않는다(사유는 fill 레코드가 말한다).
+# 시장특정 예외 사유: KRX 가 KR 전 종목 종가를 한 호출로 주는 공식 원천이고
+# 다른 시장엔 이 레포에 검증된 동급 원천이 없다(§UNIVERSAL 데이터소스 예외).
+_SESSION_FILL: dict = {"KR": (_kr_closes_on, "KRX 벌크 종가(pykrx)")}
+
+
+def _last_bar(closes: dict, min_ratio: float = 0.0) -> str | None:
+    """원천이 **유니버스 대부분에게** 준 가장 늦은 봉 날짜. 한 종목에만 먼저 온
+    봉(TW 09-09 1/225)을 '최신' 이라 부르면 보강이 불필요하다고 오판한다(#25
+    있다 만 묻는 검사는 눈이 먼다) — `min_ratio` 미만 날짜는 뺀다."""
+    if not closes:
+        return None
+    sparse = sparse_dates(closes, min_ratio) if min_ratio else {}
+    dates = [_date_key(s.index[-1]) for s in closes.values() if len(s)]
+    ok = [d for d in dates if d not in sparse]
+    if ok:
+        return max(ok)
+    # 전부 희소면(유니버스 자체가 작을 때) 그냥 마지막 봉
+    return max(dates) if dates else None
+
+
+def fill_missing_session(market: str, closes: dict, expected) -> tuple[dict, dict]:
+    """원천이 기대 완결 세션 `expected` 을 아직 안 줬으면 그 하루를 벌크 원천으로
+    채운다. 반환 = (새 closes, 사실 레코드) — 입력은 손대지 않는다. 레코드는
+    화면·진단이 그대로 적는다(#43·#136): {needed, date, newest, source, filled,
+    of, applied, reason}.
+
+    적용 규칙: 종목마다 마지막 봉이 `expected` 보다 앞일 때만 그 날짜 봉을 하나
+    덧붙인다(이미 있는 종목은 손대지 않는다). 벌크가 유니버스의 `_MIN_FILL_RATIO`
+    미만만 덮으면 **하나도 붙이지 않는다** — 붙이는 결정은 전수를 센 뒤에 한다."""
+    import pandas as pd
+    m = (market or "").upper()
+    newest = _last_bar(closes, _MIN_SCAN_RATIO)
+    sparse = sparse_dates(closes, _MIN_SCAN_RATIO) if closes else {}
+    rec = {"needed": False, "date": str(expected or ""), "newest": newest,
+           "source": "", "filled": 0, "of": len(closes or {}), "applied": False,
+           "reason": "",
+           # 이번 응답에서 일부 종목에게만 온 날짜 — 세션으로 세지 않은 이유를
+           # 화면이 말해야 한다(#43). {날짜: 종목 수}
+           "sparse": {d: n for d, n in sparse.items() if d > (newest or "")}}
+    if not expected or not closes or not newest or newest >= str(expected):
+        return closes, rec
+    rec["needed"] = True
+    src = _SESSION_FILL.get(m)
+    if not src:
+        rec["reason"] = "이 시장엔 검증된 벌크 종가 원천이 없음 — 다음 갱신에서 원천이 따라잡기를 기다림"
+        return closes, rec
+    fn, label = src
+    rec["source"] = label
+    bulk, why = fn(str(expected))
+    if not bulk:
+        rec["reason"] = why or "벌크 응답 없음"
+        return closes, rec
+    ts = pd.Timestamp(str(expected))
+    plan = []
+    for tk, s in closes.items():
+        if not len(s) or _date_key(s.index[-1]) >= str(expected):
+            continue
+        v = bulk.get(str(tk).split(".")[0].zfill(6))
+        if v is None:
+            continue
+        plan.append((tk, s, v))
+    rec["filled"] = len(plan)
+    if len(plan) < len(closes) * _MIN_FILL_RATIO:
+        rec["reason"] = (f"벌크가 {len(plan)}/{len(closes)}종목만 덮어 쓰지 않음"
+                         f"(하한 {int(_MIN_FILL_RATIO * 100)}%)")
+        return closes, rec
+    out = dict(closes)
+    for tk, s, v in plan:
+        t = ts.tz_localize(s.index.tz) if getattr(s.index, "tz", None) is not None else ts
+        out[tk] = pd.concat([s, pd.Series([float(v)], index=[t])])
+    rec["applied"] = True
+    return out, rec
+
+
+def fill_note(rec: dict | None) -> str:
+    """fill 레코드 → 화면·진단 한 줄("" 이면 적을 것 없음). 순수(#41)."""
+    r = rec or {}
+    if not r.get("needed"):
+        return ""
+    sp = r.get("sparse") or {}
+    sp_txt = ("" if not sp else " · " + ", ".join(
+        f"{d} 봉은 {n}/{r.get('of')}종목에만 와 세션으로 세지 않음"
+        for d, n in sorted(sp.items())))
+    head = (f"{r.get('date')} 종가가 이번 원천 응답에 없어(최신 봉 {r.get('newest')}{sp_txt})")
+    if r.get("applied"):
+        return (f"{head} {r.get('source')}로 채움 — {r.get('filled')}/{r.get('of')}종목 · "
+                "그날 표·카드는 그 값으로 만들었습니다")
+    return f"{head} 채우지 못함 — {r.get('reason')}"
+
+
 # ── 시계열 저장 ────────────────────────────────────────────────────────────
 def series_path(market: str) -> Path:
     return _SERIES_DIR / f"series_{(market or '').upper()}.json"
@@ -1058,10 +1209,6 @@ def build_market(market: str, *, write: bool = True,
                       f"응답 모양 이상 {scan.get('bad_shape')}")
         return _empty(m, reason, umeta)
 
-    counts = breakouts_by_date(closes)
-    if not counts:
-        return _empty(m, "밴드를 만들 수 있는 종목이 없음(20봉 미만)", umeta)
-
     # 완결 / 잠정 — 오늘 장이 아직 안 끝났으면 마지막 봉은 **부분봉**이라
     # 시계열에 넣지 않는다. 넣으면 그날 값이 장중 스냅샷으로 굳는다(#40).
     try:
@@ -1071,6 +1218,22 @@ def build_market(market: str, *, write: bool = True,
     except Exception as exc:                                   # noqa: BLE001
         log.debug("bollinger: %s 세션 판정 실패: %s", m, exc)
         expected, closed = None, None
+    # 원천이 기대 완결 세션을 안 줬으면 그 하루를 벌크 원천으로 채운다 — 밴드를
+    # 계산하기 **전에**(그래야 그날 count·표가 같은 재료에서 나온다, #45).
+    closes, fill = fill_missing_session(m, closes, expected)
+    scan["fill"] = fill
+    if fill.get("needed"):
+        log.info("bollinger: %s 기대 세션 보강 — %s", m, fill_note(fill))
+
+    counts = breakouts_by_date(closes)
+    # 일부 종목에게만 온 날짜는 시장 세션이 아니다 — 2026-09-10 TW 09-09 가 1/225
+    # 종목으로 `0종목 · 스캔 1종목` 카드가 됐다. 세지 않고 사실만 남긴다(#280·#43).
+    sparse = sparse_dates(closes, _MIN_SCAN_RATIO)
+    scan["sparse_dropped"] = {d: n for d, n in sparse.items() if d in counts}
+    for d in scan["sparse_dropped"]:
+        counts.pop(d, None)
+    if not counts:
+        return _empty(m, "밴드를 만들 수 있는 종목이 없음(20봉 미만)", umeta)
     d_last = max(counts)
     # ⚠️ **하나만** 걷어내면 안 된다 — 캘린더와 원천이 어긋나 기대 세션보다
     # 뒤인 봉이 둘 이상일 수 있고, 그러면 나머지가 '완결'로 기록된다.
@@ -1097,6 +1260,9 @@ def build_market(market: str, *, write: bool = True,
     fresh = {d: dict(v, basis=("live" if d == newest else "backfill"))
              for d, v in counts.items()}
     merged = merge_series(stored, fresh, partial=partial)
+    # 옛 판이 굽어 둔 희소 행(scanned 가 창 최대의 _MIN_SCAN_RATIO 미만)은 걷어낸다 — 그
+    # 행이 남으면 카드가 `0종목 · 스캔 1종목` 을 마지막 거래일이라 부른다.
+    merged, scan["sparse_pruned"] = prune_sparse_rows(merged, _MIN_SCAN_RATIO)
     if write and not partial:
         save_series(m, merged)
 
@@ -1158,9 +1324,12 @@ def build_market(market: str, *, write: bool = True,
         "chart": a5_hist[-_CHART_ROWS:],
         # 5일 평균 최저·최고 — 차트와 **같은 창**에서 고른다(#38·#51).
         "a5_ext": avg5_extremes(a5_hist[-_CHART_ROWS:]),
+        # 돌파 종목수 자체의 최소·최다 — 같은 창·같은 규약(#38·#51).
+        "cnt_ext": count_extremes(a5_hist[-_CHART_ROWS:]),
         "rows": table[:_TABLE_ROWS], "rows_total": len(table),
         "rows_reason": rows_reason,
         "rows_basis": rows_basis, "rows_note": rows_note if rows_basis == "stored" else "",
+        "fill": fill, "fill_note": fill_note(fill),
         "provisional": (dict(provisional, rows=prov_rows[:_TABLE_ROWS],
                              rows_total=len(prov_rows))
                         if provisional else None),
@@ -1463,19 +1632,28 @@ def _mcap_cell(r: dict) -> str:
         return _n(r.get("mcap"), 0)
 
 
-def _ext_card(label: str, e: dict | None, ext: dict | None) -> str:
-    """5일 평균 최저/최고 카드 한 장 — 값·날짜·그날 돌파 종목수·창을 한 칸에.
-    날짜 없이 값만 적으면 "언제냐"가 바로 온다(#43·#202)."""
+def _ext_card(label: str, e: dict | None, ext: dict | None,
+              key: str = "avg5") -> str:
+    """극값 카드 한 장 — 값·날짜·짝 지표·창을 한 칸에. `key="avg5"` 는 5일 평균
+    최저/최고(짝 = 그날 돌파 종목수), `key="count"` 는 돌파 최소/최다(짝 = 그날
+    5일 평균). 날짜 없이 값만 적으면 "언제냐"가 바로 온다(#43·#202)."""
     import html as _h
     if not e:
+        what = "5일 평균이 있는" if key == "avg5" else "돌파 종목수가 있는"
         return (f"<div class='stat'><div class='k'>{_h.escape(label)}</div>"
-                "<div class='v'>—</div><div class='bb-note'>5일 평균이 있는 "
+                f"<div class='v'>—</div><div class='bb-note'>{what} "
                 "세션이 없음</div></div>")
     win = (ext or {}).get("window")
+    if key == "count":
+        val = f"{_n(e.get('count'), 0)}종목"
+        pair = f"그날 5일 평균 {_n(e.get('avg5'))}"
+    else:
+        val = _n(e.get("avg5"))
+        pair = f"그날 돌파 {_n(e.get('count'), 0)}종목"
     return (f"<div class='stat'><div class='k'>{_h.escape(label)}</div>"
-            f"<div class='v'>{_n(e.get('avg5'))}</div>"
-            f"<div class='bb-note'>{_h.escape(str(e.get('date')))} · 그날 돌파 "
-            f"{_n(e.get('count'), 0)}종목 · 차트 구간 {_n(win, 0)}세션 중</div></div>")
+            f"<div class='v'>{val}</div>"
+            f"<div class='bb-note'>{_h.escape(str(e.get('date')))} · {pair}"
+            f" · 차트 구간 {_n(win, 0)}세션 중</div></div>")
 
 
 def _market_section(d: dict) -> str:
@@ -1527,6 +1705,8 @@ def _market_section(d: dict) -> str:
         f" · 약세 연속 {d.get('streak', 0)}세션</div></div>"
         f"{_ext_card('5일 평균 최저', (d.get('a5_ext') or {}).get('min'), d.get('a5_ext'))}"
         f"{_ext_card('5일 평균 최고', (d.get('a5_ext') or {}).get('max'), d.get('a5_ext'))}"
+        f"{_ext_card('돌파 최소', (d.get('cnt_ext') or {}).get('min'), d.get('cnt_ext'), key='count')}"
+        f"{_ext_card('돌파 최다', (d.get('cnt_ext') or {}).get('max'), d.get('cnt_ext'), key='count')}"
         "</div>")
     warn = ""
     if d.get("partial"):
@@ -1553,6 +1733,11 @@ def _market_section(d: dict) -> str:
         # 표가 저장분이면 **그 사실과 시각**을 표 위에 적는다 — payload 가 밝힌
         # 원천을 화면이 따라야 한다(#136·#43). 로그로만 알리면 사용자는 모른다.
         table = (f"<div class='bb-warn'>💾 {_h.escape(str(d['rows_note']))}</div>"
+                 + table)
+    if d.get("fill_note"):
+        # 기준일 종가를 벌크 원천으로 채웠으면(또는 못 채웠으면) 그 사실을 표 위에
+        # 적는다 — 야후가 아닌 값으로 만든 표를 야후 것처럼 보이면 안 된다(#136).
+        table = (f"<div class='bb-warn'>🧩 {_h.escape(str(d['fill_note']))}</div>"
                  + table)
     if prov:
         table += _rows_table(prov.get("rows") or [],
@@ -1683,10 +1868,19 @@ def render_page(data: dict, now=None) -> str:
 <b>5일 평균 최저 · 최고</b> — 차트에 그려진 <b>그 구간 안</b>에서 5일 평균이
 가장 낮았던/높았던 날짜와 그 값, 그리고 <b>그날의 돌파 종목수</b>입니다. 구간이
 굴러가므로 값·날짜도 같이 바뀝니다. 같은 값이 여러 날이면 가장 최근 날짜를 적습니다.<br>
+<b>돌파 최소 · 최다</b> — 같은 구간에서 <b>그날 돌파 종목수 자체</b>가 가장 적었던/많았던
+날짜와 그 개수(짝으로 그날의 5일 평균). 규약은 위와 같습니다(동률이면 최근 날짜).<br>
+<b>일부 종목에게만 온 봉</b> — 원천 응답에 어떤 날짜의 봉이 유니버스의
+{int(_MIN_SCAN_RATIO * 100)}% 미만 종목에만 있으면 그날은 세션으로 세지 않습니다(한
+종목으로 "돌파 0종목" 을 만들지 않으려는 것). 그 날짜는 표 위 🧩 줄이 "N/M종목에만 와
+세지 않음" 으로 밝힙니다.<br>
 <b>표가 "💾 저장분"이면</b> — 카드·차트는 마지막 거래일까지 저장된 시계열에서
 오는데, 이번 갱신의 원천 응답이 그 날짜 봉을 안 주면(야후가 하루 늦는 날) 표는
 이번 응답으로 만들 수 없습니다. 그때는 그 날짜를 마지막으로 만들었을 때 저장해 둔
 표를 보여 주고 수집 시각을 적습니다 — 카드의 종목수와 같은 목록입니다.<br>
+<b>"🧩 …로 채움"이면</b> — 원천 응답에 기준일 봉이 없을 때 그 하루 종가를 시장의
+벌크 원천(한국: KRX 공식 종가)으로 채워 그날 표·카드를 만든 것입니다. 벌크 원천이
+없는 시장은 채우지 않고 그렇게 적습니다.<br>
 <b>기준일 · 잠정 · 갱신</b> — 보드는 3시간마다 갱신되지만 <b>기록은 마지막 완결
 세션(종가 확정)만</b> 남깁니다. 장중에는 "🕒 잠정" 줄에 그 시각까지의 개수를 따로
 보여 주고, 종가가 확정된 다음 갱신에서 기록합니다(장중 값은 카드·차트에 섞이지
@@ -1749,7 +1943,7 @@ def regenerate() -> None:
 # 그대로 태우되 시계열 파일은 건드리지 않는다. 진단이 자기가 읽을 신호를
 # 오염시키면 다음 라운드가 통째로 거짓이 된다(#30·#264·#283). 그리고 판정을
 # 여기서 재구현하면 화면과 갈라지므로(#35·#169) 제품 함수만 부른다.
-_WHY_VER = 1
+_WHY_VER = 2
 _RUN_HINT = "cd ~/stock && .venv/bin/python -m bot.bollinger_board --why KR"
 
 
@@ -1943,6 +2137,12 @@ def _why(market: str) -> int:
     if d.get("rows_note"):
         _p(f"   💾 {d['rows_note']}")
     _p(f"   표 출처 {d.get('rows_basis')} (run=이번 실행 · stored=저장분 · none=없음)")
+    fl = (d.get("scan") or {}).get("fill") or {}
+    if fl.get("needed"):
+        # 화면과 같은 문구 + 숫자(#35·#202) — 채웠으면 몇 종목, 못 채웠으면 왜.
+        _p(f"   🧩 {fill_note(fl)}")
+    else:
+        _p(f"   🧩 기대 세션 보강 불필요(원천 최신 봉 {fl.get('newest')} ≥ 기대 {d.get('expected')})")
     ext = d.get("a5_ext") or {}
     if ext:
         _p(f"   5일 평균 극값(차트 구간 {ext.get('window')}세션 · 판정 {ext.get('judged')}행): "
@@ -1950,6 +2150,16 @@ def _why(market: str) -> int:
            f"최고 {_n(ext['max']['avg5'])} @ {ext['max']['date']}(돌파 {_n(ext['max']['count'], 0)})")
     else:
         _p("   5일 평균 극값: 판정할 행 없음")
+    cx = d.get("cnt_ext") or {}
+    if cx:
+        _p(f"   돌파 종목수 극값(같은 구간): 최소 {_n(cx['min']['count'], 0)}종목 @ {cx['min']['date']} · "
+           f"최다 {_n(cx['max']['count'], 0)}종목 @ {cx['max']['date']}")
+    sd = sc.get("sparse_dropped") or {}
+    sp = sc.get("sparse_pruned") or {}
+    if sd or sp:
+        _p("   ⚠️ 일부 종목에게만 온 날짜 — 세션으로 세지 않음: "
+           + ", ".join(f"{k}({v}/{sc.get('kept')}종목)" for k, v in sorted(sd.items()))
+           + (f" · 저장분에서 걷어냄: {', '.join(f'{k}(scanned {v})' for k, v in sorted(sp.items()))}" if sp else ""))
     after = load_series(m)
     _p("")
     _p(f"✅ 시계열 불변 확인 — {len(before)}행 → {len(after)}행"
