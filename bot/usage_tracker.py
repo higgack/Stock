@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from threading import Lock
@@ -426,3 +427,167 @@ def _add_rollup_cost_usd(delta: float) -> None:
         json.dump({"cost_usd": round(total, 6),
                    "note": "usage.jsonl 30일 로테이션으로 빠진 비용 적산분"}, f)
     os.replace(tmp, ROLLUP_PATH)
+
+
+# ── 진단 CLI ──────────────────────────────────────────────────────────────
+# `cd ~/stock && .venv/bin/python -m bot.usage_tracker --check`
+_CHECK_VER = 2
+
+# ④ 자기검증 표본. ⚠️ **실제 모델 id 를 쓰면 안 된다** — ⑥ 이 시키는 대로
+# 그 모델을 `_PRICING` 에 넣는 순간 이 검증이 빨간불이 되어 §Pre-commit 6 이
+# 무관한 커밋까지 전부 막는다(독립 리뷰 2026-09-09 실측 · #294 성공 조건이
+# 뇌관인 시한폭탄 · #67 리터럴을 박으면 bump 마다 무관한 빨간불).
+_UNPRICED_SAMPLE = "__단가미등재_표본__"
+
+# `_extract_token_usage` 가 모델을 못 읽으면 `"unknown"` 으로 적는다. 그건
+# 단가표에 넣을 수 있는 이름이 아니므로 처방이 다르다(#82 갈래는 이름으로).
+_UNKNOWN_MODEL = "unknown"
+
+# 공표 요율을 그대로 못박아 둔 회귀. 단가표를 고치면 여기도 같이 고쳐야
+# 한다 — 요율 변경을 **의도적으로** 만들려고 둔 마찰이다(#317).
+_RATE_PIN = ("tests/test_regression.py::TestPricingSingleSource"
+             "::test_canonical_rates_are_the_published_ones")
+
+
+def _scan_ledger_readonly() -> dict:
+    """원장의 llm_call 을 **읽기만** 해서 갈래별로 센다.
+
+    ⚠️ `load_records()` 를 부르면 안 된다 — 그 함수는 읽으면서 파일을 다시
+    쓰고 로테이션분을 롤업에 적산한다. 진단이 자기가 읽을 신호를 오염시키면
+    안 된다(#264·#283 — dry-run 이 `generate()` 로 실제 과금·기록을 남긴 그것).
+
+    ⚠️ 판정은 **화면이 쓰는 그 술어**(`is_unpriced_record`)로 한다 — `not
+    is_priced(m)` 로 재면 저장된 표식이 붙은 레코드를 통째로 놓쳐, 대시보드
+    비용카드가 과소집계 중인데 CLI 가 초록불을 준다(#35, 리뷰 실측).
+    """
+    out = {"exists": USAGE_LOG.exists(), "total": 0, "missing": {},
+           "flagged": {}, "unknown": 0, "unrecorded": 0, "err": ""}
+    if not out["exists"]:
+        return out
+    try:
+        with open(USAGE_LOG, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "llm_call":
+                    continue
+                out["total"] += 1
+                m = rec.get("model")
+                if not m:
+                    out["unrecorded"] += 1
+                elif m == _UNKNOWN_MODEL:
+                    out["unknown"] += 1
+                elif is_unpriced_record(rec):
+                    # 단가표에 없어서 0 인가(고칠 수 있다), 아니면 옛 표식인가
+                    # (그때 0 으로 적혔다 — 이제 와서 고칠 수 없다, #260).
+                    key = "flagged" if is_priced(m) else "missing"
+                    out[key][m] = out[key].get(m, 0) + 1
+    except Exception as exc:
+        # ⚠️ 읽다 끊긴 통계를 완결인 척 판정하면 안 된다(#41·#54) — 사유를
+        # 싣고 호출부가 ❓ 로 찍는다.
+        out["err"] = f"{type(exc).__name__}: {exc}"
+        log.warning("usage_tracker --check: 원장 읽기 실패(%s)", out["err"])
+    return out
+
+
+def _check() -> int:
+    """단가표·환율·미등재 판정을 사실대로 찍는다. 읽기 전용·무과금.
+
+    ⚠️ **이상이 없을 때도 말한다** — 빈 출력이 정답인 진단은 없다(#274).
+    그리고 대조할 게 없으면 ✅ 가 아니라 ❓ 다(#54).
+    """
+    print(f"usage_tracker --check v{_CHECK_VER}")
+    # ① 인터프리터 — venv 밖에서 돌면 결과가 통째로 거짓일 수 있다(#132).
+    print(f"① 인터프리터: {sys.executable}")
+
+    print("② 단가표(USD / 1M tokens) — 이게 원천이다:")
+    for m in sorted(_PRICING):
+        r = _PRICING[m]
+        print(f"   {m:24} in {r['in']:>6}  out {r['out']:>6}")
+
+    # ③ 두 환율은 **다른 일**을 한다. 숫자만 나란히 두면 또 '중복'이라고
+    #    통일된다 — 실제로 그렇게 통일했다가 과거 합계가 3.6% 틀어질 뻔했다
+    #    (#317 리뷰 오수용). 그래서 이름을 갈라 적는다.
+    print("③ 환율 — 두 상수는 서로 다른 일을 한다:")
+    print(f"   표시 환산            KRW_PER_USD = {KRW_PER_USD}")
+    try:
+        from bot.dashboard import _LEGACY_KRW_WRITE_FX as _legacy
+        print(f"   레거시 cost_krw 기록  = {_legacy}"
+              "  (그때 기록에 쓰인 환율 — 되읽을 땐 이걸로 나눠야 왕복이 맞다)")
+    except Exception as exc:
+        print(f"   레거시 기록 환율     ❓ 판정 불가({type(exc).__name__}: {exc})")
+
+    # ④ 판정을 **표본으로 태워** 보인다 — 손으로 따옴표를 조립하다 키가
+    #    `"model"` 이 되어 멀쩡한 가드가 False 를 낸 그 사고(#319·#252).
+    print("④ 미등재 판정 자체 검증:")
+    for m in (sorted(_PRICING)[0], _UNPRICED_SAMPLE):
+        tag = "등재" if is_priced(m) else "미등재"
+        print(f"   {m:24} {tag} · is_unpriced_record 판정="
+              f"{is_unpriced_record({'model': m})}")
+    print("   표식 {'unpriced': True} 인 옛 레코드 → "
+          f"{is_unpriced_record({'model': sorted(_PRICING)[0], 'unpriced': True})}"
+          "  (그때 저장된 cost_usd 는 여전히 0 이라 계속 미등재로 센다)")
+
+    # ⑤ 원장 대조 — 읽기 전용(로테이션 안 함).
+    sc = _scan_ledger_readonly()
+    print(f"⑤ 원장 대조(읽기 전용): {USAGE_LOG}")
+    if not sc["exists"]:
+        # '없음'과 '비어 있음'은 처방이 다르다(#82) — 같은 문구로 적으면
+        # 잘못된 사용자·인터프리터로 돈 것을 '원장이 비었다'로 읽는다.
+        print("   ❓ 원장 파일이 없다 — 경로·실행 사용자를 확인할 것"
+              "(판정 불가, #54)")
+        print("⑥ 판정: ❓ 단가표·판정은 정상이나 원장 대조는 못 했다")
+        return 0
+    if sc["err"]:
+        print(f"   ❓ 원장을 끝까지 못 읽었다({sc['err']}) — "
+              f"{sc['total']:,}건까지만 봤다(부분 통계, 판정 불가)")
+        print("⑥ 판정: ❓ 원장 대조 실패 — 위 사유를 먼저 볼 것")
+        return 1
+    if sc["total"] == 0:
+        print("   ❓ llm_call 0건 — 대조할 게 없다(판정 불가, #54)")
+        print("⑥ 판정: ❓ 단가표·판정은 정상이나 원장 대조는 못 했다")
+        return 0
+
+    print(f"   llm_call {sc['total']:,}건")
+    for m, n in sorted(sc["flagged"].items(), key=lambda kv: -kv[1]):
+        # 고칠 수 없는 과거분이므로 ❌ 로 찍지 않는다 — 매일 오는 ❌ 는
+        # 진짜 ❌ 를 가린다(#260).
+        print(f"   ⓘ 표식 {m} — {n:,}콜이 단가 미등재로 기록됐다"
+              "(그때 0 으로 적힘 · 지금은 단가표에 있다 · 과거분이라 고칠 수 없음)")
+    if sc["unknown"] or sc["unrecorded"]:
+        print(f"   ⚠️ 모델 미기록('{_UNKNOWN_MODEL}') "
+              f"{sc['unknown'] + sc['unrecorded']:,}콜 — 단가표가 아니라 "
+              "**기록 경로**(_extract_token_usage) 문제다. "
+              "이 이름은 _PRICING 에 넣을 수 없다")
+    if sc["missing"]:
+        for m, n in sorted(sc["missing"].items(), key=lambda kv: -kv[1]):
+            print(f"   ❌ 단가 미등재 {m} — {n:,}콜의 비용이 0 으로 집계된다")
+        # ⚠️ 처방은 **끝까지** 적는다 — 1단계만 하면 공표 요율 핀 회귀가
+        #    빨간불이 되어 §Pre-commit 6 으로 커밋이 막히고, 운영자는 이유를
+        #    모른다(#82·#274). 그 핀은 요율 변경을 의도적으로 만들려고 둔
+        #    것이므로 약화시키지 않고 처방에 싣는다.
+        print("⑥ 판정: ❌ ① _PRICING 에 위 모델을 공식 요율로 추가"
+              f"(지어내지 말 것) ② 같은 커밋에서 {_RATE_PIN} 도 갱신")
+        return 1
+    if sc["flagged"] or sc["unknown"] or sc["unrecorded"]:
+        print("⑥ 판정: ⚠️ 단가표엔 빠진 모델이 없다 — 위 항목은 과거분·기록 경로")
+        return 0
+    print("   ✅ 원장의 모든 모델이 단가표에 있다")
+    print("⑥ 판정: ✅ 이상 없음")
+    return 0
+
+
+def main() -> int:
+    if "--check" in sys.argv[1:]:
+        return _check()
+    print("사용법: cd ~/stock && .venv/bin/python -m bot.usage_tracker --check")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - 진입점
+    raise SystemExit(main())
