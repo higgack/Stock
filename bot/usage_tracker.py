@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 
@@ -63,6 +64,10 @@ MODEL_PURPOSE: dict[str, str] = {
 # rates here because /usage should stay fast and offline-tolerant.
 KRW_PER_USD = 1380
 
+# `_extract_token_usage` 가 모델을 못 읽었을 때 적는 이름.
+# 분류기와 기록부가 같은 상수를 봐야 갈리지 않는다(#38).
+UNRECORDED_MODEL = "unknown"
+
 
 # 단가표에 없는 모델을 **모델당 한 번만** 알리기 위한 기억(#25 늘 뜨는 경고
 # 금지). 테스트는 이걸 monkeypatch 로 갈아끼워 격리한다(#30).
@@ -89,6 +94,54 @@ def is_unpriced_record(rec: dict) -> bool:
         return True
     m = rec.get("model")
     return bool(m) and not is_priced(m)
+
+
+def is_unrecorded_model(rec: dict) -> bool:
+    """모델 이름을 **못 읽어서** ₩0 인가 — 단가표 문제가 아니다.
+
+    `_extract_token_usage` 는 모델을 못 찾으면 `"unknown"` 으로 적는다. 그
+    이름은 `_PRICING` 에 넣을 수 있는 것이 아니므로, '단가 미등재' 와 같은
+    라벨로 묶으면 화면이 **이행 불가능한 처방**을 준다(#82·#260).
+    """
+    return (rec.get("model") or UNRECORDED_MODEL) == UNRECORDED_MODEL
+
+
+def counts_as_unpriced(rec: dict) -> bool:
+    """₩0 으로 적힌 llm_call 인가 — 화면·CLI 가 **같은 술어**로 세게(#38).
+
+    ⚠️ `is_unpriced_record` 만 쓰면 `model` 이 **빈** 레코드가 어느 버킷에도
+    안 들어간다(그 함수는 모델 이름이 있어야 True). 그런데 `--check` 의 원장
+    스캔은 그걸 `unrecorded` 로 세므로 CLI 와 화면이 다른 수를 말한다
+    (독립 리뷰 2026-09-09 실측).
+    """
+    return is_unpriced_record(rec) or is_unrecorded_model(rec)
+
+
+def split_unpriced(records) -> dict:
+    """₩0 으로 적힌 호출을 **처방이 다른 두 갈래**로 가른다(#82).
+
+    - `missing_rate` — 단가표에 없는 모델. `_PRICING` 에 공식 요율로 추가하면
+      고쳐진다(그때 공표 요율 핀 회귀도 같이 갱신, `_RATE_PIN`).
+    - `no_model` — 모델을 못 읽어 `"unknown"`(또는 빈 값)으로 적힌 것.
+      기록 경로(`_extract_token_usage`) 문제라 요율표로는 고칠 수 없다.
+      규모를 알 수 있게 토큰 합도 같이 센다(#202 숫자로 말하라).
+
+    ⚠️ `trade/llm_usage` 는 호출부가 모델 이름을 **명시해** 넘기므로 거기선
+    `no_model` 이 구조적으로 생기지 않는다 — 그쪽 라벨은 지금도 참이라
+    건드리지 않는다(잊은 게 아니다, #55).
+    """
+    out = {"missing_rate": 0, "no_model": 0, "total": 0, "no_model_tokens": 0}
+    for rec in records or []:
+        if rec.get("type") != "llm_call" or not counts_as_unpriced(rec):
+            continue
+        out["total"] += 1
+        if is_unrecorded_model(rec):
+            out["no_model"] += 1
+            out["no_model_tokens"] += int(_num(rec.get("prompt_tokens"))
+                                          + _num(rec.get("completion_tokens")))
+        else:
+            out["missing_rate"] += 1
+    return out
 
 
 def estimate_cost_usd(
@@ -206,7 +259,7 @@ def _extract_token_usage(response) -> tuple[str, int, int]:
                 break
 
     return (
-        model or "unknown",
+        model or UNRECORDED_MODEL,
         int(prompt_tokens or 0),
         int(completion_tokens or 0),
         int(cached_tokens or 0),
@@ -439,14 +492,18 @@ _CHECK_VER = 2
 # 뇌관인 시한폭탄 · #67 리터럴을 박으면 bump 마다 무관한 빨간불).
 _UNPRICED_SAMPLE = "__단가미등재_표본__"
 
-# `_extract_token_usage` 가 모델을 못 읽으면 `"unknown"` 으로 적는다. 그건
-# 단가표에 넣을 수 있는 이름이 아니므로 처방이 다르다(#82 갈래는 이름으로).
-_UNKNOWN_MODEL = "unknown"
-
 # 공표 요율을 그대로 못박아 둔 회귀. 단가표를 고치면 여기도 같이 고쳐야
 # 한다 — 요율 변경을 **의도적으로** 만들려고 둔 마찰이다(#317).
 _RATE_PIN = ("tests/test_regression.py::TestPricingSingleSource"
              "::test_canonical_rates_are_the_published_ones")
+
+
+def _num(v) -> float:
+    """숫자로 못 읽으면 0 — 레코드 하나가 스캔 전체를 죽이면 안 된다(#315)."""
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _scan_ledger_readonly() -> dict:
@@ -461,7 +518,9 @@ def _scan_ledger_readonly() -> dict:
     비용카드가 과소집계 중인데 CLI 가 초록불을 준다(#35, 리뷰 실측).
     """
     out = {"exists": USAGE_LOG.exists(), "total": 0, "missing": {},
-           "flagged": {}, "unknown": 0, "unrecorded": 0, "err": ""}
+           "flagged": {}, "unknown": 0, "unrecorded": 0,
+           "nomodel_tokens": 0, "nomodel_first": 0.0, "nomodel_last": 0.0,
+           "err": ""}
     if not out["exists"]:
         return out
     try:
@@ -478,10 +537,18 @@ def _scan_ledger_readonly() -> dict:
                     continue
                 out["total"] += 1
                 m = rec.get("model")
-                if not m:
-                    out["unrecorded"] += 1
-                elif m == _UNKNOWN_MODEL:
-                    out["unknown"] += 1
+                if not m or m == UNRECORDED_MODEL:
+                    out["unrecorded" if not m else "unknown"] += 1
+                    out["nomodel_tokens"] += int(
+                        _num(rec.get("prompt_tokens"))
+                        + _num(rec.get("completion_tokens")))
+                    # 언제 그랬는지를 알아야 어느 배포·어느 경로인지 좁힌다 —
+                    # 안 실으면 다음 라운드에 또 손으로 명령을 조립하게 된다
+                    # (#319 가 바로 그 사고다).
+                    ts = _num(rec.get("ts"))
+                    if ts:
+                        out["nomodel_first"] = min(out["nomodel_first"] or ts, ts)
+                        out["nomodel_last"] = max(out["nomodel_last"], ts)
                 elif is_unpriced_record(rec):
                     # 단가표에 없어서 0 인가(고칠 수 있다), 아니면 옛 표식인가
                     # (그때 0 으로 적혔다 — 이제 와서 고칠 수 없다, #260).
@@ -493,6 +560,21 @@ def _scan_ledger_readonly() -> dict:
         out["err"] = f"{type(exc).__name__}: {exc}"
         log.warning("usage_tracker --check: 원장 읽기 실패(%s)", out["err"])
     return out
+
+
+def _span(sc: dict) -> str:
+    """모델 미기록 호출이 **언제** 났는지. KST 로 적는다(전역 표기 규칙 10a).
+
+    못 재면 단정하지 않는다(#165) — 'ts 없음' 이라고 말한다.
+    """
+    a, b = sc.get("nomodel_first") or 0.0, sc.get("nomodel_last") or 0.0
+    if not a or not b:
+        return "시각 미기록"
+    kst = timezone(timedelta(hours=9))
+    fmt = "%Y-%m-%d %H:%M"
+    lo = datetime.fromtimestamp(a, kst).strftime(fmt)
+    hi = datetime.fromtimestamp(b, kst).strftime(fmt)
+    return f"{lo} KST" if lo == hi else f"{lo} ~ {hi} KST"
 
 
 def _check() -> int:
@@ -560,8 +642,10 @@ def _check() -> int:
         print(f"   ⓘ 표식 {m} — {n:,}콜이 단가 미등재로 기록됐다"
               "(그때 0 으로 적힘 · 지금은 단가표에 있다 · 과거분이라 고칠 수 없음)")
     if sc["unknown"] or sc["unrecorded"]:
-        print(f"   ⚠️ 모델 미기록('{_UNKNOWN_MODEL}') "
-              f"{sc['unknown'] + sc['unrecorded']:,}콜 — 단가표가 아니라 "
+        # 규모를 모르면 고칠지 말지 못 정한다 — 토큰 합을 같이 적는다(#202).
+        print(f"   ⚠️ 모델 미기록('{UNRECORDED_MODEL}') "
+              f"{sc['unknown'] + sc['unrecorded']:,}콜 · "
+              f"토큰 {sc['nomodel_tokens']:,} · {_span(sc)} — 단가표가 아니라 "
               "**기록 경로**(_extract_token_usage) 문제다. "
               "이 이름은 _PRICING 에 넣을 수 없다")
     if sc["missing"]:
