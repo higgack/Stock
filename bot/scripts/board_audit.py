@@ -510,6 +510,46 @@ def main() -> int:
             _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
         _p("")
+        _p("── 🔋 Bollinger 보드 — 시장별 기준일")
+        # Breadth 섹션과 **같은 마킹 규칙**을 쓴다(복제하면 두 보드의 판정이
+        # 갈라진다, #38). 대조 대상이 0건이면 ✅ 가 아니라 ❌ 다(#54).
+        # ⚠️ **저장된 시계열을 읽는다** — 여기서 `build_market` 을 부르면 매일
+        # 6시장 ~1,800종목을 야후에서 다시 받아, 3시간 보드가 이미 받아 둔 것을
+        # 중복 지불하고 `yf_paused` 를 건드려 **감사가 자기가 만든 ❌ 를**
+        # 보고할 수 있다(독립 리뷰 2026-09-09). 감사가 물을 것은 "보드가 최신을
+        # 기록하고 있나"이고 그 답은 파일에 있다 — 보드가 멈추면 기준일이
+        # 그대로 굳어 아래 판정이 잡는다.
+        try:
+            from bot import bollinger_board as bb
+            from bot.bollinger import series_rows
+            seen = 0
+            for mkt in bb.MARKETS:
+                rows = series_rows(bb.load_series(mkt))
+                asof = rows[-1]["date"] if rows else None
+                cnt = rows[-1].get("count") if rows else None
+                exp, grace = mt._expected_session(mkt)
+                behind = (mt._sessions_between(mkt, asof, exp)
+                          if asof and exp and asof < exp else 0)
+                if not rows:
+                    mark = "❌ 시계열 없음(보드가 한 번도 기록 못 했다)"
+                elif not asof:
+                    mark = "❌ 기준일 없음(수집 실패)"
+                elif exp and asof > exp:
+                    mark = f"🕒 장중 미확정 봉 — 마지막 완결 세션은 {exp}"
+                elif behind and behind > grace:
+                    mark = f"⚠️ {behind}거래일 지연"
+                else:
+                    mark = "✅ 완결 세션"
+                    seen += 1
+                _p(f"   {mkt:5} 기준 {asof or '—'} · 마지막 완결 {exp}"
+                   f" · 돌파 {cnt if cnt is not None else '—'}종목"
+                   f" · 이력 {len(rows)}세션 {mark}")
+            if not seen:
+                _p("   ❌ 완결 기준일이 하나도 없다 — 보드가 통째로 비어 있다")
+        except Exception as exc:                               # noqa: BLE001
+            _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+        _p("")
         _p("── 시장타이밍 보드 — 변동성 카드")
         snap = mt.fetch_volatility_snapshot()
         for key in ("vix", "vkospi", "move"):

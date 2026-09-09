@@ -166,7 +166,7 @@ def _pick_cons_col(columns, kind: str):
     return None
 
 
-def list_csi300_500() -> dict:
+def list_csi300_500(symbols: tuple = ("000300", "000905")) -> dict:
     """CSI 300 + CSI 500 구성종목 {yfinance_ticker: 中文명} — CN 52주 신고저
     유니버스 (사용자 2026-06-17 'CSI300+500'). 대형(沪深300)+중형(中证500) ≈
     시총 상위 ~800. 전 A주(~5천)는 소형주를 yfinance 가 1년 일봉으로 잘 안 줘서
@@ -176,8 +176,17 @@ def list_csi300_500() -> dict:
     → {} (호출측 peer ~64 폴백).
 
     ⚠️ AKShare 가 서버 IP 에서 차단/지연될 수 있어 VM 라이브 검증 필요(샌드박스
-    미설치). 함수명·컬럼명은 방어적 탐지(_pick_cons_col)로 AKShare 버전 차이 흡수."""
-    cache_key = "csi300_500.json"
+    미설치). 함수명·컬럼명은 방어적 탐지(_pick_cons_col)로 AKShare 버전 차이 흡수.
+
+    `symbols` 로 지수를 고를 수 있다 — 🔋 Bollinger 보드는 CN_A 를 **CSI300
+    구성종목 전체**로 쓰므로 `("000300",)` 을 넘긴다(기본값은 종전 그대로라
+    기존 호출부는 무변경). 캐시 키도 symbols 로 갈린다."""
+    # ⚠️ 캐시 키에 **symbols 를 싣는다** — 안 실으면 CSI300 만 받은 결과와
+    # CSI300+500 결과가 같은 파일을 공유해 먼저 쓴 쪽이 상대에게 서빙된다
+    # (#61 의 반대 방향: 키를 덜 나눠서 생기는 오염 — FinMind `days` 누락과
+    # 같은 사고). 기본값은 종전 그대로라 기존 호출부는 캐시까지 무변경.
+    cache_key = ("csi300_500.json" if tuple(symbols) == ("000300", "000905")
+                 else "csi_" + "_".join(symbols) + ".json")
     cached = _cache_get(cache_key, ttl_hours=7 * 24)
     if isinstance(cached, dict) and len(cached) > 100:
         return cached
@@ -185,7 +194,7 @@ def list_csi300_500() -> dict:
     if ak is None:
         return {}
     out: dict = {}
-    for sym in ("000300", "000905"):                     # 沪深300 · 中证500
+    for sym in symbols:                                  # 沪深300 · 中证500
         df = None
         for fn_name in ("index_stock_cons_csindex", "index_stock_cons"):
             fn = getattr(ak, fn_name, None)

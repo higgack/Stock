@@ -16026,6 +16026,7 @@ def _render_marketcap_page(data_by_axis: dict) -> str:
     · <a href="liquidity.html">💧 유동성</a>
     · <a href="market_timing.html">🚦 시장타이밍</a>
     · <a href="breadth_strategy.html">🧭 Breadth전략</a>
+    · <a href="bollinger.html">🔋 Bollinger</a>
     · <a href="econ_calendar.html">📅 경제캘린더</a>
   </div>
   <h1>🏆 Market cap</h1>
@@ -18755,6 +18756,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="liquidity.html">💧 유동성</a>
     &middot; <a href="market_timing.html">🚦 시장타이밍</a>
     &middot; <a href="breadth_strategy.html">🧭 Breadth전략</a>
+    &middot; <a href="bollinger.html">🔋 Bollinger</a>
     &middot; <a href="econ_calendar.html">📅 경제캘린더</a>
     &middot; <a href="marketcap.html">🏆 Market cap</a>
     &middot; <a href="trade/">🌏 수출입</a>

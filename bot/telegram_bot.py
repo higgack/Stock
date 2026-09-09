@@ -1099,7 +1099,7 @@ _HELP_TEXT = """🧠 <b>주식분석 봇</b>
 ━━━━━━━━━
 <b>【대시보드】</b> 위 <b>Main</b> 이 단일 entry — 나머지는 전부 Main nav 에서 이동
  🌍 <b>Main</b> — 글로벌스냅샷·매크로(금리·물가·환율) · 다가오는 실적(한·미·일·대·중·홍) · 리서치 액션(한국 기업/산업/전략 + 미국 TP) · 관심종목(한글명·시총·현재/예상 PER·등락·정렬/필터 · 5분 주기 갱신) · 📋DART 공시(40+종 구조화 카드 · 🔥중요/⚠️미파싱 색상 + 카테고리 필터 · CSV) · 업종등락 + 🏯ASIA(신고저·급등락·장전/시간외·NXT) · 종목검색·스크롤복원 · 새 데이터 하단알림(1분 체크·반영은 사용자 선택)
- 📈 <b>차트보드</b> — 🚦시장타이밍(분산일·FTD·섹터 breadth·VKOSPI/VIX/MOVE) · 🧭Breadth 전략(역추세/회복/비추세/추세 4구간 · 섹터 MA120 상회비율 · 월말 확정) · 📅경제캘린더(CPI·PPI·고용·AHE·실업률·실업수당·소매·ECI·GDP·PCE·FOMC·JOLTS·소비자심리·산업생산 — 5일변동성/정책민감/침체조기경보 분류, 최근발표 대비·1M·3M·6M·1Y) · 🏭PPI · 🛒CPI · 💧유동성
+ 📈 <b>차트보드</b> — 🚦시장타이밍(분산일·FTD·섹터 breadth·VKOSPI/VIX/MOVE) · 🧭Breadth 전략(역추세/회복/비추세/추세 4구간 · 섹터 MA120 상회비율 · 월말 확정) · 🔋Bollinger(볼린저 상단 돌파 종목수 · 5일선 추이 · 에너지 국면) · 📅경제캘린더(CPI·PPI·고용·AHE·실업률·실업수당·소매·ECI·GDP·PCE·FOMC·JOLTS·소비자심리·산업생산 — 5일변동성/정책민감/침체조기경보 분류, 최근발표 대비·1M·3M·6M·1Y) · 🏭PPI · 🛒CPI · 💧유동성
  🗂 <b>그 밖에</b> — 분석 아카이브 · 자산 · Screener(워치·도메인 목록도 여기) · 레딧 · Daily Byte · 블로그 · 밸류체인 · 🏆Market cap · 부동산(청약 포함) · 수출입
  ★📝⏰ <b>카드 도구</b>(카드형 보드 공통 · 차트보드 제외) — 카드마다 ★중요·📝메모·⏰알람(서버 저장 → 모바일↔PC 동기화). 검색창 옆 필터로 표시한 것만 보기. ⏰=매일(시각) 또는 특정일(MM.DD.HH:MM)·KST 발송, ✅확인 시 종료·미확인 시 다음날 재발송
 
@@ -4196,6 +4196,18 @@ async def _periodic_fred_boards() -> None:
             raise
         except Exception:
             log.exception("breadth strategy regen failed")
+        # 🔋 Bollinger 보드(2026-09-09 사용자 캡처 전략) — 같은 주기. 값은
+        # 그 시장의 **종가가 확정된 뒤에만** 바뀌므로(장중 봉은 잠정으로만
+        # 표시하고 시계열에 안 넣는다) 이 빈도로 충분하다. 실패해도 위
+        # 보드들과 독립(try 분리).
+        try:
+            from bot.bollinger_board import regenerate as _regen_bollinger
+            await asyncio.to_thread(_regen_bollinger)
+            log.info("bollinger %dh regen: ok", _BOARD_REGEN_HOURS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("bollinger regen failed")
         # 경제캘린더 보드(2026-07-26) — CPI/Core CPI/PPI/고용/AHE/실업률/실업수당(신규·연속)/소매/ECI/GDP/PCE/Core PCE/FOMC 발표일정.
         # 같은 주기(발표일 자체가 자주 안 바뀜, vintage 질의는 24h 캐시) —
         # 실패해도 위 두 보드 갱신과 독립(try 분리).
@@ -4459,6 +4471,22 @@ async def _on_startup(application) -> None:
         _bs_thr.Thread(target=_breadth_strategy_initial, daemon=True).start()
     except Exception as exc:
         log.warning("startup: breadth strategy thread failed: %s", exc)
+    # 🔋 Bollinger 보드(2026-09-09) — 같은 이유로 startup 무조건 재생성.
+    # nav 링크는 즉시 살아나므로 여기 없으면 배포 직후 최소 한 주기 404 다
+    # (실수 #11).
+    try:
+        import threading as _bb_thr
+
+        def _bollinger_initial():
+            try:
+                from bot.bollinger_board import regenerate as _regen_bb
+                _regen_bb()
+                log.info("startup: bollinger regenerated")
+            except Exception as exc:
+                log.warning("startup: bollinger regen failed: %s", exc)
+        _bb_thr.Thread(target=_bollinger_initial, daemon=True).start()
+    except Exception as exc:
+        log.warning("startup: bollinger thread failed: %s", exc)
     # 경제캘린더 보드(2026-07-26) — 같은 이유로 startup 무조건 재생성.
     try:
         import threading as _ec_thr

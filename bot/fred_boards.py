@@ -844,6 +844,7 @@ _NAV = ('<div class="nav"><a href="market.html">🌍 홈</a> · '
         '<a href="liquidity.html">💧 유동성</a> · '
         '<a href="market_timing.html">🚦 시장타이밍</a> · '
         '<a href="breadth_strategy.html">🧭 Breadth전략</a> · '
+        '<a href="bollinger.html">🔋 Bollinger</a> · '
         '<a href="econ_calendar.html">📅 경제캘린더</a> · '
         '<a href="marketcap.html">🏆 Market cap</a></div>')
 

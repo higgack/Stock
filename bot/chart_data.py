@@ -251,12 +251,16 @@ def _series_payload(
         payload["low"] = [_round(v) for v in lows.values]
 
     # Bollinger Bands(20, 2σ) — overlay. Same as snapshot SSoT.
+    # ⚠️ 산식은 `bot.bollinger.bands` **한 곳**에서 온다 — 🔋 Bollinger 보드가
+    # 세는 '상단 돌파'와 이 차트의 상단선이 같은 값이어야 사용자가 표와 차트를
+    # 나란히 놓고 눈으로 검산할 수 있다(#33·#38). 여기 인라인으로 되돌리면
+    # 두 화면이 언젠가 갈라진다.
     if len(close) >= 20:
-        bb_mid = close.rolling(20).mean()
-        bb_std = close.rolling(20).std()
-        payload["bb_u"] = [_round(v) for v in (bb_mid + 2 * bb_std).values]
+        from bot.bollinger import bands as _bb_bands
+        bb_mid, bb_up, bb_lo = _bb_bands(close, 20, 2.0)
+        payload["bb_u"] = [_round(v) for v in bb_up.values]
         payload["bb_m"] = [_round(v) for v in bb_mid.values]
-        payload["bb_l"] = [_round(v) for v in (bb_mid - 2 * bb_std).values]
+        payload["bb_l"] = [_round(v) for v in bb_lo.values]
 
     # RSI(14) — Wilder exponential smoothing (same as snapshot SSoT).
     if len(close) >= 15:

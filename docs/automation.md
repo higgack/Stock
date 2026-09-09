@@ -19,7 +19,7 @@
 | 대시보드 분석/실행 요청 스풀 | 5초 | `_periodic_dashboard_requests` | 대시보드 버튼 클릭 → 텔레그램 채널과 동일 실행 경로 | `CHANNEL_CHAT_IDS` 미설정 시 요청 소비만(게시 안 함) |
 | 관심종목 DART 알림 | 75초 | `_periodic_dart_fav_alerts` | `dart-feed.timer`(별도 프로세스) 아카이브를 스캔해 신규만 알림 | 영구 seen-set(중복 알림 차단) |
 | marketcap.html 재생성 | 3시간 | `_periodic_marketcap` | 글로벌 시총 순위 갱신 | 없음 |
-| FRED 계열 보드 재생성 | 6시간 | `_periodic_fred_boards` | PPI/CPI/유동성/시장타이밍/경제캘린더 동시 갱신(각 try 분리, 한쪽 실패해도 나머지 진행) | `FRED_API_KEY` 부재 시 해당 보드만 graceful 빈 상태 |
+| FRED 계열 보드 재생성 | 3시간 | `_periodic_fred_boards` | PPI/CPI/유동성/시장타이밍/Breadth전략/Bollinger/경제캘린더 동시 갱신(각 try 분리, 한쪽 실패해도 나머지 진행) | `FRED_API_KEY` 부재 시 해당 보드만 graceful 빈 상태 |
 | 자정 대시보드 전체 재생성 | 매일 00:01 KST | `_periodic_dashboard_refresh` | index.html 등 일일 전면 재생성 | 없음 |
 
 ## systemd timer — bot/ (VM `~/stock`)
