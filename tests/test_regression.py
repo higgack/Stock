@@ -43600,7 +43600,24 @@ def _bollinger_html() -> str:
           "universe_meta": {"label": "KOSPI200 + KOSDAQ150", "count": 350}}
     us = _bb._empty("US", "유니버스 원천이 빈 목록",
                     {"label": "S&P 500", "count": 0})
-    return _bb.render_page({"KR": kr, "US": us})
+    # TW 섹션 — 거래소 태그(.TW/.TWO)·한글명 캐시 경로가 **실제로 그려져야**
+    # CSS 가드가 그 셀을 본다(#91c). 한글명 미캐시분은 LLM 워밍을 킥하므로
+    # 여기서는 반드시 막는다(#312 테스트가 운영 계정에 과금하면 안 된다).
+    tw = dict(kr, market="TW", rows=[
+        {"ticker": "3711.TW", "name": "日月光投控", "close": 640.0,
+         "pct_chg": 3.56, "upper": 636.03, "over_pct": 0.62,
+         "mcap": 33000.0, "new": True},
+        {"ticker": "7828.TWO", "name": "創新服務", "close": 2080.0,
+         "pct_chg": 2.21, "upper": 2055.76, "over_pct": 1.18,
+         "mcap": 842.0, "new": False}], rows_total=2, provisional=None,
+        universe_label="거래대금 상위 (TWSE/TPEx) · 225종목",
+        universe_meta={"label": "거래대금 상위 (TWSE/TPEx)", "count": 225})
+    kick_before = _bb._NAME_KICK
+    _bb._NAME_KICK = lambda pairs: None
+    try:
+        return _bb.render_page({"KR": kr, "US": us, "TW": tw})
+    finally:
+        _bb._NAME_KICK = kick_before
 
 
 def _render_all_pages():
@@ -51920,6 +51937,91 @@ class TestBollingerKrUniverse20260909:
         assert code == "005930" and name == "삼성전자"
         assert mcap == 5123456.0            # 원 → 억 (KIS 마스터와 같은 단위)
 
+    def test_naver_rung_tries_every_candidate_host_and_reports_each(
+            self, monkeypatch):
+        """2026-09-09 VM 실측: `m.stock.naver.com` 판이 네 표기 모두 HTTP 400 ·
+        **빈 본문**이라 ② 가 죽어 있었는데, 진단은 `키 []` 만 찍고 어느 호스트가
+        무엇을 돌려줬는지 한 마디도 안 했다 — 빈 본문이라 `raw` 가 falsy 여서
+        원문 줄이 통째로 생략됐다(#82 '없음'만 말하는 진단 · #109 표본 원문).
+
+        계약: 후보를 **전부** 시도하고 각 후보의 (호스트·상태·본문 사실)을
+        진단에 남긴다. 빈 본문은 '못 받음'과 다른 사실이므로 그렇게 말한다.
+        """
+        import bot.bollinger_board as bb
+
+        seen = []
+
+        class _R:
+            def __init__(self, code, body, ctype="application/json"):
+                self.status_code, self._b = code, body
+                self.headers = {"Content-Type": ctype}
+
+            @property
+            def text(self):
+                return self._b
+
+            def json(self):
+                import json
+                return json.loads(self._b)
+
+        def _get(url, **kw):
+            seen.append(url)
+            if url.startswith("https://api.stock.naver.com"):
+                return _R(200, '{"stocks": [{"itemCode": "005930", '
+                               '"stockName": "\uc0bc\uc131\uc804\uc790"}]}')
+            return _R(400, "")          # 실측 모양: 400 + 빈 본문
+
+        monkeypatch.setattr(bb, "_NAVER_INDEX_URLS", (
+            "https://m.stock.naver.com/api/index/{code}/enrollStocks"
+            "?page={page}&pageSize={size}",
+            "https://api.stock.naver.com/index/{code}/enrollStocks"
+            "?page={page}&pageSize={size}",
+        ))
+        import requests
+        monkeypatch.setattr(requests, "get", _get)
+
+        items, diag = bb._naver_index_stocks("KPI200")
+        hosts = [a["host"] for a in diag["tried"]]
+        assert hosts == ["m.stock.naver.com", "api.stock.naver.com"], (
+            "죽은 후보에서 멈추면 살아 있는 후보를 영영 안 본다")
+        dead = diag["tried"][0]
+        assert dead["http"] == 400 and dead["items"] == 0
+        assert "빈 본문" in dead["body"], (
+            "빈 본문을 침묵으로 두면 '못 받음'과 구별되지 않는다(#82)")
+        assert len(items) == 1 and diag.get("host") == "api.stock.naver.com"
+        assert not any("m.stock" in u for u in seen[2:]), (
+            "항목을 얻은 뒤 더 묻는 것은 순손실 요청이다")
+
+    def test_naver_candidate_results_reach_the_why_output(self, monkeypatch,
+                                                          capsys):
+        """진단을 모아 놓고 표시에 배선하지 않으면 없는 것과 같다 —
+        #123·#129·#189·#228 계열. 후보별 줄이 실제로 화면에 나가는지 본다."""
+        import bot.bollinger_board as bb
+
+        monkeypatch.setattr(bb, "kr_universe", lambda **kw: ({}, {
+            "rungs": [{"n": 2, "name": "네이버", "note": "n", "ok": False,
+                       "why": "0개", "diag": {"indices": {"KOSPI200": {
+                           "tried": {"KPI200": {
+                               "http": 400, "items": 0, "keys": [], "raw": "",
+                               "tried": [{"host": "m.stock.naver.com",
+                                          "http": 400, "items": 0,
+                                          "body": "빈 본문 (Content-Type "
+                                                  "text/html)"}]}}}}}}],
+            "rung": None, "reason": "x"}))
+        bb._why_universe_kr()
+        out = capsys.readouterr().out
+        assert "m.stock.naver.com: HTTP 400" in out
+        assert "빈 본문" in out, "본문 사실이 화면까지 가야 다음 라운드가 산다"
+
+    def test_twenty_session_delta_carries_its_unit(self):
+        """같은 줄의 d5 는 '종목'인데 d20 만 맨 숫자라 `-35.4` 를 %로 읽게
+        했다(2026-09-09 VM 실측 출력). 한 줄에 단위가 갈리면 거짓말이다(#34)."""
+        from bot.bollinger_board import _trend_line
+        line = _trend_line({"trend": {"dir": "up", "d5": 3.6, "pct5": 40.0,
+                                      "d20": -35.4, "th": 3.5}})
+        assert "3.6 종목" in line and "-35.4 종목" in line
+        assert "-35.4 vs" not in line
+
     def test_universe_cache_is_keyed_by_the_parser_spec(self, monkeypatch,
                                                         tmp_path):
         """버전 상수를 손으로 올리는 방식은 이 레포에서 여섯 번 졌다 —
@@ -51938,6 +52040,16 @@ class TestBollingerKrUniverse20260909:
         assert bb._kr_universe_sig() != sig_before, "지문이 컬럼 폭에 반응 안 함"
         bb.kr_universe()
         assert len(hits) == 2, "지문이 바뀌었는데 옛 캐시를 그대로 썼다"
+
+    def test_universe_signature_reacts_to_the_source_urls(self, monkeypatch):
+        """원천 URL 도 '파서를 정하는 것'이다 — 2026-09-09 네이버 후보를 다른
+        호스트로 바꾸면서 지문에 넣는 걸 빠뜨렸고, 그대로 뒀으면 7일 캐시가 옛
+        결과를 서빙해 fix 가 화면에 한 글자도 안 닿았다(#18·#21b·#216)."""
+        from bot import bollinger_board as bb
+        before = bb._kr_universe_sig()
+        monkeypatch.setattr(bb, "_NAVER_INDEX_URLS",
+                            bb._NAVER_INDEX_URLS + ("https://x/{code}",))
+        assert bb._kr_universe_sig() != before, "지문이 원천 URL 에 반응 안 함"
 
 
 class TestBollingerCollector20260909:
@@ -52380,6 +52492,160 @@ class TestBollingerBasisHonesty20260909:
         assert d["provisional"]["held"] == 3
         assert d["provisional"]["date"] == idx[-1].strftime("%Y-%m-%d")
         assert not (held & set(bb.load_series("KR"))), "미확정 봉이 기록됐다"
+
+
+class TestBollingerScreenAsks20260909:
+    """2026-09-09 화면 캡처 요청 셋 — 대만 한글명 · 코스피/코스닥 태그 · JP 빈
+    유니버스 사유. 전부 렌더타임 파생이라 시계열에 구워진 옛 행도 따라온다(#270).
+    """
+
+    def _section(self, market, rows):
+        from bot import bollinger_board as bb
+        d = {"market": market, "asof": "2026-09-09", "reason": "", "count": len(rows),
+             "new": 1, "scanned": 225, "pct": 1.0, "avg5": 5.0, "avg5_reason": "",
+             "trend": {"dir": "up", "d5": 2.0, "th": 2.25, "pct5": 40.0,
+                       "d20": None, "reason": ""},
+             "level": "neutral", "level_reason": "", "strong_th": 13,
+             "weak_th": 6, "phase": "회복 진행", "pct_rank": None,
+             "pct_rank_reason": "이력 부족", "streak": 0, "streak_note": "",
+             "chart": [], "rows": rows, "rows_total": len(rows),
+             "provisional": None, "partial": False, "scan": {}, "closed": True,
+             "expected": "2026-09-09", "universe_label": "u",
+             "universe_meta": {"label": "u", "count": 225}}
+        return bb._market_section(d)
+
+    def test_exchange_tag_is_derived_from_the_ticker_suffix(self, monkeypatch):
+        """'000210.KS' 옆에 코스피/코스닥(사용자 2026-09-09). KR 만 고치면 같은
+        구조의 TW(.TW/.TWO)·CN(.SS/.SZ) 이 조용히 남는다 — 접미사 한 표로
+        전 시장(§UNIVERSAL). 단일 거래소 시장은 태그가 **없어야** 한다(#25 반대
+        증거)."""
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_NAME_KICK", lambda pairs: None)
+        assert bb.exchange_tag("000660.KS") == "코스피"
+        assert bb.exchange_tag("263750.KQ") == "코스닥"
+        assert bb.exchange_tag("7828.TWO") == "TPEx"
+        assert bb.exchange_tag("3711.TW") == "TWSE"
+        assert bb.exchange_tag("600519.SS") == "상해"
+        assert bb.exchange_tag("AAPL") == "" and bb.exchange_tag("7203.T") == ""
+        html = self._section("KR", [
+            {"ticker": "000660.KS", "name": "SK하이닉스", "close": 1.0,
+             "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+             "new": False},
+            {"ticker": "263750.KQ", "name": "펄어비스", "close": 1.0,
+             "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+             "new": False}])
+        assert "000660.KS · 코스피" in html and "263750.KQ · 코스닥" in html
+        us = self._section("US", [{"ticker": "AAPL", "name": "Apple", "close": 1.0,
+                                   "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0,
+                                   "mcap": 1.0, "new": False}])
+        assert "AAPL ·" not in us, "태그가 없는 시장에 구분자만 남으면 안 된다"
+
+    def test_non_kr_names_come_from_the_shared_korean_name_cache(self, monkeypatch):
+        """대만 종목명을 **신고저·급등락 보드와 같은 캐시**로 한글화한다(사용자
+        2026-09-09 "기존 신고가신저가/급등급락처럼"). 렌더는 cache_only 로만
+        읽고, 미캐시분만 백그라운드 킥에 넘긴다 — 렌더가 LLM 을 기다리면 3시간
+        페이지가 매번 블로킹된다."""
+        from bot import bollinger_board as bb
+        import bot.chart_translate as ct
+        calls = []
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs, cache_only=False:
+                            (calls.append(cache_only), {"3711.TW": "ASE 테크"})[1])
+        kicks = []
+        monkeypatch.setattr(bb, "_NAME_KICK", lambda pairs: kicks.append(list(pairs)))
+        rows = [{"ticker": "3711.TW", "name": "日月光投控", "close": 1.0,
+                 "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+                 "new": True},
+                {"ticker": "2412.TW", "name": "中華電", "close": 1.0,
+                 "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+                 "new": False}]
+        html = self._section("TW", rows)
+        assert "ASE 테크" in html and "日月光投控" not in html
+        assert "中華電" in html, "미캐시 종목은 원문을 둔다(지어내지 않는다)"
+        assert calls and all(calls), "렌더는 cache_only 로만 읽어야 한다"
+        assert kicks == [[("2412.TW", "中華電")]], "미캐시분만 워밍에 넘긴다"
+        # 반대 증거: 전부 캐시에 있으면 킥이 한 번도 안 나간다(#25)
+        kicks.clear()
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs, cache_only=False:
+                            {"3711.TW": "ASE 테크", "2412.TW": "중화텔레콤"})
+        self._section("TW", rows)
+        assert kicks == []
+        # KR/US 는 이 경로를 타지 않는다 — KIS 한글명·영문명이 이미 정답이다
+        kicks.clear()
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs, cache_only=False: {})
+        self._section("KR", rows[:1])
+        assert kicks == []
+
+    def test_name_fill_kick_is_the_highlow_boards_function(self, monkeypatch):
+        """워밍 킥을 복제하지 않고 신고저 보드의 그 함수를 부른다(#38) — 두 보드가
+        같은 names_kr.json 을 데우므로 한쪽에서 번역된 종목은 다른 쪽에 공짜다.
+        그리고 그 킥은 과금 경로라 **기본 훅이 곧 그 함수**여야 테스트가 한 자리
+        (`_NAME_KICK`)만 막으면 된다(#312)."""
+        from bot import bollinger_board as bb
+        import bot.highlow_render as hl
+        assert bb._NAME_KICK is bb._kick_name_fill
+        got = []
+        monkeypatch.setattr(hl, "_kick_name_fill", lambda pairs: got.append(pairs))
+        bb._kick_name_fill([("x.TW", "y")])
+        assert got == [[("x.TW", "y")]]
+
+    def test_page_fixture_never_reaches_the_paid_name_fill(self, monkeypatch):
+        """CSS 컬렉터가 도는 픽스처(TW 행 포함)는 LLM 워밍을 **한 번도** 킥하지
+        않는다 — 테스트가 운영 계정에 과금하고 원장을 오염시킨 전례(#312)."""
+        import bot.highlow_render as hl
+        got = []
+        monkeypatch.setattr(hl, "_kick_name_fill", lambda pairs: got.append(pairs))
+        html = _bollinger_html()
+        assert "7828.TWO · TPEx" in html, "픽스처가 TW 셀을 실제로 그려야 한다"
+        assert got == []
+
+    def test_intl_empty_universe_reason_names_the_branch(self, monkeypatch):
+        """JP 카드가 '유니버스 원천이 빈 목록'만 말해 사용자가 "일본은 서포트
+        불가능한거야?" 를 물었다. 빈 목록의 갈래는 코드로 확정돼 있다(공식 상장목록
+        조회 실패 또는 100종목 이하) — 그만큼 말하고 진단 경로를 가리킨다(#82)."""
+        from bot import bollinger_board as bb
+        import bot.stock_screener as ss
+        import bot.intl_universe as iu
+        monkeypatch.setattr(ss, "_get_jp_universe", lambda: [])
+        monkeypatch.setattr(iu, "full_universe_names", lambda m: {})
+        uni, meta = bb._universe("JP")
+        assert uni == {}
+        assert "JPX/HKEX" in meta["reason"] and "--why JP" in meta["reason"]
+        assert "3시간" in meta["reason"], "재시도된다는 사실을 말해야 '불가'로 안 읽는다"
+        # US 는 다른 갈래 — JPX 문구가 붙으면 그게 거짓말이다(#34)
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_us_universe_robust", lambda: [])
+        monkeypatch.setattr(fv, "_sp500_names", lambda: {})
+        _, m2 = bb._universe("US")
+        assert "JPX" not in m2["reason"]
+
+    def test_why_names_the_layer_where_intl_universe_emptied(self, monkeypatch):
+        """`--why JP` 는 화면 경로를 층별로 되짚는다: 7일 캐시 유무 → full_universe
+        개수 → 원천 HTTP. 원천이 살아 있으면(100종목 초과) HTTP 를 **다시 치지
+        않는다**(순손실 요청 금지, 반대 증거)."""
+        from bot import bollinger_board as bb
+        import bot.intl_universe as iu
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "cache_age_sec", lambda name: None)
+        monkeypatch.setattr(iu, "full_universe", lambda m: [])
+        hits = []
+        def _get(url):
+            hits.append(url)
+            raise ConnectionError("no route")
+        monkeypatch.setattr(iu, "_http_get", _get)
+        lines = bb._why_universe_intl("JP")
+        txt = "\n".join(lines)
+        assert "full_universe_JP_v2.json" in txt and "없음" in txt
+        assert "full_universe(JP) → 0종목" in txt
+        assert "원천 HTTP 실패" in txt and "ConnectionError" in txt
+        assert len(hits) == 1 and "jpx.co.jp" in hits[0]
+        # 반대 증거: 원천이 충분하면 HTTP 를 안 친다
+        hits.clear()
+        monkeypatch.setattr(iu, "full_universe", lambda m: ["%04d.T" % i for i in range(300)])
+        txt = "\n".join(bb._why_universe_intl("JP"))
+        assert "300종목" in txt and hits == []
 
 
 class TestBollingerReviewFindings20260909:
