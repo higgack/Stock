@@ -988,6 +988,7 @@ h1{margin:0 0 4px;font-size:18px}
 .meta-status:empty,.meta-next:empty,.meta-today:empty,.meta-backlog:empty{display:none}
 .meta-status strong{color:var(--text);font-weight:600}
 .meta-next strong{color:var(--accent);font-weight:600}
+.hdr-warn{color:#f0a020;font-weight:600;margin-left:6px}
 .meta-today strong{color:var(--text);font-weight:600}
 .meta-backlog{color:var(--text-sub)}
 .meta-backlog strong{color:var(--b-import-fg);font-weight:600}
@@ -2142,8 +2143,28 @@ function renderHeaderMeta(){
   // '(채널 발표 기준)' — 히트맵·산업트렌드의 '관세청 확정'과 시차가 있다
   // (채널 확정=6월인데 관세청 스윕 확정=7월인 날이 실재 — 같은 '확정'이란
   // 말이 딴 값을 가리키면 한쪽이 틀려 보인다, 실수 #34 PPI 재발 방지).
+  // 채널이 조용해지면 이 줄은 **말없이 낡는다**(2026-09-09: 7월 1-20일에서 50일
+  // 멈춤). 최신 알림의 게시일·나이를 적고, 바로 아래 OpenAPI 카드(data-prov-end,
+  // 서버가 찍은 DOM 을 읽는다 #48)가 더 새로우면 ⚠️ — 두 표면이 갈리면 화면이
+  // 말한다(#51·#52 조용한 것과 죽은 것).
+  const today=kstTodayString();
+  const latestAny=[st.prelim,st.final].filter(Boolean)
+    .sort((a,b)=>String(b.posted_at||'').localeCompare(String(a.posted_at||'')))[0];
+  const pa=latestAny?String(latestAny.posted_at||'').slice(0,10):'';
+  if(pa){
+    const age=daysBetween(pa,today);
+    sp.push('채널 최신 발표 '+esc(pa.slice(5))+(age>=0?' ('+age+'일 전)':''));
+  }
+  let warn='';
+  const box=document.querySelector('.ind-prov');
+  const pend=box&&box.dataset?(box.dataset.provEnd||''):'';
+  const cend=st.prelim?String(st.prelim.period_end||st.prelim.period_start||''):'';
+  if(pend&&pend>cend){
+    warn=' <span class="hdr-warn">⚠️ 채널 알림 미수신 — OpenAPI 잠정은 '
+      +esc(box.dataset.provLabel||pend)+'까지 나와 있습니다</span>';
+  }
   ms.innerHTML=sp.length?'📊 현재 '+sp.join(' · ')
-    +' <span style="opacity:.6;font-size:.88em">(채널 발표 기준)</span>':'';
+    +' <span style="opacity:.6;font-size:.88em">(채널 발표 기준)</span>'+warn:'';
   const next=nextAnnouncement();
   const mn=document.getElementById('meta-next');
   if(next){
@@ -2676,6 +2697,142 @@ handleHashDeepLink();
 """
 
 
+
+def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
+    """`--why` — 헤더 입력(채널 알림)과 OpenAPI 를 나란히 놓고 갈래를 판정한다.
+    사실은 여기서 모으고 판정은 `trade.header_health.verdict`(순수)가 한다(#41).
+    읽기 전용 — DB 도 파일도 쓰지 않는다(#264)."""
+    import json as _json
+    import sys
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+    from trade import header_health as hh
+    from trade.store import latest_per_dedup_key, list_all_alerts, open_db
+
+    _KST = timezone(timedelta(hours=9))
+    # `today` 주입 — 회귀가 날짜를 고정해야 누락 목록이 달력 따라 변하지 않는다(#249)
+    today = today or datetime.now(_KST).date()
+    P = lambda *a: print(*a, flush=True)                       # noqa: E731
+    P("🌐 trade.dashboard --why v1 · 헤더 '현재 잠정/확정' 갈래 판정 · 읽기 전용")
+    P(f"① 인터프리터: {sys.executable}")
+    P(f"   DB: {db} ({'있음' if Path(db).exists() else '없음'})")
+    if not Path(db).exists():
+        P("   ❌ DB 가 없어 판정 불가")
+        return 1
+    conn = open_db(db)
+    latest = latest_per_dedup_key(conn)
+    allrows = list_all_alerts(conn)
+    conn.close()
+    P("")
+    P("② 헤더가 읽는 것 — 최신(latest-per-dedup) 알림 중 period_end 최대")
+    prelim = max((a for a in latest if a.get("status") == "preliminary"),
+                 key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
+    final = max((a for a in latest if a.get("status") == "final"),
+                key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
+    for lbl, a in (("잠정", prelim), ("확정", final)):
+        if a:
+            P(f"   {lbl}: 기간 {a.get('period_start')}~{a.get('period_end')} ({a.get('period_kind')}) · "
+              f"게시 {str(a.get('posted_at') or '')[:16]} · id {a.get('id')}")
+        else:
+            P(f"   {lbl}: 없음")
+    db_newest = max((str(a.get("posted_at") or "") for a in allrows), default="")
+    P(f"   DB 최신 게시: {db_newest[:16] or '없음'} · 전체 {len(allrows)}건 · 최신만 {len(latest)}건")
+    P("")
+    P("③ 월별 알림 수(게시일 기준, 최근 4개월)")
+    cnt = Counter(str(a.get("posted_at") or "")[:7] for a in allrows)
+    for ym in sorted(cnt)[-4:]:
+        P(f"   {ym}: {cnt[ym]}건")
+    P("")
+    P("④ inbox.jsonl(리스너 → 인제스트 사이)")
+    inbox = data_dir / "inbox.jsonl"
+    inbox_newest, after_db, n_lines = "", 0, 0
+    if inbox.exists():
+        with inbox.open(encoding="utf-8") as fh:
+            for ln in fh:
+                n_lines += 1
+                try:
+                    rec = _json.loads(ln)
+                except Exception:                              # noqa: BLE001
+                    continue
+                d = str(rec.get("date") or rec.get("ingested_at") or "")
+                if d > inbox_newest:
+                    inbox_newest = d
+                if db_newest and d[:19] > db_newest[:19]:
+                    after_db += 1
+        P(f"   {inbox}: {n_lines}줄 · 최신 {inbox_newest[:16] or '없음'} · DB 최신 이후 {after_db}줄")
+    else:
+        P(f"   {inbox}: 없음")
+    P("")
+    P("⑤ eval_misses.jsonl(파서가 못 읽은 캡션 백로그)")
+    em = data_dir / "eval_misses.jsonl"
+    em_recent = 0
+    if em.exists():
+        cutoff = (today - timedelta(days=45)).isoformat()
+        for ln in em.open(encoding="utf-8"):
+            try:
+                rec = _json.loads(ln)
+            except Exception:                                  # noqa: BLE001
+                continue
+            if str(rec.get("ts") or rec.get("posted_at") or rec.get("logged_at") or "")[:10] >= cutoff:
+                em_recent += 1
+        P(f"   {em}: 최근 45일 {em_recent}건")
+    else:
+        P(f"   {em}: 없음")
+    P("")
+    P("⑥ 예정 발표 대조(관세청 11·21·익월 1·15일, ±2일)")
+    exp = hh.expected_publications(today)
+    posted: dict = {}
+    for a in allrows:
+        k = a.get("period_kind") or ""
+        st = a.get("status") or ""
+        kind = ("monthly_final" if st == "final" and k == "monthly"
+                else "monthly_preliminary" if k == "monthly" else k)
+        posted.setdefault(kind, set()).add(str(a.get("posted_at") or "")[:10])
+    missing = hh.missing_publications(exp, posted)
+    for d, k in exp:
+        P(f"   {'❌' if (d, k) in missing else '✅'} {d} {k}")
+    P("")
+    P("⑦ 유닛 상태(systemd 에 물음)")
+    try:
+        from bot.daily_kr_flow import systemd_facts
+        lis = systemd_facts(timer=None, service="trade-bot.service")
+        ref = systemd_facts(timer="trade-bot-dashboard-refresh.timer",
+                            service="trade-bot-dashboard-refresh.service")
+        hc = systemd_facts(timer="trade-bot-health.timer", service="trade-bot-health.service")
+    except Exception as exc:                                   # noqa: BLE001
+        lis = ref = hc = {"ok": False, "err": f"{type(exc).__name__}: {exc}"}
+    for name, f in (("trade-bot.service(리스너)", lis), ("dashboard-refresh", ref), ("health", hc)):
+        if f.get("ok"):
+            P(f"   {name}: service {f.get('s_ActiveState')}/{f.get('s_SubState')} · "
+              f"timer {f.get('t_ActiveState', '—')} · last "
+              f"{str(f.get('t_LastTriggerUSec') or f.get('s_ExecMainStartTimestamp') or '')[:25]}")
+        else:
+            P(f"   {name}: 판정 불가 — {f.get('err')}")
+    listener_active = (lis.get("s_ActiveState") == "active") if lis.get("ok") else None
+    P("")
+    P("⑧ OpenAPI 잠정(카드가 읽는 것)")
+    try:
+        from trade import customs, customs_provisional as cp
+        with customs.session(db) as c2:
+            sig = cp.load_signals(c2)
+        ref_sig = sig.get("exp_item") or sig.get("imp_item") or {}
+        if ref_sig:
+            P(f"   최신 {ref_sig.get('ym')} {ref_sig.get('decile')} ({ref_sig.get('window')}) · "
+              f"창 끝 {cp.prov_period_end(ref_sig.get('ym') or '', ref_sig.get('decile') or '')}")
+        else:
+            P("   저장된 잠정 신호 없음")
+    except Exception as exc:                                   # noqa: BLE001
+        P(f"   확인 실패: {type(exc).__name__}: {exc}")
+    P("")
+    v = hh.verdict({"db_newest": db_newest[:10], "inbox_newest": inbox_newest[:10],
+                    "inbox_lines_after_db": after_db, "eval_miss_recent": em_recent,
+                    "listener_active": listener_active, "missing": missing}, today)
+    P(f"⑨ 판정: {v['branch']} — {v['reason']}")
+    for ln in v.get("lines", []):
+        P(f"   {ln}")
+    return 0 if v["branch"] == "ok" else 1
+
+
 def main() -> int:
     default_data = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
     ap = argparse.ArgumentParser(
@@ -2684,6 +2841,12 @@ def main() -> int:
     ap.add_argument(
         "--db", type=Path, default=default_data / "store.db",
         help="path to store.db",
+    )
+    ap.add_argument(
+        "--why", action="store_true",
+        help="헤더('현재 잠정 X · 확정 Y')가 왜 그 값인지 — 채널 알림 경로(inbox → "
+             "DB)와 OpenAPI 를 나란히 놓고 갈래(리스너/채널/인제스트/파서)를 판정. "
+             "읽기 전용, 렌더 안 함.",
     )
     ap.add_argument(
         "--out", type=Path, default=default_data / "dashboard" / "index.html",
@@ -2706,6 +2869,8 @@ def main() -> int:
         ),
     )
     args = ap.parse_args()
+    if args.why:
+        return _why_header(args.db, default_data)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     html = render_html(

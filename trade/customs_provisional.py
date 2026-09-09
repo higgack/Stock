@@ -507,6 +507,24 @@ def explain_windows(rows_by_kind: dict, ym: Optional[str] = None) -> list[str]:
     return out
 
 
+def prov_period_end(ym: str, decile: str) -> str:
+    """OpenAPI 잠정 창의 **끝 날짜**(YYYY-MM-DD) — D1=10일, D2=20일, FULL=말일.
+    헤더가 채널 알림의 `period_end` 와 같은 축으로 대조하려고 쓴다(#51 나란히
+    놓인 두 표면이 갈리면 화면이 말해야 한다). 모르는 decile 이면 빈 문자열."""
+    import calendar
+    try:
+        y, m = int(str(ym)[:4]), int(str(ym)[5:7])
+    except (TypeError, ValueError):
+        return ""
+    if decile == "D1":
+        return f"{y:04d}-{m:02d}-10"
+    if decile == "D2":
+        return f"{y:04d}-{m:02d}-20"
+    if decile == "FULL":
+        return f"{y:04d}-{m:02d}-{calendar.monthrange(y, m)[1]:02d}"
+    return ""
+
+
 def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
     """최신월의 '가장 진행된 누적창'을 잡고, 작년 동월·동순 YoY를 붙인다.
 
@@ -1113,7 +1131,11 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
         "과거 잠정 스냅샷 누적(잠정↔확정 대조) →</a></div>"
     )
     return (
-        "<div class='ind-prov'>"
+        # 헤더 JS 가 DOM 에서 읽는 대조 축(#48) — 채널 알림이 이보다 뒤처지면 ⚠️
+        f"<div class='ind-prov' data-prov-ym='{ym}' "
+        f"data-prov-decile='{_esc(ref.get('decile') or '')}' "
+        f"data-prov-end='{prov_period_end(ref.get('ym') or '', ref.get('decile') or '')}' "
+        f"data-prov-label='{ym} · {window}'>"
         f"<h3>🟢 잠정 속보 <span class='ind-prov-cur'>최신 {cur_label}</span> "
         "<span class='ind-prov-tag'>관세청 10일 단위 · 11일·21일·월초(전월 풀월) 발표</span></h3>"
         f"<div class='ind-prov-sub'>{ym} · {window} 누적 기준 · 확정치보다 "
