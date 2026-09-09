@@ -948,6 +948,16 @@ def _get_jp_universe() -> list[str]:
             tickers = _cap_by_liq(full, "JP")
     except Exception as exc:
         log.warning("stock_screener: JP universe(JPX) failed: %s", exc)
+    # 원천이 죽어 만료 캐시로 살린 목록은 **굳히지 않는다** — 굳히면 다음 7일간
+    # 원천을 안 물은 채 서빙돼 stale 사실이 지워진다(2026-09-09 Bollinger 실측,
+    # #43·#306). 원천이 살아나면 그때 평소대로 쓴다.
+    try:
+        from bot.intl_universe import stale_hours
+        if stale_hours("JP") is not None:
+            log.warning("stock_screener: JP universe 는 만료 캐시 폴백분 — 7일 캐시에 안 씀")
+            return tickers
+    except Exception:
+        pass
     _write_universe_cache(_JP_UNIVERSE_CACHE, tickers)
     return tickers
 
@@ -966,6 +976,16 @@ def _get_hk_universe() -> list[str]:
             tickers = _cap_by_liq(full, "HK")
     except Exception as exc:
         log.warning("stock_screener: HK universe(HKEX) failed: %s", exc)
+    # 원천이 죽어 만료 캐시로 살린 목록은 **굳히지 않는다** — 굳히면 다음 7일간
+    # 원천을 안 물은 채 서빙돼 stale 사실이 지워진다(2026-09-09 Bollinger 실측,
+    # #43·#306). 원천이 살아나면 그때 평소대로 쓴다.
+    try:
+        from bot.intl_universe import stale_hours
+        if stale_hours("HK") is not None:
+            log.warning("stock_screener: HK universe 는 만료 캐시 폴백분 — 7일 캐시에 안 씀")
+            return tickers
+    except Exception:
+        pass
     _write_universe_cache(_HK_UNIVERSE_CACHE, tickers)
     return tickers
 

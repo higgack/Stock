@@ -52616,7 +52616,7 @@ class TestBollingerScreenAsks20260909:
         from bot import bollinger_board as bb
         import bot.stock_screener as ss
         import bot.intl_universe as iu
-        monkeypatch.setattr(ss, "_get_jp_universe", lambda: [])
+        monkeypatch.setattr(iu, "full_universe", lambda m: [])
         monkeypatch.setattr(iu, "full_universe_names", lambda m: {})
         uni, meta = bb._universe("JP")
         assert uni == {}
@@ -52730,8 +52730,12 @@ class TestIntlUniverseStaleFallback20260909:
         from bot import bollinger_board as bb
         import bot.stock_screener as ss
         import bot.intl_universe as iu
-        monkeypatch.setattr(ss, "_get_jp_universe",
-                            lambda: [f"{i:04d}.T" for i in range(1, 226)])
+        # 2026-09-09 재작성: Bollinger 는 스크리너 `_get_jp_universe` 를 더 이상
+        # 거치지 않는다(그 7일 캐시가 stale 사실을 지웠다) — 52주 보드와 같은
+        # `full_universe` 경로를 스텁한다(#222).
+        monkeypatch.setattr(iu, "full_universe",
+                            lambda m: [f"{i:04d}.T" for i in range(1, 400)])
+        monkeypatch.setattr(ss, "_cap_by_liq", lambda full, m: full[:225])
         monkeypatch.setattr(iu, "full_universe_names", lambda m: {})
         monkeypatch.setattr(iu, "stale_hours", lambda m: 225.5)
         uni, meta = bb._universe("JP")
@@ -53032,6 +53036,62 @@ class TestBoardGuidesAnswerTheScreen20260909:
             src = open(mod.__file__, encoding="utf-8").read()
             assert ".mini-tbl{" not in src, f"{mod.__name__} 가 공용 클래스를 다시 정의했다"
             assert "class='mini-tbl'" in src, f"{mod.__name__} 가 공용 클래스를 안 쓴다"
+
+
+class TestIntlUniverseSecondCacheLayer20260909:
+    """2026-09-09 VM `--why JP` 3차 실측: `상장목록 9일 전 캐시` 문구가 사라졌는데
+    원천을 물은 로그가 한 줄도 없었다 — 만료 캐시로 살린 목록을 스크리너
+    `_get_jp_universe` 가 자기 7일 캐시(jp_n225.json)에 굳혀, 다음 실행은 원천을
+    안 묻고 그 캐시를 읽었다. **두 번째 캐시 층이 첫 층의 사실을 지운다**(#43·#306).
+    "복구됐다"로 읽힐 뻔했다(#12)."""
+
+    def test_bollinger_asks_the_source_layer_not_the_screener_cache(self, monkeypatch):
+        from bot import bollinger_board as bb
+        import bot.stock_screener as ss
+        import bot.intl_universe as iu
+        calls = []
+        monkeypatch.setattr(iu, "full_universe",
+                            lambda m: (calls.append("full_universe"),
+                                       [f"{i:04d}.T" for i in range(1, 400)])[1])
+        monkeypatch.setattr(ss, "_get_jp_universe",
+                            lambda: (_ for _ in ()).throw(AssertionError("스크리너 캐시 층을 타면 안 된다")))
+        monkeypatch.setattr(ss, "_cap_by_liq", lambda full, m: full[:225])
+        monkeypatch.setattr(iu, "full_universe_names", lambda m: {})
+        monkeypatch.setattr(iu, "stale_hours", lambda m: None)
+        uni, meta = bb._universe("JP")
+        assert len(uni) == 225 and calls == ["full_universe"]
+        assert "캐시" not in meta["label"]
+
+    def test_screener_does_not_persist_a_stale_fallback(self, monkeypatch, tmp_path):
+        import bot.stock_screener as ss
+        import bot.intl_universe as iu
+        monkeypatch.setattr(ss, "_JP_UNIVERSE_CACHE", tmp_path / "jp_n225.json")
+        monkeypatch.setattr(ss, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(iu, "full_universe", lambda m: [f"{i:04d}.T" for i in range(1, 400)])
+        monkeypatch.setattr(ss, "_cap_by_liq", lambda full, m: full[:225])
+        monkeypatch.setattr(iu, "stale_hours", lambda m: 225.5)
+        assert len(ss._get_jp_universe()) == 225
+        assert not (tmp_path / "jp_n225.json").exists(), "만료 폴백분을 굳히면 stale 사실이 지워진다"
+        # 반대 증거: 원천이 살아 있으면 평소대로 굳힌다(#25)
+        monkeypatch.setattr(iu, "stale_hours", lambda m: None)
+        assert len(ss._get_jp_universe()) == 225
+        assert (tmp_path / "jp_n225.json").exists()
+
+    def test_why_prints_the_layers_even_when_the_universe_is_not_empty(self, monkeypatch, capsys):
+        """비었을 때만 찍으면 '캐시로 살아 있는' 상태가 침묵한다 — 복구인지
+        캐시인지 출력만으로 갈려야 한다(#54·#82)."""
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_universe", lambda m: (
+            {f"{i:04d}.T": {} for i in range(225)},
+            {"label": "시총상위", "count": 225, "reason": ""}))
+        monkeypatch.setattr(bb, "_why_universe_intl",
+                            lambda m: ["공식 상장목록 7일 캐시: x (2.0시간 전 기록)",
+                                       "스크리너 유니버스 캐시: y (1.0시간 전 기록)"])
+        monkeypatch.setattr(bb, "build_market", lambda m, **kw: {"reason": "stop"})
+        monkeypatch.setattr(bb, "load_series", lambda m: {})
+        bb._why("JP")
+        out = capsys.readouterr().out
+        assert "공식 상장목록 7일 캐시" in out and "스크리너 유니버스 캐시" in out
 
 
 class TestBollingerReviewFindings20260909:
