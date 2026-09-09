@@ -29902,7 +29902,8 @@ class TestSecondSweep20260820:
     def test_regen_period_text_matches_the_schedule(self):
         """화면 설명이 '6시간 주기'로 남으면 동작과 out-of-sync = 버그."""
         for f in ("bot/fred_boards.py", "bot/econ_calendar.py",
-                  "bot/market_timing.py", "bot/breadth_strategy.py"):
+                  "bot/market_timing.py", "bot/breadth_strategy.py",
+                  "bot/bollinger_board.py"):
             src = open(f, encoding="utf-8").read()
             assert "6시간 주기 자동" not in src, f
             assert "6시간마다 재계산" not in src, f
@@ -30020,9 +30021,14 @@ class TestSecondSweep20260820:
         assert "from bot.market_timing import fetch_index_history" in bs, \
             "Breadth 가 같은 경로를 안 쓴다 — 보강이 한쪽에만 걸린다"
 
-    def test_all_four_boards_share_the_three_hour_loop(self):
+    def test_all_boards_share_the_three_hour_loop(self):
         """사용자 2026-08-20: "시장타이밍+Breadth 모두 3시간으로 바뀐거야?"
-        네 보드가 **같은 루프**에 있어야 주기 상수 하나로 관리된다."""
+        보드들이 **같은 루프**에 있어야 주기 상수 하나로 관리된다.
+
+        ⚠️ 2026-09-09 계약 변경(#222): 네 보드 → **다섯**(🔋 Bollinger 추가).
+        옛 이름 `..._all_four_boards_...` 은 개수를 이름에 박아 보드가 늘 때마다
+        무관한 리네임을 부르므로 개수를 뺐다. 계약 자체("차트보드 재생성은 전부
+        이 루프 안")는 그대로다."""
         import re
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         loop = re.search(r"async def _periodic_fred_boards.*?(?=\nasync def )",
@@ -30030,6 +30036,7 @@ class TestSecondSweep20260820:
         assert "asyncio.sleep(_BOARD_REGEN_HOURS * 3600)" in loop
         for fn in ("regenerate_fred_boards", "regenerate_market_timing",
                    "breadth_strategy import regenerate",
+                   "bollinger_board import regenerate",
                    "regenerate_econ_calendar"):
             assert fn in loop, f"{fn} 이 3시간 루프 밖에 있다"
 
@@ -43553,6 +43560,49 @@ def _breadth_html(data: dict) -> str:
         _bs._SIGNAL_DIR = old
 
 
+def _bollinger_html() -> str:
+    """🔋 Bollinger 페이지 — 카드·차트·표·잠정 줄·부분 스캔·인용문이 **전부
+    그려지는** 픽스처로. 빈 payload 는 껍데기만 그려 각주·표 클래스를 한 번도
+    안 본다(#91c — Breadth 가 정확히 그래서 `.si-note` 미정의를 놓쳤다).
+    """
+    from bot import bollinger_board as _bb
+    chart = [{"date": f"2026-0{6 + i // 30}-{i % 30 + 1:02d}", "count": 10 + i % 9,
+              "new": i % 4, "scanned": 350, "avg5": 12.0 + (i % 5),
+              "basis": "backfill" if i < 40 else "live"} for i in range(70)]
+    rows = [{"ticker": "005930.KS", "name": "삼성<전자>", "close": 82100.0,
+             "pct_chg": 3.21, "upper": 79500.0, "over_pct": 3.27,
+             "mcap": 4900000.0, "new": True},
+            {"ticker": "000660.KS", "name": "SK하이닉스", "close": 245000.0,
+             "pct_chg": 1.02, "upper": 240000.0, "over_pct": 2.08,
+             "mcap": 1780000.0, "new": False},
+            {"ticker": "196170.KQ", "name": "알테오젠", "close": 410000.0,
+             "pct_chg": -0.5, "upper": 405000.0, "over_pct": 1.23,
+             "mcap": None, "new": False}]
+    kr = {"market": "KR", "asof": "2026-09-08", "reason": "",
+          "count": 17, "new": 6, "scanned": 348, "pct": 4.89,
+          "avg5": 14.2, "avg5_reason": "",
+          "trend": {"d5": 6.2, "d20": 2.1, "pct5": 77.5, "dir": "up",
+                    "th": 3.5, "reason": ""},
+          "level": "neutral", "level_reason": "", "strong_th": 20,
+          "weak_th": 10, "phase": "회복 진행", "pct_rank": 88.0,
+          "pct_rank_reason": "", "streak": 41,
+          "streak_note": _bb.weak_streak_note(41),
+          "chart": chart, "rows": rows, "rows_total": 62,
+          "provisional": {"date": "2026-09-09", "count": 21, "new": 9,
+                          "scanned": 348, "as_of": "13:11",
+                          "rows": rows[:1], "rows_total": 1},
+          "partial": True,
+          "scan": {"kept": 240, "universe": 350, "ratio": 0.686,
+                   "period": "3mo", "batches": 3, "batch_fail": 0,
+                   "retry_batches": 0, "stale_skipped": 4, "short": []},
+          "closed": True, "expected": "2026-09-08",
+          "universe_label": "KOSPI200 + KOSDAQ150 · 240/350 스캔 · KIS 마스터파일",
+          "universe_meta": {"label": "KOSPI200 + KOSDAQ150", "count": 350}}
+    us = _bb._empty("US", "유니버스 원천이 빈 목록",
+                    {"label": "S&P 500", "count": 0})
+    return _bb.render_page({"KR": kr, "US": us})
+
+
 def _render_all_pages():
     """화면이 실제로 그리는 경로 그대로 — **내용이 있는** 픽스처로 태운다.
 
@@ -43618,6 +43668,10 @@ def _render_all_pages():
         # 크기로 뜨고 있었는데 이 가드가 못 잡았다.
         # ⚠️ 확정 이력이 **비면** 각주(si-note) 블록을 한 번도 안 그려 가드가
         # 눈이 먼다 — 첫 판이 실제로 그랬다(정의를 지워도 통과, #91c).
+        # ⚠️ 이름은 **모듈 stem 과 같게** — 커버리지 대조가 모듈명으로
+        # 하므로(아래 `_PAGE_MODULES_NOT_COVERED` 대조) 다르게 적으면
+        # 하드코딩 목록을 또 늘려야 한다(#24).
+        ("bollinger_board", _bollinger_html()),
         ("breadth_strategy", _breadth_html({"KR": {
             "market": "KR", "regime": "RECOVERY", "state": "CASH",
             "targets": [], "index_w": 0.0, "total_w": 0.0, "cash_w": 1.0,
@@ -51499,3 +51553,813 @@ class TestNoModelWindowIsMeasured20260909:
         out, _ = self._run(monkeypatch, tmp_path, rows)
         seg = [ln for ln in out if "이웃" in ln]
         assert seg and "외 2종" in seg[0], seg
+
+
+# ── 🔋 Bollinger 보드 (2026-09-09) ─────────────────────────────────────────
+def _bb_series(n: int = 70, count=None, scanned: int = 350,
+               start: str = "2026-05-01") -> dict:
+    """{날짜: {count,new,scanned,basis}} — 순수 판정 함수용 픽스처."""
+    import datetime as _dt
+    d0 = _dt.date.fromisoformat(start)
+    out = {}
+    for i in range(n):
+        c = count(i) if callable(count) else (count if count is not None
+                                             else 10 + i % 7)
+        out[(d0 + _dt.timedelta(days=i)).isoformat()] = {
+            "count": c, "new": max(0, c // 3), "scanned": scanned,
+            "basis": "live"}
+    return out
+
+
+def _bb_close(vals, start: str = "2026-01-01"):
+    import pandas as pd
+    return pd.Series([float(v) for v in vals],
+                     index=pd.date_range(start, periods=len(vals), freq="D"))
+
+
+def _bb_mst_line(book: str, code: str, name: str, member: bool, mcap,
+                 group: str = "ST") -> str:
+    """KIS 마스터 한 줄 — **원천이 실제로 보내는 고정폭 모양** 그대로 만든다.
+    내가 지어낸 모양으로 픽스처를 만들면 파서가 틀려도 전부 초록이다(#155)."""
+    from bot import bollinger_board as bb
+    widths, cols = ((bb._KOSPI_WIDTHS, bb._KOSPI_COLS) if book == "kospi"
+                    else (bb._KOSDAQ_WIDTHS, bb._KOSDAQ_COLS))
+    tail = [" "] * bb._KIS_TAIL[book]
+
+    def put(col, val):
+        a, b = bb._field_slice(widths, cols, col)
+        tail[a:b] = list(str(val)[:b - a].rjust(b - a))
+    spec = bb._KIS_SPEC[book]
+    put(spec[5], group.ljust(2))
+    put(spec[4], ("3" if member else "0") if book == "kospi"
+        else ("Y" if member else "N"))
+    put(spec[6], mcap)
+    return f"{code:<9}{'KR7' + code + '00':<12}{name}" + "".join(tail)
+
+
+def _bb_mst_zip(book: str, lines: list) -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(f"{book}_code.mst", "\n".join(lines).encode("cp949"))
+    return buf.getvalue()
+
+
+class TestBollingerBands20260909:
+    """산식은 `bot/bollinger.py` **한 곳**에서 온다 — 차트 탭과 이 보드가 같은
+    상단밴드를 그려야 사용자가 표와 차트를 나란히 놓고 검산할 수 있다(#33·#38).
+    """
+
+    def test_bands_match_the_chart_tab_formula(self):
+        import numpy as np
+        import pandas as pd
+        from bot.bollinger import bands
+        np.random.seed(11)
+        close = pd.Series(100 + np.cumsum(np.random.randn(60)),
+                          index=pd.date_range("2026-06-01", periods=60))
+        mid = close.rolling(20).mean()
+        sd = close.rolling(20).std()
+        m, u, l = bands(close)
+        assert m.equals(mid) and u.equals(mid + 2 * sd) and l.equals(mid - 2 * sd)
+
+    def test_chart_data_calls_the_shared_helper(self):
+        """소스에 이름이 있는지가 아니라 **호출 노드**를 센다 — 주석·독스트링이
+        대신 만족시키면 인라인 복원 뮤테이션이 통과한다(#59b·#19)."""
+        import ast
+        tree = ast.parse(open("bot/chart_data.py", encoding="utf-8").read())
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "_bb_bands"]
+        assert calls, "chart_data 가 공용 bands() 를 안 부른다(인라인 복원?)"
+        # ⚠️ 여기서 멈추면 '호출은 남기고 결과를 버리는' 변형을 못 잡는다
+        # (#141·#313) — payload 의 **값**이 공용 bands() 에서 왔는지 잰다.
+        # 소스 문자열('close.rolling(20).std()' 부재)로 재면 다른 지표가 같은
+        # 식을 쓰는 날 멀쩡한 코드가 빨간불이 된다(#19).
+        import pandas as pd
+        from bot.bollinger import bands
+        from bot.chart_data import _series_payload
+        idx = pd.date_range("2026-01-01", periods=40, freq="D")
+        close = pd.Series([100.0 + (i % 7) for i in range(40)], index=idx)
+        vol = pd.Series([1000.0] * 40, index=idx)
+        p = _series_payload(close, "$", 2, vol, close, close, close)
+        _mid, up, lo = bands(close)
+        assert p["bb_u"][-1] == round(float(up.iloc[-1]), 2)
+        assert p["bb_l"][-1] == round(float(lo.iloc[-1]), 2)
+
+    def test_breakouts_count_state_and_new_and_denominator(self):
+        from bot.bollinger import breakouts_by_date
+        flat = _bb_close([100.0] * 29 + [130.0])          # 마지막날만 돌파(신규)
+        two = _bb_close([100.0] * 28 + [130.0, 131.0])     # 이틀 연속(신규 아님)
+        short = _bb_close([100.0] * 10)                    # 20봉 미만 → 분모 제외
+        r = breakouts_by_date({"A": flat, "B": two, "C": short})
+        last = r[max(r)]
+        assert last == {"count": 2, "new": 1, "scanned": 2}, last
+        # ⚠️ **모든 날짜**에서 20봉 미달 종목이 분모에 없어야 한다 — 마지막
+        # 날짜만 보면 그 종목의 시계열이 짧아 우연히 통과한다(#91c).
+        assert all(v["scanned"] <= 2 for v in r.values()), r
+
+    def test_breakouts_ignore_nan_bars(self):
+        import numpy as np
+        from bot.bollinger import breakouts_by_date
+        vals = [100.0] * 29 + [130.0]
+        s = _bb_close(vals)
+        s.iloc[5] = np.nan
+        r = breakouts_by_date({"A": s})
+        # NaN 이 낀 창은 밴드를 못 만든다 — 그 날들은 분모에서 빠져야 한다.
+        assert all(v["scanned"] == 1 for v in r.values())
+        assert max(r) == "2026-01-30" and r[max(r)]["count"] == 1
+
+    def test_breakouts_on_lists_the_same_hits_it_counts(self):
+        """세는 곳과 나열하는 곳이 갈리면 카드 숫자와 표 행수가 어긋난다(#45)."""
+        from bot.bollinger import breakouts_by_date, breakouts_on
+        a = _bb_close([100.0] * 29 + [130.0])
+        b = _bb_close([100.0] * 28 + [130.0, 131.0])
+        d = "2026-01-30"
+        cnt = breakouts_by_date({"A": a, "B": b})[d]["count"]
+        rows = breakouts_on({"A": a, "B": b}, [d])[d]
+        assert len(rows) == cnt == 2
+        assert sum(1 for r in rows if r["new"]) == 1
+
+
+class TestBollingerVerdicts20260909:
+    """판정은 순수 함수다 — 화면·감사·CLI 가 같은 값을 보게 하려면 인라인으로
+    두면 안 된다(#176·#35). 원문의 우선순위(추이 > 수준)를 그대로 옮겼다."""
+
+    def test_avg5_needs_five_sessions_and_says_why(self):
+        from bot.bollinger import avg5, series_rows
+        rows = series_rows(_bb_series(5, count=lambda i: 10))
+        assert avg5(rows) == (10.0, "")
+        v, why = avg5(rows[:4])
+        assert v is None and "5개 미만" in why and "4개" in why
+
+    def test_level_thresholds_scale_the_capture_example(self):
+        from bot.bollinger import level_thresholds
+        assert level_thresholds(350) == (20, 10)       # 원문 기준 유니버스
+        assert level_thresholds(503) == (29, 14)       # S&P500 환산
+        assert level_thresholds(0) == (None, None)     # 분모 없으면 판정 불가
+        assert level_thresholds(None) == (None, None)
+
+    def test_level_boundaries(self):
+        from bot.bollinger import level_of
+        assert level_of(20, 350)[0] == "strong"        # 문턱 포함
+        assert level_of(19.9, 350)[0] == "neutral"
+        assert level_of(10, 350)[0] == "weak"          # 문턱 포함
+        assert level_of(10.1, 350)[0] == "neutral"
+        assert level_of(None, 350) == (None, "5일 평균 없음")
+
+    def test_trend_threshold_is_one_percent_of_the_universe(self):
+        from bot.bollinger import series_rows, trend
+        # 5세션 전 대비 정확히 문턱만큼(3.5) 오르면 **횡보**, 넘으면 상승.
+        def mk(delta):
+            base = [10] * 5 + [10] * 5
+            base += [10 + delta] * 5
+            return series_rows(_bb_series(15, count=lambda i: base[i]))
+        assert trend(mk(3.5))["dir"] == "flat"
+        assert trend(mk(3.6))["dir"] == "up"
+        assert trend(mk(-3.6))["dir"] == "down"
+        assert trend(mk(3.6))["th"] == 3.5
+
+    def test_trend_says_why_when_it_cannot_judge(self):
+        from bot.bollinger import series_rows, trend
+        t = trend(series_rows(_bb_series(6)))
+        assert t["dir"] is None and "5세션 전" in t["reason"]
+
+    def test_energy_phase_table_is_complete(self):
+        from bot.bollinger import PHASE, energy_phase
+        for lv in ("strong", "neutral", "weak"):
+            for dr in ("up", "flat", "down"):
+                assert energy_phase(lv, dr) == PHASE[(lv, dr)]
+        assert energy_phase(None, "up") is None
+        assert energy_phase("strong", None) is None
+
+    def test_history_pct_rank_needs_sixty_sessions(self):
+        """⚠️ 앞 4세션은 5일 평균을 못 만든다 — 행 수가 아니라 **avg5 개수**가
+        60 이어야 한다(경계를 행 수로 잡으면 59개로 판정해 버린다)."""
+        from bot.bollinger import history_pct_rank, series_rows
+        rows = series_rows(_bb_series(70, count=lambda i: i))
+        v, why = history_pct_rank(rows)                 # avg5 66개
+        assert why == "" and v is not None and v > 90
+        v2, why2 = history_pct_rank(rows[:63])          # avg5 59개 — 한 개 모자람
+        assert v2 is None and "이력 부족(59세션" in why2
+
+    def test_weak_streak_counts_only_consecutive(self):
+        """중간에 한 번이라도 올라오면 **0 으로 리셋**된다(누적 합이 아니다).
+
+        ⚠️ 픽스처가 세야 한다: 5일 평균이라 값 하나가 커도 평균이 문턱을 못
+        넘으면 리셋 분기를 아예 안 탄다(첫 판이 그랬다 — 30 하나로는 avg5 가
+        6.8 이라 누적합 뮤테이션이 통과했다, #91c). 200 으로 밀어 태운다."""
+        from bot.bollinger import series_rows, weak_streak
+        seq = [1] * 6 + [200] + [1] * 6
+        rows = series_rows(_bb_series(13, count=lambda i: seq[i]))
+        # 약세인 세션은 4개(앞 2 + 뒤 2)지만 **연속**은 마지막 2개뿐이다.
+        from bot.bollinger import avg5_series
+        a5 = avg5_series(rows)
+        weak_total = sum(1 for v in a5 if v is not None and v <= 10)
+        assert weak_total == 4 and weak_streak(rows) == 2
+
+    def test_capture_quote_appears_only_when_the_condition_is_met(self):
+        """원문 예시(현금 60~70%)는 조건을 채웠을 때만 — 늘 뜨는 문구는
+        아무것도 안 재는 것과 같다(#25·#260). 반대 증거를 같이 본다."""
+        from bot.bollinger import weak_streak_note
+        assert weak_streak_note(39) == ""
+        note = weak_streak_note(40)
+        assert "60~70%" in note and "처방하지 않는다" in note
+
+
+class TestBollingerSeriesMerge20260909:
+    """저장은 멱등이되 **늦게 온 봉은 정정**한다(#299). 부분 스캔은 안 쓴다(#280)."""
+
+    def test_recent_window_is_rewritten_and_older_is_not(self):
+        from bot.bollinger import RECENT_REWRITE, merge_series, series_rows
+        stored = _bb_series(60, count=lambda i: 1)
+        fresh = _bb_series(60, count=lambda i: 9)
+        out = merge_series(stored, fresh)
+        rows = series_rows(out)
+        assert [r["count"] for r in rows[-RECENT_REWRITE:]] == [9] * RECENT_REWRITE
+        assert all(r["count"] == 1 for r in rows[:-RECENT_REWRITE])
+
+    def test_partial_scan_writes_nothing(self):
+        from bot.bollinger import merge_series
+        stored = _bb_series(3, count=lambda i: 1)
+        fresh = _bb_series(3, count=lambda i: 9)
+        assert merge_series(stored, fresh, partial=True) == stored
+
+    def test_idempotent_and_string_keys_and_cap(self):
+        from bot.bollinger import MAX_ROWS, merge_series
+        stored, fresh = {}, _bb_series(MAX_ROWS + 30)
+        once = merge_series(stored, fresh)
+        assert merge_series(once, fresh) == once
+        assert len(once) == MAX_ROWS
+        assert all(isinstance(k, str) for k in once)
+
+    def test_backfill_rows_keep_their_label_until_live_overwrites(self):
+        from bot.bollinger import RECENT_REWRITE, merge_series
+        stored = {d: dict(v, basis="backfill")
+                  for d, v in _bb_series(60).items()}
+        out = merge_series(stored, _bb_series(60))
+        dates = sorted(out)
+        assert all(out[d]["basis"] == "live" for d in dates[-RECENT_REWRITE:])
+        assert all(out[d]["basis"] == "backfill"
+                   for d in dates[:-RECENT_REWRITE])
+
+
+class TestBollingerKrUniverse20260909:
+    """KR 은 KOSPI200+KOSDAQ150 이 있어야 원문(캡처)과 같은 모집단이 된다.
+
+    사다리는 '실패했나'가 아니라 **'요구를 충족했나'** 로 넘어간다 — 실패로
+    잡으면 200 종목을 기대한 자리에 2,600 종목이 와도 통과한다(#136·#191).
+    네트워크는 한 번도 타지 않는다(HTTP 스텁, #312).
+    """
+
+    def _uni(self, n_ks: int, n_kq: int) -> dict:
+        u = {f"{i:06d}.KS": {"name": "x", "mcap": 1.0, "index": "KOSPI200"}
+             for i in range(n_ks)}
+        u.update({f"{i + 500000:06d}.KQ": {"name": "y", "mcap": 1.0,
+                                           "index": "KOSDAQ150"}
+                  for i in range(n_kq)})
+        return u
+
+    def test_requirement_gate_rejects_wrong_population(self):
+        from bot.bollinger_board import kr_universe_ok
+        assert kr_universe_ok(self._uni(200, 150))[0] is True
+        assert kr_universe_ok(self._uni(190, 160))[0] is True     # 경계 포함
+        assert kr_universe_ok(self._uni(189, 150))[0] is False
+        assert kr_universe_ok(self._uni(200, 161))[0] is False
+        ok, why = kr_universe_ok(self._uni(2600, 150))            # 전종목 오독
+        assert ok is False and "2600" in why.replace(",", "")
+
+    def test_kis_master_parses_the_real_fixed_width_shape(self):
+        from bot import bollinger_board as bb
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "005930", "삼성전자", True, 5123456),
+            _bb_mst_line("kospi", "999990", "비편입주", False, 1000)])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 200000)])
+        uni, note, diag = bb._rung_kis(raw={"kospi": ks, "kosdaq": kq})
+        assert set(uni) == {"005930.KS", "196170.KQ"}
+        assert uni["005930.KS"] == {"name": "삼성전자", "mcap": 5123456.0,
+                                    "index": "KOSPI200"}
+        assert diag["books"]["kospi"]["rows"] == 2
+        assert diag["books"]["kospi"]["members"] == 1
+        assert "kospi 2행" in note
+
+    def test_kis_master_warns_when_the_two_files_disagree_on_units(self):
+        """두 파일이 한 표에 섞이므로 단위가 갈리면 정렬이 통째로 거짓말이다
+        (#34). 값으로 대조해 화면 밖(로그·진단)에라도 말한다."""
+        from bot import bollinger_board as bb
+        ks = _bb_mst_zip("kospi", [
+            _bb_mst_line("kospi", "005930", "삼성전자", True, 5)])
+        kq = _bb_mst_zip("kosdaq", [
+            _bb_mst_line("kosdaq", "196170", "알테오젠", True, 200000)])
+        _uni, _note, diag = bb._rung_kis(raw={"kospi": ks, "kosdaq": kq})
+        assert "unit_warn" in diag and "단위" in diag["unit_warn"]
+
+    def test_ladder_stops_at_the_first_rung_that_meets_the_requirement(self,
+                                                                       monkeypatch):
+        """① 이 되면 ②③④ 는 **부르지 않는다** — '있다'만 재면 그 반대 증거가
+        없다(#25). 호출 여부를 스파이로 센다."""
+        from bot import bollinger_board as bb
+        called = []
+
+        def mk(name, uni):
+            def _f():
+                called.append(name)
+                return uni, f"{name} note", {}
+            return _f
+        good = self._uni(200, 150)
+        monkeypatch.setattr(bb, "_KR_RUNGS", (
+            ("A", mk("A", good)), ("B", mk("B", good)),
+            ("C", mk("C", good)), ("D", mk("D", good))))
+        uni, meta = bb.kr_universe(use_cache=False)
+        assert called == ["A"] and meta["rung"] == 1 and len(uni) == 350
+        called.clear()
+        # probe 는 전부 시도한다(진단이 4단을 나란히 보여야 하므로)
+        bb.kr_universe(probe=True, use_cache=False)
+        assert called == ["A", "B", "C", "D"]
+
+    def test_ladder_falls_through_and_labels_the_fallback(self, monkeypatch):
+        from bot import bollinger_board as bb
+        bad = self._uni(3, 3)
+        good = self._uni(200, 150)
+        monkeypatch.setattr(bb, "_KR_RUNGS", (
+            ("A", lambda: (bad, "a", {})), ("B", lambda: ({}, "b", {})),
+            ("C", lambda: (bad, "c", {})), ("시총상위 폴백",
+                                            lambda: (good, "d", {}))))
+        uni, meta = bb.kr_universe(use_cache=False)
+        assert meta["rung"] == 4 and len(uni) == 350
+        assert "폴백" in meta["label"] and "지수 구성종목 조회 실패" in meta["label"]
+
+    def test_ladder_reports_every_rung_reason_when_all_fail(self, monkeypatch):
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_KR_RUNGS", (
+            ("A", lambda: ({}, "a", {})),
+            ("B", lambda: (_ for _ in ()).throw(RuntimeError("boom"))),))
+        uni, meta = bb.kr_universe(use_cache=False)
+        assert uni == {} and meta["rung"] is None
+        assert "A:" in meta["reason"] and "RuntimeError" in str(meta["rungs"])
+
+    def test_naver_envelopes_both_shapes(self):
+        from bot.bollinger_board import _naver_items, _naver_pick
+        item = {"itemCode": "005930", "stockName": "삼성전자",
+                "marketValue": 512345600000000}
+        assert _naver_items({"result": {"stocks": [item]}}) == [item]
+        assert _naver_items({"stocks": [item]}) == [item]
+        assert _naver_items({"isSuccess": False, "stocks": [item]}) == []
+        code, name, mcap = _naver_pick(item)
+        assert code == "005930" and name == "삼성전자"
+        assert mcap == 5123456.0            # 원 → 억 (KIS 마스터와 같은 단위)
+
+    def test_universe_cache_is_keyed_by_the_parser_spec(self, monkeypatch,
+                                                        tmp_path):
+        """버전 상수를 손으로 올리는 방식은 이 레포에서 여섯 번 졌다 —
+        컬럼 폭이 바뀌면 **자동으로** 무효화돼야 한다(#119·#216)."""
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_SERIES_DIR", tmp_path)
+        good = self._uni(200, 150)
+        hits = []
+        monkeypatch.setattr(bb, "_KR_RUNGS", (
+            ("A", lambda: (hits.append(1), (good, "a", {}))[1]),))
+        bb.kr_universe()
+        bb.kr_universe()
+        assert len(hits) == 1, "캐시가 안 먹었다"
+        sig_before = bb._kr_universe_sig()
+        monkeypatch.setattr(bb, "_KOSPI_WIDTHS", bb._KOSPI_WIDTHS[:-1] + [2])
+        assert bb._kr_universe_sig() != sig_before, "지문이 컬럼 폭에 반응 안 함"
+        bb.kr_universe()
+        assert len(hits) == 2, "지문이 바뀌었는데 옛 캐시를 그대로 썼다"
+
+
+class TestBollingerCollector20260909:
+    """수집기를 **통째로 태운다** — 헬퍼만 부르는 테스트는 배선을 떼는 변형을
+    못 잡는다(#20). 네트워크·과금은 0 이고(#312) 시계열은 임시 디렉터리다(#30).
+    """
+
+    def _df(self, tickers, n=70, breakout_every=7, flat=False):
+        import numpy as np
+        import pandas as pd
+        idx = pd.date_range("2026-06-02", periods=n, freq="B")
+        cols = pd.MultiIndex.from_product(
+            [list(tickers), ["Open", "High", "Low", "Close", "Volume"]])
+        rng = np.random.default_rng(5)
+        data = {}
+        for i, t in enumerate(tickers):
+            base = 100 + np.cumsum(rng.standard_normal(n))
+            if breakout_every and i % breakout_every == 0:
+                base[-1] *= 1.25
+            for f in ("Open", "High", "Low", "Close"):
+                data[(t, f)] = base
+            data[(t, "Volume")] = np.full(n, 1000.0)
+        df = pd.DataFrame(data, index=idx, columns=cols)
+        return df, idx
+
+    def _wire(self, monkeypatch, tmp_path, tickers, *, closed=True,
+              expected_offset=1, df=None, idx=None):
+        import sys
+        import types
+        from bot import bollinger_board as bb
+        from bot import finviz_client as fv
+        from bot import market_timing as mt
+        if df is None:
+            df, idx = self._df(tickers)
+        seen = {"calls": 0, "periods": []}
+
+        def _dl(tks, **kw):
+            seen["calls"] += 1
+            seen["periods"].append(kw.get("period"))
+            import pandas as _pd
+            if not isinstance(df.columns, _pd.MultiIndex):
+                return df                      # 단일 티커 = flat 컬럼(원천 모양)
+            keep = [t for t in tks if t in set(df.columns.get_level_values(0))]
+            return df[keep] if keep else df.iloc[:0]
+        fake = types.ModuleType("yfinance")
+        fake.download = _dl
+        monkeypatch.setitem(sys.modules, "yfinance", fake)
+        monkeypatch.setattr(bb, "_SERIES_DIR", tmp_path)
+        monkeypatch.setattr(bb, "_universe", lambda m: (
+            {t: {"name": f"종목{t[:6]}", "mcap": 1000.0 + i, "index": "KOSPI200"}
+             for i, t in enumerate(tickers)},
+            {"label": "KOSPI200 + KOSDAQ150", "count": len(tickers),
+             "source": "KIS 마스터파일"}))
+        exp = idx[-1 - expected_offset].strftime("%Y-%m-%d")
+        monkeypatch.setattr(mt, "_expected_session", lambda m: (exp, 1))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: closed)
+        monkeypatch.setattr(mt, "_idx_stale", lambda m, d: "")
+        monkeypatch.setattr(fv, "yf_paused", lambda: False)
+        return seen, idx
+
+    def test_end_to_end_counts_and_records(self, monkeypatch, tmp_path):
+        from bot import bollinger_board as bb
+        tks = [f"{i:06d}.KS" for i in range(1, 121)]
+        seen, idx = self._wire(monkeypatch, tmp_path, tks, expected_offset=0)
+        d = bb.build_market("KR")
+        assert d["reason"] == "" and d["scanned"] == 120
+        assert d["count"] == len(d["rows"]) == d["rows_total"]
+        assert d["asof"] == idx[-1].strftime("%Y-%m-%d")
+        assert d["provisional"] is None
+        assert bb.load_series("KR"), "완결 세션인데 시계열에 안 남았다"
+        assert seen["periods"][0] == "1y", "첫 실행은 백필이어야 한다"
+
+    def test_single_ticker_flat_columns_are_handled(self, monkeypatch, tmp_path):
+        """yfinance 는 티커가 하나면 **flat 컬럼**을 준다 — 멀티레벨만 다루면
+        작은 유니버스에서 통째로 0건이 된다."""
+        import pandas as pd
+        from bot import bollinger_board as bb
+        df, idx = self._df(["005930.KS"], breakout_every=1)
+        flat = df["005930.KS"]
+        assert not isinstance(flat.columns, pd.MultiIndex)
+        self._wire(monkeypatch, tmp_path, ["005930.KS"], df=flat, idx=idx,
+                   expected_offset=0)
+        d = bb.build_market("KR")
+        assert d["scanned"] == 1 and d["count"] == 1
+
+    def test_intraday_bar_is_provisional_and_not_recorded(self, monkeypatch,
+                                                          tmp_path):
+        """장중 봉은 **부분봉**이라 시계열에 넣으면 그날 값이 스냅샷으로 굳는다
+        (#40 완결/장중/지연 세 상태)."""
+        from bot import bollinger_board as bb
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        _seen, idx = self._wire(monkeypatch, tmp_path, tks, closed=False,
+                                expected_offset=1)
+        d = bb.build_market("KR")
+        last = idx[-1].strftime("%Y-%m-%d")
+        assert d["provisional"] and d["provisional"]["date"] == last
+        assert d["asof"] != last
+        assert last not in bb.load_series("KR"), "잠정 봉이 기록됐다"
+
+    def test_partial_scan_is_not_written(self, monkeypatch, tmp_path):
+        """부분 결과를 완전본으로 구우면 그날 값이 영구히 낮게 남는다(#280)."""
+        from bot import bollinger_board as bb
+        tks = [f"{i:06d}.KS" for i in range(1, 101)]
+        df, idx = self._df(tks[:40])          # 원천이 40종목만 준다
+        self._wire(monkeypatch, tmp_path, tks, df=df, idx=idx,
+                   expected_offset=0)
+        d = bb.build_market("KR")
+        assert d["partial"] is True
+        assert not bb.load_series("KR"), "부분 스캔인데 시계열에 썼다"
+
+    def test_stale_tickers_are_dropped_from_the_denominator(self, monkeypatch,
+                                                            tmp_path):
+        """정지·휴면 종목은 옛 봉의 돌파가 **매일** 오늘 것으로 새어 나온다."""
+        import numpy as np
+        from bot import bollinger_board as bb
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        df, idx = self._df(tks)
+        for f in ("Open", "High", "Low", "Close"):
+            df.loc[idx[-6:], ("000001.KS", f)] = np.nan
+        self._wire(monkeypatch, tmp_path, tks, df=df, idx=idx,
+                   expected_offset=0)
+        d = bb.build_market("KR")
+        assert d["scan"]["stale_skipped"] == 1 and d["scanned"] == 39
+
+    def test_yf_pause_skips_the_download(self, monkeypatch, tmp_path):
+        from bot import bollinger_board as bb
+        from bot import finviz_client as fv
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        seen, _idx = self._wire(monkeypatch, tmp_path, tks)
+        monkeypatch.setattr(fv, "yf_paused", lambda: True)
+        d = bb.build_market("KR")
+        assert seen["calls"] == 0 and "YF_PAUSE" in d["reason"]
+
+    def test_second_run_uses_the_short_window(self, monkeypatch, tmp_path):
+        from bot import bollinger_board as bb
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        seen, _idx = self._wire(monkeypatch, tmp_path, tks, expected_offset=0)
+        bb.save_series("KR", _bb_series(80))
+        bb.build_market("KR")
+        assert seen["periods"][0] == "3mo", "쌓인 뒤에도 1년을 다시 받는다"
+
+    def test_one_market_failing_does_not_break_the_others(self, monkeypatch,
+                                                          tmp_path):
+        from bot import bollinger_board as bb
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        self._wire(monkeypatch, tmp_path, tks, expected_offset=0)
+        monkeypatch.setattr(bb, "MARKETS", ("KR", "US"))
+        real = bb._universe
+
+        def _u(m):
+            return real(m) if m == "KR" else ({}, {"label": "S&P 500",
+                                                   "reason": "원천 빈 목록"})
+        monkeypatch.setattr(bb, "_universe", _u)
+        out = bb.build_all()
+        assert out["KR"]["reason"] == "" and out["US"]["reason"] == "원천 빈 목록"
+
+    def test_table_is_sorted_by_market_cap_with_unknowns_last(self, monkeypatch,
+                                                              tmp_path):
+        from bot import bollinger_board as bb
+        rows = [{"ticker": "A", "mcap": 10.0}, {"ticker": "B", "mcap": None},
+                {"ticker": "C", "mcap": 99.0}]
+        assert [r["ticker"] for r in bb._sorted_rows(rows)] == ["C", "A", "B"]
+
+
+class TestBollingerRender20260909:
+    """화면이 '이거 최신이야? 어떤 기준이야?' 에 스스로 답해야 한다(#43·#34).
+    렌더는 헬퍼가 아니라 **페이지 전체**로 재고, 그 카드 하나를 잘라서 본다(#55).
+    """
+
+    def _html(self):
+        return _bollinger_html()
+
+    def _kr_panel(self, html: str) -> str:
+        i = html.index("KOSPI200 + KOSDAQ150")
+        return html[html.rindex("<div class='panel'>", 0, i):
+                    html.index("</div>", html.index("bb-links", i))]
+
+    def test_card_says_phase_asof_thresholds_and_universe(self):
+        html = self._html()
+        seg = self._kr_panel(html)
+        assert "회복 진행" in seg                      # 국면(수준×추이)
+        assert "기준일 2026-09-08" in seg
+        assert "강세 ≥ 20 · 약세 ≤ 10" in seg          # 원문 예시 문턱을 숫자로
+        assert "원문 예시 기준" in seg                  # KR 은 환산이 아니다
+        assert "KOSPI200 + KOSDAQ150" in seg and "KIS 마스터파일" in seg
+
+    def test_non_kr_thresholds_say_they_are_not_validated(self):
+        """비-KR 문턱은 KR 예시의 환산일 뿐이다 — 화면이 그렇게 말해야
+        사용자가 검증된 기준으로 읽지 않는다(#165)."""
+        from bot import bollinger_board as bb
+        d = {"market": "US", "asof": "2026-09-08", "reason": "", "count": 30,
+             "new": 5, "scanned": 503, "pct": 6.0, "avg5": 29.0,
+             "avg5_reason": "", "trend": {"dir": "flat", "d5": 0.1, "th": 5.03,
+                                          "pct5": 0.3, "d20": None,
+                                          "reason": ""},
+             "level": "strong", "level_reason": "", "strong_th": 29,
+             "weak_th": 14, "phase": "강세 유지", "pct_rank": 50.0,
+             "pct_rank_reason": "", "streak": 0, "streak_note": "",
+             "chart": [], "rows": [], "rows_total": 0, "provisional": None,
+             "partial": False, "scan": {}, "closed": True,
+             "expected": "2026-09-08", "universe_label": "S&P 500 · 503종목",
+             "universe_meta": {}}
+        html = bb.render_page({"US": d})
+        assert "강세 ≥ 29 · 약세 ≤ 14" in html
+        assert "검증된 기준 아님" in html
+
+    def test_trend_line_shows_the_numbers_not_just_a_word(self):
+        """'다르다'만 말하면 사용자가 매번 되묻는다 — 값으로 보여준다(#202)."""
+        seg = self._kr_panel(self._html())
+        assert "6.2 종목" in seg and "vs 5세션 전" in seg and "문턱 ±3.5" in seg
+
+    def test_provisional_and_partial_are_spelled_out(self):
+        seg = self._kr_panel(self._html())
+        assert "잠정(장중 13:11 KST 기준) 21종목" in seg
+        assert "2026-09-09 종가가 확정되면" in seg
+        assert "부분 스캔 240/350" in seg
+        assert "시계열에 기록하지 않았습니다" in seg
+
+    def test_capture_quote_only_when_condition_met(self):
+        seg = self._kr_panel(self._html())
+        assert "60~70%" in seg and "처방하지 않는다" in seg
+
+    def test_table_shows_new_badge_upper_band_and_truncation(self):
+        seg = self._kr_panel(self._html())
+        assert "🆕" in seg and "상단밴드" in seg
+        assert "표시 3종목 · 전체 62종목" in seg       # 자른 사실을 말한다(#45)
+        assert "79,500.00" in seg                     # 상단밴드 값
+        assert "&lt;전자&gt;" in seg                   # HTML escape
+
+    def test_empty_market_names_the_branch(self):
+        html = self._html()
+        assert "유니버스 원천이 빈 목록" in html       # 사유를 갈래로(#82)
+
+    def test_session_badge_is_asked_with_the_market(self, monkeypatch):
+        """배지는 시장타이밍 판정을 **그대로** 쓴다 — 인자에서 시장을 빼면
+        '오늘'이 시장마다 갈린다(#38·#249)."""
+        from bot import market_timing as mt
+        seen = []
+        monkeypatch.setattr(mt, "_idx_stale",
+                            lambda m, d: seen.append((m, d)) or "<b>BADGE</b>")
+        html = _bollinger_html()
+        assert ("KR", "2026-09-08") in seen
+        assert "BADGE" in html
+
+    def test_no_markdown_stars_or_raw_floats(self):
+        import re
+        html = self._html()
+        assert "**" not in html
+        # 표시용 포맷을 거치면 소수 3자리 이상은 화면에 안 나온다(규칙 10).
+        leaked = re.findall(r">[^<]*?\d+\.\d{3,}[^<]*?<", html)
+        assert not leaked, leaked[:3]
+
+    def test_guide_keeps_the_capture_warnings(self):
+        html = self._html()
+        for phrase in ("선행 지표가 아닙니다", "절댓값보다 추이",
+                       "시장 간 종목수를 직접 비교하지 마세요",
+                       "생존편향", "거래대금"):
+            assert phrase in html, phrase
+
+    def test_inline_js_parses(self):
+        """생성한 JS 는 파이썬이 문법을 안 봐준다 — 인라인 스크립트가 통째로
+        죽으면 표는 살고 차트만 빈칸이라 **데이터 문제로 보인다**(#26).
+        렌더 스모크(길이 검사)로는 절대 안 잡힌다."""
+        import os
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            import pytest
+            pytest.skip("node 없음 — VM/CI 에서 검증")
+        js = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
+                        self._html(), re.S)
+        assert js, "인라인 스크립트가 없다 — 픽스처가 차트를 안 그렸다(#91c)"
+        for body in js:
+            with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                             encoding="utf-8") as f:
+                f.write(body)
+                path = f.name
+            try:
+                r = subprocess.run([node, "--check", path],
+                                   capture_output=True, text=True)
+            finally:
+                os.unlink(path)
+            assert r.returncode == 0, r.stderr[:400]
+
+    def test_embedded_json_cannot_close_the_script_tag(self):
+        from bot.bollinger_board import _js
+        assert "</" not in _js([{"d": "x</script>y"}])
+
+    def test_related_boards_are_linked(self):
+        seg = self._kr_panel(self._html())
+        assert "market_timing.html" in seg and "breadth_strategy.html" in seg
+
+
+class TestBollingerWiring20260909:
+    """새 보드는 nav·help·루프·startup·감사에 **같은 커밋**으로 등록돼야
+    한다(§Help/Dashboard 등록 의무 · 실수 #11 배포 직후 404)."""
+
+    def test_nav_puts_bollinger_right_after_breadth(self):
+        import re
+        from bot import fred_boards as fb
+        pat = re.compile(r'breadth_strategy\.html">🧭 Breadth전략</a>[^<]*'
+                         r'(?:&middot;|·)\s*<a href="bollinger\.html">'
+                         r'🔋 Bollinger</a>')
+        assert pat.search(fb._NAV), "공용 nav 순서가 다르다"
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert len(pat.findall(db)) >= 2, "대시보드 nav 두 곳에 없다"
+
+    def test_help_registers_the_board_and_stays_under_the_cap(self):
+        import ast
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        text = None
+        for node in ast.parse(src).body:
+            if (isinstance(node, ast.Assign)
+                    and any(getattr(t, "id", "") == "_HELP_TEXT"
+                            for t in node.targets)):
+                text = ast.literal_eval(node.value)
+        assert text, "_HELP_TEXT 를 못 찾음"
+        i = text.index("📈 <b>차트보드</b>")
+        group = text[i:text.index("\n", i)]
+        assert "🔋Bollinger" in group, group
+        assert len(text.encode("utf-16-le")) // 2 < 4096
+
+    def test_startup_regenerates_the_page(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "def _bollinger_initial" in src
+        assert "bollinger_board import regenerate as _regen_bb" in src
+
+    def test_regenerate_writes_the_page_file(self, monkeypatch, tmp_path):
+        """`regenerate` 가 실제로 그 파일을 쓰는지 — 이름만 보면 배선이
+        끊겨도 통과한다(#53 함수 이름이 살아 있다고 화면이 사는 건 아니다)."""
+        from bot import bollinger_board as bb
+        from bot import dashboard as d
+        monkeypatch.setattr(d, "ARCHIVE_ROOT", tmp_path)
+        monkeypatch.setattr(bb, "build_all", lambda: {})
+        monkeypatch.setattr("bot.fred_boards._ensure_chartjs", lambda: True)
+        bb.regenerate()
+        out = tmp_path / "bollinger.html"
+        assert out.exists() and "Bollinger" in out.read_text(encoding="utf-8")
+
+    def test_board_audit_has_a_bollinger_section(self):
+        src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
+        assert "Bollinger 보드 — 시장별 기준일" in src
+        assert "bollinger_board as bb" in src
+        # 대조 0건이면 ✅ 가 아니라 ❌ 다(#54)
+        assert "완결 기준일이 하나도 없다" in src
+
+    def test_docs_row_matches_the_actual_period(self):
+        """설명이 코드와 어긋나면 버그다(#55) — 3시간 루프인데 문서가 6시간."""
+        doc = open("docs/automation.md", encoding="utf-8").read()
+        row = [ln for ln in doc.split("\n") if "_periodic_fred_boards" in ln]
+        assert row and "| 3시간 |" in row[0], row
+        assert "Bollinger" in row[0]
+
+    def test_diagnostic_is_read_only(self, monkeypatch, tmp_path, capsys):
+        """진단이 자기가 읽을 신호를 오염시키면 다음 라운드가 통째로
+        거짓이 된다(#30·#264·#283). **동작으로** 재고(파일 불변) 배선은
+        AST 로 못박는다 — 이름만 보면 게이트만 꺼도 통과한다(#141)."""
+        import ast
+
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_SERIES_DIR", tmp_path)
+        before = _bb_series(30)
+        bb.save_series("KR", before)
+        stamp = bb.series_path("KR").stat().st_mtime_ns
+        monkeypatch.setattr(bb, "_universe",
+                            lambda m: ({}, {"label": "x", "reason": "테스트"}))
+        rc = bb._why("KR")
+        assert rc == 1                       # 유니버스가 없으면 실패로 알린다
+        assert bb.load_series("KR") == before
+        assert bb.series_path("KR").stat().st_mtime_ns == stamp
+        assert "읽기 전용" in capsys.readouterr().out
+        tree = ast.parse(open("bot/bollinger_board.py", encoding="utf-8").read())
+        why = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "_why")
+        names = {getattr(c.func, "id", "") or getattr(c.func, "attr", "")
+                 for c in ast.walk(why) if isinstance(c, ast.Call)}
+        assert "save_series" not in names, "진단이 시계열을 쓴다"
+        assert "build_market" in names, "진단이 화면 경로를 안 탄다(#35)"
+
+    def test_printed_run_hint_includes_cd(self):
+        """`python -m` 은 cwd 에서 패키지를 찾는다 — 홈에서 돌리면 진단
+        자체가 안 뜬다(#278)."""
+        from bot.bollinger_board import _RUN_HINT
+        assert _RUN_HINT.startswith("cd ~/stock && ") and "-m bot." in _RUN_HINT
+
+
+class TestBollingerBasisHonesty20260909:
+    """차트의 '옅은 막대 = 백필(생존편향)' 설명이 사실이어야 한다(#43·#165).
+
+    3개월 창을 받으면 과거 40여 세션이 같이 계산되는데 그건 **오늘 유니버스로
+    되짚은 것**이다 — live 라고 부르면 화면이 거짓말한다. 반대로 어제 실제로
+    관측한 행이 오늘 백필로 강등돼도 거짓말이다.
+    """
+
+    def test_only_the_newest_row_of_a_run_is_live(self, monkeypatch, tmp_path):
+        from bot import bollinger_board as bb
+        t = TestBollingerCollector20260909()
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        t._wire(monkeypatch, tmp_path, tks, expected_offset=0)
+        bb.build_market("KR")
+        series = bb.load_series("KR")
+        newest = max(series)
+        assert series[newest]["basis"] == "live"
+        older = [v["basis"] for k, v in series.items() if k != newest]
+        assert older and set(older) == {"backfill"}, set(older)
+
+    def test_live_rows_are_never_demoted_on_a_later_run(self):
+        from bot.bollinger import merge_series
+        stored = {"2026-09-01": {"count": 5, "scanned": 350, "basis": "live"}}
+        fresh = {"2026-09-01": {"count": 6, "scanned": 350,
+                                "basis": "backfill"},
+                 "2026-09-02": {"count": 7, "scanned": 350, "basis": "live"}}
+        out = merge_series(stored, fresh)
+        assert out["2026-09-01"]["count"] == 6      # 값은 정정된다(#299)
+        assert out["2026-09-01"]["basis"] == "live"  # 라벨은 강등 안 된다
+        assert out["2026-09-02"]["basis"] == "live"
+
+    def test_every_session_after_the_expected_one_is_held_back(self,
+                                                              monkeypatch,
+                                                              tmp_path):
+        """캘린더와 원천이 어긋나 기대 세션보다 뒤인 봉이 **둘 이상**일 수
+        있다 — 하나만 걷어내면 나머지가 '완결'로 굳는다."""
+        from bot import bollinger_board as bb
+        t = TestBollingerCollector20260909()
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        _seen, idx = t._wire(monkeypatch, tmp_path, tks, closed=False,
+                             expected_offset=3)
+        d = bb.build_market("KR")
+        held = {x.strftime("%Y-%m-%d") for x in idx[-3:]}
+        assert d["provisional"]["held"] == 3
+        assert d["provisional"]["date"] == idx[-1].strftime("%Y-%m-%d")
+        assert not (held & set(bb.load_series("KR"))), "미확정 봉이 기록됐다"

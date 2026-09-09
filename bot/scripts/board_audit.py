@@ -510,6 +510,37 @@ def main() -> int:
             _p(f"   조회 실패 {type(exc).__name__}: {exc}")
 
         _p("")
+        _p("── 🔋 Bollinger 보드 — 시장별 기준일")
+        # Breadth 섹션과 **같은 마킹 규칙**을 쓴다(복제하면 두 보드의 판정이
+        # 갈라진다, #38). 대조 대상이 0건이면 ✅ 가 아니라 ❌ 다(#54).
+        try:
+            from bot import bollinger_board as bb
+            seen = 0
+            for mkt in bb.MARKETS:
+                d = bb.build_market(mkt, write=False)
+                asof = (d or {}).get("asof")
+                exp, grace = mt._expected_session(mkt)
+                behind = (mt._sessions_between(mkt, asof, exp)
+                          if asof and exp and asof < exp else 0)
+                if (d or {}).get("reason"):
+                    mark = f"❌ {d['reason']}"
+                elif not asof:
+                    mark = "❌ 기준일 없음(수집 실패)"
+                elif exp and asof > exp:
+                    mark = f"🕒 장중 미확정 봉 — 마지막 완결 세션은 {exp}"
+                elif behind and behind > grace:
+                    mark = f"⚠️ {behind}거래일 지연"
+                else:
+                    mark = "✅ 완결 세션"
+                    seen += 1
+                _p(f"   {mkt:5} 기준 {asof or '—'} · 마지막 완결 {exp}"
+                   f" · 돌파 {d.get('count') if d else '—'}종목 {mark}")
+            if not seen:
+                _p("   ❌ 완결 기준일이 하나도 없다 — 보드가 통째로 비어 있다")
+        except Exception as exc:                               # noqa: BLE001
+            _p(f"   조회 실패 {type(exc).__name__}: {exc}")
+
+        _p("")
         _p("── 시장타이밍 보드 — 변동성 카드")
         snap = mt.fetch_volatility_snapshot()
         for key in ("vix", "vkospi", "move"):
