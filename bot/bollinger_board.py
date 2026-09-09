@@ -1707,7 +1707,7 @@ def _why(market: str) -> int:
     _p("⑤ 완결 / 잠정")
     _p(f"   기준일 {d.get('asof')} · 마지막 완결 세션 {d.get('expected')} · "
        f"현지 {'마감' if d.get('closed') else '장중/개장전' if d.get('closed') is False else '판정 불가'}"
-       f" {_session_badge(m, d.get('asof')) or ''}")
+       + (f" {_b}" if (_b := _session_badge(m, d.get('asof'))) else ""))
     if d.get("provisional"):
         pv = d["provisional"]
         _p(f"   🕒 잠정 {pv.get('date')} {pv.get('count')}종목 — 기록하지 않음")

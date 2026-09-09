@@ -12,8 +12,11 @@ from io import BytesIO
 
 log = logging.getLogger("bot.intl_universe")
 
+# 2026-09-09 VM 실측: 옛 `data_j.xls` 는 404(HTML) — 목록 페이지(_JPX_INDEX) 탐색이
+# 아래 xlsx 주소를 찾아 3,705종목을 받았다. 하드코딩은 그 실측값으로 맞추고, 또
+# 옮겨가면 `_fetch_with_discovery` 가 다시 찾는다(#79 실행 증거 · #42a 폴백 알림).
 _JPX_URL = ("https://www.jpx.co.jp/markets/statistics-equities/misc/"
-            "tvdivq0000001vg2-att/data_j.xls")
+            "tvdivq0000001vg2-att/data_j.xlsx")
 _HKEX_URL = ("https://www.hkex.com.hk/eng/services/trading/securities/"
              "securitieslists/ListOfSecurities.xlsx")
 _UA = {"User-Agent": "Mozilla/5.0"}
