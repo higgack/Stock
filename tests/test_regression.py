@@ -54448,3 +54448,95 @@ class TestBollingerAvg5Extremes20260910:
         assert rc == 0, out
         assert "5일 평균 극값" in out and "@ 2026-09-09" in out
         assert "표 출처 run" in out
+
+
+class TestBollingerNaverRungDeclined20260910:
+    """2026-09-10 `--why KR` 실측: ② 네이버 지수 구성종목이 `409 {"code":"StockConflict",
+    "message":"지수의 구성종목을 서비스하지 않는 지수입니다."}` — 원천이 스스로 '안 준다'
+    고 선언한 것인데 매번 ❌ 로 찍혔다. 고칠 수 없는 ❌ 는 진짜 ❌ 를 가린다(#260) →
+    원천이 찍은 코드를 구조로 읽어(#19·#82) ⚠️ 로 내리되 사실은 그대로 적는다(#41).
+    ① KIS 가 채택되므로 화면 영향은 0."""
+
+    class _Resp:
+        def __init__(self, status, payload=None, text=""):
+            self.status_code, self._p, self.text = status, payload, text
+            self.headers = {"Content-Type": "application/json"}
+
+        def json(self):
+            if self._p is None:
+                raise ValueError("no json")
+            return self._p
+
+    def test_409_stockconflict_is_flagged_structurally(self):
+        import bot.bollinger_board as bb
+        R = self._Resp
+        assert bb._naver_declined(R(409, {"code": "StockConflict", "message": "x"})) is True
+        assert bb._naver_declined(R(409, {"code": "Other"})) is False, "409 만으론 안 된다"
+        assert bb._naver_declined(R(200, {"code": "StockConflict"})) is False
+        assert bb._naver_declined(R(400, None, text="")) is False
+
+    def test_fetch_records_the_flag_per_attempt(self, monkeypatch):
+        """생산부가 표식을 남긴다 — 소비부가 본문 문자열을 냄새 맡지 않게(#19)."""
+        import sys, types
+        import bot.bollinger_board as bb
+        R = self._Resp
+        calls = []
+
+        def _get(url, **kw):
+            calls.append(url)
+            if "api.stock" in url:
+                return R(409, {"code": "StockConflict", "message": "m"}, text='{"code":"StockConflict"}')
+            return R(400, None, text="")
+        monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=_get))
+        items, diag = bb._naver_index_stocks("KQ150")
+        assert items == []
+        by_host = {a["host"]: a for a in diag["tried"]}
+        assert by_host["api.stock.naver.com"]["declined"] is True
+        assert by_host["m.stock.naver.com"]["declined"] is False
+
+    def test_rung_is_declined_only_when_every_index_declines(self, monkeypatch):
+        import bot.bollinger_board as bb
+
+        def _stub(declined_codes):
+            def _f(code, **kw):
+                return [], {"http": 409, "keys": [], "raw": "", "pages": 0,
+                            "tried": [{"host": "api.stock.naver.com", "http": 409,
+                                       "items": 0, "body": "b",
+                                       "declined": code in declined_codes}]}
+            return _f
+        monkeypatch.setattr(bb, "_naver_index_stocks",
+                            _stub({"KPI200", "KOSPI200", "KQ150", "KOSDAQ150"}))
+        _u, _n, diag = bb._rung_naver()
+        assert diag["source_declined"] is True
+        assert all(i["declined"] for i in diag["indices"].values())
+        # 한 지수만 선언 → 나머지는 우리 것일 수 있다 — 단 전체를 ⚠️ 로 내리면 안 된다
+        monkeypatch.setattr(bb, "_naver_index_stocks", _stub({"KQ150", "KOSDAQ150"}))
+        _u, _n, diag = bb._rung_naver()
+        assert diag["source_declined"] is False
+        assert diag["indices"]["KOSDAQ150"]["declined"] and not diag["indices"]["KOSPI200"]["declined"]
+
+    def test_rung_mark_three_states(self):
+        from bot.bollinger_board import rung_mark
+        assert rung_mark({"ok": True, "diag": {"source_declined": True}}) == ("✅", "")
+        g, tag = rung_mark({"ok": False, "diag": {"source_declined": True}})
+        assert g == "⚠️" and "고칠 것 없음" in tag and "StockConflict" in tag
+        assert rung_mark({"ok": False, "diag": {}}) == ("❌", "")
+
+    def test_why_prints_warning_for_declined_and_cross_for_ours(self, monkeypatch, capsys):
+        """배선은 결과로 본다(#20·#313) — 선언한 단은 ⚠️, 그렇지 않은 실패 단은 여전히
+        ❌(#25 반대 증거). 사실(개수)은 두 줄 다 그대로 남는다(#41)."""
+        import bot.bollinger_board as bb
+        monkeypatch.setattr(bb, "kr_universe", lambda **kw: ({}, {
+            "rungs": [
+                {"n": 2, "name": "네이버 지수 구성종목", "note": "KOSPI200 0(—)", "ok": False,
+                 "why": ".KS 0개(기대 190~210)", "diag": {"source_declined": True, "indices": {}}},
+                {"n": 3, "name": "pykrx 지수 구성종목", "note": "n", "ok": False,
+                 "why": ".KS 0개(기대 190~210)", "diag": {}},
+            ], "rung": None, "reason": "x"}))
+        bb._why_universe_kr()
+        lines = capsys.readouterr().out.splitlines()
+        l2 = next(l for l in lines if "네이버 지수 구성종목" in l)
+        l3 = next(l for l in lines if "pykrx 지수 구성종목" in l)
+        assert "⚠️" in l2 and "❌" not in l2 and "고칠 것 없음" in l2
+        assert ".KS 0개(기대 190~210)" in l2, "사실은 그대로 적는다(#41)"
+        assert "❌" in l3 and "⚠️" not in l3

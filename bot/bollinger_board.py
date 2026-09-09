@@ -311,6 +311,26 @@ def _body_note(resp) -> str:
     return f"{ctype} {len(body)}자: {body[:300]}"
 
 
+# 2026-09-10 VM 실측: `api.stock.naver.com` 이 KOSPI200·KQ150·KOSDAQ150 에
+# `409 {"code":"StockConflict","message":"지수의 구성종목을 서비스하지 않는
+# 지수입니다."}` 를 돌려준다 — **원천이 스스로 '안 준다'고 선언**한 것이라 우리가
+# 고칠 게 없다. 그걸 매번 ❌ 로 찍으면 진짜 ❌ 를 가린다(#260) → 원천이 찍은
+# 코드를 **구조로** 읽어 표식을 남기고 표시는 ⚠️ 로 내린다(#82·#19 문자열 냄새
+# 맡기 금지). ① KIS 마스터가 채택되므로 화면엔 영향이 없다.
+_NAVER_DECLINE_CODE = "StockConflict"
+
+
+def _naver_declined(resp) -> bool:
+    """원천이 '서비스하지 않는 지수' 라고 답했나 — 409 + 응답 JSON 의 `code`."""
+    try:
+        if int(resp.status_code) != 409:
+            return False
+        d = resp.json()
+    except Exception:                                          # noqa: BLE001
+        return False
+    return isinstance(d, dict) and d.get("code") == _NAVER_DECLINE_CODE
+
+
 def _naver_index_stocks(code: str, size: int = 100,
                         max_pages: int = 10) -> tuple[list, dict]:
     """(항목 목록, 진단). 후보 URL 을 순서대로 시도하고 **각 후보가 무엇을
@@ -339,6 +359,7 @@ def _naver_index_stocks(code: str, size: int = 100,
             attempt["http"] = r.status_code
             if r.status_code != 200:
                 attempt["body"] = _body_note(r)
+                attempt["declined"] = _naver_declined(r)
                 break
             try:
                 d = r.json()
@@ -429,8 +450,11 @@ def _rung_naver() -> tuple[dict, str, dict]:
                             "tried": d.get("tried") or []}
             if len(items) > len(best):
                 best, best_code = items, code
+        # 후보 하나라도 원천이 '안 준다'고 선언했으면 그 지수는 원천 미제공이다
+        declined = any(a.get("declined") for c in detail.values()
+                       for a in (c.get("tried") or []))
         diag["indices"][index_name] = {"tried": detail, "picked": best_code,
-                                       "count": len(best)}
+                                       "count": len(best), "declined": declined}
         for it in best:
             code, name, mcap = _naver_pick(it)
             if not code:
@@ -438,6 +462,10 @@ def _rung_naver() -> tuple[dict, str, dict]:
             uni[f"{code}{suffix}"] = {"name": name or code, "mcap": mcap,
                                       "index": index_name}
         notes.append(f"{index_name} {len(best)}({best_code or '—'})")
+    # 지수 **전부**가 선언했을 때만 단 전체를 원천 미제공으로 본다 — 하나만
+    # 선언했으면 나머지는 코드 표기 문제일 수 있어 여전히 우리 것(❌)이다.
+    idx = diag["indices"]
+    diag["source_declined"] = bool(idx) and all(i["declined"] for i in idx.values())
     return uni, " · ".join(notes), diag
 
 
@@ -1729,14 +1757,26 @@ def _p(s: str = "") -> None:
     print(s, flush=True)
 
 
+def rung_mark(r: dict) -> tuple[str, str]:
+    """사다리 한 단의 표식 — (글리프, 꼬리표). 순수(#41).
+    ✅ 충족 / ⚠️ 원천이 스스로 '안 준다'고 선언(우리가 고칠 것 없음, #260) /
+    ❌ 그 밖(우리가 볼 것). 사실(개수·후보별 응답)은 어느 쪽이든 그대로 찍힌다(#41)."""
+    if r.get("ok"):
+        return "✅", ""
+    if (r.get("diag") or {}).get("source_declined"):
+        return "⚠️", ("원천이 '서비스하지 않는 지수' 로 답함(409 "
+                      f"{_NAVER_DECLINE_CODE}) — 우리가 고칠 것 없음")
+    return "❌", ""
+
+
 def _why_universe_kr() -> None:
     """KR 사다리 4단을 **전부** 시도해 나란히 찍는다 — 어느 단이 왜 안 됐는지
     한 번에 보여야 다음 라운드가 엉뚱한 데를 고치지 않는다(#82·#109)."""
     _uni, meta = kr_universe(probe=True, use_cache=False)
     for r in meta["rungs"]:
-        mark = "✅" if r["ok"] else "❌"
+        mark, tag = rung_mark(r)
         _p(f"   {'①②③④'[r['n'] - 1]} {r['name']:<18} {r['note']}  "
-           f"{mark} {r['why']}")
+           f"{mark} {r['why']}{' · ' + tag if tag else ''}")
         diag = r.get("diag") or {}
         for book, b in (diag.get("books") or {}).items():
             _p(f"      {book}: 그룹코드 {b.get('groups')} · 표본 "
