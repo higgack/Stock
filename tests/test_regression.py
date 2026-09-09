@@ -52648,6 +52648,133 @@ class TestBollingerScreenAsks20260909:
         assert "300종목" in txt and hits == []
 
 
+class TestIntlUniverseStaleFallback20260909:
+    """2026-09-09 VM `--why JP` 실측: JPX 가 21,082바이트를 주는데 xls 가 아니라
+    pandas 가 "Excel file format cannot be determined" 로 죽고, 7일 TTL 이 만료된
+    뒤(225시간 전 기록) JP 유니버스가 통째로 비었다 — 같은 원천을 쓰는 52주
+    신고저 보드도 같이 죽는다. 원인은 상태를 안 보고 본문을 파서에 넘긴 것(#82)
+    과 만료 캐시를 버리는 것(#161 의 반대 — 빈 목록보다 낡은 목록이 낫다, 단
+    그렇다고 말한다 #43)."""
+
+    class _R:
+        def __init__(self, code, body, ctype):
+            self.status_code, self.content = code, body
+            self.headers = {"Content-Type": ctype}
+
+    def _cache_dir(self, monkeypatch, tmp_path):
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        return tmp_path
+
+    def test_http_get_refuses_non_excel_bodies_and_names_what_it_got(self, monkeypatch):
+        import bot.intl_universe as iu
+        import requests
+        html = b"<!DOCTYPE html><html><body>Access denied</body></html>" * 400
+        monkeypatch.setattr(requests, "get",
+                            lambda url, **kw: self._R(403, html, "text/html; charset=utf-8"))
+        with pytest.raises(RuntimeError) as ei:
+            iu._http_get("https://x/data_j.xls")
+        msg = str(ei.value)
+        assert "HTTP 403" in msg and "text/html" in msg and "Access denied" in msg
+        assert "21,600바이트" in msg or f"{len(html):,}바이트" in msg
+        # 200 인데 HTML 이어도 거부 — 상태만 보면 차단 페이지가 파서로 간다
+        monkeypatch.setattr(requests, "get",
+                            lambda url, **kw: self._R(200, html, "text/html"))
+        with pytest.raises(RuntimeError, match="엑셀 파일이 아닙니다"):
+            iu._http_get("https://x/data_j.xls")
+        # 반대 증거: 진짜 xls(OLE) · xlsx(zip) 시그니처는 통과(#25)
+        for magic in (b"\xd0\xcf\x11\xe0" + b"\0" * 100, b"PK\x03\x04" + b"\0" * 100):
+            monkeypatch.setattr(requests, "get",
+                                lambda url, m=magic, **kw: self._R(200, m, "application/octet-stream"))
+            assert iu._http_get("https://x/f") == magic
+
+    def test_expired_cache_serves_when_source_fails_and_says_so(self, monkeypatch, tmp_path):
+        import json, os, time
+        import bot.intl_universe as iu
+        self._cache_dir(monkeypatch, tmp_path)
+        iu._STALE_HOURS.clear()
+        old = [f"{i:04d}.T" for i in range(1, 300)]
+        f = tmp_path / "full_universe_JP_v2.json"
+        f.write_text(json.dumps(old), encoding="utf-8")
+        past = time.time() - 225.5 * 3600                 # VM 실측 나이
+        os.utime(f, (past, past))
+        monkeypatch.setattr(iu, "_http_get",
+                            lambda url: (_ for _ in ()).throw(RuntimeError("HTTP 403 text/html")))
+        assert iu.full_universe("JP") == old, "만료 캐시가 빈 목록보다 낫다"
+        assert iu.stale_hours("JP") is not None and 225 <= iu.stale_hours("JP") <= 226
+        # 반대 증거: 원천이 다시 살면 깃발이 내려간다(#25)
+        fresh = [f"{i:04d}.T" for i in range(1, 400)]
+        monkeypatch.setattr(iu, "_http_get", lambda url: b"ok")
+        monkeypatch.setattr(iu, "_SPEC", {"JP": ("u", lambda b: fresh)})
+        assert iu.full_universe("JP") == fresh
+        assert iu.stale_hours("JP") is None
+        # 캐시가 아예 없으면 빈 목록 + 깃발 없음(지어내지 않는다)
+        iu._STALE_HOURS.clear()
+        for x in tmp_path.iterdir():
+            x.unlink()
+        monkeypatch.setattr(iu, "_http_get",
+                            lambda url: (_ for _ in ()).throw(RuntimeError("down")))
+        assert iu.full_universe("JP") == [] and iu.stale_hours("JP") is None
+
+    def test_bollinger_label_says_the_universe_is_a_stale_cache(self, monkeypatch):
+        """카드 라벨이 '공식 상장목록 기준'이라고만 하면 9일 전 목록을 오늘 것으로
+        읽는다(#43·#306 폴백은 화면이 말한다)."""
+        from bot import bollinger_board as bb
+        import bot.stock_screener as ss
+        import bot.intl_universe as iu
+        monkeypatch.setattr(ss, "_get_jp_universe",
+                            lambda: [f"{i:04d}.T" for i in range(1, 226)])
+        monkeypatch.setattr(iu, "full_universe_names", lambda m: {})
+        monkeypatch.setattr(iu, "stale_hours", lambda m: 225.5)
+        uni, meta = bb._universe("JP")
+        assert len(uni) == 225
+        assert "9일 전 캐시" in meta["label"] and "원천 조회 실패" in meta["label"]
+        assert meta.get("stale_hours") == 225.5
+        monkeypatch.setattr(iu, "stale_hours", lambda m: None)
+        _, meta2 = bb._universe("JP")
+        assert "캐시" not in meta2["label"]
+
+    def test_why_reports_stale_serving_and_the_source_head(self, monkeypatch):
+        from bot import bollinger_board as bb
+        import bot.intl_universe as iu
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "cache_age_sec", lambda name: 225.5 * 3600)
+        monkeypatch.setattr(iu, "full_universe",
+                            lambda m: [f"{i:04d}.T" for i in range(1, 300)])
+        monkeypatch.setattr(iu, "stale_hours", lambda m: 225.5)
+        monkeypatch.setattr(iu, "_http_get", lambda url: (_ for _ in ()).throw(
+            RuntimeError("HTTP 403 text/html 21,082바이트 — 엑셀 파일이 아닙니다 · 앞머리: '<!DOCTYPE'")))
+        txt = "\n".join(bb._why_universe_intl("JP"))
+        assert "299종목" in txt and "226시간 전 캐시로 서빙 중" in txt
+        assert "원천 HTTP 실패" in txt and "<!DOCTYPE" in txt, (
+            "만료 캐시로 버틸 때도 원천이 왜 죽었는지 원문 앞머리를 찍어야 한다")
+
+
+class TestHighlowUniverseStaleNote20260909:
+    """같은 `full_universe` 를 쓰는 52주 신고저 보드도 만료 캐시로 버틸 땐 payload 가
+    그렇게 말해야 한다 — Bollinger 카드만 고치면 이 보드는 조용히 낡은 목록을 오늘
+    것처럼 보인다(#38·#43·#306)."""
+
+    def test_source_string_carries_the_stale_note(self, monkeypatch, tmp_path):
+        import inspect
+        import bot.intl_highlow as ih
+        import bot.intl_universe as iu
+        src = inspect.getsource(ih)
+        assert "stale_hours(market)" in src and "일 전 캐시(원천 조회 실패)" in src
+        monkeypatch.setattr(iu, "stale_hours", lambda m: 225.5)
+        # payload 를 만드는 자리를 그대로 태운다 — 헬퍼 grep 만으론 배선을 못 본다(#20)
+        import textwrap
+        i0 = src.rindex("\n", 0, src.index('src = f"{_CFG[market][3]}')) + 1
+        seg = textwrap.dedent(src[i0:src.index("_cache_write(cache, out)")])
+        ns = {"_CFG": {"JP": ("", "", "", "JPX")}, "market": "JP",
+              "high": [], "low": [], "_now_label": lambda: "t"}
+        exec(seg, ns)
+        assert "9일 전 캐시(원천 조회 실패)" in ns["out"]["source"]
+        monkeypatch.setattr(iu, "stale_hours", lambda m: None)
+        exec(seg, ns)
+        assert "캐시" not in ns["out"]["source"]
+
+
 class TestBollingerReviewFindings20260909:
     """배포전 독립 리뷰(2026-09-09)가 잡은 다섯. 전부 **동작으로** 고정한다 —
     이름·모양만 재면 '호출은 남기고 결과를 버리는' 변형을 못 잡는다(#313).

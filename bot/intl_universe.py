@@ -21,9 +21,52 @@ _UA = {"User-Agent": "Mozilla/5.0"}
 _JP_EXCL = ("ETF", "ETN", "REIT", "出資", "インフラ", "PRO", "受益")
 
 
-def _http_get(url: str):
+# 원천 조회 실패 시 만료된 캐시로 버틴 시간(시장 → 시간). 화면·진단이 읽는다.
+# 상장목록은 느리게 바뀌므로 9일 전 목록이 빈 목록보다 낫다 — 단 그 사실을
+# 말한다(#43). 2026-09-09 VM 실측: JPX 가 21KB 를 주는데 xls 가 아니어서
+# ("Excel file format cannot be determined") 7일 TTL 만료 뒤 JP 유니버스가
+# 통째로 비었다 — 52주 신고저·Bollinger 보드가 같이 죽었다.
+_STALE_HOURS: dict = {}
+
+_XLS_MAGIC = (b"\xd0\xcf\x11\xe0", b"PK\x03\x04")   # OLE(xls) · zip(xlsx)
+
+
+def stale_hours(market: str):
+    """원천 조회가 실패해 만료 캐시로 서빙 중이면 그 나이(시간), 아니면 None."""
+    return _STALE_HOURS.get(market)
+
+
+def _http_get(url: str) -> bytes:
+    """상장목록 파일 바이트. **엑셀 시그니처가 아니면 예외** — 상태·형식·길이·
+    앞머리를 예외 문장에 싣는다. 옛 판은 상태를 안 보고 본문을 파서에 넘겨,
+    403/차단 HTML 이 pandas 의 "format cannot be determined" 로만 남아 원인을
+    한 라운드 늦게 알았다(#82 '없음'만 말하는 진단 · #109 원문 표본)."""
     import requests
-    return requests.get(url, timeout=30, headers=_UA).content
+    r = requests.get(url, timeout=30, headers=_UA)
+    body = r.content or b""
+    ctype = (r.headers.get("Content-Type") or "?").split(";")[0].strip()
+    if r.status_code != 200 or not body.startswith(_XLS_MAGIC):
+        head = body[:200].decode("utf-8", "replace").replace("\n", " ")
+        raise RuntimeError(
+            f"HTTP {r.status_code} {ctype} {len(body):,}바이트 — 엑셀 파일이 "
+            f"아닙니다 · 앞머리: {head!r}")
+    return body
+
+
+def _stale_cache(cache_name: str, market: str, kind):
+    """만료된 캐시라도 있으면 돌려주고 나이를 기록한다. 없으면 None."""
+    try:
+        from bot.finviz_client import _cached, cache_age_sec
+        c = _cached(cache_name, ttl=float("inf"))
+        age = cache_age_sec(cache_name)
+    except Exception:
+        return None
+    if isinstance(c, kind) and len(c) > 100 and age is not None:
+        _STALE_HOURS[market] = age / 3600.0
+        log.warning("full_universe %s: 원천 실패 → %.0f시간 전 캐시로 서빙",
+                    market, age / 3600.0)
+        return c
+    return None
 
 
 def _jp_pick(code, div) -> str | None:
@@ -167,7 +210,7 @@ def full_universe_names(market: str) -> dict:
         names = parser(_http_get(url))
     except Exception as exc:
         log.warning("full_universe_names %s 실패: %s", market, exc)
-        return {}
+        return _stale_cache(cache_name, f"names:{market}", dict) or {}
     if len(names) > 100 and _cache_write:
         try:
             _cache_write(cache_name, names)
@@ -191,13 +234,16 @@ def full_universe(market: str) -> list[str]:
     if _cached:
         c = _cached(cache_name, ttl=7 * 86400)
         if isinstance(c, list) and len(c) > 100:
+            _STALE_HOURS.pop(market, None)
             return c
     url, parser = spec
     try:
         tickers = parser(_http_get(url))
     except Exception as exc:
         log.warning("full_universe %s fetch/parse 실패: %s", market, exc)
-        return []
+        return _stale_cache(cache_name, market, list) or []
+    if len(tickers) > 100:
+        _STALE_HOURS.pop(market, None)
     if len(tickers) > 100 and _cache_write:
         try:
             _cache_write(cache_name, tickers)

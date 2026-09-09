@@ -658,6 +658,13 @@ def _universe(market: str) -> tuple[dict, dict]:
                             else _get_hk_universe()) or [])
             names = full_universe_names(m) or {}
             meta["label"] = "시총상위 (공식 상장목록 기준)"
+            from bot.intl_universe import stale_hours
+            st = stale_hours(m)
+            if st is not None:
+                # 원천이 죽어 만료 캐시로 버티는 중 — 화면이 말한다(#43·#306).
+                meta["stale_hours"] = st
+                meta["label"] += (f" · 상장목록 {st / 24:.0f}일 전 캐시"
+                                  "(원천 조회 실패 — 다음 주기 재시도)")
         elif m == "CN_A":
             from bot.akshare_client import list_csi300_500
             names = list_csi300_500(symbols=("000300",)) or {}
@@ -1501,12 +1508,14 @@ def _why_universe_intl(m: str) -> list[str]:
         out.append(f"캐시 경로 확인 실패: {type(exc).__name__}: {exc}")
     try:
         full = iu.full_universe(m)
+        st = iu.stale_hours(m)
         out.append(f"full_universe({m}) → {len(full):,}종목"
-                   f"{' (100 이하 → 유니버스로 안 쓴다)' if len(full) <= 100 else ''}")
+                   f"{' (100 이하 → 유니버스로 안 쓴다)' if len(full) <= 100 else ''}"
+                   f"{f' · ⚠️ 원천 실패, {st:.0f}시간 전 캐시로 서빙 중' if st is not None else ''}")
     except Exception as exc:                                   # noqa: BLE001
         out.append(f"full_universe({m}) 예외: {type(exc).__name__}: {exc}")
-        full = []
-    if len(full) <= 100:
+        full, st = [], None
+    if len(full) <= 100 or st is not None:
         spec = iu._SPEC.get(m)
         url = spec[0] if spec else "?"
         try:
