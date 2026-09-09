@@ -1089,6 +1089,8 @@ _BB_CSS = """
 .bb-mini{border-collapse:collapse;margin:6px 0 8px;font-size:12px}
 .bb-mini th,.bb-mini td{border:1px solid var(--border);padding:3px 8px;text-align:center}
 .bb-mini th{color:var(--muted);font-weight:600}
+.bb-nm{color:var(--fg);text-decoration:none;border-bottom:1px dotted var(--border)}
+.bb-nm:hover{color:var(--accent);border-bottom-color:var(--accent)}
 .bb-links{font-size:12px;margin-top:10px}
 .bb-links a{color:var(--accent);text-decoration:none}
 .bb-links a:hover{text-decoration:underline}
@@ -1246,6 +1248,23 @@ def _level_line(d: dict) -> str:
     return base + " (원문 예시 20/10 을 유니버스 크기로 환산 — 검증된 기준 아님)"
 
 
+def _name_link(row: dict) -> str:
+    """종목명 → `/lookup/<ticker>` 종목분석 화면 링크(사용자 2026-09-09 "볼린저밴드
+    보드에서 종목을 클릭하면 종목분석화면으로. 모든 나라 다 적용").
+
+    상대 경로는 신고가·급등락(`highlow_render`)·미국·네이버 보드와 **같은 형태**
+    (`lookup/{ticker}`)다 — 이 페이지들이 전부 ARCHIVE_ROOT 한 디렉터리에서
+    서빙되므로 규약이 하나여야 한다(#38). 티커가 없으면 링크를 만들지 않는다
+    (빈 href 는 그 페이지를 다시 여는 죽은 링크다, #144 필수 인자가 없으면
+    부르지 말 것)."""
+    import html as _h
+    tk = str(row.get("ticker") or "").strip()
+    label = _h.escape(str(row.get("name") or tk or "—"))
+    if not tk:
+        return label
+    return f"<a class='bb-nm' href='lookup/{_h.escape(tk)}'>{label}</a>"
+
+
 def _rows_table(rows: list, total: int, scanned, title: str) -> str:
     import html as _h
     if not rows:
@@ -1254,7 +1273,7 @@ def _rows_table(rows: list, total: int, scanned, title: str) -> str:
     body = "".join(
         "<tr>"
         f"<td>{i + 1}</td>"
-        f"<td>{_h.escape(str(r.get('name') or r.get('ticker')))}"
+        f"<td>{_name_link(r)}"
         f"<div class='bb-note'>{_h.escape(str(r.get('ticker')))}"
         f"{' · ' + _h.escape(exchange_tag(r.get('ticker'))) if exchange_tag(r.get('ticker')) else ''}"
         "</div></td>"
@@ -1447,7 +1466,9 @@ def render_page(data: dict, now=None) -> str:
 마감은 드문 사건(대략 2.3%)이고, 실적·재료로 강하게 오른 종목에서 나옵니다.<br>
 <b>돌파 종목 표의 열</b> — 종가 · 등락(<b>전일 종가 대비</b> %) · 상단밴드(그날의
 20일 이동평균 +2σ) · 돌파폭 = <b>종가 ÷ 상단밴드 − 1</b>(밴드를 얼마나 넘어
-마감했나) · 시총(억·조 / $B). 티커 옆 태그는 거래소입니다.<br>
+마감했나) · 시총(억·조 / $B). 티커 옆 태그는 거래소입니다.
+<b>종목명을 누르면 그 종목의 분석 화면</b>(차트·재무·밸류에이션)으로 갑니다 —
+전 시장 동일.<br>
 <b>돌파 종목 표</b> — 유니버스 전체를 스캔해 조건에 맞는 종목을 <b>전부</b>
 싣습니다(시총 내림차순). 카드의 "오늘 돌파 N종목"과 표의 행 수는 같은 목록에서
 나오므로 항상 같습니다. 🆕 는 <b>전일엔 밴드 안이었다가 오늘 밖에서 마감</b>한

@@ -36,7 +36,7 @@ import sqlite3
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
 
 BASE = "https://apis.data.go.kr/1220000"
@@ -731,6 +731,58 @@ def load_rows(conn: sqlite3.Connection) -> dict[str, list]:
         return {}
 
 
+def load_fetched_at(conn: sqlite3.Connection) -> Optional[datetime]:
+    """4종 중 **가장 최근 수집 시각**(UTC aware) — 없거나 테이블이 없으면 None.
+    읽기 전용(ensure_schema 를 부르지 않는다 — 진단·감사가 이걸 읽으므로 #264).
+    2026-09-09: 🟢 박스가 데이터 창(2026-08 · 전월)만 적고 **언제 받았는지**는
+    안 적어, 수집기가 멈춘 날과 정상인 날이 화면에서 똑같았다(#304 값 수집 시각)."""
+    try:
+        recs = list(conn.execute("SELECT fetched_at FROM customs_provisional"))
+    except Exception:
+        return None
+    newest = None
+    for (ts,) in recs:
+        try:
+            dt = datetime.fromisoformat(str(ts))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if newest is None or dt > newest:
+            newest = dt
+    return newest
+
+
+# 수집 정지 판정 문턱 — refresh 타이머가 `--if-stale`(6h) 로 5분마다 묻고
+# 旬 경계엔 prov-fetch 가 30분마다 돌므로, 12시간 넘게 새 수집이 없으면
+# 자격증명·API·유닛 중 무언가가 멈춘 것이다(#25·#260 늘 뜨는 배지 금지 —
+# 정상 운영에선 6h 안에 항상 갱신된다).
+_FETCH_STALE_H = 12.0
+_KST = timezone(timedelta(hours=9))
+
+
+def prov_fetch_note(fetched_at: Optional[datetime], now: Optional[datetime] = None
+                    ) -> tuple[str, bool]:
+    """(화면 문구, 정지 여부). 문구는 **우리가 받아온 시각**이지 관세청 발표 시각이
+    아니다(#165 안 잰 것을 단정하지 않는다). None 이면 '미기록' 을 말한다(#43)."""
+    if fetched_at is None:
+        return "값 수집 시각 미기록 — 아직 한 번도 수집되지 않았거나 구버전 저장분", True
+    now = now or datetime.now(timezone.utc)
+    age_h = (now - fetched_at).total_seconds() / 3600.0
+    when = fetched_at.astimezone(_KST).strftime("%m-%d %H:%M")
+    if age_h < 1:
+        age = f"{age_h * 60:.0f}분 전"
+    elif age_h < 48:
+        age = f"{age_h:.0f}시간 전"
+    else:
+        age = f"{age_h / 24:.0f}일 전"
+    base = f"값 수집 {when} KST ({age})"
+    if age_h >= _FETCH_STALE_H:
+        return (base + f" ⚠️ {age_h:.0f}시간째 새 수집 없음 — 아래 창이 최신이 아닐 수 있음"
+                " (fetch_provisional 유닛·API 키 확인)"), True
+    return base, False
+
+
 def is_stale(conn: sqlite3.Connection, max_age_h: float = 6.0) -> bool:
     """전체 시계열(series_json)이 비었거나(구버전·미수집) 가장 최근 수집이
     max_age_h보다 오래됐으면 True → fetch_provisional --if-stale가 한 번만
@@ -1069,7 +1121,8 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
     )
 
 
-def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
+def render_box(signals: dict[str, dict], *, momentum_html: str = "",
+               fetched_at: Optional[datetime] = None) -> str:
     """4종 신호 → '🟢 잠정 속보' 박스. 데이터 없으면 '' (motie 배너가 폴백).
 
     헤드라인: 전체 수출/수입 잠정 YoY + ⚡반도체제조용장비 수입(capex 선행)
@@ -1116,6 +1169,11 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     caveat = ""
 
     from html import escape as _esc
+    # 값 수집 시각(우리가 받아온 때) — 데이터 창만 적으면 수집기가 멈춘 날도
+    # 멀쩡해 보인다(#304·#52 조용한 것과 죽은 것). 보이는 줄로 낸다(#228).
+    fetch_txt, fetch_stale = prov_fetch_note(fetched_at)
+    fetch_line = (f"<div class='ind-prov-fetch{' is-stale' if fetch_stale else ''}'>"
+                  f"🕒 {_esc(fetch_txt)}</div>")
     ym = _esc(ref.get("ym") or "")
     window = _esc(ref.get("window") or "")
     # 최신 잠정 창 명시 badge (사용자 2026-06-15 '현재 말고 최신으로' — 확정
@@ -1135,7 +1193,8 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
         f"<div class='ind-prov' data-prov-ym='{ym}' "
         f"data-prov-decile='{_esc(ref.get('decile') or '')}' "
         f"data-prov-end='{prov_period_end(ref.get('ym') or '', ref.get('decile') or '')}' "
-        f"data-prov-label='{ym} · {window}'>"
+        f"data-prov-label='{ym} · {window}' "
+        f"data-prov-fetched='{_esc(fetched_at.isoformat() if fetched_at else '')}'>"
         f"<h3>🟢 잠정 속보 <span class='ind-prov-cur'>최신 {cur_label}</span> "
         "<span class='ind-prov-tag'>관세청 10일 단위 · 11일·21일·월초(전월 풀월) 발표</span></h3>"
         f"<div class='ind-prov-sub'>{ym} · {window} 누적 기준 · 확정치보다 "
@@ -1148,6 +1207,7 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
         "<div class='ind-prov-src'>📡 출처: 관세청 공개 OpenAPI(data.go.kr 순별 잠정) "
         "· 상단 속보(텔레그램 채널)보다 1~2일 늦게 공개될 수 있어 旬(1-10/1-20)이 "
         "일시적으로 다를 수 있음 — OpenAPI 갱신 시 자동 반영</div>"
+        f"{fetch_line}"
         f"<div class='ind-prov-grid'>{body}</div>"
         f"{caveat}"
         f"{momentum_html}"

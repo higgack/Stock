@@ -66,9 +66,11 @@ def _release_stage(period: str, today: date | None = None) -> str:
         y, m = int(period[:4]), int(period[5:7])
     except Exception:
         return ""
-    fy, fm = (y + 1, 1) if m == 12 else (y, m + 1)   # 익월
-    today = today or date.today()
-    return "확정" if today >= date(fy, fm, 15) else "잠정"
+    # 2026-09-09: 같은 달력 판정을 산업트렌드(`industry._month_status_label`, KST)와
+    # 여기(`date.today()` = 서버 로컬)가 따로 갖고 있어 15일 00~09시 KST 사이엔 두
+    # 표면이 같은 달을 다르게 불렀다(#38·규칙 10a). 단일 출처에서 파생한다.
+    from trade.industry import _month_status_label
+    return _month_status_label(f"{y:04d}-{m:02d}", today).split("(")[0]
 
 
 def _months_of(node: dict) -> dict:

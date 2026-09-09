@@ -33,7 +33,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -43,6 +43,10 @@ except ModuleNotFoundError:  # test env fallback
     def load_dotenv(*args, **kwargs):
         return False
 
+_KST = timezone(timedelta(hours=9))
+# `--why` 가 inbox 캡션을 파싱하는 상한 — 진단이 오래 걸리면 안 되고, 넘으면
+# 넘었다고 말한다(#45 자른 사실을 말할 것). 실측 inbox 16,182줄에 여유.
+_INBOX_PARSE_CAP = 40000
 from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 위치 복원(공용)
 from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
 
@@ -194,6 +198,7 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             # 헤드라인 박스(signals) + 🔟 10일 모멘텀 펼치기(전체 시계열 rows).
             prov_signals = customs_provisional.load_signals(conn)
             prov_rows = customs_provisional.load_rows(conn)
+            prov_fetched = customs_provisional.load_fetched_at(conn)
         # 헤드라인 박스 MoM(전월 동순) 즉시 반영 (사용자 2026-06-12 '잠정
         # mom 아직 안보여'): MoM 은 latest_signal 이 산출하는데, 저장 payload
         # 가 MoM 도입(2026-06-12) 전 스냅샷이면 비어 보인다 — fetch_provisional
@@ -211,7 +216,8 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
                 prov_signals[_kind] = _sig
         prov_html = customs_provisional.render_box(
             prov_signals,
-            momentum_html=customs_provisional.render_momentum(prov_rows))
+            momentum_html=customs_provisional.render_momentum(prov_rows),
+            fetched_at=prov_fetched)
         ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
         # 🔗 공유: 그 확정월 시점 '스냅샷' 공개 URL(인증 없음)을 클립보드로 복사.
         # 새 확정월이 오면 버튼이 새 URL을 주지만, 이미 보낸 옛 링크는 그 달 동결.
@@ -297,7 +303,14 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
                 + ins_html
                 + industry.render_industry_html(by_ind, by_imp, by_mti,
                                                 by_mti_imp, motie=False))
-    except Exception:
+    except Exception as exc:
+        # 2026-09-09: 여기가 bare `return ""` 라 🟢 잠정 속보 + 산업트렌드 탭
+        # 전체가 단서 0 으로 사라졌다 — 형제 `_load_heatmap_html` 은 이미 경고를
+        # 남기는데 이쪽만 안 했다(#12·#38 한 곳을 고치면 형제를 즉시 grep).
+        import logging
+        logging.getLogger("trade-dashboard").warning(
+            "industry/provisional render failed (산업트렌드·잠정 속보 탭 숨김): %s: %s",
+            type(exc).__name__, exc)
         return ""
 
 
@@ -687,7 +700,8 @@ def _build_html(
     geo_sido_json = json.dumps(list(_geo.KR_SIDO_ROOTS), ensure_ascii=False,
                                separators=(",", ":"))
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # 규칙 10a: 모든 시각은 KST — 이 줄만 UTC 였다(형제 페이지는 전부 KST, 2026-09-09).
+    now = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
     by_status = s.get("by_status", {})
     by_dir = s.get("by_direction", {})
 
@@ -1084,6 +1098,8 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-extra-sub{color:var(--text-sub);font-size:11px;cursor:help}
 .ind-code{display:inline-block;margin-left:3px;padding:0 4px;border-radius:5px;font-size:10px;font-family:ui-monospace,Menlo,monospace;background:var(--surface-2);color:var(--text-sub);vertical-align:1px}
 .ind-prov-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
+.ind-prov-fetch{font-size:11px;color:var(--text-sub);margin-bottom:6px}
+.ind-prov-fetch.is-stale{color:#f0a020;font-weight:600}
 .ind-prov-src{font-size:11px;color:var(--text-sub);background:var(--surface-2);border:1px solid var(--border-soft);border-radius:6px;padding:5px 9px;margin-bottom:10px;line-height:1.45}
 .ind-prov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .ind-prov-cell{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
@@ -2698,54 +2714,56 @@ handleHashDeepLink();
 
 
 
-def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
-    """`--why` — 헤더 입력(채널 알림)과 OpenAPI 를 나란히 놓고 갈래를 판정한다.
-    사실은 여기서 모으고 판정은 `trade.header_health.verdict`(순수)가 한다(#41).
-    읽기 전용 — DB 도 파일도 쓰지 않는다(#264)."""
+def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
+    """헤더 갈래 판정에 필요한 **사실**을 모은다(읽기 전용 — DB 도 파일도 쓰지
+    않는다, #264). `--why` 가 찍고 `dashboard_audit` 이 세는 것이 **같은 함수**다
+    (#35 감사는 화면이 쓰는 그 경로 · #176 판정 경로를 함수로). 판정 자체는
+    `trade.header_health.verdict`(순수)가 한다(#41).
+
+    2026-09-09 실측 결함 정정: ⑧ OpenAPI 를 `customs.session(db)` 로 **store.db**
+    에서 읽고 있었다 — customs_provisional 테이블은 customs.db 에 산다(화면
+    `_load_industry_html` 이 그렇게 읽는다). 진단이 늘 '저장된 잠정 신호 없음'
+    을 찍고 `ensure_schema` 가 store.db 에 빈 표까지 만들 뻔했다(#35·#264)."""
     import json as _json
-    import sys
     from collections import Counter
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     from trade import header_health as hh
     from trade.store import latest_per_dedup_key, list_all_alerts, open_db
 
-    _KST = timezone(timedelta(hours=9))
-    # `today` 주입 — 회귀가 날짜를 고정해야 누락 목록이 달력 따라 변하지 않는다(#249)
     today = today or datetime.now(_KST).date()
-    P = lambda *a: print(*a, flush=True)                       # noqa: E731
-    P("🌐 trade.dashboard --why v1 · 헤더 '현재 잠정/확정' 갈래 판정 · 읽기 전용")
-    P(f"① 인터프리터: {sys.executable}")
-    P(f"   DB: {db} ({'있음' if Path(db).exists() else '없음'})")
-    if not Path(db).exists():
-        P("   ❌ DB 가 없어 판정 불가")
-        return 1
+    f: dict = {"db": str(db), "db_exists": Path(db).exists(), "today": today}
+    if not f["db_exists"]:
+        f["verdict"] = {"branch": "unknown", "reason": "DB 가 없어 판정 불가", "lines": []}
+        return f
     conn = open_db(db)
     latest = latest_per_dedup_key(conn)
     allrows = list_all_alerts(conn)
     conn.close()
-    P("")
-    P("② 헤더가 읽는 것 — 최신(latest-per-dedup) 알림 중 period_end 최대")
-    prelim = max((a for a in latest if a.get("status") == "preliminary"),
-                 key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
-    final = max((a for a in latest if a.get("status") == "final"),
-                key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
-    for lbl, a in (("잠정", prelim), ("확정", final)):
-        if a:
-            P(f"   {lbl}: 기간 {a.get('period_start')}~{a.get('period_end')} ({a.get('period_kind')}) · "
-              f"게시 {str(a.get('posted_at') or '')[:16]} · id {a.get('id')}")
-        else:
-            P(f"   {lbl}: 없음")
-    db_newest = max((str(a.get("posted_at") or "") for a in allrows), default="")
-    P(f"   DB 최신 게시: {db_newest[:16] or '없음'} · 전체 {len(allrows)}건 · 최신만 {len(latest)}건")
-    P("")
-    P("③ 월별 알림 수(게시일 기준, 최근 4개월)")
+    f["prelim"] = max((a for a in latest if a.get("status") == "preliminary"),
+                      key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
+    f["final"] = max((a for a in latest if a.get("status") == "final"),
+                     key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
+    f["db_newest"] = max((str(a.get("posted_at") or "") for a in allrows), default="")
+    f["n_all"], f["n_latest"] = len(allrows), len(latest)
     cnt = Counter(str(a.get("posted_at") or "")[:7] for a in allrows)
-    for ym in sorted(cnt)[-4:]:
-        P(f"   {ym}: {cnt[ym]}건")
-    P("")
-    P("④ inbox.jsonl(리스너 → 인제스트 사이)")
+    f["month_counts"] = [(ym, cnt[ym]) for ym in sorted(cnt)[-4:]]
+
+    # ⚠️ inbox.jsonl 은 **전 소스 공용**이다(관세청 BeOn + 나쁜양파 15종). 반면
+    # store.db 는 관세청 전용이라, 줄 수를 그냥 세면 나쁜양파 트래픽이 늘 '안
+    # 들어간 줄' 로 잡혀 판정이 영영 `ingest` 가 된다 — 2026-09-10 VM 실측이
+    # 그랬다(438줄 중 관세청 0줄, 나머지는 사이클당 387건이 형제 DB 로 정상
+    # 적재). 모집단이 다른 둘을 비교한 것이다(#45).
+    # 갈래는 ingest 가 실제로 쓰는 게이트(`parse_caption`)로 가른다 — 그게
+    # None 이면 그 캡션은 애초에 store.db 후보가 아니다(#35 제품이 쓰는 그 경로).
+    # 순수 파싱이라 네트워크·쓰기 0(#264).
+    try:
+        from trade.parser import parse_caption as _parse
+    except Exception:                                          # noqa: BLE001
+        _parse = None
     inbox = data_dir / "inbox.jsonl"
     inbox_newest, after_db, n_lines = "", 0, 0
+    kr_newest, kr_after = "", 0
+    parsed_n, capped = 0, False
     if inbox.exists():
         with inbox.open(encoding="utf-8") as fh:
             for ln in fh:
@@ -2757,13 +2775,33 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
                 d = str(rec.get("date") or rec.get("ingested_at") or "")
                 if d > inbox_newest:
                     inbox_newest = d
-                if db_newest and d[:19] > db_newest[:19]:
+                newer = bool(f["db_newest"] and d[:19] > f["db_newest"][:19])
+                if newer:
                     after_db += 1
-        P(f"   {inbox}: {n_lines}줄 · 최신 {inbox_newest[:16] or '없음'} · DB 최신 이후 {after_db}줄")
-    else:
-        P(f"   {inbox}: 없음")
-    P("")
-    P("⑤ eval_misses.jsonl(파서가 못 읽은 캡션 백로그)")
+                if _parse is None:
+                    continue
+                if parsed_n >= _INBOX_PARSE_CAP:
+                    capped = True
+                    continue
+                cap_txt = str(rec.get("caption") or rec.get("text") or "")
+                if not cap_txt:
+                    continue
+                parsed_n += 1
+                try:
+                    is_kr = _parse(cap_txt) is not None
+                except Exception:                              # noqa: BLE001
+                    continue
+                if not is_kr:
+                    continue
+                if d > kr_newest:
+                    kr_newest = d
+                if newer:
+                    kr_after += 1
+    f.update(inbox=str(inbox), inbox_exists=inbox.exists(), inbox_newest=inbox_newest,
+             after_db=after_db, n_lines=n_lines,
+             kr_newest=kr_newest, kr_after=kr_after,
+             parse_ok=_parse is not None, parse_capped=capped)
+
     em = data_dir / "eval_misses.jsonl"
     em_recent = 0
     if em.exists():
@@ -2775,11 +2813,8 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
                 continue
             if str(rec.get("ts") or rec.get("posted_at") or rec.get("logged_at") or "")[:10] >= cutoff:
                 em_recent += 1
-        P(f"   {em}: 최근 45일 {em_recent}건")
-    else:
-        P(f"   {em}: 없음")
-    P("")
-    P("⑥ 예정 발표 대조(관세청 11·21·익월 1·15일, ±2일)")
+    f.update(em=str(em), em_exists=em.exists(), em_recent=em_recent)
+
     exp = hh.expected_publications(today)
     posted: dict = {}
     for a in allrows:
@@ -2788,11 +2823,9 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
         kind = ("monthly_final" if st == "final" and k == "monthly"
                 else "monthly_preliminary" if k == "monthly" else k)
         posted.setdefault(kind, set()).add(str(a.get("posted_at") or "")[:10])
-    missing = hh.missing_publications(exp, posted)
-    for d, k in exp:
-        P(f"   {'❌' if (d, k) in missing else '✅'} {d} {k}")
-    P("")
-    P("⑦ 유닛 상태(systemd 에 물음)")
+    f["expected"] = exp
+    f["missing"] = hh.missing_publications(exp, posted)
+
     try:
         from bot.daily_kr_flow import systemd_facts
         lis = systemd_facts(timer=None, service="trade-bot.service")
@@ -2801,33 +2834,113 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
         hc = systemd_facts(timer="trade-bot-health.timer", service="trade-bot-health.service")
     except Exception as exc:                                   # noqa: BLE001
         lis = ref = hc = {"ok": False, "err": f"{type(exc).__name__}: {exc}"}
-    for name, f in (("trade-bot.service(리스너)", lis), ("dashboard-refresh", ref), ("health", hc)):
-        if f.get("ok"):
-            P(f"   {name}: service {f.get('s_ActiveState')}/{f.get('s_SubState')} · "
-              f"timer {f.get('t_ActiveState', '—')} · last "
-              f"{str(f.get('t_LastTriggerUSec') or f.get('s_ExecMainStartTimestamp') or '')[:25]}")
-        else:
-            P(f"   {name}: 판정 불가 — {f.get('err')}")
-    listener_active = (lis.get("s_ActiveState") == "active") if lis.get("ok") else None
-    P("")
-    P("⑧ OpenAPI 잠정(카드가 읽는 것)")
+    f["units"] = (("trade-bot.service(리스너)", lis), ("dashboard-refresh", ref), ("health", hc))
+    f["listener_active"] = (lis.get("s_ActiveState") == "active") if lis.get("ok") else None
+
+    # OpenAPI 잠정 — 화면(`_load_industry_html`)과 같은 customs.db 기본 경로.
+    # ⚠️ 존재 확인 없이 열면 안 된다 — `customs.session()` → `open_db()` 가 파일과
+    # 스키마를 **만들고** `load_signals` 도 `ensure_schema` 를 부른다. 읽기 전용이라
+    # 적어 놓고 쓰는 진단이 되고(#264), 그렇게 만들어진 빈 DB 는 다음 날부터
+    # 감사가 '수집 시각 미기록 ❌' 를 영원히 내게 한다(#260). 형제
+    # (`_load_industry_html`·`audit_provisional`)는 이미 이렇게 막고 있었다(#38).
+    f["prov"], f["prov_fetched"], f["prov_err"] = None, None, ""
     try:
         from trade import customs, customs_provisional as cp
-        with customs.session(db) as c2:
+        if not Path(customs.DEFAULT_DB).exists():
+            raise FileNotFoundError(f"customs.db 없음(아직 수집 전): {customs.DEFAULT_DB}")
+        with customs.session() as c2:
             sig = cp.load_signals(c2)
-        ref_sig = sig.get("exp_item") or sig.get("imp_item") or {}
-        if ref_sig:
-            P(f"   최신 {ref_sig.get('ym')} {ref_sig.get('decile')} ({ref_sig.get('window')}) · "
-              f"창 끝 {cp.prov_period_end(ref_sig.get('ym') or '', ref_sig.get('decile') or '')}")
-        else:
-            P("   저장된 잠정 신호 없음")
+            f["prov_fetched"] = cp.load_fetched_at(c2) if c2 is not None else None
+        f["prov"] = sig.get("exp_item") or sig.get("imp_item") or None
     except Exception as exc:                                   # noqa: BLE001
-        P(f"   확인 실패: {type(exc).__name__}: {exc}")
+        f["prov_err"] = f"{type(exc).__name__}: {exc}"
+
+    # 판정은 **관세청 모집단**으로 — 파서를 못 불러오면(의존성 문제) 전 소스 값으로
+    # 폴백하되 그 사실을 밝힌다(#12·#165 폴백했으면 폴백했다고 말할 것).
+    use_kr = f["parse_ok"] and not capped
+    f["verdict_population"] = "관세청 캡션" if use_kr else "전 소스(파서 미가용 — 폴백)"
+    f["verdict"] = hh.verdict({"db_newest": f["db_newest"][:10],
+                               "inbox_newest": (kr_newest if use_kr else inbox_newest)[:10],
+                               "inbox_lines_after_db": kr_after if use_kr else after_db,
+                               "eval_miss_recent": em_recent,
+                               "listener_active": f["listener_active"], "missing": f["missing"],
+                               "inbox_scope": f["verdict_population"],
+                               "inbox_present": n_lines > 0,
+                               "inbox_total_lines": n_lines},
+                              today)
+    return f
+
+
+def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
+    """`--why` — 헤더 입력(채널 알림)과 OpenAPI 를 나란히 놓고 갈래를 판정한다.
+    사실은 `header_facts`(감사와 공유)가 모으고 여기선 찍기만 한다."""
+    import sys
+    from trade import customs_provisional as cp
+
+    P = lambda *a: print(*a, flush=True)                       # noqa: E731
+    P("🌐 trade.dashboard --why v2 · 헤더 '현재 잠정/확정' 갈래 판정 · 읽기 전용")
+    P(f"① 인터프리터: {sys.executable}")
+    f = header_facts(db, data_dir, today=today)
+    P(f"   DB: {f['db']} ({'있음' if f['db_exists'] else '없음'})")
+    if not f["db_exists"]:
+        P("   ❌ DB 가 없어 판정 불가")
+        return 1
     P("")
-    v = hh.verdict({"db_newest": db_newest[:10], "inbox_newest": inbox_newest[:10],
-                    "inbox_lines_after_db": after_db, "eval_miss_recent": em_recent,
-                    "listener_active": listener_active, "missing": missing}, today)
-    P(f"⑨ 판정: {v['branch']} — {v['reason']}")
+    P("② 헤더가 읽는 것 — 최신(latest-per-dedup) 알림 중 period_end 최대")
+    for lbl, a in (("잠정", f["prelim"]), ("확정", f["final"])):
+        if a:
+            P(f"   {lbl}: 기간 {a.get('period_start')}~{a.get('period_end')} ({a.get('period_kind')}) · "
+              f"게시 {str(a.get('posted_at') or '')[:16]} · id {a.get('id')}")
+        else:
+            P(f"   {lbl}: 없음")
+    P(f"   DB 최신 게시: {f['db_newest'][:16] or '없음'} · 전체 {f['n_all']}건 · 최신만 {f['n_latest']}건")
+    P("")
+    P("③ 월별 알림 수(게시일 기준, 최근 4개월)")
+    for ym, n in f["month_counts"]:
+        P(f"   {ym}: {n}건")
+    P("")
+    P("④ inbox.jsonl(리스너 → 인제스트 사이)")
+    if f["inbox_exists"]:
+        P(f"   {f['inbox']}: {f['n_lines']}줄 · 최신 {f['inbox_newest'][:16] or '없음'} · "
+          f"DB 최신 이후 {f['after_db']}줄  ← 전 소스(관세청+나쁜양파 15종 공용)")
+        if f["parse_ok"]:
+            P(f"   그중 관세청 캡션: 최신 {f['kr_newest'][:16] or '없음'} · "
+              f"DB 최신 이후 {f['kr_after']}줄  ← store.db 후보는 이것뿐"
+              + ("  (파싱 상한 초과 — 일부만 셈)" if f["parse_capped"] else ""))
+        else:
+            P("   관세청 캡션 분리: 파서를 못 불러와 판정 불가")
+    else:
+        P(f"   {f['inbox']}: 없음")
+    P("")
+    P("⑤ eval_misses.jsonl(파서가 못 읽은 캡션 백로그)")
+    P(f"   {f['em']}: 최근 45일 {f['em_recent']}건" if f["em_exists"] else f"   {f['em']}: 없음")
+    P("")
+    P("⑥ 예정 발표 대조(관세청 11·21·익월 1·15일, ±2일)")
+    for d, k in f["expected"]:
+        P(f"   {'❌' if (d, k) in f['missing'] else '✅'} {d} {k}")
+    P("")
+    P("⑦ 유닛 상태(systemd 에 물음)")
+    for name, u in f["units"]:
+        if u.get("ok"):
+            P(f"   {name}: service {u.get('s_ActiveState')}/{u.get('s_SubState')} · "
+              f"timer {u.get('t_ActiveState', '—')} · last "
+              f"{str(u.get('t_LastTriggerUSec') or u.get('s_ExecMainStartTimestamp') or '')[:25]}")
+        else:
+            P(f"   {name}: 판정 불가 — {u.get('err')}")
+    P("")
+    P("⑧ OpenAPI 잠정(카드가 읽는 것 — customs.db)")
+    if f["prov_err"]:
+        P(f"   확인 실패: {f['prov_err']}")
+    elif f["prov"]:
+        ref_sig = f["prov"]
+        P(f"   최신 {ref_sig.get('ym')} {ref_sig.get('decile')} ({ref_sig.get('window')}) · "
+          f"창 끝 {cp.prov_period_end(ref_sig.get('ym') or '', ref_sig.get('decile') or '')}")
+        P(f"   {cp.prov_fetch_note(f['prov_fetched'])[0]}")
+    else:
+        P("   저장된 잠정 신호 없음")
+    P("")
+    v = f["verdict"]
+    P(f"⑨ 판정: {v['branch']} ({f['verdict_population']} 기준) — {v['reason']}")
     for ln in v.get("lines", []):
         P(f"   {ln}")
     return 0 if v["branch"] == "ok" else 1
@@ -2871,6 +2984,7 @@ def main() -> int:
     args = ap.parse_args()
     if args.why:
         return _why_header(args.db, default_data)
+    import logging          # 이 파일의 기존 관례(로컬 임포트, :323 참조)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     html = render_html(
@@ -2909,8 +3023,10 @@ def main() -> int:
             industry_archive.write_export(conn, cards)        # 공유 스냅샷(현재월)
             industry_archive.record_snapshot(conn, cards)     # 아카이브 현재월 = 라이브 추적
             industry_archive.regenerate()                     # 색인 재생성
-    except Exception:
-        pass
+    except Exception as exc:
+        # bare pass 면 링크는 살아 있고 404·낡은 페이지만 남으며 단서가 0 이다(#12).
+        logging.getLogger("trade-dashboard").warning(
+            "%s 재생성 실패: %s: %s", "industry_archive(월별 아카이브·공유 스냅샷)", type(exc).__name__, exc)
     # 🟢 잠정 타임라인 — 저장된 잠정 스냅샷에서 매 렌더마다 재빌드(API 0콜).
     # fetch가 아니라 렌더가 아카이브 HTML을 소유 → 렌더 코드 변경이 ~5분 내
     # 반영(6h stale-fetch 대기 불필요). 데이터 없으면 빈 색인 보장만.
@@ -2918,25 +3034,30 @@ def main() -> int:
         from trade import provisional_archive, customs as _customs2
         with _customs2.session() as conn:
             provisional_archive.refresh(conn)
-    except Exception:
-        pass
+    except Exception as exc:
+        # bare pass 면 링크는 살아 있고 404·낡은 페이지만 남으며 단서가 0 이다(#12).
+        logging.getLogger("trade-dashboard").warning(
+            "%s 재생성 실패: %s: %s", "provisional_archive(잠정 타임라인)", type(exc).__name__, exc)
     # 🤖 AI 보고서 아카이브 색인 — 링크 404 방지 + 색인 템플릿 변경 소급 반영
     # (jsonl 적립은 dashboard_server 의 유료 render_llm 이 즉시 append+regenerate).
     try:
         from trade import report_archive
         report_archive.ensure_exists()
         report_archive.regenerate()
-    except Exception:
-        pass
+    except Exception as exc:
+        # bare pass 면 링크는 살아 있고 404·낡은 페이지만 남으며 단서가 0 이다(#12).
+        logging.getLogger("trade-dashboard").warning(
+            "%s 재생성 실패: %s: %s", "report_archive(AI 보고서 색인)", type(exc).__name__, exc)
     # 📖 품목 레퍼런스북 — 품목↔HS↔산업↔관련기업 (정적 연계표라 매 렌더 재생성 저렴).
     try:
         from trade import reference_book
         reference_book.regenerate()
-    except Exception:
-        pass
+    except Exception as exc:
+        # bare pass 면 링크는 살아 있고 404·낡은 페이지만 남으며 단서가 0 이다(#12).
+        logging.getLogger("trade-dashboard").warning(
+            "%s 재생성 실패: %s: %s", "reference_book(품목 레퍼런스북)", type(exc).__name__, exc)
     # 🇯🇵 일본 수출 데이터(BeOn) — 별도 jp.db → jp.html (한국 대시보드 옆 형제 파일).
     # 데이터 없어도 빈 페이지 생성(nav 링크 404 방지).
-    import logging          # 이 파일의 기존 관례(로컬 임포트, :323 참조)
     try:
         from trade import jp_exports
         jp_exports.regenerate(

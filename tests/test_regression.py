@@ -14406,23 +14406,46 @@ class TestTradeDashboardAudit20260820:
     KST)로 돈다. 여기선 순수 파서·계약을 고정한다(데이터 실측은 VM 몫)."""
 
     def test_header_parser_reads_the_real_render_format(self):
-        # 실제 렌더는 **UTC 표기·콤마 없음**(dashboard.py:690). 처음 정규식은
+        # 실제 렌더는 **접미 표기·콤마 없음**(dashboard.py `갱신 …`). 처음 정규식은
         # 숫자·기호만 받아 'UTC' 글자에서 통째로 미매칭 — 픽스처를 실제 형식
         # 으로 만들지 않았으면 영원히 '파싱 0건 ❌'만 찍었다(#54).
+        # 2026-09-09 다시 씀(#222): 렌더가 KST 로 바뀌었고(규칙 10a) 옛 UTC 렌더도
+        # 배포 직후 5분은 살아 있으므로 둘 다 받는다 — 접미는 그대로 남긴다.
         from trade.scripts.dashboard_audit import parse_header
-        real = ("갱신 2026-08-20 06:40 UTC · 총 3036건 (최신 1054개) · "
-                "수출 2000 / 수입 1036 · 잠정 1500 / 확정 1536 · 품목 88")
-        h = parse_header(real)
-        assert h == {"updated": "2026-08-20 06:40 UTC", "total": 3036,
-                     "latest": 1054, "export": 2000, "import": 1036,
-                     "prelim": 1500, "final": 1536, "items": 88}
+        for suffix in ("KST", "UTC"):
+            real = (f"갱신 2026-08-20 06:40 {suffix} · 총 3036건 (최신 1054개) · "
+                    "수출 2000 / 수입 1036 · 잠정 1500 / 확정 1536 · 품목 88")
+            h = parse_header(real)
+            assert h == {"updated": f"2026-08-20 06:40 {suffix}", "total": 3036,
+                         "latest": 1054, "export": 2000, "import": 1036,
+                         "prelim": 1500, "final": 1536, "items": 88}
         assert parse_header("아무 관계 없는 텍스트") is None
 
     def test_producer_really_writes_that_format(self):
         # 생산자 쪽도 같은 테스트에서 고정 — 한쪽만 바뀌면 감사가 눈이 먼다(#54b).
+        # 소스 문자열이 아니라 **렌더 결과**를 파서에 태운다(#19) — 그리고 시각은
+        # KST 여야 한다(규칙 10a: 이 페이지만 UTC 였다, 2026-09-09).
+        import re
+        from trade.scripts.dashboard_audit import parse_header
         src = open("trade/dashboard.py", encoding="utf-8").read()
-        assert 'strftime("%Y-%m-%d %H:%M UTC")' in src
         assert "총 {s.get('total', 0)}건 (최신 {len(latest_ids)}개)" in src
+        html = self._render_index()
+        hdr = parse_header(html)
+        assert hdr is not None, "감사 파서가 실제 렌더를 못 읽는다"
+        assert hdr["updated"].endswith("KST"), hdr["updated"]
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} KST", hdr["updated"])
+
+    @staticmethod
+    def _render_index() -> str:
+        import tempfile
+        from pathlib import Path
+        import trade.dashboard as td
+        import trade.store as ts
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "store.db"
+            ts.open_db(db).close()
+            return td.render_html(db, customs_db_path=Path(d) / "nope.db",
+                                  hs_map_path=Path(d) / "nope.tsv")
 
     def test_lazy_refs_matched_by_real_markers_only(self):
         # index 의 lazy 참조 3형태(data-src / HISTORY_SRC / INDUSTRY_CSV_SRC)만
@@ -53179,6 +53202,11 @@ class TestTradeHeaderStaleness20260909:
                             lambda c: {"exp_item": {"ym": "2026-08", "decile": "FULL",
                                                     "window": "전월(1~말일)"}})
         monkeypatch.setattr(customs, "session", lambda p=None: __import__("contextlib").nullcontext(None))
+        # 2026-09-10 다시 씀(#222): ⑧ 앞에 **존재 확인**이 생겼다(#264 진단이
+        # customs.db 를 만들면 안 된다) — 파일이 있어야 그 경로를 탄다.
+        _cdb = tmp_path / "customs.db"
+        _cdb.write_bytes(b"")
+        monkeypatch.setattr(customs, "DEFAULT_DB", _cdb)
         monkeypatch.setattr(td, "render_html",
                             lambda *a, **k: (_ for _ in ()).throw(AssertionError("--why 는 렌더하지 않는다")))
         # 오늘을 고정하지 않으면 날짜가 지나며 누락 목록이 변해 빨간불이 된다(#249)
@@ -53400,3 +53428,471 @@ class TestBollingerReviewFindings20260909:
         m = re.search(r"^# BOLLINGER_UNIVERSE_CAP=(\d+)", env, re.M)
         assert m, "공용 캡 예시가 사라졌다"
         assert int(m.group(1)) >= max(_DEFAULT_CAP.values()), m.group(1)
+
+
+class TestTradeDashboardRecheck20260909:
+    """2026-09-09 사용자 "수출입 대시보드가 정말 문제가 많아. 전체적으로 좀 다시
+    점검해줘". 코드 전수 점검에서 나온 구조 결함 — 한 페이지에 잠정/확정 정의가
+    넷(채널·OpenAPI·달력 KST·달력 서버로컬), 시각이 셋(헤더만 UTC), 가장 큰
+    섹션(잠정 속보+산업트렌드)과 형제 페이지 4종 재생성이 bare `except` 로 사라지고,
+    🟢 박스는 데이터 창만 적어 **수집기가 멈춘 날과 정상인 날이 같아 보였다**(#304).
+    감사(dashboard_audit)는 그 어느 것도 세지 않았고(#303), `--why` ⑧ 은 store.db
+    를 열어 늘 '저장된 잠정 신호 없음' 을 찍었다(#35 감사가 화면과 다른 저장소)."""
+
+    # ---- 🟢 잠정 박스: 값 수집 시각 -------------------------------------
+    def test_fetch_note_says_when_and_flags_a_stalled_fetcher(self):
+        from datetime import datetime, timedelta, timezone
+        from trade import customs_provisional as cp
+        now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+        txt, stale = cp.prov_fetch_note(None, now)
+        assert stale and "미기록" in txt                       # 침묵이 최악(#43)
+        txt, stale = cp.prov_fetch_note(now - timedelta(hours=2), now)
+        assert not stale and txt.startswith("값 수집 09-09 19:00 KST (2시간 전)"), txt
+        txt, stale = cp.prov_fetch_note(now - timedelta(hours=13), now)
+        assert stale and "⚠️" in txt and "13시간째" in txt, txt
+        # 문턱 바로 아래는 정상 — 늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260)
+        assert not cp.prov_fetch_note(now - timedelta(hours=cp._FETCH_STALE_H - 0.1), now)[1]
+        assert cp._FETCH_STALE_H >= 2 * 6.0, "refresh --if-stale(6h) 의 2배 이상이어야 정상 주기에 안 뜬다"
+
+    def test_box_shows_fetch_time_as_a_visible_line(self):
+        from datetime import datetime, timezone
+        from trade import customs_provisional as cp
+        sig = {"exp_item": {"ym": "2026-08", "decile": "FULL", "window": "전월(1~말일)",
+                            "total_usd": 983e8, "total_yoy": 68.7, "total_mom": -0.7, "items": []}}
+        fa = datetime.now(timezone.utc)
+        html = cp.render_box(sig, fetched_at=fa)
+        # 툴팁이 아니라 보이는 줄(#228) + DOM 대조 축(#48)
+        assert "<div class='ind-prov-fetch'>🕒 값 수집" in html
+        assert f"data-prov-fetched='{fa.isoformat()}'" in html
+        html0 = cp.render_box(sig)                              # 미기록도 말한다
+        assert "ind-prov-fetch is-stale" in html0 and "미기록" in html0
+
+    def test_load_fetched_at_is_read_only_and_takes_the_newest(self):
+        import sqlite3
+        from datetime import datetime, timezone
+        from trade import customs_provisional as cp
+        conn = sqlite3.connect(":memory:")
+        assert cp.load_fetched_at(conn) is None
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name='customs_provisional'").fetchall(), \
+            "읽기만 해야 한다 — 진단·감사가 부른다(#264)"
+        cp.ensure_schema(conn)
+        conn.execute("INSERT INTO customs_provisional VALUES ('a','{}',NULL,'2026-09-08T01:00:00+00:00')")
+        conn.execute("INSERT INTO customs_provisional VALUES ('b','{}',NULL,'2026-09-09T01:00:00')")
+        got = cp.load_fetched_at(conn)
+        assert got == datetime(2026, 9, 9, 1, 0, tzinfo=timezone.utc)   # naive = UTC(저장 규약)
+
+    def test_page_wires_fetched_at_into_the_box(self, monkeypatch, tmp_path, caplog):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 화면 경로를 태운다."""
+        import logging
+        import trade.dashboard as td
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "customs.db"
+        with customs.session(db) as conn:
+            cp.ensure_schema(conn)
+            cp.store_signal(conn, "exp_item", {"ym": "2026-08", "decile": "FULL", "window": "전월(1~말일)",
+                                                "total_usd": 1.0, "total_yoy": 1.0, "items": []}, rows=None)
+        html = td._load_industry_html(db)
+        assert "🕒 값 수집" in html and "data-prov-fetched='20" in html
+
+    def test_industry_section_failure_is_logged_not_swallowed(self, monkeypatch, tmp_path, caplog):
+        import logging
+        import trade.dashboard as td
+        from trade import customs
+        db = tmp_path / "customs.db"
+        db.write_bytes(b"")
+        def _boom(*a, **k):
+            raise RuntimeError("disk on fire")
+        monkeypatch.setattr(customs, "session", _boom)
+        with caplog.at_level(logging.WARNING, logger="trade-dashboard"):
+            assert td._load_industry_html(db) == ""
+        assert any("disk on fire" in r.getMessage() and "잠정 속보" in r.getMessage()
+                   for r in caplog.records), "bare return '' 로 탭이 사라지면 단서가 0 이다(#12)"
+
+    def test_no_bare_except_pass_left_in_dashboard_main(self):
+        import ast
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        bare = [h.lineno for h in ast.walk(main) if isinstance(h, ast.ExceptHandler)
+                and len(h.body) == 1 and isinstance(h.body[0], ast.Pass)]
+        assert bare == [], f"main() 의 bare except-pass(형제 페이지 재생성 실패가 무음): {bare}"
+
+    # ---- 잠정/확정 달력 판정: 단일 출처 + KST -------------------------------
+    def test_period_report_stage_follows_industry_label_in_kst(self, monkeypatch):
+        from datetime import date
+        from trade import industry, period_report as pr
+        assert pr._release_stage("2026-08", date(2026, 9, 14)) == "잠정"
+        assert pr._release_stage("2026-08", date(2026, 9, 15)) == "확정"
+        assert pr._release_stage("garbage") == ""
+        # 배선: industry 의 판정을 갈아끼우면 여기도 따라온다(#38 단일 출처)
+        monkeypatch.setattr(industry, "_month_status_label", lambda ym, today=None: "테스트(…)")
+        assert pr._release_stage("2026-08", date(2026, 9, 15)) == "테스트"
+        # 그리고 오늘을 안 주면 KST 로 잰다 — `date.today()`(서버 로컬) 회귀 금지
+        import ast
+        src = open("trade/period_report.py", encoding="utf-8").read()
+        fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "_release_stage")
+        # 주석이 아니라 **호출 노드**를 본다(#59b — 설명 주석이 검사를 만족시켰다)
+        calls = [ast.unparse(c.func) for c in ast.walk(fn) if isinstance(c, ast.Call)]
+        assert "date.today" not in calls, calls
+
+    # ---- --why ⑧ 가 store.db 를 열던 결함 + 감사와 같은 사실 수집기 ------------
+    def test_header_facts_reads_openapi_from_customs_db_not_store_db(self, monkeypatch, tmp_path):
+        import contextlib
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {"ok": False, "err": "x"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        seen = []
+        def _session(*a, **k):
+            seen.append((a, k))
+            return contextlib.nullcontext(None)
+        monkeypatch.setattr(customs, "session", _session)
+        # 2026-09-10 다시 씀(#222): 이제 **존재 확인이 앞선다**(#264 진단이 DB 를
+        # 만들면 안 된다) — 그래서 파일이 실제로 있어야 그 경로를 탄다.
+        cdb = tmp_path / "customs.db"
+        cdb.write_bytes(b"")
+        monkeypatch.setattr(customs, "DEFAULT_DB", cdb)
+        from datetime import date
+        f = td.header_facts(db, tmp_path, today=date(2026, 9, 9))
+        assert seen == [((), {})], f"OpenAPI 는 customs.db 기본 경로에서 읽어야 한다(#35): {seen}"
+        assert f["verdict"]["branch"] in {"ok", "unknown", "channel_quiet", "listener", "ingest", "parser"}
+        assert db.stat().st_size > 0
+
+    def test_why_prints_fetch_time_line(self, monkeypatch, tmp_path, capsys):
+        import contextlib
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        from datetime import date
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {"ok": False, "err": "x"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {"exp_item": {"ym": "2026-08", "decile": "FULL", "window": "w"}})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        cdb = tmp_path / "customs.db"           # 2026-09-10(#222): 존재 확인이 앞선다(#264)
+        cdb.write_bytes(b"")
+        monkeypatch.setattr(customs, "DEFAULT_DB", cdb)
+        td._why_header(db, tmp_path, today=date(2026, 9, 9))
+        out = capsys.readouterr().out
+        assert "값 수집 시각 미기록" in out, "⑧ 이 창만 적고 언제 받았는지 안 적으면 #304 재발"
+
+    # ---- dashboard_audit ⑥⑦ ------------------------------------------------
+    def test_audit_provisional_counts_missing_and_stale(self, tmp_path, capsys, monkeypatch):
+        """2026-09-10 다시 씀(#222): 같은 계약에 **키 조건**이 붙었다 —
+        `TRADE_DATA_GO_KR_KEY` 가 없으면 수집이 설계상 안 돌므로 ❌ 가 아니다(#260).
+        키가 있는 환경에서의 계약은 종전 그대로다."""
+        from datetime import datetime, timedelta, timezone
+        from trade import customs, customs_provisional as cp
+        from trade.scripts import dashboard_audit as da
+        monkeypatch.setenv("TRADE_DATA_GO_KR_KEY", "x")
+        assert da.audit_provisional(tmp_path / "customs.db")        # 없음 = ❌(#54)
+        db = tmp_path / "customs.db"
+        with customs.session(db) as conn:
+            cp.ensure_schema(conn)
+            old = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+            conn.execute("INSERT INTO customs_provisional VALUES ('a','{}',NULL,?)", (old,))
+        bad = da.audit_provisional(db)
+        assert len(bad) == 1 and "정지" in bad[0]
+        with customs.session(db) as conn:
+            conn.execute("UPDATE customs_provisional SET fetched_at=?",
+                         (datetime.now(timezone.utc).isoformat(),))
+        assert da.audit_provisional(db) == []                         # 반대 증거(#25)
+        assert "⑥" in capsys.readouterr().out
+
+    def test_audit_header_branch_uses_the_shared_facts_and_maps_marks(self, monkeypatch, tmp_path, capsys):
+        import trade.dashboard as td
+        from trade.scripts import dashboard_audit as da
+        calls = []
+        def _facts(db, data_dir, today=None):
+            calls.append((db, data_dir))
+            return {"verdict": {"branch": _facts.branch, "reason": "r"},
+                    "missing": [("2026-09-01", "monthly_preliminary")]}
+        monkeypatch.setattr(td, "header_facts", _facts)
+        for branch, is_bad in (("ok", False), ("channel_quiet", False), ("unknown", False),
+                               ("listener", True), ("ingest", True), ("parser", True)):
+            _facts.branch = branch
+            bad = da.audit_header_branch(tmp_path / "store.db", tmp_path)
+            assert bool(bad) is is_bad, (branch, bad)
+            if is_bad:
+                assert branch in bad[0]
+        out = capsys.readouterr().out
+        assert "⚠️ 판정 channel_quiet" in out and "❌ 판정 listener" in out
+        assert calls and calls[0] == (tmp_path / "store.db", tmp_path)
+        # 판정 글자는 판정에만 — 설명 문구에 ❌ 를 쓰면 sweep 이 결함으로 센다(#289)
+        for line in out.splitlines():
+            if "판정" not in line:
+                assert "❌" not in line and "⚠️" not in line, line
+
+    def test_run_audit_actually_calls_the_new_sections(self, monkeypatch, tmp_path):
+        from trade.scripts import dashboard_audit as da
+        monkeypatch.setenv("TRADE_DATA_DIR", str(tmp_path))
+        called = []
+        for name in ("audit_index", "audit_siblings", "audit_archives", "audit_backlog",
+                     "audit_provisional", "audit_header_branch"):
+            monkeypatch.setattr(da, name, (lambda n: (lambda *a: called.append(n) or []))(name))
+        assert da.run_audit() == []
+        assert called == ["audit_index", "audit_siblings", "audit_archives", "audit_backlog",
+                          "audit_provisional", "audit_header_branch"]
+
+
+class TestBollingerRowLinksToAnalysis20260909:
+    """2026-09-09 사용자 "볼린저밴드 보드에서 종목을 클릭하면 종목분석화면으로 가게
+    해줘. 모든 나라 다 적용이야." 돌파 종목 표의 종목명이 평문이라 티커를 손으로
+    복사해 검색창에 넣어야 했다. 상대 경로 규약은 신고가·급등락·미국·네이버 보드와
+    같은 `lookup/{ticker}`(#38) — 다르게 적으면 한 페이지만 404 가 된다.
+
+    ⚠️ 헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 렌더된 표에서 **행마다**
+    링크가 실리는지 보고, 잠정(미확정) 표까지 같이 본다."""
+
+    _MARKETS = ("KR", "US", "JP", "HK", "CN_A", "TW")
+    _SAMPLE = {"KR": "000660.KS", "US": "AAPL", "JP": "7203.T",
+               "HK": "0700.HK", "CN_A": "600519.SS", "TW": "2330.TW"}
+
+    @staticmethod
+    def _row(tk, name):
+        return {"ticker": tk, "name": name, "close": 1.0, "pct_chg": 1.0,
+                "upper": 0.9, "over_pct": 1.0, "mcap": 1e9, "is_new": True}
+
+    def test_every_market_row_links_to_the_lookup_page(self):
+        import re
+        from bot import bollinger_board as bb
+        for m, tk in self._SAMPLE.items():
+            html = bb._rows_table([self._row(tk, f"종목-{m}")], 1, 10, "돌파")
+            assert f"href='lookup/{tk}'" in html, (m, html[:400])
+            # 링크 텍스트는 종목명 — 티커만 걸면 사용자가 이름을 못 누른다
+            assert re.search(rf"href='lookup/{re.escape(tk)}'>종목-{m}</a>", html), m
+
+    def test_rendered_hrefs_are_accepted_by_the_lookup_route(self):
+        """진짜 계약은 '눌러서 열리나' 다 — 라우트 가드가 그 심볼을 받는지 잰다
+        (#25 능력은 이름이 아니라 실측). 새 시장 심볼이 10자를 넘거나 이상한
+        문자를 쓰면 여기서 잡힌다."""
+        import re
+        from bot import bollinger_board as bb
+        from bot.dashboard_server import _TICKER_RE
+        rows = [self._row(tk, f"n{m}") for m, tk in self._SAMPLE.items()]
+        html = bb._rows_table(rows, len(rows), 10, "돌파")
+        hrefs = re.findall(r"href='lookup/([^']+)'", html)
+        assert len(hrefs) == len(rows), hrefs        # 대조 0건은 통과가 아니다(#54)
+        for h in hrefs:
+            assert _TICKER_RE.match(h), f"/lookup/ 라우트가 거부하는 심볼: {h}"
+
+    def test_provisional_table_links_too(self):
+        """잠정(장중) 표도 같은 헬퍼를 쓴다 — 한쪽만 링크면 사용자는 그 표에서만
+        못 누른다(#38). 렌더 결과로 확인한다."""
+        from bot import bollinger_board as bb
+        html = bb._rows_table([self._row("005930.KS", "삼성전자")], 1, 10, "잠정")
+        assert "href='lookup/005930.KS'" in html
+
+    def test_missing_ticker_renders_no_dead_link(self):
+        """티커가 없으면 링크를 만들지 않는다 — `lookup/` 는 그 페이지를 다시
+        여는 죽은 링크다(#144 필수 인자가 없으면 부르지 말 것)."""
+        from bot import bollinger_board as bb
+        html = bb._rows_table([{"ticker": "", "name": "이름만", "close": 1.0}], 1, 10, "돌파")
+        assert "이름만" in html and "lookup/" not in html
+
+    def test_name_is_escaped_in_the_link(self):
+        from bot import bollinger_board as bb
+        html = bb._rows_table([self._row("AAPL", "<b>x</b>&")], 1, 10, "돌파")
+        assert "&lt;b&gt;x&lt;/b&gt;&amp;" in html and "<b>x</b>" not in html
+
+    def test_page_actually_carries_the_links(self):
+        """표 헬퍼가 아니라 **페이지**를 태운다 — 섹션이 그 헬퍼를 안 부르게
+        되돌리는 변형을 잡는다(#20)."""
+        html = _bollinger_html()
+        assert "href='lookup/" in html, "보드 페이지에 종목 링크가 없다"
+
+    def test_guide_says_the_row_is_clickable(self):
+        """동작이 바뀌면 설명도 같은 커밋에서(§Help/Dashboard · #55) — 가이드가
+        말 안 하면 사용자는 누를 수 있는 줄 모른다."""
+        from bot import bollinger_board as bb
+        guide = bb.render_page({})
+        assert "종목명을 누르면" in guide and "분석 화면" in guide
+
+
+class TestTradeInboxPopulationSplit20260910:
+    """2026-09-10 VM 실측이 어제 판정을 뒤집었다. `--why` 가 `⑨ ingest — inbox 엔
+    DB 최신 이후 438줄이 있는데 DB 에 안 들어옴` 을 찍어 dashboard-refresh 를
+    보게 만들었는데, 같은 VM 의 systemd 로그는 그 서비스가 매 사이클 정상 종료
+    (`Deactivated successfully` · 전 패스 status=0/SUCCESS)였고 ingest 계정도
+    **한 줄도 안 흘리고** 있었다 — 실측 `7,499(main) + 387(형제 DB) = 7,886(grouped)`.
+
+    원인: `inbox.jsonl` 은 관세청 BeOn + 나쁜양파 15종 **공용**인데 `store.db` 는
+    관세청 전용이라, 줄 수를 그냥 세면 나쁜양파 트래픽이 늘 '안 들어간 줄' 로 잡혀
+    판정이 영영 `ingest` 다(#45 총계와 소계가 다른 모집단). 갈래는 ingest 가 실제로
+    쓰는 게이트(`parser.parse_caption`)로 갈라야 하고(#35), 진짜 상태는
+    `channel_quiet`(관세청 채널이 07-22 뒤 조용함) 였다."""
+
+    # ⚠️ 픽스처는 **원천이 실제로 보내는 모양**이어야 한다 — 첫 판은 내가 지어낸
+    # 캡션이라 `parse_caption` 이 KR 도 None 으로 돌려줬고, 그래서 "필터가 걸렀다"가
+    # 아니라 "아무것도 파싱 안 됐다"로 통과할 뻔했다(#155·#91c). 아래는
+    # `trade/tests/test_parser.py` 가 쓰는 운영자 실표본 형식.
+    _KR = ("2차전지 원형·각형 등 Cap Assembly, 모듈 (전국)\n"
+           "관련종목: 월별 수출 데이터\n\n"
+           "2026년 7월 1일 ~ 20일 잠정치 수출데이터 입니다.")
+    _NOT_KR = "[미국] 8월 수출 품목별\n- 반도체 1억"
+
+    def _facts(self, tmp_path, monkeypatch, rows, today):
+        import contextlib
+        from datetime import date
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        alerts = [{"id": 1, "status": "preliminary", "period_start": "2026-07-01",
+                   "period_end": "2026-07-20", "period_kind": "decadal_20",
+                   "posted_at": "2026-07-22T08:47:00+09:00"}]
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: alerts)
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: alerts)
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {
+            "ok": True, "s_ActiveState": "active", "s_SubState": "running"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        import json
+        (tmp_path / "inbox.jsonl").write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+        return td.header_facts(db, tmp_path, today=today)
+
+    def test_fixture_really_splits_the_two_populations(self):
+        """픽스처가 실제로 갈리는지부터 — KR 은 파서가 받고 나머지는 안 받아야
+        이 클래스의 다른 단언이 의미를 갖는다(#91c 픽스처가 충분히 센가)."""
+        from trade.parser import parse_caption
+        assert parse_caption(self._KR) is not None, "KR 표본이 파서에 안 걸린다"
+        assert parse_caption(self._NOT_KR) is None, "비-KR 표본이 파서에 걸린다"
+
+    def test_badonion_traffic_no_longer_reads_as_a_stuck_ingest(self, tmp_path, monkeypatch):
+        """VM 실제 모양 재현: 관세청은 07-22 에 멈췄고 그 뒤는 다른 소스 트래픽뿐."""
+        from datetime import date
+        rows = [{"date": "2026-07-22T08:47:00+09:00", "caption_present": True, "caption": self._KR}]
+        rows += [{"date": f"2026-08-2{i % 9}T10:00:00+09:00", "caption_present": True,
+                  "caption": self._NOT_KR} for i in range(438)]
+        f = self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))
+        assert f["after_db"] == 438, "전 소스 계수는 사실대로 남긴다(#45 둘 다 말할 것)"
+        assert f["kr_after"] == 0, "관세청 캡션은 DB 최신 이후 0줄이어야 한다"
+        assert f["verdict"]["branch"] == "channel_quiet", f["verdict"]
+        assert "dashboard-refresh" not in f["verdict"]["reason"], "엉뚱한 처방(#292)"
+
+    def test_real_ingest_gap_still_fires(self, tmp_path, monkeypatch):
+        """반대 증거 — **관세청 캡션**이 DB 최신 이후에 쌓이면 그건 진짜 ingest 다.
+        이걸 안 보면 갈래를 통째로 죽이는 변형이 통과한다(#25·#47)."""
+        from datetime import date
+        rows = [{"date": "2026-07-22T08:47:00+09:00", "caption_present": True, "caption": self._KR}]
+        rows += [{"date": f"2026-08-1{i % 9}T10:00:00+09:00", "caption_present": True,
+                  "caption": self._KR} for i in range(30)]
+        f = self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))
+        assert f["kr_after"] == 30 and f["verdict"]["branch"] == "ingest", f["verdict"]
+
+    def test_why_prints_both_populations(self, tmp_path, monkeypatch, capsys):
+        """④ 가 전 소스와 관세청을 **나란히** 찍어야 다음 라운드가 안 헛돈다(#45·#202)."""
+        from datetime import date
+        import trade.dashboard as td
+        rows = [{"date": "2026-07-22T08:47:00+09:00", "caption_present": True, "caption": self._KR},
+                {"date": "2026-08-28T10:00:00+09:00", "caption_present": True, "caption": self._NOT_KR}]
+        self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))   # 스텁 배선
+        td._why_header(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
+        out = capsys.readouterr().out
+        assert "← 전 소스(관세청+나쁜양파 15종 공용)" in out
+        assert "그중 관세청 캡션" in out and "store.db 후보는 이것뿐" in out
+        assert "판정: channel_quiet (관세청 캡션 기준)" in out
+
+    def test_empty_population_does_not_claim_the_file_is_missing(self):
+        """파일은 439줄인데 '파일 없음/빈 파일' 이라 적으면 운영자를 경로 확인으로
+        보낸다 — 첫 판이 실제로 그랬다(#292 틀린 라벨은 라벨이 없는 것보다 나쁘다)."""
+        from datetime import date
+        from trade.header_health import verdict
+        base = {"db_newest": "2026-07-22", "inbox_newest": "", "inbox_lines_after_db": 0,
+                "eval_miss_recent": 0, "listener_active": True,
+                "missing": [("2026-09-01", "monthly_preliminary")]}
+        v = verdict({**base, "inbox_scope": "관세청 캡션", "inbox_present": True,
+                     "inbox_total_lines": 439}, date(2026, 9, 10))
+        assert v["branch"] == "channel_quiet"
+        assert "관세청 캡션 기록이 한 줄도 없음" in v["reason"] and "439줄" in v["reason"]
+        assert "파일 없음" not in v["reason"]
+        # 옛 호출부(선택 facts 없음)는 종전 문구 그대로 — 계약을 안 깬다(#222)
+        old = verdict(base, date(2026, 9, 10))
+        assert "파일 없음/빈 파일" in old["reason"]
+
+    def test_parser_unavailable_falls_back_and_says_so(self, tmp_path, monkeypatch):
+        """파서를 못 불러오면 전 소스로 폴백하되 **폴백했다고 말한다**(#12·#165)."""
+        from datetime import date
+        import builtins
+        real = builtins.__import__
+
+        def _blocked(name, *a, **k):
+            if name == "trade.parser":
+                raise ImportError("blocked")
+            return real(name, *a, **k)
+
+        rows = [{"date": "2026-08-28T10:00:00+09:00", "caption_present": True, "caption": self._NOT_KR}]
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+        f = self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))
+        assert f["parse_ok"] is False
+        assert "폴백" in f["verdict_population"]
+
+
+class TestTradeAuditDoesNotCreateWhatItReads20260910:
+    """2026-09-10 배포전 독립 리뷰(High): `header_facts` ⑧ 이 존재 확인 없이
+    `customs.session()` 을 열어 **읽기 전용이라 적어 둔 진단이 customs.db 와
+    스키마를 만들고** 있었다(#264). 더 나쁜 건 그 빈 DB 가 다음 날부터 감사에
+    `수집 시각 미기록 ❌` 를 영원히 내게 한다는 것 — 키를 안 넣은 환경에선
+    운영자가 손쓸 수 없는 경고다(#260). 형제 두 곳은 이미 존재 확인을 하고
+    있었다(#38 한 곳을 고쳤으면 형제를 볼 것).
+
+    ⚠️ 저자 테스트가 못 잡은 이유: 둘 다 `customs.session` 을 monkeypatch 해서
+    진짜 `open_db`/`ensure_schema` 가 한 번도 안 돌았다(#20 스텁은 배선을 못 잰다)."""
+
+    def test_header_facts_does_not_create_customs_db(self, tmp_path, monkeypatch):
+        from datetime import date
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {"ok": False, "err": "x"})
+        missing = tmp_path / "nope" / "customs.db"
+        monkeypatch.setattr(customs, "DEFAULT_DB", missing)
+        f = td.header_facts(db, tmp_path, today=date(2026, 9, 10))
+        assert not missing.exists(), "진단이 읽기만 한다더니 DB 를 만들었다(#264)"
+        assert not missing.parent.exists(), "디렉터리까지 만들었다"
+        assert "customs.db 없음" in f["prov_err"], f["prov_err"]
+
+    def test_unconfigured_key_is_not_a_blocking_failure(self, tmp_path, monkeypatch):
+        """키가 없으면 수집은 설계상 안 돈다(`fetch_provisional.run` 이 조용히 0) —
+        그걸 ❌ 로 세면 매일 못 고칠 경고가 온다(#260). 사실은 ⚠️ 로 적되 결함 0."""
+        from datetime import datetime, timedelta, timezone
+        from trade import customs, customs_provisional as cp
+        from trade.scripts import dashboard_audit as da
+        monkeypatch.delenv("TRADE_DATA_GO_KR_KEY", raising=False)
+        assert da.audit_provisional(tmp_path / "nope.db") == []          # 파일도 없음
+        db = tmp_path / "customs.db"
+        with customs.session(db) as conn:
+            cp.ensure_schema(conn)
+            old = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+            conn.execute("INSERT INTO customs_provisional VALUES ('a','{}',NULL,?)", (old,))
+        assert da.audit_provisional(db) == []                            # 정지지만 손쓸 게 없다
+        # 반대 증거 — 키가 있으면 같은 상태가 여전히 ❌ 다(#25·#47 가드가 눈멀지 않았나)
+        monkeypatch.setenv("TRADE_DATA_GO_KR_KEY", "x")
+        bad = da.audit_provisional(db)
+        assert len(bad) == 1 and "정지" in bad[0], bad
+        assert da.audit_provisional(tmp_path / "nope.db")               # 파일 없음도 ❌
+
+    def test_unconfigured_still_states_the_fact(self, tmp_path, monkeypatch, capsys):
+        """결함으로 세지 않는 것과 침묵은 다르다 — 뒤처진 사실은 그대로 적는다(#41)."""
+        from trade.scripts import dashboard_audit as da
+        monkeypatch.delenv("TRADE_DATA_GO_KR_KEY", raising=False)
+        da.audit_provisional(tmp_path / "nope.db")
+        out = capsys.readouterr().out
+        assert "TRADE_DATA_GO_KR_KEY 미설정" in out and "⚠️" in out

@@ -64,7 +64,13 @@ def _age_days(iso: str | None, today: date) -> int | None:
 def verdict(facts: dict, today: date) -> dict:
     """facts = {db_newest, inbox_newest, inbox_lines_after_db, eval_miss_recent,
     listener_active(bool|None), missing:[(date,kind)]} → {branch, reason, lines}.
-    단정할 재료가 없으면 `unknown` 이고 왜 모르는지 적는다(#54·#165)."""
+    단정할 재료가 없으면 `unknown` 이고 왜 모르는지 적는다(#54·#165).
+
+    `inbox_newest`·`inbox_lines_after_db` 는 **store.db 와 같은 모집단**(관세청
+    캡션)이어야 한다 — inbox.jsonl 은 나쁜양파 15종과 공용이라 전 소스로 세면
+    판정이 영영 `ingest` 다(#45, 2026-09-10 VM 실측). 선택 facts 둘이 그 사실을
+    문구에 싣는다: `inbox_scope`(모집단 이름) · `inbox_present`(파일에 줄이 있나)
+    · `inbox_total_lines`. 없으면 옛 호출부와 같은 문구를 쓴다(#222)."""
     missing = facts.get("missing") or []
     if not missing:
         return {"branch": "ok", "reason": "예정 발표가 전부 도착했다(±2일)", "lines": []}
@@ -88,7 +94,14 @@ def verdict(facts: dict, today: date) -> dict:
     # inbox 자체가 없거나 비어 있으면(리스너가 한 줄도 못 썼거나 경로가 다름) 시각
     # 비교 없이 서비스 상태로 가른다 — 픽스처에 파일이 없자 unknown 으로 새어 발각.
     if not facts.get("inbox_newest"):
-        note = "inbox.jsonl 에 기록이 없음(파일 없음/빈 파일 — 경로가 다르면 --why 의 ④ 경로를 볼 것)"
+        scope = facts.get("inbox_scope") or ""
+        if facts.get("inbox_present"):
+            # 파일은 멀쩡한데 그 모집단만 0줄 — '파일 없음' 이라 적으면 운영자를
+            # 경로 확인으로 보낸다(#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
+            note = (f"inbox.jsonl 에 {scope or '해당'} 기록이 한 줄도 없음"
+                    f"(파일엔 {facts.get('inbox_total_lines') or '?'}줄 — 다른 소스 트래픽)")
+        else:
+            note = "inbox.jsonl 에 기록이 없음(파일 없음/빈 파일 — 경로가 다르면 --why 의 ④ 경로를 볼 것)"
         if active is False:
             return {"branch": "listener", "lines": lines,
                     "reason": f"{note} · trade-bot.service 비활성 — 리스너가 죽었다. `systemctl status trade-bot` 부터"}
