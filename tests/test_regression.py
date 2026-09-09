@@ -53094,6 +53094,211 @@ class TestIntlUniverseSecondCacheLayer20260909:
         assert "공식 상장목록 7일 캐시" in out and "스크리너 유니버스 캐시" in out
 
 
+class TestTradeHeaderStaleness20260909:
+    """2026-09-09 수출입 보드: 헤더 `현재 잠정 7월 1-20일 · 확정 6월 전체(채널 발표
+    기준)` 인데 바로 아래 OpenAPI 카드는 `최신 2026-08 · 전월(1~말일)`. 헤더는 채널
+    알림(inbox → DB)에서, 카드는 OpenAPI 에서 오므로 채널 경로가 7/21 뒤 멈추면
+    정확히 이렇게 갈리는데 화면은 **말없이 낡았다**(#43·#52). 갈래는 셋(리스너/
+    채널/인제스트/파서)이고 처방이 다 다르다(#82) — 샌드박스에선 못 가르므로
+    `--why` 가 사실을 모아 순수 판정(`trade.header_health`)에 넘긴다(#41·#252).
+    사용자: "수출입보드 맞추는거 정말 수번을 하는듯"."""
+
+    def test_prov_period_end_is_the_window_end(self):
+        from trade.customs_provisional import prov_period_end as f
+        assert f("2026-08", "FULL") == "2026-08-31"
+        assert f("2026-02", "FULL") == "2026-02-28"
+        assert f("2026-09", "D1") == "2026-09-10" and f("2026-09", "D2") == "2026-09-20"
+        assert f("x", "D1") == "" and f("2026-08", "??") == ""     # 지어내지 않는다
+
+    def test_openapi_box_carries_its_window_end_for_the_header(self):
+        from trade import customs_provisional as cp
+        html = cp.render_box({"exp_item": {"ym": "2026-08", "decile": "FULL",
+                                           "window": "전월(1~말일)", "total_usd": 983e8,
+                                           "total_yoy": 68.7, "total_mom": -0.7, "items": []}})
+        assert "data-prov-end='2026-08-31'" in html
+        assert "data-prov-label='2026-08 · 전월(1~말일)'" in html
+
+    def test_expected_publications_agree_with_health_check(self):
+        """같은 발표 규약을 두 곳이 적는다 — 갈리면 회귀가 잡는다(#38·#317)."""
+        from datetime import datetime, date
+        from trade import header_health as hh
+        from trade.scripts import health_check as hc
+        # ⚠️ 월초 날짜로 재면 health_check 가 1일 발표만 돌려줘 11·15·21일 규약이 한
+        # 번도 안 탄다 — 15일 확정을 지우는 뮤테이션이 통과했다(#91c). 월말로 잰다.
+        for today in (datetime(2026, 9, 28, 12, 0), datetime(2026, 12, 30, 12, 0)):
+            theirs = set(hc._expected_recent_publications(today))
+            mine = {(d, k) for d, k in hh.expected_publications(today.date(), lookback_days=60,
+                                                                grace_days=hc.CYCLE_GAP_DAYS)
+                    if d >= today.strftime("%Y-%m-01")}
+            assert theirs == mine, (today, theirs, mine)
+            assert any(k == "monthly_final" for _, k in theirs), "15일 확정 규약이 실제로 재어졌나"
+
+    def test_verdict_names_every_branch_and_never_guesses(self):
+        from datetime import date
+        from trade.header_health import expected_publications, missing_publications, verdict
+        exp = expected_publications(date(2026, 9, 9))
+        posted = {"decadal_20": {"2026-07-21"}, "decadal_10": {"2026-07-11"},
+                  "monthly_final": {"2026-07-15"}, "monthly_preliminary": {"2026-07-01"}}
+        miss = missing_publications(exp, posted)
+        assert [d for d, _ in miss] == ["2026-08-01", "2026-08-11", "2026-08-15",
+                                        "2026-08-21", "2026-09-01"]
+        base = {"db_newest": "2026-07-21", "inbox_newest": "2026-07-21",
+                "inbox_lines_after_db": 0, "eval_miss_recent": 0, "missing": miss}
+        t = date(2026, 9, 9)
+        assert verdict({**base, "listener_active": False}, t)["branch"] == "listener"
+        assert verdict({**base, "listener_active": True}, t)["branch"] == "channel_quiet"
+        assert verdict({**base, "listener_active": None}, t)["branch"] == "unknown"
+        assert verdict({**base, "inbox_newest": "2026-09-01", "inbox_lines_after_db": 12,
+                        "listener_active": True}, t)["branch"] == "ingest"
+        assert verdict({**base, "inbox_newest": "2026-09-01", "inbox_lines_after_db": 12,
+                        "eval_miss_recent": 5, "listener_active": True}, t)["branch"] == "parser"
+        assert verdict({**base, "missing": []}, t)["branch"] == "ok"
+        # ±2일 안에 왔으면 누락이 아니다(원천 발표가 하루 밀리는 날이 실재)
+        assert missing_publications([("2026-08-11", "decadal_10")],
+                                    {"decadal_10": {"2026-08-12"}}) == []
+
+    def test_why_reports_the_branch_and_stays_read_only(self, monkeypatch, tmp_path, capsys):
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        rows = [{"id": 1, "status": "preliminary", "period_start": "2026-07-01",
+                 "period_end": "2026-07-20", "period_kind": "decadal_20",
+                 "posted_at": "2026-07-21T10:00:00+09:00"},
+                {"id": 2, "status": "final", "period_start": "2026-06-01",
+                 "period_end": "2026-06-30", "period_kind": "monthly",
+                 "posted_at": "2026-07-15T10:00:00+09:00"}]
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: rows)
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: rows)
+        monkeypatch.setattr(dkf, "systemd_facts",
+                            lambda timer=None, service="": {"ok": True, "s_ActiveState": "inactive",
+                                                            "s_SubState": "dead"})
+        monkeypatch.setattr(cp, "load_signals",
+                            lambda c: {"exp_item": {"ym": "2026-08", "decile": "FULL",
+                                                    "window": "전월(1~말일)"}})
+        monkeypatch.setattr(customs, "session", lambda p=None: __import__("contextlib").nullcontext(None))
+        monkeypatch.setattr(td, "render_html",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("--why 는 렌더하지 않는다")))
+        # 오늘을 고정하지 않으면 날짜가 지나며 누락 목록이 변해 빨간불이 된다(#249)
+        from datetime import date as _date
+        before = db.stat().st_mtime_ns
+        rc = td._why_header(db, tmp_path, today=_date(2026, 9, 9))
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "잠정: 기간 2026-07-01~2026-07-20" in out and "확정: 기간 2026-06-01~2026-06-30" in out
+        assert "❌ 2026-08-01 monthly_preliminary" in out and "❌ 2026-09-01 monthly_preliminary" in out
+        assert "최신 2026-08 FULL" in out and "창 끝 2026-08-31" in out
+        assert "⑨ 판정: listener" in out
+        assert db.stat().st_mtime_ns == before, "진단이 DB 를 건드리면 안 된다(#264)"
+
+    @staticmethod
+    def _js_fn(html: str, name: str) -> str:
+        i = html.find(f"function {name}(")
+        if i < 0:
+            return ""
+        j = html.index("{", i); depth = 0
+        for k in range(j, len(html)):
+            depth += {"{": 1, "}": -1}.get(html[k], 0)
+            if depth == 0:
+                return html[i:k + 1]
+        return ""
+
+    def _run_header(self, tmp_path, alerts, prov_end, prov_label="2026-08 · 전월(1~말일)"):
+        """렌더된 페이지에서 헤더 JS 함수들을 잘라 node 에서 **실제로 실행**한다 —
+        문자열 존재만 보면 `if(false){}` 로 감싼 뮤테이션이 통과한다(#313 실측)."""
+        import json, shutil, subprocess
+        import pytest as _pt
+        import trade.dashboard as td
+        import trade.store as ts
+        node = shutil.which("node")
+        if not node:
+            _pt.skip("node 없음 — JS 실행 불가")
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        html = td.render_html(db)
+        # 의존 함수를 **이름 고정 목록**으로 뽑으면 다음 헬퍼(quickStats …)를 또 놓친다
+        # (#24) — 본문에서 `name(` 을 찾아 페이지에 `function name(` 이 있으면 따라간다.
+        import re as _re
+        defined = set(_re.findall(r"function ([A-Za-z_]\w*)\(", html))
+        want, seen, chunks = ["renderHeaderMeta"], set(), []
+        while want:
+            n = want.pop()
+            if n in seen or n not in defined:
+                continue
+            seen.add(n)
+            body = self._js_fn(html, n)
+            chunks.append(body)
+            want += [m for m in _re.findall(r"\b([A-Za-z_]\w*)\(", body)
+                     if m in defined and m not in seen and m not in ("esc", "kstTodayString")]
+        fns = "\n".join(chunks)
+        assert "function renderHeaderMeta(" in fns and "function currentDataStatus(" in fns
+        if "function daysBetween(" not in fns:
+            fns += "\nfunction daysBetween(a,b){return Math.round((new Date(b)-new Date(a))/864e5);}"
+        box = ("{dataset:{provEnd:%s,provLabel:%s}}" % (json.dumps(prov_end), json.dumps(prov_label))
+               if prov_end is not None else "null")
+        js = f"""
+var ALERTS={json.dumps(alerts, ensure_ascii=False)};
+var LATEST_IDS=new Set(ALERTS.map(function(a){{return a.id}}));
+function esc(s){{return String(s)}}
+function kstTodayString(){{return '2026-09-09'}}
+var __els={{}};
+function __el(id){{ if(!__els[id]) __els[id]={{innerHTML:'',textContent:''}}; return __els[id]; }}
+var document={{getElementById:__el, querySelector:function(sel){{ return sel==='.ind-prov'?{box}:null; }}}};
+{fns}
+renderHeaderMeta();
+console.log(JSON.stringify({{status:__el('meta-status').innerHTML, next:__el('meta-next').innerHTML}}));
+"""
+        f = tmp_path / "hdr.js"; f.write_text(js, encoding="utf-8")
+        r = subprocess.run([node, str(f)], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr[:600]
+        return json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_header_warns_when_openapi_is_newer_than_the_channel(self, tmp_path):
+        alerts = [{"id": 1, "status": "preliminary", "period_start": "2026-07-01",
+                   "period_end": "2026-07-20", "period_kind": "decadal_20",
+                   "posted_at": "2026-07-21T10:00:00+09:00"},
+                  {"id": 2, "status": "final", "period_start": "2026-06-01",
+                   "period_end": "2026-06-30", "period_kind": "monthly",
+                   "posted_at": "2026-07-15T10:00:00+09:00"}]
+        out = self._run_header(tmp_path, alerts, "2026-08-31")
+        st = out["status"]
+        assert "잠정 <strong>7월 1-20일</strong>" in st and "확정 <strong>6월 전체</strong>" in st
+        assert "채널 최신 발표 07-21 (50일 전)" in st            # 낡음을 숫자로(#202)
+        assert "채널 알림 미수신" in st and "2026-08 · 전월(1~말일)" in st
+        # 반대 증거: OpenAPI 가 더 새롭지 않으면 ⚠️ 없음 · 카드가 없어도 죽지 않음(#25)
+        assert "채널 알림 미수신" not in self._run_header(tmp_path, alerts, "2026-07-20")["status"]
+        assert "채널 알림 미수신" not in self._run_header(tmp_path, alerts, None)["status"]
+
+    def test_header_js_reads_the_openapi_box_and_warns(self, tmp_path):
+        """헤더 JS 가 `.ind-prov[data-prov-end]` 를 읽어 채널 알림보다 새로우면 ⚠️.
+        JS 본문은 중괄호로 잘라 본다(#174) + 인라인 스크립트는 파서에 태운다(#26)."""
+        import re, subprocess, shutil
+        import trade.dashboard as td
+        import trade.store as ts
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        html = td.render_html(db)
+        i = html.index("function renderHeaderMeta(")
+        depth = 0; j = html.index("{", i)
+        for k in range(j, len(html)):
+            depth += {"{": 1, "}": -1}.get(html[k], 0)
+            if depth == 0:
+                break
+        body = html[i:k + 1]
+        assert "dataset.provEnd" in body and "채널 알림 미수신" in body
+        assert "채널 최신 발표" in body and "daysBetween(pa,today)" in body
+        assert ".hdr-warn{" in html, "클래스만 쓰고 정의를 빠뜨리면 #201"
+        if shutil.which("node"):
+            for n, script in enumerate(re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", html, re.S)):
+                if "renderHeaderMeta" not in script:
+                    continue
+                f = tmp_path / f"s{n}.js"; f.write_text(script, encoding="utf-8")
+                r = subprocess.run(["node", "--check", str(f)], capture_output=True, text=True)
+                assert r.returncode == 0, r.stderr[:400]
+
+
 class TestBollingerReviewFindings20260909:
     """배포전 독립 리뷰(2026-09-09)가 잡은 다섯. 전부 **동작으로** 고정한다 —
     이름·모양만 재면 '호출은 남기고 결과를 버리는' 변형을 못 잡는다(#313).
