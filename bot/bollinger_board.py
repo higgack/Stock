@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from bot.bollinger import (PHASE, _date_key, avg5, avg5_extremes, breakouts_by_date, breakouts_on,
-                           count_extremes, prune_sparse_rows, sparse_dates,
+                           count_extremes, coverage_by_date, prune_sparse_rows, sparse_dates,
                            energy_phase, history_pct_rank, level_of,
                            level_thresholds, merge_series, series_rows,
                            trend, weak_streak, weak_streak_note,
@@ -873,10 +873,11 @@ def _download_closes(tickers: list, period: str) -> tuple[dict, dict]:
 # 스크리너 `_fetch_kr_bulk` 가 이미 부르는 검증된 호출 · HTTP 1건, #141·#150
 # 이미 부르는 호출이 무엇을 더 주는지 먼저 볼 것). 그 밖의 시장은 검증된 벌크
 # 원천이 없어 채우지 않고 **그렇게 밝힌다**(#43 침묵이 최악).
-# 벌크가 유니버스의 이 비율 미만만 채우면 쓰지 않는다 — 장전에는 KRX 가 그날
-# 행을 0 값 placeholder 로 주고(`_fetch_kr_bulk` 실측), 그걸 붙이면 전 종목이
-# 0 원 종가로 '밴드 아래' 가 된다. 부분을 완전본으로 굽지 않는다(#280).
-_MIN_FILL_RATIO = 0.5
+# 붙이는 문턱은 희소 날짜 게이트와 **같은 상수**(`_MIN_SCAN_RATIO`)다 — 문턱이 둘이면
+# "채웠다" 고 적고도 그 날짜가 희소로 걸러져 화면이 거짓말한다(독립 리뷰 실측: 0.5 로
+# 채운 15/25 를 0.7 게이트가 버렸다). 판정은 벌크가 더한 수가 아니라 **채운 뒤 그
+# 날짜의 커버리지**(원천이 이미 준 종목 + 벌크로 더한 종목)로 한다. 장전 KRX 0 값
+# placeholder(`_fetch_kr_bulk` 실측)는 0 을 버려 걸러진다(#280).
 
 
 def _kr_closes_on(date: str) -> tuple[dict, str]:
@@ -948,8 +949,12 @@ def fill_missing_session(market: str, closes: dict, expected) -> tuple[dict, dic
     of, applied, reason}.
 
     적용 규칙: 종목마다 마지막 봉이 `expected` 보다 앞일 때만 그 날짜 봉을 하나
-    덧붙인다(이미 있는 종목은 손대지 않는다). 벌크가 유니버스의 `_MIN_FILL_RATIO`
-    미만만 덮으면 **하나도 붙이지 않는다** — 붙이는 결정은 전수를 센 뒤에 한다."""
+    덧붙인다(이미 있는 종목은 손대지 않는다). 채운 뒤 그 날짜의 커버리지(원천이
+    이미 준 종목 + 벌크로 더한 종목)가 유니버스의 `_MIN_SCAN_RATIO` 미만이면
+    **하나도 붙이지 않는다** — 붙이는 결정은 전수를 센 뒤에 한다.
+    ⚠️ 재지 않은 것(#165): `expected` 는 거래소 캘린더가 준 완결 세션이므로 거래일
+    이지만, 캘린더 폴백 환경에서 휴장일이 넘어오면 벌크가 무엇을 돌려주는지는 실측이
+    없다(pykrx 응답엔 날짜 칸이 없어 대조 불가)."""
     import pandas as pd
     m = (market or "").upper()
     newest = _last_bar(closes, _MIN_SCAN_RATIO)
@@ -983,9 +988,12 @@ def fill_missing_session(market: str, closes: dict, expected) -> tuple[dict, dic
             continue
         plan.append((tk, s, v))
     rec["filled"] = len(plan)
-    if len(plan) < len(closes) * _MIN_FILL_RATIO:
-        rec["reason"] = (f"벌크가 {len(plan)}/{len(closes)}종목만 덮어 쓰지 않음"
-                         f"(하한 {int(_MIN_FILL_RATIO * 100)}%)")
+    have = coverage_by_date(closes).get(str(expected), 0)
+    rec["coverage"] = have + len(plan)
+    if rec["coverage"] < len(closes) * _MIN_SCAN_RATIO:
+        rec["reason"] = (f"벌크로 {len(plan)}종목을 더해도 {expected} 봉이 "
+                         f"{rec['coverage']}/{len(closes)}종목뿐이라 쓰지 않음"
+                         f"(하한 {int(_MIN_SCAN_RATIO * 100)}% — 그 아래는 세션으로 세지 않는다)")
         return closes, rec
     out = dict(closes)
     for tk, s, v in plan:
@@ -998,12 +1006,14 @@ def fill_missing_session(market: str, closes: dict, expected) -> tuple[dict, dic
 def fill_note(rec: dict | None) -> str:
     """fill 레코드 → 화면·진단 한 줄("" 이면 적을 것 없음). 순수(#41)."""
     r = rec or {}
-    if not r.get("needed"):
-        return ""
     sp = r.get("sparse") or {}
-    sp_txt = ("" if not sp else " · " + ", ".join(
-        f"{d} 봉은 {n}/{r.get('of')}종목에만 와 세션으로 세지 않음"
-        for d, n in sorted(sp.items())))
+    sp_lines = [f"{d} 봉은 {n}/{r.get('of')}종목에만 와 세션으로 세지 않음"
+                for d, n in sorted(sp.items())]
+    if not r.get("needed"):
+        # 보강은 불필요해도 일부 종목에게만 온 뒷날짜는 화면이 말해야 한다(#43) —
+        # 안 그러면 --why 만 알고 사용자는 "왜 오늘 봉이 없냐" 를 또 묻는다.
+        return " · ".join(sp_lines)
+    sp_txt = ("" if not sp_lines else " · " + ", ".join(sp_lines))
     head = (f"{r.get('date')} 종가가 이번 원천 응답에 없어(최신 봉 {r.get('newest')}{sp_txt})")
     if r.get("applied"):
         return (f"{head} {r.get('source')}로 채움 — {r.get('filled')}/{r.get('of')}종목 · "

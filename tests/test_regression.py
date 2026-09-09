@@ -54261,6 +54261,20 @@ def _bb_offline(monkeypatch, tmp_path, *, last_day: str, spike=("000001.KS",),
                                                       "received": len(closes)}))
     monkeypatch.setattr(mt, "_expected_session", lambda m: (expected, 1))
     monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+    # ⚠️ 기대 세션 보강(#326)은 KR 에서 pykrx → **실제 KRX** 를 친다. VM 처럼 자격증명과
+    # pykrx 가 있는 환경에서 `make test` 가 원천을 두드리면 안 되므로(#312) 기본은 스텁 —
+    # 보강을 재는 테스트만 `_SESSION_FILL` 을 덮어쓴다. 그리고 진짜 pykrx 가 깔린 환경에서
+    # 누군가 스텁을 우회하면 즉시 터지도록 sys.modules 에 폭탄을 둔다(#25 반대 증거).
+    import sys, types
+    monkeypatch.setattr(bb, "_SESSION_FILL",
+                        {"KR": (lambda date: ({}, "테스트 스텁 — 벌크 없음"), "KRX 벌크 종가(pykrx)")})
+    def _boom(*a, **k):
+        raise AssertionError("테스트가 실제 KRX(pykrx) 를 쳤다 — #312")
+    fake = types.ModuleType("pykrx"); fake.stock = types.SimpleNamespace(
+        get_market_cap_by_ticker=_boom, get_market_fundamental_by_ticker=_boom,
+        get_index_portfolio_deposit_file=_boom)
+    monkeypatch.setitem(sys.modules, "pykrx", fake)
+    monkeypatch.setitem(sys.modules, "pykrx.stock", fake.stock)
     return bb
 
 
@@ -54616,8 +54630,8 @@ class TestBollingerMissingSessionFill20260910:
         monkeypatch.setattr(bb, "_SESSION_FILL", {"KR": (lambda date: (few, ""), "KRX")})
         d = bb.build_market("KR", write=False, enrich=False)
         fl = d["fill"]
-        assert fl["needed"] and not fl["applied"] and fl["filled"] == 3
-        assert "3/25종목만 덮어" in fl["reason"] and "채우지 못함" in d["fill_note"]
+        assert fl["needed"] and not fl["applied"] and fl["filled"] == 3 and fl["coverage"] == 3
+        assert "3/25종목뿐이라 쓰지 않음" in fl["reason"] and "채우지 못함" in d["fill_note"]
         assert all(bb._date_key(s.index[-1]) == "2026-09-08" for s in closes.values()), "입력을 손댔다"
         # 저장분이 없으니 보드는 정직하게 09-08 까지만 말한다(09-09 를 지어내지 않는다, #32)
         assert d["asof"] == "2026-09-08" and d["rows_basis"] == "run"
@@ -54831,3 +54845,93 @@ class TestBollingerCountExtremes20260910:
         import bot.bollinger_board as bb
         html = bb._ext_card("돌파 최소", None, None, key="count")
         assert "돌파 종목수가 있는 세션이 없음" in html and "—" in html
+
+
+class TestBollingerFillCoverageRule20260910:
+    """독립 리뷰(2026-09-10 #326 diff) High 둘: (3) 붙이는 문턱 0.5 와 희소 게이트 0.7 이
+    달라 '15/25 채웠다' 고 적고도 그 날짜가 게이트에 걸러져 화면이 거짓말했고, (4) 판정을
+    벌크가 **더한 수**로 해서 원천이 이미 15종목에게 준 날에 벌크가 전 종목을 덮어도
+    '10/25 만 덮어' 라며 거부했다. 규칙 하나로 통일 — 채운 뒤 그 날짜 커버리지(원천 +
+    벌크) ≥ `_MIN_SCAN_RATIO`. Low 셋도 같이: tz-aware 인덱스 · 뒷날짜만 sparse 로 ·
+    보강 불필요여도 뒷날짜 희소는 화면이 말한다."""
+
+    @staticmethod
+    def _bulk(closes, only=None):
+        return {tk.split(".")[0]: 103.0 for tk in closes if only is None or tk in only}
+
+    def test_bulk_covering_60pct_is_refused_because_the_gate_would_drop_it(self, tmp_path, monkeypatch):
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-08", expected="2026-09-09")
+        closes, _ = bb._download_closes([], "3mo")
+        some = sorted(closes)[:15]                        # 15/25 = 60% < 70%
+        monkeypatch.setattr(bb, "_SESSION_FILL", {"KR": (lambda d: (self._bulk(closes, some), ""), "KRX")})
+        d = bb.build_market("KR", write=False, enrich=False)
+        fl = d["fill"]
+        assert not fl["applied"] and fl["coverage"] == 15 and "15/25종목뿐" in fl["reason"]
+        assert d["asof"] == "2026-09-08" and d["scan"]["sparse_dropped"] == {}
+        assert "채움" not in d["fill_note"] and "채우지 못함" in d["fill_note"]
+
+    def test_source_plus_bulk_coverage_is_what_counts(self, tmp_path, monkeypatch):
+        """원천이 09-09 를 15종목에게 이미 줬고(희소) 벌크가 나머지 10 을 채우면 25/25 다."""
+        import pandas as pd
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-08", expected="2026-09-09")
+        closes, _ = bb._download_closes([], "3mo")
+        for tk in sorted(closes)[:15]:
+            closes[tk] = pd.concat([closes[tk], pd.Series([104.0], index=[pd.Timestamp("2026-09-09")])])
+        monkeypatch.setattr(bb, "_SESSION_FILL", {"KR": (lambda d: (self._bulk(closes), ""), "KRX")})
+        d = bb.build_market("KR", write=False, enrich=False)
+        fl = d["fill"]
+        assert fl["needed"] and fl["applied"] and fl["filled"] == 10 and fl["coverage"] == 25, fl
+        assert fl["newest"] == "2026-09-08" and fl["sparse"] == {"2026-09-09": 15}
+        assert d["asof"] == "2026-09-09" and d["scanned"] == 25 and d["rows_basis"] == "run"
+
+    def test_tz_aware_index_gets_the_bar_appended(self, tmp_path, monkeypatch):
+        """야후가 tz-aware 인덱스를 줄 수 있다 — naive Timestamp 를 그냥 붙이면 object
+        인덱스가 되어 날짜 키가 갈린다. 붙인 봉의 키가 'YYYY-MM-DD' 여야 한다."""
+        import pandas as pd
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-08", expected="2026-09-09")
+        closes, _ = bb._download_closes([], "3mo")
+        for tk in closes:
+            closes[tk] = closes[tk].tz_localize("Asia/Seoul")
+        monkeypatch.setattr(bb, "_SESSION_FILL", {"KR": (lambda d: (self._bulk(closes), ""), "KRX")})
+        out, rec = bb.fill_missing_session("KR", closes, "2026-09-09")
+        assert rec["applied"]
+        s = out["000001.KS"]
+        assert str(s.index.dtype).startswith("datetime64") and s.index.tz is not None, s.index.dtype
+        assert bb._date_key(s.index[-1]) == "2026-09-09" and s.index.is_unique
+
+    def test_sparse_field_lists_only_dates_after_the_newest_covered_bar(self, tmp_path, monkeypatch):
+        import pandas as pd
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-08", expected="2026-09-09")
+        closes, _ = bb._download_closes([], "3mo")
+        keep = "000001.KS"
+        for tk in closes:                                   # 08-03 봉은 한 종목만 갖는다(과거 희소)
+            if tk != keep:
+                closes[tk] = closes[tk][closes[tk].index != pd.Timestamp("2026-08-03")]
+        closes[keep] = pd.concat([closes[keep], pd.Series([1.0], index=[pd.Timestamp("2026-09-09")])])
+        _out, rec = bb.fill_missing_session("JP", closes, "2026-09-09")
+        assert rec["needed"] and rec["newest"] == "2026-09-08"
+        assert rec["sparse"] == {"2026-09-09": 1}, rec["sparse"]     # 08-03 은 뒷날짜가 아니다
+
+    def test_future_straggler_is_said_even_when_no_fill_is_needed(self, tmp_path, monkeypatch):
+        """전 종목이 09-09 를 받았고 한 종목만 09-10 봉이 먼저 왔다 — 보강은 불필요하지만
+        화면이 그 봉을 세지 않은 이유는 말해야 한다(#43, 리뷰 Low 6)."""
+        import pandas as pd
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09", expected="2026-09-09")
+        closes, _ = bb._download_closes([], "3mo")
+        closes["000001.KS"] = pd.concat([closes["000001.KS"], pd.Series([1.0], index=[pd.Timestamp("2026-09-10")])])
+        d = bb.build_market("JP", write=False, enrich=False)
+        assert d["fill"]["needed"] is False and d["scan"]["sparse_dropped"] == {"2026-09-10": 1}
+        assert d["fill_note"] == "2026-09-10 봉은 1/25종목에만 와 세션으로 세지 않음", d["fill_note"]
+        html = bb.render_page({"JP": d})
+        assert "🧩 2026-09-10 봉은 1/25종목에만" in html
+
+    def test_offline_harness_blocks_real_pykrx(self, tmp_path, monkeypatch):
+        """`_bb_offline` 의 기본 스텁을 우회해 진짜 pykrx 경로로 가면 sys.modules 의 폭탄이
+        맞는다(#312 반대 증거) — `_kr_closes_on` 은 예외를 사유로 접으므로 그 사유에 폭탄의
+        예외 이름이 찍히는지로 본다(원천엔 한 번도 닿지 않는다)."""
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-08", expected="2026-09-09")
+        import bot.pykrx_client as pk
+        monkeypatch.setattr(pk, "krx_login_ready", lambda: True)
+        monkeypatch.setattr(bb, "_SESSION_FILL", {"KR": (bb._kr_closes_on, "KRX")})
+        d = bb.build_market("KR", write=False, enrich=False)
+        assert d["fill"]["reason"] == "KRX 조회 실패(AssertionError)", d["fill"]

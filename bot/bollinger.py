@@ -273,7 +273,7 @@ def prune_sparse_rows(series: dict, min_ratio: float,
     vals = [out[k].get("scanned") for k in keys]
     ref = max((v for v in vals if isinstance(v, (int, float))), default=None)
     dropped: dict = {}
-    if False:
+    if ref:
         for k in keys:
             sc = out[k].get("scanned")
             if isinstance(sc, (int, float)) and sc < ref * min_ratio:
