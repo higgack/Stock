@@ -53380,7 +53380,10 @@ class TestBollingerReviewFindings20260909:
         d = bb.build_market("KR")
         assert d["partial"] is True and "부분 스캔" in d["rows_reason"]
         html = bb.render_page({"KR": d})
-        assert "부분 스캔이라 종목 표를 만들지 않았습니다" in html
+        # 2026-09-10 #325 로 문구가 `pick_table_source` 에서 온다(부분 스캔 비율까지
+        # 적는다). 계약은 "부분 스캔이면 표를 접고 그렇다고 말한다" 이지 리터럴이
+        # 아니다(#19·#222) — 저장 표가 없는 이 픽스처에선 여전히 표를 접는다.
+        assert "부분 스캔" in html and "종목 표를 만들지 않았습니다" in html
         assert "<th class='num'>상단밴드</th>" not in html
 
     def test_all_filtered_is_not_reported_as_a_dead_download(self, monkeypatch,
@@ -54052,3 +54055,396 @@ class TestTradePendingCountedByIdentity20260910:
         monkeypatch.setattr(_ts, "open_db", lambda p: _Blocking(_real_open(p)))
         f = td.header_facts(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
         assert f["ids_ok"] is False and "id 대조 불가" in f["verdict_population"]
+
+
+class TestTradeWholeInboxSilence20260910:
+    """2026-09-10 VM 실측(판정 확정 뒤): `channel_quiet` 은 맞는데 같은 출력의 ④ 는
+    `inbox 최신 2026-08-28`(13일 전), ⑨ 는 `inbox 최신이 50일 전`(관세청) 이라
+    **한 화면의 두 줄이 다른 말**을 했다(#34 라벨에 기준을 박을 것).
+
+    그리고 더 중요한 사실이 그 출력에 있었는데 아무도 안 짚었다 — `trade.bot` 한
+    프로세스가 관세청 BeOn + 나쁜양파 15종을 **같은 채널로** 받아 inbox 에 쓰므로,
+    16개 소스가 13일째 전부 조용한 건 원천 채널이 아니라 **중계 경로** 신호다.
+    ⑦ 은 그 중계 리스너 둘을 아예 안 묻고 있었다(#316 스코프를 추측하지 말 것)."""
+
+    def test_verdict_text_names_the_population(self):
+        from datetime import date
+        from trade.header_health import verdict
+        base = {"db_newest": "2026-07-22", "inbox_newest": "2026-07-22",
+                "inbox_lines_after_db": 0, "eval_miss_recent": 0, "listener_active": True,
+                "missing": [("2026-09-01", "monthly_preliminary")],
+                "inbox_scope": "관세청 캡션 · 미적재는 메시지 id 대조"}
+        v = verdict(base, date(2026, 9, 10))
+        assert v["branch"] == "channel_quiet"
+        assert "inbox 의 관세청 캡션 최신이 50일 전" in v["reason"], v["reason"]
+        # 모집단을 안 주면 종전 문구 — 옛 호출부 계약을 안 깬다(#222)
+        old = verdict({k: x for k, x in base.items() if k != "inbox_scope"}, date(2026, 9, 10))
+        assert "inbox 최신이 50일 전" in old["reason"]
+
+    def test_whole_inbox_silence_is_reported_separately(self):
+        from datetime import date
+        from trade.dashboard import inbox_silence_notes
+        quiet = inbox_silence_notes({"inbox_newest": "2026-08-28T16:36"}, today=date(2026, 9, 10))
+        assert len(quiet) == 1 and "13일째" in quiet[0] and "중계 리스너" in quiet[0]
+        # 정상 정적(하루 이틀)은 말하지 않는다 — 늘 뜨는 줄은 안 재는 것과 같다(#25·#260)
+        assert inbox_silence_notes({"inbox_newest": "2026-09-09T10:00"}, today=date(2026, 9, 10)) == []
+        assert inbox_silence_notes({}) == []                      # 재료 없으면 침묵(#54)
+        assert inbox_silence_notes({"inbox_newest": "쓰레기"}) == []
+
+    def test_why_actually_prints_the_silence_line(self, tmp_path, monkeypatch, capsys):
+        """헬퍼만 재면 `_why_header` 에서 호출을 지우는 변형이 통과한다(#20 실측) —
+        낡은 inbox 를 깔고 **출력**에 그 줄이 실리는지 본다."""
+        import contextlib, json
+        from datetime import date
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        (tmp_path / "inbox.jsonl").write_text(json.dumps(
+            {"date": "2026-08-28T16:36:00+09:00", "message_id": 9,
+             "caption_present": True, "caption": "[미국] 8월 수출\n- 반도체 1억"},
+            ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {
+            "ok": True, "s_ActiveState": "active", "s_SubState": "running"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        td._why_header(db, tmp_path, today=date(2026, 9, 10))
+        out = capsys.readouterr().out
+        assert "inbox 전체가 13일째 조용하다" in out and "중계 리스너" in out
+
+    def test_why_asks_the_relay_listeners(self, tmp_path, monkeypatch, capsys):
+        """중계 리스너를 안 물으면 '채널이 조용하다' 가 죽은 유닛을 가린다(#82·#316).
+        스텁이 아니라 **출력**으로 확인한다(#313 모양이 아니라 결과로)."""
+        import contextlib
+        from datetime import date
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        asked = []
+
+        def _facts(timer=None, service=""):
+            asked.append(service)
+            return {"ok": True, "s_ActiveState": "active", "s_SubState": "running"}
+
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", _facts)
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        td._why_header(db, tmp_path, today=date(2026, 9, 10))
+        out = capsys.readouterr().out
+        assert "trade-bot-beon-listener.service" in asked
+        assert "trade-bot-badonion-listener.service" in asked
+        assert "beon-listener(중계)" in out and "badonion-listener(중계)" in out
+
+
+class TestBollingerRowsGapReason20260910:
+    """2026-09-10 사용자 "한국, 일본 왜 9/9 가 수집밖이야? 이해가 안가네.. 그리고
+    최종거래일 기준으로 저장되어야 해." KR·JP 카드가 `기준일 2026-09-09 · 21종목`
+    인데 표 자리엔 `2026-09-09 은 이번 수집 창 밖이라 종목 표를 만들지 못했습니다`.
+
+    '수집 창' 은 3개월이라 **창 크기는 원인이 아니다** — 한 문구가 갈래 셋을
+    대표하고 있었고 처방이 다 다르다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다):
+    이번 실행이 잠정으로 분류 / 원천이 그 날짜를 안 줌(야후가 KR·JP 에서 하루 늦는
+    #301·#310) / 그 밖. 카드 수치가 저장분(마지막 거래일)에서 온다는 것도 밝힌다(#45)."""
+
+    def test_no_reason_when_the_date_is_in_this_run(self):
+        from bot.bollinger_board import rows_gap_reason as r
+        assert r("2026-09-09", {"2026-09-08", "2026-09-09"}, None, "2026-09-09") == ""
+
+    def test_provisional_branch_names_itself(self):
+        from bot.bollinger_board import rows_gap_reason as r
+        msg = r("2026-09-09", {"2026-09-08"}, {"date": "2026-09-09"}, "2026-09-08")
+        assert "잠정(미확정) 봉으로 분류" in msg and "기대 완결 세션 2026-09-08" in msg
+        assert "수집 창" not in msg, "창 크기를 원인으로 가리키면 안 된다"
+
+    def test_source_short_branch_prints_the_numbers(self):
+        from bot.bollinger_board import rows_gap_reason as r
+        msg = r("2026-09-09", {"2026-09-08"}, None, "2026-09-09")
+        assert "이번 원천 최신 봉 2026-09-08" in msg and "기대 완결 세션 2026-09-09" in msg
+        assert "저장분(마지막 거래일) 기준" in msg      # 카드가 어디서 왔는지(#45)
+
+    def test_no_data_and_no_expected_still_says_something(self):
+        """재료가 없어도 침묵하지 않는다 — 빈칸이면 왜 비었는지 말한다(#43)."""
+        from bot.bollinger_board import rows_gap_reason as r
+        msg = r("2026-09-09", set(), None, None)
+        assert "이번 원천 데이터 없음" in msg and "기대 완결 세션" not in msg
+
+    def test_reason_has_no_markdown_asterisks(self):
+        """HTML escape 를 거치므로 `**` 는 화면에 별표로 그대로 찍힌다(#298)."""
+        from bot.bollinger_board import rows_gap_reason as r
+        for msg in (r("2026-09-09", {"2026-09-08"}, {"date": "2026-09-09"}, "x"),
+                    r("2026-09-09", {"2026-09-08"}, None, "x")):
+            assert "**" not in msg, msg
+
+    def test_build_market_actually_calls_the_reason_builder(self, tmp_path, monkeypatch):
+        """`build_market` 을 **오프라인으로 태워** 배선을 잰다 — 렌더 테스트는
+        rows_reason 을 손으로 넣으므로 옛 문구로 되돌리는 변형을 못 잡는다(#20 실측).
+
+        원천이 09-08 까지만 주고 저장분엔 09-09 가 있는 **그 상태**를 재현한다."""
+        import pandas as pd
+        import bot.bollinger_board as bb
+        monkeypatch.setattr(bb, "_SERIES_DIR", tmp_path)
+        # 저장분: 09-09 까지 있다(마지막 거래일 기준으로 저장된 상태)
+        bb.save_series("KR", {f"2026-08-{d:02d}": {"count": 3, "new": 1, "scanned": 10,
+                                                    "basis": "backfill"} for d in range(1, 29)}
+                       | {"2026-09-09": {"count": 21, "new": 16, "scanned": 350,
+                                          "basis": "live"}})
+        # 이번 원천은 09-08 까지만 준다(야후가 KR 에서 하루 늦는 그 증상)
+        idx = pd.bdate_range("2026-06-01", "2026-09-08")
+        closes = {f"{i:06d}.KS": pd.Series([100.0 + (j % 7) for j in range(len(idx))], index=idx)
+                  for i in range(1, 26)}
+        monkeypatch.setattr(bb, "_universe", lambda m: ({t: {} for t in closes},
+                                                        {"label": "테스트"}))
+        monkeypatch.setattr(bb, "_download_closes",
+                            lambda tks, period: (closes, {"ratio": 1.0, "kept": len(closes),
+                                                          "received": len(closes)}))
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-09", 1))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+        d = bb.build_market("KR", write=False, enrich=False)
+        assert d["asof"] == "2026-09-09", d.get("asof")
+        assert "이번 원천 최신 봉 2026-09-08" in d["rows_reason"], d["rows_reason"]
+        # 독립 리뷰(2026-09-10): expected 인자 배선도 결과로 본다(#20)
+        assert "기대 완결 세션 2026-09-09" in d["rows_reason"]
+        assert "수집 창" not in d["rows_reason"]
+
+    def test_board_wires_the_reason_into_the_page(self):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 렌더 결과로 본다."""
+        import bot.bollinger_board as bb
+        html = bb.render_page({"KR": {
+            "market": "KR", "asof": "2026-09-09", "reason": "", "count": 21, "new": 16,
+            "scanned": 350, "pct": 6.0, "avg5": 12.6, "avg5_reason": "",
+            "trend": {"dir": "up"}, "level": "중립", "level_reason": "",
+            "strong_th": 20, "weak_th": 10, "phase": "회복 진행",
+            "pct_rank": 38, "pct_rank_reason": "", "streak": 0, "streak_note": "",
+            "chart": [], "rows": [], "rows_total": 0,
+            "rows_reason": bb.rows_gap_reason("2026-09-09", {"2026-09-08"}, None, "2026-09-09"),
+            "provisional": None, "partial": False,
+            "scan": {}, "closed": True, "expected": "2026-09-09",
+            "universe_label": "KOSPI200"}})
+        assert "이번 원천 최신 봉 2026-09-08" in html
+        assert "이번 수집 창 밖" not in html, "옛 문구가 남아 있다"
+
+
+def _bb_offline(monkeypatch, tmp_path, *, last_day: str, spike=("000001.KS",),
+                expected: str = "2026-09-09", ratio: float = 1.0):
+    """볼린저 보드를 **오프라인**으로 태우는 스텁 한 벌 — 원천은 `last_day` 까지만
+    주고, `spike` 종목은 마지막 두 봉이 급등해 상단 돌파가 된다(표가 비지 않게)."""
+    import pandas as pd
+    import bot.bollinger_board as bb
+    import bot.market_timing as mt
+    monkeypatch.setattr(bb, "_SERIES_DIR", tmp_path)
+    # 차트 창(_CHART_ROWS=120)보다 **긴** 이력 — 창 슬라이스를 지우는 변형이 픽스처가
+    # 짧으면 통과한다(#91c 깨지는 값까지 밀어 볼 것).
+    idx = pd.bdate_range("2026-01-05", last_day)
+    closes = {}
+    for i in range(1, 26):
+        tk = f"{i:06d}.KS"
+        vals = [100.0 + (j % 7) for j in range(len(idx))]
+        if tk in spike:
+            vals[-1] = 200.0
+            vals[-2] = 190.0
+        closes[tk] = pd.Series(vals, index=idx)
+    monkeypatch.setattr(bb, "_universe", lambda m: ({t: {} for t in closes},
+                                                    {"label": "테스트"}))
+    monkeypatch.setattr(bb, "_download_closes",
+                        lambda tks, period: (closes, {"ratio": ratio, "kept": len(closes),
+                                                      "universe": len(closes),
+                                                      "received": len(closes)}))
+    monkeypatch.setattr(mt, "_expected_session", lambda m: (expected, 1))
+    monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+    return bb
+
+
+class TestBollingerStoredRowsFallback20260910:
+    """2026-09-10 사용자 "그러면 이해가 안가는게 왜 돌파종목들이 안나오는거야? 한국이랑
+    일본은. 나와야지." — #324 는 문구만 갈랐고 표는 여전히 비었다. 원인은 **표만
+    이번 실행의 원천에 매여 있던 것**: 카드·차트는 저장 시계열(마지막 거래일)에서
+    오는데 표는 저장하지 않아, 원천이 하루 늦는 실행마다 "21종목" 카드 아래가 빈칸이
+    됐다(#325 · #45 카드와 표가 다른 저장소). 표도 마지막 거래일 기준으로 저장하고
+    이번 실행이 못 만들면 저장분을 **수집 시각과 함께** 보여 준다(#43·#136)."""
+
+    def test_run1_saves_rows_and_run2_serves_them_when_the_source_lags(self, tmp_path, monkeypatch):
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09")
+        d1 = bb.build_market("KR", write=True, enrich=False)
+        assert d1["asof"] == "2026-09-09" and d1["rows_basis"] == "run"
+        assert [r["ticker"] for r in d1["rows"]] == ["000001.KS"], d1["rows"]
+        saved = bb.load_rows("KR")
+        assert "2026-09-09" in saved and saved["2026-09-09"]["saved_at"]
+        assert saved["2026-09-09"]["rows"][0]["ticker"] == "000001.KS"
+        # run2: 원천이 09-08 까지만 준다(야후가 KR·JP 에서 하루 늦는 그 증상)
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-08")
+        d2 = bb.build_market("KR", write=True, enrich=False)
+        assert d2["asof"] == "2026-09-09", "카드 기준일은 저장분(마지막 거래일)"
+        assert d2["rows_basis"] == "stored" and d2["rows_reason"] == ""
+        assert [r["ticker"] for r in d2["rows"]] == ["000001.KS"], "표가 저장분에서 살아난다"
+        assert "표는 저장분" in d2["rows_note"] and "KST 수집" in d2["rows_note"]
+        assert "이번 원천 최신 봉 2026-09-08" in d2["rows_note"], d2["rows_note"]
+        # run2 가 저장 표를 **덮어쓰지 않았다** — 09-09 표는 run1 것 그대로
+        assert bb.load_rows("KR")["2026-09-09"]["rows"][0]["ticker"] == "000001.KS"
+
+    def test_write_false_never_touches_the_rows_file(self, tmp_path, monkeypatch):
+        """`--why` 는 write=False 다 — 진단이 저장분을 바꾸면 안 된다(#264·#283)."""
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09")
+        bb.build_market("KR", write=False, enrich=False)
+        assert not bb.rows_path("KR").exists()
+
+    def test_partial_scan_uses_stored_rows_and_does_not_save(self, tmp_path, monkeypatch):
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09")
+        bb.build_market("KR", write=True, enrich=False)
+        before = bb.rows_path("KR").read_text(encoding="utf-8")
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09", ratio=0.2)
+        d = bb.build_market("KR", write=True, enrich=False)
+        assert d["partial"] and d["rows_basis"] == "stored"
+        assert "부분 스캔" in d["rows_note"] and "표는 저장분" in d["rows_note"]
+        assert bb.rows_path("KR").read_text(encoding="utf-8") == before, "부분 스캔은 저장하지 않는다(#280)"
+
+    def test_partial_scan_without_stored_rows_still_folds_the_table(self, tmp_path, monkeypatch):
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09", ratio=0.2)
+        d = bb.build_market("KR", write=True, enrich=False)
+        assert d["rows_basis"] == "none" and d["rows"] == []
+        assert "부분 스캔" in d["rows_reason"] and "저장된 전수 스캔 기준" in d["rows_reason"]
+
+    def test_provisional_branch_is_wired_through_build_market(self, tmp_path, monkeypatch):
+        """독립 리뷰(2026-09-10) Medium: provisional/expected 인자를 호출부에서 None 으로
+        바꿔도 회귀 7개가 전부 green 이었다 — 배선은 태워야 보인다(#20). 앞선 실행이
+        09-09 를 확정으로 저장했는데 이번 실행의 기대 세션이 09-08 로 물러난 상태."""
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09", expected="2026-09-08")
+        bb.save_series("KR", {"2026-09-09": {"count": 1, "new": 1, "scanned": 25,
+                                             "basis": "live"}})
+        d = bb.build_market("KR", write=False, enrich=False)
+        assert d["asof"] == "2026-09-09" and d["provisional"]["date"] == "2026-09-09"
+        assert "잠정(미확정) 봉으로 분류" in d["rows_reason"], d["rows_reason"]
+        assert "기대 완결 세션 2026-09-08" in d["rows_reason"]
+
+    def test_pick_table_source_is_pure_and_names_each_branch(self):
+        from bot.bollinger_board import pick_table_source as pick
+        stored = {"2026-09-09": {"rows": [{"ticker": "X"}], "saved_at": "2026-09-09 18:03"}}
+        assert pick("2026-09-09", {"2026-09-09"}, stored, partial=False,
+                    provisional=None, expected="2026-09-09") == ("run", "")
+        b, note = pick("2026-09-09", {"2026-09-08"}, stored, partial=False,
+                       provisional=None, expected="2026-09-09")
+        assert b == "stored" and "2026-09-09 18:03 KST 수집" in note
+        b, note = pick("2026-09-09", {"2026-09-08"}, {}, partial=False,
+                       provisional=None, expected="2026-09-09")
+        assert b == "none" and "이번 원천 최신 봉 2026-09-08" in note
+        b, note = pick("2026-09-09", {"2026-09-09"}, {}, partial=True,
+                       provisional=None, expected="2026-09-09", scan={"kept": 5, "universe": 25})
+        assert b == "none" and "부분 스캔(5/25)" in note
+        assert "수집 시각 미기록" in pick("2026-09-09", set(), {"2026-09-09": {"rows": []}},
+                                        partial=False, provisional=None, expected=None)[1]
+
+    def test_merge_rows_overwrites_this_run_and_keeps_the_window(self):
+        from bot.bollinger_board import merge_rows, _ROWS_KEEP
+        stored = {f"2026-09-0{i}": {"rows": [{"ticker": "OLD"}], "saved_at": "a"}
+                  for i in range(1, 6)}
+        out = merge_rows(stored, {"2026-09-05": [{"ticker": "NEW"}],
+                                  "2026-09-08": [{"ticker": "N8"}]}, "2026-09-08 18:00")
+        assert len(out) == _ROWS_KEEP and "2026-09-01" not in out
+        assert out["2026-09-05"]["rows"][0]["ticker"] == "NEW"
+        assert out["2026-09-08"]["saved_at"] == "2026-09-08 18:00"
+        assert out["2026-09-04"]["rows"][0]["ticker"] == "OLD"
+
+    def test_page_shows_the_stored_note_above_the_table(self):
+        import bot.bollinger_board as bb
+        base = {"market": "KR", "asof": "2026-09-09", "reason": "", "count": 1, "new": 1,
+                "scanned": 25, "pct": 4.0, "avg5": 1.0, "avg5_reason": "",
+                "trend": {"dir": "up"}, "level": "중립", "level_reason": "",
+                "strong_th": 20, "weak_th": 10, "phase": "회복 진행",
+                "pct_rank": 38, "pct_rank_reason": "", "streak": 0, "streak_note": "",
+                "chart": [], "rows": [{"ticker": "000001.KS", "close": 200.0, "upper": 110.0,
+                                       "over_pct": 81.8, "pct_chg": 5.3, "new": True}],
+                "rows_total": 1, "rows_reason": "", "rows_basis": "stored",
+                "rows_note": "X · 표는 저장분(2026-09-09 18:03 KST 수집)",
+                "provisional": None, "partial": False, "scan": {}, "closed": True,
+                "expected": "2026-09-09", "universe_label": "KOSPI200"}
+        html = bb.render_page({"KR": base})
+        # ⚠️ 페이지 전체 grep 은 ℹ️ 가이드의 같은 낱말이 대신 만족시킨다(#55 실측) —
+        # 배지 **요소**를 집는다.
+        note = "<div class='bb-warn'>💾 "
+        assert note in html and "2026-09-09 18:03 KST 수집" in html.split(note, 1)[1][:200]
+        assert "000001.KS" in html, "저장분 표가 실제로 그려진다"
+        html2 = bb.render_page({"KR": dict(base, rows_basis="run", rows_note="")})
+        assert note not in html2, "이번 실행 표면 저장분 배지가 뜨면 안 된다(#25 반대 증거)"
+
+
+class TestBollingerAvg5Extremes20260910:
+    """2026-09-10 사용자 "위쪽 카드에 우리가 세는 기간 동안 5일평균이 최저일 때와 최고일
+    때 + 그날의 돌파 종목수까지 카드로. 일자 포함. 전체 나라." — 카드는 차트와 **같은
+    창**(`_CHART_ROWS`)에서 고른다(#38·#51 그래프에서 찾은 봉과 카드 날짜가 같아야 한다).
+    창은 갱신마다 굴러가므로 값·날짜도 같이 바뀐다."""
+
+    def test_min_max_with_dates_and_that_days_count(self):
+        from bot.bollinger import avg5_extremes
+        rows = [{"date": "d1", "count": 5, "avg5": None},
+                {"date": "d2", "count": 1, "avg5": 3.0},
+                {"date": "d3", "count": 40, "avg5": 22.4},
+                {"date": "d4", "count": 9, "avg5": 10.0}]
+        e = avg5_extremes(rows)
+        assert e["min"] == {"date": "d2", "avg5": 3.0, "count": 1}
+        assert e["max"] == {"date": "d3", "avg5": 22.4, "count": 40}
+        assert e["window"] == 4 and e["judged"] == 3
+
+    def test_ties_go_to_the_latest_date(self):
+        from bot.bollinger import avg5_extremes
+        rows = [{"date": "d1", "count": 2, "avg5": 3.0}, {"date": "d2", "count": 7, "avg5": 3.0}]
+        e = avg5_extremes(rows)
+        assert e["min"]["date"] == "d2" and e["max"]["date"] == "d2"
+
+    def test_nothing_to_judge_is_none_not_zero(self):
+        from bot.bollinger import avg5_extremes
+        assert avg5_extremes([]) is None
+        assert avg5_extremes([{"date": "d", "count": 1, "avg5": None}]) is None
+
+    def test_build_market_uses_the_chart_window(self, tmp_path, monkeypatch):
+        """차트와 카드가 다른 창을 보면 그래프에서 찾은 봉과 날짜가 안 맞는다(#51)."""
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09")
+        d = bb.build_market("KR", write=False, enrich=False)
+        ext = d["a5_ext"]
+        chart_dates = {r["date"] for r in d["chart"]}
+        assert ext["window"] == len(d["chart"]) <= bb._CHART_ROWS
+        assert ext["min"]["date"] in chart_dates and ext["max"]["date"] in chart_dates
+        # 최고는 마지막 봉(스파이크)이 든 5일 창 — 그날의 돌파 종목수가 같이 실린다
+        assert ext["max"]["date"] == "2026-09-09" and ext["max"]["count"] == 1
+
+    def test_cards_render_with_date_count_and_window(self):
+        import bot.bollinger_board as bb
+        ext = {"min": {"date": "2026-07-17", "avg5": 3.1, "count": 1},
+               "max": {"date": "2026-04-21", "avg5": 49.2, "count": 54},
+               "window": 120, "judged": 116}
+        html = bb.render_page({"KR": {
+            "market": "KR", "asof": "2026-09-09", "reason": "", "count": 21, "new": 16,
+            "scanned": 350, "pct": 6.0, "avg5": 12.6, "avg5_reason": "",
+            "trend": {"dir": "up"}, "level": "중립", "level_reason": "",
+            "strong_th": 20, "weak_th": 10, "phase": "회복 진행",
+            "pct_rank": 38, "pct_rank_reason": "", "streak": 0, "streak_note": "",
+            "chart": [], "rows": [], "rows_total": 0, "rows_reason": "",
+            "rows_basis": "run", "rows_note": "", "a5_ext": ext,
+            "provisional": None, "partial": False, "scan": {}, "closed": True,
+            "expected": "2026-09-09", "universe_label": "KOSPI200"}})
+        import re
+        cards = re.findall(r"<div class='stat'>.*?</div></div>", html, flags=re.S)
+        lo = [c for c in cards if "5일 평균 최저" in c]
+        hi = [c for c in cards if "5일 평균 최고" in c]
+        assert len(lo) == 1 and len(hi) == 1, "카드가 각각 정확히 한 장"
+        assert "3.1" in lo[0] and "2026-07-17" in lo[0] and "그날 돌파 1종목" in lo[0]
+        assert "49.2" in hi[0] and "2026-04-21" in hi[0] and "그날 돌파 54종목" in hi[0]
+        assert "차트 구간 120세션" in lo[0]
+        assert "5일 평균 최저 · 최고" in html and "굴러" in html, "가이드가 창·롤링을 설명한다"
+
+    def test_why_prints_extremes_and_table_source(self, tmp_path, monkeypatch, capsys):
+        """진단과 화면이 같은 사실을 말한다(#35·#320) — 극값과 표 출처를 --why 가 찍는다."""
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09")
+        rc = bb._why("KR")
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "5일 평균 극값" in out and "@ 2026-09-09" in out
+        assert "표 출처 run" in out

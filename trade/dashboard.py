@@ -2854,9 +2854,17 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
         ref = systemd_facts(timer="trade-bot-dashboard-refresh.timer",
                             service="trade-bot-dashboard-refresh.service")
         hc = systemd_facts(timer="trade-bot-health.timer", service="trade-bot-health.service")
+        # inbox.jsonl 에 쓰는 건 `trade.bot` 하나지만, 그 채널로 **중계**하는 앞단
+        # 리스너가 둘 더 있다(BeOn·나쁜양파). 그 둘이 죽으면 trade-bot 은 활성인데
+        # inbox 가 통째로 조용해진다 — 그 상태를 '채널이 조용하다' 로만 적으면
+        # 운영자가 원천 채널을 보러 가고 정작 죽은 유닛을 못 본다(#316 스코프·#82).
+        beon = systemd_facts(timer=None, service="trade-bot-beon-listener.service")
+        bad = systemd_facts(timer=None, service="trade-bot-badonion-listener.service")
     except Exception as exc:                                   # noqa: BLE001
-        lis = ref = hc = {"ok": False, "err": f"{type(exc).__name__}: {exc}"}
-    f["units"] = (("trade-bot.service(리스너)", lis), ("dashboard-refresh", ref), ("health", hc))
+        lis = ref = hc = beon = bad = {"ok": False, "err": f"{type(exc).__name__}: {exc}"}
+    f["units"] = (("trade-bot.service(수신·inbox 기록)", lis),
+                  ("beon-listener(중계)", beon), ("badonion-listener(중계)", bad),
+                  ("dashboard-refresh", ref), ("health", hc))
     f["listener_active"] = (lis.get("s_ActiveState") == "active") if lis.get("ok") else None
 
     # OpenAPI 잠정 — 화면(`_load_industry_html`)과 같은 customs.db 기본 경로.
@@ -2899,6 +2907,32 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
                                "inbox_total_lines": n_lines},
                               today)
     return f
+
+
+# inbox 전체가 조용한 것은 **관세청 채널이 조용한 것과 다른 사실**이다 —
+# 한 리스너가 16개 소스(관세청 BeOn + 나쁜양파 15종)를 같은 채널로 받아 적으므로,
+# 전부가 동시에 멈추면 원천 채널이 아니라 그 앞 중계 경로를 봐야 한다.
+# 며칠까지를 '정상 정적' 으로 볼지는 재지 않았으므로 문턱은 넉넉하게 두고
+# 단정하지 않는다(#165) — 사실만 적고 어디를 볼지 가리킨다(#82).
+_INBOX_SILENT_DAYS = 3
+
+
+def inbox_silence_notes(f: dict, today=None) -> list[str]:
+    """inbox 전체 침묵에 대한 관찰 줄(없으면 빈 리스트). 순수 함수(#41)."""
+    from datetime import date, datetime
+    newest = str(f.get("inbox_newest") or "")[:10]
+    if not newest:
+        return []
+    today = today or datetime.now(_KST).date()
+    try:
+        age = (today - date.fromisoformat(newest)).days
+    except ValueError:
+        return []
+    if age < _INBOX_SILENT_DAYS:
+        return []
+    return [f"↪ inbox 전체가 {age}일째 조용하다(마지막 {newest}) — 이 파일은 관세청 "
+            "BeOn + 나쁜양파 15종이 **공용**이라 전부 동시에 멈추는 건 흔치 않다. "
+            "위 ⑦ 의 중계 리스너(beon·badonion) 상태를 먼저 볼 것"]
 
 
 def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
@@ -2980,6 +3014,8 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
     P("")
     v = f["verdict"]
     P(f"⑨ 판정: {v['branch']} ({f['verdict_population']} 기준) — {v['reason']}")
+    for ln in inbox_silence_notes(f):
+        P(f"   {ln}")
     for ln in v.get("lines", []):
         P(f"   {ln}")
     return 0 if v["branch"] == "ok" else 1

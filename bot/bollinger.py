@@ -189,6 +189,34 @@ def avg5_series(rows: list[dict]) -> list[float | None]:
     return out
 
 
+def avg5_extremes(rows: list[dict]) -> dict | None:
+    """차트 구간 안에서 **5일 평균의 최저·최고 시점**(순수).
+
+    rows = `_avg5_chart` 가 만든 [{date, count, avg5, …}] — 카드는 차트와
+    **같은 행**을 봐야 그래프에서 눈으로 찾은 봉과 카드의 날짜가 맞는다(#38·#51).
+    반환 {"min": {date, avg5, count}, "max": {…}, "window": 구간 행 수,
+    "judged": 5일 평균이 있는 행 수}. 5일 평균이 없는 행(구간 앞머리·결측)은
+    판정에서 빼고, 동률이면 **가장 최근** 날짜를 든다(오늘과 가까운 쪽이 행동에
+    쓸모 있다 — 규약은 가이드에 적는다). 판정할 행이 없으면 None(#54)."""
+    rows = list(rows or [])
+    judged = [r for r in rows if r.get("avg5") is not None]
+    if not judged:
+        return None
+
+    def _pick(worst: bool) -> dict:
+        best = None
+        for r in judged:                         # 뒤에 오는 동률이 이긴다(최근)
+            v = float(r["avg5"])
+            if best is None or (v <= best[0] if worst else v >= best[0]):
+                best = (v, r)
+        v, r = best
+        return {"date": str(r.get("date")), "avg5": round(v, 1),
+                "count": r.get("count")}
+
+    return {"min": _pick(True), "max": _pick(False),
+            "window": len(rows), "judged": len(judged)}
+
+
 def level_thresholds(scanned) -> tuple[int | None, int | None]:
     """(강세 문턱, 약세 문턱) — 원문 예시 20/10 을 유니버스 크기로 환산.
 
