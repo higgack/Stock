@@ -188,6 +188,56 @@ def _parse_hk_names(content: bytes) -> dict:
 _SPEC = {"JP": (_JPX_URL, _parse_jp), "HK": (_HKEX_URL, _parse_hk)}
 _NAME_SPEC = {"JP": (_JPX_URL, _parse_jp_names), "HK": (_HKEX_URL, _parse_hk_names)}
 
+# 첨부파일 URL 의 불투명 토큰(`tvdivq0000001vg2-att`)은 원천이 바꾼다 — 2026-09-09
+# VM 실측: 옛 URL 이 **HTTP 404 + JPX 자체 일본어 HTML** 을 줘 7일 TTL 만료 뒤
+# JP 유니버스가 통째로 비었다(차단이 아니라 이동). 하드코딩이 죽으면 **목록
+# 페이지에서 링크를 찾아** 한 번 더 시도한다(#119 규율이 아니라 구조로 · #136
+# 폴백은 '요구를 충족했나'로). HKEX 는 URL 에 토큰이 없어 등록하지 않는다.
+_JPX_INDEX = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+_DISCOVER = {"JP": (_JPX_INDEX, r"data_j\.xlsx?")}
+_DISCOVERED: dict = {}          # market → 마지막으로 찾아낸 URL(진단용)
+
+
+def _discover_url(market: str):
+    """목록 페이지에서 상장목록 파일의 현재 href 를 찾아 절대 URL 로. 못 찾으면
+    None — 지어내지 않는다. 페이지 자체를 못 받으면 예외를 그대로 올린다(사유가
+    로그에 남아야 한다, #82)."""
+    import re
+    from urllib.parse import urljoin
+
+    import requests
+    spec = _DISCOVER.get(market)
+    if not spec:
+        return None
+    index_url, pat = spec
+    r = requests.get(index_url, timeout=30, headers=_UA)
+    if r.status_code != 200:
+        raise RuntimeError(f"목록 페이지 HTTP {r.status_code}: {index_url}")
+    html = r.text or ""
+    m = re.search(r'href="([^"]*' + pat + r')"', html)
+    if not m:
+        return None
+    url = urljoin(index_url, m.group(1))
+    _DISCOVERED[market] = url
+    return url
+
+
+def _fetch_with_discovery(market: str, url: str) -> bytes:
+    """하드코딩 URL → 실패하면 목록 페이지에서 찾은 URL 로 **한 번 더**. 둘 다
+    실패하면 두 사유를 합쳐 올린다 — 어느 단계가 죽었는지 로그가 말한다."""
+    try:
+        return _http_get(url)
+    except Exception as first:                                 # noqa: BLE001
+        try:
+            alt = _discover_url(market)
+        except Exception as exc:                               # noqa: BLE001
+            raise RuntimeError(f"{first} · 목록 페이지 탐색 실패: {exc}") from first
+        if not alt or alt == url:
+            raise RuntimeError(f"{first} · 목록 페이지에서 새 링크 못 찾음") from first
+        log.warning("full_universe %s: 하드코딩 URL 실패 → 목록 페이지가 가리키는 "
+                    "%s 로 재시도", market, alt)
+        return _http_get(alt)
+
 
 def full_universe_names(market: str) -> dict:
     """{ticker: native 銘柄名/Name} — JP/HK 공식 상장목록 종목명 (사용자 2026-06-14
@@ -207,7 +257,7 @@ def full_universe_names(market: str) -> dict:
             return c
     url, parser = spec
     try:
-        names = parser(_http_get(url))
+        names = parser(_fetch_with_discovery(market, url))
     except Exception as exc:
         log.warning("full_universe_names %s 실패: %s", market, exc)
         return _stale_cache(cache_name, f"names:{market}", dict) or {}
@@ -238,7 +288,7 @@ def full_universe(market: str) -> list[str]:
             return c
     url, parser = spec
     try:
-        tickers = parser(_http_get(url))
+        tickers = parser(_fetch_with_discovery(market, url))
     except Exception as exc:
         log.warning("full_universe %s fetch/parse 실패: %s", market, exc)
         return _stale_cache(cache_name, market, list) or []

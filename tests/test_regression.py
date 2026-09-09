@@ -52796,6 +52796,126 @@ class TestBollingerTableShowsEveryMatch20260909:
         assert "시총 상위만 표시" not in html
 
 
+class TestIntlUniverseUrlDiscovery20260909:
+    """2026-09-09 VM `--why JP` 2차 실측: 옛 첨부 URL 이 **HTTP 404 + JPX 자체
+    일본어 HTML** — 차단이 아니라 첨부 토큰이 바뀐 것이다. 하드코딩이 죽으면 목록
+    페이지에서 현재 링크를 찾아 한 번 더 시도한다(#119 구조로 · #136)."""
+
+    class _R:
+        def __init__(self, code, text):
+            self.status_code, self.text = code, text
+
+    def test_discover_resolves_the_current_attachment_href(self, monkeypatch):
+        import bot.intl_universe as iu
+        import requests
+        page = ('<html lang="ja"><body><a href="/markets/statistics-equities/misc/'
+                'tvdivq0000009zzz-att/data_j.xls">東証上場銘柄一覧</a></body></html>')
+        monkeypatch.setattr(requests, "get", lambda url, **kw: self._R(200, page))
+        iu._DISCOVERED.clear()
+        url = iu._discover_url("JP")
+        assert url == ("https://www.jpx.co.jp/markets/statistics-equities/misc/"
+                       "tvdivq0000009zzz-att/data_j.xls")
+        assert iu._DISCOVERED["JP"] == url
+        # 링크가 없으면 None — 지어내지 않는다(#165)
+        monkeypatch.setattr(requests, "get",
+                            lambda url, **kw: self._R(200, "<html>no link</html>"))
+        assert iu._discover_url("JP") is None
+        # 등록 안 된 시장은 탐색 자체가 없다(HKEX 는 토큰이 없다)
+        assert iu._discover_url("HK") is None
+        # 목록 페이지가 죽으면 예외를 올린다 — 침묵하지 않는다(#82)
+        monkeypatch.setattr(requests, "get", lambda url, **kw: self._R(503, ""))
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            iu._discover_url("JP")
+
+    def test_full_universe_retries_with_the_discovered_url(self, monkeypatch, tmp_path):
+        import bot.finviz_client as fv
+        import bot.intl_universe as iu
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        iu._STALE_HOURS.clear()
+        seen = []
+        def _get(url):
+            seen.append(url)
+            if "new-att" in url:
+                return b"ok"
+            raise RuntimeError("HTTP 404 text/html")
+        monkeypatch.setattr(iu, "_http_get", _get)
+        monkeypatch.setattr(iu, "_discover_url",
+                            lambda m: "https://www.jpx.co.jp/x/new-att/data_j.xls")
+        fresh = [f"{i:04d}.T" for i in range(1, 300)]
+        monkeypatch.setattr(iu, "_SPEC", {"JP": ("https://old/data_j.xls", lambda b: fresh)})
+        assert iu.full_universe("JP") == fresh
+        assert seen == ["https://old/data_j.xls",
+                        "https://www.jpx.co.jp/x/new-att/data_j.xls"], (
+            "하드코딩 먼저, 실패해야 탐색 URL — 순서가 계약이다")
+        assert iu.stale_hours("JP") is None
+        # 반대 증거: 하드코딩이 살아 있으면 탐색을 부르지 않는다(순손실 요청 금지)
+        seen.clear()
+        monkeypatch.setattr(iu, "_http_get", lambda url: (seen.append(url), b"ok")[1])
+        monkeypatch.setattr(iu, "_discover_url",
+                            lambda m: (_ for _ in ()).throw(AssertionError("불리면 안 됨")))
+        for x in tmp_path.iterdir():
+            x.unlink()
+        assert iu.full_universe("JP") == fresh and seen == ["https://old/data_j.xls"]
+        # 둘 다 죽으면 두 사유가 합쳐진 예외 → 만료 캐시 폴백 경로로 (기존 계약 유지)
+        monkeypatch.setattr(iu, "_http_get",
+                            lambda url: (_ for _ in ()).throw(RuntimeError("HTTP 404")))
+        monkeypatch.setattr(iu, "_discover_url", lambda m: None)
+        with pytest.raises(RuntimeError, match="새 링크 못 찾음"):
+            iu._fetch_with_discovery("JP", "https://old/data_j.xls")
+
+    def test_why_prints_the_discovery_outcome(self, monkeypatch):
+        from bot import bollinger_board as bb
+        import bot.finviz_client as fv
+        import bot.intl_universe as iu
+        monkeypatch.setattr(fv, "cache_age_sec", lambda name: None)
+        monkeypatch.setattr(iu, "full_universe", lambda m: [])
+        monkeypatch.setattr(iu, "stale_hours", lambda m: None)
+        monkeypatch.setattr(iu, "_http_get",
+                            lambda url: (_ for _ in ()).throw(RuntimeError("HTTP 404")))
+        monkeypatch.setattr(iu, "_discover_url", lambda m: "https://www.jpx.co.jp/new/data_j.xls")
+        txt = "\n".join(bb._why_universe_intl("JP"))
+        assert "목록 페이지 탐색: 찾음 → https://www.jpx.co.jp/new/data_j.xls" in txt
+        monkeypatch.setattr(iu, "_discover_url", lambda m: None)
+        assert "링크 못 찾음" in "\n".join(bb._why_universe_intl("JP"))
+
+
+class TestBollingerGuideAnswersTheQuestions20260909:
+    """사용자 2026-09-09 "위에 설명들을 보드 읽는 법에 자세히 써줘. 헷갈릴수
+    있으니까". 채팅으로 답한 것을 화면이 스스로 답해야 다음 사람이 다시 안 묻는다
+    (#43·#202). 가이드 블록 하나를 잘라서 본다(#55 페이지 전체 grep 금지)."""
+
+    def _guide(self):
+        html = _bollinger_html()
+        i = html.index("이 보드 읽는 법")
+        # 소스는 80열에서 줄을 접지만 브라우저는 공백을 합친다 — 같은 기준으로 본다
+        return " ".join(html[i:html.index("</details>", i)].split())
+
+    def test_guide_defines_session_streak_percentile_table_and_stale_cache(self):
+        g = self._guide()
+        assert "그 시장의 거래일 하나" in g                       # 세션
+        assert "연속" in g and "0 으로 리셋" in g and "40세션" in g   # 약세 연속
+        assert "오늘보다 낮았던 세션 수 ÷ 전체 세션 수" in g          # 백분위 산식
+        assert "시장 간에 뜻이 같은 유일한 축" in g
+        assert "약간 높게" in g                                  # 생존편향 방향
+        assert "전부" in g and "지속 돌파" in g                    # 표 · 🆕 vs 지속
+        assert "상장목록 N일 전 캐시" in g                        # JP/HK 폴백 문구
+        # 옛 문구 하나만 남고 중복되지 않았는지(블록 교체가 잘못되면 두 번 나온다)
+        assert g.count("<b>위험 관리</b>") == 1 and g.count("<b>이력 백분위</b>") == 1
+
+    def test_why_universe_line_does_not_double_count(self, monkeypatch, capsys):
+        """`--why JP` 실측 출력 `… · 225종목 · 225종목` — universe_label 이 이미
+        개수를 실으므로 한 번만(#45)."""
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_universe", lambda m: (
+            {f"{i:04d}.T": {} for i in range(225)},
+            {"label": "시총상위", "count": 225, "reason": ""}))
+        monkeypatch.setattr(bb, "build_market", lambda m, **kw: {"reason": "stop"})
+        monkeypatch.setattr(bb, "load_series", lambda m: {})
+        bb._why("JP")
+        out = capsys.readouterr().out
+        assert out.count("225종목") == 1
+
+
 class TestBollingerReviewFindings20260909:
     """배포전 독립 리뷰(2026-09-09)가 잡은 다섯. 전부 **동작으로** 고정한다 —
     이름·모양만 재면 '호출은 남기고 결과를 버리는' 변형을 못 잡는다(#313).
