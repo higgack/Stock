@@ -44,6 +44,9 @@ except ModuleNotFoundError:  # test env fallback
         return False
 
 _KST = timezone(timedelta(hours=9))
+# `--why` 가 inbox 캡션을 파싱하는 상한 — 진단이 오래 걸리면 안 되고, 넘으면
+# 넘었다고 말한다(#45 자른 사실을 말할 것). 실측 inbox 16,182줄에 여유.
+_INBOX_PARSE_CAP = 40000
 from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 위치 복원(공용)
 from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
 
@@ -2745,8 +2748,22 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
     cnt = Counter(str(a.get("posted_at") or "")[:7] for a in allrows)
     f["month_counts"] = [(ym, cnt[ym]) for ym in sorted(cnt)[-4:]]
 
+    # ⚠️ inbox.jsonl 은 **전 소스 공용**이다(관세청 BeOn + 나쁜양파 15종). 반면
+    # store.db 는 관세청 전용이라, 줄 수를 그냥 세면 나쁜양파 트래픽이 늘 '안
+    # 들어간 줄' 로 잡혀 판정이 영영 `ingest` 가 된다 — 2026-09-10 VM 실측이
+    # 그랬다(438줄 중 관세청 0줄, 나머지는 사이클당 387건이 형제 DB 로 정상
+    # 적재). 모집단이 다른 둘을 비교한 것이다(#45).
+    # 갈래는 ingest 가 실제로 쓰는 게이트(`parse_caption`)로 가른다 — 그게
+    # None 이면 그 캡션은 애초에 store.db 후보가 아니다(#35 제품이 쓰는 그 경로).
+    # 순수 파싱이라 네트워크·쓰기 0(#264).
+    try:
+        from trade.parser import parse_caption as _parse
+    except Exception:                                          # noqa: BLE001
+        _parse = None
     inbox = data_dir / "inbox.jsonl"
     inbox_newest, after_db, n_lines = "", 0, 0
+    kr_newest, kr_after = "", 0
+    parsed_n, capped = 0, False
     if inbox.exists():
         with inbox.open(encoding="utf-8") as fh:
             for ln in fh:
@@ -2758,10 +2775,32 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
                 d = str(rec.get("date") or rec.get("ingested_at") or "")
                 if d > inbox_newest:
                     inbox_newest = d
-                if f["db_newest"] and d[:19] > f["db_newest"][:19]:
+                newer = bool(f["db_newest"] and d[:19] > f["db_newest"][:19])
+                if newer:
                     after_db += 1
+                if _parse is None:
+                    continue
+                if parsed_n >= _INBOX_PARSE_CAP:
+                    capped = True
+                    continue
+                cap_txt = str(rec.get("caption") or rec.get("text") or "")
+                if not cap_txt:
+                    continue
+                parsed_n += 1
+                try:
+                    is_kr = _parse(cap_txt) is not None
+                except Exception:                              # noqa: BLE001
+                    continue
+                if not is_kr:
+                    continue
+                if d > kr_newest:
+                    kr_newest = d
+                if newer:
+                    kr_after += 1
     f.update(inbox=str(inbox), inbox_exists=inbox.exists(), inbox_newest=inbox_newest,
-             after_db=after_db, n_lines=n_lines)
+             after_db=after_db, n_lines=n_lines,
+             kr_newest=kr_newest, kr_after=kr_after,
+             parse_ok=_parse is not None, parse_capped=capped)
 
     em = data_dir / "eval_misses.jsonl"
     em_recent = 0
@@ -2799,9 +2838,16 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
     f["listener_active"] = (lis.get("s_ActiveState") == "active") if lis.get("ok") else None
 
     # OpenAPI 잠정 — 화면(`_load_industry_html`)과 같은 customs.db 기본 경로.
+    # ⚠️ 존재 확인 없이 열면 안 된다 — `customs.session()` → `open_db()` 가 파일과
+    # 스키마를 **만들고** `load_signals` 도 `ensure_schema` 를 부른다. 읽기 전용이라
+    # 적어 놓고 쓰는 진단이 되고(#264), 그렇게 만들어진 빈 DB 는 다음 날부터
+    # 감사가 '수집 시각 미기록 ❌' 를 영원히 내게 한다(#260). 형제
+    # (`_load_industry_html`·`audit_provisional`)는 이미 이렇게 막고 있었다(#38).
     f["prov"], f["prov_fetched"], f["prov_err"] = None, None, ""
     try:
         from trade import customs, customs_provisional as cp
+        if not Path(customs.DEFAULT_DB).exists():
+            raise FileNotFoundError(f"customs.db 없음(아직 수집 전): {customs.DEFAULT_DB}")
         with customs.session() as c2:
             sig = cp.load_signals(c2)
             f["prov_fetched"] = cp.load_fetched_at(c2) if c2 is not None else None
@@ -2809,9 +2855,18 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
     except Exception as exc:                                   # noqa: BLE001
         f["prov_err"] = f"{type(exc).__name__}: {exc}"
 
-    f["verdict"] = hh.verdict({"db_newest": f["db_newest"][:10], "inbox_newest": inbox_newest[:10],
-                               "inbox_lines_after_db": after_db, "eval_miss_recent": em_recent,
-                               "listener_active": f["listener_active"], "missing": f["missing"]},
+    # 판정은 **관세청 모집단**으로 — 파서를 못 불러오면(의존성 문제) 전 소스 값으로
+    # 폴백하되 그 사실을 밝힌다(#12·#165 폴백했으면 폴백했다고 말할 것).
+    use_kr = f["parse_ok"] and not capped
+    f["verdict_population"] = "관세청 캡션" if use_kr else "전 소스(파서 미가용 — 폴백)"
+    f["verdict"] = hh.verdict({"db_newest": f["db_newest"][:10],
+                               "inbox_newest": (kr_newest if use_kr else inbox_newest)[:10],
+                               "inbox_lines_after_db": kr_after if use_kr else after_db,
+                               "eval_miss_recent": em_recent,
+                               "listener_active": f["listener_active"], "missing": f["missing"],
+                               "inbox_scope": f["verdict_population"],
+                               "inbox_present": n_lines > 0,
+                               "inbox_total_lines": n_lines},
                               today)
     return f
 
@@ -2847,7 +2902,13 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
     P("④ inbox.jsonl(리스너 → 인제스트 사이)")
     if f["inbox_exists"]:
         P(f"   {f['inbox']}: {f['n_lines']}줄 · 최신 {f['inbox_newest'][:16] or '없음'} · "
-          f"DB 최신 이후 {f['after_db']}줄")
+          f"DB 최신 이후 {f['after_db']}줄  ← 전 소스(관세청+나쁜양파 15종 공용)")
+        if f["parse_ok"]:
+            P(f"   그중 관세청 캡션: 최신 {f['kr_newest'][:16] or '없음'} · "
+              f"DB 최신 이후 {f['kr_after']}줄  ← store.db 후보는 이것뿐"
+              + ("  (파싱 상한 초과 — 일부만 셈)" if f["parse_capped"] else ""))
+        else:
+            P("   관세청 캡션 분리: 파서를 못 불러와 판정 불가")
     else:
         P(f"   {f['inbox']}: 없음")
     P("")
@@ -2879,7 +2940,7 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
         P("   저장된 잠정 신호 없음")
     P("")
     v = f["verdict"]
-    P(f"⑨ 판정: {v['branch']} — {v['reason']}")
+    P(f"⑨ 판정: {v['branch']} ({f['verdict_population']} 기준) — {v['reason']}")
     for ln in v.get("lines", []):
         P(f"   {ln}")
     return 0 if v["branch"] == "ok" else 1

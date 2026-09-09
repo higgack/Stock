@@ -344,20 +344,36 @@ def audit_backlog(dash_dir: Path) -> list[str]:
 # 문제가 많아": 채널 알림이 7/21 에 멈춰 헤더가 50일 낡았는데 감사는 ①~⑤ 어디서도
 # 세지 않았고, 🟢 잠정 박스는 데이터 창만 적어 수집기가 멈춰도 똑같아 보였다.
 # 둘 다 사람이 눈으로 먼저 잡았다(#43·#52·#303 감사가 안 세는 것은 없는 것과 같다).
-def audit_provisional(customs_db: Path) -> list[str]:
+def audit_provisional(customs_db: Path, *, key_present: bool | None = None) -> list[str]:
     """OpenAPI 잠정 수집 시각 — 화면 🟢 박스가 읽는 그 값(`load_fetched_at`, #35).
-    없으면 ❌(대조 0건은 통과가 아니다 #54), 문턱(`_FETCH_STALE_H`) 넘으면 ❌."""
+    없거나 문턱(`_FETCH_STALE_H`)을 넘으면 ❌ — 단 **키가 없으면 ❌ 가 아니다**.
+
+    `fetch_provisional.run()` 은 `TRADE_DATA_GO_KR_KEY` 가 없으면 조용히 0 을
+    돌려주는 게 **설계된 동작**이라(그 모듈 독스트링), 키를 안 넣은 환경에서 ❌ 를
+    내면 운영자가 손쓸 수 없는 경고가 매일 온다(#260 못 고칠 ❌ 는 진짜 ❌ 를
+    가린다). 그런 자리는 ⚠️ 로 사실만 말한다(#41 뒤처진 사실은 그대로).
+    `key_present=None` 이면 환경에서 읽는다(`main()` 이 먼저 load_dotenv, #23)."""
+    import os
     from trade import customs, customs_provisional as cp
+    if key_present is None:
+        key_present = bool(os.environ.get("TRADE_DATA_GO_KR_KEY"))
     bad: list[str] = []
     _p("\n" + "=" * 72)
     _p("⑥ 잠정 수집 신선도 (OpenAPI · 🟢 박스가 읽는 customs.db)")
     _p("=" * 72)
     if not Path(customs_db).exists():
+        if not key_present:
+            _p(f"{_WARN} {customs_db} 없음 · TRADE_DATA_GO_KR_KEY 미설정 — 잠정 수집 미구성")
+            return []
         _p(f"{_NG} {customs_db} 없음")
         return [f"customs.db 없음({customs_db}) — 잠정 박스·산업트렌드가 통째로 빈다"]
     with customs.session(customs_db) as conn:
         fetched = cp.load_fetched_at(conn)
     txt, stale = cp.prov_fetch_note(fetched)
+    if stale and not key_present:
+        # 키가 없으면 수집 자체가 설계상 안 돈다 — 사실은 적되 결함으로 세지 않는다.
+        _p(f"{_WARN} {txt} · TRADE_DATA_GO_KR_KEY 미설정 — 수집이 설계상 안 돈다")
+        return []
     _p(f"{_mark(not stale)} {txt}")
     if stale:
         bad.append(f"잠정 수집 정지: {txt}")
