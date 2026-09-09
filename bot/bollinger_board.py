@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from bot.bollinger import (PHASE, avg5, breakouts_by_date, breakouts_on,
+from bot.bollinger import (PHASE, avg5, avg5_extremes, breakouts_by_date, breakouts_on,
                            energy_phase, history_pct_rank, level_of,
                            level_thresholds, merge_series, series_rows,
                            trend, weak_streak, weak_streak_note,
@@ -55,6 +55,12 @@ _MIN_SCAN_RATIO = 0.7
 # `_TABLE_ROWS >= max(_DEFAULT_CAP)` 를 강제하므로 유니버스를 키우면 여기도 같이
 # 올려야 한다(#67 리터럴 대신 불변식). 초과분 '외 N종목' 표기는 안전망으로만(#45).
 _TABLE_ROWS = 1000
+# 차트가 그리는 세션 수 — 5일 평균 최저·최고 카드도 **같은 창**을 본다(#38·#51).
+_CHART_ROWS = 120
+# 돌파 종목 표를 날짜별로 저장해 두는 세션 수. 카드는 저장 시계열에서 오는데
+# 표만 이번 실행의 원천에서 만들면 원천이 하루 늦는 날 카드는 21종목인데 표는
+# 빈칸이 된다(2026-09-10 KR·JP 실측, #325) — 표도 마지막 거래일 기준으로 저장한다.
+_ROWS_KEEP = 5
 
 # 유니버스 기본 크기. KR·US·CN_A 는 지수 구성종목이라 이 값이 상한이 아니라
 # 사실상 그 지수의 크기이고, JP/HK/TW 는 그 시장에 검증된 지수 구성종목 원천이
@@ -856,6 +862,79 @@ def save_series(market: str, series: dict) -> None:
         log.warning("bollinger: %s 시계열 저장 실패: %s", market, exc)
 
 
+def rows_path(market: str) -> Path:
+    return _SERIES_DIR / f"rows_{(market or '').upper()}.json"
+
+
+def load_rows(market: str) -> dict:
+    """저장된 돌파 종목 표 {날짜: {"rows": [...], "saved_at": "YYYY-MM-DD HH:MM"}}.
+    graceful {} — 파일이 없으면 표 폴백이 없을 뿐 카드·차트는 그대로다."""
+    p = rows_path(market)
+    try:
+        if p.exists():
+            d = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(d, dict):
+                return {str(k): v for k, v in d.items()
+                        if isinstance(v, dict) and isinstance(v.get("rows"), list)}
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("bollinger: %s 종목 표 읽기 실패: %s", market, exc)
+    return {}
+
+
+def merge_rows(stored: dict, fresh: dict, saved_at: str,
+               keep: int = _ROWS_KEEP) -> dict:
+    """저장 표 + 이번 실행 표 → 최근 `keep` 세션만 남긴 새 dict(순수).
+    이번 실행이 만든 날짜는 **덮어쓴다**(늦게 온 봉 정정 — `merge_series` 와
+    같은 규율, #299). 저장돼 있던 옛 날짜는 그대로 두되 창 밖이면 버린다."""
+    out = {str(k): dict(v) for k, v in (stored or {}).items()}
+    for k, rows in (fresh or {}).items():
+        out[str(k)] = {"rows": list(rows or []), "saved_at": saved_at}
+    for k in sorted(out)[:max(0, len(out) - keep)]:
+        out.pop(k, None)
+    return out
+
+
+def save_rows(market: str, rows_by_date: dict) -> None:
+    """원자적 쓰기(#280) — 시계열과 같은 이유."""
+    p = rows_path(market)
+    try:
+        _SERIES_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rows_by_date, ensure_ascii=False),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("bollinger: %s 종목 표 저장 실패: %s", market, exc)
+
+
+def pick_table_source(asof, count_dates, stored_rows, *, partial: bool,
+                      provisional, expected, scan=None) -> tuple[str, str]:
+    """기준일 표를 어디서 가져오나 — ("run"|"stored"|"none", 문구). 순수(#41).
+
+    우선순위: ① 이번 실행이 그 날짜를 전수 스캔으로 만들었다 → run
+    ② 저장분에 그 날짜 표가 있다 → stored(문구 = 왜 이번 실행 것을 못 썼는지 +
+    저장분 수집 시각) ③ 둘 다 아니면 none(문구 = `rows_gap_reason` 또는 부분 스캔).
+    ②가 없던 것이 2026-09-10 "왜 돌파종목이 안 나와" 의 원인이다(#325) — 카드는
+    저장 시계열이 답했는데 표만 이번 원천에 매여 있었다."""
+    in_run = asof in (count_dates or set())
+    if in_run and not partial:
+        return "run", ""
+    if partial:
+        sc = scan or {}
+        why = (f"이번 수집이 부분 스캔({sc.get('kept', '?')}/{sc.get('universe', '?')})"
+               "이라 이번 값을 쓰지 않았습니다")
+    else:
+        why = rows_gap_reason(asof, count_dates, provisional, expected)
+    rec = (stored_rows or {}).get(str(asof))
+    if rec is not None:
+        return "stored", (f"{why} · 표는 저장분"
+                          f"({rec.get('saved_at') or '수집 시각 미기록'} KST 수집)")
+    if partial:
+        return "none", (f"{why} — 종목 표를 만들지 않았습니다"
+                        "(카드 수치는 저장된 전수 스캔 기준)")
+    return "none", why
+
+
 # ── 시총·종목명 ────────────────────────────────────────────────────────────
 def _overlay(rows: list, market: str, uni: dict) -> None:
     """돌파 종목 행에 시총·표시명을 채운다(in-place).
@@ -932,6 +1011,7 @@ def build_market(market: str, *, write: bool = True,
         pass
 
     stored = load_series(m)
+    stored_rows = load_rows(m)
     period = (_PERIOD_LIVE if len(stored) >= _BACKFILL_IF_ROWS_UNDER
               else _PERIOD_BACKFILL)
     closes, scan = _download_closes(list(uni), period)
@@ -1003,21 +1083,31 @@ def build_market(market: str, *, write: bool = True,
     rank, rank_reason = history_pct_rank(rows_hist)
     streak = weak_streak(rows_hist)
 
-    # ⚠️ 기준일이 이번 수집 창 **밖**이면(부분 스캔이라 저장분을 그대로 쓰는
-    # 경우 등) 표를 만들 수 없다 — 그걸 '돌파 0건'이라 적으면 재지 않은 것을
-    # 사실로 말하는 것이다(#54·#43).
-    rows_reason = ("" if asof in counts else
-                   f"{asof} 은 이번 수집 창 밖이라 종목 표를 만들지 못했습니다")
-    if partial and not rows_reason:
-        # ⚠️ 카드의 개수는 **저장된 전수 스캔**에서 오고 표는 이번 **부분**
-        # 스캔에서 나온다 — 나란히 놓으면 "17종목" 위에 9행짜리 표가 앉는다
-        # (#33·#45 총계와 소계는 같은 모집단이어야 한다).
-        rows_reason = ("이번 수집이 부분 스캔이라 종목 표를 만들지 "
-                       "않았습니다(카드 수치는 저장된 전수 스캔 기준)")
-    want = ([asof] if asof in counts else []) + (
-        [provisional["date"]] if provisional else [])
+    # 표는 최근 몇 세션치를 만들어 **저장**한다 — 카드·차트는 저장 시계열(마지막
+    # 거래일)에서 오는데 표만 이번 원천에 매여 있으면 원천이 하루 늦는 날
+    # "21종목" 카드 아래 표가 비었다(2026-09-10 KR·JP, #325). 부분 스캔이면
+    # 시계열과 같은 이유로 저장하지 않는다(#280).
+    recent_dates = sorted(counts)[-_ROWS_KEEP:]
+    want = recent_dates + ([provisional["date"]] if provisional else [])
     detail = breakouts_on(closes, want) if want else {}
-    table = detail.get(asof) or []
+    if write and not partial:
+        stored_rows = merge_rows(
+            stored_rows, {d: detail.get(d) or [] for d in recent_dates},
+            _now_kst().strftime("%Y-%m-%d %H:%M"))
+        save_rows(m, stored_rows)
+    rows_basis, rows_note = pick_table_source(
+        asof, set(counts), stored_rows, partial=partial,
+        provisional=provisional, expected=expected, scan=scan)
+    # ⚠️ 표를 못 만들면 '돌파 0건'이 아니라 **사유**를 적는다(#54·#43) — 그리고
+    # 카드의 개수(저장 전수 스캔)와 표의 행수(이번 부분 스캔)를 나란히 놓지
+    # 않는다(#33·#45 총계와 소계는 같은 모집단이어야 한다).
+    rows_reason = rows_note if rows_basis == "none" else ""
+    if rows_basis == "run":
+        table = detail.get(asof) or []
+    elif rows_basis == "stored":
+        table = [dict(r) for r in (stored_rows.get(asof) or {}).get("rows") or []]
+    else:
+        table = []
     prov_rows = (detail.get(provisional["date"]) or []) if provisional else []
     if enrich:
         _overlay(table, m, uni)
@@ -1037,9 +1127,12 @@ def build_market(market: str, *, write: bool = True,
         "phase": energy_phase(lv, tr.get("dir")),
         "pct_rank": rank, "pct_rank_reason": rank_reason,
         "streak": streak, "streak_note": weak_streak_note(streak),
-        "chart": a5_hist[-120:],
+        "chart": a5_hist[-_CHART_ROWS:],
+        # 5일 평균 최저·최고 — 차트와 **같은 창**에서 고른다(#38·#51).
+        "a5_ext": avg5_extremes(a5_hist[-_CHART_ROWS:]),
         "rows": table[:_TABLE_ROWS], "rows_total": len(table),
         "rows_reason": rows_reason,
+        "rows_basis": rows_basis, "rows_note": rows_note if rows_basis == "stored" else "",
         "provisional": (dict(provisional, rows=prov_rows[:_TABLE_ROWS],
                              rows_total=len(prov_rows))
                         if provisional else None),
@@ -1265,6 +1358,31 @@ def _name_link(row: dict) -> str:
     return f"<a class='bb-nm' href='lookup/{_h.escape(tk)}'>{label}</a>"
 
 
+def rows_gap_reason(asof, count_dates, provisional, expected) -> str:
+    """기준일 표를 못 만든 사유(만들 수 있으면 ""). 순수 함수라 값으로 고정한다(#41).
+
+    2026-09-09 KR·JP 실측: 화면이 `{asof} 은 이번 수집 창 밖이라…` 하나로 적어
+    사용자가 "왜 9/9 가 수집 밖이냐" 고 물었다 — **창 크기(3개월)는 원인이 아니고**
+    갈래가 셋인데 처방이 다 다르다(#82·#292 틀린 라벨은 라벨이 없는 것보다 나쁘다):
+      (a) 이번 실행이 그 날짜를 **잠정(미확정)** 으로 분류했다 → 기대 세션 판정을 볼 것
+      (b) 이번 원천 데이터에 그 날짜가 **아예 없다**(야후가 KR·JP 에서 하루 늦는
+          알려진 증상, #301·#310) → 다음 주기에 따라잡는다
+      (c) 위 둘이 아닌데 없다 → 숫자를 그대로 적어 다음 라운드가 재게 한다
+          (`count_dates` 가 빈 경우는 `build_market` 에선 도달하지 않는다 — 방어용)
+    카드 수치는 저장분(마지막 거래일 기준)에서 오므로 그 사실도 같이 적는다(#45).
+    """
+    if asof in (count_dates or set()):
+        return ""
+    exp = f" · 기대 완결 세션 {expected}" if expected else ""
+    if provisional and str(provisional.get("date") or "") == str(asof):
+        return (f"{asof} 은 이번 실행에서 잠정(미확정) 봉으로 분류돼 확정 표를 "
+                f"만들지 않았습니다{exp} — 카드 수치는 저장분(마지막 거래일) 기준")
+    newest = max(count_dates) if count_dates else None
+    got = f"이번 원천 최신 봉 {newest}" if newest else "이번 원천 데이터 없음"
+    return (f"{asof} 이 이번 수집 데이터에 없어 종목 표를 만들지 못했습니다"
+            f"({got}{exp}) — 카드 수치는 저장분(마지막 거래일) 기준")
+
+
 def _rows_table(rows: list, total: int, scanned, title: str) -> str:
     import html as _h
     if not rows:
@@ -1317,6 +1435,21 @@ def _mcap_cell(r: dict) -> str:
         return _n(r.get("mcap"), 0)
 
 
+def _ext_card(label: str, e: dict | None, ext: dict | None) -> str:
+    """5일 평균 최저/최고 카드 한 장 — 값·날짜·그날 돌파 종목수·창을 한 칸에.
+    날짜 없이 값만 적으면 "언제냐"가 바로 온다(#43·#202)."""
+    import html as _h
+    if not e:
+        return (f"<div class='stat'><div class='k'>{_h.escape(label)}</div>"
+                "<div class='v'>—</div><div class='bb-note'>5일 평균이 있는 "
+                "세션이 없음</div></div>")
+    win = (ext or {}).get("window")
+    return (f"<div class='stat'><div class='k'>{_h.escape(label)}</div>"
+            f"<div class='v'>{_n(e.get('avg5'))}</div>"
+            f"<div class='bb-note'>{_h.escape(str(e.get('date')))} · 그날 돌파 "
+            f"{_n(e.get('count'), 0)}종목 · 차트 구간 {_n(win, 0)}세션 중</div></div>")
+
+
 def _market_section(d: dict) -> str:
     import html as _h
     if not d:
@@ -1364,6 +1497,8 @@ def _market_section(d: dict) -> str:
         f"<div class='bb-note'>"
         f"{_h.escape(d.get('pct_rank_reason') or '이 시장 자기 이력 대비')}"
         f" · 약세 연속 {d.get('streak', 0)}세션</div></div>"
+        f"{_ext_card('5일 평균 최저', (d.get('a5_ext') or {}).get('min'), d.get('a5_ext'))}"
+        f"{_ext_card('5일 평균 최고', (d.get('a5_ext') or {}).get('max'), d.get('a5_ext'))}"
         "</div>")
     warn = ""
     if d.get("partial"):
@@ -1386,6 +1521,11 @@ def _market_section(d: dict) -> str:
              if d.get("rows_reason") else
              _rows_table(d.get("rows") or [], d.get("rows_total") or 0,
                          d.get("scanned"), f"{d.get('asof')} 종가 기준 돌파 종목"))
+    if d.get("rows_note"):
+        # 표가 저장분이면 **그 사실과 시각**을 표 위에 적는다 — payload 가 밝힌
+        # 원천을 화면이 따라야 한다(#136·#43). 로그로만 알리면 사용자는 모른다.
+        table = (f"<div class='bb-warn'>💾 {_h.escape(str(d['rows_note']))}</div>"
+                 + table)
     if prov:
         table += _rows_table(prov.get("rows") or [],
                              prov.get("rows_total") or 0, prov.get("scanned"),
@@ -1509,7 +1649,16 @@ def render_page(data: dict, now=None) -> str:
 높게</b> 나오는 방향). 백분위는 <b>수준</b>만 말하고 <b>추이</b>는 옆 칸이 말합니다.<br>
 <b>차트</b> — 막대는 <b>일별 돌파 종목수</b>(옅은 막대 = 백필 구간), 주황
 선은 <b>5일 평균</b>, 초록·빨강 점선은 강세·약세 <b>문턱</b>입니다. 판정은 주황
-선이 점선의 어디에 있고 어느 방향으로 움직이는지로 읽으면 됩니다.<br>
+선이 점선의 어디에 있고 어느 방향으로 움직이는지로 읽으면 됩니다. 구간은
+<b>최근 {_CHART_ROWS}세션</b>이고 갱신마다 한 세션씩 굴러갑니다(왼쪽 끝이 빠지고
+오른쪽에 새 세션이 붙습니다).<br>
+<b>5일 평균 최저 · 최고</b> — 차트에 그려진 <b>그 구간 안</b>에서 5일 평균이
+가장 낮았던/높았던 날짜와 그 값, 그리고 <b>그날의 돌파 종목수</b>입니다. 구간이
+굴러가므로 값·날짜도 같이 바뀝니다. 같은 값이 여러 날이면 가장 최근 날짜를 적습니다.<br>
+<b>표가 "💾 저장분"이면</b> — 카드·차트는 마지막 거래일까지 저장된 시계열에서
+오는데, 이번 갱신의 원천 응답이 그 날짜 봉을 안 주면(야후가 하루 늦는 날) 표는
+이번 응답으로 만들 수 없습니다. 그때는 그 날짜를 마지막으로 만들었을 때 저장해 둔
+표를 보여 주고 수집 시각을 적습니다 — 카드의 종목수와 같은 목록입니다.<br>
 <b>기준일 · 잠정 · 갱신</b> — 보드는 3시간마다 갱신되지만 <b>기록은 마지막 완결
 세션(종가 확정)만</b> 남깁니다. 장중에는 "🕒 잠정" 줄에 그 시각까지의 개수를 따로
 보여 주고, 종가가 확정된 다음 갱신에서 기록합니다(장중 값은 카드·차트에 섞이지
@@ -1747,6 +1896,20 @@ def _why(market: str) -> int:
        f" · 약세 연속 {d.get('streak')}세션")
     _p(f"   돌파 종목 표 {len(d.get('rows') or [])}행 / 전체 "
        f"{d.get('rows_total')}종목")
+    if d.get("rows_reason"):
+        # 표를 못 만든 사유는 갈래가 셋이고 처방이 다르다 — 화면과 같은 문구를
+        # 진단도 찍어야 사용자가 본 것을 그대로 재현한다(#35).
+        _p(f"   ↪ {d['rows_reason']}")
+    if d.get("rows_note"):
+        _p(f"   💾 {d['rows_note']}")
+    _p(f"   표 출처 {d.get('rows_basis')} (run=이번 실행 · stored=저장분 · none=없음)")
+    ext = d.get("a5_ext") or {}
+    if ext:
+        _p(f"   5일 평균 극값(차트 구간 {ext.get('window')}세션 · 판정 {ext.get('judged')}행): "
+           f"최저 {_n(ext['min']['avg5'])} @ {ext['min']['date']}(돌파 {_n(ext['min']['count'], 0)}) · "
+           f"최고 {_n(ext['max']['avg5'])} @ {ext['max']['date']}(돌파 {_n(ext['max']['count'], 0)})")
+    else:
+        _p("   5일 평균 극값: 판정할 행 없음")
     after = load_series(m)
     _p("")
     _p(f"✅ 시계열 불변 확인 — {len(before)}행 → {len(after)}행"
