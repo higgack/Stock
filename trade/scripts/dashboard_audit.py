@@ -76,13 +76,14 @@ def _data_dir() -> Path:
 def parse_header(html: str) -> dict | None:
     """index.html 헤더의 7개 숫자 + 갱신시각. 파싱 실패 = None(호출부가 ❌).
 
-    ⚠️ 갱신시각은 **UTC 표기**다(`갱신 2026-08-20 06:40 UTC` —
-    dashboard.py:690 `strftime("%Y-%m-%d %H:%M UTC")`). 처음 쓴 정규식은
-    숫자·기호만 받아 'UTC' 글자에서 통째로 미매칭됐다 — 픽스처를 실제 렌더
-    문자열로 안 만들었으면 이 감사는 영원히 '파싱 0건 ❌'만 찍었을 것이다
-    (#54: 원천 형식을 원천 코드로 확인하고 시작할 것)."""
+    갱신시각은 2026-09-09 부터 **KST 표기**(`갱신 2026-09-09 21:40 KST`, 규칙
+    10a — 그 전엔 이 페이지만 UTC 였다). 옛 렌더(UTC)도 배포 직후 5분 동안은
+    살아 있으므로 둘 다 받고 `updated` 에 접미를 그대로 남긴다 — 비교하는 쪽이
+    접미로 타임존을 정한다. 처음 쓴 정규식은 숫자·기호만 받아 'UTC' 글자에서
+    통째로 미매칭됐다 — 픽스처를 실제 렌더 문자열로 안 만들었으면 이 감사는
+    영원히 '파싱 0건 ❌'만 찍었을 것이다(#54)."""
     m = re.search(
-        r"갱신 ([0-9 :.\-]+ UTC) · 총 ([\d,]+)건 \(최신 ([\d,]+)개\) · "
+        r"갱신 ([0-9 :.\-]+ (?:UTC|KST)) · 총 ([\d,]+)건 \(최신 ([\d,]+)개\) · "
         r"수출 ([\d,]+) / 수입 ([\d,]+) · 잠정 ([\d,]+) / 확정 ([\d,]+) · "
         r"품목 ([\d,]+)", html)
     if not m:
@@ -155,10 +156,9 @@ def audit_index(dash_dir: Path, db_path: Path) -> list[str]:
     _p("")
     _p("② 갱신 신선도 (5분 재렌더 주기)")
     try:
-        # 헤더 시각은 UTC(위 parse_header 주석) — UTC 로 비교해야 9시간 오차가
-        # 없다(실수기록 전역표기 10a: 시각 비교는 명시 타임존).
-        upd = datetime.strptime(hdr["updated"][:16], "%Y-%m-%d %H:%M").replace(
-            tzinfo=timezone.utc)
+        # 접미(KST/UTC)가 타임존을 정한다 — 가정하면 9시간 오차(규칙 10a).
+        tz = _KST if hdr["updated"].endswith("KST") else timezone.utc
+        upd = datetime.strptime(hdr["updated"][:16], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
         age_min = (datetime.now(timezone.utc) - upd).total_seconds() / 60
         ok = age_min <= _INDEX_MAX_AGE_MIN
         _p(f"{_mark(ok)} 갱신 {hdr['updated']} — {age_min:.0f}분 전 "
@@ -340,6 +340,64 @@ def audit_backlog(dash_dir: Path) -> list[str]:
     return bad
 
 
+# ⑥ 잠정 수집 신선도 · ⑦ 헤더 갈래 — 2026-09-09 사용자 "수출입 대시보드가 정말
+# 문제가 많아": 채널 알림이 7/21 에 멈춰 헤더가 50일 낡았는데 감사는 ①~⑤ 어디서도
+# 세지 않았고, 🟢 잠정 박스는 데이터 창만 적어 수집기가 멈춰도 똑같아 보였다.
+# 둘 다 사람이 눈으로 먼저 잡았다(#43·#52·#303 감사가 안 세는 것은 없는 것과 같다).
+def audit_provisional(customs_db: Path) -> list[str]:
+    """OpenAPI 잠정 수집 시각 — 화면 🟢 박스가 읽는 그 값(`load_fetched_at`, #35).
+    없으면 ❌(대조 0건은 통과가 아니다 #54), 문턱(`_FETCH_STALE_H`) 넘으면 ❌."""
+    from trade import customs, customs_provisional as cp
+    bad: list[str] = []
+    _p("\n" + "=" * 72)
+    _p("⑥ 잠정 수집 신선도 (OpenAPI · 🟢 박스가 읽는 customs.db)")
+    _p("=" * 72)
+    if not Path(customs_db).exists():
+        _p(f"{_NG} {customs_db} 없음")
+        return [f"customs.db 없음({customs_db}) — 잠정 박스·산업트렌드가 통째로 빈다"]
+    with customs.session(customs_db) as conn:
+        fetched = cp.load_fetched_at(conn)
+    txt, stale = cp.prov_fetch_note(fetched)
+    _p(f"{_mark(not stale)} {txt}")
+    if stale:
+        bad.append(f"잠정 수집 정지: {txt}")
+    return bad
+
+
+# 갈래 → (감사 기호, 처방). ok 만 ✅ · channel_quiet 는 원천이 조용한 것이라 ⚠️
+# (우리가 고칠 게 없다 — #260 못 고칠 ❌ 는 진짜 ❌ 를 가린다) · 나머지는 ❌.
+_BRANCH_MARK = {
+    "ok": ("✅", ""),
+    "channel_quiet": ("⚠️", "리스너는 살아 있고 채널이 조용 — 채널 상태·trade-bot 로그 확인"),
+    "listener": ("❌", "systemctl status trade-bot"),
+    "ingest": ("❌", "trade-bot-dashboard-refresh.timer / ingest_inbox 로그"),
+    "parser": ("❌", "unstored_check 백로그(eval_misses.jsonl)로 파서 맞춤"),
+    "unknown": ("⚠️", "cd ~/stock-trade && .venv/bin/python -m trade.dashboard --why"),
+}
+
+
+def audit_header_branch(store_db: Path, data_dir: Path) -> list[str]:
+    """헤더 '현재 잠정/확정' 이 왜 그 값인지 — `--why` 와 **같은 사실 수집기**
+    (`trade.dashboard.header_facts`)를 태운다. 판정을 여기 복제하지 않는다(#38·#169)."""
+    from trade.dashboard import header_facts
+    bad: list[str] = []
+    _p("\n" + "=" * 72)
+    _p("⑦ 헤더 갈래 (채널 알림 ↔ OpenAPI · trade.dashboard --why 와 같은 판정)")
+    _p("=" * 72)
+    f = header_facts(store_db, data_dir)
+    v = f.get("verdict") or {}
+    branch = v.get("branch") or "unknown"
+    mark, remedy = _BRANCH_MARK.get(branch, _BRANCH_MARK["unknown"])
+    miss = f.get("missing") or []
+    _p(f"{mark} 판정 {branch} — {v.get('reason', '')}"
+       + (f" · 누락 발표 {len(miss)}건(최근 {miss[-1][0]} {miss[-1][1]})" if miss else ""))
+    if remedy:
+        _p(f"   처방: {remedy}")
+    if mark == _NG:
+        bad.append(f"헤더 채널 경로 {branch}: {v.get('reason', '')} — {remedy}")
+    return bad
+
+
 def run_audit() -> list[str]:
     data = _data_dir()
     dash_dir = data / "dashboard"
@@ -351,7 +409,9 @@ def run_audit() -> list[str]:
     for fn, args in ((audit_index, (dash_dir, db_path)),
                      (audit_siblings, (dash_dir,)),
                      (audit_archives, (dash_dir,)),
-                     (audit_backlog, (dash_dir,))):
+                     (audit_backlog, (dash_dir,)),
+                     (audit_provisional, (data / "customs.db",)),
+                     (audit_header_branch, (db_path, data))):
         try:
             bad += fn(*args)
         except Exception as exc:                              # noqa: BLE001

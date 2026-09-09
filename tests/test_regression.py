@@ -14406,23 +14406,46 @@ class TestTradeDashboardAudit20260820:
     KST)로 돈다. 여기선 순수 파서·계약을 고정한다(데이터 실측은 VM 몫)."""
 
     def test_header_parser_reads_the_real_render_format(self):
-        # 실제 렌더는 **UTC 표기·콤마 없음**(dashboard.py:690). 처음 정규식은
+        # 실제 렌더는 **접미 표기·콤마 없음**(dashboard.py `갱신 …`). 처음 정규식은
         # 숫자·기호만 받아 'UTC' 글자에서 통째로 미매칭 — 픽스처를 실제 형식
         # 으로 만들지 않았으면 영원히 '파싱 0건 ❌'만 찍었다(#54).
+        # 2026-09-09 다시 씀(#222): 렌더가 KST 로 바뀌었고(규칙 10a) 옛 UTC 렌더도
+        # 배포 직후 5분은 살아 있으므로 둘 다 받는다 — 접미는 그대로 남긴다.
         from trade.scripts.dashboard_audit import parse_header
-        real = ("갱신 2026-08-20 06:40 UTC · 총 3036건 (최신 1054개) · "
-                "수출 2000 / 수입 1036 · 잠정 1500 / 확정 1536 · 품목 88")
-        h = parse_header(real)
-        assert h == {"updated": "2026-08-20 06:40 UTC", "total": 3036,
-                     "latest": 1054, "export": 2000, "import": 1036,
-                     "prelim": 1500, "final": 1536, "items": 88}
+        for suffix in ("KST", "UTC"):
+            real = (f"갱신 2026-08-20 06:40 {suffix} · 총 3036건 (최신 1054개) · "
+                    "수출 2000 / 수입 1036 · 잠정 1500 / 확정 1536 · 품목 88")
+            h = parse_header(real)
+            assert h == {"updated": f"2026-08-20 06:40 {suffix}", "total": 3036,
+                         "latest": 1054, "export": 2000, "import": 1036,
+                         "prelim": 1500, "final": 1536, "items": 88}
         assert parse_header("아무 관계 없는 텍스트") is None
 
     def test_producer_really_writes_that_format(self):
         # 생산자 쪽도 같은 테스트에서 고정 — 한쪽만 바뀌면 감사가 눈이 먼다(#54b).
+        # 소스 문자열이 아니라 **렌더 결과**를 파서에 태운다(#19) — 그리고 시각은
+        # KST 여야 한다(규칙 10a: 이 페이지만 UTC 였다, 2026-09-09).
+        import re
+        from trade.scripts.dashboard_audit import parse_header
         src = open("trade/dashboard.py", encoding="utf-8").read()
-        assert 'strftime("%Y-%m-%d %H:%M UTC")' in src
         assert "총 {s.get('total', 0)}건 (최신 {len(latest_ids)}개)" in src
+        html = self._render_index()
+        hdr = parse_header(html)
+        assert hdr is not None, "감사 파서가 실제 렌더를 못 읽는다"
+        assert hdr["updated"].endswith("KST"), hdr["updated"]
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} KST", hdr["updated"])
+
+    @staticmethod
+    def _render_index() -> str:
+        import tempfile
+        from pathlib import Path
+        import trade.dashboard as td
+        import trade.store as ts
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "store.db"
+            ts.open_db(db).close()
+            return td.render_html(db, customs_db_path=Path(d) / "nope.db",
+                                  hs_map_path=Path(d) / "nope.tsv")
 
     def test_lazy_refs_matched_by_real_markers_only(self):
         # index 의 lazy 참조 3형태(data-src / HISTORY_SRC / INDUSTRY_CSV_SRC)만
@@ -53400,3 +53423,205 @@ class TestBollingerReviewFindings20260909:
         m = re.search(r"^# BOLLINGER_UNIVERSE_CAP=(\d+)", env, re.M)
         assert m, "공용 캡 예시가 사라졌다"
         assert int(m.group(1)) >= max(_DEFAULT_CAP.values()), m.group(1)
+
+
+class TestTradeDashboardRecheck20260909:
+    """2026-09-09 사용자 "수출입 대시보드가 정말 문제가 많아. 전체적으로 좀 다시
+    점검해줘". 코드 전수 점검에서 나온 구조 결함 — 한 페이지에 잠정/확정 정의가
+    넷(채널·OpenAPI·달력 KST·달력 서버로컬), 시각이 셋(헤더만 UTC), 가장 큰
+    섹션(잠정 속보+산업트렌드)과 형제 페이지 4종 재생성이 bare `except` 로 사라지고,
+    🟢 박스는 데이터 창만 적어 **수집기가 멈춘 날과 정상인 날이 같아 보였다**(#304).
+    감사(dashboard_audit)는 그 어느 것도 세지 않았고(#303), `--why` ⑧ 은 store.db
+    를 열어 늘 '저장된 잠정 신호 없음' 을 찍었다(#35 감사가 화면과 다른 저장소)."""
+
+    # ---- 🟢 잠정 박스: 값 수집 시각 -------------------------------------
+    def test_fetch_note_says_when_and_flags_a_stalled_fetcher(self):
+        from datetime import datetime, timedelta, timezone
+        from trade import customs_provisional as cp
+        now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+        txt, stale = cp.prov_fetch_note(None, now)
+        assert stale and "미기록" in txt                       # 침묵이 최악(#43)
+        txt, stale = cp.prov_fetch_note(now - timedelta(hours=2), now)
+        assert not stale and txt.startswith("값 수집 09-09 19:00 KST (2시간 전)"), txt
+        txt, stale = cp.prov_fetch_note(now - timedelta(hours=13), now)
+        assert stale and "⚠️" in txt and "13시간째" in txt, txt
+        # 문턱 바로 아래는 정상 — 늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260)
+        assert not cp.prov_fetch_note(now - timedelta(hours=cp._FETCH_STALE_H - 0.1), now)[1]
+        assert cp._FETCH_STALE_H >= 2 * 6.0, "refresh --if-stale(6h) 의 2배 이상이어야 정상 주기에 안 뜬다"
+
+    def test_box_shows_fetch_time_as_a_visible_line(self):
+        from datetime import datetime, timezone
+        from trade import customs_provisional as cp
+        sig = {"exp_item": {"ym": "2026-08", "decile": "FULL", "window": "전월(1~말일)",
+                            "total_usd": 983e8, "total_yoy": 68.7, "total_mom": -0.7, "items": []}}
+        fa = datetime.now(timezone.utc)
+        html = cp.render_box(sig, fetched_at=fa)
+        # 툴팁이 아니라 보이는 줄(#228) + DOM 대조 축(#48)
+        assert "<div class='ind-prov-fetch'>🕒 값 수집" in html
+        assert f"data-prov-fetched='{fa.isoformat()}'" in html
+        html0 = cp.render_box(sig)                              # 미기록도 말한다
+        assert "ind-prov-fetch is-stale" in html0 and "미기록" in html0
+
+    def test_load_fetched_at_is_read_only_and_takes_the_newest(self):
+        import sqlite3
+        from datetime import datetime, timezone
+        from trade import customs_provisional as cp
+        conn = sqlite3.connect(":memory:")
+        assert cp.load_fetched_at(conn) is None
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name='customs_provisional'").fetchall(), \
+            "읽기만 해야 한다 — 진단·감사가 부른다(#264)"
+        cp.ensure_schema(conn)
+        conn.execute("INSERT INTO customs_provisional VALUES ('a','{}',NULL,'2026-09-08T01:00:00+00:00')")
+        conn.execute("INSERT INTO customs_provisional VALUES ('b','{}',NULL,'2026-09-09T01:00:00')")
+        got = cp.load_fetched_at(conn)
+        assert got == datetime(2026, 9, 9, 1, 0, tzinfo=timezone.utc)   # naive = UTC(저장 규약)
+
+    def test_page_wires_fetched_at_into_the_box(self, monkeypatch, tmp_path, caplog):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 화면 경로를 태운다."""
+        import logging
+        import trade.dashboard as td
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "customs.db"
+        with customs.session(db) as conn:
+            cp.ensure_schema(conn)
+            cp.store_signal(conn, "exp_item", {"ym": "2026-08", "decile": "FULL", "window": "전월(1~말일)",
+                                                "total_usd": 1.0, "total_yoy": 1.0, "items": []}, rows=None)
+        html = td._load_industry_html(db)
+        assert "🕒 값 수집" in html and "data-prov-fetched='20" in html
+
+    def test_industry_section_failure_is_logged_not_swallowed(self, monkeypatch, tmp_path, caplog):
+        import logging
+        import trade.dashboard as td
+        from trade import customs
+        db = tmp_path / "customs.db"
+        db.write_bytes(b"")
+        def _boom(*a, **k):
+            raise RuntimeError("disk on fire")
+        monkeypatch.setattr(customs, "session", _boom)
+        with caplog.at_level(logging.WARNING, logger="trade-dashboard"):
+            assert td._load_industry_html(db) == ""
+        assert any("disk on fire" in r.getMessage() and "잠정 속보" in r.getMessage()
+                   for r in caplog.records), "bare return '' 로 탭이 사라지면 단서가 0 이다(#12)"
+
+    def test_no_bare_except_pass_left_in_dashboard_main(self):
+        import ast
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        bare = [h.lineno for h in ast.walk(main) if isinstance(h, ast.ExceptHandler)
+                and len(h.body) == 1 and isinstance(h.body[0], ast.Pass)]
+        assert bare == [], f"main() 의 bare except-pass(형제 페이지 재생성 실패가 무음): {bare}"
+
+    # ---- 잠정/확정 달력 판정: 단일 출처 + KST -------------------------------
+    def test_period_report_stage_follows_industry_label_in_kst(self, monkeypatch):
+        from datetime import date
+        from trade import industry, period_report as pr
+        assert pr._release_stage("2026-08", date(2026, 9, 14)) == "잠정"
+        assert pr._release_stage("2026-08", date(2026, 9, 15)) == "확정"
+        assert pr._release_stage("garbage") == ""
+        # 배선: industry 의 판정을 갈아끼우면 여기도 따라온다(#38 단일 출처)
+        monkeypatch.setattr(industry, "_month_status_label", lambda ym, today=None: "테스트(…)")
+        assert pr._release_stage("2026-08", date(2026, 9, 15)) == "테스트"
+        # 그리고 오늘을 안 주면 KST 로 잰다 — `date.today()`(서버 로컬) 회귀 금지
+        import ast
+        src = open("trade/period_report.py", encoding="utf-8").read()
+        fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "_release_stage")
+        # 주석이 아니라 **호출 노드**를 본다(#59b — 설명 주석이 검사를 만족시켰다)
+        calls = [ast.unparse(c.func) for c in ast.walk(fn) if isinstance(c, ast.Call)]
+        assert "date.today" not in calls, calls
+
+    # ---- --why ⑧ 가 store.db 를 열던 결함 + 감사와 같은 사실 수집기 ------------
+    def test_header_facts_reads_openapi_from_customs_db_not_store_db(self, monkeypatch, tmp_path):
+        import contextlib
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {"ok": False, "err": "x"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        seen = []
+        def _session(*a, **k):
+            seen.append((a, k))
+            return contextlib.nullcontext(None)
+        monkeypatch.setattr(customs, "session", _session)
+        from datetime import date
+        f = td.header_facts(db, tmp_path, today=date(2026, 9, 9))
+        assert seen == [((), {})], f"OpenAPI 는 customs.db 기본 경로에서 읽어야 한다(#35): {seen}"
+        assert f["verdict"]["branch"] in {"ok", "unknown", "channel_quiet", "listener", "ingest", "parser"}
+        assert db.stat().st_size > 0
+
+    def test_why_prints_fetch_time_line(self, monkeypatch, tmp_path, capsys):
+        import contextlib
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        from datetime import date
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {"ok": False, "err": "x"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {"exp_item": {"ym": "2026-08", "decile": "FULL", "window": "w"}})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        td._why_header(db, tmp_path, today=date(2026, 9, 9))
+        out = capsys.readouterr().out
+        assert "값 수집 시각 미기록" in out, "⑧ 이 창만 적고 언제 받았는지 안 적으면 #304 재발"
+
+    # ---- dashboard_audit ⑥⑦ ------------------------------------------------
+    def test_audit_provisional_counts_missing_and_stale(self, tmp_path, capsys):
+        from datetime import datetime, timedelta, timezone
+        from trade import customs, customs_provisional as cp
+        from trade.scripts import dashboard_audit as da
+        assert da.audit_provisional(tmp_path / "customs.db")        # 없음 = ❌(#54)
+        db = tmp_path / "customs.db"
+        with customs.session(db) as conn:
+            cp.ensure_schema(conn)
+            old = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+            conn.execute("INSERT INTO customs_provisional VALUES ('a','{}',NULL,?)", (old,))
+        bad = da.audit_provisional(db)
+        assert len(bad) == 1 and "정지" in bad[0]
+        with customs.session(db) as conn:
+            conn.execute("UPDATE customs_provisional SET fetched_at=?",
+                         (datetime.now(timezone.utc).isoformat(),))
+        assert da.audit_provisional(db) == []                         # 반대 증거(#25)
+        assert "⑥" in capsys.readouterr().out
+
+    def test_audit_header_branch_uses_the_shared_facts_and_maps_marks(self, monkeypatch, tmp_path, capsys):
+        import trade.dashboard as td
+        from trade.scripts import dashboard_audit as da
+        calls = []
+        def _facts(db, data_dir, today=None):
+            calls.append((db, data_dir))
+            return {"verdict": {"branch": _facts.branch, "reason": "r"},
+                    "missing": [("2026-09-01", "monthly_preliminary")]}
+        monkeypatch.setattr(td, "header_facts", _facts)
+        for branch, is_bad in (("ok", False), ("channel_quiet", False), ("unknown", False),
+                               ("listener", True), ("ingest", True), ("parser", True)):
+            _facts.branch = branch
+            bad = da.audit_header_branch(tmp_path / "store.db", tmp_path)
+            assert bool(bad) is is_bad, (branch, bad)
+            if is_bad:
+                assert branch in bad[0]
+        out = capsys.readouterr().out
+        assert "⚠️ 판정 channel_quiet" in out and "❌ 판정 listener" in out
+        assert calls and calls[0] == (tmp_path / "store.db", tmp_path)
+        # 판정 글자는 판정에만 — 설명 문구에 ❌ 를 쓰면 sweep 이 결함으로 센다(#289)
+        for line in out.splitlines():
+            if "판정" not in line:
+                assert "❌" not in line and "⚠️" not in line, line
+
+    def test_run_audit_actually_calls_the_new_sections(self, monkeypatch, tmp_path):
+        from trade.scripts import dashboard_audit as da
+        monkeypatch.setenv("TRADE_DATA_DIR", str(tmp_path))
+        called = []
+        for name in ("audit_index", "audit_siblings", "audit_archives", "audit_backlog",
+                     "audit_provisional", "audit_header_branch"):
+            monkeypatch.setattr(da, name, (lambda n: (lambda *a: called.append(n) or []))(name))
+        assert da.run_audit() == []
+        assert called == ["audit_index", "audit_siblings", "audit_archives", "audit_backlog",
+                          "audit_provisional", "audit_header_branch"]
