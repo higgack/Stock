@@ -456,8 +456,9 @@ def _compute_stats(records: list[dict]) -> dict:
     # 단가 미등재 호출 수 — 그만큼 위 금액이 **과소집계**다. 판정은 저장된
     # 표식이 아니라 **단가표에 직접 대조**한다(쓰는 곳이 13곳이라 표식만 믿으면
     # 샌다 · 옛 레코드엔 표식이 아예 없다 — 독립 리뷰 실측, #24·#86).
-    unpriced_calls = 0
-    unpriced_nomodel_calls = 0
+    # 갈래·개수·구간을 **한 번에** 단일 출처가 낸다(#38) — 여기서 또 세면
+    # CLI(`--check`)·`/usage` 와 갈린다. 옛 판은 이 루프 안에서 따로 셌다.
+    unpriced_split = _ut.split_unpriced(usage)
     # Per-subsystem breakdown (분석 / Screener / …) so the main dashboard
     # surfaces where the total bill is coming from. Screener Pro calls
     # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
@@ -474,12 +475,6 @@ def _compute_stats(records: list[dict]) -> dict:
         # (trade 루프와 동일 불변식).
         cost = r.get("cost_usd", 0) or 0
         total_cost_usd += cost
-        if _ut.counts_as_unpriced(r):
-            unpriced_calls += 1
-            # 처방이 다른 갈래를 같이 센다 — 한 라벨로 묶으면 `unknown` 에
-            # '요율표에 추가' 를 시키게 된다(#82·#34, VM 실측 12콜).
-            if _ut.is_unrecorded_model(r):
-                unpriced_nomodel_calls += 1
         ts = r.get("ts")
         if not ts:
             continue
@@ -631,8 +626,11 @@ def _compute_stats(records: list[dict]) -> dict:
         "today_cost_usd": today_cost_usd,
         "month_cost_usd": month_cost_usd,
         "total_cost_usd": total_cost_usd,
-        "unpriced_calls": unpriced_calls,
-        "unpriced_nomodel_calls": unpriced_nomodel_calls,
+        # ⚠️ 옛 `unpriced_calls`/`unpriced_nomodel_calls` 는 지웠다 —
+        #    렌더가 `unpriced_split` 만 읽게 되면서 아무도 안 읽는 키가 됐고,
+        #    같은 함수에서 파생된 두 값을 대조하는 테스트는 동어반복이다
+        #    (#291·§작업 원칙 죽은 경로는 삭제).
+        "unpriced_split": unpriced_split,
         "month_cost_by_model": month_cost_by_model,
         "today_cost_by_sub_usd": today_cost_by_sub_usd,
         "month_cost_by_sub_usd": month_cost_by_sub_usd,
@@ -719,24 +717,15 @@ def _render_stats_panel(stats: dict) -> str:
     cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']} / 누적(전체)"]
     # ⚠️ 단가표에 없는 모델은 ₩0 으로 집계된다 — 말하지 않으면 카드가 '공짜'
     # 라고 거짓말한다(#43·#284). 창을 같이 밝힌다(#34).
-    _nomodel = stats.get("unpriced_nomodel_calls", 0)
-    _rate_gap = stats.get("unpriced_calls", 0) - _nomodel
     # ⚠️ 창을 '누적' 이라 적으면 안 된다 — 옆의 **금액**은 롤업까지 더한
     # 누적이지만 이 **계수**는 `usage.jsonl` 하나만 본다. 그렇다고 '30일' 도
     # 아니다: 로테이션은 `/usage` 를 칠 때만 도는 유일한 경로라(load_records)
     # 파일은 그보다 길 수 있다 — 재지 않은 창을 적지 않는다(#165, 리뷰 실측).
-    _win = "현재 원장"
-    # ⚠️ **두 갈래 모두 ₩0 으로 집계된다** — '실제 비용은 더 큼' 은 갈래와
-    # 무관한 사실이므로 양쪽에 적는다. 한쪽에만 두면 원장이 `unknown` 뿐인
-    # 날(VM 실측 12콜) 그 경고가 통째로 사라져 카드가 '공짜'라고 말한다
-    # (#43·#284 — 배지의 존재 이유다). 갈리는 건 **처방**이다(#82).
-    if _rate_gap:
-        cost_sub_parts.append(
-            f"⚠️ 단가 미등재 {_rate_gap}콜({_win}) — 실제 비용은 더 큼")
-    if _nomodel:
-        cost_sub_parts.append(
-            f"⚠️ 모델 미기록 {_nomodel}콜({_win}) — 실제 비용은 더 큼 · "
-            "기록 경로 문제(요율표 아님)")
+    # ⚠️ 문구는 `usage_tracker` 가 만든다 — 여기서 다시 적으면 `/usage` 와
+    # 갈린다(#38·#147, 실제로 그랬다). 구간을 같이 실어 82일 전 일회성이
+    # 현재 문제처럼 읽히지 않게 한다(#43·#202).
+    cost_sub_parts.extend(_ut.unpriced_notes(
+        stats.get("unpriced_split") or {}, "현재 원장"))
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
     # Per-subsystem breakdown. Surface only buckets with non-zero
