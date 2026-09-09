@@ -1595,15 +1595,11 @@ def _build_usage_report() -> str:
         f"  • 30일: {len(month_runs)}건",
         "",
         f"💰 <b>총 비용 (전체 surface 합산)</b> (₩{fx}/$)"
-        # ⚠️ 단가 미등재는 ₩0 으로 집계된다 — 말하지 않으면 '공짜'가 된다
-        # (#43·#284). 판정은 단가표에 직접 대조(#24·#86). 0 건이면 조용히.
-        + (f"  ⚠️ 단가 미등재 {_split_30d['missing_rate']}콜(30일) — 실제 비용은 더 큼"
-           if _split_30d["missing_rate"] else "")
-        # ⚠️ 둘 다 ₩0 으로 집계된다 — '더 큼' 은 양쪽에 적고(#43·#284) 갈리는
-        #    건 **처방**이다: `unknown` 은 요율표로 못 고친다(#82·#260).
-        + (f"  ⚠️ 모델 미기록 {_split_30d['no_model']}콜(30일) — 실제 비용은 "
-           "더 큼 · 기록 경로 문제"
-           if _split_30d["no_model"] else ""),
+        # ⚠️ ₩0 으로 집계되는 호출은 말하지 않으면 '공짜'가 된다(#43·#284).
+        #    문구·구간은 비용카드와 **같은 함수**가 만든다 — 여기서 따로
+        #    적었다가 한쪽만 고쳐진 적이 있다(#38·#147). 0 건이면 조용히.
+        + "".join(f"  {n}" for n in
+                  usage_tracker.unpriced_notes(_split_30d, "30일")),
         f"  • 오늘: <b>{krw(today_total_usd)}</b>  (${today_total_usd:.2f})",
         f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",
         f"  • 누적: <b>{krw(all_total_usd)}</b>  (${all_total_usd:.2f})",

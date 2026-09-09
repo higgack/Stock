@@ -50378,20 +50378,33 @@ class TestMainCostCardSurfacesUnpriced20260908:
                             lambda *a, **k: [self._rec(ut._UNPRICED_SAMPLE, now),
                                              self._rec("gemini-2.5-flash", now)])
         monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
-        st = d._compute_stats([])
-        assert st["unpriced_calls"] == 1, st["unpriced_calls"]
+        # ⚠️ 2026-09-09 다시 씀(#222): 옛 판은 `st["unpriced_calls"]` 를 읽었는데
+        # 그 키는 렌더가 `unpriced_split` 만 보게 되면서 아무도 안 읽어 지웠다
+        # (#291). 계약("집계기를 통째로 태워 수를 잰다")은 그대로이고, 이제
+        # **화면이 말하는 수**로 재므로 배선까지 함께 잡힌다.
+        st = dict(d._compute_stats([]))
+        st["total"] = 1
+        html = d._render_stats_panel(st)
+        assert "단가 미등재 1콜" in html, html
+        assert "단가 미등재 2콜" not in html, html
 
     def test_card_says_it_and_names_the_window(self, monkeypatch):
         """렌더를 **실제로 태운다** — 소스 grep 폴백은 옆 문구가 대신
         만족시킨다(#75·#19)."""
+        import time
         import bot.dashboard as d
-        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: [])
+        # ⚠️ 2026-09-09 세 번째로 다시 씀(#222): 옛 판은 `unpriced_calls` 를
+        # **주입**했는데, 렌더가 갈래·구간을 함께 든 `unpriced_split` 을 읽게
+        # 되면서 그 주입이 무시된다. 손으로 만든 stats 는 제품이 실제로 넣는
+        # 모양이 아니다(#155) → 집계기를 통째로 태운다(#20).
+        now = time.time()
+        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: [
+            self._rec("brand-new-model", now) for _ in range(4)])
         monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
         st = dict(d._compute_stats([]))
         # ⚠️ 분석 0건이면 패널이 통째로 빈 문자열이다 — 빈 픽스처는 껍데기만
         # 그리고 그러면 이 단언은 아무것도 안 잰다(#91c·#299).
         st["total"] = 1
-        st["unpriced_calls"] = 4
         html = d._render_stats_panel(st)
         # ⚠️ 2026-09-09 **두 번** 다시 씀(#222). ① 옛 판은 창을 '누적' 으로
         # 못박았는데 거짓이었다(옆의 **금액**만 롤업까지 더한 누적이고 이
@@ -50415,7 +50428,8 @@ class TestMainCostCardSurfacesUnpriced20260908:
         monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
         st = dict(d._compute_stats([]))
         st["total"] = 1
-        st["unpriced_calls"] = 0
+        # (옛 `st["unpriced_calls"] = 0` 주입은 지웠다 — 그 키는 이제 없고,
+        #  없는 키를 넣어 두면 다음 사람이 그게 읽힌다고 오해한다, #291.)
         html = d._render_stats_panel(st)
         assert html, "패널이 비면 아무것도 안 재는 것이다(#54)"
         assert "단가 미등재" not in html
@@ -50479,8 +50493,14 @@ class TestUsageCommandSurfacesUnpriced20260908:
         body = self._fn()
         calls = [ast.unparse(n.func) for n in ast.walk(ast.parse(body))
                  if isinstance(n, ast.Call)]
+        # ⚠️ 2026-09-09 다시 씀(#222): 문구까지 단일 출처로 올렸다 — 옛 판은
+        # 이 함수 **본문**에 `단가 미등재`/`모델 미기록` 리터럴이 있는지 봤는데,
+        # 그러면 문구를 공용 함수로 옮기는 순간 멀쩡한 코드가 빨간불이고
+        # (#19), 반대로 여기에 문구를 **복제**해도 통과한다. 계약은 "센 것도
+        # 쓴 것도 usage_tracker 가 낸다" 이므로 호출 둘을 잰다.
         assert "usage_tracker.split_unpriced" in calls, calls
-        assert "단가 미등재 " in body and "모델 미기록 " in body, body[-800:]
+        assert "usage_tracker.unpriced_notes" in calls, calls
+        assert "단가 미등재" not in body, "문구를 여기서 다시 적으면 갈린다"
 
     def test_usage_counts_unpriced_via_the_table(self, monkeypatch):
         """저장된 표식이 **없는** 옛 레코드도 세어져야 한다(#24·#86)."""
@@ -50985,9 +51005,15 @@ class TestUsageCheckUsesTheProductPredicate20260909:
         assert seg and want in seg[0] and "KST" in seg[0], (want, seg)
 
     def test_span_says_so_when_there_is_no_timestamp(self):
-        """못 재면 단정하지 않는다(#165) — 빈칸도 침묵도 아니다(#43)."""
+        """못 재면 단정하지 않는다(#165) — 빈칸도 침묵도 아니다(#43).
+
+        ⚠️ 2026-09-09 다시 씀(#222): 화면도 같은 구간을 찍게 되면서 포맷터를
+        CLI 전용 `_span(dict)` 에서 공용 `kst_span(first, last)` 로 올렸다
+        (#38 — 두 곳에 두면 카드와 CLI 가 다른 문자열을 낸다). 계약("못 재면
+        미기록이라고 말한다")은 그대로다.
+        """
         import bot.usage_tracker as ut
-        assert "미기록" in ut._span({"nomodel_first": 0.0, "nomodel_last": 0.0})
+        assert "미기록" in ut.kst_span(0.0, 0.0)
 
     def test_partial_read_is_unjudged_not_a_pass(self, monkeypatch, tmp_path):
         """읽다 끊긴 통계를 완결인 척 판정하면 안 된다(#41·#54)."""
@@ -51107,12 +51133,20 @@ class TestUnpricedSplitsByPrescription20260909:
         assert out["no_model_tokens"] == 1000, out
 
     def test_stats_expose_both_counts(self, monkeypatch):
+        """⚠️ 2026-09-09 다시 씀(#222): 옛 판은 `unpriced_calls`
+        ·`unpriced_nomodel_calls` 두 키를 읽었는데, 렌더가 `unpriced_split`
+        하나만 읽게 되면서 그 둘은 **아무도 안 읽는 키**가 됐고(지웠다),
+        같은 함수에서 파생된 값을 그 함수로 대조하면 동어반복이다(#291).
+        계약은 "카드가 두 갈래를 **각각** 센 수로 말한다" 이므로 렌더로 잰다.
+        """
         import bot.dashboard as d
         monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: self._rows())
         monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
-        st = d._compute_stats([])
-        assert st["unpriced_calls"] == 2, st
-        assert st["unpriced_nomodel_calls"] == 1, st
+        st = dict(d._compute_stats([]))
+        st["total"] = 1
+        html = d._render_stats_panel(st)
+        assert "단가 미등재 1콜" in html, html
+        assert "모델 미기록 1콜" in html, html
 
     def test_card_does_not_call_the_unrecorded_ones_a_rate_gap(self,
                                                               monkeypatch):
@@ -51203,10 +51237,14 @@ class TestUnpricedBadgeReviewFindings20260909:
         assert out["no_model_tokens"] == 10, out
 
     def test_f2_stats_agree_with_the_cli(self, monkeypatch):
+        """⚠️ 2026-09-09 다시 씀(#222): 옛 판이 읽던 두 stats 키는 지웠다
+        (#291) — 계약("`model` 이 **빈** 레코드도 화면이 센다")은 그대로라
+        화면 문구로 잰다. `unknown` 갈래로 세어야 처방이 맞는다(#82)."""
         d, st = self._stats(monkeypatch, [
             {"type": "llm_call", "cost_usd": 0.0, "ts": time.time()}])
-        assert st["unpriced_calls"] == 1, st
-        assert st["unpriced_nomodel_calls"] == 1, st
+        html = d._render_stats_panel(st)
+        assert "모델 미기록 1콜" in html, html
+        assert "단가 미등재" not in html, html
 
     def test_f2_priced_record_is_still_not_counted(self):
         """반대 증거 — 게이트를 넓히다 정상 호출까지 세면 배지가 늘 뜬다."""
@@ -51248,3 +51286,216 @@ class TestUnpricedBadgeReviewFindings20260909:
         assert "누적" not in seg[0], seg
         assert f"{ut.ROTATION_DAYS}일" not in seg[0], seg
         assert "원장" in seg[0], seg
+
+
+class TestNoModelWindowIsMeasured20260909:
+    """`--check` 는 '언제' 를 말하는데 **화면은 개수만** 말하고 있었다.
+
+    VM 실측(2026-09-09): `⚠️ 모델 미기록('unknown') 12콜 · 토큰 182,714 ·
+    2026-06-19 23:24 ~ 2026-06-19 23:27 KST`. CLI 는 3분짜리 과거 한 건임을
+    아는데, 비용카드·`/usage` 는 `모델 미기록 12콜(현재 원장)` 뿐이라 **82일
+    전 일회성이 지금 진행 중인 문제처럼 읽힌다**(#43 침묵 금지 · #202 숫자로
+    말하라). 계산해 두고 표시에 안 배선한 것 — #123·#129·#189·#228·#292 와
+    같은 병이고, 바로 그 계열을 고치던 커밋(#319)에서 재발했다.
+
+    그리고 '왜 그랬나' 는 **재야** 안다(#12). 12콜/3분/182,714토큰이 한
+    번의 종목분석처럼 **보이는** 것은 추론이지 측정이 아니다 — 레코드가
+    `subsystem` 을 들고 있고(분석 경로는 무태그) 같은 구간의 이웃 호출도
+    원장에 있으므로, 다음 라운드가 짐작하지 않도록 `--check` 가 찍는다.
+    """
+
+    # VM 실측 그 시각(2026-06-19 23:24 KST)을 그대로 쓴다 — 독스트링이
+    # 인용하는 관측과 픽스처가 어긋나면 설명이 거짓이다(#55). 고정값이라
+    # 시한폭탄도 아니다(#249·#291).
+    _TS = 1781879040.0
+
+    def _kst(self, ts):
+        import datetime as _dt
+        kst = _dt.timezone(_dt.timedelta(hours=9))
+        return _dt.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d %H:%M")
+
+    def _nomodel(self, ts=None, **kw):
+        return {"type": "llm_call", "model": "unknown", "cost_usd": 0.0,
+                "ts": self._TS if ts is None else ts,
+                "prompt_tokens": 700, "completion_tokens": 300, **kw}
+
+    # ── ① 재료: split 이 '언제' 를 같이 돌려준다 ──────────────────────────
+    def test_split_carries_when_not_just_how_many(self):
+        import bot.usage_tracker as ut
+        out = ut.split_unpriced([self._nomodel(),
+                                 self._nomodel(ts=self._TS + 180)])
+        assert out["no_model_first"] == self._TS, out
+        assert out["no_model_last"] == self._TS + 180, out
+
+    def test_split_does_not_invent_a_time_it_never_saw(self):
+        """ts 없는 레코드에 '지금' 을 붙이면 82일 전 사고가 오늘 일이 된다
+        (#165 안 잰 것을 단정하지 말 것)."""
+        import bot.usage_tracker as ut
+        out = ut.split_unpriced([self._nomodel(ts=None) | {"ts": None}])
+        assert out["no_model"] == 1, out
+        assert not out["no_model_first"] and not out["no_model_last"], out
+
+    # ── ② 포맷터는 하나 — 화면끼리 갈리면 안 된다(#38) ───────────────────
+    def test_one_formatter_for_cli_and_screens(self):
+        import bot.usage_tracker as ut
+        assert self._kst(self._TS) in ut.kst_span(self._TS, self._TS)
+        assert "미기록" in ut.kst_span(0.0, 0.0)
+
+    # ── ③ 화면이 '언제' 를 말한다 ────────────────────────────────────────
+    def _stats(self, monkeypatch, rows):
+        import bot.dashboard as d
+        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: rows)
+        monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
+        st = dict(d._compute_stats([]))
+        st["total"] = 1
+        return d, st
+
+    def test_cost_card_says_when_the_unrecorded_calls_happened(self,
+                                                              monkeypatch):
+        """개수만 적으면 과거분이 현재 문제로 읽힌다(#43·#202).
+        ⚠️ 날짜가 카드 다른 곳(오늘/이번달 라벨)에도 있으므로 **그 배지
+        하나를 잘라내서** 본다(#75·#55)."""
+        d, st = self._stats(monkeypatch, [self._nomodel()])
+        seg = [x.strip() for x in
+               d._render_stats_panel(st).replace("<br>", "\n").splitlines()
+               if "모델 미기록" in x]
+        assert seg, "배지가 없다"
+        assert self._kst(self._TS) in seg[0] and "KST" in seg[0], seg
+
+    def test_rate_gap_badge_does_not_borrow_the_nomodel_window(self,
+                                                              monkeypatch):
+        """창은 **그 갈래가 실제로 잰 것**이어야 한다 — 단가 미등재 배지에
+        모델 미기록의 구간을 붙이면 라벨이 거짓말한다(#34)."""
+        d, st = self._stats(monkeypatch, [
+            self._nomodel(),
+            {"type": "llm_call", "model": "brand-new-model", "cost_usd": 0.0,
+             "ts": self._TS + 999999}])
+        seg = [x.strip() for x in
+               d._render_stats_panel(st).replace("<br>", "\n").splitlines()
+               if "단가 미등재" in x]
+        assert seg, "배지가 없다"
+        assert self._kst(self._TS) not in seg[0], seg
+
+    def test_both_screens_build_the_badge_from_one_source(self):
+        """문구를 두 곳에 적으면 한쪽만 고쳐진다 — 이 세션에서 실제로 그랬다
+        (#38·#147). 값으로 재고, 배선은 각 화면 테스트가 본다."""
+        import bot.usage_tracker as ut
+        notes = ut.unpriced_notes(ut.split_unpriced([self._nomodel()]), "30일")
+        assert len(notes) == 1, notes
+        assert "모델 미기록 1콜(30일)" in notes[0], notes
+        assert self._kst(self._TS) in notes[0], notes
+        assert "실제 비용은 더 큼" in notes[0], notes
+
+    def test_usage_report_says_when(self, monkeypatch):
+        pytest.importorskip("telegram")        # 샌드박스엔 없다 — VM 에서 돈다
+        import bot.telegram_bot as tb
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "load_records",
+                            lambda *a, **k: [self._nomodel()])
+        monkeypatch.setattr(tb, "_count_watchdog_restarts_24h", lambda: 0)
+        seg = [ln for ln in tb._build_usage_report().splitlines()
+               if "모델 미기록" in ln]
+        assert seg and self._kst(self._TS) in seg[0], seg
+
+    # ── ④ `--check` 가 원장 자체의 구간을 잰다 ───────────────────────────
+    def _run(self, monkeypatch, tmp_path, lines):
+        import bot.usage_tracker as ut
+        log = tmp_path / "usage.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in lines),
+                       encoding="utf-8")
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "rollup.json")
+        monkeypatch.setattr(sys, "argv", ["bot.usage_tracker", "--check"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ut.main()
+        return buf.getvalue().splitlines(), rc
+
+    def test_check_states_the_ledger_span(self, monkeypatch, tmp_path):
+        """'현재 원장' 이 며칠치인지 재지 않으면 그 라벨이 공허하다 — 로테이션은
+        `/usage` 를 칠 때만 도는 유일한 경로라 파일은 30일보다 길 수 있다(#165)."""
+        out, _ = self._run(monkeypatch, tmp_path, [
+            self._nomodel(),
+            {"type": "llm_call", "model": "gemini-2.5-pro",
+             "ts": self._TS + 86400 * 82}])
+        seg = [ln for ln in out if "llm_call" in ln and "건" in ln]
+        assert seg, out
+        assert self._kst(self._TS) in seg[0], seg
+        assert "82일" in seg[0], seg
+
+    def test_check_names_the_subsystem_of_the_unrecorded_calls(self,
+                                                              monkeypatch,
+                                                              tmp_path):
+        """'왜 그랬나' 는 재서 답한다(#12) — 레코드가 이미 들고 있는 태그다.
+        분석 경로는 **무태그**로 적히므로 그것도 사실대로 말한다(#82)."""
+        out, _ = self._run(monkeypatch, tmp_path, [
+            self._nomodel(subsystem="screener"),
+            self._nomodel(), self._nomodel()])
+        # ⚠️ 전체 출력에서 세면 단가표의 `1.25` 가 `"1"` 을 대신 만족시킨다 —
+        #    수를 ×99 하는 변형이 통과했다(독립 리뷰 실측, #75·#55). 그 줄만.
+        seg = [ln for ln in out if "subsystem:" in ln]
+        assert seg, out
+        assert "screener 1콜" in seg[0], seg
+        assert "태그 없음 2콜" in seg[0], seg
+
+    def test_check_lists_neighbouring_models_in_the_window(self, monkeypatch,
+                                                           tmp_path):
+        """어느 파이프라인이었나는 같은 구간의 이웃이 말해 준다 — 창을
+        밝혀서 찍는다(#34 라벨에 기준을 박을 것)."""
+        out, _ = self._run(monkeypatch, tmp_path, [
+            self._nomodel(),
+            {"type": "llm_call", "model": "gemini-2.5-flash",
+             "ts": self._TS + 60},
+            {"type": "llm_call", "model": "gemini-2.5-flash",
+             "ts": self._TS + 120},
+            # 창 밖 — 세면 안 된다.
+            {"type": "llm_call", "model": "gemini-2.5-pro",
+             "ts": self._TS + 86400}])
+        txt = "\n".join(ln for ln in out if "이웃" in ln)
+        # ⚠️ `"2" in txt` 는 **`gemini-2.5-flash` 의 2** 가 대신 만족시킨다 —
+        #    수를 ×7 하는 변형이 통과했다(독립 리뷰 실측, #75). 값을 집는다.
+        assert "gemini-2.5-flash 2콜" in txt, out
+        assert "gemini-2.5-pro" not in txt, out       # 창 밖
+        # ⚠️ 자기 자신은 이웃이 아니다 — 세면 자기를 근거로 삼는다.
+        assert "unknown" not in txt, out
+
+    def test_check_says_so_when_the_window_has_no_neighbours(self, monkeypatch,
+                                                             tmp_path):
+        """대조 0건은 침묵이 아니다 — '없다' 도 사실이다(#54·#274).
+
+        ⚠️ 다만 잰 것은 **창 안**뿐이다 — 창 밖 호출을 두고 '원장에 안
+        남았다' 고 적으면 재지 않은 원인을 단정하는 것이다(#165, 독립 리뷰가
+        창 밖 형제로 재현). 그래서 '창 밖은 안 봤다' 까지 말해야 한다.
+        """
+        out, _ = self._run(monkeypatch, tmp_path, [
+            self._nomodel(),
+            # 창(±10분) 밖 형제 — 있는데도 '원장에 안 남았다' 고 하면 거짓이다.
+            {"type": "llm_call", "model": "gemini-2.5-pro",
+             "ts": self._TS - 900}])
+        seg = [ln for ln in out if "구간(±" in ln]
+        assert seg and "없다" in seg[0], out
+        assert "창 밖" in seg[0], seg
+        assert "원장에 안 남았다" not in seg[0], seg
+
+    def test_failed_neighbour_scan_is_not_reported_as_none(self, monkeypatch,
+                                                           tmp_path):
+        """못 읽은 것을 '이웃 없음' 이라 적으면 **거짓**이다 — 판정 불가와
+        사실은 다른 말이다(#54·#82). 배포전 셀프리뷰가 잡았다."""
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "_scan_neighbors",
+                            lambda lo, hi: ({}, 0, "OSError: boom"))
+        out, _ = self._run(monkeypatch, tmp_path, [self._nomodel()])
+        seg = [ln for ln in out if "이웃" in ln]
+        assert seg and "판정 불가" in seg[0], out
+        assert "없음" not in seg[0], seg
+
+    def test_truncated_neighbour_list_says_it_was_truncated(self, monkeypatch,
+                                                            tmp_path):
+        """상위 5종만 적으면 나열된 콜 수 합이 총계와 안 맞는다 — 자른 사실을
+        말하지 않으면 사용자가 그 차이를 결함으로 읽는다(#45)."""
+        rows = [self._nomodel()] + [
+            {"type": "llm_call", "model": f"m{i}", "ts": self._TS + 60 + i}
+            for i in range(7)]
+        out, _ = self._run(monkeypatch, tmp_path, rows)
+        seg = [ln for ln in out if "이웃" in ln]
+        assert seg and "외 2종" in seg[0], seg

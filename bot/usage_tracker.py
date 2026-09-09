@@ -130,7 +130,8 @@ def split_unpriced(records) -> dict:
     `no_model` 이 구조적으로 생기지 않는다 — 그쪽 라벨은 지금도 참이라
     건드리지 않는다(잊은 게 아니다, #55).
     """
-    out = {"missing_rate": 0, "no_model": 0, "total": 0, "no_model_tokens": 0}
+    out = {"missing_rate": 0, "no_model": 0, "total": 0, "no_model_tokens": 0,
+           "no_model_first": 0.0, "no_model_last": 0.0}
     for rec in records or []:
         if rec.get("type") != "llm_call" or not counts_as_unpriced(rec):
             continue
@@ -139,8 +140,53 @@ def split_unpriced(records) -> dict:
             out["no_model"] += 1
             out["no_model_tokens"] += int(_num(rec.get("prompt_tokens"))
                                           + _num(rec.get("completion_tokens")))
+            # ⚠️ ts 가 없으면 **아무 시각도 지어내지 않는다** — 'now' 를 붙이면
+            #    82일 전 일회성이 오늘 일이 된다(#165).
+            ts = _num(rec.get("ts"))
+            if ts:
+                out["no_model_first"] = min(out["no_model_first"] or ts, ts)
+                out["no_model_last"] = max(out["no_model_last"], ts)
         else:
             out["missing_rate"] += 1
+    return out
+
+
+def kst_span(first: float, last: float) -> str:
+    """[first, last] 를 KST 한 줄로. 화면·CLI 가 **같은 포맷터**를 쓴다(#38).
+
+    시각을 못 재면 단정하지 않는다(#165) — 침묵도 빈칸도 아니고 '미기록'
+    이라고 말한다(#43).
+    """
+    a, b = first or 0.0, last or 0.0
+    if not a or not b:
+        return "시각 미기록"
+    kst = timezone(timedelta(hours=9))
+    fmt = "%Y-%m-%d %H:%M"
+    lo = datetime.fromtimestamp(a, kst).strftime(fmt)
+    hi = datetime.fromtimestamp(b, kst).strftime(fmt)
+    return f"{lo} KST" if lo == hi else f"{lo} ~ {hi} KST"
+
+
+def unpriced_notes(sp: dict, window: str) -> list[str]:
+    """₩0 집계 경고를 **한 곳에서** 만든다 — 비용카드·`/usage` 공용(#38).
+
+    문구를 두 화면에 각각 적어 두면 한쪽만 고쳐진다. 이 세션에서 실제로
+    그랬다(#147 — `unknown` 라벨을 카드에서 고치고 `/usage` 를 안 봤다).
+
+    ⚠️ 두 갈래 **모두** ₩0 으로 집계되므로 '실제 비용은 더 큼' 은 양쪽에
+    적는다(#43·#284). 갈리는 건 **처방**이다(#82).
+    ⚠️ 구간은 모델 미기록 갈래가 **실제로 잰 것**이라 그 줄에만 붙인다 —
+    옆 갈래에 붙이면 라벨이 거짓말한다(#34).
+    """
+    out: list[str] = []
+    if sp.get("missing_rate"):
+        out.append(f"⚠️ 단가 미등재 {sp['missing_rate']}콜({window}) — "
+                   "실제 비용은 더 큼")
+    if sp.get("no_model"):
+        out.append(
+            f"⚠️ 모델 미기록 {sp['no_model']}콜({window}) · "
+            f"{kst_span(sp.get('no_model_first'), sp.get('no_model_last'))}"
+            " — 실제 비용은 더 큼 · 기록 경로 문제(요율표 아님)")
     return out
 
 
@@ -484,7 +530,7 @@ def _add_rollup_cost_usd(delta: float) -> None:
 
 # ── 진단 CLI ──────────────────────────────────────────────────────────────
 # `cd ~/stock && .venv/bin/python -m bot.usage_tracker --check`
-_CHECK_VER = 2
+_CHECK_VER = 3
 
 # ④ 자기검증 표본. ⚠️ **실제 모델 id 를 쓰면 안 된다** — ⑥ 이 시키는 대로
 # 그 모델을 `_PRICING` 에 넣는 순간 이 검증이 빨간불이 되어 §Pre-commit 6 이
@@ -496,6 +542,16 @@ _UNPRICED_SAMPLE = "__단가미등재_표본__"
 # 한다 — 요율 변경을 **의도적으로** 만들려고 둔 마찰이다(#317).
 _RATE_PIN = ("tests/test_regression.py::TestPricingSingleSource"
              "::test_canonical_rates_are_the_published_ones")
+
+# 분석(종목분석)의 Gemini 호출은 subsystem 태그 **없이** 적힌다 — 대시보드가
+# 무태그를 '분석' 으로 집계하는 것도 그래서다. 진단은 우리가 **잰 것**(태그가
+# 없다)을 말하고, 그 뒤에 우리 코드가 그걸 어떻게 읽는지 덧붙인다(#165).
+_NO_SUBSYSTEM = "태그 없음"
+
+# 이웃 호출을 볼 창 = [모델 미기록 첫 호출, 마지막] ±이만큼. 한 번의 실행은
+# 몇 분이 걸리므로 구간을 조금 넓혀야 앞뒤 호출이 잡힌다. **넓힌 사실을
+# 화면이 말한다** — 안 밝히면 창이 거짓말한다(#34).
+_NEIGHBOR_PAD_SEC = 600
 
 
 def _num(v) -> float:
@@ -519,7 +575,8 @@ def _scan_ledger_readonly() -> dict:
     """
     out = {"exists": USAGE_LOG.exists(), "total": 0, "missing": {},
            "flagged": {}, "unknown": 0, "unrecorded": 0,
-           "nomodel_tokens": 0, "nomodel_first": 0.0, "nomodel_last": 0.0,
+           "no_model_tokens": 0, "no_model_first": 0.0, "no_model_last": 0.0,
+           "no_model_subs": {}, "first_ts": 0.0, "last_ts": 0.0,
            "err": ""}
     if not out["exists"]:
         return out
@@ -536,19 +593,31 @@ def _scan_ledger_readonly() -> dict:
                 if rec.get("type") != "llm_call":
                     continue
                 out["total"] += 1
+                ts = _num(rec.get("ts"))
+                if ts:
+                    # 원장 자체의 구간 — '현재 원장' 이 며칠치인지 재지 않으면
+                    # 그 라벨이 공허하다(로테이션은 `/usage` 를 칠 때만 도는
+                    # 유일한 경로라 파일은 30일보다 길 수 있다, #165).
+                    out["first_ts"] = min(out["first_ts"] or ts, ts)
+                    out["last_ts"] = max(out["last_ts"], ts)
                 m = rec.get("model")
                 if not m or m == UNRECORDED_MODEL:
                     out["unrecorded" if not m else "unknown"] += 1
-                    out["nomodel_tokens"] += int(
+                    out["no_model_tokens"] += int(
                         _num(rec.get("prompt_tokens"))
                         + _num(rec.get("completion_tokens")))
                     # 언제 그랬는지를 알아야 어느 배포·어느 경로인지 좁힌다 —
                     # 안 실으면 다음 라운드에 또 손으로 명령을 조립하게 된다
                     # (#319 가 바로 그 사고다).
-                    ts = _num(rec.get("ts"))
                     if ts:
-                        out["nomodel_first"] = min(out["nomodel_first"] or ts, ts)
-                        out["nomodel_last"] = max(out["nomodel_last"], ts)
+                        out["no_model_first"] = min(
+                            out["no_model_first"] or ts, ts)
+                        out["no_model_last"] = max(out["no_model_last"], ts)
+                    # '왜 그랬나' 는 재서 답한다(#12) — 레코드가 이미 태그를
+                    # 들고 있다. 분석 경로는 **무태그**로 적히므로(UsageCallback)
+                    # 그것도 사실대로 부른다(#82·#165).
+                    sub = rec.get("subsystem") or _NO_SUBSYSTEM
+                    out["no_model_subs"][sub] = out["no_model_subs"].get(sub, 0) + 1
                 elif is_unpriced_record(rec):
                     # 단가표에 없어서 0 인가(고칠 수 있다), 아니면 옛 표식인가
                     # (그때 0 으로 적혔다 — 이제 와서 고칠 수 없다, #260).
@@ -562,19 +631,44 @@ def _scan_ledger_readonly() -> dict:
     return out
 
 
-def _span(sc: dict) -> str:
-    """모델 미기록 호출이 **언제** 났는지. KST 로 적는다(전역 표기 규칙 10a).
+def _scan_neighbors(lo: float, hi: float) -> tuple[dict, int, str]:
+    """모델 미기록 구간의 **이웃 호출**을 모델별로 센다 — 읽기 전용 2회차.
 
-    못 재면 단정하지 않는다(#165) — 'ts 없음' 이라고 말한다.
+    "12콜/3분/182,714토큰이면 종목분석 한 번처럼 보인다" 는 **추론**이지
+    측정이 아니다(#12). 같은 구간에 어떤 모델이 돌았는지는 원장이 이미
+    알고 있으므로 짐작하지 말고 물어본다(#86).
+
+    ⚠️ 미기록 레코드 자신은 이웃이 아니다 — 세면 자기를 근거로 삼는다.
+    ⚠️ 실패를 0건으로 돌려주면 호출부가 '이웃이 없다'는 **거짓**을 찍는다 —
+    갈래를 같이 돌려준다(#54 대조 0건은 통과가 아니다 · #82).
     """
-    a, b = sc.get("nomodel_first") or 0.0, sc.get("nomodel_last") or 0.0
-    if not a or not b:
-        return "시각 미기록"
-    kst = timezone(timedelta(hours=9))
-    fmt = "%Y-%m-%d %H:%M"
-    lo = datetime.fromtimestamp(a, kst).strftime(fmt)
-    hi = datetime.fromtimestamp(b, kst).strftime(fmt)
-    return f"{lo} KST" if lo == hi else f"{lo} ~ {hi} KST"
+    got: dict[str, int] = {}
+    total = 0
+    err = ""
+    try:
+        with open(USAGE_LOG, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "llm_call":
+                    continue
+                m = rec.get("model")
+                if not m or m == UNRECORDED_MODEL:
+                    continue
+                ts = _num(rec.get("ts"))
+                if not ts or ts < lo or ts > hi:
+                    continue
+                got[m] = got.get(m, 0) + 1
+                total += 1
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        log.warning("usage_tracker --check: 이웃 스캔 실패(%s)", err)
+    return got, total, err
 
 
 def _check() -> int:
@@ -635,7 +729,14 @@ def _check() -> int:
         print("⑥ 판정: ❓ 단가표·판정은 정상이나 원장 대조는 못 했다")
         return 0
 
-    print(f"   llm_call {sc['total']:,}건")
+    # '현재 원장' 이 며칠치인지 **재서** 적는다 — 로테이션은 `/usage` 를 칠
+    # 때만 도는 유일한 경로라 파일은 30일보다 길 수 있다(#165 재지 않은 창을
+    # 주장하지 말 것). 못 재면 그렇게 말한다(#43).
+    _days = ""
+    if sc["first_ts"] and sc["last_ts"]:
+        _days = f" ({int((sc['last_ts'] - sc['first_ts']) // 86400)}일치)"
+    print(f"   llm_call {sc['total']:,}건 · "
+          f"{kst_span(sc['first_ts'], sc['last_ts'])}{_days}")
     for m, n in sorted(sc["flagged"].items(), key=lambda kv: -kv[1]):
         # 고칠 수 없는 과거분이므로 ❌ 로 찍지 않는다 — 매일 오는 ❌ 는
         # 진짜 ❌ 를 가린다(#260).
@@ -645,9 +746,48 @@ def _check() -> int:
         # 규모를 모르면 고칠지 말지 못 정한다 — 토큰 합을 같이 적는다(#202).
         print(f"   ⚠️ 모델 미기록('{UNRECORDED_MODEL}') "
               f"{sc['unknown'] + sc['unrecorded']:,}콜 · "
-              f"토큰 {sc['nomodel_tokens']:,} · {_span(sc)} — 단가표가 아니라 "
-              "**기록 경로**(_extract_token_usage) 문제다. "
+              f"토큰 {sc['no_model_tokens']:,} · "
+              f"{kst_span(sc['no_model_first'], sc['no_model_last'])} — "
+              "단가표가 아니라 **기록 경로**(_extract_token_usage) 문제다. "
               "이 이름은 _PRICING 에 넣을 수 없다")
+        # 어느 경로였나 — 짐작 대신 레코드가 든 태그를 그대로 센다(#12).
+        _subs = ", ".join(
+            f"{k} {v:,}콜" for k, v in
+            sorted(sc["no_model_subs"].items(), key=lambda kv: -kv[1]))
+        # ⚠️ 폴백을 두지 않는다 — 이 블록은 미기록 레코드가 있을 때만 도는데
+        #    그 레코드는 전부 `no_model_subs` 에 들어가므로 빈 경우가 없다.
+        #    도달 불가한 가드는 지키는 척만 한다(#291).
+        print(f"      · subsystem: {_subs}"
+              + (f"  ('{_NO_SUBSYSTEM}' = 대시보드가 '분석' 으로 집계하는 그것)"
+                 if _NO_SUBSYSTEM in sc["no_model_subs"] else ""))
+        # 그리고 같은 구간의 이웃 — 어느 파이프라인이었는지는 옆에서 같이
+        # 돈 모델이 말해 준다. 창을 넓혔으면 **넓혔다고 밝힌다**(#34).
+        if sc["no_model_first"] and sc["no_model_last"]:
+            _pad_min = _NEIGHBOR_PAD_SEC // 60
+            nb, nb_total, nb_err = _scan_neighbors(
+                sc["no_model_first"] - _NEIGHBOR_PAD_SEC,
+                sc["no_model_last"] + _NEIGHBOR_PAD_SEC)
+            if nb_err:
+                # 못 읽은 것을 '없다' 로 적으면 거짓이다(#54·#82).
+                print(f"      · 같은 구간(±{_pad_min}분) 이웃 판정 불가"
+                      f"({nb_err})")
+            elif nb_total:
+                _rank = sorted(nb.items(), key=lambda kv: -kv[1])
+                _top = ", ".join(f"{k} {v:,}콜" for k, v in _rank[:5])
+                # 잘랐으면 말한다 — 안 그러면 나열된 콜 수 합이 총계와 안 맞아
+                # 사용자가 그 차이를 결함으로 읽는다(#45).
+                _more = f" 외 {len(_rank) - 5}종" if len(_rank) > 5 else ""
+                print(f"      · 같은 구간(±{_pad_min}분) 이웃 호출 "
+                      f"{nb_total:,}건: {_top}{_more}")
+            else:
+                # 대조 0건은 침묵이 아니다 — '없다' 도 사실이다(#54·#274).
+                # ⚠️ 다만 잰 것은 **이 창 안**뿐이다 — 창 밖 호출을 두고
+                #    '원장에 안 남았다' 고 적으면 재지 않은 원인을 단정하는
+                #    것이다(#165, 독립 리뷰가 창 밖 형제로 재현).
+                print(f"      · 같은 구간(±{_pad_min}분) 안에는 다른 llm_call "
+                      "이 없다(창 밖은 안 봤다)")
+        else:
+            print("      · 시각이 없어 이웃을 못 본다(판정 불가, #54)")
     if sc["missing"]:
         for m, n in sorted(sc["missing"].items(), key=lambda kv: -kv[1]):
             print(f"   ❌ 단가 미등재 {m} — {n:,}콜의 비용이 0 으로 집계된다")
