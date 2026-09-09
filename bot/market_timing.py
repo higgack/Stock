@@ -1771,6 +1771,49 @@ _FTD_LABEL = {
     "CORRECTION": "🔵 조정 진행", "NO_CORRECTION": "⚪ 조정 없음(평시)",
     "INSUFFICIENT_DATA": "— 데이터 부족",
 }
+
+
+# ── 가이드용 생성 표 — 손으로 적으면 상수와 어긋난다(#55) ────────────────────
+def _risk_table_html() -> str:
+    """분산일 위험도 4단계 — `_RISK_*` 상수에서. 판정은 위에서부터 먼저 맞는 단계."""
+    rows = (
+        ("SEVERE", f"D25 ≥ {_RISK_SEVERE_D25} 또는 D15 ≥ {_RISK_SEVERE_D15}"),
+        ("HIGH", f"D25 ≥ {_RISK_HIGH_D25} 또는 D15 ≥ {_RISK_HIGH_D15} 또는 D5 ≥ {_RISK_HIGH_D5}"),
+        ("CAUTION", f"D25 ≥ {_RISK_CAUTION_D25}"),
+        ("NORMAL", "위 어느 조건도 아님"),
+    )
+    return ("<table class='mini-tbl'><tr><th>위험도</th><th>조건(먼저 맞는 것)</th></tr>"
+            + "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows) + "</table>")
+
+
+# FTD 상태 → 뜻. `_FTD_LABEL` 의 **모든** 키가 있어야 한다(회귀). 조건은
+# `compute_ftd` 그대로: 실패 = Day1 저가 하회 · 기한만료 = Day 11+ ·
+# 확정 = Day4~10 에 +1.25%↑ 종가 상승 + 거래량 증가(둘 다 거래량이 있어야 판정).
+_FTD_MEANING = {
+    "FTD_CONFIRMED": "조정 뒤 반등 Day4~10 에 종가 +1.25%↑ 상승·거래량 증가로 확인된 날 — 유효 신호",
+    "RALLY_ATTEMPT": "조정 저점 뒤 반등이 시작됐지만 아직 FTD 조건 미충족(Day1~10 대기)",
+    "RALLY_FAILED": "반등 중 종가가 Day1 저가를 다시 깨짐 — 그 시도는 무효",
+    "RALLY_ATTEMPT_EXPIRED": "반등 10일이 지나도록 FTD 조건 미충족 — 기한 만료",
+    "CORRECTION": "3%↑ 조정이 진행 중(아직 반등 시작 전)",
+    "NO_CORRECTION": "탐색 창(41봉) 안에 3%↑ 조정 자체가 없음 — 평시",
+    "INSUFFICIENT_DATA": "봉이 모자라 판정 불가",
+}
+
+
+def _ftd_state_table_html() -> str:
+    import html as _hh
+    return ("<table class='mini-tbl'><tr><th>상태</th><th>뜻</th></tr>"
+            + "".join(f"<tr><th>{_hh.escape(lbl)}</th><td>{_hh.escape(_FTD_MEANING[k])}</td></tr>"
+                      for k, lbl in _FTD_LABEL.items()) + "</table>")
+
+
+def _macro_regime_table_html() -> str:
+    """레짐 이름 → 뜻 — `_MACRO_REGIME_KR` 에서(판정 함수가 낼 수 있는 값 전부)."""
+    import html as _hh
+    return ("<table class='mini-tbl'><tr><th>국면</th><th>뜻</th></tr>"
+            + "".join(f"<tr><th>{_hh.escape(k)}</th><td>{_hh.escape(v)}</td></tr>"
+                      for k, v in _MACRO_REGIME_KR.items()) + "</table>")
+
 _RISK_COLOR = {"NORMAL": "#16a34a", "CAUTION": "#f59e0b", "HIGH": "#ef4444",
               "SEVERE": "#991b1b"}
 
@@ -2094,18 +2137,21 @@ SPY-TLT(주식÷장기국채) · XLY-XLP(경기소비재÷필수소비재) · 10
 <p class="sub">분산일(IBD)·팔로우스루데이(O'Neil)·시장폭·변동성·센티먼트·매크로 레짐·크립토·COT — 데이터 적용시각 {ts} ·
 소스 yfinance + FRED + CoinGecko + CFTC + 네이버(VIX) + CNN(센티먼트)(전부 무료, 3시간 주기 자동 갱신)</p>
 <details class="guide"><summary>ℹ️ 사용법 — 처음이면 펼쳐 보세요</summary>
+<b>0) 기준일 옆 배지</b> — 배지가 없으면 그 시장의 <b>마지막 완결 세션</b>(종가 확정)
+기준입니다. <b>🕒 장중(미확정)</b> 은 오늘 봉이 아직 안 끝난 것, <b>⚠️ N거래일 지연</b> 은
+원천 시계열이 기대 세션까지 못 온 것(우리가 고칠 게 아니라 원천이 늦은 것), 「MM-DD
+기준 저장분」은 원천이 한 사이클 통째로 비어 마지막 성공분을 그대로 둔 것입니다.<br>
 <b>1) 분산일(Distribution Day)</b> — 종가 -0.2%+ 하락 & 거래량 증가 = 기관 매도 신호.
 D5/D15/D25 = 최근 5/15/25거래일 내 활성 건수. <b>거래량이 없는 세션은 셀 수
 없으므로</b> 그런 세션이 있으면 카드가 개수를 밝힙니다(0 이 '없음'인지 '못 셌음'인지
 구별되게). <b>TW·CN_A·HK 는 지수가 아니라 ETF</b>(0050.TW·510300.SS·2800.HK)라
 거래량이 <b>그 펀드의 거래량</b>입니다 — 시장 전체 거래량이 아니므로 US·KR·JP 와
-같은 강도로 읽지 마세요. 위험도는 셋 중 가장 높은 신호로 판정
-(예: D5≥2 또는 D15≥3 만으로도 HIGH, D25 가 낮아도 무관) — CAUTION D25≥3 · HIGH
-D25≥5·D15≥3·D5≥2 중 하나만 충족 · SEVERE D25≥6·D15≥4 중 하나만 충족. 높을수록
-경계.<br>
+같은 강도로 읽지 마세요. 위험도는 D5/D15/D25 셋 중 <b>가장 높은 신호</b>로 판정합니다(예: D5≥2 만으로도 HIGH, D25 가 낮아도 무관). 높을수록 경계.
+{_risk_table_html()}
 <b>2) 팔로우스루데이(FTD)</b> — 3%+ 조정(3거래일+ 연속 하락) 후 반등 4~10일째
 +1.25%+ 상승·거래량 증가 = 바닥 확인 신호(O'Neil 방법론). 🟢 FTD 확정만 유효 신호,
-나머지는 대기/무효. 확정이면 <b>그 FTD 가 며칠 전인지</b>를 같이 적습니다 —
+나머지는 대기/무효(상태 뜻은 아래 표).
+{_ftd_state_table_html()} 확정이면 <b>그 FTD 가 며칠 전인지</b>를 같이 적습니다 —
 탐색 창이 41봉이라 최대 두 달 전 신호일 수 있고, 날짜 없이 보면 오늘 일처럼 읽힙니다.<br>
 &nbsp;&nbsp;· <b>품질점수는 O'Neil 원본에 없는 우리 자체 산식</b>입니다:
 Day4~7=60 / Day8~10=50 에 상승폭 보너스(+2%↑ 20 · +1.5%↑ 10 · 그 외 0)를 더한 값
@@ -2114,7 +2160,7 @@ Day4~7=60 / Day8~10=50 에 상승폭 보너스(+2%↑ 20 · +1.5%↑ 10 · 그 �
 &nbsp;&nbsp;· FTD 뒤에 분산일이 쌓이면 IBD 해석에서 랠리를 '압박' 으로 읽지만
 <b>몇 개부터인지는 원본이 정하지 않습니다</b> — 그래서 우리는 판정하지 않고
 <b>FTD 이후 분산일 개수만</b> 카드에 적습니다(🟢 와 위험도 HIGH 가 같이 뜨는 이유).<br>
-<b>3) 시장 폭</b> — 섹터 ETF 중 20/50/200일선 상회 비율(개별종목 breadth 의 섹터-레벨
+<b>3) 시장 폭</b> — 카드의 &quot;표본&quot; 은 분모가 된 섹터 ETF 개수입니다. 섹터 ETF 중 20/50/200일선 상회 비율(개별종목 breadth 의 섹터-레벨
 근사) — 20일=단기 모멘텀·50일=중기·200일=장기 추세. 낮으면 소수 대형주만 지수 방어,
 높으면 전반적 참여. <b>KR</b>=KODEX 섹터 12개(KRX 업종) · <b>US</b>=SPDR GICS 11개.
 표본이 다르므로 두 시장의 %를 직접 비교하지 말 것(같은 시장의 시계열 변화를 볼 것).<br>
@@ -2140,11 +2186,9 @@ MOVE=채권 변동성(ICE BofA, bp 단위). 종가 기반 카드는 '현재' 칸
 &nbsp;&nbsp;· <b>10Y-2Y</b> 국채 커브(FRED T10Y2Y) — 역전(마이너스)이면 수축.<br>
 &nbsp;&nbsp;비율은 <b>1년(252거래일) 수익률 차이(%p)</b>이고 커브만 스프레드(%p) 원값입니다.
 카드에 <b>반영 지표 N/6</b> 을 함께 적으니, 몇 표로 나온 결론인지 보고 신뢰도를 판단하세요.<br>
-&nbsp;&nbsp;국면 뜻 — <b>Concentration(집중)</b> 소수 대형주 쏠림 ·
-<b>Broadening(확산)</b> 참여 종목 확대·위험선호 ·
-<b>Contraction(수축)</b> 위험회피·긴축 ·
-<b>Inflationary(인플레)</b> 주식이 장기채를 크게 상회 ·
-<b>Transitional</b> 은 국면 이름이 아니라 <b>판단보류</b>입니다 — 반영 지표가 3개 미만이거나
+&nbsp;&nbsp;국면 뜻(판정 함수가 낼 수 있는 값 전부):
+{_macro_regime_table_html()}
+&nbsp;&nbsp;<b>Transitional</b> 은 국면 이름이 아니라 <b>판단보류</b>입니다 — 반영 지표가 3개 미만이거나
 과반을 넘는 국면이 없을 때(6표가 2:2:2 로 갈리는 경우 등). 세부 가중치 없는 단순
 휴리스틱이라 확정 판단 금지.<br>
 <b>7) 크립토 레짐</b> — BTC 기준 0-100 점수(100=risk-on, 0=risk-off).
@@ -2155,7 +2199,7 @@ MOVE=채권 변동성(ICE BofA, bp 단위). 종가 기반 카드는 '현재' 칸
 평균</b> 내므로 결과가 낙폭 그 자체가 됩니다. <b>BTC 가격 자체는 점수에 안 들어갑니다</b>
 (추세 컴포넌트가 SMA50·SMA200 을 함께 요구해서). CoinGecko 는 라이브 시세라 관측기간이
 없어 <b>수집 시각(KST)</b>을 기준으로 적습니다.<br>
-<b>8) COT 역발상 게이트</b> — S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
+<b>8) COT 역발상 게이트</b> — 카드의 &quot;포지셔닝&quot; 은 백분위를 말로 옮긴 라벨입니다. S&amp;P500 E-mini 대형투기자 포지셔닝(CFTC 주간보고,
 선물전용) 트레일링 3년(156주) 백분위. 극단 쏠림(≥80/≤20)은 과거 반전 빈도가 높았던
 구간이라는 참고 신호일 뿐(선물전용).<br>
 자동 신호이므로 참고용 — 확정 판단 금지.
