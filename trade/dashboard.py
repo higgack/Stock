@@ -2738,6 +2738,17 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
     conn = open_db(db)
     latest = latest_per_dedup_key(conn)
     allrows = list_all_alerts(conn)
+    # ingest 의 멱등 키는 시각이 아니라 `(source_chat_id, source_message_id)`
+    # UNIQUE + ON CONFLICT DO NOTHING 이다(trade/store.py). 시각으로 세면
+    # 틀린다 — inbox 의 `date` 는 **중계 시각**이고 DB `posted_at` 은
+    # `forward_origin_date`(원 게시 시각)라 시계가 다르다(2026-09-10 VM 실측:
+    # 시각 기준 21건이 '안 들어감' 인데 ingest 는 `inserted:0 already_present`,
+    # 즉 전부 이미 있는 행이었다 — #45 가 한 겹 더 있었다).
+    try:
+        stored_ids = {r[0] for r in conn.execute(
+            "SELECT source_message_id FROM alerts")}
+    except Exception:                                          # noqa: BLE001
+        stored_ids = None
     conn.close()
     f["prelim"] = max((a for a in latest if a.get("status") == "preliminary"),
                       key=lambda a: a.get("period_end") or a.get("period_start") or "", default=None)
@@ -2762,7 +2773,7 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
         _parse = None
     inbox = data_dir / "inbox.jsonl"
     inbox_newest, after_db, n_lines = "", 0, 0
-    kr_newest, kr_after = "", 0
+    kr_newest, kr_after, kr_pending, kr_unidentified = "", 0, 0, 0
     parsed_n, capped = 0, False
     if inbox.exists():
         with inbox.open(encoding="utf-8") as fh:
@@ -2797,9 +2808,20 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
                     kr_newest = d
                 if newer:
                     kr_after += 1
+                # 진짜 '안 들어간 것' = ingest 의 멱등 키로 DB 에 없는 것.
+                # ⚠️ message_id 가 없는 줄은 **식별 불가**지 미적재가 아니다 —
+                # 모르는 것을 결함으로 세면 없는 결함을 만든다(#54). 따로 센다.
+                mid = rec.get("message_id")
+                if stored_ids is None:
+                    pass
+                elif mid is None:
+                    kr_unidentified += 1
+                elif mid not in stored_ids:
+                    kr_pending += 1
     f.update(inbox=str(inbox), inbox_exists=inbox.exists(), inbox_newest=inbox_newest,
              after_db=after_db, n_lines=n_lines,
-             kr_newest=kr_newest, kr_after=kr_after,
+             kr_newest=kr_newest, kr_after=kr_after, kr_pending=kr_pending,
+             kr_unidentified=kr_unidentified, ids_ok=stored_ids is not None,
              parse_ok=_parse is not None, parse_capped=capped)
 
     em = data_dir / "eval_misses.jsonl"
@@ -2858,10 +2880,18 @@ def header_facts(db: Path, data_dir: Path, *, today=None) -> dict:
     # 판정은 **관세청 모집단**으로 — 파서를 못 불러오면(의존성 문제) 전 소스 값으로
     # 폴백하되 그 사실을 밝힌다(#12·#165 폴백했으면 폴백했다고 말할 것).
     use_kr = f["parse_ok"] and not capped
-    f["verdict_population"] = "관세청 캡션" if use_kr else "전 소스(파서 미가용 — 폴백)"
+    # 미적재 건수는 식별자 대조가 정답이고, alerts 표를 못 읽을 때만 시각으로 폴백한다.
+    use_ids = use_kr and f["ids_ok"]
+    if use_ids:
+        f["verdict_population"] = "관세청 캡션 · 미적재는 메시지 id 대조"
+    elif use_kr:
+        f["verdict_population"] = "관세청 캡션 · 미적재는 시각 기준(id 대조 불가)"
+    else:
+        f["verdict_population"] = "전 소스(파서 미가용 — 폴백)"
     f["verdict"] = hh.verdict({"db_newest": f["db_newest"][:10],
                                "inbox_newest": (kr_newest if use_kr else inbox_newest)[:10],
-                               "inbox_lines_after_db": kr_after if use_kr else after_db,
+                               "inbox_lines_after_db": (kr_pending if use_ids
+                                                        else kr_after if use_kr else after_db),
                                "eval_miss_recent": em_recent,
                                "listener_active": f["listener_active"], "missing": f["missing"],
                                "inbox_scope": f["verdict_population"],
@@ -2905,8 +2935,17 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
           f"DB 최신 이후 {f['after_db']}줄  ← 전 소스(관세청+나쁜양파 15종 공용)")
         if f["parse_ok"]:
             P(f"   그중 관세청 캡션: 최신 {f['kr_newest'][:16] or '없음'} · "
-              f"DB 최신 이후 {f['kr_after']}줄  ← store.db 후보는 이것뿐"
+              f"DB 최신 이후 {f['kr_after']}줄(시각 기준)  ← store.db 후보는 이것뿐"
               + ("  (파싱 상한 초과 — 일부만 셈)" if f["parse_capped"] else ""))
+            if f["ids_ok"]:
+                # 시각은 시계가 달라 겹쳐 보인다(중계 시각 vs 원 게시 시각) —
+                # ingest 의 멱등 키로 다시 센 것이 실제 미적재다.
+                P(f"   그중 **DB 에 없는 것**: {f['kr_pending']}건 "
+                  f"(ingest 와 같은 기준: source_message_id)"
+                  + (f" · 식별 불가 {f['kr_unidentified']}건(message_id 없음)"
+                     if f["kr_unidentified"] else ""))
+            else:
+                P("   DB 에 없는 것: alerts 표를 못 읽어 판정 불가 — 시각 기준으로 폴백")
         else:
             P("   관세청 캡션 분리: 파서를 못 불러와 판정 불가")
     else:
