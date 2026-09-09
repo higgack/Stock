@@ -54052,3 +54052,91 @@ class TestTradePendingCountedByIdentity20260910:
         monkeypatch.setattr(_ts, "open_db", lambda p: _Blocking(_real_open(p)))
         f = td.header_facts(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
         assert f["ids_ok"] is False and "id 대조 불가" in f["verdict_population"]
+
+
+class TestTradeWholeInboxSilence20260910:
+    """2026-09-10 VM 실측(판정 확정 뒤): `channel_quiet` 은 맞는데 같은 출력의 ④ 는
+    `inbox 최신 2026-08-28`(13일 전), ⑨ 는 `inbox 최신이 50일 전`(관세청) 이라
+    **한 화면의 두 줄이 다른 말**을 했다(#34 라벨에 기준을 박을 것).
+
+    그리고 더 중요한 사실이 그 출력에 있었는데 아무도 안 짚었다 — `trade.bot` 한
+    프로세스가 관세청 BeOn + 나쁜양파 15종을 **같은 채널로** 받아 inbox 에 쓰므로,
+    16개 소스가 13일째 전부 조용한 건 원천 채널이 아니라 **중계 경로** 신호다.
+    ⑦ 은 그 중계 리스너 둘을 아예 안 묻고 있었다(#316 스코프를 추측하지 말 것)."""
+
+    def test_verdict_text_names_the_population(self):
+        from datetime import date
+        from trade.header_health import verdict
+        base = {"db_newest": "2026-07-22", "inbox_newest": "2026-07-22",
+                "inbox_lines_after_db": 0, "eval_miss_recent": 0, "listener_active": True,
+                "missing": [("2026-09-01", "monthly_preliminary")],
+                "inbox_scope": "관세청 캡션 · 미적재는 메시지 id 대조"}
+        v = verdict(base, date(2026, 9, 10))
+        assert v["branch"] == "channel_quiet"
+        assert "inbox 의 관세청 캡션 최신이 50일 전" in v["reason"], v["reason"]
+        # 모집단을 안 주면 종전 문구 — 옛 호출부 계약을 안 깬다(#222)
+        old = verdict({k: x for k, x in base.items() if k != "inbox_scope"}, date(2026, 9, 10))
+        assert "inbox 최신이 50일 전" in old["reason"]
+
+    def test_whole_inbox_silence_is_reported_separately(self):
+        from datetime import date
+        from trade.dashboard import inbox_silence_notes
+        quiet = inbox_silence_notes({"inbox_newest": "2026-08-28T16:36"}, today=date(2026, 9, 10))
+        assert len(quiet) == 1 and "13일째" in quiet[0] and "중계 리스너" in quiet[0]
+        # 정상 정적(하루 이틀)은 말하지 않는다 — 늘 뜨는 줄은 안 재는 것과 같다(#25·#260)
+        assert inbox_silence_notes({"inbox_newest": "2026-09-09T10:00"}, today=date(2026, 9, 10)) == []
+        assert inbox_silence_notes({}) == []                      # 재료 없으면 침묵(#54)
+        assert inbox_silence_notes({"inbox_newest": "쓰레기"}) == []
+
+    def test_why_actually_prints_the_silence_line(self, tmp_path, monkeypatch, capsys):
+        """헬퍼만 재면 `_why_header` 에서 호출을 지우는 변형이 통과한다(#20 실측) —
+        낡은 inbox 를 깔고 **출력**에 그 줄이 실리는지 본다."""
+        import contextlib, json
+        from datetime import date
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        (tmp_path / "inbox.jsonl").write_text(json.dumps(
+            {"date": "2026-08-28T16:36:00+09:00", "message_id": 9,
+             "caption_present": True, "caption": "[미국] 8월 수출\n- 반도체 1억"},
+            ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {
+            "ok": True, "s_ActiveState": "active", "s_SubState": "running"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        td._why_header(db, tmp_path, today=date(2026, 9, 10))
+        out = capsys.readouterr().out
+        assert "inbox 전체가 13일째 조용하다" in out and "중계 리스너" in out
+
+    def test_why_asks_the_relay_listeners(self, tmp_path, monkeypatch, capsys):
+        """중계 리스너를 안 물으면 '채널이 조용하다' 가 죽은 유닛을 가린다(#82·#316).
+        스텁이 아니라 **출력**으로 확인한다(#313 모양이 아니라 결과로)."""
+        import contextlib
+        from datetime import date
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        ts.open_db(db).close()
+        asked = []
+
+        def _facts(timer=None, service=""):
+            asked.append(service)
+            return {"ok": True, "s_ActiveState": "active", "s_SubState": "running"}
+
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: [])
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: [])
+        monkeypatch.setattr(dkf, "systemd_facts", _facts)
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        td._why_header(db, tmp_path, today=date(2026, 9, 10))
+        out = capsys.readouterr().out
+        assert "trade-bot-beon-listener.service" in asked
+        assert "trade-bot-badonion-listener.service" in asked
+        assert "beon-listener(중계)" in out and "badonion-listener(중계)" in out

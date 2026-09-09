@@ -61,6 +61,14 @@ def _age_days(iso: str | None, today: date) -> int | None:
         return None
 
 
+def _scope(facts: dict) -> str:
+    """판정이 쓴 모집단 이름 — 숫자만 적으면 화면의 다른 줄과 어긋나 보인다.
+    2026-09-10 실측: ④ 는 `inbox 최신 08-28`(전 소스)인데 ⑨ 는 `inbox 최신이 50일
+    전`(관세청 캡션)이라 한 출력의 두 줄이 다른 말을 했다(#34 라벨에 기준을 박을 것)."""
+    scope = str(facts.get("inbox_scope") or "").split(" · ")[0].strip()
+    return f"inbox 의 {scope}" if scope else "inbox"
+
+
 def verdict(facts: dict, today: date) -> dict:
     """facts = {db_newest, inbox_newest, inbox_lines_after_db, eval_miss_recent,
     listener_active(bool|None), missing:[(date,kind)]} → {branch, reason, lines}.
@@ -116,13 +124,13 @@ def verdict(facts: dict, today: date) -> dict:
             date.fromisoformat(str(facts["inbox_newest"])[:10]) < date.fromisoformat(last_missing):
         if active is False:
             return {"branch": "listener", "lines": lines,
-                    "reason": (f"inbox 최신이 {ib_age}일 전이고 trade-bot.service 가 활성이 아님 — "
-                               "리스너가 죽었다. `systemctl status trade-bot` 부터")}
+                    "reason": (f"{_scope(facts)} 최신이 {ib_age}일 전이고 trade-bot.service 가 활성이 "
+                               "아님 — 리스너가 죽었다. `systemctl status trade-bot` 부터")}
         if active is True:
             return {"branch": "channel_quiet", "lines": lines,
-                    "reason": (f"리스너는 활성인데 inbox 최신이 {ib_age}일 전 — 채널에 메시지가 "
-                               "안 왔거나 전달 필터에 걸림(원천 채널을 직접 확인)")}
+                    "reason": (f"리스너는 활성인데 {_scope(facts)} 최신이 {ib_age}일 전 — 채널에 "
+                               "메시지가 안 왔거나 전달 필터에 걸림(원천 채널을 직접 확인)")}
         return {"branch": "unknown", "lines": lines,
-                "reason": f"inbox 최신 {ib_age}일 전, 리스너 상태를 못 물음(systemctl 실패)"}
+                "reason": f"{_scope(facts)} 최신 {ib_age}일 전, 리스너 상태를 못 물음(systemctl 실패)"}
     return {"branch": "unknown", "lines": lines,
             "reason": "누락은 있는데 inbox·DB 시각으로는 갈래가 안 갈린다 — 아래 사실을 볼 것"}
