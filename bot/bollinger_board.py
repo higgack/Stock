@@ -679,7 +679,13 @@ def _universe(market: str) -> tuple[dict, dict]:
     except Exception as exc:                                   # noqa: BLE001
         return {}, {"label": "", "reason": f"{type(exc).__name__}: {exc}"}
     if not tickers:
-        return {}, {"label": meta["label"], "reason": "유니버스 원천이 빈 목록"}
+        # JP/HK 는 빈 목록의 갈래가 코드로 확정돼 있다(`_get_jp_universe`:
+        # 공식 상장목록 조회 실패 **또는** 100종목 이하) — 그만큼만 말한다(#82·#165).
+        why = "유니버스 원천이 빈 목록"
+        if m in ("JP", "HK"):
+            why += (" — 공식 상장목록(JPX/HKEX) 조회 실패 또는 100종목 이하, "
+                    f"다음 3시간 주기에 재시도 · `--why {m}` 로 갈래 확인")
+        return {}, {"label": meta["label"], "reason": why}
     cap = _universe_cap(m, _DEFAULT_CAP.get(m, 300))
     if len(tickers) > cap:
         # ⚠️ 원천이 준 **순서 그대로** 앞 N 개다. JP/HK/TW/CN 은 이미 시총·
@@ -1073,6 +1079,66 @@ _MARKET_META = {
     "HK": ("🇭🇰", "홍콩"), "CN_A": ("🇨🇳", "중국 A주"), "TW": ("🇹🇼", "대만"),
 }
 
+# 한 유니버스에 거래소가 둘 이상 섞이는 시장은 티커 접미사로 어느 거래소인지
+# 적는다(사용자 2026-09-09 "코스피인지 코스닥인지"). KR 만 고치면 같은 구조의
+# TW(.TW/.TWO)·CN(.SS/.SZ)이 조용히 남는다(§UNIVERSAL) — 접미사 → 라벨 한 표.
+# 단일 거래소 시장(US·JP·HK)은 표에 없어 자연히 빈칸이다(시장 게이트 없음).
+_EXCHANGE_TAG = {
+    ".KS": "코스피", ".KQ": "코스닥",
+    ".TW": "TWSE", ".TWO": "TPEx",
+    ".SS": "상해", ".SZ": "심천",
+}
+
+
+def exchange_tag(ticker: str) -> str:
+    """'000660.KS' → '코스피'. 접미사가 표에 없으면 빈 문자열(지어내지 않는다)."""
+    t = str(ticker or "")
+    dot = t.rfind(".")
+    return _EXCHANGE_TAG.get(t[dot:], "") if dot >= 0 else ""
+
+
+def _kick_name_fill(pairs: list) -> None:
+    """미캐시 종목명 백그라운드 워밍 — 52주 신고저 보드의 그 함수(#38 복제 금지).
+    ⚠️ 과금되는 LLM 경로다(#312) — 테스트·진단은 `_NAME_KICK` 을 갈아끼운다."""
+    from bot.highlow_render import _kick_name_fill as _hl_kick
+    _hl_kick(pairs)
+
+
+_NAME_KICK = _kick_name_fill
+
+
+def korean_names(rows: list, market: str) -> int:
+    """비-KR/US 표의 종목명을 **신고저·급등락 보드와 같은 캐시**(names_kr.json,
+    `translate_names_kr cache_only`)로 한글화한다(사용자 2026-09-09 "기존 신고가
+    신저가/급등급락처럼"). 렌더타임이라 시계열에 구워진 옛 행도 따라온다(#270).
+    캐시에 없는 종목은 원문을 두고 백그라운드로 워밍 — 렌더는 네트워크·LLM 을
+    한 번도 기다리지 않는다. 반환 = 한글로 바뀐 행 수."""
+    if market not in ("CN_A", "TW", "HK"):
+        return 0
+    pairs = [(r.get("ticker"), r.get("name")) for r in rows or []
+             if r.get("ticker")]
+    if not pairs:
+        return 0
+    try:
+        from bot.chart_translate import translate_names_kr
+        knm = translate_names_kr(pairs, cache_only=True) or {}
+    except Exception as exc:                                   # noqa: BLE001
+        log.debug("bollinger: 한글명 캐시 조회 실패: %s", exc)
+        return 0
+    hit = 0
+    for r in rows:
+        k = knm.get(r.get("ticker"))
+        if k and k != r.get("name"):
+            r["name"] = k
+            hit += 1
+    miss = [p for p in pairs if p[0] not in knm]
+    if miss:
+        try:
+            _NAME_KICK(miss)
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("bollinger: 한글명 워밍 킥 실패: %s", exc)
+    return hit
+
 
 def _n(v, digits: int = 1) -> str:
     """숫자 한 칸 — 원시 float 를 화면에 그대로 흘리지 않는다(규칙 10)."""
@@ -1130,7 +1196,9 @@ def _rows_table(rows: list, total: int, scanned, title: str) -> str:
         "<tr>"
         f"<td>{i + 1}</td>"
         f"<td>{_h.escape(str(r.get('name') or r.get('ticker')))}"
-        f"<div class='bb-note'>{_h.escape(str(r.get('ticker')))}</div></td>"
+        f"<div class='bb-note'>{_h.escape(str(r.get('ticker')))}"
+        f"{' · ' + _h.escape(exchange_tag(r.get('ticker'))) if exchange_tag(r.get('ticker')) else ''}"
+        "</div></td>"
         f"<td class='num'>{_n(r.get('close'), 2)}</td>"
         f"<td class='num'>{_pct_cell(r.get('pct_chg'))}</td>"
         f"<td class='num'>{_n(r.get('upper'), 2)}</td>"
@@ -1181,6 +1249,8 @@ def _market_section(d: dict) -> str:
         r["_market"] = m
     for r in ((d.get("provisional") or {}).get("rows") or []):
         r["_market"] = m
+    korean_names(d.get("rows") or [], m)
+    korean_names(((d.get("provisional") or {}).get("rows") or []), m)
     phase = d.get("phase") or "판정 불가"
     head = (f"<div class='panel-title'><span class='bb-flag'>{flag}</span>"
             f"{_h.escape(kname)} — <span class='bb-phase'>"
@@ -1335,7 +1405,10 @@ def render_page(data: dict, now=None) -> str:
 다릅니다).
 ③ 차트에서 <b>옅은 막대</b>는 백필 구간입니다 — 오늘 유니버스로 과거를 계산한
 것이라 생존편향이 있습니다.
-④ 대만 유니버스는 시총이 아니라 <b>거래대금</b> 상위입니다.<br>
+④ 대만 유니버스는 시총이 아니라 <b>거래대금</b> 상위입니다.
+⑤ 티커 옆 <b>코스피/코스닥·TWSE/TPEx·상해/심천</b>은 접미사로 정한 거래소이고,
+중국·대만·홍콩 종목명은 52주 신고저 보드와 <b>같은 한글명 캐시</b>를 씁니다 —
+아직 번역되지 않은 종목은 원문 그대로 두고 다음 갱신에서 채웁니다.<br>
 자동 신호이므로 참고용 — 확정 판단 금지.
 </details>
 {sections}
@@ -1408,6 +1481,43 @@ def _why_universe_kr() -> None:
        if meta.get("rung") else f"   채택 실패 — {meta.get('reason')}")
 
 
+def _why_universe_intl(m: str) -> list[str]:
+    """JP/HK 유니버스가 비었을 때 **어느 층**에서 비었는지 — 화면이 쓰는 그
+    경로(`_get_jp_universe` → `full_universe` → JPX/HKEX HTTP)를 층별로 되짚는다
+    (#82 갈래는 이름으로 · #35 감사는 화면 경로를). 원천 원문·예외를 그대로
+    싣는다 — '빈 목록'만 말하면 운영자가 짐작한다."""
+    out: list[str] = []
+    try:
+        from bot import intl_universe as iu
+    except Exception as exc:                                   # noqa: BLE001
+        return [f"intl_universe import 실패: {type(exc).__name__}: {exc}"]
+    try:
+        from bot.finviz_client import _CACHE_DIR, cache_age_sec
+        name = f"full_universe_{m}_v2.json"
+        age = cache_age_sec(name)
+        out.append(f"공식 상장목록 7일 캐시: {_CACHE_DIR / name} "
+                   f"({'없음' if age is None else f'{age / 3600:.1f}시간 전 기록'})")
+    except Exception as exc:                                   # noqa: BLE001
+        out.append(f"캐시 경로 확인 실패: {type(exc).__name__}: {exc}")
+    try:
+        full = iu.full_universe(m)
+        out.append(f"full_universe({m}) → {len(full):,}종목"
+                   f"{' (100 이하 → 유니버스로 안 쓴다)' if len(full) <= 100 else ''}")
+    except Exception as exc:                                   # noqa: BLE001
+        out.append(f"full_universe({m}) 예외: {type(exc).__name__}: {exc}")
+        full = []
+    if len(full) <= 100:
+        spec = iu._SPEC.get(m)
+        url = spec[0] if spec else "?"
+        try:
+            raw = iu._http_get(url)
+            out.append(f"원천 HTTP: {url} → {len(raw):,}바이트 수신"
+                       " (받았는데 파싱이 100종목 이하면 파서/서식 문제)")
+        except Exception as exc:                               # noqa: BLE001
+            out.append(f"원천 HTTP 실패: {url} → {type(exc).__name__}: {exc}")
+    return out
+
+
 def _why(market: str) -> int:
     import sys
 
@@ -1428,6 +1538,9 @@ def _why(market: str) -> int:
         uni, meta = _universe(m)
         _p(f"   {universe_label(m, meta)} · {len(uni):,}종목"
            f"{' · ' + meta['reason'] if meta.get('reason') else ''}")
+        if not uni and m in ("JP", "HK"):
+            for line in _why_universe_intl(m):
+                _p(f"   {line}")
     _p("")
     _p("③ 수집 — 화면이 쓰는 그 경로를 태웁니다(몇 분 걸립니다)")
     _p("   시계열 파일과 시총·한글명 보강(네이버·yfinance·LLM 번역)은 "

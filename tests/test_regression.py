@@ -43600,7 +43600,24 @@ def _bollinger_html() -> str:
           "universe_meta": {"label": "KOSPI200 + KOSDAQ150", "count": 350}}
     us = _bb._empty("US", "유니버스 원천이 빈 목록",
                     {"label": "S&P 500", "count": 0})
-    return _bb.render_page({"KR": kr, "US": us})
+    # TW 섹션 — 거래소 태그(.TW/.TWO)·한글명 캐시 경로가 **실제로 그려져야**
+    # CSS 가드가 그 셀을 본다(#91c). 한글명 미캐시분은 LLM 워밍을 킥하므로
+    # 여기서는 반드시 막는다(#312 테스트가 운영 계정에 과금하면 안 된다).
+    tw = dict(kr, market="TW", rows=[
+        {"ticker": "3711.TW", "name": "日月光投控", "close": 640.0,
+         "pct_chg": 3.56, "upper": 636.03, "over_pct": 0.62,
+         "mcap": 33000.0, "new": True},
+        {"ticker": "7828.TWO", "name": "創新服務", "close": 2080.0,
+         "pct_chg": 2.21, "upper": 2055.76, "over_pct": 1.18,
+         "mcap": 842.0, "new": False}], rows_total=2, provisional=None,
+        universe_label="거래대금 상위 (TWSE/TPEx) · 225종목",
+        universe_meta={"label": "거래대금 상위 (TWSE/TPEx)", "count": 225})
+    kick_before = _bb._NAME_KICK
+    _bb._NAME_KICK = lambda pairs: None
+    try:
+        return _bb.render_page({"KR": kr, "US": us, "TW": tw})
+    finally:
+        _bb._NAME_KICK = kick_before
 
 
 def _render_all_pages():
@@ -52475,6 +52492,160 @@ class TestBollingerBasisHonesty20260909:
         assert d["provisional"]["held"] == 3
         assert d["provisional"]["date"] == idx[-1].strftime("%Y-%m-%d")
         assert not (held & set(bb.load_series("KR"))), "미확정 봉이 기록됐다"
+
+
+class TestBollingerScreenAsks20260909:
+    """2026-09-09 화면 캡처 요청 셋 — 대만 한글명 · 코스피/코스닥 태그 · JP 빈
+    유니버스 사유. 전부 렌더타임 파생이라 시계열에 구워진 옛 행도 따라온다(#270).
+    """
+
+    def _section(self, market, rows):
+        from bot import bollinger_board as bb
+        d = {"market": market, "asof": "2026-09-09", "reason": "", "count": len(rows),
+             "new": 1, "scanned": 225, "pct": 1.0, "avg5": 5.0, "avg5_reason": "",
+             "trend": {"dir": "up", "d5": 2.0, "th": 2.25, "pct5": 40.0,
+                       "d20": None, "reason": ""},
+             "level": "neutral", "level_reason": "", "strong_th": 13,
+             "weak_th": 6, "phase": "회복 진행", "pct_rank": None,
+             "pct_rank_reason": "이력 부족", "streak": 0, "streak_note": "",
+             "chart": [], "rows": rows, "rows_total": len(rows),
+             "provisional": None, "partial": False, "scan": {}, "closed": True,
+             "expected": "2026-09-09", "universe_label": "u",
+             "universe_meta": {"label": "u", "count": 225}}
+        return bb._market_section(d)
+
+    def test_exchange_tag_is_derived_from_the_ticker_suffix(self, monkeypatch):
+        """'000210.KS' 옆에 코스피/코스닥(사용자 2026-09-09). KR 만 고치면 같은
+        구조의 TW(.TW/.TWO)·CN(.SS/.SZ) 이 조용히 남는다 — 접미사 한 표로
+        전 시장(§UNIVERSAL). 단일 거래소 시장은 태그가 **없어야** 한다(#25 반대
+        증거)."""
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "_NAME_KICK", lambda pairs: None)
+        assert bb.exchange_tag("000660.KS") == "코스피"
+        assert bb.exchange_tag("263750.KQ") == "코스닥"
+        assert bb.exchange_tag("7828.TWO") == "TPEx"
+        assert bb.exchange_tag("3711.TW") == "TWSE"
+        assert bb.exchange_tag("600519.SS") == "상해"
+        assert bb.exchange_tag("AAPL") == "" and bb.exchange_tag("7203.T") == ""
+        html = self._section("KR", [
+            {"ticker": "000660.KS", "name": "SK하이닉스", "close": 1.0,
+             "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+             "new": False},
+            {"ticker": "263750.KQ", "name": "펄어비스", "close": 1.0,
+             "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+             "new": False}])
+        assert "000660.KS · 코스피" in html and "263750.KQ · 코스닥" in html
+        us = self._section("US", [{"ticker": "AAPL", "name": "Apple", "close": 1.0,
+                                   "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0,
+                                   "mcap": 1.0, "new": False}])
+        assert "AAPL ·" not in us, "태그가 없는 시장에 구분자만 남으면 안 된다"
+
+    def test_non_kr_names_come_from_the_shared_korean_name_cache(self, monkeypatch):
+        """대만 종목명을 **신고저·급등락 보드와 같은 캐시**로 한글화한다(사용자
+        2026-09-09 "기존 신고가신저가/급등급락처럼"). 렌더는 cache_only 로만
+        읽고, 미캐시분만 백그라운드 킥에 넘긴다 — 렌더가 LLM 을 기다리면 3시간
+        페이지가 매번 블로킹된다."""
+        from bot import bollinger_board as bb
+        import bot.chart_translate as ct
+        calls = []
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs, cache_only=False:
+                            (calls.append(cache_only), {"3711.TW": "ASE 테크"})[1])
+        kicks = []
+        monkeypatch.setattr(bb, "_NAME_KICK", lambda pairs: kicks.append(list(pairs)))
+        rows = [{"ticker": "3711.TW", "name": "日月光投控", "close": 1.0,
+                 "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+                 "new": True},
+                {"ticker": "2412.TW", "name": "中華電", "close": 1.0,
+                 "pct_chg": 0.0, "upper": 1.0, "over_pct": 0.0, "mcap": 1.0,
+                 "new": False}]
+        html = self._section("TW", rows)
+        assert "ASE 테크" in html and "日月光投控" not in html
+        assert "中華電" in html, "미캐시 종목은 원문을 둔다(지어내지 않는다)"
+        assert calls and all(calls), "렌더는 cache_only 로만 읽어야 한다"
+        assert kicks == [[("2412.TW", "中華電")]], "미캐시분만 워밍에 넘긴다"
+        # 반대 증거: 전부 캐시에 있으면 킥이 한 번도 안 나간다(#25)
+        kicks.clear()
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs, cache_only=False:
+                            {"3711.TW": "ASE 테크", "2412.TW": "중화텔레콤"})
+        self._section("TW", rows)
+        assert kicks == []
+        # KR/US 는 이 경로를 타지 않는다 — KIS 한글명·영문명이 이미 정답이다
+        kicks.clear()
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs, cache_only=False: {})
+        self._section("KR", rows[:1])
+        assert kicks == []
+
+    def test_name_fill_kick_is_the_highlow_boards_function(self, monkeypatch):
+        """워밍 킥을 복제하지 않고 신고저 보드의 그 함수를 부른다(#38) — 두 보드가
+        같은 names_kr.json 을 데우므로 한쪽에서 번역된 종목은 다른 쪽에 공짜다.
+        그리고 그 킥은 과금 경로라 **기본 훅이 곧 그 함수**여야 테스트가 한 자리
+        (`_NAME_KICK`)만 막으면 된다(#312)."""
+        from bot import bollinger_board as bb
+        import bot.highlow_render as hl
+        assert bb._NAME_KICK is bb._kick_name_fill
+        got = []
+        monkeypatch.setattr(hl, "_kick_name_fill", lambda pairs: got.append(pairs))
+        bb._kick_name_fill([("x.TW", "y")])
+        assert got == [[("x.TW", "y")]]
+
+    def test_page_fixture_never_reaches_the_paid_name_fill(self, monkeypatch):
+        """CSS 컬렉터가 도는 픽스처(TW 행 포함)는 LLM 워밍을 **한 번도** 킥하지
+        않는다 — 테스트가 운영 계정에 과금하고 원장을 오염시킨 전례(#312)."""
+        import bot.highlow_render as hl
+        got = []
+        monkeypatch.setattr(hl, "_kick_name_fill", lambda pairs: got.append(pairs))
+        html = _bollinger_html()
+        assert "7828.TWO · TPEx" in html, "픽스처가 TW 셀을 실제로 그려야 한다"
+        assert got == []
+
+    def test_intl_empty_universe_reason_names_the_branch(self, monkeypatch):
+        """JP 카드가 '유니버스 원천이 빈 목록'만 말해 사용자가 "일본은 서포트
+        불가능한거야?" 를 물었다. 빈 목록의 갈래는 코드로 확정돼 있다(공식 상장목록
+        조회 실패 또는 100종목 이하) — 그만큼 말하고 진단 경로를 가리킨다(#82)."""
+        from bot import bollinger_board as bb
+        import bot.stock_screener as ss
+        import bot.intl_universe as iu
+        monkeypatch.setattr(ss, "_get_jp_universe", lambda: [])
+        monkeypatch.setattr(iu, "full_universe_names", lambda m: {})
+        uni, meta = bb._universe("JP")
+        assert uni == {}
+        assert "JPX/HKEX" in meta["reason"] and "--why JP" in meta["reason"]
+        assert "3시간" in meta["reason"], "재시도된다는 사실을 말해야 '불가'로 안 읽는다"
+        # US 는 다른 갈래 — JPX 문구가 붙으면 그게 거짓말이다(#34)
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_us_universe_robust", lambda: [])
+        monkeypatch.setattr(fv, "_sp500_names", lambda: {})
+        _, m2 = bb._universe("US")
+        assert "JPX" not in m2["reason"]
+
+    def test_why_names_the_layer_where_intl_universe_emptied(self, monkeypatch):
+        """`--why JP` 는 화면 경로를 층별로 되짚는다: 7일 캐시 유무 → full_universe
+        개수 → 원천 HTTP. 원천이 살아 있으면(100종목 초과) HTTP 를 **다시 치지
+        않는다**(순손실 요청 금지, 반대 증거)."""
+        from bot import bollinger_board as bb
+        import bot.intl_universe as iu
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "cache_age_sec", lambda name: None)
+        monkeypatch.setattr(iu, "full_universe", lambda m: [])
+        hits = []
+        def _get(url):
+            hits.append(url)
+            raise ConnectionError("no route")
+        monkeypatch.setattr(iu, "_http_get", _get)
+        lines = bb._why_universe_intl("JP")
+        txt = "\n".join(lines)
+        assert "full_universe_JP_v2.json" in txt and "없음" in txt
+        assert "full_universe(JP) → 0종목" in txt
+        assert "원천 HTTP 실패" in txt and "ConnectionError" in txt
+        assert len(hits) == 1 and "jpx.co.jp" in hits[0]
+        # 반대 증거: 원천이 충분하면 HTTP 를 안 친다
+        hits.clear()
+        monkeypatch.setattr(iu, "full_universe", lambda m: ["%04d.T" % i for i in range(300)])
+        txt = "\n".join(bb._why_universe_intl("JP"))
+        assert "300종목" in txt and hits == []
 
 
 class TestBollingerReviewFindings20260909:
