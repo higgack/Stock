@@ -13,7 +13,13 @@ fix 가 회귀하면 즉시 fail. 다음 세션 Claude(또는 본인) 가 실수
 """
 from __future__ import annotations
 
+import ast
+import contextlib
+import io
+import json
+import pathlib
 import re
+import sys
 import time
 
 import pytest
@@ -50117,9 +50123,9 @@ class TestUnpricedModelIsNotSilent:
         import bot.usage_tracker as ut
         self._reset(monkeypatch)
         with caplog.at_level(logging.WARNING):
-            assert ut.estimate_cost_usd("gemini-3.0-pro", 10**6, 10**6) == 0.0
+            assert ut.estimate_cost_usd(ut._UNPRICED_SAMPLE, 10**6, 10**6) == 0.0
         msgs = [r.getMessage() for r in caplog.records]
-        assert any("gemini-3.0-pro" in m for m in msgs), msgs
+        assert any(ut._UNPRICED_SAMPLE in m for m in msgs), msgs
 
     def test_warns_once_per_model_not_per_call(self, monkeypatch, caplog):
         """늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260)."""
@@ -50128,8 +50134,8 @@ class TestUnpricedModelIsNotSilent:
         self._reset(monkeypatch)
         with caplog.at_level(logging.WARNING):
             for _ in range(5):
-                ut.estimate_cost_usd("gemini-3.0-pro", 1, 1)
-        n = sum("gemini-3.0-pro" in r.getMessage() for r in caplog.records)
+                ut.estimate_cost_usd(ut._UNPRICED_SAMPLE, 1, 1)
+        n = sum(ut._UNPRICED_SAMPLE in r.getMessage() for r in caplog.records)
         assert n == 1, n
 
     def test_known_model_stays_silent(self, monkeypatch, caplog):
@@ -50148,7 +50154,7 @@ class TestUnpricedModelIsNotSilent:
         import trade.llm_usage as lu
         self._reset(monkeypatch)
         monkeypatch.setattr(lu, "USAGE_LOG", tmp_path / "usage.jsonl")
-        lu.record("gemini-3.0-pro", 100, 50)
+        lu.record(ut._UNPRICED_SAMPLE, 100, 50)
         rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
         assert rec["cost_usd"] == 0 and rec.get("unpriced") is True, rec
 
@@ -50203,7 +50209,7 @@ class TestUnpricedIsSurfaced20260908:
         monkeypatch.setattr(ut, "_UNPRICED_SEEN", set())
         monkeypatch.setattr(lu, "USAGE_LOG", tmp_path / "usage.jsonl")
         lu.record("gemini-2.5-flash", 1000, 500)
-        lu.record("gemini-3.0-pro", 1000, 500)
+        lu.record(ut._UNPRICED_SAMPLE, 1000, 500)
         s = lu.summary()
         assert s["total"]["calls"] == 2 and s["total"]["unpriced"] == 1, s
 
@@ -50307,7 +50313,7 @@ class TestUnpricedReadFromTheTable20260908:
         """`technical_analysis`·`dart_growth_risk` 는 같은 원장에 쓰면서 표식을
         안 붙인다(리뷰 실측) — 그것들도 세어져야 한다."""
         import bot.usage_tracker as ut
-        assert ut.is_unpriced_record({"model": "gemini-3.0-pro"}) is True
+        assert ut.is_unpriced_record({"model": ut._UNPRICED_SAMPLE}) is True
 
     def test_legacy_record_with_a_known_model_is_not_counted(self):
         import bot.usage_tracker as ut
@@ -50335,7 +50341,7 @@ class TestUnpricedReadFromTheTable20260908:
         monkeypatch.setattr(ut, "_UNPRICED_SEEN", set())
         monkeypatch.setattr(ut, "USAGE_LOG", tmp_path / "usage.jsonl")
         monkeypatch.setattr(ut, "_extract_token_usage",
-                            lambda resp: ("gemini-3.0-pro", 10, 5, 0))
+                            lambda resp: (ut._UNPRICED_SAMPLE, 10, 5, 0))
         ut.UsageCallback().on_llm_end(object())
         rec = json.loads((tmp_path / "usage.jsonl").read_text().strip())
         assert rec["cost_usd"] == 0.0 and rec.get("unpriced") is True, rec
@@ -50366,9 +50372,10 @@ class TestMainCostCardSurfacesUnpriced20260908:
         True 로 오타를 잡는다)."""
         import time
         import bot.dashboard as d
+        import bot.usage_tracker as ut
         now = time.time()
         monkeypatch.setattr(d, "_read_usage_records",
-                            lambda *a, **k: [self._rec("gemini-3.0-pro", now),
+                            lambda *a, **k: [self._rec(ut._UNPRICED_SAMPLE, now),
                                              self._rec("gemini-2.5-flash", now)])
         monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
         st = d._compute_stats([])
@@ -50701,3 +50708,290 @@ class TestLiquidityAuditEndToEnd20260909:
         i = [n for n, ln in enumerate(out) if "WALCL" in ln][0]
         after = out[i + 1:i + 4]
         assert not [ln for ln in after if "observation_end" in ln], after
+
+
+class TestUsageCheckCli20260909:
+    """단가·환율·미등재 확인을 **손으로 따옴표를 조립하지 않고** 할 수 있어야
+    한다(2026-09-09 실수 #319).
+
+    사용자에게 드린 확인 명령이 `-c "…{'\"'\"'model'\"'\"': …}"` 였는데, 그
+    idiom 은 **홑따옴표 문자열 안에서만** 성립한다 — 겹따옴표 `-c` 안에서는
+    키가 `model` 이 아니라 `"model"` 이 되어 `rec.get("model")` 이 None 이 되고,
+    멀쩡한 가드가 `미등재 판정 False` 라는 **그럴듯한 거짓**을 냈다(#252).
+    모델 id 는 실제로 드리프트하므로(2.5→3.0) 이 확인은 반복된다 → 명령을
+    건네는 것으로 끝내지 말고 제품에 심는다(#12·#252).
+    """
+
+    def _run(self, monkeypatch, tmp_path, lines=None, argv=("--check",)):
+        import importlib
+        ut = importlib.import_module("bot.usage_tracker")
+        log = tmp_path / "usage.jsonl"
+        if lines is not None:
+            log.write_text("".join(json.dumps(r) + "\n" for r in lines),
+                           encoding="utf-8")
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "usage_rollup.json")
+        monkeypatch.setattr(sys, "argv", ["bot.usage_tracker", *argv])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ut.main()
+        return buf.getvalue().splitlines(), rc, log
+
+    def test_check_states_the_table_and_both_fx_by_name(self, monkeypatch,
+                                                        tmp_path):
+        """#317 의 오수용 재발 방지 — 1330 과 1380 은 **다른 일**을 한다.
+        하나만 찍으면 다음 사람이 또 '중복'이라고 통일한다."""
+        from bot.usage_tracker import _PRICING, KRW_PER_USD
+        out, _, _ = self._run(monkeypatch, tmp_path, lines=[])
+        txt = "\n".join(out)
+        # 모델명·요율을 박지 않는다 — 요율 갱신은 이 모듈 독스트링이 권하는
+        # 정상 작업인데 그때 무관한 빨간불이 된다(#19·#67, 리뷰 지적).
+        for m in _PRICING:
+            assert m in txt, (m, txt)
+        assert str(KRW_PER_USD) in txt and "1330" in txt, txt
+        # 이름을 갈라 말해야 한다 — 숫자만 나란히 두면 또 통일된다.
+        assert "표시" in txt and "레거시" in txt, txt
+
+    def test_check_proves_the_judgment_actually_splits(self, monkeypatch,
+                                                       tmp_path):
+        """오늘 내가 하려던 그 확인 — 등재/미등재를 **표본으로 태워** 보인다.
+        판정을 늘 False 로 만드는 변형이 여기서 발화한다."""
+        out, _, _ = self._run(monkeypatch, tmp_path, lines=[])
+        # 모델명을 박지 않는다 — 단가표가 바뀌면 무관한 빨간불이다(#19·#67).
+        # 계약은 "등재는 False, 미등재는 True 로 **갈린다**" 이다.
+        lines = [ln for ln in out if "판정=" in ln]
+        assert lines, out
+        yes = [ln for ln in lines if "미등재 ·" in ln]
+        no = [ln for ln in lines if "미등재" not in ln and "등재 ·" in ln]
+        assert yes and all("판정=True" in ln for ln in yes), yes
+        assert no and all("판정=False" in ln for ln in no), no
+
+    def test_ledger_names_the_unpriced_models(self, monkeypatch, tmp_path):
+        import bot.usage_tracker as ut
+        now = time.time()
+        rows = [{"type": "llm_call", "ts": now, "model": "gemini-2.5-pro"},
+                {"type": "llm_call", "ts": now, "model": ut._UNPRICED_SAMPLE},
+                {"type": "llm_call", "ts": now, "model": ut._UNPRICED_SAMPLE}]
+        out, rc, _ = self._run(monkeypatch, tmp_path, lines=rows)
+        txt = "\n".join(out)
+        assert ut._UNPRICED_SAMPLE in txt and "2" in txt, txt
+        assert "❌" in txt, txt
+        assert rc == 1, txt
+
+    def test_empty_ledger_is_unjudged_not_a_pass(self, monkeypatch, tmp_path):
+        """대조 0건은 통과가 아니다(#54) — 원장이 비면 ❓ 로 찍어야 한다."""
+        out, rc, _ = self._run(monkeypatch, tmp_path, lines=[])
+        led = [ln for ln in out if "원장" in ln]
+        assert led and any("❓" in ln for ln in led), out
+        assert rc == 0, out
+
+    def test_check_never_rotates_the_operators_ledger(self, monkeypatch,
+                                                      tmp_path):
+        """⚠️ 진단이 자기가 읽을 신호를 오염시키면 안 된다(#264·#283).
+
+        `load_records()` 는 **읽으면서 파일을 다시 쓰고** 로테이션분을 롤업에
+        적산한다 — 그걸 부르는 순간 진단이 운영 원장을 바꾼다. 이 테스트는
+        로테이션 대상(31일 전) 레코드를 넣어 그 경로를 **실제로 태운다**(#91c).
+        """
+        old = time.time() - 31 * 86400
+        rows = [{"type": "llm_call", "ts": old, "model": "gemini-2.5-pro",
+                 "cost_usd": 1.23},
+                {"type": "llm_call", "ts": time.time(),
+                 "model": "gemini-2.5-pro"}]
+        before = "".join(json.dumps(r) + "\n" for r in rows)
+        out, _, log = self._run(monkeypatch, tmp_path, lines=rows)
+        assert log.read_text(encoding="utf-8") == before, out
+        assert not (tmp_path / "usage_rollup.json").exists(), out
+
+    def test_banner_names_the_interpreter(self, monkeypatch, tmp_path):
+        """#132 — venv 밖에서 돌면 결과가 통째로 거짓이 될 수 있다."""
+        out, _, _ = self._run(monkeypatch, tmp_path, lines=[])
+        assert any(sys.executable in ln for ln in out), out
+
+
+class TestUsageCheckIsNotItsOwnTimeBomb20260909:
+    """`--check` 의 **처방을 이행하면 회귀가 빨간불**이 되면 안 된다.
+
+    독립 리뷰 실측(2026-09-09): 자기검증 표본이 실제 모델 id(`gemini-3.0-pro`)
+    라, ⑥ 이 시키는 대로 그 모델을 `_PRICING` 에 넣는 순간 검증 2건이 깨져
+    `make test` 가 빨간불 → §Pre-commit 6 으로 **무관한 커밋까지 전부 막힌다**.
+    성공 조건이 뇌관인 시한폭탄이다(#294·#67·#249·#291).
+    """
+
+    def _run(self, monkeypatch, tmp_path, pricing_extra=None, lines=()):
+        import importlib
+        ut = importlib.import_module("bot.usage_tracker")
+        if pricing_extra:
+            monkeypatch.setattr(ut, "_PRICING",
+                                {**ut._PRICING, **pricing_extra})
+        log = tmp_path / "usage.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in lines),
+                       encoding="utf-8")
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "usage_rollup.json")
+        monkeypatch.setattr(sys, "argv", ["bot.usage_tracker", "--check"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ut.main()
+        return buf.getvalue().splitlines(), rc
+
+    def test_sample_can_never_be_added_to_the_table(self):
+        """표본은 **합성 이름**이어야 한다 — 실제 요율표에 실릴 수 없는 것."""
+        from bot.usage_tracker import _PRICING, _UNPRICED_SAMPLE, is_priced
+        assert _UNPRICED_SAMPLE not in _PRICING
+        assert not is_priced(_UNPRICED_SAMPLE)
+        assert not _UNPRICED_SAMPLE.startswith("gemini"), _UNPRICED_SAMPLE
+
+    def test_adding_a_real_model_keeps_the_check_green(self, monkeypatch,
+                                                       tmp_path):
+        """처방 이행(= 단가표에 모델 추가)이 검증을 깨뜨리지 않는다."""
+        out, rc = self._run(monkeypatch, tmp_path,
+                            pricing_extra={"gemini-3.0-pro":
+                                           {"in": 1.0, "out": 8.0}})
+        txt = "\n".join(out)
+        assert "gemini-3.0-pro" in txt, txt        # ② 표에 실린다
+        judged = [ln for ln in out if "is_unpriced_record 판정=" in ln]
+        assert any("판정=True" in ln for ln in judged), judged
+        assert any("판정=False" in ln for ln in judged), judged
+        assert rc == 0, txt
+
+
+class TestUsageCheckUsesTheProductPredicate20260909:
+    """⑤ 원장 대조는 **화면이 쓰는 그 술어**로 판정해야 한다(#35).
+
+    독립 리뷰 실측: `not is_priced(m)` 로 재서, 저장된 `unpriced` 표식이 붙은
+    레코드를 통째로 놓쳤다 — 대시보드 비용카드는 1콜을 미등재로 세는데 CLI 는
+    `✅ 이상 없음` 이라 **과소집계된 카드에 초록불**을 줬다. 그 상태가 하필
+    처방을 이행한 **직후**의 상태다.
+    """
+
+    def _run(self, monkeypatch, tmp_path, lines, raw=None):
+        import importlib
+        ut = importlib.import_module("bot.usage_tracker")
+        log = tmp_path / "usage.jsonl"
+        if raw is not None:
+            log.write_bytes(raw)
+        else:
+            log.write_text("".join(json.dumps(r) + "\n" for r in lines),
+                           encoding="utf-8")
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "usage_rollup.json")
+        monkeypatch.setattr(sys, "argv", ["bot.usage_tracker", "--check"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ut.main()
+        return buf.getvalue().splitlines(), rc
+
+    def test_stored_flag_on_a_priced_model_is_not_a_pass(self, monkeypatch,
+                                                         tmp_path):
+        from bot.usage_tracker import _PRICING
+        priced = sorted(_PRICING)[0]
+        out, _ = self._run(monkeypatch, tmp_path, [
+            {"type": "llm_call", "ts": time.time(), "model": priced},
+            {"type": "llm_call", "ts": time.time(), "model": priced,
+             "unpriced": True, "cost_usd": 0.0},
+        ])
+        txt = "\n".join(out)
+        assert "✅ 이상 없음" not in txt, txt
+        assert "표식" in txt, txt
+
+    def test_flagged_history_is_not_a_red_x(self, monkeypatch, tmp_path):
+        """⚠️ 옛 표식은 **고칠 수 없다** — ❌ 로 찍으면 진짜 ❌ 를 가린다
+        (#260 고칠 수 없는 ❌ 가 매일 오면 진짜를 못 본다)."""
+        from bot.usage_tracker import _PRICING
+        priced = sorted(_PRICING)[0]
+        out, rc = self._run(monkeypatch, tmp_path, [
+            {"type": "llm_call", "ts": time.time(), "model": priced,
+             "unpriced": True, "cost_usd": 0.0}])
+        assert rc == 0, out
+        assert not [ln for ln in out if "❌" in ln], out
+
+    def test_unknown_model_gets_its_own_prescription(self, monkeypatch,
+                                                     tmp_path):
+        """`"unknown"` 은 `_extract_token_usage` 의 폴백이라 **단가표에 넣을 수
+        없다** — 'add to _PRICING' 처방은 이행 불가능한 영구 ❌ 다(#82·#260)."""
+        out, _ = self._run(monkeypatch, tmp_path, [
+            {"type": "llm_call", "ts": time.time(), "model": "unknown"}])
+        # 경로 문자열이 "unknown" 을 품을 수 있다 — ⚠️ 줄만 집는다(#75).
+        seg = [ln for ln in out if ln.lstrip().startswith("⚠️")]
+        assert seg and any("unknown" in ln for ln in seg), out
+        assert not any("_PRICING 에 위" in ln for ln in out), out
+        assert any("기록 경로" in ln for ln in seg), seg
+
+    def test_partial_read_is_unjudged_not_a_pass(self, monkeypatch, tmp_path):
+        """읽다 끊긴 통계를 완결인 척 판정하면 안 된다(#41·#54)."""
+        good = json.dumps({"type": "llm_call", "ts": time.time(),
+                           "model": "gemini-2.5-pro"}).encode() + b"\n"
+        raw = good + b'{"type": "llm_call", "model": "\xff\xfe"}\n' + good
+        out, rc = self._run(monkeypatch, tmp_path, [], raw=raw)
+        txt = "\n".join(out)
+        assert "✅ 이상 없음" not in txt, txt
+        assert "❓" in txt, txt
+        assert rc == 1, txt
+
+    def test_missing_file_and_empty_file_are_different_branches(
+            self, monkeypatch, tmp_path):
+        """'없음'과 '비어 있음'은 처방이 다르다(#82) — 같은 문구면 잘못된
+        인터프리터·사용자로 돈 것을 '원장이 비었다'로 읽는다."""
+        import importlib
+        ut = importlib.import_module("bot.usage_tracker")
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "usage_rollup.json")
+        monkeypatch.setattr(sys, "argv", ["bot.usage_tracker", "--check"])
+
+        def run(path):
+            monkeypatch.setattr(ut, "USAGE_LOG", path)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ut.main()
+            return buf.getvalue()
+
+        empty = tmp_path / "usage.jsonl"
+        empty.write_text("", encoding="utf-8")
+        a = run(tmp_path / "nope.jsonl")
+        b = run(empty)
+        def branch(txt):
+            return [ln.split(":", 1)[-1] for ln in txt.splitlines()
+                    if "❓" in ln]
+        ba, bb = branch(a), branch(b)
+        assert ba and bb, (a, b)
+        assert ba != bb, (ba, bb)          # 경로가 아니라 **갈래**가 달라야 한다
+        assert any("파일" in ln for ln in ba), ba
+
+
+class TestPrescriptionIsComplete20260909:
+    """❌ 처방은 **끝까지** 적혀야 한다 — 1단계만 이행하면 공표 요율 핀이
+    빨간불이 되어 §Pre-commit 6 으로 커밋이 막히는데 이유를 알 수 없다
+    (#82 갈래는 이름으로 · #274 이상 없을 때/이행 후를 말하라).
+    """
+
+    def test_prescription_points_at_a_real_test(self):
+        """⚠️ 이름이 바뀌면 안내가 거짓말이 된다(#55) — 실제로 수집되는지
+        확인한다. 문자열이 존재하는지가 아니라 **가리키는 대상이 사는지**."""
+        import bot.usage_tracker as ut
+        path, cls, fn = ut._RATE_PIN.split("::")
+        src = pathlib.Path(path).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        target = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.ClassDef) and n.name == cls]
+        assert target, (cls, ut._RATE_PIN)
+        names = [m.name for m in target[0].body
+                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        assert fn in names, (fn, names)
+
+    def test_red_verdict_names_both_steps(self, monkeypatch, tmp_path):
+        import bot.usage_tracker as ut
+        log = tmp_path / "usage.jsonl"
+        log.write_text(json.dumps({"type": "llm_call", "ts": time.time(),
+                                   "model": "totally-new-model"}) + "\n",
+                       encoding="utf-8")
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        monkeypatch.setattr(ut, "ROLLUP_PATH", tmp_path / "rollup.json")
+        monkeypatch.setattr(sys, "argv", ["bot.usage_tracker", "--check"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ut.main()
+        out = buf.getvalue()
+        assert rc == 1, out
+        verdict = [ln for ln in out.splitlines() if ln.startswith("⑥")][0]
+        assert "_PRICING" in verdict, verdict
+        assert ut._RATE_PIN in verdict, verdict
