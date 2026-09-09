@@ -53748,7 +53748,19 @@ class TestTradeInboxPopulationSplit20260910:
         import bot.daily_kr_flow as dkf
         from trade import customs, customs_provisional as cp
         db = tmp_path / "store.db"
-        ts.open_db(db).close()
+        # 2026-09-10(#222·#155): 미적재 판정이 **식별자**(source_message_id)로 바뀌어
+        # alerts 표가 실제로 그 행을 들고 있어야 픽스처가 현실을 재현한다 — 표가 빈
+        # 채로 stub 만 두면 이미 적재된 행도 '미적재' 로 잡힌다(실측으로 발각).
+        conn = ts.open_db(db)
+        from trade.parser import parse_caption
+        _p = parse_caption(self._KR)
+        assert _p is not None
+        ts.upsert_alert(conn, ts.alert_to_row(
+            _p, source_chat_id=1, source_message_id=1, media_group_id=None,
+            ingested_at="2026-07-22T08:47:00+09:00",
+            posted_at="2026-07-22T08:47:00+09:00", raw_text=self._KR))
+        conn.commit()
+        conn.close()
         alerts = [{"id": 1, "status": "preliminary", "period_start": "2026-07-01",
                    "period_end": "2026-07-20", "period_kind": "decadal_20",
                    "posted_at": "2026-07-22T08:47:00+09:00"}]
@@ -53773,12 +53785,14 @@ class TestTradeInboxPopulationSplit20260910:
     def test_badonion_traffic_no_longer_reads_as_a_stuck_ingest(self, tmp_path, monkeypatch):
         """VM 실제 모양 재현: 관세청은 07-22 에 멈췄고 그 뒤는 다른 소스 트래픽뿐."""
         from datetime import date
-        rows = [{"date": "2026-07-22T08:47:00+09:00", "caption_present": True, "caption": self._KR}]
-        rows += [{"date": f"2026-08-2{i % 9}T10:00:00+09:00", "caption_present": True,
-                  "caption": self._NOT_KR} for i in range(438)]
+        rows = [{"date": "2026-07-22T08:47:00+09:00", "message_id": 1,
+                 "caption_present": True, "caption": self._KR}]
+        rows += [{"date": f"2026-08-2{i % 9}T10:00:00+09:00", "message_id": 1000 + i,
+                  "caption_present": True, "caption": self._NOT_KR} for i in range(438)]
         f = self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))
         assert f["after_db"] == 438, "전 소스 계수는 사실대로 남긴다(#45 둘 다 말할 것)"
         assert f["kr_after"] == 0, "관세청 캡션은 DB 최신 이후 0줄이어야 한다"
+        assert f["kr_pending"] == 0, "식별자로도 미적재가 없어야 한다"
         assert f["verdict"]["branch"] == "channel_quiet", f["verdict"]
         assert "dashboard-refresh" not in f["verdict"]["reason"], "엉뚱한 처방(#292)"
 
@@ -53786,24 +53800,30 @@ class TestTradeInboxPopulationSplit20260910:
         """반대 증거 — **관세청 캡션**이 DB 최신 이후에 쌓이면 그건 진짜 ingest 다.
         이걸 안 보면 갈래를 통째로 죽이는 변형이 통과한다(#25·#47)."""
         from datetime import date
-        rows = [{"date": "2026-07-22T08:47:00+09:00", "caption_present": True, "caption": self._KR}]
-        rows += [{"date": f"2026-08-1{i % 9}T10:00:00+09:00", "caption_present": True,
-                  "caption": self._KR} for i in range(30)]
+        rows = [{"date": "2026-07-22T08:47:00+09:00", "message_id": 1,
+                 "caption_present": True, "caption": self._KR}]
+        rows += [{"date": f"2026-08-1{i % 9}T10:00:00+09:00", "message_id": 2000 + i,
+                  "caption_present": True, "caption": self._KR} for i in range(30)]
         f = self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))
-        assert f["kr_after"] == 30 and f["verdict"]["branch"] == "ingest", f["verdict"]
+        assert f["kr_after"] == 30 and f["kr_pending"] == 30, f
+        assert f["verdict"]["branch"] == "ingest", f["verdict"]
 
     def test_why_prints_both_populations(self, tmp_path, monkeypatch, capsys):
         """④ 가 전 소스와 관세청을 **나란히** 찍어야 다음 라운드가 안 헛돈다(#45·#202)."""
         from datetime import date
         import trade.dashboard as td
-        rows = [{"date": "2026-07-22T08:47:00+09:00", "caption_present": True, "caption": self._KR},
-                {"date": "2026-08-28T10:00:00+09:00", "caption_present": True, "caption": self._NOT_KR}]
+        rows = [{"date": "2026-07-22T08:47:00+09:00", "message_id": 1,
+                 "caption_present": True, "caption": self._KR},
+                {"date": "2026-08-28T10:00:00+09:00", "message_id": 2,
+                 "caption_present": True, "caption": self._NOT_KR}]
         self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))   # 스텁 배선
         td._why_header(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
         out = capsys.readouterr().out
         assert "← 전 소스(관세청+나쁜양파 15종 공용)" in out
         assert "그중 관세청 캡션" in out and "store.db 후보는 이것뿐" in out
-        assert "판정: channel_quiet (관세청 캡션 기준)" in out
+        # 2026-09-10(#222): 미적재 계수가 식별자 기준으로 바뀌며 라벨이 자랐다 —
+        # 계약은 '어느 모집단으로 판정했는지 밝힌다' 이지 그 문자열이 아니다(#200).
+        assert "판정: channel_quiet (관세청 캡션" in out
 
     def test_empty_population_does_not_claim_the_file_is_missing(self):
         """파일은 439줄인데 '파일 없음/빈 파일' 이라 적으면 운영자를 경로 확인으로
@@ -53833,9 +53853,13 @@ class TestTradeInboxPopulationSplit20260910:
                 raise ImportError("blocked")
             return real(name, *a, **k)
 
-        rows = [{"date": "2026-08-28T10:00:00+09:00", "caption_present": True, "caption": self._NOT_KR}]
+        rows = [{"date": "2026-08-28T10:00:00+09:00", "message_id": 3,
+                 "caption_present": True, "caption": self._NOT_KR}]
+        # 픽스처 준비도 `trade.parser` 를 쓰므로 **준비를 끝낸 뒤** 막는다.
+        import trade.dashboard as td
+        self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))
         monkeypatch.setattr(builtins, "__import__", _blocked)
-        f = self._facts(tmp_path, monkeypatch, rows, date(2026, 9, 10))
+        f = td.header_facts(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
         assert f["parse_ok"] is False
         assert "폴백" in f["verdict_population"]
 
@@ -53896,3 +53920,135 @@ class TestTradeAuditDoesNotCreateWhatItReads20260910:
         da.audit_provisional(tmp_path / "nope.db")
         out = capsys.readouterr().out
         assert "TRADE_DATA_GO_KR_KEY 미설정" in out and "⚠️" in out
+
+
+class TestTradePendingCountedByIdentity20260910:
+    """2026-09-10 배포 직후 VM 실측이 또 한 겹을 드러냈다. 관세청 모집단으로 갈랐더니
+    (#323) `DB 최신 이후 21줄` 이 남아 판정이 여전히 `ingest` 였는데, 같은 VM 의
+    ingest 카운터는 `inserted:0 · already_present:7477` — 그 21건은 **이미 DB 에
+    있는 행**이었다.
+
+    원인: inbox 의 `date` 는 **중계 시각**이고 DB 의 `posted_at` 은
+    `forward_origin_date`(원 게시 시각)라 **시계가 다르다**. 원본이 08:47 에 올라온
+    글을 08:59 에 전달받으면 시각 비교로는 '나중 줄' 로 보인다. ingest 가 실제로
+    쓰는 멱등 키는 `(source_chat_id, source_message_id)` UNIQUE + DO NOTHING
+    (`trade/store.py`)이므로 **식별자로 세야** 한다(#35 제품이 쓰는 그 기준)."""
+
+    _KR = ("2차전지 원형·각형 등 Cap Assembly, 모듈 (전국)\n"
+           "관련종목: 월별 수출 데이터\n\n"
+           "2026년 7월 1일 ~ 20일 잠정치 수출데이터 입니다.")
+
+    def _facts(self, tmp_path, monkeypatch, rows, *, stored_ids=(1,)):
+        import contextlib, json
+        from datetime import date
+        import trade.dashboard as td
+        import trade.store as ts
+        import bot.daily_kr_flow as dkf
+        from trade import customs, customs_provisional as cp
+        db = tmp_path / "store.db"
+        conn = ts.open_db(db)
+        # ⚠️ 손으로 짠 INSERT 는 NOT NULL 위반을 `OR IGNORE` 가 삼켜 **아무것도 안
+        # 심는다** — 첫 판이 그래서 거짓으로 실패했다(#54 픽스처가 증명하는 게 없다).
+        # 제품의 삽입 경로(`alert_to_row` + `upsert_alert`)를 그대로 쓴다(#155).
+        from trade.parser import parse_caption
+        parsed = parse_caption(self._KR)
+        assert parsed is not None, "표본이 파서에 안 걸리면 이 픽스처는 무의미하다"
+        for mid in stored_ids:
+            ts.upsert_alert(conn, ts.alert_to_row(
+                parsed, source_chat_id=1, source_message_id=mid, media_group_id=None,
+                ingested_at="2026-07-22T08:47:00+09:00",
+                posted_at="2026-07-22T08:47:00+09:00", raw_text=self._KR))
+        conn.commit()
+        got = {r[0] for r in conn.execute("SELECT source_message_id FROM alerts")}
+        conn.close()
+        assert got == set(stored_ids), f"픽스처가 실제로 안 심었다: {got}"
+        alerts = [{"id": 1, "status": "preliminary", "period_start": "2026-07-01",
+                   "period_end": "2026-07-20", "period_kind": "decadal_20",
+                   "posted_at": "2026-07-22T08:47:00+09:00"}]
+        monkeypatch.setattr(ts, "latest_per_dedup_key", lambda c: alerts)
+        monkeypatch.setattr(ts, "list_all_alerts", lambda c: alerts)
+        monkeypatch.setattr(dkf, "systemd_facts", lambda timer=None, service="": {
+            "ok": True, "s_ActiveState": "active", "s_SubState": "running"})
+        monkeypatch.setattr(cp, "load_signals", lambda c: {})
+        monkeypatch.setattr(customs, "session", lambda *a, **k: contextlib.nullcontext(None))
+        (tmp_path / "inbox.jsonl").write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+        return td.header_facts(db, tmp_path, today=date(2026, 9, 10))
+
+    def test_already_stored_relays_do_not_read_as_pending(self, tmp_path, monkeypatch):
+        """VM 실제 모양: 원 게시 08:47 을 08:59 에 전달받아 inbox 시각이 더 늦다.
+        시각으로 세면 '안 들어감', 식별자로 세면 0 — 후자가 사실이다."""
+        rows = [{"date": "2026-07-22T08:59:00+09:00", "message_id": 1,
+                 "caption_present": True, "caption": self._KR}]
+        f = self._facts(tmp_path, monkeypatch, rows, stored_ids=(1,))
+        assert f["kr_after"] == 1, "시각 기준 계수는 사실대로 남긴다(#45 둘 다 말할 것)"
+        assert f["kr_pending"] == 0, "식별자로는 이미 있는 행이다"
+        assert f["verdict"]["branch"] == "channel_quiet", f["verdict"]
+        assert "메시지 id 대조" in f["verdict_population"]
+
+    def test_genuinely_missing_rows_still_fire(self, tmp_path, monkeypatch):
+        """반대 증거 — DB 에 **없는** 관세청 캡션이면 여전히 ingest 다(#25·#47)."""
+        rows = [{"date": "2026-07-22T08:59:00+09:00", "message_id": 1,
+                 "caption_present": True, "caption": self._KR}]
+        rows += [{"date": "2026-08-01T09:00:00+09:00", "message_id": 900 + i,
+                  "caption_present": True, "caption": self._KR} for i in range(7)]
+        f = self._facts(tmp_path, monkeypatch, rows, stored_ids=(1,))
+        assert f["kr_pending"] == 7 and f["verdict"]["branch"] == "ingest", f["verdict"]
+
+    def test_rows_without_message_id_are_unidentified_not_pending(self, tmp_path, monkeypatch, capsys):
+        """message_id 가 없으면 **모르는 것**이지 미적재가 아니다 — 모르는 것을
+        결함으로 세면 없는 결함을 만든다(#54). 사실은 따로 세어 화면이 밝힌다(#43)."""
+        from datetime import date
+        import trade.dashboard as td
+        rows = [{"date": "2026-08-01T09:00:00+09:00",          # id 없음
+                 "caption_present": True, "caption": self._KR}]
+        f = self._facts(tmp_path, monkeypatch, rows, stored_ids=(1,))
+        assert f["kr_pending"] == 0, "식별 불가를 미적재로 세면 안 된다"
+        assert f["kr_unidentified"] == 1
+        assert f["verdict"]["branch"] == "channel_quiet", f["verdict"]
+        td._why_header(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
+        assert "식별 불가 1건(message_id 없음)" in capsys.readouterr().out
+
+    def test_why_prints_both_counts(self, tmp_path, monkeypatch, capsys):
+        from datetime import date
+        import trade.dashboard as td
+        rows = [{"date": "2026-07-22T08:59:00+09:00", "message_id": 1,
+                 "caption_present": True, "caption": self._KR}]
+        self._facts(tmp_path, monkeypatch, rows, stored_ids=(1,))
+        td._why_header(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
+        out = capsys.readouterr().out
+        assert "줄(시각 기준)" in out
+        assert "DB 에 없는 것**: 0건" in out and "source_message_id" in out
+
+    def test_unreadable_alerts_table_falls_back_and_says_so(self, tmp_path, monkeypatch, capsys):
+        """alerts 표를 못 읽으면 시각 기준으로 폴백하되 **폴백했다고 말한다**(#12·#165)."""
+        from datetime import date
+        import sqlite3
+        import trade.dashboard as td
+        rows = [{"date": "2026-07-22T08:59:00+09:00", "message_id": 1,
+                 "caption_present": True, "caption": self._KR}]
+
+        # `sqlite3.Connection` 은 C 불변 타입이라 메서드를 못 갈아끼운다(실측
+        # TypeError) — 연결을 감싸는 래퍼로 그 SELECT 만 막는다.
+        class _Blocking:
+            def __init__(self, conn):
+                self._c = conn
+
+            def execute(self, sql, *a, **k):
+                if "source_message_id" in sql and sql.strip().upper().startswith("SELECT"):
+                    raise sqlite3.OperationalError("no such table: alerts")
+                return self._c.execute(sql, *a, **k)
+
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+
+        # 픽스처 준비(스텁·파일)를 먼저 끝내고 **그 뒤에** SELECT 를 막는다 —
+        # 준비 단계까지 막으면 픽스처가 자기 검증에서 죽는다.
+        self._facts(tmp_path, monkeypatch, rows, stored_ids=())
+        # `header_facts` 는 `open_db` 를 **함수 안에서** import 하므로 모듈 속성이
+        # 아니라 원천(`trade.store`)을 갈아끼워야 한다(실측: td 패치는 안 먹는다).
+        import trade.store as _ts
+        _real_open = _ts.open_db
+        monkeypatch.setattr(_ts, "open_db", lambda p: _Blocking(_real_open(p)))
+        f = td.header_facts(tmp_path / "store.db", tmp_path, today=date(2026, 9, 10))
+        assert f["ids_ok"] is False and "id 대조 불가" in f["verdict_population"]

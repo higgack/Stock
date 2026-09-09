@@ -4450,6 +4450,23 @@ Pre-commit 검증) 적용 대상 — 리뷰 시 "이건 Copilot이 짰으니 기
     (진짜 ingest 지연은 여전히 잡히는가)를 같이 둘 것(#25·#47).
     ⚠️ 갈래를 맞게 뒤집어도 **사유 문구가 거짓이면 처방이 틀린다** — 파일이 439줄
     있는데 "파일 없음/빈 파일" 이라 적어 운영자를 경로 확인으로 보낼 뻔했다(#292).
+    ⚠️⚠️ **배포 직후 실측이 한 겹을 더 벗겼다** — 관세청 모집단으로 갈랐더니 `21줄`
+    이 남아 판정이 여전히 `ingest` 였는데, 같은 VM 의 ingest 카운터는 `inserted:0 ·
+    already_present`(= 이미 있는 행)였다. inbox 의 `date` 는 **중계 시각**이고 DB 의
+    `posted_at` 은 `forward_origin_date`(원 게시 시각)라 **시계가 다르다**: 08:47 글을
+    08:59 에 전달받으면 시각 비교로는 '나중 줄' 이다. ingest 의 멱등 키는
+    `(source_chat_id, source_message_id)` UNIQUE + DO NOTHING 이므로 **식별자로
+    세야** 한다(#35). 일반화: '아직 처리 안 됨' 을 **시각으로 재지 말 것** — 두 시각이
+    같은 시계인지부터 묻고, 아니면 제품의 멱등 키로 물어라.
+    ⚠️ 그리고 `message_id` 가 없는 줄은 **식별 불가**지 미적재가 아니다 — 모르는 것을
+    결함으로 세면 없는 결함을 만든다(#54). 따로 세어 화면이 밝힌다.
+    ⚠️ 픽스처가 또 두 번 눈이 멀었다: (a) 손으로 짠 `INSERT OR IGNORE` 가 NOT NULL
+    위반을 **조용히 삼켜** 아무것도 안 심었다 → 제품 삽입 경로(`alert_to_row` +
+    `upsert_alert`)를 쓰고 **심겼는지 되읽어 단언**할 것 (b) stub 만 두고 alerts 표를
+    비워 둔 앞선 픽스처는 이미 적재된 행을 '미적재' 로 만들었다(#155).
+    ⚠️ `sqlite3.Connection` 은 C 불변 타입이라 메서드 monkeypatch 가 안 된다(실측
+    TypeError) — 래퍼로 감쌀 것. 그리고 `header_facts` 는 `open_db` 를 **함수 안에서**
+    import 하므로 모듈 속성이 아니라 **원천 모듈**을 갈아끼워야 한다.
     ⚠️⚠️ 배포전 독립 리뷰가 **내가 '읽기 전용' 이라 적은 그 진단에서 쓰기를** 찾았다:
     `header_facts` ⑧ 이 존재 확인 없이 `customs.session()` 을 열어 customs.db 와
     스키마를 만들고 있었다(#264). 형제 둘(`_load_industry_html`·`audit_provisional`)은
