@@ -736,7 +736,10 @@ def _download_closes(tickers: list, period: str) -> tuple[dict, dict]:
         before = stats["batches"]
         _batch(dropped, 40)
         stats["retry_batches"] = stats["batches"] - before
+    stats["received"] = len(raw)
     if not raw:
+        stats["kept"] = 0
+        stats["ratio"] = 0.0
         return {}, stats
 
     all_dates = sorted({d for s in raw.values() for d in s.index})
@@ -840,8 +843,16 @@ def _empty(market: str, reason: str, meta: dict | None = None) -> dict:
             "universe_meta": meta or {}}
 
 
-def build_market(market: str, *, write: bool = True) -> dict:
-    """한 시장의 payload. 조각 실패는 그 시장만 비운다(다른 시장은 그대로)."""
+def build_market(market: str, *, write: bool = True,
+                 enrich: bool = True) -> dict:
+    """한 시장의 payload. 조각 실패는 그 시장만 비운다(다른 시장은 그대로).
+
+    `write=False` — 시계열 파일을 안 쓴다. `enrich=False` — 시총·한글명
+    overlay 를 건너뛴다. ⚠️ 그 overlay 는 네이버·yfinance 를 치고 비-KR 은
+    `_backfill_korean_names` 를 거쳐 **과금되는 LLM 번역**까지 부른다
+    (그 비용이 운영 원장 → 대시보드 비용 카드에 쌓인다, #30·#284·#312).
+    진단(`--why`)은 둘 다 끄고 부른다 — 표의 이름·시총을 보고하지 않으므로
+    잃는 정보가 없다(#264 진단은 상태를 바꾸지 않는다)."""
     m = (market or "").upper()
     uni, umeta = _universe(m)
     if not uni:
@@ -859,9 +870,19 @@ def build_market(market: str, *, write: bool = True) -> dict:
               else _PERIOD_BACKFILL)
     closes, scan = _download_closes(list(uni), period)
     if not closes:
-        return _empty(m, (scan.get("error") or
-                          f"다운로드 전멸(배치 {scan['batches']}건 중 실패 "
-                          f"{scan['batch_fail']}건)"), umeta)
+        # 갈래를 이름으로 부른다 — '전멸' 과 '받았지만 전부 걸러졌다' 는
+        # 처방이 다르다(#82). 재 놓고 안 쓰면 없는 것과 같다(#123).
+        if scan.get("error"):
+            reason = scan["error"]
+        elif not scan.get("received"):
+            reason = (f"다운로드 전멸(배치 {scan['batches']}건 성공 · "
+                      f"{scan['batch_fail']}건 실패)")
+        else:
+            reason = (f"받은 {scan['received']}종목이 전부 걸러짐 — "
+                      f"20봉 미만 {len(scan.get('short') or [])} · "
+                      f"정지·휴면 {scan.get('stale_skipped')} · "
+                      f"응답 모양 이상 {scan.get('bad_shape')}")
+        return _empty(m, reason, umeta)
 
     counts = breakouts_by_date(closes)
     if not counts:
@@ -921,17 +942,21 @@ def build_market(market: str, *, write: bool = True) -> dict:
     # 사실로 말하는 것이다(#54·#43).
     rows_reason = ("" if asof in counts else
                    f"{asof} 은 이번 수집 창 밖이라 종목 표를 만들지 못했습니다")
+    if partial and not rows_reason:
+        # ⚠️ 카드의 개수는 **저장된 전수 스캔**에서 오고 표는 이번 **부분**
+        # 스캔에서 나온다 — 나란히 놓으면 "17종목" 위에 9행짜리 표가 앉는다
+        # (#33·#45 총계와 소계는 같은 모집단이어야 한다).
+        rows_reason = ("이번 수집이 부분 스캔이라 종목 표를 만들지 "
+                       "않았습니다(카드 수치는 저장된 전수 스캔 기준)")
     want = ([asof] if asof in counts else []) + (
         [provisional["date"]] if provisional else [])
     detail = breakouts_on(closes, want) if want else {}
-    table = _sorted_rows(detail.get(asof) or [])
-    _overlay(table, m, uni)
-    table = _sorted_rows(table)
-    prov_rows: list = []
-    if provisional:
-        prov_rows = _sorted_rows(detail.get(provisional["date"]) or [])
+    table = detail.get(asof) or []
+    prov_rows = (detail.get(provisional["date"]) or []) if provisional else []
+    if enrich:
+        _overlay(table, m, uni)
         _overlay(prov_rows, m, uni)
-        prov_rows = _sorted_rows(prov_rows)
+    table, prov_rows = _sorted_rows(table), _sorted_rows(prov_rows)
 
     a5_hist = _avg5_chart(rows_hist)
     return {
@@ -1231,7 +1256,7 @@ def render_page(data: dict, now=None) -> str:
         sections = ("<div class='panel'><div class='bb-empty'>데이터를 받지 "
                     "못했습니다 — 유니버스·yfinance 조회를 확인하세요.</div></div>")
     calls = "".join(
-        f"bbChart('bbc-{m}', {_js(( data.get(m) or {}).get('chart') or [])},"
+        f"bbChart('bbc-{m}', {_js((data.get(m) or {}).get('chart') or [])},"
         f" {_js((data.get(m) or {}).get('strong_th'))},"
         f" {_js((data.get(m) or {}).get('weak_th'))});"
         for m in MARKETS if (data.get(m) or {}).get("chart"))
@@ -1256,8 +1281,9 @@ def render_page(data: dict, now=None) -> str:
 <b>이력 백분위</b> — 그 시장 자기 이력에서 오늘 5일선이 어디쯤인지. 유니버스
 크기와 무관해 시장마다 뜻이 같습니다(60세션 이상 쌓여야 판정합니다).<br>
 <b>위험 관리</b> — 원문은 "5일 평균 10 이하가 두 달 연속"일 때 현금 비중
-60~70% 를 <b>예로</b> 듭니다. 이 보드는 비중을 처방하지 않고 약세가 며칠째
-연속인지만 사실로 적으며, 그 조건을 채웠을 때만 원문을 인용합니다.<br>
+60~70% 를 <b>예로</b> 듭니다. 이 보드는 비중을 처방하지 않고 약세가 몇
+세션 연속인지(거래일 기준 세션 수)만 사실로 적으며, 그 조건을 채웠을 때만
+원문을 인용합니다.<br>
 <b>해석이 들어간 지점 넷</b> —
 ① 돌파는 <b>종가 &gt; 상단</b>(그날 밴드 밖에서 마감한 상태)으로 셉니다.
 🆕 는 전일엔 밴드 안이었던 신규 돌파입니다. HTS 는 표준편차 정의가 다를 수 있어
@@ -1344,7 +1370,8 @@ def _why(market: str) -> int:
     from bot.scripts.probe_progress import stream_stdout
     stream_stdout()
     m = (market or "KR").upper()
-    _p(f"🔋 bollinger_board --why v{_WHY_VER} · {m} · 읽기 전용")
+    _p(f"🔋 bollinger_board --why v{_WHY_VER} · {m} · "
+       "시계열 미기록 · 보강(과금) 미호출")
     _p(f"① 인터프리터: {sys.executable}")
     _p(f"   시계열: {series_path(m)} "
        f"({'있음' if series_path(m).exists() else '없음 — 첫 실행은 1년 백필'})")
@@ -1358,9 +1385,11 @@ def _why(market: str) -> int:
         _p(f"   {universe_label(m, meta)} · {len(uni):,}종목"
            f"{' · ' + meta['reason'] if meta.get('reason') else ''}")
     _p("")
-    _p("③ 수집 — 화면이 쓰는 그 경로를 그대로 태웁니다(몇 분 걸립니다)")
+    _p("③ 수집 — 화면이 쓰는 그 경로를 태웁니다(몇 분 걸립니다)")
+    _p("   시계열 파일과 시총·한글명 보강(네이버·yfinance·LLM 번역)은 "
+       "건너뜁니다 — 유니버스 캐시는 평소처럼 갱신됩니다")
     t0 = time.time()
-    d = build_market(m, write=False)
+    d = build_market(m, write=False, enrich=False)
     _p(f"   소요 {time.time() - t0:.1f}초")
     if d.get("reason"):
         _p(f"   ❌ {d['reason']}")
@@ -1411,7 +1440,7 @@ def _why(market: str) -> int:
        f"{d.get('rows_total')}종목")
     after = load_series(m)
     _p("")
-    _p(f"✅ 읽기 전용 확인 — 시계열 {len(before)}행 → {len(after)}행"
+    _p(f"✅ 시계열 불변 확인 — {len(before)}행 → {len(after)}행"
        f"{' (변화 없음)' if before == after else ' ⚠️ 변했다!'}")
     return 0 if before == after else 1
 

@@ -49614,10 +49614,20 @@ class TestQuoteTailRange20260908:
         assert len(calls) == 1, f"같은 일봉을 {len(calls)}번 받았다(#61)"
 
     def test_fresh_series_does_not_pay_for_the_fallback(self, monkeypatch):
-        """정상일 땐 추가 HTTP 0 — 늘 부르면 티커마다 순손실이다(#116)."""
+        """정상일 땐 추가 HTTP 0 — 늘 부르면 티커마다 순손실이다(#116).
+
+        ⚠️ 2026-09-09 수정: 픽스처 날짜(2026-09-07)만 박고 기대 세션은
+        **실제 캘린더**에 물어보고 있었다. #314 로 게이트가 `_vol_age_days`
+        에서 `sessions_behind` 로 바뀐 뒤, 그 날짜가 실제 기대 세션보다
+        뒤처지는 날이 오자 '정상'이라던 픽스처가 지연으로 판정돼 매일
+        빨간불이 됐다(시한폭탄 — #249·#291). 계약("뒤처지지 않았으면 추가
+        HTTP 0")은 그대로 두고, 기대 세션을 픽스처 날짜로 고정해 날짜에
+        의존하지 않게 한다(바로 위 형제 테스트가 이미 그렇게 한다)."""
         import bot.market_timing as mt
         import bot.chart_data as cd
         rows = [{"date": "2026-09-07", "close": 100.0}]
+        monkeypatch.setattr(mt, "_expected_session",
+                            lambda m: (rows[-1]["date"], 1))
         monkeypatch.setattr(mt, "_payload_to_rows", lambda p, days: rows)
         monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: {"x": 1})
         called = []
@@ -52301,7 +52311,14 @@ class TestBollingerWiring20260909:
         assert rc == 1                       # 유니버스가 없으면 실패로 알린다
         assert bb.load_series("KR") == before
         assert bb.series_path("KR").stat().st_mtime_ns == stamp
-        assert "읽기 전용" in capsys.readouterr().out
+        # ⚠️ 2026-09-09 계약 보강(#222): 옛 단언은 배너의 '읽기 전용' 이라는
+        # **한 낱말**만 봤는데, 그건 참이 아니었다 — 그때 `--why` 는 시총·
+        # 한글명 보강까지 타서 과금 LLM 을 부를 수 있었다(독립 리뷰). 이제
+        # 배너가 **무엇을 안 건드리는지** 갈래로 말해야 한다(#284 '안 쓴다'는
+        # 주장은 무엇을 안 쓰는지까지 적어야 참이 된다).
+        out = capsys.readouterr().out
+        assert "시계열 미기록" in out and "미호출" in out, out[:200]
+        assert "건너뜁니다" in out
         tree = ast.parse(open("bot/bollinger_board.py", encoding="utf-8").read())
         why = next(n for n in tree.body
                    if isinstance(n, ast.FunctionDef) and n.name == "_why")
@@ -52363,3 +52380,106 @@ class TestBollingerBasisHonesty20260909:
         assert d["provisional"]["held"] == 3
         assert d["provisional"]["date"] == idx[-1].strftime("%Y-%m-%d")
         assert not (held & set(bb.load_series("KR"))), "미확정 봉이 기록됐다"
+
+
+class TestBollingerReviewFindings20260909:
+    """배포전 독립 리뷰(2026-09-09)가 잡은 다섯. 전부 **동작으로** 고정한다 —
+    이름·모양만 재면 '호출은 남기고 결과를 버리는' 변형을 못 잡는다(#313).
+    """
+
+    def test_why_never_calls_the_paid_enrichment(self, monkeypatch, tmp_path,
+                                                 capsys):
+        """⚠️ 첫 판의 '읽기 전용' 회귀는 **시계열 파일만** 봐서 눈이 멀었다
+        (#91b 재는 대상이 맞나): `--why` 가 `build_market(write=False)` 를
+        불러 시총·한글명 overlay 까지 탔고, 비-KR 은 거기서
+        `_backfill_korean_names` → **과금되는 LLM 번역**이 나간다(#30·#284·
+        #312 — 운영 비용 원장에 가짜 행이 쌓인다)."""
+        from bot import bollinger_board as bb
+        t = TestBollingerCollector20260909()
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        t._wire(monkeypatch, tmp_path, tks, expected_offset=0)
+        overlay = []
+        monkeypatch.setattr(bb, "_overlay",
+                            lambda *a, **k: overlay.append(a))
+        rc = bb._why("KR")
+        capsys.readouterr()
+        assert rc == 0 and not overlay, "진단이 보강(과금) 경로를 탔다"
+
+    def test_build_market_still_enriches_for_the_screen(self, monkeypatch,
+                                                        tmp_path):
+        """반대 증거 — 화면 경로에서는 보강이 **살아 있어야** 한다(#25)."""
+        from bot import bollinger_board as bb
+        t = TestBollingerCollector20260909()
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        t._wire(monkeypatch, tmp_path, tks, expected_offset=0)
+        overlay = []
+        monkeypatch.setattr(bb, "_overlay",
+                            lambda *a, **k: overlay.append(a))
+        bb.build_market("KR")
+        assert overlay, "화면 경로에서 보강이 빠졌다"
+
+    def test_partial_scan_draws_no_table_and_says_why(self, monkeypatch,
+                                                      tmp_path):
+        """카드 수치는 저장된 **전수** 스캔에서 오고 표는 이번 **부분** 스캔에서
+        나온다 — 나란히 놓으면 총계와 소계의 모집단이 다르다(#33·#45)."""
+        from bot import bollinger_board as bb
+        t = TestBollingerCollector20260909()
+        tks = [f"{i:06d}.KS" for i in range(1, 101)]
+        df, idx = t._df(tks[:40])
+        t._wire(monkeypatch, tmp_path, tks, df=df, idx=idx, expected_offset=0)
+        # 저장분의 마지막 날짜를 **이번 스캔 창 안**에 둔다 — 창 밖이면 그쪽
+        # 사유가 먼저 걸려 부분-스캔 분기를 한 번도 안 탄다(#91c).
+        bb.save_series("KR", {d.strftime("%Y-%m-%d"):
+                              {"count": 9, "new": 1, "scanned": 100,
+                               "basis": "live"} for d in idx})
+        d = bb.build_market("KR")
+        assert d["partial"] is True and "부분 스캔" in d["rows_reason"]
+        html = bb.render_page({"KR": d})
+        assert "부분 스캔이라 종목 표를 만들지 않았습니다" in html
+        assert "<th class='num'>상단밴드</th>" not in html
+
+    def test_all_filtered_is_not_reported_as_a_dead_download(self, monkeypatch,
+                                                             tmp_path):
+        """'다운로드 전멸(배치 16건 중 실패 0건)' 은 자기 모순이다 — 갈래를
+        이름으로 부르고, 재 놓은 수치를 실제로 쓴다(#82·#123)."""
+        from bot import bollinger_board as bb
+        t = TestBollingerCollector20260909()
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        df, idx = t._df(tks, n=10)        # 전 종목 20봉 미만 → 전부 걸러짐
+        t._wire(monkeypatch, tmp_path, tks, df=df, idx=idx, expected_offset=0)
+        d = bb.build_market("KR")
+        assert "전부 걸러짐" in d["reason"] and "20봉 미만 40" in d["reason"]
+        assert "전멸" not in d["reason"]
+
+    def test_dead_download_still_says_so(self, monkeypatch, tmp_path):
+        from bot import bollinger_board as bb
+        t = TestBollingerCollector20260909()
+        tks = [f"{i:06d}.KS" for i in range(1, 41)]
+        t._wire(monkeypatch, tmp_path, tks, expected_offset=0)
+        import sys
+        sys.modules["yfinance"].download = lambda *a, **k: None
+        d = bb.build_market("KR")
+        assert "다운로드 전멸" in d["reason"]
+
+    def test_daily_audit_reads_the_series_instead_of_refetching(self):
+        """감사가 매일 6시장 ~1,800종목을 야후에서 다시 받으면 3시간 보드가
+        이미 받은 것을 중복 지불하고 `yf_paused` 를 건드려 **자기가 만든 ❌**
+        를 보고할 수 있다(독립 리뷰). 물을 것은 '보드가 최신을 기록하고
+        있나'이고 답은 파일에 있다."""
+        # ⚠️ `assert ... or True` 같은 항상 참인 단언은 두지 않는다(#291) —
+        # 아래 두 줄이 **그 섹션만 잘라서** 실제 계약을 잰다(#55).
+        src = open("bot/scripts/board_audit.py", encoding="utf-8").read()
+        i = src.index("Bollinger 보드 — 시장별 기준일")
+        seg = src[i:src.index("시장타이밍 보드 — 변동성 카드", i)]
+        assert "bb.load_series(" in seg, "감사가 저장된 시계열을 안 읽는다"
+        assert "bb.build_market(" not in seg, "감사가 매일 원천을 다시 받는다"
+
+    def test_shared_cap_example_is_a_no_op_ceiling(self):
+        """공용 키 예시가 US 기본값보다 낮으면 주석을 그대로 켜는 순간
+        S&P500 이 알파벳 앞쪽만 남는다(라벨은 'S&P 500' 그대로)."""
+        import re
+        from bot.bollinger_board import _DEFAULT_CAP
+        env = open(".env.example", encoding="utf-8").read()
+        m = re.search(r"^# BOLLINGER_UNIVERSE_CAP=(\d+)", env, re.M)
+        assert m, "공용 캡 예시가 사라졌다"
+        assert int(m.group(1)) >= max(_DEFAULT_CAP.values()), m.group(1)
