@@ -50393,7 +50393,18 @@ class TestMainCostCardSurfacesUnpriced20260908:
         st["total"] = 1
         st["unpriced_calls"] = 4
         html = d._render_stats_panel(st)
-        assert "단가 미등재 4콜(누적)" in html, html[:600]
+        # ⚠️ 2026-09-09 다시 씀(#222): 옛 판은 창을 '누적' 으로 못박았는데
+        # 그건 거짓이었다 — 옆의 **금액**은 롤업까지 더한 누적이지만 이
+        # **계수**는 `usage.jsonl` 하나만 본다(로테이션 밖은 못 본다, #34).
+        # 계약은 "수를 적고 · 그 수의 창을 정직하게 밝힌다" 이다.
+        import bot.usage_tracker as _ut
+        assert "단가 미등재 4콜" in html, html[:600]
+        # ⚠️ 같은 <div> 에 **금액의 창**("누적(전체)")이 나란히 있다 — 줄로
+        # 재면 그게 대신 만족시킨다(#75). 배지 조각만 잘라 본다(#55).
+        seg = [x for x in html.replace("<br>", "\n").splitlines()
+               if "단가 미등재" in x][0]
+        assert f"{_ut.ROTATION_DAYS}일" in seg, seg
+        assert "누적" not in seg, seg
 
     def test_card_is_quiet_when_everything_is_priced(self, monkeypatch):
         """반대 증거(#25) — 늘 뜨는 배지는 아무것도 안 잰다."""
@@ -50441,23 +50452,51 @@ class TestUsageCommandSurfacesUnpriced20260908:
         lines = src.splitlines(keepends=True)
         return "".join(lines[fn[0].lineno - 1:fn[0].end_lineno])
 
-    def test_usage_counts_unpriced_via_the_table(self):
-        body = self._fn()
-        assert "is_unpriced_record" in body, "저장된 표식만 믿고 있다(#24·#86)"
+    # ⚠️ 2026-09-09 다시 씀(#222): 옛 판 셋은 **소스 문자열**(`is_unpriced_record`
+    # ·`_unpriced_30d`)을 박아 두어, 판정을 단일 출처(`split_unpriced`)로 옮기는
+    # 무해한 리팩터에 전부 깨졌다 — 이 세션에서만 같은 형태가 반복이다(#19·#89·
+    # #117·#150·#230). 계약은 "표에 대조해 세고 · 창을 밝혀 찍고 · 0 이면
+    # 조용하다" 이므로 **출력 문자열**로 다시 쓴다(리팩터에 강하고 뮤테이션엔
+    # 더 민감하다 — 계산만 하고 안 찍는 변형도 여기서 잡힌다).
+    def _report(self, monkeypatch, rows):
+        pytest.importorskip("telegram")   # 샌드박스엔 없다 — VM 에서 돈다
+        import bot.telegram_bot as tb
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "load_records", lambda *a, **k: rows)
+        monkeypatch.setattr(tb, "_count_watchdog_restarts_24h", lambda: 0)
+        return tb._build_usage_report()
 
-    def test_usage_prints_it_with_the_window_named(self):
+    def _row(self, model, **kw):
+        return {"type": "llm_call", "model": model, "cost_usd": 0.0,
+                "ts": time.time(), **kw}
+
+    def test_usage_asks_the_single_source(self):
+        """telegram 이 없는 환경에서도 도는 구조 계약(#38) — 여기서 다시 세면
+        화면끼리 갈린다. 지역 변수 이름이 아니라 **제품 API 호출**을 잰다."""
+        import ast
+        body = self._fn()
+        calls = [ast.unparse(n.func) for n in ast.walk(ast.parse(body))
+                 if isinstance(n, ast.Call)]
+        assert "usage_tracker.split_unpriced" in calls, calls
+        assert "단가 미등재 " in body and "모델 미기록 " in body, body[-800:]
+
+    def test_usage_counts_unpriced_via_the_table(self, monkeypatch):
+        """저장된 표식이 **없는** 옛 레코드도 세어져야 한다(#24·#86)."""
+        out = self._report(monkeypatch, [self._row("brand-new-model")])
+        assert "단가 미등재 1콜(30일)" in out, out
+
+    def test_usage_prints_it_with_the_window_named(self, monkeypatch):
         """계산해 놓고 안 찍으면 없는 것과 같다(#123·#189·#228). 창을 안
         적으면 카드(누적)와 같은 문구에 다른 N 이 뜬다(#34)."""
-        body = self._fn()
-        assert "_unpriced_30d" in body
-        assert body.count("_unpriced_30d") >= 2, "재기만 하고 안 찍는다"
-        assert "단가 미등재 {_unpriced_30d}콜(30일)" in body, body[-500:]
+        out = self._report(monkeypatch, [self._row("brand-new-model")])
+        line = [ln for ln in out.splitlines() if "단가 미등재" in ln]
+        assert line and "30일" in line[0], out
 
-    def test_usage_stays_quiet_when_zero(self):
+    def test_usage_stays_quiet_when_zero(self, monkeypatch):
         """반대 증거(#25) — 조건 없이 붙이면 늘 뜬다."""
-        body = self._fn()
-        i = body.index("단가 미등재 {_unpriced_30d}")
-        assert "if _unpriced_30d else" in body[i:i + 200], body[i:i + 200]
+        out = self._report(monkeypatch, [self._row("gemini-2.5-flash",
+                                                   cost_usd=1.0)])
+        assert "미등재" not in out and "미기록" not in out, out
 
 
 class TestLegacyKrwRoundTrip20260908:
@@ -50918,6 +50957,36 @@ class TestUsageCheckUsesTheProductPredicate20260909:
         assert not any("_PRICING 에 위" in ln for ln in out), out
         assert any("기록 경로" in ln for ln in seg), seg
 
+    def test_unrecorded_line_states_the_token_volume(self, monkeypatch,
+                                                     tmp_path):
+        """12콜이 ₩10 인지 ₩10,000 인지 모르면 고칠지 말지 못 정한다 —
+        규모를 숫자로 말한다(#202). 뮤테이션 실측으로 무가드였다."""
+        out, _ = self._run(monkeypatch, tmp_path, [
+            {"type": "llm_call", "ts": time.time(), "model": "unknown",
+             "prompt_tokens": 700, "completion_tokens": 300},
+            {"type": "llm_call", "ts": time.time(), "model": "unknown",
+             "prompt_tokens": 50, "completion_tokens": 25}])
+        seg = [ln for ln in out if ln.lstrip().startswith("⚠️")]
+        assert seg and "1,075" in seg[0], seg
+
+    def test_unrecorded_line_states_when(self, monkeypatch, tmp_path):
+        """'언제' 를 안 실으면 다음 라운드에 또 손으로 명령을 조립하게 된다
+        (#319 가 바로 그 사고다). KST 로 적는다(전역 표기 규칙 10a)."""
+        ts = 1757380000.0                      # 고정 시각 — 시한폭탄 금지(#249)
+        out, _ = self._run(monkeypatch, tmp_path, [
+            {"type": "llm_call", "ts": ts, "model": "unknown",
+             "prompt_tokens": 1, "completion_tokens": 1}])
+        seg = [ln for ln in out if ln.lstrip().startswith("⚠️")]
+        import datetime as _dt
+        kst = _dt.timezone(_dt.timedelta(hours=9))
+        want = _dt.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d %H:%M")
+        assert seg and want in seg[0] and "KST" in seg[0], (want, seg)
+
+    def test_span_says_so_when_there_is_no_timestamp(self):
+        """못 재면 단정하지 않는다(#165) — 빈칸도 침묵도 아니다(#43)."""
+        import bot.usage_tracker as ut
+        assert "미기록" in ut._span({"nomodel_first": 0.0, "nomodel_last": 0.0})
+
     def test_partial_read_is_unjudged_not_a_pass(self, monkeypatch, tmp_path):
         """읽다 끊긴 통계를 완결인 척 판정하면 안 된다(#41·#54)."""
         good = json.dumps({"type": "llm_call", "ts": time.time(),
@@ -50995,3 +51064,67 @@ class TestPrescriptionIsComplete20260909:
         verdict = [ln for ln in out.splitlines() if ln.startswith("⑥")][0]
         assert "_PRICING" in verdict, verdict
         assert ut._RATE_PIN in verdict, verdict
+
+
+class TestUnpricedSplitsByPrescription20260909:
+    """`unknown` 을 '단가 미등재' 로 묶으면 **이행 불가능한 처방**이 된다.
+
+    VM 실측(2026-09-09): 원장 6,849콜 중 12콜이 `model="unknown"` 이다 —
+    `_extract_token_usage` 가 모델을 못 읽은 것이라 `_PRICING` 에 넣을 수 있는
+    이름이 아니다. 그런데 비용카드·`/usage` 는 그 12콜을 '단가 미등재' 라고
+    적어, 운영자를 요율표로 보낸다(#34 한 라벨이 두 갈래를 대표하면 한쪽은
+    거짓말 · #82 갈래는 이름으로 · #260 고칠 수 없는 경고).
+    `--check` 만 갈라 놨던 것을 화면까지 배선한다(#38·#147).
+    """
+
+    _NOMODEL = "unknown"
+
+    def _rows(self):
+        now = time.time()
+        return [
+            {"type": "llm_call", "model": "gemini-2.5-flash", "cost_usd": 1.0,
+             "ts": now},
+            {"type": "llm_call", "model": "brand-new-model", "cost_usd": 0.0,
+             "ts": now, "prompt_tokens": 10, "completion_tokens": 5},
+            {"type": "llm_call", "model": self._NOMODEL, "cost_usd": 0.0,
+             "ts": now, "prompt_tokens": 700, "completion_tokens": 300},
+        ]
+
+    def test_helper_splits_the_two_branches(self):
+        import bot.usage_tracker as ut
+        out = ut.split_unpriced(self._rows())
+        assert out["missing_rate"] == 1, out
+        assert out["no_model"] == 1, out
+        assert out["total"] == 2, out
+
+    def test_helper_counts_tokens_of_the_unrecorded_calls(self):
+        """규모를 모르면 고칠지 말지 못 정한다 — 12콜이 ₩10 인지 ₩10,000
+        인지 화면이 답해야 한다(#202 숫자로 말하라)."""
+        import bot.usage_tracker as ut
+        out = ut.split_unpriced(self._rows())
+        assert out["no_model_tokens"] == 1000, out
+
+    def test_stats_expose_both_counts(self, monkeypatch):
+        import bot.dashboard as d
+        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: self._rows())
+        monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
+        st = d._compute_stats([])
+        assert st["unpriced_calls"] == 2, st
+        assert st["unpriced_nomodel_calls"] == 1, st
+
+    def test_card_does_not_call_the_unrecorded_ones_a_rate_gap(self,
+                                                              monkeypatch):
+        """배선을 떼는 변형은 헬퍼 테스트가 못 잡는다(#20) — 렌더를 태운다."""
+        import bot.dashboard as d
+        monkeypatch.setattr(d, "_read_usage_records", lambda *a, **k: self._rows())
+        monkeypatch.setattr(d, "_read_usage_rollup_usd", lambda: 0.0)
+        st = dict(d._compute_stats([]))
+        # ⚠️ 분석 0건이면 패널이 통째로 빈 문자열이라 단언이 아무것도 안
+        # 잰다(#91c·#299) — 형제 테스트와 같은 방식으로 태운다.
+        st["total"] = 1
+        html = d._render_stats_panel(st)
+        assert "단가 미등재 1콜" in html, [
+            ln for ln in html.splitlines() if "미등재" in ln]
+        assert "모델 미기록" in html, [
+            ln for ln in html.splitlines() if "미기록" in ln]
+        assert "단가 미등재 2콜" not in html, html

@@ -457,6 +457,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # 표식이 아니라 **단가표에 직접 대조**한다(쓰는 곳이 13곳이라 표식만 믿으면
     # 샌다 · 옛 레코드엔 표식이 아예 없다 — 독립 리뷰 실측, #24·#86).
     unpriced_calls = 0
+    unpriced_nomodel_calls = 0
     # Per-subsystem breakdown (분석 / Screener / …) so the main dashboard
     # surfaces where the total bill is coming from. Screener Pro calls
     # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
@@ -475,6 +476,10 @@ def _compute_stats(records: list[dict]) -> dict:
         total_cost_usd += cost
         if _ut.is_unpriced_record(r):
             unpriced_calls += 1
+            # 처방이 다른 갈래를 같이 센다 — 한 라벨로 묶으면 `unknown` 에
+            # '요율표에 추가' 를 시키게 된다(#82·#34, VM 실측 12콜).
+            if _ut.is_unrecorded_model(r):
+                unpriced_nomodel_calls += 1
         ts = r.get("ts")
         if not ts:
             continue
@@ -627,6 +632,7 @@ def _compute_stats(records: list[dict]) -> dict:
         "month_cost_usd": month_cost_usd,
         "total_cost_usd": total_cost_usd,
         "unpriced_calls": unpriced_calls,
+        "unpriced_nomodel_calls": unpriced_nomodel_calls,
         "month_cost_by_model": month_cost_by_model,
         "today_cost_by_sub_usd": today_cost_by_sub_usd,
         "month_cost_by_sub_usd": month_cost_by_sub_usd,
@@ -713,9 +719,20 @@ def _render_stats_panel(stats: dict) -> str:
     cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']} / 누적(전체)"]
     # ⚠️ 단가표에 없는 모델은 ₩0 으로 집계된다 — 말하지 않으면 카드가 '공짜'
     # 라고 거짓말한다(#43·#284). 창을 같이 밝힌다(#34).
-    if stats.get("unpriced_calls"):
+    _nomodel = stats.get("unpriced_nomodel_calls", 0)
+    _rate_gap = stats.get("unpriced_calls", 0) - _nomodel
+    # ⚠️ 창을 '누적' 이라 적으면 안 된다 — 옆의 **금액**은 롤업까지 더한
+    # 누적이지만 이 **계수**는 `usage.jsonl` 하나만 본다(로테이션으로 그보다
+    # 오래된 콜은 파일에 없다). 같은 줄에 다른 창을 두 이름 없이 놓으면
+    # 한쪽이 거짓말한다(#34). 리터럴 대신 상수에서 파생시킨다(#38·#67).
+    _win = f"원장 {_ut.ROTATION_DAYS}일"
+    if _rate_gap:
         cost_sub_parts.append(
-            f"⚠️ 단가 미등재 {stats['unpriced_calls']}콜(누적) — 실제 비용은 더 큼")
+            f"⚠️ 단가 미등재 {_rate_gap}콜({_win}) — 실제 비용은 더 큼")
+    if _nomodel:
+        # ⚠️ 요율표로는 못 고친다 — 갈래를 이름으로 부른다(#82·#260).
+        cost_sub_parts.append(
+            f"⚠️ 모델 미기록 {_nomodel}콜({_win}) — 기록 경로 문제(요율표 아님)")
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
     # Per-subsystem breakdown. Surface only buckets with non-zero

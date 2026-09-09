@@ -1474,9 +1474,9 @@ def _build_usage_report() -> str:
     watchdog_24h = _count_watchdog_restarts_24h()
 
     fx = usage_tracker.KRW_PER_USD
-    _unpriced_30d = sum(1 for r in records
-                        if r.get("type") == "llm_call"
-                        and usage_tracker.is_unpriced_record(r))
+    # 갈래를 나눈 판정은 usage_tracker 단일 출처가 낸다 — 여기서 다시 세면
+    # 화면끼리 갈린다(#38·#82).
+    _split_30d = usage_tracker.split_unpriced(records)
 
     def krw(usd: float) -> str:
         return f"₩{int(round(usd * fx)):,}"
@@ -1597,8 +1597,11 @@ def _build_usage_report() -> str:
         f"💰 <b>총 비용 (전체 surface 합산)</b> (₩{fx}/$)"
         # ⚠️ 단가 미등재는 ₩0 으로 집계된다 — 말하지 않으면 '공짜'가 된다
         # (#43·#284). 판정은 단가표에 직접 대조(#24·#86). 0 건이면 조용히.
-        + (f"  ⚠️ 단가 미등재 {_unpriced_30d}콜(30일) — 실제 비용은 더 큼"
-           if _unpriced_30d else ""),
+        + (f"  ⚠️ 단가 미등재 {_split_30d['missing_rate']}콜(30일) — 실제 비용은 더 큼"
+           if _split_30d["missing_rate"] else "")
+        # ⚠️ `unknown` 은 요율표로 못 고친다 — 갈래를 이름으로(#82·#260).
+        + (f"  ⚠️ 모델 미기록 {_split_30d['no_model']}콜(30일) — 기록 경로 문제"
+           if _split_30d["no_model"] else ""),
         f"  • 오늘: <b>{krw(today_total_usd)}</b>  (${today_total_usd:.2f})",
         f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",
         f"  • 누적: <b>{krw(all_total_usd)}</b>  (${all_total_usd:.2f})",
