@@ -322,6 +322,50 @@ def _nearest_rank(sorted_vals: list[float], q: float) -> float | None:
     return sorted_vals[min(k, len(sorted_vals)) - 1]
 
 
+# ── 적용 문턱 규약(사용자 결정 2026-09-10 "B추천으로") ──────────────────────
+# 강세/약세는 **자기 이력 백분위**다 — 최근 `_PCT_WINDOW` 세션의 5일선 분포에서
+# 상위 20%(강세) · 하위 20%(약세), nearest-rank. KR 실측(221세션)에서 고정 20 은
+# 세션의 49% 에서 발화해 '평상시' 를 가리켰고, 약세 10 은 하위 20%(9.0)와 거의
+# 같았다. 유니버스 크기와 무관해 시장 게이트 없이 universal 이고, 국면이 바뀌면
+# 따라간다. 이력이 `_PCT_MIN_HISTORY` 미만이면 원문 예시 비율 환산(고정값)으로
+# 폴백하되 화면이 그렇게 말한다(#43·#165).
+_PCT_WINDOW = 250          # ≈1년 거래일
+_PCT_MIN_HISTORY = 120     # ≈6개월 — 이 미만은 백분위가 표본 몇 개에서 나온다
+_PCT_HI, _PCT_LO = 0.80, 0.20
+
+
+def _last_scanned(rows):
+    """마지막으로 분모(scanned)가 있는 행의 값 — 없으면 None. 세 곳이 같은 규칙을
+    쓴다(리뷰 2026-09-10: 복제된 제너레이터가 이미 `rows or []` 유무로 갈려 있었다)."""
+    return next(((r or {}).get("scanned") for r in reversed(rows or [])
+                 if (r or {}).get("scanned")), None)
+
+
+def resolve_thresholds(rows: list[dict], scanned) -> dict:
+    """적용 문턱 — {strong, weak, basis('pct'|'fixed'|None), n, window, needed,
+    fixed_strong, fixed_weak, reason}. `n` 은 백분위에 쓴 5일선 표본 수(창 안)."""
+    fs, fw = level_thresholds(scanned)
+    a5 = [v for v in avg5_series(rows or []) if v is not None][-_PCT_WINDOW:]
+    out = {"n": len(a5), "window": _PCT_WINDOW, "needed": _PCT_MIN_HISTORY,
+           "fixed_strong": fs, "fixed_weak": fw}
+    if len(a5) >= _PCT_MIN_HISTORY:
+        sv = sorted(a5)
+        hi, lo = _nearest_rank(sv, _PCT_HI), _nearest_rank(sv, _PCT_LO)
+        if hi is not None and lo is not None and hi > lo:
+            out.update(strong=hi, weak=lo, basis="pct", reason="")
+            return out
+        flat = f"백분위 문턱이 갈리지 않음(상위·하위 20% 가 같은 값 {hi})"
+    else:
+        flat = ""
+    if fs is None:
+        out.update(strong=None, weak=None, basis=None, reason="분모(스캔 종목수) 없음")
+        return out
+    why = flat or f"이력 {len(a5)}세션 < {_PCT_MIN_HISTORY}"
+    out.update(strong=fs, weak=fw, basis="fixed",
+               reason=f"{why} — 백분위 문턱 전까지 고정값")
+    return out
+
+
 def threshold_audit(rows: list[dict]) -> dict:
     """저장 이력에서 문턱이 **실제로** 어떻게 발화했나 — 값으로(#12·#51).
 
@@ -353,32 +397,48 @@ def threshold_audit(rows: list[dict]) -> dict:
                 pcts.append(float(c) / float(sc) * 100.0)
         except (TypeError, ValueError):
             pass
-    out = {"n": n, "reason": ""}
+    last_sc = _last_scanned(rows)
+    # 발화율은 **고정 참조 문턱**(원문 예시 비율 환산)으로 센다 — 폴백이 제정신
+    # 인지 보는 축이다. 화면이 실제로 쓰는 적용 문턱은 `applied` 로 나란히 싣는다.
+    out = {"n": n, "reason": "", "applied": resolve_thresholds(rows, last_sc)}
     if n == 0:
         out["reason"] = "판정 가능한 세션 0 — 대조 불가"
         return out
     for k in hits:
         out[f"{k}_share"] = hits[k] / n
     out["mean_pct"] = sum(pcts) / len(pcts) if pcts else None
-    last_sc = next(((r or {}).get("scanned") for r in reversed(rows)
-                    if (r or {}).get("scanned")), None)
     if last_sc:
         out["expected_lo"] = BAND_OUTSIDE_SHARE[0] * float(last_sc)
         out["expected_hi"] = BAND_OUTSIDE_SHARE[1] * float(last_sc)
-    sv = sorted(vals)
+    # 백분위는 **적용 문턱과 같은 창**(최근 _PCT_WINDOW)에서 — 전 이력으로 내면 ⑧ 이
+    # 같은 이름의 값 둘을 다른 모집단으로 찍는다(#45, 리뷰 2026-09-10).
+    win = vals[-_PCT_WINDOW:]
+    sv = sorted(win)
+    out["pct_n"] = len(win)
     out["p20"], out["p80"] = _nearest_rank(sv, 0.20), _nearest_rank(sv, 0.80)
     if n < _MIN_HISTORY:
         out["reason"] = f"이력 부족({n}세션 · {_MIN_HISTORY} 필요) — 비율은 참고만"
     return out
 
 
-def level_of(value, scanned) -> tuple[str | None, str]:
-    """(수준 'strong'|'neutral'|'weak', 사유). 재료가 없으면 (None, 사유)."""
+def level_of(value, scanned, rows: list[dict] | None = None, *,
+             thresholds: dict | None = None) -> tuple[str | None, str]:
+    """(수준 'strong'|'neutral'|'weak', 사유). 재료가 없으면 (None, 사유).
+
+    `thresholds`(이미 해석한 `resolve_thresholds` 결과) 또는 `rows` 를 주면 **적용
+    문턱**(이력 백분위, 부족하면 고정 폴백)으로 판정한다. 안 주면 고정 참조 문턱(원문 예시 비율 환산)이다 —
+    `threshold_audit` 이 그 참조의 발화율을 재는 데 쓴다."""
     if value is None:
         return None, "5일 평균 없음"
-    strong, weak = level_thresholds(scanned)
-    if strong is None:
-        return None, "분모(스캔 종목수) 없음"
+    if thresholds is None and rows is None:
+        strong, weak = level_thresholds(scanned)
+        if strong is None:
+            return None, "분모(스캔 종목수) 없음"
+    else:
+        th = thresholds if thresholds is not None else resolve_thresholds(rows, scanned)
+        strong, weak = th["strong"], th["weak"]
+        if strong is None:
+            return None, th["reason"]
     if value >= strong:
         return "strong", ""
     if value <= weak:
@@ -433,7 +493,9 @@ def history_pct_rank(rows: list[dict]) -> tuple[float | None, str]:
     유니버스 크기가 시장마다 달라 원문 문턱을 그대로 못 믿는 비-KR 의 **대조군**
     이다 — 자기 이력과 비교하므로 크기와 무관하다. 표본이 얇으면 판정하지
     않는다(#54)."""
-    a5 = [v for v in avg5_series(rows) if v is not None]
+    # 창은 적용 문턱(`resolve_thresholds`)과 **같은 최근 _PCT_WINDOW 세션** — 한 카드에
+    # '이력 백분위' 가 두 창으로 실리면 같은 이름이 다른 값을 낸다(#34, 리뷰 2026-09-10).
+    a5 = [v for v in avg5_series(rows) if v is not None][-_PCT_WINDOW:]
     if len(a5) < _MIN_HISTORY:
         return None, f"이력 부족({len(a5)}세션 · {_MIN_HISTORY} 필요)"
     cur = a5[-1]
@@ -441,20 +503,21 @@ def history_pct_rank(rows: list[dict]) -> tuple[float | None, str]:
     return below / len(a5) * 100.0, ""
 
 
-def weak_streak(rows: list[dict]) -> int:
+def weak_streak(rows: list[dict], weak: float | None = None) -> int:
     """5일선이 **연속으로** 약세 문턱 이하였던 세션 수(최근부터 거슬러).
 
     누적 합이 아니라 연속이다 — 중간에 한 번이라도 올라오면 0 으로 리셋된다.
     원문의 '두 달 연속' 조건을 판정하는 재료이고, 판정 자체(현금 비중)는
     우리가 하지 않는다(§5.3)."""
     a5 = avg5_series(rows)
+    if weak is None:                                     # 카드와 같은 적용 문턱
+        weak = resolve_thresholds(rows, _last_scanned(rows))["weak"]
+    if weak is None:
+        return 0
     streak = 0
     for i in range(len(rows) - 1, -1, -1):
         v = a5[i]
-        if v is None:
-            break
-        _strong, weak = level_thresholds((rows[i] or {}).get("scanned"))
-        if weak is None or v > weak:
+        if v is None or v > weak:
             break
         streak += 1
     return streak

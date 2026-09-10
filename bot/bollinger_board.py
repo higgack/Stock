@@ -29,7 +29,7 @@ from pathlib import Path
 from bot.bollinger import (PHASE, _date_key, avg5, avg5_extremes, breakouts_by_date, breakouts_on,
                            count_extremes, coverage_by_date, prune_sparse_rows, sparse_dates,
                            energy_phase, history_pct_rank, level_of,
-                           level_thresholds, merge_series, series_rows,
+                           merge_series, resolve_thresholds, series_rows, _PCT_WINDOW,
                            trend, weak_streak, weak_streak_note,
                            DIR_LABEL, LEVEL_LABEL)
 
@@ -1283,10 +1283,11 @@ def build_market(market: str, *, write: bool = True,
     scanned = latest.get("scanned")
     a5, a5_reason = avg5(rows_hist)
     tr = trend(rows_hist)
-    lv, lv_reason = level_of(a5, scanned)
-    strong_th, weak_th = level_thresholds(scanned)
+    th = resolve_thresholds(rows_hist, scanned)       # 한 번 해석해 셋이 같은 것을 본다
+    lv, lv_reason = level_of(a5, scanned, thresholds=th)
+    strong_th, weak_th = th["strong"], th["weak"]
     rank, rank_reason = history_pct_rank(rows_hist)
-    streak = weak_streak(rows_hist)
+    streak = weak_streak(rows_hist, weak=th["weak"])
 
     # 표는 최근 몇 세션치를 만들어 **저장**한다 — 카드·차트는 저장 시계열(마지막
     # 거래일)에서 오는데 표만 이번 원천에 매여 있으면 원천이 하루 늦는 날
@@ -1329,6 +1330,8 @@ def build_market(market: str, *, write: bool = True,
         "avg5": a5, "avg5_reason": a5_reason,
         "trend": tr, "level": lv, "level_reason": lv_reason,
         "strong_th": strong_th, "weak_th": weak_th,
+        "th_basis": th["basis"], "th_n": th["n"], "th_needed": th["needed"],
+        "th_window": th["window"], "th_reason": th["reason"],
         "phase": energy_phase(lv, tr.get("dir")),
         "pct_rank": rank, "pct_rank_reason": rank_reason,
         "streak": streak, "streak_note": weak_streak_note(streak),
@@ -1601,13 +1604,23 @@ def _trend_line(d: dict) -> str:
 
 
 def _level_line(d: dict) -> str:
+    """수준 문턱 한 줄 — 적용 규약을 라벨에 박는다(#34·#43). 백분위면 창과 표본을,
+    고정 폴백이면 왜 폴백인지(이력 부족)를 같은 줄에 적는다."""
     strong, weak = d.get("strong_th"), d.get("weak_th")
     if strong is None:
         return d.get("level_reason") or "판정 불가"
+    if d.get("th_basis") == "pct":
+        return (f"강세 ≥ {strong:.1f} · 약세 ≤ {weak:.1f} "
+                f"(최근 {d.get('th_n')}세션 5일선 상위·하위 20% 백분위)")
     base = f"강세 ≥ {strong} · 약세 ≤ {weak}"
+    tail = ""
+    if d.get("th_reason"):
+        tail = f" · {d['th_reason']}"                 # 해석기가 말한 사유 그대로(#292)
+    elif d.get("th_n") is not None and d.get("th_needed"):
+        tail = f" · 이력 {d['th_n']}세션 < {d['th_needed']} — 백분위 문턱 전까지 고정값"
     if (d.get("market") or "") == "KR":
-        return base + " (원문 예시 기준)"
-    return base + " (원문 예시 20/10 을 유니버스 크기로 환산 — 검증된 기준 아님)"
+        return base + " (원문 예시 기준)" + tail
+    return base + " (원문 예시 20/10 을 유니버스 크기로 환산 — 검증된 기준 아님)" + tail
 
 
 def _name_link(row: dict) -> str:
@@ -1773,7 +1786,7 @@ def _market_section(d: dict) -> str:
         f"<div class='stat'><div class='k'>이력 백분위</div>"
         f"<div class='v'>{rank}</div>"
         f"<div class='bb-note'>"
-        f"{_h.escape(d.get('pct_rank_reason') or '이 시장 자기 이력 대비')}"
+        f"{_h.escape(d.get('pct_rank_reason') or f'이 시장 자기 이력(최근 {_PCT_WINDOW}세션) 대비')}"
         f" · 약세 연속 {d.get('streak', 0)}세션</div></div>"
         f"{_ext_card('5일 평균 최저', (d.get('a5_ext') or {}).get('min'), d.get('a5_ext'))}"
         f"{_ext_card('5일 평균 최고', (d.get('a5_ext') or {}).get('max'), d.get('a5_ext'))}"
@@ -1924,8 +1937,9 @@ def render_page(data: dict, now=None) -> str:
 0 으로 리셋됩니다. 0 은 "지금은 약세 아님"입니다. 원문의 "두 달 연속"을
 40거래일로 환산해 두었고, <b>40세션에 닿았을 때만</b> 원문의 현금 비중 문구를
 인용합니다.<br>
-<b>이력 백분위</b> — 오늘의 5일 평균이 <b>이 시장 자기 과거 5일 평균들 중 몇
-%보다 높은가</b>입니다(산식: 오늘보다 낮았던 세션 수 ÷ 전체 세션 수). 예를 들어
+<b>이력 백분위</b> — 오늘의 5일 평균이 <b>이 시장 자기 과거(최근 250세션) 5일
+평균들 중 몇 %보다 높은가</b>입니다(산식: 오늘보다 낮았던 세션 수 ÷ 창 안 세션 수 —
+강세/약세 문턱과 같은 창). 예를 들어
 38% 는 지난 이력의 38% 가 오늘보다 낮았고 62% 는 오늘 이상이었다는 뜻 — 중하위권
 입니다. 강세/약세 문턱은 코스피200+코스닥150 기준 예시라 다른 시장에 그대로 못
 쓰지만, 백분위는 자기 이력과만 비교하므로 유니버스 크기와 무관해 <b>시장 간에 뜻이
@@ -1972,13 +1986,15 @@ def render_page(data: dict, now=None) -> str:
 ① 돌파는 <b>종가 &gt; 상단</b>(그날 밴드 밖에서 마감한 상태)으로 셉니다.
 HTS 는 표준편차 정의가 다를 수 있어
 종목수가 한두 개 차이 날 수 있습니다(우리가 재 보지는 않았습니다).
-② 문턱 20/10 은 원문이 밝힌 <b>예시</b>이고 코스피200+코스닥150(350종목)
-기준입니다 — 다른 시장은 유니버스 크기로 <b>비율</b> 환산했습니다. 이 종목수에
-공식 문턱은 없고, 통용되는 폭(breadth) 규약은 유니버스 대비 비율과 자기 이력
-백분위 둘입니다. 참고: 20일·2σ 밴드는 한 종목 가격의 약 88~89% 를 담는다는
-Bollinger 규칙에서 상·하 대칭과 종목 간 독립을 가정하면 상단 밖 종목은 유니버스의
-5~6%(350종목이면 ≈19~21)라는 <b>통계적 추정</b>이 나옵니다 — 측정이 아니며, 종목들은
-같이 움직여 실제 분포는 치우칩니다. 실제 발화율은 <code>--why ⑧</code> 이 잽니다.
+② 강세/약세 문턱은 <b>자기 이력 백분위</b>입니다 — 최근 250세션의 5일선 분포에서
+상위 20%(강세)·하위 20%(약세). 이 종목수에 공식 문턱은 없고 통용되는 폭(breadth)
+규약은 유니버스 대비 비율과 자기 이력 백분위 둘인데, 원문 예시 20/10 을 그대로 쓰면
+한국 실측(221세션)에서 강세가 세션의 49% 에 발화해 '평상시' 를 가리켰습니다
+(2026-09-10 사용자 결정). 이력이 120세션 미만이면 원문 예시 20/10 을 유니버스 크기로
+비율 환산한 고정값을 쓰고 카드가 그렇게 말합니다. 참고: 20일·2σ 밴드는 한 종목
+가격의 약 88~89% 를 담는다는 Bollinger 규칙에서 상·하 대칭과 종목 간 독립을
+가정하면 상단 밖 종목은 유니버스의 5~6%(350종목이면 ≈19~21)라는 <b>통계적 추정</b>이
+나옵니다 — 측정이 아니며 종목들은 같이 움직여 실제 분포는 치우칩니다. 적용 문턱과 발화율은 <code>--why ⑧</code> 이 잽니다.
 시장 간 종목수를 직접 비교하지 마세요(유니버스 크기·구성이 다릅니다).
 ③ 차트에서 <b>옅은 막대</b>는 백필 구간입니다 — 오늘 유니버스로 과거를 계산한
 것이라 생존편향이 있습니다.
@@ -2019,7 +2035,7 @@ def regenerate() -> None:
 # 그대로 태우되 시계열 파일은 건드리지 않는다. 진단이 자기가 읽을 신호를
 # 오염시키면 다음 라운드가 통째로 거짓이 된다(#30·#264·#283). 그리고 판정을
 # 여기서 재구현하면 화면과 갈라지므로(#35·#169) 제품 함수만 부른다.
-_WHY_VER = 4   # 2026-09-10 ⑧ 문턱 검증(이력 발화율·밴드 통계 기대값)
+_WHY_VER = 5   # 2026-09-10 ⑧ 적용 문턱(이력 백분위·고정 폴백) + 고정 참조 발화율
 _RUN_HINT = "cd ~/stock && .venv/bin/python -m bot.bollinger_board --why KR"
 
 
@@ -2134,14 +2150,21 @@ def _threshold_audit_lines(market: str, series: dict) -> str:
     from bot import bollinger as _b
     rows = _b.series_rows(series)
     a = _b.threshold_audit(rows)
-    lines = ["⑧ 문턱 검증 — 저장 이력에서 실제 발화율(문턱은 바꾸지 않았다)"]
-    strong, weak = _b.level_thresholds(
-        next(((r or {}).get("scanned") for r in reversed(rows)
-              if (r or {}).get("scanned")), None))
+    lines = ["⑧ 문턱 검증 — 적용 문턱(이력 백분위, 부족하면 고정 폴백)과 고정 참조의 실제 발화율"]
+    ap = a.get("applied") or {}
+    if ap.get("basis") == "pct":
+        lines.append(f"   적용 문턱(백분위): 강세 ≥ {ap['strong']:.1f} · 약세 ≤ {ap['weak']:.1f}"
+                     f" — 최근 {ap['n']}세션(창 {ap['window']}) 5일선 상위·하위 20%")
+    elif ap.get("basis") == "fixed":
+        lines.append(f"   적용 문턱(고정 폴백): 강세 ≥ {ap['strong']} · 약세 ≤ {ap['weak']}"
+                     f" — {ap.get('reason')}")
+    else:
+        lines.append(f"   적용 문턱: 없음 — {ap.get('reason') or '판정 불가'}")
+    strong, weak = ap.get("fixed_strong"), ap.get("fixed_weak")
     if not a.get("n"):
         lines.append(f"   ❓ {a.get('reason') or '판정 불가'}")
         return "\n".join(lines)
-    lines.append(f"   문턱 강세 ≥ {strong} · 약세 ≤ {weak} · 판정 세션 {a['n']}"
+    lines.append(f"   고정 참조 문턱 강세 ≥ {strong} · 약세 ≤ {weak} · 판정 세션 {a['n']}"
                  + (f" · ⚠️ {a['reason']}" if a.get("reason") else ""))
     lines.append(f"   발화율: 강세 {a['strong_share']*100:.0f}% · 중립 "
                  f"{a['neutral_share']*100:.0f}% · 약세 {a['weak_share']*100:.0f}%"
@@ -2152,8 +2175,8 @@ def _threshold_audit_lines(market: str, series: dict) -> str:
                      f"대칭·독립 가정)은 최근 분모 기준 {a['expected_lo']:.0f}~{a['expected_hi']:.0f}종목 "
                      "— 실측이 이 추정과 갈리면 실측이 맞다")
     if a.get("p20") is not None:
-        lines.append(f"   5일선 이력 백분위: 하위 20% ≤ {a['p20']:.1f} · 상위 20% ≥ {a['p80']:.1f}"
-                     " (통용 규약의 다른 한 축 — 이 값과 문턱을 나란히 보라)")
+        lines.append(f"   5일선 이력 백분위(최근 {a.get('pct_n')}세션 — 적용 문턱과 같은 창): "
+                     f"하위 20% ≤ {a['p20']:.1f} · 상위 20% ≥ {a['p80']:.1f}")
     return "\n".join(lines)
 
 

@@ -31,7 +31,7 @@ from trade.archive_template import (asof_footer, back_nav_html, card_html,
                                     max_ingest_iso)
 from trade.cn_stock_flow import _CSS, _THEME_JS
 
-PARSE_VER = 1
+PARSE_VER = 2
 TABLE = "tw_monthly_revenue"
 TITLE = "🧋 대만 월매출 데이터(종목별)"
 SIBLING = "tw_stock.html"
@@ -46,8 +46,10 @@ _RE_HEAD = re.compile(
 _RE_GATE = re.compile(r"(?:^|[^\d\s])\s*월\s*매출", re.M)
 _RE_PERIOD = re.compile(r"(?P<yy>\d{2})년\s*(?P<mm>\d{1,2})월(?!\s*누적)")
 _RE_PCT = re.compile(r"(?P<v>[+-]?\d+(?:\.\d+)?)\s*%")
-_RE_MOM = re.compile(r"(?<![A-Za-z])MoM(?![A-Za-z])\s*[:：]?\s*(?P<v>[+-]?\d+(?:\.\d+)?)\s*%", re.I)
-_RE_YOY = re.compile(r"(?<![A-Za-z])YoY(?![A-Za-z])\s*[:：]?\s*(?P<v>[+-]?\d+(?:\.\d+)?)\s*%", re.I)
+# 부호가 라벨 **앞**에 오는 형식도 실재한다 — 실물 캡션 `(+YoY 39.3%)`(2026-09-10
+# 스크린샷). 값에 부호가 없고 라벨 앞에 부호가 있으면 그 부호를 값에 적용한다.
+_RE_MOM = re.compile(r"(?:(?P<s>[+-])\s*)?(?<![A-Za-z])MoM(?![A-Za-z])\s*[:：]?\s*(?P<v>[+-]?\d+(?:\.\d+)?)\s*%", re.I)
+_RE_YOY = re.compile(r"(?:(?P<s>[+-])\s*)?(?<![A-Za-z])YoY(?![A-Za-z])\s*[:：]?\s*(?P<v>[+-]?\d+(?:\.\d+)?)\s*%", re.I)
 _RE_REVLBL = re.compile(r"(?<![A-Za-z])REV(?:ENUE)?(?![A-Za-z])|매출(?:액)?", re.I)
 _RE_HEADTOK = re.compile(r"월\s*매출")
 # 한 줄에 여러 지표가 오면 구분자(`,`)나 다음 라벨 앞에서 금액을 자른다.
@@ -82,6 +84,33 @@ def _pct(tok: str) -> float | None:
         return None
 
 
+def _labeled(rx: re.Pattern, tok: str) -> float | None:
+    """`YoY +53.3%` · `YoY: 53.3%` · `(+YoY 39.3%)` · `-YoY 5%` → 부호 붙은 값."""
+    m = rx.search(tok)
+    if not m:
+        return None
+    v = m.group("v")
+    if v[0] not in "+-" and m.group("s"):
+        v = m.group("s") + v
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+
+def _is_cum_value(tok: str) -> bool:
+    """누적 토큰 뒤에 이어지는 '값만 있는' 줄인가 — 금액 또는 % 가 있고 MoM/REV
+    라벨·기준월(`N년 M월`, 누적 아님)·헤더가 없다. `(+YoY 39.3%)` 는 값이다."""
+    if not (_RE_AMT.search(tok) or _RE_PCT.search(tok)):
+        return False
+    if _RE_MOM.search(tok) or _RE_REVLBL.search(tok) or _RE_HEADTOK.search(tok):
+        return False
+    if _RE_PERIOD.search(tok) or _RE_URL.fullmatch(tok.rstrip(".,;")):
+        return False
+    return True
+
+
 def parse_tw_monthly_revenue(caption: str) -> dict | None:
     """캡션 → {ticker, stock_name, month, rev_text, rev_twd, mom, yoy, cum_text,
     cum_yoy, parse_ver} 또는 None(이 문법이 아니면)."""
@@ -112,13 +141,29 @@ def parse_tw_monthly_revenue(caption: str) -> dict | None:
     if not month:
         return None
     rev_text = mom = yoy = cum_text = cum_yoy = None
-    for t in toks:
+    # 누적 블록은 누적 토큰 + 뒤따르는 **값만 있는 토큰**(금액·% 만 있고 MoM/REV
+    # 라벨·기준월이 없는 것)이다 — 실물 캡션(2026-09-10 스크린샷)은
+    # `26년 1~8월 누적:` / `3조 3,868억 7,000만 TWD` / `(+YoY 39.3%)` 세 줄이고,
+    # 첫 줄만 보면 금액·YoY 가 빈칸이 되며 셋째 줄의 YoY 가 당월 YoY 자리를
+    # 넘본다. 기준월 줄·MoM 줄·각주·URL 은 블록을 끝낸다(한 줄 형식은 누적
+    # 토큰 하나에 다 실려 있어 무해).
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        i += 1
         if _RE_URL.fullmatch(t.rstrip(".,;")):
             continue
         if "누적" in t:
+            block = [t]
+            while i < len(toks) and _is_cum_value(toks[i]):
+                block.append(toks[i])
+                i += 1
             if cum_text is None:
-                cum_text = _RE_URL.sub("", t).strip()[:200] or None
-                cum_yoy = _pct(t)
+                joined = " ".join(_RE_URL.sub("", b).strip() for b in block).strip()
+                cum_text = joined[:200] or None
+                cum_yoy = _labeled(_RE_YOY, joined)
+                if cum_yoy is None:
+                    cum_yoy = _pct(joined)
             continue
         if _RE_HEADTOK.search(t):
             continue                            # 헤더 토큰의 '매출' 은 라벨이 아니다
@@ -130,13 +175,9 @@ def parse_tw_monthly_revenue(caption: str) -> dict | None:
                 rest = re.sub(r"^[\s:]*약\s*", "", rest.strip(" :")).strip()
                 rev_text = rest[:120] or None
         if mom is None:
-            mm_ = _RE_MOM.search(t)
-            if mm_:
-                mom = float(mm_.group("v"))
+            mom = _labeled(_RE_MOM, t)
         if yoy is None:
-            my = _RE_YOY.search(t)
-            if my:
-                yoy = float(my.group("v"))
+            yoy = _labeled(_RE_YOY, t)
     if rev_text is None and mom is None and yoy is None:
         return None
     return {
