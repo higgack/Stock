@@ -14471,9 +14471,10 @@ class TestTradeDashboardAudit20260820:
         assert "trade.scripts.dashboard_audit --notify" in svc
         assert "OnCalendar=*-*-* 08:10:00 Asia/Seoul" in tmr
         aud = open("trade/scripts/dashboard_audit.py", encoding="utf-8").read()
-        # 무음 규율: ❌ 0건이면 notify 경로 자체에 안 들어간다
         assert '"--notify" in argv' in aud
-        assert aud.index("if not bad:") < aud.index('"--notify" in argv')
+        # 무음 규율(❌ 0건·⚠️ 0건이면 notify 를 부르지 않는다)은 2026-09-10 ⑧ 원천 침묵
+        # 추가로 ⚠️ 버킷이 생기며 소스 순서 단언이 거짓이 됐다 — 행동으로 다시 쓴다(#222):
+        # `TestTradeSourceSilence20260910.test_main_notifies_on_warnings_alone_with_rc_zero`.
 
     def test_sibling_staleness_pure_function(self):
         """③ 형제 페이지 검증이 '존재+비어있지 않음'뿐이라 화석을 못 잡았다
@@ -55781,3 +55782,221 @@ class TestBollingerPercentileThresholds20260910:
         seg = html[i:html.index("③", i)]
         assert "자기 이력 백분위" in seg and "250세션" in seg and "120세션 미만" in seg
         assert "49%" in seg and "--why ⑧" in seg
+
+
+class TestTradeSourceSilence20260910:
+    """사용자 2026-09-10 "나중에 신호가 나오면 알려줘"(나쁜양파 공지 '국내 수출입 데이터
+    9월 1일부터 사라집니다'). 기존 감사 ②·⑥·⑦ 은 전부 우리 쪽(재생성·수집·채널)이라 원천이
+    새 달을 안 내거나 한 소스만 카드가 끊기면 셋을 다 통과했다(#52). ⑧ 이 잠정 기한과
+    소스별 마지막 게시 vs 평소 간격을 재고 ⚠️ 로 알린다(#260 우리가 고칠 것은 없다 —
+    단 사람이 알아야 하는 신호). 값으로 못박는다(#19·#313) · 진단은 읽기 전용(#264)."""
+
+    def test_provisional_expected_follows_customs_release_days(self):
+        from datetime import date
+        from trade.scripts import dashboard_audit as da
+        # 1·11·21일 발표 + 여유 3**영업일**(달력일로 세면 연휴마다 오탐 #279·#314 — 독립
+        # 리뷰 2026-09-10). 날짜는 XKRX 캘린더 유무와 무관하게 같은 답이 나오는 것만 고른다
+        # (9/28 은 추석 휴장 9/24·25 를 빼도 3영업일, 주말만 빼면 5 — 둘 다 ≥3).
+        assert da.provisional_expected(date(2026, 9, 3)) == ("2026-08", "D2", 21)   # 9/2·3 = 2
+        assert da.provisional_expected(date(2026, 9, 5)) == ("2026-08", "FULL", 1)  # 토 · 2·3·4
+        assert da.provisional_expected(date(2026, 9, 15)) == ("2026-08", "FULL", 1) # 14·15 = 2
+        assert da.provisional_expected(date(2026, 9, 16)) == ("2026-09", "D1", 11)
+        assert da.provisional_expected(date(2026, 9, 28)) == ("2026-09", "D2", 21)
+        assert da.provisional_expected(date(2026, 1, 6)) == ("2025-12", "FULL", 1)   # 해 넘김
+        # 영업일 계수: 주말을 건너뛴다(캘린더가 없어도) · 시작일 제외 · 종료일 포함
+        assert da._business_days_since(date(2026, 9, 11), date(2026, 9, 14)) == 1   # 금→월
+        assert da._business_days_since(date(2026, 9, 11), date(2026, 9, 11)) == 0
+        # 발표일이 토요일(2026-11-21) — 달력 4일(11/25 수)이면 옛 판은 '나왔어야' 라 했지만
+        # 영업일 3 은 11/25 에야 찬다(23·24·25); 11/24 는 아직 아니다
+        assert da.provisional_expected(date(2026, 11, 24)) == ("2026-11", "D1", 11)
+        assert da.provisional_expected(date(2026, 11, 25)) == ("2026-11", "D2", 21)
+
+    def test_provisional_silence_names_the_missing_window(self):
+        from datetime import date
+        from trade.scripts import dashboard_audit as da
+        have = {"exp": [{"ym": "2026-08", "decile": "FULL", "amt": [9.0]},
+                        {"ym": "2026-08", "decile": "D2", "amt": [6.0]}]}
+        assert da.provisional_silence(have, date(2026, 9, 10))[0] is None
+        txt, info = da.provisional_silence(have, date(2026, 9, 16))
+        assert "2026-09 1~10일 창이 아직 없음" in txt and "저장 최신 2026-08 전체" in txt
+        assert "당월 11일" in txt and "영업일" in txt and info["expected"] == ("2026-09", "D1")
+        txt, info = da.provisional_silence({}, date(2026, 9, 16))
+        assert txt is None and "판정 불가" in info["reason"]              # #54
+        # 창의 유무는 화면 선택기(_decile_amounts — 전체금액 0 행은 화면도 안 그린다)로
+        # 센다: D1 행이 amt 0 으로만 있으면 '있음' 이 아니다(#35, 독립 리뷰 2026-09-10)
+        have2 = {"exp": [{"ym": "2026-09", "decile": "D1", "amt": [0, 0]},
+                         {"ym": "2026-08", "decile": "FULL", "amt": [5.0]}]}
+        txt, info = da.provisional_silence(have2, date(2026, 9, 16))
+        assert txt is not None and info["latest"] == ("2026-08", "FULL")
+        have2["exp"][0]["amt"] = [7.0]
+        assert da.provisional_silence(have2, date(2026, 9, 16))[0] is None
+
+    def test_source_silence_threshold_comes_from_own_cadence(self):
+        from datetime import date, timedelta
+        from trade.scripts import dashboard_audit as da
+        monthly = [date(2026, 5, 10), date(2026, 6, 10), date(2026, 7, 10), date(2026, 8, 10)]
+        assert da.source_silence(monthly, date(2026, 9, 15))[0] is None    # 36일 < 상한 62
+        txt, info = da.source_silence(monthly, date(2026, 11, 1))
+        assert "83일 전" in txt and "상한 62일" in txt and info["median_gap"] == 31.0
+        weekly = [date(2026, 8, 1) + timedelta(days=7 * i) for i in range(5)]
+        # 주간 소스가 30일 조용 — 간격×2=14 지만 최소 45 가 막는다(늘 뜨는 경고 금지 #260)
+        assert da.source_silence(weekly, weekly[-1] + timedelta(days=30))[0] is None
+        assert da.source_silence(weekly, weekly[-1] + timedelta(days=46))[0] is not None
+        assert "판정 불가" in da.source_silence(monthly[:3], date(2026, 9, 1))[1]["reason"]
+        assert da.source_silence([], date(2026, 9, 1))[0] is None
+
+    @staticmethod
+    def _db(path, table, dates):
+        import sqlite3
+        conn = sqlite3.connect(path)
+        conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, posted_at TEXT, x TEXT)")
+        conn.executemany(f"INSERT INTO {table}(posted_at, x) VALUES (?, ?)",
+                         [(f"{d}T05:53:00+00:00", "y") for d in dates])
+        conn.commit(); conn.close()
+
+    def test_audit_section_reads_every_source_read_only(self, tmp_path, monkeypatch, capsys):
+        from datetime import date
+        from types import SimpleNamespace as NS
+        from trade import badonion_sources as bs
+        from trade.scripts import dashboard_audit as da
+        self._db(tmp_path / "store.db", "alerts",
+                 ["2026-05-10", "2026-06-10", "2026-07-10", "2026-08-10"])   # 관세청 BeOn 침묵
+        self._db(tmp_path / "fresh.db", "whatever_table",
+                 ["2026-06-01", "2026-07-01", "2026-08-01", "2026-09-01"])   # 정상
+        monkeypatch.setattr(bs, "SOURCES", (
+            NS(label="정상 소스", db_file="fresh.db"),
+            NS(label="미구성 소스", db_file="nope.db")))
+        bad, warn = da.audit_source_silence(tmp_path, today=date(2026, 11, 1))
+        assert bad == []
+        assert len(warn) == 1 and warn[0].startswith("관세청 BeOn 알림(store.db): ") \
+            and "83일 전" in warn[0], warn
+        out = capsys.readouterr().out
+        assert "✅ 정상 소스: 마지막 게시 2026-09-01" in out
+        assert "미구성 소스: nope.db 없음" in out
+        # 읽기 전용 — 없는 customs.db·nope.db 를 만들지 않는다(#264·#323)
+        assert not (tmp_path / "customs.db").exists() and not (tmp_path / "nope.db").exists()
+        assert "customs.db 없음" in out
+
+    def test_provisional_rows_are_read_without_creating_schema(self, tmp_path):
+        """`customs.session`+`load_rows` 는 CREATE TABLE/ALTER 를 돌리고 예외를 삼켜 '읽기
+        실패' 가 '없음' 으로 보였다(독립 리뷰 2026-09-10 · #264·#12). 읽기 전용 경로:
+        표 없음 → None(판정 불가) · 있음 → 시계열 · 깨진 DB → sqlite3.Error 가 ❌ 로."""
+        import json, sqlite3
+        from datetime import date
+        from trade import badonion_sources as bs
+        from trade.scripts import dashboard_audit as da
+        cdb = tmp_path / "customs.db"
+        sqlite3.connect(cdb).execute("CREATE TABLE other (x TEXT)").connection.commit()
+        before = sqlite3.connect(cdb).execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        assert da._provisional_rows_ro(cdb) is None
+        # 배선까지: 감사 섹션이 그 파일을 열어도 표·스키마가 생기지 않는다(옛 경로는
+        # customs.session/ensure_schema 가 CREATE TABLE 을 돌려 화면이 보는 스키마를 바꿨다)
+        import unittest.mock as um
+        with um.patch.object(bs, "SOURCES", ()):
+            bad, warn = da.audit_source_silence(tmp_path, today=date(2026, 9, 16))
+        assert bad == [] and warn == []
+        after = sqlite3.connect(cdb).execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        assert before == after, after                   # 표를 만들지 않았다(#264)
+        conn = sqlite3.connect(cdb)
+        conn.execute("CREATE TABLE customs_provisional (kind TEXT, series_json TEXT)")
+        conn.execute("INSERT INTO customs_provisional VALUES (?, ?)", ("exp", json.dumps(
+            [{"ym": "2026-08", "decile": "FULL", "amt": [5.0]}])))
+        conn.execute("INSERT INTO customs_provisional VALUES (?, ?)", ("imp", None))
+        conn.commit(); conn.close()
+        assert da._provisional_rows_ro(cdb) == {"exp": [{"ym": "2026-08", "decile": "FULL", "amt": [5.0]}]}
+        # 깨진 파일은 ❌ 로 올라온다 — 옛 경로는 {} 를 돌려줘 '판정 불가 ⚠️' 로만 보였다
+        (tmp_path / "broken.db").write_bytes(b"not a sqlite file" * 100)
+        with pytest.raises(sqlite3.Error):
+            da._provisional_rows_ro(tmp_path / "broken.db")
+        import shutil
+        shutil.copy(tmp_path / "broken.db", cdb)
+        with um.patch.object(bs, "SOURCES", ()):
+            bad, warn = da.audit_source_silence(tmp_path, today=date(2026, 9, 16))
+        assert any(b.startswith("잠정 시계열 읽기 실패: DatabaseError") for b in bad), bad
+
+    def test_posted_date_uses_the_same_kst_rule_as_daily_digest(self):
+        """naive 는 UTC(daily_digest._kst_date_of 와 같은 규칙) — 두 도구가 '마지막 게시'
+        날짜를 하루 다르게 매기면 안 된다(#38, 독립 리뷰 2026-09-10). daily_digest 는 import
+        시 load_dotenv 를 타므로 함수 소스만 떼어 태운다(#294 운영 .env 를 읽지 않는다)."""
+        import ast, inspect
+        from datetime import date, timedelta, timezone
+        from trade.scripts import dashboard_audit as da
+        src = (pathlib.Path(__file__).resolve().parents[1] / "trade/scripts/daily_digest.py").read_text()
+        fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "_kst_date_of")
+        ns = {"datetime": __import__("datetime").datetime, "timezone": timezone,
+              "_KST": timezone(timedelta(hours=9))}
+        exec(ast.unparse(fn), ns)
+        for ts in ("2026-08-31T23:30:00", "2026-08-31T23:30:00Z", "2026-08-31T14:59:59+00:00",
+                   "2026-09-01T05:53:00+09:00", "garbage"):
+            got = da._posted_date(ts)
+            assert (got.isoformat() if got else "") == ns["_kst_date_of"](ts), ts
+        assert da._posted_date("2026-08-31T23:30:00") == date(2026, 9, 1)   # naive = UTC → 다음날 KST
+
+    def test_notify_text_stays_inside_the_telegram_budget(self):
+        """15 ❌ + 10 ⚠️ 를 그대로 이으면 4096자를 넘고, 그 날은 400 으로 **아무것도 안 온다**
+        (독립 리뷰 2026-09-10). 예산 안에서 자르고 잘랐다고 말한다(#45)."""
+        from trade.scripts import dashboard_audit as da
+        bad = [f"결함 {i}: " + "가" * 250 for i in range(15)]
+        warn = [f"관세청 BeOn 알림(store.db): 마지막 게시 " + "나" * 250 for _ in range(10)]
+        txt = da.notify_text(bad, warn)
+        assert len(txt) <= 4096 and txt.startswith("🔍 <b>수출입 대시보드 감사</b> · ❌ 15건 · ⚠️ 10건")
+        assert "… 외 " in txt and "줄" in txt
+        assert len("\n".join([f"• {b}" for b in bad] + [f"⚠️ {w}" for w in warn])) > 4096   # 대조군
+        short = da.notify_text(["x"], ["y"])
+        assert short.splitlines() == ["🔍 <b>수출입 대시보드 감사</b> · ❌ 1건 · ⚠️ 1건", "• x", "⚠️ y"]
+        long_line = da.notify_text(["z" * 1000], [])
+        assert len(long_line.splitlines()[1]) <= da._TG_LINE_MAX + 2 and long_line.endswith("…")
+
+    def test_health_notify_logs_when_telegram_rejects(self, monkeypatch, caplog):
+        """`_notify` 가 응답을 안 봐서 4096자 초과·HTML 오류가 조용히 사라졌다(#12)."""
+        import logging, subprocess, types
+        from trade.scripts import health_check as hc
+        monkeypatch.setenv("TRADE_BOT_TOKEN", "t"); monkeypatch.setenv("TRADE_CHANNEL_CHAT_IDS", "1")
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            body = b'{"ok":false,"error_code":400,"description":"Bad Request: message is too long"}'
+            if "text=ok" in cmd:
+                body = b'{"ok":true,"result":{}}'
+            return types.SimpleNamespace(returncode=0, stdout=body, stderr=b"")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with caplog.at_level(logging.WARNING, logger="health-check"):
+            hc._notify("ok"); hc._notify("x" * 5000)
+        assert len(calls) == 2
+        msgs = [r.getMessage() for r in caplog.records if "notify not delivered" in r.getMessage()]
+        assert len(msgs) == 1 and "too long" in msgs[0] and "len=5000" in msgs[0]
+        assert "t/sendMessage" not in msgs[0]              # 토큰·본문은 로그에 안 찍는다
+
+    def test_run_audit_full_carries_the_silence_warnings(self, tmp_path, monkeypatch):
+        from trade import badonion_sources as bs
+        from trade.scripts import dashboard_audit as da
+        self._db(tmp_path / "store.db", "alerts",
+                 ["2025-05-10", "2025-06-10", "2025-07-10", "2025-08-10"])
+        monkeypatch.setattr(bs, "SOURCES", ())
+        monkeypatch.setattr(da, "_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(da, "run_audit", lambda: [])
+        bad, warn = da.run_audit_full()
+        assert bad == [] and len(warn) == 1 and "관세청 BeOn" in warn[0]
+
+    def test_main_notifies_on_warnings_alone_with_rc_zero(self, monkeypatch, capsys):
+        import sys
+        from types import SimpleNamespace as NS
+        from trade.scripts import dashboard_audit as da
+        from trade.scripts import health_check as hc
+        # main() 은 load_dotenv() 를 부른다 — 진짜 ~/stock/.env 가 세션 환경에 들어오면
+        # 뒤 테스트의 '미설정' 분기가 파일 순서에 따라 뒤집힌다(#294 · 독립 리뷰 2026-09-10)
+        loaded = []
+        monkeypatch.setitem(sys.modules, "dotenv", NS(load_dotenv=lambda *a, **k: loaded.append(1)))
+        sent = []
+        monkeypatch.setattr(hc, "_notify", lambda msg: sent.append(msg))
+        monkeypatch.setattr(da, "run_audit_full", lambda: ([], ["관세청 BeOn 알림(store.db): 마지막 게시 …"]))
+        assert da.main(["--notify"]) == 0                    # ⚠️ 만이면 결함 아님
+        assert len(sent) == 1 and "❌ 0건 · ⚠️ 1건" in sent[0] and "⚠️ 관세청 BeOn" in sent[0]
+        monkeypatch.setattr(da, "run_audit_full", lambda: ([], []))
+        sent.clear()
+        assert da.main(["--notify"]) == 0 and sent == []      # 무음
+        monkeypatch.setattr(da, "run_audit_full", lambda: (["x"], []))
+        assert da.main(["--notify"]) == 1 and "❌ 1건 · ⚠️ 0건" in sent[-1]
+        assert loaded                                     # 스텁이 실제로 그 경로를 받았다
