@@ -710,6 +710,9 @@ def sort_by_pct(items: list, gainers: bool = True) -> list:
 
 _ENRICH_CACHE: dict = {}
 _ENRICH_TTL = 600   # 10분 — render 비용 amortize
+# 시총 persist(디스크) 파일 TTL — 정의는 `finviz_client.MCAP_PERSIST_TTL` 하나
+# (같은 파일을 `_persist_mcap_overlay` 도 읽는다). 여기선 이름만 빌린다(#38).
+from bot.finviz_client import MCAP_PERSIST_TTL as _MCAP_PERSIST_TTL
 _ENRICH_REFRESHING: set = set()   # 백그라운드 full-enrich 진행 중 key (dedup)
 _ENRICH_LOCK = _threading.Lock()
 
@@ -756,7 +759,7 @@ def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
     # 내구 캐시 비대칭 해소 위에 렌더-블록 제거 추가).
     mcaps = _fetch_mcaps(tickers) if allow_slow else {}
     pkey = f"enrich_mcap_{market}.json"
-    persist = _cached(pkey, ttl=12 * 3600)
+    persist = _cached(pkey, ttl=_MCAP_PERSIST_TTL)
     persist = dict(persist) if isinstance(persist, dict) else {}
     changed = False
     # T7(2026-06-16): TW 는 네이버 worldstock 시총 overlay 가 없어 fast_info(rate-

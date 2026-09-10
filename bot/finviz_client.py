@@ -1578,13 +1578,20 @@ def _naver_worldstock_overlay(rows: list, market: str,
             r["name"] = w["name"]
 
 
+# 시총 persist(`enrich_mcap_<market>.json`) 파일 TTL — 이 파일을 읽는 곳이 둘이다
+# (`_persist_mcap_overlay` · `highlow_render._enrich_compute`). 리터럴을 두 곳에
+# 적으면 한쪽만 바뀌어 같은 파일을 두 독자가 다르게 판정한다(#38·#36) — 진단
+# (`bot.scripts.tw_enrich_probe`)의 '만료' 갈래도 이 값을 읽는다.
+MCAP_PERSIST_TTL = 12 * 3600
+
+
 def _persist_mcap_overlay(rows: list, market: str) -> None:
     """시총 디스크 persist — yfinance 가 일시적으로 시총 None 줘도 직전 성공값 유지
     (사용자 2026-06-14 'TW 시총 안 떠'). enrich_for_panel persist 와 같은 파일
     (enrich_mcap_<market>.json) 공유 → 52주·무버 시총 일관. in-place·graceful."""
     try:
         pkey = f"enrich_mcap_{market}.json"
-        persist = _cached(pkey, ttl=12 * 3600)
+        persist = _cached(pkey, ttl=MCAP_PERSIST_TTL)
         persist = dict(persist) if isinstance(persist, dict) else {}
         changed = False
         for r in rows:

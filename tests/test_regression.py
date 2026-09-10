@@ -54935,3 +54935,279 @@ class TestBollingerFillCoverageRule20260910:
         monkeypatch.setattr(bb, "_SESSION_FILL", {"KR": (bb._kr_closes_on, "KRX")})
         d = bb.build_market("KR", write=False, enrich=False)
         assert d["fill"]["reason"] == "KRX 조회 실패(AssertionError)", d["fill"]
+
+
+class TestTwEnrichProbe20260910:
+    """대만 급등·급락 업종·시총 진단(`bot.scripts.tw_enrich_probe`).
+
+    사용자 2026-09-10 "업종이랑 시총 안나오는건 너무 작아서 그런거야?" — 같은
+    질문이 세 번째(2026-08-04·08-19 업종)라 확인 명령 대신 제품에 심었다(#252).
+    독립 리뷰(같은 날)가 첫 판에서 잡은 것들을 계약으로: 테스트가 진짜 TPEx 를
+    쳤다(#312) · 캐시 맵과 원천이라는 **다른 모집단**을 한 수로 섞었다(#45) ·
+    `--slow` 가 채운 결과를 판정이 안 봤다(같은 실행이 반증한 원인을 적음) ·
+    봇 메모리에만 있는 fast_info 쿨다운을 다른 프로세스가 '정상'이라 단정했다
+    (#165) · `main()` 이 판정을 실제로 찍는지는 아무 테스트도 안 봤다(#20)."""
+
+    def _harness(self, monkeypatch, tmp_path, *, persist=None, listed=None, otc=None,
+                 cached_map=None, mcap_age=None, movers=None, meta=None,
+                 slow_meta=None, closes=None, render_raises=False):
+        """제품 모듈만 스텁하고 진단은 그대로 태운다 — 홈·네트워크 차단(#294·#312).
+        `requests.get` 은 **폭탄**이다: 진단이 원문 덤프 분기로 가면 여기서 터진다."""
+        import bot.finviz_client as fv
+        import bot.twse_client as tw
+        import bot.highlow_render as hr
+        import bot.chart_translate as ct
+        import requests
+        calls = {"movers": 0, "enrich": [], "translate": 0, "requests": 0, "closes": 0}
+
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(fv, "cache_age_sec", lambda name: mcap_age)
+        monkeypatch.setattr(fv, "_cached", lambda name, ttl=0: dict(persist or {}))
+        monkeypatch.setattr(fv, "yf_paused", lambda: False)
+        monkeypatch.setattr(tw, "_cached_stale",
+                            lambda name, max_age_sec=0: dict(cached_map or {}))
+
+        def _src(url, label):
+            return dict((listed if label.startswith("上市") else otc) or {})
+        monkeypatch.setattr(tw, "_fetch_one_industry_source", _src)
+
+        def _movers(*a, **k):
+            calls["movers"] += 1
+            return {"up": list(movers or []), "down": [], "date": "2026-09-09"}
+        monkeypatch.setattr(tw, "fetch_tw_movers", _movers)
+
+        def _all(*a, **k):
+            calls["closes"] += 1
+            return ([{"code": c, "close": v} for c, v in (closes or {}).items()], "2026-09-09")
+        monkeypatch.setattr(tw, "_tw_all_common", _all)
+
+        def _enrich(tickers, items, market, want_ind, want_name, allow_slow):
+            calls["enrich"].append({"want_ind": want_ind, "want_name": want_name,
+                                    "allow_slow": allow_slow, "tickers": list(tickers),
+                                    "prices": [it.get("price") for it in items]})
+            if render_raises and not allow_slow:
+                raise RuntimeError("render boom")
+            return dict((slow_meta if allow_slow else meta) or {})
+        monkeypatch.setattr(hr, "_enrich_compute", _enrich)
+
+        def _boom(*a, **k):
+            calls["translate"] += 1
+            raise AssertionError("진단이 번역(LLM)을 불렀다 — #312·#321")
+        monkeypatch.setattr(ct, "translate_titles_kr", _boom)
+        monkeypatch.setattr(ct, "translate_names_kr", _boom)
+
+        def _net(*a, **k):
+            calls["requests"] += 1
+            raise AssertionError("테스트가 진짜 네트워크를 쳤다 — #312")
+        monkeypatch.setattr(requests, "get", _net)
+        return calls
+
+    def _run(self, monkeypatch, argv):
+        from bot.scripts import tw_enrich_probe as p
+        monkeypatch.setattr(sys, "argv", ["tw_enrich_probe", *argv])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = p.main()
+        return rc, buf.getvalue()
+
+    _M = [{"code": "8227", "name": "巨騰", "close": 198.0},
+          {"code": "6949", "name": "普及", "close": 54.9}]
+    _BOTH = {"8227": "전자부품", "6949": "바이오"}
+
+    # ── 판정: 갈래마다 다른 말(#82) — 순수 함수를 값으로
+    def test_verdict_says_which_branch_emptied_mcap(self):
+        from bot.scripts.tw_enrich_probe import enrich_verdict
+        base = dict(n=30, render_ok=True, ind_filled=30, map_n=1800, in_map=30,
+                    src_in=30, yf_pause=False)
+        gone = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=None, **base))
+        old = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=20 * 3600, **base))
+        cold = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=600, **base))
+        assert "파일이 없다" in gone and "만료" not in gone
+        assert "만료" in old and "20.0시간 전" in old
+        assert "아직 못 채웠다" in cold and "만료" not in cold
+        assert len({gone, old, cold}) == 3
+
+    def test_verdict_uses_the_slow_result_instead_of_a_disproved_cause(self):
+        """④-b 가 채웠으면 '캐시 파일이 없다'는 같은 실행이 반증한 원인이다(리뷰 High)."""
+        from bot.scripts.tw_enrich_probe import enrich_verdict
+        base = dict(n=30, render_ok=True, mcap_filled=0, ind_filled=30,
+                    mcap_age_sec=None, map_n=1800, in_map=30, src_in=30, yf_pause=False)
+        filled = "\n".join(enrich_verdict(slow=(30, 30), **base))
+        still = "\n".join(enrich_verdict(slow=(0, 30), **base))
+        assert "캐시 콜드였다" in filled and "파일이 없다" not in filled
+        assert "--slow 로도 0/30" in still and "파일이 없다" not in still
+
+    def test_verdict_names_the_pause_marker_only_when_it_is_set(self):
+        """fast_info 쿨다운 갈래는 지웠다 — 봇 프로세스 밖에선 관측 불가라 '정상'
+        이라고 찍으면 재지 않은 것을 단정하는 것(#165, 리뷰 High). 정지 마커는 파일이라
+        보인다(#222 옛 계약을 새 계약으로 다시 씀)."""
+        from bot.scripts.tw_enrich_probe import enrich_verdict
+        base = dict(n=30, render_ok=True, mcap_filled=0, ind_filled=30,
+                    mcap_age_sec=None, map_n=1800, in_map=30, src_in=30)
+        pause = "\n".join(enrich_verdict(yf_pause=True, **base))
+        ok = "\n".join(enrich_verdict(yf_pause=False, **base))
+        assert "정지 마커" in pause and "정지 마커" not in ok
+        assert "쿨다운" not in pause and "쿨다운" not in ok
+
+    def test_verdict_keeps_cache_map_and_fresh_source_as_separate_populations(self):
+        """캐시 맵 2종목에 '4/4 다 있다'는 산수가 불가능하다(리뷰 High·#45) —
+        모집단을 갈라 '맵이 낡았다' 갈래가 생긴다."""
+        from bot.scripts.tw_enrich_probe import enrich_verdict
+        base = dict(n=4, render_ok=True, mcap_filled=4, mcap_age_sec=600, yf_pause=False)
+        stale = "\n".join(enrich_verdict(ind_filled=2, map_n=2, in_map=2, src_in=4, **base))
+        wiring = "\n".join(enrich_verdict(ind_filled=0, map_n=1800, in_map=4, src_in=4, **base))
+        outage = "\n".join(enrich_verdict(ind_filled=0, map_n=0, in_map=0, src_in=0, **base))
+        nomap = "\n".join(enrich_verdict(ind_filled=0, map_n=0, in_map=0, src_in=4, **base))
+        absent = "\n".join(enrich_verdict(ind_filled=2, map_n=1800, in_map=2, src_in=2, **base))
+        assert "맵이 낡았다" in stale and "배선" not in stale
+        assert "배선 문제" in wiring
+        assert "소스 장애" in outage and "곧 채워진다" not in outage
+        assert "곧 채워진다" in nomap and "소스 장애" not in nomap
+        assert "어디에도 없는 코드 2개" in absent and "단정 안 함" in absent
+        assert "4/4 이 다 있는데" not in stale
+
+    def test_verdict_answers_the_size_question_with_a_measurement(self):
+        """'너무 작아서?' 는 단정이 아니라 측정으로 답한다(#12·#165)."""
+        from bot.scripts.tw_enrich_probe import enrich_verdict
+        txt = "\n".join(enrich_verdict(n=30, render_ok=True, mcap_filled=0, ind_filled=27,
+                                       mcap_age_sec=None, map_n=1800, in_map=27,
+                                       src_in=28, yf_pause=False))
+        assert "27/30, 지금 받은 원천엔 28/30 이 실제로 들어 있다" in txt
+
+    def test_verdict_refuses_to_pass_when_there_is_nothing_to_compare(self):
+        """대조 0건·렌더 경로 예외는 ✅ 도 ❌ 도 아니라 판정 불가다(#54)."""
+        from bot.scripts.tw_enrich_probe import enrich_verdict
+        empty = "\n".join(enrich_verdict(n=0, render_ok=True, mcap_filled=0, ind_filled=0,
+                                         mcap_age_sec=None, map_n=0, in_map=0, src_in=0,
+                                         yf_pause=False))
+        broken = "\n".join(enrich_verdict(n=30, render_ok=False, mcap_filled=0, ind_filled=0,
+                                          mcap_age_sec=None, map_n=0, in_map=0, src_in=0,
+                                          yf_pause=False))
+        for txt in (empty, broken):
+            assert "❓" in txt and "판정 불가" in txt and "✅" not in txt and "❌" not in txt
+        assert "③" in broken
+
+    # ── main(): 화면과 같은 입력(#35) · 과금 0(#312·#321) · 판정을 실제로 찍는다(#20)
+    def test_default_target_is_todays_movers_not_a_hardcoded_sample(self, monkeypatch, tmp_path):
+        calls = self._harness(monkeypatch, tmp_path, movers=self._M,
+                              listed=self._BOTH, otc=self._BOTH, cached_map=self._BOTH)
+        rc, out = self._run(monkeypatch, [])
+        assert rc == 0 and calls["movers"] == 1, out
+        assert calls["enrich"][0]["tickers"] == ["8227.TW", "6949.TW"], calls["enrich"]
+        assert calls["enrich"][0]["prices"] == [198.0, 54.9]
+        assert "오늘 무버 2종목" in out
+
+    def test_arg_mode_carries_the_close_like_the_screen_path(self, monkeypatch, tmp_path):
+        """인자 모드가 종가를 None 으로 넘기면 FinMind 시총 폴백이 영영 안 돌아
+        화면과 다른 결과를 낸다(#145, 리뷰 Medium)."""
+        calls = self._harness(monkeypatch, tmp_path, listed=self._BOTH, otc=self._BOTH,
+                              cached_map=self._BOTH, closes={"8227": 198.0})
+        rc, out = self._run(monkeypatch, ["8227", "6949.TW"])
+        assert rc == 0 and calls["closes"] == 1 and calls["movers"] == 0
+        assert calls["enrich"][0]["prices"] == [198.0, None], calls["enrich"]
+        assert "종가 미확인 1개(6949)" in out
+
+    def test_default_run_never_translates_never_slow_never_network(self, monkeypatch, tmp_path):
+        calls = self._harness(monkeypatch, tmp_path, movers=self._M,
+                              listed=self._BOTH, otc=self._BOTH)
+        rc, out = self._run(monkeypatch, [])
+        assert rc == 0 and calls["translate"] == 0 and calls["requests"] == 0, out
+        assert calls["enrich"], "enrich 를 한 번도 안 태웠다 — 아무것도 안 재는 진단"
+        for c in calls["enrich"]:
+            assert c["want_name"] is False and c["allow_slow"] is False and c["want_ind"] is True, c
+
+    def test_network_bomb_is_armed_where_the_raw_dump_lives(self, monkeypatch, tmp_path):
+        """반대 증거(#25): 上櫃 원천이 비면 진단이 원문 덤프를 시도한다 — 그 자리에서
+        폭탄이 터져야 '테스트가 네트워크를 안 친다'가 증명된 것이다."""
+        calls = self._harness(monkeypatch, tmp_path, movers=self._M,
+                              listed=self._BOTH, otc={})
+        rc, out = self._run(monkeypatch, [])
+        assert rc == 0 and calls["requests"] == 1, out
+        assert "실패 AssertionError" in out and "테스트가 진짜 네트워크를 쳤다" in out
+
+    def test_main_prints_a_verdict_derived_from_what_it_measured(self, monkeypatch, tmp_path):
+        """`enrich_verdict` 를 부르고 버리는 변형·인자 뒤바꿈은 순수 함수 테스트로는
+        안 잡힌다(리뷰 High, #20) — stdout 의 판정 줄을 실측값으로 집는다."""
+        self._harness(monkeypatch, tmp_path, movers=self._M, mcap_age=20 * 3600,
+                      listed=self._BOTH, otc=self._BOTH, cached_map={"8227": "전자부품"},
+                      meta={"8227.TW": {"ind": "전자부품"}})
+        _, out = self._run(monkeypatch, [])
+        assert "❌ 시총 0/2 — 디스크 캐시가 20.0시간 전이라 만료" in out, out
+        assert "⚠️ 업종 1/2 — 캐시 맵(1종목)엔 1/2, 지금 원천엔 2/2: 맵이 낡았다" in out, out
+        assert "이 표의 1/2, 지금 받은 원천엔 2/2 이 실제로 들어 있다" in out
+
+    def test_slow_result_reaches_the_verdict(self, monkeypatch, tmp_path):
+        calls = self._harness(monkeypatch, tmp_path, movers=self._M,
+                              listed=self._BOTH, otc=self._BOTH, cached_map=self._BOTH,
+                              meta={"8227.TW": {"ind": "전자부품"}, "6949.TW": {"ind": "바이오"}},
+                              slow_meta={"8227.TW": {"mcap": 12.0, "ind": "전자부품"},
+                                         "6949.TW": {"mcap": 3.0, "ind": "바이오"}})
+        rc, out = self._run(monkeypatch, ["--slow"])
+        assert rc == 0 and calls["translate"] == 0
+        slow = [c for c in calls["enrich"] if c["allow_slow"]]
+        assert len(slow) == 1 and slow[0]["want_name"] is False, calls["enrich"]
+        assert "④-b" in out and "캐시 콜드였다: --slow 가 2/2 을 채워" in out, out
+        assert "파일이 없다" not in out
+
+    def test_render_exception_yields_undetermined_not_a_cause(self, monkeypatch, tmp_path):
+        self._harness(monkeypatch, tmp_path, movers=self._M, listed=self._BOTH,
+                      otc=self._BOTH, cached_map=self._BOTH, render_raises=True)
+        rc, out = self._run(monkeypatch, [])
+        assert rc == 0 and "❌ 실패 RuntimeError: render boom" in out
+        assert "❓ 렌더 경로(③)가 예외로 끝나" in out and "파일이 없다" not in out
+
+    def test_banner_is_honest_about_side_effects_and_blind_spots(self, monkeypatch, tmp_path):
+        """'읽기 전용' 이라 적고 캐시를 쓰면 #284 다 — 배너는 하는 일을 적고,
+        관측 불가한 것(fast_info 쿨다운)은 판정 불가라고 말한다(#165). 인터프리터·
+        버전은 찍는 **행위**로 잰다(#132·#67)."""
+        from bot.scripts import tw_enrich_probe as p
+        self._harness(monkeypatch, tmp_path, movers=[])
+        rc, out = self._run(monkeypatch, [])
+        assert rc == 0 and sys.executable in out
+        assert f"v{p._PROBE_VER}" in out and p._PROBE_VER >= 5
+        assert "읽기 전용" not in out
+        assert "업종맵 갱신 가능" in out and "LLM 0" in out
+        assert "fast_info 쿨다운은 봇 프로세스 안에서만 보여 여기서 판정 불가" in out
+
+    def test_printed_command_carries_the_repo_cwd(self, monkeypatch, tmp_path):
+        """`python -m` 은 cwd 에서 패키지를 찾는다 — 안내에 `cd` 가 빠지면 그 한 턴이
+        날아간다(#278). 안내는 뭔가 비었을 때만 뜬다(늘 뜨는 안내는 안 재는 것, #260)."""
+        self._harness(monkeypatch, tmp_path, movers=self._M, listed=self._BOTH, otc=self._BOTH)
+        _, out = self._run(monkeypatch, [])
+        hint = [l for l in out.splitlines() if "-m bot.scripts.tw_enrich_probe" in l]
+        assert hint and all("cd ~/stock &&" in l for l in hint), out
+        self._harness(monkeypatch, tmp_path, movers=self._M, listed=self._BOTH, otc=self._BOTH,
+                      cached_map=self._BOTH,
+                      meta={"8227.TW": {"mcap": 1.0, "ind": "a"}, "6949.TW": {"mcap": 2.0, "ind": "b"}})
+        _, out2 = self._run(monkeypatch, [])
+        assert "✅ 시총 2/2" in out2 and "-m bot.scripts.tw_enrich_probe" not in out2
+
+    # ── 문턱은 제품에서 가져온다(#38) — 같은 파일을 읽는 독자 셋이 한 상수를 본다
+    def test_probe_ttl_follows_the_product_not_a_copy(self):
+        import importlib
+        import bot.finviz_client as fv
+        from bot.scripts import tw_enrich_probe as p
+        orig = fv.MCAP_PERSIST_TTL
+        try:
+            fv.MCAP_PERSIST_TTL = 6 * 3600
+            importlib.reload(p)
+            assert p._MCAP_TTL_H == 6, p._MCAP_TTL_H
+        finally:
+            fv.MCAP_PERSIST_TTL = orig
+            importlib.reload(p)
+        assert p._MCAP_TTL_H == orig / 3600
+
+    def test_both_product_readers_pass_the_same_ttl(self, monkeypatch):
+        """`_enrich_compute` 와 `_persist_mcap_overlay` 는 같은 파일을 읽는다 — 리뷰가
+        '절반만 옮겼다'(Medium)고 잡은 자리. 소스가 아니라 **넘어간 값**으로(#19)."""
+        import bot.highlow_render as hr
+        import bot.finviz_client as fv
+        seen = []
+        monkeypatch.setattr(fv, "_cached", lambda name, ttl=0: seen.append((name, ttl)) or {})
+        monkeypatch.setattr(hr, "_MCAP_PERSIST_TTL", 7 * 3600)
+        monkeypatch.setattr(fv, "MCAP_PERSIST_TTL", 7 * 3600)
+        monkeypatch.setattr(fv, "_fetch_mcaps", lambda tks: {})
+        monkeypatch.setattr(fv, "_industries_for", lambda tks, mkt, allow_slow=True: {})
+        hr._enrich_compute(["8227.TW"], [{"ticker": "8227.TW"}], "TW", True, False, False)
+        fv._persist_mcap_overlay([{"ticker": "8227.TW", "mcap": None}], "TW")
+        assert seen == [("enrich_mcap_TW.json", 7 * 3600)] * 2, seen
