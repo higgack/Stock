@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re as _re
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -1431,12 +1432,27 @@ def _kick_name_fill(pairs: list) -> None:
 _NAME_KICK = _kick_name_fill
 
 
-def korean_names(rows: list, market: str) -> int:
-    """비-KR/US 표의 종목명을 **신고저·급등락 보드와 같은 캐시**(names_kr.json,
-    `translate_names_kr cache_only`)로 한글화한다(사용자 2026-09-09 "기존 신고가
-    신저가/급등급락처럼"). 렌더타임이라 시계열에 구워진 옛 행도 따라온다(#270).
-    캐시에 없는 종목은 원문을 두고 백그라운드로 워밍 — 렌더는 네트워크·LLM 을
-    한 번도 기다리지 않는다. 반환 = 한글로 바뀐 행 수."""
+_HAN_RE = _re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+
+
+def has_han(name: str) -> bool:
+    """한자가 남아 있으면 아직 한글화 안 된 이름이다(한국어엔 한자가 없다)."""
+    return bool(_HAN_RE.search(name or ""))
+
+
+def korean_names(rows: list, market: str, *, kick: bool = True) -> int:
+    """비-KR/US 표의 종목명을 **신고저·급등락 보드와 같은 캐시**로 한글화한다
+    (사용자 2026-09-09 "기존 신고가 신저가/급등급락처럼"). 렌더타임이라
+    시계열에 구워진 옛 행도 따라온다(#270). 캐시에 없는 종목은 원문을 두고
+    백그라운드로 워밍 — 렌더는 네트워크·LLM 을 한 번도 기다리지 않는다.
+
+    ⚠️ 캐시가 **둘**이다(2026-09-10 사용자 "대만 한글화 안 된 것들" — `欣銓`
+    3264.TWO 가 한자 그대로): `names_kr.json` 은 **티커** 키이고, 정작 대만
+    급등락·52주 보드는 `chart_title_kr.json`(**원문명** 키, `translate_titles_kr`)
+    로 번역한다. 옛 코드는 앞 캐시만 봐서 "같은 캐시" 라는 독스트링이 거짓
+    이었다(#55) — 앞 캐시가 비면 뒤 캐시를 원문명으로 한 번 더 본다. 둘 다
+    LLM 0. `kick=False` 는 진단용(과금 경로를 열지 않는다, #312).
+    반환 = 한글로 바뀐 행 수."""
     if market not in ("CN_A", "TW", "HK"):
         return 0
     pairs = [(r.get("ticker"), r.get("name")) for r in rows or []
@@ -1444,7 +1460,7 @@ def korean_names(rows: list, market: str) -> int:
     if not pairs:
         return 0
     try:
-        from bot.chart_translate import translate_names_kr
+        from bot.chart_translate import translate_names_kr, translate_titles_kr
         knm = translate_names_kr(pairs, cache_only=True) or {}
     except Exception as exc:                                   # noqa: BLE001
         log.debug("bollinger: 한글명 캐시 조회 실패: %s", exc)
@@ -1455,13 +1471,59 @@ def korean_names(rows: list, market: str) -> int:
         if k and k != r.get("name"):
             r["name"] = k
             hit += 1
-    miss = [p for p in pairs if p[0] not in knm]
-    if miss:
+    # 2차 — 원문명 키 캐시(급등락·52주 보드가 쓰는 그것). 한자가 남은 행만.
+    left = [r for r in rows if r.get("ticker") not in knm and has_han(r.get("name"))]
+    resolved: set = set()
+    if left:
+        try:
+            ktl = translate_titles_kr([r["name"] for r in left], cache_only=True) or {}
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("bollinger: 제목 캐시 조회 실패: %s", exc)
+            ktl = {}
+        for r in left:
+            k = ktl.get(r.get("name"))
+            if k and k != r.get("name"):
+                r["name"] = k
+                resolved.add(r.get("ticker"))
+                hit += 1
+    # 2차로 풀린 티커는 워밍에서 뺀다 — 화면이 이미 한글로 보여주는 이름을
+    # 과금 경로(translate_names_kr)에 다시 보내지 않는다(독립 리뷰 2026-09-10).
+    miss = [p for p in pairs if p[0] not in knm and p[0] not in resolved]
+    if miss and kick:
         try:
             _NAME_KICK(miss)
         except Exception as exc:                               # noqa: BLE001
             log.debug("bollinger: 한글명 워밍 킥 실패: %s", exc)
     return hit
+
+
+def name_diag(rows: list, market: str) -> dict:
+    """진단용 — 한글명이 왜 안 붙었는지 **캐시별로** 센다(LLM 0 · 킥 0).
+
+    {total, han_before, han_after, by_ticker(names_kr 적중), by_title(제목
+    캐시 적중), samples(아직 한자인 티커·이름)}. '없음' 만 말하면 추측을
+    부르므로(#82) 어느 캐시가 비었는지까지 갈라 말한다."""
+    rows = [dict(r) for r in rows or []]
+    out = {"total": len(rows), "han_before": sum(1 for r in rows if has_han(r.get("name"))),
+           "by_ticker": 0, "by_title": 0, "han_after": 0, "samples": []}
+    if market not in ("CN_A", "TW", "HK") or not rows:
+        out["han_after"] = out["han_before"]
+        return out
+    try:
+        from bot.chart_translate import translate_names_kr, translate_titles_kr
+        knm = translate_names_kr([(r.get("ticker"), r.get("name")) for r in rows],
+                                 cache_only=True) or {}
+        out["by_ticker"] = sum(1 for r in rows if knm.get(r.get("ticker")))
+        left = [r for r in rows if not knm.get(r.get("ticker")) and has_han(r.get("name"))]
+        ktl = translate_titles_kr([r["name"] for r in left], cache_only=True) if left else {}
+        out["by_title"] = sum(1 for r in left if (ktl or {}).get(r.get("name")))
+    except Exception as exc:                                   # noqa: BLE001
+        out["error"] = f"{type(exc).__name__}: {exc}"
+    korean_names(rows, market, kick=False)
+    out["han_after"] = sum(1 for r in rows if has_han(r.get("name")))
+    out["samples"] = [f"{r.get('ticker')} {r.get('name')}" for r in rows
+                      if has_han(r.get("name"))][:8]
+    return out
 
 
 def _phase_table_html() -> str:
@@ -1953,7 +2015,7 @@ def regenerate() -> None:
 # 그대로 태우되 시계열 파일은 건드리지 않는다. 진단이 자기가 읽을 신호를
 # 오염시키면 다음 라운드가 통째로 거짓이 된다(#30·#264·#283). 그리고 판정을
 # 여기서 재구현하면 화면과 갈라지므로(#35·#169) 제품 함수만 부른다.
-_WHY_VER = 2
+_WHY_VER = 3
 _RUN_HINT = "cd ~/stock && .venv/bin/python -m bot.bollinger_board --why KR"
 
 
@@ -2170,6 +2232,41 @@ def _why(market: str) -> int:
         _p("   ⚠️ 일부 종목에게만 온 날짜 — 세션으로 세지 않음: "
            + ", ".join(f"{k}({v}/{sc.get('kept')}종목)" for k, v in sorted(sd.items()))
            + (f" · 저장분에서 걷어냄: {', '.join(f'{k}(scanned {v})' for k, v in sorted(sp.items()))}" if sp else ""))
+    if m in ("CN_A", "TW", "HK"):
+        _p("")
+        _p("⑦ 한글명 — 렌더타임 캐시 조회(LLM 0 · 워밍 킥 안 함)")
+        # ⚠️ enrich=False 로 받은 행엔 `name` 이 없다(이름은 `_overlay` 가 붙인다)
+        # — 그대로 재면 한자 0 으로 늘 ✅ 가 된다(독립 리뷰 2026-09-10 · #54).
+        # `_overlay` 의 첫 단계(유니버스 맵 이름)만 그대로 적용해 화면이 보는
+        # 원문명을 만든다. LLM·네트워크 0(맵은 ② 에서 이미 받았다).
+        try:
+            uni_names, _ = _universe(m)
+        except Exception as exc:                               # noqa: BLE001
+            uni_names = {}
+            _p(f"   ⚠️ 유니버스 이름 맵 조회 실패 {type(exc).__name__}: {exc}")
+        named = []
+        for r in d.get("rows") or []:
+            r = dict(r)
+            info = (uni_names or {}).get(r.get("ticker")) or {}
+            r["name"] = info.get("name") or r.get("name") or r.get("ticker")
+            named.append(r)
+        if not named:
+            _p("   ❓ 표가 비어 판정 불가(대조 0행)")
+        else:
+            nd = name_diag(named, m)
+            if nd.get("error"):
+                _p(f"   ❌ 캐시 조회 실패 {nd['error']}")
+            _p(f"   표 {nd['total']}행(이름 = 유니버스 맵) · 한자 남은 이름 {nd['han_before']} → "
+               f"조회 후 {nd['han_after']} (티커 캐시 names_kr {nd['by_ticker']} · "
+               f"제목 캐시 chart_title_kr {nd['by_title']})")
+            if nd["han_after"]:
+                from bot.env_keys import env_diag
+                _p(f"   아직 한자: {', '.join(nd['samples'])}")
+                why = env_diag("GOOGLE_API_KEY")
+                _p("   ↪ 두 캐시 모두 없음 — 3시간 빌드의 LLM 번역이 채운다"
+                   + (f" · 번역 키 {why}" if why else " · 번역 키 GOOGLE_API_KEY 는 환경변수에 있음"))
+            else:
+                _p("   ✅ 전 행 한글(또는 한자 없음)")
     after = load_series(m)
     _p("")
     _p(f"✅ 시계열 불변 확인 — {len(before)}행 → {len(after)}행"

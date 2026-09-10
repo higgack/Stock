@@ -1,4 +1,10 @@
-"""중국 채널 **종목별** 캡션 공용 엔진 — 수출/수입 한 곳에서.
+"""나쁜양파 **종목별** 캡션 공용 엔진 — 나라·방향은 `Flow` 가 갖는다.
+
+2026-09-10: 대만 종목판(`대만 수출 · 26년 8월 Update`)이 채널에 떴는데 파서가
+없어 관련성 필터에서 통째로 드랍됐다 — #83 이 "새 나라의 종목판이 뜨면 또
+난다"고 적은 그 다섯 번째다. 이 엔진이 `중국` 을 리터럴로 다섯 곳에 박고
+있어 어댑터만으로는 못 붙였다 → 나라를 `Flow.country` 로 올렸다(cns·cni 는
+`country="중국"` 을 명시 — 동작은 한 글자도 안 바뀐다). 모듈 이름은 이력 보존을 위해 둔다.
 
 배경(2026-08-21). `cn_stock_exports.py` 를 만든 **같은 날** 사용자가
 "중국수입 7월 기업도 있어. 수출건이랑 똑같이 하면 돼." 라고 했다. 두
@@ -34,7 +40,7 @@ from trade.archive_template import (asof_footer, back_nav_html,
 
 # 파서 스키마 버전. 올리면 저장된 옛 행의 파생 필드를 upsert 가 **버리고**
 # 다시 채운다 — 파서를 고쳐도 이미 구운 값이 안 바뀌는 함정 차단(실수 #18).
-PARSE_VER = 1
+PARSE_VER = 2   # 2026-09-10: 맨 도메인 꼬리(`badonion.co.kr`)가 품목 슬롯에 앉던 것 — 구운 행 재파생
 
 
 @dataclass(frozen=True)
@@ -46,14 +52,18 @@ class Flow:
     table: str              # sqlite 테이블명
     title: str              # 페이지 h1(이모지 포함)
     sibling: str            # 품목(HS) 기준 형제 페이지. 없으면 ""
+    # 캡션 마커 앞단어 · 화면 문구 — "중국" | "대만" …  ⚠️ 기본값을 두지 않는다:
+    # 어댑터가 빠뜨리면 남의 나라 캡션을 자기 DB 로 삼키는 조용한 유실이 된다
+    # (#83 · 독립 리뷰 2026-09-10). 레지스트리 `Source` 의 축과 같은 규율.
+    country: str
     sibling_label: str = ""
 
 
 _NL = r"\n(?:[^\S\n]*\n)*"      # 줄바꿈(사이 빈 줄 허용)
 
 
-def block_re(marker: str) -> re.Pattern:
-    """헤더 = "종목명 (티커)" / "중국 <마커>" / "NN년 N월 Update".
+def block_re(marker: str, country: str) -> re.Pattern:
+    """헤더 = "종목명 (티커)" / "<나라> <마커>" / "NN년 N월 Update".
 
     ⚠️ 헤더 **한 줄** 안에서는 `\\s` 를 쓰지 않는다 — `\\s` 가 개행을 먹어
     `어떤회사\\n(ABCD) 중국 수출` 같은 무관 조합이 통과한다(jp_stock 이
@@ -62,7 +72,7 @@ def block_re(marker: str) -> re.Pattern:
     return re.compile(
         r"^[^\S\n]*(?P<name>[^\n(]+?)[^\S\n]*\((?P<ticker>[A-Za-z0-9.\-]{2,10})\)"
         r"[^\S\n]*(?:" + _NL + r")?"
-        r"[^\S\n]*중국[^\S\n]*" + re.escape(marker) +
+        r"[^\S\n]*" + re.escape(country) + r"[^\S\n]*" + re.escape(marker) +
         r"[^\S\n]*(?:Update)?[^\S\n]*" + _NL +
         r"[^\S\n]*(?P<yy>\d{2})[^\S\n]*년[^\S\n]*(?P<mm>\d{1,2})[^\S\n]*월"
         r"[^\S\n]*(?:Update)?",
@@ -104,7 +114,13 @@ def skip_line_re(flow: Flow) -> re.Pattern:
     return re.compile(
         re.escape(flow.amount) +
         r"|단가|YoY|상관|방향\s*일치율|https?://|맵핑|Update"
-        r"|중국\s*" + re.escape(flow.marker) + r"|^\s*[-•*]|^\s*\d{2}\s*년",
+        # 꼬리 도메인이 `https://` 없이 맨 `badonion.co.kr` 로도 온다(대만
+        # 2026-09-10 실측) — 그 줄이 품목 슬롯에 앉았다. **줄 전체가 도메인**
+        # 일 때만 거른다(독립 리뷰: 낱말 검색이면 `NVIDIA.com 공급` 같은 진짜
+        # 설명 줄까지 먹고, 꼬리 마침표(`badonion.co.kr.`)는 놓쳤다). 호출부는
+        # strip 한 한 줄을 넘기므로 ^…$ 가 그 줄이다(#155).
+        r"|^(?:https?://)?[\w\-]+(?:\.[\w\-]+)*\.(?:co\.kr|kr|com|net|io)(?:/\S*)?[.,;:!\s]*$"
+        r"|" + re.escape(flow.country) + r"\s*" + re.escape(flow.marker) + r"|^\s*[-•*]|^\s*\d{2}\s*년",
         re.I)
 
 
@@ -143,7 +159,7 @@ def parse(caption: str, flow: Flow) -> dict | None:
     # ⚠️ `**`(마크다운 볼드)만 걷어낸다. `*` 를 전부 지우면 각주 마커까지
     # 사라져 note 가 죽는다(형제 모듈과 같은 규약).
     text = caption.replace("：", ":").replace("**", "")
-    heads = list(block_re(flow.marker).finditer(text))
+    heads = list(block_re(flow.marker, flow.country).finditer(text))
     if not heads:
         return None
     m = heads[0]
@@ -489,8 +505,8 @@ def _card_html(r: dict, hist: list[dict], media_prefix: str,
 def _sub(flow: Flow) -> str:
     sib = (f" · 품목(HS) 기준은 <a href='{flow.sibling}'>{flow.sibling_label}</a>"
            if flow.sibling else "")
-    return (f"Badonions 중국 {flow.marker} 캡션을 <b>종목별</b>로 정리한 별도 "
-            f"페이지 · 중국에서 {flow.marker}하는 기업이라 <b>국적이 섞여 "
+    return (f"Badonions {flow.country} {flow.marker} 캡션을 <b>종목별</b>로 정리한 별도 "
+            f"페이지 · {flow.country}에서 {flow.marker}하는 기업이라 <b>국적이 섞여 "
             f"있습니다</b>{sib}<br>"
             "<b>상관</b>(-1~1)·<b>방향 일치율</b>(%)은 변화율이 아니라 "
             "<b>수준값</b>이라 부호·화살표 없이 그대로 적습니다.<br>"
@@ -506,7 +522,7 @@ def render_html(conn: sqlite3.Connection, flow: Flow, *,
     head = ("<!DOCTYPE html><html lang='ko'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, "
             "initial-scale=1'>"
-            f"<title>중국 {flow.marker} 데이터(종목별)</title><style>" + _CSS +
+            f"<title>{flow.country} {flow.marker} 데이터(종목별)</title><style>" + _CSS +
             "</style></head><body>" + _THEME_JS)
     rows = list_latest(conn, flow)
     nav = f"{back_nav_html()}"
@@ -514,7 +530,7 @@ def render_html(conn: sqlite3.Connection, flow: Flow, *,
         # 빈 상태에서도 페이지를 만들어 nav 404 를 막는다(기존 모듈 규약).
         return (head + "<div class='wrap'>" + nav +
                 f"<h1>{flow.title}</h1>"
-                f"<div class='empty'>아직 수집된 중국 {flow.marker} 데이터"
+                f"<div class='empty'>아직 수집된 {flow.country} {flow.marker} 데이터"
                 "(종목별, 나쁜양파)가 없습니다.</div>"
                 + asof_footer(0, "종목", None,
                               max_ingest_iso(conn, flow.table))

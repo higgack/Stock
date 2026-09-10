@@ -45,7 +45,8 @@ from trade import cn_stock_flow as _f
 FLOW = _f.Flow(key="export", marker="수출", amount="수출액",
                table="cn_stock_exports",
                title="🏮 중국 수출 데이터(종목별)",
-               sibling="cn.html", sibling_label="중국 수출 데이터(품목)")
+               sibling="cn.html", sibling_label="중국 수출 데이터(품목)",
+               country="중국")
 
 
 def parse_cn_stock_export(caption: str) -> dict | None:

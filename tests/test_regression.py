@@ -55211,3 +55211,121 @@ class TestTwEnrichProbe20260910:
         hr._enrich_compute(["8227.TW"], [{"ticker": "8227.TW"}], "TW", True, False, False)
         fv._persist_mcap_overlay([{"ticker": "8227.TW", "mcap": None}], "TW")
         assert seen == [("enrich_mcap_TW.json", 7 * 3600)] * 2, seen
+
+
+class TestBollingerKoreanNameTwoCaches20260910:
+    """사용자 2026-09-10 볼린저 TW 표 `欣銓 3264.TWO` 한자 그대로 — "한글화
+    안된것들도 처리해줘".
+
+    원인: `korean_names` 는 `names_kr.json`(**티커** 키)만 봤는데 정작 대만
+    급등락·52주 보드는 `chart_title_kr.json`(**원문명** 키)로 번역한다 —
+    독스트링의 "같은 캐시" 가 거짓이었다(#55). 계약: ① 티커 캐시가 비면 제목
+    캐시를 원문명으로 본다(둘 다 LLM 0) ② `kick=False` 면 워밍(과금)을 열지
+    않는다 ③ `--why` ⑦ 이 어느 캐시가 비었는지 갈라 말하고 킥·LLM 을 부르지
+    않는다(#312·#321)."""
+
+    def _stub(self, monkeypatch, *, by_ticker=None, by_title=None):
+        import bot.chart_translate as ct
+        import bot.bollinger_board as bb
+        calls = {"kick": 0, "llm": 0}
+
+        def _names(pairs, cache_only=False):
+            if not cache_only:
+                calls["llm"] += 1
+                raise AssertionError("LLM 경로가 열렸다 — #312")
+            return dict(by_ticker or {})
+
+        def _titles(titles, cache_only=False):
+            if not cache_only:
+                calls["llm"] += 1
+                raise AssertionError("LLM 경로가 열렸다 — #312")
+            return {t: (by_title or {})[t] for t in titles if t in (by_title or {})}
+        monkeypatch.setattr(ct, "translate_names_kr", _names)
+        monkeypatch.setattr(ct, "translate_titles_kr", _titles)
+        def _kick(pairs):
+            calls["kick"] += 1
+            calls["kicked"] = [p[0] for p in pairs]
+        monkeypatch.setattr(bb, "_NAME_KICK", _kick)
+        return bb, calls
+
+    def test_title_cache_fills_what_the_ticker_cache_misses(self, monkeypatch):
+        bb, calls = self._stub(monkeypatch, by_ticker={"2330.TW": "TSMC"},
+                               by_title={"欣銓": "시거드 마이크로"})
+        rows = [{"ticker": "3264.TWO", "name": "欣銓"},
+                {"ticker": "2330.TW", "name": "台積電"},
+                {"ticker": "6488.TWO", "name": "環球晶"}]
+        assert bb.korean_names(rows, "TW") == 2
+        assert [r["name"] for r in rows] == ["시거드 마이크로", "TSMC", "環球晶"]
+        assert calls["llm"] == 0 and calls["kick"] == 1      # 미캐시 남았으니 워밍 1회
+        # 제목 캐시로 풀린 3264 는 워밍(과금)에 보내지 않는다(독립 리뷰 2026-09-10)
+        assert calls["kicked"] == ["6488.TWO"], calls["kicked"]
+
+    def test_kick_false_never_opens_the_paid_path(self, monkeypatch):
+        bb, calls = self._stub(monkeypatch)
+        rows = [{"ticker": "3264.TWO", "name": "欣銓"}]
+        assert bb.korean_names(rows, "TW", kick=False) == 0
+        assert rows[0]["name"] == "欣銓" and calls["kick"] == 0 and calls["llm"] == 0
+
+    def test_ticker_cache_wins_over_title_cache(self, monkeypatch):
+        """두 캐시가 다르면 티커 키(정확한 식별자)가 이긴다 — 원문명은 동명이사가 있다."""
+        bb, _ = self._stub(monkeypatch, by_ticker={"3264.TWO": "시거드"},
+                           by_title={"欣銓": "엉뚱한 번역"})
+        rows = [{"ticker": "3264.TWO", "name": "欣銓"}]
+        bb.korean_names(rows, "TW", kick=False)
+        assert rows[0]["name"] == "시거드"
+
+    def test_name_diag_splits_the_two_caches(self, monkeypatch):
+        bb, calls = self._stub(monkeypatch, by_ticker={"2330.TW": "TSMC"},
+                               by_title={"欣銓": "시거드"})
+        rows = [{"ticker": "3264.TWO", "name": "欣銓"},
+                {"ticker": "2330.TW", "name": "台積電"},
+                {"ticker": "6488.TWO", "name": "環球晶"}]
+        nd = bb.name_diag(rows, "TW")
+        assert (nd["total"], nd["han_before"], nd["by_ticker"], nd["by_title"], nd["han_after"]) == (3, 3, 1, 1, 1)
+        assert nd["samples"] == ["6488.TWO 環球晶"]
+        assert rows[0]["name"] == "欣銓", "진단이 입력을 바꾸면 안 된다"
+        assert calls["kick"] == 0 and calls["llm"] == 0
+        assert bb.has_han("欣銓") and not bb.has_han("시거드") and not bb.has_han("ASE")
+
+    def _why_harness(self, monkeypatch, tmp_path, bb, rows, uni):
+        """`build_market(enrich=False)` 가 주는 행엔 **name 이 없다** — 진단은 유니버스
+        맵으로 이름을 붙인 뒤 재야 한다(독립 리뷰 2026-09-10: 손으로 이름을 넣은
+        픽스처는 그 배선을 못 봤다, #20·#313). 그래서 여기 행은 이름 없이 준다."""
+        d = {"market": "TW", "rows": rows, "rows_total": len(rows),
+             "scan": {"kept": 2, "universe": 2, "ratio": 1.0}, "chart": [],
+             "asof": "2026-09-09", "expected": "2026-09-09", "closed": True,
+             "rows_basis": "run", "count": len(rows), "avg5": 1.0, "streak": 0}
+        monkeypatch.setattr(bb, "build_market", lambda m, **k: d)
+        monkeypatch.setattr(bb, "load_series", lambda m: [])
+        monkeypatch.setattr(bb, "series_path", lambda m: tmp_path / "s.json")
+        monkeypatch.setattr(bb, "_universe", lambda m: (uni, {"label": "x"}))
+        monkeypatch.setattr(bb, "_why_universe_intl", lambda m: [])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bb._why("TW")
+        return buf.getvalue()
+
+    def test_why_measures_names_the_screen_sees_not_nameless_rows(self, monkeypatch, tmp_path):
+        bb, calls = self._stub(monkeypatch, by_title={"欣銓": "시거드"})
+        import bot.env_keys as ek
+        monkeypatch.setattr(ek, "env_diag", lambda *names: "")
+        uni = {"3264.TWO": {"name": "欣銓"}, "6488.TWO": {"name": "環球晶"}}
+        out = self._why_harness(monkeypatch, tmp_path, bb,
+                                [{"ticker": "3264.TWO", "close": 1.0},
+                                 {"ticker": "6488.TWO", "close": 2.0}], uni)
+        assert "⑦ 한글명" in out and "LLM 0" in out
+        assert "한자 남은 이름 2 → 조회 후 1 (티커 캐시 names_kr 0 · 제목 캐시 chart_title_kr 1)" in out, out
+        assert "아직 한자: 6488.TWO 環球晶" in out
+        assert "GOOGLE_API_KEY 는 환경변수에 있음" in out
+        assert calls["kick"] == 0 and calls["llm"] == 0
+
+    def test_why_names_the_key_branch_and_refuses_to_pass_on_zero_rows(self, monkeypatch, tmp_path):
+        bb, calls = self._stub(monkeypatch)
+        import bot.env_keys as ek
+        monkeypatch.setattr(ek, "env_diag", lambda *names: "GOOGLE_API_KEY: .env 에 키 없음")
+        uni = {"6488.TWO": {"name": "環球晶"}}
+        out = self._why_harness(monkeypatch, tmp_path, bb, [{"ticker": "6488.TWO", "close": 2.0}], uni)
+        assert "번역 키 GOOGLE_API_KEY: .env 에 키 없음" in out and "출처: 없음" not in out
+        out0 = self._why_harness(monkeypatch, tmp_path, bb, [], uni)
+        assert "❓ 표가 비어 판정 불가" in out0 and "✅ 전 행 한글" not in out0
+        assert calls["kick"] == 0 and calls["llm"] == 0
