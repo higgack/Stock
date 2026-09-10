@@ -59,7 +59,7 @@ def _notify(text: str) -> None:
         return
     chat_id = chat_ids.split(",")[0].strip()
     try:
-        subprocess.run(
+        r = subprocess.run(
             [
                 "curl", "-s", "-m", "10",
                 "-X", "POST",
@@ -72,6 +72,12 @@ def _notify(text: str) -> None:
             check=False,
             capture_output=True,
         )
+        # 응답을 안 보면 4096자 초과(400 'message is too long')·잘못된 HTML 이 **조용히**
+        # 사라진다(#12 silent-fail — 독립 리뷰 2026-09-10). 본문은 안 찍는다(§Secrets).
+        body = (r.stdout or b"").decode("utf-8", "replace")
+        if r.returncode != 0 or '"ok":true' not in body.replace(" ", ""):
+            log.warning("notify not delivered: rc=%s len=%d resp=%s",
+                        r.returncode, len(text), body[:200])
     except Exception as e:
         log.warning("notify failed: %s", e)
 

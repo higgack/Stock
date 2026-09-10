@@ -420,46 +420,74 @@ def audit_header_branch(store_db: Path, data_dir: Path) -> list[str]:
 # 원천이 새 달을 안 내거나 한 소스만 카드가 끊기면 셋을 다 통과한다(#52 조용한 것과
 # 죽은 것). 판정은 순수 함수 둘 — 감사·회귀가 같은 값을 본다(#41·#176). 우리가 고칠
 # 게 없는 사실이므로 ⚠️(#260) — 단 사람이 알아야 하는 신호라 알림에는 싣는다.
-_PROV_GRACE_DAYS = 4        # 관세청 발표일(1·11·21일) + 여유(휴일·수집 주기)
+_PROV_GRACE_BDAYS = 3       # 관세청 발표일(1·11·21일) 뒤 여유 **영업일**(주말·휴일 무관 #279·#314)
+                            # — 실측 아님(OpenAPI 가 보도자료보다 늦는 시차 미측정, #165)
 _SILENCE_MIN_DAYS = 45      # 이보다 짧은 침묵은 묻지 않는다(월간 카드가 흔하다)
 _SILENCE_GAP_MULT = 2.0     # 평소 게시 간격 중앙값의 몇 배를 넘으면 침묵인가
 _SILENCE_MIN_DATES = 4      # 간격을 잴 최소 게시일 수 — 미만은 판정 불가(#54)
 _DECILE_KO = {"D1": "1~10일", "D2": "1~20일", "FULL": "전체"}
 
 
+def _business_days_since(start, end) -> int:
+    """`start` 뒤 `end` 까지의 한국 **영업일** 수(start 제외 · end 포함). 거래일 캘린더
+    (`bot.market_calendar`, XKRX)가 있으면 휴일까지 세고, 없으면 주말만 뺀다 —
+    달력일로 세면 연휴마다 오탐이다(#279 '연휴 최대 3일' 가정 · #314 단위 불일치)."""
+    if end <= start:
+        return 0
+    try:
+        from bot.market_calendar import sessions_behind
+        n = sessions_behind("KR", start.isoformat(), end.isoformat())
+        if n is not None:
+            return int(n)
+    except Exception:                                     # noqa: BLE001
+        pass
+    d, n = start, 0
+    while d < end:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n += 1
+    return n
+
+
 def provisional_expected(today) -> tuple[str, str, int]:
-    """오늘(KST 날짜) 기준 **이미 나왔어야 할** 가장 최근 (ym, decile, 기한일).
+    """오늘(KST 날짜) 기준 **이미 나왔어야 할** 가장 최근 (ym, decile, 발표일).
     관세청 잠정: 매월 1일 전월 전체 · 11일 당월 1~10 · 21일 당월 1~20(customs_provisional
-    독스트링). 기한 + `_PROV_GRACE_DAYS` 를 지나야 '나왔어야 한다' 고 본다."""
-    y, m, d = today.year, today.month, today.day
+    독스트링). 발표일 뒤 `_PROV_GRACE_BDAYS` 영업일이 지나야 '나왔어야 한다' 고 본다."""
+    from datetime import date
+    y, m = today.year, today.month
     cur = f"{y:04d}-{m:02d}"
     pm_y, pm_m = (y - 1, 12) if m == 1 else (y, m - 1)
     prev = f"{pm_y:04d}-{pm_m:02d}"
-    g = _PROV_GRACE_DAYS
-    if d >= 21 + g:
+    g = _PROV_GRACE_BDAYS
+    if _business_days_since(date(y, m, 21), today) >= g:
         return cur, "D2", 21
-    if d >= 11 + g:
+    if _business_days_since(date(y, m, 11), today) >= g:
         return cur, "D1", 11
-    if d >= 1 + g:
+    if _business_days_since(date(y, m, 1), today) >= g:
         return prev, "FULL", 1
     return prev, "D2", 21
 
 
 def provisional_silence(rows_by_kind: dict, today) -> tuple[str | None, dict]:
     """(⚠️ 문구 | None, 근거). 저장 시계열이 없으면 문구 없이 근거에 '판정 불가'."""
-    keys = {(r.get("ym"), r.get("decile")) for rows in (rows_by_kind or {}).values()
-            for r in (rows or []) if r.get("ym") and r.get("decile")}
+    # 창의 유무는 화면이 쓰는 그 선택기(`_decile_amounts` — 전체금액 0 인 행은 화면도
+    # 안 그린다)로 센다 — 행 존재로 세면 감사 ✅ 인데 화면은 빈칸일 수 있다(#35).
+    from trade.customs_provisional import _DECILE_ORDER, _decile_amounts
+    keys = set()
+    for rows in (rows_by_kind or {}).values():
+        rows = rows or []
+        for ym in {r.get("ym") for r in rows if r.get("ym")}:
+            keys |= {(ym, dec) for dec in _decile_amounts(rows, ym)}
     if not keys:
         return None, {"reason": "저장된 잠정 시계열 없음 — 판정 불가"}
-    from trade.customs_provisional import _DECILE_ORDER
     latest = max(keys, key=lambda k: (k[0], _DECILE_ORDER.get(k[1], 0)))
     ym, dec, due = provisional_expected(today)
     info = {"expected": (ym, dec), "latest": latest, "due_day": due}
     if (ym, dec) in keys:
         return None, info
     when = "익월 1일" if dec == "FULL" else f"당월 {due}일"
-    return (f"관세청 잠정 {ym} {_DECILE_KO.get(dec, dec)} 창이 아직 없음 — 기한 {when} + "
-            f"여유 {_PROV_GRACE_DAYS}일 경과 · "
+    return (f"관세청 잠정 {ym} {_DECILE_KO.get(dec, dec)} 창이 아직 없음 — 발표 {when} + "
+            f"여유 {_PROV_GRACE_BDAYS}영업일 경과 · "
             f"저장 최신 {latest[0]} {_DECILE_KO.get(latest[1], latest[1])} — 원천 미게시? "
             "(⑥ 수집이 정상이면 원천 쪽 — 나쁜양파 공지 '국내 수출입 9/1 비공개 전환' 과 대조)",
             info)
@@ -488,20 +516,20 @@ def source_silence(dates, today) -> tuple[str | None, dict]:
 
 
 def _posted_date(v):
-    """posted_at(ISO, 보통 UTC) → KST 날짜. 못 읽으면 None."""
+    """posted_at(ISO, 보통 UTC) → KST 날짜. 못 읽으면 None. 규칙은 `daily_digest.
+    _kst_date_of` 와 같다(naive = UTC) — 두 도구가 '마지막 게시' 날짜를 다르게 매기면
+    안 된다(#38). 그 모듈은 import 시 `load_dotenv()` 를 타서 여기서 import 하지
+    않고 회귀가 두 함수의 값을 대조한다."""
     if not v:
         return None
     s = str(v).strip()
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is not None:
-            dt = dt.astimezone(_KST)
-        return dt.date()
     except ValueError:
-        try:
-            return datetime.strptime(s[:10], "%Y-%m-%d").date()
-        except ValueError:
-            return None
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_KST).date()
 
 
 def _posted_dates_ro(db_path: Path) -> list:
@@ -527,10 +555,39 @@ def _posted_dates_ro(db_path: Path) -> list:
     return out
 
 
-def audit_source_silence(data_dir: Path, today=None) -> tuple[list[str], list[str]]:
-    """⑧ 원천 침묵 → (❌ 목록, ⚠️ 목록). 읽기 전용 — 없는 DB 는 만들지 않는다."""
+def _provisional_rows_ro(db_path: Path) -> dict | None:
+    """customs.db 의 저장 잠정 시계열 {kind: rows} — **읽기 전용**. 표가 없으면 None
+    (판정 불가), 못 읽으면 sqlite3.Error 가 그대로 올라온다. `customs.session`·
+    `cp.load_rows` 는 스키마를 만들고 예외를 삼켜 '읽기 실패' 가 '없음' 으로 보인다
+    (#264 진단은 운영 상태를 바꾸지 않는다 · #12 silent-fail · #323 header_facts 가
+    같은 함정을 밟았다)."""
+    import json as _json
     import sqlite3
-    from trade import customs, customs_provisional as cp
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        has = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                           "AND name='customs_provisional'").fetchone()
+        if not has:
+            return None
+        cols = [r[1] for r in conn.execute('PRAGMA table_info("customs_provisional")')]
+        if "series_json" not in cols:
+            return {}
+        out: dict = {}
+        for kind, payload in conn.execute("SELECT kind, series_json FROM customs_provisional"):
+            if not payload:
+                continue
+            try:
+                out[kind] = _json.loads(payload)
+            except ValueError:
+                continue
+        return out
+    finally:
+        conn.close()
+
+
+def audit_source_silence(data_dir: Path, today=None) -> tuple[list[str], list[str]]:
+    """⑧ 원천 침묵 → (❌ 목록, ⚠️ 목록). 읽기 전용 — 없는 DB·표·열을 만들지 않는다."""
+    import sqlite3
     today = today or datetime.now(_KST).date()
     bad: list[str] = []
     warn: list[str] = []
@@ -543,12 +600,14 @@ def audit_source_silence(data_dir: Path, today=None) -> tuple[list[str], list[st
         _p(f"{_WARN} customs.db 없음 — 잠정 기한 판정 불가(⑥ 참조)")
     else:
         try:
-            with customs.session(cdb) as conn:
-                rows = cp.load_rows(conn)
-        except Exception as exc:                          # noqa: BLE001
+            rows = _provisional_rows_ro(cdb)
+        except sqlite3.Error as exc:
             bad.append(f"잠정 시계열 읽기 실패: {type(exc).__name__}: {exc}")
             _p(f"{_NG} 잠정 시계열 읽기 실패: {type(exc).__name__}: {exc}")
             rows = None
+        else:
+            if rows is None:
+                _p(f"{_WARN} customs_provisional 표 없음 — 잠정 기한 판정 불가(아직 수집 전)")
         if rows is not None:
             txt, info = provisional_silence(rows, today)
             if txt:
@@ -658,14 +717,30 @@ def main(argv: list[str] | None = None) -> int:
     if "--notify" in argv:
         # health_check 와 같은 전송 경로(설정 없으면 조용히 skip — dev 안전).
         from trade.scripts.health_check import _notify
-        lines = [f"🔍 <b>수출입 대시보드 감사</b> · ❌ {len(bad)}건 · ⚠️ {len(warn)}건"]
-        lines += [f"• {b}" for b in bad[:15]]
-        if len(bad) > 15:
-            lines.append(f"… 외 {len(bad) - 15}건 (VM: python -m "
-                         "trade.scripts.dashboard_audit)")
-        lines += [f"⚠️ {w}" for w in warn[:10]]
-        _notify("\n".join(lines))
+        _notify(notify_text(bad, warn))
     return 1 if bad else 0
+
+
+_TG_BUDGET = 3900          # 텔레그램 sendMessage 4096자 — 넘으면 400 이고 통째로 안 온다
+_TG_LINE_MAX = 300
+
+
+def notify_text(bad: list[str], warn: list[str]) -> str:
+    """알림 본문 — 4096자 예산 안(넘으면 텔레그램이 400 을 주고 **아무것도 안 온다** —
+    신호가 필요한 날일수록 줄이 많다). 줄은 `_TG_LINE_MAX` 로 자르고 예산이 다하면
+    '… 외 N줄' 로 끊는다(#45 자른 사실을 말한다)."""
+    head = f"🔍 <b>수출입 대시보드 감사</b> · ❌ {len(bad)}건 · ⚠️ {len(warn)}건"
+    items = [f"• {b}" for b in bad] + [f"⚠️ {w}" for w in warn]
+    tail = "… 외 {n}줄 (VM: python -m trade.scripts.dashboard_audit)"
+    out, used = [head], len(head)
+    for i, ln in enumerate(items):
+        ln = ln if len(ln) <= _TG_LINE_MAX else ln[:_TG_LINE_MAX - 1] + "…"
+        if used + 1 + len(ln) + 1 + len(tail) + 3 > _TG_BUDGET:
+            out.append(tail.format(n=len(items) - i))
+            break
+        out.append(ln)
+        used += 1 + len(ln)
+    return "\n".join(out)
 
 
 if __name__ == "__main__":
