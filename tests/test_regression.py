@@ -52956,7 +52956,10 @@ class TestBollingerGuideAnswersTheQuestions20260909:
         g = self._guide()
         assert "그 시장의 거래일 하나" in g                       # 세션
         assert "연속" in g and "0 으로 리셋" in g and "40세션" in g   # 약세 연속
-        assert "오늘보다 낮았던 세션 수 ÷ 전체 세션 수" in g          # 백분위 산식
+        # 2026-09-10 사용자 결정(백분위 문턱) 뒤 창이 '전체' 에서 '최근 250세션' 으로 —
+        # 문턱과 같은 창이어야 한 카드의 두 '이력 백분위' 가 같은 값을 본다(#222 다시 씀).
+        assert "오늘보다 낮았던 세션 수 ÷ 창 안 세션 수" in g          # 백분위 산식
+        assert "최근 250세션" in g and "문턱과 같은 창" in g
         assert "시장 간에 뜻이 같은 유일한 축" in g
         assert "약간 높게" in g                                  # 생존편향 방향
         assert "전부" in g and "지속 돌파" in g                    # 표 · 🆕 vs 지속
@@ -55606,3 +55609,175 @@ class TestBollingerThresholdAudit20260910:
         # 추론을 사실처럼 적지 않는다(독립 리뷰 #7·#165) — 추정이라 밝히고 실측을 가리킨다
         assert "통계적 추정" in html and "측정이 아니" in html
         assert "대략 평균 수준" not in html
+
+
+class TestBollingerPercentileThresholds20260910:
+    """사용자 결정 2026-09-10 "B추천으로 해주고" — 강세/약세 문턱 = 최근 250세션 5일선의
+    상위·하위 20% 백분위(자기 이력), 이력 120세션 미만이면 원문 예시 비율 환산 고정값으로
+    폴백. KR 실측(221세션): 고정 강세 20 이 세션의 49% 에 발화 = '평상시'(#333 의 결정).
+    옛 계약(#222 다시 쓰기): `level_of(v, scanned)` 는 고정 **참조** 문턱으로 남아
+    `threshold_audit` 의 발화율 축이 그걸 잰다. 값으로 못박는다(#19·#313)."""
+
+    @staticmethod
+    def _rows(n_zero=100, n=350, scanned=350):
+        # 앞 n_zero 세션은 0(창 밖에 있어야 할 옛 이력) · 이후는 5..44 순환
+        return [{"date": f"d{i:03d}", "count": (0 if i < n_zero else 5 + i % 40),
+                 "scanned": scanned} for i in range(n)]
+
+    def test_percentile_thresholds_use_the_trailing_window(self):
+        from bot import bollinger as b
+        rows = self._rows()
+        th = b.resolve_thresholds(rows, 350)
+        assert th["basis"] == "pct" and th["n"] == b._PCT_WINDOW == 250
+        a5 = [v for v in b.avg5_series(rows) if v is not None][-250:]
+        sv = sorted(a5)
+        assert th["strong"] == b._nearest_rank(sv, 0.80)
+        assert th["weak"] == b._nearest_rank(sv, 0.20)
+        # 창을 지우면 옛 0 이력 96개가 하위 20% 를 통째로 0 으로 만든다(#91c)
+        assert th["weak"] > 0, th
+        assert (th["fixed_strong"], th["fixed_weak"]) == (20, 10)   # 참조는 그대로 실린다
+
+    def test_short_history_falls_back_to_fixed_and_says_so(self):
+        from bot import bollinger as b
+        th = b.resolve_thresholds(self._rows(n_zero=0, n=100), 350)
+        assert th["basis"] == "fixed" and (th["strong"], th["weak"]) == (20, 10)
+        assert th["n"] == 96 and "96세션 < 120" in th["reason"] and "고정값" in th["reason"]
+        th = b.resolve_thresholds(self._rows(n_zero=0, n=100, scanned=None), None)
+        assert th["basis"] is None and th["strong"] is None and "분모" in th["reason"]
+
+    def test_flat_history_cannot_split_and_falls_back(self):
+        from bot import bollinger as b
+        rows = [{"date": f"d{i}", "count": 7, "scanned": 350} for i in range(200)]
+        th = b.resolve_thresholds(rows, 350)
+        assert th["basis"] == "fixed" and "갈리지 않음" in th["reason"]
+
+    def test_level_of_with_rows_uses_the_applied_thresholds(self):
+        from bot import bollinger as b
+        rows = self._rows()
+        th = b.resolve_thresholds(rows, 350)
+        mid = (th["strong"] + th["fixed_strong"]) / 2       # 고정 20 이상 · 백분위 미만
+        assert th["fixed_strong"] < mid < th["strong"], th
+        assert b.level_of(mid, 350)[0] == "strong"          # 고정 참조
+        assert b.level_of(mid, 350, rows)[0] == "neutral"   # 적용 문턱
+        assert b.level_of(th["strong"], 350, rows)[0] == "strong"
+        assert b.level_of(th["weak"], 350, rows)[0] == "weak"
+        assert b.level_of(3.0, None, [{"date": "d", "count": 1}] * 5) == (None, "분모(스캔 종목수) 없음")
+
+    def test_weak_streak_counts_against_the_applied_weak(self):
+        from bot import bollinger as b
+        rows = self._rows()
+        th = b.resolve_thresholds(rows, 350)
+        # 꼬리 12세션을 백분위 약세 이하 · 고정 10 초과 값으로 — 고정으로 되돌리면 0
+        tail_val = th["weak"] - 0.1
+        assert tail_val > 10, th
+        rows2 = rows[:-12] + [{"date": f"t{i}", "count": tail_val, "scanned": 350}
+                              for i in range(12)]
+        th2 = b.resolve_thresholds(rows2, 350)
+        assert th2["basis"] == "pct" and tail_val <= th2["weak"], th2
+        assert b.weak_streak(rows2) >= 8
+
+    def test_level_line_states_the_basis(self):
+        from bot import bollinger_board as bb
+        pct = {"market": "KR", "strong_th": 40.8, "weak_th": 9.0, "th_basis": "pct",
+               "th_n": 221, "th_needed": 120}
+        line = bb._level_line(pct)
+        assert "강세 ≥ 40.8 · 약세 ≤ 9.0" in line and "221세션" in line and "백분위" in line
+        assert "원문 예시" not in line
+        fixed = {"market": "KR", "strong_th": 20, "weak_th": 10, "th_basis": "fixed",
+                 "th_n": 66, "th_needed": 120, "th_reason": "이력 66세션 < 120 — 백분위 문턱 전까지 고정값"}
+        line = bb._level_line(fixed)
+        assert "강세 ≥ 20 · 약세 ≤ 10" in line and "원문 예시 기준" in line
+        assert "66세션 < 120" in line and "고정값" in line
+        # 폴백 사유는 해석기가 말한 것을 **그대로** — 분포가 안 갈린 경우를 '이력 부족'
+        # 이라 적으면 거짓말이다(독립 리뷰 2026-09-10 #1 · #292)
+        flat = dict(fixed, th_n=196, th_reason="백분위 문턱이 갈리지 않음(상위·하위 20% 가 같은 값 7.0) — 백분위 문턱 전까지 고정값")
+        line = bb._level_line(flat)
+        assert "갈리지 않음" in line and "196세션 < 120" not in line
+        us = bb._level_line(dict(fixed, market="US", strong_th=29, weak_th=14))
+        assert "환산" in line or "환산" in us
+
+    def test_build_market_wires_the_percentile_thresholds(self, monkeypatch, tmp_path):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 오프라인 build 결과로."""
+        import random
+        import pandas as pd
+        bb = _bb_offline(monkeypatch, tmp_path, last_day="2026-09-09")
+        idx = pd.bdate_range("2026-01-05", "2026-09-09")
+        rng = random.Random(7)
+        closes = {}
+        for i in range(1, 26):
+            v, vals = 100.0, []
+            for _ in idx:
+                v *= 1 + rng.gauss(0, 0.02)
+                vals.append(v)
+            closes[f"{i:06d}.KS"] = pd.Series(vals, index=idx)
+        monkeypatch.setattr(bb, "_universe", lambda m: ({t: {} for t in closes},
+                                                        {"label": "테스트"}))
+        monkeypatch.setattr(bb, "_download_closes",
+                            lambda tks, period: (closes, {"ratio": 1.0, "kept": 25,
+                                                          "universe": 25, "received": 25}))
+        d = bb.build_market("KR", write=False, enrich=False)
+        assert d["th_basis"] == "pct" and d["th_n"] >= 120, {k: d.get(k) for k in ("th_basis", "th_n")}
+        assert "th_reason" in d                      # 폴백 사유 릴레이(리뷰 #1)
+        assert d["strong_th"] > d["weak_th"]
+        # 수준 판정이 **적용 문턱**과 일치한다(고정 20/10 으로 되돌리면 갈린다)
+        exp = ("strong" if d["avg5"] >= d["strong_th"] else
+               "weak" if d["avg5"] <= d["weak_th"] else "neutral")
+        assert d["level"] == exp, (d["level"], d["avg5"], d["strong_th"], d["weak_th"])
+        html = bb.render_page({"KR": d})
+        assert f"강세 ≥ {d['strong_th']:.1f} · 약세 ≤ {d['weak_th']:.1f}" in html
+        assert "상위·하위 20% 백분위" in html
+
+    def test_why_prints_the_applied_thresholds(self, monkeypatch, tmp_path):
+        import contextlib, io
+        from bot import bollinger as b
+        from bot import bollinger_board as bb
+        rows = self._rows()
+        series = {r["date"]: {"count": r["count"], "scanned": r["scanned"], "new": 0,
+                              "basis": "live"} for r in rows}
+        monkeypatch.setattr(bb, "build_market", lambda m, **k: {"reason": "stop"})
+        monkeypatch.setattr(bb, "load_series", lambda m: dict(series))
+        monkeypatch.setattr(bb, "series_path", lambda m: tmp_path / "s.json")
+        monkeypatch.setattr(bb, "_universe", lambda m: ({"a": {}}, {"label": "x"}))
+        monkeypatch.setattr(bb, "_why_universe_intl", lambda m: [])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bb._why("JP")
+        out = buf.getvalue()
+        th = b.resolve_thresholds(rows, 350)
+        assert f"적용 문턱(백분위): 강세 ≥ {th['strong']:.1f} · 약세 ≤ {th['weak']:.1f}" in out, out
+        assert "최근 250세션" in out and "고정 참조 문턱 강세 ≥ 20 · 약세 ≤ 10" in out
+        assert bb._WHY_VER >= 5
+
+    def test_history_pct_rank_shares_the_threshold_window(self):
+        """카드의 '이력 백분위' 와 수준 문턱이 **같은 창**(최근 250세션)을 본다 — 옛 이력이
+        창 밖이면 둘 다 그걸 모른다(독립 리뷰 2026-09-10 #2, #34 같은 이름 다른 값)."""
+        from bot import bollinger as b
+        # 옛 150세션은 아주 높고(창 밖) · 이후 245세션 낮음 · 꼬리 5세션은 창 p80 근처.
+        # ⚠️ 옛 60세션이면 창 없이도 순위가 80.06% 라 통과했다(#91c) — 150 이어야 62% 로 발화.
+        rows = ([{"date": f"o{i}", "count": 500, "scanned": 350} for i in range(150)]
+                + [{"date": f"n{i}", "count": 5 + i % 20, "scanned": 350} for i in range(245)]
+                + [{"date": f"t{i}", "count": 30, "scanned": 350} for i in range(5)])
+        th = b.resolve_thresholds(rows, 350)
+        assert th["basis"] == "pct" and th["strong"] < 100        # 옛 500 은 창 밖
+        rank, why = b.history_pct_rank(rows)
+        assert why == "" and rank > 80, (rank, th)               # 창 밖 500 이 순위를 못 누른다
+        a = b.threshold_audit(rows)
+        assert a["pct_n"] == 250 and a["p80"] == th["strong"] and a["p20"] == th["weak"]
+
+    def test_guide_states_the_percentile_rule_and_the_fallback(self):
+        from bot import bollinger_board as bb
+        d = {"market": "US", "asof": "2026-09-08", "reason": "", "count": 30,
+             "new": 5, "scanned": 503, "pct": 6.0, "avg5": 29.0, "avg5_reason": "",
+             "trend": {"dir": "flat", "d5": 0.1, "th": 5.03, "pct5": 0.3, "d20": None,
+                       "reason": ""},
+             "level": "strong", "level_reason": "", "strong_th": 29, "weak_th": 14,
+             "phase": "강세 유지", "pct_rank": 50.0, "pct_rank_reason": "", "streak": 0,
+             "streak_note": "", "chart": [], "rows": [], "rows_total": 0,
+             "provisional": None, "partial": False, "scan": {}, "closed": True,
+             "expected": "2026-09-08", "universe_label": "S&P 500 · 503종목",
+             "universe_meta": {}}
+        html = bb.render_page({"US": d})
+        i = html.index("② 강세/약세 문턱")
+        seg = html[i:html.index("③", i)]
+        assert "자기 이력 백분위" in seg and "250세션" in seg and "120세션 미만" in seg
+        assert "49%" in seg and "--why ⑧" in seg
