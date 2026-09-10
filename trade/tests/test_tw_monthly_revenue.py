@@ -21,7 +21,16 @@ from trade import badonion_sources as srcs
 from trade import tw_monthly_revenue as twr
 from trade import tw_stock_exports as tws
 
+# 실물 캡션 — 2026-09-10 오후 2:53 KST 텔레그램 스크린샷 그대로(#155). 누적 블록이
+# 세 줄이고 YoY 부호가 라벨 앞에 온다(`(+YoY 39.3%)`), 각주에 `대만 수출` 이 있다.
 _TSMC = (
+    "TSMC 월매출\n26년 8월\n\n"
+    "REV 약 5,148억 1,000만 TWD\nMoM +10.1% · YoY +53.3%\n\n"
+    "26년 1~8월 누적:\n3조 3,868억 7,000만 TWD\n(+YoY 39.3%)\n\n"
+    "* 대만 수출이 먼저 나오기 때문에 어느 정도 예상 가능했던 일\n\n"
+    "https://badonion.co.kr/twse-revenue")
+# 첫 재구성(스크린샷 확인 전) — 누적이 한 줄에 다 오는 압축 형식. 관용 파싱 유지.
+_COMPACT = (
     "TSMC 월매출\n26년 8월 Update\n\n"
     "REV: 약 5,148억 1,000만 TWD\nMoM: +10.1%\nYoY: +53.3%\n"
     "26년 1~8월 누적: 약 3조 2,500억 TWD (YoY +40.2%)\n\n"
@@ -29,7 +38,7 @@ _TSMC = (
 # 한 줄 `·` 구분 + 티커 괄호 + 라벨 뒤 `:` 없음
 _ONE_LINE = ("TSMC (2330) 월매출 26년 8월 · REV 약 5,148억 1,000만 TWD · MoM +10.1% · "
              "YoY +53.3% · 26년 1~8월 누적 YoY +40.2% · https://badonion.co.kr/twse-revenue")
-_NEG = _TSMC.replace("MoM: +10.1%", "MoM: -3.4%").replace("YoY: +53.3%", "YoY: -12.0%")
+_NEG = _TSMC.replace("MoM +10.1%", "MoM -3.4%").replace("YoY +53.3%", "YoY -12.0%")
 
 
 class ParseTests(unittest.TestCase):
@@ -41,10 +50,34 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(d["rev_text"], "5,148억 1,000만 TWD")
         self.assertEqual(d["rev_twd"], 514_810_000_000.0)
         self.assertEqual(d["mom"], 10.1)
-        self.assertEqual(d["yoy"], 53.3, "누적 YoY(+40.2) 를 당월 YoY 로 읽으면 안 된다")
-        self.assertEqual(d["cum_yoy"], 40.2)
+        self.assertEqual(d["yoy"], 53.3, "누적 YoY(+39.3) 를 당월 YoY 로 읽으면 안 된다")
+        self.assertEqual(d["cum_yoy"], 39.3, "누적 블록 셋째 줄 `(+YoY 39.3%)` 를 읽어야 한다")
         self.assertIn("1~8월 누적", d["cum_text"])
+        self.assertIn("3조 3,868억 7,000만 TWD", d["cum_text"], "누적 금액은 다음 줄에 온다")
         self.assertNotIn("badonion", d["cum_text"])
+        self.assertNotIn("대만 수출", d["cum_text"], "각주는 누적 블록이 아니다(문단이 갈린다)")
+        self.assertEqual(d["parse_ver"], twr.PARSE_VER)
+
+    def test_compact_single_line_cumulative(self):
+        d = twr.parse_tw_monthly_revenue(_COMPACT)
+        self.assertEqual((d["month"], d["mom"], d["yoy"], d["cum_yoy"]), ("2026-08", 10.1, 53.3, 40.2))
+        self.assertIn("3조 2,500억", d["cum_text"])
+
+    def test_sign_before_label_is_applied(self):
+        """`(-YoY 5.0%)` 는 -5.0 · `(+YoY 39.3%)` 는 +39.3 — 값에 부호가 있으면 그게 이긴다."""
+        d = twr.parse_tw_monthly_revenue(_TSMC.replace("(+YoY 39.3%)", "(-YoY 5.0%)"))
+        self.assertEqual(d["cum_yoy"], -5.0)
+        self.assertEqual(d["yoy"], 53.3)
+        d = twr.parse_tw_monthly_revenue(_TSMC.replace("YoY +53.3%", "-YoY +2.0%"))
+        self.assertEqual(d["yoy"], 2.0, "값 자체의 부호가 라벨 앞 부호보다 우선")
+
+    def test_cumulative_yoy_does_not_become_monthly_yoy_when_monthly_is_absent(self):
+        """당월 YoY 줄이 없어도 누적 블록의 YoY 가 당월 칸에 앉으면 안 된다 —
+        빈칸이 낫다(#29)."""
+        cap = _TSMC.replace("MoM +10.1% · YoY +53.3%", "MoM +10.1%")
+        d = twr.parse_tw_monthly_revenue(cap)
+        self.assertIsNone(d["yoy"])
+        self.assertEqual(d["cum_yoy"], 39.3)
 
     def test_one_line_variant_with_ticker(self):
         d = twr.parse_tw_monthly_revenue(_ONE_LINE)
@@ -180,6 +213,32 @@ class BackfillShowIrrelevantTests(unittest.TestCase):
     """새 카드 형식은 늘 '드랍된 쪽'에 숨는다(여섯 번째). 백필이 드랍 캡션 머리를
     찍는 읽기 전용 플래그를 갖고 `main` 이 그걸 `run` 에 넘기는지 AST 로 본다
     (telethon 없는 환경에서도 잰다)."""
+
+    def test_unit_head_same_shape_for_dropped_and_existing(self):
+        """드랍 유닛과 이미 포워드된 유닛이 같은 헬퍼로 찍힌다 — 창 안인데 드랍
+        목록에 없는 글이 어디로 갔는지 한 출력에서 갈린다(2026-09-10 TSMC)."""
+        import ast
+        from datetime import datetime, timezone
+        from types import SimpleNamespace as NS
+        # 샌드박스엔 telethon 이 없다 — 헬퍼 정의만 AST 로 떼어 실행한다.
+        src = open("trade/scripts/backfill_badonion.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_unit_head")
+        ns = {"Message": object}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "bf", "exec"), ns)
+        _unit_head = ns["_unit_head"]
+        d = datetime(2026, 9, 10, 5, 53, tzinfo=timezone.utc)
+        when, head = _unit_head([NS(text="", date=d), NS(text="TSMC  월매출\n26년 8월", date=d)])
+        self.assertEqual((when, head), ("2026-09-10 05:53 UTC", "TSMC 월매출 26년 8월"))
+        self.assertEqual(_unit_head([NS(text=None, date=d)])[1], "(캡션 없음)")
+        run = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "run")
+        calls = [n for n in ast.walk(run) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "_unit_head"]
+        self.assertGreaterEqual(len(calls), 2, "드랍·기존 두 목록이 같은 헬퍼를 써야 한다")
+        # 기존 유닛은 `key in existing` 분기에서 모아 'already-in-inbox' 로 찍힌다
+        run_src = ast.get_source_segment(src, run)
+        self.assertIn("existing_msgs.append(msg)", run_src)
+        self.assertIn("already-in-inbox unit", run_src)
 
     def test_flag_is_wired_from_main_to_run(self):
         import ast

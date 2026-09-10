@@ -273,6 +273,17 @@ def _msg_key_with_origin(
     return (source_chat_id, msg.id), _ORIGIN_FALLBACK
 
 
+def _unit_head(unit: list[Message], width: int = 160) -> tuple[str, str]:
+    """(시각, 캡션 머리) — 진단 출력용. 앨범이면 캡션이 있는 첫 멤버, 없으면
+    `(캡션 없음)`. 드랍된 유닛과 이미 포워드된 유닛이 **같은 모양**으로 찍혀야
+    한 출력에서 대조된다(2026-09-10 TSMC 월매출 — 드랍 목록에 없어서 어디로
+    갔는지 한 라운드를 더 썼다)."""
+    first = next((m for m in unit if (m.text or "").strip()), None)
+    head = " ".join((first.text or "").split())[:width] if first else "(캡션 없음)"
+    when = (first or unit[0]).date.strftime("%Y-%m-%d %H:%M UTC")
+    return when, head
+
+
 def _group_by_album(messages: list[Message]) -> list[list[Message]]:
     """Walk chronological messages and return a list of send-units:
     each unit is one standalone message OR one full album."""
@@ -380,6 +391,7 @@ async def run(
         skipped_ignored = 0
         fwd_fallback_count = 0
         iterated = 0
+        existing_msgs: list[Message] = []
         async for msg in client.iter_messages(
             source, offset_date=since, reverse=True
         ):
@@ -398,6 +410,8 @@ async def run(
                 )
             if key in existing:
                 skipped_existing += 1
+                if show_irrelevant:
+                    existing_msgs.append(msg)
                 continue
             caption = msg.text or ""
             if (
@@ -470,10 +484,14 @@ async def run(
             for u in units_all:
                 if id(u) in kept:
                     continue
-                first = next((m for m in u if (m.text or "").strip()), None)
-                head = " ".join((first.text or "").split())[:160] if first else "(캡션 없음)"
-                when = (first or u[0]).date.strftime("%Y-%m-%d %H:%M UTC")
+                when, head = _unit_head(u)
                 log.info("irrelevant unit %s: %s", when, head)
+            # 창 안인데 드랍 목록에 없는 글은 여기 있다 — '이미 inbox 에 있음'
+            # 은 dest 채널에 도착했다는 뜻이고(리스너·이전 백필·수동 포워드
+            # 어느 쪽이든), 저장 여부는 ingest 가 다음 주기에 정한다.
+            for u in _group_by_album(existing_msgs):
+                when, head = _unit_head(u)
+                log.info("already-in-inbox unit %s: %s", when, head)
         if dry_run:
             log.info("dry-run: not forwarding")
             return 0
@@ -604,9 +622,9 @@ def main() -> None:
     ap.add_argument(
         "--show-irrelevant",
         action="store_true",
-        help=("관련성 필터가 드랍한 유닛의 캡션 머리(160자)를 찍는다 — 새 카드 "
-              "형식이 파서 없이 버려지고 있는지 보는 용도. --dry-run 을 강제한다"
-              "(포워드 0)"),
+        help=("관련성 필터가 드랍한 유닛과 이미 inbox 에 있는 유닛의 캡션 머리"
+              "(160자)를 나란히 찍는다 — 새 카드 형식이 파서 없이 버려지고 있는지, "
+              "창 안의 글이 어디로 갔는지 보는 용도. --dry-run 을 강제한다(포워드 0)"),
     )
     args = ap.parse_args()
     max_candidates = (
