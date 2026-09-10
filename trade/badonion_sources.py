@@ -38,6 +38,7 @@ from trade import my_stock_exports as _mys
 from trade import ph_exports as _ph
 from trade import th_exports as _th
 from trade import tw_exports as _tw
+from trade import tw_stock_exports as _tws
 from trade import us_imports as _us
 from trade import us_ppi as _uppi
 
@@ -148,6 +149,15 @@ SOURCES: tuple[Source, ...] = (
            "cn_stock_import.db", "cn_stock_import.html",
            "🧧 중국 수입 데이터(종목별·나쁜양파)",
            country="중국", basis="company", flow="import"),
+    # 대만도 품목(tw)과 **종목** 두 갈래다. 26년 8월 종목판이 채널에 떴는데
+    # 파서가 없어 관련성 필터에서 통째로 드랍됐다(사용자 2026-09-10 —
+    # 일본 08-16·말레이시아 08-20·중국 08-21 과 같은 사고의 **다섯 번째**,
+    # #83 이 예측한 그대로). 문법 엔진(`cn_stock_flow`)을 나라만 바꿔 쓴다.
+    Source("tws", "대만 수출(종목별)", _tws.parse_tw_stock_export,
+           _tws.open_tw_stock_db, _tws.ingest, _tws.regenerate,
+           "tw_stock.db", "tw_stock.html",
+           "🧋 대만 수출 데이터(종목별·나쁜양파)",
+           country="대만", basis="company", flow="export"),
 )
 
 # nav 표시 순서 — **ingest 순서와 다르다.** SOURCES 를 재정렬하면 라우팅이
