@@ -1973,9 +1973,13 @@ def render_page(data: dict, now=None) -> str:
 HTS 는 표준편차 정의가 다를 수 있어
 종목수가 한두 개 차이 날 수 있습니다(우리가 재 보지는 않았습니다).
 ② 문턱 20/10 은 원문이 밝힌 <b>예시</b>이고 코스피200+코스닥150(350종목)
-기준입니다 — 다른 시장은 유니버스 크기로 환산했을 뿐 <b>검증된 기준이
-아닙니다</b>. 시장 간 종목수를 직접 비교하지 마세요(유니버스 크기·구성이
-다릅니다).
+기준입니다 — 다른 시장은 유니버스 크기로 <b>비율</b> 환산했습니다. 이 종목수에
+공식 문턱은 없고, 통용되는 폭(breadth) 규약은 유니버스 대비 비율과 자기 이력
+백분위 둘입니다. 참고: 20일·2σ 밴드는 한 종목 가격의 약 88~89% 를 담는다는
+Bollinger 규칙에서 상·하 대칭과 종목 간 독립을 가정하면 상단 밖 종목은 유니버스의
+5~6%(350종목이면 ≈19~21)라는 <b>통계적 추정</b>이 나옵니다 — 측정이 아니며, 종목들은
+같이 움직여 실제 분포는 치우칩니다. 실제 발화율은 <code>--why ⑧</code> 이 잽니다.
+시장 간 종목수를 직접 비교하지 마세요(유니버스 크기·구성이 다릅니다).
 ③ 차트에서 <b>옅은 막대</b>는 백필 구간입니다 — 오늘 유니버스로 과거를 계산한
 것이라 생존편향이 있습니다.
 ④ 대만 유니버스는 시총이 아니라 <b>거래대금</b> 상위입니다.
@@ -2015,7 +2019,7 @@ def regenerate() -> None:
 # 그대로 태우되 시계열 파일은 건드리지 않는다. 진단이 자기가 읽을 신호를
 # 오염시키면 다음 라운드가 통째로 거짓이 된다(#30·#264·#283). 그리고 판정을
 # 여기서 재구현하면 화면과 갈라지므로(#35·#169) 제품 함수만 부른다.
-_WHY_VER = 3
+_WHY_VER = 4   # 2026-09-10 ⑧ 문턱 검증(이력 발화율·밴드 통계 기대값)
 _RUN_HINT = "cd ~/stock && .venv/bin/python -m bot.bollinger_board --why KR"
 
 
@@ -2122,6 +2126,37 @@ def _why_universe_intl(m: str) -> list[str]:
     return out
 
 
+def _threshold_audit_lines(market: str, series: dict) -> str:
+    """⑧ 문턱 검증 — 저장 이력에서 강세/약세가 실제로 얼마나 자주 발화했나를
+    **값으로** 찍는다(사용자 2026-09-10 "이 기준이 맞는걸까"). 판정은
+    `bollinger.threshold_audit` 순수 함수(화면·감사가 같은 값을 보게, #176).
+    대조 0세션이면 ❓ 이지 ✅ 가 아니다(#54)."""
+    from bot import bollinger as _b
+    rows = _b.series_rows(series)
+    a = _b.threshold_audit(rows)
+    lines = ["⑧ 문턱 검증 — 저장 이력에서 실제 발화율(문턱은 바꾸지 않았다)"]
+    strong, weak = _b.level_thresholds(
+        next(((r or {}).get("scanned") for r in reversed(rows)
+              if (r or {}).get("scanned")), None))
+    if not a.get("n"):
+        lines.append(f"   ❓ {a.get('reason') or '판정 불가'}")
+        return "\n".join(lines)
+    lines.append(f"   문턱 강세 ≥ {strong} · 약세 ≤ {weak} · 판정 세션 {a['n']}"
+                 + (f" · ⚠️ {a['reason']}" if a.get("reason") else ""))
+    lines.append(f"   발화율: 강세 {a['strong_share']*100:.0f}% · 중립 "
+                 f"{a['neutral_share']*100:.0f}% · 약세 {a['weak_share']*100:.0f}%"
+                 " (세션 비율 — 한쪽이 절반을 넘으면 그 문턱은 '평상시' 를 가리킨다)")
+    if a.get("mean_pct") is not None and a.get("expected_lo") is not None:
+        lines.append(f"   평균 돌파 비율 {a['mean_pct']:.1f}%(판정 세션 기준) — 통계적 추정"
+                     f"(20일·2σ 밖 ≈{_b.BAND_OUTSIDE_SHARE[0]*100:.1f}~{_b.BAND_OUTSIDE_SHARE[1]*100:.0f}%, "
+                     f"대칭·독립 가정)은 최근 분모 기준 {a['expected_lo']:.0f}~{a['expected_hi']:.0f}종목 "
+                     "— 실측이 이 추정과 갈리면 실측이 맞다")
+    if a.get("p20") is not None:
+        lines.append(f"   5일선 이력 백분위: 하위 20% ≤ {a['p20']:.1f} · 상위 20% ≥ {a['p80']:.1f}"
+                     " (통용 규약의 다른 한 축 — 이 값과 문턱을 나란히 보라)")
+    return "\n".join(lines)
+
+
 def _why(market: str) -> int:
     import sys
 
@@ -2158,6 +2193,9 @@ def _why(market: str) -> int:
     if d.get("reason"):
         _p(f"   ❌ {d['reason']}")
         _p(f"   유니버스: {d.get('universe_label')}")
+        # 문턱 검증은 저장 이력만 보므로 이번 실행이 실패해도 답할 수 있다.
+        _p("")
+        _p(_threshold_audit_lines(m, before))
         return 1
     sc = d.get("scan") or {}
     _p(f"   기간 {sc.get('period')} · 배치 {sc.get('batches')}건(실패 "
@@ -2263,10 +2301,14 @@ def _why(market: str) -> int:
                 from bot.env_keys import env_diag
                 _p(f"   아직 한자: {', '.join(nd['samples'])}")
                 why = env_diag("GOOGLE_API_KEY")
-                _p("   ↪ 두 캐시 모두 없음 — 3시간 빌드의 LLM 번역이 채운다"
+                _p(("   ↪ 캐시 조회가 실패해 판정 불가 — 위 ❌ 원문부터"
+                    if nd.get("error") else
+                    "   ↪ 두 캐시 모두 없음 — 3시간 빌드의 LLM 번역이 채운다")
                    + (f" · 번역 키 {why}" if why else " · 번역 키 GOOGLE_API_KEY 는 환경변수에 있음"))
             else:
                 _p("   ✅ 전 행 한글(또는 한자 없음)")
+    _p("")
+    _p(_threshold_audit_lines(m, before))
     after = load_series(m)
     _p("")
     _p(f"✅ 시계열 불변 확인 — {len(before)}행 → {len(after)}행"

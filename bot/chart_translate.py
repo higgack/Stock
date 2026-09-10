@@ -11,11 +11,16 @@ subsystem='chart_translate' 로 기록(메인 대시보드 총합에 포함, 분
 from __future__ import annotations
 
 import json
+import logging
 import os
 from bot.genai_factory import effective_key as _effective_key
 import re
+import tempfile
+import threading
 import time
 from pathlib import Path
+
+log = logging.getLogger("bot.chart_translate")
 
 _HOME = Path.home() / ".tradingagents"
 _CACHE = _HOME / "chart_title_kr.json"
@@ -25,21 +30,112 @@ _FLASH_IN, _FLASH_OUT = 0.30, 2.50   # gemini-2.5-flash $/M
 _MAX_BATCH = 40                       # 한 콜당 최대 제목 수(토큰 bound)
 
 
-def _load() -> dict:
+_SALVAGE_LOCK = threading.Lock()
+
+
+def _atomic_write_json(path: Path, d: dict) -> None:
+    """고유 임시파일(mkstemp) + os.replace — reader 가 찢어진 JSON 을 보지 않고
+    (#280), 렌더 스레드 여럿과 워밍 스레드가 **같은 tmp 이름**을 나눠 쓰다 서로의
+    내용을 섞거나 두 번째 replace 가 FileNotFoundError 로 죽는 일이 없다(독립
+    리뷰 2026-09-10 #4 — 읽기 경로가 정리본을 쓰게 되면서 생긴 경쟁)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        return json.loads(_CACHE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(d, ensure_ascii=False))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _drop_replacement_entries(d: dict) -> tuple[dict, int]:
+    """U+FFFD(대체문자)가 키·값에 든 항목을 버린다. 남기면 (a) 깨진 이름이 화면에
+    그대로 실리고 (b) 캐시 히트라 **영원히 다시 번역되지 않으며** (c) 다음
+    `_save` 가 그걸 정상 항목으로 굽는다(독립 리뷰 2026-09-10 #1). 버린 항목은
+    캐시 미스가 되어 다음 워밍이 다시 채운다(항목 수만큼만 재과금)."""
+    bad = [k for k, v in d.items()
+           if "\ufffd" in str(k) or (isinstance(v, str) and "\ufffd" in v)]
+    for k in bad:
+        d.pop(k, None)
+    return d, len(bad)
+
+
+def _read_json_cache(path: Path) -> dict:
+    """번역 캐시 파일을 **어떤 경우에도 던지지 않고** 읽는다.
+
+    2026-09-10 VM 실측: `chart_title_kr.json` 의 432,419번째 바이트가 0x8d 라
+    `read_text(encoding="utf-8")` 이 UnicodeDecodeError 를 던졌다 — 옛 except 는
+    JSONDecodeError·OSError 만 잡아 그 예외가 **호출부 전부로** 나갔다. 대만
+    급등락·52주 보드는 `enrich_for_panel` 의 넓은 except 가 삼켜 **업종·시총·
+    한글명이 통째로 빈칸**이 됐고(사용자 캡처 그대로), 볼린저 2차 캐시는 조용히
+    0건이었다(#12 silent-fail · #315 곁들이 하나가 본체를 지운다).
+    깨진 바이트는 `errors="replace"` 로 걷어내고 파싱을 다시 시도한다 — 대개
+    문자열 값 하나만 다치고 나머지 수천 항목은 산다. 다친 항목(U+FFFD 포함)은
+    **버리고 정리본을 한 번 다시 써서** 다음 읽기부터는 경고가 안 뜬다.
+    그래도 못 읽으면 {} 를 돌려주되 **경고를 남긴다**(침묵 금지 #43) — 그 경우
+    번역이 다시 과금되므로 운영자가 알아야 한다. 파일 없음만 조용하고, 그 밖의
+    OSError(권한·I/O)와 dict 가 아닌 본문도 경고한다."""
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        log.warning("translate cache %s: 읽기 실패(%s) — 빈 캐시로 시작(번역이 다시 과금된다)",
+                    path.name, exc)
+        return {}
+    salvaged = False
+    try:
+        d = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        log.warning("translate cache %s: UTF-8 깨진 바이트(위치 %d) — 대체문자로 "
+                    "걷어내고 다시 읽음(다친 항목만 손실)", path.name, exc.start)
+        try:
+            d = json.loads(raw.decode("utf-8", errors="replace"))
+            salvaged = True
+        except json.JSONDecodeError as exc2:
+            log.warning("translate cache %s: 깨진 바이트를 걷어내도 JSON 이 아님(%s) — "
+                        "빈 캐시로 시작(번역이 다시 과금된다)", path.name, exc2)
+            return {}
+    except json.JSONDecodeError as exc:
+        log.warning("translate cache %s: JSON 파싱 실패(%s) — 빈 캐시로 시작", path.name, exc)
+        return {}
+    if not isinstance(d, dict):
+        log.warning("translate cache %s: 본문이 dict 가 아님(%s) — 빈 캐시로 시작",
+                    path.name, type(d).__name__)
+        return {}
+    if salvaged:
+        d, n_bad = _drop_replacement_entries(d)
+        log.warning("translate cache %s: 깨진 항목 %d개 버리고 정리본을 다시 씀(%d개 유지)",
+                    path.name, n_bad, len(d))
+        # 정리본 쓰기는 한 번이면 된다 — 동시에 읽은 스레드 여럿이 각자 쓰지 않게
+        # 잠그고, 잠금을 얻은 뒤 파일이 이미 정상(다른 스레드가 먼저 정리)이면 건너뛴다.
+        with _SALVAGE_LOCK:
+            try:
+                json.loads(path.read_bytes().decode("utf-8"))
+                return d                                    # 누군가 먼저 정리했다
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+            try:
+                _atomic_write_json(path, d)
+            except OSError as exc:
+                log.warning("translate cache %s: 정리본 쓰기 실패(%s) — 다음 읽기에 다시 걷어낸다",
+                            path.name, exc)
+    return d
+
+
+def _load() -> dict:
+    return _read_json_cache(_CACHE)
 
 
 def _save(d: dict) -> None:
     try:
-        _HOME.mkdir(parents=True, exist_ok=True)
-        tmp = _CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, _CACHE)
-    except OSError:
-        pass
+        _atomic_write_json(_CACHE, d)
+    except OSError as exc:
+        log.warning("translate cache %s: 쓰기 실패(%s)", _CACHE.name, exc)
 
 
 def _log_usage(pt: int, ot: int) -> None:
@@ -59,20 +155,14 @@ _IND_CACHE = _HOME / "industry_en.json"
 
 
 def _load_ind() -> dict:
-    try:
-        return json.loads(_IND_CACHE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
+    return _read_json_cache(_IND_CACHE)
 
 
 def _save_ind(d: dict) -> None:
     try:
-        _HOME.mkdir(parents=True, exist_ok=True)
-        tmp = _IND_CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, _IND_CACHE)
-    except OSError:
-        pass
+        _atomic_write_json(_IND_CACHE, d)
+    except OSError as exc:
+        log.warning("translate cache %s: 쓰기 실패(%s)", _IND_CACHE.name, exc)
 
 
 def translate_industries_en(names: list[str]) -> dict:
@@ -122,20 +212,14 @@ _NAME_CACHE = _HOME / "names_en.json"
 
 
 def _load_name() -> dict:
-    try:
-        return json.loads(_NAME_CACHE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
+    return _read_json_cache(_NAME_CACHE)
 
 
 def _save_name(d: dict) -> None:
     try:
-        _HOME.mkdir(parents=True, exist_ok=True)
-        tmp = _NAME_CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, _NAME_CACHE)
-    except OSError:
-        pass
+        _atomic_write_json(_NAME_CACHE, d)
+    except OSError as exc:
+        log.warning("translate cache %s: 쓰기 실패(%s)", _NAME_CACHE.name, exc)
 
 
 def translate_names_en(names: list[str]) -> dict:
@@ -186,20 +270,14 @@ _NAME_KR_CACHE = _HOME / "names_kr.json"
 
 
 def _load_name_kr() -> dict:
-    try:
-        return json.loads(_NAME_KR_CACHE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
+    return _read_json_cache(_NAME_KR_CACHE)
 
 
 def _save_name_kr(d: dict) -> None:
     try:
-        _HOME.mkdir(parents=True, exist_ok=True)
-        tmp = _NAME_KR_CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, _NAME_KR_CACHE)
-    except OSError:
-        pass
+        _atomic_write_json(_NAME_KR_CACHE, d)
+    except OSError as exc:
+        log.warning("translate cache %s: 쓰기 실패(%s)", _NAME_KR_CACHE.name, exc)
 
 
 def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:

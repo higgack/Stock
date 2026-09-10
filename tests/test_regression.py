@@ -19716,11 +19716,15 @@ class TestTwIndustryBulkMap20260804:
                             lambda name, obj: written.setdefault(name, obj))
         got = tw.fetch_tw_industry_map()
         assert got == {"2059": "전자부품", "2344": "반도체"}
-        assert written["tw_industry_map"] == got
+        assert written[tw._TW_IND_CACHE_KEY] == got
 
     def test_unknown_industry_code_never_leaks_as_number(self):
+        # 2026-09-10 계약 변경(독립 리뷰): 표에 없는 코드는 "기타" 가 아니라 ''.
+        # "기타" 로 채우면 맵이 '채워진 것' 이 되어 `.TWO` yfinance 폴백이 영영
+        # 안 돌았다. 숫자 누출 금지는 그대로다.
         import bot.twse_client as tw
-        assert tw._sector_kr("99") == "기타"
+        assert tw._sector_kr("99") == ""
+        assert tw._sector_kr("24") == "반도체"
 
     def test_unrecognized_schema_returns_empty_gracefully(self, monkeypatch):
         # 필드명이 예상과 다르면(스키마 변경) 예외 없이 {} — yfinance 폴백 유지.
@@ -19750,7 +19754,7 @@ class TestTwIndustryBulkMap20260804:
             {"2330": "반도체"} if label == "上市" else {"6488": "광전(디스플레이)"}))
         out = tw.fetch_tw_industry_map()
         assert out == {"2330": "반도체", "6488": "광전(디스플레이)"}
-        assert written.get("tw_industry_map") == out
+        assert written.get(tw._TW_IND_CACHE_KEY) == out
 
     def test_industries_for_tw_prefers_bulk_falls_back_to_yfinance_on_miss(self, monkeypatch):
         import bot.finviz_client as fc
@@ -28996,7 +29000,10 @@ class TestTwOtcIndustry20260819:
     소형주가 아니라 **上櫃(TPEx) 대역이 통째로 빈 것**:
 
       · TPEx OpenAPI 가 필드명을 영문화(`SecuritiesCompanyCode`)하고 업종을
-        **번호**로만 준다(`SecuritiesIndustryCode='33'`) → 이름 매핑 불가
+        **번호**로만 준다(`SecuritiesIndustryCode='33'`) → (당시엔) 이름 매핑
+        불가라고 봤다. ⚠️ 2026-09-10 반증(#331): 그 번호는 上市와 같은 MOPS
+        코드라 `_INDUSTRY_CODE_KR` 로 매핑된다 — 이제 上櫃도 일괄 맵이 채우고
+        `.TWO` 폴백은 맵에 없는 코드만 맡는다.
       · 야후는 上櫃를 `.TW` 가 아니라 **`.TWO`** 로 받는다 → `.TW` 조회는 404
 
     `.TWO` 로 물으니 표본 11개 중 10개가 채워졌다(포장·용기·반도체·부동산
@@ -29038,16 +29045,28 @@ class TestTwOtcIndustry20260819:
         fc._industries_for(["2601.TW", "5351.TW"], "TW", allow_slow=True)
         assert calls == [], calls
 
-    def test_parser_says_why_it_skips_the_numeric_schema(self):
-        """'스키마 변경 의심'은 다음 사람이 또 조사하게 만든다 — 무엇이
-        없는지(이름 필드)와 누가 대신 채우는지(.TWO)를 로그에 적는다."""
-        import inspect
+    def test_parser_says_why_it_skips_an_unknown_schema(self, monkeypatch, caplog):
+        """⚠️ 2026-09-10 계약 갱신(#222). 옛 이름은
+        `test_parser_says_why_it_skips_the_numeric_schema` 였고 "번호 스키마는
+        이름 표가 없어 스킵한다" 가 계약이었다 — 그 전제가 틀렸다(#331): 上市
+        `產業別` 도 같은 MOPS 2자리 코드이고 `_INDUSTRY_CODE_KR` 이 그 표다.
+        이제 번호 스키마는 **파싱**하고(TestTwIndustryMapTpexEnglishKeys20260910),
+        남는 계약은 "코드/업종 필드가 **정말** 없는 모양만 스킵하되 무엇이 없는지와
+        누가 대신 채우는지를 로그가 말한다"(#82). 소스 문자열이 아니라 **로그
+        레코드**로 잰다(#19 — 옛 판은 주석에 걸려 뮤테이션이 통과했다)."""
+        import logging
+        import types
         from bot import twse_client as tw
-        # ⚠️ 소스 전체를 보면 **내가 쓴 주석**에 걸려 뮤테이션이 통과한다
-        # (실측: 로그를 지워도 green). 로그 문자열 자체를 단언한다.
-        src = inspect.getsource(tw._fetch_one_industry_source)
-        assert "업종 '이름' 필드 없음" in src
-        assert ".TWO yfinance 폴백이 담당" in src
+
+        class _R:
+            status_code = 200
+            def json(self):
+                return [{"Date": "1150909", "CompanyName": "?"}]
+        monkeypatch.setattr(tw, "requests", types.SimpleNamespace(get=lambda *a, **k: _R()))
+        with caplog.at_level(logging.WARNING, logger="bot.twse_client"):
+            assert tw._fetch_one_industry_source("x", "上櫃(TPEx)") == {}
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("코드/업종 필드 없음" in m and ".TWO yfinance 폴백이 담당" in m for m in msgs), msgs
 
 
 class TestPeriodQueryFallback20260819:
@@ -40233,9 +40252,11 @@ class TestUnlabeledCorrSeries20260829:
         bad = []
         with tempfile.TemporaryDirectory() as td:
             for src in SOURCES:
-                if src.basis != "company":
+                # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
+                # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
+                if src.basis != "company" or src.flow not in ("export", "import"):
                     continue
-                flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+                flow = {"export": "수출", "import": "수입"}[src.flow]
                 tkr = "005930" if src.key == "krs" else "ABCD"
                 cap = (f"어떤회사 ({tkr})\n{src.country} {flow}\n"
                        f"26년 7월 Update\n\n{flow}액 YoY: +1.0%\n\n"
@@ -40294,7 +40315,7 @@ class TestStockBoardCorrMetrics20260829:
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company":
+            if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
                 continue
             got = src.parse(self._cap(src, self.CAP_TAIL)) or {}
             want = {"corr": 0.96, "dir_hit": 89.0,
@@ -40318,7 +40339,7 @@ class TestStockBoardCorrMetrics20260829:
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company":
+            if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
                 continue
             got = src.parse(self._cap(src, "상관: 0.55\n")) or {}
             if got.get("corr") != 0.55:
@@ -40341,7 +40362,7 @@ class TestStockBoardCorrMetrics20260829:
         bad = []
         with tempfile.TemporaryDirectory() as td:
             for src in SOURCES:
-                if src.basis != "company":
+                if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
                     continue
                 conn = src.open_db(Path(td) / src.db_file)
                 tbl = next(r[0] for r in conn.execute(
@@ -40520,9 +40541,11 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company":
+            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
+            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
+            if src.basis != "company" or src.flow not in ("export", "import"):
                 continue
-            flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+            flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
             three = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
                      f"{flow}액 YoY: +10.0%\n단가 YoY: +5.0%")
@@ -40539,9 +40562,11 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company":
+            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
+            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
+            if src.basis != "company" or src.flow not in ("export", "import"):
                 continue
-            flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+            flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
             cap = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
                    f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n"
@@ -40559,9 +40584,11 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company":
+            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
+            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
+            if src.basis != "company" or src.flow not in ("export", "import"):
                 continue
-            flow = {"export": "수출", "import": "수입"}.get(src.flow, "수출")
+            flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
             base = (f"어떤회사 ({tkr})\n{src.country} {flow}\n26년 7월 Update\n\n"
                     f"단가 YoY: +1.0%\n{flow}액 YoY: +2.0%\n\n")
@@ -55329,3 +55356,253 @@ class TestBollingerKoreanNameTwoCaches20260910:
         out0 = self._why_harness(monkeypatch, tmp_path, bb, [], uni)
         assert "❓ 표가 비어 판정 불가" in out0 and "✅ 전 행 한글" not in out0
         assert calls["kick"] == 0 and calls["llm"] == 0
+
+
+class TestTranslateCacheCorruptBytes20260910:
+    """VM 실측 2026-09-10: `chart_title_kr.json` 432,419번째 바이트가 0x8d 라
+    `read_text(encoding="utf-8")` 이 UnicodeDecodeError 를 던졌고, 옛 except 는
+    JSONDecodeError·OSError 만 잡아 그 예외가 호출부 전부로 나갔다 — 대만
+    급등락 보드는 `enrich_for_panel` 의 넓은 except 가 삼켜 업종·시총·한글명이
+    통째로 빈칸이 됐다(사용자 캡처 그대로). 계약: 캐시 읽기는 **어떤 바이트가
+    와도 던지지 않고**, 깨진 항목만 잃고 나머지는 살리며, 손실은 경고로 남긴다."""
+
+    def _cache(self, tmp_path, monkeypatch, name, raw: bytes):
+        import bot.chart_translate as ct
+        f = tmp_path / name
+        f.write_bytes(raw)
+        monkeypatch.setattr(ct, "_CACHE", f)
+        monkeypatch.setattr(ct, "_NAME_KR_CACHE", f)
+        return ct
+
+    def test_corrupt_byte_inside_a_value_loses_only_that_entry(self, tmp_path, monkeypatch, caplog):
+        import logging
+        good = '{"台積電": "TSMC", "欣銓": "시거드", "X": "'.encode("utf-8")
+        raw = good + b"\x8d" + '"}'.encode("utf-8")
+        ct = self._cache(tmp_path, monkeypatch, "chart_title_kr.json", raw)
+        with caplog.at_level(logging.WARNING, logger="bot.chart_translate"):
+            d = ct._load()
+        assert d["台積電"] == "TSMC" and d["欣銓"] == "시거드"      # 나머지는 산다
+        assert "X" not in d, "U+FFFD 항목은 버린다 — 남기면 캐시 히트라 영영 재번역 안 됨"
+        assert any("깨진 바이트" in r.getMessage() and "chart_title_kr.json" in r.getMessage()
+                   for r in caplog.records), "손실을 조용히 넘기면 안 된다(#43)"
+        # 정리본을 한 번 다시 써서 다음 읽기는 경고 없이 통과한다
+        import json
+        assert json.loads((tmp_path / "chart_title_kr.json").read_text(encoding="utf-8")) == d
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="bot.chart_translate"):
+            assert ct._load() == d
+        assert not caplog.records, "정리본을 안 썼으면 매 읽기마다 경고가 뜬다"
+        # 티커 캐시·업종·영문명 캐시도 같은 독자를 쓴다(#38)
+        assert ct._load_name_kr()["欣銓"] == "시거드"
+        monkeypatch.setattr(ct, "_IND_CACHE", tmp_path / "chart_title_kr.json")
+        monkeypatch.setattr(ct, "_NAME_CACHE", tmp_path / "chart_title_kr.json")
+        assert ct._load_ind()["欣銓"] == "시거드" and ct._load_name()["欣銓"] == "시거드"
+
+    def test_non_dict_body_and_unreadable_file_warn_not_raise(self, tmp_path, monkeypatch, caplog):
+        import logging
+        ct = self._cache(tmp_path, monkeypatch, "chart_title_kr.json", b'["not", "a", "dict"]')
+        with caplog.at_level(logging.WARNING, logger="bot.chart_translate"):
+            assert ct._load() == {}
+        assert any("dict 가 아님" in r.getMessage() for r in caplog.records)
+        caplog.clear()
+        d = tmp_path / "dir.json"
+        d.mkdir()                                   # 디렉터리 = FileNotFoundError 가 아닌 OSError
+        monkeypatch.setattr(ct, "_CACHE", d)
+        with caplog.at_level(logging.WARNING, logger="bot.chart_translate"):
+            assert ct._load() == {}
+        assert any("읽기 실패" in r.getMessage() for r in caplog.records), \
+            "파일 없음만 조용하다 — 권한·I/O 오류는 경고(독립 리뷰 #7)"
+
+    def test_hopeless_file_returns_empty_and_warns_not_raises(self, tmp_path, monkeypatch, caplog):
+        import logging
+        ct = self._cache(tmp_path, monkeypatch, "chart_title_kr.json", b"\x8d\x8d not json")
+        with caplog.at_level(logging.WARNING, logger="bot.chart_translate"):
+            assert ct._load() == {}
+        assert any("빈 캐시" in r.getMessage() for r in caplog.records)
+
+    def test_render_safe_translation_survives_corrupt_cache(self, tmp_path, monkeypatch):
+        """호출부 계약: cache_only 번역이 예외 대신 dict 를 돌려준다 — 그래야
+        `enrich_for_panel` 이 업종·시총까지 버리지 않는다(#315)."""
+        ct = self._cache(tmp_path, monkeypatch, "chart_title_kr.json",
+                         b'{"a": "b", "c": "\x8d"}')
+        assert ct.translate_titles_kr(["a", "zzz"], cache_only=True) == {"a": "b"}
+        assert ct.translate_names_kr([("a", "n")], cache_only=True) == {"a": "b"}
+
+
+class TestTwIndustryMapTpexEnglishKeys20260910:
+    """VM 프로브 실측 2026-09-10: 上櫃(TPEx) OpenAPI 890행이 `SecuritiesCompanyCode`
+    · `SecuritiesIndustryCode='33'` 로 오는데 파서가 "번호→이름 표가 없다"며
+    통째로 스킵했다 — 표(`_INDUSTRY_CODE_KR`)는 이미 있고 上市도 같은 MOPS 코드로
+    그 표를 탄다(#25 능력은 이름이 아니라 실측 · #55). 그래서 무버 60종목 중
+    33개가 '어디에도 없는 코드' 로 찍혔다."""
+
+    def _stub(self, monkeypatch, rows):
+        import types
+        from bot import twse_client as tw
+
+        class _R:
+            status_code = 200
+            def json(self):
+                return rows
+        monkeypatch.setattr(tw, "requests", types.SimpleNamespace(get=lambda *a, **k: _R()))
+        return tw
+
+    def test_tpex_english_rows_map_through_the_same_code_table(self, monkeypatch):
+        tw = self._stub(monkeypatch, [
+            {"Date": "1150909", "SecuritiesCompanyCode": "1240", "CompanyName": "茂生農經",
+             "SecuritiesIndustryCode": "33"},
+            {"Date": "1150909", "SecuritiesCompanyCode": "1259", "CompanyName": "安心",
+             "SecuritiesIndustryCode": "16"}])
+        got = tw._fetch_one_industry_source("x", "上櫃(TPEx)")
+        assert got == {"1240": tw._INDUSTRY_CODE_KR["33"], "1259": tw._INDUSTRY_CODE_KR["16"]}
+        assert got["1240"] == "농업기술" and got["1259"] == "관광·외식"
+
+    def test_twse_korean_keys_unchanged_and_unknown_shape_still_skipped(self, monkeypatch):
+        tw = self._stub(monkeypatch, [{"公司代號": "2330", "產業別": "24"}])
+        assert tw._fetch_one_industry_source("x", "上市") == {"2330": "반도체"}
+        tw = self._stub(monkeypatch, [{"foo": "1"}])
+        assert tw._fetch_one_industry_source("x", "?") == {}
+
+    def test_merged_map_serves_tpex_codes_to_the_screen_path(self, monkeypatch):
+        """화면이 부르는 `_industries_for(…, 'TW')` 까지 태운다(#20) — 원천(HTTP)만
+        스텁하고 파서·맵·호출부는 실물로. 맵이 채우면 yfinance 폴백은 불리지
+        않고(반대 증거 #25), 표에 없는 코드는 미스로 남아 `.TWO` 폴백이 **돈다**
+        (독립 리뷰 #2 — "기타" 로 채우면 이 폴백이 영영 안 돌았다)."""
+        import types
+        from bot import finviz_client as fv
+        from bot import twse_client as tw
+        rows = {tw._OPENAPI_LISTED_INFO: [{"公司代號": "2330", "產業別": "24"}],
+                tw._OPENAPI_OTC_INFO: [{"SecuritiesCompanyCode": "1240", "SecuritiesIndustryCode": "33"},
+                                       {"SecuritiesCompanyCode": "9999", "SecuritiesIndustryCode": "77"}]}
+
+        class _R:
+            status_code = 200
+            def __init__(self, url): self._u = url
+            def json(self): return rows[self._u]
+        monkeypatch.setattr(tw, "requests", types.SimpleNamespace(get=lambda url, *a, **k: _R(url)))
+        monkeypatch.setattr(tw, "_cached_stale", lambda *a, **k: None)
+        monkeypatch.setattr(tw, "_cache_write", lambda *a, **k: None)
+        calls = []
+        monkeypatch.setattr(fv, "_fetch_industries",
+                            lambda tks, allow_slow=True: calls.append(list(tks)) or
+                            {t: "폴백업종" for t in tks if t.endswith(".TWO")})
+        got = fv._industries_for(["1240.TW", "2330.TW", "9999.TW"], "TW", allow_slow=False)
+        assert got["1240.TW"] == "농업기술" and got["2330.TW"] == "반도체"
+        assert got["9999.TW"] == "폴백업종", "표에 없는 코드는 폴백으로 채워져야 한다"
+        assert calls == [["9999.TW"], ["9999.TWO"]], calls
+
+
+class TestBollingerThresholdAudit20260910:
+    """사용자 2026-09-10 "강세 20이상, 약세 10 이하 … 이 기준이 맞는걸까? … 공식적
+    or 통용되는 기준으로 하고 싶어". 조사 결과 이 종목수엔 공식 문턱이 없고 통용
+    규약은 비율·이력 백분위 둘이다 — 그래서 문턱을 바꾸는 대신 **이력에서 실제
+    발화율을 재는** 축(`threshold_audit` → `--why ⑧`)을 둔다(#12 재고 나서 말한다).
+    값으로 못박는다(#19·#313) — 픽스처는 손으로 셀 수 있게 계단 하나다."""
+
+    @staticmethod
+    def _rows(n_hi=30, hi=30, n_lo=40, lo=4, scanned=350):
+        return [{"date": f"d{i:03d}", "count": (hi if i < n_hi else lo),
+                 "scanned": scanned} for i in range(n_hi + n_lo)]
+
+    def test_shares_and_percentiles_are_counted_from_the_series(self):
+        from bot import bollinger as b
+        a = b.threshold_audit(self._rows())
+        # 5일선: idx4..30 강세(27) · 31,32 중립(2) · 33..69 약세(37) = 66세션
+        assert a["n"] == 66 and a["reason"] == ""
+        assert abs(a["strong_share"] - 27 / 66) < 1e-9
+        assert abs(a["neutral_share"] - 2 / 66) < 1e-9
+        assert abs(a["weak_share"] - 37 / 66) < 1e-9
+        # 평균 돌파 비율도 **판정 세션(66)** 에서만 — idx4..29 는 30, idx30..69 는 4
+        assert abs(a["mean_pct"] - (26 * 30 + 40 * 4) / 66 / 350 * 100) < 1e-9
+        assert (a["expected_lo"], a["expected_hi"]) == (0.055 * 350, 0.06 * 350)
+        assert (a["p20"], a["p80"]) == (4.0, 30.0)          # nearest-rank = ceil(q·n)(#167)
+        from bot.bollinger import _nearest_rank
+        assert _nearest_rank([1.0, 2.0, 3.0, 4.0, 5.0], 0.20) == 1.0   # ceil(1.0)=1
+        assert _nearest_rank([1.0, 2.0, 3.0, 4.0, 5.0], 0.21) == 2.0   # ceil(1.05)=2 (round 였으면 1)
+
+    def test_zero_judgeable_sessions_is_not_a_pass(self):
+        from bot import bollinger as b
+        a = b.threshold_audit([{"date": "d", "count": 3} for _ in range(20)])   # 분모 없음
+        assert a["n"] == 0 and "대조 불가" in a["reason"] and "strong_share" not in a
+        assert b.threshold_audit([]) ["n"] == 0
+
+    def test_short_history_still_reports_but_says_so(self):
+        from bot import bollinger as b
+        a = b.threshold_audit(self._rows(n_hi=10, n_lo=10))
+        assert 0 < a["n"] < b._MIN_HISTORY
+        assert "이력 부족" in a["reason"] and "strong_share" in a
+
+    def test_why_prints_the_audit_from_the_stored_series(self, monkeypatch, tmp_path):
+        import contextlib, io
+        from bot import bollinger_board as bb
+        series = {r["date"]: {"count": r["count"], "scanned": r["scanned"], "new": 0,
+                              "basis": "live"} for r in self._rows()}
+        monkeypatch.setattr(bb, "build_market", lambda m, **k: {"reason": "stop"})
+        monkeypatch.setattr(bb, "load_series", lambda m: dict(series))
+        monkeypatch.setattr(bb, "series_path", lambda m: tmp_path / "s.json")
+        monkeypatch.setattr(bb, "_universe", lambda m: ({"a": {}}, {"label": "x"}))
+        monkeypatch.setattr(bb, "_why_universe_intl", lambda m: [])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bb._why("JP")
+        out = buf.getvalue()
+        assert "⑧ 문턱 검증" in out
+        assert "발화율: 강세 41% · 중립 3% · 약세 56%" in out, out    # 27/66·2/66·37/66
+        assert "판정 세션 66" in out and "19~21종목" in out
+        assert "하위 20% ≤ 4.0 · 상위 20% ≥ 30.0" in out
+        assert bb._WHY_VER >= 4
+
+    def test_why_prints_the_audit_on_the_normal_path_too(self, monkeypatch, tmp_path):
+        """조기 반환 경로만 재면 정상 경로의 배선을 지워도 통과한다(#20) — 둘 다."""
+        import contextlib, io
+        from bot import bollinger_board as bb
+        series = {r["date"]: {"count": r["count"], "scanned": r["scanned"], "new": 0,
+                              "basis": "live"} for r in self._rows()}
+        d = {"market": "JP", "rows": [], "rows_total": 0, "chart": [],
+             "scan": {"kept": 1, "universe": 1, "ratio": 1.0},
+             "asof": "2026-09-09", "expected": "2026-09-09", "closed": True,
+             "rows_basis": "run", "count": 1, "avg5": 1.0, "streak": 0}
+        monkeypatch.setattr(bb, "build_market", lambda m, **k: d)
+        monkeypatch.setattr(bb, "load_series", lambda m: dict(series))
+        monkeypatch.setattr(bb, "series_path", lambda m: tmp_path / "s.json")
+        monkeypatch.setattr(bb, "_universe", lambda m: ({"a": {"name": "x"}}, {"label": "x"}))
+        monkeypatch.setattr(bb, "_why_universe_intl", lambda m: [])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bb._why("JP")
+        out = buf.getvalue()
+        assert "⑧ 문턱 검증" in out and "✅ 시계열 불변" in out
+        assert out.index("④ 최근 10세션") < out.index("⑧ 문턱 검증") < out.index("✅ 시계열 불변")
+        assert "발화율: 강세 41% · 중립 3% · 약세 56%" in out
+
+    def test_why_with_no_history_says_undecidable(self, monkeypatch, tmp_path):
+        import contextlib, io
+        from bot import bollinger_board as bb
+        monkeypatch.setattr(bb, "build_market", lambda m, **k: {"reason": "stop"})
+        monkeypatch.setattr(bb, "load_series", lambda m: {})
+        monkeypatch.setattr(bb, "series_path", lambda m: tmp_path / "s.json")
+        monkeypatch.setattr(bb, "_universe", lambda m: ({"a": {}}, {"label": "x"}))
+        monkeypatch.setattr(bb, "_why_universe_intl", lambda m: [])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bb._why("JP")
+        assert "❓ 판정 가능한 세션 0" in buf.getvalue()
+
+    def test_guide_states_the_statistical_basis_and_points_at_the_audit(self):
+        from bot import bollinger_board as bb
+        d = {"market": "US", "asof": "2026-09-08", "reason": "", "count": 30,
+             "new": 5, "scanned": 503, "pct": 6.0, "avg5": 29.0, "avg5_reason": "",
+             "trend": {"dir": "flat", "d5": 0.1, "th": 5.03, "pct5": 0.3, "d20": None,
+                       "reason": ""},
+             "level": "strong", "level_reason": "", "strong_th": 29, "weak_th": 14,
+             "phase": "강세 유지", "pct_rank": 50.0, "pct_rank_reason": "", "streak": 0,
+             "streak_note": "", "chart": [], "rows": [], "rows_total": 0,
+             "provisional": None, "partial": False, "scan": {}, "closed": True,
+             "expected": "2026-09-08", "universe_label": "S&P 500 · 503종목",
+             "universe_meta": {}}
+        html = bb.render_page({"US": d})
+        assert "88~89%" in html and "5~6%" in html and "--why ⑧" in html
+        assert "공식 문턱은 없고" in html
+        # 추론을 사실처럼 적지 않는다(독립 리뷰 #7·#165) — 추정이라 밝히고 실측을 가리킨다
+        assert "통계적 추정" in html and "측정이 아니" in html
+        assert "대략 평균 수준" not in html

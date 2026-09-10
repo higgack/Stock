@@ -337,6 +337,8 @@ async def run(
     until: datetime | None,
     dry_run: bool,
     max_candidates: int,
+    *,
+    show_irrelevant: bool = False,
 ) -> int:
     existing = _load_existing_keys()
     log.info("already ingested: %d forward keys", len(existing))
@@ -459,6 +461,19 @@ async def run(
             skipped_irrelevant, len(candidates),
         )
 
+        if skipped_irrelevant and not show_irrelevant:
+            # 새 형식은 늘 '드랍된 쪽'에 숨는다(2026-09-10 TSMC 월매출 — 여섯
+            # 번째 조용한 유실). 다음 라운드가 원문을 손으로 찾지 않게 안내.
+            log.info("드랍된 캡션 머리를 보려면 --show-irrelevant")
+        if show_irrelevant:
+            kept = {id(u) for u in units}
+            for u in units_all:
+                if id(u) in kept:
+                    continue
+                first = next((m for m in u if (m.text or "").strip()), None)
+                head = " ".join((first.text or "").split())[:160] if first else "(캡션 없음)"
+                when = (first or u[0]).date.strftime("%Y-%m-%d %H:%M UTC")
+                log.info("irrelevant unit %s: %s", when, head)
         if dry_run:
             log.info("dry-run: not forwarding")
             return 0
@@ -586,6 +601,13 @@ def main() -> None:
         action="store_true",
         help="enumerate candidates without forwarding",
     )
+    ap.add_argument(
+        "--show-irrelevant",
+        action="store_true",
+        help=("관련성 필터가 드랍한 유닛의 캡션 머리(160자)를 찍는다 — 새 카드 "
+              "형식이 파서 없이 버려지고 있는지 보는 용도. --dry-run 을 강제한다"
+              "(포워드 0)"),
+    )
     args = ap.parse_args()
     max_candidates = (
         args.max_candidates
@@ -605,12 +627,18 @@ def main() -> None:
             since_date.date().isoformat(),
         )
 
+    # 진단 플래그는 운영 상태를 바꾸면 안 된다(#264·#283) — 드랍 목록을 보려던
+    # 실행이 포워드까지 하면 '읽기 전용' 이 거짓이 된다(독립 리뷰 2026-09-10 #1).
+    dry_run = bool(args.dry_run or args.show_irrelevant)
+    if args.show_irrelevant and not args.dry_run:
+        log.info("--show-irrelevant: dry-run 강제(포워드하지 않음)")
     rc = asyncio.run(
         run(
             since_date,
             _parse_date(args.to) if args.to else None,
-            args.dry_run,
+            dry_run,
             max_candidates,
+            show_irrelevant=args.show_irrelevant,
         )
     )
     sys.exit(rc)
