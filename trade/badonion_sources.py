@@ -38,6 +38,7 @@ from trade import my_stock_exports as _mys
 from trade import ph_exports as _ph
 from trade import th_exports as _th
 from trade import tw_exports as _tw
+from trade import tw_monthly_revenue as _twr
 from trade import tw_stock_exports as _tws
 from trade import us_imports as _us
 from trade import us_ppi as _uppi
@@ -158,6 +159,14 @@ SOURCES: tuple[Source, ...] = (
            "tw_stock.db", "tw_stock.html",
            "🧋 대만 수출 데이터(종목별·나쁜양파)",
            country="대만", basis="company", flow="export"),
+    # 대만 월매출(종목별) — `badonion.co.kr/twse-revenue` 카드. 2026-09-10 대만
+    # 수출 6건은 회수됐는데 TSMC 월매출만 어느 파서도 안 받아 드랍됐다(여섯 번째).
+    # 수출 문법이 아니라 엔진을 재사용하지 않는다(월매출·REV·MoM·YoY·누적).
+    Source("twr", "대만 월매출(종목별)", _twr.parse_tw_monthly_revenue,
+           _twr.open_tw_revenue_db, _twr.ingest, _twr.regenerate,
+           "tw_revenue.db", "tw_revenue.html",
+           "🧋 대만 월매출 데이터(종목별·나쁜양파)",
+           country="대만", basis="company", flow="revenue"),
 )
 
 # nav 표시 순서 — **ingest 순서와 다르다.** SOURCES 를 재정렬하면 라우팅이
@@ -167,7 +176,7 @@ SOURCES: tuple[Source, ...] = (
 # 회사별, 수출다음 수입순. 나라의 순서는 대시보드의 개수가 많은것 우선"):
 #   ① 나라로 묶고, 나라는 **대시보드 개수 내림차순**
 #   ② 한 나라 안에서는 품목별 → 회사별
-#   ③ 그 다음 수출 → 수입 → 지수
+#   ③ 그 다음 수출 → 수입 → 지수 → 매출(2026-09-10 대만 월매출)
 #
 # ⚠️ 손으로 나열하지 않고 **계산한다.** 옛 코드는 12개를 직접 적어 뒀는데,
 # 그러면 새 소스를 추가할 때마다 규약과 어긋난 자리에 조용히 놓인다(실수 #24
@@ -175,7 +184,7 @@ SOURCES: tuple[Source, ...] = (
 # 옆이어야 하는데 손으로 끼워 넣어야 했다. 이제 축(country/basis/flow)만
 # 밝히면 자리는 자동이고, 축을 안 밝히면 dataclass 가 즉시 터진다.
 _BASIS_RANK = {"item": 0, "company": 1}
-_FLOW_RANK = {"export": 0, "import": 1, "index": 2}
+_FLOW_RANK = {"export": 0, "import": 1, "index": 2, "revenue": 3}
 
 # 레지스트리 **밖**에서 nav 에 실리는 대시보드 수. dashboard.py 가 jp.html
 # (일본/비온)을 직접 하드코딩하는데, 나라별 개수 판정에 이게 빠지면 일본이

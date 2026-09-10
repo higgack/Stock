@@ -114,7 +114,7 @@ def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int
     else:
         gap = n - max(in_map, src_in)
         out.append(f"⚠️ 업종 {ind_filled}/{n} — 上市·上櫃 파싱 맵 어디에도 없는 코드 "
-                   f"{gap}개: 興櫃·ETF·신규상장이거나 上櫃가 업종을 번호로만 준 경우다 "
+                   f"{gap}개: 興櫃·ETF·신규상장이거나 원천이 그 코드를 안 실은 경우다 "
                    "— 어느 쪽인지는 ④ 원문으로(단정 안 함). yfinance `.TWO` 폴백은 "
                    "백그라운드에서만 돈다")
     if slow is not None and slow[1] > ind_filled:

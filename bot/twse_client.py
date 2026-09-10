@@ -100,7 +100,10 @@ def _sector_kr(core: str) -> str:
     2026-06-16 한자 누수 fix). TWSE 類股명에 設備/業 등 suffix 변형이 섞여 나오던 것 흡수."""
     core = str(core or "").strip()
     if core.isdigit():
-        return _INDUSTRY_CODE_KR.get(core.zfill(2), "기타")
+        # 표에 없는 코드는 "기타" 가 아니라 **빈 문자열** — "기타" 로 채우면 맵이
+        # '채워진 것' 이 되어 `.TWO` yfinance 폴백이 영영 안 돈다(독립 리뷰
+        # 2026-09-10 #2). 숫자 그대로 누출하지도 않는다(2026-08-04 fix 유지).
+        return _INDUSTRY_CODE_KR.get(core.zfill(2), "")
     if core in _SECTOR_KR:
         return _SECTOR_KR[core]
     # core(TWSE 정식명)가 map key(짧은 형)로 시작할 때만 매칭 — 設備/業 등 suffix
@@ -438,17 +441,22 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
     code_key = next((k for k in sample if "代號" in k), None)
     ind_key = next((k for k in sample if "產業" in k), None)
     if not code_key or not ind_key:
-        # ⚠️ TPEx 는 2026-08 경 필드명을 **영문화**했고(`SecuritiesCompanyCode`·
-        # `SecuritiesIndustryCode`), 업종이 이름이 아니라 **번호**('33'·'16')로
-        # 온다(2026-08-19 프로브 실측 890행). 번호→이름 표가 없으니 여기서
-        # 이름을 만들 수 없다 — 지어내지 않고 스킵하고, 上櫃 종목의 업종은
-        # `finviz_client._industries_for` 의 `.TWO` yfinance 폴백이 채운다.
-        _en = next((k for k in sample if "SecuritiesIndustryCode" in k), None)
-        log.warning("twse industry map (%s): 업종 '이름' 필드 없음(code=%s ind=%s"
-                    "%s) — 스킵(上櫃는 .TWO yfinance 폴백이 담당). keys=%s",
-                    label, code_key, ind_key,
-                    ", 번호 필드만 있음: SecuritiesIndustryCode" if _en else "",
-                    list(sample)[:12])
+        # TPEx 는 2026-08 경 필드명을 **영문화**했다(`SecuritiesCompanyCode`·
+        # `SecuritiesIndustryCode`, 2026-08-19 프로브 실측 890행). 옛 코드는
+        # "업종이 번호('33'·'16')로 오는데 번호→이름 표가 없다"며 통째로
+        # 스킵했는데 — 그 전제가 틀렸다(2026-09-10 실측): 上市 `產業別` 도
+        # **같은 MOPS 2자리 코드**이고 바로 아래서 `_sector_kr` 이
+        # `_INDUSTRY_CODE_KR` 로 이름을 만든다('33'=농업기술·'16'=관광·외식 이
+        # 표에 있다). 즉 영문 키만 받으면 上櫃도 같은 경로로 채워진다(#25 능력은
+        # 이름이 아니라 실측 · #55 주석이 코드와 어긋나면 버그). 그동안 上櫃
+        # 890종목은 yfinance `.TWO` 폴백(백그라운드 전용)에만 기대 화면이
+        # 렌더 시점엔 늘 `—` 였다.
+        code_key = code_key or next((k for k in sample if k == "SecuritiesCompanyCode"), None)
+        ind_key = ind_key or next((k for k in sample if k == "SecuritiesIndustryCode"), None)
+    if not code_key or not ind_key:
+        log.warning("twse industry map (%s): 코드/업종 필드 없음(code=%s ind=%s) — "
+                    "스킵(上櫃는 .TWO yfinance 폴백이 담당). keys=%s",
+                    label, code_key, ind_key, list(sample)[:12])
         return {}
     out: dict[str, str] = {}
     for row in rows:
@@ -460,10 +468,18 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
             # 2026-08-04 VM 실측: 產業別 필드는 한자 업종명이 아니라 MOPS
             # 2자리 숫자 분류코드("20"/"02"/"22" 등) — _sector_kr 이
             # _INDUSTRY_CODE_KR 코드표로 정확 매핑(숫자 그대로 노출 fix).
-            out[code] = _sector_kr(ind)
+            # 표에 없는 코드는 '' 이므로 싣지 않는다 — 미스로 남아야 폴백이 돈다.
+            name = _sector_kr(ind)
+            if name:
+                out[code] = name
     log.info("twse industry map (%s): %d종목 (code_key=%s ind_key=%s)",
              label, len(out), code_key, ind_key)
     return out
+
+
+# 2026-09-10: 표에 없는 코드를 "기타" 로 굽던 옛 캐시가 24h 동안 `.TWO` 폴백을
+# 계속 가린다(독립 리뷰 #5) — 키를 올려 배포 즉시 새로 받는다(#21b 캐시가 fix 를 가림).
+_TW_IND_CACHE_KEY = "tw_industry_map_v2"
 
 
 def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
@@ -476,17 +492,18 @@ def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
     시 TWSE 상장분만이라도 개선. 코드 키는 6자리 zero-pad 없이 원문 그대로
     (finviz_client._industries_for 가 호출측에서 티커 정규화)."""
     if not force:
-        c = _cached_stale("tw_industry_map", max_age_sec=_TW_IND_CACHE_TTL)
+        c = _cached_stale(_TW_IND_CACHE_KEY, max_age_sec=_TW_IND_CACHE_TTL)
         if isinstance(c, dict) and c:
             normalized = {code: _sector_kr(ind) for code, ind in c.items()}
+            normalized = {k: v for k, v in normalized.items() if v}
             if normalized != c:
-                _cache_write("tw_industry_map", normalized)
+                _cache_write(_TW_IND_CACHE_KEY, normalized)
             return normalized
     out: dict[str, str] = {}
     out.update(_fetch_one_industry_source(_OPENAPI_LISTED_INFO, "上市"))
     out.update(_fetch_one_industry_source(_OPENAPI_OTC_INFO, "上櫃"))
     if out:
-        _cache_write("tw_industry_map", out)
+        _cache_write(_TW_IND_CACHE_KEY, out)
     return out
 
 

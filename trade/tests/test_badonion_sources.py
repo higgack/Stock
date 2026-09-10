@@ -44,7 +44,9 @@ class RegistryTests(unittest.TestCase):
              # 2026-08-21 중국 수출·수입(종목별).
              "cns", "cni",
              # 2026-09-10 대만 수출(종목별) — 파서가 없어 드랍되던 것(#83 다섯 번째).
-             "tws"])
+             "tws",
+             # 2026-09-10 대만 월매출(종목별) — 같은 날 여섯 번째(TSMC 월매출 카드).
+             "twr"])
         # ⚠️ 위 목록은 **손으로 갱신하는 핀**이라, 규약 자체도 같이 못박는다
         # (핀만 있으면 "지금 순서를 그대로 적은" 테스트가 된다, 실수 #19).
         # 계약: 품목(HS) 기준 파서가 **전부** 종목(회사) 기준보다 앞.
@@ -378,9 +380,10 @@ class TestNavOrderRule20260820(unittest.TestCase):
                              f"{c}: 품목별이 회사별보다 앞이어야: {bases}")
             for basis in ("item", "company"):
                 flows = [s.flow for s in grp if s.basis == basis]
+                # 2026-09-10 `revenue`(월매출) 추가 — 수출·수입·지수 뒤(#222 계약 확장).
                 self.assertEqual(
-                    flows, sorted(flows, key="export import index".split().index),
-                    f"{c}/{basis}: 수출→수입→지수 순이어야: {flows}")
+                    flows, sorted(flows, key="export import index revenue".split().index),
+                    f"{c}/{basis}: 수출→수입→지수→매출 순이어야: {flows}")
 
     def test_rule_is_computed_not_transcribed(self):
         """합성 레지스트리로 규약 자체를 태운다 — 하드코딩 튜플로 되돌리면

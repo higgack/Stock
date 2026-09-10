@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import math
+
 # ── 원문(캡처)이 제시한 예시 문턱 ───────────────────────────────────────────
 # "강세장: 5일 평균 종목수가 20 이상 · 약세장: 10 이하" — 코스피200+코스닥150
 # (350 종목) 기준이다. 다른 시장은 유니버스 크기가 달라 그대로 쓸 수 없으므로
@@ -296,6 +298,78 @@ def level_thresholds(scanned) -> tuple[int | None, int | None]:
         return None, None
     return (int(round(_REF_STRONG / _REF_UNIVERSE * s)),
             int(round(_REF_WEAK / _REF_UNIVERSE * s)))
+
+
+# ── 문턱의 통계 기준(2026-09-10 사용자 "이 기준이 맞는걸까? … 공식적 or 통용되는
+# 기준으로") ──────────────────────────────────────────────────────────────
+# 조사 결과 '상단 밴드 밖 종목수' 에 **공식 문턱은 없다**. 통용되는 폭(breadth)
+# 규약은 둘이다: (a) 유니버스 대비 **비율**(T2108/%above-MA 류가 전부 % 로 정의)
+# (b) **자기 이력 백분위**(SentimenTrader 류). Bollinger 자신의 규칙 — 20일·2σ
+# 밴드는 한 종목 가격의 약 88~89% 를 담는다(bollingerbands.com 22 rules) — 에서
+# 상·하 대칭·종목 간 독립을 **가정하면** 한쪽 밖은 약 5.5~6%, 350종목이면 ≈19~21
+# 이라는 **추정**이 나온다(원문 '강세 20' 이 그 근처). ⚠️ 이건 종목별 시계열
+# 통계에서 횡단면 비율을 유도한 추정이지 측정이 아니다 — 종목들은 같이 움직여
+# 실제 분포는 훨씬 치우친다. 그래서 문턱을 바꾸지 않고 "우리 이력에서 실제로
+# 얼마나 자주 발화하나"를 `threshold_audit`(`--why ⑧`)이 **잰다**. 추정과 실측이
+# 갈리면 실측이 이긴다(#165).
+BAND_OUTSIDE_SHARE = (0.055, 0.06)
+
+
+def _nearest_rank(sorted_vals: list[float], q: float) -> float | None:
+    if not sorted_vals:
+        return None
+    k = max(1, math.ceil(q * len(sorted_vals)))          # 표준 nearest-rank(ceil)
+    return sorted_vals[min(k, len(sorted_vals)) - 1]
+
+
+def threshold_audit(rows: list[dict]) -> dict:
+    """저장 이력에서 문턱이 **실제로** 어떻게 발화했나 — 값으로(#12·#51).
+
+    {n(판정 세션), strong_share, weak_share, neutral_share(0~1), mean_pct(평균
+    돌파 비율 %), expected_lo/hi(밴드 통계 **추정** 종목수 — 최근 분모 기준, 측정 아님),
+    p20, p80(5일선 이력 nearest-rank 백분위), reason}. 판정 0세션이면 n=0 과
+    사유만 — ✅ 를 찍지 않는다(#54). 이력이 `_MIN_HISTORY` 미만이면 값은 내되
+    `reason` 이 '이력 부족' 을 말한다(#41 여유로 사실을 덮지 않는다)."""
+    rows = list(rows or [])
+    a5 = avg5_series(rows)
+    n = 0
+    hits = {"strong": 0, "neutral": 0, "weak": 0}
+    pcts: list[float] = []
+    vals: list[float] = []
+    for r, v in zip(rows, a5):
+        c, sc = (r or {}).get("count"), (r or {}).get("scanned")
+        if v is None:
+            continue
+        lv, _ = level_of(v, sc)
+        if lv is None:
+            continue
+        n += 1
+        hits[lv] += 1
+        vals.append(v)
+        # 평균 돌파 비율도 **같은 판정 세션**에서만 — 한 줄에 다른 모집단 둘을
+        # 나란히 찍지 않는다(#45, 독립 리뷰 2026-09-10 #6).
+        try:
+            if c is not None and sc:
+                pcts.append(float(c) / float(sc) * 100.0)
+        except (TypeError, ValueError):
+            pass
+    out = {"n": n, "reason": ""}
+    if n == 0:
+        out["reason"] = "판정 가능한 세션 0 — 대조 불가"
+        return out
+    for k in hits:
+        out[f"{k}_share"] = hits[k] / n
+    out["mean_pct"] = sum(pcts) / len(pcts) if pcts else None
+    last_sc = next(((r or {}).get("scanned") for r in reversed(rows)
+                    if (r or {}).get("scanned")), None)
+    if last_sc:
+        out["expected_lo"] = BAND_OUTSIDE_SHARE[0] * float(last_sc)
+        out["expected_hi"] = BAND_OUTSIDE_SHARE[1] * float(last_sc)
+    sv = sorted(vals)
+    out["p20"], out["p80"] = _nearest_rank(sv, 0.20), _nearest_rank(sv, 0.80)
+    if n < _MIN_HISTORY:
+        out["reason"] = f"이력 부족({n}세션 · {_MIN_HISTORY} 필요) — 비율은 참고만"
+    return out
 
 
 def level_of(value, scanned) -> tuple[str | None, str]:
