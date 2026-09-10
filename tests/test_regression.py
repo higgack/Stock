@@ -14471,9 +14471,10 @@ class TestTradeDashboardAudit20260820:
         assert "trade.scripts.dashboard_audit --notify" in svc
         assert "OnCalendar=*-*-* 08:10:00 Asia/Seoul" in tmr
         aud = open("trade/scripts/dashboard_audit.py", encoding="utf-8").read()
-        # 무음 규율: ❌ 0건이면 notify 경로 자체에 안 들어간다
         assert '"--notify" in argv' in aud
-        assert aud.index("if not bad:") < aud.index('"--notify" in argv')
+        # 무음 규율(❌ 0건·⚠️ 0건이면 notify 를 부르지 않는다)은 2026-09-10 ⑧ 원천 침묵
+        # 추가로 ⚠️ 버킷이 생기며 소스 순서 단언이 거짓이 됐다 — 행동으로 다시 쓴다(#222):
+        # `TestTradeSourceSilence20260910.test_main_notifies_on_warnings_alone_with_rc_zero`.
 
     def test_sibling_staleness_pure_function(self):
         """③ 형제 페이지 검증이 '존재+비어있지 않음'뿐이라 화석을 못 잡았다
@@ -55781,3 +55782,103 @@ class TestBollingerPercentileThresholds20260910:
         seg = html[i:html.index("③", i)]
         assert "자기 이력 백분위" in seg and "250세션" in seg and "120세션 미만" in seg
         assert "49%" in seg and "--why ⑧" in seg
+
+
+class TestTradeSourceSilence20260910:
+    """사용자 2026-09-10 "나중에 신호가 나오면 알려줘"(나쁜양파 공지 '국내 수출입 데이터
+    9월 1일부터 사라집니다'). 기존 감사 ②·⑥·⑦ 은 전부 우리 쪽(재생성·수집·채널)이라 원천이
+    새 달을 안 내거나 한 소스만 카드가 끊기면 셋을 다 통과했다(#52). ⑧ 이 잠정 기한과
+    소스별 마지막 게시 vs 평소 간격을 재고 ⚠️ 로 알린다(#260 우리가 고칠 것은 없다 —
+    단 사람이 알아야 하는 신호). 값으로 못박는다(#19·#313) · 진단은 읽기 전용(#264)."""
+
+    def test_provisional_expected_follows_customs_release_days(self):
+        from datetime import date
+        from trade.scripts import dashboard_audit as da
+        # 1·11·21일 발표 + 여유 4일: 5일부터 전월 전체, 15일부터 당월 1~10, 25일부터 당월 1~20
+        assert da.provisional_expected(date(2026, 9, 3)) == ("2026-08", "D2", 21)
+        assert da.provisional_expected(date(2026, 9, 5)) == ("2026-08", "FULL", 1)
+        assert da.provisional_expected(date(2026, 9, 15)) == ("2026-09", "D1", 11)
+        assert da.provisional_expected(date(2026, 9, 25)) == ("2026-09", "D2", 21)
+        assert da.provisional_expected(date(2026, 1, 6)) == ("2025-12", "FULL", 1)   # 해 넘김
+
+    def test_provisional_silence_names_the_missing_window(self):
+        from datetime import date
+        from trade.scripts import dashboard_audit as da
+        have = {"exp": [{"ym": "2026-08", "decile": "FULL"}, {"ym": "2026-08", "decile": "D2"}]}
+        assert da.provisional_silence(have, date(2026, 9, 10))[0] is None
+        txt, info = da.provisional_silence(have, date(2026, 9, 16))
+        assert "2026-09 1~10일 창이 아직 없음" in txt and "저장 최신 2026-08 전체" in txt
+        assert "당월 11일" in txt and info["expected"] == ("2026-09", "D1")
+        txt, info = da.provisional_silence({}, date(2026, 9, 16))
+        assert txt is None and "판정 불가" in info["reason"]              # #54
+
+    def test_source_silence_threshold_comes_from_own_cadence(self):
+        from datetime import date, timedelta
+        from trade.scripts import dashboard_audit as da
+        monthly = [date(2026, 5, 10), date(2026, 6, 10), date(2026, 7, 10), date(2026, 8, 10)]
+        assert da.source_silence(monthly, date(2026, 9, 15))[0] is None    # 36일 < 상한 62
+        txt, info = da.source_silence(monthly, date(2026, 11, 1))
+        assert "83일 전" in txt and "상한 62일" in txt and info["median_gap"] == 31.0
+        weekly = [date(2026, 8, 1) + timedelta(days=7 * i) for i in range(5)]
+        # 주간 소스가 30일 조용 — 간격×2=14 지만 최소 45 가 막는다(늘 뜨는 경고 금지 #260)
+        assert da.source_silence(weekly, weekly[-1] + timedelta(days=30))[0] is None
+        assert da.source_silence(weekly, weekly[-1] + timedelta(days=46))[0] is not None
+        assert "판정 불가" in da.source_silence(monthly[:3], date(2026, 9, 1))[1]["reason"]
+        assert da.source_silence([], date(2026, 9, 1))[0] is None
+
+    @staticmethod
+    def _db(path, table, dates):
+        import sqlite3
+        conn = sqlite3.connect(path)
+        conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, posted_at TEXT, x TEXT)")
+        conn.executemany(f"INSERT INTO {table}(posted_at, x) VALUES (?, ?)",
+                         [(f"{d}T05:53:00+00:00", "y") for d in dates])
+        conn.commit(); conn.close()
+
+    def test_audit_section_reads_every_source_read_only(self, tmp_path, monkeypatch, capsys):
+        from datetime import date
+        from types import SimpleNamespace as NS
+        from trade import badonion_sources as bs
+        from trade.scripts import dashboard_audit as da
+        self._db(tmp_path / "store.db", "alerts",
+                 ["2026-05-10", "2026-06-10", "2026-07-10", "2026-08-10"])   # 관세청 BeOn 침묵
+        self._db(tmp_path / "fresh.db", "whatever_table",
+                 ["2026-06-01", "2026-07-01", "2026-08-01", "2026-09-01"])   # 정상
+        monkeypatch.setattr(bs, "SOURCES", (
+            NS(label="정상 소스", db_file="fresh.db"),
+            NS(label="미구성 소스", db_file="nope.db")))
+        bad, warn = da.audit_source_silence(tmp_path, today=date(2026, 11, 1))
+        assert bad == []
+        assert len(warn) == 1 and warn[0].startswith("관세청 BeOn 알림(store.db): ") \
+            and "83일 전" in warn[0], warn
+        out = capsys.readouterr().out
+        assert "✅ 정상 소스: 마지막 게시 2026-09-01" in out
+        assert "미구성 소스: nope.db 없음" in out
+        # 읽기 전용 — 없는 customs.db·nope.db 를 만들지 않는다(#264·#323)
+        assert not (tmp_path / "customs.db").exists() and not (tmp_path / "nope.db").exists()
+        assert "customs.db 없음" in out
+
+    def test_run_audit_full_carries_the_silence_warnings(self, tmp_path, monkeypatch):
+        from trade import badonion_sources as bs
+        from trade.scripts import dashboard_audit as da
+        self._db(tmp_path / "store.db", "alerts",
+                 ["2025-05-10", "2025-06-10", "2025-07-10", "2025-08-10"])
+        monkeypatch.setattr(bs, "SOURCES", ())
+        monkeypatch.setattr(da, "_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(da, "run_audit", lambda: [])
+        bad, warn = da.run_audit_full()
+        assert bad == [] and len(warn) == 1 and "관세청 BeOn" in warn[0]
+
+    def test_main_notifies_on_warnings_alone_with_rc_zero(self, monkeypatch, capsys):
+        from trade.scripts import dashboard_audit as da
+        from trade.scripts import health_check as hc
+        sent = []
+        monkeypatch.setattr(hc, "_notify", lambda msg: sent.append(msg))
+        monkeypatch.setattr(da, "run_audit_full", lambda: ([], ["관세청 BeOn 알림(store.db): 마지막 게시 …"]))
+        assert da.main(["--notify"]) == 0                    # ⚠️ 만이면 결함 아님
+        assert len(sent) == 1 and "❌ 0건 · ⚠️ 1건" in sent[0] and "⚠️ 관세청 BeOn" in sent[0]
+        monkeypatch.setattr(da, "run_audit_full", lambda: ([], []))
+        sent.clear()
+        assert da.main(["--notify"]) == 0 and sent == []      # 무음
+        monkeypatch.setattr(da, "run_audit_full", lambda: (["x"], []))
+        assert da.main(["--notify"]) == 1 and "❌ 1건 · ⚠️ 0건" in sent[-1]
