@@ -22,7 +22,7 @@ import json
 import re
 import sys
 
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -39,14 +39,32 @@ _PAGES = [
 #   stock.naver.com/api/foreign/market/{NAT}/upjong/list  ← CN·HK·JP 가 이걸로 산다
 #   stock.naver.com/api/polling/domestic/index            ← 국내 지수가 이걸로 산다
 #   api.stock.naver.com/marketindex                        ← 매크로가 이걸로 산다
+# v1 VM 실측(2026-09-11)으로 **살아 있는 것 둘**이 확정됐다:
+#   업종  stock.naver.com/api/domestic/market/upjong/list  → list[20]
+#   리서치 m.stock.naver.com/api/research/company           → list[20]
+# 나머지 넷은 400/404 로 죽었다. 여기 목록은 그 실측 결과를 반영한 것이고,
+# v2 는 **이 둘의 전체 모양**(전 키·표본 행)과 형제·페이징을 잰다.
 _CANDIDATES = [
-    ("업종 목록(domestic 미러)", "https://stock.naver.com/api/domestic/market/upjong/list"),
-    ("업종 목록(KOR nation)", "https://stock.naver.com/api/foreign/market/KOR/upjong/list"),
-    ("업종 목록(api 호스트)", "https://api.stock.naver.com/industry/list"),
-    ("업종 목록(m 호스트)", "https://m.stock.naver.com/api/industry/list"),
-    ("리서치(api 호스트)", "https://api.stock.naver.com/research/company"),
-    ("리서치(m 호스트)", "https://m.stock.naver.com/api/research/company"),
+    ("업종 목록", "https://stock.naver.com/api/domestic/market/upjong/list"),
+    ("리서치 종목", "https://m.stock.naver.com/api/research/company"),
 ]
+
+# 형제 후보 — 옛 HTML 경로 이름(company_list/industry_list/invest_list)에서
+# 파생. 살아 있는 `/api/research/company` 와 **같은 자리**만 바꾼 것이라
+# 지어낸 호스트가 아니다. 어느 게 실재하는지는 응답이 말한다(#25·#151).
+_SIBLINGS = [
+    ("리서치 산업", "https://m.stock.naver.com/api/research/industry"),
+    ("리서치 전략", "https://m.stock.naver.com/api/research/invest"),
+    ("리서치 시황", "https://m.stock.naver.com/api/research/market"),
+    ("리서치 경제", "https://m.stock.naver.com/api/research/economy"),
+    ("리서치 채권", "https://m.stock.naver.com/api/research/bond"),
+]
+
+# 업종이 20개만 오는 게 **기본 페이지 크기**인지 전부인지 재야 한다 —
+# 상위/하위 10 랭킹은 **전 업종**을 봐야 맞다. 20개만 보고 순위를 매기면
+# 화면이 조용히 틀린다(#45 총계와 소계가 다른 모집단).
+_PAGING = ["", "?page=1&pageSize=100", "?pageSize=100", "?size=100",
+           "?page=2", "?perPage=100"]
 
 # 업종·리서치 데이터라면 반드시 들어 있을 필드들 — 이름으로 찾지 말고
 # **값이 실제로 있는지**로 본다(#25 '있다' 만 묻는 검사는 눈이 먼다).
@@ -82,6 +100,27 @@ def _sample(text: str, key: str, width: int = 240) -> str:
     return " ".join(text[max(0, i - width // 4): i + width].split())
 
 
+def _get_json(requests, url: str, timeout: int = 10):
+    """(파싱된 JSON, 사유) — 실패는 **갈래를 이름으로** 말한다(#82).
+
+    `None, 사유` 가 실패다. 빈 리스트는 실패가 아니라 '원천이 0건' 이므로
+    구별해야 한다(#54 대조 0건은 통과가 아니지만 오류도 아니다).
+    """
+    try:
+        r = requests.get(url, headers=_H, timeout=timeout)
+    except Exception as exc:                               # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    ct = (r.headers.get("content-type") or "").split(";")[0]
+    if r.status_code != 200:
+        return None, f"HTTP {r.status_code} · {ct or '—'}"
+    if "json" not in ct:
+        return None, f"JSON 아님 · {ct or '—'}"
+    try:
+        return r.json(), ""
+    except Exception as exc:                               # noqa: BLE001
+        return None, f"JSON 파싱 실패: {type(exc).__name__}"
+
+
 def main(argv: list | None = None) -> int:
     import requests
 
@@ -111,32 +150,49 @@ def main(argv: list | None = None) -> int:
             print("   ❌ 인라인엔 값이 없다(껍데기만) — JSON 엔드포인트가 따로 있다")
             print(f"      ↪ 머리 200자: {(pay or html)[:200]}")
 
-    print("\n③ 후보 엔드포인트 실호출 — **이름이 아니라 응답으로** 판정(#25·#151)")
+    print("\n③ 살아 있는 엔드포인트의 **전체 모양** — 키를 자르지 않는다")
+    print("   (v1 은 키를 6개로 잘라 날짜 필드가 '외 N종' 에 숨었다 — #156 재발)")
     for name, url in _CANDIDATES:
-        try:
-            r = requests.get(url, headers=_H, timeout=10)
-        except Exception as exc:                           # noqa: BLE001
-            print(f"   · {name:24s} ❌ {type(exc).__name__}")
+        obj, note = _get_json(requests, url)
+        if obj is None:
+            print(f"   · {name}: ❌ {note}")
             continue
-        ct = (r.headers.get("content-type") or "").split(";")[0]
-        note = ""
-        if r.status_code == 200 and "json" in ct:
-            try:
-                obj = r.json()
-                if isinstance(obj, list):
-                    note = (f"list[{len(obj)}] 첫 키="
-                            f"{sorted(obj[0])[:6] if obj and isinstance(obj[0], dict) else '—'}")
-                elif isinstance(obj, dict):
-                    note = f"dict 키={sorted(obj)[:6]}"
-                rc = 0
-            except Exception:                              # noqa: BLE001
-                note = "JSON 파싱 실패"
-        mark = "✅" if (r.status_code == 200 and "json" in ct) else "❌"
-        print(f"   · {name:24s} {mark} HTTP {r.status_code} · {ct or '—'} · {note}")
+        rc = 0
+        row = obj[0] if isinstance(obj, list) and obj else obj
+        n = len(obj) if isinstance(obj, list) else 1
+        print(f"   · {name}: ✅ {n}행")
+        if isinstance(row, dict):
+            print(f"     전 키({len(row)}개): {sorted(row)}")
+            print(f"     표본 행: {json.dumps(row, ensure_ascii=False)[:600]}")
+
+    print("\n④ 업종이 20개뿐인가 **페이지 크기**인가 — 랭킹은 전 업종을 봐야 맞다")
+    base = _CANDIDATES[0][1]
+    for q in _PAGING:
+        obj, note = _get_json(requests, base + q)
+        label = q or "(무인자)"
+        if obj is None:                       # 실패는 사유만 — 행수 자리에 섞지 않는다
+            print(f"   · {label:24s} ❌ {note[:80]}")
+            continue
+        if not isinstance(obj, list):
+            print(f"   · {label:24s} ⚠️ 리스트가 아님({type(obj).__name__})")
+            continue
+        first = (obj[0].get("name") if obj and isinstance(obj[0], dict) else "")
+        print(f"   · {label:24s} → {len(obj):3d}행  첫 행={first!r}")
+
+    print("\n⑤ 리서치 형제 — 옛 company/industry/invest 세 목록에 대응하는 자리")
+    for name, url in _SIBLINGS:
+        obj, note = _get_json(requests, url)
+        if obj is None:
+            print(f"   · {name:12s} ❌ {note}")
+            continue
+        row = obj[0] if isinstance(obj, list) and obj else obj
+        n = len(obj) if isinstance(obj, list) else 1
+        keys = sorted(row) if isinstance(row, dict) else "—"
+        print(f"   · {name:12s} ✅ {n}행 · 키={keys}")
 
     if rc:
-        print("\n④ ❌ 인라인도 후보도 못 찾았다 — 브라우저 DevTools Network 탭에서")
-        print("   업종 페이지가 실제로 부르는 XHR URL 을 하나만 알려주세요(추측 금지).")
+        print("\n⑥ ❌ 살아 있는 엔드포인트를 못 찾았다 — 브라우저 DevTools Network")
+        print("   탭에서 그 페이지가 실제로 부르는 XHR URL 을 알려주세요(추측 금지).")
     return rc
 
 
