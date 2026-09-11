@@ -131,9 +131,11 @@ def _naver_research() -> tuple[bool, str]:
     업종 위젯과 짝이라 점검이 없으면 둘이 같이 비어도 하나만 말한다(#24) —
     2026-09-11 에 실제로 그랬다. 경로는 위젯과 **같은 것**이어야 한다(#35).
     """
-    from bot.naver_research_client import _RESEARCH_API
+    from bot.naver_research_client import (_RESEARCH_API,
+                                            _RESEARCH_JSON_HEADERS)
     try:
-        ok, data, dt = _nv_api(f"{_RESEARCH_API}/company")
+        ok, data, dt = _nv_api(f"{_RESEARCH_API}/company",
+                               headers=dict(_RESEARCH_JSON_HEADERS))
         if not ok:
             return False, f"{data} ({dt:.0f}ms)"
         n = len(data) if isinstance(data, list) else 0
@@ -163,8 +165,15 @@ def _naver_theme_html() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
-def _nv_api(url: str) -> tuple[bool, object, float]:
-    return _naver_get(url, headers={
+def _nv_api(url: str, headers: dict | None = None) -> tuple[bool, object, float]:
+    """네이버 JSON API 점검 GET. `headers` 를 주면 그것으로 보낸다.
+
+    ⚠️ **경로가 같은 것과 요청이 같은 것은 다르다**(독립 리뷰 2026-09-11 M6):
+    m.stock 리서치 API 는 제품이 모바일 Referer·크롬 UA 로 부르는데 점검만
+    데스크톱 기본값으로 물으면, Referer 를 보는 원천에서 매일 거짓 ❌(또는
+    반대로 거짓 ✅)가 난다. 감사는 화면이 쓰는 **그 요청**을 태운다(#35).
+    """
+    return _naver_get(url, headers=headers or {
         "User-Agent": "Mozilla/5.0", "Accept": "application/json",
         "Referer": "https://stock.naver.com/"})
 
@@ -281,7 +290,10 @@ def format_report(res: dict) -> str:
         lines.append(
             f"ℹ️ 네이버 경로별: finance.naver.com(HTML) {f_ok}/{len(_fin)} · "
             f"stock.naver.com(API) {a_ok}/{len(_api)}"
-            + (" — HTML 경로만 막힘(테마 시세·상한가·업종맵 영향 · 업종 등락·"
+            # ⚠️ 업종맵(`sise_group.naver`)은 여기서 **재지 않는다** — 아래
+            # HTML 행은 테마 페이지를 친다. 안 재는 기능을 영향으로 적으면
+            # 그 줄이 매일 거짓말한다(#55·#165, 독립 리뷰 2026-09-11 M5).
+            + (" — HTML 경로만 막힘(테마 시세·상한가 영향 · 업종 등락·"
                "리서치 액션은 JSON 이라 무관)"
                if f_ok == 0 and a_ok > 0 else ""))
     fi_ok = ck.get("yfinance fast_info", (True,))[0]

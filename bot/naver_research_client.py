@@ -74,17 +74,40 @@ def last_fail_reason(kind: str) -> str:
 _PAGE_CAP = 20          # 실측(v2): 세 목록 모두 한 응답에 20행. 페이징 미측정.
 
 
-def window_note(kind: str, got: int, kept: int, days_back: int) -> str:
-    """받은 행이 **원천 한 쪽 상한**에 닿았고 그게 전부 창 안이면 그 사실(순수).
+def window_note(raw_n: int, parsed: int, kept: int, days_back: int) -> str:
+    """원천이 **한 쪽 상한**만큼 줬을 때 화면이 값과 같이 말할 사실(순수).
 
-    창을 다 못 채웠을 수 있다는 뜻이지 실패가 아니다 — 그래서 값과 **같이**
-    화면에 실린다(#43). 페이징이 되는지는 아직 안 쟀다(#165 단정 금지):
-    `naver_spa_probe ⑥` 이 재고, 되면 그때 이어받기를 배선한다.
+    두 가지를 말한다 — 창을 다 못 채웠을 수 있다는 것과, 형식이 달라 **우리가
+    못 읽은 행**이 있다는 것. 둘 다 실패가 아니라 값과 같이 가는 사실이다(#43).
+    페이징이 되는지는 아직 안 쟀다(#165 단정 금지): `naver_spa_probe ⑥` 이
+    재고, 되면 그때 이어받기를 배선한다.
+
+    ⚠️ `raw_n` 은 **원천이 준 행 수**여야 한다 — 파싱 뒤 수를 넘기면 못 읽은
+    행 하나가 `raw_n` 을 상한 밑으로 내려 **경고가 통째로 꺼진다**(독립 리뷰
+    2026-09-11 M1 실측: 20행 중 id 없는 1행 → 19행을 30일치인 양 조용히 그림).
+    즉 목록을 짧게 만드는 바로 그 입력이 '짧다' 는 경고를 끄고 있었다.
+    ⚠️ `kept < parsed`(읽은 행 일부가 창 밖)면 창은 이미 다 덮인 것이므로
+    절단을 말하지 않는다 — 늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260).
     """
-    if got < _PAGE_CAP or kept < got:
-        return ""
-    return (f"원천이 한 번에 {got}건만 줍니다 — {days_back}일 창을 다 못 채웠을 "
-            "수 있습니다(더 오래된 건 누락 가능)")
+    if raw_n < _PAGE_CAP:
+        return ""                      # 상한에 안 닿았다 = 원천에 그게 전부다
+    bits = []
+    if kept >= parsed:
+        bits.append(f"원천이 한 번에 {raw_n}건만 줍니다 — {days_back}일 창을 "
+                    "다 못 채웠을 수 있습니다(더 오래된 건 누락 가능)")
+    if raw_n > parsed:                 # 계산해 둔 것을 화면까지(#123 계열)
+        bits.append(f"형식이 달라 못 읽은 {raw_n - parsed}행은 뺐습니다")
+    return " · ".join(bits)
+
+
+def cached_window_note(n: int, days_back: int) -> str:
+    """캐시에 **저장된 행 수**만 아는 자리의 사실 — 원천 원시 수는 모른다.
+
+    저장된 것은 파싱·창 필터를 통과한 행이라 `raw_n` 을 못 잰다. 그래서 상한에
+    닿았는지만 보고(그 이상은 단정하지 않는다, #165) 같은 문구를 만든다 —
+    **두 캐시 층**(이 모듈 12h · `market_overview` 10분)이 같은 함수를 쓴다(#38).
+    """
+    return window_note(n, n, n, days_back)
 
 
 def last_window_note(kind: str) -> str:
@@ -366,9 +389,19 @@ def _abs_url(url: str) -> str:
 
     빈 문자열이면 호출부가 옛 `*_read.naver?nid=` 조립본으로 떨어진다 —
     죽은 주소일 수 있지만 **우리 호스트로 해석되는 상대 경로보다는 낫다**.
+
+    ⚠️ `u[:8]` 슬라이싱은 `"http://"`(호스트 없음)·`"https:/host/x"`(슬래시
+    하나)를 통과시켰다 — 앞엣것은 화면에 **죽은 링크**를 만든다(리뷰 L1).
+    모양을 손으로 재지 말고 파서에 맡길 것(#26·#155).
     """
+    from urllib.parse import urlparse
+
     u = (url or "").strip()
-    return u if u[:8].lower().startswith(("http://", "https:/")) else ""
+    try:
+        parts = urlparse(u)
+    except ValueError:                 # 포트 자리에 글자 등 — 주소가 아니다
+        return ""
+    return u if parts.scheme in ("http", "https") and parts.netloc else ""
 
 
 def research_rows_from_json(rows: object, kind: str) -> list[dict]:
@@ -430,20 +463,24 @@ def research_rows_from_json(rows: object, kind: str) -> list[dict]:
     return out
 
 
-def fetch_research_json(kind: str) -> tuple[list[dict], str]:
-    """(행, 실패 사유) — 한 목록을 JSON 으로 받는다. 빈 리스트는 실패가 아니다."""
+def fetch_research_json(kind: str) -> tuple[list[dict], str, int]:
+    """(행, 실패 사유, **원천이 준 행 수**) — 한 목록을 JSON 으로 받는다.
+
+    빈 리스트는 실패가 아니다(#54). 세 번째 값이 필요한 이유는 `window_note`
+    독스트링에 있다 — 파싱 뒤 수로 상한을 재면 못 읽은 행 하나가 경고를 끈다.
+    """
     if kind not in _RESEARCH_KINDS:
-        return [], f"모르는 목록: {kind}"
+        return [], f"모르는 목록: {kind}", 0
     raw, why = _get2_json(f"{_RESEARCH_API}/{kind}")
     if raw is None:
-        return [], why
+        return [], why, 0
     if not isinstance(raw, list):      # 목록이 아니면 계약 변경 — 0건과 다르다
-        return [], _nd.shape_reason(f"{_RESEARCH_KINDS[kind]} 리서치 목록", raw)
+        return [], _nd.shape_reason(f"{_RESEARCH_KINDS[kind]} 리서치 목록", raw), 0
     rows = research_rows_from_json(raw, kind)
     if raw and not rows:               # 행은 왔는데 한 건도 못 읽음 = 구조 변경
         return [], _nd.parse_reason(f"{_RESEARCH_KINDS[kind]} 리서치 행", len(raw),
-                                 unit="행")
-    return rows, ""
+                                 unit="행"), len(raw)
+    return rows, "", len(raw)
 
 
 _RESEARCH_JSON_HEADERS = dict(_HEADERS, **{
@@ -486,8 +523,7 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
                 # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
                 # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
                 # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
-                _WINDOW_NOTE["market"] = window_note(
-                    "market", len(cached or []), len(cached or []), days_back)
+                _WINDOW_NOTE["market"] = cached_window_note(len(cached or []), days_back)
                 return cached or []
         except Exception as exc:
             log.warning("naver_research: market cache read failed: %s", exc)
@@ -505,7 +541,7 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
     # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
     # 표시한다(#52·#43·#45).
-    j_rows, why = fetch_research_json("company")
+    j_rows, why, raw_n = fetch_research_json("company")
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
     for r in j_rows:
         if r.get("date") and r["date"] < cut:
@@ -516,7 +552,7 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         rows.append(r)
     # ⚠️ 창 절단은 **실패가 아니다** — 실패 칸(`why`)에 넣으면 행이 하나라도
     # 오는 순간 아래에서 `""` 로 덮여 화면이 영영 모른다(독립 리뷰 H1).
-    _WINDOW_NOTE["market"] = window_note("market", len(j_rows), len(rows), days_back)
+    _WINDOW_NOTE["market"] = window_note(raw_n, len(j_rows), len(rows), days_back)
 
     rows = rows[:limit]
     if not rows:
@@ -526,8 +562,12 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         log.info("naver_research: no recent market reports (%d-day window) — 캐시 안 함",
                  days_back)
         _LAST_MARKET_FAIL["reason"] = why
+        # 이번 실행은 상세를 한 건도 안 걸었다 — 지난 실행의 수율 사유를 남기면
+        # 화면이 **하지도 않은 상세 수집**을 두고 경고한다(리뷰 L3 · #165).
+        _LAST_MARKET_FAIL["detail"] = ""
         return []
     _LAST_MARKET_FAIL["reason"] = ""
+    _LAST_MARKET_FAIL["detail"] = ""      # 아래 블록이 이번 실행 값으로 채운다
 
     if fetch_detail:
         detail_map: dict[str, tuple[Optional[float], str]] = {}
@@ -604,8 +644,7 @@ def fetch_recent_research_industry(limit: int = 80,
                 # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
                 # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
                 # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
-                _WINDOW_NOTE["industry"] = window_note(
-                    "industry", len(cached or []), len(cached or []), days_back)
+                _WINDOW_NOTE["industry"] = cached_window_note(len(cached or []), days_back)
                 return cached or []
         except Exception as exc:
             log.warning("naver_research: industry cache read failed: %s", exc)
@@ -621,7 +660,7 @@ def fetch_recent_research_industry(limit: int = 80,
     # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
     # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
     # 표시한다(#52·#43·#45).
-    j_rows, why = fetch_research_json("industry")
+    j_rows, why, raw_n = fetch_research_json("industry")
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
     for r in j_rows:
         if r.get("date") and r["date"] < cut:
@@ -633,7 +672,7 @@ def fetch_recent_research_industry(limit: int = 80,
     # 사유를 **계산만 하고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
     _LAST_MARKET_FAIL["industry"] = why or ""
     # 창 절단은 실패가 아니라 **값과 같이** 말할 사실이다(독립 리뷰 H1).
-    _WINDOW_NOTE["industry"] = window_note("industry", len(j_rows), len(rows), days_back)
+    _WINDOW_NOTE["industry"] = window_note(raw_n, len(j_rows), len(rows), days_back)
 
     rows = rows[:limit]
     out = [{
@@ -682,8 +721,7 @@ def fetch_recent_research_strategy(limit: int = 80,
                 # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
                 # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
                 # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
-                _WINDOW_NOTE["strategy"] = window_note(
-                    "strategy", len(cached or []), len(cached or []), days_back)
+                _WINDOW_NOTE["strategy"] = cached_window_note(len(cached or []), days_back)
                 return cached or []
         except Exception as exc:
             log.warning("naver_research: strategy cache read failed: %s", exc)
@@ -699,7 +737,7 @@ def fetch_recent_research_strategy(limit: int = 80,
     # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
     # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
     # 표시한다(#52·#43·#45).
-    j_rows, why = fetch_research_json("invest")
+    j_rows, why, raw_n = fetch_research_json("invest")
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
     for r in j_rows:
         if r.get("date") and r["date"] < cut:
@@ -711,7 +749,7 @@ def fetch_recent_research_strategy(limit: int = 80,
     # 사유를 **계산만 하고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
     _LAST_MARKET_FAIL["strategy"] = why or ""
     # 창 절단은 실패가 아니라 **값과 같이** 말할 사실이다(독립 리뷰 H1).
-    _WINDOW_NOTE["strategy"] = window_note("strategy", len(j_rows), len(rows), days_back)
+    _WINDOW_NOTE["strategy"] = window_note(raw_n, len(j_rows), len(rows), days_back)
 
     rows = rows[:limit]
     out = [{
@@ -844,12 +882,20 @@ def check() -> int:
     print(f"① 인터프리터: {sys.executable}")
     rc, empty, company_rows = 0, [], []
     for kind, label in _RESEARCH_KINDS.items():
-        rows, why = fetch_research_json(kind)
+        rows, why, raw_n = fetch_research_json(kind)
         if kind == "company":
             company_rows = rows      # ④ 가 다시 묻지 않게(#61·#160 한 번만)
         if rows:
             newest = max((r.get("date") or "") for r in rows)
-            print(f"② {label}({kind}): ✅ {len(rows)}건 · 최신 {newest}")
+            # 버린 행을 안 세면 `✅ 19건` 이 정상으로 읽힌다 — 원천이 한 목록
+            # 에서만 키를 바꾸면 **부분 유실**이 조용하다(리뷰 2026-09-11 M2:
+            # `_LAST_DROPPED` 가 write-only 였다, #123·#129·#189·#228 계열).
+            drop = _LAST_DROPPED.get(kind) or {}
+            n_drop = sum(drop.values())
+            tail = (f" · ⚠️ 원천 {raw_n}행 중 {n_drop}행 버림"
+                    f"(날짜 {drop.get('date', 0)}·제목 {drop.get('title', 0)}"
+                    f"·id {drop.get('nid', 0)})" if n_drop else "")
+            print(f"② {label}({kind}): ✅ {len(rows)}건 · 최신 {newest}{tail}")
             continue
         if why:                        # 정지·HTTP·구조변경·계약변경 = 우리가 볼 것
             print(f"② {label}({kind}): ❌ {why}")

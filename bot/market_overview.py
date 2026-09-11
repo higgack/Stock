@@ -1282,6 +1282,19 @@ def _newest_cached_rows(cache_dir, prefix: str,
     return None, None
 
 
+def _research_cache_note(key: str, rows: list, days_back: int) -> None:
+    """바깥 10분 캐시에 걸린 요청도 **창 절단 사실은 말해야** 한다.
+
+    안쪽(12h)만 고쳤더니 배포·watchdog 재시작이 마지막 수집 10분 안에 나면
+    세 탭이 20행을 30일치인 양 **아무 표시 없이** 그렸다(독립 리뷰 2026-09-11
+    H1 실측 — `_RESEARCH_NOTE[kind]` 가 `{}` 로 남는다). 규칙이 바뀌면 **형제
+    캐시 층**을 즉시 grep 할 것(#38·#147). 문구는 단일 출처에서 만든다.
+    """
+    from bot.naver_research_client import cached_window_note
+    _RESEARCH_NOTE[key] = {"reason": "", "stale": False,
+                           "window": cached_window_note(len(rows or []), days_back)}
+
+
 def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
     """Fetch latest KR 종목(기업) 리서치 리포트 — 한 달치(Naver Finance).
 
@@ -1296,7 +1309,9 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
-                return json.loads(cache_file.read_text())
+                _cached = json.loads(cache_file.read_text())
+                _research_cache_note("kr", _cached, 30)
+                return _cached
         except Exception:
             pass
 
@@ -1346,7 +1361,9 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
-                return json.loads(cache_file.read_text())
+                _cached = json.loads(cache_file.read_text())
+                _research_cache_note("kr_industry", _cached, 30)
+                return _cached
         except Exception:
             pass
 
@@ -1386,7 +1403,9 @@ def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
-                return json.loads(cache_file.read_text())
+                _cached = json.loads(cache_file.read_text())
+                _research_cache_note("kr_strategy", _cached, 30)
+                return _cached
         except Exception:
             pass
 
