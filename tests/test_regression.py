@@ -56406,3 +56406,83 @@ class TestNaverWidgetTimestamps20260911:
         monkeypatch.setattr(nrc, "_parse_strategy_list_page", lambda h, c: [{"nid": "3"}])
         assert nrc.main(["--check"]) == 0
         assert "세 목록 모두 파싱됨" in capsys.readouterr().out
+
+
+class TestNoOutboundHttpInTests20260911:
+    """`make test` 한 번이 **409건**을 22개 호스트로 내보내고 있었다(2026-09-11 실측:
+    stock.naver.com 84 · sec.gov 70 · finance.naver.com 49 · openapi.koreainvestment
+    **인증 토큰** 15 …). 개별 테스트가 스텁을 빠뜨리면 조용히 진짜 원천을 치고, 렌더가
+    띄운 daemon 스레드는 mock 이 풀린 뒤까지 살아 친다(#312). 남의 레이트리밋을 태우고
+    과금 경로를 밟고 운영 캐시를 오염시킨다(#30). `tests/conftest.py` 가 한 번에
+    막는다(#24 목록형 방어는 새 테스트를 못 잡는다)."""
+
+    @staticmethod
+    def _conftest():
+        """**이미 로드된 그 모듈**을 집는다 — 경로로 새로 import 하면 `_BLOCKED` 가
+        딴 리스트라 기록 검사가 아무것도 안 잰다(#35 화면이 쓰는 그 경로).
+        모듈 이름(`tests.conftest`)은 rootdir·importmode 에 따라 갈리므로 파일로 찾는다."""
+        import sys
+        want = str(pathlib.Path(__file__).resolve().with_name("conftest.py"))
+        for mod in list(sys.modules.values()):
+            f = getattr(mod, "__file__", None)
+            if f and str(pathlib.Path(f).resolve()) == want:
+                return mod
+        raise AssertionError("tests/conftest.py 가 sys.modules 에 없다 — 차단이 안 걸렸다")
+
+    def test_both_transports_are_blocked(self):
+        """requests 만 막으면 yfinance 1.6(curl_cffi)이 샌다 — 무엇을 막았는지 값으로."""
+        _cf = self._conftest()
+        assert "requests" in _cf._INSTALLED
+        try:
+            import curl_cffi  # noqa: F401
+        except Exception:
+            pytest.skip("curl_cffi 미설치 — 이 환경엔 막을 계층이 하나")
+        assert "curl_cffi" in _cf._INSTALLED, _cf._INSTALLED
+
+    def test_a_real_request_raises_the_same_type_the_source_failure_does(self):
+        """던지는 예외가 **원천 실패와 같은 타입**이어야 3,786개 동작이 안 바뀐다 —
+        새 타입이면 `except requests.RequestException` 만 잡는 호출부가 통째로 터진다."""
+        import requests
+        with pytest.raises(requests.exceptions.ConnectionError) as ei:
+            requests.get("https://finance.naver.com/should-never-go-out", timeout=1)
+        assert "테스트가 바깥 원천을 쳤습니다" in str(ei.value)
+        assert "finance.naver.com/should-never-go-out" in str(ei.value)
+
+    def test_the_block_survives_a_teardown_and_a_background_thread(self, monkeypatch):
+        """세션 스코프여야 한다 — 테스트별 monkeypatch 면 daemon 스레드가 teardown
+        **뒤에** 진짜 원천을 친다(실측: 164건 → 1건이 그 경로로 남았다)."""
+        import threading
+        import requests
+        # 개별 테스트가 자기 스텁을 걸었다 풀어도 **우리 차단**으로 돌아온다
+        monkeypatch.setattr(requests.sessions.Session, "request",
+                            lambda self, *a, **k: "stub")
+        monkeypatch.undo()
+        seen: list = []
+
+        def _bg():
+            try:
+                requests.get("https://stock.naver.com/late", timeout=1)
+                seen.append("LEAKED")
+            except Exception as exc:                          # noqa: BLE001
+                seen.append(type(exc).__name__)
+
+        t = threading.Thread(target=_bg, daemon=True)
+        t.start()
+        t.join(10)
+        assert seen == ["ConnectionError"], seen
+
+    def test_blocked_urls_are_recorded_for_diagnosis(self):
+        """조용히 막으면 어느 테스트가 스텁을 빠뜨렸는지 알 수 없다(#43·#82).
+
+        그리고 **쿼리스트링은 떼야 한다** — 예외 문구와 이 목록은 로그·CI 출력에
+        그대로 실리는데 키가 쿼리로 가는 원천이 여럿이다(§Secrets 키값 echo 금지).
+        키가 없는 URL 로 재면 이 계약이 아무것도 안 잰다(#91c)."""
+        import requests
+        _cf = self._conftest()
+        before = len(_cf._BLOCKED)
+        with pytest.raises(requests.exceptions.ConnectionError) as ei:
+            requests.get("https://www.sec.gov/marker?serviceKey=NOT-A-REAL-KEY", timeout=1)
+        assert len(_cf._BLOCKED) == before + 1
+        assert _cf._BLOCKED[-1] == "https://www.sec.gov/marker"
+        assert "NOT-A-REAL-KEY" not in _cf._BLOCKED[-1]
+        assert "NOT-A-REAL-KEY" not in str(ei.value)
