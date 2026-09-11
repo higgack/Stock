@@ -46543,10 +46543,14 @@ class TestNaverSectorCheckTellsTheBranch20260905:
         """2026-09-11: `--fetch` 가 테마뿐 아니라 **업종 TOP** 도 실측한다 — 스텁이
         없으면 테스트가 진짜 네이버를 친다(#312). 옛 계약(rc 는 테마만 본다)은
         그대로 두되 재료를 채워 준다(#222)."""
+        import bot.finviz_client as fc
         import bot.naver_sector_client as nsc
         monkeypatch.setattr(nsc, "_get2", lambda *a, **k: ("<html/>", ""))
         monkeypatch.setattr(nsc, "parse_groups",
                             lambda html: [{"name": n, "pct": p} for n, p in groups])
+        # `_fresh` 가 `Path.exists` 를 전역 True 로 만들어 NAVER_PAUSE 마커까지
+        # '있다' 가 된다 — 정지 갈래는 전용 테스트가 본다(2026-09-11).
+        monkeypatch.setattr(fc, "naver_paused", lambda: False)
 
     def test_fetch_reports_zero_as_failure(self, monkeypatch):
         """대조 0건은 통과가 아니라 실패다(#54)."""
@@ -56041,6 +56045,9 @@ class TestNaverWidgetSilence20260911:
                 nd.parse_reason("업종 행", 1)}
         assert len(seen) == 6
         assert nd.stale_label(60 * 90) == "90분 전" and nd.stale_label(60 * 180) == "3시간 전"
+        # '168시간 전' 은 사람이 못 읽는다 — 이틀을 넘으면 일 단위(독립 리뷰 2026-09-11)
+        assert nd.stale_label(3600 * 47) == "47시간 전"
+        assert nd.stale_label(3600 * 49) == "2일 전" and nd.stale_label(3600 * 24 * 7) == "7일 전"
         assert nd.stale_label(None) == ""              # 못 재면 말하지 않는다(#165)
 
     @staticmethod
@@ -56138,6 +56145,87 @@ class TestNaverWidgetSilence20260911:
                             lambda *a, **k: self._resp(200, "<html>x</html>"))
         assert nrc.fetch_recent_research_market(limit=5, fetch_detail=False) == []
         assert "구조 변경" in nrc.last_market_fail_reason()
+
+    def test_fallback_never_borrows_a_sibling_cache(self, tmp_path, monkeypatch):
+        """`kr_*.json` 글롭이 형제 캐시(`kr_industry_`·`kr_strategy_`)까지 물어, 종목
+        탭에 산업 행이 '저장분' 라벨로 실렸다(빈 티커 링크 — 독립 리뷰 2026-09-11 실측,
+        #45). 그리고 저장분을 무제한으로 믿으면 한 달 막힌 날 한 달 전 목록을 낸다(#163)."""
+        import json as _json, time
+        import bot.market_overview as mo
+        d = tmp_path / "research"
+        d.mkdir()
+        (d / "kr_industry_2026-09-10.json").write_text(_json.dumps([{"category": "반도체"}]))
+        (d / "kr_strategy_2026-09-10.json").write_text(_json.dumps([{"category": "전략"}]))
+        assert mo._newest_cached_rows(d, "kr_") == (None, None)     # 형제를 안 빌린다
+        (d / "kr_2026-09-09.json").write_text(_json.dumps([{"code": "005930"}]))
+        rows, age = mo._newest_cached_rows(d, "kr_")
+        assert rows[0]["code"] == "005930" and age is not None
+        # 상한 밖이면 빈 화면 + 사유가 낫다(낡은 목록을 '저장분' 으로 내보내지 않는다)
+        import os
+        old_t = time.time() - (mo._RESEARCH_STALE_MAX_SEC + 3600)
+        os.utime(d / "kr_2026-09-09.json", (old_t, old_t))
+        assert mo._newest_cached_rows(d, "kr_") == (None, None)
+        assert mo._RESEARCH_STALE_MAX_SEC <= 14 * 24 * 3600        # 상한은 있어야 한다
+
+    def test_all_flat_groups_are_not_cached_as_success(self, tmp_path, monkeypatch):
+        """업종은 잡혔는데 등락률이 전부 0 이면 등락률을 못 읽은 것이다. 성공으로
+        캐시하면 `_session_fresh` 가 장 밖 내내 fresh 로 보아 **다음 개장까지 빈
+        위젯이 재시도 없이** 서빙된다 — 이 커밋이 고치려던 그 증상(독립 리뷰)."""
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_get2", lambda *a, **k: ("<html/>", ""))
+        monkeypatch.setattr(nsc, "parse_groups",
+                            lambda html: [{"name": "반도체", "pct": 0.0},
+                                          {"name": "은행", "pct": 0.0}])
+        out = nsc.fetch_sector_movers()
+        assert out["up"] == [] and "구조 변경" in out["reason"]
+        assert not (tmp_path / "upjong.json").exists(), "빈 결과를 굳히면 안 된다"
+
+    def test_pause_skips_the_live_fetch_instead_of_calling_it_a_failure(
+            self, tmp_path, monkeypatch, capsys):
+        """정지 중엔 수집이 **설계상** 안 된다 — '도달 실패' 로 찍으면 운영자가
+        원천·네트워크를 보러 간다(#82·#260, 독립 리뷰 2026-09-11)."""
+        import bot.finviz_client as fc
+        import bot.naver_sector_client as nsc
+        called: list = []
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(fc, "naver_paused", lambda: True)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda *a, **k: called.append("themes") or {"themes": []})
+        monkeypatch.setattr(nsc, "_get2",
+                            lambda *a, **k: called.append("upjong") or (None, "x"))
+        assert nsc.main(["--check", "--fetch"]) == 0
+        out = capsys.readouterr().out
+        assert "정지 중이라 실측을 건너뛴다" in out
+        assert "도달 실패이거나 파싱이 깨졌다" not in out
+        assert called == [], "정지 중인데 원천을 쳤다"
+
+    def test_reason_branch_keeps_the_child_page_links(self):
+        """자식 페이지 링크는 네이버 데이터와 무관하다 — 사유 분기에서 빠뜨리면
+        원천이 막힌 날 입구까지 같이 사라진다(독립 리뷰 2026-09-11)."""
+        import bot.dashboard as d
+        a = d._render_sector_movers({"up": [], "down": [], "reason": "원천이 HTTP 403"})
+        b = d._render_sector_movers({"up": [{"name": "반도체", "pct": 1.5}],
+                                     "down": [], "ts": "09-10 15:30"})
+        for href in ("theme", "kr52", "highlow", "krprepost", "nxt"):
+            assert f'href="{href}"' in a and f'href="{href}"' in b, href
+        assert a.count("<a href=") == b.count("<a href=") == 5
+
+    def test_per_ticker_research_keeps_its_old_pause_behaviour(self, monkeypatch):
+        """정지 게이트를 종목별 `fetch_research` 에까지 새로 달면 분석이 조용히 한경
+        컨센서스로 대체되고 **아카이브에 구워진다**(#18·#43, 독립 리뷰 2026-09-11).
+        게이트는 내가 건드린 **목록 수집**에만 적용한다."""
+        import bot.finviz_client as fc
+        import bot.naver_research_client as nrc
+        hits: list = []
+        monkeypatch.setattr(fc, "naver_paused", lambda: True)
+        monkeypatch.setattr(nrc.requests, "get",
+                            lambda *a, **k: hits.append(a[0]) or self._resp(200, "<html/>"))
+        assert nrc._get("https://finance.naver.com/x") is not None   # 종전대로 나간다
+        assert hits and nrc._get2("https://finance.naver.com/x")[0] is None
+        assert "일시정지" in nrc._get2("https://finance.naver.com/x")[1]
+        assert len(hits) == 1, "정지 중 목록 수집이 원천을 쳤다"
 
     def test_payload_carries_the_note_after_collection_not_before(self):
         """`research_kr_note` 가 수집 **뒤에** 읽히는가 — dict 리터럴 평가 순서에

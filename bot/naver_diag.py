@@ -48,9 +48,13 @@ def parse_reason(what: str, size: int) -> str:
 
 def stale_label(age_sec: float | int | None) -> str:
     """저장분 나이 → '(3시간 전)'. 못 재면 빈 문자열(#165 안 잰 것을 말하지 않는다).
-    형제 위젯(TW 업종, #306)과 같은 규약 — 분/시간 경계 120분."""
+    형제 위젯(TW 업종, #306)과 같은 규약 — 분/시간 경계 120분, 시간/일 경계 48시간
+    (`168시간 전` 은 사람이 못 읽는다 — 독립 리뷰 2026-09-11)."""
     try:
         m = int(float(age_sec) // 60)
     except (TypeError, ValueError):
         return ""
-    return f"{m}분 전" if m < 120 else f"{m // 60}시간 전"
+    if m < 120:
+        return f"{m}분 전"
+    h = m // 60
+    return f"{h}시간 전" if h < 48 else f"{h // 24}일 전"

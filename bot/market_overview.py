@@ -1184,19 +1184,36 @@ def research_note(kind: str = "kr") -> dict:
     return dict(_RESEARCH_NOTE.get(kind) or {})
 
 
-def _newest_cached_rows(cache_dir, prefix: str) -> tuple[list | None, float | None]:
-    """`prefix` 로 시작하는 가장 최근 캐시 파일의 행과 나이(초) — 신선도 무관.
+# 저장분을 믿는 상한 — 이보다 오래되면 안 쓴다. 리서치 목록은 30일 창이라 며칠은
+# 쓸모가 있지만, 무제한이면 원천이 한 달 막힌 날 한 달 전 목록을 '저장분' 으로
+# 내보낸다(#163 낡은 값을 '현재' 로 내보내지 말 것 — 그쪽은 6시간, 여기는 목록의
+# 성격상 7일). 상한을 넘으면 빈 화면 + 사유다(그게 정직하다).
+_RESEARCH_STALE_MAX_SEC = 7 * 24 * 3600
+
+
+def _newest_cached_rows(cache_dir, prefix: str,
+                        max_age_sec: float = _RESEARCH_STALE_MAX_SEC
+                        ) -> tuple[list | None, float | None]:
+    """`prefix` **날짜** 캐시 중 가장 최근 것의 행과 나이(초). 상한 밖이면 (None, None).
 
     옛 판은 오늘 캐시가 10분을 넘기면 재수집만 시도하고, 실패하면 **멀쩡한
     파일을 두고 빈 화면**을 냈다(사용자 2026-09-11 "최근 리서치 액션이 없습니다").
+
+    ⚠️ 글롭은 **날짜 모양까지** 고정한다 — `kr_*.json` 은 형제 캐시
+    `kr_industry_*.json`·`kr_strategy_*.json` 까지 물어, 종목 탭에 산업·전략 행이
+    실렸다(빈 티커 링크·빈 투자의견이 '저장분' 라벨로 나갔다 — 독립 리뷰 2026-09-11
+    실측 · #45 총계와 소계가 다른 모집단을 세면 갈라진다).
     """
     try:
-        files = sorted(Path(cache_dir).glob(f"{prefix}*.json"),
+        files = sorted(Path(cache_dir).glob(f"{prefix}20??-??-??.json"),
                        key=lambda f: f.stat().st_mtime, reverse=True)
         for f in files:
+            age = max(0.0, time.time() - f.stat().st_mtime)
+            if age > max_age_sec:
+                break                      # 정렬돼 있으므로 뒤는 더 오래됐다
             rows = json.loads(f.read_text())
             if rows:
-                return rows, max(0.0, time.time() - f.stat().st_mtime)
+                return rows, age
     except Exception as exc:                                  # noqa: BLE001
         log.warning("research cache fallback failed (%s): %s", prefix, exc)
     return None, None

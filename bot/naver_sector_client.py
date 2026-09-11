@@ -353,6 +353,16 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
                  key=lambda x: x["pct"], reverse=True)[:top_n]
     downs = sorted([s for s in groups if s["pct"] < 0],
                    key=lambda x: x["pct"])[:top_n]
+    if not ups and not downs:
+        # 업종은 잡혔는데 상승·하락이 **둘 다 0** = 등락률을 못 읽은 것(전 업종
+        # 정확히 보합은 실무상 없다). 이걸 성공으로 캐시하면 `_session_fresh` 가
+        # 장 밖 내내 fresh 로 보아 **다음 개장까지 빈 위젯이 재시도 없이** 서빙된다
+        # — 이 커밋이 고치려던 바로 그 증상이다(독립 리뷰 2026-09-11 · #54·#119).
+        prev, age = _cache_read_any("upjong.json")
+        why = _nd.parse_reason(f"업종 {len(groups)}개의 등락률", len(html or ""))
+        if prev and (prev.get("up") or prev.get("down")):
+            return dict(prev, stale=True, stale_min=int((age or 0) // 60), reason=why)
+        return {"up": [], "down": [], "ts": "", "reason": why}
     out = {"up": ups, "down": downs,
            "ts": _now_kst_label()}
     _cache_write("upjong.json", out)
@@ -939,6 +949,15 @@ def check(fetch: bool = False) -> int:
     if not fetch:
         print("③ 실제 수집은 안 했다 — 재려면 `--check --fetch`")
         return rc
+    try:
+        from bot.finviz_client import naver_paused as _np
+        if _np():
+            # 정지 중엔 수집이 **설계상** 안 된다 — 그걸 '도달 실패' 로 찍으면
+            # 운영자가 원천·네트워크를 보러 간다(#82·#260, 독립 리뷰 2026-09-11).
+            print("③ 정지 중이라 실측을 건너뛴다 — /naverpause 로 해제한 뒤 다시 볼 것")
+            return rc
+    except Exception:                                        # noqa: BLE001
+        pass
     t1 = time.time()
     # ⚠️ 여기서 네트워크가 나간다 — `--fetch` 를 태우는 테스트는 반드시 스텁할 것
     # (#312 테스트가 원천을 치면 안 된다). 기본(`--check`)은 조회만이라 안전하다.

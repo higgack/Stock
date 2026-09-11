@@ -117,21 +117,29 @@ def _normalize_code(ticker: str) -> Optional[str]:
     return None
 
 
-def _get2(url: str, **kwargs) -> tuple[Optional[str], str]:
+def _get2(url: str, respect_pause: bool = True, _kw: dict | None = None
+          ) -> tuple[Optional[str], str]:
     """(본문, 실패 사유) — 갈래를 이름으로(#82). 성공이면 사유는 "".
 
     옛 `_get` 은 정지·403·타임아웃·빈본문을 `None` 하나로 뭉쳐, 리서치 탭이
     "최근 리서치 액션이 없습니다" 라고 **거짓말**했다(원천 장애인데 '새 게 없다'
-    로 읽힌다 — 2026-09-11 사용자 지적 · #43·#52)."""
-    try:
-        from bot.finviz_client import naver_paused
-        if naver_paused():
-            return None, _nd.PAUSED
-    except Exception:
-        pass
+    로 읽힌다 — 2026-09-11 사용자 지적 · #43·#52).
+
+    ⚠️ `respect_pause` 는 **목록 수집 전용**이다. 종목별 `fetch_research` 는 이
+    모듈에 원래 정지 게이트가 없었고, 거기에 게이트를 새로 달면 정지 중 분석이
+    조용히 한경 컨센서스로 대체되어 **아카이브에 그대로 구워진다**(사유도 안
+    남는다 — 독립 리뷰 2026-09-11 · #18·#43). 동작을 바꾸려면 그 substitution 을
+    화면이 밝히는 것이 먼저다."""
+    if respect_pause:
+        try:
+            from bot.finviz_client import naver_paused
+            if naver_paused():
+                return None, _nd.PAUSED
+        except Exception:
+            pass
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=_HTTP_TIMEOUT,
-                            **kwargs)
+                            **(_kw or {}))
         resp.encoding = "euc-kr"
         if resp.status_code != 200 or not resp.text:
             log.warning("naver_research: %s -> HTTP %s (%dB)", url,
@@ -145,8 +153,9 @@ def _get2(url: str, **kwargs) -> tuple[Optional[str], str]:
 
 
 def _get(url: str, **kwargs) -> Optional[str]:
-    """본문만 — 사유가 필요한 호출부는 `_get2` 를 쓴다."""
-    return _get2(url, **kwargs)[0]
+    """본문만 — 사유가 필요한 호출부는 `_get2` 를 쓴다. 정지 게이트는 **타지 않는다**
+    (이 모듈의 종전 동작 그대로 — `_get2` 독스트링의 ⚠️ 참조)."""
+    return _get2(url, respect_pause=False, _kw=kwargs)[0]
 
 
 def _cell_texts(row_html: str) -> list[str]:
@@ -379,7 +388,7 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     seen_nid: set[str] = set()
     why = ""
     for page in range(1, max_pages + 1):
-        html, why = _get2(_BASE_URL, params={"page": page})
+        html, why = _get2(_BASE_URL, _kw={"params": {"page": page}})
         if not html:
             break
         page_rows = _parse_market_list_page(html, cutoff)

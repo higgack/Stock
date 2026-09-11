@@ -18217,13 +18217,28 @@ def _render_sector_movers(movers: dict) -> str:
     up = (movers or {}).get("up", [])
     down = (movers or {}).get("down", [])
     why = (movers or {}).get("reason") or ""
+    _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
+    # 자식 페이지 링크는 **네이버 위젯 데이터와 무관**하다 — 사유 분기에서 빠뜨리면
+    # 원천이 막힌 날 업종별 시세·신고저·급등락 입구까지 같이 사라진다(독립 리뷰
+    # 2026-09-11). 헤더는 한 곳에서 만들어 두 분기가 나눠 쓴다(#38).
+    _links = (f'<a href="theme" style="{_lnk}">🏭 업종별 시세(전체)</a>'
+              f'<a href="kr52" style="{_lnk}">📈 신고가·신저가</a>'
+              f'<a href="highlow" style="{_lnk}">🚀 급등·급락</a>'
+              f'<a href="krprepost" style="{_lnk}">🌙 NXT 급등·급락</a>'
+              f'<a href="nxt" style="{_lnk}">📊 NXT 수급</a>')
+
+    def _hd(right: str) -> str:
+        return ('<div class="section-hd" style="display:flex;align-items:baseline;'
+                'gap:6px;flex-wrap:wrap"><h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
+                + _links
+                + f'<span class="ts" style="margin-left:auto">{right}</span></div>')
+
     if not up and not down:
         if not why:
             return ""
-        return (
-            '<div class="section-hd"><h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
-            '<span class="ts" style="margin-left:auto">Naver</span></div>'
-            f'<div class="empty-msg">⚠️ 지금은 표시할 수 없습니다 — {_html.escape(why)}</div>')
+        return (_hd("Naver")
+                + f'<div class="empty-msg">⚠️ 지금은 표시할 수 없습니다 — '
+                  f'{_html.escape(why)}</div>')
 
     def _col(title: str, items: list) -> str:
         rows = []
@@ -18246,20 +18261,10 @@ def _render_sector_movers(movers: dict) -> str:
         _m = (movers or {}).get("stale_min")
         _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
         ts = f'저장분 {ts}{f" ({_ago})" if _ago else ""} ⚠️'
-    _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
-    return (
-        '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
-        '<h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
-        f'<a href="theme" style="{_lnk}">🏭 업종별 시세(전체)</a>'
-        f'<a href="kr52" style="{_lnk}">📈 신고가·신저가</a>'
-        f'<a href="highlow" style="{_lnk}">🚀 급등·급락</a>'
-        f'<a href="krprepost" style="{_lnk}">🌙 NXT 급등·급락</a>'
-        f'<a href="nxt" style="{_lnk}">📊 NXT 수급</a>'
-        f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
-        '<div class="sm-wrap">'
-        + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
-        + '</div>'
-    )
+    return (_hd(f"{ts} · Naver")
+            + '<div class="sm-wrap">'
+            + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
+            + '</div>')
 
 
 def _render_etf_sector_movers(movers: dict, heading: str, links: str = "") -> str:
