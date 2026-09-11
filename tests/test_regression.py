@@ -56660,3 +56660,57 @@ class TestNoOutboundHttpInTests20260911:
         body = src[src.index("def _install_outbound_block"):]
         assert "yield" not in body.split("def _install_socket_backstop")[0], (
             "차단을 fixture 로 만들면 teardown 뒤 스레드가 샌다")
+
+
+class TestNaverSpaProbe20260911:
+    """네이버가 `finance.naver.com` 을 **Next.js SPA** 로 갈아엎어 업종 등락 TOP·
+    리서치 세 목록이 전부 0건이 됐다(2026-09-11 VM 실측: 121,364B 응답에
+    `<table` 0건 · 스타일시트가 `/pc/_next/st…`). 파서를 고칠 문제가 아니라
+    **데이터를 어디서 받나**를 다시 정해야 하는 문제다.
+
+    엔드포인트 이름을 추측해 짜면 죽은 경로를 배포한다(#151) — 프로브는 재기만
+    한다. 그 판정 함수들을 값으로 고정한다(#41 판정은 순수 함수로)."""
+
+    def test_flight_payload_joins_the_chunks(self):
+        """조각 하나만 보면 잘린 JSON 이라 마커가 경계에 걸려 안 잡힌다 —
+        이어 붙인 뒤에 봐야 한다(#64 재는 단위가 틀리면 판정이 기운다)."""
+        from bot.scripts import naver_spa_probe as sp
+        html = (r'<script>self.__next_f.push([1,"{\"industryGro"])</script>'
+                r'<script>self.__next_f.push([1,"upKor\":\"\uc804\uae30\uc804\uc790\"}"])</script>')
+        pay = sp.flight_payload(html)
+        assert "industryGroupKor" in pay, pay      # 경계에 걸린 마커가 붙는다
+        assert "전기전자" in pay
+
+    def test_marker_hits_reports_zero_too(self):
+        """0건도 찍어야 '껍데기만 왔다' 와 '안 봤다' 가 갈린다(#54)."""
+        from bot.scripts import naver_spa_probe as sp
+        hits = dict(sp.marker_hits("아무것도 없는 문자열"))
+        assert hits and set(hits) == set(sp._DATA_MARKERS)
+        assert all(v == 0 for v in hits.values())
+        assert dict(sp.marker_hits('{"fluctuationsRatio": 1.2}'))["fluctuationsRatio"] == 1
+
+    def test_probe_is_read_only_and_prints_its_version(self):
+        """진단이 운영 상태를 바꾸면 자기가 읽을 신호를 오염시킨다(#30·#264·#283).
+        그리고 배너에 버전·인터프리터를 찍어야 배포 전 코드가 돈 걸 새 결과로
+        착각하지 않는다(#21·#132)."""
+        import ast
+        src = pathlib.Path("bot/scripts/naver_spa_probe.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        called = {n.func.attr for n in ast.walk(tree)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        for w in ("post", "put", "delete", "write_text", "write_bytes", "mkdir"):
+            assert w not in called, f"프로브가 쓰기를 한다: {w}"
+        assert "_cache_write" not in src and "_cached(" not in src
+        from bot.scripts import naver_spa_probe as sp
+        assert sp._PROBE_VER >= 1                       # 숫자가 아니라 하한으로(#67)
+        body = src[src.index("def main("):]
+        assert "_PROBE_VER" in body and "sys.executable" in body
+
+    def test_candidates_come_from_hosts_the_repo_already_proved(self):
+        """후보를 지어내면 다음 라운드가 추측으로 시작한다 — 레포가 이미 동작을
+        증명한 호스트에서만 뽑는다(§작업 원칙 선행 사례 먼저)."""
+        from bot.scripts import naver_spa_probe as sp
+        proven = ("stock.naver.com", "api.stock.naver.com", "m.stock.naver.com")
+        for name, url in sp._CANDIDATES:
+            assert any(f"://{h}/" in url for h in proven), f"{name}: {url}"
+        assert len(sp._CANDIDATES) >= 4
