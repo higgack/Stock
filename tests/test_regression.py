@@ -61437,3 +61437,95 @@ class TestResearchDetailConvergence20260912:
             t.join()
         assert not errs, errs
         assert len(set(names)) == len(names), f"tmp 이름이 겹친다: {names}"
+
+
+class TestClaudeMdFold20260912:
+    """사용자 2026-09-12 "오래된 항목을 자동으로 접는다. 레퍼런스로".
+
+    예산 가드(`tests/test_docs_consistency.py`)가 "다음에 또 걸리면 상한을 올리기
+    전에 정책을 물을 것" 이라고 적어 두고 기다리던 그 답이다. 접기는 손으로 하면
+    매번 지는 일이라(#119) 도구로 옮겼고, **다시 쓰지 않는 것**이 그 도구의 전부다
+    — #287 의 사고(압축이 한정어를 떨어뜨려 대체된 규칙이 78일 살아남음)는 사람이
+    요약을 새로 쓸 때 생긴다.
+    """
+
+    _ENTRY = (
+        "77. **머리 문장이다**(2026-01-01 어떤 화면): 증상은 이러했고 원인은 저러했다.\n"
+        "    실측으로 값이 3배였다. 파생값이 밀렸다는 것도 같이 드러났다.\n"
+        "    규칙: 분모를 **화면의 다른 칸에서** 만들 것(#33).\n"
+        "    ⚠️ 단 원천이 값을 직접 주면 그걸 먼저 쓴다 — 자체계산은 그다음이다.\n"
+        "    그리고 그 뒤에 긴 서사가 한참 더 이어졌다. 사용자가 눈으로 보고 물었다.\n"
+        "    같은 실행에서 옆 카드도 같은 값을 쓰고 있었다는 사실이 나왔다.\n"
+        "    진단은 세 라운드가 걸렸다. 첫 라운드는 캐시를 의심했고 그건 반증됐다.\n"
+        "    둘째 라운드는 파서를 의심했는데 원문을 찍어 보니 그것도 아니었다.\n"
+        "    셋째 라운드에서야 두 화면이 다른 저장소를 읽는다는 것이 드러났다.\n"
+        "    그 사이 사용자는 같은 질문을 두 번 했고 화면은 매번 침묵했다.\n"
+    )
+
+    def test_reference_copy_is_the_whole_original(self):
+        """접기 = **옮기기**다. REFERENCE 사본이 전문이 아니면 그건 압축이고,
+        압축은 이 레포에서 78일짜리 사고를 냈다(#287)."""
+        from bot.scripts import claude_md_fold as f
+        new, ref, _save = f.fold_entry("77", self._ENTRY)
+        assert self._ENTRY.strip() in ref, "REFERENCE 사본이 원문 전문이 아니다"
+        assert ref.startswith("### 실수 #77\n"), ref[:40]
+        assert f._POINTER + "77" in new
+
+    def test_every_imperative_clause_survives_verbatim(self):
+        """남기는 문장은 **원문 그대로** — 글자가 달라지면 한정어가 샌 것이다."""
+        from bot.scripts import claude_md_fold as f
+        new, _ref, _ = f.fold_entry("77", self._ENTRY)
+        flat = " ".join(new.split())
+        assert "규칙: 분모를 **화면의 다른 칸에서** 만들 것(#33)." in flat
+        # `단 …` 한정 절도 남는다 — 이게 빠지면 규칙이 실제보다 강해진다(#287)
+        assert "단 원천이 값을 직접 주면 그걸 먼저 쓴다" in flat
+        # 서사는 옮겨졌다(그래서 줄어든다)
+        assert "사용자가 눈으로 보고 물었다" not in flat
+
+    def test_short_entry_is_not_folded(self):
+        """포인터 줄은 공짜가 아니다 — 안 줄면 접지 않는다(#61 비용의 어느 단계)."""
+        from bot.scripts import claude_md_fold as f
+        assert f.fold_entry("9", "9. **짧은 항목이다**(2026-01-01): 한 줄이면 끝난다.\n") is None
+
+    def test_already_folded_entry_is_not_refolded(self):
+        """멱등 — 두 번 접으면 REFERENCE 에 사본이 둘이 된다.
+
+        ⚠️ 픽스처는 **다시 접으면 실제로 줄어드는** 것이어야 한다(#91c). 첫 판은
+        이미 접은 결과(짧다)를 넘겨서, 멱등 가드를 지워도 `MIN_SAVE` 가 대신
+        막아 뮤테이션이 통과했다 — 옆 가드가 대신 만족시키는 그 형태(#138)."""
+        from bot.scripts import claude_md_fold as f
+        already = self._ENTRY.rstrip("\n") + f"\n    {f._POINTER}77\n"
+        assert f.fold_entry("77", already) is None, "접힌 항목을 또 접었다"
+
+    def test_recent_entries_are_left_alone(self):
+        """최근 항목은 서사째로 읽힌다 — 창 밖으로 나간 것만 접는다."""
+        from bot.scripts import claude_md_fold as f
+        sec = "".join(self._ENTRY.replace("77.", f"{n}.", 1) for n in range(50, 60))
+        ents = f.parse_entries(sec)
+        assert len(ents) == 10, ents
+        assert f.due(ents, sec, keep_recent=10) == []
+        assert f.due(ents, sec, keep_recent=3) == [str(n) for n in range(50, 57)]
+
+    def test_wrapped_lines_follow_the_house_width(self):
+        """한글은 두 칸이다 — `len()` 으로 싸면 줄이 파일 관례의 두 배가 된다.
+
+        ⚠️ 폭을 제품의 `_disp` 로 재면 **동어반복**이다(실측: `_disp`→`len` 뮤테이션이
+        통과했다 — 재는 자와 재이는 것이 같이 줄었다). 계약은 '파일 관례 폭에
+        맞는다' 이므로 폭은 **여기서 독립적으로** 센다(#292 tautology 금지)."""
+        import unicodedata
+        from bot.scripts import claude_md_fold as f
+        width = lambda t: sum(2 if unicodedata.east_asian_width(c) in "WF" else 1
+                              for c in t)
+        new, _ref, _ = f.fold_entry("77", self._ENTRY)
+        wide = [ln for ln in new.splitlines() if width(ln) > 80]
+        assert not wide, f"표시폭이 관례를 넘는 줄: {wide}"
+
+    def test_reference_sections_keep_numeric_order(self):
+        """번호 순서로 끼운다 — 뒤에 붙이면 오래된 것이 맨 끝에 쌓여 못 찾는다."""
+        from bot.scripts import claude_md_fold as f
+        base = "## 실수 상세 — CLAUDE.md 에서 접은 서사 (2026-09-06 지시서 감사)\n\n" \
+               "### 실수 #10\n\n본문\n\n### 실수 #30\n\n본문\n"
+        out = f._insert_ref(base, "20", "### 실수 #20\n\n본문\n")
+        import re as _re
+        assert _re.findall(r'### 실수 #(\d+)', out) == ["10", "20", "30"], out
+        assert f._insert_ref(out, "20", "### 실수 #20\n\n다시\n") == out, "멱등이어야"

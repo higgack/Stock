@@ -60,6 +60,18 @@
 |---|---|---|
 | 일일/주간/월간 손실한도, 연속손실 쿨다운, 복수매매 차단, `side=="sell"` 조기허용 | ✅ `TestRiskGateExpansion20260726` 외 다수 | 이 파일은 이번 배치에서 신규 게이트 추가 시 전부 테스트 동반 — RULE 1-15/override 트리거와 달리 결정론적 코드라 pytest 로 경계값까지 고정 가능했던 사례 |
 
+## 지시서 자체의 룰 (`tests/test_docs_consistency.py`, 2026-09-12 접기 도구 추가)
+
+| 룰 | 검증 | 테스트 |
+|---|---|---|
+| CLAUDE.md 는 매 턴 주입되므로 예산 안 | ✅ 자동 | `test_injected_rules_file_stays_within_budget`(330,000자 — 넘으면 접을 게 남았는지까지 말한다) |
+| 접기는 **과거 사건 보고만** 버린다(규칙 문장 유실 금지, #287) | ✅ 자동 | `test_folding_only_drops_incident_narrative` — REFERENCE 사본에서 **독립 구현**으로 다시 뽑아 대조(제품 함수를 부르면 동어반복, #292) |
+| `N. ` 로 시작하는 줄은 전부 제 항목 | ✅ 자동 | `test_every_numbered_line_parses_as_its_own_entry`(#23 유실 사고의 회귀) |
+| 접기가 계열 색인의 인용 코퍼스를 깎지 않는다 | ✅ 자동 | `test_folding_does_not_thin_the_citation_corpus` |
+| 오래된 항목이 안 접힌 채 쌓이지 않는다 | ✅ 자동 | `test_old_entries_are_folded_not_left_to_grow`(20개 초과 시 실패 + 실행 명령 인쇄) |
+| 손 접기 예외는 레거시 39건뿐 | ✅ 자동 | `test_hand_fold_allowlist_stays_small_and_resolves`(크기 단언) |
+| 접기 도구의 단위 계약(전문 사본·멱등·창·표시폭·번호 순서) | ✅ 자동 | `tests/test_regression.py::TestClaudeMdFold20260912` 7건 |
+
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
 2. `_has_pm_override_trigger`/`_check_pm_override_required` — RSI 경계값(74.9/75.0/25.0/25.1), catalyst

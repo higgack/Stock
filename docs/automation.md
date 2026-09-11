@@ -94,6 +94,18 @@
 | `trade-bot-badonion-listener.service` | `trade.scripts.listen_badonion` | 나쁜양파(태국·말련·필리핀·멕시코 등) 실시간 forward | 세션 미인증(exit 78) |
 | `trade-bot-badonion-sync.timer`(6h) | `trade/scripts/backfill_badonion.py` | 위 안전망 | 없음 |
 
+## 자동화가 **아닌** 것 — 회귀가 방아쇠인 도구 (2026-09-12)
+
+| 도구 | 무엇 | 방아쇠 | 왜 타이머가 아닌가 |
+|---|---|---|---|
+| `bot/scripts/claude_md_fold.py` (`make fold`) | CLAUDE.md 오래된 실수 항목의 **과거 사건 보고**를 CLAUDE_REFERENCE.md 로 옮긴다(규칙 문장은 원문 그대로 남음) | `make test` 의 `test_old_entries_are_folded_not_left_to_grow`(접을 차례 20개 초과 시 실패) · 예산 가드(330,000자) | 무인 실행이 **지시서를 스스로 고쳐 커밋**하게 두면 안 된다 — 리뷰 없는 규칙 변경이 된다. 사람이 `--apply` 하고 회귀가 계약을 본다 |
+
+⚠️ 이 도구는 **예산 문제를 풀지 못한다**(실측): 안전한 접기의 절감은 −3,028자이고
+증가율은 ≈6,500자/일이다. 접기는 옛 항목의 서사를 걷어낼 뿐이고 증가의 주동력은
+매일 들어오는 새 항목이다 — 상한이 다시 걸리면 상한을 올릴 게 아니라 **새 항목
+크기 정책**을 사용자에게 물어야 한다(그 판단이 `tests/test_docs_consistency.py`
+예산 가드 독스트링에 적혀 있다).
+
 ## 원칙 위반 시 재설계 규칙
 운영자가 같은 명령을 두 번 이상 반복 실행해야 하는 fix 는 잘못된 fix — 우선순위
 in-process scheduler > systemd timer > cron > (일회성만) 수동. 새 반복작업 추가 = 이 표에
