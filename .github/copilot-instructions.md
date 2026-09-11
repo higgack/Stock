@@ -39,7 +39,9 @@
 - **머지 전 회귀 테스트 통과 필수** — 실패 시 commit·merge 금지(라이브 장애도
   예외 아님. CLAUDE.md `fail 시 commit 금지(누구든)` 와 같은 기준):
   ```bash
-  make test        # = pytest tests/  (VM 기준 ~37초)
+  make test        # = pytest tests/ + pytest bot/tests (**별도 프로세스 2회**
+                   #   — 합치면 bot/tests conftest 의 sys.modules mock 이
+                   #     tests/ 73건을 깬다. 이유는 pytest.ini 주석)
   ```
   변경과 무관해 보이는 빨간불도 **초록으로 만든 뒤** merge 한다 — 원인이 픽스처의
   하드코딩 날짜처럼 무관하더라도 **그 테스트를 고치는 것이 fix 다**(실측: 날짜 경과로

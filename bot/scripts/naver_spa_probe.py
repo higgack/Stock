@@ -137,6 +137,7 @@ def _paging_sweep(requests, base: str, first_key: str) -> None:
     리뷰 2026-09-11): 30일·300행을 요청해 20행을 받는데 페이징이 되는지
     아무도 재지 않았다. 같은 형제 API 면 같은 축으로 잴 것(#38·#45).
     """
+    base_first = None
     for q in _PAGING:
         obj, note = _get_json(requests, base + q)
         label = q or "(무인자)"
@@ -147,7 +148,16 @@ def _paging_sweep(requests, base: str, first_key: str) -> None:
             print(f"   · {label:24s} ⚠️ 리스트가 아님({type(obj).__name__})")
             continue
         first = (obj[0].get(first_key) if obj and isinstance(obj[0], dict) else "")
-        print(f"   · {label:24s} → {len(obj):3d}행  첫 행={first!r}")
+        if base_first is None:                # 무인자 기준선(_PAGING[0] == "")
+            base_first = first
+            print(f"   · {label:24s} → {len(obj):3d}행  첫 행={first!r}  ← 기준선")
+            continue
+        # ⚠️ **행 수만 보면 못 가른다** — `upjong/list` 는 `?page=2` 를 무시하고
+        # 같은 20행을 돌려줬다(naver_sector_client 실측). 첫 행이 기준선과 같으면
+        # 그 파라미터는 **안 먹은 것**이라고 명시적으로 찍는다(#25).
+        same = bool(first) and first == base_first
+        mark = "⚠️ 무시됨(첫 행 동일)" if same else "✅ 다른 쪽"
+        print(f"   · {label:24s} → {len(obj):3d}행  첫 행={first!r}  {mark}")
 
 
 def _first_upjong_code(requests) -> str:
@@ -239,7 +249,13 @@ def main(argv: list | None = None) -> int:
     # 화면은 30일·300행을 요청하는데 한 응답이 20행이라 창의 대부분이 빈다.
     # 페이징이 되는지 **재고 나서** 이어받기를 배선한다(#151 추측 금지).
     print("\n⑥ 리서치도 20행이 페이지 크기인가 — 30일 창의 93%가 여기 달렸다")
-    _paging_sweep(requests, f"{_RESEARCH_BASE}/company", "title")
+    # ⚠️ company 하나만 쓸면 **나머지 두 탭은 영영 안 재진다**(#24 열거형).
+    # 목록은 손으로 적지 말고 제품 레지스트리에서 파생시킨다 — 새 탭이 생기면
+    # 자동으로 실린다(#38 화면과 프로브가 같은 목록).
+    from bot.naver_research_client import _RESEARCH_KINDS as _RK
+    for _kind in _RK:
+        print(f"   [{_kind}]")
+        _paging_sweep(requests, f"{_RESEARCH_BASE}/{_kind}", "title")
 
     if rc:
         print("\n⑦ ❌ 살아 있는 엔드포인트를 못 찾았다 — 브라우저 DevTools Network")

@@ -144,6 +144,77 @@ def _naver_research() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+def _naver_upjong_map_html() -> tuple[bool, str]:
+    """업종맵(`sise_group.naver`) — `/kr52`·`/highlow` 의 **업종 칸** 원천.
+
+    ⚠️ 옛 판은 이걸 **재지 않으면서** 경로별 요약에 영향으로도 안 적었다 —
+    그래서 HTML 경로가 막힌 날 운영자는 존재하지도 않는 '상한가' 를 고치러
+    가고(#292 틀린 라벨), 실제로 비는 업종 칸은 아무도 몰랐다. 안 재는 기능을
+    영향으로 적는 대신 **재서 적는다**(#55·#165).
+
+    제품 정규식을 그대로 태운다 — 부분문자열은 셸이 그 글자를 담기만 해도
+    ✅ 를 준다(#35·#75).
+    """
+    try:
+        from bot.naver_sector_client import _UPJONG_NO_RE
+        ok, text, dt = _naver_get(
+            f"{_nsc_base()}/sise_group.naver?type=upjong",
+            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR",
+                     "Referer": f"{_nsc_base()}/"}, want="text")
+        if not ok:
+            return False, f"{text} ({dt:.0f}ms)"
+        n = len(set(_UPJONG_NO_RE.findall(text))) if isinstance(text, str) else 0
+        size = len(text) if isinstance(text, str) else 0
+        return bool(n), (f"업종 그룹 {n}개 ({size:,}B, {dt:.0f}ms)"
+                         + ("" if n else " — 응답은 왔는데 파서가 0건 = "
+                                        "표가 사라진 것(SPA 전환)"))
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _naver_nxt() -> tuple[bool, str]:
+    """`/nxt` 의 **유일 원천** — 제품 상수를 그대로 쓴다(#35·#38)."""
+    try:
+        from bot.nxt_client import _BASE as _NXT_URL
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"상수 import 실패: {type(exc).__name__}: {exc}"
+    try:
+        ok, obj, dt = _nv_api(str(_NXT_URL))
+        if not ok:
+            return False, f"{obj} ({dt:.0f}ms)"
+        n = len(obj) if isinstance(obj, (list, dict)) else 0
+        return bool(n), (f"{'행' if isinstance(obj, list) else '키'} {n}개 "
+                         f"({dt:.0f}ms)")
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _naver_polling() -> tuple[bool, str]:
+    """`/krprepost` 가치의 원천(실시간 단가). 임의 코드 1건으로 도달만 잰다."""
+    try:
+        from bot.naver_quote import _URL as _Q_URL
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"상수 import 실패: {type(exc).__name__}: {exc}"
+    try:
+        ok, obj, dt = _nv_api(str(_Q_URL).format(code="005930"))
+        if not ok:
+            return False, f"{obj} ({dt:.0f}ms)"
+        # 응답 모양이 dict/list 로 갈릴 수 있다 — **비었으면 통과가 아니다**(#54).
+        n = len(obj) if isinstance(obj, (list, dict)) else 0
+        return bool(n), f"응답 {type(obj).__name__} {n}개 ({dt:.0f}ms)"
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _nsc_base() -> str:
+    """테마 URL 은 **제품 상수에서 파생**한다 — 손으로 적으면 옮겨갈 때 갈린다(#38)."""
+    try:
+        from bot.naver_sector_client import _BASE
+        return str(_BASE)
+    except Exception:                                          # noqa: BLE001
+        return "https://finance.naver.com/sise"
+
+
 def _naver_theme_html() -> tuple[bool, str]:
     """아직 **HTML 스크래핑에 남아 있는** 경로 — 테마 시세(업종별 시세 페이지).
 
@@ -153,14 +224,22 @@ def _naver_theme_html() -> tuple[bool, str]:
     """
     try:
         ok, text, dt = _naver_get(
-            "https://finance.naver.com/sise/theme.naver?page=1",
+            f"{_nsc_base()}/theme.naver?page=1",
             headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR",
                      "Referer": "https://finance.naver.com/sise/"}, want="text")
         if not ok:
             return False, f"{text} ({dt:.0f}ms)"
-        has = isinstance(text, str) and "type=theme" in text
-        return has, (f"테마 표 {'있음' if has else '없음(구조 변경?)'} "
-                     f"({len(text) if isinstance(text, str) else 0}B, {dt:.0f}ms)")
+        # ⚠️ 옛 판은 `"type=theme" in text` 라는 **부분문자열**만 봤다. Next.js
+        # 셸이 그 문자열을 링크·프리페치 JSON 어딘가에 담아 보내면 표가 0개인데도
+        # ✅ 가 뜬다 — 이 탭이 조용히 32시간 낡은 이유다(#35 감사는 화면이 쓰는
+        # 그 경로를 · #75 '있다'만 묻는 검사는 옆 것이 대신 만족시킨다).
+        # **제품 파서를 그대로 태워 행 수를 센다**(#54 대조 0건은 통과가 아니다).
+        from bot.naver_sector_client import parse_themes_full
+        n = len(parse_themes_full(text) or []) if isinstance(text, str) else 0
+        size = len(text) if isinstance(text, str) else 0
+        return bool(n), (f"테마 행 {n}개 ({size:,}B, {dt:.0f}ms)"
+                         + ("" if n else " — 응답은 왔는데 파서가 0건 = "
+                                        "표가 사라진 것(SPA 전환)"))
     except Exception as exc:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
@@ -254,6 +333,12 @@ def run() -> dict:
         "Naver 업종(stock API)": _naver_sector(),
         "Naver 리서치(m.stock API)": _naver_research(),
         "Naver 테마(finance HTML)": _naver_theme_html(),
+        "Naver 업종맵(finance HTML)": _naver_upjong_map_html(),
+        # ⚠️ KR 5탭 중 `/nxt`(NXT 수급)·`/krprepost`(NXT 급등·급락)의 원천은
+        # 이 목록에 **한 줄도 없었다** — 죽으면 화면이 '없습니다' 만 띄우고
+        # /health 도 일일 결산도 아무 말을 안 한다(#24 열거형 가드 · #52).
+        "Naver NXT 수급(trendForeignOrg)": _naver_nxt(),
+        "Naver 실시간 시세(polling)": _naver_polling(),
     }
     return {"yf_paused": yfp, "naver_paused": nvp,
             "fast_info_breaker": fi_breaker, "checks": checks}
@@ -290,11 +375,14 @@ def format_report(res: dict) -> str:
         lines.append(
             f"ℹ️ 네이버 경로별: finance.naver.com(HTML) {f_ok}/{len(_fin)} · "
             f"stock.naver.com(API) {a_ok}/{len(_api)}"
-            # ⚠️ 업종맵(`sise_group.naver`)은 여기서 **재지 않는다** — 아래
-            # HTML 행은 테마 페이지를 친다. 안 재는 기능을 영향으로 적으면
-            # 그 줄이 매일 거짓말한다(#55·#165, 독립 리뷰 2026-09-11 M5).
-            + (" — HTML 경로만 막힘(테마 시세·상한가 영향 · 업종 등락·"
-               "리서치 액션은 JSON 이라 무관)"
+            # ⚠️ 옛 문구는 '상한가' 를 영향으로 적었는데 **어느 페이지도 그걸
+            # 서빙하지 않는다**(`fetch_upper_lower` 호출자는 자기 모듈 스모크
+            # 하나뿐) — 틀린 라벨은 라벨이 없는 것보다 나쁘다(#292). 반대로
+            # 실제로 영향받는 업종맵은 그 줄에 없었다. 업종맵은 이 점검이
+            # 직접 재지는 않지만 **같은 호스트·같은 전환**이라 영향은 사실이고,
+            # 상태는 `naver_sector_client --check ②-c` 가 잰다(#55·#165).
+            + (" — HTML 경로만 막힘(영향: 테마 시세 · 업종맵[/kr52·/highlow 의 "
+               "업종 칸] · 업종 등락·리서치 액션은 JSON 이라 무관)"
                if f_ok == 0 and a_ok > 0 else ""))
     fi_ok = ck.get("yfinance fast_info", (True,))[0]
     batch_ok = ck.get("yfinance batch", (False,))[0]

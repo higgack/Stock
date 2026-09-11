@@ -71,43 +71,96 @@ def last_fail_reason(kind: str) -> str:
     return _LAST_MARKET_FAIL.get("reason" if kind == "market" else kind) or ""
 
 
-_PAGE_CAP = 20          # 실측(v2): 세 목록 모두 한 응답에 20행. 페이징 미측정.
+_PAGE_CAP = 20          # 실측(v2): 세 목록 모두 **무인자** 한 응답에 20행.
+# 안전 상한 — **리터럴로 못박는다**(#66: 자기 상수로 자기를 검증하면 상한을
+# 올리는 뮤테이션이 그대로 통과한다). 옛 HTML 루프가 시장 4쪽·산업/전략 5쪽
+# 이었으므로 그보다 넉넉하되 유계다.
+_MAX_PAGES = 8
+# `?pageSize=` 로 한 번에 받아 볼 크기. 형제 실측이 갈린다 —
+# `stock.naver.com/.../upjong/list` 는 pageSize=100 이 먹었고(20→79),
+# `m.stock.naver.com/front-api/domestic/stock/list` 는 **50 초과면 빈 배열**
+# 이었다(#naver_ranking_client 137-140). 그래서 큰 값을 박지 않는다 — 빈 배열이
+# 오면 '원천에 0건' 으로 읽혀 더 나쁘다.
+_PAGE_SIZE_TRY = 50
 
 
-def window_note(raw_n: int, parsed: int, kept: int, days_back: int) -> str:
-    """원천이 **한 쪽 상한**만큼 줬을 때 화면이 값과 같이 말할 사실(순수).
+def _first_id(rows: list) -> str:
+    """목록의 첫 행 식별자(순수). 페이지 파라미터가 **무시됐는지** 가른다.
 
-    두 가지를 말한다 — 창을 다 못 채웠을 수 있다는 것과, 형식이 달라 **우리가
-    못 읽은 행**이 있다는 것. 둘 다 실패가 아니라 값과 같이 가는 사실이다(#43).
-    페이징이 되는지는 아직 안 쟀다(#165 단정 금지): `naver_spa_probe ⑥` 이
-    재고, 되면 그때 이어받기를 배선한다.
-
-    ⚠️ `raw_n` 은 **원천이 준 행 수**여야 한다 — 파싱 뒤 수를 넘기면 못 읽은
-    행 하나가 `raw_n` 을 상한 밑으로 내려 **경고가 통째로 꺼진다**(독립 리뷰
-    2026-09-11 M1 실측: 20행 중 id 없는 1행 → 19행을 30일치인 양 조용히 그림).
-    즉 목록을 짧게 만드는 바로 그 입력이 '짧다' 는 경고를 끄고 있었다.
-    ⚠️ `kept < parsed`(읽은 행 일부가 창 밖)면 창은 이미 다 덮인 것이므로
-    절단을 말하지 않는다 — 늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260).
+    `upjong/list` 실측에서 `?page=2` 가 무시되고 **같은 20행**이 돌아왔다
+    (naver_sector_client.py:360). 행 **수**만 보면 '2쪽도 20행' 과 구별이 안
+    되므로 첫 행을 본다(#25 '있다'만 묻는 검사는 눈이 먼다).
     """
-    if raw_n < _PAGE_CAP:
-        return ""                      # 상한에 안 닿았다 = 원천에 그게 전부다
+    if not rows:
+        return ""
+    r = rows[0]
+    return str((r or {}).get("nid") or "") if isinstance(r, dict) else ""
+
+
+def page_stop(*, page: int, got: int, page_size: int, fresh: int,
+              in_window: int, total_kept: int, limit: int,
+              max_pages: int) -> str:
+    """이 쪽을 받고 나서 **멈출 이유**(순수). "" = 계속.
+
+    옛 HTML 루프(aa298583^)의 중단 조건을 그대로 옮기되 갈래를 **이름으로**
+    부른다 — 처방이 다르기 때문이다(#82):
+      · `page_ignored`  파라미터가 무시됐다(새 행 0) → 페이징 불가, 절단 아님이
+                        아니라 **더 못 받는다**
+      · `source_end`    원천이 더 안 준다(빈 쪽 / 상한 미만) → 창을 다 덮었다
+      · `window_end`    이 쪽이 통째로 창 밖(오래된 쪽) → 창을 다 덮었다
+      · `limit`         우리가 요청한 개수를 채웠다 → 창을 다 덮었다
+      · `max_pages`     **우리 상한에 걸렸다** → 이것만 절단이다
+    """
+    if page > 1 and got and not fresh:
+        # ⚠️ 1쪽에서 `fresh=0` 은 쪽 넘기기와 무관하다 — 행이 통째로 안 읽힌
+        # 것(스키마 변경)이다. 그걸 '원천이 쪽 넘기기를 안 받는다' 라고 적으면
+        # 운영자를 엉뚱한 데로 보낸다(독립 리뷰 · #292 틀린 라벨).
+        return "page_ignored"
+    if got == 0 or got < page_size:
+        return "source_end"
+    if fresh and not in_window:
+        return "window_end"
+    if total_kept >= limit:
+        return "limit"
+    if page >= max_pages:
+        return "max_pages"
+    return ""
+
+
+def window_note(meta: dict, days_back: int) -> str:
+    """창을 다 못 덮었을 때 화면이 **값과 같이** 말할 사실(순수). "" = 할 말 없음.
+
+    ⚠️ 계약이 2026-09-12 에 바뀌었다(#222 — 옛 테스트는 지우지 않고 다시 썼다).
+    옛 판정은 `raw_n >= _PAGE_CAP` 하나였다: 한 응답이 상한에 닿았으면 경고.
+    페이지를 이어받기 시작하면 그 기준이 **영구 오탐**이 된다(100행을 정상
+    수집해도 "한 번에 100건만 줍니다" 가 뜬다). 이제 기준은 '한 응답의 크기'가
+    아니라 **'창을 다 못 덮고 멈췄나'**(`meta["stop"]`)다.
+
+    `source_end`·`window_end`·`limit` 으로 끝났으면 원천이 가진 만큼 다 본
+    것이므로 **아무 말도 안 한다** — 늘 뜨는 배지는 아무것도 안 재는 것과
+    같다(#25·#260). 절단은 두 갈래뿐이다:
+      · `max_pages`     우리 상한 — 더 받을 수 있는데 안 받았다
+      · `page_ignored`  원천이 페이지를 안 받는다 — 더 받을 방법이 없다
+    """
+    if not isinstance(meta, dict):
+        return ""
     bits = []
-    if kept >= parsed:
-        bits.append(f"원천이 한 번에 {raw_n}건만 줍니다 — {days_back}일 창을 "
-                    "다 못 채웠을 수 있습니다(더 오래된 건 누락 가능)")
-    if raw_n > parsed:                 # 계산해 둔 것을 화면까지(#123 계열)
-        bits.append(f"형식이 달라 못 읽은 {raw_n - parsed}행은 뺐습니다")
+    stop = str(meta.get("stop") or "")
+    pages = int(meta.get("pages") or 0)
+    raw = int(meta.get("raw_total") or 0)
+    if stop == "max_pages":
+        bits.append(f"{days_back}일 창을 다 못 채웠습니다 — {pages}쪽 {raw}건까지 "
+                    "받고 우리 상한에서 멈췄습니다(더 오래된 건 누락 가능)")
+    elif stop == "fetch_failed":
+        bits.append(f"쪽을 이어받다 실패해 {pages}쪽 {raw}건에서 멈췄습니다 — "
+                    f"{days_back}일 창을 다 못 채웠습니다")
+    elif stop == "page_ignored":
+        bits.append(f"원천이 쪽 넘기기를 받지 않아 {raw}건이 전부입니다 — "
+                    f"{days_back}일 창을 다 못 채웠을 수 있습니다")
+    drop = int(meta.get("unreadable") or 0)
+    if drop > 0:                        # 계산해 둔 것을 화면까지(#123 계열)
+        bits.append(f"형식이 달라 못 읽은 {drop}행은 뺐습니다")
     return " · ".join(bits)
-
-
-def cached_window_note(n: int, days_back: int) -> str:
-    """캐시에 **저장된 행 수**만 아는 자리의 사실 — 원천 원시 수는 모른다.
-
-    저장된 것은 파싱·창 필터를 통과한 행이라 `raw_n` 을 못 잰다. 그래서 상한에
-    닿았는지만 보고(그 이상은 단정하지 않는다, #165) 같은 문구를 만든다 —
-    **두 캐시 층**(이 모듈 12h · `market_overview` 10분)이 같은 함수를 쓴다(#38).
-    """
-    return window_note(n, n, n, days_back)
 
 
 def last_window_note(kind: str) -> str:
@@ -463,15 +516,21 @@ def research_rows_from_json(rows: object, kind: str) -> list[dict]:
     return out
 
 
-def fetch_research_json(kind: str) -> tuple[list[dict], str, int]:
+def fetch_research_json(kind: str,
+                       params: dict | None = None) -> tuple[list[dict], str, int]:
     """(행, 실패 사유, **원천이 준 행 수**) — 한 목록을 JSON 으로 받는다.
 
     빈 리스트는 실패가 아니다(#54). 세 번째 값이 필요한 이유는 `window_note`
     독스트링에 있다 — 파싱 뒤 수로 상한을 재면 못 읽은 행 하나가 경고를 끈다.
+
+    `params` 는 `requests.get` 으로 그대로 간다(`naver_diag.get_json` 이
+    `**kwargs` 를 넘긴다). **어떤 페이지 파라미터를 받는지는 안 쟀으므로**
+    (#12·#165) 호출부가 후보를 순서대로 시도하고 결과로 판정한다.
     """
     if kind not in _RESEARCH_KINDS:
         return [], f"모르는 목록: {kind}", 0
-    raw, why = _get2_json(f"{_RESEARCH_API}/{kind}")
+    _kw = {"params": dict(params)} if params else {}
+    raw, why = _get2_json(f"{_RESEARCH_API}/{kind}", **_kw)
     if raw is None:
         return [], why, 0
     if not isinstance(raw, list):      # 목록이 아니면 계약 변경 — 0건과 다르다
@@ -481,6 +540,184 @@ def fetch_research_json(kind: str) -> tuple[list[dict], str, int]:
         return [], _nd.parse_reason(f"{_RESEARCH_KINDS[kind]} 리서치 행", len(raw),
                                  unit="행"), len(raw)
     return rows, "", len(raw)
+
+
+
+_CLIENT_SIG = ""
+
+
+def client_sig() -> str:
+    """이 모듈 소스의 지문 — **캐시 키에 싣는다**(손 bump 금지).
+
+    ⚠️ 옛 키는 `naver_market_v2_…`·`naver_industry_v1_…` 처럼 버전이 **리터럴**
+    이었다. 페이지네이션을 넣어도 그 숫자를 안 올리면 TTL 이 끝날 때까지 옛
+    20행 캐시가 그대로 서빙돼 **고친 날 화면이 안 바뀐다** — 이 레포에서
+    #18·#21b·#95·#124·#198·#216·#233 으로 일곱 번 진 실패다. 규율로 기억할
+    일을 구조로 옮긴다(#119·#266: 배포가 곧 무효화다).
+
+    독스트링·주석은 걷어내고 잰다 — 주석 한 줄에 전 캐시가 날아가면 안 된다.
+    """
+    global _CLIENT_SIG
+    if not _CLIENT_SIG:
+        try:
+            import ast as _ast
+            import hashlib as _hl
+            src = Path(__file__).read_text(encoding="utf-8")
+            tree = _ast.parse(src)
+            for node in _ast.walk(tree):       # 독스트링 제거
+                if isinstance(node, (_ast.Module, _ast.FunctionDef,
+                                     _ast.AsyncFunctionDef, _ast.ClassDef)):
+                    b = getattr(node, "body", None)
+                    if (b and isinstance(b[0], _ast.Expr)
+                            and isinstance(b[0].value, _ast.Constant)
+                            and isinstance(b[0].value.value, str)):
+                        b[0].value.value = ""
+            _CLIENT_SIG = _hl.sha1(
+                _ast.dump(tree).encode("utf-8")).hexdigest()[:10]
+        except Exception:                                      # noqa: BLE001
+            _CLIENT_SIG = "nosig"      # 못 재면 지문을 주장하지 않는다(#54)
+    return _CLIENT_SIG
+
+
+def cache_envelope(rows: list, note: str, meta: dict,
+                   detail_note: str = "") -> dict:
+    """디스크에 저장할 봉투 — 행과 **함께 사실도** 저장한다.
+
+    ⚠️ 옛 판은 행만 저장하고 캐시 히트 때 행 수에서 절단 경고를 **파생**했다.
+    페이지네이션이 들어가면 행 수로는 '몇 쪽에서 왜 멈췄나'를 복원할 수 없고,
+    그러면 캐시가 사는 1시간 동안 화면이 조용해진다(#342 그대로 — 값과 같이
+    가는 메타는 캐시 경로에서도 복원해야 한다).
+    """
+    return {"rows": list(rows or []), "note": note or "",
+            "meta": dict(meta or {}),
+            # 상세 수율 사유도 **저장**한다 — 행에서 되짚으면 '한 번도 안 걸었다'
+            # 와 '걸었는데 다 실패' 를 못 가르고, 예산에서 뺀 건수도 잃는다
+            # (독립 리뷰 2026-09-12 · #82 갈래는 이름으로).
+            "detail_note": detail_note or ""}
+
+
+def cache_rows(obj) -> tuple[list, str]:
+    """저장분 → (행, 사실 문구). 옛 리스트 형식도 읽는다(형식 전환 내구).
+
+    옛 형식은 note 를 **모르므로** 지어내지 않는다 — "" 를 준다(#165).
+    """
+    if isinstance(obj, dict):
+        return list(obj.get("rows") or []), str(obj.get("note") or "")
+    return list(obj or []), ""
+
+
+def cache_detail_note(obj) -> str | None:
+    """저장분의 상세 수율 사유. 옛 형식(리스트)·미기록이면 **None**(모름).
+
+    None 과 "" 는 다르다 — 전자는 '못 잰다', 후자는 '할 말 없음' 이다(#54).
+    """
+    if isinstance(obj, dict) and "detail_note" in obj:
+        return str(obj.get("detail_note") or "")
+    return None
+
+
+def fetch_research_pages(kind: str, *, cutoff: str, limit: int,
+                         max_pages: int = _MAX_PAGES) -> tuple[list, str, dict]:
+    """여러 쪽을 이어받아 `cutoff` 창을 채운다 → (행, 실패 사유, meta).
+
+    2026-09-11 SPA 전환 커밋이 옛 HTML 의 `for page in range(1, max_pages+1)`
+    루프를 통째로 지웠고, 그래서 KR 3탭이 **하루치 20건**으로 줄었다(사용자
+    2026-09-12 "그전에는 … 한국은 일주일치 긁어왔어"). 복원할 것은 옛 URL 이
+    아니라 옛 **중단 조건**이다(`page_stop` 참조).
+
+    ⚠️ `m.stock.naver.com/api/research/*` 가 어떤 페이지 파라미터를 받는지는
+    **한 번도 안 쟀다**. 형제 실측이 서로 갈린다 — `upjong/list` 는 `pageSize`
+    만 먹었고 `page` 는 무시됐으며, `front-api/domestic/stock/list` 는 둘 다
+    먹되 `pageSize>50` 이면 빈 배열이다. 그래서 하나를 **추측해 박지 않고**
+    ① `pageSize` ② `page` 순으로 시도하고 **결과로 판정**한다(#25 능력은 이름이
+    아니라 실측 · #151 죽은 이름 · #136 폴백 조건은 '실패'가 아니라 '요구를
+    충족했나'). 어느 쪽이 먹었는지는 `meta["mode"]` 가 말하고 화면·프로브가
+    같은 값을 읽는다(#35).
+
+    세 탭이 이 함수 하나를 쓴다 — 복제하면 한 탭만 하루치로 남는다(#38·#147).
+    """
+    rows: list = []
+    seen: set = set()
+    unreadable = 0
+    raw_total = 0
+    why = ""
+
+    def _take(j_rows: list) -> tuple[int, int]:
+        """(새로 추가된 행 수, 그중 창 안 행 수) — in-place 로 rows 를 채운다."""
+        fresh = in_win = 0
+        for r in j_rows:
+            nid = str(r.get("nid") or "")
+            if not nid or nid in seen:
+                continue
+            seen.add(nid)
+            fresh += 1
+            if r.get("date") and r["date"] < cutoff:
+                continue
+            in_win += 1
+            rows.append(r)
+        return fresh, in_win
+
+    # ── 1쪽: `pageSize` 를 **먼저** 물어 한 번에 크게 받아 본다 ────────
+    # 먹으면 요청 수가 줄고, 안 먹으면 기본 크기(20행)가 그대로 온다 — 어느
+    # 쪽이든 **이 응답을 쓴다**(무인자 기준선을 따로 받으면 요청 하나가 순손실).
+    j1, why, raw1 = fetch_research_json(kind, {"pageSize": _PAGE_SIZE_TRY})
+    if raw1 == 0 and not why:
+        # ⚠️ 형제 실측: `front-api` 는 pageSize 가 상한을 넘으면 **빈 배열**을
+        # 준다(naver_ranking_client 137-140). 빈 배열을 '원천에 0건' 으로 읽으면
+        # 화면이 통째로 빈다 — 무인자로 한 번 더 묻는다(#136 폴백 조건은
+        # '실패' 가 아니라 '요구를 충족했나').
+        j1, why, raw1 = fetch_research_json(kind)
+        page_size = _PAGE_CAP
+        mode = "single"
+    elif raw1 > _PAGE_CAP:
+        page_size, mode = raw1 if raw1 < _PAGE_SIZE_TRY else _PAGE_SIZE_TRY, "pageSize"
+    else:
+        page_size, mode = _PAGE_CAP, "single"
+
+    pages, raw_total = 1, raw1
+    unreadable += max(0, raw1 - len(j1))
+    f1, w1 = _take(j1)
+    base_first = _first_id(j1)
+    stop = page_stop(page=1, got=raw1, page_size=page_size, fresh=f1,
+                     in_window=w1, total_kept=len(rows), limit=limit,
+                     max_pages=max_pages)
+
+    # ── 2쪽 이후: `page` 로 이어받기 ──────────────────────────────────
+    if not stop:
+        for page in range(2, max_pages + 1):
+            _p = {"page": page}
+            if mode == "pageSize":
+                _p["pageSize"] = page_size
+            jp, _why_p, rawp = fetch_research_json(kind, _p)
+            if _why_p and not jp:
+                # ⚠️ 옛 판은 사유를 버리고 `rawp=0` 을 `source_end` 로 읽어,
+                # 중간 쪽의 429·타임아웃이 **창을 조용히 자르고** 아무 말도
+                # 안 했다(독립 리뷰 2026-09-12). '원천에 그게 전부' 와 '못
+                # 받았다' 는 처방이 정반대다(#82·#136).
+                why = why or _why_p
+                stop = "fetch_failed"
+                log.warning("naver_research: %s %d쪽 수신 실패 — %s",
+                            kind, page, _why_p)
+                break
+            if _first_id(jp) and _first_id(jp) == base_first:
+                # 파라미터가 무시돼 **같은 쪽**이 돌아왔다(`upjong/list` 실측
+                # 형태). 행 **수**만 보면 '2쪽도 20행' 과 구별이 안 된다(#25).
+                stop = "page_ignored"
+                break
+            pages = page
+            raw_total += rawp
+            unreadable += max(0, rawp - len(jp))
+            fr, iw = _take(jp)
+            if mode == "single" and fr:
+                mode = "page"
+            stop = page_stop(page=page, got=rawp, page_size=page_size,
+                             fresh=fr, in_window=iw, total_kept=len(rows),
+                             limit=limit, max_pages=max_pages)
+            if stop:
+                break
+
+    return rows, why, {"pages": pages, "raw_total": raw_total, "mode": mode,
+                       "stop": stop or "max_pages", "unreadable": unreadable}
 
 
 _RESEARCH_JSON_HEADERS = dict(_HEADERS, **{
@@ -498,6 +735,45 @@ def _get2_json(url: str, **kwargs) -> tuple[object, str]:
                         tag="naver_research", **kwargs)
 
 
+# 상세(목표가·투자의견) 수집 예산 — 리터럴로 못박는다(#66). 쪽 이어받기로
+# 행이 20 → 최대 수백이 되는데 상세는 행당 HTTP 1건이고 그 경로(`company_read
+# .naver`)는 **아직 옛 HTML** 이라 살아 있는지도 안 쟀다(#79). 본문이 아닌 값에
+# 예산을 같이 다는 규약(#116) — 최신 순으로 이만큼만 걸고 나머지는 비운다.
+_DETAIL_BUDGET = 40
+
+
+def _detail_tag(scope: dict) -> str:
+    """캐시 키의 상세-수집 축(순수-ish). `fetch_detail` 이 없는 목록은 "".
+
+    ⚠️ 감사(`board_audit`)는 화면과 **같은 인자**로 부르되 `fetch_detail=False`
+    다. 그런데 그 축이 키에 없어 **상세 없는 행을 공용 캐시에 구웠고**, 그러면
+    라이브 탭의 목표가·투자의견이 통째로 비면서 "상세 페이지도 SPA 전환됐을 수
+    있습니다" 라는 **거짓 경고**까지 뜬다(독립 리뷰 2026-09-12). 키를 나누는
+    축은 **결과를 바꾸는 인자 전부**여야 한다(#61 의 반대 방향 — 덜 나눠서 생긴
+    오염, #141).
+    """
+    return "" if scope.get("fetch_detail", True) else "_nodetail"
+
+
+def detail_yield_note(rows: list, *, budget_left: int = 0) -> str:
+    """목표가·투자의견 칸이 빈 이유(순수). "" = 할 말 없음.
+
+    두 갈래를 **다른 이름으로** 말한다(#82) — 예산에서 빠진 것(정상)과 상세
+    경로가 한 건도 못 읽은 것(결함)은 처방이 정반대다.
+    """
+    rows = list(rows or [])
+    if not rows:
+        return ""
+    graded = [r for r in rows if r.get("target") or r.get("rating")]
+    if not graded:
+        return ("상세에서 목표가·투자의견을 한 건도 못 읽었습니다 — 상세 페이지도 "
+                "SPA 전환됐을 수 있습니다(`--check` 로 잴 것)")
+    if budget_left > 0:
+        return (f"목표가·투자의견은 최신 {len(graded)}건에만 붙였습니다"
+                f"(상세 수집 예산 {_DETAIL_BUDGET}건 · 나머지 {budget_left}건은 빈칸)")
+    return ""
+
+
 def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
                                  fetch_detail: bool = True) -> list[dict]:
     """전체 시장 최근 종목 리서치 리포트 (Naver Finance 리서치 목록).
@@ -505,55 +781,56 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     한경 컨센서스가 JS 렌더링으로 정적 scrape 불가 → market.html 의
     '최근 리서치 액션' KR 탭 대체 소스. Returns
     [{code, name, broker, rating, title, date}] (날짜 내림차순) —
-    dashboard 의 research_kr 스키마와 호환. 키 불필요, 12h 디스크 캐시.
+    dashboard 의 research_kr 스키마와 호환. 키 불필요, 디스크 캐시 `_MARKET_TTL_HOURS`(=1h).
 
-    ⚠️ 2026-09-11 SPA 전환 뒤로는 **페이지네이션이 없다** — JSON 이 한 번에
-    20행을 주고 우리가 `days_back` 으로 거른다. 창을 다 못 채우면 그 사실을
-    `last_window_note("market")` 에 남겨 화면이 말한다(독립 리뷰 H1). 페이징
-    가능 여부는 아직 안 쟀다 — `naver_spa_probe ⑥` 이 재고 나서 배선한다.
-    fetch_detail=True 면 각 리포트 상세에서 투자의견·목표가를 채운다."""
-    cache_key = (f"naver_market_v2_{date.today().isoformat()}"
-                 f"_{days_back}_{limit}.json")
+    쪽 이어받기는 `fetch_research_pages` 가 한다(어느 파라미터가 먹는지는
+    **런타임에 판정**한다 — 그 독스트링 참조). 창을 다 못 채우고 멈추면 그
+    사실을 `last_window_note("market")` 에 남겨 화면이 값과 **같이** 말한다.
+    fetch_detail=True 면 각 리포트 상세에서 투자의견·목표가를 채우되
+    `_DETAIL_BUDGET` 건까지만 건다(#116 장식용 값에 예산)."""
+    cache_key = (f"naver_market_{client_sig()}_{date.today().isoformat()}"
+                 f"_{days_back}_{limit}{_detail_tag(locals())}.json")
     cache_file = _CACHE_DIR / cache_key
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _MARKET_TTL_HOURS:
-                cached = json.loads(cache_file.read_text())
+                _env = json.loads(cache_file.read_text())
+                _rows, _note = cache_rows(_env)
                 # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
-                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
-                # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
-                _WINDOW_NOTE["market"] = cached_window_note(len(cached or []), days_back)
-                return cached or []
+                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 행 수에서
+                # 파생하면 '몇 쪽에서 왜 멈췄나'를 복원할 수 없으므로 저장할 때
+                # 같이 굽고 여기서 **읽는다**(#342 의 캐시 층 교훈).
+                _WINDOW_NOTE["market"] = _note
+                # ⚠️ 상세 수율 사유도 **캐시 히트에서 복원**해야 한다 — 옛 판은
+                # 수집 경로에서만 세워서, 캐시가 사는 1시간 동안 목표가·투자의견
+                # 열이 전부 '—' 인데 화면이 한 마디도 안 했다(#342 의 다음 층).
+                # 저장된 행에서 그대로 되짚는다(#270 렌더타임 파생 — 재수집 0).
+                # ⚠️ 행에서 되짚으면 '상세를 한 번도 안 걸었다'(fetch_detail
+                # =False)와 '걸었는데 다 실패' 가 같은 말이 되고, 예산에서 뺀
+                # 건수도 잃는다 — 저장된 사유를 **읽는다**(독립 리뷰).
+                _dn = cache_detail_note(_env)
+                _LAST_MARKET_FAIL["detail"] = (
+                    _dn if _dn is not None else detail_yield_note(_rows))
+                return _rows
         except Exception as exc:
             log.warning("naver_research: market cache read failed: %s", exc)
 
     today = date.today()
     cutoff = today - timedelta(days=days_back)
-    rows: list[dict] = []
-    seen_nid: set[str] = set()
-    why = ""
-    # 2026-09-11: 원천이 Next.js SPA 로 바뀌어 서버 렌더 표가 사라졌다(VM
-    # 실측: 117,442B 응답에 `<table` 0건). 페이지네이션하던 HTML 경로는
-    # 정의상 0건이라 지웠다(죽은 경로는 남기지 않는다, §작업 원칙) —
-    # JSON API 가 한 번에 20행을 주므로 받고 cutoff 로 거른다.
-    # ⚠️ 옛 HTML 경로는 여러 쪽을 훑어 더 긴 윈도를 채울 수 있었다. 지금은
-    # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
-    # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
-    # 표시한다(#52·#43·#45).
-    j_rows, why, raw_n = fetch_research_json("company")
+    # 2026-09-12: 쪽 이어받기 복원(사용자 "그전에는 한국은 일주일치 긁어왔어").
+    # 세 탭이 `fetch_research_pages` **한 함수**를 쓴다 — 복제하면 한 탭만
+    # 하루치로 남는다(#38·#147). 중단 조건·파라미터 판정은 그 안에 있다.
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
-    for r in j_rows:
-        if r.get("date") and r["date"] < cut:
-            continue
-        if r["nid"] in seen_nid:
-            continue
-        seen_nid.add(r["nid"])
-        rows.append(r)
+    rows, why, _meta = fetch_research_pages("company", cutoff=cut, limit=limit)
     # ⚠️ 창 절단은 **실패가 아니다** — 실패 칸(`why`)에 넣으면 행이 하나라도
     # 오는 순간 아래에서 `""` 로 덮여 화면이 영영 모른다(독립 리뷰 H1).
-    _WINDOW_NOTE["market"] = window_note(raw_n, len(j_rows), len(rows), days_back)
+    _WINDOW_NOTE["market"] = window_note(_meta, days_back)
 
+    # 독스트링이 '날짜 내림차순' 을 약속하는데 **정렬을 한 번도 안 했다** —
+    # 원천 순서에 기대고 있었고, 쪽을 합치면 그 가정이 처음으로 부담을 진다.
+    # 자르기(`[:limit]`)는 정렬 **뒤**에 와야 최신이 남는다.
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
     rows = rows[:limit]
     if not rows:
         # 빈 결과는 캐시하지 않음(truthy-only) — Naver 일시 차단/실패가 1h 동안
@@ -571,9 +848,12 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
 
     if fetch_detail:
         detail_map: dict[str, tuple[Optional[float], str]] = {}
+        # 최신 순으로 예산만큼만 — rows 는 바로 위에서 날짜 내림차순 정렬됐다.
+        _targets = rows[:_DETAIL_BUDGET]
+        _skipped = max(0, len(rows) - len(_targets))
         with ThreadPoolExecutor(max_workers=6) as pool:
             futures = {pool.submit(_fetch_report_detail, r["nid"]): r["nid"]
-                       for r in rows}
+                       for r in _targets}
             for fut in as_completed(futures):
                 nid = futures[fut]
                 try:
@@ -593,9 +873,8 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         # 단건 프로브만 돌고 이 칸을 **읽지 않는다** — 읽는 곳이 로그뿐인
         # write-only 였다(독립 리뷰 M6 · #123·#129·#189·#228 계열).
         _hit = sum(1 for t, rt2 in detail_map.values() if t or rt2)
-        _LAST_MARKET_FAIL["detail"] = ("" if _hit else (
-            f"상세 {len(detail_map)}건에서 목표가·투자의견을 한 건도 못 읽었습니다 "
-            "— 상세 페이지도 SPA 전환됐을 수 있습니다(`--check` 로 잴 것)"))
+        _LAST_MARKET_FAIL["detail"] = detail_yield_note(rows,
+                                                        budget_left=_skipped)
         if not _hit and detail_map:
             log.warning("naver_research: 상세 수율 0/%d — %s",
                         len(detail_map), _LAST_MARKET_FAIL["detail"])
@@ -610,7 +889,10 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
 
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(out, ensure_ascii=False))
+        cache_file.write_text(json.dumps(
+            cache_envelope(out, _WINDOW_NOTE.get("market") or "", _meta,
+                           _LAST_MARKET_FAIL.get("detail") or ""),
+            ensure_ascii=False))
     except Exception as exc:
         log.warning("naver_research: market cache write failed: %s", exc)
 
@@ -632,48 +914,39 @@ def fetch_recent_research_industry(limit: int = 80,
 
     종목 리포트와 동일 윈도(기본 7일=일주일치). 산업 리포트는 단일 목표가가
     없어 detail fetch 생략(빠름). Returns [{category, broker, title, date,
-    link}] 날짜 내림차순. 키 불필요, 12h 디스크 캐시."""
-    cache_key = (f"naver_industry_v1_{date.today().isoformat()}"
-                 f"_{days_back}_{limit}.json")
+    link}] 날짜 내림차순. 키 불필요, 디스크 캐시 `_MARKET_TTL_HOURS`(=1h)."""
+    cache_key = (f"naver_industry_{client_sig()}_{date.today().isoformat()}"
+                 f"_{days_back}_{limit}{_detail_tag(locals())}.json")
     cache_file = _CACHE_DIR / cache_key
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _MARKET_TTL_HOURS:
-                cached = json.loads(cache_file.read_text())
+                _rows, _note = cache_rows(json.loads(cache_file.read_text()))
                 # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
-                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
-                # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
-                _WINDOW_NOTE["industry"] = cached_window_note(len(cached or []), days_back)
-                return cached or []
+                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 행 수에서
+                # 파생하면 '몇 쪽에서 왜 멈췄나'를 복원할 수 없으므로 저장할 때
+                # 같이 굽고 여기서 **읽는다**(#342 의 캐시 층 교훈).
+                _WINDOW_NOTE["industry"] = _note
+                return _rows
         except Exception as exc:
             log.warning("naver_research: industry cache read failed: %s", exc)
 
     cutoff = date.today() - timedelta(days=days_back)
-    rows: list[dict] = []
-    seen_nid: set[str] = set()
-    # 2026-09-11: 원천이 Next.js SPA 로 바뀌어 서버 렌더 표가 사라졌다(VM
-    # 실측: 117,442B 응답에 `<table` 0건). 페이지네이션하던 HTML 경로는
-    # 정의상 0건이라 지웠다(죽은 경로는 남기지 않는다, §작업 원칙) —
-    # JSON API 가 한 번에 20행을 주므로 받고 cutoff 로 거른다.
-    # ⚠️ 옛 HTML 경로는 여러 쪽을 훑어 더 긴 윈도를 채울 수 있었다. 지금은
-    # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
-    # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
-    # 표시한다(#52·#43·#45).
-    j_rows, why, raw_n = fetch_research_json("industry")
+    # 2026-09-12: 쪽 이어받기 복원(사용자 "그전에는 한국은 일주일치 긁어왔어").
+    # 세 탭이 `fetch_research_pages` **한 함수**를 쓴다 — 복제하면 한 탭만
+    # 하루치로 남는다(#38·#147). 중단 조건·파라미터 판정은 그 안에 있다.
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
-    for r in j_rows:
-        if r.get("date") and r["date"] < cut:
-            continue
-        if r["nid"] in seen_nid:
-            continue
-        seen_nid.add(r["nid"])
-        rows.append(r)
+    rows, why, _meta = fetch_research_pages("industry", cutoff=cut, limit=limit)
     # 사유를 **계산만 하고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
     _LAST_MARKET_FAIL["industry"] = why or ""
     # 창 절단은 실패가 아니라 **값과 같이** 말할 사실이다(독립 리뷰 H1).
-    _WINDOW_NOTE["industry"] = window_note(raw_n, len(j_rows), len(rows), days_back)
+    _WINDOW_NOTE["industry"] = window_note(_meta, days_back)
 
+    # 독스트링이 '날짜 내림차순' 을 약속하는데 **정렬을 한 번도 안 했다** —
+    # 원천 순서에 기대고 있었고, 쪽을 합치면 그 가정이 처음으로 부담을 진다.
+    # 자르기(`[:limit]`)는 정렬 **뒤**에 와야 최신이 남는다.
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
     rows = rows[:limit]
     out = [{
         "category": r["category"], "broker": r["broker"],
@@ -685,7 +958,9 @@ def fetch_recent_research_industry(limit: int = 80,
     if out:  # truthy-only — 빈 결과(일시 실패) 캐시 안 함
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(json.dumps(out, ensure_ascii=False))
+            cache_file.write_text(json.dumps(
+                cache_envelope(out, _WINDOW_NOTE.get("industry") or "", _meta),
+                ensure_ascii=False))
         except Exception as exc:
             log.warning("naver_research: industry cache write failed: %s", exc)
 
@@ -709,48 +984,39 @@ def fetch_recent_research_strategy(limit: int = 80,
 
     종목/산업 리포트와 동일 윈도(기본 7일). 단일 목표가가 없어 detail fetch
     생략(빠름). Returns [{broker, title, date, link}] 날짜 내림차순. 키
-    불필요, 12h 디스크 캐시."""
-    cache_key = (f"naver_strategy_v1_{date.today().isoformat()}"
-                 f"_{days_back}_{limit}.json")
+    불필요, 디스크 캐시 `_MARKET_TTL_HOURS`(=1h)."""
+    cache_key = (f"naver_strategy_{client_sig()}_{date.today().isoformat()}"
+                 f"_{days_back}_{limit}{_detail_tag(locals())}.json")
     cache_file = _CACHE_DIR / cache_key
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _MARKET_TTL_HOURS:
-                cached = json.loads(cache_file.read_text())
+                _rows, _note = cache_rows(json.loads(cache_file.read_text()))
                 # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
-                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
-                # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
-                _WINDOW_NOTE["strategy"] = cached_window_note(len(cached or []), days_back)
-                return cached or []
+                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 행 수에서
+                # 파생하면 '몇 쪽에서 왜 멈췄나'를 복원할 수 없으므로 저장할 때
+                # 같이 굽고 여기서 **읽는다**(#342 의 캐시 층 교훈).
+                _WINDOW_NOTE["strategy"] = _note
+                return _rows
         except Exception as exc:
             log.warning("naver_research: strategy cache read failed: %s", exc)
 
     cutoff = date.today() - timedelta(days=days_back)
-    rows: list[dict] = []
-    seen_nid: set[str] = set()
-    # 2026-09-11: 원천이 Next.js SPA 로 바뀌어 서버 렌더 표가 사라졌다(VM
-    # 실측: 117,442B 응답에 `<table` 0건). 페이지네이션하던 HTML 경로는
-    # 정의상 0건이라 지웠다(죽은 경로는 남기지 않는다, §작업 원칙) —
-    # JSON API 가 한 번에 20행을 주므로 받고 cutoff 로 거른다.
-    # ⚠️ 옛 HTML 경로는 여러 쪽을 훑어 더 긴 윈도를 채울 수 있었다. 지금은
-    # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
-    # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
-    # 표시한다(#52·#43·#45).
-    j_rows, why, raw_n = fetch_research_json("invest")
+    # 2026-09-12: 쪽 이어받기 복원(사용자 "그전에는 한국은 일주일치 긁어왔어").
+    # 세 탭이 `fetch_research_pages` **한 함수**를 쓴다 — 복제하면 한 탭만
+    # 하루치로 남는다(#38·#147). 중단 조건·파라미터 판정은 그 안에 있다.
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
-    for r in j_rows:
-        if r.get("date") and r["date"] < cut:
-            continue
-        if r["nid"] in seen_nid:
-            continue
-        seen_nid.add(r["nid"])
-        rows.append(r)
+    rows, why, _meta = fetch_research_pages("invest", cutoff=cut, limit=limit)
     # 사유를 **계산만 하고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
     _LAST_MARKET_FAIL["strategy"] = why or ""
     # 창 절단은 실패가 아니라 **값과 같이** 말할 사실이다(독립 리뷰 H1).
-    _WINDOW_NOTE["strategy"] = window_note(raw_n, len(j_rows), len(rows), days_back)
+    _WINDOW_NOTE["strategy"] = window_note(_meta, days_back)
 
+    # 독스트링이 '날짜 내림차순' 을 약속하는데 **정렬을 한 번도 안 했다** —
+    # 원천 순서에 기대고 있었고, 쪽을 합치면 그 가정이 처음으로 부담을 진다.
+    # 자르기(`[:limit]`)는 정렬 **뒤**에 와야 최신이 남는다.
+    rows.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
     rows = rows[:limit]
     out = [{
         "broker": r["broker"], "title": r["title"], "date": r["date"],
@@ -761,7 +1027,9 @@ def fetch_recent_research_strategy(limit: int = 80,
     if out:  # truthy-only — 빈 결과(일시 실패) 캐시 안 함
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(json.dumps(out, ensure_ascii=False))
+            cache_file.write_text(json.dumps(
+                cache_envelope(out, _WINDOW_NOTE.get("strategy") or "", _meta),
+                ensure_ascii=False))
         except Exception as exc:
             log.warning("naver_research: strategy cache write failed: %s", exc)
 

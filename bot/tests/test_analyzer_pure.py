@@ -15,10 +15,39 @@ import pytest
 
 import bot.analyzer as _a
 
+# ⚠️ `pytest.importorskip` 은 못 쓴다 — conftest 가 `tradingagents.*` 일부를
+# MagicMock 으로 꽂아 두어 경로 탐색이 ImportError 가 아닌 예외로 터진다(실측).
+# 실제로 부를 수 있는지는 **불러 봐서** 판정한다(#25 능력은 이름이 아니라 실측).
+try:                                        # noqa: SIM105
+    from tradingagents.agents.utils.rating import parse_rating as _parse_rating
+    _HAS_RATING = callable(_parse_rating)
+except Exception:                           # noqa: BLE001
+    _HAS_RATING = False
+
+_NEEDS_RATING = pytest.mark.skipif(
+    not _HAS_RATING,
+    reason="tradingagents(+pydantic) 미설치 — `_extract_rating` 이 그 import 에 "
+           "위임하므로 이 환경에선 계약을 잴 수 없다(판정 불가 ≠ 통과, #54)")
+
 
 # ── _extract_rating ────────────────────────────────────────────────────────
 
+@_NEEDS_RATING
 class TestExtractRating:
+    """⚠️ `_extract_rating` 은 `tradingagents.agents.utils.rating.parse_rating`
+    에 위임하는데, 그 import 는 패키지 `__init__` 체인을 타고 `pydantic` 까지
+    간다(`agents/__init__` → `managers.research_manager` → `agents.schemas`).
+    그 의존성이 없는 환경에서는 함수가 **항상 None** 을 돌려주므로 이 클래스
+    7건이 전부 red 였다 — 구현도 계약도 낡지 않았고 **환경**이 없는 것이다
+    (2026-09-12 실측: pydantic 스텁 하나를 얹으면 182건 전부 green).
+
+    없는 의존성을 '틀렸다' 고 찍으면 고칠 수 없는 red 가 상시로 남아 진짜
+    red 를 가린다(#260). 대신 **명시적으로 건너뛰고** 사유를 적는다 — VM 처럼
+    의존성이 깔린 환경에서는 그대로 돌아 계약을 지킨다(#54 판정 불가는
+    통과가 아니라 판정 불가다).
+    """
+
+
     def test_buy(self):
         assert _a._extract_rating("Rating: Buy\nEnter at $189.") == "Buy"
 
@@ -438,3 +467,31 @@ class TestTraderDecisionDivergence:
     def test_unparseable_rating_silent(self):
         state = {"trader_investment_plan": "거래 액션: Sell"}
         assert _a._detect_trader_decision_divergence(state, "N/A") == ""
+
+
+class TestRatingImportIsNotSilent:
+    """의존성이 빠지면 **말은 해야** 한다 — 옛 판은 로그 0줄이라 운영에서
+    모든 Rating 이 'N/A' 로 떨어져도 며칠을 몰랐다(#12·#82).
+
+    ⚠️ 위 `TestExtractRating` 이 skip 되는 환경에서도 **이 테스트는 돈다** —
+    그래야 skip 이 '아무것도 안 재는 상태' 가 되지 않는다(#54·#291).
+    """
+
+    def test_import_failure_warns_once(self, monkeypatch, caplog):
+        import builtins
+        import logging
+        real = builtins.__import__
+
+        def boom(name, *a, **kw):
+            if name.startswith("tradingagents.agents.utils.rating"):
+                raise ImportError("simulated: pydantic 없음")
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", boom)
+        monkeypatch.setattr(_a, "_RATING_IMPORT_WARNED", False)
+        with caplog.at_level(logging.WARNING, logger=_a.log.name):
+            assert _a._extract_rating("Rating: Buy") is None
+            assert _a._extract_rating("Rating: Sell") is None
+        hits = [r for r in caplog.records if "parse_rating import" in r.message]
+        assert len(hits) == 1, f"모듈당 1회여야 한다(늘 뜨면 안 재는 것, #25): {hits}"
+        assert "N/A" in hits[0].getMessage()      # 무엇이 망가지는지 말한다

@@ -133,7 +133,7 @@ _ABS_CHANGE_SIDS = {"USDKRW=X"}
 
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof").encode()
+     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof_dropnote").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -202,6 +202,79 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
 
 
 # ── yfinance monthly batch ──────────────────────────────────────────
+def drop_reason(src: str, sid: str, *, naver_mapped: bool) -> str:
+    """값이 없어 카드가 빠질 때의 **갈래**(순수).
+
+    '없음' 만 말하는 진단은 추측을 부른다(#82) — 처방이 갈래마다 다르다.
+    네이버 미매핑 카드는 yf 배치 하나에 전적으로 의존하므로 **달러인덱스가
+    대조군**이다(#143): 둘 다 빠졌으면 배치 전체가 빈 것이고, 이 카드만
+    빠졌으면 그 심볼의 응답이 없는 것이다.
+    """
+    if src == "fred":
+        return "FRED 관측을 못 받았습니다"
+    if src == "ecos":
+        return "ECOS 관측을 못 받았습니다"
+    if naver_mapped:
+        return "네이버 값·히스토리를 둘 다 못 받았습니다"
+    return (f"네이버 매핑이 없어 yfinance 월간 배치에만 의존하는데 그 배치가 "
+            f"{sid} 를 안 줬습니다 — 같은 경로인 달러인덱스(DX-Y.NYB)도 함께 "
+            f"빠졌으면 배치 전체 실패, 이 카드만 빠졌으면 심볼 응답 문제입니다")
+
+
+def dropped_note(dropped: list) -> str:
+    """빠진 카드를 화면이 말할 한 줄(순수). 없으면 빈 문자열.
+
+    2026-09-11 팔라듐이 `if value is None: continue` 에서 **조용히** 사라져
+    사용자가 "카드가 하나 빠진걸 보니" 라고 물어야 했다. 카드를 안 그리는 것은
+    그대로 두되(장애 때 깨진 카드로 화면을 채우지 않는다) **빠졌다는 사실과
+    사유는 말한다**(#43 침묵이 최악 · #52 조용한 것과 죽은 것).
+    """
+    if not dropped:
+        return ""
+    _all = [str(d.get("label") or d.get("key") or "?") for d in dropped]
+    # ⚠️ 장애 때는 40장이 한꺼번에 빠진다 — 전부 나열하면 카드보다 각주가 길다.
+    # 자르되 **잘랐다고 말한다**(#45 나열 합 ≠ 총계).
+    _SHOW = 6
+    names = " · ".join(_all[:_SHOW]) + (f" 외 {len(_all) - _SHOW}장"
+                                        if len(_all) > _SHOW else "")
+    why = ""
+    whys = [str(d.get("why") or "") for d in dropped if d.get("why")]
+    if whys and len(set(whys)) == 1:
+        why = f" — {whys[0]}"
+    return f"값을 못 받아 {len(dropped)}장을 뺐습니다: {names}{why}"
+
+
+def _batch_cache_hit(_cached, name: str, tickers: list[str], ttl: int):
+    """캐시가 **요청한 티커를 다 갖고 있을 때만** 히트로 본다(순수-ish).
+
+    파일명만으로 키를 잡으면 카드 목록에 티커를 더해도 TTL 이 끝날 때까지 옛
+    dict 가 그대로 반환돼 **새 카드가 조용히 사라진다** — 2026-09-11 팔라듐
+    (PA=F)을 더한 배포가 정확히 그랬다(`macro_yf_monthly.json` 에 DX-Y.NYB 만
+    있었고 `if isinstance(c, dict) and c: return c` 가 조기 반환했다).
+    #18·#21b·#95·#124·#198·#216·#233 에 이은 같은 병이고, 손으로 버전을 올리는
+    방식은 이 레포에서 다섯 번 졌다 — 규율이 아니라 **요청 집합으로 판정**한다
+    (#119 규율로 기억할 일을 구조로).
+    """
+    if not _cached:
+        return None
+    c = _cached(name, ttl=ttl)
+    if isinstance(c, dict) and c and all(t in c for t in tickers):
+        return c
+    return None
+
+
+def _batch_cache_fill(out: dict, tickers: list[str]) -> dict:
+    """요청했는데 **안 온 티커도 빈 값으로** 기록한다(순수).
+
+    ⚠️ `_batch_cache_hit` 이 '요청한 티커가 다 있나' 로 판정하는데, 저장은
+    **값이 온 것만** 했다. 그러면 영구히 안 오는 심볼 하나(= 팔라듐이 딱 그
+    경우일 수 있다)가 캐시를 **영원한 미스**로 만들어, 30초 스냅샷 재생성마다
+    `yf.download` 가 나간다 — 이 캐시가 막으려던 그 60배 트래픽이다(독립 리뷰
+    2026-09-12). '물어봤는데 안 왔다' 도 TTL 동안 기억할 사실이다.
+    """
+    return {t: list(out.get(t) or []) for t in tickers}
+
+
 def _yf_close(df, tk):
     """yfinance 프레임에서 티커 종가 Series — 컬럼 모양 무관(순수·graceful).
 
@@ -218,7 +291,15 @@ def _yf_close(df, tk):
                 sub = df["Close"]
                 if tk in getattr(sub, "columns", []):
                     return sub[tk].dropna()
-                return sub.iloc[:, 0].dropna() if getattr(sub, "ndim", 1) > 1 else sub.dropna()
+                # ⚠️ 옛 폴백은 `sub.iloc[:, 0]` 로 **첫 컬럼**을 돌려줬다. yf 전용
+                # 티커가 달러인덱스 하나뿐일 때만 우연히 안전했고, 팔라듐(PA=F)이
+                # 더해져 둘이 되자 PA=F 컬럼이 빠진 응답에서 **달러인덱스 종가가
+                # 팔라듐 카드에 앉는다** — 사라지는 것보다 나쁜 '조용히 틀린 카드'
+                # 다(#46 원본 식별자를 자체 추정으로 대체 금지 · #33).
+                # 요청한 티커가 없으면 **없는 것**이다.
+                if getattr(sub, "ndim", 1) > 1:
+                    return None
+                return sub.dropna()
             if tk in lv0:                      # (Ticker, Price) — group_by="ticker"
                 return df[tk]["Close"].dropna()
             return None
@@ -241,10 +322,9 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
         from bot.finviz_client import _cache_write, _cached
     except Exception:
         _cache_write = _cached = None
-    if _cached:
-        c = _cached("macro_yf_monthly.json", ttl=3600)
-        if isinstance(c, dict) and c:
-            return c
+    _hit = _batch_cache_hit(_cached, "macro_yf_monthly.json", tickers, 3600)
+    if _hit is not None:
+        return _hit
     try:
         import yfinance as yf
         df = yf.download(
@@ -272,7 +352,7 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
         return _cached("macro_yf_monthly.json", ttl=86400) or out if _cached else out
     if out and _cache_write:
         try:
-            _cache_write("macro_yf_monthly.json", out)
+            _cache_write("macro_yf_monthly.json", _batch_cache_fill(out, tickers))
         except Exception:
             pass
     return out
@@ -291,10 +371,9 @@ def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
         from bot.finviz_client import _cache_write, _cached
     except Exception:
         _cache_write = _cached = None
-    if _cached:
-        c = _cached("macro_yf_daily1mo.json", ttl=3600)
-        if isinstance(c, dict) and c:
-            return c
+    _hit = _batch_cache_hit(_cached, "macro_yf_daily1mo.json", tickers, 3600)
+    if _hit is not None:
+        return _hit
     import yfinance as yf
     try:
         df = yf.download(
@@ -317,7 +396,7 @@ def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
         return _cached("macro_yf_daily1mo.json", ttl=86400) or out if _cached else out
     if out and _cache_write:
         try:
-            _cache_write("macro_yf_daily1mo.json", out)
+            _cache_write("macro_yf_daily1mo.json", _batch_cache_fill(out, tickers))
         except Exception:
             pass
     return out
@@ -693,10 +772,18 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     # YFRateLimitError 유발 → 회로차단 → Macro value None → 카드 소실의 주범이었음.
     # 모든 yf 가격 sid 가 _MACRO_NAVER 에 매핑돼 값은 네이버로 충분, 네이버 결측 시
     # chart_spark[-1](yf_monthly=download/history) 폴백. fast_info 호출 0.
-    yf_daily: dict[str, dict] = {}
+    # ⚠️ 옛 `yf_daily` dict 는 2026-06-14 에 fast_info 를 걷어내며 **채우는 쪽이
+    # 사라졌는데 읽는 쪽만 남아** 있었다 — `elif d:` 는 도달 불가한 죽은 분기였고
+    # 바로 위 주석이 '미매핑/실패는 yf 폴백' 이라고 말해 다음 사람을 오도했다
+    # (§작업 원칙 '죽은 경로는 삭제' · #55). 실제 폴백은 아래 `chart_spark[-1]`
+    # 하나뿐이다.
     macro_nv = _fetch_macro_naver_values(all_yf_sids)   # 값=전체(원자재 포함)
 
     spark_cache: dict[str, list[float]] = {}  # 큰 차트용(월간 12개월)
+
+    # 값이 없어 빠진 카드 — 화면이 **말해야** 한다(#43). DOMESTIC·GLOBAL 두 번
+    # 도는 `_build` 가 같은 리스트에 모은다(두 번 세면 갈라진다, #45).
+    dropped: list[dict] = []
 
     def _build(defs: list) -> list[dict]:
         rows: list[dict] = []
@@ -714,14 +801,12 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             # 정한다(같은 분기 안에서도 네이버 값/히스토리 폴백이 갈린다).
             _val_tag = ""
             if src == "yf":
-                # 현재값 = 네이버 우선(카드 안 사라짐), 미매핑/실패는 yf 폴백.
+                # 현재값 = 네이버 우선(카드 안 사라짐). 네이버 매핑이 없거나
+                # 실패한 sid 는 아래 `chart_spark[-1]`(yf 월간 배치)로만 채워진다.
                 nv = macro_nv.get(sid)
-                d = yf_daily.get(sid)
                 if nv:
                     value, change = nv["value"], nv["change"]
                     _val_tag = "nv:" + _MACRO_NAVER[sid][0]
-                elif d:
-                    value, change = d["value"], d["change"]
                 # (2026-07-26 회고: VIX 를 CNN "값"으로 덮어쓰려 했었으나 —
                 # 사용자가 말한 "CNN 값"은 VIX 가 아니라 CNN Fear & Greed
                 # 지수 자체였음(사용자 스크린샷으로 확인). CNN 은 원시 VIX
@@ -805,7 +890,12 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     card_spark = chart_spark
                 spark_dir = _spark_dir(card_spark, -2)
             if value is None:
-                continue  # graceful: drop empty cards
+                # 카드는 그리지 않되(옛 동작) **왜 빠졌는지 남긴다** — 그냥
+                # `continue` 하면 사용자 눈에 '기능이 삭제된 것' 으로 보인다.
+                _why = drop_reason(src, sid, naver_mapped=(sid in _MACRO_NAVER))
+                dropped.append({"key": key, "label": label, "why": _why})
+                log.warning("macro: card dropped — %s(%s): %s", label, sid, _why)
+                continue
             spark_cache[key] = chart_spark   # 큰 차트는 월간 유지
             # 기간 변동 — 카드가 **실제로 그리는 구간**(spark_span: 1개월/12개월)의
             # 시작값 대비 현재값. 옛 카드는 '직전 관측 대비'(yf=전일·FRED/ECOS=전월)
@@ -892,6 +982,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
         "charts": charts,
         "ts": kst.strftime("%m.%d. %H:%M KST"),
         "version": _DEFS_VERSION,
+        # 정의엔 있는데 값이 없어 안 그린 카드 — 화면·진단이 같은 것을 읽는다(#35).
+        "dropped": dropped,
+        "dropped_note": dropped_note(dropped),
     }
     try:
         cache_file.write_text(json.dumps(result, ensure_ascii=False))
@@ -1050,16 +1143,43 @@ def _sid_for(key: str) -> str:
 
 def _why(keys: tuple[str, ...] = ()) -> int:
     import sys as _s
-    print(f"macro_snapshot --why v1 · 지표정의 {_DEFS_VERSION[:12]}…")
+    print(f"macro_snapshot --why v2 · 지표정의 {_DEFS_VERSION[:12]}…")
     print(f"  인터프리터 {_s.executable}")                    # #132
     snap = fetch_macro_snapshot()
     rows = list(snap.get("domestic") or []) + list(snap.get("global") or [])
+    _drop = list(snap.get("dropped") or [])
+    # 정의엔 있는데 **값이 없어 안 그린** 카드를 먼저 말한다 — 이게 '카드가
+    # 사라졌다'의 답이고, 없으면 그 다음 갈래로 넘어간다.
+    if _drop:
+        print(f"  ⚠️ 값이 없어 뺀 카드 {len(_drop)}장"
+              + (f" (아래는 앞 12장)" if len(_drop) > 12 else "") + ":")
+        for d in _drop[:12]:
+            print(f"      · {d.get('label')} ({d.get('key')}) — {d.get('why')}")
     if keys:
-        rows = [r for r in rows
-                if r.get("key") in keys or any(k in r.get("label", "")
-                                               for k in keys)]
+        _match = lambda r: (r.get("key") in keys
+                            or any(k in (r.get("label") or "") for k in keys))
+        _hit_drop = [d for d in _drop if _match(d)]
+        rows = [r for r in rows if _match(r)]
+        if not rows:
+            # ⚠️ 옛 판은 갈래를 뭉개 **"키를 확인하라"** 하나만 말했다 — 팔라듐처럼
+            # 키가 정확한데 값이 없어 빠진 경우에도 운영자를 오탈자 확인으로
+            # 보낸다(#82 갈래는 이름으로 · #292 틀린 라벨은 라벨이 없는 것보다
+            # 나쁘다). 정의를 되짚어 셋으로 가른다.
+            _defined = [(k, lb, sid) for k, lb, _u, _sr, sid, _d in (DOMESTIC + GLOBAL)
+                        if k in keys or any(x in lb for x in keys)]
+            if _hit_drop:
+                for d in _hit_drop:
+                    print(f"  ❌ '{d.get('label')}' 는 **정의엔 있는데 값이 없어 "
+                          f"빠졌다** — {d.get('why')}")
+            elif _defined:
+                print(f"  ❌ 정의엔 있으나({_defined}) 카드에도 드롭 목록에도 "
+                      f"없다 — 수집 경로를 확인하라")
+            else:
+                print("  ❌ 그 키는 **정의에 없다**(DOMESTIC·GLOBAL) — 오탈자 확인")
+            return 1
     if not rows:
-        print("  ❌ 대조할 카드가 없다 — 키를 확인하라(대조 0건은 통과가 아니다)")
+        print("  ❌ 대조할 카드가 하나도 없다 — 수집이 통째로 비었다"
+              "(대조 0건은 통과가 아니다, #54)")
         return 1
     from bot.finviz_client import cache_age_sec
     from bot.naver_marketindex import fetch_commodities
