@@ -60231,17 +60231,25 @@ class TestNaverThemeAndDetailSpa20260912:
     def test_partial_pages_are_shown_but_not_cached(self, monkeypatch):
         """중간 쪽이 429·타임아웃이면 **값은 주되 완전본으로 굽지 않는다** —
         구우면 TTL 내내 잘린 목록이 서빙되고, 그 사이 '원천에 그게 전부' 로
-        읽힌다(#280·#343)."""
+        읽힌다(#280·#343).
+
+        ⚠️ 픽스처를 다시 썼다(#222, 2026-09-12 독립 리뷰 H1): 이제 2쪽 실패가
+        **한도 사다리를 올리므로**, 더 큰 한도에서 원천이 짧게 주면 그건
+        정당한 완결이고 부분이 아니다. 이 계약이 실제로 서는 자리는 **한도를
+        다 올려도 계속 가득 차는** 경우다 — 픽스처가 그 상태를 못 만들면
+        아무것도 안 재는 것이다(#91c).
+        """
         import bot.naver_sector_client as nsc
-        full = [dict(self._ROW, no=str(i)) for i in range(100)]
+        full = [dict(self._ROW, no=str(i)) for i in range(5000)]
 
         def fake(url, params=None, **k):
-            return (full, "") if (params or {}).get("page", 1) == 1 \
-                else (None, "HTTP 429")
+            p = dict(params or {})
+            return ((full[:p.get("pageSize", 20)], "") if p.get("page", 1) == 1
+                    else (None, "HTTP 429"))
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, partial = nsc._theme_json_rung("u")
-        assert len(rows) == 100 and partial is True and "429" in why
+        assert len(rows) == nsc._THEME_PAGE_SIZES[-1] and partial is True, why
         monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
         _r, marks, _w, p2 = nsc.collect_themes_json()
         assert p2 is True and "⚠️" in marks[0], marks
@@ -60941,3 +60949,121 @@ class TestThemeLadder400AndCooldown20260912:
         _l2, w2 = theme_status({"stale": True, "stale_age": 3600,
                                 "reason": "원천이 HTTP 400"})
         assert "직전 기록" not in w2, w2
+
+
+class TestThemeLadderReviewFixes20260912:
+    """독립 리뷰(2026-09-12) H1·H2·M1 — #346 의 fix 가 스스로 만든 구멍.
+
+    H1 이 핵심이다: `page` 를 2쪽부터 계속 얹으면, **이 변경이 스스로 세운
+    가설**(같은 주소가 `page` 를 얹은 요청에 400 을 준다)이 참일 때 2쪽이
+    400 → `saturated=False` → **한도 사다리가 300·1000 으로 안 올라간다**.
+    결과는 266개 중 100개 · `partial=True` · 캐시 거부 = 사용자가 신고한
+    '느림'이 그대로 남고 화면은 `전체 테마 100개` 라고 적는다(#45).
+    """
+
+    _ROW = {"no": "64", "name": "콩/대두", "changeRate": "1.0",
+            "recent3daysChangeRate": "0.5", "type": "theme"}
+
+    def _iso(self, monkeypatch, tmp_path):
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        return nsc
+
+    # ── H1 ──────────────────────────────────────────────────────────────
+    def test_page2_rejection_still_escalates_the_size_ladder(
+            self, monkeypatch, tmp_path):
+        """원천이 `page` 를 얹은 요청을 **거절**해도 한도는 올라가야 한다.
+
+        1쪽이 상한까지 찼는데 2쪽을 못 받았으면 그건 '목록 끝'이 아니라
+        **더 있는데 못 받은 것**이다(#136 요구를 충족했나 · #342 상한 판정은
+        원천이 준 원시 수로).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(266)]
+        seen = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            seen.append(p)
+            if "page" in p:                    # 이 변경의 가설 그대로
+                return None, nsc._nd.http_reason(400)
+            return full[:p.get("pageSize", 20)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows is not None and len(rows) == 266, (len(rows or []), why, seen)
+        assert partial is False, (why, seen)
+        # 한도가 실제로 올라갔는지 — 값만 보면 사다리를 지워도 통과할 수 있다
+        assert any(p.get("pageSize") == 300 for p in seen), seen
+
+    def test_page1_full_but_no_more_pages_is_not_called_complete(
+            self, monkeypatch, tmp_path):
+        """반대 증거 — 한도를 다 올렸는데도 계속 가득 차면 **부분**이다(#280)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(5000)]
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if "page" in p:
+                return None, nsc._nd.http_reason(400)
+            return full[:p.get("pageSize", 20)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert partial is True and rows and len(rows) == nsc._THEME_PAGE_SIZES[-1]
+
+    # ── H2 ──────────────────────────────────────────────────────────────
+    def test_earlier_rung_does_not_win_over_a_more_actionable_later_one(
+            self, monkeypatch, tmp_path):
+        """**눈먼 테스트 보완**: 옛 픽스처는 400 이 이미 1순위라 정렬을 통째로
+        지워도(`sorted(...)[0]` → `fails[0]`) 42개가 전부 통과했다(리뷰 실측).
+
+        현실 배치가 정확히 그 반대다 — `rungs` 는 `[("탐색됨", memo)] +
+        _THEME_API_RUNGS` 라 **옛 탐색 메모가 0단**이므로, 0단 404 · 1단
+        (증명된 주소) 400 이면 순위가 없으면 404 를 적는다(고치려던 그 오보).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "https://x/api/old")
+        proven = nsc._THEME_API_RUNGS[0][1]
+        monkeypatch.setattr(
+            nsc, "_get2_json",
+            lambda url, **k: (None, nsc._nd.http_reason(
+                400 if url == proven else 404)))
+        rows, marks, why, _p = nsc.collect_themes_json()
+        assert rows == []
+        assert "400" in why and "404" not in why, why
+        assert nsc._THEME_API_RUNGS[0][0] in why, why
+        assert marks[0].startswith("탐색됨"), marks   # 0단이 먼저 돌긴 했다
+
+    # ── M1 ──────────────────────────────────────────────────────────────
+    def test_cooldown_is_disclosed_even_without_a_stored_snapshot(
+            self, monkeypatch, tmp_path):
+        """저장분이 없으면 `theme_status` 가 안 돌아 **냉각 사실이 사라진다**
+        — 10분 전 기록을 방금 잰 것처럼 적는다(#165·#43). CLAUDE.md #346 이
+        "냉각 중엔 화면이 '직전 기록 · N분 뒤 재시도' 라고 밝힌다"고 적어 둔
+        그 약속이 이 경로에선 거짓이었다(#286).
+        """
+        import bot.naver_sector_client as nsc
+        from bot.naver_pages import render_theme_page
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        nsc._cache_write(nsc._THEME_FAIL_MEMO,
+                         {"reason": "원천이 HTTP 400 (domestic/theme)",
+                          "rungs": []})
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_read_cache", lambda n: (None, None))
+        html = render_theme_page()
+        assert "400" in html, html[:400]
+        assert "직전 기록" in html and "재시도" in html, html[:900]
+
+    def test_pause_fixture_uses_the_product_shaped_reason(self):
+        """픽스처는 원천이 아니라 **제품이 실제로 만드는 문자열**이어야 한다
+        (#155) — `pick_theme_reason` 이 라벨을 덧붙인 모양으로 온다."""
+        import bot.naver_sector_client as nsc
+        from bot import naver_diag as nd
+        shaped = nsc.pick_theme_reason(
+            [(0, 0, "domestic/theme", nd.PAUSED),
+             (2, 1, "front-api/theme", nd.http_reason(404))])
+        assert shaped.startswith(nd.PAUSED) and "domestic/theme" in shaped
+        assert nd.reason_rank(shaped) == 0, shaped

@@ -1083,15 +1083,27 @@ def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
         # 무시한다고 확정했으므로 얹어도 이득이 0인데, 2026-09-12 실측에서 같은
         # 주소가 `page` 를 얹은 요청에 **HTTP 400** 을 줬다(한 시간 전 같은
         # 주소가 100행을 줬다). 이득 없는 파라미터는 거절의 후보일 뿐이므로
-        # **증명된 호출 모양**(업종 `?pageSize=100`)을 그대로 쓴다. `page` 가
-        # 듣는 형제(리서치)를 위해 2쪽부터만 얹는다(#61 이 파라미터가 무엇을
-        # 줄이나 · #136 요구를 충족했나).
+        # **증명된 호출 모양**(업종 `?pageSize=100`)을 그대로 쓴다.
+        # 2쪽부터는 얹는다 — 이 함수는 탐색이 찾아낸 **모르는 주소**도 검증
+        # 하므로(`_discover_theme_endpoint`) `page` 가 듣는 원천이면 그때
+        # 이어받는다. 리서치 형제는 여기를 안 쓴다(자기 페이징이 따로 있고
+        # 거기도 1쪽은 `page` 없이 보낸다) — 귀속을 틀리게 적으면 다음 사람이
+        # "리서치가 깨진다"는 헛걱정을 한다(#55, 독립 리뷰 2026-09-12 L2).
         params = {"pageSize": page_size}
         if page > 1:
             params["page"] = page
         raw, why = _get2_json(url, params=params)
         if raw is None:
-            return ((got, why, True, False) if got
+            # ⚠️ **1쪽이 상한까지 찼는데 2쪽을 못 받았으면 포화다.** 그건 '목록
+            # 끝'이 아니라 더 있는데 못 받은 것이므로, 여기서 `saturated=False`
+            # 로 끝내면 한도 사다리(100→300→1000)가 멈춘다 — 이 변경이 스스로
+            # 세운 가설(같은 주소가 `page` 를 얹은 요청에 400 을 준다)이 참일
+            # 때 정확히 그렇게 되어, 266개 중 100개를 '전체 테마'로 그리고
+            # 캐시도 거부해 **클릭마다 재수집**한다(독립 리뷰 2026-09-12 H1
+            # 실측 · #136 요구를 충족했나 · #45 모집단).
+            # 상한 판정은 파싱 뒤 행 수가 아니라 **원천이 준 원시 수**로 —
+            # 못 읽은 행 하나가 경고를 끄면 안 된다(#342).
+            return ((got, why, True, n_first >= page_size) if got
                     else (None, why, False, False))
         if not isinstance(raw, list):
             # dict 로 감싸 오는 가족도 있다 — 목록 자리를 찾아본다.
@@ -1369,7 +1381,15 @@ def _note_theme_fail(reason: str, marks: list) -> None:
 
 
 def _clear_theme_fail() -> None:
-    """수집이 성공하면 냉각 기록을 지운다 — 다음 실패가 제 나이를 갖게."""
+    """식은 뒤 성공하면 죽은 기록 파일을 치운다.
+
+    ⚠️ 옛 독스트링은 "남겨 두면 다음 실패의 나이가 옛 기록에서 계산돼 냉각이
+    짧아진다" 고 적었는데 **성립하지 않는다**(독립 리뷰 2026-09-12 L1 실측):
+    `_note_theme_fail` 은 `_cache_write`(tmp + `os.replace`)라 재기록마다
+    mtime 이 새로 잡히고, 냉각이 살아 있으면 `_collect_and_store` 가 조기
+    반환하므로 '살아 있는 메모 + 성공' 자체가 제품 경로에 없다. 정리 목적만
+    남긴다 — 가드가 재는 범위를 넘는 주장을 독스트링에 적지 말 것(#55·#286).
+    """
     try:
         (_CACHE_DIR / _THEME_FAIL_MEMO).unlink()
     except Exception:                                          # noqa: BLE001

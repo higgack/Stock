@@ -152,16 +152,28 @@ def theme_status(data: dict) -> tuple[str, str]:
     ago = f"{age // 3600}시간 전" if age >= 3600 else f"{age // 60}분 전"
     if data.get("refreshing"):
         return f" · {ago} 스냅샷 · 갱신 중", ""
+    return (f" · {ago} 스냅샷 · 갱신 실패",
+            theme_reason_text(data)
+            or "테마 수집이 0건으로 끝났습니다 — 사유를 기록하지 못했습니다")
+
+
+def theme_reason_text(data: dict) -> str:
+    """수집 사유 + **냉각이면 그 사실**까지 한 줄로(순수).
+
+    ⚠️ 옛 판은 이 꼬리표를 `theme_status` 안에만 뒀는데 그 함수는 `stale`
+    (= 쓸 수 있는 저장분이 있을 때)에만 돈다. 새 배포·캐시 비움 상태에서
+    원천이 죽으면 2회차부터 냉각이 걸린 빈 결과가 나오고, 그 payload 엔
+    `stale` 이 없어 화면이 **10분 전 기록을 방금 잰 것처럼** 적었다
+    (독립 리뷰 2026-09-12 M1 실측 — CLAUDE.md #346 이 "냉각 중엔 화면이
+    '직전 기록 · N분 뒤 재시도' 라고 밝힌다" 고 적어 둔 약속이 그 경로에선
+    거짓이었다, #165·#43·#286). 두 경로가 **같은 함수**를 쓴다(#38).
+    """
     why = str(data.get("reason") or "")
     cool = int(data.get("cooldown") or 0)
-    if cool:
-        # 이 사유는 **지금 잰 것이 아니다** — 직전 전멸 기록이고 아직 냉각
-        # 중이라 사다리를 다시 걷지 않았다. 그 사실을 밝히지 않으면 방금
-        # 측정한 것으로 읽힌다(#165 안 잰 것을 단정하지 말 것 · #43).
-        why = ((why or "직전 수집이 0건으로 끝났습니다")
-               + f" (직전 기록 · {cool // 60}분 {cool % 60}초 뒤 재시도)")
-    return (f" · {ago} 스냅샷 · 갱신 실패",
-            why or "테마 수집이 0건으로 끝났습니다 — 사유를 기록하지 못했습니다")
+    if not cool:
+        return why
+    return ((why or "직전 수집이 0건으로 끝났습니다")
+            + f" (직전 기록 · {cool // 60}분 {cool % 60}초 뒤 재시도)")
 
 
 def render_theme_page() -> str:
@@ -178,7 +190,7 @@ def render_theme_page() -> str:
     # 0건인 날 NameError 로 페이지가 통째로 죽는다(#63a 게이트 안에 갇힌 변수).
     note, _why0 = theme_status(data)
     if not themes:
-        _w = str(data.get("reason") or "")
+        _w = theme_reason_text(data)      # 냉각이면 그 사실까지(#43·#165)
         body = ('<div class="empty">테마 시세를 불러올 수 없습니다'
                 + (f' — {_html.escape(_w)}' if _w else '') + '</div>')
     else:
