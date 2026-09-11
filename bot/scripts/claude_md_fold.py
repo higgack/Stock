@@ -39,18 +39,76 @@ _HEAD = "## ⛔ 과거 실수 — 반복 금지 (먼저 읽을 것)"
 _END = "## ⛔ UNIVERSAL CHANGES ONLY"
 _REF_HEAD = "## 실수 상세 — CLAUDE.md 에서 접은 서사 (2026-09-06 지시서 감사)"
 _POINTER = "→ REFERENCE §실수 #"
-_ENTRY_RE = re.compile(r'(?m)^(\d+[a-z]?)\. \*\*')
+# ⚠️ `**` 를 요구하면 안 된다 — 굵게가 뒤에 오는 항목(#23 `23. 진단 스크립트는
+# **…**`)이 통째로 앞 항목에 합쳐진다(독립 리뷰 Blocking: 실제로 #23 이
+# CLAUDE.md 에서 사라지고 그 안의 `env_keys` 규칙이 유실됐다). 모양 관례에
+# 기대지 말고 번호만 본다 — 회귀가 "모든 `N. ` 줄이 자기 항목으로 파싱되는가"
+# 를 전수로 못박는다(#24).
+_ENTRY_RE = re.compile(r'(?m)^(\d+[a-z]?)\. ')
 
 # 접기 정책 — 숫자는 **측정**으로 정한다(#25·#260 근거 없는 문턱 금지).
 KEEP_RECENT = 40      # 최근 N개는 손대지 않는다(막 쓴 항목은 서사째로 읽힌다)
-MIN_SAVE = 150        # 이만큼 못 줄이면 포인터 줄만 늘어난다 — 접지 않는다
+MIN_SAVE = 80         # 이만큼 못 줄이면 포인터 줄만 늘어난다 — 접지 않는다
+# ⚠️ 150 → 80(2026-09-12): 판정 극성을 뒤집자(아래 `is_droppable`) 안전한 절감이
+# **−3,028자(24개 항목)** 로 줄었다 — 첫 판의 −42,816 은 절감이 아니라 규칙 유실
+# 이었다(독립 리뷰 실측). 80 은 포인터 줄(≈25자)의 세 배라 순절감이 확실한 선이다.
 
-# 명령형·한정 절 표지. **넓게** 잡는다 — 놓치면 규칙이 조용히 약해지고(#287),
-# 과하게 잡으면 그냥 덜 줄어들 뿐이다(안전한 방향으로 틀린다).
-_KEEP_RE = re.compile(
-    r'(할 것|볼 것|물을 것|쓸 것|둘 것|적을 것|셀 것|말 것|답할 것|확인할 것|넣을 것'
-    r'|지울 것|잴 것|갈 것|read|금지|하라|말라|해야 한다|여야 한다|돼야|되어야'
-    r'|안 된다|아니다|규칙:|대응:|처방:|일반화:|교훈|먼저 |단 |다만 |예외|때만)')
+# 명령형·한정 절 표지 — **열거가 아니라 구조**로 본다(#24).
+# ⚠️ 첫 판은 동사 14개를 이름으로 적었다가 `쓸 것`·`봐야 한다`·`처방 둘:` 같은
+# 형태를 못 잡아 **57개 항목에서 규칙 절 70개를 흘렸다**(독립 리뷰 실측).
+# 한국어 명령형은 생산적이라 목록으로는 못 따라간다 — 넓게 잡아 틀리면 덜
+# 줄어들 뿐이고, 좁게 잡아 틀리면 규칙이 조용히 약해진다(#287).
+_OBLIGATION_RE = re.compile(
+    r'[가-힣]야 한다|[가-힣]야 하고|[가-힣]야만|금지|하라|말라|해선 안|안 된다|아니다')
+# ⚠️ 콜론을 요구하면 안 된다 — `규칙의 경계는 …다`(#32)처럼 콜론 없이 규칙을
+# 말하는 문장이 흔하다(회귀가 켜지자마자 그걸 잡았다, #87a).
+_LABEL_RE = re.compile(r'규칙|대응|처방|일반화|교훈|검산법')
+# 한정절 — 이게 빠지면 남은 문장이 **원문보다 강해진다**(#287 이 정확히 그 사고).
+_QUALIFIER_RE = re.compile(r'(⚠️|^단 |^다만 | 단 | 다만 |예외|때만|먼저 |그러나|하지만)')
+
+
+def _has_imperative(text: str) -> bool:
+    """`~할 것`·`~볼 것` 형태 — ` 것` 앞 음절의 받침이 ㄹ 인가로 본다.
+
+    동사를 열거하지 않는다: 한국어의 `-ㄹ 것` 은 어떤 동사에도 붙는다.
+    """
+    for m in re.finditer(r'([가-힣]) 것', text):
+        ch = ord(m.group(1)) - 0xAC00
+        if 0 <= ch < 11172 and ch % 28 == 8:        # 종성 ㄹ
+            return True
+    return False
+
+
+def is_rule_clause(text: str) -> bool:
+    """이 문장이 **규칙을 말하나** — 명령형·의무·라벨·한정."""
+    return bool(_has_imperative(text) or _OBLIGATION_RE.search(text)
+                or _LABEL_RE.search(text) or _QUALIFIER_RE.search(text))
+
+
+def is_incident_narrative(text: str) -> bool:
+    """이 문장이 **그때 무슨 일이 있었나**(과거 사건 보고)인가 — 종성 ㅆ.
+
+    `했다.`·`였다.`·`됐다.` 로 끝나면 사건 기술이다. `~한다.`·`~이다.`·`~할 것.`
+    은 규칙이라 여기 안 걸린다.
+    """
+    m = re.search(r'([가-힣])다[.)\]"\'」』]*\s*$', text.strip())
+    if not m:
+        return False
+    code = ord(m.group(1)) - 0xAC00
+    return 0 <= code < 11172 and (code % 28) == 20        # 종성 ㅆ
+
+
+def is_droppable(text: str) -> bool:
+    """CLAUDE.md 에서 뺄 수 있는 문장 — **과거 사건 보고이면서 규칙이 아닌 것**.
+
+    ⚠️ 판정의 **극성**이 중요하다. 첫 판은 "규칙처럼 보이는 것만 남긴다" 였는데,
+    이 파일의 규칙은 자주 **평서문**으로 쓰여 있어(#31 "…보드 단위 그룹 기본값 +
+    화면 id 와 규약 키가 다르면 `cadence_id`. 회귀는 …로 고정." ) 그 정책은
+    **진짜 규칙을 흘렸다**(독립 리뷰 B2: 57개 항목 70개 절, 실측). 그래서
+    "규칙을 고른다" 가 아니라 **"서사만 버린다"** 로 뒤집었다 — 애매하면 남는다.
+    절감은 −42,816 → −3,028자로 줄지만 그 차액은 **절감이 아니라 유실**이었다.
+    """
+    return is_incident_narrative(text) and not is_rule_clause(text)
 
 
 def split_mistakes(txt: str) -> tuple[str, str, str]:
@@ -66,6 +124,12 @@ def parse_entries(section: str) -> list[tuple[str, int, int]]:
     out = []
     for i, m in enumerate(ms):
         end = ms[i + 1].start() if i + 1 < len(ms) else len(section)
+        if i + 1 == len(ms):
+            # 섹션 끝의 정책 문단(들여쓰기 3칸)은 **항목이 아니다** — 삼키면
+            # 마지막 항목의 본문이 되고 REFERENCE 에 복제된다(독립 리뷰 M1).
+            tail = re.search(r'(?m)^ {1,3}\S', section[m.start():end])
+            if tail:
+                end = m.start() + tail.start()
         out.append((m.group(1), m.start(), end))
     return out
 
@@ -78,11 +142,14 @@ def clauses(body: str) -> list[str]:
 
 
 def keep_clauses(body: str) -> list[str]:
-    """CLAUDE.md 에 남길 문장 — 머리 문장 + 명령형·한정 절(**원문 그대로**)."""
+    """CLAUDE.md 에 남길 문장 — 머리 문장 + **버릴 수 없는 것 전부**(원문 그대로).
+
+    고르는 게 아니라 **버리는** 쪽으로 판정한다(`is_droppable` 참조).
+    """
     cs = clauses(body)
     if not cs:
         return []
-    return [cs[0]] + [c for c in cs[1:] if _KEEP_RE.search(c)]
+    return [cs[0]] + [c for c in cs[1:] if not is_droppable(c)]
 
 
 def _disp(s: str) -> int:
@@ -99,8 +166,13 @@ def _wrap(num: str, kept: list[str], width: int = 76) -> str:
     """
     body = re.sub(r'^\d+[a-z]?\.\s+', '', " ".join(kept))
     indent = " " * 4
+    body = re.sub(r'\s+(?=[⚠✅])', '\n', body)      # 경고·확인 절은 줄을 바꾼다
     lines, cur = [], f"{num}. "
-    for word in body.split(" "):
+    for word in body.replace("\n", " \n").split(" "):
+        if word == "\n":
+            lines.append(cur.rstrip())
+            cur = indent
+            continue
         cand = (cur + word) if cur.endswith(" ") else f"{cur} {word}"
         if cur.strip() and _disp(cand) > width:
             lines.append(cur.rstrip())
@@ -153,6 +225,8 @@ def _insert_ref(ref_txt: str, num: str, block: str) -> str:
             return ref_txt[:m.start()] + block + "\n" + ref_txt[m.start():]
     if secs:
         return ref_txt.rstrip("\n") + "\n\n" + block
+    # 절이 하나도 없으면 **그 헤딩 바로 뒤**에 넣는다(파일 끝이 아니라 —
+    # 이 섹션이 늘 마지막이라는 보장이 없다, 독립 리뷰 L4).
     i = ref_txt.index(_REF_HEAD) + len(_REF_HEAD)
     return ref_txt[:i] + "\n\n" + block + ref_txt[i:]
 

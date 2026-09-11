@@ -54,11 +54,23 @@ _REF_RE = re.compile(r'#(\d+[a-z]?)')
 
 
 def _mistake_entries():
-    """실수 섹션을 {번호: 본문} 으로."""
+    """실수 섹션을 {번호: 본문} 으로 — 접힌 항목은 **REFERENCE 사본을 합쳐서**.
+
+    ⚠️ 접기는 서사를 옮기고 서사에는 `#N` 상호참조가 들어 있다. 합치지 않으면
+    아래 계열 가드(#24 "이 목록은 누가 갱신하나" 의 답)가 **잘린 코퍼스**로
+    돌아 감도가 조용히 떨어진다 — 독립 리뷰 실측: 접기로 본문 내 인용이
+    1,515 → 1,335(−12%), 113개 항목이 인용 번호를 잃었다. 계수는 접기 전후로
+    변하지 않아야 한다(아래 회귀가 그걸 고정).
+    """
     txt = _CLAUDE.read_text(encoding="utf-8")
     sec = txt[txt.index(_MISTAKE_HEAD):txt.index(_MISTAKE_END)]
     parts = _ENT_RE.split(sec)
-    return sec, {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+    ent = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+    ref = _REFERENCE.read_text(encoding="utf-8")
+    for num, body, ref_body in _folded_pairs():
+        if num in ent:
+            ent[num] = ent[num] + "\n" + ref_body
+    return sec, ent
 
 
 def _themes(sec):
@@ -213,23 +225,34 @@ def test_injected_rules_file_stays_within_budget():
     331,000 이지만, 이 파일은 **매 턴 전량 주입**되므로 38% 증가는 매 턴의 실제
     비용이다 — 그래서 **300,000**(약 9일 창)으로 절충했다. 옛 판이 겪은 '여유 3일'
     참사와 달리 무관한 커밋을 며칠 만에 막지는 않는다.
-    **2026-09-12 정책 결정 — 상한을 올리지 않고 오래된 항목을 자동으로 접는다**
-    (사용자 "오래된 항목을 자동으로 접는다. 레퍼런스로"). 위 ⚠️ 가 물으라고 한
-    그 정책 질문의 답이다. `bot/scripts/claude_md_fold.py` 가 최근 40개를 뺀
-    항목의 **서사만** REFERENCE 로 옮기고 명령형 절은 원문 그대로 남긴다 —
-    첫 실행 실측 **240,941 → 198,125자(136개 접음, −42,816)**. 그래서 상한을
-    300,000 → **240,000 으로 되돌린다**(올린 것을 물린다).
-    ⚠️ 접기는 **기울기를 낮추는 것이지 증가를 멈추는 게 아니다**: 새 항목은
-    전문으로 들어오고(≈6,500자/일) 창 밖으로 나간 것만 ≈45% 로 접힌다 —
-    전 항목이 한 번씩 창을 통과한 뒤의 정상 상태 기울기는 ≈2,900자/일로
-    추정되고(측정이 아니라 그 비율에서 나온 추정이다, #165) 240,000 까지는
-    그 기준으로 약 2주다. 다시 걸리면 **접을 것이 남았는지 먼저 보고**
-    (`--apply`), 접을 게 없는데도 넘으면 그때 다시 정책을 물을 것."""
+    **2026-09-12 정책 결정 — 오래된 항목을 자동으로 접는다**(사용자 "오래된 항목을
+    자동으로 접는다. 레퍼런스로"). 위 ⚠️ 가 물으라고 한 그 정책 질문의 답이고,
+    `bot/scripts/claude_md_fold.py` 가 그 일을 한다.
+
+    ⚠️⚠️ **그런데 접기로는 이 선을 못 지킨다 — 실측이 그렇게 말한다.**
+    첫 판은 240,941 → 198,125자(−42,816)를 냈지만 독립 리뷰가 그 절감의 대부분이
+    **규칙 유실**임을 실측으로 보였다(57개 항목에서 규칙 절 70개 · 항목 #23 은
+    통째로 사라져 `bot/env_keys.py` 단일 헬퍼 규칙까지 유실). 판정 극성을
+    "규칙을 고른다" → **"과거 사건 보고만 버린다"** 로 뒤집자 안전한 절감은
+    **−3,028자(24개 항목)** 다. 이 파일의 규칙은 자주 평서문으로 쓰여 있어
+    기계가 규칙과 서사를 문장 단위로 가를 수 없다 — 애매하면 남긴다(#287).
+    그래서 상한은 **접기가 아니라 측정**으로 정한다: 접은 뒤 238,172자,
+    git 실측 증가율 ≈6,500자/일(2026-09-02→09-11) → 2주 창 = **330,000**.
+    ⚠️ 상한을 파일 크기에 바싹 붙이면 **무관한 커밋이 문서 단언 하나에 막힌다**
+    (#67·#275 — 옛 판의 '여유 3일' 참사). 접을 것이 0인데도 넘으면 그때는
+    상한을 올릴 게 아니라 **새 항목의 크기 정책**(항목당 상한 등)을 물어야 한다 —
+    증가의 주동력은 옛 항목이 아니라 매일 들어오는 새 항목이다."""
+    from bot.scripts import claude_md_fold as fold
     n = len(_CLAUDE.read_text(encoding="utf-8"))
-    assert n <= 240_000, (
-        f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(240,000)을 넘었다. "
-        "`cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold` 로 "
-        "접을 것이 남았는지 먼저 볼 것(규칙 문장은 남는다).")
+    if n > 330_000:
+        _, sec, _ = fold.split_mistakes(_CLAUDE.read_text(encoding="utf-8"))
+        pending = fold.due(fold.parse_entries(sec), sec)
+        assert False, (
+            f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(330,000)을 넘었다. "
+            f"접을 차례 {len(pending)}개"
+            + (" — `cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold "
+               "--apply` 로 접을 것" if pending else
+               " — 접을 게 없다. 상한을 올리지 말고 **새 항목 크기 정책**을 물을 것"))
 
 
 # ── 요약 문서 ↔ CLAUDE.md 동기화 (2026-09-06 지시서 감사 (e) 회수분) ────────────
@@ -348,32 +371,114 @@ def _folded_pairs():
     return out
 
 
-def test_folding_never_drops_an_imperative_clause():
-    """접기의 **유일한** 계약: 서사는 옮겨도 **명령형 절은 CLAUDE.md 에 남는다**.
+# 접기 계약을 재는 **독립** 추출기 — 제품의 `is_rule_clause` 를 쓰면 동어반복이다
+# (독립 리뷰 B3 실측: 제품 마커 14개 중 절반을 지우는 뮤테이션이 22개 테스트를
+# 전부 통과했다 — 재는 자와 재이는 것이 같이 좁아져서다, #292). 여기 규칙은
+# 제품보다 **넓어도 된다**: 넓으면 제품이 더 남기게 강제할 뿐이다.
+_RULE_OTHER = re.compile(r'야 한다|야 하고|야만 한다|금지|하라|말라|안 된다|'
+                        r'규칙|대응|처방|일반화|교훈|검산법')
 
-    #287 이 기록한 사고가 정확히 그 반대다 — 2026-06-20 압축이 한정어 둘을
-    떨어뜨려 이미 대체된 규칙이 78일을 살아남았다. 그래서 '무엇이 사라졌나'를
-    산문이 아니라 **원문의 명령형 절**로 묻는다(#286): REFERENCE 사본(원문)에서
-    절을 다시 뽑아 CLAUDE.md 항목에 **글자 그대로** 있는지 본다.
 
-    ⚠️ 손 접기 39건은 사람이 다시 쓴 요약이라 이 검사를 통과할 수 없다(실측:
-    39/39 이 '누락'으로 잡힌다) — allowlist 로 빼되 크기를 못박는다. 새 항목을
-    손으로 접으면 여기서 걸리고, 그때 "왜 다시 썼나"를 적게 된다."""
-    from bot.scripts import claude_md_fold as fold
-    norm = lambda s: re.sub(r'\s+', ' ', s).strip()
+def _jongseong(ch: str) -> int:
+    """음절의 종성 인덱스 — 제품과 **따로** 구현한다(복식부기, #292)."""
+    code = ord(ch) - 0xAC00
+    return code % 28 if 0 <= code < 11172 else -1
+
+
+def _sentences(text):
+    """문장 분리 — 이것도 여기서 따로 한다(제품 분리기를 부르면 동어반복)."""
+    flat = re.sub(r'\s+', ' ', text).strip()
+    flat = re.sub(r'^\d+[a-z]?\.\s+', '', flat)
+    return [p.strip() for p in re.split(r'(?<=다\.)\s+|\s+(?=[⚠✅])', flat) if p.strip()]
+
+
+def _must_survive(text):
+    """CLAUDE.md 에 **반드시 남아야** 하는 문장 = 규칙이거나, 과거 사건 보고가 아닌 것.
+
+    접기의 계약은 "서사만 버린다" 이므로, 여기서는 그 여집합을 독립적으로 센다.
+    ⚠️ 규칙형을 `것` 하나로 잡으면 안 된다 — `한 번도 안 탄 것 —` 같은 명사절
+    서사가 전부 걸린다(실측으로 #37 이 그렇게 걸렸다). `-ㄹ 것`(할·볼·쓸…)이다.
+    """
+    out = []
+    for s_ in _sentences(text)[1:]:
+        rule = _RULE_OTHER.search(s_) or any(
+            _jongseong(s_[i - 1]) == 8                      # 종성 ㄹ
+            for i in range(1, len(s_) - 1)
+            if s_[i] == " " and s_[i + 1] == "것")
+        m = re.search(r'([가-힣])다[.)\]"\'」』]*$', s_)
+        past = bool(m) and _jongseong(m.group(1)) == 20      # 종성 ㅆ
+        if rule or not past:
+            out.append(s_)
+    return out
+
+
+def test_folding_only_drops_incident_narrative():
+    """접기의 **유일한** 계약: 버리는 것은 **과거 사건 보고**뿐이다.
+
+    #287 이 기록한 사고가 그 반대다 — 2026-06-20 압축이 한정어 둘을 떨어뜨려
+    이미 대체된 규칙이 78일을 살아남았다. 그래서 '무엇이 사라졌나'를 산문이
+    아니라 **문장의 형태**로 묻는다(#286).
+
+    ⚠️ 옛 판은 제품의 `keep_clauses` 로 뽑아 제품이 만든 결과와 대조했다 —
+    `keep(X) ⊆ wrap(keep(X))` 는 **어떤 마커 집합에서도 참**이라 아무것도 안
+    쟀다(독립 리뷰 실측: 제품 마커 절반을 지우는 변형도, CLAUDE.md 에서 규칙
+    한 줄을 손으로 지우는 변형도 전부 통과). 이제 위 **독립 구현**으로 REFERENCE
+    사본에서 다시 뽑고, 머리 문장도 건너뛰지 않는다(잔존 글자의 58%가 거기 있었다).
+
+    ⚠️ 손 접기 39건은 사람이 다시 쓴 요약이라 통과할 수 없다 — allowlist 로
+    빼되 크기를 못박는다.
+
+    ⚠️ **이 가드가 못 보는 축**(#274): 오라클이 REFERENCE 사본이므로 **접힌 항목만**
+    본다. 안 접힌 항목에서 규칙을 지우는 편집은 여기서 안 걸린다(실측: 접힌 #37 에서
+    문장을 지우면 빨간불, 안 접힌 #22 에서 지우면 통과). 그건 사본이 없어 생기는
+    한계이고, 그 자리는 사람 리뷰(§Pre-commit 7)가 담당한다."""
+    norm = lambda t: re.sub(r'\s+', ' ', t).strip()
     pairs = [(n, c, r) for n, c, r in _folded_pairs() if n not in _HAND_FOLDED]
-    checked = 0
+    assert pairs, "도구로 접은 항목이 0건 — 이 가드는 지금 눈이 멀어 있다"
     for num, claude_body, ref_body in pairs:
         assert claude_body, f"#{num} 절은 있는데 CLAUDE.md 항목이 없다(고아)"
-        flat = norm(claude_body)
-        missing = [k for k in fold.keep_clauses(ref_body)[1:] if norm(k) not in flat]
+        flat = norm(re.sub(r'^\d+[a-z]?\.\s+', '', norm(claude_body)))
+        must = _must_survive(ref_body)
+        # 대조 0건은 통과가 아니다(#54) — **항목마다** 잰다(합으로 세면 항상 ≥1).
+        assert must, f"#{num}: 남아야 할 문장을 하나도 못 뽑았다 — 추출기가 깨졌다"
+        missing = [k for k in must if norm(k) not in flat]
         assert not missing, (
-            f"#{num}: 접으면서 명령형 절이 사라졌다(#287) — {missing[:2]}")
-        checked += len(fold.keep_clauses(ref_body))
-    # 대조 대상이 0건이면 통과가 아니다(#54) — 도구로 접은 게 하나도 없으면
-    # 이 가드는 아무것도 안 재는 것이므로 그 사실이 보여야 한다.
-    assert pairs, "도구로 접은 항목이 0건 — 이 가드는 지금 눈이 멀어 있다"
-    assert checked >= len(pairs), "절을 하나도 못 뽑았다 — 추출기가 깨졌다"
+            f"#{num}: 접으면서 규칙/현재형 문장이 사라졌다(#287) — {missing[:2]}")
+        # 머리 문장도 그대로여야 한다(옛 판은 `[1:]` 로 건너뛰어 M11 을 놓쳤다)
+        head = norm(re.sub(r'^\d+[a-z]?\.\s+', '', _sentences(ref_body)[0]))
+        assert head in flat, f"#{num}: 머리 문장이 바뀌었다 — {head[:60]}"
+
+
+def test_folding_does_not_thin_the_citation_corpus():
+    """계열 가드가 세는 `#N` 인용은 **접기 전후로 같아야** 한다.
+
+    접기는 서사를 옮기고 인용은 서사에 있다 — 코퍼스를 CLAUDE.md 로만 잡으면
+    접을수록 가드가 눈이 먼다(독립 리뷰 H2, 실측 −12%). `_mistake_entries` 가
+    REFERENCE 사본을 합치므로 접힌 항목의 인용도 그대로 세어진다."""
+    _, ent = _mistake_entries()
+    folded = [n for n, _b, _r in _folded_pairs() if n in ent]
+    assert len(folded) >= 20, f"접힌 항목이 {len(folded)}개뿐 — 눈먼 가드"
+    # 접힌 항목 본문에 REFERENCE 서사가 실제로 합쳐졌는지 값으로 본다
+    thin = [n for n in folded if "→ REFERENCE §실수" not in ent[n]]
+    assert not thin, f"포인터가 없는 접힌 항목: {thin[:5]}"
+    cites = sum(len(_REF_RE.findall(ent[n])) for n in folded)
+    assert cites >= len(folded), f"접힌 항목의 인용이 {cites}건뿐 — 사본이 안 합쳐졌다"
+
+
+def test_every_numbered_line_parses_as_its_own_entry():
+    """`N. ` 로 시작하는 줄은 **전부** 제 항목이어야 한다.
+
+    옛 파서는 `N. **굵게`(모양 관례)를 요구해서, 산문이 먼저 오는 #23 이 앞
+    항목에 통째로 합쳐졌다 — CLAUDE.md 에서 그 항목이 사라지고 그 안의
+    `bot/env_keys.py` 단일 헬퍼 규칙(명시적으로 'SUPERSEDED 아님' 이라 적힌
+    살아 있는 규칙)이 유실됐다(독립 리뷰 Blocking). 모양 관례에 기대지 말고
+    구조로 못박는다(#24)."""
+    from bot.scripts import claude_md_fold as fold
+    _, sec, _ = fold.split_mistakes(_CLAUDE.read_text(encoding="utf-8"))
+    lines = {m.group(1) for m in re.finditer(r'(?m)^(\d+[a-z]?)\. ', sec)}
+    parsed = {n for n, _s, _e in fold.parse_entries(sec)}
+    assert lines == parsed, f"번호 줄인데 항목으로 안 잡힌다: {sorted(lines - parsed)}"
+    assert "23" in parsed and "env_keys" in sec, "#23(env_keys 단일 헬퍼)이 사라졌다"
 
 
 def test_hand_fold_allowlist_stays_small_and_resolves():
