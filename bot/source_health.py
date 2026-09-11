@@ -120,6 +120,26 @@ def _naver_sector() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+def _naver_research() -> tuple[bool, str]:
+    """네이버 finance 리서치 목록(‘최근 리서치 액션’ KR 탭) — HTML.
+
+    업종 위젯과 **같은 호스트(finance.naver.com)** 인데 점검이 없어, 2026-09-11
+    에 둘이 같이 비었을 때 /health 가 업종만 말하고 리서치는 침묵했다(#24 열거형
+    점검은 목록 밖을 못 잡는다)."""
+    try:
+        ok, text, dt = _naver_get(
+            "https://finance.naver.com/research/company_list.naver",
+            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR",
+                     "Referer": "https://finance.naver.com/research/"}, want="text")
+        if not ok:
+            return False, f"{text} ({dt:.0f}ms)"
+        has = isinstance(text, str) and "company_read.naver" in text
+        return has, (f"리포트 링크 {'있음' if has else '없음(구조 변경?)'} "
+                     f"({len(text) if isinstance(text, str) else 0}B, {dt:.0f}ms)")
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
 def _nv_api(url: str) -> tuple[bool, object, float]:
     return _naver_get(url, headers={
         "User-Agent": "Mozilla/5.0", "Accept": "application/json",
@@ -200,6 +220,7 @@ def run() -> dict:
         "Naver 해외(worldstock)": _naver_world(),
         "Naver 업종(desktop API)": _naver_upjong(),
         "Naver 업종(finance HTML)": _naver_sector(),
+        "Naver 리서치(finance HTML)": _naver_research(),
     }
     return {"yf_paused": yfp, "naver_paused": nvp,
             "fast_info_breaker": fi_breaker, "checks": checks}
@@ -222,6 +243,22 @@ def format_report(res: dict) -> str:
     # 제한 — 우리는 download(history)+Naver 로 우회하므로 앱 영향 0. /health 의
     # fast_info 점검은 진단용 '직접' 호출이라 제한 시 항상 ❌ (앱 traffic 아님).
     ck = res.get("checks", {})
+    # finance.naver.com(HTML 스크래핑)과 stock.naver.com(JSON API)은 **다른
+    # 경로**다 — 한쪽만 죽으면 "네이버 장애"가 아니라 그 경로 문제이고, 어느
+    # 위젯이 영향받는지가 다르다(2026-09-11 한국 업종·리서치만 빈 날 미국 업종은
+    # 정상이었다). 그 대조를 사람이 눈으로 하지 않게 한 줄로 적는다(#51·#143).
+    _fin = {k: v for k, v in ck.items() if "finance HTML" in k}
+    _api = {k: v for k, v in ck.items()
+            if k.startswith(("Naver", "스냅샷")) and "finance HTML" not in k}
+    if _fin and _api:
+        f_ok = sum(1 for v in _fin.values() if v[0])
+        a_ok = sum(1 for v in _api.values() if v[0])
+        lines.append("")
+        lines.append(
+            f"ℹ️ 네이버 경로별: finance.naver.com(HTML) {f_ok}/{len(_fin)} · "
+            f"stock.naver.com(API) {a_ok}/{len(_api)}"
+            + (" — HTML 경로만 막힘(한국 업종 등락·리서치 액션 위젯 영향)"
+               if f_ok == 0 and a_ok > 0 else ""))
     fi_ok = ck.get("yfinance fast_info", (True,))[0]
     batch_ok = ck.get("yfinance batch", (False,))[0]
     naver_ok = any(v[0] for k, v in ck.items() if k.startswith("Naver"))

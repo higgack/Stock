@@ -48,6 +48,7 @@ _USAGE_LOG_PATH = Path.home() / ".tradingagents" / "usage.jsonl"
 _MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.md"
 # ⚠️ "keep in sync" 는 규율이라 매번 진다 — **표시** 환율의 정의는
 # `usage_tracker` 한 곳이다(#38·#119).
+from bot import naver_diag as _naver_diag                   # noqa: E402
 from bot import usage_tracker as _ut                        # noqa: E402
 _KRW_PER_USD = _ut.KRW_PER_USD
 
@@ -17482,10 +17483,28 @@ def _render_earnings_table(earnings: list) -> str:
     )
 
 
-def _render_research_kr_table(research: list) -> str:
-    """Render the KR 기업(종목) research actions table — 일주일치."""
+def _render_research_kr_table(research: list, note: dict | None = None) -> str:
+    """Render the KR 기업(종목) research actions table — 일주일치.
+
+    `note` = {reason, stale, stale_min}. 비었는데 사유가 있으면 **'없습니다' 대신
+    사유를 적는다** — 원천이 막힌 날 "최근 리서치 액션이 없습니다" 는 거짓말이고
+    사용자가 매번 물어야 했다(2026-09-11 · #43·#52·#82)."""
+    note = note or {}
     if not research:
+        why = note.get("reason") or ""
+        if why:
+            return ('<div class="empty-msg">⚠️ 지금은 표시할 수 없습니다 — '
+                    f'{_html.escape(why)}</div>')
         return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
+    hd = ""
+    if note.get("stale"):
+        _m = note.get("stale_min")
+        _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
+        _why = note.get("reason") or ""
+        hd = ('<div class="empty-msg">💾 저장분'
+              + (f' ({_ago})' if _ago else "")
+              + (f' · {_html.escape(_why)}' if _why else "")
+              + '</div>')
     rows: list[str] = []
     for r in research[:200]:
         code = _html.escape(r.get("code", ""))
@@ -17511,7 +17530,8 @@ def _render_research_kr_table(research: list) -> str:
             f'<td>{title_cell}</td><td>{dt}</td></tr>'
         )
     return (
-        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
+        hd
+        + '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>종목</th><th>증권사</th><th>투자의견</th><th>목표가</th>'
         '<th>제목(클릭→원문)</th><th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
@@ -18188,11 +18208,22 @@ def _render_deposit_charts(dep: dict) -> str:
 
 
 def _render_sector_movers(movers: dict) -> str:
-    """업종 등락 TOP 10 (상승/하락) 위젯 — Naver 업종별 시세. 데이터 없으면 빈 문자열."""
+    """업종 등락 TOP 10 (상승/하락) 위젯 — Naver 업종별 시세.
+
+    데이터도 사유도 없으면 빈 문자열(위젯 생략). **사유가 있으면 위젯을 남기고
+    그 사유를 적는다** — 옛 판은 원천이 막힌 날 위젯이 통째로 사라져 사용자가
+    "갑자기 없어졌어? 또 왜그런거야?" 를 물어야 했다(2026-09-11 · #43 침묵이
+    최악 · #52 조용한 것과 죽은 것)."""
     up = (movers or {}).get("up", [])
     down = (movers or {}).get("down", [])
+    why = (movers or {}).get("reason") or ""
     if not up and not down:
-        return ""
+        if not why:
+            return ""
+        return (
+            '<div class="section-hd"><h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
+            '<span class="ts" style="margin-left:auto">Naver</span></div>'
+            f'<div class="empty-msg">⚠️ 지금은 표시할 수 없습니다 — {_html.escape(why)}</div>')
 
     def _col(title: str, items: list) -> str:
         rows = []
@@ -18209,6 +18240,12 @@ def _render_sector_movers(movers: dict) -> str:
                 f'<table class="sm-tbl">{body}</table></div>')
 
     ts = _html.escape((movers or {}).get("ts", ""))
+    # 저장분으로 되돌아갔으면 화면이 그렇게 말한다(#136 payload 가 밝힌 원천을
+    # 화면이 따른다) — 형제 위젯(TW 업종)과 같은 규약·같은 라벨(#38).
+    if (movers or {}).get("stale"):
+        _m = (movers or {}).get("stale_min")
+        _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
+        ts = f'저장분 {ts}{f" ({_ago})" if _ago else ""} ⚠️'
     _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     return (
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
@@ -18912,7 +18949,7 @@ def _render_market_page(data: dict) -> str:
     {_res_intl_btns}
   </div>
   <div id="tab-kr" class="tab-pane active">
-    {_render_research_kr_table(research_kr)}
+    {_render_research_kr_table(research_kr, data.get('research_kr_note'))}
   </div>
   <div id="tab-krind" class="tab-pane">
     {_render_research_industry_table(research_kr_industry)}

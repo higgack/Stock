@@ -28,9 +28,24 @@ from typing import Optional
 
 import requests
 
+from bot import naver_diag as _nd
+
 log = logging.getLogger("bot.naver_research")
 
 _BASE_URL = "https://finance.naver.com/research/company_list.naver"
+
+# 마지막 종목 리서치 수집이 **왜** 비었나 — 호출부(market_overview)가 화면에
+# 싣는다. 리스트 반환형을 바꾸면 형제 호출부(board_audit)까지 깨지므로 사유만
+# 따로 둔다. 한 프로세스에서 이 수집은 렌더당 1회라 동시 실행이 없다(#117 은
+# 같은 dict 를 여러 요청이 나눠 쓰는 경우 — 여기선 키가 하나뿐인 마지막 결과).
+_LAST_MARKET_FAIL: dict = {"reason": ""}
+
+
+def last_market_fail_reason() -> str:
+    """직전 `fetch_recent_research_market` 이 0건이었던 사유("" = 사유 없음).
+
+    계산해 둔 판정을 표시까지 배선하지 않으면 없는 것과 같다(#123·#129·#189·#228)."""
+    return _LAST_MARKET_FAIL.get("reason") or ""
 _DETAIL_URL = "https://finance.naver.com/research/company_read.naver"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "naver_research"
 _CACHE_TTL_HOURS = 12
@@ -102,18 +117,36 @@ def _normalize_code(ticker: str) -> Optional[str]:
     return None
 
 
-def _get(url: str, **kwargs) -> Optional[str]:
-    """GET a Naver Finance page, return decoded text or None."""
+def _get2(url: str, **kwargs) -> tuple[Optional[str], str]:
+    """(본문, 실패 사유) — 갈래를 이름으로(#82). 성공이면 사유는 "".
+
+    옛 `_get` 은 정지·403·타임아웃·빈본문을 `None` 하나로 뭉쳐, 리서치 탭이
+    "최근 리서치 액션이 없습니다" 라고 **거짓말**했다(원천 장애인데 '새 게 없다'
+    로 읽힌다 — 2026-09-11 사용자 지적 · #43·#52)."""
+    try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():
+            return None, _nd.PAUSED
+    except Exception:
+        pass
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=_HTTP_TIMEOUT,
                             **kwargs)
         resp.encoding = "euc-kr"
         if resp.status_code != 200 or not resp.text:
-            return None
-        return resp.text
+            log.warning("naver_research: %s -> HTTP %s (%dB)", url,
+                        resp.status_code, len(resp.content or b""))
+            return None, _nd.http_reason(resp.status_code,
+                                         len(resp.content or b""))
+        return resp.text, ""
     except Exception as exc:
         log.warning("naver_research: fetch failed for %s: %s", url, exc)
-        return None
+        return None, _nd.http_reason(None, exc=exc)
+
+
+def _get(url: str, **kwargs) -> Optional[str]:
+    """본문만 — 사유가 필요한 호출부는 `_get2` 를 쓴다."""
+    return _get2(url, **kwargs)[0]
 
 
 def _cell_texts(row_html: str) -> list[str]:
@@ -344,11 +377,16 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     cutoff = today - timedelta(days=days_back)
     rows: list[dict] = []
     seen_nid: set[str] = set()
+    why = ""
     for page in range(1, max_pages + 1):
-        html = _get(_BASE_URL, params={"page": page})
+        html, why = _get2(_BASE_URL, params={"page": page})
         if not html:
             break
         page_rows = _parse_market_list_page(html, cutoff)
+        if page == 1 and not page_rows:
+            # 1쪽이 200 인데 0건 = 원천 구조 변경 의심(목록 페이지는 비지 않는다).
+            # 2쪽부터의 0건은 정상적인 윈도 끝이라 사유로 삼지 않는다.
+            why = _nd.parse_reason("리서치 행", len(html))
         for r in page_rows:
             if r["nid"] in seen_nid:
                 continue
@@ -367,7 +405,9 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         # 호출이 재시도.
         log.info("naver_research: no recent market reports (%d-day window) — 캐시 안 함",
                  days_back)
+        _LAST_MARKET_FAIL["reason"] = why
         return []
+    _LAST_MARKET_FAIL["reason"] = ""
 
     if fetch_detail:
         detail_map: dict[str, tuple[Optional[float], str]] = {}

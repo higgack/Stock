@@ -1174,6 +1174,34 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
 # 한경 컨센서스는 2026 초 JS 렌더링 전환으로 정적 scrape 불가 →
 # Naver Finance 전체 시장 리서치 목록(naver_research_client)으로 대체.
 
+# 리서치 수집이 **왜** 비었나 / 저장분으로 되돌아갔나 — 화면이 읽는다.
+# 종류별 키라 세 수집기가 한 풀에서 동시에 돌아도 서로를 덮지 않는다(#117).
+_RESEARCH_NOTE: dict = {}
+
+
+def research_note(kind: str = "kr") -> dict:
+    """{reason, stale, stale_min} — 수집이 비었거나 저장분으로 되돌아간 사유."""
+    return dict(_RESEARCH_NOTE.get(kind) or {})
+
+
+def _newest_cached_rows(cache_dir, prefix: str) -> tuple[list | None, float | None]:
+    """`prefix` 로 시작하는 가장 최근 캐시 파일의 행과 나이(초) — 신선도 무관.
+
+    옛 판은 오늘 캐시가 10분을 넘기면 재수집만 시도하고, 실패하면 **멀쩡한
+    파일을 두고 빈 화면**을 냈다(사용자 2026-09-11 "최근 리서치 액션이 없습니다").
+    """
+    try:
+        files = sorted(Path(cache_dir).glob(f"{prefix}*.json"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        for f in files:
+            rows = json.loads(f.read_text())
+            if rows:
+                return rows, max(0.0, time.time() - f.stat().st_mtime)
+    except Exception as exc:                                  # noqa: BLE001
+        log.warning("research cache fallback failed (%s): %s", prefix, exc)
+    return None, None
+
+
 def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
     """Fetch latest KR 종목(기업) 리서치 리포트 — 한 달치(Naver Finance).
 
@@ -1193,19 +1221,31 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
             pass
 
     results: list[dict] = []
+    why = ""
     try:
-        from bot.naver_research_client import fetch_recent_research_market
+        from bot.naver_research_client import (fetch_recent_research_market,
+                                               last_market_fail_reason)
         results = fetch_recent_research_market(limit=limit, days_back=30,
                                                max_pages=20)
+        if not results:
+            why = last_market_fail_reason()
     except Exception as exc:
         log.warning("naver research market fetch error: %s", exc)
+        why = f"수집 예외 — {type(exc).__name__}: {str(exc)[:80]}"
 
     if results:  # truthy-only — 빈 결과(일시 실패) 캐시 안 함('또 갑자기 없음' 방지)
         try:
             cache_file.write_text(json.dumps(results, ensure_ascii=False))
         except Exception:
             pass
-    return results[:limit]
+        _RESEARCH_NOTE["kr"] = {"reason": "", "stale": False}
+        return results[:limit]
+    # 실패·0건 — 마지막 산출본이 있으면 그걸 주고 **저장분이라고 말한다**
+    # (#136 폴백 조건은 '실패' 가 아니라 '요구를 충족했나' · #43 침묵이 최악).
+    prev, age = _newest_cached_rows(cache_dir, "kr_")
+    _RESEARCH_NOTE["kr"] = {"reason": why, "stale": bool(prev),
+                            "stale_min": int((age or 0) // 60) if prev else None}
+    return (prev or [])[:limit]
 
 
 def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
@@ -1673,10 +1713,16 @@ def fetch_all_market_data() -> dict[str, Any]:
         _hk_e = sorted(earn_hk_fut.result() or [], key=_key)
         earnings = _kr_e + _us_e + _jp_e + _tw_e + _cn_e + _hk_e
 
+        # note 는 수집이 끝난 **뒤에** 읽어야 사유가 들어 있다. dict 리터럴의
+        # 평가 순서에 기대면 키 하나만 옮겨도 조용히 빈 note 가 된다 —
+        # 순서에 기댄 안전은 언제든 깨진다(#102a) → 지역 변수로 못박는다.
+        _res_kr = kr_fut.result()
+        _res_kr_note = research_note("kr")
         return {
             "snapshot": snap_fut.result(),
             "earnings": earnings,
-            "research_kr": kr_fut.result(),
+            "research_kr": _res_kr,
+            "research_kr_note": _res_kr_note,
             "research_kr_industry": kr_ind_fut.result(),
             "research_kr_strategy": kr_strat_fut.result(),
             "research_us": us_fut.result(),
@@ -1703,7 +1749,8 @@ def _fetch_sector_movers_safe() -> dict:
         return fetch_sector_movers(top_n=10)
     except Exception as exc:
         log.warning("sector movers fetch error: %s", exc)
-        return {"up": [], "down": [], "ts": ""}
+        return {"up": [], "down": [], "ts": "",
+                "reason": f"수집 예외 — {type(exc).__name__}: {str(exc)[:80]}"}
 
 
 def _fetch_us_sector_movers_safe() -> dict:

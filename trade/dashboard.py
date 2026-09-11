@@ -3014,7 +3014,9 @@ def _why_header(db: Path, data_dir: Path, *, today=None) -> int:
     P("")
     v = f["verdict"]
     P(f"⑨ 판정: {v['branch']} ({f['verdict_population']} 기준) — {v['reason']}")
-    for ln in inbox_silence_notes(f):
+    # `today` 를 안 넘기면 판정은 고정일로, 이 줄만 **오늘**로 계산돼 갈린다 —
+    # 회귀가 날짜 리터럴을 박아 두면 다음 날 빨간불이 된다(#249, 2026-09-11 실측).
+    for ln in inbox_silence_notes(f, today=today):
         P(f"   {ln}")
     for ln in v.get("lines", []):
         P(f"   {ln}")
