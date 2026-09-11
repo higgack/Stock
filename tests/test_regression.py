@@ -56656,7 +56656,7 @@ class TestNaverWidgetSilence20260911:
                      "itemName": "삼성전자",
                      "endUrl": f"https://m.stock.naver.com/r/{i}"} for i in range(n)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (_rows(20), ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         out = nrc.fetch_recent_research_market(limit=300, days_back=30,
                                                fetch_detail=False)
         assert len(out) == 20
@@ -56761,7 +56761,7 @@ class TestNaverWidgetSilence20260911:
                  "itemName": "삼성전자", "endUrl": f"https://m.stock.naver.com/r/{i}"}
                 for i in range(3)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (rows, ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         assert len(mo.fetch_recent_research_kr(limit=50)) == 3
         note = mo.research_note("kr")
         assert "목표가·투자의견을 한 건도 못 읽었습니다" in note["window"], note
@@ -56800,7 +56800,7 @@ class TestNaverWidgetSilence20260911:
         monkeypatch.setattr(nrc, "_get2_json",
                             lambda url, **kw: (asked.append(url) or
                                                ([_row(0)], "")))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         nrc.fetch_recent_research_market(limit=5, days_back=7, fetch_detail=False)
         nrc.fetch_recent_research_industry(limit=5, days_back=7)
         nrc.fetch_recent_research_strategy(limit=5, days_back=7)
@@ -56897,7 +56897,7 @@ class TestNaverWidgetSilence20260911:
         # 돌려주는 `_fetch_report_detail_via` 를 부른다 — 스텁은 **제품이 실제로
         # 부르는 그 함수**를 겨눠야 아무것도 안 새어 나간다(#340·#312).
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: seen.append(nid) or (95000.0, "매수",
+                            lambda nid, **kw: seen.append(nid) or (95000.0, "매수",
                                                              "api/x"))
         assert nrc.check() == 0
         out = capsys.readouterr().out
@@ -56909,7 +56909,7 @@ class TestNaverWidgetSilence20260911:
         assert "경로 api/x" in out, "어느 경로로 읽었는지 안 적는다(#42a)"
         # 못 읽으면 갈래를 적되 **단정하지 않는다** — 그 리포트에 없을 수도 있다
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (None, "", ""))
+                            lambda nid, **kw: (None, "", ""))
         nrc.check()
         out = capsys.readouterr().out
         assert "상세 수율: ⚠️" in out and "단정하지 않는다" in out
@@ -56931,14 +56931,14 @@ class TestNaverWidgetSilence20260911:
                                             "title": "t", "date": _TODAY,
                                             "url": "#", "rating": ""}], "", 1))
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (None, "", ""))
+                            lambda nid, **kw: (None, "", ""))
         rows = nrc.fetch_recent_research_market(limit=5, fetch_detail=True)
         assert rows and "한 건도 못 읽었습니다" in nrc.last_fail_reason("detail")
         # 하나라도 읽히면 사유가 깨끗해진다(옛 사유가 남으면 거짓말이다).
         # 정상 경로(1단)면 **경로 배지도 안 뜬다** — 늘 뜨는 배지는 아무것도
         # 안 재는 것과 같다(#25·#260).
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (95000.0, "매수",
+                            lambda nid, **kw: (95000.0, "매수",
                                          nrc._DETAIL_API_RUNGS[0][0]))
         (tmp_path / "res").exists() and [f.unlink() for f in (tmp_path / "res").glob("*")]
         rows = nrc.fetch_recent_research_market(limit=5, fetch_detail=True)
@@ -57177,7 +57177,7 @@ class TestNaverWidgetSilence20260911:
                  "writeDate": _TODAY, "itemCode": "005930", "itemName": "삼성전자",
                  "endUrl": f"https://m.stock.naver.com/r/{i}"} for i in range(20)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (rows, ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (95000.0, "매수"))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (95000.0, "매수"))
         for fn, key in ((mo.fetch_recent_research_kr, "kr"),
                         (mo.fetch_recent_research_kr_industry, "kr_industry"),
                         (mo.fetch_recent_research_kr_strategy, "kr_strategy")):
@@ -57239,7 +57239,7 @@ class TestNaverWidgetSilence20260911:
                  "brokerName": "b", "writeDate": _TODAY,
                  "endUrl": "https://m.stock.naver.com/r/1"} for i in range(20)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (rows, ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         nrc.check()
         out = capsys.readouterr().out
         assert "원천 20행 중 3행 버림" in out and "id 3" in out, out
@@ -58328,7 +58328,7 @@ class TestPalladiumAndResearchPaging20260912:
         # 네이버를 친다(conftest 차단이 실제로 잡았다, #312).
         monkeypatch.setattr(
             nrc, "_fetch_report_detail_via",
-            lambda nid: hits.append(nid) or (1000.0, "Buy",
+            lambda nid, **kw: hits.append(nid) or (1000.0, "Buy",
                                              nrc._DETAIL_API_RUNGS[0][0]))
         out = nrc.fetch_recent_research_market(limit=1000, days_back=30,
                                                fetch_detail=True)
@@ -58823,7 +58823,7 @@ class TestReviewFindings20260912:
         # 시장 경로는 `_fetch_report_detail_via` 를 부른다 — 옛 이름을 스텁하면
         # 아무것도 안 막아 **테스트가 진짜 네이버를 친다**(#340·#312).
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (1000.0, "Buy",
+                            lambda nid, **kw: (1000.0, "Buy",
                                          nrc._DETAIL_API_RUNGS[0][0]))
         nrc.fetch_recent_research_market(limit=5, days_back=30, fetch_detail=True)
         nrc.fetch_recent_research_market(limit=5, days_back=30, fetch_detail=False)
@@ -60722,7 +60722,7 @@ class TestNaverThemeAndDetailSpa20260912:
         seq = [rc_ for rc_ in ("api/x", "옛 HTML", "api/x", "api/x")]
         it = iter(seq)
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (1000.0, "Buy", next(it)))
+                            lambda nid, **kw: (1000.0, "Buy", next(it)))
         nrc.fetch_recent_research_market(limit=50, days_back=30,
                                          fetch_detail=True)
         note = nrc.last_fail_reason("detail")
@@ -61183,7 +61183,10 @@ class TestResearchDetailCoverage20260912:
             + [{"target": None, "rating": ""}] * 260
         note = detail_yield_note(rows, budget_left=220, fetched=40,
                                  from_cache=0)
-        assert "35/295" in note and "이번 수집 40" in note, note
+        # ⚠️ `저장분` 은 캐시 적중 수(값 없는 기록 포함)라 '채워진 35' 를 분해
+        # 하는 수가 아니다 — 무엇을 센 수인지 이름으로 말한다(독립 리뷰 L2).
+        assert "35/295" in note and "이번 주기에 40건 조회" in note, note
+        assert "저장분 재사용" in note, note
         assert "다음 주기" in note, note
         # 예산은 남았는데 못 채운 행 = **상세가 값을 안 준 것**(갈래가 다르다)
         # ⚠️ `... or True` 로 쓰면 앞 절이 통째로 무력해진다 — 항상 참인 단언은
@@ -61192,3 +61195,245 @@ class TestResearchDetailCoverage20260912:
         assert "35/295" in n2, n2
         assert "없는 리포트" in n2, n2        # 갈래가 다르다(예산 아님)
         assert "다음 주기" not in n2 and "예산" not in n2, n2
+
+
+class TestResearchDetailConvergence20260912:
+    """독립 리뷰 2026-09-12 Blocking — 예산이 **수렴하지 않는다**.
+
+    `_DETAIL_TTL_MISS`(15분) < 수집 주기(`_MARKET_TTL_HOURS` 1시간)라 음성
+    캐시는 **다음 주기 전에 항상 만료**된다. 그래서 값이 없는 리포트(NOT
+    RATED·탐방노트)가 매 주기 날짜 상위 40건을 영구 점유하고 그 아래 행은
+    **한 번도 시도되지 않는다** — 리뷰 실측: 24주기 뒤에도 화면 0/295 ·
+    시도 40/295.
+
+    갈래를 나눠야 한다(#82): **원천이 답했는데 값이 없다** = 그 리포트엔
+    없는 것(발행분은 안 바뀐다) → 길게 · **못 닿았다** = 원천 장애 → 짧게
+    (#303·#161·#152). 오래 믿는 쪽은 파서 지문을 같이 실어 배포가 곧
+    무효화가 되게 한다(#119 — 우리 파서가 바뀌면 '값 없음' 판정도 무효다).
+    """
+
+    def _rows(self, n):
+        return [{"nid": f"n{i}", "code": f"{i:06d}", "name": f"종목{i}",
+                 "broker": "증권", "title": f"리포트{i}",
+                 "date": f"2026-09-{(30 - i % 28):02d}", "url": ""}
+                for i in range(n)]
+
+    def _setup(self, monkeypatch, tmp_path, rows):
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nrc, "_DETAIL_MEM", {})
+        monkeypatch.setattr(nrc, "_DETAIL_MEM_AT", 0.0)
+        monkeypatch.setattr(nrc, "_DETAIL_DIRTY", False)
+        monkeypatch.setattr(nrc, "fetch_research_pages",
+                            lambda *a, **k: (list(rows), "", {}))
+        return nrc
+
+    def test_answered_but_empty_is_remembered_unreachable_is_not(
+            self, monkeypatch, tmp_path):
+        """같은 '빈 결과' 인데 원인이 둘이고 처방이 반대다."""
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        monkeypatch.setattr(nrc, "_detail_json",
+                            lambda nid, **kw: (None, "", "", []))
+        # empty1 = 원천이 상세를 주긴 했는데 목표가·의견이 없다
+        # down1  = 상세를 못 받았다(원천 장애)
+        monkeypatch.setattr(nrc, "_get",
+                            lambda url, **k: ("<html>리포트</html>"
+                                              if "empty1" in url else ""))
+        assert nrc._fetch_report_detail_via("empty1") == (None, "", "")
+        assert nrc._fetch_report_detail_via("down1") == (None, "", "")
+        # 다음 주기(1시간 뒤) = 실패 TTL 은 지났다
+        monkeypatch.setattr(nrc, "_DETAIL_TTL_MISS", 0)
+        assert nrc.detail_cached("empty1") is not None, "답한 건 기억해야 한다"
+        assert nrc.detail_cached("down1") is None, "못 닿은 건 다시 물어야 한다"
+
+    def test_parser_change_invalidates_the_empty_verdict(
+            self, monkeypatch, tmp_path):
+        """'값이 없다' 는 **우리 파서의 판정**이다 — 파서가 바뀌면 무효다.
+
+        손으로 버전을 올리는 방식은 이 레포에서 일곱 번 졌다(#119·#233).
+        """
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-A")
+        nrc.detail_cache_put("e1", None, "", "", answered=True)
+        assert nrc.detail_cached("e1") is not None
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-B")
+        assert nrc.detail_cached("e1") is None, "파서가 바뀌면 다시 물어야 한다"
+        # 값이 **있는** 기록은 파서와 무관하게 산다(원천이 준 사실이다)
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-A")
+        nrc.detail_cache_put("g1", 1000.0, "매수", "json")
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-B")
+        assert nrc.detail_cached("g1") == (1000.0, "매수", "json")
+
+    def test_mixed_batch_converges_across_cycles(self, monkeypatch, tmp_path):
+        """값이 **아래쪽에만** 있는 배치 — 옛 판은 24주기를 돌아도 0건이다."""
+        import bot.naver_research_client as nrc
+        rows = self._rows(100)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        # 날짜 내림차순 상위 60건은 값이 없고(원천은 답한다) 나머지 40건만 값
+        graded_nids = {f"n{i}" for i in range(100)}
+        hit = []
+
+        def fake_json(nid):
+            hit.append(nid)
+            return (None, "", "", [])
+
+        def fake_get(url, **k):
+            nid = url.rsplit("nid=", 1)[-1]
+            # 뒤쪽 40개 nid 에만 목표가가 있다
+            if nid in graded_nids and int(nid[1:]) >= 60:
+                return ('<html>목표가 <em class="money">'
+                        '<strong>12,000</strong></em></html>')
+            return "<html>리포트</html>"
+
+        monkeypatch.setattr(nrc_, "_detail_json", fake_json)
+        monkeypatch.setattr(nrc_, "_get", fake_get)
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 40)
+
+        tried = set()
+        for _cycle in range(3):
+            for f in tmp_path.glob("naver_market_*.json"):
+                f.unlink()
+            hit.clear()
+            out = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+            tried |= set(hit)
+            # 주기 사이에 실패 TTL 은 지난다(15분 < 1시간)
+            monkeypatch.setattr(nrc_, "_DETAIL_TTL_MISS", 0)
+        assert len(tried) == 100, f"시도 {len(tried)}/100 — 수렴하지 않는다"
+        assert sum(1 for r in out if r.get("target")) == 40
+
+    def test_coverage_survives_a_restart(self, monkeypatch, tmp_path):
+        """**영속**이 이 fix 의 핵심이다 — 메모리만이면 재시작마다 원점이다.
+
+        (독립 리뷰 High-1: `detail_cache_flush()` 두 호출을 지워도 옛 회귀는
+        전부 green 이었다 — 3주기가 같은 프로세스라 `_DETAIL_MEM` 이 이어져서다.)
+        """
+        import bot.naver_research_client as nrc
+        rows = self._rows(100)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        hit = []
+
+        # ⚠️ 오늘 운영에서 실제로 도는 경로는 **옛 HTML** 이다 — JSON 단이
+        # 값을 주는 픽스처로만 재면 HTML 경로의 캐시 쓰기가 무가드가 된다
+        # (독립 리뷰 High-2: 그 줄을 지워도 옛 회귀 4건이 전부 green).
+        monkeypatch.setattr(nrc_, "_detail_json",
+                            lambda nid, **kw: (None, "", "", []))
+
+        def fake_get(url, **k):
+            hit.append(url.rsplit("nid=", 1)[-1])
+            return ('<html>목표가 <em class="money">'
+                    '<strong>12,000</strong></em></html>')
+
+        monkeypatch.setattr(nrc_, "_get", fake_get)
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 40)
+
+        seen = []
+        for _cycle in range(3):
+            for f in tmp_path.glob("naver_market_*.json"):
+                f.unlink()
+            hit.clear()
+            out = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+            seen.append(sum(1 for r in out if r.get("target")))
+            # **재시작** — 메모리 사본을 버리고 디스크만 남긴다
+            monkeypatch.setattr(nrc_, "_DETAIL_MEM", {})
+            monkeypatch.setattr(nrc_, "_DETAIL_MEM_AT", 0.0)
+            monkeypatch.setattr(nrc_, "_DETAIL_DIRTY", False)
+        assert seen == [40, 80, 100], seen
+        assert (tmp_path / "research_detail.json").exists()
+
+    def test_single_stock_path_reads_the_cache(self, monkeypatch, tmp_path):
+        """`fetch_research()`(단일 종목)의 **유일한** 캐시 읽기 — 무가드였다."""
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        nrc.detail_cache_put("s1", 1234.0, "매수", "json")
+
+        def boom(nid):
+            raise AssertionError("캐시가 있는데 원천을 쳤다")
+
+        monkeypatch.setattr(nrc, "_detail_json", boom)
+        monkeypatch.setattr(nrc, "_get", boom)
+        assert nrc._fetch_report_detail_via("s1") == (1234.0, "매수", "json")
+
+    def test_restored_note_says_it_is_a_previous_cycles_record(self):
+        """캐시 히트 주기는 **한 건도 안 걸었다** — 저장된 `이번 주기에 40건
+        조회` 를 그대로 내보내면 화면이 안 한 일을 했다고 말한다(독립 리뷰 L3).
+        """
+        from bot.naver_research_client import restored_detail_note
+        n = restored_detail_note("목표가·투자의견 35/295건 — 이번 주기에 40건 조회",
+                                 0.5)
+        assert "직전 수집 기록(30분 전)" in n, n
+        assert restored_detail_note("", 0.5) == ""
+
+    def test_cache_hit_restores_the_note_with_that_label(
+            self, monkeypatch, tmp_path):
+        """헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20) — 캐시 히트를
+        실제로 태워 화면이 읽는 칸에 그 라벨이 실리는지 본다."""
+        import bot.naver_research_client as nrc
+        rows = self._rows(5)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        monkeypatch.setattr(nrc_, "_detail_json",
+                            lambda nid, **kw: (1000.0, "매수", "json", []))
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 2)
+        nrc_.fetch_recent_research_market(limit=5, days_back=30)
+        n1 = nrc_._LAST_MARKET_FAIL["detail"]
+        assert "직전 수집 기록" not in n1, n1        # 이번 실행은 진짜 수집이다
+        nrc_.fetch_recent_research_market(limit=5, days_back=30)   # 캐시 히트
+        n2 = nrc_._LAST_MARKET_FAIL["detail"]
+        assert "직전 수집 기록" in n2, n2
+
+    def test_check_measures_the_source_not_the_cache(
+            self, monkeypatch, tmp_path, capsys):
+        """감사 ④ 가 묻는 것은 "**원천이 지금 답하나**" 다 — 30일 캐시를 읽으면
+        원천이 죽은 날에도 옛 값으로 ✅ 가 찍힌다(#35 의 경계 · #321·#345c).
+        """
+        import bot.naver_research_client as nrc
+        nrc_ = self._setup(monkeypatch, tmp_path, [])
+        nrc_.detail_cache_put("n1", 9999.0, "매수", "json")   # 저장분(옛 값)
+        monkeypatch.setattr(
+            nrc_, "fetch_research_json",
+            lambda kind, **k: ([{"nid": "n1", "date": "2026-09-12",
+                                 "code": "000001", "name": "종목",
+                                 "broker": "증권", "title": "t", "url": ""}],
+                               "", 1))
+        # 원천은 **오늘 죽어 있다** — 상세 사다리도 HTML 도 값을 안 준다
+        monkeypatch.setattr(nrc_, "_detail_json",
+                            lambda nid, **kw: (None, "", "", ["1단 HTTP 500"]))
+        monkeypatch.setattr(nrc_, "_get", lambda url, **k: "")
+        nrc_.check()
+        out = capsys.readouterr().out
+        assert "9999" not in out, out           # 저장분으로 ✅ 를 찍으면 안 된다
+        assert "④ 상세 수율: ⚠️" in out, out
+        # 진단이 운영 캐시를 건드리지도 않았다(#264·#283)
+        assert nrc_.detail_cached("n1") == (9999.0, "매수", "json")
+
+    def test_concurrent_flush_does_not_lose_the_map(self, monkeypatch,
+                                                    tmp_path):
+        """tmp 이름이 프로세스 상수면 두 flush 가 **같은 파일**을 쓴다 —
+        `os.replace` 가 ENOENT 로 죽어 그 flush 가 조용히 유실된다(독립 리뷰 L1).
+        """
+        import threading
+        from pathlib import Path as _P
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        names = []
+        real_write = _P.write_text
+
+        def spy(self, *a, **k):
+            if self.suffix == ".tmp":
+                names.append(self.name)
+            return real_write(self, *a, **k)
+
+        monkeypatch.setattr(_P, "write_text", spy)
+        errs = []
+
+        def worker(i):
+            try:
+                nrc.detail_cache_put(f"c{i}", float(i), "매수", "json")
+                nrc.detail_cache_flush()
+            except Exception as exc:               # noqa: BLE001
+                errs.append(exc)
+
+        ts = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        assert not errs, errs
+        assert len(set(names)) == len(names), f"tmp 이름이 겹친다: {names}"
