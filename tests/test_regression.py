@@ -14078,31 +14078,43 @@ class TestResearchStrategyTab:
     종목/산업 탭과 동일 기준, 투자정보(invest_list) 소스."""
 
     def test_strategy_list_parser(self):
-        from datetime import date
-        from bot.naver_research_client import _parse_strategy_list_page
-        html = (
-            '<table><tbody>'
-            '<tr><td><a href="invest_read.naver?nid=111&page=1">하반기 전략</a></td>'
-            '<td>미래에셋증권</td><td>PDF</td><td>26.06.12</td><td>1,234</td></tr>'
-            '<tr><td><a href="invest_read.naver?nid=222">자산배분 코멘트</a></td>'
-            '<td>NH투자증권</td><td>PDF</td><td>26.06.11</td><td>9</td></tr>'
-            '<tr><td>광고행(nid없음)</td></tr>'
-            '<tr><td><a href="invest_read.naver?nid=333">오래됨</a></td>'
-            '<td>하나증권</td><td>PDF</td><td>26.05.01</td><td>1</td></tr>'
-            '</tbody></table>')
-        rows = _parse_strategy_list_page(html, date(2026, 6, 10))
-        # nid 없는 행·cutoff 밖(5/1) 제외, 분류·목표가 없음(증권사/제목/날짜)
+        """⚠️ 2026-09-11 계약 변경(#222): 원천이 SPA 로 바뀌어 HTML 목록이
+        사라졌고 `_parse_strategy_list_page` 는 **정의상 0건**이라 지웠다
+        (죽은 경로는 남기지 않는다, §작업 원칙·#53). 계약은 '전략 목록 행을
+        읽는다 — 분류 컬럼은 없다' 이고, 이제 JSON 파서가 그걸 한다."""
+        from bot.naver_research_client import research_rows_from_json
+        rows = research_rows_from_json([
+            {"researchId": 111, "title": "하반기 전략", "brokerName": "미래에셋증권",
+             "writeDate": "2026-06-12",
+             "endUrl": "https://m.stock.naver.com/research/invest/111"},
+            {"researchId": 222, "title": "자산배분 코멘트", "brokerName": "NH투자증권",
+             "writeDate": "2026-06-11"},
+        ], "invest")
         assert [r["nid"] for r in rows] == ["111", "222"]
         assert rows[0]["broker"] == "미래에셋증권"
         assert rows[0]["title"].startswith("하반기")
         assert rows[0]["date"] == "2026-06-12"
-        assert "category" not in rows[0]  # 전략은 분류 컬럼 없음
+        assert rows[0]["url"].endswith("/invest/111")   # 원천이 준 주소(#150)
+        assert not rows[0].get("code") and not rows[0].get("rating")
 
     def test_strategy_uses_invest_endpoint(self):
-        # 투자정보(invest_list/invest_read) 소스인지 — 종목(company)/산업
-        # (industry) 와 다른 엔드포인트 회귀 가드
-        src = open("bot/naver_research_client.py", encoding="utf-8").read()
-        assert "invest_list.naver" in src and "invest_read.naver" in src
+        """종목(company)·산업(industry)과 **다른 목록**을 본다는 회귀 가드.
+
+        ⚠️ 2026-09-11(#222): 옛 판은 죽은 HTML 주소(`invest_list.naver`)가
+        소스에 있는지로 쟀다 — 그 문자열은 남아 있어도 아무 의미가 없다.
+        살아 있는 계약은 `_RESEARCH_KINDS` 의 목록 키다(#19 소스 문자열 금지)."""
+        from bot.naver_research_client import _RESEARCH_API, _RESEARCH_KINDS
+        assert set(_RESEARCH_KINDS) == {"company", "industry", "invest"}
+        assert _RESEARCH_API.endswith("/research")
+        import bot.naver_research_client as nrc
+        seen = []
+        orig = nrc._get2_json
+        try:
+            nrc._get2_json = lambda url, **kw: (seen.append(url) or ([], ""))
+            nrc.fetch_research_json("invest")
+        finally:
+            nrc._get2_json = orig              # 손대입 스텁은 그 이름을 되돌린다(#130)
+        assert seen == [f"{_RESEARCH_API}/invest"], seen
 
     def test_dashboard_strategy_tab_wired(self):
         # 탭 버튼·페인·렌더 함수·시그니처가 모두 연결됐는지 (bot.dashboard
@@ -14114,10 +14126,35 @@ class TestResearchStrategyTab:
         assert "_render_research_strategy_table" in src
         assert 'research_kr_strategy = data.get("research_kr_strategy"' in src
 
-    def test_market_overview_strategy_wired(self):
+    def test_market_overview_strategy_wired(self, monkeypatch):
+        """⚠️ 2026-09-11(#222): 옛 판은 `'"research_kr_strategy": kr_strat_fut.
+        result()' in src` 라는 **소스 문자열**이라, 결과를 지역 변수로 받도록
+        리팩터하자 계약이 그대로인데 깨졌다(#19·#89·#117 — 이 레포에서 열한 번째).
+        계약은 '수집 결과가 payload 의 그 키로 실린다' 이고, 그건 **값**으로 잰다."""
+        import bot.market_overview as mo
         src = open("bot/market_overview.py", encoding="utf-8").read()
         assert "fetch_recent_research_kr_strategy" in src
-        assert '"research_kr_strategy": kr_strat_fut.result()' in src
+        monkeypatch.setattr(mo, "fetch_recent_research_kr_strategy",
+                            lambda *a, **k: [{"broker": "B", "title": "T",
+                                              "date": "09-11", "link": "#"}])
+        monkeypatch.setattr(mo, "fetch_recent_research_kr_industry",
+                            lambda *a, **k: [{"category": "반도체", "broker": "B",
+                                              "title": "T", "date": "09-11",
+                                              "link": "#"}])
+        for _fn in ("fetch_market_snapshot", "fetch_earnings_calendar",
+                    "fetch_earnings_calendar_kr", "fetch_earnings_calendar_intl",
+                    "fetch_recent_research_kr", "fetch_recent_research_us",
+                    "fetch_recent_research_intl", "fetch_macro_snapshot",
+                    "fetch_deposit"):
+            if hasattr(mo, _fn):
+                monkeypatch.setattr(mo, _fn, lambda *a, **k: [])
+        data = mo.fetch_all_market_data()
+        assert data["research_kr_strategy"] and data["research_kr_strategy"][0]["broker"] == "B"
+        assert data["research_kr_industry"]
+        # 사유 칸도 payload 에 실린다 — 렌더가 그걸 읽어 '없습니다' 대신 사유를
+        # 적는다(#43, 리뷰 M2). 키가 빠지면 화면이 다시 거짓말한다.
+        assert "research_kr_strategy_note" in data
+        assert "research_kr_industry_note" in data
 
 
 class TestPmOverrideRatingMask:
@@ -24744,7 +24781,11 @@ class TestChronologicalTablesAndVol20260816:
             f"배지 주기가 스케줄러({_hours}h)와 다름: {badge.group(1)}"
         guide = html[html.index("<details"):html.index("</details>")]
         assert f"{_hours}시간" in guide, "가이드 주기가 스케줄러와 다름"
-        assert "기준일 2026-08-14" in html, "기준일 미표기"
+        # ⚠️ 2026-09-11 라벨 변경(#222): `… 기준일 X`(문장 끝) → `기준 <b>X</b>`
+        # (stat-grid 바로 아래 자기 줄). 계약은 '기준일이 화면에 있다' 이지
+        # 그 문구가 아니다 — 값으로 집는다(#19 소스·문구 리터럴 단언 금지).
+        assert "2026-08-14" in html, "기준일 미표기"
+        assert "bs-asof" in html, "기준일이 자기 줄로 나와야 한다"
         # 확정 배지에는 주기 문구가 붙으면 안 된다(월말 기준이므로).
         conf = bs.render_page({"KR": {**d, "is_confirmed": True}})
         assert "월말 종가 확정" in conf
@@ -30268,8 +30309,14 @@ class TestSecondSweep20260820:
              "resolution_note": ""}
 
         def badge(html):
-            m = re.search(r"기준일 2026-08-20(.{0,80})", html)
-            return re.sub(r"<[^>]*>", "", m.group(1)).strip() if m else ""
+            # ⚠️ 2026-09-11 라벨 변경(#222): 기준일이 `.sub` 문장 끝(`… 기준일 X`)
+            # 에서 **stat-grid 바로 아래 자기 줄**(`기준 <b>X</b>`)로 나왔다
+            # (사용자 "언제기준인지 명시해줘"). 계약은 '배지가 기준일 옆에
+            # 붙는다' 이지 그 문구가 아니다 — 태그를 걷고 값으로 집는다(#19).
+            m = re.search(r"기준 <b>2026-08-20</b>(.{0,120})", html)
+            if not m:
+                return "__기준일 줄이 없다__"
+            return re.sub(r"<[^>]*>", "", m.group(1)).split("·")[0].strip()
 
         monkeypatch.setattr(mt, "_market_closed_today", lambda m: False)
         assert "장중" in badge(bs.render_page({"KR": d})), "장중 표시 없음"
@@ -43757,6 +43804,9 @@ def _render_all_pages():
             "source_label": "KODEX 섹터 ETF", "sectors_missing": [],
             "rs_ranked": [{"name": "IT", "rs": 12.3}],
             "fng": {"index": 42, "label": "공포"}, "asof": "2026-09-07",
+            # 기준 줄(`.bs-asof`)이 **실제로 그려지게** 종가까지 채운다 — 빈
+            # 픽스처는 그 블록을 안 그려 CSS 미정의를 못 잡는다(#91c).
+            "latest_close": 7591.7,
             "is_confirmed": False, "resolution_note": "표본 13개"}})),
         ("market_timing", _mt.render_market_timing_page({"markets": {"US": {
             "ticker": "^GSPC", "name": "S&P 500",
@@ -46545,9 +46595,15 @@ class TestNaverSectorCheckTellsTheBranch20260905:
         그대로 두되 재료를 채워 준다(#222)."""
         import bot.finviz_client as fc
         import bot.naver_sector_client as nsc
-        monkeypatch.setattr(nsc, "_get2", lambda *a, **k: ("<html/>", ""))
-        monkeypatch.setattr(nsc, "parse_groups",
-                            lambda html: [{"name": n, "pct": p} for n, p in groups])
+        # 2026-09-11 SPA 전환: 실측 경로가 JSON API 다 — 옛 `_get2`/`parse_groups`
+        # 를 스텁하면 제품은 진짜 네이버를 친다(#312·#35 화면이 쓰는 그 경로).
+        # 전수 하한을 넘겨 '부분 수신' 갈래에 걸리지 않게 채운다(#91c).
+        raw = [{"name": n, "changeRate": str(p), "thistime": "20260911155908"}
+               for n, p in groups]
+        raw += [{"name": f"_filler{i}", "changeRate": "0.1",
+                 "thistime": "20260911155908"}
+                for i in range(nsc._UPJONG_MIN_GROUPS - len(raw))]
+        monkeypatch.setattr(nsc, "_get2_json", lambda *a, **k: (raw, ""))
         # `_fresh` 가 `Path.exists` 를 전역 True 로 만들어 NAVER_PAUSE 마커까지
         # '있다' 가 된다 — 정지 갈래는 전용 테스트가 본다(2026-09-11).
         monkeypatch.setattr(fc, "naver_paused", lambda: False)
@@ -56054,6 +56110,10 @@ class TestTradeSourceSilence20260910:
         assert loaded                                     # 스텁이 실제로 그 경로를 받았다
 
 
+def _no_json():
+    raise ValueError("not json")
+
+
 class TestNaverWidgetSilence20260911:
     """사용자 2026-09-11 "갑자기 이거랑 똑같은 한국이 메인대시보드에서 없어졌어?
     또 왜그런거야?" + "이것도 그러네"(리서치 액션). 한국 업종 등락 위젯은 원천이
@@ -56083,10 +56143,20 @@ class TestNaverWidgetSilence20260911:
         assert nd.stale_label(None) == ""              # 못 재면 말하지 않는다(#165)
 
     @staticmethod
-    def _resp(status, text="", body=b""):
+    def _resp(status, text="", body=b"", payload=None):
+        """응답 스텁. `payload` 를 주면 `.json()` 도 답한다.
+
+        2026-09-11 원천이 SPA 로 바뀌며 클라이언트가 JSON API 로 갈아탔다 —
+        스텁이 `.json()` 을 모르면 제품이 'JSON 파싱 실패' 로 떨어져 테스트가
+        **엉뚱한 갈래**를 재게 된다(#155 픽스처는 원천이 실제로 내는 모양대로).
+        """
         import types
-        return types.SimpleNamespace(status_code=status, text=text,
-                                     content=body or text.encode(), encoding="euc-kr")
+        r = types.SimpleNamespace(status_code=status, text=text,
+                                  content=body or text.encode(),
+                                  encoding="euc-kr",
+                                  headers={"content-type": "application/json"})
+        r.json = (lambda: payload) if payload is not None else _no_json
+        return r
 
     def test_sector_fetch_reports_the_branch_and_falls_back_to_last_good(
             self, tmp_path, monkeypatch):
@@ -56108,13 +56178,186 @@ class TestNaverWidgetSilence20260911:
         assert isinstance(out["stale_min"], int)
         # 200 인데 0건 = 구조 변경 의심(도달 실패와 다른 갈래)
         monkeypatch.setattr(nsc.requests, "get",
-                            lambda *a, **k: self._resp(200, "<html>없음</html>"))
+                            lambda *a, **k: self._resp(200, payload=[]))
         assert "구조 변경" in nsc.fetch_sector_movers()["reason"]
+        # 기본 페이지(20행)만 오면 **전 업종 랭킹이 아니다** — 값은 주되
+        # 그 사실을 사유로 말한다(#45 모집단 · VM 실측: pageSize=100 → 79행)
+        page20 = [{"name": f"업종{i}", "changeRate": f"{i - 10}.0",
+                   "thistime": "20260911155908"} for i in range(20)]
+        monkeypatch.setattr(nsc.requests, "get",
+                            lambda *a, **k: self._resp(200, payload=page20))
+        out = nsc.fetch_sector_movers()
+        assert out["up"] and "기본 페이지" in out.get("reason", ""), out
+        assert out["ts"] == "09-11 15:59"      # 원천 기준시각(렌더 시각 아님)
         # 정지 중이면 그렇게 말한다 — 원천 탓으로 읽히면 운영자가 헛걸음한다
         monkeypatch.setattr(nsc, "_cache_read_any", lambda name: (None, None))
         import bot.finviz_client as fc
         monkeypatch.setattr(fc, "naver_paused", lambda: True)
         assert "일시정지" in nsc.fetch_sector_movers()["reason"]
+
+    def test_sector_partial_page_is_named_sized_and_not_cached(
+            self, tmp_path, monkeypatch):
+        """부분 수신은 **값이 다 있어서** 조용히 틀린다(독립 리뷰 2026-09-11 H3).
+
+        계약 셋: ① `pageSize` 를 실제로 보낸다(선례 `pageSize=50` 회귀와 같은
+        수준) ② 20(기본 페이지)만이 아니라 **하한 미만**이면 부분으로 본다 —
+        '20 인가'만 물으면 원천이 40·50 을 주기 시작할 때 눈이 먼다(#24)
+        ③ 부분은 last-good 으로 굽지 않는다(#280 부분을 완전본으로 만들지 말 것).
+        """
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        seen = []
+
+        def _rows(n):
+            return [{"name": f"업종{i}", "changeRate": f"{i - n // 2}.0",
+                     "thistime": "20260911155908"} for i in range(n)]
+
+        def _get(url, **kw):
+            seen.append((url, kw.get("params") or {}))
+            return self._resp(200, payload=_rows(_get.n))
+        monkeypatch.setattr(nsc.requests, "get", _get)
+
+        # ① 파라미터를 실제로 보낸다 — 안 보내면 원천이 20행 기본 페이지를 준다
+        _get.n = 79                                    # VM 실측 전수
+        out = nsc.fetch_sector_movers()
+        assert seen and seen[-1][1].get("pageSize") == nsc._UPJONG_PAGE_SIZE, seen
+        assert not out.get("partial") and "reason" not in out
+        assert (tmp_path / "upjong.json").exists()     # 전수는 굽는다
+
+        # ② 하한 미만은 20 이 아니어도 부분이다
+        (tmp_path / "upjong.json").unlink()
+        _get.n = 40
+        out = nsc.fetch_sector_movers()
+        assert out["up"] and out.get("partial") is True
+        assert "40개만" in out["reason"] and str(nsc._UPJONG_MIN_GROUPS) in out["reason"]
+        assert "기본 페이지" not in out["reason"]      # 갈래를 틀리게 부르지 않는다
+        # ③ 부분은 굽지 않는다 — 구우면 TTL 내내 틀린 랭킹이 서빙된다
+        assert not (tmp_path / "upjong.json").exists(), "부분을 굽지 마라"
+
+        _get.n = 20                                    # 기본 페이지는 그렇게 부른다
+        assert "기본 페이지" in nsc.fetch_sector_movers()["reason"]
+
+    def test_sector_widget_says_the_ranking_may_be_partial(self):
+        """값이 **있어도** 사유가 있으면 화면이 적는다(독립 리뷰 H2).
+
+        옛 판은 `reason` 을 사유 분기에서만 읽어, 부분 페이지 랭킹이 아무 표시
+        없이 전 업종 랭킹처럼 그려졌다(#43·#45)."""
+        import bot.dashboard as d
+        html = d._render_sector_movers(
+            {"up": [{"name": "반도체", "pct": 1.5}], "down": [], "ts": "09-11 15:59",
+             "partial": True,
+             "reason": "업종이 20개만 왔습니다(기본 페이지) — 전 업종 랭킹이 아닐 수 있습니다"})
+        assert "반도체" in html                         # 값은 그대로 그린다
+        assert "20개만" in html and "전 업종 랭킹이 아닐" in html
+        # 사유가 없으면 군더더기를 붙이지 않는다
+        clean = d._render_sector_movers(
+            {"up": [{"name": "반도체", "pct": 1.5}], "down": [], "ts": "09-11 15:59"})
+        assert "⚠️" not in clean
+
+    def test_reason_says_rows_when_it_counted_rows(self):
+        """`원천 응답(20B)` — 20**행**을 20**바이트**라고 적고 있었다(리뷰 M4).
+
+        HTML 시절엔 바이트였는데 JSON 전환 뒤 호출부가 행 수를 넘겼다. 운영자를
+        '응답이 잘렸나' 로 보내는 라벨이다(#34·#64 단위가 다른 값을 한 자리에)."""
+        import bot.naver_diag as nd
+        assert "(20행)" in nd.parse_reason("업종 행", 20, unit="행")
+        assert "(20B)" in nd.parse_reason("JSON", 20)          # 바이트는 종전대로
+        # 호출부가 **행을 세는데 바이트라고 적지 않는지** — 값으로 본다
+        import bot.naver_sector_client as nsc
+        rows = [{"nope": 1} for _ in range(20)]
+        assert "20행" in nsc._nd.parse_reason("업종 행", len(rows), unit="행")
+
+    def test_json_get_is_one_implementation(self):
+        """형제 둘이 `_get2_json` 을 **복제**하고 있었고 이미 갈라져 있었다 —
+        한쪽만 'JSON 아님' 을 로그에 남겼다(#38, 리뷰 M6)."""
+        import ast
+        import bot.naver_diag as nd
+        assert callable(getattr(nd, "get_json", None))
+        for path in ("bot/naver_sector_client.py", "bot/naver_research_client.py"):
+            src = open(path, encoding="utf-8").read()
+            fn = next(n for n in ast.parse(src).body
+                      if isinstance(n, ast.FunctionDef) and n.name == "_get2_json")
+            body = ast.get_source_segment(src, fn)
+            assert "get_json(" in body, f"{path}: 공용 구현을 안 쓴다"
+            # 복제의 흔적(직접 HTTP)이 남아 있으면 또 갈라진다
+            assert "requests.get(" not in body, f"{path}: 아직 직접 친다"
+
+    def test_check_reports_the_industry_map_without_touching_the_network(
+            self, tmp_path, monkeypatch, capsys):
+        """업종맵(종목코드→업종 한글) 빌드가 **조용히 죽고 있었다**(리뷰 M5).
+
+        빌드 경로가 SPA 로 죽은 옛 HTML 이라 정의상 0건인데 `if not groups:
+        return` 이 사유도 안 남겨, KR 항목의 '업종' 칸이 몇 달째 빌 수 있었다
+        (#12 silent-fail 금지 · #43). 대체 경로는 **재고 나서** 갈아탄다(#151).
+
+        ⚠️ 그리고 이 줄을 만들며 `kr_industry_map()` 을 부르면 안 된다 — 캐시가
+        없으면 **빌드 스레드를 띄워 네이버를 친다**. 기본 `--check` 는 읽기
+        전용이어야 한다(#264·#321). 화면이 쓴 그 파일을 읽는다(#35).
+        """
+        import json as _json
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        kicked = []
+        monkeypatch.setattr(nsc, "_build_kr_industry_map",
+                            lambda: kicked.append(1))
+        nsc.check()
+        out = capsys.readouterr().out
+        assert "업종맵" in out and "0종목" in out
+        assert "naver_spa_probe" in out, "다음 행동을 적어야 한다(#82)"
+        assert not kicked, "진단이 빌드 스레드를 띄웠다 — 읽기 전용이 아니다"
+        # 캐시가 있으면 규모·나이를 말한다
+        (tmp_path / nsc._KR_IND_CACHE).write_text(
+            _json.dumps({"005930": "반도체", "000660": "반도체"}))
+        nsc.check()
+        out = capsys.readouterr().out
+        assert "2종목" in out and not kicked
+
+    def test_industry_map_build_says_why_it_gave_up(self, monkeypatch):
+        """0건이면 **사유를 남긴다** — 옛 판은 그냥 `return` 이라 매 렌더가
+        같은 실패를 반복하는데 아무도 몰랐다(#12·#42a)."""
+        import bot.naver_sector_client as nsc
+        nsc._KR_IND_FAIL["reason"] = ""
+        # 200 인데 표가 없다(SPA) — '도달 실패' 와 **다른 갈래**다(#82)
+        monkeypatch.setattr(nsc, "_get", lambda *a, **k: "<html>" + "x" * 900 + "</html>")
+        nsc._build_kr_industry_map()
+        why = nsc.kr_industry_fail_reason()
+        assert "0건" in why and "SPA" in why and "도달 실패" not in why, why
+        # 응답 자체가 없으면 그렇게 말한다
+        monkeypatch.setattr(nsc, "_get", lambda *a, **k: "")
+        nsc._build_kr_industry_map()
+        assert "도달 실패" in nsc.kr_industry_fail_reason()
+
+    def test_sector_check_fetch_uses_the_json_path_the_screen_uses(
+            self, tmp_path, monkeypatch, capsys):
+        """`--check --fetch` 는 **화면이 쓰는 그 경로**를 태운다(#35, 리뷰 M1).
+
+        옛 판은 SPA 로 죽은 `sise_group.naver` 를 재서, 고친 뒤에도 영원히 ❌ 를
+        찍었다 — 감사가 화면과 다른 경로를 보면 거짓 경보를 준다."""
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda *a, **k: {"themes": [{"name": "t", "pct": 1.0}]})
+        urls = []
+
+        def _get(url, **kw):
+            urls.append(url)
+            return self._resp(200, payload=[
+                {"name": f"업종{i}", "changeRate": "1.0", "thistime": "20260911155908"}
+                for i in range(79)])
+        monkeypatch.setattr(nsc.requests, "get", _get)
+        rc = nsc.check(fetch=True)
+        out = capsys.readouterr().out
+        assert rc == 0 and "79개" in out and "09-11 15:59" in out
+        assert any(nsc._UPJONG_API in u for u in urls), urls
+        assert not any("sise_group.naver" in u for u in urls), urls   # 죽은 경로 금지
+        # 부분이면 실측도 그렇게 말하고 rc 를 올린다(값이 다 있어서 조용히 틀린다)
+        def _get40(url, **kw):
+            return self._resp(200, payload=[
+                {"name": f"업종{i}", "changeRate": "1.0"} for i in range(40)])
+        monkeypatch.setattr(nsc.requests, "get", _get40)
+        assert nsc.check(fetch=True) == 1
+        assert "부분 수신" in capsys.readouterr().out
 
     def test_sector_widget_stays_on_screen_with_the_reason(self):
         import bot.dashboard as d
@@ -56141,6 +56384,85 @@ class TestNaverWidgetSilence20260911:
                                                    "reason": "원천이 HTTP 429 — 요청 한도 초과"})
         assert "저장분" in stale and "3시간 전" in stale and "삼성전자" in stale
 
+    def test_industry_and_strategy_tabs_do_not_lie_either(self, tmp_path, monkeypatch):
+        """종목 탭만 고치고 **형제 둘을 안 봤다**(독립 리뷰 2026-09-11 M2).
+
+        산업·전략 수집은 사유를 계산해 놓고 **버리고**(write-only) 있었고, 화면은
+        원천이 막힌 날에도 "최근 산업 리포트가 없습니다" 라고 적었다 — 원천 장애를
+        '새 게 없음' 으로 말하는 것이다(#43·#52·#82). 한 화면에서 고쳤으면 같은
+        계산을 하는 형제를 즉시 grep 할 것(#38·#147)."""
+        import bot.dashboard as d
+        # ① 렌더: 사유가 있으면 '없습니다' 대신 사유 — 세 탭이 **같은 문구**로
+        for fn, empty in ((d._render_research_industry_table, "최근 산업 리포트가 없습니다"),
+                          (d._render_research_strategy_table, "최근 전략 리포트가 없습니다"),
+                          (d._render_research_kr_table, "최근 리서치 액션이 없습니다")):
+            assert empty in fn([], None)          # 사유가 없으면 종전대로
+            blocked = fn([], {"reason": "원천이 HTTP 429 — 요청 한도 초과"})
+            assert empty not in blocked and "429" in blocked, fn.__name__
+            assert "표시할 수 없습니다" in blocked, fn.__name__
+        # ② 수집: 사유를 note 에 **기록**한다(계산만 하고 버리면 없는 것과 같다)
+        import bot.market_overview as mo
+        import bot.naver_research_client as nrc
+        # ⚠️ **캐시 디렉터리를 tmp_path 로** — 안 하면 이 테스트가 운영 캐시
+        # (`~/.tradingagents/cache/market_overview/research/kr_industry_*.json`)를
+        # 10분 TTL 로 덮어 다음 실행이 그 픽스처를 읽는다(#30 실측 2026-09-11 —
+        # 첫 판이 실제로 그래서 재실행이 빨간불이 됐다).
+        monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nrc, "fetch_recent_research_industry",
+                            lambda **kw: [])
+        monkeypatch.setattr(nrc, "last_fail_reason",
+                            lambda kind: f"원천이 HTTP 403 — 차단 의심({kind})")
+        assert mo.fetch_recent_research_kr_industry(limit=5) == []
+        note = mo.research_note("kr_industry")
+        assert "403" in note["reason"] and "industry" in note["reason"]
+        # 수집이 되면 사유가 깨끗해진다 — 옛 사유가 다음 렌더에 남으면 거짓말이다
+        monkeypatch.setattr(nrc, "last_fail_reason", lambda kind: "")
+        monkeypatch.setattr(nrc, "fetch_recent_research_industry",
+                            lambda **kw: [{"category": "반도체", "broker": "b",
+                                           "title": "t", "date": "09-11", "link": "#"}])
+        assert mo.fetch_recent_research_kr_industry(limit=5)
+        assert mo.research_note("kr_industry")["reason"] == ""
+        # ③ 배선: **페이지가 note 를 넘기는가** — 헬퍼만 재면 호출부에서 인자를
+        # 떼는 변형이 통과한다(#20 실측: R4 뮤테이션이 그대로 green 이었다).
+        import ast
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        want = {"_render_research_industry_table": "research_kr_industry_note",
+                "_render_research_strategy_table": "research_kr_strategy_note",
+                "_render_research_kr_table": "research_kr_note"}
+        seen = {}
+        for node in ast.walk(ast.parse(src)):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in want):
+                continue
+            if len(node.args) < 2:
+                continue
+            # `data.get('research_kr_industry_note')` 의 그 문자열을 집는다
+            keys = [n.value for n in ast.walk(node.args[1])
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+            if want[node.func.id] in keys:
+                seen[node.func.id] = True
+        assert set(seen) == set(want), f"note 를 안 넘기는 탭: {sorted(set(want) - set(seen))}"
+
+    def test_research_client_records_the_reason_for_every_list(self, tmp_path, monkeypatch):
+        """사유를 **세 목록 모두** 기록한다 — 산업·전략은 `why` 를 만들어 놓고
+        버렸다(write-only, 리뷰 M2)."""
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path / "res")
+        monkeypatch.setattr(nrc.requests, "get",
+                            lambda *a, **k: self._resp(403, "", b"x"))
+        assert nrc.fetch_recent_research_industry(limit=5, days_back=30) == []
+        assert "403" in nrc.last_fail_reason("industry")
+        assert nrc.fetch_recent_research_strategy(limit=5, days_back=30) == []
+        assert "403" in nrc.last_fail_reason("strategy")
+        # 목록마다 **자기 사유** — 한 칸을 나눠 쓰면 남의 사유가 실린다(#117)
+        monkeypatch.setattr(nrc.requests, "get",
+                            lambda *a, **k: self._resp(200, payload=[]))
+        assert nrc.fetch_recent_research_industry(limit=5, days_back=30) == []
+        assert nrc.last_fail_reason("industry") == ""
+        assert "403" in nrc.last_fail_reason("strategy"), "형제 사유가 지워졌다"
+        assert nrc.last_fail_reason("market") == nrc.last_market_fail_reason()
+
     def test_research_collector_falls_back_and_records_the_reason(
             self, tmp_path, monkeypatch):
         import json as _json
@@ -56165,18 +56487,125 @@ class TestNaverWidgetSilence20260911:
         assert rows[0]["code"] == "000660"
         assert mo.research_note("kr") == {"reason": "", "stale": False}
 
-    def test_research_client_records_why_it_returned_nothing(self, monkeypatch):
+    def test_research_client_records_why_it_returned_nothing(self, tmp_path, monkeypatch):
+        """⚠️ 캐시 디렉터리는 **tmp_path** 로 — 옛 판은 `/nonexistent-xyz` 를 썼는데
+        쓰기 경로가 `mkdir(parents=True)` 로 **그 디렉터리를 실제로 만들어**,
+        같은 세션의 다음 테스트가 그 캐시를 읽고 엉뚱한 값을 받았다(#30 테스트가
+        캐시를 오염시킨다 — 2026-09-11 실측으로 발각)."""
         import bot.naver_research_client as nrc
-        monkeypatch.setattr(nrc, "_CACHE_DIR", __import__("pathlib").Path("/nonexistent-xyz"))
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path / "res")
         monkeypatch.setattr(nrc.requests, "get",
                             lambda *a, **k: self._resp(429, "", b"x"))
         assert nrc.fetch_recent_research_market(limit=5, fetch_detail=False) == []
         assert "429" in nrc.last_market_fail_reason()
-        # 200 인데 1쪽이 0건 = 구조 변경 의심(목록 페이지는 비지 않는다)
+        # 200 인데 행은 왔는데 한 건도 못 읽음 = 구조 변경 의심
+        # (2026-09-11 계약 변경: 원천이 SPA 로 바뀌어 HTML 페이지네이션이
+        #  JSON API 로 바뀌었다 — 갈래 규약은 그대로다, #222)
         monkeypatch.setattr(nrc.requests, "get",
-                            lambda *a, **k: self._resp(200, "<html>x</html>"))
+                            lambda *a, **k: self._resp(200, payload=[{"x": 1}]))
         assert nrc.fetch_recent_research_market(limit=5, fetch_detail=False) == []
         assert "구조 변경" in nrc.last_market_fail_reason()
+        # 원천이 정말 0건인 것은 **실패가 아니다** — 사유를 지어내지 않는다(#54)
+        monkeypatch.setattr(nrc.requests, "get",
+                            lambda *a, **k: self._resp(200, payload=[]))
+        assert nrc.fetch_recent_research_market(limit=5, fetch_detail=False) == []
+
+    def test_research_check_measures_the_detail_page_too(self, tmp_path, monkeypatch, capsys):
+        """목록은 JSON 으로 갈아탔지만 **상세는 아직 옛 HTML** 이다 — 목록이 SPA 로
+        죽었으니 여기도 죽었을 수 있고, 죽으면 매 수집이 수십 건을 순손실로 던지고
+        목표가 칸만 조용히 빈다(#79·#116). 한 건만 재고 **단정하지 않는다**(#66·#165).
+        """
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path / "res")
+        kinds = []
+        monkeypatch.setattr(nrc, "fetch_research_json",
+                            lambda kind: (kinds.append(kind) or
+                                          [{"nid": "777", "code": "005930",
+                                            "name": "삼성전자", "broker": "b",
+                                            "title": "t", "date": "2026-09-11",
+                                            "url": "#", "rating": ""}], ""))
+        seen = []
+        monkeypatch.setattr(nrc, "_fetch_report_detail",
+                            lambda nid: seen.append(nid) or (95000.0, "매수"))
+        assert nrc.check() == 0
+        out = capsys.readouterr().out
+        assert seen == ["777"], seen
+        # 목록을 **다시 묻지 않는다** — 두 번 물으면 그 사이 갱신된 값의 나이를
+        # 옛 값에 붙이고 요청만 는다(#61·#160)
+        assert kinds.count("company") == 1, kinds
+        assert "상세 수율: ✅" in out and "95000" in out
+        # 못 읽으면 갈래를 적되 **단정하지 않는다** — 그 리포트에 없을 수도 있다
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        nrc.check()
+        out = capsys.readouterr().out
+        assert "상세 수율: ⚠️" in out and "단정하지 않는다" in out
+        assert nrc._DETAIL_URL in out            # 사람이 바로 열어 볼 주소(#202)
+
+    def test_detail_yield_zero_is_recorded_not_silent(self, tmp_path, monkeypatch):
+        """수율 0 을 **기록**한다 — 로그도 사유도 없으면 몇 달 조용히 빈 칸이다(#12)."""
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path / "res")
+        monkeypatch.setattr(nrc, "fetch_research_json",
+                            lambda kind: ([{"nid": "1", "code": "005930",
+                                            "name": "삼성전자", "broker": "b",
+                                            "title": "t", "date": "2026-09-11",
+                                            "url": "#", "rating": ""}], ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        rows = nrc.fetch_recent_research_market(limit=5, fetch_detail=True)
+        assert rows and "한 건도 못 읽었습니다" in nrc.last_fail_reason("detail")
+        # 하나라도 읽히면 사유가 깨끗해진다(옛 사유가 남으면 거짓말이다)
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (95000.0, "매수"))
+        (tmp_path / "res").exists() and [f.unlink() for f in (tmp_path / "res").glob("*")]
+        rows = nrc.fetch_recent_research_market(limit=5, fetch_detail=True)
+        assert rows[0]["target"] == 95000.0
+        assert nrc.last_fail_reason("detail") == ""
+
+    def test_research_non_list_body_is_a_contract_change_not_zero_rows(
+            self, tmp_path, monkeypatch, capsys):
+        """dict 응답이 '원천이 0건' 으로 조용히 통과했다(독립 리뷰 2026-09-11 H1).
+
+        `len(raw) if isinstance(raw, list) else 0` 은 dict 를 0 으로 세므로 계약
+        변경이 '고칠 것 없음' 으로 보인다 — 처방이 정반대다(#82 갈래는 이름으로).
+        """
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path / "res")
+        monkeypatch.setattr(nrc.requests, "get",
+                            lambda *a, **k: self._resp(200, payload={"result": {"list": []}}))
+        rows, why = nrc.fetch_research_json("company")
+        assert rows == [] and why, "모양이 다르면 사유가 있어야 한다"
+        assert "목록이 아니라 dict" in why and "result" in why   # 키까지 짚는다(#109)
+        assert "0건" not in why                                  # 빈 목록과 뭉개지 않는다
+        rc = nrc.check()
+        out = capsys.readouterr().out
+        assert rc == 1 and "목록이 아니라 dict" in out
+
+        # 진짜 빈 목록은 **우리가 고칠 게 없다** — ❌ 로 세면 진짜 결함을 가린다(#260)
+        monkeypatch.setattr(nrc.requests, "get",
+                            lambda *a, **k: self._resp(200, payload=[]))
+        rows, why = nrc.fetch_research_json("company")
+        assert rows == [] and why == ""
+        rc = nrc.check()
+        out = capsys.readouterr().out
+        assert rc == 0 and "빈 목록" in out and "❌" not in out
+        assert "우리가 고칠 것은 없습니다" in out
+        # 옛 판의 뭉뚱그린 폴백이 남으면 '못 받았다' 로 읽혀 헛걸음한다
+        assert "원천이 0건" not in out
+
+    def test_research_json_uses_the_link_the_source_gave(self, tmp_path, monkeypatch):
+        """옛 `*_read.naver?nid=` 는 SPA 전환으로 죽은 주소다 — 우리가 조립하면
+        사용자가 클릭해 빈 페이지를 본다. 원천이 준 `endUrl` 을 쓴다(#150)."""
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path / "res")
+        row = {"itemCode": "112610", "itemName": "씨에스윈드", "researchId": 96103,
+               "title": "무관심에서 관심의 영역으로", "brokerName": "DS투자증권",
+               "writeDate": "2026-09-11", "researchCategory": "종목분석",
+               "endUrl": "https://m.stock.naver.com/research/company/96103"}
+        monkeypatch.setattr(nrc.requests, "get",
+                            lambda *a, **k: self._resp(200, payload=[row]))
+        out = nrc.fetch_recent_research_market(limit=5, fetch_detail=False)
+        assert out and out[0]["link"] == row["endUrl"], out
+        assert out[0]["name"] == "씨에스윈드" and out[0]["date"] == "2026-09-11"
+        assert "read.naver" not in out[0]["link"]      # 죽은 주소를 조립하지 않는다
 
     def test_fallback_never_borrows_a_sibling_cache(self, tmp_path, monkeypatch):
         """`kr_*.json` 글롭이 형제 캐시(`kr_industry_`·`kr_strategy_`)까지 물어, 종목
@@ -56206,10 +56635,13 @@ class TestNaverWidgetSilence20260911:
         import bot.naver_sector_client as nsc
         monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
         monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
-        monkeypatch.setattr(nsc, "_get2", lambda *a, **k: ("<html/>", ""))
-        monkeypatch.setattr(nsc, "parse_groups",
-                            lambda html: [{"name": "반도체", "pct": 0.0},
-                                          {"name": "은행", "pct": 0.0}])
+        # 2026-09-11 계약 변경(#222): HTML → JSON API. 옛 스텁(`_get2`·
+        # `parse_groups`)은 새 경로를 **안 막아** 테스트가 진짜 원천을 쳤다
+        # (conftest 차단 가드가 잡았다 — 그게 가드가 일한다는 증거다, #312).
+        # 스텁은 제품이 **실제로 부르는 그 함수**를 겨눠야 한다(#20·#35).
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda *a, **k: ([{"name": "반도체", "changeRate": "0.0"},
+                                              {"name": "은행", "changeRate": "0.0"}], ""))
         out = nsc.fetch_sector_movers()
         assert out["up"] == [] and "구조 변경" in out["reason"]
         assert not (tmp_path / "upjong.json").exists(), "빈 결과를 굳히면 안 된다"
@@ -56336,6 +56768,187 @@ class TestNaverWidgetSilence20260911:
              um.patch.object(sh, "_snap_coin", return_value=(True, "stub")), \
              um.patch.object(sh, "_snap_fx", return_value=(True, "stub")):
             assert "Naver 리서치(finance HTML)" in sh.run()["checks"]
+
+
+class TestBreadthAsOfLine20260911:
+    """사용자 2026-09-11: "Breadth 4구간 전략에 한국/미국에 언제기준인지(ex. 09/10)
+    명시해줘. 시장타이밍보드에 나온 '기준 2026-09-10 · 최근 종가 7591.7' 와 같이".
+
+    기준일은 **있었지만** 투자대상·RS·F&G 뒤에 묻혀 있어 '이거 최신이야?' 에
+    화면이 답하지 못했다(#43 · 규칙 10b). 같은 지수를 두 화면이 그리므로 종가를
+    같이 실어 나란히 대조하게 한다(#51)."""
+
+    _D = {"market": "KR", "regime": "RECOVERY", "state": "CASH", "targets": [],
+          "index_w": 0.0, "total_w": 0.0, "cash_w": 1.0, "breadth_pct": 30.77,
+          "dd_pct": -25.52, "bench_name": "KOSPI",
+          "breadth": {"pct": 30.77, "above": 4, "counted": 13, "skipped": [],
+                      "period": 120},
+          "source_label": "KODEX", "sectors_missing": [], "rs_ranked": [],
+          "fng": {}, "asof": "2026-09-10", "latest_close": 7591.7,
+          "is_confirmed": False, "resolution_note": ""}
+
+    def test_line_mirrors_the_market_timing_board(self):
+        import bot.breadth_strategy as bs
+        line = bs._asof_line(dict(self._D))
+        assert "기준 <b>2026-09-10</b>" in line
+        assert "최근 종가 7,591.7" in line and "KOSPI" in line
+
+    def test_missing_asof_says_so_instead_of_going_blank(self):
+        """빈 줄은 '오늘 것'으로 읽힌다 — 침묵이 최악이다(#43·#54)."""
+        import bot.breadth_strategy as bs
+        out = bs._asof_line({})
+        assert "미기록" in out and "말할 수 없습니다" in out
+        # 종가를 못 받았으면 그 칸만 빼고 기준일은 남는다(#165 안 잰 것은 말하지 않는다)
+        no_close = bs._asof_line({"asof": "2026-09-10", "market": "US"})
+        assert "기준 <b>2026-09-10</b>" in no_close and "최근 종가" not in no_close
+
+    def test_page_renders_the_line_for_every_market(self, monkeypatch):
+        """헬퍼만 재는 테스트는 **배선을 못 잰다**(#20) — 페이지를 태운다."""
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-10", 0))
+        monkeypatch.setattr(mt, "_market_closed_today", lambda m: True)
+        us = dict(self._D, market="US", bench_name="S&P 500",
+                  asof="2026-09-09", latest_close=6584.29)
+        html = bs.render_page({"KR": dict(self._D), "US": us})
+        assert "기준 <b>2026-09-10</b>" in html and "최근 종가 7,591.7" in html
+        # ⚠️ 소수 1자리로 맞춘다(시장타이밍과 같은 눈금) — 슬라이스로 재면
+        # 자릿수 계약이 바뀌어도 통과한다(#75 약한 단언 금지)
+        assert "기준 <b>2026-09-09</b>" in html and "최근 종가 6,584.3" in html
+        assert html.count("bs-asof") >= 2, "시장마다 한 줄씩"
+        # 클래스를 쓰면 **같은 번들에 정의**가 있어야 한다(#201·#273·#299)
+        assert ".bs-asof{" in html
+
+    def test_close_comes_from_the_benchmark_series_not_invented(self):
+        """종가는 **수집기가 실제로 본 벤치마크 마지막 봉**이어야 한다 —
+        지어내면 시장타이밍 보드와 어긋나고 사용자가 그걸로 대조한다(#32·#51)."""
+        import bot.breadth_strategy as bs
+        bench = [{"date": "2026-09-09", "close": 7500.0},
+                 {"date": "2026-09-10", "close": 7591.7}]
+        out = bs._assemble("KR", ["069500.KS"], "KOSPI", bench,
+                           {"KODEX 반도체": [{"date": d["date"], "close": d["close"]}
+                                             for d in bench]}, [], cut=None)
+        assert out["asof"] == "2026-09-10"
+        assert out["latest_close"] == 7591.7        # 마지막 봉, 지어낸 값 아님
+
+
+class TestFxPerDollar20260911:
+    """FX 카드가 **세 벌**로 섞여 있었다(사용자 2026-09-11 "환율을 모든게 해당통화/
+    달러 기준으로 해줘. 지금은 일부는 아닌것 같은데"):
+
+      · KR·CN·HK·TW·IN·CH = `USD<CCY>` → 1달러당 그 통화(맞다)
+      · EU 1.16 · GB 1.35 · AU 0.72 = 시장 관례가 `EURUSD`(달러가 **분자**)라
+        라벨이 "유로/달러" 인데 값은 **1유로당 달러**였다(#34 라벨과 기준이 어긋남)
+      · JP 는 아예 달러 기준이 아니었다(엔/원 100엔)
+
+    한 카드를 **세로로** 읽는 자리라 1,343 옆에 1.16 이 놓이는 순간 같은 열의
+    정의가 갈린다(#32). 그리고 역수는 **퍼센트를 되계산**해야 한다(#33).
+    """
+
+    def test_direct_pair_wins_over_inversion(self):
+        """원천이 `USD<CCY>` 를 주면 그대로 쓴다 — 자체계산은 원천이 없을 때만
+        (#32·#141 원천이 완제품을 주는지 먼저 물을 것)."""
+        import bot.market_overview as mo
+        pool = {"USDJPY": {"close": 147.2, "prev": 146.0, "pct": 0.82},
+                "JPYUSD": {"close": 0.0068, "prev": 0.0069, "pct": -0.82}}
+        r = mo.fx_per_dollar(pool, "JPY")
+        assert r["basis"] == "direct" and r["close"] == 147.2 and r["pct"] == 0.82
+
+    def test_inverted_pct_is_recomputed_not_negated(self):
+        """X 가 r 만큼 변하면 1/X 는 **-r/(1+r)** 다 — 부호만 뒤집으면 크기가 틀린다.
+
+        EURUSD +0.5776% → 역수는 -0.5776% 가 **아니라** -0.5743% 다. 화면의
+        close·prev 로 눈으로 나눠 봐도 맞아야 한다(#33)."""
+        import bot.market_overview as mo
+        pool = {"EURUSD": {"close": 1.1667, "prev": 1.1600, "pct": 0.5776}}
+        r = mo.fx_per_dollar(pool, "EUR")
+        assert r["basis"] == "inverted"
+        assert abs(r["close"] - 1 / 1.1667) < 1e-12
+        assert abs(r["prev"] - 1 / 1.1600) < 1e-12
+        # 화면의 두 칸으로 되짚은 값과 일치해야 한다(#33 눈으로 검산)
+        assert abs(r["pct"] - (r["close"] - r["prev"]) / r["prev"] * 100) < 1e-9
+        assert abs(r["pct"] - (-0.57427)) < 1e-4          # 단순 부호반전이면 -0.5776
+        assert r["pct"] != -pool["EURUSD"]["pct"]
+
+    def test_missing_or_zero_is_none_not_a_fabricated_rate(self):
+        """재료가 없으면 **만들지 않는다**(#32·#242 `or 0` 금지 — 0 을 뒤집으면
+        ZeroDivisionError 거나, 막으면 0.0 이라는 거짓 환율이 된다)."""
+        import bot.market_overview as mo
+        assert mo.fx_per_dollar({}, "EUR") is None
+        assert mo.fx_per_dollar({"EURUSD": {"close": 0, "prev": 1.1}}, "EUR") is None
+        assert mo.fx_per_dollar({"EURUSD": {"close": 1.1}}, "EUR")["pct"] is None
+        assert mo.fx_per_dollar({"USDJPY": {"close": 1}}, "") is None
+
+    def test_every_fx_card_is_per_dollar(self):
+        """카드 전체가 같은 기준인가 — 라벨과 스펙 **양쪽**으로 본다.
+
+        ⚠️ 라벨만 보면 스펙을 되돌리는 변형이 통과하고, 스펙만 보면 라벨이
+        어긋나도 통과한다(#75 옆 칸이 대신 만족시킨다)."""
+        import bot.market_overview as mo
+        for label, spec in mo.CARD_FX:
+            assert label.endswith("/달러"), (label, spec)
+            assert spec.startswith("nvxp:") or spec == "nvk:FX_USDKRW", (label, spec)
+            # `nvx:` 직행은 EURUSD 류가 그대로 실리는 경로다 — 금지(#34)
+            assert not spec.startswith("nvx:"), (label, spec)
+        assert any(s.startswith("nvxp:") for _, s in mo.CARD_FX)   # 대조 0건 금지(#54)
+
+    def test_batch_wires_nvxp_and_asks_the_pool_once(self, monkeypatch):
+        """헬퍼만 재는 테스트는 **배선을 못 잰다**(#20) — 수집기를 태운다.
+
+        그리고 풀은 **한 번만** 받는다: 두 번 물으면 그 사이 갱신된 값의 나이를
+        옛 값에 붙여 같은 카드의 두 줄이 다른 스냅샷이 된다(#160)."""
+        import bot.market_overview as mo
+        import bot.naver_marketindex as nmi
+        calls = []
+
+        def _pool():
+            calls.append(1)
+            return {"USDJPY": {"close": 147.2, "prev": 146.0,
+                               "change": 1.2, "pct": 0.82},
+                    "EURUSD": {"close": 1.1667, "prev": 1.1600,
+                               "change": 0.0067, "pct": 0.5776}}
+        monkeypatch.setattr(nmi, "fetch_world_fx", _pool)
+        for _fn in ("fetch_commodities", "fetch_world_indices", "fetch_domestic_indices",
+                    "fetch_kr_fx", "fetch_world_futures", "fetch_naver_coins"):
+            monkeypatch.setattr(nmi, _fn, lambda *a, **k: {})
+        monkeypatch.setattr(mo, "_all_yf_tickers", lambda: [])
+        try:
+            monkeypatch.setattr(mo, "fetch_naver_etf_quotes", lambda *a, **k: {})
+        except AttributeError:
+            pass
+        out = mo._fetch_yf_batch()
+        assert calls == [1], f"세계환율 풀을 {len(calls)}번 물었다"
+        assert abs(out["nvxp:JPY"]["close"] - 147.2) < 1e-9
+        assert out["nvxp:JPY"]["fx_basis"] == "direct"
+        eur = out["nvxp:EUR"]
+        assert abs(eur["close"] - 1 / 1.1667) < 1e-12 and eur["fx_basis"] == "inverted"
+        # change 도 뒤집은 값에서 만든다 — 원천 change(달러 단위)를 그대로 실으면
+        # close 와 단위가 갈려 화면이 자기 산수를 못 맞춘다(#33)
+        assert abs(eur["change"] - (eur["close"] - eur["prev_close"])) < 1e-12
+        assert eur["change"] < 0 and abs(eur["change"]) < 0.01
+
+    def test_sub_one_rates_keep_enough_digits_to_verify(self):
+        """1 미만 통화가 2자리로 잘리면 **값이 안 움직인다**(#33).
+
+        유로 0.8571 → 0.8621(전일)은 -0.57% 인데 둘 다 `0.86` 으로 찍히면 옆
+        칸의 ▼0.57% 를 눈으로 검산할 수 없다. 카드가 `해당통화/달러` 로 바뀌며
+        1 미만이 생긴 것이므로, 그 커밋에서 같이 고친다."""
+        import bot.dashboard as d
+        now, prev = d._fmt_price(0.857118, "EU 유로/달러"), d._fmt_price(0.862069, "EU 유로/달러")
+        assert now != prev, (now, prev)          # 하루 변동이 화면에 보인다
+        assert now == "0.8571" and prev == "0.8621"
+        # 큰 값은 종전대로 2자리 — 1,343.2000 은 사람이 못 읽는다
+        assert d._fmt_price(1343.2, "KR 원/달러") == "1,343.20"
+        assert d._fmt_price(147.2, "JP 엔/달러") == "147.20"
+
+    def test_naver_prefixes_are_one_list(self):
+        """접두 열거가 두 곳에 있으면 한쪽만 고쳐진다(#24·#38). `nvxp:` 를
+        빠뜨리면 홈 스냅샷이 그걸 **야후 티커로** 넘겨 '야후 0' 계약이 깨진다."""
+        import bot.market_overview as mo
+        assert "nvxp:" in mo.NAVER_PREFIXES
+        for _, spec in mo.CARD_FX:
+            assert spec.startswith(mo.NAVER_PREFIXES), spec
+        assert mo._all_yf_tickers() == []
 
 
 class TestNaverWidgetTimestamps20260911:
@@ -56510,41 +57123,68 @@ class TestNaverWidgetTimestamps20260911:
         # 앵커가 하나도 없으면 머리를 찍는다(대조 0건은 침묵이 아니라 표본, #54)
         assert "머리 320자" in "\n".join(markup_sample("<html>다른구조</html>", ("zzz",)))
 
-    def test_research_check_measures_our_parser_not_just_reachability(self, monkeypatch, capsys):
-        """`/health` 는 도달까지만 본다 — 우리 파서가 몇 건 읽는지는 여기서 잰다(#35)."""
-        import types
+    def test_research_check_measures_our_parser_not_just_reachability(
+            self, monkeypatch, capsys):
+        """`/health` 는 도달까지만 본다 — 우리가 몇 건 읽는지는 여기서 잰다(#35).
+
+        ⚠️ 2026-09-11 계약 변경(#222): 원천이 SPA 로 바뀌어 세 목록이 HTML →
+        JSON API 로 옮겼다. 진단이 옛 HTML 을 계속 재면 고친 뒤에도 영원히
+        ❌ 다 — `--check` 도 **화면이 쓰는 그 경로**를 태운다."""
         import bot.naver_research_client as nrc
-        def _resp(text):
-            return types.SimpleNamespace(status_code=200, text=text,
-                                         content=text.encode(), encoding="euc-kr")
-        monkeypatch.setattr(nrc.requests, "get", lambda *a, **k: _resp("<html>없음</html>"))
+        row = {"researchId": 1, "title": "t", "brokerName": "b",
+               "writeDate": "2026-09-11", "researchCategory": "종목분석"}
+        # ① 행은 오는데 한 건도 못 읽음 = 구조 변경(도달 실패와 다른 갈래)
+        monkeypatch.setattr(nrc, "_get2_json", lambda *a, **k: ([{"x": 1}], ""))
         assert nrc.main(["--check"]) == 1
         out = capsys.readouterr().out
-        assert f"--check v{nrc._CHECK_VER}" in out               # 배너는 버전을 찍는다
-        assert out.count("❌") == 3 and "company_read.naver` 0건" in out
-        assert "구조 변경 의심" in out
-        # 파싱되면 ✅ — 늘 ❌ 인 진단은 아무것도 안 재는 것과 같다(#25·#47)
-        monkeypatch.setattr(nrc, "_parse_market_list_page", lambda h, c: [{"nid": "1"}])
-        monkeypatch.setattr(nrc, "_parse_industry_list_page", lambda h, c: [{"nid": "2"}])
-        monkeypatch.setattr(nrc, "_parse_strategy_list_page", lambda h, c: [{"nid": "3"}])
+        assert f"--check v{nrc._CHECK_VER}" in out            # 배너는 버전을 찍는다
+        assert out.count("❌") == 3 and "구조 변경" in out
+        # ② 읽히면 ✅ — 늘 ❌ 인 진단은 아무것도 안 재는 것과 같다(#25·#47)
+        monkeypatch.setattr(nrc, "_get2_json", lambda *a, **k: ([row], ""))
         assert nrc.main(["--check"]) == 0
-        assert "세 목록 모두 파싱됨" in capsys.readouterr().out
+        ok = capsys.readouterr().out
+        assert "세 목록 모두 수신됨" in ok and "최신 2026-09-11" in ok
+        # ③ 도달 실패는 그 사유를 그대로 — '0건' 으로 뭉개지 않는다(#82)
+        monkeypatch.setattr(nrc, "_get2_json", lambda *a, **k: (None, "HTTP 429"))
+        assert nrc.main(["--check"]) == 1
+        assert "429" in capsys.readouterr().out
 
-    def test_sector_check_prints_the_markup_sample_it_promises(self, monkeypatch, capsys):
-        """`_CHECK_VER = 3` 라벨이 "3 = 원문 표본" 이라고 **약속**한다 —
-        2026-09-11 독립 리뷰 실측: 그 호출부를 지워도 3,790개가 전부 green
-        이었다(#141·#292 라벨은 라벨이 가리키는 것을 지워도 살아남는다).
-        형제(research `--check`)는 이미 이렇게 재고 있었는데 여기만 낮았다(#291).
+    def test_sector_check_prints_the_source_sample_it_promises(self, monkeypatch, capsys):
+        """`_CHECK_VER` 라벨이 "원문 표본" 을 **약속**한다 — 2026-09-11 독립 리뷰
+        실측: 그 호출부를 지워도 3,790개가 전부 green 이었다(#141·#292 라벨은
+        라벨이 가리키는 것을 지워도 살아남는다). 형제(research `--check`)는 이미
+        이렇게 재고 있었는데 여기만 낮았다(#291).
+
+        ⚠️ 2026-09-11 계약 변경(#222): 실측 경로가 HTML → JSON 이라 표본도
+        `json_sample` 이 만든다. 옛 HTML 앵커 계수를 계속 단언하면 **화면이 안
+        쓰는 경로**를 못박는 것이다(#35). 남는 계약은 '0건이면 원문 표본을
+        찍는다' 이고, 그건 원천이 무엇을 주든 지켜져야 한다(#109).
         """
         import bot.naver_sector_client as nsc
-        monkeypatch.setattr(nsc, "_get2", lambda *a, **k: ("<html>없음</html>", ""))
-        monkeypatch.setattr(nsc, "parse_groups", lambda h: [])
         monkeypatch.setattr(nsc, "collect_themes",
                             lambda *a, **k: {"themes": [{"name": "x"}]})
-        nsc.check(fetch=True)
+        # 200 인데 우리가 아는 키가 하나도 없다 = 구조 변경 — 키 이름을 찍어야
+        # 다음 라운드가 매핑을 고칠 수 있다(#156 키를 자르지 말 것)
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda *a, **k: ([{"upjongNm": "반도체", "rate": "1.2"}], ""))
+        assert nsc.check(fetch=True) == 1
         out = capsys.readouterr().out
-        assert "원문 " in out and "표본:" in out, out      # 표본이 실제로 찍힌다
-        assert "sise_group_detail" in out                  # 앵커별 계수까지
+        assert "원문 1행" in out and "upjongNm" in out and "rate" in out, out
+        # 테마가 0개면 **테마 원문 표본**도 찍는다 — 업종이 SPA 로 죽었으니
+        # 같은 페이지 가족인 테마도 죽었는지 갈려야 한다(#109·#82)
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda *a, **k: ([{"name": "반도체", "changeRate": "1.0"}
+                                              for _ in range(80)], ""))
+        monkeypatch.setattr(nsc, "collect_themes", lambda *a, **k: {"themes": []})
+        monkeypatch.setattr(nsc, "_get", lambda *a, **k: "<html>" + "t" * 400 + "</html>")
+        assert nsc.check(fetch=True) == 1
+        out = capsys.readouterr().out
+        assert "type=theme" in out and "표본:" in out, out
+        # 도달 실패는 표본이 아니라 그 사실을 말한다(#82 갈래는 이름으로)
+        monkeypatch.setattr(nsc, "_get2_json", lambda *a, **k: (None, "원천이 HTTP 403"))
+        assert nsc.check(fetch=True) == 1
+        out = capsys.readouterr().out
+        assert "403" in out and "원문 없음 — 도달 실패" in out, out
 
 
 class TestNoOutboundHttpInTests20260911:

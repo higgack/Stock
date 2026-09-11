@@ -22,7 +22,7 @@ import json
 import re
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 3        # 3 = 국내 업종 멤버 후보 추가
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -53,6 +53,13 @@ _CANDIDATES = [
 # 파생. 살아 있는 `/api/research/company` 와 **같은 자리**만 바꾼 것이라
 # 지어낸 호스트가 아니다. 어느 게 실재하는지는 응답이 말한다(#25·#151).
 _SIBLINGS = [
+    # 국내 업종 **멤버 목록** — `_build_kr_industry_map`(종목코드→업종 한글)이
+    # 아직 SPA 로 죽은 `sise_group_detail.naver` 를 훑는다. 해외판이
+    # `/api/foreign/market/{NAT}/upjong/{code}/list` 로 사는 것과 **같은 자리**
+    # 이므로 지어낸 주소가 아니다(#151 추측 금지 — 실재 여부는 응답이 말한다).
+    # ⚠️ `{code}` 는 업종 목록 응답이 주는 값이라 프로브가 런타임에 채운다.
+    ("업종 멤버(국내)", "https://stock.naver.com/api/domestic/market/upjong/"
+                       "{code}/list?pageSize=5"),
     ("리서치 산업", "https://m.stock.naver.com/api/research/industry"),
     ("리서치 전략", "https://m.stock.naver.com/api/research/invest"),
     ("리서치 시황", "https://m.stock.naver.com/api/research/market"),
@@ -121,6 +128,24 @@ def _get_json(requests, url: str, timeout: int = 10):
         return None, f"JSON 파싱 실패: {type(exc).__name__}"
 
 
+def _first_upjong_code(requests) -> str:
+    """업종 목록 응답에서 **첫 업종 코드**를 꺼낸다("" = 못 구함).
+
+    키 이름을 추측하지 않고 후보를 훑되, 찾은 게 없으면 **빈 문자열**을 돌려
+    호출부가 '판정 불가' 로 찍게 한다(#54 대조 0건은 통과가 아니다)."""
+    obj, _ = _get_json(requests,
+                       "https://stock.naver.com/api/domestic/market/upjong/list"
+                       "?pageSize=5")
+    row = obj[0] if isinstance(obj, list) and obj else None
+    if not isinstance(row, dict):
+        return ""
+    for k in ("code", "industryCode", "upjongCode", "no", "id", "groupCode"):
+        v = row.get(k)
+        if v not in (None, ""):
+            return str(v)
+    return ""
+
+
 def main(argv: list | None = None) -> int:
     import requests
 
@@ -181,6 +206,15 @@ def main(argv: list | None = None) -> int:
 
     print("\n⑤ 리서치 형제 — 옛 company/industry/invest 세 목록에 대응하는 자리")
     for name, url in _SIBLINGS:
+        if "{code}" in url:
+            # 업종 코드는 **목록 응답이 주는 값**이다 — 지어내지 않는다(#151).
+            code = _first_upjong_code(requests)
+            if not code:
+                print(f"   · {name:12s} ❓ 업종 코드를 못 구해 판정 불가 "
+                      "(위 ③ 업종 목록이 실패했거나 코드 키가 없다)")
+                continue
+            url = url.replace("{code}", str(code))
+            print(f"   · (업종 코드 {code} 로 조회)")
         obj, note = _get_json(requests, url)
         if obj is None:
             print(f"   · {name:12s} ❌ {note}")

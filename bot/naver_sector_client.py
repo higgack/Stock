@@ -54,6 +54,12 @@ _UPJONG_NO_RE = re.compile(
     r'sise_group_detail\.naver\?type=upjong[^"]*?no=(\d+)"[^>]*>([^<]+)</a>', re.I)
 
 
+_JSON_HEADERS = dict(_HEADERS, **{
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://stock.naver.com/",
+})
+
+
 def _get2(url: str, **kwargs) -> tuple[Optional[str], str]:
     """(본문, 실패 사유) — 갈래를 이름으로 돌려준다(#82). 성공이면 사유는 "".
 
@@ -78,6 +84,16 @@ def _get2(url: str, **kwargs) -> tuple[Optional[str], str]:
     except Exception as exc:
         log.warning("naver_sector: fetch failed %s: %s", url, exc)
         return None, _nd.http_reason(None, exc=exc)
+
+
+def _get2_json(url: str, **kwargs) -> tuple[object, str]:
+    """(파싱된 JSON, 실패 사유) — 공용 구현(`naver_diag.get_json`)에 위임한다.
+
+    2026-09-11 리뷰 M6: 형제 클라이언트와 이 함수를 **복제**하고 있었고 이미
+    갈라져 있었다(#38). 헤더·로거만 여기서 준다.
+    """
+    return _nd.get_json(url, headers=_JSON_HEADERS, log=log,
+                        tag="naver_sector", **kwargs)
 
 
 def _get(url: str, **kwargs) -> Optional[str]:
@@ -233,8 +249,24 @@ _kr_ind_building = False
 _kr_ind_lock = threading.Lock()
 
 
+# 업종맵 빌드가 **왜** 비었나 — `--check` 가 읽는다. 조용한 실패는 몇 달 동안
+# 기능 하나를 없는 셈 친다(#12·#43, 독립 리뷰 2026-09-11 M5).
+_KR_IND_FAIL: dict = {"reason": ""}
+
+
+def kr_industry_fail_reason() -> str:
+    """직전 업종맵 빌드가 0건이었던 사유("" = 사유 없음)."""
+    return _KR_IND_FAIL.get("reason") or ""
+
+
 def _build_kr_industry_map() -> None:
-    """네이버 업종 그룹 멤버 스캔 → {6자리코드 → 업종명(한글)}. 백그라운드 1회."""
+    """네이버 업종 그룹 멤버 스캔 → {6자리코드 → 업종명(한글)}. 백그라운드 1회.
+
+    ⚠️ 이 경로는 아직 **옛 HTML**(`sise_group.naver`)을 훑는다 — 2026-09-11
+    SPA 전환 뒤에는 정의상 0건이므로 맵이 영영 안 채워진다. 대체 엔드포인트를
+    **추측해서 짜지 않는다**(#151 — `naver_spa_probe` ⑤ '업종 멤버(국내)' 가
+    실재 여부를 재고, 그 실측 뒤에 갈아탄다). 그 사이 실패를 **말은 한다**.
+    """
     global _kr_ind_building
     try:
         html = _get(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
@@ -247,7 +279,16 @@ def _build_kr_industry_map() -> None:
                     seen.add(no)
                     groups.append((no, name))
         if not groups:
+            # 조용히 return 하면 `kr_industry_map()` 이 매 렌더마다 스레드를
+            # 띄워 같은 실패를 반복하는데 **아무도 모른다**(#12 silent-fail 금지).
+            _KR_IND_FAIL["reason"] = (
+                f"업종 그룹 0건 — 원문 {len(html or ''):,}자"
+                + ("(응답은 왔다 = SPA 전환으로 표가 사라진 것, "
+                   "`naver_spa_probe` ⑤ 로 대체 경로를 잰다)" if html
+                   else "(응답 자체가 없다 = 도달 실패)"))
+            log.warning("kr industry map: %s", _KR_IND_FAIL["reason"])
             return
+        _KR_IND_FAIL["reason"] = ""
 
         def _members(grp):
             no, name = grp
@@ -329,6 +370,78 @@ def _cache_read_any(name: str) -> tuple[Optional[dict], Optional[float]]:
         return None, None
 
 
+# ── 업종 등락: 네이버 JSON API (2026-09-11 SPA 전환) ────────────────────────
+# finance.naver.com 이 Next.js SPA 로 바뀌어 서버 렌더 표가 사라졌다(VM 실측:
+# 121,364B 응답에 `<table` 0건). CN·HK·JP 업종은 이미 JSON API 로 살고 있었고
+# **한국만 HTML 스크래핑에 남아** 있어서 한국만 죽었다(#38 같은 것을 그리는
+# 화면은 같은 경로로).
+#
+# VM 실측(2026-09-11 naver_spa_probe v2)으로 확정한 것:
+#   · 무인자        → 20행   ← **기본 페이지 크기**다(전부가 아니다)
+#   · ?pageSize=100 → 79행   ← 전 업종
+#   · ?size=100 / ?perPage=100 / ?page=2 → 전부 20행(그 파라미터는 안 먹는다)
+# 20행만 보고 상위·하위 10을 매기면 **화면이 조용히 틀린다**(#45 모집단) —
+# 그래서 pageSize 는 필수이고, 20행이 오면 그 사실을 사유로 남긴다.
+#
+# 행 모양(실측): {"name":"손해보험","changeRate":"4.18","thistime":"20260911155908",
+#   "riseCnt":"10","fallCnt":"2","totalMarketSum":"57204668","leadingItem":"...", …}
+# `changeRate` 는 **문자열**이고 부호를 포함한다. `thistime` 은 원천 기준시각
+# (렌더 시각이 아니다 — 규칙 10b).
+_UPJONG_API = "https://stock.naver.com/api/domestic/market/upjong/list"
+_UPJONG_PAGE_SIZE = 100          # 실측 79행 < 100. 리터럴로 못박는다(#66)
+_UPJONG_DEFAULT_PAGE = 20        # 이 수가 오면 pageSize 가 안 먹은 것이다
+# 2026-09-11 실측 79행. 상·하위 10 랭킹이라 전수의 일부만 와도 **값이 다 있어서**
+# 조용히 틀린다(#45·#280) — '20 인가'만 묻는 검사는 원천이 40·50 을 주기 시작하면
+# 눈이 먼다(#24 열거형). 하한을 두고 그 아래는 부분으로 본다(독립 리뷰 H3).
+_UPJONG_MIN_GROUPS = 60          # 실측 79 에서 넉넉히 내린 하한
+
+
+def parse_upjong_json(rows: object) -> list:
+    """네이버 업종 JSON → [{name, pct, rise, fall, mcap}] (순수).
+
+    값이 문자열로 오므로 숫자 변환에 실패한 행은 **버리되 조용히 버리지
+    않는다** — 호출부가 개수를 대조한다(#54). 이름이나 등락률이 없으면
+    그 행은 등락 랭킹에 쓸 수 없다.
+    """
+    out = []
+    if not isinstance(rows, list):
+        return out
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            pct = float(str(r.get("changeRate")).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        item = {"name": name, "pct": pct}
+        for src, dst in (("riseCnt", "rise"), ("fallCnt", "fall"),
+                         ("totalMarketSum", "mcap")):
+            try:
+                item[dst] = float(str(r.get(src)).replace(",", ""))
+            except (TypeError, ValueError):
+                pass
+        out.append(item)
+    return out
+
+
+def upjong_asof(rows: object) -> str:
+    """원천이 찍은 기준시각 `thistime`(YYYYMMDDHHMMSS) → 'MM-DD HH:MM' (순수).
+
+    렌더 시각을 쓰면 수집이 멈춘 날도 방금처럼 보인다(규칙 10b·#304).
+    못 읽으면 빈 문자열 — 지어내지 않는다(#165).
+    """
+    if not isinstance(rows, list):
+        return ""
+    for r in rows:
+        t = str((r or {}).get("thistime") or "") if isinstance(r, dict) else ""
+        if len(t) >= 12 and t.isdigit():
+            return f"{t[4:6]}-{t[6:8]} {t[8:10]}:{t[10:12]}"
+    return ""
+
+
 def fetch_sector_movers(top_n: int = 10) -> dict:
     """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 장중 30초 캐시.
 
@@ -339,11 +452,22 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
     c = _cached("upjong.json")
     if c is not None:
         return c
-    html, why = _get2(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
-    groups = parse_groups(html) if html else []
+    raw, why = _get2_json(_UPJONG_API, params={"pageSize": _UPJONG_PAGE_SIZE})
+    groups = parse_upjong_json(raw)
+    n_raw = len(raw) if isinstance(raw, list) else 0
+    partial = bool(groups) and n_raw < _UPJONG_MIN_GROUPS
+    if partial:
+        # 전 업종이 아니므로 상위·하위 10 이 틀린다(#45). 값은 주되 사유를 남기고
+        # **캐시하지는 않는다** — 부분을 완전본으로 구우면 TTL 내내 틀린 랭킹이
+        # 서빙된다(#280 부분·빈 결과는 캐시하지 않는다).
+        how = ("기본 페이지" if n_raw == _UPJONG_DEFAULT_PAGE
+               else f"기대 하한 {_UPJONG_MIN_GROUPS}개 미만")
+        why = (f"업종이 {n_raw}개만 왔습니다({how}) — 전 업종 랭킹이 "
+               "아닐 수 있습니다. pageSize 파라미터 확인 필요")
+        log.warning("naver upjong: 부분 수신 — %d행(%s)", n_raw, how)
     if not groups:
         if not why:                    # 200 을 받았는데 0건 = 구조 변경 의심
-            why = _nd.parse_reason("업종 행", len(html or ""))
+            why = _nd.parse_reason("업종 행", n_raw, unit="행")
         prev, age = _cache_read_any("upjong.json")
         if prev and (prev.get("up") or prev.get("down")):
             return dict(prev, stale=True, stale_min=int((age or 0) // 60),
@@ -359,12 +483,20 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
         # 장 밖 내내 fresh 로 보아 **다음 개장까지 빈 위젯이 재시도 없이** 서빙된다
         # — 이 커밋이 고치려던 바로 그 증상이다(독립 리뷰 2026-09-11 · #54·#119).
         prev, age = _cache_read_any("upjong.json")
-        why = _nd.parse_reason(f"업종 {len(groups)}개의 등락률", len(html or ""))
+        why = _nd.parse_reason(f"업종 {len(groups)}개의 등락률", n_raw, unit="행")
         if prev and (prev.get("up") or prev.get("down")):
             return dict(prev, stale=True, stale_min=int((age or 0) // 60), reason=why)
         return {"up": [], "down": [], "ts": "", "reason": why}
+    # 기준시각은 **원천이 찍은 것**을 쓴다(렌더 시각이 아니다, 규칙 10b·#304).
+    # 원천이 안 주면 우리 수집 시각으로 떨어지되 그건 '값 수집' 이다.
     out = {"up": ups, "down": downs,
-           "ts": _now_kst_label()}
+           "ts": upjong_asof(raw) or _now_kst_label(),
+           "scanned": len(groups)}
+    if why:                            # 부분 페이지 등 — 값은 있지만 사유가 있다
+        out["reason"] = why
+    if partial:
+        out["partial"] = True
+        return out                     # 부분은 last-good 으로 굽지 않는다(#280)
     _cache_write("upjong.json", out)
     return out
 
@@ -669,7 +801,7 @@ _THEME_PAGES = 7
 # — 낡은 값을 '현재'로 내보내지 않기 위해서다(#163). 화면은 어느 쪽이든
 # 스냅샷 시각(ts)을 그대로 찍는다(#43).
 _THEME_SWR_SEC = 600
-_CHECK_VER = 3        # 진단은 버전을 찍는다(#21). 2 = 업종 TOP 갈래 · 3 = 원문 표본
+_CHECK_VER = 5        # 3 = 원문 표본 · 4 = JSON 경로 · 5 = 업종맵 갈래
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -920,6 +1052,32 @@ def markup_sample(html: str | None, anchors: tuple, width: int = 220,
     return head + counts + [sample]
 
 
+def json_sample(raw: object, max_keys: int = 14) -> list[str]:
+    """JSON 0건일 때 **원문 표본** — `markup_sample` 의 JSON 판(#109).
+
+    "구조 변경 의심" 까지만 말하면 다음 라운드가 추측으로 시작한다. 키 이름을
+    **자르지 않고** 보여줄 것 — 내 옛 프로브가 키를 잘라 매핑 근거가 '외 2종'
+    안에 숨는 바람에 라운드를 하나 더 썼다(#156).
+    """
+    if raw is None:
+        return ["원문 없음 — 도달 실패"]
+    if isinstance(raw, list):
+        if not raw:
+            return ["원문: 빈 목록([]) — 도달·파싱은 됐고 행이 0건"]
+        first = raw[0]
+        if not isinstance(first, dict):
+            return [f"원문 {len(raw)}행 · 첫 원소가 dict 가 아님({type(first).__name__}): "
+                    + _mask_secrets(repr(first)[:220])]
+        keys = list(first)
+        shown = keys[:max_keys]
+        line = f"원문 {len(raw)}행 · 첫 행 키 {len(keys)}종: " + ", ".join(shown)
+        if len(keys) > len(shown):
+            line += f" … 외 {len(keys) - len(shown)}종"   # 자른 사실을 말한다(#45)
+        return [line, "   ↪ 첫 행: " + _mask_secrets(repr(first)[:320])]
+    return [f"원문이 목록이 아님({type(raw).__name__}): "
+            + _mask_secrets(repr(raw)[:320])]
+
+
 def check(fetch: bool = False) -> int:
     """`--check` — 업종별 시세(전체)가 왜 그 속도인지 **갈래로** 말한다.
 
@@ -987,6 +1145,34 @@ def check(fetch: bool = False) -> int:
         if _cached("upjong.json") is None:
             print("   ⚠️ 신선 판정 아님 — 다음 렌더가 수집을 시도하고, "
                   "실패하면 이 저장분을 '저장분 ⚠️' 라벨로 서빙한다")
+    # ── 업종맵(종목코드 → 업종 한글) — 옛 HTML 경로라 SPA 전환 뒤 0건이다.
+    # 조용히 죽으면 KR 항목의 '업종' 칸이 영영 빈다(#12·#43, 리뷰 M5).
+    # ⚠️ `kr_industry_map()` 을 부르면 안 된다 — 캐시가 없거나 낡으면 **빌드
+    # 스레드를 띄워** 네이버를 친다. 기본 `--check` 는 읽기 전용이어야 한다
+    # (#264·#321 진단이 운영 상태를 바꾸거나 원천을 치면 안 된다). 화면이 쓴
+    # 그 파일을 그대로 읽는다(#35).
+    _imf = _CACHE_DIR / _KR_IND_CACHE
+    _im = {}
+    if _imf.exists():
+        try:
+            _im = json.loads(_imf.read_text()) or {}
+        except Exception as exc:                             # noqa: BLE001
+            print(f"②-c 업종맵 캐시를 못 읽음 — {type(exc).__name__}: {exc}")
+    if _im:
+        _age = time.time() - _imf.stat().st_mtime
+        _fresh = "" if _age < _KR_IND_TTL else " ⚠️ TTL 초과(다음 렌더가 재빌드 시도)"
+        print(f"②-c 업종맵: {len(_im):,}종목 "
+              f"({_nd.stale_label(_age) or '나이 미상'}){_fresh}")
+    else:
+        # ⚠️ rc 는 올리지 않는다 — 빌드 경로가 SPA 로 죽어 **지금은 우리가 못
+        # 고치는** 상태이고, 매번 ❌ 를 내면 진짜 ❌ 를 가린다(#260·#41 사실은
+        # 그대로 말하되 기호는 갈래에 맞춘다). 대신 **다음 행동**을 적는다.
+        print("②-c 업종맵: ⚠️ 캐시 0종목 — KR 항목의 업종 칸이 빈다")
+        print("   ↪ 빌드 경로가 옛 HTML(sise_group.naver)이라 SPA 전환 뒤 0건이다 "
+              "— `python -m bot.scripts.naver_spa_probe` ⑤ '업종 멤버(국내)' 로 "
+              "대체 경로를 **재고 나서** 갈아탈 것(#151 추측 금지)")
+    if kr_industry_fail_reason():
+        print(f"   ↪ {kr_industry_fail_reason()}")
     try:
         from bot.finviz_client import naver_paused
         if naver_paused():
@@ -1011,13 +1197,26 @@ def check(fetch: bool = False) -> int:
     t1 = time.time()
     # ⚠️ 여기서 네트워크가 나간다 — `--fetch` 를 태우는 테스트는 반드시 스텁할 것
     # (#312 테스트가 원천을 치면 안 된다). 기본(`--check`)은 조회만이라 안전하다.
-    html, why = _get2(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
-    groups = parse_groups(html) if html else []
+    # ⚠️ **화면이 쓰는 그 경로**를 태운다(#35) — 2026-09-11 SPA 전환 뒤에도 옛
+    # HTML(`sise_group.naver`)을 재고 있어 고친 뒤에도 영원히 ❌ 였다(독립 리뷰 M1).
+    raw, why = _get2_json(_UPJONG_API, params={"pageSize": _UPJONG_PAGE_SIZE})
+    n_raw = len(raw) if isinstance(raw, list) else 0
+    groups = parse_upjong_json(raw)
     if groups:
-        print(f"③-b 업종 TOP 실측: {len(groups)}개 · {time.time() - t1:.2f}초")
+        asof = upjong_asof(raw) or "원천 미기록"
+        print(f"③-b 업종 TOP 실측: {len(groups)}개 / 원천 {n_raw}행 · "
+              f"기준 {asof} · {time.time() - t1:.2f}초")
+        if n_raw < _UPJONG_MIN_GROUPS:
+            # 값이 다 있어서 조용히 틀린다 — 세어 보지 않으면 안 보인다(#45).
+            print(f"   ⚠️ 부분 수신(기대 하한 {_UPJONG_MIN_GROUPS}개) — 상·하위 "
+                  "10 랭킹이 전 업종 기준이 아니다. 캐시에는 굽지 않는다")
+            rc = 1
+    elif not isinstance(raw, list) and raw is not None:
+        print(f"③-b 업종 TOP 실측 0개 — {_nd.shape_reason('업종 목록', raw)}")
+        rc = 1
     else:
-        print(f"③-b 업종 TOP 실측 0개 — {why or _nd.parse_reason('업종 행', len(html or ''))}")
-        for ln in markup_sample(html, ("sise_group_detail", "업종", "<table", "type=upjong")):
+        print(f"③-b 업종 TOP 실측 0개 — {why or _nd.parse_reason('업종 행', n_raw, unit='행')}")
+        for ln in json_sample(raw):
             print(f"   {ln}")
         rc = 1
     t0 = time.time()
@@ -1027,6 +1226,12 @@ def check(fetch: bool = False) -> int:
     if not out["themes"]:
         # 대조 0건은 통과가 아니다(#54).
         print("   ❌ 0개 — 네이버 도달 실패이거나 파싱이 깨졌다")
+        # ⚠️ 갈래를 사람이 짐작하게 두지 말 것(#82). 테마는 아직 **HTML** 경로다
+        # — 업종이 SPA 로 죽었으니(2026-09-11) 같은 페이지 가족인 여기도 죽었을
+        # 수 있다. 원문 표본을 찍으면 '도달 실패'와 '표가 사라짐'이 갈린다(#109).
+        for ln in markup_sample(_get(f"{_BASE}/theme.naver", params={"page": 1}),
+                                ("sise_group_detail", "type=theme", "<table")):
+            print(f"   {ln}")
         return 1
     # ⚠️ `return 0` 로 끝내면 위에서 세운 rc(업종 TOP 실측 실패·정지)가 버려져
     # 초록불이 된다 — 판정을 계산해 놓고 표시(여기선 종료코드)에 안 쓰면 없는

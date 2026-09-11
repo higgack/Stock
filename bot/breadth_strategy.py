@@ -463,6 +463,10 @@ def _assemble(market: str, sectors: dict, bench_name: str, bench_rows: list,
         "rs_ranked": rs_ranked[:5],
         "fng": {"index": fng.get("score"), "label": fng.get("rating_kr", "")},
         "asof": dates[-1] if dates else "",
+        # 기준일 옆에 **그날의 지수 종가**를 같이 싣는다 — 시장타이밍 보드와
+        # 같은 규약("기준 2026-09-10 · 최근 종가 7591.7")이라 두 화면을 나란히
+        # 놓고 눈으로 대조할 수 있다(사용자 2026-09-11 요청 · #33·#51).
+        "latest_close": bench_closes[-1] if bench_closes else None,
         "is_confirmed": cut is not None,
         # 해상도 각주 — 표본이 작으면 한 섹터가 큰 폭을 차지해 경계가 성기다.
         # ⚠️ '3.9개 지점' 같은 소수는 실제로 존재하지 않는다(섹터는 정수) —
@@ -747,6 +751,11 @@ def _market_section(d: dict) -> str:
         f"<td class='num'>{(r.get('total_w') or 0) * 100:.0f}%</td>"
         f"<td class='num'>{(r.get('cash_w') or 0) * 100:.0f}%</td></tr>"
         for r in reversed(load_signals(mkt, limit=24)))
+    # ⚠️ 기준일은 **stat-grid 바로 아래 자기 줄**로 뺀다 — 옛 판은 투자대상·RS·
+    # F&G 뒤에 묻혀 있어 사용자가 "언제기준인지 명시해줘" 를 물어야 했다
+    # (2026-09-11, 시장타이밍 보드의 `기준 … · 최근 종가 …` 와 같은 규약).
+    # 같은 지수를 두 화면이 그리므로 종가를 같이 적어 눈으로 대조하게 한다(#51).
+    asof_html = _asof_line(d)
     # ⚠️ 숫자 컬럼은 **헤더도** 우측정렬(class="num") — 셀만 우측이고 헤더가
     # 좌측이면 제목과 값이 어긋나 보인다(사용자 2026-08-16 스크린샷).
     hist_html = (f"<table class='bs-tbl'><thead><tr><th>월</th><th>구간</th><th>상태</th>"
@@ -767,8 +776,9 @@ def _market_section(d: dict) -> str:
 <div class="stat"><div class="k">최종 투자비중</div><div class="v">{(d.get('total_w') or 0) * 100:.0f}%</div></div>
 <div class="stat"><div class="k">현금</div><div class="v">{(d.get('cash_w') or 0) * 100:.0f}%</div></div>
 </div>
+{asof_html}
 <div class="sub" style="margin-top:6px">투자 대상 <b>{tgt_html}</b> · RS 순위(상위 5, 지수 대비 6개월) {rs_html}
-· F&amp;G {fng_s} · 기준일 {_h.escape(str(d.get('asof', '')))}{_session_badge(d.get('market'), d.get('asof'))}</div>
+· F&amp;G {fng_s}</div>
 {miss_html}
 <div class="sub">표본 {_h.escape(str(d.get('source_label', '')))} {b.get('counted', 0)}개
 (MA120 상회 {b.get('above', 0)}개) · {_h.escape(str(d.get('resolution_note', '')))}</div>
@@ -791,8 +801,39 @@ _BS_CSS = """
    보인다(실수 #201 "너무 크잖아"). 대시보드에 같은 이름이 있어도 이 페이지는
    그 번들을 안 쓴다 — 쓰는 곳이 전부 그 번들인지 먼저 답할 것(#273). */
 .bs-tbl .si-note{font-size:11px;color:var(--fg-soft,#93a0bd);font-weight:400}
+/* 기준일 줄 — stat-grid 바로 아래, 본문보다 한 톤 또렷하게(묻히면 또 묻는다) */
+.bs-asof{margin-top:8px;font-size:12.5px}
 </style>
 """
+
+
+def _asof_line(d: dict) -> str:
+    """`기준 2026-09-10(배지) · 최근 종가 7591.7 · KOSPI` 한 줄(순수).
+
+    사용자 2026-09-11 "한국/미국에 언제기준인지 명시해줘. 시장타이밍보드에 나온
+    '기준 2026-09-10 · 최근 종가 7591.7' 와 같이". 옛 판은 기준일을 투자대상·RS·
+    F&G 뒤에 묻어 놔서 '이거 최신이야?' 에 화면이 답하지 못했다(#43 · 규칙 10b).
+
+    ⚠️ 기준일이 없으면 **침묵하지 말고 그렇게 말한다** — 빈 줄은 '오늘 것'으로
+    읽힌다(#43 침묵이 최악). 종가는 못 받을 수 있으므로 있을 때만 붙인다(#165).
+    """
+    import html as _h          # `_h` 는 렌더 함수 안의 지역 import 다(모듈 전역 아님)
+
+    asof = str((d or {}).get("asof") or "")
+    if not asof:
+        return ("<div class='sub bs-asof'>기준 <b>미기록</b> — 지수 시계열을 "
+                "받지 못해 어느 종가 기준인지 말할 수 없습니다</div>")
+    close = (d or {}).get("latest_close")
+    bits = [f"기준 <b>{_h.escape(asof)}</b>"
+            f"{_session_badge((d or {}).get('market'), asof)}"]
+    if isinstance(close, (int, float)):
+        # 지수는 소수 1자리(시장타이밍과 같은 눈금) — 두 화면을 나란히 놓고
+        # 같은 값인지 확인할 수 있어야 한다(#51).
+        bits.append(f"최근 종가 {close:,.1f}")
+    name = str((d or {}).get("bench_name") or "")
+    if name:
+        bits.append(_h.escape(name))
+    return "<div class='sub bs-asof'>" + " · ".join(bits) + "</div>"
 
 
 def _session_badge(market, asof) -> str:

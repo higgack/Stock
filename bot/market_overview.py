@@ -72,17 +72,63 @@ CARD_ASIA = [
 # 사용자 2026-06-14 '다 네이버로' — 세계 cross-rate 는 네이버 exchangeWorld(nvx:).
 # 원/달러·엔/원은 KRW-base 라 exchangeWorld 미포함(KRW 부재) → 네이버 marketindex/
 # exchange(nvk:FX_*)로 가져온다. **야후 아님** (옛 'yfinance 유지' 주석 정정 2026-06-15).
+# ── FX: 전 통화를 **해당통화/달러**(1달러당 그 통화 단위)로 통일 ──────────
+# 사용자 2026-09-11 "환율을 모든게 해당통화/달러 기준으로 해줘. 지금은 일부는
+# 아닌것 같은데". 실제로 세 벌이 섞여 있었다(캡처 실측):
+#   · KR 원/달러 1,343 · CN·HK·TW·IN·CH = USD 가 분자 → **이미 맞다**
+#   · EU 1.16 · GB 1.35 · AU 0.72 = 시장 관례가 `EURUSD`(달러가 **분자**)라
+#     "유로/달러" 라고 적어 놓고 **1유로당 달러**를 보여 주고 있었다(#34 라벨과
+#     기준이 어긋난 것) — 세로로 읽으면 1,343 옆에 1.16 이 놓여 같은 열의
+#     뜻이 갈린다(#32).
+#   · JP 는 아예 달러 기준이 아니었다(엔/원 100엔).
+#
+# ⚠️ 역수를 취할 땐 **퍼센트를 되계산**해야 한다. 부호만 뒤집으면 크기가 틀린다:
+#   X 가 a→b 로 r 만큼 변하면 1/X 는 -r/(1+r) 만큼 변한다(r=10% 면 -9.09%).
+#   그래서 close·prev 를 각각 뒤집고 **거기서** pct 를 다시 만든다(#33 화면의
+#   두 칸으로 눈으로 검산해도 맞아야 한다).
+# ⚠️ 그리고 **원천이 직접 주는 쌍을 먼저** 쓴다 — 113쌍을 주므로 `USDJPY` 가
+#   있으면 역수를 만들 이유가 없다(#32 자체계산은 원천이 없을 때만 · #141).
+def fx_per_dollar(pool: dict, ccy: str) -> Optional[dict]:
+    """{close, prev, pct, basis} — 1달러당 `ccy` 단위. 없으면 None(순수).
+
+    `basis`: 'direct'(원천이 USD{ccy} 를 줌) | 'inverted'({ccy}USD 를 뒤집음).
+    화면이 그 사실을 말할 수 있게 남긴다(#43·#136) — 지금은 라벨이 같아
+    표시하진 않지만, 갈리면 진단이 가른다.
+    """
+    ccy = (ccy or "").upper()
+    if not ccy:
+        return None
+    rec = pool.get(f"USD{ccy}")
+    if rec and rec.get("close"):
+        return {"close": rec["close"], "prev": rec.get("prev"),
+                "pct": rec.get("pct"), "basis": "direct"}
+    rec = pool.get(f"{ccy}USD")
+    if not rec:
+        return None
+    close, prev = rec.get("close"), rec.get("prev")
+    if not close:                      # 0·None 은 뒤집을 수 없다(#242 or 0 금지)
+        return None
+    inv_close = 1.0 / close
+    inv_prev = (1.0 / prev) if prev else None
+    # pct 는 뒤집은 값에서 **다시** 만든다 — 원천 pct 를 음수로 만들면 틀린다
+    pct = ((inv_close - inv_prev) / inv_prev * 100.0) if inv_prev else None
+    return {"close": inv_close, "prev": inv_prev, "pct": pct, "basis": "inverted"}
+
+
+# `nvxp:` = 해당통화/달러(1달러당 그 통화). 원천이 직접 주면 그것, 아니면 역수.
+# 라벨도 전부 `<통화>/달러` 로 통일한다 — 라벨과 기준이 어긋나면 그 자체가
+# 거짓말이고, 세로로 읽는 자리에선 특히 그렇다(#34·#32).
 CARD_FX = [
-    ("KR 원/달러", "nvk:FX_USDKRW"),       # 네이버 marketindex/exchange (사용자 2026-06-14)
-    ("JP 엔/원 (100엔)", "nvk:FX_JPYKRW"),  # 네이버 (100엔 기준 표기)
-    ("EU 유로/달러", "nvx:EURUSD"),
-    ("GB 파운드/달러", "nvx:GBPUSD"),
-    ("CN 달러/위안", "nvx:USDCNY"),
-    ("HK 달러/미국달러", "nvx:USDHKD"),
-    ("TW 대만달러/미국달러", "nvx:USDTWD"),
-    ("IN 루피/달러", "nvx:USDINR"),
-    ("AU 호주달러/달러", "nvx:AUDUSD"),
-    ("CH 스위스프랑/달러", "nvx:USDCHF"),
+    ("KR 원/달러", "nvk:FX_USDKRW"),       # 네이버 marketindex/exchange (KRW 는 cross-rate 풀에 없다)
+    ("JP 엔/달러", "nvxp:JPY"),            # 2026-09-11: 옛 '엔/원(100엔)' 은 달러 기준이 아니었다
+    ("EU 유로/달러", "nvxp:EUR"),          # 옛 nvx:EURUSD 는 **1유로당 달러**였다
+    ("GB 파운드/달러", "nvxp:GBP"),        # 옛 nvx:GBPUSD 동일
+    ("CN 위안/달러", "nvxp:CNY"),          # 라벨이 '달러/위안' 으로 뒤집혀 있었다
+    ("HK 홍콩달러/달러", "nvxp:HKD"),
+    ("TW 대만달러/달러", "nvxp:TWD"),
+    ("IN 루피/달러", "nvxp:INR"),
+    ("AU 호주달러/달러", "nvxp:AUD"),      # 옛 nvx:AUDUSD 는 **1호주달러당 달러**였다
+    ("CH 스위스프랑/달러", "nvxp:CHF"),
 ]
 
 # 사용자 2026-06-14 '다 네이버로' — 원자재를 네이버 marketindex(nv:symbolCode)로
@@ -212,6 +258,12 @@ _DOLLAR_INDEX_TICKER = "DX-Y.NYB"
 
 # ── yfinance batch fetch ────────────────────────────────────────────
 
+# 네이버 경유 접두 — 여기 없는 접두는 야후 티커로 샌다(홈 스냅샷 '야후 0' 계약이
+# 깨진다). 두 곳에 열거하면 한쪽만 고쳐지므로 **단일 출처**로 둔다(#24·#38).
+NAVER_PREFIXES = ("nv:", "nvi:", "nvd:", "nvx:", "nvxp:", "nvk:",
+                  "nvf:", "nvc:", "nve:")
+
+
 def _all_yf_tickers() -> list[str]:
     """Collect all yfinance tickers needed."""
     tickers = []
@@ -219,8 +271,7 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
-            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:",
-                              "nvf:", "nvc:", "nve:")):
+            if tk.startswith(NAVER_PREFIXES):
                 continue  # 네이버 (marketindex/worldstock/domestic/exchange/futures/coin/etf)
             tickers.append(tk)
     # ALL_CARDS = 지수·환율·원자재·코인·VIX 뿐(개별 종목 카드 없음) + 전부 네이버
@@ -349,6 +400,7 @@ def _fetch_yf_batch() -> dict[str, dict]:
     # 네이버 미반환 코드는 result 미주입(블랭크, 크래시 없음).
     _nv_codes, _nvi_codes, _nvd_codes = [], [], []
     _nvx_codes, _nvk_codes, _nvf_codes, _nvc_codes, _nve_codes = [], [], [], [], []
+    _nvxp_codes: list = []
     for _grp, _items in ALL_CARDS:
         if not _items:
             continue
@@ -359,6 +411,8 @@ def _fetch_yf_batch() -> dict[str, dict]:
                 _nvi_codes.append(_tk)
             elif _tk.startswith("nvd:"):
                 _nvd_codes.append(_tk)
+            elif _tk.startswith("nvxp:"):       # 해당통화/달러 — 역수 허용
+                _nvxp_codes.append(_tk)
             elif _tk.startswith("nvx:"):
                 _nvx_codes.append(_tk)
             elif _tk.startswith("nvk:"):
@@ -402,15 +456,24 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver 국내지수 병합 실패: %s", exc)
-    if _nvx_codes:                             # fetch_world_fx 는 전체 반환(인자 무시)
+    if _nvx_codes or _nvxp_codes:              # fetch_world_fx 는 전체 반환(인자 무시)
         try:
             from bot.naver_marketindex import fetch_world_fx
+            # ⚠️ **한 번만** 받는다 — 두 번 물으면 그 사이 갱신된 값의 나이를 옛
+            # 값에 붙이고, 같은 카드의 두 줄이 다른 스냅샷이 된다(#51·#160).
             _nvx = fetch_world_fx()
             for _tk in _nvx_codes:
                 _rec = _nvx.get(_tk[4:])
                 if _rec and _rec.get("close") is not None:
                     result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
                                    "change": _rec["change"], "pct": _rec["pct"]}
+            for _tk in _nvxp_codes:
+                _rec = fx_per_dollar(_nvx, _tk[5:])
+                if _rec:
+                    _c, _p = _rec["close"], _rec["prev"]
+                    result[_tk] = {"close": _c, "prev_close": _p,
+                                   "change": (_c - _p) if _p else None,
+                                   "pct": _rec["pct"], "fx_basis": _rec["basis"]}
         except Exception as exc:
             log.warning("market_overview: naver 세계환율 병합 실패: %s", exc)
     if _nvk_codes:                             # fetch_kr_fx 는 전체 반환(인자 무시)
@@ -1282,12 +1345,19 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
             pass
 
     results: list[dict] = []
+    why = ""
     try:
-        from bot.naver_research_client import fetch_recent_research_industry
+        from bot.naver_research_client import (fetch_recent_research_industry,
+                                               last_fail_reason)
         results = fetch_recent_research_industry(limit=limit, days_back=30,
                                                  max_pages=12)
+        why = last_fail_reason("industry")
     except Exception as exc:
         log.warning("naver research industry fetch error: %s", exc)
+        why = f"수집 중 예외 — {type(exc).__name__}: {str(exc)[:80]}"
+    # 사유를 화면까지 배선한다 — 종목 탭만 고치면 산업 탭은 원천이 막힌 날에도
+    # "최근 산업 리포트가 없습니다" 라고 거짓말한다(#38·#147·#43, 리뷰 M2).
+    _RESEARCH_NOTE["kr_industry"] = {"reason": why, "stale": False}
 
     if results:  # truthy-only — 빈 결과 캐시 안 함
         try:
@@ -1315,12 +1385,17 @@ def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
             pass
 
     results: list[dict] = []
+    why = ""
     try:
-        from bot.naver_research_client import fetch_recent_research_strategy
+        from bot.naver_research_client import (fetch_recent_research_strategy,
+                                               last_fail_reason)
         results = fetch_recent_research_strategy(limit=limit, days_back=30,
                                                  max_pages=12)
+        why = last_fail_reason("strategy")
     except Exception as exc:
         log.warning("naver research strategy fetch error: %s", exc)
+        why = f"수집 중 예외 — {type(exc).__name__}: {str(exc)[:80]}"
+    _RESEARCH_NOTE["kr_strategy"] = {"reason": why, "stale": False}
 
     if results:  # truthy-only — 빈 결과 캐시 안 함
         try:
@@ -1770,13 +1845,20 @@ def fetch_all_market_data() -> dict[str, Any]:
         # 순서에 기댄 안전은 언제든 깨진다(#102a) → 지역 변수로 못박는다.
         _res_kr = kr_fut.result()
         _res_kr_note = research_note("kr")
+        # ⚠️ note 는 **결과를 받은 뒤** 읽는다 — 수집이 note 를 쓰므로 순서가
+        # 뒤바뀌면 직전 렌더의 사유가 실린다(#102a 순서에 기댄 안전 금지).
+        _res_ind, _res_strat = kr_ind_fut.result(), kr_strat_fut.result()
+        _res_ind_note = research_note("kr_industry")
+        _res_strat_note = research_note("kr_strategy")
         return {
             "snapshot": snap_fut.result(),
             "earnings": earnings,
             "research_kr": _res_kr,
             "research_kr_note": _res_kr_note,
-            "research_kr_industry": kr_ind_fut.result(),
-            "research_kr_strategy": kr_strat_fut.result(),
+            "research_kr_industry": _res_ind,
+            "research_kr_industry_note": _res_ind_note,
+            "research_kr_strategy": _res_strat,
+            "research_kr_strategy_note": _res_strat_note,
             "research_us": us_fut.result(),
             "research_jp": res_jp_fut.result(),
             "research_tw": res_tw_fut.result(),

@@ -17243,6 +17243,7 @@ _MARKET_CSS = (
     ".sm-tbl td:first-child{color:var(--text)}"
     ".sm-tbl td:last-child{text-align:right;font-weight:600;width:84px}"
     ".sm-tbl .rk{color:var(--muted);width:22px;font-size:12px}"
+    ".sm-note{color:var(--muted);font-size:12px;margin:-6px 0 10px}"
     # ── Market Daily cards ──
     ".md-row{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:28px}"
     "@media(max-width:700px){.md-row{grid-template-columns:1fr}}"
@@ -17304,7 +17305,12 @@ def _fmt_price(v: float, label: str = "") -> str:
         return "—"
     lab = label.lower()
     if "환율" in lab or "/달러" in lab or "/위안" in lab or "/원" in lab or "eurusd" in lab or "gbpusd" in lab:
-        return f"{v:,.2f}"
+        # ⚠️ 자릿수를 2 로 고정하면 **1 미만 통화가 움직이지 않는다** — 카드가
+        # `해당통화/달러` 로 통일되며(2026-09-11) 유로 0.8571·파운드 0.7386 처럼
+        # 1 미만이 생겼는데, 0.8571→0.8621(-0.57%)이 둘 다 `0.86` 으로 찍히면
+        # 옆 칸의 ▼0.57% 를 사용자가 눈으로 검산할 수 없다(#33 나란히 놓인 칸은
+        # 산수가 맞아야 한다). FX 관례대로 10 미만은 소수 4자리.
+        return f"{v:,.4f}" if abs(v) < 10 else f"{v:,.2f}"
     if "금리" in lab or "cpi" in lab or "ppi" in lab or "실업률" in lab or "ffr" in lab:
         return f"{v:.2f}"
     if abs(v) >= 100:
@@ -17486,6 +17492,20 @@ def _render_earnings_table(earnings: list) -> str:
     )
 
 
+def _research_empty_html(note: dict | None, kind_label: str) -> str:
+    """비었을 때 한 줄 — 사유가 있으면 **'없습니다' 대신 사유**(순수).
+
+    ⚠️ 문구를 탭마다 복제하면 한쪽만 고쳐진다 — 2026-09-11 첫 판이 정확히
+    그래서, 종목 탭만 고치고 산업·전략 탭은 원천이 막힌 날에도 "최근 산업
+    리포트가 없습니다" 라고 거짓말했다(#38·#147·#43·#52·#82, 리뷰 M2).
+    """
+    why = (note or {}).get("reason") or ""
+    if why:
+        return ('<div class="empty-msg">⚠️ 지금은 표시할 수 없습니다 — '
+                f'{_html.escape(why)}</div>')
+    return f'<div class="empty-msg">{_html.escape(kind_label)}</div>'
+
+
 def _render_research_kr_table(research: list, note: dict | None = None) -> str:
     """Render the KR 기업(종목) research actions table — 일주일치.
 
@@ -17494,11 +17514,7 @@ def _render_research_kr_table(research: list, note: dict | None = None) -> str:
     사용자가 매번 물어야 했다(2026-09-11 · #43·#52·#82)."""
     note = note or {}
     if not research:
-        why = note.get("reason") or ""
-        if why:
-            return ('<div class="empty-msg">⚠️ 지금은 표시할 수 없습니다 — '
-                    f'{_html.escape(why)}</div>')
-        return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
+        return _research_empty_html(note, "최근 리서치 액션이 없습니다.")
     hd = ""
     if note.get("stale"):
         _m = note.get("stale_min")
@@ -17541,10 +17557,13 @@ def _render_research_kr_table(research: list, note: dict | None = None) -> str:
     )
 
 
-def _render_research_industry_table(research: list) -> str:
-    """Render the KR 산업(업종) research table — 일주일치. 목표가 없음."""
+def _render_research_industry_table(research: list, note: dict | None = None) -> str:
+    """Render the KR 산업(업종) research table — 일주일치. 목표가 없음.
+
+    `note` = {reason} — 비었는데 사유가 있으면 형제(종목 탭)와 **같은 문구**로
+    사유를 적는다(#38·#43)."""
     if not research:
-        return '<div class="empty-msg">최근 산업 리포트가 없습니다.</div>'
+        return _research_empty_html(note, "최근 산업 리포트가 없습니다.")
     rows: list[str] = []
     for r in research[:200]:
         category = _html.escape(r.get("category", "") or "—")
@@ -17568,11 +17587,13 @@ def _render_research_industry_table(research: list) -> str:
     )
 
 
-def _render_research_strategy_table(research: list) -> str:
+def _render_research_strategy_table(research: list, note: dict | None = None) -> str:
     """Render the KR 전략(투자정보) research table — 일주일치. 분류·목표가
-    없음(증권사·제목·날짜만). 사용자 2026-06-12 '네이버 투자전략 → 한국 전략'."""
+    없음(증권사·제목·날짜만). 사용자 2026-06-12 '네이버 투자전략 → 한국 전략'.
+
+    `note` = {reason} — 형제 탭과 같은 규약(#38·#43)."""
     if not research:
-        return '<div class="empty-msg">최근 전략 리포트가 없습니다.</div>'
+        return _research_empty_html(note, "최근 전략 리포트가 없습니다.")
     rows: list[str] = []
     for r in research[:200]:
         broker = _html.escape(r.get("broker", ""))
@@ -18264,7 +18285,10 @@ def _render_sector_movers(movers: dict) -> str:
         _m = (movers or {}).get("stale_min")
         _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
         ts = f'저장분 {ts}{f" ({_ago})" if _ago else ""} ⚠️'
-    return (_hd(f"{ts} · Naver")
+    # 값이 **있어도** 사유가 있으면 적는다 — 부분 페이지는 값이 다 있어서
+    # 조용히 틀린 랭킹이 된다(독립 리뷰 2026-09-11 H2 · #43·#45).
+    note = (f'<div class="sm-note">⚠️ {_html.escape(why)}</div>') if why else ""
+    return (_hd(f"{ts} · Naver") + note
             + '<div class="sm-wrap">'
             + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
             + '</div>')
@@ -18969,10 +18993,10 @@ def _render_market_page(data: dict) -> str:
     {_render_research_kr_table(research_kr, data.get('research_kr_note'))}
   </div>
   <div id="tab-krind" class="tab-pane">
-    {_render_research_industry_table(research_kr_industry)}
+    {_render_research_industry_table(research_kr_industry, data.get('research_kr_industry_note'))}
   </div>
   <div id="tab-krstrat" class="tab-pane">
-    {_render_research_strategy_table(research_kr_strategy)}
+    {_render_research_strategy_table(research_kr_strategy, data.get('research_kr_strategy_note'))}
   </div>
   <div id="tab-us" class="tab-pane">
     {_render_research_us_table(research_us)}

@@ -715,7 +715,20 @@ if __name__ == "__main__":
     _kf = fetch_kr_fx()
     print("KR환율:", {k: _kf.get(k) for k in ("FX_USDKRW", "FX_JPYKRW")})
     _fx = fetch_world_fx()
-    print("세계환율:", {k: _fx.get(k) for k in ("EURUSD", "USDCNY", "USDTWD")})
+    # ⚠️ 손으로 고른 세 쌍만 찍으면 **목록 밖은 영영 안 보인다**(#24 — 바로 아래
+    # 원자재에서 겪은 그 함정). 카드가 `해당통화/달러` 로 통일되며(2026-09-11)
+    # `USD<CCY>` 가 원천에 있는지가 곧 '직접값이냐 역수냐' 를 가르므로, 달러
+    # 기준 쌍을 **전수** 찍고 통화별로 어느 방향이 오는지 표로 본다.
+    print(f"세계환율 {len(_fx)}쌍")
+    _ccys = sorted({k[3:] for k in _fx if k.startswith("USD") and len(k) == 6}
+                   | {k[:3] for k in _fx if k.endswith("USD") and len(k) == 6})
+    for _c in _ccys:
+        _d, _i = _fx.get(f"USD{_c}"), _fx.get(f"{_c}USD")
+        _how = "직접(USD%s)" % _c if _d else ("역수(%sUSD)" % _c if _i else "없음")
+        _v = (_d or _i or {}).get("close")
+        print(f"    {_c}  {_how:<14s} 원천값 {_v if _v is not None else '—'}")
+    if not _fx:
+        print("  ❌ 0쌍 — 대조 0건은 '이상 없음' 이 아니다(#54)")
     d = fetch_commodities()
     print(f"원자재 {len(d)}종")
     # ⚠️ 손으로 고른 목록을 찍으면 **목록 밖은 영영 안 보인다**(#24) — 카드에
