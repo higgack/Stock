@@ -21,6 +21,8 @@ from typing import Optional
 
 import requests
 
+from bot import naver_diag as _nd
+
 log = logging.getLogger("bot.naver_sector")
 
 def _now_kst_label() -> str:
@@ -52,22 +54,35 @@ _UPJONG_NO_RE = re.compile(
     r'sise_group_detail\.naver\?type=upjong[^"]*?no=(\d+)"[^>]*>([^<]+)</a>', re.I)
 
 
-def _get(url: str, **kwargs) -> Optional[str]:
+def _get2(url: str, **kwargs) -> tuple[Optional[str], str]:
+    """(본문, 실패 사유) — 갈래를 이름으로 돌려준다(#82). 성공이면 사유는 "".
+
+    옛 `_get` 은 정지·403·타임아웃·빈본문을 전부 `None` 하나로 뭉쳐서, 위젯이
+    사라진 이유를 화면도 로그도 말하지 못했다(사용자 2026-09-11 "갑자기 한국이
+    메인대시보드에서 없어졌어? 또 왜그런거야?")."""
     try:
         from bot.finviz_client import naver_paused
         if naver_paused():       # NAVER_PAUSE → fetch skip(호출부 캐시 폴백)
-            return None
+            return None, _nd.PAUSED
     except Exception:
         pass
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=15, **kwargs)
         resp.encoding = "euc-kr"
         if resp.status_code != 200 or not resp.text:
-            return None
-        return resp.text
+            log.warning("naver_sector: %s -> HTTP %s (%dB)", url,
+                        resp.status_code, len(resp.content or b""))
+            return None, _nd.http_reason(resp.status_code,
+                                         len(resp.content or b""))
+        return resp.text, ""
     except Exception as exc:
         log.warning("naver_sector: fetch failed %s: %s", url, exc)
-        return None
+        return None, _nd.http_reason(None, exc=exc)
+
+
+def _get(url: str, **kwargs) -> Optional[str]:
+    """본문만 — 사유가 필요한 호출부는 `_get2` 를 쓴다."""
+    return _get2(url, **kwargs)[0]
 
 
 def _clean(s: str) -> str:
@@ -302,19 +317,52 @@ def apply_kr_industry(items: list) -> list:
     return items
 
 
+def _cache_read_any(name: str) -> tuple[Optional[dict], Optional[float]]:
+    """신선도와 무관하게 **마지막 산출본**과 그 나이(초) — 원천이 실패한 날의
+    폴백(#136 폴백 조건은 '실패' 가 아니라 '요구를 충족했나'). 없으면 (None, None)."""
+    f = _CACHE_DIR / name
+    try:
+        if not f.exists():
+            return None, None
+        return json.loads(f.read_text()), max(0.0, time.time() - f.stat().st_mtime)
+    except Exception:                                        # noqa: BLE001
+        return None, None
+
+
 def fetch_sector_movers(top_n: int = 10) -> dict:
-    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 장중 30초 캐시."""
+    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 장중 30초 캐시.
+
+    실패하면 **빈 dict 를 주고 위젯이 사라지는 대신** 마지막 산출본을 `stale` 로
+    돌려주고(형제 TW 업종 위젯과 같은 규약, #306) 어느 갈래로 실패했는지 `reason`
+    에 싣는다 — 침묵이 최악이다(#43·#82). 저장분조차 없으면 rows 는 비지만
+    `reason` 은 남아 화면이 사유를 적는다."""
     c = _cached("upjong.json")
     if c is not None:
         return c
-    html = _get(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
+    html, why = _get2(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
     groups = parse_groups(html) if html else []
     if not groups:
-        return {"up": [], "down": [], "ts": ""}
+        if not why:                    # 200 을 받았는데 0건 = 구조 변경 의심
+            why = _nd.parse_reason("업종 행", len(html or ""))
+        prev, age = _cache_read_any("upjong.json")
+        if prev and (prev.get("up") or prev.get("down")):
+            return dict(prev, stale=True, stale_min=int((age or 0) // 60),
+                        reason=why)
+        return {"up": [], "down": [], "ts": "", "reason": why}
     ups = sorted([s for s in groups if s["pct"] > 0],
                  key=lambda x: x["pct"], reverse=True)[:top_n]
     downs = sorted([s for s in groups if s["pct"] < 0],
                    key=lambda x: x["pct"])[:top_n]
+    if not ups and not downs:
+        # 업종은 잡혔는데 상승·하락이 **둘 다 0** = 등락률을 못 읽은 것(전 업종
+        # 정확히 보합은 실무상 없다). 이걸 성공으로 캐시하면 `_session_fresh` 가
+        # 장 밖 내내 fresh 로 보아 **다음 개장까지 빈 위젯이 재시도 없이** 서빙된다
+        # — 이 커밋이 고치려던 바로 그 증상이다(독립 리뷰 2026-09-11 · #54·#119).
+        prev, age = _cache_read_any("upjong.json")
+        why = _nd.parse_reason(f"업종 {len(groups)}개의 등락률", len(html or ""))
+        if prev and (prev.get("up") or prev.get("down")):
+            return dict(prev, stale=True, stale_min=int((age or 0) // 60), reason=why)
+        return {"up": [], "down": [], "ts": "", "reason": why}
     out = {"up": ups, "down": downs,
            "ts": _now_kst_label()}
     _cache_write("upjong.json", out)
@@ -621,7 +669,7 @@ _THEME_PAGES = 7
 # — 낡은 값을 '현재'로 내보내지 않기 위해서다(#163). 화면은 어느 쪽이든
 # 스냅샷 시각(ts)을 그대로 찍는다(#43).
 _THEME_SWR_SEC = 600
-_CHECK_VER = 1        # 진단은 버전을 찍는다(#21)
+_CHECK_VER = 2        # 진단은 버전을 찍는다(#21). 2 = 업종 TOP 위젯 갈래 추가
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -876,9 +924,50 @@ def check(fetch: bool = False) -> int:
         if (obj or {}).get("partial"):
             # 부분 스냅샷이 디스크에 있으면 화면이 그걸 완전본처럼 그린다(#280).
             print("   ⚠️ 저장분이 partial=True — 일부 페이지가 빠진 스냅샷이다")
+    # ── 업종 등락 TOP 10 위젯(메인 대시보드) — 테마와 **다른 캐시**(upjong.json)다.
+    # 2026-09-11 사용자 "갑자기 한국이 메인대시보드에서 없어졌어?" 때 ② 는 테마만
+    # 보고 이 위젯은 한 줄도 말하지 않았다(#24 열거형 점검은 목록 밖을 못 잡는다).
+    prev, age = _cache_read_any("upjong.json")
+    if not prev:
+        print("②-b 업종 TOP 캐시 없음 — 위젯이 사라졌다면 원천 실패가 처음이 아니다")
+    else:
+        n_up, n_dn = len(prev.get("up") or []), len(prev.get("down") or [])
+        print(f"②-b 업종 TOP 저장분: 상승 {n_up} · 하락 {n_dn} · "
+              f"{prev.get('ts', '?')} KST ({_nd.stale_label(age) or '나이 미상'})")
+        if _cached("upjong.json") is None:
+            print("   ⚠️ 신선 판정 아님 — 다음 렌더가 수집을 시도하고, "
+                  "실패하면 이 저장분을 '저장분 ⚠️' 라벨로 서빙한다")
+    try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():
+            # 운영자가 일부러 끈 상태다 — 우리 결함이 아니므로 ⏸ 로 말하되 rc 는
+            # 올리지 않는다(#260 고칠 게 없는 것과 고칠 수 있는 것을 같은 기호로
+            # 세면 진짜 결함이 가려진다). 위젯이 빈 **답**은 이 한 줄이다.
+            print("   ⏸ NAVER_PAUSE 켜짐 — 수집을 아예 안 한다(/naverpause 로 해제)")
+    except Exception:                                        # noqa: BLE001
+        pass
     if not fetch:
         print("③ 실제 수집은 안 했다 — 재려면 `--check --fetch`")
         return rc
+    try:
+        from bot.finviz_client import naver_paused as _np
+        if _np():
+            # 정지 중엔 수집이 **설계상** 안 된다 — 그걸 '도달 실패' 로 찍으면
+            # 운영자가 원천·네트워크를 보러 간다(#82·#260, 독립 리뷰 2026-09-11).
+            print("③ 정지 중이라 실측을 건너뛴다 — /naverpause 로 해제한 뒤 다시 볼 것")
+            return rc
+    except Exception:                                        # noqa: BLE001
+        pass
+    t1 = time.time()
+    # ⚠️ 여기서 네트워크가 나간다 — `--fetch` 를 태우는 테스트는 반드시 스텁할 것
+    # (#312 테스트가 원천을 치면 안 된다). 기본(`--check`)은 조회만이라 안전하다.
+    html, why = _get2(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
+    groups = parse_groups(html) if html else []
+    if groups:
+        print(f"③-b 업종 TOP 실측: {len(groups)}개 · {time.time() - t1:.2f}초")
+    else:
+        print(f"③-b 업종 TOP 실측 0개 — {why or _nd.parse_reason('업종 행', len(html or ''))}")
+        rc = 1
     t0 = time.time()
     out = collect_themes()
     print(f"③ 실측 수집: 테마 {len(out['themes'])}개 · "
@@ -887,7 +976,10 @@ def check(fetch: bool = False) -> int:
         # 대조 0건은 통과가 아니다(#54).
         print("   ❌ 0개 — 네이버 도달 실패이거나 파싱이 깨졌다")
         return 1
-    return 0
+    # ⚠️ `return 0` 로 끝내면 위에서 세운 rc(업종 TOP 실측 실패·정지)가 버려져
+    # 초록불이 된다 — 판정을 계산해 놓고 표시(여기선 종료코드)에 안 쓰면 없는
+    # 것과 같다(#123·#292 계열. 회귀가 --fetch 경로를 실제로 태운다).
+    return rc
 
 
 def main(argv: list | None = None) -> int:
