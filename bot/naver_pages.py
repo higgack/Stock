@@ -153,6 +153,13 @@ def theme_status(data: dict) -> tuple[str, str]:
     if data.get("refreshing"):
         return f" · {ago} 스냅샷 · 갱신 중", ""
     why = str(data.get("reason") or "")
+    cool = int(data.get("cooldown") or 0)
+    if cool:
+        # 이 사유는 **지금 잰 것이 아니다** — 직전 전멸 기록이고 아직 냉각
+        # 중이라 사다리를 다시 걷지 않았다. 그 사실을 밝히지 않으면 방금
+        # 측정한 것으로 읽힌다(#165 안 잰 것을 단정하지 말 것 · #43).
+        why = ((why or "직전 수집이 0건으로 끝났습니다")
+               + f" (직전 기록 · {cool // 60}분 {cool % 60}초 뒤 재시도)")
     return (f" · {ago} 스냅샷 · 갱신 실패",
             why or "테마 수집이 0건으로 끝났습니다 — 사유를 기록하지 못했습니다")
 

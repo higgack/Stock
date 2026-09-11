@@ -60184,7 +60184,10 @@ class TestNaverThemeAndDetailSpa20260912:
         monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
         rows, marks, why, partial = nsc.collect_themes_json()
         assert len(rows) == nsc._THEME_MIN_ROWS + 5 and why == "" and partial is False
-        assert marks[0].endswith("HTTP 404") and "❌" in marks[0]
+        # ⚠️ 계약은 "단 표시가 **왜 실패했는지 적는다**" 이지 그 문자열로
+        # 끝난다가 아니다 — 2026-09-12 에 단마다 소요(#69·#110)를 붙이자
+        # `endswith` 가 깨졌다(#19·#222 계약이 바뀌면 다시 쓴다).
+        assert "HTTP 404" in marks[0] and "❌" in marks[0], marks[0]
         assert f"✅ {nsc._THEME_MIN_ROWS + 5}개" in marks[1], marks
         # 1순위가 답하면 **뒤 후보는 부르지 않는다**(순손실 요청 금지)
         assert seen[:2] == [nsc._THEME_API_RUNGS[0][1],
@@ -60217,7 +60220,8 @@ class TestNaverThemeAndDetailSpa20260912:
                  3: [dict(self._ROW, no=str(i)) for i in range(200, 230)]}
 
         def fake(url, params=None, **k):
-            return pages.get((params or {}).get("page"), []), ""
+            # 1쪽은 `page` 없이 온다(2026-09-12) — 원천은 그걸 1쪽으로 읽는다
+            return pages.get((params or {}).get("page", 1), []), ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, partial = nsc._theme_json_rung("u")
@@ -60232,7 +60236,7 @@ class TestNaverThemeAndDetailSpa20260912:
         full = [dict(self._ROW, no=str(i)) for i in range(100)]
 
         def fake(url, params=None, **k):
-            return (full, "") if (params or {}).get("page") == 1 \
+            return (full, "") if (params or {}).get("page", 1) == 1 \
                 else (None, "HTTP 429")
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
@@ -60745,3 +60749,195 @@ class TestNaverThemeAndDetailSpa20260912:
                  {"target": 900.0, "rating": "매수", "_via": "옛 HTML"}]
         note = rc.detail_yield_note(mixed)
         assert "행마다 다릅니다" in note and "옛 HTML" in note, note
+
+
+class TestThemeLadder400AndCooldown20260912:
+    """테마 사다리 — **이득 없는 파라미터 제거 · 가장 행동 가능한 사유 · 짧은 냉각**.
+
+    VM 실측 2026-09-12(프로브 v6): 세 후보가 `HTTP 400` · `HTTP 404` · `HTTP 404`
+    였는데 화면은 마지막 404 를 적었다. 400 은 **증명된 호스트**가 준 것이라
+    '주소가 없다'가 아니라 '우리 요청이 거부됐다'는 뜻이고 고칠 자리가 다르다.
+    그리고 전멸한 응답은 완전본이 아니라 캐시에 안 굽히므로(#280), 페이지를 열
+    때마다 사다리 + 죽은 옛 HTML 7쪽을 **전부 다시** 걸었다.
+    """
+
+    _ROW = {"no": "64", "name": "콩/대두", "changeRate": "14.49",
+            "recent3daysChangeRate": "-0.18", "type": "theme",
+            "leadingItem": "2,007540,샘표|2,248170,샘표식품"}
+
+    def _iso(self, monkeypatch, tmp_path):
+        """캐시 디렉터리를 이 테스트 것으로 — 냉각 기록이 형제 테스트로 새면
+        실행 순서에 따라 흔들린다(#30 의 세션판)."""
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        return nsc
+
+    # ── (a) 1쪽은 `pageSize` 만 ──────────────────────────────────────────
+    def test_first_page_sends_only_pagesize(self, monkeypatch, tmp_path):
+        """VM 실측 ④ 가 이 가족은 `page` 를 **무시**한다고 확정했다 — 이득이
+        0인 파라미터를 얹고 있었고, 같은 주소가 그 요청에 400 을 줬다.
+        **증명된 호출 모양**(업종 `?pageSize=100`)을 그대로 쓴다(#61·#136)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        seen = []
+        full = [dict(self._ROW, no=str(i)) for i in range(300)]
+
+        def fake(url, params=None, **k):
+            seen.append(dict(params or {}))
+            pg = (params or {}).get("page", 1)
+            sz = (params or {}).get("pageSize", 100)
+            return full[(pg - 1) * sz:pg * sz], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        nsc._theme_json_rung("u")
+        assert seen, "요청을 한 번도 안 보냈다"
+        assert "page" not in seen[0], seen[0]
+        assert seen[0].get("pageSize") == nsc._THEME_PAGE_SIZES[0], seen[0]
+        # 반대 증거 — `page` 가 듣는 형제를 위해 **2쪽부터는 얹는다**
+        pages_2plus = [p for p in seen if p.get("pageSize") == seen[0]["pageSize"]][1:]
+        assert pages_2plus and all("page" in p for p in pages_2plus), seen
+
+    # ── (b) 가장 행동 가능한 사유 ────────────────────────────────────────
+    def test_reason_rank_orders_by_what_can_be_acted_on(self):
+        """⚠️ 문자열을 훑는 판정이라 **생산부가 실제로 만든 문자열**로 잰다 —
+        손으로 적은 리터럴로 재면 생산부가 바뀌는 날 눈이 먼다(#19·#155)."""
+        from bot import naver_diag as nd
+        assert nd.reason_rank(nd.PAUSED) == 0
+        assert nd.reason_rank(nd.http_reason(400)) == 1
+        assert nd.reason_rank(nd.http_reason(403)) == 1
+        assert nd.reason_rank(nd.http_reason(429)) == 1
+        assert nd.reason_rank(nd.http_reason(503)) == 1
+        assert nd.reason_rank(nd.parse_reason("JSON", 12)) == 1
+        assert nd.reason_rank(nd.shape_reason("테마 목록", {"a": 1})) == 1
+        # 주소가 없거나 못 닿았다 — 고칠 자리는 '주소를 다시 찾기'다
+        assert nd.reason_rank(nd.http_reason(404)) == 2
+        assert nd.reason_rank(nd.http_reason(None)) == 2
+        assert nd.reason_rank(nd.http_reason(None, exc=TimeoutError("x"))) == 2
+        assert nd.reason_rank("") == 3
+        # 반대 증거 — 404 가 400 보다 **덜** 행동 가능하다(그 반대면 무의미)
+        assert nd.reason_rank(nd.http_reason(404)) > nd.reason_rank(nd.http_reason(400))
+
+    def test_ladder_reports_the_most_actionable_failure(self, monkeypatch, tmp_path):
+        """옛 판은 `marks[-1]` = **마지막 후보**의 사유를 적었다 — 화면이
+        `⚠️ 원천이 HTTP 404` 라고 말해 주소가 사라진 것처럼 읽혔다(#275·#82).
+
+        ⚠️ 순수 함수만 부르면 배선을 떼는 변형을 못 잡는다(#20) — 사다리를
+        통째로 태운다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        first = nsc._THEME_API_RUNGS[0][1]
+        monkeypatch.setattr(
+            nsc, "_get2_json",
+            lambda url, **k: (None, nsc._nd.http_reason(400 if url == first else 404)))
+        rows, marks, why, partial = nsc.collect_themes_json()
+        assert rows == [] and partial is False
+        assert "400" in why and "404" not in why, why
+        assert nsc._THEME_API_RUNGS[0][0] in why, why
+        # 단 표시는 **전부** 남는다 — 고른 것과 본 것은 다르다(#45)
+        assert len(marks) == len(nsc._THEME_API_RUNGS) and "404" in marks[-1]
+        # 재지 않으면 '느리다'는 진단이 아니다(#69·#110)
+        assert all(m.rstrip().endswith("s") for m in marks), marks
+
+    def test_same_rank_prefers_the_earlier_rung(self):
+        """같은 순위면 **앞 후보**가 이긴다 — 사다리 순서가 곧 증명된 순서다."""
+        import bot.naver_sector_client as nsc
+        got = nsc.pick_theme_reason([(1, 0, "증명됨", "원천이 HTTP 400"),
+                                     (1, 1, "추측", "원천이 HTTP 403")])
+        assert "400" in got and "증명됨" in got, got
+        assert nsc.pick_theme_reason([]) == ""
+        # 후보가 하나면 라벨을 덧붙이지 않는다(화면이 길어질 이유가 없다)
+        assert nsc.pick_theme_reason([(1, 0, "x", "원천이 HTTP 400")]) == "원천이 HTTP 400"
+
+    # ── (c) 전멸은 짧게만 믿는다 ────────────────────────────────────────
+    def _dead(self, nsc, monkeypatch, calls):
+        def _collect():
+            calls.append(1)
+            return {"themes": [], "ts": "", "partial": False,
+                    "reason": "원천이 HTTP 400 (domestic/theme)",
+                    "rungs": ["domestic/theme ❌ 원천이 HTTP 400 · 1.2s"]}
+        monkeypatch.setattr(nsc, "collect_themes", _collect)
+
+    def test_total_failure_is_believed_only_briefly(self, monkeypatch, tmp_path):
+        """사용자 2026-09-12 "테마별 시세 들어가는데 시간이 꽤 걸리는데" — 빈
+        결과는 캐시에 안 굽히므로(#280) 요청마다 사다리 + 죽은 HTML 7쪽을 다시
+        걸었다. 실패는 **짧게만** 믿는다(#152·#161·#303)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = []
+        self._dead(nsc, monkeypatch, calls)
+        first = nsc._collect_and_store()
+        assert first["themes"] == [] and calls == [1]
+        second = nsc._collect_and_store()
+        assert calls == [1], "냉각 중인데 사다리를 또 걸었다"
+        assert second.get("cooldown"), second
+        # 사유는 **버리지 않는다** — 화면이 말해야 한다(#43·#123 계열)
+        assert "400" in str(second.get("reason")), second
+        assert any("냉각" in m for m in second.get("rungs") or []), second
+        # ⚠️ 반대 증거 — 냉각이 식으면 **반드시 다시 시도**한다. 주기적으로
+        # 발동하는 가드는 계열을 영구히 멈출 수 있다(#178).
+        monkeypatch.setattr(nsc, "_THEME_FAIL_TTL", 0)
+        nsc._collect_and_store()
+        assert calls == [1, 1], "냉각이 식었는데 재시도하지 않았다"
+
+    def test_pause_is_not_remembered_as_a_dead_source(self, monkeypatch, tmp_path):
+        """일시정지는 원천이 죽은 게 아니라 **우리가 안 물어본 것**이다 —
+        냉각으로 기억하면 정지를 푼 뒤에도 10분을 더 빈 화면으로 산다
+        (#79·#143·#345)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = []
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: (calls.append(1),
+                                     {"themes": [], "reason": nsc._nd.PAUSED,
+                                      "rungs": []})[1])
+        nsc._collect_and_store()
+        nsc._collect_and_store()
+        assert calls == [1, 1], "일시정지를 '원천이 죽었다'로 기억했다"
+
+    def test_success_clears_the_cooldown(self, monkeypatch, tmp_path):
+        """냉각이 식은 뒤 원천이 돌아오면 기록을 지운다 — 남겨 두면 다음 실패의
+        나이가 옛 기록에서 계산돼 냉각이 실제보다 짧아진다."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: {"themes": [], "reason": "원천이 HTTP 400",
+                                     "rungs": []})
+        nsc._collect_and_store()
+        assert nsc.theme_fail_memo()[2] > 0
+        # ⚠️ 냉각 중엔 수집 자체를 안 하므로 성공할 수가 없다 — **식은 뒤**가
+        # 이 계약이 성립하는 유일한 자리다(#91c 실제로 그 분기를 태울 것).
+        monkeypatch.setattr(nsc, "_THEME_FAIL_TTL", 0)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: {"themes": [dict(self._ROW)], "partial": False})
+        nsc._collect_and_store()
+        monkeypatch.setattr(nsc, "_THEME_FAIL_TTL", 600)
+        assert nsc.theme_fail_memo()[2] == 0, "성공했는데 냉각 기록이 남았다"
+
+    def test_cooldown_does_not_claim_it_is_refreshing(self, monkeypatch, tmp_path):
+        """'갱신 중' 은 **진짜 진행 중일 때만** — 냉각 중엔 배경을 띄워도 즉시
+        빈손으로 끝난다(#25 늘 뜨는 배지 · #345)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_read_cache",
+                            lambda n: ({"themes": [dict(self._ROW)], "ts": "t"},
+                                       __import__("time").time() - 300))
+        kicked = []
+        monkeypatch.setattr(nsc, "_refresh_async",
+                            lambda *a, **k: kicked.append(1))
+        nsc._cache_write(nsc._THEME_FAIL_MEMO,
+                         {"reason": "원천이 HTTP 400", "rungs": []})
+        got = nsc.fetch_themes()
+        assert got.get("refreshing") is False and got.get("cooldown"), got
+        assert kicked == [], "냉각 중인데 배경 갱신을 띄웠다"
+        assert got["themes"], "저장분은 그대로 보여야 한다"
+
+    def test_screen_says_the_reason_is_not_a_fresh_measurement(self):
+        """이 사유는 **지금 잰 것이 아니다** — 밝히지 않으면 방금 측정한 것으로
+        읽힌다(#165·#43)."""
+        from bot.naver_pages import theme_status
+        lbl, why = theme_status({"stale": True, "stale_age": 3600,
+                                 "reason": "원천이 HTTP 400", "cooldown": 125})
+        assert "갱신 실패" in lbl and "400" in why
+        assert "직전 기록" in why and "2분 5초" in why, why
+        # 반대 증거 — 냉각이 아니면 그런 말을 붙이지 않는다
+        _l2, w2 = theme_status({"stale": True, "stale_age": 3600,
+                                "reason": "원천이 HTTP 400"})
+        assert "직전 기록" not in w2, w2
