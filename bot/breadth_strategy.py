@@ -23,9 +23,9 @@ US=SPDR GICS). 사용자 2026-08-16 "26개에 맞추지 않아도 돼, 숫자가
 작으면 한 섹터의 무게가 커져 구간 경계가 성기다(13개면 1개=7.7%p) — 그
 해상도를 화면에 명시한다(`resolution_note`).
 
-F&G 지수·히스토그램은 **기록·표시만** 한다. 캡처 어디에도 게이트로 쓰인다는
-근거가 없어(「과매도 확대 신호: False (Breadth <30% 아님)」는 Breadth 조건이다)
-없는 규칙을 지어내지 않는다.
+심리·변동성 지표(KR=VKOSPI · 그 밖=CNN F&G)는 **기록·표시만** 한다. 캡처
+어디에도 게이트로 쓰인다는 근거가 없어(「과매도 확대 신호: False (Breadth
+<30% 아님)」는 Breadth 조건이다) 없는 규칙을 지어내지 않는다.
 
 신호 주기: 원 전략은 "월말 종가 신호 → 다음 거래일부터 적용". 매일 값은
 **중간점검**이고 월말 값이 확정 신호다 — 둘을 배지로 구분해 보여준다.
@@ -150,6 +150,116 @@ def cash_reason(regime: str | None, state: str | None,
     if regime in ("NON_TREND", "TREND"):
         return "RS 가 지수를 웃도는(>0) 섹터가 없어 매수 대상이 없었습니다"
     return ""
+
+
+# ── 시장별 심리·변동성 지표 ────────────────────────────────────────────────
+# ⚠️ CNN Fear & Greed 는 **미국 증시** 지표다. 2026-08-16 에 사용자가
+# "F&G 65 는 한국기준이야?" 를 물어 출처(`美 CNN`)를 라벨에 박았는데(#34),
+# 2026-09-11 에 "한국은 VKOSPI 를 적어줘. CNN VIX 말고" 로 **그 시장의
+# 지표를 쓰라**는 결정이 왔다. 시장 게이트를 렌더러에 흩지 않고 레지스트리
+# 한 줄로 둔다 — 조건문에 흩어 적으면 다음 시장이 샌다(#24·#31).
+# VKOSPI 는 KRX 산출·KIS 제공이라 **한국에만 존재하는 원천**이다(§UNIVERSAL
+# 의 '문서화된 데이터소스 사유' 예외 — DART/ECOS/Naver 와 같은 갈래).
+# 값은 시장타이밍 보드가 쓰는 `market_timing.fetch_vkospi_rows` 를 **그대로
+# 재사용**한다(KIS 지수코드·타당범위 가드·1시간 디스크 캐시가 거기 있다 —
+# 복제하면 두 화면이 갈린다, #38).
+_SENTIMENT_KIND = {"KR": "vkospi"}       # 그 밖의 시장 = "fng"
+# VKOSPI 가 빈손인 세 갈래 — 처방이 다르다(#82). `implausible` 은 원천 장애가
+# 아니라 **지수코드가 바뀐 것**이라 로그를 봐야 한다.
+_VKOSPI_WHY = {
+    "credentials": "원천(KIS)을 조회하지 못했습니다 — 크리덴셜·네트워크 확인",
+    "empty": "원천(KIS)이 값을 주지 않았습니다",
+    "implausible": "원천(KIS) 응답이 변동성지수 범위 밖이라 채택하지 않았습니다"
+                   " — 지수코드 확인(로그)",
+}
+
+
+def sentiment_kind(market: str | None) -> str:
+    """그 시장 카드가 실을 지표 종류 — 'vkospi' | 'fng' (순수)."""
+    return _SENTIMENT_KIND.get(str(market or "").upper(), "fng")
+
+
+def sentiment_text(s: dict | None) -> str:
+    """심리·변동성 한 줄 — `VKOSPI 15.20 (2026-09-10 종가, KIS)` (순수, escape 전).
+
+    ⚠️ 값이 없으면 `—` 로 침묵하지 않는다 — **왜 없는지** 적는다(#43·#131·#82).
+    그리고 KR 에서 VKOSPI 를 못 받았다고 CNN F&G 로 조용히 내려가지 않는다:
+    그건 사용자가 바로 그 이유로 빼 달라고 한 값이라, 폴백하면 고치려던
+    거짓말을 되살린다(#136 화면은 payload 가 밝힌 원천을 따른다).
+    """
+    s = s or {}
+    label = str(s.get("label") or "")
+    val = s.get("value")
+    # ⚠️ 숫자가 아닌 값이 오면 **여기서 던지지 않는다** — 이 한 줄이 `_market_
+    # section` 안에서 터지면 카드가 통째로 사라진다(#315 곁들이가 본체를 지운다).
+    # 못 읽은 사실은 사유로 말한다(#43·#54 판정 불가는 통과가 아니다).
+    if val is not None and not isinstance(val, (int, float)):
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return f"{label} — 값을 숫자로 읽지 못했습니다" if label else "—"
+    if val is None:
+        why = str(s.get("why") or "")
+        if label and why:
+            return f"{label} — {why}"
+        return label or "—"
+    digits = int(s.get("digits") or 0)
+    bits = [b for b in (str(s.get("note") or ""), str(s.get("source") or "")) if b]
+    tail = f" ({', '.join(bits)})" if bits else ""
+    return f"{label} {val:,.{digits}f}{tail}"
+
+
+def _fetch_sentiment(market: str) -> dict:
+    """그 시장의 심리·변동성 지표 — 실패해도 **사유를 담아** 돌려준다.
+
+    반환 {kind, label, value, note, source, digits, why}. `sentiment_text` 가
+    화면 문구를 만든다(문구를 두 군데 적으면 한쪽만 고쳐진다, #38).
+    """
+    kind = sentiment_kind(market)
+    if kind == "vkospi":
+        out = {"kind": "vkospi", "label": "VKOSPI", "value": None, "note": "",
+               "source": "KIS", "digits": 2, "why": ""}
+        try:
+            from bot.market_timing import vkospi_rows_with_reason, vol_asof_label
+            rows, why = vkospi_rows_with_reason()
+        except Exception as exc:                                   # noqa: BLE001
+            out["why"] = f"원천(KIS) 조회 실패({type(exc).__name__})"
+            log.warning("breadth_strategy: VKOSPI 조회 실패(%s: %s) — 카드에 "
+                        "사유 표기", type(exc).__name__, exc)
+            return out
+        if not rows:
+            # 갈래마다 처방이 다르다 — 크리덴셜/네트워크 · 원천 빈 응답 ·
+            # 지수코드가 바뀌어 가격지수를 받은 것(#82 · L5).
+            out["why"] = _VKOSPI_WHY.get(why, "원천(KIS)에서 값을 받지 못했습니다")
+            log.info("breadth_strategy: VKOSPI 행 없음(%s) — 카드에 사유 표기",
+                     why or "unknown")
+            return out
+        out["value"] = rows[-1].get("close")
+        # ⚠️ **'종가' 를 박지 않는다.** 장중이면 그건 현재값이다 — 시장타이밍
+        # 보드가 같은 원천에 대해 이미 그 판정을 갖고 있으므로(`vol_asof_label`,
+        # 사용자 2026-08-20 "VKOSPI 가 현지 10:26 에 08-20 종가") 그걸 부른다.
+        # 복제하면 같은 값이 두 화면에서 다른 라벨을 단다(#38·#34·#43a). 3시간
+        # 주기 재생성은 KR 장중(09:00~15:30 KST)에도 돈다.
+        out["note"] = vol_asof_label({"date": rows[-1].get("date"),
+                                      "market": "KR"}).get("label", "")
+        if out["value"] is None:
+            out["why"] = "원천(KIS) 마지막 봉에 종가가 없습니다"
+        return out
+    out = {"kind": "fng", "label": "F&G", "value": None, "note": "",
+           "source": "美 CNN", "digits": 0, "why": ""}
+    try:
+        from bot.fear_greed_client import fetch_fear_greed
+        fng = fetch_fear_greed() or {}
+    except Exception as exc:                                       # noqa: BLE001
+        out["why"] = f"CNN F&G 조회 실패({type(exc).__name__})"
+        log.warning("breadth_strategy: F&G 조회 실패(%s: %s) — 카드에 사유 표기",
+                    type(exc).__name__, exc)
+        return out
+    out["value"] = fng.get("score")
+    out["note"] = str(fng.get("rating_kr") or "")
+    if out["value"] is None:
+        out["why"] = "CNN F&G 응답에 값이 없습니다"
+    return out
 
 
 def decide(breadth_pct: float | None, dd_pct: float | None, *,
@@ -437,16 +547,10 @@ def _assemble(market: str, sectors: dict, bench_name: str, bench_rows: list,
     dd = drawdown_pct(bench_closes, 252)
     dec = decide(b["pct"], dd, recovery_pool=recovery_pool, rs_ranked=rs_ranked)
 
-    # F&G 는 **현재값만** 있는 지표라 과거 시점으로 되돌릴 수 없다. 확정분
+    # 심리·변동성 지표는 **현재값만** 있어 과거 시점으로 되돌릴 수 없다. 확정분
     # (cut 지정)에 오늘 값을 박으면 그 달의 값인 척하는 거짓 기록이 된다
     # — 안 넣는다(2026-08-16 독립 리뷰). 어차피 판정에 안 쓰는 표시용이다.
-    fng = {}
-    if cut is None:
-        try:
-            from bot.fear_greed_client import fetch_fear_greed
-            fng = fetch_fear_greed() or {}
-        except Exception as exc:
-            log.debug("breadth_strategy: F&G 조회 실패: %s", exc)
+    sentiment = _fetch_sentiment(market) if cut is None else {}
 
     dates = [r["date"] for r in bench_cut]
     n = b["counted"] or len(sectors)
@@ -461,7 +565,9 @@ def _assemble(market: str, sectors: dict, bench_name: str, bench_rows: list,
         "source_label": _BREADTH_SOURCE_LABEL.get(market.upper(), "섹터 ETF"),
         "sectors_missing": all_missing,
         "rs_ranked": rs_ranked[:5],
-        "fng": {"index": fng.get("score"), "label": fng.get("rating_kr", "")},
+        # ⚠️ 시장마다 **다른 지표**다 — KR=VKOSPI(KIS) · 그 밖=CNN F&G(美).
+        # 화면 문구는 `sentiment_text` 하나가 만든다(#38).
+        "sentiment": sentiment,
         "asof": dates[-1] if dates else "",
         # 기준일 옆에 **그날의 지수 종가**를 같이 싣는다 — 시장타이밍 보드와
         # 같은 규약("기준 2026-09-10 · 최근 종가 7591.7")이라 두 화면을 나란히
@@ -604,6 +710,26 @@ _REGIME_TABLE = (
 )
 
 
+def regime_weight_cell(rule_text: str, *, active: bool, total_w) -> str:
+    """구간 표의 '비중' 칸 — **활성 구간이면 이번 판정의 실제 비중**을 덧붙인다.
+
+    ⚠️ 왜 필요한가(사용자 2026-09-11 "위에 표랑 아래 표랑 전략이 다른데.
+    최종 투자비중이랑 현금비중이랑. 어떤 로직이야?"): 아래 구간 표는 **규칙
+    설명(고정 문구)** 이고 위 stat-grid 는 **오늘 계산한 결과**다. 회복 구간의
+    규칙은 '총 50%' 인데 회복조건 셋을 다 채운 과거 리더가 0개면 `decide` 가
+    기본값(투자 0% · 현금 100%)을 그대로 낸다 — 두 표를 나란히 놓으면 서로
+    모순으로 읽힌다(#33 나란히 놓인 칸은 산수가 맞아야 한다 · #34 한 라벨이
+    둘을 대표하면 하나는 거짓말). 규칙 문구는 그대로 두고 **활성 행에만**
+    실제값을 덧붙여, 규칙과 결과가 한 줄에서 갈린다.
+
+    비활성 행은 손대지 않는다 — 그 구간은 오늘 적용되지 않았으므로 '이번
+    판정' 이라 부를 값이 없다(#165 재지 않은 것을 적지 않는다).
+    """
+    if not active or not isinstance(total_w, (int, float)):
+        return rule_text
+    return f"{rule_text} → 이번 판정 {total_w * 100:.0f}%"
+
+
 def min_sectors_for(n: int, pct: float) -> int:
     """n개 표본에서 breadth 가 `pct`% **이상**이 되는 최소 섹터 수.
 
@@ -674,6 +800,29 @@ def _cash_why(rec: dict) -> str:
             f"{_hh.escape(why)}</div>")
 
 
+def _live_cash_why(d: dict) -> str:
+    """**라이브 카드**의 현금 사유 한 줄 — 없으면 빈 문자열.
+
+    ⚠️ `cash_reason` 은 2026-09-07 에 확정 이력 표를 위해 만들었는데(#298),
+    정작 위쪽 카드는 `투자 대상 없음(현금)` 까지만 적고 **왜** 현금인지는
+    말하지 않았다 — 사용자가 "위에 표랑 아래 표랑 전략이 다른데" 를 물은
+    이유가 정확히 그것이다(계산해 둔 판정을 표시까지 배선하지 않는 실수:
+    #123·#129·#189·#228·#234·#292 계열).
+
+    ⚠️ 표 안의 `_cash_why` 와 **클래스를 공유하지 않는다** — `.si-note` 는
+    `_BS_CSS` 에서 `.bs-tbl .si-note` 로만 정의돼 있어 표 밖에서 쓰면 본문
+    크기로 뜬다(#201·#273 "지금 쓰는 곳이 전부 그 번들인가"). 카드 줄은
+    `_BOARD_CSS` 가 정의하는 `.sub` 를 쓴다.
+    """
+    import html as _hh
+    why = cash_reason((d or {}).get("regime"), (d or {}).get("state"),
+                      (d or {}).get("dd_pct"))
+    if not why:
+        return ""
+    return (f"<div class='sub' style='margin-top:4px'>💵 현금인 이유 — "
+            f"{_hh.escape(why)}</div>")
+
+
 def _breadth_cell(rec: dict) -> str:
     """확정 이력의 Breadth 칸 — 있으면 **분모까지** 적는다(`30.77% (4/13)`).
 
@@ -701,13 +850,13 @@ def _market_section(d: dict) -> str:
     badge = ("<span class='sub'>월말 종가 확정 신호</span>" if d.get("is_confirmed")
              else "<span class='sub'>중간점검 — 3시간마다 재계산(봇 기동 직후 1회) · "
                   "Breadth·DD·RS 는 <b>일봉 종가</b> 입력이라 거래일마다 한 번 "
-                  "바뀝니다(F&amp;G 는 재계산 때마다 갱신) · "
+                  "바뀝니다(심리·변동성 지표는 재계산 때마다 갱신) · "
                   "확정은 월말 종가 기준</span>")
     rows = "".join(
         f"<tr class='{'on' if key == regime else ''}'>"
         f"<td>{_h.escape(label)}</td><td>{rng}</td><td>{_h.escape(st)}</td>"
         f"<td>{_h.escape(strat)}</td><td>{_h.escape(tgt)}</td>"
-        f"<td>{_h.escape(w)}</td></tr>"
+        f"<td>{_h.escape(regime_weight_cell(w, active=(key == regime), total_w=d.get('total_w')))}</td></tr>"
         for key, label, rng, st, strat, tgt, w in _REGIME_TABLE)
     # ⚠️ 정수로 자르면 **눈으로 더했을 때 안 맞는다**: RS Top3 = 1/3 씩인데
     # 33+33+33 = 99% 인데 옆 칸은 '최종 투자비중 100%' 였다(사용자 2026-08-20
@@ -726,12 +875,10 @@ def _market_section(d: dict) -> str:
     miss_html = (f"<div class='sub'>⚠️ 제외: {_h.escape('·'.join(miss))} "
                  f"(데이터 없음 — 티커 확인 필요)</div>" if miss else "")
     b = d.get("breadth") or {}
-    fng = d.get("fng") or {}
-    # ⚠️ CNN Fear &amp; Greed 는 **미국 증시** 지표다. KR 카드에 'F&G 65' 만
-    # 적으면 한국 지표로 읽힌다(사용자 2026-08-16 "F&G 65 는 한국기준이야?").
-    # 출처를 값 옆에 붙이고, 판정에 쓰지 않는다는 사실은 가이드에 있다.
-    fng_s = (f"{fng['index']:.0f} ({_h.escape(fng.get('label', ''))}, 美 CNN)"
-             if fng.get("index") is not None else "—")
+    # ⚠️ 그 **시장의** 지표를 싣는다 — KR=VKOSPI(KIS) · 그 밖=CNN F&G(美).
+    # 문구·라벨은 `sentiment_text` 가 만들고 여기선 escape 만 한다(#38).
+    sent = d.get("sentiment") or {}
+    sent_s = _h.escape(sentiment_text(sent))
     hist = "".join(
         f"<tr><td>{_h.escape(str(r.get('month', '')))}"
         # ⚠️ **어느 종가로 확정했는지**를 적는다 — 원천이 늦으면 월말이 며칠
@@ -756,6 +903,7 @@ def _market_section(d: dict) -> str:
     # (2026-09-11, 시장타이밍 보드의 `기준 … · 최근 종가 …` 와 같은 규약).
     # 같은 지수를 두 화면이 그리므로 종가를 같이 적어 눈으로 대조하게 한다(#51).
     asof_html = _asof_line(d)
+    live_cash_why = _live_cash_why(d)
     # ⚠️ 숫자 컬럼은 **헤더도** 우측정렬(class="num") — 셀만 우측이고 헤더가
     # 좌측이면 제목과 값이 어긋나 보인다(사용자 2026-08-16 스크린샷).
     hist_html = (f"<table class='bs-tbl'><thead><tr><th>월</th><th>구간</th><th>상태</th>"
@@ -778,11 +926,15 @@ def _market_section(d: dict) -> str:
 </div>
 {asof_html}
 <div class="sub" style="margin-top:6px">투자 대상 <b>{tgt_html}</b> · RS 순위(상위 5, 지수 대비 6개월) {rs_html}
-· F&amp;G {fng_s}</div>
+· {sent_s}</div>
+{live_cash_why}
 {miss_html}
 <div class="sub">표본 {_h.escape(str(d.get('source_label', '')))} {b.get('counted', 0)}개
 (MA120 상회 {b.get('above', 0)}개) · {_h.escape(str(d.get('resolution_note', '')))}</div>
-<table class="bs-tbl" style="margin-top:10px"><tr><th>구간</th><th>Breadth</th><th>상태</th>
+<div class="sub" style="margin-top:10px">구간별 <b>규칙</b>(고정) — 현재 구간이 강조되고,
+그 행의 '비중' 에 <b>이번 판정의 실제 비중</b>을 덧붙입니다(규칙은 상한이고, 조건을 채운
+대상이 없으면 실제는 0%)</div>
+<table class="bs-tbl"><tr><th>구간</th><th>Breadth</th><th>상태</th>
 <th>전략</th><th>투자 대상</th><th>비중</th></tr>{rows}</table>
 <div class="sub" style="margin-top:10px">확정 신호 이력(월말 종가 기준)</div>
 {hist_html}
@@ -895,8 +1047,8 @@ def render_page(data: dict, now=None) -> str:
 위쪽 카드(중간점검)는 <b>3시간 주기</b>로 다시 계산되고 봇 기동 직후에도 한 번 돕니다.
 다만 판정 입력(Breadth·지수 DD·RS)이 <b>일봉 종가</b>라 그 값들이 실제로 바뀌는 건
 거래일마다 한 번(그 시장의 직전 거래일 종가가 확정된 뒤)이고, 기준일을 카드에
-<b>기준일 YYYY-MM-DD</b> 로 적어 둡니다. 같은 줄의 F&amp;G 는 판정에 쓰지 않는
-표시용이라 재계산 때마다(3시간) 최신값으로 바뀝니다.
+<b>기준일 YYYY-MM-DD</b> 로 적어 둡니다. 같은 줄의 심리·변동성 지표(한국 VKOSPI ·
+그 밖 F&amp;G)는 판정에 쓰지 않는 표시용이라 재계산 때마다(3시간) 최신값으로 바뀝니다.
 아래 <b>확정 신호 이력</b>만 월말 종가 기준이며, 이력에 기록되는 값은 그 달 마지막
 거래일까지만 잘라 계산해 장중에 조회해도 달라지지 않습니다.<br>
 <b>확정 신호 이력 표의 열</b> — 월 · 구간 · 상태 · Breadth(그 달 마지막 거래일 종가
@@ -907,9 +1059,20 @@ def render_page(data: dict, now=None) -> str:
 주지 않아, 여기서는 <b>지수를 이긴 섹터의 비율</b>을 4분위로 나눠 씁니다(≤25%→25% …
 &gt;75%→100%). 표본 수와 무관한 정의라 KR·US 에 같은 뜻으로 적용됩니다 —
 <b>해석이 들어간 유일한 지점</b>이므로 다른 정의를 원하시면 알려주세요.<br>
-<b>F&amp;G</b> — 기록·표시만 합니다. 판정에는 쓰지 않습니다(원 전략에 게이트로 쓴다는
+<b>심리·변동성 지표</b> — 카드 오른쪽 끝에 <b>그 시장의</b> 지표를 싣습니다:
+한국은 <b>VKOSPI</b>(코스피200 변동성지수 · KRX 산출, KIS 제공 · 종가 기준일 같이 표기),
+그 밖은 <b>CNN Fear &amp; Greed</b>(미국 증시 지표라 <b>美 CNN</b> 을 붙입니다).
+둘 다 <b>기록·표시만</b> 하고 판정에는 쓰지 않습니다(원 전략에 게이트로 쓴다는
 근거가 없어 임의 규칙을 만들지 않았습니다). 과거값을 되돌릴 수 없는 지표라
-월말 확정 이력에는 남기지 않습니다(오늘 값을 그 달 값인 척하지 않기 위해).<br>
+월말 확정 이력에는 남기지 않습니다(오늘 값을 그 달 값인 척하지 않기 위해).
+값을 못 받으면 <b>왜 없는지</b> 그 자리에 적습니다 — 다른 시장 지표로 대신
+채우지 않습니다.<br>
+<b>위 카드와 아래 구간 표가 달라 보일 때</b> — 아래 구간 표는 <b>규칙</b>(고정
+문구)이고 위 카드는 <b>오늘 그 규칙을 적용한 결과</b>입니다. 예: 회복 구간의 규칙은
+"총 50%" 지만 회복조건 셋(현재가&gt;MA120 · 6개월 RS&gt;0 · 20일 고점 대비 −15~−5%)을
+모두 채운 과거 리더가 <b>한 개도 없으면</b> 살 대상이 없어 최종 투자비중 0% ·
+현금 100% 가 됩니다. 그래서 현재 구간 행의 '비중' 칸에는 규칙 옆에
+<b>→ 이번 판정 N%</b> 를 덧붙이고, 카드에는 <b>현금인 이유</b>를 한 줄로 적습니다.<br>
 <b>⚠️ 시장 간 Breadth %를 직접 비교하지 마세요</b> — 표본(KODEX 섹터 vs SPDR GICS)과
 섹터 수가 달라 같은 값이 같은 의미가 아닙니다.<br>
 자동 신호이므로 참고용 — 확정 판단 금지.

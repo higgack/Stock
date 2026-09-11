@@ -18995,12 +18995,37 @@ class TestFavoritesSaveInvalidatesCache20260616:
         mf._save([{"ticker": "NEW.KS", "name": "new"}])         # 변경 저장
         assert mf._FAV_CACHE is None                            # 무효화됨 → 다음 조회 갱신
 
-    def test_save_invalidation_wired(self):
-        src = open("bot/market_favorites.py", encoding="utf-8").read()
-        # _save 본문에 _FAV_CACHE 무효화 (단일 choke point — add/remove/reorder 공통)
-        i = src.find("def _save(")
-        body = src[i:i + 600]
-        assert "_FAV_CACHE = None" in body and "global _FAV_CACHE" in body
+    def test_every_list_mutation_invalidates_the_cache(self, monkeypatch, tmp_path):
+        """**추가·삭제·순서변경 셋 다** 캐시를 무효화한다 — `_save` 가 단일
+        choke point 이므로 세 진입점을 태워서 값으로 고정한다.
+
+        ⚠️ 2026-09-11 재작성(#222): 옛 판은 `_save` 정의부터 **600자 창**을
+        잘라 `"_FAV_CACHE = None" in body` 를 봤는데, `_save` 에 별표용
+        `invalidate_cache=` 스위치와 그 사유 독스트링이 붙자 무효화 줄이
+        창 밖으로 밀려 멀쩡한 코드가 빨간불이 됐다(#60 줄 창으로 재는 검사는
+        들여쓰기·주석 한 줄에 무너진다 — 이 레포에서 네 번째). 계약은
+        "목록을 바꾸면 다음 조회가 디스크를 본다" 이지 "그 문자열이 그 창에
+        있다" 가 아니다(#19).
+        """
+        import time as _t
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", tmp_path / "favorites.json")
+        mf._save([{"ticker": "A.KS", "name": "a"}, {"ticker": "B.KS", "name": "b"}])
+
+        def _warm():
+            mf._FAV_CACHE = [{"ticker": "STALE", "name": "stale"}]
+            mf._FAV_CACHE_TS = _t.time()
+
+        _warm()
+        assert mf.remove_favorite("B.KS") is True
+        assert mf._FAV_CACHE is None, "삭제가 캐시를 안 지웠다"
+        _warm()
+        assert mf.reorder_favorite("A.KS", "bottom") is False   # 1개 = 이동 없음
+        assert mf._FAV_CACHE is not None, "변경 없는 reorder 가 캐시를 지웠다"
+        mf._save([{"ticker": "A.KS"}, {"ticker": "C.KS"}])
+        _warm()
+        assert mf.reorder_favorite("A.KS", "bottom") is True
+        assert mf._FAV_CACHE is None, "순서변경이 캐시를 안 지웠다"
 
 
 class TestFavoritesPagination20260616:
@@ -25176,22 +25201,41 @@ class TestBreadthCountsAndCards20260816:
         assert pl["per_forward"] == 30.7
 
     # ── 화면 설명(질문에 대한 답이 화면에 있어야 한다) ────────────────
-    def test_fng_is_labelled_as_a_us_index_on_the_kr_card(self):
-        """CNN F&G 는 미국 지표 — KR 카드에 'F&G 65' 만 적으면 한국 지표로
-        읽힌다(사용자 2026-08-16 "이건 한국 KOSPI인데?")."""
+    def test_each_card_shows_its_own_market_gauge(self):
+        """카드마다 **그 시장의** 심리·변동성 지표 — KR=VKOSPI · US=F&G(美 CNN).
+
+        ⚠️ 2026-09-11 재작성(#222): 옛 판은 `"美 CNN" in html` 을 **페이지 전체**
+        에서 봤다. 사용자가 "한국은 VKOSPI 를 적어줘. CNN VIX 말고" 로 KR 카드를
+        바꾼 지금, 그 단언은 ℹ️ 가이드의 같은 낱말이 대신 만족시켜 **KR 카드가
+        여전히 F&G 를 적어도 통과**한다(#55 표면별 문구는 그 카드를 잘라내서
+        볼 것). 계약도 바뀌었다 — '美 CNN 을 붙인다' → '그 시장 지표를 싣는다'.
+        """
         from bot import breadth_strategy as bs
-        d = {"market": "KR", "regime": "CONTRARIAN", "state": "CONTRARIAN_KOSPI",
-             "targets": [], "index_w": 0.75, "total_w": 0.75, "cash_w": 0.25,
-             "breadth_pct": 23.1, "dd_pct": -23.44, "bench_name": "KOSPI",
-             "breadth": {"pct": 23.1, "above": 3, "counted": 13,
-                         "skipped": [], "period": 120},
-             "source_label": "KODEX", "sectors_missing": [],
-             "rs_ranked": [{"name": "IT", "rs": 48.0}],
-             "fng": {"index": 65, "label": "탐욕"}, "asof": "2026-08-14",
-             "is_confirmed": False, "resolution_note": ""}
-        html = bs.render_page({"KR": d})
-        assert "美 CNN" in html, "F&G 출처(미국) 미표기"
-        assert "RS 순위(상위 5, 지수 대비 6개월)" in html, "RS 라벨이 모호"
+        base = {"regime": "CONTRARIAN", "state": "CONTRARIAN_KOSPI",
+                "targets": [], "index_w": 0.75, "total_w": 0.75, "cash_w": 0.25,
+                "breadth_pct": 23.1, "dd_pct": -23.44,
+                "breadth": {"pct": 23.1, "above": 3, "counted": 13,
+                            "skipped": [], "period": 120},
+                "source_label": "KODEX", "sectors_missing": [],
+                "rs_ranked": [{"name": "IT", "rs": 48.0}],
+                "asof": "2026-08-14", "is_confirmed": False,
+                "resolution_note": ""}
+        kr = bs._market_section({**base, "market": "KR", "bench_name": "KOSPI",
+                                 "sentiment": {"kind": "vkospi", "label": "VKOSPI",
+                                               "value": 15.2, "digits": 2,
+                                               "note": "2026-08-14 종가",
+                                               "source": "KIS", "why": ""}})
+        us = bs._market_section({**base, "market": "US", "bench_name": "S&P 500",
+                                 "sentiment": {"kind": "fng", "label": "F&G",
+                                               "value": 65, "digits": 0,
+                                               "note": "탐욕", "source": "美 CNN",
+                                               "why": ""}})
+        assert "VKOSPI 15.20 (2026-08-14 종가, KIS)" in kr, kr[:400]
+        assert "美 CNN" not in kr, "KR 카드에 CNN F&G 가 남아 있다"
+        # `&` 는 escape 를 거친다 — 화면에 나가는 그대로 단언한다.
+        assert "F&amp;G 65 (탐욕, 美 CNN)" in us, us[:400]
+        assert "VKOSPI" not in us, "US 카드에 VKOSPI 가 실렸다"
+        assert "RS 순위(상위 5, 지수 대비 6개월)" in kr, "RS 라벨이 모호"
 
     def test_resolution_note_gives_integer_crossing_points(self):
         """'3.9개 지점'은 존재하지 않는 수다 — 실제로 구간이 바뀌는 정수
@@ -48989,7 +49033,8 @@ class TestVolatilityLiveAsOf20260908:
         import bot.market_timing as mt
         monkeypatch.setattr(mt, "_fetch_vix_naver", lambda: nv)
         monkeypatch.setattr(mt, "fetch_index_history", lambda *a, **k: [])
-        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda *a, **k: [])
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: ([], "empty"))
         monkeypatch.setattr(mt, "fetch_move_rows", lambda *a, **k: ([], ""))
         monkeypatch.setattr(mt, "_vol_cache_load", lambda k: None)
         return mt.fetch_volatility_snapshot()
@@ -49494,6 +49539,10 @@ def _run_favorites_row(f: dict) -> str:
         "const usd=v=>v==null?'':String(v);"
         "const fmtMcap=(v,s)=>'MCAP';const fmtPrice=(v,s)=>'PRICE';"
         "const fmtPER=()=>'PER';const tperTitle=()=>'';"
+        # 별표 버튼(2026-09-11) — 이 조각은 `starBtn` 을 부른다. 스텁하지 않으면
+        # ReferenceError 라 무관한 계약이 빨간불이 된다(#183 시그니처를 바꾸면
+        # 스텁이 무너진다 — 하네스도 같은 커밋에서 고칠 것).
+        "const starBtn=(t,on)=>(on?'★':'☆');"
         "function _row(f, flag, pctVal, curCell, pctCell){\n" + seg + "\n}"
         "console.log(_row(" + json.dumps(f) + ",'FLAG','','C','P'));"
     )
@@ -49669,8 +49718,14 @@ class TestFrozenValueAndTickerAlias20260908:
         # ⚠️ **보이는 텍스트**로 잰다 — 태그를 안 걷으면 `href="lookup/2467.TT"`
         # 와 `data-name` 이 순서 단언을 대신 만족시켜, 별칭을 티커 앞으로
         # 옮기는 변형이 그대로 통과한다(실측 2026-09-08, #75).
-        text = re.sub(r"<[^>]*>", "", html.split("</td>")[0])
-        assert "2467.TT" in text and "2467.TW 로 조회" in text, text
+        # ⚠️ **위치로 집지 않는다**(#46) — 2026-09-11 에 별표(★) 칸이 맨 앞에
+        # 붙어 `split("</td>")[0]` 이 그 칸을 집었다. 계약은 "티커가 있는 그
+        # 셀에 별칭이 같이 있다" 이므로 **티커로** 셀을 찾는다.
+        cells = [re.sub(r"<[^>]*>", "", c) for c in html.split("</td>")]
+        hit = [c for c in cells if "2467.TW 로 조회" in c]
+        assert len(hit) == 1, cells
+        text = hit[0]
+        assert "2467.TT" in text, text
         assert text.index("2467.TT") < text.index("2467.TW 로 조회"), text
 
     def test_row_without_alias_says_nothing_extra(self):
@@ -49984,7 +50039,7 @@ class TestVixCardSurvivesItsGarnish20260908:
         def _boom(*a, **k):
             raise RuntimeError("KIS down")
 
-        monkeypatch.setattr(mt, "fetch_vkospi_rows", _boom)
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason", _boom)
         with caplog.at_level(logging.WARNING):
             out = mt.fetch_volatility_snapshot()
         assert "vkospi" not in out
@@ -57813,6 +57868,39 @@ class TestNoOutboundHttpInTests20260911:
         assert "yield" not in body.split("def _install_socket_backstop")[0], (
             "차단을 fixture 로 만들면 teardown 뒤 스레드가 샌다")
 
+    def test_production_disk_caches_are_redirected(self):
+        """**운영 디스크 캐시**도 같은 이유로 세션 스코프다(2026-09-11 실측).
+
+        `make test` 한 번이 `~/.tradingagents/cache/naver_sector/
+        kr_industry_fail.json` 에 실패 도장을 남겼고, 그 도장은 15분 백오프의
+        근거라 **다음 운영 실행이 업종맵을 안 만든다**(#30 테스트가 운영 캐시를
+        오염). 함수 스코프 fixture 로는 못 막는다 — 렌더가 띄운 daemon 스레드가
+        teardown **뒤에** 쓴다(위 네트워크 차단과 같은 이유 · 실측: 클래스 단독
+        실행에선 안 나오고 여러 클래스를 이어 돌릴 때만 파일이 생겼다).
+
+        ⚠️ 상수 이름이 바뀌면 `setattr` 이 조용히 아무 데도 안 걸린다 — 그걸
+        잡으려고 **지금 값이 정말 홈 밖인지**를 본다(#25 '있다'만 묻는 검사는
+        눈이 멀고, #54 대조 0건은 통과가 아니다)."""
+        import importlib
+        import pathlib as _pl
+        _cf = self._conftest()
+        home = _pl.Path.home() / ".tradingagents"
+        want = {"bot.naver_sector_client._CACHE_DIR",
+                "bot.market_timing._VOL_CACHE_DIR",
+                "bot.finviz_client._CACHE_DIR",
+                "bot.market_favorites._FAVORITES_FILE"}
+        assert want <= set(_cf._REDIRECTED), (
+            f"리다이렉트가 빠졌다(상수 이름 변경?): {want - set(_cf._REDIRECTED)}")
+        for dotted in sorted(want):
+            mod, attr = dotted.rsplit(".", 1)
+            val = _pl.Path(str(getattr(importlib.import_module(mod), attr)))
+            assert home not in val.parents and val != home, f"{dotted} → {val}"
+        # 그리고 conftest 가 그걸 **되돌리지 않는다** — 되돌리면 늦게 끝난
+        # 스레드가 운영 경로로 쓴다(위 `test_session_scope_is_measured…` 와 같은 계약).
+        src = pathlib.Path(_cf.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def _redirect_disk_caches"):]
+        assert "yield" not in body, "리다이렉트를 fixture 로 만들면 teardown 뒤 샌다"
+
 
 class TestNaverSpaProbe20260911:
     """네이버가 `finance.naver.com` 을 **Next.js SPA** 로 갈아엎어 업종 등락 TOP·
@@ -58496,11 +58584,17 @@ class TestReviewFindings20260912:
         monkeypatch.setattr(nsc, "_get2", lambda u, **k: (calls.append(u) or
                                                           ("<html/>", "")))
         monkeypatch.setattr(nsc, "_get", lambda u, **k: calls.append(u) or "<html/>")
-        nsc.kr_industry_map()
         _f0 = tmp_path / nsc._KR_IND_FAIL_FILE
+        # ⚠️ `_kr_ind_building` 은 모듈 전역이라 **앞 테스트가 띄운 스레드**가
+        # 우리 monkeypatch 뒤에 다시 True 로 올려놓을 수 있다 — 그러면 킥이
+        # 통째로 건너뛰어져 단독 green / 전체 red 가 된다(실측 2026-09-11,
+        # #128·#130·#311). 한 번만 킥하고 기다리지 말고 **빌드가 안 돌고 있으면
+        # 다시 킥**한다 — 계약("실패하면 기록이 남는다")은 그대로다.
         for _ in range(200):
             if _f0.exists():
                 break
+            if not nsc._kr_ind_building:
+                nsc.kr_industry_map()
             time.sleep(0.02)
         assert _f0.exists(), f"빌드가 안 돌았다(스레드 플래그 오염?): {calls}"
         n0 = len(calls)
@@ -58651,3 +58745,775 @@ class TestReviewFindings20260912:
                              total_kept=0, limit=300, max_pages=8) != "page_ignored"
         assert nrc.page_stop(page=2, got=20, page_size=20, fresh=0, in_window=0,
                              total_kept=20, limit=300, max_pages=8) == "page_ignored"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 관심종목 별표(중요표시) · Breadth 규칙↔판정 · 시장별 심리지표
+# (사용자 2026-09-11 세 건)
+# ─────────────────────────────────────────────────────────────────────────
+class TestFavoriteStar20260911:
+    """관심종목 앞 ★ 중요표시 + 상단 '⭐ 중요만' 필터.
+
+    사용자 2026-09-11: "종목앞에 별표로 중요표시해서 내가 선택할수 있게 해주고,
+    위쪽에 중요표시것만 선택해서 볼수있게 필터같은거 만들어줘. 특히 팔로우업
+    해야하는 종목에 대해서 체크하려는 용도야."
+
+    ⚠️ 이 기능의 구조적 위험은 **캐시가 fix 를 가리는 것**이다 — 별표는 목록
+    파일에 저장되는데 화면이 받는 행은 메모리 캐시(3분)·디스크 스냅샷(6시간)
+    에서 온다. 이 레포에서 같은 실패가 여섯 번 반복됐다(#18·#21b·#95·#124·
+    #198·#216). 그래서 (a) 별표 write 는 가격 캐시를 **안 태우고**(태우면 별
+    한 번에 전 종목 가격이 `—` 가 된다) (b) 읽는 시점에 **디스크 정본으로
+    덧입힌다**. 아래 두 테스트가 그 둘을 값으로 고정한다.
+    """
+
+    def _mf(self, monkeypatch, tmp_path, rows):
+        import json as _j
+        import bot.market_favorites as mf
+        p = tmp_path / "market_favorites.json"
+        p.write_text(_j.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", p)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None, raising=False)
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", 0.0, raising=False)
+        return mf
+
+    # ── 모델 ─────────────────────────────────────────────────────────
+    def test_star_toggle_is_idempotent_and_scoped(self, monkeypatch, tmp_path):
+        mf = self._mf(monkeypatch, tmp_path,
+                      [{"ticker": "005930.KS"}, {"ticker": "AAPL", "starred": True}])
+        assert mf.set_favorite_star("005930.ks", True) is True     # 대소문자 무관
+        assert mf.set_favorite_star("005930.KS", True) is False    # 이미 그 상태
+        assert mf.set_favorite_star("AAPL", False) is True
+        assert mf.set_favorite_star("NOPE", True) is False         # 목록에 없음
+        assert mf.starred_tickers() == ["005930.KS"]
+
+    def test_star_write_keeps_the_price_cache(self, monkeypatch, tmp_path):
+        """별표는 **목록 속성**이라 가격 캐시를 무효화하지 않는다.
+
+        태우면 별 한 번 누를 때마다 전 종목(실측 139개) 가격이 `—` 가 됐다가
+        백그라운드가 수십 초에 걸쳐 다시 채운다 — 사용자는 그걸 고장으로
+        읽는다. 반대 증거로 **일반 저장은 여전히 무효화**하는지도 본다
+        (#25 '있다'만 묻는 검사는 눈이 먼다).
+        """
+        mf = self._mf(monkeypatch, tmp_path, [{"ticker": "AAPL"}])
+        sentinel = [{"ticker": "AAPL", "current_price": 230.0}]
+        monkeypatch.setattr(mf, "_FAV_CACHE", sentinel, raising=False)
+        assert mf.set_favorite_star("AAPL", True) is True
+        assert mf._FAV_CACHE is sentinel, "별표가 가격 캐시를 날렸다"
+        mf._save(mf._load())                       # 목록 저장 = 기본 경로
+        assert mf._FAV_CACHE is None, "일반 저장이 캐시를 안 지운다(반대 증거)"
+
+    def test_screen_path_overlays_stars_from_disk(self, monkeypatch, tmp_path):
+        """화면 경로(`favorites_rows_with_as_of`)가 **정본 별표**를 싣는다.
+
+        캐시에 별표가 반대로 구워져 있어도 디스크가 이긴다 — 헬퍼만 부르는
+        테스트는 이 배선을 못 잰다(#20·#35 감사·화면은 같은 경로).
+        """
+        mf = self._mf(monkeypatch, tmp_path,
+                      [{"ticker": "005930.KS", "starred": True},
+                       {"ticker": "AAPL"}])
+        stale = [{"ticker": "005930.KS", "current_price": 1.0},       # 별표 없음
+                 {"ticker": "AAPL", "starred": True, "current_price": 2.0}]  # 반대
+        monkeypatch.setattr(mf, "get_favorites_with_prices", lambda: stale)
+        rows, _as_of = mf.favorites_rows_with_as_of()
+        got = {r["ticker"]: r["starred"] for r in rows}
+        assert got == {"005930.KS": True, "AAPL": False}, got
+        # 값(가격)은 그대로 살아 있어야 한다 — 덧입히기가 행을 갈아치우면 안 된다
+        assert [r["current_price"] for r in rows] == [1.0, 2.0]
+
+    def test_apply_stars_does_not_mutate_input(self):
+        """캐시가 들고 있는 dict 를 제자리에서 고치면 별표가 캐시에 구워진다
+        — 그러면 '읽을 때 덧입힌다'는 요점 자체가 사라진다."""
+        import bot.market_favorites as mf
+        src = [{"ticker": "AAPL", "current_price": 1.0}]
+        out = mf.apply_stars(src, {"AAPL": True})
+        assert out[0]["starred"] is True
+        assert "starred" not in src[0], "입력 dict 를 고쳤다"
+
+    # ── 서버 ─────────────────────────────────────────────────────────
+    def _post(self, payload):
+        import io as _io
+        import json as _j
+        import bot.dashboard_server as ds
+
+        class _Fake:
+            def __init__(self, body):
+                self.headers = {"Content-Length": str(len(body))}
+                self.rfile = _io.BytesIO(body)
+                self.sent = None
+
+            def _json_ok(self, obj):
+                self.sent = obj
+
+        f = _Fake(_j.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        ds.DashboardHandler._handle_favorite_star(f)
+        return f.sent
+
+    def test_star_endpoint_returns_canonical_state(self, monkeypatch, tmp_path):
+        """응답의 `starred` 는 **쓰기 뒤 정본**이다 — `changed` 만 돌려주면
+        이미 그 상태였을 때 화면이 어떻게 그려야 할지 알 수 없다(#43)."""
+        self._mf(monkeypatch, tmp_path, [{"ticker": "AAPL"}])
+        assert self._post({"ticker": "AAPL", "starred": True}) == {
+            "ok": True, "changed": True, "starred": True}
+        assert self._post({"ticker": "AAPL", "starred": True}) == {
+            "ok": True, "changed": False, "starred": True}
+        assert self._post({"ticker": "AAPL", "starred": False}) == {
+            "ok": True, "changed": True, "starred": False}
+        # 목록에 없는 티커 — '켜졌다' 고 답하면 화면이 거짓 별을 그린다
+        assert self._post({"ticker": "NOPE", "starred": True}) == {
+            "ok": True, "changed": False, "starred": False}
+
+    def test_star_endpoint_rejects_non_boolean(self, monkeypatch, tmp_path):
+        """`starred: "yes"` 를 참으로 읽으면 화면이 못 끄는 별이 생긴다."""
+        self._mf(monkeypatch, tmp_path, [{"ticker": "AAPL"}])
+        out = self._post({"ticker": "AAPL", "starred": "yes"})
+        assert out["ok"] is False and "bool" in out["error"]
+        out = self._post({"ticker": "", "starred": True})
+        assert out["ok"] is False
+
+    def test_concurrent_add_and_star_both_survive(self, monkeypatch, tmp_path):
+        """**두 writer 가 동시에** 돌아도 둘 다 남는다 — `_DISK_LOCK` 이 진짜
+        상호배제인지 값으로 잰다.
+
+        ⚠️ 왜(2026-09-11 독립 리뷰가 배포 전에 재현): `add_favorite` 는
+        `_load()` 뒤 **yfinance `.info`/`.calendar` 로 수 초**를 쓰고 그 낡은
+        목록을 저장한다. `ThreadingHTTPServer` 는 `/api/favorite_add` 와
+        `/api/favorite_star` 를 다른 스레드로 처리하므로, 그 사이에 찍은 별표가
+        통째로 사라진다(화면은 ★ 를 칠했다가 60초 뒤 ☆ 로 되돌아간다 — 오류
+        한 줄 없이). 반대로 별표 쓰기가 방금 담은 종목을 지우기도 한다.
+        락은 **전원이 참여할 때만** 상호배제다(#295 사용자 입력 유실).
+        """
+        import json as _j
+        import sys
+        import threading
+        import time
+        import types
+        mf = self._mf(monkeypatch, tmp_path, [{"ticker": "AAPL", "name": "Apple"}])
+
+        class _Tk:                      # 느린 yfinance 흉내(네트워크 없음)
+            def __init__(self, t):
+                pass
+
+            @property
+            def info(self):
+                time.sleep(0.35)
+                return {"regularMarketPrice": 1.0, "currency": "USD",
+                        "longName": "NVIDIA"}
+
+            @property
+            def calendar(self):
+                return {}
+
+        monkeypatch.setitem(sys.modules, "yfinance",
+                            types.SimpleNamespace(Ticker=_Tk))
+        monkeypatch.setattr(mf, "_resolve_kr_name", lambda t, f: f)
+        got = {}
+
+        def _add():
+            got["add"] = mf.add_favorite("NVDA")
+
+        th = threading.Thread(target=_add)
+        th.start()
+        time.sleep(0.12)                # 네트워크 구간 한가운데서 별을 찍는다
+        got["star"] = mf.set_favorite_star("AAPL", True)
+        th.join(timeout=10)
+        disk = _j.loads((tmp_path / "market_favorites.json").read_text("utf-8"))
+        by = {d["ticker"]: d for d in disk}
+        assert got["star"] is True and got["add"], got
+        assert set(by) == {"AAPL", "NVDA"}, list(by)
+        assert by["AAPL"].get("starred") is True, "별표가 추가에 덮였다"
+
+    def test_every_writer_participates_in_the_lock(self):
+        """`_save()` 를 부르는 **모든** 함수가 `_DISK_LOCK` 안에서 부른다.
+
+        락은 전원이 참여할 때만 상호배제다 — 하나라도 빠지면 그 하나가 남의
+        쓰기를 덮는다(독립 리뷰가 `add_favorite` 로 재현, #295). 스레드 경합
+        테스트는 `add_favorite` 처럼 **창이 넓은** 경우만 결정적으로 잡히므로
+        (`remove`/`reorder` 는 서브밀리초라 흔들린다) 나머지는 **구조로**
+        못박는다 — 새로 생기는 writer 도 자동으로 걸린다(#24 이름 열거 금지).
+
+        ⚠️ 못 보는 축(#274): 락 안에서 **읽었는지**(`_load()` 를 락 밖에서
+        하고 락 안에서 쓰기만 하면 여전히 덮어쓴다)까지는 안 본다. 그 계약은
+        위 `test_concurrent_add_and_star_both_survive` 가 값으로 잰다. 그리고
+        `_DISK_LOCK` 은 **프로세스 안**에서만 유효하다 — 봇과 `--sort-saved`
+        CLI 는 다른 프로세스라 이 락이 안 겹친다(그쪽은 `tmp.replace` 원자
+        쓰기 + 되읽기 검증이 담당).
+
+        실측: 이 가드를 켜자마자 `_cli_sort_saved` 가 락 밖에서 쓰고 있었다
+        (#87a 새 가드는 켜자마자 뭔가 잡는 게 정상)."""
+        import ast as _ast
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        tree = _ast.parse(src)
+        bad = []
+        for fn in _ast.walk(tree):
+            if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            if fn.name == "_save":
+                continue
+            # 이 함수 안의 `with _DISK_LOCK:` 이 덮는 줄 범위
+            locked = []
+            for w in _ast.walk(fn):
+                if not isinstance(w, _ast.With):
+                    continue
+                names = {_ast.unparse(i.context_expr) for i in w.items}
+                if "_DISK_LOCK" in names:
+                    locked.append((w.body[0].lineno, w.end_lineno))
+            for c in _ast.walk(fn):
+                if not (isinstance(c, _ast.Call) and isinstance(c.func, _ast.Name)
+                        and c.func.id == "_save"):
+                    continue
+                if not any(a <= c.lineno <= b for a, b in locked):
+                    bad.append(f"{fn.name}:{c.lineno}")
+        assert not bad, f"_DISK_LOCK 밖에서 _save() 를 부른다: {bad}"
+        # 대조 0건은 통과가 아니다 — 실제로 재는 게 있어야 한다(#54)
+        assert src.count("_save(") >= 5, "writer 를 못 찾았다 — 검사가 눈멀었다"
+
+    def test_star_route_is_wired(self):
+        """라우트 배선 — 정의가 있어도 `do_POST` 가 안 부르면 404 다(#120
+        '정의 1 + 호출 1'). 소스 문자열이 아니라 **AST** 로 센다(#59b)."""
+        import ast as _ast
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        fn = next(n for n in _ast.walk(_ast.parse(src))
+                  if isinstance(n, _ast.FunctionDef) and n.name == "do_POST")
+        paths = {c.value for c in _ast.walk(fn)
+                 if isinstance(c, _ast.Constant) and isinstance(c.value, str)}
+        calls = {c.func.attr for c in _ast.walk(fn)
+                 if isinstance(c, _ast.Call) and isinstance(c.func, _ast.Attribute)}
+        assert "/api/favorite_star" in paths, "별표 라우트 미등록"
+        assert "_handle_favorite_star" in calls, "라우트가 핸들러를 안 부른다"
+
+    # ── 화면(JS 를 실제로 태운다) ────────────────────────────────────
+    _PRE = r"""
+var __els = {};
+function __mk(id){
+  var o = {id:id,_t:'',value:'',checked:false,disabled:false,
+    style:{},dataset:{},
+    querySelectorAll:function(){return [];},
+    querySelector:function(){return null;},
+    addEventListener:function(){},
+    closest:function(){return null;},
+    getAttribute:function(){return '';},setAttribute:function(){}};
+  Object.defineProperty(o,'textContent',{get:function(){return o._t;},set:function(v){o._t=(v==null?'':String(v));}});
+  Object.defineProperty(o,'innerHTML',{get:function(){return o._t;},set:function(v){o._t=(v==null?'':String(v));}});
+  return o;
+}
+function __attrs(s){ var d={},re=/data-([a-z]+)="([^"]*)"/g,m; while((m=re.exec(s))) d[m[1]]=m[2]; return d; }
+function __parseTable(){
+  var html = (__els['fav-body']||{})._t || '';
+  if (html.indexOf('<tbody>') < 0) return null;
+  var body = html.split('<tbody>')[1].split('</tbody>')[0];
+  var rows = [], re=/<tr ([^>]*)>/g, m;
+  while((m=re.exec(body))) rows.push({dataset:__attrs(m[1]), style:{display:''}});
+  var head = (html.split('<thead>')[1]||'').split('</thead>')[0];
+  var cells = [], hre=/<th([^>]*)>/g, h;
+  while((h=hre.exec(head))) cells.push({dataset:__attrs(h[1]),
+    addEventListener:function(){}, querySelector:function(){return null;}});
+  return {tHead:{rows:[{cells:cells}]}, tBodies:[{rows:rows}]};
+}
+var __tbl = null;
+var document = {
+  getElementById:function(id){
+    if (id === 'fav-tbl') { __tbl = __parseTable(); return __tbl; }
+    if (!__els[id]) __els[id] = __mk(id);
+    return __els[id];
+  },
+  querySelector:function(){return null;},
+  hidden:false
+};
+var window = {};
+function fetch(){ var o={then:function(){return o;},catch:function(){return o;}}; return o; }
+function setTimeout(){} function setInterval(){} function alert(){}
+__els['fav-body'] = __mk('fav-body');
+__els['fav-cnt'] = __mk('fav-cnt');
+"""
+
+    _POST = r"""
+renderFavs(JSON.parse(process.argv[2]));
+var out = {html:__els['fav-body']._t, cntAll:__els['fav-cnt']._t};
+function shown(){ return __tbl ? __tbl.tBodies[0].rows
+  .filter(function(r){return r.style.display !== 'none';})
+  .map(function(r){return r.dataset.name;}) : null; }
+out.shownAll = shown();
+favState.starOnly = true; favState.page = 0; applyFavFilter();
+out.cntStar = __els['fav-cnt']._t; out.shownStar = shown();
+favState.starOnly = false; favState.country = 'KR'; applyFavFilter();
+out.cntKr = __els['fav-cnt']._t; out.shownKr = shown();
+favState.starOnly = true; applyFavFilter();
+out.cntBoth = __els['fav-cnt']._t; out.shownBoth = shown();
+/* 두 번째 렌더(60초 폴) — '중요만' 을 켠 채 새 목록이 오면 어떻게 되나 */
+if (process.argv[3]) {
+  favState.country = 'ALL'; favState.starOnly = true;
+  renderFavs(JSON.parse(process.argv[3]));
+  out.cnt2 = __els['fav-cnt']._t; out.shown2 = shown(); out.html2 = __els['fav-body']._t;
+}
+console.log(JSON.stringify(out));
+"""
+
+    _ROWS = [
+        {"ticker": "005930.KS", "name_kr": "삼성전자", "country": "KR",
+         "starred": True, "current_price": 70000, "saved_price": 60000,
+         "currency": "KRW", "currency_symbol": "₩"},
+        {"ticker": "000660.KS", "name_kr": "SK하이닉스", "country": "KR",
+         "starred": False, "current_price": 200000,
+         "currency": "KRW", "currency_symbol": "₩"},
+        {"ticker": "AAPL", "name": "Apple", "country": "US", "starred": True,
+         "current_price": 230, "currency": "USD", "currency_symbol": "$"},
+    ]
+
+    @classmethod
+    def _run_js(cls, rows, rows2=None):
+        """관심종목 IIFE 를 **제품 그대로** 태운다(재구현 금지 — #277).
+
+        IIFE 래퍼만 벗겨 클로저 변수를 하네스에서 만질 수 있게 한다. DOM 은
+        스텁이고 표는 `favBody.innerHTML` 을 파싱해 만든다 — 파싱은 브라우저가
+        하던 일이지 제품 로직이 아니다.
+        """
+        import json as _j
+        import shutil
+        import subprocess
+        import tempfile
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            pytest.skip("node 없음 — JS 실행 검증 skip")
+        from bot.dashboard import _render_market_page
+        html = _render_market_page({})
+        seg = html.split("/* ── Favorites CRUD ── */", 1)[1]
+        mark = "setInterval(function() { if (!document.hidden) loadFavs(); }, 60000);"
+        assert mark in seg, "관심종목 IIFE 끝 앵커가 바뀌었다 — 하네스 갱신 필요"
+        body = seg[:seg.index(mark) + len(mark)].split("(function() {", 1)[1]
+        with tempfile.TemporaryDirectory() as td:
+            path = f"{td}/fav_harness.js"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(cls._PRE + body + cls._POST)
+            argv = [node, path, _j.dumps(rows, ensure_ascii=False)]
+            if rows2 is not None:
+                argv.append(_j.dumps(rows2, ensure_ascii=False))
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, r.stderr[-1500:]
+        return _j.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_star_filter_shows_only_starred(self):
+        out = self._run_js(self._ROWS)
+        assert out["cntAll"] == "3종목"
+        assert len(out["shownAll"]) == 3
+        assert out["cntStar"] == "2/3종목", out["cntStar"]
+        assert len(out["shownStar"]) == 2
+        assert not any("sk하이닉스" in n for n in out["shownStar"]), out["shownStar"]
+
+    def test_star_filter_ands_with_country_filter(self):
+        """나라 필터와 **AND** 로 걸린다 — OR 이면 '중요만' 이 무의미해진다."""
+        out = self._run_js(self._ROWS)
+        assert out["cntKr"] == "2/3종목"          # KR 만
+        assert out["cntBoth"] == "1/3종목"        # KR ∩ 별표 = 삼성전자
+        assert len(out["shownBoth"]) == 1
+        assert any("삼성전자" in n for n in out["shownBoth"]), out["shownBoth"]
+
+    def test_row_renders_star_state(self):
+        """행이 별표 상태를 **버튼과 data-star 둘 다**로 말한다 — 버튼만
+        그리면 필터가 못 읽고, data 만 실으면 사용자가 못 누른다."""
+        out = self._run_js(self._ROWS)
+        h = out["html"]
+        assert h.count('class="fav-star on"') == 2, h[:400]
+        assert h.count('aria-pressed="true"') == 2
+        assert h.count('data-star="1"') == 2 and h.count('data-star="0"') == 1
+        assert "⭐ 중요만 (2)" in h, "상단 필터에 별표 개수 미표기"
+        star_th = '<th title="중요표시(팔로우업)">★</th>'
+        assert star_th in h, "★ 헤더 열 없음"
+        # ⚠️ 그 헤더는 **정렬 불가**다(`data-k`·`fav-sort` 없음) — `.dtbl th` 의
+        # 정렬 어포던스(cursor:pointer · hover 색 · `::after{' ↕'}`)를 꺼야
+        # 눌러도 아무 일 없는 헤더가 안 생긴다(독립 리뷰 L1).
+        assert "data-k" not in star_th and "fav-sort" not in star_th
+        from bot.dashboard import _render_market_page
+        page = _render_market_page({})
+        for rule in ("#fav-tbl th:not(.fav-sort){cursor:default}",
+                     "#fav-tbl th:not(.fav-sort)::after{content:none}"):
+            assert rule in page, f"{rule} 없음 — ★ 헤더가 정렬되는 척한다"
+
+    def test_filter_clears_itself_when_nothing_is_starred(self):
+        """마지막 별표를 지우면 필터만 남아 **빈 표**가 된다 — 나라 필터가
+        존재하지 않는 나라를 자동으로 푸는 것과 같은 규약(독립 리뷰 L6)."""
+        # 1차: 별표 2개로 렌더 → '중요만' 을 켠 채 2차에서 별표가 0개가 된다
+        # (사용자가 마지막 별을 지운 뒤 60초 폴이 도는 상황).
+        none_starred = [{**r, "starred": False} for r in self._ROWS]
+        out = self._run_js(self._ROWS, none_starred)
+        assert out["cnt2"] == "3종목", out["cnt2"]      # 필터가 풀려 전부 보인다
+        assert len(out["shown2"]) == 3, out["shown2"]
+        assert "⭐ 중요만 (0)" in out["html2"]
+        assert 'id="fav-star-only" checked' not in out["html2"], "체크박스가 켜진 채"
+
+    def test_toggle_bails_when_the_row_was_rerendered(self):
+        """60초 폴이 그 사이 재렌더했으면 `toggleStar` 는 **빠져야** 한다.
+
+        안 빠지면 `btn.outerHTML=` 이 떨어져 나간 노드에 no-op 이 되고, 새
+        버튼(이미 리스너가 붙어 있다)에 리스너를 또 붙여 클릭당 POST 가 두 번
+        나간다(독립 리뷰 L3 — 값은 멱등이라 망가지진 않지만 요청이 배로 는다).
+
+        ⚠️ **이 검사가 못 보는 축**(#274): 실행이 아니라 `toggleStar` **함수
+        본문**의 모양만 본다. DOM 스텁으로 태우려면 fetch 해소·노드 동일성까지
+        흉내내야 해서 비용이 크고, 이 결함은 Low(중복 요청)다. 대신 창을 잘라
+        재지 않고 **중괄호로 함수 본문만** 잘라 본다(#60·#174 고정 길이 창은
+        옆 함수가 대신 만족시킨다)."""
+        from bot.dashboard import _render_market_page
+        js = _render_market_page({})
+        i = js.index("function toggleStar(")
+        j = js.index("{", i)
+        depth, k = 0, j
+        while k < len(js):
+            if js[k] == "{":
+                depth += 1
+            elif js[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        body = js[j:k]
+        assert "isConnected" in body, "재렌더 뒤 빠지는 가드가 없다"
+        assert "return" in body.split("isConnected", 1)[1][:80], body[:200]
+
+    def test_star_css_is_defined_in_this_bundle(self):
+        """클래스만 쓰고 CSS 를 안 두면 버튼이 기본 스타일로 떠 표가 흐트러진다
+        (#201·#273 — 이 페이지는 이 번들만 쓴다)."""
+        from bot.dashboard import _render_market_page
+        html = _render_market_page({})
+        for sel in (".fav-star{", ".fav-star.on{", ".fav-ctrl .fav-star-f{"):
+            assert sel in html, f"{sel} CSS 정의 없음"
+
+    def test_market_inline_js_parses(self, tmp_path):
+        """생성된 JS 는 파이썬이 문법을 안 봐준다 — 파서에 태운다(#26)."""
+        import shutil
+        import subprocess
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            pytest.skip("node 없음")
+        from bot.dashboard import _render_market_page
+        html = _render_market_page({})
+        blocks = re.findall(r"<script>(.*?)</script>", html, re.S)
+        assert blocks, "market 페이지에 인라인 스크립트가 없다 — 렌더 계약 변경?"
+        for i, js in enumerate(blocks):
+            f = tmp_path / f"m{i}.js"
+            f.write_text(js, encoding="utf-8")
+            p = subprocess.run([node, "--check", str(f)],
+                               capture_output=True, text=True, timeout=60)
+            assert p.returncode == 0, f"블록{i} JS 파싱 실패:\n{p.stderr}"
+
+
+class TestBreadthRuleVsOutcome20260911:
+    """사용자 2026-09-11 "위에 표랑 아래 표랑 전략이 다른데. 최종 투자비중이랑
+    현금비중이랑. 어떤 로직이야?"
+
+    답: 아래 구간 표는 **규칙**(고정 문구)이고 위 카드는 **오늘 그 규칙을
+    적용한 결과**다. 회복 구간의 규칙은 '총 50%' 지만 회복조건 셋을 다 채운
+    과거 리더가 0개면 `decide` 가 기본값(0% · 현금 100%)을 낸다. 두 표를
+    나란히 놓으면 모순으로 읽히므로(#33·#34) 활성 행에 실제 비중을 덧붙이고
+    카드가 **현금인 이유**를 말한다(#43 — `cash_reason` 은 2026-09-07 에
+    이력 표용으로 만들어 놓고 카드에는 배선하지 않았다: #123·#129·#189·#228·
+    #234·#292 계열의 반복).
+    """
+
+    _BASE = {"market": "KR", "bench_name": "KOSPI", "targets": [],
+             "breadth": {"above": 4, "counted": 13, "skipped": []},
+             "source_label": "KODEX 섹터", "sectors_missing": [],
+             "rs_ranked": [], "sentiment": {}, "asof": "2026-09-10",
+             "is_confirmed": False, "resolution_note": ""}
+
+    def _row(self, html, label):
+        m = re.search(r"<tr class='(on)?'><td>" + label + r"</td>.*?</tr>",
+                      html, re.S)
+        assert m, f"{label} 행을 못 찾음"
+        return m.group(0)
+
+    def test_regime_weight_cell_values(self):
+        import bot.breadth_strategy as bs
+        rule = "총 50% (나머지 현금)"
+        assert bs.regime_weight_cell(rule, active=True, total_w=0.0) == \
+            f"{rule} → 이번 판정 0%"
+        assert bs.regime_weight_cell(rule, active=True, total_w=0.5) == \
+            f"{rule} → 이번 판정 50%"
+        # 비활성 행은 손대지 않는다 — 오늘 적용되지 않은 구간에 '이번 판정'은 없다
+        assert bs.regime_weight_cell(rule, active=False, total_w=0.5) == rule
+        # 판정 불가(비중 None)면 지어내지 않는다(#165)
+        assert bs.regime_weight_cell(rule, active=True, total_w=None) == rule
+
+    def test_active_row_shows_realized_weight_and_others_do_not(self):
+        """배선 — 헬퍼만 재면 호출을 지우는 변형을 못 잡는다(#20·#313)."""
+        import bot.breadth_strategy as bs
+        html = bs._market_section({**self._BASE, "regime": "RECOVERY",
+                                   "state": "CASH", "total_w": 0.0,
+                                   "cash_w": 1.0, "dd_pct": -6.4})
+        on = self._row(html, "회복 구간")
+        assert "총 50% (나머지 현금) → 이번 판정 0%" in on, on
+        off = self._row(html, "추세 구간")
+        assert "이번 판정" not in off, off
+
+    def test_realized_weight_follows_the_decision(self):
+        """실제로 산 달은 그 값이 실린다 — 늘 0% 를 적는 변형은 여기서 잡힌다."""
+        import bot.breadth_strategy as bs
+        html = bs._market_section({**self._BASE, "regime": "TREND",
+                                   "state": "TREND_RS_TOP3", "total_w": 1.0,
+                                   "cash_w": 0.0, "dd_pct": -2.0,
+                                   "targets": [{"name": "IT", "weight": 1.0}]})
+        assert "100% (현금 0) → 이번 판정 100%" in self._row(html, "추세 구간")
+
+    def test_live_card_says_why_it_is_cash(self):
+        """카드가 **왜** 현금인지 보이는 줄로 말한다(툴팁·이력표만으론 부족)."""
+        import bot.breadth_strategy as bs
+        html = bs._market_section({**self._BASE, "regime": "RECOVERY",
+                                   "state": "CASH", "total_w": 0.0,
+                                   "cash_w": 1.0, "dd_pct": -6.4})
+        card = html.split('<table class="bs-tbl"', 1)[0]   # 표 이전 = 카드
+        assert "💵 현금인 이유" in card, card[-600:]
+        assert "회복조건" in card and "충족한 섹터가 없었습니다" in card
+        # 역추세에서 트랜치 미달이면 **다른 사유**여야 한다(한 문구가 네 갈래를
+        # 대표하면 셋은 거짓말이다, #82·#34)
+        html2 = bs._market_section({**self._BASE, "regime": "CONTRARIAN",
+                                    "state": "CASH", "total_w": 0.0,
+                                    "cash_w": 1.0, "dd_pct": -5.0})
+        card2 = html2.split('<table class="bs-tbl"', 1)[0]
+        assert "트랜치" in card2 and "회복조건" not in card2, card2[-600:]
+
+    def test_no_cash_reason_when_not_cash(self):
+        """살 대상이 있는 달에 '현금인 이유' 가 뜨면 그게 거짓말이다."""
+        import bot.breadth_strategy as bs
+        html = bs._market_section({**self._BASE, "regime": "TREND",
+                                   "state": "TREND_RS_TOP3", "total_w": 1.0,
+                                   "cash_w": 0.0, "dd_pct": -2.0,
+                                   "targets": [{"name": "IT", "weight": 1.0}]})
+        assert "현금인 이유" not in html.split('<table class="bs-tbl"', 1)[0]
+
+    def test_card_line_does_not_borrow_the_table_only_class(self):
+        """`.si-note` 는 `_BS_CSS` 에서 `.bs-tbl .si-note` 로만 정의돼 있다 —
+        표 밖에서 쓰면 각주가 본문 크기로 뜬다(#201·#273)."""
+        import bot.breadth_strategy as bs
+        html = bs._market_section({**self._BASE, "regime": "RECOVERY",
+                                   "state": "CASH", "total_w": 0.0,
+                                   "cash_w": 1.0, "dd_pct": -6.4})
+        card = html.split('<table class="bs-tbl"', 1)[0]
+        assert "si-note" not in card, "표 전용 클래스를 카드에서 썼다"
+        assert ".bs-tbl .si-note{" in bs._BS_CSS, "표 각주 CSS 정의가 사라졌다"
+
+    def test_guide_explains_the_two_tables(self):
+        """설명 out-of-sync = 버그(#55). 가이드가 규칙↔결과 차이를 말한다."""
+        import bot.breadth_strategy as bs
+        html = bs.render_page({})
+        guide = html.split("<details class=\"guide\">", 1)[1].split("</details>", 1)[0]
+        for tok in ("위 카드와 아래 구간 표가 달라 보일 때", "→ 이번 판정",
+                    "현금인 이유"):
+            assert tok in guide, f"가이드에 '{tok}' 누락"
+
+
+class TestBreadthMarketSentiment20260911:
+    """사용자 2026-09-11 "한국은 VKOSPI 를 적어줘. CNN VIX 말고".
+
+    카드마다 **그 시장의** 심리·변동성 지표를 싣는다 — KR=VKOSPI(KRX 산출,
+    KIS 제공) · 그 밖=CNN F&G(美). 시장 게이트를 렌더러에 흩지 않고
+    `_SENTIMENT_KIND` 레지스트리 한 줄로 둔다(#24·#31).
+    """
+
+    def test_kind_is_registry_driven(self):
+        import bot.breadth_strategy as bs
+        assert bs.sentiment_kind("KR") == "vkospi"
+        assert bs.sentiment_kind("kr") == "vkospi"
+        assert bs.sentiment_kind("US") == "fng"
+        assert bs.sentiment_kind(None) == "fng"
+
+    def test_registry_is_the_single_source_not_a_literal(self, monkeypatch):
+        """레지스트리가 **실제로 판정을 정하는가** — 합성 소스로 태워서 본다.
+
+        ⚠️ 2026-09-11 재작성(#222·#291): 옛 판은 `Compare.left` 가 하필
+        `kind`/`sent` 라는 이름일 때만 보는 AST 단언이라 **아무것도 재지
+        않았다**. 독립 리뷰 실측: `if market == "KR"` 게이트를 렌더러에
+        더하는 변형, `_fetch_sentiment` 안에서 인라인으로 가르는 변형,
+        `sentiment_kind` 가 레지스트리를 무시하는 변형 **셋 다 통과**했다.
+        레지스트리가 열어 둔 문(`_SENTIMENT_KIND`)으로 **합성 시장**을 넣어
+        규약 자체를 본다(#85 — 실물 데이터로 재면 보정을 지우는 변형이
+        그대로 통과한다)."""
+        import bot.breadth_strategy as bs
+        import bot.fear_greed_client as fg
+        import bot.market_timing as mt
+        calls = []
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: (calls.append("vk") or
+                                             ([{"date": "2026-09-10", "close": 15.2}], "")))
+        monkeypatch.setattr(fg, "fetch_fear_greed",
+                            lambda *a, **k: calls.append("fng") or {"score": 34})
+        # 레지스트리에 US 를 vkospi 로 등재하면 US 도 VKOSPI 를 타야 한다 —
+        # 코드 어딘가에 `== "KR"` 이 박혀 있으면 여기서 갈린다.
+        monkeypatch.setitem(bs._SENTIMENT_KIND, "US", "vkospi")
+        assert bs.sentiment_kind("US") == "vkospi"
+        out = bs._fetch_sentiment("US")
+        assert calls == ["vk"], calls
+        assert out["kind"] == "vkospi" and out["label"] == "VKOSPI"
+        # 반대 방향 — 레지스트리에서 KR 을 빼면 KR 이 F&G 로 간다
+        calls.clear()
+        monkeypatch.delitem(bs._SENTIMENT_KIND, "KR")
+        assert bs._fetch_sentiment("KR")["kind"] == "fng"
+        assert calls == ["fng"], calls
+
+    def test_text_formats_each_kind(self):
+        import bot.breadth_strategy as bs
+        assert bs.sentiment_text({"label": "VKOSPI", "value": 15.2, "digits": 2,
+                                  "note": "2026-09-10 종가", "source": "KIS"}) == \
+            "VKOSPI 15.20 (2026-09-10 종가, KIS)"
+        assert bs.sentiment_text({"label": "F&G", "value": 34, "digits": 0,
+                                  "note": "공포", "source": "美 CNN"}) == \
+            "F&G 34 (공포, 美 CNN)"
+
+    def test_non_numeric_value_does_not_kill_the_card(self):
+        """이 한 줄이 `_market_section` 안에서 던지면 카드가 통째로 사라진다
+        (#315 곁들이가 본체를 지운다) — 못 읽은 사실을 사유로 말한다."""
+        import bot.breadth_strategy as bs
+        assert bs.sentiment_text({"label": "VKOSPI", "value": "x", "digits": 2}) == \
+            "VKOSPI — 값을 숫자로 읽지 못했습니다"
+        html = bs._market_section({**TestBreadthRuleVsOutcome20260911._BASE,
+                                   "regime": "TREND", "state": "TREND_RS_TOP3",
+                                   "total_w": 1.0, "cash_w": 0.0, "dd_pct": -2.0,
+                                   "sentiment": {"label": "VKOSPI",
+                                                 "value": object()}})
+        assert "Breadth (MA120 상회)" in html, "카드가 통째로 사라졌다"
+        assert "숫자로 읽지 못했습니다" in html
+
+    def test_missing_value_says_why(self):
+        """'—' 로 침묵하면 원천 장애인지 원래 없는 건지 사용자가 매번 묻는다
+        (#43·#82·#131)."""
+        import bot.breadth_strategy as bs
+        assert bs.sentiment_text({"label": "VKOSPI", "value": None,
+                                  "why": "원천(KIS)에서 값을 받지 못했습니다"}) == \
+            "VKOSPI — 원천(KIS)에서 값을 받지 못했습니다"
+        assert bs.sentiment_text({}) == "—"
+
+    def test_kr_fetches_vkospi_and_never_calls_fear_greed(self, monkeypatch):
+        """반대 증거를 같이 둔다 — '불렀나'만 보면 F&G 도 같이 부르는 변형이
+        통과한다(#25)."""
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        calls = []
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: (calls.append("vk") or
+                                             ([{"date": "2026-09-10", "close": 15.2}], "")))
+        import bot.fear_greed_client as fg
+        monkeypatch.setattr(fg, "fetch_fear_greed",
+                            lambda *a, **k: calls.append("fng") or {"score": 34})
+        out = bs._fetch_sentiment("KR")
+        assert calls == ["vk"], calls
+        assert out["kind"] == "vkospi" and out["value"] == 15.2
+        # 라벨은 **시장타이밍 보드와 같은 판정 함수**가 만든다 — 리터럴을 박으면
+        # 그 재사용을 지우는 변형이 통과한다(독립 리뷰 실측: 옛 판은 `"2026-09-10
+        # 종가"` 를 못박아 **버그를 축복**하고 있었다, #19).
+        assert out["note"] == mt.vol_asof_label(
+            {"date": "2026-09-10", "market": "KR"})["label"]
+        assert out["source"] == "KIS"
+
+    def test_intraday_bar_is_not_called_a_close(self, monkeypatch):
+        """장중엔 '종가' 가 아니다 — 3시간 주기 재생성은 KR 장중에도 돈다.
+
+        같은 카드의 기준일 줄은 이미 `🕒 장중(미확정)` 이라고 적는데 VKOSPI 만
+        '종가' 라고 하면 **한 카드가 두 말**을 한다(#43a 사용자 2026-08-20
+        "VKOSPI 가 현지 10:26 에 08-20 종가" · #34 · #38 판정은 단일 출처).
+        """
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        today = mt._market_today("KR").isoformat()
+        monkeypatch.setattr(mt, "_market_closed_today", lambda *a, **k: False)
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: ([{"date": today, "close": 15.29}], ""))
+        note = bs._fetch_sentiment("KR")["note"]
+        assert note.endswith("장중"), note
+        assert "종가" not in note
+        # 그리고 **시장타이밍 보드와 글자까지 같아야** 한다(두 화면이 같은 값을
+        # 다른 라벨로 적으면 사용자는 한쪽이 틀렸다고 읽는다).
+        assert note == mt.vol_asof_label({"date": today, "market": "KR"})["label"]
+
+    def test_empty_vkospi_reasons_are_named(self, monkeypatch):
+        """빈손의 갈래가 셋인데 한 문구로 뭉뚱그리면 처방이 틀린다(#82).
+
+        `implausible` 은 원천 장애가 아니라 **지수코드가 바뀐 것**이라
+        운영자가 로그를 봐야 한다."""
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        seen = set()
+        for why in ("credentials", "empty", "implausible"):
+            monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                                lambda *a, _w=why, **k: ([], _w))
+            txt = bs.sentiment_text(bs._fetch_sentiment("KR"))
+            assert txt.startswith("VKOSPI — "), txt
+            seen.add(txt)
+        assert len(seen) == 3, seen           # 셋이 서로 달라야 한다
+        assert any("지수코드" in t for t in seen), seen
+
+    def test_thin_wrapper_keeps_the_value_contract(self, monkeypatch):
+        """`fetch_vkospi_rows` 는 값만 주는 래퍼로 남는다 — 호출부 계약 유지."""
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: ([{"date": "d", "close": 1.0}], ""))
+        assert mt.fetch_vkospi_rows() == [{"date": "d", "close": 1.0}]
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: ([], "implausible"))
+        assert mt.fetch_vkospi_rows() == []
+
+    def test_non_kr_fetches_fear_greed_only(self, monkeypatch):
+        import bot.breadth_strategy as bs
+        import bot.fear_greed_client as fg
+        import bot.market_timing as mt
+        calls = []
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: calls.append("vk") or ([], "empty"))
+        monkeypatch.setattr(fg, "fetch_fear_greed",
+                            lambda *a, **k: (calls.append("fng") or
+                                             {"score": 34, "rating_kr": "공포"}))
+        out = bs._fetch_sentiment("US")
+        assert calls == ["fng"], calls
+        assert out["kind"] == "fng" and out["value"] == 34 and out["note"] == "공포"
+
+    def test_vkospi_failure_does_not_fall_back_to_fng(self, monkeypatch):
+        """폴백하면 고치려던 거짓말(한국 카드의 美 지표)이 되살아난다(#136)."""
+        import bot.breadth_strategy as bs
+        import bot.fear_greed_client as fg
+        import bot.market_timing as mt
+        calls = []
+        monkeypatch.setattr(mt, "fetch_vkospi_rows", lambda *a, **k: [])
+        monkeypatch.setattr(fg, "fetch_fear_greed",
+                            lambda *a, **k: calls.append("fng") or {"score": 34})
+        out = bs._fetch_sentiment("KR")
+        assert calls == [], "VKOSPI 실패에 CNN F&G 로 내려갔다"
+        assert out["value"] is None and out["why"], out
+        assert "VKOSPI" in bs.sentiment_text(out) and "CNN" not in bs.sentiment_text(out)
+
+    def test_vkospi_exception_is_logged_not_swallowed(self, monkeypatch, caplog):
+        import logging
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+
+        def _boom(*a, **k):
+            raise RuntimeError("kis down")
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason", _boom)
+        with caplog.at_level(logging.WARNING, logger="bot.breadth_strategy"):
+            out = bs._fetch_sentiment("KR")
+        assert out["value"] is None and "RuntimeError" in out["why"]
+        assert any("VKOSPI" in r.message for r in caplog.records), caplog.records
+
+    def test_assemble_relays_sentiment_and_render_uses_it(self, monkeypatch):
+        """배선 E2E — 수집기가 실어야 화면이 그린다(#20·#244 릴레이 필드)."""
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: ([{"date": "2026-09-10", "close": 15.2}], ""))
+        rows = [{"date": f"2026-0{1 + i // 28}-{i % 28 + 1:02d}",
+                 "close": 100.0 + i} for i in range(140)]
+        d = bs._assemble("KR", {f"t{i}": f"s{i}" for i in range(13)}, "KOSPI",
+                         rows, {f"s{i}": rows for i in range(13)}, [], cut=None)
+        assert d["sentiment"]["kind"] == "vkospi"
+        assert "VKOSPI 15.20" in bs._market_section(d)
+
+    def test_confirmed_snapshots_carry_no_sentiment(self, monkeypatch):
+        """확정분(cut)에 오늘 값을 박으면 그 달 값인 척하는 거짓 기록이 된다."""
+        import bot.breadth_strategy as bs
+        import bot.market_timing as mt
+        called = []
+        monkeypatch.setattr(mt, "vkospi_rows_with_reason",
+                            lambda *a, **k: called.append(1) or ([], "empty"))
+        rows = [{"date": f"2026-0{1 + i // 28}-{i % 28 + 1:02d}",
+                 "close": 100.0 + i} for i in range(140)]
+        d = bs._assemble("KR", {f"t{i}": f"s{i}" for i in range(13)}, "KOSPI",
+                         rows, {f"s{i}": rows for i in range(13)}, [],
+                         cut="2026-02-28")
+        assert d["sentiment"] == {} and called == []
+        assert "sentiment" not in bs._signal_record(d)

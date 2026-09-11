@@ -297,21 +297,24 @@ class MonthEndTests(unittest.TestCase):
         for rows in (long_, short):
             self.assertNotIn(500.0, [r["close"] for r in bs._cut_rows(rows, cut)])
 
-    def test_fng_is_not_stamped_onto_a_past_month(self):
-        # F&G 는 현재값만 있는 지표 — 확정분에 오늘 값을 박으면 거짓 기록.
-        from bot import fear_greed_client as fg
-        orig = fg.fetch_fear_greed
-        fg.fetch_fear_greed = lambda: {"score": 29.0, "rating_kr": "공포"}
-        self.addCleanup(lambda: setattr(fg, "fetch_fear_greed", orig))
+    def test_gauge_is_not_stamped_onto_a_past_month(self):
+        """심리·변동성 지표는 현재값만 있는 지표 — 확정분에 오늘 값을 박으면
+        그 달 값인 척하는 거짓 기록이다. 2026-09-11 재작성(#222): KR 지표가
+        CNN F&G → VKOSPI(KIS) 로 바뀌어 `fng` 키가 `sentiment` 가 됐다."""
+        from bot import market_timing as mt
+        orig = mt.vkospi_rows_with_reason
+        mt.vkospi_rows_with_reason = lambda *a, **k: (
+            [{"date": "2026-08-03", "close": 15.29}], "")
+        self.addCleanup(lambda: setattr(mt, "vkospi_rows_with_reason", orig))
         rows = [{"date": "2026-07-31", "close": 100.0},
                 {"date": "2026-08-03", "close": 110.0}]
         conf = bs._assemble("KR", {"a": "반도체"}, "KOSPI", rows,
                             {"반도체": rows}, [], cut="2026-07-31")
-        self.assertIsNone(conf["fng"]["index"])
+        self.assertEqual(conf["sentiment"], {})
         live = bs._assemble("KR", {"a": "반도체"}, "KOSPI", rows,
                             {"반도체": rows}, [], cut=None)
-        self.assertEqual(live["fng"]["index"], 29.0)
-        self.assertNotIn("fng", bs._signal_record(conf))
+        self.assertEqual(live["sentiment"]["value"], 15.29)
+        self.assertNotIn("sentiment", bs._signal_record(conf))
 
 
 class BuildAllTests(unittest.TestCase):
@@ -485,7 +488,10 @@ class RenderTests(unittest.TestCase):
                 "source_label": "KODEX 섹터 ETF",
                 "sectors_missing": missing or [],
                 "rs_ranked": [{"name": "반도체", "rs": 12.3}],
-                "fng": {"index": 29.19, "label": "Fear"},
+                # 2026-09-11: 카드마다 **그 시장의** 지표 — KR=VKOSPI(KIS).
+                "sentiment": {"kind": "vkospi", "label": "VKOSPI",
+                              "value": 15.29, "digits": 2, "source": "KIS",
+                              "note": "2026-08-14 종가", "why": ""},
                 "asof": "2026-08-14", "is_confirmed": False,
                 "resolution_note": "표본 13개 — 1개 = 7.7%p"}
 
@@ -514,11 +520,14 @@ class RenderTests(unittest.TestCase):
                        .5, .5, missing=["철강", "보험"])
         self.assertIn("철강·보험", bs.render_page({"KR": d}))
 
-    def test_fng_is_shown_but_documented_as_non_gating(self):
+    def test_market_gauge_is_shown_but_documented_as_non_gating(self):
+        """2026-09-11 재작성(#222): 사용자가 "한국은 VKOSPI 를 적어줘. CNN VIX
+        말고" 라고 해 KR 카드의 심리지표가 CNN F&G → VKOSPI 로 바뀌었다.
+        계약은 그대로다 — **싣되 판정에는 안 쓴다**."""
         html = bs.render_page({"KR": self._snap("KR", 38.46,
                                                 "RECOVERY_LEADER_PULLBACK",
                                                 "RECOVERY", .5, .5)})
-        self.assertIn("29", html)
+        self.assertIn("VKOSPI 15.29 (2026-08-14 종가, KIS)", html)
         self.assertIn("판정에는 쓰지 않습니다", html)
 
     def test_empty_data_does_not_crash(self):

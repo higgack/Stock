@@ -71,7 +71,23 @@ def _isolate_disk_caches(tmp_path_factory, monkeypatch):
         monkeypatch.setattr(_fv, "_CACHE_DIR", root / "finviz")
     except Exception:
         pass
+    # 업종맵 실패 기록(`kr_industry_fail.json`) — 2026-09-11 실측: 페이지를
+    # 렌더하는 테스트가 `kr_industry_map()` 을 킥하고, 네트워크가 막힌 테스트
+    # 환경에선 그 빌드가 실패해 **운영 캐시**에 실패 도장을 남겼다. 그 도장은
+    # 15분 백오프의 근거라, 다음 실행이 운영에서도 업종맵을 안 만든다.
+    try:
+        import bot.naver_sector_client as _ns
+        monkeypatch.setattr(_ns, "_CACHE_DIR", root / "naver_sector")
+    except Exception:
+        pass
     yield
+
+# ⚠️ 이 fixture 는 **완전하지 않다** — `bot/` 에는 `~/.tradingagents` 아래를
+# 가리키는 모듈 상수가 131개 있고(2026-09-11 AST 실측) 여기 막는 건 그중 넷이다.
+# 전부 리다이렉트하려면 테스트마다 130개 모듈을 import 해야 해서 비용이 크다.
+# 그래서 "새 캐시를 쓰는 테스트를 여기서 자동으로 막는다" 고 **주장하지 않는다**
+# (#286 지시서가 자기 자신에 대해 사실이 아닌 것을 말하면 다음 사람이 가드를
+# 건너뛴다). 오염을 관측하면 그 모듈을 여기 한 줄로 추가할 것.
 
 # 바깥 원천 차단은 **레포 루트 conftest.py** 로 옮겼다(2026-09-11) — 여기 두면
 # `pytest bot/tests` 단독 실행이 무방비다. 회귀가 그 모듈을 파일로 찾아 읽는다.
