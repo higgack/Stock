@@ -213,13 +213,23 @@ def test_injected_rules_file_stays_within_budget():
     331,000 이지만, 이 파일은 **매 턴 전량 주입**되므로 38% 증가는 매 턴의 실제
     비용이다 — 그래서 **300,000**(약 9일 창)으로 절충했다. 옛 판이 겪은 '여유 3일'
     참사와 달리 무관한 커밋을 며칠 만에 막지는 않는다.
-    ⚠️ 다음에 또 걸리면 상한을 올리기 전에 **정책**을 물을 것 — 증가율이 계속
-    오르면 상한만 올리는 건 문제를 미루는 것이다(오래된 항목의 자동 접기 등은
-    사용자 결정 사항이고, 2026-09-12 보고에 그렇게 올렸다)."""
+    **2026-09-12 정책 결정 — 상한을 올리지 않고 오래된 항목을 자동으로 접는다**
+    (사용자 "오래된 항목을 자동으로 접는다. 레퍼런스로"). 위 ⚠️ 가 물으라고 한
+    그 정책 질문의 답이다. `bot/scripts/claude_md_fold.py` 가 최근 40개를 뺀
+    항목의 **서사만** REFERENCE 로 옮기고 명령형 절은 원문 그대로 남긴다 —
+    첫 실행 실측 **240,941 → 198,125자(136개 접음, −42,816)**. 그래서 상한을
+    300,000 → **240,000 으로 되돌린다**(올린 것을 물린다).
+    ⚠️ 접기는 **기울기를 낮추는 것이지 증가를 멈추는 게 아니다**: 새 항목은
+    전문으로 들어오고(≈6,500자/일) 창 밖으로 나간 것만 ≈45% 로 접힌다 —
+    전 항목이 한 번씩 창을 통과한 뒤의 정상 상태 기울기는 ≈2,900자/일로
+    추정되고(측정이 아니라 그 비율에서 나온 추정이다, #165) 240,000 까지는
+    그 기준으로 약 2주다. 다시 걸리면 **접을 것이 남았는지 먼저 보고**
+    (`--apply`), 접을 게 없는데도 넘으면 그때 다시 정책을 물을 것."""
     n = len(_CLAUDE.read_text(encoding="utf-8"))
-    assert n <= 300_000, (
-        f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(300,000)을 넘었다. "
-        "긴 항목의 서사를 CLAUDE_REFERENCE.md 로 접을 것(규칙 문장은 남긴다).")
+    assert n <= 240_000, (
+        f"CLAUDE.md 가 {n:,}자 — 매 턴 주입되는 예산(240,000)을 넘었다. "
+        "`cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold` 로 "
+        "접을 것이 남았는지 먼저 볼 것(규칙 문장은 남는다).")
 
 
 # ── 요약 문서 ↔ CLAUDE.md 동기화 (2026-09-06 지시서 감사 (e) 회수분) ────────────
@@ -312,3 +322,78 @@ def test_summary_docs_do_not_claim_to_mirror_the_full_mistake_list():
         if claims.search(t) and not excerpt.search(t):
             bad.append(str(f.relative_to(_ROOT)))
     assert not bad, f"실수 목록을 '전량 반영' 인 것처럼 적었다(발췌라고 밝힐 것): {bad}"
+
+
+# ── 오래된 항목 자동 접기 (사용자 2026-09-12 "오래된 항목을 자동으로 접는다") ──
+# 손 접기(2026-09-06~09-12) 39건 — 사람이 **다시 쓴** 요약이라 원문 절과 글자가
+# 다르다. 도구가 접은 것은 원문 절을 **그대로** 남기므로 아래 불변식을 만족한다.
+# 크기를 못박아 이 예외가 우회 통로가 되지 않게 한다(#24·#286).
+_HAND_FOLDED = frozenset("""188 190 203 204 248 259 261 264 265 266 267 270 273
+274 275 276 277 279 280 281 282 283 286 292 293 294 297 315 317 319 323 336 340
+343 344 345 346 347 348""".split())
+
+
+def _folded_pairs():
+    """[(번호, CLAUDE.md 항목, REFERENCE 사본)] — 접힌 항목 전수(이름 열거 금지)."""
+    from bot.scripts import claude_md_fold as fold
+    c = _CLAUDE.read_text(encoding="utf-8")
+    r = _REFERENCE.read_text(encoding="utf-8")
+    _, sec, _ = fold.split_mistakes(c)
+    ents = {n: sec[s:e] for n, s, e in fold.parse_entries(sec)}
+    secs = list(re.finditer(r'(?m)^### 실수 #(\d+[a-z]?)$', r))
+    out = []
+    for i, m in enumerate(secs):
+        e = secs[i + 1].start() if i + 1 < len(secs) else len(r)
+        out.append((m.group(1), ents.get(m.group(1), ""), r[m.end():e]))
+    return out
+
+
+def test_folding_never_drops_an_imperative_clause():
+    """접기의 **유일한** 계약: 서사는 옮겨도 **명령형 절은 CLAUDE.md 에 남는다**.
+
+    #287 이 기록한 사고가 정확히 그 반대다 — 2026-06-20 압축이 한정어 둘을
+    떨어뜨려 이미 대체된 규칙이 78일을 살아남았다. 그래서 '무엇이 사라졌나'를
+    산문이 아니라 **원문의 명령형 절**로 묻는다(#286): REFERENCE 사본(원문)에서
+    절을 다시 뽑아 CLAUDE.md 항목에 **글자 그대로** 있는지 본다.
+
+    ⚠️ 손 접기 39건은 사람이 다시 쓴 요약이라 이 검사를 통과할 수 없다(실측:
+    39/39 이 '누락'으로 잡힌다) — allowlist 로 빼되 크기를 못박는다. 새 항목을
+    손으로 접으면 여기서 걸리고, 그때 "왜 다시 썼나"를 적게 된다."""
+    from bot.scripts import claude_md_fold as fold
+    norm = lambda s: re.sub(r'\s+', ' ', s).strip()
+    pairs = [(n, c, r) for n, c, r in _folded_pairs() if n not in _HAND_FOLDED]
+    checked = 0
+    for num, claude_body, ref_body in pairs:
+        assert claude_body, f"#{num} 절은 있는데 CLAUDE.md 항목이 없다(고아)"
+        flat = norm(claude_body)
+        missing = [k for k in fold.keep_clauses(ref_body)[1:] if norm(k) not in flat]
+        assert not missing, (
+            f"#{num}: 접으면서 명령형 절이 사라졌다(#287) — {missing[:2]}")
+        checked += len(fold.keep_clauses(ref_body))
+    # 대조 대상이 0건이면 통과가 아니다(#54) — 도구로 접은 게 하나도 없으면
+    # 이 가드는 아무것도 안 재는 것이므로 그 사실이 보여야 한다.
+    assert pairs, "도구로 접은 항목이 0건 — 이 가드는 지금 눈이 멀어 있다"
+    assert checked >= len(pairs), "절을 하나도 못 뽑았다 — 추출기가 깨졌다"
+
+
+def test_hand_fold_allowlist_stays_small_and_resolves():
+    """예외는 **레거시 한 번**이다 — 늘면 그만큼 #287 의 사각이 넓어진다."""
+    _, ent = _mistake_entries()
+    assert len(_HAND_FOLDED) == 39, (
+        f"손 접기 예외를 늘렸다({len(_HAND_FOLDED)}건) — 왜 도구로 못 접는지 적을 것")
+    unknown = sorted(n for n in _HAND_FOLDED if n not in ent)
+    assert not unknown, f"allowlist 가 없는 항목을 가리킨다: {unknown}"
+
+
+def test_old_entries_are_folded_not_left_to_grow():
+    """**자동 접기가 실제로 돌았나** — 상한을 올리는 대신 접기로 간 결정(사용자
+    2026-09-12)이 지켜지는지 본다. 오래된 항목이 접히지 않은 채 쌓이면 예산
+    가드가 다시 걸리고, 그때 또 상한을 올리게 된다(#25·#260 안 걸리는 가드)."""
+    from bot.scripts import claude_md_fold as fold
+    c = _CLAUDE.read_text(encoding="utf-8")
+    _, sec, _ = fold.split_mistakes(c)
+    pending = fold.due(fold.parse_entries(sec), sec)
+    assert len(pending) <= 20, (
+        f"접을 차례인 오래된 항목이 {len(pending)}개 쌓였다 — "
+        "`cd ~/stock && .venv/bin/python -m bot.scripts.claude_md_fold --apply` "
+        f"로 접을 것: {pending[:10]}")
