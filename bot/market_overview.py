@@ -1667,18 +1667,43 @@ def _cache_ts(p: Path) -> str:
     return ""
 
 
+def _cache_ts_family(d: Path, prefix: str) -> tuple[str, float | None]:
+    """(그 계열에서 **실제로 쓰인** 가장 최근 캐시의 KST 시각, 나이 초).
+
+    오늘 파일만 보면 수집이 실패한 날 ts 가 **통째로 사라져** 화면이 "언제 것인지"
+    를 못 말한다(2026-09-11 리서치 헤더가 `한국 Naver` 로만 떴다 — #43·#52).
+    글롭은 날짜 모양까지 고정한다 — `kr_*` 는 형제 `kr_industry_*` 까지 문다(#45).
+    """
+    try:
+        files = sorted(d.glob(f"{prefix}20??-??-??.json"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        if files:
+            mt = files[0].stat().st_mtime
+            return _cache_ts(files[0]), max(0.0, time.time() - mt)
+    except Exception as exc:                                  # noqa: BLE001
+        log.warning("cache ts family failed (%s): %s", prefix, exc)
+    return "", None
+
+
 def _widget_data_ts() -> dict:
     """위젯별 '실제 적용' 데이터 시각 — 각 fetch 의 캐시 파일 mtime
     (사용자 2026-06-11: 업종등락처럼 'ts · 소스' 를 실적/리서치에도).
     fetch_all_market_data 의 futures 가 resolve 된 '뒤' 호출 — refetch 가
-    일어났으면 mtime 이 방금 시각으로 갱신돼 있음."""
-    today = date.today().isoformat()
-    return {
-        "earn_us": _cache_ts(_CACHE_DIR / "finnhub" / f"earnings_{today}.json"),
-        "earn_kr": _cache_ts(_CACHE_DIR / "finnhub" / f"earnings_kr_{today}.json"),
-        "res_kr": _cache_ts(_CACHE_DIR / "research" / f"kr_{today}.json"),
-        "res_us": _cache_ts(_CACHE_DIR / "research" / f"us_{today}.json"),
+    일어났으면 mtime 이 방금 시각으로 갱신돼 있음.
+
+    `*_age` 는 그 파일의 나이(초) — 화면이 '저장분' 여부를 판정한다(#304)."""
+    fam = {
+        "earn_us": (_CACHE_DIR / "finnhub", "earnings_"),
+        "earn_kr": (_CACHE_DIR / "finnhub", "earnings_kr_"),
+        "res_kr": (_CACHE_DIR / "research", "kr_"),
+        "res_us": (_CACHE_DIR / "research", "us_"),
     }
+    out: dict = {}
+    for key, (d, prefix) in fam.items():
+        ts, age = _cache_ts_family(d, prefix)
+        out[key] = ts
+        out[f"{key}_age"] = age
+    return out
 
 
 def fetch_all_market_data() -> dict[str, Any]:

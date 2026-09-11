@@ -56304,3 +56304,105 @@ class TestNaverWidgetSilence20260911:
              um.patch.object(sh, "_snap_coin", return_value=(True, "stub")), \
              um.patch.object(sh, "_snap_fx", return_value=(True, "stub")):
             assert "Naver 리서치(finance HTML)" in sh.run()["checks"]
+
+
+class TestNaverWidgetTimestamps20260911:
+    """사용자 2026-09-11 "캡쳐된 3개… 미국 업종 등락처럼 업데이트된 날짜·시간을 찍어줘".
+    관심종목엔 기준시각이 **아예 없었고**, 리서치·실적 헤더의 ts 는 오늘 캐시 파일이
+    없으면(= 수집이 실패한 날) 통째로 사라져 소스명만 남았다 — "이거 최신이야?" 에
+    화면이 답하지 못하면 그게 결함이다(#43·#304)."""
+
+    def test_widget_ts_survives_a_failed_fetch_and_reports_age(self, tmp_path, monkeypatch):
+        import os, time
+        import bot.market_overview as mo
+        monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path)
+        (tmp_path / "research").mkdir()
+        (tmp_path / "finnhub").mkdir()
+        old_t = time.time() - 30 * 3600
+        for name in ("kr_2026-09-09.json", "us_2026-09-09.json"):
+            f = tmp_path / "research" / name
+            f.write_text("[]")
+            os.utime(f, (old_t, old_t))
+        # 형제 캐시가 있어도 빌리지 않는다(#45) — kr_industry_ 는 kr_ 이 아니다
+        (tmp_path / "research" / "kr_industry_2026-09-11.json").write_text("[]")
+        (tmp_path / "finnhub" / "earnings_kr_2026-09-11.json").write_text("[]")
+        w = mo._widget_data_ts()
+        assert w["res_kr"] and w["res_kr_age"] > 24 * 3600      # 어제 것이라도 말한다
+        assert w["earn_kr"] and w["earn_kr_age"] < 3600
+        assert w["earn_us"] == "" and w["earn_us_age"] is None  # 없으면 판정 불가(#54)
+        # earnings_ 글롭이 earnings_kr_ 을 물면 미국 칸이 한국 시각을 말한다
+        assert mo._cache_ts_family(tmp_path / "finnhub", "earnings_") == ("", None)
+
+    @staticmethod
+    def _offline(monkeypatch):
+        """`_render_market_page` 는 `korean_name_map` 을 거쳐 **daemon 스레드**로
+        네이버를 친다 — 테스트가 원천을 치면 안 되고, 그 스레드는 mock 이 풀린 뒤까지
+        산다(#312 실측: 이 클래스가 통과한 뒤에도 경고가 찍혔다)."""
+        import bot.naver_ranking_client as nrc
+        monkeypatch.setattr(nrc, "korean_name_map", lambda market: {})
+
+    def test_header_marks_a_day_old_timestamp(self, monkeypatch):
+        import bot.dashboard as d
+        self._offline(monkeypatch)
+        src = (pathlib.Path(__file__).resolve().parents[1] / "bot/dashboard.py").read_text()
+        assert "_wts.get(f\"{ts_key}_age\")" in src, "나이를 안 읽으면 라벨이 못 갈린다"
+        html = d._render_market_page({
+            "snapshot": {}, "widget_ts": {"res_kr": "2026-09-09 15:31",
+                                          "res_kr_age": 30 * 3600,
+                                          "res_us": "2026-09-11 06:32",
+                                          "res_us_age": 600}})
+        assert "한국 2026-09-09 15:31 (30시간 전) · Naver" in html
+        assert "미국 2026-09-11 06:32 · yfinance" in html      # 하루 안이면 조용하다
+
+    def test_favorites_api_carries_the_collection_time(self, monkeypatch):
+        import time
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_FAV_CACHE", [{"ticker": "AAPL"}])
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", time.time() - 120)
+        a = mf.favorites_as_of()
+        assert a["ts"] and 100 < a["age"] < 200
+        # 재료가 없으면 지어내지 않는다(#54·#165)
+        monkeypatch.setattr(mf, "_FAV_CACHE", None)
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", 0.0)
+        monkeypatch.setattr(mf, "_snapshot_load", lambda: (None, 0.0))
+        assert mf.favorites_as_of() == {}
+
+    def test_favorites_page_renders_the_timestamp_slot(self, monkeypatch):
+        import bot.dashboard as d
+        self._offline(monkeypatch)
+        html = d._render_market_page({"snapshot": {}})
+        assert 'id="fav-ts"' in html
+        assert "'값 수집 ' + a.ts" in html, "API 가 준 시각을 화면이 안 읽는다(#20)"
+        assert "#fav-section .fav-hd .ts{" in d._MARKET_CSS, "CSS 미정의(#201·#273)"
+
+    def test_markup_sample_shows_the_source_when_parsing_is_empty(self):
+        """'구조 변경 의심' 까지만 말하면 다음 라운드가 추측으로 시작한다(#109·#155)."""
+        from bot.naver_sector_client import markup_sample
+        body = "<html>" + "x" * 400 + "<table><tr><td>반도체 업종</td></tr></table></html>"
+        out = markup_sample(body, ("sise_group_detail", "업종", "<table"))
+        joined = "\n".join(out)
+        assert "sise_group_detail` 0건" in joined and "← 사라짐" in joined
+        assert "`업종` 1건" in joined and "주변:" in joined
+        assert markup_sample(None, ("x",)) == ["원문 없음 — 도달 실패"]
+        # 앵커가 하나도 없으면 머리를 찍는다(대조 0건은 침묵이 아니라 표본, #54)
+        assert "머리 320자" in "\n".join(markup_sample("<html>다른구조</html>", ("zzz",)))
+
+    def test_research_check_measures_our_parser_not_just_reachability(self, monkeypatch, capsys):
+        """`/health` 는 도달까지만 본다 — 우리 파서가 몇 건 읽는지는 여기서 잰다(#35)."""
+        import types
+        import bot.naver_research_client as nrc
+        def _resp(text):
+            return types.SimpleNamespace(status_code=200, text=text,
+                                         content=text.encode(), encoding="euc-kr")
+        monkeypatch.setattr(nrc.requests, "get", lambda *a, **k: _resp("<html>없음</html>"))
+        assert nrc.main(["--check"]) == 1
+        out = capsys.readouterr().out
+        assert f"--check v{nrc._CHECK_VER}" in out               # 배너는 버전을 찍는다
+        assert out.count("❌") == 3 and "company_read.naver` 0건" in out
+        assert "구조 변경 의심" in out
+        # 파싱되면 ✅ — 늘 ❌ 인 진단은 아무것도 안 재는 것과 같다(#25·#47)
+        monkeypatch.setattr(nrc, "_parse_market_list_page", lambda h, c: [{"nid": "1"}])
+        monkeypatch.setattr(nrc, "_parse_industry_list_page", lambda h, c: [{"nid": "2"}])
+        monkeypatch.setattr(nrc, "_parse_strategy_list_page", lambda h, c: [{"nid": "3"}])
+        assert nrc.main(["--check"]) == 0
+        assert "세 목록 모두 파싱됨" in capsys.readouterr().out

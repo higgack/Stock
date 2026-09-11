@@ -408,6 +408,25 @@ def _snapshot_load() -> tuple[list | None, float]:
         return None, 0.0
 
 
+def favorites_as_of() -> dict:
+    """관심종목 값의 **수집 시각** — {"ts": "YYYY-MM-DD HH:MM", "age": 초} (KST).
+
+    "이거 최신이야?" 에 화면이 답하지 못하면 그게 결함이다(#43·#304 값 수집 시각).
+    메모리 캐시가 있으면 그 시각, 없으면 디스크 스냅샷 시각, 둘 다 없으면 빈 dict
+    (재료가 없으면 판정 불가 — 지어내지 않는다, #54·#165)."""
+    import datetime as _dt
+    import time as _time
+    ts = _FAV_CACHE_TS if (_FAV_CACHE is not None and _FAV_CACHE_TS) else 0.0
+    if not ts:
+        _snap, sts = _snapshot_load()
+        ts = sts if _snap else 0.0
+    if not ts:
+        return {}
+    kst = _dt.timezone(_dt.timedelta(hours=9))
+    return {"ts": _dt.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d %H:%M"),
+            "age": max(0.0, _time.time() - ts)}
+
+
 def get_favorites_with_prices() -> list[dict]:
     """관심종목 + 현재가/추정치 — **렌더-세이프 SWR (사용자 2026-06-16 '오래걸려')**.
 

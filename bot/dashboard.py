@@ -17268,6 +17268,9 @@ _MARKET_CSS = (
     # ── Favorites table ──
     "#fav-section{margin-top:28px}"
     "#fav-section .fav-hd{display:flex;align-items:baseline;gap:10px;margin:0 0 14px}"
+    # 값 수집 시각(#304) — 형제 위젯 헤더의 `.ts` 와 같은 크기·색(#38). 이 번들에
+    # `.ts` 는 `.section-hd .ts` 로만 있어 그대로 쓰면 무스타일이다(#201·#273).
+    "#fav-section .fav-hd .ts{color:var(--muted);font-size:12px;margin-left:auto}"
     "#fav-body{overflow-x:auto}"
     # 관심종목 페이지네이션(10개/페이지 + 전체 펼치기, 사용자 2026-06-16)
     ".fav-pager{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-top:10px}"
@@ -18768,8 +18771,17 @@ def _render_market_page(data: dict) -> str:
     _wts = data.get("widget_ts") or {}
 
     def _src_ts(label: str, ts_key: str, src: str) -> str:
+        """'한국 2026-09-11 06:32 · Naver'. 오늘 것이 아니면 나이를 같이 적는다 —
+        ts 만 보면 그게 오늘 수집분인지 어제 저장분인지 구별이 안 된다(#43·#304).
+        하루 안이면 조용하다(늘 뜨는 라벨은 아무것도 안 재는 것과 같다, #25·#260)."""
         t = _wts.get(ts_key) or ""
-        return f"{label} {t} · {src}" if t else f"{label} {src}"
+        if not t:
+            return f"{label} {src}"
+        age = _wts.get(f"{ts_key}_age")
+        ago = _naver_diag.stale_label(age) if isinstance(age, (int, float)) else ""
+        if ago and isinstance(age, (int, float)) and age >= 24 * 3600:
+            return f"{label} {t} ({ago}) · {src}"
+        return f"{label} {t} · {src}"
 
     _earn_ts = (_src_ts("한국", "earn_kr", "yfinance")
                 + " | " + _src_ts("미국", "earn_us", "Finnhub"))
@@ -18984,7 +18996,8 @@ def _render_market_page(data: dict) -> str:
   {_etab_panes}
 
   <div id="fav-section">
-    <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span></div>
+    <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span>
+      <span class="ts" id="fav-ts"></span></div>
     <div id="fav-body"><div class="md-empty">불러오는 중…</div></div>
   </div>
 </div>
@@ -19488,7 +19501,14 @@ def _render_market_page(data: dict) -> str:
     function loadFavs() {{
       fetch('api/favorites')
         .then(function(r) {{ return r.json(); }})
-        .then(function(d) {{ renderFavs(d.favorites || []); }})
+        .then(function(d) {{
+          renderFavs(d.favorites || []);
+          /* "이거 최신이야?" 에 화면이 답한다(#43·#304). 우리가 값을 **받아온**
+             시각이지 거래소가 그 가격을 찍은 시각이 아니다 — 라벨이 그렇게 말한다. */
+          var el = document.getElementById('fav-ts');
+          var a = d.as_of || {{}};
+          if (el) el.textContent = a.ts ? ('값 수집 ' + a.ts + ' KST') : '';
+        }})
         .catch(function() {{ favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>'; }});
     }}
 

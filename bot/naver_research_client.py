@@ -779,3 +779,76 @@ def fetch_research(ticker: str, days_back: int = 90) -> Optional[dict]:
                     code, exc)
 
     return result
+
+
+# ── 진단 ────────────────────────────────────────────────────────────────────
+_CHECK_VER = 1        # 진단은 버전을 찍는다(#21)
+
+
+def check() -> int:
+    """`--check` — 리서치 목록이 왜 비었는지 갈래로 말한다(#82).
+
+    2026-09-11: 화면이 "최근 리서치 액션이 없습니다" 라고만 적어 원천 장애를
+    '새 게 없음' 으로 말했다. `/health` 는 도달 여부까지만 보므로, 여기서는
+    **우리 파서가 그 원문에서 몇 건을 읽는지**까지 잰다(#35 화면이 쓰는 그 경로).
+    0건이면 원문 표본을 그대로 찍는다 — "구조 변경 의심" 까지만 말하면 다음
+    라운드가 추측으로 시작한다(#54·#109·#155).
+    """
+    import sys
+    from datetime import date, timedelta
+
+    from bot.naver_sector_client import markup_sample
+
+    print(f"[naver_research --check v{_CHECK_VER}]")
+    print(f"① 인터프리터: {sys.executable}")
+    rc = 0
+    for label, url, anchors in (
+            ("종목(company_list)", _BASE_URL,
+             ("company_read.naver", "nid=", "<table", "종목")),
+            ("산업(industry_list)", _INDUSTRY_BASE_URL,
+             ("industry_read.naver", "nid=", "<table")),
+            ("전략(invest_list)", _STRATEGY_BASE_URL,
+             ("invest_read.naver", "nid=", "<table"))):
+        html, why = _get2(url, _kw={"params": {"page": 1}})
+        if not html:
+            print(f"② {label}: ❌ {why}")
+            rc = 1
+            continue
+        cutoff = date.today() - timedelta(days=30)
+        parser = {"종목(company_list)": _parse_market_list_page,
+                  "산업(industry_list)": _parse_industry_list_page,
+                  "전략(invest_list)": _parse_strategy_list_page}[label]
+        rows = parser(html, cutoff)
+        if rows:
+            print(f"② {label}: ✅ {len(rows)}건 (원문 {len(html):,}자)")
+            continue
+        print(f"② {label}: ❌ {_nd.parse_reason('리서치 행', len(html))}")
+        for ln in markup_sample(html, anchors):
+            print(f"   {ln}")
+        rc = 1
+    if rc == 0:
+        print("③ 세 목록 모두 파싱됨 — 화면이 비었다면 캐시·렌더를 볼 것")
+    return rc
+
+
+def main(argv: list | None = None) -> int:
+    """CLI 진입점. 디스패치를 `if __name__` 안에 인라인으로 두면 테스트가 못
+    태워 '게이트만 꺼도 통과' 하는 눈먼 회귀가 된다(#252)."""
+    import sys
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    logging.basicConfig(level=logging.INFO)
+    if "--check" in args:
+        return check()
+    rows = fetch_recent_research_market(limit=10, fetch_detail=False)
+    print(f"종목 리서치 {len(rows)}건")
+    for r in rows[:5]:
+        print("  ", r.get("date"), r.get("name"), r.get("broker"))
+    return 0
+
+
+# 엔트리포인트는 **항상 파일 끝**(#276 — 위에 두면 아래 정의에 영영 못 닿는다)
+if __name__ == "__main__":
+    import sys as _sys
+
+    _sys.exit(main())

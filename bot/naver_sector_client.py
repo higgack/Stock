@@ -669,7 +669,7 @@ _THEME_PAGES = 7
 # — 낡은 값을 '현재'로 내보내지 않기 위해서다(#163). 화면은 어느 쪽이든
 # 스냅샷 시각(ts)을 그대로 찍는다(#43).
 _THEME_SWR_SEC = 600
-_CHECK_VER = 2        # 진단은 버전을 찍는다(#21). 2 = 업종 TOP 위젯 갈래 추가
+_CHECK_VER = 3        # 진단은 버전을 찍는다(#21). 2 = 업종 TOP 갈래 · 3 = 원문 표본
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -870,6 +870,32 @@ def fetch_upper_lower(limit: int = 50) -> dict:
     return out
 
 
+def markup_sample(html: str | None, anchors: tuple, width: int = 220,
+                  max_lines: int = 8) -> list[str]:
+    """0건일 때 **원문 표본**을 사람이 읽을 수 있게 몇 줄로(순수).
+
+    "구조 변경 의심" 까지만 말하면 다음 라운드가 추측으로 시작한다 — 원문을 안
+    찍었기 때문에 세 라운드를 쓴 적이 있다(#109·#54·#155). 앵커별로 '있나/몇 건'
+    을 세고, 첫 출현 주변을 잘라 보여준다. 비밀값이 있을 수 있는 쿼리스트링은
+    그대로 찍히므로 **공개 페이지 원문에만** 쓴다(§Secrets).
+    """
+    if not html:
+        return ["원문 없음 — 도달 실패"]
+    out = [f"원문 {len(html):,}자 · 표본:"]
+    for a in anchors:
+        n = html.count(a)
+        out.append(f"   · `{a}` {n}건" + ("" if n else "  ← 사라짐"))
+    hit = next((a for a in anchors if a in html), None)
+    if hit:
+        i = html.index(hit)
+        seg = " ".join(html[max(0, i - width // 2): i + width].split())
+        out.append(f"   ↪ `{hit}` 주변: {seg}")
+    else:
+        out.append("   ↪ 앵커가 하나도 없다 — 머리 320자: "
+                   + " ".join(html[:320].split()))
+    return out[:max_lines + 2]
+
+
 def check(fetch: bool = False) -> int:
     """`--check` — 업종별 시세(전체)가 왜 그 속도인지 **갈래로** 말한다.
 
@@ -967,6 +993,8 @@ def check(fetch: bool = False) -> int:
         print(f"③-b 업종 TOP 실측: {len(groups)}개 · {time.time() - t1:.2f}초")
     else:
         print(f"③-b 업종 TOP 실측 0개 — {why or _nd.parse_reason('업종 행', len(html or ''))}")
+        for ln in markup_sample(html, ("sise_group_detail", "업종", "<table", "type=upjong")):
+            print(f"   {ln}")
         rc = 1
     t0 = time.time()
     out = collect_themes()

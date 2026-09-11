@@ -1968,8 +1968,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def _handle_favorites_get(self) -> None:
         """GET /api/favorites — return saved favorites list with current prices."""
         try:
-            from bot.market_favorites import get_favorites_with_prices
-            self._json_ok({"ok": True, "favorites": get_favorites_with_prices()})
+            from bot.market_favorites import (favorites_as_of,
+                                               get_favorites_with_prices)
+            rows = get_favorites_with_prices()
+            # 값 수집 시각을 같이 준다 — 화면이 "이거 최신이야?" 에 답해야 한다
+            # (#43·#304). 순서가 중요하다: 행을 만든 **뒤**에 읽어야 그 수집분의
+            # 시각이다(#102a 순서에 기댄 안전 금지 → 지역 변수로 못박음).
+            self._json_ok({"ok": True, "favorites": rows,
+                           "as_of": favorites_as_of()})
         except Exception as exc:
             log.warning("favorites_get: %s", exc)
             self._json_ok({"ok": False, "favorites": []})
