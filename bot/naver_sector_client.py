@@ -941,8 +941,14 @@ _THEME_API_RUNGS = (
     ("front-api/theme",
      "https://m.stock.naver.com/front-api/domestic/theme/list"),
 )
-_THEME_PAGE_SIZE = 100
-_THEME_MAX_PAGES = 5             # 실측 266개 — 100×5 로 넉넉하다
+# ⚠️ **VM 실측 2026-09-12**: 이 API 가족은 `page` 를 **무시하고 `pageSize` 만**
+# 듣는다(업종 `?page=1&pageSize=100` → 79행 전부 · `?page=2` → 첫 행 동일).
+# 업종은 79개라 100 으로 충분했지만 테마는 266개라 100 에서 **잘린다**. 그래서
+# 쪽을 더 받는 게 아니라 **한도를 키워 다시 묻는다** — 어느 크기가 맞는지는
+# 추측하지 말고 응답이 답하게 한다(#64 상태는 아는 쪽이 · #136 요구 충족 여부).
+_THEME_PAGE_SIZES = (100, 300, 1000)
+_THEME_PAGE_SIZE = _THEME_PAGE_SIZES[0]   # 형제·회귀가 참조하는 기본값
+_THEME_MAX_PAGES = 5             # `page` 가 듣는 원천을 위한 이어받기 상한
 # 형제 업종 가드와 **같은 규약**(#38): 기본 페이지 수가 그대로 오면 `pageSize`
 # 가 안 먹은 것이고, 하한 미만이면 부분이다. 실측 테마 수는 266개.
 _THEME_DEFAULT_PAGE = 20         # 이 수가 오면 pageSize 가 안 먹은 것이다
@@ -1030,16 +1036,35 @@ def wrong_resource(rows: object) -> str:
 
 
 def _theme_json_rung(url: str) -> tuple:
-    """한 후보 주소를 **페이지까지 돌며** 받는다 → (행, 사유, 부분여부).
+    """한 후보 주소 → (행, 사유, 부분여부). **한도를 키워 가며** 묻는다.
 
-    실측 테마 수는 266개인데 이 API 가족의 기본 페이지는 20이다 — 한 쪽만 받고
-    전부인 줄 알면 랭킹이 조용히 틀린다(#45·#341). `pageSize` 가 안 먹으면
-    `page` 로 이어받고, 더 안 늘면 멈춘다.
+    VM 실측(2026-09-12): `domestic/theme` 은 살아 있는데 `pageSize=100` 이 정확히
+    100행을 주고 `page` 는 무시된다 — 즉 **상한에 닿은 것**이고 더 있다. 그때
+    쪽을 더 받아 봐야 같은 목록이므로, 한도를 키워 다시 묻는 것이 답이다.
+    상한에 안 닿는 크기를 만나면 그게 전부다(원천이 스스로 답한다, #64).
 
-    ⚠️ 중간 쪽이 실패하면 **행은 주되 `partial=True`** 다 — 값은 보여주되
-    완전본으로 **굽지는 않는다**(#280 부분을 완전본으로 캐시하면 TTL 내내
-    틀린 목록이 서빙된다 · #343 중간 쪽의 429·타임아웃을 '원천에 그게 전부'
-    로 분류하면 창이 조용히 잘린다).
+    마지막 크기에서도 상한에 닿으면 **값은 주되 `partial=True`** — 완전본으로
+    굽지 않는다(#280·#343).
+    """
+    last: tuple = (None, "", False)
+    for size in _THEME_PAGE_SIZES:
+        got, why, partial, saturated = _theme_fetch_one_size(url, size)
+        if got is None:
+            # 수신 실패·잘못된 자원은 크기를 바꿔도 같다 — 더 묻지 않는다.
+            return None, why, False
+        last = (got, why, partial)
+        if not saturated:
+            return last
+    got, why, partial = last
+    return got, (why or f"한도 {_THEME_PAGE_SIZES[-1]}에서도 가득 찼습니다 "
+                        "— 더 있을 수 있습니다"), True
+
+
+def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
+    """한 `pageSize` 로 받는다 → (행, 사유, 부분여부, **상한에 닿았나**).
+
+    `saturated=True` 는 '원천에 그게 전부' 가 아니라 '우리가 상한에서 멈췄다'
+    는 뜻이다 — 호출부가 한도를 키워 다시 묻는다(#136 요구를 충족했나).
     """
     got: list = []
     seen: set = set()
@@ -1048,9 +1073,10 @@ def _theme_json_rung(url: str) -> tuple:
     paging_ok = True
     for page in range(1, _THEME_MAX_PAGES + 1):
         raw, why = _get2_json(url, params={"page": page,
-                                           "pageSize": _THEME_PAGE_SIZE})
+                                           "pageSize": page_size})
         if raw is None:
-            return (got, why, True) if got else (None, why, False)
+            return ((got, why, True, False) if got
+                    else (None, why, False, False))
         if not isinstance(raw, list):
             # dict 로 감싸 오는 가족도 있다 — 목록 자리를 찾아본다.
             inner = None
@@ -1061,11 +1087,12 @@ def _theme_json_rung(url: str) -> tuple:
                         break
             if inner is None:
                 _w = _nd.shape_reason("테마 목록", raw)
-                return (got, _w, True) if got else (None, _w, False)
+                return ((got, _w, True, False) if got
+                        else (None, _w, False, False))
             raw = inner
         bad = wrong_resource(raw)
         if bad:
-            return None, bad, False
+            return None, bad, False, False
         rows = parse_theme_json(raw)
         n_raw_total += len(raw)
         if page == 1:
@@ -1074,43 +1101,52 @@ def _theme_json_rung(url: str) -> tuple:
         for t in fresh:
             seen.add(t["no"] or t["name"])
         got.extend(fresh)
-        if not fresh and page > 1 and len(raw) >= _THEME_PAGE_SIZE:
+        if not fresh and page > 1 and len(raw) >= page_size:
             # 가득 찬 쪽을 받았는데 **새 행이 하나도 없다** = `page` 가 안 먹은
             # 것이다(원천이 매 쪽 같은 목록을 준다). '목록 끝' 이 아니라 **더
             # 있는데 못 받은 것**이므로 완전본으로 굽으면 안 된다(#280·#341).
             paging_ok = False
             break
-        if not fresh or len(raw) < _THEME_PAGE_SIZE:
+        if not fresh or len(raw) < page_size:
             break
     else:
-        # 상한까지 다 돌았는데도 매 쪽이 가득 찼다 = **더 있는데 멈춘 것**이다.
-        # '상한에 닿았나' 가 아니라 '창을 다 못 덮고 멈췄나' 로 판정한다(#343).
+        # 쪽 상한까지 다 돌았는데도 매 쪽이 가득 찼다 = 더 있는데 멈춘 것(#343).
         return got, (f"쪽 상한({_THEME_MAX_PAGES})에서 멈췄습니다 "
-                     "— 더 있을 수 있습니다"), True
+                     "— 더 있을 수 있습니다"), True, True
     if not got:
-        return None, _nd.parse_reason("테마 행", 0, unit="행"), False
+        return None, _nd.parse_reason("테마 행", 0, unit="행"), False, False
     # ⚠️ 여기까지 왔다고 완전본이 아니다 — **행 수를 하한과 대조**한다(#54 대조
     # 없이 통과시키지 말 것 · 형제 `fetch_sector_movers` 와 같은 규약 #38).
     # 독립 리뷰 2026-09-12 실측: 원천에 266개가 있는데 `page` 를 무시하면 100개,
     # `pageSize` 를 무시하면 20개만 받고 `partial=False` 로 캐시에 구웠다. 그러면
     # 화면이 '전체 테마 100개' 라고 적고 등락률 상·하위 순위가 조용히 틀린다.
     if not paging_ok:
-        return got, (f"원천이 쪽(page)을 무시해 {len(got)}개에서 멈췄습니다 "
-                     "— 더 있을 수 있습니다"), True
+        # `page` 가 안 먹는다(실측된 이 API 가족의 거동) — 한도를 키워 다시
+        # 묻는 것이 답이므로 **saturated** 로 돌려준다.
+        return got, (f"원천이 쪽(page)을 무시해 한도 {page_size}에서 "
+                     "멈췄습니다"), True, True
     if n_first == _THEME_DEFAULT_PAGE and len(got) <= _THEME_DEFAULT_PAGE:
+        # 한도를 키워도 기본 20 만 온다 = `pageSize` 자체가 안 먹는 것이다.
         return got, (f"원천이 pageSize 를 무시해 기본 {_THEME_DEFAULT_PAGE}개만 "
-                     "줬습니다 — 전체가 아닙니다"), True
+                     "줬습니다 — 전체가 아닙니다"), True, False
     if len(got) < _THEME_MIN_ROWS:
-        return got, (f"{len(got)}개 — 기대 하한 {_THEME_MIN_ROWS}개 미만이라 "
-                     "전체가 아닐 수 있습니다"), True
+        # ⚠️ 하한은 **한 번의 실측(266개)에서 온 휴리스틱**이다. 절단은 이제
+        # 구조로 잡히므로(상한 도달 = `saturated`, `pageSize` 무시) 이 가드까지
+        # 캐시를 막으면, 원천이 정당하게 150개 미만이 되는 날 **영원히 부분**이
+        # 되어 요청마다 재수집한다(#171 가드가 '못 만든다' 로 끝나면 그 자리가
+        # 영원히 빈다 · #146 증상이 아니라 원인으로 막을 것). 사실은 그대로
+        # 말하되(#41·#43) 캐시는 막지 않는다.
+        return got, (f"{len(got)}개 — 기대 하한 {_THEME_MIN_ROWS}개 미만입니다"
+                     "(원천이 줄었거나 일부만 왔을 수 있습니다)"), False, False
     # `parse_theme_json` 독스트링이 "호출부가 개수를 대조한다" 고 약속했는데
     # 아무도 안 했다(독립 리뷰 2026-09-12 Low · #54·#55). 등락률을 못 읽어
     # 버린 행이 많으면 값은 '있어도' 순위가 틀린다 — 사실을 말한다.
     dropped = n_raw_total - len(got)
     if dropped > 0 and dropped * 10 >= n_raw_total:
+        # 같은 이유로 캐시는 막지 않는다 — 값은 있고, 사실을 말한다(#43).
         return got, (f"원천 {n_raw_total}행 중 {dropped}행을 못 읽어 버렸습니다"
-                     " — 등락률 형식이 바뀌었을 수 있습니다"), True
-    return got, "", False
+                     " — 등락률 형식이 바뀌었을 수 있습니다"), False, False
+    return got, "", False, False
 
 
 _THEME_DISCOVER_TRIES = 6        # 검증 호출 상한 — 리터럴로 못박는다(#66)
@@ -1245,9 +1281,11 @@ def collect_themes_json() -> tuple:
     for label, url in rungs:
         rows, why, partial = _theme_json_rung(url)
         if rows:
-            marks.append(f"{label} {'⚠️' if partial else '✅'} {len(rows)}개"
-                         + (f" · {why}" if partial and why else ""))
-            return rows, marks, (why if partial else ""), partial
+            marks.append(f"{label} {'⚠️' if (partial or why) else '✅'} "
+                         f"{len(rows)}개" + (f" · {why}" if why else ""))
+            # ⚠️ 사유는 **부분일 때만** 싣지 않는다 — 캐시를 막지는 않지만
+            # 화면이 말해야 하는 사실(하한 미만·버려진 행)이 있다(#43·#171).
+            return rows, marks, why, partial
         marks.append(f"{label} ❌ {why or '0건'}")
     return [], marks, (marks[-1].split("❌", 1)[-1].strip() if marks else ""), False
 
@@ -1295,8 +1333,7 @@ def collect_themes() -> dict:
         # ⚠️ 부분이면 값은 주되 **캐시하지 않는다**(`_collect_and_store` 가
         # `partial` 을 보고 거부한다, #280).
         return {"themes": rows, "ts": _now_kst_label(), "partial": partial_json,
-                "reason": why_json if partial_json else "",
-                "rungs": marks, "via": marks[-1]}
+                "reason": why_json, "rungs": marks, "via": marks[-1]}
 
     # 전 후보가 죽었다 — **원천에게 물어본다**(배경, 냉각 6시간). 이번 응답을
     # 기다리게 하지 않는다(#116 본 응답 경로엔 예산).

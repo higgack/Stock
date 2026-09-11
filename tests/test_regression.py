@@ -60252,16 +60252,22 @@ class TestNaverThemeAndDetailSpa20260912:
 
     def test_page_cap_stop_is_reported_as_partial(self, monkeypatch):
         """'상한에 닿았나' 가 아니라 **'창을 다 못 덮고 멈췄나'** 로 판정한다
-        — 매 쪽이 가득 찬 채 상한에서 멈추면 더 있는 것이다(#343)."""
+        — 매 쪽이 가득 찬 채 상한에서 멈추면 더 있는 것이다(#343).
+
+        ⚠️ 이 갈래는 **`page` 가 듣는 원천**에만 성립한다(리서치가 그렇다, VM
+        실측 ⑥). 테마 쪽은 `page` 를 무시하므로 한도 사다리가 답이다 —
+        같은 함수가 두 거동을 다 받아야 한다.
+        """
         import bot.naver_sector_client as nsc
         monkeypatch.setattr(
             nsc, "_get2_json",
             lambda u, params=None, **k: (
                 [dict(self._ROW, no=f"{(params or {}).get('page')}-{i}")
-                 for i in range(nsc._THEME_PAGE_SIZE)], ""))
+                 for i in range((params or {}).get("pageSize", 20))], ""))
         rows, why, partial = nsc._theme_json_rung("u")
         assert partial is True and "상한" in why, why
-        assert len(rows) == nsc._THEME_PAGE_SIZE * nsc._THEME_MAX_PAGES
+        # 마지막 한도까지 올라간 뒤에야 부분으로 판정한다
+        assert len(rows) == nsc._THEME_PAGE_SIZES[-1] * nsc._THEME_MAX_PAGES
 
     def test_html_fallback_is_kept_and_named(self, monkeypatch):
         """폴백은 지우지 않는다(§작업 원칙·#122·#136·#191) — 대신 **탔는지
@@ -60404,18 +60410,21 @@ class TestNaverThemeAndDetailSpa20260912:
             monkeypatch.setattr(nsc, "_get2_json", fn)
             return nsc._theme_json_rung("u")
 
-        rows, why, partial = rung(lambda u, **k: (full[:100], ""))   # page 무시
-        assert partial is True and len(rows) == 100 and "쪽(page)" in why, why
-        rows, why, partial = rung(lambda u, **k: (full[:20], ""))    # pageSize 무시
+        # ⚠️ **계약 변경**(VM 실측 2026-09-12, #222): 옛 판은 `pageSize` 와 무관하게
+        # 100행 고정인 가짜로 '쪽 무시'를 재현했는데, 한도 사다리가 생긴 뒤로는
+        # 그게 '원천에 100개뿐' 과 구별되지 않는다(한도 300 으로 물어도 100 이면
+        # 원천이 그게 전부라고 답한 것이다). 절단의 진짜 신호는 **마지막 한도에서도
+        # 가득 참**이다.
+        huge = [dict(self._ROW, no=str(i))
+                for i in range(nsc._THEME_PAGE_SIZES[-1] + 80)]
+        rows, why, partial = rung(lambda u, params=None, **k:
+                                  (huge[:(params or {}).get("pageSize", 20)], ""))
+        assert partial is True and str(nsc._THEME_PAGE_SIZES[-1]) in why, why
+        # `pageSize` 자체가 안 먹으면(늘 기본 20) 한도를 키워도 소용없다
+        rows, why, partial = rung(lambda u, **k: (full[:20], ""))
         assert partial is True and "pageSize" in why, why
-        # 하한 미만 — 쪽은 정상 동작하되 원천이 그만큼밖에 없는 경우. 매 쪽
-        # 같은 목록을 주는 가짜로 만들면 **쪽 무시 분기가 먼저** 걸려 이 가지를
-        # 한 번도 안 탄다(#91c 가드마다 그 가드만 무너지는 픽스처여야 한다).
-        def short(u, params=None, **k):
-            pg = (params or {}).get("page", 1)
-            return (full[:120], "") if pg == 1 else ([], "")
-        rows, why, partial = rung(short)
-        assert partial is True and str(nsc._THEME_MIN_ROWS) in why, why
+        # 하한 미만은 이제 **사실만 말하고 캐시는 막지 않는다** — 별도 테스트
+        # (`test_short_list_is_reported_but_still_cacheable`)가 그 계약을 잰다.
 
         # 반대 증거 — 정상 응답은 완전본이어야 한다(가드가 늘 켜지면 무의미 #25)
         def ok(u, params=None, **k):
@@ -60424,6 +60433,61 @@ class TestNaverThemeAndDetailSpa20260912:
             return full[(pg - 1) * sz:pg * sz], ""
         rows, why, partial = rung(ok)
         assert partial is False and why == "" and len(rows) == 266
+
+    def test_page_size_ladder_recovers_the_full_list(self, monkeypatch):
+        """**VM 실측 2026-09-12**: `domestic/theme` 은 살아 있는데 `pageSize=100` 이
+        정확히 100행을 주고 `page` 는 무시된다(업종에서도 `?page=2` 가 첫 행
+        동일 — 이 API 가족의 거동). 즉 쪽을 더 받아 봐야 같은 목록이고, 답은
+        **한도를 키워 다시 묻는 것**이다(#64 상태는 아는 쪽이 · #136).
+        """
+        import bot.naver_sector_client as nsc
+        ALL = [dict(self._ROW, no=str(i)) for i in range(266)]
+        sizes = []
+
+        def measured(url, params=None, **k):
+            """실측 거동 — `pageSize` 만 듣고 `page` 는 무시한다."""
+            sz = (params or {}).get("pageSize", 20)
+            sizes.append(sz)
+            return ALL[:sz], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", measured)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert len(rows) == 266 and partial is False and why == "", (
+            len(rows), partial, why)
+        # 한도를 **실제로 키웠는가** — 100 에서 멈췄으면 절반만 들고 있다
+        assert max(sizes) > nsc._THEME_PAGE_SIZES[0], sizes
+        # 그리고 필요 이상으로 키우지 않는다(첫 충족에서 멈춘다)
+        assert nsc._THEME_PAGE_SIZES[-1] not in sizes, sizes
+
+        # 반대 증거 — 마지막 한도에서도 가득 차면 **부분**이다(굽지 않는다)
+        huge = [dict(self._ROW, no=str(i))
+                for i in range(nsc._THEME_PAGE_SIZES[-1] + 50)]
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda u, params=None, **k:
+                            (huge[:(params or {}).get("pageSize", 20)], ""))
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert partial is True and str(nsc._THEME_PAGE_SIZES[-1]) in why, why
+
+    def test_short_list_is_reported_but_still_cacheable(self, monkeypatch):
+        """하한은 **한 번의 실측에서 온 휴리스틱**이다 — 절단은 구조(한도 도달)로
+        잡히므로, 하한까지 캐시를 막으면 원천이 정당하게 줄어드는 날 **영원히
+        부분**이 되어 요청마다 재수집한다(#171·#146). 사실은 말하되 막지 않는다.
+        """
+        import bot.naver_sector_client as nsc
+        few = [dict(self._ROW, no=str(i)) for i in range(79)]
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda u, params=None, **k:
+                            (few[:(params or {}).get("pageSize", 20)], ""))
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert len(rows) == 79
+        assert partial is False, "하한 휴리스틱이 캐시를 영원히 막는다"
+        assert str(nsc._THEME_MIN_ROWS) in why, why
+        # 그리고 그 사유가 **화면까지** 간다(계산해 놓고 버리지 말 것 #43)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        out = nsc.collect_themes()
+        assert out["themes"] and out.get("reason"), out.get("reason")
+        assert str(nsc._THEME_MIN_ROWS) in out["reason"], out["reason"]
 
     def test_discovered_endpoint_is_validated_not_guessed(self, monkeypatch,
                                                           tmp_path):
