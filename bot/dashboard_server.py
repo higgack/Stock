@@ -55,6 +55,11 @@ from pathlib import Path
 from secrets import compare_digest
 
 from bot.archive import ARCHIVE_ROOT
+# ⚠️ **모듈 최상단**에서 import 한다 — `code_freshness` 는 import 시각을
+# 프로세스 시작의 폴백으로 쓰므로(리눅스 `/proc` 을 못 읽는 환경), 핸들러
+# 안에서만 지연 import 하면 배포 직후 첫 요청이 시각을 찍어 **감지하려던
+# 바로 그 상태에서 'fresh'** 라고 답한다(자기검토 2026-09-12 · #91b).
+from bot import code_freshness as _code_freshness  # noqa: F401
 from bot.dashboard import regenerate_index
 
 log = logging.getLogger("bot.dashboard_server")
@@ -852,6 +857,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def _do_GET_routed(self):
         if not self._authorize():
             return
+        # /api/build — 이 **프로세스**가 디스크 코드보다 낡았는지(배포 drift).
+        # `market.html` 은 봇 프로세스가 굽고 `/api/*` 는 이 프로세스가 답한다 —
+        # 두 유닛이 따로 재시작되므로 **새 HTML + 옛 API** 조합이 실재한다
+        # (2026-09-12 관심종목 ★: 열은 그려지는데 누르면 '변경 실패'. 옛
+        # 서버엔 `/api/favorite_star` 라우트가 아예 없어 404 였다). 화면이
+        # 그걸 갈래로 말하려면 서버가 자기 상태를 답해야 한다(#82·#11).
+        if self.path.split("?", 1)[0] == "/api/build":
+            return self._handle_build_api()
         # /api/chart?ticker=..&interval=1d|1wk|1mo&range=1mo|3mo|6mo|ytd|1y|3y|5y|max
         # On-demand timeframe fetch for the detail-page price chart. The
         # token prefix is already stripped by _authorize() above.
@@ -2180,6 +2193,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("favorite_reorder: %s", exc)
             self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_build_api(self) -> None:
+        """GET /api/build — 이 프로세스의 코드 신선도. 읽기 전용.
+
+        옛 서버에는 이 라우트가 **없어서 404** 가 난다 — 그 404 자체가
+        "서버가 이 기능보다 옛 코드다" 라는 확정 신호다(#25 능력은 이름이
+        아니라 실측). 그래서 화면은 404 와 '신선함' 을 구별할 수 있다.
+        """
+        try:
+            from bot import code_freshness as _cf
+            d = _cf.drift()
+            self._json_ok({
+                "ok": True,
+                "started": int(d["started"]),
+                "newest": int(d["newest"]),
+                "stale": bool(d["stale"]),
+                "measurable": bool(d["measurable"]),
+                "note": _cf.note(d, unit="stock-bot-dashboard"),
+            })
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("build_api: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)[:200]})
 
     def _handle_favorite_star(self) -> None:
         """POST /api/favorite_star — 별표(중요표시) 토글.

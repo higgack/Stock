@@ -18277,11 +18277,19 @@ def _render_sector_movers(movers: dict) -> str:
     # 자식 페이지 링크는 **네이버 위젯 데이터와 무관**하다 — 사유 분기에서 빠뜨리면
     # 원천이 막힌 날 업종별 시세·신고저·급등락 입구까지 같이 사라진다(독립 리뷰
     # 2026-09-11). 헤더는 한 곳에서 만들어 두 분기가 나눠 쓴다(#38).
-    _links = (f'<a href="theme" style="{_lnk}">🏭 업종별 시세(전체)</a>'
-              f'<a href="kr52" style="{_lnk}">📈 신고가·신저가</a>'
-              f'<a href="highlow" style="{_lnk}">🚀 급등·급락</a>'
-              f'<a href="krprepost" style="{_lnk}">🌙 NXT 급등·급락</a>'
-              f'<a href="nxt" style="{_lnk}">📊 NXT 수급</a>')
+    # ⚠️ 라벨을 여기 **복제**해 두면 자식 페이지 nav 와 갈라진다 — 2026-09-12
+    # `theme` 탭을 '테마별 시세' 로 바꾸자 이 줄만 '업종별 시세(전체)' 로 남아
+    # 같은 링크가 두 이름을 갖게 됐다(#38·#147 같은 것을 그리는 화면은 한 곳
+    # 에서). 자식 nav 와 **같은 레지스트리**에서 파생시킨다.
+    # ⚠️ 폴백 리터럴을 **지웠다**(독립 리뷰 2026-09-12 Low): 레지스트리와 바이트
+    # 단위로 똑같은 복제라 (a) 파생 가드가 아무것도 못 재고 (b) 레지스트리에서
+    # 라벨을 바꾸면 이 사본만 낡은 채 남는다 — 이 주석이 말하는 바로 그 병이다.
+    # `tw_pages` 는 같은 패키지의 순수 모듈이라 import 가 실패할 현실적 경로가
+    # 없고, 실패하면 링크가 빠지는 게 **틀린 라벨을 그리는 것보다 낫다**(#292).
+    from bot.tw_pages import _MARKET_NAV as _KRNAV
+    _tabs = list(_KRNAV.get("KR") or [])
+    _links = "".join(f'<a href="{_h}" style="{_lnk}">{_l}</a>'
+                     for _h, _l in _tabs)
 
     def _hd(right: str) -> str:
         return ('<div class="section-hd" style="display:flex;align-items:baseline;'
@@ -19631,14 +19639,22 @@ def _render_market_page(data: dict) -> str:
       var ticker = btn.dataset.ticker;
       var want = btn.getAttribute('aria-pressed') !== 'true';
       btn.disabled = true;
+      /* ⚠️ 실패 갈래가 넷인데 화면은 하나로 뭉뚱그렸다 — 처방이 전부 다르다
+         (#82): 404=서버가 옛 코드(이 라우트가 없다) · 401/403=인증 만료 ·
+         네트워크 · 서버가 거절(ok:false). 2026-09-12 사용자가 본 '중요표시
+         변경 실패' 는 **404** 였다(새 HTML 은 봇 프로세스가 굽고 API 는 옛
+         대시보드 프로세스가 답했다, #11). 상태를 잡아 이름을 댄다. */
+      var st = 0;
       fetch('api/favorite_star', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{ticker: ticker, starred: want}})
       }})
-        .then(function(r) {{ return r.json(); }})
+        .then(function(r) {{ st = r.status; return r.json().catch(function() {{ return null; }}); }})
         .then(function(d) {{
-          if (!d || !d.ok) throw new Error((d && d.error) || 'failed');
+          if (st === 404) throw new Error('서버가 옛 코드입니다 — 이 기능의 API(/api/favorite_star)가 없습니다. 대시보드 프로세스 재시작이 필요합니다.');
+          if (st === 401 || st === 403) throw new Error('인증이 만료됐습니다 — 새로고침 후 다시 로그인하세요.');
+          if (!d || !d.ok) throw new Error((d && d.error) || ('서버가 HTTP ' + st + ' 로 답했습니다'));
           var on = !!d.starred;
           /* ⚠️ 60초 폴이 그 사이 재렌더했으면 `btn` 은 **떨어져 나간 노드**다 —
              `outerHTML=` 은 아무 일도 안 하고, 새 버튼을 찾아 리스너를 또
@@ -19665,7 +19681,17 @@ def _render_market_page(data: dict) -> str:
           }} catch (e) {{}}
           applyFavFilter();
         }})
-        .catch(function() {{ btn.disabled = false; alert('중요표시 변경 실패'); }});
+        .catch(function(e) {{
+          btn.disabled = false;
+          /* 사유를 그대로 보여준다 — '실패' 만 적으면 사용자가 원인을 짐작한다
+             (#82·#43 침묵·뭉뚱그림이 최악). 네트워크 오류는 메시지가
+             브라우저 것이라 우리 말로 감싼다. */
+          var m = (e && e.message) || '';
+          if (!m || /Failed to fetch|NetworkError|Load failed/i.test(m)) {{
+            m = '서버에 닿지 못했습니다(네트워크·서버 중단).';
+          }}
+          alert('중요표시 변경 실패 — ' + m);
+        }});
     }}
 
     function removeFav(ticker) {{
@@ -19688,6 +19714,39 @@ def _render_market_page(data: dict) -> str:
         .catch(function() {{ alert('순서 변경 실패'); }});
     }}
 
+
+    /* ── 배포 drift 배너 ─────────────────────────────────────────────
+       `market.html` 은 봇 프로세스가 **정적 파일로 굽고** `/api/*` 는 대시보드
+       프로세스가 답한다 — 두 유닛이 따로 재시작되므로 '새 HTML + 옛 API' 가
+       실재한다(2026-09-12 ★ 클릭이 404 였던 그 조합). 그때 화면은 아무 말도
+       안 했고 사용자가 기능 고장으로 읽었다(#11 '배포완료 ≠ 화면에 보임' ·
+       #43 침묵이 최악).
+       ⚠️ 신선하면 **아무것도 그리지 않는다** — 늘 뜨는 배너는 아무것도 안 재는
+       것과 같다(#25·#260). */
+    function buildBanner(msg) {{
+      if (document.getElementById('build-drift')) return;
+      var d = document.createElement('div');
+      d.id = 'build-drift';
+      d.style.cssText = 'background:#3d2b12;border:1px solid #a9741c;color:#f0c674;'
+        + 'padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13px;line-height:1.5';
+      d.textContent = '⚠️ ' + msg;
+      document.body.insertBefore(d, document.body.firstChild);
+    }}
+    fetch('api/build')
+      .then(function(r) {{
+        if (r.status === 404) {{
+          /* 404 는 갈래가 둘이다 — 라우트가 없는 옛 서버, 또는 주소의 토큰이
+             바뀐 경우(`_strip_token_or_404`). 처방이 다르므로 단정하지 않는다
+             (#82 갈래는 이름으로 · #165 재지 않은 것을 단정하지 말 것). */
+          buildBanner('이 페이지의 새 기능(`/api/build`)에 서버가 404 로 답했습니다 — '
+                      + '대시보드 프로세스가 옛 코드이거나, 주소의 접근 토큰이 바뀐 것입니다. '
+                      + '새로고침해도 같으면 VM 에서 `sudo systemctl restart stock-bot-dashboard`.');
+          return null;
+        }}
+        return r.json().catch(function() {{ return null; }});
+      }})
+      .then(function(b) {{ if (b && b.ok && b.stale && b.note) buildBanner(b.note); }})
+      .catch(function() {{}});   /* 배너 실패가 본 화면을 막으면 안 된다(#315) */
 
     loadFavs();
     // SWR: 엔드포인트가 콜드 시 이름만 즉시 주고 백그라운드로 가격 채움(사용자

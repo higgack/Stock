@@ -377,11 +377,134 @@ def _parse_list_page(html: str, cutoff) -> list[dict]:
 # Stage 2: detail pages → target price + rating
 # ------------------------------------------------------------------
 
-def _fetch_report_detail(nid: str) -> tuple[Optional[float], str]:
-    """Fetch target price and rating from an individual report page."""
+# ── 상세(목표가·투자의견): JSON 경로(2026-09-12 SPA 전환) ──────────────────
+# 목록은 이미 JSON 으로 옮겼는데(2026-09-11) **상세만 옛 HTML** 이었다 —
+# `company_read.naver?nid=` 도 Next.js SPA 라 `_TARGET_RE`·`_RATING_DETAIL_RE`
+# 가 한 건도 안 맞는다(화면: "상세에서 목표가·투자의견을 한 건도 못 읽었습니다").
+#
+# 근거(추측이 아니다): 목록 JSON 이 행마다 `endUrl` 을 주는데 그 값이
+#   https://m.stock.naver.com/research/company/96103
+# 이고 목록 자체는 `m.stock.naver.com/api/research/company` 다 — 즉 상세의
+# 같은 자리는 `api/research/company/{researchId}` 다. 실재 여부는 응답이
+# 말한다(#25·#151) — 그래서 사다리로 두고 어느 단이 답했는지 기록한다.
+_DETAIL_API_RUNGS = (
+    ("api/research/{kind}/{id}",
+     "https://m.stock.naver.com/api/research/company/{nid}"),
+    ("front-api/research/{id}",
+     "https://m.stock.naver.com/front-api/research/company/{nid}"),
+)
+# 목표가·투자의견이 **어떤 키로** 오는지는 재지 않았다 — 그래서 이름 하나에
+# 걸지 않고 후보 이름 + **값의 모양**으로 찾는다(#46 위치·형태로 추정하지 말고
+# 식별할 것의 반대편: 여기선 원천 계약을 모르므로 양쪽을 다 본다).
+# ⚠️ `"tp"` 를 **부분문자열**로 두면 `httpUrl`·`ftpPath` 같은 키가 걸린다 —
+# 짧은 힌트는 전체 일치로만 본다(#75 옆 것이 대신 만족시키는 것의 키 이름판).
+_TGT_KEY_HINTS = ("targetprice", "goalprice", "target", "objective")
+_TGT_KEY_EXACT = ("tp", "goal")
+_OPI_KEY_HINTS = ("opinion", "rating", "invest", "grade", "recommend")
+# 국내 목표가의 상식 범위 — 이걸 안 두면 `readCount`·`researchId` 가 목표가
+# 자리에 앉는다(#212 값이 티커와 같으면 그건 값이 아니다).
+_TGT_MIN, _TGT_MAX = 100.0, 10_000_000.0
+
+
+def _num(v) -> Optional[float]:
+    try:
+        f = float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    return f if _TGT_MIN <= f <= _TGT_MAX else None
+
+
+def _rating_of(v) -> str:
+    """문자열이 **아는 투자의견**이면 정규화해 돌려준다. 아니면 빈 문자열."""
+    raw = str(v or "").strip()
+    if not raw or len(raw) > 24:
+        return ""
+    for kw in _RATING_KEYWORDS:
+        if kw.lower() == raw.lower():
+            return kw
+    return ""
+
+
+def detail_from_json(obj, *, _depth: int = 0) -> tuple:
+    """상세 JSON → (목표가, 투자의견) (순수·재귀).
+
+    키 이름을 모르므로 **힌트 이름 + 값 모양**을 같이 본다. 힌트에 안 걸려도
+    값이 아는 투자의견 낱말이면 채택한다(원천이 `opinion` 이 아니라 `code` 로
+    부를 수도 있다) — 다만 목표가는 이름 힌트 없이 숫자만 보고 채택하지
+    **않는다**: 조회수·식별자가 그 자리에 앉는다(#212).
+    """
+    tgt: Optional[float] = None
+    rating = ""
+    if _depth > 6:
+        return None, ""
+    if isinstance(obj, dict):
+        items = list(obj.items())
+    elif isinstance(obj, list):
+        items = [("", v) for v in obj[:200]]
+    else:
+        return None, ""
+    for k, v in items:
+        kl = str(k).lower()
+        if isinstance(v, (dict, list)):
+            t2, r2 = detail_from_json(v, _depth=_depth + 1)
+            tgt = tgt if tgt is not None else t2
+            rating = rating or r2
+            continue
+        if tgt is None and (any(h in kl for h in _TGT_KEY_HINTS)
+                            or kl in _TGT_KEY_EXACT):
+            tgt = _num(v)
+        if not rating:
+            if any(h in kl for h in _OPI_KEY_HINTS) or isinstance(v, str):
+                rating = _rating_of(v)
+    return tgt, rating
+
+
+def _detail_json(nid: str) -> tuple:
+    """사다리를 순서대로 실호출 → (목표가, 투자의견, 단 이름, 단별 사유).
+
+    전멸이면 단="". 사유는 단마다 왜 못 읽었는지 — 404 와 '200 인데 아는 키가
+    없다' 는 처방이 정반대다(#82). 계산해 놓고 버리면 없는 것과 같다(#123 계열).
+    """
+    whys: list = []
+    for label, tmpl in _DETAIL_API_RUNGS:
+        raw, why = _get2_json(tmpl.format(nid=nid))
+        if raw is None:
+            whys.append(f"{label}: {why or '수신 실패'}")
+            continue
+        tgt, rating = detail_from_json(raw)
+        if tgt is not None or rating:
+            return tgt, rating, label, whys
+        whys.append(f"{label}: 200 인데 아는 키에 목표가·투자의견이 없음")
+    return None, "", "", whys
+
+
+def _fetch_report_detail_via(nid: str) -> tuple:
+    """(목표가, 투자의견, **어느 경로로 읽었나**) — JSON 사다리 먼저, 그다음 옛 HTML.
+
+    호출부가 셋(시장·산업·개별종목)이라 여기 한 곳에서 갈아야 세 화면이 안
+    갈린다(#38). 폴백은 지우지 않는다 — 원천이 되돌릴 수도 있고, 이 레포에서
+    폴백 사다리는 버그가 아니라 fix 였다(§작업 원칙·#122·#136·#191).
+
+    ⚠️ 경로를 **모듈 전역 카운터**에 쌓지 않는다(자기검토 2026-09-12): 이 함수는
+    풀 워커 6개가 동시에 부르므로 `d[k] = d.get(k,0)+1` 은 증가를 잃고, 전역이라
+    시장·산업·종목 **세 화면의 건수가 한 통에 섞인다** — 그러면 화면이 제 행
+    수가 아닌 수를 적는다(#45 총계와 소계가 다른 모집단 · #114 잔여 상태).
+    경로는 **그 행에 실어** 화면이 자기 행에서 세게 한다.
+    """
+    tgt, rating, rung, _whys = _detail_json(nid)
+    # ⚠️ **둘 다** 채워졌을 때만 폴백을 건너뛴다(독립 리뷰 2026-09-12 High).
+    # 옛 판은 `tgt is not None or rating` 이라, 새 단이 투자의견만 주고 목표가는
+    # 우리가 모르는 키(`expectPrice` 등)로 주면 **옛 HTML 에 있는 목표가를 통째로
+    # 버렸다** — 그러면 목표가 칸과 컨센서스가 아무 설명 없이 비고, 지금 동작하는
+    # 경로보다 나빠진다. 폴백 조건은 '실패했나' 가 아니라 **'요구를 충족했나'**
+    # 다(#136 — 테마 쪽엔 적용해 놓고 여기만 빠뜨렸다).
+    if tgt is not None and rating:
+        return tgt, rating, rung
     html = _get(f"{_DETAIL_URL}?nid={nid}")
     if not html:
-        return None, ""
+        # HTML 을 못 받았으면 JSON 이 준 **부분이라도** 살린다(빈칸보다 낫다).
+        return (tgt, rating, rung) if (tgt is not None or rating) \
+            else (None, "", "")
 
     target: Optional[float] = None
     for pat in (_TARGET_RE, _TARGET_CLASS_RE):
@@ -394,21 +517,55 @@ def _fetch_report_detail(nid: str) -> tuple[Optional[float], str]:
             if target:
                 break
 
-    rating = ""
+    # ⚠️ 이름을 `rating` 으로 재사용하면 JSON 이 읽은 투자의견을 덮어쓴다 —
+    # 합치려면 **별도 이름**이어야 한다.
+    rating_html = ""
     for pat in (_RATING_DETAIL_RE, _RATING_CLASS_RE):
         m = pat.search(html)
         if m:
             raw = m.group(1).strip()
             for kw in _RATING_KEYWORDS:
                 if kw.lower() == raw.lower():
-                    rating = kw
+                    rating_html = kw
                     break
-            if not rating:
-                rating = raw
-            if rating:
+            if not rating_html:
+                rating_html = raw
+            if rating_html:
                 break
 
-    return target, rating
+    # 두 원천을 **합친다** — JSON 이 구조화해 준 값이 있으면 그것을 우선하고,
+    # 빠진 칸만 HTML 이 채운다. 어느 쪽이 기여했는지 라벨이 그대로 말한다(#43).
+    out_t = tgt if tgt is not None else target
+    out_r = rating or rating_html
+    parts = [p for p in (rung, "옛 HTML" if (target is not None or rating_html)
+                         else "") if p]
+    return out_t, out_r, ("+".join(parts) if (out_t is not None or out_r) else "")
+
+
+def _fetch_report_detail(nid: str) -> tuple[Optional[float], str]:
+    """(목표가, 투자의견) — 경로가 필요 없는 호출부용 얇은 래퍼.
+
+    ⚠️ 래퍼를 만들 땐 "버리는 정보가 화면에 필요한가" 를 먼저 묻는다(#129) —
+    시장 목록은 경로를 화면에 적으므로 `_fetch_report_detail_via` 를 직접 쓴다.
+    """
+    tgt, rating, _ = _fetch_report_detail_via(nid)
+    return tgt, rating
+
+
+def detail_rungs_note(rows: list) -> str:
+    """**이 화면의 행**에서 경로별 건수를 센다 — 화면·`--check` 가 그대로 적는다.
+
+    폴백을 로그로만 알리면 사용자는 영영 모른다(#42a·#136). 아무것도 안 읽었으면
+    빈 문자열(늘 뜨는 배지 금지, #25·#260).
+    """
+    got: dict = {}
+    for r in rows or []:
+        via = str((r or {}).get("_via") or "")
+        if via:
+            got[via] = got.get(via, 0) + 1
+    if not got:
+        return ""
+    return " · ".join(f"{k} {v}건" for k, v in sorted(got.items()))
 
 
 # ------------------------------------------------------------------
@@ -765,12 +922,29 @@ def detail_yield_note(rows: list, *, budget_left: int = 0) -> str:
     if not rows:
         return ""
     graded = [r for r in rows if r.get("target") or r.get("rating")]
+    _via_note = detail_rungs_note(rows)
     if not graded:
-        return ("상세에서 목표가·투자의견을 한 건도 못 읽었습니다 — 상세 페이지도 "
-                "SPA 전환됐을 수 있습니다(`--check` 로 잴 것)")
+        # ⚠️ 2026-09-12 까지 이 문구는 '`--check` 로 잴 것' 에서 끝났다 —
+        # 사용자에게 숙제를 넘긴 것이다(#252 반복 확인은 제품에 심는다).
+        # 이제 상세 경로는 **JSON 사다리**이고, 어느 단이 답했는지 기록이
+        # 남는다. 전멸이면 그 사실을 그대로 적는다(#82·#43).
+        tried = " · ".join(k for k, _ in _DETAIL_API_RUNGS)
+        return ("상세에서 목표가·투자의견을 한 건도 못 읽었습니다 — 후보 경로"
+                f"({tried})와 옛 HTML 이 모두 값을 주지 않았습니다. "
+                "`naver_spa_probe` ⑧ 로 원천 응답을 잽니다")
     if budget_left > 0:
         return (f"목표가·투자의견은 최신 {len(graded)}건에만 붙였습니다"
-                f"(상세 수집 예산 {_DETAIL_BUDGET}건 · 나머지 {budget_left}건은 빈칸)")
+                f"(상세 수집 예산 {_DETAIL_BUDGET}건 · 나머지 {budget_left}건은 빈칸)"
+                + (f" · 경로 {_via_note}" if _via_note else ""))
+    # ⚠️ **경로가 갈렸을 때만** 말한다(독립 리뷰 2026-09-12 Medium).
+    # 옛 판은 '1단이 아니면 경고' 였는데, JSON 단은 `endUrl` 에서 **추론**한
+    # 것이라 아직 한 번도 측정된 적이 없다 — 즉 오늘은 전 행이 `옛 HTML` 이고
+    # 그 배지가 **매 수집마다** 뜬다. 지금 유일하게 동작하는 경로를 상시
+    # 경고로 다는 것은 아무것도 안 재는 것과 같다(#25·#260).
+    # 갈린 경우(일부만 JSON, 일부는 HTML)는 진짜 이상이므로 그때 말한다.
+    _used = {str(r.get("_via") or "") for r in rows if r.get("_via")}
+    if len(_used) > 1:
+        return f"목표가·투자의견 경로가 행마다 다릅니다 — {_via_note}"
     return ""
 
 
@@ -847,23 +1021,26 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     _LAST_MARKET_FAIL["detail"] = ""      # 아래 블록이 이번 실행 값으로 채운다
 
     if fetch_detail:
-        detail_map: dict[str, tuple[Optional[float], str]] = {}
+        detail_map: dict[str, tuple] = {}
         # 최신 순으로 예산만큼만 — rows 는 바로 위에서 날짜 내림차순 정렬됐다.
         _targets = rows[:_DETAIL_BUDGET]
         _skipped = max(0, len(rows) - len(_targets))
         with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = {pool.submit(_fetch_report_detail, r["nid"]): r["nid"]
+            futures = {pool.submit(_fetch_report_detail_via, r["nid"]): r["nid"]
                        for r in _targets}
             for fut in as_completed(futures):
                 nid = futures[fut]
                 try:
                     detail_map[nid] = fut.result()
                 except Exception:
-                    detail_map[nid] = (None, "")
+                    detail_map[nid] = (None, "", "")
         for r in rows:
-            tgt, rt = detail_map.get(r["nid"], (None, ""))
+            tgt, rt, via = detail_map.get(r["nid"], (None, "", ""))
             r["rating"] = rt
             r["target"] = tgt
+            # 경로는 **그 행에** 남긴다(전역 카운터 금지 — 위 주석 참조).
+            # `out` 은 아래에서 키를 골라 만들므로 캐시·화면으로 새지 않는다.
+            r["_via"] = via
         # ⚠️ **수율을 잰다** — 상세 페이지(`company_read.naver`)는 아직 옛 HTML
         # 이다. 목록이 SPA 로 죽었으니 여기도 죽었을 수 있는데, 죽으면 매 수집이
         # 수십 건을 순손실로 던지고 목표가·투자의견 칸만 조용히 빈다(#79 그
@@ -872,7 +1049,7 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         # ⚠️ 옛 주석은 "`--check` 가 말하게 한다" 였는데 `check()` 는 자기
         # 단건 프로브만 돌고 이 칸을 **읽지 않는다** — 읽는 곳이 로그뿐인
         # write-only 였다(독립 리뷰 M6 · #123·#129·#189·#228 계열).
-        _hit = sum(1 for t, rt2 in detail_map.values() if t or rt2)
+        _hit = sum(1 for _t, _rt2, *_ in detail_map.values() if _t or _rt2)
         _LAST_MARKET_FAIL["detail"] = detail_yield_note(rows,
                                                         budget_left=_skipped)
         if not _hit and detail_map:
@@ -1134,7 +1311,7 @@ def fetch_research(ticker: str, days_back: int = 90) -> Optional[dict]:
 
 
 # ── 진단 ────────────────────────────────────────────────────────────────────
-_CHECK_VER = 4        # 3 = 빈 목록·계약변경 갈래 · 4 = 상세 수율        # 진단은 버전을 찍는다(#21)
+_CHECK_VER = 5        # 4 = 상세 수율 · 5 = 상세 JSON 사다리        # 진단은 버전을 찍는다(#21)
 
 
 def check() -> int:
@@ -1182,14 +1359,28 @@ def check() -> int:
     if not nid:
         print("④ 상세 수율: ❓ 목록이 비어 판정 불가")
     else:
-        tgt, rating = _fetch_report_detail(nid)
+        # 경로는 반환값이 직접 말한다 — 전역을 비웠다 채우는 방식은 풀에서
+        # 증가를 잃고 화면끼리 섞인다(#45·#114).
+        # ⚠️ 진단은 **단마다 왜 실패했는지**까지 말한다 — 404 와 '200 인데 아는
+        # 키가 없다' 는 처방이 정반대다(#82 · 독립 리뷰 2026-09-12 Low: 사유를
+        # 계산해 놓고 버리면 운영자가 프로브를 한 번 더 돌려야 한다).
+        _jt, _jr, _jrung, _whys = _detail_json(nid)
+        for _w in _whys:
+            print(f"   ↪ {_w}")
+        tgt, rating, _rung = _fetch_report_detail_via(nid)
+        _via = _rung or "—"
         if tgt or rating:
-            print(f"④ 상세 수율: ✅ nid={nid} → 목표가 {tgt} · 의견 {rating or '—'}")
+            print(f"④ 상세 수율: ✅ nid={nid} → 목표가 {tgt} · 의견 "
+                  f"{rating or '—'} · 경로 {_via}")
         else:
             print(f"④ 상세 수율: ⚠️ nid={nid} 에서 목표가·투자의견을 못 읽었다 "
-                  "— 그 리포트에 없을 수도, 상세 페이지도 SPA 로 죽었을 수도 "
+                  "— 그 리포트에 없을 수도, 상세 경로가 전부 죽었을 수도 "
                   "있다(한 건 관측이라 단정하지 않는다)")
-            print(f"   ↪ 주소: {_DETAIL_URL}?nid={nid}")
+            # **무엇을 시도했는지** 적는다 — 안 적으면 운영자가 같은 후보를
+            # 다시 짚는다(#82·#279 진단의 모든 문장이 잰 것인지 물을 것).
+            for _lbl, _tmpl in _DETAIL_API_RUNGS:
+                print(f"   ↪ 시도: {_lbl} — {_tmpl.format(nid=nid)}")
+            print(f"   ↪ 시도: 옛 HTML — {_DETAIL_URL}?nid={nid}")
     if rc == 0 and not empty:
         print("⑤ 세 목록 모두 수신됨 — 화면이 비었다면 캐시·렌더를 볼 것")
     elif rc == 0:

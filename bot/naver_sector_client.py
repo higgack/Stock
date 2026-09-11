@@ -544,10 +544,10 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
     out = {"up": ups, "down": downs,
            "ts": _src_ts or _now_kst_label(),
            "ts_kind": "source" if _src_ts else "collected",
-           # 전 업종(등락률 내림차순) — `/theme` 의 '업종별 시세(전체)' 표가
-           # 이걸 그린다. 위젯은 상·하위 10만 쓰지만 **같은 수집 1회**에서
-           # 파생시켜 두 화면이 갈리지 않게 한다(#38·#45).
-           "all": sorted(groups, key=lambda x: x["pct"], reverse=True),
+           # ⚠️ 2026-09-12 에 `all` 키를 지웠다 — 그걸 그리던 `/theme` 의
+           # '업종별 시세(전체)' 표가 사용자 요청으로 제거됐고(테마만 남김),
+           # 남겨 두면 주석이 없는 화면을 가리킨다(#55 설명이 코드와 어긋나면
+           # 버그 · §작업 원칙 죽은 경로는 삭제). 위젯은 상·하위 10만 쓴다.
            "scanned": len(groups)}
     if why:                            # 부분 페이지 등 — 값은 있지만 사유가 있다
         out["reason"] = why
@@ -858,7 +858,7 @@ _THEME_PAGES = 7
 # — 낡은 값을 '현재'로 내보내지 않기 위해서다(#163). 화면은 어느 쪽이든
 # 스냅샷 시각(ts)을 그대로 찍는다(#43).
 _THEME_SWR_SEC = 600
-_CHECK_VER = 5        # 3 = 원문 표본 · 4 = JSON 경로 · 5 = 업종맵 갈래
+_CHECK_VER = 6        # 4 = JSON 경로 · 5 = 업종맵 갈래 · 6 = 테마 사다리·탐색
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -915,6 +915,343 @@ def _refresh_async(name: str, fn, key: str) -> None:
         log.warning("naver_sector: 배경 갱신 스레드 시작 실패 %s: %s", name, exc)
 
 
+# ── 테마 목록: JSON 경로(2026-09-12 SPA 전환) ──────────────────────────────
+# `finance.naver.com/sise/theme.naver` 도 Next.js SPA 가 됐다 — VM 실측
+# 121,896B 를 받는데 `parse_themes_full` 이 **0행**이고, 34시간 낡은 저장분이
+# 서빙되고 있었다(사용자 2026-09-12 "이거 여전히 최신꺼 못가져오는데").
+#
+# ⚠️ 이 레포는 같은 자리에서 네 번 졌다(#151 죽은 이름 · #338 SPA 전환 ·
+# #340 경로 이동 · 여기). 이름을 추측해 파서를 짜면 **죽은 경로를 배포**한다.
+# 그래서 (a) 후보는 **실측으로 증명된 패턴**에서만 뽑고 (b) 어느 후보가 답했는지
+# 결과에 싣고 (c) 전부 실패하면 **원천에게 물어본다**(`naver_spa_discover` 가
+# 그 페이지의 Next.js 청크에서 API 경로 리터럴을 읽는다 — 추측이 아니라 측정).
+#
+# 실측으로 증명된 패턴(이 레포가 매일 쓰는 주소):
+#   stock.naver.com/api/domestic/market/upjong/list      ← 업종(79행, 2026-09-11)
+#   stock.naver.com/api/foreign/market/{NAT}/upjong/list  ← CN·HK·JP 업종
+#   m.stock.naver.com/front-api/domestic/stock/list       ← 국내 종목 목록
+# 옛 HTML 에서 업종·테마는 `sise_group*.naver?type=upjong|theme` 로 **같은 자리**
+# 였고, 업종 JSON 행은 실제로 `"type": "upjong"` 을 싣는다 — 형제 자원이 있다는
+# 원천 자신의 표시다. 첫 후보는 거기서 나온다(지어낸 호스트가 아니다).
+_THEME_API_RUNGS = (
+    ("domestic/theme",
+     "https://stock.naver.com/api/domestic/market/theme/list"),
+    ("domestic/theme(무접미)",
+     "https://stock.naver.com/api/domestic/market/theme"),
+    ("front-api/theme",
+     "https://m.stock.naver.com/front-api/domestic/theme/list"),
+)
+_THEME_PAGE_SIZE = 100
+_THEME_MAX_PAGES = 5             # 실측 266개 — 100×5 로 넉넉하다
+# 형제 업종 가드와 **같은 규약**(#38): 기본 페이지 수가 그대로 오면 `pageSize`
+# 가 안 먹은 것이고, 하한 미만이면 부분이다. 실측 테마 수는 266개.
+_THEME_DEFAULT_PAGE = 20         # 이 수가 오면 pageSize 가 안 먹은 것이다
+_THEME_MIN_ROWS = 150            # 실측 266 에서 넉넉히 내린 하한
+_THEME_MEMO = "theme_endpoint.json"
+_THEME_DISCOVER_URL = "https://finance.naver.com/sise/theme.naver"
+_THEME_DISCOVER_COOLDOWN = 6 * 3600
+
+
+def theme_leaders(raw) -> list:
+    """`leadingItem` 문자열 → [{name, code}] 최대 2(순수).
+
+    실측 모양(업종 JSON): `"2,000810,삼성화재|2,005830,DB손해보험"` — `|` 로
+    종목을 가르고 `,` 안에 6자리 코드가 들어 있다. 앞 숫자의 뜻은 **재지 않았으
+    므로 쓰지 않는다**(#165 안 잰 것을 단정하지 말 것). 코드는 자리로 추정하지
+    말고 **모양(6자리)으로 식별**한다(#46).
+    """
+    out: list = []
+    seen: set = set()
+    for part in str(raw or "").split("|"):
+        bits = [b.strip() for b in part.split(",") if b.strip()]
+        code = next((b for b in bits if len(b) == 6 and b.isdigit()), "")
+        if not code or code in seen:
+            continue
+        i = bits.index(code)
+        nm = bits[i + 1] if i + 1 < len(bits) else ""
+        if not nm:
+            continue
+        seen.add(code)
+        out.append({"name": nm, "code": code})
+    return out[:2]
+
+
+def parse_theme_json(rows: object) -> list:
+    """네이버 테마 JSON → [{name, no, pct, pct3, leaders}] (순수).
+
+    `parse_themes_full`(옛 HTML)과 **같은 계약**을 낸다 — 렌더러·저장 스키마를
+    안 건드리려면 여기서 모양을 맞춰야 한다(#38 화면이 두 벌이 되면 갈린다).
+    등락률을 못 읽는 행은 버리되 호출부가 개수를 대조한다(#54).
+    """
+    out: list = []
+    if not isinstance(rows, list):
+        return out
+    seen: set = set()
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name") or r.get("themeName") or "").strip()
+        if not name:
+            continue
+        no = str(r.get("no") or r.get("themeCode") or r.get("code") or "").strip()
+        key = no or name
+        if key in seen:
+            continue
+        try:
+            pct = round(float(str(r.get("changeRate")).replace(",", "")), 2)
+        except (TypeError, ValueError):
+            continue
+        try:
+            pct3 = round(float(str(r.get("recent3daysChangeRate")
+                                   ).replace(",", "")), 2)
+        except (TypeError, ValueError):
+            pct3 = None
+        seen.add(key)
+        out.append({"name": name, "no": no, "pct": pct, "pct3": pct3,
+                    "leaders": theme_leaders(r.get("leadingItem"))})
+    return out
+
+
+def wrong_resource(rows: object) -> str:
+    """테마를 물었는데 **업종이 왔나** — 원천이 찍은 `type` 으로 판정(순수).
+
+    같은 API 가족이라 경로 하나가 틀려도 200 + 그럴듯한 행이 온다. 그러면
+    업종 79개가 '테마' 라는 이름으로 화면에 앉고, 값이 다 '있어서' 아무 감사도
+    안 걸린다(#96). 원천이 스스로 밝히는 칸이 있으면 그걸 읽는다(#86).
+    """
+    if not isinstance(rows, list) or not rows:
+        return ""
+    kinds = {str(r.get("type") or "").strip().lower()
+             for r in rows if isinstance(r, dict)}
+    kinds.discard("")
+    if kinds and not ({"theme"} & kinds):
+        return f"테마를 물었는데 원천이 type={'/'.join(sorted(kinds))} 를 줬습니다"
+    return ""
+
+
+def _theme_json_rung(url: str) -> tuple:
+    """한 후보 주소를 **페이지까지 돌며** 받는다 → (행, 사유, 부분여부).
+
+    실측 테마 수는 266개인데 이 API 가족의 기본 페이지는 20이다 — 한 쪽만 받고
+    전부인 줄 알면 랭킹이 조용히 틀린다(#45·#341). `pageSize` 가 안 먹으면
+    `page` 로 이어받고, 더 안 늘면 멈춘다.
+
+    ⚠️ 중간 쪽이 실패하면 **행은 주되 `partial=True`** 다 — 값은 보여주되
+    완전본으로 **굽지는 않는다**(#280 부분을 완전본으로 캐시하면 TTL 내내
+    틀린 목록이 서빙된다 · #343 중간 쪽의 429·타임아웃을 '원천에 그게 전부'
+    로 분류하면 창이 조용히 잘린다).
+    """
+    got: list = []
+    seen: set = set()
+    n_first = 0
+    n_raw_total = 0
+    paging_ok = True
+    for page in range(1, _THEME_MAX_PAGES + 1):
+        raw, why = _get2_json(url, params={"page": page,
+                                           "pageSize": _THEME_PAGE_SIZE})
+        if raw is None:
+            return (got, why, True) if got else (None, why, False)
+        if not isinstance(raw, list):
+            # dict 로 감싸 오는 가족도 있다 — 목록 자리를 찾아본다.
+            inner = None
+            if isinstance(raw, dict):
+                for k in ("result", "datas", "list", "items", "stocks"):
+                    if isinstance(raw.get(k), list):
+                        inner = raw[k]
+                        break
+            if inner is None:
+                _w = _nd.shape_reason("테마 목록", raw)
+                return (got, _w, True) if got else (None, _w, False)
+            raw = inner
+        bad = wrong_resource(raw)
+        if bad:
+            return None, bad, False
+        rows = parse_theme_json(raw)
+        n_raw_total += len(raw)
+        if page == 1:
+            n_first = len(raw)
+        fresh = [t for t in rows if (t["no"] or t["name"]) not in seen]
+        for t in fresh:
+            seen.add(t["no"] or t["name"])
+        got.extend(fresh)
+        if not fresh and page > 1 and len(raw) >= _THEME_PAGE_SIZE:
+            # 가득 찬 쪽을 받았는데 **새 행이 하나도 없다** = `page` 가 안 먹은
+            # 것이다(원천이 매 쪽 같은 목록을 준다). '목록 끝' 이 아니라 **더
+            # 있는데 못 받은 것**이므로 완전본으로 굽으면 안 된다(#280·#341).
+            paging_ok = False
+            break
+        if not fresh or len(raw) < _THEME_PAGE_SIZE:
+            break
+    else:
+        # 상한까지 다 돌았는데도 매 쪽이 가득 찼다 = **더 있는데 멈춘 것**이다.
+        # '상한에 닿았나' 가 아니라 '창을 다 못 덮고 멈췄나' 로 판정한다(#343).
+        return got, (f"쪽 상한({_THEME_MAX_PAGES})에서 멈췄습니다 "
+                     "— 더 있을 수 있습니다"), True
+    if not got:
+        return None, _nd.parse_reason("테마 행", 0, unit="행"), False
+    # ⚠️ 여기까지 왔다고 완전본이 아니다 — **행 수를 하한과 대조**한다(#54 대조
+    # 없이 통과시키지 말 것 · 형제 `fetch_sector_movers` 와 같은 규약 #38).
+    # 독립 리뷰 2026-09-12 실측: 원천에 266개가 있는데 `page` 를 무시하면 100개,
+    # `pageSize` 를 무시하면 20개만 받고 `partial=False` 로 캐시에 구웠다. 그러면
+    # 화면이 '전체 테마 100개' 라고 적고 등락률 상·하위 순위가 조용히 틀린다.
+    if not paging_ok:
+        return got, (f"원천이 쪽(page)을 무시해 {len(got)}개에서 멈췄습니다 "
+                     "— 더 있을 수 있습니다"), True
+    if n_first == _THEME_DEFAULT_PAGE and len(got) <= _THEME_DEFAULT_PAGE:
+        return got, (f"원천이 pageSize 를 무시해 기본 {_THEME_DEFAULT_PAGE}개만 "
+                     "줬습니다 — 전체가 아닙니다"), True
+    if len(got) < _THEME_MIN_ROWS:
+        return got, (f"{len(got)}개 — 기대 하한 {_THEME_MIN_ROWS}개 미만이라 "
+                     "전체가 아닐 수 있습니다"), True
+    # `parse_theme_json` 독스트링이 "호출부가 개수를 대조한다" 고 약속했는데
+    # 아무도 안 했다(독립 리뷰 2026-09-12 Low · #54·#55). 등락률을 못 읽어
+    # 버린 행이 많으면 값은 '있어도' 순위가 틀린다 — 사실을 말한다.
+    dropped = n_raw_total - len(got)
+    if dropped > 0 and dropped * 10 >= n_raw_total:
+        return got, (f"원천 {n_raw_total}행 중 {dropped}행을 못 읽어 버렸습니다"
+                     " — 등락률 형식이 바뀌었을 수 있습니다"), True
+    return got, "", False
+
+
+_THEME_DISCOVER_TRIES = 6        # 검증 호출 상한 — 리터럴로 못박는다(#66)
+
+
+def theme_candidates(paths: list) -> list:
+    """발굴한 경로 목록 → **실호출할 URL 후보**(순수).
+
+    호스트를 하나로 정하지 않고 검증된 두 호스트를 모두 낸다 — 어느 쪽이
+    맞는지는 응답이 답한다(#25 능력은 이름이 아니라 실측). 템플릿 구멍이 있는
+    경로는 우리가 채우지 않는다(#165). `list` 로 끝나는 목록형을 먼저 본다.
+    """
+    out: list = []
+    seen: set = set()
+    for p in sorted(paths or [], key=lambda x: (0 if x.rstrip("/").endswith("list")
+                                                else 1, x)):
+        if "{" in p or "$" in p:
+            continue
+        path = p if p.startswith("/") else "/" + p
+        for host in ("https://stock.naver.com", "https://m.stock.naver.com"):
+            u = host + path
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+    return out
+
+
+def theme_memo_url() -> str:
+    """`naver_spa_discover` 가 찾아 둔 주소(있으면). 없으면 빈 문자열."""
+    memo, _ = _cache_read_any(_THEME_MEMO)
+    return str((memo or {}).get("url") or "")
+
+
+def _discover_theme_endpoint() -> None:
+    """전 후보가 죽었을 때 **원천에게 묻는다** — 배경에서 한 번(#116 예산).
+
+    여기서 화면을 기다리게 하지 않는다. 찾으면 메모에 적고 **다음 수집**이
+    1순위로 쓴다. 못 찾아도 메모에 시각을 남겨 냉각한다(같은 실패를 6시간마다
+    한 번만 재시도 — 매 요청마다 청크 수 MB 를 받으면 안 된다).
+    """
+    from bot import naver_spa_discover as _disc
+
+    def _fetch(u: str) -> tuple:
+        try:
+            resp = requests.get(u, headers=_HEADERS, timeout=8)
+            if resp.status_code != 200:
+                return None, _nd.http_reason(resp.status_code,
+                                             len(resp.content or b""))
+            # ⚠️ `_get2` 는 euc-kr 를 강제한다(옛 HTML 용) — SPA·JS 는 UTF-8 이라
+            # 그걸 그대로 쓰면 본문이 깨진다. 여기서 필요한 건 ASCII 주소뿐이지만
+            # 깨진 본문에선 정규식도 어긋난다(#155 원천이 실제로 보내는 모양).
+            return resp.text, ""
+        except Exception as exc:                               # noqa: BLE001
+            return None, _nd.http_reason(None, exc=exc)
+
+    paths, why = _disc.discover(_THEME_DISCOVER_URL, must_contain="theme",
+                               fetch=_fetch, prefer="theme")
+    # ⚠️ **호스트를 추측하지 않는다**(독립 리뷰 2026-09-12). 옛 판은
+    # `p.startswith("/api/")` 면 stock, 아니면 m.stock 으로 정했는데 minified
+    # 번들은 슬래시 없는 `"api/domestic/market/theme/list"` 를 흔히 낸다 —
+    # 그러면 **검증된 호스트가 있는 경로가 엉뚱한 호스트로** 조립되고, 그걸
+    # `✅ 탐색됨` 으로 6시간 못박는다('찾음' 을 '동작함' 으로 렌더 · #165·#25).
+    # 대신 후보 × 두 호스트를 **실제로 호출해** 테마 행이 오는 것만 채택한다.
+    cands = theme_candidates(paths)
+    url, tried = "", []
+    for cand in cands[:_THEME_DISCOVER_TRIES]:
+        rows, rwhy, _partial = _theme_json_rung(cand)
+        tried.append(f"{cand} — {'✅ %d개' % len(rows) if rows else (rwhy or '0건')}")
+        if rows:
+            url = cand
+            break
+    _cache_write(_THEME_MEMO, {"url": url, "found": paths[:8], "tried": tried,
+                               "why": why, "at": time.time()})
+    log.warning("naver_sector: 테마 엔드포인트 탐색 — 검증됨=%s · 후보=%s · %s",
+                url or "없음", paths[:4], why or "")
+
+
+def _maybe_discover_theme() -> None:
+    """냉각을 지키며 배경 탐색을 건다 — 같은 키는 한 번만(#113).
+
+    ⚠️ **일시정지 중에는 탐색하지 않는다**(자기검토 2026-09-12). 정지 마커가
+    걸리면 사다리 전 단이 `PAUSED` 로 실패하는데 그건 "엔드포인트가 죽었다"는
+    증거가 아니라 **우리가 안 물어본 것**이다(#79 그 경로가 실제로 실행됐나 ·
+    #143 대조군 없이 '없음'을 말하지 말 것). 그대로 두면 (a) 정지시켜 놓은
+    호스트를 탐색이 raw `requests` 로 두드리고 (b) 못 찾았다는 메모가 6시간
+    냉각을 걸어 **정지가 풀린 뒤에도 진짜 탐색이 6시간 막힌다**.
+    """
+    try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():
+            return
+    except Exception:                                          # noqa: BLE001
+        pass
+    # ⚠️ `_cache_read_any` 는 mtime 이 아니라 **나이(초)** 를 돌려준다 — 시각으로
+    # 읽으면 `time.time() - 나이` 가 늘 거대해져 냉각이 한 번도 안 걸린다
+    # (가드가 재는 대상을 틀리면 그냥 눈이 먼다, #91b).
+    _memo, age = _cache_read_any(_THEME_MEMO)
+    if age is not None and age < _THEME_DISCOVER_COOLDOWN:
+        return
+    with _BG_LOCK:
+        if _THEME_MEMO in _BG_KEYS:
+            return
+        _BG_KEYS.add(_THEME_MEMO)
+
+    def _run() -> None:
+        try:
+            _discover_theme_endpoint()
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("naver_sector: 테마 엔드포인트 탐색 실패: %s", exc)
+        finally:
+            with _BG_LOCK:
+                _BG_KEYS.discard(_THEME_MEMO)
+
+    try:
+        threading.Thread(target=_run, daemon=True,
+                         name="naver-theme-discover").start()
+    except Exception as exc:                                   # noqa: BLE001
+        with _BG_LOCK:
+            _BG_KEYS.discard(_THEME_MEMO)
+        log.warning("naver_sector: 탐색 스레드 시작 실패: %s", exc)
+
+
+def collect_themes_json() -> tuple:
+    """후보 사다리를 **순서대로 실호출** → (행, 단 표시, 사유, 부분여부).
+
+    단 표시는 화면·`--check` 가 **어느 후보가 답했는지** 그대로 적기 위한 것이다
+    — 폴백을 로그로만 알리면 사용자는 영영 모른다(#42a·#136).
+    """
+    marks: list = []
+    memo = theme_memo_url()
+    rungs = ([("탐색됨", memo)] if memo else []) + list(_THEME_API_RUNGS)
+    for label, url in rungs:
+        rows, why, partial = _theme_json_rung(url)
+        if rows:
+            marks.append(f"{label} {'⚠️' if partial else '✅'} {len(rows)}개"
+                         + (f" · {why}" if partial and why else ""))
+            return rows, marks, (why if partial else ""), partial
+        marks.append(f"{label} ❌ {why or '0건'}")
+    return [], marks, (marks[-1].split("❌", 1)[-1].strip() if marks else ""), False
+
+
 def _theme_page(page: int):
     """테마 한 페이지 → (행 목록, 실패 사유). **수신 실패는 None**(빈 `[]` 와 다르다).
 
@@ -937,40 +1274,59 @@ def _theme_page(page: int):
 
 
 def collect_themes() -> dict:
-    """전 페이지를 **병렬로** 받아 합친다.
+    """테마 목록 — **JSON 사다리 먼저**, 그다음 옛 HTML(원천이 되돌릴 경우).
 
-    ⚠️ 옛 판은 1→7 페이지를 **직렬로** 돌며 각 페이지를 최대 15초까지
-    기다렸다(요청 경로에서, 캐시는 장중 30초) — 클릭 한 번이 왕복 7번을
-    그대로 기다린다(#116 본 응답 경로의 무거운 값). 페이지끼리 의존이
-    없으므로 한 물결로 받는다. `map_bounded` 가 **입력 순서**를 지키므로
-    중복 제거가 앞 페이지를 남기는 규약도 그대로다.
+    2026-09-12 SPA 전환으로 HTML 표가 사라졌다. 폴백은 지우지 않는다 — 이
+    레포에서 폴백 사다리는 버그의 원인이 아니라 fix 였다(§작업 원칙 · #122·
+    #136·#191). 대신 **어느 단이 답했는지 화면이 말한다**(#42a 폴백은 버그를
+    숨긴다 · #136 payload 가 밝힌 원천을 화면이 따른다).
+
+    ⚠️ 옛 HTML 판은 1→7 페이지를 병렬로 받았다 — 그 구조는 그대로 두고
+    JSON 이 실패했을 때만 탄다.
     """
     from bot.pool import map_bounded
 
     t0 = time.time()
+    rows, marks, why_json, partial_json = collect_themes_json()
+    if rows:
+        rows.sort(key=lambda x: (x.get("pct") is None, -(x.get("pct") or 0)))
+        log.info("naver_sector: themes %d개 · %s · %.2fs",
+                 len(rows), marks[-1], time.time() - t0)
+        # ⚠️ 부분이면 값은 주되 **캐시하지 않는다**(`_collect_and_store` 가
+        # `partial` 을 보고 거부한다, #280).
+        return {"themes": rows, "ts": _now_kst_label(), "partial": partial_json,
+                "reason": why_json if partial_json else "",
+                "rungs": marks, "via": marks[-1]}
+
+    # 전 후보가 죽었다 — **원천에게 물어본다**(배경, 냉각 6시간). 이번 응답을
+    # 기다리게 하지 않는다(#116 본 응답 경로엔 예산).
+    _maybe_discover_theme()
+
     _res = map_bounded(_theme_page, list(range(1, _THEME_PAGES + 1)))
     pages = [(r[0] if isinstance(r, tuple) else r) for r in _res]
     whys = [str(r[1]) for r in _res if isinstance(r, tuple) and r[1]]
-    failed = [i for i, rows in enumerate(pages, 1) if rows is None]
+    failed = [i for i, rws in enumerate(pages, 1) if rws is None]
     themes: list[dict] = []
     seen: set[str] = set()
-    for rows in pages:
-        for t in rows or []:
+    for rws in pages or []:
+        for t in rws or []:
             if t["no"] in seen:
                 continue
             seen.add(t["no"])
             themes.append(t)
     themes.sort(key=lambda x: (x.get("pct") is None, -(x.get("pct") or 0)))
+    marks.append(f"옛 HTML {'✅ %d개' % len(themes) if themes else '❌ ' + (whys[0] if whys else '0건')}")
     # 재지 않으면 '느리다'는 진단이 아니다(#69·#110) — 실측을 로그에 남긴다.
-    log.info("naver_sector: themes %d개 · %d페이지(실패 %s) · %.2fs",
-             len(themes), _THEME_PAGES, failed or "없음", time.time() - t0)
+    log.info("naver_sector: themes %d개 · %d페이지(실패 %s) · %.2fs · 단 %s",
+             len(themes), _THEME_PAGES, failed or "없음", time.time() - t0, marks)
     if failed:
         log.warning("naver_sector: 테마 페이지 수신 실패 %s — 부분 스냅샷", failed)
     # 사유는 **계산해 놓고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
-    # 형제 `fetch_sector_movers` 는 이미 `reason` 을 싣는데 테마만 안 실었다(#38).
     return {"themes": themes, "ts": _now_kst_label() if themes else "",
             "partial": bool(failed),
-            "reason": ("" if themes else (whys[0] if whys else ""))}
+            "rungs": marks,
+            "via": marks[-1] if themes else "",
+            "reason": ("" if themes else (why_json or (whys[0] if whys else "")))}
 
 
 def _collect_and_store() -> dict:
@@ -1209,6 +1565,30 @@ def check(fetch: bool = False) -> int:
         if (obj or {}).get("partial"):
             # 부분 스냅샷이 디스크에 있으면 화면이 그걸 완전본처럼 그린다(#280).
             print("   ⚠️ 저장분이 partial=True — 일부 페이지가 빠진 스냅샷이다")
+        # 어느 **단**이 답했나 — 폴백을 로그로만 알리면 사용자는 영영 모른다
+        # (#42a·#136 payload 가 밝힌 원천을 화면이 따른다).
+        if (obj or {}).get("via"):
+            print(f"   ↪ 원천: {obj['via']}")
+        for _m in (obj or {}).get("rungs") or []:
+            print(f"      · {_m}")
+    # ── ②-d 테마 엔드포인트 탐색 메모 — 사다리가 전멸했을 때 배경이 원천의
+    # Next.js 청크에서 읽어 둔 것(#151 추측 금지: 이름을 짓지 않고 잰다).
+    _memo, _memo_age = _cache_read_any(_THEME_MEMO)
+    if _memo:
+        _u = str(_memo.get("url") or "")
+        # '찾음' 과 '동작함' 은 다르다 — 메모에 남는 url 은 **실호출로 테마 행이
+        # 온 것만**이다(#25·#79).
+        print(f"②-d 테마 엔드포인트 탐색({_nd.stale_label(_memo_age) or '나이 미상'}): "
+              + (f"✅ 검증됨 {_u}" if _u
+                 else f"❌ 검증된 후보 없음 — {_memo.get('why') or '사유 미기록'}"))
+        if _memo.get("found"):
+            print(f"   ↪ 청크에서 본 경로: {_memo['found']}")
+        for _t in _memo.get("tried") or []:
+            print(f"   ↪ 시도: {_t}")
+    else:
+        # 탐색이 안 돌았다는 것은 **사다리가 답했다**는 뜻이거나, 아직 한 번도
+        # 전멸한 적이 없다는 뜻이다 — 둘 다 정상이므로 ❌ 가 아니다(#260).
+        print("②-d 테마 엔드포인트 탐색: 기록 없음(사다리가 답했거나 전멸한 적 없음)")
     # ── 업종 등락 TOP 10 위젯(메인 대시보드) — 테마와 **다른 캐시**(upjong.json)다.
     # 2026-09-11 사용자 "갑자기 한국이 메인대시보드에서 없어졌어?" 때 ② 는 테마만
     # 보고 이 위젯은 한 줄도 말하지 않았다(#24 열거형 점검은 목록 밖을 못 잡는다).

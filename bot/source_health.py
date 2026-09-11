@@ -215,32 +215,65 @@ def _nsc_base() -> str:
         return "https://finance.naver.com/sise"
 
 
-def _naver_theme_html() -> tuple[bool, str]:
-    """아직 **HTML 스크래핑에 남아 있는** 경로 — 테마 시세(업종별 시세 페이지).
+def _naver_theme_raw() -> tuple[bool, str]:
+    """테마 원천이 **지금 답하나** — 사다리 1단을 raw 로 직접 친다.
 
-    업종·리서치가 JSON 으로 옮겨간 뒤에도 테마·상한가·업종맵은 finance.naver.com
-    HTML 이다. 경로 대조(아래 'ℹ️ 네이버 경로별')가 의미를 가지려면 **HTML 을
-    실제로 쓰는 기능**을 재야 한다 — 죽은 URL 을 재면 그 줄이 매일 거짓말한다.
+    ⚠️ 2026-09-12 자기검토판은 이 줄을 `fetch_themes()` 로 바꿨다가 독립 리뷰에
+    뒤집혔다. 이 섹션의 계약은 `(정지·회로차단과 무관하게 소스 raw fetch 직접
+    점검)` 인데 `fetch_themes` 는 (a) **캐시를 먼저 읽고** (b) `naver_paused()`
+    를 존중하며 (c) 콜드 캐시면 운영 캐시에 **쓰기**까지 한다. 그래서 34시간
+    낡은 스냅샷 위에서 ✅ 가 떴다 — 사용자가 신고한 바로 그 상태를 '건강' 으로
+    보고한 것이다(#35 감사는 제 계약대로 · #41 뒤처진 사실을 덮지 말 것 ·
+    #264·#283·#321 진단이 운영 상태를 바꾸면 안 된다).
+
+    화면이 실제로 뭘 들고 있는지는 **아래 스냅샷 줄**이 따로 말한다(#45 두
+    모집단을 한 줄에 섞지 말 것).
     """
     try:
-        ok, text, dt = _naver_get(
-            f"{_nsc_base()}/theme.naver?page=1",
-            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR",
-                     "Referer": "https://finance.naver.com/sise/"}, want="text")
+        from bot.naver_sector_client import (_THEME_API_RUNGS, _THEME_PAGE_SIZE,
+                                             parse_theme_json, wrong_resource)
+        label, url = _THEME_API_RUNGS[0]
+        ok, body, dt = _naver_get(f"{url}?pageSize={_THEME_PAGE_SIZE}")
         if not ok:
-            return False, f"{text} ({dt:.0f}ms)"
-        # ⚠️ 옛 판은 `"type=theme" in text` 라는 **부분문자열**만 봤다. Next.js
-        # 셸이 그 문자열을 링크·프리페치 JSON 어딘가에 담아 보내면 표가 0개인데도
-        # ✅ 가 뜬다 — 이 탭이 조용히 32시간 낡은 이유다(#35 감사는 화면이 쓰는
-        # 그 경로를 · #75 '있다'만 묻는 검사는 옆 것이 대신 만족시킨다).
-        # **제품 파서를 그대로 태워 행 수를 센다**(#54 대조 0건은 통과가 아니다).
-        from bot.naver_sector_client import parse_themes_full
-        n = len(parse_themes_full(text) or []) if isinstance(text, str) else 0
-        size = len(text) if isinstance(text, str) else 0
-        return bool(n), (f"테마 행 {n}개 ({size:,}B, {dt:.0f}ms)"
-                         + ("" if n else " — 응답은 왔는데 파서가 0건 = "
-                                        "표가 사라진 것(SPA 전환)"))
-    except Exception as exc:
+            return False, f"{label} — {body} ({dt:.0f}ms)"
+        rows = body if isinstance(body, list) else (
+            next((body[k] for k in ("result", "datas", "list", "items")
+                  if isinstance(body, dict) and isinstance(body.get(k), list)),
+                 []))
+        bad = wrong_resource(rows)
+        if bad:
+            return False, f"{label} — {bad} ({dt:.0f}ms)"
+        n = len(parse_theme_json(rows) or [])
+        # 0건은 통과가 아니다 — 응답은 왔는데 파서가 못 읽은 것이다(#54).
+        return bool(n), (f"{label} 테마 {n}개 ({dt:.0f}ms)"
+                         + ("" if n else " — 응답은 왔는데 테마 행 0건"))
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _naver_theme_snapshot() -> tuple[bool, str]:
+    """화면이 지금 들고 있는 테마 스냅샷 — **읽기 전용**(수집하지 않는다).
+
+    나이를 반드시 적는다: '조용한 것' 과 '죽은 것' 을 구별하려면 언제 것인지
+    말해야 한다(#52·#43·#202). 판정(원천이 사나)은 위 raw 줄이 하고, 이 줄은
+    **무엇이 화면에 있나**를 말한다 — 둘을 나란히 놓으면 '원천은 사는데 수집이
+    멈췄다' 가 눈에 보인다(#51).
+    """
+    try:
+        from bot.naver_diag import stale_label
+        from bot.naver_sector_client import _cache_read_any
+        obj, age = _cache_read_any("theme.json")
+        if not obj:
+            return False, "저장된 스냅샷이 없습니다"
+        n = len(obj.get("themes") or [])
+        bits = [f"테마 {n}개"]
+        if obj.get("via"):
+            bits.append(str(obj["via"]))
+        bits.append(stale_label(age) or "나이 미상")
+        if obj.get("partial"):
+            bits.append("⚠️ partial")
+        return bool(n), " · ".join(bits)
+    except Exception as exc:                                   # noqa: BLE001
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
@@ -332,7 +365,8 @@ def run() -> dict:
         "Naver 업종(desktop API)": _naver_upjong(),
         "Naver 업종(stock API)": _naver_sector(),
         "Naver 리서치(m.stock API)": _naver_research(),
-        "Naver 테마(finance HTML)": _naver_theme_html(),
+        "Naver 테마(stock API raw)": _naver_theme_raw(),
+        "Naver 테마 스냅샷(화면값)": _naver_theme_snapshot(),
         "Naver 업종맵(finance HTML)": _naver_upjong_map_html(),
         # ⚠️ KR 5탭 중 `/nxt`(NXT 수급)·`/krprepost`(NXT 급등·급락)의 원천은
         # 이 목록에 **한 줄도 없었다** — 죽으면 화면이 '없습니다' 만 띄우고
@@ -381,8 +415,12 @@ def format_report(res: dict) -> str:
             # 실제로 영향받는 업종맵은 그 줄에 없었다. 업종맵은 이 점검이
             # 직접 재지는 않지만 **같은 호스트·같은 전환**이라 영향은 사실이고,
             # 상태는 `naver_sector_client --check ②-c` 가 잰다(#55·#165).
-            + (" — HTML 경로만 막힘(영향: 테마 시세 · 업종맵[/kr52·/highlow 의 "
-               "업종 칸] · 업종 등락·리서치 액션은 JSON 이라 무관)"
+            # ⚠️ 2026-09-12: 테마가 JSON 사다리로 옮겨가 **더는 HTML 의존이
+            # 아니다** — 영향 목록에 남겨 두면 화면이 거짓말한다(#55·#292).
+            # 지금 finance HTML 에 남은 것은 업종맵뿐이다(테마 엔드포인트
+            # **탐색**은 그 호스트를 쓰지만 폴백이라 상시 영향이 아니다).
+            + (" — HTML 경로만 막힘(영향: 업종맵[/kr52·/highlow 의 업종 칸] · "
+               "테마·업종 등락·리서치 액션은 JSON 이라 무관)"
                if f_ok == 0 and a_ok > 0 else ""))
     fi_ok = ck.get("yfinance fast_info", (True,))[0]
     batch_ok = ck.get("yfinance batch", (False,))[0]
