@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import re
+
 PAUSED = "네이버 호출 일시정지 중(NAVER_PAUSE 마커 · 텔레그램 /naverpause 로 해제)"
 
 
@@ -106,6 +108,44 @@ def get_json(url: str, *, headers: dict, log, tag: str,
     except Exception as exc:                                # noqa: BLE001
         log.warning("%s json: fetch failed %s: %s", tag, url, exc)
         return None, http_reason(None, exc=exc)
+
+
+_HTTP_CODE_RE = re.compile(r"원천이 HTTP (\d{3})")
+
+
+def reason_rank(reason: str) -> int:
+    """사유 → **얼마나 행동 가능한가**(작을수록 먼저 보고). 순수.
+
+    후보 사다리는 실패 사유를 여럿 만든다. 옛 판은 그중 **마지막** 것을 화면에
+    적었다 — 2026-09-12 실측에서 1순위(증명된 호스트)가 `HTTP 400`, 2·3순위
+    (추측 후보)가 `HTTP 404` 였는데 화면은 404 를 적어, 운영자를 '주소가
+    없다'(=새 주소를 찾아라)로 보냈다. 실제로는 **주소는 있고 우리 파라미터가
+    거부된 것**이라 고칠 자리가 다르다(#275 여러 라벨 자리를 훑는 진단은 '먼저
+    찾은 것'이 아니라 **가장 행동 가능한 것**을 머리에 둘 것 · #82).
+
+    | 값 | 뜻                                        | 처방                    |
+    |----|-------------------------------------------|-------------------------|
+    | 0  | 우리가 안 물어봤다(일시정지)               | `/naverpause` 해제      |
+    | 1  | 주소는 답했다 — 거절·못 읽음(400·403·429·5xx·parse) | 요청·파서·한도·원천장애 |
+    | 2  | 주소가 없거나 못 닿았다(404·타임아웃)       | 주소를 다시 찾는다      |
+    | 3  | 사유조차 없다                              | 판정 불가              |
+
+    ⚠️ 문자열을 훑는 판정이라 **여기 형제 생산부**(`http_reason`·`parse_reason`
+    ·`shape_reason`)와 한 파일에 둔다 — 한쪽만 바뀌면 갈라지므로 회귀가 그
+    생산부가 **실제로 만든 문자열**로 왕복을 고정한다(#19·#38·#155).
+    """
+    r = str(reason or "")
+    if not r:
+        return 3
+    if PAUSED in r:
+        return 0
+    m = _HTTP_CODE_RE.search(r)
+    if m:
+        return 2 if m.group(1) == "404" else 1
+    if "닿지 못함" in r:
+        return 2
+    # 200 을 받고 못 읽었다(parse·shape·자원 오류) — 우리가 고칠 자리가 있다.
+    return 1
 
 
 def stale_label(age_sec: float | int | None) -> str:

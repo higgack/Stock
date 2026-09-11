@@ -28,8 +28,7 @@ test-fast:
 
 syntax:
 	@$(PY) -c "import ast, sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]; print('syntax OK')" \
-		bot/screener.py bot/dashboard.py bot/telegram_bot.py \
-		standardview/scripts/weekly_pusher.py
+		bot/screener.py bot/dashboard.py bot/telegram_bot.py
 
 help-len:
 	@$(PY) -c "import re; t=re.search(r'_HELP_TEXT\s*=\s*\"\"\"(.*?)\"\"\"', open('bot/telegram_bot.py').read(), re.DOTALL).group(1); n=len(t.encode('utf-16-le'))//2; print(f'_HELP_TEXT UTF-16: {n} / 4096 (slack {4096-n})')"

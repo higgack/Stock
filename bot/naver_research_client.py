@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -478,7 +479,149 @@ def _detail_json(nid: str) -> tuple:
     return None, "", "", whys
 
 
-def _fetch_report_detail_via(nid: str) -> tuple:
+# ── 상세(목표가·투자의견) **영구 캐시** ────────────────────────────────────
+# 사용자 2026-09-12: "투자의견이랑 목표가도 안나오는것들 최대한 모두 나오게".
+# 옛 판은 매 수집이 `_DETAIL_BUDGET`(40) 건만 걸고 나머지는 **영원히 빈칸**
+# 이었다 — 창을 일주일로 넓히자 295건이 되어 260건이 상시 빈칸이다.
+# 열쇠는 예산을 키우는 게 아니라 **이미 읽은 것을 다시 안 읽는 것**이다:
+# 발행된 리포트의 목표가·투자의견은 **안 바뀐다**(정정본은 새 nid 로 온다).
+# 그래서 **원천이 답했나**로 가른다(#82 — 같은 '빈 결과' 인데 처방이 반대다):
+#   값이 있다        → 길게(발행분은 안 바뀐다)
+#   답했는데 값이 없다 → 길게(그 리포트엔 없는 것이다 — NOT RATED·탐방노트)
+#   못 닿았다        → 짧게(원천 장애 한 번이 영영 빈칸으로 굳으면 안 된다,
+#                      #303·#161·#152)
+# ⚠️ 가운데 갈래가 없으면 **수렴하지 않는다**(독립 리뷰 2026-09-12 Blocking,
+# 실측): 실패 TTL(15분) < 수집 주기(1시간)라 값 없는 리포트가 매 주기 날짜
+# 상위 40건을 영구 점유하고 그 아래는 한 번도 시도되지 않는다(24주기 뒤에도
+# 화면 0/295 · 시도 40/295). 예산은 **캐시 미스**에만 쓰므로, 갈래를 나누면
+# 몇 주기면 전 행을 한 번씩 걸고 정상 상태 비용은 신규 리포트뿐이다(#116).
+# ⚠️ 단 '값이 없다' 는 **우리 파서의 판정**이라 파서가 바뀌면 무효다 — 그
+# 기록에 소스 지문을 같이 실어 배포가 곧 무효화가 되게 한다(#119·#233:
+# 손으로 버전을 올리는 방식은 이 레포에서 일곱 번 졌다).
+_DETAIL_CACHE_NAME = "research_detail.json"
+_DETAIL_TTL_OK = 30 * 24 * 3600
+_DETAIL_TTL_EMPTY = 30 * 24 * 3600
+_DETAIL_TTL_MISS = 15 * 60
+_DETAIL_MEM: dict = {}
+_DETAIL_MEM_AT: float = 0.0
+_DETAIL_DIRTY = False
+_DETAIL_LOCK = threading.Lock()
+
+
+def _detail_cache_path() -> Path:
+    return _CACHE_DIR / _DETAIL_CACHE_NAME
+
+
+def _detail_cache_load() -> dict:
+    """디스크 맵을 한 번만 읽어 메모리에 둔다. 못 읽으면 빈 맵(던지지 않는다).
+
+    ⚠️ 어떤 바이트가 와도 안 던진다 — 이 맵을 읽다 예외가 나면 그걸 부르는
+    화면 셋이 통째로 빈다(#331 캐시 독자 계약).
+    """
+    global _DETAIL_MEM, _DETAIL_MEM_AT
+    with _DETAIL_LOCK:
+        if _DETAIL_MEM_AT:
+            return _DETAIL_MEM
+        try:
+            obj = json.loads(_detail_cache_path().read_text(encoding="utf-8",
+                                                            errors="replace"))
+            _DETAIL_MEM = obj if isinstance(obj, dict) else {}
+        except Exception:                                      # noqa: BLE001
+            _DETAIL_MEM = {}
+        _DETAIL_MEM_AT = time.time()
+        return _DETAIL_MEM
+
+
+def detail_cached(nid: str) -> Optional[tuple]:
+    """캐시된 (목표가, 투자의견, 경로) — 없거나 식었으면 None(순수-ish).
+
+    성공(값이 하나라도 있음)과 실패(둘 다 없음)의 **TTL 이 다르다**.
+    """
+    rec = _detail_cache_load().get(str(nid))
+    if not isinstance(rec, dict):
+        return None
+    try:
+        age = time.time() - float(rec.get("at") or 0)
+    except (TypeError, ValueError):
+        return None
+    tgt, rating = rec.get("t"), str(rec.get("r") or "")
+    if tgt is not None or rating:
+        ttl = _DETAIL_TTL_OK
+    elif rec.get("a"):
+        # 원천이 답했는데 값이 없었다 — 그 판정은 **우리 파서**가 낸 것이므로
+        # 파서가 바뀌면 다시 묻는다(지문 불일치 = 캐시 없음).
+        if str(rec.get("s") or "") != client_sig():
+            return None
+        ttl = _DETAIL_TTL_EMPTY
+    else:
+        ttl = _DETAIL_TTL_MISS
+    if age >= ttl:
+        return None
+    return (tgt, rating, str(rec.get("v") or ""))
+
+
+def detail_cache_put(nid: str, tgt, rating: str, via: str, *,
+                     answered: bool = False) -> None:
+    """`answered` = **원천이 상세를 주긴 했다**(값이 없었을 뿐).
+
+    값이 없는 기록만 이 플래그로 갈린다 — 답한 것은 길게, 못 닿은 것은 짧게
+    믿는다. 값이 있는 기록엔 의미가 없다(늘 길게).
+    """
+    global _DETAIL_DIRTY
+    _detail_cache_load()
+    rec = {"t": tgt, "r": rating or "", "v": via or "", "at": time.time()}
+    if answered and tgt is None and not rating:
+        rec["a"] = 1
+        rec["s"] = client_sig()       # 파서가 바뀌면 이 판정은 무효다(#119)
+    with _DETAIL_LOCK:
+        _DETAIL_MEM[str(nid)] = rec
+        _DETAIL_DIRTY = True
+
+
+_FLUSH_SEQ = 0
+
+
+def _flush_seq() -> int:
+    """flush 마다 늘어나는 번호 — tmp 파일 이름을 가른다.
+
+    ⚠️ `threading.get_ident()` 로는 부족하다 — **끝난 스레드의 id 가 재사용**
+    되어 실측에서 6개 중 2개가 같은 이름을 받았다(#25 이름이 아니라 실측).
+    """
+    global _FLUSH_SEQ
+    with _DETAIL_LOCK:
+        _FLUSH_SEQ += 1
+        return _FLUSH_SEQ
+
+
+def detail_cache_flush() -> None:
+    """워커가 아니라 **호출부가 한 번** 쓴다 — 6개 스레드가 각자 쓰면 마지막이
+    나머지를 덮는다. 원자적 저장(tmp + `os.replace`, #280)."""
+    global _DETAIL_DIRTY
+    with _DETAIL_LOCK:
+        if not _DETAIL_DIRTY:
+            return
+        cut = time.time() - max(_DETAIL_TTL_OK, _DETAIL_TTL_EMPTY)
+        snap = {k: v for k, v in _DETAIL_MEM.items()
+                if isinstance(v, dict) and float(v.get("at") or 0) >= cut}
+        _DETAIL_MEM.clear()
+        _DETAIL_MEM.update(snap)
+        _DETAIL_DIRTY = False
+    try:
+        import os
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        dst = _detail_cache_path()
+        # ⚠️ tmp 이름이 프로세스 상수면 두 스레드의 flush 가 **같은 파일**을
+        # 쓰고 뒤엣것의 `os.replace` 가 ENOENT 로 죽어 그 flush 가 조용히
+        # 유실된다(독립 리뷰 2026-09-12 L1 — ThreadingHTTPServer 에서 시장·
+        # 종목 경로가 겹친다). flush 마다 늘어나는 번호로 갈라 준다.
+        tmp = dst.with_suffix(f".{os.getpid()}.{_flush_seq()}.tmp")
+        tmp.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, dst)
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("naver_research: 상세 캐시 저장 실패 — %s", exc)
+
+
+def _fetch_report_detail_via(nid: str, *, use_cache: bool = True) -> tuple:
     """(목표가, 투자의견, **어느 경로로 읽었나**) — JSON 사다리 먼저, 그다음 옛 HTML.
 
     호출부가 셋(시장·산업·개별종목)이라 여기 한 곳에서 갈아야 세 화면이 안
@@ -491,6 +634,10 @@ def _fetch_report_detail_via(nid: str) -> tuple:
     수가 아닌 수를 적는다(#45 총계와 소계가 다른 모집단 · #114 잔여 상태).
     경로는 **그 행에 실어** 화면이 자기 행에서 세게 한다.
     """
+    if use_cache:
+        _hit = detail_cached(nid)
+        if _hit is not None:
+            return _hit
     tgt, rating, rung, _whys = _detail_json(nid)
     # ⚠️ **둘 다** 채워졌을 때만 폴백을 건너뛴다(독립 리뷰 2026-09-12 High).
     # 옛 판은 `tgt is not None or rating` 이라, 새 단이 투자의견만 주고 목표가는
@@ -499,12 +646,19 @@ def _fetch_report_detail_via(nid: str) -> tuple:
     # 경로보다 나빠진다. 폴백 조건은 '실패했나' 가 아니라 **'요구를 충족했나'**
     # 다(#136 — 테마 쪽엔 적용해 놓고 여기만 빠뜨렸다).
     if tgt is not None and rating:
+        if use_cache:
+            detail_cache_put(nid, tgt, rating, rung)
         return tgt, rating, rung
     html = _get(f"{_DETAIL_URL}?nid={nid}")
     if not html:
         # HTML 을 못 받았으면 JSON 이 준 **부분이라도** 살린다(빈칸보다 낫다).
-        return (tgt, rating, rung) if (tgt is not None or rating) \
+        # ⚠️ `answered` 를 세우지 않는다 — 아무 값도 없는 이 결과는 '원천에
+        # 없다' 가 아니라 **못 닿았다** 이므로 짧게만 믿는다(#303·#161).
+        _out = (tgt, rating, rung) if (tgt is not None or rating) \
             else (None, "", "")
+        if use_cache:
+            detail_cache_put(nid, _out[0], _out[1], _out[2])
+        return _out
 
     target: Optional[float] = None
     for pat in (_TARGET_RE, _TARGET_CLASS_RE):
@@ -539,7 +693,12 @@ def _fetch_report_detail_via(nid: str) -> tuple:
     out_r = rating or rating_html
     parts = [p for p in (rung, "옛 HTML" if (target is not None or rating_html)
                          else "") if p]
-    return out_t, out_r, ("+".join(parts) if (out_t is not None or out_r) else "")
+    _via = "+".join(parts) if (out_t is not None or out_r) else ""
+    # 여기까지 왔으면 원천이 상세를 **줬다** — 값이 없다면 그 리포트에 없는
+    # 것이므로 길게 믿는다(#82 갈래 · 위 상수 주석의 Blocking 실측).
+    if use_cache:
+        detail_cache_put(nid, out_t, out_r, _via, answered=True)
+    return out_t, out_r, _via
 
 
 def _fetch_report_detail(nid: str) -> tuple[Optional[float], str]:
@@ -912,7 +1071,8 @@ def _detail_tag(scope: dict) -> str:
     return "" if scope.get("fetch_detail", True) else "_nodetail"
 
 
-def detail_yield_note(rows: list, *, budget_left: int = 0) -> str:
+def detail_yield_note(rows: list, *, budget_left: int = 0,
+                      fetched: int = 0, from_cache: int = 0) -> str:
     """목표가·투자의견 칸이 빈 이유(순수). "" = 할 말 없음.
 
     두 갈래를 **다른 이름으로** 말한다(#82) — 예산에서 빠진 것(정상)과 상세
@@ -933,8 +1093,23 @@ def detail_yield_note(rows: list, *, budget_left: int = 0) -> str:
                 f"({tried})와 옛 HTML 이 모두 값을 주지 않았습니다. "
                 "`naver_spa_probe` ⑧ 로 원천 응답을 잽니다")
     if budget_left > 0:
-        return (f"목표가·투자의견은 최신 {len(graded)}건에만 붙였습니다"
-                f"(상세 수집 예산 {_DETAIL_BUDGET}건 · 나머지 {budget_left}건은 빈칸)"
+        # ⚠️ 옛 문구는 "최신 N건에만 붙였습니다" 라 **N 이 무엇 중의 N 인지**
+        # 말하지 않았다 — 295건짜리 표에서 35 를 보면 나머지가 왜 비었는지,
+        # 그게 늘 그런 건지 이번만인지 알 수 없다(#45 모집단 · #82 갈래).
+        # 분모와 **이번 주기에 새로 건 수**를 같이 적으면 다음 주기 출력이
+        # 곧 측정이 된다(커버리지가 오르는 게 보인다).
+        # ⚠️ `저장분` 은 **캐시 적중 수**(값 없는 기록 포함)라 '채워진 건수' 가
+        # 아니다 — 앞의 `35/295` 바로 뒤에 붙으면 35 를 분해하는 것처럼 읽힌다
+        # (독립 리뷰 L2). 무엇을 센 수인지 이름으로 말한다(#34·#45).
+        return (f"목표가·투자의견 {len(graded)}/{len(rows)}건 — 이번 주기에 "
+                f"{fetched}건 조회(저장분 재사용 {from_cache}건 · 예산 "
+                f"{_DETAIL_BUDGET}건), 남은 {budget_left}건은 다음 주기에 채웁니다"
+                + (f" · 경로 {_via_note}" if _via_note else ""))
+    if len(graded) < len(rows):
+        # 예산은 남았는데 못 채운 행이 있다 = 그 행들은 **상세가 값을 안 준 것**
+        # 이다(예산에서 빠진 것과 처방이 다르다, #82). 그 사실을 말한다(#43).
+        return (f"목표가·투자의견 {len(graded)}/{len(rows)}건 — 나머지는 상세에 "
+                f"목표가·투자의견이 없는 리포트입니다"
                 + (f" · 경로 {_via_note}" if _via_note else ""))
     # ⚠️ **경로가 갈렸을 때만** 말한다(독립 리뷰 2026-09-12 Medium).
     # 옛 판은 '1단이 아니면 경고' 였는데, JSON 단은 `endUrl` 에서 **추론**한
@@ -946,6 +1121,23 @@ def detail_yield_note(rows: list, *, budget_left: int = 0) -> str:
     if len(_used) > 1:
         return f"목표가·투자의견 경로가 행마다 다릅니다 — {_via_note}"
     return ""
+
+
+def restored_detail_note(note: str, age_h: float) -> str:
+    """캐시에서 복원한 수율 문구에 **언제 잰 것인지**를 붙인다.
+
+    저장된 문구는 `이번 주기에 40건 조회` 라고 적혀 있는데, 캐시 히트 주기는
+    **한 건도 안 걸었다** — 그대로 내보내면 화면이 안 한 일을 했다고 말한다
+    (독립 리뷰 2026-09-12 L3 · #43·#136 폴백은 payload 가 밝힌 대로 적을 것).
+    """
+    note = str(note or "")
+    if not note:
+        return ""
+    try:
+        mins = max(0, int(float(age_h) * 60))
+    except (TypeError, ValueError):
+        return note
+    return f"{note} · 직전 수집 기록({mins}분 전)"
 
 
 def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
@@ -985,7 +1177,8 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
                 # 건수도 잃는다 — 저장된 사유를 **읽는다**(독립 리뷰).
                 _dn = cache_detail_note(_env)
                 _LAST_MARKET_FAIL["detail"] = (
-                    _dn if _dn is not None else detail_yield_note(_rows))
+                    restored_detail_note(_dn, age_h) if _dn is not None
+                    else detail_yield_note(_rows))
                 return _rows
         except Exception as exc:
             log.warning("naver_research: market cache read failed: %s", exc)
@@ -1022,9 +1215,20 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
 
     if fetch_detail:
         detail_map: dict[str, tuple] = {}
+        # ⚠️ **캐시에 있는 것은 전 행 채운다**(네트워크 0) — 예산은 **미스에만**
+        # 쓴다. 옛 판은 `rows[:40]` 이라 41번째부터는 몇 주기를 돌아도 영원히
+        # 빈칸이었다(창이 일주일=295건이 되며 260건 상시 빈칸). 이렇게 두면
+        # 몇 주기 만에 커버리지가 100% 로 가고, 정상 상태 비용은 신규 리포트
+        # 몇 건뿐이다(사용자 2026-09-12 "최대한 모두 나오게").
+        for _r in rows:
+            _c = detail_cached(_r["nid"])
+            if _c is not None:
+                detail_map[_r["nid"]] = _c
+        _cached_n = len(detail_map)
+        _miss = [r for r in rows if r["nid"] not in detail_map]
         # 최신 순으로 예산만큼만 — rows 는 바로 위에서 날짜 내림차순 정렬됐다.
-        _targets = rows[:_DETAIL_BUDGET]
-        _skipped = max(0, len(rows) - len(_targets))
+        _targets = _miss[:_DETAIL_BUDGET]
+        _skipped = max(0, len(_miss) - len(_targets))
         with ThreadPoolExecutor(max_workers=6) as pool:
             futures = {pool.submit(_fetch_report_detail_via, r["nid"]): r["nid"]
                        for r in _targets}
@@ -1049,9 +1253,12 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         # ⚠️ 옛 주석은 "`--check` 가 말하게 한다" 였는데 `check()` 는 자기
         # 단건 프로브만 돌고 이 칸을 **읽지 않는다** — 읽는 곳이 로그뿐인
         # write-only 였다(독립 리뷰 M6 · #123·#129·#189·#228 계열).
+        # 워커가 아니라 **여기서 한 번** 쓴다(마지막 쓰기가 나머지를 덮는 것 방지).
+        detail_cache_flush()
         _hit = sum(1 for _t, _rt2, *_ in detail_map.values() if _t or _rt2)
-        _LAST_MARKET_FAIL["detail"] = detail_yield_note(rows,
-                                                        budget_left=_skipped)
+        _LAST_MARKET_FAIL["detail"] = detail_yield_note(
+            rows, budget_left=_skipped, fetched=len(_targets),
+            from_cache=_cached_n)
         if not _hit and detail_map:
             log.warning("naver_research: 상세 수율 0/%d — %s",
                         len(detail_map), _LAST_MARKET_FAIL["detail"])
@@ -1269,6 +1476,9 @@ def fetch_research(ticker: str, days_back: int = 90) -> Optional[dict]:
                 detail_map[nid] = fut.result()
             except Exception:
                 detail_map[nid] = (None, "")
+    # 형제 표면도 **자기 수집 끝에** 굽는다 — 안 하면 여기서 읽은 상세가
+    # 메모리에만 남아 프로세스와 함께 사라진다(#38 한 곳만 배선하면 갈린다).
+    detail_cache_flush()
 
     for r in rows:
         t, rt = detail_map.get(r["nid"], (None, ""))
@@ -1367,7 +1577,11 @@ def check() -> int:
         _jt, _jr, _jrung, _whys = _detail_json(nid)
         for _w in _whys:
             print(f"   ↪ {_w}")
-        tgt, rating, _rung = _fetch_report_detail_via(nid)
+        # ⚠️ **캐시를 우회**한다 — 이 줄이 묻는 것은 "원천이 지금 답하나" 다.
+        # 30일 캐시를 읽으면 원천이 오늘 죽어 있어도 옛 값으로 ✅ 가 찍힌다
+        # (#35·#321·#345c 감사의 계약이 무엇인지 먼저 답할 것). 우회하면
+        # 진단이 운영 캐시를 건드리지도 않는다(#264·#283).
+        tgt, rating, _rung = _fetch_report_detail_via(nid, use_cache=False)
         _via = _rung or "—"
         if tgt or rating:
             print(f"④ 상세 수율: ✅ nid={nid} → 목표가 {tgt} · 의견 "

@@ -56656,7 +56656,7 @@ class TestNaverWidgetSilence20260911:
                      "itemName": "삼성전자",
                      "endUrl": f"https://m.stock.naver.com/r/{i}"} for i in range(n)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (_rows(20), ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         out = nrc.fetch_recent_research_market(limit=300, days_back=30,
                                                fetch_detail=False)
         assert len(out) == 20
@@ -56761,7 +56761,7 @@ class TestNaverWidgetSilence20260911:
                  "itemName": "삼성전자", "endUrl": f"https://m.stock.naver.com/r/{i}"}
                 for i in range(3)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (rows, ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         assert len(mo.fetch_recent_research_kr(limit=50)) == 3
         note = mo.research_note("kr")
         assert "목표가·투자의견을 한 건도 못 읽었습니다" in note["window"], note
@@ -56800,7 +56800,7 @@ class TestNaverWidgetSilence20260911:
         monkeypatch.setattr(nrc, "_get2_json",
                             lambda url, **kw: (asked.append(url) or
                                                ([_row(0)], "")))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         nrc.fetch_recent_research_market(limit=5, days_back=7, fetch_detail=False)
         nrc.fetch_recent_research_industry(limit=5, days_back=7)
         nrc.fetch_recent_research_strategy(limit=5, days_back=7)
@@ -56897,7 +56897,7 @@ class TestNaverWidgetSilence20260911:
         # 돌려주는 `_fetch_report_detail_via` 를 부른다 — 스텁은 **제품이 실제로
         # 부르는 그 함수**를 겨눠야 아무것도 안 새어 나간다(#340·#312).
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: seen.append(nid) or (95000.0, "매수",
+                            lambda nid, **kw: seen.append(nid) or (95000.0, "매수",
                                                              "api/x"))
         assert nrc.check() == 0
         out = capsys.readouterr().out
@@ -56909,7 +56909,7 @@ class TestNaverWidgetSilence20260911:
         assert "경로 api/x" in out, "어느 경로로 읽었는지 안 적는다(#42a)"
         # 못 읽으면 갈래를 적되 **단정하지 않는다** — 그 리포트에 없을 수도 있다
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (None, "", ""))
+                            lambda nid, **kw: (None, "", ""))
         nrc.check()
         out = capsys.readouterr().out
         assert "상세 수율: ⚠️" in out and "단정하지 않는다" in out
@@ -56931,14 +56931,14 @@ class TestNaverWidgetSilence20260911:
                                             "title": "t", "date": _TODAY,
                                             "url": "#", "rating": ""}], "", 1))
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (None, "", ""))
+                            lambda nid, **kw: (None, "", ""))
         rows = nrc.fetch_recent_research_market(limit=5, fetch_detail=True)
         assert rows and "한 건도 못 읽었습니다" in nrc.last_fail_reason("detail")
         # 하나라도 읽히면 사유가 깨끗해진다(옛 사유가 남으면 거짓말이다).
         # 정상 경로(1단)면 **경로 배지도 안 뜬다** — 늘 뜨는 배지는 아무것도
         # 안 재는 것과 같다(#25·#260).
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (95000.0, "매수",
+                            lambda nid, **kw: (95000.0, "매수",
                                          nrc._DETAIL_API_RUNGS[0][0]))
         (tmp_path / "res").exists() and [f.unlink() for f in (tmp_path / "res").glob("*")]
         rows = nrc.fetch_recent_research_market(limit=5, fetch_detail=True)
@@ -57177,7 +57177,7 @@ class TestNaverWidgetSilence20260911:
                  "writeDate": _TODAY, "itemCode": "005930", "itemName": "삼성전자",
                  "endUrl": f"https://m.stock.naver.com/r/{i}"} for i in range(20)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (rows, ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (95000.0, "매수"))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (95000.0, "매수"))
         for fn, key in ((mo.fetch_recent_research_kr, "kr"),
                         (mo.fetch_recent_research_kr_industry, "kr_industry"),
                         (mo.fetch_recent_research_kr_strategy, "kr_strategy")):
@@ -57239,7 +57239,7 @@ class TestNaverWidgetSilence20260911:
                  "brokerName": "b", "writeDate": _TODAY,
                  "endUrl": "https://m.stock.naver.com/r/1"} for i in range(20)]
         monkeypatch.setattr(nrc, "_get2_json", lambda url, **kw: (rows, ""))
-        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid: (None, ""))
+        monkeypatch.setattr(nrc, "_fetch_report_detail", lambda nid, **kw: (None, ""))
         nrc.check()
         out = capsys.readouterr().out
         assert "원천 20행 중 3행 버림" in out and "id 3" in out, out
@@ -58328,7 +58328,7 @@ class TestPalladiumAndResearchPaging20260912:
         # 네이버를 친다(conftest 차단이 실제로 잡았다, #312).
         monkeypatch.setattr(
             nrc, "_fetch_report_detail_via",
-            lambda nid: hits.append(nid) or (1000.0, "Buy",
+            lambda nid, **kw: hits.append(nid) or (1000.0, "Buy",
                                              nrc._DETAIL_API_RUNGS[0][0]))
         out = nrc.fetch_recent_research_market(limit=1000, days_back=30,
                                                fetch_detail=True)
@@ -58380,6 +58380,11 @@ class TestPalladiumAndResearchPaging20260912:
         """상수를 돌려주는 뮤테이션이 통과하면 가드가 눈이 먼 것이고(#91b),
         주석 한 줄에 전 캐시가 날아가도 안 된다(#266)."""
         import bot.naver_research_client as nrc
+        # ⚠️ `client_sig` 는 `_CLIENT_SIG` 에 **memo** 한다 — 기준값을 memo 가
+        # 이미 찬 상태에서 재면 앞 테스트가 무엇을 남겼느냐에 따라 결과가
+        # 갈린다(무작위 순서 실행에서만 빨간불이었다, 2026-09-12 실측).
+        # 기준값도 **깨끗한 상태**에서 잰다(#91b 재는 대상이 맞나).
+        monkeypatch.setattr(nrc, "_CLIENT_SIG", "")
         real = nrc.client_sig()
         monkeypatch.setattr(nrc, "_CLIENT_SIG", "")
         import pathlib
@@ -58818,7 +58823,7 @@ class TestReviewFindings20260912:
         # 시장 경로는 `_fetch_report_detail_via` 를 부른다 — 옛 이름을 스텁하면
         # 아무것도 안 막아 **테스트가 진짜 네이버를 친다**(#340·#312).
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (1000.0, "Buy",
+                            lambda nid, **kw: (1000.0, "Buy",
                                          nrc._DETAIL_API_RUNGS[0][0]))
         nrc.fetch_recent_research_market(limit=5, days_back=30, fetch_detail=True)
         nrc.fetch_recent_research_market(limit=5, days_back=30, fetch_detail=False)
@@ -60184,7 +60189,10 @@ class TestNaverThemeAndDetailSpa20260912:
         monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
         rows, marks, why, partial = nsc.collect_themes_json()
         assert len(rows) == nsc._THEME_MIN_ROWS + 5 and why == "" and partial is False
-        assert marks[0].endswith("HTTP 404") and "❌" in marks[0]
+        # ⚠️ 계약은 "단 표시가 **왜 실패했는지 적는다**" 이지 그 문자열로
+        # 끝난다가 아니다 — 2026-09-12 에 단마다 소요(#69·#110)를 붙이자
+        # `endswith` 가 깨졌다(#19·#222 계약이 바뀌면 다시 쓴다).
+        assert "HTTP 404" in marks[0] and "❌" in marks[0], marks[0]
         assert f"✅ {nsc._THEME_MIN_ROWS + 5}개" in marks[1], marks
         # 1순위가 답하면 **뒤 후보는 부르지 않는다**(순손실 요청 금지)
         assert seen[:2] == [nsc._THEME_API_RUNGS[0][1],
@@ -60217,7 +60225,8 @@ class TestNaverThemeAndDetailSpa20260912:
                  3: [dict(self._ROW, no=str(i)) for i in range(200, 230)]}
 
         def fake(url, params=None, **k):
-            return pages.get((params or {}).get("page"), []), ""
+            # 1쪽은 `page` 없이 온다(2026-09-12) — 원천은 그걸 1쪽으로 읽는다
+            return pages.get((params or {}).get("page", 1), []), ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, partial = nsc._theme_json_rung("u")
@@ -60227,17 +60236,25 @@ class TestNaverThemeAndDetailSpa20260912:
     def test_partial_pages_are_shown_but_not_cached(self, monkeypatch):
         """중간 쪽이 429·타임아웃이면 **값은 주되 완전본으로 굽지 않는다** —
         구우면 TTL 내내 잘린 목록이 서빙되고, 그 사이 '원천에 그게 전부' 로
-        읽힌다(#280·#343)."""
+        읽힌다(#280·#343).
+
+        ⚠️ 픽스처를 다시 썼다(#222, 2026-09-12 독립 리뷰 H1): 이제 2쪽 실패가
+        **한도 사다리를 올리므로**, 더 큰 한도에서 원천이 짧게 주면 그건
+        정당한 완결이고 부분이 아니다. 이 계약이 실제로 서는 자리는 **한도를
+        다 올려도 계속 가득 차는** 경우다 — 픽스처가 그 상태를 못 만들면
+        아무것도 안 재는 것이다(#91c).
+        """
         import bot.naver_sector_client as nsc
-        full = [dict(self._ROW, no=str(i)) for i in range(100)]
+        full = [dict(self._ROW, no=str(i)) for i in range(5000)]
 
         def fake(url, params=None, **k):
-            return (full, "") if (params or {}).get("page") == 1 \
-                else (None, "HTTP 429")
+            p = dict(params or {})
+            return ((full[:p.get("pageSize", 20)], "") if p.get("page", 1) == 1
+                    else (None, "HTTP 429"))
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, partial = nsc._theme_json_rung("u")
-        assert len(rows) == 100 and partial is True and "429" in why
+        assert len(rows) == nsc._THEME_PAGE_SIZES[-1] and partial is True, why
         monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
         _r, marks, _w, p2 = nsc.collect_themes_json()
         assert p2 is True and "⚠️" in marks[0], marks
@@ -60661,15 +60678,15 @@ class TestNaverThemeAndDetailSpa20260912:
         # ① JSON 이 의견만 준다 → HTML 이 목표가를 채우고 라벨이 둘 다 말한다
         monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
             {"investmentOpinion": "매수", "expectPrice": "77,000"}, ""))
-        tgt, rating, via = rc._fetch_report_detail_via("1")
+        tgt, rating, via1 = rc._fetch_report_detail_via("p1")
         assert (tgt, rating) == (88000.0, "매수"), (tgt, rating)
-        assert hits and "옛 HTML" in via and rc._DETAIL_API_RUNGS[0][0] in via, via
+        assert hits and "옛 HTML" in via1 and rc._DETAIL_API_RUNGS[0][0] in via1, via1
 
         # ② JSON 이 **둘 다** 주면 폴백을 안 탄다(순손실 요청 금지)
         hits.clear()
         monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
             {"targetPrice": "77,000", "opinion": "매수"}, ""))
-        assert rc._fetch_report_detail_via("1") == (
+        assert rc._fetch_report_detail_via("p2") == (
             77000.0, "매수", rc._DETAIL_API_RUNGS[0][0])
         assert not hits, "JSON 이 둘 다 줬는데 HTML 도 받았다"
 
@@ -60678,8 +60695,12 @@ class TestNaverThemeAndDetailSpa20260912:
         monkeypatch.setattr(rc, "_get", lambda u, **k: "")
         monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
             {"investmentOpinion": "매수"}, ""))
-        tgt, rating, via = rc._fetch_report_detail_via("1")
+        tgt, rating, via = rc._fetch_report_detail_via("p3")
         assert tgt is None and rating == "매수" and via
+        # ⚠️ 2026-09-12 에 nid 별 상세 캐시가 생겨 **같은 nid 재호출은 캐시 히트**
+        # 다(#348) — 세 시나리오를 같은 `"1"` 로 돌리면 ②·③ 이 ① 의 값을 받는다.
+        # 계약("부분이면 폴백에 물어본다")은 그대로이고 픽스처만 nid 를 가른다(#222).
+        assert rc.detail_cached("p1") == (88000.0, "매수", via1), rc.detail_cached("p1")
 
     def test_via_is_stamped_end_to_end_so_the_note_can_speak(self, tmp_path,
                                                              monkeypatch):
@@ -60701,7 +60722,7 @@ class TestNaverThemeAndDetailSpa20260912:
         seq = [rc_ for rc_ in ("api/x", "옛 HTML", "api/x", "api/x")]
         it = iter(seq)
         monkeypatch.setattr(nrc, "_fetch_report_detail_via",
-                            lambda nid: (1000.0, "Buy", next(it)))
+                            lambda nid, **kw: (1000.0, "Buy", next(it)))
         nrc.fetch_recent_research_market(limit=50, days_back=30,
                                          fetch_detail=True)
         note = nrc.last_fail_reason("detail")
@@ -60745,3 +60766,674 @@ class TestNaverThemeAndDetailSpa20260912:
                  {"target": 900.0, "rating": "매수", "_via": "옛 HTML"}]
         note = rc.detail_yield_note(mixed)
         assert "행마다 다릅니다" in note and "옛 HTML" in note, note
+
+
+class TestThemeLadder400AndCooldown20260912:
+    """테마 사다리 — **이득 없는 파라미터 제거 · 가장 행동 가능한 사유 · 짧은 냉각**.
+
+    VM 실측 2026-09-12(프로브 v6): 세 후보가 `HTTP 400` · `HTTP 404` · `HTTP 404`
+    였는데 화면은 마지막 404 를 적었다. 400 은 **증명된 호스트**가 준 것이라
+    '주소가 없다'가 아니라 '우리 요청이 거부됐다'는 뜻이고 고칠 자리가 다르다.
+    그리고 전멸한 응답은 완전본이 아니라 캐시에 안 굽히므로(#280), 페이지를 열
+    때마다 사다리 + 죽은 옛 HTML 7쪽을 **전부 다시** 걸었다.
+    """
+
+    _ROW = {"no": "64", "name": "콩/대두", "changeRate": "14.49",
+            "recent3daysChangeRate": "-0.18", "type": "theme",
+            "leadingItem": "2,007540,샘표|2,248170,샘표식품"}
+
+    def _iso(self, monkeypatch, tmp_path):
+        """캐시 디렉터리를 이 테스트 것으로 — 냉각 기록이 형제 테스트로 새면
+        실행 순서에 따라 흔들린다(#30 의 세션판)."""
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        return nsc
+
+    # ── (a) 1쪽은 `pageSize` 만 ──────────────────────────────────────────
+    def test_first_page_sends_only_pagesize(self, monkeypatch, tmp_path):
+        """VM 실측 ④ 가 이 가족은 `page` 를 **무시**한다고 확정했다 — 이득이
+        0인 파라미터를 얹고 있었고, 같은 주소가 그 요청에 400 을 줬다.
+        **증명된 호출 모양**(업종 `?pageSize=100`)을 그대로 쓴다(#61·#136)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        seen = []
+        full = [dict(self._ROW, no=str(i)) for i in range(300)]
+
+        def fake(url, params=None, **k):
+            seen.append(dict(params or {}))
+            pg = (params or {}).get("page", 1)
+            sz = (params or {}).get("pageSize", 100)
+            return full[(pg - 1) * sz:pg * sz], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        nsc._theme_json_rung("u")
+        assert seen, "요청을 한 번도 안 보냈다"
+        assert "page" not in seen[0], seen[0]
+        assert seen[0].get("pageSize") == nsc._THEME_PAGE_SIZES[0], seen[0]
+        # 반대 증거 — `page` 가 듣는 형제를 위해 **2쪽부터는 얹는다**
+        pages_2plus = [p for p in seen if p.get("pageSize") == seen[0]["pageSize"]][1:]
+        assert pages_2plus and all("page" in p for p in pages_2plus), seen
+
+    # ── (b) 가장 행동 가능한 사유 ────────────────────────────────────────
+    def test_reason_rank_orders_by_what_can_be_acted_on(self):
+        """⚠️ 문자열을 훑는 판정이라 **생산부가 실제로 만든 문자열**로 잰다 —
+        손으로 적은 리터럴로 재면 생산부가 바뀌는 날 눈이 먼다(#19·#155)."""
+        from bot import naver_diag as nd
+        assert nd.reason_rank(nd.PAUSED) == 0
+        assert nd.reason_rank(nd.http_reason(400)) == 1
+        assert nd.reason_rank(nd.http_reason(403)) == 1
+        assert nd.reason_rank(nd.http_reason(429)) == 1
+        assert nd.reason_rank(nd.http_reason(503)) == 1
+        assert nd.reason_rank(nd.parse_reason("JSON", 12)) == 1
+        assert nd.reason_rank(nd.shape_reason("테마 목록", {"a": 1})) == 1
+        # 주소가 없거나 못 닿았다 — 고칠 자리는 '주소를 다시 찾기'다
+        assert nd.reason_rank(nd.http_reason(404)) == 2
+        assert nd.reason_rank(nd.http_reason(None)) == 2
+        assert nd.reason_rank(nd.http_reason(None, exc=TimeoutError("x"))) == 2
+        assert nd.reason_rank("") == 3
+        # 반대 증거 — 404 가 400 보다 **덜** 행동 가능하다(그 반대면 무의미)
+        assert nd.reason_rank(nd.http_reason(404)) > nd.reason_rank(nd.http_reason(400))
+
+    def test_ladder_reports_the_most_actionable_failure(self, monkeypatch, tmp_path):
+        """옛 판은 `marks[-1]` = **마지막 후보**의 사유를 적었다 — 화면이
+        `⚠️ 원천이 HTTP 404` 라고 말해 주소가 사라진 것처럼 읽혔다(#275·#82).
+
+        ⚠️ 순수 함수만 부르면 배선을 떼는 변형을 못 잡는다(#20) — 사다리를
+        통째로 태운다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        first = nsc._THEME_API_RUNGS[0][1]
+        monkeypatch.setattr(
+            nsc, "_get2_json",
+            lambda url, **k: (None, nsc._nd.http_reason(400 if url == first else 404)))
+        rows, marks, why, partial = nsc.collect_themes_json()
+        assert rows == [] and partial is False
+        assert "400" in why and "404" not in why, why
+        assert nsc._THEME_API_RUNGS[0][0] in why, why
+        # 단 표시는 **전부** 남는다 — 고른 것과 본 것은 다르다(#45)
+        assert len(marks) == len(nsc._THEME_API_RUNGS) and "404" in marks[-1]
+        # 재지 않으면 '느리다'는 진단이 아니다(#69·#110)
+        assert all(m.rstrip().endswith("s") for m in marks), marks
+
+    def test_same_rank_prefers_the_earlier_rung(self):
+        """같은 순위면 **앞 후보**가 이긴다 — 사다리 순서가 곧 증명된 순서다."""
+        import bot.naver_sector_client as nsc
+        got = nsc.pick_theme_reason([(1, 0, "증명됨", "원천이 HTTP 400"),
+                                     (1, 1, "추측", "원천이 HTTP 403")])
+        assert "400" in got and "증명됨" in got, got
+        assert nsc.pick_theme_reason([]) == ""
+        # 후보가 하나면 라벨을 덧붙이지 않는다(화면이 길어질 이유가 없다)
+        assert nsc.pick_theme_reason([(1, 0, "x", "원천이 HTTP 400")]) == "원천이 HTTP 400"
+
+    # ── (c) 전멸은 짧게만 믿는다 ────────────────────────────────────────
+    def _dead(self, nsc, monkeypatch, calls):
+        def _collect():
+            calls.append(1)
+            return {"themes": [], "ts": "", "partial": False,
+                    "reason": "원천이 HTTP 400 (domestic/theme)",
+                    "rungs": ["domestic/theme ❌ 원천이 HTTP 400 · 1.2s"]}
+        monkeypatch.setattr(nsc, "collect_themes", _collect)
+
+    def test_total_failure_is_believed_only_briefly(self, monkeypatch, tmp_path):
+        """사용자 2026-09-12 "테마별 시세 들어가는데 시간이 꽤 걸리는데" — 빈
+        결과는 캐시에 안 굽히므로(#280) 요청마다 사다리 + 죽은 HTML 7쪽을 다시
+        걸었다. 실패는 **짧게만** 믿는다(#152·#161·#303)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = []
+        self._dead(nsc, monkeypatch, calls)
+        first = nsc._collect_and_store()
+        assert first["themes"] == [] and calls == [1]
+        second = nsc._collect_and_store()
+        assert calls == [1], "냉각 중인데 사다리를 또 걸었다"
+        assert second.get("cooldown"), second
+        # 사유는 **버리지 않는다** — 화면이 말해야 한다(#43·#123 계열)
+        assert "400" in str(second.get("reason")), second
+        assert any("냉각" in m for m in second.get("rungs") or []), second
+        # ⚠️ 반대 증거 — 냉각이 식으면 **반드시 다시 시도**한다. 주기적으로
+        # 발동하는 가드는 계열을 영구히 멈출 수 있다(#178).
+        monkeypatch.setattr(nsc, "_THEME_FAIL_TTL", 0)
+        nsc._collect_and_store()
+        assert calls == [1, 1], "냉각이 식었는데 재시도하지 않았다"
+
+    def test_pause_is_not_remembered_as_a_dead_source(self, monkeypatch, tmp_path):
+        """일시정지는 원천이 죽은 게 아니라 **우리가 안 물어본 것**이다 —
+        냉각으로 기억하면 정지를 푼 뒤에도 10분을 더 빈 화면으로 산다
+        (#79·#143·#345)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = []
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: (calls.append(1),
+                                     {"themes": [], "reason": nsc._nd.PAUSED,
+                                      "rungs": []})[1])
+        nsc._collect_and_store()
+        nsc._collect_and_store()
+        assert calls == [1, 1], "일시정지를 '원천이 죽었다'로 기억했다"
+
+    def test_success_clears_the_cooldown(self, monkeypatch, tmp_path):
+        """냉각이 식은 뒤 원천이 돌아오면 기록을 지운다 — 남겨 두면 다음 실패의
+        나이가 옛 기록에서 계산돼 냉각이 실제보다 짧아진다."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: {"themes": [], "reason": "원천이 HTTP 400",
+                                     "rungs": []})
+        nsc._collect_and_store()
+        assert nsc.theme_fail_memo()[2] > 0
+        # ⚠️ 냉각 중엔 수집 자체를 안 하므로 성공할 수가 없다 — **식은 뒤**가
+        # 이 계약이 성립하는 유일한 자리다(#91c 실제로 그 분기를 태울 것).
+        monkeypatch.setattr(nsc, "_THEME_FAIL_TTL", 0)
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda: {"themes": [dict(self._ROW)], "partial": False})
+        nsc._collect_and_store()
+        monkeypatch.setattr(nsc, "_THEME_FAIL_TTL", 600)
+        assert nsc.theme_fail_memo()[2] == 0, "성공했는데 냉각 기록이 남았다"
+
+    def test_cooldown_does_not_claim_it_is_refreshing(self, monkeypatch, tmp_path):
+        """'갱신 중' 은 **진짜 진행 중일 때만** — 냉각 중엔 배경을 띄워도 즉시
+        빈손으로 끝난다(#25 늘 뜨는 배지 · #345)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_read_cache",
+                            lambda n: ({"themes": [dict(self._ROW)], "ts": "t"},
+                                       __import__("time").time() - 300))
+        kicked = []
+        monkeypatch.setattr(nsc, "_refresh_async",
+                            lambda *a, **k: kicked.append(1))
+        nsc._cache_write(nsc._THEME_FAIL_MEMO,
+                         {"reason": "원천이 HTTP 400", "rungs": []})
+        got = nsc.fetch_themes()
+        assert got.get("refreshing") is False and got.get("cooldown"), got
+        assert kicked == [], "냉각 중인데 배경 갱신을 띄웠다"
+        assert got["themes"], "저장분은 그대로 보여야 한다"
+
+    def test_screen_says_the_reason_is_not_a_fresh_measurement(self):
+        """이 사유는 **지금 잰 것이 아니다** — 밝히지 않으면 방금 측정한 것으로
+        읽힌다(#165·#43)."""
+        from bot.naver_pages import theme_status
+        lbl, why = theme_status({"stale": True, "stale_age": 3600,
+                                 "reason": "원천이 HTTP 400", "cooldown": 125})
+        assert "갱신 실패" in lbl and "400" in why
+        assert "직전 기록" in why and "2분 5초" in why, why
+        # 반대 증거 — 냉각이 아니면 그런 말을 붙이지 않는다
+        _l2, w2 = theme_status({"stale": True, "stale_age": 3600,
+                                "reason": "원천이 HTTP 400"})
+        assert "직전 기록" not in w2, w2
+
+
+class TestThemeLadderReviewFixes20260912:
+    """독립 리뷰(2026-09-12) H1·H2·M1 — #346 의 fix 가 스스로 만든 구멍.
+
+    H1 이 핵심이다: `page` 를 2쪽부터 계속 얹으면, **이 변경이 스스로 세운
+    가설**(같은 주소가 `page` 를 얹은 요청에 400 을 준다)이 참일 때 2쪽이
+    400 → `saturated=False` → **한도 사다리가 300·1000 으로 안 올라간다**.
+    결과는 266개 중 100개 · `partial=True` · 캐시 거부 = 사용자가 신고한
+    '느림'이 그대로 남고 화면은 `전체 테마 100개` 라고 적는다(#45).
+    """
+
+    _ROW = {"no": "64", "name": "콩/대두", "changeRate": "1.0",
+            "recent3daysChangeRate": "0.5", "type": "theme"}
+
+    def _iso(self, monkeypatch, tmp_path):
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        return nsc
+
+    # ── H1 ──────────────────────────────────────────────────────────────
+    def test_page2_rejection_still_escalates_the_size_ladder(
+            self, monkeypatch, tmp_path):
+        """원천이 `page` 를 얹은 요청을 **거절**해도 한도는 올라가야 한다.
+
+        1쪽이 상한까지 찼는데 2쪽을 못 받았으면 그건 '목록 끝'이 아니라
+        **더 있는데 못 받은 것**이다(#136 요구를 충족했나 · #342 상한 판정은
+        원천이 준 원시 수로).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(266)]
+        seen = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            seen.append(p)
+            if "page" in p:                    # 이 변경의 가설 그대로
+                return None, nsc._nd.http_reason(400)
+            return full[:p.get("pageSize", 20)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows is not None and len(rows) == 266, (len(rows or []), why, seen)
+        assert partial is False, (why, seen)
+        # 한도가 실제로 올라갔는지 — 값만 보면 사다리를 지워도 통과할 수 있다
+        assert any(p.get("pageSize") == 300 for p in seen), seen
+
+    def test_page1_full_but_no_more_pages_is_not_called_complete(
+            self, monkeypatch, tmp_path):
+        """반대 증거 — 한도를 다 올렸는데도 계속 가득 차면 **부분**이다(#280)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(5000)]
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if "page" in p:
+                return None, nsc._nd.http_reason(400)
+            return full[:p.get("pageSize", 20)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert partial is True and rows and len(rows) == nsc._THEME_PAGE_SIZES[-1]
+
+    # ── H2 ──────────────────────────────────────────────────────────────
+    def test_earlier_rung_does_not_win_over_a_more_actionable_later_one(
+            self, monkeypatch, tmp_path):
+        """**눈먼 테스트 보완**: 옛 픽스처는 400 이 이미 1순위라 정렬을 통째로
+        지워도(`sorted(...)[0]` → `fails[0]`) 42개가 전부 통과했다(리뷰 실측).
+
+        현실 배치가 정확히 그 반대다 — `rungs` 는 `[("탐색됨", memo)] +
+        _THEME_API_RUNGS` 라 **옛 탐색 메모가 0단**이므로, 0단 404 · 1단
+        (증명된 주소) 400 이면 순위가 없으면 404 를 적는다(고치려던 그 오보).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "https://x/api/old")
+        proven = nsc._THEME_API_RUNGS[0][1]
+        monkeypatch.setattr(
+            nsc, "_get2_json",
+            lambda url, **k: (None, nsc._nd.http_reason(
+                400 if url == proven else 404)))
+        rows, marks, why, _p = nsc.collect_themes_json()
+        assert rows == []
+        assert "400" in why and "404" not in why, why
+        assert nsc._THEME_API_RUNGS[0][0] in why, why
+        assert marks[0].startswith("탐색됨"), marks   # 0단이 먼저 돌긴 했다
+
+    # ── M1 ──────────────────────────────────────────────────────────────
+    def test_cooldown_is_disclosed_even_without_a_stored_snapshot(
+            self, monkeypatch, tmp_path):
+        """저장분이 없으면 `theme_status` 가 안 돌아 **냉각 사실이 사라진다**
+        — 10분 전 기록을 방금 잰 것처럼 적는다(#165·#43). CLAUDE.md #346 이
+        "냉각 중엔 화면이 '직전 기록 · N분 뒤 재시도' 라고 밝힌다"고 적어 둔
+        그 약속이 이 경로에선 거짓이었다(#286).
+        """
+        import bot.naver_sector_client as nsc
+        from bot.naver_pages import render_theme_page
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        nsc._cache_write(nsc._THEME_FAIL_MEMO,
+                         {"reason": "원천이 HTTP 400 (domestic/theme)",
+                          "rungs": []})
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_read_cache", lambda n: (None, None))
+        html = render_theme_page()
+        assert "400" in html, html[:400]
+        assert "직전 기록" in html and "재시도" in html, html[:900]
+
+    def test_pause_fixture_uses_the_product_shaped_reason(self):
+        """픽스처는 원천이 아니라 **제품이 실제로 만드는 문자열**이어야 한다
+        (#155) — `pick_theme_reason` 이 라벨을 덧붙인 모양으로 온다."""
+        import bot.naver_sector_client as nsc
+        from bot import naver_diag as nd
+        shaped = nsc.pick_theme_reason(
+            [(0, 0, "domestic/theme", nd.PAUSED),
+             (2, 1, "front-api/theme", nd.http_reason(404))])
+        assert shaped.startswith(nd.PAUSED) and "domestic/theme" in shaped
+        assert nd.reason_rank(shaped) == 0, shaped
+
+
+class TestResearchDetailCoverage20260912:
+    """사용자 2026-09-12 "투자의견이랑 목표가도 안나오는것들 최대한 모두 나오게".
+
+    옛 판은 매 수집이 `rows[:_DETAIL_BUDGET]`(40) 만 걸어 41번째부터는 **몇
+    주기를 돌아도 영원히 빈칸**이었다 — 창을 일주일로 넓히자 295건이 되어
+    260건이 상시 빈칸이다. 예산을 키우는 게 아니라 **이미 읽은 것을 다시 안
+    읽는 것**이 답이다(발행 리포트의 목표가·투자의견은 안 바뀐다).
+    """
+
+    def _rows(self, n):
+        return [{"nid": f"n{i}", "code": f"{i:06d}", "name": f"종목{i}",
+                 "broker": "증권", "title": f"리포트{i}",
+                 "date": f"2026-09-{(30 - i % 28):02d}", "url": ""}
+                for i in range(n)]
+
+    def _setup(self, monkeypatch, tmp_path, rows):
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nrc, "_DETAIL_MEM", {})
+        monkeypatch.setattr(nrc, "_DETAIL_MEM_AT", 0.0)
+        monkeypatch.setattr(nrc, "_DETAIL_DIRTY", False)
+        monkeypatch.setattr(nrc, "fetch_research_pages",
+                            lambda *a, **k: (list(rows), "", {}))
+        return nrc
+
+    def test_budget_is_spent_on_cache_misses_so_coverage_grows(
+            self, monkeypatch, tmp_path):
+        """**핵심 계약**: 한 주기가 예산만큼 새로 채우고, 다음 주기는 그걸
+        저장분으로 쓰고 **다른** 예산을 쓴다 — 몇 주기면 전 행이 찬다.
+
+        옛 판은 늘 같은 `rows[:40]` 을 다시 쳤으므로 41번째는 영원히 빈칸이다.
+        """
+        import bot.naver_research_client as nrc
+        rows = self._rows(100)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        hit = []
+
+        # ⚠️ 스텁은 **원천 쪽**에 건다 — 제품 함수(`_fetch_report_detail_via`)를
+        # 갈아끼우면 그 안의 캐시 쓰기가 통째로 빠져 이 계약을 못 잰다(#155·#20).
+        def fake_json(nid):
+            hit.append(nid)
+            return 1000.0, "매수", "api/research/{kind}/{id}", []
+
+        monkeypatch.setattr(nrc_, "_detail_json", fake_json)
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 40)
+
+        out1 = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        graded1 = sum(1 for r in out1 if r.get("target") or r.get("rating"))
+        assert graded1 == 40 and len(hit) == 40, (graded1, len(hit))
+        first = set(hit)
+
+        # 2주기: 목록 캐시는 지우되 **상세 캐시는 남긴다**(그게 이 계약이다)
+        for f in tmp_path.glob("naver_market_*.json"):
+            f.unlink()
+        hit.clear()
+        out2 = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        graded2 = sum(1 for r in out2 if r.get("target") or r.get("rating"))
+        assert graded2 == 80, graded2
+        assert len(hit) == 40, len(hit)
+        # 같은 nid 를 다시 치지 않았다 = 예산이 **미스에만** 쓰였다
+        # (`rows` 는 날짜로 정렬되므로 입력 순서가 아니라 **1주기가 실제로 친
+        # 집합**과 대조해야 한다 — 입력 슬라이스로 재면 엉뚱한 걸 잰다, #91b)
+        assert not (set(hit) & first), sorted(set(hit) & first)[:5]
+
+        for f in tmp_path.glob("naver_market_*.json"):
+            f.unlink()
+        hit.clear()
+        out3 = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        assert sum(1 for r in out3 if r.get("target")) == 100
+        # 전부 찼으면 그 다음엔 **네트워크 0**
+        for f in tmp_path.glob("naver_market_*.json"):
+            f.unlink()
+        hit.clear()
+        nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        assert hit == [], hit
+
+    def test_failures_are_believed_only_briefly(self, monkeypatch, tmp_path):
+        """성공은 길게, **실패는 짧게만** — 원천 장애 한 번이 그 리포트를 한 달
+        동안 빈칸으로 굳히면 안 된다(#303·#161·#152).
+        """
+        nrc = self._setup(monkeypatch, tmp_path, self._rows(1))
+        nrc.detail_cache_put("ok1", 1000.0, "매수", "json")
+        nrc.detail_cache_put("bad1", None, "", "")
+        assert nrc.detail_cached("ok1") == (1000.0, "매수", "json")
+        assert nrc.detail_cached("bad1") == (None, "", "")
+        # 실패 TTL 만 지난 시점 — 성공은 살아 있고 실패는 만료다
+        monkeypatch.setattr(nrc, "_DETAIL_TTL_MISS", 0)
+        assert nrc.detail_cached("bad1") is None
+        assert nrc.detail_cached("ok1") is not None
+
+    def test_cache_reader_never_raises(self, monkeypatch, tmp_path):
+        """어떤 바이트가 와도 안 던진다 — 이 맵이 던지면 그걸 읽는 화면 셋이
+        통째로 빈다(#331 캐시 독자 계약)."""
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        (tmp_path / "research_detail.json").write_bytes(b"\x8d{not json")
+        assert nrc.detail_cached("x") is None          # 예외 없이 None
+
+    def test_note_names_the_denominator_and_this_cycle(self):
+        """'최신 35건' 만 적으면 **무엇 중의 35 인지** 알 수 없다(#45·#82) —
+        분모와 이번 주기 수집분을 같이 적어 다음 출력이 곧 측정이 되게."""
+        from bot.naver_research_client import detail_yield_note
+        rows = [{"target": 1.0, "rating": "매수", "_via": "json"}] * 35 \
+            + [{"target": None, "rating": ""}] * 260
+        note = detail_yield_note(rows, budget_left=220, fetched=40,
+                                 from_cache=0)
+        # ⚠️ `저장분` 은 캐시 적중 수(값 없는 기록 포함)라 '채워진 35' 를 분해
+        # 하는 수가 아니다 — 무엇을 센 수인지 이름으로 말한다(독립 리뷰 L2).
+        assert "35/295" in note and "이번 주기에 40건 조회" in note, note
+        assert "저장분 재사용" in note, note
+        assert "다음 주기" in note, note
+        # 예산은 남았는데 못 채운 행 = **상세가 값을 안 준 것**(갈래가 다르다)
+        # ⚠️ `... or True` 로 쓰면 앞 절이 통째로 무력해진다 — 항상 참인 단언은
+        # 가드가 아니라 죽은 코드다(#291, 셀프리뷰 2026-09-12에 내가 쓴 것을 잡음).
+        n2 = detail_yield_note(rows, budget_left=0, fetched=295, from_cache=0)
+        assert "35/295" in n2, n2
+        assert "없는 리포트" in n2, n2        # 갈래가 다르다(예산 아님)
+        assert "다음 주기" not in n2 and "예산" not in n2, n2
+
+
+class TestResearchDetailConvergence20260912:
+    """독립 리뷰 2026-09-12 Blocking — 예산이 **수렴하지 않는다**.
+
+    `_DETAIL_TTL_MISS`(15분) < 수집 주기(`_MARKET_TTL_HOURS` 1시간)라 음성
+    캐시는 **다음 주기 전에 항상 만료**된다. 그래서 값이 없는 리포트(NOT
+    RATED·탐방노트)가 매 주기 날짜 상위 40건을 영구 점유하고 그 아래 행은
+    **한 번도 시도되지 않는다** — 리뷰 실측: 24주기 뒤에도 화면 0/295 ·
+    시도 40/295.
+
+    갈래를 나눠야 한다(#82): **원천이 답했는데 값이 없다** = 그 리포트엔
+    없는 것(발행분은 안 바뀐다) → 길게 · **못 닿았다** = 원천 장애 → 짧게
+    (#303·#161·#152). 오래 믿는 쪽은 파서 지문을 같이 실어 배포가 곧
+    무효화가 되게 한다(#119 — 우리 파서가 바뀌면 '값 없음' 판정도 무효다).
+    """
+
+    def _rows(self, n):
+        return [{"nid": f"n{i}", "code": f"{i:06d}", "name": f"종목{i}",
+                 "broker": "증권", "title": f"리포트{i}",
+                 "date": f"2026-09-{(30 - i % 28):02d}", "url": ""}
+                for i in range(n)]
+
+    def _setup(self, monkeypatch, tmp_path, rows):
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nrc, "_DETAIL_MEM", {})
+        monkeypatch.setattr(nrc, "_DETAIL_MEM_AT", 0.0)
+        monkeypatch.setattr(nrc, "_DETAIL_DIRTY", False)
+        monkeypatch.setattr(nrc, "fetch_research_pages",
+                            lambda *a, **k: (list(rows), "", {}))
+        return nrc
+
+    def test_answered_but_empty_is_remembered_unreachable_is_not(
+            self, monkeypatch, tmp_path):
+        """같은 '빈 결과' 인데 원인이 둘이고 처방이 반대다."""
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        monkeypatch.setattr(nrc, "_detail_json",
+                            lambda nid, **kw: (None, "", "", []))
+        # empty1 = 원천이 상세를 주긴 했는데 목표가·의견이 없다
+        # down1  = 상세를 못 받았다(원천 장애)
+        monkeypatch.setattr(nrc, "_get",
+                            lambda url, **k: ("<html>리포트</html>"
+                                              if "empty1" in url else ""))
+        assert nrc._fetch_report_detail_via("empty1") == (None, "", "")
+        assert nrc._fetch_report_detail_via("down1") == (None, "", "")
+        # 다음 주기(1시간 뒤) = 실패 TTL 은 지났다
+        monkeypatch.setattr(nrc, "_DETAIL_TTL_MISS", 0)
+        assert nrc.detail_cached("empty1") is not None, "답한 건 기억해야 한다"
+        assert nrc.detail_cached("down1") is None, "못 닿은 건 다시 물어야 한다"
+
+    def test_parser_change_invalidates_the_empty_verdict(
+            self, monkeypatch, tmp_path):
+        """'값이 없다' 는 **우리 파서의 판정**이다 — 파서가 바뀌면 무효다.
+
+        손으로 버전을 올리는 방식은 이 레포에서 일곱 번 졌다(#119·#233).
+        """
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-A")
+        nrc.detail_cache_put("e1", None, "", "", answered=True)
+        assert nrc.detail_cached("e1") is not None
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-B")
+        assert nrc.detail_cached("e1") is None, "파서가 바뀌면 다시 물어야 한다"
+        # 값이 **있는** 기록은 파서와 무관하게 산다(원천이 준 사실이다)
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-A")
+        nrc.detail_cache_put("g1", 1000.0, "매수", "json")
+        monkeypatch.setattr(nrc, "client_sig", lambda: "sig-B")
+        assert nrc.detail_cached("g1") == (1000.0, "매수", "json")
+
+    def test_mixed_batch_converges_across_cycles(self, monkeypatch, tmp_path):
+        """값이 **아래쪽에만** 있는 배치 — 옛 판은 24주기를 돌아도 0건이다."""
+        import bot.naver_research_client as nrc
+        rows = self._rows(100)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        # 날짜 내림차순 상위 60건은 값이 없고(원천은 답한다) 나머지 40건만 값
+        graded_nids = {f"n{i}" for i in range(100)}
+        hit = []
+
+        def fake_json(nid):
+            hit.append(nid)
+            return (None, "", "", [])
+
+        def fake_get(url, **k):
+            nid = url.rsplit("nid=", 1)[-1]
+            # 뒤쪽 40개 nid 에만 목표가가 있다
+            if nid in graded_nids and int(nid[1:]) >= 60:
+                return ('<html>목표가 <em class="money">'
+                        '<strong>12,000</strong></em></html>')
+            return "<html>리포트</html>"
+
+        monkeypatch.setattr(nrc_, "_detail_json", fake_json)
+        monkeypatch.setattr(nrc_, "_get", fake_get)
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 40)
+
+        tried = set()
+        for _cycle in range(3):
+            for f in tmp_path.glob("naver_market_*.json"):
+                f.unlink()
+            hit.clear()
+            out = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+            tried |= set(hit)
+            # 주기 사이에 실패 TTL 은 지난다(15분 < 1시간)
+            monkeypatch.setattr(nrc_, "_DETAIL_TTL_MISS", 0)
+        assert len(tried) == 100, f"시도 {len(tried)}/100 — 수렴하지 않는다"
+        assert sum(1 for r in out if r.get("target")) == 40
+
+    def test_coverage_survives_a_restart(self, monkeypatch, tmp_path):
+        """**영속**이 이 fix 의 핵심이다 — 메모리만이면 재시작마다 원점이다.
+
+        (독립 리뷰 High-1: `detail_cache_flush()` 두 호출을 지워도 옛 회귀는
+        전부 green 이었다 — 3주기가 같은 프로세스라 `_DETAIL_MEM` 이 이어져서다.)
+        """
+        import bot.naver_research_client as nrc
+        rows = self._rows(100)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        hit = []
+
+        # ⚠️ 오늘 운영에서 실제로 도는 경로는 **옛 HTML** 이다 — JSON 단이
+        # 값을 주는 픽스처로만 재면 HTML 경로의 캐시 쓰기가 무가드가 된다
+        # (독립 리뷰 High-2: 그 줄을 지워도 옛 회귀 4건이 전부 green).
+        monkeypatch.setattr(nrc_, "_detail_json",
+                            lambda nid, **kw: (None, "", "", []))
+
+        def fake_get(url, **k):
+            hit.append(url.rsplit("nid=", 1)[-1])
+            return ('<html>목표가 <em class="money">'
+                    '<strong>12,000</strong></em></html>')
+
+        monkeypatch.setattr(nrc_, "_get", fake_get)
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 40)
+
+        seen = []
+        for _cycle in range(3):
+            for f in tmp_path.glob("naver_market_*.json"):
+                f.unlink()
+            hit.clear()
+            out = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+            seen.append(sum(1 for r in out if r.get("target")))
+            # **재시작** — 메모리 사본을 버리고 디스크만 남긴다
+            monkeypatch.setattr(nrc_, "_DETAIL_MEM", {})
+            monkeypatch.setattr(nrc_, "_DETAIL_MEM_AT", 0.0)
+            monkeypatch.setattr(nrc_, "_DETAIL_DIRTY", False)
+        assert seen == [40, 80, 100], seen
+        assert (tmp_path / "research_detail.json").exists()
+
+    def test_single_stock_path_reads_the_cache(self, monkeypatch, tmp_path):
+        """`fetch_research()`(단일 종목)의 **유일한** 캐시 읽기 — 무가드였다."""
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        nrc.detail_cache_put("s1", 1234.0, "매수", "json")
+
+        def boom(nid):
+            raise AssertionError("캐시가 있는데 원천을 쳤다")
+
+        monkeypatch.setattr(nrc, "_detail_json", boom)
+        monkeypatch.setattr(nrc, "_get", boom)
+        assert nrc._fetch_report_detail_via("s1") == (1234.0, "매수", "json")
+
+    def test_restored_note_says_it_is_a_previous_cycles_record(self):
+        """캐시 히트 주기는 **한 건도 안 걸었다** — 저장된 `이번 주기에 40건
+        조회` 를 그대로 내보내면 화면이 안 한 일을 했다고 말한다(독립 리뷰 L3).
+        """
+        from bot.naver_research_client import restored_detail_note
+        n = restored_detail_note("목표가·투자의견 35/295건 — 이번 주기에 40건 조회",
+                                 0.5)
+        assert "직전 수집 기록(30분 전)" in n, n
+        assert restored_detail_note("", 0.5) == ""
+
+    def test_cache_hit_restores_the_note_with_that_label(
+            self, monkeypatch, tmp_path):
+        """헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20) — 캐시 히트를
+        실제로 태워 화면이 읽는 칸에 그 라벨이 실리는지 본다."""
+        import bot.naver_research_client as nrc
+        rows = self._rows(5)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        monkeypatch.setattr(nrc_, "_detail_json",
+                            lambda nid, **kw: (1000.0, "매수", "json", []))
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 2)
+        nrc_.fetch_recent_research_market(limit=5, days_back=30)
+        n1 = nrc_._LAST_MARKET_FAIL["detail"]
+        assert "직전 수집 기록" not in n1, n1        # 이번 실행은 진짜 수집이다
+        nrc_.fetch_recent_research_market(limit=5, days_back=30)   # 캐시 히트
+        n2 = nrc_._LAST_MARKET_FAIL["detail"]
+        assert "직전 수집 기록" in n2, n2
+
+    def test_check_measures_the_source_not_the_cache(
+            self, monkeypatch, tmp_path, capsys):
+        """감사 ④ 가 묻는 것은 "**원천이 지금 답하나**" 다 — 30일 캐시를 읽으면
+        원천이 죽은 날에도 옛 값으로 ✅ 가 찍힌다(#35 의 경계 · #321·#345c).
+        """
+        import bot.naver_research_client as nrc
+        nrc_ = self._setup(monkeypatch, tmp_path, [])
+        nrc_.detail_cache_put("n1", 9999.0, "매수", "json")   # 저장분(옛 값)
+        monkeypatch.setattr(
+            nrc_, "fetch_research_json",
+            lambda kind, **k: ([{"nid": "n1", "date": "2026-09-12",
+                                 "code": "000001", "name": "종목",
+                                 "broker": "증권", "title": "t", "url": ""}],
+                               "", 1))
+        # 원천은 **오늘 죽어 있다** — 상세 사다리도 HTML 도 값을 안 준다
+        monkeypatch.setattr(nrc_, "_detail_json",
+                            lambda nid, **kw: (None, "", "", ["1단 HTTP 500"]))
+        monkeypatch.setattr(nrc_, "_get", lambda url, **k: "")
+        nrc_.check()
+        out = capsys.readouterr().out
+        assert "9999" not in out, out           # 저장분으로 ✅ 를 찍으면 안 된다
+        assert "④ 상세 수율: ⚠️" in out, out
+        # 진단이 운영 캐시를 건드리지도 않았다(#264·#283)
+        assert nrc_.detail_cached("n1") == (9999.0, "매수", "json")
+
+    def test_concurrent_flush_does_not_lose_the_map(self, monkeypatch,
+                                                    tmp_path):
+        """tmp 이름이 프로세스 상수면 두 flush 가 **같은 파일**을 쓴다 —
+        `os.replace` 가 ENOENT 로 죽어 그 flush 가 조용히 유실된다(독립 리뷰 L1).
+        """
+        import threading
+        from pathlib import Path as _P
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        names = []
+        real_write = _P.write_text
+
+        def spy(self, *a, **k):
+            if self.suffix == ".tmp":
+                names.append(self.name)
+            return real_write(self, *a, **k)
+
+        monkeypatch.setattr(_P, "write_text", spy)
+        errs = []
+
+        def worker(i):
+            try:
+                nrc.detail_cache_put(f"c{i}", float(i), "매수", "json")
+                nrc.detail_cache_flush()
+            except Exception as exc:               # noqa: BLE001
+                errs.append(exc)
+
+        ts = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        assert not errs, errs
+        assert len(set(names)) == len(names), f"tmp 이름이 겹친다: {names}"

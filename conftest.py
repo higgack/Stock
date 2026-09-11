@@ -179,6 +179,9 @@ def _redirect_disk_caches() -> list:
         ("bot.market_timing", "_VOL_CACHE_DIR", "market_timing"),
         ("bot.finviz_client", "_CACHE_DIR", "finviz"),
         ("bot.market_favorites", "_FAVORITES_FILE", "market_favorites.json"),
+        # 상세 캐시(목표가·투자의견)는 렌더 경로가 디스크에 굽는다 — 함수
+        # 스코프 fixture 로는 `pytest bot/tests` 프로세스가 안 덮인다(#344).
+        ("bot.naver_research_client", "_CACHE_DIR", "naver_research"),
     )
     done = []
     for mod, attr, leaf in targets:

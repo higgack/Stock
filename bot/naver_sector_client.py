@@ -858,7 +858,7 @@ _THEME_PAGES = 7
 # — 낡은 값을 '현재'로 내보내지 않기 위해서다(#163). 화면은 어느 쪽이든
 # 스냅샷 시각(ts)을 그대로 찍는다(#43).
 _THEME_SWR_SEC = 600
-_CHECK_VER = 6        # 4 = JSON 경로 · 5 = 업종맵 갈래 · 6 = 테마 사다리·탐색
+_CHECK_VER = 7        # 5 = 테마 사다리 · 6 = 탐색 · 7 = 냉각·행동가능 사유
 
 _BG_KEYS: set = set()
 _BG_LOCK = threading.Lock()
@@ -954,6 +954,13 @@ _THEME_MAX_PAGES = 5             # `page` 가 듣는 원천을 위한 이어받�
 _THEME_DEFAULT_PAGE = 20         # 이 수가 오면 pageSize 가 안 먹은 것이다
 _THEME_MIN_ROWS = 150            # 실측 266 에서 넉넉히 내린 하한
 _THEME_MEMO = "theme_endpoint.json"
+# 전 후보가 죽은 날의 **짧은 냉각**. 없으면 페이지를 열 때마다 JSON 사다리
+# (3후보 × 한도 3)와 죽은 옛 HTML 7쪽을 **전부 다시** 걷는다 — 빈 결과는
+# 완전본이 아니라 캐시에 굽지 않으므로(#280) 요청마다 순손실이다(사용자
+# 2026-09-12 "테마별 시세 들어가는데 시간이 꽤 걸리는데"). 실패는 **짧게만**
+# 믿는다 — 길게 믿으면 원천이 돌아온 뒤에도 빈 화면이 남는다(#152·#161·#303).
+_THEME_FAIL_MEMO = "theme_fail.json"
+_THEME_FAIL_TTL = 600
 _THEME_DISCOVER_URL = "https://finance.naver.com/sise/theme.naver"
 _THEME_DISCOVER_COOLDOWN = 6 * 3600
 
@@ -1072,10 +1079,31 @@ def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
     n_raw_total = 0
     paging_ok = True
     for page in range(1, _THEME_MAX_PAGES + 1):
-        raw, why = _get2_json(url, params={"page": page,
-                                           "pageSize": page_size})
+        # ⚠️ 1쪽은 **`pageSize` 만** 보낸다. VM 실측 ④ 가 이 가족은 `page` 를
+        # 무시한다고 확정했으므로 얹어도 이득이 0인데, 2026-09-12 실측에서 같은
+        # 주소가 `page` 를 얹은 요청에 **HTTP 400** 을 줬다(한 시간 전 같은
+        # 주소가 100행을 줬다). 이득 없는 파라미터는 거절의 후보일 뿐이므로
+        # **증명된 호출 모양**(업종 `?pageSize=100`)을 그대로 쓴다.
+        # 2쪽부터는 얹는다 — 이 함수는 탐색이 찾아낸 **모르는 주소**도 검증
+        # 하므로(`_discover_theme_endpoint`) `page` 가 듣는 원천이면 그때
+        # 이어받는다. 리서치 형제는 여기를 안 쓴다(자기 페이징이 따로 있고
+        # 거기도 1쪽은 `page` 없이 보낸다) — 귀속을 틀리게 적으면 다음 사람이
+        # "리서치가 깨진다"는 헛걱정을 한다(#55, 독립 리뷰 2026-09-12 L2).
+        params = {"pageSize": page_size}
+        if page > 1:
+            params["page"] = page
+        raw, why = _get2_json(url, params=params)
         if raw is None:
-            return ((got, why, True, False) if got
+            # ⚠️ **1쪽이 상한까지 찼는데 2쪽을 못 받았으면 포화다.** 그건 '목록
+            # 끝'이 아니라 더 있는데 못 받은 것이므로, 여기서 `saturated=False`
+            # 로 끝내면 한도 사다리(100→300→1000)가 멈춘다 — 이 변경이 스스로
+            # 세운 가설(같은 주소가 `page` 를 얹은 요청에 400 을 준다)이 참일
+            # 때 정확히 그렇게 되어, 266개 중 100개를 '전체 테마'로 그리고
+            # 캐시도 거부해 **클릭마다 재수집**한다(독립 리뷰 2026-09-12 H1
+            # 실측 · #136 요구를 충족했나 · #45 모집단).
+            # 상한 판정은 파싱 뒤 행 수가 아니라 **원천이 준 원시 수**로 —
+            # 못 읽은 행 하나가 경고를 끄면 안 된다(#342).
+            return ((got, why, True, n_first >= page_size) if got
                     else (None, why, False, False))
         if not isinstance(raw, list):
             # dict 로 감싸 오는 가족도 있다 — 목록 자리를 찾아본다.
@@ -1276,18 +1304,38 @@ def collect_themes_json() -> tuple:
     — 폴백을 로그로만 알리면 사용자는 영영 모른다(#42a·#136).
     """
     marks: list = []
+    fails: list = []
     memo = theme_memo_url()
     rungs = ([("탐색됨", memo)] if memo else []) + list(_THEME_API_RUNGS)
     for label, url in rungs:
+        _t = time.time()
         rows, why, partial = _theme_json_rung(url)
+        # 재지 않으면 '느리다'는 진단이 아니다(#69·#110) — 단마다 소요를 싣는다.
+        _dt = f" · {time.time() - _t:.1f}s"
         if rows:
             marks.append(f"{label} {'⚠️' if (partial or why) else '✅'} "
-                         f"{len(rows)}개" + (f" · {why}" if why else ""))
+                         f"{len(rows)}개" + (f" · {why}" if why else "") + _dt)
             # ⚠️ 사유는 **부분일 때만** 싣지 않는다 — 캐시를 막지는 않지만
             # 화면이 말해야 하는 사실(하한 미만·버려진 행)이 있다(#43·#171).
             return rows, marks, why, partial
-        marks.append(f"{label} ❌ {why or '0건'}")
-    return [], marks, (marks[-1].split("❌", 1)[-1].strip() if marks else ""), False
+        why = why or "0건"
+        marks.append(f"{label} ❌ {why}{_dt}")
+        fails.append((_nd.reason_rank(why), len(fails), label, why))
+    return [], marks, pick_theme_reason(fails), False
+
+
+def pick_theme_reason(fails: list) -> str:
+    """(순위, 차례, 라벨, 사유) 목록 → **가장 행동 가능한** 사유 한 줄(순수).
+
+    옛 판은 `marks[-1]` 을 썼다 — 즉 **마지막 후보**의 사유다. 2026-09-12 실측
+    에서 1순위(증명된 호스트)가 `HTTP 400`, 2·3순위(추측 후보)가 `HTTP 404`
+    였는데 화면은 `⚠️ 원천이 HTTP 404` 라고 적어, 주소가 사라진 것처럼 읽혔다.
+    같은 순위면 **앞 후보**가 이긴다 — 사다리 순서가 곧 증명된 순서다(#275·#82).
+    """
+    if not fails:
+        return ""
+    _rank, _order, label, why = sorted(fails, key=lambda f: (f[0], f[1]))[0]
+    return f"{why} ({label})" if len(fails) > 1 else why
 
 
 def _theme_page(page: int):
@@ -1309,6 +1357,43 @@ def _theme_page(page: int):
         # 다른 이름으로 말해야 운영자가 엔드포인트 교체로 간다.
         return [], _nd.parse_reason("테마 행", len(html), unit="B")
     return rows, ""
+
+
+def theme_fail_memo() -> tuple:
+    """직전 **전멸** 기록 → (사유, 단 표시, 남은 냉각초). 없거나 식었으면 ("", [], 0)."""
+    memo, age = _cache_read_any(_THEME_FAIL_MEMO)
+    if not isinstance(memo, dict) or age is None or age >= _THEME_FAIL_TTL:
+        return "", [], 0
+    return (str(memo.get("reason") or ""), list(memo.get("rungs") or []),
+            int(_THEME_FAIL_TTL - age))
+
+
+def _note_theme_fail(reason: str, marks: list) -> None:
+    """전멸을 기록한다 — 단 **'안 물어본 것'은 기록하지 않는다**.
+
+    일시정지(`/naverpause`)는 원천이 죽은 게 아니라 우리가 안 물어본 것이다
+    (#79·#143·#345). 그걸 냉각으로 기억하면 정지를 푼 뒤에도 10분을 더 빈
+    화면으로 산다.
+    """
+    if _nd.reason_rank(reason) == 0:
+        return
+    _cache_write(_THEME_FAIL_MEMO, {"reason": reason, "rungs": list(marks or [])})
+
+
+def _clear_theme_fail() -> None:
+    """식은 뒤 성공하면 죽은 기록 파일을 치운다.
+
+    ⚠️ 옛 독스트링은 "남겨 두면 다음 실패의 나이가 옛 기록에서 계산돼 냉각이
+    짧아진다" 고 적었는데 **성립하지 않는다**(독립 리뷰 2026-09-12 L1 실측):
+    `_note_theme_fail` 은 `_cache_write`(tmp + `os.replace`)라 재기록마다
+    mtime 이 새로 잡히고, 냉각이 살아 있으면 `_collect_and_store` 가 조기
+    반환하므로 '살아 있는 메모 + 성공' 자체가 제품 경로에 없다. 정리 목적만
+    남긴다 — 가드가 재는 범위를 넘는 주장을 독스트링에 적지 말 것(#55·#286).
+    """
+    try:
+        (_CACHE_DIR / _THEME_FAIL_MEMO).unlink()
+    except Exception:                                          # noqa: BLE001
+        pass
 
 
 def collect_themes() -> dict:
@@ -1374,13 +1459,28 @@ def _collect_and_store() -> dict:
     **다음 개장까지 빈 화면이 재시도 없이** 서빙된다(독립 리뷰 실측). 부분·빈
     결과는 굽지 않는다(#119 예외로 끝난 실행은 캐시하지 말 것).
     """
+    why_cool, marks_cool, cool = theme_fail_memo()
+    if cool:
+        # ⚠️ 냉각은 **제품 경로에만** 건다 — `--check`·프로브는 `collect_themes`
+        # 를 직접 부르므로 재는 일이 막히지 않는다(#35 의 경계, #345c).
+        log.info("naver_sector: 테마 냉각 중(%d초 남음) — 재수집 생략 · %s",
+                 cool, why_cool)
+        return {"themes": [], "ts": "", "partial": False, "reason": why_cool,
+                "rungs": list(marks_cool) + [f"냉각 {cool}초 — 직전 전멸 기록"],
+                "via": "", "cooldown": cool}
     out = collect_themes()
     if out.get("themes") and not out.get("partial"):
         _cache_write("theme.json", out)
+        _clear_theme_fail()
     else:
         log.warning("naver_sector: 테마 수집 불완전(themes=%d partial=%s) — "
                     "캐시를 덮지 않는다",
                     len(out.get("themes") or []), out.get("partial"))
+        if not out.get("themes"):
+            # 전멸했다 — 짧게 기억해 다음 클릭이 같은 순손실을 되풀이하지
+            # 않게 한다. 부분(값은 있음)은 기록하지 않는다.
+            _note_theme_fail(str(out.get("reason") or ""),
+                             list(out.get("rungs") or []))
     return out
 
 
@@ -1396,6 +1496,13 @@ def fetch_themes() -> dict:
     old, mt = _read_cache("theme.json")
     have_old = bool(old and old.get("themes"))
     age = None if mt is None else time.time() - mt
+    why_cool, _mk, cool = theme_fail_memo()
+    if cool and have_old:
+        # 직전에 전 후보가 죽었고 아직 냉각 중이다 — 배경 갱신을 띄워 봐야
+        # 즉시 빈손으로 끝난다. '갱신 중' 은 **진짜 진행 중일 때만** 적는다
+        # (#25 늘 뜨는 배지는 아무것도 안 재는 것과 같다 · #345).
+        return dict(old, stale=True, stale_age=int(age or 0), refreshing=False,
+                    reason=why_cool, cooldown=cool)
     if have_old and age is not None and age < _THEME_SWR_SEC:
         _refresh_async("theme.json", _collect_and_store, "naver:themes")
         # 여기만 **실제로 배경 갱신이 떠 있다** — 화면이 '갱신 중' 이라고 말할
@@ -1608,6 +1715,17 @@ def check(fetch: bool = False) -> int:
             print(f"   ↪ 원천: {obj['via']}")
         for _m in (obj or {}).get("rungs") or []:
             print(f"      · {_m}")
+    # ── ②-e 전멸 냉각 — 그동안 **제품 경로는 수집을 건너뛴다**. 안 적으면
+    # 아래 ③ 실측(냉각을 우회해 직접 잰다)과 화면이 왜 다른지 운영자가
+    # 짐작하게 된다(#82·#35 감사는 화면이 쓰는 경로를 알아야 한다).
+    _why_cool, _marks_cool, _cool = theme_fail_memo()
+    if _cool:
+        print(f"②-e 테마 냉각 {_cool}초 남음 — 그동안 클릭은 재수집하지 않는다 "
+              f"(직전 사유: {_why_cool or '미기록'})")
+        for _m in _marks_cool:
+            print(f"      · {_m}")
+    else:
+        print("②-e 테마 냉각: 없음(직전 수집이 전멸하지 않았거나 이미 식었다)")
     # ── ②-d 테마 엔드포인트 탐색 메모 — 사다리가 전멸했을 때 배경이 원천의
     # Next.js 청크에서 읽어 둔 것(#151 추측 금지: 이름을 짓지 않고 잰다).
     _memo, _memo_age = _cache_read_any(_THEME_MEMO)
@@ -1720,9 +1838,9 @@ def check(fetch: bool = False) -> int:
     if not out["themes"]:
         # 대조 0건은 통과가 아니다(#54).
         print("   ❌ 0개 — 네이버 도달 실패이거나 파싱이 깨졌다")
-        # ⚠️ 갈래를 사람이 짐작하게 두지 말 것(#82). 테마는 아직 **HTML** 경로다
-        # — 업종이 SPA 로 죽었으니(2026-09-11) 같은 페이지 가족인 여기도 죽었을
-        # 수 있다. 원문 표본을 찍으면 '도달 실패'와 '표가 사라짐'이 갈린다(#109).
+        # ⚠️ 갈래를 사람이 짐작하게 두지 말 것(#82). 테마는 **JSON 사다리 →
+        # 옛 HTML** 순이고(2026-09-12) 여기까지 왔다는 건 둘 다 죽었다는 뜻이다.
+        # 옛 HTML 원문 표본을 찍으면 '도달 실패'와 '표가 사라짐'이 갈린다(#109).
         for ln in markup_sample(_get(f"{_BASE}/theme.naver", params={"page": 1}),
                                 ("sise_group_detail", "type=theme", "<table")):
             print(f"   {ln}")
