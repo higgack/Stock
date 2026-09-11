@@ -49439,10 +49439,42 @@ class TestFrozenValueAndTickerAlias20260908:
 
     def test_sid_is_derived_from_the_definitions(self):
         """payload 에 sid 를 더하면 캐시 salt 를 같이 올려야 한다 —
-        정의에서 되짚어 그 부채를 만들지 않는다(#38·#304)."""
+        정의에서 되짚어 그 부채를 만들지 않는다(#38·#304).
+
+        ⚠️ 2026-09-11 계약 변경(#222): `aluminum`/`ALI=F` 카드가 **팔라듐**으로
+        교체됐다(LME 알루미늄 합금은 거의 거래가 없어 3,200.00 에 고정 — 이
+        클래스가 만들어진 바로 그 증상이다). 옛 판은 그 한 쌍을 리터럴로 박아
+        교체에 깨졌다 — 계약은 '특정 티커' 가 아니라 **'정의에서 되짚는다'**
+        이므로 정의를 돌며 확인하고, 모르는 키는 빈 문자열로 못박는다(#19)."""
         import bot.macro_snapshot as ms
-        assert ms._sid_for("aluminum") == "ALI=F"
+        defs = {k: sid for k, _, _, _, sid, _ in (ms.DOMESTIC + ms.GLOBAL)}
+        assert defs and all(ms._sid_for(k) == sid for k, sid in defs.items())
         assert ms._sid_for("모르는키") == ""
+        # 교체가 실제로 반영됐나 — 죽은 계열이 남아 있으면 화면이 그대로다
+        assert "aluminum" not in defs and "ALI=F" not in defs.values()
+        assert defs.get("palladium") == "PA=F"
+
+    def test_no_macro_card_is_wired_to_the_known_dead_series(self):
+        """LME 알루미늄 **합금**(ALI=F / 네이버 AA)은 거의 거래가 없어 값이
+        고정된다 — 2026-09-08 실측으로 스파크 22점이 전부 같은 값이었고
+        사용자가 "효용이 없다"고 뺐다. 다시 배선되면 같은 죽은 카드가
+        돌아온다(#222 되돌리기 금지 · #53 화석은 지운다).
+
+        ⚠️ 이 가드는 **그 한 계열만** 본다 — '평평한 원천 전반'을 잡지는
+        못한다(그건 `flatness_verdict` 가 런타임에 잰다, #274 못 보는 축)."""
+        import bot.macro_snapshot as ms
+        sids = {sid for _, _, _, _, sid, _ in (ms.DOMESTIC + ms.GLOBAL)}
+        assert "ALI=F" not in sids
+        assert ms._MACRO_NAVER.get("ALI=F") is None
+        assert ("com", "AA") not in ms._MACRO_NAVER.values()
+
+    def test_palladium_has_no_guessed_naver_mapping(self):
+        """네이버 metals 에 팔라듐 코드가 있는지 **재지 않았다** — 추측 매핑을
+        달면 조용히 빈칸이 된다(#165·#151). 안 단 채 yf 폴백으로 두는 것이
+        DXY 와 같은 검증된 경로다. 코드를 실측하면 그때 더한다."""
+        import bot.macro_snapshot as ms
+        assert "PA=F" not in ms._MACRO_NAVER, "실측 없이 네이버 코드를 달았다"
+        assert "DX-Y.NYB" not in ms._MACRO_NAVER      # 같은 처방의 선행 사례
 
     def test_macro_why_is_dispatched_and_reports_zero_as_failure(
             self, monkeypatch, capsys):

@@ -718,8 +718,18 @@ if __name__ == "__main__":
     print("세계환율:", {k: _fx.get(k) for k in ("EURUSD", "USDCNY", "USDTWD")})
     d = fetch_commodities()
     print(f"원자재 {len(d)}종")
-    for sc in ("CL", "BRN", "DCB", "NG", "GC", "SI", "HG", "AA", "NI",
-               "PL", "ZC", "ZS", "ZW"):
-        r = d.get(sc)
-        if r:
-            print(f"  {sc} {r['name']}: {r['close']:,} ({r['pct']:+.2f}%)")
+    # ⚠️ 손으로 고른 목록을 찍으면 **목록 밖은 영영 안 보인다**(#24) — 카드에
+    # 무엇을 올릴 수 있는지 고르려면 원천이 주는 전수를 봐야 한다. 2026-09-11
+    # 알루미늄 합금(AA)을 교체할 금속을 고르면서 이 목록 때문에 후보를 못 셌다.
+    # 카테고리별로 **전부** 찍는다(코드·이름·값) — 그게 곧 선택지다.
+    by_cat: dict = {}
+    for sc, r in sorted(d.items()):
+        by_cat.setdefault(r.get("category") or "(미분류)", []).append((sc, r))
+    for cat in sorted(by_cat):
+        rows = by_cat[cat]
+        print(f"  [{cat}] {len(rows)}종")
+        for sc, r in rows:
+            print(f"    {sc:6s} {r['name']:<16s} {r['close']:>12,.2f} "
+                  f"({r['pct']:+.2f}%)  reuters={r.get('reutersCode') or '—'}")
+    if not d:
+        print("  ❌ 0종 — 대조 0건은 '이상 없음' 이 아니다(#54)")
