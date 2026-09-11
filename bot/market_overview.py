@@ -1667,18 +1667,53 @@ def _cache_ts(p: Path) -> str:
     return ""
 
 
+# 위젯 ts 를 재는 글롭은 **그 값을 쓰는 fetch 함수의 파일명에서 파생**시킨다.
+# 손으로 적으면 생산부와 갈린다 — 2026-09-11 독립 리뷰 실측: 네 칸 중 **셋**이
+# 영원히 빈칸이었다(`earnings_{date}.json` 을 찾는데 생산부는
+# `earnings_{date}_{salt}_v2.json` 을 쓰고, US 리서치는 날짜 파일 자체가 없다).
+# 옛 코드부터 그랬고 내 fix 도 그대로 물려받았다 — 화면은 `미국 Finnhub` 처럼
+# 소스명만 남아 "이거 최신이야?" 에 답하지 못했다(#43·#35 화면이 쓰는 그 경로).
+_WIDGET_CACHE_GLOB = {
+    # key: (하위 디렉터리, 글롭) — 옆 주석이 그 파일을 쓰는 함수다
+    "earn_us": ("finnhub", "earnings_20??-??-??_*.json"),      # fetch_earnings_calendar
+    "earn_kr": ("finnhub", "earnings_kr_20??-??-??_*.json"),   # fetch_earnings_calendar_kr
+    "res_kr": ("research", "kr_20??-??-??.json"),              # fetch_recent_research_kr
+    "res_us": ("research", "us_rolling.json"),                 # fetch_recent_research_us(롤링 1파일)
+}
+
+
+def _cache_ts_family(d: Path, pattern: str) -> tuple[str, float | None]:
+    """(그 글롭에 걸린 **가장 최근** 캐시의 KST 시각, 나이 초).
+
+    오늘 파일만 보면 수집이 실패한 날 ts 가 **통째로 사라져** 화면이 "언제 것인지"
+    를 못 말한다(2026-09-11 리서치 헤더가 `한국 Naver` 로만 떴다 — #43·#52).
+    글롭은 날짜 모양까지 고정한다 — `kr_*` 는 형제 `kr_industry_*` 까지 물고,
+    `earnings_*` 는 `earnings_kr_*` 까지 문다(#45 총계와 소계가 다른 모집단).
+    """
+    try:
+        files = sorted(d.glob(pattern),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        if files:
+            mt = files[0].stat().st_mtime
+            return _cache_ts(files[0]), max(0.0, time.time() - mt)
+    except Exception as exc:                                  # noqa: BLE001
+        log.warning("cache ts family failed (%s): %s", pattern, exc)
+    return "", None
+
+
 def _widget_data_ts() -> dict:
     """위젯별 '실제 적용' 데이터 시각 — 각 fetch 의 캐시 파일 mtime
     (사용자 2026-06-11: 업종등락처럼 'ts · 소스' 를 실적/리서치에도).
     fetch_all_market_data 의 futures 가 resolve 된 '뒤' 호출 — refetch 가
-    일어났으면 mtime 이 방금 시각으로 갱신돼 있음."""
-    today = date.today().isoformat()
-    return {
-        "earn_us": _cache_ts(_CACHE_DIR / "finnhub" / f"earnings_{today}.json"),
-        "earn_kr": _cache_ts(_CACHE_DIR / "finnhub" / f"earnings_kr_{today}.json"),
-        "res_kr": _cache_ts(_CACHE_DIR / "research" / f"kr_{today}.json"),
-        "res_us": _cache_ts(_CACHE_DIR / "research" / f"us_{today}.json"),
-    }
+    일어났으면 mtime 이 방금 시각으로 갱신돼 있음.
+
+    `*_age` 는 그 파일의 나이(초) — 화면이 '저장분' 여부를 판정한다(#304)."""
+    out: dict = {}
+    for key, (sub, pattern) in _WIDGET_CACHE_GLOB.items():
+        ts, age = _cache_ts_family(_CACHE_DIR / sub, pattern)
+        out[key] = ts
+        out[f"{key}_age"] = age
+    return out
 
 
 def fetch_all_market_data() -> dict[str, Any]:

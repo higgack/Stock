@@ -408,6 +408,50 @@ def _snapshot_load() -> tuple[list | None, float]:
         return None, 0.0
 
 
+def _as_of_dict(ts: float) -> dict:
+    """수집 시각(epoch) → {"ts": KST 문자열, "age": 초}. 없으면 빈 dict
+    (재료가 없으면 판정 불가 — 지어내지 않는다, #54·#165)."""
+    import datetime as _dt
+    import time as _time
+    if not ts:
+        return {}
+    kst = _dt.timezone(_dt.timedelta(hours=9))
+    return {"ts": _dt.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d %H:%M"),
+            "age": max(0.0, _time.time() - ts)}
+
+
+def favorites_rows_with_as_of() -> tuple[list[dict], dict]:
+    """(행, 그 행의 수집 시각) — **한 번의 읽기로 묶어서** 돌려준다.
+
+    행과 시각을 따로 읽으면 그 사이 SWR 백그라운드가 `_FAV_CACHE`/`_FAV_CACHE_TS`
+    를 다시 바인딩해 **낡은 행에 방금 시각이 찍힌다**(2026-09-11 독립 리뷰).
+    콜드 스타트 분기는 더 나쁘다 — 값이 전부 None 인 표에 '값 수집 <지금>' 이
+    붙는다. 창이 마이크로초라 드물지만, 순서에 기댄 안전은 언젠가 깨진다(#102a).
+    여기서 `_FAV_LOCK` 아래 한 번에 집으면 **구조적으로** 어긋날 수 없다.
+    """
+    rows = get_favorites_with_prices()
+    with _FAV_LOCK:
+        ts = _FAV_CACHE_TS if (_FAV_CACHE is not None and _FAV_CACHE_TS) else 0.0
+    if not ts:
+        _snap, sts = _snapshot_load()
+        ts = sts if _snap else 0.0
+    return rows, _as_of_dict(ts)
+
+
+def favorites_as_of() -> dict:
+    """관심종목 값의 **수집 시각** — {"ts": "YYYY-MM-DD HH:MM", "age": 초} (KST).
+
+    "이거 최신이야?" 에 화면이 답하지 못하면 그게 결함이다(#43·#304 값 수집 시각).
+    ⚠️ 행과 같이 쓸 거면 `favorites_rows_with_as_of()` 를 쓸 것 — 따로 읽으면
+    낡은 행에 새 시각이 붙는다. 이 함수는 행 없이 시각만 필요한 자리용이다."""
+    with _FAV_LOCK:
+        ts = _FAV_CACHE_TS if (_FAV_CACHE is not None and _FAV_CACHE_TS) else 0.0
+    if not ts:
+        _snap, sts = _snapshot_load()
+        ts = sts if _snap else 0.0
+    return _as_of_dict(ts)
+
+
 def get_favorites_with_prices() -> list[dict]:
     """관심종목 + 현재가/추정치 — **렌더-세이프 SWR (사용자 2026-06-16 '오래걸려')**.
 

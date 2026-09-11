@@ -72,3 +72,6 @@ def _isolate_disk_caches(tmp_path_factory, monkeypatch):
     except Exception:
         pass
     yield
+
+# 바깥 원천 차단은 **레포 루트 conftest.py** 로 옮겼다(2026-09-11) — 여기 두면
+# `pytest bot/tests` 단독 실행이 무방비다. 회귀가 그 모듈을 파일로 찾아 읽는다.
