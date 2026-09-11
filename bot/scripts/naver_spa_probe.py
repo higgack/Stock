@@ -22,7 +22,7 @@ import json
 import re
 import sys
 
-_PROBE_VER = 2
+_PROBE_VER = 4        # 3 = 업종 멤버 후보 · 4 = 리서치 페이징 스윕
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -53,6 +53,13 @@ _CANDIDATES = [
 # 파생. 살아 있는 `/api/research/company` 와 **같은 자리**만 바꾼 것이라
 # 지어낸 호스트가 아니다. 어느 게 실재하는지는 응답이 말한다(#25·#151).
 _SIBLINGS = [
+    # 국내 업종 **멤버 목록** — `_build_kr_industry_map`(종목코드→업종 한글)이
+    # 아직 SPA 로 죽은 `sise_group_detail.naver` 를 훑는다. 해외판이
+    # `/api/foreign/market/{NAT}/upjong/{code}/list` 로 사는 것과 **같은 자리**
+    # 이므로 지어낸 주소가 아니다(#151 추측 금지 — 실재 여부는 응답이 말한다).
+    # ⚠️ `{code}` 는 업종 목록 응답이 주는 값이라 프로브가 런타임에 채운다.
+    ("업종 멤버(국내)", "https://stock.naver.com/api/domestic/market/upjong/"
+                       "{code}/list?pageSize=5"),
     ("리서치 산업", "https://m.stock.naver.com/api/research/industry"),
     ("리서치 전략", "https://m.stock.naver.com/api/research/invest"),
     ("리서치 시황", "https://m.stock.naver.com/api/research/market"),
@@ -63,6 +70,8 @@ _SIBLINGS = [
 # 업종이 20개만 오는 게 **기본 페이지 크기**인지 전부인지 재야 한다 —
 # 상위/하위 10 랭킹은 **전 업종**을 봐야 맞다. 20개만 보고 순위를 매기면
 # 화면이 조용히 틀린다(#45 총계와 소계가 다른 모집단).
+_RESEARCH_BASE = "https://m.stock.naver.com/api/research"
+
 _PAGING = ["", "?page=1&pageSize=100", "?pageSize=100", "?size=100",
            "?page=2", "?perPage=100"]
 
@@ -121,6 +130,44 @@ def _get_json(requests, url: str, timeout: int = 10):
         return None, f"JSON 파싱 실패: {type(exc).__name__}"
 
 
+def _paging_sweep(requests, base: str, first_key: str) -> None:
+    """한 엔드포인트에 페이징 인자를 하나씩 실제로 던져 **행 수를 재서** 찍는다.
+
+    ⚠️ 이 스윕을 업종에만 걸어 두었더니 **리서치의 창 절단을 못 쟀다**(독립
+    리뷰 2026-09-11): 30일·300행을 요청해 20행을 받는데 페이징이 되는지
+    아무도 재지 않았다. 같은 형제 API 면 같은 축으로 잴 것(#38·#45).
+    """
+    for q in _PAGING:
+        obj, note = _get_json(requests, base + q)
+        label = q or "(무인자)"
+        if obj is None:                       # 실패는 사유만 — 행수 자리에 섞지 않는다
+            print(f"   · {label:24s} ❌ {note[:80]}")
+            continue
+        if not isinstance(obj, list):
+            print(f"   · {label:24s} ⚠️ 리스트가 아님({type(obj).__name__})")
+            continue
+        first = (obj[0].get(first_key) if obj and isinstance(obj[0], dict) else "")
+        print(f"   · {label:24s} → {len(obj):3d}행  첫 행={first!r}")
+
+
+def _first_upjong_code(requests) -> str:
+    """업종 목록 응답에서 **첫 업종 코드**를 꺼낸다("" = 못 구함).
+
+    키 이름을 추측하지 않고 후보를 훑되, 찾은 게 없으면 **빈 문자열**을 돌려
+    호출부가 '판정 불가' 로 찍게 한다(#54 대조 0건은 통과가 아니다)."""
+    obj, _ = _get_json(requests,
+                       "https://stock.naver.com/api/domestic/market/upjong/list"
+                       "?pageSize=5")
+    row = obj[0] if isinstance(obj, list) and obj else None
+    if not isinstance(row, dict):
+        return ""
+    for k in ("code", "industryCode", "upjongCode", "no", "id", "groupCode"):
+        v = row.get(k)
+        if v not in (None, ""):
+            return str(v)
+    return ""
+
+
 def main(argv: list | None = None) -> int:
     import requests
 
@@ -166,21 +213,19 @@ def main(argv: list | None = None) -> int:
             print(f"     표본 행: {json.dumps(row, ensure_ascii=False)[:600]}")
 
     print("\n④ 업종이 20개뿐인가 **페이지 크기**인가 — 랭킹은 전 업종을 봐야 맞다")
-    base = _CANDIDATES[0][1]
-    for q in _PAGING:
-        obj, note = _get_json(requests, base + q)
-        label = q or "(무인자)"
-        if obj is None:                       # 실패는 사유만 — 행수 자리에 섞지 않는다
-            print(f"   · {label:24s} ❌ {note[:80]}")
-            continue
-        if not isinstance(obj, list):
-            print(f"   · {label:24s} ⚠️ 리스트가 아님({type(obj).__name__})")
-            continue
-        first = (obj[0].get("name") if obj and isinstance(obj[0], dict) else "")
-        print(f"   · {label:24s} → {len(obj):3d}행  첫 행={first!r}")
+    _paging_sweep(requests, _CANDIDATES[0][1], "name")
 
     print("\n⑤ 리서치 형제 — 옛 company/industry/invest 세 목록에 대응하는 자리")
     for name, url in _SIBLINGS:
+        if "{code}" in url:
+            # 업종 코드는 **목록 응답이 주는 값**이다 — 지어내지 않는다(#151).
+            code = _first_upjong_code(requests)
+            if not code:
+                print(f"   · {name:12s} ❓ 업종 코드를 못 구해 판정 불가 "
+                      "(위 ③ 업종 목록이 실패했거나 코드 키가 없다)")
+                continue
+            url = url.replace("{code}", str(code))
+            print(f"   · (업종 코드 {code} 로 조회)")
         obj, note = _get_json(requests, url)
         if obj is None:
             print(f"   · {name:12s} ❌ {note}")
@@ -190,8 +235,14 @@ def main(argv: list | None = None) -> int:
         keys = sorted(row) if isinstance(row, dict) else "—"
         print(f"   · {name:12s} ✅ {n}행 · 키={keys}")
 
+    # ⑥ **리서치 페이징** — 창 절단이 실제로 여기 있다(독립 리뷰 2026-09-11 H1).
+    # 화면은 30일·300행을 요청하는데 한 응답이 20행이라 창의 대부분이 빈다.
+    # 페이징이 되는지 **재고 나서** 이어받기를 배선한다(#151 추측 금지).
+    print("\n⑥ 리서치도 20행이 페이지 크기인가 — 30일 창의 93%가 여기 달렸다")
+    _paging_sweep(requests, f"{_RESEARCH_BASE}/company", "title")
+
     if rc:
-        print("\n⑥ ❌ 살아 있는 엔드포인트를 못 찾았다 — 브라우저 DevTools Network")
+        print("\n⑦ ❌ 살아 있는 엔드포인트를 못 찾았다 — 브라우저 DevTools Network")
         print("   탭에서 그 페이지가 실제로 부르는 XHR URL 을 알려주세요(추측 금지).")
     return rc
 

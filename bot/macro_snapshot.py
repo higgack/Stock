@@ -53,7 +53,7 @@ DOMESTIC = [
 ]
 
 # 사용자 2026-06-14 재정렬: FFR·달러인덱스 삭제 / 원자재 = WTI·브렌트·천연가스·
-# 금·은·구리·알루미늄·[니켈]·옥수수·대두·소맥·돈육·커피·면화 / 코인은
+# 금·은·구리·팔라듐(2026-09-11 알루미늄합금 교체)·[니켈]·옥수수·대두·소맥·돈육·면화 / 코인은
 # 비트·이더·솔만(BNB·도지·리플 삭제). 니켈은 yfinance 무티커(네이버 metals 전용)
 # 라 이름 확정 후 추가. 백금 제거 + VIX 뒤 CCFI(중국 컨테이너 운임) 추가(2026-06-18).
 # 달러인덱스(DXY) 복원 + 미국 경기활동(CFNAI) 제거(사용자 2026-07-31). DXY 는
@@ -93,7 +93,20 @@ GLOBAL = [
     ("gold", "금", "$", "yf", "GC=F", 0),
     ("silver", "은", "$", "yf", "SI=F", 2),
     ("copper", "구리", "$", "yf", "HG=F", 2),
-    ("aluminum", "알루미늄 합금", "$", "yf", "ALI=F", 2),  # 네이버 metals=AA(합금), 사용자 2026-06-14
+    # 팔라듐 — 알루미늄 합금(ALI=F) 교체(사용자 2026-09-11 "거의 변화가 없어서
+    # 별로 효용이 없어"). LME 알루미늄**합금**은 거의 거래가 없어 3,200.00 에
+    # 고정돼 있었다(2026-09-08 실측: 스파크 22점이 전부 같은 값 — #82 를 만든
+    # 바로 그 카드다). PA=F 를 고른 이유:
+    #   · 데이터 — NYMEX 선물이라 이미 쓰는 GC=F·SI=F·HG=F 와 같은 계열이다
+    #     (검증 안 된 LME/철광석 티커를 쓰면 또 죽은 카드를 배포한다, #151).
+    #   · 의미 — 자동차 촉매 금속(현대차·기아)이고, 금·은(귀금속)과 구리·니켈
+    #     (산업)의 사이를 메운다.
+    #   · 백금(PL)은 **다시 넣지 않는다** — 사용자가 2026-06-18 에 CCFI 로
+    #     교체해 뺀 카드다(우선순위 결정이므로 되돌리지 않는다, #222).
+    # 네이버 metals 에 팔라듐 코드가 있는지는 **재지 않았다** — 그래서 매핑을
+    # 달지 않고 yf 폴백으로 둔다(DXY 와 같은 경로. 추측 매핑을 달면 조용히
+    # 빈칸이 된다, #165). 네이버 코드가 확인되면 그때 _MACRO_NAVER 에 더한다.
+    ("palladium", "팔라듐", "$", "yf", "PA=F", 0),
     ("nickel", "니켈", "$", "yf", "NI=F", 0),  # 사용자 2026-06-14 (네이버 NI, yf 무차트)
     ("corn", "옥수수", "$", "yf", "ZC=F", 0),
     ("soybean", "대두", "$", "yf", "ZS=F", 0),
@@ -575,7 +588,6 @@ _MACRO_NAVER = {
     "^SOX": ("idx", ".SOX"),     # 필라델피아 반도체 (사용자 2026-06-22, 옛 CCFI 대체)
     "CL=F": ("com", "CL"), "BZ=F": ("com", "BRN"), "NG=F": ("com", "NG"),
     "GC=F": ("com", "GC"), "SI=F": ("com", "SI"), "HG=F": ("com", "HG"),
-    "ALI=F": ("com", "AA"),
     # VM probe 2026-06-14 확정 — 곡물·돈육·커피·면화·니켈 (marketindex metals/agri).
     # CCFI(중국 컨테이너 운임)=marketindex/transport — fetch_commodities 가 transport
     # 카테고리 포함(naver_marketindex _CATEGORIES), CARD_FUTURES nv:CCFI 와 동일 소스.
@@ -1092,7 +1104,7 @@ def _why(keys: tuple[str, ...] = ()) -> int:
     return 1 if bad else 0
 
 
-if __name__ == "__main__":       # cd ~/stock && .venv/bin/python -m bot.macro_snapshot --why 알루미늄
+if __name__ == "__main__":       # cd ~/stock && .venv/bin/python -m bot.macro_snapshot --why 팔라듐
     import sys
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if "--why" in sys.argv[1:]:
