@@ -58380,6 +58380,11 @@ class TestPalladiumAndResearchPaging20260912:
         """상수를 돌려주는 뮤테이션이 통과하면 가드가 눈이 먼 것이고(#91b),
         주석 한 줄에 전 캐시가 날아가도 안 된다(#266)."""
         import bot.naver_research_client as nrc
+        # ⚠️ `client_sig` 는 `_CLIENT_SIG` 에 **memo** 한다 — 기준값을 memo 가
+        # 이미 찬 상태에서 재면 앞 테스트가 무엇을 남겼느냐에 따라 결과가
+        # 갈린다(무작위 순서 실행에서만 빨간불이었다, 2026-09-12 실측).
+        # 기준값도 **깨끗한 상태**에서 잰다(#91b 재는 대상이 맞나).
+        monkeypatch.setattr(nrc, "_CLIENT_SIG", "")
         real = nrc.client_sig()
         monkeypatch.setattr(nrc, "_CLIENT_SIG", "")
         import pathlib
@@ -60673,15 +60678,15 @@ class TestNaverThemeAndDetailSpa20260912:
         # ① JSON 이 의견만 준다 → HTML 이 목표가를 채우고 라벨이 둘 다 말한다
         monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
             {"investmentOpinion": "매수", "expectPrice": "77,000"}, ""))
-        tgt, rating, via = rc._fetch_report_detail_via("1")
+        tgt, rating, via1 = rc._fetch_report_detail_via("p1")
         assert (tgt, rating) == (88000.0, "매수"), (tgt, rating)
-        assert hits and "옛 HTML" in via and rc._DETAIL_API_RUNGS[0][0] in via, via
+        assert hits and "옛 HTML" in via1 and rc._DETAIL_API_RUNGS[0][0] in via1, via1
 
         # ② JSON 이 **둘 다** 주면 폴백을 안 탄다(순손실 요청 금지)
         hits.clear()
         monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
             {"targetPrice": "77,000", "opinion": "매수"}, ""))
-        assert rc._fetch_report_detail_via("1") == (
+        assert rc._fetch_report_detail_via("p2") == (
             77000.0, "매수", rc._DETAIL_API_RUNGS[0][0])
         assert not hits, "JSON 이 둘 다 줬는데 HTML 도 받았다"
 
@@ -60690,8 +60695,12 @@ class TestNaverThemeAndDetailSpa20260912:
         monkeypatch.setattr(rc, "_get", lambda u, **k: "")
         monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
             {"investmentOpinion": "매수"}, ""))
-        tgt, rating, via = rc._fetch_report_detail_via("1")
+        tgt, rating, via = rc._fetch_report_detail_via("p3")
         assert tgt is None and rating == "매수" and via
+        # ⚠️ 2026-09-12 에 nid 별 상세 캐시가 생겨 **같은 nid 재호출은 캐시 히트**
+        # 다(#348) — 세 시나리오를 같은 `"1"` 로 돌리면 ②·③ 이 ① 의 값을 받는다.
+        # 계약("부분이면 폴백에 물어본다")은 그대로이고 픽스처만 nid 를 가른다(#222).
+        assert rc.detail_cached("p1") == (88000.0, "매수", via1), rc.detail_cached("p1")
 
     def test_via_is_stamped_end_to_end_so_the_note_can_speak(self, tmp_path,
                                                              monkeypatch):
@@ -61067,3 +61076,119 @@ class TestThemeLadderReviewFixes20260912:
              (2, 1, "front-api/theme", nd.http_reason(404))])
         assert shaped.startswith(nd.PAUSED) and "domestic/theme" in shaped
         assert nd.reason_rank(shaped) == 0, shaped
+
+
+class TestResearchDetailCoverage20260912:
+    """사용자 2026-09-12 "투자의견이랑 목표가도 안나오는것들 최대한 모두 나오게".
+
+    옛 판은 매 수집이 `rows[:_DETAIL_BUDGET]`(40) 만 걸어 41번째부터는 **몇
+    주기를 돌아도 영원히 빈칸**이었다 — 창을 일주일로 넓히자 295건이 되어
+    260건이 상시 빈칸이다. 예산을 키우는 게 아니라 **이미 읽은 것을 다시 안
+    읽는 것**이 답이다(발행 리포트의 목표가·투자의견은 안 바뀐다).
+    """
+
+    def _rows(self, n):
+        return [{"nid": f"n{i}", "code": f"{i:06d}", "name": f"종목{i}",
+                 "broker": "증권", "title": f"리포트{i}",
+                 "date": f"2026-09-{(30 - i % 28):02d}", "url": ""}
+                for i in range(n)]
+
+    def _setup(self, monkeypatch, tmp_path, rows):
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nrc, "_DETAIL_MEM", {})
+        monkeypatch.setattr(nrc, "_DETAIL_MEM_AT", 0.0)
+        monkeypatch.setattr(nrc, "_DETAIL_DIRTY", False)
+        monkeypatch.setattr(nrc, "fetch_research_pages",
+                            lambda *a, **k: (list(rows), "", {}))
+        return nrc
+
+    def test_budget_is_spent_on_cache_misses_so_coverage_grows(
+            self, monkeypatch, tmp_path):
+        """**핵심 계약**: 한 주기가 예산만큼 새로 채우고, 다음 주기는 그걸
+        저장분으로 쓰고 **다른** 예산을 쓴다 — 몇 주기면 전 행이 찬다.
+
+        옛 판은 늘 같은 `rows[:40]` 을 다시 쳤으므로 41번째는 영원히 빈칸이다.
+        """
+        import bot.naver_research_client as nrc
+        rows = self._rows(100)
+        nrc_ = self._setup(monkeypatch, tmp_path, rows)
+        hit = []
+
+        # ⚠️ 스텁은 **원천 쪽**에 건다 — 제품 함수(`_fetch_report_detail_via`)를
+        # 갈아끼우면 그 안의 캐시 쓰기가 통째로 빠져 이 계약을 못 잰다(#155·#20).
+        def fake_json(nid):
+            hit.append(nid)
+            return 1000.0, "매수", "api/research/{kind}/{id}", []
+
+        monkeypatch.setattr(nrc_, "_detail_json", fake_json)
+        monkeypatch.setattr(nrc_, "_DETAIL_BUDGET", 40)
+
+        out1 = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        graded1 = sum(1 for r in out1 if r.get("target") or r.get("rating"))
+        assert graded1 == 40 and len(hit) == 40, (graded1, len(hit))
+        first = set(hit)
+
+        # 2주기: 목록 캐시는 지우되 **상세 캐시는 남긴다**(그게 이 계약이다)
+        for f in tmp_path.glob("naver_market_*.json"):
+            f.unlink()
+        hit.clear()
+        out2 = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        graded2 = sum(1 for r in out2 if r.get("target") or r.get("rating"))
+        assert graded2 == 80, graded2
+        assert len(hit) == 40, len(hit)
+        # 같은 nid 를 다시 치지 않았다 = 예산이 **미스에만** 쓰였다
+        # (`rows` 는 날짜로 정렬되므로 입력 순서가 아니라 **1주기가 실제로 친
+        # 집합**과 대조해야 한다 — 입력 슬라이스로 재면 엉뚱한 걸 잰다, #91b)
+        assert not (set(hit) & first), sorted(set(hit) & first)[:5]
+
+        for f in tmp_path.glob("naver_market_*.json"):
+            f.unlink()
+        hit.clear()
+        out3 = nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        assert sum(1 for r in out3 if r.get("target")) == 100
+        # 전부 찼으면 그 다음엔 **네트워크 0**
+        for f in tmp_path.glob("naver_market_*.json"):
+            f.unlink()
+        hit.clear()
+        nrc_.fetch_recent_research_market(limit=100, days_back=30)
+        assert hit == [], hit
+
+    def test_failures_are_believed_only_briefly(self, monkeypatch, tmp_path):
+        """성공은 길게, **실패는 짧게만** — 원천 장애 한 번이 그 리포트를 한 달
+        동안 빈칸으로 굳히면 안 된다(#303·#161·#152).
+        """
+        nrc = self._setup(monkeypatch, tmp_path, self._rows(1))
+        nrc.detail_cache_put("ok1", 1000.0, "매수", "json")
+        nrc.detail_cache_put("bad1", None, "", "")
+        assert nrc.detail_cached("ok1") == (1000.0, "매수", "json")
+        assert nrc.detail_cached("bad1") == (None, "", "")
+        # 실패 TTL 만 지난 시점 — 성공은 살아 있고 실패는 만료다
+        monkeypatch.setattr(nrc, "_DETAIL_TTL_MISS", 0)
+        assert nrc.detail_cached("bad1") is None
+        assert nrc.detail_cached("ok1") is not None
+
+    def test_cache_reader_never_raises(self, monkeypatch, tmp_path):
+        """어떤 바이트가 와도 안 던진다 — 이 맵이 던지면 그걸 읽는 화면 셋이
+        통째로 빈다(#331 캐시 독자 계약)."""
+        nrc = self._setup(monkeypatch, tmp_path, [])
+        (tmp_path / "research_detail.json").write_bytes(b"\x8d{not json")
+        assert nrc.detail_cached("x") is None          # 예외 없이 None
+
+    def test_note_names_the_denominator_and_this_cycle(self):
+        """'최신 35건' 만 적으면 **무엇 중의 35 인지** 알 수 없다(#45·#82) —
+        분모와 이번 주기 수집분을 같이 적어 다음 출력이 곧 측정이 되게."""
+        from bot.naver_research_client import detail_yield_note
+        rows = [{"target": 1.0, "rating": "매수", "_via": "json"}] * 35 \
+            + [{"target": None, "rating": ""}] * 260
+        note = detail_yield_note(rows, budget_left=220, fetched=40,
+                                 from_cache=0)
+        assert "35/295" in note and "이번 수집 40" in note, note
+        assert "다음 주기" in note, note
+        # 예산은 남았는데 못 채운 행 = **상세가 값을 안 준 것**(갈래가 다르다)
+        # ⚠️ `... or True` 로 쓰면 앞 절이 통째로 무력해진다 — 항상 참인 단언은
+        # 가드가 아니라 죽은 코드다(#291, 셀프리뷰 2026-09-12에 내가 쓴 것을 잡음).
+        n2 = detail_yield_note(rows, budget_left=0, fetched=295, from_cache=0)
+        assert "35/295" in n2, n2
+        assert "없는 리포트" in n2, n2        # 갈래가 다르다(예산 아님)
+        assert "다음 주기" not in n2 and "예산" not in n2, n2

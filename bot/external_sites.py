@@ -55,6 +55,9 @@ SITES: tuple[Site, ...] = (
     # 사용자 2026-09-02: "Sites 랑 대시보드에 제목은 'Quantflow' 로" —
     # 두 표면 명시라 nav 등재.
     Site("Quantflow", "Quantflow", "https://quantflow.io.kr/dashboard"),
+    # 사용자 2026-09-12: "이걸 Sites 에 추가, 제목은 '모소밤부', 대시보드에도
+    # 추가해주고 제목은 똑같이 '모소밤부'" — 두 표면 명시라 nav 등재.
+    Site("모소밤부", "모소밤부", "https://mosobamboocompany.github.io/"),
 )
 
 
