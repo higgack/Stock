@@ -870,30 +870,54 @@ def fetch_upper_lower(limit: int = 50) -> dict:
     return out
 
 
+# 원문 표본에 섞여 나올 수 있는 비밀값을 **모양으로** 가린다(이름 열거 금지 #24).
+# 값은 지우되 키 이름은 남긴다 — 어느 파라미터가 왔는지는 진단에 필요하다(#82).
+import re as _re
+
+_SECRET_IN_MARKUP = _re.compile(
+    r"((?:key|token|secret|passwd|password|auth|sig|signature|serviceKey|apikey)"
+    r"[\"'\s]*[=:][\"'\s]*)([^\s\"'&<>]{8,})", _re.I)
+
+
+def _mask_secrets(text: str) -> str:
+    return _SECRET_IN_MARKUP.sub(lambda m: m.group(1) + "***", text)
+
+
 def markup_sample(html: str | None, anchors: tuple, width: int = 220,
                   max_lines: int = 8) -> list[str]:
     """0건일 때 **원문 표본**을 사람이 읽을 수 있게 몇 줄로(순수).
 
     "구조 변경 의심" 까지만 말하면 다음 라운드가 추측으로 시작한다 — 원문을 안
     찍었기 때문에 세 라운드를 쓴 적이 있다(#109·#54·#155). 앵커별로 '있나/몇 건'
-    을 세고, 첫 출현 주변을 잘라 보여준다. 비밀값이 있을 수 있는 쿼리스트링은
-    그대로 찍히므로 **공개 페이지 원문에만** 쓴다(§Secrets).
+    을 세고, 첫 출현 주변을 잘라 보여준다.
+
+    ⚠️ 비밀값은 **함수가** 가린다 — "공개 페이지에만 쓴다" 는 규율이었고 이
+    레포에서 규율은 매번 진다(#119). 원문에 섞인 키·토큰 모양을 마스킹한다.
     """
     if not html:
         return ["원문 없음 — 도달 실패"]
-    out = [f"원문 {len(html):,}자 · 표본:"]
+    counts = []
     for a in anchors:
         n = html.count(a)
-        out.append(f"   · `{a}` {n}건" + ("" if n else "  ← 사라짐"))
+        counts.append(f"   · `{a}` {n}건" + ("" if n else "  ← 사라짐"))
     hit = next((a for a in anchors if a in html), None)
     if hit:
         i = html.index(hit)
-        seg = " ".join(html[max(0, i - width // 2): i + width].split())
-        out.append(f"   ↪ `{hit}` 주변: {seg}")
+        seg = _mask_secrets(" ".join(html[max(0, i - width // 2): i + width].split()))
+        sample = f"   ↪ `{hit}` 주변: {seg}"
     else:
-        out.append("   ↪ 앵커가 하나도 없다 — 머리 320자: "
-                   + " ".join(html[:320].split()))
-    return out[:max_lines + 2]
+        sample = ("   ↪ 앵커가 하나도 없다 — 머리 320자: "
+                  + _mask_secrets(" ".join(html[:320].split())))
+    # ⚠️ 자르는 건 **계수 줄**이다. 예전엔 `out[:max_lines+2]` 라 앵커가 9개
+    # 이상이면 `↪ 표본` 이 잘렸다 — 이 함수가 존재하는 이유가 그 줄인데(#109
+    # 원문 표본을 같이 찍을 것) 호출부가 이미 갖고 있는 계수만 남았다.
+    keep = max(1, max_lines)
+    head = [f"원문 {len(html):,}자 · 표본:"]
+    if len(counts) > keep:
+        shown, hidden = counts[:keep], len(counts) - keep
+        shown.append(f"   · … 외 {hidden}종 생략")     # 자른 사실을 말한다(#45)
+        counts = shown
+    return head + counts + [sample]
 
 
 def check(fetch: bool = False) -> int:

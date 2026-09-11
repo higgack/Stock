@@ -56312,26 +56312,117 @@ class TestNaverWidgetTimestamps20260911:
     없으면(= 수집이 실패한 날) 통째로 사라져 소스명만 남았다 — "이거 최신이야?" 에
     화면이 답하지 못하면 그게 결함이다(#43·#304)."""
 
-    def test_widget_ts_survives_a_failed_fetch_and_reports_age(self, tmp_path, monkeypatch):
+    @staticmethod
+    def _write_production_caches(mo, root, *, stale_res_kr=False):
+        """생산부가 **실제로 쓰는** 이름으로 캐시를 만든다.
+
+        2026-09-11 독립 리뷰 실측: 내가 지어낸 이름(`us_2026-09-09.json` ·
+        `earnings_kr_{date}.json`)으로 재서, 네 칸 중 **셋이 영원히 빈칸**인
+        결함을 테스트가 '정상(없으면 판정 불가)' 으로 축복하고 있었다(#155
+        픽스처는 원천이 실제로 내는 모양대로 · #91c).
+        각 줄 옆이 그 파일을 쓰는 생산부 함수다 — 파일명이 바뀌면 여기도 바뀐다.
+        """
         import os, time
+        from datetime import date
+        t = date.today().isoformat()
+        salt = mo._CODE_SALT
+        (root / "finnhub").mkdir(exist_ok=True)
+        (root / "research").mkdir(exist_ok=True)
+        (root / "finnhub" / f"earnings_{t}_{salt}_v2.json").write_text("[]")
+        (root / "finnhub" / f"earnings_kr_{t}_{salt}.json").write_text("[]")
+        (root / "research" / "us_rolling.json").write_text("{}")
+        f = root / "research" / f"kr_{t}.json"
+        f.write_text("[]")
+        if stale_res_kr:                       # 수집이 실패한 날 = 어제 것이 남는다
+            old_t = time.time() - 30 * 3600
+            os.utime(f, (old_t, old_t))
+        return f
+
+    def test_favorites_api_actually_carries_as_of(self, monkeypatch):
+        """헬퍼만 부르는 테스트는 **핸들러 배선을 못 잰다** — 2026-09-11 독립
+        리뷰 실측: `_handle_favorites_get` 에서 `as_of` 를 지워도 3,790개가
+        전부 green 이었다(#20). 화면의 기준시각이 조용히 사라지는 그 회귀다."""
+        import bot.dashboard_server as ds
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_FAV_CACHE", [{"ticker": "AAPL"}], raising=False)
+        monkeypatch.setattr(mf, "_FAV_CACHE_TS", 1_757_000_000.0, raising=False)
+        monkeypatch.setattr(mf, "get_favorites_with_prices",
+                            lambda: [{"ticker": "AAPL"}])
+        sent = {}
+        h = ds.DashboardHandler.__new__(ds.DashboardHandler)
+        monkeypatch.setattr(ds.DashboardHandler, "_json_ok",
+                            lambda self, payload: sent.update(payload))
+        ds.DashboardHandler._handle_favorites_get(h)
+        assert sent.get("ok") is True and sent.get("favorites")
+        assert sent.get("as_of", {}).get("ts"), sent      # 그 칸이 실제로 실린다
+
+    def test_widget_ts_uses_the_filenames_production_actually_writes(
+            self, tmp_path, monkeypatch):
+        """네 칸이 **전부** 채워져야 한다 — 하나라도 빈칸이면 그 위젯은 매일
+        소스명만 달고 뜬다(#43). 옛 판은 셋이 그랬다."""
         import bot.market_overview as mo
         monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path)
-        (tmp_path / "research").mkdir()
-        (tmp_path / "finnhub").mkdir()
-        old_t = time.time() - 30 * 3600
-        for name in ("kr_2026-09-09.json", "us_2026-09-09.json"):
-            f = tmp_path / "research" / name
-            f.write_text("[]")
-            os.utime(f, (old_t, old_t))
+        self._write_production_caches(mo, tmp_path)
+        w = mo._widget_data_ts()
+        blank = [k for k in ("earn_us", "earn_kr", "res_kr", "res_us") if not w[k]]
+        assert not blank, f"영원히 빈칸인 위젯 ts: {blank}"
+        assert all(w[f"{k}_age"] is not None
+                   for k in ("earn_us", "earn_kr", "res_kr", "res_us"))
+
+    def test_widget_ts_survives_a_failed_fetch_and_reports_age(self, tmp_path, monkeypatch):
+        import bot.market_overview as mo
+        monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path)
+        self._write_production_caches(mo, tmp_path, stale_res_kr=True)
         # 형제 캐시가 있어도 빌리지 않는다(#45) — kr_industry_ 는 kr_ 이 아니다
         (tmp_path / "research" / "kr_industry_2026-09-11.json").write_text("[]")
-        (tmp_path / "finnhub" / "earnings_kr_2026-09-11.json").write_text("[]")
         w = mo._widget_data_ts()
         assert w["res_kr"] and w["res_kr_age"] > 24 * 3600      # 어제 것이라도 말한다
         assert w["earn_kr"] and w["earn_kr_age"] < 3600
-        assert w["earn_us"] == "" and w["earn_us_age"] is None  # 없으면 판정 불가(#54)
-        # earnings_ 글롭이 earnings_kr_ 을 물면 미국 칸이 한국 시각을 말한다
-        assert mo._cache_ts_family(tmp_path / "finnhub", "earnings_") == ("", None)
+
+    def test_us_earnings_glob_does_not_borrow_the_kr_timestamp(
+            self, tmp_path, monkeypatch):
+        """`earnings_` 가 `earnings_kr_` 을 물면 **미국 칸이 한국 시각을 말한다**
+        — 값이 '있어서' 아무 감사도 안 걸리는 종류의 거짓말이다(#34·#45)."""
+        import bot.market_overview as mo
+        from datetime import date
+        monkeypatch.setattr(mo, "_CACHE_DIR", tmp_path)
+        (tmp_path / "finnhub").mkdir()
+        (tmp_path / "research").mkdir()
+        t = date.today().isoformat()
+        (tmp_path / "finnhub" / f"earnings_kr_{t}_{mo._CODE_SALT}.json").write_text("[]")
+        w = mo._widget_data_ts()
+        assert w["earn_kr"]                                     # 한국은 잡히고
+        assert w["earn_us"] == "" and w["earn_us_age"] is None   # 미국은 판정 불가(#54)
+
+    def test_widget_globs_are_derived_from_the_writers(self):
+        """글롭을 손으로 적으면 생산부와 갈린다 — 소스의 `cache_file = …` 줄에
+        그 패턴이 실제로 맞는지 **파일명을 만들어** 대조한다(#19 문자열 단언이
+        아니라 값으로, #35 생산부가 쓰는 그 이름)."""
+        import fnmatch, re
+        from datetime import date
+        import bot.market_overview as mo
+        src = pathlib.Path("bot/market_overview.py").read_text(encoding="utf-8")
+        t, salt = date.today().isoformat(), mo._CODE_SALT
+        # 생산부가 f-string 으로 만드는 캐시 파일명을 실제 값으로 펼친다
+        writers = {
+            "earn_us": f"earnings_{t}_{salt}_v2.json",
+            "earn_kr": f"earnings_kr_{t}_{salt}.json",
+            "res_kr": f"kr_{t}.json",
+            "res_us": "us_rolling.json",
+        }
+        for key, name in writers.items():
+            lit = (name.replace(t, "{today.isoformat()}")
+                       .replace(str(salt), "{_CODE_SALT}"))
+            assert lit in src or name in src, f"{key}: 생산부에 {lit} 가 없다"
+            _sub, pat = mo._WIDGET_CACHE_GLOB[key]
+            assert fnmatch.fnmatch(name, pat), f"{key}: {pat!r} 가 {name!r} 를 못 문다"
+        assert set(mo._WIDGET_CACHE_GLOB) == set(writers)
+        # 글롭은 한 자리(_WIDGET_CACHE_GLOB)에서만 온다 — 호출부가 늘면 복제다(#38).
+        # `def` 줄이 정규식에 같이 걸리므로 AST 의 **Call 노드**로 센다(#59b).
+        calls = [n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "_cache_ts_family"]
+        assert len(calls) == 1, f"_cache_ts_family 호출 {len(calls)}곳"
 
     @staticmethod
     def _offline(monkeypatch):
@@ -56407,6 +56498,22 @@ class TestNaverWidgetTimestamps20260911:
         assert nrc.main(["--check"]) == 0
         assert "세 목록 모두 파싱됨" in capsys.readouterr().out
 
+    def test_sector_check_prints_the_markup_sample_it_promises(self, monkeypatch, capsys):
+        """`_CHECK_VER = 3` 라벨이 "3 = 원문 표본" 이라고 **약속**한다 —
+        2026-09-11 독립 리뷰 실측: 그 호출부를 지워도 3,790개가 전부 green
+        이었다(#141·#292 라벨은 라벨이 가리키는 것을 지워도 살아남는다).
+        형제(research `--check`)는 이미 이렇게 재고 있었는데 여기만 낮았다(#291).
+        """
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_get2", lambda *a, **k: ("<html>없음</html>", ""))
+        monkeypatch.setattr(nsc, "parse_groups", lambda h: [])
+        monkeypatch.setattr(nsc, "collect_themes",
+                            lambda *a, **k: {"themes": [{"name": "x"}]})
+        nsc.check(fetch=True)
+        out = capsys.readouterr().out
+        assert "원문 " in out and "표본:" in out, out      # 표본이 실제로 찍힌다
+        assert "sise_group_detail" in out                  # 앵커별 계수까지
+
 
 class TestNoOutboundHttpInTests20260911:
     """`make test` 한 번이 **409건**을 22개 호스트로 내보내고 있었다(2026-09-11 실측:
@@ -56422,12 +56529,12 @@ class TestNoOutboundHttpInTests20260911:
         딴 리스트라 기록 검사가 아무것도 안 잰다(#35 화면이 쓰는 그 경로).
         모듈 이름(`tests.conftest`)은 rootdir·importmode 에 따라 갈리므로 파일로 찾는다."""
         import sys
-        want = str(pathlib.Path(__file__).resolve().with_name("conftest.py"))
+        want = str((pathlib.Path(__file__).resolve().parents[1] / "conftest.py"))
         for mod in list(sys.modules.values()):
             f = getattr(mod, "__file__", None)
             if f and str(pathlib.Path(f).resolve()) == want:
                 return mod
-        raise AssertionError("tests/conftest.py 가 sys.modules 에 없다 — 차단이 안 걸렸다")
+        raise AssertionError("루트 conftest.py 가 sys.modules 에 없다 — 차단이 안 걸렸다")
 
     def test_both_transports_are_blocked(self):
         """requests 만 막으면 yfinance 1.6(curl_cffi)이 샌다 — 무엇을 막았는지 값으로."""
@@ -56482,7 +56589,74 @@ class TestNoOutboundHttpInTests20260911:
         before = len(_cf._BLOCKED)
         with pytest.raises(requests.exceptions.ConnectionError) as ei:
             requests.get("https://www.sec.gov/marker?serviceKey=NOT-A-REAL-KEY", timeout=1)
-        assert len(_cf._BLOCKED) == before + 1
-        assert _cf._BLOCKED[-1] == "https://www.sec.gov/marker"
-        assert "NOT-A-REAL-KEY" not in _cf._BLOCKED[-1]
+        # 위치·개수로 재면 흔들린다 — 전 세션 604건 중 **216건(36%)** 이 다른
+        # 스레드(enrich_0·kor-name-*·ThreadPoolExecutor-*)에서 들어온다(2026-09-11
+        # 독립 리뷰 실측). 그 스레드들이야말로 이 차단이 잡으려는 대상이므로
+        # 없앨 게 아니라 **단언이 순서를 가정하지 않게** 한다(#128).
+        new = _cf._BLOCKED[before:]
+        assert "https://www.sec.gov/marker" in new, new
+        assert not any("NOT-A-REAL-KEY" in u for u in new)
         assert "NOT-A-REAL-KEY" not in str(ei.value)
+
+    def test_secrets_in_the_url_path_are_redacted_too(self):
+        """쿼리스트링만 떼면 부족하다 — 이 레포는 텔레그램 토큰을 **경로**에
+        박는 호출부가 20곳이다(`/bot<id>:<token>/sendMessage`). 그 문자열은
+        pytest 트레이스백·CI 로그에 그대로 실린다(§Secrets 키값 echo 금지).
+        2026-09-11 독립 리뷰가 실제 유출 문자열로 보였다."""
+        _cf = self._conftest()
+        tok = "1234567890:AAHfakeBotTokenSECRETvalue"
+        red = _cf._blocked_url(f"https://api.telegram.org/bot{tok}/sendMessage")
+        assert tok not in red and "AAHfake" not in red, red
+        assert red.endswith("/sendMessage")          # 어느 호출인지는 남는다(#82)
+        # 키가 경로 조각으로 오는 공공 API 도 같은 모양이다
+        keyed = _cf._blocked_url("https://apis.data.go.kr/svc/v1/"
+                                 + "A" * 40 + "/list")
+        assert "A" * 40 not in keyed, keyed
+        # 그렇다고 멀쩡한 경로까지 지우면 진단이 쓸모없어진다(#54)
+        plain = _cf._blocked_url("https://query1.finance.yahoo.com/v8/finance/chart/AAPL")
+        assert plain == "https://query1.finance.yahoo.com/v8/finance/chart/AAPL"
+
+    def test_socket_backstop_catches_transports_we_did_not_enumerate(self):
+        """두 패치는 **이름 목록**이라 새 전송 계층을 못 잡는다(#24 — 하필
+        #24 를 고치는 fix 안에서 같은 병을 냈다). `bot/` 엔 httpx 20곳 ·
+        urllib.request 8곳이 이미 있고 `Session.send`·aiohttp·raw socket 은
+        위 패치가 애초에 못 본다. 소켓에서 막으면 어느 라이브러리든 걸린다."""
+        import socket
+        import urllib.request
+        _cf = self._conftest()
+        assert _cf._SOCKET_BLOCKED is True
+        # **리터럴 IP** 로 친다 — 이름을 쓰면 DNS(getaddrinfo)가 connect 앞에서
+        # 먼저 실패해(실측 `Errno -2`) 가드까지 가지도 않는다. 그러면 이 테스트는
+        # 가드가 아니라 샌드박스 DNS 를 재는 것이다(#91b 재는 대상이 맞나).
+        # 192.0.2.0/24 = RFC 5737 TEST-NET-1(어디서도 라우팅되지 않는다).
+        with pytest.raises(OSError) as ei:            # requests 를 안 거치는 경로
+            urllib.request.urlopen("http://192.0.2.1/x", timeout=1)
+        assert "바깥 원천" in str(ei.value), str(ei.value)
+        # 루프백은 통과해야 한다 — 자기 서버를 띄우는 테스트가 있다(실측:
+        # tests/test_dashboard_gzip.py). 막으면 그 테스트가 통째로 죽는다.
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0)); srv.listen(1)
+        c = socket.socket()
+        try:
+            c.connect(("127.0.0.1", srv.getsockname()[1]))   # 예외가 나면 안 된다
+        finally:
+            c.close(); srv.close()
+
+    def test_session_scope_is_measured_not_just_claimed(self):
+        """`monkeypatch.undo()` 는 스코프와 무관하게 복원하므로 **아무것도 재지
+        않는다** — 2026-09-11 독립 리뷰가 함수 스코프 fixture 로 되돌리는 판을
+        만들어도 이 클래스가 전부 통과함을 실측으로 보였다(#165 주장만 하고
+        측정 안 함 · #286). 계약은 "**되돌리지 않는다**" 이므로 그것을 본다."""
+        import requests.sessions as _rs
+        _cf = self._conftest()
+        # 차단 함수가 **지금도** 설치돼 있다(앞 테스트 수천 개가 지나간 뒤다)
+        qn = getattr(_rs.Session.request, "__qualname__", "")
+        assert "_deny" in qn, qn
+        assert _rs.Session.request.__module__ == _cf.__name__ or "conftest" in (
+            _rs.Session.request.__module__ or ""), _rs.Session.request.__module__
+        # 그리고 conftest 안에 복원 경로가 없어야 한다 — 있으면 teardown 뒤에
+        # 뜬 daemon 스레드가 그 틈으로 나간다(실측 164건 → 1건이 그 경로였다).
+        src = pathlib.Path(_cf.__file__).read_text(encoding="utf-8")
+        body = src[src.index("def _install_outbound_block"):]
+        assert "yield" not in body.split("def _install_socket_backstop")[0], (
+            "차단을 fixture 로 만들면 teardown 뒤 스레드가 샌다")
