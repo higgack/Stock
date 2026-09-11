@@ -85,7 +85,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
         toggle = _market_nav("KR", active)
     except Exception:
         toggle = ('<div class="toggle">'
-                  + _t("theme", "🏭 업종별 시세(전체)")
+                  + _t("theme", "🎭 테마별 시세")
                   + _t("kr52", "📈 신고가·신저가")
                   + _t("highlow", "🚀 급등·급락")
                   + _t("krprepost", "🌙 NXT 급등·급락")
@@ -133,57 +133,6 @@ def _fmt_vol(v) -> str:
 
 _THEME_DETAIL = ("https://finance.naver.com/sise/sise_group_detail.naver"
                  "?type=theme&no=")
-
-
-def upjong_panel() -> str:
-    """🏭 **업종별 시세(전체)** — 살아 있는 JSON(`upjong/list`)에서 전 업종.
-
-    ⚠️ 이 페이지의 탭 라벨이 '업종별 시세(전체)' 인데 내용은 **테마**였고, 그
-    테마 수집은 `finance.naver.com` SPA 전환으로 죽어 32시간 낡은 스냅샷을
-    서빙하고 있었다(사용자 2026-09-12 "한국업종별 시세는 오늘 기준이 아니라
-    어제기준인데?"). 업종 데이터는 **이미 살아 있다** — 대시보드 위젯이 그걸로
-    상·하위 10을 그린다. 새 원천을 찾을 게 아니라 **이미 부르는 호출이 무엇을
-    더 주는지** 보는 자리다(#150·#141 · §작업 원칙 선행 사례 먼저).
-
-    위젯과 **같은 수집 1회**(`fetch_sector_movers`)에서 파생시킨다 — 따로
-    받으면 두 화면의 기준시각이 갈린다(#38·#51).
-    """
-    try:
-        from bot.naver_sector_client import fetch_sector_movers
-        d = fetch_sector_movers() or {}
-    except Exception as exc:                                   # noqa: BLE001
-        log.warning("theme page: upjong fetch failed: %s", exc)
-        return ('<div class="panel"><h2>🏭 업종별 시세(전체)</h2>'
-                f'<div class="empty">업종 수집 실패 — {_html.escape(str(exc)[:80])}'
-                '</div></div>')
-    groups = list(d.get("all") or [])
-    ts = _html.escape(str(d.get("ts") or ""))
-    kind = "값 수집 " if d.get("ts_kind") == "collected" else ""
-    if d.get("stale"):
-        ts = f'저장분 {ts} ⚠️'
-    why = str(d.get("reason") or "")
-    if not groups:
-        return ('<div class="panel"><h2>🏭 업종별 시세(전체)</h2>'
-                + (f'<div class="empty">{_html.escape(why)}</div>' if why else
-                   '<div class="empty">업종 데이터가 없습니다.</div>')
-                + '</div>')
-    rows = []
-    for i, g in enumerate(groups, 1):
-        nm = _html.escape(str(g.get("name") or ""))
-        rows.append(
-            f'<tr data-name="{nm}" data-pct="{g.get("pct", -999)}">'
-            f'<td class="rk">{i}</td><td class="nm">{nm}</td>'
-            f'{_pct_cell(g.get("pct"))}'
-            f'<td class="ld">{int(g.get("rise") or 0)}↑ / {int(g.get("fall") or 0)}↓</td>'
-            f'</tr>')
-    note = (f'<div class="sm-note">⚠️ {_html.escape(why)}</div>') if why else ""
-    return (f'<div class="panel"><h2>🏭 업종별 시세(전체) {len(groups)}개 '
-            f'<span class="ts">{kind}{ts}{" · Naver" if ts else ""}</span></h2>'
-            f'{note}'
-            f'<table id="upj-tbl" class="cflt"><thead><tr><th>#</th>'
-            f'<th>업종</th><th style="text-align:right">등락률</th>'
-            f'<th>상승/하락 종목수</th></tr></thead>'
-            f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
 def theme_status(data: dict) -> tuple[str, str]:
@@ -273,11 +222,18 @@ def render_theme_page() -> str:
     # 부제는 **data 에서 파생**한다 — 리터럴로 '장중 30초 캐시' 라고 적어 두면
     # 32시간 낡은 스냅샷 위에서도 그렇게 주장한다(#55 설명이 코드와 어긋나면
     # 버그). 부제와 패널 제목이 **같은 판정값**에서 나와야 갈리지 않는다(#38).
-    _sub = ("Naver 증권 · 🏭 업종은 JSON(실시간) · 테마는"
+    # ⚠️ 이 페이지는 **테마만** 그린다(사용자 2026-09-12 "여기 원래 테마만
+    # 있으면 돼. 업종별 시세는 메인대시보드에 있으면 되는거야"). 옛 판은 탭
+    # 라벨이 '업종별 시세(전체)' 인데 내용은 테마였고, 그걸 맞추려고 업종
+    # 패널을 같이 그렸다 — 사용자는 그 패널을 원하지 않았다. 라벨·제목·내용을
+    # 한 가지(테마)로 맞춘다(#34 라벨에 기준을 박을 것).
+    _via = str(data.get("via") or "")
+    _sub = ("Naver 증권 · 테마"
             + (" 저장분(수집 실패)" if (note and not data.get("refreshing"))
                else " 장중 30초 캐시")
+            + (f" · 원천 {_html.escape(_via)}" if _via else "")
             + ". 이름 클릭 시 상세/종목분석.")
-    return _shell("업종·테마 시세", _sub, "theme", upjong_panel() + body)
+    return _shell("테마별 시세", _sub, "theme", body)
 
 
 _THEME_SORT_JS = """<script>

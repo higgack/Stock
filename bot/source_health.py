@@ -216,30 +216,34 @@ def _nsc_base() -> str:
 
 
 def _naver_theme_html() -> tuple[bool, str]:
-    """아직 **HTML 스크래핑에 남아 있는** 경로 — 테마 시세(업종별 시세 페이지).
+    """테마 시세 — **화면이 쓰는 그 경로**로 잰다(#35).
 
-    업종·리서치가 JSON 으로 옮겨간 뒤에도 테마·상한가·업종맵은 finance.naver.com
-    HTML 이다. 경로 대조(아래 'ℹ️ 네이버 경로별')가 의미를 가지려면 **HTML 을
-    실제로 쓰는 기능**을 재야 한다 — 죽은 URL 을 재면 그 줄이 매일 거짓말한다.
+    2026-09-12 까지 이 점검은 `finance.naver.com/sise/theme.naver` HTML 을
+    직접 받아 `parse_themes_full` 로 셌다. 그런데 그 페이지가 SPA 로 바뀌어
+    화면은 이미 **JSON 사다리**로 옮겨 갔다 — 죽은 경로를 계속 재면 고친 뒤에도
+    영원히 ❌ 다(#342 `/health` 가 옛 HTML 마커를 단언하던 그 실패).
+    `fetch_themes()` 를 그대로 태우고(캐시 경유 = 화면과 같은 값) **어느 단이
+    답했는지**까지 적는다(#136 payload 가 밝힌 원천을 화면이 따른다).
     """
+    import time as _t
+
     try:
-        ok, text, dt = _naver_get(
-            f"{_nsc_base()}/theme.naver?page=1",
-            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR",
-                     "Referer": "https://finance.naver.com/sise/"}, want="text")
-        if not ok:
-            return False, f"{text} ({dt:.0f}ms)"
-        # ⚠️ 옛 판은 `"type=theme" in text` 라는 **부분문자열**만 봤다. Next.js
-        # 셸이 그 문자열을 링크·프리페치 JSON 어딘가에 담아 보내면 표가 0개인데도
-        # ✅ 가 뜬다 — 이 탭이 조용히 32시간 낡은 이유다(#35 감사는 화면이 쓰는
-        # 그 경로를 · #75 '있다'만 묻는 검사는 옆 것이 대신 만족시킨다).
-        # **제품 파서를 그대로 태워 행 수를 센다**(#54 대조 0건은 통과가 아니다).
-        from bot.naver_sector_client import parse_themes_full
-        n = len(parse_themes_full(text) or []) if isinstance(text, str) else 0
-        size = len(text) if isinstance(text, str) else 0
-        return bool(n), (f"테마 행 {n}개 ({size:,}B, {dt:.0f}ms)"
-                         + ("" if n else " — 응답은 왔는데 파서가 0건 = "
-                                        "표가 사라진 것(SPA 전환)"))
+        from bot.naver_sector_client import fetch_themes
+        t0 = _t.time()
+        data = fetch_themes() or {}
+        dt = (_t.time() - t0) * 1000.0
+        n = len(data.get("themes") or [])
+        via = str(data.get("via") or "")
+        why = str(data.get("reason") or "")
+        bits = [f"테마 {n}개"]
+        if via:
+            bits.append(via)
+        if data.get("stale"):
+            bits.append("저장분")
+        bits.append(f"{dt:.0f}ms")
+        msg = " · ".join(bits)
+        # 0건이면 통과가 아니다(#54) — 사유를 그대로 싣는다.
+        return bool(n), msg + ("" if n else f" — {why or '사유 미기록'}")
     except Exception as exc:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 

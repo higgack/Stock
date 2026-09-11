@@ -22,7 +22,7 @@ import json
 import re
 import sys
 
-_PROBE_VER = 4        # 3 = 업종 멤버 후보 · 4 = 리서치 페이징 스윕
+_PROBE_VER = 5        # 4 = 리서치 페이징 · 5 = 테마·상세 사다리 + 청크 발굴
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -257,10 +257,99 @@ def main(argv: list | None = None) -> int:
         print(f"   [{_kind}]")
         _paging_sweep(requests, f"{_RESEARCH_BASE}/{_kind}", "title")
 
-    if rc:
-        print("\n⑦ ❌ 살아 있는 엔드포인트를 못 찾았다 — 브라우저 DevTools Network")
-        print("   탭에서 그 페이지가 실제로 부르는 XHR URL 을 알려주세요(추측 금지).")
-    return rc
+    # ── ⑦ 테마 — **제품 사다리를 그대로** 태운다(#35 화면이 쓰는 그 경로) ──
+    print("\n⑦ 테마 목록 — 제품 사다리(collect_themes_json)를 그대로 태운다")
+    theme_ok = False
+    try:
+        from bot.naver_sector_client import collect_themes_json
+        # ⚠️ 반환 **모양**을 확인하고 쓸 것 — 3개로 풀면 ValueError 가 아래
+        # `except` 에 삼켜져 멀쩡한 사다리가 '실행 실패'로 찍힌다(#252 반환형을
+        # 확인 안 하고 조립한 진단이 그럴듯한 거짓을 낸다).
+        rows, marks, why, partial = collect_themes_json()
+        for m in marks:
+            print(f"   · {m}")
+        if rows:
+            # 부분이면 ✅ 가 아니다 — 값은 왔지만 창을 다 못 덮었다(#343·#41).
+            theme_ok = not partial
+            print(f"   {'✅' if not partial else '⚠️'} 테마 {len(rows)}개"
+                  + (f" · 부분({why})" if partial else "") + " · 표본: "
+                  f"{json.dumps(rows[0], ensure_ascii=False)[:300]}")
+        else:
+            print(f"   ❌ 전 후보 실패 — {why or '사유 미기록'}")
+    except Exception as exc:                               # noqa: BLE001
+        print(f"   ❌ 사다리 실행 실패: {type(exc).__name__}: {exc}")
+
+    # ── ⑧ 리서치 상세(목표가·투자의견) — 목록이 준 researchId 로 실호출 ──
+    print("\n⑧ 리서치 상세 — 목표가·투자의견을 어느 경로로 읽나")
+    detail_ok = False
+    nid = ""
+    obj, note = _get_json(requests, f"{_RESEARCH_BASE}/company?pageSize=1")
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        nid = str(obj[0].get("researchId") or "")
+        print(f"   · 표본 researchId={nid} · endUrl={obj[0].get('endUrl')}")
+    if not nid:
+        print(f"   ❓ 목록에서 researchId 를 못 구해 판정 불가 — {note or '키 없음'}")
+    else:
+        try:
+            from bot.naver_research_client import (_DETAIL_API_RUNGS,
+                                                   detail_from_json)
+            for label, tmpl in _DETAIL_API_RUNGS:
+                url = tmpl.format(nid=nid)
+                o2, n2 = _get_json(requests, url)
+                if o2 is None:
+                    print(f"   · {label}: ❌ {n2}  ({url})")
+                    continue
+                tgt, rating = detail_from_json(o2)
+                keys = sorted(o2) if isinstance(o2, dict) else "(list)"
+                print(f"   · {label}: ✅ 응답 · 목표가={tgt} 투자의견={rating!r}")
+                print(f"     전 키: {keys}")
+                print(f"     표본: {json.dumps(o2, ensure_ascii=False)[:700]}")
+                if tgt is not None or rating:
+                    detail_ok = True
+                    break
+        except Exception as exc:                           # noqa: BLE001
+            print(f"   ❌ 상세 사다리 실행 실패: {type(exc).__name__}: {exc}")
+
+    # ── ⑨ 그래도 못 찾았으면 **원천에게 묻는다**(추측 금지, #151·#338) ──
+    # Next.js 는 라우트 청크 JS 안에 API 경로를 문자열 리터럴로 담는다.
+    if not (theme_ok and detail_ok):
+        print("\n⑨ 청크 발굴 — 그 페이지가 부르는 API 경로를 JS 에서 읽는다")
+        from bot import naver_spa_discover as _disc
+
+        def _fetch(u: str):
+            try:
+                r = requests.get(u, headers=_H, timeout=10)
+            except Exception as exc:                       # noqa: BLE001
+                return None, f"{type(exc).__name__}: {exc}"
+            return (r.text, "") if r.status_code == 200 else (None, f"HTTP {r.status_code}")
+
+        for label, page, key in (
+                ("테마", "https://finance.naver.com/sise/theme.naver", "theme"),
+                ("리서치", "https://finance.naver.com/research/company_list.naver",
+                 "research")):
+            if label == "테마" and theme_ok:
+                continue
+            if label == "리서치" and detail_ok:
+                continue
+            paths, why = _disc.discover(page, must_contain=key, fetch=_fetch,
+                                        prefer=key)
+            if paths:
+                print(f"   · {label}: ✅ 청크에서 {len(paths)}건 발견")
+                for pth in paths[:20]:
+                    print(f"       {pth}")
+            else:
+                print(f"   · {label}: ❌ {why}")
+
+    # 이상 없을 때도 **한 줄은 말한다** — 빈 출력이 정답인 도구는 없다(#274).
+    print("\n⑩ 판정")
+    print(f"   · 업종·리서치 목록: {'✅ 살아 있음' if rc == 0 else '❌ 전멸'}")
+    print(f"   · 테마 목록: {'✅' if theme_ok else '❌'}")
+    print(f"   · 리서치 상세: {'✅' if detail_ok else '❌'}")
+    if rc == 0 and theme_ok and detail_ok:
+        print("   ✅ 이상 없음 — 세 경로 모두 값이 온다")
+    else:
+        print("   ↪ ❌ 인 줄의 URL·사유를 그대로 붙여 주세요(추측으로 고치지 않습니다).")
+    return 0 if (rc == 0 and theme_ok and detail_ok) else 1
 
 
 if __name__ == "__main__":
