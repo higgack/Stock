@@ -1274,7 +1274,11 @@ def _newest_cached_rows(cache_dir, prefix: str,
             age = max(0.0, time.time() - f.stat().st_mtime)
             if age > max_age_sec:
                 break                      # 정렬돼 있으므로 뒤는 더 오래됐다
-            rows = json.loads(f.read_text())
+            # ⚠️ 2026-09-12 부터 저장 형식이 **봉투**({rows, note, meta})다 —
+            # 그대로 돌려주면 호출부의 `(prev or [])[:limit]` 이 dict 슬라이스로
+            # 터진다. 옛 리스트 형식도 같이 읽는다(형식 전환 내구).
+            from bot.naver_research_client import cache_rows as _crows
+            rows, _ = _crows(json.loads(f.read_text()))
             if rows:
                 return rows, age
     except Exception as exc:                                  # noqa: BLE001
@@ -1282,17 +1286,19 @@ def _newest_cached_rows(cache_dir, prefix: str,
     return None, None
 
 
-def _research_cache_note(key: str, rows: list, days_back: int) -> None:
+def _research_cache_note(key: str, note: str) -> None:
     """바깥 10분 캐시에 걸린 요청도 **창 절단 사실은 말해야** 한다.
 
-    안쪽(12h)만 고쳤더니 배포·watchdog 재시작이 마지막 수집 10분 안에 나면
+    안쪽(1h)만 고쳤더니 배포·watchdog 재시작이 마지막 수집 10분 안에 나면
     세 탭이 20행을 30일치인 양 **아무 표시 없이** 그렸다(독립 리뷰 2026-09-11
     H1 실측 — `_RESEARCH_NOTE[kind]` 가 `{}` 로 남는다). 규칙이 바뀌면 **형제
-    캐시 층**을 즉시 grep 할 것(#38·#147). 문구는 단일 출처에서 만든다.
+    캐시 층**을 즉시 grep 할 것(#38·#147).
+
+    ⚠️ 2026-09-12: 옛 판은 **행 수에서 파생**했다. 쪽 이어받기가 들어가면 행
+    수로는 '몇 쪽에서 왜 멈췄나' 를 복원할 수 없으므로 저장할 때 문구를 같이
+    굽고 여기서 **읽는다**(단일 출처는 `naver_research_client.window_note`).
     """
-    from bot.naver_research_client import cached_window_note
-    _RESEARCH_NOTE[key] = {"reason": "", "stale": False,
-                           "window": cached_window_note(len(rows or []), days_back)}
+    _RESEARCH_NOTE[key] = {"reason": "", "stale": False, "window": note or ""}
 
 
 def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
@@ -1309,9 +1315,10 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
-                _cached = json.loads(cache_file.read_text())
-                _research_cache_note("kr", _cached, 30)
-                return _cached
+                from bot.naver_research_client import cache_rows as _crows
+                _rows, _note = _crows(json.loads(cache_file.read_text()))
+                _research_cache_note("kr", _note)
+                return _rows
         except Exception:
             pass
 
@@ -1336,7 +1343,9 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
 
     if results:  # truthy-only — 빈 결과(일시 실패) 캐시 안 함('또 갑자기 없음' 방지)
         try:
-            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+            from bot.naver_research_client import cache_envelope as _cenv
+            cache_file.write_text(json.dumps(
+                _cenv(results, window, {}), ensure_ascii=False))
         except Exception:
             pass
         _RESEARCH_NOTE["kr"] = {"reason": "", "window": window, "stale": False}
@@ -1361,9 +1370,10 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
-                _cached = json.loads(cache_file.read_text())
-                _research_cache_note("kr_industry", _cached, 30)
-                return _cached
+                from bot.naver_research_client import cache_rows as _crows
+                _rows, _note = _crows(json.loads(cache_file.read_text()))
+                _research_cache_note("kr_industry", _note)
+                return _rows
         except Exception:
             pass
 
@@ -1384,7 +1394,9 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
 
     if results:  # truthy-only — 빈 결과 캐시 안 함
         try:
-            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+            from bot.naver_research_client import cache_envelope as _cenv
+            cache_file.write_text(json.dumps(
+                _cenv(results, window, {}), ensure_ascii=False))
         except Exception:
             pass
     return results[:limit]
@@ -1403,9 +1415,10 @@ def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
-                _cached = json.loads(cache_file.read_text())
-                _research_cache_note("kr_strategy", _cached, 30)
-                return _cached
+                from bot.naver_research_client import cache_rows as _crows
+                _rows, _note = _crows(json.loads(cache_file.read_text()))
+                _research_cache_note("kr_strategy", _note)
+                return _rows
         except Exception:
             pass
 
@@ -1424,7 +1437,9 @@ def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
 
     if results:  # truthy-only — 빈 결과 캐시 안 함
         try:
-            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+            from bot.naver_research_client import cache_envelope as _cenv
+            cache_file.write_text(json.dumps(
+                _cenv(results, window, {}), ensure_ascii=False))
         except Exception:
             pass
     return results[:limit]

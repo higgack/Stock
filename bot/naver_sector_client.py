@@ -229,11 +229,61 @@ _kr_ind_lock = threading.Lock()
 # 업종맵 빌드가 **왜** 비었나 — `--check` 가 읽는다. 조용한 실패는 몇 달 동안
 # 기능 하나를 없는 셈 친다(#12·#43, 독립 리뷰 2026-09-11 M5).
 _KR_IND_FAIL: dict = {"reason": ""}
+# 실패를 **파일로** 남긴다. 이유 둘:
+#  (a) `--check` 는 별도 프로세스라 모듈 전역만 보면 항상 초기값("")이다 —
+#      그 줄은 사실상 죽은 코드였다(독립 리뷰 2026-09-12 실측, #291·#123 계열).
+#  (b) 백오프가 **재시작을 넘어야** 한다 — watchdog 재시작마다 백오프가
+#      풀리면 죽은 URL 을 다시 두드린다.
+_KR_IND_FAIL_FILE = "kr_industry_fail.json"
+# 빌드가 0건으로 끝난 뒤 **다시 시도하지 않을 시간**. 빌드는 in-flight 가드가
+# `finally` 에서 즉시 풀리고 캐시 파일은 0건이라 안 써지므로, 옛 코드는
+# **렌더마다** 죽은 URL 로 스레드를 띄웠다(사용자 2026-09-12 "비용 낭비").
+# 리터럴로 못박는다(#66) — 15분이면 원천이 복구된 날 한 시간 안에 따라붙는다.
+_KR_IND_BACKOFF_SEC = 900
+
+
+def _kr_ind_fail_record(reason: str) -> None:
+    """실패 사유와 시각을 디스크에 남긴다(백오프·진단 공용).
+
+    성공(`reason=""`)이면 기록을 **지운다** — 남겨 두면 그 시각이 '마지막 실패'
+    로 읽혀 정상 빌드까지 백오프가 잡아먹는다(독립 리뷰 2026-09-12).
+    """
+    _KR_IND_FAIL["reason"] = reason
+    try:
+        if reason:
+            _cache_write(_KR_IND_FAIL_FILE, {"at": time.time(), "reason": reason})
+        else:
+            (_CACHE_DIR / _KR_IND_FAIL_FILE).unlink(missing_ok=True)
+    except Exception:                                          # noqa: BLE001
+        log.warning("kr industry map: 실패 기록을 못 남겼다 — 백오프가 안 걸린다")
+
+
+def _kr_ind_fail_state() -> tuple[float, str]:
+    """(마지막 실패 시각, 사유) — 없으면 (0.0, "").
+
+    ⚠️ 옛 판은 이번 프로세스가 실패를 겪었으면 `time.time()` 을 돌려줬다 —
+    그러면 `now - now = 0` 이라 **백오프가 영원히 안 풀리고** 한 번 실패한
+    업종맵이 재시작 전까지 죽는다(독립 리뷰 2026-09-12 실측: +2h 시뮬에도
+    재시도 0회). 주기적으로 발동하는 가드를 넣을 땐 "이게 매번 걸리면 계열이
+    어떻게 되나"를 먼저 물을 것(#178). **시각은 기록이 말한다** — 전역은
+    사유 문구의 폴백으로만 쓴다.
+    """
+    at, why = 0.0, ""
+    try:
+        d = json.loads((_CACHE_DIR / _KR_IND_FAIL_FILE).read_text())
+        at, why = float(d.get("at") or 0.0), str(d.get("reason") or "")
+    except Exception:                                          # noqa: BLE001
+        pass
+    return at, why or (_KR_IND_FAIL.get("reason") or "")
 
 
 def kr_industry_fail_reason() -> str:
-    """직전 업종맵 빌드가 0건이었던 사유("" = 사유 없음)."""
-    return _KR_IND_FAIL.get("reason") or ""
+    """직전 업종맵 빌드가 0건이었던 사유("" = 사유 없음).
+
+    ⚠️ 모듈 전역만 보면 **별도 프로세스**(`--check`·프로브)에서 항상 빈
+    문자열이다 — 그래서 그 줄이 한 번도 안 찍혔다. 디스크 기록으로 폴백한다.
+    """
+    return _KR_IND_FAIL.get("reason") or _kr_ind_fail_state()[1]
 
 
 def _build_kr_industry_map() -> None:
@@ -258,14 +308,14 @@ def _build_kr_industry_map() -> None:
         if not groups:
             # 조용히 return 하면 `kr_industry_map()` 이 매 렌더마다 스레드를
             # 띄워 같은 실패를 반복하는데 **아무도 모른다**(#12 silent-fail 금지).
-            _KR_IND_FAIL["reason"] = (
+            _kr_ind_fail_record(
                 f"업종 그룹 0건 — 원문 {len(html or ''):,}자"
                 + ("(응답은 왔다 = SPA 전환으로 표가 사라진 것, "
                    "`naver_spa_probe` ⑤ 로 대체 경로를 잰다)" if html
-                   else "(응답 자체가 없다 = 도달 실패)"))
+                   else "(응답 자체가 없다 = 도달 실패·정지 등)"))
             log.warning("kr industry map: %s", _KR_IND_FAIL["reason"])
             return
-        _KR_IND_FAIL["reason"] = ""
+        _kr_ind_fail_record("")      # 성공 — 기록을 지운다(아래 참조)
 
         def _members(grp):
             no, name = grp
@@ -285,8 +335,11 @@ def _build_kr_industry_map() -> None:
                     out.setdefault(code, name)   # 한 종목 = 첫 업종(소속 1개)
         if out:
             _cache_write(_KR_IND_CACHE, out)
-    except Exception as exc:
+    except Exception as exc:                                   # noqa: BLE001
+        # ⚠️ 옛 판은 예외 경로에서 **아무것도 기록하지 않아** 백오프가 안 걸렸다
+        # — 원천이 계속 던지면 렌더마다 다시 나간다(독립 리뷰 2026-09-12).
         log.warning("kr industry map build: %s", exc)
+        _kr_ind_fail_record(f"빌드 예외 — {type(exc).__name__}: {str(exc)[:80]}")
     finally:
         with _kr_ind_lock:
             _kr_ind_building = False
@@ -305,6 +358,16 @@ def kr_industry_map() -> dict:
                 return raw
     except Exception:
         raw = None
+    # ⚠️ in-flight 가드(`_kr_ind_building`)는 `finally` 에서 **즉시** 풀리므로
+    # 렌더 **사이**를 막지 못한다. 빌드가 0건이면 캐시 파일도 안 써져서
+    # `fp.exists()` 가 영원히 거짓 — 그래서 렌더마다 죽은 URL 로 스레드가
+    # 나갔다(사용자 2026-09-12). 실패 뒤에는 **백오프**를 둔다(#72 차단기와
+    # 같은 처방 · #25 늘 도는 재시도는 아무것도 안 재는 것과 같다).
+    _at, _why = _kr_ind_fail_state()
+    # 사유가 **있을 때만** 막는다 — 성공 기록(`reason=""`)에도 시각이 찍히므로
+    # 시각만 보면 정상 빌드까지 백오프가 잡아먹는다(독립 리뷰).
+    if _why and _at and (time.time() - _at) < _KR_IND_BACKOFF_SEC:
+        return raw or {}
     global _kr_ind_building
     with _kr_ind_lock:
         if not _kr_ind_building:
@@ -472,8 +535,19 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
         return {"up": [], "down": [], "ts": "", "reason": why}
     # 기준시각은 **원천이 찍은 것**을 쓴다(렌더 시각이 아니다, 규칙 10b·#304).
     # 원천이 안 주면 우리 수집 시각으로 떨어지되 그건 '값 수집' 이다.
+    # ⚠️ `ts` 한 칸이 **두 의미를 대표**하고 있었다 — 원천이 `thistime` 을 빼면
+    # 조용히 우리 수집 시각으로 떨어지는데 화면 라벨은 그대로 '기준' 이었다.
+    # 그 순간 수집이 멈춰 있어도 화면은 방금처럼 보인다(규칙 10b·#34 한 라벨이
+    # 두 계정을 대표하면 한쪽은 반드시 거짓말). 어느 쪽인지 **payload 가 밝히고**
+    # 화면이 따른다(#136) — 레포에 이미 '값 수집' 규약이 있다(#304).
+    _src_ts = upjong_asof(raw)
     out = {"up": ups, "down": downs,
-           "ts": upjong_asof(raw) or _now_kst_label(),
+           "ts": _src_ts or _now_kst_label(),
+           "ts_kind": "source" if _src_ts else "collected",
+           # 전 업종(등락률 내림차순) — `/theme` 의 '업종별 시세(전체)' 표가
+           # 이걸 그린다. 위젯은 상·하위 10만 쓰지만 **같은 수집 1회**에서
+           # 파생시켜 두 화면이 갈리지 않게 한다(#38·#45).
+           "all": sorted(groups, key=lambda x: x["pct"], reverse=True),
            "scanned": len(groups)}
     if why:                            # 부분 페이지 등 — 값은 있지만 사유가 있다
         out["reason"] = why
@@ -842,14 +916,24 @@ def _refresh_async(name: str, fn, key: str) -> None:
 
 
 def _theme_page(page: int):
-    """테마 한 페이지 → 행 목록. **수신 실패는 None**(빈 페이지 `[]` 와 다르다).
+    """테마 한 페이지 → (행 목록, 실패 사유). **수신 실패는 None**(빈 `[]` 와 다르다).
 
     옛 직렬 판은 첫 실패에서 `break` 해 부분 결과를 만들지 않았다. 병렬로
     바꾸면 4쪽만 429 를 맞아도 나머지가 그대로 합쳐져 **~170개를 완전본으로**
     굽는다(독립 리뷰) — 갈래를 남겨 호출부가 캐시 여부를 정한다(#82·#119).
     """
-    html = _get(f"{_BASE}/theme.naver", params={"page": page})
-    return parse_themes_full(html) if html else None
+    # ⚠️ `_get` 은 사유를 버린다 — 도달 실패(403·타임아웃·NAVER_PAUSE)와
+    # 'SPA 로 표가 사라짐' 이 화면에서 같은 말이 된다(처방이 정반대인데, #82).
+    # `_get2` 로 받아 갈래를 위로 올린다.
+    html, why = _get2(f"{_BASE}/theme.naver", params={"page": page})
+    if not html:
+        return None, why or _nd.parse_reason("테마 페이지", 0, unit="B")
+    rows = parse_themes_full(html)
+    if not rows:
+        # 응답은 왔는데 행이 0 = **표가 사라진 것**(SPA 전환). 도달 실패와
+        # 다른 이름으로 말해야 운영자가 엔드포인트 교체로 간다.
+        return [], _nd.parse_reason("테마 행", len(html), unit="B")
+    return rows, ""
 
 
 def collect_themes() -> dict:
@@ -864,7 +948,9 @@ def collect_themes() -> dict:
     from bot.pool import map_bounded
 
     t0 = time.time()
-    pages = map_bounded(_theme_page, list(range(1, _THEME_PAGES + 1)))
+    _res = map_bounded(_theme_page, list(range(1, _THEME_PAGES + 1)))
+    pages = [(r[0] if isinstance(r, tuple) else r) for r in _res]
+    whys = [str(r[1]) for r in _res if isinstance(r, tuple) and r[1]]
     failed = [i for i, rows in enumerate(pages, 1) if rows is None]
     themes: list[dict] = []
     seen: set[str] = set()
@@ -880,8 +966,11 @@ def collect_themes() -> dict:
              len(themes), _THEME_PAGES, failed or "없음", time.time() - t0)
     if failed:
         log.warning("naver_sector: 테마 페이지 수신 실패 %s — 부분 스냅샷", failed)
+    # 사유는 **계산해 놓고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
+    # 형제 `fetch_sector_movers` 는 이미 `reason` 을 싣는데 테마만 안 실었다(#38).
     return {"themes": themes, "ts": _now_kst_label() if themes else "",
-            "partial": bool(failed)}
+            "partial": bool(failed),
+            "reason": ("" if themes else (whys[0] if whys else ""))}
 
 
 def _collect_and_store() -> dict:
@@ -916,13 +1005,18 @@ def fetch_themes() -> dict:
     age = None if mt is None else time.time() - mt
     if have_old and age is not None and age < _THEME_SWR_SEC:
         _refresh_async("theme.json", _collect_and_store, "naver:themes")
-        return dict(old, stale=True, stale_age=int(age))
+        # 여기만 **실제로 배경 갱신이 떠 있다** — 화면이 '갱신 중' 이라고 말할
+        # 자격이 있는 유일한 갈래다.
+        return dict(old, stale=True, stale_age=int(age), refreshing=True)
     from bot.singleflight import once
     out = once("naver:themes", _collect_and_store)
     if not out.get("themes") and have_old:
-        # 수집이 빈손이면 저장분이라도 준다 — 빈 화면보다 낫고 ts 가 언제
-        # 것인지 말한다(#43·#163 낡은 값을 '현재'라 하지 않는다).
-        return dict(old, stale=True, stale_age=int(age or 0))
+        # 수집이 **이미 끝나고 빈손**이다 — 옛 판은 이 경우에도 화면이
+        # '갱신 중' 이라고 적어, 기다리면 채워질 것처럼 읽혔다(사용자 2026-09-12
+        # "어제기준인데?" · #25 늘 뜨는 배지는 아무것도 안 재는 것과 같다).
+        # 진행 중인 갱신은 없다 — 사실대로 '수집 실패' 라고 말한다.
+        return dict(old, stale=True, stale_age=int(age or 0), refreshing=False,
+                    reason=out.get("reason") or "")
     return out
 
 

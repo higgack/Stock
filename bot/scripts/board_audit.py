@@ -271,7 +271,12 @@ def _audit_home_surfaces(show_all):
     _p("── 최근 리서치 액션")
     try:
         from bot import naver_research_client as nrc
-        items = nrc.fetch_recent_research_market(limit=25)
+        # ⚠️ 화면과 **같은 인자**여야 한다 — 캐시 키가 (days_back, limit) 을
+        # 포함하므로 기본값(14·25)으로 부르면 감사가 화면이 안 보는 **다른
+        # 파일**을 재고, 상세 수집까지 따로 돈다(#35·#264 진단이 비용·운영
+        # 상태를 만들지 않는다). 화면은 `market_overview` 가 30일·300건으로 부른다.
+        items = nrc.fetch_recent_research_market(limit=300, days_back=30,
+                                                 fetch_detail=False)
         dates = sorted({str(i.get("date", ""))[:10] for i in items if i.get("date")})
         _p(f"   {len(items)}건 · 최신 {dates[-1] if dates else '—'}"
            f" · 가장 오래된 {dates[0] if dates else '—'}")

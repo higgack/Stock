@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import time
+
+from bot import naver_diag as _naver_diag
 
 from bot.live_refresh import LIVE_REFRESH_JS as _LIVE_REFRESH_JS
 
@@ -50,6 +53,10 @@ td.ld a,td.ld a.tnm{color:#6ea8fe;text-decoration:underline;text-decoration-colo
 td.ld a:hover{color:var(--accent)}
 .up{color:var(--pos);font-weight:600}.dn{color:var(--neg);font-weight:600}.neu{color:var(--muted)}
 .empty{color:var(--muted);font-size:13px;padding:30px 0;text-align:center}
+/* 값과 **같이** 가는 사실 줄(수집 실패·부분 수신) — 클래스를 쓰면서
+   CSS 를 안 두면 각주가 본문 크기로 떠서 표보다 커 보인다(#201·#273·#299).
+   같은 이름이 다른 번들에 있다고 스타일이 따라오지 않는다. */
+.sm-note{color:var(--muted,#8b93a7);font-size:12px;margin:-2px 0 10px}
 .ts{color:var(--muted);font-size:12px;margin-left:8px}
 </style>
 """
@@ -128,6 +135,79 @@ _THEME_DETAIL = ("https://finance.naver.com/sise/sise_group_detail.naver"
                  "?type=theme&no=")
 
 
+def upjong_panel() -> str:
+    """🏭 **업종별 시세(전체)** — 살아 있는 JSON(`upjong/list`)에서 전 업종.
+
+    ⚠️ 이 페이지의 탭 라벨이 '업종별 시세(전체)' 인데 내용은 **테마**였고, 그
+    테마 수집은 `finance.naver.com` SPA 전환으로 죽어 32시간 낡은 스냅샷을
+    서빙하고 있었다(사용자 2026-09-12 "한국업종별 시세는 오늘 기준이 아니라
+    어제기준인데?"). 업종 데이터는 **이미 살아 있다** — 대시보드 위젯이 그걸로
+    상·하위 10을 그린다. 새 원천을 찾을 게 아니라 **이미 부르는 호출이 무엇을
+    더 주는지** 보는 자리다(#150·#141 · §작업 원칙 선행 사례 먼저).
+
+    위젯과 **같은 수집 1회**(`fetch_sector_movers`)에서 파생시킨다 — 따로
+    받으면 두 화면의 기준시각이 갈린다(#38·#51).
+    """
+    try:
+        from bot.naver_sector_client import fetch_sector_movers
+        d = fetch_sector_movers() or {}
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("theme page: upjong fetch failed: %s", exc)
+        return ('<div class="panel"><h2>🏭 업종별 시세(전체)</h2>'
+                f'<div class="empty">업종 수집 실패 — {_html.escape(str(exc)[:80])}'
+                '</div></div>')
+    groups = list(d.get("all") or [])
+    ts = _html.escape(str(d.get("ts") or ""))
+    kind = "값 수집 " if d.get("ts_kind") == "collected" else ""
+    if d.get("stale"):
+        ts = f'저장분 {ts} ⚠️'
+    why = str(d.get("reason") or "")
+    if not groups:
+        return ('<div class="panel"><h2>🏭 업종별 시세(전체)</h2>'
+                + (f'<div class="empty">{_html.escape(why)}</div>' if why else
+                   '<div class="empty">업종 데이터가 없습니다.</div>')
+                + '</div>')
+    rows = []
+    for i, g in enumerate(groups, 1):
+        nm = _html.escape(str(g.get("name") or ""))
+        rows.append(
+            f'<tr data-name="{nm}" data-pct="{g.get("pct", -999)}">'
+            f'<td class="rk">{i}</td><td class="nm">{nm}</td>'
+            f'{_pct_cell(g.get("pct"))}'
+            f'<td class="ld">{int(g.get("rise") or 0)}↑ / {int(g.get("fall") or 0)}↓</td>'
+            f'</tr>')
+    note = (f'<div class="sm-note">⚠️ {_html.escape(why)}</div>') if why else ""
+    return (f'<div class="panel"><h2>🏭 업종별 시세(전체) {len(groups)}개 '
+            f'<span class="ts">{kind}{ts}{" · Naver" if ts else ""}</span></h2>'
+            f'{note}'
+            f'<table id="upj-tbl" class="cflt"><thead><tr><th>#</th>'
+            f'<th>업종</th><th style="text-align:right">등락률</th>'
+            f'<th>상승/하락 종목수</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+
+def theme_status(data: dict) -> tuple[str, str]:
+    """저장분 테마에 붙일 (짧은 라벨, 사유 줄) — 순수.
+
+    ⚠️ 옛 판은 `stale` 이면 무조건 `N분 전 스냅샷 · 갱신 중` 이라고 적었다.
+    그런데 그 문구가 뜨는 경로는 **동기 수집이 이미 끝나고 빈손인** 쪽이라
+    진행 중인 갱신은 없다 — 기다리면 채워질 것처럼 읽혀 사용자가 새로고침을
+    반복하고, 그때마다 죽은 7페이지를 다시 긁는다(#25 늘 뜨는 배지 · #43).
+    갈래는 수집기가 `refreshing` 으로 싣는다(화면이 재계산하면 갈라진다, #35).
+    """
+    if not data.get("stale"):
+        return "", ""
+    age = int(data.get("stale_age") or 0)
+    if age < 120:
+        return "", ""
+    ago = f"{age // 3600}시간 전" if age >= 3600 else f"{age // 60}분 전"
+    if data.get("refreshing"):
+        return f" · {ago} 스냅샷 · 갱신 중", ""
+    why = str(data.get("reason") or "")
+    return (f" · {ago} 스냅샷 · 갱신 실패",
+            why or "테마 수집이 0건으로 끝났습니다 — 사유를 기록하지 못했습니다")
+
+
 def render_theme_page() -> str:
     """테마별 시세 — 전체 테마. 테마명=네이버 상세 링크, 최근3일·주도주 포함."""
     try:
@@ -138,8 +218,13 @@ def render_theme_page() -> str:
         data = {"themes": [], "ts": ""}
     themes = data.get("themes", [])
     ts = _html.escape(data.get("ts", ""))
+    # ⚠️ `note` 는 아래 else 안에서만 세워지는데 부제가 그걸 읽는다 — 테마가
+    # 0건인 날 NameError 로 페이지가 통째로 죽는다(#63a 게이트 안에 갇힌 변수).
+    note, _why0 = theme_status(data)
     if not themes:
-        body = '<div class="empty">테마 시세를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.</div>'
+        _w = str(data.get("reason") or "")
+        body = ('<div class="empty">테마 시세를 불러올 수 없습니다'
+                + (f' — {_html.escape(_w)}' if _w else '') + '</div>')
     else:
         def _ld_link(ld) -> str:
             # 주도주 종목명 → 우리 종목분석(lookup). 코드 정규화(.KS/.KQ).
@@ -175,10 +260,9 @@ def render_theme_page() -> str:
         # ⚠️ 단 SWR 창(10분)이 캐시 TTL(30초)보다 넓어 정상 조회의 대부분이
         # `stale` 이다 — 늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260).
         # 정말 뒤처졌을 때(TTL 의 4배)만, 그것도 **잰 값**으로 말한다.
-        _age = int(data.get("stale_age") or 0)
-        note = (f" · {_age // 60}분 전 스냅샷 · 갱신 중"
-                if data.get("stale") and _age >= 120 else "")
-        body = (f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
+        _why = _why0
+        body = ((f'<div class="sm-note">⚠️ {_html.escape(_why)}</div>' if _why else "")
+                + f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
                 f'<span class="ts">{ts} 기준{note}</span></h2>'
                 f'<table id="thm-tbl" class="cflt"><thead><tr><th>#</th>'
                 f'<th class="js-th-sort" data-k="name">테마</th>'
@@ -186,9 +270,14 @@ def render_theme_page() -> str:
                 f'<th class="js-th-sort" data-k="pct3" style="text-align:right">최근3일</th>'
                 f'<th>주도주</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>{_THEME_SORT_JS}{_gfjs}')
-    return _shell("테마별 시세",
-                  "Naver 증권 테마별 등락률 · 상승순. 테마명·주도주 클릭 시 상세/종목분석. 장중 30초 캐시.",
-                  "theme", body)
+    # 부제는 **data 에서 파생**한다 — 리터럴로 '장중 30초 캐시' 라고 적어 두면
+    # 32시간 낡은 스냅샷 위에서도 그렇게 주장한다(#55 설명이 코드와 어긋나면
+    # 버그). 부제와 패널 제목이 **같은 판정값**에서 나와야 갈리지 않는다(#38).
+    _sub = ("Naver 증권 · 🏭 업종은 JSON(실시간) · 테마는"
+            + (" 저장분(수집 실패)" if (note and not data.get("refreshing"))
+               else " 장중 30초 캐시")
+            + ". 이름 클릭 시 상세/종목분석.")
+    return _shell("업종·테마 시세", _sub, "theme", upjong_panel() + body)
 
 
 _THEME_SORT_JS = """<script>
@@ -242,7 +331,13 @@ def render_highlow_page() -> str:
             if nv.get("up") or nv.get("down"):
                 _cache_write(_cf, nv)
             elif stale is not None:
-                nv = stale       # fetch 빈/실패 → 직전 산출본 유지(블랭크 방지)
+                # fetch 빈/실패 → 직전 산출본 유지(블랭크 방지). ⚠️ 옛 판은 그
+                # **나이를 한 마디도 안 했다** — front-api 가 막힌 날 화면이
+                # 어제 종가 랭킹 위에 '장중 30초 갱신' 이라고 적었고, 값이 다
+                # '있어서' 사용자도 감사도 못 잡는다(#96·#43·#52). 형제 위젯
+                # (TW 업종·업종 등락)이 쓰는 규약을 그대로 쓴다(#38·#306).
+                nv = dict(stale, stale=True,
+                          stale_min=int(max(0.0, time.time() - _mt) // 60))
         if nv and (nv.get("up") or nv.get("down")):
             data = nv
     except Exception as exc:
@@ -253,23 +348,41 @@ def render_highlow_page() -> str:
         down = sort_by_pct(data["down"], gainers=False)
         # KR 업종(한글) 백필 — 네이버 업종 그룹 멤버맵 (사용자 2026-06-14 'KR
         # 급등락에 업종 추가, 그냥 한글로'). SWR·graceful(빌드 중이면 —).
+        _ind_why = ""
         try:
-            from bot.naver_sector_client import apply_kr_industry
+            from bot.naver_sector_client import (apply_kr_industry,
+                                                 kr_industry_fail_reason)
             apply_kr_industry(up)
             apply_kr_industry(down)
+            if not any(x.get("ind") for x in (up + down)):
+                # 업종 열을 그려 놓고 전 행이 비면 사용자는 수집 실패로 읽는다
+                # — `--check` 는 이미 사유를 말하는데 **페이지는 안 말했다**
+                # (#123·#129·#189·#228 계열 · #43).
+                _ind_why = kr_industry_fail_reason()
         except Exception:
             pass
         ts = _html.escape(data.get("ts", ""))
         _o = dict(name_only=True, show_ind=True, show_vol=True, show_value=True)
-        body = ('<div class="grid">'
+        body = ((f'<div class="sm-note">⚠️ 업종 칸이 빈 이유: '
+                 f'{_html.escape(_ind_why)}</div>' if _ind_why else "")
+                + '<div class="grid">'
                 + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "KR",
                               ind_dist_line(up), **_o)
                 + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "KR",
                               ind_dist_line(down), **_o)
                 + '</div>' + HL_SORT_JS)
+        # ⚠️ `movers_freshness` 는 **캐시 나이를 보지 않는다** — 장중이면 무조건
+        # '장중 30초 갱신' 이라고 적는다. 저장분을 그리는 날 그 문구는 거짓이다
+        # (#55 설명이 코드와 어긋나면 버그). 저장분이면 **잰 나이**를 적는다.
         from bot.highlow_render import movers_freshness as _mf
+        if data.get("stale"):
+            _m = data.get("stale_min")
+            _ago = _naver_diag.stale_label(_m * 60 if isinstance(_m, int) else None)
+            _fresh_txt = f'저장분{f" ({_ago})" if _ago else ""} ⚠️'
+        else:
+            _fresh_txt = _mf("KR")
         sub = ("네이버 증권 급등/급락 · 업종=네이버 · "
-               f"{_mf('KR')}{(' · ' + ts + ' 기준') if ts else ''}")
+               f"{_fresh_txt}{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'

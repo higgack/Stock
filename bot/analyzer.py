@@ -2484,6 +2484,9 @@ def _clean_section(body, currency_symbol: str = "", canonical: dict | None = Non
     return polished
 
 
+_RATING_IMPORT_WARNED = False
+
+
 def _extract_rating(decision: str) -> str | None:
     """Extract the 5-tier rating from a rendered decision.
 
@@ -2508,7 +2511,17 @@ def _extract_rating(decision: str) -> str | None:
         return None
     try:
         from tradingagents.agents.utils.rating import parse_rating
-    except Exception:
+    except Exception as exc:                                   # noqa: BLE001
+        # ⚠️ 옛 판은 **로그 한 줄도 안 남겼다**. 의존성이 빠진 배포가 나가면
+        # 모든 분석 카드의 Rating 이 조용히 'N/A' 가 되고(1295행 `or "N/A"`)
+        # 며칠을 모른다 — '없음' 과 '못 읽음' 이 같은 None 으로 뭉개진다
+        # (#12 silent-fail 금지 · #82 갈래는 이름으로 · #315).
+        # 늘 뜨는 로그는 아무것도 안 재는 것과 같으므로 **모듈당 1회**(#25·#260).
+        global _RATING_IMPORT_WARNED
+        if not _RATING_IMPORT_WARNED:
+            _RATING_IMPORT_WARNED = True
+            log.warning("_extract_rating: parse_rating import 실패 — 모든 Rating 이 "
+                        "'N/A' 로 떨어진다: %s: %s", type(exc).__name__, exc)
         return None
     _sentinel = "__NO_RATING__"
     result = parse_rating(decision, default=_sentinel)

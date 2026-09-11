@@ -18296,6 +18296,12 @@ def _render_sector_movers(movers: dict) -> str:
                 f'<table class="sm-tbl">{body}</table></div>')
 
     ts = _html.escape((movers or {}).get("ts", ""))
+    # ⚠️ 그 시각이 **원천이 찍은 기준**인지 **우리가 받아온 시각**인지 라벨로
+    # 가른다 — 옛 판은 원천이 `thistime` 을 빼면 조용히 후자로 떨어지면서도
+    # 계속 '기준' 처럼 보였다(규칙 10b·#34·#304 '값 수집' 규약). 판정은
+    # payload 가 하고 화면은 따르기만 한다(#136·#35).
+    if (movers or {}).get("ts_kind") == "collected" and ts:
+        ts = f"값 수집 {ts}"
     # 저장분으로 되돌아갔으면 화면이 그렇게 말한다(#136 payload 가 밝힌 원천을
     # 화면이 따른다) — 형제 위젯(TW 업종)과 같은 규약·같은 라벨(#38).
     if (movers or {}).get("stale"):
@@ -18447,6 +18453,18 @@ def _render_macro_snapshot(macro: dict) -> str:
                    '<div class="macro-grid">')
         out.extend(_render_macro_card(i) for i in glob)
         out.append('</div></details>')
+
+    # 정의엔 있는데 값이 없어 **안 그린** 카드 — 침묵하면 사용자는 기능이
+    # 삭제된 줄로 읽는다(2026-09-11 팔라듐, #43·#52). 수집기가 갈래까지
+    # 계산해 뒀으므로 여기서는 그 문장을 그대로 싣는다(#35 화면과 진단이
+    # 같은 것을 읽는다 · #228 툴팁 말고 보이는 줄로).
+    # ⚠️ 클래스는 **이 페이지 번들**에 정의된 것이어야 한다 — `.si-note` 는
+    # lookup 페이지(`_CONSOLE_JS`)에만 있고 매크로 스냅샷은 `_MARKET_CSS` 를
+    # 쓰는 market.html 에 실린다. 같은 이름이 다른 번들에 있다고 스타일이
+    # 따라오지 않는다(#201 클래스만 쓰고 CSS 미정의 · #273·#299).
+    _dn = str(macro.get("dropped_note") or "")
+    if _dn:
+        out.append(f'<div class="sm-note">⚠️ {_html.escape(_dn)}</div>')
 
     return "".join(out)
 
@@ -18812,12 +18830,22 @@ def _render_market_page(data: dict) -> str:
     _wts = data.get("widget_ts") or {}
 
     def _src_ts(label: str, ts_key: str, src: str) -> str:
-        """'한국 2026-09-11 06:32 · Naver'. 오늘 것이 아니면 나이를 같이 적는다 —
-        ts 만 보면 그게 오늘 수집분인지 어제 저장분인지 구별이 안 된다(#43·#304).
-        하루 안이면 조용하다(늘 뜨는 라벨은 아무것도 안 재는 것과 같다, #25·#260)."""
+        """'한국 값 수집 2026-09-11 06:32 · Naver'. 오늘 것이 아니면 나이를 같이
+        적는다 — ts 만 보면 그게 오늘 수집분인지 어제 저장분인지 구별이 안
+        된다(#43·#304). 하루 안이면 나이는 조용하다(늘 뜨는 라벨은 아무것도 안
+        재는 것과 같다, #25·#260).
+
+        ⚠️ 접두 '값 수집' 은 장식이 아니다 — 이 시각은 **캐시 파일 mtime**,
+        즉 우리가 받아온 시각이지 원천이 그 데이터를 찍은 시각이 아니다
+        (`_widget_data_ts` → `_cache_ts` → `st_mtime`). 같은 화면의 업종 위젯은
+        원천이 준 `thistime` 을 쓰므로 **두 칸이 다른 것을 잰다** — 접두 없이
+        나란히 놓으면 사용자는 같은 기준으로 읽는다(#34 라벨에 기준을 박을 것 ·
+        #304 '값 수집' 규약 · 규칙 10b).
+        """
         t = _wts.get(ts_key) or ""
         if not t:
             return f"{label} {src}"
+        label = f"{label} 값 수집"
         age = _wts.get(f"{ts_key}_age")
         ago = _naver_diag.stale_label(age) if isinstance(age, (int, float)) else ""
         if ago and isinstance(age, (int, float)) and age >= 24 * 3600:
