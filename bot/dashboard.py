@@ -17281,6 +17281,21 @@ _MARKET_CSS = (
     ".fav-pg:hover{background:var(--surface-2)}"
     "#fav-section .fav-hd h2{font-size:17px;margin:0}"
     "#fav-section .fav-hd .cnt{color:var(--muted);font-size:12px}"
+    # 별표(중요표시) — 사용자 2026-09-11 "특히 팔로우업해야하는 종목에 대해서
+    # 체크하려는 용도야". ⚠️ 클래스를 쓰면서 **이 번들에 CSS 를 안 두면** 버튼이
+    # 기본 스타일로 떠서 표가 흐트러진다(#201·#273 — 시장 페이지는 이 블록만 쓴다).
+    # ⚠️ `.dtbl th` 는 **전부** 정렬 가능한 것처럼 보인다(cursor:pointer ·
+    # hover 색 · `::after{' ↕'}`). ★ 열은 `data-k` 가 없어 리스너가 안 붙으므로
+    # 그 어포던스를 꺼야 한다 — 안 그러면 눌러도 아무 일이 없는 헤더가 된다.
+    "#fav-tbl th:not(.fav-sort){cursor:default}"
+    "#fav-tbl th:not(.fav-sort):hover{color:var(--muted)}"
+    "#fav-tbl th:not(.fav-sort)::after{content:none}"
+    ".fav-star{background:none;border:none;cursor:pointer;font-size:15px;line-height:1;"
+    "padding:2px 4px;border-radius:4px;color:var(--muted)}"
+    ".fav-star.on{color:#f59e0b}"
+    ".fav-star:hover{background:var(--surface-2)}"
+    ".fav-ctrl .fav-star-f{display:inline-flex;align-items:center;gap:4px;"
+    "font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap}"
     ".fav-del{background:none;border:none;color:var(--neg);cursor:pointer;"
     "font-size:14px;padding:2px 6px;border-radius:4px}"
     ".fav-del:hover{background:rgba(220,38,38,.1)}"
@@ -19306,7 +19321,7 @@ def _render_market_page(data: dict) -> str:
   (function() {{
     var favBody = document.getElementById('fav-body');
     var favCnt = document.getElementById('fav-cnt');
-    var favState = {{ sortK: null, sortDir: 1, country: 'ALL', earnFrom: '', earnTo: '', page: 0, showAll: false }};
+    var favState = {{ sortK: null, sortDir: 1, country: 'ALL', earnFrom: '', earnTo: '', page: 0, showAll: false, starOnly: false }};
     var FAV_PAGE_SIZE = 10;   /* 한 화면 10개, 그 이상은 페이지 번호로 (사용자 2026-06-16) */
 
     var FLAG = {{'US':'🇺🇸','KR':'🇰🇷','JP':'🇯🇵','TW':'🇹🇼','CN':'🇨🇳','HK':'🇭🇰','UK':'🇬🇧','DE':'🇩🇪','FR':'🇫🇷'}};
@@ -19350,6 +19365,14 @@ def _render_market_page(data: dict) -> str:
       return (favState.sortK === k) ? (favState.sortDir > 0 ? ' ▲' : ' ▼') : '';
     }}
 
+    /* 별표 버튼 — 켜짐 ★ / 꺼짐 ☆. 목록에 담는 ⭐(상세 페이지 저장)와 **다른
+       글리프**를 쓴다: 같은 모양이면 '이미 담았는데 왜 또 별이지?' 가 된다. */
+    function starBtn(ticker, on) {{
+      return '<button class="fav-star' + (on ? ' on' : '') + '" data-ticker="' + ticker
+        + '" aria-pressed="' + (on ? 'true' : 'false')
+        + '" title="' + (on ? '중요표시 해제' : '중요표시') + '">' + (on ? '★' : '☆') + '</button>';
+    }}
+
     function renderFavs(list) {{
       favState.sortK = null;  /* 새 데이터 = 저장 순서로 표시 */
       favState.page = 0;      /* 새 데이터 = 1페이지부터 (showAll 은 유지) */
@@ -19384,16 +19407,26 @@ def _render_market_page(data: dict) -> str:
            + '<span class="dsep">~</span>'
            + '<select id="fav-earn-to" class="dfilt" title="실적일 종료">' + dopts(favState.earnTo) + '</select>')
         : '';
+      /* ⭐ 중요만 — 별표(★) 찍은 종목만 보기(사용자 2026-09-11 '팔로우업해야하는
+         종목 체크 용도'). 나라·실적일 필터와 **AND** 로 걸린다. */
+      var nStar = 0;
+      list.forEach(function(f) {{ if (f.starred) nStar++; }});
+      /* 마지막 별표를 지우면 필터만 남아 **빈 표**가 된다 — 나라 필터가
+         존재하지 않는 나라를 자동으로 푸는 것과 같은 규약으로 해제한다. */
+      if (!nStar) favState.starOnly = false;
       var ctrl = '<div class="fav-ctrl">'
         + '<select id="fav-country">' + copts + '</select>' + dctrl
-        + '<span style="font-size:11px;color:var(--muted)">새로 저장한 종목이 맨 위 · ↕ 화살표로 순서 변경 · 헤더 클릭 정렬'
+        + '<label class="fav-star-f" title="별표(★) 찍은 종목만 보기">'
+        + '<input type="checkbox" id="fav-star-only"' + (favState.starOnly ? ' checked' : '') + '>'
+        + '⭐ 중요만 (' + nStar + ')</label>'
+        + '<span style="font-size:11px;color:var(--muted)">종목 앞 ★ = 중요표시(팔로우업) · 새로 저장한 종목이 맨 위 · ↕ 화살표로 순서 변경 · 헤더 클릭 정렬'
         + ' · 현재 PER = 현재가 ÷ 실적 EPS(국내는 KRX 투자지표)</span></div>';
 
       /* 정렬 헤더 (data-k/data-t) */
       var cols = [['name','s','종목'],['country','s','나라'],['saved','s','저장일'],
         ['mcap','n','시총'],['sprice','n','저장가격'],['cprice','n','현재가격'],
         ['pct','n','저장대비'],['tper','n','현재 PER'],['per','n','예상 PER'],['earn','s','다음예상 실적일']];
-      var thead = '<tr>';
+      var thead = '<tr><th title="중요표시(팔로우업)">★</th>';
       cols.forEach(function(c, i) {{
         var al = (i === 0) ? ' style="text-align:left"' : '';
         thead += '<th class="fav-sort" data-k="' + c[0] + '" data-t="' + c[1] + '"' + al + '>'
@@ -19433,8 +19466,10 @@ def _render_market_page(data: dict) -> str:
           + ' data-saved="' + (f.saved_date || '') + '" data-mcap="' + usd(f.market_cap) + '"'
           + ' data-sprice="' + usd(f.saved_price) + '" data-cprice="' + usd(f.current_price) + '"'
           + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-tper="' + usd(f.per_trailing) + '"'
-          + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"';
+          + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"'
+          + ' data-star="' + (f.starred ? '1' : '0') + '"';
         return '<tr ' + da + '>'
+          + '<td>' + starBtn(f.ticker, !!f.starred) + '</td>'
           + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="color:inherit;text-decoration:none">'
           + '<span style="font-weight:600;font-size:13px">' + (f.name_kr||f.name||f.ticker) + '</span>'
           + '<span style="display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:1px">' + f.ticker
@@ -19460,6 +19495,9 @@ def _render_market_page(data: dict) -> str:
       favBody.innerHTML = ctrl + '<table class="dtbl" id="fav-tbl"><thead>' + thead + '</thead><tbody>' + rows + '</tbody></table>'
         + '<div id="fav-pager" class="fav-pager"></div>';
 
+      favBody.querySelectorAll('.fav-star').forEach(function(b) {{
+        b.addEventListener('click', function() {{ toggleStar(b); }});
+      }});
       favBody.querySelectorAll('.fav-del').forEach(function(b) {{
         b.addEventListener('click', function() {{ removeFav(b.dataset.ticker); }});
       }});
@@ -19475,6 +19513,8 @@ def _render_market_page(data: dict) -> str:
       favBody.querySelectorAll('.fav-bottom').forEach(function(b) {{
         b.addEventListener('click', function() {{ reorderFav(b.dataset.ticker, 'bottom'); }});
       }});
+      var ssel = document.getElementById('fav-star-only');
+      if (ssel) ssel.addEventListener('change', function() {{ favState.starOnly = ssel.checked; favState.page = 0; applyFavFilter(); }});
       var csel = document.getElementById('fav-country');
       if (csel) csel.addEventListener('change', function() {{ favState.country = csel.value; favState.page = 0; applyFavFilter(); }});
       var efr = document.getElementById('fav-earn-from');
@@ -19498,6 +19538,7 @@ def _render_market_page(data: dict) -> str:
       [].forEach.call(tbl.tBodies[0].rows, function(tr) {{
         total++;
         var ok = (favState.country === 'ALL') || (tr.dataset.country === favState.country);
+        if (ok && favState.starOnly) ok = (tr.dataset.star === '1');
         if (ok && dateOn) {{   /* 다음예상 실적일(data-earn) 범위 필터(사용자 2026-06-15) */
           var ed = tr.dataset.earn || '';
           ok = !!ed && (!df || ed >= df) && (!dt || ed <= dt);
@@ -19513,7 +19554,8 @@ def _render_market_page(data: dict) -> str:
       var start = favState.showAll ? 0 : favState.page * FAV_PAGE_SIZE;
       var end = favState.showAll ? shown : (start + FAV_PAGE_SIZE);
       pass.slice(start, end).forEach(function(tr) {{ tr.style.display = ''; }});
-      favCnt.textContent = (favState.country === 'ALL' && !dateOn) ? (total + '종목') : (shown + '/' + total + '종목');
+      var filtOn = (favState.country !== 'ALL') || dateOn || favState.starOnly;
+      favCnt.textContent = filtOn ? (shown + '/' + total + '종목') : (total + '종목');
       renderFavPager(shown, pages);
     }}
 
@@ -19579,6 +19621,51 @@ def _render_market_page(data: dict) -> str:
           if (el) el.textContent = a.ts ? ('값 수집 ' + a.ts + ' KST') : '';
         }})
         .catch(function() {{ favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>'; }});
+    }}
+
+    /* ⚠️ 토글 뒤 `loadFavs()` 를 부르지 않는다 — 재렌더는 정렬·페이지를
+       초기화하고(renderFavs 가 sortK/page 를 리셋한다) 별 하나 누를 때마다
+       사용자가 보던 자리를 잃는다. 서버 응답의 **정본 `starred`** 로 그 칸만
+       고치고 필터를 다시 적용한다(#43 화면은 서버가 밝힌 값을 따른다). */
+    function toggleStar(btn) {{
+      var ticker = btn.dataset.ticker;
+      var want = btn.getAttribute('aria-pressed') !== 'true';
+      btn.disabled = true;
+      fetch('api/favorite_star', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{ticker: ticker, starred: want}})
+      }})
+        .then(function(r) {{ return r.json(); }})
+        .then(function(d) {{
+          if (!d || !d.ok) throw new Error((d && d.error) || 'failed');
+          var on = !!d.starred;
+          /* ⚠️ 60초 폴이 그 사이 재렌더했으면 `btn` 은 **떨어져 나간 노드**다 —
+             `outerHTML=` 은 아무 일도 안 하고, 새 버튼을 찾아 리스너를 또
+             붙이면 클릭당 POST 가 두 번 나간다(값은 멱등이라 망가지진 않지만
+             요청이 배로 는다). 새 DOM 은 이미 정본 `starred` 로 그려져 있으니
+             그냥 빠진다. */
+          if (!btn.isConnected) {{ applyFavFilter(); return; }}
+          var tr = btn.closest('tr');
+          if (tr) tr.dataset.star = on ? '1' : '0';
+          btn.outerHTML = starBtn(ticker, on);
+          var nb = favBody.querySelector('.fav-star[data-ticker="' + ticker + '"]');
+          if (nb) nb.addEventListener('click', function() {{ toggleStar(nb); }});
+          /* 상단 개수 갱신 — ⚠️ 이 곁들이가 던지면 `.catch` 가 **성공한
+             토글을 '실패' 로 알린다**(#315 곁들이가 본체를 지운다). 라벨을
+             못 찾거나 모양이 달라도 조용히 넘어간다. 그리고 `favBody` 안에서
+             찾는다(문서 전체에서 찾으면 남의 라벨을 집을 수 있다). */
+          try {{
+            var lbl = favBody.querySelector('.fav-star-f');
+            var txt = lbl && lbl.lastChild;
+            if (txt && txt.nodeType === 3) {{
+              var n = favBody.querySelectorAll('tr[data-star="1"]').length;
+              txt.nodeValue = '⭐ 중요만 (' + n + ')';
+            }}
+          }} catch (e) {{}}
+          applyFavFilter();
+        }})
+        .catch(function() {{ btn.disabled = false; alert('중요표시 변경 실패'); }});
     }}
 
     function removeFav(ticker) {{

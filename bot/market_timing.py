@@ -1050,13 +1050,16 @@ def _vkospi_plausible(rows: list) -> bool:
     return all(_VKOSPI_MIN <= c <= _VKOSPI_MAX for c in closes)
 
 
-def fetch_vkospi_rows(days: int = _VKOSPI_DAYS) -> list:
-    """KIS 국내지수 일봉 → [{date, close}] 오름차순. 실패 시 [] (graceful).
+def vkospi_rows_with_reason(days: int = _VKOSPI_DAYS) -> tuple[list, str]:
+    """(행, 사유) — 빈 리스트의 **갈래를 이름으로** 돌려준다(#82·#129).
 
-    `kis_client.get_domestic_index_daily` 가 1시간 디스크 캐시를 갖고 있어
-    3시간 주기 재생성에서 실제 호출은 회당 1번뿐이다. 크리덴셜
-    (KIS_APP_KEY/KIS_APP_SECRET)이 없으면 None 을 돌려주고, 그러면 카드가
-    통째로 생략된다(0 이나 VIX 값으로 채우지 않는다)."""
+    `fetch_vkospi_rows` 는 세 가지 이유로 `[]` 를 낸다: 조회 예외(크리덴셜·
+    네트워크) · 원천이 빈 응답 · **타당범위 밖**(지수코드가 바뀌어 가격지수를
+    받은 경우). 처방이 전부 다른데 값만 꺼내면 화면이 한 문구로 뭉뚱그린다 —
+    래퍼를 만들 땐 "버리는 정보가 화면에 필요한가"를 먼저 물을 것(#129).
+
+    사유는 `""`(정상) · `"credentials"` · `"empty"` · `"implausible"` 다.
+    """
     try:
         from bot.kis_client import get_kis
         from bot.naver_sector_client import _KIS_VKOSPI_IDX_CODE
@@ -1064,17 +1067,30 @@ def fetch_vkospi_rows(days: int = _VKOSPI_DAYS) -> list:
                                                   days=days) or []
     except Exception as exc:
         log.debug("market_timing: VKOSPI(KIS) 실패: %s", exc)
-        return []
+        return [], "credentials"
     if not rows:
         log.info("market_timing: VKOSPI 데이터 없음 — 카드 생략"
                  "(KIS 크리덴셜 또는 지수코드 확인)")
-        return []
+        return [], "empty"
     if not _vkospi_plausible(rows):
         log.warning("market_timing: VKOSPI 응답이 변동성지수 범위 밖 — 다른 "
                     "지수일 가능성(최근값 %s, %d행). 채택 안 함.",
                     [r.get("close") for r in rows[-3:]], len(rows))
-        return []
-    return rows
+        return [], "implausible"
+    return rows, ""
+
+
+def fetch_vkospi_rows(days: int = _VKOSPI_DAYS) -> list:
+    """KIS 국내지수 일봉 → [{date, close}] 오름차순. 실패 시 [] (graceful).
+
+    `kis_client.get_domestic_index_daily` 가 1시간 디스크 캐시를 갖고 있어
+    3시간 주기 재생성에서 실제 호출은 회당 1번뿐이다. 크리덴셜
+    (KIS_APP_KEY/KIS_APP_SECRET)이 없으면 None 을 돌려주고, 그러면 카드가
+    통째로 생략된다(0 이나 VIX 값으로 채우지 않는다).
+
+    ⚠️ 값만 필요한 자리용 얇은 래퍼다 — **왜 비었는지**가 화면에 필요하면
+    `vkospi_rows_with_reason` 을 쓸 것(#129)."""
+    return vkospi_rows_with_reason(days)[0]
 
 
 # ── 변동성 카드 last-good 캐시 ────────────────────────────────────────────

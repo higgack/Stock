@@ -148,3 +148,50 @@ def _install_socket_backstop() -> bool:
 
 _INSTALLED = _install_outbound_block()
 _SOCKET_BLOCKED = _install_socket_backstop()
+
+
+# ── 운영 디스크 캐시 차단 ────────────────────────────────────────────────────
+# 2026-09-11 실측: `make test` 한 번이 운영 캐시
+# `~/.tradingagents/cache/naver_sector/kr_industry_fail.json` 에 **실패 도장**을
+# 남겼다. 그 도장은 15분 백오프의 근거라, 다음 운영 실행이 업종맵을 안 만든다 —
+# 테스트가 프로덕션 동작을 바꾸는 경로다(#30).
+#
+# ⚠️ `tests/conftest.py` 의 **함수 스코프** fixture 로는 못 막는다. 렌더가 띄운
+# **daemon 스레드**가 teardown 뒤에 쓰기 때문이다 — 바로 위 네트워크 차단이
+# 세션 스코프인 것과 **같은 이유**이고, 같은 실측으로 확인했다(클래스 단독
+# 실행에선 안 나오고 여러 클래스를 이어 돌릴 때만 파일이 생긴다). 그래서
+# 여기서 **import 시점에 한 번** 갈아끼우고 **되돌리지 않는다**.
+#
+# ⚠️ 이 목록은 **완전하지 않다** — `bot/` 에 `~/.tradingagents` 아래를 가리키는
+# 모듈 상수가 131개 있다(AST 실측). 전부 갈아끼우려면 conftest 가 130개 모듈을
+# import 해야 해서 비용이 크다. 그러니 "테스트는 운영 캐시를 못 만진다"고
+# **주장하지 않는다**(#286 지시서가 자기 자신에 대해 거짓이면 다음 사람이 가드를
+# 건너뛴다). 오염을 관측하면 그 모듈을 여기 한 줄로 추가할 것.
+_REDIRECTED: list = []
+
+
+def _redirect_disk_caches() -> list:
+    import tempfile
+    from pathlib import Path as _P
+    root = _P(tempfile.mkdtemp(prefix="noah-test-caches-"))
+    targets = (
+        ("bot.naver_sector_client", "_CACHE_DIR", "naver_sector"),
+        ("bot.market_timing", "_VOL_CACHE_DIR", "market_timing"),
+        ("bot.finviz_client", "_CACHE_DIR", "finviz"),
+        ("bot.market_favorites", "_FAVORITES_FILE", "market_favorites.json"),
+    )
+    done = []
+    for mod, attr, leaf in targets:
+        try:
+            import importlib
+            m = importlib.import_module(mod)
+            if not hasattr(m, attr):
+                continue           # 상수 이름이 바뀌었다 — 아래 회귀가 잡는다
+            setattr(m, attr, root / leaf)
+            done.append(f"{mod}.{attr}")
+        except Exception:
+            continue
+    return done
+
+
+_REDIRECTED = _redirect_disk_caches()

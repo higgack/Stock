@@ -992,6 +992,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_favorite_remove()
         if self.path == "/api/favorite_reorder":
             return self._handle_favorite_reorder()
+        if self.path == "/api/favorite_star":
+            return self._handle_favorite_star()
         if self.path == "/api/screener_delete":
             return self._handle_screener_delete()
         if self.path == "/api/daily_byte_delete":
@@ -2177,6 +2179,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_ok({"ok": changed})
         except Exception as exc:
             log.warning("favorite_reorder: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_favorite_star(self) -> None:
+        """POST /api/favorite_star — 별표(중요표시) 토글.
+
+        사용자 2026-09-11 "특히 팔로우업해야하는 종목에 대해서 체크하려는
+        용도야". 응답의 `starred` 는 **쓰기 뒤 정본 값**이다 — `changed` 만
+        돌려주면 이미 그 상태였을 때 화면이 되돌려야 할지 알 수 없다(#43).
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            ticker = (payload.get("ticker") or "").strip()
+            starred = payload.get("starred")
+            if not ticker:
+                self._json_ok({"ok": False, "error": "missing ticker"})
+                return
+            if not isinstance(starred, bool):
+                self._json_ok({"ok": False, "error": "starred must be bool"})
+                return
+            from bot.market_favorites import set_favorite_star, starred_tickers
+            changed = set_favorite_star(ticker, starred)
+            now_on = ticker.upper() in {str(t or "").upper()
+                                        for t in starred_tickers()}
+            # 목록에 없는 티커면 `changed=False` 이고 `starred` 도 False —
+            # 화면이 '켜졌다' 고 표시하지 않게 정본을 그대로 돌려준다.
+            self._json_ok({"ok": True, "changed": changed, "starred": now_on})
+        except Exception as exc:
+            log.warning("favorite_star: %s", exc)
             self._json_ok({"ok": False, "error": str(exc)})
 
     def _handle_search_api(self) -> None:

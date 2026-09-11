@@ -38,17 +38,29 @@ def _load() -> list[dict]:
     return []
 
 
-def _save(favorites: list[dict]) -> None:
+def _save(favorites: list[dict], *, invalidate_cache: bool = True) -> None:
+    """디스크에 목록을 쓴다. `invalidate_cache=False` 는 **표시 속성 전용**.
+
+    ⚠️ 기본값(True)은 추가/삭제/순서변경용이다 — 안 하면
+    `get_favorites_with_prices` 가 옛 목록(삭제분 포함)을 stale 로 계속 줘서
+    '휴지통/추가가 안 먹는' 것처럼 보인다(사용자 2026-06-16 '휴지통 작동
+    안 함'). 다음 조회가 `_load()`(갱신 디스크) 즉시 반영 + 백그라운드 가격
+    재계산.
+
+    ⚠️ 반대로 **별표(중요표시)처럼 목록·순서를 안 바꾸는 속성**에서 이걸
+    태우면 별 한 번 누를 때마다 전 종목 가격이 통째로 `—` 가 됐다가 데몬이
+    다시 채운다(139종목 실측 수십 초) — 사용자는 그걸 고장으로 읽는다.
+    그런 속성은 `invalidate_cache=False` 로 쓰고, **읽는 시점에 디스크에서
+    덧입힌다**(`_apply_stars`) — 어느 캐시 층이 행을 주든 정본과 같아진다
+    (#18·#21b 캐시가 fix 를 가리는 실패를 규율이 아니라 구조로 막는다).
+    """
     _FAVORITES_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = _FAVORITES_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(favorites, ensure_ascii=False, indent=2), "utf-8")
     tmp.replace(_FAVORITES_FILE)
-    # 추가/삭제/순서변경 후 SWR 가격 캐시 무효화 — 안 하면 get_favorites_with_prices
-    # 가 옛 목록(삭제분 포함)을 stale 로 계속 줘서 '휴지통/추가가 안 먹는' 것처럼
-    # 보임(사용자 2026-06-16 '휴지통 작동 안 함'). 다음 조회가 _load()(갱신 디스크)
-    # 즉시 반영 + 백그라운드 가격 재계산. _FAV_CACHE 는 아래에서 정의(런타임 global).
-    global _FAV_CACHE
-    _FAV_CACHE = None
+    if invalidate_cache:
+        global _FAV_CACHE          # _FAV_CACHE 는 아래에서 정의(런타임 global)
+        _FAV_CACHE = None
 
 
 def _detect_country(ticker: str) -> str:
@@ -298,19 +310,30 @@ def add_favorite(ticker: str) -> Optional[dict]:
     # 그 위에서 동작) 이 한 줄이 곧 표시 순서다 — 기존 항목의 **수동 순서는
     # 건드리지 않는다**(↕ 로 직접 맞춘 배열을 날짜 정렬로 덮으면 사용자가
     # 요청해 만든 기능이 무의미해진다, #222 계약을 바꿀 땐 범위를 먼저).
-    favorites.insert(0, entry)
-    _save(favorites)
+    # ⚠️ 위 `_load()` 는 **네트워크 전** 스냅샷이라 이미 낡았다 — 락 안에서
+    # 다시 읽고 중복도 다시 본다(그 사이 다른 탭이 담았을 수 있다).
+    with _DISK_LOCK:
+        favorites = _load()
+        if any(f["ticker"].upper() == ticker.upper() for f in favorites):
+            return None
+        favorites.insert(0, entry)
+        _save(favorites)
     return entry
 
 
 def remove_favorite(ticker: str) -> bool:
-    """Remove ticker from favorites. Returns True if removed."""
-    favorites = _load()
-    before = len(favorites)
-    favorites = [f for f in favorites if f["ticker"].upper() != ticker.upper()]
-    if len(favorites) < before:
-        _save(favorites)
-        return True
+    """Remove ticker from favorites. Returns True if removed.
+
+    load→save 는 `_DISK_LOCK` 안에서 — 락은 전원이 참여할 때만 상호배제다.
+    """
+    with _DISK_LOCK:
+        favorites = _load()
+        before = len(favorites)
+        favorites = [f for f in favorites
+                     if f["ticker"].upper() != ticker.upper()]
+        if len(favorites) < before:
+            _save(favorites)
+            return True
     return False
 
 
@@ -333,27 +356,107 @@ def sort_by_saved(favorites: list[dict]) -> list[dict]:
                   reverse=True)
 
 
+# ── 별표(중요표시) ────────────────────────────────────────────────────
+# 사용자 2026-09-11: "종목앞에 별표로 중요표시해서 내가 선택할수 있게 해주고,
+# 위쪽에 중요표시것만 선택해서 볼수있게 필터같은거 만들어줘. 특히 팔로우업
+# 해야하는 종목에 대해서 체크하려는 용도야."
+#
+# ⚠️ 별표는 **목록 속성**이지 가격 파생값이 아니다. 그래서 두 가지를 지킨다:
+#   (a) 쓸 때 가격 캐시를 무효화하지 않는다(`_save(..., invalidate_cache=False)`)
+#   (b) 읽을 때 **디스크 정본에서 덧입힌다**(`_apply_stars`)
+# (b)가 없으면 `_FAV_CACHE`(3분)·디스크 스냅샷(6시간)이 별표 없는 옛 행을
+# 계속 줘서 "별을 눌렀는데 안 켜진다"가 된다 — 이 레포에서 캐시가 fix 를
+# 가린 실패가 여섯 번 반복됐고(#18·#21b·#95·#124·#198·#216), 매번 규율로는
+# 졌다. 구조로 막는다(#119).
+_STAR_KEY = "starred"
+# ⚠️ 이 파일의 **모든 writer** 가 같은 락 아래 load→save 를 한다. 락은 **전원이
+# 참여할 때만** 상호배제이고, 하나라도 빠지면 그 하나가 남의 쓰기를 덮는다.
+# 처음엔 "추가·삭제·순서는 전부 사용자 클릭이라 서로 직렬" 이라고 적고 별표와
+# 데몬 둘만 걸었는데, 독립 리뷰가 **재현**했다(2026-09-11): `ThreadingHTTPServer`
+# 는 `/api/favorite_add` 와 `/api/favorite_star` 를 다른 스레드로 처리하고,
+# `add_favorite` 는 `_load()` 뒤 **yfinance `.info`/`.calendar` 로 수 초**를
+# 쓴 다음 그 낡은 목록을 쓴다 — 그 사이 찍은 별표가 통째로 사라지고(화면은
+# ★ 를 칠했다가 60초 뒤 ☆ 로 되돌아간다), 반대로 별표 쓰기가 방금 담은 종목을
+# 지우기도 한다. 창이 좁기는커녕 **수 초**다(#295 사용자 입력 유실 · #286
+# 주석이 자기 자신에 대해 거짓이면 다음 사람이 그대로 믿는다).
+# ⚠️ 네트워크 I/O 는 **락 밖**이다 — 안에 두면 느린 yfinance 한 건이 별표
+# 클릭을 몇 초씩 막는다. 대신 쓰기 직전에 락 안에서 **다시 읽는다**.
+_DISK_LOCK = _threading.Lock()
+
+
+def _star_map() -> dict:
+    """디스크 정본의 {티커(대문자): 별표} — 순수-ish(읽기 전용)."""
+    return {str(f.get("ticker") or "").upper(): bool(f.get(_STAR_KEY))
+            for f in _load()}
+
+
+def apply_stars(rows: list, stars: dict) -> list:
+    """행에 별표를 덧입힌 **새 리스트**(순수).
+
+    입력을 손대지 않는다 — `_FAV_CACHE` 의 dict 를 제자리에서 고치면 캐시가
+    별표를 굽게 되고, 그러면 (b)의 요점이 사라진다.
+    목록에 없는 티커(스냅샷에만 남은 행)는 False — 지어내지 않는다(#165).
+    """
+    return [{**r, _STAR_KEY: bool(stars.get(str(r.get("ticker") or "").upper()))}
+            for r in rows or []]
+
+
+def _apply_stars(rows: list) -> list:
+    """`apply_stars` + 디스크 정본 읽기(화면 경로 전용)."""
+    return apply_stars(rows, _star_map())
+
+
+def set_favorite_star(ticker: str, starred: bool) -> bool:
+    """별표 저장. **값이 실제로 바뀌었을 때만** True.
+
+    ⚠️ 바뀔 게 없으면 아무것도 쓰지 않는다 — 파괴적이지 않은 write 라도
+    매 클릭 디스크를 다시 쓰면 `name_kr` 백필과 겹칠 때 잃을 게 생긴다
+    (#295 "바뀔 게 없으면 아무것도 쓰지 않는 것이 가장 강한 방어").
+    """
+    want = bool(starred)
+    with _DISK_LOCK:
+        favorites = _load()
+        hit = None
+        for f in favorites:
+            if str(f.get("ticker") or "").upper() == str(ticker or "").upper():
+                hit = f
+                break
+        if hit is None:
+            return False
+        if bool(hit.get(_STAR_KEY)) == want:
+            return False
+        hit[_STAR_KEY] = want
+        _save(favorites, invalidate_cache=False)
+    return True
+
+
+def starred_tickers() -> list:
+    """별표된 티커(저장 순서) — 텔레그램·알림 쪽에서 쓸 읽기 전용 헬퍼."""
+    return [f.get("ticker") for f in _load() if f.get(_STAR_KEY)]
+
+
 def reorder_favorite(ticker: str, direction: str) -> bool:
     """Move a ticker in the saved order. Persists.
 
     direction: 'up'/'down' (한 칸) | 'top'/'bottom' (맨 위/아래 — 사용자 2026-06-17
     '하나씩 올리면 끝까지 한참'). Returns True if order changed."""
-    favorites = _load()
-    idx = next((i for i, f in enumerate(favorites)
-                if f.get("ticker", "").upper() == ticker.upper()), None)
-    if idx is None:
-        return False
-    if direction == "up" and idx > 0:
-        favorites[idx - 1], favorites[idx] = favorites[idx], favorites[idx - 1]
-    elif direction == "down" and idx < len(favorites) - 1:
-        favorites[idx + 1], favorites[idx] = favorites[idx], favorites[idx + 1]
-    elif direction == "top" and idx > 0:
-        favorites.insert(0, favorites.pop(idx))      # 맨 위로
-    elif direction == "bottom" and idx < len(favorites) - 1:
-        favorites.append(favorites.pop(idx))         # 맨 아래로
-    else:
-        return False
-    _save(favorites)
+    with _DISK_LOCK:          # load→save 는 한 덩어리(`_DISK_LOCK` 주석)
+        favorites = _load()
+        idx = next((i for i, f in enumerate(favorites)
+                    if f.get("ticker", "").upper() == ticker.upper()), None)
+        if idx is None:
+            return False
+        if direction == "up" and idx > 0:
+            favorites[idx - 1], favorites[idx] = favorites[idx], favorites[idx - 1]
+        elif direction == "down" and idx < len(favorites) - 1:
+            favorites[idx + 1], favorites[idx] = favorites[idx], favorites[idx + 1]
+        elif direction == "top" and idx > 0:
+            favorites.insert(0, favorites.pop(idx))      # 맨 위로
+        elif direction == "bottom" and idx < len(favorites) - 1:
+            favorites.append(favorites.pop(idx))         # 맨 아래로
+        else:
+            return False
+        _save(favorites)
     return True
 
 
@@ -429,7 +532,9 @@ def favorites_rows_with_as_of() -> tuple[list[dict], dict]:
     붙는다. 창이 마이크로초라 드물지만, 순서에 기댄 안전은 언젠가 깨진다(#102a).
     여기서 `_FAV_LOCK` 아래 한 번에 집으면 **구조적으로** 어긋날 수 없다.
     """
-    rows = get_favorites_with_prices()
+    # ⚠️ 별표는 **여기서** 디스크 정본으로 덧입힌다 — 캐시(3분)·스냅샷(6시간)
+    # 어느 층이 행을 주든 화면의 별표가 정본과 같다(`set_favorite_star` 주석).
+    rows = _apply_stars(get_favorites_with_prices())
     with _FAV_LOCK:
         ts = _FAV_CACHE_TS if (_FAV_CACHE is not None and _FAV_CACHE_TS) else 0.0
     if not ts:
@@ -774,19 +879,27 @@ def _compute_favorites_with_prices() -> list[dict]:
     # 디스크 재로드 → name_kr 복사 → save. 이후 cold load 부턴 재호출 0.
     try:
         by_t = {f["ticker"]: f for f in favorites}
-        disk = _load()
-        _chg = False
-        for d in disk:
-            f = by_t.get(d["ticker"])
-            nk = f.get("name_kr") if f else None
-            if not nk:
-                continue
-            # 한글명(영문 name 과 다름)이면 갱신(영문→한글 치유 포함); 디스크가
-            # 비어있으면 영문 fallback 이라도 채움. 기존 한글명을 영문으로 안 덮음.
-            if (nk != f.get("name") and nk != d.get("name_kr")) or not d.get("name_kr"):
-                d["name_kr"], _chg = nk, True
-        if _chg:
-            _save(disk)
+        # ⚠️ 별표 write 와 같은 락 — 이 블록이 `_load()` 와 `_save()` 사이에
+        # 별표를 삼키지 않게 한다(`_DISK_LOCK` 주석). `acquire()` + 플래그로
+        # 쓰면 `acquire()` 가 돌아온 직후·플래그 대입 전에 들어온 시그널이
+        # 락을 **영구히** 남긴다(그러면 이후 모든 별표 write 가 멈춘다) —
+        # `with` 면 그 틈이 없다.
+        with _DISK_LOCK:
+            disk = _load()
+            _chg = False
+            for d in disk:
+                f = by_t.get(d["ticker"])
+                nk = f.get("name_kr") if f else None
+                if not nk:
+                    continue
+                # 한글명(영문 name 과 다름)이면 갱신(영문→한글 치유 포함);
+                # 디스크가 비어있으면 영문 fallback 이라도 채움. 기존 한글명을
+                # 영문으로 안 덮음.
+                if ((nk != f.get("name") and nk != d.get("name_kr"))
+                        or not d.get("name_kr")):
+                    d["name_kr"], _chg = nk, True
+            if _chg:
+                _save(disk)
     except Exception:
         pass
 
@@ -873,7 +986,11 @@ def _cli_sort_saved(apply_it: bool) -> int:
         print(f"❌ 같은 이름의 백업이 이미 있다 — 중단(쓰지 않음)\n   {bak}")
         return 1
     shutil.copy2(_FAVORITES_FILE, bak)
-    _save(new)
+    # ⚠️ 같은 프로세스 안의 다른 writer 와 겹치지 않게 락 안에서 쓴다(락은
+    # 전원이 참여할 때만 상호배제다 — 회귀가 전수로 강제). **다른 프로세스**
+    # (봇 ↔ 이 CLI)까지는 못 막는다 — 그래서 바로 아래 되읽기 검증이 있다.
+    with _DISK_LOCK:
+        _save(new)
     # ⚠️ 쓴 뒤 **되읽어 확인**한다 — 대시보드의 name_kr 백필도 같은 파일을
     # `_load`→`_save` 하므로 겹치면 옛 순서로 되덮일 수 있다(#79 그 경로가
     # 실제로 반영됐나).
