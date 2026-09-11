@@ -22,7 +22,7 @@ import json
 import re
 import sys
 
-_PROBE_VER = 5        # 4 = 리서치 페이징 · 5 = 테마·상세 사다리 + 청크 발굴
+_PROBE_VER = 6        # 5 = 테마·상세 사다리 · 6 = 부분/전멸 갈래 + 한도 스윕
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -260,6 +260,7 @@ def main(argv: list | None = None) -> int:
     # ── ⑦ 테마 — **제품 사다리를 그대로** 태운다(#35 화면이 쓰는 그 경로) ──
     print("\n⑦ 테마 목록 — 제품 사다리(collect_themes_json)를 그대로 태운다")
     theme_ok = False
+    theme_rows = 0
     try:
         from bot.naver_sector_client import collect_themes_json
         # ⚠️ 반환 **모양**을 확인하고 쓸 것 — 3개로 풀면 ValueError 가 아래
@@ -269,6 +270,7 @@ def main(argv: list | None = None) -> int:
         for m in marks:
             print(f"   · {m}")
         if rows:
+            theme_rows = len(rows)
             # 부분이면 ✅ 가 아니다 — 값은 왔지만 창을 다 못 덮었다(#343·#41).
             theme_ok = not partial
             print(f"   {'✅' if not partial else '⚠️'} 테마 {len(rows)}개"
@@ -312,7 +314,10 @@ def main(argv: list | None = None) -> int:
 
     # ── ⑨ 그래도 못 찾았으면 **원천에게 묻는다**(추측 금지, #151·#338) ──
     # Next.js 는 라우트 청크 JS 안에 API 경로를 문자열 리터럴로 담는다.
-    if not (theme_ok and detail_ok):
+    # ⚠️ VM 실측 2026-09-12: 테마가 `부분` 인데도 청크 12개(2.8MB)를 받았다 —
+    # 부분은 **엔드포인트를 이미 아는 것**이라 발굴이 순손실이다. 갈래마다
+    # 처방이 다르다(#82): 전멸 = 주소를 모른다(발굴) · 부분 = 한도를 키운다.
+    if (theme_ok is False and not theme_rows) or not detail_ok:
         print("\n⑨ 청크 발굴 — 그 페이지가 부르는 API 경로를 JS 에서 읽는다")
         from bot import naver_spa_discover as _disc
 
@@ -327,7 +332,7 @@ def main(argv: list | None = None) -> int:
                 ("테마", "https://finance.naver.com/sise/theme.naver", "theme"),
                 ("리서치", "https://finance.naver.com/research/company_list.naver",
                  "research")):
-            if label == "테마" and theme_ok:
+            if label == "테마" and (theme_ok or theme_rows):
                 continue
             if label == "리서치" and detail_ok:
                 continue
@@ -343,7 +348,10 @@ def main(argv: list | None = None) -> int:
     # 이상 없을 때도 **한 줄은 말한다** — 빈 출력이 정답인 도구는 없다(#274).
     print("\n⑩ 판정")
     print(f"   · 업종·리서치 목록: {'✅ 살아 있음' if rc == 0 else '❌ 전멸'}")
-    print(f"   · 테마 목록: {'✅' if theme_ok else '❌'}")
+    print(f"   · 테마 목록: "
+          + ("✅" if theme_ok else
+             (f"⚠️ 부분({theme_rows}개) — 주소는 살아 있고 한도가 문제다"
+              if theme_rows else "❌ 전멸 — 주소를 모른다")))
     print(f"   · 리서치 상세: {'✅' if detail_ok else '❌'}")
     if rc == 0 and theme_ok and detail_ok:
         print("   ✅ 이상 없음 — 세 경로 모두 값이 온다")
