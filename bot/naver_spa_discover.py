@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 log = logging.getLogger("bot.naver_spa_discover")
 
@@ -70,6 +70,14 @@ def chunk_urls(html: str, page_url: str, *, cap: int = 60,
             i = u.find("_next/static/chunks/")
             if i > 0:
                 prefix = u[:i]
+    if not prefix:
+        # ⚠️ 속성(`<script src=…>`)이 하나도 안 잡히면 이 분기가 **영영 안
+        # 돈다** — 이스케이프된 이름만 실려 오는 경우를 위해 만든 폴백인데,
+        # 정확히 그때 못 쓰게 되어 있었다(독립 리뷰 2026-09-12 Low).
+        # 그런 페이지에선 표준 위치(`{origin}/_next/...`)를 쓴다.
+        pr = urlsplit(page_url)
+        if pr.scheme and pr.netloc:
+            prefix = f"{pr.scheme}://{pr.netloc}/"
     if prefix:
         for m in _CHUNK_REL.finditer(html or ""):
             u = prefix + "_next/" + m.group(1)

@@ -18281,15 +18281,13 @@ def _render_sector_movers(movers: dict) -> str:
     # `theme` 탭을 '테마별 시세' 로 바꾸자 이 줄만 '업종별 시세(전체)' 로 남아
     # 같은 링크가 두 이름을 갖게 됐다(#38·#147 같은 것을 그리는 화면은 한 곳
     # 에서). 자식 nav 와 **같은 레지스트리**에서 파생시킨다.
-    try:
-        from bot.tw_pages import _MARKET_NAV as _KRNAV
-        _tabs = list(_KRNAV.get("KR") or [])
-    except Exception:                                          # noqa: BLE001
-        _tabs = []
-    if not _tabs:            # 레지스트리를 못 읽어도 입구는 남긴다(#43)
-        _tabs = [("theme", "🎭 테마별 시세"), ("kr52", "📈 신고가·신저가"),
-                 ("highlow", "🚀 급등·급락"), ("krprepost", "🌙 NXT 급등·급락"),
-                 ("nxt", "📊 NXT 수급")]
+    # ⚠️ 폴백 리터럴을 **지웠다**(독립 리뷰 2026-09-12 Low): 레지스트리와 바이트
+    # 단위로 똑같은 복제라 (a) 파생 가드가 아무것도 못 재고 (b) 레지스트리에서
+    # 라벨을 바꾸면 이 사본만 낡은 채 남는다 — 이 주석이 말하는 바로 그 병이다.
+    # `tw_pages` 는 같은 패키지의 순수 모듈이라 import 가 실패할 현실적 경로가
+    # 없고, 실패하면 링크가 빠지는 게 **틀린 라벨을 그리는 것보다 낫다**(#292).
+    from bot.tw_pages import _MARKET_NAV as _KRNAV
+    _tabs = list(_KRNAV.get("KR") or [])
     _links = "".join(f'<a href="{_h}" style="{_lnk}">{_l}</a>'
                      for _h, _l in _tabs)
 
@@ -19737,8 +19735,12 @@ def _render_market_page(data: dict) -> str:
     fetch('api/build')
       .then(function(r) {{
         if (r.status === 404) {{
-          buildBanner('서버(대시보드 프로세스)가 옛 코드입니다 — 이 페이지의 새 기능이 동작하지 않습니다. '
-                      + 'VM 에서 `sudo systemctl restart stock-bot-dashboard` 를 실행하세요.');
+          /* 404 는 갈래가 둘이다 — 라우트가 없는 옛 서버, 또는 주소의 토큰이
+             바뀐 경우(`_strip_token_or_404`). 처방이 다르므로 단정하지 않는다
+             (#82 갈래는 이름으로 · #165 재지 않은 것을 단정하지 말 것). */
+          buildBanner('이 페이지의 새 기능(`/api/build`)에 서버가 404 로 답했습니다 — '
+                      + '대시보드 프로세스가 옛 코드이거나, 주소의 접근 토큰이 바뀐 것입니다. '
+                      + '새로고침해도 같으면 VM 에서 `sudo systemctl restart stock-bot-dashboard`.');
           return null;
         }}
         return r.json().catch(function() {{ return null; }});

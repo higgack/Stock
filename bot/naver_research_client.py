@@ -460,15 +460,22 @@ def detail_from_json(obj, *, _depth: int = 0) -> tuple:
 
 
 def _detail_json(nid: str) -> tuple:
-    """사다리를 순서대로 실호출 → (목표가, 투자의견, 단 이름). 전멸이면 단=""."""
+    """사다리를 순서대로 실호출 → (목표가, 투자의견, 단 이름, 단별 사유).
+
+    전멸이면 단="". 사유는 단마다 왜 못 읽었는지 — 404 와 '200 인데 아는 키가
+    없다' 는 처방이 정반대다(#82). 계산해 놓고 버리면 없는 것과 같다(#123 계열).
+    """
+    whys: list = []
     for label, tmpl in _DETAIL_API_RUNGS:
         raw, why = _get2_json(tmpl.format(nid=nid))
         if raw is None:
+            whys.append(f"{label}: {why or '수신 실패'}")
             continue
         tgt, rating = detail_from_json(raw)
         if tgt is not None or rating:
-            return tgt, rating, label
-    return None, "", ""
+            return tgt, rating, label, whys
+        whys.append(f"{label}: 200 인데 아는 키에 목표가·투자의견이 없음")
+    return None, "", "", whys
 
 
 def _fetch_report_detail_via(nid: str) -> tuple:
@@ -484,12 +491,20 @@ def _fetch_report_detail_via(nid: str) -> tuple:
     수가 아닌 수를 적는다(#45 총계와 소계가 다른 모집단 · #114 잔여 상태).
     경로는 **그 행에 실어** 화면이 자기 행에서 세게 한다.
     """
-    tgt, rating, rung = _detail_json(nid)
-    if tgt is not None or rating:
+    tgt, rating, rung, _whys = _detail_json(nid)
+    # ⚠️ **둘 다** 채워졌을 때만 폴백을 건너뛴다(독립 리뷰 2026-09-12 High).
+    # 옛 판은 `tgt is not None or rating` 이라, 새 단이 투자의견만 주고 목표가는
+    # 우리가 모르는 키(`expectPrice` 등)로 주면 **옛 HTML 에 있는 목표가를 통째로
+    # 버렸다** — 그러면 목표가 칸과 컨센서스가 아무 설명 없이 비고, 지금 동작하는
+    # 경로보다 나빠진다. 폴백 조건은 '실패했나' 가 아니라 **'요구를 충족했나'**
+    # 다(#136 — 테마 쪽엔 적용해 놓고 여기만 빠뜨렸다).
+    if tgt is not None and rating:
         return tgt, rating, rung
     html = _get(f"{_DETAIL_URL}?nid={nid}")
     if not html:
-        return None, "", ""
+        # HTML 을 못 받았으면 JSON 이 준 **부분이라도** 살린다(빈칸보다 낫다).
+        return (tgt, rating, rung) if (tgt is not None or rating) \
+            else (None, "", "")
 
     target: Optional[float] = None
     for pat in (_TARGET_RE, _TARGET_CLASS_RE):
@@ -502,21 +517,29 @@ def _fetch_report_detail_via(nid: str) -> tuple:
             if target:
                 break
 
-    rating = ""
+    # ⚠️ 이름을 `rating` 으로 재사용하면 JSON 이 읽은 투자의견을 덮어쓴다 —
+    # 합치려면 **별도 이름**이어야 한다.
+    rating_html = ""
     for pat in (_RATING_DETAIL_RE, _RATING_CLASS_RE):
         m = pat.search(html)
         if m:
             raw = m.group(1).strip()
             for kw in _RATING_KEYWORDS:
                 if kw.lower() == raw.lower():
-                    rating = kw
+                    rating_html = kw
                     break
-            if not rating:
-                rating = raw
-            if rating:
+            if not rating_html:
+                rating_html = raw
+            if rating_html:
                 break
 
-    return target, rating, ("옛 HTML" if (target is not None or rating) else "")
+    # 두 원천을 **합친다** — JSON 이 구조화해 준 값이 있으면 그것을 우선하고,
+    # 빠진 칸만 HTML 이 채운다. 어느 쪽이 기여했는지 라벨이 그대로 말한다(#43).
+    out_t = tgt if tgt is not None else target
+    out_r = rating or rating_html
+    parts = [p for p in (rung, "옛 HTML" if (target is not None or rating_html)
+                         else "") if p]
+    return out_t, out_r, ("+".join(parts) if (out_t is not None or out_r) else "")
 
 
 def _fetch_report_detail(nid: str) -> tuple[Optional[float], str]:
@@ -913,12 +936,15 @@ def detail_yield_note(rows: list, *, budget_left: int = 0) -> str:
         return (f"목표가·투자의견은 최신 {len(graded)}건에만 붙였습니다"
                 f"(상세 수집 예산 {_DETAIL_BUDGET}건 · 나머지 {budget_left}건은 빈칸)"
                 + (f" · 경로 {_via_note}" if _via_note else ""))
-    # ⚠️ 정상 경로만 탔으면 **아무 말도 안 한다** — 늘 뜨는 배지는 아무것도 안
-    # 재는 것과 같다(#25·#260). 말해야 하는 건 **폴백을 탔다**는 사실이다(#42a).
-    _primary = _DETAIL_API_RUNGS[0][0] if _DETAIL_API_RUNGS else ""
+    # ⚠️ **경로가 갈렸을 때만** 말한다(독립 리뷰 2026-09-12 Medium).
+    # 옛 판은 '1단이 아니면 경고' 였는데, JSON 단은 `endUrl` 에서 **추론**한
+    # 것이라 아직 한 번도 측정된 적이 없다 — 즉 오늘은 전 행이 `옛 HTML` 이고
+    # 그 배지가 **매 수집마다** 뜬다. 지금 유일하게 동작하는 경로를 상시
+    # 경고로 다는 것은 아무것도 안 재는 것과 같다(#25·#260).
+    # 갈린 경우(일부만 JSON, 일부는 HTML)는 진짜 이상이므로 그때 말한다.
     _used = {str(r.get("_via") or "") for r in rows if r.get("_via")}
-    if _used and _used != {_primary}:
-        return f"목표가·투자의견 경로 {_via_note}"
+    if len(_used) > 1:
+        return f"목표가·투자의견 경로가 행마다 다릅니다 — {_via_note}"
     return ""
 
 
@@ -1335,6 +1361,12 @@ def check() -> int:
     else:
         # 경로는 반환값이 직접 말한다 — 전역을 비웠다 채우는 방식은 풀에서
         # 증가를 잃고 화면끼리 섞인다(#45·#114).
+        # ⚠️ 진단은 **단마다 왜 실패했는지**까지 말한다 — 404 와 '200 인데 아는
+        # 키가 없다' 는 처방이 정반대다(#82 · 독립 리뷰 2026-09-12 Low: 사유를
+        # 계산해 놓고 버리면 운영자가 프로브를 한 번 더 돌려야 한다).
+        _jt, _jr, _jrung, _whys = _detail_json(nid)
+        for _w in _whys:
+            print(f"   ↪ {_w}")
         tgt, rating, _rung = _fetch_report_detail_via(nid)
         _via = _rung or "—"
         if tgt or rating:

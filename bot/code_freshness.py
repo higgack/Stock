@@ -132,7 +132,11 @@ def note(d: dict | None = None, *, unit: str = "") -> str:
     d = drift() if d is None else d
     if not d.get("measurable") or not d.get("stale"):
         return ""
-    head = (f"이 프로세스는 옛 코드입니다 — 소스가 {_mins(d['lag_sec'])} 전에 "
-            "갱신됐는데 프로세스는 그보다 먼저 시작했습니다")
+    # ⚠️ 우리가 잰 것은 `bot/` **최상위**의 .py 뿐이다(비재귀 scandir) —
+    # `bot/scripts/**`·`trade/**` 만 바뀐 배포는 이 배너를 못 띄운다. 문장이
+    # 그보다 넓게 말하면 재지 않은 것을 단정하는 것이다(#165·#274 못 보는 축을
+    # 밝힐 것).
+    head = (f"이 프로세스는 옛 코드입니다 — `bot/` 소스가 {_mins(d['lag_sec'])} "
+            "전에 갱신됐는데 프로세스는 그보다 먼저 시작했습니다")
     return f"{head}. `sudo systemctl restart {unit}` 로 재시작하세요." if unit \
         else head + "."

@@ -15324,6 +15324,18 @@ class TestChildDashboardOrderNaming:
         from bot.tw_pages import _MARKET_NAV
         for _href, _label in _MARKET_NAV["KR"]:
             assert _label in h, (_href, _label)
+        # ⚠️ 위 루프만으로는 **아무것도 안 잰다** — 폴백 리터럴이 레지스트리와
+        # 바이트 동일하면 파생을 통째로 지워도 통과한다(독립 리뷰 2026-09-12).
+        # 레지스트리를 **실제로 흔들어** 화면이 따라오는지 본다(#91b·#141).
+        import bot.tw_pages as _tw
+        _orig = _tw._MARKET_NAV["KR"]
+        try:
+            _tw._MARKET_NAV["KR"] = [("theme", "ZZZ-표식"), ("kr52", "📈 신고가·신저가")]
+            h2 = _render_sector_movers({"up": [{"name": "반도체", "pct": 1.0}],
+                                        "down": [], "ts": "x"})
+            assert "ZZZ-표식" in h2, "레지스트리를 바꿨는데 화면이 안 따라온다"
+        finally:
+            _tw._MARKET_NAV["KR"] = _orig
 
     def test_tw_home_widget_highlow_after_52w(self):
         # TW: 신고가·신저가 → 상한가·하한가 (신고저가 먼저)
@@ -57270,7 +57282,12 @@ class TestNaverWidgetSilence20260911:
         res = {"yf_paused": False, "naver_paused": False, "fast_info_breaker": False,
                "checks": {"Naver 업종(stock API)": (True, "업종 79개"),
                           "스냅샷 지수(worldstock)": (True, "ok"),
-                          "Naver 테마(finance HTML)": (False, "HTTP 403")}}
+                          # ⚠️ 계약 변경(2026-09-12, #222): 테마는 JSON 사다리로
+                          # 옮겨가 **더는 HTML 행이 아니다**. 옛 판은 테마를
+                          # finance HTML 로 세어, 테마가 JSON 으로 ✅ 나는 날
+                          # `f_ok` 가 1 이 되어 '`HTML 경로만 막힘`' 이 **영영
+                          # 안 뜨게** 만들었다(독립 리뷰 2026-09-12 High).
+                          "Naver 업종맵(finance HTML)": (False, "HTTP 403")}}
         rep = sh.format_report(res)
         assert "finance.naver.com(HTML) 0/1" in rep and "stock.naver.com(API) 2/2" in rep
         assert "HTML 경로만 막힘" in rep
@@ -57281,9 +57298,12 @@ class TestNaverWidgetSilence20260911:
         # ⚠️ 계약 변경(#222): 옛 문구는 '상한가' 를 영향으로 적었는데 **어느
         # 페이지도 그걸 서빙하지 않는다** — 틀린 라벨은 라벨이 없는 것보다
         # 나쁘다(#292). 실제로 영향받는 업종맵은 그 줄에 없었다.
-        assert "테마 시세" in impact and "업종 등락·리서치 액션은 JSON" in impact
+        assert "업종 등락·리서치 액션은 JSON" in impact
         assert "업종맵" in impact, impact
         assert "상한가" not in impact, "안 쓰는 기능을 영향으로 적으면 헛걸음"
+        # 테마는 이제 JSON 이다 — HTML 영향으로 적으면 운영자를 엉뚱한 호스트로
+        # 보낸다(#292 틀린 라벨은 라벨이 없는 것보다 나쁘다).
+        assert "영향: 업종맵" in impact, impact
         # 이 행은 테마 페이지를 재는데 업종맵은 다른 페이지다 — 안 재는 기능을
         # 영향으로 적으면 매일 거짓말이다(독립 리뷰 M5 · #55·#165)
         # ⚠️ 계약 변경(#222): 옛 판은 "안 재는 기능을 영향으로 적지 말 것"
@@ -57309,13 +57329,15 @@ class TestNaverWidgetSilence20260911:
                                                       for k in _keys), \
             f"KR 5탭 중 /nxt·/krprepost 원천이 점검 목록 밖이면 영영 안 보인다(#24): {_keys}"
         # 둘 다 정상이면 '막힘' 이라고 말하지 않는다(늘 뜨는 문구 금지 #25·#260)
-        res["checks"]["Naver 테마(finance HTML)"] = (True, "ok")
+        res["checks"]["Naver 업종맵(finance HTML)"] = (True, "ok")
         assert "HTML 경로만 막힘" not in sh.format_report(res)
         # run() 이 셋 다 점검 대상에 넣는가 — 네트워크는 스텁
         import unittest.mock as um
         with um.patch.object(sh, "_naver_research", return_value=(True, "stub")), \
              um.patch.object(sh, "_naver_sector", return_value=(True, "stub")), \
-             um.patch.object(sh, "_naver_theme_html", return_value=(True, "stub")), \
+             um.patch.object(sh, "_naver_theme_raw", return_value=(True, "stub")), \
+             um.patch.object(sh, "_naver_theme_snapshot", return_value=(True, "stub")), \
+             um.patch.object(sh, "_naver_upjong_map_html", return_value=(True, "stub")), \
              um.patch.object(sh, "_yf_batch_check", return_value=(True, "stub")), \
              um.patch.object(sh, "_naver_domestic", return_value=(True, "stub")), \
              um.patch.object(sh, "_naver_world", return_value=(True, "stub")), \
@@ -57326,7 +57348,14 @@ class TestNaverWidgetSilence20260911:
              um.patch.object(sh, "_snap_fx", return_value=(True, "stub")):
             names = sh.run()["checks"]
         assert "Naver 리서치(m.stock API)" in names
-        assert "Naver 테마(finance HTML)" in names
+        # 테마는 **두 줄**이다 — 원천이 사는가(raw)와 화면이 뭘 들고 있는가
+        # (스냅샷)는 다른 질문이고, 한 줄로 묶으면 34시간 낡은 스냅샷 위에서
+        # ✅ 가 뜬다(독립 리뷰 2026-09-12 High · #45 두 모집단).
+        assert "Naver 테마(stock API raw)" in names, names
+        assert "Naver 테마 스냅샷(화면값)" in names, names
+        # 그리고 테마 줄은 finance HTML 버킷에 들어가면 안 된다 — 들어가면
+        # JSON 성공이 HTML 성공으로 세어져 영향 문구가 죽는다.
+        assert not any("테마" in k and "finance HTML" in k for k in names), names
 
 
 class TestBreadthAsOfLine20260911:
@@ -58470,24 +58499,47 @@ class TestPalladiumAndResearchPaging20260912:
         assert np.theme_status({"stale": True, "stale_age": 60}) == ("", "")
         assert np.theme_status({}) == ("", "")
 
-    def test_theme_health_check_runs_the_path_the_screen_uses(self, monkeypatch):
-        """**계약 변경**: 옛 판은 `parse_themes_full`(HTML 파서)을 태우는지
-        봤다. 그 경로가 SPA 로 죽어 화면은 JSON 사다리로 옮겨 갔으므로, 죽은
-        경로를 계속 재면 **고친 뒤에도 영원히 ❌** 다(#342·#35). 이제 계약은
-        "화면이 얻는 그 값을 잰다" = `fetch_themes()` 를 태운다(#222 로 다시 씀).
+    def test_theme_health_has_a_raw_row_and_a_snapshot_row(self, monkeypatch):
+        """**계약 변경**(독립 리뷰 2026-09-12 High, #222): 2026-09-12 자기검토판은
+        이 점검을 `fetch_themes()` 로 바꿨다가 뒤집혔다.
+
+        그 섹션의 계약은 `(정지·회로차단과 무관하게 소스 raw fetch 직접 점검)`
+        인데 `fetch_themes` 는 캐시를 먼저 읽고, 정지를 존중하고, 콜드 캐시면
+        운영 캐시에 **쓰기**까지 한다 — 그래서 34시간 낡은 스냅샷 위에서 ✅ 가
+        떴다(사용자가 신고한 바로 그 상태를 '건강' 으로 보고, #35·#41·#264).
+        이제 **두 줄**이다: 원천이 사는가(raw) · 화면이 뭘 들고 있는가(스냅샷).
         """
-        import bot.naver_sector_client as nsc
         import bot.source_health as sh
-        monkeypatch.setattr(nsc, "fetch_themes", lambda: {
-            "themes": [{"name": "x"}] * 3, "via": "domestic/theme ✅ 3개"})
-        ok, msg = sh._naver_theme_html()
-        assert ok is True and "테마 3개" in msg, msg
-        assert "domestic/theme" in msg, "어느 단이 답했는지 안 적는다"
-        # 0건은 통과가 아니다(#54) — 그리고 사유를 그대로 싣는다(#43).
+        import bot.naver_sector_client as nsc
+
+        # ① raw 줄은 `fetch_themes` 를 **부르지 않는다**(캐시·정지·쓰기 경유 금지)
+        called = []
         monkeypatch.setattr(nsc, "fetch_themes",
-                            lambda: {"themes": [], "reason": "표가 사라짐"})
-        ok2, msg2 = sh._naver_theme_html()
-        assert ok2 is False and "표가 사라짐" in msg2, msg2
+                            lambda *a, **k: called.append(1) or {})
+        monkeypatch.setattr(sh, "_naver_get",
+                            lambda u, **k: (True, [
+                                {"name": f"T{i}", "no": str(i), "changeRate": 1.0}
+                                for i in range(266)], 12.0))
+        ok, msg = sh._naver_theme_raw()
+        assert ok and "266개" in msg, msg
+        assert not called, "raw 점검이 캐시 경유 `fetch_themes` 를 탔다"
+
+        # ② 원천이 **테마 대신 업종**을 주면 ❌ (#96 값이 다 있어서 안 걸린다)
+        monkeypatch.setattr(sh, "_naver_get",
+                            lambda u, **k: (True, [{"name": "은행", "no": "1",
+                                                    "changeRate": 1.0,
+                                                    "type": "upjong"}], 5.0))
+        ok, msg = sh._naver_theme_raw()
+        assert not ok and "upjong" in msg, msg
+
+        # ③ 스냅샷 줄은 **나이를 반드시** 적는다 — '조용한 것' 과 '죽은 것'(#52)
+        monkeypatch.setattr(nsc, "_cache_read_any",
+                            lambda name: ({"themes": [{"name": "T"}],
+                                           "via": "domestic/theme ✅"}, 34 * 3600))
+        ok, msg = sh._naver_theme_snapshot()
+        assert ok and "시간 전" in msg and "domestic/theme" in msg, msg
+        # 그리고 그 줄은 **수집하지 않는다**(진단이 운영 상태를 바꾸면 안 된다)
+        assert not called, "스냅샷 점검이 수집을 돌렸다"
 
     def test_kr_movers_says_how_old_the_stored_rows_are(self, monkeypatch):
         """front-api 가 막힌 날 화면이 어제 랭킹 위에 '장중 30초 갱신' 이라고
@@ -59816,6 +59868,23 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         h.handle_one_request()
         return s._w.getvalue()
 
+    @pytest.fixture(autouse=True)
+    def _no_dashboard_auth(self, monkeypatch):
+        """⚠️ **시한폭탄 제거**(독립 리뷰 2026-09-12 Blocking): `dashboard_server`
+        는 import 시점에 `load_dotenv()` 로 `DASHBOARD_USER`/`PASSWORD`/`TOKEN` 을
+        읽는다. CLAUDE.md §Stance 가 VM 의 `.env` 에 그 키들을 **요구**하므로,
+        그 키가 있는 체크아웃에서 이 클래스의 소켓 테스트가 401 을 받아 실패한다
+        — 즉 화면이 시키는 설정을 한 순간 `make test` 가 빨간불이 되고, 그러면
+        무관한 커밋이 전부 막힌다(#294 그대로 · #249·#291 시한폭탄).
+        실측: `.env` 두 줄을 넣자 두 테스트가 `401 Unauthorized` 로 즉시 실패.
+
+        이 클래스가 재는 계약은 **라우팅**이지 인증이 아니므로 인증을 끈다.
+        """
+        import bot.dashboard_server as ds
+        for _name in ("_AUTH_USER", "_AUTH_PASSWORD", "_TOKEN"):
+            if hasattr(ds, _name):
+                monkeypatch.setattr(ds, _name, "", raising=False)
+
     def test_build_endpoint_is_routed_and_answers(self):
         """옛 서버엔 이 라우트가 **없어서 404** 다 — 그 404 가 곧 '서버가
         옛 코드' 라는 확정 신호이므로, 새 서버에서는 200 이어야 그 신호가
@@ -59833,6 +59902,84 @@ setTimeout(function(){ console.log(JSON.stringify(ALERTS)); }, 20);
         증거를 같이 둘 것)."""
         raw = self._get("/api/definitely-not-a-route")
         assert b"404" in raw.split(b"\r\n")[0], raw[:120]
+
+    def test_build_api_relays_the_real_verdict_not_a_constant(self, monkeypatch):
+        """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 Medium): 옛 판은 키가 있는지만
+        봐서 `"note": ""` 로 고정하는 변형이 통과했다 — 그러면 배너가 영영 안 뜬다.
+        `drift()` 의 판정이 **응답에 실리는지**를 값으로 본다(#313 모양이 아니라 결과).
+        """
+        import bot.code_freshness as cf
+        monkeypatch.setattr(cf, "drift", lambda **k: {
+            "stale": True, "measurable": True, "lag_sec": 4800.0,
+            "started": 1.0, "newest": 4801.0})
+        raw = self._get("/api/build")
+        body = json.loads(raw.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+        assert body["stale"] is True and body["measurable"] is True
+        assert body["note"], "판정이 stale 인데 화면에 줄 문구가 비었다"
+        assert "80분" in body["note"], body["note"]
+        # 처방(유닛 이름)은 **아는 호출부만** 적는다(#292 틀린 라벨 금지)
+        assert "stock-bot-dashboard" in body["note"], body["note"]
+        # 신선하면 문구가 없다 — 늘 뜨는 배너 금지(#25·#260)
+        monkeypatch.setattr(cf, "drift", lambda **k: {
+            "stale": False, "measurable": True, "lag_sec": -10.0,
+            "started": 2.0, "newest": 1.0})
+        body = json.loads(self._get("/api/build").split(b"\r\n\r\n", 1)[1])
+        assert body["note"] == "", body
+
+    def test_stale_verdict_reaches_the_dom_end_to_end(self, tmp_path):
+        """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 Medium): 옛 판은 `buildBanner`
+        를 손으로 불러 DOM 만 봤다 — 그래서 `if (b.ok && b.stale && b.note)` 분기를
+        통째로 지워도, 서버가 `note: ""` 를 보내도 전부 green 이었다(실측).
+        여기서는 **fetch 를 스텁해 그 체인을 실제로 실행**한다(#20 배선 · #313
+        모양이 아니라 결과 · #120 정의→호출→**결과**).
+        """
+        import shutil
+        import subprocess
+
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            pytest.skip("node 없음")
+        from bot.dashboard import _render_market_page
+        page = _render_market_page({})
+        i = page.index("fetch('api/build')")
+        j = page.index(".catch(function() {});", i) + len(".catch(function() {});")
+        chain = page[i:j]
+        assert "buildBanner" in chain, chain[:200]
+        src = self._js_fn(page, "buildBanner")
+
+        def run(resp_json, status=200):
+            harness = (
+                "var INSERTED = [];\n"
+                "var document = {\n"
+                "  getElementById: function() { return null; },\n"
+                # ⚠️ 스텁이 **제품이 실제로 쓰는 속성**을 받아야 한다 —
+                # `buildBanner` 는 `textContent` 를 쓰는데 `innerHTML` 만 받으면
+                # 값이 undefined 로 나와 테스트가 엉뚱하게 깨진다(#91b).
+                "  createElement: function() { return {style:{}}; },\n"
+                "  body: {insertBefore: function(el) { INSERTED.push(el.textContent); },"
+                " firstChild: null},\n"
+                "};\n"
+                "var fetch = function() { return Promise.resolve({\n"
+                f"  status: {status},\n"
+                f"  json: function() {{ return Promise.resolve({resp_json}); }}\n"
+                "}); };\n"
+                + src + "\n" + chain + "\n"
+                "setTimeout(function(){ console.log(JSON.stringify(INSERTED)); }, 0);\n")
+            f = tmp_path / "h.js"
+            f.write_text(harness, encoding="utf-8")
+            out = subprocess.run([node, str(f)], capture_output=True, text=True,
+                                 timeout=30)
+            assert out.returncode == 0, out.stderr[-500:]
+            return json.loads(out.stdout.strip().splitlines()[-1])
+
+        # ① 서버가 '옛 코드다' 라고 답하면 그 **문구 그대로** 화면에 들어간다
+        got = run('{ok:true, stale:true, note:"소스가 80분 전에 갱신됐습니다"}')
+        assert len(got) == 1 and "80분" in got[0], got
+        # ② 신선하면 아무것도 안 뜬다(늘 뜨는 배너 금지 #25·#260)
+        assert run('{ok:true, stale:false, note:""}') == []
+        # ③ 라우트가 아예 없으면(옛 서버) 404 가 곧 신호다
+        got = run("null", status=404)
+        assert len(got) == 1 and "restart stock-bot-dashboard" in got[0], got
 
     def test_market_page_asks_the_server_and_renders_a_banner(self, tmp_path):
         """배너는 **호출이 있다** 로는 부족하다 — 404 를 받았을 때 실제로
@@ -59872,8 +60019,15 @@ console.log(JSON.stringify(INSERTED));
         (실행 검사는 위 두 개가 맡고, 여기서는 그 둘을 잇는 호출부를 본다.)"""
         from bot.dashboard import _render_market_page
         page = _render_market_page({})
+        # ⚠️ **고정 길이 창 금지**(#60·#174 — 이 레포에서 세 번 졌다). 900자 창은
+        # 지금도 `loadFavs`·`setInterval`·다음 `<script>` 앞부분까지 덮고 있어,
+        # 우연히 그 안에 `404` 가 있으면 단언이 조용히 눈이 먼다(독립 리뷰
+        # 2026-09-12 Low). **그 체인만** 잘라서 본다.
         i = page.index("fetch('api/build')")
-        seg = page[i:i + 900]
+        j = page.index(".catch(function() {});", i) + len(".catch(function() {});")
+        seg = page[i:j]
+        assert "loadFavs" not in seg and "setInterval" not in seg, \
+            "창이 옆 코드를 덮는다 — 단언이 눈이 먼다"
         assert "404" in seg, "404 갈래가 없다 — 옛 서버를 신선함과 못 가른다"
         assert "buildBanner(" in seg, "받아 놓고 화면에 안 쓴다(#123 계열)"
         assert "b.stale" in seg, "서버가 stale 이라 해도 안 그린다"
@@ -60014,15 +60168,24 @@ class TestNaverThemeAndDetailSpa20260912:
             if url == nsc._THEME_API_RUNGS[0][1]:
                 return None, "HTTP 404"
             if url == nsc._THEME_API_RUNGS[1][1]:
-                return [self._ROW], ""
+                # ⚠️ 픽스처를 **하한 위**로 채우고 `page` 도 **실제로 구현**한다
+                # (#155 원천이 보내는 모양대로). 2026-09-12 에 형제 업종 가드와
+                # 같은 규약으로 `_THEME_MIN_ROWS` + 쪽 무시 판정을 넣었으므로,
+                # 매 쪽 같은 목록을 주는 가짜는 정당하게 '쪽 무시'로 잡힌다
+                # (#222 계약이 바뀌면 테스트를 다시 쓴다).
+                _all = [dict(self._ROW, no=str(i))
+                        for i in range(nsc._THEME_MIN_ROWS + 5)]
+                _pg = (params or {}).get("page", 1)
+                _sz = nsc._THEME_PAGE_SIZE
+                return _all[(_pg - 1) * _sz:_pg * _sz], ""
             return None, "HTTP 404"
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
         rows, marks, why, partial = nsc.collect_themes_json()
-        assert len(rows) == 1 and why == "" and partial is False
+        assert len(rows) == nsc._THEME_MIN_ROWS + 5 and why == "" and partial is False
         assert marks[0].endswith("HTTP 404") and "❌" in marks[0]
-        assert "✅ 1개" in marks[1], marks
+        assert f"✅ {nsc._THEME_MIN_ROWS + 5}개" in marks[1], marks
         # 1순위가 답하면 **뒤 후보는 부르지 않는다**(순손실 요청 금지)
         assert seen[:2] == [nsc._THEME_API_RUNGS[0][1],
                             nsc._THEME_API_RUNGS[1][1]], seen
@@ -60048,15 +60211,18 @@ class TestNaverThemeAndDetailSpa20260912:
         """실측 테마는 266개인데 이 API 가족의 기본 페이지는 20이다 — 한 쪽만
         받고 전부인 줄 알면 랭킹이 조용히 틀린다(#45·#341)."""
         import bot.naver_sector_client as nsc
+        # 하한(`_THEME_MIN_ROWS`) 위로 채운다 — 그 아래는 정당하게 부분이다
         pages = {1: [dict(self._ROW, no=str(i)) for i in range(100)],
-                 2: [dict(self._ROW, no=str(i)) for i in range(100, 130)]}
+                 2: [dict(self._ROW, no=str(i)) for i in range(100, 200)],
+                 3: [dict(self._ROW, no=str(i)) for i in range(200, 230)]}
 
         def fake(url, params=None, **k):
             return pages.get((params or {}).get("page"), []), ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, partial = nsc._theme_json_rung("u")
-        assert len(rows) == 130 and why == "" and partial is False, len(rows or [])
+        assert len(rows) == 230 and why == "" and partial is False, (
+            len(rows or []), why)
 
     def test_partial_pages_are_shown_but_not_cached(self, monkeypatch):
         """중간 쪽이 429·타임아웃이면 **값은 주되 완전본으로 굽지 않는다** —
@@ -60209,6 +60375,153 @@ class TestNaverThemeAndDetailSpa20260912:
         assert found, "프로브가 제품 사다리를 안 부른다(#35)"
         assert all(n == actual for n in found), (found, actual)
 
+    def test_wrong_resource_is_wired_into_the_ladder(self, monkeypatch):
+        """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 High): 옛 판은 `wrong_resource`
+        를 **직접** 불러서, 호출부 세 줄을 통째로 지우는 변형이 전 슈트를
+        통과했다(실측). 이 가드 하나가 '테마 API 가 업종 79행을 준다' 와 '업종이
+        테마라는 이름으로 화면에 앉는다' 사이에 서 있다 — 값이 다 있어서 어떤
+        감사도 안 걸린다(#96·#20 배선은 태워야 보인다).
+        """
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_get2_json", lambda u, **k: (
+            [{"name": "은행", "no": "1", "changeRate": 1.0, "type": "upjong"}], ""))
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows is None, "업종이 테마로 통과했다"
+        assert "upjong" in why, why
+
+    def test_truncated_theme_list_is_never_cached_as_complete(self, monkeypatch):
+        """**실측 재현**(독립 리뷰 2026-09-12 High): 원천에 266개가 있는데
+        `page` 를 무시하면 100개, `pageSize` 를 무시하면 20개만 받고
+        `partial=False` 로 캐시에 구웠다 — 그러면 화면이 '전체 테마 100개' 라고
+        적고 등락률 상·하위 순위가 조용히 틀린다(#45·#280·#341).
+        형제 `fetch_sector_movers` 는 `_UPJONG_DEFAULT_PAGE`/`_UPJONG_MIN_GROUPS`
+        로 이미 그걸 막고 있었다 — 같은 규약을 여기에도(#38).
+        """
+        import bot.naver_sector_client as nsc
+        full = [dict(self._ROW, no=str(i)) for i in range(266)]
+
+        def rung(fn):
+            monkeypatch.setattr(nsc, "_get2_json", fn)
+            return nsc._theme_json_rung("u")
+
+        rows, why, partial = rung(lambda u, **k: (full[:100], ""))   # page 무시
+        assert partial is True and len(rows) == 100 and "쪽(page)" in why, why
+        rows, why, partial = rung(lambda u, **k: (full[:20], ""))    # pageSize 무시
+        assert partial is True and "pageSize" in why, why
+        # 하한 미만 — 쪽은 정상 동작하되 원천이 그만큼밖에 없는 경우. 매 쪽
+        # 같은 목록을 주는 가짜로 만들면 **쪽 무시 분기가 먼저** 걸려 이 가지를
+        # 한 번도 안 탄다(#91c 가드마다 그 가드만 무너지는 픽스처여야 한다).
+        def short(u, params=None, **k):
+            pg = (params or {}).get("page", 1)
+            return (full[:120], "") if pg == 1 else ([], "")
+        rows, why, partial = rung(short)
+        assert partial is True and str(nsc._THEME_MIN_ROWS) in why, why
+
+        # 반대 증거 — 정상 응답은 완전본이어야 한다(가드가 늘 켜지면 무의미 #25)
+        def ok(u, params=None, **k):
+            pg = (params or {}).get("page", 1)
+            sz = nsc._THEME_PAGE_SIZE
+            return full[(pg - 1) * sz:pg * sz], ""
+        rows, why, partial = rung(ok)
+        assert partial is False and why == "" and len(rows) == 266
+
+    def test_discovered_endpoint_is_validated_not_guessed(self, monkeypatch,
+                                                          tmp_path):
+        """**호스트를 추측하지 않는다**(독립 리뷰 2026-09-12 Medium).
+
+        minified 번들은 슬래시 없는 `"api/domestic/market/theme/list"` 를 흔히
+        낸다 — 옛 판은 `startswith("/api/")` 가 거짓이라 그걸 `m.stock` 으로
+        조립하고 `✅ 탐색됨` 으로 6시간 못박았다('찾음' 을 '동작함' 으로 렌더,
+        #165·#25). 이제 후보 × 검증된 두 호스트를 **실제로 호출해** 테마 행이
+        오는 것만 메모에 적는다.
+        """
+        import bot.naver_sector_client as nsc
+        # 후보 생성: 슬래시 없는 경로도 두 호스트 모두, 목록형이 먼저
+        cands = nsc.theme_candidates(["api/domestic/market/theme/list",
+                                      "/api/x/{id}"])
+        assert cands[0] == "https://stock.naver.com/api/domestic/market/theme/list"
+        assert any("m.stock.naver.com" in c for c in cands)
+        assert not any("{" in c for c in cands), cands
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        good = "https://m.stock.naver.com/api/domestic/market/theme/list"
+        tried = []
+
+        def rung(url):
+            tried.append(url)
+            if url == good:
+                return [dict(self._ROW, no=str(i)) for i in range(200)], "", False
+            return None, "HTTP 404", False
+
+        monkeypatch.setattr(nsc, "_theme_json_rung", rung)
+        monkeypatch.setattr(
+            nsc, "_disc_paths", None, raising=False)
+        import bot.naver_spa_discover as _disc
+        monkeypatch.setattr(_disc, "discover",
+                            lambda *a, **k: (["api/domestic/market/theme/list"], ""))
+        nsc._discover_theme_endpoint()
+        memo, _age = nsc._cache_read_any(nsc._THEME_MEMO)
+        assert memo["url"] == good, memo
+        assert len(tried) >= 2, "첫 호스트가 죽었는데 두 번째를 안 시도했다"
+        assert memo.get("tried"), "무엇을 시도했는지 안 남겼다"
+
+        # 검증된 후보가 없으면 **url 을 적지 않는다**(추측을 ✅ 로 렌더 금지)
+        monkeypatch.setattr(nsc, "_theme_json_rung",
+                            lambda u: (None, "HTTP 404", False))
+        nsc._discover_theme_endpoint()
+        memo, _age = nsc._cache_read_any(nsc._THEME_MEMO)
+        assert memo["url"] == "", memo
+
+    def test_collect_themes_publishes_the_rung_it_used(self, monkeypatch):
+        """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 Medium): 화면 테스트가
+        `fetch_themes` 에 `via` 가 든 dict 를 손으로 먹여서, **생산부**에서
+        `via` 를 빼는 변형이 통과했다 — 그러면 화면이 출처를 말하지 않는다(#42a).
+        """
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        full = [dict(self._ROW, no=str(i)) for i in range(200)]
+
+        def fake(url, params=None, **k):
+            if url != nsc._THEME_API_RUNGS[0][1]:
+                return None, "HTTP 404"
+            pg = (params or {}).get("page", 1)
+            sz = nsc._THEME_PAGE_SIZE
+            return full[(pg - 1) * sz:pg * sz], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        out = nsc.collect_themes()
+        assert out["themes"] and not out.get("partial")
+        assert nsc._THEME_API_RUNGS[0][0] in str(out.get("via")), out.get("via")
+        assert out.get("rungs"), "단 목록이 payload 에 없다"
+
+    def test_total_ladder_failure_kicks_discovery(self, monkeypatch):
+        """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 Medium): `_maybe_discover_theme()`
+        호출을 `pass` 로 바꾸는 변형이 통과했다 — '전멸하면 원천에게 묻는다' 가
+        주석에만 있는 배선이었다(#20·#141 게이트만 꺼도 호출은 남는다).
+        """
+        import bot.naver_sector_client as nsc
+        kicked = []
+        monkeypatch.setattr(nsc, "_maybe_discover_theme",
+                            lambda: kicked.append(1))
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        monkeypatch.setattr(nsc, "_get2_json", lambda u, **k: (None, "HTTP 404"))
+        monkeypatch.setattr(nsc, "_theme_page", lambda p: (None, "HTTP 404"))
+        out = nsc.collect_themes()
+        assert out["themes"] == [] and kicked == [1], (out, kicked)
+        # 반대 증거 — 사다리가 답하면 **묻지 않는다**(순손실 탐색 금지)
+        kicked.clear()
+        full = [dict(self._ROW, no=str(i)) for i in range(200)]
+
+        def ok(url, params=None, **k):
+            pg = (params or {}).get("page", 1)
+            sz = nsc._THEME_PAGE_SIZE
+            return full[(pg - 1) * sz:pg * sz], ""
+        monkeypatch.setattr(nsc, "_get2_json", ok)
+        nsc.collect_themes()
+        assert kicked == [], "사다리가 답했는데 탐색까지 돌았다"
+
     # ── 리서치 상세 ─────────────────────────────────────────────────────
     def test_detail_json_reads_target_and_rating(self):
         import bot.naver_research_client as rc
@@ -60229,8 +60542,12 @@ class TestNaverThemeAndDetailSpa20260912:
         assert rc.detail_from_json({"httpUrl": "12345"}) == (None, "")
         assert rc.detail_from_json({"ftpPath": "7777"}) == (None, "")
         assert rc.detail_from_json({"tp": "9900"})[0] == 9900.0
-        # 상식 범위 밖(단위 사고)은 안 받는다
+        # 상식 범위 밖(단위 사고)은 안 받는다 — **양쪽 다** 못박는다.
+        # 상한만 지우는 변형이 통과했다(독립 리뷰 2026-09-12 Low): `targetDate`
+        # 처럼 `target` 힌트에 걸리는 **날짜**가 20,260,930 으로 목표가 칸에
+        # 앉는다(#212 값이 식별자와 같으면 그건 값이 아니다).
         assert rc.detail_from_json({"targetPrice": "3"}) == (None, "")
+        assert rc.detail_from_json({"targetDate": "20260930"}) == (None, "")
 
     def test_detail_tries_json_then_html_and_returns_the_rung(self, monkeypatch):
         """호출부가 셋(시장·산업·개별종목)이라 **한 곳**에서 갈아야 세 화면이
@@ -60263,6 +60580,69 @@ class TestNaverThemeAndDetailSpa20260912:
                            '투자의견<em>Buy</em>')
         assert rc._fetch_report_detail_via("1") == (12300.0, "Buy", "옛 HTML")
 
+    def test_partial_rung_still_asks_the_fallback_for_the_missing_field(self,
+                                                                        monkeypatch):
+        """**실측 재현**(독립 리뷰 2026-09-12 High): 옛 판은
+        `if tgt is not None or rating` 로 폴백을 건너뛰어, 새 단이 투자의견만 주고
+        목표가는 **우리가 모르는 키**(`expectPrice` 등)로 주면 옛 HTML 에 있는
+        목표가를 통째로 버렸다 — 목표가 칸과 컨센서스가 아무 설명 없이 비고,
+        지금 동작하는 경로보다 나빠진다. 폴백 조건은 '실패했나' 가 아니라
+        **'요구를 충족했나'** 다(#136 — 테마 쪽엔 적용해 놓고 여기만 빠뜨렸다).
+        """
+        import bot.naver_research_client as rc
+        HTML = '목표가<em><strong>88,000</strong></em>투자의견<em>매수</em>'
+        hits = []
+        monkeypatch.setattr(rc, "_get", lambda u, **k: hits.append(u) or HTML)
+
+        # ① JSON 이 의견만 준다 → HTML 이 목표가를 채우고 라벨이 둘 다 말한다
+        monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
+            {"investmentOpinion": "매수", "expectPrice": "77,000"}, ""))
+        tgt, rating, via = rc._fetch_report_detail_via("1")
+        assert (tgt, rating) == (88000.0, "매수"), (tgt, rating)
+        assert hits and "옛 HTML" in via and rc._DETAIL_API_RUNGS[0][0] in via, via
+
+        # ② JSON 이 **둘 다** 주면 폴백을 안 탄다(순손실 요청 금지)
+        hits.clear()
+        monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
+            {"targetPrice": "77,000", "opinion": "매수"}, ""))
+        assert rc._fetch_report_detail_via("1") == (
+            77000.0, "매수", rc._DETAIL_API_RUNGS[0][0])
+        assert not hits, "JSON 이 둘 다 줬는데 HTML 도 받았다"
+
+        # ③ JSON 이 부분인데 HTML 도 죽으면 **부분이라도 살린다**(빈칸보다 낫다)
+        hits.clear()
+        monkeypatch.setattr(rc, "_get", lambda u, **k: "")
+        monkeypatch.setattr(rc, "_get2_json", lambda u, **k: (
+            {"investmentOpinion": "매수"}, ""))
+        tgt, rating, via = rc._fetch_report_detail_via("1")
+        assert tgt is None and rating == "매수" and via
+
+    def test_via_is_stamped_end_to_end_so_the_note_can_speak(self, tmp_path,
+                                                             monkeypatch):
+        """**눈먼 테스트 보완**(독립 리뷰 2026-09-12 High): `r["_via"] = via` 한 줄을
+        지워도 전 슈트가 통과했다 — 사유 함수가 **손으로 만든 행**만 먹었고, 유일한
+        E2E 단언이 `"_via" not in r` 라는 **부정형**이라 스탬프가 없어도 참이었다.
+        그러면 경로가 갈려도 화면이 영영 말하지 않는다(#20·#42a).
+        """
+        import datetime as dt
+        import bot.naver_research_client as nrc
+        monkeypatch.setattr(nrc, "_CACHE_DIR", tmp_path / "r")
+        today = str(dt.date.today())
+        rows = [{"nid": str(i), "code": "005930", "name": "삼성전자",
+                 "broker": "b", "title": "t", "date": today, "url": "#",
+                 "rating": ""} for i in range(4)]
+        monkeypatch.setattr(nrc, "fetch_research_pages",
+                            lambda k, **kw: (list(rows), "", {"stop": "source_end"}))
+        # 경로가 **행마다 갈린다** = 진짜 이상 → 화면이 말해야 한다
+        seq = [rc_ for rc_ in ("api/x", "옛 HTML", "api/x", "api/x")]
+        it = iter(seq)
+        monkeypatch.setattr(nrc, "_fetch_report_detail_via",
+                            lambda nid: (1000.0, "Buy", next(it)))
+        nrc.fetch_recent_research_market(limit=50, days_back=30,
+                                         fetch_detail=True)
+        note = nrc.last_fail_reason("detail")
+        assert "행마다 다릅니다" in note and "옛 HTML 1건" in note, note
+
     def test_detail_rung_is_never_a_module_global(self):
         """전역 카운터로 돌아가는 변형을 막는다.
 
@@ -60283,13 +60663,21 @@ class TestNaverThemeAndDetailSpa20260912:
                                      {"_via": "api/x"}])
         assert "옛 HTML 2건" in note and "api/x 1건" in note
 
-    def test_detail_note_speaks_only_when_a_fallback_was_used(self):
-        """늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260) — 말해야 하는
-        것은 **폴백을 탔다**는 사실이다(#42a)."""
+    def test_detail_note_speaks_only_when_paths_disagree(self):
+        """늘 뜨는 배지는 아무것도 안 재는 것과 같다(#25·#260).
+
+        ⚠️ **계약 변경**(독립 리뷰 2026-09-12, #222): 옛 판은 '1단이 아니면
+        경고' 였다. 그런데 JSON 단은 `endUrl` 에서 **추론**한 것이라 아직 한 번도
+        측정된 적이 없다 — 즉 오늘은 전 행이 `옛 HTML` 이고 그 배지가 매
+        수집마다 뜬다. 지금 유일하게 동작하는 경로를 상시 경고로 다는 것은
+        아무것도 안 재는 것과 같다. **행마다 경로가 갈린 경우**가 진짜 이상이다.
+        """
         import bot.naver_research_client as rc
         primary = rc._DETAIL_API_RUNGS[0][0]
-        ok = [{"target": 1000.0, "rating": "매수", "_via": primary}]
-        assert rc.detail_yield_note(ok) == "", "정상 경로인데 배지가 뜬다"
-        fell = [{"target": 1000.0, "rating": "매수", "_via": "옛 HTML"}]
-        assert "옛 HTML" in rc.detail_yield_note(fell), \
-            "폴백을 탔는데 화면이 말하지 않는다"
+        for via in (primary, "옛 HTML"):
+            one = [{"target": 1000.0, "rating": "매수", "_via": via}]
+            assert rc.detail_yield_note(one) == "", (via, "한 경로인데 배지가 뜬다")
+        mixed = [{"target": 1000.0, "rating": "매수", "_via": primary},
+                 {"target": 900.0, "rating": "매수", "_via": "옛 HTML"}]
+        note = rc.detail_yield_note(mixed)
+        assert "행마다 다릅니다" in note and "옛 HTML" in note, note
