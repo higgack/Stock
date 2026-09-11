@@ -17506,6 +17506,17 @@ def _research_empty_html(note: dict | None, kind_label: str) -> str:
     return f'<div class="empty-msg">{_html.escape(kind_label)}</div>'
 
 
+def _research_window_html(note: dict | None) -> str:
+    """행이 **있어도** 창을 다 못 채웠으면 그 사실 한 줄(순수).
+
+    사유(`reason`)는 비었을 때만 뜨지만 이건 **값과 같이** 떠야 한다 — 30일을
+    요청해 20건만 받은 날 화면이 침묵하면 사용자는 '새 게 없다' 로 읽는다
+    (독립 리뷰 2026-09-11 H1 · #43·#52·#45 총계와 모집단).
+    """
+    w = (note or {}).get("window") or ""
+    return f'<div class="sm-note">⚠️ {_html.escape(w)}</div>' if w else ""
+
+
 def _render_research_kr_table(research: list, note: dict | None = None) -> str:
     """Render the KR 기업(종목) research actions table — 일주일치.
 
@@ -17515,6 +17526,7 @@ def _render_research_kr_table(research: list, note: dict | None = None) -> str:
     note = note or {}
     if not research:
         return _research_empty_html(note, "최근 리서치 액션이 없습니다.")
+    win = _research_window_html(note)
     hd = ""
     if note.get("stale"):
         _m = note.get("stale_min")
@@ -17524,6 +17536,7 @@ def _render_research_kr_table(research: list, note: dict | None = None) -> str:
               + (f' ({_ago})' if _ago else "")
               + (f' · {_html.escape(_why)}' if _why else "")
               + '</div>')
+    hd += win                          # 값이 있어도 말할 사실(독립 리뷰 H1)
     rows: list[str] = []
     for r in research[:200]:
         code = _html.escape(r.get("code", ""))
@@ -17564,6 +17577,7 @@ def _render_research_industry_table(research: list, note: dict | None = None) ->
     사유를 적는다(#38·#43)."""
     if not research:
         return _research_empty_html(note, "최근 산업 리포트가 없습니다.")
+    win = _research_window_html(note)      # 값이 있어도 말할 사실(독립 리뷰 H1)
     rows: list[str] = []
     for r in research[:200]:
         category = _html.escape(r.get("category", "") or "—")
@@ -17580,7 +17594,8 @@ def _render_research_industry_table(research: list, note: dict | None = None) ->
             f'<td>{broker}</td><td>{title_cell}</td><td>{dt}</td></tr>'
         )
     return (
-        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
+        win
+        + '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>산업</th><th>증권사</th><th>제목(클릭→원문)</th>'
         '<th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
@@ -17594,6 +17609,7 @@ def _render_research_strategy_table(research: list, note: dict | None = None) ->
     `note` = {reason} — 형제 탭과 같은 규약(#38·#43)."""
     if not research:
         return _research_empty_html(note, "최근 전략 리포트가 없습니다.")
+    win = _research_window_html(note)      # 값이 있어도 말할 사실(독립 리뷰 H1)
     rows: list[str] = []
     for r in research[:200]:
         broker = _html.escape(r.get("broker", ""))
@@ -17608,7 +17624,8 @@ def _render_research_strategy_table(research: list, note: dict | None = None) ->
             f'<tr><td>{broker}</td><td>{title_cell}</td><td>{dt}</td></tr>'
         )
     return (
-        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
+        win
+        + '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>증권사</th><th>제목(클릭→원문)</th>'
         '<th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'

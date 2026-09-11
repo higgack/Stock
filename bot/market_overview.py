@@ -1301,14 +1301,20 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
             pass
 
     results: list[dict] = []
-    why = ""
+    why, window = "", ""
     try:
         from bot.naver_research_client import (fetch_recent_research_market,
-                                               last_market_fail_reason)
-        results = fetch_recent_research_market(limit=limit, days_back=30,
-                                               max_pages=20)
+                                               last_market_fail_reason,
+                                               last_window_note)
+        results = fetch_recent_research_market(limit=limit, days_back=30)
         if not results:
             why = last_market_fail_reason()
+        window = last_window_note("market")
+        # 상세 수율 0 은 **행이 있어도** 말해야 하는 사실이다 — 목표가·투자의견
+        # 열이 통째로 '—' 인 이유가 그거다(독립 리뷰 M6: 읽는 곳이 로그뿐이었다).
+        from bot.naver_research_client import last_fail_reason as _lfr
+        _d = _lfr("detail")
+        window = " · ".join(x for x in (window, _d) if x)
     except Exception as exc:
         log.warning("naver research market fetch error: %s", exc)
         why = f"수집 예외 — {type(exc).__name__}: {str(exc)[:80]}"
@@ -1318,12 +1324,12 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
             cache_file.write_text(json.dumps(results, ensure_ascii=False))
         except Exception:
             pass
-        _RESEARCH_NOTE["kr"] = {"reason": "", "stale": False}
+        _RESEARCH_NOTE["kr"] = {"reason": "", "window": window, "stale": False}
         return results[:limit]
     # 실패·0건 — 마지막 산출본이 있으면 그걸 주고 **저장분이라고 말한다**
     # (#136 폴백 조건은 '실패' 가 아니라 '요구를 충족했나' · #43 침묵이 최악).
     prev, age = _newest_cached_rows(cache_dir, "kr_")
-    _RESEARCH_NOTE["kr"] = {"reason": why, "stale": bool(prev),
+    _RESEARCH_NOTE["kr"] = {"reason": why, "window": window, "stale": bool(prev),
                             "stale_min": int((age or 0) // 60) if prev else None}
     return (prev or [])[:limit]
 
@@ -1345,19 +1351,19 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
             pass
 
     results: list[dict] = []
-    why = ""
+    why, window = "", ""
     try:
         from bot.naver_research_client import (fetch_recent_research_industry,
-                                               last_fail_reason)
-        results = fetch_recent_research_industry(limit=limit, days_back=30,
-                                                 max_pages=12)
+                                               last_fail_reason, last_window_note)
+        results = fetch_recent_research_industry(limit=limit, days_back=30)
         why = last_fail_reason("industry")
+        window = last_window_note("industry")
     except Exception as exc:
         log.warning("naver research industry fetch error: %s", exc)
         why = f"수집 중 예외 — {type(exc).__name__}: {str(exc)[:80]}"
     # 사유를 화면까지 배선한다 — 종목 탭만 고치면 산업 탭은 원천이 막힌 날에도
     # "최근 산업 리포트가 없습니다" 라고 거짓말한다(#38·#147·#43, 리뷰 M2).
-    _RESEARCH_NOTE["kr_industry"] = {"reason": why, "stale": False}
+    _RESEARCH_NOTE["kr_industry"] = {"reason": why, "window": window, "stale": False}
 
     if results:  # truthy-only — 빈 결과 캐시 안 함
         try:
@@ -1385,17 +1391,17 @@ def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
             pass
 
     results: list[dict] = []
-    why = ""
+    why, window = "", ""
     try:
         from bot.naver_research_client import (fetch_recent_research_strategy,
-                                               last_fail_reason)
-        results = fetch_recent_research_strategy(limit=limit, days_back=30,
-                                                 max_pages=12)
+                                               last_fail_reason, last_window_note)
+        results = fetch_recent_research_strategy(limit=limit, days_back=30)
         why = last_fail_reason("strategy")
+        window = last_window_note("strategy")
     except Exception as exc:
         log.warning("naver research strategy fetch error: %s", exc)
         why = f"수집 중 예외 — {type(exc).__name__}: {str(exc)[:80]}"
-    _RESEARCH_NOTE["kr_strategy"] = {"reason": why, "stale": False}
+    _RESEARCH_NOTE["kr_strategy"] = {"reason": why, "window": window, "stale": False}
 
     if results:  # truthy-only — 빈 결과 캐시 안 함
         try:

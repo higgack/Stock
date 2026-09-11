@@ -50,6 +50,9 @@ _BASE_URL = "https://finance.naver.com/research/company_list.naver"
 # 하는 형제를 즉시 grep 할 것(#38·#147).
 _LAST_MARKET_FAIL: dict = {"reason": "", "industry": "", "strategy": "",
                            "detail": ""}
+# 창 절단 사실 — **실패가 아니라** 값이 있는 채로 말해야 하는 것이라 칸을
+# 따로 둔다(같은 칸을 쓰면 행이 오는 순간 덮인다, 독립 리뷰 H1).
+_WINDOW_NOTE: dict = {}
 
 
 def last_market_fail_reason() -> str:
@@ -66,6 +69,36 @@ def last_fail_reason(kind: str) -> str:
     '없습니다' 라고 말하면 원천 장애가 '새 게 없음' 으로 읽힌다(#43·#52·#82).
     """
     return _LAST_MARKET_FAIL.get("reason" if kind == "market" else kind) or ""
+
+
+_PAGE_CAP = 20          # 실측(v2): 세 목록 모두 한 응답에 20행. 페이징 미측정.
+
+
+def window_note(kind: str, got: int, kept: int, days_back: int) -> str:
+    """받은 행이 **원천 한 쪽 상한**에 닿았고 그게 전부 창 안이면 그 사실(순수).
+
+    창을 다 못 채웠을 수 있다는 뜻이지 실패가 아니다 — 그래서 값과 **같이**
+    화면에 실린다(#43). 페이징이 되는지는 아직 안 쟀다(#165 단정 금지):
+    `naver_spa_probe ⑥` 이 재고, 되면 그때 이어받기를 배선한다.
+    """
+    if got < _PAGE_CAP or kept < got:
+        return ""
+    return (f"원천이 한 번에 {got}건만 줍니다 — {days_back}일 창을 다 못 채웠을 "
+            "수 있습니다(더 오래된 건 누락 가능)")
+
+
+def last_window_note(kind: str) -> str:
+    """행은 왔지만 **창을 다 못 채웠을 때** 의 사실("" = 할 말 없음).
+
+    ⚠️ 실패 사유와 **다른 칸**이어야 한다 — 옛 판은 같은 칸을 써서 행이
+    하나라도 오면 `""` 로 덮었고(`_LAST_MARKET_FAIL["reason"] = ""`), 화면은
+    사유가 없을 때만 note 를 읽었다. 그래서 30일·300행을 요청해 **20행**을
+    받아도 화면이 한 마디도 안 했다(독립 리뷰 2026-09-11 실측 H1 — 창의 93%가
+    조용히 사라진다, #43·#52·#45). 값이 **있어도** 말해야 하는 사실이다(#43·#45).
+    """
+    return _WINDOW_NOTE.get(kind) or ""
+
+
 _DETAIL_URL = "https://finance.naver.com/research/company_read.naver"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "naver_research"
 _CACHE_TTL_HOURS = 12
@@ -307,8 +340,6 @@ def _fetch_report_detail(nid: str) -> tuple[Optional[float], str]:
 # ------------------------------------------------------------------
 
 # 종목명 link: <a href="/item/main.naver?code=005930">삼성전자</a>
-_ITEM_CODE_RE = re.compile(
-    r'/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>', re.I)
 
 
 # ── 리서치: 네이버 JSON API (2026-09-11 SPA 전환) ──────────────────────────
@@ -326,32 +357,62 @@ _RESEARCH_API = "https://m.stock.naver.com/api/research"
 _RESEARCH_KINDS = {"company": "종목", "industry": "산업", "invest": "전략"}
 
 
+# 파서가 버린 행 수 — 목록이 짧은 이유를 진단이 말할 수 있게 남긴다(#54·#82).
+_LAST_DROPPED: dict = {}
+
+
+def _abs_url(url: str) -> str:
+    """절대 http(s) URL 이면 그대로, 아니면 빈 문자열(순수).
+
+    빈 문자열이면 호출부가 옛 `*_read.naver?nid=` 조립본으로 떨어진다 —
+    죽은 주소일 수 있지만 **우리 호스트로 해석되는 상대 경로보다는 낫다**.
+    """
+    u = (url or "").strip()
+    return u if u[:8].lower().startswith(("http://", "https:/")) else ""
+
+
 def research_rows_from_json(rows: object, kind: str) -> list[dict]:
     """네이버 리서치 JSON → 기존 스키마 그대로(순수).
 
     반환 키는 **옛 HTML 파서와 동일**하다 — 화면·캐시·상세 보강이 그 키를
     읽으므로 여기서 이름을 바꾸면 한쪽이 조용히 빈칸이 된다(#34·#38).
     날짜가 없는 행은 버린다(정렬·윈도 판정의 기준이라 없으면 못 쓴다).
+
+    ⚠️ `researchId` 가 없는 행도 버린다 — 호출부가 `nid` 로 중복을 거르므로
+    빈 nid 가 둘이면 **둘째부터 전부 같은 행으로 보여** 목록이 한 줄로
+    쪼그라든다(독립 리뷰 2026-09-11 실측: 20행 → 1행, 사유는 `""`).
+    행 모양은 `company` 에서 실측했고 `industry`/`invest` 는 그 키가 온다는
+    보장을 **재지 않았다** — 그래서 조용히 버리지 않고 세어서 말한다(#54).
     """
     out: list[dict] = []
     if not isinstance(rows, list):
         return out
+    dropped = {"date": 0, "title": 0, "nid": 0}
     for r in rows:
         if not isinstance(r, dict):
             continue
         date_str = str(r.get("writeDate") or "").strip()
         if len(date_str) != 10 or date_str[4] != "-":
+            dropped["date"] += 1
             continue
         title = str(r.get("title") or "").strip()[:80]
         if not title:
+            dropped["title"] += 1
             continue
-        item = {"nid": str(r.get("researchId") or ""),
+        nid = str(r.get("researchId") or "").strip()
+        if not nid:
+            dropped["nid"] += 1
+            continue
+        item = {"nid": nid,
                 "broker": str(r.get("brokerName") or "").strip(),
                 "title": title, "date": date_str,
                 # 원천이 주는 링크를 그대로 보존한다 — 옛 `*_read.naver?nid=`
                 # 는 SPA 전환으로 죽은 주소다. 우리가 조립하면 사용자가 클릭해
                 # 빈 페이지를 본다(#150 우리가 그걸 다 쓰고 있나).
-                "url": str(r.get("endUrl") or "").strip()}
+                # ⚠️ **절대 URL 일 때만** — 상대 경로가 오면 우리 대시보드
+                # 호스트로 해석돼 전 링크가 엉뚱한 곳을 가리킨다. 실측한 건
+                # `company` 뿐이라 나머지 형태는 보장이 아니다(#50·#155).
+                "url": _abs_url(str(r.get("endUrl") or "").strip())}
         if kind == "company":
             item.update(code=str(r.get("itemCode") or "").strip(),
                         name=str(r.get("itemName") or "").strip(), rating="")
@@ -359,6 +420,13 @@ def research_rows_from_json(rows: object, kind: str) -> list[dict]:
             item["category"] = str(r.get("researchCategory")
                                    or r.get("category") or "").strip()
         out.append(item)
+    if any(dropped.values()):
+        log.warning("naver_research %s: %d행 중 %d행 버림(날짜 %d·제목 %d·id %d)",
+                    kind, len(rows), sum(dropped.values()),
+                    dropped["date"], dropped["title"], dropped["nid"])
+        _LAST_DROPPED[kind] = dict(dropped)
+    else:
+        _LAST_DROPPED[kind] = {}
     return out
 
 
@@ -394,8 +462,7 @@ def _get2_json(url: str, **kwargs) -> tuple[object, str]:
 
 
 def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
-                                 fetch_detail: bool = True,
-                                 max_pages: int = 4) -> list[dict]:
+                                 fetch_detail: bool = True) -> list[dict]:
     """전체 시장 최근 종목 리서치 리포트 (Naver Finance 리서치 목록).
 
     한경 컨센서스가 JS 렌더링으로 정적 scrape 불가 → market.html 의
@@ -403,9 +470,11 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     [{code, name, broker, rating, title, date}] (날짜 내림차순) —
     dashboard 의 research_kr 스키마와 호환. 키 불필요, 12h 디스크 캐시.
 
-    days_back 윈도(예: 7=일주일치) 안의 리포트를 max_pages 까지 페이지네이션
-    해 수집. cutoff 보다 오래된 페이지가 나오면 조기 중단. fetch_detail=True
-    면 각 리포트 상세에서 투자의견·목표가를 best-effort 로 채운다."""
+    ⚠️ 2026-09-11 SPA 전환 뒤로는 **페이지네이션이 없다** — JSON 이 한 번에
+    20행을 주고 우리가 `days_back` 으로 거른다. 창을 다 못 채우면 그 사실을
+    `last_window_note("market")` 에 남겨 화면이 말한다(독립 리뷰 H1). 페이징
+    가능 여부는 아직 안 쟀다 — `naver_spa_probe ⑥` 이 재고 나서 배선한다.
+    fetch_detail=True 면 각 리포트 상세에서 투자의견·목표가를 채운다."""
     cache_key = (f"naver_market_v2_{date.today().isoformat()}"
                  f"_{days_back}_{limit}.json")
     cache_file = _CACHE_DIR / cache_key
@@ -414,6 +483,11 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _MARKET_TTL_HOURS:
                 cached = json.loads(cache_file.read_text())
+                # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
+                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
+                # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
+                _WINDOW_NOTE["market"] = window_note(
+                    "market", len(cached or []), len(cached or []), days_back)
                 return cached or []
         except Exception as exc:
             log.warning("naver_research: market cache read failed: %s", exc)
@@ -427,9 +501,10 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     # 실측: 117,442B 응답에 `<table` 0건). 페이지네이션하던 HTML 경로는
     # 정의상 0건이라 지웠다(죽은 경로는 남기지 않는다, §작업 원칙) —
     # JSON API 가 한 번에 20행을 주므로 받고 cutoff 로 거른다.
-    # ⚠️ 옛 경로는 최대 {max_pages}쪽까지 훑어 더 긴 윈도를 채울 수 있었다.
-    # 지금은 20행이 상한이라 `days_back` 이 길면 그 창을 다 못 채운다 —
-    # 화면이 그걸 모르면 '새 게 없다' 로 읽는다(#52·#43). 사유로 남긴다.
+    # ⚠️ 옛 HTML 경로는 여러 쪽을 훑어 더 긴 윈도를 채울 수 있었다. 지금은
+    # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
+    # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
+    # 표시한다(#52·#43·#45).
     j_rows, why = fetch_research_json("company")
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
     for r in j_rows:
@@ -439,9 +514,9 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
             continue
         seen_nid.add(r["nid"])
         rows.append(r)
-    if j_rows and len(j_rows) >= 20 and len(rows) == len(j_rows):
-        # 받은 20행이 **전부 윈도 안** = 원천에 더 있을 수 있다(한 쪽 상한).
-        why = why or "원천이 한 번에 20건만 줍니다 — 더 오래된 건은 빠질 수 있습니다"
+    # ⚠️ 창 절단은 **실패가 아니다** — 실패 칸(`why`)에 넣으면 행이 하나라도
+    # 오는 순간 아래에서 `""` 로 덮여 화면이 영영 모른다(독립 리뷰 H1).
+    _WINDOW_NOTE["market"] = window_note("market", len(j_rows), len(rows), days_back)
 
     rows = rows[:limit]
     if not rows:
@@ -473,7 +548,10 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         # 이다. 목록이 SPA 로 죽었으니 여기도 죽었을 수 있는데, 죽으면 매 수집이
         # 수십 건을 순손실로 던지고 목표가·투자의견 칸만 조용히 빈다(#79 그
         # 경로가 실제로 실행됐나 · #116 장식용 값의 비용). 0 이면 사유로 남겨
-        # `--check` 가 말하게 한다 — 아직 **재지 않았으므로 끄지는 않는다**(#12).
+        # **화면이** 말하게 한다 — 아직 재지 않았으므로 끄지는 않는다(#12).
+        # ⚠️ 옛 주석은 "`--check` 가 말하게 한다" 였는데 `check()` 는 자기
+        # 단건 프로브만 돌고 이 칸을 **읽지 않는다** — 읽는 곳이 로그뿐인
+        # write-only 였다(독립 리뷰 M6 · #123·#129·#189·#228 계열).
         _hit = sum(1 for t, rt2 in detail_map.values() if t or rt2)
         _LAST_MARKET_FAIL["detail"] = ("" if _hit else (
             f"상세 {len(detail_map)}건에서 목표가·투자의견을 한 건도 못 읽었습니다 "
@@ -508,8 +586,8 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
 _INDUSTRY_DETAIL_URL = "https://finance.naver.com/research/industry_read.naver"
 
 
-def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
-                                   max_pages: int = 5) -> list[dict]:
+def fetch_recent_research_industry(limit: int = 80,
+                                   days_back: int = 7) -> list[dict]:
     """전체 시장 최근 산업(업종) 리서치 리포트 (Naver industry_list).
 
     종목 리포트와 동일 윈도(기본 7일=일주일치). 산업 리포트는 단일 목표가가
@@ -523,6 +601,11 @@ def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _MARKET_TTL_HOURS:
                 cached = json.loads(cache_file.read_text())
+                # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
+                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
+                # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
+                _WINDOW_NOTE["industry"] = window_note(
+                    "industry", len(cached or []), len(cached or []), days_back)
                 return cached or []
         except Exception as exc:
             log.warning("naver_research: industry cache read failed: %s", exc)
@@ -534,9 +617,10 @@ def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
     # 실측: 117,442B 응답에 `<table` 0건). 페이지네이션하던 HTML 경로는
     # 정의상 0건이라 지웠다(죽은 경로는 남기지 않는다, §작업 원칙) —
     # JSON API 가 한 번에 20행을 주므로 받고 cutoff 로 거른다.
-    # ⚠️ 옛 경로는 최대 {max_pages}쪽까지 훑어 더 긴 윈도를 채울 수 있었다.
-    # 지금은 20행이 상한이라 `days_back` 이 길면 그 창을 다 못 채운다 —
-    # 화면이 그걸 모르면 '새 게 없다' 로 읽는다(#52·#43). 사유로 남긴다.
+    # ⚠️ 옛 HTML 경로는 여러 쪽을 훑어 더 긴 윈도를 채울 수 있었다. 지금은
+    # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
+    # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
+    # 표시한다(#52·#43·#45).
     j_rows, why = fetch_research_json("industry")
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
     for r in j_rows:
@@ -546,11 +630,10 @@ def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
             continue
         seen_nid.add(r["nid"])
         rows.append(r)
-    if j_rows and len(j_rows) >= 20 and len(rows) == len(j_rows):
-        # 받은 20행이 **전부 윈도 안** = 원천에 더 있을 수 있다(한 쪽 상한).
-        why = why or "원천이 한 번에 20건만 줍니다 — 더 오래된 건은 빠질 수 있습니다"
     # 사유를 **계산만 하고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
     _LAST_MARKET_FAIL["industry"] = why or ""
+    # 창 절단은 실패가 아니라 **값과 같이** 말할 사실이다(독립 리뷰 H1).
+    _WINDOW_NOTE["industry"] = window_note("industry", len(j_rows), len(rows), days_back)
 
     rows = rows[:limit]
     out = [{
@@ -581,8 +664,8 @@ def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
 _STRATEGY_DETAIL_URL = "https://finance.naver.com/research/invest_read.naver"
 
 
-def fetch_recent_research_strategy(limit: int = 80, days_back: int = 7,
-                                   max_pages: int = 5) -> list[dict]:
+def fetch_recent_research_strategy(limit: int = 80,
+                                   days_back: int = 7) -> list[dict]:
     """전체 시장 최근 투자전략(투자정보) 리서치 리포트 (Naver invest_list).
 
     종목/산업 리포트와 동일 윈도(기본 7일). 단일 목표가가 없어 detail fetch
@@ -596,6 +679,11 @@ def fetch_recent_research_strategy(limit: int = 80, days_back: int = 7,
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _MARKET_TTL_HOURS:
                 cached = json.loads(cache_file.read_text())
+                # 캐시 히트도 **창 절단 사실은 말해야** 한다 — 재시작 뒤 첫 렌더가
+                # 절단된 캐시를 조용히 그리면 #43 이 그대로 재발한다. 저장 형식은
+                # 그대로 두고 행 수에서 파생한다(#270 렌더타임 파생).
+                _WINDOW_NOTE["strategy"] = window_note(
+                    "strategy", len(cached or []), len(cached or []), days_back)
                 return cached or []
         except Exception as exc:
             log.warning("naver_research: strategy cache read failed: %s", exc)
@@ -607,9 +695,10 @@ def fetch_recent_research_strategy(limit: int = 80, days_back: int = 7,
     # 실측: 117,442B 응답에 `<table` 0건). 페이지네이션하던 HTML 경로는
     # 정의상 0건이라 지웠다(죽은 경로는 남기지 않는다, §작업 원칙) —
     # JSON API 가 한 번에 20행을 주므로 받고 cutoff 로 거른다.
-    # ⚠️ 옛 경로는 최대 {max_pages}쪽까지 훑어 더 긴 윈도를 채울 수 있었다.
-    # 지금은 20행이 상한이라 `days_back` 이 길면 그 창을 다 못 채운다 —
-    # 화면이 그걸 모르면 '새 게 없다' 로 읽는다(#52·#43). 사유로 남긴다.
+    # ⚠️ 옛 HTML 경로는 여러 쪽을 훑어 더 긴 윈도를 채울 수 있었다. 지금은
+    # 한 응답 20행이 상한이라 `days_back` 이 길면 창을 다 못 채운다 — 화면이
+    # 그걸 모르면 '새 게 없다' 로 읽으므로 `_WINDOW_NOTE` 로 남겨 값과 **같이**
+    # 표시한다(#52·#43·#45).
     j_rows, why = fetch_research_json("invest")
     cut = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)
     for r in j_rows:
@@ -619,10 +708,10 @@ def fetch_recent_research_strategy(limit: int = 80, days_back: int = 7,
             continue
         seen_nid.add(r["nid"])
         rows.append(r)
-    if j_rows and len(j_rows) >= 20 and len(rows) == len(j_rows):
-        # 받은 20행이 **전부 윈도 안** = 원천에 더 있을 수 있다(한 쪽 상한).
-        why = why or "원천이 한 번에 20건만 줍니다 — 더 오래된 건은 빠질 수 있습니다"
-    _LAST_MARKET_FAIL["strategy"] = why or ""     # 형제와 같은 규약(#38)
+    # 사유를 **계산만 하고 버리면 없는 것과 같다**(#123·#129·#189·#228 계열).
+    _LAST_MARKET_FAIL["strategy"] = why or ""
+    # 창 절단은 실패가 아니라 **값과 같이** 말할 사실이다(독립 리뷰 H1).
+    _WINDOW_NOTE["strategy"] = window_note("strategy", len(j_rows), len(rows), days_back)
 
     rows = rows[:limit]
     out = [{

@@ -105,36 +105,59 @@ def _naver_upjong() -> tuple[bool, str]:
 
 
 def _naver_sector() -> tuple[bool, str]:
-    """네이버 finance 업종 시세(국내 업종 등락) — HTML."""
+    """국내 업종 등락 위젯이 **실제로 쓰는** 경로 — stock.naver.com JSON.
+
+    ⚠️ 2026-09-11 까지 이 점검은 `finance.naver.com/sise/sise_group.naver` 의
+    `sise_group_detail` 마커를 봤는데, 그건 SPA 전환으로 **사라진 마커**다.
+    그대로 뒀으면 배포 다음 날부터 매일 고칠 수 없는 ❌ 가 뜨고(#260 진짜
+    ❌ 를 가린다) 아래 영향 문구가 "한국 업종 등락 위젯 영향" 이라는 **거짓**
+    을 말했을 것이다 — 위젯은 이미 JSON 을 읽는다. 감사는 화면이 쓰는 그
+    경로를 태운다(#35·#38·#147, 독립 리뷰 H2).
+    """
+    from bot.naver_sector_client import _UPJONG_API, _UPJONG_PAGE_SIZE
     try:
-        ok, text, dt = _naver_get(
-            "https://finance.naver.com/sise/sise_group.naver?type=upjong",
-            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR",
-                     "Referer": "https://finance.naver.com/sise/"}, want="text")
+        ok, data, dt = _nv_api(f"{_UPJONG_API}?pageSize={_UPJONG_PAGE_SIZE}")
         if not ok:
-            return False, f"{text} ({dt:.0f}ms)"
-        has = isinstance(text, str) and "sise_group_detail" in text
-        return has, (f"업종 표 {'있음' if has else '없음(구조 변경?)'} "
-                     f"({len(text) if isinstance(text, str) else 0}B, {dt:.0f}ms)")
+            return False, f"{data} ({dt:.0f}ms)"
+        n = len(data) if isinstance(data, list) else 0
+        return n > 0, f"업종 {n}개 ({dt:.0f}ms)"
     except Exception as exc:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
 def _naver_research() -> tuple[bool, str]:
-    """네이버 finance 리서치 목록(‘최근 리서치 액션’ KR 탭) — HTML.
+    """‘최근 리서치 액션’ KR 탭이 쓰는 경로 — m.stock.naver.com JSON.
 
-    업종 위젯과 **같은 호스트(finance.naver.com)** 인데 점검이 없어, 2026-09-11
-    에 둘이 같이 비었을 때 /health 가 업종만 말하고 리서치는 침묵했다(#24 열거형
-    점검은 목록 밖을 못 잡는다)."""
+    업종 위젯과 짝이라 점검이 없으면 둘이 같이 비어도 하나만 말한다(#24) —
+    2026-09-11 에 실제로 그랬다. 경로는 위젯과 **같은 것**이어야 한다(#35).
+    """
+    from bot.naver_research_client import _RESEARCH_API
+    try:
+        ok, data, dt = _nv_api(f"{_RESEARCH_API}/company")
+        if not ok:
+            return False, f"{data} ({dt:.0f}ms)"
+        n = len(data) if isinstance(data, list) else 0
+        return n > 0, f"리포트 {n}건 ({dt:.0f}ms)"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _naver_theme_html() -> tuple[bool, str]:
+    """아직 **HTML 스크래핑에 남아 있는** 경로 — 테마 시세(업종별 시세 페이지).
+
+    업종·리서치가 JSON 으로 옮겨간 뒤에도 테마·상한가·업종맵은 finance.naver.com
+    HTML 이다. 경로 대조(아래 'ℹ️ 네이버 경로별')가 의미를 가지려면 **HTML 을
+    실제로 쓰는 기능**을 재야 한다 — 죽은 URL 을 재면 그 줄이 매일 거짓말한다.
+    """
     try:
         ok, text, dt = _naver_get(
-            "https://finance.naver.com/research/company_list.naver",
+            "https://finance.naver.com/sise/theme.naver?page=1",
             headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR",
-                     "Referer": "https://finance.naver.com/research/"}, want="text")
+                     "Referer": "https://finance.naver.com/sise/"}, want="text")
         if not ok:
             return False, f"{text} ({dt:.0f}ms)"
-        has = isinstance(text, str) and "company_read.naver" in text
-        return has, (f"리포트 링크 {'있음' if has else '없음(구조 변경?)'} "
+        has = isinstance(text, str) and "type=theme" in text
+        return has, (f"테마 표 {'있음' if has else '없음(구조 변경?)'} "
                      f"({len(text) if isinstance(text, str) else 0}B, {dt:.0f}ms)")
     except Exception as exc:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
@@ -219,8 +242,9 @@ def run() -> dict:
         "Naver 국내(front-api)": _naver_domestic(),
         "Naver 해외(worldstock)": _naver_world(),
         "Naver 업종(desktop API)": _naver_upjong(),
-        "Naver 업종(finance HTML)": _naver_sector(),
-        "Naver 리서치(finance HTML)": _naver_research(),
+        "Naver 업종(stock API)": _naver_sector(),
+        "Naver 리서치(m.stock API)": _naver_research(),
+        "Naver 테마(finance HTML)": _naver_theme_html(),
     }
     return {"yf_paused": yfp, "naver_paused": nvp,
             "fast_info_breaker": fi_breaker, "checks": checks}
@@ -257,7 +281,8 @@ def format_report(res: dict) -> str:
         lines.append(
             f"ℹ️ 네이버 경로별: finance.naver.com(HTML) {f_ok}/{len(_fin)} · "
             f"stock.naver.com(API) {a_ok}/{len(_api)}"
-            + (" — HTML 경로만 막힘(한국 업종 등락·리서치 액션 위젯 영향)"
+            + (" — HTML 경로만 막힘(테마 시세·상한가·업종맵 영향 · 업종 등락·"
+               "리서치 액션은 JSON 이라 무관)"
                if f_ok == 0 and a_ok > 0 else ""))
     fi_ok = ck.get("yfinance fast_info", (True,))[0]
     batch_ok = ck.get("yfinance batch", (False,))[0]

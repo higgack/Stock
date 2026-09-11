@@ -43,13 +43,9 @@ _HEADERS = {
     "Referer": "https://finance.naver.com/sise/",
 }
 
-# 업종/테마 공통 — sise_group_detail.naver?type=upjong|theme&no=N 링크의 이름
-_GROUP_RE = re.compile(
-    r'sise_group_detail\.naver\?type=(?:upjong|theme)[^"]*?no=\d+"[^>]*>([^<]+)</a>',
-    re.I)
 _PCT_RE = re.compile(r'([+\-]?)(\d{1,3}\.\d{1,2})\s*%')
 _ITEM_RE = re.compile(r'/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>', re.I)
-# 업종 그룹 링크(번호+이름) — 멤버 스캔용 (parse_groups 의 _GROUP_RE 는 이름만 캡처).
+# 업종 그룹 링크(번호+이름) — 업종맵 멤버 스캔용(옛 HTML 경로).
 _UPJONG_NO_RE = re.compile(
     r'sise_group_detail\.naver\?type=upjong[^"]*?no=(\d+)"[^>]*>([^<]+)</a>', re.I)
 
@@ -126,25 +122,6 @@ def _pct_from_row(row_html: str) -> Optional[float]:
     if sign != "+" and re.search(r"(nv01|nv02|blue|down)", row_html, re.I):
         return -num
     return num
-
-
-def parse_groups(html: str) -> list[dict]:
-    """업종/테마 표 → [{name, pct}] (등락률 %)."""
-    out: list[dict] = []
-    seen: set[str] = set()
-    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
-        a = _GROUP_RE.search(row)
-        if not a:
-            continue
-        name = _clean(a.group(1))
-        if not name or name in seen:
-            continue
-        pct = _pct_from_row(row)
-        if pct is None:
-            continue
-        seen.add(name)
-        out.append({"name": name, "pct": round(pct, 2)})
-    return out
 
 
 _THEME_LINK_RE = re.compile(
@@ -466,8 +443,14 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
                "아닐 수 있습니다. pageSize 파라미터 확인 필요")
         log.warning("naver upjong: 부분 수신 — %d행(%s)", n_raw, how)
     if not groups:
-        if not why:                    # 200 을 받았는데 0건 = 구조 변경 의심
-            why = _nd.parse_reason("업종 행", n_raw, unit="행")
+        if not why:
+            # ⚠️ dict 가 오면 `n_raw` 는 0 이라 "원천 응답(0행)" 이라는 **거짓
+            # 숫자**를 적고 운영자를 파서로 보낸다 — `--check` 는 같은 경우를
+            # `shape_reason` 으로 맞게 말하고 있었다(형제가 갈린 것, #38·#147,
+            # 독립 리뷰 M3). 계약 변경과 '행은 왔는데 못 읽음' 은 처방이 다르다.
+            why = (_nd.parse_reason("업종 행", n_raw, unit="행")
+                   if isinstance(raw, list)
+                   else _nd.shape_reason("업종 목록", raw))
         prev, age = _cache_read_any("upjong.json")
         if prev and (prev.get("up") or prev.get("down")):
             return dict(prev, stale=True, stale_min=int((age or 0) // 60),
