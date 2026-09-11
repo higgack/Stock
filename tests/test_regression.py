@@ -56708,9 +56708,51 @@ class TestNaverSpaProbe20260911:
 
     def test_candidates_come_from_hosts_the_repo_already_proved(self):
         """후보를 지어내면 다음 라운드가 추측으로 시작한다 — 레포가 이미 동작을
-        증명한 호스트에서만 뽑는다(§작업 원칙 선행 사례 먼저)."""
+        증명한 호스트에서만 뽑는다(§작업 원칙 선행 사례 먼저).
+
+        ⚠️ 2026-09-11 v1 VM 실측 뒤 계약이 바뀌었다(#222): 후보 6개 중 둘만
+        살아 있어(나머지 400/404) `_CANDIDATES` 가 **살아 있는 것**으로 좁혀지고
+        형제 탐색이 `_SIBLINGS` 로 갈라졌다. 옛 판은 `len(_CANDIDATES) >= 4` 라
+        그 좁히기에 깨졌다 — 계약은 '후보가 넷 이상' 이 아니라 **'지어낸 호스트가
+        없다 + 목록이 통째로 비지 않는다'** 이므로 그렇게 다시 쓴다."""
         from bot.scripts import naver_spa_probe as sp
         proven = ("stock.naver.com", "api.stock.naver.com", "m.stock.naver.com")
-        for name, url in sp._CANDIDATES:
+        urls = list(sp._CANDIDATES) + list(sp._SIBLINGS)
+        for name, url in urls:
             assert any(f"://{h}/" in url for h in proven), f"{name}: {url}"
-        assert len(sp._CANDIDATES) >= 4
+        assert len(urls) >= 4                       # 비면 프로브가 아무것도 안 잰다
+        assert sp._CANDIDATES                       # 살아 있는 것이 최소 하나
+
+    def test_paging_probe_asks_whether_twenty_is_the_whole_universe(self):
+        """업종 20개가 **전부인지 페이지 크기인지** 안 재고 랭킹을 만들면 화면이
+        조용히 틀린다 — 상위/하위 10은 전 업종을 봐야 맞다(#45 모집단).
+        무인자 호출을 반드시 포함해야 기준선이 생긴다(#143 대조군)."""
+        from bot.scripts import naver_spa_probe as sp
+        assert "" in sp._PAGING, "무인자 기준선이 없으면 비교할 게 없다"
+        assert len(sp._PAGING) >= 3
+        assert any("100" in q for q in sp._PAGING)   # 더 달라고 실제로 물어본다
+
+    def test_get_json_names_the_failure_branch(self):
+        """실패를 `None` 하나로 뭉개면 '못 닿음'·'404'·'JSON 아님' 이 같아진다
+        (#82). 그리고 **빈 리스트는 실패가 아니다** — 원천이 0건인 것이다(#54)."""
+        import types
+        from bot.scripts import naver_spa_probe as sp
+
+        def fake(status, ct, payload=None, boom=None):
+            class _R:
+                status_code = status
+                headers = {"content-type": ct}
+                def json(self):
+                    if boom:
+                        raise ValueError(boom)
+                    return payload
+            return types.SimpleNamespace(get=lambda *a, **k: _R())
+
+        obj, why = sp._get_json(fake(404, "application/json"), "u")
+        assert obj is None and "404" in why
+        obj, why = sp._get_json(fake(200, "text/html"), "u")
+        assert obj is None and "JSON 아님" in why
+        obj, why = sp._get_json(fake(200, "application/json", boom="bad"), "u")
+        assert obj is None and "파싱 실패" in why
+        obj, why = sp._get_json(fake(200, "application/json", payload=[]), "u")
+        assert obj == [] and not why                # 0건은 실패가 아니다
