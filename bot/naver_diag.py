@@ -88,6 +88,12 @@ def _sanitize(txt: str, limit: int) -> str:
     return txt[:limit] + ("…" if len(txt) > limit else "")
 
 
+# 원천이 "요청 자체가 잘못됐다"고 말하는 상태들 — 인증(401·403)·없음(404)·
+# 한도(429)·장애(5xx)와 **처방이 다르다**. 사다리(크기 물러나기)와 프로브
+# (키 존재 판정)가 같은 집합을 쓴다(#38 복제하면 한쪽만 고쳐진다).
+REQUEST_SHAPE_4XX = (400, 413, 414, 422)
+
+
 def error_brief(body: object) -> str:
     """네이버 오류 봉투 → **결정적 사실을 앞세운** 한 줄(순수). 못 읽으면 "".
 
@@ -137,7 +143,20 @@ def error_brief(body: object) -> str:
             msg = _v
         else:
             detail = _v
+    # ⚠️ **결정적인 것을 앞에 둔다** — 자르기는 항상 꼬리를 먹으므로, 쓸모없는
+    # 머리말(`Bad Request`)이 앞서면 정작 필요한 `detail` 이 잘린다(#156·#350·
+    # #352 가 전부 같은 병이다). RFC7807 상세가 있으면 그것부터.
     parts: list = []
+    if isinstance(detail, dict):
+        for k in ("detail", "title", "status"):
+            v = detail.get(k)
+            if v not in (None, "") and f"{k}: {v}" not in parts:
+                parts.append(f"{k}: {v}")
+        fe0 = detail.get("fieldErrors")
+        if isinstance(fe0, dict):
+            for k, v in fe0.items():
+                one = v[0] if isinstance(v, list) and v else v
+                parts.append(f"{k}: {one}")
     if isinstance(msg, dict):
         fe = msg.get("fieldErrors")
         if isinstance(fe, dict):
@@ -149,18 +168,8 @@ def error_brief(body: object) -> str:
             parts.extend(str(x) for x in form if x)
     elif isinstance(msg, str) and msg.strip():
         parts.append(msg.strip())
-    if isinstance(detail, dict):
-        # RFC7807 — 값이 있는 것만, 재사용 가능한 순서로.
-        for k in ("detail", "title", "status"):
-            v = detail.get(k)
-            if v not in (None, "") and str(v) not in parts:
-                parts.append(f"{k}: {v}")
-        fe = detail.get("fieldErrors")
-        if isinstance(fe, dict):
-            for k, v in fe.items():
-                one = v[0] if isinstance(v, list) and v else v
-                parts.append(f"{k}: {one}")
-    elif isinstance(detail, str) and detail.strip():
+    if isinstance(detail, str) and detail.strip() and (
+            detail.strip() not in parts):
         parts.append(detail.strip())
     if not parts and not code:
         return ""
@@ -168,7 +177,10 @@ def error_brief(body: object) -> str:
     out = f"{head} ({code})" if code and head else (head or code)
     # ⚠️ `body_sample` 을 우회하면 태그·`<`/`>` 제거가 사라진다 — 요약이 그
     # 자리를 **대신 쓰므로** 같은 살균을 거쳐야 한다(독립 리뷰 2026-09-12).
-    return _sanitize(out, 160)
+    # ⚠️ 한도가 160 이면 RFC7807 `detail`(구조화되지 않은 한 덩이)에서 결정적
+    # 텍스트가 또 잘린다 — 이 함수가 막으려던 바로 그 실패다(#156·#350·#352).
+    # zod 경로는 필드별로 쪼개져 짧으므로 이 한도는 `detail` 을 위한 것이다.
+    return _sanitize(out, 300)
 
 
 _LE_RE = re.compile(

@@ -62243,8 +62243,8 @@ class TestSecondErrorEnvelopeShape20260912:
         # ⚠️ 본문이 키 이름을 **담지 않아야** 이 배선을 잰다 — 실측의 잘린
         # 응답이 정확히 그 모양이었다(`Bad Request` 만 남는다). 첫 판은
         # 이름매칭이 대신 만족시켜 뮤테이션이 통과했다(#75·#91b).
-        anon = (b'{"detailCode":"HttpError","message":"Bad Request",'
-                b'"result":"{\"title\":\"Bad Request\",\"status\":400}"}')
+        anon = (rb'{"detailCode":"HttpError","message":"Bad Request",'
+                rb'"result":"{\"title\":\"Bad Request\",\"status\":400}"}')
 
         def fake(url, params=None, **k):
             p = dict(params or {})
@@ -62256,3 +62256,77 @@ class TestSecondErrorEnvelopeShape20260912:
         body = "\n".join(nsc.probe_params())
         line = [ln for ln in body.splitlines() if "sortType" in ln][0]
         assert "있음" in line, line
+
+    def test_shared_status_is_environment_not_a_key(
+            self, monkeypatch, tmp_path):
+        """여러 후보가 **같은 상태**로 거절되면 그건 키가 아니라 환경이다.
+
+        독립 리뷰 실측: 프로브 도중 429 가 걸리자 12개 중 9개가
+        `있음 — 이 키에만 HTTP 429` 로 찍혔다 — '이 키에만' 이 거짓이 된다.
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        state = {"n": 0}
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if len(p) == 1:                    # 기준선
+                return [], ""
+            state["n"] += 1
+            if state["n"] > 2:                 # 도중에 한도가 걸린다
+                return None, nsc._nd.http_reason(400)
+            return [], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        body = "\n".join(nsc.probe_params())
+        assert "이 키에만" not in body, body
+        assert "환경 변화 의심" in body, body
+
+    def test_rate_limit_and_auth_are_not_presence(self):
+        """401·403·404·429 는 '요청 모양' 오류가 아니다 — 처방이 다르다(#82)."""
+        import bot.naver_sector_client as nsc
+
+        for st in (401, 403, 404, 429):
+            v = nsc.classify_param_probe(st, "nope", "sortType",
+                                         base_status=200)
+            assert "있음" not in v, (st, v)
+        assert "있음" in nsc.classify_param_probe(400, "nope", "sortType",
+                                                 base_status=200)
+
+    def test_long_rfc7807_detail_is_not_truncated_away(self):
+        """`detail` 은 구조화되지 않은 한 덩이라 160자면 또 잘린다(#156·#350).
+
+        ⚠️ 첫 판은 **머리말이 짧아** 순서를 바꿔도 꼬리가 300자 안에 들어와
+        뮤테이션이 통과했다(#91c 깨지는 값까지 밀어 볼 것). 원천이 실제로
+        길이가 있는 머리말을 주면 순서가 곧 생사이므로 그렇게 재현한다.
+        """
+        import bot.naver_diag as nd
+
+        head_msg = "요청 본문이 올바르지 않습니다 " + "M" * 150
+        long_detail = ("sortType 는 다음 중 하나여야 합니다: " + "A" * 100
+                       + " · less than or equal to 200")
+        body = ('{"detailCode":"HttpError","message":'
+                + __import__("json").dumps(head_msg) + ','
+                '"result":' + __import__("json").dumps(
+                    __import__("json").dumps(
+                        {"title": "Bad Request", "detail": long_detail}))
+                + '}')
+        why = nd.http_reason(400, 9, body=body.encode())
+        # ⚠️ 결정적인 것은 **꼬리**에 있다 — 머리말이 앞서면 잘려 나간다.
+        # 그래서 RFC7807 상세를 맨 앞에 싣는다.
+        assert "less than or equal to 200" in why, why[-120:]
+        # 그리고 그 순서 자체를 못박는다 — 길이가 우연히 맞아떨어져도
+        # 계약("상세가 먼저")은 유지돼야 한다.
+        assert why.index("detail: ") < why.index("M" * 20), why
+        # ⚠️ 그렇다고 `pageSize` 상한으로 읽으면 안 된다 — 이 문구는
+        # `sortType` 것이다(필드 한정이 그래서 필요하다, #46).
+        assert nd.size_cap_from(why) is None, why
+
+    def test_string_result_is_not_duplicated(self):
+        """`message` 와 `result` 가 같은 문구면 두 번 싣지 않는다."""
+        import bot.naver_diag as nd
+
+        s = nd.error_brief('{"detailCode":"HttpError",'
+                           '"message":"Bad Request","result":"Bad Request"}')
+        assert s.count("Bad Request") == 1, s

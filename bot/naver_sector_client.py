@@ -1101,7 +1101,7 @@ def _theme_json_rung(url: str) -> tuple:
             # 429 는 한도 초과 원천을 즉시 두 번 더 두드린다). 크기 거절은
             # 원천이 4xx 로 '요청이 잘못됐다'고 말한 경우다.
             _st = _nd.status_from(why)
-            _size_problem = _st in (400, 413, 414, 422)
+            _size_problem = _st in _nd.REQUEST_SHAPE_4XX
             nxt = cap if cap else (size // 2 if _size_problem else 0)
             if (nxt and nxt not in tried and nxt > ok_size
                     and cap_tries < _THEME_CAP_TRIES):
@@ -1429,7 +1429,7 @@ def classify_param_probe(status, brief: str, key: str,
         return "없음(무시됨)"
     if re.search(rf"\b{re.escape(key)}\b", r, re.I):
         return "있음 — 원천이 값을 지적함"
-    if base_status == 200 and 400 <= status < 500:
+    if base_status == 200 and status in _nd.REQUEST_SHAPE_4XX:
         # ⚠️ **차이 자체가 측정**이다 — 같은 요청 모양에서 기준선은 200 인데
         # 이 키만 4xx 면 원천이 그 키를 **읽고** 거절한 것이다(모르는 키는
         # 조용히 버려져 200 이 온다). 이름을 지목하지 않아도 그렇다
@@ -1456,6 +1456,7 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
         base_n = len(raw)
     out.append(f"   기준선: pageSize={_THEME_PAGE_SIZES[0]} → "
                + (f"{base_n}행" if base_n is not None else f"실패({why})"))
+    rows: list = []
     for key in (keys or _PARAM_CANDIDATES):
         params = {"pageSize": _THEME_PAGE_SIZES[0], key: _PARAM_JUNK}
         raw, why = _get2_json(url, params=params)
@@ -1463,6 +1464,20 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
         n_rows = len(raw) if isinstance(raw, list) else None
         verdict = classify_param_probe(status, why, key, n_rows, base_n,
                                        base_status)
+        rows.append([key, status, why, n_rows, verdict])
+    # ⚠️ **여러 후보가 같은 상태로 거절되면 그건 키가 아니라 환경이다** —
+    # 프로브 도중 한도·차단이 걸리면 '이 키에만' 이라는 문구가 거짓이 된다
+    # (독립 리뷰 실측: 429 하나로 12개 중 9개가 '있음' 으로 찍혔다). 차이
+    # 판정은 **혼자일 때만** 차이다(#45 모집단 · #165 단정 금지).
+    shared: dict = {}
+    for _k, st, _w, _n, v in rows:
+        if v.startswith("있음 — 이 키에만"):
+            shared[st] = shared.get(st, 0) + 1
+    for r in rows:
+        if r[4].startswith("있음 — 이 키에만") and shared.get(r[1], 0) > 1:
+            r[4] = (f"판정 불가(HTTP {r[1]} 가 후보 {shared[r[1]]}개에 동시에 "
+                    "— 키가 아니라 환경 변화 의심)")
+    for key, status, why, n_rows, verdict in rows:
         if not verdict.startswith("판정 불가"):
             measured += 1
         extra = f" · {n_rows}행(기준선 {base_n})" if (
