@@ -946,7 +946,17 @@ _THEME_API_RUNGS = (
 # 업종은 79개라 100 으로 충분했지만 테마는 266개라 100 에서 **잘린다**. 그래서
 # 쪽을 더 받는 게 아니라 **한도를 키워 다시 묻는다** — 어느 크기가 맞는지는
 # 추측하지 말고 응답이 답하게 한다(#64 상태는 아는 쪽이 · #136 요구 충족 여부).
-_THEME_PAGE_SIZES = (100, 300, 1000)
+# ⚠️ **순서가 계약이다: 100 → 200 → 1000.**
+#  · 100 이 **먼저**인 이유: `pageSize` 를 받아들이면서도 쪽을 100개씩 끊어
+#    주는 원천이 있으면 200 으로 물었을 때 첫 쪽 100행을 '목록 끝'으로 읽어
+#    통째로 잘린다(회귀가 그 상태를 재현). 절단은 조용하다(#280·#45).
+#  · 200 은 VM 실측(2026-09-12)에서 **원천이 스스로 말한 상한**이다
+#    (`too_big` → `less than or equal to 200`, 200 으로 물으니 200행).
+#  · 1000 은 상한이 올라갔는지 **묻는 한 번**이다(거절되면 그 사유에서 상한을
+#    다시 읽는다, `size_cap_from`). 지금 원천에선 이 한 번이 항상 400 이다.
+# 순서를 바꾸거나 100 을 빼면 위 절단이 되살아난다 — `_THEME_PAGE_SIZE`(=100,
+# `source_health` 헬스체크 URL)도 이 첫 단에서 파생된다.
+_THEME_PAGE_SIZES = (100, 200, 1000)
 _THEME_PAGE_SIZE = _THEME_PAGE_SIZES[0]   # 형제·회귀가 참조하는 기본값
 _THEME_MAX_PAGES = 5             # `page` 가 듣는 원천을 위한 이어받기 상한
 _THEME_CAP_TRIES = 2             # 원천이 말한 상한으로 다시 묻는 횟수 상한(#71)
@@ -1059,6 +1069,7 @@ def _theme_json_rung(url: str) -> tuple:
     tried: set = set()
     ok_size = 0                      # 실제로 값을 받아 온 가장 큰 한도
     cap_tries = 0                    # 원천이 말한 상한으로 다시 물은 횟수
+    known_cap = 0                    # 원천이 밝힌 pageSize 상한(0=모름)
     while queue:
         size = queue.pop(0)
         if size in tried:
@@ -1077,10 +1088,25 @@ def _theme_json_rung(url: str) -> tuple:
             # 않는다. 상한 없는 반복은 이 레포에서 프로세스를 멈춰 세운 적이
             # 있다(#71) — 자기 리뷰가 잡았다.
             cap = _nd.size_cap_from(why)
-            if (cap and cap not in tried and cap > ok_size
+            if cap:
+                known_cap = cap
+            # ⚠️ 상한을 **안 말하는** 원천도 있다 — 그때 첫 단(200)이 거절되면
+            # 빈손으로 끝난다(사다리 첫 단을 올린 대가다). 절반으로 물러나
+            # 한 번 더 묻는다: 추측이 아니라 "너무 크게 물었으니 작게" 라는
+            # 재시도이고, 횟수는 같은 상한이 묶는다(#171 가드가 '못 만든다'로
+            # 끝나면 그 자리가 영원히 빈다 · #71 상한 없는 반복 금지).
+            # ⚠️ 절반 물러나기는 **크기 때문에 거절당했을 때만** 한다 —
+            # 사유를 안 보면 타임아웃·404·429·일시정지에도 발화해 한 단이
+            # 3회 요청이 된다(독립 리뷰 실측: 전 호출 타임아웃 시 15초×3,
+            # 429 는 한도 초과 원천을 즉시 두 번 더 두드린다). 크기 거절은
+            # 원천이 4xx 로 '요청이 잘못됐다'고 말한 경우다.
+            _st = _nd.status_from(why)
+            _size_problem = _st in (400, 413, 414, 422)
+            nxt = cap if cap else (size // 2 if _size_problem else 0)
+            if (nxt and nxt not in tried and nxt > ok_size
                     and cap_tries < _THEME_CAP_TRIES):
                 cap_tries += 1
-                queue.insert(0, cap)
+                queue.insert(0, nxt)
                 continue
             # ⚠️ 옛 판은 여기서 **무조건** `None` 을 돌려줬다("크기를 바꿔도
             # 같다"). 그 전제는 한도 거절에 성립하지 않는다 — `pageSize=100` 이
@@ -1115,10 +1141,19 @@ def _theme_json_rung(url: str) -> tuple:
                     tail = f"한도 {size} 요청도 실패({why})"
                 return last[0], f"{prior} · {tail}", True
             return None, why, False
-        last = (got, why, partial)
+        # ⚠️ **더 많이 받았을 때만** 갈아끼운다. 뒷단이 더 짧게 주면(원천이
+        # pageSize 를 받으면서도 쪽을 100개씩 끊는 모양) 앞단의 `partial`
+        # 증거가 덮여 **100/130 이 '전체'로 캐시되고 ✅ 배지**가 붙는다
+        # (독립 리뷰 실측 — 100 을 첫 단으로 둔 보호가 200 단에서 무효화됐다).
+        if len(got) > len(last[0] or []):
+            last = (got, why, partial)
         ok_size = max(ok_size, size)
         if not saturated:
             return last
+        if known_cap and size >= known_cap:
+            # 원천이 밝힌 상한까지 받았다 — 더 큰 크기는 정의상 거절이므로
+            # 묻지 않는다(실측: 1000 요청이 매번 순손실이었다, #61).
+            break
     got, why, partial = last
     return got, (why or f"한도 {_THEME_PAGE_SIZES[-1]}에서도 가득 찼습니다 "
                         "— 더 있을 수 있습니다"), True
@@ -1356,6 +1391,80 @@ def _maybe_discover_theme() -> None:
         with _BG_LOCK:
             _BG_KEYS.discard(_THEME_MEMO)
         log.warning("naver_sector: 탐색 스레드 시작 실패: %s", exc)
+
+
+# 원천 스키마에 **어떤 파라미터가 있는지 묻기 위한** 후보. 이름은 가설이므로
+# 여기 있는 것만으로는 아무것도 배선하지 않는다 — 프로브가 **재고**, 실제로
+# 동작이 확인된 것만 사람이 코드에 넣는다(#151 죽은 이름 배포 금지 · #345
+# 탐색은 '찾음'을 '동작함'으로 렌더하지 말 것 · #165).
+_PARAM_CANDIDATES = ("page", "pageNo", "offset", "start", "cursor",
+                     "sort", "sortType", "order", "orderBy", "direction",
+                     "category", "type")
+_PARAM_JUNK = "__probe__"
+
+
+def classify_param_probe(status, brief: str, key: str,
+                        n_rows=None, base_n=None) -> str:
+    """(상태코드, 오류 요약, 키, 행 수, 기준선) → 그 키가 스키마에 있나(순수).
+
+    zod 는 **모르는 키를 조용히 버리고**(200) 아는 키에 잘못된 값이 오면
+    그 키를 이름으로 지목해 400 을 준다. 그래서 일부러 틀린 값을 넣어 보면
+    원천이 스스로 스키마를 말해 준다 — 추측이 아니라 측정이다(#64·#86).
+
+    ⚠️ 키 매칭은 **토큰 경계**로 한다 — 부분문자열로 보면 `pageSize` 오류
+    하나가 후보 `page` 를 '있음'으로 만든다(우리가 매 요청에 `pageSize` 를
+    싣기 때문에 늘 오염된다). `sort` ↔ `sortType` 도 같다(독립 리뷰 실측).
+    ⚠️ 200 이어도 **행 수가 기준선과 다르면** 그 키는 듣고 있는 것이다 —
+    원천이 받아들이는 필터 키가 정확히 이 갈래에 숨는다.
+    ⚠️ 일시정지는 '도달 실패' 가 아니다 — 처방이 정반대다(#82·#279).
+    """
+    r = str(brief or "")
+    if _nd.PAUSED in r:
+        return "판정 불가(일시정지 — /naverpause 해제 후 다시)"
+    if status is None:
+        return "판정 불가(도달 실패)"
+    if status == 200:
+        if n_rows is not None and base_n is not None and n_rows != base_n:
+            return f"있음 — 결과가 달라짐({n_rows}행 vs 기준선 {base_n}행)"
+        return "없음(무시됨)"
+    if re.search(rf"\b{re.escape(key)}\b", r, re.I):
+        return "있음 — 원천이 값을 지적함"
+    return f"판정 불가(HTTP {status}, 이 키를 지목하지 않음)"
+
+
+def probe_params(url: str = "", keys: tuple = ()) -> list:
+    """후보 파라미터가 원천 스키마에 있는지 **재기만** 한다 → 표시용 줄 목록.
+
+    ⚠️ **읽기 전용**이다 — 캐시·냉각·메모를 건드리지 않는다(#264·#283·#321).
+    ⚠️ 값을 쓰지 않는다: 어떤 키가 '있음'으로 나와도 그것만으로 배선하지
+    않는다. 무엇을 하면 목록이 실제로 늘어나는지는 그다음 측정이 답한다.
+    """
+    url = url or _THEME_API_RUNGS[0][1]
+    out = [f"후보 {len(keys or _PARAM_CANDIDATES)}종 · {url}"]
+    base_n = None
+    measured = 0
+    raw, why = _get2_json(url, params={"pageSize": _THEME_PAGE_SIZES[0]})
+    if isinstance(raw, list):
+        base_n = len(raw)
+    out.append(f"   기준선: pageSize={_THEME_PAGE_SIZES[0]} → "
+               + (f"{base_n}행" if base_n is not None else f"실패({why})"))
+    for key in (keys or _PARAM_CANDIDATES):
+        params = {"pageSize": _THEME_PAGE_SIZES[0], key: _PARAM_JUNK}
+        raw, why = _get2_json(url, params=params)
+        status = 200 if raw is not None else _nd.status_from(why)
+        n_rows = len(raw) if isinstance(raw, list) else None
+        verdict = classify_param_probe(status, why, key, n_rows, base_n)
+        if not verdict.startswith("판정 불가"):
+            measured += 1
+        extra = f" · {n_rows}행(기준선 {base_n})" if (
+            n_rows is not None and base_n is not None) else ""
+        out.append(f"   {key:<10} {verdict}{extra}"
+                   + (f" — {why}" if why and status != 200 else ""))
+    if not measured:
+        # 한 건도 못 쟀다 — 성공으로 집계하면 "후보에 아무것도 없다"로
+        # 읽힌다(#54 대조 0건은 통과가 아니다).
+        out.append("   ❌ 한 건도 재지 못했습니다 — 위 사유를 볼 것")
+    return out
 
 
 def collect_themes_json() -> tuple:
@@ -1928,6 +2037,11 @@ def main(argv: list | None = None) -> int:
 
     args = list(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(level=logging.INFO)
+    if "--probe-params" in args:
+        # 읽기 전용 측정 — 캐시·냉각을 건드리지 않는다(#264).
+        for ln in probe_params():
+            print(ln)
+        return 0
     if "--check" in args:
         return check(fetch="--fetch" in args)
     mv = fetch_sector_movers()
