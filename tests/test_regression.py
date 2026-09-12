@@ -62330,3 +62330,154 @@ class TestSecondErrorEnvelopeShape20260912:
         s = nd.error_brief('{"detailCode":"HttpError",'
                            '"message":"Bad Request","result":"Bad Request"}')
         assert s.count("Bad Request") == 1, s
+
+
+class TestSortCoverageProbe20260912:
+    """천장(pageSize 상한 200)을 정렬로 넘을 수 있나 — **재는** 도구.
+
+    VM 실측(2026-09-12 `--probe-params`)에서 원천이 `sortType` 의 허용값
+    14종을 스스로 적어 보냈다. 그렇다고 "정렬을 섞으면 266개가 다 온다"는
+    것은 **추측**이다 — 정렬이 순서만 바꾸고 같은 200개를 주면 합집합은
+    안 자란다. 배선 전에 그걸 재고(#12·#79·#351 측정이 먼저), 값은 지어내지
+    않고 원천이 선언한 것만 쓴다(#151·#345).
+    """
+
+    # ⚠️ VM 실측 출력을 그대로 옮긴 것 — 내가 지어낸 모양으로 픽스처를 만들면
+    # 파서가 틀려도 green 이다(#155·#156).
+    VM = ("detail: 유효하지 않은 sortType: [__probe__]. 허용값: [changeRate, "
+          "fallCnt, leadingItem, name, no, recent3daysChangeRate, riseCnt, "
+          "steadyCnt, thistime, totalAccAmount, totalAccQuant, totalCnt, "
+          "totalMarketSum, type] · title: Bad Request · status: 400 · "
+          "Bad Request (HttpError)")
+
+    def test_allowed_values_reads_the_real_rejection(self):
+        import bot.naver_sector_client as nsc
+
+        vals = nsc.allowed_values(self.VM)
+        assert len(vals) == 14, vals
+        assert vals[0] == "changeRate" and vals[-1] == "type", vals
+        # 우리가 보낸 미끼는 값이 아니다.
+        assert nsc._PARAM_JUNK not in vals, vals
+
+    def test_echo_list_is_excluded_even_when_it_looks_like_a_list(self):
+        """미끼를 담은 괄호는 **되읊음**이지 스키마가 아니다.
+
+        ⚠️ 기본 미끼(`__probe__`)는 한 토큰이라 실측에서는 '항목 2개 미만'
+        가드가 먼저 거른다 — 즉 이 필터만으로는 발화 경로가 없다. 원천이
+        받은 값을 **여럿** 되읊는 모양에서만 갈리므로 그 상태를 만들어
+        실제로 태운다(#91 가드가 발화할 수 없으면 없는 것이다).
+        """
+        import bot.naver_sector_client as nsc
+
+        brief = ("유효하지 않은 sortType: [__probe__, __probe__2]. "
+                 "허용값: [name, no]")
+        assert nsc.allowed_values(brief) == ("name", "no")
+
+    def test_sentences_are_not_mistaken_for_a_value_list(self):
+        import bot.naver_sector_client as nsc
+
+        assert nsc.allowed_values("[Bad Request, 요청이 올바르지 않습니다]") == ()
+        assert nsc.allowed_values("[onlyone]") == ()
+        assert nsc.allowed_values("") == ()
+
+    def test_theme_ids_follow_the_screen_dedupe_key(self):
+        import bot.naver_sector_client as nsc
+
+        rows = [{"no": "1", "name": "A"}, {"no": "1", "name": "A2"},
+                {"name": "B"}, {"themeCode": "9", "name": "C"}, "junk"]
+        assert nsc.theme_ids(rows) == {"1", "B", "9"}
+        assert nsc.theme_ids(None) == set()
+
+    @staticmethod
+    def _rows(ids):
+        return [{"no": str(i), "name": f"T{i}", "changeRate": "1.0"} for i in ids]
+
+    def _run(self, monkeypatch, tmp_path, by_sort, base_ids, cap_first=False):
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        calls: list = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            calls.append(p)
+            if cap_first and p.get("pageSize", 0) > 200:
+                return None, nsc._nd.http_reason(
+                    400, 9,
+                    body=('{"detailCode":"too_big","message":"{\\"fieldErrors\\":'
+                          '{\\"pageSize\\":[\\"Number must be less than or equal '
+                          'to 200\\"]}}"}').encode())
+            st = p.get("sortType")
+            if st is None:
+                return self._rows(base_ids), ""
+            if st == nsc._PARAM_JUNK:
+                return None, nsc._nd.http_reason(400, 9) + " · " + self.VM
+            return self._rows(by_sort.get(st, base_ids)), ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        body = "\n".join(nsc.probe_sorts())
+        # 읽기 전용 — 캐시 파일을 만들지 않는다(#264·#321).
+        assert list(tmp_path.iterdir()) == [], list(tmp_path.iterdir())
+        return body, calls
+
+    def test_union_growth_is_reported_when_sorts_differ(
+            self, monkeypatch, tmp_path):
+        base = list(range(200))
+        by = {"changeRate": list(range(50, 250)),
+              "fallCnt": list(range(66, 266))}
+        body, _ = self._run(monkeypatch, tmp_path, by, base)
+        assert "합집합 266종" in body, body
+        assert "천장 너머가 보입니다" in body, body
+        # 새로 들어온 수를 정렬마다 말한다 — 총계만 적으면 어느 정렬이
+        # 값어치가 있는지 모른다(#82·#45).
+        assert "새 식별자 50종" in body, body
+
+    def test_order_only_sorts_are_called_out(self, monkeypatch, tmp_path):
+        """같은 200개를 다른 순서로 주면 **천장을 못 넘는다**고 말해야 한다."""
+        base = list(range(200))
+        body, _ = self._run(monkeypatch, tmp_path, {}, base)
+        assert "순서만" in body and "천장을 못 넘습니다" in body, body
+        assert "+0" in body, body
+
+    def test_declared_cap_is_used_when_the_first_size_is_rejected(
+            self, monkeypatch, tmp_path):
+        body, calls = self._run(monkeypatch, tmp_path, {}, list(range(200)),
+                                cap_first=True)
+        assert "원천이 말한 상한 200" in body, body
+        assert all(c.get("pageSize", 0) <= 200 for c in calls[1:]), calls
+        assert "기준선" in body and "200행" in body, body
+
+    def test_nothing_measured_is_a_failure_not_a_pass(
+            self, monkeypatch, tmp_path):
+        """허용값을 못 읽으면 ✅ 가 아니라 ❌ 다(#54)."""
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if p.get("sortType"):
+                return None, "HTTP 500"
+            return self._rows(range(10)), ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        body = "\n".join(nsc.probe_sorts())
+        assert "❌" in body and "허용값을 못 읽었습니다" in body, body
+
+    def test_baseline_failure_is_named(self, monkeypatch, tmp_path):
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda *a, **k: (None, "HTTP 503"))
+        body = "\n".join(nsc.probe_sorts())
+        assert "❌" in body and "503" in body, body
+
+    def test_cli_flag_actually_dispatches(self, monkeypatch, capsys):
+        """광고한 플래그가 **실제로** 디스패치된다 — 게이트만 꺼도 정의는
+        남으므로 `main` 을 태워야 잡힌다(#252·#141)."""
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "probe_sorts", lambda *a, **k: ["SENTINEL-77"])
+        assert nsc.main(["--probe-sorts"]) == 0
+        assert "SENTINEL-77" in capsys.readouterr().out
