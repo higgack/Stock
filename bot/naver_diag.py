@@ -282,6 +282,16 @@ def get_json(url: str, *, headers: dict, log, tag: str,
 _HTTP_CODE_RE = re.compile(r"원천이 HTTP (\d{3})")
 
 
+def status_from(reason: str) -> int | None:
+    """사유 문구 → HTTP 상태코드(순수). 못 읽으면 None.
+
+    생산부(`http_reason`)가 만든 문자열에서 되읽는다 — 같은 파일에 두어
+    한쪽만 바뀌면 회귀가 잡는다(#19·#38).
+    """
+    m = _HTTP_CODE_RE.search(str(reason or ""))
+    return int(m.group(1)) if m else None
+
+
 def reason_rank(reason: str) -> int:
     """사유 → **얼마나 행동 가능한가**(작을수록 먼저 보고). 순수.
 

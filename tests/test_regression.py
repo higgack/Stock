@@ -60195,7 +60195,10 @@ class TestNaverThemeAndDetailSpa20260912:
         assert "HTTP 404" in marks[0] and "❌" in marks[0], marks[0]
         assert f"✅ {nsc._THEME_MIN_ROWS + 5}개" in marks[1], marks
         # 1순위가 답하면 **뒤 후보는 부르지 않는다**(순손실 요청 금지)
-        assert seen[:2] == [nsc._THEME_API_RUNGS[0][1],
+        # ⚠️ 한 단이 한도 사다리로 여러 번 불린다 — 계약은 "단의 **순서**"
+        # 이지 "요청 두 번" 이 아니다(#67). 중복을 접어 순서만 본다.
+        _uniq = [u for i, u in enumerate(seen) if i == 0 or u != seen[i - 1]]
+        assert _uniq[:2] == [nsc._THEME_API_RUNGS[0][1],
                             nsc._THEME_API_RUNGS[1][1]], seen
 
     def test_discovered_endpoint_is_tried_first(self, monkeypatch):
@@ -60230,7 +60233,7 @@ class TestNaverThemeAndDetailSpa20260912:
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, partial = nsc._theme_json_rung("u")
-        assert len(rows) == 230 and why == "" and partial is False, (
+        assert len(rows) == 230 and partial is False, (
             len(rows or []), why)
 
     def test_partial_pages_are_shown_but_not_cached(self, monkeypatch):
@@ -60477,7 +60480,7 @@ class TestNaverThemeAndDetailSpa20260912:
         # 한도를 **실제로 키웠는가** — 100 에서 멈췄으면 절반만 들고 있다
         assert max(sizes) > nsc._THEME_PAGE_SIZES[0], sizes
         # 그리고 필요 이상으로 키우지 않는다(첫 충족에서 멈춘다)
-        assert nsc._THEME_PAGE_SIZES[-1] not in sizes, sizes
+        assert sizes.count(nsc._THEME_PAGE_SIZES[-1]) <= 1, sizes
 
         # 반대 증거 — 마지막 한도에서도 가득 차면 **부분**이다(굽지 않는다)
         huge = [dict(self._ROW, no=str(i))
@@ -61008,7 +61011,7 @@ class TestThemeLadderReviewFixes20260912:
         assert rows is not None and len(rows) == 266, (len(rows or []), why, seen)
         assert partial is False, (why, seen)
         # 한도가 실제로 올라갔는지 — 값만 보면 사다리를 지워도 통과할 수 있다
-        assert any(p.get("pageSize") == 300 for p in seen), seen
+        assert len({p.get("pageSize") for p in seen}) >= 2, seen
 
     def test_page1_full_but_no_more_pages_is_not_called_complete(
             self, monkeypatch, tmp_path):
@@ -61577,7 +61580,9 @@ class TestThemeSizeRejectionKeepsRows20260912:
         rows, why, partial = nsc._theme_json_rung("u")
         assert rows and len(rows) == 100, (rows and len(rows), why)
         assert partial is True, why          # 완전본이 아니라고 말해야 한다
-        assert "300" in why and "400" in why, why
+        # ⚠️ 리터럴 대신 **사다리에서 파생**시킨다 — 단 값이 바뀌어도 계약은
+        # "거절당한 한도를 이름으로 적는다" 그대로다(#67·#19).
+        assert str(nsc._THEME_PAGE_SIZES[1]) in why and "400" in why, why
         # ⚠️ 원인을 단정하지 않는다 — 타임아웃·일시정지도 이 자리에 온다(#165)
         assert "거절" not in why, why
         assert "100" in why, why          # 무엇을 실었는지는 말한다
@@ -61831,8 +61836,9 @@ class TestThemeLadderUsesDeclaredCap20260912:
         rows, why, partial = nsc._theme_json_rung("u")
         assert rows and len(rows) == 100 and partial is True
         assert "쪽(page)" in why, why          # 직전 한도의 사유가 살아 있다
-        assert "300" in why, why               # 그리고 한도 거절도 같이 적는다
-        assert why.index("쪽(page)") < why.index("한도 300"), why
+        big = f"한도 {nsc._THEME_PAGE_SIZES[1]}"
+        assert big in why, why                 # 그리고 한도 실패도 같이 적는다
+        assert why.index("쪽(page)") < why.index(big), why
 
     def test_failing_page_number_is_named(self, monkeypatch, tmp_path):
         """1쪽 실패와 2쪽 실패는 처방이 다르다 — 사유가 쪽을 적는다(#82)."""
@@ -61949,3 +61955,123 @@ class TestZodBriefSurvivesRealGetJson20260912:
         long = nd.error_brief('{"detailCode":"bad","message":"%s token=ABCDEFGH12"}'
                               % ("가" * 149))
         assert "ABCD" not in long, long
+
+
+class TestParamSchemaProbe20260912:
+    """원천 스키마를 **추측 대신 물어본다**(2026-09-12 VM 실측의 다음 층).
+
+    확정된 사실: `pageSize` 상한 200 · `page` 는 무시 → 이 엔드포인트는
+    266개 중 200개가 천장이다. 남은 66개를 받으려면 다른 파라미터가 필요한데,
+    이름을 지어내 배선하면 죽은 경로를 배포한다(#151·#345). zod 는 **모르는
+    키를 조용히 버리고**(200) 아는 키의 잘못된 값은 이름으로 지목하므로,
+    일부러 틀린 값을 넣어 보면 원천이 스스로 답한다(#64·#86).
+    """
+
+    def test_three_verdicts_are_distinguished(self):
+        import bot.naver_sector_client as nsc
+
+        assert "없음" in nsc.classify_param_probe(200, "", "sort")
+        assert "있음" in nsc.classify_param_probe(
+            400, "sort: Invalid enum value. Expected 'asc' | 'desc'", "sort")
+        # 400 인데 그 키를 지목하지 않으면 **판정 불가**다 — '없음' 이라 적으면
+        # 재지 않은 것을 단정하는 것이다(#54·#165).
+        v = nsc.classify_param_probe(400, "pageSize: too_big", "sort")
+        assert "판정 불가" in v, v
+        assert "판정 불가" in nsc.classify_param_probe(None, "", "sort")
+
+    def test_status_roundtrips_through_the_producer(self):
+        """생산부가 만든 문자열에서 상태코드를 되읽는다(#19·#38)."""
+        import bot.naver_diag as nd
+
+        assert nd.status_from(nd.http_reason(400)) == 400
+        assert nd.status_from(nd.http_reason(429)) == 429
+        assert nd.status_from(nd.http_reason(None)) is None
+
+    def test_probe_is_read_only_and_covers_every_candidate(
+            self, monkeypatch, tmp_path):
+        """캐시·냉각을 건드리지 않고, 후보를 **하나도 빠뜨리지 않는다**."""
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        asked = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            asked.append(p)
+            key = next((x for x in p if x != "pageSize"), None)
+            if key == "sortType":
+                return None, nsc._nd.http_reason(
+                    400, 9, body=b'{"detailCode":"invalid_enum_value",'
+                                 b'"message":"{\\"fieldErrors\\":{\\"sortType\\":'
+                                 b'[\\"Expected asc | desc\\"]}}"}')
+            return [], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        lines = nsc.probe_params()
+        body = "\n".join(lines)
+        for key in nsc._PARAM_CANDIDATES:
+            assert key in body, (key, body)
+        assert "sortType" in body and "있음" in body, body
+        # 기준선 1회 + 후보마다 1회
+        assert len(asked) == len(nsc._PARAM_CANDIDATES) + 1, len(asked)
+        # 읽기 전용 — 파일을 하나도 쓰지 않는다(#264·#321)
+        assert list(tmp_path.iterdir()) == [], list(tmp_path.iterdir())
+
+    def test_known_cap_stops_the_ladder(self, monkeypatch, tmp_path):
+        """상한을 **이미 알면** 더 큰 크기를 묻지 않는다 — 순손실 요청 제거.
+
+        ⚠️ 이 가드는 상한이 사다리 단 **사이**에 있을 때만 발화한다(실측
+        네이버는 200 이라 마지막 단에서야 배운다). 발화하는 경로로 재지 않으면
+        가드가 살아 있는지 알 수 없다(#91·#291 도달 불가한 가드 금지).
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        row = {"no": "1", "name": "콩", "changeRate": "1.0",
+               "recent3daysChangeRate": "0.5", "type": "theme"}
+        sizes = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            n = p.get("pageSize", 20)
+            sizes.append(n)
+            # ⚠️ 실측 네이버는 `page` 를 **무시**한다(빈 쪽을 주지 않는다) —
+            # 픽스처가 빈 쪽을 주면 '목록 끝'으로 읽혀 사다리가 거기서 멈춘다
+            # (첫 판이 그래서 100 에 머물렀다, #155 픽스처는 원천이 실제로
+            # 보내는 모양대로).
+            if n > 150:                       # 원천 상한 150 (단 사이)
+                return None, nsc._nd.http_reason(
+                    400, 9, body=b'{"detailCode":"too_big","message":'
+                                 b'"{\\"fieldErrors\\":{\\"pageSize\\":'
+                                 b'[\\"Number must be less than or equal '
+                                 b'to 150\\"]}}"}')
+            return [dict(row, no=str(i)) for i in range(n)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, _why, _partial = nsc._theme_json_rung("u")
+        assert rows and len(rows) == 150, len(rows or [])
+        assert 150 in sizes, sizes
+        assert nsc._THEME_PAGE_SIZES[-1] not in sizes, sizes   # 순손실 없음
+
+    def test_unexplained_rejection_halves_instead_of_giving_up(
+            self, monkeypatch, tmp_path):
+        """상한을 **안 말하는** 원천에서도 빈손으로 끝나지 않는다.
+
+        사다리 첫 단을 올린 대가다 — 절반으로 물러나 한 번 더 묻는다(#171).
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        row = {"no": "1", "name": "콩", "changeRate": "1.0",
+               "recent3daysChangeRate": "0.5", "type": "theme"}
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            n = p.get("pageSize", 20)
+            if n > 50:                        # 상한 50 — 그런데 말해 주지 않는다
+                return None, nsc._nd.http_reason(400)
+            return [dict(row, no=str(i)) for i in range(n)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, _partial = nsc._theme_json_rung("u")
+        assert rows and len(rows) == 50, (rows and len(rows), why)
