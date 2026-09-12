@@ -965,8 +965,8 @@ _CSS = """
 :root{
   --bg:#f5f5f7;--surface:#fff;--surface-2:#fafafd;--text:#1d1d1f;
   --text-sub:#6e6e73;--border:#d2d2d7;--border-soft:#e5e5e7;
-  --chip-bg:#f0f0f0;--accent:#0071e3;
-  --tone-export:#34c759;--tone-import:#ff9500;
+  --chip-bg:#f0f0f0;--accent:#006cda; --accent-on:#fff;
+  --tone-export:#217f39;--tone-import:#a25f00;
   --b-export-bg:#d1f4d8;--b-export-fg:#1f7a32;
   --b-import-bg:#fff0d1;--b-import-fg:#8a5a00;
   --b-prelim-bg:#eee;--b-prelim-fg:#6e6e73;
@@ -978,7 +978,7 @@ _CSS = """
 body.dark{
   --bg:#1a1a1c;--surface:#2c2c2e;--surface-2:#252527;--text:#f5f5f7;
   --text-sub:#b8b8bd;--border:#3a3a3c;--border-soft:#3a3a3c;
-  --chip-bg:#3a3a3c;--accent:#0a84ff;
+  --chip-bg:#3a3a3c;--accent:#3097ff; --accent-on:#0b1220;
   --tone-export:#30d158;--tone-import:#ff9f0a;
   --b-export-bg:#0f3a1a;--b-export-fg:#5fd778;
   --b-import-bg:#3a2807;--b-import-fg:#ffb84d;
@@ -1140,7 +1140,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-archive a:hover{text-decoration:underline}
 .ind-share{display:inline-flex;align-items:center;flex-wrap:wrap;margin-left:16px}
 .ind-share-link{display:inline-block;padding:7px 14px;border:1px solid var(--accent);border-radius:8px;font-size:13px;font-weight:600;color:var(--accent);text-decoration:none;word-break:keep-all}
-.ind-share-link:active{background:var(--accent);color:#fff}
+.ind-share-link:active{background:var(--accent);color:var(--accent-on)}
 .ind-legend{display:flex;gap:12px;font-size:12px;color:var(--text-sub)}
 .ind-legend i{display:inline-block;width:14px;height:0;vertical-align:middle;margin-right:4px}
 .ind-legend .ind-lg-v{border-top:3px solid var(--accent)}
@@ -1248,7 +1248,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-signal b{color:var(--text)}
 .ind-toggle{display:inline-flex;gap:0;margin-bottom:6px;border:1px solid var(--border);border-radius:7px;overflow:hidden}
 .ind-tg-btn{padding:4px 12px;background:var(--surface);border:none;font-size:11px;font-weight:600;color:var(--text-sub);cursor:pointer}
-.ind-tg-btn.is-active{background:var(--accent);color:#fff}
+.ind-tg-btn.is-active{background:var(--accent);color:var(--accent-on)}
 .ind-chart-title{font-size:11px;color:var(--text-sub);margin-bottom:2px}
 .ind-na{font-size:12px;color:var(--text-sub);padding:24px 8px;text-align:center}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
@@ -1262,7 +1262,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 #rb-q{flex:1;min-width:180px;padding:8px 10px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;font-size:14px}
 .rb-btn{padding:8px 12px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
 .rb-btn:hover{border-color:var(--accent)}
-.rb-btn.rb-llm{background:var(--accent);color:#fff;border-color:var(--accent)}
+.rb-btn.rb-llm{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}
 .rb-result{margin-top:10px;background:var(--card);border:1px solid var(--border-soft);border-radius:10px;padding:14px 16px}
 .rb-result:empty{display:none}
 .rb-note{color:var(--muted);font-size:13px;padding:6px 0}
@@ -1273,13 +1273,13 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .chips{display:flex;gap:14px;flex-wrap:wrap}
 .chip-group{display:flex;gap:3px;flex-wrap:wrap}
 .chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
-.chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.chip.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}
 .count{margin-top:7px;font-size:11px;color:var(--text-sub)}
 /* 산업별·국가별·지역별 탭 축 선택 바 (사용자 2026-06-22) — 검색 대신 칩 클릭 리뷰 */
 .country-bar,.region-bar,.industry-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 .country-chip,.region-chip,.industry-chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
 .country-chip:hover,.region-chip:hover,.industry-chip:hover{border-color:var(--accent)}
-.country-chip.active,.region-chip.active,.industry-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.country-chip.active,.region-chip.active,.industry-chip.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}
 .country-chip em,.region-chip em,.industry-chip em{font-style:normal;opacity:.6;margin-left:3px;font-size:11px}
 .country-chip.active em,.region-chip.active em,.industry-chip.active em{opacity:.85}
 /* 매트릭스 행/열 축 선택 바 (사용자 2026-06-22) — 품목·회사·산업·국가·지역 2축 조합 */
@@ -1288,7 +1288,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .mx-axis-lab{font-size:12px;color:var(--text-sub);margin-right:2px}
 .mx-axis-chip{padding:4px 10px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:13px;font-size:12px;cursor:pointer}
 .mx-axis-chip:hover{border-color:var(--accent)}
-.mx-axis-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.mx-axis-chip.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}
 .view{display:none;padding:12px}
 .view.active{display:block}
 .section{background:var(--surface);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
@@ -1375,9 +1375,9 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .modal-links,.modal-peers{margin-top:10px;font-size:12px}
 .modal-links .label,.modal-peers .label{color:var(--text-sub);margin-right:6px;font-size:11px}
 .link-chip{padding:3px 9px;margin:2px 3px 0 0;background:var(--chip-bg);color:var(--text);border:1px solid var(--border-soft);border-radius:4px;font-size:11px;cursor:pointer;font-weight:500}
-.link-chip:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.link-chip:hover{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}
 .peer-chip{display:inline-block;padding:2px 7px;margin:2px 3px 0 0;background:var(--chip-bg);color:var(--text);border-radius:4px;font-size:11px;cursor:pointer}
-.peer-chip:hover{background:var(--accent);color:#fff}
+.peer-chip:hover{background:var(--accent);color:var(--accent-on)}
 .modal-card{display:block}
 .modal-card.secondary{border-top:1px solid var(--border-soft);cursor:pointer;transition:background .15s}
 .modal-card.secondary:hover{background:var(--surface-2)}

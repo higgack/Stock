@@ -121,6 +121,21 @@
 | 부제에서 뺀 사다리 경위는 **로그로 남긴다** · 죽은 가드 둘은 실제로 태운다(#43·#291) | ✅ 자동 | `…::test_complete_path_logs_the_ladder_story` · `…::test_dead_guards_actually_guard` |
 | 저장분이 있으면 **전경에서 수집을 기다리지 않는다**(SWR = KR 한 세션, #116·#163) | ✅ 자동 | `…::test_a_stale_snapshot_is_served_without_making_the_user_wait` |
 | 정렬 기여 상세는 부제가 아니라 **로그**에(사용자 2026-09-12 · #43·#222) | ✅ 자동 | `…::test_sort_contribution_goes_to_the_log_not_the_subtitle` |
+| 팔레트 전 토큰이 페이지 표면 대비 **WCAG AA 4.5:1** 이상(#355·#96) | ✅ 자동 | `TestPaletteContrastAndDesignDrift20260912::test_every_palette_meets_wcag_aa` |
+| 대비 가드가 **실제로 발화**한다 + 반대 증거(#47·#25) | ✅ 자동 | `…::test_contrast_guard_fires_on_a_low_contrast_palette` |
+| 텍스트 토큰은 **이름 열거가 아니라 용법**에서 파생(#24) | ✅ 자동 | `…::test_text_tokens_come_from_usage_not_a_hand_list` |
+| 칩 전경(짝 배경 보유)은 페이지 표면과 대조하지 않는다 — 오탐 금지(#50) | ✅ 자동 | `…::test_chip_foregrounds_are_not_paired_with_page_surfaces` |
+| `body.dark{}` 처럼 `:root` 밖 팔레트도 스캔(#24) | ✅ 자동 | `…::test_dark_variants_on_non_root_selectors_are_scanned` |
+| `--text` 가 `-text` 접미로 칩 전경 오인되지 않는다(#47) | ✅ 자동 | `…::test_body_text_token_is_not_mistaken_for_a_chip_foreground` |
+| `;` 없는 마지막 선언도 파싱 — 블록째 무검사 금지(#155·#54) | ✅ 자동 | `…::test_last_declaration_without_a_semicolon_is_parsed` |
+| 모든 팔레트 블록에 표면이 하나는 있다(#54) | ✅ 자동 | `…::test_every_palette_block_has_a_surface` |
+| `DESIGN.md` 색상표 = `bot/dashboard.py` 실값(#55 문서↔코드 드리프트) | ✅ 자동 | `…::test_design_md_palette_matches_dashboard_css` |
+| 드리프트 판정이 발화한다 — 본 테스트와 **같은 함수**로(#286) | ✅ 자동 | `…::test_drift_guard_fires_when_the_doc_lies` |
+| 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
+| 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
+| 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |
+| `--accent-on` 을 페이지 배경과 대조하지 않는다 — 오탐 금지(#50) | ✅ 자동 | `…::test_accent_on_is_not_measured_against_the_page_background` |
+| `_SELECTOR_OK` 가 버린 팔레트 블록 0건 — 버려지면 어떤 가드도 못 본다(#54) | ✅ 자동 | `…::test_no_palette_block_is_silently_rejected` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

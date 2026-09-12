@@ -32,14 +32,14 @@ ARCHIVE_CSS = (
    defaults at `:root`, dark overrides at `:root[data-theme="dark"]`. */
 :root {
   --bg:#f8fafc; --card:#ffffff; --border:#e5e7eb;
-  --text:#1f2937; --muted:#6b7280; --accent:#0ea5e9;
-  --pos:#059669; --neg:#dc2626; --neu:#6b7280; --pending:#d97706;
-  --accent-soft:rgba(14,165,233,0.07);
-  --accent-soft2:rgba(14,165,233,0.14);
+  --text:#1f2937; --muted:#6b7280; --accent:#0a79ab; --accent-on:#fff;
+  --pos:#04805a; --neg:#dc2626; --neu:#6b7280; --pending:#aa5d05;
+  --accent-soft:rgba(10,121,171,0.07);
+  --accent-soft2:rgba(10,121,171,0.14);
   --surface-tint:rgba(0,0,0,0.05);
   --surface-tint-strong:rgba(0,0,0,0.07);
   --row-border:rgba(0,0,0,0.05);
-  --tier-l-bg:rgba(14,165,233,0.12); --tier-l-fg:#0369a1;
+  --tier-l-bg:rgba(10,121,171,0.12); --tier-l-fg:#0369a1;
   --tier-m-bg:rgba(16,185,129,0.14); --tier-m-fg:#047857;
   --tier-s-bg:rgba(245,158,11,0.18); --tier-s-fg:#b45309;
   --search-btn-bg:#16a34a; --search-btn-hover:#15803d;
@@ -48,8 +48,8 @@ ARCHIVE_CSS = (
 }
 :root[data-theme="dark"] {
   --bg:#0F1219; --card:#1A1F2B; --border:#2A3142;
-  --text:#E8ECF4; --muted:#94A3B8; --accent:#3B82F6;
-  --pos:#10B981; --neg:#EF4444; --neu:#6B7280; --pending:#F59E0B;
+  --text:#E8ECF4; --muted:#94A3B8; --accent:#4085f6; --accent-on:#0b1220;
+  --pos:#10B981; --neg:#f04d4d; --neu:#6B7280; --pending:#F59E0B;
   --accent-soft:rgba(59,130,246,0.06);
   --accent-soft2:rgba(59,130,246,0.15);
   --surface-tint:rgba(255,255,255,0.04);

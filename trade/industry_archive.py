@@ -270,7 +270,7 @@ def record_snapshot(conn, cards, *, cost_krw=None, now=None) -> str | None:
     summary = _summary_text(by_ind, by_imp, cards)
     link = (
         f'<a href="archive/{fname}" style="display:inline-block;margin-top:8px;'
-        'padding:8px 14px;background:var(--accent);color:#fff;border-radius:8px;'
+        'padding:8px 14px;background:var(--accent);color:var(--accent-on);border-radius:8px;'
         'text-decoration:none;font-weight:600">'
         '🔗 이 시점 산업트렌드 전체 화면 보기 →</a>'
     )

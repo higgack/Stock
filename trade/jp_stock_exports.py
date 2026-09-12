@@ -263,9 +263,9 @@ def ingest(conn: sqlite3.Connection, caption: str, *, source_message_id=None,
 
 _CSS = """
 :root{--bg:#f7f8f9;--card:#ffffff;--border:#e8e8ea;--text:#282a30;
-  --item:#16171a;--muted:#8a8f98;--accent:#5e6ad2;--row:#eef0f2;--chartbd:#e8e8ea}
+  --item:#16171a;--muted:#696e78;--accent:#5a66d1;--row:#eef0f2;--chartbd:#e8e8ea;--up:#d61e24;--down:#0b63f2}
 body.dark{--bg:#0b0c0e;--card:#141518;--border:#26272b;--text:#e2e3e6;
-  --item:#f7f8f8;--muted:#8a8f98;--accent:#9aa2f0;--row:#1f2023;--chartbd:#26272b}
+  --item:#f7f8f8;--muted:#8a8f98;--accent:#9aa2f0;--row:#1f2023;--chartbd:#26272b;--up:#e75458;--down:#3e84f6}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
   font-family:'Inter',-apple-system,'Apple SD Gothic Neo','Pretendard',sans-serif;
@@ -291,7 +291,7 @@ details.kr-card > .kr-sum::after{content:"▸ 펼치기(차트·월별)";color:v
 .kr-metric{display:flex;align-items:baseline;gap:8px;font-size:13px;flex-wrap:wrap}
 .kr-mlabel{color:var(--muted);min-width:88px}
 .kr-mval{font-weight:600;color:var(--text)}
-.up{color:#e5484d}.down{color:#3b82f6}.flat{color:var(--muted)}
+.up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--muted)}
 .kr-lead{font-size:11.5px;color:var(--muted);line-height:1.6}
 .kr-rev{font-size:12px;color:var(--text);margin-top:2px}
 .kr-detail{padding:0 16px 14px;border-top:1px solid var(--border)}
