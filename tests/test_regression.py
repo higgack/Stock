@@ -61639,7 +61639,8 @@ class TestThemeSizeRejectionKeepsRows20260912:
 
         def fake(url, params=None, **k):
             p = dict(params or {})
-            calls.append((url, p.get("pageSize"), p.get("page")))
+            calls.append((url, p.get("pageSize"), p.get("page"),
+                          p.get("sortType")))
             if p.get("pageSize", 20) > 100 or "page" in p:
                 return None, nsc._nd.http_reason(400)
             return full[:100], ""
@@ -61651,7 +61652,13 @@ class TestThemeSizeRejectionKeepsRows20260912:
         out = nsc.collect_themes()
         assert len(out["themes"]) == 100 and out["partial"] is True, out["reason"]
         assert not html, ("옛 HTML 7쪽을 걸었다", html)
-        assert len(calls) <= 4, calls          # 1단 × (100·2쪽·300) 이내
+        # 2026-09-12 계약 갱신(#222): 천장에서 멈추면 **정렬 훑기**가 이어
+        # 붙는다(실측으로 그게 266개를 모은다). 정렬을 무시하는 이 원천에선
+        # 연속 0종 2회에 멈추므로 비용은 1단 3회 + 훑기 2회로 유계다 —
+        # 그 상한이 사라지면(훑기가 5종을 다 걸면) 여기서 잡힌다.
+        assert len(calls) <= 5, calls
+        sorts = [c for c in calls if c[3]]
+        assert len(sorts) == 2, ("연속 0종이면 멈춰야 한다", sorts)
 
     def test_paused_partial_is_still_not_remembered(
             self, monkeypatch, tmp_path):
@@ -62661,3 +62668,223 @@ class TestSortCoverageProbe20260912:
         monkeypatch.setattr(nsc, "probe_sorts", lambda *a, **k: ["SENTINEL-77"])
         assert nsc.main(["--probe-sorts"]) == 0
         assert "SENTINEL-77" in capsys.readouterr().out
+
+
+class TestThemeSortSweep20260912:
+    """정렬을 섞어 **한 요청 천장 너머**를 모은다 — VM 실측이 확정한 배선.
+
+    `--probe-sorts` VM 실측(2026-09-12): `pageSize` 상한 200 · `page` 무시 ·
+    전체 266개. 정렬을 바꾸면 상위 200 의 구성이 달라져 합집합이 자란다 —
+    `changeRate` +0(기준선과 같은 순서) · `fallCnt` +56 · `leadingItem` +9 ·
+    `name` +1 · 나머지 10종 +0 → **266**. 그 전엔 화면이 200개를 '전체 테마'
+    라고 적고(#45 모집단) `partial=True` 라 캐시도 못 해 클릭마다 재수집했다.
+
+    ⚠️ 여기 픽스처는 **그 거동을 그대로** 흉내낸다 — 정렬마다 다른 상위 200을
+    주고 `page` 는 무시한다(#155 픽스처는 원천이 실제로 보내는 모양대로).
+    """
+
+    _ROW = {"no": "1", "name": "T", "changeRate": "1.0",
+            "recent3daysChangeRate": "0.5", "type": "theme"}
+
+    # 원천이 가진 전체(266) — 정렬마다 다른 구간의 상위 200을 준다.
+    def _universe(self, n=266):
+        return [dict(self._ROW, no=str(i), name=f"T{i}") for i in range(n)]
+
+    def _iso(self, monkeypatch, tmp_path):
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        return nsc
+
+    def _wire(self, nsc, monkeypatch, *, universe=None, cap=200,
+              windows=None, fail_sorts=None):
+        """실측 거동: `pageSize` 상한 `cap` · `page` 무시 · 정렬별 다른 창."""
+        full = universe if universe is not None else self._universe()
+        windows = windows if windows is not None else {
+            "fallCnt": (66, 266), "leadingItem": (57, 257), "name": (66, 266)}
+        fail_sorts = fail_sorts or {}
+        calls: list = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            size = p.get("pageSize", 20)
+            sort = p.get("sortType")
+            calls.append((size, p.get("page"), sort))
+            if size > cap:
+                return None, nsc._nd.http_reason(
+                    400, 9,
+                    body=('{"detailCode":"too_big","message":"{\\"fieldErrors\\"'
+                          ':{\\"pageSize\\":[\\"Number must be less than or '
+                          f'equal to {cap}\\"]}}"' + '}').encode())
+            if sort in fail_sorts:
+                return None, fail_sorts[sort]
+            lo, hi = windows.get(sort, (0, cap))
+            return full[lo:hi][:size], ""       # `page` 는 무시된다
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        monkeypatch.setattr(nsc, "_get2", lambda *a, **k: (None, "옛 HTML 죽음"))
+        return calls
+
+    def test_sorts_recover_the_whole_universe_and_it_is_cached(
+            self, monkeypatch, tmp_path):
+        """실측 재현 — 200 천장에서 **266개**를 모으고 완전본으로 캐시한다.
+
+        §Pre-commit 9: 증상(200개·캐시 거부)을 먼저 재현하는 테스트다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        self._wire(nsc, monkeypatch)
+        out = nsc._collect_and_store()
+        assert len(out["themes"]) == 266, (len(out["themes"]), out["reason"])
+        assert out["partial"] is False, out["reason"]
+        # 완전본이므로 캐시에 구워진다 — 그래야 클릭마다 재수집이 멈춘다.
+        assert (tmp_path / "theme.json").exists(), list(tmp_path.iterdir())
+        # 화면·로그가 **어떻게 모았는지** 말한다(#43·#45 모집단).
+        assert "정렬" in out["reason"] and "266개" in out["reason"], out["reason"]
+        # ⚠️ `via` 는 페이지 **부제**에 그대로 실린다 — 정상 수집이 매번
+        # 경고처럼 읽히면 안 되고(#25·#260), 사다리의 경위("한도 1000 거절")는
+        # 로그로 간다. 완전본이면 ✅ 이고 합산 사실만 적는다.
+        assert "⚠️" not in out["via"] and "✅" in out["via"], out["via"]
+        assert "한도" not in out["via"], out["via"]
+
+    def test_barren_sort_sweep_is_not_called_complete(
+            self, monkeypatch, tmp_path):
+        """훑기가 한 종목도 못 늘리면 **완전본이라 말하지 않는다**.
+
+        두 세계가 구분되지 않는다 — 총 개수가 그만큼이거나, 원천이 정렬을
+        무시해 매번 같은 목록을 잘라 주거나(#165·#341).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        self._wire(nsc, monkeypatch, windows={})     # 전 정렬이 같은 상위 200
+        out = nsc._collect_and_store()
+        assert len(out["themes"]) == 200
+        assert out["partial"] is True, out["reason"]
+        assert not (tmp_path / "theme.json").exists()
+
+    def test_dry_sorts_stop_early(self, monkeypatch, tmp_path):
+        """연속 0종이면 멈춘다 — 정렬을 무시하는 원천에서 순손실 금지(#61)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = self._wire(nsc, monkeypatch, windows={})
+        nsc.collect_themes()
+        sorts = [c[2] for c in calls if c[2]]
+        assert len(sorts) == nsc._THEME_SORT_DRY, sorts
+
+    def test_failed_sort_names_the_value_and_blocks_caching(
+            self, monkeypatch, tmp_path):
+        """정렬이 거절되면 **그 이름을 사유에** 적고 완전본으로 굽지 않는다.
+
+        목록(`_THEME_SORTS`)은 열거형이라 원천이 이름을 바꾸면 눈이 먼다 —
+        그 드리프트가 화면·로그에 보여야 다음 라운드가 `--probe-sorts` 로
+        간다(#24·#43).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        self._wire(nsc, monkeypatch,
+                   fail_sorts={"leadingItem": "원천이 HTTP 400 — 알 수 없는 정렬"})
+        out = nsc._collect_and_store()
+        assert out["partial"] is True, out["reason"]
+        assert "leadingItem" in out["reason"], out["reason"]
+        assert not (tmp_path / "theme.json").exists()
+
+    def test_two_failed_sorts_stop_the_sweep(self, monkeypatch, tmp_path):
+        """연속 실패 = 이 주소는 sortType 을 안 받는다 — 남은 정렬은 순손실."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = self._wire(nsc, monkeypatch,
+                           fail_sorts={s: "원천이 HTTP 400"
+                                       for s in nsc._THEME_SORTS})
+        nsc.collect_themes()
+        sorts = [c[2] for c in calls if c[2]]
+        assert len(sorts) == nsc._THEME_SORT_FAILS, sorts
+
+    def test_sweep_asks_with_the_winning_page_size(
+            self, monkeypatch, tmp_path):
+        """훑기는 **이긴 단의 크기**로 묻는다 — 다른 크기면 합집합이 안 맞는다."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = self._wire(nsc, monkeypatch)
+        nsc.collect_themes()
+        sizes = {c[0] for c in calls if c[2]}
+        assert sizes == {200}, calls
+
+    def test_sweep_does_not_send_page(self, monkeypatch, tmp_path):
+        """이 가족은 `page` 를 무시한다(실측) — 얹으면 400 의 후보일 뿐이다(#61)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = self._wire(nsc, monkeypatch)
+        nsc.collect_themes()
+        assert all(c[1] is None for c in calls if c[2]), calls
+
+    def test_dedupe_key_is_the_one_the_screen_uses(self):
+        """합집합 키는 화면(`parse_theme_json`)이 쓰는 그 키다(#38·#45)."""
+        import bot.naver_sector_client as nsc
+
+        rows = nsc.parse_theme_json(
+            [dict(self._ROW, no="7", name="가"), dict(self._ROW, no="", name="나")])
+        assert [nsc._theme_key(t) for t in rows] == ["7", "나"]
+        assert nsc._theme_key({}) == "" and nsc._theme_key(None) == ""
+
+    def test_sweep_also_runs_when_the_ladder_ends_without_a_rejection(
+            self, monkeypatch, tmp_path):
+        """사다리가 **거절 없이** 끝나는 경로에도 훑기가 붙는다.
+
+        ⚠️ 실측 경로(상한 200)는 마지막 한도가 거절돼 분기 A 로 끝난다 — 그래서
+        마지막 반환점의 배선이 **테스트에 한 번도 안 걸렸고**, 그 줄을 지우는
+        뮤테이션이 전부 통과했다(#91·#291 발화할 수 없는 가드는 없는 것이다).
+        상한이 사다리 최대치보다 큰 원천을 만들어 그 경로를 실제로 태운다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        big = self._universe(1300)
+        self._wire(nsc, monkeypatch, universe=big, cap=5000,
+                   windows={"fallCnt": (300, 1300)})
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert len(rows) == 1300, (len(rows), why)
+        assert partial is False, why
+        assert "정렬" in why, why
+
+    def test_ladder_data_loss_is_not_erased_by_a_clean_sweep(
+            self, monkeypatch, tmp_path):
+        """사다리가 **실제로 잃은 것**은 훑기의 성공이 덮지 못한다(#351b·#45).
+
+        쪽 요청이 실패해 한 쪽을 잃었는데 훑기가 깨끗이 끝나면, `lost` 가
+        없을 때 그 손실이 사라지고 불완전한 목록이 완전본으로 구워진다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = self._universe()
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            size, sort = p.get("pageSize", 20), p.get("sortType")
+            if size > 200:
+                return None, nsc._nd.http_reason(
+                    400, 9,
+                    body=('{"detailCode":"too_big","message":"{\\"fieldErrors\\"'
+                          ':{\\"pageSize\\":[\\"Number must be less than or '
+                          'equal to 200\\"]}}"}').encode())
+            if p.get("page"):                    # 2쪽을 **잃었다**(429)
+                return None, "원천이 HTTP 429 — 요청 한도 초과"
+            lo, hi = {"fallCnt": (66, 266)}.get(sort, (0, 200))
+            return full[lo:hi][:size], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert len(rows) == 266, (len(rows), why)
+        assert partial is True, why       # 훑기는 깨끗했지만 쪽 하나를 잃었다
+
+    def test_page_cap_loss_is_not_erased_either(self, monkeypatch, tmp_path):
+        """`page` 가 **듣는** 원천에서 쪽 상한에 걸린 것도 훑기가 못 메운다.
+
+        한 요청짜리 훑기는 6쪽 이후를 볼 수 없다 — 훑기가 깨끗이 끝나도
+        부분이다(#351b). 이 갈래에 발화 경로가 없으면 `lost` 는 장식이다(#291).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            size, sort, page = p.get("pageSize", 20), p.get("sortType"), p.get("page")
+            if sort:          # 정렬은 깨끗이 답하고 새 항목도 준다
+                lo = 9000 if sort == nsc._THEME_SORTS[0] else 0
+                return [dict(self._ROW, no=f"s{lo + i}") for i in range(size)], ""
+            # 쪽이 **듣는** 원천: 쪽마다 다른 행 → 상한(5쪽)에서 멈춘다
+            return [dict(self._ROW, no=f"{page or 1}-{i}") for i in range(size)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert partial is True, (why, "쪽 상한 손실을 훑기가 지웠다")
+        assert "상한" in why, why
