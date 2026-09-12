@@ -99,10 +99,12 @@
 | 여러 후보가 **같은 상태**로 거절되면 키가 아니라 **환경 변화**로 내린다(#45·#165) | ✅ 자동 | `…::test_shared_status_is_environment_not_a_key`(프로브 전체를 태운다) |
 | RFC7807 `detail` 은 **맨 앞에** 싣고 한도는 300 — 자르기는 늘 꼬리를 먹는다(#156·#350) | ✅ 자동 | `…::test_long_rfc7807_detail_is_not_truncated_away`(머리말 길이로 순서를 강제) |
 | `message` 와 `result` 가 같은 문구면 **두 번 싣지 않는다** | ✅ 자동 | `…::test_string_result_is_not_duplicated` |
-| 허용값 목록은 **어구가 아니라 구조로** 읽고(미끼 되읊기 제외·문장 배제) 우리가 열거하지 않는다(#24·#65) | ✅ 자동 | `TestSortCoverageProbe20260912::test_allowed_values_reads_the_real_rejection` 외 2건(실측 바이트 픽스처) |
-| 합집합 커버리지는 **화면의 중복 제거 키**(`no` 우선)로 센다(#35·#45) | ✅ 자동 | `…::test_theme_ids_follow_the_screen_dedupe_key` |
+| 허용값 목록은 **어구가 아니라 구조로** 읽고(미끼 되읊기 제외·문장 배제·비-미끼 괄호가 둘이면 긴 쪽) 우리가 열거하지 않는다(#24·#65) | ✅ 자동 | `TestSortCoverageProbe20260912::test_allowed_values_reads_the_real_rejection` 외 3건(실측 바이트 픽스처·#91 발화 확인) |
+| 허용값을 못 읽은 것이 **우리가 잘라서**면 '거절되지 않음' 이라 말하지 않는다 — 갈래가 다르면 처방도 다르다(#82·#156·#350) | ✅ 자동 | `…::test_truncated_list_is_not_called_unreadable`(실제 바이트로 `_sanitize` 파이프라인을 태운다) |
+| 합집합 커버리지는 **화면이 그리는 행**만 센다 — 키만 베끼면 모집단이 갈린다(#35·#45·#38) | ✅ 자동 | `…::test_theme_ids_count_only_what_the_screen_draws`(`parse_theme_json` 위임 + 반대 증거) |
 | 정렬이 **순서만 바꾸는지 천장을 넘는지**를 재서 말한다 — 배선 전에 측정(#12·#79·#351) | ✅ 자동 | `…::test_union_growth_is_reported_when_sorts_differ` · `…::test_order_only_sorts_are_called_out` |
-| 첫 크기가 거절되면 **원천이 말한 상한**으로 다시 묻는다(#350) · 못 재면 ❌(#54) · 읽기 전용(#264) | ✅ 자동 | `…::test_declared_cap_is_used_when_the_first_size_is_rejected` 외 2건(캐시 디렉터리 비었음 단언) |
+| **일부만 재고 '천장을 못 넘는다'고 단정하지 않는다** — '자란다'만 부분 측정에서 참(#165·#54·#274) · 실패가 같은 상태로 몰리면 환경(#45) | ✅ 자동 | `…::test_partial_measurement_never_claims_the_ceiling` 외 3건(0종 ❌ · 부분 ❓ · 부분이어도 성장은 단정) |
+| 첫 크기가 거절되면 **원천이 말한 상한**으로 다시 묻고(#350) 상한을 안 적으면 **레포가 이미 쓰는 더 작은 크기**로(#351·§작업 원칙) · 상한은 **줄일 때만** 상한(#91) · 읽기 전용(#264) | ✅ 자동 | `…::test_declared_cap_is_used_when_the_first_size_is_rejected` 외 4건(캐시 디렉터리 비었음 단언 포함) |
 | 광고한 `--probe-sorts` 가 **실제로 디스패치**된다(#252) | ✅ 자동 | `…::test_cli_flag_actually_dispatches`(main 을 태운다) |
 
 ## 다음 우선순위 (갭 메우기 후보)

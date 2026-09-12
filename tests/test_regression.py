@@ -62380,20 +62380,73 @@ class TestSortCoverageProbe20260912:
         assert nsc.allowed_values("[onlyone]") == ()
         assert nsc.allowed_values("") == ()
 
-    def test_theme_ids_follow_the_screen_dedupe_key(self):
+    def test_theme_ids_count_only_what_the_screen_draws(self):
+        """키 규칙만 베끼면 **모집단이 갈린다**(독립 리뷰 실측 44종 vs 3종).
+
+        `parse_theme_json` 은 이름·등락률을 못 읽는 행을 버리므로, 그런 행을
+        세면 커버리지가 부풀려지고 "천장 너머가 보인다" 판정이 화면이 못
+        그리는 수 위에 선다(#35·#45). 그래서 베끼지 않고 그 함수를 태운다.
+        """
         import bot.naver_sector_client as nsc
 
-        rows = [{"no": "1", "name": "A"}, {"no": "1", "name": "A2"},
-                {"name": "B"}, {"themeCode": "9", "name": "C"}, "junk"]
+        rows = [{"no": "1", "name": "A", "changeRate": "1.0"},
+                {"no": "1", "name": "A2", "changeRate": "2.0"},   # 중복 키
+                {"name": "B", "changeRate": "3.0"},               # no 없음 → 이름
+                {"themeCode": "9", "name": "C", "changeRate": "4.0"},
+                {"no": "7", "name": "D"},          # ⚠️ 등락률 없음 = 화면이 버림
+                {"no": "8", "changeRate": "5.0"},  # ⚠️ 이름 없음 = 화면이 버림
+                "junk"]
         assert nsc.theme_ids(rows) == {"1", "B", "9"}
         assert nsc.theme_ids(None) == set()
+        # 반대 증거: 프로브가 세는 수 == 화면이 그리는 수(#25).
+        assert len(nsc.theme_ids(rows)) == len(nsc.parse_theme_json(rows))
+
+    def test_longest_non_echo_bracket_list_wins(self):
+        """비-미끼 괄호가 **둘 이상**일 때 긴 쪽을 고른다.
+
+        실측 픽스처는 살아남는 목록이 하나뿐이라 이 선택이 발화하지 않는다 —
+        발화할 수 없는 가드는 없는 것이므로 둘인 상태를 만들어 태운다(#91·#291).
+        """
+        import bot.naver_sector_client as nsc
+
+        brief = "fieldErrors: [a,b] · 허용값: [c,d,e]"
+        assert nsc.allowed_values(brief) == ("c", "d", "e")
+        # 순서를 뒤집어도 길이가 이긴다(먼저 찾은 것 채택이면 여기서 깨진다).
+        assert nsc.allowed_values("허용값: [c,d,e] · fieldErrors: [a,b]") == (
+            "c", "d", "e")
+
+    # 실측 정렬 키 14종 — 원천이 선언한 것(우리가 적은 것이 아니다).
+    SORTS = ("changeRate", "fallCnt", "leadingItem", "name", "no",
+             "recent3daysChangeRate", "riseCnt", "steadyCnt", "thistime",
+             "totalAccAmount", "totalAccQuant", "totalCnt", "totalMarketSum",
+             "type")
 
     @staticmethod
     def _rows(ids):
         return [{"no": str(i), "name": f"T{i}", "changeRate": "1.0"} for i in ids]
 
-    def _run(self, monkeypatch, tmp_path, by_sort, base_ids, cap_first=False):
+    @classmethod
+    def _reject_body(cls, vals=None):
+        """원천이 실제로 보내는 **바이트**(RFC7807 을 `result` 에 담은 봉투).
+
+        ⚠️ 완성된 사유 문자열을 픽스처로 주면 `get_json → http_reason →
+        error_brief → _sanitize(…,300)` 파이프라인을 한 번도 안 탄다 —
+        그러면 목록이 길이 제한에 잘리는 실패를 영원히 못 잡는다(#155·#20).
+        """
+        import json
+
+        inner = json.dumps(
+            {"type": "about:blank", "title": "Bad Request", "status": 400,
+             "detail": "유효하지 않은 sortType: [__probe__]. 허용값: [%s]"
+                       % ", ".join(vals or cls.SORTS)}, ensure_ascii=False)
+        return json.dumps({"detailCode": "HttpError", "message": "Bad Request",
+                           "result": inner}, ensure_ascii=False).encode()
+
+    def _run(self, monkeypatch, tmp_path, by_sort, base_ids, cap_first=False,
+             fail_sorts=None, cap_silent=False):
         import bot.naver_sector_client as nsc
+
+        fail_sorts = fail_sorts or {}
 
         monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
         calls: list = []
@@ -62401,6 +62454,9 @@ class TestSortCoverageProbe20260912:
         def fake(url, params=None, **k):
             p = dict(params or {})
             calls.append(p)
+            if cap_silent and p.get("pageSize", 0) > 200:
+                # 원천이 상한을 **안 적고** 거절하는 경우(#351 절반 물러나기).
+                return None, nsc._nd.http_reason(400, 9)
             if cap_first and p.get("pageSize", 0) > 200:
                 return None, nsc._nd.http_reason(
                     400, 9,
@@ -62411,7 +62467,10 @@ class TestSortCoverageProbe20260912:
             if st is None:
                 return self._rows(base_ids), ""
             if st == nsc._PARAM_JUNK:
-                return None, nsc._nd.http_reason(400, 9) + " · " + self.VM
+                return None, nsc._nd.http_reason(400, 9,
+                                                 body=self._reject_body())
+            if st in fail_sorts:
+                return None, fail_sorts[st]
             return self._rows(by_sort.get(st, base_ids)), ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
@@ -62438,6 +62497,9 @@ class TestSortCoverageProbe20260912:
         body, _ = self._run(monkeypatch, tmp_path, {}, base)
         assert "순서만" in body and "천장을 못 넘습니다" in body, body
         assert "+0" in body, body
+        # 전수를 쟀다는 사실이 판정의 전제다 — 이 수치가 사라지면 부분 측정과
+        # 구별되지 않는다(#45·#274).
+        assert "잰 정렬 14/14종" in body, body
 
     def test_declared_cap_is_used_when_the_first_size_is_rejected(
             self, monkeypatch, tmp_path):
@@ -62447,7 +62509,7 @@ class TestSortCoverageProbe20260912:
         assert all(c.get("pageSize", 0) <= 200 for c in calls[1:]), calls
         assert "기준선" in body and "200행" in body, body
 
-    def test_nothing_measured_is_a_failure_not_a_pass(
+    def test_unreadable_allowed_values_is_a_failure_not_a_pass(
             self, monkeypatch, tmp_path):
         """허용값을 못 읽으면 ✅ 가 아니라 ❌ 다(#54)."""
         import bot.naver_sector_client as nsc
@@ -62463,6 +62525,124 @@ class TestSortCoverageProbe20260912:
         monkeypatch.setattr(nsc, "_get2_json", fake)
         body = "\n".join(nsc.probe_sorts())
         assert "❌" in body and "허용값을 못 읽었습니다" in body, body
+
+    def test_truncated_list_is_not_called_unreadable(
+            self, monkeypatch, tmp_path):
+        """원천은 선언했는데 **우리가 잘랐다** — 갈래가 다르면 처방도 다르다.
+
+        사유는 `_sanitize(…, 300)` 을 거치므로 원천이 정렬 키를 몇 개만
+        늘려도 닫는 `]` 가 잘려 목록이 통째로 사라진다(실측: 14종은 읽히고
+        21종이면 0종). '거절되지 않음' 이라고 말하면 원천을 고치러 간다
+        (#82·#156·#350).
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        many = list(self.SORTS) + [f"extraSortKey{i}" for i in range(8)]
+        why = nsc._nd.http_reason(400, 9, body=self._reject_body(many))
+        assert nsc.allowed_values(why) == (), why      # 전제: 실제로 못 읽는다
+        assert nsc.list_truncated(why) is True, why
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if p.get("sortType"):
+                return None, why
+            return self._rows(range(10)), ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        body = "\n".join(nsc.probe_sorts())
+        assert "잘렸습니다" in body, body
+        assert "거절되지 않음" not in body, body
+
+    def test_no_sort_measured_is_judgement_impossible_not_a_ceiling(
+            self, monkeypatch, tmp_path):
+        """허용값은 읽혔는데 **14종을 전부 못 쟀다** — 이때 '못 넘는다'는 거짓.
+
+        옛 판은 이 분기에 발화 경로가 없어(허용값 단계에서 조기 반환) 가드를
+        통째로 지워도 통과했다(리뷰 실측 M3, #91①·#291).
+        """
+        body, _ = self._run(monkeypatch, tmp_path, {}, list(range(200)),
+                            fail_sorts={s: "원천이 HTTP 429 — 요청 한도 초과"
+                                        for s in self.SORTS})
+        assert "잰 정렬 0/14종" in body, body
+        assert "한 정렬도 재지 못했습니다" in body, body
+        assert "천장을 못 넘습니다" not in body, body
+        # 같은 상태로 몰리면 정렬 탓이 아니라 환경이다(#45·#165).
+        assert "환경 변화 의심" in body, body
+
+    def test_partial_measurement_never_claims_the_ceiling(
+            self, monkeypatch, tmp_path):
+        """1종만 재고 '천장을 못 넘는다'고 단정하면 값어치 있는 경로를 포기시킨다.
+
+        이 도구의 **유일한 목적**이 배선 값어치 판정이므로, 가장 위험한
+        거짓말이다(#165 재지 않은 것 단정 금지 · #274 값 표시 ≠ 판정).
+        """
+        base = list(range(200))
+        dead = {s: "원천이 HTTP 429 — 요청 한도 초과" for s in self.SORTS[1:]}
+        body, _ = self._run(monkeypatch, tmp_path, {}, base, fail_sorts=dead)
+        assert "잰 정렬 1/14종" in body, body
+        assert "❓ 판정 불가" in body and "13종을 못 쟀습니다" in body, body
+        assert "천장을 못 넘습니다" not in body, body
+
+    def test_partial_measurement_may_still_confirm_growth(
+            self, monkeypatch, tmp_path):
+        """반대로 **자란다**는 부분 측정에서도 참이다 — 그 갈래는 단정한다."""
+        base = list(range(200))
+        dead = {s: "원천이 HTTP 429 — 요청 한도 초과" for s in self.SORTS[1:]}
+        body, _ = self._run(monkeypatch, tmp_path,
+                            {"changeRate": list(range(50, 250))}, base,
+                            fail_sorts=dead)
+        assert "잰 정렬 1/14종" in body, body
+        assert "천장 너머가 보입니다" in body, body
+
+    def test_a_cap_that_does_not_shrink_is_not_reused(
+            self, monkeypatch, tmp_path):
+        """원천이 **줄지 않는 상한**을 적어 보내면 같은 크기를 다시 묻지 않는다.
+
+        `if cap:` 만 보면 같은 수로 계속 되묻는다 — 요청만 늘고 기준선은
+        영영 안 선다. 상한은 **줄일 때만** 상한이다(#91 발화 경로를 실제로
+        태운다).
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        calls: list = []
+        # 상한을 1000(= 우리가 물은 크기)이라 적고 거절하는 원천.
+        stale = nsc._nd.http_reason(
+            400, 9,
+            body=('{"detailCode":"too_big","message":"{\\"fieldErrors\\":'
+                  '{\\"pageSize\\":[\\"Number must be less than or equal '
+                  'to 1000\\"]}}"}').encode())
+        assert nsc._nd.size_cap_from(stale) == 1000, stale
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            calls.append(p)
+            if p.get("pageSize", 0) > 200:
+                return None, stale
+            return self._rows(range(200)), ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        body = "\n".join(nsc.probe_sorts())
+        sizes = [c.get("pageSize") for c in calls]
+        assert sizes.count(1000) == 1, sizes      # 같은 크기 되묻기 금지
+        assert sizes[:2] == [1000, 200], sizes
+        assert "200행" in body, body
+
+    def test_halves_back_when_the_source_hides_its_cap(
+            self, monkeypatch, tmp_path):
+        """상한을 안 적고 거절하면 **절반으로 물러나** 한 번 더 묻는다.
+
+        수집 사다리엔 있던 이 물러나기가 프로브엔 없어(#351·#38) 원천이
+        사유에 수를 안 적는 날 기준선이 통째로 죽었다.
+        """
+        body, calls = self._run(monkeypatch, tmp_path, {}, list(range(200)),
+                                cap_silent=True)
+        assert "더 작은 크기 200" in body, body
+        assert "기준선" in body and "200행" in body, body
+        # 블라인드 이분(1000→500→250, 여전히 상한 밖)이 아니라 **이 레포가
+        # 이미 쓰는 크기**로 물러난다 — 한 번에 닿는다(§작업 원칙).
+        assert [c.get("pageSize") for c in calls[:2]] == [1000, 200], calls
 
     def test_baseline_failure_is_named(self, monkeypatch, tmp_path):
         import bot.naver_sector_client as nsc
