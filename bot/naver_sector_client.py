@@ -1078,6 +1078,24 @@ _THEME_SORT_FAILS = 2     # 연속 실패 = 이 원천은 sortType 을 안 받�
 _THEME_SORT_DRY = 2       # 연속 0종 = 이 원천은 정렬로 더 안 준다
 
 
+def _theme_rows_of(raw: object) -> object:
+    """응답 → 목록(순수). dict 로 감싸 오는 가족의 목록 자리를 푼다.
+
+    `_theme_fetch_one_size` 와 정렬 훑기가 **같이** 쓴다 — 훑기에만 없으면
+    정상 응답이 '정렬 실패(사유 없음)' 로 찍혀 훑기를 끊는다(#38·#82·#292).
+    """
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for k in ("result", "datas", "list", "items", "stocks"):
+            if isinstance(raw.get(k), list):
+                return raw[k]
+    return None
+
+
+_THEME_SWEEP_BUDGET = 8.0   # 훑기 전체 예산(초) — 전경 요청 경로다(#116)
+
+
 def _theme_sort_sweep(url: str, size: int, rows: list) -> tuple:
     """천장 너머를 **정렬을 바꿔** 모은다 → (행, 사유, 부분여부).
 
@@ -1096,12 +1114,24 @@ def _theme_sort_sweep(url: str, size: int, rows: list) -> tuple:
     streak = 0
     dry = 0
     last_gain = None
+    t0 = time.time()
     for v in _THEME_SORTS:
+        if time.time() - t0 > _THEME_SWEEP_BUDGET:
+            # ⚠️ 훑기는 **전경(요청) 경로**에서 돈다 — 원천이 느린 날 정렬
+            # 5종 × 15초면 화면이 그만큼 더 멈춘다. 본문이 아닌 값을 본 응답
+            # 경로에서 부를 땐 예산과 캐시를 같이 둘 것(#116·#346).
+            failed.append(f"예산 {_THEME_SWEEP_BUDGET:.0f}초 초과로 중단")
+            break
         raw, why = _get2_json(url, params={"pageSize": size, "sortType": v})
-        if not isinstance(raw, list):
+        raw = _theme_rows_of(raw)
+        # ⚠️ 형제(`_theme_fetch_one_size`)가 막는 '테마를 물었는데 업종이 왔다'
+        # 를 훑기가 안 막으면 업종 행이 테마 목록에 섞인 채 완전본으로 캐시된다
+        # (독립 리뷰 실측 279개 중 79개, #38·#96).
+        bad = wrong_resource(raw) if raw is not None else ""
+        if raw is None or bad:
             # 정렬 이름을 **그대로 적는다** — 목록이 원천과 갈라지면 그 사실이
             # 화면·로그에 보여야 다음 라운드가 `--probe-sorts` 로 간다(#24·#43).
-            failed.append(f"{v}({why or '사유 없음'})")
+            failed.append(f"{v}({bad or why or '사유 없음'})")
             streak += 1
             if streak >= _THEME_SORT_FAILS:
                 # 연속 실패 = 이 주소는 sortType 을 안 받는다(탐색으로 찾은
@@ -1131,6 +1161,13 @@ def _theme_sort_sweep(url: str, size: int, rows: list) -> tuple:
             + (f"({', '.join(used)})" if used else ""))
     if failed:
         note += f" · 정렬 실패 {'; '.join(failed)}"
+        # 형제 프로브와 같은 후처리 — 여러 정렬이 **같은 상태**로 거절되면 그건
+        # 정렬 드리프트가 아니라 환경(한도·차단)이다. 이름만 앞세우면 다음
+        # 라운드가 엉뚱한 데로 간다(#45·#82·#165).
+        _sts = [c for c in (_nd.status_from(f) for f in failed) if c]
+        if len(_sts) > 1 and len(set(_sts)) == 1:
+            note += (f" · HTTP {_sts[0]} 가 {len(_sts)}종에 동시에 "
+                     "— 정렬 탓이 아니라 환경 변화 의심")
     # ⚠️ **정렬 훑기가 실제로 천장을 넘었을 때만** 완전본이라 말한다. 훑기가
     # 한 종목도 못 늘렸다면 두 세계가 구분되지 않는다 — (a) 총 개수가 그만큼
     # 이거나 (b) 이 원천이 정렬을 무시해 매번 같은 목록을 잘라 주거나. 구분이
@@ -1150,7 +1187,7 @@ def _theme_sweep_finish(url: str, got: list, why: str, size: int,
     한도 사다리의 경위는 그 뒤다(#275·#350).
     """
     if not got or size <= 0:
-        return got, why, True
+        return got, why, True, True
     rows, note, partial = _theme_sort_sweep(url, size, got)
     # ⚠️ 사다리가 **실제로 무언가를 잃었으면**(쪽 요청 실패·쪽 상한) 훑기가
     # 그걸 덮지 못한다 — 뒷단의 성공이 앞단의 부분 증거를 지우는 것이 이
@@ -1163,12 +1200,23 @@ def _theme_sweep_finish(url: str, got: list, why: str, size: int,
         # 곳은 로그이므로 거기 남긴다(#43 버리지는 않는다).
         if why:
             log.info("naver_sector: 테마 한도 경위 — %s", why)
-        return rows, note, False
-    return rows, (f"{note} · {why}" if (note and why) else (note or why)), partial
+        # ⚠️ 네 번째 값 `warn` — 완전본의 합산 사유는 **경고가 아니다**. 옛 판은
+        # 화면이 `partial or why` 로 판정해 정상 수집에 ⚠️ 가 붙었고, 그걸
+        # `partial` 만 보게 좁히자 이번엔 **일부러 partial=False 로 두고 사유만
+        # 남기는** 갈래(하한 미만·읽다 버린 행)가 ✅ 로 바뀌어 "못 읽어
+        # 버렸습니다" 옆에 ✅ 가 놓였다(독립 리뷰 실측 Medium-1, #34·#43).
+        # 판정을 문자열 냄새가 아니라 **값**으로 올린다(#19·#65).
+        return rows, note, False, False
+    return rows, (f"{note} · {why}" if (note and why) else (note or why)), (
+        partial, True)[0], True
 
 
-def _theme_json_rung(url: str) -> tuple:
-    """한 후보 주소 → (행, 사유, 부분여부). **한도를 키워 가며** 묻는다.
+def _theme_json_rung(url: str, *, sweep: bool = True) -> tuple:
+    """한 후보 주소 → (행, 사유, 부분여부, **경고여부**). 한도를 키워 가며 묻는다.
+
+    `sweep=False` 는 **탐색 검증 전용**이다 — `_discover_theme_endpoint` 는
+    추측 후보가 테마 행을 주는지만 보고 결과를 버리므로, 거기까지 정렬 훑기를
+    붙이면 검증에 아무것도 기여하지 않는 요청만 최대 5회 더 나간다(#61).
 
     VM 실측(2026-09-12): `domestic/theme` 은 살아 있는데 `pageSize=100` 이 정확히
     100행을 주고 `page` 는 무시된다 — 즉 **상한에 닿은 것**이고 더 있다. 그때
@@ -1258,10 +1306,12 @@ def _theme_json_rung(url: str) -> tuple:
                     tail = f"한도 {size} 거절(원천 상한 {_cap})"
                 else:
                     tail = f"한도 {size} 요청도 실패({why})"
+                if not sweep:
+                    return last[0], f"{prior} · {tail}", True, True
                 return _theme_sweep_finish(
                     url, last[0], f"{prior} · {tail}", last_size,
                     lost=last_lost)
-            return None, why, False
+            return None, why, False, True
         # ⚠️ **더 많이 받았을 때만** 갈아끼운다. 뒷단이 더 짧게 주면(원천이
         # pageSize 를 받으면서도 쪽을 100개씩 끊는 모양) 앞단의 `partial`
         # 증거가 덮여 **100/130 이 '전체'로 캐시되고 ✅ 배지**가 붙는다
@@ -1272,7 +1322,9 @@ def _theme_json_rung(url: str) -> tuple:
             last_lost = lost
         ok_size = max(ok_size, size)
         if not saturated:
-            return last
+            # 사유가 있으면 경고다 — 하한 미만·읽다 버린 행처럼 **부분은
+            # 아니지만 사실을 말해야 하는** 갈래가 여기로 온다(#43·#171).
+            return (*last, bool(last[2] or last[1]))
         if known_cap and size >= known_cap:
             # 원천이 밝힌 상한까지 받았다 — 더 큰 크기는 정의상 거절이므로
             # 묻지 않는다(실측: 1000 요청이 매번 순손실이었다, #61).
@@ -1283,9 +1335,10 @@ def _theme_json_rung(url: str) -> tuple:
     # 무엇보다 266개 중 200개만 그리면서 등락률 순위가 조용히 틀렸다(#45).
     # 정렬을 바꿔 받으면 합집합이 자란다는 것을 실측이 확정했으므로(#353)
     # 그 훑기를 이어 붙인다 — 훑기가 평평해지면 그때 완전본으로 본다.
-    return _theme_sweep_finish(
-        url, got, why or f"한도 {_THEME_PAGE_SIZES[-1]}에서도 가득 찼습니다",
-        last_size, lost=last_lost)
+    why = why or f"한도 {_THEME_PAGE_SIZES[-1]}에서도 가득 찼습니다"
+    if not sweep:
+        return got, why, True, True
+    return _theme_sweep_finish(url, got, why, last_size, lost=last_lost)
 
 
 def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
@@ -1294,9 +1347,9 @@ def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
     `saturated=True` 는 '원천에 그게 전부' 가 아니라 '우리가 상한에서 멈췄다'
     는 뜻이다 — 호출부가 한도를 키워 다시 묻는다(#136 요구를 충족했나).
 
-    `lost=True` 는 **정렬 훑기로도 못 메우는 손실**이다(쪽 요청 실패·쪽 상한·
-    읽다 버린 행). 천장(쪽 무시·`pageSize` 무시)은 `partial=True` 지만
-    `lost=False` — 훑기가 그걸 넘을 수 있다. 둘을 한 플래그로 묶으면 훑기의
+    `lost=True` 는 **정렬 훑기로도 못 메우는 손실**이다(쪽 요청이 4xx 가 아닌
+    사유로 실패 · 쪽 상한). 천장(쪽 무시 · 쪽 요청 4xx · `pageSize` 무시)은
+    `partial=True` 여도 `lost=False` — 훑기가 그걸 넘을 수 있다. 둘을 한 플래그로 묶으면 훑기의
     성공이 진짜 손실을 지우거나(#351b) 반대로 정상 수집이 영원히 부분이 된다.
     """
     got: list = []
@@ -1333,16 +1386,18 @@ def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
             # 다르다(주소·한도 vs 페이지네이션 규약). 사유가 그걸 안 적으면
             # 다음 실행도 같은 자리를 추측한다(#82·#275).
             _pw = f"{page}쪽({page_size}개 단위)에서 실패: {why}"
-            return ((got, _pw, True, n_first >= page_size, True) if got
+            # ⚠️ **요청 모양 거절(4xx)은 손실이 아니다.** 이 가족은 `page` 를
+            # 안 받아 400 을 주는 것이 실측 거동인데(바로 위 주석·형제 픽스처),
+            # 그걸 `lost=True` 로 고정하면 정렬 훑기가 266개를 다 모아도 영원히
+            # 부분이라 캐시가 안 생기고 클릭마다 재수집한다(독립 리뷰 실측
+            # High-1 — 이 변경의 목적이 통째로 무효화됐다). 429·5xx·타임아웃은
+            # 진짜로 못 받은 것이므로 손실이다 — 처방이 정반대다(#82).
+            _shape = _nd.status_from(why) in _nd.REQUEST_SHAPE_4XX
+            return ((got, _pw, True, n_first >= page_size, not _shape) if got
                     else (None, _pw, False, False, False))
         if not isinstance(raw, list):
-            # dict 로 감싸 오는 가족도 있다 — 목록 자리를 찾아본다.
-            inner = None
-            if isinstance(raw, dict):
-                for k in ("result", "datas", "list", "items", "stocks"):
-                    if isinstance(raw.get(k), list):
-                        inner = raw[k]
-                        break
+            # dict 로 감싸 오는 가족도 있다 — 목록 자리를 찾는다(훑기와 공용).
+            inner = _theme_rows_of(raw)
             if inner is None:
                 _w = _nd.shape_reason("테마 목록", raw)
                 return ((got, _w, True, False, True) if got
@@ -1482,7 +1537,7 @@ def _discover_theme_endpoint() -> None:
     cands = theme_candidates(paths)
     url, tried = "", []
     for cand in cands[:_THEME_DISCOVER_TRIES]:
-        rows, rwhy, _partial = _theme_json_rung(cand)
+        rows, rwhy, _partial, _warn = _theme_json_rung(cand, sweep=False)
         tried.append(f"{cand} — {'✅ %d개' % len(rows) if rows else (rwhy or '0건')}")
         if rows:
             url = cand
@@ -1821,11 +1876,11 @@ def collect_themes_json() -> tuple:
     rungs = ([("탐색됨", memo)] if memo else []) + list(_THEME_API_RUNGS)
     for label, url in rungs:
         _t = time.time()
-        rows, why, partial = _theme_json_rung(url)
+        rows, why, partial, warn = _theme_json_rung(url)
         # 재지 않으면 '느리다'는 진단이 아니다(#69·#110) — 단마다 소요를 싣는다.
         _dt = f" · {time.time() - _t:.1f}s"
         if rows:
-            marks.append(f"{label} {'⚠️' if partial else '✅'} "
+            marks.append(f"{label} {'⚠️' if warn else '✅'} "
                          f"{len(rows)}개" + (f" · {why}" if why else "") + _dt)
             # ⚠️ 사유는 **부분일 때만** 싣지 않는다 — 캐시를 막지는 않지만
             # 화면이 말해야 하는 사실(하한 미만·버려진 행)이 있다(#43·#171).

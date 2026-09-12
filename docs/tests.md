@@ -112,6 +112,13 @@
 | 훑기는 **이긴 단의 크기**로 묻고 `page` 를 안 얹는다 · 연속 0종·연속 실패면 멈춘다(#61) | ✅ 자동 | `…::test_sweep_asks_with_the_winning_page_size` 외 3건 |
 | 거절당한 정렬은 **이름을 사유에** 적고 캐시를 막는다(열거형 드리프트 가시화, #24·#43) | ✅ 자동 | `…::test_failed_sort_names_the_value_and_blocks_caching` |
 | 완전본 수집은 부제에 **경고를 띄우지 않는다**(사다리 경위는 로그로, #25·#260) | ✅ 자동 | `…::test_sorts_recover_…`(`via` 에 ⚠️·'한도' 없음) |
+| 쪽 요청 **4xx 거절은 천장**(훑기가 넘는다)이고 429·5xx 는 손실이다(#82) | ✅ 자동 | `…::test_page_rejected_with_4xx_is_a_ceiling_not_a_loss` · `…::test_ladder_data_loss_is_not_erased_by_a_clean_sweep` |
+| 마지막 정렬이 **아직 새 항목을 주면** 완전본이 아니다(#280·#341) | ✅ 자동 | `…::test_still_growing_union_is_never_called_complete` |
+| `partial=False` 인데 사유가 있는 갈래(하한 미만·버린 행)도 **⚠️ 로 표시**(#34·#43) | ✅ 자동 | `…::test_anomaly_without_partial_still_warns`(네 번째 값 `warn`) |
+| 훑기도 형제의 **`wrong_resource` 가드·dict 언랩**을 쓴다(#38·#96) | ✅ 자동 | `…::test_sweep_refuses_a_different_resource` · `…::test_sort_response_wrapped_in_a_dict_is_accepted` |
+| 훑기는 **전경 경로 예산**(8초)에서 멈추고, 탐색 검증은 훑지 않는다(#116·#61) | ✅ 자동 | `…::test_sweep_stops_at_its_time_budget`(시계 주입) · `…::test_discovery_validation_does_not_sweep`(진입점을 태운다) |
+| 여러 정렬이 **같은 상태**로 거절되면 환경 변화로 말한다(#45·#82) | ✅ 자동 | `…::test_same_status_on_many_sorts_reads_as_environment` |
+| 부제에서 뺀 사다리 경위는 **로그로 남긴다** · 죽은 가드 둘은 실제로 태운다(#43·#291) | ✅ 자동 | `…::test_complete_path_logs_the_ladder_story` · `…::test_dead_guards_actually_guard` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

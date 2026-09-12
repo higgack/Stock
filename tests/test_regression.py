@@ -60232,7 +60232,7 @@ class TestNaverThemeAndDetailSpa20260912:
             return pages.get((params or {}).get("page", 1), []), ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert len(rows) == 230 and why == "" and partial is False, (
             len(rows or []), why)
 
@@ -60256,7 +60256,7 @@ class TestNaverThemeAndDetailSpa20260912:
                     else (None, "HTTP 429"))
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert len(rows) == nsc._THEME_PAGE_SIZES[-1] and partial is True, why
         monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
         _r, marks, _w, p2 = nsc.collect_themes_json()
@@ -60287,7 +60287,7 @@ class TestNaverThemeAndDetailSpa20260912:
             lambda u, params=None, **k: (
                 [dict(self._ROW, no=f"{(params or {}).get('page')}-{i}")
                  for i in range((params or {}).get("pageSize", 20))], ""))
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert partial is True and "상한" in why, why
         # 마지막 한도까지 올라간 뒤에야 부분으로 판정한다
         assert len(rows) == nsc._THEME_PAGE_SIZES[-1] * nsc._THEME_MAX_PAGES
@@ -60388,7 +60388,7 @@ class TestNaverThemeAndDetailSpa20260912:
         import bot.scripts.naver_spa_probe as probe
 
         monkeypatch.setattr(nsc, "_theme_json_rung",
-                            lambda url: (None, "HTTP 404", False))
+                            lambda url, **kw: (None, "HTTP 404", False, True))
         monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
         actual = len(nsc.collect_themes_json())
 
@@ -60414,7 +60414,7 @@ class TestNaverThemeAndDetailSpa20260912:
         import bot.naver_sector_client as nsc
         monkeypatch.setattr(nsc, "_get2_json", lambda u, **k: (
             [{"name": "은행", "no": "1", "changeRate": 1.0, "type": "upjong"}], ""))
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows is None, "업종이 테마로 통과했다"
         assert "upjong" in why, why
 
@@ -60431,7 +60431,8 @@ class TestNaverThemeAndDetailSpa20260912:
 
         def rung(fn):
             monkeypatch.setattr(nsc, "_get2_json", fn)
-            return nsc._theme_json_rung("u")
+            rows, why, partial, _warn = nsc._theme_json_rung("u")
+            return rows, why, partial
 
         # ⚠️ **계약 변경**(VM 실측 2026-09-12, #222): 옛 판은 `pageSize` 와 무관하게
         # 100행 고정인 가짜로 '쪽 무시'를 재현했는데, 한도 사다리가 생긴 뒤로는
@@ -60474,7 +60475,7 @@ class TestNaverThemeAndDetailSpa20260912:
             return ALL[:sz], ""
 
         monkeypatch.setattr(nsc, "_get2_json", measured)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert len(rows) == 266 and partial is False and why == "", (
             len(rows), partial, why)
         # 한도를 **실제로 키웠는가** — 100 에서 멈췄으면 절반만 들고 있다
@@ -60488,7 +60489,7 @@ class TestNaverThemeAndDetailSpa20260912:
         monkeypatch.setattr(nsc, "_get2_json",
                             lambda u, params=None, **k:
                             (huge[:(params or {}).get("pageSize", 20)], ""))
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert partial is True and str(nsc._THEME_PAGE_SIZES[-1]) in why, why
 
     def test_short_list_is_reported_but_still_cacheable(self, monkeypatch):
@@ -60501,7 +60502,7 @@ class TestNaverThemeAndDetailSpa20260912:
         monkeypatch.setattr(nsc, "_get2_json",
                             lambda u, params=None, **k:
                             (few[:(params or {}).get("pageSize", 20)], ""))
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert len(rows) == 79
         assert partial is False, "하한 휴리스틱이 캐시를 영원히 막는다"
         assert str(nsc._THEME_MIN_ROWS) in why, why
@@ -60535,11 +60536,12 @@ class TestNaverThemeAndDetailSpa20260912:
         good = "https://m.stock.naver.com/api/domestic/market/theme/list"
         tried = []
 
-        def rung(url):
+        def rung(url, **kw):
             tried.append(url)
             if url == good:
-                return [dict(self._ROW, no=str(i)) for i in range(200)], "", False
-            return None, "HTTP 404", False
+                return ([dict(self._ROW, no=str(i)) for i in range(200)],
+                        "", False, False)
+            return None, "HTTP 404", False, True
 
         monkeypatch.setattr(nsc, "_theme_json_rung", rung)
         monkeypatch.setattr(
@@ -60555,7 +60557,7 @@ class TestNaverThemeAndDetailSpa20260912:
 
         # 검증된 후보가 없으면 **url 을 적지 않는다**(추측을 ✅ 로 렌더 금지)
         monkeypatch.setattr(nsc, "_theme_json_rung",
-                            lambda u: (None, "HTTP 404", False))
+                            lambda u, **kw: (None, "HTTP 404", False, True))
         nsc._discover_theme_endpoint()
         memo, _age = nsc._cache_read_any(nsc._THEME_MEMO)
         assert memo["url"] == "", memo
@@ -61007,7 +61009,7 @@ class TestThemeLadderReviewFixes20260912:
             return full[:p.get("pageSize", 20)], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows is not None and len(rows) == 266, (len(rows or []), why, seen)
         assert partial is False, (why, seen)
         # 한도가 실제로 올라갔는지 — 값만 보면 사다리를 지워도 통과할 수 있다
@@ -61026,7 +61028,7 @@ class TestThemeLadderReviewFixes20260912:
             return full[:p.get("pageSize", 20)], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert partial is True and rows and len(rows) == nsc._THEME_PAGE_SIZES[-1]
 
     # ── H2 ──────────────────────────────────────────────────────────────
@@ -61577,7 +61579,7 @@ class TestThemeSizeRejectionKeepsRows20260912:
             return full[:100], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows and len(rows) == 100, (rows and len(rows), why)
         assert partial is True, why          # 완전본이 아니라고 말해야 한다
         # ⚠️ 리터럴 대신 **사다리에서 파생**시킨다 — 단 값이 바뀌어도 계약은
@@ -61594,7 +61596,7 @@ class TestThemeSizeRejectionKeepsRows20260912:
         monkeypatch.setattr(
             nsc, "_get2_json",
             lambda url, params=None, **k: (None, nsc._nd.http_reason(404)))
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows is None and partial is False, (rows, why)
         assert "404" in why, why
 
@@ -61816,7 +61818,7 @@ class TestThemeLadderUsesDeclaredCap20260912:
             return full[:n], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert 500 in sizes, sizes            # 원천이 말한 값으로 물었다
         assert rows and len(rows) == 400, (len(rows or []), why)
         assert partial is False, why
@@ -61840,7 +61842,7 @@ class TestThemeLadderUsesDeclaredCap20260912:
             return full, ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows and len(rows) == 100 and partial is True
         assert "쪽(page)" in why, why          # 직전 한도의 사유가 살아 있다
         big = f"한도 {nsc._THEME_PAGE_SIZES[1]}"
@@ -61861,7 +61863,7 @@ class TestThemeLadderUsesDeclaredCap20260912:
             return full, ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows and len(rows) == 100, why
         assert "2쪽" in why, why
 
@@ -61883,7 +61885,7 @@ class TestThemeLadderUsesDeclaredCap20260912:
             return None, nsc._nd.http_reason(400, 9, body=body)
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows is None and partial is False, (rows, why)
         assert calls["n"] <= len(nsc._THEME_PAGE_SIZES) + nsc._THEME_CAP_TRIES, (
             calls["n"])
@@ -62055,7 +62057,7 @@ class TestParamSchemaProbe20260912:
             return [dict(row, no=str(i)) for i in range(n)], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, _why, _partial = nsc._theme_json_rung("u")
+        rows, _why, _partial, _warn = nsc._theme_json_rung("u")
         assert rows and len(rows) == 150, len(rows or [])
         assert 150 in sizes, sizes
         assert nsc._THEME_PAGE_SIZES[-1] not in sizes, sizes   # 순손실 없음
@@ -62080,7 +62082,7 @@ class TestParamSchemaProbe20260912:
             return [dict(row, no=str(i)) for i in range(n)], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, _partial = nsc._theme_json_rung("u")
+        rows, why, _partial, _warn = nsc._theme_json_rung("u")
         assert rows and len(rows) == 50, (rows and len(rows), why)
 
     def test_halving_only_on_size_rejections(self, monkeypatch, tmp_path):
@@ -62127,7 +62129,7 @@ class TestParamSchemaProbe20260912:
             return [dict(row, no=str(i)) for i in range(100)], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert rows and len(rows) == 100, len(rows or [])
         assert partial is True, (why, "부분을 완전본으로 찍었다")
 
@@ -62746,6 +62748,9 @@ class TestThemeSortSweep20260912:
         # 로그로 간다. 완전본이면 ✅ 이고 합산 사실만 적는다.
         assert "⚠️" not in out["via"] and "✅" in out["via"], out["via"]
         assert "한도" not in out["via"], out["via"]
+        # 정렬별 기여는 **측정 증거**다 — 지우면 다음 라운드가 어느 정렬이
+        # 값어치 있는지 모른다(리뷰 Low-4 · #43·#82).
+        assert "fallCnt+" in out["reason"], out["reason"]
 
     def test_barren_sort_sweep_is_not_called_complete(
             self, monkeypatch, tmp_path):
@@ -62833,7 +62838,7 @@ class TestThemeSortSweep20260912:
         big = self._universe(1300)
         self._wire(nsc, monkeypatch, universe=big, cap=5000,
                    windows={"fallCnt": (300, 1300)})
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert len(rows) == 1300, (len(rows), why)
         assert partial is False, why
         assert "정렬" in why, why
@@ -62863,7 +62868,7 @@ class TestThemeSortSweep20260912:
             return full[lo:hi][:size], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert len(rows) == 266, (len(rows), why)
         assert partial is True, why       # 훑기는 깨끗했지만 쪽 하나를 잃었다
 
@@ -62885,6 +62890,212 @@ class TestThemeSortSweep20260912:
             return [dict(self._ROW, no=f"{page or 1}-{i}") for i in range(size)], ""
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
-        rows, why, partial = nsc._theme_json_rung("u")
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
         assert partial is True, (why, "쪽 상한 손실을 훑기가 지웠다")
         assert "상한" in why, why
+
+    def test_page_rejected_with_4xx_is_a_ceiling_not_a_loss(
+            self, monkeypatch, tmp_path):
+        """**독립 리뷰 High-1 재현**: `page` 를 안 받는 원천(400)에서 266개를
+        다 모으고도 영원히 부분이라 캐시가 안 생겼다.
+
+        이 가족이 `page` 에 400 을 주는 것은 in-code 실측 기록이고 형제 픽스처가
+        재현한다 — 그걸 손실로 세면 이 변경의 목적(266개 + 캐시)이 통째로
+        무효화된다. 429·5xx 는 진짜 손실이라 처방이 정반대다(#82).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = self._universe()
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            size, sort = p.get("pageSize", 20), p.get("sortType")
+            if size > 200:
+                return None, nsc._nd.http_reason(
+                    400, 9,
+                    body=('{"detailCode":"too_big","message":"{\\"fieldErrors\\"'
+                          ':{\\"pageSize\\":[\\"Number must be less than or '
+                          'equal to 200\\"]}}"}').encode())
+            if p.get("page"):                    # 원천이 `page` 를 **안 받는다**
+                return None, nsc._nd.http_reason(400)
+            lo, hi = {"fallCnt": (66, 266)}.get(sort, (0, 200))
+            return full[lo:hi][:size], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        out = nsc._collect_and_store()
+        assert len(out["themes"]) == 266, (len(out["themes"]), out["reason"])
+        assert out["partial"] is False, out["reason"]
+        assert (tmp_path / "theme.json").exists(), "266개를 모으고도 캐시를 못 했다"
+
+    def test_still_growing_union_is_never_called_complete(
+            self, monkeypatch, tmp_path):
+        """**독립 리뷰 High-2 재현**: 마지막 정렬이 **아직도 새 항목을 주는데**
+        `_THEME_SORTS` 가 소진되면 '평평해졌다'가 아니다 — 더 있다(#280·#341).
+
+        옛 판은 그 가드(`last_gain > 0`)에 회귀가 없어 지워도 전부 green 이었다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        big = self._universe(2000)
+        # 정렬 5종이 **서로 겹치지 않는** 창을 준다 → 매 정렬이 200종씩 새로.
+        wins = {v: (200 * (i + 1), 200 * (i + 2))
+                for i, v in enumerate(nsc._THEME_SORTS)}
+        self._wire(nsc, monkeypatch, universe=big, windows=wins)
+        out = nsc._collect_and_store()
+        assert len(out["themes"]) == 1200, len(out["themes"])
+        assert out["partial"] is True, out["reason"]
+        assert not (tmp_path / "theme.json").exists()
+
+    def test_sort_response_wrapped_in_a_dict_is_accepted(
+            self, monkeypatch, tmp_path):
+        """**리뷰 Low-1**: 정상 응답을 '정렬 실패(사유 없음)' 로 찍고 훑기를
+        끊었다 — 형제의 언랩을 공용 헬퍼로 쓴다(#38·#292 틀린 라벨)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = self._universe()
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            size, sort = p.get("pageSize", 20), p.get("sortType")
+            if size > 200:
+                return None, nsc._nd.http_reason(400, 9)
+            lo, hi = {"fallCnt": (66, 266)}.get(sort, (0, 200))
+            rows = full[lo:hi][:size]
+            return ({"result": rows} if sort else rows), ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
+        assert len(rows) == 266, (len(rows), why)
+        assert "정렬 실패" not in why, why
+
+    def test_sweep_refuses_a_different_resource(self, monkeypatch, tmp_path):
+        """**리뷰 Medium-2**: 테마를 물었는데 업종이 오면 합집합에 넣지 않는다.
+
+        값이 다 '있어서' 아무 감사도 안 걸린다 — `wrong_resource` 가 막으라고
+        만들어진 정확히 그 사고다(#38·#96).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = self._universe()
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            size, sort = p.get("pageSize", 20), p.get("sortType")
+            if size > 200:
+                return None, nsc._nd.http_reason(400, 9)
+            if sort:      # 업종 행이 온다
+                return [{"no": f"u{i}", "name": f"U{i}", "changeRate": "1.0",
+                         "type": "upjong"} for i in range(79)], ""
+            return full[:size], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
+        assert len(rows) == 200, (len(rows), why)     # 업종 79행이 안 섞였다
+        assert partial is True, why
+
+    def test_sweep_stops_at_its_time_budget(self, monkeypatch, tmp_path):
+        """**리뷰 Medium-3**: 훑기는 전경(요청) 경로다 — 예산이 없으면 원천이
+        느린 날 화면이 정렬 수만큼 더 멈춘다(#116·#346)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = self._universe()
+        seen: list = []
+
+        # ⚠️ 시간을 `sleep` 으로 재면 **단독 green · 전체 실행 red** 다(실측 —
+        # #128·#130 그대로). 시계를 주입해 결정적으로 만든다: 호출마다 5초씩
+        # 흘러 예산 8초를 두 번째 검사에서 넘는다.
+        class _Clock:
+            n = 0
+
+            def time(self):
+                _Clock.n += 1
+                return 5.0 * _Clock.n
+
+        monkeypatch.setattr(nsc, "time", _Clock())
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            size, sort = p.get("pageSize", 20), p.get("sortType")
+            if sort:
+                seen.append(sort)
+            if size > 200:
+                return None, nsc._nd.http_reason(400, 9)
+            lo, hi = {"fallCnt": (66, 266)}.get(sort, (0, 200))
+            return full[lo:hi][:size], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
+        assert len(seen) < len(nsc._THEME_SORTS), seen
+        assert "예산" in why and partial is True, why
+
+    def test_same_status_on_many_sorts_reads_as_environment(
+            self, monkeypatch, tmp_path):
+        """**리뷰 Low-6**: 여러 정렬이 같은 상태로 거절되면 정렬 드리프트가
+        아니라 환경이다 — 형제 프로브와 같은 후처리(#45·#82·#165)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        self._wire(nsc, monkeypatch,
+                   fail_sorts={s: "원천이 HTTP 429 — 요청 한도 초과"
+                               for s in nsc._THEME_SORTS})
+        rows, why, partial, _warn = nsc._theme_json_rung("u")
+        assert "환경 변화 의심" in why, why
+
+    def test_discovery_validation_does_not_sweep(self, monkeypatch, tmp_path):
+        """**리뷰 Low-5**: 탐색 검증은 결과를 버린다 — 훑기는 순손실이다(#61).
+
+        ⚠️ 첫 판은 `_theme_json_rung(sweep=False)` 를 **직접** 불러서, 정작
+        `_discover_theme_endpoint` 가 그 인자를 빼는 뮤테이션을 못 잡았다
+        (#20 배선은 태워야 보인다 · #291). 탐색 진입점을 그대로 태운다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = self._wire(nsc, monkeypatch)
+        monkeypatch.setattr(nsc, "_disc_paths", None, raising=False)
+        import bot.naver_spa_discover as _disc
+        monkeypatch.setattr(
+            _disc, "discover",
+            lambda *a, **k: (["api/domestic/market/theme/list"], ""))
+        nsc._discover_theme_endpoint()
+        assert calls, "후보를 한 번도 검증하지 않았다"
+        assert [c for c in calls if c[2]] == [], (
+            "탐색 검증이 정렬 훑기까지 걸었다", calls)
+
+    def test_anomaly_without_partial_still_warns(self, monkeypatch, tmp_path):
+        """**리뷰 Medium-1**: 일부러 `partial=False` 로 두고 **사유만 남기는**
+        갈래(읽다 버린 행)가 ✅ 로 찍히면 배지가 자기 문장을 뒤집는다(#34·#43).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+
+        # 원천이 기대 하한보다 적게 준다 — 부분으로 찍어 캐시를 막지는 않되
+        # (#171 그러면 영원히 재수집) 사실은 말해야 한다.
+        monkeypatch.setattr(
+            nsc, "_get2_json",
+            lambda u, params=None, **k: (
+                [dict(self._ROW, no=str(i), name=f"T{i}") for i in range(90)], ""))
+        rows, marks, why, partial = nsc.collect_themes_json()
+        assert partial is False and "하한" in why, why
+        assert "⚠️" in marks[-1] and "✅" not in marks[-1], marks
+
+    def test_dead_guards_actually_guard(self, monkeypatch):
+        """**리뷰 Low-3**: 두 가드에 발화 경로가 없어 뮤테이션이 통과했다 —
+        실제로 태운다(#291 발화할 수 없는 가드는 없는 것이다)."""
+        import bot.naver_sector_client as nsc
+
+        # ① 정렬 후보가 비면 훑기는 아무것도 안 하고 부분으로 남는다
+        monkeypatch.setattr(nsc, "_THEME_SORTS", ())
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("후보가 없는데 요청했다")))
+        rows = [dict(self._ROW)]
+        assert nsc._theme_sort_sweep("u", 200, rows) == (rows, "", True)
+        # ② 행이 없거나 크기를 모르면 훑기를 시작하지 않는다
+        assert nsc._theme_sweep_finish("u", [], "왜", 200) == ([], "왜", True, True)
+        assert nsc._theme_sweep_finish("u", rows, "왜", 0) == (rows, "왜", True, True)
+
+    def test_complete_path_logs_the_ladder_story(
+            self, monkeypatch, tmp_path, caplog):
+        """**리뷰 Low-4**: 부제에서 뺀 사다리 경위는 **로그로 남긴다**(#43).
+
+        '버리지는 않는다' 고 주석이 약속하는데 그 줄을 지워도 전부 green 이었다.
+        """
+        import logging
+
+        nsc = self._iso(monkeypatch, tmp_path)
+        self._wire(nsc, monkeypatch)
+        with caplog.at_level(logging.INFO, logger="bot.naver_sector"):
+            nsc._theme_json_rung("u")
+        assert any("한도 경위" in r.message for r in caplog.records), [
+            r.message for r in caplog.records]
