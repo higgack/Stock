@@ -945,14 +945,14 @@ _BS_CSS = """
 <style>
 .bs-tbl{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
 .bs-tbl th,.bs-tbl td{padding:5px 8px;border-bottom:1px solid var(--border,#2a3656);text-align:left}
-.bs-tbl th{color:var(--fg-soft,#93a0bd);font-weight:500}
+.bs-tbl th{color:var(--muted);font-weight:500}
 .bs-tbl th.num,.bs-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
 .bs-tbl tr.on{background:rgba(77,163,255,.14);font-weight:600}
 /* 각주(확정 기준일·현금 사유) — 표보다 작고 흐리게. ⚠️ 이 클래스를 쓰면서
    **이 페이지 번들에 정의를 안 두면** 각주가 본문 크기로 떠서 표보다 커
    보인다(실수 #201 "너무 크잖아"). 대시보드에 같은 이름이 있어도 이 페이지는
    그 번들을 안 쓴다 — 쓰는 곳이 전부 그 번들인지 먼저 답할 것(#273). */
-.bs-tbl .si-note{font-size:11px;color:var(--fg-soft,#93a0bd);font-weight:400}
+.bs-tbl .si-note{font-size:11px;color:var(--muted);font-weight:400}
 /* 기준일 줄 — stat-grid 바로 아래, 본문보다 한 톤 또렷하게(묻히면 또 묻는다) */
 .bs-asof{margin-top:8px;font-size:12.5px}
 </style>

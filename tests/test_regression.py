@@ -63194,9 +63194,12 @@ class TestPaletteContrastAndDesignDrift20260912:
         rows = []
         for p, src in mods:
             rows.extend(cc.audit_source(src, str(p)))
-        # 대조 0건은 통과가 아니라 실패(#54). 2026-09-12 실측 356쌍 — 하한은
-        # 현재값에 바싹 붙이지 않는다(#67 시한폭탄).
-        assert len(rows) >= 250, f"검사 쌍 {len(rows)}개 — 쌍 파생이 무너졌다(#54)"
+        # 대조 0건은 통과가 아니라 실패(#54). 2026-09-12 실측 480쌍.
+        # ⚠️ 하한은 **실패모드를 실제로 잡는 값**이어야 한다. 처음 250 은
+        # 이 가드가 그물이라고 광고하는 바로 그 붕괴(`--text` 오분류)를 통과
+        # 시켰다(독립 리뷰 실측: 그때 368→280, 지금은 480→392). 그 위·현재값
+        # 아래로 잡는다 — 현재값에 바싹 붙이지는 않는다(#67 시한폭탄).
+        assert len(rows) >= 420, f"검사 쌍 {len(rows)}개 — 쌍 파생이 무너졌다(#54)"
         # 문턱은 **리터럴로** 못박는다 — `cc.failures(rows)` 로 기본값을 쓰면
         # `AA_MIN` 을 1.0 으로 내리는 뮤테이션이 그대로 통과한다(#66 자기 상수로
         # 자기를 검증하는 tautology).
@@ -63283,6 +63286,90 @@ class TestPaletteContrastAndDesignDrift20260912:
                     missing.append(f"{p} [{sel[:40]}]")
         assert not missing, "표면 없는 팔레트 블록:\n  " + "\n  ".join(missing[:10])
 
+    def test_page_surface_is_derived_from_body_selector_not_only_names(self):
+        """표면 파생이 **이름 규약 밖**에서도 도는지 — 없으면 3개짜리 손 목록이다.
+
+        2026-09-12 독립 리뷰 실측: 오늘 레포의 22개 팔레트 모듈에서 선택자 파생이
+        기여하는 토큰이 **0개**라, `_SURFACE_SELECTORS` 루프를 통째로 지워도
+        회귀 10건이 전부 green 이었다. 그 상태로 "표면은 선택자에서 파생한다"고
+        적으면 문서가 자기 자신에 대해 거짓을 말하는 것이고(#286), 가드는
+        사실상 `("--bg","--card","--surface")` 열거다(#24). 합성 픽스처로
+        그 경로를 **실제로 태운다**(#291·#353 발화 경로 없는 가드는 가드가 아니다).
+        """
+        from bot import css_contrast as cc
+
+        # 표면 이름이 규약 밖(`--page`)이고 텍스트도 규약 밖(`--ink`)이다.
+        src = (":root{--page:#ffffff;--ink:#cccccc;--other:#111111}"
+               "body{background:var(--page)}.t{color:var(--ink)}")
+        assert "--page" in cc.page_surfaces(src), cc.page_surfaces(src)
+        bad = cc.failures(cc.audit_source(src, "synthetic"))
+        assert [r["text"] for r in bad] == ["--ink"], bad
+        # 반대 증거(#25): 배경을 그 규칙에서 떼면 표면이 아니다.
+        none = src.replace("body{background:var(--page)}", "body{margin:0}")
+        assert "--page" not in cc.page_surfaces(none), cc.page_surfaces(none)
+
+    def test_accent_on_pairs_meet_wcag_aa(self):
+        """`--X-on` × `--X` — 칩 배경 위 글씨. 토큰을 옮기는 것만으론 못 고친다.
+
+        2026-09-12 독립 리뷰 실측: 접근성을 위해 다크 `--accent` 를 밝히자
+        그 위의 **리터럴 흰 글씨**가 3.65 → 3.00 으로 **더 나빠졌다**. 한 토큰이
+        '어두운 배경 위 글자'와 '그 위에 놓이는 글자'를 겸할 수 없다(#34) —
+        전경 토큰을 따로 두고 이 축을 가드가 잰다(#274 못 보는 축을 닫는다).
+        """
+        from bot import css_contrast as cc
+
+        rows = []
+        for _p, src in self._palette_modules():
+            rows.extend({**r, "module": str(_p)} for r in cc.on_pairs(src))
+        # 대조 0건은 통과가 아니다(#54). 2026-09-12 실측 16쌍.
+        assert len(rows) >= 12, f"`-on` 쌍 {len(rows)}개 — 배선이 무너졌다"
+        assert cc.AA_MIN == 4.5, cc.AA_MIN
+        bad = cc.failures(rows, 4.5)
+        assert not bad, "칩 전경 AA 미달:\n  " + "\n  ".join(cc.describe(r) for r in bad)
+
+    def test_on_pair_guard_fires_and_needs_a_real_partner(self):
+        """발화 확인 + 짝 없는 `--X-on` 은 재지 않는다(#25 반대 증거)."""
+        from bot import css_contrast as cc
+
+        bad = cc.on_pairs(":root{--accent:#3097ff;--accent-on:#ffffff;--x:1}")
+        assert [round(r["ratio"], 2) for r in bad] == [3.00], bad
+        ok = cc.on_pairs(":root{--accent:#3097ff;--accent-on:#0b1220;--x:1}")
+        assert not cc.failures(ok), ok
+        # 짝 `--orphan` 이 없으면 잴 대상이 아니다(지어내지 않는다).
+        assert not cc.on_pairs(":root{--orphan-on:#ffffff;--a:1;--b:2}")
+
+    def test_accent_on_is_not_measured_against_the_page_background(self):
+        """`--accent-on` 은 칩 위에 놓인다 — 페이지 배경과 대조하면 오탐이다(#50).
+
+        다크 팔레트의 `--accent-on`(어두운 잉크)은 다크 `--bg` 위에서 1.x:1 이지만
+        그 조합은 화면에 존재하지 않는다. 짝이 실재할 때만 제외한다.
+        """
+        from bot import css_contrast as cc
+
+        src = ("body.dark{--bg:#1a1a1c;--card:#2c2c2e;--accent:#3097ff;"
+               "--accent-on:#0b1220}"
+               "body{background:var(--bg)}.c{background:var(--accent);"
+               "color:var(--accent-on)}")
+        assert "--accent-on" not in cc.text_tokens(src), cc.text_tokens(src)
+        # 반대 증거: 짝 `--accent` 가 없으면 평범한 텍스트 토큰이다.
+        lone = src.replace("--accent:#3097ff;", "")
+        assert "--accent-on" in cc.text_tokens(lone), cc.text_tokens(lone)
+
+    def test_no_palette_block_is_silently_rejected(self):
+        """`_SELECTOR_OK` 가 버린 블록은 어떤 가드도 못 본다 — 0건인 지금 못박는다.
+
+        `:is(...)`·`:where(...)` 처럼 괄호가 든 선택자로 팔레트를 쓰면 블록이
+        통째로 사라지고 `test_every_palette_block_has_a_surface` 조차 안 본다(#54).
+        """
+        from bot import css_contrast as cc
+
+        rejected = []
+        for _p, src in self._palette_modules():
+            rejected += [f"{_p} [{sel[:40]}]" for sel in cc.rejected_selectors(src)]
+        assert not rejected, "버려진 팔레트 블록:\n  " + "\n  ".join(rejected[:10])
+        # 반대 증거(#47): 틀린 상태를 재현하면 실제로 잡힌다.
+        assert cc.rejected_selectors(":is(.a,.b){--bg:#fff;--card:#fff;--m:#ccc}")
+
     # --- ② 문서 드리프트 ---------------------------------------------------
     @staticmethod
     def _design_md_rows():
@@ -63293,15 +63380,27 @@ class TestPaletteContrastAndDesignDrift20260912:
                           md, re.M)
 
     @staticmethod
-    def _drift(rows, light, dark):
+    def _drift(rows, table, is_dark):
+        """문서 행 × **한 팔레트 블록**의 실값. 그 블록이 정의한 토큰만 본다.
+
+        ⚠️ 블록을 합쳐서 재면 안 된다 — `.update()` 로 병합하면 마지막 블록만
+        검사돼, `bot/dashboard.py` 의 라이트 팔레트 셋 중 둘이 문서와 갈라져도
+        통과한다(독립 리뷰 뮤테이션 실측).
+        """
         bad = []
         for name, lv, dv in rows:
-            for want, table, label in ((lv, light, "라이트"), (dv, dark, "다크")):
-                got = table.get(name)
-                if got is None:
-                    bad.append(f"{name} {label}: dashboard.py 에 정의 없음")
-                elif got.strip().lower() != want.strip().lower():
-                    bad.append(f"{name} {label}: 문서 {want} ≠ 코드 {got}")
+            got = table.get(name)
+            if got is None:
+                continue
+            want = dv if is_dark else lv
+            # `#fff` 와 `#ffffff` 는 같은 색이다 — 표기 차이로 오보하지 않게
+            # **값으로** 비교한다(문자열 비교는 표기를 계약으로 만든다, #19).
+            from bot import css_contrast as _cc
+            same = (_cc._rgb(got) is not None
+                    and _cc._rgb(got) == _cc._rgb(want))
+            if not same and got.strip().lower() != want.strip().lower():
+                label = "다크" if is_dark else "라이트"
+                bad.append(f"{name} {label}: 문서 {want} ≠ 코드 {got}")
         return bad
 
     def test_design_md_palette_matches_dashboard_css(self):
@@ -63310,13 +63409,20 @@ class TestPaletteContrastAndDesignDrift20260912:
 
         rows = self._design_md_rows()
         assert len(rows) >= 9, f"DESIGN.md 표에서 {len(rows)}행 — 파싱이 무너졌다(#54)"
-        src = open("bot/dashboard.py").read()
-        light, dark = {}, {}
-        for sel, tok in cc.palette_blocks(src):
-            if "--bg" not in tok:
-                continue
-            (dark if "dark" in sel else light).update(tok)
-        bad = self._drift(rows, light, dark)
+        src = pathlib.Path("bot/dashboard.py").read_text()
+        # `bot/dashboard.py` 는 라이트 팔레트가 셋(`_BASE_CSS`·`_SCREENER_CSS`·
+        # `_MARKET_CSS`)·다크가 셋이다. 합치면 마지막 것만 검사된다(#45).
+        blocks = [(sel, tok) for sel, tok in cc.palette_blocks(src) if "--bg" in tok]
+        assert len(blocks) >= 4, f"팔레트 블록 {len(blocks)}개 — 파싱이 무너졌다(#54)"
+        bad, compared = [], 0
+        for sel, tok in blocks:
+            mine = [(n, lv, dv) for n, lv, dv in rows if n in tok]
+            compared += len(mine)
+            table = {n: tok[n] for n, _, _ in mine}
+            for msg in self._drift(mine, table, "dark" in sel.lower()):
+                bad.append(f"[{sel[:44]}] {msg}")
+        # 대조 0건은 통과가 아니다(#54). 2026-09-12 실측 45건.
+        assert compared >= 30, f"대조 {compared}건 — 블록↔문서 매칭이 무너졌다"
         assert not bad, "DESIGN.md ↔ dashboard.py 드리프트:\n  " + "\n  ".join(bad)
 
     def test_drift_guard_fires_when_the_doc_lies(self):
@@ -63325,7 +63431,9 @@ class TestPaletteContrastAndDesignDrift20260912:
         rows = self._design_md_rows()
         assert rows, "표가 비었다"
         name, lv, dv = rows[0]
-        light, dark = {name: lv}, {name: dv}
-        assert not self._drift(rows[:1], light, dark), "정상인데 잡았다"
-        assert self._drift(rows[:1], {name: "#ff00ff"}, dark), "값이 갈렸는데 못 잡았다"
-        assert self._drift(rows[:1], {}, dark), "정의가 없는데 못 잡았다"
+        assert not self._drift(rows[:1], {name: lv}, False), "정상인데 잡았다"
+        assert not self._drift(rows[:1], {name: dv}, True), "정상인데 잡았다(다크)"
+        assert self._drift(rows[:1], {name: "#ff00ff"}, False), "값이 갈렸는데 못 잡았다"
+        # 라이트 값을 다크 칸에 넣으면 잡혀야 한다 — 테마를 뒤바꾸는 변형 방어.
+        if lv.strip().lower() != dv.strip().lower():
+            assert self._drift(rows[:1], {name: lv}, True), "테마가 뒤바뀌었는데 못 잡았다"

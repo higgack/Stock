@@ -14,6 +14,10 @@
     dark]`·`body.dark` 등 선택자 무관).
   · 표면 = `body`/`.card`/`.panel`/`.wrap` 규칙이 배경으로 쓰는 토큰(선택자에서
     파생) ∪ 이름이 표면 규약인 것(`--bg`·`--card`·`--surface`).
+    ⚠️ 오늘 레포에서 **선택자 파생이 기여하는 토큰은 0개**다(이름 규약 셋이
+    전부 덮는다) — 즉 그 경로는 이름 밖 표면을 위한 그물이고 실물로는 안
+    발화한다. 합성 픽스처가 그 경로를 태워 가드로 남긴다(#291 발화 경로 없는
+    가드는 가드가 아니다 · #286 문서가 자기 자신에 대해 거짓을 말하지 않게).
   · 텍스트 = `color:var(--X)` 로 쓰이는 토큰 − 표면 − 칩 전경(`--X-fg` 에
     짝 `--X-bg` 가 있는 것 — 그건 자기 tint 위에 놓이지 페이지 표면에 안 놓인다).
 
@@ -24,12 +28,8 @@
     **재지 않은 것을 단정하지 않는다**(#165).
   · 큰 글씨 예외(≥18.66px bold / 24px)를 쓰지 않고 전부 AA 4.5 로 본다 —
     이 레포의 본문·표는 11~14px 라 전부 small text 다(실측).
-  · 칩 전경 × 자기 칩 배경 쌍은 이름 규약으로만 짝이 나므로 판정하지 않는다.
-    ⚠️ 실측으로 남아 있는 것: 활성 필은 `--accent` 배경 + **리터럴 흰 글씨**라
-    라이트는 4.84~5.05 로 통과하지만 다크 `--accent`(#7c84e8 3.32 · #4085f6
-    3.56)는 AA 미달이다. 한 토큰이 '어두운 배경 위 글자'(밝아야 함)와 '그 위의
-    흰 글자'(어두워야 함)를 겸할 수 없어 생기는 구조적 긴장이고, 고치려면
-    `--accent-on` 같은 전경 토큰을 새로 두어야 한다 — 이번 범위 밖으로 남겼다.
+  · 칩 전경 × 자기 칩 배경 중 **`--X-on` 규약을 쓰지 않는 짝**(`--tier-l-fg`
+    ↔`--tier-l-bg` 류)은 판정하지 않는다. `--X-on` 쌍은 `on_pairs()` 가 잰다.
 """
 from __future__ import annotations
 
@@ -116,6 +116,11 @@ def _is_chip_foreground(tok: str, names: set[str], bg_used: set[str]) -> bool:
     실측 4건 — #24 이름 규약 열거는 다음 이름을 못 잡는다 · #50 내 가정을
     원천의 보장으로 착각하지 말 것).
     """
+    # `--X-on` 은 정의상 `--X` 위에 놓이는 전경이다(`on_pairs()` 가 잰다).
+    # 페이지 표면과 대조하면 다크 `--accent-on`(어두운 잉크)이 다크 배경 위로
+    # 잡혀 오탐이 된다 — 짝이 실재할 때만 제외한다(#50 가정을 보장으로 쓰지 말 것).
+    if tok.endswith("-on") and tok[: -len("-on")] in names:
+        return True
     for suf in _FG_SUFFIXES:
         if not tok.endswith(suf):
             continue
@@ -165,6 +170,55 @@ def audit_paths(paths) -> list[dict]:
     for p in sorted(Path(x) for x in paths):
         rows.extend(audit_source(p.read_text(errors="ignore"), str(p)))
     return rows
+
+
+def on_pairs(src: str) -> list[dict]:
+    """`--X-on`(그 토큰 위에 놓이는 전경) × `--X` 쌍을 잰다.
+
+    왜 별도인가 — 한 토큰이 '어두운 배경 위 글자'(밝아야 함)와 '그 위에 놓이는
+    글자'(어두워야 함)를 겸할 수 없다. 2026-09-12 실측에서 활성 칩은
+    `background:var(--accent)` + **리터럴 흰 글씨**였고, 라이트는 4.84~5.19 로
+    통과하지만 다크는 2.53~3.65 로 전부 AA 미달이었다 — 그리고 접근성을 위해
+    다크 `--accent` 를 밝히자 그 흰 글씨가 **더 나빠졌다**(3.65→3.00). 즉 토큰을
+    옮기는 것만으로는 못 고치고 전경 토큰이 따로 있어야 한다(#34 한 라벨이 두
+    계정을 대표하면 한쪽은 반드시 거짓말).
+
+    이름 규약이지만 **열거가 아니다** — 선언된 `--X-on` 을 전부 훑고 짝 `--X`
+    가 같은 블록에 있을 때만 잰다. 새 `--X-on` 을 만들면 다음 실행이 저절로 본다.
+    """
+    rows: list[dict] = []
+    for sel, tok in palette_blocks(src):
+        for t in sorted(tok):
+            if not t.endswith("-on"):
+                continue
+            base = t[: -len("-on")]
+            if base not in tok:
+                continue
+            r = contrast_ratio(tok[t], tok[base])
+            if r is None:
+                continue
+            rows.append({"selector": sel, "text": t, "text_value": tok[t],
+                         "surface": base, "surface_value": tok[base], "ratio": r})
+    return rows
+
+
+def rejected_selectors(src: str) -> list[str]:
+    """팔레트로 보이는데 `_SELECTOR_OK` 에 걸려 **버려진** 선택자.
+
+    버려진 블록은 `test_every_palette_block_has_a_surface` 조차 못 보므로
+    조용히 무검사가 된다 — 0건인 지금이 못박을 때다(#54 대조 0건은 통과가 아니다).
+    """
+    out: list[str] = []
+    for m in re.finditer(r"([^{}]*)\{([^{}]*)\}", src):
+        if len(_DECL.findall(m.group(2))) < 3:
+            continue
+        raw = m.group(1).strip()
+        if not raw:
+            continue
+        sel = raw.splitlines()[-1].strip()
+        if sel and not _SELECTOR_OK.match(sel):
+            out.append(sel)
+    return out
 
 
 def failures(rows, minimum: float = AA_MIN) -> list[dict]:

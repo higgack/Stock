@@ -224,9 +224,9 @@ def _hour_label(h: str) -> str:
 _CSS = """
 <style>
 :root,[data-theme="dark"]{--bg:#0e1117;--card:#161b22;--border:#30363d;--text:#e6edf3;
---muted:#8b949e;--accent:#58a6ff;--badge:#e6edf3;--badge-text:#0e1117}
+--muted:#8b949e;--accent:#58a6ff; --accent-on:#0b1220;--badge:#e6edf3;--badge-text:#0e1117}
 [data-theme="light"]{--bg:#fff;--card:#f6f8fa;--border:#d0d7de;--text:#1f2328;
---muted:#656d76;--accent:#0969da;--badge:#1f2328;--badge-text:#fff}
+--muted:#656d76;--accent:#0969da; --accent-on:#fff;--badge:#1f2328;--badge-text:#fff}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
 background:var(--bg);color:var(--text);padding:24px;max-width:1100px;margin:0 auto}
@@ -279,7 +279,7 @@ margin-right:5px;vertical-align:middle}
 background:var(--card);color:var(--text);font-size:14px;font-weight:600;
 text-decoration:none;transition:background .15s}
 .mkt-btn:hover{background:var(--border)}
-.mkt-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.mkt-btn.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}
 .kir-sec{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:20px}
 .kir-hd{font-size:15px;font-weight:700;margin-bottom:10px}
 .kir-sub{font-size:11px;font-weight:400;color:var(--muted);margin-left:6px}

@@ -982,15 +982,15 @@ _BASE_CSS = """
   --fg: #282a30; --fg-soft: #696e78; --bg: #f7f8f9; --card: #ffffff;
   --surface-2: #f0f1f3;
   --border: #e8e8ea; --border-input: #e0e1e4; --border-strong: #d8dade;
-  --accent: #5a66d1; --accent-hover: #515dc4;
-  --focus-ring: rgba(94,106,210,0.13);
+  --accent: #5a66d1; --accent-on:#fff; --accent-hover: #515dc4;
+  --focus-ring: rgba(90,102,209,0.13);
   --radius: 10px; --radius-sm: 8px;
 }
 :root[data-theme="dark"] {
   --fg: #e2e3e6; --fg-soft: #8a8f98; --bg: #0b0c0e; --card: #141518;
   --surface-2: #1a1b1f;
   --border: #26272b; --border-input: #2a2c31; --border-strong: #34363c;
-  --accent: #7c84e8; --accent-hover: #9aa2f0;
+  --accent: #7c84e8; --accent-on:#0b1220; --accent-hover: #9aa2f0;
   --focus-ring: rgba(124,132,232,0.18);
 }
 * { box-sizing: border-box; }
@@ -1075,7 +1075,7 @@ _INDEX_CSS = _BASE_CSS + """
   font-family: inherit; transition: border-color 0.12s, background 0.12s;
 }
 .mf-btn:hover { color: var(--fg); border-color: var(--accent); }
-.mf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.mf-btn.active { background: var(--accent); color:var(--accent-on); border-color: var(--accent); font-weight: 600; }
 .mf-count { opacity: 0.7; font-size: 11px; margin-left: 2px; }
 .status-line {
   color: var(--fg-soft); font-size: 13px; margin: 0 4px 16px;
@@ -2349,7 +2349,7 @@ _DETAIL_CSS = _BASE_CSS + """
   font-family: inherit; line-height: 1.6;
 }
 .chart-tf-btn:hover { color: var(--fg); border-color: var(--accent); }
-.chart-tf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.chart-tf-btn.active { background: var(--accent); color:var(--accent-on); border-color: var(--accent); font-weight: 600; }
 .chart-tf-status { color: var(--fg-soft); font-size: 12px; margin-left: 6px; }
 .chart-ind-toolbar { margin-top: 4px; }
 .chart-ind-label { color: var(--fg-soft); font-size: 12px; margin-right: 2px; }
@@ -2359,7 +2359,7 @@ _DETAIL_CSS = _BASE_CSS + """
   font-family: inherit; line-height: 1.6;
 }
 .chart-ind-btn:hover { color: var(--fg); border-color: var(--accent); }
-.chart-ind-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.chart-ind-btn.active { background: var(--accent); color:var(--accent-on); border-color: var(--accent); font-weight: 600; }
 .chart-row { display: flex; gap: 10px; align-items: stretch; }
 .chart-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 /* 상단 헤드라인(현재가 large + 기간 수익률 + 거래량) — 레퍼런스 터미널 패턴. */
@@ -8769,7 +8769,7 @@ def _render_stock_info_html(rec: dict) -> str:
       <b>같은 날 같은 종목 재실행은 무과금</b>(캐시)입니다.
     </div>
     <button type="button" id="si-tech-run"
-      style="background:var(--accent);color:#fff;border:none;border-radius:6px;
+      style="background:var(--accent);color:var(--accent-on);border:none;border-radius:6px;
              padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer">
       🧮 기술 분석 실행 (Gemini)</button>
     <div id="si-tech-debate-status" style="font-size:12px;color:var(--fg-soft);margin-top:8px"></div>
@@ -11394,14 +11394,14 @@ _SCREENER_CSS = (
    defaults at `:root`, dark overrides at `:root[data-theme="dark"]`. */
 :root {
   --bg:#f7f8f9; --card:#ffffff; --border:#e8e8ea;
-  --text:#282a30; --muted:#696e78; --accent:#5a66d1;
+  --text:#282a30; --muted:#696e78; --accent:#5a66d1; --accent-on:#fff;
   --pos:#04805a; --neg:#dc2626; --neu:#8a8f98; --pending:#aa5d05;
-  --accent-soft:rgba(94,106,210,0.07);
-  --accent-soft2:rgba(94,106,210,0.14);
+  --accent-soft:rgba(90,102,209,0.07);
+  --accent-soft2:rgba(90,102,209,0.14);
   --surface-tint:rgba(0,0,0,0.05);
   --surface-tint-strong:rgba(0,0,0,0.07);
   --row-border:rgba(0,0,0,0.05);
-  --tier-l-bg:rgba(94,106,210,0.12); --tier-l-fg:#4651b8;
+  --tier-l-bg:rgba(90,102,209,0.12); --tier-l-fg:#4651b8;
   --tier-m-bg:rgba(16,185,129,0.14); --tier-m-fg:#047857;
   --tier-s-bg:rgba(245,158,11,0.18); --tier-s-fg:#b45309;
   --search-btn-bg:#16a34a; --search-btn-hover:#15803d;
@@ -11410,7 +11410,7 @@ _SCREENER_CSS = (
 }
 :root[data-theme="dark"] {
   --bg:#0b0c0e; --card:#141518; --border:#26272b;
-  --text:#e2e3e6; --muted:#8a8f98; --accent:#7c84e8;
+  --text:#e2e3e6; --muted:#8a8f98; --accent:#7c84e8; --accent-on:#0b1220;
   --pos:#10B981; --neg:#f04d4d; --neu:#6B7280; --pending:#F59E0B;
   --accent-soft:rgba(124,132,232,0.06);
   --accent-soft2:rgba(124,132,232,0.15);
@@ -11799,10 +11799,10 @@ def _render_screener_domains_page() -> str:
 :root[data-theme="dark"] .dom-card:hover {{
   box-shadow:0 1px 4px rgba(0,0,0,0.3); }}
 .dom-head {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }}
-.slug {{ background:rgba(14,165,233,0.15); color:var(--accent);
+.slug {{ background:rgba(10,121,171,0.15); color:var(--accent);
   padding:4px 11px; border-radius:6px; font-size:13px; font-weight:700;
   font-family:'IBM Plex Mono',monospace;
-  border:1px solid rgba(14,165,233,0.25); }}
+  border:1px solid rgba(10,121,171,0.25); }}
 :root[data-theme="dark"] .slug {{
   background:rgba(59,130,246,0.18);
   border-color:rgba(59,130,246,0.3); }}
@@ -11844,12 +11844,12 @@ def _render_screener_domains_page() -> str:
   border-top:1px solid var(--border);
   border-left:3px solid var(--accent);
   background:linear-gradient(90deg,
-    rgba(14,165,233,0.05) 0%,
+    rgba(10,121,171,0.05) 0%,
     transparent 240px); }}
 .layer-section:first-of-type {{ margin-top:24px; border-top:none; padding-top:8px; }}
 .layer-section.l1 {{ border-left-color:#0ea5e9; }}
 .layer-section.l1 {{ background:linear-gradient(90deg,
-  rgba(14,165,233,0.07) 0%, transparent 280px); }}
+  rgba(10,121,171,0.07) 0%, transparent 280px); }}
 .layer-section.l2 {{ border-left-color:#10b981; }}
 .layer-section.l2 {{ background:linear-gradient(90deg,
   rgba(16,185,129,0.07) 0%, transparent 280px); }}
@@ -14973,10 +14973,10 @@ _PF_CSS = """<style>
 .pf-ctl input[type=text],.pf-ctl select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:13px}
 .pf-ctl label{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .pf-mkt-filter .mf-btn{background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:12px;padding:3px 10px;font-size:12px;cursor:pointer;white-space:nowrap}
-.pf-mkt-filter .mf-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.pf-mkt-filter .mf-btn.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}
 .pf-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pf-title-row h1{margin:0}
-.pf-send{background:var(--accent);color:#fff;border:0;border-radius:4px;padding:3px 7px;font-size:11px;cursor:pointer}
+.pf-send{background:var(--accent);color:var(--accent-on);border:0;border-radius:4px;padding:3px 7px;font-size:11px;cursor:pointer}
 .pf-send:hover{opacity:.88}
 .pf-send:disabled{opacity:.5;cursor:default}
 .pf-tbl thead th{position:sticky;top:0;background:var(--card);z-index:1}
@@ -17085,11 +17085,11 @@ _MARKET_CSS = (
     "<script>" + _THEME_JS + "</script>"
     "<style>"
     ":root{--bg:#f7f8f9;--card:#fff;--border:#e8e8ea;--text:#282a30;"
-    "--muted:#696e78;--accent:#5a66d1;--pos:#04805a;--neg:#dc2626;"
+    "--muted:#696e78;--accent:#5a66d1; --accent-on:#fff;--pos:#04805a;--neg:#dc2626;"
     "--neu:#8a8f98;--surface-tint:rgba(0,0,0,.05);"
-    "--accent-soft:rgba(94,106,210,.07)}"
+    "--accent-soft:rgba(90,102,209,.07)}"
     ":root[data-theme='dark']{--bg:#0b0c0e;--card:#141518;--border:#26272b;"
-    "--text:#e2e3e6;--muted:#8a8f98;--accent:#7c84e8;--pos:#10B981;"
+    "--text:#e2e3e6;--muted:#8a8f98;--accent:#7c84e8; --accent-on:#0b1220;--pos:#10B981;"
     "--neg:#f04d4d;--neu:#6B7280;--surface-tint:rgba(255,255,255,.04);"
     "--accent-soft:rgba(124,132,232,.06)}"
     "*{box-sizing:border-box}"
@@ -17110,7 +17110,7 @@ _MARKET_CSS = (
     ".search-box input:focus{border-color:var(--accent);"
     "box-shadow:0 0 0 3px var(--accent-soft)}"
     ".search-box button{padding:10px 20px;font-size:14px;font-weight:600;"
-    "border:none;border-radius:8px;background:var(--accent);color:#fff;"
+    "border:none;border-radius:8px;background:var(--accent);color:var(--accent-on);"
     "cursor:pointer}"
     ".search-box button:hover{opacity:.9}"
     ".section-hd{display:flex;align-items:baseline;gap:10px;"
@@ -17173,7 +17173,7 @@ _MARKET_CSS = (
     ".tab-btn,.etab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
     "border:1px solid var(--border);border-radius:6px;"
     "background:var(--card);color:var(--muted);cursor:pointer}"
-    ".tab-btn.active,.etab-btn.active{background:var(--accent);color:#fff;"
+    ".tab-btn.active,.etab-btn.active{background:var(--accent);color:var(--accent-on);"
     "border-color:var(--accent)}"
     ".tab-pane{display:none}.tab-pane.active{display:block}"
     ".etab-pane{display:none}.etab-pane.active{display:block}"
@@ -17277,7 +17277,7 @@ _MARKET_CSS = (
     ".fav-pager{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-top:10px}"
     ".fav-pg{min-width:30px;padding:4px 9px;border:1px solid var(--border);border-radius:6px;"
     "background:var(--surface);color:var(--text);font-size:12px;cursor:pointer}"
-    ".fav-pg.active{background:var(--accent);color:#fff;border-color:var(--accent)}"
+    ".fav-pg.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent)}"
     ".fav-pg:hover{background:var(--surface-2)}"
     "#fav-section .fav-hd h2{font-size:17px;margin:0}"
     "#fav-section .fav-hd .cnt{color:var(--muted);font-size:12px}"
@@ -20164,7 +20164,7 @@ def render_lookup_page(ticker: str) -> str:
       placeholder="티커 또는 종목명 검색 (예: NVDA, 삼성전자, 7203.T)"
       autocomplete="off" spellcheck="false"
       style="flex:1;padding:8px 12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);outline:none">
-    <button id="lk-go" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer">검색</button>
+    <button id="lk-go" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-radius:8px;background:var(--accent);color:var(--accent-on);cursor:pointer">검색</button>
     <button id="lk-save" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-radius:8px;background:var(--card);color:var(--accent);border:1px solid var(--accent);cursor:pointer">⭐ 저장</button>
   </div>
   <div class="title-row">
