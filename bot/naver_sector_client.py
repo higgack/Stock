@@ -1143,7 +1143,7 @@ def _theme_sort_sweep(url: str, size: int, rows: list) -> tuple:
 
 
 def _theme_sweep_finish(url: str, got: list, why: str, size: int,
-                       *, lost: bool = False) -> tuple:
+                        *, lost: bool = False) -> tuple:
     """한도 사다리가 **천장에서 멈춘** 결과에 정렬 훑기를 이어 붙인다.
 
     사유는 **더 행동 가능한 쪽이 앞**이다 — 훑기 결과가 지금 화면을 정하고,
