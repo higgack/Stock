@@ -1057,7 +1057,21 @@ def _theme_json_rung(url: str) -> tuple:
     for size in _THEME_PAGE_SIZES:
         got, why, partial, saturated = _theme_fetch_one_size(url, size)
         if got is None:
-            # 수신 실패·잘못된 자원은 크기를 바꿔도 같다 — 더 묻지 않는다.
+            # ⚠️ 옛 판은 여기서 **무조건** `None` 을 돌려줬다("크기를 바꿔도
+            # 같다"). 그 전제는 한도 거절에 성립하지 않는다 — `pageSize=100` 이
+            # 100행을 주고 `pageSize=300` 이 거절되면 **이미 받은 100행을
+            # 버리고** 그 단이 통째로 실패가 되어, 뒤 후보(추측 주소)의 404 만
+            # 남고 화면은 40시간 낡은 스냅샷에 '갱신 실패' 를 적는다(사용자
+            # 2026-09-12 캡처). 폴백 조건은 '실패했나' 가 아니라 **'요구를
+            # 충족했나'** 다(#136·#345b 부분 성공이 폴백을 죽인다 · #148 없다고
+            # 말하기 전에 우리가 버린 건 아닌가).
+            # ⚠️ 사유는 **잰 것만** 적는다 — '한도를 거절당했다'로 단정하면
+            # 타임아웃·일시정지·0행까지 "원천이 한도를 막는다"로 읽힌다(#165·
+            # #82, 독립 리뷰 2026-09-12 실측). 무엇을 물었고 무엇이 왔는지만.
+            if last[0]:
+                return last[0], (f"한도 {size} 요청이 실패했습니다({why}) — "
+                                 f"직전 한도로 받은 {len(last[0])}개까지만 "
+                                 "실었습니다"), True
             return None, why, False
         last = (got, why, partial)
         if not saturated:
@@ -1478,7 +1492,14 @@ def _collect_and_store() -> dict:
                     len(out.get("themes") or []), out.get("partial"))
         if not out.get("themes"):
             # 전멸했다 — 짧게 기억해 다음 클릭이 같은 순손실을 되풀이하지
-            # 않게 한다. 부분(값은 있음)은 기록하지 않는다.
+            # 않게 한다(사다리 3후보 × 한도 3 + 죽은 옛 HTML 7쪽).
+            # ⚠️ **부분은 기록하지 않는다.** 한 번 기록해 봤다가 독립 리뷰
+            # 실측이 새 실패모드 둘을 잡았다(2026-09-12): (a) 저장분이 있으면
+            # 화면이 `100개(오늘)` ↔ `266개(어제)` 를 10분 주기로 오간다
+            # (#45 모집단이 새로고침마다 바뀐다) (b) 저장분이 없으면 캐시도
+            # 냉각도 안 생겨 **수렴 지점이 없다**(#171). 그리고 부분은 값을
+            # 돌려주므로 사다리가 **1단에서 끝나고** 옛 HTML 7쪽을 아예 안
+            # 걷는다 — 전멸만큼 비싸지 않다(#61 비용의 어느 단계인가).
             _note_theme_fail(str(out.get("reason") or ""),
                              list(out.get("rungs") or []))
     return out
@@ -1583,13 +1604,12 @@ def fetch_upper_lower(limit: int = 50) -> dict:
 # 값은 지우되 키 이름은 남긴다 — 어느 파라미터가 왔는지는 진단에 필요하다(#82).
 import re as _re
 
-_SECRET_IN_MARKUP = _re.compile(
-    r"((?:key|token|secret|passwd|password|auth|sig|signature|serviceKey|apikey)"
-    r"[\"'\s]*[=:][\"'\s]*)([^\s\"'&<>]{8,})", _re.I)
+# 마스킹 규약은 공용 헬퍼가 단일 출처다(#38) — 복제하면 한쪽만 고쳐진다.
+_SECRET_IN_MARKUP = _nd.SECRET_IN_MARKUP
 
 
 def _mask_secrets(text: str) -> str:
-    return _SECRET_IN_MARKUP.sub(lambda m: m.group(1) + "***", text)
+    return _nd.mask_secrets(text)
 
 
 def markup_sample(html: str | None, anchors: tuple, width: int = 220,

@@ -60265,7 +60265,10 @@ class TestNaverThemeAndDetailSpa20260912:
         monkeypatch.setattr(nsc, "_cache_write",
                             lambda *a, **k: wrote.append(a))
         nsc._collect_and_store()
-        assert not wrote, "부분 스냅샷을 완전본으로 구웠다"
+        # 계약은 **테마 스냅샷(theme.json)을 굽지 않는다** 이다 — 냉각 기록
+        # (theme_fail.json)은 별개 파일이므로 대상을 좁혀 단언한다(#222).
+        assert not [w for w in wrote if w and w[0] == "theme.json"], (
+            "부분 스냅샷을 완전본으로 구웠다", wrote)
 
     def test_page_cap_stop_is_reported_as_partial(self, monkeypatch):
         """'상한에 닿았나' 가 아니라 **'창을 다 못 덮고 멈췄나'** 로 판정한다
@@ -61529,3 +61532,193 @@ class TestClaudeMdFold20260912:
         import re as _re
         assert _re.findall(r'### 실수 #(\d+)', out) == ["10", "20", "30"], out
         assert f._insert_ref(out, "20", "### 실수 #20\n\n다시\n") == out, "멱등이어야"
+
+
+class TestThemeSizeRejectionKeepsRows20260912:
+    """사용자 캡처(2026-09-12 07:27 KST) — `HTTP 400 (domestic/theme)` · 40시간 전 스냅샷.
+
+    그 사유 문자열은 `pick_theme_reason` 만 만들 수 있으므로(라벨 괄호) 화면이
+    본 코드는 이미 #1254 였다 — 즉 1쪽에서 `page` 를 뺀 뒤에도 그 단이 통째로
+    실패했다. 코드를 되읽어 **구조적 원인 하나**를 찾았다: 한도 사다리가
+    `pageSize=300` 에서 거절되면 `_theme_json_rung` 이 **직전 한도로 이미 받은
+    행을 버리고** `None` 을 돌려준다("수신 실패는 크기를 바꿔도 같다"는 전제).
+    한도 거절에는 그 전제가 성립하지 않는다 — 100행은 받았고 300이 거절된 것이다.
+
+    ⚠️ 이것이 **그 캡처의 원인이라고 단정하지 않는다**(#12·#165). 샌드박스는
+    네트워크가 막혀 400 을 재현할 수 없다. 여기서 고치는 것은 '원천이 무엇을
+    거절하든 이미 받은 값을 버리지 않는다'는 계약이고, 무엇이 거절됐는지는
+    같은 커밋의 본문 표본(`naver_diag.body_sample`)이 다음 실행에서 말한다.
+    """
+
+    _ROW = {"no": "64", "name": "콩/대두", "changeRate": "1.0",
+            "recent3daysChangeRate": "0.5", "type": "theme"}
+
+    def _iso(self, monkeypatch, tmp_path):
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        return nsc
+
+    def test_larger_limit_rejected_keeps_the_smaller_limits_rows(
+            self, monkeypatch, tmp_path):
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(266)]
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if p.get("pageSize", 20) > 100:      # 한도 거절
+                return None, nsc._nd.http_reason(400)
+            if "page" in p:                      # 2쪽도 거절
+                return None, nsc._nd.http_reason(400)
+            return full[:100], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows and len(rows) == 100, (rows and len(rows), why)
+        assert partial is True, why          # 완전본이 아니라고 말해야 한다
+        assert "300" in why and "400" in why, why
+        # ⚠️ 원인을 단정하지 않는다 — 타임아웃·일시정지도 이 자리에 온다(#165)
+        assert "거절" not in why, why
+        assert "100" in why, why          # 무엇을 실었는지는 말한다
+
+    def test_first_limit_failing_still_reports_failure(
+            self, monkeypatch, tmp_path):
+        """반대 증거 — 버릴 값이 없으면 그 단은 실패가 맞다(#25·#47)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            nsc, "_get2_json",
+            lambda url, params=None, **k: (None, nsc._nd.http_reason(404)))
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows is None and partial is False, (rows, why)
+        assert "404" in why, why
+
+    def test_partial_is_not_remembered_and_stays_consistent(
+            self, monkeypatch, tmp_path):
+        """부분은 **냉각으로 기억하지 않는다** — 그리고 화면이 오가지 않는다.
+
+        한 번 기록해 봤다가 독립 리뷰 실측이 둘을 잡았다(2026-09-12):
+        저장분이 있으면 `100개(오늘)` ↔ `266개(어제)` 가 10분 주기로 오가고
+        (#45), 저장분이 없으면 캐시도 냉각도 없어 **수렴 지점이 없다**(#171).
+        """
+        import json
+        nsc = self._iso(monkeypatch, tmp_path)
+        (tmp_path / "theme.json").write_text(json.dumps(
+            {"themes": [dict(self._ROW, no=str(i)) for i in range(266)],
+             "ts": "어제"}), encoding="utf-8")
+        rows = [dict(self._ROW, no=str(i)) for i in range(100)]
+        monkeypatch.setattr(
+            nsc, "collect_themes",
+            lambda: {"themes": rows, "ts": "x", "partial": True,
+                     "reason": "한도 300 요청이 실패했습니다", "rungs": [],
+                     "via": "x"})
+        seen = []
+        for _ in range(3):
+            out = nsc._collect_and_store()
+            seen.append(len(out.get("themes") or []))
+        assert seen == [100, 100, 100], seen      # 모집단이 오가지 않는다
+        assert nsc.theme_fail_memo()[2] == 0, "부분은 냉각으로 기억하지 않는다"
+        kept = json.loads((tmp_path / "theme.json").read_text(encoding="utf-8"))
+        assert len(kept["themes"]) == 266, "부분이 완전본을 덮었다"
+
+    def test_partial_walk_stops_at_the_first_rung(
+            self, monkeypatch, tmp_path):
+        """부분이 싸게 끝나는 **이유**를 값으로 못박는다(#61).
+
+        값을 돌려주면 사다리가 1단에서 끝나고 죽은 옛 HTML 7쪽을 아예 안
+        걷는다 — 그래서 부분은 전멸만큼 비싸지 않고, 냉각이 필요 없다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(266)]
+        calls = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            calls.append((url, p.get("pageSize"), p.get("page")))
+            if p.get("pageSize", 20) > 100 or "page" in p:
+                return None, nsc._nd.http_reason(400)
+            return full[:100], ""
+
+        html = []
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        monkeypatch.setattr(nsc, "_get2",
+                            lambda *a, **k: (html.append(a) or (None, "x")))
+        out = nsc.collect_themes()
+        assert len(out["themes"]) == 100 and out["partial"] is True, out["reason"]
+        assert not html, ("옛 HTML 7쪽을 걸었다", html)
+        assert len(calls) <= 4, calls          # 1단 × (100·2쪽·300) 이내
+
+    def test_paused_partial_is_still_not_remembered(
+            self, monkeypatch, tmp_path):
+        """'안 물어본 것'은 여전히 기록하지 않는다(#79·#143·#345)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            nsc, "collect_themes",
+            lambda: {"themes": [], "ts": "", "partial": False,
+                     "reason": nsc._nd.PAUSED, "rungs": [], "via": ""})
+        nsc._collect_and_store()
+        assert nsc.theme_fail_memo()[2] == 0, "일시정지는 냉각으로 기억하지 않는다"
+
+
+class TestNaverErrorBodyIsCaptured20260912:
+    """`HTTP 400` 만 남기고 **원천이 적어 보낸 이유를 버리고 있었다**.
+
+    #325 는 볼린저에서 `409 {"code":"StockConflict","message":…}` 를 읽어
+    '주소가 죽었다'와 '원천이 거절했다'를 갈랐다. 공용 `get_json` 에는 그
+    선행 사례가 안 옮겨져 있어, 테마 400 의 원인을 두 라운드나 파라미터
+    추측으로 썼다(#12 같은증상 2회+ = 추측종료 → 가시성).
+    """
+
+    def test_reason_carries_the_sources_own_message(self):
+        import bot.naver_diag as nd
+        why = nd.http_reason(400, 42, body=b'{"code":"BadRequest",'
+                                           b'"message":"pageSize is invalid"}')
+        assert "400" in why and "pageSize is invalid" in why, why
+        # 왕복 — 생산부가 만든 문자열을 판정부가 여전히 같은 급으로 읽는가
+        assert nd.reason_rank(why) == 1, why
+
+    def test_body_sample_is_safe_for_html_surfaces(self):
+        import bot.naver_diag as nd
+        s = nd.body_sample("<html><body>오류 <b>발생</b></body></html>")
+        assert "<" not in s and ">" not in s, s
+        assert "오류" in s and "발생" in s, s
+        assert nd.body_sample(b"") == "" and nd.body_sample(None) == ""
+        long = nd.body_sample("가" * 500)
+        assert len(long) <= 121 and long.endswith("…"), len(long)
+
+    def test_body_sample_masks_secrets(self):
+        """§Secrets — 형제 `markup_sample` 은 거치는데 공용 헬퍼만 빠져 있었다."""
+        import bot.naver_diag as nd
+        s = nd.body_sample('{"serviceKey":"SUPERSECRETVALUE123","m":"bad"}')
+        assert "SUPERSECRETVALUE123" not in s, s
+        assert "***" in s and "bad" in s, s
+        # 마스커는 **단일 출처** — 섹터 클라이언트가 복제하지 않는다(#38)
+        import bot.naver_sector_client as nsc
+        assert nsc._mask_secrets("token=ABCDEFGH12").endswith("***")
+
+    def test_body_sample_reads_euc_kr_error_pages(self):
+        """옛 HTML 경로가 euc-kr 을 강제하는 그 원천이다 — U+FFFD 로 뭉개지면
+        401·403 '차단' 갈래에서 본문이 아무 말도 못 한다(독립 리뷰 2026-09-12)."""
+        import bot.naver_diag as nd
+        s = nd.body_sample("접근이 차단되었습니다".encode("euc-kr"))
+        assert "차단" in s and "\ufffd" not in s, s
+
+    def test_get_json_passes_the_body_not_just_the_status(self, monkeypatch):
+        """배선 — 헬퍼만 재면 호출부가 본문을 안 넘기는 변형을 못 잡는다(#20)."""
+        import logging
+        import bot.naver_diag as nd
+
+        class _R:
+            status_code = 400
+            content = b'{"code":"InvalidParameter","message":"page"}'
+
+            def json(self):
+                raise ValueError
+
+        import requests
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+        monkeypatch.setattr(nd, "PAUSED", nd.PAUSED)
+        got, why = nd.get_json("http://x", headers={}, log=logging.getLogger("t"),
+                               tag="t")
+        assert got is None
+        assert "InvalidParameter" in why, why
