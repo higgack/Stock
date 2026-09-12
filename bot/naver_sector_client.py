@@ -1439,6 +1439,179 @@ def classify_param_probe(status, brief: str, key: str,
     return f"판정 불가(HTTP {status}, 이 키를 지목하지 않음)"
 
 
+_BRACKET_RE = re.compile(r"\[([^\[\]]{2,400})\]")
+
+
+def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
+    """원천의 거절 사유 → 그 키의 **허용값 목록**(순수). 못 읽으면 ().
+
+    VM 실측(2026-09-12) `sortType=__probe__` 응답:
+    ``detail: 유효하지 않은 sortType: [__probe__]. 허용값: [changeRate,
+    fallCnt, … type] · title: Bad Request · status: 400`` — 즉 원천이
+    스키마를 스스로 적어 준다(#86 상태는 아는 쪽에 묻는다).
+
+    ⚠️ **어구로 찾지 않는다**(`허용값:` 는 이 원천의 한국어 문구일 뿐이고
+    원천이 언어를 바꾸면 통째로 눈이 먼다, #24·#65 문자열이 아니라 구조로).
+    괄호 목록 중 **우리가 보낸 미끼를 담은 것**은 그 값을 되읊은 것이므로
+    빼고, 남은 것 중 항목이 가장 많은 것을 고른다. 항목이 하나뿐이면
+    목록이라 부를 수 없으므로 받지 않는다(#54 대조 0건은 통과가 아니다).
+    """
+    best: tuple = ()
+    for m in _BRACKET_RE.finditer(str(brief or "")):
+        inner = m.group(1)
+        if junk and junk in inner:
+            continue
+        vals = tuple(v.strip() for v in inner.split(",") if v.strip())
+        # 값에 공백이 섞이면 목록이 아니라 문장이다(`[Bad Request, 400]` 류는
+        # 항목 수로 걸러지지만 문장 한 덩이는 이것으로 걸린다).
+        if len(vals) < 2 or any(" " in v for v in vals):
+            continue
+        if len(vals) > len(best):
+            best = vals
+    return best
+
+
+def list_truncated(brief: str) -> bool:
+    """허용값을 못 읽은 것이 **잘려서**인가(순수).
+
+    사유는 `_sanitize(…, 300)` 을 거치므로 원천이 정렬 키를 몇 개만 늘려도
+    닫는 ``]`` 가 잘려 나가 목록이 통째로 사라진다(독립 리뷰 실측: 21종은
+    읽히고 26종이면 0종). 그때 '거절되지 않음' 이라고 말하면 원천을 고치러
+    간다 — 갈래가 다르면 처방도 다르다(#82 · #156·#350 자르는 자리가 다음
+    결정을 가리지 않는가). 판정은 어구가 아니라 **구조**로(#65).
+    """
+    s = str(brief or "")
+    head = s.rfind("[")
+    return head >= 0 and "]" not in s[head:]
+
+
+def theme_ids(rows: object) -> set:
+    """테마 행 목록 → **화면이 그리는** 식별자 집합(순수).
+
+    ⚠️ 키 규칙만 베끼면 모집단이 갈린다 — `parse_theme_json` 은 이름·등락률을
+    못 읽는 행을 **버리는데** 복제본은 그걸 센다(독립 리뷰 실측: 같은 응답에서
+    44종 vs 3종). 그 수 위에서 '천장 너머가 보인다' 를 판정하면 화면이 못
+    그리는 행까지 세어 배선 결정이 부풀려진다(#35 감사는 화면이 쓰는 그 경로 ·
+    #45 총계와 소계가 다른 모집단). 그러니 베끼지 말고 **그 함수를 태운다**(#38).
+    """
+    return {(t.get("no") or t["name"]) for t in parse_theme_json(rows)}
+
+
+def _baseline_rows(url: str, size: int) -> tuple:
+    """정렬 없는 기준선 → (행, 사유, 쓴 크기, 표시줄). 상한 협상을 포함.
+
+    첫 요청은 실측 상한(200)보다 큰 크기로 나가 **매번 거절**되므로, 원천이
+    말한 상한으로 다시 묻고(#350 추측해 이분 탐색할 일이 아니다) 상한을 못
+    읽으면 **이 레포가 이미 쓰는 더 작은 크기**로 물러난다(#351 — 수집
+    사다리엔 있던 이 물러나기가 프로브엔 없어 원천이 상한을 안 적는 날
+    기준선이 통째로 죽었다, #38). 블라인드 이분이 아니라 동작이 증명된
+    값부터 쓰는 것이다(§작업 원칙 선행 사례 먼저).
+
+    ⚠️ 물러나기는 원천이 '요청이 잘못됐다'(4xx)고 말했을 때만 — 타임아웃·429
+    에 크기를 바꿔 다시 물으면 한도만 더 태운다(#351·#82).
+    """
+    lines: list = []
+    smaller = [n for n in sorted(_THEME_PAGE_SIZES, reverse=True) if n < size]
+    raw, why = _get2_json(url, params={"pageSize": size})
+    tries = 0
+    while raw is None and tries < len(_THEME_PAGE_SIZES) + _THEME_CAP_TRIES:
+        cap = _nd.size_cap_from(why)
+        st = _nd.status_from(why)
+        if cap and cap < size:
+            nxt, how = cap, "원천이 말한 상한"
+        elif st in _nd.REQUEST_SHAPE_4XX and smaller:
+            nxt, how = smaller[0], "더 작은 크기"
+        else:
+            break
+        smaller = [n for n in smaller if n < nxt]
+        lines.append(f"   한도 {size} 거절 → {how} {nxt} 으로 다시 묻습니다")
+        size = nxt
+        raw, why = _get2_json(url, params={"pageSize": size})
+        tries += 1
+    return raw, why, size, lines
+
+
+def probe_sorts(url: str = "", size: int = 0) -> list:
+    """정렬을 바꾸면 **천장 너머가 보이나**를 잰다 → 표시용 줄 목록.
+
+    실측(2026-09-12)으로 이 엔드포인트의 천장은 `pageSize` **상한 200** 이고
+    `page` 는 무시된다 — 전체(≈266)를 못 채운다. 남은 것을 받으려면 **다른
+    정렬의 상위 200** 이 다른 집합이어야 하는데, 그건 재 봐야 안다:
+    정렬이 순서만 바꾸고 **같은 200개**를 준다면 합집합은 안 자란다.
+
+    ⚠️ **읽기 전용**이고 여기서 배선하지 않는다 — 값을 지어내 배선하면 죽은
+    경로를 배포한다(#151·#345). 이 출력이 "합집합이 자란다"를 보인 **뒤에**
+    수집 경로를 고친다(#12·#79 그 경로가 실제로 실행됐나).
+    """
+    url = url or _THEME_API_RUNGS[0][1]
+    size = size or max(_THEME_PAGE_SIZES)
+    out = [f"정렬 커버리지 · {url}"]
+
+    # ① 기준선 — 정렬 없이 상한까지(상한 협상은 `_baseline_rows`).
+    raw, why, size, neg = _baseline_rows(url, size)
+    out.extend(neg)
+    if not isinstance(raw, list):
+        out.append(f"   ❌ 기준선을 못 받았습니다 — {why or '사유 없음'}")
+        return out
+    base = theme_ids(raw)
+    out.append(f"   기준선: 정렬 없음 · pageSize={size} → {len(raw)}행 · 식별자 {len(base)}종")
+
+    # ② 허용값은 **원천에게 묻는다** — 목록을 우리가 적으면 원천이 늘렸을 때
+    #    영영 안 보인다(#24 열거형 가드는 새 항목을 못 잡는다).
+    _r, why_j = _get2_json(url, params={"pageSize": size, "sortType": _PARAM_JUNK})
+    vals = allowed_values(why_j)
+    if not vals:
+        if list_truncated(why_j):
+            # 원천은 선언했는데 **우리가 잘랐다** — 원천을 고치러 가면 안 된다.
+            out.append("   ❌ 허용값 목록이 사유 길이 제한에 잘렸습니다 — "
+                       f"사유 상한을 늘려야 합니다: {why_j}")
+        else:
+            out.append(f"   ❌ 허용값을 못 읽었습니다 — {why_j or '거절되지 않음'}")
+        return out
+    out.append(f"   허용 정렬 {len(vals)}종(원천 선언): {', '.join(vals)}")
+
+    # ③ 정렬마다 받아 **새로 들어온 식별자**를 센다. 0 이면 그 정렬은 같은
+    #    집합을 다른 순서로 준 것이다 — 그 사실이 곧 판정이다.
+    union = set(base)
+    measured = 0
+    failed: dict = {}
+    for v in vals:
+        raw_v, why_v = _get2_json(url, params={"pageSize": size, "sortType": v})
+        if not isinstance(raw_v, list):
+            st = _nd.status_from(why_v)
+            failed[st] = failed.get(st, 0) + 1
+            out.append(f"   {v:<22} 판정 불가 — {why_v or '사유 없음'}")
+            continue
+        measured += 1
+        ids = theme_ids(raw_v)
+        fresh = ids - union
+        union |= ids
+        out.append(f"   {v:<22} {len(raw_v)}행 · 새 식별자 {len(fresh)}종 "
+                   f"· 누적 합집합 {len(union)}종")
+    grew = len(union) - len(base)
+    out.append(f"   합집합 {len(union)}종 (기준선 대비 +{grew}) · 잰 정렬 {measured}/{len(vals)}종")
+    # ⚠️ 실패가 **같은 상태로 몰리면** 그건 정렬 탓이 아니라 환경이다(형제
+    #    `probe_params` 가 429 하나로 9개를 오판한 그 사고, #45·#165).
+    for st, n in sorted(failed.items()):
+        if n > 1:
+            out.append(f"   ↪ HTTP {st} 가 정렬 {n}종에 동시에 — "
+                       "정렬 탓이 아니라 환경 변화 의심(한도·차단)")
+    # ⚠️ **일부만 재고 '못 넘는다'고 단정하면** 값어치 있는 경로를 포기시킨다
+    #    (#165 재지 않은 것을 단정 금지 · #54 대조 0건은 통과가 아니다 · #274
+    #    값을 보여주는 것과 판정하는 것은 다르다). '자란다' 는 부분 측정에서도
+    #    참이지만 '안 자란다' 는 전수를 재야 말할 수 있다.
+    if grew > 0:
+        out.append("   → 정렬을 섞으면 천장 너머가 보입니다. 수집 경로에 배선할 값어치가 있습니다.")
+    elif not measured:
+        out.append("   ❌ 한 정렬도 재지 못했습니다 — 천장 여부는 판정 불가입니다(위 사유를 볼 것)")
+    elif measured < len(vals):
+        out.append(f"   ❓ 판정 불가 — {len(vals) - measured}종을 못 쟀습니다. "
+                   "잰 것만으로는 천장을 못 넘는다고 말할 수 없습니다")
+    else:
+        out.append("   → 정렬은 **순서만** 바꿉니다. 이 주소로는 천장을 못 넘습니다.")
+    return out
+
+
 def probe_params(url: str = "", keys: tuple = ()) -> list:
     """후보 파라미터가 원천 스키마에 있는지 **재기만** 한다 → 표시용 줄 목록.
 
@@ -2064,6 +2237,11 @@ def main(argv: list | None = None) -> int:
     if "--probe-params" in args:
         # 읽기 전용 측정 — 캐시·냉각을 건드리지 않는다(#264).
         for ln in probe_params():
+            print(ln)
+        return 0
+    if "--probe-sorts" in args:
+        # 읽기 전용 측정 — 캐시·냉각을 건드리지 않는다(#264).
+        for ln in probe_sorts():
             print(ln)
         return 0
     if "--check" in args:
