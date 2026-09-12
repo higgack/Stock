@@ -69,8 +69,17 @@ def body_sample(body: object, limit: int = 120) -> str:
     txt = str(body)[:8000]
     if not txt.strip():
         return ""
-    # ⚠️ 상한 없는 스캔은 큰 문서에서 프로세스를 멈춰 세운다(#71) — 표본이므로
-    # 앞부분만 본다.
+    return _sanitize(txt, limit)
+
+
+def _sanitize(txt: str, limit: int) -> str:
+    """화면·로그에 실릴 표본 한 줄 — 태그 제거 · 마스킹 · 자르기(순수).
+
+    ⚠️ **마스킹이 자르기보다 먼저**다 — 뒤에 하면 상한에서 잘린 값이 8자 미만이
+    되어 `{8,}` 패턴을 빠져나간다(독립 리뷰 2026-09-12 실측 5자 누출).
+    ⚠️ 상한 없는 스캔은 큰 문서에서 프로세스를 멈춰 세운다(#71) — 호출부가
+    앞부분만 넘긴다.
+    """
     txt = re.sub(r"<[^>]*>", " ", txt).replace("<", " ").replace(">", " ")
     txt = " ".join(txt.split())
     if not txt:
@@ -131,11 +140,15 @@ def error_brief(body: object) -> str:
         parts.append(msg.strip())
     if not parts and not code:
         return ""
-    head = " · ".join(str(x) for x in parts)[:160]
-    return mask_secrets(f"{head} ({code})" if code and head else (head or code))
+    head = " · ".join(str(x) for x in parts)
+    out = f"{head} ({code})" if code and head else (head or code)
+    # ⚠️ `body_sample` 을 우회하면 태그·`<`/`>` 제거가 사라진다 — 요약이 그
+    # 자리를 **대신 쓰므로** 같은 살균을 거쳐야 한다(독립 리뷰 2026-09-12).
+    return _sanitize(out, 160)
 
 
-_LE_RE = re.compile(r"less than or equal to\s*(\d+)")
+_LE_RE = re.compile(
+    r"pageSize[^·]{0,200}?less than or equal to\s*(\d+)", re.I)
 
 
 def size_cap_from(reason: str) -> int | None:
@@ -250,7 +263,12 @@ def get_json(url: str, *, headers: dict, log, tag: str,
                         f" · 원천: {_b}" if _b else "")
             # ⚠️ 본문을 버리면 상태코드만 남는다 — 원천이 적어 보낸 거절 사유가
             # 곧 처방이다(#325·#82).
-            return None, http_reason(resp.status_code, size, body=_b)
+            # ⚠️ **원문 바이트**를 넘긴다 — 잘린 표본(`_b`)을 넘기면
+            # `error_brief` 가 JSON 파싱에 실패해 구조 요약이 통째로 죽는다
+            # (독립 리뷰 2026-09-12 Blocking: 그 상태로 12개 테스트가 green
+            # 이었다 — 배선을 안 태우면 기능이 없는 채로 통과한다, #20·#79).
+            return None, http_reason(resp.status_code, size,
+                                     body=resp.content)
         try:
             return resp.json(), ""
         except ValueError:

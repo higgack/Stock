@@ -1101,8 +1101,19 @@ def _theme_json_rung(url: str) -> tuple:
                 # (#275 가장 행동 가능한 것을 머리에 · #292 판정을 세면서
                 # 어느 축인지 버리면 요약이 추측을 부른다).
                 prior = last[1] or f"{len(last[0])}개까지만 받았습니다"
-                return last[0], (f"{prior} · 한도 {size} 요청도 실패"
-                                 f"({why})"), True
+                # ⚠️ 같은 오류 blob 을 두 번 잇지 말 것 — 사유가 350자가 되어
+                # 부제(`via = marks[-1]`)에서 정작 드러내려던 '2쪽에서 실패'가
+                # 묻힌다(독립 리뷰 2026-09-12). 상한을 읽었으면 그 **사실만**
+                # 짧게 적는다.
+                # ⚠️ **'거절' 은 원천이 상한을 말했을 때만** 쓴다 — 타임아웃·
+                # 일시정지·0행도 이 자리에 오므로 단정하면 거짓이 된다
+                # (#165·#349, 그 계약을 회귀가 못박고 있다).
+                _cap = _nd.size_cap_from(why)
+                if _cap:
+                    tail = f"한도 {size} 거절(원천 상한 {_cap})"
+                else:
+                    tail = f"한도 {size} 요청도 실패({why})"
+                return last[0], f"{prior} · {tail}", True
             return None, why, False
         last = (got, why, partial)
         ok_size = max(ok_size, size)

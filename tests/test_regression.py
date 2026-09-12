@@ -61874,3 +61874,78 @@ class TestThemeLadderUsesDeclaredCap20260912:
         assert rows is None and partial is False, (rows, why)
         assert calls["n"] <= len(nsc._THEME_PAGE_SIZES) + nsc._THEME_CAP_TRIES, (
             calls["n"])
+
+
+class TestZodBriefSurvivesRealGetJson20260912:
+    """독립 리뷰 2026-09-12 **Blocking** — 새 기능이 운영 경로에서 한 번도 안 돌았다.
+
+    `get_json` 이 `body_sample(...)`(이미 120자로 잘린 **문자열**)을 `body=` 로
+    넘겨, `error_brief` 의 `json.loads` 가 늘 실패했다. 그 상태로 신규 회귀
+    12개가 전부 green — 전부 `http_reason(body=원문바이트)` 을 손으로 부르거나
+    `_get2_json` 을 스텁했기 때문이다(#20 배선은 태워야 보인다 · #79 그 경로가
+    실제로 실행됐나). 이 테스트는 **제품의 get_json 을 통과**한다.
+    """
+
+    RAW = (b'{"detailCode":"too_big","message":"{\\"formErrors\\":[],'
+           b'\\"fieldErrors\\":{\\"pageSize\\":[\\"Number must be less than '
+           b'or equal to 100\\"]}}"}')
+
+    def _stub(self, monkeypatch, body: bytes, status: int = 400):
+        import requests
+
+        class _R:
+            status_code = status
+            content = body
+
+            def json(self):
+                raise ValueError
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+
+    def test_cap_survives_the_real_call_path(self, monkeypatch):
+        import logging
+        import bot.naver_diag as nd
+
+        self._stub(monkeypatch, self.RAW)
+        got, why = nd.get_json("http://x", headers={},
+                               log=logging.getLogger("t"), tag="t")
+        assert got is None
+        assert "pageSize" in why and "100" in why, why
+        assert nd.size_cap_from(why) == 100, why   # ← 옛 판은 None 이었다
+
+    def test_page_bound_does_not_hijack_the_pagesize_cap(self, monkeypatch):
+        """`page` 와 `pageSize` 상한이 같이 오면 **pageSize 것**만 읽는다.
+
+        첫 숫자를 집으면 `page` 상한 5 를 읽어 `pageSize=5` 로 재시도하고,
+        5행짜리 포화 결과가 멀쩡한 100행을 덮는다(독립 리뷰 Medium).
+        """
+        import logging
+        import bot.naver_diag as nd
+
+        both = (b'{"detailCode":"too_big","message":"{\\"fieldErrors\\":'
+                b'{\\"page\\":[\\"Number must be less than or equal to 5\\"],'
+                b'\\"pageSize\\":[\\"Number must be less than or equal '
+                b'to 100\\"]}}"}')
+        self._stub(monkeypatch, both)
+        _g, why = nd.get_json("http://x", headers={},
+                              log=logging.getLogger("t"), tag="t")
+        assert nd.size_cap_from(why) == 100, why
+
+    def test_brief_is_sanitized_and_masked(self, monkeypatch):
+        """요약이 `body_sample` 을 대신 쓰므로 **같은 살균**을 거쳐야 한다.
+
+        그리고 마스킹은 자르기보다 **먼저**다 — 뒤에 하면 상한에서 잘린 값이
+        8자 미만이 되어 패턴을 빠져나간다(독립 리뷰 Low, 실측 5자 누출).
+        """
+        import bot.naver_diag as nd
+
+        s = nd.error_brief('{"detailCode":"bad","message":'
+                           '"<b>oops</b> token=SUPERSECRETVALUE"}')
+        assert "<" not in s and ">" not in s, s
+        assert "SUPERSECRETVALUE" not in s and "***" in s, s
+        # ⚠️ 자르기 경계 — 값이 **일부만 남도록** 길이를 맞춘다. 값이 통째로
+        # 잘려 나가면 어느 순서든 안 새어 픽스처가 눈이 먼다(#91c 실측: 첫
+        # 판은 뮤테이션이 그대로 통과했다). 160자 경계가 값 4자째에 오게 한다.
+        long = nd.error_brief('{"detailCode":"bad","message":"%s token=ABCDEFGH12"}'
+                              % ("가" * 149))
+        assert "ABCD" not in long, long
