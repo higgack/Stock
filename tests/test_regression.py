@@ -62748,9 +62748,11 @@ class TestThemeSortSweep20260912:
         # 로그로 간다. 완전본이면 ✅ 이고 합산 사실만 적는다.
         assert "⚠️" not in out["via"] and "✅" in out["via"], out["via"]
         assert "한도" not in out["via"], out["via"]
-        # 정렬별 기여는 **측정 증거**다 — 지우면 다음 라운드가 어느 정렬이
-        # 값어치 있는지 모른다(리뷰 Low-4 · #43·#82).
-        assert "fallCnt+" in out["reason"], out["reason"]
+        # ⚠️ **계약 변경**(사용자 2026-09-12, #222): "(fallCnt+56, …) 이런
+        # 내용은 굳이 필요없을것 같아" — 부제는 합산 사실만 적는다. 기여
+        # 상세는 버리지 않고 로그로 간다(아래 테스트가 그걸 잡는다, #43).
+        assert "fallCnt+" not in out["reason"], out["reason"]
+        assert "정렬 3종 합산 266개" in out["reason"], out["reason"]
 
     def test_barren_sort_sweep_is_not_called_complete(
             self, monkeypatch, tmp_path):
@@ -63099,3 +63101,54 @@ class TestThemeSortSweep20260912:
             nsc._theme_json_rung("u")
         assert any("한도 경위" in r.message for r in caplog.records), [
             r.message for r in caplog.records]
+
+    def test_sort_contribution_goes_to_the_log_not_the_subtitle(
+            self, monkeypatch, tmp_path, caplog):
+        """기여 상세는 **로그로** 남긴다 — 화면에서 뺐다고 버리는 게 아니다.
+
+        사용자 2026-09-12 요청으로 부제에서 뺐다(#222). 어느 정렬이 값어치
+        있는지는 다음 라운드의 근거이므로 로그에는 있어야 한다(#43).
+        """
+        import logging
+
+        nsc = self._iso(monkeypatch, tmp_path)
+        self._wire(nsc, monkeypatch)
+        with caplog.at_level(logging.INFO, logger="bot.naver_sector"):
+            nsc._theme_json_rung("u")
+        assert any("정렬 기여" in r.message and "fallCnt+66" in r.message
+                   for r in caplog.records), [r.message for r in caplog.records]
+
+    def test_a_stale_snapshot_is_served_without_making_the_user_wait(
+            self, monkeypatch, tmp_path):
+        """**사용자 2026-09-12 "클릭하면 들어가는게 여전히 느려"**.
+
+        창이 10분이라 마지막 수집 후 10분이 지나 클릭하면 사용자가 수집을
+        통째로 기다렸다(부제가 스스로 잰 값 21.7초). 저장분이 있으면 즉시
+        주고 갱신은 뒤에서 한다 — 화면은 얼마나 낡았는지 말한다(#116·#163).
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        old = {"themes": [dict(self._ROW, no="1", name="T1", pct=1.0)],
+               "ts": "2026-09-12 13:00", "partial": False}
+        nsc._cache_write("theme.json", old)
+        # 30초 TTL 밖 · 옛 SWR 창(600초) 밖으로 낡게 만든다
+        import os
+        stale_at = time.time() - 3600
+        os.utime(tmp_path / "theme.json", (stale_at, stale_at))
+        # 장중이라고 가정한다 — 장 밖이면 `_cached` 가 마지막 산출본을 그대로
+        # fresh 로 보므로(재수집 0) 이 경로 자체가 안 탄다.
+        import bot.finviz_client as _fv
+        monkeypatch.setattr(_fv, "_session_fresh", lambda *a, **k: False)
+        monkeypatch.setattr(nsc, "theme_fail_memo", lambda: ("", [], 0))
+        monkeypatch.setattr(nsc, "_collect_and_store",
+                            lambda: (_ for _ in ()).throw(
+                                AssertionError("전경에서 수집을 기다렸다")))
+        kicked: list = []
+        monkeypatch.setattr(nsc, "_refresh_async",
+                            lambda *a, **k: kicked.append(a))
+        out = nsc.fetch_themes()
+        assert out["themes"] == old["themes"]
+        assert out["stale"] is True and out["refreshing"] is True, out
+        assert out["stale_age"] >= 3500, out["stale_age"]
+        assert kicked, "배경 갱신을 안 띄웠다"
