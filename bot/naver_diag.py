@@ -20,10 +20,74 @@ import re
 PAUSED = "네이버 호출 일시정지 중(NAVER_PAUSE 마커 · 텔레그램 /naverpause 로 해제)"
 
 
+SECRET_IN_MARKUP = re.compile(
+    r"((?:key|token|secret|passwd|password|auth|sig|signature|serviceKey|apikey)"
+    r"[\"'\s]*[=:][\"'\s]*)([^\s\"'&<>]{8,})", re.I)
+
+
+def mask_secrets(text: str) -> str:
+    """원문 표본에 섞인 키·토큰 모양을 가린다(§Secrets).
+
+    ⚠️ `naver_sector_client._mask_secrets` 가 여기로 위임한다 — 형제 표본
+    함수(`markup_sample`)는 마스킹을 거치는데 **공용 헬퍼인 이쪽만 빠져**
+    있었다(독립 리뷰 2026-09-12: `serviceKey=…` 가 그대로 통과). 복제하면
+    한쪽만 고쳐진다(#38·#282).
+    """
+    return SECRET_IN_MARKUP.sub(lambda m: m.group(1) + "***", text)
+
+
+def body_sample(body: object, limit: int = 120) -> str:
+    """오류 본문 → 한 줄 표본(순수). 없으면 "".
+
+    네이버 JSON API 는 거절할 때 **스스로 이유를 적어 보낸다**
+    (`{"code":"StockConflict","message":"지수의 구성종목을 …"}` — #325 가 그걸
+    읽어 '주소가 죽었다'와 '원천이 거절했다'를 갈랐다). 그런데 `get_json` 은
+    non-200 에서 상태코드만 남기고 **본문을 버리고 있었다** — 그래서 테마
+    `HTTP 400` 이 "무엇이 잘못됐는지"를 한 마디도 말하지 못했고, 원인을 두
+    라운드나 파라미터 추측으로 썼다(#12 같은증상 2회+ = 추측종료 → 가시성 ·
+    #109 원문 표본을 같이 찍을 것 · #82 갈래는 이름으로).
+
+    ⚠️ 화면·로그에 그대로 실리므로 (a) 태그를 걷어내고 (b) `<`/`>` 를 남기지
+    않는다(#7 HTML escape 사고 방지) (c) 길이를 자른다.
+    """
+    if body is None:
+        return ""
+    if isinstance(body, (bytes, bytearray)):
+        # ⚠️ **자르고 나서** 디코드한다 — 13.6MB 오류 페이지를 통째로 디코드하면
+        # 요청마다 수십 MB 를 쓴다(독립 리뷰 2026-09-12 실측 19.3ms·40.8MB).
+        raw = bytes(body)[:8000]
+        try:
+            body = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # ⚠️ 같은 레포의 옛 HTML 경로(`_get2`)가 **euc-kr 을 강제**하는 그
+            # 원천이다 — utf-8 replace 로만 읽으면 401·403 차단 페이지가
+            # U+FFFD 로 뭉개져 본문이 아무 말도 못 한다.
+            try:
+                body = raw.decode("euc-kr")
+            except UnicodeDecodeError:
+                body = raw.decode("utf-8", "replace")
+    txt = str(body)[:8000]
+    if not txt.strip():
+        return ""
+    # ⚠️ 상한 없는 스캔은 큰 문서에서 프로세스를 멈춰 세운다(#71) — 표본이므로
+    # 앞부분만 본다.
+    txt = re.sub(r"<[^>]*>", " ", txt).replace("<", " ").replace(">", " ")
+    txt = " ".join(txt.split())
+    if not txt:
+        return ""
+    txt = mask_secrets(txt)
+    return txt[:limit] + ("…" if len(txt) > limit else "")
+
+
 def http_reason(status: int | None, size: int | None = None,
-                exc: BaseException | None = None) -> str:
+                exc: BaseException | None = None, *,
+                body: object = None) -> str:
     """HTTP 결과 → 사유 한 줄. 갈래마다 처방이 다르므로 상태코드를 그대로 싣는다
-    (#290 숫자만 세는 원장은 처방이 정반대인 갈래를 못 가른다)."""
+    (#290 숫자만 세는 원장은 처방이 정반대인 갈래를 못 가른다).
+
+    `body` 를 주면 **원천이 스스로 적은 거절 사유**를 뒤에 붙인다 — 상태코드만
+    으론 '주소가 죽었나 · 파라미터가 틀렸나 · 한도를 넘겼나' 가 안 갈린다.
+    """
     if exc is not None:
         return f"원천에 닿지 못함 — {type(exc).__name__}: {str(exc)[:80]}"
     if status is None:
@@ -31,12 +95,18 @@ def http_reason(status: int | None, size: int | None = None,
     if status == 200:
         return f"원천이 200 을 줬는데 본문이 비었음({size or 0}B)"
     if status in (401, 403):
-        return f"원천이 HTTP {status} — 차단·봇 탐지 의심(우리 IP·헤더)"
+        return _with_body(f"원천이 HTTP {status} — 차단·봇 탐지 의심"
+                          "(우리 IP·헤더)", body)
     if status == 429:
-        return f"원천이 HTTP {status} — 요청 한도 초과"
+        return _with_body(f"원천이 HTTP {status} — 요청 한도 초과", body)
     if 500 <= status < 600:
-        return f"원천이 HTTP {status} — 원천 장애"
-    return f"원천이 HTTP {status}"
+        return _with_body(f"원천이 HTTP {status} — 원천 장애", body)
+    return _with_body(f"원천이 HTTP {status}", body)
+
+
+def _with_body(reason: str, body: object) -> str:
+    sample = body_sample(body)
+    return f"{reason} — 원천: {sample}" if sample else reason
 
 
 def parse_reason(what: str, size: int, *, unit: str = "B") -> str:
@@ -98,8 +168,12 @@ def get_json(url: str, *, headers: dict, log, tag: str,
         resp = requests.get(url, headers=headers, timeout=timeout, **kwargs)
         size = len(resp.content or b"")
         if resp.status_code != 200:
-            log.warning("%s json: %s -> HTTP %s", tag, url, resp.status_code)
-            return None, http_reason(resp.status_code, size)
+            _b = body_sample(resp.content)
+            log.warning("%s json: %s -> HTTP %s%s", tag, url, resp.status_code,
+                        f" · 원천: {_b}" if _b else "")
+            # ⚠️ 본문을 버리면 상태코드만 남는다 — 원천이 적어 보낸 거절 사유가
+            # 곧 처방이다(#325·#82).
+            return None, http_reason(resp.status_code, size, body=_b)
         try:
             return resp.json(), ""
         except ValueError:

@@ -72,6 +72,16 @@
 | 손 접기 예외는 레거시 39건뿐 | ✅ 자동 | `test_hand_fold_allowlist_stays_small_and_resolves`(크기 단언) |
 | 접기 도구의 단위 계약(전문 사본·멱등·창·표시폭·번호 순서) | ✅ 자동 | `tests/test_regression.py::TestClaudeMdFold20260912` 7건 |
 
+## 네이버 경유 위젯 — 사다리·가시성 (2026-09-12, #349)
+
+| 룰 | 검증 | 테스트 |
+|---|---|---|
+| 큰 한도가 거절돼도 **직전 한도로 받은 행을 버리지 않는다**(#136·#148) | ✅ 자동 | `TestThemeSizeRejectionKeepsRows20260912::test_larger_limit_rejected_keeps_the_smaller_limits_rows` (+ 반대 증거: 첫 한도부터 실패하면 실패로 보고) |
+| 부분은 **냉각으로 기억하지 않는다**(모집단이 오가지 않는다·수렴한다) · 일시정지도 기억하지 않는다(#79) | ✅ 자동 | `…::test_partial_is_not_remembered_and_stays_consistent` · `…::test_paused_partial_is_still_not_remembered` |
+| 부분이 싼 **이유**(1단에서 끝나고 옛 HTML 7쪽을 안 걷는다, #61) | ✅ 자동 | `…::test_partial_walk_stops_at_the_first_rung`(호출 수·HTML 미주행을 값으로) |
+| 실패 사유는 원인을 **단정하지 않는다**(#165) | ✅ 자동 | `…::test_larger_limit_rejected_keeps_the_smaller_limits_rows`('거절' 어휘 금지 단언) |
+| non-200 에서 **원천이 적어 보낸 거절 사유**를 사유에 싣는다(#325·#82) — 단 비밀값 마스킹·HTML 안전·euc-kr 까지 | ✅ 자동 | `TestNaverErrorBodyIsCaptured20260912` 5건(왕복 `reason_rank`·HTML 안전·마스킹 단일 출처·euc-kr·`get_json` 배선) |
+
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
 2. `_has_pm_override_trigger`/`_check_pm_override_required` — RSI 경계값(74.9/75.0/25.0/25.1), catalyst
