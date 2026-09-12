@@ -1404,7 +1404,7 @@ _PARAM_JUNK = "__probe__"
 
 
 def classify_param_probe(status, brief: str, key: str,
-                        n_rows=None, base_n=None) -> str:
+                        n_rows=None, base_n=None, base_status=None) -> str:
     """(상태코드, 오류 요약, 키, 행 수, 기준선) → 그 키가 스키마에 있나(순수).
 
     zod 는 **모르는 키를 조용히 버리고**(200) 아는 키에 잘못된 값이 오면
@@ -1429,6 +1429,13 @@ def classify_param_probe(status, brief: str, key: str,
         return "없음(무시됨)"
     if re.search(rf"\b{re.escape(key)}\b", r, re.I):
         return "있음 — 원천이 값을 지적함"
+    if base_status == 200 and 400 <= status < 500:
+        # ⚠️ **차이 자체가 측정**이다 — 같은 요청 모양에서 기준선은 200 인데
+        # 이 키만 4xx 면 원천이 그 키를 **읽고** 거절한 것이다(모르는 키는
+        # 조용히 버려져 200 이 온다). 이름을 지목하지 않아도 그렇다
+        # (VM 실측 2026-09-12: 12개 중 `sortType` 만 400 — 오류 봉투 모양도
+        # 달랐다). 5xx 는 제외한다 — 일시적 장애와 구별되지 않는다(#165).
+        return f"있음 — 이 키에만 HTTP {status}(기준선 200)"
     return f"판정 불가(HTTP {status}, 이 키를 지목하지 않음)"
 
 
@@ -1444,6 +1451,7 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
     base_n = None
     measured = 0
     raw, why = _get2_json(url, params={"pageSize": _THEME_PAGE_SIZES[0]})
+    base_status = 200 if raw is not None else _nd.status_from(why)
     if isinstance(raw, list):
         base_n = len(raw)
     out.append(f"   기준선: pageSize={_THEME_PAGE_SIZES[0]} → "
@@ -1453,7 +1461,8 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
         raw, why = _get2_json(url, params=params)
         status = 200 if raw is not None else _nd.status_from(why)
         n_rows = len(raw) if isinstance(raw, list) else None
-        verdict = classify_param_probe(status, why, key, n_rows, base_n)
+        verdict = classify_param_probe(status, why, key, n_rows, base_n,
+                                       base_status)
         if not verdict.startswith("판정 불가"):
             measured += 1
         extra = f" · {n_rows}행(기준선 {base_n})" if (

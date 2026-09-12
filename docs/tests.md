@@ -81,6 +81,8 @@
 | 부분이 싼 **이유**(1단에서 끝나고 옛 HTML 7쪽을 안 걷는다, #61) | ✅ 자동 | `…::test_partial_walk_stops_at_the_first_rung`(호출 수·HTML 미주행을 값으로) |
 | 실패 사유는 원인을 **단정하지 않는다**(#165) | ✅ 자동 | `…::test_larger_limit_rejected_keeps_the_smaller_limits_rows`('거절' 어휘 금지 단언) |
 | 상한을 알면 **더 큰 크기를 안 묻는다** · 상한을 안 말하면 **절반으로 물러난다**(#171) | ✅ 자동 | `TestParamSchemaProbe20260912::test_known_cap_stops_the_ladder` · `…::test_unexplained_rejection_halves_instead_of_giving_up` |
+| 오류 봉투가 **두 벌**(zod `message` · RFC7807 `result`) — 둘 다 파싱한다(#73) | ✅ 자동 | `TestSecondErrorEnvelopeShape20260912` 4건(구조화 출력·형제 봉투 무손상·차이 판정·배선) |
+| **차이 자체가 측정** — 같은 요청에서 이 키만 4xx 면 있음(5xx 제외, #165) | ✅ 자동 | `…::test_status_differential_is_itself_the_measurement` |
 | 절반 물러나기는 **4xx(크기 거절)일 때만** — 타임아웃·429·404·일시정지엔 안 한다 | ✅ 자동 | `…::test_halving_only_on_size_rejections` |
 | 뒷단이 더 짧게 주면 **앞단의 부분 증거가 남는다**(완전본으로 캐시 금지) | ✅ 자동 | `…::test_shorter_later_size_does_not_erase_partial_evidence` |
 | 키 매칭은 **토큰 경계** · 행 수 변화 = 있음 · 일시정지 ≠ 도달 실패 · 0건이면 실패 고지 | ✅ 자동 | `…::test_page_candidate_is_not_matched_inside_pagesize` 외 3건 |

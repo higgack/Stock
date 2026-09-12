@@ -118,14 +118,25 @@ def error_brief(body: object) -> str:
     if not isinstance(env, dict):
         return ""
     code = str(env.get("detailCode") or env.get("code") or "").strip()
+    # ⚠️ 이 원천은 오류 **봉투가 두 벌**이다 — zod 검증 오류는 상세를
+    # `message`(JSON 문자열)에, 그 밖의 거절은 `result`(RFC7807 problem+json
+    # 문자열)에 담는다. `message` 만 보면 후자에서 결정적 텍스트가 통째로
+    # 잘려 `Bad Request` 만 남는다(VM 실측 2026-09-12 `sortType`).
     msg = env.get("message")
-    if isinstance(msg, str) and msg.strip().startswith("{"):
-        try:
-            import json
+    detail = env.get("result")
+    for _k in ("message", "result"):
+        _v = env.get(_k)
+        if isinstance(_v, str) and _v.strip().startswith("{"):
+            try:
+                import json
 
-            msg = json.loads(msg)
-        except Exception:                                   # noqa: BLE001
-            pass
+                _v = json.loads(_v)
+            except Exception:                               # noqa: BLE001
+                pass
+        if _k == "message":
+            msg = _v
+        else:
+            detail = _v
     parts: list = []
     if isinstance(msg, dict):
         fe = msg.get("fieldErrors")
@@ -138,6 +149,19 @@ def error_brief(body: object) -> str:
             parts.extend(str(x) for x in form if x)
     elif isinstance(msg, str) and msg.strip():
         parts.append(msg.strip())
+    if isinstance(detail, dict):
+        # RFC7807 — 값이 있는 것만, 재사용 가능한 순서로.
+        for k in ("detail", "title", "status"):
+            v = detail.get(k)
+            if v not in (None, "") and str(v) not in parts:
+                parts.append(f"{k}: {v}")
+        fe = detail.get("fieldErrors")
+        if isinstance(fe, dict):
+            for k, v in fe.items():
+                one = v[0] if isinstance(v, list) and v else v
+                parts.append(f"{k}: {one}")
+    elif isinstance(detail, str) and detail.strip():
+        parts.append(detail.strip())
     if not parts and not code:
         return ""
     head = " · ".join(str(x) for x in parts)
