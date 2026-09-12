@@ -61722,3 +61722,230 @@ class TestNaverErrorBodyIsCaptured20260912:
                                tag="t")
         assert got is None
         assert "InvalidParameter" in why, why
+
+
+class TestNaverZodErrorIsReadable20260912:
+    """VM 실측(2026-09-12)이 원인을 확정했다 — `pageSize` **상한**이다.
+
+    로그 원문:
+    `HTTP 400 · 원천: {"detailCode":"too_big","message":"{\\"formErrors\\":[],
+    \\"fieldErrors\\":{\\"pageSize\\":[\\"Number must be less than or equal…`
+
+    ⚠️ 120자 자르기가 **정확히 그 숫자 직전에서** 끊어 상한을 못 봤다 —
+    한 라운드를 더 썼다(#156·#338 자르는 자리가 다음 결정을 가리지 않는가).
+    그래서 자르기 전에 **구조로 요약**하고, 원천이 밝힌 상한을 읽어 쓴다.
+    """
+
+    # 원천이 실제로 보내는 바이트(#155) — 내가 지어낸 모양이 아니다.
+    RAW = (b'{"detailCode":"too_big","message":"{\\"formErrors\\":[],'
+           b'\\"fieldErrors\\":{\\"pageSize\\":[\\"Number must be less than '
+           b'or equal to 100\\"]}}"}')
+
+    def test_decisive_number_survives_the_cut(self):
+        import bot.naver_diag as nd
+        why = nd.http_reason(400, 210, body=self.RAW)
+        assert "pageSize" in why, why
+        assert "100" in why, why          # ← 옛 판은 여기서 잘렸다
+        assert "too_big" in why, why
+        assert nd.reason_rank(why) == 1, why
+
+    def test_cap_is_read_not_guessed(self):
+        import bot.naver_diag as nd
+        why = nd.http_reason(400, 210, body=self.RAW)
+        assert nd.size_cap_from(why) == 100
+        # 반대 증거 — 상한을 말하지 않는 사유에서는 지어내지 않는다(#165)
+        assert nd.size_cap_from(nd.http_reason(404)) is None
+        assert nd.size_cap_from("") is None
+
+    def test_non_json_body_falls_back_to_raw_sample(self):
+        import bot.naver_diag as nd
+        assert nd.error_brief(b"<html>nope</html>") == ""
+        why = nd.http_reason(500, 9, body=b"<html>nope</html>")
+        assert "nope" in why and "<" not in why, why
+
+
+class TestThemeLadderUsesDeclaredCap20260912:
+    """사다리는 상한을 **추측하지 않고 원천이 말한 값**으로 다시 묻는다."""
+
+    _ROW = {"no": "64", "name": "콩/대두", "changeRate": "1.0",
+            "recent3daysChangeRate": "0.5", "type": "theme"}
+
+    def _iso(self, monkeypatch, tmp_path):
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(nsc, "_maybe_discover_theme", lambda: None)
+        monkeypatch.setattr(nsc, "theme_memo_url", lambda: "")
+        return nsc
+
+    def test_rejected_size_retries_at_the_declared_cap(
+            self, monkeypatch, tmp_path):
+        """상한 500 을 말해 주면 **사다리에 없는 500** 으로 한 번 더 묻는다.
+
+        사다리는 100→300→1000 인데 원천 상한이 500 이면 1000 이 거절된다 —
+        그때 멈추면 400개 중 300개만 싣는다(#171 가드가 '못 만든다'로 끝나면
+        그 자리가 영원히 빈다).
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(400)]
+        sizes = []
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            n = p.get("pageSize", 20)
+            sizes.append(n)
+            if "page" in p:
+                return None, nsc._nd.http_reason(400)
+            if n > 500:
+                return None, nsc._nd.http_reason(
+                    400, 9, body=b'{"detailCode":"too_big","message":'
+                                 b'"{\\"fieldErrors\\":{\\"pageSize\\":'
+                                 b'[\\"Number must be less than or equal '
+                                 b'to 500\\"]}}"}')
+            return full[:n], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert 500 in sizes, sizes            # 원천이 말한 값으로 물었다
+        assert rows and len(rows) == 400, (len(rows or []), why)
+        assert partial is False, why
+
+    def test_prior_reason_is_not_overwritten_by_the_cap_rejection(
+            self, monkeypatch, tmp_path):
+        """왜 직전 한도에서 멈췄는지가 **더 행동 가능한 사실**이다(#275).
+
+        실측에서 화면은 `한도 300 요청이 실패` 만 적어, "왜 100에서 멈췄나"
+        (쪽이 안 먹는가 · 2쪽이 거절됐는가)를 한 마디도 말하지 않았다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(100)]
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if p.get("pageSize", 20) > 100:
+                return None, nsc._nd.http_reason(400)
+            if "page" in p:
+                return full, ""               # 매 쪽 같은 목록 = page 무시
+            return full, ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows and len(rows) == 100 and partial is True
+        assert "쪽(page)" in why, why          # 직전 한도의 사유가 살아 있다
+        assert "300" in why, why               # 그리고 한도 거절도 같이 적는다
+        assert why.index("쪽(page)") < why.index("한도 300"), why
+
+    def test_failing_page_number_is_named(self, monkeypatch, tmp_path):
+        """1쪽 실패와 2쪽 실패는 처방이 다르다 — 사유가 쪽을 적는다(#82)."""
+        nsc = self._iso(monkeypatch, tmp_path)
+        full = [dict(self._ROW, no=str(i)) for i in range(100)]
+
+        def fake(url, params=None, **k):
+            p = dict(params or {})
+            if p.get("pageSize", 20) > 100:
+                return None, nsc._nd.http_reason(404)
+            if "page" in p:
+                return None, nsc._nd.http_reason(400)
+            return full, ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows and len(rows) == 100, why
+        assert "2쪽" in why, why
+
+    def test_cap_retry_is_bounded(self, monkeypatch, tmp_path):
+        """원천이 거절할 때마다 **더 큰 상한**을 말해도 끝난다(#71).
+
+        자기 리뷰가 잡은 무한 루프 — 상한 없는 반복은 이 레포에서 프로세스를
+        멈춰 세운 적이 있다.
+        """
+        nsc = self._iso(monkeypatch, tmp_path)
+        calls = {"n": 0}
+
+        def fake(url, params=None, **k):
+            calls["n"] += 1
+            n = dict(params or {}).get("pageSize", 20)
+            body = ('{"detailCode":"too_big","message":"{\\"fieldErrors\\":'
+                    '{\\"pageSize\\":[\\"Number must be less than or equal '
+                    f'to {n * 2}\\"]}}"}}').encode()
+            return None, nsc._nd.http_reason(400, 9, body=body)
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows is None and partial is False, (rows, why)
+        assert calls["n"] <= len(nsc._THEME_PAGE_SIZES) + nsc._THEME_CAP_TRIES, (
+            calls["n"])
+
+
+class TestZodBriefSurvivesRealGetJson20260912:
+    """독립 리뷰 2026-09-12 **Blocking** — 새 기능이 운영 경로에서 한 번도 안 돌았다.
+
+    `get_json` 이 `body_sample(...)`(이미 120자로 잘린 **문자열**)을 `body=` 로
+    넘겨, `error_brief` 의 `json.loads` 가 늘 실패했다. 그 상태로 신규 회귀
+    12개가 전부 green — 전부 `http_reason(body=원문바이트)` 을 손으로 부르거나
+    `_get2_json` 을 스텁했기 때문이다(#20 배선은 태워야 보인다 · #79 그 경로가
+    실제로 실행됐나). 이 테스트는 **제품의 get_json 을 통과**한다.
+    """
+
+    RAW = (b'{"detailCode":"too_big","message":"{\\"formErrors\\":[],'
+           b'\\"fieldErrors\\":{\\"pageSize\\":[\\"Number must be less than '
+           b'or equal to 100\\"]}}"}')
+
+    def _stub(self, monkeypatch, body: bytes, status: int = 400):
+        import requests
+
+        class _R:
+            status_code = status
+            content = body
+
+            def json(self):
+                raise ValueError
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+
+    def test_cap_survives_the_real_call_path(self, monkeypatch):
+        import logging
+        import bot.naver_diag as nd
+
+        self._stub(monkeypatch, self.RAW)
+        got, why = nd.get_json("http://x", headers={},
+                               log=logging.getLogger("t"), tag="t")
+        assert got is None
+        assert "pageSize" in why and "100" in why, why
+        assert nd.size_cap_from(why) == 100, why   # ← 옛 판은 None 이었다
+
+    def test_page_bound_does_not_hijack_the_pagesize_cap(self, monkeypatch):
+        """`page` 와 `pageSize` 상한이 같이 오면 **pageSize 것**만 읽는다.
+
+        첫 숫자를 집으면 `page` 상한 5 를 읽어 `pageSize=5` 로 재시도하고,
+        5행짜리 포화 결과가 멀쩡한 100행을 덮는다(독립 리뷰 Medium).
+        """
+        import logging
+        import bot.naver_diag as nd
+
+        both = (b'{"detailCode":"too_big","message":"{\\"fieldErrors\\":'
+                b'{\\"page\\":[\\"Number must be less than or equal to 5\\"],'
+                b'\\"pageSize\\":[\\"Number must be less than or equal '
+                b'to 100\\"]}}"}')
+        self._stub(monkeypatch, both)
+        _g, why = nd.get_json("http://x", headers={},
+                              log=logging.getLogger("t"), tag="t")
+        assert nd.size_cap_from(why) == 100, why
+
+    def test_brief_is_sanitized_and_masked(self, monkeypatch):
+        """요약이 `body_sample` 을 대신 쓰므로 **같은 살균**을 거쳐야 한다.
+
+        그리고 마스킹은 자르기보다 **먼저**다 — 뒤에 하면 상한에서 잘린 값이
+        8자 미만이 되어 패턴을 빠져나간다(독립 리뷰 Low, 실측 5자 누출).
+        """
+        import bot.naver_diag as nd
+
+        s = nd.error_brief('{"detailCode":"bad","message":'
+                           '"<b>oops</b> token=SUPERSECRETVALUE"}')
+        assert "<" not in s and ">" not in s, s
+        assert "SUPERSECRETVALUE" not in s and "***" in s, s
+        # ⚠️ 자르기 경계 — 값이 **일부만 남도록** 길이를 맞춘다. 값이 통째로
+        # 잘려 나가면 어느 순서든 안 새어 픽스처가 눈이 먼다(#91c 실측: 첫
+        # 판은 뮤테이션이 그대로 통과했다). 160자 경계가 값 4자째에 오게 한다.
+        long = nd.error_brief('{"detailCode":"bad","message":"%s token=ABCDEFGH12"}'
+                              % ("가" * 149))
+        assert "ABCD" not in long, long

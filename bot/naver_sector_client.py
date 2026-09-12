@@ -949,6 +949,7 @@ _THEME_API_RUNGS = (
 _THEME_PAGE_SIZES = (100, 300, 1000)
 _THEME_PAGE_SIZE = _THEME_PAGE_SIZES[0]   # 형제·회귀가 참조하는 기본값
 _THEME_MAX_PAGES = 5             # `page` 가 듣는 원천을 위한 이어받기 상한
+_THEME_CAP_TRIES = 2             # 원천이 말한 상한으로 다시 묻는 횟수 상한(#71)
 # 형제 업종 가드와 **같은 규약**(#38): 기본 페이지 수가 그대로 오면 `pageSize`
 # 가 안 먹은 것이고, 하한 미만이면 부분이다. 실측 테마 수는 266개.
 _THEME_DEFAULT_PAGE = 20         # 이 수가 오면 pageSize 가 안 먹은 것이다
@@ -1054,9 +1055,33 @@ def _theme_json_rung(url: str) -> tuple:
     굽지 않는다(#280·#343).
     """
     last: tuple = (None, "", False)
-    for size in _THEME_PAGE_SIZES:
+    queue = list(_THEME_PAGE_SIZES)
+    tried: set = set()
+    ok_size = 0                      # 실제로 값을 받아 온 가장 큰 한도
+    cap_tries = 0                    # 원천이 말한 상한으로 다시 물은 횟수
+    while queue:
+        size = queue.pop(0)
+        if size in tried:
+            continue
+        tried.add(size)
         got, why, partial, saturated = _theme_fetch_one_size(url, size)
         if got is None:
+            # 원천이 **상한을 스스로 말하면** 그 값으로 한 번 더 묻는다 —
+            # 추측해 이분 탐색하면 요청만 늘고, 다음 실행도 같은 자리에서
+            # 막힌다(#64 상태는 아는 쪽이 말하게 · #86).
+            # ⚠️ 비교 대상은 **성공한 가장 큰 한도**다 — 방금 거절당한 크기와
+            # 비교하면(`max(tried)`) 상한이 늘 더 작아 재시도가 한 번도 안
+            # 돈다(내 첫 판이 그랬고 테스트가 잡았다, #91b 재는 대상이 맞나).
+            # ⚠️ **횟수 상한은 필수**다 — 원천이 거절할 때마다 더 큰 상한을
+            # 말하면(우리가 못 재는 원천 버그·정책 변경) 재시도가 끝나지
+            # 않는다. 상한 없는 반복은 이 레포에서 프로세스를 멈춰 세운 적이
+            # 있다(#71) — 자기 리뷰가 잡았다.
+            cap = _nd.size_cap_from(why)
+            if (cap and cap not in tried and cap > ok_size
+                    and cap_tries < _THEME_CAP_TRIES):
+                cap_tries += 1
+                queue.insert(0, cap)
+                continue
             # ⚠️ 옛 판은 여기서 **무조건** `None` 을 돌려줬다("크기를 바꿔도
             # 같다"). 그 전제는 한도 거절에 성립하지 않는다 — `pageSize=100` 이
             # 100행을 주고 `pageSize=300` 이 거절되면 **이미 받은 100행을
@@ -1069,11 +1094,29 @@ def _theme_json_rung(url: str) -> tuple:
             # 타임아웃·일시정지·0행까지 "원천이 한도를 막는다"로 읽힌다(#165·
             # #82, 독립 리뷰 2026-09-12 실측). 무엇을 물었고 무엇이 왔는지만.
             if last[0]:
-                return last[0], (f"한도 {size} 요청이 실패했습니다({why}) — "
-                                 f"직전 한도로 받은 {len(last[0])}개까지만 "
-                                 "실었습니다"), True
+                # ⚠️ **직전 한도의 사유가 먼저다.** 처음엔 이 자리에 한도
+                # 거절만 적었는데, 그게 "왜 100에서 멈췄나"(쪽이 안 먹는가 ·
+                # 2쪽이 거절됐는가)라는 **더 행동 가능한 사실**을 덮었다
+                # — 원천이 상한을 말해 준 실행에서도 다음 수를 못 정했다
+                # (#275 가장 행동 가능한 것을 머리에 · #292 판정을 세면서
+                # 어느 축인지 버리면 요약이 추측을 부른다).
+                prior = last[1] or f"{len(last[0])}개까지만 받았습니다"
+                # ⚠️ 같은 오류 blob 을 두 번 잇지 말 것 — 사유가 350자가 되어
+                # 부제(`via = marks[-1]`)에서 정작 드러내려던 '2쪽에서 실패'가
+                # 묻힌다(독립 리뷰 2026-09-12). 상한을 읽었으면 그 **사실만**
+                # 짧게 적는다.
+                # ⚠️ **'거절' 은 원천이 상한을 말했을 때만** 쓴다 — 타임아웃·
+                # 일시정지·0행도 이 자리에 오므로 단정하면 거짓이 된다
+                # (#165·#349, 그 계약을 회귀가 못박고 있다).
+                _cap = _nd.size_cap_from(why)
+                if _cap:
+                    tail = f"한도 {size} 거절(원천 상한 {_cap})"
+                else:
+                    tail = f"한도 {size} 요청도 실패({why})"
+                return last[0], f"{prior} · {tail}", True
             return None, why, False
         last = (got, why, partial)
+        ok_size = max(ok_size, size)
         if not saturated:
             return last
     got, why, partial = last
@@ -1117,8 +1160,12 @@ def _theme_fetch_one_size(url: str, page_size: int) -> tuple:
             # 실측 · #136 요구를 충족했나 · #45 모집단).
             # 상한 판정은 파싱 뒤 행 수가 아니라 **원천이 준 원시 수**로 —
             # 못 읽은 행 하나가 경고를 끄면 안 된다(#342).
-            return ((got, why, True, n_first >= page_size) if got
-                    else (None, why, False, False))
+            # ⚠️ **몇 쪽에서 막혔는지 말한다** — 1쪽 실패와 2쪽 실패는 처방이
+            # 다르다(주소·한도 vs 페이지네이션 규약). 사유가 그걸 안 적으면
+            # 다음 실행도 같은 자리를 추측한다(#82·#275).
+            _pw = f"{page}쪽({page_size}개 단위)에서 실패: {why}"
+            return ((got, _pw, True, n_first >= page_size) if got
+                    else (None, _pw, False, False))
         if not isinstance(raw, list):
             # dict 로 감싸 오는 가족도 있다 — 목록 자리를 찾아본다.
             inner = None

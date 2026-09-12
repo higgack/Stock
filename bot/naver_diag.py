@@ -69,14 +69,102 @@ def body_sample(body: object, limit: int = 120) -> str:
     txt = str(body)[:8000]
     if not txt.strip():
         return ""
-    # ⚠️ 상한 없는 스캔은 큰 문서에서 프로세스를 멈춰 세운다(#71) — 표본이므로
-    # 앞부분만 본다.
+    return _sanitize(txt, limit)
+
+
+def _sanitize(txt: str, limit: int) -> str:
+    """화면·로그에 실릴 표본 한 줄 — 태그 제거 · 마스킹 · 자르기(순수).
+
+    ⚠️ **마스킹이 자르기보다 먼저**다 — 뒤에 하면 상한에서 잘린 값이 8자 미만이
+    되어 `{8,}` 패턴을 빠져나간다(독립 리뷰 2026-09-12 실측 5자 누출).
+    ⚠️ 상한 없는 스캔은 큰 문서에서 프로세스를 멈춰 세운다(#71) — 호출부가
+    앞부분만 넘긴다.
+    """
     txt = re.sub(r"<[^>]*>", " ", txt).replace("<", " ").replace(">", " ")
     txt = " ".join(txt.split())
     if not txt:
         return ""
     txt = mask_secrets(txt)
     return txt[:limit] + ("…" if len(txt) > limit else "")
+
+
+def error_brief(body: object) -> str:
+    """네이버 오류 봉투 → **결정적 사실을 앞세운** 한 줄(순수). 못 읽으면 "".
+
+    VM 실측(2026-09-12) 테마 400 본문:
+    ``{"detailCode":"too_big","message":"{\\"formErrors\\":[],
+    \\"fieldErrors\\":{\\"pageSize\\":[\\"Number must be less than or
+    equal to N\\"]}}"}`` — zod 검증 오류이고 `message` 는 **JSON 문자열**이다.
+    원문을 그대로 120자로 자르면 정확히 **그 N 직전에서 잘려**, 결정적 숫자를
+    못 본 채 한 라운드를 더 썼다(#156·#338 '자르는 자리는 다음 결정을 가리지
+    않는가'를 먼저 물을 것). 그래서 자르기 전에 **구조로 요약**한다.
+    """
+    if body is None:
+        return ""
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            body = bytes(body)[:8000].decode("utf-8", "replace")
+        except Exception:                                   # noqa: BLE001
+            return ""
+    txt = str(body)[:8000].strip()
+    if not txt.startswith("{"):
+        return ""
+    try:
+        import json
+
+        env = json.loads(txt)
+    except Exception:                                       # noqa: BLE001
+        return ""
+    if not isinstance(env, dict):
+        return ""
+    code = str(env.get("detailCode") or env.get("code") or "").strip()
+    msg = env.get("message")
+    if isinstance(msg, str) and msg.strip().startswith("{"):
+        try:
+            import json
+
+            msg = json.loads(msg)
+        except Exception:                                   # noqa: BLE001
+            pass
+    parts: list = []
+    if isinstance(msg, dict):
+        fe = msg.get("fieldErrors")
+        if isinstance(fe, dict):
+            for k, v in fe.items():
+                one = v[0] if isinstance(v, list) and v else v
+                parts.append(f"{k}: {one}")
+        form = msg.get("formErrors")
+        if isinstance(form, list):
+            parts.extend(str(x) for x in form if x)
+    elif isinstance(msg, str) and msg.strip():
+        parts.append(msg.strip())
+    if not parts and not code:
+        return ""
+    head = " · ".join(str(x) for x in parts)
+    out = f"{head} ({code})" if code and head else (head or code)
+    # ⚠️ `body_sample` 을 우회하면 태그·`<`/`>` 제거가 사라진다 — 요약이 그
+    # 자리를 **대신 쓰므로** 같은 살균을 거쳐야 한다(독립 리뷰 2026-09-12).
+    return _sanitize(out, 160)
+
+
+_LE_RE = re.compile(
+    r"pageSize[^·]{0,200}?less than or equal to\s*(\d+)", re.I)
+
+
+def size_cap_from(reason: str) -> int | None:
+    """사유 문구 → 원천이 밝힌 **상한 값**(순수). 못 읽으면 None.
+
+    상한을 추측해 이분 탐색하면 요청만 는다 — **원천이 스스로 말한 수**를
+    읽는 것이 답이다(#64 상태는 아는 쪽이 말하게 · #86).
+    """
+    m = _LE_RE.search(str(reason or ""))
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+    except ValueError:
+        return None
+    return n if 0 < n <= 100000 else None
 
 
 def http_reason(status: int | None, size: int | None = None,
@@ -105,7 +193,9 @@ def http_reason(status: int | None, size: int | None = None,
 
 
 def _with_body(reason: str, body: object) -> str:
-    sample = body_sample(body)
+    # ⚠️ **구조 요약이 먼저다** — 원문을 그대로 자르면 결정적 숫자가 잘린다
+    # (실측: `…less than or equal…` 에서 끊겨 상한을 못 봤다, #156).
+    sample = error_brief(body) or body_sample(body)
     return f"{reason} — 원천: {sample}" if sample else reason
 
 
@@ -173,7 +263,12 @@ def get_json(url: str, *, headers: dict, log, tag: str,
                         f" · 원천: {_b}" if _b else "")
             # ⚠️ 본문을 버리면 상태코드만 남는다 — 원천이 적어 보낸 거절 사유가
             # 곧 처방이다(#325·#82).
-            return None, http_reason(resp.status_code, size, body=_b)
+            # ⚠️ **원문 바이트**를 넘긴다 — 잘린 표본(`_b`)을 넘기면
+            # `error_brief` 가 JSON 파싱에 실패해 구조 요약이 통째로 죽는다
+            # (독립 리뷰 2026-09-12 Blocking: 그 상태로 12개 테스트가 green
+            # 이었다 — 배선을 안 태우면 기능이 없는 채로 통과한다, #20·#79).
+            return None, http_reason(resp.status_code, size,
+                                     body=resp.content)
         try:
             return resp.json(), ""
         except ValueError:

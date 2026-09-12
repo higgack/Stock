@@ -80,6 +80,12 @@
 | 부분은 **냉각으로 기억하지 않는다**(모집단이 오가지 않는다·수렴한다) · 일시정지도 기억하지 않는다(#79) | ✅ 자동 | `…::test_partial_is_not_remembered_and_stays_consistent` · `…::test_paused_partial_is_still_not_remembered` |
 | 부분이 싼 **이유**(1단에서 끝나고 옛 HTML 7쪽을 안 걷는다, #61) | ✅ 자동 | `…::test_partial_walk_stops_at_the_first_rung`(호출 수·HTML 미주행을 값으로) |
 | 실패 사유는 원인을 **단정하지 않는다**(#165) | ✅ 자동 | `…::test_larger_limit_rejected_keeps_the_smaller_limits_rows`('거절' 어휘 금지 단언) |
+| 그 요약이 **제품 진입점(`get_json`)을 통과**한다(중복제거 최적화가 자료형을 바꿔 기능이 죽었다, #20·#79) | ✅ 자동 | `TestZodBriefSurvivesRealGetJson20260912::test_cap_survives_the_real_call_path` |
+| 상한은 **`pageSize` 것만** 읽는다(`page` 상한에 납치되지 않는다) | ✅ 자동 | `…::test_page_bound_does_not_hijack_the_pagesize_cap` |
+| 요약도 태그·`<`/`>` 제거를 거치고 **마스킹이 자르기보다 먼저**(§Secrets) | ✅ 자동 | `…::test_brief_is_sanitized_and_masked`(경계가 값 한가운데) |
+| 네이버 zod 오류 봉투는 **자르기 전에 구조로 요약**(결정적 숫자가 잘리지 않는다, #156) | ✅ 자동 | `TestNaverZodErrorIsReadable20260912` 3건(실측 바이트 픽스처 · 상한 읽기 · 비-JSON 폴백) |
+| 한도는 추측이 아니라 **원천이 말한 값**으로 재시도(비교 대상 = 성공한 최대 한도) | ✅ 자동 | `TestThemeLadderUsesDeclaredCap20260912::test_rejected_size_retries_at_the_declared_cap` |
+| 사유를 합칠 땐 **더 행동 가능한 쪽이 앞**이고 둘 다 남는다 · 실패한 쪽 번호를 적는다(#275·#82) | ✅ 자동 | `…::test_prior_reason_is_not_overwritten_by_the_cap_rejection` · `…::test_failing_page_number_is_named` |
 | non-200 에서 **원천이 적어 보낸 거절 사유**를 사유에 싣는다(#325·#82) — 단 비밀값 마스킹·HTML 안전·euc-kr 까지 | ✅ 자동 | `TestNaverErrorBodyIsCaptured20260912` 5건(왕복 `reason_rank`·HTML 안전·마스킹 단일 출처·euc-kr·`get_json` 배선) |
 
 ## 다음 우선순위 (갭 메우기 후보)
