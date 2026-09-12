@@ -202,7 +202,7 @@ def ingest(conn: sqlite3.Connection, caption: str, *, source_message_id=None,
 # ─────────────────────────────────────────────────────────────────────────
 _CSS = """
 :root{--bg:#f7f8f9;--card:#ffffff;--border:#e8e8ea;--text:#282a30;
-  --item:#16171a;--muted:#8a8f98;--accent:#5e6ad2;--row:#eef0f2;--chartbd:#e8e8ea}
+  --item:#16171a;--muted:#696e78;--accent:#5a66d1;--row:#eef0f2;--chartbd:#e8e8ea}
 body.dark{--bg:#0b0c0e;--card:#141518;--border:#26272b;--text:#e2e3e6;
   --item:#f7f8f8;--muted:#8a8f98;--accent:#9aa2f0;--row:#1f2023;--chartbd:#26272b}
 *{box-sizing:border-box}

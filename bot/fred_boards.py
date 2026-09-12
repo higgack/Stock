@@ -810,7 +810,7 @@ def _load_liq() -> tuple[list[dict], dict, float | None]:
 _BOARD_CSS = """
 <style>
 :root{--bg:#f7f8f9;--card:#ffffff;--surface2:#f0f1f3;--border:#e4e5e9;
- --fg:#282a30;--muted:#7c818c;--accent:#3b78e7;--pillbd:#282a30}
+ --fg:#282a30;--muted:#696e78;--accent:#276ae5;--pillbd:#282a30}
 :root[data-theme="dark"]{--bg:#0f1117;--card:#1a1d27;--surface2:#242836;
  --border:#2e3348;--fg:#e4e6ed;--muted:#8b8fa3;--accent:#4f8ff7;--pillbd:#ffffff}
 body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;margin:0}

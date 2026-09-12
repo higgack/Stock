@@ -63152,3 +63152,180 @@ class TestThemeSortSweep20260912:
         assert out["stale"] is True and out["refreshing"] is True, out
         assert out["stale_age"] >= 3500, out["stale_age"]
         assert kicked, "배경 갱신을 안 띄웠다"
+
+
+class TestPaletteContrastAndDesignDrift20260912:
+    """실수 #355 — `DESIGN.md` §4 가 "다크/라이트 둘 다 대비 확보"라고 **적어만 두고**
+    아무도 재지 않았다(#55). 2026-09-12 실측: 라이트 `--muted` 3.06:1 ·
+    `--pos` 3.54 · `--accent` 4.42 · trade `--tone-export` 2.04 — 기준시각·사유·
+    등락 숫자가 AA(4.5) 미달 대비로 떠 있었고, 값이 다 '있어서' 어떤 감사도
+    안 걸렸다(#96).
+
+    가드 둘:
+      ① 팔레트 전수 대비 — `bot/`·`trade/` 디렉터리 전체(#24 이름 열거 금지).
+         텍스트·표면 토큰을 **용법에서 파생**한다: 손으로 적은 6개 목록은
+         `--fg-soft`·`--pending`·`--item`·`--text-sub`·`--tone-*` 를 놓쳤다.
+      ② 문서↔코드 드리프트 — `DESIGN.md` 색상표가 `bot/dashboard.py` 실값과
+         같은가. 오늘은 0건 불일치지만 **양쪽이 갈라지는 걸 막는 것이 없었다**.
+    """
+
+    _SRC_DIRS = ("bot", "trade")
+
+    # --- 공통 --------------------------------------------------------------
+    def _palette_modules(self):
+        import pathlib
+        out = []
+        for d in self._SRC_DIRS:
+            for p in sorted(pathlib.Path(d).rglob("*.py")):
+                if "tests" in p.parts:
+                    continue
+                src = p.read_text(errors="ignore")
+                if ":root" in src or "body.dark" in src:
+                    out.append((p, src))
+        return out
+
+    # --- ① 대비 ------------------------------------------------------------
+    def test_every_palette_meets_wcag_aa(self):
+        """페이지 표면에 놓이는 모든 텍스트 토큰이 AA(4.5:1) 이상."""
+        from bot import css_contrast as cc
+
+        mods = self._palette_modules()
+        assert len(mods) >= 15, f"팔레트 모듈이 {len(mods)}개 — 스캔이 눈멀었다(#54)"
+        rows = []
+        for p, src in mods:
+            rows.extend(cc.audit_source(src, str(p)))
+        # 대조 0건은 통과가 아니라 실패(#54). 2026-09-12 실측 356쌍 — 하한은
+        # 현재값에 바싹 붙이지 않는다(#67 시한폭탄).
+        assert len(rows) >= 250, f"검사 쌍 {len(rows)}개 — 쌍 파생이 무너졌다(#54)"
+        # 문턱은 **리터럴로** 못박는다 — `cc.failures(rows)` 로 기본값을 쓰면
+        # `AA_MIN` 을 1.0 으로 내리는 뮤테이션이 그대로 통과한다(#66 자기 상수로
+        # 자기를 검증하는 tautology).
+        assert cc.AA_MIN == 4.5, cc.AA_MIN
+        bad = cc.failures(rows, 4.5)
+        assert not bad, "AA 미달:\n  " + "\n  ".join(cc.describe(r) for r in bad[:20])
+
+    def test_contrast_guard_fires_on_a_low_contrast_palette(self):
+        """가드가 **실제로 발화하는지** 틀린 상태를 재현해 확인(#47·#91)."""
+        from bot import css_contrast as cc
+
+        src = (":root{--bg:#ffffff;--card:#ffffff;--muted:#cccccc;--text:#111111}"
+               "body{background:var(--bg)}.x{color:var(--muted)}.y{color:var(--text)}")
+        rows = cc.audit_source(src, "synthetic")
+        bad = cc.failures(rows)
+        assert [r["text"] for r in bad] == ["--muted", "--muted"], bad
+        # 반대 증거(#25): 대비를 올리면 아무것도 안 잡힌다.
+        ok = cc.audit_source(src.replace("#cccccc", "#595959"), "synthetic")
+        assert not cc.failures(ok), cc.failures(ok)
+
+    def test_text_tokens_come_from_usage_not_a_hand_list(self):
+        """`color:var(--X)` 로 쓰이면 이름과 무관하게 텍스트로 잡힌다(#24)."""
+        from bot import css_contrast as cc
+
+        src = (":root{--bg:#fff;--card:#fff;--brand-new-thing:#dddddd}"
+               "body{background:var(--bg)}.z{color:var(--brand-new-thing)}")
+        assert "--brand-new-thing" in cc.text_tokens(src)
+        assert cc.failures(cc.audit_source(src, "synthetic")), "새 이름을 못 잡았다"
+
+    def test_chip_foregrounds_are_not_paired_with_page_surfaces(self):
+        """칩 전경(`--x-fg` + 짝 `--x-bg`)은 자기 tint 위에 놓인다 — 오탐 금지(#50)."""
+        from bot import css_contrast as cc
+
+        src = (":root{--bg:#ffffff;--card:#ffffff;--tier-l-fg:#dddddd;--tier-l-bg:#222222}"
+               "body{background:var(--bg)}.t{color:var(--tier-l-fg)}")
+        assert "--tier-l-fg" not in cc.text_tokens(src)
+        assert not cc.failures(cc.audit_source(src, "synthetic"))
+
+    def test_dark_variants_on_non_root_selectors_are_scanned(self):
+        """`body.dark{}` 같은 선택자도 팔레트다 — trade/dashboard 가 그렇다."""
+        from bot import css_contrast as cc
+
+        src = (":root{--bg:#ffffff;--card:#ffffff;--muted:#595959}"
+               "body.dark{--bg:#1a1a1c;--card:#2c2c2e;--muted:#3a3a3c}"
+               "body{background:var(--bg)}.m{color:var(--muted)}")
+        sels = {s for s, _ in cc.palette_blocks(src)}
+        assert "body.dark" in sels, sels
+        bad = cc.failures(cc.audit_source(src, "synthetic"))
+        assert bad and all("dark" in r["selector"] for r in bad), bad
+
+    def test_body_text_token_is_not_mistaken_for_a_chip_foreground(self):
+        """`--text` 도 `-text` 로 끝난다 — base 검증이 없으면 본문이 무검사(#47).
+
+        2026-09-12 실측: 이 가드 없이 검사 쌍이 368→280 으로 줄고 `--text`·
+        `--fg` 가 통째로 빠졌다(가장 중요한 토큰이 가장 먼저 눈먼다).
+        """
+        from bot import css_contrast as cc
+
+        src = (":root{--bg:#ffffff;--card:#ffffff;--text:#bbbbbb;--badge:#222222;"
+               "--badge-text:#dddddd}"
+               "body{background:var(--bg)}.b{background:var(--badge)}"
+               ".t{color:var(--text)}.bt{color:var(--badge-text)}")
+        texts = cc.text_tokens(src)
+        assert "--text" in texts, texts
+        assert "--badge-text" not in texts, texts
+        assert {r["text"] for r in cc.failures(cc.audit_source(src, "s"))} == {"--text"}
+
+    def test_last_declaration_without_a_semicolon_is_parsed(self):
+        """`;` 없이 `}` 로 끝나는 마지막 선언 — 버리면 팔레트가 블록째 무검사다."""
+        from bot import css_contrast as cc
+
+        blocks = cc.palette_blocks(":root{--bg:#fff;--card:#fff;--muted:#cccccc}")
+        assert blocks and blocks[0][1].get("--muted") == "#cccccc", blocks
+
+    def test_every_palette_block_has_a_surface(self):
+        """표면을 하나도 못 뽑은 블록이 있으면 그 팔레트는 통째로 무검사다(#54)."""
+        from bot import css_contrast as cc
+
+        missing = []
+        for p, src in self._palette_modules():
+            surf = cc.page_surfaces(src)
+            for sel, tok in cc.palette_blocks(src):
+                if not (surf & tok.keys()):
+                    missing.append(f"{p} [{sel[:40]}]")
+        assert not missing, "표면 없는 팔레트 블록:\n  " + "\n  ".join(missing[:10])
+
+    # --- ② 문서 드리프트 ---------------------------------------------------
+    @staticmethod
+    def _design_md_rows():
+        import pathlib
+        import re
+        md = pathlib.Path("DESIGN.md").read_text()
+        return re.findall(r"^\|\s*`(--[\w-]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|",
+                          md, re.M)
+
+    @staticmethod
+    def _drift(rows, light, dark):
+        bad = []
+        for name, lv, dv in rows:
+            for want, table, label in ((lv, light, "라이트"), (dv, dark, "다크")):
+                got = table.get(name)
+                if got is None:
+                    bad.append(f"{name} {label}: dashboard.py 에 정의 없음")
+                elif got.strip().lower() != want.strip().lower():
+                    bad.append(f"{name} {label}: 문서 {want} ≠ 코드 {got}")
+        return bad
+
+    def test_design_md_palette_matches_dashboard_css(self):
+        """문서 색상표 = `bot/dashboard.py` 실값(#55 설명이 코드와 어긋나면 버그)."""
+        from bot import css_contrast as cc
+
+        rows = self._design_md_rows()
+        assert len(rows) >= 9, f"DESIGN.md 표에서 {len(rows)}행 — 파싱이 무너졌다(#54)"
+        src = open("bot/dashboard.py").read()
+        light, dark = {}, {}
+        for sel, tok in cc.palette_blocks(src):
+            if "--bg" not in tok:
+                continue
+            (dark if "dark" in sel else light).update(tok)
+        bad = self._drift(rows, light, dark)
+        assert not bad, "DESIGN.md ↔ dashboard.py 드리프트:\n  " + "\n  ".join(bad)
+
+    def test_drift_guard_fires_when_the_doc_lies(self):
+        """드리프트 판정이 **실제로 발화하는지** — 본 테스트와 같은 함수로(#286
+        판정을 인라인 재구현하면 tautology 다)."""
+        rows = self._design_md_rows()
+        assert rows, "표가 비었다"
+        name, lv, dv = rows[0]
+        light, dark = {name: lv}, {name: dv}
+        assert not self._drift(rows[:1], light, dark), "정상인데 잡았다"
+        assert self._drift(rows[:1], {name: "#ff00ff"}, dark), "값이 갈렸는데 못 잡았다"
+        assert self._drift(rows[:1], {}, dark), "정의가 없는데 못 잡았다"

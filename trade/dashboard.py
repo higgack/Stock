@@ -965,8 +965,8 @@ _CSS = """
 :root{
   --bg:#f5f5f7;--surface:#fff;--surface-2:#fafafd;--text:#1d1d1f;
   --text-sub:#6e6e73;--border:#d2d2d7;--border-soft:#e5e5e7;
-  --chip-bg:#f0f0f0;--accent:#0071e3;
-  --tone-export:#34c759;--tone-import:#ff9500;
+  --chip-bg:#f0f0f0;--accent:#006cda;
+  --tone-export:#217f39;--tone-import:#a25f00;
   --b-export-bg:#d1f4d8;--b-export-fg:#1f7a32;
   --b-import-bg:#fff0d1;--b-import-fg:#8a5a00;
   --b-prelim-bg:#eee;--b-prelim-fg:#6e6e73;
@@ -978,7 +978,7 @@ _CSS = """
 body.dark{
   --bg:#1a1a1c;--surface:#2c2c2e;--surface-2:#252527;--text:#f5f5f7;
   --text-sub:#b8b8bd;--border:#3a3a3c;--border-soft:#3a3a3c;
-  --chip-bg:#3a3a3c;--accent:#0a84ff;
+  --chip-bg:#3a3a3c;--accent:#3097ff;
   --tone-export:#30d158;--tone-import:#ff9f0a;
   --b-export-bg:#0f3a1a;--b-export-fg:#5fd778;
   --b-import-bg:#3a2807;--b-import-fg:#ffb84d;

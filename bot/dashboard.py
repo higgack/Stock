@@ -979,10 +979,10 @@ _BASE_CSS = """
    교체 → var() 쓰는 전 요소 자동 리스타일. 라이트 기본 + data-theme=dark 오버라이드.
    별/메모/알람·삭제·차트 등 semantic 색은 spec 도 유지(여기 미변경). */
 :root {
-  --fg: #282a30; --fg-soft: #8a8f98; --bg: #f7f8f9; --card: #ffffff;
+  --fg: #282a30; --fg-soft: #696e78; --bg: #f7f8f9; --card: #ffffff;
   --surface-2: #f0f1f3;
   --border: #e8e8ea; --border-input: #e0e1e4; --border-strong: #d8dade;
-  --accent: #5e6ad2; --accent-hover: #515dc4;
+  --accent: #5a66d1; --accent-hover: #515dc4;
   --focus-ring: rgba(94,106,210,0.13);
   --radius: 10px; --radius-sm: 8px;
 }
@@ -11394,8 +11394,8 @@ _SCREENER_CSS = (
    defaults at `:root`, dark overrides at `:root[data-theme="dark"]`. */
 :root {
   --bg:#f7f8f9; --card:#ffffff; --border:#e8e8ea;
-  --text:#282a30; --muted:#8a8f98; --accent:#5e6ad2;
-  --pos:#059669; --neg:#dc2626; --neu:#8a8f98; --pending:#d97706;
+  --text:#282a30; --muted:#696e78; --accent:#5a66d1;
+  --pos:#04805a; --neg:#dc2626; --neu:#8a8f98; --pending:#aa5d05;
   --accent-soft:rgba(94,106,210,0.07);
   --accent-soft2:rgba(94,106,210,0.14);
   --surface-tint:rgba(0,0,0,0.05);
@@ -11411,7 +11411,7 @@ _SCREENER_CSS = (
 :root[data-theme="dark"] {
   --bg:#0b0c0e; --card:#141518; --border:#26272b;
   --text:#e2e3e6; --muted:#8a8f98; --accent:#7c84e8;
-  --pos:#10B981; --neg:#EF4444; --neu:#6B7280; --pending:#F59E0B;
+  --pos:#10B981; --neg:#f04d4d; --neu:#6B7280; --pending:#F59E0B;
   --accent-soft:rgba(124,132,232,0.06);
   --accent-soft2:rgba(124,132,232,0.15);
   --surface-tint:rgba(255,255,255,0.04);
@@ -17085,12 +17085,12 @@ _MARKET_CSS = (
     "<script>" + _THEME_JS + "</script>"
     "<style>"
     ":root{--bg:#f7f8f9;--card:#fff;--border:#e8e8ea;--text:#282a30;"
-    "--muted:#8a8f98;--accent:#5e6ad2;--pos:#059669;--neg:#dc2626;"
+    "--muted:#696e78;--accent:#5a66d1;--pos:#04805a;--neg:#dc2626;"
     "--neu:#8a8f98;--surface-tint:rgba(0,0,0,.05);"
     "--accent-soft:rgba(94,106,210,.07)}"
     ":root[data-theme='dark']{--bg:#0b0c0e;--card:#141518;--border:#26272b;"
     "--text:#e2e3e6;--muted:#8a8f98;--accent:#7c84e8;--pos:#10B981;"
-    "--neg:#EF4444;--neu:#6B7280;--surface-tint:rgba(255,255,255,.04);"
+    "--neg:#f04d4d;--neu:#6B7280;--surface-tint:rgba(255,255,255,.04);"
     "--accent-soft:rgba(124,132,232,.06)}"
     "*{box-sizing:border-box}"
     "body{background:var(--bg);color:var(--text);margin:0;"

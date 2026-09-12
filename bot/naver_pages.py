@@ -20,7 +20,7 @@ _CSS = """
 :root,[data-theme="dark"]{--bg:#0e1117;--card:#161b22;--border:#30363d;--text:#e6edf3;
 --muted:#8b949e;--accent:#58a6ff;--pos:#26a69a;--neg:#e2574c}
 [data-theme="light"]{--bg:#fff;--card:#f6f8fa;--border:#d0d7de;--text:#1f2328;
---muted:#656d76;--accent:#0969da;--pos:#059669;--neg:#dc2626}
+--muted:#656d76;--accent:#0969da;--pos:#04805a;--neg:#dc2626}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
 background:var(--bg);color:var(--text);padding:24px;max-width:1000px;margin:0 auto}
