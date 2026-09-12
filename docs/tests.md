@@ -119,6 +119,8 @@
 | 훑기는 **전경 경로 예산**(8초)에서 멈추고, 탐색 검증은 훑지 않는다(#116·#61) | ✅ 자동 | `…::test_sweep_stops_at_its_time_budget`(시계 주입) · `…::test_discovery_validation_does_not_sweep`(진입점을 태운다) |
 | 여러 정렬이 **같은 상태**로 거절되면 환경 변화로 말한다(#45·#82) | ✅ 자동 | `…::test_same_status_on_many_sorts_reads_as_environment` |
 | 부제에서 뺀 사다리 경위는 **로그로 남긴다** · 죽은 가드 둘은 실제로 태운다(#43·#291) | ✅ 자동 | `…::test_complete_path_logs_the_ladder_story` · `…::test_dead_guards_actually_guard` |
+| 저장분이 있으면 **전경에서 수집을 기다리지 않는다**(SWR = KR 한 세션, #116·#163) | ✅ 자동 | `…::test_a_stale_snapshot_is_served_without_making_the_user_wait` |
+| 정렬 기여 상세는 부제가 아니라 **로그**에(사용자 2026-09-12 · #43·#222) | ✅ 자동 | `…::test_sort_contribution_goes_to_the_log_not_the_subtitle` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
