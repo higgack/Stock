@@ -79,6 +79,81 @@ def body_sample(body: object, limit: int = 120) -> str:
     return txt[:limit] + ("…" if len(txt) > limit else "")
 
 
+def error_brief(body: object) -> str:
+    """네이버 오류 봉투 → **결정적 사실을 앞세운** 한 줄(순수). 못 읽으면 "".
+
+    VM 실측(2026-09-12) 테마 400 본문:
+    ``{"detailCode":"too_big","message":"{\\"formErrors\\":[],
+    \\"fieldErrors\\":{\\"pageSize\\":[\\"Number must be less than or
+    equal to N\\"]}}"}`` — zod 검증 오류이고 `message` 는 **JSON 문자열**이다.
+    원문을 그대로 120자로 자르면 정확히 **그 N 직전에서 잘려**, 결정적 숫자를
+    못 본 채 한 라운드를 더 썼다(#156·#338 '자르는 자리는 다음 결정을 가리지
+    않는가'를 먼저 물을 것). 그래서 자르기 전에 **구조로 요약**한다.
+    """
+    if body is None:
+        return ""
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            body = bytes(body)[:8000].decode("utf-8", "replace")
+        except Exception:                                   # noqa: BLE001
+            return ""
+    txt = str(body)[:8000].strip()
+    if not txt.startswith("{"):
+        return ""
+    try:
+        import json
+
+        env = json.loads(txt)
+    except Exception:                                       # noqa: BLE001
+        return ""
+    if not isinstance(env, dict):
+        return ""
+    code = str(env.get("detailCode") or env.get("code") or "").strip()
+    msg = env.get("message")
+    if isinstance(msg, str) and msg.strip().startswith("{"):
+        try:
+            import json
+
+            msg = json.loads(msg)
+        except Exception:                                   # noqa: BLE001
+            pass
+    parts: list = []
+    if isinstance(msg, dict):
+        fe = msg.get("fieldErrors")
+        if isinstance(fe, dict):
+            for k, v in fe.items():
+                one = v[0] if isinstance(v, list) and v else v
+                parts.append(f"{k}: {one}")
+        form = msg.get("formErrors")
+        if isinstance(form, list):
+            parts.extend(str(x) for x in form if x)
+    elif isinstance(msg, str) and msg.strip():
+        parts.append(msg.strip())
+    if not parts and not code:
+        return ""
+    head = " · ".join(str(x) for x in parts)[:160]
+    return mask_secrets(f"{head} ({code})" if code and head else (head or code))
+
+
+_LE_RE = re.compile(r"less than or equal to\s*(\d+)")
+
+
+def size_cap_from(reason: str) -> int | None:
+    """사유 문구 → 원천이 밝힌 **상한 값**(순수). 못 읽으면 None.
+
+    상한을 추측해 이분 탐색하면 요청만 는다 — **원천이 스스로 말한 수**를
+    읽는 것이 답이다(#64 상태는 아는 쪽이 말하게 · #86).
+    """
+    m = _LE_RE.search(str(reason or ""))
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+    except ValueError:
+        return None
+    return n if 0 < n <= 100000 else None
+
+
 def http_reason(status: int | None, size: int | None = None,
                 exc: BaseException | None = None, *,
                 body: object = None) -> str:
@@ -105,7 +180,9 @@ def http_reason(status: int | None, size: int | None = None,
 
 
 def _with_body(reason: str, body: object) -> str:
-    sample = body_sample(body)
+    # ⚠️ **구조 요약이 먼저다** — 원문을 그대로 자르면 결정적 숫자가 잘린다
+    # (실측: `…less than or equal…` 에서 끊겨 상한을 못 봤다, #156).
+    sample = error_brief(body) or body_sample(body)
     return f"{reason} — 원천: {sample}" if sample else reason
 
 
