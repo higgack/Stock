@@ -60233,7 +60233,7 @@ class TestNaverThemeAndDetailSpa20260912:
 
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, partial = nsc._theme_json_rung("u")
-        assert len(rows) == 230 and partial is False, (
+        assert len(rows) == 230 and why == "" and partial is False, (
             len(rows or []), why)
 
     def test_partial_pages_are_shown_but_not_cached(self, monkeypatch):
@@ -62075,3 +62075,107 @@ class TestParamSchemaProbe20260912:
         monkeypatch.setattr(nsc, "_get2_json", fake)
         rows, why, _partial = nsc._theme_json_rung("u")
         assert rows and len(rows) == 50, (rows and len(rows), why)
+
+    def test_halving_only_on_size_rejections(self, monkeypatch, tmp_path):
+        """절반 물러나기는 **크기 거절일 때만** — 타임아웃·429 엔 안 한다.
+
+        독립 리뷰 실측: 사유를 안 보면 전 호출 타임아웃 시 한 단이 3회
+        요청(15초×3)이 되고, 429 는 한도 초과 원천을 즉시 두 번 더 두드린다.
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        for reason in (nsc._nd.http_reason(None, exc=TimeoutError("x")),
+                       nsc._nd.http_reason(429),
+                       nsc._nd.http_reason(404),
+                       nsc._nd.PAUSED):
+            sizes = []
+
+            def fake(url, params=None, _r=reason, **k):
+                sizes.append(dict(params or {}).get("pageSize"))
+                return None, _r
+
+            monkeypatch.setattr(nsc, "_get2_json", fake)
+            nsc._theme_json_rung("u")
+            # 계약은 "**사다리 밖 크기를 만들지 않는다**" 이다 — 첫 단이
+            # 전멸하면 사다리 자체가 멈추므로 요청은 1회다(그게 옳다).
+            assert all(x in nsc._THEME_PAGE_SIZES for x in sizes), (reason, sizes)
+            assert len(sizes) == 1, (reason, sizes)
+
+    def test_shorter_later_size_does_not_erase_partial_evidence(
+            self, monkeypatch, tmp_path):
+        """뒷단이 더 짧게 주면 앞단의 부분 증거가 남아야 한다.
+
+        실측 재현(테마 130개·응답 100행 상한·page 무시): size=200 이 100행을
+        주며 `partial=False` 로 덮어 **100/130 이 '전체 테마'로 캐시**됐다.
+        """
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        row = {"no": "1", "name": "콩", "changeRate": "1.0",
+               "recent3daysChangeRate": "0.5", "type": "theme"}
+
+        def fake(url, params=None, **k):
+            # 어떤 pageSize 를 물어도 100행만 주고 page 는 무시한다
+            return [dict(row, no=str(i)) for i in range(100)], ""
+
+        monkeypatch.setattr(nsc, "_get2_json", fake)
+        rows, why, partial = nsc._theme_json_rung("u")
+        assert rows and len(rows) == 100, len(rows or [])
+        assert partial is True, (why, "부분을 완전본으로 찍었다")
+
+    def test_page_candidate_is_not_matched_inside_pagesize(self):
+        """토큰 경계 — `pageSize` 오류가 후보 `page` 를 '있음' 으로 만들면 안 된다."""
+        import bot.naver_sector_client as nsc
+
+        brief = "pageSize: Number must be less than or equal to 200 (too_big)"
+        assert "판정 불가" in nsc.classify_param_probe(400, brief, "page")
+        assert "있음" in nsc.classify_param_probe(400, brief, "pageSize")
+        assert "판정 불가" in nsc.classify_param_probe(
+            400, "sortType: Expected asc | desc", "sort")
+
+    def test_row_count_change_counts_as_present(self):
+        """200 이어도 **행 수가 달라지면** 그 키는 듣고 있는 것이다."""
+        import bot.naver_sector_client as nsc
+
+        assert "있음" in nsc.classify_param_probe(200, "", "category",
+                                                 n_rows=0, base_n=100)
+        assert "없음" in nsc.classify_param_probe(200, "", "category",
+                                                 n_rows=100, base_n=100)
+
+    def test_paused_is_not_called_unreachable(self):
+        """일시정지와 '못 닿음' 은 처방이 정반대다(#82·#279)."""
+        import bot.naver_sector_client as nsc
+
+        v = nsc.classify_param_probe(None, nsc._nd.PAUSED, "sort")
+        assert "일시정지" in v and "도달 실패" not in v, v
+
+    def test_cli_flag_actually_dispatches(self, monkeypatch, capsys):
+        """광고한 CLI 가 죽은 채 배포되지 않게 **main 을 태운다**(#252).
+
+        디스패치 블록을 지워도 전 회귀가 green 이었다(독립 리뷰 grep 확인).
+        """
+        import bot.naver_sector_client as nsc
+
+        called = {"n": 0}
+
+        def fake_probe(*a, **k):
+            called["n"] += 1
+            return ["PROBE-RAN"]
+
+        monkeypatch.setattr(nsc, "probe_params", fake_probe)
+        rc = nsc.main(["--probe-params"])
+        assert rc == 0 and called["n"] == 1
+        assert "PROBE-RAN" in capsys.readouterr().out
+
+    def test_probe_reports_failure_when_nothing_was_measured(
+            self, monkeypatch, tmp_path):
+        """한 건도 못 쟀으면 '후보에 아무것도 없다'로 읽히면 안 된다(#54)."""
+        import bot.naver_sector_client as nsc
+
+        monkeypatch.setattr(nsc, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(
+            nsc, "_get2_json",
+            lambda url, params=None, **k: (None, nsc._nd.PAUSED))
+        body = "\n".join(nsc.probe_params())
+        assert "❌ 한 건도 재지 못했습니다" in body, body
