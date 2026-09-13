@@ -13,7 +13,9 @@ skip.
 2026-08-24·08-26 확정: "새로운 글만 올라오면 되는거야. 새로 등록되는 것들은
 모두. 이건 디폴트야"). 첫 run 은 기존 글을 **seen 처리만** 하고 push 하지
 않는다(`state["init"][blog_id]`) — 백필 옵션은 **두지 않는다**. 레지스트리
-항목은 `{id, title, categories}` 세 키뿐이라 opt-in 할 자리 자체가 없고,
+항목의 필수 키는 `{id, title, categories}` 이고 선택 키는 `channel`(실측
+채널 제목 = 정체성 대조 기준) · `title_any`/`title_none`(제목 축 필터)뿐이라
+— 어디에도 백필을 여는 자리가 없고,
 회귀가 `_BLOGS` **전 항목**에 대해 이 계약을 검사한다(#24 이름 열거는 새
 항목을 못 잡는다). 2차 방어로 날짜가드(`_MAX_AGE_DAYS`)가 있어, 초기화를
 건너뛰어도 오래된 글은 push 되지 않는다.
@@ -39,6 +41,12 @@ _KST = timezone(timedelta(hours=9))
 # id(네이버 blogId) + title(표시명, 비면 런타임 RSS 채널 title 로 보강) +
 # categories(수집 카테고리 prefix; None = 전체 글). 새 블로그는 첫 run 에
 # **per-blog 초기화**로 기존 글 seen 처리(폭주 방지) → 이후 새 글만 push.
+# 선택 키 셋(다음 사람이 있는 줄도 모르면 없는 것과 같다, #55):
+#   · channel     — 실측 원천 채널 제목. `--check` 의 정체성 대조 기준이고
+#                   표시명(title)과 다를 수 있다(필명 vs 블로그 제목, #362).
+#   · title_any   — 제목에 이 중 하나가 있어야 통과(카가: 결산 글만)
+#   · title_none  — 제목에 이 중 하나가 있으면 제외(간동: 주별결산 제외)
+# 제목 축은 카테고리 축과 **AND** — 카테고리로 못 가르는 요구가 실재한다(#363).
 _BLOGS = (
     {"id": "teasky0221", "title": "필승", "categories": None},   # 전체 글 (사용자 2026-06-15)
     {"id": "doctordk", "title": "의교창", "categories": None},   # 전체 글 (사용자 2026-06-15)
@@ -70,20 +78,31 @@ _BLOGS = (
     {"id": "jsi4914", "title": "지댕", "categories": None},  # 전체 글
     # 사용자 2026-09-13 3건 일괄 추가(표시명 사용자 확정). 첫 run 은 per-blog
     # init 으로 기존 글 seen 처리만 — 백필 없이 새 글부터(위 ⛔ 디폴트).
-    {"id": "bvmzzin1023", "title": "한라산유기농백수", "categories": None},
-    {"id": "ggbbvv", "title": "간동", "categories": None},
-    # ⚠️ 2026-09-13 VM 실측이 **href 쪽을 반증했다**. 사용자 원문은
-    # `[.../hempt](.../hempty)` 였고 나는 href(`hempty`)를 골랐는데,
-    # `--check hempty` 는 RSS 50건을 정상 반환했는데 채널 제목이
-    # **"테니스 슈즈"**(일상·운동기록)였다 — 사용자가 말한 "카가" 가 아니다.
-    # 즉 실재하지만 **다른 사람의 블로그**였고, 그대로 뒀으면 무관한 개인
-    # 일상글이 NOAH 채널로 push 될 뻔했다(#25 능력은 이름이 아니라 실측 —
-    # '도달한다' 는 '맞는 블로그다' 가 아니다).
-    # 남은 후보는 링크 텍스트 `hempt` 이고 그건 **아직 안 쟀다** — 지어내
-    # 등록하지 않는다(#12·#151). 확정되면 여기 한 줄을 추가한다:
-    #     cd ~/stock && .venv/bin/python -m bot.blog_watch --check hempt
-    # 채널 제목이 "카가" 면 맞다. `rss_health` 가 등록분의 침묵을 잡으므로
-    # 틀린 등록보다 **빈 자리가 낫다**(#29·#32).
+    # 제거: bvmzzin1023("한라산유기농백수") — 사용자 2026-09-13 "별로 괜찮은
+    # 글을 안 올리는 것 같다". 수집만 멈추고 기존 아카이브는 그대로 둔다.
+    {"id": "ggbbvv", "title": "간동", "categories": None,
+     # 사용자 2026-09-13: "주별결산은 주식내용이 아니니 월별결산 그런것만".
+     # 실측한 월별 제목: "26년 8월 투자 결산".
+     # ⚠️ 주별 제목 형식은 **아직 안 쟀다** — 아래 제외어는 잠정이고,
+     # `--check ggbbvv` 가 제목마다 통과/제외를 찍으므로 다음 실행이 곧
+     # 측정이다(#82·#12 안 잰 것을 단정하지 말 것).
+     "title_any": ("결산",), "title_none": ("주차", "주간", "주별")},
+    # ⚠️⚠️ 2026-09-13: 이 줄을 한 번 **잘못 지웠다가 되살렸다**(실수 #362).
+    # `--check hempty` 가 채널 제목 "테니스 슈즈" 를 돌려주자 사용자가 말한
+    # "카가" 와 달라 '다른 사람의 블로그' 로 단정하고 뺐는데, 사용자가 화면을
+    # 캡처해 반증했다 — **"테니스 슈즈" 는 블로그 제목이고 "카가" 는 필명**
+    # 이다(프로필 `🧡 카가 / hempty`, 주식 관련 글). 그리고 내가 "아직 안
+    # 쟀다" 며 남겨 둔 후보 `hempt` 는 실측에서 RSS 200 이지만 `<item>` 이
+    # 없다 = 존재하지 않는다. 즉 **처음 고른 href 가 맞았다**.
+    # 교훈: 사람이 부르는 이름과 원천이 싣는 제목은 **다른 축**이라 그 둘의
+    # 불일치만으로 정체성을 판정할 수 없다(#165 재지 않은 것을 단정하지 말 것).
+    # `channel` = 실측한 원천 채널 제목(대조 기준) · `title` = 화면 표시명.
+    {"id": "hempty", "title": "카가", "categories": None,
+     "channel": "테니스 슈즈",
+     # 사용자 2026-09-13: "결산글만 올라오게". 실측 제목: "2026년 06월 결산"
+     # · "2026년 07월 결산" · "2026년 08월 결산"(카테고리는 '일상'이라
+     # categories 로는 못 가른다 — 그래서 제목 축이 필요하다).
+     "title_any": ("결산",)},
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
@@ -122,6 +141,46 @@ def category_label(categories) -> str:
         return ""
     names = (categories,) if isinstance(categories, str) else tuple(categories)
     return " · " + "/".join(names) + " 카테고리만"
+
+
+def title_gate(title: str, blog: dict) -> tuple[bool, str]:
+    """제목 축 필터 — (통과?, 사유). 카테고리 축과 **AND** 로 걸린다.
+
+    왜 축이 둘인가(사용자 2026-09-13): 카가(`hempty`)의 결산 글은 카테고리가
+    '일상' 이라 `categories` 로는 못 가른다 — 같은 카테고리 안에서 제목으로만
+    갈리는 요구가 실재한다("결산글만 올라오게").
+
+    계약(둘 다 선택 키, 없으면 그 축은 통과):
+      · `title_any`  — 이 중 **하나라도** 제목에 있어야 통과
+      · `title_none` — 이 중 **하나라도** 있으면 제외(간동의 주별결산)
+
+    ⚠️ 사유를 같이 돌려준다 — 값만 주면 화면·진단이 "왜 안 올라왔나"에 답할
+    수 없다(#123·#129·#189·#228 계열). 공백은 지우고 본다(원천 제목은
+    `26년 8월 투자 결산` 처럼 띄어쓰기가 일정하지 않다).
+    """
+    t = (title or "").replace(" ", "")
+    none_ = tuple(blog.get("title_none") or ())
+    for w in none_:
+        if w.replace(" ", "") in t:
+            return False, f"제외어 {w!r}"
+    any_ = tuple(blog.get("title_any") or ())
+    if any_ and not any(w.replace(" ", "") in t for w in any_):
+        return False, f"필수어 {'/'.join(any_)} 없음"
+    return True, ""
+
+
+def title_label(blog: dict) -> str:
+    """`/blog` 목록 꼬리표의 제목 축 — 화면이 필터를 말해야 한다(#43)."""
+    any_ = tuple(blog.get("title_any") or ())
+    none_ = tuple(blog.get("title_none") or ())
+    if not any_ and not none_:
+        return ""
+    bits = []
+    if any_:
+        bits.append("제목 " + "/".join(any_))
+    if none_:
+        bits.append("제외 " + "/".join(none_))
+    return " · " + " · ".join(bits)
 
 
 def rss_health(state: dict, blogs=None, *, now: float | None = None) -> list[dict]:
@@ -423,17 +482,27 @@ def _process_blog(blog: dict, state: dict, seen: set,
     cats = blog.get("categories")
     feed_has_cat = any(it.get("category") for it in items)
     allowed: list[dict] = []
+    skipped_title = 0
     for it in new_items:
         cat = (it.get("category") or "").strip()
         ok = (cats is None) or (not feed_has_cat) or cat.startswith(cats)
-        if ok:
+        # 제목 축은 카테고리 축과 **AND** — 한쪽만 통과하면 안 올린다.
+        t_ok, t_why = title_gate(it.get("title") or "", blog)
+        if ok and not t_ok:
+            skipped_title += 1
+            log.info("blog_watch[%s]: 제목 필터 제외(%s) — %.60s",
+                     bid, t_why, it.get("title") or "")
+        if ok and t_ok:
             allowed.append(it)
         else:
             seen.add(it["guid"])
             state["seen"].append(it["guid"])
     if cats and not feed_has_cat:
         log.warning("blog_watch[%s]: RSS 에 category 없음 — 전체 허용(형식 확인)", bid)
-    skipped_cat = len(new_items) - len(allowed)
+    # ⚠️ 두 축을 한 수에 섞지 말 것 — 옛 판은 `len(new_items) - len(allowed)`
+    # 였는데 제목 축이 생기면서 그 차이에 제목 제외분까지 들어가, 로그가
+    # '카테고리외' 라고 **틀린 라벨**을 달게 된다(#292·#45 소계는 각자 세라).
+    skipped_cat = len(new_items) - len(allowed) - skipped_title
     allowed = allowed[:_MAX_NEW_PER_RUN]
 
     # 날짜가드 — pubDate 파싱 가능하고 _MAX_AGE_DAYS 초과면 push 제외
@@ -475,8 +544,9 @@ def _process_blog(blog: dict, state: dict, seen: set,
                     {"text": txt, "source": f"blog:{it.get('blog_title') or bid}"})
         seen.add(it["guid"])
         state["seen"].append(it["guid"])
-    log.info("blog_watch[%s]: 새 글 %d개 수집, %d push, 카테고리외 %d 제외",
-             bid, len(allowed), pushed, skipped_cat)
+    log.info("blog_watch[%s]: 새 글 %d개 수집, %d push,"
+             " 카테고리외 %d · 제목외 %d 제외",
+             bid, len(allowed), pushed, skipped_cat, skipped_title)
     return pushed
 
 
@@ -567,27 +637,40 @@ def check(blog_id: str) -> int:
     title = _parse_channel_title(xml)
     items = _parse_items(xml)
     print(f"  채널 제목: {title or '(파싱 실패)'}")
-    # ⚠️ **도달성은 정체성이 아니다**(#361a). 2026-09-13 실측: `hempty` 는
-    # 실재하고 RSS 50건을 정상으로 줬지만 채널 제목이 "테니스 슈즈"(일상·
-    # 운동기록)로, 사용자가 말한 "카가" 가 아니었다 — 원문의 `[.../hempt]
-    # (.../hempty)` 에서 내가 href 쪽을 골랐는데 반대였다. 그대로 뒀으면
-    # 무관한 개인 일상글이 NOAH 채널로 push 됐다. 그때 이 진단은 `✅ RSS
-    # 응답`·`항목 50개` 까지만 보고 **내용이 맞는지는 안 봤다**(#25 '있다'를
-    # 묻는 검사에는 반대 증거를 같이 둘 것) — 그래서 rc=0 이었다.
-    # 이제 등록 표시명과 대조한다. 표시명은 사람이 붙이는 것이라 원천 채널명과
-    # 글자까지 같을 이유는 없으므로 **공백을 지운 뒤 어느 한쪽이 다른 쪽을
-    # 품는가**로 보고, 아니면 ❌ 로 말한다(단정하지 않고 둘 다 보여 준다, #82).
+    # ⚠️ **도달성은 정체성이 아니다**(#361a) — 그러나 **표시명과 채널 제목은
+    # 다른 축이다**(#362). 2026-09-13 에 이 자리를 두 번 틀렸다:
+    #   1차: 채널 제목을 찍기만 하고 아무것도 대조 안 함 → 틀린 blogId 가 rc=0
+    #   2차: 등록 **표시명**과 대조 → `hempty`(표시명 "카가" · 채널 "테니스
+    #        슈즈")가 ❌ 로 찍혔다. 필명과 블로그 제목이 다른 건 정상이고,
+    #        그 불일치로는 정체성을 판정할 수 없다(#165).
+    # 그래서 대조 기준은 **우리가 실측해 등록해 둔 채널 제목**(`channel`)이다:
+    #   · `channel` 이 있으면 → 다르면 ❌(blogId 가 다른 곳을 가리키기 시작함)
+    #   · 없으면 → ✅ 도 ❌ 도 아닌 **판정 불가**(#54). 사람이 한 번 눈으로
+    #     확인해 `channel=` 을 박아 넣어야 다음부터 기계가 잡는다(#119).
+    # 판정 불가를 조용히 통과시키면 1차 실수가 그대로 재발하므로 **눈에 띄는
+    # 줄**로 말한다(#43 침묵이 최악).
     #
     # ⚠️ 여기서 **바로 return 하지 않는다** — 끊으면 아래 카테고리 분포·필터
     # 진단이 통째로 사라진다. 이 도구의 계약은 "아는 것을 갈래로 전부 말한다"
     # 이므로(#82·#43) 결함은 **기록하고 계속 간다**. 종료코드로만 실패시킨다.
     bad = 0
     if reg and title:
-        _a, _b = title.replace(" ", ""), str(reg["title"]).replace(" ", "")
-        if _a not in _b and _b not in _a:
-            print(f"  ❌ 채널 제목이 등록 표시명과 다르다 — 원천 {title!r} vs"
-                  f" 등록 {reg['title']!r}. **다른 블로그일 수 있다**"
-                  " (blogId 를 다시 확인할 것 — 도달한다고 맞는 것이 아니다)")
+        known = (reg.get("channel") or "").strip()
+        if not known:
+            # ⚠️ "이 값을 박아라" 로만 적으면 **틀린 blogId 를 영구히
+            # 축복**한다 — #362 가 정확히 그 시나리오다. 확인이 먼저다.
+            print(f"  ❓ 이 채널 제목이 맞는지 대조할 기준이 없다 — 위 제목이"
+                  f" 의도한 블로그가 맞는지 **먼저 확인**하고, 맞으면 등록에"
+                  f" `\"channel\": {title!r}` 을 박을 것"
+                  " (그때부터 기계가 blogId 드리프트를 잡는다)")
+        elif title.replace(" ", "") != known.replace(" ", ""):
+            # ⚠️ f-string 과 `.format()` 을 한 식에 섞지 말 것 — f-string 이
+            # 먼저 채운 값에 `{` 가 들어 있으면 뒤이은 `.format()` 이 그걸
+            # 필드로 읽어 KeyError 다(원천 제목은 우리가 못 고르는 문자열이다).
+            print(f"  ❌ 채널 제목이 실측 등록분과 다르다 — 지금 {title!r} vs"
+                  f" 등록 {known!r}. **blogId 가 다른 블로그를 가리키거나"
+                  f" 원천이 제목을 바꿨다**"
+                  f"(표시명 {reg['title']!r} 과의 차이는 정상)")
             bad = 1
     print(f"  항목: {len(items)}개")
     if not items:
@@ -608,6 +691,29 @@ def check(blog_id: str) -> int:
     print("  카테고리 분포 (categories= 에 쓸 접두어):")
     for c, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"   · {n:3d}건  {c}")
+    # ── 제목 축 — 어느 제목이 통과/제외인지 **하나씩** 찍는다. 제외어 목록이
+    # 잠정이라(간동 주별 제목 미실측) 이 출력이 곧 다음 라운드의 측정이다(#82).
+    if reg and (reg.get("title_any") or reg.get("title_none")):
+        _shown = items[:10]
+        print(f"  제목 필터{title_label(reg)} → 최근 {len(_shown)}건 판정:")
+        _pass = 0
+        for it in _shown:
+            _ok, _why = title_gate(it.get("title") or "", reg)
+            _pass += 1 if _ok else 0
+            print(f"   {'✅' if _ok else '⛔'} {it['title'][:46]}"
+                  + (f"   ({_why})" if not _ok else ""))
+        _all = sum(1 for it in items if title_gate(it.get("title") or "", reg)[0])
+        print(f"  → 위 {len(_shown)}건 중 {_pass}건 · "
+              f"이 RSS 창 전체 {len(items)}건 중 {_all}건 통과")
+        if not _all:
+            # ⚠️ **rc=1 로 만들지 않는다**(독립 리뷰 2026-09-13). 0건은 갈래가
+            # 둘이고 처방이 정반대다(#82): 필터가 원천 제목과 안 맞거나(우리가
+            # 고칠 것), 그 유형 글이 이 창에 없을 뿐이거나(고칠 게 없다 —
+            # 간동의 월 1회 결산은 50건 창에서 정상적으로 밀려난다).
+            # 우리가 못 가르는 것을 ❌ 로 내면 매일 못 고칠 ❌ 가 되어 진짜
+            # ❌ 를 가린다(#260·#25). 사실만 적고 판정은 사람에게 남긴다.
+            print("  ⚠️ 이 창에선 한 건도 안 통과 — 필터가 원천 제목과 안 맞거나"
+                  " 그 유형 글이 최근에 없다(위 목록으로 가를 것)")
     cats = (reg or {}).get("categories")
     if cats is not None:
         _hit = sum(n for c, n in counts.items() if c.startswith(cats))

@@ -2122,11 +2122,15 @@ def _blog_list_text() -> str:
     사용자 2026-06-15 '블로그도 sites 처럼'."""
     import html as _h
     try:
-        from bot.blog_watch import _BLOGS, category_label as _cat_label
+        from bot.blog_watch import (
+            _BLOGS, category_label as _cat_label, title_label as _ttl_label)
     except Exception:
         _BLOGS = ()
 
         def _cat_label(_c):
+            return ""
+
+        def _ttl_label(_b):
             return ""
     lines = ["📝 <b>감시 블로그</b>", "",
              "새 글을 30분마다 자동 수집 → 채널 알림 + 대시보드(blog.html, 전문·검색).",
@@ -2136,7 +2140,9 @@ def _blog_list_text() -> str:
         title = _h.escape(b.get("title") or bid)
         # ⚠️ 꼬리표는 `blog_watch.category_label` 단일 출처 — 여기서 직접
         # 만들면 `categories` 가 str 일 때 글자를 쪼갠다(2026-09-13 실측).
-        suffix = _h.escape(_cat_label(b.get("categories")))
+        # 필터는 **두 축**(카테고리·제목)이고 화면은 둘 다 말해야 한다 —
+        # 한쪽만 적으면 "왜 안 올라오나"에 답을 못 한다(#43·#34).
+        suffix = _h.escape(_cat_label(b.get("categories")) + _ttl_label(b))
         lines.append(f' • <a href="https://m.blog.naver.com/{bid}">{title}</a>{suffix}')
     lines += ["", "📊 대시보드: 주식분석 아카이브 → 📝 블로그"]
     return "\n".join(lines)
