@@ -83,6 +83,15 @@ LIVE_REFRESH_JS = """<script>
       .then(function(r){if(!r.ok)throw 0;return r.text();})
       .then(function(html){
         var doc=new DOMParser().parseFromString(html,'text/html');
+        /* 부제(`.sub`)는 **신선도를 말하는 줄**이다 — `원천 …` · `저장분(수집
+           실패)` · `장중 30초 캐시`. 그런데 `#live-root` 밖이라 탭을 열어 둔
+           채 배포·수집이 일어나면 **표만 갱신되고 부제는 영원히 옛 문구**가
+           된다(2026-09-13 독립 리뷰 실측 — 사용자가 테마 부제를 두 번 물은
+           그 증상의 충분한 설명이다, #43 신선도 라벨이 안 갱신되면 거짓말 ·
+           #38 같은 화면의 두 부분이 다른 주기로 돈다). 값과 그 값을 설명하는
+           라벨은 **같이** 갈아끼운다. */
+        var fsub=doc.getElementById('live-sub'), csub=document.getElementById('live-sub');
+        if(fsub&&csub) csub.innerHTML=fsub.innerHTML;
         var fresh=doc.getElementById('live-root'), cur=document.getElementById('live-root');
         if(fresh&&cur&&fresh.innerHTML.length>50){
           cur.innerHTML=fresh.innerHTML;

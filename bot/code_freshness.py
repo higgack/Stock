@@ -140,3 +140,55 @@ def note(d: dict | None = None, *, unit: str = "") -> str:
             "전에 갱신됐는데 프로세스는 그보다 먼저 시작했습니다")
     return f"{head}. `sudo systemctl restart {unit}` 로 재시작하세요." if unit \
         else head + "."
+
+
+# ── 화면 배너 ────────────────────────────────────────────────────────────
+# ⚠️ 2026-09-13: 이 배너가 **메인 대시보드 한 장에만** 있었다. 사용자가 테마
+# 페이지에서 옛 부제(`정렬 5종 합산 266개(fallCnt+56, …)`)를 보고 **두 번**
+# 물었는데, 그 문구를 만드는 코드는 25시간 전에 base 에서 사라졌다 — 즉
+# 화면은 옛 프로세스가 그린 것이고, 페이지는 그 사실을 말할 방법이 없었다
+# (#11 '배포완료 ≠ 화면에 보임' · #38 한 화면에서 고쳤으면 형제를 즉시 grep ·
+# #12 같은 증상 2회+ 면 다음 패치가 아니라 가시성).
+#
+# ⚠️ `fetch` 주소는 **상대경로**여야 한다 — 토큰 경로(`/t/<token>/theme`)
+# 아래에서도 같은 접두를 따라간다. `/api/build` 로 적으면 토큰이 떨어져 404 다.
+#
+# ⚠️ 신선하면 **아무것도 그리지 않는다**(#25·#260 늘 뜨는 배너는 아무것도 안
+# 재는 것과 같다). 배너 실패가 본 화면을 막아서도 안 된다(#315).
+#
+# ⚠️⚠️ **이 배너가 못 보는 축**(독립 리뷰 2026-09-13 · #274 검사를 넣을 땐 그게
+# 못 보는 축을 같이 답할 것): 서버가 그리는 페이지(`/theme` 등)는 HTML 과
+# `/api/build` 가 **같은 프로세스**에서 나온다 — 그 프로세스가 옛 코드면 애초에
+# 이 스크립트가 없는 HTML 을 뱉고 `/api/build` 라우트도 없다. 즉 배너는 자기
+# 프로세스의 낡음을 **스스로 신고하지 못한다**. 이 배너가 실제로 발화하는 자리는
+# `market.html` 처럼 **HTML 은 봇이 굽고 API 는 대시보드가 답하는** 분리 구조다
+# (2026-09-12 ★ 사고가 그 조합이었다). 서버렌더 페이지의 '옛 화면' 은 다른 축이
+# 잡는다 — 부제를 `#live-sub` 로 두어 `live_refresh` 가 표와 **같이** 갈아끼운다.
+BANNER_JS = """<script>
+(function(){
+  function buildBanner(msg) {
+    if (document.getElementById('build-drift')) return;
+    var d = document.createElement('div');
+    d.id = 'build-drift';
+    d.style.cssText = 'background:#3d2b12;border:1px solid #a9741c;color:#f0c674;'
+      + 'padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13px;line-height:1.5';
+    d.textContent = '\u26a0\ufe0f ' + msg;
+    document.body.insertBefore(d, document.body.firstChild);
+  }
+  fetch('api/build')
+    .then(function(r) {
+      if (r.status === 404) {
+        /* 404 는 갈래가 둘이다 — 라우트가 없는 옛 서버, 또는 주소의 토큰이
+           바뀐 경우(`_strip_token_or_404`). 처방이 다르므로 단정하지 않는다
+           (#82 갈래는 이름으로 · #165 재지 않은 것을 단정하지 말 것). */
+        buildBanner('이 페이지의 새 기능(`/api/build`)에 서버가 404 로 답했습니다 — '
+                    + '대시보드 프로세스가 옛 코드이거나, 주소의 접근 토큰이 바뀐 것입니다. '
+                    + '새로고침해도 같으면 VM 에서 `sudo systemctl restart stock-bot-dashboard`.');
+        return null;
+      }
+      return r.json().catch(function() { return null; });
+    })
+    .then(function(b) { if (b && b.ok && b.stale && b.note) buildBanner(b.note); })
+    .catch(function() {});
+})();
+</script>"""

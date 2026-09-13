@@ -12118,6 +12118,225 @@ class TestBlogWatchMultiBlog:
             assert b["id"] not in seen, f"blogId 중복: {b['id']}"
             seen.add(b["id"])
 
+    def test_freshness_subtitle_refreshes_with_the_data_it_describes(self):
+        """실수 #360(독립 리뷰 2026-09-13) — 부제는 **신선도를 말하는 줄**
+        (`원천 …` · `저장분(수집 실패)` · `장중 30초 캐시`)인데 `#live-root`
+        **밖**이라 `live_refresh` 가 안 갈아끼웠다. 탭을 열어 둔 채 배포·수집이
+        일어나면 **표만 갱신되고 부제는 영원히 옛 문구**다 — 사용자가 테마
+        부제를 두 번 물은 그 증상의 **충분한 설명**이고, 새 drift 배너로는
+        잡히지 않는다(서버는 신선하다). #43 신선도 라벨이 안 갱신되면 거짓말.
+        """
+        from bot.live_refresh import LIVE_REFRESH_JS as js
+        assert "getElementById('live-sub')" in js, \
+            "부제를 갈아끼우지 않는다 — 표만 갱신되고 라벨은 옛 문구로 남는다"
+        # 세 shell 전부 그 id 를 단다(한 장만 달면 나머지가 낡는다, #38).
+        for mod in ("bot/naver_pages.py", "bot/tw_pages.py", "bot/us_pages.py"):
+            src = open(mod, encoding="utf-8").read()
+            assert 'class="sub" id="live-sub"' in src, mod
+        # 반대 증거 — 표 갱신은 그대로다(#25).
+        assert "getElementById('live-root')" in js, js[:200]
+
+    def test_drift_banner_is_on_every_page_shell(self, monkeypatch):
+        """실수 #360 — #359 에서 `naver_pages._shell` 한 집안에만 배너를 달아
+        `tw_pages._tw_shell`·`us_pages._shell` 이 그리는 화면(tw52·twhighlow·
+        jp/hk/cn 52·movers·usindustry·ushighlow·usmovers·usprepost)이 전부
+        침묵했다 — **#359 가 기록한 바로 그 실수를 같은 커밋에서 반복**한 것을
+        독립 리뷰가 잡았다(#38 형제를 즉시 grep).
+        """
+        for mod in ("bot/naver_pages.py", "bot/tw_pages.py", "bot/us_pages.py"):
+            src = open(mod, encoding="utf-8").read()
+            assert "BANNER_JS" in src, f"{mod} 에 drift 배너가 없다"
+            assert "{_banner}" in src, f"{mod} 이 배너를 HTML 에 안 싣는다"
+            assert "function buildBanner" not in src, f"{mod} 이 복제했다(#38)"
+
+    def test_banner_blind_spot_is_written_down(self):
+        """#274 — 검사를 넣을 땐 **못 보는 축**을 같이 답할 것. 서버렌더
+        페이지는 HTML 과 `/api/build` 가 같은 프로세스라, 그 프로세스가 낡으면
+        배너 스크립트조차 없는 HTML 이 나온다 = 자기 낡음을 못 신고한다.
+        """
+        import bot.code_freshness as cf
+        doc = open("bot/code_freshness.py", encoding="utf-8").read()
+        assert "못 보는 축" in doc, "한계를 안 적으면 다음 사람이 과신한다(#286)"
+        assert "live-sub" in doc, "서버렌더 페이지를 무엇이 잡는지 안 적었다"
+
+    def test_blog_rss_health_separates_never_ran_from_failure(self):
+        """실수 #360 — blogId 가 틀리면 `_process_blog` 가 -1 을 주고 **경고
+        한 줄**이 전부다. `feed_health.mark("blog")` 는 다른 블로그가 성공하면
+        찍히고 blog.html 은 아카이브에서 만들어지므로, 그 블로그는 '새 글이
+        없는' 것과 구별되지 않는다(#52 조용한 것과 죽은 것 · #43).
+        2026-09-13 `hempty` 처럼 확인 못 한 채 등록하는 일이 실재한다.
+        """
+        import time
+        import bot.blog_watch as bw
+        blogs = ({"id": "a", "title": "A", "categories": None},
+                 {"id": "b", "title": "B", "categories": None})
+        now = 1_700_000_000.0
+        st = {"rss": {"a": {"ok_at": now - 3600}}}
+        rows = {h["id"]: h for h in bw.rss_health(st, blogs, now=now)}
+        assert rows["a"]["never"] is False and rows["a"]["days"] < 1, rows["a"]
+        assert rows["b"]["never"] is True and rows["b"]["days"] is None, rows["b"]
+        # 반대 증거 — 도장이 하나도 없으면 '전부 실패' 가 아니라 판정 불가다
+        # (#54·#165·#25 늘 뜨는 경보). CLI 가 그걸 갈라 말하고 rc 도 0 이다.
+        src = open("bot/blog_watch.py", encoding="utf-8").read()
+        assert "도달 도장이 하나도 없다" in src, "배포 직후를 실패로 오보한다"
+        # 그리고 성공하면 **그 자리에서** 도장을 찍는다(배선, #20).
+        assert 'state.setdefault("rss", {})[bid]' in src, "도달 도장 배선 없음"
+
+    def test_drift_banner_is_a_single_source_on_sibling_pages(self, monkeypatch):
+        """실수 #359 — 배포 drift 배너가 **메인 대시보드 한 장에만** 있었다.
+
+        사용자가 테마 페이지에서 옛 부제(`정렬 5종 합산 266개(fallCnt+56, …)`)
+        를 보고 **두 번** 물었는데, 그 문구를 만드는 코드는 25시간 전에 base
+        에서 사라진 뒤였다 — 즉 화면은 옛 프로세스가 그린 것이고 페이지는 그
+        사실을 말할 방법이 없었다(#11 '배포완료 ≠ 화면에 보임' · #43 침묵이
+        최악 · #38 한 화면에서 고쳤으면 형제를 즉시 grep).
+        """
+        import bot.code_freshness as cf
+        import bot.naver_pages as np
+        import bot.naver_sector_client as ns
+
+        # ① 단일 출처가 존재하고 **상대경로**로 묻는다 — 토큰 경로
+        #    (`/t/<token>/theme`) 아래에서도 같은 접두를 따라가야 한다.
+        assert "fetch('api/build')" in cf.BANNER_JS, cf.BANNER_JS[:200]
+        assert "fetch('/api/build')" not in cf.BANNER_JS, "절대경로면 토큰이 떨어져 404"
+        # ② 신선하면 아무것도 안 그린다(#25·#260 늘 뜨는 배너).
+        assert "b.stale" in cf.BANNER_JS, cf.BANNER_JS[:200]
+
+        # ③ 형제 페이지(`_shell`)가 그걸 **싣는다**.
+        monkeypatch.setattr(ns, "fetch_themes", lambda: {
+            "themes": [{"name": "반도체", "pct": 1.2, "pct3": 2.0,
+                        "lead": "삼성전자", "lead_code": "005930"}],
+            "ts": "2026-09-13 15:00", "via": "domestic/theme ✅ 266개"})
+        page = np.render_theme_page()
+        assert "build-drift" in page and "api/build" in page, \
+            "형제 페이지에 drift 배너가 없다 — 옛 코드가 그려도 화면이 침묵한다"
+
+        # ④ 복제본 금지 — 두 벌이면 한쪽만 고쳐진다(#38). 정의는 단일 출처에만.
+        dash = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "function buildBanner" not in dash, \
+            "dashboard 가 배너 JS 를 복제하고 있다 — code_freshness.BANNER_JS 를 쓸 것"
+        npsrc = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "function buildBanner" not in npsrc, npsrc[:200]
+
+    def test_theme_subtitle_has_no_per_sort_breakdown(self, monkeypatch):
+        """사용자 2026-09-12·09-13(두 번) — `(fallCnt+56, leadingItem+9, …)` 은
+        불필요하다. 부제는 **합산 사실**만 적고 기여 상세는 로그로 간다(#43
+        버리지는 않는다). 옛 판이 되살아나면 여기서 걸린다.
+        """
+        import bot.naver_pages as np
+        import bot.naver_sector_client as ns
+        monkeypatch.setattr(ns, "fetch_themes", lambda: {
+            "themes": [{"name": "반도체", "pct": 1.2, "pct3": 2.0,
+                        "lead": "삼성전자", "lead_code": "005930"}],
+            "ts": "2026-09-13 15:00",
+            "via": "domestic/theme ✅ 266개 · 정렬 5종 합산 266개 · 21.7s"})
+        page = np.render_theme_page()
+        # ⚠️ `<div class="sub">` 리터럴로 자르면 속성이 하나만 늘어도 깨진다
+        # (2026-09-13 `id="live-sub"` 를 더하자 실제로 깨졌다, #19 소스 문자열
+        # 단언 금지) — 그 클래스를 **구조로** 집는다.
+        import re as _re
+        m = _re.search(r'<div class="sub"[^>]*>(.*?)</div>', page, _re.S)
+        assert m, "부제 블록을 못 찾았다"
+        sub = m.group(1)
+        for tok in ("fallCnt", "leadingItem", "totalMarketSum", "riseCnt"):
+            assert tok not in sub, f"정렬 기여 상세가 부제에 남아 있다: {tok}\n{sub}"
+        assert "합산" in sub, sub          # 반대 증거 — 합산 사실은 남는다(#25)
+
+    def test_sort_contributions_go_to_the_log_not_the_note(self):
+        """기여 상세를 **버리지는 않는다** — 어느 정렬이 값어치 있는지가 다음
+        라운드의 근거다(#43). 로그에만 남는지 값으로 잰다.
+        """
+        import ast
+        src = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_theme_sort_sweep")
+        body = ast.get_source_segment(src, fn) or ""
+        # `used` 는 `fallCnt+56` 류 — note 에 들어가면 안 되고 로그엔 있어야 한다.
+        assert "join(used)" in body, "기여 상세를 통째로 버렸다(#43)"
+        note_lines = [l for l in body.splitlines() if "note = " in l]
+        assert note_lines, body[:200]
+        for l in note_lines:
+            assert "used)" not in l.replace("len(used)", ""), \
+                f"부제에 기여 상세가 다시 들어갔다\n{l}"
+
+    def test_sweep_note_carries_no_breakdown_measured_by_value(self, monkeypatch):
+        """⚠️ 위 두 테스트는 **눈이 반쯤 멀었다**(실측): 렌더 테스트는 `via` 를
+        미리 만들어 주는 스텁이라 수집기를 안 태우고(#20), AST 테스트는 소스
+        문자열을 재므로 리팩터에 깨진다(#19). 기여 상세를 부제에 되살리는
+        뮤테이션을 **값으로** 잡는 것은 이 테스트뿐이다.
+
+        원천은 스텁 — 바깥을 치지 않는다(#312·#336).
+        """
+        import bot.naver_sector_client as ns
+
+        def _fake_get2_json(url, params=None, **kw):
+            # 정렬마다 다른 테마를 하나씩 준다 → `used` 가 실제로 채워진다.
+            v = (params or {}).get("sortType", "?")
+            return [{"no": f"{v}-1", "name": f"테마-{v}", "changeRate": "1.0"}], ""
+
+        monkeypatch.setattr(ns, "_get2_json", _fake_get2_json)
+        rows, note, partial = ns._theme_sort_sweep("u", 200, [])
+        assert len(rows) == len(ns._THEME_SORTS), rows      # 정렬마다 +1
+        # ① 부제에 기여 상세가 없다 — 이것이 사용자가 두 번 요청한 그 계약이다.
+        for tok in ns._THEME_SORTS:
+            assert tok not in note, f"부제에 정렬 이름이 있다: {tok}\n{note}"
+        assert "+1" not in note, f"기여 수치가 부제에 있다\n{note}"
+        # ② 반대 증거 — 합산 사실은 남는다(#25 '없다'만 재면 지워도 통과).
+        assert f"합산 {len(rows)}개" in note, note
+        assert f"{len(ns._THEME_SORTS)}종" in note, note
+
+    def test_blogs_config_has_the_20260913_batch(self):
+        """사용자 2026-09-13 3건 일괄 추가(표시명 사용자 확정).
+
+        ⚠️ `hempty` 는 사용자가 준 링크의 **href** 다 — 같은 줄의 링크
+        텍스트는 `hempt` 로 한 글자 짧았고, 샌드박스는 rss.blog.naver.com 이
+        프록시에 막혀 어느 쪽이 실재하는지 **재지 못했다**(#12). VM
+        `--check` 가 확정한다. 여기서는 '사용자가 준 href 를 쓴다'만 못박는다.
+        """
+        import bot.blog_watch as bw
+        ids = {b["id"]: b for b in bw._BLOGS}
+        for bid, title in (("bvmzzin1023", "한라산유기농백수"),
+                           ("ggbbvv", "간동"), ("hempty", "카가")):
+            assert bid in ids, f"{bid} 미등록 — 자동수집 안 함"
+            assert ids[bid]["title"] == title, ids[bid]
+            assert ids[bid]["categories"] is None, ids[bid]   # 전체 글
+
+    def test_category_label_does_not_split_a_string_into_letters(self):
+        """⚠️ 2026-09-13 실측 — `/blog` 목록이 `intelligent_tiger` 의
+        `"국내증시 시황정리"` 를 `국/내/증/시/ /시/황/정/리 카테고리만` 으로
+        찍고 있었다. 렌더가 `'/'.join(cat)` 만 써서 str 이면 **글자를
+        쪼갠 것**이다 — 계약은 `None | str | tuple[str,...]` 인데
+        (`test_every_blog_entry_is_well_formed` 가 그렇게 못박아 뒀다)
+        렌더는 tuple 만 상정했다(#34).
+        """
+        import bot.blog_watch as bw
+        assert bw.category_label(None) == ""
+        assert bw.category_label("국내증시 시황정리") == " · 국내증시 시황정리 카테고리만"
+        assert bw.category_label(("관심종목", "기업탐방")) == " · 관심종목/기업탐방 카테고리만"
+        # 반대 증거 — 쪼개는 구현이면 이 글자가 나온다(#25).
+        assert "국/내" not in bw.category_label("국내증시 시황정리")
+        # 등록된 전 항목이 사람이 읽을 수 있는 꼬리표를 낸다(#24 전수).
+        for b in bw._BLOGS:
+            lab = bw.category_label(b["categories"])
+            assert "/" not in lab or isinstance(b["categories"], tuple), (b, lab)
+
+    def test_blog_list_renders_the_label_through_the_single_source(self):
+        """⚠️ 순수 함수만 재면 **배선을 떼는 변형을 못 잡는다**(#20) —
+        `_blog_list_text` 가 다시 `'/'.join` 으로 돌아가도 위 테스트는 green
+        이다. 여기서는 렌더가 `category_label` 을 **부르고 그 결과를 쓰는지**
+        를 본다(존재가 아니라 호출, #120·#141).
+        """
+        import ast
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_blog_list_text")
+        body = ast.get_source_segment(src, fn) or ""
+        assert "category_label" in body, "단일 출처를 안 부른다"
+        assert "'/'.join" not in body and '"/".join' not in body, \
+            f"꼬리표를 렌더가 직접 만든다 — str 이면 글자를 쪼갠다\n{body}"
+        # 그리고 그 반환을 실제로 **쓴다**(호출만 하고 버리면 no-op).
+        assert "suffix = " in body and "_cat_label(" in body, body
+
     def test_blogs_config_has_teasky_pilseung(self):
         import bot.blog_watch as bw
         ids = {b["id"]: b for b in bw._BLOGS}
@@ -41615,7 +41834,17 @@ class TestBlogCheckProbe20260826:
         monkeypatch.setattr(bw, "check", lambda b: called.append(b) or 0)
         rc = bw.main(["--check", "arirangya"])
         assert called == ["arirangya"] and rc == 0, (called, rc)
-        assert bw.main(["--check"]) == 2, "인자 없으면 사용법 + 실패코드"
+        # ⚠️ 계약 변경(2026-09-13 · #222 옛 계약은 지우지 말고 다시 쓴다):
+        # 옛 판은 무인자 `--check` 가 **사용법 + rc 2** 였다. 그런데 "등록한
+        # blogId 가 실제로 수집되나"에 답하는 surface 가 하나도 없어서 틀린
+        # blogId 가 조용히 0건이 됐다(#360d) — 이제 무인자는 **전 블로그 도달
+        # 이력 표**를 찍는다(네트워크 0·읽기 전용). 남는 보장은 그대로다:
+        # `--check <id>` 는 여전히 `check` 로 디스패치되고, 무인자는 `check`
+        # 를 부르지 않는다(실호출 0).
+        called.clear()
+        rc_none = bw.main(["--check"])
+        assert called == [], "무인자가 개별 진단(RSS 실호출)을 불렀다"
+        assert rc_none in (0, 1), rc_none
 
 
 class TestNoBackfillIsTheDefaultForEveryBlog20260826:

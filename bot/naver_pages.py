@@ -91,13 +91,22 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
                   + _t("krprepost", "🌙 NXT 급등·급락")
                   + _t("nxt", "📊 NXT 수급")
                   + '</div>')
+    # ⚠️ 배포 drift 배너 — 이 페이지도 `stock-bot-dashboard` 프로세스가
+    # 그린다. 그 프로세스가 옛 코드면 화면이 **옛 문구**를 그리는데, 배너가
+    # 없으면 페이지는 그 사실을 말할 방법이 없다(2026-09-13 테마 부제를
+    # 사용자가 두 번 물었다 — #11·#38·#12). 신선하면 아무것도 안 그린다.
+    try:
+        from bot.code_freshness import BANNER_JS as _banner
+    except Exception:
+        _banner = ""
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_html.escape(title)}</title>{_CSS}</head><body>
 <a class="back-link" href="market.html">← 홈으로</a>
 <h1>{_html.escape(title)}</h1>
-<div class="sub">{sub}</div>
+<div class="sub" id="live-sub">{sub}</div>
+{_banner}
 {toggle}
 <div id="live-root">
 {body}
