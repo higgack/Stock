@@ -12108,9 +12108,15 @@ class TestBlogWatchMultiBlog:
             # 제목이고 `--check` 의 정체성 대조 기준이다. 표시명(`title`)과
             # 다를 수 있다(필명 vs 블로그 제목).
             assert {"id", "title", "categories"} <= set(b) <= {
-                "id", "title", "categories", "channel"}, b
+                "id", "title", "categories", "channel",
+                "title_any", "title_none"}, b
             assert isinstance(b["id"], str) and b["id"].strip(), b
             assert isinstance(b["title"], str) and b["title"].strip(), b
+            for k in ("title_any", "title_none"):
+                if k in b:
+                    assert (isinstance(b[k], tuple) and b[k]
+                            and all(isinstance(w, str) and w.strip()
+                                    for w in b[k])), b
             if "channel" in b:
                 assert isinstance(b["channel"], str) and b["channel"].strip(), b
             # ⚠️ 이 단언은 처음에 **틀린 계약**을 적고 있었다(#50) —
@@ -12294,21 +12300,33 @@ class TestBlogWatchMultiBlog:
     def test_blogs_config_has_the_20260913_batch(self):
         """사용자 2026-09-13 3건 일괄 추가(표시명 사용자 확정).
 
-        ⚠️ **계약 변경(2026-09-13 실측 · #222 옛 계약은 지우지 말고 다시
-        쓴다)**: 원문이 `[.../hempt](.../hempty)` 라 처음엔 href(`hempty`)를
-        골랐다. VM `--check hempty` 는 RSS 50건을 정상 반환했지만 채널 제목이
-        **"테니스 슈즈"**(일상·운동기록)로, 사용자가 말한 "카가" 가 아니었다 —
-        실재하지만 **다른 사람의 블로그**다(#361a 도달성은 정체성이 아니다).
-        그래서 `hempty` 는 뺐고, 남은 후보 `hempt` 는 **아직 안 쟀으므로
-        넣지 않는다**. 여기서는 확정된 2건만 못박는다.
+        ⚠️ **이 계약은 같은 날 두 번 바뀌었다**(#222 옛 계약은 지우지 말고
+        무엇이 왜 바뀌었는지 남긴다):
+          1차 — 원문 `[.../hempt](.../hempty)` 에서 href 를 골라 3건 등록.
+          2차 — `--check hempty` 의 채널 제목이 "테니스 슈즈" 라 '다른 사람의
+                블로그' 로 보고 뺐다. → **사용자 캡처가 반증**(#362): 그건
+                블로그 제목이고 "카가" 는 필명이다. `hempt` 는 실측상 존재하지
+                않는다(RSS 200 · `<item>` 0).
+          3차 — 사용자 2026-09-13 "한라산유기농백수는 그냥 블로그에서 빼줘
+                (별로 괜찮은 글을 안 올리는 것 같다)" → `bvmzzin1023` 제거.
+        남는 것은 `ggbbvv`·`hempty` 둘이다.
         """
         import bot.blog_watch as bw
         ids = {b["id"]: b for b in bw._BLOGS}
-        for bid, title in (("bvmzzin1023", "한라산유기농백수"),
-                           ("ggbbvv", "간동")):
+        for bid, title in (("ggbbvv", "간동"), ("hempty", "카가")):
             assert bid in ids, f"{bid} 미등록 — 자동수집 안 함"
             assert ids[bid]["title"] == title, ids[bid]
-            assert ids[bid]["categories"] is None, ids[bid]   # 전체 글
+            # 카테고리 축은 계속 전체 글 — 이 둘은 **제목 축**으로 거른다
+            # (결산 글이 '일상' 카테고리라 categories 로는 못 가른다, #362).
+            assert ids[bid]["categories"] is None, ids[bid]
+            assert ids[bid]["title_any"] == ("결산",), ids[bid]
+        # 간동만 주별 제외가 붙는다(사용자 "주별결산은 주식내용이 아니니").
+        assert ids["ggbbvv"].get("title_none"), ids["ggbbvv"]
+        assert not ids["hempty"].get("title_none"), ids["hempty"]
+        # 사용자가 뺀 것은 다시 들어오지 않는다(#222·#339 사용자 결정을
+        # 되돌리지 말 것) · 실측으로 존재하지 않는 후보도 마찬가지.
+        assert "bvmzzin1023" not in ids, "사용자가 뺀 블로그가 되살아났다"
+        assert "hempt" not in ids, "실측으로 반증된 blogId 를 등록했다"
 
     def test_category_label_does_not_split_a_string_into_letters(self):
         """⚠️ 2026-09-13 실측 — `/blog` 목록이 `intelligent_tiger` 의
@@ -12472,7 +12490,31 @@ class TestBlogWatchMultiBlog:
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "async def cmd_blog(" in src, "cmd_blog 핸들러 누락"
         assert "def _blog_list_text(" in src, "_blog_list_text 누락"
-        assert "from bot.blog_watch import _BLOGS" in src, "목록 자동 생성(_BLOGS) 미연결"
+        # ⚠️ 옛 단언은 `"from bot.blog_watch import _BLOGS" in src` 라는
+        # **소스 문자열**이었다 — import 를 여러 줄 괄호형으로 바꾸자(제목
+        # 축 라벨을 같이 들여오면서) 멀쩡한 코드가 틀렸다고 했다(#19, 이
+        # 레포에서 셀 수 없이 반복된 그 패턴). 계약은 "`_blog_list_text` 가
+        # 레지스트리를 **import 해 자동 생성**한다" 이지 표기가 아니다 —
+        # 표기에 안 흔들리게 AST 로 본다(#60·#65 문자열이 아니라 구조로).
+        # (동작으로 재려면 `telegram` 이 필요한데 샌드박스엔 없다 — 그래서
+        # 구조로 재고, 렌더 동작은 `telegram` 이 있는 환경의 형제 테스트가
+        # 맡는다. 이 검사가 못 보는 축이다, #274.)
+        import ast as _ast
+        _fn = next(n for n in _ast.walk(_ast.parse(src))
+                   if isinstance(n, _ast.FunctionDef)
+                   and n.name == "_blog_list_text")
+        _names = {a.name for n in _ast.walk(_fn)
+                  if isinstance(n, _ast.ImportFrom) and n.module == "bot.blog_watch"
+                  for a in n.names}
+        assert "_BLOGS" in _names, f"목록 자동 생성(_BLOGS) 미연결 — {_names}"
+        # ⚠️ 꼬리표는 **두 축**(카테고리·제목)이고 둘 다 실려야 한다 — 제목
+        # 축 배선을 떼는 변형이 순수 함수 테스트를 전부 통과했다(#20).
+        # 값으로 재려면 `telegram` 이 필요해 구조로 본다(#274 못 보는 축).
+        assert "category_label" in _names and "title_label" in _names, _names
+        _calls = {getattr(n.func, "id", "") for n in _ast.walk(_fn)
+                  if isinstance(n, _ast.Call)}
+        assert {"_cat_label", "_ttl_label"} <= _calls, \
+            f"꼬리표 두 축 중 하나가 호출되지 않는다 — {_calls}"
         assert '"blog": (cmd_blog' in src, "레지스트리 등록 누락(텔레그램·메뉴·콘솔)"
         assert 'first_word == "blog"' in src, "채널 dispatch 누락"
         assert "/blog" in src, "help §1 /blog 누락"
@@ -26369,6 +26411,144 @@ class TestFlowTrendDiagnosis20260818:
              mt._expected_session) = saved[:3]
             ty._FAIL.clear(); ty._FAIL.update(saved[3])
 
+    def test_title_gate_filters_by_title_and_says_why(self):
+        """사용자 2026-09-13 — 카가는 **결산 글만**, 간동은 **월별 결산만**
+        (주별결산은 주식 내용이 아니다). 카테고리 축으로는 못 가른다: 카가의
+        결산 글은 카테고리가 '일상' 이다 — 그래서 **제목 축**이 필요하다.
+
+        사유를 같이 돌려준다 — 값만 주면 "왜 안 올라왔나"에 화면·진단이 답을
+        못 한다(#123·#129·#189·#228 계열).
+        """
+        from bot.blog_watch import title_gate, title_label
+        kaga = {"title_any": ("결산",)}
+        # 실측 제목(사용자 캡처).
+        assert title_gate("2026년 06월 결산", kaga)[0]
+        assert title_gate("2026년 08월 결산", kaga)[0]
+        ok, why = title_gate("260318_터보832 촬영 영상", kaga)
+        assert not ok and "결산" in why, why
+
+        gan = {"title_any": ("결산",), "title_none": ("주차", "주간", "주별")}
+        assert title_gate("26년 8월 투자 결산", gan)[0]      # 실측 월별 제목
+        ok, why = title_gate("26년 8월 2주차 투자 결산", gan)
+        assert not ok and "주차" in why, why
+        # 필터가 없는 블로그는 전부 통과 — 기존 14건이 안 바뀐다(#45).
+        assert title_gate("아무 제목", {})[0]
+        # 공백 표기가 흔들려도 같은 판정(원천 제목은 띄어쓰기가 일정치 않다).
+        assert title_gate("26년 8월 2 주차 결산", gan)[0] is False
+
+        # 화면이 필터를 말한다(#43) — 없으면 조용하다.
+        assert title_label({}) == ""
+        assert "결산" in title_label(kaga)
+        assert "주차" in title_label(gan)
+
+    def test_collector_applies_the_title_gate_and_counts_it_apart(
+            self, monkeypatch):
+        """⚠️ 순수 함수만 재면 **배선을 떼는 변형을 못 잡는다**(#20) —
+        수집기를 통째로 태운다.
+
+        그리고 두 축의 제외 수를 **한 수에 섞지 않는다**: 옛 판은
+        `len(new_items) - len(allowed)` 를 '카테고리외' 라 불렀는데 제목 축이
+        생기면 그 라벨이 거짓이 된다(#292 틀린 라벨은 라벨이 없는 것보다
+        나쁘다 · #45 소계는 각자 세라).
+        """
+        import bot.blog_watch as bw
+        # 픽스처는 **원천이 실제로 보내는 모양**으로 — 형제 테스트의 `_xml`
+        # 하네스를 그대로 쓴다(#155 · 손으로 만든 dict 는 파서를 안 탄다).
+        xml = ("<rss><channel><title>테니스 슈즈</title>"
+               + "".join(
+                   f"<item><title>{t}</title>"
+                   f"<link>https://blog.naver.com/hempty/{g}</link>"
+                   f"<guid>{g}</guid><category>일상</category>"
+                   "<pubDate>Fri, 12 Sep 2026 10:00:00 +0900</pubDate></item>"
+                   for t, g in (("2026년 08월 결산", "g1"),
+                                ("260318_터보832 촬영 영상", "g2")))
+               + "</channel></rss>")
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: xml)
+        pushed: list = []
+        monkeypatch.setattr(bw, "_push", lambda it: pushed.append(it["title"]) or True)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        state = {"seen": [], "init": {"hempty": True}}
+        seen: set = set()
+        blog = {"id": "hempty", "title": "카가", "categories": None,
+                "title_any": ("결산",)}
+        bw._process_blog(blog, state, seen)
+        # 결산 글만 올라간다 — 그리고 제외된 글도 seen 처리(재검사 방지).
+        assert pushed == ["2026년 08월 결산"], pushed
+        assert "g2" in seen, "제외 글이 seen 에 안 들어가 매번 재검사된다"
+
+    def test_check_shows_the_title_verdict_per_item(self, monkeypatch, capsys):
+        """독립 리뷰 2026-09-13 — `--check` 의 제목 축 진단 블록이 **통째로
+        무가드**였다(지워도 블로그 테스트 선택이 동일). 제외어 목록이 잠정이라
+        이 출력이 곧 다음 라운드의 측정인데, 그게 사라져도 아무도 모른다(#82).
+
+        그리고 0건 통과는 **❌ 가 아니다** — 갈래가 둘이고 처방이 정반대다:
+        필터가 원천과 안 맞거나(우리가 고칠 것), 그 유형 글이 이 창에 없을
+        뿐이거나(간동의 월 1회 결산은 50건 창에서 정상적으로 밀려난다).
+        못 가르는 것을 ❌ 로 내면 매일 못 고칠 ❌ 가 된다(#260·#82).
+        """
+        import bot.blog_watch as bw
+
+        def _rss(*titles):
+            return ("<rss><channel><title>테니스 슈즈</title>" + "".join(
+                f"<item><title>{t}</title><link>u{i}</link><guid>g{i}</guid>"
+                "<pubDate>Sat, 13 Sep 2026 10:00:00 +0900</pubDate>"
+                "<category>일상</category></item>"
+                for i, t in enumerate(titles)) + "</channel></rss>")
+        monkeypatch.setattr(bw, "_load_state", lambda: {})
+        # 섞인 창 — 통과/제외가 제목마다 찍혀야 한다.
+        monkeypatch.setattr(bw, "_fetch_rss",
+                            lambda b: _rss("2026년 08월 결산", "촬영 영상"))
+        assert bw.check("hempty") == 0
+        out = capsys.readouterr().out
+        assert "제목 필터" in out and "결산" in out, out
+        assert "✅ 2026년 08월 결산" in out, out
+        assert "⛔ 촬영 영상" in out, out
+        assert "1건 통과" in out, out          # 세어서 말한다(#54)
+        # 0건이어도 rc 는 0 이고 ❌ 가 아니다 — 사실만 적는다(#260).
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("촬영 영상"))
+        assert bw.check("hempty") == 0
+        out = capsys.readouterr().out
+        assert "한 건도 안 통과" in out, out
+        assert "❌" not in out, f"못 고칠 ❌ 를 매일 낸다\n{out}"
+        # 필터가 없는 블로그는 이 섹션 자체가 안 나온다(#25 늘 뜨는 것은
+        # 아무것도 안 재는 것과 같다).
+        _plain = next(b["id"] for b in bw._BLOGS
+                      if not b.get("title_any") and not b.get("title_none"))
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("아무 글"))
+        bw.check(_plain)
+        assert "제목 필터" not in capsys.readouterr().out
+
+    def test_skip_counters_do_not_borrow_each_others_label(
+            self, monkeypatch, caplog):
+        """위 docstring 이 주장하는 **계수 분리**를 실제로 잰다 — 주장만 적고
+        안 재면 그 문장이 거짓이 될 수 있다(#286 지시서가 자기 자신에 대해
+        사실 아닌 것을 말한다).
+        """
+        import logging
+        import bot.blog_watch as bw
+        xml = ("<rss><channel><title>T</title>"
+               + "".join(
+                   f"<item><title>{t}</title>"
+                   f"<link>https://blog.naver.com/x/{g}</link>"
+                   f"<guid>{g}</guid><category>{c}</category>"
+                   "<pubDate>Fri, 12 Sep 2026 10:00:00 +0900</pubDate></item>"
+                   for t, g, c in (("8월 결산", "g1", "투자"),
+                                   ("잡담", "g2", "투자"),      # 제목외
+                                   ("9월 결산", "g3", "일상")))  # 카테고리외
+               + "</channel></rss>")
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: xml)
+        monkeypatch.setattr(bw, "_push", lambda it: True)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        with caplog.at_level(logging.INFO, logger=bw.log.name):
+            bw._process_blog({"id": "x", "title": "X", "categories": "투자",
+                              "title_any": ("결산",)},
+                             {"seen": [], "init": {"x": True}}, set())
+        line = next(m for m in caplog.messages if "제외" in m and "push" in m)
+        assert "카테고리외 1" in line, line
+        assert "제목외 1" in line, line
+
     def test_blog_registry_keeps_the_pen_name_blog(self):
         """실수 #362 — **#361a 의 계약을 뒤집어 다시 쓴다**(#222 지우지 말고
         무엇이 왜 바뀌었는지 남길 것).
@@ -26393,8 +26573,12 @@ class TestFlowTrendDiagnosis20260818:
         assert reg["hempty"]["channel"] != reg["hempty"]["title"]
         # 존재하지 않는 것으로 실측된 후보는 여전히 안 넣는다(#12·#151).
         assert "hempt" not in reg, "실측으로 반증된 blogId 를 등록했다"
-        # 같은 배치의 나머지 둘도 그대로 산다(#45).
-        assert {"bvmzzin1023", "ggbbvv"} <= set(reg), sorted(reg)
+        # 같은 배치의 `ggbbvv` 는 그대로 산다(#45 한 건 때문에 전부 지우지
+        # 말 것) — `bvmzzin1023` 은 **사용자가 뒤에 뺐다**(2026-09-13
+        # "별로 괜찮은 글을 안 올리는 것 같다"). 그 결정은 여기가 아니라
+        # `test_blogs_config_has_the_20260913_batch` 가 못박는다(#38 한 사실을
+        # 두 곳에서 단언하면 한쪽만 고쳐진다).
+        assert "ggbbvv" in reg, sorted(reg)
         # 그리고 왜 되살렸는지 코드가 말한다 — 다음 사람이 또 지우지 않게(#55).
         src = open("bot/blog_watch.py", encoding="utf-8").read()
         assert "필명" in src and "hempt" in src, "번복 근거가 코드에 없다"
@@ -26554,8 +26738,11 @@ class TestFlowTrendDiagnosis20260818:
         import bot.blog_watch as bw
 
         def _rss(title):
+            # ⚠️ 제목은 **그 블로그의 제목 필터를 통과하는 것**이어야 한다 —
+            # 임의의 "글" 로 두면 `hempty`(결산만)에서 0건 통과가 되어 이
+            # 테스트가 재려는 축(정체성)이 아니라 제목 축을 재게 된다(#91b).
             return ("<rss><channel><title>" + title + "</title>"
-                    "<item><title>글</title><link>u</link>"
+                    "<item><title>2026년 08월 결산</title><link>u</link>"
                     "<pubDate>Sat, 13 Sep 2026 10:00:00 +0900</pubDate>"
                     "<category>일상</category></item></channel></rss>")
         monkeypatch.setattr(bw, "_load_state", lambda: {})
@@ -26583,11 +26770,18 @@ class TestFlowTrendDiagnosis20260818:
         assert bw.check("hempty") == 1
         assert "남 {0} 블로그" in capsys.readouterr().out
         # (c) 기준이 없는 블로그는 ✅ 도 ❌ 도 아니다 — 판정 불가라고 말한다.
+        # ⚠️ 대상은 **등록돼 있으면서 `channel` 이 없는** 블로그여야 한다 —
+        # 미등록 id 를 쓰면 `reg` 가 None 이라 이 분기가 아예 안 돌아 가드에
+        # 발화 경로가 없어진다(독립 리뷰 2026-09-13 실측, #291).
+        _no_ch = next(b["id"] for b in bw._BLOGS if not b.get("channel"))
         monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("아무 제목"))
-        assert bw.check("bvmzzin1023") == 0
+        assert bw.check(_no_ch) == 0
         out = capsys.readouterr().out
         assert "대조할 기준이 없다" in out, f"판정 불가가 조용히 통과했다\n{out}"
         assert "channel" in out, "무엇을 박아야 하는지 안 알려 준다"
+        # 그리고 **확인이 먼저**라고 말한다 — "이 값을 박아라" 로만 적으면
+        # 틀린 blogId 를 영구히 축복한다(#362 가 그 시나리오다).
+        assert "먼저 확인" in out, out
         # (d) 미등록 blogId 는 대조할 상대 자체가 없다 — 막지 않는다(#54).
         assert bw.check("__unregistered__") == 0
 
@@ -42258,7 +42452,8 @@ class TestNoBackfillIsTheDefaultForEveryBlog20260826:
         import bot.blog_watch as bw
         for b in bw._BLOGS:
             assert {"id", "title", "categories"} <= set(b) <= {
-                "id", "title", "categories", "channel"}, b
+                "id", "title", "categories", "channel",
+                "title_any", "title_none"}, b
             for k in b:
                 assert not any(w in k.lower() for w in (
                     "backfill", "since", "days", "limit", "history")), b

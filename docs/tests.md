@@ -154,6 +154,11 @@
 | 전역 `last_fail` 은 **이번에 조회한 달**일 때만 믿는다(#361 리뷰 c·#82) | ✅ 자동 | `…::test_month_failed_needs_the_month_to_have_been_queried` |
 | 정체성 대조는 **실측 `channel`** 기준 · 없으면 판정 불가(#362·#54·#165) | ✅ 자동 | `…::test_check_measures_identity_against_the_recorded_channel` |
 | 필명 블로그(`hempty`)는 등재 · 실측 반증된 `hempt` 는 미등재(#362·#222) | ✅ 자동 | `…::test_blog_registry_keeps_the_pen_name_blog` |
+| 제목 축 필터가 사유까지 돌려준다(#363·#123 계열) | ✅ 자동 | `…::test_title_gate_filters_by_title_and_says_why` |
+| 그 게이트가 **수집기에 배선**돼 제외분도 seen 처리(#363·#20) | ✅ 자동 | `…::test_collector_applies_the_title_gate_and_counts_it_apart` |
+| 카테고리외·제목외 계수가 서로의 라벨을 빌리지 않는다(#363·#292·#45) | ✅ 자동 | `…::test_skip_counters_do_not_borrow_each_others_label` |
+| `/blog` 꼬리표가 **두 축**을 다 부른다(#363·#20·#274 AST) | ✅ 자동 | `TestBlogWatchMultiBlog::test_blog_command_wired` |
+| `--check` 제목 판정이 제목마다 찍히고 0건은 ❌ 가 아니다(#363·#260) | ✅ 자동 | `…::test_check_shows_the_title_verdict_per_item` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |
