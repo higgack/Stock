@@ -26645,6 +26645,84 @@ class TestFlowTrendDiagnosis20260818:
         assert A.report_text({"findings": [], "warn": 0, "errors": [],
                               "fp": "abcdef0123", "raw": ""}) == ""
 
+    def test_ecos_source_end_splits_the_two_verdicts(self, monkeypatch):
+        """실수 #366 — 비-FRED 시리즈는 지연 갈래를 못 갈랐다.
+
+        `liquidity_audit._series_meta` 가 `":" in sid` 면 무조건 None 이라
+        `stale_bucket` 이 주기 휴리스틱으로 폴백했다 — 한국 M2 가 뒤처져도
+        **한국은행이 안 낸 것인지 우리가 못 받은 것인지** 아무 도구도 답하지
+        못했다(사용자 2026-09-13 "유동성보드 지연건"). 재료는 이미
+        `bok_ecos_client.check()` 안에 있었다(#150·#318·#38).
+        """
+        import bot.bok_ecos_client as E
+
+        class _R:
+            def __init__(self, payload):
+                self._p = payload
+
+            def json(self):
+                return self._p
+
+        def _payload(rows, total):
+            return {"StatisticSearch": {"list_total_count": total, "row": rows}}
+
+        monkeypatch.setattr(E, "_env_key", lambda _n: "KEY")
+        rows = [{"TIME": "202605"}, {"TIME": "202606"}]
+
+        # ① 절단 없음 → 원천 최신을 **화면 asof 형식**으로 돌려준다.
+        #    ⚠️ 여기가 어긋나면(`202606` vs `2026-06`) `stale_bucket` 의
+        #    문자열 동등비교가 전부 '우리 수집 실패' 로 조용히 오판한다.
+        monkeypatch.setattr(E.requests, "get",
+                            lambda *a, **k: _R(_payload(rows, 2)))
+        m = E.series_meta("m2")
+        assert m["observation_end"] == "2026-06", m
+
+        # ② 절단이면 **모른다고 말한다** — 1쪽 최댓값이 원천의 끝이라는
+        #    보장이 없다(#54·#165 안 잰 것을 단정하지 말 것).
+        monkeypatch.setattr(E.requests, "get",
+                            lambda *a, **k: _R(_payload(rows, 999)))
+        m = E.series_meta("m2")
+        assert m["observation_end"] is None and "절단" in m["why"], m
+
+        # ③ 행 0 · 키 없음도 갈래를 이름으로 말한다(#82).
+        monkeypatch.setattr(E.requests, "get",
+                            lambda *a, **k: _R(_payload([], 0)))
+        assert E.series_meta("m2")["observation_end"] is None
+        monkeypatch.setattr(E, "_env_key", lambda _n: "")
+        assert "API_KEY" in E.series_meta("m2")["why"]
+
+        # ④ **배선** — 감사가 `ecos:` 를 그 함수로 보낸다(#20). 순수 함수만
+        #    재면 배선을 떼는 변형을 못 잡는다.
+        import bot.scripts.liquidity_audit as LA
+        seen = []
+        monkeypatch.setattr(E, "series_meta",
+                            lambda k: seen.append(k) or {"observation_end": "2026-07"})
+        got = LA._series_meta("ECOS:M2", "ecos:m2")
+        assert seen == ["m2"], seen
+        assert got["observation_end"] == "2026-07", got
+
+        # ⑤ **호출부가 `src` 를 실제로 넘기는가** — 헬퍼만 재면 인자를 빼는
+        #    변형이 통과한다(실측 M4, #20 이 세션 세 번째). 감사 본문은
+        #    원천을 받아와야 돌아 값으로 못 태우므로 AST 로 인자 수를 본다
+        #    (이게 이 검사가 **못 보는 축**: 인자를 넘기되 엉뚱한 값을 넘기는
+        #    변형은 못 잡는다, #274).
+        import ast
+        import pathlib as _pl
+        tree = ast.parse(_pl.Path(LA.__file__).read_text(encoding="utf-8"))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "_series_meta"]
+        assert calls, "호출부가 사라졌다"
+        assert all(len(c.args) >= 2 for c in calls), \
+            "호출부가 src 를 안 넘긴다 — ECOS 는 영영 폴백이다"
+
+        # ⑥ 그 값이 실제로 갈래를 가른다 — 원천이 앞서면 **우리 문제**다.
+        from bot.macro_cadence import judge, stale_bucket
+        j = judge("ECOS:M2", "2026-06")
+        assert j and j["stale"], j
+        assert stale_bucket(j, source_end="2026-07", asof="2026-06")[0] == "late"
+        assert stale_bucket(j, source_end="2026-06", asof="2026-06")[0] == "src_lag"
+
     def test_audit_fingerprint_marks_partial_coverage(self):
         """못 읽은 소스가 있으면 **조용히 덜 덮은 지문을 내지 않는다**.
 
@@ -29752,12 +29830,25 @@ class TestStalenessSourceEvidence20260819:
         meta = fc.fetch_series_meta("FDHBFIN")
         assert meta["observation_end"] == "2025-10-01"
 
-    def test_audit_asks_source_only_for_fred_ids(self):
-        # ECOS:/AK: 등 비-FRED 시리즈에 FRED 메타를 묻지 않는다(엉뚱한
-        # 404 를 '수집 문제'로 오보하는 경로 차단).
+    def test_audit_asks_source_only_for_fred_ids(self, monkeypatch):
+        """⚠️ 2026-09-13 다시 씀(#222·#366): 옛 계약은 "비-FRED 면 아무것도
+        안 묻는다" 였는데, 그 탓에 ECOS 는 지연 갈래를 **영영** 못 갈랐다.
+        지금 계약은 "**그 원천에** 묻는다" 이고, 남는 보장은 그대로다 —
+        FRED 가 아닌 것에 FRED 메타를 묻지 않는다(엉뚱한 404 를 '수집 문제'
+        로 오보하는 경로 차단).
+        """
         from bot.scripts.liquidity_audit import _series_meta
+
+        import bot.fred_client as fc
+        monkeypatch.setattr(fc, "fetch_series_meta",
+                            lambda *a, **k: pytest.fail("비-FRED 에 FRED 메타"))
+        # src 를 모르면 종전대로 None(단정하지 않는다).
         assert _series_meta("ECOS:M2") is None
         assert _series_meta("AK:LPR1Y") is None
+        # src 가 `ecos:` 면 **ECOS 원천**에 묻는다.
+        import bot.bok_ecos_client as E
+        monkeypatch.setattr(E, "series_meta", lambda k: {"observation_end": k})
+        assert _series_meta("ECOS:M2", "ecos:m2")["observation_end"] == "m2"
 
     def test_audit_wires_meta_into_stale_branch(self):
         """⚠️ 2026-09-09 다시 씀(#222): 옛 판은 `liquidity_audit.main` 소스에
@@ -52242,7 +52333,8 @@ class TestLiquidityAuditEndToEnd20260909:
         with mock.patch.object(fbc, "LIQ_SERIES", cat), \
              mock.patch.object(fc, "fetch_history", lambda sid, start: hist[sid]), \
              mock.patch.object(la, "_series_meta",
-                               lambda sid: calls.append(sid) or metas.get(sid)), \
+                               lambda sid, *a, **k: calls.append(sid)
+                               or metas.get(sid)), \
              mock.patch.object(la, "_p",
                                lambda *a: out.append(" ".join(str(x) for x in a))):
             la.main()

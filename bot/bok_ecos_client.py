@@ -661,6 +661,77 @@ def fetch_kr_cpi_history(patterns: list[str],
 _PROBE_VER = 1
 
 
+def series_meta(key: str) -> Optional[dict]:
+    """ECOS 원천이 **스스로 보고한 마지막 기간** — 실수 #366.
+
+    ⚠️ 왜 필요한가: `liquidity_audit` 은 FRED 시리즈만 `observation_end` 를
+    물어 `stale_bucket` 으로 '원천 공표 지연(⚠️)' 과 '우리 수집이 뒤처짐(❌)'
+    을 갈랐고(#318), **비-FRED(`ECOS:`·`AK:`)는 `None` 을 넘겨** 주기
+    휴리스틱으로 폴백했다. 그래서 한국 M2 가 3개월 뒤처져도 그게 한국은행이
+    아직 안 낸 것인지 우리가 못 받은 것인지 **아무 도구도 답하지 못했다**
+    (사용자 2026-09-13 "유동성보드 지연건").
+
+    재료는 이미 `check()` 안에 있었다 — 총 건수·1쪽 수신·월별 행수(#150
+    우리가 이미 부르는 호출이 답을 갖고 있나). CLI 에만 있어 감사가 못 불렀을
+    뿐이라 꺼내서 **둘이 같은 술어를 쓰게** 한다(#35·#38).
+
+    반환 `observation_end` 는 **화면 `asof` 와 같은 형식**이어야 한다 —
+    `stale_bucket` 이 문자열 동등 비교를 하므로(`202606` vs `2026-06`) 형식이
+    어긋나면 조용히 전부 '우리 수집 실패' 로 오판한다. `_format_time` 단일
+    출처를 쓴다.
+
+    ⚠️ **모르면 None** 이고 그 사유를 `why` 에 적는다(#54·#165) — 키 없음 ·
+    조회 실패 · 행 0 · **절단**. 절단이면 1쪽에서 본 최댓값이 원천의 끝이라는
+    보장이 없으므로 값을 주면 거짓말이다.
+    """
+    from collections import Counter
+
+    cfg = _SERIES.get(key)
+    if not cfg:
+        return {"observation_end": None, "why": f"미등록 시리즈({key})"}
+    api_key = _env_key("BOK_ECOS_API_KEY")
+    if not api_key:
+        return {"observation_end": None, "why": "BOK_ECOS_API_KEY 없음"}
+    end = date.today()
+    start = end - timedelta(days=cfg["lookback_days"])
+    if cfg["freq"] == "M":
+        s_str, e_str = start.strftime("%Y%m"), end.strftime("%Y%m")
+    elif cfg["freq"] == "D":
+        s_str, e_str = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+    else:
+        s_str = f"{start.year}Q{(start.month - 1) // 3 + 1}"
+        e_str = f"{end.year}Q{(end.month - 1) // 3 + 1}"
+    url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/{_ROW_CAP}/"
+           f"{cfg['table']}/{cfg['freq']}/{s_str}/{e_str}/"
+           f"{cfg.get('item', '')}")
+    try:
+        payload = requests.get(url, timeout=_TIMEOUT).json()
+    except Exception as exc:                                   # noqa: BLE001
+        return {"observation_end": None, "why": f"조회 실패: {type(exc).__name__}"}
+    if "RESULT" in payload and "StatisticSearch" not in payload:
+        _r = payload.get("RESULT") or {}
+        return {"observation_end": None,
+                "why": f"RESULT {_r.get('CODE')} — {_r.get('MESSAGE')}"}
+    _ss = payload.get("StatisticSearch", {}) or {}
+    rows = _ss.get("row") or []
+    total = _ss.get("list_total_count")
+    per_t = Counter((r.get("TIME") or "") for r in rows)
+    try:
+        truncated = int(total) > len(rows)
+    except (TypeError, ValueError):
+        truncated = False
+    out = {"observation_end": None, "total": total, "received": len(rows),
+           "per_time": per_t, "truncated": truncated, "why": "",
+           "window": f"{s_str}~{e_str}"}
+    if truncated:
+        out["why"] = "1쪽 절단 — 1쪽 최댓값이 원천의 끝이라는 보장이 없다"
+    elif not rows:
+        out["why"] = "행 0 — 조회창·테이블/아이템 코드부터 의심"
+    else:
+        out["observation_end"] = _format_time(max(per_t), cfg["freq"])
+    return out
+
+
 def check(keys: list[str]) -> None:
     """ECOS 카드 지연 진단 — **원천 지연**과 **우리 절단**을 가른다(#82).
 
@@ -707,48 +778,26 @@ def check(keys: list[str]) -> None:
         if not api_key:
             print("  ② 원시 조회 생략(키 없음)")
             continue
-        end = date.today()
-        start = end - timedelta(days=cfg["lookback_days"])
-        if cfg["freq"] == "M":
-            s_str, e_str = start.strftime("%Y%m"), end.strftime("%Y%m")
-        elif cfg["freq"] == "D":
-            s_str, e_str = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
-        else:
-            s_str = f"{start.year}Q{(start.month - 1) // 3 + 1}"
-            e_str = f"{end.year}Q{(end.month - 1) // 3 + 1}"
-        url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/{_ROW_CAP}/"
-               f"{cfg['table']}/{cfg['freq']}/{s_str}/{e_str}/"
-               f"{cfg.get('item', '')}")
-        try:
-            payload = requests.get(url, timeout=_TIMEOUT).json()
-        except Exception as exc:                               # noqa: BLE001
-            print(f"  ② 원시 조회 실패: {exc}")
-            continue
-        if "RESULT" in payload and "StatisticSearch" not in payload:
-            _r = payload.get("RESULT") or {}
-            print(f"  ② RESULT {_r.get('CODE')} — {_r.get('MESSAGE')}")
-            continue
-        _ss = payload.get("StatisticSearch", {}) or {}
-        rows = _ss.get("row") or []
-        total = _ss.get("list_total_count")
-        per_t = Counter((r.get("TIME") or "") for r in rows)
+        # ⚠️ 감사(`liquidity_audit`)와 **같은 술어**를 쓴다 — 여기 인라인으로
+        # 두면 둘이 갈라져 CLI 와 결산이 다른 말을 한다(#35·#38·#169).
+        meta = series_meta(key) or {}
+        per_t = meta.get("per_time") or {}
         last_times = sorted(per_t)[-3:]
-        print(f"  ② 원시: 총 {total}행 · 1쪽 수신 {len(rows)}행 · "
-              f"조회창 {s_str}~{e_str}")
-        print("     최근 기간별 행수: "
-              + " · ".join(f"{t}={per_t[t]}" for t in last_times))
-        try:
-            truncated = int(total) > len(rows)
-        except (TypeError, ValueError):
-            truncated = False
-        if truncated:
+        print(f"  ② 원시: 총 {meta.get('total')}행 · "
+              f"1쪽 수신 {meta.get('received')}행 · "
+              f"조회창 {meta.get('window')}")
+        if per_t:
+            print("     최근 기간별 행수: "
+                  + " · ".join(f"{t}={per_t[t]}" for t in last_times))
+        oe = meta.get("observation_end")
+        if oe:
+            print(f"  판정: 절단 없음 — 원천이 주는 최신이 {oe} 다. "
+                  "이보다 새 달이 없으면 **원천(ECOS) 지연**이다")
+        elif meta.get("truncated"):
             print("  판정: ❌ 절단(우리 문제였음) — 총 건수 > 1쪽 수신. "
                   "화면 경로는 페이지를 이어 받아 복구한다(로그 '시리즈 응답 절단')")
-        elif rows:
-            print(f"  판정: 절단 없음 — 원천이 주는 최신이 {max(per_t)} 다. "
-                  "이보다 새 달이 없으면 **원천(ECOS) 지연**이다")
         else:
-            print("  판정: ❓ 행 0 — 조회창·테이블/아이템 코드부터 의심")
+            print(f"  판정: ❓ 원천 최신 판정 불가 — {meta.get('why')}")
 
 
 def _main(argv=None) -> int:

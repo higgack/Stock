@@ -56,9 +56,21 @@ def _fmt(v: float, unit: str) -> str:
     return f"{a:,.1f}"
 
 
-def _series_meta(sid: str):
-    """FRED 시리즈 메타(원천의 마지막 관측일). FRED 시리즈가 아니면 None."""
-    if ":" in sid:                      # ECOS:/AK: 등 비-FRED 소스
+def _series_meta(sid: str, src: str = ""):
+    """원천이 스스로 보고한 **마지막 관측일** 메타. 못 물으면 None.
+
+    ⚠️ 옛 판은 `":" in sid` 면 무조건 None 이라 **비-FRED 는 갈래를 못 갈랐다**
+    — 한국 M2 가 3개월 뒤처져도 한국은행이 안 낸 것인지 우리가 못 받은
+    것인지 아무 도구도 답하지 못했다(실수 #366). `src` 는 카탈로그가 이미
+    싣고 있으므로 매핑을 손으로 열거하지 않는다(#24).
+    """
+    if src.startswith("ecos:"):
+        try:
+            from bot.bok_ecos_client import series_meta
+            return series_meta(src.split(":", 1)[1])
+        except Exception:                                      # noqa: BLE001
+            return None
+    if ":" in sid:                      # AK: 등 아직 안 푼 비-FRED 소스
         return None
     try:
         from bot.fred_client import fetch_series_meta
@@ -147,7 +159,7 @@ def main() -> int:
                 # 같은 기호가 된다(#86·#82). 메타는 **여기서 한 번만** 받고
                 # 아래 ↪ 줄이 그걸 재사용한다(두 번 물으면 그 사이 갱신된
                 # 값의 나이를 옛 값에 붙인다, #160·#61).
-                _stale_meta = _series_meta(sid)
+                _stale_meta = _series_meta(sid, s.get("src") or "")
                 _oe = (_stale_meta or {}).get("observation_end")
                 bucket, verdict = stale_bucket(j, source_end=_oe, asof=asof)
                 if bucket == "late":
