@@ -12319,10 +12319,22 @@ class TestBlogWatchMultiBlog:
             # 카테고리 축은 계속 전체 글 — 이 둘은 **제목 축**으로 거른다
             # (결산 글이 '일상' 카테고리라 categories 로는 못 가른다, #362).
             assert ids[bid]["categories"] is None, ids[bid]
-            assert ids[bid]["title_any"] == ("결산",), ids[bid]
+            assert "결산" in ids[bid]["title_any"][0], ids[bid]
+        # ⚠️ **실측이 1차 판별어를 반증했다**(#222 계약을 다시 쓴다):
+        # `("결산",)` 은 50건 중 32건을 통과시켰고 거기에 `운동 & 독서 결산`
+        # 처럼 주식과 무관한 글이 섞였다. 간동은 **"투자 결산"** 으로 좁힌다
+        # (실측 10건에 10/10). 카가는 결산 글이 곧 투자 결산이라 그대로.
+        assert ids["ggbbvv"]["title_any"] == ("투자 결산",), ids["ggbbvv"]
+        assert ids["hempty"]["title_any"] == ("결산",), ids["hempty"]
         # 간동만 주별 제외가 붙는다(사용자 "주별결산은 주식내용이 아니니").
         assert ids["ggbbvv"].get("title_none"), ids["ggbbvv"]
         assert not ids["hempty"].get("title_none"), ids["hempty"]
+        # 실측한 채널 제목은 박아 둔다 — 그래야 blogId 드리프트를 기계가
+        # 잡는다. 안 잰 블로그는 **안 박는다**(#362·#12).
+        assert ids["ggbbvv"]["channel"] == "개미의 투자 일상", ids["ggbbvv"]
+        # 사용자 2026-09-13 추가 — 표시명만 확정, 채널은 미측정.
+        assert ids["chcmg2022"]["title"] == "너쟁이", ids.get("chcmg2022")
+        assert "channel" not in ids["chcmg2022"], "안 잰 채널을 박았다"
         # 사용자가 뺀 것은 다시 들어오지 않는다(#222·#339 사용자 결정을
         # 되돌리지 말 것) · 실측으로 존재하지 않는 후보도 마찬가지.
         assert "bvmzzin1023" not in ids, "사용자가 뺀 블로그가 되살아났다"
