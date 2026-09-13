@@ -67,6 +67,16 @@ _BLOGS = (
     # 사용자 2026-08-30 (blog.naver.com/jsi4914, 표시명 사용자 확정).
     # 첫 run 은 per-blog init 으로 기존 글 seen 처리만 — 백필 없이 새 글부터.
     {"id": "jsi4914", "title": "지댕", "categories": None},  # 전체 글
+    # 사용자 2026-09-13 3건 일괄 추가(표시명 사용자 확정). 첫 run 은 per-blog
+    # init 으로 기존 글 seen 처리만 — 백필 없이 새 글부터(위 ⛔ 디폴트).
+    {"id": "bvmzzin1023", "title": "한라산유기농백수", "categories": None},
+    {"id": "ggbbvv", "title": "간동", "categories": None},
+    # ⚠️ blogId 는 사용자가 준 링크의 **href**(.../hempty)를 쓴다 — 같은 줄의
+    # 링크 **텍스트**는 `.../hempt` 로 한 글자 짧았다(자동링크가 남긴 차이).
+    # 샌드박스는 rss.blog.naver.com 이 프록시에 막혀 어느 쪽이 실재하는지
+    # **재지 못했다**(#12 검증불가면 단정 금지) → VM `--check` 로 확정할 것.
+    # 틀렸으면 RSS 미수신 warning 만 남고 조용히 0건이 된다(#82).
+    {"id": "hempty", "title": "카가", "categories": None},
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
@@ -86,6 +96,25 @@ _MAX_SEEN = 5000
 # 처리 — 캡 축출/RSS 재등장에도 옛 글 재푸시 원천 차단.
 _MAX_AGE_DAYS = 14
 _MAX_NEW_PER_RUN = 5     # 블로그당
+
+
+def category_label(categories) -> str:
+    """`/blog` 목록에 붙는 카테고리 꼬리표 — `categories` 계약 셋을 전부 받는다.
+
+    ⚠️ 2026-09-13 발각: `telegram_bot._blog_list_text` 가 `'/'.join(cat)` 만
+    써서 **str 이면 글자를 쪼갰다** — `intelligent_tiger` 의
+    `"국내증시 시황정리"` 가 화면에 `국/내/증/시/ /시/황/정/리 카테고리만`
+    으로 떴다. 계약은 `None | str | tuple[str,...]` 인데(회귀가 그렇게
+    못박아 뒀다) 렌더는 tuple 만 상정한 것이다(#34 한 자리가 두 형을
+    대표하면 한쪽은 반드시 거짓말).
+
+    ⚠️ 판정을 `telegram_bot` 안에 두면 `telegram` 미설치 환경에서 회귀가
+    통째로 스킵된다 — 순수 함수로 여기 둬서 어디서나 값으로 잰다(#176).
+    """
+    if categories is None:
+        return ""
+    names = (categories,) if isinstance(categories, str) else tuple(categories)
+    return " · " + "/".join(names) + " 카테고리만"
 
 
 def _now_kst() -> datetime:

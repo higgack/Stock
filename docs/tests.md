@@ -133,6 +133,9 @@
 | 드리프트 판정이 발화한다 — 본 테스트와 **같은 함수**로(#286) | ✅ 자동 | `…::test_drift_guard_fires_when_the_doc_lies` |
 | 재무부 판정 줄이 **시리즈·갈래 근거**를 실어 셋이 구별된다(#356·#114·#292) | ✅ 자동 | `TestFlowTrendDiagnosis20260818::test_treasury_verdict_names_the_series_and_carries_its_reason` |
 | `src=UST` 면 '보강이 걸리지 않았다'고 적지 않는다(#356·#55·#165) | ✅ 자동 | `…::test_treasury_verdict_does_not_claim_enrichment_never_ran` |
+| 블로그 2026-09-13 3건 등록(표시명·전체 글) | ✅ 자동 | `TestBlogWatchMultiBlog::test_blogs_config_has_the_20260913_batch` |
+| `/blog` 카테고리 꼬리표가 str 을 낱글자로 쪼개지 않는다(#357·#34) | ✅ 자동 | `…::test_category_label_does_not_split_a_string_into_letters` |
+| 그 꼬리표를 렌더가 **단일 출처로 부르고 쓴다**(#20·#120) | ✅ 자동 | `…::test_blog_list_renders_the_label_through_the_single_source` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |

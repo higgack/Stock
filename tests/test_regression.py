@@ -12118,6 +12118,58 @@ class TestBlogWatchMultiBlog:
             assert b["id"] not in seen, f"blogId 중복: {b['id']}"
             seen.add(b["id"])
 
+    def test_blogs_config_has_the_20260913_batch(self):
+        """사용자 2026-09-13 3건 일괄 추가(표시명 사용자 확정).
+
+        ⚠️ `hempty` 는 사용자가 준 링크의 **href** 다 — 같은 줄의 링크
+        텍스트는 `hempt` 로 한 글자 짧았고, 샌드박스는 rss.blog.naver.com 이
+        프록시에 막혀 어느 쪽이 실재하는지 **재지 못했다**(#12). VM
+        `--check` 가 확정한다. 여기서는 '사용자가 준 href 를 쓴다'만 못박는다.
+        """
+        import bot.blog_watch as bw
+        ids = {b["id"]: b for b in bw._BLOGS}
+        for bid, title in (("bvmzzin1023", "한라산유기농백수"),
+                           ("ggbbvv", "간동"), ("hempty", "카가")):
+            assert bid in ids, f"{bid} 미등록 — 자동수집 안 함"
+            assert ids[bid]["title"] == title, ids[bid]
+            assert ids[bid]["categories"] is None, ids[bid]   # 전체 글
+
+    def test_category_label_does_not_split_a_string_into_letters(self):
+        """⚠️ 2026-09-13 실측 — `/blog` 목록이 `intelligent_tiger` 의
+        `"국내증시 시황정리"` 를 `국/내/증/시/ /시/황/정/리 카테고리만` 으로
+        찍고 있었다. 렌더가 `'/'.join(cat)` 만 써서 str 이면 **글자를
+        쪼갠 것**이다 — 계약은 `None | str | tuple[str,...]` 인데
+        (`test_every_blog_entry_is_well_formed` 가 그렇게 못박아 뒀다)
+        렌더는 tuple 만 상정했다(#34).
+        """
+        import bot.blog_watch as bw
+        assert bw.category_label(None) == ""
+        assert bw.category_label("국내증시 시황정리") == " · 국내증시 시황정리 카테고리만"
+        assert bw.category_label(("관심종목", "기업탐방")) == " · 관심종목/기업탐방 카테고리만"
+        # 반대 증거 — 쪼개는 구현이면 이 글자가 나온다(#25).
+        assert "국/내" not in bw.category_label("국내증시 시황정리")
+        # 등록된 전 항목이 사람이 읽을 수 있는 꼬리표를 낸다(#24 전수).
+        for b in bw._BLOGS:
+            lab = bw.category_label(b["categories"])
+            assert "/" not in lab or isinstance(b["categories"], tuple), (b, lab)
+
+    def test_blog_list_renders_the_label_through_the_single_source(self):
+        """⚠️ 순수 함수만 재면 **배선을 떼는 변형을 못 잡는다**(#20) —
+        `_blog_list_text` 가 다시 `'/'.join` 으로 돌아가도 위 테스트는 green
+        이다. 여기서는 렌더가 `category_label` 을 **부르고 그 결과를 쓰는지**
+        를 본다(존재가 아니라 호출, #120·#141).
+        """
+        import ast
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_blog_list_text")
+        body = ast.get_source_segment(src, fn) or ""
+        assert "category_label" in body, "단일 출처를 안 부른다"
+        assert "'/'.join" not in body and '"/".join' not in body, \
+            f"꼬리표를 렌더가 직접 만든다 — str 이면 글자를 쪼갠다\n{body}"
+        # 그리고 그 반환을 실제로 **쓴다**(호출만 하고 버리면 no-op).
+        assert "suffix = " in body and "_cat_label(" in body, body
+
     def test_blogs_config_has_teasky_pilseung(self):
         import bot.blog_watch as bw
         ids = {b["id"]: b for b in bw._BLOGS}
