@@ -12118,6 +12118,103 @@ class TestBlogWatchMultiBlog:
             assert b["id"] not in seen, f"blogId 중복: {b['id']}"
             seen.add(b["id"])
 
+    def test_drift_banner_is_a_single_source_on_sibling_pages(self, monkeypatch):
+        """실수 #359 — 배포 drift 배너가 **메인 대시보드 한 장에만** 있었다.
+
+        사용자가 테마 페이지에서 옛 부제(`정렬 5종 합산 266개(fallCnt+56, …)`)
+        를 보고 **두 번** 물었는데, 그 문구를 만드는 코드는 25시간 전에 base
+        에서 사라진 뒤였다 — 즉 화면은 옛 프로세스가 그린 것이고 페이지는 그
+        사실을 말할 방법이 없었다(#11 '배포완료 ≠ 화면에 보임' · #43 침묵이
+        최악 · #38 한 화면에서 고쳤으면 형제를 즉시 grep).
+        """
+        import bot.code_freshness as cf
+        import bot.naver_pages as np
+        import bot.naver_sector_client as ns
+
+        # ① 단일 출처가 존재하고 **상대경로**로 묻는다 — 토큰 경로
+        #    (`/t/<token>/theme`) 아래에서도 같은 접두를 따라가야 한다.
+        assert "fetch('api/build')" in cf.BANNER_JS, cf.BANNER_JS[:200]
+        assert "fetch('/api/build')" not in cf.BANNER_JS, "절대경로면 토큰이 떨어져 404"
+        # ② 신선하면 아무것도 안 그린다(#25·#260 늘 뜨는 배너).
+        assert "b.stale" in cf.BANNER_JS, cf.BANNER_JS[:200]
+
+        # ③ 형제 페이지(`_shell`)가 그걸 **싣는다**.
+        monkeypatch.setattr(ns, "fetch_themes", lambda: {
+            "themes": [{"name": "반도체", "pct": 1.2, "pct3": 2.0,
+                        "lead": "삼성전자", "lead_code": "005930"}],
+            "ts": "2026-09-13 15:00", "via": "domestic/theme ✅ 266개"})
+        page = np.render_theme_page()
+        assert "build-drift" in page and "api/build" in page, \
+            "형제 페이지에 drift 배너가 없다 — 옛 코드가 그려도 화면이 침묵한다"
+
+        # ④ 복제본 금지 — 두 벌이면 한쪽만 고쳐진다(#38). 정의는 단일 출처에만.
+        dash = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "function buildBanner" not in dash, \
+            "dashboard 가 배너 JS 를 복제하고 있다 — code_freshness.BANNER_JS 를 쓸 것"
+        npsrc = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "function buildBanner" not in npsrc, npsrc[:200]
+
+    def test_theme_subtitle_has_no_per_sort_breakdown(self, monkeypatch):
+        """사용자 2026-09-12·09-13(두 번) — `(fallCnt+56, leadingItem+9, …)` 은
+        불필요하다. 부제는 **합산 사실**만 적고 기여 상세는 로그로 간다(#43
+        버리지는 않는다). 옛 판이 되살아나면 여기서 걸린다.
+        """
+        import bot.naver_pages as np
+        import bot.naver_sector_client as ns
+        monkeypatch.setattr(ns, "fetch_themes", lambda: {
+            "themes": [{"name": "반도체", "pct": 1.2, "pct3": 2.0,
+                        "lead": "삼성전자", "lead_code": "005930"}],
+            "ts": "2026-09-13 15:00",
+            "via": "domestic/theme ✅ 266개 · 정렬 5종 합산 266개 · 21.7s"})
+        page = np.render_theme_page()
+        sub = page.split('<div class="sub">')[1].split("</div>")[0]
+        for tok in ("fallCnt", "leadingItem", "totalMarketSum", "riseCnt"):
+            assert tok not in sub, f"정렬 기여 상세가 부제에 남아 있다: {tok}\n{sub}"
+        assert "합산" in sub, sub          # 반대 증거 — 합산 사실은 남는다(#25)
+
+    def test_sort_contributions_go_to_the_log_not_the_note(self):
+        """기여 상세를 **버리지는 않는다** — 어느 정렬이 값어치 있는지가 다음
+        라운드의 근거다(#43). 로그에만 남는지 값으로 잰다.
+        """
+        import ast
+        src = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_theme_sort_sweep")
+        body = ast.get_source_segment(src, fn) or ""
+        # `used` 는 `fallCnt+56` 류 — note 에 들어가면 안 되고 로그엔 있어야 한다.
+        assert "join(used)" in body, "기여 상세를 통째로 버렸다(#43)"
+        note_lines = [l for l in body.splitlines() if "note = " in l]
+        assert note_lines, body[:200]
+        for l in note_lines:
+            assert "used)" not in l.replace("len(used)", ""), \
+                f"부제에 기여 상세가 다시 들어갔다\n{l}"
+
+    def test_sweep_note_carries_no_breakdown_measured_by_value(self, monkeypatch):
+        """⚠️ 위 두 테스트는 **눈이 반쯤 멀었다**(실측): 렌더 테스트는 `via` 를
+        미리 만들어 주는 스텁이라 수집기를 안 태우고(#20), AST 테스트는 소스
+        문자열을 재므로 리팩터에 깨진다(#19). 기여 상세를 부제에 되살리는
+        뮤테이션을 **값으로** 잡는 것은 이 테스트뿐이다.
+
+        원천은 스텁 — 바깥을 치지 않는다(#312·#336).
+        """
+        import bot.naver_sector_client as ns
+
+        def _fake_get2_json(url, params=None, **kw):
+            # 정렬마다 다른 테마를 하나씩 준다 → `used` 가 실제로 채워진다.
+            v = (params or {}).get("sortType", "?")
+            return [{"no": f"{v}-1", "name": f"테마-{v}", "changeRate": "1.0"}], ""
+
+        monkeypatch.setattr(ns, "_get2_json", _fake_get2_json)
+        rows, note, partial = ns._theme_sort_sweep("u", 200, [])
+        assert len(rows) == len(ns._THEME_SORTS), rows      # 정렬마다 +1
+        # ① 부제에 기여 상세가 없다 — 이것이 사용자가 두 번 요청한 그 계약이다.
+        for tok in ns._THEME_SORTS:
+            assert tok not in note, f"부제에 정렬 이름이 있다: {tok}\n{note}"
+        assert "+1" not in note, f"기여 수치가 부제에 있다\n{note}"
+        # ② 반대 증거 — 합산 사실은 남는다(#25 '없다'만 재면 지워도 통과).
+        assert f"합산 {len(rows)}개" in note, note
+        assert f"{len(ns._THEME_SORTS)}종" in note, note
+
     def test_blogs_config_has_the_20260913_batch(self):
         """사용자 2026-09-13 3건 일괄 추가(표시명 사용자 확정).
 

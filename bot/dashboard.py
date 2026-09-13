@@ -18820,6 +18820,13 @@ _CSEC_JS = """<script>
 def _render_market_page(data: dict) -> str:
     """Render market.html — global market snapshot + earnings + research."""
     from bot.market_overview import ALL_CARDS
+    # 배포 drift 배너 — `code_freshness.BANNER_JS` **단일 출처**(2026-09-13).
+    # 옛 판은 이 함수 안에 JS 를 복제해 뒀고, 그래서 형제 페이지(테마·급등락
+    # 등 `naver_pages._shell`)는 배너가 아예 없었다(#38 복제하면 한쪽만 고쳐진다).
+    try:
+        from bot.code_freshness import BANNER_JS as _BUILD_BANNER_JS
+    except Exception:
+        _BUILD_BANNER_JS = ""
 
     snap = data.get("snapshot", {})
     yf = snap.get("yf", {})
@@ -19715,38 +19722,8 @@ def _render_market_page(data: dict) -> str:
     }}
 
 
-    /* ── 배포 drift 배너 ─────────────────────────────────────────────
-       `market.html` 은 봇 프로세스가 **정적 파일로 굽고** `/api/*` 는 대시보드
-       프로세스가 답한다 — 두 유닛이 따로 재시작되므로 '새 HTML + 옛 API' 가
-       실재한다(2026-09-12 ★ 클릭이 404 였던 그 조합). 그때 화면은 아무 말도
-       안 했고 사용자가 기능 고장으로 읽었다(#11 '배포완료 ≠ 화면에 보임' ·
-       #43 침묵이 최악).
-       ⚠️ 신선하면 **아무것도 그리지 않는다** — 늘 뜨는 배너는 아무것도 안 재는
-       것과 같다(#25·#260). */
-    function buildBanner(msg) {{
-      if (document.getElementById('build-drift')) return;
-      var d = document.createElement('div');
-      d.id = 'build-drift';
-      d.style.cssText = 'background:#3d2b12;border:1px solid #a9741c;color:#f0c674;'
-        + 'padding:10px 14px;border-radius:8px;margin:0 0 14px;font-size:13px;line-height:1.5';
-      d.textContent = '⚠️ ' + msg;
-      document.body.insertBefore(d, document.body.firstChild);
-    }}
-    fetch('api/build')
-      .then(function(r) {{
-        if (r.status === 404) {{
-          /* 404 는 갈래가 둘이다 — 라우트가 없는 옛 서버, 또는 주소의 토큰이
-             바뀐 경우(`_strip_token_or_404`). 처방이 다르므로 단정하지 않는다
-             (#82 갈래는 이름으로 · #165 재지 않은 것을 단정하지 말 것). */
-          buildBanner('이 페이지의 새 기능(`/api/build`)에 서버가 404 로 답했습니다 — '
-                      + '대시보드 프로세스가 옛 코드이거나, 주소의 접근 토큰이 바뀐 것입니다. '
-                      + '새로고침해도 같으면 VM 에서 `sudo systemctl restart stock-bot-dashboard`.');
-          return null;
-        }}
-        return r.json().catch(function() {{ return null; }});
-      }})
-      .then(function(b) {{ if (b && b.ok && b.stale && b.note) buildBanner(b.note); }})
-      .catch(function() {{}});   /* 배너 실패가 본 화면을 막으면 안 된다(#315) */
+    /* 배포 drift 배너는 `code_freshness.BANNER_JS` 단일 출처가 그린다 —
+       이 블록을 여기 복제해 두면 형제 페이지와 갈린다(#38·2026-09-13). */
 
     loadFavs();
     // SWR: 엔드포인트가 콜드 시 이름만 즉시 주고 백그라운드로 가격 채움(사용자
@@ -19759,6 +19736,7 @@ def _render_market_page(data: dict) -> str:
 <!-- legacy-live-marker: DOMParser fetch('market.html') getElementById('live-sections') document.hidden 30초 자동 갱신 -->
 {_MARKET_LIVE_JS}
 {_CSEC_JS}
+{_BUILD_BANNER_JS}
 </body></html>
 """)
     return "".join(parts)
