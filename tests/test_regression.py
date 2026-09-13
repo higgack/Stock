@@ -26023,6 +26023,79 @@ class TestFlowTrendDiagnosis20260818:
             out2 = capsys.readouterr().out
             assert "❌" not in out2, f"정상인데 결함으로 찍는다\n{out2}"
 
+    def test_treasury_verdict_names_the_series_and_carries_its_reason(
+            self, tmp_path, capsys, monkeypatch):
+        """실수 #356 — 2026-09-13 일일 감사가 ❌ 3건을 냈는데 **셋이 글자까지
+        똑같았다**(`화면 2026-09-10 이 최선(2026-09-11)보다 뒤처졌고 보강이
+        걸리지 않았다(no_overlap)`). DGS2·DGS10·DGS30 인데 판정 줄에 시리즈가
+        없어 어느 만기가 문제인지 알 수 없고(#114·#292), `sweep` 은 ❌ 줄만
+        올리므로 바로 윗줄이 들고 있던 **갈래 근거**(조회 달·표에 있는 날)가
+        결산에 한 글자도 안 실린다(#292·#320 요약이 사유를 버린다).
+
+        그리고 `src == "UST"` 면 보강은 **이미 걸린 것**이다 — 그 상태에서
+        "보강이 걸리지 않았다"는 같은 함수가 이미 아는 사실과 어긋난다
+        (#55·#165 재지 않은 것을 단정하지 말 것).
+        """
+        import json, types
+        from datetime import date
+        from bot import treasury_yield_client as ty
+        from bot.scripts.macro_staleness_audit import _treasury_status
+        from bot.audit_sweep import _findings
+
+        d = tmp_path / "fred"
+        d.mkdir(parents=True)
+        today = date.today().isoformat()
+        # 결정적으로 — 바깥 원천을 치지 않는다(#312·#336).
+        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10: (
+            "no_overlap", {"sid": sid, "fred_date": fd, "months": ["202609"],
+                           "curve_days": ["2026-09-11"], "tol": tol}))
+        fake = types.SimpleNamespace(
+            _CACHE_DIR=tmp_path, _TREASURY_SIDS={"DGS2", "DGS10", "DGS30"},
+            _FRED_TTL_DAILY_H=1.0)
+        for sid in fake._TREASURY_SIDS:
+            (d / f"{sid}_{today}.json").write_text(json.dumps(
+                {"value": 4.0, "time": "1999-01-04"}))   # src 없음 = FRED
+        _treasury_status(fake)
+        out = capsys.readouterr().out
+        bad = _findings(out)
+        assert len(bad) == 3, f"결함 3건이 아니다\n{out}"
+        # ① 시리즈 이름이 판정 줄에 있어야 셋이 구별된다.
+        assert len(set(bad)) == 3, f"세 줄이 구별되지 않는다\n" + "\n".join(bad)
+        for sid in fake._TREASURY_SIDS:
+            assert any(sid in b for b in bad), f"{sid} 가 판정 줄에 없다\n{bad}"
+        # ② 갈래 근거가 ❌ 줄 자체에 실려야 결산만 보고도 다음 수가 정해진다.
+        for b in bad:
+            assert "202609" in b and "2026-09-11" in b, \
+                f"조회 달·표에 있는 날이 ❌ 줄에 없다 — sweep 이 사유를 버린다\n{b}"
+
+    def test_treasury_verdict_does_not_claim_enrichment_never_ran(
+            self, tmp_path, capsys, monkeypatch):
+        """`src == "UST"` = 보강이 이미 걸려 그 값이 화면에 있다는 뜻이다.
+        그때 "보강이 걸리지 않았다"고 적으면 운영자를 배선 확인으로 보낸다 —
+        실제 갈래는 '보강 뒤 재검증 실패'다(#82 처방이 다르면 이름을 달리).
+        """
+        import json, types
+        from datetime import date
+        from bot import treasury_yield_client as ty
+        from bot.scripts.macro_staleness_audit import _treasury_status
+
+        d = tmp_path / "fred"
+        d.mkdir(parents=True)
+        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10: (
+            "no_overlap", {"sid": sid, "fred_date": fd, "months": ["202609"],
+                           "curve_days": [], "tol": tol}))
+        fake = types.SimpleNamespace(_CACHE_DIR=tmp_path,
+                                     _TREASURY_SIDS={"DGS10"},
+                                     _FRED_TTL_DAILY_H=1.0)
+        (d / f"DGS10_{date.today().isoformat()}.json").write_text(json.dumps(
+            {"value": 4.0, "time": "1999-01-04", "src": "UST"}))
+        _treasury_status(fake)
+        out = capsys.readouterr().out
+        assert "❌" in out, out
+        assert "보강이 걸리지 않았다" not in out, \
+            f"보강이 걸린(src=UST) 상태인데 안 걸렸다고 적는다\n{out}"
+        assert "UST" in out, f"어느 원천이 실려 있는지 판정 줄이 안 말한다\n{out}"
+
     def test_supplementary_consensus_names_its_source(self):
         """⚠️ POSCO홀딩스에서 ₩461,888(18명)과 ₩557,500(6명)이 나란히 떠
         사용자가 "이 둘 차이가 뭐냐"고 물었다(2026-08-18) — 화면이 출처를
