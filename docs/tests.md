@@ -162,6 +162,9 @@
 | `--check` 가 **어느 코드가 돌았는지** 말한다 — 소스 지문(#364·#21·#119) | ✅ 자동 | `…::test_check_banner_says_which_code_ran` |
 | 그 배너가 **두 갈래**(무인자 표·개별 진단) 모두에 실린다(#364·#359·#38·#20) | ✅ 자동 | `…::test_check_banner_says_which_code_ran` |
 | 너쟁이 채널은 **실측값**으로 박고 요청 없는 필터는 없다(#364·#222) | ✅ 자동 | `TestBlogWatchMultiBlog::test_blogs_config_has_the_20260913_batch` |
+| 지문을 못 구하면 **'지문불가'라고 말한다** — 침묵 금지(#364·#291·#54) | ✅ 자동 | `…::test_banner_says_it_cannot_read_the_fingerprint` |
+| `--check` 경로가 다른 `bot.*` 를 안 읽는다 = 지문이 전부를 덮는다(#364·#274) | ✅ 자동 | `…::test_check_banner_covers_everything_check_reads` |
+| 의존성 부재를 '도달 실패'가 아니라 **갈래로** 말한다(#364·#82·#132) | ✅ 자동 | `…::test_check_names_the_dependency_branch` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |

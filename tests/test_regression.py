@@ -12341,7 +12341,11 @@ class TestBlogWatchMultiBlog:
         assert ids["chcmg2022"]["channel"] == "성실히 나아가는 작은 발걸음", \
             ids["chcmg2022"]
         # 요청 없는 필터는 붙이지 않는다 — 사용자는 표시명만 정했다.
-        assert "title_any" not in ids["chcmg2022"], "요청 없는 필터를 붙였다"
+        # ⚠️ `title_any` 만 보면 `title_none` 이 열려 있다(독립 리뷰 실측:
+        # 제외어를 넣어도 전부 green) — 그러면 요청 없는 제외 필터가
+        # 사용자 글을 조용히 떨어뜨린다. **키 집합 전체**로 못박는다.
+        assert set(ids["chcmg2022"]) == {"id", "title", "categories", "channel"}, \
+            ids["chcmg2022"]
         # 사용자가 뺀 것은 다시 들어오지 않는다(#222·#339 사용자 결정을
         # 되돌리지 말 것) · 실측으로 존재하지 않는 후보도 마찬가지.
         assert "bvmzzin1023" not in ids, "사용자가 뺀 블로그가 되살아났다"
@@ -26507,7 +26511,13 @@ class TestFlowTrendDiagnosis20260818:
         """
         import bot.blog_watch as bw
         b1 = bw._check_banner()
-        assert "지문" in b1 and str(len(bw._BLOGS)) in b1, b1
+        # ⚠️ `str(len(_BLOGS)) in b1` 로 재면 **지문이 그 숫자를 품는 날**
+        # 계수 절반이 눈이 먼다(독립 리뷰 실측: 지문을 `263d15c463` 으로
+        # 만들자 `· 등록 N개` 를 통째로 지워도 통과 — 편집마다 해시가
+        # 다시 굴려지므로 30커밋에 한 번쯤 조용히 무가드다, #75). 값을
+        # 집는다. 그리고 `"지문"` 라벨은 안 잰다 — 계약은 "어느 코드가
+        # 돌았는지 말한다" 이지 그 낱말이 아니다(#19).
+        assert f"등록 {len(bw._BLOGS)}개" in b1, b1
         # 소스가 바뀌면 지문도 바뀐다 — 상수를 돌려주는 구현이면 눈이 먼다(#91b).
         import hashlib, pathlib
         real = hashlib.sha1(
@@ -26525,6 +26535,97 @@ class TestFlowTrendDiagnosis20260818:
         assert real in capsys.readouterr().out, "개별 진단에 배너가 없다"
         bw.main(["--check"])
         assert real in capsys.readouterr().out, "무인자 표에 배너가 없다"
+
+    def test_banner_says_it_cannot_read_the_fingerprint(self, monkeypatch):
+        """#364 의 실패 갈래 — 지문을 못 구하면 **모른다고 말한다**.
+
+        독립 리뷰 실측: `sig = ""` 로 바꿔도 전 슈트가 green 이었다 =
+        **발화 경로 없는 가드**(#291). 빈 지문은 낡은 체크아웃과 신선한
+        것이 같은 글자를 내므로 #364 가 그대로 재발한다(#54·#43).
+        """
+        import pathlib
+
+        import bot.blog_watch as bw
+
+        def _boom(self, *a, **kw):                             # noqa: ANN001
+            raise OSError("nope")
+
+        monkeypatch.setattr(pathlib.Path, "read_bytes", _boom)
+        b = bw._check_banner()
+        assert "지문불가" in b and "OSError" in b, b
+        assert f"등록 {len(bw._BLOGS)}개" in b, b
+
+    def test_check_names_the_dependency_branch(self, monkeypatch, capsys):
+        """독립 리뷰 2026-09-13 — 의존성이 없는 인터프리터에서 `--check` 가
+        **원시 트레이스백**으로 죽어 '도달 실패' 와 구별되지 않았다(#82 처방이
+        정반대인 갈래 · #12 raw 실패 금지 · #132 진단은 제품과 같은 venv 로).
+
+        ⚠️ 환경에 따라 달라지면 안 되므로(VM 엔 httpx 가 있다) 예외를 직접
+        일으켜 잰다 — 이 갈래가 **발화 경로를 갖는지**가 계약이다(#291).
+        """
+        import bot.blog_watch as bw
+
+        def _boom(_bid):
+            raise ImportError("No module named 'httpx'")
+
+        monkeypatch.setattr(bw, "_fetch_rss", _boom)
+        monkeypatch.setattr(bw, "_load_state", lambda: {})
+        assert bw.check("hempty") == 1
+        out = capsys.readouterr().out
+        assert "진단 불가" in out and "httpx" in out, out
+        # '도달 실패' 로 읽히면 운영자가 blogId·차단을 의심하러 간다.
+        assert "RSS 도달 실패" not in out, out
+
+    def test_check_banner_covers_everything_check_reads(self):
+        """#364 의 **못 보는 축**(#274) — 지문은 이 파일 하나만 잰다.
+
+        `--check` 가 읽는 것(`_fetch_rss`·`title_gate`·`rss_health`·
+        `_BLOGS` …)이 전부 이 모듈에 살기 때문에 오늘은 완전하다. 판정을
+        순수 모듈로 빼는 것이 이 레포의 상습 리팩터라(#176), 그 날
+        배너는 **출력을 만든 코드를 안 덮는 지문**을 계속 찍는다 —
+        침묵보다 나쁜 과대 주장이다. 그 전제를 여기서 못박는다:
+        다른 `bot.*` 를 import 하기 시작하면 지문을 넓히거나 이 계약을
+        다시 쓸 것(#222·#286 안 잰 것을 주장하지 말 것).
+        """
+        import ast
+        import pathlib
+
+        import bot.blog_watch as bw
+
+        tree = ast.parse(pathlib.Path(bw.__file__).read_text(encoding="utf-8"))
+        defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+        def _calls(node):
+            return {c.func.id for c in ast.walk(node)
+                    if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+
+        # ⚠️ **모듈 전체를 재면 안 된다** — 수집기(`run`/`_process_blog`)는
+        # `bot.daily_kr_flow`·`bot.dashboard`·`bot.feed_health` 를 부르는데
+        # 그건 `--check` 가 안 타는 경로다(첫 판이 그걸 잡아 멀쩡한 코드를
+        # 틀렸다고 했다, #91b 재는 대상이 맞나). `--check` 진입점에서
+        # **실제 도달하는** 함수만 따라간다.
+        seeds = {"check", "_check_banner"}
+        for n in ast.walk(defs["main"]):
+            if isinstance(n, ast.If) and "--check" in ast.dump(n.test):
+                seeds |= _calls(n)
+        seen, todo, bad = set(), [x for x in seeds if x in defs], []
+        while todo:
+            name = todo.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            fn = defs[name]
+            for n in ast.walk(fn):
+                if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("bot"):
+                    bad.append(f"{name}: {n.module}")
+                elif isinstance(n, ast.Import):
+                    bad += [f"{name}: {a.name}" for a in n.names
+                            if a.name.startswith("bot")]
+            todo += [c for c in _calls(fn) if c in defs and c not in seen]
+        assert "check" in seen and "rss_health" in seen and len(seen) >= 6, seen
+        assert not bad, (
+            f"`--check` 경로가 다른 bot 모듈을 읽기 시작했다: {bad} — "
+            "`_check_banner` 의 지문이 그 코드를 안 덮는다(#364·#274)")
 
     def test_check_shows_the_title_verdict_per_item(self, monkeypatch, capsys):
         """독립 리뷰 2026-09-13 — `--check` 의 제목 축 진단 블록이 **통째로

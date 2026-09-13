@@ -634,6 +634,12 @@ def _check_banner() -> str:
     ≠ 화면에 보임 · #359 사용자가 같은 걸 두 번 묻게 만든 그 사각).
     배포 시각이 아니라 **이 파일의 소스 지문**을 찍는다 — 그래야 체크아웃이
     낡았는지 값으로 갈린다(손으로 올리는 버전은 여섯 번 졌다, #119).
+
+    ⚠️ **못 보는 축**(#274): 지문은 **이 파일 하나**를 잰다. `--check` 가
+    읽는 것이 전부 여기 살아서 오늘은 완전하지만, 판정을 순수 모듈로 빼는
+    순간(#176 이 상습적으로 그렇게 한다) 배너는 출력을 만든 코드를 안 덮는
+    지문을 계속 찍는다 — 그건 침묵보다 나쁜 과대 주장이다. 회귀가 "다른
+    `bot.*` 를 import 하지 않는다" 로 그 전제를 못박는다.
     """
     import hashlib
     import pathlib
@@ -668,7 +674,15 @@ def check(blog_id: str) -> int:
              + ("전체 글" if reg["categories"] is None
                 else f"카테고리 {reg['categories']}") + ")"
              if reg else "미등록 ⚠️ (_BLOGS 에 없어 자동수집 안 함)"))
-    xml = _fetch_rss(blog_id)
+    try:
+        xml = _fetch_rss(blog_id)
+    except ImportError as exc:
+        # ⚠️ 의존성 부재는 **도달 실패가 아니다** — 원시 트레이스백을 던지면
+        # 운영자가 blogId·차단을 의심하러 간다(#82 갈래는 이름으로 · #12
+        # silent/raw 실패 금지). `--check` 는 진단이므로 갈래를 말하고 끝낸다.
+        print(f"  ❌ 진단 불가 — 이 인터프리터에 의존성이 없다({exc}). "
+              "봇이 도는 venv 로 돌릴 것(#132 진단은 제품과 같은 인터프리터로).")
+        return 1
     if not xml:
         print("  ❌ RSS 도달 실패 — 404/차단이거나 <item> 이 없다"
               " (이웃공개 블로그면 RSS 자체가 안 나온다)")
