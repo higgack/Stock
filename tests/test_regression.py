@@ -12332,9 +12332,20 @@ class TestBlogWatchMultiBlog:
         # 실측한 채널 제목은 박아 둔다 — 그래야 blogId 드리프트를 기계가
         # 잡는다. 안 잰 블로그는 **안 박는다**(#362·#12).
         assert ids["ggbbvv"]["channel"] == "개미의 투자 일상", ids["ggbbvv"]
-        # 사용자 2026-09-13 추가 — 표시명만 확정, 채널은 미측정.
+        # 사용자 2026-09-13 추가(표시명 사용자 확정 · 채널은 `--check` 실측).
         assert ids["chcmg2022"]["title"] == "너쟁이", ids.get("chcmg2022")
-        assert "channel" not in ids["chcmg2022"], "안 잰 채널을 박았다"
+        # ⚠️ 계약 변경(#222) — 1차는 "안 쟀으니 박지 않는다" 였고, `--check`
+        # 실측이 채널 제목을 줘 박았다. blogId 가 **사용자가 준 URL 그대로**라
+        # 정체성이 출처로 확정되고, 박는 값은 정체성 주장이 아니라 **드리프트
+        # 기준선**이다(`hempty` 때는 내가 후보 중 골라서 확인이 필요했다).
+        assert ids["chcmg2022"]["channel"] == "성실히 나아가는 작은 발걸음", \
+            ids["chcmg2022"]
+        # 요청 없는 필터는 붙이지 않는다 — 사용자는 표시명만 정했다.
+        # ⚠️ `title_any` 만 보면 `title_none` 이 열려 있다(독립 리뷰 실측:
+        # 제외어를 넣어도 전부 green) — 그러면 요청 없는 제외 필터가
+        # 사용자 글을 조용히 떨어뜨린다. **키 집합 전체**로 못박는다.
+        assert set(ids["chcmg2022"]) == {"id", "title", "categories", "channel"}, \
+            ids["chcmg2022"]
         # 사용자가 뺀 것은 다시 들어오지 않는다(#222·#339 사용자 결정을
         # 되돌리지 말 것) · 실측으로 존재하지 않는 후보도 마찬가지.
         assert "bvmzzin1023" not in ids, "사용자가 뺀 블로그가 되살아났다"
@@ -26488,6 +26499,247 @@ class TestFlowTrendDiagnosis20260818:
         # 결산 글만 올라간다 — 그리고 제외된 글도 seen 처리(재검사 방지).
         assert pushed == ["2026년 08월 결산"], pushed
         assert "g2" in seen, "제외 글이 seen 에 안 들어가 매번 재검사된다"
+
+    def test_check_banner_says_which_code_ran(self, monkeypatch, capsys):
+        """실수 #364 — 판별어를 좁혀 배포했는데 사용자가 돌린 `--check` 출력이
+        **옛 라벨·옛 통과 수**였다(VM auto-update 전). 출력만 봐선 나도
+        사용자도 그걸 못 가려, 고친 것이 안 먹은 것처럼 보였다(#11·#359).
+        진단은 **어느 코드가 돌았는지** 스스로 말해야 한다(#21 버전 배너).
+
+        지문은 손으로 올리는 버전이 아니라 **소스 해시**다 — 손 bump 는 이
+        레포에서 여섯 번 졌다(#119).
+        """
+        import bot.blog_watch as bw
+        b1 = bw._check_banner()
+        # ⚠️ `str(len(_BLOGS)) in b1` 로 재면 **지문이 그 숫자를 품는 날**
+        # 계수 절반이 눈이 먼다(독립 리뷰 실측: 지문을 `263d15c463` 으로
+        # 만들자 `· 등록 N개` 를 통째로 지워도 통과 — 편집마다 해시가
+        # 다시 굴려지므로 30커밋에 한 번쯤 조용히 무가드다, #75). 값을
+        # 집는다. 그리고 `"지문"` 라벨은 안 잰다 — 계약은 "어느 코드가
+        # 돌았는지 말한다" 이지 그 낱말이 아니다(#19).
+        assert f"등록 {len(bw._BLOGS)}개" in b1, b1
+        # 소스가 바뀌면 지문도 바뀐다 — 상수를 돌려주는 구현이면 눈이 먼다(#91b).
+        import hashlib, pathlib
+        real = hashlib.sha1(
+            pathlib.Path(bw.__file__).read_bytes()).hexdigest()[:10]
+        assert real in b1, f"지문이 이 파일에서 안 나왔다 — {b1}"
+        # 그리고 **실제로 찍힌다** — 계산만 하고 출력에 안 쓰면 없는 것과
+        # 같다(#123·#129·#189·#228 계열). 헬퍼가 아니라 **진입점**을 태운다
+        # (#20·#252 — CLI 계약은 `main` 을 통과해야 잰다).
+        monkeypatch.setattr(bw, "_load_state", lambda: {})
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: "")
+        # ⚠️ 두 갈래 **모두** — 무인자 표도 `_BLOGS` 에서 나오므로 낡은
+        # 체크아웃이면 등록 목록부터 옛것이다. 한 갈래에만 달면 그 갈래의
+        # 증상만 설명한다(#359·#38).
+        bw.main(["--check", "__none__"])
+        assert real in capsys.readouterr().out, "개별 진단에 배너가 없다"
+        bw.main(["--check"])
+        assert real in capsys.readouterr().out, "무인자 표에 배너가 없다"
+
+    def test_banner_says_it_cannot_read_the_fingerprint(self, monkeypatch):
+        """#364 의 실패 갈래 — 지문을 못 구하면 **모른다고 말한다**.
+
+        독립 리뷰 실측: `sig = ""` 로 바꿔도 전 슈트가 green 이었다 =
+        **발화 경로 없는 가드**(#291). 빈 지문은 낡은 체크아웃과 신선한
+        것이 같은 글자를 내므로 #364 가 그대로 재발한다(#54·#43).
+        """
+        import pathlib
+
+        import bot.blog_watch as bw
+
+        def _boom(self, *a, **kw):                             # noqa: ANN001
+            raise OSError("nope")
+
+        monkeypatch.setattr(pathlib.Path, "read_bytes", _boom)
+        b = bw._check_banner()
+        assert "지문불가" in b and "OSError" in b, b
+        assert f"등록 {len(bw._BLOGS)}개" in b, b
+
+    def test_audit_digest_says_which_code_ran(self, tmp_path, monkeypatch):
+        """실수 #365 — 아침 결산이 **어느 코드에서 나왔는지** 말해야 한다.
+
+        2026-09-13 실측: 사용자가 붙여 준 `❌ 3건` 의 판정 줄에 시리즈명이
+        없었는데 그건 #356 이 **그날 14:44 에 배포하며 고친** 증상이다
+        (08:13 실행 = 배포 전 코드). 출력만 봐선 "내 fix 가 안 먹었나" 와
+        "옛 코드다" 가 같은 화면이라, 코드를 태워 재고서야 갈렸다(#360).
+
+        ⚠️⚠️ 이 테스트의 1차 판은 **추적 중인 레포 소스에 직접 써서**
+        `bot/treasury_yield_client.py` 의 mtime 을 지금으로 밀었다(내용은
+        복원해도 mtime 은 아니다). 그러면 `code_freshness.newest_source_mtime`
+        이 `bot/*.py` 를 훑어 **돌고 있는 모든 프로세스를 stale 로** 판정하고
+        #359 가 심은 '이 프로세스는 옛 코드' 배너가 뜬다 — **배포 drift 도구를
+        나르는 테스트가 거짓 drift 경보를 만든 것**이다(독립 리뷰 실측
+        lag 100,041초). 게다가 pytest 가 write 와 `finally` 사이에 죽으면
+        `# mutate` 가 추적 파일에 남아 flush 로 배포된다(#328).
+        → 반응성은 **tmp 패키지**로 잰다. 레포 파일은 건드리지 않는다.
+        """
+        import contextlib
+        import io
+        import sys
+
+        import bot.audit_sweep as A
+
+        # ── 반응성: 임시 패키지로 (레포 무단 수정 금지) ──────────────
+        pkg = tmp_path / "botfp"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_bytes(b"")
+        (pkg / "a.py").write_text("from botfp import dep\n", encoding="utf-8")
+        dep = pkg / "dep.py"
+        dep.write_text("X = 1\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(A, "_PKG", "botfp")
+        base = A.audit_fingerprint(["botfp.a"])
+        assert len(base) == 10 and "?" not in base, base
+
+        # ① 감사 모듈이 바뀌면 지문이 바뀐다 — 상수를 돌려주면 눈먼
+        #    가드다(실측으로 한 번 그랬다: `pathlib` 미import 가
+        #    NameError 를 except 에 먹여 **이름만 해싱**했다, #12·#91b).
+        (pkg / "a.py").write_text("from botfp import dep\n# m\n", encoding="utf-8")
+        assert A.audit_fingerprint(["botfp.a"]) != base, "감사 모듈 변경에 무반응"
+        (pkg / "a.py").write_text("from botfp import dep\n", encoding="utf-8")
+        assert A.audit_fingerprint(["botfp.a"]) == base, "복원했는데 지문이 다르다"
+
+        # ② **전이 의존**도 덮는다 — 이 결산의 판정 문구는 감사 모듈이
+        #    아니라 그 아래 제품 모듈이 만든다(#364d 과대 주장 금지).
+        #    한 단계만 훑던 옛 판은 63개를 놓쳤다(독립 리뷰 실측).
+        dep.write_text("X = 2\n", encoding="utf-8")
+        for m in list(sys.modules):
+            if m.startswith("botfp"):
+                del sys.modules[m]
+        assert A.audit_fingerprint(["botfp.a"]) != base, "전이 의존에 무반응"
+
+        # ③ **배선** — `sweep()` 이 싣는 지문이 진짜 지문이어야 한다.
+        #    옛 판은 `audit_fingerprint([])` 로 바꿔도 전 슈트가 green
+        #    이었다 = 이 기능의 존재 이유가 무가드(#20, 독립 리뷰 실측).
+        monkeypatch.setattr(A, "_PKG", "bot")
+        monkeypatch.setattr(A, "_run_one", lambda mod: ("", ""))
+        r = A.sweep(include_weekly=False)
+        assert r["fp"] == A.audit_fingerprint(), "sweep 의 지문이 진짜가 아니다"
+        assert r["ran"] == sum(1 for _n, _m, c in A.AUDITS if c == "daily")
+        # ④ 그리고 **주기에 흔들리지 않는다** — `ran` 으로 해싱하던 옛 판은
+        #    코드가 그대로여도 월요일(주간 3종)에 값이 달라져 "지문이 다르면
+        #    낡은 코드" 계약이 매주 거짓이 됐다(독립 리뷰 실측).
+        assert A.sweep(include_weekly=True)["fp"] == r["fp"], \
+            "주간 감사가 끼면 지문이 달라진다 — 코드만의 함수가 아니다"
+
+        # ⑤ **두 표면 모두**에 실린다(#359·#364) — 텔레그램 결산과 원문.
+        fake = {"findings": ["X ❌ 뭔가"], "warn": 0, "errors": [],
+                "fp": "abcdef0123", "ran": 7, "raw": "raw"}
+        txt = A.report_text(fake)
+        assert "abcdef0123" in txt, txt
+        monkeypatch.setattr(A, "sweep", lambda include_weekly=False: fake)
+        monkeypatch.setattr(sys, "argv", ["audit_sweep", "--daily"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            A.main()
+        # ⚠️ `"abcdef0123" in out` 으로 재면 **결산 헤더가 대신 만족**시켜
+        # 원문 배너를 지워도 통과한다(실측, #75). 그 줄 하나를 집는다.
+        raw_banner = [ln for ln in buf.getvalue().splitlines()
+                      if ln.startswith("# audit_sweep")]
+        assert raw_banner and "abcdef0123" in raw_banner[0], buf.getvalue()
+        # ⑥ 배너가 **돈 개수를 사실대로** 적는다 — `len(AUDITS)` 를 그대로
+        #    쓰면 `--daily` 에서 7종만 돌고도 "10종" 이라 거짓말이다(#55).
+        assert f"{fake['ran']}/{len(A.AUDITS)}" in raw_banner[0], raw_banner[0]
+
+        # ⑦ 무음 계약은 그대로 — 결함이 없으면 빈 문자열(배너도 안 나간다).
+        assert A.report_text({"findings": [], "warn": 0, "errors": [],
+                              "fp": "abcdef0123", "raw": ""}) == ""
+
+    def test_audit_fingerprint_marks_partial_coverage(self):
+        """못 읽은 소스가 있으면 **조용히 덜 덮은 지문을 내지 않는다**.
+
+        그러면 "이 지문이 전부를 덮는다" 가 거짓이 된다(#54·#43·#364).
+        """
+        import bot.audit_sweep as A
+
+        fp = A.audit_fingerprint(["bot.scripts.__no_such_audit__"])
+        assert fp.endswith("?"), fp
+
+    def test_check_names_the_dependency_branch(self, monkeypatch, capsys):
+        """독립 리뷰 2026-09-13 — 의존성이 없는 인터프리터에서 `--check` 가
+        **원시 트레이스백**으로 죽어 '도달 실패' 와 구별되지 않았다(#82 처방이
+        정반대인 갈래 · #12 raw 실패 금지 · #132 진단은 제품과 같은 venv 로).
+
+        ⚠️ 환경에 따라 달라지면 안 되므로(VM 엔 httpx 가 있다) 예외를 직접
+        일으켜 잰다 — 이 갈래가 **발화 경로를 갖는지**가 계약이다(#291).
+        """
+        import bot.blog_watch as bw
+
+        def _boom(_bid):
+            raise ImportError("No module named 'httpx'")
+
+        monkeypatch.setattr(bw, "_fetch_rss", _boom)
+        monkeypatch.setattr(bw, "_load_state", lambda: {})
+        assert bw.check("hempty") == 1
+        out = capsys.readouterr().out
+        assert "진단 불가" in out and "httpx" in out, out
+        # '도달 실패' 로 읽히면 운영자가 blogId·차단을 의심하러 간다.
+        assert "RSS 도달 실패" not in out, out
+
+    def test_check_banner_covers_everything_check_reads(self):
+        """#364 의 **못 보는 축**(#274) — 지문은 이 파일 하나만 잰다.
+
+        `--check` 가 읽는 것(`_fetch_rss`·`title_gate`·`rss_health`·
+        `_BLOGS` …)이 전부 이 모듈에 살기 때문에 오늘은 완전하다. 판정을
+        순수 모듈로 빼는 것이 이 레포의 상습 리팩터라(#176), 그 날
+        배너는 **출력을 만든 코드를 안 덮는 지문**을 계속 찍는다 —
+        침묵보다 나쁜 과대 주장이다. 그 전제를 여기서 못박는다:
+        다른 `bot.*` 를 import 하기 시작하면 지문을 넓히거나 이 계약을
+        다시 쓸 것(#222·#286 안 잰 것을 주장하지 말 것).
+        """
+        import ast
+        import pathlib
+
+        import bot.blog_watch as bw
+
+        tree = ast.parse(pathlib.Path(bw.__file__).read_text(encoding="utf-8"))
+        defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+        def _calls(node):
+            return {c.func.id for c in ast.walk(node)
+                    if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+
+        # ⚠️ **모듈 전체를 재면 안 된다** — 수집기(`run`/`_process_blog`)는
+        # `bot.daily_kr_flow`·`bot.dashboard`·`bot.feed_health` 를 부르는데
+        # 그건 `--check` 가 안 타는 경로다(첫 판이 그걸 잡아 멀쩡한 코드를
+        # 틀렸다고 했다, #91b 재는 대상이 맞나). `--check` 진입점에서
+        # **실제 도달하는** 함수만 따라간다.
+        # ⚠️ **모듈 레벨 import 를 먼저 본다** — 함수 본문만 훑던 옛 판은
+        # `bot/blog_watch.py` 최상단에 `from bot.market_calendar import …`
+        # 를 넣어도 통과했다(독립 리뷰 실측). 이 파일엔 top-level `bot.*`
+        # import 가 0건이라 **미래의 import 가 정확히 그 자리에 들어온다**
+        # = 유일하게 뚫려 있던 슬롯이었다(#286 지시서가 자기 자신에 대해
+        # 사실 아닌 것을 말한다).
+        top_bad = []
+        for n in tree.body:
+            if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("bot"):
+                top_bad.append(f"<module>: {n.module}")
+            elif isinstance(n, ast.Import):
+                top_bad += [f"<module>: {a.name}" for a in n.names
+                            if a.name.startswith("bot")]
+
+        seeds = {"check", "_check_banner"}
+        for n in ast.walk(defs["main"]):
+            if isinstance(n, ast.If) and "--check" in ast.dump(n.test):
+                seeds |= _calls(n)
+        seen, todo, bad = set(), [x for x in seeds if x in defs], list(top_bad)
+        while todo:
+            name = todo.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            fn = defs[name]
+            for n in ast.walk(fn):
+                if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("bot"):
+                    bad.append(f"{name}: {n.module}")
+                elif isinstance(n, ast.Import):
+                    bad += [f"{name}: {a.name}" for a in n.names
+                            if a.name.startswith("bot")]
+            todo += [c for c in _calls(fn) if c in defs and c not in seen]
+        assert "check" in seen and "rss_health" in seen and len(seen) >= 6, seen
+        assert not bad, (
+            f"`--check` 경로가 다른 bot 모듈을 읽기 시작했다: {bad} — "
+            "`_check_banner` 의 지문이 그 코드를 안 덮는다(#364·#274)")
 
     def test_check_shows_the_title_verdict_per_item(self, monkeypatch, capsys):
         """독립 리뷰 2026-09-13 — `--check` 의 제목 축 진단 블록이 **통째로
