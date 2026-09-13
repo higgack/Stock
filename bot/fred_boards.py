@@ -261,6 +261,13 @@ def _ecos_iso(t: str) -> str:
     return t
 
 
+# 대체 소스별 조회창(일) — 기본(_SERIES[key]["lookback_days"])과 다른 것만.
+# ⚠️ 감사(`liquidity_audit`)가 원천 메타를 물을 때 **같은 창**을 써야 한다 —
+# 화면이 950일로 받는 시리즈를 45일로 물으면 행 0 이 되어 조용히 주기
+# 휴리스틱으로 떨어진다(#35 감사는 화면이 쓰는 그 경로를).
+_ALT_LOOKBACK = {"ecos:base_rate": 950, "ecos:kr10y": 950}
+
+
 def _alt_history(src: str) -> list[tuple[str, float]]:
     """FRED 중단 시리즈의 대체 소스 히스토리(ISO 날짜) — 사용자 2026-07-04
     'FRED 중단분은 우리 자원으로 대체': ecos:m2(한국은행 M2 평잔) ·
@@ -279,7 +286,7 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
             from bot import bok_ecos_client
             return [(_ecos_iso(t), v)
                     for t, v in bok_ecos_client.fetch_series_points(
-                        "base_rate", lookback_days=950)]
+                        "base_rate", lookback_days=_ALT_LOOKBACK["ecos:base_rate"])]
         if src == "ak:lpr1y":
             from bot import akshare_client
             return akshare_client.lpr_1y_history()
@@ -287,7 +294,7 @@ def _alt_history(src: str) -> list[tuple[str, float]]:
             from bot import bok_ecos_client
             return [(_ecos_iso(t), v)
                     for t, v in bok_ecos_client.fetch_series_points(
-                        "kr10y", lookback_days=950)]
+                        "kr10y", lookback_days=_ALT_LOOKBACK["ecos:kr10y"])]
         if src == "ecos:fx_reserve":
             from bot import bok_ecos_client
             return [(_ecos_iso(t), v)

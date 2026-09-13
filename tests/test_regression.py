@@ -26645,83 +26645,6 @@ class TestFlowTrendDiagnosis20260818:
         assert A.report_text({"findings": [], "warn": 0, "errors": [],
                               "fp": "abcdef0123", "raw": ""}) == ""
 
-    def test_ecos_source_end_splits_the_two_verdicts(self, monkeypatch):
-        """실수 #366 — 비-FRED 시리즈는 지연 갈래를 못 갈랐다.
-
-        `liquidity_audit._series_meta` 가 `":" in sid` 면 무조건 None 이라
-        `stale_bucket` 이 주기 휴리스틱으로 폴백했다 — 한국 M2 가 뒤처져도
-        **한국은행이 안 낸 것인지 우리가 못 받은 것인지** 아무 도구도 답하지
-        못했다(사용자 2026-09-13 "유동성보드 지연건"). 재료는 이미
-        `bok_ecos_client.check()` 안에 있었다(#150·#318·#38).
-        """
-        import bot.bok_ecos_client as E
-
-        class _R:
-            def __init__(self, payload):
-                self._p = payload
-
-            def json(self):
-                return self._p
-
-        def _payload(rows, total):
-            return {"StatisticSearch": {"list_total_count": total, "row": rows}}
-
-        monkeypatch.setattr(E, "_env_key", lambda _n: "KEY")
-        rows = [{"TIME": "202605"}, {"TIME": "202606"}]
-
-        # ① 절단 없음 → 원천 최신을 **화면 asof 형식**으로 돌려준다.
-        #    ⚠️ 여기가 어긋나면(`202606` vs `2026-06`) `stale_bucket` 의
-        #    문자열 동등비교가 전부 '우리 수집 실패' 로 조용히 오판한다.
-        monkeypatch.setattr(E.requests, "get",
-                            lambda *a, **k: _R(_payload(rows, 2)))
-        m = E.series_meta("m2")
-        assert m["observation_end"] == "2026-06", m
-
-        # ② 절단이면 **모른다고 말한다** — 1쪽 최댓값이 원천의 끝이라는
-        #    보장이 없다(#54·#165 안 잰 것을 단정하지 말 것).
-        monkeypatch.setattr(E.requests, "get",
-                            lambda *a, **k: _R(_payload(rows, 999)))
-        m = E.series_meta("m2")
-        assert m["observation_end"] is None and "절단" in m["why"], m
-
-        # ③ 행 0 · 키 없음도 갈래를 이름으로 말한다(#82).
-        monkeypatch.setattr(E.requests, "get",
-                            lambda *a, **k: _R(_payload([], 0)))
-        assert E.series_meta("m2")["observation_end"] is None
-        monkeypatch.setattr(E, "_env_key", lambda _n: "")
-        assert "API_KEY" in E.series_meta("m2")["why"]
-
-        # ④ **배선** — 감사가 `ecos:` 를 그 함수로 보낸다(#20). 순수 함수만
-        #    재면 배선을 떼는 변형을 못 잡는다.
-        import bot.scripts.liquidity_audit as LA
-        seen = []
-        monkeypatch.setattr(E, "series_meta",
-                            lambda k: seen.append(k) or {"observation_end": "2026-07"})
-        got = LA._series_meta("ECOS:M2", "ecos:m2")
-        assert seen == ["m2"], seen
-        assert got["observation_end"] == "2026-07", got
-
-        # ⑤ **호출부가 `src` 를 실제로 넘기는가** — 헬퍼만 재면 인자를 빼는
-        #    변형이 통과한다(실측 M4, #20 이 세션 세 번째). 감사 본문은
-        #    원천을 받아와야 돌아 값으로 못 태우므로 AST 로 인자 수를 본다
-        #    (이게 이 검사가 **못 보는 축**: 인자를 넘기되 엉뚱한 값을 넘기는
-        #    변형은 못 잡는다, #274).
-        import ast
-        import pathlib as _pl
-        tree = ast.parse(_pl.Path(LA.__file__).read_text(encoding="utf-8"))
-        calls = [n for n in ast.walk(tree)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                 and n.func.id == "_series_meta"]
-        assert calls, "호출부가 사라졌다"
-        assert all(len(c.args) >= 2 for c in calls), \
-            "호출부가 src 를 안 넘긴다 — ECOS 는 영영 폴백이다"
-
-        # ⑥ 그 값이 실제로 갈래를 가른다 — 원천이 앞서면 **우리 문제**다.
-        from bot.macro_cadence import judge, stale_bucket
-        j = judge("ECOS:M2", "2026-06")
-        assert j and j["stale"], j
-        assert stale_bucket(j, source_end="2026-07", asof="2026-06")[0] == "late"
-        assert stale_bucket(j, source_end="2026-06", asof="2026-06")[0] == "src_lag"
 
     def test_audit_fingerprint_marks_partial_coverage(self):
         """못 읽은 소스가 있으면 **조용히 덜 덮은 지문을 내지 않는다**.
@@ -29845,10 +29768,17 @@ class TestStalenessSourceEvidence20260819:
         # src 를 모르면 종전대로 None(단정하지 않는다).
         assert _series_meta("ECOS:M2") is None
         assert _series_meta("AK:LPR1Y") is None
-        # src 가 `ecos:` 면 **ECOS 원천**에 묻는다.
+        # src 가 `ecos:` 면 **ECOS 원천**에 묻고, 원문 TIME 을 **화면 asof 를
+        # 만든 그 함수**로 돌려 돌려준다(#35 · B1).
+        # ⚠️ 스텁은 `**kw` 로 열어 둔다 — 시그니처에 인자가 하나 늘면 스텁이
+        # TypeError 를 내고 그게 `except` 에 먹혀 '판정 불가' 로 둔갑한다(#183).
         import bot.bok_ecos_client as E
-        monkeypatch.setattr(E, "series_meta", lambda k: {"observation_end": k})
-        assert _series_meta("ECOS:M2", "ecos:m2")["observation_end"] == "m2"
+        monkeypatch.setattr(E, "series_meta",
+                            lambda k, **kw: {"observation_time": "202606",
+                                             "why": "", "_key": k})
+        got = _series_meta("ECOS:M2", "ecos:m2")
+        assert got["_key"] == "m2", got
+        assert got["observation_end"] == "2026-06-01", got
 
     def test_audit_wires_meta_into_stale_branch(self):
         """⚠️ 2026-09-09 다시 씀(#222): 옛 판은 `liquidity_audit.main` 소스에
@@ -64749,6 +64679,14 @@ class TestMacroYfFallbackPrevAndSource20260913:
             assert r["change_pct"] is not None, (key, r)
             assert abs(r["change_pct"] - (1.0 / 98.0 * 100)) < 1e-9, (key, r)
             assert r["pct_style"] is True, r
+        # ⚠️⚠️ 파생을 분기 밖으로 **옮겼으면 안 바뀐 쪽도 못박는다** — 독립
+        # 리뷰 실측: 파생을 yf 태그로만 게이트해 네이버 20장의 '직전' 을
+        # 통째로 없애도 4,148개가 전부 green 이었다(#91b 재는 대상이 맞나).
+        gold = rows["gold"]                      # 네이버 매핑 카드
+        assert gold["change"] == 1.0, gold
+        assert abs(gold["change_pct"] - (1.0 / 99.0 * 100)) < 1e-9, gold
+        # 환율만 예외 — % 가 아니라 ₩ 절대값이다(_ABS_CHANGE_SIDS).
+        assert rows["usdkrw"]["change_pct"] is None, rows["usdkrw"]
 
     def test_the_card_says_which_source_filled_it(self, tmp_path, monkeypatch):
         """형제끼리 수집 시각이 다른 이유를 화면이 스스로 말한다(#34·#43)."""
@@ -64765,6 +64703,14 @@ class TestMacroYfFallbackPrevAndSource20260913:
         assert "yf 일봉" not in R(gold) and "네이버" in R(gold)
         # 발표지표 카드에는 원천 라벨을 붙이지 않는다(접두가 '기준' 이다).
         assert "· 네이버" not in R(rows["us_cpi"])
+        # ⚠️ 나이를 **못 잰** 카드('미기록')에도 원천은 실린다 — 옛 판은 그
+        # 분기에 라벨이 없어 히스토리 폴백 라벨이 payload 에만 있고 화면엔
+        # 영영 안 떴다(#291 발화 경로 없는 가드는 가드가 아니다).
+        hist = R({"label": "니켈", "value": 1.0, "decimals": 2, "unit": "",
+                  "spark": [1, 2], "asof": "", "asof_kind": "live",
+                  "value_src": "네이버 히스토리",
+                  "value_age_why": "값이 네이버 히스토리 폴백에서 왔다"})
+        assert "값 수집 시각 미기록" in hist and "네이버 히스토리" in hist, hist
 
     def test_age_is_measured_on_the_file_that_actually_filled_the_value(
             self, tmp_path, monkeypatch):
@@ -64797,3 +64743,145 @@ class TestMacroYfFallbackPrevAndSource20260913:
         guide = src.split("ℹ️ 기준 날짜")[1].split("</details>")[0]
         assert "원천" in guide and "yf 일봉" in guide, guide[:600]
         assert "수집 시각이" in guide and "정상" in guide, guide[:600]
+
+
+# ── 실수 #366 (2026-09-13) ─────────────────────────────────────────
+class TestEcosStaleVerdictSplit20260913:
+    """비-FRED(ECOS) 시리즈도 지연 갈래를 가르는가 — 실수 #366.
+
+    ⚠️ 이 테스트는 처음에 `TestFlowTrendDiagnosis20260818`(외국인 보유율·
+    공매도 잔고율) 안에 붙어 있었다 — 돌긴 했지만 클래스 이름으로는
+    찾을 수 없었다(독립 리뷰 지적 · #68 의 사촌: 그건 안 돈 경우,
+    이건 도는데 안 보이는 경우).
+    """
+
+    def test_ecos_source_end_splits_the_two_verdicts(self, monkeypatch):
+        """실수 #366 — 비-FRED 시리즈는 지연 갈래를 못 갈랐다.
+
+        `liquidity_audit._series_meta` 가 `":" in sid` 면 무조건 None 이라
+        `stale_bucket` 이 주기 휴리스틱으로 폴백했다 — 한국 M2 가 뒤처져도
+        **한국은행이 안 낸 것인지 우리가 못 받은 것인지** 아무 도구도 답하지
+        못했다(사용자 2026-09-13 "유동성보드 지연건"). 재료는 이미
+        `bok_ecos_client.check()` 안에 있었다(#150·#318·#38).
+        """
+        import bot.bok_ecos_client as E
+
+        class _R:
+            def __init__(self, payload):
+                self._p = payload
+
+            def json(self):
+                return self._p
+
+        def _payload(rows, total):
+            return {"StatisticSearch": {"list_total_count": total, "row": rows}}
+
+        monkeypatch.setattr(E, "_env_key", lambda _n: "KEY")
+        rows = [{"TIME": "202605"}, {"TIME": "202606"}]
+
+        # ⓪ 질의는 **화면 경로와 같은 후보 해석**을 쓴다 — m2 는 `item` 키가
+        #    아예 없고 `item_name`+`alt_tables` 로만 풀린다. `cfg.get("item","")`
+        #    로 URL 을 만들면 **빈 ITEM 조회**가 되어, 그 통계로 화면을 판정하게
+        #    된다(#35, 독립 리뷰 2026-09-13 실측).
+        seen_urls = []
+        monkeypatch.setattr(
+            E, "_table_item_candidates",
+            lambda key, cfg, api_key: iter([("161Y006", "RESOLVED")]))
+        monkeypatch.setattr(
+            E.requests, "get",
+            lambda url, **k: seen_urls.append(url) or _R(_payload(rows, 2)))
+        m = E.series_meta("m2")
+        assert seen_urls and seen_urls[0].endswith("/RESOLVED"), seen_urls
+
+        # ① 절단 없음 → **원문 TIME 그대로** 돌려준다(포맷하지 않는다).
+        assert m["observation_time"] == "202606", m
+
+        # ⓪-b 조회창을 호출부가 정할 수 있어야 한다 — 화면이 950일로 받는
+        #    시리즈를 45일로 물으면 행 0 이 되어 조용히 휴리스틱으로 떨어진다.
+        seen_urls.clear()
+        E.series_meta("m2", lookback_days=950)
+        assert seen_urls, seen_urls
+
+        # ② 절단이면 **모른다고 말한다** — 1쪽 최댓값이 원천의 끝이라는
+        #    보장이 없다(#54·#165 안 잰 것을 단정하지 말 것).
+        monkeypatch.setattr(E.requests, "get",
+                            lambda *a, **k: _R(_payload(rows, 999)))
+        m = E.series_meta("m2")
+        assert m["observation_time"] is None and "절단" in m["why"], m
+
+        # ③ 행 0 · 키 없음도 갈래를 이름으로 말한다(#82).
+        monkeypatch.setattr(E.requests, "get",
+                            lambda *a, **k: _R(_payload([], 0)))
+        assert E.series_meta("m2")["observation_time"] is None
+        monkeypatch.setattr(E, "_env_key", lambda _n: "")
+        assert "API_KEY" in E.series_meta("m2")["why"]
+
+        # ④ **배선** — 감사가 `ecos:` 를 그 함수로 보내고, 받은 원문 TIME 을
+        #    **화면 asof 를 만든 그 함수**(`_ecos_iso`)로 돌려 돌려준다(#35).
+        #    ⚠️⚠️ 첫 판은 `_format_time` 의 `2026-06` 을 그대로 넘겨, 화면
+        #    asof `2026-06-01` 과 문자열 동등비교가 영영 안 맞아 **월간 ECOS
+        #    전 행이 '우리 수집 실패(❌)' 로 뒤집혔다** — 이 fix 가 막으려던
+        #    바로 그 오판이다(독립 리뷰 실측 · #260).
+        import bot.scripts.liquidity_audit as LA
+        seen = []
+        monkeypatch.setattr(
+            E, "series_meta",
+            lambda k, **kw: seen.append((k, kw.get("lookback_days")))
+            or {"observation_time": "202607", "why": ""})
+        got = LA._series_meta("ECOS:M2", "ecos:m2")
+        assert seen == [("m2", None)], seen
+        from bot.fred_boards import _ecos_iso
+        assert got["observation_end"] == _ecos_iso("202607") == "2026-07-01", got
+
+        # ④-b 화면이 넓은 창을 쓰는 시리즈는 감사도 **같은 창**으로 묻는다.
+        seen.clear()
+        LA._series_meta("ECOS:KR10Y", "ecos:kr10y")
+        assert seen == [("kr10y", 950)], seen
+
+        # ⑤ **호출부가 `src` 를 실제로 넘기는가** — 헬퍼만 재면 인자를 빼는
+        #    변형이 통과한다(실측 M4, #20 이 세션 세 번째). 감사 본문은
+        #    원천을 받아와야 돌아 값으로 못 태우므로 AST 로 인자 수를 본다
+        #    (이게 이 검사가 **못 보는 축**: 인자를 넘기되 엉뚱한 값을 넘기는
+        #    변형은 못 잡는다, #274).
+        import ast
+        import pathlib as _pl
+        tree = ast.parse(_pl.Path(LA.__file__).read_text(encoding="utf-8"))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "_series_meta"]
+        assert calls, "호출부가 사라졌다"
+        assert all(len(c.args) >= 2 for c in calls), \
+            "호출부가 src 를 안 넘긴다 — ECOS 는 영영 폴백이다"
+
+        # ⑥ 그 값이 실제로 갈래를 가른다 — **화면이 만드는 그 asof 모양**으로
+        #    잰다. 합성 문자열(`"2026-06"`)로 재면 프로덕션이 내지 않는 모양을
+        #    축복해 B1 을 그대로 통과시킨다(#155 픽스처는 원천 모양대로).
+        from bot.macro_cadence import judge, stale_bucket
+        _asof = _ecos_iso("202606")             # = 화면 asof (`2026-06-01`)
+        j = judge("ECOS:M2", _asof)
+        assert j and j["stale"], j
+        assert stale_bucket(j, source_end=_ecos_iso("202607"),
+                            asof=_asof)[0] == "late"
+        assert stale_bucket(j, source_end=_ecos_iso("202606"),
+                            asof=_asof)[0] == "src_lag"
+
+        # ⑦ 갈래 사유를 **버리지 않는다** — 절단은 '우리 문제' 인데 옛 판은
+        #    화면에 `observation_end=None` 만 찍어 '판정 불가' 로 읽혔다(#123 계열).
+        monkeypatch.setattr(
+            E, "series_meta",
+            lambda k, **kw: {"observation_time": None, "why": "1쪽 절단 — …"})
+        assert LA._series_meta("ECOS:M2", "ecos:m2")["why"].startswith("1쪽 절단")
+        # ⚠️ 소스 문자열로 재면 **출력에서 빼는 변형이 통과한다**(실측 R4:
+        # `_why` 대입은 남고 연결만 사라져도 green). 값으로 본다(#176·#19).
+        ln = LA.stale_evidence_line({"observation_end": None,
+                                     "why": "1쪽 절단 — 우리 문제"})
+        assert "판정 불가" in ln and "1쪽 절단" in ln, ln
+        # 값을 아는 줄엔 사유를 덧붙이지 않는다(노이즈 금지).
+        ok = LA.stale_evidence_line({"observation_end": "2026-06-01",
+                                     "why": "무시돼야 함"})
+        assert "2026-06-01" in ok and "무시돼야 함" not in ok, ok
+        # 그리고 **호출부가 그 함수를 쓴다** — 인라인으로 되돌리는 변형 차단(#20).
+        _tree = ast.parse(_pl.Path(LA.__file__).read_text(encoding="utf-8"))
+        assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                   and n.func.id == "stale_evidence_line"
+                   for n in ast.walk(_tree)), "증거 줄이 배선에서 빠졌다"

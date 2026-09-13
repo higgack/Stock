@@ -189,6 +189,12 @@
 | 나이를 **값이 온 그 캐시 파일**에서 잰다(월간↔일봉 혼동 금지, #367·#35) | ✅ 자동 | `…::test_age_is_measured_on_the_file_that_actually_filled_the_value` |
 | 일봉 결측 시 **월간 꼬리 폴백이 살아 있다**(#367·#148) | ✅ 자동 | `…::test_monthly_tail_still_rescues_a_card_with_no_daily_bars` |
 | ℹ️ 가이드가 카드와 같은 말을 한다(설명 out-of-sync = 버그, #367·#55) | ✅ 자동 | `…::test_guide_explains_the_differing_collection_times` |
+| ECOS 메타가 **화면 asof 모양**으로 대조된다(`_ecos_iso`, #366·B1·#35) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 진단이 화면과 **같은 표/아이템 후보**로 질의한다(빈 ITEM 금지, #366·H1) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 감사가 화면과 **같은 조회창**을 넘긴다(`_ALT_LOOKBACK`, #366·#35) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 절단 사유가 증거 줄에 **값으로** 실린다 + 배선(#366·H2·#176·#291) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 파생을 옮겨도 **네이버 20장의 직전**은 그대로(#367·M1·#91b) | ✅ 자동 | `…::test_naver_unmapped_card_now_carries_its_previous_value` |
+| 나이 '미기록' 카드에도 원천 라벨이 실린다(#367·L1·#291) | ✅ 자동 | `…::test_the_card_says_which_source_filled_it` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 4
+_PROBE_VER = 5
 
 # 표기 단위 → 배수(화면 JS `UM` 과 같은 규약).
 _MULT = {"M USD": 1e6, "B USD": 1e9, "M EUR": 1e6, "100M JPY": 1e8}
@@ -67,8 +67,24 @@ def _series_meta(sid: str, src: str = ""):
     if src.startswith("ecos:"):
         try:
             from bot.bok_ecos_client import series_meta
-            return series_meta(src.split(":", 1)[1])
-        except Exception:                                      # noqa: BLE001
+            from bot.fred_boards import _ALT_LOOKBACK, _ecos_iso
+            m = series_meta(src.split(":", 1)[1],
+                            lookback_days=_ALT_LOOKBACK.get(src))
+            if not m:
+                return None
+            # ⚠️⚠️ 포맷은 **대조 상대를 만든 함수**로 한다 — `stale_bucket` 은
+            # `str(source_end) == str(asof)` 문자열 동등 비교이고, 화면 asof 는
+            # `_alt_history` 가 `_ecos_iso` 로 만든다(`202606` → `2026-06-01`).
+            # 첫 판은 `_format_time` 의 `2026-06` 을 넘겨 **월간 ECOS 전 행이
+            # '우리 수집 실패(❌)' 로 뒤집혔다**(독립 리뷰 실측) — 이 fix 가
+            # 막으려던 바로 그 오판이다(#35·#38·#260).
+            _t = m.get("observation_time")
+            return {**m, "observation_end": _ecos_iso(_t) if _t else None}
+        except Exception as exc:                               # noqa: BLE001
+            # silent-fail 금지(#12) — 조용히 None 을 내면 시그니처 변경 같은
+            # 우리 버그가 '원천 메타 조회 실패' 로 둔갑한다(실측: 스텁 하나가
+            # TypeError 를 내 전 ECOS 행이 폴백으로 떨어졌다).
+            _p(f"       ↪ ECOS 메타 조회 예외: {type(exc).__name__}: {exc}")
             return None
     if ":" in sid:                      # AK: 등 아직 안 푼 비-FRED 소스
         return None
@@ -77,6 +93,25 @@ def _series_meta(sid: str, src: str = ""):
         return fetch_series_meta(sid)
     except Exception:                                          # noqa: BLE001
         return None
+
+
+def stale_evidence_line(meta: dict) -> str:
+    """원천 메타의 **근거 한 줄** — 판정은 이미 끝났고 여기선 재료만 보인다.
+
+    ⚠️ 갈래 사유(`why`)를 계산해 놓고 버리면 운영자는 '판정 불가' 만 본다 —
+    **절단(우리 문제)까지 'None' 으로 읽힌다**(#123·#129·#189·#228 계열,
+    독립 리뷰 2026-09-13 지적).
+
+    ⚠️ 인라인으로 두면 회귀가 소스 문자열밖에 못 재고, 사유를 출력에서
+    빼는 변형이 그대로 통과한다(실측 R4) — 순수 함수로 빼서 **값**으로
+    고정한다(#176·#291·#19).
+    """
+    oe = meta.get("observation_end")
+    why = str(meta.get("why") or "").strip()
+    lu = str(meta.get("last_updated") or "?")[:19]
+    return (f"원천 observation_end={oe or '판정 불가'}"
+            + (f" — {why}" if not oe and why else "")
+            + f" · last_updated={lu}")
 
 
 def summary_lines(bad_unit, late, no_rule, src_lag=()) -> list:
@@ -186,9 +221,7 @@ def main() -> int:
                 _p("       ↪ 원천 메타 조회 실패(키 부재·네트워크) — 주기 "
                    "규약으로 폴백했다(단정 아님, #12)")
             else:
-                _p(f"       ↪ 원천 observation_end="
-                   f"{_stale_meta.get('observation_end', '?')} · last_updated="
-                   f"{(_stale_meta.get('last_updated') or '?')[:19]}")
+                _p("       ↪ " + stale_evidence_line(_stale_meta))
 
     _p("")
     for _ln in summary_lines(bad_unit, late, no_rule, src_lag):

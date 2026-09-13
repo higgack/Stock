@@ -294,6 +294,37 @@ def fetch_kr_macro() -> dict:
     return out
 
 
+def _table_item_candidates(key: str, cfg: dict, api_key: str):
+    """(표, 아이템) 후보를 순서대로 — 화면 경로와 진단이 **같은 질의**를 쓰게.
+
+    `item_name` 이 있으면 표별 StatisticItemList 이름해석(KR PPI `_match_items`
+    재사용, 코드 하드코딩 금지 — BBHA00 INFO-200 재발 방지 2026-07-04). 정적
+    `item` 시리즈는 기존 그대로 단일 표 1회.
+
+    ⚠️ 이 규칙을 베껴 쓰면 진단이 화면과 **다른 질의**를 재고 그 통계로 화면을
+    판정한다(#35). m2 는 `item` 키가 아예 없고 `item_name`+`alt_tables` 로만
+    풀리므로, `cfg.get("item","")` 로 URL 을 만들면 빈 ITEM 조회가 된다.
+    """
+    for _tbl in [cfg["table"]] + list(cfg.get("alt_tables", [])):
+        _item = cfg.get("item", "")
+        if cfg.get("item_name"):
+            _all = _fetch_item_list(api_key, table=_tbl)
+            # 주기 일치 + 최근까지 제공되는 항목만 — legacy(구계열) 동명
+            # 항목 오매칭 차단(END_TIME 이 13개월 이내 신선한 것만).
+            _cutoff = (date.today() - timedelta(days=400)).strftime("%Y%m")
+            _cands = _filter_series_items(_all, cfg["freq"], _cutoff)
+            _code = _match_items(_cands, [cfg["item_name"]]).get(cfg["item_name"])
+            if not _code:
+                log.warning("ecos: %s item '%s' unmatched in %s "
+                            "(items=%d, 신선 %d)",
+                            key, cfg["item_name"], _tbl, len(_all), len(_cands))
+                continue
+            log.info("ecos: %s resolved %s/'%s' → %s",
+                     key, _tbl, cfg["item_name"], _code)
+            _item = _code
+        yield _tbl, _item
+
+
 def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tuple[str, float]]:
     """Return sorted [(TIME, value)] points for an ECOS series (sparkline use).
 
@@ -334,27 +365,12 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
     else:
         return []
 
-    # 표 후보 순회 — item_name 이 있으면 표별 StatisticItemList 이름해석
-    # (KR PPI _match_items 재사용, 코드 하드코딩 금지 — BBHA00 INFO-200 재발
-    # 방지 2026-07-04). 정적 item 시리즈는 기존 그대로 단일 표 1회.
+    # 표 후보 순회 — 해석은 `_table_item_candidates` 단일 출처(#38): 진단
+    # (`series_meta`)이 이 규칙을 베끼면 **다른 질의를 재고** 그 통계로 화면을
+    # 판정하게 된다(#35, 독립 리뷰 2026-09-13 실측 — m2 는 `item` 키가 없어
+    # 빈 ITEM 으로 조회됐다).
     rows: list[dict] = []
-    for _tbl in [cfg["table"]] + list(cfg.get("alt_tables", [])):
-        _item = cfg.get("item", "")
-        if cfg.get("item_name"):
-            _all = _fetch_item_list(api_key, table=_tbl)
-            # 주기 일치 + 최근까지 제공되는 항목만 — legacy(구계열) 동명
-            # 항목 오매칭 차단(END_TIME 이 13개월 이내 신선한 것만).
-            _cutoff = (date.today() - timedelta(days=400)).strftime("%Y%m")
-            _cands = _filter_series_items(_all, cfg["freq"], _cutoff)
-            _code = _match_items(_cands, [cfg["item_name"]]).get(cfg["item_name"])
-            if not _code:
-                log.warning("ecos: %s item '%s' unmatched in %s "
-                            "(items=%d, 신선 %d)",
-                            key, cfg["item_name"], _tbl, len(_all), len(_cands))
-                continue
-            log.info("ecos: %s resolved %s/'%s' → %s",
-                     key, _tbl, cfg["item_name"], _code)
-            _item = _code
+    for _tbl, _item in _table_item_candidates(key, cfg, api_key):
         def _sreq(lo: int, hi: int, _t=_tbl, _i=_item):
             url = (
                 f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/{lo}/{hi}/"
@@ -658,10 +674,10 @@ def fetch_kr_cpi_history(patterns: list[str],
 
 
 # ── 지연 진단 CLI (2026-08-27, 사용자 "원천이 지연인지 우리문제인지") ────────
-_PROBE_VER = 1
+_PROBE_VER = 2
 
 
-def series_meta(key: str) -> Optional[dict]:
+def series_meta(key: str, lookback_days: int | None = None) -> Optional[dict]:
     """ECOS 원천이 **스스로 보고한 마지막 기간** — 실수 #366.
 
     ⚠️ 왜 필요한가: `liquidity_audit` 은 FRED 시리즈만 `observation_end` 를
@@ -675,10 +691,18 @@ def series_meta(key: str) -> Optional[dict]:
     우리가 이미 부르는 호출이 답을 갖고 있나). CLI 에만 있어 감사가 못 불렀을
     뿐이라 꺼내서 **둘이 같은 술어를 쓰게** 한다(#35·#38).
 
-    반환 `observation_end` 는 **화면 `asof` 와 같은 형식**이어야 한다 —
-    `stale_bucket` 이 문자열 동등 비교를 하므로(`202606` vs `2026-06`) 형식이
-    어긋나면 조용히 전부 '우리 수집 실패' 로 오판한다. `_format_time` 단일
-    출처를 쓴다.
+    ⚠️⚠️ 반환은 **원문 TIME 그대로**(`observation_time`, 예 `202606`)이고
+    이 함수는 **포맷하지 않는다**. 첫 판은 `_format_time` 으로 `2026-06` 을
+    돌려줬는데, 화면 `asof` 는 `fred_boards._ecos_iso` 를 거쳐 `2026-06-01`
+    이라 `stale_bucket` 의 **문자열 동등 비교**가 영영 안 맞았다 — 월간 ECOS
+    행이 전부 '우리 수집 실패(❌)' 로 뒤집혔고, 그건 이 fix 가 막으려던 바로
+    그 오판이다(독립 리뷰 2026-09-13 실측 · #260 못 고칠 ❌ 는 진짜 ❌ 를
+    가린다). **포맷은 대조 상대를 아는 호출부가 그 상대를 만든 함수로** 한다
+    (#35·#38): 감사는 `_ecos_iso`, CLI 는 `_format_time`.
+
+    `lookback_days` 는 호출부가 화면과 **같은 창**을 쓰게 넘긴다 — 화면이
+    950일로 받는 시리즈를 45일로 물으면 행 0 이 되어 조용히 휴리스틱으로
+    떨어진다(#35).
 
     ⚠️ **모르면 None** 이고 그 사유를 `why` 에 적는다(#54·#165) — 키 없음 ·
     조회 실패 · 행 0 · **절단**. 절단이면 1쪽에서 본 최댓값이 원천의 끝이라는
@@ -688,12 +712,13 @@ def series_meta(key: str) -> Optional[dict]:
 
     cfg = _SERIES.get(key)
     if not cfg:
-        return {"observation_end": None, "why": f"미등록 시리즈({key})"}
+        return {"observation_time": None, "why": f"미등록 시리즈({key})"}
     api_key = _env_key("BOK_ECOS_API_KEY")
     if not api_key:
-        return {"observation_end": None, "why": "BOK_ECOS_API_KEY 없음"}
+        return {"observation_time": None, "why": "BOK_ECOS_API_KEY 없음"}
     end = date.today()
-    start = end - timedelta(days=cfg["lookback_days"])
+    lb = lookback_days if lookback_days is not None else cfg["lookback_days"]
+    start = end - timedelta(days=lb)
     if cfg["freq"] == "M":
         s_str, e_str = start.strftime("%Y%m"), end.strftime("%Y%m")
     elif cfg["freq"] == "D":
@@ -701,34 +726,43 @@ def series_meta(key: str) -> Optional[dict]:
     else:
         s_str = f"{start.year}Q{(start.month - 1) // 3 + 1}"
         e_str = f"{end.year}Q{(end.month - 1) // 3 + 1}"
-    url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/{_ROW_CAP}/"
-           f"{cfg['table']}/{cfg['freq']}/{s_str}/{e_str}/"
-           f"{cfg.get('item', '')}")
-    try:
-        payload = requests.get(url, timeout=_TIMEOUT).json()
-    except Exception as exc:                                   # noqa: BLE001
-        return {"observation_end": None, "why": f"조회 실패: {type(exc).__name__}"}
-    if "RESULT" in payload and "StatisticSearch" not in payload:
-        _r = payload.get("RESULT") or {}
-        return {"observation_end": None,
-                "why": f"RESULT {_r.get('CODE')} — {_r.get('MESSAGE')}"}
-    _ss = payload.get("StatisticSearch", {}) or {}
-    rows = _ss.get("row") or []
-    total = _ss.get("list_total_count")
-    per_t = Counter((r.get("TIME") or "") for r in rows)
-    try:
-        truncated = int(total) > len(rows)
-    except (TypeError, ValueError):
-        truncated = False
-    out = {"observation_end": None, "total": total, "received": len(rows),
-           "per_time": per_t, "truncated": truncated, "why": "",
+    out = {"observation_time": None, "total": None, "received": None,
+           "per_time": {}, "truncated": False, "why": "",
            "window": f"{s_str}~{e_str}"}
-    if truncated:
-        out["why"] = "1쪽 절단 — 1쪽 최댓값이 원천의 끝이라는 보장이 없다"
-    elif not rows:
-        out["why"] = "행 0 — 조회창·테이블/아이템 코드부터 의심"
-    else:
-        out["observation_end"] = _format_time(max(per_t), cfg["freq"])
+    last_why = "표/아이템 후보를 하나도 못 풀었다"
+    # 화면 경로와 **같은 후보 순서**(#35) — m2 처럼 item_name·alt_tables 로만
+    # 풀리는 시리즈를 `cfg["item"]` 으로 조회하면 빈 ITEM 질의가 된다.
+    for _tbl, _item in _table_item_candidates(key, cfg, api_key):
+        url = (f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/{_ROW_CAP}/"
+               f"{_tbl}/{cfg['freq']}/{s_str}/{e_str}/{_item}")
+        try:
+            payload = requests.get(url, timeout=_TIMEOUT).json()
+        except Exception as exc:                               # noqa: BLE001
+            last_why = f"조회 실패: {type(exc).__name__}"
+            continue
+        if "RESULT" in payload and "StatisticSearch" not in payload:
+            _r = payload.get("RESULT") or {}
+            last_why = f"RESULT {_r.get('CODE')} — {_r.get('MESSAGE')}"
+            continue
+        _ss = payload.get("StatisticSearch", {}) or {}
+        rows = _ss.get("row") or []
+        total = _ss.get("list_total_count")
+        per_t = Counter((r.get("TIME") or "") for r in rows)
+        try:
+            truncated = int(total) > len(rows)
+        except (TypeError, ValueError):
+            truncated = False
+        out.update(total=total, received=len(rows), per_time=per_t,
+                   truncated=truncated, why="")
+        if truncated:
+            out["why"] = "1쪽 절단 — 1쪽 최댓값이 원천의 끝이라는 보장이 없다"
+        elif not rows:
+            last_why = "행 0 — 조회창·테이블/아이템 코드부터 의심"
+            continue
+        else:
+            out["observation_time"] = max(per_t)
+        return out
+    out["why"] = last_why
     return out
 
 
@@ -741,7 +775,6 @@ def check(keys: list[str]) -> None:
     것이고(우리 문제, 이제 자동 복구), 절단 없이 최신 월이 뒤처져 있으면
     원천 지연이다. 키 값은 안 찍고 출처만(#23·#82)."""
     import sys
-    from collections import Counter
 
     from bot.env_keys import env_source, env_why
     print(f"ecos_check v{_PROBE_VER} · 인터프리터 {sys.executable}")
@@ -783,13 +816,18 @@ def check(keys: list[str]) -> None:
         meta = series_meta(key) or {}
         per_t = meta.get("per_time") or {}
         last_times = sorted(per_t)[-3:]
-        print(f"  ② 원시: 총 {meta.get('total')}행 · "
-              f"1쪽 수신 {meta.get('received')}행 · "
-              f"조회창 {meta.get('window')}")
+        if meta.get("received") is None:
+            # 조회 자체가 안 된 갈래 — 'None행' 을 데이터처럼 찍지 않는다(#54).
+            print(f"  ② 원시 조회 불가 · 조회창 {meta.get('window') or '?'}")
+        else:
+            print(f"  ② 원시: 총 {meta.get('total')}행 · "
+                  f"1쪽 수신 {meta.get('received')}행 · "
+                  f"조회창 {meta.get('window')}")
         if per_t:
             print("     최근 기간별 행수: "
                   + " · ".join(f"{t}={per_t[t]}" for t in last_times))
-        oe = meta.get("observation_end")
+        _ot = meta.get("observation_time")
+        oe = _format_time(_ot, cfg["freq"]) if _ot else None
         if oe:
             print(f"  판정: 절단 없음 — 원천이 주는 최신이 {oe} 다. "
                   "이보다 새 달이 없으면 **원천(ECOS) 지연**이다")

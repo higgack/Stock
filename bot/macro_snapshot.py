@@ -480,7 +480,8 @@ def _yf_daily_change(tickers: list[str]) -> dict[str, dict]:
 # 45분이 '지연'으로 뜬다(독립 리뷰 실측 DXY 40분 → stale). 늘 뜨는 배지는
 # 아무것도 안 재는 것과 같다(#25·#260) — 문턱은 주기의 배수로 잡는다.
 _LIVE_STALE_SEC = 900.0            # 네이버 값 풀(TTL 30초) — 30사이클
-_LIVE_STALE_YFM_SEC = 10800.0      # yf 월간 배치(TTL 1시간) — 3주기
+_LIVE_STALE_YFBATCH_SEC = 10800.0  # yf 배치(월간·일봉 둘 다 TTL 1시간) — 3주기
+_LIVE_STALE_YFM_SEC = _LIVE_STALE_YFBATCH_SEC   # 옛 이름(호출부 보존)
 
 
 def live_asof(age_sec: float | None, now: Optional[datetime] = None,
@@ -526,7 +527,7 @@ def _value_age_sec(tag: str, rec: dict | None = None) -> tuple[float | None, flo
         _info = _VAL_TAG_INFO.get(tag)
         if _info:
             from bot.finviz_client import cache_age_sec
-            return cache_age_sec(_info[1]), _LIVE_STALE_YFM_SEC
+            return cache_age_sec(_info[1]), _LIVE_STALE_YFBATCH_SEC
     except Exception as exc:                                 # noqa: BLE001
         # silent-fail 금지(#12) — 조용히 None 을 내면 감사가 '히스토리
         # 폴백' 이라는 **틀린 사유**를 지어낸다(#292 틀린 라벨은 없느니만 못하다).
@@ -796,13 +797,15 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     # ⛔ _yf_daily_change(fast_info ~24콜/갱신) 제거 (사용자 2026-06-14 '매크로카드
     # 맨날 없어져·뭐가 fast_info 트리거하냐'). 이게 매 갱신마다 야후 quote 를 24회 때려
     # YFRateLimitError 유발 → 회로차단 → Macro value None → 카드 소실의 주범이었음.
-    # 모든 yf 가격 sid 가 _MACRO_NAVER 에 매핑돼 값은 네이버로 충분, 네이버 결측 시
-    # chart_spark[-1](yf_monthly=download/history) 폴백. fast_info 호출 0.
+    # 값은 네이버 우선(fast_info 호출 0). ⚠️ "모든 yf 가격 sid 가 매핑돼 있다" 는
+    # 예전부터 거짓이었다 — DX-Y.NYB·PA=F 는 매핑이 없다(#367). 그 둘의 폴백은
+    # **일봉(_yf_daily_1mo_batch) → 월간 꼬리** 순이다(값·차트·직전을 한 계열에서,
+    # #33). 아래 "chart_spark[-1] 하나뿐" 주석도 같은 이유로 갱신했다.
     # ⚠️ 옛 `yf_daily` dict 는 2026-06-14 에 fast_info 를 걷어내며 **채우는 쪽이
     # 사라졌는데 읽는 쪽만 남아** 있었다 — `elif d:` 는 도달 불가한 죽은 분기였고
     # 바로 위 주석이 '미매핑/실패는 yf 폴백' 이라고 말해 다음 사람을 오도했다
-    # (§작업 원칙 '죽은 경로는 삭제' · #55). 실제 폴백은 아래 `chart_spark[-1]`
-    # 하나뿐이다.
+    # (§작업 원칙 '죽은 경로는 삭제' · #55). 실제 폴백은 아래 **둘**이다 —
+    # `one_mo[-1]`(일봉 1개월 배치) 우선, 결측이면 `chart_spark[-1]`(월간 꼬리).
     macro_nv = _fetch_macro_naver_values(all_yf_sids)   # 값=전체(원자재 포함)
 
     spark_cache: dict[str, list[float]] = {}  # 큰 차트용(월간 12개월)
@@ -828,7 +831,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             _val_tag = ""
             if src == "yf":
                 # 현재값 = 네이버 우선(카드 안 사라짐). 네이버 매핑이 없거나
-                # 실패한 sid 는 아래 `chart_spark[-1]`(yf 월간 배치)로만 채워진다.
+                # 실패한 sid 는 아래에서 **일봉 1개월 배치 → 월간 꼬리** 순으로
+                # 채워진다(#367 — 옛 주석은 '월간으로만' 이라 적어 다음 사람이
+                # DXY·팔라듐 값의 출처를 오진하게 했다, #55).
                 nv = macro_nv.get(sid)
                 if nv:
                     value, change = nv["value"], nv["change"]
@@ -987,7 +992,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # 변동 표기 단위를 **서버가 명시** — 프론트가 change_pct 유무로
                 # 추측하면 값이 없는 카드만 절대값으로 튀어 표기가 들쭉날쭉해진다.
                 # (2026-09-13: 네이버 미매핑 카드(DXY·팔라듐)의 change 부재는
-                # 해소됐다 — yf 일봉에서 직접 만든다, #367.) 규칙은 2026-06-10 그대로:
+                # **일봉이 2점 이상일 때** 해소된다 — 월간 꼬리로 떨어지면 '직전'
+                # 의 뜻이 월 간격이 되므로 일부러 안 만든다, #367·#34.)
+                # 규칙은 2026-06-10 그대로:
                 # 1개월(가격) 카드 = % · 12개월(FRED/ECOS) = 절대값,
                 # 단 환율(_ABS_CHANGE_SIDS)은 ₩ 절대값이 직관적이라 예외.
                 "pct_style": bool(spark_span == "1개월"
