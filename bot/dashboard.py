@@ -17900,14 +17900,24 @@ def _render_macro_card(ind: dict) -> str:
     # ⚠️ 실시간 카드인데 나이를 못 쟀으면 **비우지 말고 그렇게 말한다** —
     # ℹ️ 가이드는 이 카드들에 수집 시각이 있다고 약속하므로, 조용히 빈 줄이면
     # 화면이 자기 범례와 어긋난다(#43·#55, 독립 리뷰 지적).
+    # 원천 라벨 — 형제 카드끼리 '값 수집' 시각이 다른 이유는 원천이
+    # 다르기 때문이다(네이버 값 풀 TTL 30초 vs yf 배치 TTL 1시간).
+    # 말하지 않으면 사용자는 고장으로 읽는다(규칙 10b · #34 · 실수 #367).
+    # ⚠️ **'미기록' 줄에도 싣는다** — 옛 판은 else 분기에만 있어 히스토리
+    # 폴백(`hist`)의 라벨이 payload 에만 있고 **화면엔 영영 안 떴다**(독립
+    # 리뷰 실측: 값 풀이 통째로 비면 20장이 그 상태다, #291 발화 경로 없는
+    # 가드는 가드가 아니다).
+    _vsrc = _html.escape(str(ind.get("value_src") or ""))
+    _vsrc_html = f' · {_vsrc}' if (_live and _vsrc) else ""
     if _live and not asof:
         _why = _html.escape(str(ind.get("value_age_why") or ""))
         asof_html = ('<div class="masof" style="font-size:10px;color:var(--muted);'
-                     'margin-top:2px">값 수집 시각 미기록'
+                     'margin-top:2px">값 수집 시각 미기록' + _vsrc_html
                      + (f' — {_why}' if _why else '') + '</div>')
     else:
         asof_html = (f'<div class="masof" style="font-size:10px;color:var(--muted);'
-                     f'margin-top:2px">{_asof_pre} {asof}{_lag_html}</div>') if asof else ""
+                     f'margin-top:2px">{_asof_pre} {asof}{_vsrc_html}'
+                     f'{_lag_html}</div>') if asof else ""
     # 기간 시작값 + 직전 관측 대비 — "얼마나 올랐나"의 기준점을 보여준다
     # (사용자 2026-08-01 '기간대로 시작가도 포함'). 직전 대비는 헤드라인에서
     # 밀려났지만 FRED/ECOS 의 전월 대비는 표준 해석이라 여기 남긴다.
@@ -18452,8 +18462,11 @@ def _render_macro_snapshot(macro: dict) -> str:
           <b>배지가 없으면 그 지표 기준으로는 최신</b>입니다.</li>
       <li>지수·원자재·코인·환율은 <b>실시간 현재가</b>라 관측 기간이 없습니다 — 대신
           <b>값 수집 HH:MM</b>(KST)로 <b>우리가 원천에서 값을 받아온 시각</b>을 적습니다
-          (거래소가 그 가격을 찍은 시각이 아닙니다). 원천마다 갱신 주기가 달라
-          (네이버 값 30초 · 달러인덱스 1시간) <b>그 주기를 크게 넘기면</b>
+          (거래소가 그 가격을 찍은 시각이 아닙니다). 시각 뒤에 <b>원천</b>
+          (네이버 / 네이버 히스토리 / yf 일봉 / yf 월간)을 같이 적습니다 —
+          원천마다 갱신 주기가
+          달라(네이버 값 30초 · yf 배치 1시간) <b>형제 카드끼리 수집 시각이
+          다른 것은 정상</b>입니다. <b>그 주기를 크게 넘기면</b>
           <b>(N분 전) ⚠ 지연</b>이 붙습니다 — 값 원천이 막혀 <b>저장분</b>을
           그리고 있다는 뜻입니다. 수집 시각을 못 잰 카드는 <b>미기록</b>과 그
           사유를 적습니다.</li>

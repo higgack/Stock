@@ -173,11 +173,28 @@
 | 배너가 **돈 개수를 사실대로** 적는다(`7/10종`, #365·#55) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
 | 반응성 측정이 **레포 파일을 안 건드린다**(mtime 부작용 금지, #365·#328) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
 | `--check` 가 **모듈 레벨**에서도 다른 `bot.*` 를 안 읽는다(#365·#286) | ✅ 자동 | `…::test_check_banner_covers_everything_check_reads` |
+| ECOS 원천 최신월이 **화면 asof 형식**으로 온다 — 형식 어긋나면 전부 오판(#366·#34) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 절단이면 값 대신 **사유**를 준다(1쪽 최댓값 ≠ 원천 끝, #366·#54) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 감사가 `ecos:` 를 그 함수로 보내고 **호출부가 `src` 를 넘긴다**(#366·#20) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |
 | `--accent-on` 을 페이지 배경과 대조하지 않는다 — 오탐 금지(#50) | ✅ 자동 | `…::test_accent_on_is_not_measured_against_the_page_background` |
 | `_SELECTOR_OK` 가 버린 팔레트 블록 0건 — 버려지면 어떤 가드도 못 본다(#54) | ✅ 자동 | `…::test_no_palette_block_is_silently_rejected` |
+| 태그 표가 **전수**다 — 수집기가 대입하는 리터럴 ⊆ `_VAL_TAG_INFO`(#367·#24·#38) | ✅ 자동 | `…::test_every_tag_the_collector_assigns_is_in_the_one_table` |
+| 원천 라벨은 **모르는 태그를 지어내지 않는다**(#367·#165) | ✅ 자동 | `…::test_source_label_is_pure_and_admits_what_it_does_not_know` |
+| 네이버 미매핑 카드가 `change`/`change_pct` 를 싣는다 — 파생 **위치**까지(#367·#123) | ✅ 자동 | `…::test_naver_unmapped_card_now_carries_its_previous_value` |
+| 값·차트 끝점이 **같은 계열**이다(#367·#33) | ✅ 자동 | `…::test_naver_unmapped_card_now_carries_its_previous_value` |
+| 카드가 **어느 원천**이 채웠는지 말한다 + 발표지표엔 안 붙인다(#367·#34·#25) | ✅ 자동 | `…::test_the_card_says_which_source_filled_it` |
+| 나이를 **값이 온 그 캐시 파일**에서 잰다(월간↔일봉 혼동 금지, #367·#35) | ✅ 자동 | `…::test_age_is_measured_on_the_file_that_actually_filled_the_value` |
+| 일봉 결측 시 **월간 꼬리 폴백이 살아 있다**(#367·#148) | ✅ 자동 | `…::test_monthly_tail_still_rescues_a_card_with_no_daily_bars` |
+| ℹ️ 가이드가 카드와 같은 말을 한다(설명 out-of-sync = 버그, #367·#55) | ✅ 자동 | `…::test_guide_explains_the_differing_collection_times` |
+| ECOS 메타가 **화면 asof 모양**으로 대조된다(`_ecos_iso`, #366·B1·#35) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 진단이 화면과 **같은 표/아이템 후보**로 질의한다(빈 ITEM 금지, #366·H1) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 감사가 화면과 **같은 조회창**을 넘긴다(`_ALT_LOOKBACK`, #366·#35) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 절단 사유가 증거 줄에 **값으로** 실린다 + 배선(#366·H2·#176·#291) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
+| 파생을 옮겨도 **네이버 20장의 직전**은 그대로(#367·M1·#91b) | ✅ 자동 | `…::test_naver_unmapped_card_now_carries_its_previous_value` |
+| 나이 '미기록' 카드에도 원천 라벨이 실린다(#367·L1·#291) | ✅ 자동 | `…::test_the_card_says_which_source_filled_it` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
