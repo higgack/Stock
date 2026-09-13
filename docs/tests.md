@@ -131,6 +131,8 @@
 | 모든 팔레트 블록에 표면이 하나는 있다(#54) | ✅ 자동 | `…::test_every_palette_block_has_a_surface` |
 | `DESIGN.md` 색상표 = `bot/dashboard.py` 실값(#55 문서↔코드 드리프트) | ✅ 자동 | `…::test_design_md_palette_matches_dashboard_css` |
 | 드리프트 판정이 발화한다 — 본 테스트와 **같은 함수**로(#286) | ✅ 자동 | `…::test_drift_guard_fires_when_the_doc_lies` |
+| 재무부 판정 줄이 **시리즈·갈래 근거**를 실어 셋이 구별된다(#356·#114·#292) | ✅ 자동 | `TestFlowTrendDiagnosis20260818::test_treasury_verdict_names_the_series_and_carries_its_reason` |
+| `src=UST` 면 '보강이 걸리지 않았다'고 적지 않는다(#356·#55·#165) | ✅ 자동 | `…::test_treasury_verdict_does_not_claim_enrichment_never_ran` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |
