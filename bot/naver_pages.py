@@ -105,7 +105,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
 <title>{_html.escape(title)}</title>{_CSS}</head><body>
 <a class="back-link" href="market.html">← 홈으로</a>
 <h1>{_html.escape(title)}</h1>
-<div class="sub">{sub}</div>
+<div class="sub" id="live-sub">{sub}</div>
 {_banner}
 {toggle}
 <div id="live-root">

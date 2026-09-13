@@ -140,6 +140,10 @@
 | 테마 부제에 정렬 기여 상세(`fallCnt+56` 류)가 없다 — 렌더(#359) | ✅ 자동 | `…::test_theme_subtitle_has_no_per_sort_breakdown` |
 | 기여 상세는 **로그로** 간다 — 버리지 않는다(#43) | ✅ 자동 | `…::test_sort_contributions_go_to_the_log_not_the_note` |
 | 그 계약을 **값으로** 잰다 — 수집기를 통째로 태워(#19·#20) | ✅ 자동 | `…::test_sweep_note_carries_no_breakdown_measured_by_value` |
+| 신선도 부제가 표와 **같이** 갱신된다(`#live-sub`, #360a·#43) | ✅ 자동 | `TestBlogWatchMultiBlog::test_freshness_subtitle_refreshes_with_the_data_it_describes` |
+| drift 배너가 **세 shell 전부**에 있다(#360b·#38) | ✅ 자동 | `…::test_drift_banner_is_on_every_page_shell` |
+| 배너가 **못 보는 축**이 코드에 적혀 있다(#360c·#274) | ✅ 자동 | `…::test_banner_blind_spot_is_written_down` |
+| 블로그 RSS 도달 이력 — '한 번도 안 돎' ≠ '실패'(#360d·#54) | ✅ 자동 | `…::test_blog_rss_health_separates_never_ran_from_failure` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |

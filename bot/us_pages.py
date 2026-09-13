@@ -63,13 +63,22 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
               + _t("usmovers", "🚀 급등·급락")
               + _t("usprepost", "🌙 장전·장후")
               + '</div>')
+    # ⚠️ 배포 drift 배너 — `code_freshness.BANNER_JS` 단일 출처(2026-09-13).
+    # 형제 shell 셋(`naver_pages`·`tw_pages`·`us_pages`)이 **전부** 실어야
+    # 한다 — 한 장만 달면 나머지 화면은 침묵한다(#359 가 바로 그 실수였고,
+    # 독립 리뷰가 그 커밋에서 같은 누락을 다시 잡았다, #38).
+    try:
+        from bot.code_freshness import BANNER_JS as _banner
+    except Exception:
+        _banner = ""
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_html.escape(title)}</title>{_CSS}</head><body>
 <a class="back-link" href="market.html">← 홈으로</a>
 <h1>{_html.escape(title)}</h1>
-<div class="sub">{sub}</div>
+<div class="sub" id="live-sub">{sub}</div>
+{_banner}
 {toggle}
 <div id="live-root">
 {body}

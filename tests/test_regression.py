@@ -12118,6 +12118,70 @@ class TestBlogWatchMultiBlog:
             assert b["id"] not in seen, f"blogId 중복: {b['id']}"
             seen.add(b["id"])
 
+    def test_freshness_subtitle_refreshes_with_the_data_it_describes(self):
+        """실수 #360(독립 리뷰 2026-09-13) — 부제는 **신선도를 말하는 줄**
+        (`원천 …` · `저장분(수집 실패)` · `장중 30초 캐시`)인데 `#live-root`
+        **밖**이라 `live_refresh` 가 안 갈아끼웠다. 탭을 열어 둔 채 배포·수집이
+        일어나면 **표만 갱신되고 부제는 영원히 옛 문구**다 — 사용자가 테마
+        부제를 두 번 물은 그 증상의 **충분한 설명**이고, 새 drift 배너로는
+        잡히지 않는다(서버는 신선하다). #43 신선도 라벨이 안 갱신되면 거짓말.
+        """
+        from bot.live_refresh import LIVE_REFRESH_JS as js
+        assert "getElementById('live-sub')" in js, \
+            "부제를 갈아끼우지 않는다 — 표만 갱신되고 라벨은 옛 문구로 남는다"
+        # 세 shell 전부 그 id 를 단다(한 장만 달면 나머지가 낡는다, #38).
+        for mod in ("bot/naver_pages.py", "bot/tw_pages.py", "bot/us_pages.py"):
+            src = open(mod, encoding="utf-8").read()
+            assert 'class="sub" id="live-sub"' in src, mod
+        # 반대 증거 — 표 갱신은 그대로다(#25).
+        assert "getElementById('live-root')" in js, js[:200]
+
+    def test_drift_banner_is_on_every_page_shell(self, monkeypatch):
+        """실수 #360 — #359 에서 `naver_pages._shell` 한 집안에만 배너를 달아
+        `tw_pages._tw_shell`·`us_pages._shell` 이 그리는 화면(tw52·twhighlow·
+        jp/hk/cn 52·movers·usindustry·ushighlow·usmovers·usprepost)이 전부
+        침묵했다 — **#359 가 기록한 바로 그 실수를 같은 커밋에서 반복**한 것을
+        독립 리뷰가 잡았다(#38 형제를 즉시 grep).
+        """
+        for mod in ("bot/naver_pages.py", "bot/tw_pages.py", "bot/us_pages.py"):
+            src = open(mod, encoding="utf-8").read()
+            assert "BANNER_JS" in src, f"{mod} 에 drift 배너가 없다"
+            assert "{_banner}" in src, f"{mod} 이 배너를 HTML 에 안 싣는다"
+            assert "function buildBanner" not in src, f"{mod} 이 복제했다(#38)"
+
+    def test_banner_blind_spot_is_written_down(self):
+        """#274 — 검사를 넣을 땐 **못 보는 축**을 같이 답할 것. 서버렌더
+        페이지는 HTML 과 `/api/build` 가 같은 프로세스라, 그 프로세스가 낡으면
+        배너 스크립트조차 없는 HTML 이 나온다 = 자기 낡음을 못 신고한다.
+        """
+        import bot.code_freshness as cf
+        doc = open("bot/code_freshness.py", encoding="utf-8").read()
+        assert "못 보는 축" in doc, "한계를 안 적으면 다음 사람이 과신한다(#286)"
+        assert "live-sub" in doc, "서버렌더 페이지를 무엇이 잡는지 안 적었다"
+
+    def test_blog_rss_health_separates_never_ran_from_failure(self):
+        """실수 #360 — blogId 가 틀리면 `_process_blog` 가 -1 을 주고 **경고
+        한 줄**이 전부다. `feed_health.mark("blog")` 는 다른 블로그가 성공하면
+        찍히고 blog.html 은 아카이브에서 만들어지므로, 그 블로그는 '새 글이
+        없는' 것과 구별되지 않는다(#52 조용한 것과 죽은 것 · #43).
+        2026-09-13 `hempty` 처럼 확인 못 한 채 등록하는 일이 실재한다.
+        """
+        import time
+        import bot.blog_watch as bw
+        blogs = ({"id": "a", "title": "A", "categories": None},
+                 {"id": "b", "title": "B", "categories": None})
+        now = 1_700_000_000.0
+        st = {"rss": {"a": {"ok_at": now - 3600}}}
+        rows = {h["id"]: h for h in bw.rss_health(st, blogs, now=now)}
+        assert rows["a"]["never"] is False and rows["a"]["days"] < 1, rows["a"]
+        assert rows["b"]["never"] is True and rows["b"]["days"] is None, rows["b"]
+        # 반대 증거 — 도장이 하나도 없으면 '전부 실패' 가 아니라 판정 불가다
+        # (#54·#165·#25 늘 뜨는 경보). CLI 가 그걸 갈라 말하고 rc 도 0 이다.
+        src = open("bot/blog_watch.py", encoding="utf-8").read()
+        assert "도달 도장이 하나도 없다" in src, "배포 직후를 실패로 오보한다"
+        # 그리고 성공하면 **그 자리에서** 도장을 찍는다(배선, #20).
+        assert 'state.setdefault("rss", {})[bid]' in src, "도달 도장 배선 없음"
+
     def test_drift_banner_is_a_single_source_on_sibling_pages(self, monkeypatch):
         """실수 #359 — 배포 drift 배너가 **메인 대시보드 한 장에만** 있었다.
 
@@ -12167,7 +12231,13 @@ class TestBlogWatchMultiBlog:
             "ts": "2026-09-13 15:00",
             "via": "domestic/theme ✅ 266개 · 정렬 5종 합산 266개 · 21.7s"})
         page = np.render_theme_page()
-        sub = page.split('<div class="sub">')[1].split("</div>")[0]
+        # ⚠️ `<div class="sub">` 리터럴로 자르면 속성이 하나만 늘어도 깨진다
+        # (2026-09-13 `id="live-sub"` 를 더하자 실제로 깨졌다, #19 소스 문자열
+        # 단언 금지) — 그 클래스를 **구조로** 집는다.
+        import re as _re
+        m = _re.search(r'<div class="sub"[^>]*>(.*?)</div>', page, _re.S)
+        assert m, "부제 블록을 못 찾았다"
+        sub = m.group(1)
         for tok in ("fallCnt", "leadingItem", "totalMarketSum", "riseCnt"):
             assert tok not in sub, f"정렬 기여 상세가 부제에 남아 있다: {tok}\n{sub}"
         assert "합산" in sub, sub          # 반대 증거 — 합산 사실은 남는다(#25)
@@ -41764,7 +41834,17 @@ class TestBlogCheckProbe20260826:
         monkeypatch.setattr(bw, "check", lambda b: called.append(b) or 0)
         rc = bw.main(["--check", "arirangya"])
         assert called == ["arirangya"] and rc == 0, (called, rc)
-        assert bw.main(["--check"]) == 2, "인자 없으면 사용법 + 실패코드"
+        # ⚠️ 계약 변경(2026-09-13 · #222 옛 계약은 지우지 말고 다시 쓴다):
+        # 옛 판은 무인자 `--check` 가 **사용법 + rc 2** 였다. 그런데 "등록한
+        # blogId 가 실제로 수집되나"에 답하는 surface 가 하나도 없어서 틀린
+        # blogId 가 조용히 0건이 됐다(#360d) — 이제 무인자는 **전 블로그 도달
+        # 이력 표**를 찍는다(네트워크 0·읽기 전용). 남는 보장은 그대로다:
+        # `--check <id>` 는 여전히 `check` 로 디스패치되고, 무인자는 `check`
+        # 를 부르지 않는다(실호출 0).
+        called.clear()
+        rc_none = bw.main(["--check"])
+        assert called == [], "무인자가 개별 진단(RSS 실호출)을 불렀다"
+        assert rc_none in (0, 1), rc_none
 
 
 class TestNoBackfillIsTheDefaultForEveryBlog20260826:

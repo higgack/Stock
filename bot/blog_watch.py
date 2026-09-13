@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("bot.blog_watch")
@@ -115,6 +116,30 @@ def category_label(categories) -> str:
         return ""
     names = (categories,) if isinstance(categories, str) else tuple(categories)
     return " · " + "/".join(names) + " 카테고리만"
+
+
+def rss_health(state: dict, blogs=None, *, now: float | None = None) -> list[dict]:
+    """블로그별 RSS 도달 이력 → [{id, title, ok_at, days, never}] (순수).
+
+    ⚠️ 왜 필요한가(독립 리뷰 2026-09-13): blogId 가 틀리면 `_process_blog` 가
+    `-1` 을 돌려주고 **journald 경고 한 줄**이 전부다. `run()` 의
+    `feed_health.mark("blog")` 는 **다른 블로그가 성공하면** 그대로 찍히고,
+    blog.html 은 아카이브에서 만들어지므로 그 블로그는 그냥 '새 글이 없는'
+    것처럼 보인다 — **조용한 것과 죽은 것을 구별하는 surface 가 없었다**
+    (#52·#43·#82). 2026-09-13 `hempty` 처럼 확인 못 한 채 등록하는 일이
+    실제로 있으므로 그 침묵은 그날 바로 문제가 된다.
+
+    판정을 `check`/`run` 안에 두면 값으로 못 잰다 — 순수 함수로 뺀다(#176).
+    """
+    now = time.time() if now is None else now
+    seen = dict((state or {}).get("rss") or {})
+    out = []
+    for b in (blogs if blogs is not None else _BLOGS):
+        at = seen.get(b["id"], {}).get("ok_at")
+        out.append({"id": b["id"], "title": b.get("title") or b["id"],
+                    "ok_at": at, "never": at is None,
+                    "days": None if at is None else max(0.0, (now - at) / 86400)})
+    return out
 
 
 def _now_kst() -> datetime:
@@ -357,6 +382,9 @@ def _process_blog(blog: dict, state: dict, seen: set,
     if not xml:
         log.warning("blog_watch[%s]: RSS 미수신 — skip (VM 네이버 접근 확인)", bid)
         return -1
+    # ⚠️ 도달 도장은 **블로그별**이다 — `feed_health.mark("blog")` 는 하나만
+    # 성공해도 찍히므로 죽은 blogId 를 가린다(독립 리뷰 2026-09-13 · #45).
+    state.setdefault("rss", {})[bid] = {"ok_at": time.time()}
     items = _parse_items(xml)
     if not items:
         log.warning("blog_watch[%s]: RSS 파싱 0건 — skip", bid)
@@ -455,6 +483,15 @@ def run() -> int:
         r = _process_blog(blog, state, seen, new_texts)
         if r >= 0:
             fetched_any = True
+    # ⚠️ 도달한 적 없는 blogId 는 **이름을 대서** 경고한다 — 숫자만 세면
+    # 운영자가 짐작한다(#82). 등록 직후 첫 run 전에는 당연히 없으므로,
+    # '한 번도 없음' 과 '며칠째 없음' 을 갈라 말한다(#52 조용한 것과 죽은 것).
+    _bad = [h for h in rss_health(state) if h["never"] or (h["days"] or 0) >= 2]
+    if _bad:
+        log.warning("blog_watch: RSS 도달 이력 없음/지연 — %s", ", ".join(
+            f"{h['id']}({h['title']}, "
+            + ("한 번도 없음" if h["never"] else f"{h['days']:.1f}일 전")
+            + ")" for h in _bad))
     _save_state(state)
     if not fetched_any:
         return 1            # 전 블로그 RSS 실패 — 타이머에 실패 신호
@@ -559,8 +596,39 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(_sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--check":
         if len(argv) < 2:
-            print("사용법: python -m bot.blog_watch --check <blogId>")
-            return 2
+            # ⚠️ 무인자 = **전 블로그 도달 이력**(읽기 전용·네트워크 0). 옛
+            # 판은 사용법만 찍고 끝났는데, 정작 필요한 질문("등록한 blogId 가
+            # 실제로 수집되나")에 답하는 surface 가 하나도 없었다(독립 리뷰
+            # 2026-09-13 · #52·#43). 개별 진단은 `--check <blogId>`.
+            _st = _load_state()
+            rows = rss_health(_st)
+            print(f"■ 감시 블로그 {len(rows)}개 — RSS 도달 이력"
+                  " (마지막 성공 시각 기준 · 네트워크 0)")
+            if not (_st.get("rss") or {}):
+                # ⚠️ 도장이 **하나도** 없다 = 이 기능 배포 후 아직 run 이 안
+                # 돈 것이다. 그걸 전 블로그 실패로 찍으면 늘 뜨는 경보가 되어
+                # 아무것도 안 재는 것과 같다(#25·#260). 판정 불가는 실패가
+                # 아니다(#54·#165) — rc 도 0.
+                print("  ❓ 도달 도장이 하나도 없다 — 이 기능 배포 후 아직"
+                      " `blog-watch` 가 안 돈 것이다(30분 타이머).")
+                print("     다음 run 뒤에 다시 볼 것. 지금 당장 한 블로그를"
+                      " 확인하려면 `--check <blogId>`(RSS 실호출).")
+                return 0
+            bad = 0
+            for h in rows:
+                if h["never"]:
+                    mark, when, bad = "❌", "한 번도 도달한 적 없음", bad + 1
+                elif (h["days"] or 0) >= 2:
+                    mark, when, bad = "⚠️", f"{h['days']:.1f}일 전", bad + 1
+                else:
+                    mark, when = "✅", f"{h['days']:.1f}일 전"
+                print(f"  {mark} {h['id']:<20} {h['title']:<16} {when}")
+            print("\n  ❌ = blogId 오타이거나 이웃공개(RSS 미노출)일 수 있다 —"
+                  " `--check <blogId>` 로 갈래를 본다."
+                  if bad else "\n  전 블로그가 최근 도달했다.")
+            # ⚠️ 아직 한 번도 안 돈 상태(도장 없음)와 실제 실패는 다르다 —
+            # 등록 직후라면 다음 run 이 도장을 찍는다(#165 단정하지 않는다).
+            return 1 if bad else 0
         return check(argv[1])
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
