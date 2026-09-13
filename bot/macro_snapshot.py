@@ -133,7 +133,7 @@ _ABS_CHANGE_SIDS = {"USDKRW=X"}
 
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof_dropnote").encode()
+     + "|spark1mo_span_pct_absfx_dxypct_periodchg_dailylag_liveasof_dropnote_valsrc367").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -502,6 +502,17 @@ def live_asof(age_sec: float | None, now: Optional[datetime] = None,
     return label, age_sec > stale_after, int(age_sec // 60)
 
 
+# 값 출처 태그 → (화면 라벨, 나이를 잴 캐시 파일). **한 표에서** 파생시킨다 —
+# 두 곳에 나눠 적으면 새 태그가 한쪽에만 실려 라벨은 있는데 나이는 못 재는
+# (또는 그 반대) 카드가 조용히 생긴다(#24 열거가 갈라진다 · #38).
+# ⚠️ 월간과 일봉은 **다른 파일**이다. 섞으면 `live_age_why` 가 '히스토리
+# 폴백' 이라는 틀린 사유를 지어낸다(#292 틀린 라벨은 없느니만 못하다).
+_VAL_TAG_INFO: dict[str, tuple[str, str]] = {
+    "yfm": ("yf 월간", "macro_yf_monthly.json"),
+    "yfd": ("yf 일봉", "macro_yf_daily1mo.json"),
+}
+
+
 def _value_age_sec(tag: str, rec: dict | None = None) -> tuple[float | None, float]:
     """(나이 초, 지연 문턱) — 값이 실제로 온 그 캐시를 잰다. tag 는 값을
     **채운 그 경로**다(분기 이름이 아니라 값의 출처로 정한다, #35).
@@ -512,15 +523,30 @@ def _value_age_sec(tag: str, rec: dict | None = None) -> tuple[float | None, flo
         if tag.startswith("nv:"):
             from bot.naver_marketindex import value_age_sec
             return value_age_sec(tag[3:], rec), _LIVE_STALE_SEC
-        if tag == "yfm":
+        _info = _VAL_TAG_INFO.get(tag)
+        if _info:
             from bot.finviz_client import cache_age_sec
-            return (cache_age_sec("macro_yf_monthly.json"),
-                    _LIVE_STALE_YFM_SEC)
+            return cache_age_sec(_info[1]), _LIVE_STALE_YFM_SEC
     except Exception as exc:                                 # noqa: BLE001
         # silent-fail 금지(#12) — 조용히 None 을 내면 감사가 '히스토리
         # 폴백' 이라는 **틀린 사유**를 지어낸다(#292 틀린 라벨은 없느니만 못하다).
         log.warning("macro: 값 나이 측정 실패(tag=%s): %s", tag, exc)
     return None, _LIVE_STALE_SEC
+
+
+def value_src_label(tag: str) -> str:
+    """값이 **어느 원천**에서 왔나 — 카드가 수집 시각 옆에 밝힌다(규칙 10b).
+
+    같은 줄에 나란히 놓인 형제 카드들의 '값 수집' 시각이 서로 다른 이유는
+    원천이 다르기 때문이다(네이버 값 풀 TTL 30초 vs yf 배치 TTL 1시간).
+    라벨이 없으면 사용자는 그걸 고장으로 읽는다 — 실제로 팔라듐을 두고
+    "리프레시되는 시간도 다르고" 라는 질문을 받았다(실수 #367 · #34·#43).
+    """
+    if tag.startswith("nv:"):
+        return "네이버"
+    if tag == "hist":
+        return "네이버 히스토리"
+    return (_VAL_TAG_INFO.get(tag) or ("",))[0]
 
 
 def live_age_why(tag: str) -> str:
@@ -814,13 +840,6 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # 되돌림 — VIX 는 계속 네이버/yfinance 가 정확한 소스,
                 # bot/fear_greed_client.py 독스트링 참조. F&G 지수 자체는
                 # 아래 sentiment 섹션에서 이미 별도로 다룸.)
-                # 일일 % 변화 — 한달단위(1개월) 카드는 절대값 대신 %로
-                # 표시(사용자 2026-06-10). 단 환율(USD/KRW)는 절대값. prev=value-change.
-                if (value is not None and change is not None
-                        and sid not in _ABS_CHANGE_SIDS):
-                    _prev = value - change
-                    if _prev not in (None, 0):
-                        change_pct = change / _prev * 100
                 if sid in nv_spark:
                     # 원자재·지수·코인·환율 — 네이버 history(yfinance 무티커/throttle
                     # 무관, 매크로 야후 차트 0). 카드=최근 1개월(뒤 22점). **라인 끝점을
@@ -848,10 +867,34 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     card_spark = one_mo or (chart_spark[-2:] if len(chart_spark) >= 2
                                             else chart_spark)
                     spark_span = "1개월"
-                    if value is None and chart_spark:
+                    # ⚠️ 값·차트·직전은 **한 계열**에서 나와야 한다(#33 나란히
+                    # 놓인 칸은 산수가 맞아야). 옛 판은 값만 **월간** 배치
+                    # 끝점으로 채우고 차트·'1개월 전'은 **일봉**에서 뽑아, 한
+                    # 카드가 두 계열을 섞었다. 그리고 `change` 는 네이버 분기
+                    # 에서만 설정돼 네이버 매핑이 없는 카드(팔라듐·DXY)는
+                    # **'직전' 이 영영 안 떴다** — 형제 카드는 전부 뜨는데
+                    # 하나만 빠지면 사용자는 고장으로 읽는다(실수 #367).
+                    if value is None and one_mo:
+                        value = one_mo[-1]
+                        _val_tag = "yfd"       # yf 일봉 1개월 배치(1h 캐시)
+                        if change is None and len(one_mo) >= 2:
+                            change = one_mo[-1] - one_mo[-2]
+                    elif value is None and chart_spark:
                         value = chart_spark[-1]
                         _val_tag = "yfm"       # yf 월간 배치(1h 캐시·실패 시 24h)
                     spark_dir = _spark_dir(card_spark, 0)
+                # 일일 % 변화 — 한달단위(1개월) 카드는 절대값 대신 %로
+                # 표시(사용자 2026-06-10). 단 환율(USD/KRW)는 절대값. prev=value-change.
+                # ⚠️ 이 파생은 **값·직전이 다 정해진 뒤**여야 한다 — 옛 판은
+                # 네이버 분기 바로 뒤에 있어, yf 폴백이 채운 `change` 는 한 번도
+                # 안 걸렸다. 렌더는 1개월 카드에서 `change_pct` 만 읽으므로
+                # (`pct_style`) 그 카드들은 '직전' 이 영영 안 떴다(#123 계열 —
+                # 계산해 둔 값을 표시까지 배선하지 않으면 없는 것과 같다).
+                if (value is not None and change is not None
+                        and sid not in _ABS_CHANGE_SIDS):
+                    _prev = value - change
+                    if _prev not in (None, 0):
+                        change_pct = change / _prev * 100
             elif src == "fred":
                 chart_spark = _fred_monthly(sid)
                 card_spark = chart_spark      # 월간 시계열(스파크라인)
@@ -942,8 +985,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 "period_change": period_change,
                 "period_change_pct": period_change_pct,
                 # 변동 표기 단위를 **서버가 명시** — 프론트가 change_pct 유무로
-                # 추측하면 일간 변동이 없는 카드(DXY: 네이버 미매핑이라 change 부재)
-                # 만 절대값으로 튀어 표기가 들쭉날쭉해진다. 규칙은 2026-06-10 그대로:
+                # 추측하면 값이 없는 카드만 절대값으로 튀어 표기가 들쭉날쭉해진다.
+                # (2026-09-13: 네이버 미매핑 카드(DXY·팔라듐)의 change 부재는
+                # 해소됐다 — yf 일봉에서 직접 만든다, #367.) 규칙은 2026-06-10 그대로:
                 # 1개월(가격) 카드 = % · 12개월(FRED/ECOS) = 절대값,
                 # 단 환율(_ABS_CHANGE_SIDS)은 ₩ 절대값이 직관적이라 예외.
                 "pct_style": bool(spark_span == "1개월"
@@ -959,6 +1003,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 # 못 잰 이유를 같이 싣는다 — 침묵이 최악이고(#43), 사유를
                 # 버리면 감사가 지어낸다(#82·#292).
                 "value_age_why": _live_why,
+                # 원천 라벨 — 형제 카드끼리 수집 시각이 다른 이유를 화면이
+                # 스스로 말한다(규칙 10b · #34 · 실수 #367).
+                "value_src": value_src_label(_val_tag) if src == "yf" else "",
                 "asof_lag": None if _is_daily_card else _asof_lag_months(asof_raw),
                 # 통상 공표 일정 대비 뒤처졌는지 — 경과 개월만으론 정상 지연과
                 # 갱신 중단을 구분 못 한다(사용자 2026-08-18).

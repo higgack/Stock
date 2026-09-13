@@ -181,6 +181,14 @@
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |
 | `--accent-on` 을 페이지 배경과 대조하지 않는다 — 오탐 금지(#50) | ✅ 자동 | `…::test_accent_on_is_not_measured_against_the_page_background` |
 | `_SELECTOR_OK` 가 버린 팔레트 블록 0건 — 버려지면 어떤 가드도 못 본다(#54) | ✅ 자동 | `…::test_no_palette_block_is_silently_rejected` |
+| 태그 표가 **전수**다 — 수집기가 대입하는 리터럴 ⊆ `_VAL_TAG_INFO`(#367·#24·#38) | ✅ 자동 | `…::test_every_tag_the_collector_assigns_is_in_the_one_table` |
+| 원천 라벨은 **모르는 태그를 지어내지 않는다**(#367·#165) | ✅ 자동 | `…::test_source_label_is_pure_and_admits_what_it_does_not_know` |
+| 네이버 미매핑 카드가 `change`/`change_pct` 를 싣는다 — 파생 **위치**까지(#367·#123) | ✅ 자동 | `…::test_naver_unmapped_card_now_carries_its_previous_value` |
+| 값·차트 끝점이 **같은 계열**이다(#367·#33) | ✅ 자동 | `…::test_naver_unmapped_card_now_carries_its_previous_value` |
+| 카드가 **어느 원천**이 채웠는지 말한다 + 발표지표엔 안 붙인다(#367·#34·#25) | ✅ 자동 | `…::test_the_card_says_which_source_filled_it` |
+| 나이를 **값이 온 그 캐시 파일**에서 잰다(월간↔일봉 혼동 금지, #367·#35) | ✅ 자동 | `…::test_age_is_measured_on_the_file_that_actually_filled_the_value` |
+| 일봉 결측 시 **월간 꼬리 폴백이 살아 있다**(#367·#148) | ✅ 자동 | `…::test_monthly_tail_still_rescues_a_card_with_no_daily_bars` |
+| ℹ️ 가이드가 카드와 같은 말을 한다(설명 out-of-sync = 버그, #367·#55) | ✅ 자동 | `…::test_guide_explains_the_differing_collection_times` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

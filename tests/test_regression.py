@@ -50044,7 +50044,8 @@ class TestMacroLiveAsOf20260908:
         assert 590 < fc.cache_age_sec("x.json") < 640
 
     # ── 배선 ── 헬퍼만 부르는 테스트는 배선을 떼는 변형을 못 잡는다(#20).
-    def _snapshot(self, tmp_path, monkeypatch, ages: dict, nv_values=None):
+    def _snapshot(self, tmp_path, monkeypatch, ages: dict, nv_values=None,
+                  daily=None):
         import os
         import time as _t
         import bot.finviz_client as fc
@@ -50065,8 +50066,11 @@ class TestMacroLiveAsOf20260908:
                                         for s in sids if s in ms._MACRO_NAVER}))
         monkeypatch.setattr(ms, "_yf_monthly_batch",
                             lambda tk: {t: [90.0, 95.0, 99.0] for t in tk})
+        # `daily` 를 주면 일봉 배치를 갈아끼운다 — 일봉 결측 시 월간 꼬리
+        # 폴백이 살아 있는지 재려면 **이 자리**여야 한다(호출부에서 미리
+        # 패치하면 여기서 되덮인다, 2026-09-13 실측).
         monkeypatch.setattr(ms, "_yf_daily_1mo_batch",
-                            lambda tk: {t: [98.0, 99.0] for t in tk})
+                            daily or (lambda tk: {t: [98.0, 99.0] for t in tk}))
         monkeypatch.setattr(ms, "_ecos_series",
                             lambda k: [("202607", 1.0), ("202608", 2.0)])
         monkeypatch.setattr(ms, "_fred_monthly",
@@ -50082,7 +50086,11 @@ class TestMacroLiveAsOf20260908:
         rows = self._snapshot(tmp_path, monkeypatch, {
             "naver_worldindex.json": 47 * 60, "naver_marketindex.json": 30,
             "naver_coins.json": 30, "naver_krfx.json": 30,
+            # 2026-09-13(#367): 네이버 미매핑 카드는 값을 **일봉** 배치에서
+            # 가져간다(값·차트·직전을 한 계열로, #33). 월간 배치는 일봉이
+            # 결측일 때의 꼬리 폴백으로 남는다 — 둘 다 있어야 전수가 된다.
             "macro_yf_monthly.json": 5 * 60,
+            "macro_yf_daily1mo.json": 5 * 60,
         })
         live = [r for r in rows if r.get("asof_kind") == "live"]
         # 22장이 그 카드들이다 — 하나도 빠짐없이 기준을 싣는다.
@@ -50094,7 +50102,7 @@ class TestMacroLiveAsOf20260908:
             assert idx[k]["value_age_min"] == 47 and idx[k]["asof_stale"], idx[k]
         for k in ("dxy", "usdkrw", "gold", "btc"):
             assert not idx[k]["asof_stale"], idx[k]
-        assert idx["dxy"]["value_age_min"] == 5          # yf 월간 배치 경로
+        assert idx["dxy"]["value_age_min"] == 5          # yf 일봉 배치 경로
         # 발표지표(ECOS/FRED)는 건드리지 않는다 — 라벨의 뜻이 다르다(#34).
         obs = [r for r in rows if r.get("asof_kind") == "obs"]
         assert obs and all(r.get("value_age_min") is None for r in obs)
@@ -50168,7 +50176,11 @@ class TestMacroLiveAsOfReview20260908:
         rows = TestMacroLiveAsOf20260908()._snapshot(tmp_path, monkeypatch, {
             "naver_worldindex.json": 30, "naver_marketindex.json": 30,
             "naver_coins.json": 30, "naver_krfx.json": 30,
-            "macro_yf_monthly.json": 40 * 60,       # 리뷰가 실측한 그 나이
+            # 리뷰가 실측한 그 나이. 2026-09-13(#367) 이후 이 카드의 값은
+            # **일봉** 배치에서 오므로 그 파일이 문턱을 정한다 — 월간을 더
+            # 낡게 둬, 재는 파일을 바꾸는 뮤테이션이 여기서 발화한다(#91b).
+            "macro_yf_monthly.json": 5 * 3600,
+            "macro_yf_daily1mo.json": 40 * 60,
         })
         dxy = {r["key"]: r for r in rows}["dxy"]
         assert dxy["value_age_min"] == 40
@@ -64652,3 +64664,136 @@ class TestPaletteContrastAndDesignDrift20260912:
         # 라이트 값을 다크 칸에 넣으면 잡혀야 한다 — 테마를 뒤바꾸는 변형 방어.
         if lv.strip().lower() != dv.strip().lower():
             assert self._drift(rows[:1], {name: lv}, True), "테마가 뒤바뀌었는데 못 잡았다"
+
+
+# ── 실수 #367 (2026-09-13) ───────────────────────────────────────────
+# 사용자: "팔라듐 새로 등록된거, 다른것과 같은 방식으로 그대로 된거 맞어?
+# 리프레시되는 시간도 다르고, 직전은 또 안나오네."
+#
+# 두 증상의 뿌리는 하나다 — PA=F 는 `_MACRO_NAVER` 에 매핑이 없다(등록 주석이
+# "네이버 코드가 있는지는 재지 않았다"고 밝힌 그대로, #165). 그래서
+#   (a) `change`(=직전)가 **네이버 분기에서만** 설정돼 영영 안 떴고,
+#   (b) 값 나이를 네이버 값 풀이 아니라 yf 배치 파일에서 재 시각이 달랐다.
+# (a)는 구조적 결함이라 고친다 — 값·차트·직전을 **같은 일봉 계열**에서
+# 만든다(#33). (b)는 원천이 다르니 시각도 다른 게 맞다 — 고칠 것은 값이
+# 아니라 **침묵**이다. 카드가 원천을 밝힌다(규칙 10b·#34·#43).
+class TestMacroYfFallbackPrevAndSource20260913:
+    """네이버 미매핑 카드(팔라듐·달러인덱스)가 형제와 같은 것을 싣는가."""
+
+    _AGES = {"naver_worldindex.json": 30, "naver_marketindex.json": 30,
+             "naver_coins.json": 30, "naver_krfx.json": 30,
+             # ⚠️ 두 파일의 나이를 **다르게** 둔다 — 같으면 월간 파일을 재는
+             # 뮤테이션이 그대로 통과한다(#91b 재는 대상이 맞나).
+             "macro_yf_monthly.json": 90 * 60,
+             "macro_yf_daily1mo.json": 4 * 60}
+
+    def _rows(self, tmp_path, monkeypatch, daily=None):
+        return {r["key"]: r for r in
+                TestMacroLiveAsOf20260908()._snapshot(
+                    tmp_path, monkeypatch, dict(self._AGES), daily=daily)}
+
+    def test_source_label_is_pure_and_admits_what_it_does_not_know(self):
+        from bot.macro_snapshot import value_src_label as L
+        assert L("nv:com") == "네이버" and L("nv:idx") == "네이버"
+        assert L("yfd") == "yf 일봉" and L("yfm") == "yf 월간"
+        assert L("hist") == "네이버 히스토리"
+        # 모르는 태그를 지어내지 않는다(#165) — 빈 문자열이면 화면이 안 적는다.
+        assert L("") == "" and L("뭔가다른것") == ""
+
+    def test_every_tag_the_collector_assigns_is_in_the_one_table(self):
+        """태그 표는 **전수**여야 한다 — 라벨과 캐시 파일을 두 곳에 나눠
+        적으면 새 태그가 한쪽에만 실려 조용히 반쪽이 된다(#24·#38).
+
+        수집기가 실제로 대입하는 리터럴을 AST 로 훑어 표와 대조한다(이름을
+        손으로 열거하면 다음 태그를 못 잡는다).
+        """
+        import ast as _ast
+        import pathlib
+        import bot.macro_snapshot as ms
+        tree = _ast.parse(pathlib.Path("bot/macro_snapshot.py")
+                          .read_text(encoding="utf-8"))
+        fn = next(n for n in _ast.walk(tree)
+                  if isinstance(n, _ast.FunctionDef)
+                  and n.name == "fetch_macro_snapshot")
+        tags = {n.value.value for n in _ast.walk(fn)
+                if isinstance(n, _ast.Assign)
+                and any(isinstance(t, _ast.Name) and t.id == "_val_tag"
+                        for t in n.targets)
+                and isinstance(n.value, _ast.Constant)
+                and isinstance(n.value.value, str) and n.value.value}
+        # 대조 0건은 통과가 아니다(#54).
+        assert len(tags) >= 3, f"대입 리터럴 {tags} — AST 스캔이 무너졌다"
+        known = set(ms._VAL_TAG_INFO) | {"hist"}
+        assert tags <= known, f"표 밖 태그: {tags - known}"
+        # 표에 실린 태그는 라벨과 파일을 **둘 다** 갖는다.
+        for tag, (label, fname) in ms._VAL_TAG_INFO.items():
+            assert label and fname.endswith(".json"), (tag, label, fname)
+            assert ms.value_src_label(tag) == label
+
+    def test_naver_unmapped_card_now_carries_its_previous_value(
+            self, tmp_path, monkeypatch):
+        """`change`/`change_pct` 가 **일봉 계열에서** 만들어져 실린다.
+
+        렌더는 1개월 카드에서 `change_pct` 만 읽으므로(`pct_style`)
+        `change` 만 채우면 화면은 그대로 빈칸이다 — 파생 위치까지 봐야 한다.
+        """
+        import bot.macro_snapshot as ms
+        assert "PA=F" not in ms._MACRO_NAVER, "매핑이 생겼으면 이 계약을 다시 쓸 것"
+        rows = self._rows(tmp_path, monkeypatch)
+        for key in ("palladium", "dxy"):
+            r = rows[key]
+            # 값은 카드가 그리는 그 계열의 끝점이다(#33 — 옛 판은 값만 월간에서 뽑았다).
+            assert r["value"] == 99.0, (key, r)
+            assert r["spark"] and r["spark"][-1] == r["value"], (key, r)
+            assert r["change"] == 1.0, (key, r)
+            assert r["change_pct"] is not None, (key, r)
+            assert abs(r["change_pct"] - (1.0 / 98.0 * 100)) < 1e-9, (key, r)
+            assert r["pct_style"] is True, r
+
+    def test_the_card_says_which_source_filled_it(self, tmp_path, monkeypatch):
+        """형제끼리 수집 시각이 다른 이유를 화면이 스스로 말한다(#34·#43)."""
+        from bot.dashboard import _render_macro_card as R
+        rows = self._rows(tmp_path, monkeypatch)
+        pa, gold = rows["palladium"], rows["gold"]
+        assert pa["value_src"] == "yf 일봉", pa
+        assert gold["value_src"] == "네이버", gold          # 반대 증거(#25)
+        # 발표지표는 '값 수집' 카드가 아니다 — 라벨을 뭉뚱그리지 않는다(#34).
+        assert rows["us_cpi"]["value_src"] == "", rows["us_cpi"]
+        html = R(pa)
+        assert "값 수집" in html and "yf 일봉" in html, html
+        assert "직전" in html, html                         # (a) 의 최종 증거
+        assert "yf 일봉" not in R(gold) and "네이버" in R(gold)
+        # 발표지표 카드에는 원천 라벨을 붙이지 않는다(접두가 '기준' 이다).
+        assert "· 네이버" not in R(rows["us_cpi"])
+
+    def test_age_is_measured_on_the_file_that_actually_filled_the_value(
+            self, tmp_path, monkeypatch):
+        """나이는 **값이 온 그 캐시**를 잰다(#35). 월간 파일을 재면 90분이라
+        지연 배지까지 달라진다 — 파일을 바꾸는 뮤테이션이 여기서 발화한다."""
+        import bot.macro_snapshot as ms
+        assert ms._value_age_sec("yfd")[1] == ms._LIVE_STALE_YFM_SEC
+        rows = self._rows(tmp_path, monkeypatch)
+        assert rows["palladium"]["value_age_min"] == 4, rows["palladium"]
+        assert rows["dxy"]["value_age_min"] == 4, rows["dxy"]
+        # 못 잰 게 아니다 — 사유 칸은 비어 있어야 한다(#82 틀린 라벨 금지).
+        assert rows["palladium"]["value_age_why"] == "", rows["palladium"]
+
+    def test_monthly_tail_still_rescues_a_card_with_no_daily_bars(
+            self, tmp_path, monkeypatch):
+        """일봉이 결측이면 월간 꼬리 폴백은 **그대로 살아 있어야** 한다 —
+        폴백을 지우면 그 카드가 통째로 사라진다(#148 우리가 버린 건 아닌가)."""
+        rows = self._rows(tmp_path, monkeypatch, daily=lambda tk: {})
+        pa = rows["palladium"]
+        assert pa["value"] == 99.0 and pa["value_src"] == "yf 월간", pa
+        assert pa["value_age_min"] == 90, pa
+        # 월간 꼬리엔 '직전' 을 만들지 않는다 — 일봉이 아니라 월봉 간격이라
+        # '직전' 의 뜻이 달라진다(#34 라벨에 기준을 박거나 비운다).
+        assert pa["change"] is None and pa["change_pct"] is None, pa
+
+    def test_guide_explains_the_differing_collection_times(self):
+        """ℹ️ 가이드가 코드와 같은 말을 하는가(#55 설명 out-of-sync = 버그)."""
+        import pathlib
+        src = pathlib.Path("bot/dashboard.py").read_text(encoding="utf-8")
+        guide = src.split("ℹ️ 기준 날짜")[1].split("</details>")[0]
+        assert "원천" in guide and "yf 일봉" in guide, guide[:600]
+        assert "수집 시각이" in guide and "정상" in guide, guide[:600]
