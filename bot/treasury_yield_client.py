@@ -167,6 +167,23 @@ def curve_for(fred_last_date: str, ym: str | None = None
 #   mismatch   → 겹치는 날 값이 다르다(태그 오집 의심 — 만기가 다른 값)
 #   no_newer   → 재무부에도 더 새 날짜가 없다 = **이게 원천의 최선**
 #   ok         → 당길 수 있다
+# 대조가 **성립한** 갈래는 둘뿐이다 — 당길 수 있거나(ok), 재무부에도 더 새
+# 날짜가 없거나(no_newer). 나머지 넷은 전부 "재무부와 못 맞춰 봤다"이다.
+_PROBE_OK = ("ok", "no_newer")
+
+
+def probe_failed(code: str) -> bool:
+    """이번 대조가 성립하지 않았나(#361c).
+
+    ⚠️ 갈래를 **열거하면 새 갈래가 샌다**(#24) — 2026-09-13 독립 리뷰가
+    `("no_curve", "month_failed")` 만 보던 판을 잡았다(`mismatch`·
+    `no_overlap` 도 대조 실패인데 조용했다). 성립하는 쪽이 닫힌 집합이므로
+    **여집합**으로 판정한다. 그리고 `--why` 와 `macro_staleness_audit` 이
+    **같은 술어**를 쓴다 — 각자 열거하면 두 화면이 갈린다(#35·#38).
+    """
+    return code not in _PROBE_OK
+
+
 def fresher_diag(fred_last_date: str, fred_last_value: float, sid: str,
                  tol: float = 0.10) -> tuple[str, dict]:
     """(갈래, 수치) — 순수 판정. 화면·로그·진단이 같이 쓴다(#35·#38)."""
@@ -191,8 +208,13 @@ def fresher_diag(fred_last_date: str, fred_last_value: float, sid: str,
         # (재시도 vs 원천 결측·창 확대, #82 갈래는 이름으로 · #143 대조군
         # 없이 '없음' 과 '못 받음' 을 가르지 말 것). 오늘 아침 감사의
         # `❌ 3건(no_overlap)` 이 바로 이것이었다.
+        # ⚠️ `last_fail` 은 **모듈 전역**이라 오래전 실패가 남아 있을 수 있다 —
+        # 이번 호출이 그 달을 조회조차 안 했으면(FRED 최신일이 두 달 전인
+        # 경우) 그 기록은 이 판정과 무관하다. `months`(= curve_for 가 이번에
+        # 시도한 달)에 있을 때만 믿는다 — 아니면 `month_failed` 와
+        # `no_overlap` 의 처방이 정반대라 운영자를 반대쪽으로 보낸다(#82).
         _ym = fred_last_date[:4] + fred_last_date[5:7]
-        _why_m = last_fail(_ym)
+        _why_m = last_fail(_ym) if _ym in (d.get("months") or ()) else None
         if _why_m:
             d["failed_month"], d["fail"] = _ym, _why_m
             return "month_failed", d
@@ -336,11 +358,16 @@ def _why(sids: list[str]) -> int:
             behind.append(f"{sid}@{shown}")
         elif best:
             print(f"  ✅ 최선({best})까지 왔다")
-        if code in ("no_curve", "month_failed"):
-            # 화면이 최선이어도 **대조는 못 했다** — 그 사실을 그대로 말한다.
-            print(f"  ⚠️ 다만 이번 대조는 실패했다({code}) — 화면 값이 우연히"
-                  " 최선이었을 뿐, 보강 경로는 확인되지 않았다")
-            probe_bad.append(f"{sid}:{code}")
+            # ⚠️ 화면이 최선이어도 **대조는 못 했을 수 있다** — 그 사실을
+            # 그대로 말한다(#41 우연으로 사실을 덮지 말 것). 이 통지는
+            # **'최선까지 왔다' 안에만** 둔다: 뒤처진 줄에 붙이면 바로 위
+            # ⚠️ 와 모순되고(그 줄은 이미 갈래·사유를 말한다), `best` 를
+            # 못 구한 실행(= _expected_session 실패)에 붙이면 "우연히
+            # 최선이었을 뿐"이라는 **재지 않은 주장**이 된다(#165).
+            if probe_failed(code):
+                print(f"  ⚠️ 다만 이번 대조는 실패했다({code}) — 화면 값이"
+                      " 우연히 최선이었을 뿐, 보강 경로는 확인되지 않았다")
+                probe_bad.append(f"{sid}:{code}")
         print()
 
     if failed:
