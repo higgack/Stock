@@ -42,7 +42,8 @@ def _treasury_status(mo) -> None:
 
     _p("── 재무부 보강(국채금리 DGS2/10/30) 상태")
     try:
-        from bot.treasury_yield_client import fresher_diag, fresher_reason
+        from bot.treasury_yield_client import (
+            fresher_diag, fresher_reason, probe_failed)
     except Exception as exc:                          # noqa: BLE001
         _p(f"   ❌ 재무부 클라이언트를 못 불러왔다: {type(exc).__name__}: {exc}")
         return
@@ -85,6 +86,29 @@ def _treasury_status(mo) -> None:
             continue
         if str(shown) >= best:
             _p(f"      ✅ {sid} 최선({best})까지 왔다")
+            # ⚠️ 화면이 최선이어도 **대조 자체는 실패했을 수 있다** — 그러면
+            # ✅ 가 "재무부를 못 받았다" 를 덮는다(2026-09-13 VM 실측: 3건
+            # 전부 202609 timeout 인데 `--why` 최종 판정이 `✅ 전부 최선까지
+            # 왔다` 였다, #41 여유·우연으로 사실을 덮지 말 것). 오늘은 무해해도
+            # 내일은 보강이 안 된다. 형제 표면(`--why`)과 **같은 규약**이다(#38).
+            # ⚠️ 갈래를 **열거하지 않는다** — 옛 판이 `("no_curve",
+            # "month_failed")` 만 봐서 `mismatch`·`no_overlap` 이 조용했다
+            # (#24, 2026-09-13 독립 리뷰). `probe_failed` 단일 술어를
+            # `--why` 와 **같이** 쓴다 — 각자 열거하면 두 화면이 갈린다(#38).
+            #
+            # ⚠️ 이 줄이 **못 보는 축**(#274): ⚠️ 는 `audit_sweep` 에서 warn
+            # 으로만 세어지고 `report_text` 는 ❌ 가 하나도 없으면 빈 문자열을
+            # 돌려주므로, **대조 실패만 있는 날의 일일 결산은 조용하다**.
+            # 그래도 ❌ 로 올리지 않는 이유는 재서 답한다 — 재무부 보강은
+            # FRED 보다 하루 앞선 값을 당기는 **보조** 경로라 실패해도 화면은
+            # FRED 의 최선까지 와 있다(그래서 이 분기다). 며칠 이어지면 화면이
+            # 기대 세션보다 뒤처지고, 그건 같은 감사의 **신선도 축**
+            # (`stale_bucket`)이 ❌ 로 잡는다. 여기서 ❌ 를 내면 일시적
+            # 타임아웃 한 번이 매일 못 고칠 ❌ 가 되어 진짜 ❌ 를 가린다
+            # (#260·#25). 전문은 `python -m bot.audit_sweep` 에 실린다.
+            if probe_failed(code):
+                _p(f"      ⚠️ {sid} 다만 이번 대조는 실패했다({code}) — 화면"
+                   f" 값이 우연히 최선이었을 뿐이다. {fresher_reason(code, dg)}")
         elif code in ("no_newer",):
             # 원천에도 그보다 새 관측이 없다 = 우리가 고칠 게 없다(#260).
             _p(f"      ⚠️ {sid} 최선({best})보다 뒤지지만 재무부에도 더 새 값이"

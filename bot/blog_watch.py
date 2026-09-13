@@ -72,12 +72,18 @@ _BLOGS = (
     # init 으로 기존 글 seen 처리만 — 백필 없이 새 글부터(위 ⛔ 디폴트).
     {"id": "bvmzzin1023", "title": "한라산유기농백수", "categories": None},
     {"id": "ggbbvv", "title": "간동", "categories": None},
-    # ⚠️ blogId 는 사용자가 준 링크의 **href**(.../hempty)를 쓴다 — 같은 줄의
-    # 링크 **텍스트**는 `.../hempt` 로 한 글자 짧았다(자동링크가 남긴 차이).
-    # 샌드박스는 rss.blog.naver.com 이 프록시에 막혀 어느 쪽이 실재하는지
-    # **재지 못했다**(#12 검증불가면 단정 금지) → VM `--check` 로 확정할 것.
-    # 틀렸으면 RSS 미수신 warning 만 남고 조용히 0건이 된다(#82).
-    {"id": "hempty", "title": "카가", "categories": None},
+    # ⚠️ 2026-09-13 VM 실측이 **href 쪽을 반증했다**. 사용자 원문은
+    # `[.../hempt](.../hempty)` 였고 나는 href(`hempty`)를 골랐는데,
+    # `--check hempty` 는 RSS 50건을 정상 반환했는데 채널 제목이
+    # **"테니스 슈즈"**(일상·운동기록)였다 — 사용자가 말한 "카가" 가 아니다.
+    # 즉 실재하지만 **다른 사람의 블로그**였고, 그대로 뒀으면 무관한 개인
+    # 일상글이 NOAH 채널로 push 될 뻔했다(#25 능력은 이름이 아니라 실측 —
+    # '도달한다' 는 '맞는 블로그다' 가 아니다).
+    # 남은 후보는 링크 텍스트 `hempt` 이고 그건 **아직 안 쟀다** — 지어내
+    # 등록하지 않는다(#12·#151). 확정되면 여기 한 줄을 추가한다:
+    #     cd ~/stock && .venv/bin/python -m bot.blog_watch --check hempt
+    # 채널 제목이 "카가" 면 맞다. `rss_health` 가 등록분의 침묵을 잡으므로
+    # 틀린 등록보다 **빈 자리가 낫다**(#29·#32).
 )
 # 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
 # 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
@@ -561,6 +567,28 @@ def check(blog_id: str) -> int:
     title = _parse_channel_title(xml)
     items = _parse_items(xml)
     print(f"  채널 제목: {title or '(파싱 실패)'}")
+    # ⚠️ **도달성은 정체성이 아니다**(#361a). 2026-09-13 실측: `hempty` 는
+    # 실재하고 RSS 50건을 정상으로 줬지만 채널 제목이 "테니스 슈즈"(일상·
+    # 운동기록)로, 사용자가 말한 "카가" 가 아니었다 — 원문의 `[.../hempt]
+    # (.../hempty)` 에서 내가 href 쪽을 골랐는데 반대였다. 그대로 뒀으면
+    # 무관한 개인 일상글이 NOAH 채널로 push 됐다. 그때 이 진단은 `✅ RSS
+    # 응답`·`항목 50개` 까지만 보고 **내용이 맞는지는 안 봤다**(#25 '있다'를
+    # 묻는 검사에는 반대 증거를 같이 둘 것) — 그래서 rc=0 이었다.
+    # 이제 등록 표시명과 대조한다. 표시명은 사람이 붙이는 것이라 원천 채널명과
+    # 글자까지 같을 이유는 없으므로 **공백을 지운 뒤 어느 한쪽이 다른 쪽을
+    # 품는가**로 보고, 아니면 ❌ 로 말한다(단정하지 않고 둘 다 보여 준다, #82).
+    #
+    # ⚠️ 여기서 **바로 return 하지 않는다** — 끊으면 아래 카테고리 분포·필터
+    # 진단이 통째로 사라진다. 이 도구의 계약은 "아는 것을 갈래로 전부 말한다"
+    # 이므로(#82·#43) 결함은 **기록하고 계속 간다**. 종료코드로만 실패시킨다.
+    bad = 0
+    if reg and title:
+        _a, _b = title.replace(" ", ""), str(reg["title"]).replace(" ", "")
+        if _a not in _b and _b not in _a:
+            print(f"  ❌ 채널 제목이 등록 표시명과 다르다 — 원천 {title!r} vs"
+                  f" 등록 {reg['title']!r}. **다른 블로그일 수 있다**"
+                  " (blogId 를 다시 확인할 것 — 도달한다고 맞는 것이 아니다)")
+            bad = 1
     print(f"  항목: {len(items)}개")
     if not items:
         # 대조 0건은 통과가 아니라 실패다(#54) — 원문 표본을 같이 찍는다(#109).
@@ -588,7 +616,7 @@ def check(blog_id: str) -> int:
     seen = _load_state()
     inited = bool((seen.get("init") or {}).get(blog_id))
     print(f"  초기화: {'완료 — 새 글부터 push' if inited else '미완료 — 다음 run 이 기존 글을 seen 처리(백필 없음)'}")
-    return 0
+    return bad
 
 
 def main(argv: list[str] | None = None) -> int:
