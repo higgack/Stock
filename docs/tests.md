@@ -144,6 +144,10 @@
 | drift 배너가 **세 shell 전부**에 있다(#360b·#38) | ✅ 자동 | `…::test_drift_banner_is_on_every_page_shell` |
 | 배너가 **못 보는 축**이 코드에 적혀 있다(#360c·#274) | ✅ 자동 | `…::test_banner_blind_spot_is_written_down` |
 | 블로그 RSS 도달 이력 — '한 번도 안 돎' ≠ '실패'(#360d·#54) | ✅ 자동 | `…::test_blog_rss_health_separates_never_ran_from_failure` |
+| 그 달을 **못 받은 것**을 '원천 표에 없다' 로 찍지 않는다(#361b·#82) | ✅ 자동 | `TestFlowTrendDiagnosis20260818::test_month_fetch_failure_is_not_called_missing_from_the_source` |
+| 대조 실패를 `✅ 전부 최선` 이 덮지 않는다(#361c·#41) | ✅ 자동 | `…::test_why_does_not_bury_a_failed_probe_under_a_green_verdict` |
+| **감사도** 같은 자리에서 덮지 않는다(#361c·#38 형제) | ✅ 자동 | `…::test_audit_also_reports_a_failed_probe_under_a_green_line` |
+| 실측으로 반증된 blogId 는 빠지고, 안 잰 후보는 안 넣는다(#361a·#12) | ✅ 자동 | `…::test_blog_registry_drops_the_measured_wrong_id` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |

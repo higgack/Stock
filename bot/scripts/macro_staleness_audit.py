@@ -85,6 +85,14 @@ def _treasury_status(mo) -> None:
             continue
         if str(shown) >= best:
             _p(f"      ✅ {sid} 최선({best})까지 왔다")
+            # ⚠️ 화면이 최선이어도 **대조 자체는 실패했을 수 있다** — 그러면
+            # ✅ 가 "재무부를 못 받았다" 를 덮는다(2026-09-13 VM 실측: 3건
+            # 전부 202609 timeout 인데 `--why` 최종 판정이 `✅ 전부 최선까지
+            # 왔다` 였다, #41 여유·우연으로 사실을 덮지 말 것). 오늘은 무해해도
+            # 내일은 보강이 안 된다. 형제 표면(`--why`)과 **같은 규약**이다(#38).
+            if code in ("no_curve", "month_failed"):
+                _p(f"      ⚠️ {sid} 다만 이번 대조는 실패했다({code}) — 화면"
+                   f" 값이 우연히 최선이었을 뿐이다. {fresher_reason(code, dg)}")
         elif code in ("no_newer",):
             # 원천에도 그보다 새 관측이 없다 = 우리가 고칠 게 없다(#260).
             _p(f"      ⚠️ {sid} 최선({best})보다 뒤지지만 재무부에도 더 새 값이"

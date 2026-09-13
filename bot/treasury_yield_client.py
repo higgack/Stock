@@ -162,6 +162,7 @@ def curve_for(fred_last_date: str, ym: str | None = None
 # 네 갈래 중 **셋이 조용**해서(곡선 미수신·겹치는 날 없음·더 새 날짜 없음)
 # 화면이 왜 안 당겨졌는지 로그로도 알 수 없었다(#12 silent-fail).
 #   no_curve   → 재무부 XML 미수신(네트워크·원천 장애)
+#   month_failed → FRED 최신일이 든 **달을 우리가 못 받았다**(일시적·재시도)
 #   no_overlap → FRED 최신일이 재무부 표에 없다(달 경계·원천 결측)
 #   mismatch   → 겹치는 날 값이 다르다(태그 오집 의심 — 만기가 다른 값)
 #   no_newer   → 재무부에도 더 새 날짜가 없다 = **이게 원천의 최선**
@@ -180,6 +181,21 @@ def fresher_diag(fred_last_date: str, fred_last_value: float, sid: str,
     same = (curve.get(fred_last_date) or {}).get(sid)
     d["overlap_value"] = same
     if same is None:
+        # ⚠️ 2026-09-13 VM 실측 — 같은 명령을 두 번 돌리자 갈렸다:
+        #   1회차: no_newer · 표에 있는 날 2026-09-01~09-11 (8일)  ✅
+        #   2회차: `fetch 202609 failed(timeout)` → 표에 있는 날
+        #          2026-08-03~08-31 (21일) → **no_overlap**
+        # 즉 202609 를 **우리가 못 받으면** `curve_for` 가 직전 달로 폴백해
+        # 8월 표만 남고, 9월 날짜가 거기 없으니 '원천 표에 없다' 로 찍혔다.
+        # 실제로는 **우리가 그 달을 못 받은 것**이다 — 처방이 정반대다
+        # (재시도 vs 원천 결측·창 확대, #82 갈래는 이름으로 · #143 대조군
+        # 없이 '없음' 과 '못 받음' 을 가르지 말 것). 오늘 아침 감사의
+        # `❌ 3건(no_overlap)` 이 바로 이것이었다.
+        _ym = fred_last_date[:4] + fred_last_date[5:7]
+        _why_m = last_fail(_ym)
+        if _why_m:
+            d["failed_month"], d["fail"] = _ym, _why_m
+            return "month_failed", d
         return "no_overlap", d
     d["overlap_gap"] = abs(same - fred_last_value)
     if d["overlap_gap"] > tol:
@@ -201,6 +217,11 @@ def fresher_reason(code: str, d: dict) -> str:
     if code == "no_curve":
         return (f"재무부 XML 을 못 받았다(조회 달 {months}) — "
                 f"갈래 {d.get('fail') or '미상'}")
+    if code == "month_failed":
+        return (f"FRED 최신일 {fd} 가 든 달({d.get('failed_month')})을 "
+                f"**우리가 못 받았다** — 갈래 {d.get('fail') or '미상'}. "
+                f"직전 달로 폴백해 표에 있는 날은 {span} 뿐이다"
+                f"(조회 달 {months}) — 원천 결측이 아니다")
     if code == "no_overlap":
         return (f"FRED 최신일 {fd} 가 재무부 표에 없다 — 조회 달 {months}, "
                 f"표에 있는 날 {span}")
@@ -245,6 +266,8 @@ def fresher_than(fred_last_date: str, fred_last_value: float, sid: str,
 _WHY_FIX = {
     "no_curve": "재무부 도달 실패 — timeout=원천이 느리거나 요청이 늘어짐"
                 " · http4xx=차단·경로변경 · network=DNS·연결. 갈래는 위 사유에 있다",
+    "month_failed": "그 달을 못 받았다(일시적) — 재시도하면 풀린다."
+                    " 반복되면 no_curve 와 같은 갈래를 본다(timeout·차단·DNS)",
     "no_overlap": "겹치는 날이 없다 — 달 경계면 직전 달까지 받아야 한다",
     "mismatch": "태그 오집 의심 — `_FIELDS` 만기 매핑을 원문으로 확인할 것",
     "no_newer": "원천이 이미 최선이다 — 우리 문제가 아니다",
@@ -276,6 +299,12 @@ def _why(sids: list[str]) -> int:
     print("#   ⚠️ 화면을 재생성하지 않는다(FRED 일별 캐시만 화면과 공유).\n")
 
     behind, failed, checked = [], [], 0
+    # ⚠️ 대조 **자체가 실패한** 건은 따로 센다 — 화면 값이 이미 최선이면
+    # `✅ 최선까지 왔다` 가 찍히는데, 그러면 "재무부를 못 받았다" 는 사실이
+    # ✅ 에 덮인다(2026-09-13 VM 2회차 실측: 3건 전부 202609 timeout 인데
+    # 최종 판정이 `✅ 대조 3건 전부 원천의 최선까지 왔다` 였다). 여유·우연으로
+    # 사실을 덮지 말 것(#41) — 오늘은 무해해도 내일은 보강이 안 된다.
+    probe_bad: list = []
     for sid in sids:
         sid = sid.upper()
         print(f"── {sid} ──────────────────────────────")
@@ -307,17 +336,30 @@ def _why(sids: list[str]) -> int:
             behind.append(f"{sid}@{shown}")
         elif best:
             print(f"  ✅ 최선({best})까지 왔다")
+        if code in ("no_curve", "month_failed"):
+            # 화면이 최선이어도 **대조는 못 했다** — 그 사실을 그대로 말한다.
+            print(f"  ⚠️ 다만 이번 대조는 실패했다({code}) — 화면 값이 우연히"
+                  " 최선이었을 뿐, 보강 경로는 확인되지 않았다")
+            probe_bad.append(f"{sid}:{code}")
         print()
 
     if failed:
         print(f"판정: ❌ 조회 실패 {len(failed)}건 — {' · '.join(failed)}")
     if behind:
         print(f"판정: ⚠️ 최선보다 뒤처짐 {len(behind)}건 — {' · '.join(behind)}")
+    if probe_bad:
+        # rc 는 바꾸지 않는다 — 화면은 최선이므로 사용자에게 문제가 없다.
+        # 다만 **말은 한다**(#43 침묵이 최악 · #25 늘 뜨는 경보도 금물이라
+        # 실제 실패했을 때만 뜬다).
+        print(f"판정: ⚠️ 대조 실패 {len(probe_bad)}건 — {' · '.join(probe_bad)}"
+              " (화면은 최선이나 보강 경로 미확인 — 반복되면 갈래를 볼 것)")
     if failed or behind:
         return 1
     if not checked:
         print("판정: ❓ 대조한 시리즈가 0건 — 인자를 확인할 것")
         return 1
+    if probe_bad:
+        return 0          # 화면은 정상 — 다만 위 ⚠️ 로 사실을 남겼다
     print(f"판정: ✅ 대조 {checked}건 전부 원천의 최선까지 왔다.")
     return 0
 

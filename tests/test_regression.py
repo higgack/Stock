@@ -12288,15 +12288,18 @@ class TestBlogWatchMultiBlog:
     def test_blogs_config_has_the_20260913_batch(self):
         """사용자 2026-09-13 3건 일괄 추가(표시명 사용자 확정).
 
-        ⚠️ `hempty` 는 사용자가 준 링크의 **href** 다 — 같은 줄의 링크
-        텍스트는 `hempt` 로 한 글자 짧았고, 샌드박스는 rss.blog.naver.com 이
-        프록시에 막혀 어느 쪽이 실재하는지 **재지 못했다**(#12). VM
-        `--check` 가 확정한다. 여기서는 '사용자가 준 href 를 쓴다'만 못박는다.
+        ⚠️ **계약 변경(2026-09-13 실측 · #222 옛 계약은 지우지 말고 다시
+        쓴다)**: 원문이 `[.../hempt](.../hempty)` 라 처음엔 href(`hempty`)를
+        골랐다. VM `--check hempty` 는 RSS 50건을 정상 반환했지만 채널 제목이
+        **"테니스 슈즈"**(일상·운동기록)로, 사용자가 말한 "카가" 가 아니었다 —
+        실재하지만 **다른 사람의 블로그**다(#361a 도달성은 정체성이 아니다).
+        그래서 `hempty` 는 뺐고, 남은 후보 `hempt` 는 **아직 안 쟀으므로
+        넣지 않는다**. 여기서는 확정된 2건만 못박는다.
         """
         import bot.blog_watch as bw
         ids = {b["id"]: b for b in bw._BLOGS}
         for bid, title in (("bvmzzin1023", "한라산유기농백수"),
-                           ("ggbbvv", "간동"), ("hempty", "카가")):
+                           ("ggbbvv", "간동")):
             assert bid in ids, f"{bid} 미등록 — 자동수집 안 함"
             assert ids[bid]["title"] == title, ids[bid]
             assert ids[bid]["categories"] is None, ids[bid]   # 전체 글
@@ -26241,6 +26244,144 @@ class TestFlowTrendDiagnosis20260818:
             _treasury_status(fake)
             out2 = capsys.readouterr().out
             assert "❌" not in out2, f"정상인데 결함으로 찍는다\n{out2}"
+
+    def test_month_fetch_failure_is_not_called_missing_from_the_source(self):
+        """실수 #361 — VM 에서 같은 명령을 **두 번 연달아** 돌리자 갈렸다:
+        1회차 `no_newer`(표 2026-09-01~09-11), 2회차 `fetch 202609
+        failed(timeout)` → 표 2026-08-03~08-31 → **`no_overlap`**.
+
+        `curve_for` 는 그 달을 못 받으면 직전 달로 폴백하는데, 그러면 9월
+        날짜가 8월 표에 없으니 '원천 표에 없다' 로 찍힌다 — 실제로는
+        **우리가 그 달을 못 받은 것**이고 처방이 정반대다(재시도 vs 원천
+        결측·창 확대, #82·#143). 2026-09-13 아침 감사의 `❌ 3건(no_overlap)`
+        이 바로 이것이었다.
+        """
+        import bot.treasury_yield_client as ty
+        aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
+
+        def _fail_sep(ym):
+            if ym == "202609":
+                ty._FAIL[ym] = "timeout"      # 제품이 실패 시 하는 그대로
+                return {}
+            return aug
+        orig_fetch, orig_fail = ty.fetch_daily_curve, dict(ty._FAIL)
+        try:
+            ty._FAIL.clear()
+            ty.fetch_daily_curve = _fail_sep
+            code, d = ty.fresher_diag("2026-09-11", 4.96, "DGS10")
+            assert code == "month_failed", code
+            assert d.get("failed_month") == "202609", d
+            why = ty.fresher_reason(code, d)
+            assert "못 받았다" in why and "timeout" in why, why
+            assert "원천 결측이 아니다" in why, why
+            # 처방이 갈려야 다음 수가 정해진다(#82).
+            assert ty._WHY_FIX["month_failed"] != ty._WHY_FIX["no_overlap"]
+            # 반대 증거 — 그 달을 **받았는데** 날짜가 없으면 여전히
+            # no_overlap 이다(#25 '있다' 만 묻는 검사는 눈이 먼다).
+            ty._FAIL.clear()
+            ty.fetch_daily_curve = lambda ym: aug
+            code2, _ = ty.fresher_diag("2026-09-11", 4.96, "DGS10")
+            assert code2 == "no_overlap", code2
+        finally:
+            ty.fetch_daily_curve = orig_fetch
+            ty._FAIL.clear(); ty._FAIL.update(orig_fail)
+
+    def test_audit_also_reports_a_failed_probe_under_a_green_line(
+            self, tmp_path, capsys, monkeypatch):
+        """#361c 의 **형제 표면** — `--why` 만 고치면 감사가 같은 자리에서
+        ✅ 로 덮는다(#38 한 화면에서 고쳤으면 형제를 즉시 grep). 화면 값이
+        최선이어도 대조가 실패했으면 그 사실을 말해야 한다(#41).
+        """
+        import json
+        import types
+        from datetime import date
+        import bot.market_timing as mt
+        import bot.treasury_yield_client as ty
+        from bot.scripts.macro_staleness_audit import _treasury_status
+
+        aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
+
+        def _f(ym):
+            if ym == "202609":
+                ty._FAIL[ym] = "timeout"
+                return {}
+            return aug
+        monkeypatch.setattr(ty, "fetch_daily_curve", _f)
+        monkeypatch.setattr(ty, "_FAIL", {})
+        monkeypatch.setattr(mt, "_expected_session", lambda m: ("2026-09-11", 0))
+        d = tmp_path / "fred"
+        d.mkdir()
+        (d / f"DGS10_{date.today().isoformat()}.json").write_text(json.dumps(
+            {"value": 4.96, "time": "2026-09-11", "src": "UST"}))
+        _treasury_status(types.SimpleNamespace(
+            _CACHE_DIR=tmp_path, _TREASURY_SIDS={"DGS10"}))
+        out = capsys.readouterr().out
+        assert "✅ DGS10 최선" in out, out          # 화면은 사실
+        assert "다만 이번 대조는 실패했다" in out, f"✅ 가 실패를 덮었다\n{out}"
+        assert "month_failed" in out, out
+
+    def test_why_does_not_bury_a_failed_probe_under_a_green_verdict(self):
+        """실수 #361 — VM 2회차는 3건 전부 202609 timeout 이었는데 최종 판정이
+        `✅ 대조 3건 전부 원천의 최선까지 왔다` 였다. 화면 값이 이미 최선이면
+        `✅` 가 찍히면서 **재무부를 못 받았다는 사실이 덮인 것**이다(#41 여유·
+        우연으로 사실을 덮지 말 것). 오늘은 무해해도 내일은 보강이 안 된다.
+        """
+        import bot.market_timing as mt
+        import bot.market_overview as mo
+        import bot.treasury_yield_client as ty
+        aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
+        saved = (ty.fetch_daily_curve, mo._fred_fetch_series,
+                 mt._expected_session, dict(ty._FAIL))
+
+        def _fail_sep(ym):
+            if ym == "202609":
+                ty._FAIL[ym] = "timeout"
+                return {}
+            return aug
+        try:
+            ty._FAIL.clear()
+            ty.fetch_daily_curve = _fail_sep
+            mo._fred_fetch_series = lambda sid, n: {
+                "time": "2026-09-11", "value": 4.96, "src": "UST"}
+            mt._expected_session = lambda m: ("2026-09-11", 0)
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = ty._why(["DGS10"])
+            out = buf.getvalue()
+            assert "✅ 최선(2026-09-11)까지 왔다" in out, out   # 화면은 사실
+            assert "이번 대조는 실패했다" in out, f"실패를 ✅ 가 덮었다\n{out}"
+            assert "대조 실패 1건" in out, out
+            # 화면이 최선이므로 사용자에겐 문제가 없다 — rc 는 0 이고
+            # **최종 ✅ 문장은 찍지 않는다**(둘 다 찍으면 자기모순).
+            assert rc == 0, rc
+            assert "전부 원천의 최선까지 왔다" not in out, \
+                f"대조가 실패했는데 '전부 최선' 이라고 단정한다\n{out}"
+        finally:
+            (ty.fetch_daily_curve, mo._fred_fetch_series,
+             mt._expected_session) = saved[:3]
+            ty._FAIL.clear(); ty._FAIL.update(saved[3])
+
+    def test_blog_registry_drops_the_measured_wrong_id(self):
+        """실수 #361 — `hempty` 는 **실재하지만 다른 블로그**였다. VM
+        `--check hempty` 가 RSS 50건을 정상 반환했는데 채널 제목이 "테니스
+        슈즈"(일상·운동기록)로, 사용자가 말한 "카가" 가 아니다. 그대로 뒀으면
+        무관한 개인 일상글이 NOAH 채널로 push 됐다 — **'도달한다' 는 '맞는
+        블로그다' 가 아니다**(#25 능력은 이름이 아니라 실측).
+
+        남은 후보 `hempt` 는 아직 안 쟀으므로 **등록하지 않는다** — 틀린
+        등록보다 빈 자리가 낫다(#12·#29·#32·#151).
+        """
+        import bot.blog_watch as bw
+        ids = {b["id"] for b in bw._BLOGS}
+        assert "hempty" not in ids, "실측으로 반증된 blogId 가 남아 있다"
+        assert "hempt" not in ids, "아직 안 잰 blogId 를 지어내 등록했다"
+        # 같은 배치의 나머지 둘은 그대로 산다(#45 한 건 때문에 전부 지우지 말 것).
+        assert {"bvmzzin1023", "ggbbvv"} <= ids, ids
+        # 그리고 왜 뺐는지 코드가 말한다 — 다음 사람이 되살리지 않게(#55·#222).
+        src = open("bot/blog_watch.py", encoding="utf-8").read()
+        assert "테니스 슈즈" in src and "hempt" in src, "반증 근거가 코드에 없다"
 
     def test_treasury_verdict_names_the_series_and_carries_its_reason(
             self, tmp_path, capsys, monkeypatch):
