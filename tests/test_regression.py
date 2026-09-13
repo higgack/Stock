@@ -12332,9 +12332,16 @@ class TestBlogWatchMultiBlog:
         # 실측한 채널 제목은 박아 둔다 — 그래야 blogId 드리프트를 기계가
         # 잡는다. 안 잰 블로그는 **안 박는다**(#362·#12).
         assert ids["ggbbvv"]["channel"] == "개미의 투자 일상", ids["ggbbvv"]
-        # 사용자 2026-09-13 추가 — 표시명만 확정, 채널은 미측정.
+        # 사용자 2026-09-13 추가(표시명 사용자 확정 · 채널은 `--check` 실측).
         assert ids["chcmg2022"]["title"] == "너쟁이", ids.get("chcmg2022")
-        assert "channel" not in ids["chcmg2022"], "안 잰 채널을 박았다"
+        # ⚠️ 계약 변경(#222) — 1차는 "안 쟀으니 박지 않는다" 였고, `--check`
+        # 실측이 채널 제목을 줘 박았다. blogId 가 **사용자가 준 URL 그대로**라
+        # 정체성이 출처로 확정되고, 박는 값은 정체성 주장이 아니라 **드리프트
+        # 기준선**이다(`hempty` 때는 내가 후보 중 골라서 확인이 필요했다).
+        assert ids["chcmg2022"]["channel"] == "성실히 나아가는 작은 발걸음", \
+            ids["chcmg2022"]
+        # 요청 없는 필터는 붙이지 않는다 — 사용자는 표시명만 정했다.
+        assert "title_any" not in ids["chcmg2022"], "요청 없는 필터를 붙였다"
         # 사용자가 뺀 것은 다시 들어오지 않는다(#222·#339 사용자 결정을
         # 되돌리지 말 것) · 실측으로 존재하지 않는 후보도 마찬가지.
         assert "bvmzzin1023" not in ids, "사용자가 뺀 블로그가 되살아났다"
@@ -26488,6 +26495,36 @@ class TestFlowTrendDiagnosis20260818:
         # 결산 글만 올라간다 — 그리고 제외된 글도 seen 처리(재검사 방지).
         assert pushed == ["2026년 08월 결산"], pushed
         assert "g2" in seen, "제외 글이 seen 에 안 들어가 매번 재검사된다"
+
+    def test_check_banner_says_which_code_ran(self, monkeypatch, capsys):
+        """실수 #364 — 판별어를 좁혀 배포했는데 사용자가 돌린 `--check` 출력이
+        **옛 라벨·옛 통과 수**였다(VM auto-update 전). 출력만 봐선 나도
+        사용자도 그걸 못 가려, 고친 것이 안 먹은 것처럼 보였다(#11·#359).
+        진단은 **어느 코드가 돌았는지** 스스로 말해야 한다(#21 버전 배너).
+
+        지문은 손으로 올리는 버전이 아니라 **소스 해시**다 — 손 bump 는 이
+        레포에서 여섯 번 졌다(#119).
+        """
+        import bot.blog_watch as bw
+        b1 = bw._check_banner()
+        assert "지문" in b1 and str(len(bw._BLOGS)) in b1, b1
+        # 소스가 바뀌면 지문도 바뀐다 — 상수를 돌려주는 구현이면 눈이 먼다(#91b).
+        import hashlib, pathlib
+        real = hashlib.sha1(
+            pathlib.Path(bw.__file__).read_bytes()).hexdigest()[:10]
+        assert real in b1, f"지문이 이 파일에서 안 나왔다 — {b1}"
+        # 그리고 **실제로 찍힌다** — 계산만 하고 출력에 안 쓰면 없는 것과
+        # 같다(#123·#129·#189·#228 계열). 헬퍼가 아니라 **진입점**을 태운다
+        # (#20·#252 — CLI 계약은 `main` 을 통과해야 잰다).
+        monkeypatch.setattr(bw, "_load_state", lambda: {})
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: "")
+        # ⚠️ 두 갈래 **모두** — 무인자 표도 `_BLOGS` 에서 나오므로 낡은
+        # 체크아웃이면 등록 목록부터 옛것이다. 한 갈래에만 달면 그 갈래의
+        # 증상만 설명한다(#359·#38).
+        bw.main(["--check", "__none__"])
+        assert real in capsys.readouterr().out, "개별 진단에 배너가 없다"
+        bw.main(["--check"])
+        assert real in capsys.readouterr().out, "무인자 표에 배너가 없다"
 
     def test_check_shows_the_title_verdict_per_item(self, monkeypatch, capsys):
         """독립 리뷰 2026-09-13 — `--check` 의 제목 축 진단 블록이 **통째로
