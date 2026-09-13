@@ -26562,59 +26562,86 @@ class TestFlowTrendDiagnosis20260818:
         없었는데 그건 #356 이 **그날 14:44 에 배포하며 고친** 증상이다
         (08:13 실행 = 배포 전 코드). 출력만 봐선 "내 fix 가 안 먹었나" 와
         "옛 코드다" 가 같은 화면이라, 코드를 태워 재고서야 갈렸다(#360).
-        #364 가 `--check` 에 같은 배너를 심었는데 **매일 읽는 이 결산엔
-        없었다** — 배너는 한 화면에만 달면 그 화면의 증상만 설명한다(#359).
+
+        ⚠️⚠️ 이 테스트의 1차 판은 **추적 중인 레포 소스에 직접 써서**
+        `bot/treasury_yield_client.py` 의 mtime 을 지금으로 밀었다(내용은
+        복원해도 mtime 은 아니다). 그러면 `code_freshness.newest_source_mtime`
+        이 `bot/*.py` 를 훑어 **돌고 있는 모든 프로세스를 stale 로** 판정하고
+        #359 가 심은 '이 프로세스는 옛 코드' 배너가 뜬다 — **배포 drift 도구를
+        나르는 테스트가 거짓 drift 경보를 만든 것**이다(독립 리뷰 실측
+        lag 100,041초). 게다가 pytest 가 write 와 `finally` 사이에 죽으면
+        `# mutate` 가 추적 파일에 남아 flush 로 배포된다(#328).
+        → 반응성은 **tmp 패키지**로 잰다. 레포 파일은 건드리지 않는다.
         """
+        import contextlib
+        import io
+        import sys
+
         import bot.audit_sweep as A
 
-        mod = "bot.scripts.macro_staleness_audit"
-        base = A.audit_fingerprint([mod])
+        # ── 반응성: 임시 패키지로 (레포 무단 수정 금지) ──────────────
+        pkg = tmp_path / "botfp"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_bytes(b"")
+        (pkg / "a.py").write_text("from botfp import dep\n", encoding="utf-8")
+        dep = pkg / "dep.py"
+        dep.write_text("X = 1\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(A, "_PKG", "botfp")
+        base = A.audit_fingerprint(["botfp.a"])
         assert len(base) == 10 and "?" not in base, base
 
         # ① 감사 모듈이 바뀌면 지문이 바뀐다 — 상수를 돌려주면 눈먼
         #    가드다(실측으로 한 번 그랬다: `pathlib` 미import 가
         #    NameError 를 except 에 먹여 **이름만 해싱**했다, #12·#91b).
-        import importlib.util
-        src = pathlib.Path(importlib.util.find_spec(mod).origin)
-        orig = src.read_bytes()
-        try:
-            src.write_bytes(orig + b"\n# mutate\n")
-            assert A.audit_fingerprint([mod]) != base, "감사 모듈 변경에 무반응"
-        finally:
-            src.write_bytes(orig)
-        assert A.audit_fingerprint([mod]) == base, "복원했는데 지문이 다르다"
+        (pkg / "a.py").write_text("from botfp import dep\n# m\n", encoding="utf-8")
+        assert A.audit_fingerprint(["botfp.a"]) != base, "감사 모듈 변경에 무반응"
+        (pkg / "a.py").write_text("from botfp import dep\n", encoding="utf-8")
+        assert A.audit_fingerprint(["botfp.a"]) == base, "복원했는데 지문이 다르다"
 
-        # ② **한 단계 의존**도 덮는다 — 이 결산의 판정 문구는
-        #    `treasury_yield_client.fresher_reason` 이 만든다(#364d
-        #    지문이 출력을 만든 코드를 안 덮으면 과대 주장).
-        dep = pathlib.Path(
-            importlib.util.find_spec("bot.treasury_yield_client").origin)
-        orig_dep = dep.read_bytes()
-        try:
-            dep.write_bytes(orig_dep + b"\n# mutate\n")
-            assert A.audit_fingerprint([mod]) != base, "한 단계 의존에 무반응"
-        finally:
-            dep.write_bytes(orig_dep)
+        # ② **전이 의존**도 덮는다 — 이 결산의 판정 문구는 감사 모듈이
+        #    아니라 그 아래 제품 모듈이 만든다(#364d 과대 주장 금지).
+        #    한 단계만 훑던 옛 판은 63개를 놓쳤다(독립 리뷰 실측).
+        dep.write_text("X = 2\n", encoding="utf-8")
+        for m in list(sys.modules):
+            if m.startswith("botfp"):
+                del sys.modules[m]
+        assert A.audit_fingerprint(["botfp.a"]) != base, "전이 의존에 무반응"
 
-        # ③ **두 표면 모두**에 실린다(#359·#364) — 텔레그램 결산과 원문.
-        r = {"findings": ["X ❌ 뭔가"], "warn": 0, "errors": [], "fp": "abcdef0123",
-             "raw": "raw"}
-        txt = A.report_text(r)
+        # ③ **배선** — `sweep()` 이 싣는 지문이 진짜 지문이어야 한다.
+        #    옛 판은 `audit_fingerprint([])` 로 바꿔도 전 슈트가 green
+        #    이었다 = 이 기능의 존재 이유가 무가드(#20, 독립 리뷰 실측).
+        monkeypatch.setattr(A, "_PKG", "bot")
+        monkeypatch.setattr(A, "_run_one", lambda mod: ("", ""))
+        r = A.sweep(include_weekly=False)
+        assert r["fp"] == A.audit_fingerprint(), "sweep 의 지문이 진짜가 아니다"
+        assert r["ran"] == sum(1 for _n, _m, c in A.AUDITS if c == "daily")
+        # ④ 그리고 **주기에 흔들리지 않는다** — `ran` 으로 해싱하던 옛 판은
+        #    코드가 그대로여도 월요일(주간 3종)에 값이 달라져 "지문이 다르면
+        #    낡은 코드" 계약이 매주 거짓이 됐다(독립 리뷰 실측).
+        assert A.sweep(include_weekly=True)["fp"] == r["fp"], \
+            "주간 감사가 끼면 지문이 달라진다 — 코드만의 함수가 아니다"
+
+        # ⑤ **두 표면 모두**에 실린다(#359·#364) — 텔레그램 결산과 원문.
+        fake = {"findings": ["X ❌ 뭔가"], "warn": 0, "errors": [],
+                "fp": "abcdef0123", "ran": 7, "raw": "raw"}
+        txt = A.report_text(fake)
         assert "abcdef0123" in txt, txt
-        monkeypatch.setattr(A, "sweep", lambda include_weekly=False: r)
+        monkeypatch.setattr(A, "sweep", lambda include_weekly=False: fake)
         monkeypatch.setattr(sys, "argv", ["audit_sweep", "--daily"])
-        import contextlib
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             A.main()
         # ⚠️ `"abcdef0123" in out` 으로 재면 **결산 헤더가 대신 만족**시켜
-        # 원문 배너를 지워도 통과한다(실측 M2, #75). 그 줄 하나를 집는다.
+        # 원문 배너를 지워도 통과한다(실측, #75). 그 줄 하나를 집는다.
         raw_banner = [ln for ln in buf.getvalue().splitlines()
                       if ln.startswith("# audit_sweep")]
         assert raw_banner and "abcdef0123" in raw_banner[0], buf.getvalue()
+        # ⑥ 배너가 **돈 개수를 사실대로** 적는다 — `len(AUDITS)` 를 그대로
+        #    쓰면 `--daily` 에서 7종만 돌고도 "10종" 이라 거짓말이다(#55).
+        assert f"{fake['ran']}/{len(A.AUDITS)}" in raw_banner[0], raw_banner[0]
 
-        # ④ 무음 계약은 그대로 — 결함이 없으면 빈 문자열(배너도 안 나간다).
+        # ⑦ 무음 계약은 그대로 — 결함이 없으면 빈 문자열(배너도 안 나간다).
         assert A.report_text({"findings": [], "warn": 0, "errors": [],
                               "fp": "abcdef0123", "raw": ""}) == ""
 
@@ -26677,11 +26704,25 @@ class TestFlowTrendDiagnosis20260818:
         # 그건 `--check` 가 안 타는 경로다(첫 판이 그걸 잡아 멀쩡한 코드를
         # 틀렸다고 했다, #91b 재는 대상이 맞나). `--check` 진입점에서
         # **실제 도달하는** 함수만 따라간다.
+        # ⚠️ **모듈 레벨 import 를 먼저 본다** — 함수 본문만 훑던 옛 판은
+        # `bot/blog_watch.py` 최상단에 `from bot.market_calendar import …`
+        # 를 넣어도 통과했다(독립 리뷰 실측). 이 파일엔 top-level `bot.*`
+        # import 가 0건이라 **미래의 import 가 정확히 그 자리에 들어온다**
+        # = 유일하게 뚫려 있던 슬롯이었다(#286 지시서가 자기 자신에 대해
+        # 사실 아닌 것을 말한다).
+        top_bad = []
+        for n in tree.body:
+            if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("bot"):
+                top_bad.append(f"<module>: {n.module}")
+            elif isinstance(n, ast.Import):
+                top_bad += [f"<module>: {a.name}" for a in n.names
+                            if a.name.startswith("bot")]
+
         seeds = {"check", "_check_banner"}
         for n in ast.walk(defs["main"]):
             if isinstance(n, ast.If) and "--check" in ast.dump(n.test):
                 seeds |= _calls(n)
-        seen, todo, bad = set(), [x for x in seeds if x in defs], []
+        seen, todo, bad = set(), [x for x in seeds if x in defs], list(top_bad)
         while todo:
             name = todo.pop()
             if name in seen:

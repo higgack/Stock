@@ -132,7 +132,12 @@ def _findings(out: str) -> list[str]:
     return hits
 
 
-def audit_fingerprint(modules: tuple[str, ...] | list[str]) -> str:
+# 지문에 넣을 **우리 패키지**. `startswith("bot")` 로 재면 `boto3` 처럼
+# 접두가 겹치는 남의 패키지까지 문다 — 경계는 `bot` 자신이거나 `bot.` 이다.
+_PKG = "bot"
+
+
+def audit_fingerprint(modules: tuple[str, ...] | list[str] | None = None) -> str:
     """이 결산을 만든 **코드의 지문**(sha1 앞 10자) — 실수 #365.
 
     ⚠️ 왜 필요한가(2026-09-13 실측): 사용자가 아침 결산 `❌ 3건` 을 붙여
@@ -145,13 +150,28 @@ def audit_fingerprint(modules: tuple[str, ...] | list[str]) -> str:
     #359 가 "배너를 만들면 **어느 화면에 뜨나**를 그 자리에서 답하라" 고
     적은 그 사각이다 — 매일 아침 읽는 이 결산엔 없었다.
 
-    ⚠️ 지문은 **이 결산을 만든 코드**를 덮어야 한다(#364d 과대 주장 금지):
-    `audit_sweep` + 이번 패스가 실제로 돌린 감사 모듈 + 그 감사들이 읽는
-    `bot.*` 모듈(**한 단계**, AST 정적 스캔 — `macro_staleness_audit` 의
-    판정 문구는 `treasury_yield_client.fresher_reason` 이 만든다).
-    **못 보는 축**(#274): 두 단계 이상 떨어진 제품 모듈은 안 덮는다 —
-    지문이 같아도 그 아래가 바뀌었을 수 있다. 손으로 올리는 버전이
-    아니라 소스 해시인 이유는 #119(규율은 여섯 번 졌다).
+    ⚠️ 모집단은 **등록된 감사 전부**(`AUDITS`)이지 이번에 돌린 것이 아니다.
+    옛 판은 `ran` 을 해싱해 **코드가 그대로여도 월요일**(주간 감사 3종 추가)
+    에 지문이 달라졌고, 수동 실행(기본 주간 포함)은 평일 결산과 **영원히
+    안 맞았다**(독립 리뷰 실측 `a635f0d916` vs `a5b30fcd29`). 그러면
+    "지문이 다르면 낡은 코드" 라는 계약이 매주 거짓이 된다 — 지문은
+    **코드만의 함수**여야 한다(#34 한 값이 두 뜻을 겸하면 한쪽은 거짓말).
+
+    ⚠️ 깊이는 **전이 폐포**다(#364d 과대 주장 금지). 한 단계만 훑던 옛 판은
+    25개를 덮고 **63개를 놓쳤다** — 예: 매크로 카드 판정 문구를 만드는
+    `naver_marketindex` 가 빠져 그걸 고친 배포에 지문이 안 변했다. 지금은
+    **154개**·1.7초로, 분(分) 단위 감사에 견주면 공짜다(실측).
+    ⚠️ `from bot import feed_health` 형태는 `n.module` 이 `bot` 이라 **서브
+    모듈이 안 잡힌다** — `board_audit` 하나가 그 형태로 제품 모듈 10여 개를
+    끌어오는데 옛 판은 `bot/__init__.py` 만 해싱했다. 별칭까지 후보로 넣어
+    푼다(함수 이름이면 `find_spec` 이 못 찾고 조용히 넘어간다).
+
+    ⚠️ **못 보는 축**(#274): 이건 **디스크**를 잰다. 장수 프로세스가 새
+    코드를 못 올린 채(배포 후 재시작 실패) 돌면 결산은 **옛 메모리 코드**로
+    만들어지는데 지문은 새것을 찍는다 — 신호가 뒤집히는 자리다. 그래서
+    `main()` 배너가 `code_freshness.drift()` 로 **프로세스 축을 따로**
+    말한다(둘은 다른 사실이다, #45). 손 bump 가 아니라 소스 해시인 이유는
+    #119(규율은 여섯 번 졌다).
     """
     import ast
     import hashlib
@@ -160,37 +180,62 @@ def audit_fingerprint(modules: tuple[str, ...] | list[str]) -> str:
                             # **이름만 해싱한 상수 지문**이 나온다(실측: 감사
                             # 모듈을 고쳐도 지문 불변 = 눈먼 가드, #12·#91b).
     missing: list[str] = []
+    if modules is None:
+        modules = tuple(m for _n, m, _c in AUDITS)
 
-    def _src(mod: str) -> bytes:
+    def _src(mod: str, *, required: bool) -> bytes:
+        """모듈 소스 바이트. 못 찾으면 b"".
+
+        ⚠️ `required` 는 **우리가 덮기로 약속한 것**(등록 감사·이 모듈)에만
+        참이다. 의존으로 **발견된** 이름은 모듈이 아닐 수 있다 —
+        `from bot.fcf import dart_capex` 의 `dart_capex` 는 함수다. 그걸
+        `missing` 으로 세면 영구 `?` 가 붙어 커버리지 문제가 아닌 상시
+        경보가 된다(#25·#260).
+        """
         try:
             spec = importlib.util.find_spec(mod)
             if spec and spec.origin:
                 return pathlib.Path(spec.origin).read_bytes()
+            if spec is not None:
+                # 네임스페이스 패키지(`bot.scripts` 는 `__init__.py` 가 없다)
+                # 는 소스가 없는 게 정상이다.
+                return b""
         except Exception:                                      # noqa: BLE001
             pass
-        missing.append(mod)
+        if required:
+            missing.append(mod)
         return b""
 
-    seen: dict[str, bytes] = {"bot.audit_sweep": _src("bot.audit_sweep")}
-    for m in modules:
-        b = _src(m)
-        seen[m] = b
+    # **전이 폐포** — 큐로 훑는다(한 단계만 보면 63개를 놓쳤다, 위 ⚠️).
+    def _ours(name: str) -> bool:
+        return name == _PKG or name.startswith(_PKG + ".")
+
+    seen: dict[str, bytes] = {}
+    required = {__name__, *modules}
+    todo = list(required)
+    while todo:
+        m = todo.pop()
+        if m in seen:              # ⚠️ `setdefault(k, _src(k))` 는 인자를
+            continue               # **먼저 평가**해 같은 파일을 몇 번씩
+        b = _src(m, required=m in required)   # 읽는다(실측 25개 모듈에 56회,
+        seen[m] = b                # 1.1MB `dashboard.py` 를 10번). 먼저 막는다.
         if not b:
             continue
-        try:                       # 그 감사가 읽는 bot.* 한 단계까지
+        try:
             tree = ast.parse(b.decode("utf-8", "replace"))
         except SyntaxError:
             continue
         for n in ast.walk(tree):
-            dep = None
-            if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("bot"):
-                dep = n.module
+            if isinstance(n, ast.ImportFrom) and _ours(n.module or ""):
+                todo.append(n.module)
+                # ⚠️ `from bot import feed_health` 는 `n.module` 이 `bot`
+                # 이라 **서브모듈이 폐포에 안 들어온다** — `board_audit`
+                # 하나가 이 형태로 제품 모듈 10여 개를 끌어오는데 옛 판은
+                # `bot/__init__.py` 만 해싱했다(테스트가 잡았다, #87a).
+                # 함수·상수 이름이면 `find_spec` 이 못 찾고 조용히 넘어간다.
+                todo += [f"{n.module}.{a.name}" for a in n.names]
             elif isinstance(n, ast.Import):
-                for a in n.names:
-                    if a.name.startswith("bot"):
-                        seen.setdefault(a.name, _src(a.name))
-            if dep:
-                seen.setdefault(dep, _src(dep))
+                todo += [a.name for a in n.names if _ours(a.name)]
     h = hashlib.sha1()
     for name in sorted(seen):      # 순서를 고정해야 지문이 안정적이다
         h.update(name.encode())
@@ -225,8 +270,12 @@ def sweep(include_weekly: bool = False) -> dict:
         for f in _findings(out):
             findings.append(f"{name} {f}")
         warn += out.count("⚠️")
+    # ⚠️ 지문은 `ran` 이 아니라 **등록 전부** 기준이다 — `ran` 으로 해싱하면
+    # 코드가 그대로여도 월요일(주간 3종 추가)에 값이 달라져 계약이 거짓이
+    # 된다(독립 리뷰 실측). 돈 개수는 **다른 사실**이라 따로 싣는다(#45).
     return {"findings": findings, "warn": warn, "errors": errors,
-            "fp": audit_fingerprint(ran), "raw": "\n".join(chunks)}
+            "fp": audit_fingerprint(), "ran": len(ran),
+            "raw": "\n".join(chunks)}
 
 
 def report_text(result: dict | None = None,
@@ -261,8 +310,22 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING)
     # 수동 실행은 기본이 전량(주간 포함) — 사람이 직접 돌릴 땐 다 보고 싶다.
     r = sweep(include_weekly="--daily" not in sys.argv)
+    # ⚠️ `len(AUDITS)` 를 그대로 적으면 `--daily` 에서 7종만 돌고도 "10종"
+    # 이라 배너가 거짓말한다 — 모호함을 없애려고 만든 줄에서(#55).
+    ran = r.get("ran")
+    # ⚠️ 지문은 **디스크**를 잰다. 프로세스가 옛 코드를 들고 있으면 신호가
+    # 뒤집히므로(배포 후 재시작 실패) 그 축은 따로 말한다(#45·#274).
+    try:
+        from bot.code_freshness import drift
+        d = drift()
+        proc = (f" · ⚠️ 이 프로세스는 소스보다 {d['lag_sec'] / 60:.0f}분 낡음"
+                if d.get("stale") else
+                ("" if d.get("measurable") else " · 프로세스 신선도 판정 불가"))
+    except Exception as exc:                                   # noqa: BLE001
+        proc = f" · 프로세스 신선도 판정 불가({type(exc).__name__})"
     print(f"# audit_sweep · 코드 지문 {r.get('fp') or '지문불가'}"
-          f" · 감사 {len(AUDITS)}종")
+          f" · 감사 {ran if ran is not None else '?'}/{len(AUDITS)}종 실행"
+          f"{proc}")
     print(r["raw"])
     print("\n" + "=" * 72)
     txt = report_text(r)

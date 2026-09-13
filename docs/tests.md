@@ -168,6 +168,11 @@
 | 아침 결산이 **어느 코드에서 나왔는지** 말한다 — 두 표면 모두(#365·#359·#38) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
 | 그 지문이 감사 모듈·**한 단계 의존** 변경에 반응한다(#365·#91b·#364d) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
 | 못 읽은 소스가 있으면 `?` 로 밝힌다 — 조용한 부분 지문 금지(#365·#54) | ✅ 자동 | `…::test_audit_fingerprint_marks_partial_coverage` |
+| `sweep()` 이 싣는 지문이 **진짜 지문**이다 — 배선(#365·#20) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
+| 지문이 **주기에 안 흔들린다**(월요일 주간 감사 포함해도 동일, #365) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
+| 배너가 **돈 개수를 사실대로** 적는다(`7/10종`, #365·#55) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
+| 반응성 측정이 **레포 파일을 안 건드린다**(mtime 부작용 금지, #365·#328) | ✅ 자동 | `…::test_audit_digest_says_which_code_ran` |
+| `--check` 가 **모듈 레벨**에서도 다른 `bot.*` 를 안 읽는다(#365·#286) | ✅ 자동 | `…::test_check_banner_covers_everything_check_reads` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |
