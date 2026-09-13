@@ -152,7 +152,8 @@
 | '대조 실패' 는 열거가 아니라 **여집합**이고 두 표면이 같은 술어(#361 리뷰 b·#24·#38) | ✅ 자동 | `…::test_failed_comparison_is_a_complement_not_a_list` |
 | 그 술어가 **감사에 배선**돼 `mismatch` 도 잡힌다(#361 리뷰 b·#20) | ✅ 자동 | `…::test_audit_calls_a_mismatch_a_failed_comparison_too` |
 | 전역 `last_fail` 은 **이번에 조회한 달**일 때만 믿는다(#361 리뷰 c·#82) | ✅ 자동 | `…::test_month_failed_needs_the_month_to_have_been_queried` |
-| 도달성 ≠ 정체성 — `--check` 가 채널 제목을 등록명과 대조한다(#361 리뷰 d·#25) | ✅ 자동 | `…::test_check_rejects_a_reachable_but_wrong_blog` |
+| 정체성 대조는 **실측 `channel`** 기준 · 없으면 판정 불가(#362·#54·#165) | ✅ 자동 | `…::test_check_measures_identity_against_the_recorded_channel` |
+| 필명 블로그(`hempty`)는 등재 · 실측 반증된 `hempt` 는 미등재(#362·#222) | ✅ 자동 | `…::test_blog_registry_keeps_the_pen_name_blog` |
 | 표면 파생이 **이름 규약 밖**에서도 돈다(오늘 기여 0 — 픽스처로 경로를 태운다, #291·#286) | ✅ 자동 | `…::test_page_surface_is_derived_from_body_selector_not_only_names` |
 | 칩 배경 위 글씨 `--X-on` × `--X` 가 AA 이상 — 전 모듈 전수(#34·#274) | ✅ 자동 | `…::test_accent_on_pairs_meet_wcag_aa` |
 | 그 가드가 발화한다 + 짝 없는 `--X-on` 은 재지 않는다(#25·#47) | ✅ 자동 | `…::test_on_pair_guard_fires_and_needs_a_real_partner` |

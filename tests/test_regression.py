@@ -12104,9 +12104,15 @@ class TestBlogWatchMultiBlog:
         assert bw._BLOGS, "감시 블로그 목록이 비었다"
         seen = set()
         for b in bw._BLOGS:
-            assert set(b) == {"id", "title", "categories"}, b
+            # `channel`(2026-09-13, #362)은 **선택** 키 — 실측한 원천 채널
+            # 제목이고 `--check` 의 정체성 대조 기준이다. 표시명(`title`)과
+            # 다를 수 있다(필명 vs 블로그 제목).
+            assert {"id", "title", "categories"} <= set(b) <= {
+                "id", "title", "categories", "channel"}, b
             assert isinstance(b["id"], str) and b["id"].strip(), b
             assert isinstance(b["title"], str) and b["title"].strip(), b
+            if "channel" in b:
+                assert isinstance(b["channel"], str) and b["channel"].strip(), b
             # ⚠️ 이 단언은 처음에 **틀린 계약**을 적고 있었다(#50) —
             # `list` 를 허용했는데 `str.startswith` 는 list 를 받으면
             # TypeError 이고, 정작 정상 사용인 `str` 은 거부했다. 실제 계약은
@@ -26363,25 +26369,35 @@ class TestFlowTrendDiagnosis20260818:
              mt._expected_session) = saved[:3]
             ty._FAIL.clear(); ty._FAIL.update(saved[3])
 
-    def test_blog_registry_drops_the_measured_wrong_id(self):
-        """실수 #361 — `hempty` 는 **실재하지만 다른 블로그**였다. VM
-        `--check hempty` 가 RSS 50건을 정상 반환했는데 채널 제목이 "테니스
-        슈즈"(일상·운동기록)로, 사용자가 말한 "카가" 가 아니다. 그대로 뒀으면
-        무관한 개인 일상글이 NOAH 채널로 push 됐다 — **'도달한다' 는 '맞는
-        블로그다' 가 아니다**(#25 능력은 이름이 아니라 실측).
+    def test_blog_registry_keeps_the_pen_name_blog(self):
+        """실수 #362 — **#361a 의 계약을 뒤집어 다시 쓴다**(#222 지우지 말고
+        무엇이 왜 바뀌었는지 남길 것).
 
-        남은 후보 `hempt` 는 아직 안 쟀으므로 **등록하지 않는다** — 틀린
-        등록보다 빈 자리가 낫다(#12·#29·#32·#151).
+        옛 계약: "`hempty` 는 채널 제목이 '테니스 슈즈' 라 사용자가 말한 '카가'
+        가 아니므로 등록하지 않는다." → 사용자가 화면을 캡처해 **반증**했다.
+        "테니스 슈즈" 는 **블로그 제목**이고 "카가" 는 **필명**이다(프로필
+        `🧡 카가 / hempty`, 주식 관련 글). 그리고 내가 "아직 안 쟀다"며 남겨 둔
+        후보 `hempt` 는 VM 실측에서 RSS 200 이지만 `<item>` 이 없다 = **존재하지
+        않는다**. 즉 처음 고른 href 가 맞았고 내가 지운 것이 오판이었다.
+
+        남는 보장은 그대로다 — **재지 않은 후보는 등록하지 않는다**(#12·#151).
+        새로 생긴 보장 — 실측한 원천 채널 제목을 `channel` 로 **박아 둔다**:
+        그래야 blogId 드리프트를 사람이 아니라 기계가 잡는다(#119).
         """
         import bot.blog_watch as bw
-        ids = {b["id"] for b in bw._BLOGS}
-        assert "hempty" not in ids, "실측으로 반증된 blogId 가 남아 있다"
-        assert "hempt" not in ids, "아직 안 잰 blogId 를 지어내 등록했다"
-        # 같은 배치의 나머지 둘은 그대로 산다(#45 한 건 때문에 전부 지우지 말 것).
-        assert {"bvmzzin1023", "ggbbvv"} <= ids, ids
-        # 그리고 왜 뺐는지 코드가 말한다 — 다음 사람이 되살리지 않게(#55·#222).
+        reg = {b["id"]: b for b in bw._BLOGS}
+        assert "hempty" in reg, "실측으로 확정된 blogId 가 빠져 있다"
+        assert reg["hempty"]["title"] == "카가", reg["hempty"]
+        # 대조 기준은 **실측값**이지 표시명이 아니다 — 둘이 다른 것이 정상이다.
+        assert reg["hempty"]["channel"] == "테니스 슈즈", reg["hempty"]
+        assert reg["hempty"]["channel"] != reg["hempty"]["title"]
+        # 존재하지 않는 것으로 실측된 후보는 여전히 안 넣는다(#12·#151).
+        assert "hempt" not in reg, "실측으로 반증된 blogId 를 등록했다"
+        # 같은 배치의 나머지 둘도 그대로 산다(#45).
+        assert {"bvmzzin1023", "ggbbvv"} <= set(reg), sorted(reg)
+        # 그리고 왜 되살렸는지 코드가 말한다 — 다음 사람이 또 지우지 않게(#55).
         src = open("bot/blog_watch.py", encoding="utf-8").read()
-        assert "테니스 슈즈" in src and "hempt" in src, "반증 근거가 코드에 없다"
+        assert "필명" in src and "hempt" in src, "번복 근거가 코드에 없다"
 
     def test_probe_failure_notice_only_speaks_where_it_can_be_true(self):
         """#361c 독립 리뷰 — 통지를 `✅ 최선` 분기 **밖**에 두었더니 둘이
@@ -26521,11 +26537,19 @@ class TestFlowTrendDiagnosis20260818:
             ty.fetch_daily_curve = saved[0]
             ty._FAIL.clear(); ty._FAIL.update(saved[1])
 
-    def test_check_rejects_a_reachable_but_wrong_blog(self, monkeypatch, capsys):
-        """#361a 독립 리뷰 — `hempty` 를 잡아냈어야 할 **탐지기 자체는 그대로**
-        였다: `check()` 가 채널 제목을 **찍기만 하고** 등록 표시명과 대조하지
-        않아, 도달하지만 다른 블로그여도 rc=0 이었다. 도달성은 정체성이
-        아니다(#25 '있다'를 묻는 검사에는 반대 증거를 같이).
+    def test_check_measures_identity_against_the_recorded_channel(
+            self, monkeypatch, capsys):
+        """#362 — **#361a 의 이 계약도 뒤집어 다시 쓴다**(#222).
+
+        옛 계약: "채널 제목이 등록 **표시명**과 다르면 ❌". 그 판정이 정상
+        블로그(`hempty` — 표시명 "카가" · 채널 "테니스 슈즈")를 ❌ 로 찍었다 —
+        필명과 블로그 제목은 **다른 축**이라 그 불일치로 정체성을 말할 수
+        없다(#165 재지 않은 것을 단정하지 말 것 · #146 증상이 아니라 원인으로).
+
+        새 계약: 대조 기준은 **우리가 실측해 박아 둔 `channel`** 이다.
+          · 있고 다르면 ❌(blogId 가 다른 곳을 가리키거나 원천이 제목을 바꿨다)
+          · 없으면 ✅ 도 ❌ 도 아닌 **판정 불가**(#54) — 조용히 통과시키면
+            "도달만 보고 rc=0" 이던 1차 실수가 그대로 재발한다(#43).
         """
         import bot.blog_watch as bw
 
@@ -26534,27 +26558,37 @@ class TestFlowTrendDiagnosis20260818:
                     "<item><title>글</title><link>u</link>"
                     "<pubDate>Sat, 13 Sep 2026 10:00:00 +0900</pubDate>"
                     "<category>일상</category></item></channel></rss>")
-        reg = {b["id"]: b for b in bw._BLOGS}["bvmzzin1023"]
         monkeypatch.setattr(bw, "_load_state", lambda: {})
-        # (a) 실측의 그 상황 — 도달하고 항목도 있지만 **다른 블로그**다.
-        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("테니스 슈즈"))
-        rc = bw.check("bvmzzin1023")
+        # (a) 기준이 박힌 블로그에서 채널 제목이 바뀌면 ❌ (blogId 드리프트).
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("남의 블로그"))
+        rc = bw.check("hempty")
         out = capsys.readouterr().out
-        assert rc == 1, f"도달만 보고 통과시켰다\n{out}"
-        assert "채널 제목이 등록 표시명과 다르다" in out, out
-        # 어느 쪽이 무엇인지 **둘 다** 보여 준다 — 단정하지 않는다(#82·#165).
-        assert "테니스 슈즈" in out and reg["title"] in out, out
-        # ⚠️ 그리고 **거기서 끊지 않는다** — 첫 판은 곧장 return 해 같은 실행의
-        # 카테고리 분포·필터 진단이 통째로 사라졌다(기존 회귀 4건이 잡았다).
-        # 이 도구의 계약은 "아는 것을 갈래로 전부 말한다" 이므로 결함은
-        # 기록하고 계속 가며 **종료코드로만** 실패시킨다(#82·#43).
+        assert rc == 1, f"실측 기준과 다른데 통과시켰다\n{out}"
+        assert "채널 제목이 실측 등록분과 다르다" in out, out
+        # 어느 쪽이 무엇인지 **둘 다** 보여 준다(#82·#202).
+        assert "남의 블로그" in out and "테니스 슈즈" in out, out
+        # ⚠️ 그리고 **거기서 끊지 않는다** — 끊으면 같은 실행의 카테고리 분포·
+        # 필터 진단이 통째로 사라진다. 결함은 기록하고 계속 가며 종료코드로만
+        # 실패시킨다(#82·#43 — 기존 회귀 4건이 그걸 잡았다).
         assert "카테고리 분포" in out, f"❌ 하나가 나머지 진단을 삼켰다\n{out}"
         assert "항목: 1개" in out, out
-        # (b) 반대 증거 — 맞는 블로그는 그대로 통과한다(#25).
-        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss(reg["title"]))
-        assert bw.check("bvmzzin1023") == 0, capsys.readouterr().out
-        # (c) 미등록 blogId 는 대조할 상대가 없다 — 그때는 막지 않는다(#54).
-        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("아무개"))
+        # (b) 반대 증거 — **표시명과 달라도** 실측 기준과 같으면 통과한다(#25).
+        #     이것이 옛 계약이 오판하던 바로 그 경우다.
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("테니스 슈즈"))
+        assert bw.check("hempty") == 0, capsys.readouterr().out
+        capsys.readouterr()
+        # ⚠️ 원천 제목은 우리가 못 고르는 문자열이다 — `{` 가 들어 있어도
+        # 사유 줄을 만들다 죽으면 안 된다(f-string + `.format()` 혼용 금지).
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("남 {0} 블로그"))
+        assert bw.check("hempty") == 1
+        assert "남 {0} 블로그" in capsys.readouterr().out
+        # (c) 기준이 없는 블로그는 ✅ 도 ❌ 도 아니다 — 판정 불가라고 말한다.
+        monkeypatch.setattr(bw, "_fetch_rss", lambda b: _rss("아무 제목"))
+        assert bw.check("bvmzzin1023") == 0
+        out = capsys.readouterr().out
+        assert "대조할 기준이 없다" in out, f"판정 불가가 조용히 통과했다\n{out}"
+        assert "channel" in out, "무엇을 박아야 하는지 안 알려 준다"
+        # (d) 미등록 blogId 는 대조할 상대 자체가 없다 — 막지 않는다(#54).
         assert bw.check("__unregistered__") == 0
 
     def test_treasury_verdict_names_the_series_and_carries_its_reason(
@@ -42210,11 +42244,24 @@ class TestNoBackfillIsTheDefaultForEveryBlog20260826:
         assert len(pushes) == 5
 
     def test_the_registry_has_no_backfill_opt_in(self):
-        """백필은 **옵션조차 두지 않는다** — 키가 셋뿐이라 opt-in 할 자리가
-        없다. 누가 `backfill` 같은 키를 더하면 여기서 걸린다."""
+        """백필은 **옵션조차 두지 않는다** — 허용 키가 닫혀 있어 opt-in 할
+        자리가 없다. 누가 `backfill` 같은 키를 더하면 여기서 걸린다.
+
+        ⚠️ 2026-09-13(#362): `channel`(실측 채널 제목 = `--check` 의 정체성
+        대조 기준)이 **선택 키**로 늘어 이 단언이 깨졌다 — 같은 키 집합을
+        **형제 테스트 둘이 각자 열거**하고 있었기 때문이다(#38). 목록은 여전히
+        여기 **리터럴**로 둔다: 제품 상수에서 파생시키면 그 상수에 `backfill`
+        을 더하는 변형이 그대로 통과하는 동어반복이 된다(#66).
+        ⚠️ 그리고 이름 열거는 다음 키를 못 잡으므로(#24) 뜻으로도 한 번 더
+        본다 — 백필·기간을 여는 이름이 붙으면 목록과 무관하게 걸린다.
+        """
         import bot.blog_watch as bw
         for b in bw._BLOGS:
-            assert set(b) == {"id", "title", "categories"}, b
+            assert {"id", "title", "categories"} <= set(b) <= {
+                "id", "title", "categories", "channel"}, b
+            for k in b:
+                assert not any(w in k.lower() for w in (
+                    "backfill", "since", "days", "limit", "history")), b
 
     def test_the_contract_is_written_where_it_is_implemented(self):
         """규율로 기억할 일은 코드 옆에 적는다(#119) — 다음 사람이 백필
