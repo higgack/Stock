@@ -26555,6 +26555,79 @@ class TestFlowTrendDiagnosis20260818:
         assert "지문불가" in b and "OSError" in b, b
         assert f"등록 {len(bw._BLOGS)}개" in b, b
 
+    def test_audit_digest_says_which_code_ran(self, tmp_path, monkeypatch):
+        """실수 #365 — 아침 결산이 **어느 코드에서 나왔는지** 말해야 한다.
+
+        2026-09-13 실측: 사용자가 붙여 준 `❌ 3건` 의 판정 줄에 시리즈명이
+        없었는데 그건 #356 이 **그날 14:44 에 배포하며 고친** 증상이다
+        (08:13 실행 = 배포 전 코드). 출력만 봐선 "내 fix 가 안 먹었나" 와
+        "옛 코드다" 가 같은 화면이라, 코드를 태워 재고서야 갈렸다(#360).
+        #364 가 `--check` 에 같은 배너를 심었는데 **매일 읽는 이 결산엔
+        없었다** — 배너는 한 화면에만 달면 그 화면의 증상만 설명한다(#359).
+        """
+        import bot.audit_sweep as A
+
+        mod = "bot.scripts.macro_staleness_audit"
+        base = A.audit_fingerprint([mod])
+        assert len(base) == 10 and "?" not in base, base
+
+        # ① 감사 모듈이 바뀌면 지문이 바뀐다 — 상수를 돌려주면 눈먼
+        #    가드다(실측으로 한 번 그랬다: `pathlib` 미import 가
+        #    NameError 를 except 에 먹여 **이름만 해싱**했다, #12·#91b).
+        import importlib.util
+        src = pathlib.Path(importlib.util.find_spec(mod).origin)
+        orig = src.read_bytes()
+        try:
+            src.write_bytes(orig + b"\n# mutate\n")
+            assert A.audit_fingerprint([mod]) != base, "감사 모듈 변경에 무반응"
+        finally:
+            src.write_bytes(orig)
+        assert A.audit_fingerprint([mod]) == base, "복원했는데 지문이 다르다"
+
+        # ② **한 단계 의존**도 덮는다 — 이 결산의 판정 문구는
+        #    `treasury_yield_client.fresher_reason` 이 만든다(#364d
+        #    지문이 출력을 만든 코드를 안 덮으면 과대 주장).
+        dep = pathlib.Path(
+            importlib.util.find_spec("bot.treasury_yield_client").origin)
+        orig_dep = dep.read_bytes()
+        try:
+            dep.write_bytes(orig_dep + b"\n# mutate\n")
+            assert A.audit_fingerprint([mod]) != base, "한 단계 의존에 무반응"
+        finally:
+            dep.write_bytes(orig_dep)
+
+        # ③ **두 표면 모두**에 실린다(#359·#364) — 텔레그램 결산과 원문.
+        r = {"findings": ["X ❌ 뭔가"], "warn": 0, "errors": [], "fp": "abcdef0123",
+             "raw": "raw"}
+        txt = A.report_text(r)
+        assert "abcdef0123" in txt, txt
+        monkeypatch.setattr(A, "sweep", lambda include_weekly=False: r)
+        monkeypatch.setattr(sys, "argv", ["audit_sweep", "--daily"])
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            A.main()
+        # ⚠️ `"abcdef0123" in out` 으로 재면 **결산 헤더가 대신 만족**시켜
+        # 원문 배너를 지워도 통과한다(실측 M2, #75). 그 줄 하나를 집는다.
+        raw_banner = [ln for ln in buf.getvalue().splitlines()
+                      if ln.startswith("# audit_sweep")]
+        assert raw_banner and "abcdef0123" in raw_banner[0], buf.getvalue()
+
+        # ④ 무음 계약은 그대로 — 결함이 없으면 빈 문자열(배너도 안 나간다).
+        assert A.report_text({"findings": [], "warn": 0, "errors": [],
+                              "fp": "abcdef0123", "raw": ""}) == ""
+
+    def test_audit_fingerprint_marks_partial_coverage(self):
+        """못 읽은 소스가 있으면 **조용히 덜 덮은 지문을 내지 않는다**.
+
+        그러면 "이 지문이 전부를 덮는다" 가 거짓이 된다(#54·#43·#364).
+        """
+        import bot.audit_sweep as A
+
+        fp = A.audit_fingerprint(["bot.scripts.__no_such_audit__"])
+        assert fp.endswith("?"), fp
+
     def test_check_names_the_dependency_branch(self, monkeypatch, capsys):
         """독립 리뷰 2026-09-13 — 의존성이 없는 인터프리터에서 `--check` 가
         **원시 트레이스백**으로 죽어 '도달 실패' 와 구별되지 않았다(#82 처방이

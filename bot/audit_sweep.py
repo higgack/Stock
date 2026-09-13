@@ -132,6 +132,75 @@ def _findings(out: str) -> list[str]:
     return hits
 
 
+def audit_fingerprint(modules: tuple[str, ...] | list[str]) -> str:
+    """이 결산을 만든 **코드의 지문**(sha1 앞 10자) — 실수 #365.
+
+    ⚠️ 왜 필요한가(2026-09-13 실측): 사용자가 아침 결산 `❌ 3건` 을 붙여
+    줬는데 판정 줄에 시리즈명이 없었다 — 그건 #356 이 **그날 14:44 에
+    배포하며 고친** 바로 그 증상이다. 08:13 실행이 배포 전 코드였던 것인데,
+    **출력만 봐선 나도 사용자도 그걸 못 가른다**. 나는 코드를 태워 재고서야
+    갈랐고(#360 설명이 둘이면 둘 다 재라), 그 재기 전까지 "내 fix 가 안
+    먹었나" 와 "옛 코드다" 가 같은 화면이었다.
+    #364 가 `blog_watch --check` 에 같은 배너를 심은 바로 그 이유이고,
+    #359 가 "배너를 만들면 **어느 화면에 뜨나**를 그 자리에서 답하라" 고
+    적은 그 사각이다 — 매일 아침 읽는 이 결산엔 없었다.
+
+    ⚠️ 지문은 **이 결산을 만든 코드**를 덮어야 한다(#364d 과대 주장 금지):
+    `audit_sweep` + 이번 패스가 실제로 돌린 감사 모듈 + 그 감사들이 읽는
+    `bot.*` 모듈(**한 단계**, AST 정적 스캔 — `macro_staleness_audit` 의
+    판정 문구는 `treasury_yield_client.fresher_reason` 이 만든다).
+    **못 보는 축**(#274): 두 단계 이상 떨어진 제품 모듈은 안 덮는다 —
+    지문이 같아도 그 아래가 바뀌었을 수 있다. 손으로 올리는 버전이
+    아니라 소스 해시인 이유는 #119(규율은 여섯 번 졌다).
+    """
+    import ast
+    import hashlib
+    import importlib.util
+    import pathlib          # ⚠️ 빠뜨리면 아래 NameError 가 except 에 먹혀
+                            # **이름만 해싱한 상수 지문**이 나온다(실측: 감사
+                            # 모듈을 고쳐도 지문 불변 = 눈먼 가드, #12·#91b).
+    missing: list[str] = []
+
+    def _src(mod: str) -> bytes:
+        try:
+            spec = importlib.util.find_spec(mod)
+            if spec and spec.origin:
+                return pathlib.Path(spec.origin).read_bytes()
+        except Exception:                                      # noqa: BLE001
+            pass
+        missing.append(mod)
+        return b""
+
+    seen: dict[str, bytes] = {"bot.audit_sweep": _src("bot.audit_sweep")}
+    for m in modules:
+        b = _src(m)
+        seen[m] = b
+        if not b:
+            continue
+        try:                       # 그 감사가 읽는 bot.* 한 단계까지
+            tree = ast.parse(b.decode("utf-8", "replace"))
+        except SyntaxError:
+            continue
+        for n in ast.walk(tree):
+            dep = None
+            if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("bot"):
+                dep = n.module
+            elif isinstance(n, ast.Import):
+                for a in n.names:
+                    if a.name.startswith("bot"):
+                        seen.setdefault(a.name, _src(a.name))
+            if dep:
+                seen.setdefault(dep, _src(dep))
+    h = hashlib.sha1()
+    for name in sorted(seen):      # 순서를 고정해야 지문이 안정적이다
+        h.update(name.encode())
+        h.update(seen[name])
+    # ⚠️ 못 읽은 소스가 있으면 **조용히 덜 덮은 지문을 내지 않는다** —
+    # 그건 "이 지문이 전부를 덮는다" 는 과대 주장이 된다(#364·#54·#43).
+    # `?` 접미로 읽는 쪽이 부분 지문임을 알게 한다.
+    return h.hexdigest()[:10] + ("?" if missing else "")
+
+
 def sweep(include_weekly: bool = False) -> dict:
     """감사 실행 → {"findings": [...], "warn": int, "errors": [...], "raw": str}.
 
@@ -141,9 +210,11 @@ def sweep(include_weekly: bool = False) -> dict:
     errors: list[str] = []
     warn = 0
     chunks: list[str] = []
+    ran: list[str] = []
     for name, module, cadence in AUDITS:
         if cadence == "weekly" and not include_weekly:
             continue
+        ran.append(module)
         out, err = _run_one(module)
         chunks.append(f"───── {name} ({module}) ─────\n{out}")
         if err:
@@ -155,7 +226,7 @@ def sweep(include_weekly: bool = False) -> dict:
             findings.append(f"{name} {f}")
         warn += out.count("⚠️")
     return {"findings": findings, "warn": warn, "errors": errors,
-            "raw": "\n".join(chunks)}
+            "fp": audit_fingerprint(ran), "raw": "\n".join(chunks)}
 
 
 def report_text(result: dict | None = None,
@@ -166,7 +237,11 @@ def report_text(result: dict | None = None,
     if not bad:
         return ""
     now = datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
-    head = (f"🔍 <b>대시보드 감사</b> · {now} KST\n"
+    # ⚠️ 지문은 **두 표면 모두**에 — 텔레그램 결산과 `main()` 원문이
+    # 갈리면 한쪽만 "어느 코드였나" 에 답한다(#359·#364 배너를 한 장에만
+    # 달지 말 것). 사용자가 읽는 건 이 결산이다.
+    fp = r.get("fp") or "지문불가"
+    head = (f"🔍 <b>대시보드 감사</b> · {now} KST · 코드 {fp}\n"
             f"❌ {len(bad)}건"
             + (f" · ⚠️ {r.get('warn', 0)}건은 사람 확인 대상" if r.get("warn") else "")
             + "\n\n")
@@ -186,6 +261,8 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING)
     # 수동 실행은 기본이 전량(주간 포함) — 사람이 직접 돌릴 땐 다 보고 싶다.
     r = sweep(include_weekly="--daily" not in sys.argv)
+    print(f"# audit_sweep · 코드 지문 {r.get('fp') or '지문불가'}"
+          f" · 감사 {len(AUDITS)}종")
     print(r["raw"])
     print("\n" + "=" * 72)
     txt = report_text(r)
