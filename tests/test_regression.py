@@ -6345,7 +6345,15 @@ class TestQuarterlyMultiMarket20260816:
         for s in SITES:
             assert s.url in nav, f"nav 에 없다: {s.nav_label}"
             assert s.nav_label in nav, f"nav 라벨이 없다: {s.nav_label}"
-            assert s.url in blk, f"/sites 에 없다: {s.nav_label}"
+            if s.in_sites:
+                assert s.url in blk, f"/sites 에 없다: {s.nav_label}"
+        # 2026-09-16 계약 변경(#222): 옛 계약은 "레지스트리 전부가 /sites 에
+        # 있다" 였는데, 사용자가 네이버증권을 **대시보드에만** 올려 달라고
+        # 해서 nav 전용 축(`in_sites`)이 생겼다. 남는 보장 = 그 축이 조용히
+        # 커지지 않는다(전부 False 로 바꾸면 파티 검사가 통째로 눈이 먼다).
+        navonly = [s for s in SITES if not s.in_sites]
+        assert len(navonly) <= 2, (
+            f"nav 전용이 {len(navonly)}개 — /sites 파티 검사가 무력해진다")
         # 외부 링크는 새 탭 + opener 차단(우리 페이지를 건드리지 못하게).
         assert nav.count('target="_blank"') == len(SITES)
         assert nav.count('rel="noopener') == len(SITES)
@@ -45267,6 +45275,13 @@ def _fetching_pages() -> list:
             "up": _rows("KR"), "down": [], "ts": "2026-09-08 13:11",
             "source": "네이버"})
         out.append(("naver_highlow", _np.render_highlow_page()))
+        # 거래량 상위(사용자 2026-09-16) — 새 완결 페이지는 CSS 가드 목록에
+        # 같이 넣어야 한다(#299 — 목록 밖 페이지는 영영 안 재진다).
+        P("bot.kr_volume_client.fetch_kr_volume_top", return_value={
+            "rows": [dict(r, high=1.0, low=0.5) for r in _rows("KR")],
+            "ts": "2026-09-08 13:11", "sort": "accumulatedTradingVolume",
+            "reason": "", "has_hl": True, "source": "네이버"})
+        out.append(("naver_kr_volume", _np.render_kr_volume_page()))
         P("bot.twse_client.fetch_tw_movers", return_value={
             "up": _rows("TW"), "down": [], "ts": "2026-09-08 13:11",
             "date": "20260908"})
@@ -58395,9 +58410,15 @@ class TestNaverWidgetSilence20260911:
         a = d._render_sector_movers({"up": [], "down": [], "reason": "원천이 HTTP 403"})
         b = d._render_sector_movers({"up": [{"name": "반도체", "pct": 1.5}],
                                      "down": [], "ts": "09-10 15:30"})
-        for href in ("theme", "kr52", "highlow", "krprepost", "nxt"):
+        # 2026-09-16(#222): 링크 수를 5 로 못박고 있었는데 거래량 상위 탭이
+        # 늘자 깨졌다 — 계약은 "**nav 레지스트리의 KR 탭 전부**가 두 분기에
+        # 똑같이 실린다" 이지 특정 개수가 아니다(#19·#67·#85 스냅샷 단언).
+        from bot.tw_pages import _MARKET_NAV
+        tabs = [k for k, _lb in _MARKET_NAV["KR"]]
+        assert len(tabs) >= 5, f"KR 탭이 조용히 줄었다: {tabs}"
+        for href in tabs:
             assert f'href="{href}"' in a and f'href="{href}"' in b, href
-        assert a.count("<a href=") == b.count("<a href=") == 5
+        assert a.count("<a href=") == b.count("<a href=") == len(tabs)
 
     def test_per_ticker_research_keeps_its_old_pause_behaviour(self, monkeypatch):
         """정지 게이트를 종목별 `fetch_research` 에까지 새로 달면 분석이 조용히 한경
@@ -66131,3 +66152,230 @@ class TestKoreaCompanyFlowBoards20260916:
         assert src.country == "한국" and src.basis == "company"
         assert src.flow == "import"
         assert src.html_file and src.db_file
+
+
+class TestKrVolumeAndSessions20260916:
+    """거래량 상위 보드 + KRX/NXT 세션 창 단일 출처 (사용자 2026-09-16).
+
+    근거: 네이버증권 공지 153 — 2026 개편으로 **KRX 에도 애프터마켓
+    (16:00~20:00)** 이 생겼다. 그때까지 'KR 시간외 = NXT' 가정이 리터럴 창으로
+    박혀 있었다(#38).
+    """
+
+    # ── 세션 창 (공지 153) ──────────────────────────────────────────
+    def test_notice153_windows_are_the_single_source(self):
+        from datetime import datetime
+
+        from bot.kr_session import KST, in_after_market, in_pre_market, phase
+        d = lambda h, m: datetime(2026, 9, 16, h, m, tzinfo=KST)   # noqa: E731
+        # KRX — 애프터마켓 16:00~20:00 (그 전은 '정규장 마감')
+        assert phase("KRX", d(15, 45))[0] == "regular_close"
+        assert phase("KRX", d(16, 0))[0] == "after"
+        assert phase("KRX", d(19, 59))[0] == "after"
+        assert phase("KRX", d(20, 0))[0] == "after_close"
+        # NXT — 애프터마켓이 **20분 먼저** 열린다(15:40). 두 거래소 창이
+        # 다르므로 한 벌로 쓰면 한쪽이 20분을 잃는다.
+        assert phase("NXT", d(15, 45))[0] == "after"
+        assert in_after_market("NXT", d(15, 45)) is True
+        assert in_after_market("KRX", d(15, 45)) is False
+        # KRX 엔 프리마켓이 없다(개장전은 호가접수) — 없는 것을 있는 척하지
+        # 않는다(#43).
+        assert in_pre_market("NXT", d(8, 10)) is True
+        assert in_pre_market("KRX", d(8, 10)) is False
+        assert phase("KRX", d(8, 10))[0] == "preopen"
+        # 주말은 어느 거래소도 휴장
+        assert phase("KRX", datetime(2026, 9, 19, 17, 0, tzinfo=KST))[0] == "closed"
+
+    def test_nxt_board_windows_come_from_the_single_source(self):
+        """옛 리터럴 창(08:00~09:00 · 15:40~20:00)과 **동작이 같아야** 한다 —
+        단일 출처로 옮기는 건 리팩터지 정책 변경이 아니다. 그리고 창을
+        `prepost_client` 에 다시 적으면 KRX 보드와 갈라지므로 소스에
+        리터럴이 남지 않았는지도 본다(#38)."""
+        import ast
+        from datetime import datetime
+
+        from bot.kr_session import KST
+        from bot.prepost_client import _current_kr_session, _in_kr_extended_window
+        d = lambda h, m: datetime(2026, 9, 16, h, m, tzinfo=KST)   # noqa: E731
+        assert _current_kr_session(d(8, 30)) == "pre"
+        assert _current_kr_session(d(8, 55)) == "pre", "프리마켓 마감 10분이 샌다"
+        assert _current_kr_session(d(16, 3)) == "post"
+        assert _current_kr_session(d(11, 0)) == ""
+        assert _in_kr_extended_window(d(16, 3)) is True
+        assert _in_kr_extended_window(d(8, 55)) is True
+        assert _in_kr_extended_window(datetime(2026, 6, 20, 16, 3, tzinfo=KST)) is False
+        src = open("bot/prepost_client.py", encoding="utf-8").read()
+        tree = ast.parse(src)
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.FunctionDef) and fn.name in (
+                    "_in_kr_extended_window", "_current_kr_session"):
+                nums = {n.value for n in ast.walk(fn)
+                        if isinstance(n, ast.Constant) and isinstance(n.value, int)}
+                assert not ({8, 9, 15, 20, 40} & nums), (
+                    f"{fn.name} 이 창을 리터럴로 다시 적고 있다 — "
+                    "kr_session 단일 출처에서 받아야 한다")
+
+    # ── 거래량 상위: 정렬 키를 원천에게 배운다 ────────────────────────
+    def test_volume_sort_key_is_learned_not_invented(self):
+        """이름을 지어내 배선하면 죽은 경로를 배포한다(#151·#345). 원천이
+        미끼 값을 거절하며 적어 보내는 허용값에서 고른다(#350·#353)."""
+        from bot.kr_volume_client import pick_volume_sort
+        allowed = ("changeRate", "accumulatedTradingValue",
+                   "accumulatedTradingVolume", "marketValue")
+        assert pick_volume_sort(allowed) == "accumulatedTradingVolume"
+        # 거래'대금'만 있으면 받지 않는다 — 이름이 비슷하다고 받으면 화면이
+        # 제목과 다른 것을 그린다(#34·#221).
+        assert pick_volume_sort(("changeRate", "accumulatedTradingValue")) == ""
+        assert pick_volume_sort(()) == ""
+        # 누적 표기가 없으면 남은 거래량계를 쓴다(원천이 이름을 바꿔도 산다).
+        assert pick_volume_sort(("changeRate", "tradingVolume")) == "tradingVolume"
+
+    def test_learn_sort_type_asks_the_origin_and_caches(self, tmp_path, monkeypatch):
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        calls = []
+
+        def _fake(sort, page):
+            calls.append(sort)
+            if sort == "__probe__":
+                return [], ("원천이 HTTP 400 · detail: 유효하지 않은 sortType: "
+                            "[__probe__]. 허용값: [changeRate,accumulatedTrading"
+                            "Volume,accumulatedTradingValue,marketValue]")
+            return [{"itemCode": "005930"}], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        got, why = kv.learn_sort_type()
+        assert got == "accumulatedTradingVolume", why
+        assert calls == ["__probe__"], "허용값을 묻지도 않고 값을 지어냈다"
+        # 두 번째 호출은 디스크에서 — 매 렌더 미끼 요청을 쏘지 않는다.
+        calls.clear()
+        assert kv.learn_sort_type()[0] == "accumulatedTradingVolume"
+        assert calls == [], f"캐시를 안 읽고 또 물었다: {calls}"
+
+    def test_origin_without_a_volume_sort_says_so_instead_of_emptying(
+            self, tmp_path, monkeypatch):
+        """허용값에 거래량이 없으면 **빈 화면 + 침묵**이 아니라 사유다(#43·#82)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: (
+            [], "원천이 HTTP 400 · detail: 허용값: [changeRate,marketValue]"))
+        out = kv.fetch_kr_volume_top()
+        assert out["rows"] == []
+        assert "거래량 정렬" in out["reason"] and "changeRate" in out["reason"], out
+
+    def test_rejected_learned_key_is_relearned(self, tmp_path, monkeypatch):
+        """원천이 enum 을 바꾸면 배운 키가 400 이 된다 — 그때 **다시 배운다**.
+        안 그러면 보드가 영영 빈다(#24 목록을 우리가 들고 있으면 새 이름을
+        못 잡는다)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._SORT_CACHE, {"sort": "staleKey"})
+        seen = []
+
+        def _fake(sort, page):
+            seen.append(sort)
+            if sort == "staleKey":
+                return [], "원천이 HTTP 400 · detail: 유효하지 않은 sortType"
+            if sort == "__probe__":
+                return [], ("원천이 HTTP 400 · detail: 허용값: "
+                            "[changeRate,accumulatedTradingVolume]")
+            return [{"itemCode": "005930", "name": "삼성전자",
+                     "stockEndType": "stock", "currentPrice": "80,000",
+                     "accumulatedTradingVolume": 10}], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        out = kv.fetch_kr_volume_top(limit=5)
+        assert "__probe__" in seen, f"거절당하고도 다시 안 배웠다: {seen}"
+        assert out["sort"] == "accumulatedTradingVolume"
+        assert out["rows"], "재학습 뒤 행을 못 채웠다"
+
+    def test_missing_high_low_is_stated_not_silently_blank(
+            self, tmp_path, monkeypatch):
+        """원천 목록이 고가·저가를 안 주면 빈칸만 두지 않는다 — 빈칸은
+        '0' 으로 읽힌다(#43·#181)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._SORT_CACHE, {"sort": "accumulatedTradingVolume"})
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: (
+            [{"itemCode": "005930", "name": "삼성전자", "stockEndType": "stock",
+              "currentPrice": "80,000", "accumulatedTradingVolume": 10}], ""))
+        out = kv.fetch_kr_volume_top(limit=5)
+        assert out["rows"] and out["has_hl"] is False
+        assert "고가" in out["reason"], out["reason"]
+        # 있으면 조용하다(늘 뜨는 각주는 아무것도 안 재는 것과 같다, #25·#260).
+        # ⚠️ 60초 캐시를 비우고 다시 잰다 — 안 비우면 두 번째 단언이 **첫
+        # 결과를 다시 보는 것**이라 아무것도 안 재게 된다(#91b).
+        (tmp_path / kv._CACHE).unlink()
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: (
+            [{"itemCode": "005930", "name": "삼성전자", "stockEndType": "stock",
+              "currentPrice": "80,000", "accumulatedTradingVolume": 10,
+              "highPrice": "81,000", "lowPrice": "79,000"}], ""))
+        out2 = kv.fetch_kr_volume_top(limit=5)
+        assert out2["has_hl"] is True and not out2["reason"], out2["reason"]
+
+    # ── 화면 ────────────────────────────────────────────────────────
+    def test_page_draws_naver_columns_and_shows_the_reason(self, monkeypatch):
+        """네이버 화면 칼럼 그대로 + 사유는 **보이는 줄**로(#228 — 툴팁에만
+        두면 없는 것과 같다)."""
+        import bot.kr_volume_client as kv
+        import bot.naver_pages as np
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda limit=50: {
+            "rows": [{"ticker": "005930.KS", "name": "삼성전자", "price": 80000,
+                      "pct": 1.23, "vol": 1234567, "value": 300.0,
+                      "mcap": 5000000.0, "high": 81000, "low": 79000}],
+            "ts": "09-16 21:00", "sort": "accumulatedTradingVolume",
+            "reason": "원천 목록이 고가·저가를 주지 않아 두 칸은 비어 있습니다",
+            "has_hl": True, "source": "네이버"})
+        html = np.render_kr_volume_page()
+        for col in ("현재가", "등락률", "거래량", "거래대금", "고가", "저가", "시총"):
+            assert col in html, f"네이버 칼럼 누락: {col}"
+        assert "81,000" in html and "79,000" in html
+        body = html[html.index('id="live-root"'):]
+        assert "고가·저가를 주지 않아" in body, "사유가 화면에 안 실렸다"
+        assert 'class="sm-note"' in body, "사유가 보이는 줄이 아니다"
+
+    def test_nav_order_puts_volume_before_the_nxt_movers_board(self):
+        """사용자 지정 순서 — 거래량 상위는 NXT 급등·급락 **앞**. nav 는
+        `tw_pages._MARKET_NAV` 단일 출처이고 `naver_pages` 폴백도 같은
+        구성이어야 한다(갈리면 한 페이지에서 탭이 사라진다)."""
+        import inspect
+
+        from bot.naver_pages import _shell
+        from bot.tw_pages import _MARKET_NAV
+        keys = [k for k, _lb in _MARKET_NAV["KR"]]
+        assert "krvolume" in keys, "nav 단일 출처에 거래량 상위가 없다"
+        assert keys.index("krvolume") < keys.index("krprepost"), keys
+        fb = inspect.getsource(_shell)
+        assert '_t("krvolume"' in fb and fb.index('_t("krvolume"') < fb.index(
+            '_t("krprepost"'), "폴백 toggle 이 단일 출처와 다른 순서다"
+
+    def test_route_and_live_polling_are_wired(self):
+        """페이지를 만들어도 라우트·폴링이 없으면 아무도 못 본다(#20)."""
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert 'raw == "/krvolume"' in srv, "라우트가 없다"
+        assert '"render_kr_volume_page"' in srv
+        assert '"/krvolume"' in srv[:srv.index("def do_GET")], (
+            "no-cache 목록에 없다 — 브라우저가 옛 HTML 을 캐시한다")
+        js = open("bot/live_refresh.py", encoding="utf-8").read()
+        assert "'/krvolume':'KR'" in js, "라이브 폴링 시장 매핑이 없다"
+        assert "'/krvolume':120000" in js, "2분 주기가 배선되지 않았다"
+
+    def test_volume_cache_ttl_is_shorter_than_the_poll_interval(self):
+        """TTL ≥ 주기면 폴링의 절반이 같은 바이트 재서빙이라 '2분마다
+        갱신' 이 거짓이 된다(#36)."""
+        from bot.kr_volume_client import _TTL
+        js = open("bot/live_refresh.py", encoding="utf-8").read()
+        i = js.index("'/krvolume':")
+        poll = int(js[i:js.index("}", i)].split("'/krvolume':")[1].split(",")[0]
+                   .split("}")[0])
+        assert _TTL * 1000 < poll, f"TTL {_TTL}s ≥ 폴링 {poll}ms"
+
+    def test_naver_stock_is_nav_only(self):
+        """사용자 2026-09-16: "대시보드에만 연결해주면 돼"."""
+        from bot.external_sites import SITES, nav_html
+        hit = [s for s in SITES if "stock.naver.com" in s.url]
+        assert len(hit) == 1 and hit[0].nav_label == "네이버증권", hit
+        assert hit[0].in_sites is False, "/sites 파티 검사가 이걸 요구하게 된다"
+        assert "네이버증권" in nav_html()

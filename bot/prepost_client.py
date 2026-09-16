@@ -415,25 +415,21 @@ _KR_REFRESHING = False
 
 
 def _in_kr_extended_window(now_kst: datetime) -> bool:
-    """KST now 가 NXT(넥스트레이드) 장전(08:00–09:00) 또는 장후(15:40–20:00) 창
-    안인가 — 순수. 평일만(주말 휴장). 창 밖이면 직전 스냅샷 fresh(재스캔 0)."""
-    wd, h, m = now_kst.weekday(), now_kst.hour, now_kst.minute
-    if wd >= 5:
-        return False
-    pre = (8, 0) <= (h, m) < (9, 0)
-    post = (15, 40) <= (h, m) < (20, 0)
-    return pre or post
+    """KST now 가 **NXT** 연장 체결 창(프리 08:00–09:00 · 애프터 15:40–20:00)
+    안인가. 창은 `bot.kr_session` **단일 출처**에서 온다 — 2026 개편으로 KRX
+    에도 애프터마켓이 생겨 창이 거래소마다 다르므로, 여기 리터럴로 적으면
+    KRX 보드와 갈라진다(#38, 사용자 2026-09-16 네이버증권 공지 153)."""
+    from bot.kr_session import in_extended_window
+    return in_extended_window("NXT", now_kst)
 
 
 def _current_kr_session(now_kst: datetime | None = None) -> str:
-    """현재 KST 의 NXT 세션 — 'pre'(08:00–09:00)·'post'(15:40–20:00)·''. 순수."""
-    now = now_kst or datetime.now(_KST9)
-    h, m = now.hour, now.minute
-    if (8, 0) <= (h, m) < (9, 0):
+    """현재 KST 의 **NXT** 세션 — 'pre'·'post'·''. 창은 `bot.kr_session`."""
+    from bot.kr_session import phase
+    k = phase("NXT", now_kst)[0]
+    if k in ("pre", "pre_close"):
         return "pre"
-    if (15, 40) <= (h, m) < (20, 0):
-        return "post"
-    return ""
+    return "post" if k == "after" else ""
 
 
 def _kr_over_session(sess: str) -> str | None:

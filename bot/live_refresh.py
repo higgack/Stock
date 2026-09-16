@@ -23,8 +23,10 @@ LIVE_REFRESH_JS = """<script>
   var SLOW={'/kr52':1,'/jp52':1,'/hk52':1,'/tw52':1,'/ushighlow':1,'/twhighlow':1};
   // 美 장전·장후: 서버 _PREPOST_TTL=30분이라 30초 폴링은 60배 over-poll(동일
   // 데이터 재서빙·라이브 착시) → 5분으로(사용자 2026-06-16 C 그룹).
-  var MED={'/usprepost':300000};
-  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR',
+  // /krvolume: 서버 캐시 60s · 사용자 지정 2분 주기(2026-09-16) — 30초 폴링이면
+  // 3/4 가 같은 바이트 재서빙이다.
+  var MED={'/usprepost':300000,'/krvolume':120000};
+  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR','/krvolume':'KR',
     '/usmovers':'US','/ushighlow':'US','/usindustry':'US','/usprepost':'US',
     '/jpmovers':'JP','/jp52':'JP','/hkmovers':'HK','/hk52':'HK',
     '/cnmovers':'CN','/twhighlow':'TW','/tw52':'TW'};

@@ -245,6 +245,30 @@
 | 상관 4지표 계약의 **대상 집합이 조용히 줄지 않는다**(하한 리터럴, #66) | ✅ 자동 | `…::test_the_corr_contract_scope_cannot_silently_shrink` |
 | `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` |
 
+### 거래량 상위 보드 + KRX/NXT 세션 창 (2026-09-16, 실수 #371)
+`tests/test_regression.py::TestKrVolumeAndSessions20260916`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 공지 153 창이 **단일 출처** — KRX 애프터 16:00, NXT 15:40(20분 차) | ✅ 자동 | `…::test_notice153_windows_are_the_single_source` |
+| KRX 엔 프리마켓이 없다 — 없는 것을 있는 척하지 않는다(#43) | ✅ 자동 | 〃 |
+| NXT 보드 창이 옛 리터럴과 **동작 동일** + 소스에 리터럴 잔존 금지(AST, #38) | ✅ 자동 | `…::test_nxt_board_windows_come_from_the_single_source` |
+| 거래량 정렬 키는 **거래대금이 아니다**(#34·#221) | ✅ 자동 | `…::test_volume_sort_key_is_learned_not_invented` |
+| 정렬 키를 **원천에게 배우고** 디스크에 적어 재요청을 안 쏜다(#350·#353) | ✅ 자동 | `…::test_learn_sort_type_asks_the_origin_and_caches` |
+| 허용값에 거래량이 없으면 빈 화면이 아니라 **사유**(#43·#82) | ✅ 자동 | `…::test_origin_without_a_volume_sort_says_so_instead_of_emptying` |
+| 배운 키가 400 이면 **다시 배운다**(#24 — 원천 enum 드리프트) | ✅ 자동 | `…::test_rejected_learned_key_is_relearned` |
+| 고가·저가가 안 오면 **말한다**, 오면 조용하다(#43·#25·#260) | ✅ 자동 | `…::test_missing_high_low_is_stated_not_silently_blank` |
+| 네이버 칼럼 8종 + 사유가 **보이는 줄**(#228) | ✅ 자동 | `…::test_page_draws_naver_columns_and_shows_the_reason` |
+| nav 순서 = 거래량 상위 → NXT 급등·급락(단일 출처·폴백 동일) | ✅ 자동 | `…::test_nav_order_puts_volume_before_the_nxt_movers_board` |
+| 라우트·no-cache·라이브 폴링 배선(#20) | ✅ 자동 | `…::test_route_and_live_polling_are_wired` |
+| 서버 TTL < 화면 폴링 주기(#36 — 아니면 '2분 갱신' 이 거짓) | ✅ 자동 | `…::test_volume_cache_ttl_is_shorter_than_the_poll_interval` |
+| 네이버증권은 **nav 전용**이고 그 축이 조용히 커지지 않는다 | ✅ 자동 | `…::test_naver_stock_is_nav_only` |
+| KR 자식 링크 수 = nav 레지스트리 탭 수(옛 `== 5` 스냅샷 대체, #222) | ✅ 자동 | `TestNaverWidgetSilence20260911::test_reason_branch_keeps_the_child_page_links` |
+
+⚠️ 못 보는 축(#274): **KRX 애프터마켓의 원천**은 아직 재지 않았다 — 네이버
+`overMarketPriceInfo` 가 어느 거래소 체결인지 모르므로 KRX 장후 보드는 배선하지
+않았다. `bot.scripts.kr_board_probe` 가 그걸 재고, 그 출력을 본 뒤에 배선한다.
+
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
 2. `_has_pm_override_trigger`/`_check_pm_override_required` — RSI 경계값(74.9/75.0/25.0/25.1), catalyst

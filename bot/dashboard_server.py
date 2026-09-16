@@ -809,7 +809,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                   "/twhighlow", "/tw52",
                                   "/jp52", "/hk52", "/kr52", "/cn52",
                                   "/hkmovers", "/jpmovers", "/cnmovers",
-                                  "/jphighlow", "/nxt", "/krprepost")
+                                  "/jphighlow", "/nxt", "/krprepost",
+                                  "/krvolume")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -937,6 +938,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if raw == "/krprepost":
             return self._handle_simple_page(
                 "bot.intl_pages", "render_kr_prepost_page")
+        # /krvolume — KR 거래량 상위 (네이버 실시간 랭킹 형식, 2026-09-16).
+        if raw == "/krvolume":
+            return self._handle_simple_page(
+                "bot.naver_pages", "render_kr_volume_page")
         # /jphighlow — 일본 상한가/하한가 (구 경로, jpmovers 로 대체 — 캐시 링크 호환)
         if raw == "/jphighlow":            return self._handle_jp_stop()
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
