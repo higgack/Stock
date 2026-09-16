@@ -1695,7 +1695,9 @@ def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
     # 명시적이라 문장이 섞일 여지가 없다.
     for m in _PIPED_RE.finditer(text):
         vals = tuple(v for v in _QUOTED_RE.findall(m.group(0)) if v.strip())
-        if junk and junk in vals:
+        # 미끼 배제는 괄호 경로와 **같은 기준**(부분문자열)으로 — 정확일치만
+        # 보면 원천이 미끼를 감싸 되읊을 때(`"sortType=__probe__"`) 샌다(#38).
+        if junk and junk in m.group(0):
             continue
         if len(vals) >= 2 and len(vals) > len(best):
             best = vals

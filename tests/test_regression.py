@@ -66892,3 +66892,74 @@ class TestKrBoardProbeMeasured20260916:
         assert "건너뜀" in body, "③ 스킵이 여전히 조용하다"
         # 마지막 줄이 ②③ 을 리터럴로 주장하면 안 된다 — 돈 것만 말해야 한다.
         assert '"②③"' in body and 'done' in body, body[-400:]
+
+    def test_failed_learning_is_cooled_not_retried_every_render(
+            self, tmp_path, monkeypatch):
+        """확정이 안 되는 상태(휴장·원천 장애로 거래량 전부 동률)에서 60초
+        TTL 마다 미끼 1 + 후보 6 = 7콜이 나가면 안 된다(#346 느림의 원인은
+        양이 아니라 실패 재시도 · #116 예산). 그리고 **식으면 다시 시도**
+        하고(#178), 화면은 재시도 시점을 말한다(#43·#165)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        calls = []
+        REJECT = ('원천: sortType: Invalid option: expected one of '
+                  '"quantTop"|"priceTop"|"marketValue" (invalid_value)')
+
+        def _fake(sort, page, **kw):
+            calls.append(sort)
+            if sort == "__probe__":
+                return [], REJECT
+            # 휴장: 거래량이 전부 같아 어느 정렬도 '내림차순' 판정을 못 받는다.
+            return [{"itemCode": f"{i:06d}", "accumulatedTradingVolume": "0"}
+                    for i in range(30)], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        kv.learn_sort_type()
+        tried_first = [c for c in calls if c != "__probe__"]
+        assert len(tried_first) >= 2, calls
+        calls.clear()
+        got, why, rows = kv.learn_sort_type()
+        # ⚠️ 계약은 "**후보 시험**을 안 한다" 이지 "아무것도 안 부른다" 가
+        # 아니다 — 미끼 1콜은 남겨야 H3 폴백(기본 정렬 행)이 산다(#148).
+        assert got == ""
+        assert [c for c in calls if c != "__probe__"] == [], f"냉각 중 시험: {calls}"
+        assert len(calls) <= 1, f"냉각 중 호출이 1콜을 넘었다: {calls}"
+        # ⚠️ 여기서 `rows` 가 빈 것은 정상이다 — 원천이 미끼를 **거절**하면
+        # 그 응답엔 행이 없다(H3 폴백은 원천이 sortType 을 검증하지 **않을**
+        # 때만 성립한다, #148). 그래서 냉각 중 미끼 1콜을 남기는 이유는
+        # 그 폴백 경로를 살려 두는 것이고, 이 픽스처는 그 경로가 아니다.
+        assert rows == [], rows
+        assert "다시 시험" in why, why
+        # 식으면 반드시 다시 시도한다 — 영구 정지는 #178 이 금지한다.
+        monkeypatch.setattr(kv, "_LEARN_COOL", 0)
+        calls.clear()
+        kv.learn_sort_type()
+        assert calls, "냉각이 식었는데 다시 안 물었다"
+
+    def test_successful_relearn_clears_the_cooldown(self, tmp_path, monkeypatch):
+        """냉각 해제 줄이 **무가드**였다(뮤테이션 M8 통과 → #291).
+
+        발화 경로: 배운 키가 거절돼 `force` 재학습이 돌고(#24 원천 드리프트)
+        그게 성공하면, 남아 있던 실패 도장을 **반드시 지워야** 한다 — 안
+        지우면 다음 비-force 학습이 멀쩡한 상태에서 10분간 막힌다(#178
+        주기적으로 발동하는 가드가 계열을 영구히 멈추면 안 된다).
+        """
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._LEARN_FAIL, {"why": "옛 실패 도장"})
+        assert fv._cached(kv._LEARN_FAIL, ttl=kv._LEARN_COOL), "픽스처가 안 섰다"
+
+        def _fake(sort, page, **kw):
+            if sort == "__probe__":
+                return [], ('원천: sortType: Invalid option: expected one of '
+                            '"quantTop"|"marketValue" (invalid_value)')
+            return [{"itemCode": f"{i:06d}",
+                     "accumulatedTradingVolume": str(9000 - i * 13)}
+                    for i in range(30)], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        got, why, _r = kv.learn_sort_type(force=True)
+        assert got == "quantTop", why
+        left = fv._cached(kv._LEARN_FAIL, ttl=kv._LEARN_COOL)
+        assert not (isinstance(left, dict) and left.get("why")), (
+            f"확정했는데 냉각 도장이 남았다: {left}")

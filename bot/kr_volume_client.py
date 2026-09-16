@@ -34,6 +34,12 @@ _HDRS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
          "Accept": "application/json", "Referer": "https://m.stock.naver.com/"}
 _PAGE_SIZE = 50
 _SORT_CACHE = "kr_volume_sort.json"     # 원천에게 배운 정렬 키
+_LEARN_FAIL = "kr_volume_learn_fail.json"   # 학습 실패 냉각(아래 _LEARN_COOL)
+_LEARN_COOL = 600       # 10분. 학습은 실패해도 **캐시되지 않으므로**, 확정이
+#   안 되는 상태(휴장·원천 장애로 거래량이 전부 0·동률 → 어느 후보도 내림차순
+#   판정을 못 받음)에서는 60초 TTL 마다 미끼 1 + 후보 6 = **7콜**이 나간다.
+#   느림의 원인은 양이 아니라 실패 재시도다(#346·#349) — 짧게만 믿고(#303·#152
+#   길게 믿으면 장애 한 번이 하루를 지운다) 식으면 반드시 다시 시도한다(#178).
 _CACHE = "kr_volume_top.json"
 _TTL = 60                               # 60초 — 화면 폴링 2분보다 **짧아야** 매
 #   주기가 캐시에 걸리지 않는다(#36 TTL < 주기). 2분으로 두면 절반이 같은
@@ -171,6 +177,12 @@ def learn_sort_type(force: bool = False) -> tuple[str, str, list]:
             return "", "원천이 허용값을 적어 보냈지만 사유 길이 제한에 잘렸습니다", rows
         return "", (why or "원천이 미끼 값을 거절하지 않았습니다 — "
                     "이 엔드포인트는 sortType 을 검증하지 않는 것으로 보입니다"), rows
+    # 확정이 안 되는 상태에서 매 렌더 7콜을 쏘지 않는다(#346·#116). 진단·
+    # 재학습(`force`)은 이 냉각을 타지 않는다 — 프로브는 계속 재야 한다(#345c).
+    if not force:
+        f = _cached(_LEARN_FAIL, ttl=_LEARN_COOL)
+        if isinstance(f, dict) and f.get("why"):
+            return "", f"{f['why']} · 최대 {_LEARN_COOL // 60}분 뒤 다시 시험합니다", rows
     # 이름으로 고르지 않는다 — 후보를 **실제로 불러** 거래량 내림차순인
     # 것을 고른다(#46·#151·#345. 2026-09-16 실측: 허용값 12종에 'volume' 이
     # 든 이름이 하나도 없다). 예산 안에서 첫 확정을 쓰고, 하나도 확정 안 되면
@@ -181,12 +193,15 @@ def learn_sort_type(force: bool = False) -> tuple[str, str, list]:
         tried.append(cand)
         if is_volume_desc(got):
             _cache_write(_SORT_CACHE, {"sort": cand, "allowed": list(vals)})
+            _cache_write(_LEARN_FAIL, {})       # 확정했으면 냉각을 푼다(#72)
             log.info("kr_volume: 실측으로 정렬 키 확정 %s (허용 %d종 · 시험 %d종)",
                      cand, len(vals), len(tried))
             return cand, "", got
-    return "", ("원천이 밝힌 허용값 %d종 중 %d종을 실제로 불러 봤지만 "
+    why_fail = ("원천이 밝힌 허용값 %d종 중 %d종을 실제로 불러 봤지만 "
                 "거래량 내림차순인 것이 없었습니다(시험: %s)"
-                % (len(vals), len(tried), ", ".join(tried))), rows
+                % (len(vals), len(tried), ", ".join(tried)))
+    _cache_write(_LEARN_FAIL, {"why": why_fail})
+    return "", why_fail, rows
 
 
 def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:
