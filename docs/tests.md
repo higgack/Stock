@@ -321,6 +321,13 @@
 | 정렬 키는 **실호출 실측**으로 고른다 — 이름만으론 채택 금지(#46·#25·#151) | ✅ 자동 | `TestKrVolumeAndSessions20260916::test_name_alone_never_decides_the_sort_key` |
 | 프로브가 dict·list 값을 **접지 않는다**(#156·#338·#350 자르는 자리가 결정을 가림) | ✅ 자동 | `…::test_probe_does_not_fold_dict_values` |
 | 섹션을 건너뛰면 **건너뛴 사실을 적고** 마지막 줄은 돈 것만 말한다(#54·#286) | ✅ 자동 | `…::test_probe_says_when_it_skipped_a_section` |
+| 학습 실패는 **10분만** 믿고(#303·#152) 남은 시간을 말한다(#202) | ✅ 자동 | `…::test_repeated_failures_are_cooled_down_not_retried_every_render` · `…::test_cooldown_note_says_remaining_not_the_cap` |
+| 확정하면 냉각을 푼다 — 영구 정지 금지(#178) | ✅ 자동 | `…::test_successful_relearn_clears_the_cooldown` |
+| 일시정지(rank 0)는 실패가 아니라 **판정 보류** — 도장을 안 찍는다(#79·#143·#345) | ✅ 자동 | `…::test_a_transient_failure_is_named_and_not_mistaken_for_no_volume_sort` |
+| **M2** 5행으로는 시총순과 거래량순이 안 갈린다 — `min_rows` 발화(#91·#291) | ✅ 자동 | `…::test_five_rows_cannot_decide_volume_order` |
+| **M2** 짝: `_TRIAL_ROWS ≥ 판정 하한` + `size=` 배선(#20·#171) | ✅ 자동 | `…::test_trial_asks_for_enough_rows_to_decide` |
+| **M4** 동시 학습은 하나만 — 탭 N 개가 7N 콜을 쏘지 않는다(#113) | ✅ 자동 | `…::test_concurrent_learns_run_the_body_once` |
+| 파이프 경로의 미끼 배제·1항목 거부에 **발화 경로**를 준다(#291·#38) | ✅ 자동 | `…::test_piped_list_that_echoes_our_junk_is_not_the_allowed_list` · `…::test_piped_pair_with_a_blank_side_is_not_a_list` |
 
 ⚠️ 못 보는 축(#274): **KRX/NXT 체결 귀속은 여전히 판정 불가**다. 2026-09-16
 실측에서 `stockExchangeType`·`integratedPriceInfo` 가 접혀 찍혀 venue 축 유무를

@@ -1666,7 +1666,7 @@ _BRACKET_RE = re.compile(r"\[([^\[\]]{2,400})\]")
 # 이은 따옴표 목록**을 준다 — 괄호가 없어 `_BRACKET_RE` 가 한 글자도 못 읽었고
 # 진단이 `❌ 허용값을 못 읽었습니다` 로 끝났다. 한 원천이 오류 모양을 하나만
 # 쓴다고 가정하지 말 것(#73·#350 zod 배열 · #352 RFC7807 에 이어 셋째).
-_PIPED_RE = re.compile(r'"([^"\n]{1,60})"(?:\s*\|\s*"([^"\n]{1,60})")+')
+_PIPED_RE = re.compile(r'"(?:[^"\n]{1,60})"(?:\s*\|\s*"(?:[^"\n]{1,60})")+')
 _QUOTED_RE = re.compile(r'"([^"\n]{1,60})"')
 
 
@@ -1681,7 +1681,9 @@ def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
     ⚠️ 원천은 **봉투를 한 벌만 쓰지 않는다**(#73). 2026-09-16 실측의
     `domestic/stock/list` 는 괄호 없이
     ``Invalid option: expected one of "marketValue"|"up"|…`` 로 준다 —
-    파이프로 이은 따옴표 목록을 먼저 보고, 없을 때만 괄호 목록을 본다.
+    두 봉투를 **둘 다 훑고 항목 수로 겨루게** 한다. 파이프를 먼저 보고 거기서
+    끝내면, 같은 응답이 다른 파라미터(`category` 등)도 거절할 때 그쪽의 2개
+    짜리 파이프 목록이 12개짜리 괄호 목록을 가린다(실측, 독립 리뷰 M1).
 
     ⚠️ **어구로 찾지 않는다**(`허용값:` 는 이 원천의 한국어 문구일 뿐이고
     원천이 언어를 바꾸면 통째로 눈이 먼다, #24·#65 문자열이 아니라 구조로).
@@ -1701,8 +1703,10 @@ def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
             continue
         if len(vals) >= 2 and len(vals) > len(best):
             best = vals
-    if best:
-        return best
+    # ⚠️ 여기서 **조기 반환하면 안 된다**(독립 리뷰 2026-09-16 M1): 같은 응답이
+    # 다른 파라미터(`category` 등)도 함께 거절하면 그쪽의 2개짜리 파이프 목록이
+    # 12개짜리 괄호 목록을 이긴다(실측: `('all','kospi')` 가 sortType 12종을
+    # 가렸다). 두 경로가 같은 `best` 를 놓고 **항목 수로** 겨루게 한다.
     for m in _BRACKET_RE.finditer(text):
         inner = m.group(1)
         if junk and junk in inner:
@@ -1727,6 +1731,13 @@ def list_truncated(brief: str) -> bool:
     결정을 가리지 않는가). 판정은 어구가 아니라 **구조**로(#65).
     """
     s = str(brief or "")
+    # 파이프 목록도 같은 이유로 잘린다 — 괄호가 없어 위 판정이 못 본다
+    # (독립 리뷰 2026-09-16 H2 실측: 정렬 키가 10종 더 늘면 `quantTop` 이
+    # 잘려 나가는데 `list_truncated` 는 False 라, 화면이 "허용값 17종 중
+    # 6종을 불러 봤지만…" 이라며 **우리가 자른 것을 원천 탓으로** 말한다).
+    # `_sanitize` 는 자를 때 `…` 를 붙이므로 그것이 구조 신호다(#65).
+    if _PIPED_RE.search(s) and s.rstrip().endswith(("…", "...")):
+        return True
     head = s.rfind("[")
     return head >= 0 and "]" not in s[head:]
 

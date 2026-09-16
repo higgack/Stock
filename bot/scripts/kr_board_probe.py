@@ -115,21 +115,28 @@ def _section_sorts():
 
 
 def _section_rows(vals):
-    print("\n③ 후보 정렬 키 실호출 — 행 수와 **전 키**")
-    # 거래량/거래대금계로 **보이는** 것만 시험한다 — 어느 것이 맞는지는
-    # 이름이 아니라 실호출 결과가 정한다(#25).
-    cands = [v for v in vals
-             if any(w in v.lower() for w in ("volume", "trade", "amount", "value"))]
-    if not cands:
-        print("   ⚠️ 허용값에 거래량계로 보이는 키가 없습니다 — 전 키를 시험합니다.")
-        cands = list(vals)
-    for v in cands[:8]:
-        d, why = _get(_LIST, sortType=v, category="all", page=1, pageSize=5)
+    print("\n③ 후보 정렬 키 실호출 — 제품과 **같은 선택기·같은 판정**")
+    # ⚠️ v1 은 여기서 `("volume","trade","amount","value")` 이름 필터를 자체로
+    # 갖고 있었다. 실측 허용값에서 그건 `marketValue`(='value' 포함) **하나만**
+    # 고르고 — 정작 `quantTop` 은 한 번도 안 불렀다. 제품에서 #46·#291 을 이유로
+    # 걷어낸 바로 그 이름 판정이 계측에만 남아 있었고, 그래서 감사와 화면이
+    # 다른 선택기를 쓰고 있었다(#35 감사는 화면이 쓰는 그 선택기를 부를 것).
+    # 이제 제품 함수를 그대로 부르고 판정도 제품의 `is_volume_desc` 가 한다.
+    import bot.kr_volume_client as kv
+    cands = list(kv.volume_sort_candidates(tuple(vals)))[:kv._TRIAL_BUDGET]
+    print(f"   시험 순서(제품 volume_sort_candidates, 예산 {kv._TRIAL_BUDGET}): "
+          f"{', '.join(cands)}")
+    for v in cands:
+        d, why = _get(_LIST, sortType=v, category="all", page=1,
+                      pageSize=kv._TRIAL_ROWS)
         rows = _rows(d)
         if not rows:
             print(f"   · {v:<22} 0행 — {why or '사유 없음'}")
             continue
-        print(f"   · {v:<22} {len(rows)}행")
+        # 판정을 여기서 재구현하면 제품과 갈라진다(#35·#169).
+        verdict = kv.is_volume_desc(rows)
+        mark = "✅ 거래량 내림차순" if verdict else "❌ 거래량 내림차순 아님"
+        print(f"   · {v:<22} {len(rows)}행 — {mark}")
         first = rows[0] if isinstance(rows[0], dict) else {}
         print(f"       전 키: {', '.join(sorted(first))}")
         print(f"       표본: {json.dumps(first, ensure_ascii=False)[:600]}")
