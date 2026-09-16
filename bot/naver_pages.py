@@ -395,6 +395,10 @@ def render_kr_volume_page() -> str:
     rows = d.get("rows") or []
     ts = _html.escape(str(d.get("ts") or ""))
     reason = _html.escape(str(d.get("reason") or ""))
+    if d.get("stale"):
+        # 저장분을 서빙 중이면 화면이 그렇게 말한다 — 침묵하면 '지금 값'으로
+        # 읽힌다(#306·#335·#43, 독립 리뷰 2026-09-16 M8).
+        reason = ("💾 " + reason) if reason else "💾 아래는 직전 저장분입니다"
     note = ""
     if reason:
         # 값이 없거나 일부가 빈 이유는 **보이는 줄**로(#43·#228 — 툴팁에만

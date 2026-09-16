@@ -227,6 +227,13 @@ def _naver_kr_volume() -> tuple[bool, str]:
     except Exception as exc:                                   # noqa: BLE001
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
     if not rows:
+        # ⚠️ 일시정지는 **안 물어본 것**이지 실패가 아니다 — 형제 점검들은
+        # `requests` 를 직접 쳐서 정지와 무관한데 이 줄만 ❌ 를 내면
+        # `/naverpause` 가 매일 못 고칠 ❌ 를 만든다(#260·#279·#346,
+        # 독립 리뷰 2026-09-16 M7).
+        from bot.naver_diag import PAUSED
+        if PAUSED in (why or ""):
+            return True, "⏸ 네이버 일시정지 중 — 판정 보류"
         return False, f"sortType={sort} 0행 — {why or '사유 없음'}"
     return True, f"sortType={sort} {len(rows)}행"
 

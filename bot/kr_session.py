@@ -98,9 +98,24 @@ def in_extended_window(venue: str, now: datetime | None = None) -> bool:
 
 def window_label(venue: str) -> str:
     """화면 각주용 — 그 거래소의 체결 창을 사람이 읽는 문장으로. 창을
-    화면에 리터럴로 적으면 이 표와 갈라진다(#55)."""
-    parts = []
+    화면에 리터럴로 적으면 이 표와 갈라진다(#55).
+
+    ⚠️ **`in_extended_window` 와 같은 구간을 말해야 한다.** 옛 판은 `pre`·
+    `after` 만 적어 NXT 프리마켓을 `08:00–08:50` 으로 줄여 말했는데, 수집기는
+    `pre_close`(08:50~09:00)에도 돌고 있었다 — 08:55 에 빈 화면이 "그 창에
+    확인해 주세요" 라며 **이미 닫혔다고** 말한다(독립 리뷰 2026-09-16 H5 ·
+    #55 설명이 코드와 어긋나면 버그). 그래서 라벨도 같은 술어에서 파생하고,
+    맞닿은 구간은 하나로 잇는다.
+    """
+    spans = []
     for sh, sm, eh, em, k, lb in _table(venue):
-        if k in ("pre", "after"):
-            parts.append(f"{lb} {sh:02d}:{sm:02d}–{eh:02d}:{em:02d}")
+        if k not in ("pre", "pre_close", "after"):
+            continue
+        s_, e_ = sh * 60 + sm, eh * 60 + em
+        if spans and spans[-1][1] == s_:        # 맞닿았으면 이어 붙인다
+            spans[-1] = (spans[-1][0], e_, spans[-1][2])
+        else:
+            spans.append((s_, e_, "프리마켓" if k.startswith("pre") else lb))
+    parts = [f"{lb} {s_ // 60:02d}:{s_ % 60:02d}–{e_ // 60:02d}:{e_ % 60:02d}"
+             for s_, e_, lb in spans]
     return " · ".join(parts) + " KST"

@@ -616,13 +616,14 @@ def stock_panel(title: str, items: list, tid: str, market: str,
             _pct_cell(pct),
         ]
         value = it.get("value")
-        if show_hl:
-            cells.append(f'<td class="num">{_fmt_price(it.get("high"), market, with_sym=False)}</td>')
-            cells.append(f'<td class="num">{_fmt_price(it.get("low"), market, with_sym=False)}</td>')
         if show_vol:
             cells.append(f'<td class="num">{_fmt_vol(vol)}</td>')
         if show_value:
             cells.append(f'<td class="num">{fmt_mcap(value, market, with_sym=False)}</td>')
+        if show_hl:
+            # 네이버 실시간 랭킹 칼럼 순서 — 거래량·거래대금 **뒤**, 시총 앞.
+            cells.append(f'<td class="num">{_fmt_price(it.get("high"), market, with_sym=False)}</td>')
+            cells.append(f'<td class="num">{_fmt_price(it.get("low"), market, with_sym=False)}</td>')
         if show_mcap:
             cells.append(f'<td class="num">{fmt_mcap(mcap, market, with_sym=False)}</td>')
         if show_ind:
@@ -643,13 +644,13 @@ def stock_panel(title: str, items: list, tid: str, market: str,
              '<th class="srt" data-key="sym" data-type="text">종목</th>',
              f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가{cur_h}</th>',
              '<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>']
-    if show_hl:
-        heads.append(f'<th class="srt" data-key="hi" data-type="num" style="text-align:right">고가{cur_h}</th>')
-        heads.append(f'<th class="srt" data-key="lo" data-type="num" style="text-align:right">저가{cur_h}</th>')
     if show_vol:
         heads.append(f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">{vol_label}</th>')
     if show_value:
         heads.append(f'<th class="srt" data-key="value" data-type="num" style="text-align:right">{value_label}{cur_h}</th>')
+    if show_hl:
+        heads.append(f'<th class="srt" data-key="hi" data-type="num" style="text-align:right">고가{cur_h}</th>')
+        heads.append(f'<th class="srt" data-key="lo" data-type="num" style="text-align:right">저가{cur_h}</th>')
     if show_mcap:
         heads.append(f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총{cur_h}</th>')
     if show_ind:

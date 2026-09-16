@@ -66233,6 +66233,10 @@ class TestKrVolumeAndSessions20260916:
         assert pick_volume_sort(("changeRate", "tradingVolume")) == "tradingVolume"
 
     def test_learn_sort_type_asks_the_origin_and_caches(self, tmp_path, monkeypatch):
+        """⚠️ 계약 변경(2026-09-16 리뷰 H3, #222): 반환이 (키, 사유) → **(키,
+        사유, 미끼 응답 행)** 이다. 미끼가 거절되지 않으면 그 응답이 정상
+        목록이라 버리면 보드가 영영 빈다(#148). 남는 보장(허용값을 묻고서
+        고른다 · 두 번째 호출은 디스크)은 그대로 잰다."""
         import bot.finviz_client as fv
         import bot.kr_volume_client as kv
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
@@ -66246,7 +66250,7 @@ class TestKrVolumeAndSessions20260916:
                             "Volume,accumulatedTradingValue,marketValue]")
             return [{"itemCode": "005930"}], ""
         monkeypatch.setattr(kv, "_fetch", _fake)
-        got, why = kv.learn_sort_type()
+        got, why, _rows = kv.learn_sort_type()
         assert got == "accumulatedTradingVolume", why
         assert calls == ["__probe__"], "허용값을 묻지도 않고 값을 지어냈다"
         # 두 번째 호출은 디스크에서 — 매 렌더 미끼 요청을 쏘지 않는다.
@@ -66445,10 +66449,14 @@ class TestKrxAfterMarketBoard20260916:
         assert pp.kr_prepost_status("NXT") == {}, "상태 파일이 섞였다"
 
     def test_one_venue_refresh_does_not_block_the_other(self, monkeypatch):
-        """전역 불리언 하나면 KRX 스캔 중 NXT 갱신이 통째로 막힌다."""
+        """전역 불리언 하나면 KRX 스캔 중 NXT 갱신이 통째로 막힌다.
+
+        ⚠️ 스텁은 `pp._threading.Thread` 가 아니라 **모듈 로컬 `_spawn`** 에
+        건다(리뷰 L18, #222) — stdlib `threading` 을 프로세스 전역으로 갈면
+        같은 실행의 다른 테스트가 스레드를 못 띄운다(#30)."""
         import bot.prepost_client as pp
         started = []
-        monkeypatch.setattr(pp._threading, "Thread",
+        monkeypatch.setattr(pp, "_spawn",
                             lambda **kw: type("T", (), {
                                 "start": lambda _s, n=kw.get("name"): started.append(n)})())
         pp._KR_REFRESHING.clear()
@@ -66528,6 +66536,231 @@ class TestKrxAfterMarketBoard20260916:
         assert 'raw == "/krafter"' in srv and '"render_kr_after_page"' in srv
         assert '"/krafter"' in srv[:srv.index("def do_GET")], "no-cache 목록에 없다"
         js = open("bot/live_refresh.py", encoding="utf-8").read()
-        assert "'/krafter':'KR'" in js and "'/krafter':120000" in js
+        assert "'/krafter':'KR'" in js
+        # 리뷰 L17(#222): 옛 계약은 `'/krafter':120000` 이었는데 그건 서버
+        # _KR_PREPOST_TTL(120초)과 **같아** 재집계가 2~4분으로 흔들린다(#36).
+        # 사용자 요구는 NXT 와 '똑같이' 이므로 형제 /krprepost 와 같은 축
+        # (MED 미등록 = 기본 30초)에 둔다 — 단일 출처(#38).
+        import re as _re
+        med = _re.search(r"var MED=\{([^}]*)\}", js).group(1)
+        assert "/krafter" not in med, f"형제와 다른 폴링 축에 올랐다: {med}"
+        assert "/krprepost" not in med, med
+        import bot.prepost_client as _pp
+        assert _pp._KR_PREPOST_TTL > 30, "폴링(30초)이 서버 TTL 보다 길면 안 된다"
         tg = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert '"render_kr_after_page"' in tg, "워머에 없다 — 방문해야만 채워진다"
+
+
+class TestKrBoardsReviewFixes20260916:
+    """독립 리뷰(2026-09-16) 지적 반영분 — 각 항목이 **실제로 발화하는**
+    상태를 재현해 값으로 잰다(#91·#291)."""
+
+    def _naver_rows(self, n, etf=0):
+        return [{"itemCode": f"{i:06d}",
+                 "name": ("KODEX%d" % i if i < etf else "종목%d" % i),
+                 "stockEndType": ("etf" if i < etf else "stock"),
+                 "currentPrice": "1,000", "accumulatedTradingVolume": 10,
+                 "stockExchangeType": "KOSPI"} for i in range(n)]
+
+    # ── B1: 겹치는 창에서 같은 스캔을 두 번 하지 않는다 ─────────────
+    def test_overlapping_venues_share_one_scan(self, tmp_path, monkeypatch):
+        """리뷰 B1 — `_one()` 은 거래소와 무관하다. 보드마다 스캔하면 16:00~
+        20:00 네 시간 동안 네이버 콜이 2배가 되고, 그게 레이트리밋을 건드리면
+        `naver_paused()` 로 **전 네이버 보드**가 죽는다."""
+        import bot.finviz_client as fv
+        import bot.prepost_client as pp
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_kr_movers_universe",
+                            lambda: (["005930.KS"], {"005930.KS": "삼성전자"}, {}))
+        calls = []
+
+        def _q(t):
+            calls.append(t)
+            return {"over_session": "AFTER_MARKET", "over_price": 81000.0,
+                    "reg_close": 80000.0, "over_volume": 5000,
+                    "over_value": 4.05e8, "volume": 9_000_000}
+        monkeypatch.setattr("bot.naver_quote.fetch_kr_quote", _q)
+        monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
+        monkeypatch.setattr(pp, "_shared_venues", lambda v, *a: ("NXT", "KRX"))
+        pp._compute_kr_prepost("NXT")
+        assert len(calls) == 1
+        # 한 번 스캔했는데 **두 보드 모두** 값이 있어야 한다.
+        for v in ("NXT", "KRX"):
+            snap = pp.fetch_kr_prepost_movers(v)
+            assert snap.get("up"), f"{v} 보드가 비었다 — 스캔을 또 해야 한다"
+            assert snap.get("venue") == v, snap.get("venue")
+            assert snap.get("scan_venue") == "NXT", "어느 스캔에서 왔는지 안 남겼다"
+        assert len(calls) == 1, f"보드를 읽자 또 스캔했다: {len(calls)}"
+
+    def test_sharing_only_when_the_session_matches(self):
+        """세션이 다르면 공유하지 않는다 — NXT 프리(08:30)에 KRX 는 닫혀 있다."""
+        from datetime import datetime
+
+        from bot.kr_session import KST
+        from bot.prepost_client import _shared_venues
+        d = lambda h, m: datetime(2026, 9, 16, h, m, tzinfo=KST)   # noqa: E731
+        assert set(_shared_venues("NXT", d(16, 30))) == {"NXT", "KRX"}
+        assert _shared_venues("NXT", d(15, 45)) == ("NXT",)
+        assert _shared_venues("NXT", d(8, 30)) == ("NXT",)
+
+    # ── H5: 화면 창 문구 = 수집기 창 ────────────────────────────────
+    def test_window_label_matches_the_scanner_window(self):
+        """리뷰 H5 — 라벨이 08:50 에서 끊기면 08:55 빈 화면이 '창이 닫혔다'고
+        거짓말한다(수집기는 그때 돌고 있다)."""
+        from datetime import datetime
+
+        from bot.kr_session import KST, in_extended_window, window_label
+        lb = window_label("NXT")
+        assert "08:00–09:00" in lb, lb
+        assert "08:50" not in lb, lb
+        assert in_extended_window("NXT", datetime(2026, 9, 16, 8, 55, tzinfo=KST))
+        assert window_label("KRX") == "애프터마켓 16:00–20:00 KST"
+
+    # ── H4 + M6: 화면 문구가 거래소를 제대로 말하나 ────────────────
+    def test_krx_banners_and_window_come_from_the_venue(self, monkeypatch):
+        """리뷰 H4(배너가 'NXT' 리터럴) · M6(창 문구가 이웃 줄로 대신 만족).
+        **부제만 잘라서** 본다(#55)."""
+        import bot.intl_pages as ip
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
+            "up": [], "down": [], "ts": "", "session": "", "venue": "KRX"})
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {
+            "state": "failed", "ts_label": "09-16 17:00",
+            "detail": "universe 실패(네이버 무버 0)"})
+        html = ip.render_kr_after_page()
+        # ⚠️ 라벨은 "집계 실패" **앞**에 온다 — 거기서 자르면 정의상 못 잡는다
+        # (#91b 재는 대상이 맞나). 배너 블록 자체를 집는다.
+        banner = html[html.index("최근 "):][:200]
+        assert "NXT" not in banner, banner
+        assert "KRX 애프터마켓 집계 실패" in banner, banner
+        sub = html[html.index('id="live-sub"'):html.index("</div>",
+                                                          html.index('id="live-sub"'))]
+        assert "16:00–20:00" in sub, f"부제가 KRX 창을 안 적었다: {sub}"
+        assert "15:40" not in sub, f"부제가 NXT 창을 적었다: {sub}"
+
+    # ── H2/H3/M8/M9: 거래량 상위 ───────────────────────────────────
+    def test_volume_board_overfetches_so_the_filter_does_not_shrink_it(
+            self, tmp_path, monkeypatch):
+        """리뷰 H2 — 거래량 랭킹은 ETF 가 절반이다. 원시 수로 세면 50을
+        요청하고 25를 그린다(#45 총계·소계)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._SORT_CACHE, {"sort": "accumulatedTradingVolume"})
+        monkeypatch.setattr(kv, "_fetch",
+                            lambda s, p: (self._naver_rows(50, etf=25), ""))
+        out = kv.fetch_kr_volume_top(50)
+        assert len(out["rows"]) == 50, len(out["rows"])
+        assert out["excluded"] == 50 and "ETF" in out["reason"], out["reason"]
+
+    def test_probe_rows_are_used_instead_of_a_blank_board(
+            self, tmp_path, monkeypatch):
+        """리뷰 H3 — 원천이 sortType 을 검증 안 하면 미끼 응답이 곧 정상
+        목록이다. 그걸 버리면 보드가 영영 빈다(#148)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: (self._naver_rows(50), ""))
+        out = kv.fetch_kr_volume_top(50)
+        assert out["rows"], "이미 받은 목록을 버렸다"
+        assert "기본 정렬" in out["reason"], out["reason"]
+        assert out["partial"] is True
+        assert not (tmp_path / kv._CACHE).exists(), "기본 정렬 결과를 캐시했다"
+
+    def test_partial_scan_is_not_cached_and_names_its_own_reason(
+            self, tmp_path, monkeypatch):
+        """리뷰 M9 — 반쪽 스캔을 완전본으로 굽지 말 것(#280), 그리고 사유를
+        한 변수에 덮어쓰지 말 것(#207)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._SORT_CACHE, {"sort": "accumulatedTradingVolume"})
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: (
+            (self._naver_rows(50), "") if p == 1 else ([], "원천이 HTTP 500")))
+        out = kv.fetch_kr_volume_top(100)
+        assert out["partial"] is True
+        assert "500" in out["reason"] and "일부만" in out["reason"], out["reason"]
+        assert not (tmp_path / kv._CACHE).exists(), "부분을 캐시했다"
+
+    def test_fetch_failure_falls_back_to_the_snapshot_and_says_so(
+            self, tmp_path, monkeypatch):
+        """리뷰 M8 — 정렬 키를 아는데 원천이 5xx 면 90초 전 저장분이 있는데도
+        빈 화면이었다. 그리고 저장분이라는 사실을 화면이 말해야 한다."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        import bot.naver_pages as np
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._SORT_CACHE, {"sort": "accumulatedTradingVolume"})
+        fv._cache_write(kv._CACHE, {"rows": [{"ticker": "005930.KS",
+                                              "name": "삼성전자", "price": 1,
+                                              "pct": 1.0}],
+                                    "ts": "09-16 20:00", "sort": "x"})
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: ([], "원천이 HTTP 500"))
+        monkeypatch.setattr(kv, "_TTL", 0)          # 신선 캐시 경로 배제
+        out = kv.fetch_kr_volume_top(50)
+        assert out["rows"] and out["stale"] is True, out
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda limit=50: out)
+        html = np.render_kr_volume_page()
+        body = html[html.index('id="live-root"'):]
+        assert "저장분" in body, "저장분 서빙을 화면이 말하지 않는다"
+
+    def test_volume_sort_rejects_lookalike_keys(self):
+        """리뷰 L15 — `volumePower`(체결강도)는 거래량 랭킹이 아니다(#34)."""
+        from bot.kr_volume_client import pick_volume_sort
+        assert pick_volume_sort(("volumePower", "changeRate")) == ""
+        assert pick_volume_sort(
+            ("volumePower", "accumulatedTradingVolume")) == "accumulatedTradingVolume"
+
+    def test_relearn_clears_the_dead_key(self, tmp_path, monkeypatch):
+        """리뷰 L16 — 재학습이 실패해도 죽은 키가 30일 살아남으면 안 된다."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._SORT_CACHE, {"sort": "staleKey"})
+        monkeypatch.setattr(kv, "_fetch", lambda s, p: ([], "원천이 HTTP 500"))
+        got, why, _rows = kv.learn_sort_type(force=True)
+        assert got == "" and why
+        assert not (fv._cached(kv._SORT_CACHE, ttl=30 * 86400) or {}).get("sort")
+
+    # ── M7/M10: /health ────────────────────────────────────────────
+    def test_health_row_is_registered_and_pause_is_not_a_failure(
+            self, tmp_path, monkeypatch):
+        """리뷰 M10(등록 자체가 무가드) · M7(일시정지에 ❌)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        import bot.source_health as sh
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        src = open("bot/source_health.py", encoding="utf-8").read()
+        run_body = src[src.index("def run("):]
+        assert "_naver_kr_volume()" in run_body, "점검이 run() 에 등록되지 않았다"
+        fv._cache_write(kv._SORT_CACHE, {"sort": "accumulatedTradingVolume"})
+        monkeypatch.setattr(fv, "naver_paused", lambda: True)
+        ok, detail = sh._naver_kr_volume()
+        assert ok is True and "일시정지" in detail, (ok, detail)
+
+    # ── M11: 스레드 생성이 던져도 그 venue 가 영구 정지하지 않는다 ──
+    def test_failed_thread_start_does_not_wedge_the_venue(self, monkeypatch):
+        """리뷰 M11 — `start()` 가 던지면 `finally` 가 안 돌아 그 거래소가
+        영구 정지한다(#280). 그 경로를 **실제로 태운다**."""
+        import pytest
+
+        import bot.prepost_client as pp
+        pp._KR_REFRESHING.clear()
+
+        class _Boom:
+            def __init__(self, **kw):
+                pass
+
+            def start(self):
+                raise RuntimeError("no threads")
+        monkeypatch.setattr(pp, "_spawn", _Boom)
+        with pytest.raises(RuntimeError):
+            pp._kick_kr_refresh("KRX")
+        assert "KRX" not in pp._KR_REFRESHING, "실패가 그 거래소를 영구 정지시켰다"
+        started = []
+        monkeypatch.setattr(pp, "_spawn", lambda **kw: type("T", (), {
+            "start": lambda _s: started.append(kw.get("name"))})())
+        pp._kick_kr_refresh("KRX")
+        assert started, "다음 킥이 막혔다"
+        pp._KR_REFRESHING.clear()

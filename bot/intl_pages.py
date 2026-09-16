@@ -305,7 +305,7 @@ def _render_kr_over_page(venue: str = "NXT") -> str:
             '<div style="margin:10px 0;padding:10px 14px;border-radius:8px;'
             'background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.45);'
             'font-size:13px;line-height:1.55">'
-            f'⚠️ <b>최근 NXT 집계 실패</b> — {_stl}{_scan_txt} · 사유: {_detail}<br>'
+            f'⚠️ <b>최근 {label} 집계 실패</b> — {_stl}{_scan_txt} · 사유: {_detail}<br>'
             f'아래는 직전 성공 스냅샷입니다. {win} 창에서 자동 재집계됩니다.'
             '</div>') + body
     elif _state == "running":
@@ -313,7 +313,7 @@ def _render_kr_over_page(venue: str = "NXT") -> str:
             '<div style="margin:10px 0;padding:10px 14px;border-radius:8px;'
             'background:rgba(56,139,253,.12);border:1px solid rgba(56,139,253,.45);'
             'font-size:13px;line-height:1.55">'
-            f'⏳ <b>NXT 집계 진행 중</b> — {_stl} · 잠시 후 새로고침하면 최신으로 '
+            f'⏳ <b>{label} 집계 진행 중</b> — {_stl} · 잠시 후 새로고침하면 최신으로 '
             '갱신됩니다. 아래는 직전 스냅샷.</div>') + body
     sub = (f"🇰🇷 {sess_kr} {label} 급등·급락 상·하위 30 · 등락률=시간외가 vs 정규장 "
            "종가(시간외-정규장 격차) · 거래량·거래대금=시간외 세션 누적(정규장 별개) · "

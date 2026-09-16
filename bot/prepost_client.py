@@ -403,8 +403,6 @@ def fetch_us_prepost_movers() -> dict:
 # fetch_kr_quote 로 시간외가·등락% 수집. 무료·무키·rate-limit 면역(네이버).
 
 _KST9 = timezone(timedelta(hours=9))
-_KR_PREPOST_CACHE = "kr_prepost_v1.json"
-_KR_PREPOST_STATUS = "kr_prepost_status.json"
 # venue 별 캐시/상태 파일 — 두 보드가 같은 파일을 쓰면 창이 다른 값이 서로를
 # 덮는다(NXT 애프터 15:40~ · KRX 애프터 16:00~, 사용자 2026-09-16 공지 153).
 _KR_VENUE_FILES = {
@@ -443,6 +441,12 @@ _KR_PREPOST_TTL = 2 * 60        # NXT 창 재산출 간격 2분 (사용자 2026-
 #   에서 단축 — NXT 는 연속거래라 5분은 거침). 부하 무: SWR 요청-트리거(미열람 시 0)
 #   + _KR_REFRESHING 락(스캔 비중첩·stampede 차단) + 종목당 30초 캐시 + 6-worker
 #   풀. 열람 중 ~200종목 네이버 2분당 1회(~100콜/분) — realtime 엔드포인트 안전.
+#   ⚠️ 이 예산은 **스캔이 창당 한 번**일 때만 참이다. KRX·NXT 애프터마켓이
+#   겹치는 16:00~20:00 에 보드마다 스캔하면 콜이 2배가 되고, 그게 네이버
+#   레이트리밋을 건드리면 `naver_paused()` 가 켜져 **전 네이버 보드**가 죽는다
+#   (독립 리뷰 2026-09-16 B1). `_shared_venues` 로 한 번 받아 같이 저장한다.
+_spawn = _threading.Thread   # 테스트가 stdlib `threading` 을 프로세스 전역으로
+#   갈아끼우지 않게 하는 모듈 지역 별칭(독립 리뷰 2026-09-16 L18).
 _KR_LOCK = _threading.Lock()
 _KR_REFRESHING: set = set()      # 동시에 도는 venue 집합(거래소별 1개)
 
@@ -478,6 +482,29 @@ def _kr_over_session(sess: str) -> str | None:
     if "AFTER" in s:
         return "post"
     return None
+
+
+def _shared_venues(venue: str, now_kst: datetime | None = None) -> tuple:
+    """이 스캔 결과를 **그대로 써도 되는** 거래소들(순수).
+
+    `_one()` 은 거래소와 무관하다 — 같은 네이버 시간외 블록을 보고, 창과
+    세션만 거래소가 정한다. 그래서 **창이 열려 있고 세션이 같은** 거래소는
+    같은 결과를 갖는다(겹치는 16:00~20:00). 보드마다 따로 스캔하면 같은
+    숫자를 얻으려고 바깥 원천 호출이 2배가 된다(리뷰 B1).
+
+    ⚠️ 세션이 다르면(예: NXT 프리 08:30 — KRX 는 닫힘) 공유하지 않는다.
+    """
+    now = now_kst or datetime.now(_KST9)
+    vn = (venue or "NXT").upper()
+    mine = _current_kr_session(now, vn)
+    out = [vn]
+    for other in _KR_VENUE_FILES:
+        if other == vn:
+            continue
+        if (_in_kr_extended_window(now, other)
+                and _current_kr_session(now, other) == mine):
+            out.append(other)
+    return tuple(out)
 
 
 def _kr_status_write(state: str, venue: str = "NXT", **kw) -> None:
@@ -603,9 +630,13 @@ def _compute_kr_prepost(venue: str = "NXT") -> dict:
         votes = [r.get("session") for r in ups + downs if r.get("session")]
         out["session"] = max(set(votes), key=votes.count) if votes else ""
         if ups or downs:
-            _cache_write(cache_name, out)
-            _kr_status_write("done", venue=vn, up=len(ups), down=len(downs),
-                             session=out["session"])
+            # 창이 겹치는 거래소는 같은 결과를 갖는다 — 한 번 받아 같이
+            # 저장한다(리뷰 B1). 저장분의 `venue` 는 **읽는 쪽**이 정한다.
+            for _v in _shared_venues(vn):
+                _cache_write(_venue_files(_v)[0], {**out, "venue": _v,
+                                                   "scan_venue": vn})
+                _kr_status_write("done", venue=_v, up=len(ups), down=len(downs),
+                                 session=out["session"], scan_venue=vn)
         else:
             _kr_status_write("failed", venue=vn, scanned=len(rows),
                              detail="시간외 행 0 — 그 거래소 연장 창 밖이거나 체결 없음")
@@ -641,8 +672,7 @@ def _kick_kr_refresh(venue: str = "NXT") -> None:
                 _KR_REFRESHING.discard(vn)
 
     try:
-        _threading.Thread(target=_run, daemon=True,
-                          name=f"kr-prepost-{vn}").start()
+        _spawn(target=_run, daemon=True, name=f"kr-prepost-{vn}").start()
     except Exception:                                       # noqa: BLE001
         # start() 가 던지면 finally 가 안 돌아 그 venue 가 영구 정지한다(#280).
         with _KR_LOCK:
