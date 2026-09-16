@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 _PROBE_VER = 1
@@ -79,6 +80,29 @@ def banner() -> str:
         sig = f"지문불가({type(exc).__name__})"
     return (f"■ 네이버 금리 프로브 v{_PROBE_VER} · 코드 지문 {sig} · "
             f"인터프리터 {sys.executable}")
+
+
+_RE_DATEISH = re.compile(r"\b(20\d{2})[-/.]?(\d{2})[-/.]?(\d{2})\b")
+
+
+def row_date(rows) -> str | None:
+    """표본 행들에서 **날짜꼴 값**을 찾아 가장 큰 것을 돌려준다(없으면 None).
+
+    어느 필드가 기준일인지는 원천만 알고 우리는 아직 안 쟀다 — 이름을 찍어
+    맞히는 대신(#151·#345 탐색은 '찾음'을 '동작함'으로 렌더하지 말 것) 값의
+    **모양**으로 후보를 고르고, 없으면 그대로 '판정 불가' 가 된다."""
+    best = None
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        for v in r.values():
+            m = _RE_DATEISH.search(str(v)) if isinstance(v, (str, int)) else None
+            if not m:
+                continue
+            iso = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            if best is None or iso > best:
+                best = iso
+    return best
 
 
 def verdict(naver_asof: str | None, ours_asof: str | None) -> str:
@@ -162,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         curve = fetch_daily_curve(attempts=_DIAG_ATTEMPTS)
         if curve:
             last = sorted(curve)[-1]
+            ours["_UST"] = last
             print(f"   재무부 곡선 마지막 {last}: {curve[last]}")
         else:
             from bot.treasury_yield_client import last_fail
@@ -194,12 +219,24 @@ def main(argv: list[str] | None = None) -> int:
     print("\n③ 청크 발굴 — 네이버 시장지표 페이지가 부르는 API 경로")
     from bot import naver_spa_discover as _disc
 
+    # ⚠️ `discover` 를 키마다 다시 부르면 **같은 청크를 키 수만큼 다시 받는다**
+    # (독립 리뷰 실측: 최대 ~78요청·18MB/실행). 프로브가 스스로 레이트리밋을
+    # 불러 자기 측정을 망치는 모양이다(#61 이 파라미터가 비용의 어느 단계를
+    # 줄이나 · #321). URL 단위로 한 번만 받아 세 키가 나눠 쓴다.
+    _seen: dict[str, tuple] = {}
+
     def _fetch(u: str):
+        if u in _seen:
+            return _seen[u]
         try:
             r = requests.get(u, headers=_H, timeout=10)
         except Exception as exc:                               # noqa: BLE001
-            return None, f"{type(exc).__name__}: {exc}"
-        return (r.text, "") if r.status_code == 200 else (None, f"HTTP {r.status_code}")
+            out = (None, f"{type(exc).__name__}: {exc}")
+        else:
+            out = ((r.text, "") if r.status_code == 200
+                   else (None, f"HTTP {r.status_code}"))
+        _seen[u] = out
+        return out
 
     found_any = False
     for label, page in _PAGES:
@@ -228,12 +265,22 @@ def main(argv: list[str] | None = None) -> int:
                   f"  reuters={r.get('reutersCode')}")
 
     # ── 판정 — 이상 없을 때도 한 줄은 말한다(#274) ────────────────────
+    #
+    # ⚠️ 옛 판은 `_VERDICT_TEXT['unknown_naver']` 를 **리터럴로** 찍어
+    # `verdict()` 가 어느 경로로도 안 불렸다 — 모듈 독스트링이 "판정은
+    # 3-상태" 라고 적어 놓고 실제론 발화 경로가 없는 함수였다(2026-09-16
+    # 독립 리뷰 실측: ⑤ 를 `pass` 로 바꿔도 전 테스트 green, #291·#53).
+    # 이제 표본 행에서 **날짜꼴 값을 실제로 찾아** 우리 최신 기준일과 댄다.
     print("\n⑤ 판정")
+    ours_best = max((v for k, v in ours.items() if v), default="")
     if hits:
         print(f"   · 금리 계열 카테고리 {len(hits)}건 발견 — 위 표본의 "
               "기준일 필드를 ①과 대조해 더 최신일 때만 배선한다")
-        print(f"     {_VERDICT_TEXT['unknown_naver']} (기준일 필드를 아직 "
-              "안 골랐다 — 표본을 보고 정한다)")
+        for cat, rows in hits:
+            nav_asof = row_date(rows)
+            code = verdict(nav_asof, ours_best or None)
+            print(f"     {cat}: 네이버 기준일 후보 {nav_asof or '—'} · "
+                  f"우리 {ours_best or '—'} → {_VERDICT_TEXT[code]}")
     elif found_any:
         print("   · 카테고리 가족엔 없지만 **페이지가 부르는 경로**가 나왔다 —"
               " 위 경로를 실호출해 모양을 재는 것이 다음 수다")
@@ -242,6 +289,13 @@ def main(argv: list[str] | None = None) -> int:
         print("      ↪ ①의 재무부 곡선이 정상이었다면 = 네이버에 없는 것이고,")
         print("        ①도 실패했다면 이 VM 의 바깥 도달 문제다(#143 대조군).")
     print("   ⚠️ 이 프로브는 **아무것도 배선하지 않는다** — 출력을 보고 정한다.")
+    # 대조군(①)이 하나도 안 서면 '네이버에 없다' 가 아니라 **판정 불가**다 —
+    # 한 건도 못 쟀는데 rc=0 을 내면 성공으로 읽힌다(#54·#143 · #351 이 형제
+    # 프로브에서 겪은 그대로).
+    if not ours:
+        print("   ❓ 대조군이 하나도 안 섰다(FRED 디스크캐시·재무부 곡선 모두)"
+              " — 이번 실행으로는 판정할 수 없다.")
+        return 2
     return 0
 
 

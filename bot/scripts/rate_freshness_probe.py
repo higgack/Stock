@@ -82,9 +82,12 @@ def main(argv: list[str]) -> int:
             print(f"   [화면 _fetch_series] ❌ {type(exc).__name__}: {exc}")
 
     # ④ 미 재무부 원천 — FRED 보다 하루 빠른지 **실측**한다.
-    #    ⚠️ 아직 화면에 안 붙였다. 필드명을 내가 외워 쓰면 틀린 금리가
-    #    올라간다 — 겹치는 날 값이 FRED 와 맞는지 확인하고 붙인다.
-    print("\n── 미 재무부 일별 수익률곡선(당일 15:30 ET · 미배선)")
+    #    2026-08 에 화면에 붙었다(`market_overview._fred_fetch_series` 가
+    #    `fresher_than` 으로 당긴다). 옛 주석이 "미배선" 이라 적힌 채 남아
+    #    다음 사람을 오도하고 있었다(2026-09-16 독립 리뷰, #55).
+    #    ⚠️ 위 ③ 의 `[화면 _fetch_series]` 는 `fred_client._fetch_series` 라
+    #    **보강 전** 값이다 — 화면이 실제로 그리는 값과 다를 수 있다(#35).
+    print("\n── 미 재무부 일별 수익률곡선(당일 15:30 ET · 화면 보강에 배선됨)")
     try:
         from bot.treasury_yield_client import (
             _DIAG_ATTEMPTS, fetch_daily_curve, fresher_than)

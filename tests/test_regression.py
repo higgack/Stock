@@ -21844,13 +21844,24 @@ class TestCpiBoardWiring20260724:
         import re
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         help_text = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', tb, re.S).group(1)
+        reg_m = re.search(
+            r"def _static_command_registry\(\).*?return \{(.*?)\n    \}\n",
+            tb, re.S)
+        registered = set(re.findall(r'"([a-z_0-9]+)":\s*\(', reg_m.group(1)))
         loose = set(re.findall(r'/([a-z_][a-z_0-9]*)', help_text))
         strict = set(re.findall(
             r'(?:^|\s)/([a-z_][a-z_0-9]*)(?=[\s\[<·—,)]|$)', help_text, re.M))
         assert strict < loose, "엄격 추출이 느슨한 쪽의 진부분집합이어야 한다"
-        # 느슨한 쪽만 찾는 실제 예 — 합성 표기 안의 비용 명령.
-        assert "daily_byte_cost" in (loose - strict), (
+        # 느슨한 쪽만 찾는 실제 예 — 합성 표기(`/a·b_cost`) 안의 이름.
+        # ⚠️ 특정 이름을 박으면 그 줄을 미용상 손보기만 해도 빨간불이다
+        # (독립 리뷰 2026-09-16, #19). 계약은 "**합성 표기가 실제로 있고**
+        # 느슨한 쪽만 그걸 본다" 이므로 레지스트리 이름으로 교집합을 잰다.
+        reg_only_loose = registered & (loose - strict)
+        assert reg_only_loose, (
             "합성 표기 추출이 깨졌다 — 2026-08-02 사고를 다시 놓친다")
+        # ⚠️ 이 검사가 **못 보는 축**(#274): 은퇴한 명령이 합성 표기
+        # (`·/oldcmd`)로만 적혀 있으면 엄격 추출이 못 보고 고아로도 안 잡힌다.
+        # 그 축은 사람이 §Help 규약으로 지킨다.
 
 
 class TestMarketTiming20260726:
@@ -41591,9 +41602,10 @@ class TestUnlabeledCorrSeries20260829:
         bad = []
         with tempfile.TemporaryDirectory() as td:
             for src in SOURCES:
-                # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-                # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-                if src.basis != "company" or src.flow not in ("export", "import"):
+                # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+                # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+                # 계약 위반으로 찍었다.
+                if "corr" not in src.grammars:
                     continue
                 flow = {"export": "수출", "import": "수입"}[src.flow]
                 tkr = "005930" if src.key == "krs" else "ABCD"
@@ -41654,7 +41666,7 @@ class TestStockBoardCorrMetrics20260829:
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
+            if "corr" not in src.grammars:  # 레지스트리 문법 축(#370)
                 continue
             got = src.parse(self._cap(src, self.CAP_TAIL)) or {}
             want = {"corr": 0.96, "dir_hit": 89.0,
@@ -41678,7 +41690,7 @@ class TestStockBoardCorrMetrics20260829:
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
+            if "corr" not in src.grammars:  # 레지스트리 문법 축(#370)
                 continue
             got = src.parse(self._cap(src, "상관: 0.55\n")) or {}
             if got.get("corr") != 0.55:
@@ -41701,7 +41713,7 @@ class TestStockBoardCorrMetrics20260829:
         bad = []
         with tempfile.TemporaryDirectory() as td:
             for src in SOURCES:
-                if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
+                if "corr" not in src.grammars:  # 레지스트리 문법 축(#370)
                     continue
                 conn = src.open_db(Path(td) / src.db_file)
                 tbl = next(r[0] for r in conn.execute(
@@ -41880,9 +41892,10 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-            if src.basis != "company" or src.flow not in ("export", "import"):
+            # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+            # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+            # 계약 위반으로 찍었다.
+            if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
@@ -41901,9 +41914,10 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-            if src.basis != "company" or src.flow not in ("export", "import"):
+            # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+            # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+            # 계약 위반으로 찍었다.
+            if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
@@ -41923,9 +41937,10 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-            if src.basis != "company" or src.flow not in ("export", "import"):
+            # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+            # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+            # 계약 위반으로 찍었다.
+            if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
@@ -48418,11 +48433,22 @@ class TestShadowedTopLevelDefs20260906:
         assert any(r.startswith("tests/") for r in rels), "tests/ 가 스캔 범위 밖이다"
         assert any(r.startswith("bot/") for r in rels)
         assert any(r.startswith("trade/") for r in rels)
-        # 이 목록이 곧 `_dups()` 가 도는 목록인지 — 복제하면 갈라진다(#38).
-        import inspect
-        src = inspect.getsource(self._dups)
-        assert '"bot", "trade", "tests"' in src, (
-            "`_dups` 가 도는 디렉터리 목록이 이 테스트와 갈렸다")
+        # ⚠️ 옛 판은 `'"bot", "trade", "tests"' in inspect.getsource(_dups)`
+        # 라는 **소스 문자열 단언**이라, 그 튜플을 줄바꿈만 해도 멀쩡한 코드가
+        # 빨간불이었다(독립 리뷰 실측 — 이 레포에서 15번째, #19·#89·#363).
+        # 계약은 "`tests/` 가 실제로 스캔된다" 이므로 **값으로** 잰다: 임시
+        # 중복을 tests/ 아래에 심고 `_dups()` 가 그걸 집는지 본다.
+        import pathlib as _pl
+        probe = root / "tests" / "_dupscan_probe_tmp.py"
+        probe.write_text("def f():\n    pass\n\n\ndef f():\n    pass\n",
+                         encoding="utf-8")
+        try:
+            _, _, dups = self._dups()
+            hit = [d for d in dups if d[0].endswith("_dupscan_probe_tmp.py")]
+            assert hit, f"tests/ 가 스캔 범위 밖이다 — {len(dups)}건만 봤다"
+        finally:
+            probe.unlink(missing_ok=True)
+        assert isinstance(_pl.Path(root), _pl.Path)
 
     def test_allowlist_is_empty_so_it_cannot_become_a_bypass(self):
         """allowlist 에 항목을 넣는 것만으로 가드가 무음이 된다 — 크기를 못박아
@@ -59987,9 +60013,20 @@ class TestPalladiumAndResearchPaging20260912:
                 if l.strip().startswith("$(PY) -m pytest")]
         # ⚠️ 한 세션에 합치면 깨진다 — `bot/tests/conftest.py` 가 sys.modules 를
         # 모듈 레벨로 오염시켜 `tests/` 73건이 빨간불이 된다(2026-09-12 실측).
-        # 그래서 게이트는 **별도 프로세스 둘**이다.
-        assert len(runs) == 2, f"게이트가 두 슈트를 다 돌지 않는다: {runs}"
+        # 그래서 게이트는 트리마다 **별도 프로세스**다.
+        # ⚠️ 2026-09-16 계약 확장(#370·#222): 옛 판은 `len(runs) == 2` 라는
+        # **리터럴**이라 트리가 늘면 깨졌다(실제로 `trade/tests` 를 붙이자
+        # 빨간불). 계약은 "줄 수가 둘"이 아니라 **"트리마다 한 줄이고 서로
+        # 다른 프로세스"** 다(#19·#67 리터럴 핀 금지). 어느 트리가 있어야
+        # 하는지는 `…::test_every_test_tree_is_inside_the_commit_gate` 가
+        # 파일 시스템에서 파생해 따로 잰다 — 여기선 **형태**만 본다.
+        assert len(runs) >= 2, f"게이트가 슈트를 하나만 돈다: {runs}"
+        assert len(set(runs)) == len(runs), f"같은 슈트를 두 번 돈다: {runs}"
         assert any("bot/tests" in r for r in runs), runs
+        # 기본 슈트(인자 없음) 한 줄 + 나머지는 명시 경로 — 합치면 안 된다.
+        bare = [r for r in runs if r.replace("$(PY) -m pytest", "").strip()
+                in ("", "-v", "-q")]
+        assert len(bare) == 1, f"기본 슈트 줄이 하나가 아니다: {runs}"
         ini = pathlib.Path("pytest.ini").read_text(encoding="utf-8")
         assert "testpaths = tests\n" in ini, "기본 슈트 선언이 없다"
         assert "bot/tests" in ini and "모듈 레벨" in ini, \
@@ -65218,6 +65255,40 @@ class TestTreasurySpreadAndRetry20260914:
                   and n.func.id == fn
                   and any(k.arg == "attempts" for k in n.keywords)]
             assert ok, f"{mod} 의 {fn} 호출이 attempts 를 안 넘긴다"
+        # ⚠️ `_why` 도 배치 표면이다 — 2026-09-16 독립 리뷰가 여기만 빠진 것을
+        # 잡았다(#24 열거형은 목록 밖을 못 잡는다). 그 결과 `--why` 는 1회만
+        # 물으면서 "이미 재시도한 뒤다" 라는 처방을 찍고 있었다(#187b).
+        import inspect as _insp
+
+        from bot import treasury_yield_client as _ty
+        why_src = _ast.parse(_insp.getsource(_ty._why))
+        assert [n for n in _ast.walk(why_src)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                and n.func.id == "fresher_diag"
+                and any(k.arg == "attempts" for k in n.keywords)], (
+            "`--why` 가 fresher_diag 에 attempts 를 안 넘긴다")
+
+    def test_attempts_actually_reaches_the_fetcher(self, monkeypatch):
+        """⚠️ AST 로 **호출부**만 재면 중간 홉이 인자를 버려도 통과한다 —
+        독립 리뷰가 세 홉(`fresher_diag`→`curve_for`→`fetch_daily_curve`)을
+        하나씩 지웠는데 전부 green 이었다(#20·#141·#291 배선은 태워야 보인다).
+        값으로 잰다: 실제로 몇 번 물었나."""
+        from bot import treasury_yield_client as _ty
+
+        seen: list[int] = []
+
+        def _fake(ym=None, *, attempts: int = 1, **kw):
+            seen.append(attempts)
+            return {}
+
+        monkeypatch.setattr(_ty, "fetch_daily_curve", _fake)
+        _ty.fresher_diag("2026-09-11", 4.0, "DGS10", attempts=3)
+        assert seen and all(a == 3 for a in seen), (
+            f"attempts 가 fetcher 까지 안 닿았다: {seen}")
+        # 반대 증거 — 기본값(렌더 경로)은 1회다(#116 화면 대기를 늘리지 않는다).
+        seen.clear()
+        _ty.fresher_diag("2026-09-11", 4.0, "DGS10")
+        assert seen == [1] * len(seen) and seen, f"렌더 경로가 1회가 아니다: {seen}"
 
     # ── 네이버 조사 프로브 ───────────────────────────────────────────
     def test_naver_probe_verdict_never_says_ok_without_both_sides(self):
@@ -65425,12 +65496,25 @@ class TestCreditSplitWhyAndDateAlignment20260914:
 
     def test_the_note_uses_a_class_this_page_bundle_defines(self):
         """`.si-note` 는 lookup 번들에만 있다 — market.html 에 쓰면 CSS 가
-        안 붙어 각주가 본문 크기로 뜬다(#201·#273·#299)."""
+        안 붙어 각주가 본문 크기로 뜬다(#201·#273·#299).
+
+        ⚠️ 옛 판은 `.sm-note` 를 **리터럴로** 박아, 카드를 `.si-note` 로
+        되돌려도 전 CSS 가드가 green 이었다(2026-09-16 독립 리뷰 실측 — 이
+        카드가 사는 `_render_deposit_charts` 는 레포 전수 CSS 컬렉터
+        `_render_all_pages` 밖이다, #24·#274). **렌더된 카드에서 클래스를
+        읽어** 그것이 이 페이지 번들에 정의돼 있는지 잰다(#19·#313)."""
         import re
 
         from bot import dashboard as D
         css = D._MARKET_CSS if isinstance(D._MARKET_CSS, str) else "".join(D._MARKET_CSS)
-        assert re.search(r"\.sm-note\s*\{", css), "쓰는 클래스의 CSS 가 없다"
+        html = D._render_deposit_charts(
+            {"credit_split_why": "http", "credit_kospi_series": [],
+             "credit_kosdaq_series": []})
+        m = re.search(r'class="([a-z][\w-]*)"[^>]*>⚠️', html)
+        assert m, f"사유 카드에서 클래스를 못 읽었다:\n{html[-600:]}"
+        cls = m.group(1)
+        assert re.search(r"\." + re.escape(cls) + r"\s*\{", css), (
+            f"카드가 쓰는 `.{cls}` 가 market 번들에 정의돼 있지 않다")
 
 
 class TestFcfFindingLineCarriesMaterials20260914:
@@ -65445,7 +65529,12 @@ class TestFcfFindingLineCarriesMaterials20260914:
     """
 
     def _lines(self, gap_pct: float) -> list:
-        """축 ②(분기)만 태워 나온 줄들 — 제품 경로를 그대로 부른다(#35)."""
+        """축 ②(분기) 한 줄을 **제품 헬퍼로** 조립해 본다.
+
+        ⚠️ 이건 `audit_one` 을 태우는 게 아니다(네트워크가 필요하다) — 조립
+        **모양**은 이 테스트가 재현하고, 제품이 실제로 그렇게 짜여 있는지는
+        아래 AST 불변식이 잰다. 옛 독스트링이 "제품 경로를 그대로 부른다"고
+        적어 사각을 가리고 있었다(2026-09-16 독립 리뷰, #55·#286)."""
         import types
 
         from bot.scripts import fcf_audit as FA
@@ -65484,21 +65573,45 @@ class TestFcfFindingLineCarriesMaterials20260914:
         # 를 **별도 문장**으로 되돌리는 변형을 잡아야 한다(#20·#291).
         tree = _ast.parse(_pl.Path("bot/scripts/fcf_audit.py")
                           .read_text(encoding="utf-8"))
+        # ⚠️ 옛 판은 `say("  " + _materials(…))` 라는 **한 가지 모양**만 봐서,
+        # 독립 리뷰가 `say(str(_materials(…)))` 로 되돌리자 그대로 통과했다
+        # (#19 모양이 아니라 계약을 잴 것). 계약은 "재료가 **판정 글자와 같은
+        # `say()`** 에 실린다" 이므로 그걸 직접 잰다 — 접두 문구를 붙이든
+        # str() 로 감싸든, `_mark` 가 없는 say() 에 재료가 있으면 그 줄은
+        # 결산에 안 올라간다(#356).
+        def _names(node):
+            return {getattr(c.func, "id", "") for c in _ast.walk(node)
+                    if isinstance(c, _ast.Call)}
+
         lone = [n for n in _ast.walk(tree)
                 if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
-                and n.func.id == "say" and len(n.args) == 1
-                and isinstance(n.args[0], _ast.BinOp)
-                and isinstance(n.args[0].left, _ast.Constant)
-                and isinstance(n.args[0].left.value, str)
-                and n.args[0].left.value.strip() == ""
-                and isinstance(n.args[0].right, _ast.Call)
-                and getattr(n.args[0].right.func, "id", "") == "_materials"]
-        assert not lone, "재료가 다시 별도 줄로 빠졌다(결산이 그 줄을 안 올린다)"
+                and n.func.id == "say"
+                and "_materials" in _names(n) and "_mark" not in _names(n)]
+        assert not lone, "재료가 판정 글자 없는 줄로 빠졌다(결산이 안 올린다)"
         # 그리고 분기·연간 **둘 다** 같은 규약이어야 한다(#38 형제 누락 금지).
         calls = [n for n in _ast.walk(tree)
                  if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
                  and n.func.id == "_materials"]
         assert len(calls) == 2, f"_materials 호출이 {len(calls)}건 — 형제가 갈렸다"
+
+
+class TestCacheVersionFloors20260916:
+    """캐시 버전 bump 는 **되돌려도 아무 테스트가 안 깨졌다**(독립 리뷰 실측).
+
+    이 레포에서 가장 많이 재발한 병이다(#18·#21b·#95·#124·#198·#216·#304·#367)
+    — payload/스키마를 바꾸고 키를 안 올리면 fix 가 화면에 한 글자도 안 닿는다.
+    형제(`_DEPOSIT_SCHEMA_V >= 4`)가 이미 하한으로 고정돼 있었는데 새 bump 만
+    무가드였다(#38). 하한이라 다음 bump 를 막지 않는다."""
+
+    def test_fred_cache_version_floor(self):
+        from bot import market_overview as mo
+        assert mo._FRED_CACHE_VER >= 3, (
+            "T10Y2Y 보강·일별 집합 변경분이 옛 24h 사본에 가린다(#368)")
+
+    def test_deposit_schema_version_floor(self):
+        from bot import naver_sector_client as ns
+        assert ns._DEPOSIT_SCHEMA_V >= 5, (
+            "credit_split_why 릴레이가 옛 스냅샷에 가린다(#369)")
 
 
 class TestPublicSurfaceCheck20260916:
@@ -65596,12 +65709,313 @@ class TestPublicSurfaceCheck20260916:
         assert seen and seen[-1] == "HEAD", f"HEAD 기준을 안 돈다: {seen}"
         assert len(seen) == 2 and seen[0] != "HEAD", f"base 기준을 안 돈다: {seen}"
 
-    def test_the_repo_is_clean_against_base_or_says_it_cannot_judge(self):
-        """진입점을 실제로 태운다 — 헬퍼만 재면 배선을 떼는 변형을 못 잡는다
-        (#20). base ref 가 없는 환경에서는 ✅ 가 아니라 **판정 불가(rc=2)** 여야
-        한다(#54 대조 0건은 통과가 아니다)."""
+    def test_the_entry_point_reports_both_baselines(self, capsys):
+        """진입점을 실제로 태운다 — 헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20).
+
+        ⚠️ 2026-09-16 독립 리뷰가 옛 판(`rc in (0, 2)`)을 잡았다: `rc=1` 은
+        도구 계약상 **"사람이 판단"** 이지 결함이 아닌데, 그걸 의무 게이트
+        (`make test`)에 넣으면 **정당한 공개 심볼 삭제가 커밋을 막고** 화면이
+        시키는 처방이 "이 단언을 고쳐라" 가 된다(#260 못 고칠 ❌ 를 의무
+        게이트에 넣지 말 것 · #25). 여기서 재는 것은 **도구가 도느냐**다 —
+        무엇이 사라졌는지는 §Pre-commit 7e 에서 사람이 읽는다."""
         m = self._mod()
         rc = m.main(["public_surface_check.py"])
-        assert rc in (0, 2), (
-            f"rc={rc} — base 대비 조용히 사라진 공개 심볼·테스트가 있다. "
-            "의도한 삭제면 보고에 한 줄 적고 이 단언을 넘길 것(#43)")
+        out = capsys.readouterr().out
+        assert rc in (0, 1, 2), rc
+        assert "base=" in out and "HEAD=HEAD" in out, (
+            f"두 기준을 다 안 찍었다:\n{out}")
+
+    def test_base_baseline_uses_the_merge_base(self):
+        """base 는 Copilot 과 **공유하는** 배포 지점이다 — 그대로 대조하면
+        남이 base 에 더한 공개 심볼이 내 브랜치에선 '사라짐' 으로 읽힌다
+        (독립 리뷰가 base 를 40커밋 되감아 재현). 분기점으로 본다."""
+        import inspect as _insp
+        m = self._mod()
+        assert "merge-base" in _insp.getsource(m._merge_base)
+        src = _insp.getsource(m.main)
+        assert "_merge_base(base)" in src, "base 기준이 분기점이 아니다"
+
+
+class TestKoreaCompanyFlowBoards20260916:
+    """한국 **회사별 금액판**(수출·수입) — 받는 파서가 아예 없었다.
+
+    사용자 2026-09-16 캡처: `🇰🇷 8월 수출 한국` / `▶️ LS ELECTRIC Co., Ltd. —
+    동관 + …` / `26년08월: $158.5M (+105.3% YoY) (+11.8% MoM)` + 최근 추이.
+    기존 `kr_stock_exports`(krs) 는 `HPSP (403870)` / `한국 수출` /
+    `26년 7월 Update` 문법이라 이 캡션을 못 읽는다 — 관련성 필터가 곧
+    파서라 **저장도 미매칭 알림도 없이** 드랍됐다(#83·#261·#330·#332 계열).
+    수입(텔레칩스)도 같은 문법인데 페이지 자체가 없었다.
+
+    사용자 결정: 수출분은 **기존 종목별 페이지에 합치고**, 수입은 새 페이지.
+    문법만 `kr_company_flow` 가 공유한다(#38·#84 복제 대신 엔진).
+
+    ⚠️ 픽스처는 **스크린샷 재구성**이다 — 배포 뒤 첫 실물로 대조할 것
+    (`backfill_badonion --show-irrelevant`, #155·#334).
+    """
+
+    EXP = (
+        "**🇰🇷 8월 수출 한국**\n\n"
+        "**▶️ LS ELECTRIC Co., Ltd. — 동관 + 대용량 유입식 변압기 + "
+        "정지형 전력변환기 + 전력용 차단기 + 계전기·릴레이 + 배전반·수배전반**\n\n"
+        "**26년08월: $158.5M  (+105.3% YoY)  (+11.8% MoM)**\n\n"
+        "최근 추이 (단위: USD M$)\n"
+        "26년07월: $141.7M  (+25.9% YoY)  (+10.0% MoM)\n"
+        "26년06월: $128.8M  (+37.3% YoY)  (+2.1% MoM)\n\n"
+        "맵핑에서 보기\nbadonion.co.kr")
+
+    IMP = (
+        "**🇰🇷 8월 수입 한국**\n\n"
+        "**▶️ 텔레칩스 — 차량용 AP·프로세서**\n\n"
+        "**26년08월: $2,175.2M  (+49.4% YoY)  (+7.3% MoM)**\n\n"
+        "최근 추이 (단위: USD M$)\n"
+        "26년07월: $2,027.2M  (+16.0% YoY)  (-3.8% MoM)\n"
+        "26년06월: $2,108.1M  (+39.2% YoY)  (+31.4% MoM)")
+
+    LEGACY = ("HPSP (403870)\n한국 수출\n26년 7월 Update\n\n"
+              "단가 YoY: -6.4%\n수출액 YoY: +260.2%\n3M 수출액 YoY: +103.8%\n\n"
+              "선행상관: 0.70\n선행 방향 일치율: 80%\n\n"
+              "- CY26Q2 매출 ₩29.9B(-20.6% YoY)")
+
+    def test_flow_parser_reads_company_item_and_every_month(self):
+        from trade import kr_stock_exports as krs
+        p = krs.parse_kr_stock_flow(self.EXP)
+        # 회사명에 쉼표·마침표가 있다 — 그걸로 자르면 이름이 잘린다.
+        assert p["stock_name"] == "LS ELECTRIC Co., Ltd.", p
+        assert p["item"].startswith("동관 + 대용량 유입식 변압기"), p
+        # 메시지 안의 **전 개월**을 받는다(형제 품목판과 같은 규약).
+        assert [m["month"] for m in p["months"]] == ["2026-08", "2026-07",
+                                                     "2026-06"], p
+        assert p["months"][0] == {"month": "2026-08", "value_musd": 158.5,
+                                  "value_yoy": 105.3, "value_mom": 11.8}
+        # 꼬리 도메인(`badonion.co.kr`)이 품목 슬롯에 앉지 않는다(#330).
+        assert "badonion" not in p["item"]
+
+    def test_direction_marker_keeps_the_two_boards_apart(self):
+        """수출 파서가 수입 캡션을 삼키면 **남의 DB** 로 들어간다(#83)."""
+        from trade import kr_stock_exports as krs
+        from trade import kr_stock_imports as kri
+        assert krs.parse_kr_stock_flow(self.IMP) is None
+        assert kri.parse_kr_stock_import(self.EXP) is None
+        assert kri.parse_kr_stock_import(self.IMP) is not None
+
+    def test_exactly_one_registry_source_claims_each_caption(self):
+        """⚠️ `SOURCES` 순서가 곧 ingest 폴백 순서다 — 두 소스가 같은 캡션을
+        주장하면 앞엣것이 조용히 가져간다. 각 캡션의 주인이 하나인지 잰다."""
+        from trade import badonion_sources as bs
+        for name, cap, want in (("EXP", self.EXP, "krs"),
+                                ("IMP", self.IMP, "kri"),
+                                ("LEGACY", self.LEGACY, "krs")):
+            owners = [s.key for s in bs.SOURCES if s.parse(cap) is not None]
+            assert owners == [want], f"{name}: {owners}"
+
+    def test_item_only_caption_is_not_stored_as_a_company(self):
+        """▶️ 줄에 대시가 없으면 **품목판**이다 — 품목을 회사 칸에 넣으면
+        화면이 스스로 거짓말한다(#34·#77). 한국은 품목판 소스가 없으므로
+        그런 캡션은 `--show-irrelevant` 에 남아 다음 라운드가 잰다(#332)."""
+        from trade import kr_stock_exports as krs
+        cap = self.EXP.replace(
+            "LS ELECTRIC Co., Ltd. — 동관 + 대용량 유입식 변압기 + "
+            "정지형 전력변환기 + 전력용 차단기 + 계전기·릴레이 + 배전반·수배전반",
+            "전기차")
+        assert krs.parse_kr_stock_flow(cap) is None
+        # 반대 증거 — 대시가 있으면 받는다(가드가 전부를 막는 게 아니다, #25).
+        assert krs.parse_kr_stock_flow(
+            cap.replace("▶️ 전기차", "▶️ 어떤회사 — 전기차")) is not None
+
+    def _db(self, tmp_path):
+        from trade import kr_stock_exports as krs
+        return krs.open_kr_stock_db(tmp_path / "kr_stock.db")
+
+    def test_export_rows_land_on_the_existing_page(self, tmp_path):
+        """사용자 결정 — LS ELECTRIC 이 **그 페이지**에 뜬다."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        assert krs.ingest(conn, self.EXP, source_message_id=1,
+                          posted_at="2026-09-01")
+        assert krs.ingest(conn, self.LEGACY, source_message_id=2,
+                          posted_at="2026-09-01")
+        n = conn.execute("SELECT COUNT(*) FROM kr_stock_exports").fetchone()[0]
+        assert n == 4, f"수출 금액판 3개월 + 옛 판 1행이어야 한다: {n}"
+        html = krs.render_html(conn)
+        assert "LS ELECTRIC Co., Ltd." in html and "$158.5M" in html
+        assert "▲+11.8%" in html, "MoM 이 카드에 없다"
+        assert "동관" in html, "품목이 카드에 없다"
+        # 옛 판 카드는 그대로 — 합치면서 형제를 깨면 안 된다(#38).
+        assert "HPSP" in html and "403870" in html
+        # ⚠️ 합성키가 **코드로 새면** 없는 종목코드를 있다고 말한다(#34·#43).
+        assert "nm:" not in html
+
+    def test_synthetic_key_never_duplicates_a_company_card(self, tmp_path):
+        """같은 회사가 두 문법으로 오면 카드가 둘이 되면 안 된다(#45)."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        flow_cap = self.EXP.replace("LS ELECTRIC Co., Ltd.", "HPSP")
+        assert krs.ingest(conn, flow_cap, source_message_id=1, posted_at="")
+        assert krs.ingest(conn, self.LEGACY, source_message_id=2, posted_at="")
+        codes = {r[0] for r in conn.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes == {"403870"}, f"같은 회사가 두 키로 쪼개졌다: {codes}"
+        # 반대 방향(옛 판이 먼저 와도) 같은 결과여야 한다.
+        conn2 = krs.open_kr_stock_db(tmp_path / "b.db")
+        krs.ingest(conn2, self.LEGACY, source_message_id=2, posted_at="")
+        krs.ingest(conn2, flow_cap, source_message_id=1, posted_at="")
+        codes2 = {r[0] for r in conn2.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes2 == {"403870"}, codes2
+
+    def test_absorbing_a_synthetic_key_merges_instead_of_replacing(self,
+                                                                   tmp_path):
+        """합성키 행을 진짜 코드로 옮길 때 **같은 달이 이미 있으면 병합**한다.
+
+        ⚠️ `UPDATE OR REPLACE` 로 쓰면 충돌한 달의 진짜 코드 행이 통째로
+        지워진다 — 상관·분기매출처럼 옛 지표판만 아는 값이 조용히 사라진다(#45).
+        ⚠️ **왜 헬퍼를 직접 태우나**: 오늘의 ingest 순서로는 그 충돌이 안 난다
+        (`_resolve_code` 가 이름으로 진짜 코드를 먼저 찾으므로 합성키와 진짜
+        코드가 같은 회사에 동시에 존재할 수 없다). 그래서 수집기로 태운 첫
+        픽스처는 OR REPLACE 로 되돌려도 통과했다(실측 2회, #91c). 도달 경로가
+        없는 가드는 가드가 아니므로(#291) 계약을 **헬퍼 수준**으로 못박고,
+        그 사실을 여기 적는다 — 이름 표기가 갈리거나 순서가 바뀌면 그때가
+        이 그물이 필요한 날이다.
+        """
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        krs.upsert_kr_stock(
+            conn, {"stock_code": "403870", "month": "2026-07",
+                   "stock_name": "HPSP", "lead_corr": 0.70,
+                   "rev_value_krw_b": 29.9},
+            chart_media=None, source_message_id=1, posted_at="", raw_text="")
+        conn.execute(
+            "INSERT INTO kr_stock_exports (stock_code, month, stock_name, "
+            "export_value_musd, item) VALUES (?,?,?,?,?)",
+            ("nm:HPSP", "2026-07", "HPSP", 141.7, "웨이퍼"))
+        krs._absorb_synthetic(conn, code="403870", synth="nm:HPSP")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-07'").fetchone())
+        assert r["stock_code"] == "403870", r
+        assert r["lead_corr"] == 0.70, f"옛 판 지표가 지워졌다: {r}"
+        assert r["rev_value_krw_b"] == 29.9, f"분기매출이 지워졌다: {r}"
+        assert r["export_value_musd"] == 141.7, f"금액판 값이 안 실렸다: {r}"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM kr_stock_exports").fetchone()[0] == 1
+
+    def test_flow_rows_do_not_fabricate_correlation_fields(self, tmp_path):
+        """금액판엔 상관·단가가 없다 — 없는 것을 지어내지 않는다(#32·#43)."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        krs.ingest(conn, self.EXP, source_message_id=1, posted_at="")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        for k in ("corr", "dir_hit", "lead_corr", "lead_dir_hit",
+                  "price_yoy", "export_yoy_3m"):
+            assert r[k] is None, (k, r[k])
+
+    def test_import_page_speaks_its_own_direction(self, tmp_path):
+        """수출 문구를 복사만 하면 화면이 스스로 거짓말한다(#55·#34)."""
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "kr_stock_import.db")
+        assert kri.ingest(conn, self.IMP, source_message_id=3, posted_at="")
+        assert conn.execute(
+            "SELECT COUNT(*) FROM kr_stock_imports").fetchone()[0] == 3
+        html = kri.render_html(conn)
+        assert "텔레칩스" in html and "$2,175.2M" in html
+        assert "수입액" in html and "차량용 AP" in html
+        # ⚠️ 페이지 전체 grep 은 **형제 링크 라벨**(한국 수출 데이터(종목별))이
+        # 대신 만족시킨다 — 그건 실재하는 남의 페이지 이름이라 정당하다(#55).
+        # 계약은 "이 페이지 자신의 카드·지표 라벨이 수입이라고 말한다" 이므로
+        # 카드 격자만 잘라서 본다.
+        cards = html.split("<div class='grid'>", 1)[1].split("</div></div>")[0]
+        assert "수출" not in cards, "수입 페이지 카드가 수출이라고 말한다"
+        assert "수출액" not in html, "지표 라벨이 수출로 남았다"
+        # 형제 링크는 실재하는 페이지만(억지로 걸면 404, #84).
+        assert "kr_stock.html" in html and "한국 수출 데이터(종목별)" in html
+
+    def test_empty_import_page_still_renders(self, tmp_path):
+        """빈 상태에서도 페이지를 만들어 nav 404 를 막는다(기존 모듈 규약)."""
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "e.db")
+        html = kri.render_html(conn)
+        assert "한국 수입 데이터(회사별)" in html and "없습니다" in html
+
+    def test_parse_ver_bump_rederives_baked_rows(self, tmp_path):
+        """파서를 고쳐도 이미 구운 값이 안 바뀌는 함정 차단(#18·#21b)."""
+        from trade import kr_company_flow as f
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "v.db")
+        kri.ingest(conn, self.IMP, source_message_id=3, posted_at="")
+        conn.execute("UPDATE kr_stock_imports SET item='옛값', parse_ver=0")
+        kri.ingest(conn, self.IMP, source_message_id=3, posted_at="")
+        items = {r[0] for r in conn.execute(
+            "SELECT DISTINCT item FROM kr_stock_imports")}
+        assert items == {"차량용 AP·프로세서"}, items
+        assert f.PARSE_VER >= 1
+
+    def test_every_test_tree_is_inside_the_commit_gate(self):
+        """게이트 밖 트리의 계약은 **없는 것과 같다**(#24·#54). 2026-09-16
+        실측: `trade/tests` 1,227건이 게이트 밖이라 레지스트리 계약 4건이
+        빨간불인 채 `make test` 가 green 이었다. 이름을 열거하지 않고
+        **파일 시스템에서 파생**해 새 트리가 생기면 여기서 터지게 한다."""
+        import re as _re
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1]
+        trees = sorted({
+            f.parent.relative_to(root).as_posix()
+            for f in root.glob("*/**/test_*.py")
+            if ".venv" not in f.parts and "site-packages" not in f.parts
+        })
+        # 한 트리 안의 하위 디렉터리는 그 트리가 덮는다 — 최상위만 남긴다.
+        roots = []
+        for t in trees:
+            if not any(t != o and t.startswith(o + "/") for o in trees):
+                roots.append(t)
+        assert roots, "테스트 트리를 하나도 못 찾았다(대조 0건 = 실패, #54)"
+        mk = (root / "Makefile").read_text(encoding="utf-8")
+        body = mk.split("\ntest:", 1)[1].split("\n\n", 1)[0]
+        covered = {t for t in _re.findall(r"pytest ([^\n]*)", body)
+                   for t in t.split() if not t.startswith("-")}
+        # `pytest -v` (인자 없음) = pytest.ini testpaths.
+        import configparser
+        cp = configparser.ConfigParser()
+        cp.read(root / "pytest.ini")
+        covered |= set(cp["pytest"].get("testpaths", "").split())
+        # 예외는 **이유와 함께** 명시한다(이름 열거가 아니라 allowlist, #24).
+        exempt = {
+            # 상류 벤더 서브트리. 이 슈트는 `tradingagents` 패키지(+무거운 LLM
+            # 의존성)를 요구해 샌드박스에선 **수집조차 안 된다**(실측 9 errors)
+            # — 게이트에 넣으면 의존성 없는 환경에서 상시 빨간불이다(#25·#260).
+            "TradingAgents/tests",
+        }
+        stale = [t for t in exempt if t not in roots]
+        assert not stale, f"사라진 트리를 아직 면제하고 있다: {stale}"
+        missing = [t for t in roots if t not in covered and t not in exempt]
+        assert not missing, f"게이트 밖 테스트 트리: {missing} (덮는 것: {sorted(covered)})"
+
+    def test_every_source_declares_its_caption_grammar(self):
+        """문법 축이 비면 그 소스는 **어느 형제 계약에도 안 걸린다**(#24·#54).
+        기본값을 안 둔 이유이고, 값은 아는 것만 쓴다(오타 = 조용한 눈멂)."""
+        from trade import badonion_sources as bs
+        known = {"hs", "corr", "amount", "revenue", "ppi"}
+        for src in bs.SOURCES:
+            assert src.grammars, src.key
+            assert set(src.grammars) <= known, (src.key, src.grammars)
+
+    def test_the_corr_contract_scope_cannot_silently_shrink(self):
+        """선택기가 줄면 형제 전수 계약(#262·#261)이 조용히 눈먼다 — 오늘 6개.
+        ⚠️ 하한은 **리터럴**이다(자기 상수로 자기를 검증하면 tautology, #66)."""
+        from trade import badonion_sources as bs
+        corr = [s.key for s in bs.sources_with_grammar("corr")]
+        assert len(corr) >= 6, corr
+        # 반대 증거 — 금액판은 이 계약 밖이다(그게 이 축을 만든 이유다, #25).
+        assert "kri" not in corr and "twr" not in corr
+        # 그리고 수출 페이지는 **둘 다** 받는다(합쳤으니까).
+        krs = next(s for s in bs.SOURCES if s.key == "krs")
+        assert set(krs.grammars) == {"corr", "amount"}, krs.grammars
+
+    def test_registry_places_the_new_source_next_to_its_sibling(self):
+        """nav 자리는 축(country/basis/flow)에서 **계산**된다(#24)."""
+        from trade import badonion_sources as bs
+        order = list(bs._nav_order())
+        assert "kri" in order and order.index("kri") == order.index("krs") + 1
+        src = {s.key: s for s in bs.SOURCES}["kri"]
+        assert src.country == "한국" and src.basis == "company"
+        assert src.flow == "import"
+        assert src.html_file and src.db_file

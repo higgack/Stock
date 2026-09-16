@@ -105,6 +105,19 @@ def shrinkage(before: str, after: str, *, is_test: bool) -> tuple[list[str], int
     return lost, dropped
 
 
+def _merge_base(ref: str) -> str:
+    """`ref` 와 HEAD 의 분기점. 못 구하면 `ref` 그대로.
+
+    ⚠️ base 는 **Copilot 과 공유하는 배포 지점**이다(CLAUDE.md §다른 AI
+    에이전트와 레포 공유). base 를 그대로 대조하면 *남이 base 에 더한* 공개
+    심볼이 내 브랜치에선 '사라짐' 으로 읽힌다(2026-09-16 독립 리뷰가 base 를
+    40커밋 되감아 재현: `parse_groups 1개 사라짐`). 분기점과 비교하면 내가
+    지운 것만 남는다."""
+    rc, out = _git("merge-base", ref, "HEAD")
+    sha = out.strip()
+    return sha if rc == 0 and sha else ref
+
+
 def _changed_files(base: str) -> list[str]:
     # ⚠️ `base...HEAD` 가 아니라 `base`(= **작업트리** 대 base) 다. 이 도구가 도는
     # 자리는 §Pre-commit 7 = **커밋 전**이라, 커밋된 것만 보면 #278·#358 처럼
@@ -125,7 +138,8 @@ def _scan(ref: str) -> tuple[list[str], int]:
         if rc_b != 0:
             continue                      # 그 판에 없던 새 파일 — 늘어난 것은 안 본다
         try:
-            after = open(path, encoding="utf-8").read()
+            with open(path, encoding="utf-8") as fh:
+                after = fh.read()
         except FileNotFoundError:
             continue                      # 통째로 삭제 = 보이는 결정이라 세지 않는다
         try:
@@ -154,7 +168,7 @@ def main(argv: list[str]) -> int:
     # 작업트리에서 날아간 것을 본다 — 후자가 #278·#358(미커밋 테스트 유실)의 축이고,
     # base 하나만 보면 이번 브랜치에서 **새로 더한** 것을 지워도 조용하다(실측).
     worst, total_cmp = 0, 0
-    for label, ref in (("base", base), ("HEAD", "HEAD")):
+    for label, ref in (("base", _merge_base(base)), ("HEAD", "HEAD")):
         findings, compared = _scan(ref)
         total_cmp += compared
         print(f"# public_surface_check · {label}={ref} · 대조 {compared}개 파일")

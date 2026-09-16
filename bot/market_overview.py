@@ -619,10 +619,19 @@ def _daily_cadence_sids() -> set[str]:
 
 _FRED_DAILY_SIDS = _daily_cadence_sids()
 # 미 재무부가 같은 값을 **하루 먼저** 내는 시리즈. 수익률 3종 + 거기서 파생되는
+def _treasury_augmentable() -> frozenset[str]:
+    """재무부 보강 대상 — 단일 출처는 `treasury_yield_client` 다."""
+    from bot.treasury_yield_client import augmentable_sids
+    return augmentable_sids()
+
+
 # 장단기금리차(`treasury_yield_client.derive_spreads` — 재무부는 금리차를 직접
 # 주지 않는다). 스프레드를 빼 두면 2Y·10Y 만 하루 당겨져 **같은 화면에서
 # 10Y − 2Y 가 스프레드 카드와 안 맞는다**(#33, 사용자 2026-09-14).
-_TREASURY_SIDS = {"DGS2", "DGS10", "DGS30", "T10Y2Y"}
+# ⚠️ 손으로 적지 않는다 — 2026-09-16 독립 리뷰가 잡았듯 한쪽만 늘어나면
+# `--why` 가 T10Y2Y 를 "미지원" 이라 답한다(#24·#38). 재무부 클라이언트가
+# 무엇을 당길 수 있는지는 그쪽이 안다(#86 상태는 아는 쪽에 묻는다).
+_TREASURY_SIDS = set(_treasury_augmentable())
 _FRED_TTL_DAILY_H = 1.0
 _FRED_TTL_OTHER_H = 24.0
 # ⚠️ **캐시는 코드 배포로 안 바뀐다**(실수 #18 의 캐시판). #909 로 국채금리를

@@ -40,7 +40,15 @@ def _treasury_status(mo) -> None:
     import time
     from datetime import date as _date
 
-    _p("── 재무부 보강(국채금리 DGS2/10/30) 상태")
+    # ⚠️ 제목에 시리즈를 손으로 적지 않는다 — 아래 루프는
+    # `mo._TREASURY_SIDS` 를 도는데 제목만 `DGS2/10/30` 이라 T10Y2Y 가
+    # 붙은 날부터 화면이 거짓말했다(2026-09-16 독립 리뷰, #55·#34).
+    try:
+        from bot.market_overview import _TREASURY_SIDS as _TS
+        _names = "·".join(sorted(_TS))
+    except Exception:                                 # noqa: BLE001
+        _names = "판정 불가"
+    _p(f"── 재무부 보강({_names}) 상태")
     try:
         from bot.treasury_yield_client import (
             _DIAG_ATTEMPTS, fresher_diag, fresher_reason, probe_failed)

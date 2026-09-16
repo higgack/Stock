@@ -212,17 +212,32 @@
 | 사유가 릴레이되고 카드가 **사라지는 대신 말한다**(#369·#20·#43·#335) | ✅ 자동 | `…::test_reason_is_relayed_and_the_card_speaks_instead_of_vanishing` |
 | 각주 클래스는 **그 페이지 번들**에 정의돼 있다(#369·#201·#273·#299) | ✅ 자동 | `…::test_the_note_uses_a_class_this_page_bundle_defines` |
 | FCF ❌ 줄이 재료를 **같은 줄에** 싣는다(분기·연간 둘 다)(#369·#356·#38) | ✅ 자동 | `…::TestFcfFindingLineCarriesMaterials20260914::test_materials_ride_on_the_finding_line_not_the_next_one` |
-
 | 커밋된 판 대비 **조용히 사라진** 공개 심볼을 센다(§Pre-commit 7e·#210) | ✅ 자동 | `…::TestPublicSurfaceCheck20260916::test_guard_fires_on_a_silently_deleted_public_symbol` |
 | 커밋된 판 대비 **줄어든 `def test_`** 를 센다(§Pre-commit 7e) | ✅ 자동 | `…::TestPublicSurfaceCheck20260916::test_guard_fires_on_a_dropped_test` |
 | 기준이 **둘**(base·HEAD)이다 — base 만 보면 신규 심볼 삭제가 조용하다 | ✅ 자동 | `…::test_both_baselines_are_scanned` |
 | 테스트 **이름 변경**·private 변동은 소음이라 세지 않는다(#25·#260) | ✅ 자동 | `…::test_renaming_a_test_is_not_a_finding` · `…::test_private_churn_is_not_a_finding` |
-| `public_surface_check` **진입점**이 실제로 돈다(rc 0/2)(#20·#54) | ✅ 자동 | `…::test_the_repo_is_clean_against_base_or_says_it_cannot_judge` |
+| `public_surface_check` **진입점**이 두 기준을 다 찍는다(#20·#54) | ✅ 자동 | `…::test_the_entry_point_reports_both_baselines` |
+| base 기준은 **merge-base** 다 — 공용 base 가 앞서가도 오탐 없음 | ✅ 자동 | `…::test_base_baseline_uses_the_merge_base` |
 | 중복 정의 스캔이 **모든 스코프**(클래스 본문 포함)를 본다(#59·#68) | ✅ 자동 | `…::TestShadowedTopLevelDefs20260906::test_guard_also_fires_inside_a_class_body` |
 | 중복 정의 스캔 범위에 **`tests/`** 가 들어 있다(#24·#91b) | ✅ 자동 | `…::test_the_scan_actually_covers_the_test_tree` |
 | if/else 폴백의 같은 이름은 오탐이 아니다(#25·#260) | ✅ 자동 | `…::test_if_else_branches_defining_the_same_name_are_not_flagged` |
 | §Help "제거 시 해당 줄도 제거" — HELP_TEXT 에만 있는 **은퇴 명령** 금지 | ✅ 자동 | `…::TestCpiBoardWiring20260724::test_help_text_has_no_retired_commands` |
 | 두 파티 방향이 **다른 추출**을 쓴다(합치면 한쪽이 눈먼다)(#47) | ✅ 자동 | `…::test_both_help_parity_directions_use_different_extraction` |
+| 한국 회사별 금액판 파서가 회사·품목·**전 개월**을 읽는다(#370·#83) | ✅ 자동 | `…::TestKoreaCompanyFlowBoards20260916::test_flow_parser_reads_company_item_and_every_month` |
+| 방향 마커가 수출↔수입을 가른다 — 남의 DB 로 안 들어간다(#370·#83) | ✅ 자동 | `…::test_direction_marker_keeps_the_two_boards_apart` |
+| 레지스트리에서 **한 캡션의 주인은 하나**(SOURCES 순서 = 폴백 순서) | ✅ 자동 | `…::test_exactly_one_registry_source_claims_each_caption` |
+| ▶️ 줄에 대시가 없으면 품목판 — 품목을 회사 칸에 넣지 않는다(#34·#77) | ✅ 자동 | `…::test_item_only_caption_is_not_stored_as_a_company` |
+| 수출 금액판이 **기존 종목별 페이지**에 실린다(사용자 2026-09-16 결정) | ✅ 자동 | `…::test_export_rows_land_on_the_existing_page` |
+| 합성키(`nm:`)가 같은 회사를 두 카드로 쪼개지 않는다(양방향)(#45) | ✅ 자동 | `…::test_synthetic_key_never_duplicates_a_company_card` |
+| 합성키 흡수는 **병합**이다 — `OR REPLACE` 는 옛 판 값을 지운다(#45·#291) | ✅ 자동 | `…::test_absorbing_a_synthetic_key_merges_instead_of_replacing` |
+| 금액판엔 상관·단가가 없다 — 없는 것을 지어내지 않는다(#32·#43) | ✅ 자동 | `…::test_flow_rows_do_not_fabricate_correlation_fields` |
+| 수입 페이지 **카드**가 수출이라고 말하지 않는다(#55·#34) | ✅ 자동 | `…::test_import_page_speaks_its_own_direction` |
+| 빈 수입 페이지도 렌더된다 — nav 404 차단 | ✅ 자동 | `…::test_empty_import_page_still_renders` |
+| `PARSE_VER` 를 올리면 구운 행이 **다시 파생**된다(#18·#21b) | ✅ 자동 | `…::test_parse_ver_bump_rederives_baked_rows` |
+| nav 순서가 새 소스를 **형제 옆**에 놓는다(레지스트리 파생) | ✅ 자동 | `…::test_registry_places_the_new_source_next_to_its_sibling` |
+| 모든 소스가 **캡션 문법**을 밝힌다 — 안 밝히면 형제 계약 밖(#370·#24·#54) | ✅ 자동 | `…::test_every_source_declares_its_caption_grammar` |
+| 상관 4지표 계약의 **대상 집합이 조용히 줄지 않는다**(하한 리터럴, #66) | ✅ 자동 | `…::test_the_corr_contract_scope_cannot_silently_shrink` |
+| `test_*.py` 를 담은 **모든 트리**가 `make test` 안에 있다(#370·#24·#54) | ✅ 자동 | `…::test_every_test_tree_is_inside_the_commit_gate` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

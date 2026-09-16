@@ -19,13 +19,19 @@ PY := .venv/bin/python
 # 그렇다고 한 세션에 합치면 깨진다 — `bot/tests/conftest.py` 가 sys.modules 를
 # 모듈 레벨로 오염시켜 `tests/` 73건이 빨간불이 된다(2026-09-12 실측, 이유는
 # pytest.ini 주석). **별도 프로세스로 둘 다** 돌리는 것이 게이트다.
+# ⚠️ `trade/tests` 도 게이트 밖이었다(2026-09-16 실측: 레지스트리 계약 4건이
+# 빨간불인 채 `make test` 는 green — 그 슈트를 아무도 안 돌렸다). 테스트 트리가
+# 하나라도 게이트 밖이면 그 계약은 없는 것과 같다(#24·#54). 회귀가 "test_*.py 를
+# 담은 모든 트리가 이 타깃에 있는가"를 전수로 잰다.
 test:
 	$(PY) -m pytest -v
 	$(PY) -m pytest bot/tests -v
+	$(PY) -m pytest trade/tests -v
 
 test-fast:
 	$(PY) -m pytest -q
 	$(PY) -m pytest bot/tests -q
+	$(PY) -m pytest trade/tests -q
 
 syntax:
 	@$(PY) -c "import ast, sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]; print('syntax OK')" \

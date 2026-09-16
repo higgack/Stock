@@ -632,7 +632,11 @@ _CREDIT_SPLIT_WHY = {
     "breaker": "금융위 서비스 연속 실패로 냉각 중 — 곧 자동 재시도합니다",
     "http": "원천 요청이 실패했습니다(상태코드·타임아웃)",
     "empty": "원천이 결과를 0건으로 돌려줬습니다",
+    "unparsed": "시장별 필드는 찾았지만 값을 하나도 읽지 못했습니다",
     "nofield": "응답에 시장별(코스피/코스닥) 필드가 없습니다",
+    # 한쪽 시장만 온 경우 — 나머지 카드가 "사유 미기록" 으로 남으면 #369 가
+    # 없애려던 그 침묵이 그대로다(2026-09-16 독립 리뷰).
+    "partial": "원천이 한쪽 시장만 돌려줬습니다(코스피·코스닥 중 하나)",
     "sanity": "시장별 합계가 전체와 크게 어긋나 값을 채택하지 않았습니다",
     # 수집기가 네이버 폴백으로 내려간 경우 — 그 원천엔 시장별 분리가 없다.
     "fallback": "금융투자협회 대신 네이버 폴백으로 받아 시장별 분리가 없습니다",
@@ -642,6 +646,7 @@ _CREDIT_SPLIT_WHY = {
 # 빈 결과를 얼마나 믿나 — 성공(1h)보다 훨씬 짧게(#116 예산과 캐시는 한 세트).
 # 일시 실패 한 번이 카드를 한 시간 지우면 사용자에겐 "가끔 안 나온다" 로만
 # 보인다(#152·#161·#280·#303, 사용자 2026-09-14).
+_CREDIT_TTL_SEC = 1 * 3600   # 2026-08-08 시장유동성 섹션 1h 통일
 _EMPTY_KEEP_SEC = 600
 
 
@@ -658,7 +663,7 @@ def _credit_split_cache(ck: str, out: dict, why: str) -> tuple[dict, str]:
             import os as _os
             import time as _t
             _p = _os.path.join(_CACHE_DIR, ck + ".json")
-            _back = _t.time() - (1 * 3600 - _EMPTY_KEEP_SEC)
+            _back = _t.time() - (_CREDIT_TTL_SEC - _EMPTY_KEEP_SEC)
             _os.utime(_p, (_back, _back))
         except Exception as exc:                               # noqa: BLE001
             log.debug("fsc: 빈 결과 캐시 수명 단축 실패: %s", exc)
@@ -688,7 +693,10 @@ def credit_split_with_reason(n: int = 130) -> tuple[dict, str]:
     (#123·#129·#189·#228 계열) — 값만 필요한 자리는 `credit_split_series_eok`.
     """
     ck = f"kofia_credit_split_{n}_{_now():%Y%m%d}"
-    c = _cache_get(ck, ttl=1 * 3600)  # 2026-08-08: 시장유동성 섹션 1h 통일
+    # ⚠️ 읽는 ttl 과 위 mtime 되감기는 **한 상수**에서 와야 한다 —
+    # 따로 적으면 읽는 쪽만 늘려도 테스트가 전부 green 인 채 "빈 결과는
+    # 10분" 계약이 조용히 5시간이 된다(2026-09-16 독립 리뷰 실측, #38·#91b).
+    c = _cache_get(ck, ttl=_CREDIT_TTL_SEC)
     if c is not None:
         ser = c.get("series") if isinstance(c, dict) and "series" in c else c
         return ({m: [tuple(x) for x in v] for m, v in (ser or {}).items()},
@@ -790,7 +798,12 @@ def credit_split_with_reason(n: int = 130) -> tuple[dict, str]:
             log.info("kofia credit split: 전체·시장이 겹치는 날이 없어 "
                      "합리성 검산 생략")
     if not out and not why:
-        why = "empty"
+        # '0건' 과 '필드는 있는데 값을 못 읽음' 은 처방이 다르다(#82·#292).
+        why = "empty" if not raw else "unparsed"
+    elif out and len(out) < 2 and not why:
+        # 부분 성공도 사유를 남긴다 — 안 그러면 없는 쪽 카드가 "사유 미기록"
+        # 으로 떠 #369 가 지우려던 침묵이 그대로다(#43·#45).
+        why = "partial"
     return _credit_split_cache(ck, out, why)
 
 

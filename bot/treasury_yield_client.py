@@ -243,6 +243,14 @@ def curve_for(fred_last_date: str, ym: str | None = None, *,
 _PROBE_OK = ("ok", "no_newer")
 
 
+def augmentable_sids() -> frozenset[str]:
+    """재무부로 당길 수 있는 시리즈 — 직접 만기(`_FIELDS`) + 파생 금리차
+    (`_SPREAD_LEGS`). 화면(`market_overview._TREASURY_SIDS`)·`--why`·감사가
+    **여기 하나**에서 파생한다 — 각자 적으면 T10Y2Y 처럼 한쪽만 늘어난다
+    (2026-09-16 독립 리뷰 실측: `--why T10Y2Y` 가 '미지원'이라 답했다, #24·#38)."""
+    return frozenset(_FIELDS) | frozenset(_SPREAD_LEGS)
+
+
 def probe_failed(code: str) -> bool:
     """이번 대조가 성립하지 않았나(#361c).
 
@@ -405,7 +413,7 @@ def _why(sids: list[str]) -> int:
     for sid in sids:
         sid = sid.upper()
         print(f"── {sid} ──────────────────────────────")
-        if sid not in _FIELDS:
+        if sid not in augmentable_sids():
             print(f"  ❌ 재무부 매핑에 {sid} 이 없다 — 오타이거나 미지원\n")
             failed.append(sid)
             continue
@@ -424,7 +432,11 @@ def _why(sids: list[str]) -> int:
         fdate, fval = str(rec.get("time") or "")[:10], float(rec["value"])
         used = rec.get("src") or "FRED"
         print(f"  화면이 쓰는 값: {fval}% ({fdate}) · 출처 {used}")
-        code, d = fresher_diag(fdate, fval, sid)
+        # ⚠️ 진단은 **배치**다 — 사용자가 기다리는 화면이 아니므로 재시도한다.
+        # 없으면 `_WHY_FIX['month_failed']` 가 '이미 재시도한 뒤다' 라고
+        # 적어 놓고 실제로는 1회만 물어, 한 번 더 물으면 풀릴 상황에
+        # 운영자를 차단·DNS 확인으로 보낸다(2026-09-16 독립 리뷰 실측 · #187b).
+        code, d = fresher_diag(fdate, fval, sid, attempts=_DIAG_ATTEMPTS)
         print(f"  재무부 대조: {code} — {fresher_reason(code, d)}")
         print(f"  처방: {_WHY_FIX.get(code, code)}")
         shown = d.get("newer", (fdate, fval))[0] if code == "ok" else fdate
@@ -482,4 +494,4 @@ if __name__ == "__main__":                # pragma: no cover - 수동 진단
         ap.print_help()
         sys.exit(0)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    sys.exit(_why(a.why or list(_FIELDS)))
+    sys.exit(_why(a.why or sorted(augmentable_sids())))
