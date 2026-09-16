@@ -162,7 +162,69 @@ def _walk(obj, path=""):
                 hits.append((p, v if not isinstance(v, (dict, list))
                              else json.dumps(v, ensure_ascii=False)))
             hits += _walk(v, p)
+    elif isinstance(obj, list):
+        # ⚠️ v2 는 dict 만 재귀해 **리스트 안**을 못 봤다(독립 리뷰 2026-09-17
+        # 실측: `{"overMarketPriceInfoList":[{"nxtVenue":"NXT"}]}` → 경로 0건).
+        # 이름으로 가르는 필드가 실제로 있는데 '없음'이라 찍으면 그게 바로
+        # #165(재지 않은 것을 단정)이고, 같은 출력의 위쪽 덤프와도 모순된다.
+        for i, v in enumerate(obj):
+            hits += _walk(v, f"{path}[{i}]")
     return hits
+
+
+def _n(v):
+    """'16,386,371' · 16386371 → float | None (순수)."""
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def venue_axis_paths(item: dict) -> list:
+    """응답 안에서 **거래소를 이름으로 가르는** 경로(순수). 없으면 [].
+
+    ⚠️ 이건 '거래소 축이 없다' 의 **필요조건**일 뿐이다 — 이름 없이 **값으로만**
+    가르는 필드(`marketSessionType: "NXT_AFTER"` 류)가 있을 수 있고, 다른
+    엔드포인트는 재지 않았다(#165·#274 이 검사가 못 보는 축). 그래서 호출부는
+    "이 응답엔 **이름으로** 가르는 필드가 없다" 까지만 말한다.
+    리스트 안 중첩은 `_walk` 가 재귀하므로 본다(독립 리뷰 2026-09-17).
+    """
+    return [(p, v) for p, v in _walk(item)
+            if "nxt" in p.lower() or "krx" in p.lower()]
+
+
+def composition_check(item: dict) -> tuple[str, str]:
+    """(판정키, 사람이 읽는 줄) — `통합 = 본체 + 시간외` 인가(순수).
+
+    2026-09-17 VM 실측에서 삼성전자·SK하이닉스의 **거래량·거래대금 네 쌍이
+    원 단위까지** 이 항등식을 만족했다(11,438,019 + 4,948,352 = 16,386,371 등).
+    즉 `integratedPriceInfo` 는 '거래소 통합' 이 아니라 **본체 + 시간외 합산**
+    으로 읽힌다.
+
+    ⚠️ 그렇다고 거래소를 주장하지는 않는다 — '본체' 가 KRX 정규장인지 KRX
+    전체인지 이 산수로는 못 가른다(두 가설이 같은 수치를 낸다, #255). 이
+    함수는 **항등식 성립 여부**만 말한다.
+    """
+    reg = _n(item.get("accumulatedTradingVolumeRaw")
+             or item.get("accumulatedTradingVolume"))
+    om = item.get("overMarketPriceInfo")
+    ip = item.get("integratedPriceInfo")
+    if not isinstance(om, dict) or not isinstance(ip, dict):
+        return ("unmeasurable", "시간외·통합 블록이 없어 구성 검산 불가(판정 불가)")
+    over = _n(om.get("accumulatedTradingVolumeRaw")
+              or om.get("accumulatedTradingVolume"))
+    integ = _n(ip.get("accumulatedTradingVolumeRaw")
+               or ip.get("accumulatedTradingVolume"))
+    if reg is None or over is None or integ is None:
+        return ("unmeasurable", "거래량 셋 중 하나를 못 읽어 구성 검산 불가(판정 불가)")
+    got = reg + over
+    mark = "✅" if abs(got - integ) < 1 else "❌"
+    return (("ok" if mark == "✅" else "mismatch"),
+            f"{mark} 구성 검산 본체 {reg:,.0f} + 시간외 {over:,.0f} = {got:,.0f}"
+            f" vs 통합 {integ:,.0f}")
+
+
+_VENUE_MISMATCH: list = []   # ④ 구성 검산이 어긋난 종목 — 마지막 줄이 말한다
 
 
 def _section_venue():
@@ -177,7 +239,23 @@ def _section_venue():
         print(f"   · {code} 전 키: {', '.join(sorted(it))}")
         for p, v in _walk(it):
             print(f"       {p} = {v}")
+        vp = venue_axis_paths(it)
         om = it.get("overMarketPriceInfo")
+        if vp:
+            print("       거래소를 이름으로 가르는 경로: "
+                  + ", ".join(p for p, _v in vp))
+        elif isinstance(om, dict):
+            print("       거래소를 이름으로 가르는 경로: **없음**"
+                  "(이 응답 기준 — 다른 엔드포인트는 안 쟀다)")
+        else:
+            # ⚠️ 시간외 블록이 안 붙은 응답에서 '없음' 을 같은 확신으로 찍으면
+            # 대표성 없는 관측이 확인으로 읽힌다(#41 여유·우연으로 사실을 덮지
+            # 말 것 · #54 대조 0건은 통과가 아니다).
+            print("       거래소 축: 판정 불가 — 시간외 블록이 안 붙었다(창 밖)")
+        key, line = composition_check(it)
+        if key == "mismatch":
+            _VENUE_MISMATCH.append(code)
+        print("       " + line)
         if isinstance(om, dict):
             print(f"       overMarketPriceInfo 원문: "
                   f"{json.dumps(om, ensure_ascii=False)}")
@@ -211,7 +289,13 @@ def main() -> int:
     done = "②③" if vals else "②"
     print(f"\n판정은 사람이 합니다 — 위 {done} 이(가) 거래량 보드의 정렬 키를, "
           "④ 가 KRX/NXT 구별 가능 여부를 정합니다.")
-    return 0 if ok else 1
+    if _VENUE_MISMATCH:
+        # ⚠️ 판정키를 계산해 놓고 마지막 줄에 안 실으면 없는 것과 같다
+        # (#123 계열) — ❌ 는 rc 에도 실린다(#54).
+        print("   ❌ ④ 구성 검산 불일치: "
+              + ", ".join(_VENUE_MISMATCH)
+              + " — `통합 = 본체 + 시간외` 가 깨졌습니다(원천 구조 변경 의심).")
+    return 0 if (ok and not _VENUE_MISMATCH) else 1
 
 
 if __name__ == "__main__":

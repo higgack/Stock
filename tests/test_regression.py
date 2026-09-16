@@ -67136,3 +67136,317 @@ class TestKrBoardProbeMeasured20260916:
             t.join(5)
         assert len(runs) == 1, f"동시 학습이 {len(runs)}번 돌았다"
         assert out == [("quantTop", "", [])] * 3, out
+
+
+class TestVenueAxisAndUnparsed20260917:
+    """2026-09-17 VM 프로브가 ④ 를 절반 확정했고, 수입 보드 0건을 로컬에서
+    가를 도구가 없었다.
+
+    ① 폴링 응답 전 키 37개에 `KRX`/`NXT` 를 **이름으로 가르는 필드가 없다**
+       → 두 보드는 같은 시간외 블록을 본다(확정).
+    ② `integratedPriceInfo` = **본체 + 시간외 합산**(거래량·거래대금 네 쌍이
+       원 단위까지 일치) — 거래소 통합이 아니다.
+    ③ 그래도 **그 블록이 어느 거래소 체결인지는 미측정**이다(두 가설이 같은
+       산수를 낸다, #255) — 화면은 거래소를 주장하지 않는다(#165).
+    ④ `ingest_inbox` 는 '어느 소스도 안 받은 캡션'을 **숫자로만** 세고 있어
+       (#82·#332) 새 형식 유실을 로컬에서 볼 수 없었다.
+    """
+
+    # 실측 바이트 모양 그대로(#155) — 005930, 2026-09-16 20:00 KST 마감분.
+    ITEM = {
+        "itemCode": "005930", "stockName": "삼성전자",
+        "accumulatedTradingVolume": "11,438,019",
+        "accumulatedTradingVolumeRaw": "11438019",
+        "stockExchangeType": {"code": "KS", "nameKor": "코스피",
+                              "startTime": "0900", "endTime": "1530"},
+        "marketSessionType": "afterMarket",
+        "overMarketPriceInfo": {
+            "tradingSessionType": "AFTER_MARKET", "overMarketStatus": "CLOSE",
+            "accumulatedTradingVolume": "4,948,352",
+            "accumulatedTradingVolumeRaw": "4948352"},
+        "integratedPriceInfo": {
+            "accumulatedTradingVolume": "16,386,371",
+            "accumulatedTradingVolumeRaw": "16386371"},
+    }
+
+    def test_integrated_is_regular_plus_after_hours(self):
+        """② — 실측 항등식이 성립한다(원 단위)."""
+        from bot.scripts.kr_board_probe import composition_check
+        key, line = composition_check(self.ITEM)
+        assert key == "ok", line
+        assert "16,386,371" in line and "4,948,352" in line, line
+
+    def test_composition_check_fires_when_the_identity_breaks(self):
+        """반대 증거(#25·#47) — 틀린 상태를 실제로 재현해 ❌ 가 뜨는가."""
+        from bot.scripts.kr_board_probe import composition_check
+        bad = dict(self.ITEM)
+        bad["integratedPriceInfo"] = {"accumulatedTradingVolumeRaw": "99999999"}
+        assert composition_check(bad)[0] == "mismatch"
+        # 블록이 없으면 ✅ 도 ❌ 도 아니다(#54 대조 0건은 통과가 아니다).
+        assert composition_check({"accumulatedTradingVolumeRaw": "1"})[0] == (
+            "unmeasurable")
+
+    def test_comma_only_payload_is_parsed(self):
+        """`_n` 의 콤마 경로에 **발화 경로**를 준다(#291·#155).
+
+        ⚠️ `…Raw` 가 있는 픽스처만 두면 콤마 파싱을 지워도 통과한다(독립 리뷰
+        M1 실측 21 passed). 그리고 출력 줄의 `16,386,371` 은 포매터
+        `f"{v:,.0f}"` 가 만드는 문자열이라 그 단언으로는 파싱을 못 잰다(#75).
+        """
+        from bot.scripts.kr_board_probe import composition_check
+        raw_less = {
+            "accumulatedTradingVolume": "11,438,019",
+            "overMarketPriceInfo": {"accumulatedTradingVolume": "4,948,352"},
+            "integratedPriceInfo": {"accumulatedTradingVolume": "16,386,371"},
+        }
+        assert composition_check(raw_less)[0] == "ok", composition_check(raw_less)
+
+    def test_response_has_no_venue_named_field(self):
+        """① — 실측 응답엔 거래소 축이 없다. 그리고 **있으면 잡힌다**."""
+        from bot.scripts.kr_board_probe import venue_axis_paths
+        assert venue_axis_paths(self.ITEM) == []
+        with_axis = dict(self.ITEM, nxtPriceInfo={"overPrice": "1"},
+                         krxPriceInfo={"overPrice": "2"})
+        # 경로 접두가 걸리면 자식도 같이 잡힌다 — 계약은 "그 축을 **본다**"
+        # 이지 개수가 아니다(#19·#67). 두 거래소를 **둘 다** 본다(#25 반대
+        # 증거가 한쪽뿐이면 나머지 절반은 무가드다 — 독립 리뷰 L1 실측:
+        # `or "krx" in p.lower()` 를 지워도 30 passed 였다).
+        got = [p for p, _v in venue_axis_paths(with_axis)]
+        assert "nxtPriceInfo" in got and "krxPriceInfo" in got, got
+        # 리스트 안 중첩도 본다 — dict 만 재귀하면 **이름으로 가르는 필드가
+        # 실제로 있는데 '없음'** 이라 찍는다(독립 리뷰 M2 실측).
+        nested = {"overMarketPriceInfoList": [{"nxtVenue": "NXT"}]}
+        assert any("nxtVenue" in p for p, _v in venue_axis_paths(nested)), (
+            venue_axis_paths(nested))
+
+    def test_screen_states_the_measured_half_and_claims_no_venue(self):
+        """③ — 화면 줄은 '같은 블록'(측정)을 말하되 거래소는 주장하지 않는다.
+
+        ⚠️ 계약 변경(#222): 옛 판은 "그 블록이 KRX 체결인지 NXT 체결인지는
+        아직 재지 않았습니다" 하나로 **둘 다** 미측정이라 말했다. 프로브가
+        ① 을 확정했으므로 그 절반은 이제 사실로 적고, 나머지 절반(체결
+        귀속)만 미측정으로 남긴다.
+        """
+        from bot.prepost_client import venue_attribution_note
+        krx, nxt = venue_attribution_note("KRX"), venue_attribution_note("NXT")
+        for note in (krx, nxt):
+            # 측정된 절반과 **미측정 절반을 둘 다** 적는다 — KRX 줄에만 달면
+            # NXT 화면은 귀속이 해결된 것처럼 읽힌다(독립 리뷰 H5 · #43·#34).
+            assert "블록이 하나뿐이라" in note, note
+            assert "아직 재지 않았습니다" in note, note
+            # ⚠️ denylist("KRX 체결입니다" 금지)로 쓰면 표현만 바꾼 주장이
+            # 그대로 통과한다 — 실측으로 "이 블록은 실측상 NXT 체결로
+            # 확인됐습니다" 뮤테이션이 16 passed 였다(#19·#75). 거래소 이름 뒤에
+            # 확정 어미가 붙는 형태 자체를 막는다.
+            for v in ("KRX", "NXT"):
+                for claim in (f"{v} 체결입니다", f"{v} 체결로", f"{v} 체결임",
+                              f"{v} 체결이다"):
+                    assert claim not in note, (claim, note)
+        # 이 줄은 `_html.escape` 를 거쳐 **평문**으로 나간다 — 마크다운 볼드를
+        # 쓰면 별표가 화면에 그대로 찍힌다(#298. 배포전 셀프리뷰가 실제로
+        # 잡았고, 그래서 규율이 아니라 회귀로 옮긴다).
+        assert "**" not in krx and "**" not in nxt, (krx, nxt)
+
+    def test_the_note_reaches_the_rendered_page(self, monkeypatch):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20) — 렌더 결과로."""
+        import bot.intl_pages as ip
+        import bot.prepost_client as pp
+        payload = {"up": [], "down": [], "ts": "", "session": "", "venue": "KRX"}
+        # 손대입 스텁은 예외 경로에서 새고 형제 테스트와도 갈린다 — monkeypatch
+        # 로 통일(#130 · 독립 리뷰 L4).
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers",
+                            lambda *a, **k: dict(payload))
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {})
+        html = ip.render_kr_after_page()
+        assert "아직 재지 않았습니다" in html, html[:400]
+
+    # ── ingest_inbox --show-unparsed ────────────────────────────────
+    @staticmethod
+    def _isolate_ignore_list(monkeypatch, ii):
+        """운영 ignore 목록에서 격리(#30·#294 — 독립 리뷰 Blocking).
+
+        `trade.ignored._DEFAULT_DIR` 는 **import 시점**에
+        `TRADE_DATA_DIR or ~/.trade` 로 굳으므로 `monkeypatch.setenv` 로는
+        못 막는다. 막지 않으면 (a) 깨끗한 머신에서 `make test` 가
+        `~/.trade/ignored.txt` 를 만들고 (b) 운영자의 실제 ignore 목록을 읽어
+        `/ignore 1000` 한 번에 이 테스트가 빨간불이 된다(리뷰가 실제로 재현).
+        """
+        monkeypatch.setattr(ii._ignored, "load", lambda *a, **k: set())
+        # ⚠️ 격리만 하면 **발화 경로가 없다**(#291) — 운영 파일이 없는 머신에선
+        # 빼도 통과한다. 실제 경로를 폭탄으로 바꿔 두면 격리가 빠지는 순간
+        # 터지므로 이 가드가 무엇을 막는지 테스트가 스스로 보인다(#25 반대 증거).
+        def _boom(*a, **k):
+            raise AssertionError("테스트가 운영 ignore 목록 경로를 건드렸다")
+        monkeypatch.setattr(ii._ignored, "_ensure", _boom)
+
+    def _inbox(self, tmp_path, captions):
+        import json as _j
+        p = tmp_path / "inbox.jsonl"
+        p.write_text("\n".join(_j.dumps({
+            "chat_id": -100, "message_id": 1000 + i, "caption": c,
+            "caption_present": True, "date": "2026-09-01T00:00:00+00:00",
+        }, ensure_ascii=False) for i, c in enumerate(captions)) + "\n")
+        return p
+
+    def test_unparsed_captions_are_named_not_just_counted(
+            self, tmp_path, monkeypatch, caplog):
+        """#82·#332 — 어느 소스도 안 받은 캡션을 **머리까지** 찍는다.
+
+        새 카드 형식이 파서 없이 버려지는 자리가 여기다(#83·#261·#330·#332·
+        #370 — 일곱 번). 숫자만 세면 사람이 채널을 다시 열어야 한다.
+        """
+        import logging
+
+        from trade.scripts import ingest_inbox as ii
+        self._isolate_ignore_list(monkeypatch, ii)
+        inbox = self._inbox(tmp_path, ["이건 어느 파서도 안 받는 잡담입니다 ZZZ"])
+        monkeypatch.setattr(
+            "sys.argv", ["ingest_inbox", "--inbox", str(inbox),
+                         "--db", str(tmp_path / "store.db"),
+                         "--media-root", str(tmp_path / "media"),
+                         "--show-unparsed"])
+        # ⚠️ `capsys` 는 못 본다 — 이 모듈은 import 시점 `basicConfig` 로
+        # **그때의 stderr** 에 핸들러를 묶는다(#91b 재는 대상이 맞나).
+        with caplog.at_level(logging.INFO):
+            assert ii.main() == 0
+        out = caplog.text
+        assert "ZZZ" in out, out[-800:]
+        assert "어느 소스도 받지 않은 캡션: 1건" in out, out[-800:]
+
+    def test_zero_unparsed_still_says_zero(self, tmp_path, monkeypatch, caplog):
+        """빈 출력이 정답인 도구는 없다(#274) — 0건도 말한다."""
+        import logging
+
+        from trade.scripts import ingest_inbox as ii
+        self._isolate_ignore_list(monkeypatch, ii)
+        inbox = self._inbox(tmp_path, [])
+        inbox.write_text('{"chat_id":-100,"message_id":1,"caption_present":false,'
+                         '"date":"2026-09-01T00:00:00+00:00"}\n')
+        monkeypatch.setattr(
+            "sys.argv", ["ingest_inbox", "--inbox", str(inbox),
+                         "--db", str(tmp_path / "store.db"),
+                         "--media-root", str(tmp_path / "media"),
+                         "--show-unparsed"])
+        with caplog.at_level(logging.INFO):
+            assert ii.main() == 0
+        assert "어느 소스도 받지 않은 캡션: 0건" in caplog.text, caplog.text[-600:]
+
+    def test_flag_off_keeps_quiet_and_does_not_change_ingest(
+            self, tmp_path, monkeypatch, caplog):
+        """플래그 **off** 동작을 못박는다(독립 리뷰 L3).
+
+        help 가 "적재 동작은 그대로다" 라고 주장하므로 그 주장을 잰다.
+
+        ⚠️ 못 보는 축(#274): `unparsed = [] if flag else None` 의 `else None`
+        은 **관측 가능한 계약이 아니라 메모리 최적화**다 — 항상 수집하도록
+        바꿔도 출력·계수가 같아 이 테스트는 통과한다(실측). 가드가 없다고
+        적는 대신 그게 무엇인지 적는다(#291 발화 경로 없는 가드는 가드가
+        아니다 — 없는 계약을 지어내지 않는다, #165).
+        """
+        import logging
+
+        from trade.scripts import ingest_inbox as ii
+        self._isolate_ignore_list(monkeypatch, ii)
+        inbox = self._inbox(tmp_path, ["이건 어느 파서도 안 받는 잡담입니다 ZZZ"])
+        monkeypatch.setattr(
+            "sys.argv", ["ingest_inbox", "--inbox", str(inbox),
+                         "--db", str(tmp_path / "store.db"),
+                         "--media-root", str(tmp_path / "media")])
+        with caplog.at_level(logging.INFO):
+            assert ii.main() == 0
+        assert "unparsed unit" not in caplog.text
+        assert "어느 소스도 받지 않은 캡션" not in caplog.text
+        # 적재 계수는 그대로 — 플래그가 진단 축만 더한다.
+        assert "'unparseable': 1" in caplog.text, caplog.text[-600:]
+
+    def test_long_caption_head_is_cut(self, tmp_path, monkeypatch, caplog):
+        """머리 자르기(160자)가 무가드였다(뮤테이션 width 4000 통과 · L2)."""
+        import logging
+
+        from trade.scripts import ingest_inbox as ii
+        self._isolate_ignore_list(monkeypatch, ii)
+        inbox = self._inbox(tmp_path, ["잡담 " + "가" * 500])
+        monkeypatch.setattr(
+            "sys.argv", ["ingest_inbox", "--inbox", str(inbox),
+                         "--db", str(tmp_path / "store.db"),
+                         "--media-root", str(tmp_path / "media"),
+                         "--show-unparsed"])
+        with caplog.at_level(logging.INFO):
+            assert ii.main() == 0
+        line = next(m for m in caplog.messages if "unparsed unit" in m)
+        assert len(line) < 260, len(line)
+        # 형제(`backfill_badonion._unit_head`)와 **같은 시각 포맷** — 눈으로
+        # 대조가 되어야 한 출력에서 "채널에 없나 / 못 읽나" 가 갈린다(M3).
+        assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC · msg \d+ · ",
+                         line), line
+
+    def test_long_unparsed_list_is_capped_and_says_so(
+            self, tmp_path, monkeypatch, caplog):
+        """상한을 두되 **자른 사실을 고지**한다(#45·#264) — inbox.jsonl 은
+        로테이션이 없어 누적 미파싱이 수천 건일 수 있고, 조용한 절단은
+        '전부 봤다' 로 읽힌다."""
+        import logging
+
+        from trade.scripts import ingest_inbox as ii
+        self._isolate_ignore_list(monkeypatch, ii)
+        n = ii._UNPARSED_SHOW_CAP + 7
+        inbox = self._inbox(tmp_path, [f"어느 파서도 안 받는 잡담 {i}"
+                                       for i in range(n)])
+        monkeypatch.setattr(
+            "sys.argv", ["ingest_inbox", "--inbox", str(inbox),
+                         "--db", str(tmp_path / "store.db"),
+                         "--media-root", str(tmp_path / "media"),
+                         "--show-unparsed"])
+        with caplog.at_level(logging.INFO):
+            assert ii.main() == 0
+        shown = [m for m in caplog.messages if "unparsed unit" in m]
+        assert len(shown) == ii._UNPARSED_SHOW_CAP, len(shown)
+        assert f"캡션: {n}건 (아래는 최신 {ii._UNPARSED_SHOW_CAP}건)" in caplog.text
+        # 최신 쪽을 남긴다 — 앞을 남기면 방금 들어온 새 형식이 안 보인다.
+        assert f"잡담 {n - 1}" in caplog.text
+
+    # ── ④ 배선 ─────────────────────────────────────────────────────
+    def _probe_stub(self, monkeypatch, item):
+        import bot.scripts.kr_board_probe as pr
+        monkeypatch.setattr(pr, "_CODES", ("005930",))
+        monkeypatch.setattr(pr, "_get", lambda *a, **k: ({"datas": [item]}, ""))
+        monkeypatch.setattr(pr, "_VENUE_MISMATCH", [])
+        return pr
+
+    def test_section_venue_prints_the_axis_and_the_composition(
+            self, monkeypatch, capsys):
+        """두 함수가 **찍히는지**까지 본다 — 순수 테스트만 두면 print 두 줄을
+        통째로 지워도 4,256개가 전부 green 이다(독립 리뷰 M1 실측 · #20·#313).
+        """
+        pr = self._probe_stub(monkeypatch, self.ITEM)
+        pr._section_venue()
+        out = capsys.readouterr().out
+        assert "거래소를 이름으로 가르는 경로: **없음**" in out, out
+        assert "✅ 구성 검산" in out and "16,386,371" in out, out
+        assert not pr._VENUE_MISMATCH
+
+    def test_outside_the_window_the_axis_is_unjudged_not_absent(
+            self, monkeypatch, capsys):
+        """M4 — 시간외 블록이 안 붙은 응답에서 '없음' 을 같은 확신으로 찍으면
+        대표성 없는 관측이 확인으로 읽힌다(#41·#54)."""
+        item = {k: v for k, v in self.ITEM.items()
+                if k not in ("overMarketPriceInfo", "integratedPriceInfo")}
+        pr = self._probe_stub(monkeypatch, item)
+        pr._section_venue()
+        out = capsys.readouterr().out
+        assert "거래소 축: 판정 불가" in out, out
+        assert "**없음**" not in out, out
+
+    def test_composition_mismatch_reaches_the_summary_and_rc(
+            self, monkeypatch, capsys):
+        """L6 — 판정키를 계산해 놓고 마지막 줄에 안 실으면 없는 것과 같다
+        (#123 계열). ❌ 는 rc 에도 실린다(#54)."""
+        bad = dict(self.ITEM,
+                   integratedPriceInfo={"accumulatedTradingVolumeRaw": "999"})
+        pr = self._probe_stub(monkeypatch, bad)
+        monkeypatch.setattr(pr, "_banner", lambda: True)
+        monkeypatch.setattr(pr, "_section_control", lambda: True)
+        monkeypatch.setattr(pr, "_section_sorts", lambda: [])
+        assert pr.main() == 1
+        out = capsys.readouterr().out
+        assert "❌ ④ 구성 검산 불일치: 005930" in out, out

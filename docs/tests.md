@@ -265,10 +265,10 @@
 | 네이버증권은 **nav 전용**이고 그 축이 조용히 커지지 않는다 | ✅ 자동 | `…::test_naver_stock_is_nav_only` |
 | KR 자식 링크 수 = nav 레지스트리 탭 수(옛 `== 5` 스냅샷 대체, #222) | ✅ 자동 | `TestNaverWidgetSilence20260911::test_reason_branch_keeps_the_child_page_links` |
 
-⚠️ 못 보는 축(#274): **KRX 애프터마켓의 원천**은 아직 재지 않았다 — 네이버
-`overMarketPriceInfo` 가 어느 거래소 체결인지 모른다. 보드는 그 사실을 화면에
-적은 채 배선했다(아래 절) — `bot.scripts.kr_board_probe` 를 애프터마켓 창
-(16:00–20:00 KST)에서 돌려 재고, 그 출력으로 문구를 확정한다.
+⚠️ 못 보는 축(#274): **KRX 애프터마켓 블록의 체결 귀속**은 여전히 미측정이다 —
+네이버 `overMarketPriceInfo` 가 어느 거래소 체결인지 모른다. 단 "시간외 블록이
+하나뿐이고 응답에 거래소를 **이름으로** 가르는 필드가 없다"는 2026-09-17 프로브
+실측으로 확정됐다 → 아래 §venue 축 실측 절. 화면은 그 절반만 사실로 적는다.
 
 ### KRX 애프터마켓 보드 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrxAfterMarketBoard20260916`
@@ -286,9 +286,9 @@
 | 라우트·no-cache·폴링·워머 배선(#20) | ✅ 자동 | `…::test_krx_route_and_polling_are_wired` |
 
 ⚠️ 못 보는 축(#274): **네이버 시간외 블록의 체결 귀속**(KRX인가 NXT인가)은
-아직 측정되지 않았다 — `bot.scripts.kr_board_probe` 를 애프터마켓 창 안에서
-돌려 재고, 그 결과로 화면 문구를 확정한다. 화면은 그 사실을 **보이는 줄**로
-적는다(#43·#165) — 라벨을 지어내지 않는다.
+여전히 미측정이다. 2026-09-17 프로브가 답한 것은 **절반**(같은 블록을 본다)이고
+그건 화면 문구에 반영됐다 → 아래 §venue 축 실측 절. 화면은 남은 절반을
+**보이는 줄**로 밝힌다(#43·#165) — 라벨을 지어내지 않는다.
 
 ### KR 보드 독립 리뷰 반영분 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrBoardsReviewFixes20260916`
@@ -329,10 +329,39 @@
 | **M4** 동시 학습은 하나만 — 탭 N 개가 7N 콜을 쏘지 않는다(#113) | ✅ 자동 | `…::test_concurrent_learns_run_the_body_once` |
 | 파이프 경로의 미끼 배제·1항목 거부에 **발화 경로**를 준다(#291·#38) | ✅ 자동 | `…::test_piped_list_that_echoes_our_junk_is_not_the_allowed_list` · `…::test_piped_pair_with_a_blank_side_is_not_a_list` |
 
-⚠️ 못 보는 축(#274): **KRX/NXT 체결 귀속은 여전히 판정 불가**다. 2026-09-16
-실측에서 `stockExchangeType`·`integratedPriceInfo` 가 접혀 찍혀 venue 축 유무를
-못 봤다 — 프로브를 고쳤으니 **애프터마켓 창 안에서 한 번 더** 돌려야 답이 나온다.
-그때까지 화면 문구("아직 재지 않았습니다")는 참이므로 그대로 둔다(#165).
+⚠️ 못 보는 축(#274): **KRX/NXT 체결 귀속은 여전히 미측정**이다. 단 2026-09-16
+실측이 못 본 축 유무(`stockExchangeType`·`integratedPriceInfo` 가 접혀 찍혔다)는
+프로브를 고친 뒤 2026-09-17 실행이 답했다 → 아래 §venue 축 실측 절. 화면 문구는
+그 절반을 반영해 갱신됐다(같은 블록 = 사실 · 체결 귀속 = 미측정).
+
+### venue 축 실측 · 미파싱 캡션 가시화 (2026-09-17, 실수 #373)
+`tests/test_regression.py::TestVenueAxisAndUnparsed20260917`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| `통합 = 본체 + 시간외` 항등식(실측 원 단위) — 어긋나면 ❌, 블록 없으면 판정 불가(#54) | ✅ 자동 | `…::test_integrated_is_regular_plus_after_hours` · `…::test_composition_check_fires_when_the_identity_breaks` |
+| 이 응답엔 거래소를 **이름으로** 가르는 필드가 없다 + 있으면 잡힌다(#25 반대 증거) | ✅ 자동 | `…::test_response_has_no_venue_named_field` |
+| 화면은 **확정된 절반**(같은 블록)만 적고 거래소는 주장하지 않는다(#165·#222) | ✅ 자동 | `…::test_screen_states_the_measured_half_and_claims_no_venue` |
+| 그 줄이 **렌더까지** 실린다 — 헬퍼만 재면 배선을 못 잡는다(#20) | ✅ 자동 | `…::test_the_note_reaches_the_rendered_page` |
+| 어느 소스도 안 받은 캡션을 **머리까지** 찍는다(#82·#332) · 0건도 말한다(#274) | ✅ 자동 | `…::test_unparsed_captions_are_named_not_just_counted` · `…::test_zero_unparsed_still_says_zero` |
+| **B1** 테스트가 운영 `~/.trade/ignored.txt` 를 읽지·만들지 않는다(#30·#294) | ✅ 자동 | `…::_isolate_ignore_list`(두 CLI 테스트가 호출) |
+| **H1** ④ 의 두 줄이 **찍히는지**까지 — 순수 테스트만으론 print 삭제가 통과(#20·#313) | ✅ 자동 | `…::test_section_venue_prints_the_axis_and_the_composition` |
+| **M4** 창 밖(시간외 블록 없음)은 '없음' 이 아니라 **판정 불가**(#41·#54) | ✅ 자동 | `…::test_outside_the_window_the_axis_is_unjudged_not_absent` |
+| **L6** 구성 검산 ❌ 가 마지막 줄·rc 에 실린다(#123 계열) | ✅ 자동 | `…::test_composition_mismatch_reaches_the_summary_and_rc` |
+| **M1** `_n` 콤마 경로에 발화 경로 — 출력의 콤마는 포매터가 만든다(#75·#291) | ✅ 자동 | `…::test_comma_only_payload_is_parsed` |
+| **L1·M2** 반대 증거는 KRX·NXT **둘 다** + 리스트 중첩(#25) | ✅ 자동 | `…::test_response_has_no_venue_named_field` |
+| **L2·M3** 머리 160자 자르기 + 형제와 **같은 시각 포맷**(`… UTC · msg N ·`) | ✅ 자동 | `…::test_long_caption_head_is_cut` |
+| **L3** 플래그 off 면 조용하고 적재 계수는 그대로(#291) | ✅ 자동 | `…::test_flag_off_keeps_quiet_and_does_not_change_ingest` |
+| **H5** 미측정 절반을 **두 줄 모두** + 거래소 주장 금지는 denylist 가 아니다(#19·#75) | ✅ 자동 | `…::test_screen_states_the_measured_half_and_claims_no_venue` |
+
+⚠️ 못 보는 축(#274): **시간외 블록의 체결 귀속은 여전히 미측정**이다. 산수
+(`본체 + 시간외 = 통합`)는 '본체' 가 KRX 정규장인지 KRX 전체인지 못 가르고 두
+가설이 같은 수치를 낸다(#255). 다른 엔드포인트도 안 쟀다 — `venue_axis_paths`
+는 **이름**으로만 보므로 값으로만 가르는 필드(`marketSessionType: "NXT_AFTER"`
+류)가 있으면 놓친다(리스트 중첩은 `_walk` 가 재귀하므로 본다).
+그리고 `--show-unparsed` 는 **`unparseable` 분기만** 본다 — 형제 파서가 먼저
+가져간 캡션과 `ingest` 가 조용히 `stored=False` 로 끝난 건은 이 플래그에도
+`unstored_check` 에도 안 잡힌다(다음 라운드가 낭비되지 않게 help 에도 적었다).
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
