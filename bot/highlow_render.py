@@ -544,11 +544,14 @@ def stock_panel(title: str, items: list, tid: str, market: str,
                 show_vol: bool = True, show_ind: bool = True,
                 show_mcap: bool = True, show_value: bool = False,
                 vol_label: str = "거래량(주)", value_label: str = "거래대금",
-                limit_pct: float | None = None) -> str:
+                limit_pct: float | None = None, show_hl: bool = False) -> str:
     """리치 종목 패널 — 종목·현재가·등락률·(거래량)·(거래대금)·(시총)·(업종),
     헤더 클릭 정렬. **통화기호는 셀이 아닌 헤더에만**(사용자 2026-06-13).
     플래그: name_only·show_vol·show_value(거래대금)·show_ind·show_mcap.
     거래대금/시총 = it['value']/it['mcap'] 억 단위(fmt_mcap 규약).
+    show_hl: 고가·저가 두 칸(네이버 실시간 랭킹 형식, 사용자 2026-09-16).
+    원천이 안 주면 값은 None 이라 '—' 이고 **왜 비었는지는 호출부가 각주로**
+    말한다 — 빈칸만 두면 '0' 으로 읽힌다(#43·#181).
     vol_label/value_label: 거래량·거래대금 컬럼 헤더 — 미국 장전·장후 보드는
     '정규장 거래량(주)'·'정규장 거래대금'으로 명확화(네이버 worldstock 이 시간외
     거래량/대금 미제공이라 정규장 값, 사용자 2026-06-16)."""
@@ -617,6 +620,10 @@ def stock_panel(title: str, items: list, tid: str, market: str,
             cells.append(f'<td class="num">{_fmt_vol(vol)}</td>')
         if show_value:
             cells.append(f'<td class="num">{fmt_mcap(value, market, with_sym=False)}</td>')
+        if show_hl:
+            # 네이버 실시간 랭킹 칼럼 순서 — 거래량·거래대금 **뒤**, 시총 앞.
+            cells.append(f'<td class="num">{_fmt_price(it.get("high"), market, with_sym=False)}</td>')
+            cells.append(f'<td class="num">{_fmt_price(it.get("low"), market, with_sym=False)}</td>')
         if show_mcap:
             cells.append(f'<td class="num">{fmt_mcap(mcap, market, with_sym=False)}</td>')
         if show_ind:
@@ -625,6 +632,8 @@ def stock_panel(title: str, items: list, tid: str, market: str,
         data = (f'data-sym="{tk.lower()}" '
                 f'data-price="{pnum if pnum is not None else -1}" '
                 f'data-pct="{pct if pct is not None else -9999}" '
+                f'data-hi="{it.get("high") if it.get("high") is not None else -1}" '
+                f'data-lo="{it.get("low") if it.get("low") is not None else -1}" '
                 f'data-vol="{vol if vol is not None else -1}" '
                 f'data-value="{value if value is not None else -1}" '
                 f'data-mcap="{mcap if mcap is not None else -1}" '
@@ -639,6 +648,9 @@ def stock_panel(title: str, items: list, tid: str, market: str,
         heads.append(f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">{vol_label}</th>')
     if show_value:
         heads.append(f'<th class="srt" data-key="value" data-type="num" style="text-align:right">{value_label}{cur_h}</th>')
+    if show_hl:
+        heads.append(f'<th class="srt" data-key="hi" data-type="num" style="text-align:right">고가{cur_h}</th>')
+        heads.append(f'<th class="srt" data-key="lo" data-type="num" style="text-align:right">저가{cur_h}</th>')
     if show_mcap:
         heads.append(f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총{cur_h}</th>')
     if show_ind:

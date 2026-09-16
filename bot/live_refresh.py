@@ -23,8 +23,14 @@ LIVE_REFRESH_JS = """<script>
   var SLOW={'/kr52':1,'/jp52':1,'/hk52':1,'/tw52':1,'/ushighlow':1,'/twhighlow':1};
   // 美 장전·장후: 서버 _PREPOST_TTL=30분이라 30초 폴링은 60배 over-poll(동일
   // 데이터 재서빙·라이브 착시) → 5분으로(사용자 2026-06-16 C 그룹).
-  var MED={'/usprepost':300000};
-  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR',
+  // /krvolume: 서버 캐시 60s · 사용자 지정 2분 주기(2026-09-16) — 30초 폴링이면
+  // 3/4 가 같은 바이트 재서빙이다.
+  // /krafter(KRX 애프터마켓)는 **폴링 설정을 두지 않는다** — 형제 /krprepost 와
+  // 같은 기본 30초다(사용자 '똑같이 KRX 도'). 실제 재집계 간격은 서버
+  // _KR_PREPOST_TTL=120초이고 폴링은 그 결과를 30초 안에 화면에 올리는
+  // 역할이다 — 폴링을 120초로 두면 TTL 과 같아져 재집계가 2~4분으로 흔들린다(#36).
+  var MED={'/usprepost':300000,'/krvolume':120000};
+  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR','/krvolume':'KR','/krafter':'KR',
     '/usmovers':'US','/ushighlow':'US','/usindustry':'US','/usprepost':'US',
     '/jpmovers':'JP','/jp52':'JP','/hkmovers':'HK','/hk52':'HK',
     '/cnmovers':'CN','/twhighlow':'TW','/tw52':'TW'};

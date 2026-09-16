@@ -88,6 +88,8 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
                   + _t("theme", "🎭 테마별 시세")
                   + _t("kr52", "📈 신고가·신저가")
                   + _t("highlow", "🚀 급등·급락")
+                  + _t("krvolume", "📊 거래량 상위")
+                  + _t("krafter", "🏛️ KRX 장후")
                   + _t("krprepost", "🌙 NXT 급등·급락")
                   + _t("nxt", "📊 NXT 수급")
                   + '</div>')
@@ -372,3 +374,48 @@ def render_highlow_page() -> str:
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
             '(잠시 후 다시 시도해 주세요.)</div>')
     return _shell("급등·급락", "네이버 증권 급등/급락", "highlow", body)
+
+
+def render_kr_volume_page() -> str:
+    """🇰🇷 거래량 상위 — 네이버 실시간 랭킹 형식(사용자 2026-09-16).
+
+    칼럼은 네이버 화면 그대로 — 종목명·현재가·전일대비·거래량·거래대금·
+    고가·저가·시가총액. 정렬 키는 우리가 적지 않고 **원천에게 배운다**
+    (`kr_volume_client.learn_sort_type`, #151·#350).
+    """
+    from bot.highlow_render import HL_SORT_JS, stock_panel
+    from bot.kr_session import phase, now_kst
+    try:
+        from bot.kr_volume_client import fetch_kr_volume_top
+        d = fetch_kr_volume_top(limit=50)
+    except Exception as exc:                                # noqa: BLE001
+        log.warning("kr volume page: %s", exc)
+        d = {"rows": [], "ts": "", "reason": f"{type(exc).__name__}: {exc}",
+             "sort": "", "has_hl": False}
+    rows = d.get("rows") or []
+    ts = _html.escape(str(d.get("ts") or ""))
+    reason = _html.escape(str(d.get("reason") or ""))
+    if d.get("stale"):
+        # 저장분을 서빙 중이면 화면이 그렇게 말한다 — 침묵하면 '지금 값'으로
+        # 읽힌다(#306·#335·#43, 독립 리뷰 2026-09-16 M8).
+        reason = ("💾 " + reason) if reason else "💾 아래는 직전 저장분입니다"
+    note = ""
+    if reason:
+        # 값이 없거나 일부가 빈 이유는 **보이는 줄**로(#43·#228 — 툴팁에만
+        # 두면 없는 것과 같다).
+        note = f'<div class="sm-note">ℹ️ {reason}</div>'
+    if not rows:
+        body = (note + '<div class="empty">거래량 상위를 불러오지 못했습니다.'
+                '<br>위 사유를 확인해 주세요.</div>')
+    else:
+        body = (note + stock_panel(
+            "📊 거래량 상위", rows, "krvol", "KR", "",
+            show_vol=True, show_value=True, show_mcap=True, show_ind=False,
+            show_hl=True) + HL_SORT_JS)
+    ph = phase("KRX", now_kst())[1]
+    sub = ("네이버 증권 거래량 상위 · 전일대비=정규장 등락률 · 거래량·거래대금"
+           "=당일 누적 · 2분 주기 갱신"
+           + (f" · 정렬 키 {_html.escape(str(d.get('sort')))}" if d.get("sort") else "")
+           + f" · KRX {_html.escape(ph)}"
+           + (f" · {ts} 기준" if ts else ""))
+    return _shell("🇰🇷 거래량 상위", sub, "krvolume", body)

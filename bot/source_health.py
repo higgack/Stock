@@ -206,6 +206,38 @@ def _naver_polling() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+def _naver_kr_volume() -> tuple[bool, str]:
+    """`/krvolume` 의 **정렬 키**가 아직 유효한가 — `Naver 국내(front-api)` 가
+    ✅ 인데 이 줄이 ❌ 면 원천이 sortType enum 을 바꾼 것이고, 처방이 다르다
+    (도달 문제가 아니라 다시 배워야 한다, #82). 읽기 전용 — 배운 키를
+    캐시에서 읽기만 하고 여기서 재학습하지 않는다(#264 진단이 운영 신호를
+    바꾸면 안 된다)."""
+    try:
+        from bot.finviz_client import _cached
+        from bot.kr_volume_client import _SORT_CACHE, _fetch
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"import 실패: {type(exc).__name__}: {exc}"
+    c = _cached(_SORT_CACHE, ttl=30 * 86400)
+    sort = str((c or {}).get("sort") or "") if isinstance(c, dict) else ""
+    if not sort:
+        # 아직 한 번도 안 배운 것은 실패가 아니다 — 첫 렌더가 배운다.
+        return True, "아직 학습 전(첫 렌더가 원천에게 묻는다) — 판정 보류"
+    try:
+        rows, why = _fetch(sort, 1)
+    except Exception as exc:                                   # noqa: BLE001
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+    if not rows:
+        # ⚠️ 일시정지는 **안 물어본 것**이지 실패가 아니다 — 형제 점검들은
+        # `requests` 를 직접 쳐서 정지와 무관한데 이 줄만 ❌ 를 내면
+        # `/naverpause` 가 매일 못 고칠 ❌ 를 만든다(#260·#279·#346,
+        # 독립 리뷰 2026-09-16 M7).
+        from bot.naver_diag import PAUSED
+        if PAUSED in (why or ""):
+            return True, "⏸ 네이버 일시정지 중 — 판정 보류"
+        return False, f"sortType={sort} 0행 — {why or '사유 없음'}"
+    return True, f"sortType={sort} {len(rows)}행"
+
+
 def _nsc_base() -> str:
     """테마 URL 은 **제품 상수에서 파생**한다 — 손으로 적으면 옮겨갈 때 갈린다(#38)."""
     try:
@@ -373,6 +405,7 @@ def run() -> dict:
         # /health 도 일일 결산도 아무 말을 안 한다(#24 열거형 가드 · #52).
         "Naver NXT 수급(trendForeignOrg)": _naver_nxt(),
         "Naver 실시간 시세(polling)": _naver_polling(),
+        "Naver 거래량 상위 정렬키": _naver_kr_volume(),
     }
     return {"yf_paused": yfp, "naver_paused": nvp,
             "fast_info_breaker": fi_breaker, "checks": checks}
