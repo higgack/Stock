@@ -213,6 +213,17 @@
 | 각주 클래스는 **그 페이지 번들**에 정의돼 있다(#369·#201·#273·#299) | ✅ 자동 | `…::test_the_note_uses_a_class_this_page_bundle_defines` |
 | FCF ❌ 줄이 재료를 **같은 줄에** 싣는다(분기·연간 둘 다)(#369·#356·#38) | ✅ 자동 | `…::TestFcfFindingLineCarriesMaterials20260914::test_materials_ride_on_the_finding_line_not_the_next_one` |
 
+| 커밋된 판 대비 **조용히 사라진** 공개 심볼을 센다(§Pre-commit 7e·#210) | ✅ 자동 | `…::TestPublicSurfaceCheck20260916::test_guard_fires_on_a_silently_deleted_public_symbol` |
+| 커밋된 판 대비 **줄어든 `def test_`** 를 센다(§Pre-commit 7e) | ✅ 자동 | `…::TestPublicSurfaceCheck20260916::test_guard_fires_on_a_dropped_test` |
+| 기준이 **둘**(base·HEAD)이다 — base 만 보면 신규 심볼 삭제가 조용하다 | ✅ 자동 | `…::test_both_baselines_are_scanned` |
+| 테스트 **이름 변경**·private 변동은 소음이라 세지 않는다(#25·#260) | ✅ 자동 | `…::test_renaming_a_test_is_not_a_finding` · `…::test_private_churn_is_not_a_finding` |
+| `public_surface_check` **진입점**이 실제로 돈다(rc 0/2)(#20·#54) | ✅ 자동 | `…::test_the_repo_is_clean_against_base_or_says_it_cannot_judge` |
+| 중복 정의 스캔이 **모든 스코프**(클래스 본문 포함)를 본다(#59·#68) | ✅ 자동 | `…::TestShadowedTopLevelDefs20260906::test_guard_also_fires_inside_a_class_body` |
+| 중복 정의 스캔 범위에 **`tests/`** 가 들어 있다(#24·#91b) | ✅ 자동 | `…::test_the_scan_actually_covers_the_test_tree` |
+| if/else 폴백의 같은 이름은 오탐이 아니다(#25·#260) | ✅ 자동 | `…::test_if_else_branches_defining_the_same_name_are_not_flagged` |
+| §Help "제거 시 해당 줄도 제거" — HELP_TEXT 에만 있는 **은퇴 명령** 금지 | ✅ 자동 | `…::TestCpiBoardWiring20260724::test_help_text_has_no_retired_commands` |
+| 두 파티 방향이 **다른 추출**을 쓴다(합치면 한쪽이 눈먼다)(#47) | ✅ 자동 | `…::test_both_help_parity_directions_use_different_extraction` |
+
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
 2. `_has_pm_override_trigger`/`_check_pm_override_required` — RSI 경계값(74.9/75.0/25.0/25.1), catalyst

@@ -21802,6 +21802,56 @@ class TestCpiBoardWiring20260724:
         cost_cmds = {"screener_cost", "daily_byte_cost", "cheongyak_cost", "realestate_cost"}
         assert cost_cmds <= help_cmds, f"비용 명령 4종이 HELP_TEXT 에 온전한 이름으로 없음"
 
+    def test_help_text_has_no_retired_commands(self):
+        """**반대 방향** — HELP_TEXT 에만 있고 레지스트리엔 없는 명령(2026-09-16
+        채택, NousResearch/hermes-agent 리뷰: 그쪽은 doc↔registry 를 양방향으로
+        검사하는데 이유가 "은퇴한 명령이 문서에 몇 달씩 남아 있었다" 였다).
+
+        §Help 는 "제거 시 해당 줄도 제거 · deprecated/aspirational 금지" 를
+        **의무로 적어 놓고 강제 장치가 없었다** — 위 테스트는 레지스트리 ⊆ 도움말
+        한 방향만 본다. 그러면 사용자가 도움말을 보고 입력한 명령이 그냥 실패한다.
+
+        ⚠️ 추출을 **양쪽 다** 남긴다. 위 테스트의 느슨한 `/(w+)` 식 추출은
+        `/screener·daily_byte_cost` 같은 합성 표기 안의 이름까지 찾아내는 게
+        목적이고(그게 2026-08-02 사고였다), 이쪽은 그 느슨함이 `RSI/price/sma`
+        목록·URL·`<b>`/`<code>` 태그를 명령으로 오인해 오탐 7건을 낸다(실측).
+        여기서는 **토큰 경계**로 집는다 — 하나로 합치면 한쪽이 눈이 먼다(#47).
+        오늘 고아 0건이라 조용한 가드다(#25·#260).
+        """
+        import re
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        reg_m = re.search(
+            r"def _static_command_registry\(\).*?return \{(.*?)\n    \}\n",
+            tb, re.S)
+        registered = set(re.findall(r'"([a-z_0-9]+)":\s*\(', reg_m.group(1)))
+        assert len(registered) >= 20, "레지스트리 추출 실패(정규식 회귀?)"
+        help_text = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', tb, re.S).group(1)
+        # 앞이 공백/줄머리이고 뒤가 구분자인 것만 = 사용자가 그대로 칠 수 있는 표기.
+        strict = set(re.findall(
+            r'(?:^|\s)/([a-z_][a-z_0-9]*)(?=[\s\[<·—,)]|$)', help_text, re.M))
+        assert len(strict) >= 15, (
+            f"엄격 추출이 {len(strict)}개밖에 못 찾았다 — 대조 0건은 통과가 아니다(#54)")
+        orphans = strict - registered
+        assert not orphans, (
+            "HELP_TEXT 에만 있고 레지스트리엔 없는 명령 — 사용자가 치면 실패한다"
+            f"(§Help '제거 시 해당 줄도 제거'): {sorted(orphans)}")
+
+    def test_both_help_parity_directions_use_different_extraction(self):
+        """두 방향이 **같은** 추출을 쓰면 한쪽이 반드시 눈이 먼다 — 느슨한 쪽은
+        고아 판정에서 오탐 7건, 엄격한 쪽은 합성 표기(`/screener·daily_byte_cost`)
+        안의 이름을 못 본다. 실측으로 그 차이를 못박아, 나중에 누가 "중복이니
+        하나로 합치자" 고 할 때 테스트가 막는다(#38 의 반대 방향)."""
+        import re
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        help_text = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', tb, re.S).group(1)
+        loose = set(re.findall(r'/([a-z_][a-z_0-9]*)', help_text))
+        strict = set(re.findall(
+            r'(?:^|\s)/([a-z_][a-z_0-9]*)(?=[\s\[<·—,)]|$)', help_text, re.M))
+        assert strict < loose, "엄격 추출이 느슨한 쪽의 진부분집합이어야 한다"
+        # 느슨한 쪽만 찾는 실제 예 — 합성 표기 안의 비용 명령.
+        assert "daily_byte_cost" in (loose - strict), (
+            "합성 표기 추출이 깨졌다 — 2026-08-02 사고를 다시 놓친다")
+
 
 class TestMarketTiming20260726:
     """시장타이밍/브레드스(claude-trading-skills ibd-distribution-day-monitor/
@@ -48278,6 +48328,17 @@ class TestShadowedTopLevelDefs20260906:
 
     이름 열거가 아니라 **디렉터리 전수 + allowlist**(#24), 그리고 대조 대상이
     0건이면 통과가 아니라 실패(#54).
+
+    ⚠️ 2026-09-16 **범위 확대**(NousResearch/hermes-agent 리뷰에서 채택 — 그쪽은
+    같은 AST 아이디어를 **테스트 트리**와 **모든 스코프**에 걸고 있었고, 실제로
+    (a) 중복된 autouse fixture 가 158개 테스트의 격리를 조용히 바꾼 사고와
+    (b) 살아남은 쪽이 이름이 약속한 케이스를 빠뜨린 중복 테스트 사고를 겪었다):
+      · 옛 계약 = `bot/`·`trade/` **top-level 만**. 그러면 65k줄짜리
+        `tests/test_regression.py` 안에서 **클래스 메서드 이름이 중복**돼도
+        아무도 안 본다 — 그게 #68("테스트가 한 번도 실행되지 않았다") 그대로다.
+      · 지금 계약 = `bot/`·`trade/`·`tests/` 를 **모든 스코프**(모듈·클래스 본문·
+        중첩 함수)에서. 옛 계약은 이 계약의 부분집합이라 보장이 줄지 않는다(#222).
+      · 켜자마자 0건이었다 — 예방용이고, **소음이 아니다**(#25·#260).
     """
 
     _ALLOW: set[tuple[str, str]] = set()   # (파일, 이름) — 의도된 재정의만. 비어 있는 게 정상.
@@ -48292,18 +48353,40 @@ class TestShadowedTopLevelDefs20260906:
         '작동 확인' 테스트는 아무것도 확인하지 않는다(#19·#91b)."""
         import ast
         import collections
-        tree = ast.parse(src)
-        names = [n.name for n in tree.body
-                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
-        names += [t.id for n in tree.body if isinstance(n, ast.Assign)
-                  for t in n.targets
-                  if isinstance(t, ast.Name) and t.id.isupper()]
-        return sorted(k for k, v in collections.Counter(names).items() if v > 1)
+
+        def names_of(body):
+            ns = [n.name for n in body
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+            ns += [t.id for n in body if isinstance(n, ast.Assign)
+                   for t in n.targets
+                   if isinstance(t, ast.Name) and t.id.isupper()]
+            return ns
+
+        out = []
+
+        def walk(node, path):
+            body = getattr(node, "body", None)
+            if isinstance(body, list):
+                for k, v in collections.Counter(names_of(body)).items():
+                    if v > 1:
+                        # top-level 은 맨 이름(옛 계약과 같은 모양), 중첩은 경로를 붙인다.
+                        out.append(f"{path}::{k}" if path else k)
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    walk(child, f"{path}.{child.name}" if path else child.name)
+                elif not isinstance(child, ast.expr):
+                    # if/try/for 본문은 **같은 스코프**지만 분기마다 같은 이름을
+                    # 정의하는 것은 정상이라(if/else 폴백) 각 body 를 따로 센다.
+                    walk(child, path)
+
+        walk(ast.parse(src), "")
+        return sorted(set(out))
 
     def _dups(self):
         import pathlib
         root = pathlib.Path(__file__).resolve().parent.parent
-        files = sorted(f for d in ("bot", "trade") for f in (root / d).rglob("*.py"))
+        files = sorted(f for d in ("bot", "trade", "tests")
+                       for f in (root / d).rglob("*.py"))
         scanned, out = 0, []
         for f in files:
             try:
@@ -48323,6 +48406,24 @@ class TestShadowedTopLevelDefs20260906:
         assert scanned >= found - 2, f"{found}개 중 {scanned}개만 파싱됐다"
         assert not dups, f"중복 정의(뒤엣것이 앞을 가린다, #59·#74): {dups}"
 
+    def test_the_scan_actually_covers_the_test_tree(self):
+        """`tests` 를 디렉터리 목록에서 빼도 bot+trade 가 734개라 파일 수 단언은
+        그대로 통과한다 = 확대분이 조용히 되돌려진다(뮤테이션 실측). 범위를
+        **값으로** 못박는다(#91b 재는 대상이 맞나 · #24)."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        files = sorted(f for d in ("bot", "trade", "tests")
+                       for f in (root / d).rglob("*.py"))
+        rels = {str(f.relative_to(root)) for f in files}
+        assert any(r.startswith("tests/") for r in rels), "tests/ 가 스캔 범위 밖이다"
+        assert any(r.startswith("bot/") for r in rels)
+        assert any(r.startswith("trade/") for r in rels)
+        # 이 목록이 곧 `_dups()` 가 도는 목록인지 — 복제하면 갈라진다(#38).
+        import inspect
+        src = inspect.getsource(self._dups)
+        assert '"bot", "trade", "tests"' in src, (
+            "`_dups` 가 도는 디렉터리 목록이 이 테스트와 갈렸다")
+
     def test_allowlist_is_empty_so_it_cannot_become_a_bypass(self):
         """allowlist 에 항목을 넣는 것만으로 가드가 무음이 된다 — 크기를 못박아
         늘리려면 이 테스트도 같이 고치게 한다(독립 리뷰 실측: 300건을 주입해도
@@ -48339,6 +48440,30 @@ class TestShadowedTopLevelDefs20260906:
         assert self._dup_names(src) == ["C", "X", "f"], (
             f"def·class·모듈 상수 세 축 중 못 잡는 것이 있다: {self._dup_names(src)}")
         assert self._dup_names("def f():\n    pass\nY = 1\n") == [], "오탐"
+
+    def test_guard_also_fires_inside_a_class_body(self):
+        """2026-09-16 확대분 — **클래스 안 중복**이 이 가드의 새 축이다.
+        top-level 만 보던 옛 판은 이 입력에 `[]` 를 돌려줬다(= 65k줄짜리
+        테스트 파일에서 같은 이름의 테스트 메서드가 조용히 하나만 남는다,
+        #68). 그 축이 실제로 발화하는지 값으로 못박는다(#91·#291 — 발화
+        경로 없는 가드는 가드가 아니다)."""
+        src = ("class T:\n"
+               "    def test_a(self):\n        pass\n"
+               "    def test_b(self):\n        pass\n"
+               "    def test_a(self):\n        pass\n")
+        assert self._dup_names(src) == ["T::test_a"], self._dup_names(src)
+        # 반대 증거(#25) — 서로 다른 클래스의 같은 메서드 이름은 중복이 아니다.
+        ok = ("class A:\n    def m(self):\n        pass\n"
+              "class B:\n    def m(self):\n        pass\n")
+        assert self._dup_names(ok) == [], self._dup_names(ok)
+
+    def test_if_else_branches_defining_the_same_name_are_not_flagged(self):
+        """폴백 패턴(`try: import X / except: def X()`)은 정상이다 — 오탐을
+        내면 매번 뜨는 경고가 되어 아무것도 안 재는 것과 같다(#25·#260)."""
+        src = ("import os\n"
+               "if os.name == 'nt':\n    def p():\n        return 1\n"
+               "else:\n    def p():\n        return 2\n")
+        assert self._dup_names(src) == [], self._dup_names(src)
 
 
 class TestFcfCapexSingleSource20260907:
@@ -65374,3 +65499,109 @@ class TestFcfFindingLineCarriesMaterials20260914:
                  if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
                  and n.func.id == "_materials"]
         assert len(calls) == 2, f"_materials 호출이 {len(calls)}건 — 형제가 갈렸다"
+
+
+class TestPublicSurfaceCheck20260916:
+    """`scripts/public_surface_check.py` — **조용히 사라진** 공개 심볼·테스트.
+
+    2026-09-16 NousResearch/hermes-agent 리뷰에서 채택. 그쪽 사고: 큰 리팩터가
+    공개 이름 1,703개와 테스트 130개를 조용히 떨어뜨렸고 ~30개만 손으로 찾았다.
+
+    우리 레포에 같은 사고가 이미 세 번 있었다 —
+      · #210 `_derived_desc` 를 문자열 replace 로 갈다 **252줄(함수 셋)**이 함께
+        지워졌는데 `ast.parse`·`import` 가 둘 다 통과했고 회귀 2,785개 중
+        **하나**만 우연히 잡았다.
+      · #278·#358 뮤테이션 복원이 커밋된 판으로 되돌려 그 뒤 자란 것을 날렸다.
+        ⚠️ 이 도구는 **그 둘은 못 잡는다** — `git checkout <file>` 은 작업트리를
+        HEAD 와 같게 만들어 개수 차가 0 이다(실측). 잡는 것은 **커밋된 판에 있던
+        것이 지금 없는** 경우이고, #210 이 정확히 그 모양이다(과대 주장 금지, #286).
+
+    기존 가드가 못 보는 축이다(#274): symtable 검사(#210)는 **정의되지 않은
+    참조**를 잡지 정의와 호출부가 같이 지워진 경우는 못 잡고, AST 중복정의
+    검사(#59)는 **늘어난** 이름만 본다. 이건 **줄어든** 이름을 본다.
+
+    판정은 순수 함수로 두고 값으로 잰다(#41·#176) — base ref 가 필요한 진입점은
+    샌드박스·CI 마다 상태가 달라 rc 만 본다(#274 못 보는 축).
+
+    기준이 **둘**인 이유도 실측이다: base 하나만 보면 이 브랜치에서 **새로 더한**
+    심볼을 지워도 조용하다(base 엔 애초에 없으니까). HEAD 기준이 그걸 잡는다.
+    """
+
+    @staticmethod
+    def _mod():
+        import importlib.util
+        import pathlib
+        p = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "public_surface_check.py"
+        spec = importlib.util.spec_from_file_location("_psc", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_public_surface_counts_defs_classes_consts_and_methods(self):
+        m = self._mod()
+        src = ("def keep():\n    pass\n"
+               "def _priv():\n    pass\n"
+               "X = 1\n_Y = 2\n"
+               "class C:\n    def m(self):\n        pass\n"
+               "    def _h(self):\n        pass\n")
+        assert m.public_surface(src) == {"keep", "X", "C", "C.m"}, m.public_surface(src)
+
+    def test_guard_fires_on_a_silently_deleted_public_symbol(self):
+        """#210 그 사고 — 함수가 통째로 사라진 상태를 재현해 실제로 잡히는지
+        본다. 가드를 넣었으면 그게 **발화하는 상태**로 재야 한다(#91·#291)."""
+        m = self._mod()
+        before = "def keep():\n    pass\ndef gone():\n    pass\nclass C:\n    def m(self): pass\n"
+        after = "def keep():\n    pass\nclass C:\n    pass\n"
+        lost, dropped = m.shrinkage(before, after, is_test=False)
+        assert lost == ["C.m", "gone"], lost
+        assert dropped == 0
+        # 반대 증거(#25) — 아무것도 안 지웠으면 조용해야 한다.
+        assert m.shrinkage(before, before, is_test=False) == ([], 0)
+
+    def test_guard_fires_on_a_dropped_test(self):
+        """#278·#358 그 사고 — 테스트가 몇 개 사라졌는지 센다."""
+        m = self._mod()
+        before = "def test_a(): pass\ndef test_b(): pass\ndef test_c(): pass\n"
+        after = "def test_a(): pass\n"
+        assert m.shrinkage(before, after, is_test=True) == ([], 2)
+
+    def test_renaming_a_test_is_not_a_finding(self):
+        """이름 바꾸는 리팩터는 정상이다 — 첫 판이 이걸 심볼 소실로 세어 매번
+        뜨는 경고가 될 뻔했다(실측). 늘 뜨는 경고는 아무것도 안 재는 것과
+        같다(#25·#260)."""
+        m = self._mod()
+        before = "def test_a(): pass\ndef test_b(): pass\n"
+        after = "def test_x(): pass\ndef test_y(): pass\n"
+        assert m.shrinkage(before, after, is_test=True) == ([], 0)
+
+    def test_private_churn_is_not_a_finding(self):
+        """private 이름은 리팩터로 자주 바뀐다 — 세면 소음이다(#25·#260)."""
+        m = self._mod()
+        before = "def _a(): pass\n_X = 1\ndef keep(): pass\n"
+        after = "def _b(): pass\n_Y = 1\ndef keep(): pass\n"
+        assert m.shrinkage(before, after, is_test=False) == ([], 0)
+
+    def test_both_baselines_are_scanned(self):
+        """`base` 하나만 보면 이 브랜치에서 **새로 더한** 심볼을 지워도 조용하다
+        (실측: `derive_spreads` 삭제에 base ✅ / HEAD ❌). 두 기준을 다 도는지
+        값으로 못박는다 — 배선을 떼는 변형은 헬퍼 테스트가 못 잡는다(#20)."""
+        m = self._mod()
+        seen = []
+        orig = m._scan
+        try:
+            m._scan = lambda ref: (seen.append(ref), ([], 1))[1]
+            m.main(["x"])
+        finally:
+            m._scan = orig
+        assert seen and seen[-1] == "HEAD", f"HEAD 기준을 안 돈다: {seen}"
+        assert len(seen) == 2 and seen[0] != "HEAD", f"base 기준을 안 돈다: {seen}"
+
+    def test_the_repo_is_clean_against_base_or_says_it_cannot_judge(self):
+        """진입점을 실제로 태운다 — 헬퍼만 재면 배선을 떼는 변형을 못 잡는다
+        (#20). base ref 가 없는 환경에서는 ✅ 가 아니라 **판정 불가(rc=2)** 여야
+        한다(#54 대조 0건은 통과가 아니다)."""
+        m = self._mod()
+        rc = m.main(["public_surface_check.py"])
+        assert rc in (0, 2), (
+            f"rc={rc} — base 대비 조용히 사라진 공개 심볼·테스트가 있다. "
+            "의도한 삭제면 보고에 한 줄 적고 이 단언을 넘길 것(#43)")

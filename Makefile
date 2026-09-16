@@ -8,11 +8,12 @@
 #   make test-fast  — 회귀 슈트만 (단축 출력).
 #   make syntax     — 만진 .py 파일 ast.parse (변경 후 1초 sanity).
 #   make help-len   — _HELP_TEXT UTF-16 길이 (4096 cap 확인).
+#   make surface    — base 대비 **조용히 사라진** 공개 심볼·테스트 (배포전 셀프리뷰).
 #   make install    — requirements.txt 설치 (pytest 포함).
 
 PY := .venv/bin/python
 
-.PHONY: test test-fast syntax help-len install
+.PHONY: test test-fast syntax help-len surface install
 
 # ⚠️ 옛 판은 `tests/` 만 돌려 `bot/tests` 182건이 **어떤 게이트에도 안 걸렸다**.
 # 그렇다고 한 세션에 합치면 깨진다 — `bot/tests/conftest.py` 가 sys.modules 를
@@ -32,6 +33,11 @@ syntax:
 
 fold:
 	$(PY) -m bot.scripts.claude_md_fold $(ARGS)
+
+# §Pre-commit 7(배포전 셀프리뷰)의 "base 대비 전체 diff 재독" 보조 — 사람 눈이
+# 놓치는 축 하나(조용한 삭제)를 기계가 센다. BASE=<ref> 로 기준을 바꾼다.
+surface:
+	@$(PY) scripts/public_surface_check.py $(BASE)
 
 help-len:
 	@$(PY) -c "import re; t=re.search(r'_HELP_TEXT\s*=\s*\"\"\"(.*?)\"\"\"', open('bot/telegram_bot.py').read(), re.DOTALL).group(1); n=len(t.encode('utf-16-le'))//2; print(f'_HELP_TEXT UTF-16: {n} / 4096 (slack {4096-n})')"
