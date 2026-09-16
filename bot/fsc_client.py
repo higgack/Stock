@@ -623,22 +623,93 @@ def _classify_credit_key(key: str) -> str | None:
     return None
 
 
-def credit_split_series_eok(n: int = 130) -> dict:
-    """시장별 신용거래융자 시계열 {"kospi": [(basDt, 억원)], "kosdaq": [...]}.
+# 시장별 신용잔고가 **빈 이유** — 처방이 전부 다르다(#82). 옛 판은 전부
+# `{}` 하나로 뭉뚱그렸고, 화면은 카드를 **통째로 없앴다** — 사용자 2026-09-14
+# "코스피/코스닥 신용잔고 추이가 안나올때가 있어"(#335·#343 과 같은 계열:
+# 값이 없으면 위젯이 사라져 기능이 삭제된 것처럼 보인다).
+_CREDIT_SPLIT_WHY = {
+    "key": "DATA_GO_KR_API_KEY 미설정 — 원천을 부를 수 없습니다",
+    "breaker": "금융위 서비스 연속 실패로 냉각 중 — 곧 자동 재시도합니다",
+    "http": "원천 요청이 실패했습니다(상태코드·타임아웃)",
+    "empty": "원천이 결과를 0건으로 돌려줬습니다",
+    "nofield": "응답에 시장별(코스피/코스닥) 필드가 없습니다",
+    "sanity": "시장별 합계가 전체와 크게 어긋나 값을 채택하지 않았습니다",
+    # 수집기가 네이버 폴백으로 내려간 경우 — 그 원천엔 시장별 분리가 없다.
+    "fallback": "금융투자협회 대신 네이버 폴백으로 받아 시장별 분리가 없습니다",
+}
+
+
+# 빈 결과를 얼마나 믿나 — 성공(1h)보다 훨씬 짧게(#116 예산과 캐시는 한 세트).
+# 일시 실패 한 번이 카드를 한 시간 지우면 사용자에겐 "가끔 안 나온다" 로만
+# 보인다(#152·#161·#280·#303, 사용자 2026-09-14).
+_EMPTY_KEEP_SEC = 600
+
+
+def _credit_split_cache(ck: str, out: dict, why: str) -> tuple[dict, str]:
+    """결과를 캐시하고 그대로 돌려준다 — **빈 결과는 수명을 줄여서**.
+
+    `_cache_get` 의 ttl 은 호출부가 정하므로, 같은 키를 두 ttl 로 읽는 대신
+    mtime 을 과거로 밀어 남은 수명만 남긴다(읽는 코드가 하나로 남는다).
+    """
+    _cache_put(ck, {"series": {m: list(map(list, v)) for m, v in out.items()},
+                    "why": why})
+    if not out:
+        try:
+            import os as _os
+            import time as _t
+            _p = _os.path.join(_CACHE_DIR, ck + ".json")
+            _back = _t.time() - (1 * 3600 - _EMPTY_KEEP_SEC)
+            _os.utime(_p, (_back, _back))
+        except Exception as exc:                               # noqa: BLE001
+            log.debug("fsc: 빈 결과 캐시 수명 단축 실패: %s", exc)
+    return out, why
+
+
+def credit_split_reason_text(why: str) -> str:
+    """사유 코드 → 사람이 읽는 한 줄. 화면·진단이 **같은 문구**를 쓴다(#38).
+
+    모르는 코드는 지어내지 않고 그대로 보여 준다 — 새 갈래가 생기면 화면에
+    낯선 낱말이 뜨는 것 자체가 신호다(#165·#290).
+    """
+    w = str(why or "").strip()
+    if not w:
+        return ""
+    return _CREDIT_SPLIT_WHY.get(w, f"원천에서 값을 받지 못했습니다({w})")
+
+
+def credit_split_with_reason(n: int = 130) -> tuple[dict, str]:
+    """({"kospi": [(basDt, 억원)], ...}, 사유) — 빈 dict 의 **갈래를 이름으로**.
 
     응답 필드명 런타임 발견: 정확명 후보(_CREDIT_SPLIT_EXACT) 우선, 없으면
     crdTrFing* 키 휴리스틱(_classify_credit_key). 발견/미발견 모두 INFO 로그
-    (silent-fail 금지). 미발견 시 {} — 위젯은 graceful 생략."""
+    (silent-fail 금지).
+
+    ⚠️ 얇은 래퍼가 사유를 버리면 화면이 "없는 거야?"에 답을 못 한다
+    (#123·#129·#189·#228 계열) — 값만 필요한 자리는 `credit_split_series_eok`.
+    """
     ck = f"kofia_credit_split_{n}_{_now():%Y%m%d}"
     c = _cache_get(ck, ttl=1 * 3600)  # 2026-08-08: 시장유동성 섹션 1h 통일
     if c is not None:
-        return {m: [tuple(x) for x in ser] for m, ser in c.items()}
-    raw = _fetch(_KOFIA_BASE, _OP_CREDIT, {"numOfRows": n})
+        ser = c.get("series") if isinstance(c, dict) and "series" in c else c
+        return ({m: [tuple(x) for x in v] for m, v in (ser or {}).items()},
+                (c.get("why", "") if isinstance(c, dict) and "series" in c else ""))
+    if not fsc_key_ready():
+        # 키가 없으면 네트워크를 안 친다 — 캐시할 실패도 아니다.
+        log.info("kofia credit split: 키 미설정 — skip")
+        return {}, "key"
+    if _breaker_open(_OP_CREDIT):
+        log.info("kofia credit split: 차단기 냉각 중 — skip")
+        return {}, "breaker"
+    raw, ok = _fetch2(_KOFIA_BASE, _OP_CREDIT, {"numOfRows": n})
     if not raw:
-        # 빈 응답도 로그(키 미설정/일시 실패 — silent 경로 금지, 2026-07-08
-        # '로그 0줄' 진단 혼선 재발 방지). 미캐시 — 다음 호출 재시도.
-        log.info("kofia credit split: 빈 응답(키 미설정/일시 실패) — skip")
-        return {}
+        # ⚠️ `[]` 는 '결과 없음'과 '서비스 장애'를 구별 못 한다 — 처방이
+        # 다르므로 `_fetch2` 의 성공 플래그로 가른다(#82·#143).
+        why = "empty" if ok else "http"
+        log.info("kofia credit split: 빈 응답(%s) — skip", why)
+        # ⚠️ 여기도 **짧게 캐시한다** — 안 하면 30초 위젯 regen 마다 죽은
+        # 서비스를 다시 친다(쿼터 낭비). 아래 성공 경로와 같은 수명 규약을
+        # 쓰도록 한 곳으로 모은다(#38 두 곳에 적으면 갈라진다).
+        return _credit_split_cache(ck, {}, why)
     # 키 발견은 앞쪽 여러 행 union — 최신 행이 장중 일부 필드만 채워 오는
     # 케이스에서 시장 필드를 놓치지 않게(리뷰 2026-07-06).
     keys: list = []
@@ -659,6 +730,10 @@ def credit_split_series_eok(n: int = 130) -> dict:
     log.info("kofia credit split: keys=%s → kospi=%s kosdaq=%s",
              [k for k in keys if "crd" in k.lower()],
              field.get("kospi"), field.get("kosdaq"))
+    if not field:
+        # 빈 결과도 **짧게** 캐시 — 30초 위젯 regen 마다 재fetch 하는 쿼터
+        # 낭비를 막되(리뷰 2026-07-06) 한 시간을 지우지는 않는다(#369).
+        return _credit_split_cache(ck, {}, "nofield")
     out: dict = {}
     for mkt, fk in field.items():
         series = {}
@@ -673,25 +748,56 @@ def credit_split_series_eok(n: int = 130) -> dict:
     # 잔고 합리성 가드 — 오분류 필드(비율·증감 등)가 빠져나온 경우 차단:
     # 각 시장 최신값은 전체(crdTrFingWhl) 미만 & 양수, 두 시장 합은 전체의
     # ±25% 이내여야. 위반 시 WARNING + 전체 드롭(틀린 숫자 노출 금지).
+    #
+    # ⚠️ **같은 날끼리 비교해야 한다**(2026-09-14). 옛 판은 전체는
+    # `whole[max(whole)]`, 시장은 각자의 `s[-1]` 을 써서 **두 모집단이 다른
+    # 날짜**였다(#45). 전체만 계속 오고 시장 필드가 한동안 끊기면, 그 사이
+    # 전체가 자란 만큼 오차가 벌어져 ±25% 룰이 **멀쩡한 시계열을 통째로**
+    # 드롭한다. 셋 다 값이 있는 가장 최근 날짜에서 잰다(없으면 판정하지
+    # 않는다 — #99 창이 안 맞으면 판정 자체를 하지 말 것).
+    #
+    # ⚠️ 이게 사용자가 본 "코스피/코스닥 신용잔고 추이가 안나올때가 있어"의
+    # **원인이라고 단정하지 않는다** — 샌드박스에선 KOFIA 를 못 쳐서 재지
+    # 못했다(#12·#165). 구조적으로 틀린 비교라 그 자체로 고칠 값어치가 있고,
+    # 진짜 갈래는 이제 `why` 가 화면에 말하므로 **다음 발생 때 출력이
+    # 답한다**(#82 다음 출력이 곧 측정).
     whole = {d: v / 1e8 for d, v in
              ((str(it.get("basDt") or ""), _f(it.get("crdTrFingWhl")))
               for it in raw) if d and v is not None}
+    why = ""
     if out and whole:
-        w_latest = whole[max(whole)]
-        latest = {m: s[-1][1] for m, s in out.items()}
-        bad = [m for m, v in latest.items() if not (0 < v < w_latest)]
-        if not bad and len(latest) == 2:
-            tot = sum(latest.values())
-            if not (0.75 * w_latest <= tot <= 1.25 * w_latest):
-                bad = list(latest)
-        if bad:
-            log.warning("kofia credit split: 합리성 가드 위반 %s (latest=%s, "
-                        "whole=%.0f) — 드롭", bad, latest, w_latest)
-            out = {}
-    # 미발견(빈 결과)도 캐시 — 30초 위젯 regen 마다 재fetch 하는 쿼터 낭비
-    # 방지(리뷰 2026-07-06). 빈 dict 는 _cache_get 에서 None 과 구분됨.
-    _cache_put(ck, {m: list(map(list, s)) for m, s in out.items()})
-    return out
+        common = set(whole)
+        for _m, _s in out.items():
+            common &= {d for d, _v in _s}
+        if common:
+            day = max(common)
+            w_latest = whole[day]
+            latest = {m: dict(s)[day] for m, s in out.items()}
+            bad = [m for m, v in latest.items() if not (0 < v < w_latest)]
+            if not bad and len(latest) == 2:
+                tot = sum(latest.values())
+                if not (0.75 * w_latest <= tot <= 1.25 * w_latest):
+                    bad = list(latest)
+            if bad:
+                log.warning("kofia credit split: 합리성 가드 위반 %s "
+                            "(%s latest=%s, whole=%.0f) — 드롭",
+                            bad, day, latest, w_latest)
+                out = {}
+                why = "sanity"
+        else:
+            # 겹치는 날이 없으면 **검산이 성립하지 않는다** — 값을 버리지도
+            # 축복하지도 않는다. 그 사실을 로그로 남긴다(#54·#12).
+            log.info("kofia credit split: 전체·시장이 겹치는 날이 없어 "
+                     "합리성 검산 생략")
+    if not out and not why:
+        why = "empty"
+    return _credit_split_cache(ck, out, why)
+
+
+def credit_split_series_eok(n: int = 130) -> dict:
+    """값만 필요한 자리용 얇은 래퍼 — **왜 비었는지**가 화면에 필요하면
+    `credit_split_with_reason` 을 쓸 것(#129)."""
+    return credit_split_with_reason(n)[0]
 
 
 def _fmt_jo(won) -> str:

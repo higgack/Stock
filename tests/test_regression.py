@@ -21302,24 +21302,35 @@ class TestCreditSplitAndMarketcap20260706:
                  "crdTrFingKosdaq": "80000000000000",
                  "crdTrLndrWhl": "90000000000",
                  "dpsgScrtMogFing": "24000000000000"}]
-        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: fake)
+        # ⚠️ 계약 갱신(2026-09-14, #222): 수집이 `_fetch` → `_fetch2` 로 옮겼다.
+        # `[]` 하나로는 '결과 없음'과 '서비스 장애'를 못 가르는데 처방이 다르기
+        # 때문이다(#82·#143). 키·차단기 게이트도 이 함수가 직접 보므로 스텁을
+        # 같이 연다. 남는 보장(필드 분류·원→억원·빈 결과 캐시·합리성 가드)은
+        # 그대로 잰다.
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (fake, True))
         monkeypatch.setattr(fc, "_cache_get", lambda *a, **k: None)
         monkeypatch.setattr(fc, "_cache_put", lambda *a, **k: None)
         sp = fc.credit_split_series_eok(2)
         assert set(sp) == {"kospi", "kosdaq"}
         assert sp["kospi"][-1] == ("20260702", 2910000.0)   # 원→억원
         # 응답에 시장 필드가 아예 없으면 {} (graceful) + 빈 결과도 캐시
-        # (30초 위젯 regen 마다 재fetch 하는 쿼터 낭비 방지 — 리뷰 2026-07-06)
+        # (30초 위젯 regen 마다 재fetch 하는 쿼터 낭비 방지 — 리뷰 2026-07-06.
+        #  ⚠️ 다만 **수명은 짧게** — 그건 #369 의 별도 테스트가 잰다)
         puts = []
         monkeypatch.setattr(fc, "_cache_put", lambda k, v: puts.append(v))
-        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: [
-            {"basDt": "20260701", "crdTrFingWhl": "1"}])
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (
+            [{"basDt": "20260701", "crdTrFingWhl": "1"}], True))
         assert fc.credit_split_series_eok(1) == {}
-        assert puts and puts[-1] == {}
+        # ⚠️ 이제 캐시 봉투가 `{"series": …, "why": …}` 다 — 갈래를 버리면
+        # 화면이 "없는 거야?"에 답을 못 한다(#369·#129).
+        assert puts and puts[-1]["series"] == {}
+        assert puts[-1]["why"] == "nofield"
         # 합리성 가드: 시장 최신값이 전체(Whl)보다 크면 오분류로 보고 드롭
-        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: [
-            {"basDt": "20260701", "crdTrFingWhl": "100",
-             "crdTrFingScrtMrkt": "90000000000000"}])
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (
+            [{"basDt": "20260701", "crdTrFingWhl": "100",
+              "crdTrFingScrtMrkt": "90000000000000"}], True))
         assert fc.credit_split_series_eok(1) == {}
 
     def test_deposit_charts_include_split(self):
@@ -21332,10 +21343,16 @@ class TestCreditSplitAndMarketcap20260706:
         ch = d._render_deposit_charts(dep)
         assert "코스피 신용잔고" in ch and "코스닥 신용잔고" in ch
         assert "repeat(3,1fr)" in ch      # 4+카드 → 3열 wrap
-        # split 없으면 기존 3카드 그대로 (graceful)
+        # ⚠️ 계약 갱신(2026-09-14, #222): 옛 판은 "split 없으면 **조용히**
+        # 3카드" 였다. 그래서 원천이 막힌 날 카드가 통째로 사라졌고 사용자가
+        # "코스피/코스닥 신용잔고 추이가 안나올때가 있어" 라고 물어야 했다
+        # (#43·#52·#335). 남는 보장은 "나머지 3카드는 그대로 · 3열 wrap" 이고,
+        # 새 계약은 "사라지는 대신 **사유를 말한다**" 다.
         dep2 = {k: v for k, v in dep.items() if "kosp" not in k and "kosd" not in k}
         ch2 = d._render_deposit_charts(dep2)
-        assert "코스피 신용잔고" not in ch2 and "repeat(3,1fr)" in ch2
+        assert "고객예탁금 추이" in ch2 and "repeat(3,1fr)" in ch2
+        assert "코스피 신용잔고 추이 (억원)" not in ch2   # 차트는 안 그린다
+        assert "받지 못했습니다" in ch2                   # 그러나 침묵하지도 않는다
         # deposit.json 스키마 버전 게이트 — 장외 무기한 fresh 캐시가 새 필드
         # 반영을 다음 장까지 막던 것(2026-07-08). 구버전 캐시 = miss.
         import bot.naver_sector_client as nsc
@@ -26086,13 +26103,13 @@ class TestFlowTrendDiagnosis20260818:
         틀린 금리가 올라간다. 겹치는 날 값이 FRED 와 0.10%p 이내로 맞아야만
         쓴다 — 만기가 다르면 절대 못 맞는다. 이게 검산이다."""
         from bot import treasury_yield_client as ty
-        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None: {
+        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None, **kw: {
             "2026-08-14": {"DGS10": 4.68}, "2026-08-17": {"DGS10": 4.71}})
         assert ty.fresher_than("2026-08-14", 4.68, "DGS10") == ("2026-08-17", 4.71)
         # 같은 날 값이 어긋나면(=필드 오집) 새 값을 쓰지 않는다.
         assert ty.fresher_than("2026-08-14", 4.10, "DGS10") is None
         # 더 최신 날짜가 없으면 None — FRED 를 그대로 쓴다.
-        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None: {
+        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None, **kw: {
             "2026-08-14": {"DGS10": 4.68}})
         assert ty.fresher_than("2026-08-14", 4.68, "DGS10") is None
 
@@ -26108,9 +26125,19 @@ class TestFlowTrendDiagnosis20260818:
         날(8-14) 값이 **정확히 일치**하고 8-17 이 추가로 있었다.
 
         ⚠️ 배선했어도 가드는 그대로다: 겹치는 날이 어긋나면(태그 오집)
-        FRED 값을 그대로 쓴다. 금리 자리에 틀린 숫자를 올릴 수는 없다."""
+        FRED 값을 그대로 쓴다. 금리 자리에 틀린 숫자를 올릴 수는 없다.
+
+        ⚠️ 계약 갱신(2026-09-14, #222 지우지 않고 다시 쓴다): 옛 판은
+        `== {DGS2, DGS10, DGS30}` **동등**이었는데, 그 탓에 장단기금리차
+        (`T10Y2Y`)가 보강 대상 밖으로 남아 **같은 화면에서 10Y − 2Y 가
+        스프레드 카드와 안 맞았다**(#33, 사용자 2026-09-14 "장단기금리차같은거
+        여전히 가장 최신이 아니잖아"). 남는 보장은 "만기 3종이 보강된다" 이고
+        (그건 그대로 잰다), 여기에 "스프레드도 같이 당겨진다" 가 더해졌다.
+        """
         from bot import market_overview as mo
-        assert mo._TREASURY_SIDS == {"DGS2", "DGS10", "DGS30"}
+        assert {"DGS2", "DGS10", "DGS30"} <= mo._TREASURY_SIDS
+        assert "T10Y2Y" in mo._TREASURY_SIDS, (
+            "스프레드만 보강 밖이면 10Y−2Y 가 카드와 안 맞는다(#33)")
 
         # ⚠️ 헬퍼 단위테스트만으로는 **배선 변형을 못 잡는다**(실수 #20).
         # 그래서 `_fred_fetch_series` 를 통째로 태운다 — FRED 응답과 재무부
@@ -26137,13 +26164,13 @@ class TestFlowTrendDiagnosis20260818:
 
         # (a) 겹치는 날 일치 + 더 최신 관측 → 재무부 값으로 하루 당긴다.
         ok = {"2026-08-14": {"DGS10": 4.68}, "2026-08-17": {"DGS10": 4.72}}
-        r = _run("a", "DGS10", lambda ym=None: ok)
+        r = _run("a", "DGS10", lambda ym=None, **kw: ok)
         assert r["time"] == "2026-08-17" and r["value"] == 4.72
         assert r["prev_value"] == 4.68 and abs(r["change"] - 0.04) < 1e-9
 
         # (b) 겹치는 날이 어긋나면(태그 오집) FRED 를 그대로 쓴다.
         bad = {"2026-08-14": {"DGS10": 4.20}, "2026-08-17": {"DGS10": 4.25}}
-        r = _run("b", "DGS10", lambda ym=None: bad)
+        r = _run("b", "DGS10", lambda ym=None, **kw: bad)
         assert r["time"] == "2026-08-14" and r["value"] == 4.68
 
         # (c) 국채가 아닌 시리즈는 재무부를 **아예 조회하지 않는다**.
@@ -26330,7 +26357,7 @@ class TestFlowTrendDiagnosis20260818:
         import bot.treasury_yield_client as ty
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
 
-        def _fail_sep(ym):
+        def _fail_sep(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"      # 제품이 실패 시 하는 그대로
                 return {}
@@ -26350,7 +26377,7 @@ class TestFlowTrendDiagnosis20260818:
             # 반대 증거 — 그 달을 **받았는데** 날짜가 없으면 여전히
             # no_overlap 이다(#25 '있다' 만 묻는 검사는 눈이 먼다).
             ty._FAIL.clear()
-            ty.fetch_daily_curve = lambda ym: aug
+            ty.fetch_daily_curve = lambda ym, **kw: aug
             code2, _ = ty.fresher_diag("2026-09-11", 4.96, "DGS10")
             assert code2 == "no_overlap", code2
         finally:
@@ -26372,7 +26399,7 @@ class TestFlowTrendDiagnosis20260818:
 
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
 
-        def _f(ym):
+        def _f(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"
                 return {}
@@ -26404,7 +26431,7 @@ class TestFlowTrendDiagnosis20260818:
         saved = (ty.fetch_daily_curve, mo._fred_fetch_series,
                  mt._expected_session, dict(ty._FAIL))
 
-        def _fail_sep(ym):
+        def _fail_sep(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"
                 return {}
@@ -26863,7 +26890,7 @@ class TestFlowTrendDiagnosis20260818:
         saved = (ty.fetch_daily_curve, mo._fred_fetch_series,
                  mt._expected_session, dict(ty._FAIL))
 
-        def _fail_sep(ym):
+        def _fail_sep(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"
                 return {}
@@ -26942,7 +26969,7 @@ class TestFlowTrendDiagnosis20260818:
         # 같은 날이 표에 있는데 값이 다르다 → mismatch (태그 오집 의심).
         monkeypatch.setattr(ty, "_FAIL", {})
         monkeypatch.setattr(ty, "fetch_daily_curve",
-                            lambda ym: {"2026-09-11": {"DGS10": 3.00}})
+                            lambda ym, **kw: {"2026-09-11": {"DGS10": 3.00}})
         monkeypatch.setattr(mt, "_expected_session",
                             lambda m: ("2026-09-11", 0))
         d = tmp_path / "fred"
@@ -26966,7 +26993,7 @@ class TestFlowTrendDiagnosis20260818:
         saved = (ty.fetch_daily_curve, dict(ty._FAIL))
         try:
             # 곡선은 멀쩡히 오지만 7월 날짜는 없다 → no_overlap 이 정답.
-            ty.fetch_daily_curve = lambda ym: {
+            ty.fetch_daily_curve = lambda ym, **kw: {
                 f"2026-09-{d:02d}": {"DGS10": 4.9} for d in (1, 11)}
             ty._FAIL.clear()
             ty._FAIL["202607"] = "timeout"        # 오래전 실패가 남아 있다
@@ -26975,7 +27002,7 @@ class TestFlowTrendDiagnosis20260818:
             assert code == "no_overlap", \
                 f"조회조차 안 한 달의 옛 실패를 이번 판정에 끌어왔다({code})"
             # 반대 증거 — **이번에 조회한** 달이 실패했으면 여전히 잡는다(#25).
-            def _f(ym):
+            def _f(ym, **kw):
                 ty._FAIL[ym] = "timeout"
                 return {}
             ty._FAIL.clear()
@@ -27073,7 +27100,7 @@ class TestFlowTrendDiagnosis20260818:
         d.mkdir(parents=True)
         today = date.today().isoformat()
         # 결정적으로 — 바깥 원천을 치지 않는다(#312·#336).
-        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10: (
+        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10, **kw: (
             "no_overlap", {"sid": sid, "fred_date": fd, "months": ["202609"],
                            "curve_days": ["2026-09-11"], "tol": tol}))
         fake = types.SimpleNamespace(
@@ -27108,7 +27135,7 @@ class TestFlowTrendDiagnosis20260818:
 
         d = tmp_path / "fred"
         d.mkdir(parents=True)
-        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10: (
+        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10, **kw: (
             "no_overlap", {"sid": sid, "fred_date": fd, "months": ["202609"],
                            "curve_days": [], "tol": tol}))
         fake = types.SimpleNamespace(_CACHE_DIR=tmp_path,
@@ -49661,7 +49688,7 @@ def test_market_timing_why_probe_dispatches_and_is_read_only():
 def _ust_stub(monkeypatch, by_month):
     from bot import treasury_yield_client as t
     monkeypatch.setattr(t, "fetch_daily_curve",
-                        lambda ym=None: dict(by_month.get(ym or "", {})))
+                        lambda ym=None, **kw: dict(by_month.get(ym or "", {})))
     return t
 
 
@@ -49675,7 +49702,7 @@ def test_treasury_fresher_names_the_branch(monkeypatch):
     # 원천이 이미 최선 — 우리 문제가 아니다(❌ 로 세면 진짜 결함을 가린다 #260)
     assert t.fresher_diag("2026-09-04", 4.29, "DGS2")[0] == "no_newer"
     # 곡선 미수신
-    monkeypatch.setattr(t, "fetch_daily_curve", lambda ym=None: {})
+    monkeypatch.setattr(t, "fetch_daily_curve", lambda ym=None, **kw: {})
     assert t.fresher_diag("2026-09-04", 4.29, "DGS2")[0] == "no_curve"
     # 태그 오집(만기가 다른 값) — 이 검산이 이 모듈의 존재 이유다
     _ust_stub(monkeypatch, {"202609": {"2026-09-03": {"DGS2": 3.90},
@@ -64885,3 +64912,465 @@ class TestEcosStaleVerdictSplit20260913:
         assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                    and n.func.id == "stale_evidence_line"
                    for n in ast.walk(_tree)), "증거 줄이 배선에서 빠졌다"
+
+
+class TestTreasurySpreadAndRetry20260914:
+    """장단기금리차 재무부 보강 + 느린 원천 재시도 (사용자 2026-09-14).
+
+    "여기 미국채나 장단기금리차같은거 재무부것도 여전히 가장 최신이 아니잖아."
+
+    두 결함이 겹쳐 있었다:
+      (a) `_TREASURY_SIDS` 가 만기 3종만이라 **스프레드 카드만** FRED 의
+          D+1 에 머물렀다 — 같은 화면에서 10Y − 2Y 를 빼면 카드와 안 맞는다
+          (#33). 게다가 `_FRED_DAILY_SIDS` 열거에도 T10Y2Y 가 빠져 있어
+          일별 시리즈가 **24시간 캐시**에 앉아 있었다(#24 열거형은 새 항목을
+          못 잡는다). 값이 다 '있어서' 아무 감사도 안 걸렸다(#96).
+      (b) 재무부 조회가 단발 20초라, 원천이 느린 날의 **동전던지기**가 그대로
+          결산의 판정이 됐다(2026-09-13 실측: 같은 명령 1회차 `no_newer` ✅ /
+          2회차 `month_failed` — #21·#361b).
+    """
+
+    # ── (a) 파생 스프레드 ────────────────────────────────────────────
+    def test_spread_needs_both_legs_and_keeps_inversion(self):
+        """재료가 둘 다 있을 때만 만든다(#88) — 그리고 역전은 정상값이다."""
+        from bot.treasury_yield_client import derive_spreads
+        assert derive_spreads({"DGS10": 4.05, "DGS2": 3.55}) == {"T10Y2Y": 0.5}
+        # 한쪽 다리가 없으면 아예 안 만든다(빈칸이 틀린 값보다 낫다, #29).
+        assert derive_spreads({"DGS10": 4.05}) == {}
+        assert derive_spreads({"DGS2": 3.55}) == {}
+        # ⚠️ 역전(마이너스)은 `_num` 의 0~20 상식범위 가드를 태우면 안 된다 —
+        # 그건 **수익률** 전용이다. 침체 선행 신호를 우리가 지우면 안 된다.
+        assert derive_spreads({"DGS10": 3.50, "DGS2": 4.10}) == {"T10Y2Y": -0.6}
+        # 부동소수 noise 가 화면에 새지 않는다(FRED 도 소수 2자리).
+        assert derive_spreads({"DGS10": 4.13, "DGS2": 3.58}) == {"T10Y2Y": 0.55}
+
+    def test_curve_carries_the_spread_and_the_overlap_guard_still_bites(
+            self, monkeypatch):
+        """⚠️ 헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20) — 파서를
+        통째로 태워 곡선에 스프레드가 실리는지, 그리고 FRED 와 겹치는 날
+        검산이 여전히 무는지 값으로 본다."""
+        import requests as _rq
+
+        from bot import treasury_yield_client as ty
+        xml = (
+            "<x>"
+            "<entry><d:NEW_DATE>2026-09-12T00:00:00</d:NEW_DATE>"
+            "<d:BC_2YEAR>3.55</d:BC_2YEAR><d:BC_10YEAR>4.05</d:BC_10YEAR></entry>"
+            "<entry><d:NEW_DATE>2026-09-15T00:00:00</d:NEW_DATE>"
+            "<d:BC_2YEAR>3.58</d:BC_2YEAR><d:BC_10YEAR>4.13</d:BC_10YEAR></entry>"
+            "</x>")
+
+        class _R:
+            status_code = 200
+            text = xml
+
+            def raise_for_status(self):
+                pass
+
+        monkeypatch.setattr(ty, "_CACHE", {})
+        monkeypatch.setattr(_rq, "get", lambda *a, **k: _R())
+        curve = ty.fetch_daily_curve("202609")
+        assert curve["2026-09-12"]["T10Y2Y"] == 0.5
+        assert curve["2026-09-15"]["T10Y2Y"] == 0.55
+        # FRED 의 T10Y2Y(0.50)와 겹치는 날이 맞으므로 새 날짜를 준다.
+        assert ty.fresher_than("2026-09-12", 0.50, "T10Y2Y") == ("2026-09-15", 0.55)
+        # ⚠️ 다리를 잘못 집었으면 겹치는 날이 어긋나 거부된다 — 파생값도
+        # 같은 검산을 받는다(그게 이 배선의 안전장치다).
+        assert ty.fresher_than("2026-09-12", 0.90, "T10Y2Y") is None
+
+    def test_daily_cache_set_comes_from_the_cadence_table(self):
+        """옛 판은 다섯을 **이름으로** 적어 T10Y2Y 가 24h 캐시에 앉아 있었다.
+
+        공표 주기는 `macro_cadence.CADENCE` 가 이미 단일 출처로 들고 있다 —
+        거기서 파생시키면 새 일별 시리즈가 저절로 따라온다(#24·#38).
+        """
+        from bot import market_overview as mo
+        from bot.macro_cadence import CADENCE
+        daily = {sid for sid, spec in CADENCE.items() if spec[0] == "D"}
+        assert daily <= mo._FRED_DAILY_SIDS, (
+            "일별 규약인데 긴 캐시에 앉는 시리즈가 있다")
+        assert "T10Y2Y" in mo._FRED_DAILY_SIDS
+        # ⚠️ 옛 다섯 개짜리 리터럴로 되돌리는 변형을 잡으려면 **그 목록 밖**
+        # 이면서 일별인 것을 집어야 한다(#91b 재는 대상이 맞나).
+        assert "SOFR" in mo._FRED_DAILY_SIDS, "표에서 파생하지 않고 있다"
+        # 월간·분기까지 짧게 하면 호출만 늘고 얻는 게 없다.
+        assert "CPIAUCSL" not in mo._FRED_DAILY_SIDS
+
+    # ── (b) 재시도 ──────────────────────────────────────────────────
+    def test_retry_is_only_for_kinds_that_can_change_their_answer(self):
+        """4xx 는 **우리 요청 모양**이라 백 번 물어도 같다(#82·#279)."""
+        from bot.treasury_yield_client import retryable
+        assert retryable("timeout") and retryable("network")
+        assert retryable("http503") and retryable("http500")
+        assert not retryable("http404") and not retryable("http403")
+        assert not retryable("other")
+
+    def test_render_asks_once_and_batch_retries_then_stops_on_4xx(
+            self, monkeypatch):
+        """렌더는 1회(#116 화면 대기 금지) · 배치만 재시도.
+
+        ⚠️ 시간·순서가 아니라 **요청 횟수**로 잰다(#128 sleep 로 재면 단독
+        green 전체 red). 그리고 `sleep` 을 무력화해 결정적으로 돌린다.
+        """
+        import requests as _rq
+
+        from bot import treasury_yield_client as ty
+        monkeypatch.setattr(ty.time, "sleep", lambda *_a: None)
+        calls: list[int] = []
+
+        def _boom(*_a, **_k):
+            calls.append(1)
+            raise _rq.exceptions.ReadTimeout("slow")
+
+        monkeypatch.setattr(_rq, "get", _boom)
+        monkeypatch.setattr(ty, "_CACHE", {})
+        assert ty.fetch_daily_curve("202609") == {}
+        assert len(calls) == 1, "렌더 경로가 재시도하면 20초 × N 이 화면 대기다"
+
+        calls.clear()
+        monkeypatch.setattr(ty, "_CACHE", {})
+        assert ty.fetch_daily_curve("202609", attempts=3) == {}
+        assert len(calls) == 3, "배치가 한 번만 묻고 포기하면 동전던지기다"
+
+        # 4xx 는 다시 물어도 같은 답 — 첫 실패에서 멈춘다.
+        class _E(Exception):
+            pass
+
+        def _404(*_a, **_k):
+            calls.append(1)
+            r = _rq.Response()
+            r.status_code = 404
+            r.raise_for_status()
+
+        calls.clear()
+        monkeypatch.setattr(_rq, "get", _404)
+        monkeypatch.setattr(ty, "_CACHE", {})
+        assert ty.fetch_daily_curve("202609", attempts=3) == {}
+        assert len(calls) == 1, "4xx 에 재시도하면 순손실이다(#82)"
+
+    def test_diagnostics_do_not_trust_a_stale_failure_cache(self, monkeypatch):
+        """진단은 **지금** 사실을 재야 한다 — 10분 전 한 번의 타임아웃을
+        원천 결측으로 보고하면 다음 라운드를 엉뚱한 데로 보낸다(#35·#54).
+        단 **성공** 캐시는 존중한다(공짜 조회를 일부러 늘리지 않는다)."""
+        import time as _t
+
+        from bot import treasury_yield_client as ty
+        monkeypatch.setattr(ty.time, "sleep", lambda *_a: None)
+        calls: list[str] = []
+
+        class _R:
+            status_code = 200
+            text = "<x></x>"
+
+            def raise_for_status(self):
+                pass
+
+        import requests as _rq
+        monkeypatch.setattr(_rq, "get", lambda *a, **k: (calls.append("x"), _R())[1])
+
+        # 실패 캐시가 신선해도 배치는 다시 묻는다.
+        monkeypatch.setattr(ty, "_CACHE", {"202609": (_t.time(), {})})
+        ty.fetch_daily_curve("202609", attempts=3)
+        assert calls, "실패 캐시를 그대로 믿으면 진단이 옛 사실을 말한다"
+        # 성공 캐시는 그대로 쓴다.
+        calls.clear()
+        monkeypatch.setattr(
+            ty, "_CACHE", {"202609": (_t.time(), {"2026-09-15": {"DGS10": 4.1}})})
+        assert ty.fetch_daily_curve("202609", attempts=3)
+        assert not calls, "성공 캐시까지 무시하면 진단이 원천을 몰아친다"
+
+    def test_batch_surfaces_actually_pass_attempts(self):
+        """⚠️ 상수를 import 만 하고 안 넘기면 아무 일도 안 일어난다(#20·#141).
+        두 배치 표면(감사·프로브)이 **인자로** 넘기는지 AST 로 못박는다."""
+        import ast as _ast
+        import pathlib as _pl
+
+        for mod, fn in (("bot/scripts/macro_staleness_audit.py", "fresher_diag"),
+                        ("bot/scripts/rate_freshness_probe.py", "fetch_daily_curve")):
+            tree = _ast.parse(_pl.Path(mod).read_text(encoding="utf-8"))
+            ok = [n for n in _ast.walk(tree)
+                  if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                  and n.func.id == fn
+                  and any(k.arg == "attempts" for k in n.keywords)]
+            assert ok, f"{mod} 의 {fn} 호출이 attempts 를 안 넘긴다"
+
+    # ── 네이버 조사 프로브 ───────────────────────────────────────────
+    def test_naver_probe_verdict_never_says_ok_without_both_sides(self):
+        """"네이버가 더 최신인가" 는 **양쪽을 다 재야** 답이 나온다 —
+        한쪽이 없으면 ✅ 도 ❌ 도 아닌 판정 불가다(#54·#143)."""
+        from bot.scripts.naver_rate_probe import _VERDICT_TEXT, verdict
+        assert verdict("2026-09-15", "2026-09-12") == "fresher"
+        assert verdict("2026-09-12", "2026-09-12") == "same"
+        assert verdict("2026-09-11", "2026-09-12") == "older"
+        assert verdict(None, "2026-09-12") == "unknown_naver"
+        assert verdict("2026-09-15", None) == "unknown_ours"
+        # 갈래마다 문구가 있어야 화면이 말할 수 있다(#82).
+        assert set(_VERDICT_TEXT) == {"fresher", "same", "older",
+                                      "unknown_naver", "unknown_ours"}
+        # 판정 불가를 ✅ 로 찍지 않는다.
+        for k in ("unknown_naver", "unknown_ours"):
+            assert "✅" not in _VERDICT_TEXT[k]
+
+    def test_naver_probe_banner_reacts_to_its_own_source(self, tmp_path):
+        """배너가 상수면 낡은 체크아웃이 신선한 것과 같은 글자를 낸다 —
+        고친 것이 안 먹은 것처럼 보인다(#364·#91b)."""
+        import hashlib
+        import pathlib as _pl
+
+        from bot.scripts import naver_rate_probe as P
+        b = P.banner()
+        sig = hashlib.sha1(
+            _pl.Path(P.__file__).read_bytes()).hexdigest()[:10]
+        assert sig in b, "지문이 이 파일의 소스에 반응하지 않는다"
+        # 인터프리터도 찍는다 — venv 밖에서 돌린 출력을 사실로 읽지 않기 위해(#132).
+        import sys as _sys
+        assert _sys.executable in b
+
+
+class TestCreditSplitWhyAndDateAlignment20260914:
+    """코스피/코스닥 신용잔고 추이가 **가끔 사라진다** (사용자 2026-09-14).
+
+    세 결함이 겹쳐 있었다:
+      (a) `credit_split_series_eok` 가 빈 dict 하나로 **갈래를 뭉갰다** —
+          키 미설정 · 차단기 냉각 · 요청 실패 · 결과 0건 · 필드 미발견 ·
+          합리성 가드 드롭이 처방이 전부 다른데 화면은 아무 말도 못 했다
+          (#82·#129·#123 계열).
+      (b) 합리성 가드가 **다른 날짜끼리** 비교했다 — 전체는 `max(whole)`,
+          시장은 각자의 마지막 행이라, 원천이 최신 행에 전체만 먼저 채우는
+          날이면 정상 데이터가 ±25% 룰에 걸려 통째로 드롭됐다(#45 두 모집단).
+      (c) 그 빈 결과가 **1시간 캐시**에 앉아 카드가 한 시간 사라졌다
+          (#152·#161·#280·#303 실패는 짧게만 믿는다).
+      그리고 화면은 값이 없으면 카드를 **아예 안 그렸다** — 사라지면 기능이
+      삭제된 것처럼 보이고 '새 게 없다' 와 '원천이 막혔다' 가 같은 화면이
+      된다(#43·#52·#335 형제 위젯의 선행 사례).
+    """
+
+    @staticmethod
+    def _rows(whole_only_latest: bool = False) -> list:
+        """KOFIA 신용공여 응답 모양 — 원천이 실제로 보내는 키로(#155).
+
+        `whole_only_latest=True` 면 **최신 행에 전체만** 채워져 온다(장중에
+        실제로 나는 모양). 옛 판은 이 경우 정상 데이터를 통째로 드롭했다.
+        """
+        rows = [
+            {"basDt": "20260910", "crdTrFingWhl": "20000000000000",
+             "crdTrFingScrs": "11000000000000",
+             "crdTrFingKosdaq": "9000000000000"},
+            {"basDt": "20260911", "crdTrFingWhl": "20200000000000",
+             "crdTrFingScrs": "11100000000000",
+             "crdTrFingKosdaq": "9100000000000"},
+        ]
+        if whole_only_latest:
+            # ⚠️ 전체만 계속 오고 시장 필드가 **한동안 끊긴** 구간 — 그 사이
+            # 전체가 ±25% 넘게 자라면 옛 판(다른 날짜끼리 비교)은 멀쩡한
+            # 시계열을 통째로 드롭했다. 하루치만 어긋나게 두면 오차가 작아
+            # 옛 판도 통과해 **가드가 눈이 먼다**(#91c 깨지는 값까지 밀 것).
+            rows += [{"basDt": f"2026091{i}", "crdTrFingWhl": str(w)}
+                     for i, w in ((2, 22000000000000), (3, 24000000000000),
+                                  (4, 27000000000000))]
+        return rows
+
+    def _patch(self, monkeypatch, tmp_path, rows, ok=True):
+        from bot import fsc_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (rows, ok))
+        return fc
+
+    def test_a_partially_filled_latest_row_no_longer_drops_everything(
+            self, monkeypatch, tmp_path):
+        """(b) 같은 날끼리 비교한다 — 전체만 먼저 온 날에 시장 시계열이
+        통째로 사라지면 안 된다. 그게 '가끔 안 나온다' 의 유력 후보였다."""
+        fc = self._patch(monkeypatch, tmp_path, self._rows(whole_only_latest=True))
+        out, why = fc.credit_split_with_reason(130)
+        assert why == "", f"정상 데이터가 드롭됐다({why})"
+        assert len(out["kospi"]) == 2 and len(out["kosdaq"]) == 2
+        # 그래도 **진짜 오분류**는 여전히 막는다(가드를 약하게 만든 게 아니다).
+        bad = [{"basDt": "20260911", "crdTrFingWhl": "20200000000000",
+                "crdTrFingScrs": "100", "crdTrFingKosdaq": "100"}]
+        fc = self._patch(monkeypatch, tmp_path / "b", bad)
+        (tmp_path / "b").mkdir(exist_ok=True)
+        out2, why2 = fc.credit_split_with_reason(131)
+        assert out2 == {} and why2 == "sanity"
+
+    def test_every_empty_result_names_its_branch(self, monkeypatch, tmp_path):
+        """(a) 처방이 다른 갈래를 한 통에 담지 말 것(#82)."""
+        from bot import fsc_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: False)
+        assert fc.credit_split_with_reason(140) == ({}, "key")
+
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: True)
+        assert fc.credit_split_with_reason(141) == ({}, "breaker")
+
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        # ⚠️ `[]` 하나로는 '결과 없음' 과 '서비스 장애' 를 못 가른다(#143).
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: ([], True))
+        assert fc.credit_split_with_reason(142) == ({}, "empty")
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: ([], False))
+        assert fc.credit_split_with_reason(143) == ({}, "http")
+        # 응답은 왔는데 시장 필드가 없으면 '원천 결측' 이 아니라 '필드 미발견'.
+        monkeypatch.setattr(
+            fc, "_fetch2",
+            lambda *a, **k: ([{"basDt": "20260911", "crdTrFingWhl": "1"}], True))
+        assert fc.credit_split_with_reason(144) == ({}, "nofield")
+        # 갈래마다 사람이 읽는 문구가 있어야 화면이 말할 수 있다.
+        for code in ("key", "breaker", "http", "empty", "nofield", "sanity"):
+            assert fc.credit_split_reason_text(code), code
+        # 모르는 코드는 **지어내지 않고** 그대로 보여 준다(#165·#290).
+        assert "zzz" in fc.credit_split_reason_text("zzz")
+        assert fc.credit_split_reason_text("") == ""
+
+    def test_empty_results_are_believed_only_briefly(self, monkeypatch, tmp_path):
+        """(c) 일시 실패 한 번이 카드를 **한 시간** 지우면 안 된다."""
+        import os
+        import time
+
+        from bot import fsc_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: ([], True))
+        assert fc.credit_split_with_reason(150) == ({}, "empty")
+        f = [p for p in os.listdir(tmp_path) if p.endswith(".json")]
+        assert f, "캐시 파일이 안 생겼다"
+        age = time.time() - os.path.getmtime(os.path.join(tmp_path, f[0]))
+        assert age > 1800, "빈 결과가 성공과 같은 수명을 갖고 있다"
+        assert age < 3600, "그렇다고 즉시 만료시키면 쿼터를 낭비한다"
+        # 그리고 성공은 **그대로 1시간** — 빈 결과만 짧게 믿는다.
+        fc2 = self._patch(monkeypatch, tmp_path / "s", self._rows())
+        (tmp_path / "s").mkdir(exist_ok=True)
+        out, _ = fc2.credit_split_with_reason(151)
+        assert out
+        g = [p for p in os.listdir(tmp_path / "s") if p.endswith(".json")]
+        assert (time.time() - os.path.getmtime(
+            os.path.join(tmp_path / "s", g[0]))) < 60
+
+    def test_thin_wrapper_still_returns_only_the_value(self, monkeypatch, tmp_path):
+        """값만 필요한 자리는 그대로 — 래퍼를 지우면 호출부가 무너진다(#129)."""
+        fc = self._patch(monkeypatch, tmp_path, self._rows())
+        assert set(fc.credit_split_series_eok(160)) == {"kospi", "kosdaq"}
+
+    def test_reason_is_relayed_and_the_card_speaks_instead_of_vanishing(
+            self, monkeypatch, tmp_path):
+        """⚠️ 순수 함수만 재면 **배선을 떼는 변형을 못 잡는다**(#20) —
+        수집기가 사유를 릴레이하는지, 렌더가 그걸 화면 줄로 내는지 값으로."""
+        from bot import fsc_client as fc
+        from bot import naver_sector_client as nsc
+        monkeypatch.setattr(fc, "deposit_series_eok", lambda n: [
+            ("20260910", 500000.0), ("20260911", 505000.0)])
+        monkeypatch.setattr(fc, "credit_series_eok", lambda n: [
+            ("20260910", 200000.0), ("20260911", 202000.0)])
+        monkeypatch.setattr(fc, "credit_split_with_reason",
+                            lambda n=130: ({}, "breaker"))
+        monkeypatch.setattr(fc, "collateral_loan_series_eok", lambda n: [])
+        dep = nsc._fetch_deposit_fsc()
+        assert dep.get("credit_split_why") == "breaker", "사유가 릴레이에서 샜다"
+        # ⚠️ 네이버 폴백 경로엔 시장별 분리가 **아예 없다** — 그때 '사유
+        # 미기록' 이라고 말하면 원인을 잘못 짚게 한다(#292 틀린 라벨은
+        # 라벨이 없는 것보다 나쁘다). 그 갈래도 이름을 갖는다(#82).
+        monkeypatch.setattr(nsc, "_fetch_deposit_fsc", lambda: {})
+        monkeypatch.setattr(nsc, "_fetch_deposit_naver",
+                            lambda: {"deposit": 1.0, "date": "2026.09.12"})
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_fetch_equity_fund_naver", lambda: [])
+        fb = nsc.fetch_deposit()
+        assert fb.get("credit_split_why") == "fallback", fb
+        assert fc.credit_split_reason_text("fallback")
+
+        from bot.dashboard import _render_deposit_charts
+        html = _render_deposit_charts(dep)
+        # 사라지지 않는다 — 그리고 **사유가 보이는 줄**로 나온다(#228).
+        assert "코스피 신용잔고" in html and "코스닥 신용잔고" in html
+        assert fc.credit_split_reason_text("breaker") in html, html[-800:]
+        # 값이 있으면 종전대로 차트를 그리고 사유 줄은 안 붙는다(노이즈 금지).
+        dep2 = dict(dep)
+        dep2.pop("credit_split_why", None)
+        dep2["credit_kospi_series"] = [{"d": "2026-09-10", "v": 110000.0},
+                                       {"d": "2026-09-11", "v": 111000.0}]
+        dep2["credit_kosdaq_series"] = [{"d": "2026-09-10", "v": 90000.0},
+                                        {"d": "2026-09-11", "v": 91000.0}]
+        h2 = _render_deposit_charts(dep2)
+        assert "코스피 신용잔고 추이 (억원)" in h2
+        assert fc.credit_split_reason_text("breaker") not in h2
+
+    def test_the_note_uses_a_class_this_page_bundle_defines(self):
+        """`.si-note` 는 lookup 번들에만 있다 — market.html 에 쓰면 CSS 가
+        안 붙어 각주가 본문 크기로 뜬다(#201·#273·#299)."""
+        import re
+
+        from bot import dashboard as D
+        css = D._MARKET_CSS if isinstance(D._MARKET_CSS, str) else "".join(D._MARKET_CSS)
+        assert re.search(r"\.sm-note\s*\{", css), "쓰는 클래스의 CSS 가 없다"
+
+
+class TestFcfFindingLineCarriesMaterials20260914:
+    """FCF 교차출처 ❌ 한 줄이 **자족해야** 한다 (2026-09-14 일일 감사).
+
+    결산이 이렇게 왔다 —
+    `[125020.KQ] 26.2Q (2026-06-30) DART 24.8억 vs yfinance 22.7억 ❌ 차이 9.42%`.
+    재료(OCF·유형/무형 취득 ↔ yfinance OCF·CAPEX)는 감사 로그의 **다음 줄**에
+    있는데 `audit_sweep._findings` 는 ❌ **한 줄만** 올린다 — 그래서 어느
+    구성요소가 갈렸는지는 결산에서 버려지고 원인 규명이 추측으로 시작된다
+    (#356 한 줄만 올리는 구조면 그 줄이 자족해야 한다 · #292 · #93).
+    """
+
+    def _lines(self, gap_pct: float) -> list:
+        """축 ②(분기)만 태워 나온 줄들 — 제품 경로를 그대로 부른다(#35)."""
+        import types
+
+        from bot.scripts import fcf_audit as FA
+
+        out: list = []
+        # DART 24.8억 · yfinance 는 gap 만큼 벌어지게.
+        dv = 24.8e8
+        yv = dv / (1 + gap_pct / 100.0)
+        fin = {"FCF": dv, "영업활동현금흐름": 30.0e8,
+               "유형자산취득": 5.2e8, "무형자산취득": 1.1e8}
+        q = {"label": "26.2Q", "year": 2026, "quarter": 2, "financials": fin}
+        yrow = {"Operating Cash Flow": 28.0e8, "Capital Expenditure": -5.3e8}
+        # `audit_one` 전체를 태우면 네트워크가 필요하다 — 축 ② 블록만
+        # 같은 코드로 돌린다(재구현이 아니라 **같은 헬퍼**를 부른다, #19).
+        g = FA._pct(dv, yv)
+        _bad = g is not None and g > FA._GAP_OK
+        line = (f"        {q['label']} ({FA.q_end(2026, 2)})  "
+                f"DART {dv / 1e8:,.1f}억 vs yfinance {yv / 1e8:,.1f}억  "
+                + FA._mark(g, FA._GAP_OK)
+                + ("  " + FA._materials(fin, yrow) if _bad else ""))
+        out.append(line)
+        return out
+
+    def test_materials_ride_on_the_finding_line_not_the_next_one(self):
+        """❌ 면 재료가 **같은 줄**에 — 통과면 안 붙는다(노이즈 금지)."""
+        import ast as _ast
+        import pathlib as _pl
+
+        bad = self._lines(9.42)[0]
+        assert "❌" in bad and "DART OCF" in bad and "yfinance OCF" in bad, bad
+        ok = self._lines(0.1)[0]
+        assert "❌" not in ok and "DART OCF" not in ok, ok
+
+        # ⚠️ 위는 계약의 **모양**만 재므로, 제품 소스가 실제로 그렇게 짜여
+        # 있는지 AST 로 같이 못박는다 — 옛 판처럼 `say("   " + _materials(…))`
+        # 를 **별도 문장**으로 되돌리는 변형을 잡아야 한다(#20·#291).
+        tree = _ast.parse(_pl.Path("bot/scripts/fcf_audit.py")
+                          .read_text(encoding="utf-8"))
+        lone = [n for n in _ast.walk(tree)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                and n.func.id == "say" and len(n.args) == 1
+                and isinstance(n.args[0], _ast.BinOp)
+                and isinstance(n.args[0].left, _ast.Constant)
+                and isinstance(n.args[0].left.value, str)
+                and n.args[0].left.value.strip() == ""
+                and isinstance(n.args[0].right, _ast.Call)
+                and getattr(n.args[0].right.func, "id", "") == "_materials"]
+        assert not lone, "재료가 다시 별도 줄로 빠졌다(결산이 그 줄을 안 올린다)"
+        # 그리고 분기·연간 **둘 다** 같은 규약이어야 한다(#38 형제 누락 금지).
+        calls = [n for n in _ast.walk(tree)
+                 if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                 and n.func.id == "_materials"]
+        assert len(calls) == 2, f"_materials 호출이 {len(calls)}건 — 형제가 갈렸다"

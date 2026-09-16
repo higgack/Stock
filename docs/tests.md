@@ -195,6 +195,23 @@
 | 절단 사유가 증거 줄에 **값으로** 실린다 + 배선(#366·H2·#176·#291) | ✅ 자동 | `…::test_ecos_source_end_splits_the_two_verdicts` |
 | 파생을 옮겨도 **네이버 20장의 직전**은 그대로(#367·M1·#91b) | ✅ 자동 | `…::test_naver_unmapped_card_now_carries_its_previous_value` |
 | 나이 '미기록' 카드에도 원천 라벨이 실린다(#367·L1·#291) | ✅ 자동 | `…::test_the_card_says_which_source_filled_it` |
+| 장단기금리차도 재무부 값으로 당긴다 — 만기만 보강하면 10Y−2Y 가 카드와 안 맞는다(#368·#33) | ✅ 자동 | `…::test_treasury_overrides_fred_only_when_it_checks_out` |
+| 파생 스프레드는 **재료가 둘 다** 있을 때만 · 역전은 보존(#368·#88·#29) | ✅ 자동 | `…::TestTreasurySpreadAndRetry20260914::test_spread_needs_both_legs_and_keeps_inversion` |
+| 곡선이 스프레드를 싣고 겹치는 날 검산이 여전히 문다(#368·#20) | ✅ 자동 | `…::test_curve_carries_the_spread_and_the_overlap_guard_still_bites` |
+| 일별 캐시 집합은 `macro_cadence` 표에서 파생(#368·#24·#38) | ✅ 자동 | `…::test_daily_cache_set_comes_from_the_cadence_table` |
+| 재시도는 **답이 바뀔 갈래**에만 — 4xx 제외(#368·#82·#279) | ✅ 자동 | `…::test_retry_is_only_for_kinds_that_can_change_their_answer` |
+| 렌더 1회 · 배치만 재시도, 4xx 는 즉시 중단(#368·#116·#128) | ✅ 자동 | `…::test_render_asks_once_and_batch_retries_then_stops_on_4xx` |
+| 진단은 실패 캐시를 안 믿고 성공 캐시는 존중(#368·#35·#54) | ✅ 자동 | `…::test_diagnostics_do_not_trust_a_stale_failure_cache` |
+| 배치 표면 둘이 `attempts` 를 **인자로** 넘긴다(#368·#20·#141) | ✅ 자동 | `…::test_batch_surfaces_actually_pass_attempts` |
+| 네이버 프로브 판정은 3-상태 — 한쪽을 못 재면 ✅ 도 ❌ 도 아니다(#368·#54·#143) | ✅ 자동 | `…::test_naver_probe_verdict_never_says_ok_without_both_sides` |
+| 프로브 배너 지문이 **제 소스에 반응**한다(#368·#364·#91b) | ✅ 자동 | `…::test_naver_probe_banner_reacts_to_its_own_source` |
+| 합리성 가드는 **같은 날**끼리 — 시장 필드가 끊긴 구간에 통째 드롭 금지(#369·#45) | ✅ 자동 | `…::TestCreditSplitWhyAndDateAlignment20260914::test_a_partially_filled_latest_row_no_longer_drops_everything` |
+| 빈 결과는 갈래를 이름으로(키·냉각·요청실패·0건·필드미발견·가드)(#369·#82) | ✅ 자동 | `…::test_every_empty_result_names_its_branch` |
+| 빈 결과는 **짧게만** 믿는다 — 성공은 1시간 그대로(#369·#152·#303) | ✅ 자동 | `…::test_empty_results_are_believed_only_briefly` |
+| 값만 필요한 자리용 얇은 래퍼 유지(#369·#129) | ✅ 자동 | `…::test_thin_wrapper_still_returns_only_the_value` |
+| 사유가 릴레이되고 카드가 **사라지는 대신 말한다**(#369·#20·#43·#335) | ✅ 자동 | `…::test_reason_is_relayed_and_the_card_speaks_instead_of_vanishing` |
+| 각주 클래스는 **그 페이지 번들**에 정의돼 있다(#369·#201·#273·#299) | ✅ 자동 | `…::test_the_note_uses_a_class_this_page_bundle_defines` |
+| FCF ❌ 줄이 재료를 **같은 줄에** 싣는다(분기·연간 둘 다)(#369·#356·#38) | ✅ 자동 | `…::TestFcfFindingLineCarriesMaterials20260914::test_materials_ride_on_the_finding_line_not_the_next_one` |
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import sys
 
-_PROBE_VER = 3
-_SIDS = ("DGS2", "DGS10", "DGS30")
+_PROBE_VER = 4
+# T10Y2Y 는 재무부가 직접 안 주고 우리가 파생한다(derive_spreads) — 그래서
+# 더더욱 프로브가 같이 재야 한다(파생이 FRED 정의와 맞는지는 겹치는 날
+# 검산이 답한다).
+_SIDS = ("DGS2", "DGS10", "DGS30", "T10Y2Y")
 
 
 def main(argv: list[str]) -> int:
@@ -83,8 +86,11 @@ def main(argv: list[str]) -> int:
     #    올라간다 — 겹치는 날 값이 FRED 와 맞는지 확인하고 붙인다.
     print("\n── 미 재무부 일별 수익률곡선(당일 15:30 ET · 미배선)")
     try:
-        from bot.treasury_yield_client import fetch_daily_curve, fresher_than
-        curve = fetch_daily_curve()
+        from bot.treasury_yield_client import (
+            _DIAG_ATTEMPTS, fetch_daily_curve, fresher_than)
+        # 진단은 **지금** 사실을 재야 한다 — 단발 타임아웃 한 번을 원천 결측
+        # 으로 보고하면 다음 라운드를 엉뚱한 데로 보낸다(#21·#361b).
+        curve = fetch_daily_curve(attempts=_DIAG_ATTEMPTS)
         if not curve:
             print("   ❌ 조회 실패 또는 파싱 0건 — 붙이면 안 된다.")
         else:
@@ -98,7 +104,8 @@ def main(argv: list[str]) -> int:
                 same = (curve.get(got["time"]) or {}).get(sid)
                 mark = ("일치" if same is not None
                         and abs(same - got["value"]) <= 0.10 else "불일치")
-                nf = fresher_than(got["time"], got["value"], sid)
+                nf = fresher_than(got["time"], got["value"], sid,
+                                  attempts=_DIAG_ATTEMPTS)
                 print(f"   {sid}: FRED {got['time']}={got['value']} · "
                       f"재무부 같은날={same}({mark}) · "
                       + (f"더 최신 {nf[0]}={nf[1]}" if nf else "더 최신 없음"))

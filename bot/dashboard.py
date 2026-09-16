@@ -18242,6 +18242,7 @@ def _render_deposit_charts(dep: dict) -> str:
                                  [("신용잔고", "#42a5f5")], svg, src_foot))
     # 코스피/코스닥 신용잔고 분리 차트 (사용자 2026-07-06 — 시장별 레버리지
     # 추이. KOFIA 신용공여 시장 필드, 있을 때만 graceful).
+    _split_missing: list[str] = []
     for _key, _lbl, _col in (("credit_kospi_series", "코스피 신용잔고", "#66bb6a"),
                              ("credit_kosdaq_series", "코스닥 신용잔고", "#7e57c2")):
         _ser = dep.get(_key, [])
@@ -18252,6 +18253,31 @@ def _render_deposit_charts(dep: dict) -> str:
                   "data": [p["v"] for p in _ser], "axis": "L"}])
             cards.append(_chart_card(f"{_lbl} 추이 (억원)",
                                      [(_lbl, _col)], svg, src_foot))
+        else:
+            _split_missing.append(_lbl)
+    # ⚠️ 값이 없다고 **카드를 통째로 없애지 않는다** — 사용자 2026-09-14
+    # "코스피/코스닥 신용잔고 추이가 안나올때가 있어". 사라지면 기능이 삭제된
+    # 것처럼 보이고, '새 게 없다' 와 '원천이 막혔다' 가 같은 화면이 된다
+    # (#43 침묵이 최악 · #52 조용한 것과 죽은 것 · #335 형제 위젯의 선행 사례).
+    # 사유는 수집기가 이름으로 릴레이한 것을 **그 함수로** 문장화한다(#38).
+    if _split_missing:
+        try:
+            from bot.fsc_client import credit_split_reason_text
+            _why_txt = credit_split_reason_text(dep.get("credit_split_why") or "")
+        except Exception as exc:                               # noqa: BLE001
+            log.warning("credit split 사유 문장화 실패: %s", exc)
+            _why_txt = ""
+        cards.append(
+            '<div class="chart-card">'
+            f'<h3>{_html.escape(" · ".join(_split_missing))} 추이</h3>'
+            # ⚠️ 클래스는 **이 페이지 번들**에 정의된 것이어야 한다 —
+            # `.si-note` 는 lookup 페이지(`_CONSOLE_JS`)에만 있고 이 카드는
+            # `_MARKET_CSS` 를 쓰는 market.html 에 실린다(#201·#273·#299).
+            '<div class="sm-note" style="padding:18px 6px">⚠️ '
+            + _html.escape(_why_txt or "원천에서 시장별 신용잔고를 받지 "
+                                        "못했습니다(사유 미기록)")
+            + '</div>'
+            f'<div class="foot">{_html.escape(src_foot)}</div></div>')
     # VKOSPI(코스피 변동성지수) — 예탁증권담보융자 추이 자리 대체(사용자
     # 2026-08-06 요청, 2026-08-08 KIS API 로 재구현). KOFIA 예탁금/신용과
     # 무관한 별개 소스(KIS 국내업종 기간별시세) — 단위가 억원이 아니라

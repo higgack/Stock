@@ -574,7 +574,8 @@ def _first_big(cells: list) -> Optional[float]:
 _CRED_MIN, _CRED_MAX = 150000.0, 800000.0
 
 # deposit.json 산출 스키마 버전 — 필드 추가/변경 시 +1 (구버전 캐시 1회 무효화)
-_DEPOSIT_SCHEMA_V = 4   # 2=코스피/코스닥 신용 분리 · 3=예탁증권담보융자(2026-07-08)
+_DEPOSIT_SCHEMA_V = 5   # 2=코스피/코스닥 신용 분리 · 3=예탁증권담보융자(2026-07-08)
+#                       # 5=credit_split_why(빈 사유 릴레이, 2026-09-14 #369)
                         # · 4=VKOSPI 시리즈(2026-08-08, KIS 소스)
 
 # VKOSPI(코스피 200 변동성지수) KIS 업종상세코드. pykrx/ECOS 둘 다 미제공 확인
@@ -616,11 +617,16 @@ def _fetch_deposit_fsc() -> dict:
     # 시장별(코스피/코스닥) 신용잔고 — 같은 KOFIA 신용공여 응답의 시장 필드
     # (사용자 2026-07-06 '왼쪽처럼 코스피·코스닥 신용잔고 추가'). 필드명
     # 런타임 발견(fsc_client) — 미발견 시 키 자체가 없어 위젯 graceful 생략.
+    # ⚠️ 값만 꺼내면 화면이 "없는 거야?"에 답을 못 한다 — 사용자 2026-09-14
+    # "코스피/코스닥 신용잔고 추이가 안나올때가 있어". 갈래를 같이 받아
+    # 릴레이한다(#82·#129·#335 값이 없으면 카드가 조용히 사라진다).
     try:
-        split = fsc_client.credit_split_series_eok(130)
+        split, split_why = fsc_client.credit_split_with_reason(130)
     except Exception as exc:
         log.warning("credit split fetch failed: %s", exc)
-        split = {}
+        split, split_why = {}, "http"
+    if split_why:
+        out["credit_split_why"] = split_why
     for mkt, prefix in (("kospi", "credit_kospi"), ("kosdaq", "credit_kosdaq")):
         ser = split.get(mkt) or []
         if not ser:
@@ -718,6 +724,11 @@ def fetch_deposit() -> dict:
     out = _fetch_deposit_fsc()
     if not out or out.get("deposit") is None:
         out = _fetch_deposit_naver()
+        # ⚠️ 네이버 폴백엔 시장별(코스피/코스닥) 분리가 **아예 없다** — 그때
+        # 화면이 '사유 미기록' 이라고 말하면 원인을 잘못 짚게 한다(#292 틀린
+        # 라벨은 라벨이 없는 것보다 나쁘다). 갈래를 이름으로 댄다(#82).
+        if isinstance(out, dict) and out:
+            out.setdefault("credit_split_why", "fallback")
     # 주식형펀드 — 네이버 trendDeposit/chart 보조(사용자 2026-06-14, 예탁금/신용은
     # FSC 유지). 신용잔고 옆 3번째 차트(렌더 스캐폴드는 이미 merged).
     try:

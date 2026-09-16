@@ -34,7 +34,7 @@ import argparse
 import sys
 import time as _time
 
-_AUDIT_VER = 2
+_AUDIT_VER = 3
 _GAP_OK = 1.0        # 교차출처 허용 차이(%) — 정의가 같으면 소수점까지 맞는다
 _SUM_OK = 5.0        # 분기합 vs 연간 허용 차이(%)
 
@@ -409,11 +409,17 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
             continue
         seen += 1
         g = _pct(v, y)
+        # ⚠️ 재료를 **같은 줄에** 싣는다(2026-09-14). 옛 판은 다음 줄에
+        # 찍었는데, `audit_sweep._findings` 는 ❌ **한 줄만** 결산에 올리므로
+        # 일일 결산이 `DART 24.8억 vs yfinance 22.7억 ❌ 차이 9.42%` 까지만
+        # 말하고 **어느 구성요소가 갈렸는지는 버렸다** — 그러면 원인 규명이
+        # 추측으로 시작된다(#356 한 줄만 올리는 구조면 그 줄이 자족해야
+        # 한다 · #93 숫자는 행동으로 이어질 때만 쓸모가 있다).
+        _bad = g is not None and g > _GAP_OK
         say(f"        {q.get('label')} ({p})  DART {v / 1e8:,.1f}억 vs "
-            f"yfinance {y / 1e8:,.1f}억  " + _mark(g, _GAP_OK))
-        if g is not None and g > _GAP_OK:
-            say("           " + _materials(q.get("financials") or {},
-                                           dict(yq).get(p) or {}))
+            f"yfinance {y / 1e8:,.1f}억  " + _mark(g, _GAP_OK)
+            + ("  " + _materials(q.get("financials") or {},
+                                 dict(yq).get(p) or {}) if _bad else ""))
         flag(None if g is None else g <= _GAP_OK, "②교차출처(분기)")
     if not seen:
         # ⚠️ 대조 대상이 0건이면 '이상 없음'이 아니라 판정 실패다(#54).
@@ -434,10 +440,11 @@ def audit_one(tk: str, dart, years: int = 3) -> dict:
         if a is None:
             continue
         g = _pct(v, a)
+        # 분기와 **같은 규약** — 형제를 안 고치면 연간 ❌ 만 재료 없이 나간다(#38).
+        _bad = g is not None and g > _GAP_OK
         say(f"        FY{y0} ({p})  DART {v / 1e8:,.1f}억 vs "
-            f"yfinance {a / 1e8:,.1f}억  " + _mark(g, _GAP_OK))
-        if g is not None and g > _GAP_OK:
-            say("           " + _materials(fin, dict(ya).get(p) or {}))
+            f"yfinance {a / 1e8:,.1f}억  " + _mark(g, _GAP_OK)
+            + ("  " + _materials(fin, dict(ya).get(p) or {}) if _bad else ""))
         flag(None if g is None else g <= _GAP_OK, "②교차출처(연간)")
     return {"lines": out, "bad": bad, "unknown": unknown,
             "bad_axes": bad_axes, "unknown_axes": unknown_axes}
