@@ -1661,6 +1661,13 @@ def classify_param_probe(status, brief: str, key: str,
 
 
 _BRACKET_RE = re.compile(r"\[([^\[\]]{2,400})\]")
+# 세 번째 오류 봉투(2026-09-16 VM 실측, `domestic/stock/list`): zod 가
+# `Invalid option: expected one of "marketValue"|"up"|"down"|…` 로 **파이프로
+# 이은 따옴표 목록**을 준다 — 괄호가 없어 `_BRACKET_RE` 가 한 글자도 못 읽었고
+# 진단이 `❌ 허용값을 못 읽었습니다` 로 끝났다. 한 원천이 오류 모양을 하나만
+# 쓴다고 가정하지 말 것(#73·#350 zod 배열 · #352 RFC7807 에 이어 셋째).
+_PIPED_RE = re.compile(r'"([^"\n]{1,60})"(?:\s*\|\s*"([^"\n]{1,60})")+')
+_QUOTED_RE = re.compile(r'"([^"\n]{1,60})"')
 
 
 def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
@@ -1671,14 +1678,30 @@ def allowed_values(brief: str, junk: str = _PARAM_JUNK) -> tuple:
     fallCnt, … type] · title: Bad Request · status: 400`` — 즉 원천이
     스키마를 스스로 적어 준다(#86 상태는 아는 쪽에 묻는다).
 
+    ⚠️ 원천은 **봉투를 한 벌만 쓰지 않는다**(#73). 2026-09-16 실측의
+    `domestic/stock/list` 는 괄호 없이
+    ``Invalid option: expected one of "marketValue"|"up"|…`` 로 준다 —
+    파이프로 이은 따옴표 목록을 먼저 보고, 없을 때만 괄호 목록을 본다.
+
     ⚠️ **어구로 찾지 않는다**(`허용값:` 는 이 원천의 한국어 문구일 뿐이고
     원천이 언어를 바꾸면 통째로 눈이 먼다, #24·#65 문자열이 아니라 구조로).
     괄호 목록 중 **우리가 보낸 미끼를 담은 것**은 그 값을 되읊은 것이므로
     빼고, 남은 것 중 항목이 가장 많은 것을 고른다. 항목이 하나뿐이면
     목록이라 부를 수 없으므로 받지 않는다(#54 대조 0건은 통과가 아니다).
     """
+    text = str(brief or "")
     best: tuple = ()
-    for m in _BRACKET_RE.finditer(str(brief or "")):
+    # 파이프로 이은 따옴표 목록이 먼저다 — 괄호 목록과 달리 구분자가
+    # 명시적이라 문장이 섞일 여지가 없다.
+    for m in _PIPED_RE.finditer(text):
+        vals = tuple(v for v in _QUOTED_RE.findall(m.group(0)) if v.strip())
+        if junk and junk in vals:
+            continue
+        if len(vals) >= 2 and len(vals) > len(best):
+            best = vals
+    if best:
+        return best
+    for m in _BRACKET_RE.finditer(text):
         inner = m.group(1)
         if junk and junk in inner:
             continue

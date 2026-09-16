@@ -136,15 +136,24 @@ def _section_rows(vals):
 
 
 def _walk(obj, path=""):
-    """venue 축으로 보이는 키를 전부 모은다 — 이름을 우리가 고르지 않는다."""
+    """venue 축으로 보이는 키를 전부 모은다 — 이름을 우리가 고르지 않는다.
+
+    ⚠️ v1 은 dict·list 값을 `type(v).__name__` 으로 접어 찍었다. 2026-09-16
+    VM 실측에서 그게 정확히 **다음 결정을 가렸다** — `stockExchangeType =
+    dict` · `integratedPriceInfo`(이름 필터에도 안 걸림)가 접혀, venue 축이
+    거기 있는지 없는지 판정할 수 없었는데 출력만 보면 '없다'로 읽혔다
+    (#156·#338·#350 자르는 자리가 다음 결정을 가리지 않는가 · #165 재지 않은
+    것을 단정하지 말 것). 이제 **접지 않고 통째로** 찍는다.
+    """
     hits = []
     if isinstance(obj, dict):
         for k, v in obj.items():
             p = f"{path}.{k}" if path else k
             lk = k.lower()
             if any(w in lk for w in ("nxt", "over", "market", "session", "venue",
-                                     "exchange")):
-                hits.append((p, v if not isinstance(v, (dict, list)) else type(v).__name__))
+                                     "exchange", "integrated", "krx")):
+                hits.append((p, v if not isinstance(v, (dict, list))
+                             else json.dumps(v, ensure_ascii=False)))
             hits += _walk(v, p)
     return hits
 
@@ -185,8 +194,15 @@ def main() -> int:
     vals = _section_sorts()
     if vals:
         _section_rows(vals)
+    else:
+        # ⚠️ 조용히 건너뛰면 마지막 줄이 **안 한 일을 했다고** 말한다
+        # (#54 대조 0건은 통과가 아니다 · #286 도구가 자기 자신에 대해 사실
+        # 아닌 것을 말하지 말 것). 건너뛴 사실을 그 자리에 적는다.
+        print("\n③ 후보 정렬 키 실호출 — ⏭ 건너뜀(② 가 허용값을 못 읽어 "
+              "시험할 후보가 없습니다)")
     _section_venue()
-    print("\n판정은 사람이 합니다 — 위 ②③ 이 거래량 보드의 정렬 키를, "
+    done = "②③" if vals else "②"
+    print(f"\n판정은 사람이 합니다 — 위 {done} 이(가) 거래량 보드의 정렬 키를, "
           "④ 가 KRX/NXT 구별 가능 여부를 정합니다.")
     return 0 if ok else 1
 

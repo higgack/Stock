@@ -47,32 +47,54 @@ _LOW_KEYS = ("lowPrice", "lowPriceRaw", "low", "lowestPrice")
 
 # ── 순수 ────────────────────────────────────────────────────────────────
 
-# 이름에 `volume` 이 들어가도 **거래량 랭킹이 아닌** 키들 — 받으면 화면이
-# 제목과 다른 것을 그린다(#34·#221. 독립 리뷰 2026-09-16 L15: `volumePower`
-# (체결강도)가 그 예다).
+# 이름에 `volume` 이 들어가도 **거래량 랭킹이 아닌** 키들 — 순서 힌트에서
+# 뒤로 민다(#34·#221. 독립 리뷰 2026-09-16 L15: `volumePower`(체결강도)).
 _NOT_VOLUME = ("value", "amount", "power", "strength", "rate", "ratio",
                "turnover", "change")
+# 이름은 **시험 순서만** 정한다 — 판정은 `is_volume_desc` 실측이다(#46 위치·
+# 형태로 추정하지 말 것 · #25 능력은 이름이 아니라 실측).
+_VOL_HINT = ("quant", "volume", "거래량", "trade")
+_TRIAL_BUDGET = 6          # 허용값 전수를 다 치지 않는다(#116 예산)
+_TRIAL_ROWS = 30           # 시총순·거래대금순과 갈라지려면 5행으론 부족하다
 
 
-def pick_volume_sort(allowed: tuple) -> str:
-    """원천이 밝힌 허용값 → **거래량** 정렬 키(순수). 없으면 "".
+def volume_sort_candidates(allowed: tuple) -> tuple:
+    """허용값 → **시험 순서**(순수). 이름은 순서만 정하고 판정은 실측이다.
 
-    거래'대금'(value/amount)·체결강도(power) 등은 다른 지표이므로 배제한다.
+    ⚠️ 2026-09-16 VM 실측이 옛 판정을 뒤집었다: 이 엔드포인트의 허용값은
+    ``marketValue|up|down|quantTop|priceTop|searchTop|newStock|management|
+    high52week|low52week|dividend|konex`` — **'volume' 이 든 이름이 하나도
+    없다**. 그래서 "이름에 volume 이 있는 것을 고른다"(옛 `pick_volume_sort`)
+    는 무엇도 못 고르는 **발화 경로 없는 코드**였다(#291). 그렇다고
+    `quantTop` 을 이름만 보고 박으면 죽은 경로를 배포하는 그 실수다
+    (#151·#345) — 후보를 **실제로 불러** 거래량 내림차순인 것을 고른다.
     """
-    vol, best = [], ""
-    for v in allowed or ():
+    def _rank(v: str) -> tuple:
         lv = v.lower()
-        if "volume" not in lv:
-            continue
-        if any(w in lv for w in _NOT_VOLUME):
-            continue
-        vol.append(v)
-    for v in vol:                      # 누적 거래량 표기를 선호(랭킹의 정의)
-        if "accum" in v.lower():
-            return v
-    if vol:
-        best = vol[0]
-    return best
+        hint = next((i for i, w in enumerate(_VOL_HINT) if w in lv), len(_VOL_HINT))
+        # 2차 힌트: 이 원천의 랭킹 키는 `…Top` 으로 끝난다(quantTop·priceTop·
+        # searchTop). 예산(#116)이 `dividend`·`konex` 같은 비-랭킹 키에 먼저
+        # 쓰이면 진짜 후보에 닿기 전에 소진된다 — **순서만** 바꾸고 판정은
+        # 여전히 실측이다.
+        rank_ish = 0 if lv.endswith("top") else 1
+        return (hint, rank_ish, 1 if any(w in lv for w in _NOT_VOLUME) else 0, v)
+    return tuple(sorted(allowed or (), key=_rank))
+
+
+def is_volume_desc(rows: list, min_rows: int = 10) -> bool:
+    """이 행들이 **누적 거래량 내림차순**인가(순수) — '거래량 상위'의 정의다.
+
+    시총순(`marketValue`)·거래대금순(`priceTop`)과 갈리는 자리다. 값이 거의
+    다 같으면(휴장·빈 응답) 어떤 정렬이든 '내림차순'이라 판정 불가이므로
+    **서로 다른 값의 수**를 같이 요구한다(#54 대조 0건은 통과가 아니다 ·
+    #25 '있다'를 묻는 검사엔 반대 증거를 같이).
+    """
+    vols = [_first(r, ("accumulatedTradingVolume", "accumulatedTradingVolumeRaw"))
+            for r in (rows or []) if isinstance(r, dict)]
+    vols = [v for v in vols if v is not None]
+    if len(vols) < min_rows or len(set(vols)) < max(3, len(vols) // 2):
+        return False
+    return all(a >= b for a, b in zip(vols, vols[1:]))
 
 
 def _num(v):
@@ -117,10 +139,10 @@ def _rows(payload) -> list:
     return []
 
 
-def _fetch(sort_type: str, page: int) -> tuple[list, str]:
+def _fetch(sort_type: str, page: int, size: int | None = None) -> tuple[list, str]:
     d, why = _nd.get_json(_LIST, headers=_HDRS, log=log, tag="kr_volume",
                           params={"sortType": sort_type, "category": "all",
-                                  "page": page, "pageSize": _PAGE_SIZE})
+                                  "page": page, "pageSize": size or _PAGE_SIZE})
     return _rows(d), why
 
 
@@ -149,13 +171,22 @@ def learn_sort_type(force: bool = False) -> tuple[str, str, list]:
             return "", "원천이 허용값을 적어 보냈지만 사유 길이 제한에 잘렸습니다", rows
         return "", (why or "원천이 미끼 값을 거절하지 않았습니다 — "
                     "이 엔드포인트는 sortType 을 검증하지 않는 것으로 보입니다"), rows
-    sort = pick_volume_sort(vals)
-    if not sort:
-        return "", ("원천이 밝힌 허용값에 거래량 정렬이 없습니다: "
-                    + ", ".join(vals)), rows
-    _cache_write(_SORT_CACHE, {"sort": sort, "allowed": list(vals)})
-    log.info("kr_volume: 원천이 밝힌 정렬 키 채택 %s (허용 %d종)", sort, len(vals))
-    return sort, "", rows
+    # 이름으로 고르지 않는다 — 후보를 **실제로 불러** 거래량 내림차순인
+    # 것을 고른다(#46·#151·#345. 2026-09-16 실측: 허용값 12종에 'volume' 이
+    # 든 이름이 하나도 없다). 예산 안에서 첫 확정을 쓰고, 하나도 확정 안 되면
+    # 그 사실과 무엇을 시험했는지 말한다(#43·#82).
+    tried: list = []
+    for cand in volume_sort_candidates(vals)[:_TRIAL_BUDGET]:
+        got, _why = _fetch(cand, 1, size=_TRIAL_ROWS)
+        tried.append(cand)
+        if is_volume_desc(got):
+            _cache_write(_SORT_CACHE, {"sort": cand, "allowed": list(vals)})
+            log.info("kr_volume: 실측으로 정렬 키 확정 %s (허용 %d종 · 시험 %d종)",
+                     cand, len(vals), len(tried))
+            return cand, "", got
+    return "", ("원천이 밝힌 허용값 %d종 중 %d종을 실제로 불러 봤지만 "
+                "거래량 내림차순인 것이 없었습니다(시험: %s)"
+                % (len(vals), len(tried), ", ".join(tried))), rows
 
 
 def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:
