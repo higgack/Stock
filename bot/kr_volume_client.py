@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 
 from bot import naver_diag as _nd
+from bot import singleflight as _sf
 
 log = logging.getLogger("bot.kr_volume_client")
 
@@ -34,6 +35,13 @@ _HDRS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
          "Accept": "application/json", "Referer": "https://m.stock.naver.com/"}
 _PAGE_SIZE = 50
 _SORT_CACHE = "kr_volume_sort.json"     # 원천에게 배운 정렬 키
+_SORT_TTL = 7 * 86400   # 배운 키를 주기적으로 다시 잰다(독립 리뷰 M2)
+_LEARN_FAIL = "kr_volume_learn_fail.json"   # 학습 실패 냉각(아래 _LEARN_COOL)
+_LEARN_COOL = 600       # 10분. 학습은 실패해도 **캐시되지 않으므로**, 확정이
+#   안 되는 상태(휴장·원천 장애로 거래량이 전부 0·동률 → 어느 후보도 내림차순
+#   판정을 못 받음)에서는 60초 TTL 마다 미끼 1 + 후보 6 = **7콜**이 나간다.
+#   느림의 원인은 양이 아니라 실패 재시도다(#346·#349) — 짧게만 믿고(#303·#152
+#   길게 믿으면 장애 한 번이 하루를 지운다) 식으면 반드시 다시 시도한다(#178).
 _CACHE = "kr_volume_top.json"
 _TTL = 60                               # 60초 — 화면 폴링 2분보다 **짧아야** 매
 #   주기가 캐시에 걸리지 않는다(#36 TTL < 주기). 2분으로 두면 절반이 같은
@@ -47,32 +55,60 @@ _LOW_KEYS = ("lowPrice", "lowPriceRaw", "low", "lowestPrice")
 
 # ── 순수 ────────────────────────────────────────────────────────────────
 
-# 이름에 `volume` 이 들어가도 **거래량 랭킹이 아닌** 키들 — 받으면 화면이
-# 제목과 다른 것을 그린다(#34·#221. 독립 리뷰 2026-09-16 L15: `volumePower`
-# (체결강도)가 그 예다).
+# 이름에 `volume` 이 들어가도 **거래량 랭킹이 아닌** 키들 — 순서 힌트에서
+# 뒤로 민다(#34·#221. 독립 리뷰 2026-09-16 L15: `volumePower`(체결강도)).
 _NOT_VOLUME = ("value", "amount", "power", "strength", "rate", "ratio",
                "turnover", "change")
+# 이름은 **시험 순서만** 정한다 — 판정은 `is_volume_desc` 실측이다(#46 위치·
+# 형태로 추정하지 말 것 · #25 능력은 이름이 아니라 실측).
+_VOL_HINT = ("quant", "volume", "거래량", "trade")
+_TRIAL_BUDGET = 6          # 허용값 전수를 다 치지 않는다(#116 예산)
+_TRIAL_ROWS = 30           # 시총순·거래대금순과 갈라지려면 5행으론 부족하다
 
 
-def pick_volume_sort(allowed: tuple) -> str:
-    """원천이 밝힌 허용값 → **거래량** 정렬 키(순수). 없으면 "".
+def volume_sort_candidates(allowed: tuple) -> tuple:
+    """허용값 → **시험 순서**(순수). 이름은 순서만 정하고 판정은 실측이다.
 
-    거래'대금'(value/amount)·체결강도(power) 등은 다른 지표이므로 배제한다.
+    ⚠️ 2026-09-16 VM 실측이 옛 판정을 뒤집었다: 이 엔드포인트의 허용값은
+    ``marketValue|up|down|quantTop|priceTop|searchTop|newStock|management|
+    high52week|low52week|dividend|konex`` — **'volume' 이 든 이름이 하나도
+    없다**. 그래서 "이름에 volume 이 있는 것을 고른다"(옛 `pick_volume_sort`)
+    는 무엇도 못 고르는 **발화 경로 없는 코드**였다(#291). 그렇다고
+    `quantTop` 을 이름만 보고 박으면 죽은 경로를 배포하는 그 실수다
+    (#151·#345) — 후보를 **실제로 불러** 거래량 내림차순인 것을 고른다.
+
+    ⚠️ 정직하게 적자면 이름이 **순서만** 정한다는 건 절반이다(#55): 학습이
+    첫 확정에서 멈추므로, 둘 이상이 실측을 통과할 수 있는 상황에서는 순서가
+    곧 결과다. 실측상 `quantTop` 이 1순위라 오늘은 무해하지만, 그 전제가
+    깨지면(1순위가 429 를 맞는 등) 뒤 후보가 이길 수 있다 — 그래서 배운 키의
+    유효기간을 30일에서 7일로 줄여 주기적으로 다시 잰다(독립 리뷰 M2).
     """
-    vol, best = [], ""
-    for v in allowed or ():
+    def _rank(v: str) -> tuple:
         lv = v.lower()
-        if "volume" not in lv:
-            continue
-        if any(w in lv for w in _NOT_VOLUME):
-            continue
-        vol.append(v)
-    for v in vol:                      # 누적 거래량 표기를 선호(랭킹의 정의)
-        if "accum" in v.lower():
-            return v
-    if vol:
-        best = vol[0]
-    return best
+        hint = next((i for i, w in enumerate(_VOL_HINT) if w in lv), len(_VOL_HINT))
+        # 2차 힌트: 이 원천의 랭킹 키는 `…Top` 으로 끝난다(quantTop·priceTop·
+        # searchTop). 예산(#116)이 `dividend`·`konex` 같은 비-랭킹 키에 먼저
+        # 쓰이면 진짜 후보에 닿기 전에 소진된다 — **순서만** 바꾸고 판정은
+        # 여전히 실측이다.
+        rank_ish = 0 if lv.endswith("top") else 1
+        return (hint, rank_ish, 1 if any(w in lv for w in _NOT_VOLUME) else 0, v)
+    return tuple(sorted(allowed or (), key=_rank))
+
+
+def is_volume_desc(rows: list, min_rows: int = 10) -> bool:
+    """이 행들이 **누적 거래량 내림차순**인가(순수) — '거래량 상위'의 정의다.
+
+    시총순(`marketValue`)·거래대금순(`priceTop`)과 갈리는 자리다. 값이 거의
+    다 같으면(휴장·빈 응답) 어떤 정렬이든 '내림차순'이라 판정 불가이므로
+    **서로 다른 값의 수**를 같이 요구한다(#54 대조 0건은 통과가 아니다 ·
+    #25 '있다'를 묻는 검사엔 반대 증거를 같이).
+    """
+    vols = [_first(r, ("accumulatedTradingVolume", "accumulatedTradingVolumeRaw"))
+            for r in (rows or []) if isinstance(r, dict)]
+    vols = [v for v in vols if v is not None]
+    if len(vols) < min_rows or len(set(vols)) < max(3, len(vols) // 2):
+        return False
+    return all(a >= b for a, b in zip(vols, vols[1:]))
 
 
 def _num(v):
@@ -117,14 +153,32 @@ def _rows(payload) -> list:
     return []
 
 
-def _fetch(sort_type: str, page: int) -> tuple[list, str]:
+def _fetch(sort_type: str, page: int, size: int | None = None) -> tuple[list, str]:
     d, why = _nd.get_json(_LIST, headers=_HDRS, log=log, tag="kr_volume",
                           params={"sortType": sort_type, "category": "all",
-                                  "page": page, "pageSize": _PAGE_SIZE})
+                                  "page": page, "pageSize": size or _PAGE_SIZE})
     return _rows(d), why
 
 
 def learn_sort_type(force: bool = False) -> tuple[str, str, list]:
+    """학습 진입점 — **동시 요청은 하나만 배운다**(#113).
+
+    학습은 미끼 1 + 후보 최대 6 = **7콜**이고 디스크 캐시는 끝난 뒤에만
+    도와주므로(#113 "진행 중인 중복은 캐시가 못 막는다"), 탭 N 개가 같은
+    순간에 열리면 7N 콜이 바깥 원천으로 나간다 — 그게 `naver_paused()` 를
+    건드리면 네이버 보드 전부가 죽는다(#371 Blocking 과 같은 형태). 막는
+    자리는 서버다.
+
+    ⚠️ 키를 `force` 로 가른다: 진행 중인 **일반** 학습은 디스크에 배운 옛
+    키를 그대로 돌려줄 수 있는데, 재학습을 부른 쪽은 바로 그 키가 거절당한
+    것을 본 쪽이다 — 공유하면 죽은 키를 되돌려준다(#82 처방이 다르면 갈래도
+    다르다).
+    """
+    return _sf.once(f"kr_volume_learn:{int(bool(force))}",
+                    lambda: _learn_sort_type(bool(force)))
+
+
+def _learn_sort_type(force: bool = False) -> tuple[str, str, list]:
     """(정렬 키, 사유, 미끼 응답 행). 디스크에 배운 게 있으면 그대로.
 
     ⚠️ 미끼 요청이 **거절되지 않으면**(원천이 sortType 을 검증 안 함) 그
@@ -136,7 +190,9 @@ def learn_sort_type(force: bool = False) -> tuple[str, str, list]:
     """
     from bot.finviz_client import _cache_write, _cached
     if not force:
-        c = _cached(_SORT_CACHE, ttl=30 * 86400)
+        # 7일 — 옛 30일은 "한 번 잘못 배우면 한 달" 이었다(재학습 트리거가
+        # 400/422 뿐인데 유효한 키는 그걸 안 낸다, 독립 리뷰 M2).
+        c = _cached(_SORT_CACHE, ttl=_SORT_TTL)
         if isinstance(c, dict) and c.get("sort"):
             return str(c["sort"]), "", []
     else:
@@ -149,13 +205,56 @@ def learn_sort_type(force: bool = False) -> tuple[str, str, list]:
             return "", "원천이 허용값을 적어 보냈지만 사유 길이 제한에 잘렸습니다", rows
         return "", (why or "원천이 미끼 값을 거절하지 않았습니다 — "
                     "이 엔드포인트는 sortType 을 검증하지 않는 것으로 보입니다"), rows
-    sort = pick_volume_sort(vals)
-    if not sort:
-        return "", ("원천이 밝힌 허용값에 거래량 정렬이 없습니다: "
-                    + ", ".join(vals)), rows
-    _cache_write(_SORT_CACHE, {"sort": sort, "allowed": list(vals)})
-    log.info("kr_volume: 원천이 밝힌 정렬 키 채택 %s (허용 %d종)", sort, len(vals))
-    return sort, "", rows
+    # 확정이 안 되는 상태에서 매 렌더 7콜을 쏘지 않는다(#346·#116). 진단·
+    # 재학습(`force`)은 이 냉각을 타지 않는다 — 프로브는 계속 재야 한다(#345c).
+    if not force:
+        f = _cached(_LEARN_FAIL, ttl=_LEARN_COOL)
+        if isinstance(f, dict) and f.get("why"):
+            # 상한이 아니라 **남은 시간**을 말한다 — 형제 `_theme_fail_memo` 가
+            # 이미 그렇게 한다(#202 숫자로 · #165 재지 않은 것을 적지 말 것).
+            from bot.finviz_client import cache_age_sec
+            age = cache_age_sec(_LEARN_FAIL)
+            left = max(0, _LEARN_COOL - int(age)) if age is not None else _LEARN_COOL
+            return "", f"{f['why']} · {left // 60}분 {left % 60}초 뒤 다시 시험합니다", rows
+    # 이름으로 고르지 않는다 — 후보를 **실제로 불러** 거래량 내림차순인
+    # 것을 고른다(#46·#151·#345. 2026-09-16 실측: 허용값 12종에 'volume' 이
+    # 든 이름이 하나도 없다). 예산 안에서 첫 확정을 쓰고, 하나도 확정 안 되면
+    # 그 사실과 무엇을 시험했는지 말한다(#43·#82).
+    tried: list = []
+    fails: list = []          # (사유) — 버리면 429 가 '내림차순 아님' 이 된다
+    any_rows = False
+    for cand in volume_sort_candidates(vals)[:_TRIAL_BUDGET]:
+        got, why_c = _fetch(cand, 1, size=_TRIAL_ROWS)
+        tried.append(cand)
+        if got:
+            any_rows = True
+        elif why_c:
+            fails.append(why_c)
+        if is_volume_desc(got):
+            _cache_write(_SORT_CACHE, {"sort": cand, "allowed": list(vals)})
+            _cache_write(_LEARN_FAIL, {})       # 확정했으면 냉각을 푼다(#72)
+            log.info("kr_volume: 실측으로 정렬 키 확정 %s (허용 %d종 · 시험 %d종)",
+                     cand, len(vals), len(tried))
+            return cand, "", got
+    # ⚠️ 행이 **한 번도 안 온** 실행을 "불러 봤지만 내림차순이 아니었다" 로
+    # 적으면 두 번 거짓말이다 — 부르긴 했지만 값을 못 받았고(#286), 유일하게
+    # 행동 가능한 사실(429·타임아웃·일시정지 — 처방이 정반대다, #82·#279)을
+    # 버린다. 형제(`naver_sector_client._note_theme_fail`)는 이미 그렇게 한다(#38).
+    worst = min(fails, key=_nd.reason_rank) if fails else ""
+    if not any_rows:
+        why_fail = ("후보 %d종을 물었지만 원천이 행을 주지 않았습니다"
+                    "(시험: %s)" % (len(tried), ", ".join(tried)))
+        if worst:
+            why_fail += f" · 최상위 사유: {worst}"
+    else:
+        why_fail = ("원천이 밝힌 허용값 %d종 중 %d종을 실제로 불러 봤지만 "
+                    "거래량 내림차순인 것이 없었습니다(시험: %s)"
+                    % (len(vals), len(tried), ", ".join(tried)))
+    # 일시정지(rank 0)는 **안 물어본 것**이지 실패가 아니다 — 도장을 찍으면
+    # 정지 해제 뒤까지 10분을 막는다(#79·#143·#345, 형제 가드 그대로).
+    if not (worst and _nd.reason_rank(worst) == 0):
+        _cache_write(_LEARN_FAIL, {"why": why_fail})
+    return "", why_fail, rows
 
 
 def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:

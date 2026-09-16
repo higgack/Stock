@@ -115,36 +115,52 @@ def _section_sorts():
 
 
 def _section_rows(vals):
-    print("\n③ 후보 정렬 키 실호출 — 행 수와 **전 키**")
-    # 거래량/거래대금계로 **보이는** 것만 시험한다 — 어느 것이 맞는지는
-    # 이름이 아니라 실호출 결과가 정한다(#25).
-    cands = [v for v in vals
-             if any(w in v.lower() for w in ("volume", "trade", "amount", "value"))]
-    if not cands:
-        print("   ⚠️ 허용값에 거래량계로 보이는 키가 없습니다 — 전 키를 시험합니다.")
-        cands = list(vals)
-    for v in cands[:8]:
-        d, why = _get(_LIST, sortType=v, category="all", page=1, pageSize=5)
+    print("\n③ 후보 정렬 키 실호출 — 제품과 **같은 선택기·같은 판정**")
+    # ⚠️ v1 은 여기서 `("volume","trade","amount","value")` 이름 필터를 자체로
+    # 갖고 있었다. 실측 허용값에서 그건 `marketValue`(='value' 포함) **하나만**
+    # 고르고 — 정작 `quantTop` 은 한 번도 안 불렀다. 제품에서 #46·#291 을 이유로
+    # 걷어낸 바로 그 이름 판정이 계측에만 남아 있었고, 그래서 감사와 화면이
+    # 다른 선택기를 쓰고 있었다(#35 감사는 화면이 쓰는 그 선택기를 부를 것).
+    # 이제 제품 함수를 그대로 부르고 판정도 제품의 `is_volume_desc` 가 한다.
+    import bot.kr_volume_client as kv
+    cands = list(kv.volume_sort_candidates(tuple(vals)))[:kv._TRIAL_BUDGET]
+    print(f"   시험 순서(제품 volume_sort_candidates, 예산 {kv._TRIAL_BUDGET}): "
+          f"{', '.join(cands)}")
+    for v in cands:
+        d, why = _get(_LIST, sortType=v, category="all", page=1,
+                      pageSize=kv._TRIAL_ROWS)
         rows = _rows(d)
         if not rows:
             print(f"   · {v:<22} 0행 — {why or '사유 없음'}")
             continue
-        print(f"   · {v:<22} {len(rows)}행")
+        # 판정을 여기서 재구현하면 제품과 갈라진다(#35·#169).
+        verdict = kv.is_volume_desc(rows)
+        mark = "✅ 거래량 내림차순" if verdict else "❌ 거래량 내림차순 아님"
+        print(f"   · {v:<22} {len(rows)}행 — {mark}")
         first = rows[0] if isinstance(rows[0], dict) else {}
         print(f"       전 키: {', '.join(sorted(first))}")
         print(f"       표본: {json.dumps(first, ensure_ascii=False)[:600]}")
 
 
 def _walk(obj, path=""):
-    """venue 축으로 보이는 키를 전부 모은다 — 이름을 우리가 고르지 않는다."""
+    """venue 축으로 보이는 키를 전부 모은다 — 이름을 우리가 고르지 않는다.
+
+    ⚠️ v1 은 dict·list 값을 `type(v).__name__` 으로 접어 찍었다. 2026-09-16
+    VM 실측에서 그게 정확히 **다음 결정을 가렸다** — `stockExchangeType =
+    dict` · `integratedPriceInfo`(이름 필터에도 안 걸림)가 접혀, venue 축이
+    거기 있는지 없는지 판정할 수 없었는데 출력만 보면 '없다'로 읽혔다
+    (#156·#338·#350 자르는 자리가 다음 결정을 가리지 않는가 · #165 재지 않은
+    것을 단정하지 말 것). 이제 **접지 않고 통째로** 찍는다.
+    """
     hits = []
     if isinstance(obj, dict):
         for k, v in obj.items():
             p = f"{path}.{k}" if path else k
             lk = k.lower()
             if any(w in lk for w in ("nxt", "over", "market", "session", "venue",
-                                     "exchange")):
-                hits.append((p, v if not isinstance(v, (dict, list)) else type(v).__name__))
+                                     "exchange", "integrated", "krx")):
+                hits.append((p, v if not isinstance(v, (dict, list))
+                             else json.dumps(v, ensure_ascii=False)))
             hits += _walk(v, p)
     return hits
 
@@ -185,8 +201,15 @@ def main() -> int:
     vals = _section_sorts()
     if vals:
         _section_rows(vals)
+    else:
+        # ⚠️ 조용히 건너뛰면 마지막 줄이 **안 한 일을 했다고** 말한다
+        # (#54 대조 0건은 통과가 아니다 · #286 도구가 자기 자신에 대해 사실
+        # 아닌 것을 말하지 말 것). 건너뛴 사실을 그 자리에 적는다.
+        print("\n③ 후보 정렬 키 실호출 — ⏭ 건너뜀(② 가 허용값을 못 읽어 "
+              "시험할 후보가 없습니다)")
     _section_venue()
-    print("\n판정은 사람이 합니다 — 위 ②③ 이 거래량 보드의 정렬 키를, "
+    done = "②③" if vals else "②"
+    print(f"\n판정은 사람이 합니다 — 위 {done} 이(가) 거래량 보드의 정렬 키를, "
           "④ 가 KRX/NXT 구별 가능 여부를 정합니다.")
     return 0 if ok else 1
 

@@ -66219,18 +66219,22 @@ class TestKrVolumeAndSessions20260916:
 
     # ── 거래량 상위: 정렬 키를 원천에게 배운다 ────────────────────────
     def test_volume_sort_key_is_learned_not_invented(self):
-        """이름을 지어내 배선하면 죽은 경로를 배포한다(#151·#345). 원천이
-        미끼 값을 거절하며 적어 보내는 허용값에서 고른다(#350·#353)."""
-        from bot.kr_volume_client import pick_volume_sort
-        allowed = ("changeRate", "accumulatedTradingValue",
-                   "accumulatedTradingVolume", "marketValue")
-        assert pick_volume_sort(allowed) == "accumulatedTradingVolume"
-        # 거래'대금'만 있으면 받지 않는다 — 이름이 비슷하다고 받으면 화면이
-        # 제목과 다른 것을 그린다(#34·#221).
-        assert pick_volume_sort(("changeRate", "accumulatedTradingValue")) == ""
-        assert pick_volume_sort(()) == ""
-        # 누적 표기가 없으면 남은 거래량계를 쓴다(원천이 이름을 바꿔도 산다).
-        assert pick_volume_sort(("changeRate", "tradingVolume")) == "tradingVolume"
+        """⚠️ 계약 변경(2026-09-16 VM 실측, #222): 옛 판은 `pick_volume_sort`
+        가 **이름에 'volume' 이 든 것**을 골랐다. 그런데 이 엔드포인트의 실제
+        허용값 12종엔 'volume' 이 **하나도 없다** — 즉 옛 판정은 무엇도 못
+        고르는 **발화 경로 없는 코드**였다(#291). 이름은 이제 **시험 순서만**
+        정하고 판정은 `is_volume_desc` 실측이 한다(#46·#25).
+        남는 보장: 값을 지어내지 않는다 · 원천이 밝힌 목록 안에서만 고른다.
+        """
+        from bot.kr_volume_client import volume_sort_candidates
+        real = ("marketValue", "up", "down", "quantTop", "priceTop",
+                "searchTop", "newStock", "management", "high52week",
+                "low52week", "dividend", "konex")   # 2026-09-16 VM 실측
+        cands = volume_sort_candidates(real)
+        assert set(cands) == set(real), "원천 밖의 값을 지어냈다"
+        # 예산(6) 안에 랭킹 키 셋이 다 들어와야 실측이 닿는다(#116).
+        assert set(cands[:6]) >= {"quantTop", "priceTop", "searchTop"}, cands
+        assert volume_sort_candidates(()) == ()
 
     def test_learn_sort_type_asks_the_origin_and_caches(self, tmp_path, monkeypatch):
         """⚠️ 계약 변경(2026-09-16 리뷰 H3, #222): 반환이 (키, 사유) → **(키,
@@ -66241,22 +66245,57 @@ class TestKrVolumeAndSessions20260916:
         import bot.kr_volume_client as kv
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
         calls = []
+        # 2026-09-16 VM 실측 그대로: 허용값에 'volume' 이 든 이름이 없다.
+        REJECT = ('원천이 HTTP 400 — 원천: sortType: Invalid option: expected '
+                  'one of "marketValue"|"quantTop"|"priceTop"|"dividend" '
+                  '(invalid_value)')
 
-        def _fake(sort, page):
+        def _fake(sort, page, **kw):                  # #183 스텁은 **kw 로
             calls.append(sort)
             if sort == "__probe__":
-                return [], ("원천이 HTTP 400 · detail: 유효하지 않은 sortType: "
-                            "[__probe__]. 허용값: [changeRate,accumulatedTrading"
-                            "Volume,accumulatedTradingValue,marketValue]")
+                return [], REJECT
+            if sort == "quantTop":                    # 거래량 내림차순
+                return [{"itemCode": f"{i:06d}",
+                         "accumulatedTradingVolume": str(9000 - i * 13)}
+                        for i in range(30)], ""
+            if sort == "priceTop":                    # 거래대금순 — 거래량은 섞임
+                return [{"itemCode": f"{i:06d}",
+                         "accumulatedTradingVolume": str(v)}
+                        for i, v in enumerate([500, 900, 100, 700, 300] * 6)], ""
             return [{"itemCode": "005930"}], ""
         monkeypatch.setattr(kv, "_fetch", _fake)
-        got, why, _rows = kv.learn_sort_type()
-        assert got == "accumulatedTradingVolume", why
-        assert calls == ["__probe__"], "허용값을 묻지도 않고 값을 지어냈다"
+        got, why, rows = kv.learn_sort_type()
+        assert got == "quantTop", why
+        assert calls[0] == "__probe__", "허용값을 묻지도 않고 값을 지어냈다"
+        assert "quantTop" in calls, "후보를 실제로 불러 보지 않았다(#46 이름 추정)"
+        assert rows, "확정한 키의 응답을 버렸다(#148)"
         # 두 번째 호출은 디스크에서 — 매 렌더 미끼 요청을 쏘지 않는다.
         calls.clear()
-        assert kv.learn_sort_type()[0] == "accumulatedTradingVolume"
+        assert kv.learn_sort_type()[0] == "quantTop"
         assert calls == [], f"캐시를 안 읽고 또 물었다: {calls}"
+
+    def test_name_alone_never_decides_the_sort_key(self, tmp_path, monkeypatch):
+        """2026-09-16 실측: 이름이 가장 그럴듯한 후보라도 **행이 거래량
+        내림차순이 아니면** 채택하지 않는다(#46·#25·#151 — 이름으로 배선하면
+        죽은 경로를 배포한다). 그리고 하나도 확정 못 하면 **무엇을 시험했는지**
+        말한다(#43·#82·#54)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        REJECT = ('원천: sortType: Invalid option: expected one of '
+                  '"quantTop"|"priceTop"|"marketValue" (invalid_value)')
+
+        def _fake(sort, page, **kw):
+            if sort == "__probe__":
+                return [], REJECT
+            # 어느 후보도 거래량 내림차순이 아니다(전부 시총순).
+            return [{"itemCode": f"{i:06d}",
+                     "accumulatedTradingVolume": str(v)}
+                    for i, v in enumerate([300, 900, 100, 700, 500] * 6)], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        got, why, _r = kv.learn_sort_type()
+        assert got == "", "실측이 부정했는데 이름만 보고 채택했다"
+        assert "quantTop" in why and "거래량 내림차순" in why, why
 
     def test_origin_without_a_volume_sort_says_so_instead_of_emptying(
             self, tmp_path, monkeypatch):
@@ -66264,11 +66303,21 @@ class TestKrVolumeAndSessions20260916:
         import bot.finviz_client as fv
         import bot.kr_volume_client as kv
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
-        monkeypatch.setattr(kv, "_fetch", lambda s, p: (
-            [], "원천이 HTTP 400 · detail: 허용값: [changeRate,marketValue]"))
+        # ⚠️ 계약 변경(#222): 옛 판은 "허용값 이름에 거래량이 없다" 로 끝냈다.
+        # 이제는 후보를 **실제로 불러** 보고, 하나도 거래량 내림차순이 아니면
+        # 그 사실을 말한다 — 이름이 아니라 실측이 사유다(#46·#25).
+        monkeypatch.setattr(kv, "_fetch", lambda s, p, **kw: (
+            [], "원천: sortType: Invalid option: expected one of "
+                '"changeRate"|"marketValue" (invalid_value)'))
         out = kv.fetch_kr_volume_top()
         assert out["rows"] == []
-        assert "거래량 정렬" in out["reason"] and "changeRate" in out["reason"], out
+        # ⚠️ 계약 변경(2026-09-16 독립 리뷰 H3, #222): 이 픽스처는 **행이 한
+        # 번도 안 온다**. 그걸 "불러 봤지만 내림차순이 아니었다" 로 적으면 두
+        # 번 거짓말이다(#286) — 갈래를 나누고 가장 행동 가능한 사유를 싣는다
+        # (#82·#275). 남는 보장: 무엇을 시험했는지 말한다.
+        assert "행을 주지 않았습니다" in out["reason"], out
+        assert "changeRate" in out["reason"], "무엇을 시험했는지 안 말한다"
+        assert "최상위 사유" in out["reason"], "행동 가능한 사유를 버렸다"
 
     def test_rejected_learned_key_is_relearned(self, tmp_path, monkeypatch):
         """원천이 enum 을 바꾸면 배운 키가 400 이 된다 — 그때 **다시 배운다**.
@@ -66280,20 +66329,21 @@ class TestKrVolumeAndSessions20260916:
         fv._cache_write(kv._SORT_CACHE, {"sort": "staleKey"})
         seen = []
 
-        def _fake(sort, page):
+        def _fake(sort, page, **kw):              # #183 스텁은 **kw 로
             seen.append(sort)
             if sort == "staleKey":
                 return [], "원천이 HTTP 400 · detail: 유효하지 않은 sortType"
             if sort == "__probe__":
-                return [], ("원천이 HTTP 400 · detail: 허용값: "
-                            "[changeRate,accumulatedTradingVolume]")
-            return [{"itemCode": "005930", "name": "삼성전자",
+                return [], ('원천: sortType: Invalid option: expected one of '
+                            '"changeRate"|"quantTop" (invalid_value)')
+            return [{"itemCode": f"{i:06d}", "name": f"종목{i}",
                      "stockEndType": "stock", "currentPrice": "80,000",
-                     "accumulatedTradingVolume": 10}], ""
+                     "accumulatedTradingVolume": str(9000 - i * 13)}
+                    for i in range(30)], ""
         monkeypatch.setattr(kv, "_fetch", _fake)
         out = kv.fetch_kr_volume_top(limit=5)
         assert "__probe__" in seen, f"거절당하고도 다시 안 배웠다: {seen}"
-        assert out["sort"] == "accumulatedTradingVolume"
+        assert out["sort"] == "quantTop", out
         assert out["rows"], "재학습 뒤 행을 못 채웠다"
 
     def test_missing_high_low_is_stated_not_silently_blank(
@@ -66706,11 +66756,18 @@ class TestKrBoardsReviewFixes20260916:
         assert "저장분" in body, "저장분 서빙을 화면이 말하지 않는다"
 
     def test_volume_sort_rejects_lookalike_keys(self):
-        """리뷰 L15 — `volumePower`(체결강도)는 거래량 랭킹이 아니다(#34)."""
-        from bot.kr_volume_client import pick_volume_sort
-        assert pick_volume_sort(("volumePower", "changeRate")) == ""
-        assert pick_volume_sort(
-            ("volumePower", "accumulatedTradingVolume")) == "accumulatedTradingVolume"
+        """리뷰 L15 — `volumePower`(체결강도)는 거래량 랭킹이 아니다(#34).
+
+        ⚠️ 계약 변경(#222): 이름으로 **거르지** 않고 순서만 민다. 진짜 거절은
+        `is_volume_desc` 가 한다 — 체결강도 정렬은 거래량 내림차순이 아니다.
+        """
+        from bot.kr_volume_client import is_volume_desc, volume_sort_candidates
+        cands = volume_sort_candidates(("volumePower", "accumulatedTradingVolume"))
+        assert cands[0] == "accumulatedTradingVolume", cands
+        # 체결강도 순으로 온 행은 거래량이 들쭉날쭉하다 → 실측이 거부한다.
+        power = [{"accumulatedTradingVolume": str(v)}
+                 for v in [500, 900, 100, 700, 300] * 6]
+        assert not is_volume_desc(power)
 
     def test_relearn_clears_the_dead_key(self, tmp_path, monkeypatch):
         """리뷰 L16 — 재학습이 실패해도 죽은 키가 30일 살아남으면 안 된다."""
@@ -66764,3 +66821,318 @@ class TestKrBoardsReviewFixes20260916:
         pp._kick_kr_refresh("KRX")
         assert started, "다음 킥이 막혔다"
         pp._KR_REFRESHING.clear()
+
+
+class TestKrBoardProbeMeasured20260916:
+    """VM 프로브 실측(2026-09-16 22:29 KST)이 확정·반증한 것 — 실수 #372.
+
+    ① 이 엔드포인트의 오류 봉투는 **세 번째 형태**다(파이프로 이은 따옴표
+       목록). 옛 파서는 괄호 목록만 봐서 12종을 한 글자도 못 읽었다.
+    ② 그래서 '이름에 volume 이 든 것을 고른다' 는 **발화 경로가 없었다**.
+    ③ ④ 섹션은 dict 값을 `type(v).__name__` 으로 접어, venue 축을 담을 수
+       있는 두 필드를 가린 채 '없다'처럼 읽히게 했다.
+    """
+
+    REAL_REJECT = (
+        '원천이 HTTP 400 — 원천: sortType: Invalid option: expected one of '
+        '"marketValue"|"up"|"down"|"quantTop"|"priceTop"|"searchTop"|'
+        '"newStock"|"management"|"high52week"|"low52week"|"dividend"|"konex" '
+        '(invalid_value)')
+
+    def test_third_error_envelope_is_read(self):
+        """#73·#350(zod 배열)·#352(RFC7807)에 이은 셋째 봉투 — 실측 바이트로."""
+        from bot.naver_sector_client import allowed_values
+        vals = allowed_values(self.REAL_REJECT)
+        assert len(vals) == 12, vals
+        assert vals[0] == "marketValue" and "quantTop" in vals, vals
+        # 옛 봉투(괄호 목록)도 계속 읽어야 한다 — 테마 보드가 그걸 쓴다(#222).
+        assert allowed_values("허용값: [changeRate,fallCnt,name]") == (
+            "changeRate", "fallCnt", "name")
+
+    def test_no_allowed_value_contains_volume(self):
+        """이 실측이 옛 판정을 **반증**한다 — 이름으로는 못 고른다(#291).
+
+        이 단언이 깨지면 원천이 이름을 바꾼 것이고, 그때는 순서 힌트가
+        더 잘 맞게 될 뿐 판정(실측)은 그대로다.
+        """
+        from bot.naver_sector_client import allowed_values
+        vals = allowed_values(self.REAL_REJECT)
+        assert not [v for v in vals if "volume" in v.lower()], vals
+
+    def test_ranking_candidates_fit_the_trial_budget(self):
+        """예산(#116) 안에 랭킹 키가 다 들어와야 실측이 그것들에 닿는다."""
+        import bot.kr_volume_client as kv
+        from bot.naver_sector_client import allowed_values
+        cands = kv.volume_sort_candidates(allowed_values(self.REAL_REJECT))
+        head = set(cands[:kv._TRIAL_BUDGET])
+        assert {"quantTop", "priceTop", "searchTop"} <= head, cands
+
+    def test_probe_does_not_fold_dict_values(self):
+        """③ — 접어 찍으면 **다음 결정을 가린다**(#156·#338·#350).
+
+        실측에서 `stockExchangeType = dict` 로 접혔고 `integratedPriceInfo`
+        는 이름 필터에도 안 걸려, venue 축 유무를 판정할 수 없는 출력이
+        '없다'처럼 읽혔다(#165 재지 않은 것을 단정하지 말 것).
+        """
+        from bot.scripts.kr_board_probe import _walk
+        it = {"stockExchangeType": {"code": "KOSPI", "name": "코스피"},
+              "integratedPriceInfo": {"nxt": {"closePrice": "1"}},
+              "overMarketPriceInfo": {"tradingSessionType": "AFTER_MARKET"}}
+        out = dict(_walk(it))
+        assert "stockExchangeType" in out and "integratedPriceInfo" in out, out
+        for k in ("stockExchangeType", "integratedPriceInfo"):
+            assert out[k] not in ("dict", "list"), f"{k} 가 접혔다: {out[k]}"
+            assert "KOSPI" in out[k] or "closePrice" in out[k], out[k]
+
+    def test_probe_says_when_it_skipped_a_section(self, monkeypatch, capsys):
+        """② 가 실패하면 ③ 이 조용히 빠지고 마지막 줄이 **안 한 일을 했다고**
+        말했다(#54·#286). 건너뛴 사실을 그 자리에 적는다.
+
+        ⚠️ 첫 판은 소스 문자열(`'"②③"' in body`)로 재서 **고치려던 그 회귀를
+        통과시켰고**(`done = "②③"` 무조건 → green) 무해한 이름 변경엔 깨졌다
+        (#19, 독립 리뷰 2026-09-16 H4 실측). 출력으로 잰다.
+        """
+        import bot.scripts.kr_board_probe as pr
+        monkeypatch.setattr(pr, "_banner", lambda: True)
+        monkeypatch.setattr(pr, "_section_control", lambda: True)
+        monkeypatch.setattr(pr, "_section_venue", lambda: None)
+        # ② 가 허용값을 못 읽는 상태 — 원천이 400 을 주고 목록이 없다.
+        monkeypatch.setattr(pr, "_get", lambda *a, **k: (None, "원천이 HTTP 400"))
+        pr.main()
+        out = capsys.readouterr().out
+        assert "건너뜀" in out, out[-600:]
+        assert "위 ②③" not in out, "③ 이 안 돌았는데 돌았다고 말한다"
+        assert "위 ②" in out, out[-600:]
+
+    def test_failed_learning_is_cooled_not_retried_every_render(
+            self, tmp_path, monkeypatch):
+        """확정이 안 되는 상태(휴장·원천 장애로 거래량 전부 동률)에서 60초
+        TTL 마다 미끼 1 + 후보 6 = 7콜이 나가면 안 된다(#346 느림의 원인은
+        양이 아니라 실패 재시도 · #116 예산). 그리고 **식으면 다시 시도**
+        하고(#178), 화면은 재시도 시점을 말한다(#43·#165)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        calls = []
+        REJECT = ('원천: sortType: Invalid option: expected one of '
+                  '"quantTop"|"priceTop"|"marketValue" (invalid_value)')
+
+        def _fake(sort, page, **kw):
+            calls.append(sort)
+            if sort == "__probe__":
+                return [], REJECT
+            # 휴장: 거래량이 전부 같아 어느 정렬도 '내림차순' 판정을 못 받는다.
+            return [{"itemCode": f"{i:06d}", "accumulatedTradingVolume": "0"}
+                    for i in range(30)], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        kv.learn_sort_type()
+        tried_first = [c for c in calls if c != "__probe__"]
+        assert len(tried_first) >= 2, calls
+        calls.clear()
+        got, why, rows = kv.learn_sort_type()
+        # ⚠️ 계약은 "**후보 시험**을 안 한다" 이지 "아무것도 안 부른다" 가
+        # 아니다 — 미끼 1콜은 남겨야 H3 폴백(기본 정렬 행)이 산다(#148).
+        assert got == ""
+        assert [c for c in calls if c != "__probe__"] == [], f"냉각 중 시험: {calls}"
+        assert len(calls) <= 1, f"냉각 중 호출이 1콜을 넘었다: {calls}"
+        # ⚠️ 여기서 `rows` 가 빈 것은 정상이다 — 원천이 미끼를 **거절**하면
+        # 그 응답엔 행이 없다(H3 폴백은 원천이 sortType 을 검증하지 **않을**
+        # 때만 성립한다, #148). 그래서 냉각 중 미끼 1콜을 남기는 이유는
+        # 그 폴백 경로를 살려 두는 것이고, 이 픽스처는 그 경로가 아니다.
+        assert rows == [], rows
+        assert "다시 시험" in why, why
+        # 식으면 반드시 다시 시도한다 — 영구 정지는 #178 이 금지한다.
+        monkeypatch.setattr(kv, "_LEARN_COOL", 0)
+        calls.clear()
+        kv.learn_sort_type()
+        assert calls, "냉각이 식었는데 다시 안 물었다"
+
+    def test_successful_relearn_clears_the_cooldown(self, tmp_path, monkeypatch):
+        """냉각 해제 줄이 **무가드**였다(뮤테이션 M8 통과 → #291).
+
+        발화 경로: 배운 키가 거절돼 `force` 재학습이 돌고(#24 원천 드리프트)
+        그게 성공하면, 남아 있던 실패 도장을 **반드시 지워야** 한다 — 안
+        지우면 다음 비-force 학습이 멀쩡한 상태에서 10분간 막힌다(#178
+        주기적으로 발동하는 가드가 계열을 영구히 멈추면 안 된다).
+        """
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._LEARN_FAIL, {"why": "옛 실패 도장"})
+        assert fv._cached(kv._LEARN_FAIL, ttl=kv._LEARN_COOL), "픽스처가 안 섰다"
+
+        def _fake(sort, page, **kw):
+            if sort == "__probe__":
+                return [], ('원천: sortType: Invalid option: expected one of '
+                            '"quantTop"|"marketValue" (invalid_value)')
+            return [{"itemCode": f"{i:06d}",
+                     "accumulatedTradingVolume": str(9000 - i * 13)}
+                    for i in range(30)], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        got, why, _r = kv.learn_sort_type(force=True)
+        assert got == "quantTop", why
+        left = fv._cached(kv._LEARN_FAIL, ttl=kv._LEARN_COOL)
+        assert not (isinstance(left, dict) and left.get("why")), (
+            f"확정했는데 냉각 도장이 남았다: {left}")
+
+    def test_transient_failure_is_named_and_not_cooled(self, tmp_path, monkeypatch):
+        """독립 리뷰 H3 — 429·타임아웃·일시정지는 '거래량 내림차순이 아니다'가
+        **아니다**. 처방이 정반대이므로 사유를 이름으로 싣고(#82·#279·#275),
+        일시정지(rank 0)는 안 물어본 것이라 냉각 도장을 찍지 않는다(#79·#143)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        import bot.naver_diag as nd
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        REJECT = ('원천: sortType: Invalid option: expected one of '
+                  '"quantTop"|"priceTop" (invalid_value)')
+
+        def _mk(trial_why):
+            def _f(sort, page, **kw):
+                return ([], REJECT) if sort == "__probe__" else ([], trial_why)
+            return _f
+
+        # ① 429 — 행이 0인데 '불러 봤다'고 말하면 안 되고 사유를 실어야 한다.
+        monkeypatch.setattr(kv, "_fetch", _mk("원천이 HTTP 429"))
+        _g, why, _r = kv.learn_sort_type(force=True)
+        assert "행을 주지 않았습니다" in why, why
+        assert "429" in why, f"행동 가능한 사유를 버렸다: {why}"
+        assert "내림차순인 것이 없었습니다" not in why, why
+
+        # ② 일시정지는 실패가 아니다 — 도장이 남으면 해제 뒤까지 10분 막힌다.
+        fv._cache_write(kv._LEARN_FAIL, {})
+        paused = f"{nd.PAUSED}"
+        assert nd.reason_rank(paused) == 0, "픽스처가 rank 0 이 아니다"
+        monkeypatch.setattr(kv, "_fetch", _mk(paused))
+        kv.learn_sort_type(force=True)
+        left = fv._cached(kv._LEARN_FAIL, ttl=kv._LEARN_COOL)
+        assert not (isinstance(left, dict) and left.get("why")), (
+            f"일시정지에 냉각 도장을 찍었다: {left}")
+
+    def test_cooldown_note_says_remaining_not_the_cap(self, tmp_path, monkeypatch):
+        """독립 리뷰 LOW — '최대 10분' 은 상한이지 측정이 아니다(#202·#165)."""
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        fv._cache_write(kv._LEARN_FAIL, {"why": "앞선 실패"})
+        # ⚠️ 냉각 게이트는 미끼 **뒤**에 있다 — 허용값을 못 읽으면 그 앞
+        # 분기에서 반환해 게이트에 닿지도 않는다(#91b 재는 대상이 맞나).
+        monkeypatch.setattr(kv, "_fetch", lambda s, p, **kw: (
+            [], '원천: sortType: Invalid option: expected one of '
+                '"quantTop"|"priceTop" (invalid_value)'))
+        _g, why, _r = kv.learn_sort_type()
+        assert "최대" not in why, why
+        assert "뒤 다시 시험합니다" in why and "초" in why, why
+
+    # ── 독립 리뷰 2026-09-16 (2차) 반영 ────────────────────────────
+    def test_five_rows_cannot_decide_volume_order(self):
+        """M2 — `min_rows` 가 이 판정의 **계약 전부**인데 발화 테스트가 없었다.
+
+        리뷰 실측: `min_rows 10→2` 로 바꿔도 32개가 전부 통과했다(#91·#291).
+        시총순(`marketValue`) 상위 몇 종목은 거래량도 우연히 내림차순이라
+        표본이 작으면 **어느 정렬이든 '거래량 상위'로 보인다** — 갈라내려면
+        행이 넉넉해야 한다는 것이 이 상수의 뜻이다.
+        """
+        import bot.kr_volume_client as kv
+        five = [{"accumulatedTradingVolume": v}
+                for v in (9_000_000, 7_000_000, 5_000_000, 3_000_000, 1_000_000)]
+        assert kv.is_volume_desc(five) is False, "5행으로 정렬을 단정했다"
+        # 같은 모양이 넉넉하면 판정한다 — 거부가 '항상 False'가 아님을 같이
+        # 보인다(#25 '있다'를 묻는 검사엔 반대 증거를 같이).
+        many = [{"accumulatedTradingVolume": 9_000_000 - i * 1000}
+                for i in range(kv._TRIAL_ROWS)]
+        assert kv.is_volume_desc(many) is True
+
+    def test_trial_asks_for_enough_rows_to_decide(self, tmp_path, monkeypatch):
+        """M2 짝 — `_TRIAL_ROWS` 가 `is_volume_desc` 의 하한보다 커야 한다.
+
+        리뷰 실측: `_TRIAL_ROWS 30→5` 도 32개가 전부 통과했다. 원천은 우리가
+        요청한 수만큼 주므로, 5행만 물으면 **어떤 후보도 확정될 수 없어**
+        학습이 영원히 실패한다(#171 가드가 '못 만든다'로 끝나면 그 자리가
+        영원히 빈다). 배선(`size=_TRIAL_ROWS`)도 여기서 같이 잰다 — 헬퍼만
+        재면 인자를 떼는 변형을 못 잡는다(#20).
+        """
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        seen: list = []
+
+        def _fake(sort, page, **kw):
+            size = kw.get("size")
+            seen.append((sort, size))
+            if sort == kv._PARAM_JUNK:
+                return [], self.REAL_REJECT
+            n = size or kv._PAGE_SIZE
+            if sort == "quantTop":       # 거래량 내림차순
+                return [{"accumulatedTradingVolume": 9_000_000 - i * 1000}
+                        for i in range(n)], ""
+            # 나머지는 값이 거의 같아 판정 불가(휴장·다른 정렬)
+            return [{"accumulatedTradingVolume": 100} for _ in range(n)], ""
+        monkeypatch.setattr(kv, "_fetch", _fake)
+        sort, why, _rows = kv.learn_sort_type(force=True)
+        assert sort == "quantTop", (sort, why, seen)
+        trial = [sz for st, sz in seen if st != kv._PARAM_JUNK]
+        assert trial and set(trial) == {kv._TRIAL_ROWS}, seen
+        assert kv._TRIAL_ROWS >= 10, "시험 행 수가 판정 하한보다 작다"
+
+    def test_piped_list_that_echoes_our_junk_is_not_the_allowed_list(self):
+        """L — 파이프 경로의 미끼 배제에 **발화 경로가 없었다**(#291).
+
+        ⚠️ 이 픽스처는 **합성**이다 — 원천이 미끼를 파이프 목록으로 되읊는
+        것을 실제로 본 적은 없다(#155·#165). 그래도 지우지 않는 이유는 괄호
+        경로가 같은 가드를 갖고 있고 그쪽은 실측 모양이기 때문이다 — 한쪽만
+        열어 두면 두 경로가 갈라진다(#38). 되읊음이 진짜 목록보다 길면
+        가드 없이는 그게 이긴다.
+        """
+        from bot.naver_sector_client import allowed_values
+        txt = ('sortType: 받은 값 "__probe__"|"__probe__x"|"__probe__y" · '
+               'expected one of "up"|"down"')
+        assert allowed_values(txt) == ("up", "down"), allowed_values(txt)
+
+    def test_piped_pair_with_a_blank_side_is_not_a_list(self):
+        """L — `len(vals) >= 2` 의 발화 경로. 정규식은 따옴표 둘을 보장하지만
+        빈 값을 걸러내면 하나만 남는다 — 항목이 하나면 목록이 아니다(#54)."""
+        from bot.naver_sector_client import allowed_values
+        assert allowed_values('expected one of "up"|"   "') == ()
+
+    def test_concurrent_learns_run_the_body_once(self, tmp_path, monkeypatch):
+        """M4 — 학습은 미끼1+후보6 = 7콜이다. 탭 N 개면 7N 콜이 나가고 그게
+        `naver_paused()` 를 건드리면 네이버 보드 전부가 죽는다(#113).
+
+        ⚠️ 겹치게 만들어야 의미가 있다 — 즉시 끝나는 함수로 재면 셋이 전부
+        리더가 되어 팔로워 경로를 한 번도 안 탄다(#113 그대로).
+        """
+        import threading
+        import time
+
+        import bot.kr_volume_client as kv
+        import bot.singleflight as _sf
+        arrived, release = threading.Event(), threading.Event()
+        runs: list = []
+
+        def _body(force=False):
+            runs.append(force)
+            arrived.set()
+            release.wait(5)
+            return ("quantTop", "", [])
+        monkeypatch.setattr(kv, "_learn_sort_type", _body)
+        out: list = []
+        ts = [threading.Thread(target=lambda: out.append(kv.learn_sort_type()))
+              for _ in range(3)]
+        ts[0].start()
+        assert arrived.wait(5), "리더가 시작되지 않았다"
+        for t in ts[1:]:
+            t.start()
+        # ⚠️ 스레드를 띄운 것만으로는 아직 `once()` 에 안 들어갔을 수 있다 —
+        # 그 상태에서 리더를 풀면 팔로워가 **새 리더**가 되어 거짓 빨간불이
+        # 난다(#128 동시성 단언을 시간·순서로 쓰면 단독 green·전체 red).
+        # 리더의 Event 에 실제로 매달릴 때까지 기다린다.
+        call = _sf._INFLIGHT["kr_volume_learn:0"]
+        end = time.monotonic() + 5
+        while len(getattr(call.ev, "_cond")._waiters) < 2 and time.monotonic() < end:
+            time.sleep(0.005)
+        assert len(call.ev._cond._waiters) == 2, "팔로워가 대기에 못 들어갔다"
+        release.set()
+        for t in ts:
+            t.join(5)
+        assert len(runs) == 1, f"동시 학습이 {len(runs)}번 돌았다"
+        assert out == [("quantTop", "", [])] * 3, out
