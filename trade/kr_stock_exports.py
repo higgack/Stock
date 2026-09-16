@@ -33,8 +33,24 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from trade import badonion_metrics as _metrics
+from trade import kr_company_flow as _flow
 from trade.archive_template import asof_footer, back_nav_html, max_ingest_iso
 from trade.archive_template import card_html
+
+# 2026-09-16: 같은 채널이 한국 수출을 **두 문법**으로 낸다. 옛 판(아래
+# `_RE_BLOCK`)은 `HPSP (403870)` / `한국 수출` / `26년 7월 Update` + 지표이고,
+# 새 판은 품목판 어순(`8월 수출 한국`) + `▶️ 회사 — 품목` + 금액/YoY/MoM 이다.
+# 새 판을 받는 소스가 아예 없어 LS ELECTRIC 이 조용히 드랍되고 있었다
+# (#83·#261·#330·#332 계열). 사용자 결정(2026-09-16): **한 페이지에 합친다**.
+# 문법만 `kr_company_flow` 가 갖고(#38·#84) 저장·렌더는 이 모듈이 계속 갖는다.
+EXPORT_FLOW = _flow.Flow(key="export", marker="수출", amount="수출액",
+                         table="kr_stock_exports",
+                         title="🏢 한국 수출 데이터(종목별)",
+                         country="한국")
+
+# 6자리 종목코드가 없는 금액판은 **회사명**을 PK 로 쓴다. 접두를 붙여 진짜
+# 코드와 섞이지 않게 하고, 화면은 접두가 붙은 키를 코드로 찍지 않는다.
+_NAME_KEY = "nm:"
 
 # 헤더 블록 = "종목명 (6자리코드)" 줄 → 곧바로 "한국 수출" → "NN년 N월 Update".
 # ⚠️ 세 마커를 **따로** 찾으면 안 된다 — 캡션 어딘가에 우연히 셋이 흩어져
@@ -131,12 +147,123 @@ def parse_kr_stock_export(caption: str) -> dict | None:
     }
 
 
+def parse_kr_stock_flow(caption: str) -> dict | None:
+    """새 금액판 캡션 → {stock_name, item, months[]} 또는 None."""
+    return _flow.parse(caption, EXPORT_FLOW)
+
+
+def parse_any(caption: str) -> dict | None:
+    """레지스트리가 쓰는 **관련성 필터** — 두 문법 중 하나라도 맞으면 통과.
+
+    ⚠️ 반환 모양이 둘이다(옛 판은 단일 월 dict, 새 판은 `months[]`). 호출부는
+    `is None` 만 보므로 계약은 지켜지지만, 새 소비자가 생기면 키를 먼저 볼 것
+    (#345 반환 모양을 확인하고 쓸 것). 저장은 `ingest` 가 갈라 처리한다."""
+    return parse_kr_stock_export(caption) or parse_kr_stock_flow(caption)
+
+
+# 법인 접미어. 원천이 같은 회사를 판마다 다르게 적는다(실측: 금액판
+# `LS ELECTRIC Co., Ltd.` ↔ 옛 판 `LS ELECTRIC`).
+_CORP_SUFFIX = ("coltd", "co", "ltd", "inc", "corp", "corporation",
+                "limited", "plc", "llc", "ag", "sa", "주식회사")
+
+
+def fold_company(name: str) -> str:
+    """비교용으로 접은 회사명 — 대소문자·공백·구두점·법인 접미어를 뺀다.
+
+    ⚠️ 접기는 **맞추기 위한 것**이지 표시용이 아니다. 너무 세게 접으면 다른
+    회사가 합쳐지므로(그건 더 나쁜 오류다) 꼬리의 법인 접미어만 벗긴다."""
+    t = "".join(ch for ch in (name or "").lower() if ch.isalnum())
+    changed = True
+    while changed and t:
+        changed = False
+        for suf in _CORP_SUFFIX:
+            if len(t) > len(suf) and t.endswith(suf):
+                t, changed = t[:-len(suf)], True
+                break
+    return t or "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
+# 금액판이 만드는 칸 — 파서 판이 오르면 이것만 다시 채운다.
+_FLOW_DERIVED = ("item", "export_value_musd", "export_yoy", "export_mom")
+
+
+def _absorb_synthetic(conn: sqlite3.Connection, *, code: str,
+                      name: str) -> None:
+    """합성키 행을 진짜 코드로 옮긴다 — **같은 달이 이미 있으면 병합**한다.
+
+    ⚠️ `UPDATE OR REPLACE` 로 쓰면 충돌한 달의 **진짜 코드 행이 통째로
+    지워진다**(합성 행이 그 자리를 차지한다). 그 행엔 옛 지표판만 아는 값
+    (상관·분기매출)이 들어 있어 조용한 데이터 유실이 된다 — 이 모듈의
+    다른 쓰기와 같은 **필드 보존 병합** 규약을 여기서도 지킨다(#45).
+    """
+    # ⚠️ 합성키도 **접은 이름**으로 찾는다 — 금액판이 `LS ELECTRIC Co., Ltd.`
+    # 로 저장해 뒀는데 옛 판이 `LS ELECTRIC` 로 오면 정확 일치로는 못 찾아
+    # 카드가 둘로 남는다(#45).
+    want = fold_company(name)
+    rows = [r for r in conn.execute(
+        "SELECT * FROM kr_stock_exports WHERE stock_code LIKE ?",
+        (_NAME_KEY + "%",)).fetchall()
+        if fold_company(r["stock_name"] or "") == want]
+    for r in rows:
+        src = dict(r)
+        synth = src["stock_code"]
+        month = src.get("month") or ""
+        ex = conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE stock_code=? AND month=?",
+            (code, month)).fetchone()
+        if ex is None:
+            conn.execute(
+                "UPDATE kr_stock_exports SET stock_code=? "
+                "WHERE stock_code=? AND month=?", (code, synth, month))
+            continue
+        keep = dict(ex)
+        for k in _COLS:
+            if keep.get(k) in (None, "") and src.get(k) not in (None, ""):
+                keep[k] = src[k]
+        keep["stock_code"] = code
+        keep["month"] = month
+        conn.execute(
+            f"INSERT OR REPLACE INTO kr_stock_exports ({','.join(_COLS)}) "
+            f"VALUES ({','.join(f':{c}' for c in _COLS)})",
+            {k: keep.get(k) for k in _COLS})
+        conn.execute(
+            "DELETE FROM kr_stock_exports WHERE stock_code=? AND month=?",
+            (synth, month))
+
+
+def _resolve_code(conn: sqlite3.Connection, *, code: str | None,
+                  name: str) -> str:
+    """두 문법이 같은 회사를 가리키면 **카드가 둘이 되면 안 된다**(#45).
+
+    · 코드가 있으면(옛 판) 그 이름으로 쌓인 합성키 행을 진짜 코드로 옮긴다.
+    · 코드가 없으면(금액판) 같은 이름의 진짜 코드가 이미 있으면 그걸 쓰고,
+      없을 때만 합성키를 만든다.
+    """
+    if code:
+        _absorb_synthetic(conn, code=code, name=name)
+        return code
+    # ⚠️ 두 판이 회사를 **다르게 적는다** — 금액판 `LS ELECTRIC Co., Ltd.` ·
+    # 옛 판 `LS ELECTRIC`. 글자 그대로 비교하면 같은 회사가 카드 둘이 된다
+    # (#45, 독립 리뷰 실측). 대소문자·공백·구두점과 법인 접미어를 걷어낸
+    # **접은 이름**으로 맞춘다 — 표시 이름은 원문 그대로 둔다(#74 값은 원본).
+    want = fold_company(name)
+    for r in conn.execute(
+            "SELECT stock_code, stock_name FROM kr_stock_exports "
+            "WHERE stock_code NOT LIKE ? ORDER BY month DESC",
+            (_NAME_KEY + "%",)):
+        if r["stock_code"] and fold_company(r["stock_name"] or "") == want:
+            return r["stock_code"]
+    return _NAME_KEY + name
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kr_stock_exports (
   stock_code TEXT NOT NULL,
   month TEXT NOT NULL DEFAULT '',
   stock_name TEXT,
   price_yoy REAL, export_yoy REAL, export_yoy_3m REAL,
+  export_value_musd REAL, export_mom REAL, item TEXT,
+  parse_ver INTEGER,
   corr REAL, dir_hit REAL, corr_basis TEXT,
   lead_corr REAL, lead_dir_hit REAL,
   rev_quarter TEXT, rev_value_krw_b REAL, rev_yoy REAL,
@@ -150,7 +277,8 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
 """
 
 _COLS = ("stock_code", "month", "stock_name", "price_yoy", "export_yoy",
-         "export_yoy_3m") + _metrics.FIELDS + (
+         "export_yoy_3m", "export_value_musd", "export_mom",
+         "item", "parse_ver") + _metrics.FIELDS + (
          "rev_quarter",
          "rev_value_krw_b", "rev_yoy", "chart_media", "source_message_id",
          "posted_at", "raw_text", "updated_at")
@@ -166,7 +294,10 @@ def open_kr_stock_db(path: str | Path) -> sqlite3.Connection:
     # 손대지 않아, 이게 없으면 배포 후 첫 쓰기가 터진다(형제와 같은 규약).
     have = {r["name"] for r in
             conn.execute("PRAGMA table_info(kr_stock_exports)")}
-    for col, decl in _metrics.FIELD_TYPES.items():
+    added = dict(_metrics.FIELD_TYPES)
+    added.update({"export_value_musd": "REAL", "export_mom": "REAL",
+                  "item": "TEXT", "parse_ver": "INTEGER"})
+    for col, decl in added.items():
         if col not in have:
             conn.execute(
                 f"ALTER TABLE kr_stock_exports ADD COLUMN {col} {decl}")
@@ -177,13 +308,23 @@ def upsert_kr_stock(conn: sqlite3.Connection, row: dict, *, chart_media,
                     source_message_id, posted_at: str, raw_text: str) -> bool:
     """필드 보존 병합 upsert — 부분 재전송이 기존 good 필드를 null 로 덮지
     않게 한다(기존 나쁜양파 모듈과 동일 규약)."""
-    code, month = row.get("stock_code"), row.get("month") or ""
-    if not code or not month:
+    month = row.get("month") or ""
+    name = (row.get("stock_name") or "").strip()
+    if not month or not (row.get("stock_code") or name):
         return False
+    code = _resolve_code(conn, code=row.get("stock_code"), name=name)
     ex = conn.execute(
         "SELECT * FROM kr_stock_exports WHERE stock_code=? AND month=?",
         (code, month)).fetchone()
     exd = dict(ex) if ex is not None else None
+    # 금액판 파생 필드는 **파서 판이 올라가면 비우고 다시 채운다**(#18) —
+    # 필드 보존 병합은 새 파서가 그 칸을 비워도 옛 값을 남기기 때문이다
+    # (`value_mom` 은 원천이 안 주면 실제로 None 이 된다, 리뷰 실측).
+    # ⚠️ 옛 지표판(상관·분기매출)은 건드리지 않는다 — 그건 다른 문법이다.
+    if (exd is not None and row.get("parse_ver")
+            and (exd.get("parse_ver") or 0) < row["parse_ver"]):
+        for k in _FLOW_DERIVED:
+            exd[k] = None
     incoming = {**row, "chart_media": chart_media,
                 "source_message_id": source_message_id,
                 "posted_at": posted_at, "raw_text": raw_text}
@@ -219,12 +360,31 @@ def history(conn: sqlite3.Connection, stock_code: str) -> list[dict]:
 
 def ingest(conn: sqlite3.Connection, caption: str, *, source_message_id=None,
            posted_at: str = "", media_paths: list[str] | None = None) -> bool:
+    """두 문법을 모두 받는다 — 옛 지표판은 1행, 새 금액판은 **메시지 안의 전
+    개월**(최신 + 최근 추이)을 각각 한 행으로 넣는다(형제 품목판과 같은 규약)."""
+    chart = (media_paths or [None])[0]
     parsed = parse_kr_stock_export(caption)
-    if parsed is None:
+    if parsed is not None:
+        return upsert_kr_stock(conn, parsed, chart_media=chart,
+                               source_message_id=source_message_id,
+                               posted_at=posted_at, raw_text=caption)
+    flow = parse_kr_stock_flow(caption)
+    if flow is None:
         return False
-    return upsert_kr_stock(conn, parsed, chart_media=(media_paths or [None])[0],
-                           source_message_id=source_message_id,
-                           posted_at=posted_at, raw_text=caption)
+    saved = False
+    for mrow in flow["months"]:
+        ok = upsert_kr_stock(
+            conn,
+            {"stock_code": None, "stock_name": flow["stock_name"],
+             "item": flow["item"], "month": mrow["month"],
+             "export_value_musd": mrow["value_musd"],
+             "export_yoy": mrow["value_yoy"],
+             "export_mom": mrow["value_mom"],
+             "parse_ver": _flow.PARSE_VER},
+            chart_media=chart, source_message_id=source_message_id,
+            posted_at=posted_at, raw_text=caption)
+        saved = saved or ok
+    return saved
 
 
 _CSS = """
@@ -304,25 +464,45 @@ def _hist_table(hist: list[dict]) -> str:
         def c(k):
             v = h.get(k)
             return f"{v:+.1f}%" if v is not None else "—"
+        amt = h.get("export_value_musd")
+        amt_s = f"${amt:,.1f}M" if amt is not None else "—"
         trs.append(f"<tr><td>{_html.escape(h['month'])}</td>"
-                   f"<td>{c('export_yoy')}</td><td>{c('export_yoy_3m')}</td>"
+                   f"<td>{amt_s}</td>"
+                   f"<td>{c('export_yoy')}</td><td>{c('export_mom')}</td>"
+                   f"<td>{c('export_yoy_3m')}</td>"
                    f"<td>{c('price_yoy')}</td></tr>")
-    return ('<table class="kr-htbl"><tr><th>월</th><th>수출액 YoY</th>'
+    # 두 문법이 한 표에 섞이므로 **없는 칸은 '—'** 로 둔다(빈칸은 0 으로
+    # 읽힌다, #43·#181). 어느 열이 어느 판에서 오는지는 카드가 말한다.
+    return ('<table class="kr-htbl"><tr><th>월</th><th>수출액</th>'
+            '<th>수출액 YoY</th><th>MoM</th>'
             '<th>3M 수출액 YoY</th><th>단가 YoY</th></tr>'
             + "".join(trs) + "</table>")
 
 
 def _card_html(r: dict, hist: list[dict], media_prefix: str) -> str:
-    name = _html.escape(r.get("stock_name") or r.get("stock_code") or "")
-    code = _html.escape(r.get("stock_code") or "")
+    raw_code = r.get("stock_code") or ""
+    # 합성키(`nm:회사명`)는 **코드가 아니다** — 그대로 찍으면 화면이 없는
+    # 종목코드를 있다고 말한다(#34·#43). 6자리 숫자일 때만 코드로 인정한다.
+    code = _html.escape(raw_code if re.fullmatch(r"\d{6}", raw_code) else "")
+    name = _html.escape(r.get("stock_name") or code or "")
     mo = _html.escape(r.get("month") or "")
     summary = [f'<div class="kr-hd">'
                f'<span class="kr-item">{name}</span>'
                f'<span class="kr-code">{code}</span>'
                f'<span class="kr-mo">📅 {mo}</span></div>']
+    amt = r.get("export_value_musd")
+    if amt is not None:
+        # 원천이 적은 단위(USD M$)를 그대로 쓴다 — 환산하지 않는다(#165).
+        summary.append('<div class="kr-metric"><span class="kr-mlabel">'
+                       f'💵 수출액</span><span class="kr-mval">${amt:,.1f}M'
+                       '</span></div>')
     summary.append(_metric("💰 수출액 YoY", r.get("export_yoy")))
+    summary.append(_metric("📈 MoM", r.get("export_mom")))
     summary.append(_metric("📊 3M 수출액", r.get("export_yoy_3m")))
     summary.append(_metric("🏷️ 단가 YoY", r.get("price_yoy")))
+    if r.get("item"):
+        summary.append(
+            f'<div class="kr-lead">📦 {_html.escape(r["item"])}</div>')
     coin = []
     _cb = r.get("corr_basis")
     _sfx = _metrics.basis_suffix(_cb)

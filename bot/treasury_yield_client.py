@@ -36,6 +36,37 @@ _FIELDS = {
 }
 _DATE_TAGS = ("NEW_DATE", "Date")
 
+# 파생 스프레드 — 재무부는 만기별 수익률만 주고 **금리차는 안 준다**. 그래서
+# `T10Y2Y`(미국 장단기금리차) 카드만 보강 대상 밖이라, 2Y·10Y 는 재무부 값으로
+# 하루 당겨지는데 스프레드는 FRED 의 D+1 에 머물렀다 — 같은 화면에서 10Y − 2Y
+# 를 빼면 스프레드 카드와 안 맞는다(#33 나란히 놓인 칸은 산수가 맞아야 한다.
+# 사용자 2026-09-14 "미국채나 장단기금리차같은거 여전히 가장 최신이 아니잖아").
+#
+# ⚠️ 이건 #32("비교표에 자체계산을 넣지 말 것")의 예외가 아니라 **그 규칙의
+# 경계 안쪽**이다. #32 의 경계는 "옆에 다른 출처가 놓이는가" 인데 여기선 세
+# 카드가 전부 같은 재무부 날짜에서 나온다. 그리고 FRED 자신이 T10Y2Y 를
+# "같은 날 DGS10 − DGS2" 로 정의한다(유동성 보드 가이드에 이미 그렇게 적혀
+# 있다) — 우리가 정의를 지어내는 게 아니라 **같은 정의를 같은 원천에 적용**
+# 하는 것이다. 게다가 `fresher_than` 의 겹치는 날 검산이 FRED 의 T10Y2Y 와
+# 대조하므로, 다리를 잘못 집었으면 그 자리에서 걸린다.
+_SPREAD_LEGS: dict[str, tuple[str, str]] = {"T10Y2Y": ("DGS10", "DGS2")}
+
+
+def derive_spreads(row: dict[str, float]) -> dict[str, float]:
+    """만기 행 → 파생 스프레드. 재료가 **둘 다** 있을 때만 만든다(#88).
+
+    순수 함수 — 한쪽 다리가 없으면 그 스프레드는 아예 안 만든다(빈칸이
+    틀린 값보다 낫다, #29). 역전(마이너스)이 정상값이므로 `_num` 의
+    0~20 상식범위 가드를 태우지 않는다 — 그건 **수익률** 전용이다.
+    """
+    out: dict[str, float] = {}
+    for sid, (long_leg, short_leg) in _SPREAD_LEGS.items():
+        a, b = row.get(long_leg), row.get(short_leg)
+        if a is None or b is None:
+            continue
+        out[sid] = round(a - b, 2)      # FRED T10Y2Y 도 소수 2자리
+    return out
+
 
 def _num(s: str) -> float | None:
     try:
@@ -49,6 +80,14 @@ _CACHE: dict[str, tuple[float, dict]] = {}
 _TTL_SEC = 1800.0          # 30분 — 재무부는 하루 한 번(15:30 ET) 갱신
 _FAIL_TTL_SEC = 600.0      # 실패는 10분만 믿는다(#152 빈 결과를 오래 믿지 말 것)
 _TIMEOUT_SEC = 20.0        # 12초는 실측에서 6/6 read timeout — 원천이 느린 날이 있다
+# 재시도 — 2026-09-13 VM 실측: 사용자가 **같은 명령을 두 번** 돌리자 1회차는
+# `no_newer`(정상), 2회차는 `fetch 202609 failed(timeout)` → `no_overlap` 이었다.
+# 한 번의 20초 시도로 판정하면 느린 날의 동전던지기가 그대로 결산의 판정이 된다
+# (#21 간격+재시도 없이는 일시적 실패를 '죽은 데이터' 로 오보한다).
+# ⚠️ 재시도는 **렌더 경로에 태우지 않는다**(기본 1회) — 20초 × N 이 화면
+# 대기가 된다(#116 예산). 배치(감사·`--why`)만 `attempts` 를 올린다.
+_DIAG_ATTEMPTS = 3         # 감사·진단 — 배치라 대기가 사용자에게 안 보인다
+_RETRY_GAP_SEC = 1.5       # 선형 백오프(1.5s, 3.0s) — 원천을 몰아치지 않는다
 _UA = ("Mozilla/5.0 (compatible; NOAH-StockBot/1.0; "
        "+https://home.treasury.gov)")
 # 마지막 실패 갈래(달별) — 처방이 갈린다: timeout=느림/차단 · http=상태코드 ·
@@ -73,33 +112,63 @@ def _fail_kind(exc: BaseException) -> str:
     return seen[0] if seen else "other"
 
 
+def retryable(kind: str) -> bool:
+    """이 실패 갈래를 다시 물어서 답이 바뀌나(#279 재시도 중단 조건).
+
+    시간·연결 문제(timeout·network)와 원천 5xx 만 — 4xx 는 **우리 요청 모양**
+    이라 백 번 물어도 같다(#82 처방이 정반대인 갈래를 한 통에 담지 말 것).
+    """
+    return kind in ("timeout", "network") or kind.startswith("http5")
+
+
 def last_fail(ym: str | None = None) -> str | None:
     """그 달의 마지막 도달 실패 갈래(없으면 None) — 진단·감사가 읽는다."""
     return _FAIL.get(ym or date.today().strftime("%Y%m"))
 
 
-def fetch_daily_curve(ym: str | None = None) -> dict[str, dict[str, float]]:
+def fetch_daily_curve(ym: str | None = None, *, attempts: int = 1
+                     ) -> dict[str, dict[str, float]]:
     """{'YYYY-MM-DD': {'DGS2': 4.17, ...}} — 실패 시 빈 dict(graceful).
 
     ⚠️ 30분 메모리 캐시. 이 함수는 시리즈마다 불리므로(2Y·10Y·30Y) 캐시가
-    없으면 한 렌더에 같은 XML 을 세 번 받는다."""
+    없으면 한 렌더에 같은 XML 을 세 번 받는다.
+
+    `attempts` — **렌더는 1회**(20초 × N 이 화면 대기가 된다, #116), 배치인
+    감사·`--why` 는 `_DIAG_ATTEMPTS`. 재시도는 다시 물어 답이 바뀔 갈래에만
+    건다(`retryable`, #279). 그리고 `attempts > 1` 이면 **실패 캐시를 믿지
+    않는다** — 진단은 10분 전 한 번의 타임아웃이 아니라 지금 사실을 재야
+    한다(#35·#54 · 성공 캐시는 그대로 존중해 공짜 조회를 늘리지 않는다).
+    """
     import requests
     ym = ym or date.today().strftime("%Y%m")
     _hit = _CACHE.get(ym)
-    if _hit and time.time() - _hit[0] < (_TTL_SEC if _hit[1] else _FAIL_TTL_SEC):
-        return _hit[1]
-    try:
-        # ⚠️ UA 를 안 보내면 기본 `python-requests/…` 로 나간다 — 정부 사이트는
-        # 그런 요청을 WAF 가 늘어뜨리거나 막는 일이 있다. 우리가 통제할 수 있는
-        # 축이므로 먼저 맞춘다("도달 실패"는 원천 장애일 수도, 우리 요청 모양
-        # 때문일 수도 있다 — 둘을 못 가르면 처방이 갈린다, #82).
-        r = requests.get(_URL.format(ym=ym), timeout=_TIMEOUT_SEC,
-                         headers={"User-Agent": _UA, "Accept": "application/xml"})
-        r.raise_for_status()
-        xml = r.text
-    except Exception as exc:
-        _FAIL[ym] = _fail_kind(exc)
-        log.info("treasury: fetch %s failed(%s): %s", ym, _FAIL[ym], exc)
+    if _hit:
+        _fresh = time.time() - _hit[0] < (_TTL_SEC if _hit[1] else _FAIL_TTL_SEC)
+        if _fresh and (_hit[1] or attempts <= 1):
+            return _hit[1]
+    xml = None
+    for _i in range(max(1, int(attempts))):
+        if _i:
+            time.sleep(_RETRY_GAP_SEC * _i)
+        try:
+            # ⚠️ UA 를 안 보내면 기본 `python-requests/…` 로 나간다 — 정부 사이트는
+            # 그런 요청을 WAF 가 늘어뜨리거나 막는 일이 있다. 우리가 통제할 수 있는
+            # 축이므로 먼저 맞춘다("도달 실패"는 원천 장애일 수도, 우리 요청 모양
+            # 때문일 수도 있다 — 둘을 못 가르면 처방이 갈린다, #82).
+            r = requests.get(_URL.format(ym=ym), timeout=_TIMEOUT_SEC,
+                             headers={"User-Agent": _UA,
+                                      "Accept": "application/xml"})
+            r.raise_for_status()
+            xml = r.text
+            break
+        except Exception as exc:
+            _FAIL[ym] = _fail_kind(exc)
+            log.info("treasury: fetch %s failed(%s, %d/%d): %s",
+                     ym, _FAIL[ym], _i + 1, max(1, int(attempts)), exc)
+            # 더 물어서 답이 바뀌지 않는 갈래면 즉시 그만둔다(#279).
+            if not retryable(_FAIL[ym]):
+                break
+    if xml is None:
         # ⚠️ 실패를 **짧게** 캐시한다. 안 하면 렌더 경로가 시리즈 3종 × 달 2개
         # = 6회를 매번 타임아웃까지 기다린다(2026-09-08 VM 실측 read timeout
         # 6/6). 길게 믿으면 원천 장애 한 번이 하루를 비운다(#152·#161) —
@@ -128,6 +197,7 @@ def fetch_daily_curve(ym: str | None = None) -> dict[str, dict[str, float]]:
                     if v is not None:
                         row[sid] = v
                     break
+        row.update(derive_spreads(row))
         if row:
             out[d] = row
     _CACHE[ym] = (time.time(), out)
@@ -139,7 +209,8 @@ def _prev_ym(ym: str) -> str:
     return f"{y - 1}12" if m == 1 else f"{y}{m - 1:02d}"
 
 
-def curve_for(fred_last_date: str, ym: str | None = None
+def curve_for(fred_last_date: str, ym: str | None = None, *,
+              attempts: int = 1
               ) -> tuple[dict[str, dict[str, float]], list[str]]:
     """(합친 곡선, 조회한 달 목록).
 
@@ -149,11 +220,11 @@ def curve_for(fred_last_date: str, ym: str | None = None
     겹치는 날이 없으면 **직전 달을 한 번 더** 받는다(30분 캐시라 유계)."""
     ym = ym or date.today().strftime("%Y%m")
     months = [ym]
-    curve = dict(fetch_daily_curve(ym))
+    curve = dict(fetch_daily_curve(ym, attempts=attempts))
     if fred_last_date and fred_last_date not in curve:
         pm = _prev_ym(ym)
         months.append(pm)
-        for d, row in fetch_daily_curve(pm).items():
+        for d, row in fetch_daily_curve(pm, attempts=attempts).items():
             curve.setdefault(d, row)
     return curve, months
 
@@ -172,6 +243,14 @@ def curve_for(fred_last_date: str, ym: str | None = None
 _PROBE_OK = ("ok", "no_newer")
 
 
+def augmentable_sids() -> frozenset[str]:
+    """재무부로 당길 수 있는 시리즈 — 직접 만기(`_FIELDS`) + 파생 금리차
+    (`_SPREAD_LEGS`). 화면(`market_overview._TREASURY_SIDS`)·`--why`·감사가
+    **여기 하나**에서 파생한다 — 각자 적으면 T10Y2Y 처럼 한쪽만 늘어난다
+    (2026-09-16 독립 리뷰 실측: `--why T10Y2Y` 가 '미지원'이라 답했다, #24·#38)."""
+    return frozenset(_FIELDS) | frozenset(_SPREAD_LEGS)
+
+
 def probe_failed(code: str) -> bool:
     """이번 대조가 성립하지 않았나(#361c).
 
@@ -185,9 +264,9 @@ def probe_failed(code: str) -> bool:
 
 
 def fresher_diag(fred_last_date: str, fred_last_value: float, sid: str,
-                 tol: float = 0.10) -> tuple[str, dict]:
+                 tol: float = 0.10, *, attempts: int = 1) -> tuple[str, dict]:
     """(갈래, 수치) — 순수 판정. 화면·로그·진단이 같이 쓴다(#35·#38)."""
-    curve, months = curve_for(fred_last_date)
+    curve, months = curve_for(fred_last_date, attempts=attempts)
     d: dict = {"sid": sid, "fred_date": fred_last_date,
                "fred_value": fred_last_value, "months": months,
                "curve_days": sorted(curve), "tol": tol}
@@ -261,13 +340,15 @@ def fresher_reason(code: str, d: dict) -> str:
 
 
 def fresher_than(fred_last_date: str, fred_last_value: float, sid: str,
-                 tol: float = 0.10) -> tuple[str, float] | None:
+                 tol: float = 0.10, *, attempts: int = 1
+                 ) -> tuple[str, float] | None:
     """FRED 보다 **새 날짜**가 있고, 겹치는 날 값이 `tol`(%p) 이내로 일치하면
     (날짜, 값)을 돌려준다. 아니면 None — 그 경우 호출부는 FRED 를 그대로 쓴다.
 
     ⚠️ 겹치는 날 검산이 핵심이다. 태그를 잘못 집으면(2년물 자리에 1개월물)
     같은 날 값이 %p 단위로 어긋나므로 여기서 걸린다."""
-    code, d = fresher_diag(fred_last_date, fred_last_value, sid, tol)
+    code, d = fresher_diag(fred_last_date, fred_last_value, sid, tol,
+                           attempts=attempts)
     if code == "ok":
         return d["newer"]
     # 조용한 생략 금지 — 어느 갈래인지 남긴다(#12).
@@ -288,8 +369,10 @@ def fresher_than(fred_last_date: str, fred_last_value: float, sid: str,
 _WHY_FIX = {
     "no_curve": "재무부 도달 실패 — timeout=원천이 느리거나 요청이 늘어짐"
                 " · http4xx=차단·경로변경 · network=DNS·연결. 갈래는 위 사유에 있다",
-    "month_failed": "그 달을 못 받았다(일시적) — 재시도하면 풀린다."
-                    " 반복되면 no_curve 와 같은 갈래를 본다(timeout·차단·DNS)",
+    "month_failed": "그 달을 못 받았다 — 진단·감사는 이미 "
+                    f"{_DIAG_ATTEMPTS}회 재시도한 뒤다(렌더는 1회). 여기까지 "
+                    "왔으면 일시적이 아니다 — no_curve 와 같은 갈래를 본다"
+                    "(timeout·차단·DNS)",
     "no_overlap": "겹치는 날이 없다 — 달 경계면 직전 달까지 받아야 한다",
     "mismatch": "태그 오집 의심 — `_FIELDS` 만기 매핑을 원문으로 확인할 것",
     "no_newer": "원천이 이미 최선이다 — 우리 문제가 아니다",
@@ -330,7 +413,7 @@ def _why(sids: list[str]) -> int:
     for sid in sids:
         sid = sid.upper()
         print(f"── {sid} ──────────────────────────────")
-        if sid not in _FIELDS:
+        if sid not in augmentable_sids():
             print(f"  ❌ 재무부 매핑에 {sid} 이 없다 — 오타이거나 미지원\n")
             failed.append(sid)
             continue
@@ -349,7 +432,11 @@ def _why(sids: list[str]) -> int:
         fdate, fval = str(rec.get("time") or "")[:10], float(rec["value"])
         used = rec.get("src") or "FRED"
         print(f"  화면이 쓰는 값: {fval}% ({fdate}) · 출처 {used}")
-        code, d = fresher_diag(fdate, fval, sid)
+        # ⚠️ 진단은 **배치**다 — 사용자가 기다리는 화면이 아니므로 재시도한다.
+        # 없으면 `_WHY_FIX['month_failed']` 가 '이미 재시도한 뒤다' 라고
+        # 적어 놓고 실제로는 1회만 물어, 한 번 더 물으면 풀릴 상황에
+        # 운영자를 차단·DNS 확인으로 보낸다(2026-09-16 독립 리뷰 실측 · #187b).
+        code, d = fresher_diag(fdate, fval, sid, attempts=_DIAG_ATTEMPTS)
         print(f"  재무부 대조: {code} — {fresher_reason(code, d)}")
         print(f"  처방: {_WHY_FIX.get(code, code)}")
         shown = d.get("newer", (fdate, fval))[0] if code == "ok" else fdate
@@ -407,4 +494,4 @@ if __name__ == "__main__":                # pragma: no cover - 수동 진단
         ap.print_help()
         sys.exit(0)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    sys.exit(_why(a.why or list(_FIELDS)))
+    sys.exit(_why(a.why or sorted(augmentable_sids())))

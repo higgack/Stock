@@ -8,23 +8,30 @@
 #   make test-fast  — 회귀 슈트만 (단축 출력).
 #   make syntax     — 만진 .py 파일 ast.parse (변경 후 1초 sanity).
 #   make help-len   — _HELP_TEXT UTF-16 길이 (4096 cap 확인).
+#   make surface    — base 대비 **조용히 사라진** 공개 심볼·테스트 (배포전 셀프리뷰).
 #   make install    — requirements.txt 설치 (pytest 포함).
 
 PY := .venv/bin/python
 
-.PHONY: test test-fast syntax help-len install
+.PHONY: test test-fast syntax help-len surface install
 
 # ⚠️ 옛 판은 `tests/` 만 돌려 `bot/tests` 182건이 **어떤 게이트에도 안 걸렸다**.
 # 그렇다고 한 세션에 합치면 깨진다 — `bot/tests/conftest.py` 가 sys.modules 를
 # 모듈 레벨로 오염시켜 `tests/` 73건이 빨간불이 된다(2026-09-12 실측, 이유는
 # pytest.ini 주석). **별도 프로세스로 둘 다** 돌리는 것이 게이트다.
+# ⚠️ `trade/tests` 도 게이트 밖이었다(2026-09-16 실측: 레지스트리 계약 4건이
+# 빨간불인 채 `make test` 는 green — 그 슈트를 아무도 안 돌렸다). 테스트 트리가
+# 하나라도 게이트 밖이면 그 계약은 없는 것과 같다(#24·#54). 회귀가 "test_*.py 를
+# 담은 모든 트리가 이 타깃에 있는가"를 전수로 잰다.
 test:
 	$(PY) -m pytest -v
 	$(PY) -m pytest bot/tests -v
+	$(PY) -m pytest trade/tests -v
 
 test-fast:
 	$(PY) -m pytest -q
 	$(PY) -m pytest bot/tests -q
+	$(PY) -m pytest trade/tests -q
 
 syntax:
 	@$(PY) -c "import ast, sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]; print('syntax OK')" \
@@ -32,6 +39,11 @@ syntax:
 
 fold:
 	$(PY) -m bot.scripts.claude_md_fold $(ARGS)
+
+# §Pre-commit 7(배포전 셀프리뷰)의 "base 대비 전체 diff 재독" 보조 — 사람 눈이
+# 놓치는 축 하나(조용한 삭제)를 기계가 센다. BASE=<ref> 로 기준을 바꾼다.
+surface:
+	@$(PY) scripts/public_surface_check.py $(BASE)
 
 help-len:
 	@$(PY) -c "import re; t=re.search(r'_HELP_TEXT\s*=\s*\"\"\"(.*?)\"\"\"', open('bot/telegram_bot.py').read(), re.DOTALL).group(1); n=len(t.encode('utf-16-le'))//2; print(f'_HELP_TEXT UTF-16: {n} / 4096 (slack {4096-n})')"

@@ -242,7 +242,11 @@ class WiringTests(unittest.TestCase):
         from trade import badonion_sources as bsrc
         s = bsrc.by_key("krs")
         self.assertIsNotNone(s, "한국 수출(종목별)이 레지스트리에 미등재")
-        self.assertIs(s.parse, krs.parse_kr_stock_export)
+        # ⚠️ 2026-09-16 계약 변경(#370·#222): 한국 수출은 **문법이 둘**이 됐다
+        # (옛 지표판 + 새 금액판). 레지스트리 필터는 그래서 `parse_any` 이고,
+        # 남는 보장은 "옛 판 캡션을 여전히 이 소스가 받는다" 이다.
+        self.assertIs(s.parse, krs.parse_any)
+        self.assertIsNotNone(s.parse(_JUL), "옛 지표판을 더 이상 안 받는다")
         self.assertIs(s.open_db, krs.open_kr_stock_db)
         self.assertIs(s.ingest, krs.ingest)
         self.assertEqual(s.db_file, "kr_stock.db")

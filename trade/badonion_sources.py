@@ -32,6 +32,7 @@ from trade import cn_stock_imports as _cni
 from trade import jp2_exports as _jp2
 from trade import jp_stock_exports as _jps
 from trade import kr_stock_exports as _krs
+from trade import kr_stock_imports as _kri
 from trade import mx_exports as _mx
 from trade import my_exports as _my
 from trade import my_stock_exports as _mys
@@ -60,6 +61,17 @@ class Source:
     country: str                # 나라 묶음 키 (예: "일본")
     basis: str                  # "item"(품목/HS) | "company"(종목/회사)
     flow: str                   # "export" | "import" | "index"
+    # ↓ 이 소스의 파서가 받는 **캡션 문법**. 형제 전수 계약(#262 상관 4지표·
+    # #261 헤더 2레이아웃 등)이 이 축으로 대상을 고른다 — 옛 판은
+    # `basis=="company" and flow in ("export","import")` 로 골랐는데,
+    # 2026-09-16 한국 **금액판**(회사·수출인데 상관 지표가 없다)이 붙자
+    # 그 선택이 멀쩡한 소스를 계약 위반으로 찍었다(#34 한 축이 두 뜻을
+    # 대표하면 한쪽은 반드시 거짓말). 축을 나눠 **문법으로** 고른다.
+    #   "hs"      품목(HS) 판          "corr"    종목 지표판(Update 헤더·상관)
+    #   "amount"  회사 금액판(▶️·$M)   "revenue" 월매출   "ppi" 미국 PPI
+    # ⚠️ 기본값을 두지 않는다 — 새 소스가 안 밝히면 조용히 남의 계약에
+    # 걸리거나(오탐) 어느 계약에도 안 걸린다(눈멂). 회귀가 전수로 잰다.
+    grammars: tuple[str, ...]
 
 
 # 순서 = ingest 폴백 순서. 뒤로 갈수록 나중에 시도된다.
@@ -78,51 +90,66 @@ class Source:
 SOURCES: tuple[Source, ...] = (
     Source("tw", "대만", _tw.parse_tw_export, _tw.open_tw_db, _tw.ingest,
            _tw.regenerate, "tw.db", "tw.html", "🧋 대만 수출 데이터(나쁜양파)",
-           country="대만", basis="item", flow="export"),
+           country="대만", basis="item", flow="export", grammars=("hs",)),
     Source("cn", "중국", _cn.parse_cn_export, _cn.open_cn_db, _cn.ingest,
            _cn.regenerate, "cn.db", "cn.html", "🐼 중국 수출 데이터(나쁜양파)",
-           country="중국", basis="item", flow="export"),
+           country="중국", basis="item", flow="export", grammars=("hs",)),
     Source("jp2", "일본", _jp2.parse_jp2_export, _jp2.open_jp2_db, _jp2.ingest,
            _jp2.regenerate, "jp2.db", "jp2.html",
            "🎌 일본 수출 데이터(나쁜양파)",
-           country="일본", basis="item", flow="export"),
+           country="일본", basis="item", flow="export", grammars=("hs",)),
     Source("th", "태국", _th.parse_th_export, _th.open_th_db, _th.ingest,
            _th.regenerate, "th.db", "th.html", "🐘 태국 수출 데이터(나쁜양파)",
-           country="태국", basis="item", flow="export"),
+           country="태국", basis="item", flow="export", grammars=("hs",)),
     Source("my", "말레이시아", _my.parse_my_export, _my.open_my_db, _my.ingest,
            _my.regenerate, "my.db", "my.html",
            "🐯 말레이시아 수출 데이터(나쁜양파)",
-           country="말레이시아", basis="item", flow="export"),
+           country="말레이시아", basis="item", flow="export", grammars=("hs",)),
     Source("ph", "필리핀", _ph.parse_ph_export, _ph.open_ph_db, _ph.ingest,
            _ph.regenerate, "ph.db", "ph.html",
            "🥭 필리핀 수출 데이터(나쁜양파)",
-           country="필리핀", basis="item", flow="export"),
+           country="필리핀", basis="item", flow="export", grammars=("hs",)),
     Source("mx", "멕시코", _mx.parse_mx_export, _mx.open_mx_db, _mx.ingest,
            _mx.regenerate, "mx.db", "mx.html", "🌮 멕시코 수출 데이터(나쁜양파)",
-           country="멕시코", basis="item", flow="export"),
+           country="멕시코", basis="item", flow="export", grammars=("hs",)),
     Source("us", "미국 수입", _us.parse_us_import, _us.open_us_db, _us.ingest,
            _us.regenerate, "us.db", "us.html", "🗽 미국 수입 데이터(나쁜양파)",
-           country="미국", basis="item", flow="import"),
+           country="미국", basis="item", flow="import", grammars=("hs",)),
     # 미국 PPI(사용자 2026-08-19) — 유일하게 **금액이 아니라 지수** 소스.
     # 마커('미국 PPI')는 us_imports 의 'N월 수입 미국' 과 겹치지 않지만,
     # 품목(HS) 기준이므로 **종목 기준(krs/jps) 앞**에 둔다(아래 계약).
     Source("uppi", "미국 PPI", _uppi.parse_us_ppi, _uppi.open_us_ppi_db,
            _uppi.ingest, _uppi.regenerate, "us_ppi.db", "us_ppi.html",
            "📈 미국 PPI 데이터(나쁜양파)",
-           country="미국", basis="item", flow="index"),
-    Source("krs", "한국 수출(종목별)", _krs.parse_kr_stock_export,
+           country="미국", basis="item", flow="index", grammars=("ppi",)),
+    # ⚠️ 한국 수출은 **문법이 둘**이다(2026-09-16 사용자 실측): 옛 지표판
+    # (`HPSP (403870)` / `한국 수출` / `26년 7월 Update`)과 새 금액판
+    # (`8월 수출 한국` / `▶️ 회사 — 품목` / `$158.5M (+105.3% YoY) (+11.8% MoM)`).
+    # 새 판을 받는 소스가 없어 LS ELECTRIC 이 조용히 드랍되고 있었다 —
+    # 관련성 필터가 곧 파서라 저장도 미매칭 알림도 없었다(#83·#261·#330·#332).
+    # 사용자 결정으로 **한 페이지에 합치므로** 필터는 `parse_any` 다.
+    Source("krs", "한국 수출(종목별)", _krs.parse_any,
            _krs.open_kr_stock_db, _krs.ingest, _krs.regenerate,
            "kr_stock.db", "kr_stock.html",
            # 한국만 품목(HS)이 아니라 **종목(회사)** 기준이라 라벨에 명시.
            "🏢 한국 수출 데이터(종목별·나쁜양파)",
-           country="한국", basis="company", flow="export"),
+           country="한국", basis="company", flow="export", grammars=("corr", "amount",)),
+    # 한국 **수입** 회사별(사용자 2026-09-16 "대시보드에 한국수입 회사별은
+    # 없는것 같은데 만들어줘. 현재는 8월부터 텔레칩스 하나야"). 수출 금액판과
+    # 마커 한 낱말만 다르므로 문법 엔진(`kr_company_flow`)을 공유하고 여기선
+    # 독립 소스로 등록한다 — DB·페이지·라우팅은 별개다(cn 수출/수입과 같은 규율).
+    Source("kri", "한국 수입(회사별)", _kri.parse_kr_stock_import,
+           _kri.open_kr_stock_import_db, _kri.ingest, _kri.regenerate,
+           "kr_stock_import.db", "kr_stock_import.html",
+           "🏢 한국 수입 데이터(회사별·나쁜양파)",
+           country="한국", basis="company", flow="import", grammars=("amount",)),
     # 일본도 품목(jp2)과 **종목** 두 갈래다. 종목판은 jp2 파서가 회사 헤더를
     # 못 읽어 관련성 필터에서 통째로 드랍되고 있었다(2026-08-16 실측 8건).
     Source("jps", "일본 수출(종목별)", _jps.parse_jp_stock_export,
            _jps.open_jp_stock_db, _jps.ingest, _jps.regenerate,
            "jp_stock.db", "jp_stock.html",
            "🗼 일본 수출 데이터(종목별·나쁜양파)",
-           country="일본", basis="company", flow="export"),
+           country="일본", basis="company", flow="export", grammars=("corr",)),
     # 말레이시아도 품목(my)과 **종목** 두 갈래다. 26년 7월 종목판이 채널에
     # 떴는데 품목 파서의 마커가 `N월 수출 말레이시아`(어순 반대)라 관련성
     # 필터를 통과 못 하고 통째로 드랍됐다(사용자 2026-08-20 — 일본이
@@ -131,7 +158,7 @@ SOURCES: tuple[Source, ...] = (
            _mys.open_my_stock_db, _mys.ingest, _mys.regenerate,
            "my_stock.db", "my_stock.html",
            "🐆 말레이시아 수출 데이터(종목별·나쁜양파)",
-           country="말레이시아", basis="company", flow="export"),
+           country="말레이시아", basis="company", flow="export", grammars=("corr",)),
     # 중국도 품목(cn)과 **종목** 두 갈래다. 26년 7월 종목판이 채널에 떴는데
     # 품목 파서의 마커가 `N월 수출 중국`(어순 반대)이라 관련성 필터를
     # 통과 못 하고 통째로 드랍됐다(사용자 2026-08-21 — 일본 2026-08-16,
@@ -141,7 +168,7 @@ SOURCES: tuple[Source, ...] = (
            _cns.open_cn_stock_db, _cns.ingest, _cns.regenerate,
            "cn_stock.db", "cn_stock.html",
            "🏮 중국 수출 데이터(종목별·나쁜양파)",
-           country="중국", basis="company", flow="export"),
+           country="중국", basis="company", flow="export", grammars=("corr",)),
     # 중국은 **수입** 종목판도 온다(사용자 2026-08-21 "중국수입 7월 기업도
     # 있어"). 수출과 마커 한 단어만 다르므로 문법 엔진(`cn_stock_flow`)을
     # 공유하고 여기선 독립 소스로 등록한다 — DB·페이지·라우팅은 별개다.
@@ -149,7 +176,7 @@ SOURCES: tuple[Source, ...] = (
            _cni.open_cn_stock_import_db, _cni.ingest, _cni.regenerate,
            "cn_stock_import.db", "cn_stock_import.html",
            "🧧 중국 수입 데이터(종목별·나쁜양파)",
-           country="중국", basis="company", flow="import"),
+           country="중국", basis="company", flow="import", grammars=("corr",)),
     # 대만도 품목(tw)과 **종목** 두 갈래다. 26년 8월 종목판이 채널에 떴는데
     # 파서가 없어 관련성 필터에서 통째로 드랍됐다(사용자 2026-09-10 —
     # 일본 08-16·말레이시아 08-20·중국 08-21 과 같은 사고의 **다섯 번째**,
@@ -158,7 +185,7 @@ SOURCES: tuple[Source, ...] = (
            _tws.open_tw_stock_db, _tws.ingest, _tws.regenerate,
            "tw_stock.db", "tw_stock.html",
            "🧋 대만 수출 데이터(종목별·나쁜양파)",
-           country="대만", basis="company", flow="export"),
+           country="대만", basis="company", flow="export", grammars=("corr",)),
     # 대만 월매출(종목별) — `badonion.co.kr/twse-revenue` 카드. 2026-09-10 대만
     # 수출 6건은 회수됐는데 TSMC 월매출만 어느 파서도 안 받아 드랍됐다(여섯 번째).
     # 수출 문법이 아니라 엔진을 재사용하지 않는다(월매출·REV·MoM·YoY·누적).
@@ -166,8 +193,14 @@ SOURCES: tuple[Source, ...] = (
            _twr.open_tw_revenue_db, _twr.ingest, _twr.regenerate,
            "tw_revenue.db", "tw_revenue.html",
            "🧋 대만 월매출 데이터(종목별·나쁜양파)",
-           country="대만", basis="company", flow="revenue"),
+           country="대만", basis="company", flow="revenue", grammars=("revenue",)),
 )
+
+
+def sources_with_grammar(grammar: str) -> tuple[Source, ...]:
+    """그 캡션 문법을 받는 소스들. **형제 전수 계약의 유일한 선택기**다 —
+    테스트마다 조건을 복제하면 새 문법이 붙을 때 한쪽만 고쳐진다(#38·#24)."""
+    return tuple(s for s in SOURCES if grammar in s.grammars)
 
 # nav 표시 순서 — **ingest 순서와 다르다.** SOURCES 를 재정렬하면 라우팅이
 # 바뀌므로 표시 순서는 여기서 따로 만든다.

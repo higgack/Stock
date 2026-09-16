@@ -598,9 +598,40 @@ def _fetch_etf_quotes(nve_codes: list) -> dict:
 # 실측(2026-08-18 22:51 KST): FRED 에 8-14 가 있는데 화면은 8-13 이었다 —
 # 24시간 캐시가 전날 받은 사본을 들고 있었기 때문이다. 사용자가 "금리가
 # 매우 중요, 가장 최신을 빠르게" 라고 한 지점이다.
-_FRED_DAILY_SIDS = {"DGS2", "DGS10", "DGS30", "BAMLH0A0HYM2", "BAMLC0A0CM"}
-# 미 재무부가 같은 값을 **하루 먼저** 내는 시리즈(국채 수익률만).
-_TREASURY_SIDS = {"DGS2", "DGS10", "DGS30"}
+# ⚠️ 손으로 열거하지 않는다. 옛 판은 다섯을 이름으로 적었는데 `T10Y2Y`
+# (장단기금리차)가 빠져 있어, **일별 시리즈가 24시간 캐시**에 앉아 있었다 —
+# 그리고 그 사실은 아무 감사도 못 잡았다(값이 다 '있었다', #96). 공표 주기는
+# `macro_cadence.CADENCE` 가 이미 단일 출처로 들고 있으므로 거기서 파생시킨다
+# — 새 일별 시리즈를 더해도 저절로 따라온다(#24 열거형 가드는 새 항목을 못
+# 잡는다 · #38 두 곳에 적으면 갈라진다). 이 함수를 타지 않는 시리즈(SOFR·
+# EFFR 등 유동성 보드 전용)가 집합에 섞여도 비용은 0 이다 — 요청된 시리즈만
+# 캐시 TTL 을 본다.
+def _daily_cadence_sids() -> set[str]:
+    """`CADENCE` 에서 freq=="D" 인 FRED series_id — 판정은 그 표가 한다."""
+    try:
+        from bot.macro_cadence import CADENCE
+    except Exception as exc:                                   # noqa: BLE001
+        log.warning("market_overview: cadence 표를 못 읽어 일별 판정 폴백: %s", exc)
+        return {"DGS2", "DGS10", "DGS30", "T10Y2Y",
+                "BAMLH0A0HYM2", "BAMLC0A0CM"}
+    return {sid for sid, spec in CADENCE.items() if spec[0] == "D"}
+
+
+_FRED_DAILY_SIDS = _daily_cadence_sids()
+# 미 재무부가 같은 값을 **하루 먼저** 내는 시리즈. 수익률 3종 + 거기서 파생되는
+def _treasury_augmentable() -> frozenset[str]:
+    """재무부 보강 대상 — 단일 출처는 `treasury_yield_client` 다."""
+    from bot.treasury_yield_client import augmentable_sids
+    return augmentable_sids()
+
+
+# 장단기금리차(`treasury_yield_client.derive_spreads` — 재무부는 금리차를 직접
+# 주지 않는다). 스프레드를 빼 두면 2Y·10Y 만 하루 당겨져 **같은 화면에서
+# 10Y − 2Y 가 스프레드 카드와 안 맞는다**(#33, 사용자 2026-09-14).
+# ⚠️ 손으로 적지 않는다 — 2026-09-16 독립 리뷰가 잡았듯 한쪽만 늘어나면
+# `--why` 가 T10Y2Y 를 "미지원" 이라 답한다(#24·#38). 재무부 클라이언트가
+# 무엇을 당길 수 있는지는 그쪽이 안다(#86 상태는 아는 쪽에 묻는다).
+_TREASURY_SIDS = set(_treasury_augmentable())
 _FRED_TTL_DAILY_H = 1.0
 _FRED_TTL_OTHER_H = 24.0
 # ⚠️ **캐시는 코드 배포로 안 바뀐다**(실수 #18 의 캐시판). #909 로 국채금리를
@@ -609,7 +640,9 @@ _FRED_TTL_OTHER_H = 24.0
 # 자연 해소되지만 24h 캐시였다면 하루를 묵었을 것이다. 결과에 버전을 찍고
 # 읽을 때 대조해, **수집 로직이 바뀌면 캐시가 즉시 무효**가 되게 한다.
 #   v1 = 재무부 보강 이전 · v2 = DGS* 재무부 보강 포함
-_FRED_CACHE_VER = 2
+#   v3 = T10Y2Y(장단기금리차)도 재무부 파생으로 보강 + 일별 TTL 대상 포함
+#        (2026-09-14 — 안 올리면 오늘 이미 구운 24h 사본이 그대로 서빙된다)
+_FRED_CACHE_VER = 3
 
 
 def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:

@@ -40,10 +40,18 @@ def _treasury_status(mo) -> None:
     import time
     from datetime import date as _date
 
-    _p("── 재무부 보강(국채금리 DGS2/10/30) 상태")
+    # ⚠️ 제목에 시리즈를 손으로 적지 않는다 — 아래 루프는
+    # `mo._TREASURY_SIDS` 를 도는데 제목만 `DGS2/10/30` 이라 T10Y2Y 가
+    # 붙은 날부터 화면이 거짓말했다(2026-09-16 독립 리뷰, #55·#34).
+    try:
+        from bot.market_overview import _TREASURY_SIDS as _TS
+        _names = "·".join(sorted(_TS))
+    except Exception:                                 # noqa: BLE001
+        _names = "판정 불가"
+    _p(f"── 재무부 보강({_names}) 상태")
     try:
         from bot.treasury_yield_client import (
-            fresher_diag, fresher_reason, probe_failed)
+            _DIAG_ATTEMPTS, fresher_diag, fresher_reason, probe_failed)
     except Exception as exc:                          # noqa: BLE001
         _p(f"   ❌ 재무부 클라이언트를 못 불러왔다: {type(exc).__name__}: {exc}")
         return
@@ -79,7 +87,12 @@ def _treasury_status(mo) -> None:
             # 대조할 게 없으면 통과가 아니다(#54) — 다만 '우리 결함'도 아니다.
             _p(f"      ⚠️ 비교 기준(캐시)이 없어 판정 불가")
             continue
-        code, dg = fresher_diag(str(base_date), float(base_val), sid)
+        # ⚠️ 배치라 재시도를 건다. 단발 20초로 판정하면 원천이 느린 날의
+        # **동전던지기**가 그대로 결산의 판정이 된다(2026-09-13 실측: 같은
+        # 명령 1회차 `no_newer` ✅ / 2회차 `month_failed` — #21·#361b).
+        # 렌더 경로는 기본 1회 그대로다(#116 화면 대기 금지).
+        code, dg = fresher_diag(str(base_date), float(base_val), sid,
+                                attempts=_DIAG_ATTEMPTS)
         _p(f"      대조: {code} — {fresher_reason(code, dg)}")
         shown = dg.get("newer", (base_date,))[0] if code == "ok" else base_date
         if not best:

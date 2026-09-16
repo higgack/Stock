@@ -40,7 +40,11 @@ class RegistryTests(unittest.TestCase):
             keys,
             ["tw", "cn", "jp2", "th", "my", "ph", "mx", "us",
              # 2026-08-19 미국 PPI — 품목 기준이라 종목 기준 앞.
-             "uppi", "krs", "jps", "mys",
+             "uppi", "krs",
+             # 2026-09-16 한국 수입(회사별) — 수출 금액판과 같은 문법 엔진,
+             # 마커 한 낱말만 다르다(#370). krs 바로 뒤여야 한국 캡션을
+             # 수출 파서가 먼저 보고 아니면 수입이 받는다.
+             "kri", "jps", "mys",
              # 2026-08-21 중국 수출·수입(종목별).
              "cns", "cni",
              # 2026-09-10 대만 수출(종목별) — 파서가 없어 드랍되던 것(#83 다섯 번째).
@@ -352,7 +356,10 @@ class TestNavOrderRule20260820(unittest.TestCase):
         return srcs.Source(
             key, key, lambda t: None, lambda p: None, lambda *a, **k: False,
             lambda *a, **k: None, f"{key}.db", f"{key}.html", f"{key} nav",
-            country=country, basis=basis, flow=flow)
+            country=country, basis=basis, flow=flow,
+            # nav 규약은 문법 축과 무관하지만 **필수 필드**다(#370) —
+            # 기본값을 두면 새 소스가 안 밝히고 지나간다.
+            grammars=("hs",))
 
     def test_countries_are_contiguous_and_by_page_count_desc(self):
         nav = srcs.nav_sources()
@@ -422,7 +429,8 @@ class TestNavOrderRule20260820(unittest.TestCase):
             return S(key, key, lambda _t: None, lambda _p: None,
                      lambda *_a, **_k: False, lambda *_a, **_k: None,
                      f"{key}.db", f"{key}.html", key,
-                     country=country, basis="item", flow="export")
+                     country=country, basis="item", flow="export",
+                     grammars=("hs",))
         # 가상: '갑' 1개 · '을' 1개 + 레지스트리 밖 1개 → 을이 앞서야 한다.
         synth = (_mk("a1", "갑"), _mk("b1", "을"))
         _orig = srcs._EXTRA_COUNTRY_PAGES

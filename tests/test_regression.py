@@ -21302,24 +21302,35 @@ class TestCreditSplitAndMarketcap20260706:
                  "crdTrFingKosdaq": "80000000000000",
                  "crdTrLndrWhl": "90000000000",
                  "dpsgScrtMogFing": "24000000000000"}]
-        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: fake)
+        # ⚠️ 계약 갱신(2026-09-14, #222): 수집이 `_fetch` → `_fetch2` 로 옮겼다.
+        # `[]` 하나로는 '결과 없음'과 '서비스 장애'를 못 가르는데 처방이 다르기
+        # 때문이다(#82·#143). 키·차단기 게이트도 이 함수가 직접 보므로 스텁을
+        # 같이 연다. 남는 보장(필드 분류·원→억원·빈 결과 캐시·합리성 가드)은
+        # 그대로 잰다.
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (fake, True))
         monkeypatch.setattr(fc, "_cache_get", lambda *a, **k: None)
         monkeypatch.setattr(fc, "_cache_put", lambda *a, **k: None)
         sp = fc.credit_split_series_eok(2)
         assert set(sp) == {"kospi", "kosdaq"}
         assert sp["kospi"][-1] == ("20260702", 2910000.0)   # 원→억원
         # 응답에 시장 필드가 아예 없으면 {} (graceful) + 빈 결과도 캐시
-        # (30초 위젯 regen 마다 재fetch 하는 쿼터 낭비 방지 — 리뷰 2026-07-06)
+        # (30초 위젯 regen 마다 재fetch 하는 쿼터 낭비 방지 — 리뷰 2026-07-06.
+        #  ⚠️ 다만 **수명은 짧게** — 그건 #369 의 별도 테스트가 잰다)
         puts = []
         monkeypatch.setattr(fc, "_cache_put", lambda k, v: puts.append(v))
-        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: [
-            {"basDt": "20260701", "crdTrFingWhl": "1"}])
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (
+            [{"basDt": "20260701", "crdTrFingWhl": "1"}], True))
         assert fc.credit_split_series_eok(1) == {}
-        assert puts and puts[-1] == {}
+        # ⚠️ 이제 캐시 봉투가 `{"series": …, "why": …}` 다 — 갈래를 버리면
+        # 화면이 "없는 거야?"에 답을 못 한다(#369·#129).
+        assert puts and puts[-1]["series"] == {}
+        assert puts[-1]["why"] == "nofield"
         # 합리성 가드: 시장 최신값이 전체(Whl)보다 크면 오분류로 보고 드롭
-        monkeypatch.setattr(fc, "_fetch", lambda base, op, params: [
-            {"basDt": "20260701", "crdTrFingWhl": "100",
-             "crdTrFingScrtMrkt": "90000000000000"}])
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (
+            [{"basDt": "20260701", "crdTrFingWhl": "100",
+              "crdTrFingScrtMrkt": "90000000000000"}], True))
         assert fc.credit_split_series_eok(1) == {}
 
     def test_deposit_charts_include_split(self):
@@ -21332,10 +21343,16 @@ class TestCreditSplitAndMarketcap20260706:
         ch = d._render_deposit_charts(dep)
         assert "코스피 신용잔고" in ch and "코스닥 신용잔고" in ch
         assert "repeat(3,1fr)" in ch      # 4+카드 → 3열 wrap
-        # split 없으면 기존 3카드 그대로 (graceful)
+        # ⚠️ 계약 갱신(2026-09-14, #222): 옛 판은 "split 없으면 **조용히**
+        # 3카드" 였다. 그래서 원천이 막힌 날 카드가 통째로 사라졌고 사용자가
+        # "코스피/코스닥 신용잔고 추이가 안나올때가 있어" 라고 물어야 했다
+        # (#43·#52·#335). 남는 보장은 "나머지 3카드는 그대로 · 3열 wrap" 이고,
+        # 새 계약은 "사라지는 대신 **사유를 말한다**" 다.
         dep2 = {k: v for k, v in dep.items() if "kosp" not in k and "kosd" not in k}
         ch2 = d._render_deposit_charts(dep2)
-        assert "코스피 신용잔고" not in ch2 and "repeat(3,1fr)" in ch2
+        assert "고객예탁금 추이" in ch2 and "repeat(3,1fr)" in ch2
+        assert "코스피 신용잔고 추이 (억원)" not in ch2   # 차트는 안 그린다
+        assert "받지 못했습니다" in ch2                   # 그러나 침묵하지도 않는다
         # deposit.json 스키마 버전 게이트 — 장외 무기한 fresh 캐시가 새 필드
         # 반영을 다음 장까지 막던 것(2026-07-08). 구버전 캐시 = miss.
         import bot.naver_sector_client as nsc
@@ -21784,6 +21801,67 @@ class TestCpiBoardWiring20260724:
         assert not orphans, f"레지스트리엔 있는데 HELP_TEXT 에 정확한 이름으로 없음: {orphans}"
         cost_cmds = {"screener_cost", "daily_byte_cost", "cheongyak_cost", "realestate_cost"}
         assert cost_cmds <= help_cmds, f"비용 명령 4종이 HELP_TEXT 에 온전한 이름으로 없음"
+
+    def test_help_text_has_no_retired_commands(self):
+        """**반대 방향** — HELP_TEXT 에만 있고 레지스트리엔 없는 명령(2026-09-16
+        채택, NousResearch/hermes-agent 리뷰: 그쪽은 doc↔registry 를 양방향으로
+        검사하는데 이유가 "은퇴한 명령이 문서에 몇 달씩 남아 있었다" 였다).
+
+        §Help 는 "제거 시 해당 줄도 제거 · deprecated/aspirational 금지" 를
+        **의무로 적어 놓고 강제 장치가 없었다** — 위 테스트는 레지스트리 ⊆ 도움말
+        한 방향만 본다. 그러면 사용자가 도움말을 보고 입력한 명령이 그냥 실패한다.
+
+        ⚠️ 추출을 **양쪽 다** 남긴다. 위 테스트의 느슨한 `/(w+)` 식 추출은
+        `/screener·daily_byte_cost` 같은 합성 표기 안의 이름까지 찾아내는 게
+        목적이고(그게 2026-08-02 사고였다), 이쪽은 그 느슨함이 `RSI/price/sma`
+        목록·URL·`<b>`/`<code>` 태그를 명령으로 오인해 오탐 7건을 낸다(실측).
+        여기서는 **토큰 경계**로 집는다 — 하나로 합치면 한쪽이 눈이 먼다(#47).
+        오늘 고아 0건이라 조용한 가드다(#25·#260).
+        """
+        import re
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        reg_m = re.search(
+            r"def _static_command_registry\(\).*?return \{(.*?)\n    \}\n",
+            tb, re.S)
+        registered = set(re.findall(r'"([a-z_0-9]+)":\s*\(', reg_m.group(1)))
+        assert len(registered) >= 20, "레지스트리 추출 실패(정규식 회귀?)"
+        help_text = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', tb, re.S).group(1)
+        # 앞이 공백/줄머리이고 뒤가 구분자인 것만 = 사용자가 그대로 칠 수 있는 표기.
+        strict = set(re.findall(
+            r'(?:^|\s)/([a-z_][a-z_0-9]*)(?=[\s\[<·—,)]|$)', help_text, re.M))
+        assert len(strict) >= 15, (
+            f"엄격 추출이 {len(strict)}개밖에 못 찾았다 — 대조 0건은 통과가 아니다(#54)")
+        orphans = strict - registered
+        assert not orphans, (
+            "HELP_TEXT 에만 있고 레지스트리엔 없는 명령 — 사용자가 치면 실패한다"
+            f"(§Help '제거 시 해당 줄도 제거'): {sorted(orphans)}")
+
+    def test_both_help_parity_directions_use_different_extraction(self):
+        """두 방향이 **같은** 추출을 쓰면 한쪽이 반드시 눈이 먼다 — 느슨한 쪽은
+        고아 판정에서 오탐 7건, 엄격한 쪽은 합성 표기(`/screener·daily_byte_cost`)
+        안의 이름을 못 본다. 실측으로 그 차이를 못박아, 나중에 누가 "중복이니
+        하나로 합치자" 고 할 때 테스트가 막는다(#38 의 반대 방향)."""
+        import re
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        help_text = re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""', tb, re.S).group(1)
+        reg_m = re.search(
+            r"def _static_command_registry\(\).*?return \{(.*?)\n    \}\n",
+            tb, re.S)
+        registered = set(re.findall(r'"([a-z_0-9]+)":\s*\(', reg_m.group(1)))
+        loose = set(re.findall(r'/([a-z_][a-z_0-9]*)', help_text))
+        strict = set(re.findall(
+            r'(?:^|\s)/([a-z_][a-z_0-9]*)(?=[\s\[<·—,)]|$)', help_text, re.M))
+        assert strict < loose, "엄격 추출이 느슨한 쪽의 진부분집합이어야 한다"
+        # 느슨한 쪽만 찾는 실제 예 — 합성 표기(`/a·b_cost`) 안의 이름.
+        # ⚠️ 특정 이름을 박으면 그 줄을 미용상 손보기만 해도 빨간불이다
+        # (독립 리뷰 2026-09-16, #19). 계약은 "**합성 표기가 실제로 있고**
+        # 느슨한 쪽만 그걸 본다" 이므로 레지스트리 이름으로 교집합을 잰다.
+        reg_only_loose = registered & (loose - strict)
+        assert reg_only_loose, (
+            "합성 표기 추출이 깨졌다 — 2026-08-02 사고를 다시 놓친다")
+        # ⚠️ 이 검사가 **못 보는 축**(#274): 은퇴한 명령이 합성 표기
+        # (`·/oldcmd`)로만 적혀 있으면 엄격 추출이 못 보고 고아로도 안 잡힌다.
+        # 그 축은 사람이 §Help 규약으로 지킨다.
 
 
 class TestMarketTiming20260726:
@@ -26086,13 +26164,13 @@ class TestFlowTrendDiagnosis20260818:
         틀린 금리가 올라간다. 겹치는 날 값이 FRED 와 0.10%p 이내로 맞아야만
         쓴다 — 만기가 다르면 절대 못 맞는다. 이게 검산이다."""
         from bot import treasury_yield_client as ty
-        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None: {
+        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None, **kw: {
             "2026-08-14": {"DGS10": 4.68}, "2026-08-17": {"DGS10": 4.71}})
         assert ty.fresher_than("2026-08-14", 4.68, "DGS10") == ("2026-08-17", 4.71)
         # 같은 날 값이 어긋나면(=필드 오집) 새 값을 쓰지 않는다.
         assert ty.fresher_than("2026-08-14", 4.10, "DGS10") is None
         # 더 최신 날짜가 없으면 None — FRED 를 그대로 쓴다.
-        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None: {
+        monkeypatch.setattr(ty, "fetch_daily_curve", lambda ym=None, **kw: {
             "2026-08-14": {"DGS10": 4.68}})
         assert ty.fresher_than("2026-08-14", 4.68, "DGS10") is None
 
@@ -26108,9 +26186,19 @@ class TestFlowTrendDiagnosis20260818:
         날(8-14) 값이 **정확히 일치**하고 8-17 이 추가로 있었다.
 
         ⚠️ 배선했어도 가드는 그대로다: 겹치는 날이 어긋나면(태그 오집)
-        FRED 값을 그대로 쓴다. 금리 자리에 틀린 숫자를 올릴 수는 없다."""
+        FRED 값을 그대로 쓴다. 금리 자리에 틀린 숫자를 올릴 수는 없다.
+
+        ⚠️ 계약 갱신(2026-09-14, #222 지우지 않고 다시 쓴다): 옛 판은
+        `== {DGS2, DGS10, DGS30}` **동등**이었는데, 그 탓에 장단기금리차
+        (`T10Y2Y`)가 보강 대상 밖으로 남아 **같은 화면에서 10Y − 2Y 가
+        스프레드 카드와 안 맞았다**(#33, 사용자 2026-09-14 "장단기금리차같은거
+        여전히 가장 최신이 아니잖아"). 남는 보장은 "만기 3종이 보강된다" 이고
+        (그건 그대로 잰다), 여기에 "스프레드도 같이 당겨진다" 가 더해졌다.
+        """
         from bot import market_overview as mo
-        assert mo._TREASURY_SIDS == {"DGS2", "DGS10", "DGS30"}
+        assert {"DGS2", "DGS10", "DGS30"} <= mo._TREASURY_SIDS
+        assert "T10Y2Y" in mo._TREASURY_SIDS, (
+            "스프레드만 보강 밖이면 10Y−2Y 가 카드와 안 맞는다(#33)")
 
         # ⚠️ 헬퍼 단위테스트만으로는 **배선 변형을 못 잡는다**(실수 #20).
         # 그래서 `_fred_fetch_series` 를 통째로 태운다 — FRED 응답과 재무부
@@ -26137,13 +26225,13 @@ class TestFlowTrendDiagnosis20260818:
 
         # (a) 겹치는 날 일치 + 더 최신 관측 → 재무부 값으로 하루 당긴다.
         ok = {"2026-08-14": {"DGS10": 4.68}, "2026-08-17": {"DGS10": 4.72}}
-        r = _run("a", "DGS10", lambda ym=None: ok)
+        r = _run("a", "DGS10", lambda ym=None, **kw: ok)
         assert r["time"] == "2026-08-17" and r["value"] == 4.72
         assert r["prev_value"] == 4.68 and abs(r["change"] - 0.04) < 1e-9
 
         # (b) 겹치는 날이 어긋나면(태그 오집) FRED 를 그대로 쓴다.
         bad = {"2026-08-14": {"DGS10": 4.20}, "2026-08-17": {"DGS10": 4.25}}
-        r = _run("b", "DGS10", lambda ym=None: bad)
+        r = _run("b", "DGS10", lambda ym=None, **kw: bad)
         assert r["time"] == "2026-08-14" and r["value"] == 4.68
 
         # (c) 국채가 아닌 시리즈는 재무부를 **아예 조회하지 않는다**.
@@ -26330,7 +26418,7 @@ class TestFlowTrendDiagnosis20260818:
         import bot.treasury_yield_client as ty
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
 
-        def _fail_sep(ym):
+        def _fail_sep(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"      # 제품이 실패 시 하는 그대로
                 return {}
@@ -26350,7 +26438,7 @@ class TestFlowTrendDiagnosis20260818:
             # 반대 증거 — 그 달을 **받았는데** 날짜가 없으면 여전히
             # no_overlap 이다(#25 '있다' 만 묻는 검사는 눈이 먼다).
             ty._FAIL.clear()
-            ty.fetch_daily_curve = lambda ym: aug
+            ty.fetch_daily_curve = lambda ym, **kw: aug
             code2, _ = ty.fresher_diag("2026-09-11", 4.96, "DGS10")
             assert code2 == "no_overlap", code2
         finally:
@@ -26372,7 +26460,7 @@ class TestFlowTrendDiagnosis20260818:
 
         aug = {f"2026-08-{d:02d}": {"DGS10": 4.9} for d in (3, 31)}
 
-        def _f(ym):
+        def _f(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"
                 return {}
@@ -26404,7 +26492,7 @@ class TestFlowTrendDiagnosis20260818:
         saved = (ty.fetch_daily_curve, mo._fred_fetch_series,
                  mt._expected_session, dict(ty._FAIL))
 
-        def _fail_sep(ym):
+        def _fail_sep(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"
                 return {}
@@ -26863,7 +26951,7 @@ class TestFlowTrendDiagnosis20260818:
         saved = (ty.fetch_daily_curve, mo._fred_fetch_series,
                  mt._expected_session, dict(ty._FAIL))
 
-        def _fail_sep(ym):
+        def _fail_sep(ym, **kw):
             if ym == "202609":
                 ty._FAIL[ym] = "timeout"
                 return {}
@@ -26942,7 +27030,7 @@ class TestFlowTrendDiagnosis20260818:
         # 같은 날이 표에 있는데 값이 다르다 → mismatch (태그 오집 의심).
         monkeypatch.setattr(ty, "_FAIL", {})
         monkeypatch.setattr(ty, "fetch_daily_curve",
-                            lambda ym: {"2026-09-11": {"DGS10": 3.00}})
+                            lambda ym, **kw: {"2026-09-11": {"DGS10": 3.00}})
         monkeypatch.setattr(mt, "_expected_session",
                             lambda m: ("2026-09-11", 0))
         d = tmp_path / "fred"
@@ -26966,7 +27054,7 @@ class TestFlowTrendDiagnosis20260818:
         saved = (ty.fetch_daily_curve, dict(ty._FAIL))
         try:
             # 곡선은 멀쩡히 오지만 7월 날짜는 없다 → no_overlap 이 정답.
-            ty.fetch_daily_curve = lambda ym: {
+            ty.fetch_daily_curve = lambda ym, **kw: {
                 f"2026-09-{d:02d}": {"DGS10": 4.9} for d in (1, 11)}
             ty._FAIL.clear()
             ty._FAIL["202607"] = "timeout"        # 오래전 실패가 남아 있다
@@ -26975,7 +27063,7 @@ class TestFlowTrendDiagnosis20260818:
             assert code == "no_overlap", \
                 f"조회조차 안 한 달의 옛 실패를 이번 판정에 끌어왔다({code})"
             # 반대 증거 — **이번에 조회한** 달이 실패했으면 여전히 잡는다(#25).
-            def _f(ym):
+            def _f(ym, **kw):
                 ty._FAIL[ym] = "timeout"
                 return {}
             ty._FAIL.clear()
@@ -27073,7 +27161,7 @@ class TestFlowTrendDiagnosis20260818:
         d.mkdir(parents=True)
         today = date.today().isoformat()
         # 결정적으로 — 바깥 원천을 치지 않는다(#312·#336).
-        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10: (
+        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10, **kw: (
             "no_overlap", {"sid": sid, "fred_date": fd, "months": ["202609"],
                            "curve_days": ["2026-09-11"], "tol": tol}))
         fake = types.SimpleNamespace(
@@ -27108,7 +27196,7 @@ class TestFlowTrendDiagnosis20260818:
 
         d = tmp_path / "fred"
         d.mkdir(parents=True)
-        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10: (
+        monkeypatch.setattr(ty, "fresher_diag", lambda fd, fv, sid, tol=0.10, **kw: (
             "no_overlap", {"sid": sid, "fred_date": fd, "months": ["202609"],
                            "curve_days": [], "tol": tol}))
         fake = types.SimpleNamespace(_CACHE_DIR=tmp_path,
@@ -41514,9 +41602,10 @@ class TestUnlabeledCorrSeries20260829:
         bad = []
         with tempfile.TemporaryDirectory() as td:
             for src in SOURCES:
-                # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-                # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-                if src.basis != "company" or src.flow not in ("export", "import"):
+                # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+                # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+                # 계약 위반으로 찍었다.
+                if "corr" not in src.grammars:
                     continue
                 flow = {"export": "수출", "import": "수입"}[src.flow]
                 tkr = "005930" if src.key == "krs" else "ABCD"
@@ -41577,7 +41666,7 @@ class TestStockBoardCorrMetrics20260829:
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
+            if "corr" not in src.grammars:  # 레지스트리 문법 축(#370)
                 continue
             got = src.parse(self._cap(src, self.CAP_TAIL)) or {}
             want = {"corr": 0.96, "dir_hit": 89.0,
@@ -41601,7 +41690,7 @@ class TestStockBoardCorrMetrics20260829:
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
+            if "corr" not in src.grammars:  # 레지스트리 문법 축(#370)
                 continue
             got = src.parse(self._cap(src, "상관: 0.55\n")) or {}
             if got.get("corr") != 0.55:
@@ -41624,7 +41713,7 @@ class TestStockBoardCorrMetrics20260829:
         bad = []
         with tempfile.TemporaryDirectory() as td:
             for src in SOURCES:
-                if src.basis != "company" or src.flow not in ("export", "import"):  # 종목판 문법 계약(월매출 twr 제외)
+                if "corr" not in src.grammars:  # 레지스트리 문법 축(#370)
                     continue
                 conn = src.open_db(Path(td) / src.db_file)
                 tbl = next(r[0] for r in conn.execute(
@@ -41803,9 +41892,10 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-            if src.basis != "company" or src.flow not in ("export", "import"):
+            # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+            # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+            # 계약 위반으로 찍었다.
+            if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
@@ -41824,9 +41914,10 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-            if src.basis != "company" or src.flow not in ("export", "import"):
+            # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+            # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+            # 계약 위반으로 찍었다.
+            if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
@@ -41846,9 +41937,10 @@ EML·DML·CW 레이저소자
         from trade.badonion_sources import SOURCES
         bad = []
         for src in SOURCES:
-            # 종목판 문법(수출/수입 Update 헤더·상관 계열)은 무역 흐름 소스의 계약이다 —
-            # 월매출(`flow="revenue"`, 2026-09-10 twr)은 회사 기준이지만 다른 문법이라 제외.
-            if src.basis != "company" or src.flow not in ("export", "import"):
+            # 선택기는 레지스트리 단일 출처다 — 문법 축(#370). 옛 판은
+            # basis/flow 로 골라 **금액판**(kri·회사/수출인데 상관이 없다)을
+            # 계약 위반으로 찍었다.
+            if "corr" not in src.grammars:
                 continue
             flow = {"export": "수출", "import": "수입"}[src.flow]
             tkr = "005930" if src.key == "krs" else "ABCD"
@@ -48251,6 +48343,17 @@ class TestShadowedTopLevelDefs20260906:
 
     이름 열거가 아니라 **디렉터리 전수 + allowlist**(#24), 그리고 대조 대상이
     0건이면 통과가 아니라 실패(#54).
+
+    ⚠️ 2026-09-16 **범위 확대**(NousResearch/hermes-agent 리뷰에서 채택 — 그쪽은
+    같은 AST 아이디어를 **테스트 트리**와 **모든 스코프**에 걸고 있었고, 실제로
+    (a) 중복된 autouse fixture 가 158개 테스트의 격리를 조용히 바꾼 사고와
+    (b) 살아남은 쪽이 이름이 약속한 케이스를 빠뜨린 중복 테스트 사고를 겪었다):
+      · 옛 계약 = `bot/`·`trade/` **top-level 만**. 그러면 65k줄짜리
+        `tests/test_regression.py` 안에서 **클래스 메서드 이름이 중복**돼도
+        아무도 안 본다 — 그게 #68("테스트가 한 번도 실행되지 않았다") 그대로다.
+      · 지금 계약 = `bot/`·`trade/`·`tests/` 를 **모든 스코프**(모듈·클래스 본문·
+        중첩 함수)에서. 옛 계약은 이 계약의 부분집합이라 보장이 줄지 않는다(#222).
+      · 켜자마자 0건이었다 — 예방용이고, **소음이 아니다**(#25·#260).
     """
 
     _ALLOW: set[tuple[str, str]] = set()   # (파일, 이름) — 의도된 재정의만. 비어 있는 게 정상.
@@ -48265,18 +48368,40 @@ class TestShadowedTopLevelDefs20260906:
         '작동 확인' 테스트는 아무것도 확인하지 않는다(#19·#91b)."""
         import ast
         import collections
-        tree = ast.parse(src)
-        names = [n.name for n in tree.body
-                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
-        names += [t.id for n in tree.body if isinstance(n, ast.Assign)
-                  for t in n.targets
-                  if isinstance(t, ast.Name) and t.id.isupper()]
-        return sorted(k for k, v in collections.Counter(names).items() if v > 1)
+
+        def names_of(body):
+            ns = [n.name for n in body
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+            ns += [t.id for n in body if isinstance(n, ast.Assign)
+                   for t in n.targets
+                   if isinstance(t, ast.Name) and t.id.isupper()]
+            return ns
+
+        out = []
+
+        def walk(node, path):
+            body = getattr(node, "body", None)
+            if isinstance(body, list):
+                for k, v in collections.Counter(names_of(body)).items():
+                    if v > 1:
+                        # top-level 은 맨 이름(옛 계약과 같은 모양), 중첩은 경로를 붙인다.
+                        out.append(f"{path}::{k}" if path else k)
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    walk(child, f"{path}.{child.name}" if path else child.name)
+                elif not isinstance(child, ast.expr):
+                    # if/try/for 본문은 **같은 스코프**지만 분기마다 같은 이름을
+                    # 정의하는 것은 정상이라(if/else 폴백) 각 body 를 따로 센다.
+                    walk(child, path)
+
+        walk(ast.parse(src), "")
+        return sorted(set(out))
 
     def _dups(self):
         import pathlib
         root = pathlib.Path(__file__).resolve().parent.parent
-        files = sorted(f for d in ("bot", "trade") for f in (root / d).rglob("*.py"))
+        files = sorted(f for d in ("bot", "trade", "tests")
+                       for f in (root / d).rglob("*.py"))
         scanned, out = 0, []
         for f in files:
             try:
@@ -48296,6 +48421,35 @@ class TestShadowedTopLevelDefs20260906:
         assert scanned >= found - 2, f"{found}개 중 {scanned}개만 파싱됐다"
         assert not dups, f"중복 정의(뒤엣것이 앞을 가린다, #59·#74): {dups}"
 
+    def test_the_scan_actually_covers_the_test_tree(self):
+        """`tests` 를 디렉터리 목록에서 빼도 bot+trade 가 734개라 파일 수 단언은
+        그대로 통과한다 = 확대분이 조용히 되돌려진다(뮤테이션 실측). 범위를
+        **값으로** 못박는다(#91b 재는 대상이 맞나 · #24)."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        files = sorted(f for d in ("bot", "trade", "tests")
+                       for f in (root / d).rglob("*.py"))
+        rels = {str(f.relative_to(root)) for f in files}
+        assert any(r.startswith("tests/") for r in rels), "tests/ 가 스캔 범위 밖이다"
+        assert any(r.startswith("bot/") for r in rels)
+        assert any(r.startswith("trade/") for r in rels)
+        # ⚠️ 옛 판은 `'"bot", "trade", "tests"' in inspect.getsource(_dups)`
+        # 라는 **소스 문자열 단언**이라, 그 튜플을 줄바꿈만 해도 멀쩡한 코드가
+        # 빨간불이었다(독립 리뷰 실측 — 이 레포에서 15번째, #19·#89·#363).
+        # 계약은 "`tests/` 가 실제로 스캔된다" 이므로 **값으로** 잰다: 임시
+        # 중복을 tests/ 아래에 심고 `_dups()` 가 그걸 집는지 본다.
+        import pathlib as _pl
+        probe = root / "tests" / "_dupscan_probe_tmp.py"
+        probe.write_text("def f():\n    pass\n\n\ndef f():\n    pass\n",
+                         encoding="utf-8")
+        try:
+            _, _, dups = self._dups()
+            hit = [d for d in dups if d[0].endswith("_dupscan_probe_tmp.py")]
+            assert hit, f"tests/ 가 스캔 범위 밖이다 — {len(dups)}건만 봤다"
+        finally:
+            probe.unlink(missing_ok=True)
+        assert isinstance(_pl.Path(root), _pl.Path)
+
     def test_allowlist_is_empty_so_it_cannot_become_a_bypass(self):
         """allowlist 에 항목을 넣는 것만으로 가드가 무음이 된다 — 크기를 못박아
         늘리려면 이 테스트도 같이 고치게 한다(독립 리뷰 실측: 300건을 주입해도
@@ -48312,6 +48466,30 @@ class TestShadowedTopLevelDefs20260906:
         assert self._dup_names(src) == ["C", "X", "f"], (
             f"def·class·모듈 상수 세 축 중 못 잡는 것이 있다: {self._dup_names(src)}")
         assert self._dup_names("def f():\n    pass\nY = 1\n") == [], "오탐"
+
+    def test_guard_also_fires_inside_a_class_body(self):
+        """2026-09-16 확대분 — **클래스 안 중복**이 이 가드의 새 축이다.
+        top-level 만 보던 옛 판은 이 입력에 `[]` 를 돌려줬다(= 65k줄짜리
+        테스트 파일에서 같은 이름의 테스트 메서드가 조용히 하나만 남는다,
+        #68). 그 축이 실제로 발화하는지 값으로 못박는다(#91·#291 — 발화
+        경로 없는 가드는 가드가 아니다)."""
+        src = ("class T:\n"
+               "    def test_a(self):\n        pass\n"
+               "    def test_b(self):\n        pass\n"
+               "    def test_a(self):\n        pass\n")
+        assert self._dup_names(src) == ["T::test_a"], self._dup_names(src)
+        # 반대 증거(#25) — 서로 다른 클래스의 같은 메서드 이름은 중복이 아니다.
+        ok = ("class A:\n    def m(self):\n        pass\n"
+              "class B:\n    def m(self):\n        pass\n")
+        assert self._dup_names(ok) == [], self._dup_names(ok)
+
+    def test_if_else_branches_defining_the_same_name_are_not_flagged(self):
+        """폴백 패턴(`try: import X / except: def X()`)은 정상이다 — 오탐을
+        내면 매번 뜨는 경고가 되어 아무것도 안 재는 것과 같다(#25·#260)."""
+        src = ("import os\n"
+               "if os.name == 'nt':\n    def p():\n        return 1\n"
+               "else:\n    def p():\n        return 2\n")
+        assert self._dup_names(src) == [], self._dup_names(src)
 
 
 class TestFcfCapexSingleSource20260907:
@@ -49661,7 +49839,7 @@ def test_market_timing_why_probe_dispatches_and_is_read_only():
 def _ust_stub(monkeypatch, by_month):
     from bot import treasury_yield_client as t
     monkeypatch.setattr(t, "fetch_daily_curve",
-                        lambda ym=None: dict(by_month.get(ym or "", {})))
+                        lambda ym=None, **kw: dict(by_month.get(ym or "", {})))
     return t
 
 
@@ -49675,7 +49853,7 @@ def test_treasury_fresher_names_the_branch(monkeypatch):
     # 원천이 이미 최선 — 우리 문제가 아니다(❌ 로 세면 진짜 결함을 가린다 #260)
     assert t.fresher_diag("2026-09-04", 4.29, "DGS2")[0] == "no_newer"
     # 곡선 미수신
-    monkeypatch.setattr(t, "fetch_daily_curve", lambda ym=None: {})
+    monkeypatch.setattr(t, "fetch_daily_curve", lambda ym=None, **kw: {})
     assert t.fresher_diag("2026-09-04", 4.29, "DGS2")[0] == "no_curve"
     # 태그 오집(만기가 다른 값) — 이 검산이 이 모듈의 존재 이유다
     _ust_stub(monkeypatch, {"202609": {"2026-09-03": {"DGS2": 3.90},
@@ -59835,9 +60013,20 @@ class TestPalladiumAndResearchPaging20260912:
                 if l.strip().startswith("$(PY) -m pytest")]
         # ⚠️ 한 세션에 합치면 깨진다 — `bot/tests/conftest.py` 가 sys.modules 를
         # 모듈 레벨로 오염시켜 `tests/` 73건이 빨간불이 된다(2026-09-12 실측).
-        # 그래서 게이트는 **별도 프로세스 둘**이다.
-        assert len(runs) == 2, f"게이트가 두 슈트를 다 돌지 않는다: {runs}"
+        # 그래서 게이트는 트리마다 **별도 프로세스**다.
+        # ⚠️ 2026-09-16 계약 확장(#370·#222): 옛 판은 `len(runs) == 2` 라는
+        # **리터럴**이라 트리가 늘면 깨졌다(실제로 `trade/tests` 를 붙이자
+        # 빨간불). 계약은 "줄 수가 둘"이 아니라 **"트리마다 한 줄이고 서로
+        # 다른 프로세스"** 다(#19·#67 리터럴 핀 금지). 어느 트리가 있어야
+        # 하는지는 `…::test_every_test_tree_is_inside_the_commit_gate` 가
+        # 파일 시스템에서 파생해 따로 잰다 — 여기선 **형태**만 본다.
+        assert len(runs) >= 2, f"게이트가 슈트를 하나만 돈다: {runs}"
+        assert len(set(runs)) == len(runs), f"같은 슈트를 두 번 돈다: {runs}"
         assert any("bot/tests" in r for r in runs), runs
+        # 기본 슈트(인자 없음) 한 줄 + 나머지는 명시 경로 — 합치면 안 된다.
+        bare = [r for r in runs if r.replace("$(PY) -m pytest", "").strip()
+                in ("", "-v", "-q")]
+        assert len(bare) == 1, f"기본 슈트 줄이 하나가 아니다: {runs}"
         ini = pathlib.Path("pytest.ini").read_text(encoding="utf-8")
         assert "testpaths = tests\n" in ini, "기본 슈트 선언이 없다"
         assert "bot/tests" in ini and "모듈 레벨" in ini, \
@@ -64885,3 +65074,1060 @@ class TestEcosStaleVerdictSplit20260913:
         assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                    and n.func.id == "stale_evidence_line"
                    for n in ast.walk(_tree)), "증거 줄이 배선에서 빠졌다"
+
+
+class TestTreasurySpreadAndRetry20260914:
+    """장단기금리차 재무부 보강 + 느린 원천 재시도 (사용자 2026-09-14).
+
+    "여기 미국채나 장단기금리차같은거 재무부것도 여전히 가장 최신이 아니잖아."
+
+    두 결함이 겹쳐 있었다:
+      (a) `_TREASURY_SIDS` 가 만기 3종만이라 **스프레드 카드만** FRED 의
+          D+1 에 머물렀다 — 같은 화면에서 10Y − 2Y 를 빼면 카드와 안 맞는다
+          (#33). 게다가 `_FRED_DAILY_SIDS` 열거에도 T10Y2Y 가 빠져 있어
+          일별 시리즈가 **24시간 캐시**에 앉아 있었다(#24 열거형은 새 항목을
+          못 잡는다). 값이 다 '있어서' 아무 감사도 안 걸렸다(#96).
+      (b) 재무부 조회가 단발 20초라, 원천이 느린 날의 **동전던지기**가 그대로
+          결산의 판정이 됐다(2026-09-13 실측: 같은 명령 1회차 `no_newer` ✅ /
+          2회차 `month_failed` — #21·#361b).
+    """
+
+    # ── (a) 파생 스프레드 ────────────────────────────────────────────
+    def test_spread_needs_both_legs_and_keeps_inversion(self):
+        """재료가 둘 다 있을 때만 만든다(#88) — 그리고 역전은 정상값이다."""
+        from bot.treasury_yield_client import derive_spreads
+        assert derive_spreads({"DGS10": 4.05, "DGS2": 3.55}) == {"T10Y2Y": 0.5}
+        # 한쪽 다리가 없으면 아예 안 만든다(빈칸이 틀린 값보다 낫다, #29).
+        assert derive_spreads({"DGS10": 4.05}) == {}
+        assert derive_spreads({"DGS2": 3.55}) == {}
+        # ⚠️ 역전(마이너스)은 `_num` 의 0~20 상식범위 가드를 태우면 안 된다 —
+        # 그건 **수익률** 전용이다. 침체 선행 신호를 우리가 지우면 안 된다.
+        assert derive_spreads({"DGS10": 3.50, "DGS2": 4.10}) == {"T10Y2Y": -0.6}
+        # 부동소수 noise 가 화면에 새지 않는다(FRED 도 소수 2자리).
+        assert derive_spreads({"DGS10": 4.13, "DGS2": 3.58}) == {"T10Y2Y": 0.55}
+
+    def test_curve_carries_the_spread_and_the_overlap_guard_still_bites(
+            self, monkeypatch):
+        """⚠️ 헬퍼만 재면 **배선을 떼는 변형을 못 잡는다**(#20) — 파서를
+        통째로 태워 곡선에 스프레드가 실리는지, 그리고 FRED 와 겹치는 날
+        검산이 여전히 무는지 값으로 본다."""
+        import requests as _rq
+
+        from bot import treasury_yield_client as ty
+        xml = (
+            "<x>"
+            "<entry><d:NEW_DATE>2026-09-12T00:00:00</d:NEW_DATE>"
+            "<d:BC_2YEAR>3.55</d:BC_2YEAR><d:BC_10YEAR>4.05</d:BC_10YEAR></entry>"
+            "<entry><d:NEW_DATE>2026-09-15T00:00:00</d:NEW_DATE>"
+            "<d:BC_2YEAR>3.58</d:BC_2YEAR><d:BC_10YEAR>4.13</d:BC_10YEAR></entry>"
+            "</x>")
+
+        class _R:
+            status_code = 200
+            text = xml
+
+            def raise_for_status(self):
+                pass
+
+        monkeypatch.setattr(ty, "_CACHE", {})
+        monkeypatch.setattr(_rq, "get", lambda *a, **k: _R())
+        curve = ty.fetch_daily_curve("202609")
+        assert curve["2026-09-12"]["T10Y2Y"] == 0.5
+        assert curve["2026-09-15"]["T10Y2Y"] == 0.55
+        # FRED 의 T10Y2Y(0.50)와 겹치는 날이 맞으므로 새 날짜를 준다.
+        assert ty.fresher_than("2026-09-12", 0.50, "T10Y2Y") == ("2026-09-15", 0.55)
+        # ⚠️ 다리를 잘못 집었으면 겹치는 날이 어긋나 거부된다 — 파생값도
+        # 같은 검산을 받는다(그게 이 배선의 안전장치다).
+        assert ty.fresher_than("2026-09-12", 0.90, "T10Y2Y") is None
+
+    def test_daily_cache_set_comes_from_the_cadence_table(self):
+        """옛 판은 다섯을 **이름으로** 적어 T10Y2Y 가 24h 캐시에 앉아 있었다.
+
+        공표 주기는 `macro_cadence.CADENCE` 가 이미 단일 출처로 들고 있다 —
+        거기서 파생시키면 새 일별 시리즈가 저절로 따라온다(#24·#38).
+        """
+        from bot import market_overview as mo
+        from bot.macro_cadence import CADENCE
+        daily = {sid for sid, spec in CADENCE.items() if spec[0] == "D"}
+        assert daily <= mo._FRED_DAILY_SIDS, (
+            "일별 규약인데 긴 캐시에 앉는 시리즈가 있다")
+        assert "T10Y2Y" in mo._FRED_DAILY_SIDS
+        # ⚠️ 옛 다섯 개짜리 리터럴로 되돌리는 변형을 잡으려면 **그 목록 밖**
+        # 이면서 일별인 것을 집어야 한다(#91b 재는 대상이 맞나).
+        assert "SOFR" in mo._FRED_DAILY_SIDS, "표에서 파생하지 않고 있다"
+        # 월간·분기까지 짧게 하면 호출만 늘고 얻는 게 없다.
+        assert "CPIAUCSL" not in mo._FRED_DAILY_SIDS
+
+    # ── (b) 재시도 ──────────────────────────────────────────────────
+    def test_retry_is_only_for_kinds_that_can_change_their_answer(self):
+        """4xx 는 **우리 요청 모양**이라 백 번 물어도 같다(#82·#279)."""
+        from bot.treasury_yield_client import retryable
+        assert retryable("timeout") and retryable("network")
+        assert retryable("http503") and retryable("http500")
+        assert not retryable("http404") and not retryable("http403")
+        assert not retryable("other")
+
+    def test_render_asks_once_and_batch_retries_then_stops_on_4xx(
+            self, monkeypatch):
+        """렌더는 1회(#116 화면 대기 금지) · 배치만 재시도.
+
+        ⚠️ 시간·순서가 아니라 **요청 횟수**로 잰다(#128 sleep 로 재면 단독
+        green 전체 red). 그리고 `sleep` 을 무력화해 결정적으로 돌린다.
+        """
+        import requests as _rq
+
+        from bot import treasury_yield_client as ty
+        monkeypatch.setattr(ty.time, "sleep", lambda *_a: None)
+        calls: list[int] = []
+
+        def _boom(*_a, **_k):
+            calls.append(1)
+            raise _rq.exceptions.ReadTimeout("slow")
+
+        monkeypatch.setattr(_rq, "get", _boom)
+        monkeypatch.setattr(ty, "_CACHE", {})
+        assert ty.fetch_daily_curve("202609") == {}
+        assert len(calls) == 1, "렌더 경로가 재시도하면 20초 × N 이 화면 대기다"
+
+        calls.clear()
+        monkeypatch.setattr(ty, "_CACHE", {})
+        assert ty.fetch_daily_curve("202609", attempts=3) == {}
+        assert len(calls) == 3, "배치가 한 번만 묻고 포기하면 동전던지기다"
+
+        # 4xx 는 다시 물어도 같은 답 — 첫 실패에서 멈춘다.
+        class _E(Exception):
+            pass
+
+        def _404(*_a, **_k):
+            calls.append(1)
+            r = _rq.Response()
+            r.status_code = 404
+            r.raise_for_status()
+
+        calls.clear()
+        monkeypatch.setattr(_rq, "get", _404)
+        monkeypatch.setattr(ty, "_CACHE", {})
+        assert ty.fetch_daily_curve("202609", attempts=3) == {}
+        assert len(calls) == 1, "4xx 에 재시도하면 순손실이다(#82)"
+
+    def test_diagnostics_do_not_trust_a_stale_failure_cache(self, monkeypatch):
+        """진단은 **지금** 사실을 재야 한다 — 10분 전 한 번의 타임아웃을
+        원천 결측으로 보고하면 다음 라운드를 엉뚱한 데로 보낸다(#35·#54).
+        단 **성공** 캐시는 존중한다(공짜 조회를 일부러 늘리지 않는다)."""
+        import time as _t
+
+        from bot import treasury_yield_client as ty
+        monkeypatch.setattr(ty.time, "sleep", lambda *_a: None)
+        calls: list[str] = []
+
+        class _R:
+            status_code = 200
+            text = "<x></x>"
+
+            def raise_for_status(self):
+                pass
+
+        import requests as _rq
+        monkeypatch.setattr(_rq, "get", lambda *a, **k: (calls.append("x"), _R())[1])
+
+        # 실패 캐시가 신선해도 배치는 다시 묻는다.
+        monkeypatch.setattr(ty, "_CACHE", {"202609": (_t.time(), {})})
+        ty.fetch_daily_curve("202609", attempts=3)
+        assert calls, "실패 캐시를 그대로 믿으면 진단이 옛 사실을 말한다"
+        # 성공 캐시는 그대로 쓴다.
+        calls.clear()
+        monkeypatch.setattr(
+            ty, "_CACHE", {"202609": (_t.time(), {"2026-09-15": {"DGS10": 4.1}})})
+        assert ty.fetch_daily_curve("202609", attempts=3)
+        assert not calls, "성공 캐시까지 무시하면 진단이 원천을 몰아친다"
+
+    def test_batch_surfaces_actually_pass_attempts(self):
+        """⚠️ 상수를 import 만 하고 안 넘기면 아무 일도 안 일어난다(#20·#141).
+        두 배치 표면(감사·프로브)이 **인자로** 넘기는지 AST 로 못박는다."""
+        import ast as _ast
+        import pathlib as _pl
+
+        for mod, fn in (("bot/scripts/macro_staleness_audit.py", "fresher_diag"),
+                        ("bot/scripts/rate_freshness_probe.py", "fetch_daily_curve")):
+            tree = _ast.parse(_pl.Path(mod).read_text(encoding="utf-8"))
+            ok = [n for n in _ast.walk(tree)
+                  if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                  and n.func.id == fn
+                  and any(k.arg == "attempts" for k in n.keywords)]
+            assert ok, f"{mod} 의 {fn} 호출이 attempts 를 안 넘긴다"
+        # ⚠️ `_why` 도 배치 표면이다 — 2026-09-16 독립 리뷰가 여기만 빠진 것을
+        # 잡았다(#24 열거형은 목록 밖을 못 잡는다). 그 결과 `--why` 는 1회만
+        # 물으면서 "이미 재시도한 뒤다" 라는 처방을 찍고 있었다(#187b).
+        import inspect as _insp
+
+        from bot import treasury_yield_client as _ty
+        why_src = _ast.parse(_insp.getsource(_ty._why))
+        assert [n for n in _ast.walk(why_src)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                and n.func.id == "fresher_diag"
+                and any(k.arg == "attempts" for k in n.keywords)], (
+            "`--why` 가 fresher_diag 에 attempts 를 안 넘긴다")
+
+    def test_attempts_actually_reaches_the_fetcher(self, monkeypatch):
+        """⚠️ AST 로 **호출부**만 재면 중간 홉이 인자를 버려도 통과한다 —
+        독립 리뷰가 세 홉(`fresher_diag`→`curve_for`→`fetch_daily_curve`)을
+        하나씩 지웠는데 전부 green 이었다(#20·#141·#291 배선은 태워야 보인다).
+        값으로 잰다: 실제로 몇 번 물었나."""
+        from bot import treasury_yield_client as _ty
+
+        seen: list[int] = []
+
+        def _fake(ym=None, *, attempts: int = 1, **kw):
+            seen.append(attempts)
+            return {}
+
+        monkeypatch.setattr(_ty, "fetch_daily_curve", _fake)
+        _ty.fresher_diag("2026-09-11", 4.0, "DGS10", attempts=3)
+        assert seen and all(a == 3 for a in seen), (
+            f"attempts 가 fetcher 까지 안 닿았다: {seen}")
+        # 반대 증거 — 기본값(렌더 경로)은 1회다(#116 화면 대기를 늘리지 않는다).
+        seen.clear()
+        _ty.fresher_diag("2026-09-11", 4.0, "DGS10")
+        assert seen == [1] * len(seen) and seen, f"렌더 경로가 1회가 아니다: {seen}"
+
+    # ── 네이버 조사 프로브 ───────────────────────────────────────────
+    def test_naver_probe_verdict_never_says_ok_without_both_sides(self):
+        """"네이버가 더 최신인가" 는 **양쪽을 다 재야** 답이 나온다 —
+        한쪽이 없으면 ✅ 도 ❌ 도 아닌 판정 불가다(#54·#143)."""
+        from bot.scripts.naver_rate_probe import _VERDICT_TEXT, verdict
+        assert verdict("2026-09-15", "2026-09-12") == "fresher"
+        assert verdict("2026-09-12", "2026-09-12") == "same"
+        assert verdict("2026-09-11", "2026-09-12") == "older"
+        assert verdict(None, "2026-09-12") == "unknown_naver"
+        assert verdict("2026-09-15", None) == "unknown_ours"
+        # 갈래마다 문구가 있어야 화면이 말할 수 있다(#82).
+        assert set(_VERDICT_TEXT) == {"fresher", "same", "older",
+                                      "unknown_naver", "unknown_ours"}
+        # 판정 불가를 ✅ 로 찍지 않는다.
+        for k in ("unknown_naver", "unknown_ours"):
+            assert "✅" not in _VERDICT_TEXT[k]
+
+    def test_naver_probe_banner_reacts_to_its_own_source(self, tmp_path):
+        """배너가 상수면 낡은 체크아웃이 신선한 것과 같은 글자를 낸다 —
+        고친 것이 안 먹은 것처럼 보인다(#364·#91b)."""
+        import hashlib
+        import pathlib as _pl
+
+        from bot.scripts import naver_rate_probe as P
+        b = P.banner()
+        sig = hashlib.sha1(
+            _pl.Path(P.__file__).read_bytes()).hexdigest()[:10]
+        assert sig in b, "지문이 이 파일의 소스에 반응하지 않는다"
+        # 인터프리터도 찍는다 — venv 밖에서 돌린 출력을 사실로 읽지 않기 위해(#132).
+        import sys as _sys
+        assert _sys.executable in b
+
+
+class TestCreditSplitWhyAndDateAlignment20260914:
+    """코스피/코스닥 신용잔고 추이가 **가끔 사라진다** (사용자 2026-09-14).
+
+    세 결함이 겹쳐 있었다:
+      (a) `credit_split_series_eok` 가 빈 dict 하나로 **갈래를 뭉갰다** —
+          키 미설정 · 차단기 냉각 · 요청 실패 · 결과 0건 · 필드 미발견 ·
+          합리성 가드 드롭이 처방이 전부 다른데 화면은 아무 말도 못 했다
+          (#82·#129·#123 계열).
+      (b) 합리성 가드가 **다른 날짜끼리** 비교했다 — 전체는 `max(whole)`,
+          시장은 각자의 마지막 행이라, 원천이 최신 행에 전체만 먼저 채우는
+          날이면 정상 데이터가 ±25% 룰에 걸려 통째로 드롭됐다(#45 두 모집단).
+      (c) 그 빈 결과가 **1시간 캐시**에 앉아 카드가 한 시간 사라졌다
+          (#152·#161·#280·#303 실패는 짧게만 믿는다).
+      그리고 화면은 값이 없으면 카드를 **아예 안 그렸다** — 사라지면 기능이
+      삭제된 것처럼 보이고 '새 게 없다' 와 '원천이 막혔다' 가 같은 화면이
+      된다(#43·#52·#335 형제 위젯의 선행 사례).
+    """
+
+    @staticmethod
+    def _rows(whole_only_latest: bool = False) -> list:
+        """KOFIA 신용공여 응답 모양 — 원천이 실제로 보내는 키로(#155).
+
+        `whole_only_latest=True` 면 **최신 행에 전체만** 채워져 온다(장중에
+        실제로 나는 모양). 옛 판은 이 경우 정상 데이터를 통째로 드롭했다.
+        """
+        rows = [
+            {"basDt": "20260910", "crdTrFingWhl": "20000000000000",
+             "crdTrFingScrs": "11000000000000",
+             "crdTrFingKosdaq": "9000000000000"},
+            {"basDt": "20260911", "crdTrFingWhl": "20200000000000",
+             "crdTrFingScrs": "11100000000000",
+             "crdTrFingKosdaq": "9100000000000"},
+        ]
+        if whole_only_latest:
+            # ⚠️ 전체만 계속 오고 시장 필드가 **한동안 끊긴** 구간 — 그 사이
+            # 전체가 ±25% 넘게 자라면 옛 판(다른 날짜끼리 비교)은 멀쩡한
+            # 시계열을 통째로 드롭했다. 하루치만 어긋나게 두면 오차가 작아
+            # 옛 판도 통과해 **가드가 눈이 먼다**(#91c 깨지는 값까지 밀 것).
+            rows += [{"basDt": f"2026091{i}", "crdTrFingWhl": str(w)}
+                     for i, w in ((2, 22000000000000), (3, 24000000000000),
+                                  (4, 27000000000000))]
+        return rows
+
+    def _patch(self, monkeypatch, tmp_path, rows, ok=True):
+        from bot import fsc_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: (rows, ok))
+        return fc
+
+    def test_a_partially_filled_latest_row_no_longer_drops_everything(
+            self, monkeypatch, tmp_path):
+        """(b) 같은 날끼리 비교한다 — 전체만 먼저 온 날에 시장 시계열이
+        통째로 사라지면 안 된다. 그게 '가끔 안 나온다' 의 유력 후보였다."""
+        fc = self._patch(monkeypatch, tmp_path, self._rows(whole_only_latest=True))
+        out, why = fc.credit_split_with_reason(130)
+        assert why == "", f"정상 데이터가 드롭됐다({why})"
+        assert len(out["kospi"]) == 2 and len(out["kosdaq"]) == 2
+        # 그래도 **진짜 오분류**는 여전히 막는다(가드를 약하게 만든 게 아니다).
+        bad = [{"basDt": "20260911", "crdTrFingWhl": "20200000000000",
+                "crdTrFingScrs": "100", "crdTrFingKosdaq": "100"}]
+        fc = self._patch(monkeypatch, tmp_path / "b", bad)
+        (tmp_path / "b").mkdir(exist_ok=True)
+        out2, why2 = fc.credit_split_with_reason(131)
+        assert out2 == {} and why2 == "sanity"
+
+    def test_every_empty_result_names_its_branch(self, monkeypatch, tmp_path):
+        """(a) 처방이 다른 갈래를 한 통에 담지 말 것(#82)."""
+        from bot import fsc_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: False)
+        assert fc.credit_split_with_reason(140) == ({}, "key")
+
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: True)
+        assert fc.credit_split_with_reason(141) == ({}, "breaker")
+
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        # ⚠️ `[]` 하나로는 '결과 없음' 과 '서비스 장애' 를 못 가른다(#143).
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: ([], True))
+        assert fc.credit_split_with_reason(142) == ({}, "empty")
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: ([], False))
+        assert fc.credit_split_with_reason(143) == ({}, "http")
+        # 응답은 왔는데 시장 필드가 없으면 '원천 결측' 이 아니라 '필드 미발견'.
+        monkeypatch.setattr(
+            fc, "_fetch2",
+            lambda *a, **k: ([{"basDt": "20260911", "crdTrFingWhl": "1"}], True))
+        assert fc.credit_split_with_reason(144) == ({}, "nofield")
+        # 갈래마다 사람이 읽는 문구가 있어야 화면이 말할 수 있다.
+        for code in ("key", "breaker", "http", "empty", "nofield", "sanity"):
+            assert fc.credit_split_reason_text(code), code
+        # 모르는 코드는 **지어내지 않고** 그대로 보여 준다(#165·#290).
+        assert "zzz" in fc.credit_split_reason_text("zzz")
+        assert fc.credit_split_reason_text("") == ""
+
+    def test_empty_results_are_believed_only_briefly(self, monkeypatch, tmp_path):
+        """(c) 일시 실패 한 번이 카드를 **한 시간** 지우면 안 된다."""
+        import os
+        import time
+
+        from bot import fsc_client as fc
+        monkeypatch.setattr(fc, "_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr(fc, "fsc_key_ready", lambda: True)
+        monkeypatch.setattr(fc, "_breaker_open", lambda op: False)
+        monkeypatch.setattr(fc, "_fetch2", lambda *a, **k: ([], True))
+        assert fc.credit_split_with_reason(150) == ({}, "empty")
+        f = [p for p in os.listdir(tmp_path) if p.endswith(".json")]
+        assert f, "캐시 파일이 안 생겼다"
+        age = time.time() - os.path.getmtime(os.path.join(tmp_path, f[0]))
+        assert age > 1800, "빈 결과가 성공과 같은 수명을 갖고 있다"
+        assert age < 3600, "그렇다고 즉시 만료시키면 쿼터를 낭비한다"
+        # 그리고 성공은 **그대로 1시간** — 빈 결과만 짧게 믿는다.
+        fc2 = self._patch(monkeypatch, tmp_path / "s", self._rows())
+        (tmp_path / "s").mkdir(exist_ok=True)
+        out, _ = fc2.credit_split_with_reason(151)
+        assert out
+        g = [p for p in os.listdir(tmp_path / "s") if p.endswith(".json")]
+        assert (time.time() - os.path.getmtime(
+            os.path.join(tmp_path / "s", g[0]))) < 60
+
+    def test_thin_wrapper_still_returns_only_the_value(self, monkeypatch, tmp_path):
+        """값만 필요한 자리는 그대로 — 래퍼를 지우면 호출부가 무너진다(#129)."""
+        fc = self._patch(monkeypatch, tmp_path, self._rows())
+        assert set(fc.credit_split_series_eok(160)) == {"kospi", "kosdaq"}
+
+    def test_reason_is_relayed_and_the_card_speaks_instead_of_vanishing(
+            self, monkeypatch, tmp_path):
+        """⚠️ 순수 함수만 재면 **배선을 떼는 변형을 못 잡는다**(#20) —
+        수집기가 사유를 릴레이하는지, 렌더가 그걸 화면 줄로 내는지 값으로."""
+        from bot import fsc_client as fc
+        from bot import naver_sector_client as nsc
+        monkeypatch.setattr(fc, "deposit_series_eok", lambda n: [
+            ("20260910", 500000.0), ("20260911", 505000.0)])
+        monkeypatch.setattr(fc, "credit_series_eok", lambda n: [
+            ("20260910", 200000.0), ("20260911", 202000.0)])
+        monkeypatch.setattr(fc, "credit_split_with_reason",
+                            lambda n=130: ({}, "breaker"))
+        monkeypatch.setattr(fc, "collateral_loan_series_eok", lambda n: [])
+        dep = nsc._fetch_deposit_fsc()
+        assert dep.get("credit_split_why") == "breaker", "사유가 릴레이에서 샜다"
+        # ⚠️ 네이버 폴백 경로엔 시장별 분리가 **아예 없다** — 그때 '사유
+        # 미기록' 이라고 말하면 원인을 잘못 짚게 한다(#292 틀린 라벨은
+        # 라벨이 없는 것보다 나쁘다). 그 갈래도 이름을 갖는다(#82).
+        monkeypatch.setattr(nsc, "_fetch_deposit_fsc", lambda: {})
+        monkeypatch.setattr(nsc, "_fetch_deposit_naver",
+                            lambda: {"deposit": 1.0, "date": "2026.09.12"})
+        monkeypatch.setattr(nsc, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(nsc, "_fetch_equity_fund_naver", lambda: [])
+        fb = nsc.fetch_deposit()
+        assert fb.get("credit_split_why") == "fallback", fb
+        assert fc.credit_split_reason_text("fallback")
+
+        from bot.dashboard import _render_deposit_charts
+        html = _render_deposit_charts(dep)
+        # 사라지지 않는다 — 그리고 **사유가 보이는 줄**로 나온다(#228).
+        assert "코스피 신용잔고" in html and "코스닥 신용잔고" in html
+        assert fc.credit_split_reason_text("breaker") in html, html[-800:]
+        # 값이 있으면 종전대로 차트를 그리고 사유 줄은 안 붙는다(노이즈 금지).
+        dep2 = dict(dep)
+        dep2.pop("credit_split_why", None)
+        dep2["credit_kospi_series"] = [{"d": "2026-09-10", "v": 110000.0},
+                                       {"d": "2026-09-11", "v": 111000.0}]
+        dep2["credit_kosdaq_series"] = [{"d": "2026-09-10", "v": 90000.0},
+                                        {"d": "2026-09-11", "v": 91000.0}]
+        h2 = _render_deposit_charts(dep2)
+        assert "코스피 신용잔고 추이 (억원)" in h2
+        assert fc.credit_split_reason_text("breaker") not in h2
+
+    def test_the_note_uses_a_class_this_page_bundle_defines(self):
+        """`.si-note` 는 lookup 번들에만 있다 — market.html 에 쓰면 CSS 가
+        안 붙어 각주가 본문 크기로 뜬다(#201·#273·#299).
+
+        ⚠️ 옛 판은 `.sm-note` 를 **리터럴로** 박아, 카드를 `.si-note` 로
+        되돌려도 전 CSS 가드가 green 이었다(2026-09-16 독립 리뷰 실측 — 이
+        카드가 사는 `_render_deposit_charts` 는 레포 전수 CSS 컬렉터
+        `_render_all_pages` 밖이다, #24·#274). **렌더된 카드에서 클래스를
+        읽어** 그것이 이 페이지 번들에 정의돼 있는지 잰다(#19·#313)."""
+        import re
+
+        from bot import dashboard as D
+        css = D._MARKET_CSS if isinstance(D._MARKET_CSS, str) else "".join(D._MARKET_CSS)
+        html = D._render_deposit_charts(
+            {"credit_split_why": "http", "credit_kospi_series": [],
+             "credit_kosdaq_series": []})
+        m = re.search(r'class="([a-z][\w-]*)"[^>]*>⚠️', html)
+        assert m, f"사유 카드에서 클래스를 못 읽었다:\n{html[-600:]}"
+        cls = m.group(1)
+        assert re.search(r"\." + re.escape(cls) + r"\s*\{", css), (
+            f"카드가 쓰는 `.{cls}` 가 market 번들에 정의돼 있지 않다")
+
+
+class TestFcfFindingLineCarriesMaterials20260914:
+    """FCF 교차출처 ❌ 한 줄이 **자족해야** 한다 (2026-09-14 일일 감사).
+
+    결산이 이렇게 왔다 —
+    `[125020.KQ] 26.2Q (2026-06-30) DART 24.8억 vs yfinance 22.7억 ❌ 차이 9.42%`.
+    재료(OCF·유형/무형 취득 ↔ yfinance OCF·CAPEX)는 감사 로그의 **다음 줄**에
+    있는데 `audit_sweep._findings` 는 ❌ **한 줄만** 올린다 — 그래서 어느
+    구성요소가 갈렸는지는 결산에서 버려지고 원인 규명이 추측으로 시작된다
+    (#356 한 줄만 올리는 구조면 그 줄이 자족해야 한다 · #292 · #93).
+    """
+
+    def _lines(self, gap_pct: float) -> list:
+        """축 ②(분기) 한 줄을 **제품 헬퍼로** 조립해 본다.
+
+        ⚠️ 이건 `audit_one` 을 태우는 게 아니다(네트워크가 필요하다) — 조립
+        **모양**은 이 테스트가 재현하고, 제품이 실제로 그렇게 짜여 있는지는
+        아래 AST 불변식이 잰다. 옛 독스트링이 "제품 경로를 그대로 부른다"고
+        적어 사각을 가리고 있었다(2026-09-16 독립 리뷰, #55·#286)."""
+        import types
+
+        from bot.scripts import fcf_audit as FA
+
+        out: list = []
+        # DART 24.8억 · yfinance 는 gap 만큼 벌어지게.
+        dv = 24.8e8
+        yv = dv / (1 + gap_pct / 100.0)
+        fin = {"FCF": dv, "영업활동현금흐름": 30.0e8,
+               "유형자산취득": 5.2e8, "무형자산취득": 1.1e8}
+        q = {"label": "26.2Q", "year": 2026, "quarter": 2, "financials": fin}
+        yrow = {"Operating Cash Flow": 28.0e8, "Capital Expenditure": -5.3e8}
+        # `audit_one` 전체를 태우면 네트워크가 필요하다 — 축 ② 블록만
+        # 같은 코드로 돌린다(재구현이 아니라 **같은 헬퍼**를 부른다, #19).
+        g = FA._pct(dv, yv)
+        _bad = g is not None and g > FA._GAP_OK
+        line = (f"        {q['label']} ({FA.q_end(2026, 2)})  "
+                f"DART {dv / 1e8:,.1f}억 vs yfinance {yv / 1e8:,.1f}억  "
+                + FA._mark(g, FA._GAP_OK)
+                + ("  " + FA._materials(fin, yrow) if _bad else ""))
+        out.append(line)
+        return out
+
+    def test_materials_ride_on_the_finding_line_not_the_next_one(self):
+        """❌ 면 재료가 **같은 줄**에 — 통과면 안 붙는다(노이즈 금지)."""
+        import ast as _ast
+        import pathlib as _pl
+
+        bad = self._lines(9.42)[0]
+        assert "❌" in bad and "DART OCF" in bad and "yfinance OCF" in bad, bad
+        ok = self._lines(0.1)[0]
+        assert "❌" not in ok and "DART OCF" not in ok, ok
+
+        # ⚠️ 위는 계약의 **모양**만 재므로, 제품 소스가 실제로 그렇게 짜여
+        # 있는지 AST 로 같이 못박는다 — 옛 판처럼 `say("   " + _materials(…))`
+        # 를 **별도 문장**으로 되돌리는 변형을 잡아야 한다(#20·#291).
+        tree = _ast.parse(_pl.Path("bot/scripts/fcf_audit.py")
+                          .read_text(encoding="utf-8"))
+        # ⚠️ 옛 판은 `say("  " + _materials(…))` 라는 **한 가지 모양**만 봐서,
+        # 독립 리뷰가 `say(str(_materials(…)))` 로 되돌리자 그대로 통과했다
+        # (#19 모양이 아니라 계약을 잴 것). 계약은 "재료가 **판정 글자와 같은
+        # `say()`** 에 실린다" 이므로 그걸 직접 잰다 — 접두 문구를 붙이든
+        # str() 로 감싸든, `_mark` 가 없는 say() 에 재료가 있으면 그 줄은
+        # 결산에 안 올라간다(#356).
+        def _names(node):
+            return {getattr(c.func, "id", "") for c in _ast.walk(node)
+                    if isinstance(c, _ast.Call)}
+
+        lone = [n for n in _ast.walk(tree)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                and n.func.id == "say"
+                and "_materials" in _names(n) and "_mark" not in _names(n)]
+        assert not lone, "재료가 판정 글자 없는 줄로 빠졌다(결산이 안 올린다)"
+        # 그리고 분기·연간 **둘 다** 같은 규약이어야 한다(#38 형제 누락 금지).
+        calls = [n for n in _ast.walk(tree)
+                 if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                 and n.func.id == "_materials"]
+        assert len(calls) == 2, f"_materials 호출이 {len(calls)}건 — 형제가 갈렸다"
+
+
+class TestCacheVersionFloors20260916:
+    """캐시 버전 bump 는 **되돌려도 아무 테스트가 안 깨졌다**(독립 리뷰 실측).
+
+    이 레포에서 가장 많이 재발한 병이다(#18·#21b·#95·#124·#198·#216·#304·#367)
+    — payload/스키마를 바꾸고 키를 안 올리면 fix 가 화면에 한 글자도 안 닿는다.
+    형제(`_DEPOSIT_SCHEMA_V >= 4`)가 이미 하한으로 고정돼 있었는데 새 bump 만
+    무가드였다(#38). 하한이라 다음 bump 를 막지 않는다."""
+
+    def test_fred_cache_version_floor(self):
+        from bot import market_overview as mo
+        assert mo._FRED_CACHE_VER >= 3, (
+            "T10Y2Y 보강·일별 집합 변경분이 옛 24h 사본에 가린다(#368)")
+
+    def test_deposit_schema_version_floor(self):
+        from bot import naver_sector_client as ns
+        assert ns._DEPOSIT_SCHEMA_V >= 5, (
+            "credit_split_why 릴레이가 옛 스냅샷에 가린다(#369)")
+
+
+class TestPublicSurfaceCheck20260916:
+    """`scripts/public_surface_check.py` — **조용히 사라진** 공개 심볼·테스트.
+
+    2026-09-16 NousResearch/hermes-agent 리뷰에서 채택. 그쪽 사고: 큰 리팩터가
+    공개 이름 1,703개와 테스트 130개를 조용히 떨어뜨렸고 ~30개만 손으로 찾았다.
+
+    우리 레포에 같은 사고가 이미 세 번 있었다 —
+      · #210 `_derived_desc` 를 문자열 replace 로 갈다 **252줄(함수 셋)**이 함께
+        지워졌는데 `ast.parse`·`import` 가 둘 다 통과했고 회귀 2,785개 중
+        **하나**만 우연히 잡았다.
+      · #278·#358 뮤테이션 복원이 커밋된 판으로 되돌려 그 뒤 자란 것을 날렸다.
+        ⚠️ 이 도구는 **그 둘은 못 잡는다** — `git checkout <file>` 은 작업트리를
+        HEAD 와 같게 만들어 개수 차가 0 이다(실측). 잡는 것은 **커밋된 판에 있던
+        것이 지금 없는** 경우이고, #210 이 정확히 그 모양이다(과대 주장 금지, #286).
+
+    기존 가드가 못 보는 축이다(#274): symtable 검사(#210)는 **정의되지 않은
+    참조**를 잡지 정의와 호출부가 같이 지워진 경우는 못 잡고, AST 중복정의
+    검사(#59)는 **늘어난** 이름만 본다. 이건 **줄어든** 이름을 본다.
+
+    판정은 순수 함수로 두고 값으로 잰다(#41·#176) — base ref 가 필요한 진입점은
+    샌드박스·CI 마다 상태가 달라 rc 만 본다(#274 못 보는 축).
+
+    기준이 **둘**인 이유도 실측이다: base 하나만 보면 이 브랜치에서 **새로 더한**
+    심볼을 지워도 조용하다(base 엔 애초에 없으니까). HEAD 기준이 그걸 잡는다.
+    """
+
+    @staticmethod
+    def _mod():
+        import importlib.util
+        import pathlib
+        p = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "public_surface_check.py"
+        spec = importlib.util.spec_from_file_location("_psc", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_public_surface_counts_defs_classes_consts_and_methods(self):
+        m = self._mod()
+        src = ("def keep():\n    pass\n"
+               "def _priv():\n    pass\n"
+               "X = 1\n_Y = 2\n"
+               "class C:\n    def m(self):\n        pass\n"
+               "    def _h(self):\n        pass\n")
+        assert m.public_surface(src) == {"keep", "X", "C", "C.m"}, m.public_surface(src)
+
+    def test_guard_fires_on_a_silently_deleted_public_symbol(self):
+        """#210 그 사고 — 함수가 통째로 사라진 상태를 재현해 실제로 잡히는지
+        본다. 가드를 넣었으면 그게 **발화하는 상태**로 재야 한다(#91·#291)."""
+        m = self._mod()
+        before = "def keep():\n    pass\ndef gone():\n    pass\nclass C:\n    def m(self): pass\n"
+        after = "def keep():\n    pass\nclass C:\n    pass\n"
+        lost, dropped = m.shrinkage(before, after, is_test=False)
+        assert lost == ["C.m", "gone"], lost
+        assert dropped == 0
+        # 반대 증거(#25) — 아무것도 안 지웠으면 조용해야 한다.
+        assert m.shrinkage(before, before, is_test=False) == ([], 0)
+
+    def test_guard_fires_on_a_dropped_test(self):
+        """#278·#358 그 사고 — 테스트가 몇 개 사라졌는지 센다."""
+        m = self._mod()
+        before = "def test_a(): pass\ndef test_b(): pass\ndef test_c(): pass\n"
+        after = "def test_a(): pass\n"
+        assert m.shrinkage(before, after, is_test=True) == ([], 2)
+
+    def test_renaming_a_test_is_not_a_finding(self):
+        """이름 바꾸는 리팩터는 정상이다 — 첫 판이 이걸 심볼 소실로 세어 매번
+        뜨는 경고가 될 뻔했다(실측). 늘 뜨는 경고는 아무것도 안 재는 것과
+        같다(#25·#260)."""
+        m = self._mod()
+        before = "def test_a(): pass\ndef test_b(): pass\n"
+        after = "def test_x(): pass\ndef test_y(): pass\n"
+        assert m.shrinkage(before, after, is_test=True) == ([], 0)
+
+    def test_private_churn_is_not_a_finding(self):
+        """private 이름은 리팩터로 자주 바뀐다 — 세면 소음이다(#25·#260)."""
+        m = self._mod()
+        before = "def _a(): pass\n_X = 1\ndef keep(): pass\n"
+        after = "def _b(): pass\n_Y = 1\ndef keep(): pass\n"
+        assert m.shrinkage(before, after, is_test=False) == ([], 0)
+
+    def test_both_baselines_are_scanned(self):
+        """`base` 하나만 보면 이 브랜치에서 **새로 더한** 심볼을 지워도 조용하다
+        (실측: `derive_spreads` 삭제에 base ✅ / HEAD ❌). 두 기준을 다 도는지
+        값으로 못박는다 — 배선을 떼는 변형은 헬퍼 테스트가 못 잡는다(#20)."""
+        m = self._mod()
+        seen = []
+        orig = m._scan
+        try:
+            m._scan = lambda ref: (seen.append(ref), ([], 1))[1]
+            m.main(["x"])
+        finally:
+            m._scan = orig
+        assert seen and seen[-1] == "HEAD", f"HEAD 기준을 안 돈다: {seen}"
+        assert len(seen) == 2 and seen[0] != "HEAD", f"base 기준을 안 돈다: {seen}"
+
+    def test_the_entry_point_reports_both_baselines(self, capsys):
+        """진입점을 실제로 태운다 — 헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20).
+
+        ⚠️ 2026-09-16 독립 리뷰가 옛 판(`rc in (0, 2)`)을 잡았다: `rc=1` 은
+        도구 계약상 **"사람이 판단"** 이지 결함이 아닌데, 그걸 의무 게이트
+        (`make test`)에 넣으면 **정당한 공개 심볼 삭제가 커밋을 막고** 화면이
+        시키는 처방이 "이 단언을 고쳐라" 가 된다(#260 못 고칠 ❌ 를 의무
+        게이트에 넣지 말 것 · #25). 여기서 재는 것은 **도구가 도느냐**다 —
+        무엇이 사라졌는지는 §Pre-commit 7e 에서 사람이 읽는다."""
+        m = self._mod()
+        rc = m.main(["public_surface_check.py"])
+        out = capsys.readouterr().out
+        assert rc in (0, 1, 2), rc
+        assert "base=" in out and "HEAD=HEAD" in out, (
+            f"두 기준을 다 안 찍었다:\n{out}")
+
+    def test_base_baseline_uses_the_merge_base(self):
+        """base 는 Copilot 과 **공유하는** 배포 지점이다 — 그대로 대조하면
+        남이 base 에 더한 공개 심볼이 내 브랜치에선 '사라짐' 으로 읽힌다
+        (독립 리뷰가 base 를 40커밋 되감아 재현). 분기점으로 본다."""
+        import inspect as _insp
+        m = self._mod()
+        assert "merge-base" in _insp.getsource(m._merge_base)
+        src = _insp.getsource(m.main)
+        assert "_merge_base(base)" in src, "base 기준이 분기점이 아니다"
+
+
+class TestKoreaCompanyFlowBoards20260916:
+    """한국 **회사별 금액판**(수출·수입) — 받는 파서가 아예 없었다.
+
+    사용자 2026-09-16 캡처: `🇰🇷 8월 수출 한국` / `▶️ LS ELECTRIC Co., Ltd. —
+    동관 + …` / `26년08월: $158.5M (+105.3% YoY) (+11.8% MoM)` + 최근 추이.
+    기존 `kr_stock_exports`(krs) 는 `HPSP (403870)` / `한국 수출` /
+    `26년 7월 Update` 문법이라 이 캡션을 못 읽는다 — 관련성 필터가 곧
+    파서라 **저장도 미매칭 알림도 없이** 드랍됐다(#83·#261·#330·#332 계열).
+    수입(텔레칩스)도 같은 문법인데 페이지 자체가 없었다.
+
+    사용자 결정: 수출분은 **기존 종목별 페이지에 합치고**, 수입은 새 페이지.
+    문법만 `kr_company_flow` 가 공유한다(#38·#84 복제 대신 엔진).
+
+    ⚠️ 픽스처는 **스크린샷 재구성**이다 — 배포 뒤 첫 실물로 대조할 것
+    (`backfill_badonion --show-irrelevant`, #155·#334).
+    """
+
+    EXP = (
+        "**🇰🇷 8월 수출 한국**\n\n"
+        "**▶️ LS ELECTRIC Co., Ltd. — 동관 + 대용량 유입식 변압기 + "
+        "정지형 전력변환기 + 전력용 차단기 + 계전기·릴레이 + 배전반·수배전반**\n\n"
+        "**26년08월: $158.5M  (+105.3% YoY)  (+11.8% MoM)**\n\n"
+        "최근 추이 (단위: USD M$)\n"
+        "26년07월: $141.7M  (+25.9% YoY)  (+10.0% MoM)\n"
+        "26년06월: $128.8M  (+37.3% YoY)  (+2.1% MoM)\n\n"
+        "맵핑에서 보기\nbadonion.co.kr")
+
+    IMP = (
+        "**🇰🇷 8월 수입 한국**\n\n"
+        "**▶️ 텔레칩스 — 차량용 AP·프로세서**\n\n"
+        "**26년08월: $2,175.2M  (+49.4% YoY)  (+7.3% MoM)**\n\n"
+        "최근 추이 (단위: USD M$)\n"
+        "26년07월: $2,027.2M  (+16.0% YoY)  (-3.8% MoM)\n"
+        "26년06월: $2,108.1M  (+39.2% YoY)  (+31.4% MoM)")
+
+    LEGACY = ("HPSP (403870)\n한국 수출\n26년 7월 Update\n\n"
+              "단가 YoY: -6.4%\n수출액 YoY: +260.2%\n3M 수출액 YoY: +103.8%\n\n"
+              "선행상관: 0.70\n선행 방향 일치율: 80%\n\n"
+              "- CY26Q2 매출 ₩29.9B(-20.6% YoY)")
+
+    def test_flow_parser_reads_company_item_and_every_month(self):
+        from trade import kr_stock_exports as krs
+        p = krs.parse_kr_stock_flow(self.EXP)
+        # 회사명에 쉼표·마침표가 있다 — 그걸로 자르면 이름이 잘린다.
+        assert p["stock_name"] == "LS ELECTRIC Co., Ltd.", p
+        assert p["item"].startswith("동관 + 대용량 유입식 변압기"), p
+        # 메시지 안의 **전 개월**을 받는다(형제 품목판과 같은 규약).
+        assert [m["month"] for m in p["months"]] == ["2026-08", "2026-07",
+                                                     "2026-06"], p
+        assert p["months"][0] == {"month": "2026-08", "value_musd": 158.5,
+                                  "value_yoy": 105.3, "value_mom": 11.8}
+        # 꼬리 도메인(`badonion.co.kr`)이 품목 슬롯에 앉지 않는다(#330).
+        assert "badonion" not in p["item"]
+
+    def test_two_companies_in_one_caption_do_not_bleed(self):
+        """캡션 전체를 훑으면 A 카드에 B 의 금액이 섞이고 B 는 통째로
+        사라진다 — 형제 `cn_stock_flow` 가 jp_stock 실측으로 얻은 가드다(#38)."""
+        from trade import kr_stock_exports as krs
+        two = self.EXP + ("\n\n**▶️ 다른회사 — 다른품목**\n\n"
+                          "**26년08월: $999.0M  (+1.0% YoY)  (+2.0% MoM)**\n")
+        p = krs.parse_kr_stock_flow(two)
+        assert p["stock_name"] == "LS ELECTRIC Co., Ltd.", p
+        vals = [m["value_musd"] for m in p["months"]]
+        assert 999.0 not in vals, f"남의 회사 금액이 섞였다: {p}"
+        assert vals == [158.5, 141.7, 128.8], p
+
+    def test_missing_yoy_or_mom_still_stores_the_amount(self):
+        """한 칸이 빠졌다고 캡션을 드랍하면 그게 이 커밋이 고치려던 **조용한
+        유실**이다(#83). 금액만 필수, 나머지는 선택 — 빈 칸은 None 이다(#43)."""
+        from trade import kr_stock_exports as krs
+        cap = ("**🇰🇷 8월 수출 한국**\n\n**▶️ 어떤회사 — 어떤품목**\n\n"
+               "**26년08월: $158.5M  (+105.3% YoY)**\n\n"
+               "최근 추이 (단위: USD M$)\n26년07월: $141.7M\n")
+        p = krs.parse_kr_stock_flow(cap)
+        assert p is not None, "MoM 이 없다고 통째로 드랍됐다"
+        assert p["months"][0] == {"month": "2026-08", "value_musd": 158.5,
+                                 "value_yoy": 105.3, "value_mom": None}, p
+        assert p["months"][1] == {"month": "2026-07", "value_musd": 141.7,
+                                 "value_yoy": None, "value_mom": None}, p
+
+    def test_marker_words_must_be_on_one_line(self):
+        """마커 세 낱말이 **줄을 넘어** 흩어져도 받으면, 우연히 그 낱말을 품은
+        코멘트가 이 DB 로 샌다(관련성 필터가 곧 파서다)."""
+        from trade import kr_stock_exports as krs
+        scattered = self.EXP.replace("8월 수출 한국", "8월\n수출\n한국")
+        assert krs.parse_kr_stock_flow(scattered) is None, "줄바꿈 마커가 통과"
+
+    def test_direction_marker_keeps_the_two_boards_apart(self):
+        """수출 파서가 수입 캡션을 삼키면 **남의 DB** 로 들어간다(#83)."""
+        from trade import kr_stock_exports as krs
+        from trade import kr_stock_imports as kri
+        assert krs.parse_kr_stock_flow(self.IMP) is None
+        assert kri.parse_kr_stock_import(self.EXP) is None
+        assert kri.parse_kr_stock_import(self.IMP) is not None
+
+    def test_exactly_one_registry_source_claims_each_caption(self):
+        """⚠️ `SOURCES` 순서가 곧 ingest 폴백 순서다 — 두 소스가 같은 캡션을
+        주장하면 앞엣것이 조용히 가져간다. 각 캡션의 주인이 하나인지 잰다."""
+        from trade import badonion_sources as bs
+        for name, cap, want in (("EXP", self.EXP, "krs"),
+                                ("IMP", self.IMP, "kri"),
+                                ("LEGACY", self.LEGACY, "krs")):
+            owners = [s.key for s in bs.SOURCES if s.parse(cap) is not None]
+            assert owners == [want], f"{name}: {owners}"
+
+    def test_item_only_caption_is_not_stored_as_a_company(self):
+        """▶️ 줄에 대시가 없으면 **품목판**이다 — 품목을 회사 칸에 넣으면
+        화면이 스스로 거짓말한다(#34·#77). 한국은 품목판 소스가 없으므로
+        그런 캡션은 `--show-irrelevant` 에 남아 다음 라운드가 잰다(#332)."""
+        from trade import kr_stock_exports as krs
+        cap = self.EXP.replace(
+            "LS ELECTRIC Co., Ltd. — 동관 + 대용량 유입식 변압기 + "
+            "정지형 전력변환기 + 전력용 차단기 + 계전기·릴레이 + 배전반·수배전반",
+            "전기차")
+        assert krs.parse_kr_stock_flow(cap) is None
+        # 반대 증거 — 대시가 있으면 받는다(가드가 전부를 막는 게 아니다, #25).
+        assert krs.parse_kr_stock_flow(
+            cap.replace("▶️ 전기차", "▶️ 어떤회사 — 전기차")) is not None
+
+    def _db(self, tmp_path):
+        from trade import kr_stock_exports as krs
+        return krs.open_kr_stock_db(tmp_path / "kr_stock.db")
+
+    def test_export_rows_land_on_the_existing_page(self, tmp_path):
+        """사용자 결정 — LS ELECTRIC 이 **그 페이지**에 뜬다."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        assert krs.ingest(conn, self.EXP, source_message_id=1,
+                          posted_at="2026-09-01")
+        assert krs.ingest(conn, self.LEGACY, source_message_id=2,
+                          posted_at="2026-09-01")
+        n = conn.execute("SELECT COUNT(*) FROM kr_stock_exports").fetchone()[0]
+        assert n == 4, f"수출 금액판 3개월 + 옛 판 1행이어야 한다: {n}"
+        html = krs.render_html(conn)
+        assert "LS ELECTRIC Co., Ltd." in html and "$158.5M" in html
+        assert "▲+11.8%" in html, "MoM 이 카드에 없다"
+        assert "동관" in html, "품목이 카드에 없다"
+        # 옛 판 카드는 그대로 — 합치면서 형제를 깨면 안 된다(#38).
+        assert "HPSP" in html and "403870" in html
+        # ⚠️ 합성키가 **코드로 새면** 없는 종목코드를 있다고 말한다(#34·#43).
+        assert "nm:" not in html
+
+    def test_synthetic_key_never_duplicates_a_company_card(self, tmp_path):
+        """같은 회사가 두 문법으로 오면 카드가 둘이 되면 안 된다(#45)."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        flow_cap = self.EXP.replace("LS ELECTRIC Co., Ltd.", "HPSP")
+        assert krs.ingest(conn, flow_cap, source_message_id=1, posted_at="")
+        assert krs.ingest(conn, self.LEGACY, source_message_id=2, posted_at="")
+        codes = {r[0] for r in conn.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes == {"403870"}, f"같은 회사가 두 키로 쪼개졌다: {codes}"
+        # 반대 방향(옛 판이 먼저 와도) 같은 결과여야 한다.
+        conn2 = krs.open_kr_stock_db(tmp_path / "b.db")
+        krs.ingest(conn2, self.LEGACY, source_message_id=2, posted_at="")
+        krs.ingest(conn2, flow_cap, source_message_id=1, posted_at="")
+        codes2 = {r[0] for r in conn2.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes2 == {"403870"}, codes2
+
+    def test_absorbing_a_synthetic_key_merges_instead_of_replacing(self,
+                                                                   tmp_path):
+        """합성키 행을 진짜 코드로 옮길 때 **같은 달이 이미 있으면 병합**한다.
+
+        ⚠️ `UPDATE OR REPLACE` 로 쓰면 충돌한 달의 진짜 코드 행이 통째로
+        지워진다 — 상관·분기매출처럼 옛 지표판만 아는 값이 조용히 사라진다(#45).
+        ⚠️ **왜 헬퍼를 직접 태우나**: 오늘의 ingest 순서로는 그 충돌이 안 난다
+        (`_resolve_code` 가 이름으로 진짜 코드를 먼저 찾으므로 합성키와 진짜
+        코드가 같은 회사에 동시에 존재할 수 없다). 그래서 수집기로 태운 첫
+        픽스처는 OR REPLACE 로 되돌려도 통과했다(실측 2회, #91c). 도달 경로가
+        없는 가드는 가드가 아니므로(#291) 계약을 **헬퍼 수준**으로 못박고,
+        그 사실을 여기 적는다 — 이름 표기가 갈리거나 순서가 바뀌면 그때가
+        이 그물이 필요한 날이다.
+        """
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        krs.upsert_kr_stock(
+            conn, {"stock_code": "403870", "month": "2026-07",
+                   "stock_name": "HPSP", "lead_corr": 0.70,
+                   "rev_value_krw_b": 29.9},
+            chart_media=None, source_message_id=1, posted_at="", raw_text="")
+        conn.execute(
+            "INSERT INTO kr_stock_exports (stock_code, month, stock_name, "
+            "export_value_musd, item) VALUES (?,?,?,?,?)",
+            ("nm:HPSP", "2026-07", "HPSP", 141.7, "웨이퍼"))
+        krs._absorb_synthetic(conn, code="403870", name="HPSP")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-07'").fetchone())
+        assert r["stock_code"] == "403870", r
+        assert r["lead_corr"] == 0.70, f"옛 판 지표가 지워졌다: {r}"
+        assert r["rev_value_krw_b"] == 29.9, f"분기매출이 지워졌다: {r}"
+        assert r["export_value_musd"] == 141.7, f"금액판 값이 안 실렸다: {r}"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM kr_stock_exports").fetchone()[0] == 1
+
+    def test_company_name_spelling_does_not_split_the_card(self, tmp_path):
+        """원천이 같은 회사를 판마다 다르게 적는다 — 금액판
+        `LS ELECTRIC Co., Ltd.` ↔ 옛 판 `LS ELECTRIC`(독립 리뷰 실측).
+        글자 그대로 비교하면 같은 회사가 카드 둘이 된다(#45)."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        assert krs.ingest(conn, self.EXP, source_message_id=1, posted_at="")
+        legacy = self.LEGACY.replace("HPSP (403870)", "LS ELECTRIC (010120)")
+        assert krs.ingest(conn, legacy, source_message_id=2, posted_at="")
+        codes = {r[0] for r in conn.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes == {"010120"}, f"같은 회사가 두 키로 쪼개졌다: {codes}"
+        # ⚠️ 반대 방향(옛 판이 먼저)도 같은 결과여야 한다 — 접기가 붙은
+        # 자리가 **둘**이라(코드 조회 · 합성키 흡수) 한쪽만 고치면 순서에
+        # 따라 갈린다. 실제로 한 방향만 태운 픽스처는 뮤테이션을 통과했다
+        # (#91b 재는 대상이 맞나).
+        conn2 = krs.open_kr_stock_db(tmp_path / "b.db")
+        assert krs.ingest(conn2, legacy, source_message_id=2, posted_at="")
+        assert krs.ingest(conn2, self.EXP, source_message_id=1, posted_at="")
+        codes2 = {r[0] for r in conn2.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes2 == {"010120"}, codes2
+        # 반대 증거 — 접기가 **다른 회사**까지 합치면 안 된다(#146).
+        assert krs.fold_company("A Ltd") != krs.fold_company("B Ltd")
+        # 표시 이름은 원문 그대로다(접기는 맞추기 위한 것, #74).
+        html = krs.render_html(conn)
+        assert "LS ELECTRIC" in html
+
+    def test_flow_rows_do_not_fabricate_correlation_fields(self, tmp_path):
+        """금액판엔 상관·단가가 없다 — 없는 것을 지어내지 않는다(#32·#43)."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        krs.ingest(conn, self.EXP, source_message_id=1, posted_at="")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        for k in ("corr", "dir_hit", "lead_corr", "lead_dir_hit",
+                  "price_yoy", "export_yoy_3m"):
+            assert r[k] is None, (k, r[k])
+
+    def test_import_page_speaks_its_own_direction(self, tmp_path):
+        """수출 문구를 복사만 하면 화면이 스스로 거짓말한다(#55·#34)."""
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "kr_stock_import.db")
+        assert kri.ingest(conn, self.IMP, source_message_id=3, posted_at="")
+        assert conn.execute(
+            "SELECT COUNT(*) FROM kr_stock_imports").fetchone()[0] == 3
+        html = kri.render_html(conn)
+        assert "텔레칩스" in html and "$2,175.2M" in html
+        assert "수입액" in html and "차량용 AP" in html
+        # ⚠️ 페이지 전체 grep 은 **형제 링크 라벨**(한국 수출 데이터(종목별))이
+        # 대신 만족시킨다 — 그건 실재하는 남의 페이지 이름이라 정당하다(#55).
+        # 계약은 "이 페이지 자신의 카드·지표 라벨이 수입이라고 말한다" 이므로
+        # 카드 격자만 잘라서 본다.
+        cards = html.split("<div class='grid'>", 1)[1].split("</div></div>")[0]
+        assert "수출" not in cards, "수입 페이지 카드가 수출이라고 말한다"
+        assert "수출액" not in html, "지표 라벨이 수출로 남았다"
+        # 형제 링크는 실재하는 페이지만(억지로 걸면 404, #84).
+        assert "kr_stock.html" in html and "한국 수출 데이터(종목별)" in html
+
+    def test_empty_import_page_still_renders(self, tmp_path):
+        """빈 상태에서도 페이지를 만들어 nav 404 를 막는다(기존 모듈 규약)."""
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "e.db")
+        html = kri.render_html(conn)
+        assert "한국 수입 데이터(회사별)" in html and "없습니다" in html
+
+    def test_parse_ver_bump_rederives_baked_rows(self, tmp_path):
+        """파서를 고쳐도 이미 구운 값이 안 바뀌는 함정 차단(#18·#21b)."""
+        from trade import kr_company_flow as f
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "v.db")
+        kri.ingest(conn, self.IMP, source_message_id=3, posted_at="")
+        conn.execute("UPDATE kr_stock_imports SET item='옛값', parse_ver=0")
+        kri.ingest(conn, self.IMP, source_message_id=3, posted_at="")
+        items = {r[0] for r in conn.execute(
+            "SELECT DISTINCT item FROM kr_stock_imports")}
+        assert items == {"차량용 AP·프로세서"}, items
+        assert f.PARSE_VER >= 1
+
+    def test_every_test_tree_is_inside_the_commit_gate(self):
+        """게이트 밖 트리의 계약은 **없는 것과 같다**(#24·#54). 2026-09-16
+        실측: `trade/tests` 1,227건이 게이트 밖이라 레지스트리 계약 4건이
+        빨간불인 채 `make test` 가 green 이었다. 이름을 열거하지 않고
+        **파일 시스템에서 파생**해 새 트리가 생기면 여기서 터지게 한다."""
+        import re as _re
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1]
+        trees = sorted({
+            f.parent.relative_to(root).as_posix()
+            for f in root.glob("*/**/test_*.py")
+            if ".venv" not in f.parts and "site-packages" not in f.parts
+        })
+        # 한 트리 안의 하위 디렉터리는 그 트리가 덮는다 — 최상위만 남긴다.
+        roots = []
+        for t in trees:
+            if not any(t != o and t.startswith(o + "/") for o in trees):
+                roots.append(t)
+        assert roots, "테스트 트리를 하나도 못 찾았다(대조 0건 = 실패, #54)"
+        mk = (root / "Makefile").read_text(encoding="utf-8")
+        body = mk.split("\ntest:", 1)[1].split("\n\n", 1)[0]
+        covered = {t for t in _re.findall(r"pytest ([^\n]*)", body)
+                   for t in t.split() if not t.startswith("-")}
+        # `pytest -v` (인자 없음) = pytest.ini testpaths.
+        import configparser
+        cp = configparser.ConfigParser()
+        cp.read(root / "pytest.ini")
+        covered |= set(cp["pytest"].get("testpaths", "").split())
+        # 예외는 **이유와 함께** 명시한다(이름 열거가 아니라 allowlist, #24).
+        exempt = {
+            # 상류 벤더 서브트리. 이 슈트는 `tradingagents` 패키지(+무거운 LLM
+            # 의존성)를 요구해 샌드박스에선 **수집조차 안 된다**(실측 9 errors)
+            # — 게이트에 넣으면 의존성 없는 환경에서 상시 빨간불이다(#25·#260).
+            "TradingAgents/tests",
+        }
+        stale = [t for t in exempt if t not in roots]
+        assert not stale, f"사라진 트리를 아직 면제하고 있다: {stale}"
+        missing = [t for t in roots if t not in covered and t not in exempt]
+        assert not missing, f"게이트 밖 테스트 트리: {missing} (덮는 것: {sorted(covered)})"
+
+    def test_every_source_declares_its_caption_grammar(self):
+        """문법 축이 비면 그 소스는 **어느 형제 계약에도 안 걸린다**(#24·#54).
+        기본값을 안 둔 이유이고, 값은 아는 것만 쓴다(오타 = 조용한 눈멂)."""
+        from trade import badonion_sources as bs
+        known = {"hs", "corr", "amount", "revenue", "ppi"}
+        for src in bs.SOURCES:
+            assert src.grammars, src.key
+            assert set(src.grammars) <= known, (src.key, src.grammars)
+
+    def test_the_corr_contract_scope_cannot_silently_shrink(self):
+        """선택기가 줄면 형제 전수 계약(#262·#261)이 조용히 눈먼다 — 오늘 6개.
+        ⚠️ 하한은 **리터럴**이다(자기 상수로 자기를 검증하면 tautology, #66)."""
+        from trade import badonion_sources as bs
+        corr = [s.key for s in bs.sources_with_grammar("corr")]
+        assert len(corr) >= 6, corr
+        # 반대 증거 — 금액판은 이 계약 밖이다(그게 이 축을 만든 이유다, #25).
+        assert "kri" not in corr and "twr" not in corr
+        # 그리고 수출 페이지는 **둘 다** 받는다(합쳤으니까).
+        krs = next(s for s in bs.SOURCES if s.key == "krs")
+        assert set(krs.grammars) == {"corr", "amount"}, krs.grammars
+
+    def test_parse_ver_bump_clears_a_field_the_new_parse_leaves_empty(self,
+                                                                     tmp_path):
+        """⚠️ 옛 회귀는 이 계약을 **한 글자도 재지 않았다**(리뷰 실측: 리셋을
+        통째로 지워도 전부 green). 필드 보존 병합은 새 파서가 그 칸을 비워도
+        옛 값을 남기므로, 리셋이 실제로 무언가를 바꾸려면 **새 파스가 비우는
+        칸**이 있어야 한다 — MoM 이 선택이 되며 그 경우가 생겼다(#291·#91c)."""
+        from trade import kr_company_flow as kcf
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "i.db")
+        conn.execute(
+            "INSERT INTO kr_stock_imports (company, month, item, value_musd, "
+            "value_mom, parse_ver) VALUES (?,?,?,?,?,?)",
+            ("텔레칩스", "2026-08", "옛품목", 1.0, 99.9, kcf.PARSE_VER - 1))
+        # MoM 이 **없는** 캡션 — 옛 값(99.9)이 남으면 화면이 거짓말한다.
+        cap = ("**🇰🇷 8월 수입 한국**\n\n**▶️ 텔레칩스 — 차량용 AP**\n\n"
+               "**26년08월: $2,175.2M  (+49.4% YoY)**\n")
+        assert kri.ingest(conn, cap, source_message_id=1, posted_at="")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_imports WHERE month='2026-08'").fetchone())
+        assert r["value_mom"] is None, f"옛 MoM 이 남았다: {r}"
+        assert r["value_musd"] == 2175.2 and r["item"] == "차량용 AP", r
+        assert r["parse_ver"] == kcf.PARSE_VER, r
+
+    def test_export_board_also_carries_the_parser_version(self, tmp_path):
+        """합친 수출 테이블에 `parse_ver` 이 없으면 **판을 올려도 그쪽은 안
+        바뀐다**(리뷰 지적) — 두 보드가 같은 엔진을 쓰는데 규율이 갈린다."""
+        from trade import kr_company_flow as kcf
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        assert krs.ingest(conn, self.EXP, source_message_id=1, posted_at="")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        assert r["parse_ver"] == kcf.PARSE_VER, r
+        # 옛 판으로 구워진 행 + MoM 없는 새 캡션 → 옛 MoM 이 지워진다.
+        conn.execute("UPDATE kr_stock_exports SET parse_ver=?, export_mom=?",
+                     (kcf.PARSE_VER - 1, 99.9))
+        cap = ("**🇰🇷 8월 수출 한국**\n\n"
+               "**▶️ LS ELECTRIC Co., Ltd. — 동관**\n\n"
+               "**26년08월: $158.5M  (+105.3% YoY)**\n")
+        assert krs.ingest(conn, cap, source_message_id=2, posted_at="")
+        r2 = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        assert r2["export_mom"] is None, f"옛 MoM 이 남았다: {r2}"
+        # ⚠️ 옛 지표판 칸은 **건드리지 않는다** — 다른 문법이다.
+        conn.execute("UPDATE kr_stock_exports SET lead_corr=0.7, parse_ver=?",
+                     (kcf.PARSE_VER - 1,))
+        assert krs.ingest(conn, cap, source_message_id=3, posted_at="")
+        r3 = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        assert r3["lead_corr"] == 0.7, f"옛 판 지표까지 지웠다: {r3}"
+
+    def test_registry_places_the_new_source_next_to_its_sibling(self):
+        """nav 자리는 축(country/basis/flow)에서 **계산**된다(#24)."""
+        from trade import badonion_sources as bs
+        order = list(bs._nav_order())
+        assert "kri" in order and order.index("kri") == order.index("krs") + 1
+        src = {s.key: s for s in bs.SOURCES}["kri"]
+        assert src.country == "한국" and src.basis == "company"
+        assert src.flow == "import"
+        assert src.html_file and src.db_file
