@@ -810,7 +810,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                   "/jp52", "/hk52", "/kr52", "/cn52",
                                   "/hkmovers", "/jpmovers", "/cnmovers",
                                   "/jphighlow", "/nxt", "/krprepost",
-                                  "/krvolume")
+                                  "/krvolume", "/krafter")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -938,6 +938,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if raw == "/krprepost":
             return self._handle_simple_page(
                 "bot.intl_pages", "render_kr_prepost_page")
+        # /krafter — KRX 애프터마켓(16:00–20:00 KST) 급등·급락 (공지 153, 2026-09-16).
+        if raw == "/krafter":
+            return self._handle_simple_page(
+                "bot.intl_pages", "render_kr_after_page")
         # /krvolume — KR 거래량 상위 (네이버 실시간 랭킹 형식, 2026-09-16).
         if raw == "/krvolume":
             return self._handle_simple_page(

@@ -11793,12 +11793,12 @@ class TestUsPrepost:
         # 직전 스냅샷 서빙 중 최근 집계 실패면 페이지에 '사유' 배너 노출 (silent-fail
         # 제거, 실수 #12) — 사용자가 '왜 오늘 장전이 안 보이는지' 화면에서 즉시 인지.
         import bot.prepost_client as pp
-        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda: {
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
             "up": [{"ticker": "005930.KS", "name": "삼성전자", "price": 80000,
                     "pct": 1.2, "vol": 50000, "value": 40.0, "mcap": 5e6,
                     "session": "post"}],
             "down": [], "ts": "2026-06-18 19:58", "source": "x", "session": "post"})
-        monkeypatch.setattr(pp, "kr_prepost_status", lambda: {
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {
             "state": "failed", "ts_label": "2026-06-19 08:30",
             "detail": "universe 실패(네이버 무버 0)", "scanned": 0})
         from bot.intl_pages import render_kr_prepost_page
@@ -11806,7 +11806,7 @@ class TestUsPrepost:
         assert "최근 NXT 집계 실패" in html
         assert "universe 실패(네이버 무버 0)" in html and "2026-06-19 08:30" in html
         # state=done 이면 배너 없음(스냅샷이 곧 최신)
-        monkeypatch.setattr(pp, "kr_prepost_status", lambda: {"state": "done"})
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {"state": "done"})
         assert "최근 NXT 집계 실패" not in render_kr_prepost_page()
 
     def test_light_board_warm_kr_ext_uses_kst_weekday(self):
@@ -19064,7 +19064,7 @@ class TestKrPrepostBoard20260616:
 
     def test_kr_page_renders_with_data(self, monkeypatch):
         import bot.prepost_client as pp
-        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda: {
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
             "up": [{"ticker": "005930.KS", "name": "삼성전자", "price": 342000.0,
                     "pct": 1.48, "vol": 1000, "mcap": 4500000.0}],
             "down": [{"ticker": "000660.KS", "name": "SK하이닉스", "price": 210000.0,
@@ -45265,6 +45265,8 @@ def _fetching_pages() -> list:
         P("bot.prepost_client.kr_prepost_status",
           return_value={"label": "장후", "open": True})
         out.append(("kr_prepost", _ip.render_kr_prepost_page()))
+        # KRX 애프터마켓 보드(사용자 2026-09-16) — 같은 엔진·다른 창.
+        out.append(("kr_after_krx", _ip.render_kr_after_page()))
         P("bot.naver_sector_client.fetch_themes", return_value={
             "themes": [{"name": "AI", "pct": 3.2, "url": "https://x",
                         "leaders": [{"name": "삼성전자", "code": "005930"}],
@@ -66379,3 +66381,153 @@ class TestKrVolumeAndSessions20260916:
         assert len(hit) == 1 and hit[0].nav_label == "네이버증권", hit
         assert hit[0].in_sites is False, "/sites 파티 검사가 이걸 요구하게 된다"
         assert "네이버증권" in nav_html()
+
+
+class TestKrxAfterMarketBoard20260916:
+    """🏛️ KRX 애프터마켓(16:00–20:00 KST) 급등·급락 (사용자 2026-09-16).
+
+    공지 153 로 KRX 에도 애프터마켓이 생겼다. NXT 보드와 **같은 엔진**을
+    쓰고 창만 다르다 — 복제하면 두 보드의 랭킹 규약이 곧 갈라진다(#38·#84).
+    """
+
+    def _rows(self):
+        return [{"ticker": "005930.KS", "name": "삼성전자", "price": 80000,
+                 "pct": 2.1, "vol": 1000, "value": 3.0, "mcap": 5.0}]
+
+    # ── 엔진 ────────────────────────────────────────────────────────
+    def test_two_venues_never_share_a_cache_file(self):
+        """같은 파일을 쓰면 창이 다른 값이 서로를 덮는다(#45 두 모집단)."""
+        from bot.prepost_client import _venue_files
+        a, b = _venue_files("NXT"), _venue_files("KRX")
+        assert a != b and a[0] != b[0] and a[1] != b[1], (a, b)
+        # 오타는 조용히 NXT 로 떨어지면 안 된다 — 이름을 대서 거부한다(#82).
+        import pytest
+        with pytest.raises(ValueError):
+            _venue_files("KOSPI")
+
+    def test_krx_window_starts_20_minutes_after_nxt(self):
+        """#371 의 급소 — 15:40~16:00 은 NXT 만 연장 체결 창이다."""
+        from datetime import datetime
+
+        from bot.kr_session import KST
+        from bot.prepost_client import _current_kr_session, _in_kr_extended_window
+        d = lambda h, m: datetime(2026, 9, 16, h, m, tzinfo=KST)   # noqa: E731
+        assert _in_kr_extended_window(d(15, 45), "NXT") is True
+        assert _in_kr_extended_window(d(15, 45), "KRX") is False
+        assert _in_kr_extended_window(d(16, 30), "KRX") is True
+        assert _in_kr_extended_window(d(20, 1), "KRX") is False
+        # KRX 엔 프리마켓이 없다 — 'pre' 가 나오면 화면이 없는 세션을 말한다.
+        assert _current_kr_session(d(8, 30), "KRX") == ""
+        assert _current_kr_session(d(8, 30), "NXT") == "pre"
+        assert _current_kr_session(d(16, 30), "KRX") == "post"
+
+    def test_scan_writes_to_its_own_venue_files(self, tmp_path, monkeypatch):
+        """수집기를 통째로 태운다 — 헬퍼만 재면 venue 배선을 못 잡는다(#20)."""
+        import bot.finviz_client as fv
+        import bot.prepost_client as pp
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(pp, "_kr_movers_universe",
+                            lambda: (["005930.KS"], {"005930.KS": "삼성전자"},
+                                     {"005930.KS": 5.0}))
+        monkeypatch.setattr("bot.naver_quote.fetch_kr_quote", lambda t: {
+            "over_session": "AFTER_MARKET", "over_price": 81000.0,
+            "reg_close": 80000.0, "over_volume": 50000, "over_value": 4.05e9,
+            "volume": 9_000_000})
+        monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
+        out = pp._compute_kr_prepost("KRX")
+        assert out["venue"] == "KRX" and out["up"], out
+        krx_cache, krx_status = pp._venue_files("KRX")
+        nxt_cache, _ = pp._venue_files("NXT")
+        assert (tmp_path / krx_cache).exists(), "KRX 결과가 저장되지 않았다"
+        assert not (tmp_path / nxt_cache).exists(), "NXT 캐시를 덮어썼다"
+        assert pp.kr_prepost_status("KRX").get("venue") == "KRX"
+        assert pp.kr_prepost_status("NXT") == {}, "상태 파일이 섞였다"
+
+    def test_one_venue_refresh_does_not_block_the_other(self, monkeypatch):
+        """전역 불리언 하나면 KRX 스캔 중 NXT 갱신이 통째로 막힌다."""
+        import bot.prepost_client as pp
+        started = []
+        monkeypatch.setattr(pp._threading, "Thread",
+                            lambda **kw: type("T", (), {
+                                "start": lambda _s, n=kw.get("name"): started.append(n)})())
+        pp._KR_REFRESHING.clear()
+        try:
+            pp._KR_REFRESHING.add("KRX")          # KRX 가 도는 중
+            pp._kick_kr_refresh("NXT")
+            assert started, "다른 거래소 갱신이 막혔다"
+            pp._kick_kr_refresh("KRX")
+            assert len(started) == 1, "같은 거래소를 중복 실행했다"
+        finally:
+            pp._KR_REFRESHING.clear()
+
+    # ── 화면 ────────────────────────────────────────────────────────
+    def test_page_states_what_it_is_actually_measuring(self, monkeypatch):
+        """체결 귀속은 **재지 않았다** — 라벨을 지어내면 화면이 거짓말한다
+        (#165·#34). 그 사실을 **보이는 줄**로 적는다(#43·#228)."""
+        import bot.intl_pages as ip
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
+            "up": self._rows(), "down": [], "ts": "09-16 17:00",
+            "session": "post", "venue": "KRX"})
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {})
+        html = ip.render_kr_after_page()
+        body = html[html.index('<div id="live-root">'):]
+        assert "아직 재지 않았습니다" in body, "귀속을 안 잰 사실을 안 말한다"
+        assert 'class="sm-note"' in body, "사유가 보이는 줄이 아니다"
+        assert "16:00–20:00" in html, "KRX 창을 안 적었다"
+        assert "15:40" not in body.split('class="grid"')[0], (
+            "KRX 보드가 NXT 창을 적고 있다")
+
+    def test_krx_page_never_says_pre_market(self, monkeypatch):
+        """KRX 는 프리마켓이 없다 — '장전' 을 적으면 없는 세션을 말한다."""
+        import bot.intl_pages as ip
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
+            "up": self._rows(), "down": [], "ts": "", "session": "",
+            "venue": "KRX"})
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {})
+        html = ip.render_kr_after_page()
+        # ⚠️ 표면별 단언은 **그 요소만 잘라서** 본다(#55) — 페이지 꼬리의
+        # live_refresh JS 주석에도 '장전' 이 있어 전체 grep 은 오탐이다.
+        import re as _re
+        titles = _re.findall(r"<h2>(.*?)</h2>", html)
+        assert titles, "패널이 안 그려졌다 — 대조 0건은 통과가 아니다(#54)"
+        assert not any("장전" in t for t in titles), titles
+        assert any("KRX 애프터마켓" in t or "오른 TOP 30" in t for t in titles), titles
+        assert "KRX 애프터마켓" in html
+
+    def test_nxt_board_keeps_its_own_window_and_labels(self, monkeypatch):
+        """2026-09-16 리팩터(#222): 렌더러를 venue 인자로 합쳤다. 남는 보장 =
+        NXT 보드는 종전대로 자기 창·자기 제목을 말한다."""
+        import bot.intl_pages as ip
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
+            "up": self._rows(), "down": [], "ts": "", "session": "post",
+            "venue": "NXT"})
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {})
+        html = ip.render_kr_prepost_page()
+        assert "NXT" in html and "15:40" in html
+        assert "KRX 애프터마켓 급등·급락" not in html
+
+    def test_nav_order_krx_after_sits_between_volume_and_nxt(self):
+        """사용자 지정 — 거래량 상위 → KRX 장후 → NXT 급등·급락."""
+        import inspect
+
+        from bot.naver_pages import _shell
+        from bot.tw_pages import _MARKET_NAV
+        keys = [k for k, _lb in _MARKET_NAV["KR"]]
+        assert keys.index("krvolume") < keys.index("krafter") < keys.index(
+            "krprepost"), keys
+        fb = inspect.getsource(_shell)
+        assert fb.index('_t("krvolume"') < fb.index('_t("krafter"') < fb.index(
+            '_t("krprepost"'), "폴백 toggle 순서가 단일 출처와 다르다"
+
+    def test_krx_route_and_polling_are_wired(self):
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert 'raw == "/krafter"' in srv and '"render_kr_after_page"' in srv
+        assert '"/krafter"' in srv[:srv.index("def do_GET")], "no-cache 목록에 없다"
+        js = open("bot/live_refresh.py", encoding="utf-8").read()
+        assert "'/krafter':'KR'" in js and "'/krafter':120000" in js
+        tg = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert '"render_kr_after_page"' in tg, "워머에 없다 — 방문해야만 채워진다"

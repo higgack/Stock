@@ -89,6 +89,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
                   + _t("kr52", "📈 신고가·신저가")
                   + _t("highlow", "🚀 급등·급락")
                   + _t("krvolume", "📊 거래량 상위")
+                  + _t("krafter", "🏛️ KRX 장후")
                   + _t("krprepost", "🌙 NXT 급등·급락")
                   + _t("nxt", "📊 NXT 수급")
                   + '</div>')

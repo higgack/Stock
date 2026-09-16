@@ -269,6 +269,25 @@
 `overMarketPriceInfo` 가 어느 거래소 체결인지 모르므로 KRX 장후 보드는 배선하지
 않았다. `bot.scripts.kr_board_probe` 가 그걸 재고, 그 출력을 본 뒤에 배선한다.
 
+### KRX 애프터마켓 보드 (2026-09-16, 실수 #371)
+`tests/test_regression.py::TestKrxAfterMarketBoard20260916`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 두 거래소가 캐시·상태 파일을 공유하지 않는다(#45) + 오타는 거부(#82) | ✅ 자동 | `…::test_two_venues_never_share_a_cache_file` |
+| KRX 창은 NXT 보다 20분 늦게 열린다 · KRX 엔 프리마켓 없음 | ✅ 자동 | `…::test_krx_window_starts_20_minutes_after_nxt` |
+| 수집기를 태워 **자기 venue 파일에만** 쓴다(#20) | ✅ 자동 | `…::test_scan_writes_to_its_own_venue_files` |
+| 한 거래소 스캔이 다른 거래소 갱신을 막지 않는다 | ✅ 자동 | `…::test_one_venue_refresh_does_not_block_the_other` |
+| 화면이 **재지 않은 귀속**을 보이는 줄로 밝힌다(#43·#165·#228) | ✅ 자동 | `…::test_page_states_what_it_is_actually_measuring` |
+| KRX 패널 제목에 '장전' 이 없다(없는 세션 금지) | ✅ 자동 | `…::test_krx_page_never_says_pre_market` |
+| 렌더러 합침 뒤에도 NXT 보드는 자기 창·제목(#222) | ✅ 자동 | `…::test_nxt_board_keeps_its_own_window_and_labels` |
+| nav 순서 = 거래량 상위 → KRX 장후 → NXT 급등·급락 | ✅ 자동 | `…::test_nav_order_krx_after_sits_between_volume_and_nxt` |
+| 라우트·no-cache·폴링·워머 배선(#20) | ✅ 자동 | `…::test_krx_route_and_polling_are_wired` |
+
+⚠️ 못 보는 축(#274): **네이버 시간외 블록의 체결 귀속**(KRX인가 NXT인가)은
+아직 측정되지 않았다 — `bot.scripts.kr_board_probe` 를 애프터마켓 창 안에서
+돌려 재고, 그 결과로 화면 문구를 확정한다.
+
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
 2. `_has_pm_override_trigger`/`_check_pm_override_required` — RSI 경계값(74.9/75.0/25.0/25.1), catalyst

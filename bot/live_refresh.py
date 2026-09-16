@@ -25,8 +25,8 @@ LIVE_REFRESH_JS = """<script>
   // 데이터 재서빙·라이브 착시) → 5분으로(사용자 2026-06-16 C 그룹).
   // /krvolume: 서버 캐시 60s · 사용자 지정 2분 주기(2026-09-16) — 30초 폴링이면
   // 3/4 가 같은 바이트 재서빙이다.
-  var MED={'/usprepost':300000,'/krvolume':120000};
-  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR','/krvolume':'KR',
+  var MED={'/usprepost':300000,'/krvolume':120000,'/krafter':120000};
+  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR','/krvolume':'KR','/krafter':'KR',
     '/usmovers':'US','/ushighlow':'US','/usindustry':'US','/usprepost':'US',
     '/jpmovers':'JP','/jp52':'JP','/hkmovers':'HK','/hk52':'HK',
     '/cnmovers':'CN','/twhighlow':'TW','/tw52':'TW'};
