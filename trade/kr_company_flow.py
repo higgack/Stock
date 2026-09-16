@@ -77,10 +77,15 @@ _RE_HEAD = re.compile(r"▶️\s*(?P<body>[^\n]+)")
 _RE_DASH = re.compile(r"\s+[—–―]\s+|\s+-\s+|(?<=\S)[—–―](?=\S)")
 
 # `26년08월: $158.5M  (+105.3% YoY)  (+11.8% MoM)`
+# ⚠️ YoY·MoM 은 **선택**이다. 옛 판은 셋을 모두 요구했는데, 그러면 원천이
+# 한 칸만 빠뜨려도(첫 달이라 MoM 이 없다·`N/A`) 파서가 None 을 돌려주고
+# 관련성 필터가 캡션을 **통째로 드랍**한다 — 이 커밋이 고치려던 바로 그
+# 조용한 유실이다(#83 계열). 같은 모듈의 옛 지표판도 "지표는 전부 선택"이다.
+# 금액(`$…M`)만 필수 — 그게 이 판의 값이다(없으면 받을 것이 없다).
 _RE_MONTHLINE = re.compile(
-    r"(\d{2})\s*년\s*(\d{1,2})\s*월\s*:\s*\$\s*([\d,]+(?:\.\d+)?)\s*M\s*"
-    r"\(\s*([+\-]?\d+(?:\.\d+)?)\s*%\s*YoY\s*\)\s*"
-    r"\(\s*([+\-]?\d+(?:\.\d+)?)\s*%\s*MoM\s*\)")
+    r"(\d{2})\s*년\s*(\d{1,2})\s*월\s*:\s*\$\s*([\d,]+(?:\.\d+)?)\s*M"
+    r"(?:[^\S\n]*\(\s*(?P<yoy>[+\-]?\d+(?:\.\d+)?)\s*%\s*YoY\s*\))?"
+    r"(?:[^\S\n]*\(\s*(?P<mom>[+\-]?\d+(?:\.\d+)?)\s*%\s*MoM\s*\))?")
 
 
 def split_head(body: str) -> tuple[str, str] | None:
@@ -100,23 +105,31 @@ def parse(caption: str, flow: Flow) -> dict | None:
     if not caption or not marker_re(flow.marker, flow.country).search(caption):
         return None
     text = caption.replace("：", ":").replace("*", "")
-    m_head = _RE_HEAD.search(text)
-    if not m_head:
+    heads = list(_RE_HEAD.finditer(text))
+    if not heads:
         return None
+    m_head = heads[0]
     split = split_head(m_head.group("body").strip())
     if split is None:
         return None
     name, item = split
+    # ⚠️ 값은 **이 헤더의 구간 안에서만** 찾는다. 캡션 전체를 훑으면 한
+    # 메시지에 두 회사가 담겼을 때 A 카드에 B 의 금액이 섞여 들어가고 B 는
+    # 통째로 사라진다(형제 `cn_stock_flow` 가 jp_stock 실측으로 얻은 가드 —
+    # 엔진을 새로 쓰면서 안 옮겨 왔다, #38 형제의 가드를 그대로 옮길 것).
+    seg = (text[m_head.start():heads[1].start()] if len(heads) > 1
+           else text[m_head.start():])
     months = []
-    for mm in _RE_MONTHLINE.finditer(text):
-        y, mo, val, yoy, mom = mm.groups()
+    for mm in _RE_MONTHLINE.finditer(seg):
+        y, mo, val = mm.group(1), mm.group(2), mm.group(3)
         if not 1 <= int(mo) <= 12:
             continue
+        yoy, mom = mm.group("yoy"), mm.group("mom")
         months.append({
             "month": f"20{y}-{int(mo):02d}",
             "value_musd": float(val.replace(",", "")),
-            "value_yoy": float(yoy),
-            "value_mom": float(mom),
+            "value_yoy": float(yoy) if yoy is not None else None,
+            "value_mom": float(mom) if mom is not None else None,
         })
     if not months:
         return None

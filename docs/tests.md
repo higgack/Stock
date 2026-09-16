@@ -225,6 +225,12 @@
 | 두 파티 방향이 **다른 추출**을 쓴다(합치면 한쪽이 눈먼다)(#47) | ✅ 자동 | `…::test_both_help_parity_directions_use_different_extraction` |
 | 한국 회사별 금액판 파서가 회사·품목·**전 개월**을 읽는다(#370·#83) | ✅ 자동 | `…::TestKoreaCompanyFlowBoards20260916::test_flow_parser_reads_company_item_and_every_month` |
 | 방향 마커가 수출↔수입을 가른다 — 남의 DB 로 안 들어간다(#370·#83) | ✅ 자동 | `…::test_direction_marker_keeps_the_two_boards_apart` |
+| 마커 세 낱말은 **한 줄** 안에 있어야 한다(줄 넘으면 남의 글이 샌다) | ✅ 자동 | `…::test_marker_words_must_be_on_one_line` |
+| 한 캡션에 두 회사면 **헤더 구간만** 훑는다(#38 형제 가드 이식) | ✅ 자동 | `…::test_two_companies_in_one_caption_do_not_bleed` |
+| YoY·MoM 은 선택 — 한 칸이 없다고 캡션을 드랍하지 않는다(#83·#43) | ✅ 자동 | `…::test_missing_yoy_or_mom_still_stores_the_amount` |
+| 회사명 표기가 갈려도 카드가 둘이 되지 않는다(양방향·반대 증거)(#45·#146) | ✅ 자동 | `…::test_company_name_spelling_does_not_split_the_card` |
+| `PARSE_VER` 리셋이 **실제로 칸을 비운다**(옛 회귀는 무가드였다, #291) | ✅ 자동 | `…::test_parse_ver_bump_clears_a_field_the_new_parse_leaves_empty` |
+| 합친 수출판도 `parse_ver` 을 싣는다 — 옛 지표판 칸은 안 건드린다 | ✅ 자동 | `…::test_export_board_also_carries_the_parser_version` |
 | 레지스트리에서 **한 캡션의 주인은 하나**(SOURCES 순서 = 폴백 순서) | ✅ 자동 | `…::test_exactly_one_registry_source_claims_each_caption` |
 | ▶️ 줄에 대시가 없으면 품목판 — 품목을 회사 칸에 넣지 않는다(#34·#77) | ✅ 자동 | `…::test_item_only_caption_is_not_stored_as_a_company` |
 | 수출 금액판이 **기존 종목별 페이지**에 실린다(사용자 2026-09-16 결정) | ✅ 자동 | `…::test_export_rows_land_on_the_existing_page` |

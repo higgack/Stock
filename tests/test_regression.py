@@ -65790,6 +65790,39 @@ class TestKoreaCompanyFlowBoards20260916:
         # 꼬리 도메인(`badonion.co.kr`)이 품목 슬롯에 앉지 않는다(#330).
         assert "badonion" not in p["item"]
 
+    def test_two_companies_in_one_caption_do_not_bleed(self):
+        """캡션 전체를 훑으면 A 카드에 B 의 금액이 섞이고 B 는 통째로
+        사라진다 — 형제 `cn_stock_flow` 가 jp_stock 실측으로 얻은 가드다(#38)."""
+        from trade import kr_stock_exports as krs
+        two = self.EXP + ("\n\n**▶️ 다른회사 — 다른품목**\n\n"
+                          "**26년08월: $999.0M  (+1.0% YoY)  (+2.0% MoM)**\n")
+        p = krs.parse_kr_stock_flow(two)
+        assert p["stock_name"] == "LS ELECTRIC Co., Ltd.", p
+        vals = [m["value_musd"] for m in p["months"]]
+        assert 999.0 not in vals, f"남의 회사 금액이 섞였다: {p}"
+        assert vals == [158.5, 141.7, 128.8], p
+
+    def test_missing_yoy_or_mom_still_stores_the_amount(self):
+        """한 칸이 빠졌다고 캡션을 드랍하면 그게 이 커밋이 고치려던 **조용한
+        유실**이다(#83). 금액만 필수, 나머지는 선택 — 빈 칸은 None 이다(#43)."""
+        from trade import kr_stock_exports as krs
+        cap = ("**🇰🇷 8월 수출 한국**\n\n**▶️ 어떤회사 — 어떤품목**\n\n"
+               "**26년08월: $158.5M  (+105.3% YoY)**\n\n"
+               "최근 추이 (단위: USD M$)\n26년07월: $141.7M\n")
+        p = krs.parse_kr_stock_flow(cap)
+        assert p is not None, "MoM 이 없다고 통째로 드랍됐다"
+        assert p["months"][0] == {"month": "2026-08", "value_musd": 158.5,
+                                 "value_yoy": 105.3, "value_mom": None}, p
+        assert p["months"][1] == {"month": "2026-07", "value_musd": 141.7,
+                                 "value_yoy": None, "value_mom": None}, p
+
+    def test_marker_words_must_be_on_one_line(self):
+        """마커 세 낱말이 **줄을 넘어** 흩어져도 받으면, 우연히 그 낱말을 품은
+        코멘트가 이 DB 로 샌다(관련성 필터가 곧 파서다)."""
+        from trade import kr_stock_exports as krs
+        scattered = self.EXP.replace("8월 수출 한국", "8월\n수출\n한국")
+        assert krs.parse_kr_stock_flow(scattered) is None, "줄바꿈 마커가 통과"
+
     def test_direction_marker_keeps_the_two_boards_apart(self):
         """수출 파서가 수입 캡션을 삼키면 **남의 DB** 로 들어간다(#83)."""
         from trade import kr_stock_exports as krs
@@ -65888,7 +65921,7 @@ class TestKoreaCompanyFlowBoards20260916:
             "INSERT INTO kr_stock_exports (stock_code, month, stock_name, "
             "export_value_musd, item) VALUES (?,?,?,?,?)",
             ("nm:HPSP", "2026-07", "HPSP", 141.7, "웨이퍼"))
-        krs._absorb_synthetic(conn, code="403870", synth="nm:HPSP")
+        krs._absorb_synthetic(conn, code="403870", name="HPSP")
         r = dict(conn.execute(
             "SELECT * FROM kr_stock_exports WHERE month='2026-07'").fetchone())
         assert r["stock_code"] == "403870", r
@@ -65897,6 +65930,34 @@ class TestKoreaCompanyFlowBoards20260916:
         assert r["export_value_musd"] == 141.7, f"금액판 값이 안 실렸다: {r}"
         assert conn.execute(
             "SELECT COUNT(*) FROM kr_stock_exports").fetchone()[0] == 1
+
+    def test_company_name_spelling_does_not_split_the_card(self, tmp_path):
+        """원천이 같은 회사를 판마다 다르게 적는다 — 금액판
+        `LS ELECTRIC Co., Ltd.` ↔ 옛 판 `LS ELECTRIC`(독립 리뷰 실측).
+        글자 그대로 비교하면 같은 회사가 카드 둘이 된다(#45)."""
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        assert krs.ingest(conn, self.EXP, source_message_id=1, posted_at="")
+        legacy = self.LEGACY.replace("HPSP (403870)", "LS ELECTRIC (010120)")
+        assert krs.ingest(conn, legacy, source_message_id=2, posted_at="")
+        codes = {r[0] for r in conn.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes == {"010120"}, f"같은 회사가 두 키로 쪼개졌다: {codes}"
+        # ⚠️ 반대 방향(옛 판이 먼저)도 같은 결과여야 한다 — 접기가 붙은
+        # 자리가 **둘**이라(코드 조회 · 합성키 흡수) 한쪽만 고치면 순서에
+        # 따라 갈린다. 실제로 한 방향만 태운 픽스처는 뮤테이션을 통과했다
+        # (#91b 재는 대상이 맞나).
+        conn2 = krs.open_kr_stock_db(tmp_path / "b.db")
+        assert krs.ingest(conn2, legacy, source_message_id=2, posted_at="")
+        assert krs.ingest(conn2, self.EXP, source_message_id=1, posted_at="")
+        codes2 = {r[0] for r in conn2.execute(
+            "SELECT DISTINCT stock_code FROM kr_stock_exports")}
+        assert codes2 == {"010120"}, codes2
+        # 반대 증거 — 접기가 **다른 회사**까지 합치면 안 된다(#146).
+        assert krs.fold_company("A Ltd") != krs.fold_company("B Ltd")
+        # 표시 이름은 원문 그대로다(접기는 맞추기 위한 것, #74).
+        html = krs.render_html(conn)
+        assert "LS ELECTRIC" in html
 
     def test_flow_rows_do_not_fabricate_correlation_fields(self, tmp_path):
         """금액판엔 상관·단가가 없다 — 없는 것을 지어내지 않는다(#32·#43)."""
@@ -66009,6 +66070,57 @@ class TestKoreaCompanyFlowBoards20260916:
         # 그리고 수출 페이지는 **둘 다** 받는다(합쳤으니까).
         krs = next(s for s in bs.SOURCES if s.key == "krs")
         assert set(krs.grammars) == {"corr", "amount"}, krs.grammars
+
+    def test_parse_ver_bump_clears_a_field_the_new_parse_leaves_empty(self,
+                                                                     tmp_path):
+        """⚠️ 옛 회귀는 이 계약을 **한 글자도 재지 않았다**(리뷰 실측: 리셋을
+        통째로 지워도 전부 green). 필드 보존 병합은 새 파서가 그 칸을 비워도
+        옛 값을 남기므로, 리셋이 실제로 무언가를 바꾸려면 **새 파스가 비우는
+        칸**이 있어야 한다 — MoM 이 선택이 되며 그 경우가 생겼다(#291·#91c)."""
+        from trade import kr_company_flow as kcf
+        from trade import kr_stock_imports as kri
+        conn = kri.open_kr_stock_import_db(tmp_path / "i.db")
+        conn.execute(
+            "INSERT INTO kr_stock_imports (company, month, item, value_musd, "
+            "value_mom, parse_ver) VALUES (?,?,?,?,?,?)",
+            ("텔레칩스", "2026-08", "옛품목", 1.0, 99.9, kcf.PARSE_VER - 1))
+        # MoM 이 **없는** 캡션 — 옛 값(99.9)이 남으면 화면이 거짓말한다.
+        cap = ("**🇰🇷 8월 수입 한국**\n\n**▶️ 텔레칩스 — 차량용 AP**\n\n"
+               "**26년08월: $2,175.2M  (+49.4% YoY)**\n")
+        assert kri.ingest(conn, cap, source_message_id=1, posted_at="")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_imports WHERE month='2026-08'").fetchone())
+        assert r["value_mom"] is None, f"옛 MoM 이 남았다: {r}"
+        assert r["value_musd"] == 2175.2 and r["item"] == "차량용 AP", r
+        assert r["parse_ver"] == kcf.PARSE_VER, r
+
+    def test_export_board_also_carries_the_parser_version(self, tmp_path):
+        """합친 수출 테이블에 `parse_ver` 이 없으면 **판을 올려도 그쪽은 안
+        바뀐다**(리뷰 지적) — 두 보드가 같은 엔진을 쓰는데 규율이 갈린다."""
+        from trade import kr_company_flow as kcf
+        from trade import kr_stock_exports as krs
+        conn = self._db(tmp_path)
+        assert krs.ingest(conn, self.EXP, source_message_id=1, posted_at="")
+        r = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        assert r["parse_ver"] == kcf.PARSE_VER, r
+        # 옛 판으로 구워진 행 + MoM 없는 새 캡션 → 옛 MoM 이 지워진다.
+        conn.execute("UPDATE kr_stock_exports SET parse_ver=?, export_mom=?",
+                     (kcf.PARSE_VER - 1, 99.9))
+        cap = ("**🇰🇷 8월 수출 한국**\n\n"
+               "**▶️ LS ELECTRIC Co., Ltd. — 동관**\n\n"
+               "**26년08월: $158.5M  (+105.3% YoY)**\n")
+        assert krs.ingest(conn, cap, source_message_id=2, posted_at="")
+        r2 = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        assert r2["export_mom"] is None, f"옛 MoM 이 남았다: {r2}"
+        # ⚠️ 옛 지표판 칸은 **건드리지 않는다** — 다른 문법이다.
+        conn.execute("UPDATE kr_stock_exports SET lead_corr=0.7, parse_ver=?",
+                     (kcf.PARSE_VER - 1,))
+        assert krs.ingest(conn, cap, source_message_id=3, posted_at="")
+        r3 = dict(conn.execute(
+            "SELECT * FROM kr_stock_exports WHERE month='2026-08'").fetchone())
+        assert r3["lead_corr"] == 0.7, f"옛 판 지표까지 지웠다: {r3}"
 
     def test_registry_places_the_new_source_next_to_its_sibling(self):
         """nav 자리는 축(country/basis/flow)에서 **계산**된다(#24)."""

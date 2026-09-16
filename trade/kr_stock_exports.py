@@ -161,8 +161,34 @@ def parse_any(caption: str) -> dict | None:
     return parse_kr_stock_export(caption) or parse_kr_stock_flow(caption)
 
 
+# 법인 접미어. 원천이 같은 회사를 판마다 다르게 적는다(실측: 금액판
+# `LS ELECTRIC Co., Ltd.` ↔ 옛 판 `LS ELECTRIC`).
+_CORP_SUFFIX = ("coltd", "co", "ltd", "inc", "corp", "corporation",
+                "limited", "plc", "llc", "ag", "sa", "주식회사")
+
+
+def fold_company(name: str) -> str:
+    """비교용으로 접은 회사명 — 대소문자·공백·구두점·법인 접미어를 뺀다.
+
+    ⚠️ 접기는 **맞추기 위한 것**이지 표시용이 아니다. 너무 세게 접으면 다른
+    회사가 합쳐지므로(그건 더 나쁜 오류다) 꼬리의 법인 접미어만 벗긴다."""
+    t = "".join(ch for ch in (name or "").lower() if ch.isalnum())
+    changed = True
+    while changed and t:
+        changed = False
+        for suf in _CORP_SUFFIX:
+            if len(t) > len(suf) and t.endswith(suf):
+                t, changed = t[:-len(suf)], True
+                break
+    return t or "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
+# 금액판이 만드는 칸 — 파서 판이 오르면 이것만 다시 채운다.
+_FLOW_DERIVED = ("item", "export_value_musd", "export_yoy", "export_mom")
+
+
 def _absorb_synthetic(conn: sqlite3.Connection, *, code: str,
-                      synth: str) -> None:
+                      name: str) -> None:
     """합성키 행을 진짜 코드로 옮긴다 — **같은 달이 이미 있으면 병합**한다.
 
     ⚠️ `UPDATE OR REPLACE` 로 쓰면 충돌한 달의 **진짜 코드 행이 통째로
@@ -170,11 +196,17 @@ def _absorb_synthetic(conn: sqlite3.Connection, *, code: str,
     (상관·분기매출)이 들어 있어 조용한 데이터 유실이 된다 — 이 모듈의
     다른 쓰기와 같은 **필드 보존 병합** 규약을 여기서도 지킨다(#45).
     """
-    rows = conn.execute(
-        "SELECT * FROM kr_stock_exports WHERE stock_code=?",
-        (synth,)).fetchall()
+    # ⚠️ 합성키도 **접은 이름**으로 찾는다 — 금액판이 `LS ELECTRIC Co., Ltd.`
+    # 로 저장해 뒀는데 옛 판이 `LS ELECTRIC` 로 오면 정확 일치로는 못 찾아
+    # 카드가 둘로 남는다(#45).
+    want = fold_company(name)
+    rows = [r for r in conn.execute(
+        "SELECT * FROM kr_stock_exports WHERE stock_code LIKE ?",
+        (_NAME_KEY + "%",)).fetchall()
+        if fold_company(r["stock_name"] or "") == want]
     for r in rows:
         src = dict(r)
+        synth = src["stock_code"]
         month = src.get("month") or ""
         ex = conn.execute(
             "SELECT * FROM kr_stock_exports WHERE stock_code=? AND month=?",
@@ -208,14 +240,19 @@ def _resolve_code(conn: sqlite3.Connection, *, code: str | None,
       없을 때만 합성키를 만든다.
     """
     if code:
-        _absorb_synthetic(conn, code=code, synth=_NAME_KEY + name)
+        _absorb_synthetic(conn, code=code, name=name)
         return code
-    row = conn.execute(
-        "SELECT stock_code FROM kr_stock_exports WHERE stock_name=? "
-        "AND stock_code NOT LIKE ? ORDER BY month DESC LIMIT 1",
-        (name, _NAME_KEY + "%")).fetchone()
-    if row and row["stock_code"]:
-        return row["stock_code"]
+    # ⚠️ 두 판이 회사를 **다르게 적는다** — 금액판 `LS ELECTRIC Co., Ltd.` ·
+    # 옛 판 `LS ELECTRIC`. 글자 그대로 비교하면 같은 회사가 카드 둘이 된다
+    # (#45, 독립 리뷰 실측). 대소문자·공백·구두점과 법인 접미어를 걷어낸
+    # **접은 이름**으로 맞춘다 — 표시 이름은 원문 그대로 둔다(#74 값은 원본).
+    want = fold_company(name)
+    for r in conn.execute(
+            "SELECT stock_code, stock_name FROM kr_stock_exports "
+            "WHERE stock_code NOT LIKE ? ORDER BY month DESC",
+            (_NAME_KEY + "%",)):
+        if r["stock_code"] and fold_company(r["stock_name"] or "") == want:
+            return r["stock_code"]
     return _NAME_KEY + name
 
 
@@ -226,6 +263,7 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
   stock_name TEXT,
   price_yoy REAL, export_yoy REAL, export_yoy_3m REAL,
   export_value_musd REAL, export_mom REAL, item TEXT,
+  parse_ver INTEGER,
   corr REAL, dir_hit REAL, corr_basis TEXT,
   lead_corr REAL, lead_dir_hit REAL,
   rev_quarter TEXT, rev_value_krw_b REAL, rev_yoy REAL,
@@ -240,7 +278,7 @@ CREATE TABLE IF NOT EXISTS kr_stock_exports (
 
 _COLS = ("stock_code", "month", "stock_name", "price_yoy", "export_yoy",
          "export_yoy_3m", "export_value_musd", "export_mom",
-         "item") + _metrics.FIELDS + (
+         "item", "parse_ver") + _metrics.FIELDS + (
          "rev_quarter",
          "rev_value_krw_b", "rev_yoy", "chart_media", "source_message_id",
          "posted_at", "raw_text", "updated_at")
@@ -258,7 +296,7 @@ def open_kr_stock_db(path: str | Path) -> sqlite3.Connection:
             conn.execute("PRAGMA table_info(kr_stock_exports)")}
     added = dict(_metrics.FIELD_TYPES)
     added.update({"export_value_musd": "REAL", "export_mom": "REAL",
-                  "item": "TEXT"})
+                  "item": "TEXT", "parse_ver": "INTEGER"})
     for col, decl in added.items():
         if col not in have:
             conn.execute(
@@ -279,6 +317,14 @@ def upsert_kr_stock(conn: sqlite3.Connection, row: dict, *, chart_media,
         "SELECT * FROM kr_stock_exports WHERE stock_code=? AND month=?",
         (code, month)).fetchone()
     exd = dict(ex) if ex is not None else None
+    # 금액판 파생 필드는 **파서 판이 올라가면 비우고 다시 채운다**(#18) —
+    # 필드 보존 병합은 새 파서가 그 칸을 비워도 옛 값을 남기기 때문이다
+    # (`value_mom` 은 원천이 안 주면 실제로 None 이 된다, 리뷰 실측).
+    # ⚠️ 옛 지표판(상관·분기매출)은 건드리지 않는다 — 그건 다른 문법이다.
+    if (exd is not None and row.get("parse_ver")
+            and (exd.get("parse_ver") or 0) < row["parse_ver"]):
+        for k in _FLOW_DERIVED:
+            exd[k] = None
     incoming = {**row, "chart_media": chart_media,
                 "source_message_id": source_message_id,
                 "posted_at": posted_at, "raw_text": raw_text}
@@ -333,7 +379,8 @@ def ingest(conn: sqlite3.Connection, caption: str, *, source_message_id=None,
              "item": flow["item"], "month": mrow["month"],
              "export_value_musd": mrow["value_musd"],
              "export_yoy": mrow["value_yoy"],
-             "export_mom": mrow["value_mom"]},
+             "export_mom": mrow["value_mom"],
+             "parse_ver": _flow.PARSE_VER},
             chart_media=chart, source_message_id=source_message_id,
             posted_at=posted_at, raw_text=caption)
         saved = saved or ok
