@@ -5659,7 +5659,8 @@ def backfill_unparsed_once_if_needed(days_back: int = 60) -> dict | None:
         # ⚠️ 예산으로 중단된 실행이 지문을 남기면 **남은 날짜는 그 배포에서
         # 영영 재추출되지 않는다** — 만들려던 회수 경로가 무력해진다(독립
         # 리뷰 2026-08-31). 다음 실행이 이어서 돌게 둔다(이미 채운 항목은
-        # `_has_meaningful_detail` 가 건너뛰므로 중복 비용 없음).
+        # 위 `cur` 게이트가 건너뛴다 — `_WINDOW_REPARSE_KW` 제목만 다시 태우고
+        # 그것도 줄이 늘 때만 교체하므로 중복 비용이 유계다).
         stats["aborted"] = True
         log.info("dart_feed 미파싱 재추출: 예산으로 중단 — 지문 미기록"
                  "(다음 실행이 이어감)")
