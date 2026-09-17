@@ -42,6 +42,7 @@ import time
 from bot.chart_translate import _MAX_BATCH
 from bot.finviz_client import MCAP_PERSIST_TTL
 from bot.twse_client import _TW_IND_CACHE_TTL
+from bot.twse_client import retry_note as _retry_note
 
 _PROBE_VER = 6
 # 문턱은 **제품에서 가져온다** — 복제하면 진단이 화면과 다른 말을 한다(#38).
@@ -61,35 +62,6 @@ def _age_label(sec: float | None, none: str = "파일 없음") -> str:
         return none
     h = sec / 3600.0
     return f"{h:.1f}시간 전" if h >= 1 else f"{sec / 60:.0f}분 전"
-
-
-def _retry_note(ind_cache: dict, labels: list[str] | None) -> str:
-    """"언제 다시 시도하나" 를 **기록된 사실**로만 적는다 — 약속이 아니라
-    마지막 시도 시각과 연속 실패 단이다(#380·#165·#82).
-
-    `labels` 가 None 이면 전 소스를 훑는다(낡음 갈래). 시도 기록이 없는 소스도
-    **건너뛰지 않고** 그렇게 말한다 — 침묵하면 '곧 된다'로 읽힌다(#43·#54).
-    """
-    from bot.twse_client import _TW_IND_SOURCES, _retry_delay
-    labs = labels if labels else [lab for lab, _u in _TW_IND_SOURCES]
-    now, parts = time.time(), []
-    tried = ind_cache.get("tried") or {}
-    fails = ind_cache.get("fails") or {}
-    for lab in labs:
-        t = tried.get(lab)
-        if t is None:
-            parts.append(f"{lab}: 시도 기록 없음")
-            continue
-        nf = int(fails.get(lab) or 0)
-        left = _retry_delay(nf) - (now - float(t))
-        when = ("다음 렌더에 재시도" if left <= 0
-                else f"{left / 60:.0f}분 뒤 재시도 가능")
-        parts.append(f"{lab}: 마지막 시도 {_age_label(now - float(t))}"
-                     + (f" · 연속 실패 {nf}회" if nf else "") + f" · {when}")
-    # ⚠️ `parts` 는 항상 비지 않는다(`labs` 가 비지 않으므로) — 빈 경우의 폴백을
-    # 두면 발화 경로 없는 가드가 된다(#291·#373). 기록 없음은 **소스별 문구**로
-    # 표현되고 그쪽은 실제로 도달한다.
-    return "재시도 " + " / ".join(parts)
 
 
 def ind_cache_probe(tw) -> dict:

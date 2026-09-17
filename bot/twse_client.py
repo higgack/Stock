@@ -518,12 +518,19 @@ def _merge_industry_by(by: dict) -> dict[str, str]:
     않는다(미스로 남아야 yfinance `.TWO` 폴백이 돈다 — _fetch_one_industry_source
     와 같은 규약, #38)."""
     out: dict[str, str] = {}
+    # ⚠️ 같은 類股명이 수백 종목에 반복되므로 **값 단위로 메모**한다 — 옛 판은
+    # 이미 한국어인 값에도 47키 prefix 루프를 돌려 렌더 경로에서 8.4ms 를 썼다
+    # (독립 리뷰 2026-09-17 M6 실측). 값은 한 글자도 안 바뀐다.
+    seen: dict[str, str] = {}
     for label, _url in _TW_IND_SOURCES:
         rows = by.get(label)
         if not isinstance(rows, dict):
             continue
         for code, ind in rows.items():
-            nm = _sector_kr(ind)
+            key = str(ind)
+            nm = seen.get(key)
+            if nm is None:
+                nm = seen[key] = _sector_kr(key)
             if nm:
                 out[str(code)] = nm
     return out
@@ -615,6 +622,11 @@ def industry_source_note() -> str:
     같다(#25·#260). 그리고 이 문장은 **우리 맵에 대한 주장**이지 "그 종목에
     업종이 없다" 가 아니다(#375) — 맵 밖은 느린 yfinance 개별조회가 채우므로
     '일부는 빌 수 있다' 까지만 적는다.
+
+    ⚠️ 낡음의 **원인을 단정하지 않는다**(독립 리뷰 2026-09-17 H1): 첫 판은
+    `state == "stale"` 이면 실패가 한 건도 없어도 "갱신이 실패하고 있습니다"
+    를 찍었다. 처방이 정반대인 두 세계(실패 중 = 원천·수집을 봐야 한다 /
+    아직 아무도 안 물어봄 = 다음 렌더가 그냥 갱신한다)를 `fails` 로 가른다(#82).
     """
     st = industry_cache_state()
     state = st["state"]
@@ -623,20 +635,25 @@ def industry_source_note() -> str:
     if state == "partial":
         miss = "·".join(str(x) for x in st["missing"])
         return (f"⚠️ 업종 맵에 {miss} 가 없습니다 — 그 종목 업종은 느린 개별조회로만 "
-                f"채워져 일부가 비어 보일 수 있습니다"
-                f"{_tried_suffix(st, st['missing'])}")
+                f"채워져 일부가 비어 보일 수 있습니다 · {retry_note(st, st['missing'])}")
     if state == "stale":
-        return (f"⚠️ 업종 맵이 낡았습니다(받은 지 {_age_ko(st['data_age'])}) — "
-                f"갱신이 실패하고 있습니다{_tried_suffix(st)}")
+        fails = st.get("fails") or {}
+        bad = [lab for lab in st["by"] if fails.get(lab)]
+        why2 = (f" — {'·'.join(bad)} 갱신이 실패하고 있습니다"
+                if bad else " — 갱신 실패 기록은 없습니다")
+        return (f"⚠️ 업종 맵이 낡았습니다(받은 지 {_age_ko(st['data_age'])})"
+                f"{why2} · {retry_note(st)}")
     # 맵이 아예 없는 갈래들 — 사유를 이름으로 말한다(#82).
-    why = {"absent": "캐시 파일이 없습니다",
+    # ⚠️ 처방은 **이 문장을 읽는 사람**(서버 파일을 못 지우는 대시보드 방문자)이
+    # 할 수 있는 것이어야 한다 — 파손 파일은 다음 갱신이 그대로 덮어쓴다(실측).
+    why = {"absent": "캐시 파일이 아직 없습니다",
            "unknown": "캐시 파일 상태를 못 읽었습니다",
-           "unreadable": f"캐시 파일이 손상됐습니다({st['file']} 삭제)",
+           "unreadable": f"캐시 파일이 손상됐습니다(다음 갱신이 {st['file']} 을 덮어씁니다)",
            "not_dict": "캐시 payload 형식이 다릅니다",
            "not_envelope": "캐시가 옛 형식입니다",
-           "empty": "맵이 비어 있습니다"}.get(state, f"상태 {state}")
-    return (f"⚠️ 업종 맵을 쓸 수 없습니다({why}) — 업종은 종목별 개별조회로만 "
-            f"채워집니다{_tried_suffix(st)}")
+           "empty": "맵이 비어 있습니다"}.get(state, f"알 수 없는 상태 {state}")
+    return (f"⚠️ 업종 맵을 쓸 수 없습니다 — {why}. 업종은 종목별 개별조회로만 "
+            f"채워집니다 · {retry_note(st)}")
 
 
 def _age_ko(sec: float | None) -> str:
@@ -646,19 +663,37 @@ def _age_ko(sec: float | None) -> str:
     return f"{h:.1f}시간" if h >= 1 else f"{sec / 60:.0f}분"
 
 
-def _tried_suffix(st: dict, labels: list | None = None) -> str:
-    """마지막 시도 시각 — **약속이 아니라 기록**을 적는다(#380·#165).
+def retry_note(st: dict, labels: list | None = None) -> str:
+    """"언제 다시 시도하나" 를 **기록된 사실**로만 적는다 — 약속이 아니라
+    마지막 시도 시각 · 연속 실패 단 · 다음 재시도까지다(#380·#165·#82).
 
-    ⚠️ `labels` 를 안 주면 전 소스의 **가장 최근** 시도를 적는데, 부분 상태에서
-    그건 **멀쩡한 소스**의 시각이라 "방금 시도했다" 는 거짓 안심이 된다(회귀가
-    잡았다 — 上櫃 가 30분째 못 받는데 上市 기준으로 '0분 전'). 빠진 소스를
-    말할 땐 **그 소스의** 기록을 적는다(#45 두 모집단).
+    ⚠️ **소스별**로 적는다. 옛 `_tried_suffix` 는 `max(tried)` 한 숫자만 적어
+    (a) 빠진 소스가 30분째 못 들어와도 **멀쩡한 소스**의 '0분 전' 을 말하고
+    (b) 지수 백오프(최대 6h)를 숨겨 "곧 된다" 로 읽혔다(독립 리뷰 H2·H3 실측).
+    ⚠️ 시도 기록이 없는 소스도 **건너뛰지 않는다** — 침묵은 '곧 된다' 로
+    읽힌다(#43·#54).
+
+    화면(`industry_source_note`)과 프로브(`tw_enrich_probe`)가 **이 함수 하나**
+    를 쓴다 — 같은 사실을 두 곳이 따로 쓰면 규약이 갈린다(#38·#35).
     """
+    labs = list(labels) if labels else [lab for lab, _u in _TW_IND_SOURCES]
+    now, parts = time.time(), []
     tried = st.get("tried") or {}
-    want = [tried[k] for k in (labels or tried) if k in tried]
-    if not want:
-        return ""
-    return f" · 마지막 시도 {_age_ko(time.time() - max(want))} 전"
+    fails = st.get("fails") or {}
+    for lab in labs:
+        t = tried.get(lab)
+        if t is None:
+            parts.append(f"{lab}: 시도 기록 없음")
+            continue
+        nf = int(fails.get(lab) or 0)
+        left = _retry_delay(nf) - (now - float(t))
+        when = ("다음 렌더에 재시도" if left <= 0
+                else f"{left / 60:.0f}분 뒤 재시도 가능")
+        parts.append(f"{lab}: 마지막 시도 {_age_ko(now - float(t))} 전"
+                     + (f" · 연속 실패 {nf}회" if nf else "") + f" · {when}")
+    # ⚠️ `labs` 가 비지 않으므로 `parts` 도 비지 않는다 — 빈 경우의 폴백을 두면
+    # 발화 경로 없는 가드가 된다(#291·#373).
+    return "재시도 " + " / ".join(parts)
 
 
 def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:

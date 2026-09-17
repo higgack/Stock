@@ -850,20 +850,35 @@ yfinance 개별조회가 채우고 있었다.
 | 만료는 "갱신이 실패하고 있다" 로 말한다 | ✅ 자동 | `test_stale_says_the_refresh_is_failing` |
 | **두 TW 페이지 모두** 싣고 형제 JP 페이지엔 안 붙는다(#359·#34) | ✅ 자동 | `test_both_tw_panels_carry_it_and_kr_does_not` |
 | 상태 조회가 던져도 페이지는 산다(#315) | ✅ 자동 | `test_a_broken_state_read_does_not_kill_the_page` |
+| 그 실패가 **로그로 남는다**(유일한 흔적 — 감사·프로브가 이 함수를 안 부른다) | ✅ 자동 | `test_a_broken_state_read_is_logged_not_just_swallowed` |
+| 완전본이면 **부제가 한 글자도 안 얻는다**(빈 문자열이 아니라 화면 축) | ✅ 자동 | `test_a_complete_map_adds_nothing_to_the_subtitle` |
+| 낡음은 **실패 기록이 있을 때만** 실패라 말한다(재지 않은 인과 금지) | ✅ 자동 | `test_stale_does_not_claim_a_failure_it_did_not_measure` |
+| `data_age` 미기록 갈래가 문장을 얻는다(가드가 죽으면 경고가 사라진다) | ✅ 자동 | `test_stale_without_a_fetch_timestamp_says_so` |
+| 다음 재시도까지의 **백오프**를 적는다(마지막 시도만 적으면 '곧 된다'로 읽힌다) | ✅ 자동 | `test_partial_states_the_backoff_not_just_the_last_attempt` |
+| 시도 기록이 없는 소스도 **침묵하지 않는다** | ✅ 자동 | `test_a_missing_source_with_no_attempt_record_is_not_silent` |
+| 제품이 내는 모든 '쓸 수 없음' 상태에 **자기 문구**가 있다(#24) | ✅ 자동 | `test_every_unusable_state_has_its_own_phrase` |
 | 부제는 **본문을 만든 뒤** 조립된다 — 그 실행이 채운 캐시를 본다(#114) | ✅ 자동 | `test_the_note_is_built_after_the_body_not_before` |
 
 ⚠️ 회귀가 실제 결함 하나를 잡았다 — 첫 판의 `_tried_suffix` 가 **전 소스의 가장
 최근 시도**를 적어, 上櫃 가 30분째 못 들어오는데 上市 기준으로 `0분 전` 이라는
 거짓 안심을 냈다(#45 두 모집단). 빠진 소스를 말할 땐 **그 소스의** 기록을 적는다.
 
-⚠️ 뮤테이션 9종 전부 발화. 그중 하나(`stale` 침묵)는 첫 시도가 `"" or (…)` 라
+⚠️ 뮤테이션 13종 전부 발화(독립 리뷰가 첫 판에서 **6종 생존**을 실측했다 — 배선은 잡혔고 문구·계수 축이 뚫려 있었다). 그중 하나(`stale` 침묵)는 첫 시도가 `"" or (…)` 라
 **아무것도 안 바꾼 no-op** 이었고 그 상태로 '생존' 처럼 보였다 — 통과·실패 어느
 쪽이든 그 자리를 실제로 쳤는지 볼 것(#267·#384).
 
 **못 보는 축**(#274): 이 문장은 **우리 맵에 대한 주장**까지다(#375) — "그 종목에
 업종이 없다" 가 아니다. 맵 밖은 느린 yfinance 개별조회가 채우므로 실제로 몇 개가
 비는지는 이 문장이 말하지 않는다(그건 `tw_enrich_probe ③` 이 센다). 그리고 부제는
-`#live-sub` 라 30초 갱신에 따라오지만, 상태가 바뀌는 시점과 갱신 시점은 별개다.
+`#live-sub` 라 표와 같이 갈아끼워지지만 **이 두 페이지는 `live_refresh.SLOW` 라
+1시간 주기**이고 `isOpen()` 이 TW 를 평일 KST 10:00–14:40 으로 잡는다 — 장 밖에서는
+사용자가 새로고침할 때까지 문장이 안 바뀐다(첫 판은 여기에 '30초 갱신' 이라고 적었다,
+#55·#286). 그리고 `industry_cache_state()` 를 렌더당 1회 더 읽는다(웜 캐시 기준 순증
+1회) — 값 단위 메모로 9.3ms → 1ms 대로 줄였지만 0 은 아니다(#116).
+같은 화면의 `업종 분포` 줄(`highlow_render.ind_dist_line`)은 **여전히 모집단을 안
+밝힌다** — 업종이 빈 행을 조용히 버리고 분모 없이 집계하므로 上櫃 가 빠진 날 그
+분포는 上市 편향 표본이다(#45). 이 문장은 빈 칸의 사유만 말하고 그 집계는 손대지
+않았다(독립 리뷰 2026-09-17 M7 — 미조치).
 
 ## ⑥ 한글명 계수는 갈래가 아니라 값으로 (2026-09-17 · 실수 #382)
 

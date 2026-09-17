@@ -27,7 +27,10 @@ def _ind_note() -> str:
     except Exception as exc:                                   # noqa: BLE001
         log.warning("tw 업종 맵 상태 조회 실패: %s", exc)
         return ""
-    return (" · " + note) if note else ""
+    # ⚠️ `_tw_shell` 은 부제를 **이스케이프 없이** 넣는다. 오늘 이 문장에 닿는
+    # 값은 모듈 상수·숫자뿐이지만, 다음 편집이 `st['detail']`(원시 예외)을 실으면
+    # raw HTML 이 된다(독립 리뷰 2026-09-17 L2) — 여기서 한 번 막는다(규칙 7).
+    return (" · " + _html.escape(note)) if note else ""
 
 # 시장별 자식 대시보드 nav — 모두 상호 연결 (사용자 2026-06-13 '캡쳐처럼').
 # (href, label). KR 은 naver _shell 과 동일 셋(kr52 가 _tw_shell 렌더라 여기 포함).

@@ -70967,7 +70967,7 @@ class TestTwIndustrySourceNoteReachesTheScreen20260917:
     """
 
     @staticmethod
-    def _state(tmp_path, monkeypatch, by, fetched=None, tried=None):
+    def _state(tmp_path, monkeypatch, by, fetched=None, tried=None, fails=None):
         import json
         import time
         import bot.twse_client as tw
@@ -70976,7 +70976,8 @@ class TestTwIndustrySourceNoteReachesTheScreen20260917:
         (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
             {"v": 3, "by": by,
              "fetched": fetched if fetched is not None else {k: now for k in by},
-             "tried": tried if tried is not None else {k: now for k in by}}),
+             "tried": tried if tried is not None else {k: now for k in by},
+             "fails": fails or {}}),
             encoding="utf-8")
         return tw
 
@@ -70999,28 +71000,91 @@ class TestTwIndustrySourceNoteReachesTheScreen20260917:
         assert "비어 보일 수 있습니다" in note
         assert "업종이 없" not in note
 
+    def test_partial_states_the_backoff_not_just_the_last_attempt(
+            self, tmp_path, monkeypatch):
+        """"마지막 시도 30분 전" 은 백오프를 숨겨 '곧 된다'로 읽힌다(#380).
+
+        독립 리뷰 2026-09-17 H2 실측: 연속 5회 실패면 다음 재시도는 4시간 뒤인데
+        옛 문구는 그 사실을 한 글자도 안 적었다. 기록만 적되 **전부** 적는다.
+        """
+        import time
+        now = time.time()
+        tw = self._state(tmp_path, monkeypatch, {"上市": {"2330": "반도체"}},
+                         fetched={"上市": now},
+                         tried={"上市": now, "上櫃": now - 1800},
+                         fails={"上櫃": 5})
+        note = tw.industry_source_note()
+        assert "연속 실패 5회" in note, note
+        assert "뒤 재시도 가능" in note, note
+        # 4h 백오프 − 30분 = 210분
+        assert "210분" in note, note
+
+    def test_a_missing_source_with_no_attempt_record_is_not_silent(
+            self, tmp_path, monkeypatch):
+        """기록이 없으면 침묵하지 않는다 — 침묵은 '곧 된다'로 읽힌다(#43·#54).
+
+        옛 `_tried_suffix` 는 `if k in tried` 로 걸러 접미사를 **통째로**
+        떨어뜨렸다(리뷰 H2 짝, 실측 C).
+        """
+        import time
+        now = time.time()
+        tw = self._state(tmp_path, monkeypatch, {"上市": {"2330": "반도체"}},
+                         fetched={"上市": now}, tried={"上市": now})
+        note = tw.industry_source_note()
+        assert "上櫃: 시도 기록 없음" in note, note
+
     def test_unusable_map_names_the_branch_not_one_lumped_phrase(
             self, tmp_path, monkeypatch):
         """처방이 다른 갈래를 한 문구로 뭉뚱그리지 않는다(#82)."""
         import bot.twse_client as tw
         monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
-        assert "캐시 파일이 없습니다" in tw.industry_source_note()
+        assert "캐시 파일이 아직 없습니다" in tw.industry_source_note()
         (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(
             "{oops", encoding="utf-8")
         note = tw.industry_source_note()
-        assert "손상" in note and "삭제" in note, note
+        # ⚠️ 파일명은 **값으로** 집는다 — 옛 단언 `"삭제" in note` 는 f-string
+        # 바깥 리터럴이 대신 만족시켜 파일명을 지워도 통과했다(리뷰 L4·#75).
+        assert "손상" in note and f"{tw._TW_IND_CACHE_KEY}.json" in note, note
+        # 처방은 **읽는 사람이 할 수 있는 것**이어야 한다 — 대시보드 방문자는
+        # 서버 파일을 못 지우고, 파손 파일은 다음 갱신이 그대로 덮어쓴다(리뷰 L1).
+        assert "삭제" not in note, note
         self._state(tmp_path, monkeypatch, {})
         assert "비어 있습니다" in tw.industry_source_note()
 
-    def test_stale_says_the_refresh_is_failing(self, tmp_path, monkeypatch):
+    def test_stale_does_not_claim_a_failure_it_did_not_measure(
+            self, tmp_path, monkeypatch):
+        """낡음의 원인은 둘이고 처방이 정반대다(#82 · 리뷰 H1).
+
+        실패 기록이 0건이면 "갱신이 실패하고 있습니다" 는 **재지 않은 인과**다
+        (#165) — 그 세계에서는 다음 렌더가 그냥 갱신한다.
+        """
         import time
         import bot.twse_client as tw0
         old = time.time() - tw0._TW_IND_CACHE_TTL - 3600
-        tw = self._state(tmp_path, monkeypatch,
-                         {"上市": {"2330": "반도체"}, "上櫃": {"6488": "광전(디스플레이)"}},
+        both = {"上市": {"2330": "반도체"}, "上櫃": {"6488": "광전(디스플레이)"}}
+        tw = self._state(tmp_path, monkeypatch, both,
                          fetched={"上市": old, "上櫃": old})
+        quiet = tw.industry_source_note()
+        assert "낡았습니다" in quiet, quiet
+        assert "갱신이 실패하고 있습니다" not in quiet, quiet
+        assert "갱신 실패 기록은 없습니다" in quiet, quiet
+        # 실패가 실제로 기록됐으면 **그 소스 이름**을 댄다
+        tw = self._state(tmp_path, monkeypatch, both,
+                         fetched={"上市": old, "上櫃": old},
+                         tried={"上市": old, "上櫃": old}, fails={"上櫃": 2})
+        loud = tw.industry_source_note()
+        assert "上櫃 갱신이 실패하고 있습니다" in loud, loud
+        assert "연속 실패 2회" in loud, loud
+
+    def test_stale_without_a_fetch_timestamp_says_so(self, tmp_path, monkeypatch):
+        """`data_age` 가 None 인 갈래는 죽어 있지 않다 — 가드를 지우면
+        `TypeError` 가 `_ind_note` 의 except 에 먹혀 **경고가 통째로 사라진다**
+        (리뷰 M3 — 이 델타가 막으려던 바로 그 침묵)."""
+        tw = self._state(tmp_path, monkeypatch, {"上市": {"2330": "반도체"},
+                                                 "上櫃": {"6488": "광전"}},
+                         fetched={})
         note = tw.industry_source_note()
-        assert "낡았습니다" in note and "갱신이 실패" in note, note
+        assert "받은 지 시각 미기록" in note, note
 
     def test_both_tw_panels_carry_it_and_kr_does_not(self, monkeypatch):
         """배선 — 한 장에만 달면 나머지 화면은 침묵한다(#359·#38).
@@ -71040,13 +71104,97 @@ class TestTwIndustrySourceNoteReachesTheScreen20260917:
                                              "building": False, "status": {}})
         for fn in (tp.render_tw_highlow_page, tp.render_tw_highlow52_page):
             assert mark in fn(), fn.__name__
-        # 같은 shell 을 쓰는 형제 페이지(JP)는 TW 업종 맵과 무관하다 — 남의
+        # 같은 shell 을 쓰는 형제 페이지(JP·KR)는 TW 업종 맵과 무관하다 — 남의
         # 사실을 실으면 그 자체가 거짓말이다(#34 · #25 반대 증거).
+        # ⚠️ 옛 판은 이름에 `kr_does_not` 이라 적고 JP 만 쟀다(리뷰 L3·#55).
         import bot.intl_pages as ip
         monkeypatch.setattr(ip, "fetch_jp_limit_stops",
                             lambda *a, **k: {"up": [], "down": [], "ts": ""},
                             raising=False)
         assert mark not in ip.render_jp_stop_page()
+        import bot.prepost_client as pc
+        monkeypatch.setattr(pc, "fetch_kr_prepost_movers",
+                            lambda *a, **k: {"up": [], "down": [], "ts": ""},
+                            raising=False)
+        assert mark not in ip.render_kr_prepost_page()
+
+    def test_a_complete_map_adds_nothing_to_the_subtitle(self, tmp_path,
+                                                         monkeypatch):
+        """화면 계약은 "빈 문자열" 이 아니라 **부제가 한 글자도 안 얻는다** 이다.
+
+        리뷰 M1 실측: `_ind_note` 를 `" · " + note` 로 바꿔도(정상일에 부제가
+        ` · ` 로 끝난다) 전 슈트가 green 이었다 — 순수 함수만 재고 화면 축을
+        아무도 안 봤기 때문이다(#20·#25·#260).
+        """
+        import bot.tw_pages as tp
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "industry_source_note", lambda: "")
+        assert tp._ind_note() == ""
+        monkeypatch.setattr(tw, "industry_source_note", lambda: "⚠️ 표식")
+        assert tp._ind_note() == " · ⚠️ 표식"
+
+    def test_the_note_is_escaped_before_it_reaches_the_subtitle(self, monkeypatch):
+        """`_tw_shell` 은 부제를 이스케이프 없이 넣는다(규칙 7 · 리뷰 L2).
+
+        오늘 이 문장에 닿는 값은 모듈 상수·숫자뿐이라 안전하지만, 다음 편집이
+        `st['detail']`(원시 예외)을 실으면 raw HTML 이 된다 — 불변식을 잡는 것이
+        아무것도 없었다(뮤테이션 '이스케이프 제거' 가 통과했다).
+        """
+        import bot.tw_pages as tp
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "industry_source_note",
+                            lambda: "<script>x</script> & 'q'")
+        note = tp._ind_note()
+        assert "<script>" not in note and "&lt;script&gt;" in note, note
+        assert "&amp;" in note, note
+
+    def test_a_broken_state_read_is_logged_not_just_swallowed(
+            self, monkeypatch, caplog):
+        """그 경고 한 줄이 **유일한 흔적**이다 — `industry_source_note` 는 어느
+        감사·프로브도 부르지 않는다(리뷰 M4·#12·#20). 값으로 못박는다(#373).
+        """
+        import logging
+        import bot.tw_pages as tp
+        import bot.twse_client as tw
+
+        def _boom():
+            raise RuntimeError("cache blew up")
+
+        monkeypatch.setattr(tw, "industry_source_note", _boom)
+        with caplog.at_level(logging.WARNING, logger="bot.tw_pages"):
+            assert tp._ind_note() == ""
+        assert any("cache blew up" in r.getMessage() for r in caplog.records), \
+            caplog.text
+
+    def test_every_unusable_state_has_its_own_phrase(self):
+        """`why` 는 손 열거라 제품이 새 갈래를 내면 화면에 `상태 xyz` 가 찍힌다
+        (리뷰 M5·#24). 상태 목록을 **제품 AST 에서** 뽑아 대조한다.
+        """
+        import ast
+        import inspect
+        import bot.twse_client as tw
+        tree = ast.parse(inspect.getsource(tw.industry_cache_state).lstrip())
+        assigned = set()
+        for nd in ast.walk(tree):
+            if not isinstance(nd, ast.Assign):
+                continue
+            tgts = [t for t in nd.targets
+                    if isinstance(t, ast.Subscript)
+                    and isinstance(t.slice, ast.Constant) and t.slice.value == "state"]
+            if not tgts:
+                continue
+            for c in ast.walk(nd.value):
+                if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                    assigned.add(c.value)
+        assert {"ok", "partial", "stale", "empty"} <= assigned, assigned
+        note_src = ast.parse(inspect.getsource(tw.industry_source_note).lstrip())
+        keys = set()
+        for nd in ast.walk(note_src):
+            if isinstance(nd, ast.Dict):
+                keys |= {k.value for k in nd.keys
+                         if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        missing = assigned - {"ok", "partial", "stale"} - keys
+        assert not missing, f"화면 문구 없는 상태: {missing}"
 
     def test_the_note_is_built_after_the_body_not_before(self):
         """부제는 **본문을 만든 뒤**에 조립돼야 한다(#114 루프 잔여 상태).
