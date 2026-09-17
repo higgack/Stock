@@ -56695,7 +56695,7 @@ class TestTwEnrichProbe20260910:
     def test_verdict_says_which_branch_emptied_mcap(self):
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=30, render_ok=True, ind_filled=30, map_n=1800, in_map=30,
-                    src_in=30, yf_pause=False, ind_age_sec=600.0)
+                    src_in=30, yf_pause=False, ind_cache=_ind_cache())
         gone = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=None, **base))
         old = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=20 * 3600, **base))
         cold = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=600, **base))
@@ -56709,7 +56709,7 @@ class TestTwEnrichProbe20260910:
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=30, render_ok=True, mcap_filled=0, ind_filled=30,
                     mcap_age_sec=None, map_n=1800, in_map=30, src_in=30, yf_pause=False,
-                    ind_age_sec=600.0)
+                    ind_cache=_ind_cache())
         filled = "\n".join(enrich_verdict(slow=(30, 30), **base))
         still = "\n".join(enrich_verdict(slow=(0, 30), **base))
         assert "캐시 콜드였다" in filled and "파일이 없다" not in filled
@@ -56722,7 +56722,7 @@ class TestTwEnrichProbe20260910:
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=30, render_ok=True, mcap_filled=0, ind_filled=30,
                     mcap_age_sec=None, map_n=1800, in_map=30, src_in=30,
-                    ind_age_sec=600.0)
+                    ind_cache=_ind_cache())
         pause = "\n".join(enrich_verdict(yf_pause=True, **base))
         ok = "\n".join(enrich_verdict(yf_pause=False, **base))
         assert "정지 마커" in pause and "정지 마커" not in ok
@@ -56733,12 +56733,13 @@ class TestTwEnrichProbe20260910:
         모집단을 갈라 '맵이 낡았다' 갈래가 생긴다."""
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=4, render_ok=True, mcap_filled=4, mcap_age_sec=600,
-                    yf_pause=False, ind_age_sec=600.0)
+                    yf_pause=False, ind_cache=_ind_cache())
         stale = "\n".join(enrich_verdict(ind_filled=2, map_n=2, in_map=2, src_in=4, **base))
         wiring = "\n".join(enrich_verdict(ind_filled=0, map_n=1800, in_map=4, src_in=4, **base))
         outage = "\n".join(enrich_verdict(ind_filled=0, map_n=0, in_map=0, src_in=0, **base))
-        nomap = "\n".join(enrich_verdict(**{**base, "ind_age_sec": None},
-                                         ind_filled=0, map_n=0, in_map=0, src_in=4))
+        nomap = "\n".join(enrich_verdict(
+            **{**base, "ind_cache": _ind_cache("absent", None)},
+            ind_filled=0, map_n=0, in_map=0, src_in=4))
         absent = "\n".join(enrich_verdict(ind_filled=2, map_n=1800, in_map=2, src_in=2, **base))
         assert "맵이 낡았다" in stale and "배선" not in stale
         assert "배선 문제" in wiring
@@ -56759,7 +56760,8 @@ class TestTwEnrichProbe20260910:
         from bot.scripts.tw_enrich_probe import enrich_verdict
         txt = "\n".join(enrich_verdict(n=30, render_ok=True, mcap_filled=0, ind_filled=27,
                                        mcap_age_sec=None, map_n=1800, in_map=27,
-                                       src_in=28, yf_pause=False, ind_age_sec=600.0))
+                                       src_in=28, yf_pause=False,
+                                       ind_cache=_ind_cache()))
         assert "27/30, 지금 받은 원천엔 28/30 이 실제로 들어 있다" in txt
 
     def test_verdict_refuses_to_pass_when_there_is_nothing_to_compare(self):
@@ -56767,10 +56769,12 @@ class TestTwEnrichProbe20260910:
         from bot.scripts.tw_enrich_probe import enrich_verdict
         empty = "\n".join(enrich_verdict(n=0, render_ok=True, mcap_filled=0, ind_filled=0,
                                          mcap_age_sec=None, map_n=0, in_map=0, src_in=0,
-                                         yf_pause=False, ind_age_sec=None))
+                                         yf_pause=False,
+                                         ind_cache=_ind_cache("absent", None)))
         broken = "\n".join(enrich_verdict(n=30, render_ok=False, mcap_filled=0, ind_filled=0,
                                           mcap_age_sec=None, map_n=0, in_map=0, src_in=0,
-                                          yf_pause=False, ind_age_sec=None))
+                                          yf_pause=False,
+                                          ind_cache=_ind_cache("absent", None)))
         for txt in (empty, broken):
             assert "❓" in txt and "판정 불가" in txt and "✅" not in txt and "❌" not in txt
         assert "③" in broken
@@ -69844,25 +69848,50 @@ class TestTwKoreanNameStuckDiag20260917:
 # 바로 위 줄에서 TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해
 # (#38) v2 rename 을 못 따라갔고, ③ cache-only 는 같은 실행에서 59/60 을
 # 채우고 있었다(= 화면은 멀쩡한데 진단만 거짓 ❌, #35·#53·#260).
+def _ind_cache(state="ok", age=600.0, detail="", file="tw_industry_map_v2.json",
+               map_=None):
+    """`tw_enrich_probe.ind_cache_probe()` 가 내는 그 모양(#155).
+
+    ⚠️ 나이 하나만 넘기던 첫 판은 호출부가 **시총 캐시 나이**를 넘겨도 전
+    게이트가 통과했다(독립 리뷰 실측 2026-09-17) — 그 helper 가 내는 dict 말고는
+    넘길 것이 없게 만드는 것이 구조적 답이다(#119).
+    """
+    return {"file": file, "age": age, "state": state, "detail": detail,
+            "map": dict(map_ or {})}
+
+
 def _cache_names_in(tree):
-    """(리터럴 캐시 이름, f-string 접두) — 캐시 호출 자리에서만 모은다.
+    """(리터럴 캐시 이름, f-string 접두) — 캐시 호출 자리 + `*.json` 상수.
 
     `_cached(...)`/`_cached_stale(...)`/`_cache_write(...)`/`cache_age_sec(...)`
     의 첫 인자와 `…_CACHE_DIR / "…"` 의 우변. 제품이 `pkey = f"enrich_mcap_
     {market}.json"` 처럼 **변수를 거쳐** 넘기는 경우가 있어 모듈 안의
-    `이름 = f"…"` 대입을 같이 따라간다(안 따라가면 정상 이름이 드리프트로
-    오보된다 — 실측 `enrich_mcap_TW`).
+    `이름 = f"…"`(접두) 와 `이름 = "…"`(정확한 이름) 대입을 같이 따라간다.
+
+    ⚠️ 평문 대입(`이름 = "…"`)을 안 따라가던 첫 판엔 구멍이 있었다 — 프로브가
+    `ind_file = "tw_industry_map.json"` 한 줄로 죽은 이름을 되살려도 스캔이
+    조용했고(독립 리뷰 실측 2026-09-17, #91b), 제품이 캐시 키를 **모듈 상수**
+    (`_TW_IND_CACHE_KEY = "…"`)로 두면 그 이름이 제품 집합에 안 들어가 **맞는**
+    리터럴을 쓴 프로브가 거짓 사유로 걸렸다(#292).
+    ⚠️ 그리고 이 레포 프로브의 지배적 관용구는 **튜플 상수 + 루프 변수**
+    (`_SOURCES = (("a.json", …), …)` → `_cached(name, …)`)라 호출 자리만 보면
+    한 이름도 안 보인다(#24 열거형은 새 모양을 못 잡는다). 그래서 모듈 안의
+    `*.json` 문자열 상수를 **위치 무관**으로 같이 모은다 — `/` 가 들어간 것은
+    경로·URL 이라 뺀다.
     """
     import ast as _ast
     calls = {"_cached", "_cached_stale", "_cache_write", "cache_age_sec"}
-    jvar = {}
+    jvar, svar = {}, {}
     for nd in _ast.walk(tree):
         if (isinstance(nd, _ast.Assign) and len(nd.targets) == 1
-                and isinstance(nd.targets[0], _ast.Name)
-                and isinstance(nd.value, _ast.JoinedStr) and nd.value.values):
-            v = nd.value.values[0]
-            if isinstance(v, _ast.Constant) and isinstance(v.value, str):
-                jvar[nd.targets[0].id] = v.value
+                and isinstance(nd.targets[0], _ast.Name)):
+            if isinstance(nd.value, _ast.JoinedStr) and nd.value.values:
+                v = nd.value.values[0]
+                if isinstance(v, _ast.Constant) and isinstance(v.value, str):
+                    jvar[nd.targets[0].id] = v.value
+            elif (isinstance(nd.value, _ast.Constant)
+                  and isinstance(nd.value.value, str)):
+                svar[nd.targets[0].id] = nd.value.value
 
     def _args():
         for n2 in _ast.walk(tree):
@@ -69878,16 +69907,26 @@ def _cache_names_in(tree):
                     yield n2.right
 
     lits, prefs = set(), set()
+
+    def _lit(nm):
+        lits.add(nm[:-5] if nm.endswith(".json") else nm)
+
     for a in _args():
         if isinstance(a, _ast.Constant) and isinstance(a.value, str):
-            nm = a.value
-            lits.add(nm[:-5] if nm.endswith(".json") else nm)
+            _lit(a.value)
         elif isinstance(a, _ast.JoinedStr) and a.values:
             v = a.values[0]
             if isinstance(v, _ast.Constant) and isinstance(v.value, str) and len(v.value) >= 4:
                 prefs.add(v.value)
+        elif isinstance(a, _ast.Name) and a.id in svar:
+            _lit(svar[a.id])
         elif isinstance(a, _ast.Name) and a.id in jvar:
             prefs.add(jvar[a.id])
+    # 위치 무관 `*.json` 상수 — 튜플/리스트 상수와 루프 변수를 덮는다.
+    for nd in _ast.walk(tree):
+        if (isinstance(nd, _ast.Constant) and isinstance(nd.value, str)
+                and nd.value.endswith(".json") and "/" not in nd.value):
+            _lit(nd.value)
     return lits, prefs
 
 
@@ -69972,6 +70011,74 @@ class TestProbeCacheKeyDrift20260917:
                          encoding="utf-8")
         assert scan_probe_cache_drift(pkg) == []
 
+    def test_the_scan_fires_on_each_way_scripts_name_a_cache(self, tmp_path):
+        """수집 분기마다 발화 경로가 있는지(#291) — 하나라도 무가드면 그 모양의
+        드리프트는 영영 안 보인다.
+
+        셋을 태운다: (a) `X._CACHE_DIR / "…"` BinOp (b) 평문 변수 대입
+        (c) 튜플 상수 + 루프 변수. (b)(c)는 독립 리뷰 실측(2026-09-17)에서
+        **전 게이트를 통과한** 우회로였다 — (b)는 프로브 한 줄로 죽은 이름을
+        되살릴 수 있었고 (c)는 이 레포 프로브의 지배적 관용구다.
+        """
+        pkg = tmp_path / "botz"
+        (pkg / "scripts").mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "src.py").write_text(
+            'KEY = "live_map_v2"\n'
+            'def f():\n'
+            '    return _cached_stale(KEY)\n', encoding="utf-8")
+        ways = {
+            "binop": 'def h(m):\n    return (m._CACHE_DIR / "live_map.json").read_text()\n',
+            "plain_var": 'def h(m):\n    nm = "live_map.json"\n'
+                         '    return (m._CACHE_DIR / nm).read_text()\n',
+            "tuple_loop": '_S = (("live_map.json", "설명"),)\n'
+                          'def h():\n'
+                          '    return [_cached(n) for n, _d in _S]\n',
+        }
+        probe = pkg / "scripts" / "p.py"
+        for tag, code in ways.items():
+            probe.write_text(code, encoding="utf-8")
+            assert scan_probe_cache_drift(pkg) == [(str(probe), "live_map")], tag
+        # 제품이 그 이름을 쓰기 시작하면 조용해진다(반대 증거, #25)
+        (pkg / "src.py").write_text(
+            'def f():\n    return _cached("live_map.json")\n', encoding="utf-8")
+        assert scan_probe_cache_drift(pkg) == []
+
+    def test_a_path_like_json_string_is_not_treated_as_a_cache_name(self, tmp_path):
+        """`"data/dead.json"` 은 경로·URL 이라 캐시 이름이 아니다 — 위치 무관
+        수집을 넣으면서 이 필터를 안 두면 멀쩡한 경로가 드리프트로 찍힌다
+        (#25·#260 시끄러운 가드는 진짜를 가린다). 발화 경로를 둔다(#291).
+        """
+        pkg = tmp_path / "botp"
+        (pkg / "scripts").mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "src.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        (pkg / "scripts" / "p.py").write_text(
+            'def h(p):\n'
+            '    return (p / "data/dead.json").read_text()\n'
+            '    # https://x.example/api/v1/dead.json\n', encoding="utf-8")
+        assert scan_probe_cache_drift(pkg) == []
+        # 같은 이름이 경로 없이 오면 캐시 이름이므로 잡힌다(반대 증거, #25)
+        (pkg / "scripts" / "p.py").write_text(
+            'def h():\n    return _cached("dead.json")\n', encoding="utf-8")
+        assert scan_probe_cache_drift(pkg) == [(str(pkg / "scripts" / "p.py"), "dead")]
+
+    def test_a_module_constant_key_in_the_product_is_not_drift(self, tmp_path):
+        """제품이 캐시 키를 **모듈 상수**로 두면(`_TW_IND_CACHE_KEY = "…"`) 그
+        이름을 그대로 쓴 프로브는 드리프트가 아니다 — 첫 판은 거짓 사유로
+        걸었다(독립 리뷰 실측 2026-09-17, #292).
+        """
+        pkg = tmp_path / "botc"
+        (pkg / "scripts").mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "src.py").write_text(
+            '_KEY = "ind_map_v2"\n'
+            'def f():\n    return _cached_stale(_KEY, max_age_sec=9)\n',
+            encoding="utf-8")
+        (pkg / "scripts" / "p.py").write_text(
+            'def h():\n    return _cached_stale("ind_map_v2")\n', encoding="utf-8")
+        assert scan_probe_cache_drift(pkg) == []
+
     def test_variable_fstring_keys_are_not_reported_as_drift(self, tmp_path):
         """`pkey = f"enrich_mcap_{market}.json"` 처럼 변수를 거치는 정상 이름을
         드리프트로 오보하면 가드가 시끄러워져 진짜를 가린다(#25·#260)."""
@@ -70040,6 +70147,48 @@ class TestTwNameCompositionCountedByValue20260917:
             # 계수만으로 ✅ 가 막힌다(= 갈래 조건이 불필요하다는 증거).
             assert not any(x.startswith("✅") for x in name_verdict([row]))
 
+    def test_mixed_script_value_counts_as_han_and_blocks_the_pass(self):
+        """`창루이機電` 처럼 **한글이 섞인** 답은 쓰기 관문이 의도적으로 통과시킨다
+        (`looks_translated` — #376 의 `百達-KY → 바이다-KY` 퇴로). 한글을 먼저 보면
+        그게 '한글' 로 세어져 `한자 잔존 0 · ✅` 가 되는데 화면엔 機電 이 그대로
+        보인다(독립 리뷰 실측 2026-09-17, #91b) — 계수는 **한자 먼저**다.
+        """
+        from bot.chart_translate import looks_translated
+        from bot.scripts.tw_enrich_probe import name_verdict
+        # 전제: 제품이 이 모양을 실제로 수락한다(가정이 아니라 측정, #50)
+        assert looks_translated("昶瑞機電", "창루이機電")
+        rows = [self._row("3703.TW", "昶瑞機電", "by_title", "창루이機電")]
+        out = name_verdict(rows)
+        assert "한자 잔존 1" in out[0] and "한글 0" in out[0], out[0]
+        assert not any(x.startswith("✅") for x in out)
+        # 갈래를 이름으로 — 기다려도 안 바뀌므로 처방이 '프롬프트' 다(#82)
+        assert any("혼합" in x and "프롬프트" in x for x in out), out
+
+    def test_mixed_count_is_a_subset_of_han_not_a_fourth_bucket(self):
+        """소계 합이 총계와 같아야 한다(#45) — 혼합은 한자의 부분집합이다."""
+        from bot.scripts.tw_enrich_probe import name_verdict
+        rows = [self._row("3703.TW", "昶瑞機電", "by_title", "창루이機電"),
+                self._row("6870.TW", "騰雲", "by_ticker", "騰雲"),
+                self._row("1709.TW", "和益", "by_ticker", "호팍스"),
+                self._row("6542.TW", "隆中", "by_ticker", "Longzhong")]
+        head = name_verdict(rows)[0]
+        assert "총 4종목" in head and "한글 1" in head
+        assert "영문 1" in head and "한자 잔존 2" in head, head
+        assert any("한자 잔존 중 1종목" in x and "혼합" in x
+                   for x in name_verdict(rows))
+
+    def test_pass_line_is_not_printed_under_a_warning(self):
+        """⚠️ 바로 아래 ✅ 는 경고 아래 pass 로 읽힌다 — '한자에 한정' 이라
+        문자적으로 참이어도 덮지 않는다(#41). VM 실측 모양이라 발화 경로가
+        있다(2026-09-17 `1709.TW | 호팍스`, #291).
+        """
+        from bot.scripts.tw_enrich_probe import name_verdict
+        odd = [self._row("1709.TW", "和益", "by_ticker", "1709.TW | 호팍스")]
+        clean = [self._row("1709.TW", "和益", "by_ticker", "호팍스")]
+        assert any("값이 수상한" in x for x in name_verdict(odd))
+        assert not any(x.startswith("✅") for x in name_verdict(odd))
+        assert any(x.startswith("✅") for x in name_verdict(clean))
+
     def test_suspicious_values_read_the_value_not_the_label(self):
         """라벨을 `→` 로 쪼개 읽으면 라벨 문구가 바뀔 때 눈이 먼다(#46·#19)."""
         from bot.scripts.tw_enrich_probe import suspicious_values
@@ -70062,10 +70211,13 @@ class TestTwNameCompositionCountedByValue20260917:
 
 
 class TestTwIndustryMapVerdictBranches20260917:
-    """`map_n == 0` 은 갈래가 셋이고 처방이 전부 다르다(#82).
+    """`map_n == 0` 은 갈래가 여럿이고 처방이 전부 다르다(#82).
 
     첫 판은 하나로 뭉뚱그려 7.7일째 그대로인 파일에 "곧 채워진다"를 적었다 —
     #380("기다리면 된다"는 정말 그 경로가 다시 도는지 재고 말할 것)의 재발.
+    2026-09-17 독립 리뷰가 두 겹을 더 벗겼다: 나이 하나로 접으면 파손·dict아님이
+    '빈 dict' 로 단정되고(#165), 같은 실행(③)이 원천에서 받아 썼는데 "다음
+    렌더가 받는다"를 원인으로 적으면 그 실행이 스스로 반증한다(#55).
     """
 
     @staticmethod
@@ -70073,38 +70225,190 @@ class TestTwIndustryMapVerdictBranches20260917:
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=60, render_ok=True, mcap_filled=60, ind_filled=0,
                     mcap_age_sec=100.0, map_n=0, in_map=0, src_in=60,
-                    yf_pause=False, ind_age_sec=None)
+                    yf_pause=False, ind_cache=_ind_cache("absent", None))
         base.update(kw)
         return "\n".join(enrich_verdict(**base))
 
-    def test_missing_file_says_never_received(self):
-        out = self._v(ind_age_sec=None)
-        assert "한 번도 못 받았다" in out and "만료" not in out
+    def test_missing_file_says_now_not_never(self):
+        """'지금 없다' 까지만 — '한 번도 못 받았다' 는 캐시 정리로도 생긴다(#165)."""
+        out = self._v(ind_cache=_ind_cache("absent", None))
+        assert "지금 캐시 파일이 없다" in out and "만료" not in out
+        assert "한 번도 못 받았다" not in out
+        assert "tw_industry_map_v2.json" in out          # 어느 파일인지 댄다(#43)
 
     def test_expired_file_says_expired_not_missing(self):
         from bot.twse_client import _TW_IND_CACHE_TTL
-        out = self._v(ind_age_sec=_TW_IND_CACHE_TTL * 7.7)
+        out = self._v(ind_cache=_ind_cache("stale", _TW_IND_CACHE_TTL * 7.7))
         assert "만료" in out and "화면은 이 맵을 안 읽는다" in out
-        assert "한 번도 못 받았다" not in out
+        assert "캐시 파일이 없다" not in out
 
     def test_fresh_but_empty_map_is_a_collection_bug(self):
-        out = self._v(ind_age_sec=60.0)
-        assert "빈 dict" in out and "수집·파싱 문제" in out
+        out = self._v(ind_cache=_ind_cache("empty", 60.0))
+        assert "빈 dict" in out
+
+    def test_corrupt_and_wrong_type_are_not_called_an_empty_dict(self):
+        """`_cached_stale` 은 모든 예외를 삼켜 파손도 `0종목` 으로 보인다 — 처방이
+        다르다(파손은 원천 수정이 아니라 파일 삭제, #82·#331·#165)."""
+        bad = self._v(ind_cache=_ind_cache("unreadable", 60.0,
+                                           "UnicodeDecodeError: 0x8d"))
+        typ = self._v(ind_cache=_ind_cache("not_dict", 60.0, "list"))
+        unk = self._v(ind_cache=_ind_cache("unknown", None, "OSError: EIO"))
+        assert "못 읽었다" in bad and "0x8d" in bad and "빈 dict" not in bad
+        assert "삭제" in bad                       # 처방을 댄다
+        assert "dict 가 아니다" in typ and "list" in typ and "빈 dict" not in typ
+        # ⚠️ '판정 불가' 만 집으면 안 된다 — 맨 끝 else 갈래도 같은 말을 해서
+        # `unknown` 분기를 지우는 뮤테이션이 통과했다(실측, #91b·#75). 사유
+        # 원문(stat 예외)을 집어야 그 갈래를 잰다.
+        assert "판정 불가" in unk and "빈 dict" not in unk
+        assert "OSError: EIO" in unk
+        assert len({bad, typ, unk}) == 3
+
+    def test_same_run_refill_is_not_reported_as_a_missing_cache(self):
+        """③ 은 업종맵에 읽기 전용이 아니다 — 콜드면 원천을 받아 쓴다. 그 실행이
+        59/60 을 채웠는데 ❌ '캐시 파일이 없다' 를 찍으면 거짓이다(#55·#79)."""
+        got = self._v(ind_cache=_ind_cache("absent", None), ind_filled=59)
+        none = self._v(ind_cache=_ind_cache("absent", None), ind_filled=0)
+        slow = self._v(ind_cache=_ind_cache("absent", None), ind_filled=0,
+                       slow=(60, 59))
+        for txt in (got, slow):
+            assert txt.startswith("✅") or "⚠️ 업종" in txt
+            assert "이 실행" in txt and "다음 렌더부터 캐시로 뜬다" in txt
+            assert "다음 렌더가 받는다" not in txt
+        assert "❌ 업종" in none and "다음 렌더가 받는다" in none
+        assert "이 실행" not in none
 
     def test_verdict_never_promises_soon_without_measuring(self):
-        """'곧 채워진다' 는 재지 않은 약속이었다 — 세 갈래 어디에도 없어야 한다."""
+        """'곧 채워진다' 는 재지 않은 약속이었다 — 어느 갈래에도 없어야 한다."""
         from bot.twse_client import _TW_IND_CACHE_TTL
-        for age in (None, 60.0, _TW_IND_CACHE_TTL * 7.7):
-            assert "곧 채워진다" not in self._v(ind_age_sec=age)
+        for st, age in (("absent", None), ("empty", 60.0),
+                        ("stale", _TW_IND_CACHE_TTL * 7.7),
+                        ("unreadable", 60.0), ("not_dict", 60.0),
+                        ("unknown", None)):
+            assert "곧 채워진다" not in self._v(ind_cache=_ind_cache(st, age))
 
-    def test_probe_passes_the_measured_age_into_the_verdict(self):
-        """배선 — 나이를 안 넘기면 세 갈래가 하나로 무너진다(#20)."""
+    def test_probe_passes_the_cache_probe_result_into_the_verdict(self):
+        """배선 — `ind_cache_probe()` 가 낸 그 dict 를 넘기는지 본다(#20).
+
+        ⚠️ kwarg 이름만 단언하던 첫 판은 **값**을 틀리게 넘기는 변형(시총 캐시
+        나이)을 못 잡았다(독립 리뷰 실측). 개수를 박지 않는다 — 계약은 "모든
+        호출부가 그 helper 의 결과를 넘긴다" 이고 required kwarg(TypeError)가
+        빠뜨림은 이미 구조로 막는다(#19·#67).
+        """
         import ast
         import pathlib
         src = (pathlib.Path(__file__).resolve().parent.parent
                / "bot/scripts/tw_enrich_probe.py").read_text(encoding="utf-8")
-        calls = [n for n in ast.walk(ast.parse(src))
-                 if isinstance(n, ast.Call)
+        tree = ast.parse(src)
+        bound = {t.id for nd in ast.walk(tree)
+                 if isinstance(nd, ast.Assign) and isinstance(nd.value, ast.Call)
+                 and getattr(nd.value.func, "id", "") == "ind_cache_probe"
+                 for t in nd.targets if isinstance(t, ast.Name)}
+        assert bound, "프로브가 ind_cache_probe() 를 부르지 않는다"
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                  and getattr(n.func, "id", "") == "enrich_verdict"]
-        assert len(calls) == 1
-        assert "ind_age_sec" in {k.arg for k in calls[0].keywords}
+        assert calls
+        for c in calls:
+            kw = {k.arg: k.value for k in c.keywords}
+            assert "ind_cache" in kw, "판정에 캐시 상태를 안 넘긴다"
+            assert getattr(kw["ind_cache"], "id", "") in bound, (
+                "ind_cache 에 ind_cache_probe() 결과가 아닌 값을 넘긴다(#91b)")
+
+
+class TestTwIndCacheProbeMeasuresTheProductFile20260917:
+    """② 가 **제품이 쓰는 그 파일**을 재는지 값으로 — 이름 리터럴이 v2 rename 을
+    못 따라가 죽은 파일(184.8시간 전)을 쟀다(#35·#38·#53).
+
+    ⚠️ 운영 캐시 dir 은 절대 안 건드린다 — `_CACHE_DIR` 을 tmp 로 갈아끼운다
+    (#30·#312·#344).
+    """
+
+    @staticmethod
+    def _probe(tmp_path, monkeypatch, payload, name=None, raw=None):
+        import json
+        import bot.twse_client as tw
+        from bot.scripts.tw_enrich_probe import ind_cache_probe
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
+        if name:
+            (tmp_path / name).write_text(
+                raw if raw is not None else json.dumps(payload), encoding="utf-8")
+        return ind_cache_probe(tw)
+
+    def test_it_reads_the_product_key_not_the_pre_v2_name(self, tmp_path, monkeypatch):
+        from bot.twse_client import _TW_IND_CACHE_KEY
+        assert _TW_IND_CACHE_KEY != "tw_industry_map", (
+            "제품이 rename 을 되돌렸다면 이 테스트의 전제를 다시 써라(#222)")
+        # 죽은 옛 이름만 있으면 '없다' 여야 한다 — 그걸 재던 것이 원래 버그다.
+        got = self._probe(tmp_path, monkeypatch, {"2330": "반도체"},
+                          name="tw_industry_map.json")
+        assert got["file"] == f"{_TW_IND_CACHE_KEY}.json"
+        assert got["state"] == "absent" and got["map"] == {}
+        # 제품 이름으로 두면 읽는다(반대 증거, #25)
+        ok = self._probe(tmp_path, monkeypatch, {"2330": "반도체"},
+                         name=f"{_TW_IND_CACHE_KEY}.json")
+        assert ok["state"] == "ok" and ok["map"] == {"2330": "반도체"}
+        assert ok["age"] is not None and ok["age"] < 3600
+
+    def test_states_are_measured_not_folded_into_empty(self, tmp_path, monkeypatch):
+        from bot.twse_client import _TW_IND_CACHE_KEY
+        nm = f"{_TW_IND_CACHE_KEY}.json"
+        assert self._probe(tmp_path, monkeypatch, {}, name=nm)["state"] == "empty"
+        bad = self._probe(tmp_path, monkeypatch, None, name=nm, raw="{oops")
+        assert bad["state"] == "unreadable" and bad["detail"]
+        lst = self._probe(tmp_path, monkeypatch, [1, 2], name=nm)
+        assert lst["state"] == "not_dict" and "list" in lst["detail"]
+
+    def test_expired_file_is_stale_and_its_map_is_not_used(self, tmp_path, monkeypatch):
+        import os
+        import time
+        from bot.twse_client import _TW_IND_CACHE_KEY, _TW_IND_CACHE_TTL
+        nm = f"{_TW_IND_CACHE_KEY}.json"
+        got = self._probe(tmp_path, monkeypatch, {"2330": "반도체"}, name=nm)
+        old = time.time() - _TW_IND_CACHE_TTL - 60
+        os.utime(tmp_path / nm, (old, old))
+        import bot.twse_client as tw
+        from bot.scripts.tw_enrich_probe import ind_cache_probe
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
+        st = ind_cache_probe(tw)
+        assert got["state"] == "ok"
+        # 화면(`fetch_tw_industry_map`)이 만료 맵을 안 읽으므로 판정도 안 쓴다
+        assert st["state"] == "stale" and st["map"] == {}
+        assert st["age"] >= _TW_IND_CACHE_TTL
+
+
+class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
+    """대만 줄은 **dir 도 키도** 틀려 영구히 "캐시 없음" 이었다(#53·#260).
+
+    가드가 키 절반(import)만 보던 첫 판은 로더를 finviz dir 로 되돌리는 변형이
+    전 게이트를 통과했다(독립 리뷰 실측 2026-09-17, #20). 값으로 잰다.
+    """
+
+    def test_loader_reads_the_twse_cache_dir(self, tmp_path, monkeypatch):
+        import json
+        import bot.finviz_client as fv
+        import bot.twse_client as tw
+        from bot.scripts.industry_kr_probe import _tw_source
+        from bot.twse_client import _TW_IND_CACHE_KEY
+        twd, fvd = tmp_path / "twse", tmp_path / "finviz"
+        twd.mkdir()
+        fvd.mkdir()
+        monkeypatch.setattr(tw, "_CACHE_DIR", twd)
+        monkeypatch.setattr(fv, "_CACHE_DIR", fvd, raising=False)
+        name, desc, load = _tw_source()
+        assert name == f"{_TW_IND_CACHE_KEY}.json" and "대만" in desc
+        (twd / name).write_text(json.dumps({"2330": "반도체"}), encoding="utf-8")
+        assert load() == {"2330": "반도체"}
+
+    def test_loader_does_not_read_the_finviz_dir(self, tmp_path, monkeypatch):
+        """반대 증거(#25) — 같은 이름을 남의 dir 에 둬도 안 읽어야 한다."""
+        import json
+        import bot.finviz_client as fv
+        import bot.twse_client as tw
+        from bot.scripts.industry_kr_probe import _tw_source
+        twd, fvd = tmp_path / "twse", tmp_path / "finviz"
+        twd.mkdir()
+        fvd.mkdir()
+        monkeypatch.setattr(tw, "_CACHE_DIR", twd)
+        monkeypatch.setattr(fv, "_CACHE_DIR", fvd, raising=False)
+        name, _desc, load = _tw_source()
+        (fvd / name).write_text(json.dumps({"2330": "반도체"}), encoding="utf-8")
+        assert not load()
