@@ -90,8 +90,10 @@ def _parse_quote(item: dict) -> dict | None:
         falling = isinstance(cmp, dict) and str(cmp.get("code")) == "5"
         pct = -abs(pct) if falling else abs(pct)
     # 미국 시간외(장전/장후) 진행 중 (사용자 2026-06-15/16). Naver
-    # overMarketPriceInfo — over-market OPEN 일 때만. KR 국내엔 이 필드 없음
-    # (안전·무영향). 라이브 price/pct(차트·관심종목)는 시간외가로 교체(누적
+    # overMarketPriceInfo — over-market OPEN 일 때만. ⚠️ 옛 주석은 "KR 국내엔
+    # 이 필드 없음" 이라고 적고 있었는데 **거짓**이다 — KR 시간외 보드
+    # (`prepost_client._compute_kr_prepost`)가 바로 이 블록으로 돈다(#55,
+    # 2026-09-17 정정). 라이브 price/pct(차트·관심종목)는 시간외가로 교체(누적
     # 등락% vs 전일종가). 동시에 정규장 종가(reg_close)·시간외가(over_price)·
     # 시간외 등락%(over_pct, vs 정규장 종가)·세션·체결시각을 분리 노출 →
     # 상세 페이지가 Naver 식 '정규장 + 시간외' 라인을 그릴 수 있게.
@@ -132,7 +134,12 @@ def _parse_quote(item: dict) -> dict | None:
         "over_volume": over_volume,     # 시간외 세션 누적 거래량 (없으면 None)
         "over_value": over_value,       # 시간외 세션 누적 거래대금(원, 없으면 None)
         "over_session": over_session,   # "" / PRE_MARKET / AFTER_MARKET
-        "over_ts": over_ts,             # 시간외 체결시각(ET ISO) — KST 변환용
+        # 시간외 체결시각(원천 `localTradedAt`). ⚠️ 옛 주석은 "ET ISO" 라고
+        # 단정했는데 **재지 않았다**(#165) — 미국 경로 문구가 그대로 남은 것으로
+        # 보인다. 형제 파서 `chart_data._quote_date` 는 같은 필드를 "ISO
+        # '..+09:00' 또는 'YYYYMMDD'" 로 적는다. `venue_universe.parse_ts` 가
+        # 두 형태를 다 읽고, 못 읽은 건의 원문 표본을 남겨 가정을 반증한다.
+        "over_ts": over_ts,
         # 당일 OHLCV — 차트의 당일 일봉을 라이브로 그리는 데 사용(yahoo 가 장중
         # 당일 봉을 EOD/미제공하는 문제 해소). close 는 price 와 동일.
         "open": _num(item.get("openPriceRaw")),

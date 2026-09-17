@@ -15,6 +15,7 @@
 | 신고저/급등락/상한가 pre-warm | 매일 07:30·16:30 KST | `_periodic_highlow_prewarm` | 첫 방문자 대기 0 위해 캐시 미리 채움 | `/yfpause` `/naverpause` 로 소스별 일시정지 |
 | 신고저 슬롯 스캔(in-process 폴백) | 15분 슬롯 | `_periodic_highlow_scan` | `highlow-scan.timer`(별도 프로세스)가 활성이면 자동 skip(이중스캔 방지) | 위와 동일 + 타이머 활성 감지 가드 |
 | 경량 동적 보드 워머 | 180초(`LIGHT_BOARD_WARM_SEC`) | `_periodic_light_board_warm` | 무버·KR52주·장전후·NXT·테마 페이지 렌더 호출(방문 시뮬)로 파일캐시 채움 | 장시간+pause 게이트, `_LIGHT_WARM_RUNNING` 재진입 가드 |
+| └ 전용 창 하한 누적 | 위 워머에 얹힘(콜 0) | `venue_universe.observe` | KR 시간외 스캔이 **거래소 전용 창**(NXT 08:00–09:00 · 15:40–16:00)에서 본 종목을 하한으로 누적 — 그 창이 열려 있을 때만 가능한 측정이라 사람 손에 두지 않는다(#379) | `kr_session.exclusive_venue` 게이트 + 체결시각 재검증, 실패해도 보드 무영향. ⚠️ **쓰는 프로세스가 둘**(봇 워머 · 대시보드 방문) — 파일 락 + 원자 교체로 lost update 차단 |
 | 카드 알람 발송 | 60초 | `_periodic_reminders` | 예약 시각 도달 알람 텔레그램 발송, 미확인 시 다음날 재발송 | `CHANNEL_CHAT_IDS` 미설정 시 스킵 |
 | 대시보드 분석/실행 요청 스풀 | 5초 | `_periodic_dashboard_requests` | 대시보드 버튼 클릭 → 텔레그램 채널과 동일 실행 경로 | `CHANNEL_CHAT_IDS` 미설정 시 요청 소비만(게시 안 함) |
 | 관심종목 DART 알림 | 75초 | `_periodic_dart_fav_alerts` | `dart-feed.timer`(별도 프로세스) 아카이브를 스캔해 신규만 알림 | 영구 seen-set(중복 알림 차단) |
