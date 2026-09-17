@@ -16541,9 +16541,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
         # '의도된 미파싱'(미파싱제외 — freeform/첨부정정)과 '진짜 미파싱'(파서 갭)
         # 분리 (사용자 2026-06-14). 진짜만 _unparsed, 의도는 _noparse.
         try:
-            meaningful = [l for l in (it.get("detail") or [])
-                          if not str(l).startswith("주요사업:")
-                          and "시가총액" not in str(l)]
+            meaningful = _dart_feed.meaningful_detail_lines(it.get("detail"))
             _base_unp = bool(_dart_feed.is_parse_target(it)) and not meaningful
             if _base_unp and _dart_feed.intended_freeform_unparsed(
                     it.get("report_nm", "")):
@@ -16779,14 +16777,21 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> tuple[str, dict[st
                         continue
                     # 시총/현재가 줄은 df-mcap — 리스트 뷰에서 상세는 숨기고
                     # 이 줄만 유지 (사용자 2026-06-11 '제목+시총/현재가만').
-                    _cls = ("df-detail-ln df-mcap" if "시가총액" in s
+                    # ⚠️ 부분문자열로 가르면 원문에서 뽑은 줄(`제목: 시가총액요건
+                    # 미달…`)이 그 muted 슬롯에 앉는다 — 접두로 가른다(2026-09-17).
+                    _cls = ("df-detail-ln df-mcap"
+                            if _dart_feed.is_enrichment_line(s)
                             else "df-detail-ln")
                     detail_html += f'<div class="{_cls}">{_html.escape(s)}</div>'
                 # 시총/현재가 — '모든' 상장사 공시 맨 아래(사용자 2026-06-11).
                 # 렌더 시점 부착: 제목만 카드 + 옛 카드 소급. 옛 enrich 가
                 # 이미 붙인 카드(detail 에 '시가총액' 존재)는 중복 방지.
+                # ⚠️ 중복 판정도 접두로 — 부분문자열이면 `제목: 시가총액요건
+                # 미달…` 카드가 '이미 붙었다'로 읽혀 시총/현재가가 그 카드에만
+                # 영영 안 붙는다(2026-09-17 주연테크·SHD 에서 같이 드러났다).
                 if (stock_code and len(stock_code) == 6 and stock_code.isdigit()
-                        and not any("시가총액" in str(l) for l in detail_lines)):
+                        and not any(_dart_feed.is_market_cap_line(l)
+                                    for l in detail_lines)):
                     for ln in _mc_lines(stock_code):
                         detail_html += (f'<div class="df-detail-ln df-mcap">'
                                         f'{_html.escape(str(ln))}</div>')

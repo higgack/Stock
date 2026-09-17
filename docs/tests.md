@@ -908,3 +908,36 @@ VM 실측에서 무버 60종목이 전부 `티커 캐시가 풂 → …` 였는�
 
 **못 보는 축**(#274): 계수는 스크립트(한글/한자/그 밖)만 본다 — 값이 *맞는
 회사명인지* 는 재지 않는다(그건 `suspicious_values` 가 모양으로만 거른다).
+
+### DART 「투자유의안내」 미파싱 — 값 창·부분문자열 (2026-09-17, 실수 #385)
+`tests/test_regression.py::TestDartInvestmentNoticeUnparsed20260917`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| generic 값 창이 긴 본문 행(`2. 내용`)을 **드랍하지 않는다** — 한 줄 길이는 종전대로 60자 | ✅ 자동 | `test_the_body_row_is_not_dropped_for_being_long` |
+| 이미 구워진 1줄 카드에 **회수 경로**가 있다 + 줄이 줄면 교체 안 함(리뷰 H1) | ✅ 자동 | `test_a_baked_one_line_card_is_re_extracted` · `test_a_shorter_re_extraction_does_not_replace` |
+| 시총 접두는 **단일 상수** — 미파싱 판정과 중복 방지가 같은 것을 본다(리뷰 M2) | ✅ 자동 | `test_the_mcap_prefixes_have_one_source` |
+| 화면 경로 E2E — 배지·`df-mcap` 분류·시총 부착 셋을 렌더로(리뷰 H3) | ✅ 자동 | `TestDartCardFormats::test_dashboard_no_eq_prefix_and_mcap_attach` |
+| 원문에서 뽑은 줄은 '시가총액' 을 품어도 **의미있는 파싱**이다 | ✅ 자동 | `test_a_parsed_line_mentioning_mcap_is_meaningful` |
+| 우리가 붙인 보강 줄(`시가총액: … / 현재가: …`·`주요사업:`)은 여전히 빠진다(#155 생산부 모양) | ✅ 자동 | `test_the_enrichment_line_is_still_excluded` |
+| 화면 경로 — detail 이 있으면 ⚠️미파싱 배지가 안 붙는다 | ✅ 자동 | `test_the_card_no_longer_shows_detail_and_the_badge_together` |
+| 옛 부분문자열 리터럴이 두 파일에 재등장하지 않는다(#38 — **소스 검사**) | ✅ 자동 | `test_every_meaningful_filter_goes_through_the_one_predicate` |
+| 옛 계약(보강 줄만 있으면 미파싱)은 지우지 않고 **다시 썼다**(#222) | ✅ 자동 | `TestDartFeedBackfill::test_meaningful_detail_gate` |
+
+⚠️ 같은 부분문자열이 **세 곳**에서 같은 병이었다 — 미파싱 배지 · `df-mcap`
+스타일(정당한 제목 줄이 리스트 뷰의 muted 시총 슬롯에 앉았다) · 시총 줄 중복
+방지(그 카드에만 시총/현재가가 영영 안 붙는다). 가드는 두 파일에서 `"시가총액"
+in`/`not in` 부분문자열 판정 자체를 금지한다(독스트링·주석은 걷어내고 본다, #59b).
+
+**못 보는 축**(#274): 값 창 800·`max_lines` 8 이 *다른* 양식의 generic 추출을
+어떻게 바꾸는지는 회귀 픽스처 범위에서만 잰다(실서버 전 양식 스윕은 없다).
+독립 리뷰가 잰 **방향성**(레포 문자열 1,512건 코퍼스 — 생산 분포 아님): 창을
+넓히면 generic 이 0건→≥1건이 되는 텍스트 64건(4.2%)이라 **'미파싱/파싱' 경계가
+전 피드 규모로 이동**하고, 새로 생긴 줄 일부는 표 덤프의 오분할 라벨이다. 그리고
+값이 **800자도 넘는** 행은 여전히 조용히 드랍된다(4000 으로 넓히면 +11행) —
+드랍은 로그도 안 남긴다(#42a). `max_lines` 6→8 은 그 창이 밀어내던 꼬리 정보 행
+(합성 스윕 46.1%)을 0% 로 되돌린 것이고, 대신 카드가 최대 2줄 길어진다.
+그리고 티케이지애강 022220 「공개매수에관한의견표명서」(detail 0줄)는 이 fix 와
+**다른 갈래**다 — 파서 갭인지 원문 미수신(`status=014`)인지는
+`cd ~/stock && .venv/bin/python -m bot.dart_feed --why 티케이지애강` 이
+답한다(#264·#265 — 조회 키는 **접수번호 또는 회사명**이지 종목코드가 아니다).
