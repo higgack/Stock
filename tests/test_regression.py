@@ -10010,13 +10010,25 @@ class TestDartFeedBackfill:
         assert rep["samples"].get("단일판매ㆍ공급계약체결") == "u1"
 
     def test_meaningful_detail_gate(self, tmp_path, monkeypatch):
-        # 미파싱 재추출 백필(2026-06-20)의 핵심 게이트 — 시총/주요사업 줄만 있으면
-        # meaningful 아님(=재추출 대상). _admin_issue_lines '경과:' 줄이 생기면 해소.
+        """미파싱 재추출 백필(2026-06-20)의 핵심 게이트 — **우리가 덧붙인 보강
+        줄**만 있으면 meaningful 아님(=재추출 대상).
+
+        ⚠️ 2026-09-17 계약 변경(#222): 옛 판은 `"시가총액" not in l` 이라
+        `결론: … 시가총액 150억원 미만 …` 같이 **원문에서 뽑은 정당한 줄**도
+        보강 줄로 보고 지웠다. 주연테크 044380·SHD 001770 의 「투자유의안내
+        (시가총액요건 미달…)」가 그래서 detail 이 화면에 보이는데 ⚠️미파싱
+        배지가 붙었다. 남는 보장은 그대로다 — `_market_cap_price_lines` 가
+        만드는 실제 보강 줄은 여전히 빠진다(접두로 가른다, #65)."""
         m = self._load(tmp_path, monkeypatch)
-        assert m._has_meaningful_detail(["결론: ... 시가총액 150억원 미만 ..."]) is False
+        # 보강 줄(생산부가 만드는 그 모양)만 빠진다
+        assert m._has_meaningful_detail(["시가총액: 1,234억 / 현재가: 5,000원"]) is False
         assert m._has_meaningful_detail(["주요사업: 반도체"]) is False
         assert m._has_meaningful_detail([]) is False
         assert m._has_meaningful_detail(["경과: 연속 25매매거래일 미달 지속"]) is True
+        # 원문에서 뽑은 줄은 '시가총액' 을 품어도 의미있는 파싱이다
+        assert m._has_meaningful_detail(["결론: ... 시가총액 150억원 미만 ..."]) is True
+        assert m._has_meaningful_detail(
+            ["제목: 시가총액요건 미달로 인한 상장폐지 우려 예고"]) is True
 
     def test_owner_share_change_form_classified_and_routed(self, tmp_path, monkeypatch):
         # 최대주주등소유주식변동신고서(공정거래법, 라이브 2026-06-13 5예시) —
@@ -10184,7 +10196,15 @@ class TestDartCardFormats:
             {"rcept_no": "R2", "corp_name": "B사", "stock_code": "000100",
              "corp_code": "C", "report_nm": "유상증자결정",
              "category": "자금조달", "date": d.strftime("%Y%m%d"), "url": "#",
-             "detail": ["신주수: 10주", "시가총액: 1조원"]}])  # 옛 enrich 부착분
+             "detail": ["신주수: 10주", "시가총액: 1조원"]},        # 옛 enrich 부착분
+            # 2026-09-17(#385): 원문에서 뽑은 줄이 '시가총액' 을 품는 카드.
+            # 부분문자열 판정이던 옛 판은 이 카드에서 ⚠️미파싱 배지를 달고,
+            # 그 줄을 muted `df-mcap` 슬롯에 넣고, 시총/현재가를 안 붙였다.
+            {"rcept_no": "R3", "corp_name": "C사", "stock_code": "044380",
+             "corp_code": "C",
+             "report_nm": "투자유의안내(시가총액요건 미달로 인한 상장폐지 우려 예고)",
+             "category": "리스크", "date": d.strftime("%Y%m%d"), "url": "#",
+             "detail": ["제목: 시가총액요건 미달로 인한 상장폐지 우려 예고"]}])
         import bot.dashboard as db
         import bot.dart_feed as real_df  # 렌더는 real 모듈에서 import
         calls = []
@@ -10196,8 +10216,19 @@ class TestDartCardFormats:
                             raising=False)
         html = db._render_dart_feed_page(m.load_all_archives(days_back=2))[0]
         assert 'df-detail-ln">= ' not in html        # '= ' prefix 제거
-        assert "시가총액: 2조원 / 현재가: 1,000원" in html
+        # 보강 줄은 muted 슬롯(df-mcap) — 원문 줄과 갈린다(#385)
+        assert ('<div class="df-detail-ln df-mcap">시가총액: 2조원 / 현재가: 1,000원'
+                in html)
         assert "042700" in calls and "000100" not in calls  # 중복 방지
+        # ── #385 카드(R3) — 카드 조각을 잘라내서 본다(#55: 페이지 전체 grep 은
+        # 다른 카드가 대신 만족시킨다).
+        seg = html[html.index('data-imp-id="R3"'):]
+        nxt = seg.find("data-imp-id=", 1)   # 다음 카드 머리까지만(#55)
+        seg = seg[:nxt] if nxt > 0 else seg
+        assert "⚠️ 미파싱" not in seg, seg[:400]      # 배지 배선
+        assert ('<div class="df-detail-ln">제목: 시가총액요건'
+                in seg), seg[:400]                    # df-mcap 슬롯 아님
+        assert "044380" in calls                      # 시총 중복방지가 막지 않음
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -14242,7 +14273,7 @@ class TestDartGenericNumberedFallback:
         assert any(l == "자기자본대비(%): 8.5" for l in L), L
         assert any("테스트홀딩스" in l for l in L)
         assert not any("해당없음란" in l for l in L)   # '-' 값 스킵
-        assert len(L) <= 6                              # 캡
+        assert len(L) <= 8                              # 캡(6→8, #385 H2)
 
     def test_date_inside_value_not_a_stop(self):
         # 값 속 날짜 '12.' 가 다음 항 stop 으로 오인되지 않음 (라벨형 run 요구)
@@ -71288,3 +71319,164 @@ class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
             {"v": 3, "by": {"上市": {"2330": "반도체"}},
              "fetched": {"上市": time.time()}, "tried": {}}), encoding="utf-8")
         assert not load()
+
+
+class TestDartInvestmentNoticeUnparsed20260917:
+    """「투자유의안내」가 detail 을 보여주면서 ⚠️미파싱 배지를 달던 것 (사용자
+    2026-09-17 '미파싱건 확인' — 주연테크 044380 09-16 · SHD 001770 09-15).
+
+    재현으로 갈래 둘이 나왔다(#9 버그는 재현 테스트 먼저):
+      D1 `_numbered_rows_lines` 의 값 창이 120자라 `2. 내용`(본문 한 문단)이
+         **통째로** 드랍됐다 — 창 안에 stop 이 없으면 그 행은 매칭 자체가 안 된다.
+      D2 미파싱 판정이 `"시가총액" not in l` 이라, 살아남은
+         `제목: 시가총액요건 미달…` 마저 지워 '의미있는 줄 0' 이 됐다.
+    """
+
+    _DOC = (
+        "1. 제목 시가총액요건 미달로 인한 상장폐지 우려 예고 "
+        "2. 내용 동사는 보통주의 시가총액이 최근 30일간 계속하여 50억원 미만에 "
+        "해당되어 코스닥시장 상장규정 제53조에 따른 관리종목 지정 사유가 "
+        "발생하였으며, 향후 90일 동안 시가총액 50억원 이상인 상태가 10일 이상 "
+        "계속되지 아니하는 경우 상장폐지 사유에 해당될 수 있음을 안내드립니다."
+    )
+
+    def test_the_body_row_is_not_dropped_for_being_long(self):
+        from bot.dart_feed import _numbered_rows_lines
+        got = _numbered_rows_lines(self._DOC)
+        assert any(l.startswith("내용:") for l in got), got
+        # 표시는 종전대로 짧게 자른다 — 창을 넓힌 것이 카드 길이를 바꾸지 않는다
+        assert all(len(l.split(": ", 1)[1]) <= 60 for l in got), got
+
+    def test_a_parsed_line_mentioning_mcap_is_meaningful(self):
+        from bot.dart_feed import _numbered_rows_lines, meaningful_detail_lines
+        got = _numbered_rows_lines(self._DOC)
+        assert got and meaningful_detail_lines(got) == got
+
+    def test_the_enrichment_line_is_still_excluded(self):
+        """보강 줄만 남았을 때를 미파싱으로 보는 계약은 유지된다 — 생산부
+        (`_market_cap_price_lines`)가 만드는 그 모양으로 잰다(#155)."""
+        from bot.dart_feed import meaningful_detail_lines
+        assert meaningful_detail_lines(
+            ["시가총액: 1,234억 / 현재가: 5,000원", "주요사업: 반도체"]) == []
+        # 시총이 비어 현재가만 실린 경우도 보강 줄이다(옛 부분문자열은 이 모양을
+        # 못 걸러 보강 줄뿐인 카드가 '파싱됨'으로 보였다)
+        assert meaningful_detail_lines(["현재가: 5,000원"]) == []
+
+    def test_the_card_no_longer_shows_detail_and_the_badge_together(self):
+        """화면 경로 그대로 — 파싱대상이면서 detail 이 있으면 배지는 안 붙는다."""
+        from bot.dart_feed import (_numbered_rows_lines, is_parse_target,
+                                   meaningful_detail_lines)
+        it = {"report_nm": "투자유의안내(시가총액요건 미달로 인한 상장폐지 우려 예고)",
+              "category": "리스크", "corp_code": "00126362",
+              "detail": _numbered_rows_lines(self._DOC)}
+        assert is_parse_target(it) is True          # 색칠 대상은 맞다
+        assert it["detail"], "generic 폴백이 줄을 내야 한다"
+        badge = bool(is_parse_target(it)) and not meaningful_detail_lines(
+            it["detail"])
+        assert badge is False, it["detail"]
+
+    def test_a_baked_one_line_card_is_re_extracted(self, tmp_path, monkeypatch):
+        """이미 구워진 카드에 **회수 경로**가 있다(독립 리뷰 2026-09-17 H1).
+
+        D2 가 `_has_meaningful_detail` 을 False→True 로 뒤집으면서, 옛 창에
+        드랍돼 제목 한 줄만 남은 카드가 백필의 스킵 조건에 걸렸다 — 배지는
+        사라지지만 `내용:` 줄은 영원히 안 생긴다. 제목 열거로 그 경로만
+        다시 태우고 **줄이 늘 때만** 교체한다(#18·#11)."""
+        import importlib
+        import sys
+        import types
+        from datetime import datetime
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for mod in [m for m in list(sys.modules) if m.startswith("bot.dart_feed")]:
+            sys.modules.pop(mod, None)
+        m = importlib.import_module("bot.dart_feed")
+        m = importlib.reload(m)
+        monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
+        monkeypatch.setattr(m, "_budget_today", lambda: 0)
+        monkeypatch.setattr(m, "_budget_add", lambda n: None)
+        monkeypatch.setattr(m.time, "sleep", lambda s: None)
+        d = datetime.now(m._KST).date()
+        one = ["제목: 시가총액요건 미달로 인한 상장폐지 우려 예고"]
+        m.save_archive(d, [
+            {"rcept_no": "R1", "corp_name": "주연테크", "stock_code": "044380",
+             "corp_code": "C",
+             "report_nm": "투자유의안내(시가총액요건 미달로 인한 상장폐지 우려 예고)",
+             "category": "리스크", "date": d.strftime("%Y%m%d"), "url": "#",
+             "detail": list(one)},
+            # 대조군 — 제목 밖이면 옛 스킵 그대로(비용 0, #25 반대 증거)
+            {"rcept_no": "R2", "corp_name": "B사", "stock_code": "000100",
+             "corp_code": "C", "report_nm": "단일판매ㆍ공급계약체결",
+             "category": "계약", "date": d.strftime("%Y%m%d"), "url": "#",
+             "detail": ["계약: X"]}])
+        seen: list[str] = []
+
+        def _fake(rn, rc, cc, key):
+            seen.append(rc)
+            return {"lines": one + ["내용: 동사는 … 50억원 미만에 해당되어 …"]}
+
+        monkeypatch.setattr(m, "_extract_detail", _fake)
+        st = m.backfill_unparsed_once_if_needed(days_back=1)
+        assert seen == ["R1"], seen            # 대조군은 안 태운다
+        assert st and st["fixed"] == 1, st
+        got = [it for it in m.load_archive(d) if it["rcept_no"] == "R1"][0]
+        assert any(l.startswith("내용:") for l in got["detail"]), got["detail"]
+
+    def test_a_shorter_re_extraction_does_not_replace(self, tmp_path,
+                                                      monkeypatch):
+        """줄이 줄면 교체하지 않는다 — 옛 카드 퇴행 0."""
+        import importlib
+        import sys
+        from datetime import datetime
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for mod in [x for x in list(sys.modules) if x.startswith("bot.dart_feed")]:
+            sys.modules.pop(mod, None)
+        m = importlib.reload(importlib.import_module("bot.dart_feed"))
+        monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
+        monkeypatch.setattr(m, "_budget_today", lambda: 0)
+        monkeypatch.setattr(m, "_budget_add", lambda n: None)
+        monkeypatch.setattr(m.time, "sleep", lambda s: None)
+        d = datetime.now(m._KST).date()
+        keep = ["제목: 시가총액요건 미달", "내용: 이미 있는 본문"]
+        m.save_archive(d, [
+            {"rcept_no": "R1", "corp_name": "주연테크", "stock_code": "044380",
+             "corp_code": "C", "report_nm": "투자유의안내(시가총액요건 미달)",
+             "category": "리스크", "date": d.strftime("%Y%m%d"), "url": "#",
+             "detail": list(keep)}])
+        monkeypatch.setattr(m, "_extract_detail",
+                            lambda *a, **k: {"lines": ["제목: 시가총액요건 미달"]})
+        m.backfill_unparsed_once_if_needed(days_back=1)
+        assert m.load_archive(d)[0]["detail"] == keep
+
+    def test_the_mcap_prefixes_have_one_source(self):
+        """미파싱 판정과 시총 중복 방지가 **같은 상수**를 본다(#38, 리뷰 M2).
+
+        인라인으로 다시 적으면 새 보강 모양이 한쪽만 따라간다."""
+        import ast
+        import pathlib as _pl
+        from bot.dart_feed import _MCAP_PREFIXES, is_market_cap_line
+        assert set(_MCAP_PREFIXES) == {"시가총액:", "현재가:"}
+        assert is_market_cap_line("현재가: 5,000원")
+        assert not is_market_cap_line("제목: 시가총액요건 미달")
+        # 두 파일 어디에도 그 접두를 손으로 다시 적지 않는다
+        for f in ("bot/dart_feed.py", "bot/dashboard.py"):
+            src = _pl.Path(f).read_text(encoding="utf-8")
+            n = 0
+            for node in ast.walk(ast.parse(src)):
+                if (isinstance(node, ast.Tuple)
+                        and [getattr(e, "value", None) for e in node.elts]
+                        == ["시가총액:", "현재가:"]):
+                    n += 1
+            assert n <= 1, (f, n)   # 정의 1회 — 그 밖은 헬퍼를 부른다
+
+    def test_every_meaningful_filter_goes_through_the_one_predicate(self):
+        """복제가 다시 생기면 대시보드 배지와 감사·`--why` 가 갈린다(#38)."""
+        import pathlib
+        import re
+        for f in ("bot/dart_feed.py", "bot/dashboard.py"):
+            src = pathlib.Path(f).read_text(encoding="utf-8")
+            src = re.sub(r'"""[\s\S]*?"""', "", src)      # 독스트링 제거(#59b)
+            src = re.sub(r"(?m)^\s*#.*$", "", src)        # 주석 제거
+            assert '"시가총액" not in' not in src, f
+            # 부분문자열 판정은 원문에서 뽑은 줄까지 문다 — 미파싱 배지,
+            # df-mcap 스타일, 시총 중복 방지 셋이 같은 병이었다.
+            assert '"시가총액" in' not in src, f

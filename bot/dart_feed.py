@@ -2615,7 +2615,7 @@ def _extract_misc_mgmt(rcept_no: str, api_key: str) -> dict | None:
     return out
 
 
-def _numbered_rows_lines(txt: str, max_lines: int = 6) -> list[str]:
+def _numbered_rows_lines(txt: str, max_lines: int = 8) -> list[str]:
     """표준 신고 양식 'N. 라벨 값' 행 generic 발췌 — 전용 파서가 없거나
     변형 양식에 실패했을 때의 최종 폴백 (사용자 2026-06-12 '조금 다른
     건 니가 판단해서' — 새 예시 없이도 카드에 핵심 줄 표시).
@@ -2633,9 +2633,20 @@ def _numbered_rows_lines(txt: str, max_lines: int = 6) -> list[str]:
     # 같은 문장 종결을 enumeration 으로 오인하던 것 차단(test_prose 회귀).
     _PFX = r"(?:\d{1,2}|(?<![가-힣])[가나다라마바사아자차카타파하])"
     _stop = r"(?=" + _PFX + r"\s*\.\s*" + _LBL + r"[\s:：]|$)"
+    # ⚠️ 값 창이 좁으면 **그 행이 통째로 사라진다** — 창 안에 stop 이 없으면
+    # 매칭 자체가 실패하기 때문이다. 옛 상한 120자가 유가증권/코스닥
+    # 「투자유의안내」의 `2. 내용`(본문 한 문단, 실측 200자+)을 매번 드랍해
+    # 카드에 제목만 남았다(2026-09-17 주연테크 044380·SHD 001770 재현).
+    # 표시는 어차피 60자로 자르므로 **한 줄의 길이**는 안 변한다. 다만 긴
+    # 본문 행이 슬롯을 차지하면 DART 양식이 맨 뒤에 두는 짧은 정보 행
+    # (`이사회결의일`·`취득예정일자`)이 상한에 밀려난다 — 합성 스윕 실측
+    # 46.1%(독립 리뷰 2026-09-17). 그래서 `max_lines` 를 6→8 로 같이 올렸다
+    # (같은 스윕에서 축출 0%). 창 상한은 메모리·예측가능성 때문에 유지한다 —
+    # ⚠️ '무제한이면 역추적이 폭주한다' 는 **재 보니 거짓**이었다(736KB 실측:
+    # 무제한 146ms < 800자 214ms). 잰 것만 적는다(#165).
     rows = re.findall(
         _PFX + r"\s*\.\s*(" + _LBL + r")\s*[:：]?\s+"
-        r"([\s\S]{1,120}?)\s*" + _stop, txt)
+        r"([\s\S]{1,800}?)\s*" + _stop, txt)
     parts: list[str] = []
     seen: set[str] = set()
     for lbl, val in rows:
@@ -4075,9 +4086,7 @@ def unparsed_audit(days_back: int = 7) -> dict:
     total = 0
     for _ds, items in by_date.items():
         for it in items:
-            meaningful = [l for l in (it.get("detail") or [])
-                          if not str(l).startswith("주요사업:")
-                          and "시가총액" not in str(l)]
+            meaningful = meaningful_detail_lines(it.get("detail"))
             if not (is_parse_target(it) and not meaningful):
                 continue
             if intended_freeform_unparsed(it.get("report_nm", "")):
@@ -4180,8 +4189,7 @@ def explain_unparsed(query: str, days_back: int = 7) -> list[str]:
         rc = str(it.get("rcept_no") or "")
         nm = it.get("report_nm") or ""
         detail = [str(l) for l in (it.get("detail") or [])]
-        meaningful = [l for l in detail
-                      if not l.startswith("주요사업:") and "시가총액" not in l]
+        meaningful = meaningful_detail_lines(detail)
         out.append(f"── {it.get('corp_name')} | {nm} | {rc}")
         out.append(f"   분류={it.get('category')} 파싱대상={is_parse_target(it)} "
                    f"의도된미파싱={intended_freeform_unparsed(nm)}")
@@ -5508,11 +5516,42 @@ def backfill_admin_issue_once_if_needed() -> dict | None:
 _BACKFILL_UNPARSED_MARKER = _ARCHIVE_DIR.parent / ".dart_unparsed_reextract_v2"
 
 
+# `_market_cap_price_lines` 가 만드는 접두 — 시총이 비면 `현재가:` 만 실린다
+# (옛 부분문자열 판정도 그 모양은 못 걸러 보강 줄뿐인 카드가 '파싱됨'으로
+# 보였다). 미파싱 판정과 대시보드의 **시총 중복 방지**가 같은 상수를 본다
+# — 인라인으로 다시 적으면 새 모양이 한쪽만 따라간다(#38, 독립 리뷰 M2).
+_MCAP_PREFIXES = ("시가총액:", "현재가:")
+
+
+def is_market_cap_line(line) -> bool:
+    """`_market_cap_price_lines` 가 붙인 시총/현재가 줄인가. 순수."""
+    return str(line).startswith(_MCAP_PREFIXES)
+
+
+def is_enrichment_line(line) -> bool:
+    """그 줄이 **파싱 결과가 아니라 우리가 덧붙인 보강 줄**인가 — 미파싱 판정에서
+    빼야 하는 것은 이 둘뿐이다(`주요사업: …` · `시가총액: X / 현재가: Y원`,
+    `_market_cap_price_lines`).
+
+    ⚠️ 부분문자열로 재지 말 것(2026-09-17 주연테크 044380·SHD 001770 실측):
+    옛 판이 `"시가총액" not in l` 이라, 원문에서 뽑은 정당한 줄
+    `제목: 시가총액요건 미달로 인한 상장폐지 우려 예고` 까지 지워 **detail 이
+    화면에 보이는데 ⚠️미파싱 배지**가 붙었다(#65·#60 문자열이 아니라 구조로).
+    보강 줄은 우리가 만들므로 접두가 보장된다 — 접두로 가른다. 순수."""
+    t = str(line)
+    return t.startswith("주요사업:") or is_market_cap_line(t)
+
+
+def meaningful_detail_lines(detail) -> list[str]:
+    """보강 줄을 뺀 나머지 — 미파싱 판정의 **단일 출처**(대시보드 배지 ·
+    커버리지 감사 · `--why` · 백필이 전부 이걸 쓴다, #38). 순수."""
+    return [str(l) for l in (detail or []) if not is_enrichment_line(l)]
+
+
 def _has_meaningful_detail(detail) -> bool:
-    """대시보드 미파싱 판정과 동일 — '주요사업:'·'시가총액' 줄 제외하고 남는 줄이
-    있으면 의미있는 파싱(=미파싱 아님). 순수."""
-    return any(not str(l).startswith("주요사업:") and "시가총액" not in str(l)
-               for l in (detail or []))
+    """대시보드 미파싱 판정과 동일 — 보강 줄 제외하고 남는 줄이 있으면
+    의미있는 파싱(=미파싱 아님). 순수."""
+    return bool(meaningful_detail_lines(detail))
 
 
 def _backfill_unparsed_due() -> bool:
@@ -5545,6 +5584,16 @@ def _backfill_unparsed_stamp(stats: dict) -> None:
         pass
 
 
+# generic 값 창을 넓힌 배포(#385)가 **이미 구워진** 카드엔 안 닿는다 —
+# `run_once` 는 3~4일만 재fetch 하는 데다 `known_detail_is_final` 이 진짜 파싱
+# 결과를 최종으로 재사용하고, 아래 백필은 `_has_meaningful_detail` 로 건너뛴다.
+# 그래서 옛 창에서 `2. 내용` 이 통째로 드랍돼 **제목 한 줄만** 남은 카드는
+# 회수 경로가 없었다(독립 리뷰 2026-09-17 실측: 새 술어가 그 카드를 True 로
+# 뒤집어 백필이 스킵한다). 그 제목만 다시 태우고 **줄이 늘 때만** 교체한다
+# — 제목 열거는 비용 상한이고(#116), 새 카드는 어차피 정상 파싱된다.
+_WINDOW_REPARSE_KW = ("투자유의안내",)
+
+
 def backfill_unparsed_once_if_needed(days_back: int = 60) -> dict | None:
     """잔여 미파싱(is_parse_target & meaningful detail 없음) 전 카테고리 재추출 1회
     (사용자 2026-06-20 '미파싱처리'). 파서가 나중 추가됐는데 옛 항목이 generic
@@ -5569,7 +5618,9 @@ def backfill_unparsed_once_if_needed(days_back: int = 60) -> dict | None:
             continue
         changed = False
         for it in items:
-            if _has_meaningful_detail(it.get("detail")):
+            cur = meaningful_detail_lines(it.get("detail"))
+            if cur and not any(k in str(it.get("report_nm") or "")
+                               for k in _WINDOW_REPARSE_KW):
                 continue
             if not is_parse_target(it) or intended_freeform_unparsed(
                     it.get("report_nm", "")):
@@ -5588,7 +5639,9 @@ def backfill_unparsed_once_if_needed(days_back: int = 60) -> dict | None:
                                          str(it.get("rcept_no", "")),
                                          it.get("corp_code", ""), api_key)
                 lines = list(detail.get("lines", [])) if detail else []
-                if lines and _has_meaningful_detail(lines):
+                # 줄이 **늘 때만** 교체 — 재추출이 더 적게 뽑으면 옛 카드가
+                # 퇴행한다(위 `_WINDOW_REPARSE_KW` 경로는 cur 이 비어 있지 않다).
+                if lines and len(meaningful_detail_lines(lines)) > len(cur):
                     it["detail"] = lines
                     nc = detail.get("category") if isinstance(detail, dict) else None
                     if nc:
