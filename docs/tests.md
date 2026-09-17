@@ -734,3 +734,63 @@ M8 발화 확인).
 ⚠️ `docs/tests.md` 가 **인용한 테스트 이름이 실재하는지 검사하는 가드는
 없다**(#274 못 보는 축) — 그래서 이런 이름은 조용히 썩는다. 지울 땐 인용처를
 같이 볼 것.
+
+## 진단이 제품과 같은 캐시를 보는가 (2026-09-17 · 실수 #382)
+
+`tw_enrich_probe` 가 업종 캐시를 `tw_industry_map`(옛 이름)으로 읽고 있었다 —
+제품은 `_TW_IND_CACHE_KEY = "tw_industry_map_v2"` 다. 프로브는 바로 위 줄에서
+TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해(#38) rename 을 못
+따라갔고, ② 가 `항목 0종목` · ⑤ 가 거짓 ❌ `곧 채워진다` 를 7.7일째 찍었다.
+같은 실행의 ③(cache-only)은 업종 59/60 을 채우고 있었다(화면은 멀쩡, #35·#53).
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| `bot/scripts/**` 가 읽는 캐시 이름이 제품 집합 밖이면 실패(이름 열거 아님, #24) | ✅ 자동 | `test_no_script_reads_a_cache_name_the_product_never_writes` |
+| TW 업종 키를 제품 상수에서 import 한다(형제 프로브 둘 다) | ✅ 자동 | `test_tw_probes_take_the_industry_key_from_the_product_constant` |
+| ② 가 **제품이 쓰는 그 파일**을 재고, 옛 이름만 있으면 '없다' 다(값으로) | ✅ 자동 | `TestTwIndCacheProbeMeasuresTheProductFile20260917::test_it_reads_the_product_key_not_the_pre_v2_name` |
+| 형제 프로브의 대만 로더가 **twse dir** 을 읽는다 + finviz dir 은 안 읽는다(#25) | ✅ 자동 | `TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917` |
+| 그 스캔이 실제로 드리프트를 잡는다 + 고치면 조용해진다(#291·#25) | ✅ 자동 | `test_the_scan_fires_on_a_renamed_product_key` |
+| 수집 분기마다 발화 경로가 있다(CACHE_DIR BinOp · 평문 변수 · 튜플+루프) | ✅ 자동 | `test_the_scan_fires_on_each_way_scripts_name_a_cache` |
+| `pkey = f"enrich_mcap_{market}.json"` 류 정상 이름을 오보하지 않는다(#25·#260) | ✅ 자동 | `test_variable_fstring_keys_are_not_reported_as_drift` |
+| 제품이 캐시 키를 **모듈 상수**로 두면 그 이름은 드리프트가 아니다(#292) | ✅ 자동 | `test_a_module_constant_key_in_the_product_is_not_drift` |
+| `map_n == 0` 을 상태별로 가른다(없음/판정불가/만료/파손/dict아님/빈 맵, #82) | ✅ 자동 | `TestTwIndustryMapVerdictBranches20260917` 4건 |
+| 파손·dict아님을 '빈 dict' 라 단정하지 않고 처방(파일 삭제)을 댄다(#331·#165) | ✅ 자동 | `test_corrupt_and_wrong_type_are_not_called_an_empty_dict` |
+| 같은 실행(③)이 채웠으면 ❌ '캐시 파일이 없다' 로 적지 않는다(#55·#79) | ✅ 자동 | `test_same_run_refill_is_not_reported_as_a_missing_cache` |
+| 재지 않은 '곧 채워진다' 를 어느 갈래에서도 약속하지 않는다(#380·#165) | ✅ 자동 | `test_verdict_never_promises_soon_without_measuring` |
+| 판정에 `ind_cache_probe()` **그 결과**를 넘긴다(이름만 맞는 다른 값 금지, #91b) | ✅ 자동 | `test_probe_passes_the_cache_probe_result_into_the_verdict` |
+
+**못 보는 축**(#274): 이 스캔은 **이름**만 본다 — 모듈 안의 `이름 = "…"` ·
+`이름 = f"…"` 대입과 `*.json` 문자열 상수(경로·URL 제외)를 위치 무관으로 모으지만,
+런타임에 조립하는 이름(`"_".join(...)`·하위 dir `cache_dir / f"…"`)과 **맞는
+파일을 열고도 엉뚱한 키로 조회**하는 경우는 밖이다. 대상은 `bot/` 뿐이다 —
+`trade/scripts` 는 스크립트 전용 캐시(`resolve_check` 등)를 자기가 쓰고 자기가
+읽어 여집합 규칙으로는 전부 오탐이 된다(실측 5건, #25·#260).
+
+## ⑥ 한글명 계수는 갈래가 아니라 값으로 (2026-09-17 · 실수 #382)
+
+VM 실측에서 무버 60종목이 전부 `티커 캐시가 풂 → …` 였는데 그중 11종목이
+로마자(`KAI WEI TECHNOLOGY`·`Longzhong`·`U-CHEM` …)인데도 요약이 `한글 60 ·
+영문 0` 이었다. 갈래는 '어느 관문이 풀었나'(= 어디를 고칠지)이고 계수는 '화면에
+무엇이 보이나'라 한 축이 둘을 대신할 수 없다(#45·#34·#91b). #376 이 "통용
+한글명이 없으면 영문" 퇴로를 연 직후라 그 규약이 얼마나 쓰이는지 아무도 못 봤다.
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 캐시가 풀어 준 로마자 값은 영문으로 센다 + 규약대로임을 말한다(#43) | ✅ 자동 | `test_latin_value_from_cache_counts_as_english_not_korean` |
+| 캐시가 원문을 그대로 주면 '한자 잔존' 이고 ✅ 가 아니다(#54·#376b) | ✅ 자동 | `test_han_value_from_cache_is_counted_as_han_not_korean` |
+| 혼합(한글+한자) 값은 **한자로** 세고 ✅ 를 막는다 + 처방이 프롬프트라고 말한다 | ✅ 자동 | `test_mixed_script_value_counts_as_han_and_blocks_the_pass` |
+| 혼합은 한자의 부분집합 — 소계 합이 총계와 같다(#45) | ✅ 자동 | `test_mixed_count_is_a_subset_of_han_not_a_fourth_bucket` |
+| 거부·대기·미시도 갈래는 value 가 정의상 한자다(전제 고정) | ✅ 자동 | `test_stuck_branches_always_carry_a_han_value` |
+| ⚠️ 바로 아래에 ✅ 를 붙이지 않는다(#41) | ✅ 자동 | `test_pass_line_is_not_printed_under_a_warning` |
+| 수상한 값 판정은 라벨이 아니라 **값**을 읽는다(#46·#19) | ✅ 자동 | `test_suspicious_values_read_the_value_not_the_label` |
+| `name_rows_diag` 가 해소된 값을 싣는다(배선, #20) | ✅ 자동 | `test_rows_carry_the_resolved_value` |
+
+⚠️ ✅ 를 막는 조건에 갈래(`stuck`)를 같이 걸었다가 **뮤테이션이 통과**해 지웠다
+— 그 갈래들은 `not has_han(nm)` 검사를 먼저 지나므로 도달 불가였다(#291).
+위 세 번째 줄이 그 **전제**(value 가 한자다)를 생산자로 태워 지킨다.
+⚠️ 다만 전제는 거기까지다 — "그래서 계수만으로 ✅ 가 막힌다" 는 **한글을 먼저
+세면 거짓**이었다(혼합 값이 '한글' 로 잡혀 `한자 잔존 0 · ✅`). 그래서 분류를
+**한자 먼저**로 두고 그 순서 자체를 위 두 줄이 값으로 잰다(#91b).
+
+**못 보는 축**(#274): 계수는 스크립트(한글/한자/그 밖)만 본다 — 값이 *맞는
+회사명인지* 는 재지 않는다(그건 `suspicious_values` 가 모양으로만 거른다).

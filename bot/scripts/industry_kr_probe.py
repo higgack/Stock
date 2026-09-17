@@ -25,13 +25,24 @@ from collections import Counter
 
 _PROBE_VER = 1
 
-# (캐시 파일, 설명) — 값이 {티커: 업종} 인 맵만.
-_SOURCES = (
+# (캐시 파일, 설명) — 값이 {티커: 업종} 인 맵만. 미국 셋은 finviz 캐시 dir.
+_FINVIZ_SOURCES = (
     ("nasdaq_industries.json", "미국(NASDAQ screener) — 신고저·급등락·장전장후"),
     ("sp500_inds_github.json", "미국 S&P500(GICS sub-industry)"),
     ("sp500_industry.json", "미국 S&P500(보조)"),
-    ("tw_industry_map", "대만(TWSE/TPEx)"),
 )
+# ⚠️ 대만은 **다른 모듈의 캐시 dir**(twse)이고 키도 제품 상수에 있다. 첫 판은
+# `("tw_industry_map", …)` 을 finviz `_cached` 로 읽어 — dir 도 키도 틀려서 —
+# 이 줄이 **영구히 "캐시 없음"** 이었다(#53 죽은 이름 · #35 · #260 못 고칠
+# 경보). 이름을 손으로 적지 말고 제품에서 가져온다(#38).
+_TW_DESC = "대만(TWSE/TPEx)"
+
+
+def _tw_source():
+    """(파일명, 설명, 로더) — 대만 업종 맵은 twse 캐시 dir · 키는 제품 상수."""
+    from bot.twse_client import _TW_IND_CACHE_KEY, _cached_stale
+    return (f"{_TW_IND_CACHE_KEY}.json", _TW_DESC,
+            lambda: _cached_stale(_TW_IND_CACHE_KEY, max_age_sec=10 ** 9))
 
 
 def _p(*a):
@@ -45,8 +56,11 @@ def main() -> int:
 
     _p(f"industry_kr_probe v{_PROBE_VER} · 사전 {len(_INDUSTRY_KR)}개 항목")
 
-    for name, desc in _SOURCES:
-        m = _cached(name, ttl=10 ** 9)      # 나이 무시 — 지금 디스크에 있는 것
+    srcs = [(n, d, lambda n=n: _cached(n, ttl=10 ** 9))
+            for n, d in _FINVIZ_SOURCES]
+    srcs.append(_tw_source())
+    for name, desc, load in srcs:
+        m = load()                          # 나이 무시 — 지금 디스크에 있는 것
         if not isinstance(m, dict) or not m:
             _p("")
             _p(f"── {desc}: 캐시 없음({name}) — 아직 안 받았거나 소스 실패")

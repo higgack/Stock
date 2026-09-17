@@ -35,13 +35,14 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 import time
 
 from bot.chart_translate import _MAX_BATCH
 from bot.finviz_client import MCAP_PERSIST_TTL
-from bot.twse_client import _TW_IND_CACHE_TTL
+from bot.twse_client import _TW_IND_CACHE_KEY, _TW_IND_CACHE_TTL
 
 _PROBE_VER = 6
 # 문턱은 **제품에서 가져온다** — 복제하면 진단이 화면과 다른 말을 한다(#38).
@@ -60,9 +61,68 @@ def _age_label(sec: float | None) -> str:
     return f"{h:.1f}시간 전" if h >= 1 else f"{sec / 60:.0f}분 전"
 
 
+def ind_cache_probe(tw) -> dict:
+    """업종 맵 캐시의 **파일·나이·상태·맵** — ⑤ 가 갈래를 말할 재료(읽기 전용).
+
+    ⚠️ 파일 이름은 **제품 상수**(`_TW_IND_CACHE_KEY`)에서 만든다 — 리터럴로
+    적었더니 v2 rename 을 못 따라가 죽은 파일(`tw_industry_map.json`, 184.8시간
+    전)을 재고 `항목 0종목` 을 찍었다(VM 실측 2026-09-17, #35·#38·#53).
+    ⚠️ 상태를 `빈 dict` 하나로 뭉개지 않는다 — 제품의 `_cached_stale` 은 모든
+    예외를 삼키므로 파손(#331 에서 한 바이트가 보드 셋을 비웠다)·dict 아닌
+    payload·읽기 실패가 전부 같은 `0종목` 으로 보인다. 처방이 다르다(파손은
+    원천 수정이 아니라 그 파일 삭제, #82·#165).
+    ⚠️ 나이를 못 쟀으면 `absent` 가 아니라 `unknown` 이다 — '파일이 없다' 와
+    'stat 이 실패했다' 는 다른 사실이고, 후자는 판정 불가다(#54).
+
+    ⚠️ **맵은 제품의 리더**(`_cached_stale`)로 받는다 — 화면이 읽는 그 경로여야
+    ② 의 수와 화면이 안 갈린다(#35). 파일을 직접 읽는 것은 **비어 있을 때 왜**
+    비었나를 가르기 위해서다(진단 전용).
+
+    상태: absent / unknown / stale / unreadable / not_dict / empty / ok
+    """
+    name = f"{_TW_IND_CACHE_KEY}.json"
+    out: dict = {"file": name, "age": None, "state": "absent",
+                 "detail": "", "map": {}}
+    fp = tw._CACHE_DIR / name
+    try:
+        if fp.exists():
+            out["age"] = time.time() - fp.stat().st_mtime
+    except OSError as exc:                                     # noqa: BLE001
+        out["state"], out["detail"] = "unknown", f"{type(exc).__name__}: {exc}"
+        return out
+    got = tw._cached_stale(_TW_IND_CACHE_KEY, max_age_sec=_TW_IND_CACHE_TTL)
+    if got is not None and not isinstance(got, dict):
+        # ⚠️ 제품 리더는 payload 를 검사하지 않는다 — list 를 그대로 돌려주면
+        # 호출부의 `.get()` 이 AttributeError 로 죽어 ② 에서 프로브가 통째로
+        # 끝난다(선재 결함, 독립 리뷰 2026-09-17). 여기서 갈래로 돌린다.
+        out["state"], out["detail"] = "not_dict", type(got).__name__
+        return out
+    out["map"] = got or {}
+    if out["map"]:
+        out["state"] = "ok"
+        return out
+    if out["age"] is None:
+        return out                                             # absent
+    if out["age"] >= _TW_IND_CACHE_TTL:
+        out["state"] = "stale"
+        return out
+    try:
+        raw = json.loads(fp.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        out["state"], out["detail"] = "unreadable", f"{type(exc).__name__}: {exc}"
+        return out
+    if not isinstance(raw, dict):
+        # 리더가 None 을 준 뒤(예외를 삼켰거나 TTL 경계 race)에만 닿는다 —
+        # 회귀는 리더 쪽 갈래만 잰다(못 보는 축, #274).
+        out["state"], out["detail"] = "not_dict", type(raw).__name__
+        return out
+    out["state"] = "empty"
+    return out
+
+
 def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int,
                    mcap_age_sec: float | None, map_n: int, in_map: int,
-                   src_in: int, yf_pause: bool,
+                   src_in: int, yf_pause: bool, ind_cache: dict,
                    slow: tuple[int, int] | None = None) -> list[str]:
     """②③④ 실측 → 사람이 읽는 판정 줄(순수 함수 — 값으로 검증, #41·#176).
 
@@ -71,7 +131,14 @@ def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int
     '캐시가 낡았다'는 판정이다). `slow` 는 ④-b 를 돌렸을 때 (시총, 업종) 채움
     수 — 같은 실행이 채웠는데 '캐시 파일이 없다'를 원인으로 적으면 거짓이다.
     갈래마다 처방이 다르므로 뭉뚱그리지 않는다(#82). 잴 게 없거나 재는
-    경로가 죽었으면 ✅ 도 ❌ 도 아니라 판정 불가다(#54)."""
+    경로가 죽었으면 ✅ 도 ❌ 도 아니라 판정 불가다(#54).
+
+    ⚠️ `ind_cache` 는 **기본값이 없고 `ind_cache_probe()` 가 만든 dict** 다.
+    나이만 받던 첫 판은 (a) 기본값이 없어도 **엉뚱한 값**(시총 캐시 나이)을
+    넘기는 변형이 전 게이트를 통과했고(독립 리뷰 실측 2026-09-17, #91b)
+    (b) 상태를 나이 하나로 접어 파손·dict아님을 '빈 dict' 라 단정했다(#165).
+    그 helper 가 내는 dict 말고는 넘길 것이 없게 만드는 것이 답이다 — 규율로
+    기억할 일을 구조로 옮긴다(#119)."""
     if n <= 0:
         return ["❓ 대조할 종목이 0개 — 무버 목록을 못 받았다(원천/네트워크). "
                 "업종·시총 판정 불가."]
@@ -110,8 +177,40 @@ def enrich_verdict(*, n: int, render_ok: bool, mcap_filled: int, ind_filled: int
         out.append(f"❌ 업종 {ind_filled}/{n} — 캐시 맵도 원천(上市·上櫃 OpenAPI)도 "
                    "0종목 = 소스 장애. 이 맵은 전종목 일괄이라 종목 크기와 무관하다")
     elif map_n <= 0:
-        out.append(f"❌ 업종 {ind_filled}/{n} — 캐시 맵이 없는데 원천엔 {src_in}/{n} 있다: "
-                   "③이 방금 받아 썼거나 다음 렌더가 받는다 — 곧 채워진다")
+        # ⚠️ `map_n == 0` 은 갈래가 여럿이고 처방이 전부 다르다(#82) — 한 문구로
+        # 뭉뚱그렸더니 7.7일째 그대로인 파일에 "곧 채워진다"를 적었다(#380 의
+        # 재발: "기다리면 된다"는 정말 그 경로가 다시 도는지 재고 말할 것).
+        st = str(ind_cache.get("state") or "unknown")
+        age_s, det = _age_label(ind_cache.get("age")), str(ind_cache.get("detail") or "")
+        f_ = str(ind_cache.get("file") or "업종 캐시")
+        if st == "absent":
+            # '지금 없다' 까지만 — '한 번도 못 받았다' 는 캐시 정리·삭제로도
+            # 생기므로 재지 않은 주장이다(#165).
+            cause = f"지금 캐시 파일이 없다({f_})"
+        elif st == "unknown":
+            cause = f"캐시 파일 상태를 못 읽었다({det or '사유 미기록'}) — 나이 판정 불가"
+        elif st == "stale":
+            cause = (f"캐시가 {age_s}이라 만료(TTL {_IND_TTL_H:.0f}시간) — "
+                     "화면은 이 맵을 안 읽는다")
+        elif st == "unreadable":
+            cause = (f"캐시 파일을 못 읽었다({det or '사유 미기록'}) — 파손일 수 있다"
+                     f"(처방은 원천이 아니라 그 파일 삭제: {f_})")
+        elif st == "not_dict":
+            cause = f"캐시 payload 가 dict 가 아니다({det or '형 미기록'}) — {f_} 삭제"
+        elif st == "empty":
+            cause = f"캐시는 살아 있는데({age_s}) 맵이 **빈 dict** 다"
+        else:
+            cause = f"캐시는 {age_s}인데 맵에서 0종목을 읽었다 — 상태 판정 불가"
+        # ⚠️ ③(cache-only)·④-b 는 업종맵에 **읽기 전용이 아니다** — 콜드/만료면
+        # 원천을 받아 쓴다. 그 실행이 채웠는데 "다음 렌더가 받는다"를 원인으로
+        # 적으면 같은 실행이 반증한 원인이다(독스트링이 금지한 그 형태, #55).
+        got = max(ind_filled, slow[1]) if slow else ind_filled
+        if got > 0:
+            out.append(f"⚠️ 업종 {ind_filled}/{n} — {cause}. 다만 ③(이 실행)이 "
+                       f"원천에서 {got}/{n} 을 받아 썼다 — 다음 렌더부터 캐시로 뜬다")
+        else:
+            out.append(f"❌ 업종 {ind_filled}/{n} — {cause}. "
+                       f"원천엔 {src_in}/{n} 있으니 다음 렌더가 받는다")
     elif in_map >= n:
         out.append(f"❗ 업종 {ind_filled}/{n} — 캐시 맵({map_n}종목)엔 {in_map}/{n} 이 "
                    "다 있는데 화면 값이 비었다 = 배선 문제")
@@ -160,7 +259,7 @@ def name_rows_diag(items: list, *, titles: dict, names: dict, miss: dict,
         # — 그걸 이름으로 세면 한자가 아니라서 '영문 폴백' 이라는 **거짓 갈래**가
         # 나온다(#35 진단은 화면이 보는 입력을 재야 한다).
         if not nm or nm in (tk, str(tk or "").split(".")[0]):
-            out.append({"ticker": tk, "native": nm, "branch": "no_name",
+            out.append({"ticker": tk, "native": nm, "branch": "no_name", "value": "",
                         "label": "원천 이름 없음(인자 모드) — 화면 입력이 아니다"})
             continue
         kr = ((names or {}).get(tk) or (titles or {}).get(en)
@@ -174,17 +273,21 @@ def name_rows_diag(items: list, *, titles: dict, names: dict, miss: dict,
             gate = {"by_ticker": "티커 캐시", "by_longname": "longName→제목 캐시",
                     "by_title": "제목 캐시"}[branch]
             label = f"{gate}가 풂 → {kr}"
+            shown = kr
         elif not has_han(nm):
             branch, label = (("korean", "") if _has_hangul(nm)
                              else ("latin", "원천 이름이 한자가 아님(영문/숫자)"))
+            shown = nm
         elif en and not has_han(en):
             branch = "en_fallback"
             label = f"번역은 없지만 longName 이 영문이라 화면은 그걸 쓴다 → {en}"
+            shown = en
         else:
             # 관문이 둘이라 **둘 다** 본다(리뷰 B1) — 하나라도 다시 물으면
             # 화면은 바뀔 수 있다(#82 처방이 다르다: 어느 프롬프트를 고칠 것인가).
             recs = [r for r in ((miss or {}).get(nm), (miss or {}).get(tk))
                     if isinstance(r, dict)]
+            shown = nm                    # 화면은 아직 한자 원문을 쓴다
             if not recs:
                 branch, label = "never_asked", "아직 한 번도 안 물음 — 다음 빌드가 채운다"
             elif any(r.get("retry") for r in recs):
@@ -202,7 +305,8 @@ def name_rows_diag(items: list, *, titles: dict, names: dict, miss: dict,
                 ver = next((r.get("ver") for r in recs if r.get("ver")), "")
                 label = (f"물었는데 거부됨({g} 관문) — 같은 프롬프트로는 다시 안 묻는다"
                          f" · {why}" + (f" · 지문 {ver}" if ver else ""))
-        out.append({"ticker": tk, "native": nm, "branch": branch, "label": label})
+        out.append({"ticker": tk, "native": nm, "branch": branch,
+                    "value": shown, "label": label})
     return out
 
 
@@ -221,7 +325,7 @@ def suspicious_values(rows: list) -> list:
     for r in rows:
         if not str(r.get("branch") or "").startswith("by_"):
             continue
-        v = str(r.get("label") or "").split("→", 1)[-1].strip()
+        v = str(r.get("value") or "").strip()
         tk, nat = str(r.get("ticker") or ""), str(r.get("native") or "")
         code = tk.split(".")[0]
         if (code and code in v) or re.match(r"^\W*\d", v) or (nat and v == nat):
@@ -233,13 +337,40 @@ def name_verdict(rows: list) -> list:
     """⑥ 판정 — 대조 0건은 ✅ 가 아니다(#54). 고칠 수 있는 것만 ❌ 로(#260)."""
     if not rows:
         return ["❓ 대조 0행 — 판정 불가"]
+    from bot.chart_translate import has_han
     c: dict = {}
     for r in rows:
         c[r["branch"]] = c.get(r["branch"], 0) + 1
-    kor = (c.get("korean", 0) + c.get("by_title", 0) + c.get("by_ticker", 0)
-           + c.get("by_longname", 0))
-    han = c.get("rejected", 0) + c.get("will_retry", 0) + c.get("never_asked", 0)
-    latin = c.get("latin", 0) + c.get("en_fallback", 0)
+    # ⚠️ 계수는 **갈래가 아니라 값**으로 센다. 갈래는 '어느 관문이 풀었나'(=
+    # 어디를 고칠지)이고 계수는 '화면에 무엇이 보이나'라 한 축이 둘을 대신할 수
+    # 없다(#45·#34). 갈래로 세던 첫 판은 캐시가 풀어 준 값이 로마자여도 한글로
+    # 세어, VM 실측에서 11종목이 영문인데 `영문 0` 을 찍었다(2026-09-17, #91b) —
+    # 하필 #376 이 "통용 한글명이 없으면 영문" 이라는 퇴로를 연 뒤라 그 규약이
+    # 실제로 얼마나 쓰이는지를 아무도 못 봤다.
+    # ⚠️ 판정은 **한자 먼저**다. 한글을 먼저 보면 `창루이機電` 같은 혼합 값이
+    # '한글' 로 세어져 `한자 잔존 0 · ✅` 가 되는데 화면엔 機電 이 그대로 보인다
+    # (독립 리뷰 실측 2026-09-17, #91b). 혼합은 제품이 **의도적으로 수락**하는
+    # 모양이다 — `looks_translated` 가 "한글이 섞인 답은 통과시킨다"(#376 의
+    # `百達-KY → 바이다-KY` 퇴로) — 그래서 드물지 않고, 기다려도 안 바뀐다.
+    kor = han = latin = mixed = 0
+    for r in rows:
+        if r["branch"] == "no_name":
+            continue
+        v = str(r.get("value") or "")
+        if has_han(v):
+            han += 1
+            if _has_hangul(v):
+                mixed += 1
+        elif _has_hangul(v):
+            kor += 1
+        else:
+            latin += 1
+    # ❌/⚠️ 는 '고칠 수 있나'(갈래)로 가른다 — 계수와 다른 축이다(#82).
+    # ⚠️ 거부·대기·미시도 갈래는 `name_rows_diag` 가 `not has_han(nm)` 을 **먼저**
+    # 보므로 value 가 정의상 한자다(실측 2026-09-17) — 그래서 ✅ 를 막는 조건에
+    # 갈래를 또 더할 필요가 없다. 한때 `not stuck` 을 같이 걸었는데 뮤테이션이
+    # 통과했다 = 발화 경로가 없는 가드였다(#291). 그 전제는 회귀가 지킨다
+    # (TestTwNameCompositionCountedByValue20260917).
     lines = [f"총 {len(rows)}종목 · 한글 {kor} · 영문 {latin} · 한자 잔존 {han}"
              # 소계 합이 총계와 같아야 한다(#45) — 이름을 못 받은 행은 따로 센다.
              + (f" · 이름 미확인 {c['no_name']}" if c.get("no_name") else "")]
@@ -251,6 +382,10 @@ def name_verdict(rows: list) -> list:
         lines.append(f"⚠️ {c.get('will_retry', 0) + c.get('never_asked', 0)}종목은 다음 "
                      "빌드가 (다시) 묻는다 — 기다리면 된다(한 번에 최대 "
                      f"{_MAX_BATCH}종목씩).")
+    if mixed:
+        lines.append(f"⚠️ 한자 잔존 중 {mixed}종목은 **혼합**(한글+한자) — 쓰기 관문이 "
+                     "의도적으로 수락하는 모양이라(한글이 섞이면 통과) 기다려도 "
+                     "안 바뀐다. 고칠 자리는 프롬프트다.")
     if latin:
         lines.append(f"ℹ️ 영문 {latin}종목 — 통용 한글명이 없으면 한자보다 영문이 "
                      "낫다는 규약대로다(설계대로, 사용자 2026-09-17).")
@@ -266,7 +401,9 @@ def name_verdict(rows: list) -> list:
                      "있다(정화는 읽는 경계가 하지만, 새 모양이면 여기서 먼저 보인다): "
                      + " · ".join(f"{t} {v}" for t, v in odd[:5])
                      + (f" (외 {len(odd) - 5}종목)" if len(odd) > 5 else ""))
-    if not han and not c.get("no_name"):
+    # ⚠️ ⚠️ 바로 아래 ✅ 를 붙이지 말 것 — '한자에 한정' 이라 문자적으로는
+    # 참이어도 경고 아래 pass 로 읽힌다(#41 여유로 사실을 덮지 말 것).
+    if not han and not c.get("no_name") and not odd:
         lines.append("✅ 한자로 남은 종목 없음")
     return lines
 
@@ -327,16 +464,17 @@ def main() -> int:
     persist = fv._cached("enrich_mcap_TW.json", ttl=MCAP_PERSIST_TTL) or {}
     have_mc = sum(1 for t in tickers if persist.get(t) is not None)
     _p(f"              항목 {len(persist)}종목 · 이 표의 {have_mc}/{n}")
-    try:
-        fp = tw._CACHE_DIR / "tw_industry_map.json"
-        ind_age = (time.time() - fp.stat().st_mtime) if fp.exists() else None
-    except OSError:
-        ind_age = None
-    ind_cached = tw._cached_stale("tw_industry_map", max_age_sec=_TW_IND_CACHE_TTL) or {}
+    # 파일 이름·나이·상태를 한 자리에서 — 이름을 리터럴로 적었더니 v2 rename 을
+    # 못 따라가 죽은 파일을 쟀다(#382). 상태 갈래는 ⑤ 가 쓴다.
+    ind_cache = ind_cache_probe(tw)
+    ind_cached = ind_cache["map"]
     map_n = len(ind_cached)
     in_map = sum(1 for c in codes if ind_cached.get(c))
-    _p(f"   업종 캐시  tw_industry_map.json  {_age_label(ind_age)}"
-       f" · TTL {_IND_TTL_H:.0f}시간 · 항목 {map_n}종목 · 이 표의 {in_map}/{n}")
+    _p(f"   업종 캐시  {ind_cache['file']}  {_age_label(ind_cache['age'])}"
+       f" · TTL {_IND_TTL_H:.0f}시간 · 항목 {map_n}종목 · 이 표의 {in_map}/{n}"
+       + (f"  ⚠️ 상태 {ind_cache['state']}"
+          f"{' — ' + ind_cache['detail'] if ind_cache['detail'] else ''}"
+          if ind_cache["state"] not in ("ok", "absent") else ""))
     yf_pause = fv.yf_paused()
     _p(f"   yfinance   정지마커 {'🚫 켜짐' if yf_pause else '꺼짐'}"
        " · fast_info 쿨다운은 봇 프로세스 안에서만 보여 여기서 판정 불가")
@@ -423,7 +561,8 @@ def main() -> int:
     for line in enrich_verdict(n=n, render_ok=render_ok, mcap_filled=mcap_filled,
                                ind_filled=ind_filled, mcap_age_sec=mcap_age,
                                map_n=map_n, in_map=in_map, src_in=src_in,
-                               yf_pause=yf_pause, slow=slow_res):
+                               yf_pause=yf_pause, ind_cache=ind_cache,
+                               slow=slow_res):
         _p(f"   {line}")
     if not slow and render_ok and (mcap_filled < n or ind_filled < n):
         _p("   ↪ 캐시 콜드인지 원천 부재인지 가르려면(시총 캐시를 채우는 쓰기):")
