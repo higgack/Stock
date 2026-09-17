@@ -56695,7 +56695,7 @@ class TestTwEnrichProbe20260910:
     def test_verdict_says_which_branch_emptied_mcap(self):
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=30, render_ok=True, ind_filled=30, map_n=1800, in_map=30,
-                    src_in=30, yf_pause=False)
+                    src_in=30, yf_pause=False, ind_age_sec=600.0)
         gone = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=None, **base))
         old = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=20 * 3600, **base))
         cold = "\n".join(enrich_verdict(mcap_filled=0, mcap_age_sec=600, **base))
@@ -56708,7 +56708,8 @@ class TestTwEnrichProbe20260910:
         """④-b 가 채웠으면 '캐시 파일이 없다'는 같은 실행이 반증한 원인이다(리뷰 High)."""
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=30, render_ok=True, mcap_filled=0, ind_filled=30,
-                    mcap_age_sec=None, map_n=1800, in_map=30, src_in=30, yf_pause=False)
+                    mcap_age_sec=None, map_n=1800, in_map=30, src_in=30, yf_pause=False,
+                    ind_age_sec=600.0)
         filled = "\n".join(enrich_verdict(slow=(30, 30), **base))
         still = "\n".join(enrich_verdict(slow=(0, 30), **base))
         assert "캐시 콜드였다" in filled and "파일이 없다" not in filled
@@ -56720,7 +56721,8 @@ class TestTwEnrichProbe20260910:
         보인다(#222 옛 계약을 새 계약으로 다시 씀)."""
         from bot.scripts.tw_enrich_probe import enrich_verdict
         base = dict(n=30, render_ok=True, mcap_filled=0, ind_filled=30,
-                    mcap_age_sec=None, map_n=1800, in_map=30, src_in=30)
+                    mcap_age_sec=None, map_n=1800, in_map=30, src_in=30,
+                    ind_age_sec=600.0)
         pause = "\n".join(enrich_verdict(yf_pause=True, **base))
         ok = "\n".join(enrich_verdict(yf_pause=False, **base))
         assert "정지 마커" in pause and "정지 마커" not in ok
@@ -56730,16 +56732,25 @@ class TestTwEnrichProbe20260910:
         """캐시 맵 2종목에 '4/4 다 있다'는 산수가 불가능하다(리뷰 High·#45) —
         모집단을 갈라 '맵이 낡았다' 갈래가 생긴다."""
         from bot.scripts.tw_enrich_probe import enrich_verdict
-        base = dict(n=4, render_ok=True, mcap_filled=4, mcap_age_sec=600, yf_pause=False)
+        base = dict(n=4, render_ok=True, mcap_filled=4, mcap_age_sec=600,
+                    yf_pause=False, ind_age_sec=600.0)
         stale = "\n".join(enrich_verdict(ind_filled=2, map_n=2, in_map=2, src_in=4, **base))
         wiring = "\n".join(enrich_verdict(ind_filled=0, map_n=1800, in_map=4, src_in=4, **base))
         outage = "\n".join(enrich_verdict(ind_filled=0, map_n=0, in_map=0, src_in=0, **base))
-        nomap = "\n".join(enrich_verdict(ind_filled=0, map_n=0, in_map=0, src_in=4, **base))
+        nomap = "\n".join(enrich_verdict(**{**base, "ind_age_sec": None},
+                                         ind_filled=0, map_n=0, in_map=0, src_in=4))
         absent = "\n".join(enrich_verdict(ind_filled=2, map_n=1800, in_map=2, src_in=2, **base))
         assert "맵이 낡았다" in stale and "배선" not in stale
         assert "배선 문제" in wiring
-        assert "소스 장애" in outage and "곧 채워진다" not in outage
-        assert "곧 채워진다" in nomap and "소스 장애" not in nomap
+        assert "소스 장애" in outage
+        # ⚠️ 2026-09-17 계약 변경(#382·#222): `map_n == 0` 은 갈래가 셋이고 처방이
+        # 다르므로 `곧 채워진다` 라는 **재지 않은 약속**을 지웠다(#380·#165).
+        # 남는 보장은 그대로다 — 맵이 없는데 원천이 주는 상태를 '소스 장애' 로
+        # 오진하지 않고, 원천 수(`src_in`)를 근거로 댄다. 갈래별 문구는
+        # TestTwIndustryMapVerdictBranches20260917 이 값으로 잰다.
+        assert "소스 장애" not in nomap and "4/4" in nomap
+        for txt in (outage, nomap):
+            assert "곧 채워진다" not in txt
         assert "어디에도 없는 코드 2개" in absent and "단정 안 함" in absent
         assert "4/4 이 다 있는데" not in stale
 
@@ -56748,7 +56759,7 @@ class TestTwEnrichProbe20260910:
         from bot.scripts.tw_enrich_probe import enrich_verdict
         txt = "\n".join(enrich_verdict(n=30, render_ok=True, mcap_filled=0, ind_filled=27,
                                        mcap_age_sec=None, map_n=1800, in_map=27,
-                                       src_in=28, yf_pause=False))
+                                       src_in=28, yf_pause=False, ind_age_sec=600.0))
         assert "27/30, 지금 받은 원천엔 28/30 이 실제로 들어 있다" in txt
 
     def test_verdict_refuses_to_pass_when_there_is_nothing_to_compare(self):
@@ -56756,10 +56767,10 @@ class TestTwEnrichProbe20260910:
         from bot.scripts.tw_enrich_probe import enrich_verdict
         empty = "\n".join(enrich_verdict(n=0, render_ok=True, mcap_filled=0, ind_filled=0,
                                          mcap_age_sec=None, map_n=0, in_map=0, src_in=0,
-                                         yf_pause=False))
+                                         yf_pause=False, ind_age_sec=None))
         broken = "\n".join(enrich_verdict(n=30, render_ok=False, mcap_filled=0, ind_filled=0,
                                           mcap_age_sec=None, map_n=0, in_map=0, src_in=0,
-                                          yf_pause=False))
+                                          yf_pause=False, ind_age_sec=None))
         for txt in (empty, broken):
             assert "❓" in txt and "판정 불가" in txt and "✅" not in txt and "❌" not in txt
         assert "③" in broken
@@ -69824,3 +69835,276 @@ class TestTwKoreanNameStuckDiag20260917:
                   and isinstance(k.value, ast.Constant) and k.value.value is True]
             assert ok, (f"{getattr(c.func, 'id', '?')} 가 과금 경로를 연다"
                         " — 진단이 돈을 쓴다(#312·#321)")
+
+
+# ── 진단이 제품과 **다른 캐시 파일**을 재면 판정이 통째로 거짓이 된다 ──────────
+# 2026-09-17 VM 실측: `tw_enrich_probe` ② 가 `업종 캐시 tw_industry_map.json
+# 184.8시간 전 · 항목 0종목` 을 찍고 ⑤ 가 "캐시 맵이 없는데 … 곧 채워진다" 를
+# 적었는데, 제품 키는 `_TW_IND_CACHE_KEY = "tw_industry_map_v2"` 다. 프로브는
+# 바로 위 줄에서 TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해
+# (#38) v2 rename 을 못 따라갔고, ③ cache-only 는 같은 실행에서 59/60 을
+# 채우고 있었다(= 화면은 멀쩡한데 진단만 거짓 ❌, #35·#53·#260).
+def _cache_names_in(tree):
+    """(리터럴 캐시 이름, f-string 접두) — 캐시 호출 자리에서만 모은다.
+
+    `_cached(...)`/`_cached_stale(...)`/`_cache_write(...)`/`cache_age_sec(...)`
+    의 첫 인자와 `…_CACHE_DIR / "…"` 의 우변. 제품이 `pkey = f"enrich_mcap_
+    {market}.json"` 처럼 **변수를 거쳐** 넘기는 경우가 있어 모듈 안의
+    `이름 = f"…"` 대입을 같이 따라간다(안 따라가면 정상 이름이 드리프트로
+    오보된다 — 실측 `enrich_mcap_TW`).
+    """
+    import ast as _ast
+    calls = {"_cached", "_cached_stale", "_cache_write", "cache_age_sec"}
+    jvar = {}
+    for nd in _ast.walk(tree):
+        if (isinstance(nd, _ast.Assign) and len(nd.targets) == 1
+                and isinstance(nd.targets[0], _ast.Name)
+                and isinstance(nd.value, _ast.JoinedStr) and nd.value.values):
+            v = nd.value.values[0]
+            if isinstance(v, _ast.Constant) and isinstance(v.value, str):
+                jvar[nd.targets[0].id] = v.value
+
+    def _args():
+        for n2 in _ast.walk(tree):
+            if isinstance(n2, _ast.Call) and n2.args:
+                f = n2.func
+                fn = f.attr if isinstance(f, _ast.Attribute) else getattr(f, "id", "")
+                if fn in calls:
+                    yield n2.args[0]
+            if isinstance(n2, _ast.BinOp) and isinstance(n2.op, _ast.Div):
+                l = n2.left
+                ln = l.attr if isinstance(l, _ast.Attribute) else getattr(l, "id", "")
+                if str(ln).endswith("CACHE_DIR"):
+                    yield n2.right
+
+    lits, prefs = set(), set()
+    for a in _args():
+        if isinstance(a, _ast.Constant) and isinstance(a.value, str):
+            nm = a.value
+            lits.add(nm[:-5] if nm.endswith(".json") else nm)
+        elif isinstance(a, _ast.JoinedStr) and a.values:
+            v = a.values[0]
+            if isinstance(v, _ast.Constant) and isinstance(v.value, str) and len(v.value) >= 4:
+                prefs.add(v.value)
+        elif isinstance(a, _ast.Name) and a.id in jvar:
+            prefs.add(jvar[a.id])
+    return lits, prefs
+
+
+def scan_probe_cache_drift(root):
+    """[(파일, 이름)] — `bot/scripts/` 가 읽는데 제품 어디에도 없는 캐시 이름.
+
+    이름을 **열거하지 않는다**(#24): 제품 모듈 전수에서 쓰이는 이름·접두를 모아
+    여집합을 본다. 접두 규칙 때문에 f-string 으로 만드는 이름은 이 검사가 못
+    본다 — 못 보는 축을 여기 적는다(#274).
+    """
+    import ast as _ast
+    import pathlib as _pl
+    plit, ppre, scripts = set(), set(), {}
+    for p in sorted(_pl.Path(root).rglob("*.py")):
+        if "tests" in p.parts or "__pycache__" in p.parts:
+            continue
+        try:
+            t = _ast.parse(p.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        lits, prefs = _cache_names_in(t)
+        if "scripts" in p.parts:
+            if lits:
+                scripts[str(p)] = lits
+        else:
+            plit |= lits
+            ppre |= prefs
+    out = []
+    for f, got in sorted(scripts.items()):
+        for nm in sorted(got):
+            if nm in plit or any(nm.startswith(x) for x in ppre):
+                continue
+            out.append((f, nm))
+    return out
+
+
+class TestProbeCacheKeyDrift20260917:
+    """프로브가 죽은 캐시 이름을 읽으면 ②·⑤ 가 통째로 거짓말한다(#35·#53)."""
+
+    def test_no_script_reads_a_cache_name_the_product_never_writes(self):
+        import pathlib
+        bad = scan_probe_cache_drift(pathlib.Path(__file__).resolve().parent.parent / "bot")
+        assert not bad, ("진단이 제품에 없는 캐시 이름을 읽는다(rename 을 못 따라감): "
+                         + " · ".join(f"{f}:{n}" for f, n in bad))
+
+    def test_tw_probes_take_the_industry_key_from_the_product_constant(self):
+        """리터럴로 적으면 v2 rename 을 못 따라간다 — 상수를 import 하는지 본다."""
+        import ast
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        for rel in ("bot/scripts/tw_enrich_probe.py",
+                    "bot/scripts/industry_kr_probe.py"):
+            src = (root / rel).read_text(encoding="utf-8")
+            names = set()
+            for nd in ast.walk(ast.parse(src)):
+                if isinstance(nd, ast.ImportFrom) and nd.module == "bot.twse_client":
+                    names |= {a.name for a in nd.names}
+            assert "_TW_IND_CACHE_KEY" in names, (
+                f"{rel} 가 업종 캐시 키를 제품에서 안 가져온다(#38)")
+
+    def test_the_scan_fires_on_a_renamed_product_key(self, tmp_path):
+        """발화 경로 — 가드가 실제로 드리프트를 잡는지 본다(#291·#91).
+
+        제품이 `foo_map_v2` 로 바꿨는데 프로브가 옛 `foo_map` 을 읽는 상태를
+        합성해 태운다(2026-09-17 실측 그대로). 같은 함수를 본 테스트가 쓴다.
+        """
+        pkg = tmp_path / "botx"
+        (pkg / "scripts").mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "src.py").write_text(
+            'KEY = "foo_map_v2"\n'
+            'def f():\n'
+            '    return _cached_stale(KEY)\n'
+            'def g():\n'
+            '    return _cached("foo_map_v2.json")\n', encoding="utf-8")
+        probe = pkg / "scripts" / "p.py"
+        probe.write_text('def h():\n    return _cached_stale("foo_map")\n',
+                         encoding="utf-8")
+        assert scan_probe_cache_drift(pkg) == [(str(probe), "foo_map")]
+        # 고치면 조용해진다(반대 증거, #25) — 통과만 재면 늘 빨간 가드와 구별 못 한다.
+        probe.write_text('def h():\n    return _cached_stale("foo_map_v2")\n',
+                         encoding="utf-8")
+        assert scan_probe_cache_drift(pkg) == []
+
+    def test_variable_fstring_keys_are_not_reported_as_drift(self, tmp_path):
+        """`pkey = f"enrich_mcap_{market}.json"` 처럼 변수를 거치는 정상 이름을
+        드리프트로 오보하면 가드가 시끄러워져 진짜를 가린다(#25·#260)."""
+        pkg = tmp_path / "boty"
+        (pkg / "scripts").mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "src.py").write_text(
+            'def f(market):\n'
+            '    pkey = f"enrich_mcap_{market}.json"\n'
+            '    return _cached(pkey)\n', encoding="utf-8")
+        (pkg / "scripts" / "p.py").write_text(
+            'def h():\n    return _cached("enrich_mcap_TW.json")\n', encoding="utf-8")
+        assert scan_probe_cache_drift(pkg) == []
+
+
+class TestTwNameCompositionCountedByValue20260917:
+    """⑥ 계수는 **갈래가 아니라 값**으로 — 갈래로 세면 로마자가 한글로 잡힌다.
+
+    VM 실측 2026-09-17: 무버 60종목이 전부 `티커 캐시가 풂 → …` 였는데 그중
+    11종목(`KAI WEI TECHNOLOGY`·`Longzhong`·`U-CHEM` …)이 로마자인데도 요약이
+    `한글 60 · 영문 0` 이었다. #376 이 "통용 한글명이 없으면 영문" 이라는 퇴로를
+    연 뒤라, 그 규약이 실제로 얼마나 쓰이는지를 아무도 못 보고 있었다(#45·#91b).
+    """
+
+    @staticmethod
+    def _row(tk, native, branch, value):
+        return {"ticker": tk, "native": native, "branch": branch,
+                "value": value, "label": f"티커 캐시가 풂 → {value}"}
+
+    def test_latin_value_from_cache_counts_as_english_not_korean(self):
+        from bot.scripts.tw_enrich_probe import name_verdict
+        rows = [self._row("5201.TW", "凱衛", "by_ticker", "KAI WEI TECHNOLOGY"),
+                self._row("6542.TW", "隆中", "by_ticker", "Longzhong"),
+                self._row("1709.TW", "和益", "by_ticker", "호팍스")]
+        head = name_verdict(rows)[0]
+        assert "한글 1" in head and "영문 2" in head, head
+        assert any("영문 2종목" in x and "규약대로" in x for x in name_verdict(rows)), \
+            "영문 폴백이 설계대로임을 화면이 말해야 한다(#43·#82)"
+
+    def test_han_value_from_cache_is_counted_as_han_not_korean(self):
+        """캐시가 원문을 그대로 돌려주면 그건 해소된 게 아니다(#376b)."""
+        from bot.scripts.tw_enrich_probe import name_verdict
+        rows = [self._row("6870.TW", "騰雲", "by_ticker", "騰雲")]
+        head = name_verdict(rows)[0]
+        assert "한자 잔존 1" in head and "한글 0" in head, head
+        assert not any(x.startswith("✅") for x in name_verdict(rows)), \
+            "한자가 남았는데 ✅ 를 찍으면 안 된다(#54)"
+
+    def test_stuck_branches_always_carry_a_han_value(self):
+        """✅ 를 막는 것은 **계수**다 — 갈래를 또 더하면 발화 경로가 없는 가드가
+        된다(#291, 뮤테이션 실측). 그게 성립하는 전제(거부·대기·미시도 갈래는
+        `not has_han(nm)` 검사를 먼저 지나므로 value 가 정의상 한자)를 여기서
+        못박는다. 생산자가 바뀌어 전제가 깨지면 이 테스트가 먼저 빨간불이 되고,
+        그때 ✅ 조건에 갈래를 다시 넣어야 한다.
+        """
+        from bot.chart_translate import has_han
+        from bot.scripts.tw_enrich_probe import name_rows_diag, name_verdict
+        cases = (("騰雲", {"騰雲": {"gate": "title", "retry": False, "why": "x"}}),
+                 ("佳大", {"佳大": {"gate": "title", "retry": True}}),
+                 ("和益", {}))
+        for nm, miss in cases:
+            row = name_rows_diag([{"ticker": "1.TW", "name": nm}],
+                                 titles={}, names={}, miss=miss)[0]
+            assert row["branch"] in ("rejected", "will_retry", "never_asked")
+            assert has_han(row["value"]), row
+            # 계수만으로 ✅ 가 막힌다(= 갈래 조건이 불필요하다는 증거).
+            assert not any(x.startswith("✅") for x in name_verdict([row]))
+
+    def test_suspicious_values_read_the_value_not_the_label(self):
+        """라벨을 `→` 로 쪼개 읽으면 라벨 문구가 바뀔 때 눈이 먼다(#46·#19)."""
+        from bot.scripts.tw_enrich_probe import suspicious_values
+        rows = [{"ticker": "1709.TW", "native": "和益", "branch": "by_ticker",
+                 "value": "1709.TW | 호팍스", "label": "라벨 문구는 무관하다"},
+                {"ticker": "6870.TW", "native": "騰雲", "branch": "by_ticker",
+                 "value": "9. 레트로닉스", "label": ""},
+                {"ticker": "2033.TW", "native": "佳大", "branch": "by_ticker",
+                 "value": "가대", "label": ""}]
+        assert [t for t, _ in suspicious_values(rows)] == ["1709.TW", "6870.TW"]
+
+    def test_rows_carry_the_resolved_value(self):
+        """배선 — `name_rows_diag` 가 값을 실어야 위 계수가 잰다(#20)."""
+        from bot.scripts.tw_enrich_probe import name_rows_diag
+        rows = name_rows_diag(
+            [{"ticker": "5201.TW", "name": "凱衛"}],
+            titles={}, names={"5201.TW": "KAI WEI TECHNOLOGY"}, miss={})
+        assert rows[0]["value"] == "KAI WEI TECHNOLOGY"
+        assert rows[0]["branch"] == "by_ticker"
+
+
+class TestTwIndustryMapVerdictBranches20260917:
+    """`map_n == 0` 은 갈래가 셋이고 처방이 전부 다르다(#82).
+
+    첫 판은 하나로 뭉뚱그려 7.7일째 그대로인 파일에 "곧 채워진다"를 적었다 —
+    #380("기다리면 된다"는 정말 그 경로가 다시 도는지 재고 말할 것)의 재발.
+    """
+
+    @staticmethod
+    def _v(**kw):
+        from bot.scripts.tw_enrich_probe import enrich_verdict
+        base = dict(n=60, render_ok=True, mcap_filled=60, ind_filled=0,
+                    mcap_age_sec=100.0, map_n=0, in_map=0, src_in=60,
+                    yf_pause=False, ind_age_sec=None)
+        base.update(kw)
+        return "\n".join(enrich_verdict(**base))
+
+    def test_missing_file_says_never_received(self):
+        out = self._v(ind_age_sec=None)
+        assert "한 번도 못 받았다" in out and "만료" not in out
+
+    def test_expired_file_says_expired_not_missing(self):
+        from bot.twse_client import _TW_IND_CACHE_TTL
+        out = self._v(ind_age_sec=_TW_IND_CACHE_TTL * 7.7)
+        assert "만료" in out and "화면은 이 맵을 안 읽는다" in out
+        assert "한 번도 못 받았다" not in out
+
+    def test_fresh_but_empty_map_is_a_collection_bug(self):
+        out = self._v(ind_age_sec=60.0)
+        assert "빈 dict" in out and "수집·파싱 문제" in out
+
+    def test_verdict_never_promises_soon_without_measuring(self):
+        """'곧 채워진다' 는 재지 않은 약속이었다 — 세 갈래 어디에도 없어야 한다."""
+        from bot.twse_client import _TW_IND_CACHE_TTL
+        for age in (None, 60.0, _TW_IND_CACHE_TTL * 7.7):
+            assert "곧 채워진다" not in self._v(ind_age_sec=age)
+
+    def test_probe_passes_the_measured_age_into_the_verdict(self):
+        """배선 — 나이를 안 넘기면 세 갈래가 하나로 무너진다(#20)."""
+        import ast
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "bot/scripts/tw_enrich_probe.py").read_text(encoding="utf-8")
+        calls = [n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", "") == "enrich_verdict"]
+        assert len(calls) == 1
+        assert "ind_age_sec" in {k.arg for k in calls[0].keywords}

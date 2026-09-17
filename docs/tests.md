@@ -734,3 +734,45 @@ M8 발화 확인).
 ⚠️ `docs/tests.md` 가 **인용한 테스트 이름이 실재하는지 검사하는 가드는
 없다**(#274 못 보는 축) — 그래서 이런 이름은 조용히 썩는다. 지울 땐 인용처를
 같이 볼 것.
+
+## 진단이 제품과 같은 캐시를 보는가 (2026-09-17 · 실수 #382)
+
+`tw_enrich_probe` 가 업종 캐시를 `tw_industry_map`(옛 이름)으로 읽고 있었다 —
+제품은 `_TW_IND_CACHE_KEY = "tw_industry_map_v2"` 다. 프로브는 바로 위 줄에서
+TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해(#38) rename 을 못
+따라갔고, ② 가 `항목 0종목` · ⑤ 가 거짓 ❌ `곧 채워진다` 를 7.7일째 찍었다.
+같은 실행의 ③(cache-only)은 업종 59/60 을 채우고 있었다(화면은 멀쩡, #35·#53).
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| `bot/scripts/**` 가 읽는 캐시 이름이 제품 집합 밖이면 실패(이름 열거 아님, #24) | ✅ 자동 | `test_no_script_reads_a_cache_name_the_product_never_writes` |
+| TW 업종 키는 **제품 상수**에서 온다(형제 프로브 둘 다) | ✅ 자동 | `test_tw_probes_take_the_industry_key_from_the_product_constant` |
+| 그 스캔이 실제로 드리프트를 잡는다 + 고치면 조용해진다(#291·#25) | ✅ 자동 | `test_the_scan_fires_on_a_renamed_product_key` |
+| `pkey = f"enrich_mcap_{market}.json"` 류 정상 이름을 오보하지 않는다(#25·#260) | ✅ 자동 | `test_variable_fstring_keys_are_not_reported_as_drift` |
+| `map_n == 0` 을 갈래 셋(파일없음/만료/빈 맵)으로 가른다(#82) | ✅ 자동 | `test_missing_file_says_never_received` · `test_expired_file_says_expired_not_missing` · `test_fresh_but_empty_map_is_a_collection_bug` |
+| 재지 않은 '곧 채워진다' 를 어느 갈래에서도 약속하지 않는다(#380·#165) | ✅ 자동 | `test_verdict_never_promises_soon_without_measuring` |
+| 잰 나이를 판정에 **넘긴다**(안 넘기면 세 갈래가 하나로 무너진다, #20) | ✅ 자동 | `test_probe_passes_the_measured_age_into_the_verdict` |
+
+**못 보는 축**(#274): 캐시 이름을 f-string 으로 **만드는 자리** 자체는 이 스캔이
+못 본다(리터럴만 본다) — 변수 대입은 따라가지만 그 이상은 아니다. 그리고
+프로브가 **맞는 파일을 열고도 엉뚱한 키로 조회**하는 경우는 여전히 밖이다.
+
+## ⑥ 한글명 계수는 갈래가 아니라 값으로 (2026-09-17 · 실수 #382)
+
+VM 실측에서 무버 60종목이 전부 `티커 캐시가 풂 → …` 였는데 그중 11종목이
+로마자(`KAI WEI TECHNOLOGY`·`Longzhong`·`U-CHEM` …)인데도 요약이 `한글 60 ·
+영문 0` 이었다. 갈래는 '어느 관문이 풀었나'(= 어디를 고칠지)이고 계수는 '화면에
+무엇이 보이나'라 한 축이 둘을 대신할 수 없다(#45·#34·#91b). #376 이 "통용
+한글명이 없으면 영문" 퇴로를 연 직후라 그 규약이 얼마나 쓰이는지 아무도 못 봤다.
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 캐시가 풀어 준 로마자 값은 영문으로 센다 + 규약대로임을 말한다(#43) | ✅ 자동 | `test_latin_value_from_cache_counts_as_english_not_korean` |
+| 캐시가 원문을 그대로 주면 '한자 잔존' 이고 ✅ 가 아니다(#54·#376b) | ✅ 자동 | `test_han_value_from_cache_is_counted_as_han_not_korean` |
+| 거부·대기·미시도 갈래는 value 가 정의상 한자 — 그래서 계수만으로 ✅ 가 막힌다 | ✅ 자동 | `test_stuck_branches_always_carry_a_han_value` |
+| 수상한 값 판정은 라벨이 아니라 **값**을 읽는다(#46·#19) | ✅ 자동 | `test_suspicious_values_read_the_value_not_the_label` |
+| `name_rows_diag` 가 해소된 값을 싣는다(배선, #20) | ✅ 자동 | `test_rows_carry_the_resolved_value` |
+
+⚠️ ✅ 를 막는 조건에 갈래(`stuck`)를 같이 걸었다가 **뮤테이션이 통과**해 지웠다
+— 그 갈래들은 `not has_han(nm)` 검사를 먼저 지나므로 도달 불가였다(#291).
+위 세 번째 줄이 그 **전제**를 생산자로 태워 지킨다: 전제가 깨지면 그때 다시 넣는다.
