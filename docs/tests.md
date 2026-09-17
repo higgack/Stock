@@ -738,7 +738,8 @@ M8 발화 확인).
 ## 진단이 제품과 같은 캐시를 보는가 (2026-09-17 · 실수 #382)
 
 `tw_enrich_probe` 가 업종 캐시를 `tw_industry_map`(옛 이름)으로 읽고 있었다 —
-제품은 `_TW_IND_CACHE_KEY = "tw_industry_map_v2"` 다. 프로브는 바로 위 줄에서
+제품은 그때 `_TW_IND_CACHE_KEY = "tw_industry_map_v2"` 였다(지금은 `…_v3`
+— 아래 §부분 캐시 절에서 봉투로 바뀌며 다시 올렸다). 프로브는 바로 위 줄에서
 TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해(#38) rename 을 못
 따라갔고, ② 가 `항목 0종목` · ⑤ 가 거짓 ❌ `곧 채워진다` 를 7.7일째 찍었다.
 같은 실행의 ③(cache-only)은 업종 59/60 을 채우고 있었다(화면은 멀쩡, #35·#53).
@@ -746,14 +747,14 @@ TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해(#
 | 계약 | 상태 | 테스트 |
 |---|---|---|
 | `bot/scripts/**` 가 읽는 캐시 이름이 제품 집합 밖이면 실패(이름 열거 아님, #24) | ✅ 자동 | `test_no_script_reads_a_cache_name_the_product_never_writes` |
-| TW 업종 키를 제품 상수에서 import 한다(형제 프로브 둘 다) | ✅ 자동 | `test_tw_probes_take_the_industry_key_from_the_product_constant` |
+| 프로브 둘이 캐시 이름을 **스스로 만들지 않는다**(제품 판정 함수를 부른다, #176) | ✅ 자동 | `test_tw_probes_do_not_build_the_industry_cache_name_themselves` |
 | ② 가 **제품이 쓰는 그 파일**을 재고, 옛 이름만 있으면 '없다' 다(값으로) | ✅ 자동 | `TestTwIndCacheProbeMeasuresTheProductFile20260917::test_it_reads_the_product_key_not_the_pre_v2_name` |
 | 형제 프로브의 대만 로더가 **twse dir** 을 읽는다 + finviz dir 은 안 읽는다(#25) | ✅ 자동 | `TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917` |
 | 그 스캔이 실제로 드리프트를 잡는다 + 고치면 조용해진다(#291·#25) | ✅ 자동 | `test_the_scan_fires_on_a_renamed_product_key` |
 | 수집 분기마다 발화 경로가 있다(CACHE_DIR BinOp · 평문 변수 · 튜플+루프) | ✅ 자동 | `test_the_scan_fires_on_each_way_scripts_name_a_cache` |
 | `pkey = f"enrich_mcap_{market}.json"` 류 정상 이름을 오보하지 않는다(#25·#260) | ✅ 자동 | `test_variable_fstring_keys_are_not_reported_as_drift` |
 | 제품이 캐시 키를 **모듈 상수**로 두면 그 이름은 드리프트가 아니다(#292) | ✅ 자동 | `test_a_module_constant_key_in_the_product_is_not_drift` |
-| `map_n == 0` 을 상태별로 가른다(없음/판정불가/만료/파손/dict아님/빈 맵, #82) | ✅ 자동 | `TestTwIndustryMapVerdictBranches20260917` 4건 |
+| `map_n == 0` 을 상태별로 가른다(없음/판정불가/파손/dict아님/봉투아님/빈 맵, #82) | ✅ 자동 | `TestTwIndustryMapVerdictBranches20260917` 4건 |
 | 파손·dict아님을 '빈 dict' 라 단정하지 않고 처방(파일 삭제)을 댄다(#331·#165) | ✅ 자동 | `test_corrupt_and_wrong_type_are_not_called_an_empty_dict` |
 | 같은 실행(③)이 채웠으면 ❌ '캐시 파일이 없다' 로 적지 않는다(#55·#79) | ✅ 자동 | `test_same_run_refill_is_not_reported_as_a_missing_cache` |
 | 재지 않은 '곧 채워진다' 를 어느 갈래에서도 약속하지 않는다(#380·#165) | ✅ 자동 | `test_verdict_never_promises_soon_without_measuring` |
@@ -765,6 +766,51 @@ TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해(#
 파일을 열고도 엉뚱한 키로 조회**하는 경우는 밖이다. 대상은 `bot/` 뿐이다 —
 `trade/scripts` 는 스크립트 전용 캐시(`resolve_check` 등)를 자기가 쓰고 자기가
 읽어 여집합 규칙으로는 전부 오탐이 된다(실측 5건, #25·#260).
+
+## 부분 캐시를 완전본으로 굽지 않는가 (2026-09-17 · 실수 #384)
+
+#382 를 배포한 직후 같은 프로브 출력이 한 층 아래를 드러냈다 — 업종 캐시
+**1084종목 = ④ 의 上市 개수와 정확히 같고** 上櫃 892 는 0. `fetch_tw_industry_map`
+이 두 소스를 한 dict 로 합쳐 `if out:` 로 쓰는데, 한쪽이 실패한 부분 맵이
+완전본과 **같은 파일·같은 24h TTL** 로 구워지고 무엇이 빠졌는지 아무 데도
+안 남았다(#280·#45). 그 사이 上櫃 무버 30개는 이 맵이 애초에 없애려던 느린
+yfinance 개별조회가 채우고 있었다.
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 한 소스가 실패하면 `partial` + 빠진 소스 **이름**을 남긴다(완전본으로 안 굽는다) | ✅ 자동 | `test_a_failed_source_is_not_baked_as_a_complete_map` |
+| 쿨다운 안에선 아무것도 안 두드리고, 지나면 **실패한 소스만** 다시 시도(#61·#303) | ✅ 자동 | `test_only_the_failed_source_is_retried_and_only_after_the_cooldown` |
+| 받은 적 있는 소스가 실패해도 그 행을 **버리지 않는다** + 로그로 말한다(#148·#12) | ✅ 자동 | `test_a_source_that_fails_later_keeps_its_previous_rows` |
+| 만료 맵도 버리지 않는다(원천이 다 죽어도 화면이 빈칸이 되지 않는다, #148·#42a) | ✅ 자동 | `test_an_expired_map_is_served_even_when_the_refetch_fails` |
+| 첫 **전멸**에서도 재시도 시각을 남긴다(빈 봉투는 `empty` 라는 이름, #54·#303) | ✅ 자동 | `test_the_first_total_failure_still_records_the_attempt` |
+| `force=True` 는 TTL·쿨다운 둘 다 무시한다 | ✅ 자동 | `test_force_ignores_both_the_ttl_and_the_cooldown` |
+| 동시 렌더 두 스레드가 서로 다른 소스만 받아도 **한쪽을 지우지 않는다**(#110·#344) | ✅ 자동 | `test_a_concurrent_writer_does_not_lose_the_other_source` |
+| 그 재읽기는 **더 새 쪽**을 남긴다(무조건 남의 것 채택 금지, #91b) | ✅ 자동 | `test_the_reread_keeps_the_newer_rows_not_the_last_write` |
+| 나이는 **소스별 `fetched`** 가 말한다 — 파일 mtime 은 재시도로도 바뀐다(#304) | ✅ 자동 | `test_expired_map_is_called_stale_but_not_thrown_away` |
+| 봉투가 아닌 dict(옛 형식·손편집)를 '빈 맵' 으로 접지 않는다(#82) | ✅ 자동 | `test_states_are_measured_not_folded_into_empty` |
+| ⑤ 가 '부분' 과 '낡음' 을 갈라 말한다(처방이 다르다, #82·#380) | ✅ 자동 | `test_main_prints_a_verdict_derived_from_what_it_measured` · `test_a_complete_but_old_map_is_called_old_not_partial` |
+| ⑤ 가 **맵 밖을 무엇이 채웠는지** 댄다(같은 실행의 ③ 과 모순 금지, #382b·#43) | ✅ 자동 | `test_the_verdict_names_what_filled_beyond_the_map` |
+| ② 가 소스별로 찍는다(한 줄로 합치면 '한쪽 없음' 이 '조금 낡음' 으로 보인다) | ✅ 자동 | `test_main_prints_a_verdict_derived_from_what_it_measured` |
+| 캐시 저장 모양이 소스별 봉투다(병합 결과는 그대로) | ✅ 자동 | `test_fetch_tw_industry_map_merges_both_sources_and_caches` |
+| 읽기(렌더) 경로는 캐시를 **다시 쓰지 않는다** | ✅ 자동 | `test_cached_numeric_codes_are_healed` |
+
+⚠️ 뮤테이션 14종 중 둘이 생존했다 — '실패한 소스의 행을 유지한다' 는 **암묵
+동작**이라(그냥 `by[label]` 을 안 건드린다) 그 자리의 `elif` 는 로그뿐이었다.
+`caplog` 로 재야 발화한다(#20·#373). 그리고 재읽기 병합의 **더 새 쪽** 비교는
+두 스레드가 서로 다른 소스만 가진 픽스처에선 한 번도 안 태워진다 — 같은 소스를
+옛 타임스탬프로 들고 있는 경쟁자를 만들어야 발화한다(#91c).
+
+⚠️ 그리고 이 변경은 **쓰기를 늘린다**(실패도 재시도 시각을 굽는다) — 개발기에서
+프로브를 한 번 돌리면 그 쿨다운이 회귀로 새어 `TestTwIndustryMapTpexEnglishKeys`
+가 원천을 못 타고 조용히 빈 맵을 받았다(**전체 실행에서만** 빨간불, #30·#312·#344).
+루트 `conftest.py` 리다이렉트 목록에 `bot.twse_client._CACHE_DIR` 을 더했고, 그
+테스트 자신도 `tmp_path` 를 써 순서에 기대지 않는다.
+
+**못 보는 축**(#274): 이 계약들은 캐시 **경계**만 잰다 — 원천이 필드명을 바꿔
+`_fetch_one_industry_source` 가 `{}` 를 주는 경우와 원천이 진짜로 비어 있는
+경우는 여기서 안 갈린다(그건 ④ 가 원문 표본으로 말한다, #109). 그리고 15분
+쿨다운이 **적절한 값인지**는 재지 않았다 — 원천 복구 시간을 측정한 적이
+없다(#165).
 
 ## ⑥ 한글명 계수는 갈래가 아니라 값으로 (2026-09-17 · 실수 #382)
 

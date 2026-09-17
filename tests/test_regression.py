@@ -20130,17 +20130,30 @@ class TestTwIndustryBulkMap20260804:
         assert got == {"2059": "전자부품", "2344": "반도체",
                        "1907": "제지", "6669": "컴퓨터·주변기기"}
 
-    def test_cached_numeric_codes_are_healed(self, monkeypatch):
+    def test_cached_numeric_codes_are_healed(self, tmp_path, monkeypatch):
+        """2026-09-17 계약 다시 씀(#222): 캐시가 **소스별 봉투**가 되며 숫자 코드는
+        읽을 때 `_merge_industry_by` 가 한글로 바꾼다 — 옛 판처럼 렌더 경로에서
+        **다시 쓰지 않는다**(치유는 키 bump 가 한다). 남는 보장은 '숫자가 화면으로
+        새지 않는다' 그대로다."""
+        import json
+        import time
         import bot.twse_client as tw
-
-        monkeypatch.setattr(tw, "_cached_stale",
-                            lambda name, max_age_sec=86400: {"2059": "28", "2344": "24"})
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
+        now = time.time()
+        (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
+            {"v": 3, "by": {"上市": {"2059": "28", "2344": "24"}},
+             "fetched": {"上市": now},
+             "tried": {lab: now for lab, _u in tw._TW_IND_SOURCES}}),
+            encoding="utf-8")
         written = {}
         monkeypatch.setattr(tw, "_cache_write",
                             lambda name, obj: written.setdefault(name, obj))
-        got = tw.fetch_tw_industry_map()
-        assert got == {"2059": "전자부품", "2344": "반도체"}
-        assert written[tw._TW_IND_CACHE_KEY] == got
+        assert tw.industry_cache_state()["map"] == {"2059": "전자부품", "2344": "반도체"}
+        # 上櫃 는 아직 안 받았지만 쿨다운 안이라 이 호출은 원천을 안 친다
+        monkeypatch.setattr(tw, "_fetch_one_industry_source",
+                            lambda url, label: pytest.fail("쿨다운 안인데 원천을 쳤다"))
+        assert tw.fetch_tw_industry_map() == {"2059": "전자부품", "2344": "반도체"}
+        assert not written, "읽기만 했는데 캐시를 다시 썼다"
 
     def test_unknown_industry_code_never_leaks_as_number(self):
         # 2026-09-10 계약 변경(독립 리뷰): 표에 없는 코드는 "기타" 가 아니라 ''.
@@ -20169,16 +20182,21 @@ class TestTwIndustryBulkMap20260804:
         monkeypatch.setattr(tw.requests, "get", _boom)
         assert tw._fetch_one_industry_source(tw._OPENAPI_LISTED_INFO, "上市") == {}
 
-    def test_fetch_tw_industry_map_merges_both_sources_and_caches(self, monkeypatch):
+    def test_fetch_tw_industry_map_merges_both_sources_and_caches(self, tmp_path,
+                                                                  monkeypatch):
+        """병합은 그대로 · 저장은 **소스별 봉투**(#222 다시 씀, 2026-09-17)."""
         import bot.twse_client as tw
-        monkeypatch.setattr(tw, "_cached_stale", lambda name, max_age_sec=86400: None)
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
         written = {}
         monkeypatch.setattr(tw, "_cache_write", lambda name, obj: written.setdefault(name, obj))
         monkeypatch.setattr(tw, "_fetch_one_industry_source", lambda url, label: (
             {"2330": "반도체"} if label == "上市" else {"6488": "광전(디스플레이)"}))
         out = tw.fetch_tw_industry_map()
         assert out == {"2330": "반도체", "6488": "광전(디스플레이)"}
-        assert written.get(tw._TW_IND_CACHE_KEY) == out
+        env = written.get(tw._TW_IND_CACHE_KEY)
+        assert set(env["by"]) == {"上市", "上櫃"}, "소스별로 안 나눠 담았다"
+        assert env["by"]["上櫃"] == {"6488": "광전(디스플레이)"}
+        assert set(env["fetched"]) == {"上市", "上櫃"}
 
     def test_industries_for_tw_prefers_bulk_falls_back_to_yfinance_on_miss(self, monkeypatch):
         import bot.finviz_client as fc
@@ -56617,7 +56635,8 @@ class TestTwEnrichProbe20260910:
     (#165) · `main()` 이 판정을 실제로 찍는지는 아무 테스트도 안 봤다(#20)."""
 
     def _harness(self, monkeypatch, tmp_path, *, persist=None, listed=None, otc=None,
-                 cached_map=None, mcap_age=None, movers=None, meta=None,
+                 cached_map=None, cached_by=None, cached_fetched=None,
+                 mcap_age=None, movers=None, meta=None,
                  slow_meta=None, closes=None, render_raises=False):
         """제품 모듈만 스텁하고 진단은 그대로 태운다 — 홈·네트워크 차단(#294·#312).
         `requests.get` 은 **폭탄**이다: 진단이 원문 덤프 분기로 가면 여기서 터진다."""
@@ -56633,8 +56652,24 @@ class TestTwEnrichProbe20260910:
         monkeypatch.setattr(fv, "cache_age_sec", lambda name: mcap_age)
         monkeypatch.setattr(fv, "_cached", lambda name, ttl=0: dict(persist or {}))
         monkeypatch.setattr(fv, "yf_paused", lambda: False)
-        monkeypatch.setattr(tw, "_cached_stale",
-                            lambda name, max_age_sec=0: dict(cached_map or {}))
+        # ⚠️ 캐시는 **진짜 파일**로 둔다(#155) — `_cached_stale` 을 스텁하던 첫 판은
+        # 2026-09-17 캐시가 소스별 봉투로 바뀌자 아무것도 안 재게 됐다. 코드는
+        # 어느 소스가 빠졌는지로 판정이 갈리므로 그 모양 그대로 굽는다.
+        if cached_map is not None or cached_by is not None:
+            import json as _json
+            import time as _time
+            by = {k: dict(v) for k, v in (cached_by or {}).items()}
+            if cached_by is None:
+                for code, ind in dict(cached_map or {}).items():
+                    lab = ("上櫃" if (otc or {}).get(code)
+                           and not (listed or {}).get(code) else "上市")
+                    by.setdefault(lab, {})[code] = ind
+            now = _time.time()
+            (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(_json.dumps(
+                {"v": 3, "by": by,
+                 "fetched": cached_fetched or {k: now for k in by},
+                 "tried": {lab: now for lab, _u in tw._TW_IND_SOURCES}}),
+                encoding="utf-8")
 
         def _src(url, label):
             return dict((listed if label.startswith("上市") else otc) or {})
@@ -56860,8 +56895,42 @@ class TestTwEnrichProbe20260910:
                       meta={"8227.TW": {"ind": "전자부품"}})
         _, out = self._run(monkeypatch, [])
         assert "❌ 시총 0/2 — 디스크 캐시가 20.0시간 전이라 만료" in out, out
-        assert "⚠️ 업종 1/2 — 캐시 맵(1종목)엔 1/2, 지금 원천엔 2/2: 맵이 낡았다" in out, out
+        # 2026-09-17: 이 픽스처는 上櫃 가 캐시에 **통째로 없는** 상태다 — 옛 판은
+        # 그걸 "맵이 낡았다" 라고 말해 기다리라는 뜻이 됐다(#384·#82).
+        assert ("⚠️ 업종 1/2 — 캐시 맵(1종목)엔 1/2, 지금 원천엔 2/2: 캐시가 **부분**"
+                "이다 — 上櫃 가 통째로 없다") in out, out
         assert "이 표의 1/2, 지금 받은 원천엔 2/2 이 실제로 들어 있다" in out
+        # ② 도 소스별로 찍는다 — 한 줄로 합치면 '한쪽이 없음' 이 '조금 낡음' 으로 보인다
+        assert "↳ 上市 1종목 · 받은 지" in out and "↳ 上櫃 ❌ 캐시에 없음" in out, out
+
+    def test_a_complete_but_old_map_is_called_old_not_partial(self, monkeypatch, tmp_path):
+        """'부분' 과 '낡음' 은 처방이 다르다(#82) — 두 소스가 다 있는데 오래된
+        경우에만 "낡았다" 고 말해야 한다. 그리고 나이는 **소스별 `fetched`** 에서
+        온다(파일 mtime 은 실패한 소스의 재시도로도 바뀐다, #304)."""
+        import time
+        from bot.twse_client import _TW_IND_CACHE_TTL
+        old = time.time() - _TW_IND_CACHE_TTL * 3
+        self._harness(monkeypatch, tmp_path, movers=self._M, mcap_age=1.0,
+                      listed=self._BOTH, otc=self._BOTH,
+                      cached_by={"上市": {"8227": "전자부품"}, "上櫃": {"1111": "기타"}},
+                      cached_fetched={"上市": old, "上櫃": old},
+                      meta={"8227.TW": {"ind": "전자부품"}})
+        _, out = self._run(monkeypatch, [])
+        assert "맵이 낡았다(받은 지 72.0시간 전" in out, out
+        assert "부분" not in out and "통째로 없다" not in out
+
+    def test_the_verdict_names_what_filled_beyond_the_map(self, monkeypatch, tmp_path):
+        """⑤ 가 "화면이 옛 맵을 읽는다" 고만 말하면 같은 실행의 ③ 측정과 모순된다 —
+        VM 실측은 맵 30/60 인데 화면이 59/60 이었다(#382b 의 이웃 갈래). 맵 밖을
+        무엇이 채웠는지 말하지 않으면 사용자가 다시 묻는다(#43)."""
+        self._harness(monkeypatch, tmp_path, movers=self._M, mcap_age=1.0,
+                      listed=self._BOTH, otc=self._BOTH,
+                      cached_map={"9999": "기타"},          # 이 표와 무관 → in_map 0
+                      meta={"8227.TW": {"ind": "전자부품"}})  # 화면은 1/2 을 채웠다
+        _, out = self._run(monkeypatch, [])
+        assert "⚠️ 업종 1/2 — 캐시 맵(1종목)엔 0/2" in out, out
+        assert ("맵 밖 1개는 맵이 아닌 경로(yfinance 개별조회·그 캐시)가 채운 것이다"
+                in out), out
 
     def test_slow_result_reaches_the_verdict(self, monkeypatch, tmp_path):
         calls = self._harness(monkeypatch, tmp_path, movers=self._M,
@@ -57163,7 +57232,7 @@ class TestTwIndustryMapTpexEnglishKeys20260910:
         tw = self._stub(monkeypatch, [{"foo": "1"}])
         assert tw._fetch_one_industry_source("x", "?") == {}
 
-    def test_merged_map_serves_tpex_codes_to_the_screen_path(self, monkeypatch):
+    def test_merged_map_serves_tpex_codes_to_the_screen_path(self, monkeypatch, tmp_path):
         """화면이 부르는 `_industries_for(…, 'TW')` 까지 태운다(#20) — 원천(HTTP)만
         스텁하고 파서·맵·호출부는 실물로. 맵이 채우면 yfinance 폴백은 불리지
         않고(반대 증거 #25), 표에 없는 코드는 미스로 남아 `.TWO` 폴백이 **돈다**
@@ -57180,7 +57249,10 @@ class TestTwIndustryMapTpexEnglishKeys20260910:
             def __init__(self, url): self._u = url
             def json(self): return rows[self._u]
         monkeypatch.setattr(tw, "requests", types.SimpleNamespace(get=lambda url, *a, **k: _R(url)))
-        monkeypatch.setattr(tw, "_cached_stale", lambda *a, **k: None)
+        # ⚠️ 캐시 dir 을 tmp 로 — 2026-09-17 부터 실패도 **재시도 시각**을 굽기
+        # 때문에(#384) 남이 남긴 쿨다운이 이 테스트의 원천 조회를 통째로 건너뛰게
+        # 한다(전체 실행에서만 빨간불, #128·#311). 순서에 기대지 않는다.
+        monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
         monkeypatch.setattr(tw, "_cache_write", lambda *a, **k: None)
         calls = []
         monkeypatch.setattr(fv, "_fetch_industries",
@@ -69848,16 +69920,22 @@ class TestTwKoreanNameStuckDiag20260917:
 # 바로 위 줄에서 TTL 을 제품 상수로 import 하면서 **이름만 리터럴로 복제**해
 # (#38) v2 rename 을 못 따라갔고, ③ cache-only 는 같은 실행에서 59/60 을
 # 채우고 있었다(= 화면은 멀쩡한데 진단만 거짓 ❌, #35·#53·#260).
-def _ind_cache(state="ok", age=600.0, detail="", file="tw_industry_map_v2.json",
-               map_=None):
-    """`tw_enrich_probe.ind_cache_probe()` 가 내는 그 모양(#155).
+def _ind_cache(state="ok", age=600.0, detail="", file=None, map_=None,
+               missing=None, data_age=None, by=None, fetched=None, tried=None):
+    """`twse_client.industry_cache_state()` 가 내는 그 모양(#155).
 
     ⚠️ 나이 하나만 넘기던 첫 판은 호출부가 **시총 캐시 나이**를 넘겨도 전
     게이트가 통과했다(독립 리뷰 실측 2026-09-17) — 그 helper 가 내는 dict 말고는
     넘길 것이 없게 만드는 것이 구조적 답이다(#119).
+    ⚠️ 파일 이름을 리터럴(`…_v2.json`)로 박았더니 키를 올릴 때 무관한 빨간불이
+    났다 — 계약은 "어느 파일인지 댄다" 이지 그 판 번호가 아니다(#67·#19).
     """
-    return {"file": file, "age": age, "state": state, "detail": detail,
-            "map": dict(map_ or {})}
+    from bot.twse_client import _TW_IND_CACHE_KEY
+    return {"file": file or f"{_TW_IND_CACHE_KEY}.json", "age": age,
+            "state": state, "detail": detail, "map": dict(map_ or {}),
+            "missing": list(missing or []), "partial": bool(missing),
+            "data_age": data_age, "by": dict(by or {}),
+            "fetched": dict(fetched or {}), "tried": dict(tried or {})}
 
 
 def _cache_names_in(tree):
@@ -69972,20 +70050,29 @@ class TestProbeCacheKeyDrift20260917:
         assert not bad, ("진단이 제품에 없는 캐시 이름을 읽는다(rename 을 못 따라감): "
                          + " · ".join(f"{f}:{n}" for f, n in bad))
 
-    def test_tw_probes_take_the_industry_key_from_the_product_constant(self):
-        """리터럴로 적으면 v2 rename 을 못 따라간다 — 상수를 import 하는지 본다."""
+    def test_tw_probes_do_not_build_the_industry_cache_name_themselves(self):
+        """2026-09-17 계약 다시 씀(#222) — 옛 계약은 "키를 제품 상수에서 import
+        한다" 였다. 그건 **이름만** 따라가므로 payload 모양이 바뀌면 또 갈린다
+        (실제로 같은 날 캐시가 소스별 봉투가 되며 옛 로더는 `{"by": …}` 를 업종
+        맵으로 읽었을 것이다). 지금 계약은 더 강하다: 이름도 해석도 제품
+        (`industry_cache_state`)이 하고 프로브는 **부르기만** 한다(#35·#38·#176)."""
         import ast
         import pathlib
         root = pathlib.Path(__file__).resolve().parent.parent
         for rel in ("bot/scripts/tw_enrich_probe.py",
                     "bot/scripts/industry_kr_probe.py"):
             src = (root / rel).read_text(encoding="utf-8")
+            tree = ast.parse(src)
             names = set()
-            for nd in ast.walk(ast.parse(src)):
+            for nd in ast.walk(tree):
                 if isinstance(nd, ast.ImportFrom) and nd.module == "bot.twse_client":
                     names |= {a.name for a in nd.names}
-            assert "_TW_IND_CACHE_KEY" in names, (
-                f"{rel} 가 업종 캐시 키를 제품에서 안 가져온다(#38)")
+            assert "_TW_IND_CACHE_KEY" not in names, (
+                f"{rel} 가 캐시 이름을 스스로 만든다 — 제품 판정 함수를 부를 것(#38)")
+            called = {getattr(nd.func, "id", "") or getattr(nd.func, "attr", "")
+                      for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
+            assert "industry_cache_state" in called, (
+                f"{rel} 가 제품의 업종 캐시 판정 함수를 부르지 않는다(#35)")
 
     def test_the_scan_fires_on_a_renamed_product_key(self, tmp_path):
         """발화 경로 — 가드가 실제로 드리프트를 잡는지 본다(#291·#91).
@@ -70232,15 +70319,24 @@ class TestTwIndustryMapVerdictBranches20260917:
     def test_missing_file_says_now_not_never(self):
         """'지금 없다' 까지만 — '한 번도 못 받았다' 는 캐시 정리로도 생긴다(#165)."""
         out = self._v(ind_cache=_ind_cache("absent", None))
+        from bot.twse_client import _TW_IND_CACHE_KEY
         assert "지금 캐시 파일이 없다" in out and "만료" not in out
         assert "한 번도 못 받았다" not in out
-        assert "tw_industry_map_v2.json" in out          # 어느 파일인지 댄다(#43)
+        # 어느 파일인지 댄다(#43) — 판 번호는 제품에서 파생(#67)
+        assert f"{_TW_IND_CACHE_KEY}.json" in out
 
-    def test_expired_file_says_expired_not_missing(self):
+    def test_expired_map_says_how_old_not_missing(self):
+        """2026-09-17 계약 다시 씀(#222) — 만료 맵은 이제 **버려지지 않으므로**
+        (`industry_cache_state` 가 `stale` 이면 map_n>0) 이 안내는 맵이 있는
+        갈래로 옮겼다. 옛 자리(map_n==0 + stale)는 도달 불가였다(#291).
+        그리고 "화면은 이 맵을 안 읽는다" 는 이제 거짓이다 — 읽고 쓴다."""
         from bot.twse_client import _TW_IND_CACHE_TTL
-        out = self._v(ind_cache=_ind_cache("stale", _TW_IND_CACHE_TTL * 7.7))
-        assert "만료" in out and "화면은 이 맵을 안 읽는다" in out
-        assert "캐시 파일이 없다" not in out
+        out = self._v(ind_filled=30, map_n=900, in_map=30, src_in=60,
+                      ind_cache=_ind_cache("stale", 60.0,
+                                           data_age=_TW_IND_CACHE_TTL * 7.7,
+                                           map_={"x": "y"}))
+        assert "맵이 낡았다" in out and "받은 지 184.8시간 전" in out
+        assert "캐시 파일이 없다" not in out and "부분" not in out
 
     def test_fresh_but_empty_map_is_a_collection_bug(self):
         out = self._v(ind_cache=_ind_cache("empty", 60.0))
@@ -70323,6 +70419,16 @@ class TestTwIndCacheProbeMeasuresTheProductFile20260917:
     """
 
     @staticmethod
+    def _env(by, fetched=None):
+        """원천이 실제로 굽는 모양 — 소스별 봉투(#155)."""
+        import time
+        now = time.time()
+        return {"v": 3, "by": by,
+                "fetched": fetched if fetched is not None
+                else {k: now for k in by},
+                "tried": {k: now for k in by}}
+
+    @staticmethod
     def _probe(tmp_path, monkeypatch, payload, name=None, raw=None):
         import json
         import bot.twse_client as tw
@@ -70338,41 +70444,225 @@ class TestTwIndCacheProbeMeasuresTheProductFile20260917:
         assert _TW_IND_CACHE_KEY != "tw_industry_map", (
             "제품이 rename 을 되돌렸다면 이 테스트의 전제를 다시 써라(#222)")
         # 죽은 옛 이름만 있으면 '없다' 여야 한다 — 그걸 재던 것이 원래 버그다.
-        got = self._probe(tmp_path, monkeypatch, {"2330": "반도체"},
-                          name="tw_industry_map.json")
+        env = self._env({"上市": {"2330": "반도체"}, "上櫃": {"6488": "광전(디스플레이)"}})
+        got = self._probe(tmp_path, monkeypatch, env, name="tw_industry_map.json")
         assert got["file"] == f"{_TW_IND_CACHE_KEY}.json"
         assert got["state"] == "absent" and got["map"] == {}
         # 제품 이름으로 두면 읽는다(반대 증거, #25)
-        ok = self._probe(tmp_path, monkeypatch, {"2330": "반도체"},
-                         name=f"{_TW_IND_CACHE_KEY}.json")
-        assert ok["state"] == "ok" and ok["map"] == {"2330": "반도체"}
-        assert ok["age"] is not None and ok["age"] < 3600
+        ok = self._probe(tmp_path, monkeypatch, env, name=f"{_TW_IND_CACHE_KEY}.json")
+        assert ok["state"] == "ok"
+        assert ok["map"] == {"2330": "반도체", "6488": "광전(디스플레이)"}
+        assert ok["age"] is not None and ok["age"] < 3600 and not ok["partial"]
 
     def test_states_are_measured_not_folded_into_empty(self, tmp_path, monkeypatch):
         from bot.twse_client import _TW_IND_CACHE_KEY
         nm = f"{_TW_IND_CACHE_KEY}.json"
-        assert self._probe(tmp_path, monkeypatch, {}, name=nm)["state"] == "empty"
+        assert self._probe(tmp_path, monkeypatch, self._env({}),
+                           name=nm)["state"] == "empty"
         bad = self._probe(tmp_path, monkeypatch, None, name=nm, raw="{oops")
         assert bad["state"] == "unreadable" and bad["detail"]
         lst = self._probe(tmp_path, monkeypatch, [1, 2], name=nm)
         assert lst["state"] == "not_dict" and "list" in lst["detail"]
+        # 봉투가 아닌 dict(옛 형식·손편집)도 '빈 dict' 로 접지 않는다(#82)
+        flat = self._probe(tmp_path, monkeypatch, {"2330": "반도체"}, name=nm)
+        assert flat["state"] == "not_envelope" and flat["map"] == {}
 
-    def test_expired_file_is_stale_and_its_map_is_not_used(self, tmp_path, monkeypatch):
-        import os
+    def test_expired_map_is_called_stale_but_not_thrown_away(self, tmp_path,
+                                                             monkeypatch):
+        """2026-09-17 계약 다시 씀(#222): 만료 맵을 **버리지 않는다**.
+
+        옛 판은 24h 넘으면 통째로 버려, 두 소스가 다 실패하는 날 화면이 업종을
+        전부 yfinance 개별조회로만 채웠다(느리고 백그라운드 상한이 있다) — 상장법인
+        기본자료는 "하루 내 사실상 불변" 이라 낡은 값이 빈 값보다 낫다(#148).
+        남는 보장: 낡았다는 **사실을 이름으로 말한다**(#41 여유로 사실을 덮지 말 것).
+
+        ⚠️ 나이는 **파일 mtime 이 아니라 소스별 `fetched`** 가 말한다 — 실패한
+        소스의 재시도 시각만 바뀌어도 파일은 새로 쓰인다(#304).
+        """
         import time
         from bot.twse_client import _TW_IND_CACHE_KEY, _TW_IND_CACHE_TTL
         nm = f"{_TW_IND_CACHE_KEY}.json"
-        got = self._probe(tmp_path, monkeypatch, {"2330": "반도체"}, name=nm)
+        fresh = self._probe(tmp_path, monkeypatch,
+                            self._env({"上市": {"2330": "반도체"},
+                                       "上櫃": {"6488": "광전(디스플레이)"}}), name=nm)
+        assert fresh["state"] == "ok"
         old = time.time() - _TW_IND_CACHE_TTL - 60
-        os.utime(tmp_path / nm, (old, old))
+        st = self._probe(tmp_path, monkeypatch,
+                         self._env({"上市": {"2330": "반도체"},
+                                    "上櫃": {"6488": "광전(디스플레이)"}},
+                                   fetched={"上市": old, "上櫃": old}), name=nm)
+        assert st["state"] == "stale", "만료를 이름으로 말하지 않는다"
+        assert st["map"] == {"2330": "반도체", "6488": "광전(디스플레이)"}
+        assert st["data_age"] >= _TW_IND_CACHE_TTL
+        # 파일은 방금 썼으므로 mtime 은 신선하다 — 그걸 나이로 쓰면 거짓말이다
+        assert st["age"] < 60
+
+
+class TestTwIndustryPartialCacheIsNotBakedAsComplete20260917:
+    """한쪽 소스가 실패한 **부분 맵**을 완전본과 같은 24h TTL 로 굽던 것(#384).
+
+    2026-09-17 VM 실측: 업종 캐시 1084종목 = ④ 의 上市 개수와 **정확히 같고**
+    上櫃 892 는 통째로 없었다 — 上櫃 무버 30개가 렌더-세이프 경로에서 전부
+    업종 '—' 였고(느린 yfinance 개별조회가 대신 채운다), 옛 판의 `if out:` 는
+    무엇이 빠졌는지 아무 데도 안 남겼다(#280 부분을 완전본으로 굽지 말 것 ·
+    #45 한 파일이 두 모집단을 나른다 · #43 침묵이 최악).
+    """
+
+    @staticmethod
+    def _setup(tmp_path, monkeypatch, by=None, fetched=None, tried=None):
+        import json
         import bot.twse_client as tw
-        from bot.scripts.tw_enrich_probe import ind_cache_probe
         monkeypatch.setattr(tw, "_CACHE_DIR", tmp_path)
-        st = ind_cache_probe(tw)
-        assert got["state"] == "ok"
-        # 화면(`fetch_tw_industry_map`)이 만료 맵을 안 읽으므로 판정도 안 쓴다
-        assert st["state"] == "stale" and st["map"] == {}
-        assert st["age"] >= _TW_IND_CACHE_TTL
+        if by is not None:
+            (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
+                {"v": 3, "by": by, "fetched": fetched or {},
+                 "tried": tried or {}}), encoding="utf-8")
+        return tw
+
+    @staticmethod
+    def _sources(tw, monkeypatch, ok):
+        """ok = {라벨: rows} — 목록에 없는 소스는 {} (원천 실패)."""
+        seen = []
+        def _f(url, label):
+            seen.append(label)
+            return dict(ok.get(label) or {})
+        monkeypatch.setattr(tw, "_fetch_one_industry_source", _f)
+        return seen
+
+    def test_a_failed_source_is_not_baked_as_a_complete_map(self, tmp_path, monkeypatch):
+        tw = self._setup(tmp_path, monkeypatch)
+        self._sources(tw, monkeypatch, {"上市": {"2330": "반도체"}})   # 上櫃 실패
+        assert tw.fetch_tw_industry_map() == {"2330": "반도체"}
+        st = tw.industry_cache_state()
+        assert st["partial"] is True and st["missing"] == ["上櫃"], st
+        assert st["state"] == "partial", "부분을 완전본(ok)으로 굽는다"
+        assert set(st["by"]) == {"上市"} and set(st["fetched"]) == {"上市"}
+
+    def test_only_the_failed_source_is_retried_and_only_after_the_cooldown(
+            self, tmp_path, monkeypatch):
+        import time
+        import bot.twse_client as tw0
+        now = time.time()
+        tw = self._setup(tmp_path, monkeypatch, by={"上市": {"2330": "반도체"}},
+                         fetched={"上市": now}, tried={"上市": now, "上櫃": now})
+        seen = self._sources(tw, monkeypatch, {"上櫃": {"6488": "광전(디스플레이)"}})
+        # 쿨다운 안 — 아무것도 안 두드린다(#303 실패는 짧게만 믿되 재시도도 유계)
+        assert tw.fetch_tw_industry_map() == {"2330": "반도체"} and seen == []
+        # 쿨다운이 지나면 **실패한 소스만** 다시 시도한다(성공한 上市 는 그대로)
+        old = now - tw0._TW_IND_RETRY_SEC - 1
+        self._setup(tmp_path, monkeypatch, by={"上市": {"2330": "반도체"}},
+                    fetched={"上市": now}, tried={"上市": old, "上櫃": old})
+        assert tw.fetch_tw_industry_map() == {"2330": "반도체",
+                                              "6488": "광전(디스플레이)"}
+        assert seen == ["上櫃"], seen
+        assert tw.industry_cache_state()["state"] == "ok"
+
+    def test_a_source_that_fails_later_keeps_its_previous_rows(self, tmp_path,
+                                                               monkeypatch, caplog):
+        """받은 적 있는 소스가 이번에 실패하면 **버리지 않는다** — 버리면 그
+        소스의 커버리지가 통째로 사라진다(#148). 대신 **조용하지 않다**: 갱신이
+        멈춘 사실을 로그가 말해야 다음 라운드가 그걸 본다(#12·#42a)."""
+        import logging
+        import time
+        import bot.twse_client as tw0
+        old = time.time() - tw0._TW_IND_CACHE_TTL - 1
+        tw = self._setup(tmp_path, monkeypatch,
+                         by={"上市": {"2330": "반도체"}, "上櫃": {"6488": "광전(디스플레이)"}},
+                         fetched={"上市": old, "上櫃": old}, tried={})
+        self._sources(tw, monkeypatch, {"上市": {"2330": "반도체"}})   # 上櫃 만 실패
+        with caplog.at_level(logging.WARNING, logger=tw0.log.name):
+            got = tw.fetch_tw_industry_map()
+        assert got == {"2330": "반도체", "6488": "광전(디스플레이)"}, got
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("上櫃" in m and "갱신 실패" in m and "유지" in m for m in msgs), msgs
+
+    def test_an_expired_map_is_served_even_when_the_refetch_fails(self, tmp_path,
+                                                                  monkeypatch):
+        """만료 맵을 통째로 버리던 옛 판은 원천이 죽은 날 화면을 **전부** 느린
+        yfinance 개별조회로 떨어뜨렸다 — 상장법인 기본자료는 '하루 내 사실상
+        불변' 이라 낡은 값이 빈 값보다 낫다(#148·#42a)."""
+        import time
+        import bot.twse_client as tw0
+        old = time.time() - tw0._TW_IND_CACHE_TTL - 1
+        tw = self._setup(tmp_path, monkeypatch,
+                         by={"上市": {"2330": "반도체"}, "上櫃": {"6488": "광전(디스플레이)"}},
+                         fetched={"上市": old, "上櫃": old}, tried={})
+        self._sources(tw, monkeypatch, {})                      # 둘 다 실패
+        assert tw.fetch_tw_industry_map() == {"2330": "반도체",
+                                              "6488": "광전(디스플레이)"}
+        assert tw.industry_cache_state()["state"] == "stale"
+
+    def test_the_first_total_failure_still_records_the_attempt(self, tmp_path,
+                                                               monkeypatch):
+        """옛 판의 `if out:` 는 **첫 실패에서 아무것도 안 남겨** 재시도 시각이
+        기록되지 않았다 — 쿨다운이 영영 안 걸려 매 렌더가 다시 두드린다."""
+        tw = self._setup(tmp_path, monkeypatch)
+        seen = self._sources(tw, monkeypatch, {})
+        assert tw.fetch_tw_industry_map() == {}
+        assert seen == ["上市", "上櫃"]
+        st = tw.industry_cache_state()
+        assert st["state"] == "empty", "빈 봉투가 'ok' 로 읽히면 안 된다(#54)"
+        assert set(st["tried"]) == {"上市", "上櫃"}, "재시도 시각을 안 남겼다"
+        seen.clear()
+        assert tw.fetch_tw_industry_map() == {} and seen == [], "쿨다운이 안 걸린다"
+
+    def test_a_concurrent_writer_does_not_lose_the_other_source(self, tmp_path,
+                                                                monkeypatch):
+        """렌더는 요청마다 스레드다(#110) — 두 스레드가 빈 상태에서 출발해 각자
+        **다른 소스만** 받아 오면 나중 쓰기가 앞의 소스를 지운다. 그게 이 커밋이
+        고치는 바로 그 부분 맵이다. 원천 조회 중에 남이 쓴 상황을 재현한다."""
+        import json
+        import time
+        tw = self._setup(tmp_path, monkeypatch)
+        now = time.time()
+
+        def _f(url, label):
+            if label == "上市":
+                # 우리가 上市 를 받는 사이 남이 上櫃 를 써 두었다
+                (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
+                    {"v": 3, "by": {"上櫃": {"6488": "광전(디스플레이)"}},
+                     "fetched": {"上櫃": now}, "tried": {"上櫃": now}}),
+                    encoding="utf-8")
+                return {"2330": "반도체"}
+            return {}                                   # 우리 쪽 上櫃 는 실패
+        monkeypatch.setattr(tw, "_fetch_one_industry_source", _f)
+        got = tw.fetch_tw_industry_map()
+        assert got == {"2330": "반도체", "6488": "광전(디스플레이)"}, got
+        assert tw.industry_cache_state()["state"] == "ok"
+
+    def test_the_reread_keeps_the_newer_rows_not_the_last_write(self, tmp_path,
+                                                                monkeypatch):
+        """쓰기 직전 재읽기는 **더 새 쪽**을 남긴다 — 무조건 남의 것을 채택하면
+        방금 받은 행이 옛 행으로 덮인다(#91b 재는 대상이 맞나). 위 테스트는 두
+        스레드가 서로 **다른 소스**만 가져 이 비교를 한 번도 안 태운다(#91c)."""
+        import json
+        import time
+        tw = self._setup(tmp_path, monkeypatch)
+        old_ts = time.time() - 10_000
+
+        def _f(url, label):
+            if label == "上市":
+                # 남이 **옛** 上市 를 써 두었다 — 우리가 방금 받은 것이 더 새롭다
+                (tmp_path / f"{tw._TW_IND_CACHE_KEY}.json").write_text(json.dumps(
+                    {"v": 3, "by": {"上市": {"1111": "시멘트"}},
+                     "fetched": {"上市": old_ts}, "tried": {"上市": old_ts}}),
+                    encoding="utf-8")
+                return {"2330": "반도체"}
+            return {}
+        monkeypatch.setattr(tw, "_fetch_one_industry_source", _f)
+        assert tw.fetch_tw_industry_map() == {"2330": "반도체"}
+        assert tw.industry_cache_state()["by"]["上市"] == {"2330": "반도체"}
+
+    def test_force_ignores_both_the_ttl_and_the_cooldown(self, tmp_path, monkeypatch):
+        import time
+        now = time.time()
+        tw = self._setup(tmp_path, monkeypatch, by={"上市": {"2330": "반도체"}},
+                         fetched={"上市": now}, tried={"上市": now, "上櫃": now})
+        seen = self._sources(tw, monkeypatch, {"上市": {"2330": "반도체"},
+                                               "上櫃": {"6488": "광전(디스플레이)"}})
+        assert tw.fetch_tw_industry_map(force=True) == {
+            "2330": "반도체", "6488": "광전(디스플레이)"}
+        assert seen == ["上市", "上櫃"], seen
 
 
 class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
@@ -70384,6 +70674,7 @@ class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
 
     def test_loader_reads_the_twse_cache_dir(self, tmp_path, monkeypatch):
         import json
+        import time
         import bot.finviz_client as fv
         import bot.twse_client as tw
         from bot.scripts.industry_kr_probe import _tw_source
@@ -70395,12 +70686,17 @@ class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
         monkeypatch.setattr(fv, "_CACHE_DIR", fvd, raising=False)
         name, desc, load = _tw_source()
         assert name == f"{_TW_IND_CACHE_KEY}.json" and "대만" in desc
-        (twd / name).write_text(json.dumps({"2330": "반도체"}), encoding="utf-8")
+        # 원천이 실제로 굽는 모양(소스별 봉투) — 플랫 dict 를 두면 이 로더가
+        # 봉투를 푸는지까지 못 잰다(#155).
+        (twd / name).write_text(json.dumps(
+            {"v": 3, "by": {"上市": {"2330": "반도체"}},
+             "fetched": {"上市": time.time()}, "tried": {}}), encoding="utf-8")
         assert load() == {"2330": "반도체"}
 
     def test_loader_does_not_read_the_finviz_dir(self, tmp_path, monkeypatch):
         """반대 증거(#25) — 같은 이름을 남의 dir 에 둬도 안 읽어야 한다."""
         import json
+        import time
         import bot.finviz_client as fv
         import bot.twse_client as tw
         from bot.scripts.industry_kr_probe import _tw_source
@@ -70410,5 +70706,9 @@ class TestIndustryKrProbeTwLoaderReadsTheTwseDir20260917:
         monkeypatch.setattr(tw, "_CACHE_DIR", twd)
         monkeypatch.setattr(fv, "_CACHE_DIR", fvd, raising=False)
         name, _desc, load = _tw_source()
-        (fvd / name).write_text(json.dumps({"2330": "반도체"}), encoding="utf-8")
+        # ⚠️ **봉투**를 둬야 반대 증거가 성립한다 — 플랫 dict 는 어느 dir 에서 읽든
+        # `not_envelope` 라 falsy 여서, 로더가 남의 dir 을 읽어도 통과한다(#91b).
+        (fvd / name).write_text(json.dumps(
+            {"v": 3, "by": {"上市": {"2330": "반도체"}},
+             "fetched": {"上市": time.time()}, "tried": {}}), encoding="utf-8")
         assert not load()

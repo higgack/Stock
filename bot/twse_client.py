@@ -479,32 +479,162 @@ def _fetch_one_industry_source(url: str, label: str) -> dict[str, str]:
 
 # 2026-09-10: 표에 없는 코드를 "기타" 로 굽던 옛 캐시가 24h 동안 `.TWO` 폴백을
 # 계속 가린다(독립 리뷰 #5) — 키를 올려 배포 즉시 새로 받는다(#21b 캐시가 fix 를 가림).
-_TW_IND_CACHE_KEY = "tw_industry_map_v2"
+# 2026-09-17 v3: **소스별 봉투**로 바꾸며 다시 올린다 — 옛 판이 구운 부분 맵
+# (上市만 1084종목)이 24시간 더 살면 이 fix 가 화면에 한 글자도 안 닿는다.
+_TW_IND_CACHE_KEY = "tw_industry_map_v3"
+_TW_IND_SOURCES: tuple[tuple[str, str], ...] = (
+    ("上市", _OPENAPI_LISTED_INFO),
+    ("上櫃", _OPENAPI_OTC_INFO),
+)
+# 실패한 소스를 매 렌더마다 다시 두드리지 않는다 — 실패는 **짧게만** 믿는다(#303).
+_TW_IND_RETRY_SEC = 15 * 60
+
+
+def _merge_industry_by(by: dict) -> dict[str, str]:
+    """소스별 하위맵 → {종목코드: 업종(한글)} 병합. 코드표에 없는 값은 싣지
+    않는다(미스로 남아야 yfinance `.TWO` 폴백이 돈다 — _fetch_one_industry_source
+    와 같은 규약, #38)."""
+    out: dict[str, str] = {}
+    for label, _url in _TW_IND_SOURCES:
+        rows = by.get(label)
+        if not isinstance(rows, dict):
+            continue
+        for code, ind in rows.items():
+            nm = _sector_kr(ind)
+            if nm:
+                out[str(code)] = nm
+    return out
+
+
+def industry_cache_state() -> dict:
+    """업종 맵 캐시 **한 파일**의 상태 — 화면·프로브·진단이 같은 함수를 쓴다
+    (#35·#38·#176). 읽기 전용(네트워크 0 · 쓰기 0).
+
+    ⚠️ **소스별로 나눠 담는다.** 옛 판은 `上市 | 上櫃` 를 한 dict 로 합쳐 굽고
+    `if out:` 로 썼다 — 한쪽이 실패해도 "graceful 부분 반환"이라며 **부분 맵을
+    완전본과 똑같은 파일에 24시간** 구웠고, 무엇이 빠졌는지 아무도 몰랐다(#280
+    부분을 완전본으로 굽지 말 것 · #45 한 파일이 두 모집단을 나른다). 2026-09-17
+    VM 실측이 그 상태였다 — 맵 1084종목 = ④ 의 上市 개수와 정확히 같고 上櫃 892
+    는 통째로 없어, 上櫃 무버 30개가 렌더-세이프 경로에서 전부 업종 '—' 였다.
+
+    ⚠️ **파일 mtime 은 데이터 나이가 아니다** — 실패한 소스의 재시도 시각만
+    바뀌어도 파일은 새로 쓰인다. 나이는 소스별 `fetched` 가 말한다(#304 병합
+    캐리오버가 파일 mtime 을 거짓말로 만든다 · #64 상태는 아는 쪽이 말하게).
+
+    상태: absent / unknown / unreadable / not_dict / not_envelope / empty /
+          partial / stale / ok
+    """
+    name = f"{_TW_IND_CACHE_KEY}.json"
+    labels = [lab for lab, _u in _TW_IND_SOURCES]
+    out: dict = {"file": name, "age": None, "state": "absent", "detail": "",
+                 "by": {}, "fetched": {}, "tried": {}, "map": {},
+                 "missing": list(labels), "partial": True, "data_age": None}
+    fp = _CACHE_DIR / name
+    try:
+        if not fp.exists():
+            return out
+        out["age"] = time.time() - fp.stat().st_mtime
+    except OSError as exc:
+        # '파일이 없다' 와 'stat 이 실패했다' 는 다른 사실이고 후자는 판정 불가다(#54).
+        out["state"], out["detail"] = "unknown", f"{type(exc).__name__}: {exc}"
+        return out
+    try:
+        raw = json.loads(fp.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        # 파손은 원천 수정이 아니라 **그 파일 삭제**가 처방이다(#82·#331).
+        out["state"], out["detail"] = "unreadable", f"{type(exc).__name__}: {exc}"
+        return out
+    if not isinstance(raw, dict):
+        out["state"], out["detail"] = "not_dict", type(raw).__name__
+        return out
+    by = raw.get("by")
+    if not isinstance(by, dict):
+        out["state"], out["detail"] = "not_envelope", "봉투에 `by` 가 없다"
+        return out
+    out["by"] = {lab: by[lab] for lab in labels
+                 if isinstance(by.get(lab), dict) and by.get(lab)}
+    out["map"] = _merge_industry_by(out["by"])
+    for k in ("fetched", "tried"):
+        v = raw.get(k)
+        if isinstance(v, dict):
+            out[k] = {str(a): float(b) for a, b in v.items()
+                      if isinstance(b, (int, float)) and not isinstance(b, bool)}
+    out["missing"] = [lab for lab in labels if lab not in out["by"]]
+    out["partial"] = bool(out["missing"])
+    ages = [time.time() - out["fetched"][lab] for lab in out["by"]
+            if lab in out["fetched"]]
+    out["data_age"] = max(ages) if ages else None
+    if not out["map"]:
+        out["state"] = "empty"
+    elif out["partial"]:
+        # 부분과 만료가 겹치면 **더 행동 가능한 쪽**을 머리에 둔다(#275).
+        out["state"] = "partial"
+    elif out["data_age"] is None or out["data_age"] >= _TW_IND_CACHE_TTL:
+        out["state"] = "stale"
+    else:
+        out["state"] = "ok"
+    return out
 
 
 def fetch_tw_industry_map(force: bool = False) -> dict[str, str]:
     """{종목코드: 업종(한글)} — 상장(TWSE)+상장(TPEx上櫃) 전종목 기본자료
-    일괄 조회(24h 캐시, 사용자 2026-08-04). TW 무버/52주 페이지가 지금까지
+    일괄 조회(소스별 24h 캐시, 사용자 2026-08-04). TW 무버/52주 페이지가 지금까지
     yfinance 개별조회(백그라운드·상한 250개/회)에만 의존해 신규진입 종목
     (변동성 큰 소형주 위주라 캐시가 늘 콜드)이 항상 업종 '—' 로 빠지던 것의
-    근본 해소 시도 — 전종목 일괄이라 렌더-세이프(캐시-only) 경로에서도
-    즉시 채워짐. 두 소스 중 하나만 성공해도 부분 반환(graceful) — TPEx 실패
-    시 TWSE 상장분만이라도 개선. 코드 키는 6자리 zero-pad 없이 원문 그대로
-    (finviz_client._industries_for 가 호출측에서 티커 정규화)."""
-    if not force:
-        c = _cached_stale(_TW_IND_CACHE_KEY, max_age_sec=_TW_IND_CACHE_TTL)
-        if isinstance(c, dict) and c:
-            normalized = {code: _sector_kr(ind) for code, ind in c.items()}
-            normalized = {k: v for k, v in normalized.items() if v}
-            if normalized != c:
-                _cache_write(_TW_IND_CACHE_KEY, normalized)
-            return normalized
-    out: dict[str, str] = {}
-    out.update(_fetch_one_industry_source(_OPENAPI_LISTED_INFO, "上市"))
-    out.update(_fetch_one_industry_source(_OPENAPI_OTC_INFO, "上櫃"))
-    if out:
-        _cache_write(_TW_IND_CACHE_KEY, out)
-    return out
+    근본 해소 — 전종목 일괄이라 렌더-세이프(캐시-only) 경로에서도 즉시 채워짐.
+    코드 키는 6자리 zero-pad 없이 원문 그대로(finviz_client._industries_for 가
+    호출측에서 티커 정규화).
+
+    캐시는 **소스별**이다(§industry_cache_state): 한쪽이 실패해도 다른 쪽의
+    커버리지를 버리지 않고(#148), 실패한 쪽만 15분 뒤 다시 시도한다. 옛 판은
+    합친 부분 맵을 완전본과 같은 24h TTL 로 구워 上櫃 892종목이 하루 동안
+    통째로 사라졌다(2026-09-17 VM 실측, #280).
+    """
+    st = industry_cache_state()
+    now = time.time()
+    by, fetched, tried = dict(st["by"]), dict(st["fetched"]), dict(st["tried"])
+    changed = False
+    for label, url in _TW_IND_SOURCES:
+        got_at = fetched.get(label) if label in by else None
+        if not force and got_at is not None and now - got_at < _TW_IND_CACHE_TTL:
+            continue
+        # ⚠️ 쿨다운은 **만료·미수신 둘 다**에 건다 — 미수신에만 걸었더니 원천이
+        # 계속 죽은 동안 만료된 소스를 매 렌더가 다시 두드렸다. 실패는 짧게만
+        # 믿되, 재시도도 유계여야 한다(#303·#116).
+        if not force and now - (tried.get(label) or 0.0) < _TW_IND_RETRY_SEC:
+            continue
+        tried[label] = now
+        changed = True
+        rows = _fetch_one_industry_source(url, label)
+        if rows:
+            by[label], fetched[label] = rows, now
+        elif label in by:
+            # ⚠️ 받은 적 있는 소스가 이번에 실패하면 **버리지 않는다** — 버리면
+            # 그 소스의 커버리지가 통째로 사라진다(#148 '없다'고 하기 전에
+            # 우리가 버린 건 아닌가).
+            log.warning("twse industry map (%s): 갱신 실패 — 직전 %d종목 유지",
+                        label, len(by[label]))
+    if not changed:
+        return st["map"]
+    # ⚠️ 렌더는 요청마다 스레드다(#110·#113) — 두 스레드가 같은 빈 상태에서
+    # 출발해 각자 **다른 소스만** 받아 오면 나중 쓰기가 앞의 소스를 지운다.
+    # 그건 우리가 지금 고치는 바로 그 부분 맵이다. 쓰기 직전에 다시 읽어
+    # 소스별로 **더 새 쪽**을 남긴다(#344 쓰기 직전에 다시 읽는 규율).
+    latest = industry_cache_state()
+    for label, _u in _TW_IND_SOURCES:
+        theirs = latest["fetched"].get(label)
+        if (theirs is not None and label in latest["by"]
+                and theirs > (fetched.get(label) or 0.0)):
+            by[label], fetched[label] = latest["by"][label], theirs
+        t2 = latest["tried"].get(label)
+        if t2 is not None and t2 > (tried.get(label) or 0.0):
+            tried[label] = t2
+    # ⚠️ `by` 가 비어도 쓴다 — 옛 판의 `if out:` 는 **첫 실패에서 아무것도 안 남겨**
+    # 재시도 시각이 기록되지 않았다(쿨다운이 영영 안 걸린다). 빈 봉투는 `empty`
+    # 라는 이름으로 읽히므로 통과로 오독되지 않는다(#54).
+    _cache_write(_TW_IND_CACHE_KEY,
+                 {"v": 3, "by": by, "fetched": fetched, "tried": tried})
+    return _merge_industry_by(by)
 
 
 def fetch_tw_sector_movers(top_n: int = 10) -> dict:
