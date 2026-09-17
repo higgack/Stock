@@ -265,10 +265,10 @@
 | 네이버증권은 **nav 전용**이고 그 축이 조용히 커지지 않는다 | ✅ 자동 | `…::test_naver_stock_is_nav_only` |
 | KR 자식 링크 수 = nav 레지스트리 탭 수(옛 `== 5` 스냅샷 대체, #222) | ✅ 자동 | `TestNaverWidgetSilence20260911::test_reason_branch_keeps_the_child_page_links` |
 
-⚠️ 못 보는 축(#274): **KRX 애프터마켓의 원천**은 아직 재지 않았다 — 네이버
-`overMarketPriceInfo` 가 어느 거래소 체결인지 모른다. 보드는 그 사실을 화면에
-적은 채 배선했다(아래 절) — `bot.scripts.kr_board_probe` 를 애프터마켓 창
-(16:00–20:00 KST)에서 돌려 재고, 그 출력으로 문구를 확정한다.
+⚠️ 못 보는 축(#274): **KRX 애프터마켓 블록의 체결 귀속**은 여전히 미측정이다 —
+네이버 `overMarketPriceInfo` 가 어느 거래소 체결인지 모른다. 단 "시간외 블록이
+하나뿐이고 응답에 거래소를 **이름으로** 가르는 필드가 없다"는 2026-09-17 프로브
+실측으로 확정됐다 → 아래 §venue 축 실측 절. 화면은 그 절반만 사실로 적는다.
 
 ### KRX 애프터마켓 보드 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrxAfterMarketBoard20260916`
@@ -286,9 +286,9 @@
 | 라우트·no-cache·폴링·워머 배선(#20) | ✅ 자동 | `…::test_krx_route_and_polling_are_wired` |
 
 ⚠️ 못 보는 축(#274): **네이버 시간외 블록의 체결 귀속**(KRX인가 NXT인가)은
-아직 측정되지 않았다 — `bot.scripts.kr_board_probe` 를 애프터마켓 창 안에서
-돌려 재고, 그 결과로 화면 문구를 확정한다. 화면은 그 사실을 **보이는 줄**로
-적는다(#43·#165) — 라벨을 지어내지 않는다.
+여전히 미측정이다. 2026-09-17 프로브가 답한 것은 **절반**(같은 블록을 본다)이고
+그건 화면 문구에 반영됐다 → 아래 §venue 축 실측 절. 화면은 남은 절반을
+**보이는 줄**로 밝힌다(#43·#165) — 라벨을 지어내지 않는다.
 
 ### KR 보드 독립 리뷰 반영분 (2026-09-16, 실수 #371)
 `tests/test_regression.py::TestKrBoardsReviewFixes20260916`
@@ -329,10 +329,75 @@
 | **M4** 동시 학습은 하나만 — 탭 N 개가 7N 콜을 쏘지 않는다(#113) | ✅ 자동 | `…::test_concurrent_learns_run_the_body_once` |
 | 파이프 경로의 미끼 배제·1항목 거부에 **발화 경로**를 준다(#291·#38) | ✅ 자동 | `…::test_piped_list_that_echoes_our_junk_is_not_the_allowed_list` · `…::test_piped_pair_with_a_blank_side_is_not_a_list` |
 
-⚠️ 못 보는 축(#274): **KRX/NXT 체결 귀속은 여전히 판정 불가**다. 2026-09-16
-실측에서 `stockExchangeType`·`integratedPriceInfo` 가 접혀 찍혀 venue 축 유무를
-못 봤다 — 프로브를 고쳤으니 **애프터마켓 창 안에서 한 번 더** 돌려야 답이 나온다.
-그때까지 화면 문구("아직 재지 않았습니다")는 참이므로 그대로 둔다(#165).
+⚠️ 못 보는 축(#274): **KRX/NXT 체결 귀속은 여전히 미측정**이다. 단 2026-09-16
+실측이 못 본 축 유무(`stockExchangeType`·`integratedPriceInfo` 가 접혀 찍혔다)는
+프로브를 고친 뒤 2026-09-17 실행이 답했다 → 아래 §venue 축 실측 절. 화면 문구는
+그 절반을 반영해 갱신됐다(같은 블록 = 사실 · 체결 귀속 = 미측정).
+
+### venue 축 실측 · 미파싱 캡션 가시화 (2026-09-17, 실수 #373)
+`tests/test_regression.py::TestVenueAxisAndUnparsed20260917`
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| `통합 = 본체 + 시간외` 항등식(실측 원 단위) — 어긋나면 ❌, 블록 없으면 판정 불가(#54) | ✅ 자동 | `…::test_integrated_is_regular_plus_after_hours` · `…::test_composition_check_fires_when_the_identity_breaks` |
+| 이 응답엔 거래소를 **이름으로** 가르는 필드가 없다 + 있으면 잡힌다(#25 반대 증거) | ✅ 자동 | `…::test_response_has_no_venue_named_field` |
+| 화면은 **확정된 절반**(같은 블록)만 적고 거래소는 주장하지 않는다(#165·#222) | ✅ 자동 | `…::test_screen_states_the_measured_half_and_claims_no_venue` |
+| 그 줄이 **렌더까지** 실린다 — 헬퍼만 재면 배선을 못 잡는다(#20) | ✅ 자동 | `…::test_the_note_reaches_the_rendered_page` |
+| 어느 소스도 안 받은 캡션을 **머리까지** 찍는다(#82·#332) · 0건도 말한다(#274) | ✅ 자동 | `…::test_unparsed_captions_are_named_not_just_counted` · `…::test_zero_unparsed_still_says_zero` |
+| **B1** 테스트가 운영 `~/.trade/ignored.txt` 를 읽지·만들지 않는다(#30·#294) | ✅ 자동 | `…::_isolate_ignore_list`(두 CLI 테스트가 호출) |
+| **H1** ④ 의 두 줄이 **찍히는지**까지 — 순수 테스트만으론 print 삭제가 통과(#20·#313) | ✅ 자동 | `…::test_section_venue_prints_the_axis_and_the_composition` |
+| **M4** 창 밖(시간외 블록 없음)은 '없음' 이 아니라 **판정 불가**(#41·#54) | ✅ 자동 | `…::test_outside_the_window_the_axis_is_unjudged_not_absent` |
+| **L6** 구성 검산 ❌ 가 마지막 줄·rc 에 실린다(#123 계열) | ✅ 자동 | `…::test_composition_mismatch_reaches_the_summary_and_rc` |
+| **M1** `_n` 콤마 경로에 발화 경로 — 출력의 콤마는 포매터가 만든다(#75·#291) | ✅ 자동 | `…::test_comma_only_payload_is_parsed` |
+| **L1·M2** 반대 증거는 KRX·NXT **둘 다** + 리스트 중첩(#25) | ✅ 자동 | `…::test_response_has_no_venue_named_field` |
+| **L2·M3** 머리 160자 자르기 + 형제와 **같은 시각 포맷**(`… UTC · msg N ·`) | ✅ 자동 | `…::test_long_caption_head_is_cut` |
+| **L3** 플래그 off 면 조용하고 적재 계수는 그대로(#291) | ✅ 자동 | `…::test_flag_off_keeps_quiet_and_does_not_change_ingest` |
+| **H5** 미측정 절반을 **두 줄 모두** + 거래소 주장 금지는 denylist 가 아니다(#19·#75) | ✅ 자동 | `…::test_screen_states_the_measured_half_and_claims_no_venue` |
+
+⚠️ 못 보는 축(#274): **시간외 블록의 체결 귀속은 여전히 미측정**이다. 산수
+(`본체 + 시간외 = 통합`)는 '본체' 가 KRX 정규장인지 KRX 전체인지 못 가르고 두
+가설이 같은 수치를 낸다(#255). 다른 엔드포인트도 안 쟀다 — `venue_axis_paths`
+는 **이름**으로만 보므로 값으로만 가르는 필드(`marketSessionType: "NXT_AFTER"`
+류)가 있으면 놓친다(리스트 중첩은 `_walk` 가 재귀하므로 본다).
+그리고 `--show-unparsed` 는 **`unparseable` 분기만** 본다 — 형제 파서가 먼저
+가져간 캡션과 `ingest` 가 조용히 `stored=False` 로 끝난 건은 이 플래그에도
+`unstored_check` 에도 안 잡힌다(다음 라운드가 낭비되지 않게 help 에도 적었다).
+
+## 거래량 보드 칸·업종 + FRED 선택기 + 백필 소스별 계수 (2026-09-17, #374)
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 원천이 고가·저가를 안 주면 **칸 자체가 사라진다**(각주 아님, #25·#260) | ✅ 자동 | `tests/test_regression.py::TestKrVolumeIndustryAndHl20260917::test_high_low_columns_vanish_when_the_source_does_not_give_them` |
+| '원천이 안 준다' 와 '내 파서가 이름을 모른다' 를 가른다(#372) · 52주 류는 ❌ 아님(#34·#260) | ✅ 자동 | `…::test_hl_verdict_splits_source_gap_from_parser_gap` · `…::test_hl_key_candidates_marks_the_names_we_do_not_read` |
+| 업종은 형제 보드와 **같은 맵**(#38) + 분포 줄 + 빈 사유는 보이는 줄(#43) | ✅ 자동 | `…::test_industry_column_and_distribution_are_wired` · `…::test_empty_industry_says_why_on_a_visible_line` |
+| 부제가 업종 **출처**를 말한다(규칙 10b) | ✅ 자동 | `…::test_subtitle_names_the_industry_source` |
+| `--why` 가 배너·②③④ 를 **찍는다**(#20·#364) · 행 0 이면 rc=1(#54) | ✅ 자동 | `…::test_why_prints_the_verdicts_and_the_fingerprint` · `…::test_why_returns_one_when_there_are_no_rows` |
+| ③ 은 키 이름이 아니라 **갈래 문구**를 찍는다(#75·#313) | ✅ 자동 | `…::test_why_prints_the_verdict_itself_not_just_the_key_names` |
+| ④ 업종 섹션이 실제로 찍힌다(붙은 수 · 0이면 사유) — 리뷰 H3 실측 무가드였다 | ✅ 자동 | `…::test_why_reports_the_industry_section` |
+| 지문이 **소스에 반응**하고, 못 구하면 '지문불가' 라고 말한다(#291·#365) | ✅ 자동 | `…::test_banner_fingerprint_reacts_and_says_when_it_cannot` |
+| 의존성 없는 인터프리터는 **갈래로** 말하고 원시 트레이스백으로 죽지 않는다(#82·#132) | ✅ 자동 | `test_why_names_the_dependency_branch_instead_of_dying` — 수집을 `ImportError` 로 태워 rc=1 과 처방 문구를 값으로 본다 |
+| 냉각 되돌리기가 **본문 예외를 삼키지 않는다**(#291·#315) | ✅ 자동 | `test_cooldown_restore_does_not_swallow_the_body_exception` — `finally` 안의 `return` 이 위 갈래를 도달 불가로 만들었던 그 자리(배포전 셀프리뷰 실측) |
+| 진단이 **새 학습 냉각을 심지 않는다** — 내용·mtime 둘 다(#264·#283) + `why()` 가 두르는지(#20) | ✅ 자동 | `…::test_why_does_not_plant_a_new_learn_cooldown` |
+| 각주에 마크다운 볼드 금지 — 화면은 escape 한다(#298) | ✅ 자동 | `…::test_notes_carry_no_markdown_bold` |
+| YoY 카드 4종은 **화면과 같은 창**(730일)으로 재어진다(#35·#176) | ✅ 자동 | `…::TestFredIndicatorSelector20260917::test_yoy_cards_take_the_yoy_path` · `…::test_audit_asks_the_same_selector` |
+| `_fetch_all_fred` 배선은 결과로 본다(#20·#141) | ✅ 자동 | `…::test_fetch_all_fred_uses_the_shared_selector` |
+| '관측 없음' 갈래 셋을 `observation_end` **와 요청 창의 시작일 대조**로 가른다(#82·#86·#260) | ✅ 자동 | `…::test_empty_observation_splits_source_gap_from_ours` · `…::test_audit_wires_empty_diag_into_the_buckets` |
+| 행마다 **그 표면의 화면이 쓰는 선택기**(매크로=spot · 글로벌=YoY 디스패치)(#35·#45) | ✅ 자동 | `…::test_audit_asks_each_surface_with_its_own_selector`(값으로 — `audit_rows`) |
+| 백필이 **소스별 계수 + 0건 소스 이름**을 찍는다(#82·#54·#290) · 0건 줄은 **두 갈래를 대칭으로**(#165) | ✅ 자동 | `trade/tests/test_badonion_sources.py::TestRelevanceBreakdown20260917`(4건) |
+| `matching_keys` 는 **받는 소스 전부**를 돌려준다 — 합성 소스 둘로 발화(#45·#91c) | ✅ 자동 | `…::test_matching_keys_returns_every_source_that_takes_it` |
+
+⚠️ 못 보는 축(#274): (a) `hl_key_candidates` 는 **이름에 high/low 가 든 키**만 본다 —
+원천이 `dayRange` 처럼 다른 이름으로 주면 '원천이 안 준다' 로 찍힌다(그 판정을
+`--why` 가 사람에게 보여주는 이유다). (b) 업종 백필의 **실제 커버리지**(몇 종목에
+붙나)는 샌드박스에서 못 잰다 — 네이버가 막힌다. `--why ④` 가 VM 에서 답한다.
+(c) `empty_diag` 의 `src_lag` 갈래가 **계열 중단인지 그냥 공표 지연인지**는 안
+가른다 — 둘 다 "우리가 고칠 게 없다" 까지만 참이고, 카탈로그를 바꾸는 것은
+그 사실을 재고 나서 할 일이다(#165). (d) 백필 계수는 `--show-irrelevant` 의
+드랍 목록과 **다른 모집단**이다(관련 유닛만 센다). (e) 업종은 **전 행이 빌
+때만** 사유를 적는다 — 부분 커버리지는 빈칸이 조용하고, `kr_industry_map()` 은
+TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 결함, #43·#163).
+(f) `fetch_series_meta` 는 캐시가 없고 타임아웃 10초라, FRED 전면 장애면
+감사에 최대 `관측 없음 행 수 × 10초` 가 붙는다(#116 — 오늘 그 행은 0건).
 
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.

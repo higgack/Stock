@@ -128,6 +128,33 @@ def _group_messages(rows: list[dict]) -> list[list[dict]]:
     return list(groups.values()) + solos
 
 
+_UNPARSED_SHOW_CAP = 50   # --show-unparsed 가 찍는 최대 줄 수(자르면 고지)
+
+
+def _row_head(row: dict, width: int = 160) -> str:
+    """(시각 · 메시지id · 캡션 머리) 한 줄 — 진단 출력용(순수).
+
+    ⚠️ 형제(`backfill_badonion._unit_head`)와 **같은 시각 포맷**으로 찍는다 —
+    한쪽은 채널에서 드랍된 글을, 이쪽은 inbox 에 들어왔는데 어느 파서도
+    안 받은 글을 보여 주므로, 둘을 나란히 놓아야 "채널에 없나 / 받아는
+    왔는데 못 읽나" 가 갈린다(#82·#143). 입력 타입이 달라(Telethon
+    Message vs inbox jsonl dict) 함수를 공유하지는 못한다.
+    ⚠️ v1 은 raw ISO(`2026-09-01T00:00:00+00:00`)를 찍어 형제의
+    `2026-09-01 00:00 UTC` 와 **눈으로 대조가 안 됐다** — docstring 이 내건
+    목적이 거짓이 된다(독립 리뷰 2026-09-17 M3 · #55). msg id 는 우리만
+    가진 축이라 남긴다(`/ignore <id>` 가 그걸 받는다).
+    """
+    cap = row.get("caption") or row.get("text") or ""
+    head = " ".join(str(cap).split())[:width] or "(캡션 없음)"
+    raw = str(row.get("forward_origin_date") or row.get("date") or "?")
+    try:
+        when = datetime.fromisoformat(raw).astimezone(
+            timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError):
+        when = raw   # 파싱 못 하면 원문 — 지어내지 않는다(#165)
+    return f"{when} · msg {row.get('message_id')} · {head}"
+
+
 def _ingest_group(
     conn,
     group: list[dict],
@@ -136,6 +163,7 @@ def _ingest_group(
     ignored_ids: set[int],
     jp_conn=None,
     badonion_conns: dict | None = None,
+    unparsed: list | None = None,
 ) -> None:
     """Resolve one album/solo into a single alert row + media paths."""
     captioned = [r for r in group if r.get("caption_present")]
@@ -213,6 +241,12 @@ def _ingest_group(
             counters[_ck] = counters.get(_ck, 0) + (1 if stored else 0)
             return
         counters["unparseable"] += 1
+        # ⚠️ 숫자만 세는 원장은 다음 라운드를 엉뚱한 데로 보낸다(#82·#332).
+        # '어느 소스도 안 받은 캡션' 이야말로 새 형식이 조용히 유실되는
+        # 자리이고(#83·#261·#330·#332·#370 — 이 레포에서 일곱 번), 그걸
+        # 보려면 사람이 채널을 다시 열어야 했다. 머리만 모아 둔다.
+        if unparsed is not None:
+            unparsed.append(_row_head(primary))
         return
 
     media_paths = []
@@ -276,6 +310,16 @@ def main() -> int:
         help=f"SQLite path (default: {DEFAULT_DB})",
     )
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument(
+        "--show-unparsed", action="store_true",
+        help=("어느 소스도 받지 않은 캡션의 머리(160자)를 찍는다 — "
+              "새 카드 형식이 파서 없이 버려지고 있는지 보는 용도. "
+              "이 플래그 자체는 아무것도 더 쓰지 않지만 ingest_inbox 는 "
+              "적재 명령이다(형제 `backfill_badonion --show-irrelevant` "
+              "처럼 읽기 전용이 아니다). 못 보는 축: 형제 파서가 먼저 "
+              "가져간 캡션과 ingest 가 조용히 stored=False 로 끝난 건은 "
+              "여기 안 잡힌다(#274)."),
+    )
     args = ap.parse_args()
 
     if args.verbose:
@@ -319,11 +363,22 @@ def main() -> int:
         "with_warnings": 0,
         "media_relinked": 0,
     }
+    unparsed: list = [] if args.show_unparsed else None
     for grp in groups:
         _ingest_group(conn, grp, args.media_root, counters, ignored_ids,
-                      jp_conn, badonion_conns)
+                      jp_conn, badonion_conns, unparsed=unparsed)
 
     log.info("ingest counters: %s", counters)
+    if args.show_unparsed:
+        # 0건도 말한다 — 빈 출력이 정답인 도구는 없다(#274).
+        # ⚠️ 상한을 두되 **자른 사실을 고지**한다 — 조용한 절단은 '전부 봤다'
+        # 로 읽힌다(#45·#264 "매치 N건 중 최신 M건"). inbox.jsonl 은 로테이션이
+        # 없어 누적 미파싱이 수천 건일 수 있다.
+        log.info("어느 소스도 받지 않은 캡션: %d건%s", len(unparsed),
+                 f" (아래는 최신 {_UNPARSED_SHOW_CAP}건)"
+                 if len(unparsed) > _UNPARSED_SHOW_CAP else "")
+        for line in unparsed[-_UNPARSED_SHOW_CAP:]:
+            log.info("unparsed unit %s", line)
     s = stats(conn)
     log.info("store stats: %s", s)
     return 0

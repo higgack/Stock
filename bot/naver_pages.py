@@ -379,11 +379,19 @@ def render_highlow_page() -> str:
 def render_kr_volume_page() -> str:
     """🇰🇷 거래량 상위 — 네이버 실시간 랭킹 형식(사용자 2026-09-16).
 
-    칼럼은 네이버 화면 그대로 — 종목명·현재가·전일대비·거래량·거래대금·
-    고가·저가·시가총액. 정렬 키는 우리가 적지 않고 **원천에게 배운다**
-    (`kr_volume_client.learn_sort_type`, #151·#350).
+    칼럼 = 종목명·현재가·전일대비·거래량·거래대금·시가총액·업종, 그리고
+    원천이 줄 때만 고가·저가(시총 앞). 정렬 키는 우리가 적지 않고
+    **원천에게 배운다**(`kr_volume_client.learn_sort_type`, #151·#350).
+
+    ⚠️ 사용자 2026-09-17 "고가저가 나오게 해주고, 업종도 붙여줘. 못가져오는거면
+    아예 빼주고": (a) 고가·저가 두 칸은 **원천이 준 실측**(`has_hl`)으로 켠다 —
+    빈 칸을 그려 놓고 매번 각주로 사유를 적으면 화면만 시끄럽다(#25·#260).
+    (b) 업종은 신고가/신저가·급등락 보드와 **같은 경로**(`apply_kr_industry` +
+    `ind_dist_line`)로 붙인다 — 목록 응답엔 업종이 없고 이 맵이 유일한 출처다
+    (#38·#150 우리가 이미 부르는 것을 쓴다). 전 행이 비면 그 사유를 보이는
+    줄로 말한다(#43·#123 계열 — 형제 보드가 이미 그렇게 한다).
     """
-    from bot.highlow_render import HL_SORT_JS, stock_panel
+    from bot.highlow_render import HL_SORT_JS, ind_dist_line, stock_panel
     from bot.kr_session import phase, now_kst
     try:
         from bot.kr_volume_client import fetch_kr_volume_top
@@ -408,13 +416,29 @@ def render_kr_volume_page() -> str:
         body = (note + '<div class="empty">거래량 상위를 불러오지 못했습니다.'
                 '<br>위 사유를 확인해 주세요.</div>')
     else:
-        body = (note + stock_panel(
-            "📊 거래량 상위", rows, "krvol", "KR", "",
-            show_vol=True, show_value=True, show_mcap=True, show_ind=False,
-            show_hl=True) + HL_SORT_JS)
+        # 업종 백필 — 형제 보드(급등락·52주)와 같은 헬퍼. 목록 응답엔 업종이
+        # 없으므로 이 맵이 유일한 출처다(#38).
+        _ind_why = ""
+        try:
+            from bot.naver_sector_client import (apply_kr_industry,
+                                                 kr_industry_fail_reason)
+            apply_kr_industry(rows)
+            if not any(x.get("ind") for x in rows):
+                _ind_why = kr_industry_fail_reason()
+        except Exception:                                   # noqa: BLE001
+            pass
+        body = (note
+                + (f'<div class="sm-note">⚠️ 업종 칸이 빈 이유: '
+                   f'{_html.escape(_ind_why)}</div>' if _ind_why else "")
+                + stock_panel(
+                    "📊 거래량 상위", rows, "krvol", "KR", ind_dist_line(rows),
+                    show_vol=True, show_value=True, show_mcap=True,
+                    show_ind=True,
+                    # 원천이 안 주면 **칸 자체를 뺀다**(사용자 2026-09-17).
+                    show_hl=bool(d.get("has_hl"))) + HL_SORT_JS)
     ph = phase("KRX", now_kst())[1]
-    sub = ("네이버 증권 거래량 상위 · 전일대비=정규장 등락률 · 거래량·거래대금"
-           "=당일 누적 · 2분 주기 갱신"
+    sub = ("네이버 증권 거래량 상위 · 업종=네이버 · 전일대비=정규장 등락률 · "
+           "거래량·거래대금=당일 누적 · 2분 주기 갱신"
            + (f" · 정렬 키 {_html.escape(str(d.get('sort')))}" if d.get("sort") else "")
            + f" · KRX {_html.escape(ph)}"
            + (f" · {ts} 기준" if ts else ""))

@@ -474,6 +474,12 @@ async def run(
             len(units), len(units_all), _srcs.labels(),
             skipped_irrelevant, len(candidates),
         )
+        # ⚠️ 위 줄은 **레지스트리 전체**를 나열하므로 그 N건이 어느 소스인지
+        # 말하지 않는다 — "한국 수입 회사별이 안 들어온다" 를 물어도 '채널에
+        # 그런 글이 없었다' 와 '우리 파서가 떨어뜨렸다' 가 안 갈린다(#82).
+        # 0건인 소스도 **이름을 대서** 말한다(#54 대조 0건은 침묵이 아니다).
+        for line in _srcs.relevance_breakdown(units):
+            log.info("%s", line)
 
         if skipped_irrelevant and not show_irrelevant:
             # 새 형식은 늘 '드랍된 쪽'에 숨는다(2026-09-10 TSMC 월매출 — 여섯

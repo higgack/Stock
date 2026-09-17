@@ -151,6 +151,77 @@ from bot.macro_cadence import stale_verdict  # noqa: E402,F401
 
 
 
+def empty_diag(src: str, sid: str, window_start: str = "") -> tuple[str, str]:
+    """관측이 **하나도 없을 때**의 갈래와 문구 — (bucket, 화면 줄).
+
+    ⚠️ 2026-09-17 일일 감사가 `❌ PPI 원자재 (YoY) fred:PPIACO 관측 없음 —
+    원천이 비었다` 를 냈는데, 그 한 줄로는 **처방이 정해지지 않는다**(#82):
+      (a) 우리 조회가 실패했다        → 다시 받는다 / 코드를 고친다  ❌
+      (b) 원천에 그 창의 관측이 없다  → 우리가 고칠 게 없다          ⚠️
+          (계열 중단·개편이면 카탈로그를 바꿔야 하고, 그것도 사실을
+           **재고 나서** 할 일이다)
+      (c) 못 물어봤다(키 없음·메타 실패) → 판정 불가                 ⚪
+    원천이 **스스로 보고하는** `observation_end` 를 **우리가 요청한 창의
+    시작일**(`window_start`)과 대조해 (a)와 (b)를 가른다(#86·#318·#366).
+
+    ⚠️⚠️ 첫 판은 그 **대조를 안 하고** `oe` 가 있기만 하면 `src_lag` 를
+    돌려줬다 — 독립 리뷰가 배포 전에 잡았다. 그러면 FRED 조회 실패(429·
+    타임아웃)가 '우리가 고칠 게 없다' 로 둔갑하고 ❌ 가 **도달 불가**가 되어
+    일일 결산이 조용해진다(#41·#54·#82·#260 의 정반대 방향 — 고칠 수 있는
+    것을 안 알리는 쪽). 게다가 원천이 오늘까지 데이터가 있다고 말하는데
+    화면은 '없다' 고 적는 **거짓 진술**이다(#165·#292).
+
+    ⚠️ 창을 모르면(`window_start=""`) 대조를 **하지 않고** 판정 불가로
+    남긴다 — 못 잰 것을 단정하지 않는다(#54·#165). ECOS 는 이 메타 축이
+    다르므로 여기서 갈래를 주장하지 않는다.
+    """
+    if src == "ecos":
+        return "late", "❌ 관측 없음 — ECOS 응답에 행이 없다"
+    try:
+        from bot.fred_client import fetch_series_meta
+        meta = fetch_series_meta(sid) or {}
+    except Exception as exc:                                   # noqa: BLE001
+        return "unknown", f"⚪ 판정 불가 — 원천 메타 조회 실패({exc})"
+    oe = str(meta.get("observation_end") or "")
+    if not oe:
+        # ⚠️ `fetch_series_meta` 는 네트워크·HTTP 실패에도 None 을 준다 —
+        # "원천이 안 준다" 고 적으면 원천 탓으로 읽힌다(#82·#292 · 리뷰 L4).
+        return "unknown", "⚪ 판정 불가 — 원천 메타를 못 받았다(조회 실패 또는 미제공)"
+    if not window_start:
+        return "unknown", (f"⚪ 판정 불가 — 요청 창을 몰라 대조 못 함"
+                           f"(원천 observation_end={oe})")
+    if oe >= window_start:
+        return "late", (f"❌ 우리 조회가 빈손이었다 — 원천은 그 창에 관측이 있다"
+                        f"(observation_end={oe} ≥ 창 시작 {window_start})")
+    return "src_lag", (f"⚠️ 원천에 그 창의 관측이 없다"
+                       f"(observation_end={oe} < 창 시작 {window_start}) — "
+                       f"우리가 고칠 게 없다")
+
+
+def audit_rows(ms, mo) -> list[tuple[str, str, str, str, int]]:
+    """감사가 훑는 행 — (표면, 라벨, "src:id", 경로, 창 일수). 순수에 가깝게.
+
+    ⚠️ 행마다 **그 표면의 화면이 쓰는 선택기**를 같이 싣는다(#35). 매크로
+    스냅샷은 `_fred_fetch_series(sid, 400)` 로 그리고, 글로벌 스냅샷만 YoY
+    디스패치(`fred_indicator_fetch`)를 탄다 — 하나로 뭉뚱그리면
+    CPIAUCSL·PCEPILFE 처럼 **두 화면에 다 있는** 시리즈가 자기 화면과 다른
+    창으로 재어진다(독립 리뷰 H1 실측 2행).
+    ⚠️ `main` 안에 인라인으로 두면 네트워크 없이 값으로 못 잰다(#176).
+    """
+    rows: list[tuple[str, str, str, str, int]] = []
+    seen: set[tuple[str, str]] = set()
+    for surface, defs in (("Macro/국내", ms.DOMESTIC), ("Macro/글로벌", ms.GLOBAL)):
+        for _k, label, _u, src, sid, _d in defs:
+            if src in ("fred", "fred_yoy", "ecos") and (src, sid) not in seen:
+                seen.add((src, sid))
+                rows.append((surface, label, f"{src}:{sid}", "spot", 400))
+    for label, sid, _u, lb in mo.FRED_INDICATORS:
+        if sid and ("fred", sid) not in seen:
+            seen.add(("fred", sid))
+            rows.append(("글로벌 스냅샷", label, f"fred:{sid}", "screen", lb))
+    return rows
+
+
 def main() -> int:
     from bot.macro_cadence import (CADENCE, GRACE_DAYS, _CADENCE_VER, judge)
     from bot.env_keys import env_source
@@ -168,30 +239,32 @@ def main() -> int:
     _p("")
 
     # 화면에 실제로 뜨는 발표지표만(실시간 가격 카드 src='yf' 는 대상 아님).
-    rows: list[tuple[str, str, str]] = []      # (표면, 라벨, "src:id")
-    seen: set[tuple[str, str]] = set()
-    for surface, defs in (("Macro/국내", ms.DOMESTIC), ("Macro/글로벌", ms.GLOBAL)):
-        for _k, label, _u, src, sid, _d in defs:
-            if src in ("fred", "fred_yoy", "ecos") and (src, sid) not in seen:
-                seen.add((src, sid))
-                rows.append((surface, label, f"{src}:{sid}"))
-    for label, sid, _u, _lb in mo.FRED_INDICATORS:
-        if ("fred", sid) not in seen:
-            seen.add(("fred", sid))
-            rows.append(("글로벌 스냅샷", label, f"fred:{sid}"))
+    rows = audit_rows(ms, mo)
 
     late: list[str] = []
     src_lag: list[str] = []
     unknown: list[str] = []
-    for surface, label, key in rows:
+    for surface, label, key, mode, lb in rows:
         src, sid = key.split(":", 1)
         raw = ""
+        win_start = ""
         try:
             if src == "ecos":
                 pts = ms._ecos_series(sid)
                 raw = pts[-1][0] if pts else ""
             else:
-                spot = mo._fred_fetch_series(sid, 400)
+                # ⚠️ 화면이 쓰는 그 선택기로 묻는다 — 옛 판은 전 행을
+                # `_fred_fetch_series(sid, 400)` 로 물어 **YoY 카드**(730일
+                # 창)를 다른 경로로 쟀다(#35·#169). 그리고 그걸 고치며
+                # 전 행을 YoY 디스패치로 보내면 이번엔 **매크로 스냅샷**
+                # 행이 자기 화면과 갈린다 — 표면별로 가른다(리뷰 H1).
+                if mode == "screen":
+                    spot = mo.fred_indicator_fetch(sid, lb)
+                    win = mo.fred_indicator_window(sid, lb)
+                else:
+                    spot = mo._fred_fetch_series(sid, lb)
+                    win = lb
+                win_start = str(today - timedelta(days=win))
                 raw = (spot or {}).get("time", "")
                 if (spot or {}).get("src") == "UST":
                     key += " ·UST"          # 재무부로 하루 당겨진 행
@@ -205,9 +278,18 @@ def main() -> int:
                 _p(f"  {label:<18} {key:<28} ⚪ 판정 불가 — API 키 없음")
                 unknown.append(f"{label}(키 없음)")
             else:
-                _p(f"  {label:<18} {key:<28} ❌ 관측 없음 — 원천이 비었다"
-                   f"(키는 {_keysrc.get(src)})")
-                late.append(f"{label}(관측 없음)")
+                # '관측 없음' 은 갈래가 셋인데 처방이 다 다르다(#82):
+                #   우리 조회 실패 / 원천이 그 창에 관측이 없음(계열 중단·
+                #   개편) / 못 물어봄. 원천이 **스스로 보고하는**
+                #   `observation_end` 가 그걸 가른다(#86·#318·#366) —
+                #   고칠 수 없는 것을 ❌ 로 매일 내면 진짜 ❌ 를 가린다(#260).
+                # ⚠️ 원천 메타는 **한 번만** 묻고 판정·문구가 나눠 쓴다
+                # (두 번 물으면 그 사이 갱신된 값의 나이를 옛 판정에
+                # 붙인다, #160).
+                _b, _txt = empty_diag(src, sid, win_start)
+                _p(f"  {label:<18} {key:<28} {_txt}")
+                {"src_lag": src_lag, "unknown": unknown}.get(
+                    _b, late).append(f"{label}(관측 없음)")
             continue
         j = judge(sid, raw, today)
         if j is None:

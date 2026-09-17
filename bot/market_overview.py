@@ -745,7 +745,7 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
         except Exception:
             pass
 
-    start = (date.today() - timedelta(days=730)).isoformat()
+    start = (date.today() - timedelta(days=_FRED_YOY_WINDOW_DAYS)).isoformat()
     url = (
         f"https://api.stlouisfed.org/fred/series/observations"
         f"?series_id={series_id}&api_key={api_key}&file_type=json"
@@ -817,16 +817,46 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
     return result
 
 
+# 지수 레벨을 **YoY %** 로 바꿔 싣는 카드들 — 창(730일)·limit(30)이 달라
+# 일반 경로와 **다른 함수**를 탄다. 목록을 두 곳에 적으면 감사가 화면과
+# 다른 경로를 보게 되므로(#35·#38) 여기 하나에 두고 `fred_indicator_fetch`
+# 가 갈라 준다.
+_FRED_YOY_SIDS = ("CPIAUCSL", "PPIACO", "PCEPILFE", "RSAFS")
+_FRED_YOY_WINDOW_DAYS = 730      # `_fetch_fred_yoy` 가 실제로 요청하는 창
+
+
+def fred_indicator_window(series_id: str, lookback_days: int) -> int:
+    """`fred_indicator_fetch` 가 **실제로 요청하는 창**(일).
+
+    감사가 "원천에 그 창의 관측이 있나" 를 물으려면 화면이 쓴 창과 같아야
+    한다 — 창을 감사 쪽에 따로 적으면 두 수가 갈린다(#35·#38).
+    """
+    return (_FRED_YOY_WINDOW_DAYS if series_id in _FRED_YOY_SIDS
+            else lookback_days)
+
+
+def fred_indicator_fetch(series_id: str, lookback_days: int) -> Optional[dict]:
+    """글로벌 스냅샷 카드가 쓰는 **그 선택기**(#35).
+
+    ⚠️ 왜 함수인가(2026-09-17 일일 감사 `❌ PPI 원자재 (YoY) fred:PPIACO
+    관측 없음`): 이 분기가 `_fetch_all_fred` 안에 인라인으로 있어서
+    `macro_staleness_audit` 은 **전 행을 `_fred_fetch_series(sid, 400)`**
+    로 물었다 — YoY 카드는 화면이 730일 창으로 받는데 감사만 400일로 물은
+    것이라, 두 창 사이에 관측이 없으면 **멀쩡한 카드가 매일 ❌** 가 된다.
+    감사는 화면이 쓰는 그 경로를 태워야 한다(#35·#169·#176).
+    """
+    if series_id in _FRED_YOY_SIDS:
+        return _fetch_fred_yoy(series_id)
+    return _fred_fetch_series(series_id, lookback_days)
+
+
 def _fetch_all_fred() -> list[dict]:
     """Fetch all FRED indicators. Returns list of dicts."""
     results = []
     for label, series_id, unit, lookback in FRED_INDICATORS:
         if series_id is None:
             continue
-        if series_id in ("CPIAUCSL", "PPIACO", "PCEPILFE", "RSAFS"):
-            data = _fetch_fred_yoy(series_id)
-        else:
-            data = _fred_fetch_series(series_id, lookback)
+        data = fred_indicator_fetch(series_id, lookback)
         if data:
             data["label"] = label
             data["unit"] = unit
