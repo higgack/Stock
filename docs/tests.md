@@ -464,7 +464,68 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
 - (c) ⑤ 의 실제 호출 경로(네트워크)는 값으로 못 태운다 — AST 로 호출만 센다.
   인자를 넘기되 엉뚱한 값을 넘기는 변형은 이 검사 밖이다(#366 과 같은 축).
 - (d) 표본이 3종목이라 "전용 창인데 체결 0" 은 NXT 미거래의 증거가 아니다
-  (그래서 ❌ 가 아니라 ❓ 로 찍는다, #54).
+  (그래서 ❌ 가 아니라 ❓ 로 찍는다, #54). ⚠️ 그리고 이 프로브 한 방은 **그 창에
+  사람이 맞춰 쳐야** 답한다 — 그래서 같은 날 자동 누적을 심었다(아래 절, #379).
+
+## 전용 창 하한 **자동** 누적 (2026-09-17, #379)
+
+사용자 "이것도 해줘". 위 절의 측정은 **그 창이 열려 있을 때만** 할 수 있는데
+프로브는 사람이 15:40 에 맞춰 쳐야 답한다 — 잘못된 fix 다(§Automation-first·#252).
+시간외 보드 스캔이 **이미 그 창에서** 2분 주기로 ~200종목을 돌고 있으므로
+(`prepost_client._compute_kr_prepost`) 거기서 주워 담는다(`bot/venue_universe.py`,
+추가 네트워크 콜 0). 워머가 180초마다 그 창에서 보드를 데우므로 사람이 안 들어와도
+쌓인다.
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 전용 창을 **표에서 파생**한다(리터럴 금지, #38·#55) + 거래소 미열거(#24) | ✅ 자동 | `test_exclusive_spans_are_derived_not_enumerated` — 합성 거래소 ZZZ 로 발화(#91c) |
+| 전용 창이 없으면 그렇게 말한다(#43) | ✅ 자동 | `test_exclusive_label_says_every_span_and_says_none_when_there_is_none` |
+| 겹치는 창·창 밖에서는 **세지도 저장하지도** 않는다 | ✅ 자동 | `test_nothing_is_counted_when_the_windows_overlap` · `…_outside_any_window` |
+| 못 센 실행에 `total: 0` 을 적지 않는다(#54·#34) | ✅ 자동 | `test_total_is_absent_when_nothing_could_be_counted` |
+| **낡은 블록 가드** — 체결 **시각**도 전용 창 안이어야 센다 | ✅ 자동 | `test_a_stale_print_is_not_attributed_to_this_window` |
+| 시각을 못 읽으면 세지 않고 **못 센 수를 말한다**(#54·#82·#123) | ✅ 자동 | `test_a_print_with_no_timestamp_is_counted_as_unmeasured_not_as_nxt` |
+| 가드 기준은 '오늘' 이 아니라 '전용 창' 이다 | ✅ 자동 | `test_a_print_from_todays_pre_window_still_counts_in_the_after_window` |
+| 시각 파서가 두 형태를 읽고 **모르면 None**(추측 금지) | ✅ 자동 | `test_parse_ts_reads_the_shapes_we_might_get_and_gives_up_loudly` |
+| 형식 가정을 반증할 **원문 표본**을 남긴다(#109·#165) | ✅ 자동 | `test_the_raw_timestamp_sample_is_kept_so_the_assumption_can_be_refuted` |
+| 스캔·날짜를 누적한다 | ✅ 자동 | `test_the_store_accumulates_across_scans_and_days` |
+| 한 스캔의 중복이 **안 센 계수를 부풀리지 않는다** | ✅ 자동 | `test_a_ticker_seen_twice_in_one_scan_counts_once` |
+| 상한으로 버렸으면 **말한다**(#45) | ✅ 자동 | `test_the_cap_is_spoken_not_silent` |
+| 언제나 **하한**이라고 적는다(목록 주장 금지, #165) | ✅ 자동 | `test_it_always_says_it_is_a_lower_bound` |
+| 빈 상태가 사유와 창을 말한다 | ✅ 자동 | `test_the_empty_state_says_why_and_where_from_the_window_table` |
+| 스캔이 관측에 **체결시각까지** 넘긴다(#20·#366) + payload 계약 불변 | ✅ 자동 | `test_the_scan_hands_the_observation_the_execution_timestamp` |
+| 스캔이 저장소를 **실제로 채운다**(스파이가 아니라 결과, #313) | ✅ 자동 | `test_the_scan_actually_fills_the_store_in_an_exclusive_window` |
+| 관측이 던져도 **보드는 나간다**(곁들이, #315) | ✅ 자동 | `test_the_observation_never_breaks_the_board` |
+| 프로브 ⑤ 가 누적분을 **읽어 찍는다** | ✅ 자동 | `test_the_probe_prints_the_accumulated_lower_bound` |
+| 누적 파일을 못 읽으면 **덮어쓰지 않는다**(기록 유실 방지, #331 의 쓰는 쪽) | ✅ 자동 | `test_a_broken_store_is_not_silently_overwritten` |
+| **길이 0** 도 '빈 상태' 가 아니다(쓰다 만 것 — #280 truncate 창·크래시) | ✅ 자동 | `test_a_zero_length_store_is_not_treated_as_empty`(리뷰 B1 실측: 4종목→1종목 리셋) |
+| '못 읽음' 을 '빈 상태' 로 접지 않는다(갈래는 이름으로, #82) | ✅ 자동 | `test_an_unreadable_store_is_never_reported_as_empty` |
+| 쓰기는 **원자 교체**(tmp→`os.replace`) — reader 가 찢어진 파일을 안 본다 | ✅ 자동 | `test_the_write_replaces_the_file_instead_of_truncating_it`(열린 핸들이 옛 내용을 본다) |
+| 가드는 시각뿐 아니라 **거래소**도 못박는다 | ✅ 자동 | `test_the_guard_also_pins_the_venue_not_just_the_time` — 합성 거래소로 발화(리뷰 H1·#91c) |
+| 하나도 못 센 실행도 **스캔 사실과 원문 표본**을 남긴다(#54·#109) | ✅ 자동 | `test_the_unmeasured_run_keeps_the_sample_that_could_refute_it` — 0종목엔 ✅ 금지 |
+| 관측일은 **체결 시각**에서 온다(스캔일 아님 — 평일 공휴일 구멍도 닫힌다) | ✅ 자동 | `test_the_date_comes_from_the_execution_not_the_scan` |
+| 관측일 상한은 **최신**을 남긴다 | ✅ 자동 | `test_the_dates_cap_keeps_the_newest_not_the_oldest`(리뷰 M3) |
+| 이미 아는 티커는 `new` 가 아니다 | ✅ 자동 | `test_a_ticker_seen_twice_in_one_scan_counts_once` |
+| 운영 로그가 **수를 싣는다**(유일한 가시 창, #20) | ✅ 자동 | `test_the_log_line_carries_the_numbers` — `caplog`(#373) |
+| 프로브가 전용 창을 **표에서 읽는다**(리터럴 금지) | ✅ 자동 | `test_the_probe_reads_the_window_from_the_table_not_a_literal`(리뷰 M1) |
+| 그 장애를 '아직 안 쌓임' 으로 위장하지 않는다(#54·#82) | ✅ 자동 | `test_a_broken_store_is_reported_not_shown_as_empty` |
+| CLI 가 실행 안내(#278)와 같은 줄을 찍는다 | ✅ 자동 | `test_the_cli_prints_the_run_hint_and_the_lines` |
+
+모두 `tests/test_regression.py::TestVenueExclusiveWindowLowerBound20260917`.
+뮤테이션 16종(내가 돌린 것) + 독립 리뷰가 찾은 7종 + 리뷰 fix 를 되돌리는 6종이 전부 발화한다. 처음엔 눈먼 가드가 **아홉**이었다(내 둘 + 리뷰 일곱) — §CLAUDE.md #379.
+
+**이 검사들이 못 보는 축**(#274):
+- (a) `localTradedAt` 의 **실제 형식을 재지 않았다** — naive 면 KST 로 읽는다는
+  가정 위에 선다. 첫 실측이 `ts_sample` 로 그 가정을 반증할 수 있게 해 뒀고,
+  가정이 틀리면 `undated`/`outside` 수가 대신 커진다(#82 다음 출력이 곧 측정).
+- (b) 창이 열려도 **스캔이 돌아야** 쌓인다 — 워머(180초)나 방문이 없거나
+  `/naverpause` 중이면 그 창은 통째로 빈다. `scans` 는 (리뷰 H2 fix 로) 한 건도
+  못 센 스캔에도 오르므로 '안 돌았다' 와 '돌았는데 0건' 이 구별된다.
+- (b2) 쓰는 프로세스가 **둘**이다(봇 워머 · 대시보드 방문). 파일 락으로 lost
+  update 를 막지만 `fcntl` 이 없는 플랫폼에선 락 없이 진행한다(로그로 밝힌다) —
+  그때는 드물게 한 스캔의 계수가 유실될 수 있다(하한 자체는 다음 스캔이 줍는다).
+- (c) 하한은 **귀속을 풀지 않는다** — '이 블록이 KRX 체결인가' 는 여전히 미측정
+  이라 보드 각주는 그대로다(#375).
+- (d) 유니버스가 '정규장 무버 ~200종목' 이라 전 상장이 아니다.
 
 ## 대만 종목명 한글화 — 번역 판정·실패 기록 (2026-09-17, #376)
 

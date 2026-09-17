@@ -68896,3 +68896,369 @@ class TestFredIndicatorSelector20260917:
         assert dflt and any(
             isinstance(a, ast.Name) and a.id == "late"
             for c in dflt for a in c.args), "기본 버킷이 late 가 아니다"
+
+
+class TestVenueExclusiveWindowLowerBound20260917:
+    """거래소 **전용 체결 창**에서 모으는 거래종목 하한 — 자동 누적(실수 #379).
+
+    사용자 2026-09-17 "이 NXT 랑 KRX 애프터랑 안겹치는것도 많을텐데 … 이것도
+    해줘". 응답에 거래소 필드가 없어(#373b) 시간외 체결의 귀속을 **필드로는**
+    못 가르지만, KRX 는 체결 창이 애프터마켓뿐이라 **그 밖의 NXT 체결 창**에
+    붙는 체결은 정의상 NXT 다. 그 측정은 **그 창이 열려 있을 때만** 할 수
+    있으므로 운영자 수동 프로브가 아니라 이미 그 창에서 도는 보드 스캔이
+    주워 담는다(§Automation-first·#252).
+    """
+
+    @staticmethod
+    def _kst(h, m, day=17):
+        from datetime import datetime
+        from bot.kr_session import KST
+        return datetime(2026, 9, day, h, m, tzinfo=KST)   # 09-17 = 목요일
+
+    @staticmethod
+    def _iso(h, m, day=17):
+        return f"2026-09-{day:02d}T{h:02d}:{m:02d}:00+09:00"
+
+    @pytest.fixture()
+    def vu(self, tmp_path, monkeypatch):
+        import bot.finviz_client as fv
+        import bot.venue_universe as vu
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)   # 운영 캐시 격리(#30)
+        return vu
+
+    # ── 창은 표에서 파생된다 ───────────────────────────────────────────
+    def test_exclusive_spans_are_derived_not_enumerated(self):
+        """전용 창을 리터럴로 적으면 창 표와 갈라진다(#38·#55). 그리고 거래소
+        이름을 열거하면 거래소가 늘 때 못 따라온다(#24) — 합성 거래소로 잰다."""
+        import bot.kr_session as ks
+        # 오늘의 실측: KRX 는 애프터(16–20)뿐이라 NXT 의 프리·15:40–16:00 만 전용.
+        assert ks.exclusive_spans() == [(8 * 60, 9 * 60, "NXT"),
+                                        (15 * 60 + 40, 16 * 60, "NXT")]
+        # 합성 거래소 ZZZ 가 21:00–22:00 에만 열리면 그 구간도 전용이어야 한다.
+        zzz = ((21, 0, 22, 0, "after", "애프터마켓"),
+               (22, 0, 21, 0, "after_close", "마감"))
+        monkey = dict(ks.VENUES)
+        monkey["ZZZ"] = zzz
+        import unittest.mock as _m
+        with _m.patch.object(ks, "VENUES", monkey):
+            spans = ks.exclusive_spans()
+        assert (21 * 60, 22 * 60, "ZZZ") in spans, spans
+
+    def test_exclusive_label_says_every_span_and_says_none_when_there_is_none(self):
+        import unittest.mock as _m
+        import bot.kr_session as ks
+        lb = ks.exclusive_window_label()
+        assert "08:00–09:00" in lb and "15:40–16:00" in lb and "KST" in lb
+        # 전용 창이 하나도 없으면 침묵하지 말고 그렇게 말한다(#43).
+        both = {"A": ks.VENUES["NXT"], "B": ks.VENUES["NXT"]}
+        with _m.patch.object(ks, "VENUES", both):
+            assert "없음" in ks.exclusive_window_label()
+
+    # ── 셀 수 있을 때만 센다 ───────────────────────────────────────────
+    def test_nothing_is_counted_when_the_windows_overlap(self, vu):
+        """겹치는 구간(16:00–20:00)에서는 귀속이 불가능하다 — 세면 거짓말이다."""
+        res = vu.observe([("005930", self._iso(17, 0))], now=self._kst(17, 0))
+        assert res["branch"] == "overlap" and res["counted"] == 0
+        assert vu.summary() == {}, "겹치는 창에서 저장까지 했다"
+
+    def test_nothing_is_counted_outside_any_window(self, vu):
+        res = vu.observe([("005930", self._iso(12, 0))], now=self._kst(12, 0))
+        assert res["branch"] == "closed" and res["counted"] == 0
+        assert vu.summary() == {}
+
+    def test_total_is_absent_when_nothing_could_be_counted(self, vu):
+        """`total: 0` 을 적으면 '아무것도 안 쌓였다' 로 읽힌다(#54·#34)."""
+        res = vu.observe([("005930", self._iso(17, 0))], now=self._kst(17, 0))
+        assert "total" not in res, res
+
+    # ── 낡은 블록 가드 ─────────────────────────────────────────────────
+    def test_a_stale_print_is_not_attributed_to_this_window(self, vu):
+        """블록이 **직전 세션 값**을 들고 있으면, 전용 창에서 읽었다는 이유만으로
+        귀속하면 어제 16:00~20:00(KRX 일 수 있는) 체결을 NXT 라 부른다. 그래서
+        체결 **시각**도 전용 창 안이어야 센다."""
+        now = self._kst(15, 50)                       # NXT 전용(15:40–16:00)
+        res = vu.observe([("005930", self._iso(15, 45)),      # 이 창의 체결 → 센다
+                          ("000660", self._iso(18, 10, day=16)),  # 어제 겹치는 창
+                          ("035720", self._iso(11, 0))], now=now)  # 오늘 정규장
+        assert res["counted"] == 1 and res["outside"] == 2, res
+        assert sorted(vu.summary()["NXT"]["sample"]) == ["005930"]
+
+    def test_a_print_with_no_timestamp_is_counted_as_unmeasured_not_as_nxt(self, vu):
+        """시각을 못 읽으면 **세지 않고 못 센 사실을 말한다**(#54·#82) —
+        다음 라운드가 그 수를 보고 가정을 고칠 수 있다."""
+        now = self._kst(15, 50)
+        res = vu.observe([("005930", ""), ("000660", "어제쯤")], now=now)
+        assert res["counted"] == 0 and res["undated"] == 2, res
+        # 그리고 화면이 그 수를 말해야 한다(계산해 두고 숨기면 없는 것, #123).
+        lines = vu.format_lines()
+        assert any("못 읽음 2건" in ln for ln in lines), lines
+        # 원문이 **비어 있었다**는 사실도 보여야 한다 — falsy 라 통째로 사라지면
+        # 그 갈래가 화면에서 없어진다(#43).
+        assert any("(빈 문자열)" in ln for ln in lines), lines
+
+    def test_a_print_from_todays_pre_window_still_counts_in_the_after_window(self, vu):
+        """08:30(프리) 체결이 15:50 에 남아 있어도 **그 시각이 전용 창**이라
+        귀속은 유효하다 — 가드는 '오늘인가' 가 아니라 '전용 창인가' 다."""
+        res = vu.observe([("005930", self._iso(8, 30))], now=self._kst(15, 50))
+        assert res["counted"] == 1, res
+
+    # ── 시각 파서 ──────────────────────────────────────────────────────
+    def test_parse_ts_reads_the_shapes_we_might_get_and_gives_up_loudly(self, vu):
+        from bot.kr_session import KST
+        assert vu.parse_ts("2026-09-17T15:44:10+09:00").hour == 15
+        assert vu.parse_ts("20260917154410").minute == 44
+        # naive 는 **KST 로 읽는다**(국내 엔드포인트 가정). tzinfo 만 보면
+        # UTC 로 읽고 KST 로 환산하는 변형이 그대로 통과한다(#91b 실측) —
+        # 결과 **시각**을 집어야 잰다.
+        naive = vu.parse_ts("2026-09-17 15:44:10")
+        assert naive.tzinfo == KST and naive.hour == 15, naive
+        # 다른 오프셋으로 오면 KST 로 환산한다(가정이 틀려도 값은 안 지어낸다).
+        assert vu.parse_ts("2026-09-17T02:44:10+00:00").hour == 11
+        for bad in ("", None, "없음", "2026-13-99"):
+            assert vu.parse_ts(bad) is None, bad
+
+    def test_the_raw_timestamp_sample_is_kept_so_the_assumption_can_be_refuted(self, vu):
+        """`localTradedAt` 형식을 **재지 않았다**(#165) — 첫 실측이 그 가정을
+        스스로 반증할 수 있게 원문 표본을 같이 적는다(#109)."""
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        assert vu.summary()["NXT"]["ts_sample"] == self._iso(15, 45)
+        assert any("원문 표본" in ln for ln in vu.format_lines())
+
+    # ── 누적 ───────────────────────────────────────────────────────────
+    def test_the_store_accumulates_across_scans_and_days(self, vu):
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        vu.observe([("005930", self._iso(15, 47)),
+                    ("000660", self._iso(15, 47))], now=self._kst(15, 52))
+        vu.observe([("005930", self._iso(8, 30, day=18))],
+                   now=self._kst(8, 40, day=18))
+        s = vu.summary()["NXT"]
+        assert s["total"] == 2 and s["scans"] == 3
+        assert s["dates"] == ["2026-09-17", "2026-09-18"], s["dates"]
+        assert len(s["dates"]) == 2 and "2026-09-18" in vu.format_lines()[0]
+
+    def test_a_ticker_seen_twice_in_one_scan_counts_once(self, vu):
+        """⚠️ `counted` 는 dict 키라 중복 제거가 없어도 1 이다 — 그래서 그
+        단언만으로는 **아무것도 안 잰다**(#291·#373 최적화에 없는 계약을
+        지어내지 말 것). 실제로 관측되는 계약은 '한 번 센 티커가 같은 스캔의
+        다른 줄 때문에 **안 센 계수를 부풀리지 않는다**' 이다."""
+        res = vu.observe([("005930", self._iso(15, 45)),
+                          ("005930", self._iso(15, 46))], now=self._kst(15, 50))
+        assert res["counted"] == 1 and res["new"] == 1, res
+        res2 = vu.observe([("000660", self._iso(15, 45)),
+                           ("000660", "")], now=self._kst(15, 52))
+        assert res2["counted"] == 1 and res2["undated"] == 0, res2
+        # 이미 아는 티커는 `new` 가 아니다 — 안 그러면 "신규 N" 로그가 매 스캔
+        # 전 종목을 신규라 말한다(독립 리뷰 H4 의 MUT-G).
+        res3 = vu.observe([("000660", self._iso(15, 46))], now=self._kst(15, 54))
+        assert res3["counted"] == 1 and res3["new"] == 0, res3
+
+    def test_the_cap_is_spoken_not_silent(self, vu, monkeypatch):
+        """잘랐으면 **자른 사실을 말한다**(#45)."""
+        monkeypatch.setattr(vu, "_MAX_TICKERS", 2)
+        vu.observe([(f"00{i}", self._iso(15, 45)) for i in range(5)],
+                   now=self._kst(15, 50))
+        assert vu.summary()["NXT"]["capped"] == 3
+        assert any("버림 3건" in ln for ln in vu.format_lines()), vu.format_lines()
+
+    def test_it_always_says_it_is_a_lower_bound(self, vu):
+        """'하한' 을 빼면 화면이 **목록**을 주장하게 된다(#165·#54)."""
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        txt = " ".join(vu.format_lines())
+        assert "하한" in txt and "목록이 아닙니다" in txt
+
+    def test_the_empty_state_says_why_and_where_from_the_window_table(self, vu):
+        lines = vu.format_lines()
+        assert lines and "누적된 관측이 없습니다" in lines[0]
+        assert "08:00–09:00" in lines[0] and "15:40–16:00" in lines[0]
+
+    # ── 배선(헬퍼만 재면 못 잡는다, #20) ───────────────────────────────
+    def _stub_scan(self, monkeypatch, over_ts):
+        import bot.naver_quote as nq
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "_kr_movers_universe",
+                            lambda: (["005930"], {"005930": "삼성전자"},
+                                     {"005930": 5000000}))
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda tk: {
+            "over_session": "AFTER_MARKET", "over_price": 100.0,
+            "reg_close": 90.0, "over_volume": 1234, "over_value": 1e8,
+            "volume": 99999, "over_ts": over_ts})
+        monkeypatch.setattr(pp, "_kr_status_write", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "_cache_write", lambda *a, **k: None)
+
+    def test_the_scan_hands_the_observation_the_execution_timestamp(
+            self, monkeypatch, vu):
+        """스캔이 관측을 넘기는지 — 넘기는 **인자**까지 본다(#366: 인자 수만
+        보면 엉뚱한 값을 넘기는 변형을 못 잡는다)."""
+        import bot.prepost_client as pp
+        self._stub_scan(monkeypatch, "2026-09-17T15:45:00+09:00")
+        seen = []
+        monkeypatch.setattr(vu, "observe",
+                            lambda items, **kw: seen.append(list(items)) or {})
+        out = pp._compute_kr_prepost()
+        assert seen == [[("005930", "2026-09-17T15:45:00+09:00")]], seen
+        # 판정용 필드는 보드 payload 에 남지 않는다(계약 불변).
+        assert all("over_ts" not in r for r in out["up"] + out["down"])
+
+    def test_the_scan_actually_fills_the_store_in_an_exclusive_window(
+            self, monkeypatch, vu):
+        """스파이가 아니라 **결과**로 — 저장소에 종목이 실제로 들어간다(#313)."""
+        import bot.prepost_client as pp
+        self._stub_scan(monkeypatch, "2026-09-17T15:45:00+09:00")
+        monkeypatch.setattr(vu, "exclusive_venue",
+                            lambda now=None: ("NXT", "exclusive"))
+        pp._compute_kr_prepost()
+        assert vu.summary()["NXT"]["total"] == 1, vu.summary()
+
+    def test_the_observation_never_breaks_the_board(self, monkeypatch, vu):
+        """곁들이가 던져도 보드는 그대로 나간다(#315)."""
+        import bot.prepost_client as pp
+        self._stub_scan(monkeypatch, "2026-09-17T15:45:00+09:00")
+
+        def _boom(*a, **k):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(vu, "observe", _boom)
+        out = pp._compute_kr_prepost()
+        assert out["up"], "관측 실패가 보드를 지웠다"
+
+    # ── 표시 ───────────────────────────────────────────────────────────
+    def test_the_probe_prints_the_accumulated_lower_bound(self, vu, capsys,
+                                                          monkeypatch):
+        """프로브 ⑤ 는 이제 **누적분을 읽는다** — 그 창에 사람이 맞춰 치지
+        않아도 하한이 보인다(§Automation-first)."""
+        import bot.scripts.kr_board_probe as kb
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        monkeypatch.setattr(kb, "_get", lambda *a, **k: (None, "네트워크 금지"))
+        import bot.kr_session as ks
+        monkeypatch.setattr(ks, "exclusive_venue", lambda now=None: ("", "closed"))
+        kb._section_nxt_universe()
+        out = capsys.readouterr().out
+        assert "전용 창 관측 하한 1종목" in out, out
+        assert "005930" in out
+
+    def test_a_broken_store_is_not_silently_overwritten(self, vu, tmp_path):
+        """깨진 바이트 하나가 몇 달치 누적을 **지우면 안 된다** — 못 읽었으면
+        새 dict 로 시작하지 말고 그 실행을 건너뛴다(#331 의 쓰는 쪽)."""
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        f = vu._store_path()
+        f.write_bytes(b"{ not json \x8d")
+        res = vu.observe([("000660", self._iso(15, 45))], now=self._kst(15, 52))
+        assert res["counted"] == 1, "판정 자체는 했다"
+        assert f.read_bytes().startswith(b"{ not json"), "깨진 파일을 덮어썼다"
+
+    def test_a_broken_store_is_reported_not_shown_as_empty(self, vu):
+        """빈 dict 로 돌려주면 '아직 안 쌓였다' 로 읽혀 장애가 정상으로
+        위장한다(#54·#82)."""
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        vu._store_path().write_bytes(b"{ not json")
+        assert "_error" in vu.summary()
+        assert "못 읽었습니다" in vu.format_lines()[0], vu.format_lines()
+
+    def test_a_zero_length_store_is_not_treated_as_empty(self, vu):
+        """길이 0 은 '빈 상태' 가 아니라 **쓰다 만 것**이다(#280 truncate 창 ·
+        크래시). 빈 상태로 보면 다음 쓰기가 누적을 통째로 덮는다 — 독립 리뷰
+        2026-09-17 B1 이 실측으로 재현했다(4종목 → 1종목)."""
+        vu.observe([(t, self._iso(15, 45)) for t in
+                    ("005930", "000660", "035720", "068270")],
+                   now=self._kst(15, 50))
+        f = vu._store_path()
+        f.write_bytes(b"")
+        res = vu.observe([("900100", self._iso(15, 45))], now=self._kst(15, 52))
+        assert res.get("total") is None, "쓰지 않았어야 한다"
+        assert f.read_bytes() == b"", "길이 0 파일을 덮어썼다"
+        assert "_error" in vu.summary()
+
+    def test_the_guard_also_pins_the_venue_not_just_the_time(self, vu):
+        """거래소가 늘어 전용 창이 **둘**이 되면, 어제 저쪽 전용 창 체결을 든
+        낡은 블록이 이쪽으로 귀속된다. 오늘 표엔 전용 창을 갖는 거래소가
+        하나뿐이라 그 절반은 발화 경로가 없었다(독립 리뷰 H1·#91c·#378)."""
+        import unittest.mock as _m
+        import bot.kr_session as ks
+        zzz = ((21, 0, 22, 0, "after", "애프터마켓"),
+               (22, 0, 21, 0, "after_close", "마감"))
+        with _m.patch.object(ks, "VENUES", dict(ks.VENUES, ZZZ=zzz)):
+            # 지금은 NXT 전용 창, 체결은 ZZZ 전용 창(21:30) → 귀속 불가.
+            assert vu.classify(self._iso(21, 30), "NXT") == "outside"
+            assert vu.classify(self._iso(15, 45), "NXT") == "counted"
+
+    def test_the_unmeasured_run_keeps_the_sample_that_could_refute_it(self, vu):
+        """표본이 필요한 세계는 **하나도 못 센 세계**다 — 첫 판은 `if hit:`
+        안에서만 표본을 적어 거기서 한 줄도 안 남겼다(독립 리뷰 H2)."""
+        res = vu.observe([("005930", "15:45"), ("000660", self._iso(11, 0))],
+                         now=self._kst(15, 50))
+        assert res["counted"] == 0 and res["total"] == 0
+        txt = " ".join(vu.format_lines())
+        assert "❓" in txt and "✅" not in txt, txt          # 0종목에 ✅ 금지(#54)
+        assert "스캔 1회" in txt, txt                        # 돌긴 돌았다
+        assert "15:45" in txt and "11:00" in txt, txt        # 두 갈래 원문 표본
+
+    def test_the_dates_cap_keeps_the_newest_not_the_oldest(self, vu, monkeypatch):
+        """잘린 방향이 반대면 91일째부터 화면의 범위 끝이 **옛 날짜로 굳는다**
+        (독립 리뷰 M3 — 픽스처가 2일치라 방향을 못 쟀다)."""
+        monkeypatch.setattr(vu, "_MAX_DATES", 2)
+        for d in (15, 16, 17):
+            vu.observe([("005930", self._iso(15, 45, day=d))],
+                       now=self._kst(15, 50, day=d))
+        assert vu.summary()["NXT"]["dates"] == ["2026-09-16", "2026-09-17"]
+
+    def test_the_date_comes_from_the_execution_not_the_scan(self, vu):
+        """블록이 낡을 수 있다는 것이 이 모듈의 전제다 — 그러면 체결일 ≠ 스캔일인
+        건이 정상적으로 있고, 스캔일로 적으면 관측이 없던 날을 관측일이라 말한다
+        (독립 리뷰 M2. 평일 공휴일 구멍도 같이 닫힌다)."""
+        vu.observe([("005930", self._iso(8, 30, day=16))],   # 어제 프리마켓 체결
+                   now=self._kst(8, 40, day=17))             # 오늘 스캔
+        assert vu.summary()["NXT"]["dates"] == ["2026-09-16"]
+
+    def test_the_log_line_carries_the_numbers(self, monkeypatch, vu, caplog):
+        """운영자가 이 기능이 도는지 보는 유일한 창이다 — 통째로 지워도 22개가
+        green 이었다(독립 리뷰 H4·#20). `capsys` 는 못 잡는다(#373)."""
+        import logging
+        import bot.prepost_client as pp
+        self._stub_scan(monkeypatch, "2026-09-17T15:45:00+09:00")
+        monkeypatch.setattr(vu, "exclusive_venue",
+                            lambda now=None: ("NXT", "exclusive"))
+        with caplog.at_level(logging.INFO, logger="bot.prepost_client"):
+            pp._compute_kr_prepost()
+        msg = " ".join(r.getMessage() for r in caplog.records)
+        assert "venue universe" in msg and "NXT" in msg, msg
+        assert "관측 1종목" in msg and "신규 1" in msg and "누적 1" in msg, msg
+        assert "넘겨받음 1" in msg, msg          # `seen` 소비처(리뷰 L2)
+
+    def test_the_write_replaces_the_file_instead_of_truncating_it(self, vu):
+        """`write_text` 는 truncate 후 쓰기라 **길이 0 인 창**이 실재하고, 다른
+        프로세스가 그 순간을 읽으면 위 계약이 깨진다(#280 · 독립 리뷰 B1).
+        관측 가능한 차이: 원자 교체는 **이미 열린 핸들**에 옛 내용을 남긴다."""
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        f = vu._store_path()
+        before = f.read_bytes()
+        with open(f, "rb") as handle:                 # reader 가 잡고 있는 중
+            vu.observe([("000660", self._iso(15, 45))], now=self._kst(15, 52))
+            assert handle.read() == before, "같은 inode 를 덮어썼다(원자 교체 아님)"
+        assert b"000660" in f.read_bytes(), "새 내용이 반영되지 않았다"
+
+    def test_an_unreadable_store_is_never_reported_as_empty(self, vu):
+        """'못 읽음' 을 '빈 상태' 로 접으면 다음 쓰기가 누적을 덮는다 —
+        갈래를 이름으로 부른다(#82)."""
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        vu._store_path().write_bytes(b"[]")           # dict 가 아님
+        _, state = vu.read_store()
+        assert state.startswith("unreadable"), state
+
+    def test_the_probe_reads_the_window_from_the_table_not_a_literal(self):
+        """프로브가 전용 창을 리터럴로 적으면 `kr_session` 표와 갈라진다
+        (#38·#55, 독립 리뷰 M1 — 같은 커밋이 파생 헬퍼를 만들어 놓고 여기만
+        옛 리터럴이었다). 표를 바꾸면 문구도 바뀌어야 한다."""
+        import unittest.mock as _m
+        import bot.kr_session as ks
+        import bot.scripts.kr_board_probe as kb
+        zzz = ((21, 0, 22, 0, "after", "애프터마켓"),
+               (22, 0, 21, 0, "after_close", "마감"))
+        with _m.patch.object(ks, "VENUES", dict(ks.VENUES, ZZZ=zzz)):
+            txt = kb.nxt_lower_bound([], "", "closed")
+        assert "ZZZ 21:00–22:00" in txt, txt
+
+    def test_the_cli_prints_the_run_hint_and_the_lines(self, vu, capsys):
+        vu.observe([("005930", self._iso(15, 45))], now=self._kst(15, 50))
+        assert vu.main() == 0
+        out = capsys.readouterr().out
+        assert "cd ~/stock && .venv/bin/python -m bot.venue_universe" in out
+        assert "전용 창 관측 하한 1종목" in out

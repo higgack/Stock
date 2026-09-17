@@ -548,6 +548,34 @@ def _kr_movers_universe() -> tuple[list, dict, dict]:
     return tks, names, mcaps
 
 
+def _observe_venue_universe(rows: list) -> None:
+    """거래소 **전용 체결 창**이면 이 스캔이 본 종목을 하한에 누적한다.
+
+    사용자 2026-09-17 "이것도 해줘". 이 측정은 그 창이 열려 있을 때만 할 수
+    있는데 스캔은 **이미 그 창에서 돌고 있다** — 운영자가 15:40 에 맞춰 프로브를
+    치게 만드는 대신 여기서 주워 담는다(§Automation-first·#252). 추가 네트워크
+    콜 0. 전용 창이 아니면 `observe` 가 스스로 no-op 이므로 여기서 창을 두 번
+    판정하지 않는다(#38).
+
+    ⚠️ 스캔을 멈추게 하지 않는다 — 이건 곁들이다(#315 넓은 try 가 본체를
+    지우지 않게, 실패해도 보드는 그대로 나간다).
+    """
+    try:
+        from bot.venue_universe import observe
+        res = observe([(r.get("ticker"), r.get("over_ts")) for r in rows])
+        if res.get("branch") == "exclusive":
+            # 운영자가 이 기능이 도는지 보는 **유일한 창**이라 수를 다 싣는다
+            # (독립 리뷰 2026-09-17 H4·L2 — 통째로 지워도 회귀가 green 이었다).
+            log.info("venue universe: %s 전용 창 — 넘겨받음 %d · 관측 %d종목"
+                     "(신규 %d · 누적 %s) · 안 셈 미기록 %d/창밖 %d",
+                     res.get("venue"), res.get("seen") or 0,
+                     res.get("counted") or 0,
+                     res.get("new") or 0, res.get("total"),
+                     res.get("undated") or 0, res.get("outside") or 0)
+    except Exception as exc:                                  # noqa: BLE001
+        log.warning("venue universe: 누적 건너뜀: %s", exc)
+
+
 def _compute_kr_prepost() -> dict:
     """KR 장전·장후 시간외(단일가) 급등·급락 TOP30 — 네이버 시간외단일가 실시간.
     정규장 무버 유니버스를 종목별 fetch_kr_quote 로 스캔(over-market OPEN 만 집계).
@@ -599,7 +627,10 @@ def _compute_kr_prepost() -> dict:
                         # 유령 컷. 표시(시간외)와 게이트(정규장) 분리.
                         "reg_vol": q.get("volume"),
                         "mcap": mcaps.get(tk),
-                        "session": _ses}
+                        "session": _ses,
+                        # 랭킹엔 안 쓰고 **하한 누적 판정에만** 쓴다 — 아래에서
+                        # 떼어내므로 보드 payload 계약은 그대로다.
+                        "over_ts": q.get("over_ts") or ""}
         except Exception:
             pass
         return None
@@ -612,6 +643,9 @@ def _compute_kr_prepost() -> dict:
             for rec in pool.map(_one, tks):
                 if rec:
                     rows.append(rec)
+        _observe_venue_universe(rows)
+        for r in rows:                       # 판정에만 쓴 필드 — payload 에서 제외
+            r.pop("over_ts", None)
         cur = _current_kr_session()
         if cur:
             pref = [r for r in rows if r.get("session") == cur]

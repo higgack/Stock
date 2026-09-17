@@ -23,6 +23,11 @@
      "NXT 에 등록안된 기업들도 많다" 고 짚었다. 응답 **필드**로는 못 가르지만
      (④ 실측) KRX 는 체결 창이 애프터마켓뿐이라 **NXT 전용 창**(프리
      08:00–09:00 · 15:40–16:00)의 시간외 체결은 정의상 NXT 다 — 그 하한을 잰다.
+     ⚠️ 이 프로브 한 방은 **그 창에 사람이 맞춰 쳐야** 답한다(4종목 표본).
+     그래서 같은 날 `bot.venue_universe` 를 심어 시간외 보드 스캔(이미 그
+     창에서 2분 주기로 ~200종목을 돈다)이 자동 누적하게 했고, 여기서는 그
+     누적분을 **읽어서** 같이 찍는다 — 지금이 전용 창이 아니어도 하한이
+     보인다.
   ④ **KRX 애프터마켓이 NXT 와 구별되나** — 이게 이번 라운드의 급소다.
      `overMarketPriceInfo` 는 2026-06 에 'KR 시간외 = NXT' 이던 시절 측정한
      것이고, KRX 애프터마켓이 생긴 지금 그 블록이 어느 거래소인지는 **재지
@@ -34,8 +39,12 @@
      말하게 한다(#64·#86). '있음' 이어도 그것만으로 배선하지 않는다 —
      그 키로 목록이 실제로 줄어드는지가 그다음 측정이다.
 
-⚠️ 읽기 전용 — 운영 캐시를 **읽지도 쓰지도** 않는다(진단이 자기가 읽을
-신호를 오염시키면 안 된다, #30·#264·#283·#321). 네이버를 직접 친다.
+⚠️ 운영 캐시에 **쓰지 않는다**(진단이 자기가 읽을 신호를 오염시키면 안 된다,
+#30·#264·#283·#321). 네이버는 직접 친다. ⑤ 는 2026-09-17 부터 시간외 보드
+스캔이 쌓아 둔 하한 기록을 **읽는다** — 읽기는 신호를 오염시키지 않고, 그
+기록이 없으면 이 프로브는 그 창에 사람이 맞춰 쳐야만 답할 수 있다(옛 판이
+그랬다, §Automation-first·#252). 옛 독스트링은 "읽지도 쓰지도 않는다" 였는데
+이제 거짓이므로 같은 커밋에서 고쳤다(#55·#286).
 
 실행:
     cd ~/stock && .venv/bin/python -m bot.scripts.kr_board_probe
@@ -48,7 +57,7 @@ from __future__ import annotations
 import json
 import sys
 
-_PROBE_VER = 3
+_PROBE_VER = 4
 
 _H = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -288,8 +297,12 @@ def nxt_lower_bound(codes_with_over: list, venue: str, branch: str) -> str:
     창**(공지 153) 위에 선다(#165).
     """
     if branch == "closed":
-        return ("⏭ 지금은 체결 창 밖 — 잴 것이 없습니다(NXT 전용 창 "
-                "08:00–09:00 · 15:40–16:00 KST 에 돌리면 확정됩니다).")
+        # ⚠️ 창을 리터럴로 적으면 `kr_session` 표와 갈라진다(#38·#55, 독립 리뷰
+        # 2026-09-17 M1 — 같은 커밋에서 파생 헬퍼를 만들어 놓고 여기만 옛
+        # 리터럴이었다).
+        from bot.kr_session import exclusive_window_label
+        return (f"⏭ 지금은 체결 창 밖 — 잴 것이 없습니다(전용 창 "
+                f"{exclusive_window_label()} 에 돌리면 확정됩니다).")
     if branch == "overlap":
         # ⚠️ 2026-09-17 보드 합침(#378): 옛 문구는 "두 보드가 같은 목록을 낸다"
         # 였는데 보드가 하나라 그 문장이 없는 것을 가리킨다(#55). 남는 사실은
@@ -323,6 +336,13 @@ def _section_nxt_universe() -> None:
             if vol:
                 hit.append(code)
     print("   " + nxt_lower_bound(hit, venue, branch))
+    print("   — 누적(보드 스캔이 자동으로 쌓은 것, 네트워크 콜 0):")
+    try:
+        from bot.venue_universe import format_lines
+        for line in format_lines():
+            print("   " + line)
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"   ❌ 누적 기록을 못 읽었습니다: {type(exc).__name__}: {exc}")
     print("   ⚠️ NXT 거래 종목 **목록**을 주는 원천은 아직 안 쟀습니다 — "
           "이름을 추측해 배선하면 죽은 경로를 배포합니다(#151·#345).")
 

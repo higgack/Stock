@@ -146,6 +146,36 @@ def exclusive_venue(now: datetime | None = None) -> tuple[str, str]:
     return ("", "overlap" if open_ else "closed")
 
 
+def exclusive_spans() -> list:
+    """체결 창이 열린 거래소가 **하나뿐인** 구간 — [(시작분, 끝분, 거래소)].
+
+    `exclusive_venue` 와 **같은 술어**에서 파생한다(#38·#55) — 화면·CLI·진단이
+    "NXT 전용 창 08:00–09:00 · 15:40–16:00" 을 리터럴로 적으면 이 표와 갈라진다.
+    거래소 이름을 열거하지 않으므로 거래소가 늘면 저절로 따라온다(#24).
+
+    ⚠️ 주말엔 `phase` 가 전부 'closed' 라 빈 목록이 된다 — 그래서 **평일 하루**
+    (고정 월요일)를 분 단위로 훑는다. 이 함수가 말하는 것은 '평일의 창' 이다.
+    """
+    ref = datetime(2026, 1, 5, tzinfo=KST)        # 월요일 고정(주말이면 전부 closed)
+    out: list = []
+    for m in range(24 * 60):
+        v, branch = exclusive_venue(ref + timedelta(minutes=m))
+        if branch != "exclusive":
+            continue
+        if out and out[-1][1] == m and out[-1][2] == v:
+            out[-1] = [out[-1][0], m + 1, v]
+        else:
+            out.append([m, m + 1, v])
+    return [(a, b, v) for a, b, v in out]
+
+
+def exclusive_window_label() -> str:
+    """전용 창을 사람이 읽는 문장으로 — 비면 '없음'(#43 침묵 금지)."""
+    parts = [f"{v} {s_ // 60:02d}:{s_ % 60:02d}–{e_ // 60:02d}:{e_ % 60:02d}"
+             for s_, e_, v in exclusive_spans()]
+    return (" · ".join(parts) + " KST") if parts else "없음(평일 전 구간이 겹침)"
+
+
 # ── 합집합(거래소 중립) ─────────────────────────────────────────────
 # 사용자 2026-09-17 "합치기로 하자 … 미국처럼 장후로": KR 시간외 보드를 미국
 # `usprepost` 처럼 **한 장**으로 합쳤다. 근거는 창이다 — KRX 체결 창
