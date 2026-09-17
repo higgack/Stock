@@ -273,6 +273,58 @@ def is_relevant(text: str) -> bool:
     return any(s.parse(text) is not None for s in SOURCES)
 
 
+def matching_keys(text: str) -> tuple[str, ...]:
+    """이 캡션을 받는 소스 키 **전부**(순수) — `is_relevant` 의 상세판.
+
+    ⚠️ 왜 필요한가(2026-09-17): 백필 로그가 `9/402 units are [대만 · 중국
+    · … · 한국 수입(회사별) · …] 데이터` 라고 **레지스트리 전체**를 나열해,
+    그 9건이 **어느 소스**였는지 알 수 없었다. 그래서 "한국 수입 회사별이
+    안 들어온다" 를 물어도 '채널에 그런 글이 없었다' 와 '우리 파서가
+    떨어뜨렸다' 가 갈리지 않는다 — 처방이 정반대다(#82·#143 대조군).
+    숫자만 세는 원장은 다음 라운드를 추측으로 만든다(#290·#93).
+
+    한 캡션이 둘 이상에 걸릴 수 있으므로 **전부** 돌려준다(먼저 걸린
+    하나만 세면 소계 합이 총계와 어긋난다, #45).
+    """
+    return tuple(s.key for s in SOURCES if s.parse(text) is not None)
+
+
+def relevance_breakdown(units) -> list[str]:
+    """유닛(= `.text` 를 가진 메시지들의 묶음)을 **소스별로** 센 사람용 줄.
+
+    ⚠️ 왜 레지스트리에 있나: 호출부(`backfill_badonion`)는 telethon 이
+    없으면 import 조차 안 되므로 거기 두면 **회귀가 통째로 스킵**된다 —
+    판정은 의존성 없는 모듈로 뺀다(#176).
+
+    한 캡션이 둘 이상에 걸릴 수 있어 소계 합은 총계보다 클 수 있다 — 그
+    사실을 줄에 적는다(#45). 0건 소스도 **이름을 대서** 말한다(#54·#82):
+    '이 창의 채널에 그런 글이 없었다' 와 '우리 파서가 떨어뜨렸다' 는
+    처방이 정반대이고, 후자는 `--show-irrelevant` 원문이 답한다(#109).
+    """
+    from collections import Counter
+    brk: Counter = Counter()
+    n_units = 0
+    for u in units:
+        n_units += 1
+        keys: set = set()
+        for m in u:
+            keys |= set(matching_keys(getattr(m, "text", "") or ""))
+        for k in keys:
+            brk[k] += 1
+    by = {s.key: s.label for s in SOURCES}
+    got = [f"{by.get(k, k)} {n}"
+           for k, n in sorted(brk.items(), key=lambda kv: (-kv[1], kv[0]))]
+    out = [f"relevance breakdown: {', '.join(got) if got else '(없음)'}"
+           + (" · 유닛 하나가 여러 소스에 걸리면 중복 계수"
+              if sum(brk.values()) > n_units else "")]
+    zero = [s.label for s in SOURCES if s.key not in brk]
+    if zero:
+        out.append(f"  0건 소스({len(zero)}): {', '.join(zero)}"
+                   " — 이 창의 채널에 해당 글이 없었다는 뜻"
+                   "(파서가 떨어뜨린 것인지는 --show-irrelevant 원문으로)")
+    return out
+
+
 def labels() -> str:
     """로그·문서용 소스 나열. 하드코딩 문자열을 대체해 드리프트를 막는다."""
     return " · ".join(s.label for s in SOURCES)

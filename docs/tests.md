@@ -363,6 +363,31 @@
 가져간 캡션과 `ingest` 가 조용히 `stored=False` 로 끝난 건은 이 플래그에도
 `unstored_check` 에도 안 잡힌다(다음 라운드가 낭비되지 않게 help 에도 적었다).
 
+## 거래량 보드 칸·업종 + FRED 선택기 + 백필 소스별 계수 (2026-09-17, #374)
+
+| 계약 | 상태 | 테스트 |
+|---|---|---|
+| 원천이 고가·저가를 안 주면 **칸 자체가 사라진다**(각주 아님, #25·#260) | ✅ 자동 | `tests/test_regression.py::TestKrVolumeIndustryAndHl20260917::test_high_low_columns_vanish_when_the_source_does_not_give_them` |
+| '원천이 안 준다' 와 '내 파서가 이름을 모른다' 를 가른다(#372) · 52주 류는 ❌ 아님(#34·#260) | ✅ 자동 | `…::test_hl_verdict_splits_source_gap_from_parser_gap` · `…::test_hl_key_candidates_marks_the_names_we_do_not_read` |
+| 업종은 형제 보드와 **같은 맵**(#38) + 분포 줄 + 빈 사유는 보이는 줄(#43) | ✅ 자동 | `…::test_industry_column_and_distribution_are_wired` · `…::test_empty_industry_says_why_on_a_visible_line` |
+| 부제가 업종 **출처**를 말한다(규칙 10b) | ✅ 자동 | `…::test_subtitle_names_the_industry_source` |
+| `--why` 가 배너(코드 지문)·③·④ 를 **찍는다**(#20·#364) · 행 0 이면 rc=1(#54) | ✅ 자동 | `…::test_why_prints_the_verdicts_and_the_fingerprint` · `…::test_why_returns_one_when_there_are_no_rows` |
+| 진단이 **새 학습 냉각을 심지 않는다** — 내용·mtime 둘 다(#264·#283) + `why()` 가 두르는지(#20) | ✅ 자동 | `…::test_why_does_not_plant_a_new_learn_cooldown` |
+| 각주에 마크다운 볼드 금지 — 화면은 escape 한다(#298) | ✅ 자동 | `…::test_notes_carry_no_markdown_bold` |
+| YoY 카드 4종은 **화면과 같은 창**(730일)으로 재어진다(#35·#176) | ✅ 자동 | `…::TestFredIndicatorSelector20260917::test_yoy_cards_take_the_yoy_path` · `…::test_audit_asks_the_same_selector` |
+| `_fetch_all_fred` 배선은 결과로 본다(#20·#141) | ✅ 자동 | `…::test_fetch_all_fred_uses_the_shared_selector` |
+| '관측 없음' 갈래 셋(우리 실패/원천 창에 없음/못 물음)을 `observation_end` 로 가른다(#82·#86·#260) | ✅ 자동 | `…::test_empty_observation_splits_source_gap_from_ours` · `…::test_audit_wires_empty_diag_into_the_buckets` |
+| 백필이 **소스별 계수 + 0건 소스 이름**을 찍는다(#82·#54·#290) | ✅ 자동 | `trade/tests/test_badonion_sources.py::TestRelevanceBreakdown20260917`(4건) |
+
+⚠️ 못 보는 축(#274): (a) `hl_key_candidates` 는 **이름에 high/low 가 든 키**만 본다 —
+원천이 `dayRange` 처럼 다른 이름으로 주면 '원천이 안 준다' 로 찍힌다(그 판정을
+`--why` 가 사람에게 보여주는 이유다). (b) 업종 백필의 **실제 커버리지**(몇 종목에
+붙나)는 샌드박스에서 못 잰다 — 네이버가 막힌다. `--why ④` 가 VM 에서 답한다.
+(c) `empty_diag` 의 `src_lag` 갈래가 **계열 중단인지 그냥 공표 지연인지**는 안
+가른다 — 둘 다 "우리가 고칠 게 없다" 까지만 참이고, 카탈로그를 바꾸는 것은
+그 사실을 재고 나서 할 일이다(#165). (d) 백필 계수는 `--show-irrelevant` 의
+드랍 목록과 **다른 모집단**이다(관련 유닛만 센다).
+
 ## 다음 우선순위 (갭 메우기 후보)
 1. `_hard_guard_warn` — 감자/분할 키워드 존재 시 실제로 경고 텍스트가 삽입되는지 직접 단위테스트.
 2. `_has_pm_override_trigger`/`_check_pm_override_required` — RSI 경계값(74.9/75.0/25.0/25.1), catalyst

@@ -12,15 +12,22 @@ zod 검증이 허용값 목록을 적어 돌려준다(테마 보드가 같은 �
 지우고 **다시 배운다**(원천이 enum 을 바꾸면 따라간다, #24 — 목록을 우리가
 적으면 새 이름을 못 잡는다).
 
-고가·저가는 목록 응답이 줄 때만 싣는다. 안 주면 지어내지 않고 **비운 사유를
-말한다**(#32·#43 — 빈칸이 낫고, 왜 비었는지도 말해야 한다).
+고가·저가는 목록 응답이 줄 때만 싣는다. 안 주면 지어내지 않는다(#32).
+⚠️ 사용자 2026-09-17: **못 가져오면 칸 자체를 뺀다** — 옛 판은 빈 두 칸을
+그려 놓고 각주로 사유를 적었는데(#43), 영원히 안 오는 칸을 매번 설명하는
+것은 화면만 시끄럽게 한다(#25·#260 늘 뜨는 배지는 아무것도 안 재는 것과
+같다). 대신 **원천이 정말 안 주는지**를 재서 로그·`--why` 가 말한다 —
+`hl_key_candidates` 가 행의 키 중 high/low 를 담은 이름을 전부 모으므로,
+'원천이 안 준다' 와 '우리 파서가 이름을 모른다' 가 갈린다(#372 그대로).
 
 ⚠️ 사유는 **모아서** 말한다 — 한 변수에 `=` 로 여러 번 쓰면 나중 것이 앞의
 것을 지운다(#207). 그리고 **부분 수신은 캐시에 굽지 않는다**(#280).
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 
 from bot import naver_diag as _nd
 from bot import singleflight as _sf
@@ -109,6 +116,25 @@ def is_volume_desc(rows: list, min_rows: int = 10) -> bool:
     if len(vols) < min_rows or len(set(vols)) < max(3, len(vols) // 2):
         return False
     return all(a >= b for a, b in zip(vols, vols[1:]))
+
+
+def hl_key_candidates(row: dict) -> tuple:
+    """행의 키 중 고가·저가로 **보이는 이름 전부**(순수) — 우리가 읽는 것 포함.
+
+    ⚠️ 이건 값이 아니라 **측정**이다. `_HIGH_KEYS`/`_LOW_KEYS` 는 알려진 표기
+    목록이라, 원천이 다른 이름을 쓰면 우리는 '원천이 안 준다' 고 오판한다
+    (#372 — 진단이 ❌ 를 찍으면 '원천이 안 준 것'인지 '내 파서가 못 읽은 것'
+    인지부터 가를 것). 그래서 이름 후보를 **넓게** 모아 두고 판정은 사람이
+    한다 — 여기서 자동으로 값을 집으면 `high52week`(52주 고가)를 오늘 고가로
+    읽어 화면이 거짓말한다(#34 같은 이름 다른 시리즈).
+    """
+    known = set(_HIGH_KEYS) | set(_LOW_KEYS)
+    out = []
+    for k in (row or {}):
+        lk = str(k).lower()
+        if "high" in lk or "low" in lk:
+            out.append(f"{k}{'' if k in known else ' (미읽음)'}")
+    return tuple(sorted(out))
 
 
 def _num(v):
@@ -267,11 +293,18 @@ def _finish(out: dict, raw: list, notes: list, partial: bool) -> dict:
     out["scanned"] = len(raw)
     out["excluded"] = dropped
     out["has_hl"] = any(r.get("high") is not None for r in out["rows"])
+    # 원천 행이 고가·저가로 보이는 키를 갖고 있나 — 화면엔 안 싣고 로그·
+    # `--why` 가 말한다(위 독스트링). 첫 행 하나면 충분하다(같은 스키마).
+    out["hl_keys"] = list(hl_key_candidates(kept[0] if kept else {}))
     if dropped:
         # 총계와 소계가 다른 모집단을 세면 사용자가 눈으로 잡는다(#45).
         notes.append(f"ETF·ETN·스팩 {dropped}종을 뺀 {len(out['rows'])}종목입니다")
     if out["rows"] and not out["has_hl"]:
-        notes.append("원천 목록이 고가·저가를 주지 않아 두 칸은 비어 있습니다")
+        # 화면은 칸을 아예 안 그리므로 각주를 달지 않는다(사용자 2026-09-17).
+        # 대신 **로그로 알린다** — 조용한 폴백은 '가끔 이상하다'로만 보인다(#42a).
+        log.info("kr_volume: 원천 목록에 고가·저가 없음 — 두 칸을 뺐습니다"
+                 "(행의 high/low 후보 키: %s)",
+                 ", ".join(out["hl_keys"]) or "없음")
     if partial:
         notes.append("원천이 요청한 수를 다 주지 못해 일부만 실렸습니다")
     out["partial"] = partial
@@ -296,7 +329,7 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
         return st
 
     out: dict = {"rows": [], "ts": _now_label(), "sort": "", "reason": "",
-                 "has_hl": False, "partial": False, "limit": limit,
+                 "has_hl": False, "hl_keys": [], "partial": False, "limit": limit,
                  "scanned": 0, "excluded": 0, "stale": False,
                  "source": "네이버 증권 거래량 상위(전종목·한글명)"}
     c = _cached(_CACHE, ttl=_TTL)
@@ -309,7 +342,7 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
         if probe_rows:
             # 미끼 응답이 정상 목록이면 그걸 쓴다 — 이미 받은 것을 버리고
             # 빈 화면을 내면 안 된다(리뷰 H3·#148). 정렬 기준은 밝힌다(#43).
-            notes.append("정렬 키를 못 배워 **원천 기본 정렬**로 보여 줍니다")
+            notes.append("정렬 키를 못 배워 원천 기본 정렬로 보여 줍니다")
             _finish(out, probe_rows, notes, partial=True)
             return out                     # 부분/기본정렬은 캐시하지 않는다(#280)
         return _stale(notes) or _finish(out, [], notes, partial=False)
@@ -345,3 +378,149 @@ def fetch_kr_volume_top(limit: int = 50) -> dict:
     if out["rows"] and not partial:
         _cache_write(_CACHE, out)          # 부분은 굽지 않는다(#280)
     return out
+
+
+def why_banner() -> str:
+    """이 진단을 만든 **코드의 지문**(#364·#365).
+
+    ⚠️ 왜 필요한가: 배포가 VM 에 닿기 전에 돌린 출력과 닿은 뒤의 출력이
+    **글자만 봐선 구별되지 않는다** — 2026-09-13 에 그것 때문에 고친 것이
+    안 먹은 줄 알고 한 라운드를 썼다(#364). 여기선 특히 그렇다: 고가·저가
+    칸을 켜고 끄는 판정이 코드에 있으므로, 옛 코드가 찍은 '두 칸 비었음'을
+    새 판정으로 읽으면 엉뚱한 데를 고친다.
+
+    ⚠️ 지문은 **이 모듈의 전이 폐포**다 — `audit_fingerprint` 를 그대로
+    쓴다(#38 형제 배너와 같은 함수). 한 파일만 해싱하면 판정의 절반이
+    사는 `naver_diag`·`naver_sector_client` 를 안 덮는 과대 주장이 된다
+    (#364d).
+    """
+    try:
+        from bot.audit_sweep import audit_fingerprint
+        sig = audit_fingerprint(("bot.kr_volume_client",))
+    except Exception as exc:                                   # noqa: BLE001
+        # 못 구하면 **모른다고 말한다** — 조용히 비우면 낡은 체크아웃이
+        # 신선한 것과 구별되지 않는다(#54·#43).
+        sig = f"지문불가({type(exc).__name__})"
+    return (f"# kr_volume --why · 코드 지문 {sig} · "
+            "화면이 쓰는 그 경로(fetch_kr_volume_top)를 태웁니다(#35)")
+
+
+@contextlib.contextmanager
+def _keep_learn_cooldown():
+    """진단이 **새 냉각을 심지 않게** 학습 실패 도장을 되돌린다.
+
+    ⚠️ `--why` 는 화면 경로를 태우므로(#35) 정렬 키를 못 배운 순간에 돌리면
+    `_LEARN_FAIL` 도장이 찍혀 **다음 10분의 실수집을 막는다** — 진단이 자기가
+    읽을 신호를 오염시키는 그 자리다(#264·#283·#30). 파일 내용과 **mtime
+    둘 다** 되돌린다(TTL 이 mtime 이라 내용만 되돌리면 냉각이 그대로 산다).
+    """
+    from bot.finviz_client import _CACHE_DIR
+    p = _CACHE_DIR / _LEARN_FAIL
+    try:
+        before = (p.read_bytes(), p.stat().st_mtime) if p.exists() else None
+    except OSError:
+        before = None
+    try:
+        yield
+    finally:
+        try:
+            if before is None:
+                p.unlink(missing_ok=True)
+            else:
+                p.write_bytes(before[0])
+                os.utime(p, (before[1], before[1]))
+        except OSError:
+            pass
+
+
+def hl_verdict(rows: list, hl_keys: list) -> str:
+    """고가·저가 갈래(순수) — '원천이 안 준다' 와 '우리가 못 읽는다' 를 가른다.
+
+    #372 그대로: 진단이 ❌ 를 찍으면 원천을 의심하기 전에 **내 파서가 못 읽은
+    것인지**부터 갈라야 한다. 대조할 행이 없으면 ✅ 도 ❌ 도 아니다(#54).
+    """
+    if not rows:
+        return "❓ 판정 불가 — 행이 없어 원천 스키마를 못 봤습니다"
+    unread = [k for k in hl_keys if k.endswith("(미읽음)")]
+    if any(r.get("high") is not None for r in rows):
+        return f"✅ 원천이 줍니다 — 두 칸을 그립니다(키: {', '.join(hl_keys)})"
+    if unread:
+        # ⚠️ ❌ 로 찍지 않는다 — `high52week`(52주 고가)처럼 **오늘 고가가
+        # 아닌** 이름이 걸리면 영원히 안 꺼지는 경보가 된다(#25·#260·#34).
+        return ("⚠️ 원천 행에 high/low 이름이 있는데 우리가 안 읽습니다: "
+                + ", ".join(unread)
+                + " — 그중 **오늘** 고가·저가인 것이 있으면 _HIGH_KEYS/"
+                  "_LOW_KEYS 에 더할 것(52주 류는 아니다, #34)")
+    return "✅ 원천이 안 줍니다(high/low 이름 0개) — 두 칸을 뺐습니다"
+
+
+def why() -> int:
+    """`--why` — 거래량 보드가 지금 무엇을 들고 있나(0=행 있음, 1=없음).
+
+    갈래를 이름으로 말한다(#82): 정렬 키를 배웠나 / 원천이 행을 주나 /
+    고가·저가를 주나 / 업종이 붙나. 반복 확인은 명령을 건네지 말고 제품에
+    심는다(§Automation-first·#252).
+    """
+    from bot.finviz_client import _cached, cache_age_sec
+    print(why_banner())
+
+    print("① 정렬 키")
+    c = _cached(_SORT_CACHE, ttl=_SORT_TTL)
+    if isinstance(c, dict) and c.get("sort"):
+        age = cache_age_sec(_SORT_CACHE)
+        print(f"   ✅ 배운 키 {c['sort']} · 허용값 {len(c.get('allowed') or [])}종"
+              + (f" · {int(age) // 3600}시간 전 학습" if age is not None else ""))
+    else:
+        print("   ❓ 아직 못 배웠습니다(아래 수집이 학습을 시도합니다)")
+    f = _cached(_LEARN_FAIL, ttl=_LEARN_COOL)
+    if isinstance(f, dict) and f.get("why"):
+        print(f"   ⏸ 학습 냉각 중 — {f['why']}")
+
+    print("② 수집(화면 경로)")
+    with _keep_learn_cooldown():
+        d = fetch_kr_volume_top(limit=50)
+    rows = d.get("rows") or []
+    print(f"   행 {len(rows)}개 · 원시 {d.get('scanned', 0)}개 · "
+          f"제외(ETF·ETN·스팩) {d.get('excluded', 0)}개 · "
+          f"부분 {'예' if d.get('partial') else '아니오'} · "
+          f"저장분 {'예' if d.get('stale') else '아니오'} · "
+          f"정렬 {d.get('sort') or '(없음)'} · 기준 {d.get('ts') or '(없음)'}")
+    if d.get("reason"):
+        print(f"   사유: {d['reason']}")
+
+    print("③ 고가·저가")
+    print("   " + hl_verdict(rows, list(d.get("hl_keys") or [])))
+
+    print("④ 업종(신고저·급등락 보드와 같은 맵)")
+    try:
+        from bot.naver_sector_client import (apply_kr_industry,
+                                             kr_industry_fail_reason)
+        probe = [dict(r) for r in rows]          # 원본을 손대지 않는다(#326)
+        apply_kr_industry(probe)
+        got = sum(1 for r in probe if r.get("ind"))
+        if not rows:
+            print("   ❓ 판정 불가 — 행이 없습니다")
+        elif got:
+            print(f"   ✅ {got}/{len(rows)}종목에 업종이 붙습니다")
+        else:
+            print(f"   ❌ 0/{len(rows)} — {kr_industry_fail_reason() or '사유 미기록'}")
+    except Exception as exc:                                   # noqa: BLE001
+        print(f"   ❌ 업종 맵 조회 실패 — {type(exc).__name__}: {exc}")
+
+    return 0 if rows else 1
+
+
+if __name__ == "__main__":                       # pragma: no cover
+    # ⚠️ 엔트리포인트는 **맨 끝**이다 — 파일 중간에 두면 그 아래 정의가
+    # 영영 안 닿는다(#276).
+    import argparse
+    import sys
+
+    _ap = argparse.ArgumentParser(prog="python -m bot.kr_volume_client")
+    _ap.add_argument("--why", action="store_true",
+                     help="거래량 보드 상태를 갈래로 진단")
+    _a = _ap.parse_args()
+    if not _a.why:
+        _ap.print_help()
+        sys.exit(2)
+    sys.exit(why())

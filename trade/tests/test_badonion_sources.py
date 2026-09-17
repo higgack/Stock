@@ -534,5 +534,73 @@ class TestSiblingAsofAndFace20260820(unittest.TestCase):
                                  "다르다 — 사용자가 다른 페이지로 착각한다")
 
 
+class TestRelevanceBreakdown20260917(unittest.TestCase):
+    """백필 로그가 "N/M units are [레지스트리 전체]" 만 적어, 그 N 건이
+    **어느 소스**였는지 말하지 않았다(2026-09-17 사용자 실행 9/402).
+
+    그러면 "한국 수입 회사별이 안 들어온다" 를 물어도 '채널에 그런 글이
+    없었다' 와 '우리 파서가 떨어뜨렸다' 가 안 갈린다 — 처방이 정반대다
+    (#82·#143). 숫자만 세는 원장은 다음 라운드를 추측으로 만든다(#290).
+    """
+
+    class _M:
+        def __init__(self, text):
+            self.text = text
+
+    _KR_EXPORT = ("8월 수출 한국\n▶️ 삼성전자 — 반도체\n"
+                  "26년08월: $158.5M (+105.3% YoY) (+11.8% MoM)")
+
+    def test_breakdown_names_the_source_and_the_zero_ones(self):
+        from trade import badonion_sources as srcs
+        out = srcs.relevance_breakdown([[self._M(self._KR_EXPORT)]])
+        head = out[0]
+        self.assertIn("한국 수출(종목별) 1", head)
+        # 0건 소스도 **이름을 댄다** — 침묵하면 '검사가 돌았나' 를 모른다(#54).
+        zero = " ".join(out[1:])
+        self.assertIn("한국 수입(회사별)", zero)
+        self.assertNotIn("한국 수출(종목별)", zero)
+        # 전 소스가 소계 **또는** 0건 목록 중 하나에 정확히 한 번 나온다(#45).
+        # ⚠️ 부분문자열로 세면 '대만' 이 '대만 수출(종목별)' 에 걸려 3 이 된다
+        # (#75) — 라벨을 **토큰으로 갈라** 집합으로 잰다.
+        got_labels = {t.rsplit(" ", 1)[0]
+                      for t in head.split(": ", 1)[1].split(" · ")[0].split(", ")}
+        zero_labels = set(out[1].split(": ", 1)[1].split(" — ")[0].split(", "))
+        all_labels = {s.label for s in srcs.SOURCES}
+        self.assertEqual(all_labels, got_labels | zero_labels)
+        self.assertEqual(set(), got_labels & zero_labels, "같은 소스가 양쪽에")
+
+    def test_empty_input_is_said_not_silent(self):
+        """대조 0건은 빈 출력이 아니다(#274 빈 출력이 정답인 도구는 없다)."""
+        from trade import badonion_sources as srcs
+        out = srcs.relevance_breakdown([])
+        self.assertIn("(없음)", out[0])
+        self.assertTrue(any("0건 소스" in l for l in out))
+
+    def test_matching_keys_returns_every_source_that_takes_it(self):
+        """한 캡션이 둘 이상에 걸릴 수 있으므로 **전부** 돌려준다 — 먼저
+        걸린 하나만 세면 소계 합이 총계와 어긋난다(#45)."""
+        from trade import badonion_sources as srcs
+        got = srcs.matching_keys(self._KR_EXPORT)
+        self.assertTrue(got, "관련 캡션인데 키가 0개다")
+        self.assertEqual(bool(got), srcs.is_relevant(self._KR_EXPORT))
+        self.assertEqual((), srcs.matching_keys("오늘 점심 뭐 먹지"))
+        self.assertFalse(srcs.is_relevant("오늘 점심 뭐 먹지"))
+
+    def test_backfill_logs_the_breakdown(self):
+        """배선은 존재가 아니라 **호출**이다(#20·#120). telethon 이 없어
+        import 를 못 하므로 AST 로 본다 — 그게 이 검사가 못 보는 축이다
+        (호출은 하되 로그를 안 찍는 변형은 못 잡는다, #274)."""
+        import ast
+        import pathlib
+        tree = ast.parse(pathlib.Path(
+            "trade/scripts/backfill_badonion.py").read_text(encoding="utf-8"))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "relevance_breakdown"]
+        self.assertTrue(calls, "백필이 소스별 계수를 안 부른다")
+
+
+
 if __name__ == "__main__":
     unittest.main()

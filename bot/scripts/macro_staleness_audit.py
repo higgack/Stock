@@ -151,6 +151,38 @@ from bot.macro_cadence import stale_verdict  # noqa: E402,F401
 
 
 
+def empty_diag(src: str, sid: str) -> tuple[str, str]:
+    """관측이 **하나도 없을 때**의 갈래와 문구 — (bucket, 화면 줄).
+
+    ⚠️ 2026-09-17 일일 감사가 `❌ PPI 원자재 (YoY) fred:PPIACO 관측 없음 —
+    원천이 비었다` 를 냈는데, 그 한 줄로는 **처방이 정해지지 않는다**(#82):
+      (a) 우리 조회가 실패했다        → 다시 받는다 / 코드를 고친다  ❌
+      (b) 원천에 그 창의 관측이 없다  → 우리가 고칠 게 없다          ⚠️
+          (계열 중단·개편이면 카탈로그를 바꿔야 하고, 그것도 사실을
+           **재고 나서** 할 일이다)
+      (c) 못 물어봤다(키 없음·메타 실패) → 판정 불가                 ⚪
+    원천이 **스스로 보고하는** `observation_end` 가 (a)와 (b)를 가른다
+    (#86 상태는 아는 쪽에 · #318·#366 이 같은 축을 이미 쓴다).
+    고칠 수 없는 ❌ 를 매일 내면 **진짜 ❌ 를 가린다**(#260).
+
+    ⚠️ 잰 것만 적는다(#165) — 메타를 못 받으면 '원천이 비었다' 고 단정하지
+    않고 못 물어봤다고 말한다. ECOS 는 이 메타 축이 다르므로 여기서 갈래를
+    주장하지 않는다(#54 판정 불가가 틀린 판정보다 낫다).
+    """
+    if src == "ecos":
+        return "late", "❌ 관측 없음 — ECOS 응답에 행이 없다"
+    try:
+        from bot.fred_client import fetch_series_meta
+        meta = fetch_series_meta(sid) or {}
+    except Exception as exc:                                   # noqa: BLE001
+        return "unknown", f"⚪ 판정 불가 — 원천 메타 조회 실패({exc})"
+    oe = str(meta.get("observation_end") or "")
+    if not oe:
+        return "unknown", "⚪ 판정 불가 — 원천이 observation_end 를 안 준다"
+    return "src_lag", (f"⚠️ 원천에 그 창의 관측이 없다"
+                       f"(observation_end={oe}) — 우리가 고칠 게 없다")
+
+
 def main() -> int:
     from bot.macro_cadence import (CADENCE, GRACE_DAYS, _CADENCE_VER, judge)
     from bot.env_keys import env_source
@@ -191,7 +223,10 @@ def main() -> int:
                 pts = ms._ecos_series(sid)
                 raw = pts[-1][0] if pts else ""
             else:
-                spot = mo._fred_fetch_series(sid, 400)
+                # ⚠️ 화면이 쓰는 그 선택기로 묻는다 — 옛 판은 전 행을
+                # `_fred_fetch_series(sid, 400)` 로 물어 **YoY 카드**(730일
+                # 창)를 다른 경로로 쟀다(#35·#169).
+                spot = mo.fred_indicator_fetch(sid, 400)
                 raw = (spot or {}).get("time", "")
                 if (spot or {}).get("src") == "UST":
                     key += " ·UST"          # 재무부로 하루 당겨진 행
@@ -205,9 +240,18 @@ def main() -> int:
                 _p(f"  {label:<18} {key:<28} ⚪ 판정 불가 — API 키 없음")
                 unknown.append(f"{label}(키 없음)")
             else:
-                _p(f"  {label:<18} {key:<28} ❌ 관측 없음 — 원천이 비었다"
-                   f"(키는 {_keysrc.get(src)})")
-                late.append(f"{label}(관측 없음)")
+                # '관측 없음' 은 갈래가 셋인데 처방이 다 다르다(#82):
+                #   우리 조회 실패 / 원천이 그 창에 관측이 없음(계열 중단·
+                #   개편) / 못 물어봄. 원천이 **스스로 보고하는**
+                #   `observation_end` 가 그걸 가른다(#86·#318·#366) —
+                #   고칠 수 없는 것을 ❌ 로 매일 내면 진짜 ❌ 를 가린다(#260).
+                # ⚠️ 원천 메타는 **한 번만** 묻고 판정·문구가 나눠 쓴다
+                # (두 번 물으면 그 사이 갱신된 값의 나이를 옛 판정에
+                # 붙인다, #160).
+                _b, _txt = empty_diag(src, sid)
+                _p(f"  {label:<18} {key:<28} {_txt}")
+                {"src_lag": src_lag, "unknown": unknown}.get(
+                    _b, late).append(f"{label}(관측 없음)")
             continue
         j = judge(sid, raw, today)
         if j is None:

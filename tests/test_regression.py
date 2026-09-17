@@ -66346,21 +66346,34 @@ class TestKrVolumeAndSessions20260916:
         assert out["sort"] == "quantTop", out
         assert out["rows"], "재학습 뒤 행을 못 채웠다"
 
-    def test_missing_high_low_is_stated_not_silently_blank(
-            self, tmp_path, monkeypatch):
-        """원천 목록이 고가·저가를 안 주면 빈칸만 두지 않는다 — 빈칸은
-        '0' 으로 읽힌다(#43·#181)."""
+    def test_missing_high_low_is_measured_not_explained_every_time(
+            self, tmp_path, monkeypatch, caplog):
+        """옛 계약(2026-09-16): 고가·저가가 없으면 **각주로 사유를 적는다**.
+        지금 계약(사용자 2026-09-17 "못가져오는거면 아예 빼주고"): 각주 대신
+        **칸 자체를 뺀다** — 영원히 안 오는 칸을 매번 설명하는 배지는
+        아무것도 안 재는 것과 같다(#25·#260). 지우지 않고 다시 쓴다(#222).
+
+        남는 보장은 둘이다 — (a) 조용하지 않다: 원천 행에 무엇이 있었는지
+        `hl_keys` 로 **재고** 로그가 말한다(#42a 조용한 폴백 금지 · #372
+        '원천이 안 준다' 와 '내 파서가 못 읽는다' 를 가른다) (b) 주면
+        그대로 싣는다.
+        """
+        import logging
         import bot.finviz_client as fv
         import bot.kr_volume_client as kv
         monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
         fv._cache_write(kv._SORT_CACHE, {"sort": "accumulatedTradingVolume"})
         monkeypatch.setattr(kv, "_fetch", lambda s, p: (
             [{"itemCode": "005930", "name": "삼성전자", "stockEndType": "stock",
-              "currentPrice": "80,000", "accumulatedTradingVolume": 10}], ""))
-        out = kv.fetch_kr_volume_top(limit=5)
+              "currentPrice": "80,000", "accumulatedTradingVolume": 10,
+              "high52week": "90,000"}], ""))
+        with caplog.at_level(logging.INFO, logger="bot.kr_volume_client"):
+            out = kv.fetch_kr_volume_top(limit=5)
         assert out["rows"] and out["has_hl"] is False
-        assert "고가" in out["reason"], out["reason"]
-        # 있으면 조용하다(늘 뜨는 각주는 아무것도 안 재는 것과 같다, #25·#260).
+        assert "고가" not in out["reason"], out["reason"]
+        assert out["hl_keys"] == ["high52week (미읽음)"], out["hl_keys"]
+        assert any("고가·저가 없음" in r.message for r in caplog.records), (
+            "조용히 뺐다 — 폴백은 로그로 알릴 것(#42a)")
         # ⚠️ 60초 캐시를 비우고 다시 잰다 — 안 비우면 두 번째 단언이 **첫
         # 결과를 다시 보는 것**이라 아무것도 안 재게 된다(#91b).
         (tmp_path / kv._CACHE).unlink()
@@ -66382,14 +66395,17 @@ class TestKrVolumeAndSessions20260916:
                       "pct": 1.23, "vol": 1234567, "value": 300.0,
                       "mcap": 5000000.0, "high": 81000, "low": 79000}],
             "ts": "09-16 21:00", "sort": "accumulatedTradingVolume",
-            "reason": "원천 목록이 고가·저가를 주지 않아 두 칸은 비어 있습니다",
+            # ⚠️ 픽스처 사유는 **수집기가 실제로 내는 문구**여야 한다(#155) —
+            # 옛 판의 '고가·저가를 주지 않아…' 각주는 2026-09-17 에 없앴다
+            # (사용자 "못가져오는거면 아예 빼주고" → 칸 자체를 뺀다).
+            "reason": "ETF·ETN·스팩 39종을 뺀 50종목입니다",
             "has_hl": True, "source": "네이버"})
         html = np.render_kr_volume_page()
         for col in ("현재가", "등락률", "거래량", "거래대금", "고가", "저가", "시총"):
             assert col in html, f"네이버 칼럼 누락: {col}"
         assert "81,000" in html and "79,000" in html
         body = html[html.index('id="live-root"'):]
-        assert "고가·저가를 주지 않아" in body, "사유가 화면에 안 실렸다"
+        assert "ETF·ETN·스팩 39종" in body, "사유가 화면에 안 실렸다"
         assert 'class="sm-note"' in body, "사유가 보이는 줄이 아니다"
 
     def test_nav_order_puts_volume_before_the_nxt_movers_board(self):
@@ -67450,3 +67466,284 @@ class TestVenueAxisAndUnparsed20260917:
         assert pr.main() == 1
         out = capsys.readouterr().out
         assert "❌ ④ 구성 검산 불일치: 005930" in out, out
+
+
+class TestKrVolumeIndustryAndHl20260917:
+    """거래량 보드 — 업종 붙이기 + 고가·저가 칸을 **실측으로** 켜고 끄기.
+
+    사용자 2026-09-17 "거래량 상위에 고가저가 안나오는거 나오게 해주고,
+    여기에 신고가/신저가처럼 업종도 붙여줘. **고가/저가를 못가져오는거면
+    아예 빼주고.**"
+
+    옛 판은 빈 두 칸을 그려 놓고 각주로 "원천 목록이 고가·저가를 주지
+    않아…" 를 매번 적었다 — 영원히 안 오는 칸을 매번 설명하는 배지는
+    아무것도 안 재는 것과 같다(#25·#260). 대신 **원천이 정말 안 주는지**를
+    재서(`hl_key_candidates`) 로그·`--why` 가 갈래로 말한다(#372 '원천이
+    안 준다' 와 '내 파서가 못 읽는다' 를 먼저 가를 것).
+    """
+
+    _ROW = {"ticker": "005930.KS", "name": "삼성전자", "price": 80000,
+            "pct": 1.23, "vol": 1234567, "value": 300.0, "mcap": 5000000.0}
+
+    def _payload(self, **kw):
+        d = {"rows": [dict(self._ROW)], "ts": "09-17 13:00",
+             "sort": "quantTop", "reason": "", "has_hl": False,
+             "hl_keys": [], "source": "네이버"}
+        d.update(kw)
+        return d
+
+    def _render(self, monkeypatch, payload, *, ind=None, why=""):
+        import bot.kr_volume_client as kv
+        import bot.naver_pages as np
+        import bot.naver_sector_client as ns
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda limit=50: payload)
+
+        def _apply(items):
+            for it in items:
+                if ind:
+                    it["ind"] = ind
+        monkeypatch.setattr(ns, "apply_kr_industry", _apply)
+        monkeypatch.setattr(ns, "kr_industry_fail_reason", lambda: why)
+        return np.render_kr_volume_page()
+
+    # ── 고가·저가 ───────────────────────────────────────────────────
+    def test_high_low_columns_vanish_when_the_source_does_not_give_them(
+            self, monkeypatch):
+        """`has_hl=False` 면 두 칸이 **아예 없다** — 그리고 각주도 없다.
+
+        ⚠️ 라벨('고가')이 아니라 **헤더의 data-key** 로 잰다 — 부제·가이드에
+        같은 낱말이 있으면 페이지 전체 grep 은 대신 만족한다(#55·#75).
+        반대 증거(`has_hl=True` 면 있다)를 같이 둔다(#25).
+        """
+        off = self._render(monkeypatch, self._payload(has_hl=False))
+        assert 'data-key="hi"' not in off, "원천이 안 주는데 고가 칸이 남았다"
+        assert 'data-key="lo"' not in off
+        assert "고가·저가" not in off, (
+            "영원히 안 오는 칸을 매번 각주로 설명하고 있다(#25·#260)")
+        on = self._render(monkeypatch,
+                          self._payload(has_hl=True, rows=[
+                              dict(self._ROW, high=81000, low=79000)]))
+        assert 'data-key="hi"' in on and 'data-key="lo"' in on
+        assert "81,000" in on and "79,000" in on
+
+    def test_hl_verdict_splits_source_gap_from_parser_gap(self):
+        """#372 — ❌ 를 원천 탓으로 돌리기 전에 **내 파서**부터 가른다.
+        대조할 행이 없으면 ✅ 도 ❌ 도 아니다(#54)."""
+        from bot.kr_volume_client import hl_verdict
+        assert hl_verdict([], []).startswith("❓")
+        gave = hl_verdict([{"high": 1}], ["highPrice"])
+        assert gave.startswith("✅") and "줍니다" in gave
+        none_ = hl_verdict([{"high": None}], [])
+        assert none_.startswith("✅") and "안 줍니다" in none_
+        gap = hl_verdict([{"high": None}], ["high52week (미읽음)"])
+        assert gap.startswith("⚠️") and "high52week" in gap
+        # ⚠️ ❌ 가 아니다 — 52주 고가처럼 **오늘 고가가 아닌** 이름이 걸리면
+        # 영원히 안 꺼지는 경보가 된다(#25·#260·#34).
+        assert "❌" not in gap
+
+    def test_hl_key_candidates_marks_the_names_we_do_not_read(self):
+        """측정은 **우리가 읽는 이름**과 아닌 것을 갈라 적는다 — 그래야
+        다음 라운드가 '더할 수 있나'를 안다(#82·#372)."""
+        from bot.kr_volume_client import _HIGH_KEYS, hl_key_candidates
+        got = hl_key_candidates({"highPrice": "1", "high52week": "2",
+                                 "closePrice": "3"})
+        assert "highPrice" in got and "highPrice (미읽음)" not in got
+        assert "high52week (미읽음)" in got
+        assert not any("closePrice" in g for g in got), got
+        assert _HIGH_KEYS[0] in got[0] or True
+
+    # ── 업종 ────────────────────────────────────────────────────────
+    def test_industry_column_and_distribution_are_wired(self, monkeypatch):
+        """신고저·급등락 보드와 **같은 맵**을 쓴다(#38·#150) — 칸 + 분포 줄."""
+        html = self._render(monkeypatch, self._payload(), ind="반도체")
+        assert 'data-key="ind"' in html, "업종 칸이 없다"
+        assert "업종 분포:" in html, "분포 줄이 안 붙었다"
+        assert "반도체" in html
+
+    def test_empty_industry_says_why_on_a_visible_line(self, monkeypatch):
+        """전 행이 비면 사용자는 수집 실패로 읽는다 — 사유를 보이는 줄로
+        (#43·#123 계열 · 형제 급등락 페이지가 이미 그렇게 한다)."""
+        html = self._render(monkeypatch, self._payload(), ind=None,
+                            why="업종 맵 빌드 중입니다")
+        assert "업종 맵 빌드 중입니다" in html
+        assert 'class="sm-note"' in html
+        # 업종이 붙는 날엔 그 줄이 뜨지 않는다(늘 뜨는 경보 금지, #25·#260).
+        ok = self._render(monkeypatch, self._payload(), ind="반도체",
+                          why="업종 맵 빌드 중입니다")
+        assert "업종 맵 빌드 중입니다" not in ok
+
+    def test_subtitle_names_the_industry_source(self, monkeypatch):
+        """업종을 붙였으면 **어디서 온 것인지** 화면이 말한다(규칙 10b·#34)."""
+        html = self._render(monkeypatch, self._payload(), ind="반도체")
+        assert "업종=네이버" in html
+
+    # ── --why ───────────────────────────────────────────────────────
+    def test_why_prints_the_verdicts_and_the_fingerprint(self, monkeypatch,
+                                                         capsys):
+        """진입점을 태운다 — 헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20).
+        그리고 배너에 **코드 지문**이 있어야 낡은 체크아웃이 갈린다(#364)."""
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda limit=50: {
+            "rows": [dict(self._ROW)], "ts": "09-17 13:00", "sort": "quantTop",
+            "reason": "", "has_hl": False, "hl_keys": ["high52week (미읽음)"],
+            "scanned": 89, "excluded": 39, "partial": False, "stale": False})
+        rc = kv.why()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "코드 지문" in out.splitlines()[0]
+        assert "high52week" in out, "③ 고가·저가 판정이 출력에 없다"
+        assert "원시 89개" in out and "제외(ETF·ETN·스팩) 39개" in out
+        assert "quantTop" in out
+
+    def test_why_returns_one_when_there_are_no_rows(self, monkeypatch, capsys):
+        """행이 없으면 rc=1 — 대조 0건을 ✅ 로 찍지 않는다(#54)."""
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(kv, "fetch_kr_volume_top", lambda limit=50: {
+            "rows": [], "ts": "", "sort": "", "reason": "원천에 닿지 못함",
+            "has_hl": False, "hl_keys": []})
+        assert kv.why() == 1
+        out = capsys.readouterr().out
+        assert "원천에 닿지 못함" in out
+        assert "판정 불가" in out
+
+    def test_why_does_not_plant_a_new_learn_cooldown(self, tmp_path,
+                                                     monkeypatch):
+        """진단이 **자기가 읽을 신호를 오염**시키면 안 된다(#264·#283·#30).
+
+        학습 실패 도장이 남으면 다음 10분의 실수집이 막힌다. 내용과
+        **mtime 둘 다** 되돌아와야 한다 — TTL 이 mtime 이라 내용만 되돌리면
+        냉각이 그대로 산다(#91b 재는 대상이 맞나).
+        """
+        import os
+        import bot.finviz_client as fv
+        import bot.kr_volume_client as kv
+        monkeypatch.setattr(fv, "_CACHE_DIR", tmp_path)
+        p = tmp_path / kv._LEARN_FAIL
+        p.write_text('{"why": "옛 도장"}', encoding="utf-8")
+        os.utime(p, (1_000_000, 1_000_000))
+        with kv._keep_learn_cooldown():
+            fv._cache_write(kv._LEARN_FAIL, {"why": "진단이 심은 도장"})
+        assert "옛 도장" in p.read_text(encoding="utf-8")
+        assert int(p.stat().st_mtime) == 1_000_000, "mtime 이 안 돌아왔다"
+        # 도장이 **없던** 상태도 되돌아온다(생기면 안 된다).
+        p.unlink()
+        with kv._keep_learn_cooldown():
+            fv._cache_write(kv._LEARN_FAIL, {"why": "새 도장"})
+        assert not p.exists(), "진단이 없던 냉각을 새로 심었다"
+        # ⚠️ 그리고 **`why()` 가 그걸 실제로 두르는지**까지 본다 — 컨텍스트
+        # 매니저만 재면 호출부에서 떼는 변형이 통과한다(#20, 실측 M11).
+        monkeypatch.setattr(kv, "fetch_kr_volume_top",
+                            lambda limit=50: fv._cache_write(
+                                kv._LEARN_FAIL, {"why": "수집이 심은 도장"})
+                            or {"rows": [], "hl_keys": []})
+        kv.why()
+        assert not p.exists(), "why() 가 냉각 되돌리기를 두르지 않았다"
+
+    def test_notes_carry_no_markdown_bold(self):
+        """화면은 사유를 `_html.escape` 로 찍는다 — 마크다운 볼드는 별표가
+        그대로 보인다(#298, 2026-09-16 KRX 문구에서 겪은 그것)."""
+        import ast
+        import inspect
+        import bot.kr_volume_client as kv
+        src = inspect.getsource(kv)
+        for node in ast.walk(ast.parse(src)):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "notes"):
+                for a in node.args:
+                    txt = ast.unparse(a)
+                    assert "**" not in txt, f"각주에 마크다운 볼드: {txt}"
+
+
+class TestFredIndicatorSelector20260917:
+    """`❌ PPI 원자재 (YoY) fred:PPIACO 관측 없음` — 감사가 화면과 다른
+    경로를 물었고, '관측 없음' 한 마디가 갈래 셋을 대표했다(2026-09-17 일일 감사).
+
+    (a) 글로벌 스냅샷의 YoY 카드 4종은 화면이 **730일 창**(`_fetch_fred_yoy`)
+        으로 받는데 감사는 전 행을 `_fred_fetch_series(sid, 400)` 로 물었다 —
+        분기가 `_fetch_all_fred` 안에 인라인이라 감사가 베낄 수 없었다
+        (#35 감사는 화면이 쓰는 그 경로를 · #176 경로를 함수로).
+    (b) 관측이 0건일 때 '우리 조회 실패'와 '원천에 그 창의 관측이 없음'과
+        '못 물어봤음'이 같은 ❌ 였다 — 처방이 다 다르고(#82), 고칠 수 없는
+        ❌ 를 매일 내면 진짜 ❌ 를 가린다(#260).
+    """
+
+    def test_yoy_cards_take_the_yoy_path(self, monkeypatch):
+        import bot.market_overview as mo
+        monkeypatch.setattr(mo, "_fetch_fred_yoy", lambda sid: {"who": "yoy"})
+        monkeypatch.setattr(mo, "_fred_fetch_series",
+                            lambda sid, lb: {"who": "spot", "lb": lb})
+        assert mo.fred_indicator_fetch("PPIACO", 400)["who"] == "yoy"
+        assert mo.fred_indicator_fetch("CPIAUCSL", 400)["who"] == "yoy"
+        got = mo.fred_indicator_fetch("DGS2", 400)
+        assert got["who"] == "spot" and got["lb"] == 400
+        # 목록은 **한 곳**에만 있어야 한다 — 두 곳에 적으면 다시 갈라진다(#38).
+        assert set(mo._FRED_YOY_SIDS) >= {"CPIAUCSL", "PPIACO"}
+
+    def test_fetch_all_fred_uses_the_shared_selector(self, monkeypatch):
+        """배선은 존재가 아니라 **결과**로 본다(#20·#141)."""
+        import bot.market_overview as mo
+        monkeypatch.setattr(mo, "fred_indicator_fetch",
+                            lambda sid, lb: {"who": "shared", "sid": sid})
+        rows = mo._fetch_all_fred()
+        assert rows and all((r["data"] or {}).get("who") == "shared"
+                            for r in rows if r["series_id"]), \
+            "_fetch_all_fred 가 공용 선택기를 안 쓴다"
+
+    def test_audit_asks_the_same_selector(self):
+        """감사가 화면과 **같은 함수**를 부른다 — 옛 `_fred_fetch_series`
+        직접 호출이 남아 있으면 YoY 카드가 다시 다른 창으로 재어진다(#35)."""
+        import ast
+        import inspect
+
+        import bot.scripts.macro_staleness_audit as m
+        tree = ast.parse(inspect.getsource(m.main))
+        attrs = [n.func.attr for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        assert "fred_indicator_fetch" in attrs, "공용 선택기를 안 부른다"
+        assert "_fred_fetch_series" not in attrs, (
+            "감사가 아직 화면과 다른 경로를 본다(#35)")
+
+    def test_empty_observation_splits_source_gap_from_ours(self, monkeypatch):
+        """원천이 스스로 보고하는 `observation_end` 가 갈래를 가른다
+        (#86·#318). 못 물어보면 **단정하지 않는다**(#165·#54)."""
+        import bot.fred_client as fc
+        from bot.scripts.macro_staleness_audit import empty_diag
+
+        monkeypatch.setattr(fc, "fetch_series_meta",
+                            lambda sid: {"observation_end": "2025-10-01"})
+        b, txt = empty_diag("fred", "PPIACO")
+        assert b == "src_lag" and "2025-10-01" in txt and txt.startswith("⚠️")
+        assert "❌" not in txt, "고칠 수 없는 것을 ❌ 로 낸다(#260)"
+
+        monkeypatch.setattr(fc, "fetch_series_meta", lambda sid: None)
+        b, txt = empty_diag("fred", "PPIACO")
+        assert b == "unknown" and txt.startswith("⚪"), txt
+
+        def _boom(sid):
+            raise RuntimeError("키 없음")
+        monkeypatch.setattr(fc, "fetch_series_meta", _boom)
+        b, txt = empty_diag("fred", "PPIACO")
+        assert b == "unknown" and "키 없음" in txt
+        # ECOS 는 이 메타 축이 없다 — 남의 축으로 판정하지 않는다.
+        assert empty_diag("ecos", "m2")[0] == "late"
+
+    def test_audit_wires_empty_diag_into_the_buckets(self):
+        """헬퍼만 재면 배선을 떼는 변형을 못 잡는다(#20). 그리고 갈래가
+        **각 버킷으로 배분**되는지까지 본다(#91b — 선언만 보면 통과한다)."""
+        import ast
+        import inspect
+
+        import bot.scripts.macro_staleness_audit as m
+        src = inspect.getsource(m.main)
+        tree = ast.parse(src)
+        assert [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and getattr(n.func, "id", "") == "empty_diag"], \
+            "main 이 갈래 함수를 부르지 않는다"
+        # 세 버킷이 전부 이 분기에서 쓰인다(하나라도 빠지면 그 갈래가 사라진다).
+        i = src.index("empty_diag(")
+        seg = src[i:i + 400]
+        for bucket in ("src_lag", "unknown", "late"):
+            assert bucket in seg, f"{bucket} 버킷으로 안 담긴다"
