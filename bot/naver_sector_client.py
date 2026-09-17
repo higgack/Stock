@@ -1891,6 +1891,39 @@ def demote_shared_status(rows: list) -> list:
     return rows
 
 
+SWEEP_ABORT_RUN = 3
+SKIPPED_VERDICT = "판정 불가(묻지 않음 — 앞에서 중단)"
+
+
+def abort_param_sweep(rows: list, run: int = SWEEP_ABORT_RUN) -> str:
+    """이어진 판정 불가가 `run` 개면 중단 사유를 돌려준다(순수, 빈 문자열=계속).
+
+    ⚠️ 재시도·추가 질의의 중단 조건은 '실패했나' 가 아니라 **'더 물어서 답이
+    바뀌나'** 다(#279). 한도·차단·일시정지로 막히면 남은 후보를 더 쳐도 같은
+    답이 오고, 그건 순손실이며 한도를 더 태운다(#346 느림의 원인은 양이 아니라
+    실패 재시도 · #354 연속 실패면 멈춰 순손실을 막는다).
+
+    ⚠️ **요청 모양 4xx 는 여기 안 걸린다** — 그건 원천이 그 키를 읽고 거절한
+    것이라 우리가 찾는 신호 자체다(`classify_param_probe` 가 '있음' 으로
+    찍으므로 '판정 불가' 가 아니다).
+
+    ⚠️ 중단하면 남은 후보는 '없음' 이 아니라 **묻지 않은 것**이다 — 호출부가
+    `SKIPPED_VERDICT` 로 채워 총계와 소계를 가른다(#45·#54).
+    """
+    if run < 1 or len(rows) < run:
+        return ""
+    tail = rows[-run:]
+    if not all(str(r[4]).startswith("판정 불가") for r in tail):
+        return ""
+    sts = {r[1] for r in tail}
+    if len(sts) != 1:
+        return ""
+    st = tail[0][1]
+    what = f"HTTP {st}" if st else "도달 실패"
+    return (f"{what} 가 {run}개 연속 — 남은 후보는 묻지 않습니다"
+            "(더 물어도 답이 바뀌지 않고 한도만 태웁니다)")
+
+
 def probe_params(url: str = "", keys: tuple = ()) -> list:
     """후보 파라미터가 원천 스키마에 있는지 **재기만** 한다 → 표시용 줄 목록.
 
@@ -1909,7 +1942,12 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
     out.append(f"   기준선: pageSize={_THEME_PAGE_SIZES[0]} → "
                + (f"{base_n}행" if base_n is not None else f"실패({why})"))
     rows: list = []
-    for key in (keys or _PARAM_CANDIDATES):
+    cands = list(keys or _PARAM_CANDIDATES)
+    stop = ""
+    for i, key in enumerate(cands):
+        if stop:
+            rows.append([key, None, "", None, SKIPPED_VERDICT])
+            continue
         params = {"pageSize": _THEME_PAGE_SIZES[0], key: _PARAM_JUNK}
         raw, why = _get2_json(url, params=params)
         status = 200 if raw is not None else _nd.status_from(why)
@@ -1917,6 +1955,9 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
         verdict = classify_param_probe(status, why, key, n_rows, base_n,
                                        base_status)
         rows.append([key, status, why, n_rows, verdict])
+        stop = abort_param_sweep(rows)
+        if i + 1 >= len(cands):
+            stop = ""     # 마지막 후보였으면 건너뛴 것이 없다 — 알릴 것도 없다
     demote_shared_status(rows)
     for key, status, why, n_rows, verdict in rows:
         if not verdict.startswith("판정 불가"):
@@ -1925,6 +1966,8 @@ def probe_params(url: str = "", keys: tuple = ()) -> list:
             n_rows is not None and base_n is not None) else ""
         out.append(f"   {key:<10} {verdict}{extra}"
                    + (f" — {why}" if why and status != 200 else ""))
+    if stop:
+        out.append(f"   ⚠️ {stop}")
     if not measured:
         # 한 건도 못 쟀다 — 성공으로 집계하면 "후보에 아무것도 없다"로
         # 읽힌다(#54 대조 0건은 통과가 아니다).

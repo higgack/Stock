@@ -28,6 +28,11 @@
      것이고, KRX 애프터마켓이 생긴 지금 그 블록이 어느 거래소인지는 **재지
      않았다**(#165). 그래서 폴링 응답의 **전 키**와 over/nxt/market 이 든
      하위 블록을 통째로 찍어 venue 축이 있는지 본다.
+  ⑥ **거래소 축 파라미터가 스키마에 있나**(2026-09-17 추가) — NXT 거래
+     종목 **목록**을 주는 파라미터가 있는지. 이름을 지어내 배선하면 죽은
+     경로를 배포하므로(#151·#345) 일부러 틀린 값을 넣어 zod 가 스스로
+     말하게 한다(#64·#86). '있음' 이어도 그것만으로 배선하지 않는다 —
+     그 키로 목록이 실제로 줄어드는지가 그다음 측정이다.
 
 ⚠️ 읽기 전용 — 운영 캐시를 **읽지도 쓰지도** 않는다(진단이 자기가 읽을
 신호를 오염시키면 안 된다, #30·#264·#283·#321). 네이버를 직접 친다.
@@ -340,30 +345,49 @@ def _section_venue_params() -> None:
     (#24 열거는 목록 밖을 못 잡는다) — ④ 의 전 키 덤프가 짝이다.
     """
     print("\n⑥ 거래소 축 파라미터가 스키마에 있나 — 원천에게 묻는다")
-    from bot.naver_sector_client import (classify_param_probe,
+    from bot.naver_sector_client import (SKIPPED_VERDICT,
+                                         abort_param_sweep,
+                                         classify_param_probe,
                                          demote_shared_status, allowed_values)
+    from bot import naver_diag as _nd
     base, base_why = _get(_LIST, sortType="up", category="all", page=1,
                           pageSize=20)
-    base_rows = _rows(base)
-    base_n = len(base_rows) if base_rows else None
-    base_status = 200 if base_rows else None
+    # ⚠️ 200 판정은 **응답(payload)이 왔는가**로 한다 — 추출된 행의
+    # truthiness 로 보면 "원천이 200 인데 0행" 이 '도달 실패' 로 찍힌다
+    # (독립 리뷰 실측). 처방이 정반대인 갈래이고(#82), 무엇보다
+    # `base_status` 가 None 이 되면 #352 의 '이 키에만 4xx' 분기가 통째로
+    # 죽어 **이 섹션이 찾으려는 그 성공 케이스**(키가 먹혀 0행으로 걸러짐)를
+    # '판정 불가' 로 닫아 버린다. 형제 `probe_params` 와 같은 규약이다(#38).
+    base_ok = base is not None
+    base_n = len(_rows(base)) if base_ok else None
+    base_status = 200 if base_ok else _nd.status_from(base_why)
     print(f"   기준선: sortType=up · pageSize=20 → "
-          + (f"{base_n}행" if base_n is not None else f"실패({base_why})"))
-    if base_n is None:
+          + (f"{base_n}행" if base_ok else f"실패({base_why})"))
+    if not base_ok:
         # 대조군이 죽으면 아래 판정은 '있음/없음' 이 아니라 **판정 불가**다
         # (#143) — 그 사실을 먼저 적는다.
         print("   ⚠️ 대조군이 실패했습니다 — 아래 결과는 판정 불가로 읽을 것")
-    from bot import naver_diag as _nd
     rows: list = []
-    for key in _VENUE_PARAMS:
+    # ⚠️ 이어진 판정 불가가 3개면 멈춘다 — 한도·차단이 걸린 뒤 남은 후보를 더
+    # 치는 것은 순손실이고 한도만 더 태운다(#279·#346·#354). 요청 모양 4xx 는
+    # 우리가 찾는 신호라 여기 안 걸린다. 형제 `probe_params` 와 **같은 함수**를
+    # 쓴다 — 복제하면 한쪽만 고쳐진다(#38).
+    stop = ""
+    for i, key in enumerate(_VENUE_PARAMS):
+        if stop:
+            rows.append([key, None, "", None, SKIPPED_VERDICT])
+            continue
         d, why = _get(_LIST, sortType="up", category="all", page=1,
                       pageSize=20, **{key: "__probe__"})
-        got = _rows(d)
-        status = 200 if got else _nd.status_from(why)
-        n = len(got) if got else None
+        ok = d is not None
+        status = 200 if ok else _nd.status_from(why)
+        n = len(_rows(d)) if ok else None
         rows.append([key, status, why, n,
                      classify_param_probe(status, why, key, n, base_n,
                                           base_status)])
+        stop = abort_param_sweep(rows)
+        if i + 1 >= len(_VENUE_PARAMS):
+            stop = ""
     demote_shared_status(rows)
     measured = 0
     for key, status, why, n, verdict in rows:
@@ -376,14 +400,17 @@ def _section_venue_params() -> None:
         vals = allowed_values(why) if status and status != 200 else ()
         if vals:
             print(f"       원천이 밝힌 허용값 {len(vals)}종: {', '.join(vals)}")
+    if stop:
+        print(f"   ⚠️ {stop}")
     if not measured:
         # 한 건도 못 쟀다 — 성공으로 집계하면 "후보에 아무것도 없다"로
         # 읽힌다(#54 대조 0건은 통과가 아니다).
         print("   ❌ 한 건도 재지 못했습니다 — 위 사유를 볼 것")
     elif not any(v.startswith("있음") for *_x, v in rows):
-        print(f"   ⚠️ 후보 {measured}종 중 스키마에 있는 것이 없습니다 — "
-              "이 엔드포인트로는 거래소를 못 거릅니다. 우리가 적은 후보 밖의 "
-              "이름일 수 있으니 ④ 의 전 키 덤프를 같이 볼 것(#24).")
+        # 총계(물은 수)와 소계(잰 수)는 다른 모집단이다 — 둘 다 적는다(#45).
+        print(f"   ⚠️ 후보 {len(rows)}종 중 {measured}종을 쟀고 스키마에 있는 "
+              "것이 없습니다 — 이 엔드포인트로는 거래소를 못 거릅니다. 우리가 "
+              "적은 후보 밖의 이름일 수 있으니 ④ 의 전 키 덤프를 같이 볼 것(#24).")
 
 
 def main() -> int:

@@ -478,20 +478,33 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
 | 라벨이 도화지 안에 남는다(#100·#112 상한) | ✅ 자동 | `test_label_stays_inside_the_canvas` |
 | X축 날짜 라벨과 안 겹친다 | ✅ 자동 | `test_label_does_not_collide_with_the_date_axis` |
 | y 가 **막대 상자에서 파생**된다(부호·이웃 높이에 반응) | ✅ 자동 | `test_placement_is_derived_from_the_bar_boxes` — M1·M2 발화 |
-| 점유된 자리가 있으면 물러난다 | ✅ 자동 | `test_bar_label_y_flips_when_a_text_box_already_sits_there` |
-| 상·하한이 도화지를 지킨다 | ✅ 자동 | `test_bar_label_y_clamps_inside_the_canvas` |
+| 점유된 자리가 있으면 물러난다 | ✅ 자동 | `test_bar_label_y_flips_when_a_text_box_already_sits_there` + `test_axis_label_avoidance_fires_from_the_real_chart`(호출부) |
+| 상·하한이 도화지를 지킨다 | ✅ 자동(합성 기하) | `test_bar_label_y_clamps_inside_the_canvas` |
+| `_est_w` 가 9px sans 실폭보다 **좁지 않다** | ✅ 자동 | `test_est_w_is_not_narrower_than_the_rendered_text` — 독립 대조표(#66 동어반복 회피) |
+| 겹침 판정이 **반올림한 y**(SVG 에 실리는 값)로 돈다 | ✅ 자동 | `test_rounding_is_applied_before_the_overlap_check` — 60,000 차트를 쓸어 찾은 픽스처(3건) |
 
 **이 검사들이 못 보는 축**(#274):
-- (a) 마지막 둘은 **합성 기하**로 태운다 — 막대 차트 호출부는 그 두 갈래에
-  **도달할 수 없다**(후보 y 가 막대 기하에 묶여 도화지 밖으로도 날짜 라벨
-  위로도 못 간다). 실측으로 M3·M4 가 호출부 테스트만으론 통과했다(#291).
+- (a) **상·하한만** 합성 기하로 태운다 — 20,000 차트를 쓸어 호출부에서
+  0번 걸렸다. 축라벨 회피는 **도달한다**(같은 쓸기에서 1건, 그게
+  `test_axis_label_avoidance_fires_from_the_real_chart` 픽스처다). 처음엔
+  둘 다 '도달 불가' 로 적었는데 재 보니 아니었다 — **"도달 불가"는 재고
+  나서 쓸 것**(#291·#165). 같은 쓸기가 죽은 후보 `_PAD_T - 3.0`(값이 clamp
+  하한과 같은 9.0)과 죽은 폴백 `or [own]` 도 0/20,000 으로 드러내 지웠다.
 - (b) **실제 렌더 폭**은 안 잰다 — `_est_w` 는 근사이고 샌드박스는 브라우저가
-  없다(#14). 폭이 크게 빗나가면 겹침이 남을 수 있다.
+  없다(#14). 다만 옛 판의 문자당 3.4 는 9px sans 실폭(숫자 5.0 · `%` 8.0)의
+  1/1.5 라 가드가 눈이 멀어 있었다(파생 배치를 넣고도 3,000 차트 **78.3%**
+  겹침 → 실폭 표로 바꿔 **0%**). 대조표는 테스트가 따로 들고 있다.
 - (c) **아카이브는 렌더된 HTML 을 동결**하므로(`industry_archive`) 과거 월
   스냅샷은 옛 위치 그대로다 — 새 스냅샷부터 적용된다(#18).
-- (d) 같은 셀의 **12M TTM YoY 선차트**는 `_line_svg`/`_place_labels` 경로라
-  이 변경 대상이 아니다(라벨끼리·축과는 이미 피하고, 선은 얇고 `.ind-cl` 이
-  3px 후광을 갖는다). 선 위 겹침은 재지 않았다.
+- (d) 형제 선차트(`_monthly_chart`·`_ttm_chart`·`_ttm_yoy_chart`)의
+  **콜아웃↔폴리라인** 겹침은 이번에 고치지 않았다(실측 83.2% · 39.1% · 0%).
+  `_place_labels` 후보가 서로와 축라벨만 피하고 선은 안 본다. 미루는 근거는
+  CSS 기제다 — `.ind-cl`·`.ind-cl-ma` 의 `paint-order:stroke · stroke-width:3px`
+  헤일로(좌우 1.5px)가 2.4px/2px 선을 덮는데, 막대는 **면 채움**이라 같은
+  헤일로가 아무 일도 못 했다. ⚠️ 그 기제는 **CSS 를 읽어 세운 것이고 렌더로
+  재지 않았다**(#165) — 선차트에서도 민원이 오면 미룰 근거가 없다.
+  ✅ 반면 `_est_w` 수정은 형제에도 그대로 듣는다: `_monthly_chart` 의
+  **콜아웃↔축라벨 겹침 7.0%(633/9000) → 0%**(옛 폭으로 렌더한 것과 대조).
 
 ## NXT 거래소 축 파라미터 후보 (2026-09-17, #377 같은 커밋)
 
@@ -505,6 +518,13 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
 | `main` 이 실제로 부른다 | ✅ 자동(AST) | `test_probe_venue_param_section_is_wired_into_main` — M5 발화 |
 | 한 건도 못 재면 ❌(‘후보에 없다’ 로 단정 금지) | ✅ 자동 | `test_probe_venue_param_section_says_it_measured_nothing` — M7 이 이 테스트 전엔 통과했다(#291) |
 | 같은 상태 공유 보정이 **한 함수**(형제 복제 금지, #38) | ✅ 자동 | `test_shared_status_demotion_is_one_function_not_two` — M6 발화 |
+| 원천이 밝힌 허용값을 그대로 찍는다 | ✅ 자동 | `test_probe_venue_param_section_prints_what_the_source_declared` |
+| 대조군이 죽으면 '판정 불가' 라고 먼저 말한다(#143) | ✅ 자동 | `test_probe_venue_param_section_flags_a_dead_control_group` |
+| 같은 상태가 여럿이면 '환경 의심' 으로 내린다 | ✅ 자동 | `test_probe_venue_param_section_demotes_a_shared_status` |
+| 200·0행을 '도달 실패' 로 찍지 않는다 | ✅ 자동 | `test_probe_venue_param_section_reads_200_with_zero_rows` |
+| 하나도 없으면 물은 수·잰 수를 둘 다 적는다(#45) | ✅ 자동 | `test_probe_venue_param_section_says_none_in_schema` |
+| 읽기 전용 — 캐시·냉각을 안 건드린다 | ✅ 자동 | `test_probe_venue_param_section_writes_nothing` |
+| 판정 불가가 연속 3개면 **멈추고 건너뛴 것을 말한다**(#279·#346·#354) | ✅ 자동 | `test_sweep_stops_after_a_run_of_unjudgeable_failures` · `test_both_param_sweeps_stop_and_say_what_they_skipped`(형제 둘 다) · `test_sweep_says_nothing_when_it_asked_every_candidate`(늘 뜨는 경고 금지, #25·#260) |
 
 **못 보는 축**(#274): 후보 이름 9종은 **우리가 적은 것**이라 원천이 쓰는
 이름이 그 밖일 수 있다(#24) — ④ 의 전 키 덤프가 짝이다. 그리고 '있음' 이

@@ -407,12 +407,34 @@ def _dot_ym(ym: str) -> str:
 _LBL_H = 11.0   # approx text line height (viewBox units) for label de-collision
 
 
+# 9px sans 의 문자별 advance(viewBox 단위 ≈ px). 콜아웃·축 라벨은 전부
+# `font-size:9px`(`.ind-cl`·`.ind-cl-ma`·`.ind-axis`)라 한 표로 덮인다.
+_ADV_9PX = {"%": 8.0, ".": 3.0, ",": 3.0, "-": 3.0, " ": 3.0, "·": 3.0}
+_ADV_DIGIT, _ADV_ALPHA, _ADV_WIDE = 5.3, 6.0, 9.0
+
+
 def _est_w(text: str) -> float:
-    """Rough SVG text width (viewBox units) — CJK/심볼은 넓게, ASCII는 좁게.
-    콜아웃이 겹치는지 판정할 때만 쓰는 근사값."""
+    """SVG text 폭 추정(viewBox 단위) — 콜아웃 겹침 판정 전용.
+
+    ⚠️ 옛 판은 ASCII 를 문자당 3.4 로 셌는데 실제 9px sans 는 숫자 5.0 ·
+    `%` 8.0 이라 **1.4~1.5배 과소평가**였다(독립 리뷰 실측: `+24.2%` 20.4 vs
+    30.8). 라벨이 `text-anchor="end"` 라 과소평가는 **왼쪽으로만** 빗나가
+    왼쪽 막대가 겹침 판정에서 통째로 빠졌고, 그래서 #377 의 파생 배치가
+    프로덕션 형태 36개월 시계열에서 **16.7% 겹침**을 남겼다(옛 리터럴 71%).
+
+    폭 추정은 **넘치게** 잡는 쪽이 안전하다 — 과대평가는 라벨을 더 멀리
+    밀 뿐이고, 과소평가는 가드를 눈멀게 한다(#91b 재는 대상이 맞나).
+    """
     w = 0.0
     for ch in text:
-        w += 6.6 if ord(ch) > 0x2000 else 3.4
+        if ch in _ADV_9PX:
+            w += _ADV_9PX[ch]
+        elif ord(ch) > 0x2000:
+            w += _ADV_WIDE
+        elif ch.isdigit():
+            w += _ADV_DIGIT
+        else:
+            w += _ADV_ALPHA
     return w
 
 
@@ -443,16 +465,23 @@ def _bar_label_y(xl: float, xr: float, own, bars, occupied,
         return any(xl < orr and ol < xr and abs(y - oy) < _LBL_H
                    for ol, orr, oy in occupied)
 
-    over = [b for b in bars if xl < b[1] and b[0] < xr] or [own]
+    # `own` 은 `bars` 안에 있고 자기 자신과는 반드시 x 겹치므로 `over` 는
+    # 비지 않는다 — 옛 `or [own]` 폴백은 20,000 차트 중 0번 걸렸다(#291).
+    over = [b for b in bars if xl < b[1] and b[0] < xr]
     above = [own[2] - 3.0, min(b[2] for b in over) - 3.0]
     below = [own[3] + _LBL_ASC + 1.0, max(b[3] for b in over) + _LBL_ASC + 1.0]
     # 선호 방향을 **둘 다 먼저** 시도한다 — 양수인데 옆 막대가 높다고
     # 곧장 0선 아래로 내리면 값의 부호와 위치가 어긋나 읽힌다(#34).
-    cands = (below + above if prefer_below else above + below) + [_PAD_T - 3.0]
+    # ⚠️ 후보를 더 늘리지 말 것 — 옛 판엔 `_PAD_T - 3.0` 이 끝에 있었는데
+    # 값이 clamp 하한·최종 폴백과 **같은 9.0** 이라 20,000 차트 중 0번
+    # 선택됐다(독립 리뷰 계측). 도달 경로 없는 후보는 후보가 아니다(#291).
+    cands = below + above if prefer_below else above + below
     for y in cands:
-        y = min(max(y, _LBL_ASC + 2.0), _VH - 3.0)
+        # SVG 에는 `:.0f` 로 쓰므로 **반올림한 값으로** 판정한다 — 안 그러면
+        # 최대 0.5u 만큼 가드를 우회한다(독립 리뷰 실측 6/4000, #91b).
+        y = round(min(max(y, _LBL_ASC + 2.0), _VH - 3.0))
         if not hits(y):
-            return y
+            return float(y)
     # 최후: 가장 높은 막대보다 위(막대 top 은 _PAD_T 이상이라 정의상 안 겹친다).
     return _LBL_ASC + 2.0
 
@@ -710,6 +739,10 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
     # 안에 박히거나 더 높은 옆 막대에 가렸다. 막대 상자에서 파생시킨다.
     lbl = _pct(lv)
     lw = _est_w(lbl)
+    # ⚠️ x 는 반올림하지 않는다 — 같은 정합을 x 에도 걸어 봤지만 60,000
+    # 차트에서 결론이 바뀌는 경우가 **0건**이었다(라벨 상자가 오른쪽 끝에
+    # 붙어 있어 0.5u 로는 옆 막대 경계를 못 넘는다). 발화 경로 없는 변경은
+    # 넣지 않는다(#291) — 물었고 답이 나왔다는 사실만 남긴다(#274).
     lxl, lxr = x(li) - lw, x(li)
     occupied = [
         (2.0, 2.0 + _est_w(f"+{hi:.0f}%"), _PAD_T + 4.0),

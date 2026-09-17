@@ -948,7 +948,12 @@ class YoyBarLabelPlacement20260917(unittest.TestCase):
 
     def test_label_stays_inside_the_canvas(self):
         """파생 좌표에는 상한을 둔다(#100·#112) — 도화지 밖으로 나가면
-        잘려서 '숫자가 안 보인다' 는 같은 증상이 된다."""
+        잘려서 '숫자가 안 보인다' 는 같은 증상이 된다.
+
+        ⚠️ 렌더 픽스처만으로는 clamp 를 **한 번도 안 태운다**(실측 20,000장
+        중 0건) — clamp 를 `[-500, 500]` 으로 넓히는 변형이 통과했다(독립
+        리뷰 M3b). 그래서 합성 기하로 상·하한 양쪽을 직접 태운다(#291·#91c).
+        """
         for yoys in ([5.0] * 24 + [300.0], [5.0] * 24 + [-99.0],
                      [200.0] * 24 + [190.0]):
             with self.subTest(yoys[-1]):
@@ -956,16 +961,34 @@ class YoyBarLabelPlacement20260917(unittest.TestCase):
                 self.assertGreaterEqual(box[2], 0.0, "라벨 윗변이 도화지 위로")
                 self.assertLessEqual(box[3], float(industry._VH),
                                      "라벨 아랫변이 도화지 아래로")
+        # 하한: 도화지 꼭대기에 붙은 막대 → above 후보가 음수로 나간다.
+        top = industry._bar_label_y(
+            10.0, 40.0, (10.0, 40.0, 0.0, 5.0), [(10.0, 40.0, 0.0, 5.0)], [],
+            prefer_below=False)
+        self.assertGreaterEqual(top, industry._LBL_ASC + 2.0)
+        # 상한: 도화지 바닥까지 닿은 막대 → below 후보가 밖으로 나간다.
+        bot = industry._bar_label_y(
+            10.0, 40.0, (10.0, 40.0, 10.0, float(industry._VH) + 40),
+            [(10.0, 40.0, 10.0, float(industry._VH) + 40)], [],
+            prefer_below=True)
+        self.assertLessEqual(bot, float(industry._VH - 3))
 
     def test_label_does_not_collide_with_the_date_axis(self):
         """아래로 밀 때 X축 날짜 라벨과 겹치지 않는다 — 겹치면 옛 증상이
         막대가 아니라 글자끼리로 옮겨갈 뿐이다(#33)."""
-        box, _, _, _ = self._label_and_bars([5.0] * 24 + [-3.4])
-        # 오른쪽 날짜 라벨 baseline = _VH - 3
-        date_y = float(industry._VH - 3)
-        self.assertGreaterEqual(
-            abs(((box[2] + box[3]) / 2 + 2.5) - date_y), 8.0,
-            "최신값 라벨이 X축 날짜 라벨 위에 얹혔다")
+        # 판정은 **기하**로 — 두 글자상자가 실제로 겹치나. 문턱 상수
+        # (`_LBL_H`)로 재면 그 상수를 낮추는 변형이 통과한다(#66 자기
+        # 상수로 자기를 검증하는 tautology, 독립 리뷰 M2).
+        date_top = float(industry._VH - 3) - industry._LBL_ASC
+        date_bot = float(industry._VH - 3) + industry._LBL_DESC
+        for yoys in ([5.0] * 24 + [-3.4],
+                     [14.4, 23.1, 12.7, 9.0, 11.2, 12.9,
+                      778.2, 16.4, 5.6, 6.0, 7.8, -0.3]):
+            with self.subTest(yoys[-1]):
+                box, _, _, _ = self._label_and_bars(yoys)
+                self.assertFalse(
+                    box[2] < date_bot and date_top < box[3],
+                    "최신값 라벨이 X축 날짜 라벨 위에 얹혔다")
 
     def test_placement_is_derived_from_the_bar_boxes(self):
         """라벨 y 가 막대 상자에서 파생되는지 — 옆 막대의 높이만 바꾸면
@@ -980,12 +1003,96 @@ class YoyBarLabelPlacement20260917(unittest.TestCase):
             "양수/음수 최신값이 같은 y 로 간다 = 막대 방향을 안 보고 있다")
         self.assertTrue(flat_y <= 12.0 and tall_y <= 12.0)
 
-    # ── _bar_label_y 직접 — 아래 둘은 **막대 차트 호출부에선 도달 불가**하다
-    # (후보 y 가 막대 기하에 묶여 있어 도화지 밖으로도, 날짜 라벨 위로도
-    # 못 간다 — 실측으로 M3·M4 뮤테이션이 통과했다). 그래도 가드를 남기는
-    # 이유는 이 함수가 기하를 인자로 받는 범용 배치기이기 때문이고, 그렇다면
-    # 가드에는 발화 경로가 있어야 한다(#291) — 합성 기하로 직접 태운다.
-    # 못 보는 축: 호출부가 이 두 갈래를 만드는지는 여기서 재지 않는다(#274).
+    # 9px sans 실제 advance(units/1000 × 9/1000) — 폭 추정의 **대조군**.
+    # 이걸 두지 않으면 `_est_w` 를 되돌리는 변형이 테스트까지 같이 좁혀
+    # 통과한다(#66 자기 상수로 자기를 검증하는 tautology).
+    _ADV9 = {**{d: 5.004 for d in "0123456789"}, "+": 5.256, "-": 2.997,
+             ".": 2.502, "%": 8.001, ",": 2.502, " ": 2.502}
+
+    def test_est_w_is_not_narrower_than_the_rendered_text(self):
+        """`_est_w` 는 **넘치게** 잡아야 한다 — 과소평가는 겹침 가드를
+        눈멀게 한다(독립 리뷰 H1: 옛 3.4/문자는 1.4~1.5배 과소평가라
+        프로덕션 형태 36개월에서 겹침 16.7% 가 남았다).
+        """
+        for txt in ("+24.2%", "-3.4%", "+1234.5%", "-0.1%", "+999.9%",
+                    "2024.1", "2026.12"):
+            with self.subTest(txt):
+                real = sum(self._ADV9.get(c, 5.0) for c in txt)
+                self.assertGreaterEqual(
+                    industry._est_w(txt), real,
+                    f"{txt!r}: 추정 {industry._est_w(txt):.1f} < 실폭 {real:.1f}")
+
+    def test_axis_label_avoidance_fires_from_the_real_chart(self):
+        """축 라벨 회피(`occupied`)는 **호출부에서 도달한다** — 드물 뿐이다.
+
+        첫 판 문서·커밋 메시지는 "호출부에선 도달 불가" 라고 적었는데
+        측정이 반증했다(20,000장 중 1장에서 라벨 y 가 달라진다 — 독립 리뷰가
+        먼저 지적했고 재측정으로 확정). 도달 불가가 아니라 **픽스처가 그
+        상태를 못 만들었던 것**이다(#91c·#286 지시서가 자기 자신에 대해
+        사실 아닌 것을 말하지 말 것).
+
+        발화 조건: 12개월 · 중간에 거대한 spike · 최신값이 0 바로 아래 —
+        음수라 아래를 먼저 보는데 그 자리가 X축 날짜 라벨 근처라 물러난다.
+        """
+        ys = [14.368, 23.087, 12.728, 9.015, 11.243, 12.883,
+              778.178, 16.393, 5.552, 6.023, 7.831, -0.26]
+        svg = industry._yoy_bar_svg(self._pts(ys))
+        y = float(self._LBL.search(svg).group(2))
+        date_y = float(industry._VH - 3)
+        self.assertGreaterEqual(
+            abs(y - date_y), industry._LBL_H,
+            "X축 날짜 라벨 자리를 피하지 않았다")
+        self.assertLess(y, 110.0, "물러나지 않고 아래에 그대로 앉았다")
+
+    def test_rounding_is_applied_before_the_overlap_check(self):
+        """SVG 에는 `{y:.0f}` 로 쓰므로 **반올림한 값으로** 겹침을 판정해야
+        한다 — 안 그러면 최대 0.5u 만큼 가드를 우회한다(#91b 재는 대상이 맞나).
+
+        ⚠️ 이 픽스처는 60,000 차트를 쓸어 찾았다(3건). 아무 데이터나 넣으면
+        반올림 전후가 같은 결론이라 가드를 지워도 통과한다(#91c) — 반올림을
+        빼면 **실제로 막대에 얹히는** 30개월 시계열이어야 발화한다.
+        """
+        yoys = [-50.553, 102.046, 59.227, -7.682, 56.744, 38.099, -26.287,
+                72.468, 52.146, -69.164, 114.287, 65.826, -20.777, -21.64,
+                92.422, 36.924, 59.297, 95.092, -62.297, -54.06, -61.438,
+                -21.742, -26.876, 80.931, -27.972, -59.612, 21.126, -7.93,
+                -37.479, 19.479]
+        box, bars, y, _txt = self._label_and_bars(yoys)
+        self.assertEqual(y, round(y), "SVG 에 실린 y 가 정수가 아니다")
+        self.assertFalse(self._overlaps(box, bars),
+                         "반올림한 라벨이 막대에 얹혔다")
+
+    def test_neighbour_aware_below_candidate_is_used(self):
+        """음수 라벨이 **제 막대 아래**에서 막히면 걸치는 막대 전체 아래로
+        내려간다 — `below[1]`. 실측 계측에서 19% 의 차트가 이 후보를 쓰는데
+        테스트가 없어 그 후보를 지우는 변형이 통과했다(독립 리뷰, #291·#20).
+        """
+        own = (100.0, 120.0, 40.0, 50.0)        # 라벨이 가리키는 막대
+        nb = (80.0, 101.0, 40.0, 90.0)          # x 로 걸치는 더 깊은 막대
+        y = industry._bar_label_y(
+            80.0, 120.0, own, [own, nb], [], prefer_below=True)
+        # below[0](=50+8=58)은 nb 에 막히고 below[1](=90+8=98)이 이긴다.
+        self.assertGreaterEqual(y, 98.0)
+        self.assertLess(y, 110.0)
+
+    def test_bar_box_uses_the_clamped_height(self):
+        """hairline 막대(높이 <0.6)도 **그려지는 rect 와 같은 상자**로
+        판정한다 — box 를 클램프 전 높이로 만들면 0.6u 어긋난다(독립 리뷰 L2).
+        """
+        ys = [50.0] * 10 + [0.02]     # 마지막이 사실상 0 → hairline
+        svg = industry._yoy_bar_svg(self._pts(ys))
+        box, bars, _, _ = self._label_and_bars(ys)
+        self.assertTrue(bars, svg[:200])
+        self.assertAlmostEqual(min(b[3] for b in bars), 0.6, places=6,
+                               msg="클램프된 최소 높이가 rect 에 안 실렸다")
+        self.assertFalse(self._overlaps(box, bars))
+
+    # ── _bar_label_y 직접 — 아래 **상·하한(clamp)** 은 막대 차트 호출부에선
+    # 도달 불가다(후보 y 가 막대 기하에 묶여 도화지 밖으로 못 간다 — 실측
+    # 20,000장에서 clamp 가 무는 후보 0건). 그래도 가드를 남기는 이유는 이
+    # 함수가 기하를 인자로 받는 범용 배치기이기 때문이고, 그렇다면 가드에는
+    # 발화 경로가 있어야 한다(#291) — 합성 기하로 직접 태운다.
+    # 못 보는 축: 호출부가 그 갈래를 만드는지는 여기서 재지 않는다(#274).
     def test_bar_label_y_flips_when_a_text_box_already_sits_there(self):
         own = (100.0, 120.0, 40.0, 60.0)     # 막대 하나 (top 40, bottom 60)
         # 바로 아래(y≈68)에 이미 글자가 있으면 위로 물러나야 한다.

@@ -66542,6 +66542,24 @@ class TestKrxAfterMarketBoard20260916:
         assert pp.kr_prepost_status("KRX").get("venue") == "KRX"
         assert pp.kr_prepost_status("NXT") == {}, "상태 파일이 섞였다"
 
+    def test_a_different_session_is_not_shared(self, tmp_path, monkeypatch):
+        """세션이 다르면 공유하지 않는다 — `_shared_venues` 독스트링이
+        명시적 계약으로 적어 둔 것인데, 위 두 테스트는 `_current_kr_session`
+        을 "post" 로 고정해 **그 조건을 한 번도 안 잰다**(독립 리뷰 L6:
+        세션 동일성 검사를 지워도 128 passed). 진짜 시계로 08:30(NXT 프리 ·
+        KRX 닫힘)을 고정해 태운다.
+        """
+        from datetime import datetime
+
+        import bot.prepost_client as pp
+        from bot.kr_session import KST as _KST
+
+        at = datetime(2026, 9, 16, 8, 30, tzinfo=_KST)
+        assert pp._shared_venues("NXT", at) == ("NXT",), pp._shared_venues("NXT", at)
+        # 반대 증거: 겹치는 창(17:00)에서는 실제로 공유된다(#25).
+        at2 = datetime(2026, 9, 16, 17, 0, tzinfo=_KST)
+        assert set(pp._shared_venues("KRX", at2)) == {"KRX", "NXT"}
+
     def test_overlapping_windows_share_one_scan_into_two_files(
             self, tmp_path, monkeypatch):
         """겹치는 창(16:00~20:00)에선 **한 번 받아 둘 다** 저장한다 — 보드마다
@@ -67642,6 +67660,145 @@ class TestVenueAxisAndUnparsed20260917:
         # 그리고 '후보에 없다' 라고 단정하면 안 된다 — 못 잰 것이다(#165).
         assert "스키마에 있는 것이 없습니다" not in out, out
 
+    def test_probe_venue_param_section_prints_what_the_source_declared(
+            self, monkeypatch, capsys):
+        """⑥ 의 **존재 이유**는 원천이 스스로 적어 보낸 허용값을 읽는
+        것이다(#350·#353 이 sortType 12종을 그렇게 알아냈다) — 그 출력
+        블록이 무가드였다(통째로 지워도 전 슈트 green, 독립 리뷰 M7d).
+        그리고 '한 건도 못 잼'·'대조군 실패'·'스키마에 없음' 세 결론 줄도
+        같이 못박는다(#20·#291).
+        """
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        def fake(url, **params):
+            if not any(v == "__probe__" for v in params.values()):
+                return {"result": [{"itemCode": "005930"}]}, ""
+            return None, nd.http_reason(
+                400, 9,
+                body=b'{"message":"Invalid option: expected one of '
+                     b'\"krx\"|\"nxt\"|\"unified\""}')
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "원천이 밝힌 허용값" in out, out
+        for v in ("krx", "nxt", "unified"):
+            assert v in out, (v, out)
+        # 대조군은 살아 있었으므로 그 경고는 **없어야** 한다(반대 증거, #25).
+        assert "대조군이 실패했습니다" not in out, out
+
+    def test_probe_venue_param_section_flags_a_dead_control_group(
+            self, monkeypatch, capsys):
+        """대조군이 죽으면 아래 판정은 '있음/없음' 이 아니라 판정 불가다
+        (#143) — 그 고지가 무가드였다(지워도 green, 독립 리뷰 M7c)."""
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        monkeypatch.setattr(
+            kb, "_get", lambda url, **p: (None, nd.http_reason(429, 5)))
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "대조군이 실패했습니다" in out, out
+
+    def test_probe_venue_param_section_demotes_a_shared_status(
+            self, monkeypatch, capsys):
+        """요청 모양 4xx 한 방에 후보 전부가 '이 키에만' 으로 찍히면
+        안 된다 — 차이는 **혼자일 때만** 차이다(#45·#352). 옛 판은 배선을
+        AST 이름으로만 재서, 강등 **결과**를 버리는 변형이 통과했다
+        (독립 리뷰 H3 — 얕은 복사로는 그 자리를 못 친다는 것도 같이 확인).
+
+        ⚠️ 429 로는 이 경로를 못 태운다 — `REQUEST_SHAPE_4XX` 밖이라
+        `classify_param_probe` 가 먼저 '판정 불가' 로 보낸다(#352a). 강등이
+        필요한 자리는 **이름을 지목하지 않는 400** 이다(#91b 재는 대상).
+        """
+        import bot.scripts.kr_board_probe as kb
+        from bot import naver_diag as nd
+
+        def fake(url, **params):
+            if not any(v == "__probe__" for v in params.values()):
+                return {"result": [{"itemCode": "005930"}]}, ""
+            # 400 인데 어느 키도 지목하지 않는다 → '이 키에만 4xx' 후보
+            return None, nd.http_reason(400, 9, body=b'{"message":"Bad"}')
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "환경 변화 의심" in out, out
+        assert "이 키에만" not in out, out
+
+    def test_probe_venue_param_section_reads_200_with_zero_rows(
+            self, monkeypatch, capsys):
+        """**이 섹션이 찾으려는 바로 그 성공 케이스** — 키가 먹혀 목록이
+        0행으로 걸러지는 경우. 옛 판은 추출된 행의 truthiness 로 200 을
+        판정해 그걸 '도달 실패' 로 찍었다(독립 리뷰 H2 실측): 사용자 결정
+        대기 사항을 **거짓 negative 로 닫는다**(#82·#54·#165).
+        """
+        import bot.scripts.kr_board_probe as kb
+
+        def fake(url, **params):
+            if params.get("exchange") == "__probe__":
+                return {"result": []}, ""          # 200 인데 0행
+            if any(v == "__probe__" for v in params.values()):
+                return {"result": [{"itemCode": "A"}, {"itemCode": "B"}]}, ""
+            return {"result": [{"itemCode": "A"}, {"itemCode": "B"}]}, ""
+
+        monkeypatch.setattr(kb, "_get", fake)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if "exchange " in ln)
+        assert "있음" in line and "0행" in line, line
+        assert "도달 실패" not in line, line
+        # 하나라도 '있음' 이면 "스키마에 없다" 결론을 내면 안 된다.
+        assert "스키마에 있는 것이 없습니다" not in out, out
+
+    def test_probe_venue_param_section_says_none_in_schema(
+            self, monkeypatch, capsys):
+        """전부 무시되면 그렇게 말하되 **물은 수와 잰 수를 둘 다**(#45).
+        이 결론 줄도 무가드였다(독립 리뷰 M7b)."""
+        import bot.scripts.kr_board_probe as kb
+
+        monkeypatch.setattr(
+            kb, "_get",
+            lambda url, **p: ({"result": [{"itemCode": "A"}]}, ""))
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert "스키마에 있는 것이 없습니다" in out, out
+        assert f"후보 {len(kb._VENUE_PARAMS)}종" in out, out
+
+        # ⚠️ 전부 200 이면 물은 수 == 잰 수라 두 수를 하나로 합치는 뮤테이션이
+        # 그대로 통과한다(실측). **갈리는** 픽스처로 재야 발화한다(#91c) —
+        # 첫 후보만 답하고 나머지는 막히는(그래서 중단되는) 상태.
+        calls = {"n": 0}
+
+        def flaky(url, **p):
+            calls["n"] += 1
+            if calls["n"] <= 2:      # 기준선 + 첫 후보
+                return {"result": [{"itemCode": "A"}]}, ""
+            return None, "HTTP 503"
+
+        monkeypatch.setattr(kb, "_get", flaky)
+        kb._section_venue_params()
+        out = capsys.readouterr().out
+        assert f"후보 {len(kb._VENUE_PARAMS)}종 중 1종을 쟀고" in out, out
+
+    def test_probe_venue_param_section_writes_nothing(
+            self, monkeypatch, tmp_path, capsys):
+        """'읽기 전용' 은 **무엇을 안 쓰는지까지** 재야 참이 된다 —
+        #321 이 정확히 이 형태로 터졌다(배너는 읽기 전용이라 적었는데
+        캐시를 썼다). 형제 `probe_params` 도 같은 사각이다(#284·#264).
+        """
+        import bot.scripts.kr_board_probe as kb
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            kb, "_get",
+            lambda url, **p: ({"result": [{"itemCode": "A"}]}, ""))
+        before = sorted(q.name for q in tmp_path.iterdir())
+        kb._section_venue_params()
+        capsys.readouterr()
+        assert sorted(q.name for q in tmp_path.iterdir()) == before
+
     def test_probe_venue_param_section_is_wired_into_main(self):
         """섹션을 만들어 놓고 `main` 이 안 부르면 없는 것과 같다(#20·#291).
         헬퍼만 재는 테스트로는 배선을 떼는 변형을 못 잡는다."""
@@ -67680,6 +67837,93 @@ class TestVenueAxisAndUnparsed20260917:
             called = {n.func.id for n in ast.walk(fn)
                       if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
             assert "demote_shared_status" in called, (fname, sorted(called))
+
+    def test_sweep_stops_after_a_run_of_unjudgeable_failures(self):
+        """한도·차단이 걸린 뒤 남은 후보를 더 치는 것은 순손실이다(#279 재시도
+        중단 조건은 '실패했나' 가 아니라 '더 물어서 답이 바뀌나' · #346·#354).
+
+        ⚠️ 요청 모양 4xx 는 걸리면 안 된다 — 그건 원천이 그 키를 읽고 거절한
+        것이라 이 프로브가 찾는 신호 자체다.
+        """
+        import bot.naver_sector_client as nsc
+
+        def rows(*specs):
+            return [[f"k{i}", st, "", None, v]
+                    for i, (st, v) in enumerate(specs)]
+
+        # 같은 상태의 판정 불가 3개 → 중단
+        three = rows((429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+                     (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+                     (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"))
+        assert "429" in nsc.abort_param_sweep(three), three
+        # 둘뿐이면 계속
+        assert nsc.abort_param_sweep(three[:2]) == ""
+        # 상태가 섞이면 계속 — 환경이 아니라 키별 사정일 수 있다
+        assert nsc.abort_param_sweep(rows(
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+            (503, "판정 불가(HTTP 503, 이 키를 지목하지 않음)"),
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"))) == ""
+        # 하나라도 판정이 섰으면 계속 — 특히 '있음' 은 찾던 신호다
+        assert nsc.abort_param_sweep(rows(
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"),
+            (400, "있음 — 원천이 값을 지적함"),
+            (429, "판정 불가(HTTP 429, 이 키를 지목하지 않음)"))) == ""
+        # ⚠️ **상태가 같아도** 판정이 섰으면 계속이다 — 원천이 요청 모양 4xx
+        # 로 키를 지목하는 것이 이 프로브가 찾는 바로 그 신호라, 여기서 멈추면
+        # 성공 연속을 실패로 읽고 남은 후보를 통째로 버린다. 상태만 보는
+        # 픽스처는 이 갈래를 못 태운다(#91c — 실측으로 뮤테이션이 통과했다).
+        assert nsc.abort_param_sweep(rows(
+            (400, "있음 — 원천이 값을 지적함"),
+            (400, "있음 — 원천이 값을 지적함"),
+            (400, "있음 — 원천이 값을 지적함"))) == ""
+        # 도달 실패(status None)도 갈래 이름을 댄다(#82)
+        assert "도달 실패" in nsc.abort_param_sweep(rows(
+            (None, "판정 불가(도달 실패)"), (None, "판정 불가(도달 실패)"),
+            (None, "판정 불가(도달 실패)")))
+
+    def test_both_param_sweeps_stop_and_say_what_they_skipped(
+            self, monkeypatch, capsys):
+        """중단했으면 남은 후보는 '없음' 이 아니라 **묻지 않은 것**이다 —
+        총계(물은 수)와 소계(잰 수)를 가르지 않으면 "후보에 아무것도 없다"로
+        읽힌다(#45·#54). 형제 둘이 **같은 함수**를 쓴다(#38).
+        """
+        import bot.naver_sector_client as nsc
+        import bot.scripts.kr_board_probe as kb
+
+        calls = []
+
+        def dead(*a, **kw):
+            calls.append(kw.get("params") or kw)
+            return None, "HTTP 429"
+
+        monkeypatch.setattr(nsc, "_get2_json", dead)
+        keys = ("aa", "bb", "cc", "dd", "ee", "ff")
+        out = "\n".join(nsc.probe_params(url="http://x", keys=keys))
+        # 기준선 1 + 후보 3 = 4 콜에서 멈춘다(6 이 아니다)
+        assert len(calls) == 4, (len(calls), calls)
+        assert "429" in out and "묻지 않습니다" in out, out
+        assert out.count(nsc.SKIPPED_VERDICT) == 3, out
+        assert "한 건도 재지 못했습니다" in out, out
+
+        calls.clear()
+        monkeypatch.setattr(kb, "_get", lambda *a, **kw: dead())
+        kb._section_venue_params()
+        got = capsys.readouterr().out
+        assert len(calls) == 1 + 3, (len(calls), got)
+        assert "묻지 않습니다" in got, got
+        assert got.count(nsc.SKIPPED_VERDICT) == len(kb._VENUE_PARAMS) - 3, got
+
+    def test_sweep_says_nothing_when_it_asked_every_candidate(
+            self, monkeypatch):
+        """마지막 후보에서 걸린 '중단' 은 건너뛴 것이 없으므로 알릴 것도
+        없다 — 늘 뜨는 경고는 아무것도 안 재는 것과 같다(#25·#260).
+        """
+        import bot.naver_sector_client as nsc
+        monkeypatch.setattr(nsc, "_get2_json",
+                            lambda *a, **kw: (None, "HTTP 429"))
+        out = "\n".join(nsc.probe_params(url="http://x", keys=("aa", "bb", "cc")))
+        assert "묻지 않습니다" not in out, out
+        assert nsc.SKIPPED_VERDICT not in out, out
 
     def test_overlap_is_stated_as_our_limit_not_a_market_fact(self):
         """사용자 2026-09-17: "이 NXT 랑 KRX 애프터랑 안겹치는것도 많을텐데.
