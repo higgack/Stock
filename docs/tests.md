@@ -435,3 +435,31 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
   인자를 넘기되 엉뚱한 값을 넘기는 변형은 이 검사 밖이다(#366 과 같은 축).
 - (d) 표본이 3종목이라 "전용 창인데 체결 0" 은 NXT 미거래의 증거가 아니다
   (그래서 ❌ 가 아니라 ❓ 로 찍는다, #54).
+
+## 대만 종목명 한글화 — 번역 판정·실패 기록 (2026-09-17, #376)
+
+사용자 "대만 급등급락이랑 신고가에 한글화 안된것들 처리해줘" — `百達-KY`·
+`昶瑞機電`·`三商電` 이 한자 그대로였고, 19행은 `3296.TW` 인데 이름줄이
+`3296.TWO | 승덕` 이었다. 원인은 넷 다 "있으면 됐다" 판정(#25).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 되읊은 `티커 \| ` 접두를 벗긴다 | ✅ 자동 | `test_clean_answer_strips_an_echoed_ticker` |
+| 한자 그대로인 답은 번역이 아니다 | ✅ 자동 | `test_han_answer_is_not_accepted_as_a_translation` |
+| 멀쩡한 답은 그대로 캐시(반대 증거, #25) | ✅ 자동 | `test_translator_caches_a_real_translation` |
+| 거부한 항목을 다시 묻지 않는다 + 프롬프트 바뀌면 재시도 | ✅ 자동 | `test_translator_records_the_miss_so_it_stops_repaying` |
+| **응답에 없던 줄**도 기록한다 | ✅ 자동 | `test_a_line_the_model_never_answered_is_also_recorded` — 뮤테이션 M3 가 이 테스트 전엔 통과했다(#291) |
+| 백필이 번역 실패 시 native 로 내려간다 | ✅ 자동 | `test_tw_backfill_falls_through_to_the_native_name`(수집기 E2E, #20) |
+| 둘 다 실패면 한자보다 영문 | ✅ 자동 | `test_tw_backfill_prefers_english_over_han` |
+| 렌더가 접미사 어긋난 되읊기를 벗긴다 | ✅ 자동 | `test_render_strips_a_suffix_drifted_echo` |
+| 한자뿐이면 `name_kr` 을 비워 워밍이 걸리게 | ✅ 자동 | `test_enrich_leaves_untranslated_open_for_warming` |
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **모델이 실제로 무엇을 돌려주는지는 안 쟀다** — 샌드박스는 LLM 을 못
+  부른다. 프롬프트에 "통용 한글명이 없으면 공식 영문명" 퇴로를 열었지만 그게
+  `百達-KY` 를 실제로 풀지는 **다음 VM 수집이 답한다**(#12·#79·#82).
+- (b) **이미 굳은 캐시는 이 변경이 못 고친다**(#18) — `names_kr.json`·
+  `chart_title_kr.json` 에 한자로 들어간 항목은 그대로다. 렌더의 되읊기 벗기기만
+  소급 적용된다. 지우고 다시 받으려면 그 키를 손으로 빼야 한다.
+- (c) 실패 기록은 **프롬프트 지문**에만 묶인다 — 모델·모델 버전이 바뀌어도
+  지문은 그대로라 재시도가 없다.

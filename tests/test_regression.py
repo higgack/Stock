@@ -67211,6 +67211,188 @@ class TestKrBoardProbeMeasured20260916:
         assert out == [("quantTop", "", [])] * 3, out
 
 
+class TestTwKoreanNameStuck20260917:
+    """대만 급등락·신고저에 한자 이름이 남는다(사용자 2026-09-17 캡처:
+    `百達-KY`·`伊雲谷`·`昶瑞機電`·`佑全`·`長園科`·`三商電`·`隆中`, 그리고
+    19행은 티커 `3296.TW` 인데 이름줄이 `3296.TWO | 승덕`).
+
+    원인 둘 — 둘 다 "있으면 됐다" 로 판정한 자리다(#25):
+    (a) 백필이 `r["name"] = ke.get(e) or e` 로 **번역이 없어도** 이름을 채우고
+        그 종목을 `miss` 에서 뺐다 → 中文 native 번역이 안 돌고, 렌더 쪽은
+        `_enrich_incomplete` 가 '다 찼다' 로 봐 워밍도 안 걸린다.
+    (b) 번역기가 `if kr:` 만 보고 **한자 그대로인 답**을 영구 캐시에 넣었다 →
+        한 번 굳으면 다시는 안 고쳐진다.
+    """
+
+    def test_clean_answer_strips_an_echoed_ticker(self):
+        """모델이 입력 형식(`티커 | 현지명`)을 되읊은 답을 벗긴다."""
+        from bot.chart_translate import clean_answer
+        assert clean_answer("3296.TWO | 승덕") == "승덕"
+        assert clean_answer(" 2236.TW  |  바이다 ") == "바이다"
+        # 한글 이름은 건드리지 않는다(되읊기 패턴이 아니다).
+        assert clean_answer("타이쑤화") == "타이쑤화"
+        assert clean_answer("百達-KY") == "百達-KY"
+        # 파이프가 있어도 앞이 티커꼴이 아니면 그대로 — 남의 이름을 자르면 안 된다.
+        assert clean_answer("승덕 | 화학") == "승덕 | 화학"
+
+    def test_han_answer_is_not_accepted_as_a_translation(self):
+        """한자 그대로면 번역이 아니다 — 캐시에 넣으면 영구히 굳는다."""
+        from bot.chart_translate import looks_translated
+        assert looks_translated("百達-KY", "百達-KY") is False   # 에코
+        assert looks_translated("昶瑞機電", "昶瑞機電") is False
+        assert looks_translated("三商電", "") is False
+        # 한글이 섞였으면 받는다(`百達-KY → 바이다-KY`).
+        assert looks_translated("百達-KY", "바이다-KY") is True
+        # 영문 통용명도 받는다 — 한자가 없으면 번역이다(TSMC·UMC 정책).
+        assert looks_translated("台積電", "TSMC") is True
+
+    def test_translator_records_the_miss_so_it_stops_repaying(self, tmp_path,
+                                                              monkeypatch):
+        """거부한 답을 기록 안 하면 **매 수집마다 다시 묻는다**(#348).
+
+        그리고 기록은 **프롬프트 지문**에 묶인다 — 영구 기록이면 프롬프트를
+        고쳐도 재시도가 영영 없다(#171·#119).
+        """
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_CACHE", tmp_path / "t.json")
+        monkeypatch.setattr(ct, "_MISS_CACHE", tmp_path / "m.json")
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        monkeypatch.setattr(ct, "_log_usage", lambda *a, **k: None)
+        calls = []
+
+        def _fake(_key, prompt, **kw):
+            calls.append(prompt)
+            return ("1. 昶瑞機電", 1, 1)      # 한자 그대로 — 번역 아님
+
+        import bot.screener as sc
+        monkeypatch.setattr(sc, "_call_pro", _fake)
+        assert ct.translate_titles_kr(["昶瑞機電"]) == {}      # 거부
+        assert ct.translate_titles_kr(["昶瑞機電"]) == {}
+        assert len(calls) == 1, "거부한 항목을 다시 물었다(비용이 샌다)"
+        # 프롬프트가 바뀌면 다시 묻는다.
+        monkeypatch.setattr(ct, "_TITLE_PROMPT", ct._TITLE_PROMPT + "x")
+        ct.translate_titles_kr(["昶瑞機電"])
+        assert len(calls) == 2, "프롬프트를 고쳤는데 재시도가 없다"
+
+    def test_a_line_the_model_never_answered_is_also_recorded(self, tmp_path,
+                                                              monkeypatch):
+        """모델이 **줄을 빠뜨린** 경우도 실패다 — 안 적으면 매번 다시 묻는다.
+
+        ⚠️ 이 테스트가 없는 동안 그 기록 줄은 **발화 경로가 없었다**(뮤테이션
+        M3 이 8 passed 로 통과 — #291·#91). 거부 경로만 재면 '답이 아예 안 온'
+        경로는 무가드다.
+        """
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_CACHE", tmp_path / "t.json")
+        monkeypatch.setattr(ct, "_MISS_CACHE", tmp_path / "m.json")
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        monkeypatch.setattr(ct, "_log_usage", lambda *a, **k: None)
+        calls = []
+        import bot.screener as sc
+
+        def _fake(_key, prompt, **kw):
+            calls.append(prompt)
+            return ("1. 타이쑤화", 1, 1)      # 2번 줄이 통째로 빠졌다
+        monkeypatch.setattr(sc, "_call_pro", _fake)
+        assert ct.translate_titles_kr(["台塑化", "三商電"]) == {"台塑化": "타이쑤화"}
+        # 두 번째 호출은 **빠진 줄을 다시 묻지 않는다**(둘 다 판정이 끝났다).
+        assert ct.translate_titles_kr(["台塑化", "三商電"]) == {"台塑化": "타이쑤화"}
+        assert len(calls) == 1, "응답에 없던 줄을 다시 물었다(비용이 샌다)"
+
+    def test_translator_caches_a_real_translation(self, tmp_path, monkeypatch):
+        """반대 증거 — 멀쩡한 답은 그대로 캐시된다(#25).
+
+        거부 가드가 **전부** 거부해도 위 테스트는 통과하므로 이 짝이 필요하다.
+        """
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_CACHE", tmp_path / "t.json")
+        monkeypatch.setattr(ct, "_MISS_CACHE", tmp_path / "m.json")
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        monkeypatch.setattr(ct, "_log_usage", lambda *a, **k: None)
+        import bot.screener as sc
+        monkeypatch.setattr(sc, "_call_pro",
+                            lambda *a, **k: ("1. 3296.TWO | 승덕", 1, 1))
+        # 되읊은 접두까지 벗겨서 캐시된다.
+        assert ct.translate_titles_kr(["承德科技"]) == {"承德科技": "승덕"}
+        assert ct.translate_titles_kr(["承德科技"], cache_only=True) == {
+            "承德科技": "승덕"}
+
+    def test_tw_backfill_falls_through_to_the_native_name(self, monkeypatch):
+        """(a) 의 재현 — longName 이 있으면 中文 번역을 건너뛰던 그 자리.
+
+        ⚠️ 헬퍼만 재면 이 결함을 못 본다(#20) — `_backfill_korean_names` 를
+        통째로 태운다. 옛 판은 `百達-KY` 가 longName 으로 오면 그걸 그대로
+        이름에 넣고 native 번역을 아예 안 불렀다.
+        """
+        import bot.finviz_client as fc
+        rows = [{"ticker": "2236.TW", "name": "百達-KY"},
+                {"ticker": "6505.TW", "name": "台塑化"}]
+        # longName 은 **또 다른 한자 문자열**이다(실제 yfinance TW 소형주 모양)
+        # — 옛 판은 이걸 이름에 그대로 넣어 원문보다 더 긴 한자로 바꿔 놓고
+        # native 번역을 건너뛰었다(#155 픽스처는 원천이 실제로 내는 모양대로).
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, **kw: {"2236.TW": "百達精密工業股份有限公司",
+                                               "6505.TW": "Formosa Petrochemical"})
+        seen = []
+
+        def _tt(titles, cache_only=False):
+            seen.append(list(titles))
+            return {"Formosa Petrochemical": "타이쑤화", "百達-KY": "바이다"}
+
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "translate_titles_kr", _tt)
+        fc._backfill_korean_names(rows, "TW")
+        got = {r["ticker"]: r["name"] for r in rows}
+        assert got["6505.TW"] == "타이쑤화", got
+        # 핵심: longName 이 있어도 **번역이 없으면** native 번역까지 간다.
+        assert got["2236.TW"] == "바이다", got
+        assert any("百達-KY" in t for t in seen[1:]), seen
+
+    def test_tw_backfill_prefers_english_over_han(self, monkeypatch):
+        """둘 다 번역이 없으면 **한자보다 영문**을 둔다 — 화면이 덜 틀린다."""
+        import bot.finviz_client as fc
+        rows = [{"ticker": "7642.TW", "name": "昶瑞機電"}]
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, **kw: {"7642.TW": "Chang Rui Electric"})
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda titles, cache_only=False: {})
+        fc._backfill_korean_names(rows, "TW")
+        assert rows[0]["name"] == "Chang Rui Electric", rows
+
+    def test_render_strips_a_suffix_drifted_echo(self):
+        """19행 그대로 — 티커가 `3296.TW` 인데 이름이 `3296.TWO | 승덕`.
+
+        정확 일치만 벗기던 옛 판은 이 행을 통째로 내보냈다(#18 이미 구워진
+        캐시는 렌더가 벗겨야 한다).
+        """
+        from bot.highlow_render import _strip_dup_ticker
+        assert _strip_dup_ticker("3296.TW", "3296.TWO | 승덕") == "승덕"
+        assert _strip_dup_ticker("0004.HK", "0004.HK | 구룡창") == "구룡창"
+        # 되읊기가 아닌 이름은 그대로(반대 증거, #25).
+        assert _strip_dup_ticker("2236.TW", "百達-KY") == "百達-KY"
+        assert _strip_dup_ticker("6505.TW", "타이쑤화") == "타이쑤화"
+
+    def test_enrich_leaves_untranslated_open_for_warming(self, monkeypatch):
+        """(a) 의 렌더판 — 한자뿐이면 `name_kr` 을 **비워** 워밍이 걸리게.
+
+        채워 두면 `_enrich_incomplete` 가 '다 찼다' 로 봐 백그라운드 번역이
+        영영 안 돈다(#25 '있다' 만 묻는 검사는 눈이 먼다).
+        """
+        import bot.chart_translate as ct
+        import bot.finviz_client as fc
+        import bot.highlow_render as hr
+        items = [{"ticker": "7642.TW", "name": "昶瑞機電"}]
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, **kw: {"7642.TW": "昶瑞機電"})
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda titles, cache_only=False: {})
+        monkeypatch.setattr(fc, "_industries_for", lambda *a, **k: {})
+        meta = hr._enrich_compute(["7642.TW"], items, "TW", False, True, False)
+        assert not (meta.get("7642.TW") or {}).get("name_kr"), meta
+        assert hr._enrich_incomplete(meta, ["7642.TW"], False, True) is True
+
+
 class TestVenueAxisAndUnparsed20260917:
     """2026-09-17 VM 프로브가 ④ 를 절반 확정했고, 수입 보드 0건을 로컬에서
     가를 도구가 없었다.
