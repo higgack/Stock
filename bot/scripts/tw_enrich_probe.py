@@ -35,6 +35,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 import time
 
@@ -167,7 +168,12 @@ def name_rows_diag(items: list, *, titles: dict, names: dict, miss: dict,
         if kr:
             branch = ("by_ticker" if (names or {}).get(tk)
                       else "by_longname" if (titles or {}).get(en) else "by_title")
-            label = f"캐시가 풂 → {kr}"
+            # 어느 캐시가 풀었는지 적는다 — 값이 이상할 때 **어디를 고칠지**가
+            # 그걸로 정해진다(VM 실측 2026-09-17: 캐시 값에 되읊기 접두가
+            # 구워져 있었다). '캐시가 풂' 만 적으면 그다음을 사람이 짐작한다(#82).
+            gate = {"by_ticker": "티커 캐시", "by_longname": "longName→제목 캐시",
+                    "by_title": "제목 캐시"}[branch]
+            label = f"{gate}가 풂 → {kr}"
         elif not has_han(nm):
             branch, label = (("korean", "") if _has_hangul(nm)
                              else ("latin", "원천 이름이 한자가 아님(영문/숫자)"))
@@ -204,6 +210,25 @@ def _has_hangul(s: str) -> bool:
     return any("\uac00" <= c <= "\ud7a3" for c in s or "")
 
 
+def suspicious_values(rows: list) -> list:
+    """캐시가 풀어 준 값 중 **이름 같지 않은** 것 — [(티커, 값)](순수).
+
+    셋을 본다: (a) 티커가 값 안에 박혀 있다(되읊기) (b) 숫자·구두점으로 시작
+    한다(번호 접두) (c) 원문 그대로다. 정화는 읽는 경계가 하지만, **새 모양의
+    되읊기**는 여기서 먼저 보인다(#381 "한 모양만 막으면 다른 모양으로 온다").
+    """
+    out = []
+    for r in rows:
+        if not str(r.get("branch") or "").startswith("by_"):
+            continue
+        v = str(r.get("label") or "").split("→", 1)[-1].strip()
+        tk, nat = str(r.get("ticker") or ""), str(r.get("native") or "")
+        code = tk.split(".")[0]
+        if (code and code in v) or re.match(r"^\W*\d", v) or (nat and v == nat):
+            out.append((tk, v))
+    return out
+
+
 def name_verdict(rows: list) -> list:
     """⑥ 판정 — 대조 0건은 ✅ 가 아니다(#54). 고칠 수 있는 것만 ❌ 로(#260)."""
     if not rows:
@@ -232,6 +257,15 @@ def name_verdict(rows: list) -> list:
     if c.get("no_name"):
         lines.append(f"❓ {c['no_name']}종목은 원천 이름을 못 받아 판정 불가 — "
                      "인자 없이 돌리면 화면과 같은 입력을 잰다(#35·#54).")
+    # ⚠️ '한자가 없나' 만 재면 **값이 값다운가** 는 안 잰 것이다 — 2026-09-17
+    # 실측에서 캐시가 `1709.TW | 호팍스`·`9. 레트로닉스` 인데 ⑥ 은 ✅ 를 찍었다.
+    # 한 모양을 막아도 다른 모양으로 오므로(#381) 규율이 아니라 가드로 둔다(#119).
+    odd = suspicious_values(rows)
+    if odd:
+        lines.append(f"⚠️ 값이 수상한 {len(odd)}종목 — 되읊기·번호 접두가 남았을 수 "
+                     "있다(정화는 읽는 경계가 하지만, 새 모양이면 여기서 먼저 보인다): "
+                     + " · ".join(f"{t} {v}" for t, v in odd[:5])
+                     + (f" (외 {len(odd) - 5}종목)" if len(odd) > 5 else ""))
     if not han and not c.get("no_name"):
         lines.append("✅ 한자로 남은 종목 없음")
     return lines

@@ -527,6 +527,54 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
   이라 보드 각주는 그대로다(#375).
 - (d) 유니버스가 '정규장 무버 ~200종목' 이라 전 상장이 아니다.
 
+## 구워진 번역 캐시의 되읊기 접두 (2026-09-17, #381)
+
+위 진단(#380)을 VM 에서 돌리자 캐시 값 자체가 오염돼 있었다 — `1709.TW | 호팍스`
+(~20/60건) · `9. 레트로닉스`(번호 접두) · `3296.TWO | 승덕`. `clean_answer` 는
+**쓰기 경로**에만 있었고 번호 접두는 패턴에 아예 없었다. 벗기기를 **읽는 경계**로
+옮겨 구워진 값도 렌더타임에 따라오게 했다(#18·#270).
+
+| 계약 | 강제 | 테스트 |
+|---|---|---|
+| 번호 접두(`9. `·`2) `)를 벗긴다 | ✅ 자동 | `test_clean_answer_strips_a_numbered_prefix` |
+| 번호 뒤 **공백을 요구**한다(`3.5인치` 를 안 자른다, #146) | ✅ 자동 | `test_a_number_without_a_space_is_left_alone` |
+| 되읊기가 겹쳐도(`9. 1709.TW \| 호팍스`) 벗긴다 | ✅ 자동 | `test_clean_answer_strips_a_numbered_prefix` |
+| **구워진 캐시**를 읽을 때 벗긴다(제목 관문) | ✅ 자동 | `test_the_baked_cache_is_cleaned_on_read` |
+| 티커 관문도 같은 규율(#38 — 안 하면 화면마다 이름이 다르다) | ✅ 자동 | `test_the_ticker_gate_is_cleaned_too` |
+| 벗겨서 비거나 번호 찌꺼기·원문 그대로면 **없는 것으로**(#54·#171) | ✅ 자동 | `test_a_value_that_is_only_an_echo_is_treated_as_missing` |
+| 프로브가 **어느 캐시**가 풀었는지 적는다(#82) | ✅ 자동 | `test_the_probe_says_which_cache_resolved_it` |
+| 버린 구운 값을 **다시 한 번 묻는다**(안 그러면 영구 빈칸 #171) | ✅ 자동 | `test_a_dropped_baked_value_is_asked_again_exactly_once`(리뷰 Blocking) |
+| 또 junk 면 miss 로 남아 **두 번째부터는 안 묻는다**(수렴 #348) | ✅ 자동 | 같은 테스트 |
+| 더 **행동 가능한** 사유가 남는다(폴백이 안 덮는다, #275·#109) | ✅ 자동 | 같은 테스트 |
+| **쓰기 관문 = 읽기 관문**(갈리면 영구 stuck, #38) | ✅ 자동 | `test_the_write_gate_matches_the_read_gate` |
+| names 관문도 같은 수렴(형제 비대칭 금지 #38) | ✅ 자동 | `test_the_names_gate_converges_the_same_way` |
+| 버린 값은 **키 자체가 없다**(`{tk: ""}` 는 '해소됨'으로 읽힌다, #136) | ✅ 자동 | `test_the_ticker_gate_is_cleaned_too` |
+| `clean_answer` 는 **멱등**(렌더가 한 번 더 적용한다, 리뷰 H2) | ✅ 자동 | `test_clean_answer_is_idempotent` |
+| 번호는 **배치 줄 번호 범위**일 때만 벗긴다(연도·큰 수 보호) | ✅ 자동 | `test_the_number_must_look_like_a_batch_index`(리뷰 M3·M4) |
+| 숫자로 시작하는 **실제 상호**는 안 자른다(#146) | ✅ 자동 | `test_real_company_names_survive` |
+| ⑥ 이 **값이 값다운가**를 잰다(새 모양의 되읊기, #119) | ✅ 자동 | `test_the_verdict_flags_a_value_that_is_not_a_name`(리뷰 M2) |
+| 관심종목의 **영속된 되읊기**도 재해석한다(#38·#18) | ✅ 자동 | `test_a_persisted_echo_in_favorites_is_reinterpreted`(리뷰 M5) |
+
+모두 `tests/test_regression.py::TestCachedTranslationEchoPrefix20260917`. 뮤테이션
+7종 + 리뷰 fix 되돌리기 16종 전부 발화(넷은 처음에 눈멀어 다시 썼다 — 형제 관문
+미측정 둘 · 부분문자열이 대신 만족 둘).
+
+**이 검사들이 못 보는 축**(#274):
+- (a) **번역이 맞는 이름인지**는 안 잰다 — `6870.TW 騰雲 → 레트로닉스` 가 맞는
+  회사명인지 확인할 원천이 없다(미측정, #165).
+- (b) 정화는 **읽을 때** 한다 — 디스크 파일은 다음 쓰기가 덮을 때까지 오염된
+  채다. 이제 그 쓰기는 온다(버린 값이 `todo` 에 들어가므로).
+- (c) 되읊기의 **다른 모양**(따옴표·괄호 접두 등)은 안 막는다 — 대신 ⑥ 의 값
+  온전성 축이 **보이게** 한다(막는 것과 보이는 것은 다르다).
+- (d) 이 캐시는 회사명뿐 아니라 **공시 제목**도 담는다(`chart_events`·
+  `market_overview`). 번호 벗기기는 `_MAX_BATCH` 이하만 하지만, 제목이 정말
+  `N. ` 로 시작하면(N ≤ 40) 그 번호는 잘린다 — 관측된 적은 없다.
+- (e) 값을 **복사해 영속**하는 표면은 읽는 경계를 안 탄다 — 관심종목은 재해석
+  게이트를 넓혔지만, 볼린저 `rows_<M>.json` 의 옛 세션 행은 창(5세션)이 밀릴
+  때까지 옛 값이다(#325).
+- (f) `translate_names_en`/`translate_industries_en` 은 같은 프롬프트 모양인데
+  정화가 **없다** — 오늘은 호출부가 0건이라 피해가 없다(§작업 원칙 죽은 경로).
+
 ## 대만 한글명 — "왜 아직 한자인가" 를 종목별로 (2026-09-17, #380)
 
 사용자 "최대한 한글화 한것 맞지? 5번은 넘게 이거 돌리는듯하네". 거부된 번역은

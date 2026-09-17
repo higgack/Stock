@@ -143,10 +143,64 @@ def has_han(name: str | None) -> bool:
     return bool(_HAN_RE.search(name or ""))
 
 
+# 모델이 **번호까지 되읊는** 경우 — 줄 파서가 앞 번호 하나를 먹고 나면 값에
+# `9. ` 가 남는다. VM 실측(2026-09-17 `tw_enrich_probe ⑥`): `6870.TW` 의 캐시
+# 값이 `9. 레트로닉스` 였고 그게 화면에 그대로 떴다(사용자 캡처 16행).
+# `_ECHO_RE` 는 파이프가 있어야 걸리므로 이건 못 잡는다.
+_NUM_ECHO_RE = re.compile(r"^(\d{1,3})\s*[.)]\s+(.+)$")
+
+
+def _strip_once(a: str) -> str:
+    """되읊기 접두 한 겹(순수). 못 벗기면 원본 그대로."""
+    m = _ECHO_RE.match(a)
+    if m:
+        return m.group(1).strip()
+    m = _NUM_ECHO_RE.match(a)
+    # ⚠️ 이 번호는 **배치 줄 번호의 되읊기**다 — 그러니 1..`_MAX_BATCH` 밖이면
+    # 값의 일부다. 이 상한이 `2026. 3분기 실적발표`(연도)·`100. …` 를 지키는
+    # 유일한 장치이고, 이 캐시엔 회사명뿐 아니라 **공시 제목**도 들어온다
+    # (`chart_events`·`market_overview`). 독립 리뷰 2026-09-17 M3·M4.
+    if m and 1 <= int(m.group(1)) <= _MAX_BATCH:
+        return m.group(2).strip()
+    return a
+
+
 def clean_answer(answer: str) -> str:
-    """모델 답에서 되읊은 `티커 | ` 접두를 벗긴다(순수). 없으면 원본."""
-    m = _ECHO_RE.match((answer or "").strip())
-    return m.group(1).strip() if m else (answer or "").strip()
+    """모델 답에서 되읊은 `티커 | `·`N. ` 접두를 벗긴다(순수). 없으면 원본.
+
+    ⚠️ **불동점까지** 벗긴다(상한 4 — 무제한 루프 금지 #71). 고정 2회로 두면
+    3중 되읊기에서 값이 **부분만** 벗겨지고, 그러면 한 번 더 벗기는 급등락
+    렌더(`_strip_dup_ticker`)와 안 벗기는 볼린저가 **다시 갈린다**(#38, 독립
+    리뷰 H2). 즉 이 함수의 진짜 계약은 **멱등**이다.
+    번호 뒤 **공백을 요구**한다 — `3.5인치` 같은 값을 자르지 않기 위해서다(#146).
+    """
+    a = (answer or "").strip()
+    for _ in range(4):
+        nxt = _strip_once(a)
+        if nxt == a:
+            break
+        a = nxt
+    return a
+
+
+_JUNK_RE = re.compile(r"^\d{1,3}\s*[.)]?$")
+
+
+def usable_cached(key: str, value) -> str:
+    """구워진 캐시 값을 **쓸 수 있게** 다듬어 돌려준다(못 쓰면 "").
+
+    되읊기 접두를 벗기고(`clean_answer`), 벗긴 뒤 (a) 비었거나 (b) 번호 찌꺼기
+    (`9.`)거나 (c) 원문 그대로면 **캐시에 없는 것으로 본다** — 그래야 다음
+    배치가 다시 묻는다. 빈 이름을 화면에 내보내면 티커만 남는다(#43·#54).
+
+    ⚠️ 이 술어는 **쓰기 관문과 같아야** 한다(`looks_translated` 와 AND). 읽기가
+    더 엄하면 쓰기가 통과시킨 값을 읽기가 버리고, `todo` 가 그 키를 다시 묻지
+    않아 **영구 stuck** 이 된다(#38·#171, 독립 리뷰 2026-09-17 Blocking 실측).
+    """
+    v = clean_answer(str(value or ""))
+    if not v or _JUNK_RE.match(v) or v == str(key or "").strip():
+        return ""
+    return v
 
 
 def looks_translated(src: str, answer: str) -> bool:
@@ -434,11 +488,14 @@ def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:
     if not uniq:
         return {}
     cache = _load_name_kr()
-    out = {tk: cache[tk] for tk, _ in uniq if cache.get(tk)}
+    # 읽을 때 되읊기 접두를 벗긴다 — 형제 관문과 같은 규율(위 주석·#38).
+    out = {tk: usable_cached(tk, cache[tk]) for tk, _ in uniq if cache.get(tk)}
+    out = {tk: v for tk, v in out.items() if v}
     fp = _prompt_fp(_NAME_PROMPT)
     miss_cache = {} if cache_only else _miss_load()
+    # 버린 값은 다시 묻는다 — 형제 관문과 같은 규율(위 주석·#38·#171).
     todo = [(tk, nm) for tk, nm in uniq
-            if tk not in cache and not _miss_skip(miss_cache, tk, fp)][:_MAX_BATCH]
+            if not out.get(tk) and not _miss_skip(miss_cache, tk, fp)][:_MAX_BATCH]
     if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
     api_key = _effective_key()
@@ -446,6 +503,7 @@ def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:
         return out
     lines = "\n".join(f"{i + 1}. {tk} | {nm}" for i, (tk, nm) in enumerate(todo))
     prompt = _NAME_PROMPT + lines
+    explained: set = set()      # 구체적 사유를 이미 적은 키(아래 폴백이 안 덮게)
     try:
         from bot.screener import _call_pro
         text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
@@ -462,17 +520,18 @@ def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:
             # 되읊은 `티커 | ` 접두를 벗기고(실측 `3296.TWO | 승덕`) **번역인지**
             # 판정한다 — 한자 그대로면 캐시에 넣지 않는다(#25·#43).
             kr = clean_answer(m.group(2))
-            if looks_translated(src, kr):
+            if looks_translated(src, kr) and usable_cached(tk, kr):
                 out[tk] = kr
                 cache[tk] = kr
                 miss_cache.pop(tk, None)
             else:
+                explained.add(tk)
                 _miss_record(miss_cache, tk, fp,
                              f"모델이 번역을 못 냈습니다(답={kr[:24]!r})")
         # 답이 아예 안 온 줄도 실패다 — 기록이 없으면 매 수집마다 다시 묻는다
         # (#348 예산 밖은 언젠가 채워지나).
         for tk, _src in todo:
-            if tk not in out:
+            if tk not in out and tk not in explained:   # 구체적 사유를 덮지 않는다
                 _miss_record(miss_cache, tk, fp, "모델 응답에 그 줄이 없습니다")
         _save_name_kr(cache)
         _atomic_write_json(_MISS_CACHE, miss_cache)
@@ -491,11 +550,21 @@ def translate_titles_kr(titles: list[str], cache_only: bool = False) -> dict:
     if not uniq:
         return {}
     cache = _load()
-    out = {t: cache[t] for t in uniq if t in cache and cache[t]}
+    # ⚠️ **읽을 때** 벗긴다 — 이미 구워진 캐시는 코드를 고쳐도 안 바뀐다(#18).
+    # VM 실측(2026-09-17 ⑥): 60종목 중 ~20개가 `1709.TW | 호팍스`·`9. 레트로닉스`
+    # 처럼 되읊기 접두를 달고 캐시에 앉아 있었고, 렌더가 벗기는 경로(급등락)와
+    # 안 벗기는 경로(볼린저)가 갈려 화면마다 달랐다(#38). 여기서 한 번 벗기면
+    # 모든 소비자가 같은 값을 본다. 벗겨서 비면 캐시에 없는 것으로 본다.
+    out = {t: usable_cached(t, cache[t]) for t in uniq if t in cache and cache[t]}
+    out = {t: v for t, v in out.items() if v}
     fp = _prompt_fp(_TITLE_PROMPT)
     miss_cache = {} if cache_only else _miss_load()
+    # ⚠️ `t not in cache` 로 두면 **버린 값이 영구 빈칸**이 된다 — 키는 그대로
+    # 남아 재질의가 영영 안 온다(#171, 독립 리뷰 Blocking 실측: out={} · LLM 0).
+    # 쓰기 관문이 같은 술어를 쓰므로(아래) 다시 물어 또 junk 면 miss 로 남아
+    # 두 번째부터는 안 묻는다 — 폭주 없이 수렴한다(#348).
     todo = [t for t in uniq
-            if t not in cache and not _miss_skip(miss_cache, t, fp)][:_MAX_BATCH]
+            if not out.get(t) and not _miss_skip(miss_cache, t, fp)][:_MAX_BATCH]
     if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
     api_key = _effective_key()
@@ -503,6 +572,7 @@ def translate_titles_kr(titles: list[str], cache_only: bool = False) -> dict:
         return out  # graceful — 원문 유지
     lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(todo))
     prompt = _TITLE_PROMPT + lines
+    explained: set = set()      # 구체적 사유를 이미 적은 키(아래 폴백이 안 덮게)
     try:
         from bot.screener import _call_pro
         text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
@@ -519,15 +589,23 @@ def translate_titles_kr(titles: list[str], cache_only: bool = False) -> dict:
             kr = clean_answer(m.group(2))
             # 한자 그대로인 답을 캐시에 넣으면 그게 '한국어' 로 굳는다(#25) —
             # 이번 라운드에 사용자가 본 `百達-KY`·`三商電` 이 그 상태다.
-            if looks_translated(src, kr):
+            # 쓰기 수락 조건 = **읽기와 같은 술어**여야 수렴한다 — 느슨하면
+            # `9.` 같은 junk 가 캐시에 앉고 읽는 쪽이 버려 영구 stuck 이다
+            # (독립 리뷰 Blocking 실측: looks_translated('騰雲','9.')=True ·
+            # usable_cached=''). #38 두 관문이 갈리면 반드시 사고가 난다.
+            if looks_translated(src, kr) and usable_cached(src, kr):
                 out[src] = kr
                 cache[src] = kr
                 miss_cache.pop(src, None)
             else:
+                explained.add(src)
                 _miss_record(miss_cache, src, fp,
                              f"모델이 번역을 못 냈습니다(답={kr[:24]!r})")
         for t in todo:
-            if t not in out:
+            # ⚠️ 이미 **더 구체적인** 사유를 적은 항목은 덮지 않는다 — 덮으면
+            # "답=…" 원문 표본이 사라지고 덜 행동 가능한 문장이 남는다(#275·#109,
+            # 독립 리뷰 Blocking 을 고치다 실측으로 드러났다).
+            if t not in out and t not in explained:
                 _miss_record(miss_cache, t, fp, "모델 응답에 그 줄이 없습니다")
         _save(cache)
         _atomic_write_json(_MISS_CACHE, miss_cache)

@@ -12042,7 +12042,12 @@ class TestFavoritesKoreanName:
         assert '"name_kr": _resolve_kr_name(' in src, "add_favorite name_kr 누락"
         # 기존 엔트리는 _refresh 병렬 풀에서 (재)해석 — 부재 OR 영문(==name)
         # fallback 이면 재해석(영문 영속 자가치유)
-        assert "if not _cur_kr or _cur_kr == f.get(\"name\"):" in src, "name_kr 자가치유 게이트 누락"
+        # ⚠️ 2026-09-17: 게이트에 **되읊기 영속**(`3296.TWO | 승덕`) 축이 붙어
+        # 이 리터럴이 깨졌다 — 계약은 "부재·영문폴백·되읊기면 재해석" 이지 그
+        # 표현이 아니다(#19·#222). 술어의 세 갈래를 뜻으로 본다.
+        assert "_cur_kr = f.get(\"name_kr\")" in src, "자가치유 게이트 누락"
+        assert "not _cur_kr" in src and '_cur_kr == f.get("name")' in src
+        assert "_echoed" in src, "되읊기 영속분 재해석 축 누락(#381)"
 
     def test_refresh_self_heals_english_name_kr(self, monkeypatch):
         # #419 이전 TW 가 영문으로 name_kr 영속된 것을 _refresh 가 자가치유:
@@ -69306,6 +69311,219 @@ class TestVenueExclusiveWindowLowerBound20260917:
         out = capsys.readouterr().out
         assert "cd ~/stock && .venv/bin/python -m bot.venue_universe" in out
         assert "전용 창 관측 하한 1종목" in out
+
+
+class TestCachedTranslationEchoPrefix20260917:
+    """모델이 **입력 형식을 되읊은 값**이 캐시에 구워져 화면까지 샜다(실수 #381).
+
+    VM 실측(`tw_enrich_probe ⑥`, 무버 60종목): 캐시 값이 `1709.TW | 호팍스`
+    (~20건) · `9. 레트로닉스`(번호 접두) · `3296.TWO | 승덕`(접미사 어긋난
+    되읊기)였다. 사용자 캡처 16행의 `9. 레트로닉스` 가 바로 그것이다.
+    `clean_answer` 는 **쓰기** 경로에만 있었고 파이프가 없는 번호 접두는 아예
+    못 잡았다 — 구워진 값은 코드를 고쳐도 안 바뀐다(#18).
+    """
+
+    @pytest.fixture()
+    def ct(self, tmp_path, monkeypatch):
+        import bot.chart_translate as ct
+        for attr, leaf in (("_CACHE", "t.json"), ("_NAME_KR_CACHE", "n.json"),
+                           ("_MISS_CACHE", "m.json")):
+            monkeypatch.setattr(ct, attr, tmp_path / leaf)
+        return ct
+
+    def test_clean_answer_strips_a_numbered_prefix(self, ct):
+        """`_ECHO_RE` 는 파이프를 요구해 `9. 레트로닉스` 를 못 잡는다."""
+        assert ct.clean_answer("9. 레트로닉스") == "레트로닉스"
+        assert ct.clean_answer("2) 가대") == "가대"
+        assert ct.clean_answer("9. 1709.TW | 호팍스") == "호팍스"   # 둘이 겹친 경우
+
+    def test_a_number_without_a_space_is_left_alone(self, ct):
+        """번호 뒤 **공백을 요구**한다 — 아니면 값을 자른다(#146 증상이 아니라
+        원인으로 거를 것)."""
+        assert ct.clean_answer("3.5인치 디스플레이") == "3.5인치 디스플레이"
+        assert ct.clean_answer("암트란") == "암트란"
+
+    def test_the_baked_cache_is_cleaned_on_read(self, ct):
+        """쓰기 경로만 고치면 **이미 구워진** 값은 영원히 그대로다(#18).
+        읽는 자리에서 벗기면 모든 소비자가 같은 값을 본다(#38)."""
+        import json
+        ct._CACHE.write_text(json.dumps(
+            {"騰雲": "9. 레트로닉스", "和益": "1709.TW | 호팍스", "瑞軒": "암트란"},
+            ensure_ascii=False), encoding="utf-8")
+        got = ct.translate_titles_kr(["騰雲", "和益", "瑞軒"], cache_only=True)
+        assert got == {"騰雲": "레트로닉스", "和益": "호팍스", "瑞軒": "암트란"}, got
+
+    def test_the_ticker_gate_is_cleaned_too(self, ct):
+        """형제 관문이 갈리면 화면마다 이름이 다르다(#38)."""
+        import json
+        ct._NAME_KR_CACHE.write_text(json.dumps(
+            {"3296.TW": "3296.TWO | 승덕", "6870.TW": "6870.TW"},
+            ensure_ascii=False), encoding="utf-8")
+        # ⚠️ 버려진 값은 키 **자체가 없어야** 한다 — `{tk: ""}` 로 나가면 호출부가
+        # 전부 `not in knm` 으로 해소 여부를 보므로 '해소된 것처럼' 보이고
+        # 볼린저 2차 캐시·워밍이 통째로 죽는다(#136, 독립 리뷰 H1 실측).
+        got = ct.translate_names_kr([("3296.TW", "勝德"), ("6870.TW", "騰雲")],
+                                    cache_only=True)
+        assert got == {"3296.TW": "승덕"}, got
+
+    def test_a_value_that_is_only_an_echo_is_treated_as_missing(self, ct):
+        """벗기고 나서 비면 캐시에 **없는 것**으로 본다 — 빈 이름을 화면에
+        내보내면 티커만 남는다(#43·#54)."""
+        import json
+        ct._CACHE.write_text(json.dumps(
+            {"騰雲": "9. ", "和益": "12", "瑞軒": "瑞軒"}, ensure_ascii=False),
+            encoding="utf-8")
+        assert ct.translate_titles_kr(["騰雲", "和益", "瑞軒"],
+                                      cache_only=True) == {}
+        assert ct.usable_cached("騰雲", "9. 레트로닉스") == "레트로닉스"
+
+    def test_a_dropped_baked_value_is_asked_again_exactly_once(self, ct,
+                                                               monkeypatch):
+        """⚠️ 독립 리뷰 Blocking(실측): 버린 값도 `t in cache` 는 참이라 `todo`
+        에 안 들어가 **영구 빈칸**이었다 — 이 줄이 인용한 #171 그 자체다.
+        그리고 또 junk 면 miss 로 남아 두 번째부터는 안 묻는다(#348 수렴)."""
+        import json
+        import bot.screener as sc
+        ct._CACHE.write_text(json.dumps({"騰雲": "9."}, ensure_ascii=False),
+                             encoding="utf-8")
+        calls = []
+
+        def _stub(*a, **k):
+            calls.append(1)
+            return ("1. 9.", 1, 1)                 # 모델이 또 junk 를 낸다
+        monkeypatch.setattr(sc, "_call_pro", _stub)
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        assert ct.translate_titles_kr(["騰雲"]) == {} and len(calls) == 1
+        # 사유는 **더 행동 가능한 쪽**이 남는다 — 폴백 문구가 덮으면 원문
+        # 표본(답=…)이 사라진다(#275·#109).
+        rec = json.loads(ct._MISS_CACHE.read_text(encoding="utf-8"))["騰雲"]
+        assert "답=" in rec["why"], rec
+        assert ct.translate_titles_kr(["騰雲"]) == {} and len(calls) == 1
+
+    def test_the_write_gate_matches_the_read_gate(self, ct, monkeypatch):
+        """두 관문이 갈리면 쓰기가 통과시킨 값을 읽기가 버려 영구 stuck 이다 —
+        `looks_translated('騰雲','9.')` 는 True, `usable_cached` 는 ''(리뷰 실측)."""
+        import json
+        import bot.screener as sc
+        assert ct.looks_translated("騰雲", "9.") is True
+        assert ct.usable_cached("騰雲", "9.") == ""
+        monkeypatch.setattr(sc, "_call_pro", lambda *a, **k: ("1. 9.", 1, 1))
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        ct.translate_titles_kr(["騰雲"])
+        assert json.loads(ct._CACHE.read_text(encoding="utf-8")) == {}, \
+            "쓸 수 없는 값을 캐시에 넣었다"
+
+    def test_the_names_gate_converges_the_same_way(self, ct, monkeypatch):
+        """형제 관문이 갈리면 한쪽만 고쳐진다(#38) — titles 만 재면 names 쪽
+        `todo`·쓰기 게이트가 무가드다(실측: 두 뮤테이션 생존)."""
+        import json
+        import bot.screener as sc
+        ct._NAME_KR_CACHE.write_text(json.dumps({"6870.TW": "9."},
+                                                ensure_ascii=False), encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(sc, "_call_pro",
+                            lambda *a, **k: (calls.append(1), ("1. 9.", 1, 1))[1])
+        monkeypatch.setattr(ct, "_effective_key", lambda: "k")
+        pairs = [("6870.TW", "騰雲")]
+        assert ct.translate_names_kr(pairs) == {} and len(calls) == 1, calls
+        assert json.loads(ct._NAME_KR_CACHE.read_text(encoding="utf-8")) \
+            == {"6870.TW": "9."}, "쓸 수 없는 값을 캐시에 새로 넣었다"
+        assert ct.translate_names_kr(pairs) == {} and len(calls) == 1, "수렴 안 함"
+
+    def test_clean_answer_is_idempotent(self, ct):
+        """`_strip_dup_ticker` 가 이 함수를 **한 번 더** 적용하므로 진짜 계약은
+        멱등이다 — 고정 2회로 두면 3중 되읊기에서 화면마다 값이 갈린다(리뷰 H2)."""
+        for v in ("9. 9. 1709.TW | 호팍스", "1709.TW | 호팍스", "9. 레트로닉스",
+                  "암트란", "3.5인치 디스플레이"):
+            once = ct.clean_answer(v)
+            assert ct.clean_answer(once) == once, v
+        assert ct.clean_answer("9. 9. 1709.TW | 호팍스") == "호팍스"
+
+    def test_the_number_must_look_like_a_batch_index(self, ct):
+        """이 번호는 **배치 줄 번호의 되읊기**다 — 상한 밖이면 값의 일부다.
+        이 캐시엔 공시 제목도 들어오므로(`chart_events`) 연도를 자르면 안 된다
+        (리뷰 M3·M4 — 자릿수 상한·구두점 집합이 무가드였다)."""
+        assert ct.clean_answer("2026. 3분기 실적발표") == "2026. 3분기 실적발표"
+        assert ct.clean_answer("100. 뭐시기") == "100. 뭐시기"
+        assert ct.clean_answer(f"{ct._MAX_BATCH}. 사십") == "사십"
+        assert ct.clean_answer(f"{ct._MAX_BATCH + 1}. 사십일") \
+            == f"{ct._MAX_BATCH + 1}. 사십일"
+        # 구두점은 `.`·`)` 뿐 — 쉼표·읽기표를 넣으면 정당한 값이 잘린다.
+        assert ct.clean_answer("3, 스리엠") == "3, 스리엠"
+        assert ct.clean_answer("3、 산") == "3、 산"
+
+    def test_real_company_names_survive(self, ct):
+        """#146 — 증상이 아니라 원인으로 거를 것. 숫자로 시작하는 실제 상호."""
+        for nm in ("3M", "7-Eleven", "1-800-FLOWERS", "23andMe", "3.5인치 디스플레이",
+                   "百達-KY", "台塑化", "eCloudvalley Digital Technology"):
+            assert ct.clean_answer(nm) == nm, nm
+            assert ct.usable_cached("x", nm) == nm, nm
+
+    def test_the_verdict_flags_a_value_that_is_not_a_name(self):
+        """#381 이 "한 모양만 막으면 다른 모양으로 온다" 고 적어 놓고 코드는
+        라벨만 갈랐다 — 값 온전성 축이 있어야 규율이 아니라 가드다(#119,
+        독립 리뷰 M2). 고칠 수 있으므로 ❌ 가 아니라 ⚠️(#260)."""
+        import bot.scripts.tw_enrich_probe as tp
+        rows = tp.name_rows_diag(
+            [{"ticker": "1709.TW", "name": "和益"},
+             {"ticker": "6870.TW", "name": "騰雲"},
+             {"ticker": "2489.TW", "name": "瑞軒"}],
+            titles={"和益": "1709.TW | 호팍스", "騰雲": "9. 레트로닉스",
+                    "瑞軒": "암트란"}, names={}, miss={}, longnames={})
+        assert [t for t, _ in tp.suspicious_values(rows)] == ["1709.TW", "6870.TW"]
+        # ⚠️ 숫자로 시작하는 티커만 쓰면 `^\W*\d` 가 대신 만족시켜 **티커 포함**
+        # 축이 발화하지 않는다(#75·#91c, 실측). 알파벳 티커로 그 축만 태운다.
+        alpha = tp.name_rows_diag([{"ticker": "TSM", "name": "台積電"}],
+                                  titles={"台積電": "TSM | 티에스엠씨"}, names={},
+                                  miss={}, longnames={})
+        assert [t for t, _ in tp.suspicious_values(alpha)] == ["TSM"], alpha
+        txt = " ".join(tp.name_verdict(rows))
+        assert "값이 수상한 2종목" in txt and "⚠️" in txt, txt
+        assert "❌" not in txt, txt
+        clean = tp.name_rows_diag([{"ticker": "2489.TW", "name": "瑞軒"}],
+                                  titles={"瑞軒": "암트란"}, names={}, miss={},
+                                  longnames={})
+        assert tp.suspicious_values(clean) == []
+        assert "값이 수상한" not in " ".join(tp.name_verdict(clean))
+
+    def test_a_persisted_echo_in_favorites_is_reinterpreted(self, monkeypatch):
+        """정화는 **읽는 경계**가 하는데 관심종목은 값을 복사해 영속한다 — 옛
+        게이트(`name_kr == name`)는 `3296.TWO | 승덕` 을 통과시켜 영구
+        고착이었다(독립 리뷰 M5·#38·#18)."""
+        import inspect
+        import bot.chart_translate as ct
+        import bot.market_favorites as mf
+        # 판정의 재료는 값으로 잰다 — 되읊기는 미해결, 정상 한글명은 해결.
+        assert ct.clean_answer("3296.TWO | 승덕") != "3296.TWO | 승덕"
+        assert ct.clean_answer("승덕") == "승덕"
+        # ⚠️ 게이트는 `get_favorites_with_prices` 안의 **중첩 함수**라 값으로
+        # 못 태운다 — 그 사실이 이 검사의 못 보는 축이다(#274·#20).
+        src = inspect.getsource(mf._compute_favorites_with_prices)
+        assert "clean_answer" in src, "되읊기 판정 재료가 없다"
+        # ⚠️ `"_echoed" in src` 로 재면 **대입만 남기고 조건에서 빼는** 변형이
+        # 통과한다(#75, 실측). 그 이름이 `if` **조건**에 쓰이는지 AST 로 본다.
+        import ast as _ast
+        import textwrap as _tw
+        tree = _ast.parse(_tw.dedent(src))
+        used = [n for n in _ast.walk(tree) if isinstance(n, _ast.If)
+                and any(isinstance(x, _ast.Name) and x.id == "_echoed"
+                        for x in _ast.walk(n.test))]
+        assert used, "되읊기 축이 재해석 조건에 안 쓰인다"
+
+    def test_the_probe_says_which_cache_resolved_it(self):
+        """'캐시가 풂' 만 적으면 값이 이상할 때 **어디를 고칠지**를 사람이
+        짐작한다(#82) — VM 실측이 바로 그 상황이었다."""
+        import bot.scripts.tw_enrich_probe as tp
+        rows = {r["ticker"]: r["label"] for r in tp.name_rows_diag(
+            [{"ticker": "3296.TW", "name": "勝德"},
+             {"ticker": "2489.TW", "name": "瑞軒"},
+             {"ticker": "6689.TW", "name": "伊雲谷"}],
+            titles={"瑞軒": "암트란", "eCloudValley": "이클라우드밸리"},
+            names={"3296.TW": "승덕"}, miss={},
+            longnames={"6689.TW": "eCloudValley"})}
+        assert "티커 캐시가 풂" in rows["3296.TW"], rows
+        assert "제목 캐시가 풂" in rows["2489.TW"], rows
+        assert "longName→제목 캐시가 풂" in rows["6689.TW"], rows
 
 
 class TestTwKoreanNameStuckDiag20260917:
