@@ -66538,6 +66538,22 @@ class TestKrOverBoardMerged20260917:
         assert "15:40–22:00" in lb, lb
         assert lb != ks.window_label("NXT"), lb
 
+    def test_a_span_covering_both_phases_is_named_시간외(self, monkeypatch):
+        """독스트링이 "한 구간이 두 국면에 걸치면 '시간외' 라고만 적는다" 고
+        약속하는데 **오늘 그 조합이 없어** `prev[2] | {kind}` 와 '시간외'
+        분기를 지우는 뮤테이션이 통과한다(독립 리뷰 2026-09-17 MED-2 실측
+        75 passed). 적어 둔 규약은 가드가 있어야 규약이다(#286·#291).
+        """
+        import bot.kr_session as ks
+        # 15:00–16:00 프리 → NXT 애프터(15:40~)와 겹쳐 한 구간이 두 국면이 된다.
+        clash = ((0, 0, 15, 0, "after_close", "마감"),
+                 (15, 0, 16, 0, "pre", "프리마켓"),
+                 (16, 0, 0, 0, "after_close", "마감"))
+        monkeypatch.setitem(ks.VENUES, "ZZZ", clash)
+        lb = ks.union_window_label()
+        assert "시간외 15:00–20:00" in lb, lb
+        assert "프리마켓 15:00" not in lb and "애프터마켓 15:00" not in lb, lb
+
     def test_union_session_names_pre_and_post(self):
         from datetime import datetime
 
@@ -66549,6 +66565,44 @@ class TestKrOverBoardMerged20260917:
         assert union_session(d(16, 30)) == "post"
         assert union_session(d(9, 30)) == ""
         assert union_session(d(20, 30)) == ""
+
+    def test_union_session_is_derived_not_enumerated(self, monkeypatch):
+        """거래소를 열거하면 거래소가 늘 때 조용히 틀린다(#24) — 그런데 위
+        테스트는 오늘 창으로만 재서 `ph = [phase("NXT", now)[0]]` 뮤테이션이
+        **통과한다**(독립 리뷰 2026-09-17 MED-1 실측 75 passed). 어느 거래소도
+        열지 않는 시각에 합성 거래소를 열어 태운다(#91c·#291).
+        """
+        from datetime import datetime
+
+        import bot.kr_session as ks
+        at = datetime(2026, 9, 16, 21, 30, tzinfo=ks.KST)
+        assert ks.union_session(at) == "", "합성 전 전제가 깨졌다"
+        third = ((0, 0, 21, 0, "after_close", "마감"),
+                 (21, 0, 22, 0, "after", "애프터마켓"),
+                 (22, 0, 0, 0, "after_close", "마감"))
+        monkeypatch.setitem(ks.VENUES, "ZZZ", third)
+        assert ks.union_session(at) == "post", "새 거래소를 안 따라왔다"
+        assert ks.union_extended_window(at) is True
+
+    def test_pre_wins_when_two_venues_disagree(self, monkeypatch):
+        """`union_session` 독스트링이 "그런 날이 오면 'pre' 가 이긴다" 고
+        적어 두었는데 **오늘 그 조건이 성립하지 않아** 우선순위를 뒤집는
+        뮤테이션이 통과했다(2026-09-17 실측 14 passed) — 적어 둔 규약은
+        가드가 있어야 규약이다(#291·#286). 합성 거래소로 프리와 애프터를
+        겹쳐 실제로 태운다(#91c).
+        """
+        from datetime import datetime
+
+        import bot.kr_session as ks
+        # NXT 프리(08:30)에 애프터가 열려 있는 거래소를 끼운다.
+        clash = ((0, 0, 8, 0, "after_close", "마감"),
+                 (8, 0, 9, 0, "after", "애프터마켓"),
+                 (9, 0, 0, 0, "after_close", "마감"))
+        at = datetime(2026, 9, 16, 8, 30, tzinfo=ks.KST)
+        assert ks.union_session(at) == "pre", "합성 전 전제가 깨졌다"
+        monkeypatch.setitem(ks.VENUES, "ZZZ", clash)
+        assert ks.phase("ZZZ", at)[0] == "after", "픽스처가 안 겹친다"
+        assert ks.union_session(at) == "pre", "우선순위 규약이 안 지켜졌다"
 
     # ── 엔진 ────────────────────────────────────────────────────────
     def _kr_scan_env(self, tmp_path, monkeypatch):
@@ -66605,6 +66659,44 @@ class TestKrOverBoardMerged20260917:
         # 스텁 스레드는 `_run` 을 돌리지 않으므로 플래그가 그대로 선다.
         pp._kick_kr_refresh()
         assert len(started) == 1, f"중복 실행: {started}"
+
+    def test_the_flag_is_released_after_the_scan_finishes(self, monkeypatch):
+        """set→bool 로 바꾸면서 `_run` 의 `global _KR_REFRESHING` 이 **새 요구**가
+        됐다 — 옛 판은 `set.discard()` 라 공유 객체를 건드려 global 이 필요
+        없었다. 빠뜨리면 `_KR_REFRESHING = False` 가 `_run` 의 **지역 바인딩**이
+        되어 모듈 플래그가 영원히 True → 보드가 마지막 스냅샷에 얼어붙는다.
+        배너도 안 뜨고(state=done) 로그도 없다 = 실수 #280 그대로.
+
+        ⚠️ 형제 세 테스트는 `_spawn` 을 스텁해 **`_run` 을 한 번도 안 돌린다**
+        (독립 리뷰 2026-09-17 HIGH-1 실측: `global` 줄을 지워도 95 passed).
+        스텁이 target 을 **동기로 부르게** 해야 그 줄이 태워진다(#20·#291).
+        """
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "_KR_REFRESHING", False)
+        monkeypatch.setattr(pp, "_compute_kr_prepost", lambda: {})
+        monkeypatch.setattr(pp, "_spawn", lambda **kw: type("T", (), {
+            "start": lambda _s, t=kw["target"]: t()})())      # 동기 실행
+        pp._kick_kr_refresh()
+        assert pp._KR_REFRESHING is False, "스캔이 끝났는데 플래그가 남았다"
+        # 다음 킥이 실제로 뜬다(막혀 있지 않다).
+        ran = []
+        monkeypatch.setattr(pp, "_compute_kr_prepost", lambda: ran.append(1) or {})
+        pp._kick_kr_refresh()
+        assert ran, "다음 스캔이 막혔다 — 플래그가 물려 있다"
+
+    def test_the_flag_is_released_when_the_scan_raises(self, monkeypatch):
+        """예외 분기도 같은 요구를 진다 — `_run` 의 `finally` 가 모듈 플래그를
+        내려야 한다(#280). 리뷰 HIGH-1 의 짝."""
+        import bot.prepost_client as pp
+
+        def _boom():
+            raise RuntimeError("네이버 장애")
+        monkeypatch.setattr(pp, "_KR_REFRESHING", False)
+        monkeypatch.setattr(pp, "_compute_kr_prepost", _boom)
+        monkeypatch.setattr(pp, "_spawn", lambda **kw: type("T", (), {
+            "start": lambda _s, t=kw["target"]: t()})())
+        pp._kick_kr_refresh()                                  # 삼키고 로그만
+        assert pp._KR_REFRESHING is False, "예외가 보드를 영구 정지시켰다"
 
     def test_kick_releases_the_flag_when_the_thread_cannot_start(
             self, monkeypatch):
@@ -66664,6 +66756,33 @@ class TestKrOverBoardMerged20260917:
             assert "NXT" not in seg and "KRX" not in seg, seg
         assert "장후" in "".join(titles), titles
 
+    def test_panel_titles_follow_the_session(self, monkeypatch):
+        """패널 제목의 세션 라벨은 원천이 말한 세션을 따른다 — 고정 문자열로
+        두면 장전에 '장후' 라고 적는다(#34).
+
+        ⚠️ 이 가드가 **없었다**: 라벨을 '장전·장후' 로 고정하는 뮤테이션이
+        14 passed 였다(2026-09-17 실측). 보드를 합치면서 옛 KRX/NXT 전용
+        라벨 테스트 둘을 다시 쓰다가 이 축이 빠졌다(#20·#291).
+        """
+        import re as _re
+
+        import bot.intl_pages as ip
+        import bot.prepost_client as pp
+
+        def titles(sess):
+            monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
+                "up": self._rows(), "down": self._rows(), "ts": "",
+                "session": sess})
+            monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {})
+            return _re.findall(r"<h2>(.*?)</h2>", ip.render_kr_prepost_page())
+
+        pre, post, unknown = titles("pre"), titles("post"), titles("")
+        assert len(pre) == 2 and len(post) == 2 and len(unknown) == 2
+        assert all("장전" in t and "장후" not in t for t in pre), pre
+        assert all("장후" in t and "장전" not in t for t in post), post
+        # 세션을 모르면 지어내지 않고 둘 다 적는다(#43·#165).
+        assert all("장전·장후" in t for t in unknown), unknown
+
     def test_page_says_both_windows_in_its_subtitle(self, monkeypatch):
         """부제의 창은 `kr_session` 합집합에서 온다 — 리터럴로 적으면 그 표와
         갈라진다(#55). KRX 창만 적던 옛 판이면 15:40 이 없다."""
@@ -66679,20 +66798,67 @@ class TestKrOverBoardMerged20260917:
         assert union_window_label() in sub, sub
         assert "15:40" in sub and "08:00" in sub, sub
 
-    def test_banner_does_not_name_a_venue(self, monkeypatch):
-        """집계 실패 배너도 거래소를 말하지 않는다 — 옛 판은 'KRX 애프터마켓
-        집계 실패'/'NXT 집계 실패' 였다. **배너 블록만** 잘라서 본다(#55·#91b)."""
+    def test_banner_does_not_promise_a_snapshot_that_is_not_there(
+            self, monkeypatch):
+        """실패 배너가 "아래는 직전 성공 스냅샷입니다" 라고 적는데 정작 행이
+        없으면, 바로 아래 '데이터가 없습니다' 와 **한 화면이 두 말**을 한다
+        (#55·#43. 거래소별 두 보드 시절부터 있던 결함이라 합치면서 같이 고쳤다).
+        """
         import bot.intl_pages as ip
         import bot.prepost_client as pp
+        st = {"state": "failed", "ts_label": "09-17 17:00", "detail": "universe 실패"}
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: st)
+
         monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
             "up": [], "down": [], "ts": "", "session": ""})
-        monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: {
-            "state": "failed", "ts_label": "09-17 17:00",
-            "detail": "universe 실패(네이버 무버 0)"})
-        html = ip.render_kr_prepost_page()
-        banner = html[html.index("최근 "):][:200]
-        assert "시간외 집계 실패" in banner, banner
-        assert "NXT" not in banner and "KRX" not in banner, banner
+        empty = ip.render_kr_prepost_page()
+        assert "직전 성공 스냅샷도 없습니다" in empty
+        assert "아래는 직전 성공 스냅샷입니다" not in empty
+        assert "데이터가 없습니다" in empty, "빈 본문이 안 그려졌다(#54)"
+
+        # 반대 증거 — 스냅샷이 있으면 종전대로 '아래는 …' 이라고 말한다(#25).
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
+            "up": self._rows(), "down": [], "ts": "", "session": "post"})
+        has = ip.render_kr_prepost_page()
+        assert "아래는 직전 성공 스냅샷입니다" in has
+        assert "직전 성공 스냅샷도 없습니다" not in has
+
+    def test_banner_does_not_name_a_venue(self, monkeypatch):
+        """집계 실패/진행 배너도 거래소를 말하지 않는다 — 옛 판은 'KRX
+        애프터마켓 집계 실패'/'NXT 집계 실패' 였다.
+
+        ⚠️ **스냅샷 유무 두 분기를 모두 태운다**(독립 리뷰 2026-09-17 M3):
+        배너 둘째 줄을 스냅샷 유무로 가르는 fix 를 넣자, 빈 픽스처만 쓰던 이
+        가드가 `else` 분기만 보게 되어 **행이 있는 쪽에 'NXT' 를 되돌리는
+        뮤테이션이 17 passed** 였다. 가드를 고쳤으면 그 가드가 실제로 발화하던
+        상태를 재현해 태울 것(#343·#291·#91c).
+        ⚠️ 슬라이스는 200자 고정이 아니라 **`</div>` 까지**다 — 배너가 141자라
+        고정 슬라이스가 이웃 `sm-note`(거래소 이름을 정당하게 담는 유일한 줄)
+        까지 먹어 언젠가 거짓 빨간불이 된다(리뷰 L1 · #249·#60).
+        """
+        import bot.intl_pages as ip
+        import bot.prepost_client as pp
+
+        def banner_of(rows, st):
+            monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda *a, **k: {
+                "up": rows, "down": [], "ts": "", "session": "post"})
+            monkeypatch.setattr(pp, "kr_prepost_status", lambda *a, **k: st)
+            html = ip.render_kr_prepost_page()
+            i = html.index("최근 ") if "최근 " in html else html.index("집계 진행 중")
+            return html[i:html.index("</div>", i)]
+
+        failed = {"state": "failed", "ts_label": "09-17 17:00",
+                  "detail": "universe 실패(네이버 무버 0)"}
+        running = {"state": "running", "ts_label": "09-17 17:02"}
+        cases = [("실패·행없음", banner_of([], failed)),
+                 ("실패·행있음", banner_of(self._rows(), failed)),
+                 ("진행중·행없음", banner_of([], running)),
+                 ("진행중·행있음", banner_of(self._rows(), running))]
+        assert len(cases) == 4
+        for tag, banner in cases:
+            assert banner, f"{tag}: 배너가 안 그려졌다 — 대조 0건은 통과가 아니다(#54)"
+            assert "집계" in banner, (tag, banner)
+            assert "NXT" not in banner and "KRX" not in banner, (tag, banner)
 
     # ── 배선 ────────────────────────────────────────────────────────
     def test_the_krx_board_is_gone_everywhere(self):
@@ -66710,14 +66876,24 @@ class TestKrOverBoardMerged20260917:
         # ⚠️ 소스 검사는 **주석·독스트링을 걷어내고** 본다 — 왜 뺐는지 적은
         # 글이 스스로 걸리면 가드가 눈이 먼다(#59b). `live_refresh` 는 JS 를
         # 담은 파이썬이라 인라인 `//` 주석도 같이 걷어낸다.
+        # ⚠️ 파일을 **열거하면 다섯 번째가 샌다**(#24, 독립 리뷰 LOW-3) —
+        # `bot/` 전수로 훑는다. 모듈 두 개는 이 항목을 서술하는 쪽이라 면제하고,
+        # 그 면제 목록의 **크기를 단언**해 조용히 커지지 않게 한다(#286).
         import pathlib as _pl
         import re as _re
-        for path in ("bot/dashboard_server.py", "bot/live_refresh.py",
-                     "bot/telegram_bot.py", "bot/naver_pages.py"):
-            code = _audit_source_wo_docs(_pl.Path(path))
+        told = {"bot/intl_pages.py", "bot/prepost_client.py", "bot/kr_session.py",
+                "bot/dashboard_server.py", "bot/tw_pages.py"}   # 사유를 적은 곳
+        assert len(told) == 5
+        seen = 0
+        for f in sorted(_pl.Path("bot").rglob("*.py")):
+            if f.as_posix() in told:
+                continue
+            code = _audit_source_wo_docs(f)
             code = _re.sub(r"^\s*//.*$", "", code, flags=_re.M)
-            assert "krafter" not in code, path
-            assert "render_kr_after_page" not in code, path
+            assert "krafter" not in code, f
+            assert "render_kr_after_page" not in code, f
+            seen += 1
+        assert seen > 50, f"대조 0건은 통과가 아니다(#54): {seen}"
 
     def test_nav_has_one_after_hours_tab_named_like_the_us_board(self):
         """사용자 2026-09-17 "미국처럼 장후로" — 라벨을 미국 보드와 맞춘다.
@@ -66750,11 +66926,29 @@ class TestKrOverBoardMerged20260917:
         import re as _re
         med = _re.search(r"var MED=\{([^}]*)\}", js).group(1)
         assert "/krprepost" not in med, med
+        # ⚠️ 기본 폴링 주기를 **리터럴 30 으로 박으면** live_refresh 의 기본값을
+        # 바꿔도 안 걸린다(#66 자기 상수로 자기를 검증, 독립 리뷰 L2).
+        # `(MED[page]||30000)` 에서 실제 기본값을 뽑아 비교한다.
+        default_ms = int(_re.search(r"MED\[page\]\|\|(\d+)", js).group(1))
         import bot.prepost_client as _pp
-        assert _pp._KR_PREPOST_TTL > 30, "폴링(30초)이 서버 TTL 보다 길면 안 된다"
+        assert _pp._KR_PREPOST_TTL > default_ms / 1000, (
+            f"폴링({default_ms / 1000}초)이 서버 TTL({_pp._KR_PREPOST_TTL}초)보다 "
+            "길면 재집계가 흔들린다(#36)")
         tg = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert '"render_kr_prepost_page"' in tg, "워머에 없다 — 방문해야만 채워진다"
         assert "KRX장후" not in tg, "_HELP_TEXT 가 사라진 탭을 광고한다"
+        # ⚠️ 워머 게이트도 **수집기와 같은 술어**여야 한다 — 시각을 리터럴로
+        # 적으면 원천이 창을 넓혔을 때 스캔만 따라가고 워머는 안 따라간다
+        # (#38·#24, 독립 리뷰 2026-09-17 M2). AST 로 배선을 못박는다(#19).
+        import ast as _ast
+        warm = next(n for n in _ast.walk(_ast.parse(tg))
+                    if isinstance(n, _ast.FunctionDef) and n.name == "_warm_light_boards")
+        seg = _ast.dump(warm)
+        assert "union_extended_window" in seg, (
+            "워머가 시간외 창을 단일 출처에서 안 받는다")
+        # 그리고 그 판정이 실제로 `krprepost` 워밍을 가른다(정의 1 + 사용 1, #120).
+        names = [n.id for n in _ast.walk(warm) if isinstance(n, _ast.Name)]
+        assert names.count("kr_over") >= 2, names.count("kr_over")
 
 
 class TestKrBoardsReviewFixes20260916:

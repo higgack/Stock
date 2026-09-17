@@ -254,6 +254,8 @@ def render_kr_prepost_page() -> str:
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
+    # 패널 제목의 세션 라벨 — 원천이 말한 세션을 따른다. 고정 문자열로 두면
+    # 장전에 '장후' 라고 적는다(#34). N4 뮤테이션이 통과해 회귀를 붙였다(#291).
     sess_kr = ("장전" if sess == "pre" else
                "장후" if sess == "post" else "장전·장후")
     from bot.kr_session import union_window_label
@@ -292,8 +294,12 @@ def render_kr_prepost_page() -> str:
             'background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.45);'
             'font-size:13px;line-height:1.55">'
             f'⚠️ <b>최근 시간외 집계 실패</b> — {_stl}{_scan_txt} · 사유: {_detail}<br>'
-            f'아래는 직전 성공 스냅샷입니다. {win} 창에서 자동 재집계됩니다.'
-            '</div>') + body
+            # ⚠️ 스냅샷이 **없을 때** '아래는 직전 성공 스냅샷' 이라고 적으면
+            # 바로 아래 '데이터가 없습니다' 와 한 화면이 두 말을 한다(#55·#43).
+            + (f'아래는 직전 성공 스냅샷입니다. {win} 창에서 자동 재집계됩니다.'
+               if (up or down) else
+               f'직전 성공 스냅샷도 없습니다. {win} 창에서 자동 재집계됩니다.')
+            + '</div>') + body
     elif _state == "running":
         body = (
             '<div style="margin:10px 0;padding:10px 14px;border-radius:8px;'

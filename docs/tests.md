@@ -294,6 +294,15 @@ KRX 창이 NXT 창의 진부분집합이라 KRX 보드는 한 행도 더 내놓�
 | 제목·부제·패널 제목이 **거래소를 주장하지 않는다**(#375·#55 표면별) | ✅ 자동 | `…::test_page_never_claims_a_venue` |
 | 부제 창이 `kr_session` 합집합 단일 출처에서 온다(#55·#38) | ✅ 자동 | `…::test_page_says_both_windows_in_its_subtitle` |
 | 집계 실패 배너도 거래소를 말하지 않는다(#91b 배너 블록만 잘라서) | ✅ 자동 | `…::test_banner_does_not_name_a_venue` |
+| 실패 배너가 **없는 스냅샷**을 '아래에 있다' 고 말하지 않는다(#55·#43 · 반대 증거 포함) | ✅ 자동 | `…::test_banner_does_not_promise_a_snapshot_that_is_not_there` |
+| 패널 제목 세션 라벨이 원천 세션을 따른다(pre→장전 · post→장후 · 미상→둘 다) | ✅ 자동 | `…::test_panel_titles_follow_the_session` |
+| `union_session` 의 "충돌 시 pre 가 이긴다" 규약(합성 거래소로 실제 발화, #291) | ✅ 자동 | `…::test_pre_wins_when_two_venues_disagree` |
+| `union_session` 이 거래소를 **열거하지 않는다**(합성 거래소 전용 창으로 발화, #24·#291) | ✅ 자동 | `…::test_union_session_is_derived_not_enumerated` |
+| 한 구간이 두 국면에 걸치면 '시간외' 라고만 적는다(독스트링 규약을 가드로, #286) | ✅ 자동 | `…::test_a_span_covering_both_phases_is_named_시간외` |
+| `_run` 의 `global` — 스캔이 끝나면 플래그가 내려간다(정상·예외 두 분기, #280) | ✅ 자동 | `…::test_the_flag_is_released_after_the_scan_finishes` · `…::test_the_flag_is_released_when_the_scan_raises` |
+| 배너가 거래소를 말하지 않는다 — **스냅샷 유무 × 실패/진행 4분기 전부**(#343) | ✅ 자동 | `…::test_banner_does_not_name_a_venue` |
+| 워머 게이트도 수집기와 **같은 술어**(`union_extended_window`)에서 온다(#38·#24) | ✅ 자동 | `…::test_route_and_polling_are_wired` |
+| 폴링 기본값을 리터럴로 안 박고 `live_refresh` 에서 파생해 서버 TTL 과 비교(#66·#36) | ✅ 자동 | 〃 |
 | KRX 보드가 **모든 표면에서** 사라졌다 — 렌더러·헬퍼·nav·라우트·폴링·워머(#286 양방향) | ✅ 자동 | `…::test_the_krx_board_is_gone_everywhere` |
 | 탭 라벨이 **미국 보드와 같다**(사용자 "미국처럼") + 거래량 상위 뒤 순서 유지 | ✅ 자동 | `…::test_nav_has_one_after_hours_tab_named_like_the_us_board` |
 | 라우트·no-cache·폴링·워머 배선 + `_HELP_TEXT` 에 사라진 탭이 없다(#20·§Help) | ✅ 자동 | `…::test_route_and_polling_are_wired` |
@@ -551,9 +560,17 @@ TTL 이 지나도 옛 맵을 서빙한다(형제 보드와 공유하는 선재 �
 이름이 그 밖일 수 있다(#24) — ④ 의 전 키 덤프가 짝이다. 그리고 '있음' 이
 떠도 그 키로 **목록이 실제로 줄어드는지**는 그다음 측정이 답한다.
 
-**같은 커밋에서 잡은 시한폭탄**: `test_scan_writes_to_its_own_venue_files`
-(2026-09-16 작성)가 실제 `now` 로 창을 판정해 **매일 16:00~20:00 KST 에만**
-빨간불이었다 — KRX 체결 창은 NXT 창 안에 통째로 들어가므로 그 시간엔 공유
-저장(리뷰 B1)이 정상 동작하고, 단언 "NXT 캐시를 덮어썼다" 가 **운영 상시
-경로에서 거짓**이 된다. 창 판정을 시계에서 떼어내고 계약을 둘로 나눴다
-(`test_overlapping_windows_share_one_scan_into_two_files`, M8 발화 확인).
+**같은 커밋에서 잡은 시한폭탄**(2026-09-16 당시): 그때의
+`test_scan_writes_to_its_own_venue_files` 가 실제 `now` 로 창을 판정해 **매일
+16:00~20:00 KST 에만** 빨간불이었다 — KRX 체결 창은 NXT 창 안에 통째로
+들어가므로 그 시간엔 공유 저장(리뷰 B1)이 정상 동작하고, 단언 "NXT 캐시를
+덮어썼다" 가 **운영 상시 경로에서 거짓**이 된다. 창 판정을 시계에서 떼어내고
+계약을 둘로 나눴다(당시의 `test_overlapping_windows_share_one_scan_into_two_files`,
+M8 발화 확인).
+⚠️ 두 테스트 다 **2026-09-17 보드 합침(#378)으로 사라졌다** — 남는 보장은
+§KR 시간외 보드 절의 `test_scan_writes_one_cache_and_one_status` ·
+`test_one_scan_path_means_no_double_polling` 이고, 창 판정을 시계에서
+떼어내는 규율은 `_kr_scan_env` 가 그대로 든다(#222 지운 것이 아니라 다시 쓴 것).
+⚠️ `docs/tests.md` 가 **인용한 테스트 이름이 실재하는지 검사하는 가드는
+없다**(#274 못 보는 축) — 그래서 이런 이름은 조용히 썩는다. 지울 땐 인용처를
+같이 볼 것.
